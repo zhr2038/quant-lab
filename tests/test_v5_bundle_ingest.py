@@ -1,0 +1,45 @@
+from quant_lab.data.lake import read_parquet_dataset
+from quant_lab.strategy_telemetry.ingest import ingest_v5_bundle
+from tests.v5_bundle_fixture import make_v5_bundle_fixture
+
+
+def test_ingest_bundle_idempotent_by_sha256(tmp_path):
+    bundle = make_v5_bundle_fixture(tmp_path / "v5_live_followup_bundle_20260510T140249Z.tar.gz")
+    lake = tmp_path / "lake"
+
+    first = ingest_v5_bundle(bundle, lake, tmp_path / "restricted", tmp_path / "redacted")
+    second = ingest_v5_bundle(bundle, lake, tmp_path / "restricted", tmp_path / "redacted")
+
+    manifests = read_parquet_dataset(lake / "bronze/strategy_telemetry/v5/bundle_manifest")
+    decisions = read_parquet_dataset(lake / "silver/v5_decision_audit")
+
+    assert first.skipped is False
+    assert second.skipped is True
+    assert manifests.height == 1
+    assert decisions.height == 1
+
+
+def test_ingest_parses_window_summary(tmp_path):
+    bundle = make_v5_bundle_fixture(tmp_path / "v5_live_followup_bundle_20260510T140249Z.tar.gz")
+    lake = tmp_path / "lake"
+
+    ingest_v5_bundle(bundle, lake, tmp_path / "restricted", tmp_path / "redacted")
+
+    health = read_parquet_dataset(lake / "gold/strategy_health_daily")
+    assert health.height == 1
+    assert health["run_count_72h"][0] >= 1
+
+
+def test_ingest_parses_state_files(tmp_path):
+    bundle = make_v5_bundle_fixture(tmp_path / "v5_live_followup_bundle_20260510T140249Z.tar.gz")
+    lake = tmp_path / "lake"
+
+    ingest_v5_bundle(bundle, lake, tmp_path / "restricted", tmp_path / "redacted")
+
+    states = read_parquet_dataset(lake / "silver/v5_state_snapshot")
+    assert set(states["state_type"].to_list()) >= {
+        "kill_switch",
+        "reconcile_status",
+        "ledger_status",
+        "auto_risk_eval",
+    }

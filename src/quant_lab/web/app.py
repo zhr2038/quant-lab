@@ -17,6 +17,7 @@ from quant_lab.web.pages import (
     okx_collectors,
     overview,
     strategy_consumers,
+    v5_telemetry,
 )
 
 PageRenderer = Callable[[str | Path, Any | None], None]
@@ -29,6 +30,7 @@ PAGES: dict[str, PageRenderer] = {
     "Cost Model": cost_model.render,
     "Alpha Gates": alpha_gates.render,
     "Strategy Consumers": strategy_consumers.render,
+    "V5 Telemetry": v5_telemetry.render,
     "Expert Exports": expert_exports.render,
 }
 
@@ -101,4 +103,3 @@ def _streamlit(st_module: Any | None = None) -> Any:
 
 if __name__ == "__main__":
     streamlit_entry()
-

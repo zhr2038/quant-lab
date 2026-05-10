@@ -315,6 +315,26 @@ def strategy_consumer_summary(lake_root: str | Path) -> dict[str, Any]:
     }
 
 
+def v5_telemetry_summary(lake_root: str | Path) -> dict[str, Any]:
+    health = read_parquet_dataset(Path(lake_root) / "gold" / "strategy_health_daily")
+    gate = read_parquet_dataset(Path(lake_root) / "gold" / "v5_gate_compliance_daily")
+    if health.is_empty():
+        return {
+            "latest": {},
+            "health_rows": pl.DataFrame(),
+            "gate_compliance_rows": gate,
+            "warnings": ["strategy_health_daily dataset is missing or empty"],
+        }
+    sort_column = "date" if "date" in health.columns else health.columns[0]
+    latest = health.sort(sort_column).tail(1).to_dicts()[0]
+    return {
+        "latest": latest,
+        "health_rows": health.sort(sort_column, descending=True).head(DISPLAY_LIMIT),
+        "gate_compliance_rows": gate.head(DISPLAY_LIMIT),
+        "warnings": [],
+    }
+
+
 def expert_export_summary(exports_root: str | Path) -> dict[str, Any]:
     root = Path(exports_root)
     packs = sorted(root.glob("quant_lab_expert_pack_*.zip")) if root.exists() else []

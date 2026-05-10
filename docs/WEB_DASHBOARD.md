@@ -133,6 +133,24 @@ V5/V7 continue to own real execution, reconciliation, balances, and kill-switch
 logic. quant-lab only publishes data, cost estimates, gate decisions, and risk
 permission signals.
 
+### V5 Telemetry
+
+Use this page to inspect the remote V5 bundle ingest and analysis outputs:
+
+- latest bundle timestamp and sha256
+- run, decision audit, trade, and roundtrip counts
+- open and residual position counts
+- kill-switch, reconcile, ledger, and auto-risk state
+- high/medium issue counts
+- config values not consumed at runtime
+- high-score blocked and matured opportunity counts
+- router reason top table
+- next actions from `gold/strategy_health_daily`
+
+V5 telemetry is audit and behavior data, not the primary market data source.
+Raw bundles are kept in restricted archive only; the dashboard reads the
+redacted archive and lake-derived gold datasets.
+
 ### Expert Exports
 
 Use this page to inspect expert analysis packs:
@@ -155,7 +173,9 @@ lake root, for example `/var/lib/quant-lab/exports`.
 5. Review cost fallback ratio and low-sample cost buckets.
 6. Review `DEAD`, `QUARANTINE`, `PAPER_READY`, and `LIVE_READY` gate counts.
 7. Confirm V5/V7 risk permissions match operator expectations.
-8. Open the latest expert pack and review data quality warnings and questions.
+8. Review V5 Telemetry for bundle freshness, kill-switch/reconcile/ledger
+   status, high issues, and gate compliance warnings.
+9. Open the latest expert pack and review data quality warnings and questions.
 
 ## Manual Intervention
 
@@ -167,6 +187,8 @@ Intervene when:
 - cost buckets are missing or mostly fallback/proxy
 - an expected alpha moves to `DEAD` or `QUARANTINE`
 - V5/V7 permission is `ABORT` unexpectedly
+- V5 telemetry reports stale bundles, kill-switch enabled, reconcile failure,
+  ledger failure, or gate compliance violations
 - the latest expert pack is missing
 - any dashboard output appears to expose credentials or private auth material
 

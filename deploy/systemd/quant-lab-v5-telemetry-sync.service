@@ -1,0 +1,13 @@
+[Unit]
+Description=quant-lab V5 telemetry bundle sync
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+User=quantlab
+Group=quantlab
+WorkingDirectory=/opt/quant-lab
+ExecStart=/opt/quant-lab/.venv/bin/qlab sync-v5-telemetry --config /etc/quant-lab/v5_telemetry_remote.yaml
+NoNewPrivileges=true
+PrivateTmp=true

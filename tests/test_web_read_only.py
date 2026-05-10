@@ -15,6 +15,7 @@ from quant_lab.web.pages import (
     okx_collectors,
     overview,
     strategy_consumers,
+    v5_telemetry,
 )
 
 FORBIDDEN_WEB_TERMS = [
@@ -78,6 +79,7 @@ def test_dashboard_readers_load_fixture_lake(tmp_path):
     costs = readers.cost_model_summary(lake_root)
     gates = readers.alpha_gate_summary(lake_root)
     consumers = readers.strategy_consumer_summary(lake_root)
+    v5 = readers.v5_telemetry_summary(lake_root)
     experts = readers.expert_export_summary(tmp_path / "exports")
 
     assert overview_summary["status"] in {"OK", "WARNING"}
@@ -86,6 +88,7 @@ def test_dashboard_readers_load_fixture_lake(tmp_path):
     assert costs["costs"].height == 1
     assert gates["counts"] == {"LIVE_READY": 1}
     assert consumers["permissions"] == {"v5": "ALLOW", "v7": "SELL_ONLY"}
+    assert v5["latest"]["status"] == "OK"
     assert experts["latest_pack"].endswith("quant_lab_expert_pack_2026-05-10.zip")
 
 
@@ -101,6 +104,7 @@ def test_key_pages_render_fixture_lake_without_network_or_mutation(tmp_path):
         cost_model,
         alpha_gates,
         strategy_consumers,
+        v5_telemetry,
         expert_exports,
     ]:
         page.render(lake_root, fake)
@@ -258,6 +262,53 @@ def _fixture_lake(tmp_path) -> Path:
             ]
         ),
         lake_root / "bronze" / "okx_public_ws",
+    )
+    write_parquet_dataset(
+        pl.DataFrame(
+            [
+                {
+                    "strategy": "v5",
+                    "date": "2026-05-10",
+                    "status": "OK",
+                    "latest_bundle_ts": start,
+                    "latest_bundle_sha256": "fixture-sha",
+                    "run_count_72h": 1,
+                    "decision_audit_count_24h": 1,
+                    "trade_count_24h": 0,
+                    "trade_count_72h": 0,
+                    "roundtrip_count_72h": 0,
+                    "open_position_count": 0,
+                    "dust_residual_position_count": 0,
+                    "kill_switch_enabled": False,
+                    "reconcile_ok": True,
+                    "ledger_ok": True,
+                    "auto_risk_level": "LOW",
+                    "high_issue_count": 0,
+                    "medium_issue_count": 0,
+                    "config_not_consumed_count": 0,
+                    "high_score_blocked_count": 0,
+                    "high_score_blocked_matured_count": 0,
+                    "warnings_json": "[]",
+                    "critical_reasons_json": "[]",
+                    "next_actions_json": "[]",
+                }
+            ]
+        ),
+        lake_root / "gold" / "strategy_health_daily",
+    )
+    write_parquet_dataset(
+        pl.DataFrame(
+            [
+                {
+                    "strategy": "v5",
+                    "date": "2026-05-10",
+                    "status": "OK",
+                    "violation_count": 0,
+                    "violations_json": "[]",
+                }
+            ]
+        ),
+        lake_root / "gold" / "v5_gate_compliance_daily",
     )
     write_parquet_dataset(
         pl.DataFrame(

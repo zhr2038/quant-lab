@@ -22,6 +22,14 @@ from quant_lab.ingest.okx_readonly_private import (
 )
 from quant_lab.ingest.okx_ws_public import collect_okx_public_ws
 from quant_lab.ingest.v5_reports import inspect_v5_reports, publish_v5_reports_to_lake
+from quant_lab.strategy_telemetry.analyze import analyze_v5_telemetry
+from quant_lab.strategy_telemetry.bundle import safe_extract_v5_bundle, validate_v5_bundle
+from quant_lab.strategy_telemetry.config import load_v5_telemetry_remote_config
+from quant_lab.strategy_telemetry.ingest import ingest_v5_bundle as ingest_v5_bundle_file
+from quant_lab.strategy_telemetry.ingest import ingest_v5_inbox as ingest_v5_inbox_dir
+from quant_lab.strategy_telemetry.models import BundleLimits
+from quant_lab.strategy_telemetry.remote_pull import RemoteBundlePuller
+from quant_lab.strategy_telemetry.sanitize import scan_for_secrets
 
 app = typer.Typer(help="quant-lab read-only research utilities.")
 
@@ -255,6 +263,140 @@ def calibrate_costs(
 ) -> None:
     result = calibrate_costs_for_day(lake_root=lake_root, day=day)
     typer.echo(result.model_dump_json(indent=2))
+
+
+@app.command("pull-v5-bundles")
+def pull_v5_bundles(
+    config: Annotated[Path, typer.Option("--config", help="V5 telemetry remote YAML config.")],
+    remote_host: Annotated[str | None, typer.Option("--remote-host")] = None,
+    remote_user: Annotated[str | None, typer.Option("--remote-user")] = None,
+    remote_dir: Annotated[Path | None, typer.Option("--remote-dir")] = None,
+    local_inbox_dir: Annotated[Path | None, typer.Option("--local-inbox-dir")] = None,
+    dry_run: Annotated[bool, typer.Option("--dry-run")] = False,
+) -> None:
+    cfg = load_v5_telemetry_remote_config(
+        config,
+        overrides={
+            "remote_host": remote_host,
+            "remote_user": remote_user,
+            "remote_bundle_dir": remote_dir,
+            "local_inbox_dir": local_inbox_dir,
+            "dry_run": dry_run or None,
+        },
+    )
+    result = RemoteBundlePuller().pull_bundles(cfg)
+    typer.echo(result.model_dump_json(indent=2))
+
+
+@app.command("validate-v5-bundle")
+def validate_v5_bundle_command(
+    bundle_path: Annotated[Path, typer.Argument(exists=True, file_okay=True, dir_okay=False)],
+    max_bundle_size_mb: Annotated[int, typer.Option("--max-bundle-size-mb")] = 512,
+    max_extracted_size_mb: Annotated[int, typer.Option("--max-extracted-size-mb")] = 2048,
+    max_file_count: Annotated[int, typer.Option("--max-file-count")] = 5000,
+) -> None:
+    limits = BundleLimits(
+        max_bundle_size_mb=max_bundle_size_mb,
+        max_extracted_size_mb=max_extracted_size_mb,
+        max_file_count=max_file_count,
+    )
+    validation = validate_v5_bundle(bundle_path, limits)
+    scan = scan_for_secrets("")
+    if validation.valid:
+        import tempfile
+
+        with tempfile.TemporaryDirectory(prefix="quant_lab_validate_v5_") as temp_name:
+            extract_result = safe_extract_v5_bundle(bundle_path, Path(temp_name), limits)
+            scan = scan_for_secrets(Path(extract_result.target_dir))
+    payload = {
+        "validation": validation.model_dump(mode="json"),
+        "secret_scan": scan.model_dump(mode="json"),
+    }
+    typer.echo(json.dumps(payload, indent=2, sort_keys=True))
+    if validation.rejected or scan.high_severity_count > 0:
+        raise typer.Exit(1)
+
+
+@app.command("ingest-v5-bundle")
+def ingest_v5_bundle_command(
+    bundle_path: Annotated[Path, typer.Argument(exists=True, file_okay=True, dir_okay=False)],
+    lake_root: Annotated[Path, typer.Option("--lake-root")],
+    restricted_archive_dir: Annotated[Path, typer.Option("--restricted-archive-dir")],
+    redacted_archive_dir: Annotated[Path, typer.Option("--redacted-archive-dir")],
+    strategy: Annotated[str, typer.Option("--strategy")] = "v5",
+) -> None:
+    result = ingest_v5_bundle_file(
+        bundle_path=bundle_path,
+        lake_root=lake_root,
+        restricted_archive_dir=restricted_archive_dir,
+        redacted_archive_dir=redacted_archive_dir,
+        strategy=strategy,
+    )
+    typer.echo(result.model_dump_json(indent=2))
+    if result.validation.rejected or result.secret_scan.high_severity_count > 0:
+        raise typer.Exit(1)
+
+
+@app.command("ingest-v5-inbox")
+def ingest_v5_inbox_command(
+    inbox_dir: Annotated[Path, typer.Option("--inbox-dir")],
+    lake_root: Annotated[Path, typer.Option("--lake-root")],
+    restricted_archive_dir: Annotated[Path, typer.Option("--restricted-archive-dir")],
+    redacted_archive_dir: Annotated[Path, typer.Option("--redacted-archive-dir")],
+    strategy: Annotated[str, typer.Option("--strategy")] = "v5",
+) -> None:
+    result = ingest_v5_inbox_dir(
+        inbox_dir=inbox_dir,
+        lake_root=lake_root,
+        restricted_archive_dir=restricted_archive_dir,
+        redacted_archive_dir=redacted_archive_dir,
+        strategy=strategy,
+    )
+    typer.echo(result.model_dump_json(indent=2))
+
+
+@app.command("analyze-v5-telemetry")
+def analyze_v5_telemetry_command(
+    lake_root: Annotated[Path, typer.Option("--lake-root")],
+    date: Annotated[str | None, typer.Option("--date")] = None,
+) -> None:
+    result = analyze_v5_telemetry(lake_root=lake_root, date=date)
+    typer.echo(result.model_dump_json(indent=2))
+
+
+@app.command("sync-v5-telemetry")
+def sync_v5_telemetry_command(
+    config: Annotated[Path, typer.Option("--config", help="V5 telemetry remote YAML config.")],
+    dry_run: Annotated[bool, typer.Option("--dry-run")] = False,
+) -> None:
+    cfg = load_v5_telemetry_remote_config(
+        config,
+        overrides={"dry_run": dry_run or None},
+    )
+    pull = RemoteBundlePuller().pull_bundles(cfg)
+    inbox = None
+    analysis = None
+    if not cfg.dry_run:
+        inbox = ingest_v5_inbox_dir(
+            inbox_dir=cfg.local_inbox_dir,
+            lake_root=cfg.lake_root,
+            restricted_archive_dir=cfg.restricted_archive_dir,
+            redacted_archive_dir=cfg.redacted_archive_dir,
+            strategy=cfg.strategy,
+            limits=cfg.bundle_limits,
+        )
+        analysis = analyze_v5_telemetry(lake_root=cfg.lake_root)
+    typer.echo(
+        json.dumps(
+            {
+                "pull": pull.model_dump(mode="json"),
+                "inbox": inbox.model_dump(mode="json") if inbox else None,
+                "analysis": analysis.model_dump(mode="json") if analysis else None,
+            },
+            indent=2,
+            sort_keys=True,
+        )
+    )
 
 
 def main() -> None:

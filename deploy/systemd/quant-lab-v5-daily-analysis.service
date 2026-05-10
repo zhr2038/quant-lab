@@ -1,0 +1,13 @@
+[Unit]
+Description=quant-lab V5 telemetry daily analysis
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+User=quantlab
+Group=quantlab
+WorkingDirectory=/opt/quant-lab
+ExecStart=/opt/quant-lab/.venv/bin/qlab analyze-v5-telemetry --lake-root /var/lib/quant-lab/lake
+NoNewPrivileges=true
+PrivateTmp=true

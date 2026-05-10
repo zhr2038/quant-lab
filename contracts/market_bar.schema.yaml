@@ -1,0 +1,58 @@
+$schema: https://json-schema.org/draft/2020-12/schema
+title: market_bar
+type: object
+required:
+  - venue
+  - symbol
+  - market_type
+  - timeframe
+  - ts
+  - open
+  - high
+  - low
+  - close
+  - volume
+  - quote_volume
+  - source
+  - ingest_ts
+properties:
+  venue:
+    type: string
+    const: okx
+  symbol:
+    type: string
+    description: Canonical instrument symbol, for example BTC-USDT.
+  market_type:
+    type: string
+    description: Market type such as SPOT, SWAP, FUTURES, or OPTION.
+  timeframe:
+    type: string
+    description: Source timeframe, for example 1H.
+  ts:
+    type: string
+    format: date-time
+    description: UTC candle timestamp.
+  open:
+    type: number
+  high:
+    type: number
+  low:
+    type: number
+  close:
+    type: number
+  volume:
+    type: number
+    minimum: 0
+  quote_volume:
+    type: number
+    minimum: 0
+  source:
+    type: string
+    const: okx_public_rest
+  ingest_ts:
+    type: string
+    format: date-time
+    description: UTC ingestion timestamp.
+  is_closed:
+    type: boolean
+    const: true

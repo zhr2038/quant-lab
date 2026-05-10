@@ -1,0 +1,25 @@
+project:
+  name: quant-lab
+  role: read-only research middle platform
+  production_host: qyun2.hrhome.top
+
+storage:
+  lake_root: data/lake
+  preferred_format: parquet
+  zones:
+    bronze: data/lake/bronze
+    silver: data/lake/silver
+    gold: data/lake/gold
+
+api:
+  read_only: true
+  strategy_methods:
+    - GET
+
+quality:
+  timezone: UTC
+  closed_bar_signals_only: true
+  one_bar_decision_delay: true
+  deterministic_tests: true
+  live_network_tests: false
+

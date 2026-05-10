@@ -1,0 +1,35 @@
+$schema: https://json-schema.org/draft/2020-12/schema
+title: alpha_evidence
+type: object
+required:
+  - alpha_id
+  - coverage
+  - ic_mean
+  - ic_tstat
+  - edge_cost_ratio
+  - oos_sharpe
+  - paper_days
+  - evaluated_at
+properties:
+  alpha_id:
+    type: string
+  coverage:
+    type: number
+    minimum: 0
+    maximum: 1
+  ic_mean:
+    type: number
+  ic_tstat:
+    type: number
+  edge_cost_ratio:
+    type: number
+  oos_sharpe:
+    type: number
+  paper_days:
+    type: integer
+    minimum: 0
+  evaluated_at:
+    type: string
+    format: date-time
+    description: UTC timestamp for the evidence snapshot.
+

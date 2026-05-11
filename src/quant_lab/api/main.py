@@ -42,9 +42,30 @@ class CatalogDatasetsResponse(BaseModel):
     datasets: list[str] = Field(default_factory=list)
 
 
+class LatestFeatureRow(BaseModel):
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    symbol: str
+    ts: datetime
+    features: dict[str, float | None]
+
+
+class LatestFeaturesResponse(BaseModel):
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    feature_set: str
+    feature_version: str | None = None
+    timeframe: str | None = None
+    created_at: datetime
+    rows: list[LatestFeatureRow] = Field(default_factory=list)
+    warnings: list[str] = Field(default_factory=list)
+
+
 KNOWN_DATASETS = [
     "market_bar",
     "feature_value",
+    "feature_coverage_daily",
+    "feature_anomaly_daily",
     "cost_bucket_daily",
     "alpha_evidence",
     "gate_decision",
@@ -106,6 +127,23 @@ def create_app() -> FastAPI:
             notional_usdt=notional_usdt,
             quantile=quantile,
             notional_bucket=notional_bucket,
+        )
+
+    @app.get("/v1/features/latest", response_model=LatestFeaturesResponse)
+    def features_latest(
+        feature_set: str,
+        feature_version: str | None = None,
+        symbols: str | None = None,
+        timeframe: str | None = None,
+        feature_names: str | None = None,
+    ) -> LatestFeaturesResponse:
+        return _latest_features_response(
+            lake_root=_lake_root(),
+            feature_set=feature_set,
+            feature_version=feature_version,
+            symbols=_split_csv(symbols),
+            timeframe=timeframe,
+            feature_names=_split_csv(feature_names),
         )
 
     @app.get("/v1/market/bars", response_model=list[MarketBar])
@@ -182,6 +220,85 @@ app = create_app()
 
 def _lake_root() -> Path:
     return Path(os.environ.get("QUANT_LAB_LAKE_ROOT", "/var/lib/quant-lab/lake"))
+
+
+def _latest_features_response(
+    *,
+    lake_root: Path,
+    feature_set: str,
+    feature_version: str | None,
+    symbols: list[str] | None,
+    timeframe: str | None,
+    feature_names: list[str] | None,
+) -> LatestFeaturesResponse:
+    df = read_parquet_dataset(lake_root / "gold" / "feature_value")
+    created_at = datetime.now(UTC)
+    if df.is_empty():
+        return LatestFeaturesResponse(
+            feature_set=feature_set,
+            feature_version=feature_version,
+            timeframe=timeframe,
+            created_at=created_at,
+            rows=[],
+            warnings=["feature_value dataset is missing or empty"],
+        )
+    filtered = df.filter(pl.col("feature_set") == feature_set)
+    if "ts" in filtered.columns:
+        filtered = _normalize_datetime_column(filtered, "ts")
+    if "created_at" in filtered.columns:
+        filtered = _normalize_datetime_column(filtered, "created_at")
+        latest_created = filtered.select(pl.col("created_at").max()).item()
+        if isinstance(latest_created, datetime):
+            created_at = latest_created.astimezone(UTC)
+    if feature_version is None:
+        if filtered.is_empty() or "feature_version" not in filtered.columns:
+            version = None
+        else:
+            version = str(filtered.select(pl.col("feature_version").max()).item())
+            filtered = filtered.filter(pl.col("feature_version") == version)
+    else:
+        version = feature_version
+        filtered = filtered.filter(pl.col("feature_version") == feature_version)
+    if timeframe:
+        filtered = filtered.filter(pl.col("timeframe") == timeframe)
+    if symbols:
+        filtered = filtered.filter(pl.col("symbol").is_in(symbols))
+    if feature_names:
+        filtered = filtered.filter(pl.col("feature_name").is_in(feature_names))
+    if filtered.is_empty():
+        return LatestFeaturesResponse(
+            feature_set=feature_set,
+            feature_version=version,
+            timeframe=timeframe,
+            created_at=created_at,
+            rows=[],
+            warnings=["no feature rows matched query"],
+        )
+
+    latest_ts = filtered.group_by("symbol").agg(pl.col("ts").max().alias("ts"))
+    latest = filtered.join(latest_ts, on=["symbol", "ts"], how="inner")
+    rows: list[LatestFeatureRow] = []
+    for (symbol, ts), group in latest.group_by(["symbol", "ts"], maintain_order=True):
+        features = {
+            str(row["feature_name"]): row["value"]
+            for row in group.sort("feature_name").to_dicts()
+        }
+        rows.append(LatestFeatureRow(symbol=str(symbol), ts=ts, features=features))
+    return LatestFeaturesResponse(
+        feature_set=feature_set,
+        feature_version=version,
+        timeframe=timeframe,
+        created_at=created_at,
+        rows=rows,
+        warnings=[],
+    )
+
+
+def _split_csv(value: str | None) -> list[str] | None:
+    if not value:
+        return None
+    parsed = [item.strip() for item in value.split(",") if item.strip()]
+    return parsed or None
 
 
 def _load_gate_decisions(lake_root: Path, strategy: str) -> list[GateDecision]:

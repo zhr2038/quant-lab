@@ -14,6 +14,8 @@ from quant_lab.data.lake import invalid_parquet_files, read_parquet_dataset
 DATASET_PATHS = {
     "market_bar": Path("silver") / "market_bar",
     "feature_value": Path("gold") / "feature_value",
+    "feature_coverage_daily": Path("gold") / "feature_coverage_daily",
+    "feature_anomaly_daily": Path("gold") / "feature_anomaly_daily",
     "cost_bucket_daily": Path("gold") / "cost_bucket_daily",
     "alpha_evidence": Path("gold") / "alpha_evidence",
     "gate_decision": Path("gold") / "gate_decision",
@@ -53,6 +55,8 @@ DATASET_TIMESTAMP_COLUMNS: dict[str, tuple[str, ...]] = {
     "okx_private_readonly_fills": ("ingest_ts",),
     "okx_private_readonly_bills": ("ingest_ts",),
     "feature_value": ("created_at", "ts"),
+    "feature_coverage_daily": ("created_at", "max_ts", "day"),
+    "feature_anomaly_daily": ("created_at", "example_ts", "day"),
     "alpha_evidence": ("created_at", "end_ts"),
     "okx_public_ws_health": ("last_message_at", "updated_at", "started_at"),
     "decision_audit": ("ingest_ts", "loaded_at"),
@@ -610,6 +614,33 @@ def alpha_gate_summary(lake_root: str | Path) -> dict[str, Any]:
     }
 
 
+def feature_summary(lake_root: str | Path) -> dict[str, Any]:
+    features, feature_warning = read_dataset_with_warning(lake_root, "feature_value")
+    coverage, coverage_warning = read_dataset_with_warning(lake_root, "feature_coverage_daily")
+    anomalies, anomaly_warning = read_dataset_with_warning(lake_root, "feature_anomaly_daily")
+    warnings = [
+        warning
+        for warning in [feature_warning, coverage_warning, anomaly_warning]
+        if warning
+    ]
+    if features.is_empty():
+        warnings.append("feature_value dataset is missing or empty")
+    latest = _latest_features_table(features)
+    null_ratio = 0.0
+    if not features.is_empty() and "value" in features.columns:
+        null_ratio = float(features["value"].null_count()) / features.height
+    display_features = features.tail(DISPLAY_LIMIT) if not features.is_empty() else features
+    return {
+        "features": redact_frame(display_features),
+        "coverage": redact_frame(coverage),
+        "anomalies": redact_frame(anomalies),
+        "latest": redact_frame(latest),
+        "null_ratio": null_ratio,
+        "top_anomalies": _top_feature_anomalies(anomalies),
+        "warnings": warnings,
+    }
+
+
 def strategy_consumer_summary(lake_root: str | Path) -> dict[str, Any]:
     permissions, permissions_warning = read_dataset_with_warning(lake_root, "risk_permission")
     audits, audits_warning = read_dataset_with_warning(lake_root, "decision_audit")
@@ -926,6 +957,33 @@ def _fallback_rows(audits: pl.DataFrame) -> pl.DataFrame:
         expression = pl.col(column).str.contains("fallback", literal=True)
         predicate = expression if predicate is None else predicate | expression
     return redact_frame(audits.filter(predicate)) if predicate is not None else pl.DataFrame()
+
+
+def _latest_features_table(features: pl.DataFrame) -> pl.DataFrame:
+    required = {"symbol", "ts", "feature_name", "value"}
+    if features.is_empty() or not required.issubset(features.columns):
+        return pl.DataFrame()
+    normalized = _normalize_optional_time(features, "ts")
+    latest_ts = normalized.group_by("symbol").agg(pl.col("ts").max().alias("ts"))
+    return normalized.join(latest_ts, on=["symbol", "ts"], how="inner").sort(
+        ["symbol", "feature_name"]
+    )
+
+
+def _top_feature_anomalies(anomalies: pl.DataFrame) -> pl.DataFrame:
+    if anomalies.is_empty() or "anomaly_type" not in anomalies.columns:
+        return pl.DataFrame()
+    count_expr = (
+        pl.col("anomaly_count").sum().alias("anomaly_count")
+        if "anomaly_count" in anomalies.columns
+        else pl.len().alias("anomaly_count")
+    )
+    return (
+        anomalies.group_by(["anomaly_type", "severity"])
+        .agg(count_expr)
+        .sort("anomaly_count", descending=True)
+        .head(20)
+    )
 
 
 def _stale_dataset_rows(lake_root: str | Path) -> pl.DataFrame:

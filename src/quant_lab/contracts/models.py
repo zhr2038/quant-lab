@@ -67,6 +67,7 @@ class FeatureValue(ContractModel):
     feature_name: str = Field(min_length=1)
     feature_version: str = Field(min_length=1)
     symbol: str = Field(min_length=1)
+    timeframe: str = Field(default="1H", min_length=1)
     ts: datetime
     value: float | None
     lookback_bars: int = Field(ge=0)
@@ -74,6 +75,9 @@ class FeatureValue(ContractModel):
     input_hash: str = Field(min_length=1)
     code_version: str = Field(min_length=1)
     created_at: datetime
+    source: str = Field(default="market_bar", min_length=1)
+    is_valid: bool = True
+    invalid_reason: str | None = None
 
     @field_validator("ts", "created_at")
     @classmethod
@@ -91,6 +95,10 @@ class FeatureValue(ContractModel):
     def validate_created_after_feature_ts(self) -> "FeatureValue":
         if self.created_at < self.ts:
             raise ValueError("created_at must not be earlier than feature timestamp")
+        if self.value is None and self.is_valid and self.invalid_reason is None:
+            raise ValueError("null feature values must be marked invalid or carry invalid_reason")
+        if self.invalid_reason and self.is_valid:
+            raise ValueError("feature with invalid_reason must not be marked valid")
         return self
 
 

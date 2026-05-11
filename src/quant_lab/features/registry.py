@@ -38,6 +38,8 @@ class FeatureSpec(BaseModel):
     lookback_bars: int = Field(gt=0)
     description: str = Field(min_length=1)
     compute: FeatureCompute
+    required_columns: tuple[str, ...] = ("symbol", "ts", "close")
+    output_dtype: str = "float64"
 
     @property
     def key(self) -> tuple[str, str, str]:
@@ -73,6 +75,9 @@ class FeatureRegistry:
 
     def list_names(self) -> list[str]:
         return sorted({spec.feature_name for spec in self._features.values()})
+
+    def list_by_feature_set(self, feature_set: str) -> list[FeatureSpec]:
+        return [spec for spec in self.list() if spec.feature_set == feature_set]
 
 
 class FeatureTimestampLeakageError(ValueError):
@@ -122,6 +127,85 @@ def default_feature_registry() -> FeatureRegistry:
     return registry
 
 
+def default_core_registry(
+    *,
+    feature_version: str = "v0.1",
+    timeframe: str = "1H",
+) -> FeatureRegistry:
+    registry = FeatureRegistry()
+    for lookback in [1, 4, 24]:
+        registry.register(
+            FeatureSpec(
+                feature_set="core",
+                feature_name=f"close_return_{lookback}",
+                feature_version=feature_version,
+                timeframe=timeframe,
+                lookback_bars=lookback,
+                description=f"Close return over {lookback} closed bars.",
+                compute=compute_close_return_n,
+                required_columns=("symbol", "timeframe", "ts", "close", "is_closed"),
+            )
+        )
+    for lookback in [24, 72]:
+        registry.register(
+            FeatureSpec(
+                feature_set="core",
+                feature_name=f"rolling_volatility_{lookback}",
+                feature_version=feature_version,
+                timeframe=timeframe,
+                lookback_bars=lookback,
+                description=f"Rolling std of one-bar returns over {lookback} closed bars.",
+                compute=compute_rolling_volatility_n,
+                required_columns=("symbol", "timeframe", "ts", "close", "is_closed"),
+            )
+        )
+    for feature_name, lookback, description, required_columns in [
+        (
+            "volume_zscore_24",
+            24,
+            "Rolling z-score of bar volume over 24 closed bars.",
+            ("symbol", "timeframe", "ts", "volume", "is_closed"),
+        ),
+        (
+            "range_bps",
+            1,
+            "Intrabar high-low range divided by close in basis points.",
+            ("symbol", "timeframe", "ts", "high", "low", "close", "is_closed"),
+        ),
+        (
+            "close_position_in_range",
+            1,
+            "Close location between low and high for the same closed bar.",
+            ("symbol", "timeframe", "ts", "high", "low", "close", "is_closed"),
+        ),
+        (
+            "dollar_volume",
+            1,
+            "Quote volume or close times base volume for the closed bar.",
+            ("symbol", "timeframe", "ts", "close", "volume", "quote_volume", "is_closed"),
+        ),
+        (
+            "liquidity_proxy",
+            1,
+            "log1p of dollar_volume for the closed bar.",
+            ("symbol", "timeframe", "ts", "close", "volume", "quote_volume", "is_closed"),
+        ),
+    ]:
+        registry.register(
+            FeatureSpec(
+                feature_set="core",
+                feature_name=feature_name,
+                feature_version=feature_version,
+                timeframe=timeframe,
+                lookback_bars=lookback,
+                description=description,
+                compute=compute_close_return_n,
+                required_columns=required_columns,
+            )
+        )
+    return registry
+
+
 def compute_feature_values(
     spec: FeatureSpec,
     market_bars: pl.DataFrame,
@@ -146,10 +230,12 @@ def compute_close_return_n(
     context: FeatureComputeContext,
 ) -> list[FeatureValue]:
     bars = _prepare_market_bars(market_bars)
+    group_columns = _group_columns(bars)
     computed = bars.with_columns(
-        ((pl.col("close") / pl.col("close").shift(spec.lookback_bars).over("symbol")) - 1.0).alias(
-            "value"
-        )
+        (
+            (pl.col("close") / pl.col("close").shift(spec.lookback_bars).over(group_columns))
+            - 1.0
+        ).alias("value")
     )
     return _rows_to_feature_values(computed, spec, context)
 
@@ -160,16 +246,17 @@ def compute_rolling_volatility_n(
     context: FeatureComputeContext,
 ) -> list[FeatureValue]:
     bars = _prepare_market_bars(market_bars)
+    group_columns = _group_columns(bars)
     computed = (
         bars.with_columns(
-            ((pl.col("close") / pl.col("close").shift(1).over("symbol")) - 1.0).alias(
+            ((pl.col("close") / pl.col("close").shift(1).over(group_columns)) - 1.0).alias(
                 "_return"
             )
         )
         .with_columns(
             pl.col("_return")
             .rolling_std(window_size=spec.lookback_bars, min_samples=spec.lookback_bars)
-            .over("symbol")
+            .over(group_columns)
             .alias("value")
         )
         .drop("_return")
@@ -179,6 +266,7 @@ def compute_rolling_volatility_n(
 
 def validate_feature_timestamps(
     feature_values: Sequence[FeatureValue | dict[str, Any]] | pl.DataFrame,
+    market_bars: Sequence[dict[str, Any]] | pl.DataFrame | None = None,
     *,
     decision_delay_bars: int = 1,
 ) -> None:
@@ -188,6 +276,9 @@ def validate_feature_timestamps(
     records = _feature_records(feature_values)
     if not records:
         return
+
+    if market_bars is not None:
+        _validate_against_closed_bars(records, market_bars)
 
     timeline_by_symbol: dict[str, list[datetime]] = {}
     for record in records:
@@ -248,7 +339,13 @@ def _prepare_market_bars(market_bars: pl.DataFrame) -> pl.DataFrame:
     missing_columns = sorted(required_columns.difference(market_bars.columns))
     if missing_columns:
         raise ValueError(f"market_bars missing required columns: {', '.join(missing_columns)}")
-    return market_bars.select("symbol", "ts", "close").sort(["symbol", "ts"])
+    columns = ["symbol", "ts", "close"]
+    if "timeframe" in market_bars.columns:
+        columns.append("timeframe")
+    if "is_closed" in market_bars.columns:
+        market_bars = market_bars.filter(pl.col("is_closed"))
+    sort_columns = [column for column in ["symbol", "timeframe", "ts"] if column in columns]
+    return market_bars.select(columns).sort(sort_columns)
 
 
 def _rows_to_feature_values(
@@ -258,22 +355,58 @@ def _rows_to_feature_values(
 ) -> list[FeatureValue]:
     values: list[FeatureValue] = []
     for row in computed.select("symbol", "ts", "value").iter_rows(named=True):
+        value = _normalize_optional_float(row["value"])
         values.append(
             FeatureValue(
                 feature_set=spec.feature_set,
                 feature_name=spec.feature_name,
                 feature_version=spec.feature_version,
                 symbol=row["symbol"],
+                timeframe=spec.timeframe,
                 ts=row["ts"],
-                value=_normalize_optional_float(row["value"]),
+                value=value,
                 lookback_bars=spec.lookback_bars,
                 input_dataset_version=context.input_dataset_version,
                 input_hash=context.input_hash,
                 code_version=context.code_version,
                 created_at=context.created_at,
+                source="market_bar",
+                is_valid=value is not None,
+                invalid_reason=None if value is not None else "insufficient_lookback",
             )
         )
     return values
+
+
+def _group_columns(df: pl.DataFrame) -> list[str]:
+    return [column for column in ["symbol", "timeframe"] if column in df.columns]
+
+
+def _validate_against_closed_bars(
+    records: list[dict[str, Any]],
+    market_bars: Sequence[dict[str, Any]] | pl.DataFrame,
+) -> None:
+    bar_records = (
+        market_bars.to_dicts() if isinstance(market_bars, pl.DataFrame) else list(market_bars)
+    )
+    closed_keys: set[tuple[str, str, datetime]] = set()
+    for bar in bar_records:
+        if bar.get("is_closed", True) is False:
+            continue
+        symbol = str(bar["symbol"])
+        timeframe = str(bar.get("timeframe", "1H"))
+        ts = _coerce_utc_datetime(bar["ts"], "market_bar.ts")
+        closed_keys.add((symbol, timeframe, ts))
+
+    for record in records:
+        symbol = str(record["symbol"])
+        timeframe = str(record.get("timeframe", "1H"))
+        ts = _coerce_utc_datetime(record["ts"], "ts")
+        if (symbol, timeframe, ts) not in closed_keys:
+            raise FeatureTimestampLeakageError(
+                "feature timestamp is not backed by a closed market_bar: "
+                f"{symbol}/{timeframe}/{ts.isoformat()}"
+            )
 
 
 def _normalize_optional_float(value: Any) -> float | None:

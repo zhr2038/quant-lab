@@ -25,7 +25,7 @@ SECTIONS = ["market", "features", "costs", "research", "risk", "anomalies", "v5"
 
 SECTION_DATASETS = {
     "market": ["market_bar", "trade_print", "orderbook_snapshot", "okx_public_ws"],
-    "features": ["feature_value"],
+    "features": ["feature_value", "feature_coverage_daily", "feature_anomaly_daily"],
     "costs": ["cost_bucket_daily"],
     "research": ["alpha_evidence", "gate_decision"],
     "risk": ["risk_permission"],
@@ -115,12 +115,44 @@ CSV_SCHEMAS: dict[str, list[str]] = {
         "feature_name",
         "feature_version",
         "symbol",
+        "timeframe",
         "ts",
         "value",
         "lookback_bars",
         "input_dataset_version",
         "input_hash",
         "code_version",
+        "created_at",
+        "source",
+        "is_valid",
+        "invalid_reason",
+    ],
+    "features/feature_coverage.csv": [
+        "day",
+        "feature_set",
+        "feature_name",
+        "feature_version",
+        "timeframe",
+        "symbol",
+        "total_rows",
+        "valid_rows",
+        "null_rows",
+        "coverage",
+        "min_ts",
+        "max_ts",
+        "created_at",
+    ],
+    "features/feature_anomalies.csv": [
+        "day",
+        "feature_set",
+        "feature_name",
+        "feature_version",
+        "timeframe",
+        "symbol",
+        "anomaly_type",
+        "anomaly_count",
+        "severity",
+        "example_ts",
         "created_at",
     ],
     "market/orderbook_spread.csv": ["symbol", "channel", "ts", "spread_bps"],
@@ -420,6 +452,8 @@ def _load_snapshot(lake_root: Path) -> _DatasetSnapshot:
 def _dataset_members(frames: dict[str, pl.DataFrame]) -> dict[str, _MemberPayload]:
     market = frames.get("market_bar", pl.DataFrame())
     features = frames.get("feature_value", pl.DataFrame())
+    feature_coverage = frames.get("feature_coverage_daily", pl.DataFrame())
+    feature_anomalies = frames.get("feature_anomaly_daily", pl.DataFrame())
     costs = frames.get("cost_bucket_daily", pl.DataFrame())
     evidence = frames.get("alpha_evidence", pl.DataFrame())
     gates = frames.get("gate_decision", pl.DataFrame())
@@ -455,8 +489,16 @@ def _dataset_members(frames: dict[str, pl.DataFrame]) -> dict[str, _MemberPayloa
         "features/feature_snapshot.csv": _csv_member(
             "features/feature_snapshot.csv", _tail_by_time(features, "ts")
         ),
-        "features/feature_coverage.csv": _csv_text(_feature_coverage(features)),
-        "features/feature_anomalies.csv": _csv_text(_feature_anomalies(features)),
+        "features/feature_coverage.csv": _csv_member(
+            "features/feature_coverage.csv",
+            feature_coverage if not feature_coverage.is_empty() else _feature_coverage(features),
+        ),
+        "features/feature_anomalies.csv": _csv_member(
+            "features/feature_anomalies.csv",
+            feature_anomalies
+            if not feature_anomalies.is_empty()
+            else _feature_anomalies(features),
+        ),
         "costs/cost_bucket_daily.csv": _csv_member("costs/cost_bucket_daily.csv", costs),
         "costs/cost_estimate_examples.json": _json_text(_cost_examples(costs)),
         "costs/cost_fallbacks.csv": _csv_text(_cost_fallbacks(costs)),
@@ -942,27 +984,75 @@ def _tail_by_time(df: pl.DataFrame, column: str, limit: int = 500) -> pl.DataFra
 
 def _feature_coverage(features: pl.DataFrame) -> pl.DataFrame:
     if features.is_empty() or not {"feature_name", "symbol"}.issubset(features.columns):
-        return pl.DataFrame(
-            schema={"feature_name": pl.Utf8, "symbol": pl.Utf8, "row_count": pl.Int64}
-        )
+        return _empty_csv_schema_frame("features/feature_coverage.csv")
     return (
-        features.group_by(["feature_name", "symbol"])
-        .agg(pl.len().alias("row_count"))
+        features.group_by(["feature_set", "feature_name", "feature_version", "timeframe", "symbol"])
+        .agg(
+            [
+                pl.len().alias("total_rows"),
+                pl.col("value").is_not_null().sum().cast(pl.Int64).alias("valid_rows"),
+                pl.col("value").is_null().sum().cast(pl.Int64).alias("null_rows"),
+                pl.col("ts").min().alias("min_ts"),
+                pl.col("ts").max().alias("max_ts"),
+                pl.col("created_at").max().alias("created_at"),
+            ]
+        )
+        .with_columns(
+            [
+                pl.col("min_ts")
+                .cast(pl.Datetime(time_zone="UTC"))
+                .dt.date()
+                .cast(pl.Utf8)
+                .alias("day"),
+                (pl.col("valid_rows") / pl.col("total_rows")).alias("coverage"),
+            ]
+        )
+        .select(CSV_SCHEMAS["features/feature_coverage.csv"])
         .sort(["feature_name", "symbol"])
     )
 
 
 def _feature_anomalies(features: pl.DataFrame) -> pl.DataFrame:
     if features.is_empty() or "value" not in features.columns:
-        return pl.DataFrame(
-            schema={"feature_name": pl.Utf8, "symbol": pl.Utf8, "ts": pl.Utf8, "reason": pl.Utf8}
-        )
+        return _empty_csv_schema_frame("features/feature_anomalies.csv")
     rows = features.filter(pl.col("value").is_null())
     if rows.is_empty():
-        return pl.DataFrame(
-            schema={"feature_name": pl.Utf8, "symbol": pl.Utf8, "ts": pl.Utf8, "reason": pl.Utf8}
+        return _empty_csv_schema_frame("features/feature_anomalies.csv")
+    return (
+        rows.with_columns(
+            [
+                pl.col("ts").cast(pl.Datetime(time_zone="UTC")).dt.date().cast(pl.Utf8).alias("day"),
+                pl.lit("null_value").alias("anomaly_type"),
+                pl.lit(1).alias("anomaly_count"),
+                pl.lit("warning").alias("severity"),
+                pl.col("ts").alias("example_ts"),
+            ]
         )
-    return rows.with_columns(pl.lit("null feature value").alias("reason"))
+        .group_by(
+            [
+                "day",
+                "feature_set",
+                "feature_name",
+                "feature_version",
+                "timeframe",
+                "symbol",
+                "anomaly_type",
+                "severity",
+            ]
+        )
+        .agg(
+            [
+                pl.col("anomaly_count").sum(),
+                pl.col("example_ts").min(),
+                pl.col("created_at").max(),
+            ]
+        )
+        .select(CSV_SCHEMAS["features/feature_anomalies.csv"])
+    )
+
+
+def _empty_csv_schema_frame(path: str) -> pl.DataFrame:
+    return pl.DataFrame(schema={column: pl.Utf8 for column in CSV_SCHEMAS[path]})
 
 
 def _cost_examples(costs: pl.DataFrame) -> dict[str, Any]:

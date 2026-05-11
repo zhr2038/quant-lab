@@ -35,6 +35,8 @@ def test_read_only_example_endpoints_and_catalog():
     assert catalog.json()["datasets"] == [
         "market_bar",
         "feature_value",
+        "feature_coverage_daily",
+        "feature_anomaly_daily",
         "cost_bucket_daily",
         "alpha_evidence",
         "gate_decision",

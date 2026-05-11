@@ -1,6 +1,7 @@
 import asyncio
 import json
 import sys
+from datetime import datetime
 from pathlib import Path
 from typing import Annotated
 
@@ -9,7 +10,8 @@ import typer
 from quant_lab.contracts.models import AlphaEvidence
 from quant_lab.costs.calibrate import calibrate_costs_for_day
 from quant_lab.export.daily import export_daily_pack, validate_expert_pack
-from quant_lab.features.publish import publish_core_features
+from quant_lab.features.publish import feature_health
+from quant_lab.features.publish import publish_features as publish_feature_values
 from quant_lab.gates.defaults import evaluate_alpha_gate
 from quant_lab.ingest.okx_public import (
     MARKET_BAR_DATASET,
@@ -357,13 +359,46 @@ def publish_features(
         ),
     ],
     feature_set: Annotated[str, typer.Option("--feature-set")] = "core",
+    feature_version: Annotated[str, typer.Option("--feature-version")] = "v0.1",
     timeframe: Annotated[str, typer.Option("--timeframe")] = "1H",
+    symbols: Annotated[str | None, typer.Option("--symbols")] = None,
+    start: Annotated[datetime | None, typer.Option("--start")] = None,
+    end: Annotated[datetime | None, typer.Option("--end")] = None,
+    drop_null: Annotated[bool, typer.Option("--drop-null/--keep-null")] = False,
+    dry_run: Annotated[bool, typer.Option("--dry-run")] = False,
 ) -> None:
-    result = publish_core_features(
+    parsed_symbols = (
+        [symbol.strip() for symbol in symbols.split(",") if symbol.strip()] if symbols else None
+    )
+    result = publish_feature_values(
         lake_root=lake_root,
         feature_set=feature_set,
+        feature_version=feature_version,
         timeframe=timeframe,
+        symbols=parsed_symbols,
+        start=start,
+        end=end,
+        drop_null=drop_null,
+        dry_run=dry_run,
     )
+    typer.echo(result.model_dump_json(indent=2))
+
+
+@app.command("feature-health")
+def feature_health_command(
+    lake_root: Annotated[
+        Path,
+        typer.Option(
+            "--lake-root",
+            file_okay=False,
+            dir_okay=True,
+            help="quant-lab lake root containing gold feature quality datasets.",
+        ),
+    ],
+    feature_set: Annotated[str, typer.Option("--feature-set")] = "core",
+    date: Annotated[str | None, typer.Option("--date")] = None,
+) -> None:
+    result = feature_health(lake_root=lake_root, feature_set=feature_set, date=date)
     typer.echo(result.model_dump_json(indent=2))
 
 

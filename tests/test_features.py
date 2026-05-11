@@ -177,16 +177,21 @@ def test_publish_core_features_writes_feature_value_dataset(tmp_path):
     features = read_parquet_dataset(lake / "gold" / "feature_value")
 
     assert result.market_bar_rows == 80
-    assert result.published_rows == 400
+    assert result.published_rows == 800
     assert result.feature_names == [
         "close_return_1",
-        "close_return_6",
+        "close_return_4",
         "close_return_24",
         "rolling_volatility_24",
         "rolling_volatility_72",
+        "volume_zscore_24",
+        "range_bps",
+        "close_position_in_range",
+        "dollar_volume",
+        "liquidity_proxy",
     ]
     assert second.feature_value_rows == result.feature_value_rows
-    assert features.height == 400
+    assert features.height == 800
     assert set(features["feature_name"].unique().to_list()) == set(result.feature_names)
     assert features.filter(pl.col("feature_name") == "close_return_1")["value"][1] == pytest.approx(
         101.0 / 100.0 - 1.0

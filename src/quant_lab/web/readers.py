@@ -18,6 +18,7 @@ DATASET_PATHS = {
     "alpha_evidence": Path("gold") / "alpha_evidence",
     "gate_decision": Path("gold") / "gate_decision",
     "risk_permission": Path("gold") / "risk_permission",
+    "strategy_health_daily": Path("gold") / "strategy_health_daily",
     "trade_print": Path("silver") / "trade_print",
     "orderbook_snapshot": Path("silver") / "orderbook_snapshot",
     "okx_public_ws": Path("bronze") / "okx_public_ws",
@@ -26,6 +27,22 @@ DATASET_PATHS = {
     "decision_audit": Path("silver") / "decision_audit",
 }
 
+CORE_DIAGNOSTIC_DATASETS = {
+    "silver/market_bar": Path("silver") / "market_bar",
+    "gold/cost_bucket_daily": Path("gold") / "cost_bucket_daily",
+    "gold/gate_decision": Path("gold") / "gate_decision",
+    "gold/risk_permission": Path("gold") / "risk_permission",
+    "gold/strategy_health_daily": Path("gold") / "strategy_health_daily",
+}
+
+MARKET_BOOTSTRAP_COMMAND = (
+    "qlab okx-fetch-candles --inst-id BTC-USDT --bar 1H --market-type SPOT "
+    "--lake-root {lake_root} --history --limit 100"
+)
+V5_TELEMETRY_SYNC_COMMAND = (
+    "qlab sync-v5-telemetry --config /etc/quant-lab/v5_telemetry_remote.yaml"
+)
+EXPERT_PACK_MISSING_MESSAGE = "qlab export-daily 尚未实现或尚未运行。"
 DISPLAY_LIMIT = 500
 
 
@@ -35,6 +52,7 @@ class DatasetState:
     path: Path
     rows: int
     exists: bool
+    parquet_file_count: int = 0
     warning: str | None = None
 
 
@@ -67,11 +85,20 @@ def dataset_states(lake_root: str | Path) -> list[DatasetState]:
                 )
             )
             continue
-        states.append(DatasetState(name=name, path=path, rows=df.height, exists=path.exists()))
+        states.append(
+            DatasetState(
+                name=name,
+                path=path,
+                rows=df.height,
+                exists=path.exists(),
+                parquet_file_count=_parquet_file_count(path),
+            )
+        )
     return states
 
 
 def dashboard_overview(lake_root: str | Path) -> dict[str, Any]:
+    diagnostics = lake_diagnostics(lake_root)
     market_health = data_health_summary(lake_root)
     costs = cost_model_summary(lake_root)
     gates = alpha_gate_summary(lake_root)
@@ -79,6 +106,7 @@ def dashboard_overview(lake_root: str | Path) -> dict[str, Any]:
     experts = expert_export_summary(default_exports_root(lake_root))
 
     warnings = [
+        *diagnostics["warnings"],
         *market_health["warnings"],
         *costs["warnings"],
         *gates["warnings"],
@@ -103,7 +131,76 @@ def dashboard_overview(lake_root: str | Path) -> dict[str, Any]:
         "cost_fallback_ratio": costs["fallback_ratio"],
         "alpha_gate_counts": gates["counts"],
         "latest_expert_pack": experts["latest_pack"],
+        "diagnostics": diagnostics,
         "warnings": warnings,
+    }
+
+
+def lake_diagnostics(lake_root: str | Path) -> dict[str, Any]:
+    root = Path(lake_root)
+    parquet_count = _parquet_file_count(root)
+    latest_market_bar_ts: datetime | None = None
+    warnings: list[str] = []
+    dataset_rows: list[dict[str, Any]] = []
+    dataset_row_counts: dict[str, int] = {}
+
+    if not root.exists():
+        warnings.append(f"lake_root does not exist: {root}")
+    if parquet_count == 0:
+        warnings.append(f"No Parquet files found under lake_root: {root}")
+
+    for dataset_name, relative_path in CORE_DIAGNOSTIC_DATASETS.items():
+        path = root / relative_path
+        row_count = 0
+        warning = None
+        try:
+            df = read_parquet_dataset(path)
+            row_count = df.height
+            if dataset_name == "silver/market_bar" and not df.is_empty():
+                latest_market_bar_ts = _max_datetime(_normalize_market_frame(df), "ts")
+        except Exception as exc:
+            warning = f"failed to read {dataset_name}: {exc}"
+            warnings.append(warning)
+
+        file_count = _parquet_file_count(path)
+        exists = path.exists()
+        dataset_row_counts[dataset_name] = row_count
+        if not exists or row_count == 0:
+            warnings.append(f"{dataset_name} dataset is missing or empty at {path}")
+
+        dataset_rows.append(
+            {
+                "dataset": dataset_name,
+                "exists": exists,
+                "parquet_file_count": file_count,
+                "rows": row_count,
+                "path": str(path),
+                "warning": warning or "",
+            }
+        )
+
+    if dataset_row_counts.get("silver/market_bar", 0) == 0:
+        warnings.append(
+            "market_bar is empty. Suggested command: "
+            f"{MARKET_BOOTSTRAP_COMMAND.format(lake_root=root)}"
+        )
+
+    if dataset_row_counts.get("gold/strategy_health_daily", 0) == 0:
+        warnings.append(
+            "V5 telemetry is empty. Suggested command: " f"{V5_TELEMETRY_SYNC_COMMAND}"
+        )
+
+    experts = expert_export_summary(default_exports_root(root))
+    if not experts["latest_pack"]:
+        warnings.append(EXPERT_PACK_MISSING_MESSAGE)
+
+    return {
+        "lake_root": str(root),
+        "lake_root_exists": root.exists(),
+        "parquet_file_count": parquet_count,
+        "latest_market_bar_ts": latest_market_bar_ts,
+        "datasets": pl.DataFrame(dataset_rows),
+        "warnings": _dedupe_strings(warnings),
     }
 
 
@@ -376,6 +473,29 @@ def default_exports_root(lake_root: str | Path) -> Path:
     if root.name == "lake":
         return root.parent / "exports"
     return root / "exports"
+
+
+def _parquet_file_count(path: str | Path) -> int:
+    root = Path(path)
+    try:
+        if root.is_file():
+            return 1 if root.suffix == ".parquet" else 0
+        if not root.exists():
+            return 0
+        return sum(1 for _ in root.rglob("*.parquet"))
+    except OSError:
+        return 0
+
+
+def _dedupe_strings(values: list[str]) -> list[str]:
+    seen: set[str] = set()
+    deduped: list[str] = []
+    for value in values:
+        if value in seen:
+            continue
+        seen.add(value)
+        deduped.append(value)
+    return deduped
 
 
 def latest_market_bars(market: pl.DataFrame) -> pl.DataFrame:

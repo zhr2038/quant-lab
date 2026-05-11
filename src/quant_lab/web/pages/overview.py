@@ -15,6 +15,22 @@ def render(lake_root: str | Path, st_module: Any | None = None) -> None:
     lake_caption(st, lake_root)
     st.caption("Read-only observability for OKX-first research data and strategy permissions.")
 
+    diagnostics = snapshot["diagnostics"]
+    st.subheader("Diagnostics")
+    st.metric("lake_root", diagnostics["lake_root"])
+    st.metric("lake_root_exists", str(diagnostics["lake_root_exists"]))
+    st.metric("lake_root_parquet_file_count", diagnostics["parquet_file_count"])
+    st.metric(
+        "latest_market_bar_ts",
+        str(diagnostics["latest_market_bar_ts"] or "unknown"),
+    )
+    show_frame(
+        st,
+        diagnostics["datasets"],
+        "No core dataset diagnostics available.",
+    )
+    show_warnings(st, diagnostics["warnings"])
+
     st.metric("quant-lab status", snapshot["status"])
     st.metric("V5 permission", snapshot["v5_permission"])
     st.metric("V7 permission", snapshot["v7_permission"])
@@ -41,4 +57,8 @@ def render(lake_root: str | Path, st_module: Any | None = None) -> None:
 
     st.subheader("Latest Expert Pack")
     st.write(snapshot["latest_expert_pack"] or "No expert pack found.")
-    show_warnings(st, snapshot["warnings"])
+    diagnostic_warnings = set(diagnostics["warnings"])
+    show_warnings(
+        st,
+        [warning for warning in snapshot["warnings"] if warning not in diagnostic_warnings],
+    )

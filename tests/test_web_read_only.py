@@ -126,6 +126,47 @@ def test_pages_warn_but_do_not_crash_when_lake_is_empty(tmp_path):
     assert any(call[0] == "info" for call in fake.calls)
 
 
+def test_overview_diagnostics_warn_when_lake_root_does_not_exist(tmp_path):
+    missing_lake = tmp_path / "missing_lake"
+    fake = FakeStreamlit()
+
+    overview.render(missing_lake, fake)
+
+    warnings = _call_values(fake, "warning")
+    assert any("lake_root does not exist" in str(warning) for warning in warnings)
+    assert ("lake_root", str(missing_lake)) in _call_values(fake, "metric")
+
+
+def test_overview_diagnostics_suggests_commands_when_lake_has_no_parquet(tmp_path):
+    lake_root = tmp_path / "lake"
+    lake_root.mkdir()
+    fake = FakeStreamlit()
+
+    overview.render(lake_root, fake)
+
+    warnings = "\n".join(str(warning) for warning in _call_values(fake, "warning"))
+    assert (
+        "qlab okx-fetch-candles --inst-id BTC-USDT --bar 1H --market-type SPOT "
+        f"--lake-root {lake_root} --history --limit 100"
+    ) in warnings
+    assert "qlab sync-v5-telemetry --config /etc/quant-lab/v5_telemetry_remote.yaml" in warnings
+    assert "qlab export-daily 尚未实现或尚未运行。" in warnings
+
+
+def test_overview_diagnostics_shows_latest_market_bar_ts(tmp_path):
+    lake_root = _fixture_lake(tmp_path)
+    fake = FakeStreamlit()
+
+    overview.render(lake_root, fake)
+
+    metrics = _call_values(fake, "metric")
+    assert ("latest_market_bar_ts", "2026-05-10 02:00:00+00:00") in metrics
+
+
+def _call_values(fake: "FakeStreamlit", name: str) -> list[object]:
+    return [value for call_name, value in fake.calls if call_name == name]
+
+
 class FakeStreamlit:
     def __init__(self) -> None:
         self.calls: list[tuple[str, object]] = []

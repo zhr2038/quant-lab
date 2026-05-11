@@ -5,6 +5,7 @@ from pathlib import Path
 import polars as pl
 
 from quant_lab.data.lake import write_market_bars, write_parquet_dataset
+from quant_lab.web import app as web_app
 from quant_lab.web import readers
 from quant_lab.web.pages import (
     alpha_gates,
@@ -113,6 +114,39 @@ def test_key_pages_render_fixture_lake_without_network_or_mutation(tmp_path):
     assert fake.calls
     assert any(call[0] == "title" for call in fake.calls)
     assert any(call[0] == "dataframe" for call in fake.calls)
+
+
+def test_web_launcher_hides_streamlit_file_navigation(monkeypatch, tmp_path):
+    captured = {}
+
+    class Result:
+        returncode = 0
+
+    def fake_run(command, env, check):
+        captured["command"] = command
+        captured["env"] = env
+        captured["check"] = check
+        return Result()
+
+    monkeypatch.setattr(web_app.subprocess, "run", fake_run)
+
+    result = web_app.main(
+        [
+            "--host",
+            "0.0.0.0",
+            "--port",
+            "8501",
+            "--lake-root",
+            str(tmp_path / "lake"),
+        ]
+    )
+
+    command = captured["command"]
+    option_index = command.index("--client.showSidebarNavigation")
+    assert result == 0
+    assert captured["check"] is False
+    assert command[option_index + 1] == "false"
+    assert option_index < command.index("--")
 
 
 def test_pages_warn_but_do_not_crash_when_lake_is_empty(tmp_path):

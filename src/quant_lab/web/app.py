@@ -66,6 +66,8 @@ def main(argv: Sequence[str] | None = None) -> int:
         args.host,
         "--server.port",
         str(args.port),
+        "--client.showSidebarNavigation",
+        "false",
         "--",
         "--lake-root",
         str(args.lake_root),

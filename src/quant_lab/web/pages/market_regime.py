@@ -9,20 +9,19 @@ def render(lake_root: str | Path, st_module: Any | None = None) -> None:
     st = streamlit_module(st_module)
     summary = readers.market_regime_summary(lake_root)
 
-    st.title("Market Regime")
+    st.title("市场状态")
     lake_caption(st, lake_root)
 
-    st.subheader("Volatility Regime")
-    show_frame(st, summary["regimes"], "No market regime data available.")
+    st.subheader("波动状态")
+    show_frame(st, summary["regimes"], "暂无市场状态数据。")
 
-    st.subheader("Spread Bps")
-    show_frame(st, summary["spread_bps"], "No orderbook spread data available.")
+    st.subheader("价差 bps")
+    show_frame(st, summary["spread_bps"], "暂无订单簿价差数据。")
 
-    st.subheader("Trade Activity")
-    show_frame(st, summary["trade_activity"], "No trade activity data available.")
+    st.subheader("成交活跃度")
+    show_frame(st, summary["trade_activity"], "暂无成交活跃度数据。")
 
-    st.subheader("Abnormal Symbols")
-    show_frame(st, summary["abnormal_symbols"], "No abnormal symbols detected.")
-    st.info("Funding rate and open interest are planned once those public datasets are published.")
+    st.subheader("异常标的")
+    show_frame(st, summary["abnormal_symbols"], "未检测到异常标的。")
+    st.info("资金费率和未平仓量会在对应公共数据集发布后加入。")
     show_warnings(st, summary["warnings"])
-

@@ -9,10 +9,9 @@ def render(lake_root: str | Path, st_module: Any | None = None) -> None:
     st = streamlit_module(st_module)
     summary = readers.cost_model_summary(lake_root)
 
-    st.title("Cost Model")
+    st.title("成本模型")
     lake_caption(st, lake_root)
-    st.metric("Fallback ratio", f"{summary['fallback_ratio']:.2%}")
+    st.metric("回退比例", f"{summary['fallback_ratio']:.2%}")
     st.subheader("cost_bucket_daily")
-    show_frame(st, summary["costs"], "No cost_bucket_daily data available.")
+    show_frame(st, summary["costs"], "暂无 cost_bucket_daily 数据。")
     show_warnings(st, summary["warnings"])
-

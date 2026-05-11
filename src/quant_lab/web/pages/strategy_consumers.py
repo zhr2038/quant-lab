@@ -9,12 +9,11 @@ def render(lake_root: str | Path, st_module: Any | None = None) -> None:
     st = streamlit_module(st_module)
     summary = readers.strategy_consumer_summary(lake_root)
 
-    st.title("Strategy Consumers")
+    st.title("策略消费者")
     lake_caption(st, lake_root)
-    st.subheader("Risk Permissions")
-    show_frame(st, summary["permission_rows"], "No risk_permission data available.")
+    st.subheader("风险权限")
+    show_frame(st, summary["permission_rows"], "暂无 risk_permission 数据。")
 
-    st.subheader("Fallback Signals")
-    show_frame(st, summary["fallback_rows"], "No fallback rows found in decision audits.")
+    st.subheader("回退信号")
+    show_frame(st, summary["fallback_rows"], "decision_audit 中未找到回退行。")
     show_warnings(st, summary["warnings"])
-

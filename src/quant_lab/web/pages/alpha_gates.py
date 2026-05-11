@@ -9,9 +9,8 @@ def render(lake_root: str | Path, st_module: Any | None = None) -> None:
     st = streamlit_module(st_module)
     summary = readers.alpha_gate_summary(lake_root)
 
-    st.title("Alpha Gates")
+    st.title("Alpha 门控")
     lake_caption(st, lake_root)
-    st.subheader("Gate Decisions")
-    show_frame(st, summary["gates"], "No gate decisions available.")
+    st.subheader("门控决策")
+    show_frame(st, summary["gates"], "暂无 gate_decision 数据。")
     show_warnings(st, summary["warnings"])
-

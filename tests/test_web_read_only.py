@@ -133,8 +133,8 @@ def test_overview_diagnostics_warn_when_lake_root_does_not_exist(tmp_path):
     overview.render(missing_lake, fake)
 
     warnings = _call_values(fake, "warning")
-    assert any("lake_root does not exist" in str(warning) for warning in warnings)
-    assert ("lake_root", str(missing_lake)) in _call_values(fake, "metric")
+    assert any("Lake 根目录不存在" in str(warning) for warning in warnings)
+    assert ("Lake 根目录", str(missing_lake)) in _call_values(fake, "metric")
 
 
 def test_overview_diagnostics_suggests_commands_when_lake_has_no_parquet(tmp_path):
@@ -160,7 +160,7 @@ def test_overview_diagnostics_shows_latest_market_bar_ts(tmp_path):
     overview.render(lake_root, fake)
 
     metrics = _call_values(fake, "metric")
-    assert ("latest_market_bar_ts", "2026-05-10 02:00:00+00:00") in metrics
+    assert ("最新 market_bar 时间", "2026-05-10 02:00:00+00:00") in metrics
 
 
 def _call_values(fake: "FakeStreamlit", name: str) -> list[object]:

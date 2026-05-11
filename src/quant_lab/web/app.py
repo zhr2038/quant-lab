@@ -23,15 +23,15 @@ from quant_lab.web.pages import (
 PageRenderer = Callable[[str | Path, Any | None], None]
 
 PAGES: dict[str, PageRenderer] = {
-    "Overview": overview.render,
-    "Data Health": data_health.render,
-    "OKX Collectors": okx_collectors.render,
-    "Market Regime": market_regime.render,
-    "Cost Model": cost_model.render,
-    "Alpha Gates": alpha_gates.render,
-    "Strategy Consumers": strategy_consumers.render,
-    "V5 Telemetry": v5_telemetry.render,
-    "Expert Exports": expert_exports.render,
+    "概览": overview.render,
+    "数据健康": data_health.render,
+    "OKX 采集器": okx_collectors.render,
+    "市场状态": market_regime.render,
+    "成本模型": cost_model.render,
+    "Alpha 门控": alpha_gates.render,
+    "策略消费者": strategy_consumers.render,
+    "V5 遥测": v5_telemetry.render,
+    "专家包导出": expert_exports.render,
 }
 
 
@@ -39,10 +39,10 @@ def render_dashboard(lake_root: str | Path, st_module: Any | None = None) -> Non
     st = _streamlit(st_module)
     st.set_page_config(page_title="quant-lab", layout="wide")
     st.sidebar.title("quant-lab")
-    st.sidebar.caption("OKX-first read-only research observability.")
-    selected_page = st.sidebar.selectbox("Page", list(PAGES))
-    selected_lake_root = st.sidebar.text_input("Lake root", value=str(lake_root))
-    st.sidebar.caption("No strategy or exchange state mutation is available in this dashboard.")
+    st.sidebar.caption("OKX 优先的只读研究观测面板。")
+    selected_page = st.sidebar.selectbox("页面", list(PAGES))
+    selected_lake_root = st.sidebar.text_input("Lake 根目录", value=str(lake_root))
+    st.sidebar.caption("此 dashboard 不提供任何策略或交易所状态变更能力。")
     PAGES[selected_page](Path(selected_lake_root), st)
 
 

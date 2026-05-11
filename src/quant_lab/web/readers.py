@@ -145,9 +145,9 @@ def lake_diagnostics(lake_root: str | Path) -> dict[str, Any]:
     dataset_row_counts: dict[str, int] = {}
 
     if not root.exists():
-        warnings.append(f"lake_root does not exist: {root}")
+        warnings.append(f"Lake 根目录不存在：{root}")
     if parquet_count == 0:
-        warnings.append(f"No Parquet files found under lake_root: {root}")
+        warnings.append(f"Lake 根目录下没有 Parquet 文件：{root}")
 
     for dataset_name, relative_path in CORE_DIAGNOSTIC_DATASETS.items():
         path = root / relative_path
@@ -159,14 +159,14 @@ def lake_diagnostics(lake_root: str | Path) -> dict[str, Any]:
             if dataset_name == "silver/market_bar" and not df.is_empty():
                 latest_market_bar_ts = _max_datetime(_normalize_market_frame(df), "ts")
         except Exception as exc:
-            warning = f"failed to read {dataset_name}: {exc}"
+            warning = f"读取 {dataset_name} 失败：{exc}"
             warnings.append(warning)
 
         file_count = _parquet_file_count(path)
         exists = path.exists()
         dataset_row_counts[dataset_name] = row_count
         if not exists or row_count == 0:
-            warnings.append(f"{dataset_name} dataset is missing or empty at {path}")
+            warnings.append(f"{dataset_name} 数据集缺失或为空：{path}")
 
         dataset_rows.append(
             {
@@ -181,13 +181,13 @@ def lake_diagnostics(lake_root: str | Path) -> dict[str, Any]:
 
     if dataset_row_counts.get("silver/market_bar", 0) == 0:
         warnings.append(
-            "market_bar is empty. Suggested command: "
+            "market_bar 为空。建议命令："
             f"{MARKET_BOOTSTRAP_COMMAND.format(lake_root=root)}"
         )
 
     if dataset_row_counts.get("gold/strategy_health_daily", 0) == 0:
         warnings.append(
-            "V5 telemetry is empty. Suggested command: " f"{V5_TELEMETRY_SYNC_COMMAND}"
+            "V5 遥测为空。建议命令：" f"{V5_TELEMETRY_SYNC_COMMAND}"
         )
 
     experts = expert_export_summary(default_exports_root(root))
@@ -213,12 +213,12 @@ def data_health_summary(lake_root: str | Path) -> dict[str, Any]:
             "missing_bars": pl.DataFrame(),
             "duplicate_bar_count": 0,
             "unclosed_bar_count": 0,
-            "schema_violations": ["market_bar dataset is missing or empty"],
+            "schema_violations": ["market_bar 数据集缺失或为空"],
             "schema_violation_count": 1,
             "stale_datasets": _stale_dataset_rows(lake_root),
             "latest_market_bar_ts": None,
             "missing_bar_ratio": 0.0,
-            "warnings": ["market_bar dataset is missing or empty"],
+            "warnings": ["market_bar 数据集缺失或为空"],
         }
 
     market = _normalize_market_frame(market)
@@ -231,9 +231,9 @@ def data_health_summary(lake_root: str | Path) -> dict[str, Any]:
     latest_ts = _max_datetime(market, "ts")
 
     if duplicate_count:
-        warnings.append(f"duplicate market_bar primary keys: {duplicate_count}")
+        warnings.append(f"market_bar 主键重复：{duplicate_count}")
     if unclosed_count:
-        warnings.append(f"unclosed market bars: {unclosed_count}")
+        warnings.append(f"未闭合 market_bar：{unclosed_count}")
     warnings.extend(schema_violations)
 
     return {
@@ -261,7 +261,7 @@ def okx_collector_summary(lake_root: str | Path) -> dict[str, Any]:
 
     rows = [
         {
-            "collector": "OKX public REST",
+            "collector": "OKX 公共 REST",
             "success_count": market.height,
             "error_count": 0,
             "latest_success_ts": latest_rest,
@@ -270,7 +270,7 @@ def okx_collector_summary(lake_root: str | Path) -> dict[str, Any]:
             "lag": _lag_label(latest_rest),
         },
         {
-            "collector": "OKX public WebSocket",
+            "collector": "OKX 公共 WebSocket",
             "success_count": ws_raw.height,
             "error_count": 0,
             "latest_success_ts": latest_ws,
@@ -281,9 +281,9 @@ def okx_collector_summary(lake_root: str | Path) -> dict[str, Any]:
     ]
     warnings = []
     if market.is_empty():
-        warnings.append("OKX public REST market_bar dataset is missing or empty")
+        warnings.append("OKX 公共 REST market_bar 数据集缺失或为空")
     if ws_raw.is_empty():
-        warnings.append("OKX public WebSocket bronze dataset is missing or empty")
+        warnings.append("OKX 公共 WebSocket bronze 数据集缺失或为空")
 
     return {
         "collectors": pl.DataFrame(rows),
@@ -303,7 +303,7 @@ def market_regime_summary(lake_root: str | Path) -> dict[str, Any]:
             "spread_bps": pl.DataFrame(),
             "trade_activity": pl.DataFrame(),
             "abnormal_symbols": pl.DataFrame(),
-            "warnings": ["market_bar dataset is missing or empty"],
+            "warnings": ["market_bar 数据集缺失或为空"],
         }
 
     market = _normalize_market_frame(market)
@@ -322,10 +322,10 @@ def market_regime_summary(lake_root: str | Path) -> dict[str, Any]:
         )
         .with_columns(
             pl.when(pl.col("mean_abs_return") > 0.03)
-            .then(pl.lit("HIGH_VOL"))
+            .then(pl.lit("高波动"))
             .when(pl.col("mean_abs_return") > 0.01)
-            .then(pl.lit("NORMAL"))
-            .otherwise(pl.lit("LOW_VOL"))
+            .then(pl.lit("正常"))
+            .otherwise(pl.lit("低波动"))
             .alias("volatility_regime")
         )
         .sort(["symbol", "timeframe"])
@@ -346,7 +346,7 @@ def cost_model_summary(lake_root: str | Path) -> dict[str, Any]:
         return {
             "costs": pl.DataFrame(),
             "fallback_ratio": 0.0,
-            "warnings": ["cost_bucket_daily dataset is missing or empty"],
+            "warnings": ["cost_bucket_daily 数据集缺失或为空"],
         }
 
     fallback_ratio = 0.0
@@ -368,7 +368,7 @@ def alpha_gate_summary(lake_root: str | Path) -> dict[str, Any]:
     evidence = read_dataset(lake_root, "alpha_evidence")
     warnings = []
     if gates.is_empty():
-        warnings.append("gate_decision dataset is missing or empty")
+        warnings.append("gate_decision 数据集缺失或为空")
     counts: dict[str, int] = {}
     if "status" in gates.columns:
         counts = {
@@ -396,7 +396,7 @@ def strategy_consumer_summary(lake_root: str | Path) -> dict[str, Any]:
     audits = read_dataset(lake_root, "decision_audit")
     warnings = []
     if permissions.is_empty():
-        warnings.append("risk_permission dataset is missing or empty")
+        warnings.append("risk_permission 数据集缺失或为空")
 
     latest_by_strategy: dict[str, str] = {}
     if not permissions.is_empty() and {"strategy", "permission"}.issubset(permissions.columns):
@@ -420,7 +420,7 @@ def v5_telemetry_summary(lake_root: str | Path) -> dict[str, Any]:
             "latest": {},
             "health_rows": pl.DataFrame(),
             "gate_compliance_rows": gate,
-            "warnings": ["strategy_health_daily dataset is missing or empty"],
+            "warnings": ["strategy_health_daily 数据集缺失或为空"],
         }
     sort_column = "date" if "date" in health.columns else health.columns[0]
     latest = health.sort(sort_column).tail(1).to_dicts()[0]
@@ -442,7 +442,7 @@ def expert_export_summary(exports_root: str | Path) -> dict[str, Any]:
             "manifest_summary": {},
             "data_quality_summary": {},
             "expert_questions": [],
-            "warnings": [f"no expert packs found under {root}"],
+            "warnings": [f"未在目录下找到专家包：{root}"],
         }
 
     latest = packs[-1]
@@ -536,7 +536,7 @@ def market_bar_schema_violations(market: pl.DataFrame) -> list[str]:
         "source",
         "ingest_ts",
     }
-    violations = [f"missing column: {column}" for column in sorted(required - set(market.columns))]
+    violations = [f"缺少字段：{column}" for column in sorted(required - set(market.columns))]
     if violations:
         return violations
     invalid_rows = market.filter(
@@ -546,7 +546,7 @@ def market_bar_schema_violations(market: pl.DataFrame) -> list[str]:
         | (pl.col("volume") < 0)
     ).height
     if invalid_rows:
-        violations.append(f"invalid OHLCV rows: {invalid_rows}")
+        violations.append(f"OHLCV 无效行数：{invalid_rows}")
     return violations
 
 
@@ -668,7 +668,7 @@ def _stale_dataset_rows(lake_root: str | Path) -> pl.DataFrame:
                 {
                     "dataset": state.name,
                     "rows": state.rows,
-                    "status": "missing",
+                    "status": "缺失",
                     "path": str(state.path),
                 }
             )
@@ -711,13 +711,13 @@ def _missing_ratio(missing_bars: pl.DataFrame, actual_rows: int) -> float:
 
 def _lag_label(timestamp: datetime | None) -> str:
     if timestamp is None:
-        return "unknown"
+        return "未知"
     lag = datetime.now(UTC) - timestamp
     if lag < timedelta(hours=2):
-        return "fresh"
+        return "新鲜"
     if lag < timedelta(hours=24):
-        return "delayed"
-    return "stale"
+        return "延迟"
+    return "过期"
 
 
 def _timeframe_delta(timeframe: str) -> timedelta | None:

@@ -9,12 +9,11 @@ def render(lake_root: str | Path, st_module: Any | None = None) -> None:
     st = streamlit_module(st_module)
     summary = readers.okx_collector_summary(lake_root)
 
-    st.title("OKX Collectors")
+    st.title("OKX 采集器")
     lake_caption(st, lake_root)
-    st.metric("Trade print rows", summary["trade_print_rows"])
-    st.metric("Orderbook snapshot rows", summary["orderbook_snapshot_rows"])
+    st.metric("trade_print 行数", summary["trade_print_rows"])
+    st.metric("orderbook_snapshot 行数", summary["orderbook_snapshot_rows"])
 
-    st.subheader("Collector Counters")
-    show_frame(st, summary["collectors"], "No collector counters available.")
+    st.subheader("采集器计数")
+    show_frame(st, summary["collectors"], "暂无采集器计数。")
     show_warnings(st, summary["warnings"])
-

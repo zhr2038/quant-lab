@@ -4,59 +4,69 @@ from typing import Any
 import polars as pl
 
 from quant_lab.web import readers
-from quant_lab.web.pages._common import lake_caption, show_frame, show_warnings, streamlit_module
+from quant_lab.web.pages._common import (
+    display_unknown,
+    display_value,
+    lake_caption,
+    show_frame,
+    show_warnings,
+    streamlit_module,
+)
 
 
 def render(lake_root: str | Path, st_module: Any | None = None) -> None:
     st = streamlit_module(st_module)
     snapshot = readers.dashboard_overview(lake_root)
 
-    st.title("quant-lab Overview")
+    st.title("quant-lab 概览")
     lake_caption(st, lake_root)
-    st.caption("Read-only observability for OKX-first research data and strategy permissions.")
+    st.caption("OKX 优先研究数据和策略权限的只读观测面板。")
 
     diagnostics = snapshot["diagnostics"]
-    st.subheader("Diagnostics")
-    st.metric("lake_root", diagnostics["lake_root"])
-    st.metric("lake_root_exists", str(diagnostics["lake_root_exists"]))
-    st.metric("lake_root_parquet_file_count", diagnostics["parquet_file_count"])
+    st.subheader("诊断")
+    st.metric("Lake 根目录", diagnostics["lake_root"])
+    st.metric("Lake 根目录存在", display_value(diagnostics["lake_root_exists"]))
+    st.metric("Lake Parquet 文件数", diagnostics["parquet_file_count"])
     st.metric(
-        "latest_market_bar_ts",
-        str(diagnostics["latest_market_bar_ts"] or "unknown"),
+        "最新 market_bar 时间",
+        display_unknown(diagnostics["latest_market_bar_ts"]),
     )
     show_frame(
         st,
         diagnostics["datasets"],
-        "No core dataset diagnostics available.",
+        "暂无核心数据集诊断信息。",
     )
     show_warnings(st, diagnostics["warnings"])
 
-    st.metric("quant-lab status", snapshot["status"])
-    st.metric("V5 permission", snapshot["v5_permission"])
-    st.metric("V7 permission", snapshot["v7_permission"])
-    st.metric("Latest market bar", str(snapshot["latest_market_bar_ts"] or "unknown"))
-    st.metric("Missing bar ratio", f"{snapshot['missing_bar_ratio']:.2%}")
-    st.metric("Cost fallback ratio", f"{snapshot['cost_fallback_ratio']:.2%}")
+    st.metric("quant-lab 状态", display_value(snapshot["status"]))
+    st.metric("V5 权限", display_value(snapshot["v5_permission"]))
+    st.metric("V7 权限", display_value(snapshot["v7_permission"]))
+    st.metric("最新 market_bar", display_unknown(snapshot["latest_market_bar_ts"]))
+    st.metric("缺失 K 线比例", f"{snapshot['missing_bar_ratio']:.2%}")
+    st.metric("成本回退比例", f"{snapshot['cost_fallback_ratio']:.2%}")
 
     collector_rows = [
-        {"collector": "OKX public REST", "status": snapshot["okx_public_rest_status"]},
-        {"collector": "OKX public WebSocket", "status": snapshot["okx_public_ws_status"]},
-        {"collector": "OKX read-only private", "status": snapshot["okx_readonly_status"]},
+        {"collector": "OKX 公共 REST", "status": display_value(snapshot["okx_public_rest_status"])},
+        {
+            "collector": "OKX 公共 WebSocket",
+            "status": display_value(snapshot["okx_public_ws_status"]),
+        },
+        {"collector": "OKX 只读私有接口", "status": display_value(snapshot["okx_readonly_status"])},
     ]
-    st.subheader("Collector Status")
-    show_frame(st, pl.DataFrame(collector_rows), "No collector status available.")
+    st.subheader("采集器状态")
+    show_frame(st, pl.DataFrame(collector_rows), "暂无采集器状态。")
 
-    st.subheader("Alpha Gate Counts")
+    st.subheader("Alpha 门控数量")
     gate_counts = pl.DataFrame(
         [
             {"status": status, "count": count}
             for status, count in snapshot["alpha_gate_counts"].items()
         ]
     )
-    show_frame(st, gate_counts, "No gate decisions available.")
+    show_frame(st, gate_counts, "暂无 gate_decision 数据。")
 
-    st.subheader("Latest Expert Pack")
-    st.write(snapshot["latest_expert_pack"] or "No expert pack found.")
+    st.subheader("最新专家包")
+    st.write(snapshot["latest_expert_pack"] or "未找到专家包。")
     diagnostic_warnings = set(diagnostics["warnings"])
     show_warnings(
         st,

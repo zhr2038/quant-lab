@@ -1,2 +1,1 @@
-"""Read-only Streamlit dashboard for quant-lab."""
-
+"""quant-lab 只读 Streamlit dashboard。"""

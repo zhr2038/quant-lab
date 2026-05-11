@@ -20,22 +20,22 @@ def render(
     )
     summary = readers.expert_export_summary(root)
 
-    st.title("Expert Exports")
-    st.caption(f"Exports root: {root}")
-    st.subheader("Expert Packs")
-    show_frame(st, summary["packs"], "No expert packs found.")
+    st.title("专家包导出")
+    st.caption(f"导出根目录：{root}")
+    st.subheader("专家包")
+    show_frame(st, summary["packs"], "未找到专家包。")
 
-    st.subheader("Manifest Summary")
+    st.subheader("Manifest 摘要")
     manifest_rows = _dict_rows(summary["manifest_summary"])
-    show_frame(st, manifest_rows, "No manifest summary available.")
+    show_frame(st, manifest_rows, "暂无 manifest 摘要。")
 
-    st.subheader("Data Quality Summary")
+    st.subheader("数据质量摘要")
     quality_rows = _dict_rows(summary["data_quality_summary"])
-    show_frame(st, quality_rows, "No data quality summary available.")
+    show_frame(st, quality_rows, "暂无数据质量摘要。")
 
-    st.subheader("Expert Questions")
+    st.subheader("专家问题")
     questions = pl.DataFrame({"question": summary["expert_questions"]})
-    show_frame(st, questions, "No expert questions found.")
+    show_frame(st, questions, "未找到专家问题。")
     show_warnings(st, summary["warnings"])
 
 

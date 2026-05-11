@@ -1,2 +1,1 @@
-"""Dashboard page renderers."""
-
+"""Dashboard 页面渲染器。"""

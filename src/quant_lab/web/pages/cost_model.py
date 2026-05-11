@@ -11,7 +11,8 @@ def render(lake_root: str | Path, st_module: Any | None = None) -> None:
 
     st.title("成本模型")
     lake_caption(st, lake_root)
-    st.metric("回退比例", f"{summary['fallback_ratio']:.2%}")
+    fallback_ratio = summary["fallback_ratio"]
+    st.metric("回退比例", "N/A" if fallback_ratio is None else f"{fallback_ratio:.2%}")
     st.subheader("cost_bucket_daily")
     show_frame(st, summary["costs"], "暂无 cost_bucket_daily 数据。")
     show_warnings(st, summary["warnings"])

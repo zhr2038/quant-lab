@@ -153,6 +153,17 @@ def test_overview_diagnostics_suggests_commands_when_lake_has_no_parquet(tmp_pat
     assert "qlab export-daily 尚未实现或尚未运行。" in warnings
 
 
+def test_empty_lake_diagnostics_exposes_suggested_commands(tmp_path):
+    lake_root = tmp_path / "lake"
+
+    diagnostics = readers.lake_diagnostics(lake_root)
+
+    commands = "\n".join(diagnostics["suggested_commands"]["command"].to_list())
+    assert "qlab okx-fetch-candles" in commands
+    assert "qlab sync-v5-telemetry" in commands
+    assert "qlab export-daily" in commands
+
+
 def test_overview_diagnostics_shows_latest_market_bar_ts(tmp_path):
     lake_root = _fixture_lake(tmp_path)
     fake = FakeStreamlit()

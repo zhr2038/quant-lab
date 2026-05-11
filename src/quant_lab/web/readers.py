@@ -19,6 +19,14 @@ DATASET_PATHS = {
     "gate_decision": Path("gold") / "gate_decision",
     "risk_permission": Path("gold") / "risk_permission",
     "strategy_health_daily": Path("gold") / "strategy_health_daily",
+    "v5_execution_quality_daily": Path("gold") / "v5_execution_quality_daily",
+    "v5_gate_compliance_daily": Path("gold") / "v5_gate_compliance_daily",
+    "v5_missed_opportunity_daily": Path("gold") / "v5_missed_opportunity_daily",
+    "v5_config_health_daily": Path("gold") / "v5_config_health_daily",
+    "v5_issue_summary_daily": Path("gold") / "v5_issue_summary_daily",
+    "v5_quant_lab_usage": Path("silver") / "v5_quant_lab_usage",
+    "v5_quant_lab_cost_usage": Path("silver") / "v5_quant_lab_cost_usage",
+    "v5_quant_lab_fallback": Path("silver") / "v5_quant_lab_fallback",
     "trade_print": Path("silver") / "trade_print",
     "orderbook_snapshot": Path("silver") / "orderbook_snapshot",
     "okx_public_ws": Path("bronze") / "okx_public_ws",
@@ -33,6 +41,7 @@ CORE_DIAGNOSTIC_DATASETS = {
     "gold/gate_decision": Path("gold") / "gate_decision",
     "gold/risk_permission": Path("gold") / "risk_permission",
     "gold/strategy_health_daily": Path("gold") / "strategy_health_daily",
+    "gold/v5_gate_compliance_daily": Path("gold") / "v5_gate_compliance_daily",
 }
 
 MARKET_BOOTSTRAP_COMMAND = (
@@ -141,6 +150,7 @@ def lake_diagnostics(lake_root: str | Path) -> dict[str, Any]:
     parquet_count = _parquet_file_count(root)
     latest_market_bar_ts: datetime | None = None
     warnings: list[str] = []
+    suggested_commands: list[dict[str, str]] = []
     dataset_rows: list[dict[str, Any]] = []
     dataset_row_counts: dict[str, int] = {}
 
@@ -180,26 +190,45 @@ def lake_diagnostics(lake_root: str | Path) -> dict[str, Any]:
         )
 
     if dataset_row_counts.get("silver/market_bar", 0) == 0:
+        command = MARKET_BOOTSTRAP_COMMAND.format(lake_root=root)
         warnings.append(
             "market_bar 为空。建议命令："
             f"{MARKET_BOOTSTRAP_COMMAND.format(lake_root=root)}"
         )
+
+        suggested_commands.append({"purpose": "backfill market_bar", "command": command})
 
     if dataset_row_counts.get("gold/strategy_health_daily", 0) == 0:
         warnings.append(
             "V5 遥测为空。建议命令：" f"{V5_TELEMETRY_SYNC_COMMAND}"
         )
 
+        suggested_commands.append(
+            {"purpose": "sync V5 telemetry", "command": V5_TELEMETRY_SYNC_COMMAND}
+        )
+
     experts = expert_export_summary(default_exports_root(root))
     if not experts["latest_pack"]:
         warnings.append(EXPERT_PACK_MISSING_MESSAGE)
+        suggested_commands.append(
+            {
+                "purpose": "create expert pack",
+                "command": (
+                    "qlab export-daily --date YYYY-MM-DD "
+                    f"--lake-root {root} --out-dir {default_exports_root(root)}"
+                ),
+            }
+        )
 
     return {
         "lake_root": str(root),
         "lake_root_exists": root.exists(),
         "parquet_file_count": parquet_count,
         "latest_market_bar_ts": latest_market_bar_ts,
+        "latest_v5_bundle_ts": _latest_v5_bundle_ts(root),
+        "latest_expert_pack": experts["latest_pack"],
         "datasets": pl.DataFrame(dataset_rows),
+        "suggested_commands": pl.DataFrame(suggested_commands),
         "warnings": _dedupe_strings(warnings),
     }
 
@@ -345,7 +374,8 @@ def cost_model_summary(lake_root: str | Path) -> dict[str, Any]:
     if costs.is_empty():
         return {
             "costs": pl.DataFrame(),
-            "fallback_ratio": 0.0,
+            "fallback_ratio": None,
+            "fallback_ratio_status": "N/A",
             "warnings": ["cost_bucket_daily 数据集缺失或为空"],
         }
 
@@ -359,6 +389,7 @@ def cost_model_summary(lake_root: str | Path) -> dict[str, Any]:
     return {
         "costs": redact_frame(costs).head(DISPLAY_LIMIT),
         "fallback_ratio": fallback_ratio,
+        "fallback_ratio_status": "OK" if fallback_ratio <= 0.25 else "WARNING",
         "warnings": [],
     }
 
@@ -473,6 +504,17 @@ def default_exports_root(lake_root: str | Path) -> Path:
     if root.name == "lake":
         return root.parent / "exports"
     return root / "exports"
+
+
+def _latest_v5_bundle_ts(lake_root: str | Path) -> datetime | None:
+    health = read_parquet_dataset(Path(lake_root) / "gold" / "strategy_health_daily")
+    if not health.is_empty() and "latest_bundle_ts" in health.columns:
+        normalized = _normalize_optional_time(health, "latest_bundle_ts")
+        return _max_datetime(normalized, "latest_bundle_ts")
+    manifest = read_parquet_dataset(
+        Path(lake_root) / "bronze/strategy_telemetry/v5/bundle_manifest"
+    )
+    return _max_datetime(_normalize_optional_time(manifest, "bundle_ts"), "bundle_ts")
 
 
 def _parquet_file_count(path: str | Path) -> int:

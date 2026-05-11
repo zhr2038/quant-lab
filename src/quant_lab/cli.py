@@ -1,5 +1,6 @@
 import asyncio
 import json
+import sys
 from pathlib import Path
 from typing import Annotated
 
@@ -7,6 +8,7 @@ import typer
 
 from quant_lab.contracts.models import AlphaEvidence
 from quant_lab.costs.calibrate import calibrate_costs_for_day
+from quant_lab.export.daily import export_daily_pack, validate_expert_pack
 from quant_lab.gates.defaults import evaluate_alpha_gate
 from quant_lab.ingest.okx_public import (
     MARKET_BAR_DATASET,
@@ -263,6 +265,50 @@ def calibrate_costs(
 ) -> None:
     result = calibrate_costs_for_day(lake_root=lake_root, day=day)
     typer.echo(result.model_dump_json(indent=2))
+
+
+@app.command("export-daily")
+def export_daily(
+    export_date: Annotated[str, typer.Option("--date", help="UTC day in YYYY-MM-DD format.")],
+    lake_root: Annotated[
+        Path,
+        typer.Option(
+            "--lake-root",
+            file_okay=False,
+            dir_okay=True,
+            help="quant-lab lake root to read from.",
+        ),
+    ],
+    out_dir: Annotated[
+        Path,
+        typer.Option(
+            "--out-dir",
+            file_okay=False,
+            dir_okay=True,
+            writable=True,
+            help="Directory where the expert pack zip will be written.",
+        ),
+    ],
+    profile: Annotated[str, typer.Option("--profile", help="Export profile name.")] = "expert",
+) -> None:
+    result = export_daily_pack(
+        export_date=export_date,
+        lake_root=lake_root,
+        out_dir=out_dir,
+        profile=profile,
+        command_line=sys.argv,
+    )
+    typer.echo(result.model_dump_json(indent=2))
+
+
+@app.command("validate-expert-pack")
+def validate_expert_pack_command(
+    pack_path: Annotated[Path, typer.Argument(exists=True, file_okay=True, dir_okay=False)],
+) -> None:
+    result = validate_expert_pack(pack_path)
+    typer.echo(result.model_dump_json(indent=2))
+    if result.rejected:
+        raise typer.Exit(1)
 
 
 @app.command("pull-v5-bundles")

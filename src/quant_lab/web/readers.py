@@ -72,8 +72,16 @@ class DatasetState:
 
 
 def read_dataset(lake_root: str | Path, dataset_name: str) -> pl.DataFrame:
+    df, _warning = read_dataset_with_warning(lake_root, dataset_name)
+    return df
+
+
+def read_dataset_with_warning(
+    lake_root: str | Path,
+    dataset_name: str,
+) -> tuple[pl.DataFrame, str | None]:
     dataset_path = dataset_path_for(lake_root, dataset_name)
-    return read_parquet_dataset(dataset_path)
+    return _read_parquet_dataset_with_warning(dataset_path, dataset_name)
 
 
 def dataset_path_for(lake_root: str | Path, dataset_name: str) -> Path:
@@ -81,6 +89,19 @@ def dataset_path_for(lake_root: str | Path, dataset_name: str) -> Path:
     if relative is None:
         relative = Path(dataset_name)
     return Path(lake_root) / relative
+
+
+def _read_parquet_dataset_with_warning(
+    dataset_path: str | Path,
+    dataset_label: str,
+) -> tuple[pl.DataFrame, str | None]:
+    path = Path(dataset_path)
+    try:
+        return read_parquet_dataset(path), None
+    except Exception as exc:
+        return pl.DataFrame(), (
+            f"{dataset_label} 数据集读取失败，已按空数据处理：{path}；错误：{exc}"
+        )
 
 
 def dataset_states(lake_root: str | Path) -> list[DatasetState]:
@@ -171,14 +192,12 @@ def lake_diagnostics(lake_root: str | Path) -> dict[str, Any]:
         path = root / relative_path
         row_count = 0
         warning = None
-        try:
-            df = read_parquet_dataset(path)
-            row_count = df.height
-            if dataset_name == "silver/market_bar" and not df.is_empty():
-                latest_market_bar_ts = _max_datetime(_normalize_market_frame(df), "ts")
-        except Exception as exc:
-            warning = f"读取 {dataset_name} 失败：{exc}"
+        df, warning = _read_parquet_dataset_with_warning(path, dataset_name)
+        row_count = df.height
+        if warning:
             warnings.append(warning)
+        if dataset_name == "silver/market_bar" and not df.is_empty():
+            latest_market_bar_ts = _max_datetime(_normalize_market_frame(df), "ts")
 
         file_count = _parquet_file_count(path)
         exists = path.exists()
@@ -206,7 +225,12 @@ def lake_diagnostics(lake_root: str | Path) -> dict[str, Any]:
 
         suggested_commands.append({"purpose": "backfill market_bar", "command": command})
 
-    ws_health = read_parquet_dataset(root / DATASET_PATHS["okx_public_ws_health"])
+    ws_health, ws_health_warning = _read_parquet_dataset_with_warning(
+        root / DATASET_PATHS["okx_public_ws_health"],
+        "okx_public_ws_health",
+    )
+    if ws_health_warning:
+        warnings.append(ws_health_warning)
     if ws_health.is_empty():
         command = OKX_WS_COLLECT_COMMAND.format(lake_root=root)
         warnings.append(
@@ -251,7 +275,9 @@ def lake_diagnostics(lake_root: str | Path) -> dict[str, Any]:
 
 def data_health_summary(lake_root: str | Path) -> dict[str, Any]:
     warnings: list[str] = []
-    market = read_dataset(lake_root, "market_bar")
+    market, market_warning = read_dataset_with_warning(lake_root, "market_bar")
+    if market_warning:
+        warnings.append(market_warning)
     if market.is_empty():
         return {
             "latest_per_symbol": pl.DataFrame(),
@@ -263,7 +289,7 @@ def data_health_summary(lake_root: str | Path) -> dict[str, Any]:
             "stale_datasets": _stale_dataset_rows(lake_root),
             "latest_market_bar_ts": None,
             "missing_bar_ratio": 0.0,
-            "warnings": ["market_bar 数据集缺失或为空"],
+            "warnings": [*warnings, "market_bar 数据集缺失或为空"],
         }
 
     market = _normalize_market_frame(market)
@@ -296,11 +322,11 @@ def data_health_summary(lake_root: str | Path) -> dict[str, Any]:
 
 
 def okx_collector_summary(lake_root: str | Path) -> dict[str, Any]:
-    market = read_dataset(lake_root, "market_bar")
-    ws_raw = read_dataset(lake_root, "okx_public_ws")
-    ws_health = read_dataset(lake_root, "okx_public_ws_health")
-    trades = read_dataset(lake_root, "trade_print")
-    books = read_dataset(lake_root, "orderbook_snapshot")
+    market, market_warning = read_dataset_with_warning(lake_root, "market_bar")
+    ws_raw, ws_raw_warning = read_dataset_with_warning(lake_root, "okx_public_ws")
+    ws_health, ws_health_warning = read_dataset_with_warning(lake_root, "okx_public_ws_health")
+    trades, trades_warning = read_dataset_with_warning(lake_root, "trade_print")
+    books, books_warning = read_dataset_with_warning(lake_root, "orderbook_snapshot")
 
     latest_rest = _max_datetime(_normalize_optional_time(market, "ingest_ts"), "ingest_ts")
     latest_ws = _max_datetime(_normalize_optional_time(ws_raw, "received_at"), "received_at")
@@ -333,7 +359,17 @@ def okx_collector_summary(lake_root: str | Path) -> dict[str, Any]:
             "status": str(latest_health.get("status") or "UNKNOWN") if latest_health else "UNKNOWN",
         },
     ]
-    warnings = []
+    warnings = [
+        warning
+        for warning in [
+            market_warning,
+            ws_raw_warning,
+            ws_health_warning,
+            trades_warning,
+            books_warning,
+        ]
+        if warning
+    ]
     if market.is_empty():
         warnings.append("OKX 公共 REST market_bar 数据集缺失或为空")
     if ws_raw.is_empty():
@@ -355,16 +391,17 @@ def okx_collector_summary(lake_root: str | Path) -> dict[str, Any]:
 
 
 def market_regime_summary(lake_root: str | Path) -> dict[str, Any]:
-    market = read_dataset(lake_root, "market_bar")
-    books = read_dataset(lake_root, "orderbook_snapshot")
-    trades = read_dataset(lake_root, "trade_print")
+    market, market_warning = read_dataset_with_warning(lake_root, "market_bar")
+    books, books_warning = read_dataset_with_warning(lake_root, "orderbook_snapshot")
+    trades, trades_warning = read_dataset_with_warning(lake_root, "trade_print")
+    warnings = [warning for warning in [market_warning, books_warning, trades_warning] if warning]
     if market.is_empty():
         return {
             "regimes": pl.DataFrame(),
             "spread_bps": pl.DataFrame(),
             "trade_activity": pl.DataFrame(),
             "abnormal_symbols": pl.DataFrame(),
-            "warnings": ["market_bar 数据集缺失或为空"],
+            "warnings": [*warnings, "market_bar 数据集缺失或为空"],
         }
 
     market = _normalize_market_frame(market)
@@ -397,18 +434,19 @@ def market_regime_summary(lake_root: str | Path) -> dict[str, Any]:
         "spread_bps": orderbook_spread_table(books),
         "trade_activity": trade_activity_table(trades),
         "abnormal_symbols": regimes.filter(pl.col("mean_abs_return") > 0.03),
-        "warnings": [],
+        "warnings": warnings,
     }
 
 
 def cost_model_summary(lake_root: str | Path) -> dict[str, Any]:
-    costs = read_dataset(lake_root, "cost_bucket_daily")
+    costs, costs_warning = read_dataset_with_warning(lake_root, "cost_bucket_daily")
+    warnings = [costs_warning] if costs_warning else []
     if costs.is_empty():
         return {
             "costs": pl.DataFrame(),
             "fallback_ratio": None,
             "fallback_ratio_status": "N/A",
-            "warnings": ["cost_bucket_daily 数据集缺失或为空"],
+            "warnings": [*warnings, "cost_bucket_daily 数据集缺失或为空"],
         }
 
     fallback_ratio = 0.0
@@ -422,14 +460,14 @@ def cost_model_summary(lake_root: str | Path) -> dict[str, Any]:
         "costs": redact_frame(costs).head(DISPLAY_LIMIT),
         "fallback_ratio": fallback_ratio,
         "fallback_ratio_status": "OK" if fallback_ratio <= 0.25 else "WARNING",
-        "warnings": [],
+        "warnings": warnings,
     }
 
 
 def alpha_gate_summary(lake_root: str | Path) -> dict[str, Any]:
-    gates = read_dataset(lake_root, "gate_decision")
-    evidence = read_dataset(lake_root, "alpha_evidence")
-    warnings = []
+    gates, gates_warning = read_dataset_with_warning(lake_root, "gate_decision")
+    evidence, evidence_warning = read_dataset_with_warning(lake_root, "alpha_evidence")
+    warnings = [warning for warning in [gates_warning, evidence_warning] if warning]
     if gates.is_empty():
         warnings.append("gate_decision 数据集缺失或为空")
     counts: dict[str, int] = {}
@@ -455,9 +493,9 @@ def alpha_gate_summary(lake_root: str | Path) -> dict[str, Any]:
 
 
 def strategy_consumer_summary(lake_root: str | Path) -> dict[str, Any]:
-    permissions = read_dataset(lake_root, "risk_permission")
-    audits = read_dataset(lake_root, "decision_audit")
-    warnings = []
+    permissions, permissions_warning = read_dataset_with_warning(lake_root, "risk_permission")
+    audits, audits_warning = read_dataset_with_warning(lake_root, "decision_audit")
+    warnings = [warning for warning in [permissions_warning, audits_warning] if warning]
     if permissions.is_empty():
         warnings.append("risk_permission 数据集缺失或为空")
 
@@ -476,14 +514,15 @@ def strategy_consumer_summary(lake_root: str | Path) -> dict[str, Any]:
 
 
 def v5_telemetry_summary(lake_root: str | Path) -> dict[str, Any]:
-    health = read_parquet_dataset(Path(lake_root) / "gold" / "strategy_health_daily")
-    gate = read_parquet_dataset(Path(lake_root) / "gold" / "v5_gate_compliance_daily")
+    health, health_warning = read_dataset_with_warning(lake_root, "strategy_health_daily")
+    gate, gate_warning = read_dataset_with_warning(lake_root, "v5_gate_compliance_daily")
+    warnings = [warning for warning in [health_warning, gate_warning] if warning]
     if health.is_empty():
         return {
             "latest": {},
             "health_rows": pl.DataFrame(),
             "gate_compliance_rows": gate,
-            "warnings": ["strategy_health_daily 数据集缺失或为空"],
+            "warnings": [*warnings, "strategy_health_daily 数据集缺失或为空"],
         }
     sort_column = "date" if "date" in health.columns else health.columns[0]
     latest = health.sort(sort_column).tail(1).to_dicts()[0]
@@ -491,7 +530,7 @@ def v5_telemetry_summary(lake_root: str | Path) -> dict[str, Any]:
         "latest": latest,
         "health_rows": health.sort(sort_column, descending=True).head(DISPLAY_LIMIT),
         "gate_compliance_rows": gate.head(DISPLAY_LIMIT),
-        "warnings": [],
+        "warnings": warnings,
     }
 
 
@@ -539,12 +578,13 @@ def default_exports_root(lake_root: str | Path) -> Path:
 
 
 def _latest_v5_bundle_ts(lake_root: str | Path) -> datetime | None:
-    health = read_parquet_dataset(Path(lake_root) / "gold" / "strategy_health_daily")
+    health, _health_warning = read_dataset_with_warning(lake_root, "strategy_health_daily")
     if not health.is_empty() and "latest_bundle_ts" in health.columns:
         normalized = _normalize_optional_time(health, "latest_bundle_ts")
         return _max_datetime(normalized, "latest_bundle_ts")
-    manifest = read_parquet_dataset(
-        Path(lake_root) / "bronze/strategy_telemetry/v5/bundle_manifest"
+    manifest, _manifest_warning = _read_parquet_dataset_with_warning(
+        Path(lake_root) / "bronze/strategy_telemetry/v5/bundle_manifest",
+        "bronze/strategy_telemetry/v5/bundle_manifest",
     )
     return _max_datetime(_normalize_optional_time(manifest, "bundle_ts"), "bundle_ts")
 

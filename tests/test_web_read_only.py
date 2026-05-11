@@ -161,6 +161,20 @@ def test_pages_warn_but_do_not_crash_when_lake_is_empty(tmp_path):
     assert any(call[0] == "info" for call in fake.calls)
 
 
+def test_okx_collectors_warns_when_orderbook_parquet_is_invalid(tmp_path):
+    lake_root = _fixture_lake(tmp_path)
+    bad_path = lake_root / "silver" / "orderbook_snapshot" / "bad.parquet"
+    bad_path.parent.mkdir(parents=True, exist_ok=True)
+    bad_path.write_bytes(b"not parquet")
+    fake = FakeStreamlit()
+
+    okx_collectors.render(lake_root, fake)
+
+    warnings = "\n".join(str(warning) for warning in _call_values(fake, "warning"))
+    assert "orderbook_snapshot 数据集读取失败" in warnings
+    assert str(bad_path.parent) in warnings
+
+
 def test_overview_diagnostics_warn_when_lake_root_does_not_exist(tmp_path):
     missing_lake = tmp_path / "missing_lake"
     fake = FakeStreamlit()

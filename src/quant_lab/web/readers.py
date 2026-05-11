@@ -3,7 +3,7 @@ from __future__ import annotations
 import json
 import zipfile
 from dataclasses import dataclass
-from datetime import UTC, datetime, timedelta
+from datetime import UTC, date, datetime, time, timedelta
 from pathlib import Path
 from typing import Any
 
@@ -34,6 +34,31 @@ DATASET_PATHS = {
     "okx_private_readonly_fills": Path("bronze") / "okx_private_readonly" / "fills_history",
     "okx_private_readonly_bills": Path("bronze") / "okx_private_readonly" / "bills",
     "decision_audit": Path("silver") / "decision_audit",
+}
+
+DATASET_TIMESTAMP_COLUMNS: dict[str, tuple[str, ...]] = {
+    "market_bar": ("ts",),
+    "okx_public_ws": ("received_at",),
+    "trade_print": ("ts", "ingest_ts"),
+    "orderbook_snapshot": ("ts", "ingest_ts"),
+    "cost_bucket_daily": ("created_at", "day"),
+    "gate_decision": ("created_at",),
+    "risk_permission": ("created_at",),
+    "strategy_health_daily": ("latest_bundle_ts", "date"),
+    "v5_execution_quality_daily": ("latest_bundle_ts", "date"),
+    "v5_gate_compliance_daily": ("latest_bundle_ts", "date"),
+    "v5_missed_opportunity_daily": ("latest_bundle_ts", "date"),
+    "v5_config_health_daily": ("latest_bundle_ts", "date"),
+    "v5_issue_summary_daily": ("latest_bundle_ts", "date"),
+    "okx_private_readonly_fills": ("ingest_ts",),
+    "okx_private_readonly_bills": ("ingest_ts",),
+    "feature_value": ("created_at", "ts"),
+    "alpha_evidence": ("created_at", "end_ts"),
+    "okx_public_ws_health": ("last_message_at", "updated_at", "started_at"),
+    "decision_audit": ("ingest_ts", "loaded_at"),
+    "v5_quant_lab_usage": ("ingest_ts", "bundle_ts"),
+    "v5_quant_lab_cost_usage": ("ingest_ts", "bundle_ts"),
+    "v5_quant_lab_fallback": ("ingest_ts", "bundle_ts"),
 }
 
 CORE_DIAGNOSTIC_DATASETS = {
@@ -94,6 +119,62 @@ def dataset_path_for(lake_root: str | Path, dataset_name: str) -> Path:
     if relative is None:
         relative = Path(dataset_name)
     return Path(lake_root) / relative
+
+
+def dataset_freshness_payload(
+    dataset_name: str,
+    df: pl.DataFrame,
+    *,
+    now: datetime | None = None,
+) -> dict[str, Any]:
+    if df.is_empty():
+        return {
+            "freshness_seconds": None,
+            "freshness_status": "missing",
+            "timestamp_column": None,
+            "latest_timestamp": None,
+        }
+    latest, column = latest_dataset_timestamp(dataset_name, df)
+    if latest is None:
+        return {
+            "freshness_seconds": None,
+            "freshness_status": "unknown",
+            "timestamp_column": column,
+            "latest_timestamp": None,
+        }
+    reference_time = now.astimezone(UTC) if now else datetime.now(UTC)
+    seconds = max(int((reference_time - latest).total_seconds()), 0)
+    if seconds <= 6 * 60 * 60:
+        status = "fresh"
+    elif seconds <= 24 * 60 * 60:
+        status = "delayed"
+    else:
+        status = "stale"
+    return {
+        "freshness_seconds": seconds,
+        "freshness_status": status,
+        "timestamp_column": column,
+        "latest_timestamp": latest.isoformat(),
+    }
+
+
+def latest_dataset_timestamp(
+    dataset_name: str,
+    df: pl.DataFrame,
+) -> tuple[datetime | None, str | None]:
+    if df.is_empty():
+        return None, None
+    columns = DATASET_TIMESTAMP_COLUMNS.get(dataset_name, ("ts", "created_at", "ingest_ts"))
+    seen_timestamp_column: str | None = None
+    for column in columns:
+        if column not in df.columns:
+            continue
+        seen_timestamp_column = column
+        values = [_coerce_timestamp(value) for value in df[column].to_list()]
+        parsed = [value for value in values if value is not None]
+        if parsed:
+            return max(parsed), column
+    return None, seen_timestamp_column
 
 
 def _read_parquet_dataset_with_warning(
@@ -206,6 +287,8 @@ def lake_diagnostics(lake_root: str | Path) -> dict[str, Any]:
         row_count = 0
         warning = None
         df, warning = _read_parquet_dataset_with_warning(path, dataset_name)
+        canonical_name = _canonical_dataset_name(dataset_name)
+        freshness = dataset_freshness_payload(canonical_name, df)
         row_count = df.height
         if warning:
             warnings.append(warning)
@@ -228,6 +311,10 @@ def lake_diagnostics(lake_root: str | Path) -> dict[str, Any]:
                 "parquet_file_count": file_count,
                 "rows": row_count,
                 "path": str(path),
+                "freshness_seconds": freshness["freshness_seconds"],
+                "freshness_status": freshness["freshness_status"],
+                "timestamp_column": freshness["timestamp_column"] or "",
+                "latest_timestamp": freshness["latest_timestamp"] or "",
                 "warning": warning or "",
             }
         )
@@ -843,14 +930,24 @@ def _fallback_rows(audits: pl.DataFrame) -> pl.DataFrame:
 
 def _stale_dataset_rows(lake_root: str | Path) -> pl.DataFrame:
     rows = []
-    for state in dataset_states(lake_root):
-        if not state.exists or state.rows == 0:
+    for name in sorted(DATASET_PATHS):
+        path = dataset_path_for(lake_root, name)
+        df, warning = read_dataset_with_warning(lake_root, name)
+        freshness = dataset_freshness_payload(name, df)
+        status = freshness["freshness_status"]
+        if df.is_empty():
+            status = _empty_dataset_status(name)
+        if warning or status in {"missing", "unknown", "stale"} or df.is_empty():
             rows.append(
                 {
-                    "dataset": state.name,
-                    "rows": state.rows,
-                    "status": _empty_dataset_status(state.name),
-                    "path": str(state.path),
+                    "dataset": name,
+                    "rows": df.height,
+                    "status": status,
+                    "path": str(path),
+                    "freshness_seconds": freshness["freshness_seconds"],
+                    "timestamp_column": freshness["timestamp_column"] or "",
+                    "latest_timestamp": freshness["latest_timestamp"] or "",
+                    "warning": warning or "",
                 }
             )
     return pl.DataFrame(rows)
@@ -864,6 +961,44 @@ def _empty_dataset_status(dataset_name: str) -> str:
     if dataset_name == "decision_audit":
         return "legacy optional"
     return "missing"
+
+
+def _canonical_dataset_name(dataset_name: str) -> str:
+    if dataset_name in DATASET_PATHS:
+        return dataset_name
+    normalized = dataset_name.replace("\\", "/")
+    for name, relative_path in DATASET_PATHS.items():
+        if str(relative_path).replace("\\", "/") == normalized:
+            return name
+    return dataset_name
+
+
+def _coerce_timestamp(value: Any) -> datetime | None:
+    if value is None:
+        return None
+    if isinstance(value, datetime):
+        if value.tzinfo is None:
+            return value.replace(tzinfo=UTC)
+        return value.astimezone(UTC)
+    if isinstance(value, date):
+        return datetime.combine(value, time.min, tzinfo=UTC)
+    if isinstance(value, str):
+        text = value.strip()
+        if not text:
+            return None
+        if text.endswith("Z"):
+            text = f"{text[:-1]}+00:00"
+        try:
+            if len(text) == 10:
+                parsed_date = date.fromisoformat(text)
+                return datetime.combine(parsed_date, time.min, tzinfo=UTC)
+            parsed = datetime.fromisoformat(text)
+        except ValueError:
+            return None
+        if parsed.tzinfo is None:
+            return parsed.replace(tzinfo=UTC)
+        return parsed.astimezone(UTC)
+    return None
 
 def _normalize_market_frame(df: pl.DataFrame) -> pl.DataFrame:
     normalized = _normalize_optional_time(df, "ts")

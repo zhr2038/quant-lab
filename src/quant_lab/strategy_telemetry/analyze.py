@@ -86,9 +86,9 @@ def analyze_v5_telemetry(lake_root: Path, date: str | None = None) -> V5Telemetr
     )
     if high_issue_count > 0:
         warnings.append("high issues present")
-    for message in _issue_messages(issues):
-        if "high_score_blocked_matured_without_label" in message:
-            next_actions.append("review high_score_blocked_matured_without_label")
+    high_score_matured_issue_count = _high_score_blocked_matured_issue_count(issues)
+    if high_score_matured_issue_count:
+        next_actions.append("review high_score_blocked_matured_without_label")
 
     high_secret_count = _max_int(secret_scan, "high_severity_count")
     if high_secret_count > 0:
@@ -103,8 +103,11 @@ def analyze_v5_telemetry(lake_root: Path, date: str | None = None) -> V5Telemetr
     elif _is_stale(latest_bundle_ts, analysis_date):
         warnings.append("latest bundle is older than 24 hours")
 
-    config_not_consumed_count = _config_not_consumed_count(config)
-    if config_not_consumed_count > 0:
+    config_summary = _config_not_consumed_summary(config)
+    config_not_consumed_count = config_summary["count"]
+    if config_summary["unknown"]:
+        warnings.append("config_not_consumed_count_unknown")
+    elif config_not_consumed_count > 0:
         warnings.append("config values not consumed at runtime")
 
     gate_violations = _gate_compliance_violations(decisions, trades)
@@ -123,6 +126,11 @@ def analyze_v5_telemetry(lake_root: Path, date: str | None = None) -> V5Telemetr
     if critical:
         status = "CRITICAL"
 
+    high_score_blocked_matured_count = _summary_int(
+        window_summary,
+        ["high_score_blocked_matured_count"],
+        fallback=max(_matured_count(outcomes), high_score_matured_issue_count),
+    )
     result = V5TelemetryAnalysisResult(
         date=analysis_date,
         status=status,
@@ -175,8 +183,14 @@ def analyze_v5_telemetry(lake_root: Path, date: str | None = None) -> V5Telemetr
         high_issue_count=high_issue_count,
         medium_issue_count=medium_issue_count,
         config_not_consumed_count=config_not_consumed_count,
-        high_score_blocked_count=_count_rows(targets),
-        high_score_blocked_matured_count=_matured_count(outcomes),
+        config_not_consumed_count_unknown=bool(config_summary["unknown"]),
+        config_not_consumed_top_keys=list(config_summary["top_keys"]),
+        high_score_blocked_count=_summary_int(
+            window_summary,
+            ["high_score_blocked_count"],
+            fallback=_count_rows(targets),
+        ),
+        high_score_blocked_matured_count=high_score_blocked_matured_count,
         high_score_blocked_profitable_count=_profitable_count(outcomes),
         skipped_candidate_matured_count=_matured_count(skipped),
         router_reason_top=router_reason_top,
@@ -196,10 +210,15 @@ def _write_gold(
 ) -> None:
     base = result.model_dump()
     base["router_reason_top_json"] = json.dumps(result.router_reason_top, sort_keys=True)
+    base["config_not_consumed_top_keys_json"] = json.dumps(
+        result.config_not_consumed_top_keys,
+        sort_keys=True,
+    )
     base["warnings_json"] = json.dumps(result.warnings, sort_keys=True)
     base["critical_reasons_json"] = json.dumps(result.critical_reasons, sort_keys=True)
     base["next_actions_json"] = json.dumps(result.next_actions, sort_keys=True)
     base.pop("router_reason_top", None)
+    base.pop("config_not_consumed_top_keys", None)
     base.pop("warnings", None)
     base.pop("critical_reasons", None)
     base.pop("next_actions", None)
@@ -404,11 +423,50 @@ def _is_stale(latest_bundle_ts: datetime, analysis_date: str) -> bool:
     return latest_bundle_ts < date_end - timedelta(hours=24)
 
 
-def _config_not_consumed_count(df: pl.DataFrame) -> int:
+def _config_not_consumed_summary(df: pl.DataFrame) -> dict[str, Any]:
     if df.is_empty():
-        return 0
-    text = "\n".join(json.dumps(row, sort_keys=True, default=str) for row in df.to_dicts()).lower()
-    return text.count("not_consumed") + text.count("not consumed")
+        return {"count": 0, "unknown": False, "top_keys": []}
+    useful_columns = {"consumed", "status", "issue_type", "key", "raw_payload_json"}
+    if not useful_columns.intersection(df.columns):
+        return {"count": 0, "unknown": True, "top_keys": []}
+
+    keys: set[str] = set()
+    unknown = False
+    for row in df.to_dicts():
+        payload = _payload(row)
+        key = _first_text(row, payload, ["key", "config_key", "path", "name"])
+        if _row_indicates_not_consumed(row, payload):
+            if key:
+                keys.add(key)
+            else:
+                unknown = True
+    return {"count": len(keys), "unknown": unknown, "top_keys": sorted(keys)[:20]}
+
+
+def _first_text(
+    row: dict[str, Any],
+    payload: dict[str, Any],
+    fields: list[str],
+) -> str | None:
+    for field in fields:
+        value = row.get(field)
+        if value is None:
+            value = payload.get(field)
+        if value is not None and str(value).strip():
+            return str(value).strip()
+    return None
+
+
+def _row_indicates_not_consumed(row: dict[str, Any], payload: dict[str, Any]) -> bool:
+    consumed = row.get("consumed", payload.get("consumed"))
+    if isinstance(consumed, bool):
+        return not consumed
+    if consumed is not None and str(consumed).strip().lower() in {"false", "0", "no"}:
+        return True
+    status = str(row.get("status", payload.get("status", ""))).strip().lower()
+    issue_type = str(row.get("issue_type", payload.get("issue_type", ""))).strip().lower()
+    markers = ("not_consumed", "not consumed", "unused", "not-used")
+    return any(marker in status or marker in issue_type for marker in markers)
 
 
 def _gate_compliance_violations(decisions: pl.DataFrame, trades: pl.DataFrame) -> list[str]:
@@ -463,6 +521,9 @@ def _dust_count(df: pl.DataFrame) -> int:
 def _matured_count(df: pl.DataFrame) -> int:
     if df.is_empty():
         return 0
+    count = _truthy_column_count(df, ["matured", "is_matured", "maturity_reached"])
+    if count is not None:
+        return count
     text = "\n".join(json.dumps(row, sort_keys=True, default=str).lower() for row in df.to_dicts())
     return text.count("matured")
 
@@ -470,5 +531,36 @@ def _matured_count(df: pl.DataFrame) -> int:
 def _profitable_count(df: pl.DataFrame) -> int:
     if df.is_empty():
         return 0
+    count = _truthy_column_count(df, ["profitable", "is_profitable"])
+    if count is not None:
+        return count
     text = "\n".join(json.dumps(row, sort_keys=True, default=str).lower() for row in df.to_dicts())
     return text.count("profitable")
+
+
+def _truthy_column_count(df: pl.DataFrame, columns: list[str]) -> int | None:
+    for column in columns:
+        if column not in df.columns:
+            continue
+        count = 0
+        for value in df[column].to_list():
+            if isinstance(value, bool):
+                count += int(value)
+            elif str(value).strip().lower() in {"true", "1", "yes", "y"}:
+                count += 1
+        return count
+    return None
+
+
+def _high_score_blocked_matured_issue_count(df: pl.DataFrame) -> int:
+    if df.is_empty():
+        return 0
+    count = 0
+    for row in df.to_dicts():
+        text = " ".join(
+            str(row.get(column, ""))
+            for column in ["issue_type", "type", "message", "raw_payload_json"]
+        ).lower()
+        if "high_score_blocked_matured_without_label" in text:
+            count += 1
+    return count

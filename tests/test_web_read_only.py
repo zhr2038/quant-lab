@@ -94,6 +94,35 @@ def test_dashboard_readers_load_fixture_lake(tmp_path):
     assert experts["latest_pack"].endswith("quant_lab_expert_pack_2026-05-10.zip")
 
 
+def test_web_diagnostics_use_dataset_freshness_not_missing_for_populated_tables(tmp_path):
+    lake_root = _fixture_lake(tmp_path)
+
+    diagnostics = readers.lake_diagnostics(lake_root)
+    rows = {
+        row["dataset"]: row
+        for row in diagnostics["datasets"].to_dicts()
+    }
+
+    for dataset in [
+        "gold/cost_bucket_daily",
+        "gold/gate_decision",
+        "gold/risk_permission",
+        "gold/strategy_health_daily",
+    ]:
+        assert rows[dataset]["rows"] > 0
+        assert rows[dataset]["freshness_status"] != "missing"
+
+
+def test_dataset_freshness_unknown_when_populated_table_has_no_timestamp():
+    payload = readers.dataset_freshness_payload(
+        "decision_audit",
+        pl.DataFrame([{"payload": "no timestamp"}]),
+    )
+
+    assert payload["freshness_status"] == "unknown"
+    assert payload["freshness_status"] != "missing"
+
+
 def test_key_pages_render_fixture_lake_without_network_or_mutation(tmp_path):
     lake_root = _fixture_lake(tmp_path)
     fake = FakeStreamlit()

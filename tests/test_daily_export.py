@@ -111,6 +111,69 @@ def test_cost_fallback_ratio_is_not_pass_when_cost_bucket_daily_is_empty(tmp_pat
     assert checks["cost_fallback_ratio"]["status"] in {"N/A", "FAIL"}
 
 
+def test_dataset_freshness_uses_dataset_specific_timestamps(tmp_path):
+    lake_root = _fixture_lake(tmp_path)
+    created_at = datetime.now(UTC)
+    write_parquet_dataset(
+        pl.DataFrame(
+            [
+                {
+                    "day": "2026-05-11",
+                    "symbol": "ETH-USDT",
+                    "regime": "normal",
+                    "notional_bucket": "GLOBAL",
+                    "created_at": created_at,
+                    "sample_count": 1,
+                }
+            ]
+        ),
+        lake_root / "gold" / "cost_bucket_daily",
+    )
+    write_parquet_dataset(
+        pl.DataFrame(
+            [
+                {
+                    "channel": "tickers",
+                    "inst_id": "BTC-USDT",
+                    "received_at": created_at,
+                    "raw_json": "{}",
+                }
+            ]
+        ),
+        lake_root / "bronze" / "okx_public_ws",
+    )
+    write_parquet_dataset(
+        pl.DataFrame([{"payload": "legacy-without-time"}]),
+        lake_root / "silver" / "decision_audit",
+    )
+
+    result = export_daily_pack(
+        export_date="2026-05-11",
+        lake_root=lake_root,
+        out_dir=tmp_path / "exports",
+        profile="expert",
+        command_line=["qlab", "export-daily"],
+    )
+
+    with zipfile.ZipFile(result.zip_path) as archive:
+        manifest = json.loads(archive.read("manifest.json").decode("utf-8"))
+        provenance = json.loads(archive.read("provenance.json").decode("utf-8"))
+
+    freshness = manifest["dataset_freshness"]
+    assert freshness["cost_bucket_daily"]["freshness_status"] != "missing"
+    assert freshness["cost_bucket_daily"]["timestamp_column"] == "created_at"
+    assert freshness["gate_decision"]["freshness_status"] != "missing"
+    assert freshness["risk_permission"]["freshness_status"] != "missing"
+    assert freshness["okx_public_ws"]["freshness_status"] != "missing"
+    assert freshness["okx_public_ws"]["timestamp_column"] == "received_at"
+    assert freshness["decision_audit"]["freshness_status"] == "unknown"
+    assert all(
+        dataset["freshness_status"] != "missing"
+        for dataset in provenance["datasets"]
+        if dataset["row_count"] > 0
+    )
+
+
 def test_expert_questions_are_dynamic_for_missing_daily_inputs(tmp_path):
     result = export_daily_pack(
         export_date="2026-05-11",
@@ -129,6 +192,60 @@ def test_expert_questions_are_dynamic_for_missing_daily_inputs(tmp_path):
     assert "为什么 gate_decision / alpha_evidence 为空？" in questions
     assert "为什么 risk_permission 为空？" in questions
     assert "V5 telemetry 是否同步成功？" in questions
+
+
+def test_expert_questions_include_proxy_feature_usage_and_config_gaps(tmp_path):
+    lake_root = _fixture_lake(tmp_path)
+    write_parquet_dataset(
+        pl.DataFrame(
+            [
+                {
+                    "day": "2026-05-11",
+                    "symbol": "BTC-USDT",
+                    "regime": "normal",
+                    "notional_bucket": "GLOBAL",
+                    "sample_count": 0,
+                    "fallback_level": "PUBLIC_SPREAD_PROXY",
+                    "source": "public_spread_proxy",
+                    "created_at": datetime.now(UTC),
+                }
+            ]
+        ),
+        lake_root / "gold" / "cost_bucket_daily",
+    )
+    write_parquet_dataset(
+        pl.DataFrame(
+            [
+                {
+                    "strategy": "v5",
+                    "date": "2026-05-11",
+                    "status": "WARNING",
+                    "config_not_consumed_count": 2,
+                    "config_not_consumed_count_unknown": False,
+                    "config_not_consumed_top_keys_json": '["alpha_threshold","risk.max_weight"]',
+                    "latest_bundle_ts": datetime.now(UTC),
+                }
+            ]
+        ),
+        lake_root / "gold" / "v5_config_health_daily",
+    )
+
+    result = export_daily_pack(
+        export_date="2026-05-11",
+        lake_root=lake_root,
+        out_dir=tmp_path / "exports",
+        profile="expert",
+        command_line=["qlab", "export-daily"],
+    )
+
+    with zipfile.ZipFile(result.zip_path) as archive:
+        questions = archive.read("expert_questions.md").decode("utf-8")
+
+    assert "成本模型仍是 public spread proxy" in questions
+    assert "为什么 feature_value 为空？" in questions
+    assert "V5 是否已接入 quant-lab API？当前 v5_quant_lab_usage 为空。" in questions
+    assert "config_not_consumed_count 是否真实为 2" in questions
+    assert "alpha_threshold" in questions
 
 
 def test_validate_expert_pack_rejects_possible_secret(tmp_path):

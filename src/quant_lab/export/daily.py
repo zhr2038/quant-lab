@@ -184,7 +184,14 @@ CSV_SCHEMAS: dict[str, list[str]] = {
         "violations_json",
     ],
     "v5/v5_missed_opportunity.csv": ["strategy", "date", "status"],
-    "v5/v5_config_health.csv": ["strategy", "date", "status", "config_not_consumed_count"],
+    "v5/v5_config_health.csv": [
+        "strategy",
+        "date",
+        "status",
+        "config_not_consumed_count",
+        "config_not_consumed_count_unknown",
+        "config_not_consumed_top_keys_json",
+    ],
     "v5/v5_issue_summary.csv": [
         "strategy",
         "date",
@@ -536,7 +543,7 @@ def _manifest_payload(
         "warnings": warnings,
         "row_counts": row_counts,
         "dataset_freshness": {
-            name: _dataset_freshness_payload(frame)
+            name: _dataset_freshness_payload(name, frame)
             for name, frame in sorted(snapshot.frames.items())
         },
         "files": [
@@ -577,9 +584,9 @@ def _provenance_payload(
                 "name": name,
                 "path": str(root / readers.DATASET_PATHS[name]),
                 "row_count": snapshot.row_counts[name],
-                "min_timestamp": _min_timestamp(frame),
-                "max_timestamp": _max_timestamp(frame),
-                **_dataset_freshness_payload(frame),
+                "min_timestamp": _min_timestamp(name, frame),
+                "max_timestamp": _max_timestamp(name, frame),
+                **_dataset_freshness_payload(name, frame),
             }
             for name, frame in sorted(snapshot.frames.items())
         ],
@@ -814,6 +821,7 @@ def _expert_questions(snapshot: _DatasetSnapshot, data_quality: dict[str, Any]) 
 
 def _question_lines(snapshot: _DatasetSnapshot, data_quality: dict[str, Any]) -> list[str]:
     questions: list[str] = []
+    costs = snapshot.frames.get("cost_bucket_daily", pl.DataFrame())
     if (
         snapshot.row_counts.get("trade_print", 0) == 0
         or snapshot.row_counts.get("orderbook_snapshot", 0) == 0
@@ -827,6 +835,10 @@ def _question_lines(snapshot: _DatasetSnapshot, data_quality: dict[str, Any]) ->
         questions.append("是否启用 OKX read-only fills/bills？")
     if snapshot.row_counts.get("cost_bucket_daily", 0) == 0:
         questions.append("为什么 cost_bucket_daily 为空？")
+    elif _cost_model_is_proxy_or_fallback(costs):
+        questions.append("成本模型仍是 public spread proxy，何时启用真实 fills/bills？")
+    if snapshot.row_counts.get("feature_value", 0) == 0:
+        questions.append("为什么 feature_value 为空？")
     if snapshot.row_counts.get("gate_decision", 0) == 0:
         questions.append("为什么 gate_decision / alpha_evidence 为空？")
     elif snapshot.row_counts.get("alpha_evidence", 0) == 0:
@@ -835,6 +847,13 @@ def _question_lines(snapshot: _DatasetSnapshot, data_quality: dict[str, Any]) ->
         questions.append("为什么 risk_permission 为空？")
     if snapshot.row_counts.get("strategy_health_daily", 0) == 0:
         questions.append("V5 telemetry 是否同步成功？")
+    if snapshot.row_counts.get("v5_quant_lab_usage", 0) == 0:
+        questions.append("V5 是否已接入 quant-lab API？当前 v5_quant_lab_usage 为空。")
+    config_question = _config_not_consumed_question(
+        snapshot.frames.get("v5_config_health_daily", pl.DataFrame())
+    )
+    if config_question:
+        questions.append(config_question)
     warnings = data_quality.get("warnings", [])
     if warnings:
         questions.append("哪些 data_quality 告警需要先处理，才能继续研究复盘？")
@@ -847,6 +866,61 @@ def _question_lines(snapshot: _DatasetSnapshot, data_quality: dict[str, Any]) ->
             ]
         )
     return [f"{index}. {question}" for index, question in enumerate(questions[:10], start=1)]
+
+
+def _cost_model_is_proxy_or_fallback(costs: pl.DataFrame) -> bool:
+    if costs.is_empty():
+        return False
+    text_columns = [column for column in ["source", "fallback_level"] if column in costs.columns]
+    if not text_columns:
+        return False
+    for row in costs.select(text_columns).to_dicts():
+        rendered = " ".join(str(value).lower() for value in row.values())
+        if "public_spread_proxy" in rendered or "global_default" in rendered:
+            return True
+    return _cost_fallbacks(costs).height == costs.height
+
+
+def _config_not_consumed_question(config_health: pl.DataFrame) -> str | None:
+    if config_health.is_empty() or "config_not_consumed_count" not in config_health.columns:
+        return None
+    row = config_health.tail(1).to_dicts()[0]
+    try:
+        count = int(row.get("config_not_consumed_count") or 0)
+    except (TypeError, ValueError):
+        count = 0
+    unknown = str(row.get("config_not_consumed_count_unknown", "")).lower() in {
+        "true",
+        "1",
+        "yes",
+    }
+    if count <= 0 and not unknown:
+        return None
+    top_keys = _config_top_keys(row.get("config_not_consumed_top_keys_json"))
+    if top_keys:
+        return (
+            f"config_not_consumed_count 是否真实为 {count}？"
+            f"需要复核 top keys: {', '.join(top_keys[:10])}。"
+        )
+    if unknown:
+        return "config_not_consumed_count 无法结构化解析，需要列出 top keys。"
+    return f"config_not_consumed_count 是否真实为 {count}？需要列出 top keys。"
+
+
+def _config_top_keys(raw: Any) -> list[str]:
+    if raw is None:
+        return []
+    if isinstance(raw, list):
+        return [str(item) for item in raw if str(item)]
+    if not isinstance(raw, str) or not raw.strip():
+        return []
+    try:
+        payload = json.loads(raw)
+    except json.JSONDecodeError:
+        return []
+    if isinstance(payload, list):
+        return [str(item) for item in payload if str(item)]
+    return []
 
 
 def _latest_market_rows(market: pl.DataFrame) -> pl.DataFrame:
@@ -930,15 +1004,32 @@ def _missing_dataset_rows(frames: dict[str, pl.DataFrame]) -> pl.DataFrame:
 
 
 def _stale_rows(frames: dict[str, pl.DataFrame]) -> pl.DataFrame:
-    rows = [
-        {"dataset": name, "status": "missing_or_empty"}
-        for name, frame in sorted(frames.items())
-        if frame.is_empty()
-    ]
+    rows = []
+    for name, frame in sorted(frames.items()):
+        freshness = _dataset_freshness_payload(name, frame)
+        status = freshness["freshness_status"]
+        if status in {"missing", "unknown", "stale"}:
+            rows.append(
+                {
+                    "dataset": name,
+                    "status": status,
+                    "row_count": frame.height,
+                    "timestamp_column": freshness["timestamp_column"] or "",
+                    "latest_timestamp": freshness["latest_timestamp"] or "",
+                }
+            )
     return (
         pl.DataFrame(rows)
         if rows
-        else pl.DataFrame(schema={"dataset": pl.Utf8, "status": pl.Utf8})
+        else pl.DataFrame(
+            schema={
+                "dataset": pl.Utf8,
+                "status": pl.Utf8,
+                "row_count": pl.Int64,
+                "timestamp_column": pl.Utf8,
+                "latest_timestamp": pl.Utf8,
+            }
+        )
     )
 
 
@@ -1236,43 +1327,37 @@ def _sort_frame(df: pl.DataFrame, column: str) -> pl.DataFrame:
         return df
 
 
-def _min_timestamp(df: pl.DataFrame) -> str | None:
-    value = _timestamp_value(df, "min")
+def _min_timestamp(dataset_name: str, df: pl.DataFrame) -> str | None:
+    value = _timestamp_value(dataset_name, df, "min")
     return value.isoformat() if isinstance(value, datetime) else None
 
 
-def _max_timestamp(df: pl.DataFrame) -> str | None:
-    value = _timestamp_value(df, "max")
+def _max_timestamp(dataset_name: str, df: pl.DataFrame) -> str | None:
+    value = _timestamp_value(dataset_name, df, "max")
     return value.isoformat() if isinstance(value, datetime) else None
 
 
-def _dataset_freshness_payload(df: pl.DataFrame) -> dict[str, Any]:
-    latest = _timestamp_value(df, "max")
-    if latest is None:
-        return {"freshness_seconds": None, "freshness_status": "missing"}
-    seconds = max(int((datetime.now(UTC) - latest).total_seconds()), 0)
-    if seconds <= 6 * 60 * 60:
-        status = "fresh"
-    elif seconds <= 24 * 60 * 60:
-        status = "delayed"
-    else:
-        status = "stale"
-    return {"freshness_seconds": seconds, "freshness_status": status}
+def _dataset_freshness_payload(dataset_name: str, df: pl.DataFrame) -> dict[str, Any]:
+    return readers.dataset_freshness_payload(dataset_name, df)
 
 
-def _timestamp_value(df: pl.DataFrame, op: str) -> datetime | None:
+def _timestamp_value(dataset_name: str, df: pl.DataFrame, op: str) -> datetime | None:
     if df.is_empty():
         return None
-    for column in ["ts", "created_at", "ingest_ts", "received_at", "date", "day"]:
+    for column in readers.DATASET_TIMESTAMP_COLUMNS.get(
+        dataset_name,
+        ("ts", "created_at", "ingest_ts"),
+    ):
         if column not in df.columns:
             continue
-        try:
-            series = df.select(getattr(pl.col(column), op)()).to_series()
-            value = series.item()
-        except Exception:
+        parsed = [
+            readers._coerce_timestamp(value)  # type: ignore[attr-defined]
+            for value in df[column].to_list()
+        ]
+        values = [value for value in parsed if value is not None]
+        if not values:
             continue
-        if isinstance(value, datetime):
-            return value.astimezone(UTC)
+        return min(values) if op == "min" else max(values)
     return None
 
 
@@ -1290,8 +1375,11 @@ def _stale_severity(stale: pl.DataFrame) -> str:
     if stale.is_empty() or "dataset" not in stale.columns:
         return "warning"
     critical = {"market_bar", "cost_bucket_daily", "risk_permission"}
-    datasets = {str(value) for value in stale["dataset"].to_list()}
-    return "critical" if datasets & critical else "warning"
+    critical_rows = stale.filter(
+        pl.col("dataset").is_in(sorted(critical))
+        & pl.col("status").is_in(["missing", "stale", "missing_or_empty"])
+    )
+    return "critical" if not critical_rows.is_empty() else "warning"
 
 
 def _flag_enabled(name: str, *, default: bool) -> bool:

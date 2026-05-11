@@ -123,6 +123,66 @@ def test_analyze_reads_auto_risk_current_level(tmp_path):
     assert result.auto_risk_level == "ELEVATED"
 
 
+def test_config_not_consumed_count_uses_unique_keys(tmp_path):
+    lake = tmp_path / "lake"
+    _write_manifest(lake)
+    write_parquet_dataset(
+        pl.DataFrame(
+            [
+                _config_row("alpha_threshold", status="not_consumed"),
+                _config_row("alpha_threshold", status="not_consumed"),
+                _config_row("risk.max_weight", consumed=False),
+                _config_row("risk.min_score", status="consumed", consumed=True),
+            ]
+        ),
+        lake / "silver/v5_config_audit",
+    )
+
+    result = analyze_v5_telemetry(lake, date="2026-05-10")
+
+    assert result.config_not_consumed_count == 2
+    assert result.config_not_consumed_count_unknown is False
+    assert result.config_not_consumed_top_keys == ["alpha_threshold", "risk.max_weight"]
+
+
+def test_config_not_consumed_count_unknown_when_unparseable(tmp_path):
+    lake = tmp_path / "lake"
+    _write_manifest(lake)
+    write_parquet_dataset(
+        pl.DataFrame([{"blob": "not_consumed not_consumed not_consumed"}]),
+        lake / "silver/v5_config_audit",
+    )
+
+    result = analyze_v5_telemetry(lake, date="2026-05-10")
+
+    assert result.config_not_consumed_count == 0
+    assert result.config_not_consumed_count_unknown is True
+    assert "config_not_consumed_count_unknown" in result.warnings
+
+
+def test_high_score_blocked_next_action_matches_matured_count(tmp_path):
+    lake = tmp_path / "lake"
+    _write_manifest(lake)
+    write_parquet_dataset(
+        pl.DataFrame(
+            [
+                {
+                    **_event_row("issue"),
+                    "severity": "high",
+                    "issue_type": "high_score_blocked_matured_without_label",
+                    "message": "needs label",
+                }
+            ]
+        ),
+        lake / "silver/v5_issue",
+    )
+
+    result = analyze_v5_telemetry(lake, date="2026-05-10")
+
+    assert "review high_score_blocked_matured_without_label" in result.next_actions
+    assert result.high_score_blocked_matured_count == 1
+
+
 def _write_manifest(lake, bundle_ts=datetime(2026, 5, 10, 14, 2, 49, tzinfo=UTC)):
     write_parquet_dataset(
         pl.DataFrame(
@@ -203,5 +263,23 @@ def _event_row(label, bundle_ts=datetime(2026, 5, 10, 14, 2, 49, tzinfo=UTC)):
         "source_path_inside_bundle": f"raw/recent_runs/{label}/decision_audit.json",
         "run_id": label,
         "row_index": 0,
+        "raw_payload_json": "{}",
+    }
+
+
+def _config_row(key, *, status="", consumed=None):
+    return {
+        "strategy": "v5",
+        "bundle_sha256": "abc",
+        "bundle_name": "bundle.tar.gz",
+        "bundle_ts": datetime(2026, 5, 10, 14, 2, 49, tzinfo=UTC),
+        "ingest_ts": datetime(2026, 5, 10, 14, 3, tzinfo=UTC),
+        "schema_version": "test",
+        "source_path_inside_bundle": "summaries/config_runtime_consumption_audit.csv",
+        "run_id": None,
+        "row_index": 0,
+        "key": key,
+        "status": status,
+        "consumed": consumed,
         "raw_payload_json": "{}",
     }

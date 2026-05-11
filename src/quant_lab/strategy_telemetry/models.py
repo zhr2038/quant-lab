@@ -156,6 +156,8 @@ class V5TelemetryAnalysisResult(TelemetryModel):
     high_issue_count: int = 0
     medium_issue_count: int = 0
     config_not_consumed_count: int = 0
+    config_not_consumed_count_unknown: bool = False
+    config_not_consumed_top_keys: list[str] = Field(default_factory=list)
     high_score_blocked_count: int = 0
     high_score_blocked_matured_count: int = 0
     high_score_blocked_profitable_count: int = 0

@@ -9,7 +9,7 @@ from typing import Any
 
 import polars as pl
 
-from quant_lab.data.lake import read_parquet_dataset
+from quant_lab.data.lake import invalid_parquet_files, read_parquet_dataset
 
 DATASET_PATHS = {
     "market_bar": Path("silver") / "market_bar",
@@ -101,12 +101,20 @@ def _read_parquet_dataset_with_warning(
     dataset_label: str,
 ) -> tuple[pl.DataFrame, str | None]:
     path = Path(dataset_path)
+    invalid_files = invalid_parquet_files(path)
     try:
-        return read_parquet_dataset(path), None
+        df = read_parquet_dataset(path)
     except Exception as exc:
         return pl.DataFrame(), (
             f"{dataset_label} 数据集读取失败，已按空数据处理：{path}；错误：{exc}"
         )
+    if invalid_files:
+        rendered = ", ".join(str(file_path) for file_path in invalid_files[:5])
+        suffix = "" if len(invalid_files) <= 5 else f" (+{len(invalid_files) - 5} more)"
+        return df, (
+            f"{dataset_label} invalid parquet files ignored: {rendered}{suffix}"
+        )
+    return df, None
 
 
 def dataset_states(lake_root: str | Path) -> list[DatasetState]:

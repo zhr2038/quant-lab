@@ -171,8 +171,8 @@ def test_okx_collectors_warns_when_orderbook_parquet_is_invalid(tmp_path):
     okx_collectors.render(lake_root, fake)
 
     warnings = "\n".join(str(warning) for warning in _call_values(fake, "warning"))
-    assert "orderbook_snapshot 数据集读取失败" in warnings
-    assert str(bad_path.parent) in warnings
+    assert "orderbook_snapshot invalid parquet files ignored" in warnings
+    assert str(bad_path) in warnings
 
 
 def test_overview_diagnostics_warn_when_lake_root_does_not_exist(tmp_path):

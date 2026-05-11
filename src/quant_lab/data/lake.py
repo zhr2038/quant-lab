@@ -1,3 +1,6 @@
+import logging
+import os
+import uuid
 from collections.abc import Sequence
 from datetime import datetime
 from pathlib import Path
@@ -10,6 +13,9 @@ from quant_lab.contracts.models import MarketBar, require_utc
 
 MARKET_BAR_DATASET = Path("silver") / "market_bar"
 MARKET_BAR_PRIMARY_KEY = ["venue", "symbol", "timeframe", "ts"]
+PARQUET_MAGIC = b"PAR1"
+MIN_PARQUET_SIZE_BYTES = 12
+logger = logging.getLogger(__name__)
 MARKET_BAR_SCHEMA = {
     "venue": pl.Utf8,
     "symbol": pl.Utf8,
@@ -44,15 +50,25 @@ def write_parquet_dataset(
     path.parent.mkdir(parents=True, exist_ok=True)
 
     sorted_df = _sort_dataframe(df)
-    _remove_existing_dataset(path)
 
     if partition_by:
+        _remove_existing_dataset(path)
         path.mkdir(parents=True, exist_ok=True)
         sorted_df.write_parquet(path, partition_by=partition_by, mkdir=True)
         return path
 
+    if path.is_file():
+        path.unlink()
     path.mkdir(parents=True, exist_ok=True)
-    sorted_df.write_parquet(path / "data.parquet")
+    final_file = path / "data.parquet"
+    temp_file = path.parent / f".{path.name}.{uuid.uuid4().hex}.tmp.parquet"
+    try:
+        sorted_df.write_parquet(temp_file)
+        os.replace(temp_file, final_file)
+        _remove_stale_parquet_files(path, keep=final_file)
+    finally:
+        if temp_file.exists():
+            temp_file.unlink()
     return path
 
 
@@ -61,6 +77,10 @@ def read_parquet_dataset(dataset_path: str | Path) -> pl.DataFrame:
     if not files:
         return pl.DataFrame()
     return pl.read_parquet([str(path) for path in files])
+
+
+def invalid_parquet_files(dataset_path: str | Path) -> list[Path]:
+    return [path for path in _all_parquet_files(dataset_path) if not _is_valid_parquet_file(path)]
 
 
 def upsert_parquet_dataset(
@@ -185,12 +205,34 @@ def query_dataset_sql(lake_root: str | Path, dataset_name: str, sql: str) -> pl.
 
 
 def _parquet_files(dataset_path: str | Path) -> list[Path]:
+    return [path for path in _all_parquet_files(dataset_path) if _is_valid_parquet_file(path)]
+
+
+def _all_parquet_files(dataset_path: str | Path) -> list[Path]:
     path = Path(dataset_path)
     if path.is_file() and path.suffix == ".parquet":
         return [path]
     if not path.exists():
         return []
     return sorted(path.rglob("*.parquet"))
+
+
+def _is_valid_parquet_file(path: Path) -> bool:
+    try:
+        if path.stat().st_size < MIN_PARQUET_SIZE_BYTES:
+            logger.warning("Ignoring undersized parquet file: %s", path)
+            return False
+        with path.open("rb") as file:
+            header = file.read(len(PARQUET_MAGIC))
+            file.seek(-len(PARQUET_MAGIC), os.SEEK_END)
+            footer = file.read(len(PARQUET_MAGIC))
+        if header != PARQUET_MAGIC or footer != PARQUET_MAGIC:
+            logger.warning("Ignoring invalid parquet file header/footer: %s", path)
+            return False
+        return True
+    except OSError as exc:
+        logger.warning("Ignoring unreadable parquet file %s: %s", path, exc)
+        return False
 
 
 def _sort_dataframe(df: pl.DataFrame) -> pl.DataFrame:
@@ -257,3 +299,13 @@ def _remove_existing_dataset(path: Path) -> None:
         for child in sorted(path.rglob("*"), key=lambda item: len(item.parts), reverse=True):
             if child.is_dir() and not any(child.iterdir()):
                 child.rmdir()
+
+
+def _remove_stale_parquet_files(path: Path, keep: Path) -> None:
+    for parquet_file in _all_parquet_files(path):
+        if parquet_file == keep:
+            continue
+        parquet_file.unlink()
+    for child in sorted(path.rglob("*"), key=lambda item: len(item.parts), reverse=True):
+        if child.is_dir() and not any(child.iterdir()):
+            child.rmdir()

@@ -2,6 +2,7 @@
 
 from quant_lab.data.lake import (
     LakeConfig,
+    invalid_parquet_files,
     query_dataset_sql,
     read_parquet_dataset,
     read_parquet_lazy,
@@ -12,6 +13,7 @@ from quant_lab.data.lake import (
 
 __all__ = [
     "LakeConfig",
+    "invalid_parquet_files",
     "query_dataset_sql",
     "read_parquet_dataset",
     "read_parquet_lazy",

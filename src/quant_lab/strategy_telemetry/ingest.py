@@ -55,6 +55,11 @@ SILVER_DATASETS = {
     "v5_skipped_candidate_outcome": Path("silver/v5_skipped_candidate_outcome"),
     "v5_shadow_outcome": Path("silver/v5_shadow_outcome"),
     "v5_probe_diagnostic": Path("silver/v5_probe_diagnostic"),
+    "v5_quant_lab_usage": Path("silver/v5_quant_lab_usage"),
+    "v5_quant_lab_request": Path("silver/v5_quant_lab_request"),
+    "v5_quant_lab_compliance": Path("silver/v5_quant_lab_compliance"),
+    "v5_quant_lab_cost_usage": Path("silver/v5_quant_lab_cost_usage"),
+    "v5_quant_lab_fallback": Path("silver/v5_quant_lab_fallback"),
 }
 
 
@@ -315,6 +320,12 @@ def _append_file_rows(
     if logical.endswith("/equity.jsonl"):
         rows["v5_equity_point"].extend(_jsonl_rows(metadata, relative, file_path))
         return
+    if logical == "raw/quant_lab/quant_lab_usage.jsonl":
+        rows["v5_quant_lab_usage"].extend(_jsonl_rows(metadata, relative, file_path))
+        return
+    if logical == "raw/quant_lab/quant_lab_requests.jsonl":
+        rows["v5_quant_lab_request"].extend(_jsonl_rows(metadata, relative, file_path))
+        return
     if logical.endswith("/trades.csv"):
         rows["v5_trade_event"].extend(_csv_rows(metadata, relative, file_path))
         return
@@ -327,7 +338,12 @@ def _append_file_rows(
                 "state_type": state_type,
                 "ok": _json_bool(payload, "ok"),
                 "enabled": _json_bool(payload, "enabled"),
-                "level": str(payload.get("level") or payload.get("risk_level") or ""),
+                "level": str(
+                    payload.get("current_level")
+                    or payload.get("level")
+                    or payload.get("risk_level")
+                    or ""
+                ),
             }
         )
         return
@@ -342,6 +358,9 @@ def _append_file_rows(
         "summaries/high_score_blocked_targets.csv": "v5_high_score_blocked_target",
         "summaries/skipped_candidate_maturity_audit.csv": "v5_skipped_candidate_outcome",
         "summaries/probe_diagnostics.csv": "v5_probe_diagnostic",
+        "summaries/quant_lab_compliance.csv": "v5_quant_lab_compliance",
+        "summaries/quant_lab_cost_usage.csv": "v5_quant_lab_cost_usage",
+        "summaries/quant_lab_fallbacks.csv": "v5_quant_lab_fallback",
     }
     if logical.startswith("summaries/high_score_blocked_outcomes"):
         rows["v5_high_score_blocked_outcome"].extend(_csv_rows(metadata, relative, file_path))

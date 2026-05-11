@@ -21,13 +21,14 @@ def evaluate_live_permission(
     cost_model_version = _health_value(cost_health, "cost_model_version", default="unknown")
     gate_version = _gate_version(decisions)
 
-    if _is_data_critical(data_health):
+    data_reasons = _data_health_reasons(data_health)
+    if data_reasons:
         return _permission(
             strategy=strategy,
             version=version,
             permission=RiskAction.ABORT,
             allowed_modes=[],
-            reasons=["data_health_critical"],
+            reasons=data_reasons,
             cost_model_version=cost_model_version,
             gate_version=gate_version,
             created_at=created_at,
@@ -142,6 +143,17 @@ def _is_data_critical(data_health: Mapping[str, Any] | None) -> bool:
         return True
     status = str(data_health.get("status") or data_health.get("level") or "").lower()
     return status == "critical"
+
+
+def _data_health_reasons(data_health: Mapping[str, Any] | None) -> list[str]:
+    if not _is_data_critical(data_health):
+        return []
+    reasons = data_health.get("reasons") if data_health else None
+    if isinstance(reasons, Sequence) and not isinstance(reasons, str):
+        normalized = [str(reason) for reason in reasons if str(reason)]
+        if normalized:
+            return normalized
+    return ["data_health_critical"]
 
 
 def _cost_health_reasons(cost_health: Mapping[str, Any] | None) -> list[str]:

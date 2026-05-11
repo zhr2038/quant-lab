@@ -98,9 +98,29 @@ class CostEstimate(ContractModel):
     symbol: str = Field(min_length=1)
     regime: str = Field(min_length=1)
     notional_usdt: float = Field(gt=0)
-    cost_bps: float = Field(ge=0)
+    quantile: str = Field(default="p75", pattern="^p(50|75|90)$")
+    fee_bps: float = Field(default=0.0, ge=0)
+    slippage_bps: float = Field(default=0.0, ge=0)
+    spread_bps: float = Field(default=0.0, ge=0)
+    total_cost_bps: float = Field(default=0.0, ge=0)
+    cost_bps: float = Field(default=0.0, ge=0)
     fallback_level: str = Field(min_length=1)
+    source: str = Field(default="unknown", min_length=1)
+    sample_count: int = Field(default=0, ge=0)
+    cost_model_version: str = Field(default="unknown", min_length=1)
     bucket_id: str | None = None
+
+    @model_validator(mode="before")
+    @classmethod
+    def sync_total_cost_alias(cls, data: Any) -> Any:
+        if isinstance(data, dict):
+            normalized = dict(data)
+            if "total_cost_bps" not in normalized and "cost_bps" in normalized:
+                normalized["total_cost_bps"] = normalized["cost_bps"]
+            if "cost_bps" not in normalized and "total_cost_bps" in normalized:
+                normalized["cost_bps"] = normalized["total_cost_bps"]
+            return normalized
+        return data
 
 
 class FillEvent(ContractModel):

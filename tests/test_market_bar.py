@@ -104,3 +104,25 @@ def test_write_and_read_market_bars(tmp_path):
     assert rows_after_first_write == 3
     assert rows_after_second_write == 3
     assert [record.close for record in loaded] == [101.0, 102.0]
+
+
+def test_write_empty_market_bars_does_not_delete_existing_dataset(tmp_path):
+    lake_root = tmp_path / "lake"
+    records = [
+        bar(ts=datetime(2026, 5, 10, 1, tzinfo=UTC), close=101.0),
+        bar(ts=datetime(2026, 5, 10, 2, tzinfo=UTC), close=102.0),
+    ]
+
+    assert write_market_bars(lake_root, records) == 2
+    assert write_market_bars(lake_root, []) == 2
+
+    loaded = read_market_bars(
+        lake_root,
+        venue="okx",
+        symbol="BTC-USDT",
+        timeframe="1H",
+        start=datetime(2026, 5, 10, 0, tzinfo=UTC),
+        end=datetime(2026, 5, 10, 3, tzinfo=UTC),
+    )
+
+    assert [record.close for record in loaded] == [101.0, 102.0]

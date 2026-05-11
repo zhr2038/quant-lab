@@ -12,6 +12,7 @@ from quant_lab.costs.model import (
     build_cost_bucket_daily_inputs,
     cost_bucket_daily_to_cost_buckets,
     estimate_cost_bps,
+    estimate_cost_from_lake,
 )
 
 __all__ = [
@@ -23,5 +24,6 @@ __all__ = [
     "calibrate_costs_for_day",
     "cost_bucket_daily_to_cost_buckets",
     "estimate_cost_bps",
+    "estimate_cost_from_lake",
     "publish_cost_bucket_daily",
 ]

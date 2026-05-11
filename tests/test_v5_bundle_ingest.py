@@ -45,6 +45,21 @@ def test_ingest_parses_state_files(tmp_path):
     }
 
 
+def test_ingest_parses_quant_lab_usage_files(tmp_path):
+    bundle = make_v5_bundle_fixture(tmp_path / "v5_live_followup_bundle_20260510T140249Z.tar.gz")
+    lake = tmp_path / "lake"
+
+    result = ingest_v5_bundle(bundle, lake, tmp_path / "restricted", tmp_path / "redacted")
+
+    assert result.silver_rows["v5_quant_lab_usage"] == 1
+    assert result.silver_rows["v5_quant_lab_request"] == 1
+    assert result.silver_rows["v5_quant_lab_compliance"] == 1
+    assert result.silver_rows["v5_quant_lab_cost_usage"] == 1
+    assert result.silver_rows["v5_quant_lab_fallback"] == 1
+    assert read_parquet_dataset(lake / "silver/v5_quant_lab_usage").height == 1
+    assert read_parquet_dataset(lake / "silver/v5_quant_lab_compliance").height == 1
+
+
 def test_ingest_parses_official_bundle_top_level_dir(tmp_path):
     bundle = make_v5_bundle_fixture(
         tmp_path / "v5_live_followup_bundle_20260510T140249Z.tar.gz",

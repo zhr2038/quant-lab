@@ -110,10 +110,11 @@ def market_bars_to_polars(records: Sequence[MarketBar | dict]) -> pl.DataFrame:
 
 def write_market_bars(lake_root: str | Path, records: Sequence[MarketBar | dict]) -> int:
     dataset_path = Path(lake_root) / MARKET_BAR_DATASET
+    if not records:
+        return read_parquet_dataset(dataset_path).height
     new_df = market_bars_to_polars(records)
     if new_df.is_empty():
-        write_parquet_dataset(new_df, dataset_path)
-        return 0
+        return read_parquet_dataset(dataset_path).height
     return upsert_parquet_dataset(new_df, dataset_path, key_columns=MARKET_BAR_PRIMARY_KEY)
 
 

@@ -26,7 +26,21 @@ def test_secret_scan_redacts_config(tmp_path):
 
 
 def test_secret_scan_allows_already_redacted_values():
-    scan = scan_for_secrets("api_key: <REDACTED>\napi_secret: REDACTED\npassphrase: null\n")
+    scan = scan_for_secrets(
+        "api_key: <REDACTED>\n"
+        "api_secret: <REDACTED>\n"
+        "passphrase: <REDACTED>\n"
+    )
 
     assert scan.high_severity_count == 0
     assert scan.medium_severity_count == 0
+
+
+def test_secret_scan_flags_plaintext_credentials_as_high_severity():
+    scan = scan_for_secrets(
+        "api_key: SHOULD_NOT_LEAK_1\n"
+        "api_secret: SHOULD_NOT_LEAK_2\n"
+        "passphrase: SHOULD_NOT_LEAK_3\n"
+    )
+
+    assert scan.high_severity_count == 3

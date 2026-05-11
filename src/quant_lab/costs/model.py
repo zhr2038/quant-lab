@@ -1,14 +1,17 @@
 import logging
 from collections.abc import Iterable, Mapping
+from pathlib import Path
 from typing import Any
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 from quant_lab.contracts.models import CostEstimate, FillEvent
+from quant_lab.data.lake import read_parquet_dataset
 
 logger = logging.getLogger(__name__)
 
 DEFAULT_FALLBACK_COST_BPS = 25.0
+SUPPORTED_COST_QUANTILES = {"p50", "p75", "p90"}
 
 
 class CostBucket(BaseModel):
@@ -136,8 +139,16 @@ def estimate_cost_bps(
             symbol=symbol,
             regime=regime,
             notional_usdt=notional_usdt,
+            quantile="p75",
+            fee_bps=0.0,
+            slippage_bps=0.0,
+            spread_bps=0.0,
+            total_cost_bps=DEFAULT_FALLBACK_COST_BPS,
             cost_bps=DEFAULT_FALLBACK_COST_BPS,
             fallback_level=fallback_level,
+            source="global_default",
+            sample_count=0,
+            cost_model_version="legacy_cost_bucket_v0",
             bucket_id=None,
         )
 
@@ -157,9 +168,94 @@ def estimate_cost_bps(
         symbol=symbol,
         regime=regime,
         notional_usdt=notional_usdt,
+        quantile="p75",
+        fee_bps=0.0,
+        slippage_bps=0.0,
+        spread_bps=0.0,
+        total_cost_bps=bucket.cost_bps,
         cost_bps=bucket.cost_bps,
         fallback_level=fallback_level,
+        source="configured_cost_bucket",
+        sample_count=0,
+        cost_model_version="legacy_cost_bucket_v0",
         bucket_id=bucket.bucket_id,
+    )
+
+
+def estimate_cost_from_lake(
+    lake_root: str | Path,
+    symbol: str,
+    regime: str,
+    notional_usdt: float,
+    quantile: str = "p75",
+    notional_bucket: str | None = None,
+) -> CostEstimate:
+    df = read_parquet_dataset(Path(lake_root) / "gold" / "cost_bucket_daily")
+    rows = [] if df.is_empty() else df.to_dicts()
+    return estimate_cost_from_cost_bucket_daily_rows(
+        symbol=symbol,
+        regime=regime,
+        notional_usdt=notional_usdt,
+        quantile=quantile,
+        rows=rows,
+        notional_bucket=notional_bucket,
+    )
+
+
+def estimate_cost_from_cost_bucket_daily_rows(
+    *,
+    symbol: str,
+    regime: str,
+    notional_usdt: float,
+    quantile: str,
+    rows: Iterable[Mapping[str, Any]],
+    notional_bucket: str | None = None,
+) -> CostEstimate:
+    if notional_usdt <= 0:
+        raise ValueError("notional_usdt must be positive")
+    if quantile not in SUPPORTED_COST_QUANTILES:
+        raise ValueError("quantile must be one of p50, p75, p90")
+
+    normalized_rows = [dict(row) for row in rows]
+    if not normalized_rows:
+        return _global_default_estimate(symbol, regime, notional_usdt, quantile)
+
+    tiered = _rank_cost_bucket_rows(
+        rows=normalized_rows,
+        symbol=symbol,
+        regime=regime,
+        notional_usdt=notional_usdt,
+        notional_bucket=notional_bucket,
+    )
+    if not tiered:
+        return _global_default_estimate(symbol, regime, notional_usdt, quantile)
+
+    row, fallback_level = tiered[0]
+    fee_bps = _float_value(row, f"fee_bps_{quantile}")
+    slippage_bps = _float_value(row, f"slippage_bps_{quantile}")
+    spread_bps = _float_value(row, f"spread_bps_{quantile}")
+    total_cost_bps = _float_value(row, f"total_cost_bps_{quantile}")
+    if total_cost_bps == 0:
+        total_cost_bps = fee_bps + slippage_bps + spread_bps
+
+    bucket_id = _cost_bucket_id(row)
+    return CostEstimate(
+        symbol=symbol,
+        regime=regime,
+        notional_usdt=notional_usdt,
+        quantile=quantile,
+        fee_bps=fee_bps,
+        slippage_bps=slippage_bps,
+        spread_bps=spread_bps,
+        total_cost_bps=total_cost_bps,
+        cost_bps=total_cost_bps,
+        fallback_level=fallback_level,
+        source=str(row.get("source") or "cost_bucket_daily"),
+        sample_count=int(row.get("sample_count") or 0),
+        cost_model_version=str(
+            row.get("cost_model_version") or f"cost_bucket_daily:{row.get('day', 'unknown')}"
+        ),
+        bucket_id=bucket_id,
     )
 
 
@@ -251,3 +347,107 @@ def _notional_bucket_bounds(notional_bucket: str) -> tuple[float, float | None]:
             return 0.0, None
         case _:
             return 0.0, None
+
+
+def _rank_cost_bucket_rows(
+    *,
+    rows: list[dict[str, Any]],
+    symbol: str,
+    regime: str,
+    notional_usdt: float,
+    notional_bucket: str | None,
+) -> list[tuple[dict[str, Any], str]]:
+    ranked: list[tuple[int, str, dict[str, Any]]] = []
+    for row in rows:
+        row_symbol = str(row.get("symbol") or "")
+        row_regime = str(row.get("regime") or "")
+        row_bucket = str(row.get("notional_bucket") or "")
+        notional_match = _row_matches_notional(row_bucket, notional_usdt, notional_bucket)
+
+        if row_symbol == symbol and row_regime == regime and notional_match:
+            tier, fallback = 0, "NONE"
+        elif row_symbol == symbol and row_regime == regime:
+            tier, fallback = 1, "NOTIONAL_BUCKET_FALLBACK"
+        elif row_symbol == symbol and _is_global_regime(row_regime) and notional_match:
+            tier, fallback = 2, "REGIME_FALLBACK"
+        elif _is_global_symbol(row_symbol) and row_regime == regime and notional_match:
+            tier, fallback = 3, "SYMBOL_FALLBACK"
+        elif _is_global_symbol(row_symbol) and _is_global_regime(row_regime):
+            tier, fallback = 4, "GLOBAL_BUCKET_FALLBACK"
+        else:
+            continue
+        ranked.append((tier, fallback, row))
+
+    return [
+        (row, fallback)
+        for _tier, fallback, row in sorted(
+            ranked,
+            key=lambda item: (
+                item[0],
+                _day_sort_value(item[2]),
+                -int(item[2].get("sample_count") or 0),
+            ),
+        )
+    ]
+
+
+def _row_matches_notional(
+    row_bucket: str,
+    notional_usdt: float,
+    requested_bucket: str | None,
+) -> bool:
+    if requested_bucket:
+        return row_bucket == requested_bucket
+    min_notional, max_notional = _notional_bucket_bounds(row_bucket)
+    if notional_usdt < min_notional:
+        return False
+    return max_notional is None or notional_usdt <= max_notional
+
+
+def _is_global_symbol(symbol: str) -> bool:
+    return symbol.upper() in {"", "GLOBAL", "ALL", "*"}
+
+
+def _is_global_regime(regime: str) -> bool:
+    return regime.lower() in {"", "global", "global_default", "all", "*"}
+
+
+def _float_value(row: Mapping[str, Any], key: str) -> float:
+    value = row.get(key)
+    return float(value or 0.0)
+
+
+def _cost_bucket_id(row: Mapping[str, Any]) -> str:
+    return ":".join(
+        str(row.get(part) or "unknown")
+        for part in ["day", "symbol", "regime", "event_type", "notional_bucket"]
+    )
+
+
+def _day_sort_value(row: Mapping[str, Any]) -> int:
+    digits = "".join(character for character in str(row.get("day") or "") if character.isdigit())
+    return -int(digits or 0)
+
+
+def _global_default_estimate(
+    symbol: str,
+    regime: str,
+    notional_usdt: float,
+    quantile: str,
+) -> CostEstimate:
+    return CostEstimate(
+        symbol=symbol,
+        regime=regime,
+        notional_usdt=notional_usdt,
+        quantile=quantile,
+        fee_bps=0.0,
+        slippage_bps=0.0,
+        spread_bps=0.0,
+        total_cost_bps=DEFAULT_FALLBACK_COST_BPS,
+        cost_bps=DEFAULT_FALLBACK_COST_BPS,
+        fallback_level="GLOBAL_DEFAULT",
+        source="global_default",
+        sample_count=0,
+        cost_model_version="global_default_v0",
+        bucket_id=None,
+    )

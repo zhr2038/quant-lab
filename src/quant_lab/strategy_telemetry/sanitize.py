@@ -39,7 +39,7 @@ SECRET_PATTERNS = [
     (re.compile(r"OK-ACCESS-(KEY|SIGN|PASSPHRASE)", re.IGNORECASE), "high", "okx-auth-header"),
     (
         re.compile(
-            r"(api[_-]?key|apiSecret|api_secret)\s*[:=]\s*['\"]?"
+            r"(api[_-]?key|apiSecret)\s*[:=]\s*['\"]?"
             r"(?!(?:<REDACTED>|REDACTED|null|none|false|true|0)\b)[^'\"\s,}]+",
             re.IGNORECASE,
         ),
@@ -61,15 +61,15 @@ SECRET_PATTERNS = [
             r"(?!(?:<REDACTED>|REDACTED|null|none|false|true|0)\b)[^'\"\s,}]+",
             re.IGNORECASE,
         ),
-        "medium",
+        "high",
         "credential-field",
     ),
 ]
 
 
 def scan_for_secrets(path_or_text: str | Path) -> SecretScanResult:
-    if isinstance(path_or_text, Path) or Path(str(path_or_text)).exists():
-        path = Path(path_or_text)
+    path = _path_if_existing(path_or_text)
+    if path is not None:
         if path.is_dir():
             return _scan_dir(path)
         if path.is_file():
@@ -209,7 +209,7 @@ def _match_has_safe_redacted_value(value: str) -> bool:
         raw_value = value.split("=", 1)[1]
     else:
         return False
-    cleaned = raw_value.strip().strip("\"' ,;#}]").lower()
+    cleaned = raw_value.strip().strip("\"' ,;#}]<>").lower()
     return cleaned in SAFE_REDACTED_VALUES
 
 
@@ -223,6 +223,19 @@ def _redacted_relative(relative: Path) -> Path:
 def _sensitive_key(key: str) -> bool:
     normalized = key.replace("-", "_").lower()
     return any(item.replace("-", "_").lower() in normalized for item in SENSITIVE_KEYS)
+
+
+def _path_if_existing(path_or_text: str | Path) -> Path | None:
+    if isinstance(path_or_text, Path):
+        return path_or_text if path_or_text.exists() else None
+    text = str(path_or_text)
+    if "\n" in text or "\r" in text or len(text) > 240:
+        return None
+    try:
+        path = Path(text)
+        return path if path.exists() else None
+    except OSError:
+        return None
 
 
 def safe_json_dumps(obj: Any) -> str:

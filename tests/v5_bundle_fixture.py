@@ -23,15 +23,35 @@ def make_v5_bundle_fixture(
         "raw/recent_runs/run_001/trades.csv": (
             "ts,symbol,side,qty\n2026-05-10T01:00:00Z,BTC-USDT,buy,1\n"
         ),
+        "raw/quant_lab/quant_lab_usage.jsonl": (
+            '{"ts": "2026-05-10T01:00:00Z", "endpoint": "/v1/risk/live-permission"}\n'
+        ),
+        "raw/quant_lab/quant_lab_requests.jsonl": (
+            '{"ts": "2026-05-10T01:01:00Z", "method": "GET", '
+            '"path": "/v1/costs/estimate", "status_code": 200}\n'
+        ),
         "raw/state/kill_switch.json": '{"enabled": false}',
         "raw/state/reconcile_status.json": '{"ok": true}',
         "raw/state/ledger_status.json": '{"ok": true}',
         "raw/state/auto_risk_eval.json": '{"level": "LOW"}',
-        "summaries/window_summary.json": '{"run_count_72h": 1, "trade_count_72h": 1}',
+        "summaries/window_summary.json": (
+            '{"run_count": 1, "recent_24h_decision_audit_count": 1, '
+            '"latest_24h_trade_count": 1, "last_72h_trade_count": 1, '
+            '"last_72h_roundtrip_count": 1, "open_position_count": 1, '
+            '"dust_residual_position_count": 0, "high_issue_count": 1, '
+            '"medium_issue_count": 0}'
+        ),
         "summaries/issues_to_fix.json": (
             '{"issues": [{"severity": "high", '
             '"type": "high_score_blocked_matured_without_label", '
             '"message": "needs labels"}]}'
+        ),
+        "summaries/quant_lab_compliance.csv": (
+            "check,status,violation_count\nrisk_permission,ok,0\n"
+        ),
+        "summaries/quant_lab_cost_usage.csv": "symbol,cost_source,count\nBTC-USDT,quant_lab,3\n",
+        "summaries/quant_lab_fallbacks.csv": (
+            "fallback_reason,count\nquant_lab_unavailable_local_fallback,0\n"
         ),
         "summaries/router_decisions.csv": "reason,count\nrisk_gate,2\n",
         "summaries/trades_roundtrips.csv": "symbol,pnl\nBTC-USDT,1.2\n",

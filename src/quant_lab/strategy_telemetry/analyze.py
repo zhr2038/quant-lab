@@ -54,6 +54,7 @@ def analyze_v5_telemetry(lake_root: Path, date: str | None = None) -> V5Telemetr
     targets = read_parquet_dataset(root / SILVER["high_score_target"])
     outcomes = read_parquet_dataset(root / SILVER["high_score_outcome"])
     skipped = read_parquet_dataset(root / SILVER["skipped"])
+    window_summary = _window_summary_payload(run_summary)
 
     latest_bundle_ts = _latest_time(manifest, "bundle_ts")
     latest_sha = _latest_value(manifest, "bundle_sha256", "bundle_ts")
@@ -73,8 +74,16 @@ def analyze_v5_telemetry(lake_root: Path, date: str | None = None) -> V5Telemetr
     if ledger_ok is False:
         critical.append("ledger_not_ok")
 
-    high_issue_count = _count_where(issues, "severity", "high")
-    medium_issue_count = _count_where(issues, "severity", "medium")
+    high_issue_count = _summary_int(
+        window_summary,
+        ["high_issue_count"],
+        fallback=_count_where(issues, "severity", "high"),
+    )
+    medium_issue_count = _summary_int(
+        window_summary,
+        ["medium_issue_count"],
+        fallback=_count_where(issues, "severity", "medium"),
+    )
     if high_issue_count > 0:
         warnings.append("high issues present")
     for message in _issue_messages(issues):
@@ -119,13 +128,46 @@ def analyze_v5_telemetry(lake_root: Path, date: str | None = None) -> V5Telemetr
         status=status,
         latest_bundle_ts=latest_bundle_ts,
         latest_bundle_sha256=latest_sha,
-        run_count_72h=_count_rows(run_summary),
-        decision_audit_count_24h=_count_rows(decisions),
-        trade_count_24h=_count_rows(trades),
-        trade_count_72h=_count_rows(trades),
-        roundtrip_count_72h=_count_rows(roundtrips),
-        open_position_count=_count_rows(positions),
-        dust_residual_position_count=_dust_count(positions),
+        run_count_72h=_summary_int(
+            window_summary,
+            ["run_count", "run_count_72h"],
+            fallback=_count_recent_rows(
+                run_summary,
+                analysis_date,
+                hours=72,
+                exclude_source_path="summaries/window_summary.json",
+            ),
+        ),
+        decision_audit_count_24h=_summary_int(
+            window_summary,
+            ["recent_24h_decision_audit_count", "decision_audit_count_24h"],
+            fallback=_count_recent_rows(decisions, analysis_date, hours=24),
+        ),
+        trade_count_24h=_summary_int(
+            window_summary,
+            ["latest_24h_trade_count", "trade_count_24h"],
+            fallback=_count_recent_rows(trades, analysis_date, hours=24),
+        ),
+        trade_count_72h=_summary_int(
+            window_summary,
+            ["last_72h_trade_count", "trade_count_72h"],
+            fallback=_count_recent_rows(trades, analysis_date, hours=72),
+        ),
+        roundtrip_count_72h=_summary_int(
+            window_summary,
+            ["last_72h_roundtrip_count", "roundtrip_count_72h"],
+            fallback=_count_recent_rows(roundtrips, analysis_date, hours=72),
+        ),
+        open_position_count=_summary_int(
+            window_summary,
+            ["open_position_count"],
+            fallback=_count_rows(positions),
+        ),
+        dust_residual_position_count=_summary_int(
+            window_summary,
+            ["dust_residual_position_count"],
+            fallback=_dust_count(positions),
+        ),
         kill_switch_enabled=kill_switch_enabled,
         reconcile_ok=reconcile_ok,
         ledger_ok=ledger_ok,
@@ -222,10 +264,17 @@ def _latest_state_text(df: pl.DataFrame, state_type: str, field: str) -> str | N
     row = _latest_state_row(df, state_type)
     if row is None:
         return None
-    if row.get(field):
-        return str(row[field])
-    value = _payload(row).get(field)
-    return str(value) if value is not None else None
+    fields = [field]
+    if field == "level":
+        fields = ["level", "current_level", "risk_level"]
+    payload = _payload(row)
+    for candidate in fields:
+        if row.get(candidate):
+            return str(row[candidate])
+        value = payload.get(candidate)
+        if value is not None and str(value):
+            return str(value)
+    return None
 
 
 def _latest_state_row(df: pl.DataFrame, state_type: str) -> dict[str, Any] | None:
@@ -250,8 +299,77 @@ def _payload(row: dict[str, Any]) -> dict[str, Any]:
     return payload if isinstance(payload, dict) else {}
 
 
+def _window_summary_payload(df: pl.DataFrame) -> dict[str, Any]:
+    if df.is_empty() or "raw_payload_json" not in df.columns:
+        return {}
+    candidates = df
+    if "source_path_inside_bundle" in df.columns:
+        candidates = df.filter(
+            pl.col("source_path_inside_bundle").cast(pl.Utf8).str.contains(
+                "summaries/window_summary.json",
+                literal=True,
+            )
+        )
+    if candidates.is_empty():
+        return {}
+    for time_column in ["bundle_ts", "ingest_ts"]:
+        if time_column in candidates.columns:
+            candidates = _normalize_time(candidates, time_column).sort(time_column)
+            break
+    return _payload(candidates.tail(1).to_dicts()[0])
+
+
 def _count_rows(df: pl.DataFrame) -> int:
     return 0 if df.is_empty() else df.height
+
+
+def _summary_int(payload: dict[str, Any], keys: list[str], *, fallback: int) -> int:
+    for key in keys:
+        value = payload.get(key)
+        if value is None or value == "":
+            continue
+        try:
+            return int(float(value))
+        except (TypeError, ValueError):
+            continue
+    return fallback
+
+
+def _count_recent_rows(
+    df: pl.DataFrame,
+    analysis_date: str,
+    *,
+    hours: int,
+    exclude_source_path: str | None = None,
+) -> int:
+    if df.is_empty():
+        return 0
+    filtered = df
+    if exclude_source_path and "source_path_inside_bundle" in filtered.columns:
+        filtered = filtered.filter(
+            ~pl.col("source_path_inside_bundle").cast(pl.Utf8).str.contains(
+                exclude_source_path,
+                literal=True,
+            )
+        )
+    if filtered.is_empty():
+        return 0
+    time_column = "bundle_ts" if "bundle_ts" in filtered.columns else "ingest_ts"
+    if time_column not in filtered.columns:
+        return filtered.height
+    normalized = _normalize_time(filtered, time_column)
+    window_end = _analysis_window_end(analysis_date)
+    window_start = window_end - timedelta(hours=hours)
+    return normalized.filter(
+        (pl.col(time_column) >= window_start) & (pl.col(time_column) < window_end)
+    ).height
+
+
+def _analysis_window_end(analysis_date: str) -> datetime:
+    try:
+        return datetime.fromisoformat(analysis_date).replace(tzinfo=UTC) + timedelta(days=1)
+    except ValueError:
+        return datetime.now(UTC)
 
 
 def _count_where(df: pl.DataFrame, column: str, value: str) -> int:

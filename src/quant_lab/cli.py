@@ -24,6 +24,7 @@ from quant_lab.ingest.okx_readonly_private import (
 )
 from quant_lab.ingest.okx_ws_public import collect_okx_public_ws, collect_okx_public_ws_universe
 from quant_lab.ingest.v5_reports import inspect_v5_reports, publish_v5_reports_to_lake
+from quant_lab.research.bootstrap_gold import bootstrap_gold_health
 from quant_lab.strategy_telemetry.analyze import analyze_v5_telemetry
 from quant_lab.strategy_telemetry.bundle import safe_extract_v5_bundle, validate_v5_bundle
 from quant_lab.strategy_telemetry.config import load_v5_telemetry_remote_config
@@ -314,6 +315,31 @@ def calibrate_costs(
     day: Annotated[str, typer.Option("--day", help="UTC day in YYYY-MM-DD format.")],
 ) -> None:
     result = calibrate_costs_for_day(lake_root=lake_root, day=day)
+    typer.echo(result.model_dump_json(indent=2))
+
+
+@app.command("bootstrap-gold-health")
+def bootstrap_gold_health_command(
+    lake_root: Annotated[
+        Path,
+        typer.Option(
+            "--lake-root",
+            file_okay=False,
+            dir_okay=True,
+            writable=True,
+            help="quant-lab lake root to fill conservative gold health datasets.",
+        ),
+    ],
+    strategy: Annotated[str, typer.Option("--strategy")] = "v5",
+    version: Annotated[str, typer.Option("--version")] = "bootstrap",
+    day: Annotated[str, typer.Option("--day", help="UTC day YYYY-MM-DD or auto.")] = "auto",
+) -> None:
+    result = bootstrap_gold_health(
+        lake_root=lake_root,
+        strategy=strategy,
+        version=version,
+        day=day,
+    )
     typer.echo(result.model_dump_json(indent=2))
 
 

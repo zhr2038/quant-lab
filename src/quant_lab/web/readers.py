@@ -58,6 +58,11 @@ OKX_WS_COLLECT_COMMAND = (
     "--flush-interval-seconds 10 --flush-max-messages 100"
 )
 EXPERT_PACK_MISSING_MESSAGE = "qlab export-daily 尚未实现或尚未运行。"
+BOOTSTRAP_GOLD_HEALTH_COMMAND = (
+    "qlab bootstrap-gold-health --lake-root {lake_root} "
+    "--strategy v5 --version bootstrap --day auto"
+)
+BOOTSTRAP_PLACEHOLDER_WARNING = "bootstrap conservative placeholder, not live-ready evidence"
 DISPLAY_LIMIT = 500
 
 
@@ -204,6 +209,9 @@ def lake_diagnostics(lake_root: str | Path) -> dict[str, Any]:
         dataset_row_counts[dataset_name] = row_count
         if not exists or row_count == 0:
             warnings.append(f"{dataset_name} 数据集缺失或为空：{path}")
+        elif _is_bootstrap_placeholder(df):
+            warning = BOOTSTRAP_PLACEHOLDER_WARNING
+            warnings.append(f"{dataset_name}: {warning}")
 
         dataset_rows.append(
             {
@@ -224,6 +232,19 @@ def lake_diagnostics(lake_root: str | Path) -> dict[str, Any]:
         )
 
         suggested_commands.append({"purpose": "backfill market_bar", "command": command})
+
+    gold_health_missing = any(
+        dataset_row_counts.get(dataset_name, 0) == 0
+        for dataset_name in [
+            "gold/cost_bucket_daily",
+            "gold/gate_decision",
+            "gold/risk_permission",
+        ]
+    )
+    if gold_health_missing:
+        command = BOOTSTRAP_GOLD_HEALTH_COMMAND.format(lake_root=root)
+        warnings.append(f"gold health bootstrap suggested: {command}")
+        suggested_commands.append({"purpose": "bootstrap gold health", "command": command})
 
     ws_health, ws_health_warning = _read_parquet_dataset_with_warning(
         root / DATASET_PATHS["okx_public_ws_health"],
@@ -610,6 +631,24 @@ def _dedupe_strings(values: list[str]) -> list[str]:
         seen.add(value)
         deduped.append(value)
     return deduped
+
+
+def _is_bootstrap_placeholder(df: pl.DataFrame) -> bool:
+    if df.is_empty():
+        return False
+    if "source" in df.columns:
+        source_values = {str(value) for value in df["source"].drop_nulls().to_list()}
+        if "bootstrap_gold_health" in source_values or source_values == {"global_default"}:
+            return True
+    if "gate_version" in df.columns:
+        gate_versions = {str(value) for value in df["gate_version"].drop_nulls().to_list()}
+        if any(version.startswith("bootstrap.") for version in gate_versions):
+            return True
+    if "fallback_level" in df.columns:
+        fallback_values = {str(value) for value in df["fallback_level"].drop_nulls().to_list()}
+        if "BOOTSTRAP_CONSERVATIVE" in fallback_values or fallback_values == {"GLOBAL_DEFAULT"}:
+            return True
+    return False
 
 
 def latest_market_bars(market: pl.DataFrame) -> pl.DataFrame:

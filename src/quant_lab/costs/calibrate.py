@@ -37,6 +37,8 @@ COST_BUCKET_DAILY_SCHEMA = {
     "total_cost_bps_p90": pl.Float64,
     "fallback_level": pl.Utf8,
     "source": pl.Utf8,
+    "cost_model_version": pl.Utf8,
+    "created_at": pl.Utf8,
 }
 
 

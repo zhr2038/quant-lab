@@ -1,5 +1,6 @@
 import logging
 from collections.abc import Iterable, Mapping
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
@@ -59,6 +60,8 @@ class CostBucketDaily(BaseModel):
     total_cost_bps_p90: float = Field(ge=0)
     fallback_level: str = Field(min_length=1)
     source: str = Field(min_length=1)
+    cost_model_version: str = Field(default="cost_bucket_daily.v0.1", min_length=1)
+    created_at: datetime = Field(default_factory=lambda: datetime.now(UTC))
 
 
 def _normalize_buckets(buckets: Iterable[CostBucket | Mapping[str, Any]]) -> list[CostBucket]:
@@ -231,6 +234,8 @@ def estimate_cost_from_cost_bucket_daily_rows(
         return _global_default_estimate(symbol, regime, notional_usdt, quantile)
 
     row, fallback_level = tiered[0]
+    if str(row.get("fallback_level") or "").upper() == "GLOBAL_DEFAULT":
+        fallback_level = "GLOBAL_DEFAULT"
     fee_bps = _float_value(row, f"fee_bps_{quantile}")
     slippage_bps = _float_value(row, f"slippage_bps_{quantile}")
     spread_bps = _float_value(row, f"spread_bps_{quantile}")

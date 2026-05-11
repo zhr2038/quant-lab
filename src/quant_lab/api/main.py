@@ -24,6 +24,7 @@ from quant_lab.contracts.models import (
 from quant_lab.costs.model import CostBucket, estimate_cost_bps, estimate_cost_from_lake
 from quant_lab.data.lake import read_market_bars, read_parquet_dataset
 from quant_lab.gates.defaults import evaluate_alpha_gate
+from quant_lab.research.bootstrap_gold import BOOTSTRAP_GATE_VERSION
 from quant_lab.risk.permissions import evaluate_live_permission
 
 
@@ -139,6 +140,32 @@ def create_app() -> FastAPI:
                 "is_critical": True,
                 "reasons": [*data_health.get("reasons", []), *telemetry_reasons],
             }
+        if _has_bootstrap_gate(gate_decisions) and _data_health_is_critical(data_health):
+            data_reasons = list(data_health.get("reasons", []))
+            data_health = {
+                **data_health,
+                "status": "warning",
+                "is_critical": False,
+            }
+            permission = evaluate_live_permission(
+                strategy=strategy,
+                version=version,
+                gate_decisions=gate_decisions,
+                cost_health=cost_health,
+                data_health=data_health,
+            )
+            return permission.model_copy(
+                update={
+                    "reasons": _dedupe(
+                        [
+                            *permission.reasons,
+                            "required_alpha_gate_quarantine",
+                            *data_reasons,
+                        ]
+                    )
+                }
+            )
+
         return evaluate_live_permission(
             strategy=strategy,
             version=version,
@@ -168,6 +195,8 @@ def _load_gate_decisions(lake_root: Path, strategy: str) -> list[GateDecision]:
     for row in rows:
         cleaned = dict(row)
         cleaned.pop("strategy", None)
+        cleaned.pop("source", None)
+        cleaned.pop("fallback_level", None)
         if isinstance(cleaned.get("metrics"), str):
             cleaned["metrics"] = _json_dict(cleaned["metrics"])
         if isinstance(cleaned.get("reasons"), str):
@@ -193,6 +222,14 @@ def _lake_cost_health(lake_root: Path) -> dict[str, Any]:
         "status": status,
         "cost_model_version": f"cost_bucket_daily:{latest_day or 'unknown'}",
     }
+    if _all_cost_rows_global_default(df):
+        health.update(
+            {
+                "status": "missing",
+                "missing": True,
+                "cost_model_version": "bootstrap.cost.v1",
+            }
+        )
     if latest_day and _is_day_stale(latest_day, max_age_days=3):
         health.update({"status": "stale", "stale": True})
     return health
@@ -246,6 +283,45 @@ def _strategy_telemetry_reasons(lake_root: Path, strategy: str) -> list[str]:
         if str(latest.get("status") or "").upper() == "CRITICAL":
             reasons.append("v5_strategy_health_critical")
     return reasons
+
+
+def _has_bootstrap_gate(gate_decisions: list[GateDecision]) -> bool:
+    return any(
+        decision.gate_version == BOOTSTRAP_GATE_VERSION
+        and decision.status.value == "QUARANTINE"
+        for decision in gate_decisions
+    )
+
+
+def _data_health_is_critical(data_health: dict[str, Any]) -> bool:
+    return bool(data_health.get("is_critical")) or str(data_health.get("status")) == "critical"
+
+
+def _all_cost_rows_global_default(df: pl.DataFrame) -> bool:
+    if df.is_empty():
+        return False
+    expressions: list[pl.Expr] = []
+    if "source" in df.columns:
+        expressions.append(pl.col("source") == "global_default")
+    if "fallback_level" in df.columns:
+        expressions.append(pl.col("fallback_level") == "GLOBAL_DEFAULT")
+    if not expressions:
+        return False
+    condition = expressions[0]
+    for expression in expressions[1:]:
+        condition = condition | expression
+    return df.filter(condition).height == df.height
+
+
+def _dedupe(values: list[str]) -> list[str]:
+    seen: set[str] = set()
+    deduped: list[str] = []
+    for value in values:
+        if value in seen:
+            continue
+        seen.add(value)
+        deduped.append(value)
+    return deduped
 
 
 def _latest_row(df: pl.DataFrame, sort_column: str) -> dict[str, Any]:

@@ -9,6 +9,7 @@ import typer
 from quant_lab.contracts.models import AlphaEvidence
 from quant_lab.costs.calibrate import calibrate_costs_for_day
 from quant_lab.export.daily import export_daily_pack, validate_expert_pack
+from quant_lab.features.publish import publish_core_features
 from quant_lab.gates.defaults import evaluate_alpha_gate
 from quant_lab.ingest.okx_public import (
     MARKET_BAR_DATASET,
@@ -339,6 +340,29 @@ def bootstrap_gold_health_command(
         strategy=strategy,
         version=version,
         day=day,
+    )
+    typer.echo(result.model_dump_json(indent=2))
+
+
+@app.command("publish-features")
+def publish_features(
+    lake_root: Annotated[
+        Path,
+        typer.Option(
+            "--lake-root",
+            file_okay=False,
+            dir_okay=True,
+            writable=True,
+            help="quant-lab lake root containing silver market_bar.",
+        ),
+    ],
+    feature_set: Annotated[str, typer.Option("--feature-set")] = "core",
+    timeframe: Annotated[str, typer.Option("--timeframe")] = "1H",
+) -> None:
+    result = publish_core_features(
+        lake_root=lake_root,
+        feature_set=feature_set,
+        timeframe=timeframe,
     )
     typer.echo(result.model_dump_json(indent=2))
 

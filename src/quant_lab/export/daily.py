@@ -827,11 +827,10 @@ def _question_lines(snapshot: _DatasetSnapshot, data_quality: dict[str, Any]) ->
         questions.append("是否启用 OKX read-only fills/bills？")
     if snapshot.row_counts.get("cost_bucket_daily", 0) == 0:
         questions.append("为什么 cost_bucket_daily 为空？")
-    if (
-        snapshot.row_counts.get("gate_decision", 0) == 0
-        or snapshot.row_counts.get("alpha_evidence", 0) == 0
-    ):
+    if snapshot.row_counts.get("gate_decision", 0) == 0:
         questions.append("为什么 gate_decision / alpha_evidence 为空？")
+    elif snapshot.row_counts.get("alpha_evidence", 0) == 0:
+        questions.append("alpha_evidence 研究证据尚未生成：何时运行 walk-forward/evidence 任务？")
     if snapshot.row_counts.get("risk_permission", 0) == 0:
         questions.append("为什么 risk_permission 为空？")
     if snapshot.row_counts.get("strategy_health_daily", 0) == 0:

@@ -499,6 +499,8 @@ def alpha_gate_summary(lake_root: str | Path) -> dict[str, Any]:
     warnings = [warning for warning in [gates_warning, evidence_warning] if warning]
     if gates.is_empty():
         warnings.append("gate_decision 数据集缺失或为空")
+    if evidence.is_empty():
+        warnings.append("alpha_evidence research evidence not generated yet")
     counts: dict[str, int] = {}
     if "status" in gates.columns:
         counts = {
@@ -847,12 +849,21 @@ def _stale_dataset_rows(lake_root: str | Path) -> pl.DataFrame:
                 {
                     "dataset": state.name,
                     "rows": state.rows,
-                    "status": "缺失",
+                    "status": _empty_dataset_status(state.name),
                     "path": str(state.path),
                 }
             )
     return pl.DataFrame(rows)
 
+
+def _empty_dataset_status(dataset_name: str) -> str:
+    if dataset_name == "alpha_evidence":
+        return "research evidence not generated yet"
+    if dataset_name == "feature_value":
+        return "features not published yet"
+    if dataset_name == "decision_audit":
+        return "legacy optional"
+    return "missing"
 
 def _normalize_market_frame(df: pl.DataFrame) -> pl.DataFrame:
     normalized = _normalize_optional_time(df, "ts")

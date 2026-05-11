@@ -4,6 +4,8 @@ import polars as pl
 import pytest
 
 from quant_lab.contracts.models import FeatureValue
+from quant_lab.data.lake import read_parquet_dataset, write_market_bars
+from quant_lab.features.publish import publish_core_features
 from quant_lab.features.registry import (
     FeatureRegistry,
     FeatureTimestampLeakageError,
@@ -12,6 +14,7 @@ from quant_lab.features.registry import (
     rolling_volatility_spec,
     validate_feature_timestamps,
 )
+from quant_lab.web import readers
 
 CREATED_AT = datetime(2026, 5, 10, tzinfo=UTC)
 
@@ -142,3 +145,66 @@ def test_feature_created_before_bar_timestamp_fails():
             code_version="features-code-v1",
             created_at=datetime(2026, 4, 30, tzinfo=UTC),
         )
+
+
+def test_publish_core_features_writes_feature_value_dataset(tmp_path):
+    lake = tmp_path / "lake"
+    start = datetime(2026, 5, 10, tzinfo=UTC)
+    write_market_bars(
+        lake,
+        [
+            {
+                "venue": "okx",
+                "symbol": "BTC-USDT",
+                "market_type": "SPOT",
+                "timeframe": "1H",
+                "ts": start + timedelta(hours=index),
+                "open": 100.0 + index,
+                "high": 101.0 + index,
+                "low": 99.0 + index,
+                "close": 100.0 + index,
+                "volume": 10.0,
+                "quote_volume": 1000.0,
+                "source": "test",
+                "ingest_ts": start + timedelta(hours=index, minutes=1),
+            }
+            for index in range(80)
+        ],
+    )
+
+    result = publish_core_features(lake, feature_set="core", timeframe="1H")
+    second = publish_core_features(lake, feature_set="core", timeframe="1H")
+    features = read_parquet_dataset(lake / "gold" / "feature_value")
+
+    assert result.market_bar_rows == 80
+    assert result.published_rows == 400
+    assert result.feature_names == [
+        "close_return_1",
+        "close_return_6",
+        "close_return_24",
+        "rolling_volatility_24",
+        "rolling_volatility_72",
+    ]
+    assert second.feature_value_rows == result.feature_value_rows
+    assert features.height == 400
+    assert set(features["feature_name"].unique().to_list()) == set(result.feature_names)
+    assert features.filter(pl.col("feature_name") == "close_return_1")["value"][1] == pytest.approx(
+        101.0 / 100.0 - 1.0
+    )
+
+
+def test_publish_core_features_empty_market_bar_is_noop(tmp_path):
+    result = publish_core_features(tmp_path / "lake", feature_set="core", timeframe="1H")
+
+    assert result.market_bar_rows == 0
+    assert result.published_rows == 0
+    assert result.feature_value_rows == 0
+    assert result.warnings == ["market_bar missing or empty for feature publishing"]
+
+
+def test_data_health_labels_feature_and_alpha_gaps_as_not_yet_generated(tmp_path):
+    status_rows = readers.data_health_summary(tmp_path / "lake")["stale_datasets"].to_dicts()
+    status_by_dataset = {row["dataset"]: row["status"] for row in status_rows}
+
+    assert status_by_dataset["feature_value"] == "features not published yet"
+    assert status_by_dataset["alpha_evidence"] == "research evidence not generated yet"

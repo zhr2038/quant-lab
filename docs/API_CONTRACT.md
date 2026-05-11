@@ -48,6 +48,7 @@ Example response:
     "feature_coverage_daily",
     "feature_anomaly_daily",
     "cost_bucket_daily",
+    "cost_health_daily",
     "alpha_evidence",
     "gate_decision",
     "risk_permission"

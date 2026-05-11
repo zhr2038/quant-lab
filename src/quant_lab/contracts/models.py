@@ -169,6 +169,27 @@ class AccountBill(ContractModel):
         return require_utc(value)
 
 
+class OrderEvent(ContractModel):
+    venue: str = "okx"
+    inst_type: str = Field(min_length=1)
+    inst_id: str = Field(min_length=1)
+    order_id: str = Field(min_length=1)
+    side: str = Field(min_length=1)
+    state: str = Field(min_length=1)
+    ts: datetime
+    source: str = Field(default="okx_readonly_private", min_length=1)
+    order_type: str | None = None
+    avg_price: float | None = Field(default=None, ge=0)
+    accumulated_fill_size: float | None = Field(default=None, ge=0)
+    fee: float | None = None
+    reference_price: float | None = Field(default=None, ge=0)
+
+    @field_validator("ts")
+    @classmethod
+    def ts_is_utc(cls, value: datetime) -> datetime:
+        return require_utc(value)
+
+
 class AlphaEvidence(ContractModel):
     alpha_id: str = Field(min_length=1)
     version: str = Field(min_length=1)

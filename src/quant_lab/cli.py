@@ -9,6 +9,7 @@ import typer
 
 from quant_lab.contracts.models import AlphaEvidence, AlphaResearchSpec
 from quant_lab.costs.calibrate import calibrate_costs_for_day
+from quant_lab.costs.health import read_cost_health_daily
 from quant_lab.export.daily import export_daily_pack, validate_expert_pack
 from quant_lab.features.publish import feature_health
 from quant_lab.features.publish import publish_features as publish_feature_values
@@ -24,6 +25,7 @@ from quant_lab.ingest.okx_readonly_private import (
     OKXReadOnlyConfig,
     publish_okx_bills_to_lake,
     publish_okx_fills_to_lake,
+    publish_okx_orders_to_lake,
 )
 from quant_lab.ingest.okx_ws_public import collect_okx_public_ws, collect_okx_public_ws_universe
 from quant_lab.ingest.v5_reports import inspect_v5_reports, publish_v5_reports_to_lake
@@ -309,6 +311,75 @@ def okx_fetch_bills(
     )
 
 
+@app.command("okx-backfill-readonly")
+def okx_backfill_readonly(
+    inst_type: Annotated[str, typer.Option("--inst-type", help="OKX instrument type.")],
+    lake_root: Annotated[
+        Path,
+        typer.Option(
+            "--lake-root",
+            file_okay=False,
+            dir_okay=True,
+            writable=True,
+            help="quant-lab lake root to publish read-only private datasets into.",
+        ),
+    ],
+    inst_id: Annotated[str | None, typer.Option("--inst-id")] = None,
+    ccy: Annotated[str | None, typer.Option("--ccy")] = None,
+    begin: Annotated[str | None, typer.Option("--begin")] = None,
+    end: Annotated[str | None, typer.Option("--end")] = None,
+    max_pages: Annotated[int, typer.Option("--max-pages", min=1)] = 20,
+    limit: Annotated[int, typer.Option("--limit", min=1, max=100)] = 100,
+) -> None:
+    client = OKXReadOnlyClient(
+        OKXReadOnlyConfig.from_env().model_copy(update={"max_pages": max_pages})
+    )
+    fills = client.backfill_fills_history(
+        inst_type=inst_type,
+        inst_id=inst_id,
+        begin=begin,
+        end=end,
+        limit=limit,
+        max_pages=max_pages,
+    )
+    bills = client.backfill_account_bills(
+        ccy=ccy,
+        begin=begin,
+        end=end,
+        limit=limit,
+        max_pages=max_pages,
+    )
+    orders = client.backfill_orders_history(
+        inst_type=inst_type,
+        inst_id=inst_id,
+        begin=begin,
+        end=end,
+        limit=limit,
+        max_pages=max_pages,
+    )
+    fill_result = publish_okx_fills_to_lake(fills, lake_root)
+    bill_result = publish_okx_bills_to_lake(bills, lake_root)
+    order_result = publish_okx_orders_to_lake(orders, lake_root)
+    typer.echo(
+        json.dumps(
+            {
+                "source": "okx_readonly_private",
+                "inst_type": inst_type,
+                "inst_id": inst_id,
+                "ccy": ccy,
+                "fetched_fills": len(fills),
+                "fetched_bills": len(bills),
+                "fetched_orders": len(orders),
+                **fill_result,
+                **bill_result,
+                **order_result,
+            },
+            indent=2,
+            sort_keys=True,
+        )
+    )
+
+
 @app.command("calibrate-costs")
 def calibrate_costs(
     lake_root: Annotated[
@@ -322,9 +393,30 @@ def calibrate_costs(
         ),
     ],
     day: Annotated[str, typer.Option("--day", help="UTC day in YYYY-MM-DD format.")],
+    min_sample_count: Annotated[int, typer.Option("--min-sample-count", min=1)] = 30,
 ) -> None:
-    result = calibrate_costs_for_day(lake_root=lake_root, day=day)
+    result = calibrate_costs_for_day(
+        lake_root=lake_root,
+        day=day,
+        min_sample_count=min_sample_count,
+    )
     typer.echo(result.model_dump_json(indent=2))
+
+
+@app.command("cost-health")
+def cost_health_command(
+    lake_root: Annotated[
+        Path,
+        typer.Option(
+            "--lake-root",
+            file_okay=False,
+            dir_okay=True,
+            help="quant-lab lake root containing gold cost_health_daily.",
+        ),
+    ],
+    day: Annotated[str | None, typer.Option("--day")] = None,
+) -> None:
+    typer.echo(json.dumps(read_cost_health_daily(lake_root, day=day), indent=2, sort_keys=True))
 
 
 @app.command("bootstrap-gold-health")

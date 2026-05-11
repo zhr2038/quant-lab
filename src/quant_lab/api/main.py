@@ -21,6 +21,7 @@ from quant_lab.contracts.models import (
     MarketBar,
     RiskPermission,
 )
+from quant_lab.costs.health import read_cost_health_daily
 from quant_lab.costs.model import CostBucket, estimate_cost_bps, estimate_cost_from_lake
 from quant_lab.data.lake import read_market_bars, read_parquet_dataset
 from quant_lab.gates.defaults import evaluate_alpha_gate
@@ -77,6 +78,7 @@ KNOWN_DATASETS = [
     "feature_coverage_daily",
     "feature_anomaly_daily",
     "cost_bucket_daily",
+    "cost_health_daily",
     "alpha_evidence",
     "gate_decision",
     "risk_permission",
@@ -422,6 +424,16 @@ def _load_published_risk_permission(
 
 
 def _lake_cost_health(lake_root: Path) -> dict[str, Any]:
+    health = read_cost_health_daily(lake_root)
+    if health.get("rows"):
+        status = str(health.get("status") or "").lower()
+        return {
+            "status": status,
+            "missing": status == "critical" and int(health.get("actual_rows") or 0) == 0,
+            "high_fallback": float(health.get("fallback_ratio") or 0.0) > 0.5,
+            "fallback_ratio": float(health.get("fallback_ratio") or 0.0),
+            "cost_model_version": str(health.get("cost_model_version") or "cost_health_daily"),
+        }
     df = read_parquet_dataset(lake_root / "gold" / "cost_bucket_daily")
     if df.is_empty():
         return {

@@ -14,13 +14,14 @@ def test_actual_fills_and_bills_generate_actual_cost_bucket(tmp_path):
     _write_bills(lake_root)
     _write_orderbooks(lake_root)
 
-    result = calibrate_costs_for_day(lake_root, "2026-05-10")
+    result = calibrate_costs_for_day(lake_root, "2026-05-10", min_sample_count=1)
 
-    assert result.rows_written == 1
+    assert result.rows_written == 2
+    assert result.health_rows_written == 1
     assert result.sources == ["actual_okx_fills_and_bills"]
     rows = read_parquet_dataset(lake_root / "gold" / "cost_bucket_daily").to_dicts()
-    assert len(rows) == 1
-    row = rows[0]
+    assert len(rows) == 2
+    row = [item for item in rows if item["notional_bucket"] == "0-1k"][0]
     assert row["day"] == "2026-05-10"
     assert row["symbol"] == "BTC-USDT"
     assert row["regime"] == "realized"
@@ -33,6 +34,8 @@ def test_actual_fills_and_bills_generate_actual_cost_bucket(tmp_path):
     assert row["total_cost_bps_p50"] == 205.0
     assert row["fallback_level"] == "SLIPPAGE_UNKNOWN;SPREAD_PROXY"
     assert row["source"] == "actual_okx_fills_and_bills"
+    health = read_parquet_dataset(lake_root / "gold" / "cost_health_daily").to_dicts()[0]
+    assert health["actual_rows"] == 2
 
 
 def test_missing_bills_fallback_is_explicit(tmp_path):
@@ -47,6 +50,19 @@ def test_missing_bills_fallback_is_explicit(tmp_path):
     assert "BILLS_MISSING" in row["fallback_level"]
     assert "SLIPPAGE_UNKNOWN" in row["fallback_level"]
     assert row["fee_bps_p50"] == 5.0
+
+
+def test_sample_too_small_is_explicit_and_not_fully_actual(tmp_path):
+    lake_root = tmp_path / "lake"
+    _write_fills(lake_root)
+    _write_bills(lake_root)
+    _write_orderbooks(lake_root)
+
+    calibrate_costs_for_day(lake_root, "2026-05-10", min_sample_count=30)
+
+    row = read_parquet_dataset(lake_root / "gold" / "cost_bucket_daily").to_dicts()[0]
+    assert row["source"] == "actual_okx_fills_fee_missing"
+    assert "SAMPLE_TOO_SMALL" in row["fallback_level"]
 
 
 def test_without_fills_uses_public_spread_proxy_only(tmp_path):
@@ -84,7 +100,7 @@ def test_calibrated_output_can_feed_cost_estimate(tmp_path):
     _write_fills(lake_root)
     _write_bills(lake_root)
     _write_orderbooks(lake_root)
-    calibrate_costs_for_day(lake_root, "2026-05-10")
+    calibrate_costs_for_day(lake_root, "2026-05-10", min_sample_count=1)
 
     rows = read_parquet_dataset(lake_root / "gold" / "cost_bucket_daily").to_dicts()
     buckets = cost_bucket_daily_to_cost_buckets(rows)

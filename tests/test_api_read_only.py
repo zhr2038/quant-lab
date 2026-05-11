@@ -38,6 +38,7 @@ def test_read_only_example_endpoints_and_catalog():
         "feature_coverage_daily",
         "feature_anomaly_daily",
         "cost_bucket_daily",
+        "cost_health_daily",
         "alpha_evidence",
         "gate_decision",
         "risk_permission",

@@ -17,6 +17,7 @@ DATASET_PATHS = {
     "feature_coverage_daily": Path("gold") / "feature_coverage_daily",
     "feature_anomaly_daily": Path("gold") / "feature_anomaly_daily",
     "cost_bucket_daily": Path("gold") / "cost_bucket_daily",
+    "cost_health_daily": Path("gold") / "cost_health_daily",
     "alpha_evidence": Path("gold") / "alpha_evidence",
     "gate_decision": Path("gold") / "gate_decision",
     "risk_permission": Path("gold") / "risk_permission",
@@ -44,6 +45,7 @@ DATASET_TIMESTAMP_COLUMNS: dict[str, tuple[str, ...]] = {
     "trade_print": ("ts", "ingest_ts"),
     "orderbook_snapshot": ("ts", "ingest_ts"),
     "cost_bucket_daily": ("created_at", "day"),
+    "cost_health_daily": ("created_at", "day"),
     "gate_decision": ("created_at",),
     "risk_permission": ("created_at",),
     "strategy_health_daily": ("latest_bundle_ts", "date"),
@@ -68,6 +70,7 @@ DATASET_TIMESTAMP_COLUMNS: dict[str, tuple[str, ...]] = {
 CORE_DIAGNOSTIC_DATASETS = {
     "silver/market_bar": Path("silver") / "market_bar",
     "gold/cost_bucket_daily": Path("gold") / "cost_bucket_daily",
+    "gold/cost_health_daily": Path("gold") / "cost_health_daily",
     "gold/gate_decision": Path("gold") / "gate_decision",
     "gold/risk_permission": Path("gold") / "risk_permission",
     "gold/strategy_health_daily": Path("gold") / "strategy_health_daily",
@@ -560,10 +563,15 @@ def market_regime_summary(lake_root: str | Path) -> dict[str, Any]:
 
 def cost_model_summary(lake_root: str | Path) -> dict[str, Any]:
     costs, costs_warning = read_dataset_with_warning(lake_root, "cost_bucket_daily")
-    warnings = [costs_warning] if costs_warning else []
+    health, health_warning = read_dataset_with_warning(lake_root, "cost_health_daily")
+    warnings = [warning for warning in [costs_warning, health_warning] if warning]
     if costs.is_empty():
         return {
             "costs": pl.DataFrame(),
+            "cost_health": redact_frame(health).head(DISPLAY_LIMIT),
+            "actual_rows": 0,
+            "proxy_rows": 0,
+            "global_default_rows": 0,
             "fallback_ratio": None,
             "fallback_ratio_status": "N/A",
             "warnings": [*warnings, "cost_bucket_daily 数据集缺失或为空"],
@@ -576,8 +584,15 @@ def cost_model_summary(lake_root: str | Path) -> dict[str, Any]:
         ).height
         fallback_ratio = fallback_rows / costs.height
 
+    latest_health = health.sort("day").tail(1).to_dicts()[0] if not health.is_empty() else {}
     return {
         "costs": redact_frame(costs).head(DISPLAY_LIMIT),
+        "cost_health": redact_frame(health).head(DISPLAY_LIMIT),
+        "actual_rows": int(latest_health.get("actual_rows") or 0),
+        "proxy_rows": int(latest_health.get("proxy_rows") or 0),
+        "global_default_rows": int(latest_health.get("global_default_rows") or 0),
+        "symbols_with_actual_cost": latest_health.get("symbols_with_actual_cost"),
+        "symbols_with_proxy_only": latest_health.get("symbols_with_proxy_only"),
         "fallback_ratio": fallback_ratio,
         "fallback_ratio_status": "OK" if fallback_ratio <= 0.25 else "WARNING",
         "warnings": warnings,

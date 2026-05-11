@@ -14,7 +14,7 @@ import httpx
 import polars as pl
 from pydantic import BaseModel, ConfigDict, Field, SecretStr
 
-from quant_lab.contracts.models import AccountBill, FillEvent
+from quant_lab.contracts.models import AccountBill, FillEvent, OrderEvent
 from quant_lab.data.lake import read_parquet_dataset, write_parquet_dataset
 
 OKX_READONLY_PRIVATE_SOURCE = "okx_readonly_private"
@@ -43,6 +43,8 @@ BRONZE_FILLS_DATASET = Path("bronze") / "okx_private_readonly" / "fills_history"
 BRONZE_BILLS_DATASET = Path("bronze") / "okx_private_readonly" / "bills"
 SILVER_FILL_EVENT_DATASET = Path("silver") / "fill_event"
 SILVER_ACCOUNT_BILL_DATASET = Path("silver") / "account_bill"
+BRONZE_ORDERS_DATASET = Path("bronze") / "okx_private_readonly" / "orders_history"
+SILVER_ORDER_EVENT_DATASET = Path("silver") / "order_event"
 
 BRONZE_PRIVATE_SCHEMA = {
     "endpoint": pl.Utf8,
@@ -78,6 +80,22 @@ ACCOUNT_BILL_SCHEMA = {
     "source": pl.Utf8,
 }
 
+ORDER_EVENT_SCHEMA = {
+    "venue": pl.Utf8,
+    "inst_type": pl.Utf8,
+    "inst_id": pl.Utf8,
+    "order_id": pl.Utf8,
+    "side": pl.Utf8,
+    "order_type": pl.Utf8,
+    "state": pl.Utf8,
+    "avg_price": pl.Float64,
+    "accumulated_fill_size": pl.Float64,
+    "fee": pl.Float64,
+    "reference_price": pl.Float64,
+    "ts": pl.Utf8,
+    "source": pl.Utf8,
+}
+
 
 class OKXReadOnlyConfig(BaseModel):
     model_config = ConfigDict(extra="forbid", frozen=True)
@@ -88,6 +106,8 @@ class OKXReadOnlyConfig(BaseModel):
     passphrase: SecretStr
     timeout_seconds: float = Field(default=10.0, gt=0)
     max_retries: int = Field(default=3, ge=0)
+    rate_limit_sleep_seconds: float = Field(default=0.2, ge=0)
+    max_pages: int = Field(default=20, ge=1)
 
     @classmethod
     def from_env(cls) -> "OKXReadOnlyConfig":
@@ -165,6 +185,29 @@ class OKXReadOnlyClient:
             ),
         )
 
+    def backfill_fills_history(
+        self,
+        inst_type: str,
+        inst_id: str | None = None,
+        begin: str | None = None,
+        end: str | None = None,
+        limit: int = 100,
+        max_pages: int | None = None,
+    ) -> list[dict[str, Any]]:
+        return self._paginate_get(
+            FILLS_HISTORY_ENDPOINT,
+            _drop_none(
+                {
+                    "instType": inst_type,
+                    "instId": inst_id,
+                    "begin": begin,
+                    "end": end,
+                    "limit": str(limit),
+                }
+            ),
+            max_pages=max_pages,
+        )
+
     def get_orders_history(
         self,
         inst_type: str,
@@ -184,6 +227,29 @@ class OKXReadOnlyClient:
                     "limit": str(limit),
                 }
             ),
+        )
+
+    def backfill_orders_history(
+        self,
+        inst_type: str,
+        inst_id: str | None = None,
+        begin: str | None = None,
+        end: str | None = None,
+        limit: int = 100,
+        max_pages: int | None = None,
+    ) -> list[dict[str, Any]]:
+        return self._paginate_get(
+            ORDERS_HISTORY_ENDPOINT,
+            _drop_none(
+                {
+                    "instType": inst_type,
+                    "instId": inst_id,
+                    "begin": begin,
+                    "end": end,
+                    "limit": str(limit),
+                }
+            ),
+            max_pages=max_pages,
         )
 
     def get_orders_history_archive(
@@ -226,6 +292,27 @@ class OKXReadOnlyClient:
             ),
         )
 
+    def backfill_account_bills(
+        self,
+        ccy: str | None = None,
+        begin: str | None = None,
+        end: str | None = None,
+        limit: int = 100,
+        max_pages: int | None = None,
+    ) -> list[dict[str, Any]]:
+        return self._paginate_get(
+            ACCOUNT_BILLS_ENDPOINT,
+            _drop_none(
+                {
+                    "ccy": ccy,
+                    "begin": begin,
+                    "end": end,
+                    "limit": str(limit),
+                }
+            ),
+            max_pages=max_pages,
+        )
+
     def get_account_bills_archive(
         self,
         ccy: str | None = None,
@@ -261,6 +348,31 @@ class OKXReadOnlyClient:
             raise OKXReadOnlyAPIError(f"OKX read-only response data is not a list for {endpoint}")
         return data
 
+    def _paginate_get(
+        self,
+        endpoint: str,
+        params: Mapping[str, str],
+        *,
+        max_pages: int | None = None,
+    ) -> list[dict[str, Any]]:
+        pages = max_pages or self.config.max_pages
+        cursor_params = dict(params)
+        rows: list[dict[str, Any]] = []
+        seen_cursors: set[str] = set()
+        for page_index in range(pages):
+            page = self._private_get(endpoint, cursor_params)
+            if not page:
+                break
+            rows.extend(page)
+            cursor = _pagination_cursor(page[-1])
+            if cursor is None or cursor in seen_cursors:
+                break
+            seen_cursors.add(cursor)
+            cursor_params["before"] = cursor
+            if page_index + 1 < pages and self.config.rate_limit_sleep_seconds:
+                time.sleep(self.config.rate_limit_sleep_seconds)
+        return rows
+
     def _request_private(
         self,
         method: str,
@@ -289,7 +401,7 @@ class OKXReadOnlyClient:
                     headers=headers,
                 )
                 if response.status_code in {429, 500, 502, 503, 504} and attempt + 1 < attempts:
-                    time.sleep(0)
+                    time.sleep(self.config.rate_limit_sleep_seconds)
                     continue
                 response.raise_for_status()
                 payload = response.json()
@@ -304,13 +416,13 @@ class OKXReadOnlyClient:
             except httpx.TimeoutException as exc:
                 last_error = exc
                 if attempt + 1 < attempts:
-                    time.sleep(0)
+                    time.sleep(self.config.rate_limit_sleep_seconds)
                     continue
                 raise OKXReadOnlyTimeout(f"OKX read-only request timed out for {endpoint}") from exc
             except httpx.HTTPError as exc:
                 last_error = exc
                 if attempt + 1 < attempts:
-                    time.sleep(0)
+                    time.sleep(self.config.rate_limit_sleep_seconds)
                     continue
                 raise OKXReadOnlyError(
                     f"OKX read-only request failed for {endpoint}: {self._redact(exc)}"
@@ -383,6 +495,29 @@ def normalize_okx_bills(raw_bills: Sequence[Mapping[str, Any]]) -> list[AccountB
     return records
 
 
+def normalize_okx_orders(raw_orders: Sequence[Mapping[str, Any]]) -> list[OrderEvent]:
+    records: list[OrderEvent] = []
+    for item in raw_orders:
+        records.append(
+            OrderEvent(
+                inst_type=str(item["instType"]),
+                inst_id=str(item["instId"]),
+                order_id=str(item["ordId"]),
+                side=str(item["side"]),
+                order_type=_optional_string(item.get("ordType")),
+                state=str(item["state"]),
+                avg_price=_optional_float(item.get("avgPx")),
+                accumulated_fill_size=_optional_float(item.get("accFillSz")),
+                fee=_optional_float(item.get("fee")),
+                reference_price=_optional_float(
+                    item.get("referencePx") or item.get("refPx") or item.get("decisionPx")
+                ),
+                ts=_timestamp_ms_to_utc(item.get("uTime") or item.get("cTime") or item["ts"]),
+            )
+        )
+    return records
+
+
 def publish_okx_fills_to_lake(
     raw_fills: Sequence[Mapping[str, Any]],
     lake_root: str | Path,
@@ -397,7 +532,7 @@ def publish_okx_fills_to_lake(
     silver_rows = _upsert_frame(
         root / SILVER_FILL_EVENT_DATASET,
         _fill_event_frame(fill_events),
-        key_columns=["inst_id", "trade_id", "order_id", "ts"],
+        key_columns=["venue", "inst_id", "trade_id", "order_id", "ts"],
     )
     return {"bronze_fills_rows": bronze_rows, "fill_event_rows": silver_rows}
 
@@ -416,9 +551,28 @@ def publish_okx_bills_to_lake(
     silver_rows = _upsert_frame(
         root / SILVER_ACCOUNT_BILL_DATASET,
         _account_bill_frame(account_bills),
-        key_columns=["bill_id", "ccy", "ts"],
+        key_columns=["venue", "bill_id", "ccy", "ts"],
     )
     return {"bronze_bills_rows": bronze_rows, "account_bill_rows": silver_rows}
+
+
+def publish_okx_orders_to_lake(
+    raw_orders: Sequence[Mapping[str, Any]],
+    lake_root: str | Path,
+) -> dict[str, int]:
+    root = Path(lake_root)
+    order_events = normalize_okx_orders(raw_orders)
+    bronze_rows = _upsert_frame(
+        root / BRONZE_ORDERS_DATASET,
+        _bronze_private_frame(ORDERS_HISTORY_ENDPOINT, raw_orders),
+        key_columns=["endpoint", "raw_json"],
+    )
+    silver_rows = _upsert_frame(
+        root / SILVER_ORDER_EVENT_DATASET,
+        _order_event_frame(order_events),
+        key_columns=["venue", "inst_id", "order_id", "ts"],
+    )
+    return {"bronze_orders_rows": bronze_rows, "order_event_rows": silver_rows}
 
 
 def _sign_get_request(timestamp: str, request_path: str, secret_key: SecretStr) -> str:
@@ -488,6 +642,11 @@ def _account_bill_frame(records: Sequence[AccountBill]) -> pl.DataFrame:
     return pl.DataFrame(rows, schema=ACCOUNT_BILL_SCHEMA, orient="row")
 
 
+def _order_event_frame(records: Sequence[OrderEvent]) -> pl.DataFrame:
+    rows = [record.model_dump(mode="json") for record in records]
+    return pl.DataFrame(rows, schema=ORDER_EVENT_SCHEMA, orient="row")
+
+
 def _sanitize_private_payload(item: Mapping[str, Any]) -> dict[str, Any]:
     sensitive_fragments = ("key", "secret", "passphrase", "sign")
     return {
@@ -503,6 +662,23 @@ def _json_dumps(value: Any) -> str:
 
 def _optional_string(value: Any) -> str | None:
     return None if value is None else str(value)
+
+
+def _optional_float(value: Any) -> float | None:
+    if value is None or value == "":
+        return None
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return None
+
+
+def _pagination_cursor(row: Mapping[str, Any]) -> str | None:
+    for key in ["billId", "ordId", "tradeId", "ts"]:
+        value = row.get(key)
+        if value:
+            return str(value)
+    return None
 
 
 def iter_fill_event_dicts(records: Iterable[FillEvent]) -> list[dict[str, Any]]:

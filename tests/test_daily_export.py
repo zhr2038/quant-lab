@@ -67,6 +67,7 @@ def test_export_empty_csv_members_have_fixed_headers(tmp_path):
     with zipfile.ZipFile(result.zip_path) as archive:
         for member in [
             "costs/cost_bucket_daily.csv",
+            "costs/cost_health_daily.csv",
             "features/feature_snapshot.csv",
             "market/orderbook_spread.csv",
             "market/trade_activity.csv",

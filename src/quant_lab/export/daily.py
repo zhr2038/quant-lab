@@ -26,7 +26,7 @@ SECTIONS = ["market", "features", "costs", "research", "risk", "anomalies", "v5"
 SECTION_DATASETS = {
     "market": ["market_bar", "trade_print", "orderbook_snapshot", "okx_public_ws"],
     "features": ["feature_value", "feature_coverage_daily", "feature_anomaly_daily"],
-    "costs": ["cost_bucket_daily"],
+    "costs": ["cost_bucket_daily", "cost_health_daily"],
     "research": ["alpha_evidence", "gate_decision"],
     "risk": ["risk_permission"],
     "anomalies": ["market_bar", "feature_value", "cost_bucket_daily", "gate_decision"],
@@ -60,6 +60,7 @@ REQUIRED_MEMBERS = [
     "features/feature_coverage.csv",
     "features/feature_anomalies.csv",
     "costs/cost_bucket_daily.csv",
+    "costs/cost_health_daily.csv",
     "costs/cost_estimate_examples.json",
     "costs/cost_fallbacks.csv",
     "research/alpha_evidence.csv",
@@ -109,6 +110,21 @@ CSV_SCHEMAS: dict[str, list[str]] = {
         "total_cost_bps_p90",
         "fallback_level",
         "source",
+    ],
+    "costs/cost_health_daily.csv": [
+        "day",
+        "status",
+        "cost_model_version",
+        "actual_rows",
+        "proxy_rows",
+        "global_default_rows",
+        "fallback_ratio",
+        "symbols_with_actual_cost",
+        "symbols_with_proxy_only",
+        "symbols_missing_cost",
+        "min_sample_count",
+        "warnings_json",
+        "created_at",
     ],
     "features/feature_snapshot.csv": [
         "feature_set",
@@ -455,6 +471,7 @@ def _dataset_members(frames: dict[str, pl.DataFrame]) -> dict[str, _MemberPayloa
     feature_coverage = frames.get("feature_coverage_daily", pl.DataFrame())
     feature_anomalies = frames.get("feature_anomaly_daily", pl.DataFrame())
     costs = frames.get("cost_bucket_daily", pl.DataFrame())
+    cost_health = frames.get("cost_health_daily", pl.DataFrame())
     evidence = frames.get("alpha_evidence", pl.DataFrame())
     gates = frames.get("gate_decision", pl.DataFrame())
     risk = frames.get("risk_permission", pl.DataFrame())
@@ -500,6 +517,9 @@ def _dataset_members(frames: dict[str, pl.DataFrame]) -> dict[str, _MemberPayloa
             else _feature_anomalies(features),
         ),
         "costs/cost_bucket_daily.csv": _csv_member("costs/cost_bucket_daily.csv", costs),
+        "costs/cost_health_daily.csv": _csv_member(
+            "costs/cost_health_daily.csv", cost_health
+        ),
         "costs/cost_estimate_examples.json": _json_text(_cost_examples(costs)),
         "costs/cost_fallbacks.csv": _csv_text(_cost_fallbacks(costs)),
         "research/alpha_evidence.csv": _csv_member("research/alpha_evidence.csv", evidence),

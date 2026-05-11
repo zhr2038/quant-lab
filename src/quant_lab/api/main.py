@@ -26,6 +26,7 @@ from quant_lab.data.lake import read_market_bars, read_parquet_dataset
 from quant_lab.gates.defaults import evaluate_alpha_gate
 from quant_lab.research.bootstrap_gold import BOOTSTRAP_GATE_VERSION
 from quant_lab.risk.permissions import evaluate_live_permission
+from quant_lab.risk.publish import parse_risk_permission_row
 
 
 class HealthResponse(BaseModel):
@@ -58,6 +59,15 @@ class LatestFeaturesResponse(BaseModel):
     timeframe: str | None = None
     created_at: datetime
     rows: list[LatestFeatureRow] = Field(default_factory=list)
+    warnings: list[str] = Field(default_factory=list)
+
+
+class ResearchAlphaResponse(BaseModel):
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    alpha_id: str
+    evidence: dict[str, Any] | None = None
+    gate_decision: dict[str, Any] | None = None
     warnings: list[str] = Field(default_factory=list)
 
 
@@ -95,8 +105,10 @@ def create_app() -> FastAPI:
 
     @app.get("/v1/gates/decision/{alpha_id}", response_model=GateDecision)
     def gate_decision(alpha_id: str) -> GateDecision:
-        evidence = AlphaEvidence.example_live_ready().model_copy(update={"alpha_id": alpha_id})
-        return evaluate_alpha_gate(evidence)
+        decision = _load_latest_gate_decision_for_alpha(_lake_root(), alpha_id=alpha_id)
+        if decision is not None:
+            return decision
+        return _missing_gate_decision(alpha_id)
 
     @app.get("/v1/costs/example", response_model=CostEstimate)
     def costs_example() -> CostEstimate:
@@ -146,6 +158,23 @@ def create_app() -> FastAPI:
             feature_names=_split_csv(feature_names),
         )
 
+    @app.get("/v1/research/alpha/{alpha_id}", response_model=ResearchAlphaResponse)
+    def research_alpha(alpha_id: str) -> ResearchAlphaResponse:
+        lake_root = _lake_root()
+        evidence = _load_latest_alpha_evidence(lake_root, alpha_id=alpha_id)
+        gate = _load_latest_gate_decision_for_alpha(lake_root, alpha_id=alpha_id)
+        warnings: list[str] = []
+        if evidence is None:
+            warnings.append("alpha_evidence missing for alpha_id")
+        if gate is None:
+            warnings.append("gate_decision missing for alpha_id")
+        return ResearchAlphaResponse(
+            alpha_id=alpha_id,
+            evidence=evidence,
+            gate_decision=gate.model_dump(mode="json") if gate else None,
+            warnings=warnings,
+        )
+
     @app.get("/v1/market/bars", response_model=list[MarketBar])
     def market_bars(
         venue: str,
@@ -167,6 +196,9 @@ def create_app() -> FastAPI:
     @app.get("/v1/risk/live-permission", response_model=RiskPermission)
     def live_permission(strategy: str, version: str) -> RiskPermission:
         lake_root = _lake_root()
+        published = _load_published_risk_permission(lake_root, strategy=strategy, version=version)
+        if published is not None:
+            return published
         gate_decisions = _load_gate_decisions(lake_root, strategy=strategy)
         data_health = _lake_data_health(lake_root)
         cost_health = _lake_cost_health(lake_root)
@@ -301,6 +333,41 @@ def _split_csv(value: str | None) -> list[str] | None:
     return parsed or None
 
 
+def _load_latest_alpha_evidence(lake_root: Path, alpha_id: str) -> dict[str, Any] | None:
+    df = read_parquet_dataset(lake_root / "gold" / "alpha_evidence")
+    if df.is_empty() or "alpha_id" not in df.columns:
+        return None
+    filtered = df.filter(pl.col("alpha_id") == alpha_id)
+    if filtered.is_empty():
+        return None
+    return _latest_row(filtered, "created_at")
+
+
+def _load_latest_gate_decision_for_alpha(lake_root: Path, alpha_id: str) -> GateDecision | None:
+    df = read_parquet_dataset(lake_root / "gold" / "gate_decision")
+    if df.is_empty() or "alpha_id" not in df.columns:
+        return None
+    filtered = df.filter(pl.col("alpha_id") == alpha_id)
+    if filtered.is_empty():
+        return None
+    row = _latest_row(filtered, "created_at")
+    return _gate_decision_from_row(row)
+
+
+def _missing_gate_decision(alpha_id: str) -> GateDecision:
+    return GateDecision(
+        alpha_id=alpha_id,
+        version="unknown",
+        gate_version="missing-gate-decision-v0.1",
+        status="QUARANTINE",
+        passed=False,
+        reasons=["missing_gate_decision"],
+        metrics={},
+        next_action="build_alpha_evidence_before_gate",
+        created_at=datetime.now(UTC),
+    )
+
+
 def _load_gate_decisions(lake_root: Path, strategy: str) -> list[GateDecision]:
     df = read_parquet_dataset(lake_root / "gold" / "gate_decision")
     if df.is_empty():
@@ -314,15 +381,44 @@ def _load_gate_decisions(lake_root: Path, strategy: str) -> list[GateDecision]:
         cleaned.pop("strategy", None)
         cleaned.pop("source", None)
         cleaned.pop("fallback_level", None)
-        if isinstance(cleaned.get("metrics"), str):
-            cleaned["metrics"] = _json_dict(cleaned["metrics"])
-        if isinstance(cleaned.get("reasons"), str):
-            cleaned["reasons"] = _json_list(cleaned["reasons"])
-        try:
-            decisions.append(GateDecision.model_validate(cleaned))
-        except Exception:
-            continue
+        parsed = _gate_decision_from_row(cleaned)
+        if parsed is not None:
+            decisions.append(parsed)
     return decisions
+
+
+def _gate_decision_from_row(row: dict[str, Any]) -> GateDecision | None:
+    cleaned = dict(row)
+    cleaned.pop("strategy", None)
+    cleaned.pop("source", None)
+    cleaned.pop("fallback_level", None)
+    if isinstance(cleaned.get("metrics"), str):
+        cleaned["metrics"] = _json_dict(cleaned["metrics"])
+    if isinstance(cleaned.get("reasons"), str):
+        cleaned["reasons"] = _json_list(cleaned["reasons"])
+    try:
+        return GateDecision.model_validate(cleaned)
+    except Exception:
+        return None
+
+
+def _load_published_risk_permission(
+    lake_root: Path,
+    *,
+    strategy: str,
+    version: str,
+) -> RiskPermission | None:
+    df = read_parquet_dataset(lake_root / "gold" / "risk_permission")
+    if df.is_empty():
+        return None
+    filtered = df
+    if "strategy" in filtered.columns:
+        filtered = filtered.filter(pl.col("strategy") == strategy)
+    if "version" in filtered.columns:
+        filtered = filtered.filter(pl.col("version") == version)
+    if filtered.is_empty():
+        return None
+    return parse_risk_permission_row(_latest_row(filtered, "created_at"))
 
 
 def _lake_cost_health(lake_root: Path) -> dict[str, Any]:

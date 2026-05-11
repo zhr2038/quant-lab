@@ -88,6 +88,42 @@ def test_live_permission_api_aborts_on_v5_gate_compliance_violation(tmp_path, mo
     assert "v5_gate_compliance_violation" in payload["reasons"]
 
 
+def test_live_permission_api_reads_published_risk_permission(tmp_path, monkeypatch):
+    lake = tmp_path / "lake"
+    monkeypatch.setenv("QUANT_LAB_LAKE_ROOT", str(lake))
+    write_parquet_dataset(
+        pl.DataFrame(
+            [
+                {
+                    "strategy": "v5",
+                    "version": "5.0.0",
+                    "permission": "SELL_ONLY",
+                    "allowed_modes": '["sell_only"]',
+                    "max_gross_exposure": 0.0,
+                    "max_single_weight": 0.0,
+                    "cost_model_version": "costs-test",
+                    "gate_version": "default-v0.1",
+                    "reasons": '["published_permission"]',
+                    "created_at": datetime.now(UTC).isoformat(),
+                    "source": "test",
+                    "fallback_level": "NONE",
+                }
+            ]
+        ),
+        lake / "gold/risk_permission",
+    )
+
+    response = TestClient(app).get(
+        "/v1/risk/live-permission",
+        params={"strategy": "v5", "version": "5.0.0"},
+    )
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["permission"] == "SELL_ONLY"
+    assert payload["reasons"] == ["published_permission"]
+
+
 def _get_permission(strategy: str) -> dict:
     response = TestClient(app).get(
         "/v1/risk/live-permission",

@@ -165,6 +165,13 @@ def _cost_health_reasons(cost_health: Mapping[str, Any] | None) -> list[str]:
         reasons.append("cost_health_missing")
     if status == "stale" or bool(cost_health.get("stale")) or bool(cost_health.get("is_stale")):
         reasons.append("cost_health_stale")
+    fallback_ratio = cost_health.get("fallback_ratio")
+    try:
+        high_fallback_ratio = fallback_ratio is not None and float(fallback_ratio) > 0.5
+    except (TypeError, ValueError):
+        high_fallback_ratio = False
+    if bool(cost_health.get("high_fallback")) or high_fallback_ratio:
+        reasons.append("cost_health_high_fallback")
     return reasons
 
 

@@ -45,6 +45,8 @@ Example response:
   "datasets": [
     "market_bar",
     "feature_value",
+    "feature_coverage_daily",
+    "feature_anomaly_daily",
     "cost_bucket_daily",
     "alpha_evidence",
     "gate_decision",
@@ -109,15 +111,17 @@ Example response:
 
 ## GET /v1/costs/estimate
 
-Returns a read-only cost estimate. In v0.1 this endpoint uses a deterministic
-default bucket in the API layer; calibrated lake-backed lookup is a follow-up.
+Returns a read-only lake-backed cost estimate from
+`lake/gold/cost_bucket_daily`. If no calibrated rows exist, the endpoint returns
+an explicit `global_default` fallback and does not claim actual OKX costs.
 
 Request params:
 
 - `symbol` required string, for example `BTC-USDT`.
 - `regime` required string, for example `normal`.
 - `notional_usdt` required positive number.
-- `quantile` optional string, default `p75`; accepted for client compatibility.
+- `quantile` optional string, default `p75`; one of `p50`, `p75`, `p90`.
+- `notional_bucket` optional string, for explicit bucket lookup.
 
 Example response:
 
@@ -126,9 +130,51 @@ Example response:
   "symbol": "BTC-USDT",
   "regime": "normal",
   "notional_usdt": 10000.0,
-  "cost_bps": 4.2,
-  "fallback_level": "NONE",
-  "bucket_id": "BTC-USDT-default"
+  "quantile": "p75",
+  "fee_bps": 1.0,
+  "slippage_bps": 0.0,
+  "spread_bps": 1.5,
+  "total_cost_bps": 2.5,
+  "cost_bps": 2.5,
+  "fallback_level": "PUBLIC_SPREAD_PROXY",
+  "source": "public_spread_proxy",
+  "sample_count": 120,
+  "cost_model_version": "cost_bucket_daily:2026-05-11",
+  "bucket_id": "2026-05-11:BTC-USDT:public_proxy:spread_proxy:all"
+}
+```
+
+## GET /v1/features/latest
+
+Returns the latest read-only feature values from `lake/gold/feature_value`.
+
+Request params:
+
+- `feature_set` required string, for example `core`.
+- `feature_version` optional string.
+- `symbols` optional comma-separated symbols.
+- `timeframe` optional string.
+- `feature_names` optional comma-separated feature names.
+
+Example response:
+
+```json
+{
+  "feature_set": "core",
+  "feature_version": "v0.1",
+  "timeframe": "1H",
+  "created_at": "2026-05-11T00:00:00Z",
+  "rows": [
+    {
+      "symbol": "BTC-USDT",
+      "ts": "2026-05-11T00:00:00Z",
+      "features": {
+        "close_return_24": 0.012,
+        "rolling_volatility_24": 0.004
+      }
+    }
+  ],
+  "warnings": []
 }
 ```
 
@@ -162,9 +208,9 @@ Example response:
 
 ## GET /v1/gates/decision/{alpha_id}
 
-Returns the current gate decision shape for an alpha. In v0.1 this is a
-deterministic demo response using the requested `alpha_id`; lake-backed
-`gold/gate_decision` reads are a follow-up.
+Returns the latest lake-backed gate decision from `lake/gold/gate_decision`.
+If no row exists for the alpha, the API returns a conservative `QUARANTINE`
+response with reason `missing_gate_decision`.
 
 Path params:
 
@@ -172,9 +218,42 @@ Path params:
 
 Allowed statuses: `DEAD`, `QUARANTINE`, `PAPER_READY`, `LIVE_READY`.
 
+## GET /v1/research/alpha/{alpha_id}
+
+Returns the latest alpha evidence and gate decision for an alpha.
+
+Path params:
+
+- `alpha_id` required string.
+
+Example response:
+
+```json
+{
+  "alpha_id": "v5.core.momentum",
+  "evidence": {
+    "alpha_id": "v5.core.momentum",
+    "version": "v0.1",
+    "coverage": 0.98,
+    "ic_mean": 0.03,
+    "ic_tstat": 2.4,
+    "edge_cost_ratio": 1.8,
+    "paper_days": 0
+  },
+  "gate_decision": {
+    "alpha_id": "v5.core.momentum",
+    "status": "PAPER_READY",
+    "reasons": ["needs_paper_observation"]
+  },
+  "warnings": []
+}
+```
+
 ## GET /v1/risk/live-permission
 
-Returns the current read-only risk permission for a strategy/version pair. This
+Returns the current read-only risk permission for a strategy/version pair. The
+API reads `lake/gold/risk_permission` when published, otherwise it computes a
+conservative response from gate, cost, market-data, and V5 telemetry health. It
 is a research permission signal, not an execution command.
 
 Request params:
@@ -201,10 +280,4 @@ Example response:
 
 Allowed permissions: `ALLOW`, `SELL_ONLY`, `ABORT`.
 
-## Planned But Not Exposed In v0.1
-
-The following strategy-facing contracts remain planned follow-ups and are not
-currently registered FastAPI routes:
-
-- `GET /v1/features/latest`
-- `GET /v1/research/alpha/{alpha_id}`
+All public `/v1` routes are GET-only.

@@ -242,6 +242,46 @@ class AlphaEvidence(ContractModel):
         )
 
 
+class AlphaResearchSpec(ContractModel):
+    alpha_id: str = Field(min_length=1)
+    version: str = Field(min_length=1)
+    feature_set: str = Field(min_length=1)
+    feature_version: str = Field(min_length=1)
+    feature_names: list[str] = Field(min_length=1)
+    timeframe: str = Field(min_length=1)
+    label_horizon_bars: int = Field(gt=0)
+    decision_delay_bars: int = Field(default=1, ge=1)
+    universe_id: str = Field(min_length=1)
+    strategy: str = Field(default="v5", min_length=1)
+    min_coverage: float = Field(default=0.95, ge=0, le=1)
+    min_samples: int = Field(default=100, ge=1)
+    cost_quantile: str = Field(default="p75", pattern="^p(50|75|90)$")
+    long_only: bool = True
+    top_quantile: float = Field(default=0.2, gt=0, lt=1)
+    bottom_quantile: float | None = Field(default=None, gt=0, lt=1)
+    start: datetime | None = None
+    end: datetime | None = None
+
+    @field_validator("feature_names")
+    @classmethod
+    def normalize_feature_names(cls, value: list[str]) -> list[str]:
+        normalized = [item.strip() for item in value if item.strip()]
+        if not normalized:
+            raise ValueError("feature_names must contain at least one feature")
+        return normalized
+
+    @field_validator("start", "end")
+    @classmethod
+    def optional_timestamps_are_utc(cls, value: datetime | None) -> datetime | None:
+        return require_utc(value) if value is not None else None
+
+    @model_validator(mode="after")
+    def validate_window(self) -> "AlphaResearchSpec":
+        if self.start is not None and self.end is not None and self.end <= self.start:
+            raise ValueError("end must be after start")
+        return self
+
+
 class GateDecision(ContractModel):
     alpha_id: str = Field(min_length=1)
     version: str = Field(min_length=1)

@@ -7,7 +7,7 @@ from typing import Annotated
 
 import typer
 
-from quant_lab.contracts.models import AlphaEvidence
+from quant_lab.contracts.models import AlphaEvidence, AlphaResearchSpec
 from quant_lab.costs.calibrate import calibrate_costs_for_day
 from quant_lab.export.daily import export_daily_pack, validate_expert_pack
 from quant_lab.features.publish import feature_health
@@ -28,6 +28,12 @@ from quant_lab.ingest.okx_readonly_private import (
 from quant_lab.ingest.okx_ws_public import collect_okx_public_ws, collect_okx_public_ws_universe
 from quant_lab.ingest.v5_reports import inspect_v5_reports, publish_v5_reports_to_lake
 from quant_lab.research.bootstrap_gold import bootstrap_gold_health
+from quant_lab.research.publish import (
+    build_and_publish_alpha_evidence,
+    publish_gate_decisions_from_evidence,
+    research_health,
+)
+from quant_lab.risk.publish import publish_risk_permission as publish_risk_permission_to_lake
 from quant_lab.strategy_telemetry.analyze import analyze_v5_telemetry
 from quant_lab.strategy_telemetry.bundle import safe_extract_v5_bundle, validate_v5_bundle
 from quant_lab.strategy_telemetry.config import load_v5_telemetry_remote_config
@@ -399,6 +405,72 @@ def feature_health_command(
     date: Annotated[str | None, typer.Option("--date")] = None,
 ) -> None:
     result = feature_health(lake_root=lake_root, feature_set=feature_set, date=date)
+    typer.echo(result.model_dump_json(indent=2))
+
+
+@app.command("build-alpha-evidence")
+def build_alpha_evidence_command(
+    lake_root: Annotated[Path, typer.Option("--lake-root", file_okay=False, dir_okay=True)],
+    alpha_id: Annotated[str, typer.Option("--alpha-id")] = "v5.core.momentum",
+    version: Annotated[str, typer.Option("--version")] = "v0.1",
+    feature_set: Annotated[str, typer.Option("--feature-set")] = "core",
+    feature_version: Annotated[str, typer.Option("--feature-version")] = "v0.1",
+    feature_names: Annotated[str, typer.Option("--feature-names")] = "close_return_24",
+    timeframe: Annotated[str, typer.Option("--timeframe")] = "1H",
+    label_horizon_bars: Annotated[int, typer.Option("--label-horizon-bars", min=1)] = 4,
+    decision_delay_bars: Annotated[int, typer.Option("--decision-delay-bars", min=1)] = 1,
+    universe_id: Annotated[str, typer.Option("--universe-id")] = "okx-major-spot",
+    strategy: Annotated[str, typer.Option("--strategy")] = "v5",
+    cost_quantile: Annotated[str, typer.Option("--cost-quantile")] = "p75",
+    min_samples: Annotated[int, typer.Option("--min-samples", min=1)] = 100,
+) -> None:
+    spec = AlphaResearchSpec(
+        alpha_id=alpha_id,
+        version=version,
+        feature_set=feature_set,
+        feature_version=feature_version,
+        feature_names=[name.strip() for name in feature_names.split(",") if name.strip()],
+        timeframe=timeframe,
+        label_horizon_bars=label_horizon_bars,
+        decision_delay_bars=decision_delay_bars,
+        universe_id=universe_id,
+        strategy=strategy,
+        cost_quantile=cost_quantile,
+        min_samples=min_samples,
+    )
+    result = build_and_publish_alpha_evidence(lake_root=lake_root, spec=spec)
+    typer.echo(result.model_dump_json(indent=2))
+
+
+@app.command("publish-gate-decisions")
+def publish_gate_decisions_command(
+    lake_root: Annotated[Path, typer.Option("--lake-root", file_okay=False, dir_okay=True)],
+    strategy: Annotated[str, typer.Option("--strategy")] = "v5",
+) -> None:
+    result = publish_gate_decisions_from_evidence(lake_root=lake_root, strategy=strategy)
+    typer.echo(result.model_dump_json(indent=2))
+
+
+@app.command("publish-risk-permission")
+def publish_risk_permission_command(
+    lake_root: Annotated[Path, typer.Option("--lake-root", file_okay=False, dir_okay=True)],
+    strategy: Annotated[str, typer.Option("--strategy")] = "v5",
+    version: Annotated[str, typer.Option("--version")] = "5.0.0",
+) -> None:
+    result = publish_risk_permission_to_lake(
+        lake_root=lake_root,
+        strategy=strategy,
+        version=version,
+    )
+    typer.echo(result.model_dump_json(indent=2))
+
+
+@app.command("research-health")
+def research_health_command(
+    lake_root: Annotated[Path, typer.Option("--lake-root", file_okay=False, dir_okay=True)],
+    date: Annotated[str | None, typer.Option("--date")] = None,
+) -> None:
+    result = research_health(lake_root=lake_root, date=date)
     typer.echo(result.model_dump_json(indent=2))
 
 

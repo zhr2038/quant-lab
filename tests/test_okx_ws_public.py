@@ -7,10 +7,13 @@ import pytest
 
 from quant_lab.data.lake import read_parquet_dataset
 from quant_lab.ingest.okx_ws_public import (
+    COLLECTOR_HEALTH_DATASET,
     OKXPublicWSChannelError,
     OKXPublicWSClient,
     OKXPublicWSConfig,
+    build_universe_subscription_payload,
     collect_okx_public_ws,
+    collect_okx_public_ws_universe,
     normalize_okx_ws_candles_to_market_bars,
     normalize_okx_ws_orderbooks,
     normalize_okx_ws_trades,
@@ -64,6 +67,47 @@ def test_public_channel_router_subscribes_expected_payloads():
 
     channels = [json.loads(message)["args"][0]["channel"] for message in fake_ws.sent]
     assert channels == ["tickers", "candle1H", "trades", "books"]
+
+
+def test_universe_subscription_payload_contains_all_symbols_and_channels():
+    payload = build_universe_subscription_payload(
+        symbols=["BTC-USDT", "ETH-USDT"],
+        channels=["tickers", "trades", "books5"],
+    )
+
+    assert payload["op"] == "subscribe"
+    assert payload["args"] == [
+        {"channel": "tickers", "instId": "BTC-USDT"},
+        {"channel": "trades", "instId": "BTC-USDT"},
+        {"channel": "books5", "instId": "BTC-USDT"},
+        {"channel": "tickers", "instId": "ETH-USDT"},
+        {"channel": "trades", "instId": "ETH-USDT"},
+        {"channel": "books5", "instId": "ETH-USDT"},
+    ]
+
+
+def test_universe_subscription_rejects_private_channel():
+    with pytest.raises(OKXPublicWSChannelError):
+        build_universe_subscription_payload(
+            symbols=["BTC-USDT"],
+            channels=["tickers", "orders"],
+        )
+
+
+def test_universe_subscription_sends_no_login_payload():
+    fake_ws = FakeWebSocket(messages=[])
+    client = OKXPublicWSClient(connect_factory=lambda url: fake_ws)
+
+    async def scenario() -> None:
+        await client.connect()
+        await client.subscribe_public_channels(["BTC-USDT", "ETH-USDT"], ["tickers", "books5"])
+
+    asyncio.run(scenario())
+
+    assert len(fake_ws.sent) == 1
+    sent = fake_ws.sent[0].lower()
+    assert "login" not in sent
+    assert json.loads(fake_ws.sent[0])["op"] == "subscribe"
 
 
 def test_ws_message_standardization():
@@ -179,6 +223,45 @@ def test_collect_okx_public_ws_summary(tmp_path):
     ].endswith("silver/trade_print")
 
 
+def test_collect_universe_batches_flush_and_writes_health(tmp_path):
+    lake_root = tmp_path / "lake"
+    fake_ws = FakeWebSocket(
+        messages=[
+            json.dumps(_trade_message(symbol="BTC-USDT", trade_id="1")),
+            json.dumps(_trade_message(symbol="ETH-USDT", trade_id="2")),
+            json.dumps(_books_message(symbol="BTC-USDT")),
+        ]
+    )
+
+    summary = asyncio.run(
+        collect_okx_public_ws_universe(
+            symbols=["BTC-USDT", "ETH-USDT"],
+            channels=["trades", "books5"],
+            lake_root=lake_root,
+            flush_interval_seconds=100,
+            flush_max_messages=3,
+            max_messages=3,
+            connect_factory=lambda url: fake_ws,
+            sleep=_no_sleep,
+        )
+    )
+
+    raw = read_parquet_dataset(lake_root / "bronze" / "okx_public_ws")
+    trades = read_parquet_dataset(lake_root / "silver" / "trade_print")
+    health = read_parquet_dataset(lake_root / COLLECTOR_HEALTH_DATASET)
+
+    assert summary.messages_read == 3
+    assert summary.raw_ws_rows == 3
+    assert summary.trade_print_rows == 2
+    assert raw.height == 3
+    assert trades.height == 2
+    assert health.height == 1
+    assert health["last_message_at"][0]
+    assert health["messages_read"][0] == 3
+    assert health["status"][0] == "STOPPED"
+    assert json.loads(health["subscribed_symbols"][0]) == ["BTC-USDT", "ETH-USDT"]
+
+
 def test_forbidden_ws_terms_do_not_appear_in_implementation_code():
     implementation_text = "\n".join(
         path.read_text(encoding="utf-8")
@@ -241,12 +324,12 @@ def _candle_message(confirm: str) -> dict[str, Any]:
     }
 
 
-def _trade_message() -> dict[str, Any]:
+def _trade_message(symbol: str = "BTC-USDT", trade_id: str = "123") -> dict[str, Any]:
     return {
-        "arg": {"channel": "trades", "instId": "BTC-USDT"},
+        "arg": {"channel": "trades", "instId": symbol},
         "data": [
             {
-                "tradeId": "123",
+                "tradeId": trade_id,
                 "px": "100.5",
                 "sz": "0.2",
                 "side": "buy",
@@ -256,9 +339,9 @@ def _trade_message() -> dict[str, Any]:
     }
 
 
-def _books_message() -> dict[str, Any]:
+def _books_message(symbol: str = "BTC-USDT") -> dict[str, Any]:
     return {
-        "arg": {"channel": "books5", "instId": "BTC-USDT"},
+        "arg": {"channel": "books5", "instId": symbol},
         "data": [
             {
                 "asks": [["101", "1"]],

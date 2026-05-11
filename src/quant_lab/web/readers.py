@@ -19,6 +19,7 @@ DATASET_PATHS = {
     "gate_decision": Path("gold") / "gate_decision",
     "risk_permission": Path("gold") / "risk_permission",
     "strategy_health_daily": Path("gold") / "strategy_health_daily",
+    "okx_public_ws_health": Path("bronze") / "collector_health" / "okx_public_ws",
     "v5_execution_quality_daily": Path("gold") / "v5_execution_quality_daily",
     "v5_gate_compliance_daily": Path("gold") / "v5_gate_compliance_daily",
     "v5_missed_opportunity_daily": Path("gold") / "v5_missed_opportunity_daily",
@@ -50,6 +51,11 @@ MARKET_BOOTSTRAP_COMMAND = (
 )
 V5_TELEMETRY_SYNC_COMMAND = (
     "qlab sync-v5-telemetry --config /etc/quant-lab/v5_telemetry_remote.yaml"
+)
+OKX_WS_COLLECT_COMMAND = (
+    "qlab okx-ws-collect-universe --symbols BTC-USDT,ETH-USDT,SOL-USDT,BNB-USDT "
+    "--channels tickers,trades,books5 --market-type SPOT --lake-root {lake_root} "
+    "--flush-interval-seconds 10 --flush-max-messages 100"
 )
 EXPERT_PACK_MISSING_MESSAGE = "qlab export-daily 尚未实现或尚未运行。"
 DISPLAY_LIMIT = 500
@@ -112,6 +118,7 @@ def dashboard_overview(lake_root: str | Path) -> dict[str, Any]:
     costs = cost_model_summary(lake_root)
     gates = alpha_gate_summary(lake_root)
     consumers = strategy_consumer_summary(lake_root)
+    collectors = okx_collector_summary(lake_root)
     experts = expert_export_summary(default_exports_root(lake_root))
 
     warnings = [
@@ -120,6 +127,7 @@ def dashboard_overview(lake_root: str | Path) -> dict[str, Any]:
         *costs["warnings"],
         *gates["warnings"],
         *consumers["warnings"],
+        *collectors["warnings"],
         *experts["warnings"],
     ]
     status = "OK"
@@ -133,7 +141,7 @@ def dashboard_overview(lake_root: str | Path) -> dict[str, Any]:
         "v5_permission": consumers["permissions"].get("v5", "UNKNOWN"),
         "v7_permission": consumers["permissions"].get("v7", "UNKNOWN"),
         "okx_public_rest_status": "OK" if market_health["latest_market_bar_ts"] else "WARNING",
-        "okx_public_ws_status": "OK" if okx_ws_latest(lake_root) else "WARNING",
+        "okx_public_ws_status": collectors["okx_public_ws_status"],
         "okx_readonly_status": readonly_private_status(lake_root),
         "latest_market_bar_ts": market_health["latest_market_bar_ts"],
         "missing_bar_ratio": market_health["missing_bar_ratio"],
@@ -197,6 +205,14 @@ def lake_diagnostics(lake_root: str | Path) -> dict[str, Any]:
         )
 
         suggested_commands.append({"purpose": "backfill market_bar", "command": command})
+
+    ws_health = read_parquet_dataset(root / DATASET_PATHS["okx_public_ws_health"])
+    if ws_health.is_empty():
+        command = OKX_WS_COLLECT_COMMAND.format(lake_root=root)
+        warnings.append(
+            f"OKX public WebSocket collector health is empty. Suggested command: {command}"
+        )
+        suggested_commands.append({"purpose": "run OKX public WebSocket", "command": command})
 
     if dataset_row_counts.get("gold/strategy_health_daily", 0) == 0:
         warnings.append(
@@ -282,11 +298,15 @@ def data_health_summary(lake_root: str | Path) -> dict[str, Any]:
 def okx_collector_summary(lake_root: str | Path) -> dict[str, Any]:
     market = read_dataset(lake_root, "market_bar")
     ws_raw = read_dataset(lake_root, "okx_public_ws")
+    ws_health = read_dataset(lake_root, "okx_public_ws_health")
     trades = read_dataset(lake_root, "trade_print")
     books = read_dataset(lake_root, "orderbook_snapshot")
 
     latest_rest = _max_datetime(_normalize_optional_time(market, "ingest_ts"), "ingest_ts")
     latest_ws = _max_datetime(_normalize_optional_time(ws_raw, "received_at"), "received_at")
+    latest_health = _latest_collector_health(ws_health)
+    if latest_health:
+        latest_ws = _parse_datetime(latest_health.get("last_message_at")) or latest_ws
 
     rows = [
         {
@@ -300,12 +320,17 @@ def okx_collector_summary(lake_root: str | Path) -> dict[str, Any]:
         },
         {
             "collector": "OKX 公共 WebSocket",
-            "success_count": ws_raw.height,
-            "error_count": 0,
+            "success_count": int(latest_health.get("messages_read") or ws_raw.height)
+            if latest_health
+            else ws_raw.height,
+            "error_count": int(latest_health.get("error_count") or 0) if latest_health else 0,
             "latest_success_ts": latest_ws,
-            "reconnect_count": 0,
+            "reconnect_count": int(latest_health.get("reconnect_count") or 0)
+            if latest_health
+            else 0,
             "rate_limit_warnings": 0,
             "lag": _lag_label(latest_ws),
+            "status": str(latest_health.get("status") or "UNKNOWN") if latest_health else "UNKNOWN",
         },
     ]
     warnings = []
@@ -314,8 +339,15 @@ def okx_collector_summary(lake_root: str | Path) -> dict[str, Any]:
     if ws_raw.is_empty():
         warnings.append("OKX 公共 WebSocket bronze 数据集缺失或为空")
 
+    if ws_health.is_empty():
+        warnings.append("OKX public WebSocket collector_health is missing or empty")
+
     return {
         "collectors": pl.DataFrame(rows),
+        "collector_health": redact_frame(ws_health).head(DISPLAY_LIMIT),
+        "okx_public_ws_status": str(latest_health.get("status") or "UNKNOWN")
+        if latest_health
+        else "WARNING",
         "trade_print_rows": trades.height,
         "orderbook_snapshot_rows": books.height,
         "warnings": warnings,
@@ -679,6 +711,24 @@ def redact_text(value: Any) -> Any:
 def okx_ws_latest(lake_root: str | Path) -> datetime | None:
     ws_raw = read_dataset(lake_root, "okx_public_ws")
     return _max_datetime(_normalize_optional_time(ws_raw, "received_at"), "received_at")
+
+
+def _latest_collector_health(health: pl.DataFrame) -> dict[str, Any] | None:
+    if health.is_empty():
+        return None
+    sort_column = "updated_at" if "updated_at" in health.columns else health.columns[0]
+    return health.sort(sort_column).tail(1).to_dicts()[0]
+
+
+def _parse_datetime(value: Any) -> datetime | None:
+    if isinstance(value, datetime):
+        return value.astimezone(UTC)
+    if not isinstance(value, str) or not value:
+        return None
+    try:
+        return datetime.fromisoformat(value.replace("Z", "+00:00")).astimezone(UTC)
+    except ValueError:
+        return None
 
 
 def readonly_private_status(lake_root: str | Path) -> str:

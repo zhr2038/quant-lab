@@ -84,6 +84,7 @@ def test_dashboard_readers_load_fixture_lake(tmp_path):
 
     assert overview_summary["status"] in {"OK", "WARNING"}
     assert overview_summary["latest_market_bar_ts"] == datetime(2026, 5, 10, 2, tzinfo=UTC)
+    assert overview_summary["okx_public_ws_status"] == "RUNNING"
     assert data_health["duplicate_bar_count"] == 0
     assert costs["costs"].height == 1
     assert gates["counts"] == {"LIVE_READY": 1}
@@ -149,6 +150,7 @@ def test_overview_diagnostics_suggests_commands_when_lake_has_no_parquet(tmp_pat
         "qlab okx-fetch-candles --inst-id BTC-USDT --bar 1H --market-type SPOT "
         f"--lake-root {lake_root} --history --limit 100"
     ) in warnings
+    assert "qlab okx-ws-collect-universe" in warnings
     assert "qlab sync-v5-telemetry --config /etc/quant-lab/v5_telemetry_remote.yaml" in warnings
     assert "qlab export-daily 尚未实现或尚未运行。" in warnings
 
@@ -160,6 +162,7 @@ def test_empty_lake_diagnostics_exposes_suggested_commands(tmp_path):
 
     commands = "\n".join(diagnostics["suggested_commands"]["command"].to_list())
     assert "qlab okx-fetch-candles" in commands
+    assert "qlab okx-ws-collect-universe" in commands
     assert "qlab sync-v5-telemetry" in commands
     assert "qlab export-daily" in commands
 
@@ -314,6 +317,25 @@ def _fixture_lake(tmp_path) -> Path:
             ]
         ),
         lake_root / "bronze" / "okx_public_ws",
+    )
+    write_parquet_dataset(
+        pl.DataFrame(
+            [
+                {
+                    "collector_name": "okx_public_ws",
+                    "started_at": start.isoformat().replace("+00:00", "Z"),
+                    "last_message_at": start.isoformat().replace("+00:00", "Z"),
+                    "messages_read": 1,
+                    "reconnect_count": 0,
+                    "error_count": 0,
+                    "subscribed_symbols": '["BTC-USDT"]',
+                    "subscribed_channels": '["tickers"]',
+                    "status": "RUNNING",
+                    "updated_at": start.isoformat().replace("+00:00", "Z"),
+                }
+            ]
+        ),
+        lake_root / "bronze" / "collector_health" / "okx_public_ws",
     )
     write_parquet_dataset(
         pl.DataFrame(

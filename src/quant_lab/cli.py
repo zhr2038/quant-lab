@@ -22,7 +22,7 @@ from quant_lab.ingest.okx_readonly_private import (
     publish_okx_bills_to_lake,
     publish_okx_fills_to_lake,
 )
-from quant_lab.ingest.okx_ws_public import collect_okx_public_ws
+from quant_lab.ingest.okx_ws_public import collect_okx_public_ws, collect_okx_public_ws_universe
 from quant_lab.ingest.v5_reports import inspect_v5_reports, publish_v5_reports_to_lake
 from quant_lab.strategy_telemetry.analyze import analyze_v5_telemetry
 from quant_lab.strategy_telemetry.bundle import safe_extract_v5_bundle, validate_v5_bundle
@@ -164,6 +164,56 @@ def okx_ws_run(
             channels=parsed_channels,
             lake_root=lake_root,
             market_type=market_type,
+            max_messages=max_messages,
+        )
+    )
+    typer.echo(summary.model_dump_json(indent=2))
+
+
+@app.command("okx-ws-collect-universe")
+def okx_ws_collect_universe(
+    symbols: Annotated[
+        str,
+        typer.Option("--symbols", help="Comma-separated OKX instrument IDs."),
+    ],
+    channels: Annotated[
+        str,
+        typer.Option("--channels", help="Comma-separated public channels."),
+    ],
+    lake_root: Annotated[
+        Path,
+        typer.Option(
+            "--lake-root",
+            file_okay=False,
+            dir_okay=True,
+            writable=True,
+            help="quant-lab lake root to publish realtime public data into.",
+        ),
+    ],
+    market_type: Annotated[str, typer.Option("--market-type")] = "SPOT",
+    flush_interval_seconds: Annotated[
+        float,
+        typer.Option("--flush-interval-seconds", min=0.1),
+    ] = 10.0,
+    flush_max_messages: Annotated[
+        int,
+        typer.Option("--flush-max-messages", min=1),
+    ] = 100,
+    max_messages: Annotated[
+        int | None,
+        typer.Option("--max-messages", min=1, hidden=True),
+    ] = None,
+) -> None:
+    parsed_symbols = [symbol.strip() for symbol in symbols.split(",") if symbol.strip()]
+    parsed_channels = [channel.strip() for channel in channels.split(",") if channel.strip()]
+    summary = asyncio.run(
+        collect_okx_public_ws_universe(
+            symbols=parsed_symbols,
+            channels=parsed_channels,
+            lake_root=lake_root,
+            market_type=market_type,
+            flush_interval_seconds=flush_interval_seconds,
+            flush_max_messages=flush_max_messages,
             max_messages=max_messages,
         )
     )

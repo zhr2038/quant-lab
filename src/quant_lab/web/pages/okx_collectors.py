@@ -16,4 +16,6 @@ def render(lake_root: str | Path, st_module: Any | None = None) -> None:
 
     st.subheader("采集器计数")
     show_frame(st, summary["collectors"], "暂无采集器计数。")
+    st.subheader("collector_health")
+    show_frame(st, summary["collector_health"], "暂无 OKX public WebSocket collector_health。")
     show_warnings(st, summary["warnings"])

@@ -135,7 +135,36 @@ def test_cost_bucket_daily_estimate_uses_global_fallback_when_no_bucket_matches(
     )
 
     assert estimate.total_cost_bps == 6.0
-    assert estimate.fallback_level == "GLOBAL_BUCKET_FALLBACK"
+    assert estimate.fallback_level == "GLOBAL_BUCKET_FALLBACK;public_spread_proxy"
+    assert estimate.source == "public_spread_proxy"
+
+
+def test_cost_bucket_daily_estimate_preserves_proxy_fallback_on_exact_match():
+    estimate = estimate_cost_from_cost_bucket_daily_rows(
+        symbol="BTC-USDT",
+        regime="public_proxy",
+        notional_usdt=5_000,
+        quantile="p75",
+        rows=[
+            {
+                "day": "2026-05-10",
+                "symbol": "BTC-USDT",
+                "regime": "public_proxy",
+                "event_type": "spread_proxy",
+                "notional_bucket": "all",
+                "sample_count": 8,
+                "fee_bps_p75": 0.0,
+                "slippage_bps_p75": 0.0,
+                "spread_bps_p75": 2.0,
+                "total_cost_bps_p75": 2.0,
+                "fallback_level": "FEE_MISSING;SLIPPAGE_UNKNOWN;PUBLIC_SPREAD_PROXY",
+                "source": "public_spread_proxy",
+            }
+        ],
+    )
+
+    assert estimate.total_cost_bps == 2.0
+    assert estimate.fallback_level == "FEE_MISSING;SLIPPAGE_UNKNOWN;PUBLIC_SPREAD_PROXY"
     assert estimate.source == "public_spread_proxy"
 
 

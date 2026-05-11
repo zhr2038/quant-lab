@@ -234,8 +234,18 @@ def estimate_cost_from_cost_bucket_daily_rows(
         return _global_default_estimate(symbol, regime, notional_usdt, quantile)
 
     row, fallback_level = tiered[0]
-    if str(row.get("fallback_level") or "").upper() == "GLOBAL_DEFAULT":
+    row_fallback_level = str(row.get("fallback_level") or "")
+    if row_fallback_level.upper() == "GLOBAL_DEFAULT":
         fallback_level = "GLOBAL_DEFAULT"
+    elif row_fallback_level and row_fallback_level not in {
+        "NONE",
+        "actual_okx_fills_and_bills",
+    }:
+        fallback_level = (
+            row_fallback_level
+            if fallback_level == "NONE"
+            else f"{fallback_level};{row_fallback_level}"
+        )
     fee_bps = _float_value(row, f"fee_bps_{quantile}")
     slippage_bps = _float_value(row, f"slippage_bps_{quantile}")
     spread_bps = _float_value(row, f"spread_bps_{quantile}")

@@ -298,26 +298,28 @@ def _append_file_rows(
     relative: str,
     metadata: dict[str, Any],
 ) -> None:
-    if relative.endswith("/summary.json") or relative == "summaries/window_summary.json":
+    logical = _logical_bundle_path(relative)
+    run_id = run_id_from_path(logical)
+    if logical.endswith("/summary.json") or logical == "summaries/window_summary.json":
         payload = _read_json(file_path)
         rows["v5_run_summary"].append(
-            _json_row(metadata, relative, payload, run_id_from_path(relative))
+            _json_row(metadata, relative, payload, run_id)
         )
         return
-    if relative.endswith("/decision_audit.json"):
+    if logical.endswith("/decision_audit.json"):
         payload = _read_json(file_path)
         rows["v5_decision_audit"].append(
-            _json_row(metadata, relative, payload, run_id_from_path(relative))
+            _json_row(metadata, relative, payload, run_id)
         )
         return
-    if relative.endswith("/equity.jsonl"):
+    if logical.endswith("/equity.jsonl"):
         rows["v5_equity_point"].extend(_jsonl_rows(metadata, relative, file_path))
         return
-    if relative.endswith("/trades.csv"):
+    if logical.endswith("/trades.csv"):
         rows["v5_trade_event"].extend(_csv_rows(metadata, relative, file_path))
         return
-    if relative.startswith("raw/state/") and relative.endswith(".json"):
-        state_type = Path(relative).stem
+    if logical.startswith("raw/state/") and logical.endswith(".json"):
+        state_type = Path(logical).stem
         payload = _read_json(file_path)
         rows["v5_state_snapshot"].append(
             _json_row(metadata, relative, payload, None)
@@ -329,7 +331,7 @@ def _append_file_rows(
             }
         )
         return
-    if relative == "summaries/issues_to_fix.json":
+    if logical == "summaries/issues_to_fix.json":
         rows["v5_issue"].extend(_issue_rows(metadata, relative, _read_json(file_path)))
         return
     csv_mapping = {
@@ -341,12 +343,12 @@ def _append_file_rows(
         "summaries/skipped_candidate_maturity_audit.csv": "v5_skipped_candidate_outcome",
         "summaries/probe_diagnostics.csv": "v5_probe_diagnostic",
     }
-    if relative.startswith("summaries/high_score_blocked_outcomes"):
+    if logical.startswith("summaries/high_score_blocked_outcomes"):
         rows["v5_high_score_blocked_outcome"].extend(_csv_rows(metadata, relative, file_path))
-    elif relative.startswith("summaries/alt_impulse_shadow"):
+    elif logical.startswith("summaries/alt_impulse_shadow"):
         rows["v5_shadow_outcome"].extend(_csv_rows(metadata, relative, file_path))
-    elif relative in csv_mapping:
-        rows[csv_mapping[relative]].extend(_csv_rows(metadata, relative, file_path))
+    elif logical in csv_mapping:
+        rows[csv_mapping[logical]].extend(_csv_rows(metadata, relative, file_path))
 
 
 def _json_row(
@@ -363,22 +365,24 @@ def _json_row(
 
 def _jsonl_rows(metadata: dict[str, Any], relative: str, file_path: Path) -> list[dict[str, Any]]:
     rows = []
+    run_id = run_id_from_path(_logical_bundle_path(relative))
     for index, line in enumerate(file_path.read_text(encoding="utf-8").splitlines()):
         if not line.strip():
             continue
         payload = redact_json_like(json.loads(line))
-        rows.append(_json_row(metadata, relative, payload, run_id_from_path(relative), index))
+        rows.append(_json_row(metadata, relative, payload, run_id, index))
     return rows
 
 
 def _csv_rows(metadata: dict[str, Any], relative: str, file_path: Path) -> list[dict[str, Any]]:
     rows = []
+    run_id = run_id_from_path(_logical_bundle_path(relative))
     with file_path.open("r", encoding="utf-8", newline="") as handle:
         reader = csv.DictReader(handle)
         for index, raw_row in enumerate(reader):
             safe_row = redact_json_like(dict(raw_row))
             rows.append(
-                _base_row(metadata, relative, run_id_from_path(relative), index)
+                _base_row(metadata, relative, run_id, index)
                 | {key: str(value) for key, value in safe_row.items()}
                 | {"raw_payload_json": safe_json_dumps(safe_row)}
             )
@@ -509,3 +513,10 @@ def run_id_from_path(relative: str) -> str | None:
         if index + 1 < len(parts):
             return parts[index + 1]
     return None
+
+
+def _logical_bundle_path(relative: str) -> str:
+    parts = [part for part in relative.split("/") if part]
+    if len(parts) > 1 and parts[0].startswith("v5_live_followup_bundle_"):
+        return "/".join(parts[1:])
+    return relative

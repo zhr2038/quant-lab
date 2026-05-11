@@ -188,7 +188,15 @@ def _dangerous_member_reasons(member: tarfile.TarInfo) -> list[str]:
 
 
 def _is_detected_file(name: str) -> bool:
-    return any(pattern.match(name) for pattern in KNOWN_FILE_PATTERNS)
+    logical_name = _logical_member_name(name)
+    return any(pattern.match(logical_name) for pattern in KNOWN_FILE_PATTERNS)
+
+
+def _logical_member_name(name: str) -> str:
+    parts = [part for part in name.split("/") if part]
+    if len(parts) > 1 and parts[0].startswith("v5_live_followup_bundle_"):
+        return "/".join(parts[1:])
+    return name
 
 
 def _ensure_within(root: Path, destination: Path) -> None:

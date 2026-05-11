@@ -23,3 +23,10 @@ def test_secret_scan_redacts_config(tmp_path):
     assert result.redacted_files
     assert SECRET_VALUE not in redacted_text
     assert "<REDACTED>" in redacted_text
+
+
+def test_secret_scan_allows_already_redacted_values():
+    scan = scan_for_secrets("api_key: <REDACTED>\napi_secret: REDACTED\npassphrase: null\n")
+
+    assert scan.high_severity_count == 0
+    assert scan.medium_severity_count == 0

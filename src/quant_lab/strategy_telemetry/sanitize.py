@@ -14,6 +14,7 @@ from quant_lab.strategy_telemetry.models import (
 )
 
 REDACTION = "<REDACTED>"
+SAFE_REDACTED_VALUES = {"<redacted>", "redacted", "null", "none", "false", "true", "0"}
 
 SENSITIVE_KEYS = {
     "api_key",
@@ -38,7 +39,8 @@ SECRET_PATTERNS = [
     (re.compile(r"OK-ACCESS-(KEY|SIGN|PASSPHRASE)", re.IGNORECASE), "high", "okx-auth-header"),
     (
         re.compile(
-            r"(api[_-]?key|apiSecret|api_secret)\s*[:=]\s*['\"]?[^'\"\s,}]+",
+            r"(api[_-]?key|apiSecret|api_secret)\s*[:=]\s*['\"]?"
+            r"(?!(?:<REDACTED>|REDACTED|null|none|false|true|0)\b)[^'\"\s,}]+",
             re.IGNORECASE,
         ),
         "high",
@@ -46,7 +48,8 @@ SECRET_PATTERNS = [
     ),
     (
         re.compile(
-            r"(secret[_-]?key|api_secret)\s*[:=]\s*['\"]?[^'\"\s,}]+",
+            r"(secret[_-]?key|api_secret)\s*[:=]\s*['\"]?"
+            r"(?!(?:<REDACTED>|REDACTED|null|none|false|true|0)\b)[^'\"\s,}]+",
             re.IGNORECASE,
         ),
         "high",
@@ -54,7 +57,8 @@ SECRET_PATTERNS = [
     ),
     (
         re.compile(
-            r"(passphrase|password|token)\s*[:=]\s*['\"]?[^'\"\s,}]+",
+            r"(passphrase|password|token)\s*[:=]\s*['\"]?"
+            r"(?!(?:<REDACTED>|REDACTED|null|none|false|true|0)\b)[^'\"\s,}]+",
             re.IGNORECASE,
         ),
         "medium",
@@ -109,19 +113,20 @@ def redact_extracted_bundle(extracted_dir: Path, redacted_dir: Path) -> Redactio
 
     for file_path in sorted(path for path in source.rglob("*") if path.is_file()):
         relative = file_path.relative_to(source)
-        destination = target / relative
+        destination_relative = _redacted_relative(relative)
+        destination = target / destination_relative
         destination.parent.mkdir(parents=True, exist_ok=True)
         try:
             text = file_path.read_text(encoding="utf-8")
         except UnicodeDecodeError:
             shutil.copy2(file_path, destination)
-            copied.append(str(relative).replace("\\", "/"))
+            copied.append(str(destination_relative).replace("\\", "/"))
             continue
         safe_text = redact_text(text)
         destination.write_text(safe_text, encoding="utf-8")
-        copied.append(str(relative).replace("\\", "/"))
+        copied.append(str(destination_relative).replace("\\", "/"))
         if safe_text != text:
-            redacted_files.append(str(relative).replace("\\", "/"))
+            redacted_files.append(str(destination_relative).replace("\\", "/"))
 
     return RedactionResult(
         source_dir=str(source),
@@ -157,7 +162,8 @@ def _findings_in_text(text: str, source_path: str) -> list[SecretFinding]:
     findings: list[SecretFinding] = []
     for line_number, line in enumerate(text.splitlines(), start=1):
         for pattern, severity, label in SECRET_PATTERNS:
-            if pattern.search(line):
+            match = pattern.search(line)
+            if match and not _match_has_safe_redacted_value(match.group(0)):
                 findings.append(
                     SecretFinding(
                         source_path=source_path,
@@ -194,6 +200,24 @@ def _redact_match(value: str) -> str:
     if "=" in value:
         return value.split("=", 1)[0] + "=" + REDACTION
     return REDACTION
+
+
+def _match_has_safe_redacted_value(value: str) -> bool:
+    if ":" in value:
+        raw_value = value.split(":", 1)[1]
+    elif "=" in value:
+        raw_value = value.split("=", 1)[1]
+    else:
+        return False
+    cleaned = raw_value.strip().strip("\"' ,;#}]").lower()
+    return cleaned in SAFE_REDACTED_VALUES
+
+
+def _redacted_relative(relative: Path) -> Path:
+    parts = relative.parts
+    if len(parts) > 1 and parts[0].startswith("v5_live_followup_bundle_"):
+        return Path(*parts[1:])
+    return relative
 
 
 def _sensitive_key(key: str) -> bool:

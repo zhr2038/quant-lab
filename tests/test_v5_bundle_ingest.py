@@ -43,3 +43,21 @@ def test_ingest_parses_state_files(tmp_path):
         "ledger_status",
         "auto_risk_eval",
     }
+
+
+def test_ingest_parses_official_bundle_top_level_dir(tmp_path):
+    bundle = make_v5_bundle_fixture(
+        tmp_path / "v5_live_followup_bundle_20260510T140249Z.tar.gz",
+        top_level_dir=True,
+    )
+    lake = tmp_path / "lake"
+
+    result = ingest_v5_bundle(bundle, lake, tmp_path / "restricted", tmp_path / "redacted")
+
+    states = read_parquet_dataset(lake / "silver/v5_state_snapshot")
+    issues = read_parquet_dataset(lake / "silver/v5_issue")
+    decisions = read_parquet_dataset(lake / "silver/v5_decision_audit")
+    assert result.validation.detected_files
+    assert "kill_switch" in set(states["state_type"].to_list())
+    assert issues.height == 1
+    assert decisions["run_id"][0] == "run_001"

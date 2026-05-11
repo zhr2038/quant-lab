@@ -8,7 +8,12 @@ from pathlib import Path
 SECRET_VALUE = "SHOULD_NOT_LEAK_12345"
 
 
-def make_v5_bundle_fixture(path: Path, *, secret: bool = False) -> Path:
+def make_v5_bundle_fixture(
+    path: Path,
+    *,
+    secret: bool = False,
+    top_level_dir: bool = False,
+) -> Path:
     files = {
         "raw/recent_runs/run_001/decision_audit.json": (
             '{"quant_lab": {"permission": "ALLOW"}, "decision": "paper"}'
@@ -48,6 +53,11 @@ def make_v5_bundle_fixture(path: Path, *, secret: bool = False) -> Path:
             f"api_key: {SECRET_VALUE}\npassphrase: {SECRET_VALUE}\n"
         )
         files["raw/logs/app.log"] = f"token={SECRET_VALUE}\n"
+    if top_level_dir:
+        files = {
+            f"v5_live_followup_bundle_20260510T140249Z/{name}": text
+            for name, text in files.items()
+        }
     return make_tar(path, files)
 
 

@@ -28,7 +28,10 @@ DATASET_PATHS = {
     "v5_missed_opportunity_daily": Path("gold") / "v5_missed_opportunity_daily",
     "v5_config_health_daily": Path("gold") / "v5_config_health_daily",
     "v5_issue_summary_daily": Path("gold") / "v5_issue_summary_daily",
+    "v5_quant_lab_mode_daily": Path("gold") / "v5_quant_lab_mode_daily",
+    "v5_quant_lab_enforcement_daily": Path("gold") / "v5_quant_lab_enforcement_daily",
     "v5_quant_lab_usage": Path("silver") / "v5_quant_lab_usage",
+    "v5_quant_lab_compliance": Path("silver") / "v5_quant_lab_compliance",
     "v5_quant_lab_cost_usage": Path("silver") / "v5_quant_lab_cost_usage",
     "v5_quant_lab_fallback": Path("silver") / "v5_quant_lab_fallback",
     "trade_print": Path("silver") / "trade_print",
@@ -54,6 +57,8 @@ DATASET_TIMESTAMP_COLUMNS: dict[str, tuple[str, ...]] = {
     "v5_missed_opportunity_daily": ("latest_bundle_ts", "date"),
     "v5_config_health_daily": ("latest_bundle_ts", "date"),
     "v5_issue_summary_daily": ("latest_bundle_ts", "date"),
+    "v5_quant_lab_mode_daily": ("latest_bundle_ts", "created_at", "date"),
+    "v5_quant_lab_enforcement_daily": ("latest_bundle_ts", "created_at", "date"),
     "okx_private_readonly_fills": ("ingest_ts",),
     "okx_private_readonly_bills": ("ingest_ts",),
     "feature_value": ("created_at", "ts"),
@@ -63,6 +68,7 @@ DATASET_TIMESTAMP_COLUMNS: dict[str, tuple[str, ...]] = {
     "okx_public_ws_health": ("last_message_at", "updated_at", "started_at"),
     "decision_audit": ("ingest_ts", "loaded_at"),
     "v5_quant_lab_usage": ("ingest_ts", "bundle_ts"),
+    "v5_quant_lab_compliance": ("ingest_ts", "bundle_ts"),
     "v5_quant_lab_cost_usage": ("ingest_ts", "bundle_ts"),
     "v5_quant_lab_fallback": ("ingest_ts", "bundle_ts"),
 }
@@ -680,12 +686,23 @@ def strategy_consumer_summary(lake_root: str | Path) -> dict[str, Any]:
 def v5_telemetry_summary(lake_root: str | Path) -> dict[str, Any]:
     health, health_warning = read_dataset_with_warning(lake_root, "strategy_health_daily")
     gate, gate_warning = read_dataset_with_warning(lake_root, "v5_gate_compliance_daily")
-    warnings = [warning for warning in [health_warning, gate_warning] if warning]
+    mode, mode_warning = read_dataset_with_warning(lake_root, "v5_quant_lab_mode_daily")
+    enforcement, enforcement_warning = read_dataset_with_warning(
+        lake_root,
+        "v5_quant_lab_enforcement_daily",
+    )
+    warnings = [
+        warning
+        for warning in [health_warning, gate_warning, mode_warning, enforcement_warning]
+        if warning
+    ]
     if health.is_empty():
         return {
             "latest": {},
             "health_rows": pl.DataFrame(),
             "gate_compliance_rows": gate,
+            "quant_lab_mode_rows": mode,
+            "quant_lab_enforcement_rows": enforcement,
             "warnings": [*warnings, "strategy_health_daily 数据集缺失或为空"],
         }
     sort_column = "date" if "date" in health.columns else health.columns[0]
@@ -694,6 +711,8 @@ def v5_telemetry_summary(lake_root: str | Path) -> dict[str, Any]:
         "latest": latest,
         "health_rows": health.sort(sort_column, descending=True).head(DISPLAY_LIMIT),
         "gate_compliance_rows": gate.head(DISPLAY_LIMIT),
+        "quant_lab_mode_rows": mode.head(DISPLAY_LIMIT),
+        "quant_lab_enforcement_rows": enforcement.head(DISPLAY_LIMIT),
         "warnings": warnings,
     }
 

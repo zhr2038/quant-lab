@@ -1,7 +1,9 @@
 import logging
 import os
+import time
 import uuid
 from collections.abc import Sequence
+from contextlib import contextmanager
 from datetime import datetime
 from pathlib import Path
 
@@ -88,15 +90,17 @@ def upsert_parquet_dataset(
     dataset_path: str | Path,
     key_columns: Sequence[str],
 ) -> int:
-    existing_df = read_parquet_dataset(dataset_path)
-    frames = [frame for frame in [existing_df, df] if not frame.is_empty()]
-    combined = pl.concat(frames, how="diagonal_relaxed") if frames else df
-    if not combined.is_empty():
-        available_keys = [column for column in key_columns if column in combined.columns]
-        if available_keys:
-            combined = combined.unique(subset=available_keys, keep="last", maintain_order=True)
-    write_parquet_dataset(combined, dataset_path)
-    return combined.height
+    path = Path(dataset_path)
+    with _dataset_lock(path):
+        existing_df = read_parquet_dataset(path)
+        frames = [frame for frame in [existing_df, df] if not frame.is_empty()]
+        combined = pl.concat(frames, how="diagonal_relaxed") if frames else df
+        if not combined.is_empty():
+            available_keys = [column for column in key_columns if column in combined.columns]
+            if available_keys:
+                combined = combined.unique(subset=available_keys, keep="last", maintain_order=True)
+        write_parquet_dataset(combined, path)
+        return combined.height
 
 
 def validate_market_bars(records: Sequence[MarketBar | dict]) -> list[MarketBar]:
@@ -309,3 +313,43 @@ def _remove_stale_parquet_files(path: Path, keep: Path) -> None:
     for child in sorted(path.rglob("*"), key=lambda item: len(item.parts), reverse=True):
         if child.is_dir() and not any(child.iterdir()):
             child.rmdir()
+
+
+@contextmanager
+def _dataset_lock(dataset_path: Path, *, timeout_seconds: float = 30.0) -> object:
+    dataset_path.parent.mkdir(parents=True, exist_ok=True)
+    lock_path = dataset_path.parent / f".{dataset_path.name}.lock"
+    start = time.monotonic()
+    fd: int | None = None
+    while fd is None:
+        try:
+            fd = os.open(lock_path, os.O_CREAT | os.O_EXCL | os.O_WRONLY)
+            os.write(fd, str(os.getpid()).encode("ascii"))
+        except FileExistsError:
+            if _lock_is_stale(lock_path):
+                try:
+                    lock_path.unlink()
+                except FileNotFoundError:
+                    pass
+                continue
+            if time.monotonic() - start > timeout_seconds:
+                raise TimeoutError(
+                    f"timed out waiting for dataset lock: {dataset_path}"
+                ) from None
+            time.sleep(0.05)
+    try:
+        yield
+    finally:
+        if fd is not None:
+            os.close(fd)
+        try:
+            lock_path.unlink()
+        except FileNotFoundError:
+            pass
+
+
+def _lock_is_stale(lock_path: Path, *, stale_seconds: float = 600.0) -> bool:
+    try:
+        return time.time() - lock_path.stat().st_mtime > stale_seconds
+    except FileNotFoundError:
+        return False

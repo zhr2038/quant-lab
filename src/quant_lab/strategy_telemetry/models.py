@@ -163,6 +163,13 @@ class V5TelemetryAnalysisResult(TelemetryModel):
     high_score_blocked_profitable_count: int = 0
     skipped_candidate_matured_count: int = 0
     router_reason_top: list[dict[str, Any]] = Field(default_factory=list)
+    quant_lab_mode: str | None = None
+    permission_gate_enforced: bool | None = None
+    quant_lab_usage_count: int = 0
+    quant_lab_cost_usage_count: int = 0
+    quant_lab_fallback_count: int = 0
+    quant_lab_actual_violation_count: int = 0
+    quant_lab_hypothetical_violation_count: int = 0
     warnings: list[str] = Field(default_factory=list)
     critical_reasons: list[str] = Field(default_factory=list)
     next_actions: list[str] = Field(default_factory=list)

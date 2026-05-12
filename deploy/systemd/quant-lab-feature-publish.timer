@@ -1,0 +1,10 @@
+[Unit]
+Description=Run quant-lab feature publisher every 15 minutes
+
+[Timer]
+OnBootSec=12min
+OnUnitActiveSec=15min
+Persistent=true
+
+[Install]
+WantedBy=timers.target

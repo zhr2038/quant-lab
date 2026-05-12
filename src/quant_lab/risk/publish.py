@@ -29,6 +29,7 @@ RISK_PERMISSION_SCHEMA = {
     "gate_version": pl.Utf8,
     "reasons": pl.Utf8,
     "created_at": pl.Utf8,
+    "permission_source": pl.Utf8,
     "source": pl.Utf8,
     "fallback_level": pl.Utf8,
 }

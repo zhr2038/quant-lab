@@ -42,8 +42,38 @@ def test_read_only_example_endpoints_and_catalog():
         "alpha_evidence",
         "gate_decision",
         "risk_permission",
+        "v5_quant_lab_mode_daily",
+        "v5_quant_lab_enforcement_daily",
     ]
     assert gate.status_code == 200
     assert gate.json()["status"] == "LIVE_READY"
     assert costs.status_code == 200
     assert costs.json()["fallback_level"] == "NONE"
+
+
+def test_bearer_token_required_when_configured(monkeypatch):
+    monkeypatch.setenv("QUANT_LAB_API_TOKEN", "test-token")
+    client = TestClient(app)
+
+    missing = client.get("/v1/catalog/datasets")
+    wrong = client.get("/v1/catalog/datasets", headers={"Authorization": "Bearer wrong"})
+    correct = client.get(
+        "/v1/catalog/datasets",
+        headers={"Authorization": "Bearer test-token"},
+    )
+
+    assert missing.status_code == 401
+    assert wrong.status_code == 401
+    assert correct.status_code == 200
+
+
+def test_health_requires_token_when_local_bypass_disabled(monkeypatch):
+    monkeypatch.setenv("QUANT_LAB_API_TOKEN", "test-token")
+    monkeypatch.setenv("QUANT_LAB_HEALTH_ALLOW_LOCAL_UNAUTH", "false")
+    client = TestClient(app)
+
+    missing = client.get("/v1/health")
+    correct = client.get("/v1/health", headers={"Authorization": "Bearer test-token"})
+
+    assert missing.status_code == 401
+    assert correct.status_code == 200

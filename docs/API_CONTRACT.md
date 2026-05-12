@@ -18,6 +18,23 @@ transfer, withdrawal, private trading mutation, or account mutation endpoints.
 - Trade permission and Withdraw permission are forbidden.
 - The V5 reports importer is optional legacy tooling, not the primary source.
 
+## Authentication
+
+All `/v1/*` routes support optional bearer-token protection. When
+`QUANT_LAB_API_TOKEN` is set in the API process environment, clients must send:
+
+```text
+Authorization: Bearer <token>
+```
+
+`/v1/health` uses the same rule, except localhost health checks may be allowed
+when `QUANT_LAB_HEALTH_ALLOW_LOCAL_UNAUTH=true` (the default). Set
+`QUANT_LAB_HEALTH_ALLOW_LOCAL_UNAUTH=false` to require the bearer token for
+health checks as well.
+
+Do not write `QUANT_LAB_API_TOKEN` to lake files, logs, expert exports, or V5
+bundles.
+
 ## GET /v1/health
 
 Request params: none.
@@ -51,7 +68,9 @@ Example response:
     "cost_health_daily",
     "alpha_evidence",
     "gate_decision",
-    "risk_permission"
+    "risk_permission",
+    "v5_quant_lab_mode_daily",
+    "v5_quant_lab_enforcement_daily"
   ]
 }
 ```
@@ -253,9 +272,13 @@ Example response:
 ## GET /v1/risk/live-permission
 
 Returns the current read-only risk permission for a strategy/version pair. The
-API reads `lake/gold/risk_permission` when published, otherwise it computes a
-conservative response from gate, cost, market-data, and V5 telemetry health. It
-is a research permission signal, not an execution command.
+API reads `lake/gold/risk_permission` when published and fresh, otherwise it
+computes a conservative response from gate, cost, market-data, and V5 telemetry
+health. Published permissions older than
+`QUANT_LAB_RISK_PERMISSION_TTL_SECONDS` (default `300`) are recomputed. If the
+recomputed permission is more conservative than the published row, the API
+returns the recomputed permission. It is a research permission signal, not an
+execution command.
 
 Request params:
 
@@ -275,7 +298,8 @@ Example response:
   "cost_model_version": "costs-v1",
   "gate_version": "default-v0.1",
   "reasons": ["all_required_alpha_gates_live_ready"],
-  "created_at": "2026-05-10T00:00:00Z"
+  "created_at": "2026-05-10T00:00:00Z",
+  "permission_source": "published_cache"
 }
 ```
 

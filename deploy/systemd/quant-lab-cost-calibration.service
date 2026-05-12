@@ -1,0 +1,9 @@
+[Unit]
+Description=quant-lab daily cost calibration
+
+[Service]
+Type=oneshot
+User=quantlab
+Group=quantlab
+WorkingDirectory=/opt/quant-lab
+ExecStart=/bin/bash -lc '/opt/quant-lab/.venv/bin/qlab calibrate-costs --lake-root /var/lib/quant-lab/lake --day "$(date -u +%%F)" --min-sample-count 30'

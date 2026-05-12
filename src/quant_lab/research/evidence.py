@@ -122,8 +122,8 @@ def build_alpha_evidence(
         start_ts=start_ts,
         end_ts=end_ts,
         coverage=coverage,
-        ic_mean=ic_stats.mean if valid_rows >= spec.min_samples else min(ic_stats.mean, 0.0),
-        ic_tstat=ic_stats.tstat if valid_rows >= spec.min_samples else min(ic_stats.tstat, 0.0),
+        ic_mean=ic_stats.mean,
+        ic_tstat=ic_stats.tstat,
         rank_ic_mean=rank_ic_stats.mean,
         rank_ic_tstat=rank_ic_stats.tstat,
         edge_cost_ratio=oos_stats.edge_cost_ratio,
@@ -140,6 +140,7 @@ def build_alpha_evidence(
         paper_days=0,
         paper_slippage_coverage=0.0,
         created_at=now,
+        evidence_status=status,
     )
     return AlphaEvidenceBuildResult(evidence, dataset, _dedupe(warnings), status)
 

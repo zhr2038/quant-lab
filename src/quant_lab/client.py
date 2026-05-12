@@ -33,14 +33,18 @@ class QuantLabClient:
         self,
         base_url: str,
         timeout_seconds: float = 2.0,
+        api_token: str | None = None,
         http_client: httpx.Client | None = None,
     ) -> None:
         self.base_url = base_url.rstrip("/")
         self.timeout_seconds = timeout_seconds
+        headers = {"Accept": "application/json"}
+        if api_token:
+            headers["Authorization"] = f"Bearer {api_token}"
         self._client = http_client or httpx.Client(
             base_url=self.base_url,
             timeout=timeout_seconds,
-            headers={"Accept": "application/json"},
+            headers=headers,
         )
 
     def get_health(self) -> dict[str, Any]:

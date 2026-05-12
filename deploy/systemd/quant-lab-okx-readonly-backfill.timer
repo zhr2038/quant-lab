@@ -1,0 +1,10 @@
+[Unit]
+Description=Run quant-lab OKX read-only private backfill every 15 minutes
+
+[Timer]
+OnBootSec=7min
+OnUnitActiveSec=15min
+Persistent=true
+
+[Install]
+WantedBy=timers.target

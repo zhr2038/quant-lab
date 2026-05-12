@@ -1,0 +1,9 @@
+[Unit]
+Description=quant-lab alpha evidence publisher
+
+[Service]
+Type=oneshot
+User=quantlab
+Group=quantlab
+WorkingDirectory=/opt/quant-lab
+ExecStart=/opt/quant-lab/.venv/bin/qlab build-alpha-evidence --lake-root /var/lib/quant-lab/lake --alpha-id v5.core.momentum --version v0.1 --feature-set core --feature-version v0.1 --feature-names close_return_24 --timeframe 1H --label-horizon-bars 4 --decision-delay-bars 1 --universe-id okx-major-spot --strategy v5 --cost-quantile p75

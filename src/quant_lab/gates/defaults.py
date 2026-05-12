@@ -1,3 +1,4 @@
+import os
 from typing import Any
 
 from quant_lab.contracts.models import AlphaEvidence, GateDecision, GateStatus
@@ -6,6 +7,19 @@ DEFAULT_GATE_VERSION = "default-v0.1"
 
 
 def evaluate_alpha_gate(evidence: AlphaEvidence) -> GateDecision:
+    if evidence.evidence_status == "insufficient_samples":
+        status = _insufficient_samples_status()
+        return _decision(
+            evidence,
+            status=status,
+            reasons=["insufficient_samples"],
+            next_action=(
+                "collect_more_research_samples"
+                if status == GateStatus.QUARANTINE
+                else "retire_alpha_or_expand_universe"
+            ),
+        )
+
     dead_reasons = _dead_reasons(evidence)
     if dead_reasons:
         return _decision(
@@ -76,6 +90,16 @@ def _paper_ready_reasons(evidence: AlphaEvidence) -> list[str]:
     return reasons
 
 
+def _insufficient_samples_status() -> GateStatus:
+    configured = os.environ.get(
+        "QUANT_LAB_INSUFFICIENT_SAMPLES_GATE_STATUS",
+        GateStatus.QUARANTINE.value,
+    ).strip().upper()
+    if configured == GateStatus.DEAD.value:
+        return GateStatus.DEAD
+    return GateStatus.QUARANTINE
+
+
 def _decision(
     evidence: AlphaEvidence,
     status: GateStatus,
@@ -115,4 +139,5 @@ def _metrics(evidence: AlphaEvidence) -> dict[str, Any]:
         "pbo_score": evidence.pbo_score,
         "paper_days": evidence.paper_days,
         "paper_slippage_coverage": evidence.paper_slippage_coverage,
+        "evidence_status": evidence.evidence_status,
     }

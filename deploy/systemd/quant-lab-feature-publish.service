@@ -1,0 +1,9 @@
+[Unit]
+Description=quant-lab core feature publisher
+
+[Service]
+Type=oneshot
+User=quantlab
+Group=quantlab
+WorkingDirectory=/opt/quant-lab
+ExecStart=/opt/quant-lab/.venv/bin/qlab publish-features --lake-root /var/lib/quant-lab/lake --feature-set core --feature-version v0.1 --timeframe 1H --symbols BTC-USDT,ETH-USDT,SOL-USDT,BNB-USDT

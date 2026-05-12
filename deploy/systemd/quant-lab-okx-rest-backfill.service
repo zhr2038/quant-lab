@@ -1,0 +1,12 @@
+[Unit]
+Description=quant-lab OKX public REST market-bar backfill
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+User=quantlab
+Group=quantlab
+WorkingDirectory=/opt/quant-lab
+Environment=PYTHONUNBUFFERED=1
+ExecStart=/opt/quant-lab/.venv/bin/qlab okx-fetch-candles --inst-id BTC-USDT --bar 1H --market-type SPOT --lake-root /var/lib/quant-lab/lake --history --limit 100

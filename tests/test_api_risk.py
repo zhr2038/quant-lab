@@ -14,7 +14,12 @@ def test_live_permission_api_aborts_without_gate_decision(tmp_path, monkeypatch)
     _write_fresh_market_bar(lake)
     _write_cost_bucket(lake)
 
-    payload = _get_permission("v5")
+    response = TestClient(app).get(
+        "/v1/risk/live-permission",
+        params={"strategy": "v5", "version": "5.0.0"},
+    )
+    assert response.status_code == 200
+    payload = response.json()
 
     assert payload["permission"] == "ABORT"
     assert payload["reasons"] == ["no_required_gate_decisions"]
@@ -91,6 +96,9 @@ def test_live_permission_api_aborts_on_v5_gate_compliance_violation(tmp_path, mo
 def test_live_permission_api_reads_published_risk_permission(tmp_path, monkeypatch):
     lake = tmp_path / "lake"
     monkeypatch.setenv("QUANT_LAB_LAKE_ROOT", str(lake))
+    _write_gate(lake, GateStatus.LIVE_READY)
+    _write_cost_bucket(lake)
+    _write_fresh_market_bar(lake)
     write_parquet_dataset(
         pl.DataFrame(
             [
@@ -122,6 +130,43 @@ def test_live_permission_api_reads_published_risk_permission(tmp_path, monkeypat
     payload = response.json()
     assert payload["permission"] == "SELL_ONLY"
     assert payload["reasons"] == ["published_permission"]
+    assert payload["permission_source"] == "published_cache"
+
+
+def test_live_permission_api_recomputes_stale_published_allow(tmp_path, monkeypatch):
+    lake = tmp_path / "lake"
+    monkeypatch.setenv("QUANT_LAB_LAKE_ROOT", str(lake))
+    monkeypatch.setenv("QUANT_LAB_RISK_PERMISSION_TTL_SECONDS", "300")
+    _write_gate(lake, GateStatus.LIVE_READY)
+    _write_cost_bucket(lake)
+    _write_stale_market_bar(lake)
+    write_parquet_dataset(
+        pl.DataFrame(
+            [
+                {
+                    "strategy": "v5",
+                    "version": "5.0.0",
+                    "permission": "ALLOW",
+                    "allowed_modes": '["paper","live_canary"]',
+                    "max_gross_exposure": 0.25,
+                    "max_single_weight": 0.05,
+                    "cost_model_version": "costs-test",
+                    "gate_version": "default-v0.1",
+                    "reasons": '["old_allow"]',
+                    "created_at": (datetime.now(UTC) - timedelta(hours=1)).isoformat(),
+                    "source": "test",
+                    "fallback_level": "NONE",
+                }
+            ]
+        ),
+        lake / "gold/risk_permission",
+    )
+
+    payload = _get_permission("v5")
+
+    assert payload["permission"] == "ABORT"
+    assert payload["permission_source"] == "recomputed"
+    assert "market_bar_stale" in payload["reasons"]
 
 
 def _get_permission(strategy: str) -> dict:

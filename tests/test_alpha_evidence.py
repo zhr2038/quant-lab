@@ -34,6 +34,19 @@ def test_build_alpha_evidence_computes_metrics_without_paper_live_ready(tmp_path
     assert result.evidence.ic_mean > 0
     assert result.evidence.paper_days == 0
     assert result.evidence.paper_slippage_coverage == 0.0
+    assert result.evidence.evidence_status == "ok"
+
+
+def test_insufficient_samples_keeps_metrics_and_marks_status(tmp_path):
+    lake = tmp_path / "lake"
+    _write_research_fixture(lake)
+
+    result = build_alpha_evidence(lake, _spec(min_samples=10_000))
+
+    assert result.evidence is not None
+    assert result.status == "insufficient_samples"
+    assert result.evidence.evidence_status == "insufficient_samples"
+    assert result.evidence.ic_mean > 0
 
 
 def test_build_alpha_evidence_missing_feature_value_does_not_crash(tmp_path):

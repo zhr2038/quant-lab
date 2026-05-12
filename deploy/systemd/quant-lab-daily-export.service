@@ -1,0 +1,9 @@
+[Unit]
+Description=quant-lab daily expert export
+
+[Service]
+Type=oneshot
+User=quantlab
+Group=quantlab
+WorkingDirectory=/opt/quant-lab
+ExecStart=/bin/bash -lc '/opt/quant-lab/.venv/bin/qlab export-daily --date "$(date -u +%%F)" --lake-root /var/lib/quant-lab/lake --out-dir /var/lib/quant-lab/exports'

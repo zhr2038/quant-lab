@@ -37,7 +37,10 @@ SECTION_DATASETS = {
         "v5_missed_opportunity_daily",
         "v5_config_health_daily",
         "v5_issue_summary_daily",
+        "v5_quant_lab_mode_daily",
+        "v5_quant_lab_enforcement_daily",
         "v5_quant_lab_usage",
+        "v5_quant_lab_compliance",
         "v5_quant_lab_cost_usage",
         "v5_quant_lab_fallback",
     ],
@@ -78,7 +81,10 @@ REQUIRED_MEMBERS = [
     "v5/v5_missed_opportunity.csv",
     "v5/v5_config_health.csv",
     "v5/v5_issue_summary.csv",
+    "v5/v5_quant_lab_mode.csv",
+    "v5/v5_quant_lab_enforcement.csv",
     "v5/v5_quant_lab_usage.csv",
+    "v5/v5_quant_lab_compliance.csv",
     "v5/v5_quant_lab_cost_usage.csv",
     "v5/v5_quant_lab_fallbacks.csv",
     "charts/market_close.png",
@@ -192,6 +198,7 @@ CSV_SCHEMAS: dict[str, list[str]] = {
         "edge_cost_ratio",
         "paper_days",
         "created_at",
+        "evidence_status",
     ],
     "research/gate_decisions.csv": [
         "alpha_id",
@@ -247,6 +254,31 @@ CSV_SCHEMAS: dict[str, list[str]] = {
         "high_issue_count",
         "medium_issue_count",
     ],
+    "v5/v5_quant_lab_mode.csv": [
+        "strategy",
+        "date",
+        "mode",
+        "permission_gate_enforced",
+        "usage_count",
+        "cost_usage_count",
+        "fallback_count",
+        "latest_bundle_ts",
+        "latest_bundle_sha256",
+        "created_at",
+    ],
+    "v5/v5_quant_lab_enforcement.csv": [
+        "strategy",
+        "date",
+        "mode",
+        "permission_gate_enforced",
+        "actual_violation_count",
+        "hypothetical_violation_count",
+        "actual_violations_json",
+        "hypothetical_violations_json",
+        "latest_bundle_ts",
+        "latest_bundle_sha256",
+        "created_at",
+    ],
     "v5/v5_quant_lab_usage.csv": [
         "strategy",
         "bundle_sha256",
@@ -255,6 +287,18 @@ CSV_SCHEMAS: dict[str, list[str]] = {
         "source_path_inside_bundle",
         "run_id",
         "row_index",
+        "raw_payload_json",
+    ],
+    "v5/v5_quant_lab_compliance.csv": [
+        "strategy",
+        "bundle_sha256",
+        "bundle_name",
+        "bundle_ts",
+        "source_path_inside_bundle",
+        "permission",
+        "side",
+        "mode",
+        "permission_gate_enforced",
         "raw_payload_json",
     ],
     "v5/v5_quant_lab_cost_usage.csv": [
@@ -483,7 +527,10 @@ def _dataset_members(frames: dict[str, pl.DataFrame]) -> dict[str, _MemberPayloa
     v5_missed = frames.get("v5_missed_opportunity_daily", pl.DataFrame())
     v5_config = frames.get("v5_config_health_daily", pl.DataFrame())
     v5_issue = frames.get("v5_issue_summary_daily", pl.DataFrame())
+    v5_mode = frames.get("v5_quant_lab_mode_daily", pl.DataFrame())
+    v5_enforcement = frames.get("v5_quant_lab_enforcement_daily", pl.DataFrame())
     v5_usage = frames.get("v5_quant_lab_usage", pl.DataFrame())
+    v5_compliance = frames.get("v5_quant_lab_compliance", pl.DataFrame())
     v5_cost_usage = frames.get("v5_quant_lab_cost_usage", pl.DataFrame())
     v5_fallbacks = frames.get("v5_quant_lab_fallback", pl.DataFrame())
 
@@ -539,7 +586,16 @@ def _dataset_members(frames: dict[str, pl.DataFrame]) -> dict[str, _MemberPayloa
         "v5/v5_missed_opportunity.csv": _csv_member("v5/v5_missed_opportunity.csv", v5_missed),
         "v5/v5_config_health.csv": _csv_member("v5/v5_config_health.csv", v5_config),
         "v5/v5_issue_summary.csv": _csv_member("v5/v5_issue_summary.csv", v5_issue),
+        "v5/v5_quant_lab_mode.csv": _csv_member("v5/v5_quant_lab_mode.csv", v5_mode),
+        "v5/v5_quant_lab_enforcement.csv": _csv_member(
+            "v5/v5_quant_lab_enforcement.csv",
+            v5_enforcement,
+        ),
         "v5/v5_quant_lab_usage.csv": _csv_member("v5/v5_quant_lab_usage.csv", v5_usage),
+        "v5/v5_quant_lab_compliance.csv": _csv_member(
+            "v5/v5_quant_lab_compliance.csv",
+            v5_compliance,
+        ),
         "v5/v5_quant_lab_cost_usage.csv": _csv_member(
             "v5/v5_quant_lab_cost_usage.csv", v5_cost_usage
         ),

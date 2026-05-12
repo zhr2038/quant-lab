@@ -159,36 +159,41 @@ def default_core_registry(
                 required_columns=("symbol", "timeframe", "ts", "close", "is_closed"),
             )
         )
-    for feature_name, lookback, description, required_columns in [
+    for feature_name, lookback, description, required_columns, compute in [
         (
             "volume_zscore_24",
             24,
             "Rolling z-score of bar volume over 24 closed bars.",
             ("symbol", "timeframe", "ts", "volume", "is_closed"),
+            compute_volume_zscore_n,
         ),
         (
             "range_bps",
             1,
             "Intrabar high-low range divided by close in basis points.",
             ("symbol", "timeframe", "ts", "high", "low", "close", "is_closed"),
+            compute_range_bps,
         ),
         (
             "close_position_in_range",
             1,
             "Close location between low and high for the same closed bar.",
             ("symbol", "timeframe", "ts", "high", "low", "close", "is_closed"),
+            compute_close_position_in_range,
         ),
         (
             "dollar_volume",
             1,
             "Quote volume or close times base volume for the closed bar.",
             ("symbol", "timeframe", "ts", "close", "volume", "quote_volume", "is_closed"),
+            compute_dollar_volume,
         ),
         (
             "liquidity_proxy",
             1,
             "log1p of dollar_volume for the closed bar.",
             ("symbol", "timeframe", "ts", "close", "volume", "quote_volume", "is_closed"),
+            compute_liquidity_proxy,
         ),
     ]:
         registry.register(
@@ -199,7 +204,7 @@ def default_core_registry(
                 timeframe=timeframe,
                 lookback_bars=lookback,
                 description=description,
-                compute=compute_close_return_n,
+                compute=compute,
                 required_columns=required_columns,
             )
         )
@@ -261,6 +266,100 @@ def compute_rolling_volatility_n(
         )
         .drop("_return")
     )
+    return _rows_to_feature_values(computed, spec, context)
+
+
+def compute_volume_zscore_n(
+    market_bars: pl.DataFrame,
+    spec: FeatureSpec,
+    context: FeatureComputeContext,
+) -> list[FeatureValue]:
+    bars = _prepare_market_bars_with_columns(market_bars, ["volume"])
+    group_columns = _group_columns(bars)
+    rolling_mean = pl.col("volume").rolling_mean(
+        window_size=spec.lookback_bars,
+        min_samples=spec.lookback_bars,
+    ).over(group_columns)
+    rolling_std = pl.col("volume").rolling_std(
+        window_size=spec.lookback_bars,
+        min_samples=spec.lookback_bars,
+    ).over(group_columns)
+    computed = bars.with_columns(
+        [
+            rolling_mean.alias("_volume_mean"),
+            rolling_std.alias("_volume_std"),
+        ]
+    ).with_columns(
+        [
+            pl.when(pl.col("_volume_std") > 0)
+            .then((pl.col("volume") - pl.col("_volume_mean")) / pl.col("_volume_std"))
+            .otherwise(None)
+            .alias("value"),
+            pl.when(pl.col("_volume_std").is_null())
+            .then(pl.lit("insufficient_lookback"))
+            .when(pl.col("_volume_std") <= 0)
+            .then(pl.lit("zero_volume_std"))
+            .otherwise(None)
+            .alias("invalid_reason"),
+        ]
+    )
+    return _rows_to_feature_values(computed, spec, context)
+
+
+def compute_range_bps(
+    market_bars: pl.DataFrame,
+    spec: FeatureSpec,
+    context: FeatureComputeContext,
+) -> list[FeatureValue]:
+    bars = _prepare_market_bars_with_columns(market_bars, ["high", "low", "close"])
+    computed = bars.with_columns(
+        (((pl.col("high") - pl.col("low")) / pl.col("close")) * 10_000).alias("value")
+    )
+    return _rows_to_feature_values(computed, spec, context)
+
+
+def compute_close_position_in_range(
+    market_bars: pl.DataFrame,
+    spec: FeatureSpec,
+    context: FeatureComputeContext,
+) -> list[FeatureValue]:
+    bars = _prepare_market_bars_with_columns(market_bars, ["high", "low", "close"])
+    range_expr = pl.col("high") - pl.col("low")
+    computed = bars.with_columns(
+        [
+            pl.when(range_expr > 0)
+            .then((pl.col("close") - pl.col("low")) / range_expr)
+            .otherwise(None)
+            .alias("value"),
+            pl.when(range_expr <= 0)
+            .then(pl.lit("zero_range"))
+            .otherwise(None)
+            .alias("invalid_reason"),
+        ]
+    )
+    return _rows_to_feature_values(computed, spec, context)
+
+
+def compute_dollar_volume(
+    market_bars: pl.DataFrame,
+    spec: FeatureSpec,
+    context: FeatureComputeContext,
+) -> list[FeatureValue]:
+    bars = _prepare_market_bars_with_columns(market_bars, ["close", "volume", "quote_volume"])
+    computed = bars.with_columns(
+        pl.coalesce([pl.col("quote_volume"), pl.col("close") * pl.col("volume")]).alias("value")
+    )
+    return _rows_to_feature_values(computed, spec, context)
+
+
+def compute_liquidity_proxy(
+    market_bars: pl.DataFrame,
+    spec: FeatureSpec,
+    context: FeatureComputeContext,
+) -> list[FeatureValue]:
+    bars = _prepare_market_bars_with_columns(market_bars, ["close", "volume", "quote_volume"])
+    dollar_volume = pl.coalesce([pl.col("quote_volume"), pl.col("close") * pl.col("volume")])
+    computed = bars.with_columns((dollar_volume + 1.0).log().alias("value"))
     return _rows_to_feature_values(computed, spec, context)
 
 
@@ -348,14 +447,42 @@ def _prepare_market_bars(market_bars: pl.DataFrame) -> pl.DataFrame:
     return market_bars.select(columns).sort(sort_columns)
 
 
+def _prepare_market_bars_with_columns(
+    market_bars: pl.DataFrame,
+    value_columns: list[str],
+) -> pl.DataFrame:
+    required_columns = {"symbol", "ts", *value_columns}
+    missing_columns = sorted(required_columns.difference(market_bars.columns))
+    if missing_columns:
+        raise ValueError(f"market_bars missing required columns: {', '.join(missing_columns)}")
+    columns = ["symbol", "ts", *value_columns]
+    if "timeframe" in market_bars.columns:
+        columns.insert(2, "timeframe")
+    if "is_closed" in market_bars.columns:
+        market_bars = market_bars.filter(pl.col("is_closed"))
+    sort_columns = [column for column in ["symbol", "timeframe", "ts"] if column in columns]
+    return market_bars.select(columns).sort(sort_columns)
+
+
 def _rows_to_feature_values(
     computed: pl.DataFrame,
     spec: FeatureSpec,
     context: FeatureComputeContext,
 ) -> list[FeatureValue]:
     values: list[FeatureValue] = []
-    for row in computed.select("symbol", "ts", "value").iter_rows(named=True):
+    select_columns = ["symbol", "ts", "value"]
+    if "invalid_reason" in computed.columns:
+        select_columns.append("invalid_reason")
+    for row in computed.select(select_columns).iter_rows(named=True):
         value = _normalize_optional_float(row["value"])
+        explicit_reason = row.get("invalid_reason")
+        invalid_reason = (
+            str(explicit_reason)
+            if explicit_reason is not None and str(explicit_reason)
+            else None
+        )
+        if value is None and invalid_reason is None:
+            invalid_reason = "insufficient_lookback"
         values.append(
             FeatureValue(
                 feature_set=spec.feature_set,
@@ -371,8 +498,8 @@ def _rows_to_feature_values(
                 code_version=context.code_version,
                 created_at=context.created_at,
                 source="market_bar",
-                is_valid=value is not None,
-                invalid_reason=None if value is not None else "insufficient_lookback",
+                is_valid=value is not None and invalid_reason is None,
+                invalid_reason=invalid_reason,
             )
         )
     return values

@@ -17,6 +17,8 @@ GOLD_DATASETS = {
     "v5_missed_opportunity_daily": Path("gold/v5_missed_opportunity_daily"),
     "v5_config_health_daily": Path("gold/v5_config_health_daily"),
     "v5_issue_summary_daily": Path("gold/v5_issue_summary_daily"),
+    "v5_quant_lab_mode_daily": Path("gold/v5_quant_lab_mode_daily"),
+    "v5_quant_lab_enforcement_daily": Path("gold/v5_quant_lab_enforcement_daily"),
 }
 
 SILVER = {
@@ -34,6 +36,10 @@ SILVER = {
     "high_score_target": Path("silver/v5_high_score_blocked_target"),
     "high_score_outcome": Path("silver/v5_high_score_blocked_outcome"),
     "skipped": Path("silver/v5_skipped_candidate_outcome"),
+    "quant_lab_usage": Path("silver/v5_quant_lab_usage"),
+    "quant_lab_compliance": Path("silver/v5_quant_lab_compliance"),
+    "quant_lab_cost_usage": Path("silver/v5_quant_lab_cost_usage"),
+    "quant_lab_fallback": Path("silver/v5_quant_lab_fallback"),
 }
 
 
@@ -54,6 +60,10 @@ def analyze_v5_telemetry(lake_root: Path, date: str | None = None) -> V5Telemetr
     targets = read_parquet_dataset(root / SILVER["high_score_target"])
     outcomes = read_parquet_dataset(root / SILVER["high_score_outcome"])
     skipped = read_parquet_dataset(root / SILVER["skipped"])
+    quant_lab_usage = read_parquet_dataset(root / SILVER["quant_lab_usage"])
+    quant_lab_compliance = read_parquet_dataset(root / SILVER["quant_lab_compliance"])
+    quant_lab_cost_usage = read_parquet_dataset(root / SILVER["quant_lab_cost_usage"])
+    quant_lab_fallback = read_parquet_dataset(root / SILVER["quant_lab_fallback"])
     window_summary = _window_summary_payload(run_summary)
 
     latest_bundle_ts = _latest_time(manifest, "bundle_ts")
@@ -110,10 +120,23 @@ def analyze_v5_telemetry(lake_root: Path, date: str | None = None) -> V5Telemetr
     elif config_not_consumed_count > 0:
         warnings.append("config values not consumed at runtime")
 
-    gate_violations = _gate_compliance_violations(decisions, trades)
+    quant_lab_summary = _quant_lab_mode_summary(
+        quant_lab_usage,
+        quant_lab_compliance,
+        quant_lab_cost_usage,
+        quant_lab_fallback,
+        trades,
+    )
+    gate_violations = (
+        list(quant_lab_summary["actual_violations"])
+        if quant_lab_summary["has_data"]
+        else _gate_compliance_violations(decisions, trades)
+    )
     if gate_violations:
         critical.append("gate_compliance_violation")
         next_actions.extend(gate_violations)
+    if quant_lab_summary["hypothetical_violations"]:
+        warnings.append("quant_lab hypothetical permission violations present")
 
     router_reason_top = _router_reason_top(routers)
     fallback_count = _fallback_count(decisions)
@@ -194,11 +217,26 @@ def analyze_v5_telemetry(lake_root: Path, date: str | None = None) -> V5Telemetr
         high_score_blocked_profitable_count=_profitable_count(outcomes),
         skipped_candidate_matured_count=_matured_count(skipped),
         router_reason_top=router_reason_top,
+        quant_lab_mode=quant_lab_summary["mode"],
+        permission_gate_enforced=quant_lab_summary["permission_gate_enforced"],
+        quant_lab_usage_count=int(quant_lab_summary["usage_count"]),
+        quant_lab_cost_usage_count=int(quant_lab_summary["cost_usage_count"]),
+        quant_lab_fallback_count=int(quant_lab_summary["fallback_count"]),
+        quant_lab_actual_violation_count=len(quant_lab_summary["actual_violations"]),
+        quant_lab_hypothetical_violation_count=len(
+            quant_lab_summary["hypothetical_violations"]
+        ),
         warnings=warnings,
         critical_reasons=critical,
         next_actions=sorted(set(next_actions)),
     )
-    _write_gold(root, result, gate_violations=gate_violations, fallback_count=fallback_count)
+    _write_gold(
+        root,
+        result,
+        gate_violations=gate_violations,
+        fallback_count=fallback_count,
+        quant_lab_summary=quant_lab_summary,
+    )
     return result
 
 
@@ -207,6 +245,7 @@ def _write_gold(
     result: V5TelemetryAnalysisResult,
     gate_violations: list[str],
     fallback_count: int,
+    quant_lab_summary: dict[str, Any],
 ) -> None:
     base = result.model_dump()
     base["router_reason_top_json"] = json.dumps(result.router_reason_top, sort_keys=True)
@@ -236,6 +275,43 @@ def _write_gold(
         "v5_missed_opportunity_daily": [base],
         "v5_config_health_daily": [base],
         "v5_issue_summary_daily": [base],
+        "v5_quant_lab_mode_daily": [
+            {
+                "strategy": result.strategy,
+                "date": result.date,
+                "mode": quant_lab_summary["mode"],
+                "permission_gate_enforced": quant_lab_summary["permission_gate_enforced"],
+                "usage_count": quant_lab_summary["usage_count"],
+                "cost_usage_count": quant_lab_summary["cost_usage_count"],
+                "fallback_count": quant_lab_summary["fallback_count"],
+                "latest_bundle_ts": result.latest_bundle_ts,
+                "latest_bundle_sha256": result.latest_bundle_sha256,
+                "created_at": datetime.now(UTC),
+            }
+        ],
+        "v5_quant_lab_enforcement_daily": [
+            {
+                "strategy": result.strategy,
+                "date": result.date,
+                "mode": quant_lab_summary["mode"],
+                "permission_gate_enforced": quant_lab_summary["permission_gate_enforced"],
+                "actual_violation_count": len(quant_lab_summary["actual_violations"]),
+                "hypothetical_violation_count": len(
+                    quant_lab_summary["hypothetical_violations"]
+                ),
+                "actual_violations_json": json.dumps(
+                    quant_lab_summary["actual_violations"],
+                    sort_keys=True,
+                ),
+                "hypothetical_violations_json": json.dumps(
+                    quant_lab_summary["hypothetical_violations"],
+                    sort_keys=True,
+                ),
+                "latest_bundle_ts": result.latest_bundle_ts,
+                "latest_bundle_sha256": result.latest_bundle_sha256,
+                "created_at": datetime.now(UTC),
+            }
+        ],
     }
     for name, rows in rows_by_dataset.items():
         upsert_parquet_dataset(
@@ -479,6 +555,110 @@ def _gate_compliance_violations(decisions: pl.DataFrame, trades: pl.DataFrame) -
     if '"permission": "sell_only"' in text or '"permission":"sell_only"' in text:
         violations.append("quant_lab SELL_ONLY permission with trade events present")
     return violations
+
+
+def _quant_lab_mode_summary(
+    usage: pl.DataFrame,
+    compliance: pl.DataFrame,
+    cost_usage: pl.DataFrame,
+    fallback: pl.DataFrame,
+    trades: pl.DataFrame,
+) -> dict[str, Any]:
+    has_data = any(
+        not frame.is_empty() for frame in [usage, compliance, cost_usage, fallback]
+    )
+    mode = _latest_mode(usage, compliance)
+    enforced = _permission_gate_enforced(usage, compliance, mode)
+    actual: list[str] = []
+    hypothetical: list[str] = []
+    if not compliance.is_empty():
+        for row in compliance.to_dicts():
+            payload = _payload(row)
+            permission = _first_text(row, payload, ["permission", "quant_lab_permission"])
+            side = _first_text(row, payload, ["side", "order_side", "action", "intent"])
+            if not _is_risk_increasing_side(side):
+                continue
+            if str(permission or "").upper() not in {"ABORT", "SELL_ONLY"}:
+                continue
+            message = (
+                f"quant_lab {str(permission).upper()} permission with risk-increasing "
+                f"V5 action in mode={mode or 'unknown'}"
+            )
+            if mode == "shadow" or not enforced:
+                hypothetical.append(message)
+            else:
+                actual.append(message)
+    elif not trades.is_empty() and mode not in {None, "local_only", "cost_only"}:
+        message = f"V5 trade events present without quant_lab compliance rows in mode={mode}"
+        if mode == "shadow" or not enforced:
+            hypothetical.append(message)
+        else:
+            actual.append(message)
+    return {
+        "has_data": has_data,
+        "mode": mode or "unknown",
+        "permission_gate_enforced": enforced,
+        "usage_count": usage.height,
+        "cost_usage_count": cost_usage.height,
+        "fallback_count": fallback.height,
+        "actual_violations": sorted(set(actual)),
+        "hypothetical_violations": sorted(set(hypothetical)),
+    }
+
+
+def _latest_mode(*frames: pl.DataFrame) -> str | None:
+    allowed = {"local_only", "shadow", "cost_only", "permission_only", "enforce"}
+    for frame in frames:
+        if frame.is_empty():
+            continue
+        for row in reversed(frame.to_dicts()):
+            payload = _payload(row)
+            value = _first_text(row, payload, ["mode", "quant_lab_mode"])
+            normalized = str(value or "").strip().lower()
+            if normalized in allowed:
+                return normalized
+    return None
+
+
+def _permission_gate_enforced(
+    usage: pl.DataFrame,
+    compliance: pl.DataFrame,
+    mode: str | None,
+) -> bool:
+    if mode == "shadow":
+        return False
+    for frame in [compliance, usage]:
+        if frame.is_empty():
+            continue
+        for row in reversed(frame.to_dicts()):
+            payload = _payload(row)
+            value = row.get("permission_gate_enforced", payload.get("permission_gate_enforced"))
+            if value is None:
+                value = row.get("enforced", payload.get("enforced"))
+            parsed = _parse_bool(value)
+            if parsed is not None:
+                return parsed
+    return mode == "enforce"
+
+
+def _parse_bool(value: Any) -> bool | None:
+    if isinstance(value, bool):
+        return value
+    if value is None:
+        return None
+    normalized = str(value).strip().lower()
+    if normalized in {"1", "true", "yes", "y", "on"}:
+        return True
+    if normalized in {"0", "false", "no", "n", "off"}:
+        return False
+    return None
+
+
+def _is_risk_increasing_side(value: str | None) -> bool:
+    if value is None:
+        return False
+    normalized = value.strip().lower()
+    return normalized in {"buy", "long", "open_long", "increase", "risk_increase"}
 
 
 def _router_reason_top(df: pl.DataFrame) -> list[dict[str, Any]]:

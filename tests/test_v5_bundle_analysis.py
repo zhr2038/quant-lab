@@ -183,6 +183,39 @@ def test_high_score_blocked_next_action_matches_matured_count(tmp_path):
     assert result.high_score_blocked_matured_count == 1
 
 
+def test_quant_lab_shadow_mode_marks_hypothetical_not_actual_violation(tmp_path):
+    lake = tmp_path / "lake"
+    _write_manifest(lake)
+    _write_quant_lab_usage(lake, mode="shadow", enforced=False)
+    _write_quant_lab_compliance(lake, permission="SELL_ONLY", side="buy")
+
+    result = analyze_v5_telemetry(lake, date="2026-05-10")
+    enforcement = read_parquet_dataset(lake / "gold/v5_quant_lab_enforcement_daily")
+
+    assert result.quant_lab_mode == "shadow"
+    assert result.quant_lab_actual_violation_count == 0
+    assert result.quant_lab_hypothetical_violation_count == 1
+    assert "gate_compliance_violation" not in result.critical_reasons
+    assert enforcement["actual_violation_count"][0] == 0
+    assert enforcement["hypothetical_violation_count"][0] == 1
+
+
+def test_quant_lab_enforce_mode_marks_sell_only_buy_actual_violation(tmp_path):
+    lake = tmp_path / "lake"
+    _write_manifest(lake)
+    _write_quant_lab_usage(lake, mode="enforce", enforced=True)
+    _write_quant_lab_compliance(lake, permission="SELL_ONLY", side="buy")
+
+    result = analyze_v5_telemetry(lake, date="2026-05-10")
+    mode = read_parquet_dataset(lake / "gold/v5_quant_lab_mode_daily")
+
+    assert result.status == "CRITICAL"
+    assert result.quant_lab_actual_violation_count == 1
+    assert "gate_compliance_violation" in result.critical_reasons
+    assert mode["mode"][0] == "enforce"
+    assert mode["permission_gate_enforced"][0] == True  # noqa: E712
+
+
 def _write_manifest(lake, bundle_ts=datetime(2026, 5, 10, 14, 2, 49, tzinfo=UTC)):
     write_parquet_dataset(
         pl.DataFrame(
@@ -283,3 +316,41 @@ def _config_row(key, *, status="", consumed=None):
         "consumed": consumed,
         "raw_payload_json": "{}",
     }
+
+
+def _write_quant_lab_usage(lake, *, mode: str, enforced: bool) -> None:
+    write_parquet_dataset(
+        pl.DataFrame(
+            [
+                {
+                    **_event_row("quant_lab_usage"),
+                    "source_path_inside_bundle": "raw/quant_lab/quant_lab_usage.jsonl",
+                    "mode": mode,
+                    "permission_gate_enforced": enforced,
+                    "raw_payload_json": __import__("json").dumps(
+                        {"mode": mode, "permission_gate_enforced": enforced}
+                    ),
+                }
+            ]
+        ),
+        lake / "silver/v5_quant_lab_usage",
+    )
+
+
+def _write_quant_lab_compliance(lake, *, permission: str, side: str) -> None:
+    write_parquet_dataset(
+        pl.DataFrame(
+            [
+                {
+                    **_event_row("quant_lab_compliance"),
+                    "source_path_inside_bundle": "summaries/quant_lab_compliance.csv",
+                    "permission": permission,
+                    "side": side,
+                    "raw_payload_json": __import__("json").dumps(
+                        {"permission": permission, "side": side}
+                    ),
+                }
+            ]
+        ),
+        lake / "silver/v5_quant_lab_compliance",
+    )

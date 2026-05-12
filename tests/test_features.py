@@ -10,7 +10,12 @@ from quant_lab.features.registry import (
     FeatureRegistry,
     FeatureTimestampLeakageError,
     close_return_spec,
+    compute_close_position_in_range,
     compute_feature_values,
+    compute_liquidity_proxy,
+    compute_range_bps,
+    compute_volume_zscore_n,
+    default_core_registry,
     rolling_volatility_spec,
     validate_feature_timestamps,
 )
@@ -41,6 +46,18 @@ def test_registry_register_get_list():
     assert registry.list_names() == ["close_return_n"]
     with pytest.raises(ValueError, match="already registered"):
         registry.register(spec)
+
+
+def test_core_registry_uses_specific_compute_functions_for_non_return_features():
+    registry = default_core_registry()
+
+    assert registry.get("core", "volume_zscore_24", "v0.1").compute is compute_volume_zscore_n
+    assert registry.get("core", "range_bps", "v0.1").compute is compute_range_bps
+    assert (
+        registry.get("core", "close_position_in_range", "v0.1").compute
+        is compute_close_position_in_range
+    )
+    assert registry.get("core", "liquidity_proxy", "v0.1").compute is compute_liquidity_proxy
 
 
 def test_close_return_feature_computation_output_shape():

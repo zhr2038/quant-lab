@@ -79,3 +79,14 @@ def test_strong_evidence_is_live_ready():
     assert decision.passed is True
     assert decision.reasons == ["all_default_gates_passed"]
     assert decision.next_action == "eligible_for_strategy_consumer_review"
+
+
+def test_insufficient_samples_quarantines_without_faking_negative_alpha():
+    decision = evaluate_alpha_gate(
+        evidence(evidence_status="insufficient_samples", ic_mean=0.08, ic_tstat=5.0)
+    )
+
+    assert decision.status == GateStatus.QUARANTINE
+    assert decision.reasons == ["insufficient_samples"]
+    assert decision.metrics["ic_mean"] == 0.08
+    assert decision.metrics["ic_tstat"] == 5.0

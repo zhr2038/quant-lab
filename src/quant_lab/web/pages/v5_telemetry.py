@@ -46,4 +46,12 @@ def render(lake_root: str | Path, st_module: Any | None = None) -> None:
     show_frame(st, summary["health_rows"], "暂无 V5 strategy_health_daily 数据。")
     st.subheader("门控合规")
     show_frame(st, summary["gate_compliance_rows"], "暂无 V5 门控合规数据。")
+    st.subheader("quant-lab mode")
+    show_frame(st, summary["quant_lab_mode_rows"], "No V5 quant-lab mode data.")
+    st.subheader("quant-lab enforcement")
+    show_frame(
+        st,
+        summary["quant_lab_enforcement_rows"],
+        "No V5 quant-lab enforcement data.",
+    )
     show_warnings(st, summary["warnings"])

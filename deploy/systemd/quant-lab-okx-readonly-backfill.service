@@ -1,0 +1,13 @@
+[Unit]
+Description=quant-lab OKX read-only private fills/bills/orders backfill
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+User=quantlab
+Group=quantlab
+WorkingDirectory=/opt/quant-lab
+Environment=PYTHONUNBUFFERED=1
+EnvironmentFile=/etc/quant-lab/okx_readonly.env
+ExecStart=/opt/quant-lab/.venv/bin/qlab okx-backfill-readonly --inst-type SPOT --lake-root /var/lib/quant-lab/lake --max-pages 20

@@ -155,6 +155,11 @@ Silver:
 - `lake/silver/v5_skipped_candidate_outcome`
 - `lake/silver/v5_shadow_outcome`
 - `lake/silver/v5_probe_diagnostic`
+- `lake/silver/v5_quant_lab_usage`
+- `lake/silver/v5_quant_lab_request`
+- `lake/silver/v5_quant_lab_compliance`
+- `lake/silver/v5_quant_lab_cost_usage`
+- `lake/silver/v5_quant_lab_fallback`
 
 Gold:
 
@@ -164,6 +169,24 @@ Gold:
 - `lake/gold/v5_missed_opportunity_daily`
 - `lake/gold/v5_config_health_daily`
 - `lake/gold/v5_issue_summary_daily`
+- `lake/gold/v5_quant_lab_mode_daily`
+- `lake/gold/v5_quant_lab_enforcement_daily`
+
+## quant-lab Mode Analysis
+
+V5 telemetry may report `mode=local_only`, `shadow`, `cost_only`,
+`permission_only`, or `enforce`.
+
+- `shadow` mode records hypothetical permission violations only.
+- `permission_gate_enforced=false` means a `SELL_ONLY` plus buy-side action is
+  not an actual violation, but it remains visible as a hypothetical violation.
+- `permission_gate_enforced=true` means a `SELL_ONLY` or `ABORT` permission plus
+  risk-increasing action is an actual gate-compliance violation.
+
+These summaries are written to:
+
+- `lake/gold/v5_quant_lab_mode_daily`
+- `lake/gold/v5_quant_lab_enforcement_daily`
 
 ## Daily Metrics
 

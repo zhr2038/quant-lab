@@ -13,11 +13,14 @@ Install `quant-lab` in the V5/V7 runtime environment or vendor
 `quant_lab.client.QuantLabClient` as a small read-only dependency.
 
 ```python
+import os
+
 from quant_lab.client import QuantLabClient, QuantLabUnavailable
 
 client = QuantLabClient(
     base_url="http://127.0.0.1:8027",
     timeout_seconds=1.0,
+    api_token=os.environ.get("QUANT_LAB_API_TOKEN"),
 )
 
 try:
@@ -39,6 +42,10 @@ else:
     decision_audit["cost_bps"] = cost.cost_bps
     decision_audit["cost_fallback_level"] = cost.fallback_level
 ```
+
+When qyun2 sets `QUANT_LAB_API_TOKEN`, V5/V7 must send it as a bearer token.
+Store it only in the process environment or a root-owned runtime config file;
+do not write it to V5 bundles, logs, lake files, or expert exports.
 
 Fallbacks must be explicit. If V5 uses a local cost model because quant-lab is
 unavailable, it must write this exact audit value:

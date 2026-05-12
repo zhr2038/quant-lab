@@ -1,7 +1,14 @@
+from concurrent.futures import ThreadPoolExecutor
+
 import polars as pl
 import pytest
 
-from quant_lab.data.lake import invalid_parquet_files, read_parquet_dataset, write_parquet_dataset
+from quant_lab.data.lake import (
+    invalid_parquet_files,
+    read_parquet_dataset,
+    upsert_parquet_dataset,
+    write_parquet_dataset,
+)
 
 
 def test_read_parquet_dataset_ignores_invalid_parquet_file(tmp_path):
@@ -47,4 +54,24 @@ def test_write_parquet_dataset_keeps_previous_data_when_rewrite_fails(tmp_path, 
     after = read_parquet_dataset(dataset)
 
     assert after.to_dicts() == original.to_dicts()
+    assert not invalid_parquet_files(dataset)
+
+
+def test_concurrent_upserts_do_not_corrupt_parquet(tmp_path):
+    dataset = tmp_path / "lake" / "silver" / "concurrent"
+
+    def write_row(index: int) -> int:
+        return upsert_parquet_dataset(
+            pl.DataFrame([{"id": index, "value": f"row-{index}"}]),
+            dataset,
+            key_columns=["id"],
+        )
+
+    with ThreadPoolExecutor(max_workers=4) as executor:
+        list(executor.map(write_row, range(20)))
+
+    result = read_parquet_dataset(dataset)
+
+    assert result.height == 20
+    assert result["id"].sort().to_list() == list(range(20))
     assert not invalid_parquet_files(dataset)

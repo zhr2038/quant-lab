@@ -10,7 +10,8 @@ from pathlib import Path
 from typing import Any
 
 import polars as pl
-from fastapi import FastAPI
+from fastapi import FastAPI, HTTPException, Request, status
+from fastapi.responses import JSONResponse
 from pydantic import BaseModel, ConfigDict, Field
 
 from quant_lab import __version__
@@ -82,6 +83,8 @@ KNOWN_DATASETS = [
     "alpha_evidence",
     "gate_decision",
     "risk_permission",
+    "v5_quant_lab_mode_daily",
+    "v5_quant_lab_enforcement_daily",
 ]
 
 
@@ -91,6 +94,18 @@ def create_app() -> FastAPI:
         version=__version__,
         description="Read-only quantitative research middle platform.",
     )
+
+    @app.middleware("http")
+    async def require_bearer_token(request: Request, call_next: Any) -> Any:
+        try:
+            _authorize_v1_request(request)
+        except HTTPException as exc:
+            return JSONResponse(
+                status_code=exc.status_code,
+                content={"detail": exc.detail},
+                headers=exc.headers,
+            )
+        return await call_next(request)
 
     @app.get("/v1/health", response_model=HealthResponse)
     def health() -> HealthResponse:
@@ -199,54 +214,68 @@ def create_app() -> FastAPI:
     def live_permission(strategy: str, version: str) -> RiskPermission:
         lake_root = _lake_root()
         published = _load_published_risk_permission(lake_root, strategy=strategy, version=version)
-        if published is not None:
-            return published
-        gate_decisions = _load_gate_decisions(lake_root, strategy=strategy)
-        data_health = _lake_data_health(lake_root)
-        cost_health = _lake_cost_health(lake_root)
-        telemetry_reasons = _strategy_telemetry_reasons(lake_root, strategy=strategy)
-        if telemetry_reasons:
-            data_health = {
-                **data_health,
-                "status": "critical",
-                "is_critical": True,
-                "reasons": [*data_health.get("reasons", []), *telemetry_reasons],
-            }
-        if _has_bootstrap_gate(gate_decisions) and _data_health_is_critical(data_health):
-            data_reasons = list(data_health.get("reasons", []))
-            data_health = {
-                **data_health,
-                "status": "warning",
-                "is_critical": False,
-            }
-            permission = evaluate_live_permission(
-                strategy=strategy,
-                version=version,
-                gate_decisions=gate_decisions,
-                cost_health=cost_health,
-                data_health=data_health,
-            )
-            return permission.model_copy(
-                update={
-                    "reasons": _dedupe(
-                        [
-                            *permission.reasons,
-                            "required_alpha_gate_quarantine",
-                            *data_reasons,
-                        ]
-                    )
-                }
-            )
+        recomputed = _compute_live_permission(lake_root, strategy=strategy, version=version)
+        if published is None:
+            return recomputed.model_copy(update={"permission_source": "recomputed"})
+        if _risk_permission_is_stale(published):
+            return recomputed.model_copy(update={"permission_source": "recomputed"})
+        if _is_more_conservative(recomputed, published):
+            return recomputed.model_copy(update={"permission_source": "recomputed"})
+        return published.model_copy(update={"permission_source": "published_cache"})
 
-        return evaluate_live_permission(
+    return app
+
+
+def _compute_live_permission(
+    lake_root: Path,
+    *,
+    strategy: str,
+    version: str,
+) -> RiskPermission:
+    gate_decisions = _load_gate_decisions(lake_root, strategy=strategy)
+    data_health = _lake_data_health(lake_root)
+    cost_health = _lake_cost_health(lake_root)
+    telemetry_reasons = _strategy_telemetry_reasons(lake_root, strategy=strategy)
+    if telemetry_reasons:
+        data_health = {
+            **data_health,
+            "status": "critical",
+            "is_critical": True,
+            "reasons": [*data_health.get("reasons", []), *telemetry_reasons],
+        }
+    if _has_bootstrap_gate(gate_decisions) and _data_health_is_critical(data_health):
+        data_reasons = list(data_health.get("reasons", []))
+        data_health = {
+            **data_health,
+            "status": "warning",
+            "is_critical": False,
+        }
+        permission = evaluate_live_permission(
             strategy=strategy,
             version=version,
             gate_decisions=gate_decisions,
             cost_health=cost_health,
             data_health=data_health,
         )
+        return permission.model_copy(
+            update={
+                "reasons": _dedupe(
+                    [
+                        *permission.reasons,
+                        "required_alpha_gate_quarantine",
+                        *data_reasons,
+                    ]
+                )
+            }
+        )
 
-    return app
+    return evaluate_live_permission(
+        strategy=strategy,
+        version=version,
+        gate_decisions=gate_decisions,
+        cost_health=cost_health,
+        data_health=data_health,
+    )
 
 
 app = create_app()
@@ -254,6 +283,64 @@ app = create_app()
 
 def _lake_root() -> Path:
     return Path(os.environ.get("QUANT_LAB_LAKE_ROOT", "/var/lib/quant-lab/lake"))
+
+
+def _authorize_v1_request(request: Request) -> None:
+    if not request.url.path.startswith("/v1/"):
+        return
+    token = os.environ.get("QUANT_LAB_API_TOKEN")
+    if not token:
+        return
+    if request.url.path == "/v1/health" and _health_allows_local_unauth(request):
+        return
+    authorization = request.headers.get("authorization", "")
+    expected = f"Bearer {token}"
+    if authorization != expected:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="quant-lab API bearer token required",
+            headers={"WWW-Authenticate": "Bearer"},
+        )
+
+
+def _health_allows_local_unauth(request: Request) -> bool:
+    if not _bool_env("QUANT_LAB_HEALTH_ALLOW_LOCAL_UNAUTH", default=True):
+        return False
+    host = request.client.host if request.client else ""
+    return host in {"127.0.0.1", "::1", "localhost", "testclient"}
+
+
+def _bool_env(name: str, *, default: bool) -> bool:
+    value = os.environ.get(name)
+    if value is None:
+        return default
+    return value.strip().lower() in {"1", "true", "yes", "on"}
+
+
+def _risk_permission_ttl_seconds() -> int:
+    value = os.environ.get("QUANT_LAB_RISK_PERMISSION_TTL_SECONDS", "300")
+    try:
+        ttl = int(value)
+    except ValueError:
+        return 300
+    return max(ttl, 0)
+
+
+def _risk_permission_is_stale(permission: RiskPermission) -> bool:
+    ttl_seconds = _risk_permission_ttl_seconds()
+    if ttl_seconds == 0:
+        return True
+    return permission.created_at < datetime.now(UTC) - timedelta(seconds=ttl_seconds)
+
+
+def _is_more_conservative(candidate: RiskPermission, baseline: RiskPermission) -> bool:
+    return _permission_rank(candidate.permission.value) > _permission_rank(
+        baseline.permission.value
+    )
+
+
+def _permission_rank(permission: str) -> int:
+    return {"ALLOW": 0, "SELL_ONLY": 1, "ABORT": 2}.get(permission, 2)
 
 
 def _latest_features_response(

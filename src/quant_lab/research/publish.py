@@ -42,6 +42,7 @@ ALPHA_EVIDENCE_SCHEMA = {
     "paper_days": pl.Int64,
     "paper_slippage_coverage": pl.Float64,
     "created_at": pl.Utf8,
+    "evidence_status": pl.Utf8,
     "source": pl.Utf8,
 }
 

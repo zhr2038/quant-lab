@@ -113,6 +113,44 @@ def test_web_diagnostics_use_dataset_freshness_not_missing_for_populated_tables(
         assert rows[dataset]["freshness_status"] != "missing"
 
 
+def test_data_health_stale_datasets_use_metadata_instead_of_full_raw_reads(
+    tmp_path,
+    monkeypatch,
+):
+    lake_root = _fixture_lake(tmp_path)
+    original = readers.read_dataset_with_warning
+
+    def guarded_read_dataset_with_warning(lake_root_arg, dataset_name):
+        if dataset_name in {"okx_public_ws", "trade_print", "orderbook_snapshot"}:
+            raise AssertionError(f"{dataset_name} should be summarized from parquet metadata")
+        return original(lake_root_arg, dataset_name)
+
+    monkeypatch.setattr(readers, "read_dataset_with_warning", guarded_read_dataset_with_warning)
+
+    summary = readers.data_health_summary(lake_root)
+
+    assert summary["latest_market_bar_ts"] == datetime(2026, 5, 10, 2, tzinfo=UTC)
+    assert "stale_datasets" in summary
+
+
+def test_okx_collector_summary_uses_metadata_for_raw_collector_counts(tmp_path, monkeypatch):
+    lake_root = _fixture_lake(tmp_path)
+    original = readers.read_dataset_with_warning
+
+    def guarded_read_dataset_with_warning(lake_root_arg, dataset_name):
+        if dataset_name in {"market_bar", "okx_public_ws", "trade_print", "orderbook_snapshot"}:
+            raise AssertionError(f"{dataset_name} should be summarized from parquet metadata")
+        return original(lake_root_arg, dataset_name)
+
+    monkeypatch.setattr(readers, "read_dataset_with_warning", guarded_read_dataset_with_warning)
+
+    summary = readers.okx_collector_summary(lake_root)
+
+    assert summary["trade_print_rows"] == 1
+    assert summary["orderbook_snapshot_rows"] == 0
+    assert summary["okx_public_ws_status"] == "RUNNING"
+
+
 def test_dataset_freshness_unknown_when_populated_table_has_no_timestamp():
     payload = readers.dataset_freshness_payload(
         "decision_audit",

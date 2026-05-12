@@ -114,6 +114,15 @@ class DatasetState:
     warning: str | None = None
 
 
+@dataclass(frozen=True)
+class DatasetSnapshot:
+    rows: int
+    exists: bool
+    parquet_file_count: int
+    freshness: dict[str, Any]
+    warning: str | None = None
+
+
 def read_dataset(lake_root: str | Path, dataset_name: str) -> pl.DataFrame:
     df, _warning = read_dataset_with_warning(lake_root, dataset_name)
     return df
@@ -211,30 +220,151 @@ def _read_parquet_dataset_with_warning(
     return df, None
 
 
+def _dataset_snapshot(
+    lake_root: str | Path,
+    dataset_name: str,
+    *,
+    timestamp_columns: tuple[str, ...] | None = None,
+    now: datetime | None = None,
+) -> DatasetSnapshot:
+    path = dataset_path_for(lake_root, dataset_name)
+    invalid_files = invalid_parquet_files(path)
+    files = _valid_parquet_files(path, invalid_files=invalid_files)
+    warning = _invalid_parquet_warning(dataset_name, invalid_files)
+    if not files:
+        return DatasetSnapshot(
+            rows=0,
+            exists=path.exists(),
+            parquet_file_count=0,
+            freshness=_freshness_payload(None, None, is_empty=True, now=now),
+            warning=warning,
+        )
+
+    try:
+        lazy = pl.scan_parquet([str(file_path) for file_path in files])
+        schema = lazy.collect_schema()
+        rows = int(lazy.select(pl.len().alias("rows")).collect().item())
+        latest, column = _latest_lazy_timestamp(
+            dataset_name,
+            lazy,
+            schema,
+            timestamp_columns=timestamp_columns,
+        )
+    except Exception as exc:
+        return DatasetSnapshot(
+            rows=0,
+            exists=path.exists(),
+            parquet_file_count=len(files),
+            freshness=_freshness_payload(None, None, is_empty=True, now=now),
+            warning=f"{dataset_name} metadata read failed: {exc}",
+        )
+
+    return DatasetSnapshot(
+        rows=rows,
+        exists=path.exists(),
+        parquet_file_count=len(files),
+        freshness=_freshness_payload(latest, column, is_empty=rows == 0, now=now),
+        warning=warning,
+    )
+
+
+def _latest_lazy_timestamp(
+    dataset_name: str,
+    lazy: pl.LazyFrame,
+    schema: pl.Schema,
+    *,
+    timestamp_columns: tuple[str, ...] | None = None,
+) -> tuple[datetime | None, str | None]:
+    columns = timestamp_columns or DATASET_TIMESTAMP_COLUMNS.get(
+        dataset_name,
+        ("ts", "created_at", "ingest_ts"),
+    )
+    seen_timestamp_column: str | None = None
+    for column in columns:
+        if column not in schema:
+            continue
+        seen_timestamp_column = column
+        value = lazy.select(pl.col(column).max().alias(column)).collect().item()
+        latest = _coerce_timestamp(value)
+        if latest is not None:
+            return latest, column
+    return None, seen_timestamp_column
+
+
+def _snapshot_latest_timestamp(snapshot: DatasetSnapshot) -> datetime | None:
+    value = snapshot.freshness.get("latest_timestamp")
+    return _coerce_timestamp(value)
+
+
+def _freshness_payload(
+    latest: datetime | None,
+    column: str | None,
+    *,
+    is_empty: bool,
+    now: datetime | None = None,
+) -> dict[str, Any]:
+    if is_empty:
+        return {
+            "freshness_seconds": None,
+            "freshness_status": "missing",
+            "timestamp_column": column,
+            "latest_timestamp": None,
+        }
+    if latest is None:
+        return {
+            "freshness_seconds": None,
+            "freshness_status": "unknown",
+            "timestamp_column": column,
+            "latest_timestamp": None,
+        }
+    reference_time = now.astimezone(UTC) if now else datetime.now(UTC)
+    seconds = max(int((reference_time - latest).total_seconds()), 0)
+    if seconds <= 6 * 60 * 60:
+        status = "fresh"
+    elif seconds <= 24 * 60 * 60:
+        status = "delayed"
+    else:
+        status = "stale"
+    return {
+        "freshness_seconds": seconds,
+        "freshness_status": status,
+        "timestamp_column": column,
+        "latest_timestamp": latest.isoformat(),
+    }
+
+
+def _valid_parquet_files(path: Path, *, invalid_files: list[Path] | None = None) -> list[Path]:
+    if path.is_file() and path.suffix == ".parquet":
+        candidates = [path]
+    elif path.exists():
+        candidates = sorted(path.rglob("*.parquet"))
+    else:
+        candidates = []
+    invalid = set(invalid_files if invalid_files is not None else invalid_parquet_files(path))
+    return [file_path for file_path in candidates if file_path not in invalid]
+
+
+def _invalid_parquet_warning(dataset_label: str, invalid_files: list[Path]) -> str | None:
+    if not invalid_files:
+        return None
+    rendered = ", ".join(str(file_path) for file_path in invalid_files[:5])
+    suffix = "" if len(invalid_files) <= 5 else f" (+{len(invalid_files) - 5} more)"
+    return f"{dataset_label} invalid parquet files ignored: {rendered}{suffix}"
+
+
 def dataset_states(lake_root: str | Path) -> list[DatasetState]:
     states: list[DatasetState] = []
     for name in sorted(DATASET_PATHS):
         path = dataset_path_for(lake_root, name)
-        try:
-            df = read_parquet_dataset(path)
-        except Exception as exc:
-            states.append(
-                DatasetState(
-                    name=name,
-                    path=path,
-                    rows=0,
-                    exists=path.exists(),
-                    warning=str(exc),
-                )
-            )
-            continue
+        snapshot = _dataset_snapshot(lake_root, name)
         states.append(
             DatasetState(
                 name=name,
                 path=path,
-                rows=df.height,
-                exists=path.exists(),
-                parquet_file_count=_parquet_file_count(path),
+                rows=snapshot.rows,
+                exists=snapshot.exists,
+                parquet_file_count=snapshot.parquet_file_count,
+                warning=snapshot.warning,
             )
         )
     return states
@@ -451,14 +581,18 @@ def data_health_summary(lake_root: str | Path) -> dict[str, Any]:
 
 
 def okx_collector_summary(lake_root: str | Path) -> dict[str, Any]:
-    market, market_warning = read_dataset_with_warning(lake_root, "market_bar")
-    ws_raw, ws_raw_warning = read_dataset_with_warning(lake_root, "okx_public_ws")
+    market_snapshot = _dataset_snapshot(
+        lake_root,
+        "market_bar",
+        timestamp_columns=("ingest_ts",),
+    )
+    ws_raw_snapshot = _dataset_snapshot(lake_root, "okx_public_ws")
+    trades_snapshot = _dataset_snapshot(lake_root, "trade_print")
+    books_snapshot = _dataset_snapshot(lake_root, "orderbook_snapshot")
     ws_health, ws_health_warning = read_dataset_with_warning(lake_root, "okx_public_ws_health")
-    trades, trades_warning = read_dataset_with_warning(lake_root, "trade_print")
-    books, books_warning = read_dataset_with_warning(lake_root, "orderbook_snapshot")
 
-    latest_rest = _max_datetime(_normalize_optional_time(market, "ingest_ts"), "ingest_ts")
-    latest_ws = _max_datetime(_normalize_optional_time(ws_raw, "received_at"), "received_at")
+    latest_rest = _snapshot_latest_timestamp(market_snapshot)
+    latest_ws = _snapshot_latest_timestamp(ws_raw_snapshot)
     latest_health = _latest_collector_health(ws_health)
     if latest_health:
         latest_ws = _parse_datetime(latest_health.get("last_message_at")) or latest_ws
@@ -466,7 +600,7 @@ def okx_collector_summary(lake_root: str | Path) -> dict[str, Any]:
     rows = [
         {
             "collector": "OKX 公共 REST",
-            "success_count": market.height,
+            "success_count": market_snapshot.rows,
             "error_count": 0,
             "latest_success_ts": latest_rest,
             "reconnect_count": None,
@@ -475,9 +609,9 @@ def okx_collector_summary(lake_root: str | Path) -> dict[str, Any]:
         },
         {
             "collector": "OKX 公共 WebSocket",
-            "success_count": int(latest_health.get("messages_read") or ws_raw.height)
+            "success_count": int(latest_health.get("messages_read") or ws_raw_snapshot.rows)
             if latest_health
-            else ws_raw.height,
+            else ws_raw_snapshot.rows,
             "error_count": int(latest_health.get("error_count") or 0) if latest_health else 0,
             "latest_success_ts": latest_ws,
             "reconnect_count": int(latest_health.get("reconnect_count") or 0)
@@ -491,17 +625,17 @@ def okx_collector_summary(lake_root: str | Path) -> dict[str, Any]:
     warnings = [
         warning
         for warning in [
-            market_warning,
-            ws_raw_warning,
+            market_snapshot.warning,
+            ws_raw_snapshot.warning,
             ws_health_warning,
-            trades_warning,
-            books_warning,
+            trades_snapshot.warning,
+            books_snapshot.warning,
         ]
         if warning
     ]
-    if market.is_empty():
+    if market_snapshot.rows == 0:
         warnings.append("OKX 公共 REST market_bar 数据集缺失或为空")
-    if ws_raw.is_empty():
+    if ws_raw_snapshot.rows == 0:
         warnings.append("OKX 公共 WebSocket bronze 数据集缺失或为空")
 
     if ws_health.is_empty():
@@ -513,8 +647,8 @@ def okx_collector_summary(lake_root: str | Path) -> dict[str, Any]:
         "okx_public_ws_status": str(latest_health.get("status") or "UNKNOWN")
         if latest_health
         else "WARNING",
-        "trade_print_rows": trades.height,
-        "orderbook_snapshot_rows": books.height,
+        "trade_print_rows": trades_snapshot.rows,
+        "orderbook_snapshot_rows": books_snapshot.rows,
         "warnings": warnings,
     }
 
@@ -950,8 +1084,7 @@ def redact_text(value: Any) -> Any:
 
 
 def okx_ws_latest(lake_root: str | Path) -> datetime | None:
-    ws_raw = read_dataset(lake_root, "okx_public_ws")
-    return _max_datetime(_normalize_optional_time(ws_raw, "received_at"), "received_at")
+    return _snapshot_latest_timestamp(_dataset_snapshot(lake_root, "okx_public_ws"))
 
 
 def _latest_collector_health(health: pl.DataFrame) -> dict[str, Any] | None:
@@ -973,9 +1106,9 @@ def _parse_datetime(value: Any) -> datetime | None:
 
 
 def readonly_private_status(lake_root: str | Path) -> str:
-    fills = read_dataset(lake_root, "okx_private_readonly_fills")
-    bills = read_dataset(lake_root, "okx_private_readonly_bills")
-    if fills.is_empty() and bills.is_empty():
+    fills = _dataset_snapshot(lake_root, "okx_private_readonly_fills")
+    bills = _dataset_snapshot(lake_root, "okx_private_readonly_bills")
+    if fills.rows == 0 and bills.rows == 0:
         return "NOT_CONFIGURED"
     return "OK"
 
@@ -1024,22 +1157,22 @@ def _stale_dataset_rows(lake_root: str | Path) -> pl.DataFrame:
     rows = []
     for name in sorted(DATASET_PATHS):
         path = dataset_path_for(lake_root, name)
-        df, warning = read_dataset_with_warning(lake_root, name)
-        freshness = dataset_freshness_payload(name, df)
+        snapshot = _dataset_snapshot(lake_root, name)
+        freshness = snapshot.freshness
         status = freshness["freshness_status"]
-        if df.is_empty():
+        if snapshot.rows == 0:
             status = _empty_dataset_status(name)
-        if warning or status in {"missing", "unknown", "stale"} or df.is_empty():
+        if snapshot.warning or status in {"missing", "unknown", "stale"} or snapshot.rows == 0:
             rows.append(
                 {
                     "dataset": name,
-                    "rows": df.height,
+                    "rows": snapshot.rows,
                     "status": status,
                     "path": str(path),
                     "freshness_seconds": freshness["freshness_seconds"],
                     "timestamp_column": freshness["timestamp_column"] or "",
                     "latest_timestamp": freshness["latest_timestamp"] or "",
-                    "warning": warning or "",
+                    "warning": snapshot.warning or "",
                 }
             )
     return pl.DataFrame(rows)

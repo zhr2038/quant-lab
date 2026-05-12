@@ -34,7 +34,7 @@ def test_build_alpha_evidence_computes_metrics_without_paper_live_ready(tmp_path
     assert result.evidence.ic_mean > 0
     assert result.evidence.paper_days == 0
     assert result.evidence.paper_slippage_coverage == 0.0
-    assert result.evidence.evidence_status == "ok"
+    assert result.evidence.evidence_status == "valid"
 
 
 def test_insufficient_samples_keeps_metrics_and_marks_status(tmp_path):

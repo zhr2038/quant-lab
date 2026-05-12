@@ -216,6 +216,54 @@ def test_quant_lab_enforce_mode_marks_sell_only_buy_actual_violation(tmp_path):
     assert mode["permission_gate_enforced"][0] == True  # noqa: E712
 
 
+def test_quant_lab_compliance_prefers_explicit_violation_fields(tmp_path):
+    lake = tmp_path / "lake"
+    _write_manifest(lake)
+    _write_quant_lab_usage(lake, mode="enforce", enforced=True)
+    _write_quant_lab_compliance(
+        lake,
+        permission="ALLOW",
+        side="sell",
+        actual_violation=True,
+        hypothetical_violation=False,
+    )
+
+    result = analyze_v5_telemetry(lake, date="2026-05-10")
+
+    assert result.quant_lab_actual_violation_count == 1
+    assert result.quant_lab_hypothetical_violation_count == 0
+
+
+def test_quant_lab_cost_only_does_not_create_permission_actual_violation(tmp_path):
+    lake = tmp_path / "lake"
+    _write_manifest(lake)
+    _write_quant_lab_usage(lake, mode="cost_only", enforced=True)
+    _write_quant_lab_compliance(lake, permission="SELL_ONLY", side="buy", new_risk=True)
+
+    result = analyze_v5_telemetry(lake, date="2026-05-10")
+
+    assert result.quant_lab_actual_violation_count == 0
+    assert result.quant_lab_hypothetical_violation_count == 1
+
+
+def test_quant_lab_reduce_only_buy_is_not_risk_increasing_violation(tmp_path):
+    lake = tmp_path / "lake"
+    _write_manifest(lake)
+    _write_quant_lab_usage(lake, mode="permission_only", enforced=True)
+    _write_quant_lab_compliance(
+        lake,
+        permission="SELL_ONLY",
+        side="buy",
+        reduce_only=True,
+        new_risk=True,
+    )
+
+    result = analyze_v5_telemetry(lake, date="2026-05-10")
+
+    assert result.quant_lab_actual_violation_count == 0
+    assert result.quant_lab_hypothetical_violation_count == 0
+
+
 def _write_manifest(lake, bundle_ts=datetime(2026, 5, 10, 14, 2, 49, tzinfo=UTC)):
     write_parquet_dataset(
         pl.DataFrame(
@@ -337,20 +385,34 @@ def _write_quant_lab_usage(lake, *, mode: str, enforced: bool) -> None:
     )
 
 
-def _write_quant_lab_compliance(lake, *, permission: str, side: str) -> None:
+def _write_quant_lab_compliance(
+    lake,
+    *,
+    permission: str,
+    side: str,
+    actual_violation: bool | None = None,
+    hypothetical_violation: bool | None = None,
+    reduce_only: bool | None = None,
+    new_risk: bool | None = None,
+) -> None:
+    payload = {"permission": permission, "side": side}
+    row = {
+        **_event_row("quant_lab_compliance"),
+        "source_path_inside_bundle": "summaries/quant_lab_compliance.csv",
+        "permission": permission,
+        "side": side,
+    }
+    for key, value in {
+        "actual_violation": actual_violation,
+        "hypothetical_violation": hypothetical_violation,
+        "reduce_only": reduce_only,
+        "new_risk": new_risk,
+    }.items():
+        if value is not None:
+            row[key] = value
+            payload[key] = value
+    row["raw_payload_json"] = __import__("json").dumps(payload)
     write_parquet_dataset(
-        pl.DataFrame(
-            [
-                {
-                    **_event_row("quant_lab_compliance"),
-                    "source_path_inside_bundle": "summaries/quant_lab_compliance.csv",
-                    "permission": permission,
-                    "side": side,
-                    "raw_payload_json": __import__("json").dumps(
-                        {"permission": permission, "side": side}
-                    ),
-                }
-            ]
-        ),
+        pl.DataFrame([row]),
         lake / "silver/v5_quant_lab_compliance",
     )

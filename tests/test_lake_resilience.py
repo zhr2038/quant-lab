@@ -75,3 +75,22 @@ def test_concurrent_upserts_do_not_corrupt_parquet(tmp_path):
     assert result.height == 20
     assert result["id"].sort().to_list() == list(range(20))
     assert not invalid_parquet_files(dataset)
+
+
+def test_concurrent_writes_do_not_create_invalid_parquet(tmp_path):
+    dataset = tmp_path / "lake" / "silver" / "concurrent_replace"
+
+    def write_row(index: int) -> None:
+        write_parquet_dataset(
+            pl.DataFrame([{"id": index, "value": f"row-{index}"}]),
+            dataset,
+        )
+
+    with ThreadPoolExecutor(max_workers=4) as executor:
+        list(executor.map(write_row, range(20)))
+
+    result = read_parquet_dataset(dataset)
+
+    assert result.height == 1
+    assert result["id"][0] in set(range(20))
+    assert not invalid_parquet_files(dataset)

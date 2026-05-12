@@ -464,6 +464,13 @@ def publish_features(
     end: Annotated[datetime | None, typer.Option("--end")] = None,
     drop_null: Annotated[bool, typer.Option("--drop-null/--keep-null")] = False,
     dry_run: Annotated[bool, typer.Option("--dry-run")] = False,
+    allow_schema_replace: Annotated[
+        bool,
+        typer.Option(
+            "--allow-schema-replace/--no-schema-replace",
+            help="Replace an incompatible existing feature dataset after manual review.",
+        ),
+    ] = False,
 ) -> None:
     parsed_symbols = (
         [symbol.strip() for symbol in symbols.split(",") if symbol.strip()] if symbols else None
@@ -478,6 +485,7 @@ def publish_features(
         end=end,
         drop_null=drop_null,
         dry_run=dry_run,
+        allow_schema_replace=allow_schema_replace,
     )
     typer.echo(result.model_dump_json(indent=2))
 

@@ -90,3 +90,13 @@ def test_insufficient_samples_quarantines_without_faking_negative_alpha():
     assert decision.reasons == ["insufficient_samples"]
     assert decision.metrics["ic_mean"] == 0.08
     assert decision.metrics["ic_tstat"] == 5.0
+
+
+@pytest.mark.parametrize("status", ["insufficient_data", "stale"])
+def test_non_valid_evidence_status_quarantines_before_statistical_dead_gate(status):
+    decision = evaluate_alpha_gate(
+        evidence(evidence_status=status, ic_mean=-0.08, ic_tstat=0.0)
+    )
+
+    assert decision.status == GateStatus.QUARANTINE
+    assert decision.reasons == [status]

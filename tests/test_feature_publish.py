@@ -27,7 +27,36 @@ def test_publish_features_writes_values_coverage_and_anomalies(tmp_path):
     assert anomalies.filter(pl.col("anomaly_type") == "zero_variance").height > 0
 
 
-def test_publish_features_replaces_incompatible_legacy_feature_schema(tmp_path):
+def test_publish_features_rejects_incompatible_legacy_feature_schema_by_default(tmp_path):
+    lake = tmp_path / "lake"
+    _write_bars(lake, symbols=["BTC-USDT"], count=30)
+
+    write_parquet_dataset(
+        pl.DataFrame(
+            [
+                {
+                    "feature_set": "core",
+                    "feature_name": "close_return_1",
+                    "feature_version": "v0.1",
+                    "symbol": "BTC-USDT",
+                    "ts": datetime(2026, 5, 10, tzinfo=UTC),
+                    "value": 0.0,
+                }
+            ]
+        ),
+        lake / "gold" / "feature_value",
+    )
+    original = read_parquet_dataset(lake / "gold" / "feature_value")
+
+    with pytest.raises(ValueError, match="schema incompatible"):
+        publish_features(lake)
+
+    after = read_parquet_dataset(lake / "gold" / "feature_value")
+
+    assert after.to_dicts() == original.to_dicts()
+
+
+def test_publish_features_can_replace_incompatible_legacy_feature_schema_when_allowed(tmp_path):
     lake = tmp_path / "lake"
     _write_bars(lake, symbols=["BTC-USDT"], count=30)
 
@@ -47,7 +76,7 @@ def test_publish_features_replaces_incompatible_legacy_feature_schema(tmp_path):
         lake / "gold" / "feature_value",
     )
 
-    result = publish_features(lake)
+    result = publish_features(lake, allow_schema_replace=True)
     features = read_parquet_dataset(lake / "gold" / "feature_value")
 
     assert result.feature_value_rows == 300

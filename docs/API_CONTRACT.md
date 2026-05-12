@@ -298,11 +298,48 @@ Example response:
   "cost_model_version": "costs-v1",
   "gate_version": "default-v0.1",
   "reasons": ["all_required_alpha_gates_live_ready"],
-  "created_at": "2026-05-10T00:00:00Z",
-  "permission_source": "published_cache"
+  "created_at": "2026-05-10T00:00:00Z"
 }
 ```
 
 Allowed permissions: `ALLOW`, `SELL_ONLY`, `ABORT`.
+
+## GET /v1/risk/live-permission-detail
+
+Returns the same `RiskPermission` plus API-side audit metadata such as cache
+freshness, data health, cost health, gate summary, and V5 telemetry summary.
+Use this endpoint for operations diagnostics; strategy consumers that only need
+the permission contract can keep using `/v1/risk/live-permission`.
+
+Request params:
+
+- `strategy` required string, for example `v5`.
+- `version` required string, for example `v1`.
+
+Example response:
+
+```json
+{
+  "permission": {
+    "strategy": "v5",
+    "version": "v1",
+    "permission": "SELL_ONLY",
+    "allowed_modes": ["sell_only"],
+    "max_gross_exposure": 0.0,
+    "max_single_weight": 0.0,
+    "cost_model_version": "costs-v1",
+    "gate_version": "default-v0.1",
+    "reasons": ["cost_health_missing"],
+    "created_at": "2026-05-10T00:00:00Z"
+  },
+  "permission_source": "recomputed",
+  "permission_freshness_seconds": 420,
+  "published_permission_stale": true,
+  "data_health": {"status": "ok"},
+  "cost_health": {"status": "missing"},
+  "gate_summary": {"total": 1, "status_counts": {"LIVE_READY": 1}},
+  "v5_telemetry_summary": {"status": "ok", "reasons": []}
+}
+```
 
 All public `/v1` routes are GET-only.

@@ -11,6 +11,7 @@ from quant_lab.features.registry import (
     FeatureTimestampLeakageError,
     close_return_spec,
     compute_close_position_in_range,
+    compute_dollar_volume,
     compute_feature_values,
     compute_liquidity_proxy,
     compute_range_bps,
@@ -57,7 +58,50 @@ def test_core_registry_uses_specific_compute_functions_for_non_return_features()
         registry.get("core", "close_position_in_range", "v0.1").compute
         is compute_close_position_in_range
     )
+    assert registry.get("core", "dollar_volume", "v0.1").compute is compute_dollar_volume
     assert registry.get("core", "liquidity_proxy", "v0.1").compute is compute_liquidity_proxy
+
+
+def test_non_return_feature_compute_does_not_calculate_close_return():
+    registry = default_core_registry()
+    bars = pl.DataFrame(
+        {
+            "symbol": ["BTC-USDT", "BTC-USDT"],
+            "timeframe": ["1H", "1H"],
+            "ts": [
+                datetime(2026, 5, 1, tzinfo=UTC),
+                datetime(2026, 5, 1, 1, tzinfo=UTC),
+            ],
+            "open": [100.0, 200.0],
+            "high": [110.0, 220.0],
+            "low": [90.0, 180.0],
+            "close": [100.0, 200.0],
+            "volume": [10.0, 20.0],
+            "quote_volume": [1000.0, 4000.0],
+            "is_closed": [True, True],
+        }
+    )
+    context = {
+        "input_dataset_version": "market-bar-v1",
+        "input_hash": "sha256:test-bars",
+        "code_version": "features-code-v1",
+        "created_at": CREATED_AT,
+    }
+
+    range_value = compute_feature_values(
+        registry.get("core", "range_bps", "v0.1"),
+        bars,
+        **context,
+    )[1]
+    dollar_value = compute_feature_values(
+        registry.get("core", "dollar_volume", "v0.1"),
+        bars,
+        **context,
+    )[1]
+
+    assert range_value.value == pytest.approx((220.0 - 180.0) / 200.0 * 10_000)
+    assert dollar_value.value == pytest.approx(4000.0)
+    assert range_value.value != pytest.approx(200.0 / 100.0 - 1.0)
 
 
 def test_close_return_feature_computation_output_shape():

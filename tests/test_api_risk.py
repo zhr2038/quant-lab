@@ -130,7 +130,21 @@ def test_live_permission_api_reads_published_risk_permission(tmp_path, monkeypat
     payload = response.json()
     assert payload["permission"] == "SELL_ONLY"
     assert payload["reasons"] == ["published_permission"]
-    assert payload["permission_source"] == "published_cache"
+    assert "permission_source" not in payload
+
+    detail = TestClient(app).get(
+        "/v1/risk/live-permission-detail",
+        params={"strategy": "v5", "version": "5.0.0"},
+    )
+    assert detail.status_code == 200
+    detail_payload = detail.json()
+    assert detail_payload["permission"]["permission"] == "SELL_ONLY"
+    assert detail_payload["permission_source"] == "published_cache"
+    assert detail_payload["published_permission_stale"] is False
+    assert detail_payload["permission_freshness_seconds"] >= 0
+    assert detail_payload["data_health"]["status"] == "ok"
+    assert detail_payload["cost_health"]["status"] == "ok"
+    assert detail_payload["gate_summary"]["status_counts"] == {"LIVE_READY": 1}
 
 
 def test_live_permission_api_recomputes_stale_published_allow(tmp_path, monkeypatch):
@@ -165,8 +179,57 @@ def test_live_permission_api_recomputes_stale_published_allow(tmp_path, monkeypa
     payload = _get_permission("v5")
 
     assert payload["permission"] == "ABORT"
-    assert payload["permission_source"] == "recomputed"
     assert "market_bar_stale" in payload["reasons"]
+
+    detail = TestClient(app).get(
+        "/v1/risk/live-permission-detail",
+        params={"strategy": "v5", "version": "5.0.0"},
+    ).json()
+    assert detail["permission_source"] == "recomputed"
+    assert detail["published_permission_stale"] is True
+    assert detail["permission"]["permission"] == "ABORT"
+
+
+def test_live_permission_detail_overrides_fresh_allow_when_recomputed_is_more_conservative(
+    tmp_path,
+    monkeypatch,
+):
+    lake = tmp_path / "lake"
+    monkeypatch.setenv("QUANT_LAB_LAKE_ROOT", str(lake))
+    monkeypatch.setenv("QUANT_LAB_RISK_PERMISSION_TTL_SECONDS", "300")
+    _write_gate(lake, GateStatus.LIVE_READY)
+    _write_cost_bucket(lake)
+    _write_stale_market_bar(lake)
+    write_parquet_dataset(
+        pl.DataFrame(
+            [
+                {
+                    "strategy": "v5",
+                    "version": "5.0.0",
+                    "permission": "ALLOW",
+                    "allowed_modes": '["paper","live_canary"]',
+                    "max_gross_exposure": 0.25,
+                    "max_single_weight": 0.05,
+                    "cost_model_version": "costs-test",
+                    "gate_version": "default-v0.1",
+                    "reasons": '["fresh_allow"]',
+                    "created_at": datetime.now(UTC).isoformat(),
+                    "source": "test",
+                    "fallback_level": "NONE",
+                }
+            ]
+        ),
+        lake / "gold/risk_permission",
+    )
+
+    detail = TestClient(app).get(
+        "/v1/risk/live-permission-detail",
+        params={"strategy": "v5", "version": "5.0.0"},
+    ).json()
+
+    assert detail["permission_source"] == "recomputed"
+    assert detail["published_permission_stale"] is False
+    assert detail["permission"]["permission"] == "ABORT"
 
 
 def _get_permission(strategy: str) -> dict:

@@ -29,7 +29,6 @@ RISK_PERMISSION_SCHEMA = {
     "gate_version": pl.Utf8,
     "reasons": pl.Utf8,
     "created_at": pl.Utf8,
-    "permission_source": pl.Utf8,
     "source": pl.Utf8,
     "fallback_level": pl.Utf8,
 }
@@ -210,6 +209,7 @@ def parse_risk_permission_row(row: dict[str, Any]) -> RiskPermission | None:
     cleaned = dict(row)
     cleaned.pop("source", None)
     cleaned.pop("fallback_level", None)
+    cleaned.pop("permission_source", None)
     if isinstance(cleaned.get("allowed_modes"), str):
         cleaned["allowed_modes"] = _json_list(cleaned["allowed_modes"])
     if isinstance(cleaned.get("reasons"), str):

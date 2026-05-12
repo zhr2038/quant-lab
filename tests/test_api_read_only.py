@@ -1,7 +1,7 @@
 from fastapi.routing import APIRoute
 from fastapi.testclient import TestClient
 
-from quant_lab.api.main import app
+from quant_lab.api.main import app, create_app
 
 
 def test_api_has_no_non_get_strategy_routes():
@@ -67,9 +67,8 @@ def test_bearer_token_required_when_configured(monkeypatch):
     assert correct.status_code == 200
 
 
-def test_health_requires_token_when_local_bypass_disabled(monkeypatch):
+def test_health_requires_token_when_api_token_is_configured(monkeypatch):
     monkeypatch.setenv("QUANT_LAB_API_TOKEN", "test-token")
-    monkeypatch.setenv("QUANT_LAB_HEALTH_ALLOW_LOCAL_UNAUTH", "false")
     client = TestClient(app)
 
     missing = client.get("/v1/health")
@@ -77,3 +76,21 @@ def test_health_requires_token_when_local_bypass_disabled(monkeypatch):
 
     assert missing.status_code == 401
     assert correct.status_code == 200
+
+
+def test_allowed_client_ips_blocks_unlisted_client(monkeypatch):
+    monkeypatch.setenv("QUANT_LAB_ALLOWED_CLIENT_IPS", "127.0.0.1")
+    client = TestClient(app)
+
+    response = client.get("/v1/catalog/datasets")
+
+    assert response.status_code == 403
+
+
+def test_docs_can_be_disabled(monkeypatch):
+    monkeypatch.setenv("QUANT_LAB_DISABLE_DOCS", "true")
+    client = TestClient(create_app())
+
+    assert client.get("/docs").status_code == 404
+    assert client.get("/redoc").status_code == 404
+    assert client.get("/openapi.json").status_code == 404

@@ -1,3 +1,4 @@
+import os
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any
@@ -88,7 +89,7 @@ def build_alpha_evidence(
     )
     valid_rows = valid.height
     coverage = valid_rows / total_rows if total_rows else 0.0
-    status = "ok"
+    status = "valid"
     if valid_rows < spec.min_samples:
         warnings.append("insufficient_samples")
         status = "insufficient_samples"
@@ -111,6 +112,9 @@ def build_alpha_evidence(
     end_ts = _frame_datetime(dataset, "feature_ts", "max") or (start_ts + timedelta(seconds=1))
     if end_ts <= start_ts:
         end_ts = start_ts + timedelta(seconds=1)
+    if status == "valid" and _evidence_window_is_stale(end_ts, now):
+        warnings.append("stale")
+        status = "stale"
 
     evidence = AlphaEvidence(
         alpha_id=spec.alpha_id,
@@ -143,6 +147,17 @@ def build_alpha_evidence(
         evidence_status=status,
     )
     return AlphaEvidenceBuildResult(evidence, dataset, _dedupe(warnings), status)
+
+
+def _evidence_window_is_stale(end_ts: datetime, now: datetime) -> bool:
+    value = os.environ.get("QUANT_LAB_ALPHA_EVIDENCE_STALE_DAYS", "7")
+    try:
+        stale_days = int(value)
+    except ValueError:
+        stale_days = 7
+    if stale_days <= 0:
+        return False
+    return end_ts < now - timedelta(days=stale_days)
 
 
 def _load_features(root: Path, spec: AlphaResearchSpec, warnings: list[str]) -> pl.DataFrame:

@@ -7,12 +7,13 @@ DEFAULT_GATE_VERSION = "default-v0.1"
 
 
 def evaluate_alpha_gate(evidence: AlphaEvidence) -> GateDecision:
-    if evidence.evidence_status == "insufficient_samples":
+    if evidence.evidence_status in {"insufficient_data", "insufficient_samples", "stale"}:
         status = _insufficient_samples_status()
+        reason = evidence.evidence_status
         return _decision(
             evidence,
             status=status,
-            reasons=["insufficient_samples"],
+            reasons=[reason],
             next_action=(
                 "collect_more_research_samples"
                 if status == GateStatus.QUARANTINE

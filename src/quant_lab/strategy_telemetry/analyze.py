@@ -575,20 +575,38 @@ def _quant_lab_mode_summary(
         for row in compliance.to_dicts():
             payload = _payload(row)
             permission = _first_text(row, payload, ["permission", "quant_lab_permission"])
-            side = _first_text(row, payload, ["side", "order_side", "action", "intent"])
-            if not _is_risk_increasing_side(side):
-                continue
-            if str(permission or "").upper() not in {"ABORT", "SELL_ONLY"}:
-                continue
+            explicit_actual = _first_bool(row, payload, ["actual_violation"])
+            explicit_hypothetical = _first_bool(row, payload, ["hypothetical_violation"])
             message = (
                 f"quant_lab {str(permission).upper()} permission with risk-increasing "
                 f"V5 action in mode={mode or 'unknown'}"
             )
-            if mode == "shadow" or not enforced:
+            if explicit_actual is not None or explicit_hypothetical is not None:
+                if (
+                    explicit_actual
+                    and mode != "shadow"
+                    and _mode_allows_actual_permission_check(mode)
+                ):
+                    actual.append(message)
+                if explicit_hypothetical or (
+                    explicit_actual
+                    and (mode == "shadow" or not _mode_allows_actual_permission_check(mode))
+                ):
+                    hypothetical.append(message)
+                continue
+            if not _row_is_risk_increasing(row, payload):
+                continue
+            if str(permission or "").upper() not in {"ABORT", "SELL_ONLY"}:
+                continue
+            if mode == "shadow" or not enforced or not _mode_allows_actual_permission_check(mode):
                 hypothetical.append(message)
             else:
                 actual.append(message)
-    elif not trades.is_empty() and mode not in {None, "local_only", "cost_only"}:
+    elif (
+        not trades.is_empty()
+        and mode not in {None, "local_only", "cost_only"}
+        and _mode_allows_actual_permission_check(mode)
+    ):
         message = f"V5 trade events present without quant_lab compliance rows in mode={mode}"
         if mode == "shadow" or not enforced:
             hypothetical.append(message)
@@ -625,7 +643,7 @@ def _permission_gate_enforced(
     compliance: pl.DataFrame,
     mode: str | None,
 ) -> bool:
-    if mode == "shadow":
+    if mode in {"shadow", "cost_only", "local_only"}:
         return False
     for frame in [compliance, usage]:
         if frame.is_empty():
@@ -638,7 +656,24 @@ def _permission_gate_enforced(
             parsed = _parse_bool(value)
             if parsed is not None:
                 return parsed
-    return mode == "enforce"
+    return mode in {"enforce", "permission_only"}
+
+
+def _mode_allows_actual_permission_check(mode: str | None) -> bool:
+    return mode in {"enforce", "permission_only"}
+
+
+def _first_bool(row: dict[str, Any], payload: dict[str, Any], fields: list[str]) -> bool | None:
+    for field in fields:
+        if field in row:
+            parsed = _parse_bool(row.get(field))
+            if parsed is not None:
+                return parsed
+        if field in payload:
+            parsed = _parse_bool(payload.get(field))
+            if parsed is not None:
+                return parsed
+    return None
 
 
 def _parse_bool(value: Any) -> bool | None:
@@ -658,7 +693,25 @@ def _is_risk_increasing_side(value: str | None) -> bool:
     if value is None:
         return False
     normalized = value.strip().lower()
-    return normalized in {"buy", "long", "open_long", "increase", "risk_increase"}
+    return normalized in {"buy", "long", "open_long", "increase", "risk_increase", "enter"}
+
+
+def _row_is_risk_increasing(row: dict[str, Any], payload: dict[str, Any]) -> bool:
+    reduce_only = _first_bool(row, payload, ["reduce_only", "is_reduce_only"])
+    if reduce_only is True:
+        return False
+    new_risk = _first_bool(row, payload, ["new_risk", "risk_increasing"])
+    if new_risk is not None:
+        return new_risk
+    intent = _first_text(row, payload, ["intent", "action", "router_intent"])
+    if intent:
+        normalized = intent.strip().lower()
+        if normalized in {"reduce", "close", "close_long", "sell_only_reduce", "exit"}:
+            return False
+        if normalized in {"buy", "long", "open_long", "increase", "risk_increase", "enter"}:
+            return True
+    side = _first_text(row, payload, ["side", "order_side"])
+    return _is_risk_increasing_side(side)
 
 
 def _router_reason_top(df: pl.DataFrame) -> list[dict[str, Any]]:

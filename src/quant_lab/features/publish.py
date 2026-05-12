@@ -122,6 +122,7 @@ def publish_features(
     end: datetime | None = None,
     drop_null: bool = False,
     dry_run: bool = False,
+    allow_schema_replace: bool = False,
 ) -> FeaturePublishResult:
     root = Path(lake_root)
     warnings: list[str] = []
@@ -191,6 +192,7 @@ def publish_features(
                 "timeframe",
                 "ts",
             ],
+            allow_schema_replace=allow_schema_replace,
         )
         _upsert_or_replace_incompatible(
             coverage,
@@ -203,6 +205,7 @@ def publish_features(
                 "timeframe",
                 "symbol",
             ],
+            allow_schema_replace=allow_schema_replace,
         )
         _upsert_or_replace_incompatible(
             anomalies,
@@ -216,6 +219,7 @@ def publish_features(
                 "symbol",
                 "anomaly_type",
             ],
+            allow_schema_replace=allow_schema_replace,
         )
 
     return FeaturePublishResult(
@@ -245,8 +249,14 @@ def publish_core_features(
     *,
     feature_set: str = "core",
     timeframe: str = "1H",
+    allow_schema_replace: bool = False,
 ) -> FeaturePublishResult:
-    return publish_features(lake_root=lake_root, feature_set=feature_set, timeframe=timeframe)
+    return publish_features(
+        lake_root=lake_root,
+        feature_set=feature_set,
+        timeframe=timeframe,
+        allow_schema_replace=allow_schema_replace,
+    )
 
 
 def core_feature_specs(
@@ -494,14 +504,41 @@ def _upsert_or_replace_incompatible(
     dataset_path: Path,
     *,
     key_columns: list[str],
+    allow_schema_replace: bool = False,
 ) -> int:
     existing = read_parquet_dataset(dataset_path)
     if not existing.is_empty():
-        missing_columns = set(frame.columns).difference(existing.columns)
-        if missing_columns:
+        incompatibilities = _schema_incompatibilities(existing, frame)
+        if incompatibilities:
+            if not allow_schema_replace:
+                detail = "; ".join(incompatibilities)
+                raise ValueError(
+                    f"schema incompatible for {dataset_path}: {detail}. "
+                    "Run with allow_schema_replace=True or --allow-schema-replace "
+                    "after reviewing the existing dataset."
+                )
             write_parquet_dataset(frame, dataset_path)
             return frame.height
     return upsert_parquet_dataset(frame, dataset_path, key_columns=key_columns)
+
+
+def _schema_incompatibilities(existing: pl.DataFrame, incoming: pl.DataFrame) -> list[str]:
+    issues: list[str] = []
+    existing_columns = set(existing.columns)
+    incoming_columns = set(incoming.columns)
+    missing_from_existing = sorted(incoming_columns.difference(existing_columns))
+    missing_from_incoming = sorted(existing_columns.difference(incoming_columns))
+    if missing_from_existing:
+        issues.append(f"existing missing columns: {','.join(missing_from_existing)}")
+    if missing_from_incoming:
+        issues.append(f"incoming missing columns: {','.join(missing_from_incoming)}")
+    for column in sorted(existing_columns.intersection(incoming_columns)):
+        if existing.schema[column] != incoming.schema[column]:
+            issues.append(
+                f"type mismatch {column}: existing={existing.schema[column]} "
+                f"incoming={incoming.schema[column]}"
+            )
+    return issues
 
 
 def _compute_core_features(

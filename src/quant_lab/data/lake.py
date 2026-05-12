@@ -49,6 +49,16 @@ def write_parquet_dataset(
     partition_by: str | Sequence[str] | None = None,
 ) -> Path:
     path = Path(dataset_path)
+    with _dataset_lock(path):
+        return _write_parquet_dataset_unlocked(df, path, partition_by=partition_by)
+
+
+def _write_parquet_dataset_unlocked(
+    df: pl.DataFrame,
+    dataset_path: str | Path,
+    partition_by: str | Sequence[str] | None = None,
+) -> Path:
+    path = Path(dataset_path)
     path.parent.mkdir(parents=True, exist_ok=True)
 
     sorted_df = _sort_dataframe(df)
@@ -99,7 +109,7 @@ def upsert_parquet_dataset(
             available_keys = [column for column in key_columns if column in combined.columns]
             if available_keys:
                 combined = combined.unique(subset=available_keys, keep="last", maintain_order=True)
-        write_parquet_dataset(combined, path)
+        _write_parquet_dataset_unlocked(combined, path)
         return combined.height
 
 

@@ -3,6 +3,7 @@
 This API is read-only and must not mutate strategy state or exchange state.
 """
 
+import hmac
 import json
 import os
 from datetime import UTC, datetime, timedelta
@@ -73,6 +74,19 @@ class ResearchAlphaResponse(BaseModel):
     warnings: list[str] = Field(default_factory=list)
 
 
+class LivePermissionDetailResponse(BaseModel):
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    permission: RiskPermission
+    permission_source: str
+    permission_freshness_seconds: int | None = None
+    published_permission_stale: bool
+    data_health: dict[str, Any]
+    cost_health: dict[str, Any]
+    gate_summary: dict[str, Any]
+    v5_telemetry_summary: dict[str, Any]
+
+
 KNOWN_DATASETS = [
     "market_bar",
     "feature_value",
@@ -88,11 +102,22 @@ KNOWN_DATASETS = [
 ]
 
 
+def _bool_env(name: str, *, default: bool) -> bool:
+    value = os.environ.get(name)
+    if value is None:
+        return default
+    return value.strip().lower() in {"1", "true", "yes", "on"}
+
+
 def create_app() -> FastAPI:
+    disable_docs = _bool_env("QUANT_LAB_DISABLE_DOCS", default=False)
     app = FastAPI(
         title="quant-lab",
         version=__version__,
         description="Read-only quantitative research middle platform.",
+        docs_url=None if disable_docs else "/docs",
+        redoc_url=None if disable_docs else "/redoc",
+        openapi_url=None if disable_docs else "/openapi.json",
     )
 
     @app.middleware("http")
@@ -212,16 +237,20 @@ def create_app() -> FastAPI:
 
     @app.get("/v1/risk/live-permission", response_model=RiskPermission)
     def live_permission(strategy: str, version: str) -> RiskPermission:
-        lake_root = _lake_root()
-        published = _load_published_risk_permission(lake_root, strategy=strategy, version=version)
-        recomputed = _compute_live_permission(lake_root, strategy=strategy, version=version)
-        if published is None:
-            return recomputed.model_copy(update={"permission_source": "recomputed"})
-        if _risk_permission_is_stale(published):
-            return recomputed.model_copy(update={"permission_source": "recomputed"})
-        if _is_more_conservative(recomputed, published):
-            return recomputed.model_copy(update={"permission_source": "recomputed"})
-        return published.model_copy(update={"permission_source": "published_cache"})
+        return _live_permission_evaluation(
+            _lake_root(),
+            strategy=strategy,
+            version=version,
+        )["permission"]
+
+    @app.get("/v1/risk/live-permission-detail", response_model=LivePermissionDetailResponse)
+    def live_permission_detail(strategy: str, version: str) -> LivePermissionDetailResponse:
+        evaluation = _live_permission_evaluation(
+            _lake_root(),
+            strategy=strategy,
+            version=version,
+        )
+        return LivePermissionDetailResponse(**evaluation)
 
     return app
 
@@ -232,10 +261,55 @@ def _compute_live_permission(
     strategy: str,
     version: str,
 ) -> RiskPermission:
+    return _compute_live_permission_with_context(
+        lake_root,
+        strategy=strategy,
+        version=version,
+    )["permission"]
+
+
+def _live_permission_evaluation(
+    lake_root: Path,
+    *,
+    strategy: str,
+    version: str,
+) -> dict[str, Any]:
+    published = _load_published_risk_permission(lake_root, strategy=strategy, version=version)
+    computed = _compute_live_permission_with_context(
+        lake_root,
+        strategy=strategy,
+        version=version,
+    )
+    recomputed = computed["permission"]
+    stale = _risk_permission_is_stale(published) if published is not None else True
+    source = "recomputed"
+    permission = recomputed
+    if published is not None and not stale and not _is_more_conservative(recomputed, published):
+        source = "published_cache"
+        permission = published
+    return {
+        "permission": permission,
+        "permission_source": source,
+        "permission_freshness_seconds": _permission_freshness_seconds(published),
+        "published_permission_stale": stale,
+        "data_health": computed["data_health"],
+        "cost_health": computed["cost_health"],
+        "gate_summary": computed["gate_summary"],
+        "v5_telemetry_summary": computed["v5_telemetry_summary"],
+    }
+
+
+def _compute_live_permission_with_context(
+    lake_root: Path,
+    *,
+    strategy: str,
+    version: str,
+) -> dict[str, Any]:
     gate_decisions = _load_gate_decisions(lake_root, strategy=strategy)
     data_health = _lake_data_health(lake_root)
     cost_health = _lake_cost_health(lake_root)
     telemetry_reasons = _strategy_telemetry_reasons(lake_root, strategy=strategy)
+    original_data_health = dict(data_health)
     if telemetry_reasons:
         data_health = {
             **data_health,
@@ -257,7 +331,7 @@ def _compute_live_permission(
             cost_health=cost_health,
             data_health=data_health,
         )
-        return permission.model_copy(
+        permission = permission.model_copy(
             update={
                 "reasons": _dedupe(
                     [
@@ -268,14 +342,30 @@ def _compute_live_permission(
                 )
             }
         )
+        return {
+            "permission": permission,
+            "data_health": data_health,
+            "cost_health": cost_health,
+            "gate_summary": _gate_summary(gate_decisions),
+            "v5_telemetry_summary": _v5_telemetry_summary(telemetry_reasons),
+            "original_data_health": original_data_health,
+        }
 
-    return evaluate_live_permission(
+    permission = evaluate_live_permission(
         strategy=strategy,
         version=version,
         gate_decisions=gate_decisions,
         cost_health=cost_health,
         data_health=data_health,
     )
+    return {
+        "permission": permission,
+        "data_health": data_health,
+        "cost_health": cost_health,
+        "gate_summary": _gate_summary(gate_decisions),
+        "v5_telemetry_summary": _v5_telemetry_summary(telemetry_reasons),
+        "original_data_health": original_data_health,
+    }
 
 
 app = create_app()
@@ -288,14 +378,16 @@ def _lake_root() -> Path:
 def _authorize_v1_request(request: Request) -> None:
     if not request.url.path.startswith("/v1/"):
         return
+    if not _client_ip_allowed(request):
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="quant-lab API client IP is not allowed",
+        )
     token = os.environ.get("QUANT_LAB_API_TOKEN")
     if not token:
         return
-    if request.url.path == "/v1/health" and _health_allows_local_unauth(request):
-        return
-    authorization = request.headers.get("authorization", "")
-    expected = f"Bearer {token}"
-    if authorization != expected:
+    provided = _bearer_token(request.headers.get("authorization", ""))
+    if provided is None or not hmac.compare_digest(provided, token):
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="quant-lab API bearer token required",
@@ -303,18 +395,20 @@ def _authorize_v1_request(request: Request) -> None:
         )
 
 
-def _health_allows_local_unauth(request: Request) -> bool:
-    if not _bool_env("QUANT_LAB_HEALTH_ALLOW_LOCAL_UNAUTH", default=True):
-        return False
+def _bearer_token(authorization: str) -> str | None:
+    prefix = "Bearer "
+    if not authorization.startswith(prefix):
+        return None
+    return authorization[len(prefix) :]
+
+
+def _client_ip_allowed(request: Request) -> bool:
+    allowed = os.environ.get("QUANT_LAB_ALLOWED_CLIENT_IPS")
+    if not allowed:
+        return True
+    allowed_hosts = {item.strip() for item in allowed.split(",") if item.strip()}
     host = request.client.host if request.client else ""
-    return host in {"127.0.0.1", "::1", "localhost", "testclient"}
-
-
-def _bool_env(name: str, *, default: bool) -> bool:
-    value = os.environ.get(name)
-    if value is None:
-        return default
-    return value.strip().lower() in {"1", "true", "yes", "on"}
+    return host in allowed_hosts
 
 
 def _risk_permission_ttl_seconds() -> int:
@@ -333,6 +427,12 @@ def _risk_permission_is_stale(permission: RiskPermission) -> bool:
     return permission.created_at < datetime.now(UTC) - timedelta(seconds=ttl_seconds)
 
 
+def _permission_freshness_seconds(permission: RiskPermission | None) -> int | None:
+    if permission is None:
+        return None
+    return max(0, int((datetime.now(UTC) - permission.created_at).total_seconds()))
+
+
 def _is_more_conservative(candidate: RiskPermission, baseline: RiskPermission) -> bool:
     return _permission_rank(candidate.permission.value) > _permission_rank(
         baseline.permission.value
@@ -341,6 +441,30 @@ def _is_more_conservative(candidate: RiskPermission, baseline: RiskPermission) -
 
 def _permission_rank(permission: str) -> int:
     return {"ALLOW": 0, "SELL_ONLY": 1, "ABORT": 2}.get(permission, 2)
+
+
+def _gate_summary(gate_decisions: list[GateDecision]) -> dict[str, Any]:
+    counts: dict[str, int] = {}
+    alpha_ids: list[str] = []
+    gate_versions: list[str] = []
+    for decision in gate_decisions:
+        status_value = decision.status.value
+        counts[status_value] = counts.get(status_value, 0) + 1
+        alpha_ids.append(decision.alpha_id)
+        gate_versions.append(decision.gate_version)
+    return {
+        "total": len(gate_decisions),
+        "status_counts": counts,
+        "alpha_ids": sorted(set(alpha_ids)),
+        "gate_versions": sorted(set(gate_versions)),
+    }
+
+
+def _v5_telemetry_summary(reasons: list[str]) -> dict[str, Any]:
+    return {
+        "status": "critical" if reasons else "ok",
+        "reasons": list(reasons),
+    }
 
 
 def _latest_features_response(

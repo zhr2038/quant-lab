@@ -947,17 +947,38 @@ def _dedupe_strings(values: list[str]) -> list[str]:
 def _is_bootstrap_placeholder(df: pl.DataFrame) -> bool:
     if df.is_empty():
         return False
+    return _frame_is_bootstrap_placeholder(_latest_placeholder_slice(df))
+
+
+def _latest_placeholder_slice(df: pl.DataFrame) -> pl.DataFrame:
+    for column in ["as_of_ts", "created_at", "ingest_ts"]:
+        if column not in df.columns:
+            continue
+        try:
+            non_null = df.filter(pl.col(column).is_not_null())
+            if non_null.is_empty():
+                continue
+            latest_value = non_null.select(pl.col(column).max()).item()
+            return non_null.filter(pl.col(column) == latest_value)
+        except Exception:
+            continue
+    return df
+
+
+def _frame_is_bootstrap_placeholder(df: pl.DataFrame) -> bool:
+    if df.is_empty():
+        return False
     if "source" in df.columns:
         source_values = {str(value) for value in df["source"].drop_nulls().to_list()}
-        if "bootstrap_gold_health" in source_values or source_values == {"global_default"}:
+        if source_values == {"bootstrap_gold_health"} or source_values == {"global_default"}:
             return True
     if "gate_version" in df.columns:
         gate_versions = {str(value) for value in df["gate_version"].drop_nulls().to_list()}
-        if any(version.startswith("bootstrap.") for version in gate_versions):
+        if gate_versions and all(version.startswith("bootstrap.") for version in gate_versions):
             return True
     if "fallback_level" in df.columns:
         fallback_values = {str(value) for value in df["fallback_level"].drop_nulls().to_list()}
-        if "BOOTSTRAP_CONSERVATIVE" in fallback_values or fallback_values == {"GLOBAL_DEFAULT"}:
+        if fallback_values in [{"BOOTSTRAP_CONSERVATIVE"}, {"GLOBAL_DEFAULT"}]:
             return True
     return False
 

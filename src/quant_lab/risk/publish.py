@@ -136,7 +136,16 @@ def load_gate_decisions(root: Path, strategy: str) -> list[GateDecision]:
             decisions.append(GateDecision.model_validate(cleaned))
         except Exception:
             continue
-    return decisions
+    return _prefer_research_gate_decisions(decisions)
+
+
+def _prefer_research_gate_decisions(decisions: list[GateDecision]) -> list[GateDecision]:
+    research_decisions = [
+        decision
+        for decision in decisions
+        if not decision.gate_version.startswith("bootstrap.")
+    ]
+    return research_decisions or decisions
 
 
 def lake_cost_health(root: Path) -> dict[str, Any]:

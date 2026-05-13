@@ -636,7 +636,16 @@ def _load_gate_decisions(lake_root: Path, strategy: str) -> list[GateDecision]:
         parsed = _gate_decision_from_row(cleaned)
         if parsed is not None:
             decisions.append(parsed)
-    return decisions
+    return _prefer_research_gate_decisions(decisions)
+
+
+def _prefer_research_gate_decisions(decisions: list[GateDecision]) -> list[GateDecision]:
+    research_decisions = [
+        decision
+        for decision in decisions
+        if not decision.gate_version.startswith("bootstrap.")
+    ]
+    return research_decisions or decisions
 
 
 def _gate_decision_from_row(row: dict[str, Any]) -> GateDecision | None:

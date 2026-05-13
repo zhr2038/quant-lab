@@ -43,6 +43,21 @@ def test_publish_risk_permission_allows_live_ready_with_healthy_inputs(tmp_path)
     assert result.reasons == ["all_required_alpha_gates_live_ready"]
 
 
+def test_publish_risk_permission_ignores_bootstrap_gate_when_research_gate_exists(tmp_path):
+    lake = tmp_path / "lake"
+    _write_gate(lake, GateStatus.LIVE_READY)
+    _append_bootstrap_gate(lake)
+    _write_fresh_market_bar(lake)
+    _write_actual_cost(lake)
+
+    result = publish_risk_permission(lake, strategy="v5", version="5.0.0")
+
+    assert result.permission == "ALLOW"
+    permission = read_parquet_dataset(lake / "gold" / "risk_permission").to_dicts()[0]
+    assert permission["gate_version"] == "default-v0.1"
+    assert "bootstrap" not in permission["gate_version"]
+
+
 def test_publish_risk_permission_aborts_on_gate_compliance_violation(tmp_path):
     lake = tmp_path / "lake"
     _write_gate(lake, GateStatus.LIVE_READY)
@@ -127,6 +142,35 @@ def _write_gate(lake, status: GateStatus) -> None:
     ).model_dump(mode="json")
     write_parquet_dataset(
         pl.DataFrame([decision | {"strategy": "v5"}]),
+        lake / "gold" / "gate_decision",
+    )
+
+
+def _append_bootstrap_gate(lake) -> None:
+    existing_rows = []
+    for row in read_parquet_dataset(lake / "gold" / "gate_decision").to_dicts():
+        normalized = dict(row)
+        if isinstance(normalized.get("reasons"), list):
+            normalized["reasons"] = "[]"
+        if isinstance(normalized.get("metrics"), dict):
+            normalized["metrics"] = '{"ic_tstat":3.0}'
+        existing_rows.append(normalized)
+    bootstrap = {
+        "strategy": "v5",
+        "alpha_id": "v5.core",
+        "version": "bootstrap",
+        "gate_version": "bootstrap.quarantine.v1",
+        "status": "QUARANTINE",
+        "passed": False,
+        "reasons": '["bootstrap_gate"]',
+        "metrics": '{"bootstrap":true}',
+        "next_action": "generate_alpha_evidence_before_live",
+        "created_at": (datetime.now(UTC) - timedelta(days=1)).isoformat(),
+        "source": "bootstrap_gold_health",
+        "fallback_level": "BOOTSTRAP_CONSERVATIVE",
+    }
+    write_parquet_dataset(
+        pl.DataFrame([*existing_rows, bootstrap]),
         lake / "gold" / "gate_decision",
     )
 

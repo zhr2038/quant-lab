@@ -1,12 +1,13 @@
 import json
 from datetime import UTC, datetime, timedelta
 
+import polars as pl
 from fastapi.testclient import TestClient
 
 from quant_lab.api.main import app
 from quant_lab.contracts.models import GateStatus, RiskAction
 from quant_lab.costs.model import DEFAULT_FALLBACK_COST_BPS
-from quant_lab.data.lake import read_parquet_dataset, write_market_bars
+from quant_lab.data.lake import read_parquet_dataset, write_market_bars, write_parquet_dataset
 from quant_lab.research.bootstrap_gold import (
     BOOTSTRAP_GATE_VERSION,
     BOOTSTRAP_WARNING,
@@ -141,3 +142,84 @@ def test_web_diagnostics_show_bootstrap_warning_without_gold_missing(tmp_path):
     assert "gold/gate_decision 数据集缺失或为空" not in warnings
     assert "gold/risk_permission 数据集缺失或为空" not in warnings
     assert BOOTSTRAP_WARNING in warnings
+
+
+def test_web_diagnostics_do_not_warn_when_latest_gate_and_risk_are_research_rows(tmp_path):
+    lake = tmp_path / "lake"
+    older = datetime(2026, 5, 11, 12, tzinfo=UTC)
+    newer = datetime(2026, 5, 11, 20, tzinfo=UTC)
+    write_parquet_dataset(
+        pl.DataFrame(
+            [
+                {
+                    "strategy": "v5",
+                    "alpha_id": "v5.core",
+                    "version": "bootstrap",
+                    "gate_version": BOOTSTRAP_GATE_VERSION,
+                    "status": "QUARANTINE",
+                    "passed": False,
+                    "reasons": '["bootstrap_gate"]',
+                    "metrics": '{"bootstrap":true}',
+                    "next_action": "generate_alpha_evidence_before_live",
+                    "created_at": older,
+                    "source": "bootstrap_gold_health",
+                    "fallback_level": "BOOTSTRAP_CONSERVATIVE",
+                },
+                {
+                    "strategy": "v5",
+                    "alpha_id": "v5.core.momentum",
+                    "version": "v0.1",
+                    "gate_version": "default-v0.1",
+                    "status": "DEAD",
+                    "passed": False,
+                    "reasons": '["insufficient_coverage"]',
+                    "metrics": '{"coverage":0.75}',
+                    "next_action": "retire_alpha_or_research_new_hypothesis",
+                    "created_at": newer,
+                    "source": "research.alpha_evidence.v0.1",
+                    "fallback_level": "NONE",
+                },
+            ]
+        ),
+        lake / "gold/gate_decision",
+    )
+    write_parquet_dataset(
+        pl.DataFrame(
+            [
+                {
+                    "strategy": "v5",
+                    "version": "bootstrap",
+                    "permission": "SELL_ONLY",
+                    "allowed_modes": '["sell_only"]',
+                    "max_gross_exposure": 0.0,
+                    "max_single_weight": 0.0,
+                    "cost_model_version": "bootstrap.cost.v1",
+                    "gate_version": BOOTSTRAP_GATE_VERSION,
+                    "reasons": '["required_alpha_gate_quarantine"]',
+                    "created_at": older,
+                    "source": "bootstrap_gold_health",
+                    "fallback_level": "BOOTSTRAP_CONSERVATIVE",
+                },
+                {
+                    "strategy": "v5",
+                    "version": "5.0.0",
+                    "permission": "ABORT",
+                    "allowed_modes": "[]",
+                    "max_gross_exposure": 0.0,
+                    "max_single_weight": 0.0,
+                    "cost_model_version": "cost_bucket_daily:2026-05-11",
+                    "gate_version": "default-v0.1",
+                    "reasons": '["required_alpha_gate_dead"]',
+                    "created_at": newer,
+                    "source": "research.risk_permission.v0.1",
+                    "fallback_level": "NONE",
+                },
+            ]
+        ),
+        lake / "gold/risk_permission",
+    )
+
+    warnings = "\n".join(readers.lake_diagnostics(lake)["warnings"])
+
+    assert f"gold/gate_decision: {BOOTSTRAP_WARNING}" not in warnings
+    assert f"gold/risk_permission: {BOOTSTRAP_WARNING}" not in warnings

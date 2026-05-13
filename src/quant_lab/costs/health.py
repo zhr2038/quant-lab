@@ -10,9 +10,12 @@ from quant_lab.data.lake import read_parquet_dataset, upsert_parquet_dataset
 
 COST_HEALTH_DAILY_DATASET = Path("gold") / "cost_health_daily"
 ACTUAL_SOURCE = "actual_okx_fills_and_bills"
+ACTUAL_FILLS_SOURCE = "actual_fills"
+MIXED_ACTUAL_PROXY_SOURCE = "mixed_actual_proxy"
 FEE_ONLY_SOURCE = "actual_okx_fills_fee_missing"
 PROXY_SOURCE = "public_spread_proxy"
 DEFAULT_SOURCE = "global_default"
+ACTUAL_SOURCES = {ACTUAL_SOURCE, ACTUAL_FILLS_SOURCE, MIXED_ACTUAL_PROXY_SOURCE}
 
 COST_HEALTH_DAILY_SCHEMA = {
     "day": pl.Utf8,
@@ -76,7 +79,7 @@ def build_cost_health_daily(
     actual_rows = [
         row
         for row in rows
-        if str(row.get("source")) == ACTUAL_SOURCE
+        if str(row.get("source")) in ACTUAL_SOURCES
         and int(row.get("sample_count") or 0) >= min_sample_count
     ]
     proxy_rows = [row for row in rows if str(row.get("source")) == PROXY_SOURCE]

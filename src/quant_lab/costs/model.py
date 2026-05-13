@@ -8,6 +8,7 @@ from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 from quant_lab.contracts.models import CostEstimate, FillEvent
 from quant_lab.data.lake import read_parquet_dataset
+from quant_lab.symbols import normalize_optional_symbol, normalize_symbol
 
 logger = logging.getLogger(__name__)
 
@@ -30,6 +31,15 @@ class CostBucket(BaseModel):
         if self.max_notional_usdt is not None and self.max_notional_usdt < self.min_notional_usdt:
             raise ValueError("max_notional_usdt must be greater than or equal to min_notional_usdt")
         return self
+
+    @model_validator(mode="before")
+    @classmethod
+    def normalize_bucket_symbol(cls, data: Any) -> Any:
+        if isinstance(data, dict) and data.get("symbol") is not None:
+            normalized = dict(data)
+            normalized["symbol"] = normalize_optional_symbol(normalized.get("symbol"))
+            return normalized
+        return data
 
     def includes_notional(self, notional_usdt: float) -> bool:
         if notional_usdt < self.min_notional_usdt:
@@ -62,6 +72,15 @@ class CostBucketDaily(BaseModel):
     source: str = Field(min_length=1)
     cost_model_version: str = Field(default="cost_bucket_daily.v0.1", min_length=1)
     created_at: datetime = Field(default_factory=lambda: datetime.now(UTC))
+
+    @model_validator(mode="before")
+    @classmethod
+    def normalize_daily_symbol(cls, data: Any) -> Any:
+        if isinstance(data, dict) and data.get("symbol") not in {None, "GLOBAL"}:
+            normalized = dict(data)
+            normalized["symbol"] = normalize_symbol(normalized.get("symbol"))
+            return normalized
+        return data
 
 
 def _normalize_buckets(buckets: Iterable[CostBucket | Mapping[str, Any]]) -> list[CostBucket]:
@@ -125,21 +144,22 @@ def estimate_cost_bps(
     if notional_usdt <= 0:
         raise ValueError("notional_usdt must be positive")
 
+    requested_symbol = normalize_symbol(symbol)
     normalized = _normalize_buckets(buckets)
-    bucket, fallback_level = _choose_bucket(symbol, regime, notional_usdt, normalized)
+    bucket, fallback_level = _choose_bucket(requested_symbol, regime, notional_usdt, normalized)
 
     if bucket is None:
         logger.warning(
             "No cost bucket matched; using explicit default fallback",
             extra={
-                "symbol": symbol,
+                "symbol": requested_symbol,
                 "regime": regime,
                 "notional_usdt": notional_usdt,
                 "fallback_level": fallback_level,
             },
         )
         return CostEstimate(
-            symbol=symbol,
+            symbol=requested_symbol,
             regime=regime,
             notional_usdt=notional_usdt,
             quantile="p75",
@@ -159,7 +179,7 @@ def estimate_cost_bps(
         logger.warning(
             "Cost bucket fallback used",
             extra={
-                "symbol": symbol,
+                "symbol": requested_symbol,
                 "regime": regime,
                 "notional_usdt": notional_usdt,
                 "bucket_id": bucket.bucket_id,
@@ -168,7 +188,7 @@ def estimate_cost_bps(
         )
 
     return CostEstimate(
-        symbol=symbol,
+        symbol=requested_symbol,
         regime=regime,
         notional_usdt=notional_usdt,
         quantile="p75",
@@ -219,19 +239,20 @@ def estimate_cost_from_cost_bucket_daily_rows(
     if quantile not in SUPPORTED_COST_QUANTILES:
         raise ValueError("quantile must be one of p50, p75, p90")
 
-    normalized_rows = [dict(row) for row in rows]
+    requested_symbol = normalize_symbol(symbol)
+    normalized_rows = [_normalize_cost_row(row) for row in rows]
     if not normalized_rows:
-        return _global_default_estimate(symbol, regime, notional_usdt, quantile)
+        return _global_default_estimate(requested_symbol, regime, notional_usdt, quantile)
 
     tiered = _rank_cost_bucket_rows(
         rows=normalized_rows,
-        symbol=symbol,
+        symbol=requested_symbol,
         regime=regime,
         notional_usdt=notional_usdt,
         notional_bucket=notional_bucket,
     )
     if not tiered:
-        return _global_default_estimate(symbol, regime, notional_usdt, quantile)
+        return _global_default_estimate(requested_symbol, regime, notional_usdt, quantile)
 
     row, fallback_level = tiered[0]
     row_fallback_level = str(row.get("fallback_level") or "")
@@ -255,7 +276,7 @@ def estimate_cost_from_cost_bucket_daily_rows(
 
     bucket_id = _cost_bucket_id(row)
     return CostEstimate(
-        symbol=symbol,
+        symbol=requested_symbol,
         regime=regime,
         notional_usdt=notional_usdt,
         quantile=quantile,
@@ -271,6 +292,10 @@ def estimate_cost_from_cost_bucket_daily_rows(
             row.get("cost_model_version") or f"cost_bucket_daily:{row.get('day', 'unknown')}"
         ),
         bucket_id=bucket_id,
+        total_cost_bps_p50=_float_value(row, "total_cost_bps_p50"),
+        total_cost_bps_p75=_float_value(row, "total_cost_bps_p75"),
+        total_cost_bps_p90=_float_value(row, "total_cost_bps_p90"),
+        as_of_ts=_row_as_of_ts(row),
     )
 
 
@@ -289,11 +314,12 @@ def build_cost_bucket_daily_inputs(
         notional = abs(event.fill_price * event.fill_size)
         if notional <= 0:
             continue
-        key = (event.inst_id, event.ts.date().isoformat())
+        symbol = normalize_symbol(event.inst_id)
+        key = (symbol, event.ts.date().isoformat())
         bucket = grouped.setdefault(
             key,
             {
-                "symbol": event.inst_id,
+                "symbol": symbol,
                 "cost_day": event.ts.date().isoformat(),
                 "regime": regime,
                 "notional_usdt": 0.0,
@@ -374,7 +400,7 @@ def _rank_cost_bucket_rows(
 ) -> list[tuple[dict[str, Any], str]]:
     ranked: list[tuple[int, str, dict[str, Any]]] = []
     for row in rows:
-        row_symbol = str(row.get("symbol") or "")
+        row_symbol = _row_symbol(row)
         row_regime = str(row.get("regime") or "")
         row_bucket = str(row.get("notional_bucket") or "")
         notional_match = _row_matches_notional(row_bucket, notional_usdt, notional_bucket)
@@ -385,10 +411,14 @@ def _rank_cost_bucket_rows(
             tier, fallback = 1, "NOTIONAL_BUCKET_FALLBACK"
         elif row_symbol == symbol and _is_global_regime(row_regime) and notional_match:
             tier, fallback = 2, "REGIME_FALLBACK"
+        elif row_symbol == symbol and notional_match:
+            tier, fallback = 3, "REGIME_FALLBACK"
+        elif row_symbol == symbol:
+            tier, fallback = 4, "REGIME_AND_NOTIONAL_BUCKET_FALLBACK"
         elif _is_global_symbol(row_symbol) and row_regime == regime and notional_match:
-            tier, fallback = 3, "SYMBOL_FALLBACK"
+            tier, fallback = 5, "SYMBOL_FALLBACK"
         elif _is_global_symbol(row_symbol) and _is_global_regime(row_regime):
-            tier, fallback = 4, "GLOBAL_BUCKET_FALLBACK"
+            tier, fallback = 6, "GLOBAL_BUCKET_FALLBACK"
         else:
             continue
         ranked.append((tier, fallback, row))
@@ -399,6 +429,7 @@ def _rank_cost_bucket_rows(
             ranked,
             key=lambda item: (
                 item[0],
+                _source_priority(str(item[2].get("source") or "")),
                 _day_sort_value(item[2]),
                 -int(item[2].get("sample_count") or 0),
             ),
@@ -451,7 +482,7 @@ def _global_default_estimate(
     quantile: str,
 ) -> CostEstimate:
     return CostEstimate(
-        symbol=symbol,
+        symbol=normalize_symbol(symbol),
         regime=regime,
         notional_usdt=notional_usdt,
         quantile=quantile,
@@ -465,4 +496,53 @@ def _global_default_estimate(
         sample_count=0,
         cost_model_version="global_default_v0",
         bucket_id=None,
+        total_cost_bps_p50=DEFAULT_FALLBACK_COST_BPS,
+        total_cost_bps_p75=DEFAULT_FALLBACK_COST_BPS,
+        total_cost_bps_p90=DEFAULT_FALLBACK_COST_BPS,
+        as_of_ts=datetime.now(UTC),
     )
+
+
+def _normalize_cost_row(row: Mapping[str, Any]) -> dict[str, Any]:
+    normalized = dict(row)
+    if not _is_global_symbol(str(normalized.get("symbol") or "")):
+        normalized["symbol"] = normalize_symbol(normalized.get("symbol"))
+    return normalized
+
+
+def _row_symbol(row: Mapping[str, Any]) -> str:
+    raw = str(row.get("symbol") or "")
+    return raw if _is_global_symbol(raw) else normalize_symbol(raw)
+
+
+def _source_priority(source: str) -> int:
+    normalized = source.lower()
+    if normalized in {"actual_okx_fills_and_bills", "actual_fills", "mixed_actual_proxy"}:
+        return 0
+    if normalized == "actual_okx_fills_fee_missing":
+        return 1
+    if normalized == "public_spread_proxy":
+        return 2
+    if normalized == "global_default":
+        return 3
+    return 4
+
+
+def _row_as_of_ts(row: Mapping[str, Any]) -> datetime | None:
+    for key in ("created_at", "as_of_ts"):
+        value = row.get(key)
+        if isinstance(value, datetime):
+            return value if value.tzinfo else value.replace(tzinfo=UTC)
+        if value:
+            try:
+                parsed = datetime.fromisoformat(str(value).replace("Z", "+00:00"))
+            except ValueError:
+                continue
+            return parsed.astimezone(UTC)
+    day = row.get("day")
+    if day:
+        try:
+            return datetime.fromisoformat(str(day)).replace(tzinfo=UTC)
+        except ValueError:
+            return None
+    return None

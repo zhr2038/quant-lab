@@ -5,6 +5,8 @@ from typing import Any
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
+from quant_lab.symbols import normalize_symbol
+
 
 class ContractModel(BaseModel):
     model_config = ConfigDict(extra="forbid", frozen=True)
@@ -56,6 +58,11 @@ class MarketBar(ContractModel):
     ingest_ts: datetime
     is_closed: bool = True
 
+    @field_validator("symbol")
+    @classmethod
+    def normalize_market_symbol(cls, value: str) -> str:
+        return normalize_symbol(value)
+
     @field_validator("ts", "ingest_ts")
     @classmethod
     def timestamps_are_utc(cls, value: datetime) -> datetime:
@@ -88,6 +95,11 @@ class FeatureValue(ContractModel):
     source: str = Field(default="market_bar", min_length=1)
     is_valid: bool = True
     invalid_reason: str | None = None
+
+    @field_validator("symbol")
+    @classmethod
+    def normalize_feature_symbol(cls, value: str) -> str:
+        return normalize_symbol(value)
 
     @field_validator("ts", "created_at")
     @classmethod
@@ -127,18 +139,38 @@ class CostEstimate(ContractModel):
     sample_count: int = Field(default=0, ge=0)
     cost_model_version: str = Field(default="unknown", min_length=1)
     bucket_id: str | None = None
+    normalized_symbol: str | None = None
+    cost_source: str | None = None
+    total_cost_bps_p50: float | None = Field(default=None, ge=0)
+    total_cost_bps_p75: float | None = Field(default=None, ge=0)
+    total_cost_bps_p90: float | None = Field(default=None, ge=0)
+    fallback_reason: str | None = None
+    sample_size: int | None = Field(default=None, ge=0)
+    as_of_ts: datetime | None = None
 
     @model_validator(mode="before")
     @classmethod
-    def sync_total_cost_alias(cls, data: Any) -> Any:
+    def sync_aliases(cls, data: Any) -> Any:
         if isinstance(data, dict):
             normalized = dict(data)
             if "total_cost_bps" not in normalized and "cost_bps" in normalized:
                 normalized["total_cost_bps"] = normalized["cost_bps"]
             if "cost_bps" not in normalized and "total_cost_bps" in normalized:
                 normalized["cost_bps"] = normalized["total_cost_bps"]
+            normalized["symbol"] = normalize_symbol(normalized.get("symbol"))
+            normalized.setdefault("normalized_symbol", normalized["symbol"])
+            normalized.setdefault("cost_source", normalized.get("source"))
+            normalized.setdefault("fallback_reason", normalized.get("fallback_level"))
+            normalized.setdefault("sample_size", normalized.get("sample_count"))
+            for suffix in ("p50", "p75", "p90"):
+                normalized.setdefault(f"total_cost_bps_{suffix}", normalized.get("total_cost_bps"))
             return normalized
         return data
+
+    @field_validator("as_of_ts")
+    @classmethod
+    def as_of_is_utc(cls, value: datetime | None) -> datetime | None:
+        return require_utc(value) if value is not None else None
 
 
 class FillEvent(ContractModel):
@@ -155,6 +187,11 @@ class FillEvent(ContractModel):
     ts: datetime
     source: str = Field(default="okx_readonly_private", min_length=1)
     liquidity: str | None = None
+
+    @field_validator("inst_id")
+    @classmethod
+    def normalize_inst_id(cls, value: str) -> str:
+        return normalize_symbol(value)
 
     @field_validator("ts")
     @classmethod
@@ -193,6 +230,11 @@ class OrderEvent(ContractModel):
     accumulated_fill_size: float | None = Field(default=None, ge=0)
     fee: float | None = None
     reference_price: float | None = Field(default=None, ge=0)
+
+    @field_validator("inst_id")
+    @classmethod
+    def normalize_inst_id(cls, value: str) -> str:
+        return normalize_symbol(value)
 
     @field_validator("ts")
     @classmethod

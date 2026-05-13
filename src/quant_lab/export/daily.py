@@ -26,6 +26,7 @@ from quant_lab.risk.publish import (
     risk_permission_stale_vs_telemetry,
 )
 from quant_lab.strategy_telemetry.sanitize import SECRET_PATTERNS, safe_json_dumps
+from quant_lab.symbols import normalize_symbol
 from quant_lab.web import readers
 
 SECTIONS = ["market", "features", "costs", "research", "risk", "anomalies", "v5", "charts"]
@@ -548,13 +549,13 @@ def _dataset_members(frames: dict[str, pl.DataFrame]) -> dict[str, _MemberPayloa
     features = frames.get("feature_value", pl.DataFrame())
     feature_coverage = frames.get("feature_coverage_daily", pl.DataFrame())
     feature_anomalies = frames.get("feature_anomaly_daily", pl.DataFrame())
-    costs = frames.get("cost_bucket_daily", pl.DataFrame())
+    costs = _normalize_symbol_frame(frames.get("cost_bucket_daily", pl.DataFrame()))
     cost_health = frames.get("cost_health_daily", pl.DataFrame())
     evidence = _alpha_evidence_for_export(frames.get("alpha_evidence", pl.DataFrame()))
     gates = frames.get("gate_decision", pl.DataFrame())
     risk = _risk_permissions_for_export(frames.get("risk_permission", pl.DataFrame()), frames)
-    trades = frames.get("trade_print", pl.DataFrame())
-    books = frames.get("orderbook_snapshot", pl.DataFrame())
+    trades = _normalize_symbol_frame(frames.get("trade_print", pl.DataFrame()))
+    books = _normalize_symbol_frame(frames.get("orderbook_snapshot", pl.DataFrame()))
     v5_health = frames.get("strategy_health_daily", pl.DataFrame())
     v5_execution = frames.get("v5_execution_quality_daily", pl.DataFrame())
     v5_gate = frames.get("v5_gate_compliance_daily", pl.DataFrame())
@@ -1361,10 +1362,18 @@ def _symbols(frame: pl.DataFrame) -> set[str]:
     if frame.is_empty() or "symbol" not in frame.columns:
         return set()
     return {
-        str(value).strip()
+        normalize_symbol(value)
         for value in frame["symbol"].drop_nulls().to_list()
         if str(value).strip()
     }
+
+
+def _normalize_symbol_frame(frame: pl.DataFrame, column: str = "symbol") -> pl.DataFrame:
+    if frame.is_empty() or column not in frame.columns:
+        return frame
+    return frame.with_columns(
+        pl.col(column).map_elements(normalize_symbol, return_dtype=pl.Utf8).alias(column)
+    )
 
 
 def _config_not_consumed_question(config_health: pl.DataFrame) -> str | None:

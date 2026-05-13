@@ -9,11 +9,13 @@ from pydantic import BaseModel, ConfigDict, Field
 from quant_lab.costs.health import build_cost_health_daily, publish_cost_health_daily
 from quant_lab.costs.model import DEFAULT_FALLBACK_COST_BPS, CostBucketDaily
 from quant_lab.data.lake import read_parquet_dataset, upsert_parquet_dataset
+from quant_lab.symbols import normalize_symbol
 
 FILL_EVENT_DATASET = Path("silver") / "fill_event"
 ACCOUNT_BILL_DATASET = Path("silver") / "account_bill"
 ORDERBOOK_SNAPSHOT_DATASET = Path("silver") / "orderbook_snapshot"
 TRADE_PRINT_DATASET = Path("silver") / "trade_print"
+V5_TRADE_EVENT_DATASET = Path("silver") / "v5_trade_event"
 MARKET_BAR_DATASET = Path("silver") / "market_bar"
 COST_BUCKET_DAILY_DATASET = Path("gold") / "cost_bucket_daily"
 COST_HEALTH_DAILY_DATASET = Path("gold") / "cost_health_daily"
@@ -74,6 +76,7 @@ def calibrate_costs_for_day(
             day,
         ),
         trade_prints=_filter_day(read_parquet_dataset(root / TRADE_PRINT_DATASET), day),
+        v5_trade_events=_filter_day(read_parquet_dataset(root / V5_TRADE_EVENT_DATASET), day),
         market_bars=market_bars,
         day=day,
         min_sample_count=min_sample_count,
@@ -107,13 +110,17 @@ def build_cost_bucket_daily_rows(
     market_bars: pl.DataFrame,
     day: str,
     order_events: pl.DataFrame | None = None,
+    v5_trade_events: pl.DataFrame | None = None,
     min_sample_count: int = DEFAULT_MIN_SAMPLE_COUNT,
 ) -> list[CostBucketDaily]:
     spread_samples = _spread_samples_by_symbol(orderbook_snapshots)
     reference_prices = _reference_prices_by_order(
         order_events if order_events is not None else pl.DataFrame()
     )
-    fill_samples = _fill_samples(fill_events, reference_prices)
+    fill_samples = [
+        *_fill_samples(fill_events, reference_prices),
+        *_v5_trade_fill_samples(v5_trade_events if v5_trade_events is not None else pl.DataFrame()),
+    ]
 
     if fill_samples:
         return _actual_fill_rows(
@@ -203,10 +210,12 @@ def _actual_fill_row(
     sample_too_small = len(samples) < min_sample_count
     slippage_unknown = len(slippage_samples) != len(samples)
 
-    source = (
-        "actual_okx_fills_and_bills"
-        if bills_present and not fee_missing and not sample_too_small
-        else "actual_okx_fills_fee_missing"
+    source = _actual_fill_source(
+        samples=samples,
+        bills_present=bills_present,
+        fee_missing=fee_missing,
+        sample_too_small=sample_too_small,
+        spread_values=spread_values,
     )
     fallback_parts = []
     if not bills_present:
@@ -328,7 +337,8 @@ def _fill_samples(
         reference_price = (reference_prices or {}).get(order_id)
         samples.append(
             {
-                "symbol": str(row["inst_id"]),
+                "symbol": normalize_symbol(row["inst_id"]),
+                "source_kind": "okx_readonly_private",
                 "notional": notional,
                 "notional_bucket": _notional_bucket(notional),
                 "fee_bps": abs(fee) / notional * 10_000 if fee is not None else None,
@@ -340,6 +350,61 @@ def _fill_samples(
             }
         )
     return samples
+
+
+def _v5_trade_fill_samples(v5_trade_events: pl.DataFrame) -> list[dict[str, Any]]:
+    samples: list[dict[str, Any]] = []
+    for row in v5_trade_events.to_dicts():
+        symbol = _symbol_from_trade_row(row)
+        if not symbol:
+            continue
+        price = _first_float(row, ["price", "fill_price", "fill_px", "px", "avg_price"])
+        qty = _first_float(row, ["qty", "quantity", "size", "fill_size", "fill_sz", "sz", "amount"])
+        notional = _first_float(row, ["notional", "notional_usdt", "quote_notional", "turnover"])
+        if notional is None and price is not None and qty is not None:
+            notional = abs(price * qty)
+        if notional is None or notional <= 0:
+            continue
+        fee = _first_float(row, ["fee", "commission", "fee_usdt", "fee_abs"])
+        slippage = _first_float(
+            row,
+            [
+                "realized_slippage_bps",
+                "estimated_slippage_bps",
+                "slippage_bps",
+                "slip_bps",
+            ],
+        )
+        samples.append(
+            {
+                "symbol": symbol,
+                "source_kind": "v5_trades_csv",
+                "notional": abs(notional),
+                "notional_bucket": _notional_bucket(abs(notional)),
+                "fee_bps": abs(fee) / abs(notional) * 10_000 if fee is not None else None,
+                "slippage_bps": slippage if slippage is not None and slippage >= 0 else None,
+            }
+        )
+    return samples
+
+
+def _symbol_from_trade_row(row: dict[str, Any]) -> str:
+    for key in ["symbol", "normalized_symbol", "inst_id", "instId", "instrument", "pair"]:
+        value = row.get(key)
+        if value:
+            return normalize_symbol(value)
+    payload = row.get("raw_payload_json")
+    if isinstance(payload, str) and payload.strip():
+        try:
+            loaded = json.loads(payload)
+        except json.JSONDecodeError:
+            loaded = {}
+        if isinstance(loaded, dict):
+            for key in ["symbol", "normalized_symbol", "inst_id", "instId", "instrument", "pair"]:
+                value = loaded.get(key)
+                if value:
+                    return normalize_symbol(value)
+    return ""
 
 
 def _group_all_fill_samples(fill_samples: list[dict[str, Any]]) -> dict[str, list[dict[str, Any]]]:
@@ -388,7 +453,7 @@ def _spread_samples_by_symbol(orderbook_snapshots: pl.DataFrame) -> dict[str, li
         mid = (ask + bid) / 2
         if mid <= 0:
             continue
-        samples.setdefault(str(row["symbol"]), []).append((ask - bid) / mid * 10_000)
+        samples.setdefault(normalize_symbol(row["symbol"]), []).append((ask - bid) / mid * 10_000)
     return samples
 
 
@@ -416,7 +481,10 @@ def _symbols_from_public_data(trade_prints: pl.DataFrame, market_bars: pl.DataFr
     symbols: set[str] = set()
     for df in [trade_prints, market_bars]:
         if not df.is_empty() and "symbol" in df.columns:
-            symbols.update(str(symbol) for symbol in df["symbol"].drop_nulls().to_list())
+            symbols.update(
+                normalize_symbol(symbol)
+                for symbol in df["symbol"].drop_nulls().to_list()
+            )
     return sorted(symbols)
 
 
@@ -466,3 +534,27 @@ def _optional_float(value: Any) -> float | None:
         return float(value)
     except (TypeError, ValueError):
         return None
+
+
+def _first_float(row: dict[str, Any], keys: list[str]) -> float | None:
+    for key in keys:
+        value = _optional_float(row.get(key))
+        if value is not None:
+            return value
+    return None
+
+
+def _actual_fill_source(
+    *,
+    samples: list[dict[str, Any]],
+    bills_present: bool,
+    fee_missing: bool,
+    sample_too_small: bool,
+    spread_values: list[float],
+) -> str:
+    source_kinds = {str(sample.get("source_kind") or "") for sample in samples}
+    if "v5_trades_csv" in source_kinds:
+        return "mixed_actual_proxy" if spread_values else "actual_fills"
+    if bills_present and not fee_missing and not sample_too_small:
+        return "actual_okx_fills_and_bills"
+    return "actual_okx_fills_fee_missing"

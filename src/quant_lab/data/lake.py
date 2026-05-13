@@ -12,6 +12,7 @@ import polars as pl
 from pydantic import BaseModel, ConfigDict, Field
 
 from quant_lab.contracts.models import MarketBar, require_utc
+from quant_lab.symbols import normalize_symbol
 
 MARKET_BAR_DATASET = Path("silver") / "market_bar"
 MARKET_BAR_PRIMARY_KEY = ["venue", "symbol", "timeframe", "ts"]
@@ -174,7 +175,7 @@ def read_market_bars(
     filtered = (
         normalized.filter(
             (pl.col("venue") == venue)
-            & (pl.col("symbol") == symbol)
+            & (pl.col("symbol") == normalize_symbol(symbol))
             & (pl.col("timeframe") == timeframe)
             & (pl.col("ts") >= start_utc)
             & (pl.col("ts") <= end_utc)
@@ -283,6 +284,7 @@ def _normalize_market_bar_frame(df: pl.DataFrame) -> pl.DataFrame:
 
     return normalized.with_columns(
         [
+            pl.col("symbol").map_elements(normalize_symbol, return_dtype=pl.Utf8),
             _datetime_column(normalized, "ts"),
             _datetime_column(normalized, "ingest_ts"),
             pl.col("open").cast(pl.Float64),

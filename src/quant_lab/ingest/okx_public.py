@@ -10,6 +10,7 @@ from pydantic import BaseModel, ConfigDict, Field
 from quant_lab.contracts.models import MarketBar
 from quant_lab.data.lake import MARKET_BAR_DATASET as MARKET_BAR_DATASET
 from quant_lab.data.lake import write_market_bars
+from quant_lab.symbols import normalize_symbol
 
 OKX_PUBLIC_REST_SOURCE = "okx_public_rest"
 
@@ -205,7 +206,7 @@ def normalize_okx_candles_to_market_bars(
         market_bars.append(
             MarketBar(
                 venue="okx",
-                symbol=inst_id.upper(),
+                symbol=normalize_symbol(inst_id),
                 market_type=market_type.upper(),
                 timeframe=bar,
                 ts=_timestamp_ms_to_utc(normalized["ts"]),

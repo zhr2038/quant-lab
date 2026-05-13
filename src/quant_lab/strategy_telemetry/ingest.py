@@ -30,6 +30,7 @@ from quant_lab.strategy_telemetry.sanitize import (
     safe_json_dumps,
     scan_for_secrets,
 )
+from quant_lab.symbols import normalize_symbol
 
 SCHEMA_VERSION = "v5-telemetry-v0.1"
 
@@ -414,12 +415,25 @@ def _csv_rows(metadata: dict[str, Any], relative: str, file_path: Path) -> list[
         reader = csv.DictReader(handle)
         for index, raw_row in enumerate(reader):
             safe_row = redact_json_like(dict(raw_row))
+            safe_row = _normalize_csv_symbol_fields(safe_row)
             rows.append(
                 _base_row(metadata, relative, run_id, index)
                 | {key: str(value) for key, value in safe_row.items()}
                 | {"raw_payload_json": safe_json_dumps(safe_row)}
             )
     return rows
+
+
+def _normalize_csv_symbol_fields(row: dict[str, Any]) -> dict[str, Any]:
+    normalized = dict(row)
+    for key in ["symbol", "inst_id", "instId", "instrument", "pair"]:
+        value = normalized.get(key)
+        if value:
+            symbol = normalize_symbol(value)
+            normalized["symbol"] = symbol
+            normalized["normalized_symbol"] = symbol
+            break
+    return normalized
 
 
 def _fallback_csv_rows(

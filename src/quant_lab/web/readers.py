@@ -10,6 +10,7 @@ from typing import Any
 import polars as pl
 
 from quant_lab.data.lake import invalid_parquet_files, read_parquet_dataset
+from quant_lab.symbols import normalize_symbol
 
 DATASET_PATHS = {
     "market_bar": Path("silver") / "market_bar",
@@ -703,6 +704,7 @@ def market_regime_summary(lake_root: str | Path) -> dict[str, Any]:
 
 def cost_model_summary(lake_root: str | Path) -> dict[str, Any]:
     costs, costs_warning = read_dataset_with_warning(lake_root, "cost_bucket_daily")
+    costs = _normalize_symbol_frame(costs)
     health, health_warning = read_dataset_with_warning(lake_root, "cost_health_daily")
     warnings = [warning for warning in [costs_warning, health_warning] if warning]
     if costs.is_empty():
@@ -737,6 +739,14 @@ def cost_model_summary(lake_root: str | Path) -> dict[str, Any]:
         "fallback_ratio_status": "OK" if fallback_ratio <= 0.25 else "WARNING",
         "warnings": warnings,
     }
+
+
+def _normalize_symbol_frame(frame: pl.DataFrame, column: str = "symbol") -> pl.DataFrame:
+    if frame.is_empty() or column not in frame.columns:
+        return frame
+    return frame.with_columns(
+        pl.col(column).map_elements(normalize_symbol, return_dtype=pl.Utf8).alias(column)
+    )
 
 
 def alpha_gate_summary(lake_root: str | Path) -> dict[str, Any]:

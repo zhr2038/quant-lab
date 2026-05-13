@@ -24,6 +24,8 @@ def test_cost_model_uses_exact_matching_bucket():
     )
 
     assert estimate.cost_bps == 4.5
+    assert estimate.symbol == "BTC-USDT"
+    assert estimate.normalized_symbol == "BTC-USDT"
     assert estimate.bucket_id == "btc-normal"
     assert estimate.fallback_level == "NONE"
 
@@ -96,9 +98,15 @@ def test_cost_bucket_daily_estimate_uses_requested_quantile():
     assert estimate.slippage_bps == 4.0
     assert estimate.spread_bps == 1.0
     assert estimate.total_cost_bps == 7.0
+    assert estimate.total_cost_bps_p50 == 3.5
+    assert estimate.total_cost_bps_p75 == 5.25
+    assert estimate.total_cost_bps_p90 == 7.0
     assert estimate.cost_bps == 7.0
     assert estimate.fallback_level == "NONE"
+    assert estimate.fallback_reason == "NONE"
+    assert estimate.cost_source == "actual_okx_fills_and_bills"
     assert estimate.sample_count == 42
+    assert estimate.sample_size == 42
     assert estimate.cost_model_version == "costs-2026-05-10"
 
 
@@ -181,3 +189,148 @@ def test_cost_bucket_daily_estimate_returns_explicit_global_default_without_rows
     assert estimate.fallback_level == "GLOBAL_DEFAULT"
     assert estimate.source == "global_default"
     assert estimate.sample_count == 0
+
+
+def test_cost_bucket_daily_estimate_normalizes_strategy_symbol_to_cost_bucket():
+    rows = [
+        {
+            "day": "2026-05-10",
+            "symbol": "BNB-USDT",
+            "regime": "public_proxy",
+            "event_type": "spread_proxy",
+            "notional_bucket": "all",
+            "sample_count": 8,
+            "fee_bps_p50": 0.0,
+            "fee_bps_p75": 0.0,
+            "fee_bps_p90": 0.0,
+            "slippage_bps_p50": 0.0,
+            "slippage_bps_p75": 0.0,
+            "slippage_bps_p90": 0.0,
+            "spread_bps_p50": 1.0,
+            "spread_bps_p75": 2.0,
+            "spread_bps_p90": 3.0,
+            "total_cost_bps_p50": 1.0,
+            "total_cost_bps_p75": 2.0,
+            "total_cost_bps_p90": 3.0,
+            "fallback_level": "FEE_MISSING;SLIPPAGE_UNKNOWN;PUBLIC_SPREAD_PROXY",
+            "source": "public_spread_proxy",
+            "cost_model_version": "costs-2026-05-10",
+            "created_at": "2026-05-10T01:00:00Z",
+        }
+    ]
+
+    slash = estimate_cost_from_cost_bucket_daily_rows(
+        symbol="BNB/USDT",
+        regime="public_proxy",
+        notional_usdt=5_000,
+        quantile="p75",
+        rows=rows,
+    )
+    hyphen = estimate_cost_from_cost_bucket_daily_rows(
+        symbol="BNB-USDT",
+        regime="public_proxy",
+        notional_usdt=5_000,
+        quantile="p75",
+        rows=rows,
+    )
+
+    assert slash.symbol == "BNB-USDT"
+    assert slash.normalized_symbol == "BNB-USDT"
+    assert slash.total_cost_bps == 2.0
+    assert slash.source == "public_spread_proxy"
+    assert slash.cost_source == "public_spread_proxy"
+    assert slash.sample_size == 8
+    assert slash.as_of_ts is not None
+    assert hyphen.model_dump() == slash.model_dump()
+
+
+def test_cost_bucket_daily_estimate_can_fallback_to_symbol_bucket_across_regime():
+    estimate = estimate_cost_from_cost_bucket_daily_rows(
+        symbol="BNB/USDT",
+        regime="normal",
+        notional_usdt=5_000,
+        quantile="p75",
+        rows=[
+            {
+                "day": "2026-05-10",
+                "symbol": "BNB-USDT",
+                "regime": "public_proxy",
+                "event_type": "spread_proxy",
+                "notional_bucket": "all",
+                "sample_count": 8,
+                "total_cost_bps_p75": 2.0,
+                "fallback_level": "PUBLIC_SPREAD_PROXY",
+                "source": "public_spread_proxy",
+            }
+        ],
+    )
+
+    assert estimate.symbol == "BNB-USDT"
+    assert estimate.total_cost_bps == 2.0
+    assert estimate.source == "public_spread_proxy"
+    assert estimate.fallback_level == "REGIME_FALLBACK;PUBLIC_SPREAD_PROXY"
+
+
+def test_cost_bucket_daily_estimate_unknown_symbol_uses_global_default():
+    estimate = estimate_cost_from_cost_bucket_daily_rows(
+        symbol="UNKNOWN/USDT",
+        regime="public_proxy",
+        notional_usdt=5_000,
+        quantile="p75",
+        rows=[
+            {
+                "day": "2026-05-10",
+                "symbol": "BNB-USDT",
+                "regime": "public_proxy",
+                "event_type": "spread_proxy",
+                "notional_bucket": "all",
+                "sample_count": 8,
+                "total_cost_bps_p75": 2.0,
+                "fallback_level": "PUBLIC_SPREAD_PROXY",
+                "source": "public_spread_proxy",
+            }
+        ],
+    )
+
+    assert estimate.source == "global_default"
+    assert estimate.fallback_level == "GLOBAL_DEFAULT"
+    assert estimate.total_cost_bps == DEFAULT_FALLBACK_COST_BPS
+
+
+def test_cost_bucket_daily_estimate_prefers_actual_fills_over_public_proxy():
+    rows = [
+        {
+            "day": "2026-05-10",
+            "symbol": "BNB-USDT",
+            "regime": "realized",
+            "event_type": "actual_fill",
+            "notional_bucket": "all",
+            "sample_count": 3,
+            "total_cost_bps_p75": 4.0,
+            "fallback_level": "SLIPPAGE_UNKNOWN",
+            "source": "actual_fills",
+        },
+        {
+            "day": "2026-05-10",
+            "symbol": "BNB-USDT",
+            "regime": "realized",
+            "event_type": "spread_proxy",
+            "notional_bucket": "all",
+            "sample_count": 300,
+            "total_cost_bps_p75": 1.0,
+            "fallback_level": "PUBLIC_SPREAD_PROXY",
+            "source": "public_spread_proxy",
+        },
+    ]
+
+    estimate = estimate_cost_from_cost_bucket_daily_rows(
+        symbol="BNB/USDT",
+        regime="realized",
+        notional_usdt=5_000,
+        quantile="p75",
+        rows=rows,
+    )
+
+    assert estimate.total_cost_bps == 4.0
+    assert estimate.source == "actual_fills"
+    assert estimate.sample_size == 3

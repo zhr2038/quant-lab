@@ -18,6 +18,7 @@ from quant_lab.ingest.okx_public import (
     normalize_okx_candles_to_market_bars,
     publish_market_bars_to_lake,
 )
+from quant_lab.symbols import normalize_symbol
 
 OKX_PUBLIC_WS_SOURCE = "okx_public_ws"
 BRONZE_WS_DATASET = Path("bronze") / "okx_public_ws"
@@ -530,7 +531,7 @@ def normalize_okx_ws_trades(messages: Sequence[Mapping[str, Any]]) -> list[dict[
             rows.append(
                 {
                     "venue": "okx",
-                    "symbol": inst_id,
+                    "symbol": normalize_symbol(inst_id),
                     "trade_id": _optional_string(item.get("tradeId")),
                     "price": _optional_float(item.get("px")),
                     "size": _optional_float(item.get("sz")),
@@ -558,7 +559,7 @@ def normalize_okx_ws_orderbooks(messages: Sequence[Mapping[str, Any]]) -> list[d
             rows.append(
                 {
                     "venue": "okx",
-                    "symbol": inst_id,
+                    "symbol": normalize_symbol(inst_id),
                     "channel": channel,
                     "ts": _timestamp_ms_to_utc_string(item.get("ts")),
                     "asks_json": _json_dumps(item.get("asks", [])),
@@ -581,7 +582,7 @@ def _validate_public_channel(channel: str) -> None:
 
 
 def _normalize_symbols(symbols: Sequence[str]) -> list[str]:
-    normalized = [str(symbol).strip() for symbol in symbols if str(symbol).strip()]
+    normalized = [normalize_symbol(symbol) for symbol in symbols if str(symbol).strip()]
     if not normalized:
         raise ValueError("at least one symbol is required")
     return normalized

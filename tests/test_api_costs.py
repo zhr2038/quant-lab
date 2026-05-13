@@ -45,6 +45,9 @@ def test_cost_estimate_api_reads_cost_bucket_daily_from_lake(tmp_path, monkeypat
     assert payload["total_cost_bps"] == 5.25
     assert payload["fallback_level"] == "NONE"
     assert payload["source"] == "actual_okx_fills_and_bills"
+    assert payload["normalized_symbol"] == "BTC-USDT"
+    assert payload["cost_source"] == "actual_okx_fills_and_bills"
+    assert payload["sample_size"] == 42
     assert payload["sample_count"] == 42
     assert payload["cost_model_version"] == "costs-2026-05-10"
 
@@ -106,6 +109,45 @@ def test_cost_estimate_api_can_match_requested_notional_bucket(tmp_path, monkeyp
 
     assert response.status_code == 200
     assert response.json()["total_cost_bps"] == 9.0
+
+
+def test_cost_estimate_api_normalizes_slash_symbol(tmp_path, monkeypatch):
+    lake = tmp_path / "lake"
+    monkeypatch.setenv("QUANT_LAB_LAKE_ROOT", str(lake))
+    write_parquet_dataset(
+        pl.DataFrame(
+            [
+                _cost_row(
+                    symbol="BNB-USDT",
+                    regime="public_proxy",
+                    notional_bucket="all",
+                    total_cost_bps_p75=2.25,
+                    sample_count=11,
+                    fallback_level="PUBLIC_SPREAD_PROXY",
+                    source="public_spread_proxy",
+                )
+            ]
+        ),
+        lake / "gold/cost_bucket_daily",
+    )
+
+    response = TestClient(app).get(
+        "/v1/costs/estimate",
+        params={
+            "symbol": "BNB/USDT",
+            "regime": "normal",
+            "notional_usdt": 5_000,
+            "quantile": "p75",
+        },
+    )
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["symbol"] == "BNB-USDT"
+    assert payload["normalized_symbol"] == "BNB-USDT"
+    assert payload["source"] == "public_spread_proxy"
+    assert payload["total_cost_bps"] == 2.25
+    assert payload["fallback_level"] == "REGIME_FALLBACK;PUBLIC_SPREAD_PROXY"
 
 
 def _cost_row(**overrides):

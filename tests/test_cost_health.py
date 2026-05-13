@@ -33,6 +33,48 @@ def test_cost_health_ok_with_actual_rows(tmp_path):
     assert row.fallback_ratio == 0
 
 
+def test_cost_health_counts_actual_fills_source():
+    row = build_cost_health_daily(
+        pl.DataFrame(
+            [
+                {
+                    "day": "2026-05-10",
+                    "symbol": "BNB-USDT",
+                    "source": "actual_fills",
+                    "sample_count": 30,
+                    "fallback_level": "NONE",
+                    "cost_model_version": "costs-v1",
+                },
+                {
+                    "day": "2026-05-10",
+                    "symbol": "SOL-USDT",
+                    "source": "public_spread_proxy",
+                    "sample_count": 100,
+                    "fallback_level": "PUBLIC_SPREAD_PROXY",
+                    "cost_model_version": "costs-v1",
+                },
+                {
+                    "day": "2026-05-10",
+                    "symbol": "GLOBAL",
+                    "source": "global_default",
+                    "sample_count": 0,
+                    "fallback_level": "GLOBAL_DEFAULT",
+                    "cost_model_version": "costs-v1",
+                },
+            ]
+        ),
+        day="2026-05-10",
+        min_sample_count=30,
+        expected_symbols=["BNB-USDT", "SOL-USDT"],
+    )
+
+    assert row.actual_rows == 1
+    assert row.proxy_rows == 1
+    assert row.global_default_rows == 1
+    assert row.symbols_with_actual_cost == ["BNB-USDT"]
+    assert row.symbols_with_proxy_only == ["SOL-USDT"]
+
+
 def test_cost_health_proxy_only_is_warning():
     row = build_cost_health_daily(
         pl.DataFrame(

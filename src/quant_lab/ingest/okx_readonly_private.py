@@ -16,6 +16,7 @@ from pydantic import BaseModel, ConfigDict, Field, SecretStr
 
 from quant_lab.contracts.models import AccountBill, FillEvent, OrderEvent
 from quant_lab.data.lake import read_parquet_dataset, write_parquet_dataset
+from quant_lab.symbols import normalize_symbol
 
 OKX_READONLY_PRIVATE_SOURCE = "okx_readonly_private"
 
@@ -463,7 +464,7 @@ def normalize_okx_fills(raw_fills: Sequence[Mapping[str, Any]]) -> list[FillEven
         records.append(
             FillEvent(
                 inst_type=str(item["instType"]),
-                inst_id=str(item["instId"]),
+                inst_id=normalize_symbol(item["instId"]),
                 trade_id=str(item["tradeId"]),
                 order_id=str(item["ordId"]),
                 side=str(item["side"]),
@@ -501,7 +502,7 @@ def normalize_okx_orders(raw_orders: Sequence[Mapping[str, Any]]) -> list[OrderE
         records.append(
             OrderEvent(
                 inst_type=str(item["instType"]),
-                inst_id=str(item["instId"]),
+                inst_id=normalize_symbol(item["instId"]),
                 order_id=str(item["ordId"]),
                 side=str(item["side"]),
                 order_type=_optional_string(item.get("ordType")),

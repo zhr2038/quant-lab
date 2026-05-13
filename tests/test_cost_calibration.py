@@ -83,6 +83,29 @@ def test_without_fills_uses_public_spread_proxy_only(tmp_path):
     assert "actual" not in row["source"]
 
 
+def test_v5_trade_events_generate_actual_fill_bucket_before_spread_proxy(tmp_path):
+    lake_root = tmp_path / "lake"
+    _write_v5_trades(lake_root)
+    _write_orderbooks(lake_root, symbol="BNB-USDT")
+
+    result = calibrate_costs_for_day(lake_root, "2026-05-10", min_sample_count=1)
+
+    assert result.sources == ["mixed_actual_proxy"]
+    rows = read_parquet_dataset(lake_root / "gold" / "cost_bucket_daily").to_dicts()
+    all_row = [
+        row for row in rows if row["symbol"] == "BNB-USDT" and row["notional_bucket"] == "all"
+    ][0]
+    assert all_row["source"] == "mixed_actual_proxy"
+    assert all_row["event_type"] == "actual_fill"
+    assert all_row["sample_count"] == 2
+    assert all_row["fee_bps_p50"] > 0
+    assert "SPREAD_PROXY" in all_row["fallback_level"]
+    assert "SLIPPAGE_UNKNOWN" in all_row["fallback_level"]
+
+    health = read_parquet_dataset(lake_root / "gold" / "cost_health_daily").to_dicts()[0]
+    assert health["actual_rows"] == len(rows)
+
+
 def test_global_default_when_no_cost_inputs_exist(tmp_path):
     lake_root = tmp_path / "lake"
 
@@ -157,13 +180,13 @@ def _write_bills(lake_root: Path) -> None:
     )
 
 
-def _write_orderbooks(lake_root: Path) -> None:
+def _write_orderbooks(lake_root: Path, symbol: str = "BTC-USDT") -> None:
     write_parquet_dataset(
         pl.DataFrame(
             [
                 {
                     "venue": "okx",
-                    "symbol": "BTC-USDT",
+                    "symbol": symbol,
                     "channel": "books5",
                     "ts": "2026-05-10T00:00:00Z",
                     "asks_json": json.dumps([["101", "1"]]),
@@ -176,4 +199,46 @@ def _write_orderbooks(lake_root: Path) -> None:
             ]
         ),
         lake_root / "silver" / "orderbook_snapshot",
+    )
+
+
+def _write_v5_trades(lake_root: Path) -> None:
+    write_parquet_dataset(
+        pl.DataFrame(
+            [
+                {
+                    "strategy": "v5",
+                    "bundle_sha256": "sha",
+                    "bundle_name": "fixture.tar.gz",
+                    "source_path_inside_bundle": "raw/recent_runs/run_1/trades.csv",
+                    "run_id": "run_1",
+                    "row_index": 0,
+                    "symbol": "BNB/USDT",
+                    "side": "buy",
+                    "qty": "10",
+                    "price": "300",
+                    "fee": "0.3",
+                    "notional": "3000",
+                    "ts": "2026-05-10T00:00:00Z",
+                    "ingest_ts": "2026-05-10T00:01:00Z",
+                },
+                {
+                    "strategy": "v5",
+                    "bundle_sha256": "sha",
+                    "bundle_name": "fixture.tar.gz",
+                    "source_path_inside_bundle": "raw/recent_runs/run_1/trades.csv",
+                    "run_id": "run_1",
+                    "row_index": 1,
+                    "symbol": "OKX:BNB-USDT",
+                    "side": "sell",
+                    "qty": "5",
+                    "price": "310",
+                    "fee": "0.155",
+                    "notional": "1550",
+                    "ts": "2026-05-10T00:05:00Z",
+                    "ingest_ts": "2026-05-10T00:06:00Z",
+                },
+            ]
+        ),
+        lake_root / "silver" / "v5_trade_event",
     )

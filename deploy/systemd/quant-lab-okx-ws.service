@@ -2,6 +2,8 @@
 Description=quant-lab OKX public WebSocket collector
 After=network-online.target
 Wants=network-online.target
+StartLimitIntervalSec=300
+StartLimitBurst=3
 
 [Service]
 Type=simple
@@ -9,9 +11,13 @@ User=quantlab
 Group=quantlab
 WorkingDirectory=/opt/quant-lab
 Environment=PYTHONUNBUFFERED=1
+Environment=POLARS_MAX_THREADS=1
+Environment=MALLOC_ARENA_MAX=2
 ExecStart=/opt/quant-lab/.venv/bin/qlab okx-ws-collect-universe --symbols BTC-USDT,ETH-USDT,SOL-USDT,BNB-USDT --channels tickers,trades,books5 --market-type SPOT --lake-root /var/lib/quant-lab/lake --flush-interval-seconds 10 --flush-max-messages 100
-Restart=always
-RestartSec=5
+Restart=on-failure
+RestartSec=30
+MemoryHigh=768M
+MemoryMax=1G
 KillSignal=SIGINT
 TimeoutStopSec=30
 NoNewPrivileges=true

@@ -1,11 +1,12 @@
 import asyncio
 import json
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
 import pytest
 
-from quant_lab.data.lake import read_parquet_dataset
+from quant_lab.data.lake import read_parquet_dataset, write_market_bars
 from quant_lab.ingest.okx_ws_public import (
     COLLECTOR_HEALTH_DATASET,
     OKXPublicWSChannelError,
@@ -164,6 +165,45 @@ def test_publish_ws_messages_to_lake(tmp_path):
     assert trades["symbol"][0] == "BTC-USDT"
     assert books["symbol"][0] == "BTC-USDT"
     assert raw.height == 3
+
+
+def test_ws_stream_appends_large_datasets_without_rewriting_market_bars(tmp_path):
+    lake_root = tmp_path / "lake"
+    write_market_bars(
+        lake_root,
+        [
+            {
+                "venue": "okx",
+                "symbol": "BTC-USDT",
+                "market_type": "SPOT",
+                "timeframe": "1H",
+                "ts": datetime(2026, 5, 13, 1, tzinfo=UTC),
+                "open": 100.0,
+                "high": 101.0,
+                "low": 99.0,
+                "close": 100.5,
+                "volume": 10.0,
+                "quote_volume": 1000.0,
+                "source": "fixture",
+                "ingest_ts": datetime(2026, 5, 13, 2, tzinfo=UTC),
+            }
+        ],
+    )
+
+    first = publish_okx_public_ws_messages_to_lake(
+        [_trade_message(symbol="BTC-USDT", trade_id="1")],
+        lake_root=lake_root,
+    )
+    second = publish_okx_public_ws_messages_to_lake(
+        [_trade_message(symbol="ETH-USDT", trade_id="2")],
+        lake_root=lake_root,
+    )
+
+    assert first["market_bar_rows"] == 0
+    assert second["market_bar_rows"] == 0
+    assert read_parquet_dataset(lake_root / "silver" / "market_bar").height == 1
+    assert read_parquet_dataset(lake_root / "silver" / "trade_print").height == 2
+    assert len(list((lake_root / "silver" / "trade_print").glob("*.parquet"))) == 2
 
 
 def test_read_messages_reconnects_without_long_sleep():

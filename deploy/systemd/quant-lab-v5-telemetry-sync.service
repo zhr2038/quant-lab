@@ -8,6 +8,10 @@ Type=oneshot
 User=quantlab
 Group=quantlab
 WorkingDirectory=/opt/quant-lab
+Environment=POLARS_MAX_THREADS=1
+Environment=MALLOC_ARENA_MAX=2
 ExecStart=/opt/quant-lab/.venv/bin/qlab sync-v5-telemetry --config /etc/quant-lab/v5_telemetry_remote.yaml
+MemoryHigh=1G
+MemoryMax=1536M
 NoNewPrivileges=true
 PrivateTmp=true

@@ -1,6 +1,8 @@
 import asyncio
 import inspect
 import json
+import os
+import time
 from collections.abc import AsyncIterator, Awaitable, Callable, Mapping, Sequence
 from datetime import UTC, datetime
 from pathlib import Path
@@ -436,18 +438,18 @@ def publish_okx_public_ws_messages_to_lake(
     trade_rows = normalize_okx_ws_trades(messages)
     orderbook_rows = normalize_okx_ws_orderbooks(messages)
 
-    raw_ws_rows = _upsert_frame(
+    raw_ws_rows = _append_frame(
         root / BRONZE_WS_DATASET,
         pl.DataFrame(raw_rows, schema=RAW_WS_SCHEMA, orient="row"),
         key_columns=["channel", "inst_id", "received_at", "raw_json"],
     )
-    market_bar_rows = publish_market_bars_to_lake(market_bars, root)
-    trade_print_rows = _upsert_frame(
+    market_bar_rows = publish_market_bars_to_lake(market_bars, root) if market_bars else 0
+    trade_print_rows = _append_frame(
         root / TRADE_PRINT_DATASET,
         pl.DataFrame(trade_rows, schema=TRADE_PRINT_SCHEMA, orient="row"),
         key_columns=["symbol", "trade_id", "ts"],
     )
-    orderbook_snapshot_rows = _upsert_frame(
+    orderbook_snapshot_rows = _append_frame(
         root / ORDERBOOK_SNAPSHOT_DATASET,
         pl.DataFrame(orderbook_rows, schema=ORDERBOOK_SNAPSHOT_SCHEMA, orient="row"),
         key_columns=["symbol", "channel", "ts", "checksum"],
@@ -621,18 +623,38 @@ def _raw_ws_rows(messages: Sequence[Mapping[str, Any]]) -> list[dict[str, Any]]:
     ]
 
 
+def _append_frame(dataset_path: Path, new_df: pl.DataFrame, key_columns: list[str]) -> int:
+    if new_df.is_empty():
+        return 0
+    frame = _dedupe_frame(new_df, key_columns)
+    path = Path(dataset_path)
+    path.mkdir(parents=True, exist_ok=True)
+    batch_name = (
+        f"batch_{datetime.now(UTC).strftime('%Y%m%dT%H%M%S%fZ')}_"
+        f"{os.getpid()}_{time.monotonic_ns()}.parquet"
+    )
+    frame.write_parquet(path / batch_name)
+    return frame.height
+
+
 def _upsert_frame(dataset_path: Path, new_df: pl.DataFrame, key_columns: list[str]) -> int:
     existing_df = read_parquet_dataset(dataset_path)
     if new_df.is_empty():
         return existing_df.height
     frames = [frame for frame in [existing_df, new_df] if not frame.is_empty()]
     combined = pl.concat(frames, how="diagonal_relaxed") if frames else new_df
-    if not combined.is_empty():
-        available_keys = [column for column in key_columns if column in combined.columns]
-        if available_keys:
-            combined = combined.unique(subset=available_keys, keep="last", maintain_order=True)
+    combined = _dedupe_frame(combined, key_columns)
     write_parquet_dataset(combined, dataset_path)
     return combined.height
+
+
+def _dedupe_frame(df: pl.DataFrame, key_columns: list[str]) -> pl.DataFrame:
+    if df.is_empty():
+        return df
+    available_keys = [column for column in key_columns if column in df.columns]
+    if not available_keys:
+        return df
+    return df.unique(subset=available_keys, keep="last", maintain_order=True)
 
 
 def _dataset_paths(root: Path) -> dict[str, str]:

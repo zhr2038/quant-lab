@@ -169,6 +169,11 @@ class V5TelemetryAnalysisResult(TelemetryModel):
     quant_lab_usage_count: int = 0
     quant_lab_cost_usage_count: int = 0
     quant_lab_fallback_count: int = 0
+    request_success_count: int = 0
+    request_error_count: int = 0
+    actual_fallback_count: int = 0
+    fallback_rate: float = 0.0
+    degraded_reason: str = "none"
     quant_lab_actual_violation_count: int = 0
     quant_lab_hypothetical_violation_count: int = 0
     warnings: list[str] = Field(default_factory=list)

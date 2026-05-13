@@ -37,6 +37,7 @@ SILVER = {
     "high_score_outcome": Path("silver/v5_high_score_blocked_outcome"),
     "skipped": Path("silver/v5_skipped_candidate_outcome"),
     "quant_lab_usage": Path("silver/v5_quant_lab_usage"),
+    "quant_lab_request": Path("silver/v5_quant_lab_request"),
     "quant_lab_compliance": Path("silver/v5_quant_lab_compliance"),
     "quant_lab_cost_usage": Path("silver/v5_quant_lab_cost_usage"),
     "quant_lab_fallback": Path("silver/v5_quant_lab_fallback"),
@@ -61,6 +62,7 @@ def analyze_v5_telemetry(lake_root: Path, date: str | None = None) -> V5Telemetr
     outcomes = read_parquet_dataset(root / SILVER["high_score_outcome"])
     skipped = read_parquet_dataset(root / SILVER["skipped"])
     quant_lab_usage = read_parquet_dataset(root / SILVER["quant_lab_usage"])
+    quant_lab_request = read_parquet_dataset(root / SILVER["quant_lab_request"])
     quant_lab_compliance = read_parquet_dataset(root / SILVER["quant_lab_compliance"])
     quant_lab_cost_usage = read_parquet_dataset(root / SILVER["quant_lab_cost_usage"])
     quant_lab_fallback = read_parquet_dataset(root / SILVER["quant_lab_fallback"])
@@ -122,6 +124,7 @@ def analyze_v5_telemetry(lake_root: Path, date: str | None = None) -> V5Telemetr
 
     quant_lab_summary = _quant_lab_mode_summary(
         quant_lab_usage,
+        quant_lab_request,
         quant_lab_compliance,
         quant_lab_cost_usage,
         quant_lab_fallback,
@@ -140,9 +143,9 @@ def analyze_v5_telemetry(lake_root: Path, date: str | None = None) -> V5Telemetr
         warnings.append("quant_lab hypothetical permission violations present")
 
     router_reason_top = _router_reason_top(routers)
-    fallback_count = _fallback_count(decisions)
+    fallback_count = int(quant_lab_summary["actual_fallback_count"])
     if fallback_count:
-        warnings.append(f"quant_lab fallback used {fallback_count} times")
+        warnings.append(f"quant_lab actual fallback used {fallback_count} times")
 
     status = "OK"
     if warnings:
@@ -224,6 +227,11 @@ def analyze_v5_telemetry(lake_root: Path, date: str | None = None) -> V5Telemetr
         quant_lab_usage_count=int(quant_lab_summary["usage_count"]),
         quant_lab_cost_usage_count=int(quant_lab_summary["cost_usage_count"]),
         quant_lab_fallback_count=int(quant_lab_summary["fallback_count"]),
+        request_success_count=int(quant_lab_summary["request_success_count"]),
+        request_error_count=int(quant_lab_summary["request_error_count"]),
+        actual_fallback_count=int(quant_lab_summary["actual_fallback_count"]),
+        fallback_rate=float(quant_lab_summary["fallback_rate"]),
+        degraded_reason=str(quant_lab_summary["degraded_reason"]),
         quant_lab_actual_violation_count=len(quant_lab_summary["actual_violations"]),
         quant_lab_hypothetical_violation_count=len(
             quant_lab_summary["hypothetical_violations"]
@@ -285,6 +293,11 @@ def _write_gold(
                 "permission_gate_enforced": quant_lab_summary["permission_gate_enforced"],
                 "cost_gate_enforced": quant_lab_summary["cost_gate_enforced"],
                 "usage_count": quant_lab_summary["usage_count"],
+                "request_success_count": quant_lab_summary["request_success_count"],
+                "request_error_count": quant_lab_summary["request_error_count"],
+                "actual_fallback_count": quant_lab_summary["actual_fallback_count"],
+                "fallback_rate": quant_lab_summary["fallback_rate"],
+                "degraded_reason": quant_lab_summary["degraded_reason"],
                 "cost_usage_count": quant_lab_summary["cost_usage_count"],
                 "fallback_count": quant_lab_summary["fallback_count"],
                 "latest_bundle_ts": result.latest_bundle_ts,
@@ -574,6 +587,7 @@ def _gate_compliance_violations(decisions: pl.DataFrame, trades: pl.DataFrame) -
 
 def _quant_lab_mode_summary(
     usage: pl.DataFrame,
+    requests: pl.DataFrame,
     compliance: pl.DataFrame,
     cost_usage: pl.DataFrame,
     fallback: pl.DataFrame,
@@ -581,7 +595,7 @@ def _quant_lab_mode_summary(
     trades: pl.DataFrame,
 ) -> dict[str, Any]:
     has_data = any(
-        not frame.is_empty() for frame in [usage, compliance, cost_usage, fallback]
+        not frame.is_empty() for frame in [usage, requests, compliance, cost_usage, fallback]
     )
     mode = _latest_mode(usage, compliance, decisions)
     enforced = _gate_enforced(
@@ -596,6 +610,7 @@ def _quant_lab_mode_summary(
     )
     actual: list[str] = []
     hypothetical: list[str] = []
+    request_health = _quant_lab_request_health(requests, fallback)
     if not compliance.is_empty():
         for row in compliance.to_dicts():
             payload = _payload(row)
@@ -643,11 +658,196 @@ def _quant_lab_mode_summary(
         "permission_gate_enforced": enforced,
         "cost_gate_enforced": cost_enforced,
         "usage_count": usage.height,
+        **request_health,
         "cost_usage_count": cost_usage.height,
-        "fallback_count": fallback.height,
+        "fallback_count": request_health["actual_fallback_count"],
         "actual_violations": sorted(set(actual)),
         "hypothetical_violations": sorted(set(hypothetical)),
     }
+
+
+def _quant_lab_request_health(requests: pl.DataFrame, fallback: pl.DataFrame) -> dict[str, Any]:
+    success_count = 0
+    error_count = 0
+    request_fallback_count = 0
+    for row in requests.to_dicts() if not requests.is_empty() else []:
+        payload = _payload(row)
+        status = _request_status(row, payload)
+        if status == "success":
+            success_count += 1
+        elif status == "fallback":
+            error_count += 1
+            request_fallback_count += 1
+        elif status == "error":
+            error_count += 1
+    non_request_fallback_count = _non_request_fallback_count(
+        fallback,
+        skip_request_sources=not requests.is_empty(),
+    )
+    actual_fallback_count = request_fallback_count + non_request_fallback_count
+    total_requests = success_count + error_count
+    fallback_rate = actual_fallback_count / total_requests if total_requests else 0.0
+    if actual_fallback_count:
+        degraded_reason = "actual_fallback_present"
+    elif error_count:
+        degraded_reason = "request_errors_present"
+    else:
+        degraded_reason = "none"
+    return {
+        "request_success_count": success_count,
+        "request_error_count": error_count,
+        "actual_fallback_count": actual_fallback_count,
+        "fallback_rate": fallback_rate,
+        "degraded_reason": degraded_reason,
+    }
+
+
+def _request_status(row: dict[str, Any], payload: dict[str, Any]) -> str:
+    if _request_is_success(row, payload):
+        return "success"
+    if _request_is_actual_fallback(row, payload):
+        return "fallback"
+    if _request_is_error(row, payload):
+        return "error"
+    return "success"
+
+
+def _request_is_success(row: dict[str, Any], payload: dict[str, Any]) -> bool:
+    if _request_fallback_used(row, payload):
+        return False
+    status_code = _request_status_code(row, payload)
+    success = _first_bool(row, payload, ["success", "ok", "request_ok"])
+    if status_code == 200 and success is not False:
+        return True
+    return success is True and (status_code is None or 200 <= status_code < 300)
+
+
+def _request_is_error(row: dict[str, Any], payload: dict[str, Any]) -> bool:
+    status_code = _request_status_code(row, payload)
+    if status_code is not None and status_code >= 400:
+        return True
+    success = _first_bool(row, payload, ["success", "ok", "request_ok"])
+    if success is False:
+        return True
+    return _actual_error_text(row, payload)
+
+
+def _request_is_actual_fallback(row: dict[str, Any], payload: dict[str, Any]) -> bool:
+    if _request_is_success(row, payload):
+        return False
+    if _request_fallback_used(row, payload):
+        return True
+    status_code = _request_status_code(row, payload)
+    if status_code is not None and status_code >= 500:
+        return True
+    error_type = _first_value(row, payload, ["error_type", "exception_type"])
+    if _actual_error_type(error_type):
+        return True
+    return _actual_error_text(row, payload)
+
+
+def _request_fallback_used(row: dict[str, Any], payload: dict[str, Any]) -> bool:
+    return _first_bool(
+        row,
+        payload,
+        ["fallback_used", "used_fallback", "local_fallback"],
+    ) is True
+
+
+def _request_status_code(row: dict[str, Any], payload: dict[str, Any]) -> int | None:
+    value = _first_value(row, payload, ["status_code", "http_status", "status"])
+    if value is None:
+        return None
+    try:
+        return int(float(value))
+    except (TypeError, ValueError):
+        return None
+
+
+def _actual_error_type(value: Any) -> bool:
+    if value is None:
+        return False
+    normalized = str(value).strip().lower()
+    if normalized in {
+        "",
+        "none",
+        "null",
+        "ok",
+        "false",
+        "0",
+        "http_200",
+        "200",
+        "request_not_ok",
+    }:
+        return False
+    return True
+
+
+def _actual_error_text(row: dict[str, Any], payload: dict[str, Any]) -> bool:
+    rendered = " ".join(
+        str(_first_value(row, payload, [field]) or "").lower()
+        for field in [
+            "error",
+            "message",
+            "exception",
+            "diagnosis",
+            "reason",
+            "error_type",
+            "exception_type",
+        ]
+    )
+    if "http_200" in rendered or "http 200" in rendered:
+        rendered = rendered.replace("request_not_ok", "")
+    return any(
+        marker in rendered
+        for marker in ["timeout", "quantlabtimeout", "connection", "parse", "jsondecode"]
+    )
+
+
+def _non_request_fallback_count(fallback: pl.DataFrame, *, skip_request_sources: bool) -> int:
+    if fallback.is_empty() or "source_path_inside_bundle" not in fallback.columns:
+        return sum(
+            1
+            for row in fallback.to_dicts()
+            if _fallback_table_row_is_actual(row, _payload(row))
+        )
+    count = 0
+    for row in fallback.to_dicts():
+        source_path = str(row.get("source_path_inside_bundle") or "")
+        logical = _logical_source_path(source_path)
+        if skip_request_sources and logical in {
+            "raw/reports/quant_lab_requests.jsonl",
+            "raw/quant_lab/quant_lab_requests.jsonl",
+            "reports/quant_lab_requests.jsonl",
+            "summaries/quant_lab_fallbacks.csv",
+        }:
+            continue
+        payload = _payload(row)
+        if _fallback_table_row_is_actual(row, payload):
+            count += 1
+    return count
+
+
+def _fallback_table_row_is_actual(row: dict[str, Any], payload: dict[str, Any]) -> bool:
+    if _request_is_success(row, payload):
+        return False
+    if _request_is_actual_fallback(row, payload):
+        return True
+    event_type = str(_first_value(row, payload, ["event_type"]) or "").strip().lower()
+    if event_type == "request":
+        return False
+    count_value = _first_value(row, payload, ["count", "fallback_count"])
+    try:
+        return float(count_value) > 0
+    except (TypeError, ValueError):
+        return False
+
+
+def _logical_source_path(source_path: str) -> str:
+    parts = [part for part in source_path.split("/") if part]
+    if len(parts) > 1 and parts[0].startswith("v5_live_followup_bundle_"):
+        return "/".join(parts[1:])
+    return source_path
 
 
 def _latest_mode(*frames: pl.DataFrame) -> str | None:
@@ -698,10 +898,15 @@ def _gate_enforced(
 
 
 def _first_value(row: dict[str, Any], payload: dict[str, Any], fields: list[str]) -> Any:
+    raw_payload: dict[str, Any] | None = None
     for field in fields:
         value = row.get(field)
         if value is None:
             value = _nested_value(payload, field)
+        if value is None:
+            if raw_payload is None:
+                raw_payload = _raw_json_payload(row, payload)
+            value = _nested_value(raw_payload, field)
         if value is not None and str(value).strip():
             return value
     return None
@@ -712,6 +917,7 @@ def _mode_allows_actual_permission_check(mode: str | None) -> bool:
 
 
 def _first_bool(row: dict[str, Any], payload: dict[str, Any], fields: list[str]) -> bool | None:
+    raw_payload: dict[str, Any] | None = None
     for field in fields:
         if field in row:
             parsed = _parse_bool(row.get(field))
@@ -722,7 +928,27 @@ def _first_bool(row: dict[str, Any], payload: dict[str, Any], fields: list[str])
             parsed = _parse_bool(value)
             if parsed is not None:
                 return parsed
+        if raw_payload is None:
+            raw_payload = _raw_json_payload(row, payload)
+        value = _nested_value(raw_payload, field)
+        if value is not None:
+            parsed = _parse_bool(value)
+            if parsed is not None:
+                return parsed
     return None
+
+
+def _raw_json_payload(row: dict[str, Any], payload: dict[str, Any]) -> dict[str, Any]:
+    raw = row.get("raw_json")
+    if raw is None or not str(raw).strip():
+        raw = payload.get("raw_json")
+    if not isinstance(raw, str) or not raw.strip():
+        return {}
+    try:
+        loaded = json.loads(raw)
+    except json.JSONDecodeError:
+        return {}
+    return loaded if isinstance(loaded, dict) else {}
 
 
 def _parse_bool(value: Any) -> bool | None:

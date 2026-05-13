@@ -1,3 +1,7 @@
+import csv
+import json
+from io import StringIO
+
 from quant_lab.data.lake import read_parquet_dataset
 from quant_lab.strategy_telemetry.ingest import ingest_v5_bundle
 from tests.v5_bundle_fixture import make_tar, make_v5_bundle_fixture
@@ -99,6 +103,109 @@ def test_ingest_quant_lab_fallback_ignores_successful_200_requests(tmp_path):
     assert result.silver_rows["v5_quant_lab_fallback"] == 1
     assert fallbacks.height == 1
     assert fallbacks["status_code"][0] == "503"
+
+
+def test_ingest_quant_lab_requests_separates_success_errors_and_actual_fallbacks(tmp_path):
+    bundle = make_tar(
+        tmp_path / "v5_live_followup_bundle_20260510T140249Z.tar.gz",
+        {
+            "raw/reports/quant_lab_requests.jsonl": (
+                '{"event_type":"request","path":"/v1/costs/estimate",'
+                '"status_code":200,"success":true,"ok":true,'
+                '"fallback_used":false,"diagnosis":"request_not_ok",'
+                '"error":"http_200"}\n'
+                '{"event_type":"request","path":"/v1/risk/live-permission",'
+                '"status_code":0,"success":false,"fallback_used":true,'
+                '"error_type":"QuantLabTimeout","error":"timeout"}\n'
+            ),
+        },
+    )
+    lake = tmp_path / "lake"
+
+    result = ingest_v5_bundle(bundle, lake, tmp_path / "restricted", tmp_path / "redacted")
+    requests = read_parquet_dataset(lake / "silver/v5_quant_lab_request")
+    fallbacks = read_parquet_dataset(lake / "silver/v5_quant_lab_fallback")
+    health = read_parquet_dataset(lake / "gold/strategy_health_daily")
+    execution = read_parquet_dataset(lake / "gold/v5_execution_quality_daily")
+
+    assert result.silver_rows["v5_quant_lab_request"] == 2
+    assert result.silver_rows["v5_quant_lab_fallback"] == 1
+    assert requests.height == 2
+    assert fallbacks.height == 1
+    assert "http_200" not in fallbacks["raw_payload_json"][0]
+    assert "QuantLabTimeout" in fallbacks["raw_payload_json"][0]
+    assert health["request_success_count"][0] == 1
+    assert health["request_error_count"][0] == 1
+    assert health["actual_fallback_count"][0] == 1
+    assert health["fallback_rate"][0] == 0.5
+    assert health["degraded_reason"][0] == "actual_fallback_present"
+    assert execution["fallback_count"][0] == 1
+
+
+def test_ingest_quant_lab_fallback_csv_reads_nested_raw_json_without_double_count(
+    tmp_path,
+):
+    csv_buffer = StringIO()
+    writer = csv.DictWriter(
+        csv_buffer,
+        fieldnames=["event_type", "fallback_used", "diagnosis", "error", "raw_json"],
+    )
+    writer.writeheader()
+    writer.writerow(
+        {
+            "event_type": "request",
+            "fallback_used": "false",
+            "diagnosis": "request_not_ok",
+            "error": "http_200",
+            "raw_json": json.dumps(
+                {"status_code": 200, "success": True, "error_type": None},
+            ),
+        },
+    )
+    writer.writerow(
+        {
+            "event_type": "fallback",
+            "fallback_used": "true",
+            "diagnosis": "quant_lab_unavailable_allow_sell_only",
+            "error": "QuantLabTimeout",
+            "raw_json": json.dumps(
+                {
+                    "status_code": 0,
+                    "success": False,
+                    "fallback_used": True,
+                    "error_type": "QuantLabTimeout",
+                },
+            ),
+        },
+    )
+    bundle = make_tar(
+        tmp_path / "v5_live_followup_bundle_20260510T140249Z.tar.gz",
+        {
+            "raw/reports/quant_lab_requests.jsonl": (
+                '{"event_type":"request","status_code":200,"success":true,'
+                '"fallback_used":false,"diagnosis":"request_not_ok",'
+                '"error":"http_200"}\n'
+                '{"event_type":"request","status_code":0,"success":false,'
+                '"fallback_used":true,"error_type":"QuantLabTimeout",'
+                '"error":"timeout"}\n'
+            ),
+            "summaries/quant_lab_fallbacks.csv": csv_buffer.getvalue(),
+        },
+    )
+    lake = tmp_path / "lake"
+
+    result = ingest_v5_bundle(bundle, lake, tmp_path / "restricted", tmp_path / "redacted")
+    fallbacks = read_parquet_dataset(lake / "silver/v5_quant_lab_fallback")
+    health = read_parquet_dataset(lake / "gold/strategy_health_daily")
+
+    assert result.silver_rows["v5_quant_lab_request"] == 2
+    assert result.silver_rows["v5_quant_lab_fallback"] == 2
+    assert fallbacks.height == 2
+    assert all("http_200" not in payload for payload in fallbacks["raw_payload_json"])
+    assert health["request_success_count"][0] == 1
+    assert health["request_error_count"][0] == 1
+    assert health["actual_fallback_count"][0] == 1
+    assert health["fallback_rate"][0] == 0.5
 
 
 def test_ingest_parses_official_bundle_top_level_dir(tmp_path):

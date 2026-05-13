@@ -335,7 +335,9 @@ def _append_file_rows(
         rows["v5_quant_lab_usage"].extend(_jsonl_rows(metadata, relative, file_path))
         return
     if logical in QUANT_LAB_REQUEST_PATHS:
-        rows["v5_quant_lab_request"].extend(_jsonl_rows(metadata, relative, file_path))
+        request_rows = _jsonl_rows(metadata, relative, file_path)
+        rows["v5_quant_lab_request"].extend(request_rows)
+        rows["v5_quant_lab_fallback"].extend(_request_fallback_rows(request_rows))
         return
     if logical.endswith("/trades.csv"):
         rows["v5_trade_event"].extend(_csv_rows(metadata, relative, file_path))
@@ -428,18 +430,40 @@ def _fallback_csv_rows(
     return [row for row in _csv_rows(metadata, relative, file_path) if _is_fallback_row(row)]
 
 
+def _request_fallback_rows(request_rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    fallback_rows: list[dict[str, Any]] = []
+    for row in request_rows:
+        if not _is_fallback_row(row):
+            continue
+        payload = _loads_payload(row.get("raw_payload_json"))
+        fallback_rows.append(
+            row
+            | {
+                "event_type": "request",
+                "actual_fallback": True,
+                "diagnosis": _fallback_diagnosis(row, payload),
+                "degraded_reason": _fallback_diagnosis(row, payload),
+            }
+        )
+    return fallback_rows
+
+
 def _is_fallback_row(row: dict[str, Any]) -> bool:
     payload = _loads_payload(row.get("raw_payload_json"))
+    if _is_successful_request(row, payload):
+        return False
     if _truthy(_first_value(row, payload, ["fallback_used", "used_fallback", "local_fallback"])):
         return True
-    success = _parse_bool(_first_value(row, payload, ["success", "ok", "request_ok"]))
-    if success is False:
+    status_code = _status_code(row, payload)
+    if status_code is not None and status_code >= 500:
         return True
-    if _nonempty_text(_first_value(row, payload, ["error_type", "exception_type"])):
+    if _actual_error_type(_first_value(row, payload, ["error_type", "exception_type"])):
         return True
     count = _numeric(_first_value(row, payload, ["count", "fallback_count"]))
     if count == 0:
         return False
+    if _has_error_indicator(row, payload):
+        return True
     action = _first_value(
         row,
         payload,
@@ -454,6 +478,81 @@ def _is_fallback_row(row: dict[str, Any]) -> bool:
     return "local" in rendered and "fallback" in rendered
 
 
+def _is_successful_request(row: dict[str, Any], payload: dict[str, Any]) -> bool:
+    if _truthy(_first_value(row, payload, ["fallback_used", "used_fallback", "local_fallback"])):
+        return False
+    status_code = _status_code(row, payload)
+    success = _parse_bool(_first_value(row, payload, ["success", "ok", "request_ok"]))
+    if status_code == 200 and success is not False:
+        return True
+    return success is True and (status_code is None or 200 <= status_code < 300)
+
+
+def _status_code(row: dict[str, Any], payload: dict[str, Any]) -> int | None:
+    value = _first_value(row, payload, ["status_code", "http_status", "status"])
+    if value is None:
+        return None
+    try:
+        return int(float(value))
+    except (TypeError, ValueError):
+        return None
+
+
+def _actual_error_type(value: Any) -> bool:
+    if not _nonempty_text(value):
+        return False
+    normalized = str(value).strip().lower()
+    return normalized not in {"http_200", "200", "request_not_ok"}
+
+
+def _has_error_indicator(row: dict[str, Any], payload: dict[str, Any]) -> bool:
+    rendered = " ".join(
+        str(_first_value(row, payload, [field]) or "").lower()
+        for field in [
+            "error",
+            "message",
+            "exception",
+            "diagnosis",
+            "reason",
+            "error_type",
+            "exception_type",
+        ]
+    )
+    indicators = [
+        "timeout",
+        "quantlabtimeout",
+        "connection",
+        "connect",
+        "parse",
+        "jsondecode",
+        "decode",
+    ]
+    if "http_200" in rendered or "http 200" in rendered:
+        rendered = rendered.replace("request_not_ok", "")
+    return any(indicator in rendered for indicator in indicators)
+
+
+def _fallback_diagnosis(row: dict[str, Any], payload: dict[str, Any]) -> str:
+    if _truthy(_first_value(row, payload, ["fallback_used", "used_fallback", "local_fallback"])):
+        return "fallback_used"
+    status_code = _status_code(row, payload)
+    if status_code is not None and status_code >= 500:
+        return "http_5xx"
+    error_type = _first_value(row, payload, ["error_type", "exception_type"])
+    if _actual_error_type(error_type):
+        return str(error_type)
+    if _has_error_indicator(row, payload):
+        return "request_error"
+    action = _first_value(
+        row,
+        payload,
+        ["fail_policy_action", "fail_policy", "action", "fallback_action"],
+    )
+    if _action_triggered(action):
+        return "fail_policy_action_triggered"
+    return "actual_fallback"
+
+
 def _loads_payload(value: Any) -> dict[str, Any]:
     if not isinstance(value, str) or not value.strip():
         return {}
@@ -464,11 +563,23 @@ def _loads_payload(value: Any) -> dict[str, Any]:
     return loaded if isinstance(loaded, dict) else {}
 
 
+def _raw_json_payload(row: dict[str, Any], payload: dict[str, Any]) -> dict[str, Any]:
+    raw = row.get("raw_json")
+    if _empty_value(raw):
+        raw = payload.get("raw_json")
+    return _loads_payload(raw)
+
+
 def _first_value(row: dict[str, Any], payload: dict[str, Any], keys: list[str]) -> Any:
+    raw_payload: dict[str, Any] | None = None
     for key in keys:
         value = row.get(key)
         if _empty_value(value):
             value = payload.get(key)
+        if _empty_value(value):
+            if raw_payload is None:
+                raw_payload = _raw_json_payload(row, payload)
+            value = raw_payload.get(key)
         if not _empty_value(value):
             return value
     return None

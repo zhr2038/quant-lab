@@ -6,7 +6,7 @@ from typing import Any
 import polars as pl
 from pydantic import BaseModel, ConfigDict, Field
 
-from quant_lab.contracts.models import GateDecision, RiskPermission
+from quant_lab.contracts.models import GateDecision, RiskPermission, RiskPermissionStatus
 from quant_lab.data.lake import read_parquet_dataset, upsert_parquet_dataset
 from quant_lab.risk.permissions import evaluate_live_permission
 
@@ -17,6 +17,8 @@ COST_HEALTH_DAILY_DATASET = Path("gold") / "cost_health_daily"
 MARKET_BAR_DATASET = Path("silver") / "market_bar"
 V5_GATE_COMPLIANCE_DATASET = Path("gold") / "v5_gate_compliance_daily"
 STRATEGY_HEALTH_DAILY_DATASET = Path("gold") / "strategy_health_daily"
+RISK_PERMISSION_CONTRACT_VERSION = "risk_permission.v0.2"
+DEFAULT_TELEMETRY_STALE_THRESHOLD_SECONDS = 30 * 60
 
 RISK_PERMISSION_SCHEMA = {
     "strategy": pl.Utf8,
@@ -29,6 +31,13 @@ RISK_PERMISSION_SCHEMA = {
     "gate_version": pl.Utf8,
     "reasons": pl.Utf8,
     "created_at": pl.Utf8,
+    "as_of_ts": pl.Utf8,
+    "source_bundle_ts": pl.Utf8,
+    "expires_at": pl.Utf8,
+    "telemetry_latest_ts": pl.Utf8,
+    "permission_freshness_sec": pl.Int64,
+    "contract_version": pl.Utf8,
+    "permission_status": pl.Utf8,
     "source": pl.Utf8,
     "fallback_level": pl.Utf8,
 }
@@ -57,6 +66,7 @@ def publish_risk_permission(
     cost_health = lake_cost_health(root)
     data_health = lake_data_health(root)
     telemetry_reasons = strategy_telemetry_reasons(root, strategy)
+    telemetry_latest_ts = latest_strategy_telemetry_ts(root, strategy)
     if telemetry_reasons:
         data_health = {
             **data_health,
@@ -70,6 +80,12 @@ def publish_risk_permission(
         gate_decisions=gate_decisions,
         cost_health=cost_health,
         data_health=data_health,
+    )
+    permission = annotate_risk_permission(
+        permission,
+        telemetry_latest_ts=telemetry_latest_ts,
+        as_of_ts=datetime.now(UTC),
+        threshold_seconds=DEFAULT_TELEMETRY_STALE_THRESHOLD_SECONDS,
     )
     frame = pl.DataFrame(
         [risk_permission_row(permission)],
@@ -195,6 +211,96 @@ def strategy_telemetry_reasons(root: Path, strategy: str) -> list[str]:
     return reasons
 
 
+def latest_strategy_telemetry_ts(root: Path, strategy: str) -> datetime | None:
+    if strategy != "v5":
+        return None
+    health = read_parquet_dataset(root / STRATEGY_HEALTH_DAILY_DATASET)
+    if health.is_empty():
+        return None
+    if "strategy" in health.columns:
+        scoped = health.filter(pl.col("strategy") == strategy)
+        if not scoped.is_empty():
+            health = scoped
+    latest = _latest_timestamp_value(health, ["latest_bundle_ts", "created_at", "date"])
+    return latest
+
+
+def annotate_risk_permission(
+    permission: RiskPermission,
+    *,
+    telemetry_latest_ts: datetime | None,
+    as_of_ts: datetime | None = None,
+    threshold_seconds: int = DEFAULT_TELEMETRY_STALE_THRESHOLD_SECONDS,
+) -> RiskPermission:
+    as_of = as_of_ts or datetime.now(UTC)
+    if as_of.tzinfo is None or as_of.utcoffset() is None:
+        as_of = as_of.replace(tzinfo=UTC)
+    as_of = as_of.astimezone(UTC)
+    telemetry_ts = _ensure_utc(telemetry_latest_ts)
+    stale = risk_permission_stale_vs_telemetry(
+        as_of_ts=as_of,
+        telemetry_latest_ts=telemetry_ts,
+        threshold_seconds=threshold_seconds,
+    )
+    freshness = permission_freshness_sec(
+        as_of_ts=as_of,
+        telemetry_latest_ts=telemetry_ts,
+    )
+    expires_at = as_of + timedelta(seconds=max(threshold_seconds, 0))
+    return permission.model_copy(
+        update={
+            "as_of_ts": as_of,
+            "source_bundle_ts": telemetry_ts,
+            "expires_at": expires_at,
+            "telemetry_latest_ts": telemetry_ts,
+            "permission_freshness_sec": freshness,
+            "contract_version": RISK_PERMISSION_CONTRACT_VERSION,
+            "permission_status": permission_status(permission.permission.value, stale=stale),
+        }
+    )
+
+
+def risk_permission_stale_vs_telemetry(
+    *,
+    as_of_ts: datetime | None,
+    telemetry_latest_ts: datetime | None,
+    threshold_seconds: int = DEFAULT_TELEMETRY_STALE_THRESHOLD_SECONDS,
+) -> bool:
+    if as_of_ts is None or telemetry_latest_ts is None:
+        return False
+    as_of = _ensure_utc(as_of_ts)
+    telemetry_ts = _ensure_utc(telemetry_latest_ts)
+    if as_of is None or telemetry_ts is None:
+        return False
+    return telemetry_ts > as_of + timedelta(seconds=max(threshold_seconds, 0))
+
+
+def permission_freshness_sec(
+    *,
+    as_of_ts: datetime | None,
+    telemetry_latest_ts: datetime | None,
+) -> int:
+    if as_of_ts is None or telemetry_latest_ts is None:
+        return 0
+    as_of = _ensure_utc(as_of_ts)
+    telemetry_ts = _ensure_utc(telemetry_latest_ts)
+    if as_of is None or telemetry_ts is None or telemetry_ts <= as_of:
+        return 0
+    return int((telemetry_ts - as_of).total_seconds())
+
+
+def permission_status(permission: str, *, stale: bool) -> RiskPermissionStatus:
+    normalized = str(permission).strip().upper()
+    if normalized not in {"ALLOW", "SELL_ONLY", "ABORT"}:
+        return RiskPermissionStatus.NO_FRESH_PERMISSION
+    prefix = "STALE" if stale else "ACTIVE"
+    return RiskPermissionStatus(f"{prefix}_{normalized}")
+
+
+def is_permission_status_enforceable(status: str | RiskPermissionStatus | None) -> bool:
+    return str(status or "").startswith("ACTIVE_")
+
+
 def risk_permission_row(permission: RiskPermission) -> dict[str, Any]:
     return {
         **permission.model_dump(mode="json"),
@@ -214,10 +320,61 @@ def parse_risk_permission_row(row: dict[str, Any]) -> RiskPermission | None:
         cleaned["allowed_modes"] = _json_list(cleaned["allowed_modes"])
     if isinstance(cleaned.get("reasons"), str):
         cleaned["reasons"] = _json_list(cleaned["reasons"])
+    for field in [
+        "as_of_ts",
+        "source_bundle_ts",
+        "expires_at",
+        "telemetry_latest_ts",
+        "permission_freshness_sec",
+    ]:
+        if cleaned.get(field) in {"", "None", "none", "null"}:
+            cleaned[field] = None
+    if cleaned.get("permission_status") in {"", "None", "none", "null"}:
+        cleaned["permission_status"] = None
+    if cleaned.get("contract_version") in {"", "None", "none", "null"}:
+        cleaned.pop("contract_version", None)
     try:
         return RiskPermission.model_validate(cleaned)
     except Exception:
         return None
+
+
+def _latest_timestamp_value(df: pl.DataFrame, columns: list[str]) -> datetime | None:
+    for column in columns:
+        if column not in df.columns:
+            continue
+        values = [_coerce_timestamp(value) for value in df[column].to_list()]
+        parsed = [value for value in values if value is not None]
+        if parsed:
+            return max(parsed)
+    return None
+
+
+def _coerce_timestamp(value: Any) -> datetime | None:
+    if value is None:
+        return None
+    if isinstance(value, datetime):
+        return _ensure_utc(value)
+    text = str(value).strip()
+    if not text:
+        return None
+    if len(text) == 10 and text[4] == "-" and text[7] == "-":
+        text = f"{text}T00:00:00+00:00"
+    if text.endswith("Z"):
+        text = text[:-1] + "+00:00"
+    try:
+        parsed = datetime.fromisoformat(text)
+    except ValueError:
+        return None
+    return _ensure_utc(parsed)
+
+
+def _ensure_utc(value: datetime | None) -> datetime | None:
+    if value is None:
+        return None
+    if value.tzinfo is None or value.utcoffset() is None:
+        value = value.replace(tzinfo=UTC)
+    return value.astimezone(UTC)
 
 
 def _latest_market_bar_ts(df: pl.DataFrame) -> datetime | None:

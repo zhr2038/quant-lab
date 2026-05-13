@@ -23,6 +23,16 @@ class RiskAction(StrEnum):
     ABORT = "ABORT"
 
 
+class RiskPermissionStatus(StrEnum):
+    ACTIVE_ALLOW = "ACTIVE_ALLOW"
+    ACTIVE_SELL_ONLY = "ACTIVE_SELL_ONLY"
+    ACTIVE_ABORT = "ACTIVE_ABORT"
+    STALE_ALLOW = "STALE_ALLOW"
+    STALE_SELL_ONLY = "STALE_SELL_ONLY"
+    STALE_ABORT = "STALE_ABORT"
+    NO_FRESH_PERMISSION = "NO_FRESH_PERMISSION"
+
+
 def require_utc(value: datetime) -> datetime:
     if value.tzinfo is None or value.utcoffset() is None:
         raise ValueError("timestamp must be timezone-aware UTC")
@@ -332,8 +342,23 @@ class RiskPermission(ContractModel):
     gate_version: str = Field(min_length=1)
     reasons: list[str] = Field(default_factory=list)
     created_at: datetime
+    as_of_ts: datetime | None = None
+    source_bundle_ts: datetime | None = None
+    expires_at: datetime | None = None
+    telemetry_latest_ts: datetime | None = None
+    permission_freshness_sec: int | None = Field(default=None, ge=0)
+    contract_version: str = "risk_permission.v0.2"
+    permission_status: RiskPermissionStatus | None = None
 
-    @field_validator("created_at")
+    @field_validator(
+        "created_at",
+        "as_of_ts",
+        "source_bundle_ts",
+        "expires_at",
+        "telemetry_latest_ts",
+    )
     @classmethod
-    def created_at_is_utc(cls, value: datetime) -> datetime:
+    def risk_timestamps_are_utc(cls, value: datetime | None) -> datetime | None:
+        if value is None:
+            return None
         return require_utc(value)

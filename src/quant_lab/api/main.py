@@ -29,7 +29,14 @@ from quant_lab.data.lake import read_market_bars, read_parquet_dataset
 from quant_lab.gates.defaults import evaluate_alpha_gate
 from quant_lab.research.bootstrap_gold import BOOTSTRAP_GATE_VERSION
 from quant_lab.risk.permissions import evaluate_live_permission
-from quant_lab.risk.publish import parse_risk_permission_row
+from quant_lab.risk.publish import (
+    DEFAULT_TELEMETRY_STALE_THRESHOLD_SECONDS,
+    annotate_risk_permission,
+    is_permission_status_enforceable,
+    latest_strategy_telemetry_ts,
+    parse_risk_permission_row,
+    risk_permission_stale_vs_telemetry,
+)
 
 
 class HealthResponse(BaseModel):
@@ -281,7 +288,10 @@ def _live_permission_evaluation(
         version=version,
     )
     recomputed = computed["permission"]
-    stale = _risk_permission_is_stale(published) if published is not None else True
+    stale = _risk_permission_is_stale(
+        published,
+        telemetry_latest_ts=latest_strategy_telemetry_ts(lake_root, strategy),
+    ) if published is not None else True
     source = "recomputed"
     permission = recomputed
     if published is not None and not stale and not _is_more_conservative(recomputed, published):
@@ -309,6 +319,7 @@ def _compute_live_permission_with_context(
     data_health = _lake_data_health(lake_root)
     cost_health = _lake_cost_health(lake_root)
     telemetry_reasons = _strategy_telemetry_reasons(lake_root, strategy=strategy)
+    telemetry_latest_ts = latest_strategy_telemetry_ts(lake_root, strategy)
     original_data_health = dict(data_health)
     if telemetry_reasons:
         data_health = {
@@ -343,7 +354,12 @@ def _compute_live_permission_with_context(
             }
         )
         return {
-            "permission": permission,
+            "permission": annotate_risk_permission(
+                permission,
+                telemetry_latest_ts=telemetry_latest_ts,
+                as_of_ts=datetime.now(UTC),
+                threshold_seconds=DEFAULT_TELEMETRY_STALE_THRESHOLD_SECONDS,
+            ),
             "data_health": data_health,
             "cost_health": cost_health,
             "gate_summary": _gate_summary(gate_decisions),
@@ -359,7 +375,12 @@ def _compute_live_permission_with_context(
         data_health=data_health,
     )
     return {
-        "permission": permission,
+        "permission": annotate_risk_permission(
+            permission,
+            telemetry_latest_ts=telemetry_latest_ts,
+            as_of_ts=datetime.now(UTC),
+            threshold_seconds=DEFAULT_TELEMETRY_STALE_THRESHOLD_SECONDS,
+        ),
         "data_health": data_health,
         "cost_health": cost_health,
         "gate_summary": _gate_summary(gate_decisions),
@@ -420,17 +441,35 @@ def _risk_permission_ttl_seconds() -> int:
     return max(ttl, 0)
 
 
-def _risk_permission_is_stale(permission: RiskPermission) -> bool:
+def _risk_permission_is_stale(
+    permission: RiskPermission,
+    *,
+    telemetry_latest_ts: datetime | None,
+) -> bool:
+    if permission.permission_status and not is_permission_status_enforceable(
+        permission.permission_status
+    ):
+        return True
+    if risk_permission_stale_vs_telemetry(
+        as_of_ts=permission.as_of_ts or permission.created_at,
+        telemetry_latest_ts=telemetry_latest_ts or permission.telemetry_latest_ts,
+        threshold_seconds=DEFAULT_TELEMETRY_STALE_THRESHOLD_SECONDS,
+    ):
+        return True
+    if permission.expires_at and permission.expires_at < datetime.now(UTC):
+        return True
     ttl_seconds = _risk_permission_ttl_seconds()
     if ttl_seconds == 0:
         return True
-    return permission.created_at < datetime.now(UTC) - timedelta(seconds=ttl_seconds)
+    reference = permission.as_of_ts or permission.created_at
+    return reference < datetime.now(UTC) - timedelta(seconds=ttl_seconds)
 
 
 def _permission_freshness_seconds(permission: RiskPermission | None) -> int | None:
     if permission is None:
         return None
-    return max(0, int((datetime.now(UTC) - permission.created_at).total_seconds()))
+    reference = permission.as_of_ts or permission.created_at
+    return max(0, int((datetime.now(UTC) - reference).total_seconds()))
 
 
 def _is_more_conservative(candidate: RiskPermission, baseline: RiskPermission) -> bool:
@@ -631,7 +670,8 @@ def _load_published_risk_permission(
         filtered = filtered.filter(pl.col("version") == version)
     if filtered.is_empty():
         return None
-    return parse_risk_permission_row(_latest_row(filtered, "created_at"))
+    sort_column = "as_of_ts" if "as_of_ts" in filtered.columns else "created_at"
+    return parse_risk_permission_row(_latest_row(filtered, sort_column))
 
 
 def _lake_cost_health(lake_root: Path) -> dict[str, Any]:

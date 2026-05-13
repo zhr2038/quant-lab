@@ -298,11 +298,27 @@ def test_export_warns_when_risk_permission_older_than_v5_telemetry(tmp_path):
 
     with zipfile.ZipFile(result.zip_path) as archive:
         data_quality = json.loads(archive.read("data_quality.json").decode("utf-8"))
+        executive_summary = archive.read("executive_summary.md").decode("utf-8")
+        risk_flags = list(
+            csv.DictReader(io.StringIO(archive.read("risk/risk_flags.csv").decode("utf-8")))
+        )
 
-    assert (
-        "risk_permission_fresh_vs_v5_telemetry: risk_permission_stale_vs_v5_telemetry"
-        in data_quality["warnings"]
+    risk_quality = data_quality["risk_permission"]
+    assert risk_quality["permission_status"] == "STALE_ALLOW"
+    assert risk_quality["enforceable"] is False
+    assert risk_quality["telemetry_latest_ts"].startswith("2026-05-12T21:00:00")
+    assert risk_quality["next_action"] == "run qlab publish-risk-permission after sync-v5-telemetry"
+    assert any(
+        warning.startswith(
+            "risk_permission_fresh_vs_v5_telemetry: "
+            "risk_permission_stale_vs_v5_telemetry"
+        )
+        for warning in data_quality["warnings"]
     )
+    assert "Risk permission status: STALE_ALLOW" in executive_summary
+    assert "Latest V5 telemetry ts: 2026-05-12T21:00:00+00:00" in executive_summary
+    assert risk_flags[0]["permission_status"] == "STALE_ALLOW"
+    assert risk_flags[0]["enforceable"].lower() == "false"
 
 
 def test_export_warns_on_risk_version_mismatch_with_v5_telemetry(tmp_path):

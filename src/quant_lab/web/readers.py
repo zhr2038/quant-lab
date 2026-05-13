@@ -50,7 +50,7 @@ DATASET_TIMESTAMP_COLUMNS: dict[str, tuple[str, ...]] = {
     "cost_bucket_daily": ("created_at", "day"),
     "cost_health_daily": ("created_at", "day"),
     "gate_decision": ("created_at",),
-    "risk_permission": ("created_at",),
+    "risk_permission": ("as_of_ts", "created_at"),
     "strategy_health_daily": ("latest_bundle_ts", "date"),
     "v5_execution_quality_daily": ("latest_bundle_ts", "date"),
     "v5_gate_compliance_daily": ("latest_bundle_ts", "date"),
@@ -805,9 +805,14 @@ def strategy_consumer_summary(lake_root: str | Path) -> dict[str, Any]:
 
     latest_by_strategy: dict[str, str] = {}
     if not permissions.is_empty() and {"strategy", "permission"}.issubset(permissions.columns):
-        sort_column = "created_at" if "created_at" in permissions.columns else "strategy"
+        sort_column = "as_of_ts" if "as_of_ts" in permissions.columns else "created_at"
+        if sort_column not in permissions.columns:
+            sort_column = "strategy"
         for row in permissions.sort(sort_column).to_dicts():
-            latest_by_strategy[str(row["strategy"]).lower()] = str(row["permission"])
+            status = row.get("permission_status")
+            latest_by_strategy[str(row["strategy"]).lower()] = str(
+                status or row["permission"]
+            )
 
     return {
         "permissions": latest_by_strategy,

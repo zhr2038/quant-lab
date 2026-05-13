@@ -10,6 +10,7 @@ from quant_lab.contracts.models import GateDecision, GateStatus, RiskPermission
 from quant_lab.costs.calibrate import calibrate_costs_for_day
 from quant_lab.data.lake import read_parquet_dataset, upsert_parquet_dataset
 from quant_lab.risk.permissions import evaluate_live_permission
+from quant_lab.risk.publish import annotate_risk_permission, latest_strategy_telemetry_ts
 
 COST_BUCKET_DAILY_DATASET = Path("gold") / "cost_bucket_daily"
 GATE_DECISION_DATASET = Path("gold") / "gate_decision"
@@ -188,7 +189,11 @@ def _evaluate_bootstrap_permission(root: Path, strategy: str, version: str) -> R
             ]
         )
         permission = permission.model_copy(update={"reasons": reasons})
-    return permission
+    return annotate_risk_permission(
+        permission,
+        telemetry_latest_ts=latest_strategy_telemetry_ts(root, strategy),
+        as_of_ts=datetime.now(UTC),
+    )
 
 
 def _load_gate_decisions(root: Path, strategy: str) -> list[GateDecision]:

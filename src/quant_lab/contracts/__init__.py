@@ -11,6 +11,7 @@ from quant_lab.contracts.models import (
     MarketBar,
     RiskAction,
     RiskPermission,
+    RiskPermissionStatus,
 )
 
 __all__ = [
@@ -24,4 +25,5 @@ __all__ = [
     "MarketBar",
     "RiskAction",
     "RiskPermission",
+    "RiskPermissionStatus",
 ]

@@ -81,6 +81,38 @@ def test_publish_risk_permission_writes_idempotently(tmp_path):
     assert read_parquet_dataset(lake / "gold" / "risk_permission").height == 1
 
 
+def test_publish_risk_permission_marks_active_when_telemetry_within_threshold(tmp_path):
+    lake = tmp_path / "lake"
+    _write_gate(lake, GateStatus.QUARANTINE)
+    _write_fresh_market_bar(lake)
+    _write_actual_cost(lake)
+    telemetry_ts = datetime.now(UTC) - timedelta(minutes=5)
+    _write_strategy_health(lake, telemetry_ts)
+
+    publish_risk_permission(lake, strategy="v5", version="5.0.0")
+
+    permission = read_parquet_dataset(lake / "gold" / "risk_permission").to_dicts()[0]
+    assert permission["permission"] == "SELL_ONLY"
+    assert permission["permission_status"] == "ACTIVE_SELL_ONLY"
+    assert permission["telemetry_latest_ts"].startswith(telemetry_ts.isoformat()[:16])
+    assert permission["contract_version"] == "risk_permission.v0.2"
+
+
+def test_publish_risk_permission_marks_stale_when_telemetry_is_newer_by_48h(tmp_path):
+    lake = tmp_path / "lake"
+    _write_gate(lake, GateStatus.DEAD)
+    _write_fresh_market_bar(lake)
+    _write_actual_cost(lake)
+    _write_strategy_health(lake, datetime.now(UTC) + timedelta(hours=48))
+
+    publish_risk_permission(lake, strategy="v5", version="5.0.0")
+
+    permission = read_parquet_dataset(lake / "gold" / "risk_permission").to_dicts()[0]
+    assert permission["permission"] == "ABORT"
+    assert permission["permission_status"] == "STALE_ABORT"
+    assert permission["permission_freshness_sec"] >= 47 * 60 * 60
+
+
 def _write_gate(lake, status: GateStatus) -> None:
     decision = GateDecision(
         alpha_id="v5.core.momentum",
@@ -154,4 +186,20 @@ def _write_actual_cost(lake) -> None:
             ]
         ),
         lake / "gold" / "cost_bucket_daily",
+    )
+
+
+def _write_strategy_health(lake, latest_bundle_ts: datetime) -> None:
+    write_parquet_dataset(
+        pl.DataFrame(
+            [
+                {
+                    "strategy": "v5",
+                    "date": latest_bundle_ts.date().isoformat(),
+                    "status": "OK",
+                    "latest_bundle_ts": latest_bundle_ts,
+                }
+            ]
+        ),
+        lake / "gold" / "strategy_health_daily",
     )

@@ -18,6 +18,13 @@ import polars as pl
 from pydantic import BaseModel, ConfigDict, Field
 
 from quant_lab import __version__
+from quant_lab.risk.publish import (
+    DEFAULT_TELEMETRY_STALE_THRESHOLD_SECONDS,
+    is_permission_status_enforceable,
+    permission_freshness_sec,
+    permission_status,
+    risk_permission_stale_vs_telemetry,
+)
 from quant_lab.strategy_telemetry.sanitize import SECRET_PATTERNS, safe_json_dumps
 from quant_lab.web import readers
 
@@ -545,7 +552,7 @@ def _dataset_members(frames: dict[str, pl.DataFrame]) -> dict[str, _MemberPayloa
     cost_health = frames.get("cost_health_daily", pl.DataFrame())
     evidence = _alpha_evidence_for_export(frames.get("alpha_evidence", pl.DataFrame()))
     gates = frames.get("gate_decision", pl.DataFrame())
-    risk = frames.get("risk_permission", pl.DataFrame())
+    risk = _risk_permissions_for_export(frames.get("risk_permission", pl.DataFrame()), frames)
     trades = frames.get("trade_print", pl.DataFrame())
     books = frames.get("orderbook_snapshot", pl.DataFrame())
     v5_health = frames.get("strategy_health_daily", pl.DataFrame())
@@ -849,7 +856,10 @@ def _data_quality_payload(
         )
     )
 
-    risk = snapshot.frames.get("risk_permission", pl.DataFrame())
+    risk = _risk_permissions_for_export(
+        snapshot.frames.get("risk_permission", pl.DataFrame()),
+        snapshot.frames,
+    )
     checks.append(
         _check(
             "risk_permission_present",
@@ -866,14 +876,13 @@ def _data_quality_payload(
             warning_only=True,
         )
     )
-    v5_latest_ts = _latest_v5_bundle_ts(snapshot.frames)
-    risk_latest_ts = _latest_dataset_timestamp("risk_permission", risk)
-    risk_is_stale_vs_v5 = bool(v5_latest_ts and risk_latest_ts and risk_latest_ts < v5_latest_ts)
+    risk_quality = _risk_permission_quality(risk, snapshot.frames)
+    risk_is_stale_vs_v5 = str(risk_quality["permission_status"]).startswith("STALE_")
     checks.append(
         _check(
             "risk_permission_fresh_vs_v5_telemetry",
             not risk_is_stale_vs_v5,
-            "risk_permission_stale_vs_v5_telemetry" if risk_is_stale_vs_v5 else "ok",
+            _risk_permission_quality_detail(risk_quality),
             severity="critical",
         )
     )
@@ -933,6 +942,7 @@ def _data_quality_payload(
         "export_date": day.isoformat(),
         "checks": checks,
         "warnings": sorted(set(warnings)),
+        "risk_permission": risk_quality,
     }
 
 
@@ -980,7 +990,10 @@ def _executive_summary(
     gates = snapshot.frames.get("gate_decision", pl.DataFrame())
     risk = snapshot.frames.get("risk_permission", pl.DataFrame())
     gate_counts = _value_counts(gates, "status")
-    permission_counts = _value_counts(risk, "permission")
+    risk_quality = data_quality.get("risk_permission", {})
+    permission_counts = _value_counts(risk, "permission_status")
+    if not permission_counts:
+        permission_counts = _value_counts(risk, "permission")
     fallback_rows = _cost_fallbacks(snapshot.frames.get("cost_bucket_daily", pl.DataFrame()))
     questions = _question_lines(snapshot, data_quality)
 
@@ -992,6 +1005,10 @@ def _executive_summary(
         f"Cost fallback rows: {fallback_rows.height}",
         f"Gate status counts: {safe_json_dumps(gate_counts)}",
         f"Risk permission counts: {safe_json_dumps(permission_counts)}",
+        f"Risk permission status: {risk_quality.get('permission_status', 'UNKNOWN')}",
+        f"Risk permission as_of_ts: {risk_quality.get('as_of_ts')}",
+        f"Latest V5 telemetry ts: {risk_quality.get('telemetry_latest_ts')}",
+        f"Risk permission next action: {risk_quality.get('next_action', 'none')}",
         "",
         "Warnings:",
     ]
@@ -1118,6 +1135,143 @@ def _latest_v5_bundle_ts(frames: dict[str, pl.DataFrame]) -> datetime | None:
     ]
     parsed = [value for value in timestamps if value is not None]
     return max(parsed) if parsed else None
+
+
+def _risk_permission_quality(
+    risk: pl.DataFrame,
+    frames: dict[str, pl.DataFrame],
+) -> dict[str, Any]:
+    telemetry_latest_ts = _latest_v5_bundle_ts(frames)
+    if risk.is_empty():
+        return {
+            "permission_status": "NO_FRESH_PERMISSION",
+            "permission": None,
+            "enforceable": False,
+            "as_of_ts": None,
+            "created_at": None,
+            "source_bundle_ts": None,
+            "telemetry_latest_ts": _iso_or_none(telemetry_latest_ts),
+            "permission_freshness_sec": None,
+            "threshold_seconds": DEFAULT_TELEMETRY_STALE_THRESHOLD_SECONDS,
+            "degraded_reason": "risk_permission_missing",
+            "next_action": "run qlab publish-risk-permission after sync-v5-telemetry",
+        }
+    row = _latest_by_dataset_time("risk_permission", risk)
+    permission = str(row.get("permission") or "ABORT").strip().upper()
+    as_of_ts = _risk_row_timestamp(row, ["as_of_ts", "created_at"])
+    created_at = _risk_row_timestamp(row, ["created_at"])
+    row_telemetry_ts = _risk_row_timestamp(row, ["telemetry_latest_ts", "source_bundle_ts"])
+    effective_telemetry_ts = max(
+        [value for value in [telemetry_latest_ts, row_telemetry_ts] if value is not None],
+        default=None,
+    )
+    stored_status = str(row.get("permission_status") or "").strip().upper()
+    stale = risk_permission_stale_vs_telemetry(
+        as_of_ts=as_of_ts,
+        telemetry_latest_ts=effective_telemetry_ts,
+        threshold_seconds=DEFAULT_TELEMETRY_STALE_THRESHOLD_SECONDS,
+    )
+    status = (
+        stored_status
+        if stored_status.startswith(("ACTIVE_", "STALE_"))
+        and stored_status.endswith(permission)
+        and stored_status.startswith("STALE_") == stale
+        else permission_status(permission, stale=stale).value
+    )
+    freshness = permission_freshness_sec(
+        as_of_ts=as_of_ts,
+        telemetry_latest_ts=effective_telemetry_ts,
+    )
+    enforceable = is_permission_status_enforceable(status)
+    return {
+        "permission_status": status,
+        "permission": permission,
+        "enforceable": enforceable,
+        "as_of_ts": _iso_or_none(as_of_ts),
+        "created_at": _iso_or_none(created_at),
+        "source_bundle_ts": _iso_or_none(row_telemetry_ts),
+        "telemetry_latest_ts": _iso_or_none(effective_telemetry_ts),
+        "permission_freshness_sec": freshness,
+        "threshold_seconds": DEFAULT_TELEMETRY_STALE_THRESHOLD_SECONDS,
+        "degraded_reason": "stale_vs_v5_telemetry" if stale else "none",
+        "next_action": (
+            "run qlab publish-risk-permission after sync-v5-telemetry"
+            if stale
+            else "none"
+        ),
+    }
+
+
+def _risk_permissions_for_export(
+    risk: pl.DataFrame,
+    frames: dict[str, pl.DataFrame],
+) -> pl.DataFrame:
+    if risk.is_empty():
+        return risk
+    telemetry_latest_ts = _latest_v5_bundle_ts(frames)
+    rows: list[dict[str, Any]] = []
+    for row in risk.to_dicts():
+        permission = str(row.get("permission") or "ABORT").strip().upper()
+        as_of_ts = _risk_row_timestamp(row, ["as_of_ts", "created_at"])
+        row_telemetry_ts = _risk_row_timestamp(row, ["telemetry_latest_ts", "source_bundle_ts"])
+        effective_telemetry_ts = max(
+            [value for value in [telemetry_latest_ts, row_telemetry_ts] if value is not None],
+            default=None,
+        )
+        stale = risk_permission_stale_vs_telemetry(
+            as_of_ts=as_of_ts,
+            telemetry_latest_ts=effective_telemetry_ts,
+            threshold_seconds=DEFAULT_TELEMETRY_STALE_THRESHOLD_SECONDS,
+        )
+        status = permission_status(permission, stale=stale).value
+        rows.append(
+            row
+            | {
+                "as_of_ts": _iso_or_none(as_of_ts),
+                "telemetry_latest_ts": _iso_or_none(effective_telemetry_ts),
+                "permission_freshness_sec": permission_freshness_sec(
+                    as_of_ts=as_of_ts,
+                    telemetry_latest_ts=effective_telemetry_ts,
+                ),
+                "contract_version": row.get("contract_version") or "risk_permission.v0.2",
+                "permission_status": status,
+            }
+        )
+    return pl.DataFrame(rows) if rows else risk
+
+
+def _risk_permission_quality_detail(risk_quality: dict[str, Any]) -> str:
+    status = risk_quality.get("permission_status")
+    if status == "NO_FRESH_PERMISSION":
+        return (
+            "NO_FRESH_PERMISSION; latest_v5_telemetry="
+            f"{risk_quality.get('telemetry_latest_ts')}; next_action="
+            f"{risk_quality.get('next_action')}"
+        )
+    if str(status).startswith("STALE_"):
+        return (
+            f"risk_permission_stale_vs_v5_telemetry; permission_status={status}; "
+            f"as_of_ts={risk_quality.get('as_of_ts')}; "
+            f"telemetry_latest_ts={risk_quality.get('telemetry_latest_ts')}; "
+            f"permission_freshness_sec={risk_quality.get('permission_freshness_sec')}; "
+            f"next_action={risk_quality.get('next_action')}"
+        )
+    return (
+        f"ok; permission_status={status}; as_of_ts={risk_quality.get('as_of_ts')}; "
+        f"telemetry_latest_ts={risk_quality.get('telemetry_latest_ts')}"
+    )
+
+
+def _risk_row_timestamp(row: dict[str, Any], fields: list[str]) -> datetime | None:
+    for field in fields:
+        value = readers._coerce_timestamp(row.get(field))  # type: ignore[attr-defined]
+        if value is not None:
+            return value
+    return None
+
+
+def _iso_or_none(value: datetime | None) -> str | None:
+    return value.isoformat() if value is not None else None
 
 
 def _latest_dataset_timestamp(dataset_name: str, frame: pl.DataFrame) -> datetime | None:
@@ -1357,8 +1511,46 @@ def _cost_fallbacks(costs: pl.DataFrame) -> pl.DataFrame:
 
 def _risk_flags(risk: pl.DataFrame) -> pl.DataFrame:
     if risk.is_empty() or "permission" not in risk.columns:
-        return pl.DataFrame(schema={"strategy": pl.Utf8, "permission": pl.Utf8, "reason": pl.Utf8})
-    return risk.filter(pl.col("permission").is_in(["SELL_ONLY", "ABORT"]))
+        return pl.DataFrame(
+            schema={
+                "strategy": pl.Utf8,
+                "permission": pl.Utf8,
+                "permission_status": pl.Utf8,
+                "enforceable": pl.Boolean,
+                "reason": pl.Utf8,
+            }
+        )
+    rows: list[dict[str, Any]] = []
+    for row in risk.to_dicts():
+        status = str(row.get("permission_status") or "").strip()
+        permission = str(row.get("permission") or "").strip()
+        if not status:
+            status = permission_status(permission, stale=False).value
+        stale = status.startswith("STALE_")
+        risk_limited = permission in {"SELL_ONLY", "ABORT"}
+        if stale or risk_limited:
+            rows.append(
+                {
+                    "strategy": row.get("strategy"),
+                    "permission": permission,
+                    "permission_status": status,
+                    "enforceable": is_permission_status_enforceable(status),
+                    "reason": "stale_permission" if stale else "risk_limited_permission",
+                }
+            )
+    return (
+        pl.DataFrame(rows)
+        if rows
+        else pl.DataFrame(
+            schema={
+                "strategy": pl.Utf8,
+                "permission": pl.Utf8,
+                "permission_status": pl.Utf8,
+                "enforceable": pl.Boolean,
+                "reason": pl.Utf8,
+            }
+        )
+    )
 
 
 def _anomaly_rows(frames: dict[str, pl.DataFrame]) -> pl.DataFrame:

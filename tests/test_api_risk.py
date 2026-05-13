@@ -232,6 +232,55 @@ def test_live_permission_detail_overrides_fresh_allow_when_recomputed_is_more_co
     assert detail["permission"]["permission"] == "ABORT"
 
 
+def test_live_permission_detail_recomputes_permission_stale_vs_v5_telemetry(
+    tmp_path,
+    monkeypatch,
+):
+    lake = tmp_path / "lake"
+    monkeypatch.setenv("QUANT_LAB_LAKE_ROOT", str(lake))
+    monkeypatch.setenv("QUANT_LAB_RISK_PERMISSION_TTL_SECONDS", "999999")
+    _write_gate(lake, GateStatus.DEAD)
+    _write_cost_bucket(lake)
+    _write_fresh_market_bar(lake)
+    as_of_ts = datetime.now(UTC) - timedelta(hours=48)
+    telemetry_ts = datetime.now(UTC)
+    _write_strategy_health(lake, telemetry_ts)
+    write_parquet_dataset(
+        pl.DataFrame(
+            [
+                {
+                    "strategy": "v5",
+                    "version": "5.0.0",
+                    "permission": "ABORT",
+                    "allowed_modes": "[]",
+                    "max_gross_exposure": 0.0,
+                    "max_single_weight": 0.0,
+                    "cost_model_version": "costs-test",
+                    "gate_version": "default-v0.1",
+                    "reasons": '["old_abort"]',
+                    "created_at": as_of_ts.isoformat(),
+                    "as_of_ts": as_of_ts.isoformat(),
+                    "permission_status": "STALE_ABORT",
+                    "source": "test",
+                    "fallback_level": "NONE",
+                }
+            ]
+        ),
+        lake / "gold/risk_permission",
+    )
+
+    detail = TestClient(app).get(
+        "/v1/risk/live-permission-detail",
+        params={"strategy": "v5", "version": "5.0.0"},
+    ).json()
+
+    assert detail["published_permission_stale"] is True
+    assert detail["permission_source"] == "recomputed"
+    assert detail["permission"]["permission"] == "ABORT"
+    assert detail["permission"]["permission_status"] == "ACTIVE_ABORT"
+    assert detail["permission"]["as_of_ts"] > as_of_ts.isoformat()
+
+
 def _get_permission(strategy: str) -> dict:
     response = TestClient(app).get(
         "/v1/risk/live-permission",
@@ -319,4 +368,20 @@ def _write_market_bar(lake, ts: datetime) -> None:
                 "ingest_ts": datetime.now(UTC),
             }
         ],
+    )
+
+
+def _write_strategy_health(lake, latest_bundle_ts: datetime) -> None:
+    write_parquet_dataset(
+        pl.DataFrame(
+            [
+                {
+                    "strategy": "v5",
+                    "date": latest_bundle_ts.date().isoformat(),
+                    "status": "OK",
+                    "latest_bundle_ts": latest_bundle_ts,
+                }
+            ]
+        ),
+        lake / "gold/strategy_health_daily",
     )

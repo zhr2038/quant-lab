@@ -1,3 +1,5 @@
+import csv
+import io
 import json
 import zipfile
 from datetime import UTC, datetime, timedelta
@@ -247,6 +249,191 @@ def test_expert_questions_include_proxy_feature_usage_and_config_gaps(tmp_path):
     assert "V5 是否已接入 quant-lab API？当前 v5_quant_lab_usage 为空。" in questions
     assert "config_not_consumed_count 是否真实为 2" in questions
     assert "alpha_threshold" in questions
+
+
+def test_export_alpha_evidence_missing_status_is_unknown(tmp_path):
+    lake_root = _fixture_lake(tmp_path)
+
+    result = export_daily_pack(
+        export_date="2026-05-11",
+        lake_root=lake_root,
+        out_dir=tmp_path / "exports",
+        profile="expert",
+        command_line=["qlab", "export-daily"],
+    )
+
+    with zipfile.ZipFile(result.zip_path) as archive:
+        rows = list(
+            csv.DictReader(
+                io.StringIO(archive.read("research/alpha_evidence.csv").decode("utf-8"))
+            )
+        )
+
+    assert rows[0]["evidence_status"] == "unknown"
+
+
+def test_export_warns_when_risk_permission_older_than_v5_telemetry(tmp_path):
+    lake_root = _fixture_lake(tmp_path)
+    write_parquet_dataset(
+        pl.DataFrame(
+            [
+                {
+                    "strategy": "v5",
+                    "date": "2026-05-12",
+                    "status": "OK",
+                    "latest_bundle_ts": datetime(2026, 5, 12, 21, tzinfo=UTC),
+                }
+            ]
+        ),
+        lake_root / "gold" / "strategy_health_daily",
+    )
+
+    result = export_daily_pack(
+        export_date="2026-05-12",
+        lake_root=lake_root,
+        out_dir=tmp_path / "exports",
+        profile="expert",
+        command_line=["qlab", "export-daily"],
+    )
+
+    with zipfile.ZipFile(result.zip_path) as archive:
+        data_quality = json.loads(archive.read("data_quality.json").decode("utf-8"))
+
+    assert (
+        "risk_permission_fresh_vs_v5_telemetry: risk_permission_stale_vs_v5_telemetry"
+        in data_quality["warnings"]
+    )
+
+
+def test_export_warns_on_risk_version_mismatch_with_v5_telemetry(tmp_path):
+    lake_root = _fixture_lake(tmp_path)
+    write_parquet_dataset(
+        pl.DataFrame(
+            [
+                {
+                    "strategy": "v5",
+                    "bundle_sha256": "abc",
+                    "bundle_name": "bundle.tar.gz",
+                    "source_path_inside_bundle": "raw/reports/quant_lab_usage.jsonl",
+                    "row_index": 0,
+                    "strategy_version": "5.0.0",
+                    "raw_payload_json": '{"strategy_version":"5.0.0"}',
+                    "ingest_ts": datetime.now(UTC),
+                    "bundle_ts": datetime.now(UTC),
+                }
+            ]
+        ),
+        lake_root / "silver" / "v5_quant_lab_usage",
+    )
+
+    result = export_daily_pack(
+        export_date="2026-05-12",
+        lake_root=lake_root,
+        out_dir=tmp_path / "exports",
+        profile="expert",
+        command_line=["qlab", "export-daily"],
+    )
+
+    with zipfile.ZipFile(result.zip_path) as archive:
+        data_quality = json.loads(archive.read("data_quality.json").decode("utf-8"))
+
+    assert any(
+        "risk_permission_version_matches_v5" in warning
+        for warning in data_quality["warnings"]
+    )
+
+
+def test_export_warns_public_proxy_cost_without_private_actuals(tmp_path):
+    lake_root = _fixture_lake(tmp_path)
+    write_parquet_dataset(
+        pl.DataFrame(
+            [
+                {
+                    "day": "2026-05-12",
+                    "symbol": "BTC-USDT",
+                    "regime": "normal",
+                    "notional_bucket": "all",
+                    "sample_count": 0,
+                    "source": "public_spread_proxy",
+                    "fallback_level": "PUBLIC_SPREAD_PROXY",
+                    "created_at": datetime.now(UTC),
+                }
+            ]
+        ),
+        lake_root / "gold" / "cost_bucket_daily",
+    )
+
+    result = export_daily_pack(
+        export_date="2026-05-12",
+        lake_root=lake_root,
+        out_dir=tmp_path / "exports",
+        profile="expert",
+        command_line=["qlab", "export-daily"],
+    )
+
+    with zipfile.ZipFile(result.zip_path) as archive:
+        data_quality = json.loads(archive.read("data_quality.json").decode("utf-8"))
+
+    assert (
+        "okx_private_actual_cost_available: actual cost unavailable; "
+        "cost model is public_spread_proxy only"
+    ) in data_quality["warnings"]
+
+
+def test_export_market_tables_keep_symbol_universe_visible(tmp_path):
+    lake_root = _fixture_lake(tmp_path)
+    now = datetime.now(UTC)
+    write_parquet_dataset(
+        pl.DataFrame(
+            [
+                {"symbol": "SOL-USDT", "ts": now, "size": 1.0},
+                {"symbol": "BTC-USDT", "ts": now, "size": 2.0},
+            ]
+        ),
+        lake_root / "silver" / "trade_print",
+    )
+    write_parquet_dataset(
+        pl.DataFrame(
+            [
+                {
+                    "symbol": "SOL-USDT",
+                    "channel": "books5",
+                    "ts": now,
+                    "asks_json": '[[101, "1"]]',
+                    "bids_json": '[[100, "1"]]',
+                },
+                {
+                    "symbol": "BTC-USDT",
+                    "channel": "books5",
+                    "ts": now,
+                    "asks_json": '[[201, "1"]]',
+                    "bids_json": '[[200, "1"]]',
+                },
+            ]
+        ),
+        lake_root / "silver" / "orderbook_snapshot",
+    )
+
+    result = export_daily_pack(
+        export_date="2026-05-12",
+        lake_root=lake_root,
+        out_dir=tmp_path / "exports",
+        profile="expert",
+        command_line=["qlab", "export-daily"],
+    )
+
+    with zipfile.ZipFile(result.zip_path) as archive:
+        trade_rows = list(
+            csv.DictReader(io.StringIO(archive.read("market/trade_activity.csv").decode("utf-8")))
+        )
+        spread_rows = list(
+            csv.DictReader(io.StringIO(archive.read("market/orderbook_spread.csv").decode("utf-8")))
+        )
+        data_quality = json.loads(archive.read("data_quality.json").decode("utf-8"))
+
+    assert {row["symbol"] for row in trade_rows} >= {"BTC-USDT", "SOL-USDT"}
+    assert {row["symbol"] for row in spread_rows} >= {"BTC-USDT", "SOL-USDT"}
+    assert "okx_ws_universe_complete: okx_ws_universe_incomplete" in data_quality["warnings"]
 
 
 def test_validate_expert_pack_rejects_possible_secret(tmp_path):

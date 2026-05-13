@@ -51,7 +51,7 @@ def make_v5_bundle_fixture(
         ),
         "summaries/quant_lab_cost_usage.csv": "symbol,cost_source,count\nBTC-USDT,quant_lab,3\n",
         "summaries/quant_lab_fallbacks.csv": (
-            "fallback_reason,count\nquant_lab_unavailable_local_fallback,0\n"
+            "fallback_reason,count\nquant_lab_unavailable_local_fallback,1\n"
         ),
         "summaries/router_decisions.csv": "reason,count\nrisk_gate,2\n",
         "summaries/trades_roundtrips.csv": "symbol,pnl\nBTC-USDT,1.2\n",

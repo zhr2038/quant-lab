@@ -165,6 +165,7 @@ class V5TelemetryAnalysisResult(TelemetryModel):
     router_reason_top: list[dict[str, Any]] = Field(default_factory=list)
     quant_lab_mode: str | None = None
     permission_gate_enforced: bool | None = None
+    cost_gate_enforced: bool | None = None
     quant_lab_usage_count: int = 0
     quant_lab_cost_usage_count: int = 0
     quant_lab_fallback_count: int = 0

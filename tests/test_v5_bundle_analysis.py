@@ -264,6 +264,40 @@ def test_quant_lab_reduce_only_buy_is_not_risk_increasing_violation(tmp_path):
     assert result.quant_lab_hypothetical_violation_count == 0
 
 
+def test_quant_lab_mode_can_parse_decision_audit_nested_quant_lab(tmp_path):
+    lake = tmp_path / "lake"
+    _write_manifest(lake)
+    write_parquet_dataset(
+        pl.DataFrame(
+            [
+                {
+                    **_event_row("decision_audit"),
+                    "source_path_inside_bundle": "raw/recent_runs/run_001/decision_audit.json",
+                    "raw_payload_json": __import__("json").dumps(
+                        {
+                            "quant_lab": {
+                                "mode": "permission_only",
+                                "apply_permission_gate": True,
+                                "apply_cost_gate": False,
+                                "strategy_version": "5.0.0",
+                            }
+                        }
+                    ),
+                }
+            ]
+        ),
+        lake / "silver/v5_decision_audit",
+    )
+
+    result = analyze_v5_telemetry(lake, date="2026-05-10")
+    mode = read_parquet_dataset(lake / "gold/v5_quant_lab_mode_daily")
+
+    assert result.quant_lab_mode == "permission_only"
+    assert result.permission_gate_enforced is True
+    assert result.cost_gate_enforced is False
+    assert mode["mode"][0] == "permission_only"
+
+
 def _write_manifest(lake, bundle_ts=datetime(2026, 5, 10, 14, 2, 49, tzinfo=UTC)):
     write_parquet_dataset(
         pl.DataFrame(

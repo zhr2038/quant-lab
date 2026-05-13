@@ -125,6 +125,7 @@ def analyze_v5_telemetry(lake_root: Path, date: str | None = None) -> V5Telemetr
         quant_lab_compliance,
         quant_lab_cost_usage,
         quant_lab_fallback,
+        decisions,
         trades,
     )
     gate_violations = (
@@ -219,6 +220,7 @@ def analyze_v5_telemetry(lake_root: Path, date: str | None = None) -> V5Telemetr
         router_reason_top=router_reason_top,
         quant_lab_mode=quant_lab_summary["mode"],
         permission_gate_enforced=quant_lab_summary["permission_gate_enforced"],
+        cost_gate_enforced=quant_lab_summary["cost_gate_enforced"],
         quant_lab_usage_count=int(quant_lab_summary["usage_count"]),
         quant_lab_cost_usage_count=int(quant_lab_summary["cost_usage_count"]),
         quant_lab_fallback_count=int(quant_lab_summary["fallback_count"]),
@@ -281,6 +283,7 @@ def _write_gold(
                 "date": result.date,
                 "mode": quant_lab_summary["mode"],
                 "permission_gate_enforced": quant_lab_summary["permission_gate_enforced"],
+                "cost_gate_enforced": quant_lab_summary["cost_gate_enforced"],
                 "usage_count": quant_lab_summary["usage_count"],
                 "cost_usage_count": quant_lab_summary["cost_usage_count"],
                 "fallback_count": quant_lab_summary["fallback_count"],
@@ -295,6 +298,7 @@ def _write_gold(
                 "date": result.date,
                 "mode": quant_lab_summary["mode"],
                 "permission_gate_enforced": quant_lab_summary["permission_gate_enforced"],
+                "cost_gate_enforced": quant_lab_summary["cost_gate_enforced"],
                 "actual_violation_count": len(quant_lab_summary["actual_violations"]),
                 "hypothetical_violation_count": len(
                     quant_lab_summary["hypothetical_violations"]
@@ -527,10 +531,21 @@ def _first_text(
     for field in fields:
         value = row.get(field)
         if value is None:
-            value = payload.get(field)
+            value = _nested_value(payload, field)
         if value is not None and str(value).strip():
             return str(value).strip()
     return None
+
+
+def _nested_value(payload: dict[str, Any], field: str) -> Any:
+    value: Any = payload
+    for part in field.split("."):
+        if not isinstance(value, dict):
+            return None
+        value = value.get(part)
+        if value is None:
+            return None
+    return value
 
 
 def _row_indicates_not_consumed(row: dict[str, Any], payload: dict[str, Any]) -> bool:
@@ -562,13 +577,23 @@ def _quant_lab_mode_summary(
     compliance: pl.DataFrame,
     cost_usage: pl.DataFrame,
     fallback: pl.DataFrame,
+    decisions: pl.DataFrame,
     trades: pl.DataFrame,
 ) -> dict[str, Any]:
     has_data = any(
         not frame.is_empty() for frame in [usage, compliance, cost_usage, fallback]
     )
-    mode = _latest_mode(usage, compliance)
-    enforced = _permission_gate_enforced(usage, compliance, mode)
+    mode = _latest_mode(usage, compliance, decisions)
+    enforced = _gate_enforced(
+        [usage, compliance, decisions],
+        mode,
+        ["permission_gate_enforced", "apply_permission_gate"],
+    )
+    cost_enforced = _gate_enforced(
+        [usage, compliance, decisions, cost_usage],
+        mode,
+        ["cost_gate_enforced", "apply_cost_gate"],
+    )
     actual: list[str] = []
     hypothetical: list[str] = []
     if not compliance.is_empty():
@@ -616,6 +641,7 @@ def _quant_lab_mode_summary(
         "has_data": has_data,
         "mode": mode or "unknown",
         "permission_gate_enforced": enforced,
+        "cost_gate_enforced": cost_enforced,
         "usage_count": usage.height,
         "cost_usage_count": cost_usage.height,
         "fallback_count": fallback.height,
@@ -631,32 +657,54 @@ def _latest_mode(*frames: pl.DataFrame) -> str | None:
             continue
         for row in reversed(frame.to_dicts()):
             payload = _payload(row)
-            value = _first_text(row, payload, ["mode", "quant_lab_mode"])
+            value = _first_text(
+                row,
+                payload,
+                ["mode", "quant_lab_mode", "quant_lab.mode", "quant_lab.quant_lab_mode"],
+            )
             normalized = str(value or "").strip().lower()
             if normalized in allowed:
                 return normalized
     return None
 
 
-def _permission_gate_enforced(
-    usage: pl.DataFrame,
-    compliance: pl.DataFrame,
+def _gate_enforced(
+    frames: list[pl.DataFrame],
     mode: str | None,
+    field_names: list[str],
 ) -> bool:
-    if mode in {"shadow", "cost_only", "local_only"}:
+    is_cost_gate = "cost_gate_enforced" in field_names or "apply_cost_gate" in field_names
+    if mode in {"shadow", "local_only"} or (mode == "cost_only" and not is_cost_gate):
         return False
-    for frame in [compliance, usage]:
+    expanded_fields = [
+        field
+        for name in field_names
+        for field in [name, f"quant_lab.{name}"]
+    ]
+    for frame in frames:
         if frame.is_empty():
             continue
         for row in reversed(frame.to_dicts()):
             payload = _payload(row)
-            value = row.get("permission_gate_enforced", payload.get("permission_gate_enforced"))
-            if value is None:
-                value = row.get("enforced", payload.get("enforced"))
+            value = _first_value(row, payload, expanded_fields)
+            if value is None and "permission" in field_names[0]:
+                value = _first_value(row, payload, ["enforced", "quant_lab.enforced"])
             parsed = _parse_bool(value)
             if parsed is not None:
                 return parsed
+    if is_cost_gate:
+        return mode in {"enforce", "cost_only"}
     return mode in {"enforce", "permission_only"}
+
+
+def _first_value(row: dict[str, Any], payload: dict[str, Any], fields: list[str]) -> Any:
+    for field in fields:
+        value = row.get(field)
+        if value is None:
+            value = _nested_value(payload, field)
+        if value is not None and str(value).strip():
+            return value
+    return None
 
 
 def _mode_allows_actual_permission_check(mode: str | None) -> bool:
@@ -669,8 +717,9 @@ def _first_bool(row: dict[str, Any], payload: dict[str, Any], fields: list[str])
             parsed = _parse_bool(row.get(field))
             if parsed is not None:
                 return parsed
-        if field in payload:
-            parsed = _parse_bool(payload.get(field))
+        value = _nested_value(payload, field)
+        if value is not None:
+            parsed = _parse_bool(value)
             if parsed is not None:
                 return parsed
     return None

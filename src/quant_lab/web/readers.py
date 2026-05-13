@@ -1043,7 +1043,22 @@ def orderbook_spread_table(books: pl.DataFrame) -> pl.DataFrame:
                 "spread_bps": ((ask - bid) / mid) * 10_000,
             }
         )
-    return pl.DataFrame(rows)
+    if not rows:
+        return pl.DataFrame()
+    spread = pl.DataFrame(rows)
+    if "ts" not in spread.columns:
+        return spread.sort("symbol") if "symbol" in spread.columns else spread
+    return (
+        spread.with_columns(
+            pl.col("ts")
+            .map_elements(_coerce_timestamp, return_dtype=pl.Datetime(time_zone="UTC"))
+            .alias("ts")
+        )
+        .sort("ts")
+        .group_by(["symbol", "channel"], maintain_order=True)
+        .tail(1)
+        .sort(["symbol", "channel"])
+    )
 
 
 def trade_activity_table(trades: pl.DataFrame) -> pl.DataFrame:

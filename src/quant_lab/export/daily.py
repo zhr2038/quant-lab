@@ -26,7 +26,12 @@ SECTIONS = ["market", "features", "costs", "research", "risk", "anomalies", "v5"
 SECTION_DATASETS = {
     "market": ["market_bar", "trade_print", "orderbook_snapshot", "okx_public_ws"],
     "features": ["feature_value", "feature_coverage_daily", "feature_anomaly_daily"],
-    "costs": ["cost_bucket_daily", "cost_health_daily"],
+    "costs": [
+        "cost_bucket_daily",
+        "cost_health_daily",
+        "okx_private_readonly_fills",
+        "okx_private_readonly_bills",
+    ],
     "research": ["alpha_evidence", "gate_decision"],
     "risk": ["risk_permission"],
     "anomalies": ["market_bar", "feature_value", "cost_bucket_daily", "gate_decision"],
@@ -259,6 +264,7 @@ CSV_SCHEMAS: dict[str, list[str]] = {
         "date",
         "mode",
         "permission_gate_enforced",
+        "cost_gate_enforced",
         "usage_count",
         "cost_usage_count",
         "fallback_count",
@@ -271,6 +277,7 @@ CSV_SCHEMAS: dict[str, list[str]] = {
         "date",
         "mode",
         "permission_gate_enforced",
+        "cost_gate_enforced",
         "actual_violation_count",
         "hypothetical_violation_count",
         "actual_violations_json",
@@ -516,7 +523,7 @@ def _dataset_members(frames: dict[str, pl.DataFrame]) -> dict[str, _MemberPayloa
     feature_anomalies = frames.get("feature_anomaly_daily", pl.DataFrame())
     costs = frames.get("cost_bucket_daily", pl.DataFrame())
     cost_health = frames.get("cost_health_daily", pl.DataFrame())
-    evidence = frames.get("alpha_evidence", pl.DataFrame())
+    evidence = _alpha_evidence_for_export(frames.get("alpha_evidence", pl.DataFrame()))
     gates = frames.get("gate_decision", pl.DataFrame())
     risk = frames.get("risk_permission", pl.DataFrame())
     trades = frames.get("trade_print", pl.DataFrame())
@@ -839,6 +846,51 @@ def _data_quality_payload(
             warning_only=True,
         )
     )
+    v5_latest_ts = _latest_v5_bundle_ts(snapshot.frames)
+    risk_latest_ts = _latest_dataset_timestamp("risk_permission", risk)
+    risk_is_stale_vs_v5 = bool(v5_latest_ts and risk_latest_ts and risk_latest_ts < v5_latest_ts)
+    checks.append(
+        _check(
+            "risk_permission_fresh_vs_v5_telemetry",
+            not risk_is_stale_vs_v5,
+            "risk_permission_stale_vs_v5_telemetry" if risk_is_stale_vs_v5 else "ok",
+            severity="critical",
+        )
+    )
+    v5_versions = _v5_strategy_versions(snapshot.frames)
+    risk_versions = _frame_values(risk, "version")
+    version_mismatch = bool(
+        v5_versions and risk_versions and not v5_versions.intersection(risk_versions)
+    )
+    checks.append(
+        _check(
+            "risk_permission_version_matches_v5",
+            not version_mismatch,
+            f"risk_versions={sorted(risk_versions)}; v5_versions={sorted(v5_versions)}"
+            if version_mismatch
+            else "ok",
+            warning_only=True,
+        )
+    )
+    fills = snapshot.frames.get("okx_private_readonly_fills", pl.DataFrame())
+    bills = snapshot.frames.get("okx_private_readonly_bills", pl.DataFrame())
+    proxy_only = _all_cost_rows_public_proxy(costs)
+    checks.append(
+        _check(
+            "okx_private_actual_cost_available",
+            not (proxy_only and fills.height < 5 and bills.height < 5),
+            "actual cost unavailable; cost model is public_spread_proxy only",
+            warning_only=True,
+        )
+    )
+    checks.append(
+        _check(
+            "okx_ws_universe_complete",
+            _okx_ws_universe_complete(snapshot.frames),
+            "okx_ws_universe_incomplete",
+            warning_only=True,
+        )
+    )
 
     stale = _stale_rows(snapshot.frames)
     checks.append(
@@ -967,6 +1019,11 @@ def _question_lines(snapshot: _DatasetSnapshot, data_quality: dict[str, Any]) ->
         questions.append("V5 telemetry 是否同步成功？")
     if snapshot.row_counts.get("v5_quant_lab_usage", 0) == 0:
         questions.append("V5 是否已接入 quant-lab API？当前 v5_quant_lab_usage 为空。")
+    if _latest_v5_mode(snapshot.frames) == "unknown":
+        questions.append(
+            "V5 bundle is missing quant_lab mode fields; add mode and "
+            "permission_gate_enforced to usage/compliance exports."
+        )
     config_question = _config_not_consumed_question(
         snapshot.frames.get("v5_config_health_daily", pl.DataFrame())
     )
@@ -997,6 +1054,143 @@ def _cost_model_is_proxy_or_fallback(costs: pl.DataFrame) -> bool:
         if "public_spread_proxy" in rendered or "global_default" in rendered:
             return True
     return _cost_fallbacks(costs).height == costs.height
+
+
+def _all_cost_rows_public_proxy(costs: pl.DataFrame) -> bool:
+    if costs.is_empty() or "source" not in costs.columns:
+        return False
+    return costs.filter(pl.col("source") == "public_spread_proxy").height == costs.height
+
+
+def _alpha_evidence_for_export(evidence: pl.DataFrame) -> pl.DataFrame:
+    if evidence.is_empty() and not evidence.columns:
+        return evidence
+    normalized = evidence
+    if "evidence_status" not in normalized.columns:
+        normalized = normalized.with_columns(pl.lit("unknown").alias("evidence_status"))
+    else:
+        normalized = normalized.with_columns(
+            pl.when(pl.col("evidence_status").is_null() | (pl.col("evidence_status") == ""))
+            .then(pl.lit("unknown"))
+            .otherwise(pl.col("evidence_status").cast(pl.Utf8))
+            .alias("evidence_status")
+        )
+    return normalized
+
+
+def _latest_v5_mode(frames: dict[str, pl.DataFrame]) -> str | None:
+    mode = frames.get("v5_quant_lab_mode_daily", pl.DataFrame())
+    if mode.is_empty() or "mode" not in mode.columns:
+        return None
+    row = _latest_by_dataset_time("v5_quant_lab_mode_daily", mode)
+    return str(row.get("mode") or "").strip().lower() or None
+
+
+def _latest_v5_bundle_ts(frames: dict[str, pl.DataFrame]) -> datetime | None:
+    timestamps = [
+        _latest_dataset_timestamp(name, frames.get(name, pl.DataFrame()))
+        for name in [
+            "strategy_health_daily",
+            "v5_quant_lab_mode_daily",
+            "v5_quant_lab_enforcement_daily",
+            "v5_gate_compliance_daily",
+        ]
+    ]
+    parsed = [value for value in timestamps if value is not None]
+    return max(parsed) if parsed else None
+
+
+def _latest_dataset_timestamp(dataset_name: str, frame: pl.DataFrame) -> datetime | None:
+    latest, _column = readers.latest_dataset_timestamp(dataset_name, frame)
+    return latest
+
+
+def _latest_by_dataset_time(dataset_name: str, frame: pl.DataFrame) -> dict[str, Any]:
+    latest, column = readers.latest_dataset_timestamp(dataset_name, frame)
+    if latest is not None and column in frame.columns:
+        parsed = frame.with_columns(
+            pl.col(column).map_elements(
+                readers._coerce_timestamp,  # type: ignore[attr-defined]
+                return_dtype=pl.Datetime(time_zone="UTC"),
+            )
+        )
+        return parsed.sort(column).tail(1).to_dicts()[0]
+    return frame.tail(1).to_dicts()[0]
+
+
+def _frame_values(frame: pl.DataFrame, column: str) -> set[str]:
+    if frame.is_empty() or column not in frame.columns:
+        return set()
+    return {
+        str(value).strip()
+        for value in frame[column].drop_nulls().to_list()
+        if str(value).strip()
+    }
+
+
+def _v5_strategy_versions(frames: dict[str, pl.DataFrame]) -> set[str]:
+    versions: set[str] = set()
+    for name in [
+        "v5_quant_lab_usage",
+        "v5_quant_lab_compliance",
+        "v5_quant_lab_cost_usage",
+        "v5_quant_lab_fallback",
+    ]:
+        frame = frames.get(name, pl.DataFrame())
+        if frame.is_empty():
+            continue
+        for row in frame.to_dicts():
+            payload = _json_payload(row.get("raw_payload_json"))
+            for field in [
+                "strategy_version",
+                "version",
+                "v5_version",
+                "quant_lab.strategy_version",
+            ]:
+                value = _row_or_payload_value(row, payload, field)
+                if value is not None and str(value).strip():
+                    versions.add(str(value).strip())
+    return versions
+
+
+def _json_payload(value: Any) -> dict[str, Any]:
+    if not isinstance(value, str) or not value.strip():
+        return {}
+    try:
+        payload = json.loads(value)
+    except json.JSONDecodeError:
+        return {}
+    return payload if isinstance(payload, dict) else {}
+
+
+def _row_or_payload_value(row: dict[str, Any], payload: dict[str, Any], field: str) -> Any:
+    value = row.get(field)
+    if value is not None and str(value).strip():
+        return value
+    nested: Any = payload
+    for part in field.split("."):
+        if not isinstance(nested, dict):
+            return None
+        nested = nested.get(part)
+    return nested
+
+
+def _okx_ws_universe_complete(frames: dict[str, pl.DataFrame]) -> bool:
+    expected = {"BTC-USDT", "ETH-USDT", "SOL-USDT", "BNB-USDT"}
+    observed = _symbols(frames.get("trade_print", pl.DataFrame())) | _symbols(
+        frames.get("orderbook_snapshot", pl.DataFrame())
+    )
+    return expected.issubset(observed)
+
+
+def _symbols(frame: pl.DataFrame) -> set[str]:
+    if frame.is_empty() or "symbol" not in frame.columns:
+        return set()
+    return {
+        str(value).strip()
+        for value in frame["symbol"].drop_nulls().to_list()
+        if str(value).strip()
+    }
 
 
 def _config_not_consumed_question(config_health: pl.DataFrame) -> str | None:

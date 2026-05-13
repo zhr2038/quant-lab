@@ -62,6 +62,24 @@ def test_missing_cost_health_is_sell_only():
     assert permission.reasons == ["cost_health_missing"]
 
 
+def test_public_spread_proxy_only_cost_is_sell_only_not_live_allow():
+    permission = evaluate_live_permission(
+        strategy="v5",
+        version="v1",
+        gate_decisions=[gate(GateStatus.LIVE_READY)],
+        cost_health={
+            "status": "warning",
+            "cost_model_version": "cost_bucket_daily:2026-05-12",
+            "fallback_ratio": 1.0,
+            "high_fallback": True,
+        },
+        data_health={"status": "ok"},
+    )
+
+    assert permission.permission == RiskAction.SELL_ONLY
+    assert permission.reasons == ["cost_health_high_fallback"]
+
+
 def test_dead_gate_aborts():
     permission = evaluate_live_permission(
         strategy="v5",

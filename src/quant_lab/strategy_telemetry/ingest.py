@@ -62,6 +62,17 @@ SILVER_DATASETS = {
     "v5_quant_lab_fallback": Path("silver/v5_quant_lab_fallback"),
 }
 
+QUANT_LAB_USAGE_PATHS = {
+    "raw/reports/quant_lab_usage.jsonl",
+    "raw/quant_lab/quant_lab_usage.jsonl",
+    "reports/quant_lab_usage.jsonl",
+}
+QUANT_LAB_REQUEST_PATHS = {
+    "raw/reports/quant_lab_requests.jsonl",
+    "raw/quant_lab/quant_lab_requests.jsonl",
+    "reports/quant_lab_requests.jsonl",
+}
+
 
 def archive_v5_bundle(
     bundle_path: Path,
@@ -320,10 +331,10 @@ def _append_file_rows(
     if logical.endswith("/equity.jsonl"):
         rows["v5_equity_point"].extend(_jsonl_rows(metadata, relative, file_path))
         return
-    if logical == "raw/quant_lab/quant_lab_usage.jsonl":
+    if logical in QUANT_LAB_USAGE_PATHS:
         rows["v5_quant_lab_usage"].extend(_jsonl_rows(metadata, relative, file_path))
         return
-    if logical == "raw/quant_lab/quant_lab_requests.jsonl":
+    if logical in QUANT_LAB_REQUEST_PATHS:
         rows["v5_quant_lab_request"].extend(_jsonl_rows(metadata, relative, file_path))
         return
     if logical.endswith("/trades.csv"):
@@ -360,12 +371,13 @@ def _append_file_rows(
         "summaries/probe_diagnostics.csv": "v5_probe_diagnostic",
         "summaries/quant_lab_compliance.csv": "v5_quant_lab_compliance",
         "summaries/quant_lab_cost_usage.csv": "v5_quant_lab_cost_usage",
-        "summaries/quant_lab_fallbacks.csv": "v5_quant_lab_fallback",
     }
     if logical.startswith("summaries/high_score_blocked_outcomes"):
         rows["v5_high_score_blocked_outcome"].extend(_csv_rows(metadata, relative, file_path))
     elif logical.startswith("summaries/alt_impulse_shadow"):
         rows["v5_shadow_outcome"].extend(_csv_rows(metadata, relative, file_path))
+    elif logical == "summaries/quant_lab_fallbacks.csv":
+        rows["v5_quant_lab_fallback"].extend(_fallback_csv_rows(metadata, relative, file_path))
     elif logical in csv_mapping:
         rows[csv_mapping[logical]].extend(_csv_rows(metadata, relative, file_path))
 
@@ -406,6 +418,107 @@ def _csv_rows(metadata: dict[str, Any], relative: str, file_path: Path) -> list[
                 | {"raw_payload_json": safe_json_dumps(safe_row)}
             )
     return rows
+
+
+def _fallback_csv_rows(
+    metadata: dict[str, Any],
+    relative: str,
+    file_path: Path,
+) -> list[dict[str, Any]]:
+    return [row for row in _csv_rows(metadata, relative, file_path) if _is_fallback_row(row)]
+
+
+def _is_fallback_row(row: dict[str, Any]) -> bool:
+    payload = _loads_payload(row.get("raw_payload_json"))
+    if _truthy(_first_value(row, payload, ["fallback_used", "used_fallback", "local_fallback"])):
+        return True
+    success = _parse_bool(_first_value(row, payload, ["success", "ok", "request_ok"]))
+    if success is False:
+        return True
+    if _nonempty_text(_first_value(row, payload, ["error_type", "exception_type"])):
+        return True
+    count = _numeric(_first_value(row, payload, ["count", "fallback_count"]))
+    if count == 0:
+        return False
+    action = _first_value(
+        row,
+        payload,
+        ["fail_policy_action", "fail_policy", "action", "fallback_action"],
+    )
+    if _action_triggered(action):
+        return True
+    rendered = " ".join(
+        str(_first_value(row, payload, [field]) or "").lower()
+        for field in ["fallback_reason", "cost_source", "source", "diagnosis", "message"]
+    )
+    return "local" in rendered and "fallback" in rendered
+
+
+def _loads_payload(value: Any) -> dict[str, Any]:
+    if not isinstance(value, str) or not value.strip():
+        return {}
+    try:
+        loaded = json.loads(value)
+    except json.JSONDecodeError:
+        return {}
+    return loaded if isinstance(loaded, dict) else {}
+
+
+def _first_value(row: dict[str, Any], payload: dict[str, Any], keys: list[str]) -> Any:
+    for key in keys:
+        value = row.get(key)
+        if _empty_value(value):
+            value = payload.get(key)
+        if not _empty_value(value):
+            return value
+    return None
+
+
+def _empty_value(value: Any) -> bool:
+    return value is None or (isinstance(value, str) and value == "")
+
+
+def _truthy(value: Any) -> bool:
+    parsed = _parse_bool(value)
+    return parsed is True
+
+
+def _parse_bool(value: Any) -> bool | None:
+    if isinstance(value, bool):
+        return value
+    if value is None:
+        return None
+    normalized = str(value).strip().lower()
+    if normalized in {"1", "true", "yes", "y", "on"}:
+        return True
+    if normalized in {"0", "false", "no", "n", "off"}:
+        return False
+    return None
+
+
+def _nonempty_text(value: Any) -> bool:
+    if value is None:
+        return False
+    normalized = str(value).strip().lower()
+    return normalized not in {"", "none", "null", "ok", "false", "0"}
+
+
+def _numeric(value: Any) -> float | None:
+    if value is None or value == "":
+        return None
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return None
+
+
+def _action_triggered(value: Any) -> bool:
+    if not _nonempty_text(value):
+        return False
+    normalized = str(value).strip().lower()
+    if normalized in {"none", "no_action", "allow", "ok", "pass"}:
+        return False
+    return "fallback" in normalized or "trigger" in normalized or "sell_only" in normalized
 
 
 def _issue_rows(

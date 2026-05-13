@@ -89,7 +89,7 @@ def build_alpha_evidence(
     )
     valid_rows = valid.height
     coverage = valid_rows / total_rows if total_rows else 0.0
-    status = "valid"
+    status = "ok"
     if valid_rows < spec.min_samples:
         warnings.append("insufficient_samples")
         status = "insufficient_samples"
@@ -112,7 +112,7 @@ def build_alpha_evidence(
     end_ts = _frame_datetime(dataset, "feature_ts", "max") or (start_ts + timedelta(seconds=1))
     if end_ts <= start_ts:
         end_ts = start_ts + timedelta(seconds=1)
-    if status == "valid" and _evidence_window_is_stale(end_ts, now):
+    if status == "ok" and _evidence_window_is_stale(end_ts, now):
         warnings.append("stale")
         status = "stale"
 

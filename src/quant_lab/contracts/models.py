@@ -218,7 +218,7 @@ class AlphaEvidence(ContractModel):
     paper_days: int = Field(ge=0)
     paper_slippage_coverage: float = Field(ge=0, le=1)
     created_at: datetime
-    evidence_status: str = Field(default="valid", min_length=1)
+    evidence_status: str = Field(default="ok", min_length=1)
 
     @field_validator("start_ts", "end_ts", "created_at")
     @classmethod

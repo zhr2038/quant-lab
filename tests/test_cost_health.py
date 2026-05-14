@@ -31,6 +31,7 @@ def test_cost_health_ok_with_actual_rows(tmp_path):
     assert row.status == "OK"
     assert row.actual_rows == 1
     assert row.fallback_ratio == 0
+    assert row.api_degraded_cost_count == 0
 
 
 def test_cost_health_counts_actual_fills_source():

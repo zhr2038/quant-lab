@@ -36,6 +36,7 @@ COST_HEALTH_DAILY_SCHEMA = {
     "api_global_default_count": pl.Int64,
     "api_symbol_proxy_hit_count": pl.Int64,
     "api_regime_fallback_count": pl.Int64,
+    "api_degraded_cost_count": pl.Int64,
     "warnings_json": pl.Utf8,
     "created_at": pl.Utf8,
 }
@@ -62,6 +63,7 @@ class CostHealthDaily(BaseModel):
     api_global_default_count: int = Field(default=0, ge=0)
     api_symbol_proxy_hit_count: int = Field(default=0, ge=0)
     api_regime_fallback_count: int = Field(default=0, ge=0)
+    api_degraded_cost_count: int = Field(default=0, ge=0)
     warnings_json: str = "[]"
     created_at: datetime = Field(default_factory=lambda: datetime.now(UTC))
 

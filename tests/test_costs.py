@@ -94,6 +94,7 @@ def test_cost_bucket_daily_estimate_uses_requested_quantile():
     )
 
     assert estimate.quantile == "p90"
+    assert estimate.requested_quantile == "p90"
     assert estimate.fee_bps == 2.0
     assert estimate.slippage_bps == 4.0
     assert estimate.spread_bps == 1.0
@@ -105,6 +106,7 @@ def test_cost_bucket_daily_estimate_uses_requested_quantile():
     assert estimate.fallback_level == "NONE"
     assert estimate.fallback_reason == "NONE"
     assert estimate.cost_source == "actual_okx_fills_and_bills"
+    assert estimate.degraded_cost_model is False
     assert estimate.sample_count == 42
     assert estimate.sample_size == 42
     assert estimate.cost_model_version == "costs-2026-05-10"
@@ -274,6 +276,7 @@ def test_cost_bucket_daily_estimate_can_fallback_to_symbol_bucket_across_regime(
     assert estimate.cost_source == "public_spread_proxy"
     assert estimate.selected_total_cost_bps == 2.0
     assert estimate.fallback_reason in {"no_matching_regime", "cost_bucket_stale"}
+    assert estimate.degraded_cost_model is True
 
 
 def test_cost_bucket_daily_estimate_unknown_symbol_uses_global_default():
@@ -302,6 +305,7 @@ def test_cost_bucket_daily_estimate_unknown_symbol_uses_global_default():
     assert estimate.fallback_level == "GLOBAL_DEFAULT"
     assert estimate.fallback_reason == "symbol_missing"
     assert estimate.degraded_reason == "global_default_cost"
+    assert estimate.degraded_cost_model is True
     assert estimate.total_cost_bps == DEFAULT_FALLBACK_COST_BPS
 
 

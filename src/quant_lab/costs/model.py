@@ -314,6 +314,7 @@ def estimate_cost_from_cost_bucket_daily_rows(
         regime=regime,
         notional_usdt=notional_usdt,
         quantile=quantile,
+        requested_quantile=quantile,
         fee_bps=fee_bps,
         slippage_bps=slippage_bps,
         spread_bps=spread_bps,
@@ -335,6 +336,12 @@ def estimate_cost_from_cost_bucket_daily_rows(
         selected_total_cost_bps=total_cost_bps,
         fallback_reason=fallback_reason,
         degraded_reason="cost_bucket_stale" if stale else "none",
+        degraded_cost_model=_estimate_degraded(
+            source=source,
+            fallback_level=fallback_level,
+            fallback_reason=fallback_reason,
+            degraded_reason="cost_bucket_stale" if stale else "none",
+        ),
         as_of_ts=_row_as_of_ts(row),
     )
 
@@ -447,24 +454,30 @@ def _rank_cost_bucket_rows(
         row_bucket = str(row.get("notional_bucket") or "")
         notional_match = _row_matches_notional(row_bucket, notional_usdt, notional_bucket)
 
+        source = str(row.get("source") or "")
+
         if row_symbol == symbol and normalized_row_regime == requested_regime and notional_match:
             tier, fallback = 0, "NONE"
         elif row_symbol == symbol and normalized_row_regime == requested_regime:
             tier, fallback = 1, "NOTIONAL_BUCKET_FALLBACK"
-        elif row_symbol == symbol and _is_global_regime(row_regime) and notional_match:
+        elif row_symbol == symbol and _is_public_proxy_source(source) and notional_match:
             tier, fallback = 2, "REGIME_FALLBACK"
-        elif row_symbol == symbol and notional_match:
+        elif row_symbol == symbol and _is_public_proxy_source(source):
             tier, fallback = 3, "REGIME_FALLBACK"
+        elif row_symbol == symbol and _is_global_regime(row_regime) and notional_match:
+            tier, fallback = 4, "REGIME_FALLBACK"
+        elif row_symbol == symbol and notional_match:
+            tier, fallback = 5, "REGIME_FALLBACK"
         elif row_symbol == symbol:
-            tier, fallback = 4, "REGIME_AND_NOTIONAL_BUCKET_FALLBACK"
+            tier, fallback = 6, "REGIME_AND_NOTIONAL_BUCKET_FALLBACK"
         elif (
             _is_global_symbol(row_symbol)
             and normalized_row_regime == requested_regime
             and notional_match
         ):
-            tier, fallback = 5, "SYMBOL_FALLBACK"
+            tier, fallback = 7, "SYMBOL_FALLBACK"
         elif _is_global_symbol(row_symbol) and _is_global_regime(row_regime):
-            tier, fallback = 6, "GLOBAL_BUCKET_FALLBACK"
+            tier, fallback = 8, "GLOBAL_BUCKET_FALLBACK"
         else:
             continue
         ranked.append((tier, fallback, row))
@@ -535,6 +548,7 @@ def _global_default_estimate(
         regime=regime,
         notional_usdt=notional_usdt,
         quantile=quantile,
+        requested_quantile=quantile,
         fee_bps=0.0,
         slippage_bps=0.0,
         spread_bps=0.0,
@@ -554,6 +568,7 @@ def _global_default_estimate(
         selected_total_cost_bps=DEFAULT_FALLBACK_COST_BPS,
         fallback_reason=fallback_reason,
         degraded_reason=degraded_reason,
+        degraded_cost_model=True,
         as_of_ts=datetime.now(UTC),
     )
 
@@ -581,6 +596,25 @@ def _source_priority(source: str) -> int:
     if normalized == "global_default":
         return 3
     return 4
+
+
+def _is_public_proxy_source(source: str) -> bool:
+    return source.lower() in {"public_spread_proxy", "public_proxy"}
+
+
+def _estimate_degraded(
+    *,
+    source: str,
+    fallback_level: str,
+    fallback_reason: str,
+    degraded_reason: str,
+) -> bool:
+    return (
+        source in {"global_default", "public_spread_proxy"}
+        or fallback_level not in {"", "NONE", "actual_okx_fills_and_bills"}
+        or fallback_reason not in {"", "NONE"}
+        or degraded_reason not in {"", "none"}
+    )
 
 
 def _fallback_reason(fallback_level: str, *, stale: bool, source: str) -> str:

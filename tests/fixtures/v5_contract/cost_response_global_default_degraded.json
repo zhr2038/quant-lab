@@ -8,6 +8,7 @@
   "matched_regime": "global_default",
   "notional_usdt": 1000.0,
   "quantile": "p75",
+  "requested_quantile": "p75",
   "fee_bps": 0.0,
   "slippage_bps": 0.0,
   "spread_bps": 0.0,
@@ -20,6 +21,7 @@
   "fallback_level": "GLOBAL_DEFAULT",
   "fallback_reason": "symbol_missing",
   "degraded_reason": "global_default_cost",
+  "degraded_cost_model": true,
   "source": "global_default",
   "cost_source": "global_default",
   "sample_count": 0,
@@ -28,4 +30,3 @@
   "bucket_id": null,
   "as_of_ts": "2026-05-14T07:10:00Z"
 }
-

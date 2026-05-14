@@ -8,6 +8,7 @@
   "matched_regime": "public_proxy",
   "notional_usdt": 1000.0,
   "quantile": "p75",
+  "requested_quantile": "p75",
   "fee_bps": 0.0,
   "slippage_bps": 0.0,
   "spread_bps": 1.4969,
@@ -20,6 +21,7 @@
   "fallback_level": "REGIME_FALLBACK;PUBLIC_SPREAD_PROXY",
   "fallback_reason": "no_matching_regime",
   "degraded_reason": "none",
+  "degraded_cost_model": true,
   "source": "public_spread_proxy",
   "cost_source": "public_spread_proxy",
   "sample_count": 1440,
@@ -28,4 +30,3 @@
   "bucket_id": "2026-05-14:BNB-USDT:public_proxy:spread:all",
   "as_of_ts": "2026-05-14T07:10:00Z"
 }
-

@@ -137,6 +137,7 @@ class CostEstimate(ContractModel):
     regime: str = Field(min_length=1)
     notional_usdt: float = Field(gt=0)
     quantile: str = Field(default="p75", pattern="^p(50|75|90)$")
+    requested_quantile: str | None = Field(default=None, pattern="^p(50|75|90)$")
     fee_bps: float = Field(default=0.0, ge=0)
     slippage_bps: float = Field(default=0.0, ge=0)
     spread_bps: float = Field(default=0.0, ge=0)
@@ -157,6 +158,7 @@ class CostEstimate(ContractModel):
     selected_total_cost_bps: float | None = Field(default=None, ge=0)
     fallback_reason: str | None = None
     degraded_reason: str | None = None
+    degraded_cost_model: bool = False
     sample_size: int | None = Field(default=None, ge=0)
     as_of_ts: datetime | None = None
 
@@ -174,10 +176,15 @@ class CostEstimate(ContractModel):
             normalized.setdefault("requested_regime", normalized.get("regime"))
             normalized.setdefault("matched_regime", normalized.get("regime"))
             normalized.setdefault("cost_source", normalized.get("source"))
+            normalized.setdefault("requested_quantile", normalized.get("quantile"))
             normalized.setdefault("selected_total_cost_bps", normalized.get("total_cost_bps"))
             normalized.setdefault("fallback_reason", normalized.get("fallback_level"))
             normalized.setdefault("degraded_reason", "none")
             normalized.setdefault("sample_size", normalized.get("sample_count"))
+            normalized.setdefault(
+                "degraded_cost_model",
+                _cost_estimate_is_degraded(normalized),
+            )
             for suffix in ("p50", "p75", "p90"):
                 normalized.setdefault(f"total_cost_bps_{suffix}", normalized.get("total_cost_bps"))
             return normalized
@@ -187,6 +194,19 @@ class CostEstimate(ContractModel):
     @classmethod
     def as_of_is_utc(cls, value: datetime | None) -> datetime | None:
         return require_utc(value) if value is not None else None
+
+
+def _cost_estimate_is_degraded(data: dict[str, Any]) -> bool:
+    source = str(data.get("cost_source") or data.get("source") or "").lower()
+    fallback_level = str(data.get("fallback_level") or "")
+    fallback_reason = str(data.get("fallback_reason") or "")
+    degraded_reason = str(data.get("degraded_reason") or "")
+    return (
+        source in {"global_default", "public_spread_proxy"}
+        or fallback_level not in {"", "NONE", "actual_okx_fills_and_bills"}
+        or fallback_reason not in {"", "NONE"}
+        or degraded_reason not in {"", "none", "None"}
+    )
 
 
 class FillEvent(ContractModel):

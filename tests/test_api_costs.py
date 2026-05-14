@@ -157,6 +157,8 @@ def test_cost_estimate_api_normalizes_slash_symbol(tmp_path, monkeypatch):
     assert payload["fallback_level"] == "REGIME_FALLBACK;PUBLIC_SPREAD_PROXY"
     assert payload["fallback_reason"] == "cost_bucket_stale"
     assert payload["degraded_reason"] == "cost_bucket_stale"
+    assert payload["requested_quantile"] == "p75"
+    assert payload["degraded_cost_model"] is True
 
 
 def test_cost_estimate_api_uses_same_symbol_public_proxy_for_trending_regime(
@@ -203,25 +205,32 @@ def test_cost_estimate_api_uses_same_symbol_public_proxy_for_trending_regime(
     assert payload["matched_regime"] == "public_proxy"
     assert payload["source"] == "public_spread_proxy"
     assert payload["cost_source"] == "public_spread_proxy"
+    assert payload["requested_quantile"] == "p75"
     assert payload["total_cost_bps_p75"] == 1.4969
     assert payload["selected_total_cost_bps"] == 1.4969
     assert payload["total_cost_bps"] == 1.4969
     assert payload["sample_count"] == 496
     assert payload["fallback_level"] == "REGIME_FALLBACK;PUBLIC_SPREAD_PROXY"
     assert payload["fallback_reason"] == "no_matching_regime"
+    assert payload["degraded_cost_model"] is True
     assert payload["source"] != "global_default"
 
-    slash_response = TestClient(app).get(
-        "/v1/costs/estimate",
-        params={
-            "symbol": "BNB/USDT",
-            "regime": "Trending",
-            "notional_usdt": 5_000,
-            "quantile": "p75",
-        },
-    )
-    assert slash_response.status_code == 200
-    assert slash_response.json()["selected_total_cost_bps"] == payload["selected_total_cost_bps"]
+    for symbol_variant in ["BNB/USDT", "BNBUSDT", "OKX:BNB-USDT"]:
+        variant_response = TestClient(app).get(
+            "/v1/costs/estimate",
+            params={
+                "symbol": symbol_variant,
+                "regime": "Trending",
+                "notional_usdt": 5_000,
+                "quantile": "p75",
+            },
+        )
+        assert variant_response.status_code == 200
+        variant_payload = variant_response.json()
+        assert variant_payload["normalized_symbol"] == "BNB-USDT"
+        assert variant_payload["selected_total_cost_bps"] == payload["selected_total_cost_bps"]
+        assert variant_payload["cost_source"] == "public_spread_proxy"
+        assert variant_payload["source"] != "global_default"
 
 
 def test_cost_estimate_api_unknown_symbol_uses_degraded_global_default(tmp_path, monkeypatch):
@@ -260,6 +269,8 @@ def test_cost_estimate_api_unknown_symbol_uses_degraded_global_default(tmp_path,
     assert payload["fallback_level"] == "GLOBAL_DEFAULT"
     assert payload["fallback_reason"] == "symbol_missing"
     assert payload["degraded_reason"] == "global_default_cost"
+    assert payload["degraded_cost_model"] is True
+    assert payload["requested_quantile"] == "p75"
 
 
 def _cost_row(**overrides):

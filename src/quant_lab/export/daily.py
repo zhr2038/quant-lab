@@ -160,6 +160,7 @@ CSV_SCHEMAS: dict[str, list[str]] = {
         "api_global_default_count",
         "api_symbol_proxy_hit_count",
         "api_regime_fallback_count",
+        "api_degraded_cost_count",
         "warnings_json",
         "created_at",
     ],

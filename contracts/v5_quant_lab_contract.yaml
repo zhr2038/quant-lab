@@ -79,6 +79,7 @@ schemas:
       - matched_regime
       - notional_usdt
       - quantile
+      - requested_quantile
       - cost_source
       - source
       - cost_model_version
@@ -93,6 +94,7 @@ schemas:
       - fallback_level
       - fallback_reason
       - degraded_reason
+      - degraded_cost_model
       - as_of_ts
     nullable:
       - bucket_id
@@ -273,4 +275,3 @@ schemas:
 datasets:
   v5_telemetry:
     schema_version: v5-telemetry-v0.1
-

@@ -5,6 +5,12 @@ from typing import Any
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
+from quant_lab.contracts.v5_quant_lab import (
+    RISK_PERMISSION_CONTRACT_VERSION,
+    V5_COST_ESTIMATE_RESPONSE_SCHEMA_VERSION,
+    V5_QUANT_LAB_CONTRACT_VERSION,
+    V5_RISK_PERMISSION_RESPONSE_SCHEMA_VERSION,
+)
 from quant_lab.symbols import normalize_symbol
 
 
@@ -125,6 +131,8 @@ class FeatureValue(ContractModel):
 
 
 class CostEstimate(ContractModel):
+    contract_version: str = V5_QUANT_LAB_CONTRACT_VERSION
+    schema_version: str = V5_COST_ESTIMATE_RESPONSE_SCHEMA_VERSION
     symbol: str = Field(min_length=1)
     regime: str = Field(min_length=1)
     notional_usdt: float = Field(gt=0)
@@ -382,6 +390,7 @@ class GateDecision(ContractModel):
 
 
 class RiskPermission(ContractModel):
+    schema_version: str = V5_RISK_PERMISSION_RESPONSE_SCHEMA_VERSION
     strategy: str = Field(min_length=1)
     version: str = Field(min_length=1)
     permission: RiskAction
@@ -397,7 +406,7 @@ class RiskPermission(ContractModel):
     expires_at: datetime | None = None
     telemetry_latest_ts: datetime | None = None
     permission_freshness_sec: int | None = Field(default=None, ge=0)
-    contract_version: str = "risk_permission.v0.2"
+    contract_version: str = RISK_PERMISSION_CONTRACT_VERSION
     permission_status: RiskPermissionStatus | None = None
     enforceable: bool | None = None
     risk_reason_codes: list[str] = Field(default_factory=list)

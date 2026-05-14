@@ -18,6 +18,10 @@ import polars as pl
 from pydantic import BaseModel, ConfigDict, Field
 
 from quant_lab import __version__
+from quant_lab.contracts.v5_quant_lab import (
+    V5_QUANT_LAB_CONTRACT_VERSION,
+    V5_TELEMETRY_DATASET_SCHEMA_VERSION,
+)
 from quant_lab.data.lake import read_parquet_lazy
 from quant_lab.risk.publish import (
     DEFAULT_TELEMETRY_STALE_THRESHOLD_SECONDS,
@@ -792,6 +796,8 @@ def _manifest_payload(
         "generated_at": generated_at.isoformat(),
         "profile": profile,
         "quant_lab_version": __version__,
+        "contract_version": V5_QUANT_LAB_CONTRACT_VERSION,
+        "schema_version": V5_TELEMETRY_DATASET_SCHEMA_VERSION,
         "git_commit": git["git_commit"],
         "git_branch": git["git_branch"],
         "dirty_worktree": git["dirty_worktree"],
@@ -833,6 +839,8 @@ def _provenance_payload(
         "export_date": day.isoformat(),
         "generated_at": generated_at.isoformat(),
         "quant_lab_version": __version__,
+        "contract_version": V5_QUANT_LAB_CONTRACT_VERSION,
+        "schema_version": V5_TELEMETRY_DATASET_SCHEMA_VERSION,
         "git_commit": git["git_commit"],
         "git_branch": git["git_branch"],
         "dirty_worktree": git["dirty_worktree"],

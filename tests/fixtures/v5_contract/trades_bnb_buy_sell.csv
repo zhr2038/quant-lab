@@ -1,0 +1,4 @@
+schema_version,ts,symbol,normalized_symbol,side,qty,price,fee,fee_ccy,notional_usdt,run_id,trade_id,order_id
+v5.trade_fill_summary.v0.1,2026-05-14T07:03:00Z,BNB/USDT,BNB-USDT,buy,0.5,620.0,-0.031,USDT,310.0,run_20260514,bnb_trade_buy_001,bnb_order_buy_001
+v5.trade_fill_summary.v0.1,2026-05-14T07:05:00Z,BNB-USDT,BNB-USDT,sell,0.5,622.0,-0.0311,USDT,311.0,run_20260514,bnb_trade_sell_001,bnb_order_sell_001
+

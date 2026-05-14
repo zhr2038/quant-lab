@@ -1,0 +1,2 @@
+{"schema_version":"v5.quant_lab_request.v0.1","event_type":"request","ts":"2026-05-14T07:01:00Z","endpoint":"/v1/costs/estimate","method":"GET","status_code":200,"success":true,"ok":true,"fallback_used":false,"latency_ms":24.7,"request_id":"req-cost-bnb-001","symbol":"BNB/USDT","strategy":"v5","version":"5.0.0","error_type":null,"error":null}
+

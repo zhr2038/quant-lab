@@ -7,6 +7,7 @@ import polars as pl
 from pydantic import BaseModel, ConfigDict, Field
 
 from quant_lab.contracts.models import GateDecision, RiskPermission, RiskPermissionStatus
+from quant_lab.contracts.v5_quant_lab import RISK_PERMISSION_CONTRACT_VERSION
 from quant_lab.data.lake import read_parquet_dataset, upsert_parquet_dataset
 from quant_lab.risk.permissions import evaluate_live_permission
 
@@ -17,10 +18,10 @@ COST_HEALTH_DAILY_DATASET = Path("gold") / "cost_health_daily"
 MARKET_BAR_DATASET = Path("silver") / "market_bar"
 V5_GATE_COMPLIANCE_DATASET = Path("gold") / "v5_gate_compliance_daily"
 STRATEGY_HEALTH_DAILY_DATASET = Path("gold") / "strategy_health_daily"
-RISK_PERMISSION_CONTRACT_VERSION = "risk_permission.v0.2"
 DEFAULT_TELEMETRY_STALE_THRESHOLD_SECONDS = 30 * 60
 
 RISK_PERMISSION_SCHEMA = {
+    "schema_version": pl.Utf8,
     "strategy": pl.Utf8,
     "version": pl.Utf8,
     "permission": pl.Utf8,

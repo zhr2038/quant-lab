@@ -1,0 +1,2 @@
+{"schema_version":"v5.quant_lab_fallback.v0.1","event_type":"fallback","ts":"2026-05-14T07:02:00Z","endpoint":"/v1/risk/live-permission","method":"GET","status_code":0,"success":false,"fallback_used":true,"error_type":"QuantLabTimeout","degraded_reason":"timeout","request_id":"req-risk-timeout-001","symbol":null,"side":null,"intent":null,"strategy":"v5","version":"5.0.0"}
+

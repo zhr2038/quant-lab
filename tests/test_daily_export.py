@@ -7,6 +7,7 @@ from pathlib import Path
 
 import polars as pl
 
+from quant_lab.contracts.v5_quant_lab import V5_QUANT_LAB_CONTRACT_VERSION
 from quant_lab.data.lake import write_market_bars, write_parquet_dataset
 from quant_lab.export.daily import (
     CSV_SCHEMAS,
@@ -48,6 +49,8 @@ def test_export_daily_pack_writes_required_members(tmp_path):
         assert manifest["hostname"]
         assert manifest["python_version"]
         assert manifest["export_command"] == "qlab export-daily"
+        assert manifest["contract_version"] == V5_QUANT_LAB_CONTRACT_VERSION
+        assert provenance["contract_version"] == V5_QUANT_LAB_CONTRACT_VERSION
         assert "dataset_freshness" in manifest
         assert provenance["git_commit"]
         assert "freshness_seconds" in provenance["datasets"][0]

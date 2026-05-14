@@ -1,0 +1,276 @@
+contract_version: v5_quant_lab_contract.v0.1
+timestamp_rule: UTC ISO8601; use Z or +00:00, never local time.
+symbol_normalization:
+  canonical_format: BASE-QUOTE
+  quote_assets:
+    - USDT
+    - USDC
+    - USD
+    - BTC
+    - ETH
+  examples:
+    BNB/USDT: BNB-USDT
+    BNB-USDT: BNB-USDT
+    BNBUSDT: BNB-USDT
+    OKX:BNB-USDT: BNB-USDT
+common_enums:
+  quantile:
+    - p50
+    - p75
+    - p90
+  risk_permission:
+    - ALLOW
+    - SELL_ONLY
+    - ABORT
+  permission_status:
+    - ACTIVE_ALLOW
+    - ACTIVE_SELL_ONLY
+    - ACTIVE_ABORT
+    - STALE_ALLOW
+    - STALE_SELL_ONLY
+    - STALE_ABORT
+    - NO_FRESH_PERMISSION
+  cost_source:
+    - actual_fills
+    - mixed_actual_proxy
+    - actual_okx_fills_and_bills
+    - actual_okx_fills_fee_missing
+    - public_spread_proxy
+    - global_default
+  fallback_reason:
+    - NONE
+    - no_matching_regime
+    - symbol_missing
+    - cost_bucket_stale
+    - service_unavailable
+    - global_default_cost
+    - timeout
+    - connection_error
+    - http_5xx
+    - parse_error
+  degraded_reason:
+    - none
+    - global_default_cost
+    - cost_bucket_stale
+    - service_unavailable
+    - timeout
+    - local_fallback_used
+schemas:
+  cost_estimate_request:
+    schema_version: v5.cost_estimate.request.v0.1
+    required:
+      - schema_version
+      - symbol
+      - regime
+      - notional_usdt
+      - quantile
+    nullable: []
+    timestamps: []
+    enums:
+      quantile: [p50, p75, p90]
+  cost_estimate_response:
+    schema_version: v5.cost_estimate.response.v0.1
+    required:
+      - contract_version
+      - schema_version
+      - symbol
+      - normalized_symbol
+      - requested_regime
+      - matched_regime
+      - notional_usdt
+      - quantile
+      - cost_source
+      - source
+      - cost_model_version
+      - total_cost_bps_p50
+      - total_cost_bps_p75
+      - total_cost_bps_p90
+      - selected_total_cost_bps
+      - total_cost_bps
+      - cost_bps
+      - sample_count
+      - sample_size
+      - fallback_level
+      - fallback_reason
+      - degraded_reason
+      - as_of_ts
+    nullable:
+      - bucket_id
+    timestamps:
+      - as_of_ts
+    enums:
+      quantile: [p50, p75, p90]
+      cost_source:
+        - actual_fills
+        - mixed_actual_proxy
+        - actual_okx_fills_and_bills
+        - actual_okx_fills_fee_missing
+        - public_spread_proxy
+        - global_default
+      source:
+        - actual_fills
+        - mixed_actual_proxy
+        - actual_okx_fills_and_bills
+        - actual_okx_fills_fee_missing
+        - public_spread_proxy
+        - global_default
+      fallback_reason:
+        - NONE
+        - no_matching_regime
+        - symbol_missing
+        - cost_bucket_stale
+        - service_unavailable
+      degraded_reason:
+        - none
+        - global_default_cost
+        - cost_bucket_stale
+        - service_unavailable
+  risk_permission_response:
+    schema_version: v5.risk_permission.response.v0.2
+    required:
+      - contract_version
+      - schema_version
+      - strategy
+      - version
+      - permission
+      - permission_status
+      - enforceable
+      - allowed_modes
+      - max_gross_exposure
+      - max_single_weight
+      - cost_model_version
+      - gate_version
+      - reasons
+      - risk_reason_codes
+      - created_at
+      - as_of_ts
+      - expires_at
+      - source_bundle_ts
+      - telemetry_latest_ts
+    nullable:
+      - source_bundle_ts
+      - telemetry_latest_ts
+      - permission_freshness_sec
+    timestamps:
+      - created_at
+      - as_of_ts
+      - expires_at
+      - source_bundle_ts
+      - telemetry_latest_ts
+    enums:
+      permission: [ALLOW, SELL_ONLY, ABORT]
+      permission_status:
+        - ACTIVE_ALLOW
+        - ACTIVE_SELL_ONLY
+        - ACTIVE_ABORT
+        - STALE_ALLOW
+        - STALE_SELL_ONLY
+        - STALE_ABORT
+        - NO_FRESH_PERMISSION
+  quant_lab_request_event:
+    schema_version: v5.quant_lab_request.v0.1
+    required:
+      - schema_version
+      - event_type
+      - ts
+      - endpoint
+      - method
+      - status_code
+      - success
+      - fallback_used
+      - strategy
+      - version
+      - request_id
+    nullable:
+      - symbol
+      - latency_ms
+      - error_type
+      - error
+    timestamps:
+      - ts
+    enums:
+      event_type: [request]
+      method: [GET]
+  quant_lab_fallback_event:
+    schema_version: v5.quant_lab_fallback.v0.1
+    required:
+      - schema_version
+      - event_type
+      - ts
+      - endpoint
+      - method
+      - success
+      - fallback_used
+      - error_type
+      - degraded_reason
+      - strategy
+      - version
+      - request_id
+    nullable:
+      - status_code
+      - symbol
+      - side
+      - intent
+    timestamps:
+      - ts
+    enums:
+      event_type: [fallback]
+      method: [GET]
+      degraded_reason:
+        - timeout
+        - connection_error
+        - http_5xx
+        - parse_error
+        - local_fallback_used
+  quant_lab_cost_usage_event:
+    schema_version: v5.quant_lab_cost_usage.v0.1
+    required:
+      - schema_version
+      - ts
+      - strategy
+      - version
+      - symbol
+      - normalized_symbol
+      - requested_regime
+      - cost_source
+      - selected_total_cost_bps
+      - fallback_used
+    nullable:
+      - request_id
+      - fallback_reason
+      - degraded_reason
+    timestamps:
+      - ts
+    enums:
+      cost_source:
+        - actual_fills
+        - mixed_actual_proxy
+        - actual_okx_fills_and_bills
+        - actual_okx_fills_fee_missing
+        - public_spread_proxy
+        - global_default
+  trade_fill_summary:
+    schema_version: v5.trade_fill_summary.v0.1
+    required:
+      - schema_version
+      - ts
+      - symbol
+      - normalized_symbol
+      - side
+      - qty
+      - price
+      - fee
+      - fee_ccy
+      - notional_usdt
+      - run_id
+    nullable:
+      - trade_id
+      - order_id
+    timestamps:
+      - ts
+    enums:
+      side: [buy, sell, BUY, SELL]
+datasets:
+  v5_telemetry:
+    schema_version: v5-telemetry-v0.1
+

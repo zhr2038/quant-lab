@@ -11,6 +11,7 @@ from typing import Any
 
 import polars as pl
 
+from quant_lab.contracts.v5_quant_lab import V5_TELEMETRY_DATASET_SCHEMA_VERSION
 from quant_lab.data.lake import read_parquet_dataset, upsert_parquet_dataset
 from quant_lab.strategy_telemetry.bundle import (
     compute_sha256,
@@ -33,7 +34,7 @@ from quant_lab.strategy_telemetry.sanitize import (
 )
 from quant_lab.symbols import normalize_symbol
 
-SCHEMA_VERSION = "v5-telemetry-v0.1"
+SCHEMA_VERSION = V5_TELEMETRY_DATASET_SCHEMA_VERSION
 
 BRONZE_DATASETS = {
     "bundle_manifest": Path("bronze/strategy_telemetry/v5/bundle_manifest"),

@@ -1,0 +1,8 @@
+{
+  "schema_version": "v5.cost_estimate.request.v0.1",
+  "symbol": "BNB/USDT",
+  "regime": "Trending",
+  "notional_usdt": 1000.0,
+  "quantile": "p75"
+}
+

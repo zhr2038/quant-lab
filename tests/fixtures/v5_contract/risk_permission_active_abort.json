@@ -1,0 +1,23 @@
+{
+  "contract_version": "risk_permission.v0.2",
+  "schema_version": "v5.risk_permission.response.v0.2",
+  "strategy": "v5",
+  "version": "5.0.0",
+  "permission": "ABORT",
+  "permission_status": "ACTIVE_ABORT",
+  "enforceable": true,
+  "allowed_modes": [],
+  "max_gross_exposure": 0.0,
+  "max_single_weight": 0.0,
+  "cost_model_version": "cost_bucket_daily:2026-05-14",
+  "gate_version": "gate.v0.1",
+  "reasons": ["required_alpha_gate_dead"],
+  "risk_reason_codes": ["required_alpha_gate_dead"],
+  "created_at": "2026-05-14T07:04:01Z",
+  "as_of_ts": "2026-05-14T07:04:01Z",
+  "expires_at": "2026-05-14T07:34:01Z",
+  "source_bundle_ts": "2026-05-14T06:57:01Z",
+  "telemetry_latest_ts": "2026-05-14T06:57:01Z",
+  "permission_freshness_sec": 0
+}
+

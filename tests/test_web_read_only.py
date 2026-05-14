@@ -1,6 +1,7 @@
 import zipfile
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
+from types import SimpleNamespace
 
 import polars as pl
 
@@ -474,14 +475,52 @@ def test_overview_diagnostics_shows_latest_market_bar_ts(tmp_path):
     assert ("最新 market_bar 时间", "2026-05-10 02:00:00+00:00") in metrics
 
 
+def test_expert_exports_page_downloads_listed_packs(tmp_path):
+    lake_root = _fixture_lake(tmp_path)
+    fake = FakeStreamlit()
+
+    expert_exports.render(lake_root, fake, exports_root=tmp_path / "exports")
+
+    downloads = _call_values(fake, "download_button")
+    assert downloads
+    assert downloads[0]["file_name"] == "quant_lab_expert_pack_2026-05-10.zip"
+    assert downloads[0]["mime"] == "application/zip"
+    assert downloads[0]["data"].startswith(b"PK")
+
+
+def test_expert_exports_generate_today_button_invokes_export(tmp_path, monkeypatch):
+    lake_root = _fixture_lake(tmp_path)
+    fake = FakeStreamlit(button_values={"生成今日专家包": True})
+    captured = {}
+
+    def fake_export_daily_pack(**kwargs):
+        captured.update(kwargs)
+        pack_path = Path(kwargs["out_dir"]) / "quant_lab_expert_pack_test.zip"
+        with zipfile.ZipFile(pack_path, "w") as archive:
+            archive.writestr("manifest.json", "{}")
+            archive.writestr("data_quality.json", "{}")
+            archive.writestr("expert_questions.md", "")
+        return SimpleNamespace(zip_path=str(pack_path))
+
+    monkeypatch.setattr(expert_exports, "export_daily_pack", fake_export_daily_pack)
+
+    expert_exports.render(lake_root, fake, exports_root=tmp_path / "exports")
+
+    assert captured["lake_root"] == lake_root
+    assert captured["out_dir"] == tmp_path / "exports"
+    assert captured["profile"] == "expert"
+    assert any("已生成专家包" in str(value) for value in _call_values(fake, "success"))
+
+
 def _call_values(fake: "FakeStreamlit", name: str) -> list[object]:
     return [value for call_name, value in fake.calls if call_name == name]
 
 
 class FakeStreamlit:
-    def __init__(self) -> None:
+    def __init__(self, button_values: dict[str, bool] | None = None) -> None:
         self.calls: list[tuple[str, object]] = []
         self.sidebar = self
+        self.button_values = button_values or {}
 
     def set_page_config(self, **kwargs) -> None:
         self.calls.append(("set_page_config", kwargs))
@@ -510,11 +549,36 @@ class FakeStreamlit:
     def write(self, value) -> None:
         self.calls.append(("write", value))
 
+    def button(self, label, **kwargs):
+        self.calls.append(("button", {"label": label, **kwargs}))
+        return self.button_values.get(label, False)
+
+    def download_button(self, **kwargs) -> None:
+        self.calls.append(("download_button", kwargs))
+
+    def success(self, value) -> None:
+        self.calls.append(("success", value))
+
+    def error(self, value) -> None:
+        self.calls.append(("error", value))
+
+    def spinner(self, value):
+        self.calls.append(("spinner", value))
+        return _FakeSpinner()
+
     def selectbox(self, _label, options):
         return list(options)[0]
 
     def text_input(self, _label, value):
         return value
+
+
+class _FakeSpinner:
+    def __enter__(self) -> None:
+        return None
+
+    def __exit__(self, _exc_type, _exc, _traceback) -> bool:
+        return False
 
 
 def _fixture_lake(tmp_path) -> Path:

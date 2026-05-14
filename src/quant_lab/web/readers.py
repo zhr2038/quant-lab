@@ -115,6 +115,7 @@ WEB_RECENT_LOOKBACK_HOURS = {
     "orderbook_snapshot": 6,
     "okx_public_ws": 6,
 }
+WEB_HEAVY_METADATA_DATASETS = {"okx_public_ws", "trade_print", "orderbook_snapshot"}
 
 
 @dataclass(frozen=True)
@@ -269,6 +270,9 @@ def _dataset_snapshot(
     timestamp_columns: tuple[str, ...] | None = None,
     now: datetime | None = None,
 ) -> DatasetSnapshot:
+    if dataset_name in WEB_HEAVY_METADATA_DATASETS and timestamp_columns is None:
+        return _heavy_dataset_snapshot(lake_root, dataset_name, now=now)
+
     path = dataset_path_for(lake_root, dataset_name)
     invalid_files = invalid_parquet_files(path)
     files = _valid_parquet_files(path, invalid_files=invalid_files)
@@ -308,6 +312,61 @@ def _dataset_snapshot(
         freshness=_freshness_payload(latest, column, is_empty=rows == 0, now=now),
         warning=warning,
     )
+
+
+def _heavy_dataset_snapshot(
+    lake_root: str | Path,
+    dataset_name: str,
+    *,
+    now: datetime | None = None,
+) -> DatasetSnapshot:
+    path = dataset_path_for(lake_root, dataset_name)
+    invalid_files = invalid_parquet_files(path)
+    files = _valid_parquet_files(path, invalid_files=invalid_files)
+    warning = _invalid_parquet_warning(dataset_name, invalid_files)
+    if not files:
+        return DatasetSnapshot(
+            rows=0,
+            exists=path.exists(),
+            parquet_file_count=0,
+            freshness=_freshness_payload(None, None, is_empty=True, now=now),
+            warning=warning,
+        )
+
+    rows = _parquet_metadata_row_count(files)
+    latest = _latest_file_mtime(files)
+    return DatasetSnapshot(
+        rows=rows,
+        exists=path.exists(),
+        parquet_file_count=len(files),
+        freshness=_freshness_payload(latest, "file_mtime", is_empty=rows == 0, now=now),
+        warning=warning,
+    )
+
+
+def _parquet_metadata_row_count(files: list[Path]) -> int:
+    try:
+        import pyarrow.parquet as pq
+    except ImportError:
+        return len(files)
+
+    total = 0
+    for file_path in files:
+        try:
+            total += int(pq.ParquetFile(file_path).metadata.num_rows)
+        except Exception:
+            total += 0
+    return total
+
+
+def _latest_file_mtime(files: list[Path]) -> datetime | None:
+    if not files:
+        return None
+    try:
+        latest = max(file_path.stat().st_mtime for file_path in files)
+    except OSError:
+        return None
+    return datetime.fromtimestamp(latest, tz=UTC)
 
 
 def _latest_lazy_timestamp(

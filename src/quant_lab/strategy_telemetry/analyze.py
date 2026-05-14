@@ -764,10 +764,12 @@ def _event_key(row: dict[str, Any]) -> str:
 
 def _event_key_fields(row: dict[str, Any], payload: dict[str, Any]) -> dict[str, Any]:
     source_path = _logical_source_path(str(row.get("source_path_inside_bundle") or ""))
-    symbol = _first_value(
-        row,
-        payload,
-        ["symbol", "normalized_symbol", "inst_id", "instId", "instrument", "pair"],
+    symbol = _event_clean_text(
+        _first_value(
+            row,
+            payload,
+            ["symbol", "normalized_symbol", "inst_id", "instId", "instrument", "pair"],
+        )
     )
     fields = {
         "strategy": str(row.get("strategy") or ""),
@@ -804,12 +806,10 @@ def _event_key_fields(row: dict[str, Any], payload: dict[str, Any]) -> dict[str,
             _first_value(row, payload, ["request_id", "trace_id", "id", "uuid"]) or ""
         ).strip(),
         "symbol": normalize_symbol(symbol) if symbol else "",
-        "side": str(_first_value(row, payload, ["side", "order_side"]) or "").strip().lower(),
-        "intent": str(
-            _first_value(row, payload, ["intent", "action", "router_intent"]) or ""
-        )
-        .strip()
-        .lower(),
+        "side": _event_clean_text(_first_value(row, payload, ["side", "order_side"])).lower(),
+        "intent": _event_clean_text(
+            _first_value(row, payload, ["intent", "action", "router_intent"])
+        ).lower(),
         "fallback_used": _first_bool(
             row,
             payload,
@@ -836,6 +836,18 @@ def _analysis_event_type(
     if value is None and _first_value(row, payload, ["endpoint", "path", "url"]):
         value = "request"
     return str(value or "event").strip().lower()
+
+
+def _event_clean_text(value: Any) -> str:
+    if value is None:
+        return ""
+    rendered = str(value).strip()
+    return (
+        ""
+        if rendered.lower()
+        in {"none", "null", "nan", "unknown", "not_observable", "not-observable", "n/a", "na"}
+        else rendered
+    )
 
 
 def _normalize_event_time(value: Any) -> str:

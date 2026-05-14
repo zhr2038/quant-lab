@@ -219,9 +219,10 @@ def test_ingest_overlapping_bundles_deduplicate_quant_lab_timeout(tmp_path):
         '"error_type":"QuantLabTimeout","error":"timeout"}\n'
     )
     fallback_csv = (
-        "event_type,ts,path,status_code,success,fallback_used,error_type,error\n"
+        "event_type,ts,path,status_code,success,fallback_used,error_type,error,"
+        "symbol,side,intent\n"
         "fallback,2026-05-14T23:01:00Z,/v1/risk/live-permission,0,false,true,"
-        "QuantLabTimeout,timeout\n"
+        "QuantLabTimeout,timeout,NOT-OBSERVABLE,not_observable,not_observable\n"
     )
     first = make_tar(
         tmp_path / "v5_live_followup_bundle_20260514T230100Z.tar.gz",

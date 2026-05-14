@@ -574,10 +574,12 @@ def _event_key_fields(
     request_id = _clean_text(
         _first_value(row, payload, ["request_id", "trace_id", "id", "uuid"])
     )
-    symbol_value = _first_value(
-        row,
-        payload,
-        ["symbol", "normalized_symbol", "inst_id", "instId", "instrument", "pair"],
+    symbol_value = _clean_text(
+        _first_value(
+            row,
+            payload,
+            ["symbol", "normalized_symbol", "inst_id", "instId", "instrument", "pair"],
+        )
     )
     symbol = normalize_symbol(symbol_value) if symbol_value else ""
     fields = {
@@ -653,7 +655,12 @@ def _clean_text(value: Any) -> str:
     if value is None:
         return ""
     rendered = str(value).strip()
-    return "" if rendered.lower() in {"none", "null", "nan"} else rendered
+    return (
+        ""
+        if rendered.lower()
+        in {"none", "null", "nan", "unknown", "not_observable", "not-observable", "n/a", "na"}
+        else rendered
+    )
 
 
 def _is_fallback_row(row: dict[str, Any]) -> bool:

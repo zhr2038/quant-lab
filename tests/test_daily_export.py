@@ -177,6 +177,39 @@ def test_dataset_freshness_uses_dataset_specific_timestamps(tmp_path):
     )
 
 
+def test_export_counts_heavy_ws_dataset_without_full_member_load(tmp_path):
+    lake_root = tmp_path / "lake"
+    base_ts = datetime(2026, 5, 11, tzinfo=UTC)
+    write_parquet_dataset(
+        pl.DataFrame(
+            [
+                {
+                    "channel": "tickers",
+                    "inst_id": "BTC-USDT",
+                    "received_at": base_ts + timedelta(seconds=index),
+                    "raw_json": "{}",
+                }
+                for index in range(6001)
+            ]
+        ),
+        lake_root / "bronze" / "okx_public_ws",
+    )
+
+    result = export_daily_pack(
+        export_date="2026-05-11",
+        lake_root=lake_root,
+        out_dir=tmp_path / "exports",
+        profile="expert",
+        command_line=["qlab", "export-daily"],
+    )
+
+    with zipfile.ZipFile(result.zip_path) as archive:
+        manifest = json.loads(archive.read("manifest.json").decode("utf-8"))
+
+    assert manifest["row_counts"]["okx_public_ws"] == 6001
+    assert manifest["dataset_freshness"]["okx_public_ws"]["freshness_status"] != "missing"
+
+
 def test_expert_questions_are_dynamic_for_missing_daily_inputs(tmp_path):
     result = export_daily_pack(
         export_date="2026-05-11",

@@ -10,7 +10,7 @@ import subprocess
 import sys
 import zipfile
 from dataclasses import dataclass
-from datetime import UTC, date, datetime
+from datetime import UTC, date, datetime, timedelta
 from pathlib import Path, PurePosixPath
 from typing import Any
 
@@ -18,6 +18,7 @@ import polars as pl
 from pydantic import BaseModel, ConfigDict, Field
 
 from quant_lab import __version__
+from quant_lab.data.lake import read_parquet_lazy
 from quant_lab.risk.publish import (
     DEFAULT_TELEMETRY_STALE_THRESHOLD_SECONDS,
     is_permission_status_enforceable,
@@ -30,6 +31,12 @@ from quant_lab.symbols import normalize_symbol
 from quant_lab.web import readers
 
 SECTIONS = ["market", "features", "costs", "research", "risk", "anomalies", "v5", "charts"]
+HEAVY_EXPORT_DATASET_LIMITS = {
+    "okx_public_ws": 5_000,
+    "trade_print": 20_000,
+    "orderbook_snapshot": 20_000,
+}
+HEAVY_EXPORT_LOOKBACK_HOURS = 6
 
 SECTION_DATASETS = {
     "market": ["market_bar", "trade_print", "orderbook_snapshot", "okx_public_ws"],
@@ -530,18 +537,86 @@ def _validation_result(
 
 def _load_snapshot(lake_root: Path) -> _DatasetSnapshot:
     frames: dict[str, pl.DataFrame] = {}
+    row_counts: dict[str, int] = {}
     warnings: list[str] = []
     for name in sorted(readers.DATASET_PATHS):
-        try:
-            frames[name] = readers.read_dataset(lake_root, name)
-        except Exception as exc:
-            frames[name] = pl.DataFrame()
-            warnings.append(f"{name} read failed: {exc}")
-    row_counts = {name: frame.height for name, frame in frames.items()}
+        frame, row_count, warning = _load_export_frame(lake_root, name)
+        frames[name] = frame
+        row_counts[name] = row_count
+        if warning:
+            warnings.append(warning)
     for name, count in sorted(row_counts.items()):
         if count == 0:
             warnings.append(f"{name} dataset is missing or empty")
     return _DatasetSnapshot(frames=frames, row_counts=row_counts, warnings=warnings)
+
+
+def _load_export_frame(
+    lake_root: Path,
+    dataset_name: str,
+) -> tuple[pl.DataFrame, int, str | None]:
+    if dataset_name not in HEAVY_EXPORT_DATASET_LIMITS:
+        try:
+            frame = readers.read_dataset(lake_root, dataset_name)
+            return frame, frame.height, None
+        except Exception as exc:
+            return pl.DataFrame(), 0, f"{dataset_name} read failed: {exc}"
+
+    dataset_path = readers.dataset_path_for(lake_root, dataset_name)
+    try:
+        lazy_frame = read_parquet_lazy(dataset_path)
+        row_count = _lazy_row_count(lazy_frame)
+        frame = _collect_recent_heavy_frame(
+            lazy_frame,
+            dataset_name,
+            limit=HEAVY_EXPORT_DATASET_LIMITS[dataset_name],
+        )
+        return frame, row_count, None
+    except Exception as exc:
+        return pl.DataFrame(), 0, f"{dataset_name} sampled read failed: {exc}"
+
+
+def _lazy_row_count(lazy_frame: pl.LazyFrame) -> int:
+    try:
+        return int(lazy_frame.select(pl.len().alias("rows")).collect().item())
+    except Exception:
+        return 0
+
+
+def _collect_recent_heavy_frame(
+    lazy_frame: pl.LazyFrame,
+    dataset_name: str,
+    *,
+    limit: int,
+) -> pl.DataFrame:
+    columns = list(lazy_frame.collect_schema().names())
+    timestamp_column = next(
+        (
+            column
+            for column in readers.DATASET_TIMESTAMP_COLUMNS.get(dataset_name, ())
+            if column in columns
+        ),
+        None,
+    )
+    if timestamp_column is None:
+        return lazy_frame.tail(limit).collect()
+
+    latest_frame = lazy_frame.select(
+        pl.col(timestamp_column).max().alias(timestamp_column)
+    ).collect()
+    latest_value = latest_frame.item() if latest_frame.height else None
+    latest_ts = readers._coerce_timestamp(latest_value)  # type: ignore[attr-defined]
+    if latest_ts is None:
+        return lazy_frame.tail(limit).collect()
+
+    threshold = latest_ts - timedelta(hours=HEAVY_EXPORT_LOOKBACK_HOURS)
+    try:
+        frame = lazy_frame.filter(pl.col(timestamp_column) >= threshold).collect()
+    except Exception:
+        frame = lazy_frame.tail(limit).collect()
+    if frame.height > limit:
+        frame = _tail_by_time(frame, timestamp_column, limit=limit)
+    return frame
 
 
 def _dataset_members(frames: dict[str, pl.DataFrame]) -> dict[str, _MemberPayload]:

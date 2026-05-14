@@ -203,6 +203,48 @@ def test_recent_heavy_dataset_read_uses_latest_file_window(tmp_path, monkeypatch
     assert recent["symbol"].to_list() == ["NEW-USDT"]
 
 
+def test_market_regime_warns_when_ws_universe_is_incomplete(tmp_path):
+    lake_root = tmp_path / "lake"
+    start = datetime(2026, 5, 10, tzinfo=UTC)
+    eth_bar = _bar(start, close=200.0)
+    eth_bar["symbol"] = "ETH-USDT"
+    write_market_bars(lake_root, [_bar(start, close=100.0), eth_bar])
+    write_parquet_dataset(
+        pl.DataFrame(
+            [
+                {
+                    "symbol": "BTC-USDT",
+                    "channel": "books5",
+                    "ts": start,
+                    "asks_json": '[["101", "1"]]',
+                    "bids_json": '[["99", "1"]]',
+                }
+            ]
+        ),
+        lake_root / "silver" / "orderbook_snapshot",
+    )
+    write_parquet_dataset(
+        pl.DataFrame(
+            [
+                {
+                    "symbol": "BTC-USDT",
+                    "trade_id": "1",
+                    "price": 100.0,
+                    "size": 1.0,
+                    "ts": start,
+                }
+            ]
+        ),
+        lake_root / "silver" / "trade_print",
+    )
+
+    summary = readers.market_regime_summary(lake_root)
+
+    warnings = "\n".join(summary["warnings"])
+    assert "okx_ws_universe_incomplete" in warnings
+    assert "ETH-USDT" in warnings
+
+
 def test_dataset_freshness_unknown_when_populated_table_has_no_timestamp():
     payload = readers.dataset_freshness_payload(
         "decision_audit",

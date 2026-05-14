@@ -949,13 +949,46 @@ def market_regime_summary(lake_root: str | Path) -> dict[str, Any]:
         .sort(["symbol", "timeframe"])
     )
 
+    spread_bps = orderbook_spread_table(books)
+    trade_activity = trade_activity_table(trades)
+    warnings.extend(_market_universe_warnings(market, spread_bps, trade_activity))
+
     return {
         "regimes": redact_frame(regimes),
-        "spread_bps": orderbook_spread_table(books),
-        "trade_activity": trade_activity_table(trades),
+        "spread_bps": spread_bps,
+        "trade_activity": trade_activity,
         "abnormal_symbols": regimes.filter(pl.col("mean_abs_return") > 0.03),
         "warnings": warnings,
     }
+
+
+def _market_universe_warnings(
+    market: pl.DataFrame,
+    spread_bps: pl.DataFrame,
+    trade_activity: pl.DataFrame,
+) -> list[str]:
+    market_symbols = _symbols_from_frame(market)
+    if not market_symbols:
+        return []
+    warnings: list[str] = []
+    spread_symbols = _symbols_from_frame(spread_bps)
+    trade_symbols = _symbols_from_frame(trade_activity)
+    if spread_symbols and (missing_spread := sorted(market_symbols - spread_symbols)):
+        warnings.append(
+            "okx_ws_universe_incomplete: orderbook missing "
+            + ", ".join(missing_spread[:8])
+        )
+    if trade_symbols and (missing_trades := sorted(market_symbols - trade_symbols)):
+        warnings.append(
+            "okx_ws_universe_incomplete: trades missing " + ", ".join(missing_trades[:8])
+        )
+    return warnings
+
+
+def _symbols_from_frame(frame: pl.DataFrame) -> set[str]:
+    if frame.is_empty() or "symbol" not in frame.columns:
+        return set()
+    return {str(symbol) for symbol in frame["symbol"].drop_nulls().unique().to_list()}
 
 
 def cost_model_summary(lake_root: str | Path) -> dict[str, Any]:

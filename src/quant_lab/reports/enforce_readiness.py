@@ -385,6 +385,9 @@ def _risk_metrics(
 
 def _permission_from_row(row: dict[str, Any]) -> RiskPermission:
     cleaned = dict(row)
+    cleaned.pop("source", None)
+    cleaned.pop("fallback_level", None)
+    cleaned.pop("permission_source", None)
     for field in ["reasons", "risk_reason_codes", "allowed_modes"]:
         value = cleaned.get(field)
         if isinstance(value, str):

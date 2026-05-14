@@ -167,6 +167,8 @@ def _write_risk_permission(lake, *, status: str, enforceable: bool) -> None:
                     "permission_status": status,
                     "enforceable": enforceable,
                     "contract_version": "risk_permission.v0.2",
+                    "source": "research.risk_permission.v0.1",
+                    "fallback_level": "NONE",
                 }
             ]
         ),

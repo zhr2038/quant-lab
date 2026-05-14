@@ -533,6 +533,7 @@ def _event_key_fields(
     *,
     default_event_type: str | None,
 ) -> dict[str, Any]:
+    source_path = _logical_bundle_path(str(row.get("source_path_inside_bundle") or ""))
     run_id = _first_value(row, payload, ["run_id", "runId", "run"])
     ts_utc = _normalize_event_time(
         _first_value(
@@ -553,14 +554,17 @@ def _event_key_fields(
         _first_value(
             row,
             payload,
-            ["endpoint", "path", "url", "route", "api_path", "request_path"],
+            ["endpoint", "endpoint_path", "path", "url", "route", "api_path", "request_path"],
         )
     )
-    event_type = _clean_text(
-        _first_value(row, payload, ["event_type", "type", "kind"])
-        or default_event_type
-        or ("request" if endpoint else "event")
-    ).lower()
+    if source_path == "summaries/quant_lab_fallbacks.csv":
+        event_type = "request"
+    else:
+        event_type = _clean_text(
+            _first_value(row, payload, ["event_type", "type", "kind"])
+            or default_event_type
+            or ("request" if endpoint else "event")
+        ).lower()
     error_type = _clean_text(
         _first_value(row, payload, ["error_type", "exception_type", "error", "exception"])
     )
@@ -603,12 +607,12 @@ def _event_key_from_fields(fields: dict[str, Any]) -> str:
         if value is not None and value != ""
     }
     if (
-        stable.get("fallback_used") is True
-        and stable.get("endpoint")
+        stable.get("endpoint")
         and stable.get("ts_utc")
         and stable.get("error_type")
     ):
         stable.pop("run_id", None)
+        stable.pop("fallback_used", None)
     rendered = json.dumps(stable, ensure_ascii=False, sort_keys=True, default=str)
     return hashlib.sha256(rendered.encode("utf-8")).hexdigest()
 

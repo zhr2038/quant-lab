@@ -752,12 +752,12 @@ def _event_key(row: dict[str, Any]) -> str:
     payload = _payload(row)
     fields = _event_key_fields(row, payload)
     if (
-        fields.get("fallback_used") is True
-        and fields.get("endpoint")
+        fields.get("endpoint")
         and fields.get("ts_utc")
         and fields.get("error_type")
     ):
         fields.pop("run_id", None)
+        fields.pop("fallback_used", None)
     rendered = json.dumps(fields, ensure_ascii=False, sort_keys=True, default=str)
     return hashlib.sha256(rendered.encode("utf-8")).hexdigest()
 
@@ -777,7 +777,7 @@ def _event_key_fields(row: dict[str, Any], payload: dict[str, Any]) -> dict[str,
             _first_value(
                 row,
                 payload,
-                ["endpoint", "path", "url", "route", "api_path", "request_path"],
+                ["endpoint", "endpoint_path", "path", "url", "route", "api_path", "request_path"],
             )
             or ""
         ).strip(),

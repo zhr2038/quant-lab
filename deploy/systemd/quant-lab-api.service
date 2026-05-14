@@ -14,6 +14,8 @@ EnvironmentFile=-/etc/quant-lab/quant_lab_api.env
 ExecStart=/opt/quant-lab/.venv/bin/uvicorn quant_lab.api.main:app --host 0.0.0.0 --port 8027
 Restart=always
 RestartSec=5
+MemoryMax=512M
+CPUQuota=80%
 NoNewPrivileges=true
 PrivateTmp=true
 

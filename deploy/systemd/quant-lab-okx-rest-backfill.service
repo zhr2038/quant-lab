@@ -9,4 +9,7 @@ User=quantlab
 Group=quantlab
 WorkingDirectory=/opt/quant-lab
 Environment=PYTHONUNBUFFERED=1
+RuntimeMaxSec=10min
+MemoryMax=768M
+CPUQuota=80%
 ExecStart=/bin/bash -lc 'set -euo pipefail; for symbol in BTC-USDT ETH-USDT SOL-USDT BNB-USDT; do /opt/quant-lab/.venv/bin/qlab okx-fetch-candles --inst-id "$symbol" --bar 1H --market-type SPOT --lake-root /var/lib/quant-lab/lake --history --limit 100; done'

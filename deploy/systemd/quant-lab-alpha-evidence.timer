@@ -4,7 +4,8 @@ Description=Run quant-lab alpha evidence publisher hourly
 [Timer]
 OnBootSec=20min
 OnUnitActiveSec=1h
-Persistent=true
+RandomizedDelaySec=3min
+Persistent=false
 
 [Install]
 WantedBy=timers.target

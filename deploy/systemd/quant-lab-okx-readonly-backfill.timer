@@ -2,7 +2,7 @@
 Description=Run quant-lab OKX read-only private backfill every 15 minutes
 
 [Timer]
-OnBootSec=7min
+OnActiveSec=7min
 OnUnitActiveSec=1h
 RandomizedDelaySec=5min
 Persistent=false

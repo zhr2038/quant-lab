@@ -2,7 +2,7 @@
 Description=Run quant-lab risk permission publisher every 5 minutes
 
 [Timer]
-OnBootSec=25min
+OnActiveSec=25min
 OnUnitActiveSec=5min
 RandomizedDelaySec=1min
 Persistent=false

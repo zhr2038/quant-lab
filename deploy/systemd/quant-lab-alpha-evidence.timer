@@ -2,7 +2,7 @@
 Description=Run quant-lab alpha evidence publisher hourly
 
 [Timer]
-OnBootSec=20min
+OnActiveSec=20min
 OnUnitActiveSec=1h
 RandomizedDelaySec=3min
 Persistent=false

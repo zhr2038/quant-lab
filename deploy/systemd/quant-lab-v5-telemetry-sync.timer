@@ -2,7 +2,7 @@
 Description=Run quant-lab V5 telemetry sync every 10 minutes
 
 [Timer]
-OnBootSec=2min
+OnActiveSec=2min
 OnUnitActiveSec=10min
 RandomizedDelaySec=1min
 Persistent=false

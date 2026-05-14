@@ -137,6 +137,10 @@ def test_ingest_quant_lab_requests_separates_success_errors_and_actual_fallbacks
     assert health["request_success_count"][0] == 1
     assert health["request_error_count"][0] == 1
     assert health["actual_fallback_count"][0] == 1
+    assert health["unique_request_count"][0] == 2
+    assert health["unique_success_count"][0] == 1
+    assert health["unique_error_count"][0] == 1
+    assert health["unique_actual_fallback_count"][0] == 1
     assert health["fallback_rate"][0] == 0.5
     assert health["degraded_reason"][0] == "actual_fallback_present"
     assert execution["fallback_count"][0] == 1
@@ -208,7 +212,50 @@ def test_ingest_quant_lab_fallback_csv_reads_nested_raw_json_without_double_coun
     assert health["fallback_rate"][0] == 0.5
     assert health["raw_imported_rows"][0] == 4
     assert health["unique_event_rows"][0] == 2
+    assert health["duplicate_event_count"][0] == 2
     assert health["duplicate_event_rows"][0] == 2
+
+
+def test_ingest_event_key_prefers_trading_event_id(tmp_path):
+    first = make_tar(
+        tmp_path / "v5_live_followup_bundle_20260514T230100Z.tar.gz",
+        {
+            "raw/reports/quant_lab_requests.jsonl": (
+                '{"event_id":"ql-timeout-1","event_type":"request",'
+                '"run_id":"run_a","ts":"2026-05-14T23:01:00Z",'
+                '"path":"/v1/risk/live-permission","request_id":"request-a",'
+                '"status_code":0,"success":false,"fallback_used":true,'
+                '"error_type":"QuantLabTimeout","error":"timeout"}\n'
+            ),
+        },
+    )
+    second = make_tar(
+        tmp_path / "v5_live_followup_bundle_20260514T231000Z.tar.gz",
+        {
+            "raw/reports/quant_lab_requests.jsonl": (
+                '{"event_id":"ql-timeout-1","event_type":"request",'
+                '"run_id":"run_b","ts":"2026-05-14T23:09:00Z",'
+                '"path":"/v1/risk/live-permission","request_id":"request-b",'
+                '"status_code":0,"success":false,"fallback_used":true,'
+                '"error_type":"QuantLabTimeout","error":"timeout"}\n'
+            ),
+        },
+    )
+    lake = tmp_path / "lake"
+
+    ingest_v5_bundle(first, lake, tmp_path / "restricted", tmp_path / "redacted")
+    ingest_v5_bundle(second, lake, tmp_path / "restricted", tmp_path / "redacted")
+
+    requests = read_parquet_dataset(lake / "silver/v5_quant_lab_request")
+    fallbacks = read_parquet_dataset(lake / "silver/v5_quant_lab_fallback")
+    health = read_parquet_dataset(lake / "gold/strategy_health_daily")
+
+    assert requests.height == 1
+    assert fallbacks.height == 1
+    assert requests["event_id"][0] == "ql-timeout-1"
+    assert int(requests["source_count"][0]) == 2
+    assert health["unique_actual_fallback_count"][0] == 1
+    assert health["duplicate_event_count"][0] == 3
 
 
 def test_ingest_overlapping_bundles_deduplicate_quant_lab_timeout(tmp_path):
@@ -253,9 +300,13 @@ def test_ingest_overlapping_bundles_deduplicate_quant_lab_timeout(tmp_path):
     assert health["request_success_count"][0] == 0
     assert health["request_error_count"][0] == 1
     assert health["actual_fallback_count"][0] == 1
+    assert health["unique_request_count"][0] == 1
+    assert health["unique_error_count"][0] == 1
+    assert health["unique_actual_fallback_count"][0] == 1
     assert health["fallback_rate"][0] == 1.0
     assert health["raw_imported_rows"][0] == 6
     assert health["unique_event_rows"][0] == 1
+    assert health["duplicate_event_count"][0] == 5
     assert health["duplicate_event_rows"][0] == 5
     assert health["first_seen_bundle_ts"][0].isoformat().startswith("2026-05-14T23:01:00")
     assert health["last_seen_bundle_ts"][0].isoformat().startswith("2026-05-14T23:10:00")
@@ -323,6 +374,10 @@ def test_ingest_latest_quant_lab_requests_counts_unique_health(tmp_path):
     assert health["request_success_count"][0] == 140
     assert health["request_error_count"][0] == 2
     assert health["actual_fallback_count"][0] == 4
+    assert health["unique_request_count"][0] == 142
+    assert health["unique_success_count"][0] == 140
+    assert health["unique_error_count"][0] == 2
+    assert health["unique_actual_fallback_count"][0] == 4
     assert health["fallback_rate"][0] == 4 / 142
     assert fallbacks.height == 4
     assert not any("http_200" in payload for payload in fallbacks["raw_payload_json"])

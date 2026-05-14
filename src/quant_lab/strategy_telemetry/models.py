@@ -169,6 +169,10 @@ class V5TelemetryAnalysisResult(TelemetryModel):
     quant_lab_usage_count: int = 0
     quant_lab_cost_usage_count: int = 0
     quant_lab_fallback_count: int = 0
+    unique_request_count: int = 0
+    unique_success_count: int = 0
+    unique_error_count: int = 0
+    unique_actual_fallback_count: int = 0
     request_success_count: int = 0
     request_error_count: int = 0
     actual_fallback_count: int = 0
@@ -176,6 +180,7 @@ class V5TelemetryAnalysisResult(TelemetryModel):
     degraded_reason: str = "none"
     raw_imported_rows: int = 0
     unique_event_rows: int = 0
+    duplicate_event_count: int = 0
     duplicate_event_rows: int = 0
     duplicate_rate: float = 0.0
     first_seen_bundle_ts: datetime | None = None

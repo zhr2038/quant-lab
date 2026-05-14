@@ -511,16 +511,21 @@ def _with_event_key(
     enriched = dict(row)
     enriched.update(
         {
+            "event_id": fields["event_id"],
+            "strategy_id": fields["strategy_id"],
             "run_id": fields["run_id"] or row.get("run_id"),
             "ts_utc": fields["ts_utc"],
-            "endpoint": fields["endpoint"],
+            "endpoint": fields["endpoint_path"],
+            "endpoint_path": fields["endpoint_path"],
             "event_type": fields["event_type"],
+            "status_code": fields["status_code"] or row.get("status_code"),
             "error_type": fields["error_type"],
             "fallback_used": fields["fallback_used"],
             "request_id": fields["request_id"],
             "symbol": fields["symbol"],
             "side": fields["side"],
             "intent": fields["intent"],
+            "raw_payload_hash": fields["raw_payload_hash"],
             "event_key_fields_json": safe_json_dumps(fields),
             "event_key": _event_key_from_fields(fields),
         }
@@ -535,6 +540,13 @@ def _event_key_fields(
     default_event_type: str | None,
 ) -> dict[str, Any]:
     source_path = _logical_bundle_path(str(row.get("source_path_inside_bundle") or ""))
+    strategy_id = _clean_text(
+        _first_value(row, payload, ["strategy_id", "strategyId", "strategy"])
+        or row.get("strategy")
+    )
+    event_id = _clean_text(
+        _first_value(row, payload, ["event_id", "eventId", "source_event_id"])
+    )
     run_id = _first_value(row, payload, ["run_id", "runId", "run"])
     ts_utc = _normalize_event_time(
         _first_value(
@@ -551,7 +563,7 @@ def _event_key_fields(
             ],
         )
     )
-    endpoint = _clean_text(
+    endpoint_path = _clean_text(
         _first_value(
             row,
             payload,
@@ -564,7 +576,7 @@ def _event_key_fields(
         event_type = _clean_text(
             _first_value(row, payload, ["event_type", "type", "kind"])
             or default_event_type
-            or ("request" if endpoint else "event")
+            or ("request" if endpoint_path else "event")
         ).lower()
     error_type = _clean_text(
         _first_value(row, payload, ["error_type", "exception_type", "error", "exception"])
@@ -575,6 +587,7 @@ def _event_key_fields(
     request_id = _clean_text(
         _first_value(row, payload, ["request_id", "trace_id", "id", "uuid"])
     )
+    status_code = _status_code(row, payload)
     symbol_value = _clean_text(
         _first_value(
             row,
@@ -584,11 +597,13 @@ def _event_key_fields(
     )
     symbol = normalize_symbol(symbol_value) if symbol_value else ""
     fields = {
-        "strategy": _clean_text(row.get("strategy")),
+        "event_id": event_id,
+        "strategy_id": strategy_id,
         "run_id": _clean_text(run_id),
         "event_type": event_type,
-        "endpoint": endpoint,
+        "endpoint_path": endpoint_path,
         "ts_utc": ts_utc,
+        "status_code": "" if status_code is None else str(status_code),
         "error_type": error_type,
         "request_id": request_id,
         "symbol": symbol,
@@ -598,26 +613,68 @@ def _event_key_fields(
         ).lower(),
         "fallback_used": fallback_used,
     }
-    if not any(fields[key] for key in ["endpoint", "ts_utc", "request_id", "symbol", "error_type"]):
-        fields["payload_hash"] = _payload_hash(row, payload)
+    fields["raw_payload_hash"] = _raw_payload_hash(row, payload, fields)
     return fields
 
 
 def _event_key_from_fields(fields: dict[str, Any]) -> str:
-    stable = {
-        key: value
-        for key, value in fields.items()
-        if value is not None and value != ""
-    }
-    if (
-        stable.get("endpoint")
-        and stable.get("ts_utc")
-        and stable.get("error_type")
-    ):
-        stable.pop("run_id", None)
-        stable.pop("fallback_used", None)
+    event_id = str(fields.get("event_id") or "").strip()
+    if event_id:
+        stable = {
+            "strategy_id": str(fields.get("strategy_id") or "").strip(),
+            "event_id": event_id,
+        }
+    else:
+        stable = {
+            key: value
+            for key, value in fields.items()
+            if key not in {"event_id", "fallback_used"}
+            and value is not None
+            and value != ""
+        }
+        if (
+            stable.get("endpoint_path")
+            and stable.get("ts_utc")
+            and stable.get("error_type")
+        ):
+            # Summary fallback CSV rows often omit run_id while raw request rows carry it.
+            # Endpoint + event time + concrete error are the stable cross-bundle identity.
+            stable.pop("run_id", None)
     rendered = json.dumps(stable, ensure_ascii=False, sort_keys=True, default=str)
     return hashlib.sha256(rendered.encode("utf-8")).hexdigest()
+
+
+def _raw_payload_hash(
+    row: dict[str, Any],
+    payload: dict[str, Any],
+    fields: dict[str, Any],
+) -> str:
+    stable_event = {
+        key: fields.get(key)
+        for key in [
+            "event_id",
+            "strategy_id",
+            "event_type",
+            "endpoint_path",
+            "ts_utc",
+            "status_code",
+            "error_type",
+            "request_id",
+            "symbol",
+            "side",
+            "intent",
+        ]
+        if fields.get(key) not in {None, ""}
+    }
+    has_event_identity = any(
+        stable_event.get(key) for key in ["event_id", "endpoint_path", "ts_utc", "request_id"]
+    )
+    if has_event_identity or (
+        stable_event.get("status_code") and stable_event.get("error_type")
+    ):
+        rendered = json.dumps(stable_event, ensure_ascii=False, sort_keys=True, default=str)
+        return hashlib.sha256(rendered.encode("utf-8")).hexdigest()
+    return _payload_hash(row, payload)
 
 
 def _payload_hash(row: dict[str, Any], payload: dict[str, Any]) -> str:

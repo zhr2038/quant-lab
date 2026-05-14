@@ -229,6 +229,10 @@ def analyze_v5_telemetry(lake_root: Path, date: str | None = None) -> V5Telemetr
         quant_lab_usage_count=int(quant_lab_summary["usage_count"]),
         quant_lab_cost_usage_count=int(quant_lab_summary["cost_usage_count"]),
         quant_lab_fallback_count=int(quant_lab_summary["fallback_count"]),
+        unique_request_count=int(quant_lab_summary["unique_request_count"]),
+        unique_success_count=int(quant_lab_summary["unique_success_count"]),
+        unique_error_count=int(quant_lab_summary["unique_error_count"]),
+        unique_actual_fallback_count=int(quant_lab_summary["unique_actual_fallback_count"]),
         request_success_count=int(quant_lab_summary["request_success_count"]),
         request_error_count=int(quant_lab_summary["request_error_count"]),
         actual_fallback_count=int(quant_lab_summary["actual_fallback_count"]),
@@ -236,6 +240,7 @@ def analyze_v5_telemetry(lake_root: Path, date: str | None = None) -> V5Telemetr
         degraded_reason=str(quant_lab_summary["degraded_reason"]),
         raw_imported_rows=int(quant_lab_summary["raw_imported_rows"]),
         unique_event_rows=int(quant_lab_summary["unique_event_rows"]),
+        duplicate_event_count=int(quant_lab_summary["duplicate_event_count"]),
         duplicate_event_rows=int(quant_lab_summary["duplicate_event_rows"]),
         duplicate_rate=float(quant_lab_summary["duplicate_rate"]),
         first_seen_bundle_ts=quant_lab_summary["first_seen_bundle_ts"],
@@ -301,6 +306,12 @@ def _write_gold(
                 "permission_gate_enforced": quant_lab_summary["permission_gate_enforced"],
                 "cost_gate_enforced": quant_lab_summary["cost_gate_enforced"],
                 "usage_count": quant_lab_summary["usage_count"],
+                "unique_request_count": quant_lab_summary["unique_request_count"],
+                "unique_success_count": quant_lab_summary["unique_success_count"],
+                "unique_error_count": quant_lab_summary["unique_error_count"],
+                "unique_actual_fallback_count": quant_lab_summary[
+                    "unique_actual_fallback_count"
+                ],
                 "request_success_count": quant_lab_summary["request_success_count"],
                 "request_error_count": quant_lab_summary["request_error_count"],
                 "actual_fallback_count": quant_lab_summary["actual_fallback_count"],
@@ -308,6 +319,7 @@ def _write_gold(
                 "degraded_reason": quant_lab_summary["degraded_reason"],
                 "raw_imported_rows": quant_lab_summary["raw_imported_rows"],
                 "unique_event_rows": quant_lab_summary["unique_event_rows"],
+                "duplicate_event_count": quant_lab_summary["duplicate_event_count"],
                 "duplicate_event_rows": quant_lab_summary["duplicate_event_rows"],
                 "duplicate_rate": quant_lab_summary["duplicate_rate"],
                 "first_seen_bundle_ts": quant_lab_summary["first_seen_bundle_ts"],
@@ -719,6 +731,10 @@ def _quant_lab_request_health(requests: pl.DataFrame, fallback: pl.DataFrame) ->
     else:
         degraded_reason = "none"
     return {
+        "unique_request_count": total_requests,
+        "unique_success_count": success_count,
+        "unique_error_count": error_count,
+        "unique_actual_fallback_count": actual_fallback_count,
         "request_success_count": success_count,
         "request_error_count": error_count,
         "actual_fallback_count": actual_fallback_count,
@@ -726,6 +742,7 @@ def _quant_lab_request_health(requests: pl.DataFrame, fallback: pl.DataFrame) ->
         "degraded_reason": degraded_reason,
         "raw_imported_rows": raw_imported_rows,
         "unique_event_rows": unique_event_rows,
+        "duplicate_event_count": duplicate_event_rows,
         "duplicate_event_rows": duplicate_event_rows,
         "duplicate_rate": duplicate_rate,
         "first_seen_bundle_ts": first_seen,
@@ -746,13 +763,16 @@ def _unique_event_rows(df: pl.DataFrame) -> dict[str, dict[str, Any]]:
 
 
 def _event_key(row: dict[str, Any]) -> str:
-    existing = row.get("event_key")
-    if existing is not None and str(existing).strip():
-        return str(existing)
     payload = _payload(row)
     fields = _event_key_fields(row, payload)
-    if (
-        fields.get("endpoint")
+    event_id = str(fields.get("event_id") or "").strip()
+    if event_id:
+        fields = {
+            "strategy_id": str(fields.get("strategy_id") or "").strip(),
+            "event_id": event_id,
+        }
+    elif (
+        fields.get("endpoint_path")
         and fields.get("ts_utc")
         and fields.get("error_type")
     ):
@@ -771,18 +791,28 @@ def _event_key_fields(row: dict[str, Any], payload: dict[str, Any]) -> dict[str,
             ["symbol", "normalized_symbol", "inst_id", "instId", "instrument", "pair"],
         )
     )
+    strategy_id = _event_clean_text(
+        _first_value(row, payload, ["strategy_id", "strategyId", "strategy"])
+        or row.get("strategy")
+    )
+    event_id = _event_clean_text(
+        _first_value(row, payload, ["event_id", "eventId", "source_event_id"])
+    )
+    status_code = _request_status_code(row, payload)
+    endpoint_path = str(
+        _first_value(
+            row,
+            payload,
+            ["endpoint_path", "endpoint", "path", "url", "route", "api_path", "request_path"],
+        )
+        or ""
+    ).strip()
     fields = {
-        "strategy": str(row.get("strategy") or ""),
+        "event_id": event_id,
+        "strategy_id": strategy_id,
         "run_id": str(_first_value(row, payload, ["run_id", "runId", "run"]) or ""),
         "event_type": _analysis_event_type(row, payload, source_path),
-        "endpoint": str(
-            _first_value(
-                row,
-                payload,
-                ["endpoint", "endpoint_path", "path", "url", "route", "api_path", "request_path"],
-            )
-            or ""
-        ).strip(),
+        "endpoint_path": endpoint_path,
         "ts_utc": _normalize_event_time(
             _first_value(
                 row,
@@ -798,6 +828,7 @@ def _event_key_fields(row: dict[str, Any], payload: dict[str, Any]) -> dict[str,
                 ],
             )
         ),
+        "status_code": "" if status_code is None else str(status_code),
         "error_type": str(
             _first_value(row, payload, ["error_type", "exception_type", "error", "exception"])
             or ""
@@ -816,13 +847,42 @@ def _event_key_fields(row: dict[str, Any], payload: dict[str, Any]) -> dict[str,
             ["fallback_used", "used_fallback", "local_fallback"],
         ),
     }
-    if not any(fields[key] for key in ["endpoint", "ts_utc", "request_id", "symbol", "error_type"]):
-        fields["payload_hash"] = hashlib.sha256(
-            json.dumps(payload or row, ensure_ascii=False, sort_keys=True, default=str).encode(
-                "utf-8"
-            )
-        ).hexdigest()
+    fields["raw_payload_hash"] = _analysis_raw_payload_hash(row, payload, fields)
     return {key: value for key, value in fields.items() if value not in {"", None}}
+
+
+def _analysis_raw_payload_hash(
+    row: dict[str, Any],
+    payload: dict[str, Any],
+    fields: dict[str, Any],
+) -> str:
+    stable_event = {
+        key: fields.get(key)
+        for key in [
+            "event_id",
+            "strategy_id",
+            "event_type",
+            "endpoint_path",
+            "ts_utc",
+            "status_code",
+            "error_type",
+            "request_id",
+            "symbol",
+            "side",
+            "intent",
+        ]
+        if fields.get(key) not in {None, ""}
+    }
+    has_event_identity = any(
+        stable_event.get(key) for key in ["event_id", "endpoint_path", "ts_utc", "request_id"]
+    )
+    if has_event_identity or (
+        stable_event.get("status_code") and stable_event.get("error_type")
+    ):
+        rendered = json.dumps(stable_event, ensure_ascii=False, sort_keys=True, default=str)
+        return hashlib.sha256(rendered.encode("utf-8")).hexdigest()
+    rendered = json.dumps(payload or row, ensure_ascii=False, sort_keys=True, default=str)
+    return hashlib.sha256(rendered.encode("utf-8")).hexdigest()
 
 
 def _analysis_event_type(
@@ -833,7 +893,7 @@ def _analysis_event_type(
     if source_path == "summaries/quant_lab_fallbacks.csv":
         return "request"
     value = _first_value(row, payload, ["event_type", "type", "kind"])
-    if value is None and _first_value(row, payload, ["endpoint", "path", "url"]):
+    if value is None and _first_value(row, payload, ["endpoint_path", "endpoint", "path", "url"]):
         value = "request"
     return str(value or "event").strip().lower()
 

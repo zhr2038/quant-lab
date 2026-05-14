@@ -30,6 +30,7 @@ from quant_lab.risk.publish import (
     permission_status,
     risk_permission_stale_vs_telemetry,
 )
+from quant_lab.strategy_telemetry.analyze import _event_key as _v5_telemetry_event_key
 from quant_lab.strategy_telemetry.sanitize import SECRET_PATTERNS, safe_json_dumps
 from quant_lab.symbols import normalize_symbol
 from quant_lab.web import readers
@@ -261,6 +262,10 @@ CSV_SCHEMAS: dict[str, list[str]] = {
         "auto_risk_level",
         "high_issue_count",
         "medium_issue_count",
+        "unique_request_count",
+        "unique_success_count",
+        "unique_error_count",
+        "unique_actual_fallback_count",
         "request_success_count",
         "request_error_count",
         "actual_fallback_count",
@@ -268,6 +273,7 @@ CSV_SCHEMAS: dict[str, list[str]] = {
         "degraded_reason",
         "raw_imported_rows",
         "unique_event_rows",
+        "duplicate_event_count",
         "duplicate_event_rows",
         "duplicate_rate",
         "first_seen_bundle_ts",
@@ -278,6 +284,10 @@ CSV_SCHEMAS: dict[str, list[str]] = {
         "date",
         "status",
         "fallback_count",
+        "unique_request_count",
+        "unique_success_count",
+        "unique_error_count",
+        "unique_actual_fallback_count",
         "request_success_count",
         "request_error_count",
         "actual_fallback_count",
@@ -285,6 +295,7 @@ CSV_SCHEMAS: dict[str, list[str]] = {
         "degraded_reason",
         "raw_imported_rows",
         "unique_event_rows",
+        "duplicate_event_count",
         "duplicate_event_rows",
         "duplicate_rate",
     ],
@@ -318,6 +329,10 @@ CSV_SCHEMAS: dict[str, list[str]] = {
         "permission_gate_enforced",
         "cost_gate_enforced",
         "usage_count",
+        "unique_request_count",
+        "unique_success_count",
+        "unique_error_count",
+        "unique_actual_fallback_count",
         "request_success_count",
         "request_error_count",
         "actual_fallback_count",
@@ -325,6 +340,7 @@ CSV_SCHEMAS: dict[str, list[str]] = {
         "degraded_reason",
         "raw_imported_rows",
         "unique_event_rows",
+        "duplicate_event_count",
         "duplicate_event_rows",
         "duplicate_rate",
         "first_seen_bundle_ts",
@@ -680,7 +696,7 @@ def _dataset_members(frames: dict[str, pl.DataFrame]) -> dict[str, _MemberPayloa
     v5_usage = frames.get("v5_quant_lab_usage", pl.DataFrame())
     v5_compliance = frames.get("v5_quant_lab_compliance", pl.DataFrame())
     v5_cost_usage = frames.get("v5_quant_lab_cost_usage", pl.DataFrame())
-    v5_fallbacks = frames.get("v5_quant_lab_fallback", pl.DataFrame())
+    v5_fallbacks = _dedupe_v5_event_frame(frames.get("v5_quant_lab_fallback", pl.DataFrame()))
 
     return {
         "market/market_snapshot.csv": _csv_member(
@@ -751,6 +767,26 @@ def _dataset_members(frames: dict[str, pl.DataFrame]) -> dict[str, _MemberPayloa
             "v5/v5_quant_lab_fallbacks.csv", v5_fallbacks
         ),
     }
+
+
+def _dedupe_v5_event_frame(frame: pl.DataFrame) -> pl.DataFrame:
+    if frame.is_empty():
+        return frame
+    rows_by_key: dict[str, dict[str, Any]] = {}
+    for row in frame.to_dicts():
+        key = _v5_telemetry_event_key(row)
+        current = rows_by_key.get(key)
+        if current is None or _v5_event_seen_time(row) >= _v5_event_seen_time(current):
+            rows_by_key[key] = row
+    return pl.DataFrame(list(rows_by_key.values()))
+
+
+def _v5_event_seen_time(row: dict[str, Any]) -> datetime:
+    for field in ["last_seen_bundle_ts", "bundle_ts", "ingest_ts"]:
+        value = readers._coerce_timestamp(row.get(field))  # type: ignore[attr-defined]
+        if value is not None:
+            return value
+    return datetime.min.replace(tzinfo=UTC)
 
 
 def _chart_members(frames: dict[str, pl.DataFrame]) -> dict[str, _MemberPayload]:

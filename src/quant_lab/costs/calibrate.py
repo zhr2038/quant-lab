@@ -655,12 +655,35 @@ def _private_account_bills_for_day(root: Path, day: str) -> pl.DataFrame:
 
 
 def _v5_trade_events_for_day(root: Path, day: str) -> pl.DataFrame:
-    return _filter_recent_window(
-        read_parquet_dataset(root / V5_TRADE_EVENT_DATASET),
-        day=day,
-        lookback_days=PRIVATE_COST_LOOKBACK_DAYS,
-        timestamp_columns=("ts_utc", "ts", "timestamp", "time", "created_at"),
+    return _dedupe_v5_trade_events(
+        _filter_recent_window(
+            read_parquet_dataset(root / V5_TRADE_EVENT_DATASET),
+            day=day,
+            lookback_days=PRIVATE_COST_LOOKBACK_DAYS,
+            timestamp_columns=("ts_utc", "ts", "timestamp", "time", "created_at"),
+        )
     )
+
+
+def _dedupe_v5_trade_events(df: pl.DataFrame) -> pl.DataFrame:
+    if df.is_empty():
+        return df
+    rows_by_key: dict[tuple[Any, ...], dict[str, Any]] = {}
+    for row in df.to_dicts():
+        symbol = _symbol_from_trade_row(row)
+        key = (
+            str(row.get("trade_id") or row.get("tradeId") or ""),
+            str(row.get("order_id") or row.get("ordId") or ""),
+            symbol,
+            str(row.get("ts_utc") or row.get("ts") or row.get("timestamp") or ""),
+            str(row.get("side") or "").lower(),
+            str(row.get("qty") or row.get("quantity") or row.get("size") or ""),
+            str(row.get("price") or row.get("fill_price") or row.get("fill_px") or ""),
+            str(row.get("notional_usdt") or row.get("notional") or ""),
+            str(row.get("fee_usdt") or row.get("fee") or ""),
+        )
+        rows_by_key[key] = row
+    return pl.DataFrame(list(rows_by_key.values()), schema=df.schema, orient="row")
 
 
 def _filter_recent_window(

@@ -948,17 +948,16 @@ def _merge_event_row(
     if current is None:
         seeded = dict(row)
         seeded["source_count"] = _source_count(row)
-        seen = _seen_bundle_ts(row)
-        seeded["first_seen_bundle_ts"] = seen
-        seeded["last_seen_bundle_ts"] = seen
+        seeded["first_seen_bundle_ts"] = _first_seen_bundle_ts(row)
+        seeded["last_seen_bundle_ts"] = _last_seen_bundle_ts(row)
         return seeded
 
     current_count = _source_count(current)
     row_count = _source_count(row)
-    current_seen = _seen_bundle_ts(current)
-    row_seen = _seen_bundle_ts(row)
-    first_seen = _min_seen_ts(current.get("first_seen_bundle_ts") or current_seen, row_seen)
-    last_seen = _max_seen_ts(current.get("last_seen_bundle_ts") or current_seen, row_seen)
+    current_seen = _last_seen_bundle_ts(current)
+    row_seen = _last_seen_bundle_ts(row)
+    first_seen = _min_seen_ts(_first_seen_bundle_ts(current), _first_seen_bundle_ts(row))
+    last_seen = _max_seen_ts(current_seen, row_seen)
 
     latest = row if _seen_sort_value(row_seen) >= _seen_sort_value(last_seen) else current
     merged = dict(latest)
@@ -979,6 +978,14 @@ def _source_count(row: dict[str, Any]) -> int:
 
 def _seen_bundle_ts(row: dict[str, Any]) -> Any:
     return row.get("bundle_ts") or row.get("ingest_ts")
+
+
+def _first_seen_bundle_ts(row: dict[str, Any]) -> Any:
+    return row.get("first_seen_bundle_ts") or _seen_bundle_ts(row)
+
+
+def _last_seen_bundle_ts(row: dict[str, Any]) -> Any:
+    return row.get("last_seen_bundle_ts") or _seen_bundle_ts(row)
 
 
 def _seen_sort_value(value: Any) -> datetime:

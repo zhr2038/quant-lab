@@ -257,6 +257,8 @@ def test_ingest_overlapping_bundles_deduplicate_quant_lab_timeout(tmp_path):
     assert health["raw_imported_rows"][0] == 6
     assert health["unique_event_rows"][0] == 1
     assert health["duplicate_event_rows"][0] == 5
+    assert health["first_seen_bundle_ts"][0].isoformat().startswith("2026-05-14T23:01:00")
+    assert health["last_seen_bundle_ts"][0].isoformat().startswith("2026-05-14T23:10:00")
 
 
 def test_ingest_latest_quant_lab_requests_counts_unique_health(tmp_path):

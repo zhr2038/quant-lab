@@ -429,6 +429,66 @@ def test_export_warns_public_proxy_cost_without_private_actuals(tmp_path):
     ) in data_quality["warnings"]
 
 
+def test_export_reports_private_fills_when_actual_cost_is_zero(tmp_path):
+    lake_root = _fixture_lake(tmp_path)
+    write_parquet_dataset(
+        pl.DataFrame(
+            [
+                {
+                    "endpoint": "/api/v5/trade/fills-history",
+                    "ingest_ts": datetime.now(UTC),
+                    "raw_json": "{}",
+                }
+            ]
+        ),
+        lake_root / "bronze" / "okx_private_readonly" / "fills_history",
+    )
+    write_parquet_dataset(
+        pl.DataFrame(
+            [
+                {
+                    "day": "2026-05-12",
+                    "status": "CRITICAL",
+                    "cost_model_version": "costs-v1",
+                    "actual_rows": 0,
+                    "proxy_rows": 1,
+                    "global_default_rows": 0,
+                    "fallback_ratio": 1.0,
+                    "symbols_with_actual_cost": "[]",
+                    "symbols_with_mixed_cost": "[]",
+                    "symbols_with_proxy_only": "[\"BNB-USDT\"]",
+                    "symbols_proxy_only": "[\"BNB-USDT\"]",
+                    "symbols_missing_cost": "[]",
+                    "actual_sample_count_by_symbol": "{}",
+                    "data_quality_checks_json": (
+                        "{\"private_fills_present_but_actual_cost_zero\":false}"
+                    ),
+                    "min_sample_count": 30,
+                    "warnings_json": "[\"private_fills_present_but_actual_cost_zero\"]",
+                    "created_at": datetime.now(UTC),
+                }
+            ]
+        ),
+        lake_root / "gold" / "cost_health_daily",
+    )
+
+    result = export_daily_pack(
+        export_date="2026-05-12",
+        lake_root=lake_root,
+        out_dir=tmp_path / "exports",
+        profile="expert",
+        command_line=["qlab", "export-daily"],
+    )
+
+    with zipfile.ZipFile(result.zip_path) as archive:
+        data_quality = json.loads(archive.read("data_quality.json").decode("utf-8"))
+
+    assert any(
+        warning.startswith("private_fills_present_but_actual_cost_zero")
+        for warning in data_quality["warnings"]
+    )
+
+
 def test_export_market_tables_keep_symbol_universe_visible(tmp_path):
     lake_root = _fixture_lake(tmp_path)
     now = datetime.now(UTC)

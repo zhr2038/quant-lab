@@ -146,9 +146,16 @@ CSV_SCHEMAS: dict[str, list[str]] = {
         "global_default_rows",
         "fallback_ratio",
         "symbols_with_actual_cost",
+        "symbols_with_mixed_cost",
         "symbols_with_proxy_only",
+        "symbols_proxy_only",
         "symbols_missing_cost",
+        "actual_sample_count_by_symbol",
+        "data_quality_checks_json",
         "min_sample_count",
+        "api_global_default_count",
+        "api_symbol_proxy_hit_count",
+        "api_regime_fallback_count",
         "warnings_json",
         "created_at",
     ],
@@ -1005,12 +1012,44 @@ def _data_quality_payload(
     )
     fills = snapshot.frames.get("okx_private_readonly_fills", pl.DataFrame())
     bills = snapshot.frames.get("okx_private_readonly_bills", pl.DataFrame())
+    cost_health = snapshot.frames.get("cost_health_daily", pl.DataFrame())
     proxy_only = _all_cost_rows_public_proxy(costs)
+    latest_cost_health = (
+        cost_health.sort("day").tail(1).to_dicts()[0]
+        if not cost_health.is_empty() and "day" in cost_health.columns
+        else {}
+    )
+    health_checks = _jsonish_dict(latest_cost_health.get("data_quality_checks_json"))
+    actual_rows = int(latest_cost_health.get("actual_rows") or 0)
     checks.append(
         _check(
             "okx_private_actual_cost_available",
-            not (proxy_only and fills.height < 5 and bills.height < 5),
+            not (proxy_only and actual_rows == 0),
             "actual cost unavailable; cost model is public_spread_proxy only",
+            warning_only=True,
+        )
+    )
+    checks.append(
+        _check(
+            "private_fills_present_but_actual_cost_zero",
+            health_checks.get("private_fills_present_but_actual_cost_zero", True) is not False,
+            f"private_fills={fills.height}; actual_rows={actual_rows}",
+            warning_only=True,
+        )
+    )
+    checks.append(
+        _check(
+            "bills_present_but_fee_bps_missing",
+            health_checks.get("bills_present_but_fee_bps_missing", True) is not False,
+            f"private_bills={bills.height}",
+            warning_only=True,
+        )
+    )
+    checks.append(
+        _check(
+            "actual_cost_symbol_coverage",
+            actual_rows > 0 or fills.height == 0,
+            str(health_checks.get("actual_cost_symbol_coverage", "n/a")),
             warning_only=True,
         )
     )
@@ -1430,6 +1469,18 @@ def _v5_strategy_versions(frames: dict[str, pl.DataFrame]) -> set[str]:
 
 
 def _json_payload(value: Any) -> dict[str, Any]:
+    if not isinstance(value, str) or not value.strip():
+        return {}
+    try:
+        payload = json.loads(value)
+    except json.JSONDecodeError:
+        return {}
+    return payload if isinstance(payload, dict) else {}
+
+
+def _jsonish_dict(value: Any) -> dict[str, Any]:
+    if isinstance(value, dict):
+        return value
     if not isinstance(value, str) or not value.strip():
         return {}
     try:

@@ -73,6 +73,70 @@ def test_cost_health_counts_actual_fills_source():
     assert row.global_default_rows == 1
     assert row.symbols_with_actual_cost == ["BNB-USDT"]
     assert row.symbols_with_proxy_only == ["SOL-USDT"]
+    assert row.symbols_proxy_only == ["SOL-USDT"]
+    assert row.actual_sample_count_by_symbol == {"BNB-USDT": 30}
+
+
+def test_cost_health_counts_mixed_actual_proxy_as_private_cost_available():
+    row = build_cost_health_daily(
+        pl.DataFrame(
+            [
+                {
+                    "day": "2026-05-10",
+                    "symbol": "BNB-USDT",
+                    "source": "mixed_actual_proxy",
+                    "sample_count": 2,
+                    "fallback_level": "SAMPLE_TOO_SMALL;SLIPPAGE_UNKNOWN;SPREAD_PROXY",
+                    "cost_model_version": "costs-v1",
+                },
+                {
+                    "day": "2026-05-10",
+                    "symbol": "SOL-USDT",
+                    "source": "public_spread_proxy",
+                    "sample_count": 100,
+                    "fallback_level": "PUBLIC_SPREAD_PROXY",
+                    "cost_model_version": "costs-v1",
+                },
+            ]
+        ),
+        day="2026-05-10",
+        min_sample_count=30,
+        expected_symbols=["BNB-USDT", "SOL-USDT"],
+        private_fill_rows=2,
+        private_bill_rows=1,
+    )
+
+    assert row.status == "WARNING"
+    assert row.actual_rows == 1
+    assert row.symbols_with_mixed_cost == ["BNB-USDT"]
+    assert row.symbols_with_proxy_only == ["SOL-USDT"]
+    checks = json.loads(row.data_quality_checks_json)
+    assert checks["private_fills_present_but_actual_cost_zero"] is True
+    assert checks["actual_cost_symbol_coverage"] == "1/2"
+
+
+def test_cost_health_flags_private_fills_without_actual_cost():
+    row = build_cost_health_daily(
+        pl.DataFrame(
+            [
+                {
+                    "day": "2026-05-10",
+                    "symbol": "BNB-USDT",
+                    "source": "public_spread_proxy",
+                    "sample_count": 10,
+                    "fallback_level": "PUBLIC_SPREAD_PROXY",
+                    "cost_model_version": "costs-v1",
+                }
+            ]
+        ),
+        day="2026-05-10",
+        min_sample_count=30,
+        expected_symbols=["BNB-USDT"],
+        private_fill_rows=2,
+    )
+
+    assert row.status == "CRITICAL"
+    assert "private_fills_present_but_actual_cost_zero" in json.loads(row.warnings_json)
 
 
 def test_cost_health_proxy_only_is_warning():

@@ -1,5 +1,6 @@
 import json
 from collections.abc import Sequence
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any
 
@@ -8,7 +9,13 @@ from pydantic import BaseModel, ConfigDict, Field
 
 from quant_lab.costs.health import build_cost_health_daily, publish_cost_health_daily
 from quant_lab.costs.model import DEFAULT_FALLBACK_COST_BPS, CostBucketDaily
-from quant_lab.data.lake import read_parquet_dataset, upsert_parquet_dataset
+from quant_lab.data.lake import read_parquet_dataset, read_parquet_lazy, write_parquet_dataset
+from quant_lab.ingest.okx_readonly_private import (
+    BRONZE_BILLS_DATASET,
+    BRONZE_FILLS_DATASET,
+    normalize_okx_bills,
+    normalize_okx_fills,
+)
 from quant_lab.symbols import normalize_symbol
 
 FILL_EVENT_DATASET = Path("silver") / "fill_event"
@@ -20,6 +27,7 @@ MARKET_BAR_DATASET = Path("silver") / "market_bar"
 COST_BUCKET_DAILY_DATASET = Path("gold") / "cost_bucket_daily"
 COST_HEALTH_DAILY_DATASET = Path("gold") / "cost_health_daily"
 DEFAULT_MIN_SAMPLE_COUNT = 30
+PRIVATE_COST_LOOKBACK_DAYS = 7
 
 COST_BUCKET_DAILY_SCHEMA = {
     "day": pl.Utf8,
@@ -66,17 +74,20 @@ def calibrate_costs_for_day(
     min_sample_count: int = DEFAULT_MIN_SAMPLE_COUNT,
 ) -> CostCalibrationResult:
     root = Path(lake_root)
-    market_bars = _filter_day(read_parquet_dataset(root / MARKET_BAR_DATASET), day)
+    market_bars = _read_day_dataset(root, MARKET_BAR_DATASET, day)
+    fill_events = _private_fill_events_for_day(root, day)
+    account_bills = _private_account_bills_for_day(root, day)
     rows = build_cost_bucket_daily_rows(
-        fill_events=_filter_day(read_parquet_dataset(root / FILL_EVENT_DATASET), day),
-        account_bills=_filter_day(read_parquet_dataset(root / ACCOUNT_BILL_DATASET), day),
-        order_events=_filter_day(read_parquet_dataset(root / "silver" / "order_event"), day),
-        orderbook_snapshots=_filter_day(
-            read_parquet_dataset(root / ORDERBOOK_SNAPSHOT_DATASET),
-            day,
+        fill_events=fill_events,
+        account_bills=account_bills,
+        order_events=_filter_recent_window(
+            read_parquet_dataset(root / "silver" / "order_event"),
+            day=day,
+            lookback_days=PRIVATE_COST_LOOKBACK_DAYS,
         ),
-        trade_prints=_filter_day(read_parquet_dataset(root / TRADE_PRINT_DATASET), day),
-        v5_trade_events=_filter_day(read_parquet_dataset(root / V5_TRADE_EVENT_DATASET), day),
+        orderbook_snapshots=_read_day_dataset(root, ORDERBOOK_SNAPSHOT_DATASET, day),
+        trade_prints=_read_day_dataset(root, TRADE_PRINT_DATASET, day),
+        v5_trade_events=_read_day_dataset(root, V5_TRADE_EVENT_DATASET, day),
         market_bars=market_bars,
         day=day,
         min_sample_count=min_sample_count,
@@ -87,7 +98,13 @@ def calibrate_costs_for_day(
         cost_frame,
         day=day,
         min_sample_count=min_sample_count,
-        expected_symbols=_symbols_from_public_data(pl.DataFrame(), market_bars),
+        expected_symbols=sorted(
+            set(_symbols_from_public_data(pl.DataFrame(), market_bars))
+            | _symbols_from_fill_events(fill_events)
+        ),
+        private_fill_rows=fill_events.height,
+        private_bill_rows=account_bills.height,
+        fee_bps_missing_count=_fee_missing_count(fill_events),
     )
     health_rows_written = publish_cost_health_daily(root, health)
     return CostCalibrationResult(
@@ -123,12 +140,25 @@ def build_cost_bucket_daily_rows(
     ]
 
     if fill_samples:
-        return _actual_fill_rows(
+        actual_rows = _actual_fill_rows(
             fill_samples=fill_samples,
             bills_present=not account_bills.is_empty(),
             spread_samples=spread_samples,
             day=day,
             min_sample_count=min_sample_count,
+        )
+        actual_symbols = {row.symbol for row in actual_rows}
+        proxy_rows = _public_spread_proxy_rows(
+            spread_samples={
+                symbol: samples
+                for symbol, samples in spread_samples.items()
+                if symbol not in actual_symbols
+            },
+            day=day,
+        )
+        return sorted(
+            [*actual_rows, *proxy_rows],
+            key=lambda row: (row.symbol, row.notional_bucket),
         )
 
     if spread_samples:
@@ -144,11 +174,20 @@ def build_cost_bucket_daily_rows(
 def publish_cost_bucket_daily(lake_root: str | Path, rows: Sequence[CostBucketDaily]) -> int:
     dataset_path = Path(lake_root) / COST_BUCKET_DAILY_DATASET
     df = _cost_bucket_daily_frame(rows)
-    return upsert_parquet_dataset(
-        df,
-        dataset_path,
-        key_columns=["day", "symbol", "regime", "event_type", "notional_bucket"],
-    )
+    existing = read_parquet_dataset(dataset_path)
+    days = sorted({row.day for row in rows})
+    if not existing.is_empty() and "day" in existing.columns and days:
+        existing = existing.filter(~pl.col("day").is_in(days))
+    frames = [frame for frame in [existing, df] if not frame.is_empty()]
+    combined = pl.concat(frames, how="diagonal_relaxed") if frames else df
+    if not combined.is_empty():
+        combined = combined.unique(
+            subset=["day", "symbol", "regime", "event_type", "notional_bucket"],
+            keep="last",
+            maintain_order=True,
+        )
+    write_parquet_dataset(combined, dataset_path)
+    return combined.height
 
 
 def _actual_fill_rows(
@@ -212,10 +251,9 @@ def _actual_fill_row(
 
     source = _actual_fill_source(
         samples=samples,
-        bills_present=bills_present,
         fee_missing=fee_missing,
         sample_too_small=sample_too_small,
-        spread_values=spread_values,
+        slippage_unknown=slippage_unknown,
     )
     fallback_parts = []
     if not bills_present:
@@ -230,6 +268,8 @@ def _actual_fill_row(
         fallback_parts.append("SPREAD_MISSING")
     else:
         fallback_parts.append("SPREAD_PROXY")
+    if _uses_private_fill_lookback(samples, day):
+        fallback_parts.append("PRIVATE_FILL_LOOKBACK")
 
     fee_p50, fee_p75, fee_p90 = _percentiles_or_zero(fee_samples)
     slippage_p50, slippage_p75, slippage_p90 = _percentiles_or_zero(slippage_samples)
@@ -332,16 +372,34 @@ def _fill_samples(
         if notional <= 0:
             continue
         fee = _optional_float(row.get("fee"))
+        fee_currency = str(row.get("fee_currency") or "")
         order_id = str(row.get("order_id") or "")
         side = str(row.get("side") or "").lower()
+        symbol = normalize_symbol(row["inst_id"])
         reference_price = (reference_prices or {}).get(order_id)
+        fee_abs_usdt = _fee_abs_usdt(
+            fee=fee,
+            fee_currency=fee_currency,
+            symbol=symbol,
+            fill_price=price,
+        )
         samples.append(
             {
-                "symbol": normalize_symbol(row["inst_id"]),
+                "symbol": symbol,
                 "source_kind": "okx_readonly_private",
                 "notional": notional,
                 "notional_bucket": _notional_bucket(notional),
-                "fee_bps": abs(fee) / notional * 10_000 if fee is not None else None,
+                "trade_id": str(row.get("trade_id") or ""),
+                "order_id": order_id,
+                "side": side,
+                "fill_px": price,
+                "fill_qty": size,
+                "fee": fee,
+                "fee_ccy": fee_currency,
+                "ts": row.get("ts"),
+                "fee_bps": fee_abs_usdt / notional * 10_000
+                if fee_abs_usdt is not None
+                else None,
                 "slippage_bps": _slippage_bps(
                     fill_price=price,
                     reference_price=reference_price,
@@ -366,6 +424,13 @@ def _v5_trade_fill_samples(v5_trade_events: pl.DataFrame) -> list[dict[str, Any]
         if notional is None or notional <= 0:
             continue
         fee = _first_float(row, ["fee", "commission", "fee_usdt", "fee_abs"])
+        fee_ccy = str(row.get("fee_ccy") or row.get("fee_currency") or "")
+        fee_abs_usdt = _fee_abs_usdt(
+            fee=fee,
+            fee_currency=fee_ccy,
+            symbol=symbol,
+            fill_price=price,
+        )
         slippage = _first_float(
             row,
             [
@@ -381,7 +446,17 @@ def _v5_trade_fill_samples(v5_trade_events: pl.DataFrame) -> list[dict[str, Any]
                 "source_kind": "v5_trades_csv",
                 "notional": abs(notional),
                 "notional_bucket": _notional_bucket(abs(notional)),
-                "fee_bps": abs(fee) / abs(notional) * 10_000 if fee is not None else None,
+                "trade_id": str(row.get("trade_id") or row.get("tradeId") or ""),
+                "order_id": str(row.get("order_id") or row.get("ordId") or ""),
+                "side": str(row.get("side") or ""),
+                "fill_px": price,
+                "fill_qty": qty,
+                "fee": fee,
+                "fee_ccy": fee_ccy,
+                "ts": row.get("ts"),
+                "fee_bps": fee_abs_usdt / abs(notional) * 10_000
+                if fee_abs_usdt is not None
+                else None,
                 "slippage_bps": slippage if slippage is not None and slippage >= 0 else None,
             }
         )
@@ -477,6 +552,26 @@ def _filter_day(df: pl.DataFrame, day: str) -> pl.DataFrame:
     return df.filter(pl.col("ts").cast(pl.Utf8).str.starts_with(day))
 
 
+def _read_day_dataset(
+    root: Path,
+    dataset: Path,
+    day: str,
+    timestamp_column: str = "ts",
+) -> pl.DataFrame:
+    dataset_path = root / dataset
+    try:
+        lazy = read_parquet_lazy(dataset_path)
+        columns = lazy.collect_schema().names()
+        if timestamp_column not in columns:
+            return lazy.collect(engine="streaming")
+        return (
+            lazy.filter(pl.col(timestamp_column).cast(pl.Utf8).str.starts_with(day))
+            .collect(engine="streaming")
+        )
+    except Exception:
+        return _filter_day(read_parquet_dataset(dataset_path), day)
+
+
 def _symbols_from_public_data(trade_prints: pl.DataFrame, market_bars: pl.DataFrame) -> list[str]:
     symbols: set[str] = set()
     for df in [trade_prints, market_bars]:
@@ -486,6 +581,138 @@ def _symbols_from_public_data(trade_prints: pl.DataFrame, market_bars: pl.DataFr
                 for symbol in df["symbol"].drop_nulls().to_list()
             )
     return sorted(symbols)
+
+
+def _symbols_from_fill_events(fill_events: pl.DataFrame) -> set[str]:
+    if fill_events.is_empty() or "inst_id" not in fill_events.columns:
+        return set()
+    return {
+        normalize_symbol(symbol)
+        for symbol in fill_events["inst_id"].drop_nulls().to_list()
+        if str(symbol).strip()
+    }
+
+
+def _private_fill_events_for_day(root: Path, day: str) -> pl.DataFrame:
+    silver = read_parquet_dataset(root / FILL_EVENT_DATASET)
+    bronze = _bronze_private_fills_frame(read_parquet_dataset(root / BRONZE_FILLS_DATASET))
+    return _filter_recent_window(
+        _dedupe_frame(
+            _concat_frames([silver, bronze]),
+            key_columns=["venue", "inst_id", "trade_id", "order_id", "ts"],
+        ),
+        day=day,
+        lookback_days=PRIVATE_COST_LOOKBACK_DAYS,
+    )
+
+
+def _private_account_bills_for_day(root: Path, day: str) -> pl.DataFrame:
+    silver = read_parquet_dataset(root / ACCOUNT_BILL_DATASET)
+    bronze = _bronze_private_bills_frame(read_parquet_dataset(root / BRONZE_BILLS_DATASET))
+    return _filter_recent_window(
+        _dedupe_frame(
+            _concat_frames([silver, bronze]),
+            key_columns=["venue", "bill_id", "ccy", "ts"],
+        ),
+        day=day,
+        lookback_days=PRIVATE_COST_LOOKBACK_DAYS,
+    )
+
+
+def _filter_recent_window(df: pl.DataFrame, *, day: str, lookback_days: int) -> pl.DataFrame:
+    if df.is_empty() or "ts" not in df.columns:
+        return df
+    end = datetime.fromisoformat(day).replace(tzinfo=UTC) + timedelta(days=1)
+    start = end - timedelta(days=lookback_days)
+    rows = [
+        row
+        for row in df.to_dicts()
+        if (ts := _parse_utc_timestamp(row.get("ts"))) is not None and start <= ts < end
+    ]
+    if not rows:
+        return pl.DataFrame()
+    return pl.DataFrame(rows, schema=df.schema, orient="row")
+
+
+def _parse_utc_timestamp(value: Any) -> datetime | None:
+    if value is None:
+        return None
+    if isinstance(value, datetime):
+        return value.astimezone(UTC) if value.tzinfo else value.replace(tzinfo=UTC)
+    text = str(value).strip()
+    if not text:
+        return None
+    try:
+        parsed = datetime.fromisoformat(text.replace("Z", "+00:00"))
+    except ValueError:
+        return None
+    return parsed.astimezone(UTC) if parsed.tzinfo else parsed.replace(tzinfo=UTC)
+
+
+def _uses_private_fill_lookback(samples: list[dict[str, Any]], day: str) -> bool:
+    for sample in samples:
+        ts = _parse_utc_timestamp(sample.get("ts"))
+        if ts is not None and ts.date().isoformat() != day:
+            return True
+    return False
+
+
+def _bronze_private_fills_frame(bronze: pl.DataFrame) -> pl.DataFrame:
+    raw_items = _raw_items_from_bronze(bronze)
+    if not raw_items:
+        return pl.DataFrame()
+    try:
+        rows = [record.model_dump(mode="json") for record in normalize_okx_fills(raw_items)]
+    except (KeyError, TypeError, ValueError):
+        return pl.DataFrame()
+    return pl.DataFrame(rows)
+
+
+def _bronze_private_bills_frame(bronze: pl.DataFrame) -> pl.DataFrame:
+    raw_items = _raw_items_from_bronze(bronze)
+    if not raw_items:
+        return pl.DataFrame()
+    try:
+        rows = [record.model_dump(mode="json") for record in normalize_okx_bills(raw_items)]
+    except (KeyError, TypeError, ValueError):
+        return pl.DataFrame()
+    return pl.DataFrame(rows)
+
+
+def _raw_items_from_bronze(bronze: pl.DataFrame) -> list[dict[str, Any]]:
+    if bronze.is_empty() or "raw_json" not in bronze.columns:
+        return []
+    items: list[dict[str, Any]] = []
+    for raw_json in bronze["raw_json"].drop_nulls().to_list():
+        try:
+            loaded = json.loads(str(raw_json))
+        except json.JSONDecodeError:
+            continue
+        if isinstance(loaded, dict):
+            items.append(loaded)
+    return items
+
+
+def _concat_frames(frames: list[pl.DataFrame]) -> pl.DataFrame:
+    usable = [frame for frame in frames if not frame.is_empty()]
+    if not usable:
+        return pl.DataFrame()
+    return pl.concat(usable, how="diagonal_relaxed")
+
+
+def _dedupe_frame(df: pl.DataFrame, key_columns: list[str]) -> pl.DataFrame:
+    if df.is_empty():
+        return df
+    keys = [column for column in key_columns if column in df.columns]
+    if not keys:
+        return df
+    return df.unique(subset=keys, keep="last", maintain_order=True)
+
+
+def _fee_missing_count(fill_events: pl.DataFrame) -> int:
+    if fill_events.is_empty() or "fee" not in fill_events.columns:
+        return 0
+    return fill_events.filter(pl.col("fee").is_null()).height
 
 
 def _cost_bucket_daily_frame(rows: Sequence[CostBucketDaily]) -> pl.DataFrame:
@@ -544,17 +771,43 @@ def _first_float(row: dict[str, Any], keys: list[str]) -> float | None:
     return None
 
 
+def _fee_abs_usdt(
+    *,
+    fee: float | None,
+    fee_currency: str,
+    symbol: str,
+    fill_price: float | None,
+) -> float | None:
+    if fee is None:
+        return None
+    normalized_currency = fee_currency.upper().strip()
+    base, quote = _symbol_parts(symbol)
+    fee_abs = abs(fee)
+    if normalized_currency in {"", quote, "USDT", "USDC", "USD"}:
+        return fee_abs
+    if normalized_currency == base and fill_price is not None:
+        return fee_abs * fill_price
+    return fee_abs
+
+
+def _symbol_parts(symbol: str) -> tuple[str, str]:
+    normalized = normalize_symbol(symbol)
+    if "-" not in normalized:
+        return normalized, ""
+    base, quote = normalized.split("-", 1)
+    return base, quote
+
+
 def _actual_fill_source(
     *,
     samples: list[dict[str, Any]],
-    bills_present: bool,
     fee_missing: bool,
     sample_too_small: bool,
-    spread_values: list[float],
+    slippage_unknown: bool,
 ) -> str:
     source_kinds = {str(sample.get("source_kind") or "") for sample in samples}
-    if "v5_trades_csv" in source_kinds:
-        return "mixed_actual_proxy" if spread_values else "actual_fills"
-    if bills_present and not fee_missing and not sample_too_small:
-        return "actual_okx_fills_and_bills"
-    return "actual_okx_fills_fee_missing"
+    if fee_missing:
+        return "actual_okx_fills_fee_missing"
+    if slippage_unknown or sample_too_small or "v5_trades_csv" in source_kinds:
+        return "mixed_actual_proxy"
+    return "actual_fills"

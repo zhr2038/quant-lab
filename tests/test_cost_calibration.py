@@ -6,6 +6,10 @@ import polars as pl
 from quant_lab.costs.calibrate import calibrate_costs_for_day
 from quant_lab.costs.model import cost_bucket_daily_to_cost_buckets, estimate_cost_bps
 from quant_lab.data.lake import read_parquet_dataset, write_parquet_dataset
+from quant_lab.ingest.okx_readonly_private import (
+    BRONZE_BILLS_DATASET,
+    BRONZE_FILLS_DATASET,
+)
 
 
 def test_actual_fills_and_bills_generate_actual_cost_bucket(tmp_path):
@@ -18,7 +22,7 @@ def test_actual_fills_and_bills_generate_actual_cost_bucket(tmp_path):
 
     assert result.rows_written == 2
     assert result.health_rows_written == 1
-    assert result.sources == ["actual_okx_fills_and_bills"]
+    assert result.sources == ["mixed_actual_proxy"]
     rows = read_parquet_dataset(lake_root / "gold" / "cost_bucket_daily").to_dicts()
     assert len(rows) == 2
     row = [item for item in rows if item["notional_bucket"] == "0-1k"][0]
@@ -33,9 +37,10 @@ def test_actual_fills_and_bills_generate_actual_cost_bucket(tmp_path):
     assert row["slippage_bps_p50"] == 0.0
     assert row["total_cost_bps_p50"] == 205.0
     assert row["fallback_level"] == "SLIPPAGE_UNKNOWN;SPREAD_PROXY"
-    assert row["source"] == "actual_okx_fills_and_bills"
+    assert row["source"] == "mixed_actual_proxy"
     health = read_parquet_dataset(lake_root / "gold" / "cost_health_daily").to_dicts()[0]
     assert health["actual_rows"] == 2
+    assert "BTC-USDT" in json.loads(health["symbols_with_mixed_cost"])
 
 
 def test_missing_bills_fallback_is_explicit(tmp_path):
@@ -46,7 +51,7 @@ def test_missing_bills_fallback_is_explicit(tmp_path):
     calibrate_costs_for_day(lake_root, "2026-05-10")
 
     row = read_parquet_dataset(lake_root / "gold" / "cost_bucket_daily").to_dicts()[0]
-    assert row["source"] == "actual_okx_fills_fee_missing"
+    assert row["source"] == "mixed_actual_proxy"
     assert "BILLS_MISSING" in row["fallback_level"]
     assert "SLIPPAGE_UNKNOWN" in row["fallback_level"]
     assert row["fee_bps_p50"] == 5.0
@@ -61,7 +66,7 @@ def test_sample_too_small_is_explicit_and_not_fully_actual(tmp_path):
     calibrate_costs_for_day(lake_root, "2026-05-10", min_sample_count=30)
 
     row = read_parquet_dataset(lake_root / "gold" / "cost_bucket_daily").to_dicts()[0]
-    assert row["source"] == "actual_okx_fills_fee_missing"
+    assert row["source"] == "mixed_actual_proxy"
     assert "SAMPLE_TOO_SMALL" in row["fallback_level"]
 
 
@@ -104,6 +109,84 @@ def test_v5_trade_events_generate_actual_fill_bucket_before_spread_proxy(tmp_pat
 
     health = read_parquet_dataset(lake_root / "gold" / "cost_health_daily").to_dicts()[0]
     assert health["actual_rows"] == len(rows)
+
+
+def test_okx_private_bronze_fills_and_bills_feed_mixed_actual_cost(tmp_path):
+    lake_root = tmp_path / "lake"
+    _write_bronze_okx_private_fills(
+        lake_root,
+        [
+            _raw_bnb_fill("fill-1", "order-1", "300", "10", "-0.001", fee_ccy="BNB"),
+            _raw_bnb_fill("fill-2", "order-2", "310", "5", "-0.155"),
+        ],
+    )
+    _write_bronze_okx_private_bills(lake_root, [_raw_bnb_bill()])
+    _write_orderbooks(lake_root, symbol="BNB-USDT")
+
+    result = calibrate_costs_for_day(lake_root, "2026-05-10", min_sample_count=1)
+
+    assert result.sources == ["mixed_actual_proxy"]
+    rows = read_parquet_dataset(lake_root / "gold" / "cost_bucket_daily").to_dicts()
+    all_row = [
+        row for row in rows if row["symbol"] == "BNB-USDT" and row["notional_bucket"] == "all"
+    ][0]
+    assert all_row["source"] == "mixed_actual_proxy"
+    assert all_row["sample_count"] == 2
+    assert all_row["fee_bps_p50"] > 0
+    assert "SLIPPAGE_UNKNOWN" in all_row["fallback_level"]
+
+    health = read_parquet_dataset(lake_root / "gold" / "cost_health_daily").to_dicts()[0]
+    assert health["actual_rows"] == len(rows)
+    assert json.loads(health["symbols_with_mixed_cost"]) == ["BNB-USDT"]
+    assert json.loads(health["actual_sample_count_by_symbol"]) == {"BNB-USDT": 2}
+
+
+def test_actual_fills_do_not_hide_proxy_rows_for_other_symbols(tmp_path):
+    lake_root = tmp_path / "lake"
+    _write_fills(lake_root)
+    _write_bills(lake_root)
+    _write_orderbooks_multi(lake_root, ["BTC-USDT", "ETH-USDT"])
+
+    calibrate_costs_for_day(lake_root, "2026-05-10", min_sample_count=1)
+
+    rows = read_parquet_dataset(lake_root / "gold" / "cost_bucket_daily").to_dicts()
+    sources_by_symbol = {
+        row["symbol"]: row["source"] for row in rows if row["notional_bucket"] == "all"
+    }
+    assert sources_by_symbol["BTC-USDT"] == "mixed_actual_proxy"
+    assert sources_by_symbol["ETH-USDT"] == "public_spread_proxy"
+
+
+def test_recalibration_replaces_same_day_obsolete_proxy_rows(tmp_path):
+    lake_root = tmp_path / "lake"
+    _write_orderbooks(lake_root)
+    calibrate_costs_for_day(lake_root, "2026-05-10", min_sample_count=1)
+
+    _write_fills(lake_root)
+    _write_bills(lake_root)
+    _write_orderbooks(lake_root)
+    calibrate_costs_for_day(lake_root, "2026-05-10", min_sample_count=1)
+
+    rows = read_parquet_dataset(lake_root / "gold" / "cost_bucket_daily").to_dicts()
+    btc_rows = [row for row in rows if row["symbol"] == "BTC-USDT"]
+    assert {row["source"] for row in btc_rows} == {"mixed_actual_proxy"}
+
+
+def test_recent_private_fills_can_calibrate_later_cost_day_with_explicit_lookback(tmp_path):
+    lake_root = tmp_path / "lake"
+    _write_fills(lake_root)
+    _write_bills(lake_root)
+    _write_orderbooks_for_day(lake_root, symbol="BTC-USDT", day="2026-05-14")
+
+    calibrate_costs_for_day(lake_root, "2026-05-14", min_sample_count=1)
+
+    row = [
+        item
+        for item in read_parquet_dataset(lake_root / "gold" / "cost_bucket_daily").to_dicts()
+        if item["symbol"] == "BTC-USDT" and item["notional_bucket"] == "all"
+    ][0]
+    assert row["source"] == "mixed_actual_proxy"
+    assert "PRIVATE_FILL_LOOKBACK" in row["fallback_level"]
 
 
 def test_global_default_when_no_cost_inputs_exist(tmp_path):
@@ -181,6 +264,32 @@ def _write_bills(lake_root: Path) -> None:
 
 
 def _write_orderbooks(lake_root: Path, symbol: str = "BTC-USDT") -> None:
+    _write_orderbooks_for_day(lake_root, symbol=symbol, day="2026-05-10")
+
+
+def _write_orderbooks_for_day(lake_root: Path, symbol: str, day: str) -> None:
+    write_parquet_dataset(
+        pl.DataFrame(
+            [
+                {
+                    "venue": "okx",
+                    "symbol": symbol,
+                    "channel": "books5",
+                    "ts": f"{day}T00:00:00Z",
+                    "asks_json": json.dumps([["101", "1"]]),
+                    "bids_json": json.dumps([["99", "1"]]),
+                    "checksum": 42,
+                    "source": "okx_public_ws",
+                    "ingest_ts": f"{day}T00:00:00Z",
+                    "raw_json": "{}",
+                }
+            ]
+        ),
+        lake_root / "silver" / "orderbook_snapshot",
+    )
+
+
+def _write_orderbooks_multi(lake_root: Path, symbols: list[str]) -> None:
     write_parquet_dataset(
         pl.DataFrame(
             [
@@ -196,6 +305,7 @@ def _write_orderbooks(lake_root: Path, symbol: str = "BTC-USDT") -> None:
                     "ingest_ts": "2026-05-10T00:00:00Z",
                     "raw_json": "{}",
                 }
+                for symbol in symbols
             ]
         ),
         lake_root / "silver" / "orderbook_snapshot",
@@ -242,3 +352,62 @@ def _write_v5_trades(lake_root: Path) -> None:
         ),
         lake_root / "silver" / "v5_trade_event",
     )
+
+
+def _write_bronze_okx_private_fills(lake_root: Path, raw_items: list[dict[str, str]]) -> None:
+    _write_bronze_okx_private(lake_root / BRONZE_FILLS_DATASET, raw_items)
+
+
+def _write_bronze_okx_private_bills(lake_root: Path, raw_items: list[dict[str, str]]) -> None:
+    _write_bronze_okx_private(lake_root / BRONZE_BILLS_DATASET, raw_items)
+
+
+def _write_bronze_okx_private(dataset_path: Path, raw_items: list[dict[str, str]]) -> None:
+    write_parquet_dataset(
+        pl.DataFrame(
+            [
+                {
+                    "endpoint": "/api/v5/read-only-fixture",
+                    "ingest_ts": "2026-05-10T00:01:00Z",
+                    "raw_json": json.dumps(raw_item, sort_keys=True),
+                }
+                for raw_item in raw_items
+            ]
+        ),
+        dataset_path,
+    )
+
+
+def _raw_bnb_fill(
+    trade_id: str,
+    order_id: str,
+    fill_px: str,
+    fill_sz: str,
+    fee: str,
+    fee_ccy: str = "USDT",
+) -> dict[str, str]:
+    return {
+        "instType": "SPOT",
+        "instId": "BNB-USDT",
+        "tradeId": trade_id,
+        "ordId": order_id,
+        "side": "buy",
+        "fillPx": fill_px,
+        "fillSz": fill_sz,
+        "fee": fee,
+        "feeCcy": fee_ccy,
+        "execType": "T",
+        "ts": "1778371200000",
+    }
+
+
+def _raw_bnb_bill() -> dict[str, str]:
+    return {
+        "billId": "bill-bnb-1",
+        "ccy": "USDT",
+        "balChg": "-0.455",
+        "bal": "999.545",
+        "type": "2",
+        "subType": "1",
+        "ts": "1778371201000",
+    }

@@ -56,6 +56,13 @@ def test_export_daily_pack_writes_required_members(tmp_path):
         assert "freshness_seconds" in provenance["datasets"][0]
         assert "freshness_status" in provenance["datasets"][0]
         assert "v5/v5_strategy_health.csv" in names
+        assert "reports/v5_enforce_readiness.json" in names
+        assert "reports/v5_enforce_readiness.csv" in names
+        data_quality = json.loads(archive.read("data_quality.json").decode("utf-8"))
+        executive_summary = archive.read("executive_summary.md").decode("utf-8")
+        assert "quant_lab_enforce_readiness" in data_quality
+        assert "shadow_only_recommended" in data_quality
+        assert "quant_lab_enforce_readiness:" in executive_summary
         assert "charts/market_close.png" in names
         assert archive.read("charts/market_close.png").startswith(b"\x89PNG")
 

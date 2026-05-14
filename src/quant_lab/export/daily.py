@@ -23,6 +23,12 @@ from quant_lab.contracts.v5_quant_lab import (
     V5_TELEMETRY_DATASET_SCHEMA_VERSION,
 )
 from quant_lab.data.lake import read_parquet_lazy
+from quant_lab.reports.enforce_readiness import (
+    ENFORCE_READINESS_CSV,
+    ENFORCE_READINESS_JSON,
+    build_enforce_readiness_report,
+    enforce_readiness_members,
+)
 from quant_lab.risk.publish import (
     DEFAULT_TELEMETRY_STALE_THRESHOLD_SECONDS,
     is_permission_status_enforceable,
@@ -118,6 +124,8 @@ REQUIRED_MEMBERS = [
     "charts/gate_status_counts.png",
     "charts/cost_distribution.png",
     "charts/v5_health_summary.png",
+    f"reports/{ENFORCE_READINESS_JSON}",
+    f"reports/{ENFORCE_READINESS_CSV}",
 ]
 
 CSV_SCHEMAS: dict[str, list[str]] = {
@@ -423,6 +431,17 @@ CSV_SCHEMAS: dict[str, list[str]] = {
         "count",
         "raw_payload_json",
     ],
+    f"reports/{ENFORCE_READINESS_CSV}": [
+        "as_of_ts",
+        "strategy",
+        "version",
+        "readiness_status",
+        "shadow_only_recommended",
+        "blocked_reasons",
+        "warning_reasons",
+        "required_actions",
+        "contract_version",
+    ],
 }
 
 _MemberPayload = str | bytes
@@ -482,6 +501,7 @@ def export_daily_pack(
     members: dict[str, _MemberPayload] = {}
     members.update(_dataset_members(snapshot.frames))
     members.update(_chart_members(snapshot.frames))
+    members.update(enforce_readiness_members(root))
     members["README.md"] = _readme(day, root, profile)
     members["data_quality.json"] = _json_text(data_quality)
     members["executive_summary.md"] = _executive_summary(day, snapshot, data_quality)
@@ -1128,6 +1148,19 @@ def _data_quality_payload(
             warning_only=True,
         )
     )
+    enforce_readiness = build_enforce_readiness_report(lake_root)
+    checks.append(
+        _check(
+            "quant_lab_enforce_readiness",
+            enforce_readiness.readiness_status == "READY",
+            (
+                f"readiness_status={enforce_readiness.readiness_status}; "
+                f"blocked={enforce_readiness.blocked_reasons}; "
+                f"warnings={enforce_readiness.warning_reasons}"
+            ),
+            severity="critical" if enforce_readiness.readiness_status == "BLOCKED" else "warning",
+        )
+    )
 
     stale = _stale_rows(snapshot.frames)
     checks.append(
@@ -1151,6 +1184,8 @@ def _data_quality_payload(
         "checks": checks,
         "warnings": sorted(set(warnings)),
         "risk_permission": risk_quality,
+        "quant_lab_enforce_readiness": enforce_readiness.model_dump(mode="json"),
+        "shadow_only_recommended": enforce_readiness.shadow_only_recommended,
     }
 
 
@@ -1204,6 +1239,7 @@ def _executive_summary(
         permission_counts = _value_counts(risk, "permission")
     fallback_rows = _cost_fallbacks(snapshot.frames.get("cost_bucket_daily", pl.DataFrame()))
     questions = _question_lines(snapshot, data_quality)
+    readiness = data_quality.get("quant_lab_enforce_readiness", {})
 
     lines = [
         f"# Executive Summary - {day.isoformat()}",
@@ -1217,6 +1253,8 @@ def _executive_summary(
         f"Risk permission as_of_ts: {risk_quality.get('as_of_ts')}",
         f"Latest V5 telemetry ts: {risk_quality.get('telemetry_latest_ts')}",
         f"Risk permission next action: {risk_quality.get('next_action', 'none')}",
+        f"quant_lab_enforce_readiness: {readiness.get('readiness_status', 'UNKNOWN')}",
+        f"shadow_only_recommended: {data_quality.get('shadow_only_recommended', True)}",
         "",
         "Warnings:",
     ]

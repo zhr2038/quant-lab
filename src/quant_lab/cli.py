@@ -10,6 +10,7 @@ import typer
 from quant_lab.contracts.models import AlphaEvidence, AlphaResearchSpec
 from quant_lab.costs.calibrate import calibrate_costs_for_day
 from quant_lab.costs.health import read_cost_health_daily
+from quant_lab.e2e import run_v5_contract_e2e
 from quant_lab.export.daily import export_daily_pack, validate_expert_pack
 from quant_lab.features.publish import feature_health
 from quant_lab.features.publish import publish_features as publish_feature_values
@@ -29,6 +30,7 @@ from quant_lab.ingest.okx_readonly_private import (
 )
 from quant_lab.ingest.okx_ws_public import collect_okx_public_ws, collect_okx_public_ws_universe
 from quant_lab.ingest.v5_reports import inspect_v5_reports, publish_v5_reports_to_lake
+from quant_lab.reports.enforce_readiness import write_enforce_readiness_report
 from quant_lab.research.bootstrap_gold import bootstrap_gold_health
 from quant_lab.research.publish import (
     build_and_publish_alpha_evidence,
@@ -572,6 +574,46 @@ def research_health_command(
 ) -> None:
     result = research_health(lake_root=lake_root, date=date)
     typer.echo(result.model_dump_json(indent=2))
+
+
+@app.command("enforce-readiness")
+def enforce_readiness_command(
+    lake_root: Annotated[Path, typer.Option("--lake-root", file_okay=False, dir_okay=True)],
+    strategy: Annotated[str, typer.Option("--strategy")] = "v5",
+    version: Annotated[str, typer.Option("--version")] = "5.0.0",
+    out_dir: Annotated[
+        Path | None,
+        typer.Option("--out-dir", file_okay=False, dir_okay=True),
+    ] = None,
+) -> None:
+    result = write_enforce_readiness_report(
+        lake_root=lake_root,
+        out_dir=out_dir,
+        strategy=strategy,
+        version=version,
+    )
+    typer.echo(result.model_dump_json(indent=2))
+
+
+@app.command("run-v5-e2e-contract")
+def run_v5_e2e_contract_command(
+    out_dir: Annotated[
+        Path,
+        typer.Option(
+            "--out-dir",
+            file_okay=False,
+            dir_okay=True,
+            writable=True,
+            help="Directory for e2e reports and temporary fixture lake.",
+        ),
+    ],
+    lake_root: Annotated[
+        Path | None,
+        typer.Option("--lake-root", file_okay=False, dir_okay=True, writable=True),
+    ] = None,
+) -> None:
+    result = run_v5_contract_e2e(out_dir=out_dir, lake_root=lake_root)
+    typer.echo(json.dumps(result, indent=2, sort_keys=True, default=str))
 
 
 @app.command("export-daily")

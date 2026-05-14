@@ -203,6 +203,52 @@ def test_recent_heavy_dataset_read_uses_latest_file_window(tmp_path, monkeypatch
     assert recent["symbol"].to_list() == ["NEW-USDT"]
 
 
+def test_recent_heavy_dataset_keeps_per_symbol_samples(tmp_path):
+    lake_root = tmp_path / "lake"
+    dataset_path = lake_root / "silver" / "trade_print"
+    dataset_path.mkdir(parents=True)
+    start = datetime(2026, 5, 10, tzinfo=UTC)
+    rows = [
+        {
+            "symbol": "BTC-USDT",
+            "trade_id": f"btc-{index}",
+            "price": 100.0,
+            "size": 1.0,
+            "ts": start + timedelta(seconds=index),
+        }
+        for index in range(30)
+    ]
+    rows.extend(
+        [
+            {
+                "symbol": "ETH-USDT",
+                "trade_id": "eth-1",
+                "price": 200.0,
+                "size": 1.0,
+                "ts": start + timedelta(seconds=5),
+            },
+            {
+                "symbol": "ETH-USDT",
+                "trade_id": "eth-2",
+                "price": 201.0,
+                "size": 1.0,
+                "ts": start + timedelta(seconds=6),
+            },
+        ]
+    )
+    pl.DataFrame(rows).write_parquet(dataset_path / "batch_20260510T000000000000Z.parquet")
+
+    recent, warning = readers.read_recent_dataset_with_warning(
+        lake_root,
+        "trade_print",
+        limit=10,
+        lookback_hours=1,
+    )
+
+    assert warning is None
+    assert set(recent["symbol"].to_list()) == {"BTC-USDT", "ETH-USDT"}
+
+
 def test_market_regime_warns_when_ws_universe_is_incomplete(tmp_path):
     lake_root = tmp_path / "lake"
     start = datetime(2026, 5, 10, tzinfo=UTC)

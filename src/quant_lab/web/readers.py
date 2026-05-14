@@ -484,8 +484,24 @@ def _collect_recent_lazy_frame(
     except Exception:
         frame = lazy.tail(limit).collect()
     if frame.height > limit:
-        frame = _tail_by_column(frame, timestamp_column, limit)
+        frame = _tail_recent_sample(frame, timestamp_column, limit)
     return frame
+
+
+def _tail_recent_sample(df: pl.DataFrame, column: str, limit: int) -> pl.DataFrame:
+    if "symbol" not in df.columns:
+        return _tail_by_column(df, column, limit)
+    try:
+        symbol_count = max(df["symbol"].n_unique(), 1)
+        per_symbol_limit = max(limit // symbol_count, 1)
+        return (
+            df.sort(["symbol", column])
+            .group_by("symbol", maintain_order=True)
+            .tail(per_symbol_limit)
+            .sort(column)
+        )
+    except Exception:
+        return _tail_by_column(df, column, limit)
 
 
 def _tail_by_column(df: pl.DataFrame, column: str, limit: int) -> pl.DataFrame:

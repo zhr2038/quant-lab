@@ -174,13 +174,19 @@ class V5TelemetryAnalysisResult(TelemetryModel):
     actual_fallback_count: int = 0
     fallback_rate: float = 0.0
     degraded_reason: str = "none"
+    raw_imported_rows: int = 0
+    unique_event_rows: int = 0
+    duplicate_event_rows: int = 0
+    duplicate_rate: float = 0.0
+    first_seen_bundle_ts: datetime | None = None
+    last_seen_bundle_ts: datetime | None = None
     quant_lab_actual_violation_count: int = 0
     quant_lab_hypothetical_violation_count: int = 0
     warnings: list[str] = Field(default_factory=list)
     critical_reasons: list[str] = Field(default_factory=list)
     next_actions: list[str] = Field(default_factory=list)
 
-    @field_validator("latest_bundle_ts")
+    @field_validator("latest_bundle_ts", "first_seen_bundle_ts", "last_seen_bundle_ts")
     @classmethod
     def timestamp_is_utc(cls, value: datetime | None) -> datetime | None:
         return require_utc(value) if value is not None else None

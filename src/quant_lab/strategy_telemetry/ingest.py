@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import csv
+import hashlib
 import json
 import shutil
 import tempfile
@@ -72,6 +73,20 @@ QUANT_LAB_REQUEST_PATHS = {
     "raw/reports/quant_lab_requests.jsonl",
     "raw/quant_lab/quant_lab_requests.jsonl",
     "reports/quant_lab_requests.jsonl",
+}
+EVENT_KEY_DATASETS = {"v5_quant_lab_request", "v5_quant_lab_fallback"}
+EVENT_KEY_METADATA_FIELDS = {
+    "strategy",
+    "bundle_sha256",
+    "bundle_name",
+    "bundle_ts",
+    "ingest_ts",
+    "schema_version",
+    "source_path_inside_bundle",
+    "row_index",
+    "source_count",
+    "first_seen_bundle_ts",
+    "last_seen_bundle_ts",
 }
 
 
@@ -297,15 +312,20 @@ def _write_silver(
                     "raw_payload_json": "{}",
                 }
             )
-    counts = {
-        name: _upsert_rows(
-            lake_root / dataset,
-            dataset_rows,
-            ["strategy", "bundle_sha256", "source_path_inside_bundle", "row_index"],
-        )
-        for name, dataset in SILVER_DATASETS.items()
-        if (dataset_rows := rows[name])
-    }
+    counts: dict[str, int] = {}
+    for name, dataset in SILVER_DATASETS.items():
+        dataset_rows = rows[name]
+        if not dataset_rows:
+            continue
+        dataset_path = lake_root / dataset
+        if name in EVENT_KEY_DATASETS:
+            counts[name] = _upsert_event_rows(dataset_path, dataset_rows)
+        else:
+            counts[name] = _upsert_rows(
+                dataset_path,
+                dataset_rows,
+                ["strategy", "bundle_sha256", "source_path_inside_bundle", "row_index"],
+            )
     return counts, warnings
 
 
@@ -336,7 +356,10 @@ def _append_file_rows(
         rows["v5_quant_lab_usage"].extend(_jsonl_rows(metadata, relative, file_path))
         return
     if logical in QUANT_LAB_REQUEST_PATHS:
-        request_rows = _jsonl_rows(metadata, relative, file_path)
+        request_rows = _enrich_event_rows(
+            _jsonl_rows(metadata, relative, file_path),
+            default_event_type="request",
+        )
         rows["v5_quant_lab_request"].extend(request_rows)
         rows["v5_quant_lab_fallback"].extend(_request_fallback_rows(request_rows))
         return
@@ -441,7 +464,11 @@ def _fallback_csv_rows(
     relative: str,
     file_path: Path,
 ) -> list[dict[str, Any]]:
-    return [row for row in _csv_rows(metadata, relative, file_path) if _is_fallback_row(row)]
+    return [
+        _with_event_key(row | {"event_type": "request"}, default_event_type="request")
+        for row in _csv_rows(metadata, relative, file_path)
+        if _is_fallback_row(row)
+    ]
 
 
 def _request_fallback_rows(request_rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
@@ -451,15 +478,178 @@ def _request_fallback_rows(request_rows: list[dict[str, Any]]) -> list[dict[str,
             continue
         payload = _loads_payload(row.get("raw_payload_json"))
         fallback_rows.append(
-            row
-            | {
-                "event_type": "request",
-                "actual_fallback": True,
-                "diagnosis": _fallback_diagnosis(row, payload),
-                "degraded_reason": _fallback_diagnosis(row, payload),
-            }
+            _with_event_key(
+                row
+                | {
+                    "event_type": "request",
+                    "actual_fallback": True,
+                    "diagnosis": _fallback_diagnosis(row, payload),
+                    "degraded_reason": _fallback_diagnosis(row, payload),
+                },
+                default_event_type="request",
+            )
         )
     return fallback_rows
+
+
+def _enrich_event_rows(
+    rows: list[dict[str, Any]],
+    *,
+    default_event_type: str,
+) -> list[dict[str, Any]]:
+    return [_with_event_key(row, default_event_type=default_event_type) for row in rows]
+
+
+def _with_event_key(
+    row: dict[str, Any],
+    *,
+    default_event_type: str | None = None,
+) -> dict[str, Any]:
+    payload = _loads_payload(row.get("raw_payload_json"))
+    fields = _event_key_fields(row, payload, default_event_type=default_event_type)
+    enriched = dict(row)
+    enriched.update(
+        {
+            "run_id": fields["run_id"] or row.get("run_id"),
+            "ts_utc": fields["ts_utc"],
+            "endpoint": fields["endpoint"],
+            "event_type": fields["event_type"],
+            "error_type": fields["error_type"],
+            "fallback_used": fields["fallback_used"],
+            "request_id": fields["request_id"],
+            "symbol": fields["symbol"],
+            "side": fields["side"],
+            "intent": fields["intent"],
+            "event_key_fields_json": safe_json_dumps(fields),
+            "event_key": _event_key_from_fields(fields),
+        }
+    )
+    return enriched
+
+
+def _event_key_fields(
+    row: dict[str, Any],
+    payload: dict[str, Any],
+    *,
+    default_event_type: str | None,
+) -> dict[str, Any]:
+    run_id = _first_value(row, payload, ["run_id", "runId", "run"])
+    ts_utc = _normalize_event_time(
+        _first_value(
+            row,
+            payload,
+            [
+                "ts_utc",
+                "ts",
+                "timestamp",
+                "created_at",
+                "time",
+                "request_ts",
+                "event_ts",
+            ],
+        )
+    )
+    endpoint = _clean_text(
+        _first_value(
+            row,
+            payload,
+            ["endpoint", "path", "url", "route", "api_path", "request_path"],
+        )
+    )
+    event_type = _clean_text(
+        _first_value(row, payload, ["event_type", "type", "kind"])
+        or default_event_type
+        or ("request" if endpoint else "event")
+    ).lower()
+    error_type = _clean_text(
+        _first_value(row, payload, ["error_type", "exception_type", "error", "exception"])
+    )
+    fallback_used = _parse_bool(
+        _first_value(row, payload, ["fallback_used", "used_fallback", "local_fallback"])
+    )
+    request_id = _clean_text(
+        _first_value(row, payload, ["request_id", "trace_id", "id", "uuid"])
+    )
+    symbol_value = _first_value(
+        row,
+        payload,
+        ["symbol", "normalized_symbol", "inst_id", "instId", "instrument", "pair"],
+    )
+    symbol = normalize_symbol(symbol_value) if symbol_value else ""
+    fields = {
+        "strategy": _clean_text(row.get("strategy")),
+        "run_id": _clean_text(run_id),
+        "event_type": event_type,
+        "endpoint": endpoint,
+        "ts_utc": ts_utc,
+        "error_type": error_type,
+        "request_id": request_id,
+        "symbol": symbol,
+        "side": _clean_text(_first_value(row, payload, ["side", "order_side"])).lower(),
+        "intent": _clean_text(
+            _first_value(row, payload, ["intent", "action", "router_intent"])
+        ).lower(),
+        "fallback_used": fallback_used,
+    }
+    if not any(fields[key] for key in ["endpoint", "ts_utc", "request_id", "symbol", "error_type"]):
+        fields["payload_hash"] = _payload_hash(row, payload)
+    return fields
+
+
+def _event_key_from_fields(fields: dict[str, Any]) -> str:
+    stable = {
+        key: value
+        for key, value in fields.items()
+        if value is not None and value != ""
+    }
+    if (
+        stable.get("fallback_used") is True
+        and stable.get("endpoint")
+        and stable.get("ts_utc")
+        and stable.get("error_type")
+    ):
+        stable.pop("run_id", None)
+    rendered = json.dumps(stable, ensure_ascii=False, sort_keys=True, default=str)
+    return hashlib.sha256(rendered.encode("utf-8")).hexdigest()
+
+
+def _payload_hash(row: dict[str, Any], payload: dict[str, Any]) -> str:
+    if payload:
+        source: Any = payload
+    else:
+        source = {
+            key: value
+            for key, value in row.items()
+            if key not in EVENT_KEY_METADATA_FIELDS and key != "event_key"
+        }
+    rendered = json.dumps(source, ensure_ascii=False, sort_keys=True, default=str)
+    return hashlib.sha256(rendered.encode("utf-8")).hexdigest()
+
+
+def _normalize_event_time(value: Any) -> str:
+    if value is None or value == "":
+        return ""
+    if isinstance(value, datetime):
+        normalized = value.astimezone(UTC)
+        return normalized.isoformat().replace("+00:00", "Z")
+    if isinstance(value, (int, float)):
+        timestamp = float(value)
+        if timestamp > 10_000_000_000:
+            timestamp /= 1000.0
+        return datetime.fromtimestamp(timestamp, tz=UTC).isoformat().replace("+00:00", "Z")
+    rendered = str(value).strip()
+    try:
+        parsed = datetime.fromisoformat(rendered.replace("Z", "+00:00"))
+    except ValueError:
+        return rendered
+    return parsed.astimezone(UTC).isoformat().replace("+00:00", "Z")
+
+
+def _clean_text(value: Any) -> str:
+    if value is None:
+        return ""
+    rendered = str(value).strip()
+    return "" if rendered.lower() in {"none", "null", "nan"} else rendered
 
 
 def _is_fallback_row(row: dict[str, Any]) -> bool:
@@ -516,7 +706,12 @@ def _actual_error_type(value: Any) -> bool:
     if not _nonempty_text(value):
         return False
     normalized = str(value).strip().lower()
-    return normalized not in {"http_200", "200", "request_not_ok"}
+    if normalized in {"http_200", "200", "request_not_ok"}:
+        return False
+    return not (
+        normalized.startswith("http_4")
+        or normalized in {"400", "401", "403", "404", "409", "422", "429"}
+    )
 
 
 def _has_error_indicator(row: dict[str, Any], payload: dict[str, Any]) -> bool:
@@ -716,6 +911,86 @@ def _upsert_rows(dataset_path: Path, rows: list[dict[str, Any]], keys: list[str]
         return read_parquet_dataset(dataset_path).height
     df = pl.DataFrame(_json_safe_rows(rows))
     return upsert_parquet_dataset(df, dataset_path, key_columns=keys)
+
+
+def _upsert_event_rows(dataset_path: Path, rows: list[dict[str, Any]]) -> int:
+    if not rows:
+        return read_parquet_dataset(dataset_path).height
+    existing = read_parquet_dataset(dataset_path)
+    combined_rows = existing.to_dicts() if not existing.is_empty() else []
+    combined_rows.extend(_with_event_key(row) for row in rows)
+
+    merged: dict[tuple[str, str], dict[str, Any]] = {}
+    for raw_row in combined_rows:
+        row = _with_event_key(raw_row)
+        key = (str(row.get("strategy") or ""), str(row.get("event_key") or ""))
+        merged[key] = _merge_event_row(merged.get(key), row)
+
+    df = pl.DataFrame(_json_safe_rows(list(merged.values())))
+    return upsert_parquet_dataset(df, dataset_path, key_columns=["strategy", "event_key"])
+
+
+def _merge_event_row(
+    current: dict[str, Any] | None,
+    row: dict[str, Any],
+) -> dict[str, Any]:
+    if current is None:
+        seeded = dict(row)
+        seeded["source_count"] = _source_count(row)
+        seen = _seen_bundle_ts(row)
+        seeded["first_seen_bundle_ts"] = seen
+        seeded["last_seen_bundle_ts"] = seen
+        return seeded
+
+    current_count = _source_count(current)
+    row_count = _source_count(row)
+    current_seen = _seen_bundle_ts(current)
+    row_seen = _seen_bundle_ts(row)
+    first_seen = _min_seen_ts(current.get("first_seen_bundle_ts") or current_seen, row_seen)
+    last_seen = _max_seen_ts(current.get("last_seen_bundle_ts") or current_seen, row_seen)
+
+    latest = row if _seen_sort_value(row_seen) >= _seen_sort_value(last_seen) else current
+    merged = dict(latest)
+    merged["source_count"] = current_count + row_count
+    merged["first_seen_bundle_ts"] = first_seen
+    merged["last_seen_bundle_ts"] = last_seen
+    return merged
+
+
+def _source_count(row: dict[str, Any]) -> int:
+    value = row.get("source_count")
+    try:
+        parsed = int(float(value))
+    except (TypeError, ValueError):
+        return 1
+    return max(parsed, 1)
+
+
+def _seen_bundle_ts(row: dict[str, Any]) -> Any:
+    return row.get("bundle_ts") or row.get("ingest_ts")
+
+
+def _seen_sort_value(value: Any) -> datetime:
+    if isinstance(value, datetime):
+        return value.astimezone(UTC)
+    if value is None or value == "":
+        return datetime.min.replace(tzinfo=UTC)
+    try:
+        return datetime.fromisoformat(str(value).replace("Z", "+00:00")).astimezone(UTC)
+    except ValueError:
+        return datetime.min.replace(tzinfo=UTC)
+
+
+def _min_seen_ts(left: Any, right: Any) -> Any:
+    if _seen_sort_value(right) < _seen_sort_value(left):
+        return right
+    return left
+
+
+def _max_seen_ts(left: Any, right: Any) -> Any:
+    if _seen_sort_value(right) > _seen_sort_value(left):
+        return right
+    return left
 
 
 def _json_safe_rows(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:

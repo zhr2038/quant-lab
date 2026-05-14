@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 import json
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
@@ -9,6 +10,7 @@ import polars as pl
 
 from quant_lab.data.lake import read_parquet_dataset, upsert_parquet_dataset
 from quant_lab.strategy_telemetry.models import V5TelemetryAnalysisResult
+from quant_lab.symbols import normalize_symbol
 
 GOLD_DATASETS = {
     "strategy_health_daily": Path("gold/strategy_health_daily"),
@@ -232,6 +234,12 @@ def analyze_v5_telemetry(lake_root: Path, date: str | None = None) -> V5Telemetr
         actual_fallback_count=int(quant_lab_summary["actual_fallback_count"]),
         fallback_rate=float(quant_lab_summary["fallback_rate"]),
         degraded_reason=str(quant_lab_summary["degraded_reason"]),
+        raw_imported_rows=int(quant_lab_summary["raw_imported_rows"]),
+        unique_event_rows=int(quant_lab_summary["unique_event_rows"]),
+        duplicate_event_rows=int(quant_lab_summary["duplicate_event_rows"]),
+        duplicate_rate=float(quant_lab_summary["duplicate_rate"]),
+        first_seen_bundle_ts=quant_lab_summary["first_seen_bundle_ts"],
+        last_seen_bundle_ts=quant_lab_summary["last_seen_bundle_ts"],
         quant_lab_actual_violation_count=len(quant_lab_summary["actual_violations"]),
         quant_lab_hypothetical_violation_count=len(
             quant_lab_summary["hypothetical_violations"]
@@ -298,6 +306,12 @@ def _write_gold(
                 "actual_fallback_count": quant_lab_summary["actual_fallback_count"],
                 "fallback_rate": quant_lab_summary["fallback_rate"],
                 "degraded_reason": quant_lab_summary["degraded_reason"],
+                "raw_imported_rows": quant_lab_summary["raw_imported_rows"],
+                "unique_event_rows": quant_lab_summary["unique_event_rows"],
+                "duplicate_event_rows": quant_lab_summary["duplicate_event_rows"],
+                "duplicate_rate": quant_lab_summary["duplicate_rate"],
+                "first_seen_bundle_ts": quant_lab_summary["first_seen_bundle_ts"],
+                "last_seen_bundle_ts": quant_lab_summary["last_seen_bundle_ts"],
                 "cost_usage_count": quant_lab_summary["cost_usage_count"],
                 "fallback_count": quant_lab_summary["fallback_count"],
                 "latest_bundle_ts": result.latest_bundle_ts,
@@ -669,24 +683,35 @@ def _quant_lab_mode_summary(
 def _quant_lab_request_health(requests: pl.DataFrame, fallback: pl.DataFrame) -> dict[str, Any]:
     success_count = 0
     error_count = 0
-    request_fallback_count = 0
-    for row in requests.to_dicts() if not requests.is_empty() else []:
+    request_fallback_keys: set[str] = set()
+    request_rows = _unique_event_rows(requests)
+    fallback_rows = _unique_event_rows(fallback)
+    for row in request_rows.values():
         payload = _payload(row)
         status = _request_status(row, payload)
         if status == "success":
             success_count += 1
         elif status == "fallback":
             error_count += 1
-            request_fallback_count += 1
+            request_fallback_keys.add(_event_key(row))
         elif status == "error":
             error_count += 1
-    non_request_fallback_count = _non_request_fallback_count(
-        fallback,
-        skip_request_sources=not requests.is_empty(),
-    )
-    actual_fallback_count = request_fallback_count + non_request_fallback_count
+    fallback_keys = {
+        _event_key(row)
+        for row in fallback_rows.values()
+        if _fallback_table_row_is_actual(row, _payload(row))
+    }
+    actual_fallback_count = len(request_fallback_keys | fallback_keys)
     total_requests = success_count + error_count
     fallback_rate = actual_fallback_count / total_requests if total_requests else 0.0
+    raw_imported_rows = _raw_event_row_count(requests) + _raw_event_row_count(fallback)
+    unique_event_keys = set(request_rows) | set(fallback_rows)
+    unique_event_rows = len(unique_event_keys)
+    duplicate_event_rows = max(raw_imported_rows - unique_event_rows, 0)
+    duplicate_rate = duplicate_event_rows / raw_imported_rows if raw_imported_rows else 0.0
+    first_seen, last_seen = _event_seen_range(
+        list(request_rows.values()) + list(fallback_rows.values())
+    )
     if actual_fallback_count:
         degraded_reason = "actual_fallback_present"
     elif error_count:
@@ -699,7 +724,190 @@ def _quant_lab_request_health(requests: pl.DataFrame, fallback: pl.DataFrame) ->
         "actual_fallback_count": actual_fallback_count,
         "fallback_rate": fallback_rate,
         "degraded_reason": degraded_reason,
+        "raw_imported_rows": raw_imported_rows,
+        "unique_event_rows": unique_event_rows,
+        "duplicate_event_rows": duplicate_event_rows,
+        "duplicate_rate": duplicate_rate,
+        "first_seen_bundle_ts": first_seen,
+        "last_seen_bundle_ts": last_seen,
     }
+
+
+def _unique_event_rows(df: pl.DataFrame) -> dict[str, dict[str, Any]]:
+    if df.is_empty():
+        return {}
+    rows_by_key: dict[str, dict[str, Any]] = {}
+    for row in df.to_dicts():
+        key = _event_key(row)
+        current = rows_by_key.get(key)
+        if current is None or _row_seen_sort_value(row) >= _row_seen_sort_value(current):
+            rows_by_key[key] = row
+    return rows_by_key
+
+
+def _event_key(row: dict[str, Any]) -> str:
+    existing = row.get("event_key")
+    if existing is not None and str(existing).strip():
+        return str(existing)
+    payload = _payload(row)
+    fields = _event_key_fields(row, payload)
+    if (
+        fields.get("fallback_used") is True
+        and fields.get("endpoint")
+        and fields.get("ts_utc")
+        and fields.get("error_type")
+    ):
+        fields.pop("run_id", None)
+    rendered = json.dumps(fields, ensure_ascii=False, sort_keys=True, default=str)
+    return hashlib.sha256(rendered.encode("utf-8")).hexdigest()
+
+
+def _event_key_fields(row: dict[str, Any], payload: dict[str, Any]) -> dict[str, Any]:
+    source_path = _logical_source_path(str(row.get("source_path_inside_bundle") or ""))
+    symbol = _first_value(
+        row,
+        payload,
+        ["symbol", "normalized_symbol", "inst_id", "instId", "instrument", "pair"],
+    )
+    fields = {
+        "strategy": str(row.get("strategy") or ""),
+        "run_id": str(_first_value(row, payload, ["run_id", "runId", "run"]) or ""),
+        "event_type": _analysis_event_type(row, payload, source_path),
+        "endpoint": str(
+            _first_value(
+                row,
+                payload,
+                ["endpoint", "path", "url", "route", "api_path", "request_path"],
+            )
+            or ""
+        ).strip(),
+        "ts_utc": _normalize_event_time(
+            _first_value(
+                row,
+                payload,
+                [
+                    "ts_utc",
+                    "ts",
+                    "timestamp",
+                    "created_at",
+                    "time",
+                    "request_ts",
+                    "event_ts",
+                ],
+            )
+        ),
+        "error_type": str(
+            _first_value(row, payload, ["error_type", "exception_type", "error", "exception"])
+            or ""
+        ).strip(),
+        "request_id": str(
+            _first_value(row, payload, ["request_id", "trace_id", "id", "uuid"]) or ""
+        ).strip(),
+        "symbol": normalize_symbol(symbol) if symbol else "",
+        "side": str(_first_value(row, payload, ["side", "order_side"]) or "").strip().lower(),
+        "intent": str(
+            _first_value(row, payload, ["intent", "action", "router_intent"]) or ""
+        )
+        .strip()
+        .lower(),
+        "fallback_used": _first_bool(
+            row,
+            payload,
+            ["fallback_used", "used_fallback", "local_fallback"],
+        ),
+    }
+    if not any(fields[key] for key in ["endpoint", "ts_utc", "request_id", "symbol", "error_type"]):
+        fields["payload_hash"] = hashlib.sha256(
+            json.dumps(payload or row, ensure_ascii=False, sort_keys=True, default=str).encode(
+                "utf-8"
+            )
+        ).hexdigest()
+    return {key: value for key, value in fields.items() if value not in {"", None}}
+
+
+def _analysis_event_type(
+    row: dict[str, Any],
+    payload: dict[str, Any],
+    source_path: str,
+) -> str:
+    if source_path == "summaries/quant_lab_fallbacks.csv":
+        return "request"
+    value = _first_value(row, payload, ["event_type", "type", "kind"])
+    if value is None and _first_value(row, payload, ["endpoint", "path", "url"]):
+        value = "request"
+    return str(value or "event").strip().lower()
+
+
+def _normalize_event_time(value: Any) -> str:
+    if value is None or value == "":
+        return ""
+    if isinstance(value, datetime):
+        return value.astimezone(UTC).isoformat().replace("+00:00", "Z")
+    if isinstance(value, (int, float)):
+        timestamp = float(value)
+        if timestamp > 10_000_000_000:
+            timestamp /= 1000.0
+        return datetime.fromtimestamp(timestamp, tz=UTC).isoformat().replace("+00:00", "Z")
+    rendered = str(value).strip()
+    try:
+        parsed = datetime.fromisoformat(rendered.replace("Z", "+00:00"))
+    except ValueError:
+        return rendered
+    return parsed.astimezone(UTC).isoformat().replace("+00:00", "Z")
+
+
+def _raw_event_row_count(df: pl.DataFrame) -> int:
+    if df.is_empty():
+        return 0
+    total = 0
+    for row in df.to_dicts():
+        total += _row_source_count(row)
+    return total
+
+
+def _row_source_count(row: dict[str, Any]) -> int:
+    value = row.get("source_count")
+    try:
+        return max(int(float(value)), 1)
+    except (TypeError, ValueError):
+        return 1
+
+
+def _event_seen_range(rows: list[dict[str, Any]]) -> tuple[datetime | None, datetime | None]:
+    seen_values = [
+        value
+        for row in rows
+        for value in [
+            row.get("first_seen_bundle_ts") or row.get("bundle_ts"),
+            row.get("last_seen_bundle_ts") or row.get("bundle_ts"),
+        ]
+        if value is not None and value != ""
+    ]
+    parsed = [_parse_seen_time(value) for value in seen_values]
+    parsed = [value for value in parsed if value is not None]
+    if not parsed:
+        return None, None
+    return min(parsed), max(parsed)
+
+
+def _row_seen_sort_value(row: dict[str, Any]) -> datetime:
+    return (
+        _parse_seen_time(row.get("last_seen_bundle_ts"))
+        or _parse_seen_time(row.get("bundle_ts"))
+        or _parse_seen_time(row.get("ingest_ts"))
+        or datetime.min.replace(tzinfo=UTC)
+    )
+
+
+def _parse_seen_time(value: Any) -> datetime | None:
+    if isinstance(value, datetime):
+        return value.astimezone(UTC)
+    if value is None or value == "":
+        return None
+    try:
+        return datetime.fromisoformat(str(value).replace("Z", "+00:00")).astimezone(UTC)
+    except ValueError:
+        return None
 
 
 def _request_status(row: dict[str, Any], payload: dict[str, Any]) -> str:
@@ -780,6 +988,16 @@ def _actual_error_type(value: Any) -> bool:
         "request_not_ok",
     }:
         return False
+    if normalized.startswith("http_4") or normalized in {
+        "400",
+        "401",
+        "403",
+        "404",
+        "409",
+        "422",
+        "429",
+    }:
+        return False
     return True
 
 
@@ -833,9 +1051,6 @@ def _fallback_table_row_is_actual(row: dict[str, Any], payload: dict[str, Any]) 
         return False
     if _request_is_actual_fallback(row, payload):
         return True
-    event_type = str(_first_value(row, payload, ["event_type"]) or "").strip().lower()
-    if event_type == "request":
-        return False
     count_value = _first_value(row, payload, ["count", "fallback_count"])
     try:
         return float(count_value) > 0

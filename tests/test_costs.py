@@ -346,3 +346,45 @@ def test_cost_bucket_daily_estimate_prefers_actual_fills_over_public_proxy():
     assert estimate.total_cost_bps == 4.0
     assert estimate.source == "actual_fills"
     assert estimate.sample_size == 3
+
+
+def test_cost_bucket_daily_estimate_prefers_cross_regime_mixed_actual_over_public_proxy():
+    rows = [
+        {
+            "day": "2026-05-14",
+            "symbol": "BNB-USDT",
+            "regime": "realized",
+            "event_type": "actual_fill",
+            "notional_bucket": "all",
+            "sample_count": 4,
+            "fee_bps_p75": 1.0,
+            "spread_bps_p75": 1.5,
+            "total_cost_bps_p75": 2.5,
+            "fallback_level": "SLIPPAGE_UNKNOWN;SPREAD_PROXY",
+            "source": "mixed_actual_proxy",
+        },
+        {
+            "day": "2026-05-14",
+            "symbol": "BNB-USDT",
+            "regime": "public_proxy",
+            "event_type": "spread_proxy",
+            "notional_bucket": "all",
+            "sample_count": 1000,
+            "spread_bps_p75": 1.49,
+            "total_cost_bps_p75": 1.49,
+            "fallback_level": "FEE_MISSING;SLIPPAGE_UNKNOWN;PUBLIC_SPREAD_PROXY",
+            "source": "public_spread_proxy",
+        },
+    ]
+
+    estimate = estimate_cost_from_cost_bucket_daily_rows(
+        symbol="BNB-USDT",
+        regime="Trending",
+        notional_usdt=1_000,
+        quantile="p75",
+        rows=rows,
+    )
+
+    assert estimate.source == "mixed_actual_proxy"
+    assert estimate.matched_regime == "realized"
+    assert estimate.total_cost_bps == 2.5

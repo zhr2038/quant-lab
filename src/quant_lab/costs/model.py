@@ -469,24 +469,28 @@ def _rank_cost_bucket_rows(
             tier, fallback = 0, "NONE"
         elif row_symbol == symbol and normalized_row_regime == requested_regime:
             tier, fallback = 1, "NOTIONAL_BUCKET_FALLBACK"
-        elif row_symbol == symbol and _is_public_proxy_source(source) and notional_match:
+        elif row_symbol == symbol and _is_actual_or_mixed_source(source) and notional_match:
             tier, fallback = 2, "REGIME_FALLBACK"
-        elif row_symbol == symbol and _is_public_proxy_source(source):
+        elif row_symbol == symbol and _is_actual_or_mixed_source(source):
             tier, fallback = 3, "REGIME_FALLBACK"
-        elif row_symbol == symbol and _is_global_regime(row_regime) and notional_match:
+        elif row_symbol == symbol and _is_public_proxy_source(source) and notional_match:
             tier, fallback = 4, "REGIME_FALLBACK"
-        elif row_symbol == symbol and notional_match:
+        elif row_symbol == symbol and _is_public_proxy_source(source):
             tier, fallback = 5, "REGIME_FALLBACK"
+        elif row_symbol == symbol and _is_global_regime(row_regime) and notional_match:
+            tier, fallback = 6, "REGIME_FALLBACK"
+        elif row_symbol == symbol and notional_match:
+            tier, fallback = 7, "REGIME_FALLBACK"
         elif row_symbol == symbol:
-            tier, fallback = 6, "REGIME_AND_NOTIONAL_BUCKET_FALLBACK"
+            tier, fallback = 8, "REGIME_AND_NOTIONAL_BUCKET_FALLBACK"
         elif (
             _is_global_symbol(row_symbol)
             and normalized_row_regime == requested_regime
             and notional_match
         ):
-            tier, fallback = 7, "SYMBOL_FALLBACK"
+            tier, fallback = 9, "SYMBOL_FALLBACK"
         elif _is_global_symbol(row_symbol) and _is_global_regime(row_regime):
-            tier, fallback = 8, "GLOBAL_BUCKET_FALLBACK"
+            tier, fallback = 10, "GLOBAL_BUCKET_FALLBACK"
         else:
             continue
         ranked.append((tier, fallback, row))
@@ -605,6 +609,15 @@ def _source_priority(source: str) -> int:
     if normalized == "global_default":
         return 3
     return 4
+
+
+def _is_actual_or_mixed_source(source: str) -> bool:
+    return source.lower() in {
+        "actual_okx_fills_and_bills",
+        "actual_fills",
+        "mixed_actual_proxy",
+        "actual_okx_fills_fee_missing",
+    }
 
 
 def _is_public_proxy_source(source: str) -> bool:

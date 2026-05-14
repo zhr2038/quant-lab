@@ -151,6 +151,23 @@ def test_okx_collector_summary_uses_metadata_for_raw_collector_counts(tmp_path, 
     assert summary["okx_public_ws_status"] == "RUNNING"
 
 
+def test_market_regime_summary_samples_heavy_market_datasets(tmp_path, monkeypatch):
+    lake_root = _fixture_lake(tmp_path)
+    original = readers.read_dataset_with_warning
+
+    def guarded_read_dataset_with_warning(lake_root_arg, dataset_name):
+        if dataset_name in {"market_bar", "trade_print", "orderbook_snapshot"}:
+            raise AssertionError(f"{dataset_name} should be sampled for market regime")
+        return original(lake_root_arg, dataset_name)
+
+    monkeypatch.setattr(readers, "read_dataset_with_warning", guarded_read_dataset_with_warning)
+
+    summary = readers.market_regime_summary(lake_root)
+
+    assert not summary["regimes"].is_empty()
+    assert not summary["trade_activity"].is_empty()
+
+
 def test_dataset_freshness_unknown_when_populated_table_has_no_timestamp():
     payload = readers.dataset_freshness_payload(
         "decision_audit",

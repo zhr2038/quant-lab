@@ -103,6 +103,18 @@ BOOTSTRAP_GOLD_HEALTH_COMMAND = (
 )
 BOOTSTRAP_PLACEHOLDER_WARNING = "bootstrap conservative placeholder, not live-ready evidence"
 DISPLAY_LIMIT = 500
+WEB_HEAVY_DATASET_LIMITS = {
+    "market_bar": 20_000,
+    "trade_print": 20_000,
+    "orderbook_snapshot": 20_000,
+    "okx_public_ws": 5_000,
+}
+WEB_RECENT_LOOKBACK_HOURS = {
+    "market_bar": 24 * 14,
+    "trade_print": 6,
+    "orderbook_snapshot": 6,
+    "okx_public_ws": 6,
+}
 
 
 @dataclass(frozen=True)
@@ -135,6 +147,35 @@ def read_dataset_with_warning(
 ) -> tuple[pl.DataFrame, str | None]:
     dataset_path = dataset_path_for(lake_root, dataset_name)
     return _read_parquet_dataset_with_warning(dataset_path, dataset_name)
+
+
+def read_recent_dataset_with_warning(
+    lake_root: str | Path,
+    dataset_name: str,
+    *,
+    limit: int | None = None,
+    lookback_hours: int | None = None,
+) -> tuple[pl.DataFrame, str | None]:
+    dataset_path = dataset_path_for(lake_root, dataset_name)
+    invalid_files = invalid_parquet_files(dataset_path)
+    files = _valid_parquet_files(dataset_path, invalid_files=invalid_files)
+    warning = _invalid_parquet_warning(dataset_name, invalid_files)
+    if not files:
+        return pl.DataFrame(), warning
+
+    row_limit = limit or WEB_HEAVY_DATASET_LIMITS.get(dataset_name, DISPLAY_LIMIT)
+    hours = lookback_hours or WEB_RECENT_LOOKBACK_HOURS.get(dataset_name, 6)
+    try:
+        lazy = pl.scan_parquet([str(file_path) for file_path in files])
+        frame = _collect_recent_lazy_frame(
+            lazy,
+            dataset_name,
+            limit=row_limit,
+            lookback_hours=hours,
+        )
+        return frame, warning
+    except Exception as exc:
+        return pl.DataFrame(), f"{dataset_name} sampled read failed: {exc}"
 
 
 def dataset_path_for(lake_root: str | Path, dataset_name: str) -> Path:
@@ -290,6 +331,53 @@ def _latest_lazy_timestamp(
         if latest is not None:
             return latest, column
     return None, seen_timestamp_column
+
+
+def _collect_recent_lazy_frame(
+    lazy: pl.LazyFrame,
+    dataset_name: str,
+    *,
+    limit: int,
+    lookback_hours: int,
+) -> pl.DataFrame:
+    schema = lazy.collect_schema()
+    timestamp_column = next(
+        (
+            column
+            for column in DATASET_TIMESTAMP_COLUMNS.get(dataset_name, ("ts", "created_at"))
+            if column in schema
+        ),
+        None,
+    )
+    if timestamp_column is None:
+        return lazy.tail(limit).collect()
+
+    latest, _column = _latest_lazy_timestamp(
+        dataset_name,
+        lazy,
+        schema,
+        timestamp_columns=(timestamp_column,),
+    )
+    if latest is None:
+        return lazy.tail(limit).collect()
+
+    threshold = latest - timedelta(hours=lookback_hours)
+    try:
+        frame = lazy.filter(pl.col(timestamp_column) >= threshold).collect()
+    except Exception:
+        frame = lazy.tail(limit).collect()
+    if frame.height > limit:
+        frame = _tail_by_column(frame, timestamp_column, limit)
+    return frame
+
+
+def _tail_by_column(df: pl.DataFrame, column: str, limit: int) -> pl.DataFrame:
+    if column not in df.columns:
+        return df.tail(limit)
+    try:
+        return df.sort(column).tail(limit)
+    except Exception:
+        return df.tail(limit)
 
 
 def _snapshot_latest_timestamp(snapshot: DatasetSnapshot) -> datetime | None:
@@ -655,9 +743,9 @@ def okx_collector_summary(lake_root: str | Path) -> dict[str, Any]:
 
 
 def market_regime_summary(lake_root: str | Path) -> dict[str, Any]:
-    market, market_warning = read_dataset_with_warning(lake_root, "market_bar")
-    books, books_warning = read_dataset_with_warning(lake_root, "orderbook_snapshot")
-    trades, trades_warning = read_dataset_with_warning(lake_root, "trade_print")
+    market, market_warning = read_recent_dataset_with_warning(lake_root, "market_bar")
+    books, books_warning = read_recent_dataset_with_warning(lake_root, "orderbook_snapshot")
+    trades, trades_warning = read_recent_dataset_with_warning(lake_root, "trade_print")
     warnings = [warning for warning in [market_warning, books_warning, trades_warning] if warning]
     if market.is_empty():
         return {

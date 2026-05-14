@@ -116,6 +116,8 @@ WEB_RECENT_LOOKBACK_HOURS = {
     "okx_public_ws": 6,
 }
 WEB_HEAVY_METADATA_DATASETS = {"okx_public_ws", "trade_print", "orderbook_snapshot"}
+WEB_HEAVY_EXACT_ROW_COUNT_FILE_LIMIT = 64
+WEB_HEAVY_ROW_COUNT_SAMPLE_FILES = 32
 
 
 @dataclass(frozen=True)
@@ -350,6 +352,9 @@ def _parquet_metadata_row_count(files: list[Path]) -> int:
     except ImportError:
         return len(files)
 
+    if len(files) > WEB_HEAVY_EXACT_ROW_COUNT_FILE_LIMIT:
+        return _sampled_parquet_metadata_row_count(files, pq)
+
     total = 0
     for file_path in files:
         try:
@@ -357,6 +362,23 @@ def _parquet_metadata_row_count(files: list[Path]) -> int:
         except Exception:
             total += 0
     return total
+
+
+def _sampled_parquet_metadata_row_count(files: list[Path], pq: Any) -> int:
+    sample_size = min(WEB_HEAVY_ROW_COUNT_SAMPLE_FILES, len(files))
+    half = max(sample_size // 2, 1)
+    sampled = files[:half] + files[-half:]
+    sampled = list(dict.fromkeys(sampled))
+    counts: list[int] = []
+    for file_path in sampled:
+        try:
+            counts.append(int(pq.ParquetFile(file_path).metadata.num_rows))
+        except Exception:
+            continue
+    if not counts:
+        return len(files)
+    average_rows = sum(counts) / len(counts)
+    return max(int(average_rows * len(files)), len(counts))
 
 
 def _latest_file_mtime(files: list[Path]) -> datetime | None:

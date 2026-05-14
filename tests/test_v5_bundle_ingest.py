@@ -49,6 +49,37 @@ def test_ingest_parses_state_files(tmp_path):
     }
 
 
+def test_ingest_v5_trades_csv_normalizes_cost_schema(tmp_path):
+    bundle = make_tar(
+        tmp_path / "v5_live_followup_bundle_20260514T070500Z.tar.gz",
+        {
+            "raw/recent_runs/run_20260512_06/trades.csv": (
+                "ts,symbol,side,action,qty,price,fee,fee_ccy,order_id,trade_id\n"
+                "2026-05-12T06:01:00Z,BNB/USDT,buy,entry,0.5,620,-0.031,USDT,"
+                "bnb-order-1,bnb-trade-1\n"
+            ),
+        },
+    )
+    lake = tmp_path / "lake"
+
+    ingest_v5_bundle(bundle, lake, tmp_path / "restricted", tmp_path / "redacted")
+
+    trades = read_parquet_dataset(lake / "silver/v5_trade_event").to_dicts()
+    assert len(trades) == 1
+    row = trades[0]
+    assert row["run_id"] == "run_20260512_06"
+    assert row["ts_utc"] == "2026-05-12T06:01:00Z"
+    assert row["symbol"] == "BNB-USDT"
+    assert row["normalized_symbol"] == "BNB-USDT"
+    assert row["side"] == "buy"
+    assert row["action"] == "entry"
+    assert float(row["notional_usdt"]) == 310.0
+    assert float(row["fee_usdt"]) == 0.031
+    assert row["order_id"] == "bnb-order-1"
+    assert row["trade_id"] == "bnb-trade-1"
+    assert row["strategy_id"] == "v5"
+
+
 def test_ingest_parses_quant_lab_usage_files(tmp_path):
     bundle = make_v5_bundle_fixture(tmp_path / "v5_live_followup_bundle_20260510T140249Z.tar.gz")
     lake = tmp_path / "lake"

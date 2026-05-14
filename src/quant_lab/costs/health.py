@@ -76,6 +76,7 @@ def build_cost_health_daily(
     expected_symbols: list[str] | None = None,
     private_fill_rows: int = 0,
     private_bill_rows: int = 0,
+    v5_trade_rows: int = 0,
     fee_bps_missing_count: int = 0,
 ) -> CostHealthDaily:
     expected = set(expected_symbols or [])
@@ -94,6 +95,7 @@ def build_cost_health_daily(
                 _data_quality_checks(
                     private_fill_rows=private_fill_rows,
                     private_bill_rows=private_bill_rows,
+                    v5_trade_rows=v5_trade_rows,
                     actual_rows=0,
                     fee_bps_missing_count=fee_bps_missing_count,
                     actual_symbols=set(),
@@ -133,6 +135,7 @@ def build_cost_health_daily(
     data_quality_checks = _data_quality_checks(
         private_fill_rows=private_fill_rows,
         private_bill_rows=private_bill_rows,
+        v5_trade_rows=v5_trade_rows,
         actual_rows=len(actual_rows),
         fee_bps_missing_count=fee_bps_missing_count,
         actual_symbols=actual_symbols,
@@ -163,6 +166,7 @@ def build_cost_health_daily(
         or (fallback_ratio > 0.8 and not all_proxy and not actual_rows)
         or (missing and not actual_rows)
         or data_quality_checks.get("private_fills_present_but_actual_cost_zero") is False
+        or data_quality_checks.get("trades_present_but_not_in_cost_model") is False
     ):
         status = "CRITICAL"
     elif all_proxy or fallback_ratio > 0.5 or not trusted_actual_rows:
@@ -254,7 +258,12 @@ def _actual_sample_count_by_symbol(rows: list[dict[str, Any]]) -> dict[str, int]
         symbol = str(row.get("symbol") or "")
         if not symbol or symbol == "GLOBAL":
             continue
-        counts[symbol] = max(counts.get(symbol, 0), int(row.get("sample_count") or 0))
+        sample_count = max(
+            int(row.get("sample_count") or 0),
+            int(row.get("actual_fill_count") or 0),
+            int(row.get("mixed_fill_count") or 0),
+        )
+        counts[symbol] = max(counts.get(symbol, 0), sample_count)
     return counts
 
 
@@ -262,6 +271,7 @@ def _data_quality_checks(
     *,
     private_fill_rows: int,
     private_bill_rows: int,
+    v5_trade_rows: int,
     actual_rows: int,
     fee_bps_missing_count: int,
     actual_symbols: set[str],
@@ -269,16 +279,22 @@ def _data_quality_checks(
     expected_symbols: set[str],
 ) -> dict[str, bool | str]:
     actual_or_mixed = actual_symbols | mixed_symbols
+    fill_like_rows = private_fill_rows + v5_trade_rows
+    fee_missing_rate = (
+        "n/a" if fill_like_rows == 0 else f"{fee_bps_missing_count}/{fill_like_rows}"
+    )
     return {
         "private_fills_present_but_actual_cost_zero": not (
             private_fill_rows > 0 and actual_rows == 0
         ),
+        "trades_present_but_not_in_cost_model": not (v5_trade_rows > 0 and actual_rows == 0),
         "bills_present_but_fee_bps_missing": not (
             private_bill_rows > 0 and fee_bps_missing_count > 0
         ),
+        "fee_missing_rate": fee_missing_rate,
         "actual_cost_symbol_coverage": (
             "n/a"
-            if private_fill_rows == 0
+            if fill_like_rows == 0
             else f"{len(actual_or_mixed)}/{len(expected_symbols or actual_or_mixed)}"
         ),
     }

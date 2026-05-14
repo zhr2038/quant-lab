@@ -50,6 +50,10 @@ COST_BUCKET_DAILY_SCHEMA = {
     "total_cost_bps_p90": pl.Float64,
     "fallback_level": pl.Utf8,
     "source": pl.Utf8,
+    "cost_source": pl.Utf8,
+    "actual_fill_count": pl.Int64,
+    "mixed_fill_count": pl.Int64,
+    "proxy_sample_count": pl.Int64,
     "cost_model_version": pl.Utf8,
     "created_at": pl.Utf8,
 }
@@ -77,6 +81,7 @@ def calibrate_costs_for_day(
     market_bars = _read_day_dataset(root, MARKET_BAR_DATASET, day)
     fill_events = _private_fill_events_for_day(root, day)
     account_bills = _private_account_bills_for_day(root, day)
+    v5_trade_events = _v5_trade_events_for_day(root, day)
     rows = build_cost_bucket_daily_rows(
         fill_events=fill_events,
         account_bills=account_bills,
@@ -87,7 +92,7 @@ def calibrate_costs_for_day(
         ),
         orderbook_snapshots=_read_day_dataset(root, ORDERBOOK_SNAPSHOT_DATASET, day),
         trade_prints=_read_day_dataset(root, TRADE_PRINT_DATASET, day),
-        v5_trade_events=_read_day_dataset(root, V5_TRADE_EVENT_DATASET, day),
+        v5_trade_events=v5_trade_events,
         market_bars=market_bars,
         day=day,
         min_sample_count=min_sample_count,
@@ -101,10 +106,13 @@ def calibrate_costs_for_day(
         expected_symbols=sorted(
             set(_symbols_from_public_data(pl.DataFrame(), market_bars))
             | _symbols_from_fill_events(fill_events)
+            | _symbols_from_v5_trade_events(v5_trade_events)
         ),
         private_fill_rows=fill_events.height,
         private_bill_rows=account_bills.height,
-        fee_bps_missing_count=_fee_missing_count(fill_events),
+        v5_trade_rows=v5_trade_events.height,
+        fee_bps_missing_count=_fee_missing_count(fill_events)
+        + _v5_trade_fee_missing_count(v5_trade_events),
     )
     health_rows_written = publish_cost_health_daily(root, health)
     return CostCalibrationResult(
@@ -296,6 +304,10 @@ def _actual_fill_row(
         total_cost_bps_p90=fee_p90 + slippage_p90 + spread_p90,
         fallback_level=";".join(fallback_parts) if fallback_parts else "NONE",
         source=source,
+        cost_source=source,
+        actual_fill_count=len(samples) if source == "actual_fills" else 0,
+        mixed_fill_count=len(samples) if source != "actual_fills" else 0,
+        proxy_sample_count=len(spread_values),
     )
 
 
@@ -328,6 +340,10 @@ def _public_spread_proxy_rows(
                 total_cost_bps_p90=spread_p90,
                 fallback_level="FEE_MISSING;SLIPPAGE_UNKNOWN;PUBLIC_SPREAD_PROXY",
                 source="public_spread_proxy",
+                cost_source="public_spread_proxy",
+                actual_fill_count=0,
+                mixed_fill_count=0,
+                proxy_sample_count=len(samples),
             )
         )
     return rows
@@ -355,6 +371,7 @@ def _global_default_row(day: str, symbol: str) -> CostBucketDaily:
         total_cost_bps_p90=DEFAULT_FALLBACK_COST_BPS,
         fallback_level="GLOBAL_DEFAULT",
         source="global_default",
+        cost_source="global_default",
     )
 
 
@@ -423,9 +440,10 @@ def _v5_trade_fill_samples(v5_trade_events: pl.DataFrame) -> list[dict[str, Any]
             notional = abs(price * qty)
         if notional is None or notional <= 0:
             continue
-        fee = _first_float(row, ["fee", "commission", "fee_usdt", "fee_abs"])
+        fee_usdt = _first_float(row, ["fee_usdt", "fee_abs_usdt"])
+        fee = _first_float(row, ["fee", "commission", "fee_abs"])
         fee_ccy = str(row.get("fee_ccy") or row.get("fee_currency") or "")
-        fee_abs_usdt = _fee_abs_usdt(
+        fee_abs_usdt = abs(fee_usdt) if fee_usdt is not None else _fee_abs_usdt(
             fee=fee,
             fee_currency=fee_ccy,
             symbol=symbol,
@@ -440,6 +458,10 @@ def _v5_trade_fill_samples(v5_trade_events: pl.DataFrame) -> list[dict[str, Any]
                 "slip_bps",
             ],
         )
+        if slippage is None:
+            slippage_usdt = _first_float(row, ["slippage_usdt", "realized_slippage_usdt"])
+            if slippage_usdt is not None and abs(notional) > 0:
+                slippage = abs(slippage_usdt) / abs(notional) * 10_000
         samples.append(
             {
                 "symbol": symbol,
@@ -449,11 +471,13 @@ def _v5_trade_fill_samples(v5_trade_events: pl.DataFrame) -> list[dict[str, Any]
                 "trade_id": str(row.get("trade_id") or row.get("tradeId") or ""),
                 "order_id": str(row.get("order_id") or row.get("ordId") or ""),
                 "side": str(row.get("side") or ""),
+                "action": str(row.get("action") or ""),
                 "fill_px": price,
                 "fill_qty": qty,
                 "fee": fee,
                 "fee_ccy": fee_ccy,
-                "ts": row.get("ts"),
+                "fee_usdt": fee_abs_usdt,
+                "ts": row.get("ts_utc") or row.get("ts") or row.get("timestamp"),
                 "fee_bps": fee_abs_usdt / abs(notional) * 10_000
                 if fee_abs_usdt is not None
                 else None,
@@ -593,6 +617,17 @@ def _symbols_from_fill_events(fill_events: pl.DataFrame) -> set[str]:
     }
 
 
+def _symbols_from_v5_trade_events(v5_trade_events: pl.DataFrame) -> set[str]:
+    if v5_trade_events.is_empty():
+        return set()
+    symbols: set[str] = set()
+    for row in v5_trade_events.to_dicts():
+        symbol = _symbol_from_trade_row(row)
+        if symbol:
+            symbols.add(symbol)
+    return symbols
+
+
 def _private_fill_events_for_day(root: Path, day: str) -> pl.DataFrame:
     silver = read_parquet_dataset(root / FILL_EVENT_DATASET)
     bronze = _bronze_private_fills_frame(read_parquet_dataset(root / BRONZE_FILLS_DATASET))
@@ -619,19 +654,48 @@ def _private_account_bills_for_day(root: Path, day: str) -> pl.DataFrame:
     )
 
 
-def _filter_recent_window(df: pl.DataFrame, *, day: str, lookback_days: int) -> pl.DataFrame:
-    if df.is_empty() or "ts" not in df.columns:
+def _v5_trade_events_for_day(root: Path, day: str) -> pl.DataFrame:
+    return _filter_recent_window(
+        read_parquet_dataset(root / V5_TRADE_EVENT_DATASET),
+        day=day,
+        lookback_days=PRIVATE_COST_LOOKBACK_DAYS,
+        timestamp_columns=("ts_utc", "ts", "timestamp", "time", "created_at"),
+    )
+
+
+def _filter_recent_window(
+    df: pl.DataFrame,
+    *,
+    day: str,
+    lookback_days: int,
+    timestamp_columns: tuple[str, ...] = ("ts",),
+) -> pl.DataFrame:
+    if df.is_empty():
+        return df
+    available = [column for column in timestamp_columns if column in df.columns]
+    if not available:
         return df
     end = datetime.fromisoformat(day).replace(tzinfo=UTC) + timedelta(days=1)
     start = end - timedelta(days=lookback_days)
     rows = [
         row
         for row in df.to_dicts()
-        if (ts := _parse_utc_timestamp(row.get("ts"))) is not None and start <= ts < end
+        if (ts := _first_parseable_timestamp(row, available)) is not None and start <= ts < end
     ]
     if not rows:
         return pl.DataFrame()
     return pl.DataFrame(rows, schema=df.schema, orient="row")
+
+
+def _first_parseable_timestamp(
+    row: dict[str, Any],
+    timestamp_columns: Sequence[str],
+) -> datetime | None:
+    for column in timestamp_columns:
+        parsed = _parse_utc_timestamp(row.get(column))
+        if parsed is not None:
+            return parsed
+    return None
 
 
 def _parse_utc_timestamp(value: Any) -> datetime | None:
@@ -713,6 +777,16 @@ def _fee_missing_count(fill_events: pl.DataFrame) -> int:
     if fill_events.is_empty() or "fee" not in fill_events.columns:
         return 0
     return fill_events.filter(pl.col("fee").is_null()).height
+
+
+def _v5_trade_fee_missing_count(v5_trade_events: pl.DataFrame) -> int:
+    if v5_trade_events.is_empty():
+        return 0
+    count = 0
+    for row in v5_trade_events.to_dicts():
+        if _first_float(row, ["fee_usdt", "fee_abs_usdt", "fee", "commission", "fee_abs"]) is None:
+            count += 1
+    return count
 
 
 def _cost_bucket_daily_frame(rows: Sequence[CostBucketDaily]) -> pl.DataFrame:

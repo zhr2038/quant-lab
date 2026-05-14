@@ -71,6 +71,10 @@ class CostBucketDaily(BaseModel):
     total_cost_bps_p90: float = Field(ge=0)
     fallback_level: str = Field(min_length=1)
     source: str = Field(min_length=1)
+    cost_source: str | None = None
+    actual_fill_count: int = Field(default=0, ge=0)
+    mixed_fill_count: int = Field(default=0, ge=0)
+    proxy_sample_count: int = Field(default=0, ge=0)
     cost_model_version: str = Field(default="cost_bucket_daily.v0.1", min_length=1)
     created_at: datetime = Field(default_factory=lambda: datetime.now(UTC))
 
@@ -80,6 +84,11 @@ class CostBucketDaily(BaseModel):
         if isinstance(data, dict) and data.get("symbol") not in {None, "GLOBAL"}:
             normalized = dict(data)
             normalized["symbol"] = normalize_symbol(normalized.get("symbol"))
+            normalized.setdefault("cost_source", normalized.get("source"))
+            return normalized
+        if isinstance(data, dict):
+            normalized = dict(data)
+            normalized.setdefault("cost_source", normalized.get("source"))
             return normalized
         return data
 

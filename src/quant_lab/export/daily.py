@@ -56,6 +56,7 @@ SECTION_DATASETS = {
     "risk": ["risk_permission"],
     "anomalies": ["market_bar", "feature_value", "cost_bucket_daily", "gate_decision"],
     "v5": [
+        "v5_trade_event",
         "strategy_health_daily",
         "v5_execution_quality_daily",
         "v5_gate_compliance_daily",
@@ -141,6 +142,10 @@ CSV_SCHEMAS: dict[str, list[str]] = {
         "total_cost_bps_p90",
         "fallback_level",
         "source",
+        "cost_source",
+        "actual_fill_count",
+        "mixed_fill_count",
+        "proxy_sample_count",
     ],
     "costs/cost_health_daily.csv": [
         "day",
@@ -1057,6 +1062,7 @@ def _data_quality_payload(
     )
     fills = snapshot.frames.get("okx_private_readonly_fills", pl.DataFrame())
     bills = snapshot.frames.get("okx_private_readonly_bills", pl.DataFrame())
+    v5_trades = snapshot.frames.get("v5_trade_event", pl.DataFrame())
     cost_health = snapshot.frames.get("cost_health_daily", pl.DataFrame())
     proxy_only = _all_cost_rows_public_proxy(costs)
     latest_cost_health = (
@@ -1084,6 +1090,14 @@ def _data_quality_payload(
     )
     checks.append(
         _check(
+            "trades_present_but_not_in_cost_model",
+            health_checks.get("trades_present_but_not_in_cost_model", True) is not False,
+            f"v5_trades={v5_trades.height}; actual_rows={actual_rows}",
+            warning_only=True,
+        )
+    )
+    checks.append(
+        _check(
             "bills_present_but_fee_bps_missing",
             health_checks.get("bills_present_but_fee_bps_missing", True) is not False,
             f"private_bills={bills.height}",
@@ -1092,8 +1106,16 @@ def _data_quality_payload(
     )
     checks.append(
         _check(
+            "fee_missing_rate",
+            True,
+            str(health_checks.get("fee_missing_rate", "n/a")),
+            warning_only=True,
+        )
+    )
+    checks.append(
+        _check(
             "actual_cost_symbol_coverage",
-            actual_rows > 0 or fills.height == 0,
+            actual_rows > 0 or (fills.height == 0 and v5_trades.height == 0),
             str(health_checks.get("actual_cost_symbol_coverage", "n/a")),
             warning_only=True,
         )

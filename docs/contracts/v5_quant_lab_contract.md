@@ -29,10 +29,19 @@ The contract covers:
 - V5 `quant_lab_cost_usage` events.
 - V5 trade/fill summary rows used for cost backfill.
 
+## V5 Trade/Fill Summary
+
+`trades.csv` rows are normalized into `silver/v5_trade_event` and can feed the
+daily cost model as `mixed_actual_proxy` when fee evidence is present but
+arrival/mid slippage is unavailable. Required cost-backfill fields are
+`ts_utc`, `symbol`, `normalized_symbol`, `side`, `action`, `qty`, `price`,
+`notional_usdt`, `fee`, `fee_ccy`, `fee_usdt`, `run_id`, and `strategy_id`.
+`trade_id`, `order_id`, and `slippage_usdt` are optional. Missing optional
+fields must not cause the whole row to be dropped.
+
 ## Runtime Version References
 
 The Python runtime exposes the same versions from
 `quant_lab.contracts.v5_quant_lab`. Cost estimates, risk permissions, V5
 telemetry rows, and daily expert export manifest/provenance must carry these
 versions so V5 and quant-lab can detect contract drift.
-

@@ -111,6 +111,71 @@ def test_v5_trade_events_generate_actual_fill_bucket_before_spread_proxy(tmp_pat
     assert health["actual_rows"] == len(rows)
 
 
+def test_recent_v5_trades_feed_later_day_mixed_actual_cost(tmp_path):
+    lake_root = tmp_path / "lake"
+    write_parquet_dataset(
+        pl.DataFrame(
+            [
+                {
+                    "strategy": "v5",
+                    "source_path_inside_bundle": "raw/recent_runs/run_20260512_06/trades.csv",
+                    "run_id": "run_20260512_06",
+                    "ts_utc": "2026-05-12T06:01:00Z",
+                    "symbol": "BNB/USDT",
+                    "normalized_symbol": "BNB-USDT",
+                    "side": "buy",
+                    "action": "entry",
+                    "qty": "0.5",
+                    "price": "620",
+                    "fee": "-0.031",
+                    "fee_ccy": "USDT",
+                    "order_id": "bnb-order-buy",
+                    "trade_id": "bnb-trade-buy",
+                },
+                {
+                    "strategy": "v5",
+                    "source_path_inside_bundle": "raw/recent_runs/run_20260512_11/trades.csv",
+                    "run_id": "run_20260512_11",
+                    "ts_utc": "2026-05-12T11:01:00Z",
+                    "symbol": "BNB-USDT",
+                    "side": "sell",
+                    "qty": "0.5",
+                    "price": "622",
+                    "fee": "-0.0311",
+                    "fee_ccy": "USDT",
+                    "order_id": "bnb-order-sell",
+                    "trade_id": "bnb-trade-sell",
+                },
+            ]
+        ),
+        lake_root / "silver" / "v5_trade_event",
+    )
+    _write_orderbooks_for_day(lake_root, symbol="BNB-USDT", day="2026-05-14")
+
+    result = calibrate_costs_for_day(lake_root, "2026-05-14", min_sample_count=1)
+
+    assert result.sources == ["mixed_actual_proxy"]
+    rows = read_parquet_dataset(lake_root / "gold" / "cost_bucket_daily").to_dicts()
+    all_row = [
+        row for row in rows if row["symbol"] == "BNB-USDT" and row["notional_bucket"] == "all"
+    ][0]
+    assert all_row["source"] == "mixed_actual_proxy"
+    assert all_row["cost_source"] == "mixed_actual_proxy"
+    assert all_row["sample_count"] == 2
+    assert all_row["mixed_fill_count"] == 2
+    assert all_row["proxy_sample_count"] == 1
+    assert all_row["fee_bps_p50"] > 0
+    assert "PRIVATE_FILL_LOOKBACK" in all_row["fallback_level"]
+
+    health = read_parquet_dataset(lake_root / "gold" / "cost_health_daily").to_dicts()[0]
+    checks = json.loads(health["data_quality_checks_json"])
+    assert health["actual_rows"] == len(rows)
+    assert json.loads(health["symbols_with_mixed_cost"]) == ["BNB-USDT"]
+    assert json.loads(health["actual_sample_count_by_symbol"]) == {"BNB-USDT": 2}
+    assert checks["trades_present_but_not_in_cost_model"] is True
+    assert checks["fee_missing_rate"] == "0/2"
+
+
 def test_okx_private_bronze_fills_and_bills_feed_mixed_actual_cost(tmp_path):
     lake_root = tmp_path / "lake"
     _write_bronze_okx_private_fills(

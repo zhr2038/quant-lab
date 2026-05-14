@@ -365,7 +365,7 @@ def _append_file_rows(
         rows["v5_quant_lab_fallback"].extend(_request_fallback_rows(request_rows))
         return
     if logical.endswith("/trades.csv"):
-        rows["v5_trade_event"].extend(_csv_rows(metadata, relative, file_path))
+        rows["v5_trade_event"].extend(_v5_trade_rows(metadata, relative, file_path))
         return
     if logical.startswith("raw/state/") and logical.endswith(".json"):
         state_type = Path(logical).stem
@@ -446,6 +446,108 @@ def _csv_rows(metadata: dict[str, Any], relative: str, file_path: Path) -> list[
                 | {"raw_payload_json": safe_json_dumps(safe_row)}
             )
     return rows
+
+
+def _v5_trade_rows(
+    metadata: dict[str, Any],
+    relative: str,
+    file_path: Path,
+) -> list[dict[str, Any]]:
+    rows: list[dict[str, Any]] = []
+    for row in _csv_rows(metadata, relative, file_path):
+        payload = _loads_payload(row.get("raw_payload_json"))
+        symbol_value = _clean_text(
+            _first_value(
+                row,
+                payload,
+                ["normalized_symbol", "symbol", "inst_id", "instId", "instrument", "pair"],
+            )
+        )
+        normalized_symbol = normalize_symbol(symbol_value) if symbol_value else ""
+        price = _numeric(_first_value(row, payload, ["price", "fill_price", "fill_px", "px"]))
+        qty = _numeric(
+            _first_value(row, payload, ["qty", "quantity", "size", "fill_size", "fill_sz", "sz"])
+        )
+        notional = _numeric(
+            _first_value(row, payload, ["notional_usdt", "notional", "quote_notional"])
+        )
+        if notional is None and price is not None and qty is not None:
+            notional = abs(price * qty)
+        fee = _numeric(_first_value(row, payload, ["fee", "commission", "fee_abs"]))
+        fee_ccy = _clean_text(
+            _first_value(row, payload, ["fee_ccy", "fee_currency", "commission_asset"])
+        )
+        fee_usdt = _numeric(_first_value(row, payload, ["fee_usdt", "fee_abs_usdt"]))
+        if fee_usdt is None:
+            fee_usdt = _trade_fee_usdt(
+                fee=fee,
+                fee_ccy=fee_ccy,
+                symbol=normalized_symbol,
+                price=price,
+            )
+        ts_utc = _normalize_event_time(
+            _first_value(row, payload, ["ts_utc", "ts", "timestamp", "time", "trade_ts"])
+        )
+        side = _clean_text(_first_value(row, payload, ["side", "order_side"])).lower()
+        action = _clean_text(_first_value(row, payload, ["action", "intent"])).lower()
+        rows.append(
+            row
+            | {
+                "strategy_id": _clean_text(
+                    _first_value(row, payload, ["strategy_id", "strategyId", "strategy"])
+                    or row.get("strategy")
+                ),
+                "ts_utc": ts_utc,
+                "symbol": normalized_symbol or symbol_value,
+                "normalized_symbol": normalized_symbol,
+                "side": side,
+                "action": action,
+                "qty": "" if qty is None else str(qty),
+                "price": "" if price is None else str(price),
+                "notional_usdt": "" if notional is None else str(abs(notional)),
+                "fee": "" if fee is None else str(fee),
+                "fee_ccy": fee_ccy,
+                "fee_usdt": "" if fee_usdt is None else str(abs(fee_usdt)),
+                "slippage_usdt": str(_trade_slippage_usdt(row, payload) or ""),
+                "order_id": _clean_text(_first_value(row, payload, ["order_id", "ordId"])),
+                "trade_id": _clean_text(_first_value(row, payload, ["trade_id", "tradeId"])),
+                "raw_payload_json": safe_json_dumps(
+                    {
+                        **payload,
+                        "normalized_symbol": normalized_symbol,
+                        "ts_utc": ts_utc,
+                        "notional_usdt": notional,
+                        "fee_usdt": None if fee_usdt is None else abs(fee_usdt),
+                    }
+                ),
+            }
+        )
+    return rows
+
+
+def _trade_fee_usdt(
+    *,
+    fee: float | None,
+    fee_ccy: str,
+    symbol: str,
+    price: float | None,
+) -> float | None:
+    if fee is None:
+        return None
+    normalized_ccy = fee_ccy.upper().strip()
+    fee_abs = abs(fee)
+    if not normalized_ccy or normalized_ccy in {"USDT", "USDC", "USD"}:
+        return fee_abs
+    base, _, quote = symbol.partition("-")
+    if normalized_ccy == quote:
+        return fee_abs
+    if normalized_ccy == base and price is not None:
+        return fee_abs * price
+    return fee_abs
+
+
+def _trade_slippage_usdt(row: dict[str, Any], payload: dict[str, Any]) -> float | None:
+    return _numeric(_first_value(row, payload, ["slippage_usdt", "realized_slippage_usdt"]))
 
 
 def _normalize_csv_symbol_fields(row: dict[str, Any]) -> dict[str, Any]:

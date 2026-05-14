@@ -264,21 +264,25 @@ schemas:
     schema_version: v5.trade_fill_summary.v0.1
     required:
       - schema_version
-      - ts
+      - ts_utc
       - symbol
       - normalized_symbol
       - side
+      - action
       - qty
       - price
+      - notional_usdt
       - fee
       - fee_ccy
-      - notional_usdt
+      - fee_usdt
       - run_id
+      - strategy_id
     nullable:
       - trade_id
       - order_id
+      - slippage_usdt
     timestamps:
-      - ts
+      - ts_utc
     enums:
       side: [buy, sell, BUY, SELL]
 datasets:

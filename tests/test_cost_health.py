@@ -140,6 +140,34 @@ def test_cost_health_flags_private_fills_without_actual_cost():
     assert "private_fills_present_but_actual_cost_zero" in json.loads(row.warnings_json)
 
 
+def test_cost_health_flags_v5_trades_without_actual_cost():
+    row = build_cost_health_daily(
+        pl.DataFrame(
+            [
+                {
+                    "day": "2026-05-10",
+                    "symbol": "BNB-USDT",
+                    "source": "public_spread_proxy",
+                    "sample_count": 10,
+                    "fallback_level": "PUBLIC_SPREAD_PROXY",
+                    "cost_model_version": "costs-v1",
+                }
+            ]
+        ),
+        day="2026-05-10",
+        min_sample_count=30,
+        expected_symbols=["BNB-USDT"],
+        v5_trade_rows=2,
+    )
+
+    assert row.status == "CRITICAL"
+    warnings = json.loads(row.warnings_json)
+    checks = json.loads(row.data_quality_checks_json)
+    assert "trades_present_but_not_in_cost_model" in warnings
+    assert checks["trades_present_but_not_in_cost_model"] is False
+    assert checks["fee_missing_rate"] == "0/2"
+
+
 def test_cost_health_proxy_only_is_warning():
     row = build_cost_health_daily(
         pl.DataFrame(

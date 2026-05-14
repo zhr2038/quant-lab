@@ -168,6 +168,41 @@ def test_market_regime_summary_samples_heavy_market_datasets(tmp_path, monkeypat
     assert not summary["trade_activity"].is_empty()
 
 
+def test_recent_heavy_dataset_read_uses_latest_file_window(tmp_path, monkeypatch):
+    lake_root = tmp_path / "lake"
+    dataset_path = lake_root / "silver" / "trade_print"
+    dataset_path.mkdir(parents=True)
+    start = datetime(2026, 5, 10, tzinfo=UTC)
+    pl.DataFrame(
+        [
+            {
+                "symbol": "OLD-USDT",
+                "trade_id": "old",
+                "price": 1.0,
+                "size": 1.0,
+                "ts": start,
+            }
+        ]
+    ).write_parquet(dataset_path / "batch_20260510T000000000000Z.parquet")
+    pl.DataFrame(
+        [
+            {
+                "symbol": "NEW-USDT",
+                "trade_id": "new",
+                "price": 2.0,
+                "size": 1.0,
+                "ts": start + timedelta(hours=1),
+            }
+        ]
+    ).write_parquet(dataset_path / "batch_20260510T010000000000Z.parquet")
+    monkeypatch.setitem(readers.WEB_RECENT_FILE_LIMITS, "trade_print", 1)
+
+    recent, warning = readers.read_recent_dataset_with_warning(lake_root, "trade_print")
+
+    assert warning is None
+    assert recent["symbol"].to_list() == ["NEW-USDT"]
+
+
 def test_dataset_freshness_unknown_when_populated_table_has_no_timestamp():
     payload = readers.dataset_freshness_payload(
         "decision_audit",

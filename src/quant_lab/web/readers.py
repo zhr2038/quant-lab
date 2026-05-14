@@ -118,6 +118,14 @@ WEB_RECENT_LOOKBACK_HOURS = {
 WEB_HEAVY_METADATA_DATASETS = {"okx_public_ws", "trade_print", "orderbook_snapshot"}
 WEB_HEAVY_EXACT_ROW_COUNT_FILE_LIMIT = 64
 WEB_HEAVY_ROW_COUNT_SAMPLE_FILES = 32
+WEB_FULL_VALIDATION_FILE_LIMIT = 512
+WEB_RECENT_FILE_LIMITS = {
+    "trade_print": 384,
+    "orderbook_snapshot": 384,
+    "okx_public_ws": 384,
+}
+PARQUET_MAGIC = b"PAR1"
+MIN_PARQUET_SIZE_BYTES = 12
 
 
 @dataclass(frozen=True)
@@ -160,9 +168,12 @@ def read_recent_dataset_with_warning(
     lookback_hours: int | None = None,
 ) -> tuple[pl.DataFrame, str | None]:
     dataset_path = dataset_path_for(lake_root, dataset_name)
-    invalid_files = invalid_parquet_files(dataset_path)
-    files = _valid_parquet_files(dataset_path, invalid_files=invalid_files)
-    warning = _invalid_parquet_warning(dataset_name, invalid_files)
+    if dataset_name in WEB_HEAVY_METADATA_DATASETS:
+        files, warning = _recent_valid_parquet_files(dataset_path, dataset_name)
+    else:
+        invalid_files = invalid_parquet_files(dataset_path)
+        files = _valid_parquet_files(dataset_path, invalid_files=invalid_files)
+        warning = _invalid_parquet_warning(dataset_name, invalid_files)
     if not files:
         return pl.DataFrame(), warning
 
@@ -323,9 +334,7 @@ def _heavy_dataset_snapshot(
     now: datetime | None = None,
 ) -> DatasetSnapshot:
     path = dataset_path_for(lake_root, dataset_name)
-    invalid_files = invalid_parquet_files(path)
-    files = _valid_parquet_files(path, invalid_files=invalid_files)
-    warning = _invalid_parquet_warning(dataset_name, invalid_files)
+    files, warning = _metadata_snapshot_files(path, dataset_name)
     if not files:
         return DatasetSnapshot(
             rows=0,
@@ -344,6 +353,19 @@ def _heavy_dataset_snapshot(
         freshness=_freshness_payload(latest, "file_mtime", is_empty=rows == 0, now=now),
         warning=warning,
     )
+
+
+def _metadata_snapshot_files(path: Path, dataset_name: str) -> tuple[list[Path], str | None]:
+    candidates = _parquet_file_candidates(path)
+    if len(candidates) > WEB_FULL_VALIDATION_FILE_LIMIT:
+        return candidates, None
+    invalid_files = [
+        file_path
+        for file_path in candidates
+        if not _is_valid_parquet_file_path(file_path)
+    ]
+    valid_files = [file_path for file_path in candidates if file_path not in set(invalid_files)]
+    return valid_files, _invalid_parquet_warning(dataset_name, invalid_files)
 
 
 def _parquet_metadata_row_count(files: list[Path]) -> int:
@@ -389,6 +411,20 @@ def _latest_file_mtime(files: list[Path]) -> datetime | None:
     except OSError:
         return None
     return datetime.fromtimestamp(latest, tz=UTC)
+
+
+def _recent_valid_parquet_files(path: Path, dataset_name: str) -> tuple[list[Path], str | None]:
+    candidates = _parquet_file_candidates(path)
+    max_files = WEB_RECENT_FILE_LIMITS.get(dataset_name, WEB_FULL_VALIDATION_FILE_LIMIT)
+    selected = candidates[-max_files:] if len(candidates) > max_files else candidates
+    invalid_files = [
+        file_path
+        for file_path in selected
+        if not _is_valid_parquet_file_path(file_path)
+    ]
+    invalid = set(invalid_files)
+    valid_files = [file_path for file_path in selected if file_path not in invalid]
+    return valid_files, _invalid_parquet_warning(dataset_name, invalid_files)
 
 
 def _latest_lazy_timestamp(
@@ -504,14 +540,30 @@ def _freshness_payload(
 
 
 def _valid_parquet_files(path: Path, *, invalid_files: list[Path] | None = None) -> list[Path]:
-    if path.is_file() and path.suffix == ".parquet":
-        candidates = [path]
-    elif path.exists():
-        candidates = sorted(path.rglob("*.parquet"))
-    else:
-        candidates = []
+    candidates = _parquet_file_candidates(path)
     invalid = set(invalid_files if invalid_files is not None else invalid_parquet_files(path))
     return [file_path for file_path in candidates if file_path not in invalid]
+
+
+def _parquet_file_candidates(path: Path) -> list[Path]:
+    if path.is_file() and path.suffix == ".parquet":
+        return [path]
+    if not path.exists():
+        return []
+    return sorted(path.rglob("*.parquet"))
+
+
+def _is_valid_parquet_file_path(path: Path) -> bool:
+    try:
+        if path.stat().st_size < MIN_PARQUET_SIZE_BYTES:
+            return False
+        with path.open("rb") as file:
+            header = file.read(len(PARQUET_MAGIC))
+            file.seek(-len(PARQUET_MAGIC), 2)
+            footer = file.read(len(PARQUET_MAGIC))
+        return header == PARQUET_MAGIC and footer == PARQUET_MAGIC
+    except OSError:
+        return False
 
 
 def _invalid_parquet_warning(dataset_label: str, invalid_files: list[Path]) -> str | None:

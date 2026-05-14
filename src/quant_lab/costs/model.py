@@ -14,6 +14,7 @@ logger = logging.getLogger(__name__)
 
 DEFAULT_FALLBACK_COST_BPS = 25.0
 SUPPORTED_COST_QUANTILES = {"p50", "p75", "p90"}
+COST_BUCKET_STALE_SECONDS = 36 * 60 * 60
 
 
 class CostBucket(BaseModel):
@@ -213,7 +214,18 @@ def estimate_cost_from_lake(
     quantile: str = "p75",
     notional_bucket: str | None = None,
 ) -> CostEstimate:
-    df = read_parquet_dataset(Path(lake_root) / "gold" / "cost_bucket_daily")
+    try:
+        df = read_parquet_dataset(Path(lake_root) / "gold" / "cost_bucket_daily")
+    except Exception:
+        logger.warning("Cost bucket daily read failed; using global default", exc_info=True)
+        return _global_default_estimate(
+            normalize_symbol(symbol),
+            regime,
+            notional_usdt,
+            quantile,
+            fallback_reason="service_unavailable",
+            degraded_reason="global_default_cost",
+        )
     rows = [] if df.is_empty() else df.to_dicts()
     return estimate_cost_from_cost_bucket_daily_rows(
         symbol=symbol,
@@ -242,7 +254,14 @@ def estimate_cost_from_cost_bucket_daily_rows(
     requested_symbol = normalize_symbol(symbol)
     normalized_rows = [_normalize_cost_row(row) for row in rows]
     if not normalized_rows:
-        return _global_default_estimate(requested_symbol, regime, notional_usdt, quantile)
+        return _global_default_estimate(
+            requested_symbol,
+            regime,
+            notional_usdt,
+            quantile,
+            fallback_reason="service_unavailable",
+            degraded_reason="global_default_cost",
+        )
 
     tiered = _rank_cost_bucket_rows(
         rows=normalized_rows,
@@ -252,7 +271,19 @@ def estimate_cost_from_cost_bucket_daily_rows(
         notional_bucket=notional_bucket,
     )
     if not tiered:
-        return _global_default_estimate(requested_symbol, regime, notional_usdt, quantile)
+        fallback_reason = (
+            "no_matching_regime"
+            if any(_row_symbol(row) == requested_symbol for row in normalized_rows)
+            else "symbol_missing"
+        )
+        return _global_default_estimate(
+            requested_symbol,
+            regime,
+            notional_usdt,
+            quantile,
+            fallback_reason=fallback_reason,
+            degraded_reason="global_default_cost",
+        )
 
     row, fallback_level = tiered[0]
     row_fallback_level = str(row.get("fallback_level") or "")
@@ -275,6 +306,9 @@ def estimate_cost_from_cost_bucket_daily_rows(
         total_cost_bps = fee_bps + slippage_bps + spread_bps
 
     bucket_id = _cost_bucket_id(row)
+    stale = _row_is_stale(row)
+    source = str(row.get("source") or "cost_bucket_daily")
+    fallback_reason = _fallback_reason(fallback_level, stale=stale, source=source)
     return CostEstimate(
         symbol=requested_symbol,
         regime=regime,
@@ -286,15 +320,21 @@ def estimate_cost_from_cost_bucket_daily_rows(
         total_cost_bps=total_cost_bps,
         cost_bps=total_cost_bps,
         fallback_level=fallback_level,
-        source=str(row.get("source") or "cost_bucket_daily"),
+        source=source,
         sample_count=int(row.get("sample_count") or 0),
         cost_model_version=str(
             row.get("cost_model_version") or f"cost_bucket_daily:{row.get('day', 'unknown')}"
         ),
         bucket_id=bucket_id,
+        requested_regime=regime,
+        matched_regime=str(row.get("regime") or "unknown"),
+        cost_source=source,
         total_cost_bps_p50=_float_value(row, "total_cost_bps_p50"),
         total_cost_bps_p75=_float_value(row, "total_cost_bps_p75"),
         total_cost_bps_p90=_float_value(row, "total_cost_bps_p90"),
+        selected_total_cost_bps=total_cost_bps,
+        fallback_reason=fallback_reason,
+        degraded_reason="cost_bucket_stale" if stale else "none",
         as_of_ts=_row_as_of_ts(row),
     )
 
@@ -399,15 +439,17 @@ def _rank_cost_bucket_rows(
     notional_bucket: str | None,
 ) -> list[tuple[dict[str, Any], str]]:
     ranked: list[tuple[int, str, dict[str, Any]]] = []
+    requested_regime = regime.lower()
     for row in rows:
         row_symbol = _row_symbol(row)
         row_regime = str(row.get("regime") or "")
+        normalized_row_regime = row_regime.lower()
         row_bucket = str(row.get("notional_bucket") or "")
         notional_match = _row_matches_notional(row_bucket, notional_usdt, notional_bucket)
 
-        if row_symbol == symbol and row_regime == regime and notional_match:
+        if row_symbol == symbol and normalized_row_regime == requested_regime and notional_match:
             tier, fallback = 0, "NONE"
-        elif row_symbol == symbol and row_regime == regime:
+        elif row_symbol == symbol and normalized_row_regime == requested_regime:
             tier, fallback = 1, "NOTIONAL_BUCKET_FALLBACK"
         elif row_symbol == symbol and _is_global_regime(row_regime) and notional_match:
             tier, fallback = 2, "REGIME_FALLBACK"
@@ -415,7 +457,11 @@ def _rank_cost_bucket_rows(
             tier, fallback = 3, "REGIME_FALLBACK"
         elif row_symbol == symbol:
             tier, fallback = 4, "REGIME_AND_NOTIONAL_BUCKET_FALLBACK"
-        elif _is_global_symbol(row_symbol) and row_regime == regime and notional_match:
+        elif (
+            _is_global_symbol(row_symbol)
+            and normalized_row_regime == requested_regime
+            and notional_match
+        ):
             tier, fallback = 5, "SYMBOL_FALLBACK"
         elif _is_global_symbol(row_symbol) and _is_global_regime(row_regime):
             tier, fallback = 6, "GLOBAL_BUCKET_FALLBACK"
@@ -480,6 +526,9 @@ def _global_default_estimate(
     regime: str,
     notional_usdt: float,
     quantile: str,
+    *,
+    fallback_reason: str = "symbol_missing",
+    degraded_reason: str = "global_default_cost",
 ) -> CostEstimate:
     return CostEstimate(
         symbol=normalize_symbol(symbol),
@@ -496,9 +545,15 @@ def _global_default_estimate(
         sample_count=0,
         cost_model_version="global_default_v0",
         bucket_id=None,
+        requested_regime=regime,
+        matched_regime="global_default",
+        cost_source="global_default",
         total_cost_bps_p50=DEFAULT_FALLBACK_COST_BPS,
         total_cost_bps_p75=DEFAULT_FALLBACK_COST_BPS,
         total_cost_bps_p90=DEFAULT_FALLBACK_COST_BPS,
+        selected_total_cost_bps=DEFAULT_FALLBACK_COST_BPS,
+        fallback_reason=fallback_reason,
+        degraded_reason=degraded_reason,
         as_of_ts=datetime.now(UTC),
     )
 
@@ -521,11 +576,26 @@ def _source_priority(source: str) -> int:
         return 0
     if normalized == "actual_okx_fills_fee_missing":
         return 1
-    if normalized == "public_spread_proxy":
+    if normalized in {"public_spread_proxy", "public_proxy"}:
         return 2
     if normalized == "global_default":
         return 3
     return 4
+
+
+def _fallback_reason(fallback_level: str, *, stale: bool, source: str) -> str:
+    if stale:
+        return "cost_bucket_stale"
+    if fallback_level == "NONE":
+        return "NONE"
+    normalized = fallback_level.upper()
+    if "REGIME_FALLBACK" in normalized:
+        return "no_matching_regime"
+    if "SYMBOL_FALLBACK" in normalized or "GLOBAL_BUCKET_FALLBACK" in normalized:
+        return "symbol_missing"
+    if source == "global_default":
+        return "symbol_missing"
+    return fallback_level
 
 
 def _row_as_of_ts(row: Mapping[str, Any]) -> datetime | None:
@@ -545,4 +615,26 @@ def _row_as_of_ts(row: Mapping[str, Any]) -> datetime | None:
             return datetime.fromisoformat(str(day)).replace(tzinfo=UTC)
         except ValueError:
             return None
+    return None
+
+
+def _row_is_stale(row: Mapping[str, Any]) -> bool:
+    as_of_ts = _row_explicit_as_of_ts(row)
+    if as_of_ts is None:
+        return False
+    age_seconds = (datetime.now(UTC) - as_of_ts.astimezone(UTC)).total_seconds()
+    return age_seconds > COST_BUCKET_STALE_SECONDS
+
+
+def _row_explicit_as_of_ts(row: Mapping[str, Any]) -> datetime | None:
+    for key in ("created_at", "as_of_ts"):
+        value = row.get(key)
+        if isinstance(value, datetime):
+            return value if value.tzinfo else value.replace(tzinfo=UTC)
+        if value:
+            try:
+                parsed = datetime.fromisoformat(str(value).replace("Z", "+00:00"))
+            except ValueError:
+                continue
+            return parsed.astimezone(UTC)
     return None

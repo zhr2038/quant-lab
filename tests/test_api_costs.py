@@ -1,3 +1,5 @@
+from datetime import UTC, datetime
+
 import polars as pl
 from fastapi.testclient import TestClient
 
@@ -125,6 +127,7 @@ def test_cost_estimate_api_normalizes_slash_symbol(tmp_path, monkeypatch):
                     sample_count=11,
                     fallback_level="PUBLIC_SPREAD_PROXY",
                     source="public_spread_proxy",
+                    created_at="2026-05-10T00:00:00Z",
                 )
             ]
         ),
@@ -145,9 +148,118 @@ def test_cost_estimate_api_normalizes_slash_symbol(tmp_path, monkeypatch):
     payload = response.json()
     assert payload["symbol"] == "BNB-USDT"
     assert payload["normalized_symbol"] == "BNB-USDT"
+    assert payload["requested_regime"] == "normal"
+    assert payload["matched_regime"] == "public_proxy"
     assert payload["source"] == "public_spread_proxy"
+    assert payload["cost_source"] == "public_spread_proxy"
     assert payload["total_cost_bps"] == 2.25
+    assert payload["selected_total_cost_bps"] == 2.25
     assert payload["fallback_level"] == "REGIME_FALLBACK;PUBLIC_SPREAD_PROXY"
+    assert payload["fallback_reason"] == "cost_bucket_stale"
+    assert payload["degraded_reason"] == "cost_bucket_stale"
+
+
+def test_cost_estimate_api_uses_same_symbol_public_proxy_for_trending_regime(
+    tmp_path,
+    monkeypatch,
+):
+    lake = tmp_path / "lake"
+    monkeypatch.setenv("QUANT_LAB_LAKE_ROOT", str(lake))
+    write_parquet_dataset(
+        pl.DataFrame(
+            [
+                _cost_row(
+                    symbol="BNB-USDT",
+                    regime="public_proxy",
+                    notional_bucket="all",
+                    total_cost_bps_p50=1.1,
+                    total_cost_bps_p75=1.4969,
+                    total_cost_bps_p90=2.2,
+                    sample_count=496,
+                    fallback_level="PUBLIC_SPREAD_PROXY",
+                    source="public_spread_proxy",
+                    created_at=datetime.now(UTC).isoformat(),
+                )
+            ]
+        ),
+        lake / "gold/cost_bucket_daily",
+    )
+
+    response = TestClient(app).get(
+        "/v1/costs/estimate",
+        params={
+            "symbol": "BNB-USDT",
+            "regime": "Trending",
+            "notional_usdt": 5_000,
+            "quantile": "p75",
+        },
+    )
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["symbol"] == "BNB-USDT"
+    assert payload["normalized_symbol"] == "BNB-USDT"
+    assert payload["requested_regime"] == "Trending"
+    assert payload["matched_regime"] == "public_proxy"
+    assert payload["source"] == "public_spread_proxy"
+    assert payload["cost_source"] == "public_spread_proxy"
+    assert payload["total_cost_bps_p75"] == 1.4969
+    assert payload["selected_total_cost_bps"] == 1.4969
+    assert payload["total_cost_bps"] == 1.4969
+    assert payload["sample_count"] == 496
+    assert payload["fallback_level"] == "REGIME_FALLBACK;PUBLIC_SPREAD_PROXY"
+    assert payload["fallback_reason"] == "no_matching_regime"
+    assert payload["source"] != "global_default"
+
+    slash_response = TestClient(app).get(
+        "/v1/costs/estimate",
+        params={
+            "symbol": "BNB/USDT",
+            "regime": "Trending",
+            "notional_usdt": 5_000,
+            "quantile": "p75",
+        },
+    )
+    assert slash_response.status_code == 200
+    assert slash_response.json()["selected_total_cost_bps"] == payload["selected_total_cost_bps"]
+
+
+def test_cost_estimate_api_unknown_symbol_uses_degraded_global_default(tmp_path, monkeypatch):
+    lake = tmp_path / "lake"
+    monkeypatch.setenv("QUANT_LAB_LAKE_ROOT", str(lake))
+    write_parquet_dataset(
+        pl.DataFrame(
+            [
+                _cost_row(
+                    symbol="BNB-USDT",
+                    regime="public_proxy",
+                    notional_bucket="all",
+                    total_cost_bps_p75=1.4969,
+                    fallback_level="PUBLIC_SPREAD_PROXY",
+                    source="public_spread_proxy",
+                )
+            ]
+        ),
+        lake / "gold/cost_bucket_daily",
+    )
+
+    response = TestClient(app).get(
+        "/v1/costs/estimate",
+        params={
+            "symbol": "UNKNOWN-USDT",
+            "regime": "Trending",
+            "notional_usdt": 5_000,
+            "quantile": "p75",
+        },
+    )
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["source"] == "global_default"
+    assert payload["cost_source"] == "global_default"
+    assert payload["fallback_level"] == "GLOBAL_DEFAULT"
+    assert payload["fallback_reason"] == "symbol_missing"
+    assert payload["degraded_reason"] == "global_default_cost"
 
 
 def _cost_row(**overrides):

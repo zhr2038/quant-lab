@@ -269,6 +269,11 @@ def test_cost_bucket_daily_estimate_can_fallback_to_symbol_bucket_across_regime(
     assert estimate.total_cost_bps == 2.0
     assert estimate.source == "public_spread_proxy"
     assert estimate.fallback_level == "REGIME_FALLBACK;PUBLIC_SPREAD_PROXY"
+    assert estimate.requested_regime == "normal"
+    assert estimate.matched_regime == "public_proxy"
+    assert estimate.cost_source == "public_spread_proxy"
+    assert estimate.selected_total_cost_bps == 2.0
+    assert estimate.fallback_reason in {"no_matching_regime", "cost_bucket_stale"}
 
 
 def test_cost_bucket_daily_estimate_unknown_symbol_uses_global_default():
@@ -293,7 +298,10 @@ def test_cost_bucket_daily_estimate_unknown_symbol_uses_global_default():
     )
 
     assert estimate.source == "global_default"
+    assert estimate.cost_source == "global_default"
     assert estimate.fallback_level == "GLOBAL_DEFAULT"
+    assert estimate.fallback_reason == "symbol_missing"
+    assert estimate.degraded_reason == "global_default_cost"
     assert estimate.total_cost_bps == DEFAULT_FALLBACK_COST_BPS
 
 

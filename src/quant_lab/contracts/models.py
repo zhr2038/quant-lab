@@ -140,11 +140,15 @@ class CostEstimate(ContractModel):
     cost_model_version: str = Field(default="unknown", min_length=1)
     bucket_id: str | None = None
     normalized_symbol: str | None = None
+    requested_regime: str | None = None
+    matched_regime: str | None = None
     cost_source: str | None = None
     total_cost_bps_p50: float | None = Field(default=None, ge=0)
     total_cost_bps_p75: float | None = Field(default=None, ge=0)
     total_cost_bps_p90: float | None = Field(default=None, ge=0)
+    selected_total_cost_bps: float | None = Field(default=None, ge=0)
     fallback_reason: str | None = None
+    degraded_reason: str | None = None
     sample_size: int | None = Field(default=None, ge=0)
     as_of_ts: datetime | None = None
 
@@ -159,8 +163,12 @@ class CostEstimate(ContractModel):
                 normalized["cost_bps"] = normalized["total_cost_bps"]
             normalized["symbol"] = normalize_symbol(normalized.get("symbol"))
             normalized.setdefault("normalized_symbol", normalized["symbol"])
+            normalized.setdefault("requested_regime", normalized.get("regime"))
+            normalized.setdefault("matched_regime", normalized.get("regime"))
             normalized.setdefault("cost_source", normalized.get("source"))
+            normalized.setdefault("selected_total_cost_bps", normalized.get("total_cost_bps"))
             normalized.setdefault("fallback_reason", normalized.get("fallback_level"))
+            normalized.setdefault("degraded_reason", "none")
             normalized.setdefault("sample_size", normalized.get("sample_count"))
             for suffix in ("p50", "p75", "p90"):
                 normalized.setdefault(f"total_cost_bps_{suffix}", normalized.get("total_cost_bps"))

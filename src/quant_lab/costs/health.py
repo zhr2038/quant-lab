@@ -29,6 +29,9 @@ COST_HEALTH_DAILY_SCHEMA = {
     "symbols_with_proxy_only": pl.Utf8,
     "symbols_missing_cost": pl.Utf8,
     "min_sample_count": pl.Int64,
+    "api_global_default_count": pl.Int64,
+    "api_symbol_proxy_hit_count": pl.Int64,
+    "api_regime_fallback_count": pl.Int64,
     "warnings_json": pl.Utf8,
     "created_at": pl.Utf8,
 }
@@ -48,6 +51,9 @@ class CostHealthDaily(BaseModel):
     symbols_with_proxy_only: list[str] = Field(default_factory=list)
     symbols_missing_cost: list[str] = Field(default_factory=list)
     min_sample_count: int = Field(ge=1)
+    api_global_default_count: int = Field(default=0, ge=0)
+    api_symbol_proxy_hit_count: int = Field(default=0, ge=0)
+    api_regime_fallback_count: int = Field(default=0, ge=0)
     warnings_json: str = "[]"
     created_at: datetime = Field(default_factory=lambda: datetime.now(UTC))
 

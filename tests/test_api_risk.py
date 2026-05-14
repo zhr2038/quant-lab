@@ -185,9 +185,11 @@ def test_live_permission_api_recomputes_stale_published_allow(tmp_path, monkeypa
         "/v1/risk/live-permission-detail",
         params={"strategy": "v5", "version": "5.0.0"},
     ).json()
-    assert detail["permission_source"] == "recomputed"
+    assert detail["permission_source"] == "recomputed_stale_context"
     assert detail["published_permission_stale"] is True
     assert detail["permission"]["permission"] == "ABORT"
+    assert detail["permission"]["permission_status"] == "STALE_ABORT"
+    assert detail["permission"]["enforceable"] is False
 
 
 def test_live_permission_detail_overrides_fresh_allow_when_recomputed_is_more_conservative(
@@ -275,10 +277,132 @@ def test_live_permission_detail_recomputes_permission_stale_vs_v5_telemetry(
     ).json()
 
     assert detail["published_permission_stale"] is True
-    assert detail["permission_source"] == "recomputed"
+    assert detail["permission_source"] == "published_stale"
     assert detail["permission"]["permission"] == "ABORT"
-    assert detail["permission"]["permission_status"] == "ACTIVE_ABORT"
-    assert detail["permission"]["as_of_ts"] > as_of_ts.isoformat()
+    assert detail["permission"]["permission_status"] == "STALE_ABORT"
+    assert detail["permission"]["enforceable"] is False
+    assert detail["permission"]["as_of_ts"] == as_of_ts.isoformat().replace("+00:00", "Z")
+
+
+def test_live_permission_api_returns_latest_active_matching_strategy_version(
+    tmp_path,
+    monkeypatch,
+):
+    lake = tmp_path / "lake"
+    monkeypatch.setenv("QUANT_LAB_LAKE_ROOT", str(lake))
+    monkeypatch.setenv("QUANT_LAB_RISK_PERMISSION_TTL_SECONDS", "999999")
+    old_as_of = datetime.now(UTC) - timedelta(days=2)
+    new_as_of = datetime.now(UTC) - timedelta(minutes=5)
+    _write_risk_permissions(
+        lake,
+        [
+            _risk_row(
+                strategy="v5",
+                version="5.0.0",
+                permission="ABORT",
+                reasons='["old_abort"]',
+                as_of_ts=old_as_of,
+                permission_status="ACTIVE_ABORT",
+            ),
+            _risk_row(
+                strategy="v5",
+                version="5.0.0",
+                permission="ABORT",
+                reasons='["new_abort"]',
+                as_of_ts=new_as_of,
+                permission_status="ACTIVE_ABORT",
+            ),
+        ],
+    )
+
+    response = TestClient(app).get(
+        "/v1/risk/live-permission",
+        params={"strategy": "v5", "version": "5.0.0"},
+    )
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["reasons"] == ["new_abort"]
+    assert payload["as_of_ts"] == new_as_of.isoformat().replace("+00:00", "Z")
+    assert payload["permission_status"] == "ACTIVE_ABORT"
+    assert payload["enforceable"] is True
+
+
+def test_live_permission_api_downgrades_expired_active_permission(
+    tmp_path,
+    monkeypatch,
+):
+    lake = tmp_path / "lake"
+    monkeypatch.setenv("QUANT_LAB_LAKE_ROOT", str(lake))
+    as_of = datetime.now(UTC) - timedelta(minutes=10)
+    _write_risk_permissions(
+        lake,
+        [
+            _risk_row(
+                strategy="v5",
+                version="5.0.0",
+                permission="ABORT",
+                reasons='["expired_abort"]',
+                as_of_ts=as_of,
+                expires_at=datetime.now(UTC) - timedelta(seconds=1),
+                permission_status="ACTIVE_ABORT",
+            ),
+        ],
+    )
+
+    payload = TestClient(app).get(
+        "/v1/risk/live-permission",
+        params={"strategy": "v5", "version": "5.0.0"},
+    ).json()
+
+    assert payload["permission"] == "ABORT"
+    assert payload["permission_status"] == "STALE_ABORT"
+    assert payload["enforceable"] is False
+    assert "permission_expired" in payload["risk_reason_codes"]
+
+
+def test_live_permission_detail_flags_response_older_than_gold_latest(
+    tmp_path,
+    monkeypatch,
+):
+    lake = tmp_path / "lake"
+    monkeypatch.setenv("QUANT_LAB_LAKE_ROOT", str(lake))
+    monkeypatch.setenv("QUANT_LAB_RISK_PERMISSION_TTL_SECONDS", "999999")
+    active_as_of = datetime.now(UTC) - timedelta(minutes=20)
+    stale_as_of = datetime.now(UTC) - timedelta(minutes=5)
+    _write_strategy_health(lake, datetime.now(UTC))
+    _write_risk_permissions(
+        lake,
+        [
+            _risk_row(
+                strategy="v5",
+                version="5.0.0",
+                permission="ABORT",
+                reasons='["active_abort"]',
+                as_of_ts=active_as_of,
+                source_bundle_ts=active_as_of,
+                permission_status="ACTIVE_ABORT",
+            ),
+            _risk_row(
+                strategy="v5",
+                version="5.0.0",
+                permission="ABORT",
+                reasons='["newer_stale_abort"]',
+                as_of_ts=stale_as_of,
+                expires_at=datetime.now(UTC) - timedelta(seconds=1),
+                source_bundle_ts=stale_as_of,
+                permission_status="STALE_ABORT",
+            ),
+        ],
+    )
+
+    detail = TestClient(app).get(
+        "/v1/risk/live-permission-detail",
+        params={"strategy": "v5", "version": "5.0.0"},
+    ).json()
+
+    assert detail["permission"]["as_of_ts"] == active_as_of.isoformat().replace("+00:00", "Z")
+    assert detail["api_consistency"]["compare_gold_latest_vs_api_response"] == "FAIL"
 
 
 def _get_permission(strategy: str) -> dict:
@@ -385,3 +509,39 @@ def _write_strategy_health(lake, latest_bundle_ts: datetime) -> None:
         ),
         lake / "gold/strategy_health_daily",
     )
+
+
+def _write_risk_permissions(lake, rows: list[dict]) -> None:
+    write_parquet_dataset(pl.DataFrame(rows), lake / "gold/risk_permission")
+
+
+def _risk_row(
+    *,
+    strategy: str,
+    version: str,
+    permission: str,
+    reasons: str,
+    as_of_ts: datetime,
+    permission_status: str,
+    expires_at: datetime | None = None,
+    source_bundle_ts: datetime | None = None,
+) -> dict:
+    return {
+        "strategy": strategy,
+        "version": version,
+        "permission": permission,
+        "allowed_modes": "[]",
+        "max_gross_exposure": 0.0,
+        "max_single_weight": 0.0,
+        "cost_model_version": "costs-test",
+        "gate_version": "default-v0.1",
+        "reasons": reasons,
+        "created_at": as_of_ts.isoformat(),
+        "as_of_ts": as_of_ts.isoformat(),
+        "source_bundle_ts": source_bundle_ts.isoformat() if source_bundle_ts else None,
+        "expires_at": expires_at.isoformat() if expires_at else None,
+        "permission_status": permission_status,
+        "contract_version": "risk_permission.v0.2",
+        "source": "test",
+        "fallback_level": "NONE",
+    }

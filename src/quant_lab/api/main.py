@@ -35,6 +35,7 @@ from quant_lab.risk.publish import (
     is_permission_status_enforceable,
     latest_strategy_telemetry_ts,
     parse_risk_permission_row,
+    permission_status,
     risk_permission_stale_vs_telemetry,
 )
 
@@ -92,6 +93,7 @@ class LivePermissionDetailResponse(BaseModel):
     cost_health: dict[str, Any]
     gate_summary: dict[str, Any]
     v5_telemetry_summary: dict[str, Any]
+    api_consistency: dict[str, Any] = Field(default_factory=dict)
 
 
 KNOWN_DATASETS = [
@@ -281,22 +283,39 @@ def _live_permission_evaluation(
     strategy: str,
     version: str,
 ) -> dict[str, Any]:
-    published = _load_published_risk_permission(lake_root, strategy=strategy, version=version)
+    telemetry_latest_ts = latest_strategy_telemetry_ts(lake_root, strategy)
+    selection = _select_published_risk_permission(
+        lake_root,
+        strategy=strategy,
+        version=version,
+        telemetry_latest_ts=telemetry_latest_ts,
+    )
+    published = selection["active"] or selection["stale"]
     computed = _compute_live_permission_with_context(
         lake_root,
         strategy=strategy,
         version=version,
     )
     recomputed = computed["permission"]
-    stale = _risk_permission_is_stale(
-        published,
-        telemetry_latest_ts=latest_strategy_telemetry_ts(lake_root, strategy),
-    ) if published is not None else True
+    stale = selection["active"] is None
     source = "recomputed"
     permission = recomputed
-    if published is not None and not stale and not _is_more_conservative(recomputed, published):
+    if selection["active"] is not None and not _is_more_conservative(
+        recomputed, selection["active"]
+    ):
         source = "published_cache"
-        permission = published
+        permission = selection["active"]
+    elif selection["active"] is None and selection["stale"] is not None:
+        source = "published_stale"
+        permission = selection["stale"]
+        if _is_more_conservative(recomputed, selection["stale"]):
+            source = "recomputed_stale_context"
+            permission = recomputed
+        permission = _force_non_enforceable_permission(
+            permission,
+            telemetry_latest_ts=telemetry_latest_ts,
+            reason="no_fresh_published_permission",
+        )
     return {
         "permission": permission,
         "permission_source": source,
@@ -306,6 +325,10 @@ def _live_permission_evaluation(
         "cost_health": computed["cost_health"],
         "gate_summary": computed["gate_summary"],
         "v5_telemetry_summary": computed["v5_telemetry_summary"],
+        "api_consistency": _risk_permission_api_consistency(
+            response_permission=permission,
+            gold_latest=selection["gold_latest"],
+        ),
     }
 
 
@@ -663,24 +686,189 @@ def _gate_decision_from_row(row: dict[str, Any]) -> GateDecision | None:
         return None
 
 
-def _load_published_risk_permission(
+def _select_published_risk_permission(
     lake_root: Path,
     *,
     strategy: str,
     version: str,
-) -> RiskPermission | None:
+    telemetry_latest_ts: datetime | None,
+) -> dict[str, RiskPermission | None]:
     df = read_parquet_dataset(lake_root / "gold" / "risk_permission")
     if df.is_empty():
-        return None
+        return {"active": None, "stale": None, "gold_latest": None}
     filtered = df
     if "strategy" in filtered.columns:
         filtered = filtered.filter(pl.col("strategy") == strategy)
     if "version" in filtered.columns:
         filtered = filtered.filter(pl.col("version") == version)
     if filtered.is_empty():
+        return {"active": None, "stale": None, "gold_latest": None}
+
+    parsed = [
+        permission
+        for row in filtered.to_dicts()
+        if (permission := parse_risk_permission_row(row)) is not None
+    ]
+    if not parsed:
+        return {"active": None, "stale": None, "gold_latest": None}
+
+    normalized = [
+        _normalize_published_risk_permission(
+            permission,
+            telemetry_latest_ts=telemetry_latest_ts,
+        )
+        for permission in parsed
+    ]
+    gold_latest = _latest_permission(normalized)
+    active_candidates = [
+        permission for permission in normalized if _published_permission_is_active(permission)
+    ]
+    stale_candidates = [
+        permission for permission in normalized if not _published_permission_is_active(permission)
+    ]
+    return {
+        "active": _latest_permission(active_candidates),
+        "stale": _latest_permission(stale_candidates),
+        "gold_latest": gold_latest,
+    }
+
+
+def _normalize_published_risk_permission(
+    permission: RiskPermission,
+    *,
+    telemetry_latest_ts: datetime | None,
+) -> RiskPermission:
+    as_of = _ensure_utc(permission.as_of_ts or permission.created_at)
+    latest_telemetry = _latest_datetime(
+        [
+            telemetry_latest_ts,
+            permission.telemetry_latest_ts,
+            permission.source_bundle_ts,
+        ]
+    )
+    expires_at = _ensure_utc(permission.expires_at)
+    if expires_at is None and as_of is not None:
+        expires_at = as_of + timedelta(seconds=max(_risk_permission_ttl_seconds(), 0))
+    expired = expires_at is not None and expires_at < datetime.now(UTC)
+    stale_vs_telemetry = risk_permission_stale_vs_telemetry(
+        as_of_ts=as_of,
+        telemetry_latest_ts=latest_telemetry,
+        threshold_seconds=DEFAULT_TELEMETRY_STALE_THRESHOLD_SECONDS,
+    )
+    stale = expired or stale_vs_telemetry
+    status_value = permission_status(permission.permission.value, stale=stale)
+    reasons = list(permission.reasons)
+    if expired and "permission_expired" not in reasons:
+        reasons.append("permission_expired")
+    if stale_vs_telemetry and "risk_permission_stale_vs_v5_telemetry" not in reasons:
+        reasons.append("risk_permission_stale_vs_v5_telemetry")
+    return permission.model_copy(
+        update={
+            "as_of_ts": as_of,
+            "expires_at": expires_at,
+            "telemetry_latest_ts": latest_telemetry,
+            "permission_freshness_sec": _telemetry_freshness_seconds(as_of, latest_telemetry),
+            "permission_status": status_value,
+            "enforceable": is_permission_status_enforceable(status_value),
+            "risk_reason_codes": reasons,
+            "reasons": reasons,
+        }
+    )
+
+
+def _published_permission_is_active(permission: RiskPermission) -> bool:
+    return (
+        is_permission_status_enforceable(permission.permission_status)
+        and not _permission_expired(permission)
+    )
+
+
+def _permission_expired(permission: RiskPermission) -> bool:
+    return permission.expires_at is not None and permission.expires_at < datetime.now(UTC)
+
+
+def _force_non_enforceable_permission(
+    permission: RiskPermission,
+    *,
+    telemetry_latest_ts: datetime | None,
+    reason: str,
+) -> RiskPermission:
+    as_of = _ensure_utc(permission.as_of_ts or permission.created_at)
+    latest_telemetry = _latest_datetime(
+        [telemetry_latest_ts, permission.telemetry_latest_ts, permission.source_bundle_ts]
+    )
+    reasons = _dedupe([*permission.reasons, reason])
+    status_value = permission_status(permission.permission.value, stale=True)
+    return permission.model_copy(
+        update={
+            "as_of_ts": as_of,
+            "telemetry_latest_ts": latest_telemetry,
+            "permission_freshness_sec": _telemetry_freshness_seconds(as_of, latest_telemetry),
+            "permission_status": status_value,
+            "enforceable": False,
+            "risk_reason_codes": reasons,
+            "reasons": reasons,
+        }
+    )
+
+
+def _latest_permission(permissions: list[RiskPermission]) -> RiskPermission | None:
+    if not permissions:
         return None
-    sort_column = "as_of_ts" if "as_of_ts" in filtered.columns else "created_at"
-    return parse_risk_permission_row(_latest_row(filtered, sort_column))
+    return sorted(
+        permissions,
+        key=lambda permission: (
+            _datetime_sort_value(permission.as_of_ts or permission.created_at),
+            _datetime_sort_value(permission.source_bundle_ts),
+        ),
+    )[-1]
+
+
+def _risk_permission_api_consistency(
+    *,
+    response_permission: RiskPermission,
+    gold_latest: RiskPermission | None,
+) -> dict[str, Any]:
+    response_as_of = response_permission.as_of_ts or response_permission.created_at
+    gold_as_of = gold_latest.as_of_ts or gold_latest.created_at if gold_latest is not None else None
+    status_value = "PASS"
+    if gold_as_of is not None and response_as_of < gold_as_of:
+        status_value = "FAIL"
+    return {
+        "compare_gold_latest_vs_api_response": status_value,
+        "api_response_as_of_ts": response_as_of.isoformat(),
+        "gold_latest_as_of_ts": gold_as_of.isoformat() if gold_as_of else None,
+        "api_response_permission_status": str(response_permission.permission_status or ""),
+        "gold_latest_permission_status": str(gold_latest.permission_status or "")
+        if gold_latest
+        else None,
+    }
+
+
+def _datetime_sort_value(value: datetime | None) -> float:
+    normalized = _ensure_utc(value)
+    return normalized.timestamp() if normalized is not None else 0.0
+
+
+def _latest_datetime(values: list[datetime | None]) -> datetime | None:
+    parsed = [_ensure_utc(value) for value in values]
+    clean = [value for value in parsed if value is not None]
+    return max(clean) if clean else None
+
+
+def _telemetry_freshness_seconds(
+    as_of_ts: datetime | None,
+    telemetry_latest_ts: datetime | None,
+) -> int:
+    if as_of_ts is None or telemetry_latest_ts is None or telemetry_latest_ts <= as_of_ts:
+        return 0
+    return int((telemetry_latest_ts - as_of_ts).total_seconds())
+
+
+def _ensure_utc(value: datetime | None) -> datetime | None:
+    if value is None:
+        return None
+    return value.astimezone(UTC) if value.tzinfo else value.replace(tzinfo=UTC)
 
 
 def _lake_cost_health(lake_root: Path) -> dict[str, Any]:

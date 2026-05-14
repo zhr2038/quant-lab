@@ -399,6 +399,8 @@ class RiskPermission(ContractModel):
     permission_freshness_sec: int | None = Field(default=None, ge=0)
     contract_version: str = "risk_permission.v0.2"
     permission_status: RiskPermissionStatus | None = None
+    enforceable: bool | None = None
+    risk_reason_codes: list[str] = Field(default_factory=list)
 
     @field_validator(
         "created_at",

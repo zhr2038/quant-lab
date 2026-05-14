@@ -38,6 +38,8 @@ RISK_PERMISSION_SCHEMA = {
     "permission_freshness_sec": pl.Int64,
     "contract_version": pl.Utf8,
     "permission_status": pl.Utf8,
+    "enforceable": pl.Boolean,
+    "risk_reason_codes": pl.Utf8,
     "source": pl.Utf8,
     "fallback_level": pl.Utf8,
 }
@@ -265,6 +267,8 @@ def annotate_risk_permission(
             "permission_freshness_sec": freshness,
             "contract_version": RISK_PERMISSION_CONTRACT_VERSION,
             "permission_status": permission_status(permission.permission.value, stale=stale),
+            "enforceable": not stale,
+            "risk_reason_codes": permission.reasons,
         }
     )
 
@@ -317,6 +321,7 @@ def risk_permission_row(permission: RiskPermission) -> dict[str, Any]:
         "reasons": _json(permission.reasons),
         "source": "research.risk_permission.v0.1",
         "fallback_level": "NONE",
+        "risk_reason_codes": _json(permission.risk_reason_codes or permission.reasons),
     }
 
 
@@ -329,6 +334,8 @@ def parse_risk_permission_row(row: dict[str, Any]) -> RiskPermission | None:
         cleaned["allowed_modes"] = _json_list(cleaned["allowed_modes"])
     if isinstance(cleaned.get("reasons"), str):
         cleaned["reasons"] = _json_list(cleaned["reasons"])
+    if isinstance(cleaned.get("risk_reason_codes"), str):
+        cleaned["risk_reason_codes"] = _json_list(cleaned["risk_reason_codes"])
     for field in [
         "as_of_ts",
         "source_bundle_ts",

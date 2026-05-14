@@ -414,7 +414,7 @@ def _latest_file_mtime(files: list[Path]) -> datetime | None:
 
 
 def _recent_valid_parquet_files(path: Path, dataset_name: str) -> tuple[list[Path], str | None]:
-    candidates = _parquet_file_candidates(path)
+    candidates = _recent_parquet_file_candidates(path)
     max_files = WEB_RECENT_FILE_LIMITS.get(dataset_name, WEB_FULL_VALIDATION_FILE_LIMIT)
     selected = candidates[-max_files:] if len(candidates) > max_files else candidates
     invalid_files = [
@@ -425,6 +425,17 @@ def _recent_valid_parquet_files(path: Path, dataset_name: str) -> tuple[list[Pat
     invalid = set(invalid_files)
     valid_files = [file_path for file_path in selected if file_path not in invalid]
     return valid_files, _invalid_parquet_warning(dataset_name, invalid_files)
+
+
+def _recent_parquet_file_candidates(path: Path) -> list[Path]:
+    candidates = _parquet_file_candidates(path)
+    batch_files = [file_path for file_path in candidates if file_path.name.startswith("batch_")]
+    if batch_files:
+        candidates = batch_files
+    try:
+        return sorted(candidates, key=lambda file_path: (file_path.stat().st_mtime, file_path.name))
+    except OSError:
+        return sorted(candidates)
 
 
 def _latest_lazy_timestamp(

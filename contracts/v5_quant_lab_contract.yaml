@@ -25,11 +25,14 @@ common_enums:
   permission_status:
     - ACTIVE_ALLOW
     - ACTIVE_SELL_ONLY
-    - ACTIVE_ABORT
-    - STALE_ALLOW
-    - STALE_SELL_ONLY
-    - STALE_ABORT
-    - NO_FRESH_PERMISSION
+      - ACTIVE_ABORT
+      - STALE_ALLOW
+      - STALE_SELL_ONLY
+      - STALE_ABORT
+      - EXPIRED_ALLOW
+      - EXPIRED_SELL_ONLY
+      - EXPIRED_ABORT
+      - NO_FRESH_PERMISSION
   cost_source:
     - actual_fills
     - mixed_actual_proxy
@@ -140,9 +143,12 @@ schemas:
       - allowed_modes
       - max_gross_exposure
       - max_single_weight
+      - max_gross_exposure_usdt
+      - max_single_order_usdt
       - cost_model_version
       - gate_version
       - reasons
+      - reason
       - risk_reason_codes
       - created_at
       - as_of_ts
@@ -168,6 +174,9 @@ schemas:
         - STALE_ALLOW
         - STALE_SELL_ONLY
         - STALE_ABORT
+        - EXPIRED_ALLOW
+        - EXPIRED_SELL_ONLY
+        - EXPIRED_ABORT
         - NO_FRESH_PERMISSION
   quant_lab_request_event:
     schema_version: v5.quant_lab_request.v0.1

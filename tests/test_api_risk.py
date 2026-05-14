@@ -47,11 +47,16 @@ def test_live_permission_api_sell_only_when_cost_missing(tmp_path, monkeypatch):
     payload = _get_permission("v5")
 
     assert payload["permission"] == "SELL_ONLY"
-    assert payload["allowed_modes"] == ["sell_only"]
+    assert payload["allowed_modes"] == []
     assert payload["reasons"] == ["cost_health_missing"]
+    assert payload["permission_status"] == "NO_FRESH_PERMISSION"
+    assert payload["enforceable"] is False
 
 
-def test_live_permission_api_allows_when_gate_cost_and_data_are_healthy(tmp_path, monkeypatch):
+def test_live_permission_api_requires_published_permission_even_when_inputs_are_healthy(
+    tmp_path,
+    monkeypatch,
+):
     lake = tmp_path / "lake"
     monkeypatch.setenv("QUANT_LAB_LAKE_ROOT", str(lake))
     _write_gate(lake, GateStatus.LIVE_READY)
@@ -61,10 +66,14 @@ def test_live_permission_api_allows_when_gate_cost_and_data_are_healthy(tmp_path
     payload = _get_permission("v5")
 
     assert payload["permission"] == "ALLOW"
-    assert payload["allowed_modes"] == ["paper", "live_canary"]
+    assert payload["allowed_modes"] == []
     assert payload["reasons"] == ["all_required_alpha_gates_live_ready"]
     assert payload["cost_model_version"].startswith("cost_bucket_daily:")
     assert payload["gate_version"] == "default-v0.1"
+    assert payload["permission_status"] == "NO_FRESH_PERMISSION"
+    assert payload["enforceable"] is False
+    assert "no_fresh_published_permission" in payload["risk_reason_codes"]
+    assert payload["reason"] == "no_fresh_published_permission"
 
 
 def test_live_permission_api_aborts_on_v5_gate_compliance_violation(tmp_path, monkeypatch):
@@ -131,6 +140,11 @@ def test_live_permission_api_reads_published_risk_permission(tmp_path, monkeypat
     assert payload["permission"] == "SELL_ONLY"
     assert payload["reasons"] == ["published_permission"]
     assert "permission_source" not in payload
+    assert payload["permission_status"] == "ACTIVE_SELL_ONLY"
+    assert payload["enforceable"] is True
+    assert payload["max_gross_exposure_usdt"] == 0.0
+    assert payload["max_single_order_usdt"] == 0.0
+    assert payload["reason"] == "published_permission"
 
     detail = TestClient(app).get(
         "/v1/risk/live-permission-detail",
@@ -328,6 +342,49 @@ def test_live_permission_api_returns_latest_active_matching_strategy_version(
     assert payload["enforceable"] is True
 
 
+def test_live_permission_api_breaks_ties_by_latest_source_bundle_ts(
+    tmp_path,
+    monkeypatch,
+):
+    lake = tmp_path / "lake"
+    monkeypatch.setenv("QUANT_LAB_LAKE_ROOT", str(lake))
+    monkeypatch.setenv("QUANT_LAB_RISK_PERMISSION_TTL_SECONDS", "999999")
+    as_of = datetime.now(UTC) - timedelta(minutes=5)
+    old_bundle = as_of - timedelta(minutes=2)
+    new_bundle = as_of - timedelta(minutes=1)
+    _write_risk_permissions(
+        lake,
+        [
+            _risk_row(
+                strategy="v5",
+                version="5.0.0",
+                permission="ABORT",
+                reasons='["old_bundle_abort"]',
+                as_of_ts=as_of,
+                source_bundle_ts=old_bundle,
+                permission_status="ACTIVE_ABORT",
+            ),
+            _risk_row(
+                strategy="v5",
+                version="5.0.0",
+                permission="ABORT",
+                reasons='["new_bundle_abort"]',
+                as_of_ts=as_of,
+                source_bundle_ts=new_bundle,
+                permission_status="ACTIVE_ABORT",
+            ),
+        ],
+    )
+
+    payload = TestClient(app).get(
+        "/v1/risk/live-permission",
+        params={"strategy": "v5", "version": "5.0.0"},
+    ).json()
+
+    assert payload["reasons"] == ["new_bundle_abort"]
+    assert payload["source_bundle_ts"] == new_bundle.isoformat().replace("+00:00", "Z")
+
+
 def test_live_permission_api_downgrades_expired_active_permission(
     tmp_path,
     monkeypatch,
@@ -356,9 +413,31 @@ def test_live_permission_api_downgrades_expired_active_permission(
     ).json()
 
     assert payload["permission"] == "ABORT"
-    assert payload["permission_status"] == "STALE_ABORT"
+    assert payload["permission_status"] == "EXPIRED_ABORT"
     assert payload["enforceable"] is False
     assert "permission_expired" in payload["risk_reason_codes"]
+
+
+def test_live_permission_api_no_fresh_permission_has_empty_allowed_modes(
+    tmp_path,
+    monkeypatch,
+):
+    lake = tmp_path / "lake"
+    monkeypatch.setenv("QUANT_LAB_LAKE_ROOT", str(lake))
+    _write_gate(lake, GateStatus.LIVE_READY)
+    _write_cost_bucket(lake)
+    _write_fresh_market_bar(lake)
+
+    payload = TestClient(app).get(
+        "/v1/risk/live-permission",
+        params={"strategy": "v5", "version": "5.0.0"},
+    ).json()
+
+    assert payload["permission_status"] == "NO_FRESH_PERMISSION"
+    assert payload["enforceable"] is False
+    assert payload["allowed_modes"] == []
+    assert payload["max_gross_exposure_usdt"] == 0.0
+    assert payload["max_single_order_usdt"] == 0.0
 
 
 def test_live_permission_detail_flags_response_older_than_gold_latest(

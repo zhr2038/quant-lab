@@ -38,6 +38,9 @@ class RiskPermissionStatus(StrEnum):
     STALE_ALLOW = "STALE_ALLOW"
     STALE_SELL_ONLY = "STALE_SELL_ONLY"
     STALE_ABORT = "STALE_ABORT"
+    EXPIRED_ALLOW = "EXPIRED_ALLOW"
+    EXPIRED_SELL_ONLY = "EXPIRED_SELL_ONLY"
+    EXPIRED_ABORT = "EXPIRED_ABORT"
     NO_FRESH_PERMISSION = "NO_FRESH_PERMISSION"
 
 
@@ -417,9 +420,12 @@ class RiskPermission(ContractModel):
     allowed_modes: list[str] = Field(default_factory=list)
     max_gross_exposure: float = Field(ge=0)
     max_single_weight: float = Field(ge=0)
+    max_gross_exposure_usdt: float | None = Field(default=None, ge=0)
+    max_single_order_usdt: float | None = Field(default=None, ge=0)
     cost_model_version: str = Field(min_length=1)
     gate_version: str = Field(min_length=1)
     reasons: list[str] = Field(default_factory=list)
+    reason: str | None = None
     created_at: datetime
     as_of_ts: datetime | None = None
     source_bundle_ts: datetime | None = None
@@ -430,6 +436,26 @@ class RiskPermission(ContractModel):
     permission_status: RiskPermissionStatus | None = None
     enforceable: bool | None = None
     risk_reason_codes: list[str] = Field(default_factory=list)
+
+    @model_validator(mode="before")
+    @classmethod
+    def sync_permission_aliases(cls, data: Any) -> Any:
+        if isinstance(data, dict):
+            normalized = dict(data)
+            normalized.setdefault("max_gross_exposure_usdt", normalized.get("max_gross_exposure"))
+            normalized.setdefault("max_single_order_usdt", normalized.get("max_single_weight"))
+            reasons = normalized.get("risk_reason_codes") or normalized.get("reasons") or []
+            if isinstance(reasons, str):
+                try:
+                    import json
+
+                    parsed = json.loads(reasons)
+                    reasons = parsed if isinstance(parsed, list) else [str(parsed)]
+                except json.JSONDecodeError:
+                    reasons = [reasons] if reasons else []
+            normalized.setdefault("reason", reasons[0] if reasons else None)
+            return normalized
+        return data
 
     @field_validator(
         "created_at",

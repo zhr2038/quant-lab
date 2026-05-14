@@ -1298,6 +1298,10 @@ def _risk_permission_quality(
             "permission": None,
             "enforceable": False,
             "as_of_ts": None,
+            "api_permission_as_of_ts": None,
+            "gold_permission_as_of_ts": None,
+            "permission_api_lag_sec": None,
+            "permission_api_consistent_with_gold": False,
             "created_at": None,
             "source_bundle_ts": None,
             "telemetry_latest_ts": _iso_or_none(telemetry_latest_ts),
@@ -1321,12 +1325,17 @@ def _risk_permission_quality(
         telemetry_latest_ts=effective_telemetry_ts,
         threshold_seconds=DEFAULT_TELEMETRY_STALE_THRESHOLD_SECONDS,
     )
+    expired = False
+    expires_at = _risk_row_timestamp(row, ["expires_at"])
+    if expires_at is not None:
+        expired = expires_at < datetime.now(UTC)
     status = (
         stored_status
-        if stored_status.startswith(("ACTIVE_", "STALE_"))
+        if stored_status.startswith(("ACTIVE_", "STALE_", "EXPIRED_"))
         and stored_status.endswith(permission)
-        and stored_status.startswith("STALE_") == stale
-        else permission_status(permission, stale=stale).value
+        and stored_status.startswith("STALE_") == (stale and not expired)
+        and stored_status.startswith("EXPIRED_") == expired
+        else permission_status(permission, stale=stale and not expired, expired=expired).value
     )
     freshness = permission_freshness_sec(
         as_of_ts=as_of_ts,
@@ -1338,6 +1347,10 @@ def _risk_permission_quality(
         "permission": permission,
         "enforceable": enforceable,
         "as_of_ts": _iso_or_none(as_of_ts),
+        "api_permission_as_of_ts": _iso_or_none(as_of_ts),
+        "gold_permission_as_of_ts": _iso_or_none(as_of_ts),
+        "permission_api_lag_sec": 0,
+        "permission_api_consistent_with_gold": True,
         "created_at": _iso_or_none(created_at),
         "source_bundle_ts": _iso_or_none(row_telemetry_ts),
         "telemetry_latest_ts": _iso_or_none(effective_telemetry_ts),
@@ -1373,7 +1386,9 @@ def _risk_permissions_for_export(
             telemetry_latest_ts=effective_telemetry_ts,
             threshold_seconds=DEFAULT_TELEMETRY_STALE_THRESHOLD_SECONDS,
         )
-        status = permission_status(permission, stale=stale).value
+        expires_at = _risk_row_timestamp(row, ["expires_at"])
+        expired = expires_at is not None and expires_at < datetime.now(UTC)
+        status = permission_status(permission, stale=stale and not expired, expired=expired).value
         rows.append(
             row
             | {
@@ -1385,6 +1400,7 @@ def _risk_permissions_for_export(
                 ),
                 "contract_version": row.get("contract_version") or "risk_permission.v0.2",
                 "permission_status": status,
+                "enforceable": is_permission_status_enforceable(status) and not expired,
             }
         )
     return pl.DataFrame(rows) if rows else risk

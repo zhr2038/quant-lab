@@ -28,9 +28,12 @@ RISK_PERMISSION_SCHEMA = {
     "allowed_modes": pl.Utf8,
     "max_gross_exposure": pl.Float64,
     "max_single_weight": pl.Float64,
+    "max_gross_exposure_usdt": pl.Float64,
+    "max_single_order_usdt": pl.Float64,
     "cost_model_version": pl.Utf8,
     "gate_version": pl.Utf8,
     "reasons": pl.Utf8,
+    "reason": pl.Utf8,
     "created_at": pl.Utf8,
     "as_of_ts": pl.Utf8,
     "source_bundle_ts": pl.Utf8,
@@ -270,6 +273,7 @@ def annotate_risk_permission(
             "permission_status": permission_status(permission.permission.value, stale=stale),
             "enforceable": not stale,
             "risk_reason_codes": permission.reasons,
+            "reason": permission.reasons[0] if permission.reasons else None,
         }
     )
 
@@ -303,11 +307,19 @@ def permission_freshness_sec(
     return int((telemetry_ts - as_of).total_seconds())
 
 
-def permission_status(permission: str, *, stale: bool) -> RiskPermissionStatus:
+def permission_status(
+    permission: str,
+    *,
+    stale: bool = False,
+    expired: bool = False,
+) -> RiskPermissionStatus:
     normalized = str(permission).strip().upper()
     if normalized not in {"ALLOW", "SELL_ONLY", "ABORT"}:
         return RiskPermissionStatus.NO_FRESH_PERMISSION
-    prefix = "STALE" if stale else "ACTIVE"
+    if expired:
+        prefix = "EXPIRED"
+    else:
+        prefix = "STALE" if stale else "ACTIVE"
     return RiskPermissionStatus(f"{prefix}_{normalized}")
 
 

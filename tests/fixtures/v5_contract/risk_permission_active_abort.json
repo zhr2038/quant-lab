@@ -9,9 +9,12 @@
   "allowed_modes": [],
   "max_gross_exposure": 0.0,
   "max_single_weight": 0.0,
+  "max_gross_exposure_usdt": 0.0,
+  "max_single_order_usdt": 0.0,
   "cost_model_version": "cost_bucket_daily:2026-05-14",
   "gate_version": "gate.v0.1",
   "reasons": ["required_alpha_gate_dead"],
+  "reason": "required_alpha_gate_dead",
   "risk_reason_codes": ["required_alpha_gate_dead"],
   "created_at": "2026-05-14T07:04:01Z",
   "as_of_ts": "2026-05-14T07:04:01Z",
@@ -20,4 +23,3 @@
   "telemetry_latest_ts": "2026-05-14T06:57:01Z",
   "permission_freshness_sec": 0
 }
-

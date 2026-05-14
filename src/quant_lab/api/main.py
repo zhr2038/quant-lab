@@ -22,6 +22,7 @@ from quant_lab.contracts.models import (
     GateDecision,
     MarketBar,
     RiskPermission,
+    RiskPermissionStatus,
 )
 from quant_lab.costs.health import read_cost_health_daily
 from quant_lab.costs.model import CostBucket, estimate_cost_bps, estimate_cost_from_lake
@@ -315,6 +316,12 @@ def _live_permission_evaluation(
             permission,
             telemetry_latest_ts=telemetry_latest_ts,
             reason="no_fresh_published_permission",
+        )
+    elif selection["active"] is None and selection["stale"] is None:
+        source = "no_fresh_permission"
+        permission = _force_no_fresh_permission(
+            recomputed,
+            telemetry_latest_ts=telemetry_latest_ts,
         )
     return {
         "permission": permission,
@@ -699,6 +706,8 @@ def _select_published_risk_permission(
     filtered = df
     if "strategy" in filtered.columns:
         filtered = filtered.filter(pl.col("strategy") == strategy)
+    elif "strategy_id" in filtered.columns:
+        filtered = filtered.filter(pl.col("strategy_id") == strategy)
     if "version" in filtered.columns:
         filtered = filtered.filter(pl.col("version") == version)
     if filtered.is_empty():
@@ -755,8 +764,11 @@ def _normalize_published_risk_permission(
         telemetry_latest_ts=latest_telemetry,
         threshold_seconds=DEFAULT_TELEMETRY_STALE_THRESHOLD_SECONDS,
     )
-    stale = expired or stale_vs_telemetry
-    status_value = permission_status(permission.permission.value, stale=stale)
+    status_value = permission_status(
+        permission.permission.value,
+        stale=stale_vs_telemetry,
+        expired=expired,
+    )
     reasons = list(permission.reasons)
     if expired and "permission_expired" not in reasons:
         reasons.append("permission_expired")
@@ -769,9 +781,10 @@ def _normalize_published_risk_permission(
             "telemetry_latest_ts": latest_telemetry,
             "permission_freshness_sec": _telemetry_freshness_seconds(as_of, latest_telemetry),
             "permission_status": status_value,
-            "enforceable": is_permission_status_enforceable(status_value),
+            "enforceable": is_permission_status_enforceable(status_value) and not expired,
             "risk_reason_codes": reasons,
             "reasons": reasons,
+            "reason": reasons[0] if reasons else None,
         }
     )
 
@@ -798,7 +811,12 @@ def _force_non_enforceable_permission(
         [telemetry_latest_ts, permission.telemetry_latest_ts, permission.source_bundle_ts]
     )
     reasons = _dedupe([*permission.reasons, reason])
-    status_value = permission_status(permission.permission.value, stale=True)
+    expired = _permission_expired(permission)
+    status_value = permission_status(
+        permission.permission.value,
+        stale=not expired,
+        expired=expired,
+    )
     return permission.model_copy(
         update={
             "as_of_ts": as_of,
@@ -808,6 +826,31 @@ def _force_non_enforceable_permission(
             "enforceable": False,
             "risk_reason_codes": reasons,
             "reasons": reasons,
+            "reason": reasons[0] if reasons else None,
+        }
+    )
+
+
+def _force_no_fresh_permission(
+    permission: RiskPermission,
+    *,
+    telemetry_latest_ts: datetime | None,
+) -> RiskPermission:
+    reasons = list(permission.reasons)
+    reason = "no_fresh_published_permission"
+    risk_reason_codes = _dedupe([*permission.risk_reason_codes, *reasons, reason])
+    return permission.model_copy(
+        update={
+            "allowed_modes": [],
+            "max_gross_exposure": 0.0,
+            "max_single_weight": 0.0,
+            "max_gross_exposure_usdt": 0.0,
+            "max_single_order_usdt": 0.0,
+            "telemetry_latest_ts": _ensure_utc(telemetry_latest_ts),
+            "permission_status": RiskPermissionStatus.NO_FRESH_PERMISSION,
+            "enforceable": False,
+            "risk_reason_codes": risk_reason_codes,
+            "reason": reason,
         }
     )
 
@@ -834,10 +877,19 @@ def _risk_permission_api_consistency(
     status_value = "PASS"
     if gold_as_of is not None and response_as_of < gold_as_of:
         status_value = "FAIL"
+    lag_seconds = (
+        max(0, int((gold_as_of - response_as_of).total_seconds()))
+        if gold_as_of is not None
+        else None
+    )
     return {
         "compare_gold_latest_vs_api_response": status_value,
         "api_response_as_of_ts": response_as_of.isoformat(),
         "gold_latest_as_of_ts": gold_as_of.isoformat() if gold_as_of else None,
+        "api_permission_as_of_ts": response_as_of.isoformat(),
+        "gold_permission_as_of_ts": gold_as_of.isoformat() if gold_as_of else None,
+        "permission_api_lag_sec": lag_seconds,
+        "permission_api_consistent_with_gold": status_value == "PASS",
         "api_response_permission_status": str(response_permission.permission_status or ""),
         "gold_latest_permission_status": str(gold_latest.permission_status or "")
         if gold_latest

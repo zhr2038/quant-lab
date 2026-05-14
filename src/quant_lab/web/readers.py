@@ -542,11 +542,11 @@ def dataset_states(lake_root: str | Path) -> list[DatasetState]:
 
 def dashboard_overview(lake_root: str | Path) -> dict[str, Any]:
     diagnostics = lake_diagnostics(lake_root)
-    market_health = data_health_summary(lake_root)
+    market_health = _overview_market_health(lake_root)
     costs = cost_model_summary(lake_root)
     gates = alpha_gate_summary(lake_root)
     consumers = strategy_consumer_summary(lake_root)
-    collectors = okx_collector_summary(lake_root)
+    ws_status, ws_warnings = _overview_okx_ws_status(lake_root)
     experts = expert_export_summary(default_exports_root(lake_root))
 
     warnings = [
@@ -555,7 +555,7 @@ def dashboard_overview(lake_root: str | Path) -> dict[str, Any]:
         *costs["warnings"],
         *gates["warnings"],
         *consumers["warnings"],
-        *collectors["warnings"],
+        *ws_warnings,
         *experts["warnings"],
     ]
     status = "OK"
@@ -569,7 +569,7 @@ def dashboard_overview(lake_root: str | Path) -> dict[str, Any]:
         "v5_permission": consumers["permissions"].get("v5", "UNKNOWN"),
         "v7_permission": consumers["permissions"].get("v7", "UNKNOWN"),
         "okx_public_rest_status": "OK" if market_health["latest_market_bar_ts"] else "WARNING",
-        "okx_public_ws_status": collectors["okx_public_ws_status"],
+        "okx_public_ws_status": ws_status,
         "okx_readonly_status": readonly_private_status(lake_root),
         "latest_market_bar_ts": market_health["latest_market_bar_ts"],
         "missing_bar_ratio": market_health["missing_bar_ratio"],
@@ -579,6 +579,41 @@ def dashboard_overview(lake_root: str | Path) -> dict[str, Any]:
         "diagnostics": diagnostics,
         "warnings": warnings,
     }
+
+
+def _overview_market_health(lake_root: str | Path) -> dict[str, Any]:
+    warnings: list[str] = []
+    market, market_warning = read_dataset_with_warning(lake_root, "market_bar")
+    if market_warning:
+        warnings.append(market_warning)
+    if market.is_empty():
+        return {
+            "latest_market_bar_ts": None,
+            "missing_bar_ratio": 0.0,
+            "schema_violation_count": 1,
+            "unclosed_bar_count": 0,
+            "warnings": [*warnings, "market_bar dataset is missing or empty"],
+        }
+    market = _normalize_market_frame(market)
+    schema_violations = market_bar_schema_violations(market)
+    unclosed_count = unclosed_market_bar_count(market)
+    missing_bars = missing_bar_table(market)
+    return {
+        "latest_market_bar_ts": _max_datetime(market, "ts"),
+        "missing_bar_ratio": _missing_ratio(missing_bars, market.height),
+        "schema_violation_count": len(schema_violations),
+        "unclosed_bar_count": unclosed_count,
+        "warnings": [*warnings, *schema_violations],
+    }
+
+
+def _overview_okx_ws_status(lake_root: str | Path) -> tuple[str, list[str]]:
+    health, health_warning = read_dataset_with_warning(lake_root, "okx_public_ws_health")
+    warnings = [health_warning] if health_warning else []
+    latest_health = _latest_collector_health(health)
+    if not latest_health:
+        return "WARNING", [*warnings, "OKX public WebSocket collector_health is missing or empty"]
+    return str(latest_health.get("status") or "UNKNOWN"), warnings
 
 
 def lake_diagnostics(lake_root: str | Path) -> dict[str, Any]:

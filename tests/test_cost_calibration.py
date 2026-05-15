@@ -161,7 +161,9 @@ def test_v5_order_lifecycle_generates_actual_fills_bucket(tmp_path):
             [
                 {
                     "strategy": "v5",
-                    "source_path_inside_bundle": "raw/recent_runs/run_lifecycle/order_lifecycle.csv",
+                    "source_path_inside_bundle": (
+                        "raw/recent_runs/run_lifecycle/order_lifecycle.csv"
+                    ),
                     "run_id": "run_lifecycle",
                     "ts_utc": "2026-05-15T01:00:04Z",
                     "symbol": "BNB-USDT",

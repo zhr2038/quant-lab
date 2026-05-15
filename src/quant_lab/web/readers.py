@@ -20,6 +20,9 @@ DATASET_PATHS = {
     "cost_bucket_daily": Path("gold") / "cost_bucket_daily",
     "cost_health_daily": Path("gold") / "cost_health_daily",
     "alpha_evidence": Path("gold") / "alpha_evidence",
+    "alpha_discovery_board": Path("gold") / "alpha_discovery_board",
+    "strategy_evidence": Path("gold") / "strategy_evidence",
+    "strategy_evidence_sample": Path("gold") / "strategy_evidence_sample",
     "gate_decision": Path("gold") / "gate_decision",
     "risk_permission": Path("gold") / "risk_permission",
     "strategy_health_daily": Path("gold") / "strategy_health_daily",
@@ -35,6 +38,10 @@ DATASET_PATHS = {
     "v5_quant_lab_compliance": Path("silver") / "v5_quant_lab_compliance",
     "v5_quant_lab_cost_usage": Path("silver") / "v5_quant_lab_cost_usage",
     "v5_quant_lab_fallback": Path("silver") / "v5_quant_lab_fallback",
+    "v5_candidate_event": Path("silver") / "v5_candidate_event",
+    "v5_candidate_label": Path("gold") / "v5_candidate_label",
+    "v5_candidate_quality_daily": Path("gold") / "v5_candidate_quality_daily",
+    "v5_candidate_outcome_summary": Path("gold") / "v5_candidate_outcome_summary",
     "v5_decision_audit": Path("silver") / "v5_decision_audit",
     "v5_trade_event": Path("silver") / "v5_trade_event",
     "trade_print": Path("silver") / "trade_print",
@@ -68,12 +75,19 @@ DATASET_TIMESTAMP_COLUMNS: dict[str, tuple[str, ...]] = {
     "feature_coverage_daily": ("created_at", "max_ts", "day"),
     "feature_anomaly_daily": ("created_at", "example_ts", "day"),
     "alpha_evidence": ("created_at", "end_ts"),
+    "alpha_discovery_board": ("created_at", "end_ts", "start_ts", "as_of_date"),
+    "strategy_evidence": ("created_at", "end_ts", "as_of_date"),
+    "strategy_evidence_sample": ("created_at", "ts_utc"),
     "okx_public_ws_health": ("last_message_at", "updated_at", "started_at"),
     "decision_audit": ("ingest_ts", "loaded_at"),
     "v5_quant_lab_usage": ("ingest_ts", "bundle_ts"),
     "v5_quant_lab_compliance": ("ingest_ts", "bundle_ts"),
     "v5_quant_lab_cost_usage": ("ingest_ts", "bundle_ts"),
     "v5_quant_lab_fallback": ("ingest_ts", "bundle_ts"),
+    "v5_candidate_event": ("ts_utc", "ingest_ts", "bundle_ts"),
+    "v5_candidate_label": ("label_ts", "decision_ts", "ts_utc", "created_at"),
+    "v5_candidate_quality_daily": ("created_at", "date"),
+    "v5_candidate_outcome_summary": ("created_at", "date"),
     "v5_decision_audit": ("ingest_ts", "bundle_ts"),
     "v5_trade_event": ("ts_utc", "ts", "ingest_ts", "bundle_ts"),
 }
@@ -1072,16 +1086,84 @@ def _normalize_symbol_frame(frame: pl.DataFrame, column: str = "symbol") -> pl.D
 def alpha_gate_summary(lake_root: str | Path) -> dict[str, Any]:
     gates, gates_warning = read_dataset_with_warning(lake_root, "gate_decision")
     evidence, evidence_warning = read_dataset_with_warning(lake_root, "alpha_evidence")
-    warnings = [warning for warning in [gates_warning, evidence_warning] if warning]
+    discovery_board, discovery_board_warning = read_dataset_with_warning(
+        lake_root,
+        "alpha_discovery_board",
+    )
+    strategy_evidence, strategy_evidence_warning = read_dataset_with_warning(
+        lake_root,
+        "strategy_evidence",
+    )
+    strategy_samples, strategy_samples_warning = read_dataset_with_warning(
+        lake_root,
+        "strategy_evidence_sample",
+    )
+    candidate_events, candidate_events_warning = read_dataset_with_warning(
+        lake_root,
+        "v5_candidate_event",
+    )
+    candidate_labels, candidate_labels_warning = read_dataset_with_warning(
+        lake_root,
+        "v5_candidate_label",
+    )
+    candidate_quality, candidate_quality_warning = read_dataset_with_warning(
+        lake_root,
+        "v5_candidate_quality_daily",
+    )
+    candidate_outcomes, candidate_outcomes_warning = read_dataset_with_warning(
+        lake_root,
+        "v5_candidate_outcome_summary",
+    )
+    warnings = [
+        warning
+        for warning in [
+            gates_warning,
+            evidence_warning,
+            discovery_board_warning,
+            strategy_evidence_warning,
+            strategy_samples_warning,
+            candidate_events_warning,
+            candidate_labels_warning,
+            candidate_quality_warning,
+            candidate_outcomes_warning,
+        ]
+        if warning
+    ]
     if gates.is_empty():
         warnings.append("gate_decision 数据集缺失或为空")
     if evidence.is_empty():
         warnings.append("alpha_evidence research evidence not generated yet")
+    if discovery_board.is_empty():
+        warnings.append("alpha_discovery_board candidate decision board not generated yet")
+    if strategy_evidence.is_empty():
+        warnings.append("strategy_evidence candidate discovery evidence not generated yet")
+    if candidate_events.is_empty():
+        warnings.append("v5_candidate_event snapshots not ingested yet")
+    if candidate_labels.is_empty():
+        warnings.append("v5_candidate_label forward labels not generated yet")
     counts: dict[str, int] = {}
     if "status" in gates.columns:
         counts = {
             row["status"]: row["count"]
             for row in gates.group_by("status").len(name="count").sort("status").to_dicts()
+        }
+    strategy_counts: dict[str, int] = {}
+    if "decision" in strategy_evidence.columns:
+        strategy_counts = {
+            row["decision"]: row["count"]
+            for row in strategy_evidence.group_by("decision")
+            .len(name="count")
+            .sort("decision")
+            .to_dicts()
+        }
+    discovery_counts: dict[str, int] = {}
+    if "decision" in discovery_board.columns:
+        discovery_counts = {
+            row["decision"]: row["count"]
+            for row in discovery_board.group_by("decision")
+            .len(name="count")
+            .sort("decision")
+            .to_dicts()
         }
     joined = gates
     if not gates.is_empty() and not evidence.is_empty():
@@ -1095,8 +1177,233 @@ def alpha_gate_summary(lake_root: str | Path) -> dict[str, Any]:
     return {
         "gates": redact_frame(joined).head(DISPLAY_LIMIT),
         "counts": counts,
+        "alpha_discovery_board": redact_frame(
+            _alpha_discovery_board_table(discovery_board)
+        ).head(DISPLAY_LIMIT),
+        "strategy_evidence": redact_frame(
+            _strategy_evidence_table(strategy_evidence)
+        ).head(DISPLAY_LIMIT),
+        "strategy_samples": redact_frame(
+            _strategy_sample_table(strategy_samples)
+        ).head(DISPLAY_LIMIT),
+        "candidate_events": redact_frame(
+            _candidate_event_table(candidate_events)
+        ).head(DISPLAY_LIMIT),
+        "candidate_labels": redact_frame(
+            _candidate_label_table(candidate_labels)
+        ).head(DISPLAY_LIMIT),
+        "candidate_quality": redact_frame(candidate_quality.tail(5)),
+        "candidate_outcomes": redact_frame(
+            _candidate_outcome_table(candidate_outcomes)
+        ).head(DISPLAY_LIMIT),
+        "strategy_counts": strategy_counts,
+        "alpha_discovery_counts": discovery_counts,
         "warnings": warnings,
     }
+
+
+def _alpha_discovery_board_table(board: pl.DataFrame) -> pl.DataFrame:
+    if board.is_empty():
+        return board
+    columns = [
+        "strategy_candidate",
+        "symbol",
+        "regime_state",
+        "horizon_hours",
+        "decision",
+        "sample_count",
+        "complete_sample_count",
+        "avg_net_bps",
+        "median_net_bps",
+        "p25_net_bps",
+        "win_rate",
+        "avg_mfe_bps",
+        "avg_mae_bps",
+        "cost_source_mix",
+        "stability_by_day",
+        "paper_days",
+        "risk_permission_status",
+        "enforce_readiness_status",
+        "decision_reasons",
+        "as_of_date",
+        "created_at",
+    ]
+    selected = [column for column in columns if column in board.columns]
+    if not selected:
+        return board
+    table = board.select(selected)
+    sort_columns = [
+        column
+        for column in ["decision", "strategy_candidate", "symbol", "horizon_hours"]
+        if column in table.columns
+    ]
+    return table.sort(sort_columns) if sort_columns else table
+
+
+def _strategy_evidence_table(strategy_evidence: pl.DataFrame) -> pl.DataFrame:
+    if strategy_evidence.is_empty():
+        return strategy_evidence
+    columns = [
+        "candidate_name",
+        "decision",
+        "sample_count",
+        "complete_sample_count",
+        "avg_net_bps_by_horizon",
+        "win_rate_by_horizon",
+        "downside_p25_by_horizon",
+        "max_drawdown_proxy",
+        "cost_sensitivity",
+        "symbol_breakdown",
+        "regime_breakdown",
+        "decision_reasons",
+        "as_of_date",
+        "created_at",
+    ]
+    selected = [column for column in columns if column in strategy_evidence.columns]
+    if not selected:
+        return strategy_evidence
+    table = strategy_evidence.select(selected)
+    sort_columns = [
+        column for column in ["decision", "candidate_name"] if column in table.columns
+    ]
+    return table.sort(sort_columns) if sort_columns else table
+
+
+def _strategy_sample_table(strategy_samples: pl.DataFrame) -> pl.DataFrame:
+    if strategy_samples.is_empty():
+        return strategy_samples
+    columns = [
+        "ts_utc",
+        "symbol",
+        "candidate_name",
+        "entry_condition_signal",
+        "block_reason",
+        "final_score",
+        "f1",
+        "f2",
+        "f3",
+        "f4",
+        "f5",
+        "alpha6_score",
+        "alpha6_side",
+        "regime_state",
+        "protect_level",
+        "expected_edge_bps",
+        "required_edge_bps",
+        "cost_source",
+        "cost_bps",
+        "label_status",
+        "net_bps_after_cost_24h",
+        "win_24h",
+        "drawdown_proxy_bps_24h",
+        "net_bps_after_cost_72h",
+        "win_72h",
+        "drawdown_proxy_bps_72h",
+        "source_dataset",
+    ]
+    selected = [column for column in columns if column in strategy_samples.columns]
+    if not selected:
+        return strategy_samples
+    table = strategy_samples.select(selected)
+    sort_columns = [
+        column
+        for column in ["candidate_name", "symbol", "ts_utc"]
+        if column in table.columns
+    ]
+    return table.sort(sort_columns) if sort_columns else table
+
+
+def _candidate_event_table(candidate_events: pl.DataFrame) -> pl.DataFrame:
+    if candidate_events.is_empty():
+        return candidate_events
+    columns = [
+        "ts_utc",
+        "run_id",
+        "symbol",
+        "strategy_candidate",
+        "final_decision",
+        "block_reason",
+        "final_score",
+        "rank",
+        "f1_mom_5d",
+        "f2_mom_20d",
+        "f3_vol_adj_ret",
+        "f4_volume_expansion",
+        "f5_rsi_trend_confirm",
+        "alpha6_score",
+        "alpha6_side",
+        "expected_edge_bps",
+        "required_edge_bps",
+        "cost_bps",
+        "cost_source",
+        "candidate_id",
+    ]
+    selected = [column for column in columns if column in candidate_events.columns]
+    table = candidate_events.select(selected) if selected else candidate_events
+    sort_columns = [
+        column
+        for column in ["run_id", "symbol", "strategy_candidate"]
+        if column in table.columns
+    ]
+    return table.sort(sort_columns) if sort_columns else table
+
+
+def _candidate_label_table(candidate_labels: pl.DataFrame) -> pl.DataFrame:
+    if candidate_labels.is_empty():
+        return candidate_labels
+    columns = [
+        "ts_utc",
+        "symbol",
+        "strategy_candidate",
+        "block_reason",
+        "horizon_hours",
+        "gross_bps",
+        "net_bps_after_cost",
+        "mfe_bps",
+        "mae_bps",
+        "win",
+        "label_status",
+        "label_reason",
+        "cost_bps",
+        "cost_source",
+        "candidate_id",
+    ]
+    selected = [column for column in columns if column in candidate_labels.columns]
+    table = candidate_labels.select(selected) if selected else candidate_labels
+    sort_columns = [
+        column
+        for column in ["strategy_candidate", "symbol", "horizon_hours"]
+        if column in table.columns
+    ]
+    return table.sort(sort_columns) if sort_columns else table
+
+
+def _candidate_outcome_table(candidate_outcomes: pl.DataFrame) -> pl.DataFrame:
+    if candidate_outcomes.is_empty():
+        return candidate_outcomes
+    columns = [
+        "block_reason",
+        "strategy_candidate",
+        "symbol",
+        "horizon_hours",
+        "sample_count",
+        "complete_sample_count",
+        "avg_net_bps",
+        "median_net_bps",
+        "win_rate",
+        "downside_p25_bps",
+        "avg_mfe_bps",
+        "avg_mae_bps",
+        "date",
+    ]
+    selected = [column for column in columns if column in candidate_outcomes.columns]
+    table = candidate_outcomes.select(selected) if selected else candidate_outcomes
+    sort_columns = [
+        column
+        for column in ["strategy_candidate", "symbol", "horizon_hours"]
+        if column in table.columns
+    ]
+    return table.sort(sort_columns) if sort_columns else table
 
 
 def feature_summary(lake_root: str | Path) -> dict[str, Any]:

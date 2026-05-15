@@ -260,7 +260,43 @@ def analyze_v5_telemetry(lake_root: Path, date: str | None = None) -> V5Telemetr
         fallback_count=fallback_count,
         quant_lab_summary=quant_lab_summary,
     )
+    _build_candidate_labels_safely(root, analysis_date)
+    _build_alpha_discovery_board_safely(root, analysis_date)
+    _build_strategy_evidence_safely(root, analysis_date)
     return result
+
+
+def _build_candidate_labels_safely(lake_root: Path, analysis_date: str) -> None:
+    try:
+        from quant_lab.research.candidate_labels import build_and_publish_candidate_labels
+
+        build_and_publish_candidate_labels(lake_root, as_of_date=analysis_date)
+    except Exception:
+        # V5 telemetry health must remain available even if candidate snapshots
+        # or forward market bars are incomplete.
+        return
+
+
+def _build_alpha_discovery_board_safely(lake_root: Path, analysis_date: str) -> None:
+    try:
+        from quant_lab.research.alpha_discovery import build_and_publish_alpha_discovery_board
+
+        build_and_publish_alpha_discovery_board(lake_root, as_of_date=analysis_date)
+    except Exception:
+        # Strategy telemetry analysis should not fail if the candidate research
+        # board is waiting on forward labels or cost context.
+        return
+
+
+def _build_strategy_evidence_safely(lake_root: Path, analysis_date: str) -> None:
+    try:
+        from quant_lab.research.strategy_evidence import build_and_publish_strategy_evidence
+
+        build_and_publish_strategy_evidence(lake_root, as_of_date=analysis_date)
+    except Exception:
+        # V5 telemetry health must remain available even if research evidence inputs
+        # are incomplete or a future bundle adds an unexpected telemetry shape.
+        return
 
 
 def _write_gold(

@@ -341,13 +341,16 @@ def _write_silver(
 
 
 def _write_candidate_gold(lake_root: Path, bundle_day: str) -> dict[str, int]:
+    from quant_lab.research.alpha_discovery import build_and_publish_alpha_discovery_board
     from quant_lab.research.candidate_labels import build_and_publish_candidate_labels
 
     result = build_and_publish_candidate_labels(lake_root, as_of_date=bundle_day)
+    board = build_and_publish_alpha_discovery_board(lake_root, as_of_date=bundle_day)
     return {
         "v5_candidate_label": result.candidate_label_rows,
         "v5_candidate_quality_daily": result.candidate_quality_rows,
         "v5_candidate_outcome_summary": result.candidate_outcome_summary_rows,
+        "alpha_discovery_board": board.alpha_discovery_board_rows,
     }
 
 
@@ -568,9 +571,17 @@ def _order_lifecycle_rows(
         arrival_mid = _numeric(_first_value(row, payload, ["arrival_mid", "mid_px_at_decision"]))
         signal_price = _numeric(_first_value(row, payload, ["signal_price", "decision_price"]))
         avg_fill_px = _numeric(_first_value(row, payload, ["avg_fill_px", "fill_px", "avg_px"]))
-        filled_qty = _numeric(_first_value(row, payload, ["filled_qty", "fill_qty", "fill_sz", "qty"]))
-        notional = _numeric(_first_value(row, payload, ["notional_usdt", "notional", "requested_notional_usdt"]))
-        if (notional is None or notional <= 0) and avg_fill_px is not None and filled_qty is not None:
+        filled_qty = _numeric(
+            _first_value(row, payload, ["filled_qty", "fill_qty", "fill_sz", "qty"])
+        )
+        notional = _numeric(
+            _first_value(row, payload, ["notional_usdt", "notional", "requested_notional_usdt"])
+        )
+        if (
+            (notional is None or notional <= 0)
+            and avg_fill_px is not None
+            and filled_qty is not None
+        ):
             notional = abs(avg_fill_px * filled_qty)
         fee_usdt = _numeric(_first_value(row, payload, ["fee_usdt", "fee_abs_usdt"]))
         fee = _numeric(_first_value(row, payload, ["fee", "commission", "fee_abs"]))
@@ -626,7 +637,9 @@ def _order_lifecycle_rows(
                 "side": side,
                 "notional_usdt": "" if notional is None else str(abs(notional)),
                 "fee_usdt": "" if fee_usdt is None else str(abs(fee_usdt)),
-                "arrival_slippage_bps": "" if arrival_slippage_bps is None else str(arrival_slippage_bps),
+                "arrival_slippage_bps": (
+                    "" if arrival_slippage_bps is None else str(arrival_slippage_bps)
+                ),
                 "delay_cost_bps": "" if delay_cost_bps is None else str(delay_cost_bps),
                 "spread_cost_bps": "" if spread_cost_bps is None else str(spread_cost_bps),
                 "fee_bps": "" if fee_bps is None else str(fee_bps),

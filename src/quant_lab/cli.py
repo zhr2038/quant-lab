@@ -31,12 +31,15 @@ from quant_lab.ingest.okx_readonly_private import (
 from quant_lab.ingest.okx_ws_public import collect_okx_public_ws, collect_okx_public_ws_universe
 from quant_lab.ingest.v5_reports import inspect_v5_reports, publish_v5_reports_to_lake
 from quant_lab.reports.enforce_readiness import write_enforce_readiness_report
+from quant_lab.research.alpha_discovery import build_and_publish_alpha_discovery_board
 from quant_lab.research.bootstrap_gold import bootstrap_gold_health
+from quant_lab.research.candidate_labels import build_and_publish_candidate_labels
 from quant_lab.research.publish import (
     build_and_publish_alpha_evidence,
     publish_gate_decisions_from_evidence,
     research_health,
 )
+from quant_lab.research.strategy_evidence import build_and_publish_strategy_evidence
 from quant_lab.risk.publish import publish_risk_permission as publish_risk_permission_to_lake
 from quant_lab.strategy_telemetry.analyze import analyze_v5_telemetry
 from quant_lab.strategy_telemetry.bundle import safe_extract_v5_bundle, validate_v5_bundle
@@ -541,6 +544,50 @@ def build_alpha_evidence_command(
         min_samples=min_samples,
     )
     result = build_and_publish_alpha_evidence(lake_root=lake_root, spec=spec)
+    typer.echo(result.model_dump_json(indent=2))
+
+
+@app.command("build-strategy-evidence")
+def build_strategy_evidence_command(
+    lake_root: Annotated[Path, typer.Option("--lake-root", file_okay=False, dir_okay=True)],
+    as_of_date: Annotated[
+        str,
+        typer.Option("--date", help="UTC as-of day in YYYY-MM-DD format or auto."),
+    ] = "auto",
+    min_live_samples: Annotated[int, typer.Option("--min-live-samples", min=30)] = 30,
+) -> None:
+    result = build_and_publish_strategy_evidence(
+        lake_root=lake_root,
+        as_of_date=as_of_date,
+        min_live_samples=min_live_samples,
+    )
+    typer.echo(result.model_dump_json(indent=2))
+
+
+@app.command("build-v5-candidate-labels")
+def build_v5_candidate_labels_command(
+    lake_root: Annotated[Path, typer.Option("--lake-root", file_okay=False, dir_okay=True)],
+    as_of_date: Annotated[
+        str,
+        typer.Option("--date", help="UTC as-of day in YYYY-MM-DD format or auto."),
+    ] = "auto",
+) -> None:
+    result = build_and_publish_candidate_labels(lake_root=lake_root, as_of_date=as_of_date)
+    typer.echo(result.model_dump_json(indent=2))
+
+
+@app.command("build-alpha-discovery-board")
+def build_alpha_discovery_board_command(
+    lake_root: Annotated[Path, typer.Option("--lake-root", file_okay=False, dir_okay=True)],
+    as_of_date: Annotated[
+        str,
+        typer.Option("--date", help="UTC as-of day in YYYY-MM-DD format or auto."),
+    ] = "auto",
+) -> None:
+    result = build_and_publish_alpha_discovery_board(
+        lake_root=lake_root,
+        as_of_date=as_of_date,
+    )
     typer.echo(result.model_dump_json(indent=2))
 
 

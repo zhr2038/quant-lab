@@ -106,6 +106,13 @@ Analyze:
 qlab analyze-v5-telemetry --lake-root /tmp/quant-lab-test-lake
 ```
 
+Rebuild candidate forward labels directly:
+
+```bash
+qlab build-v5-candidate-labels --lake-root /tmp/quant-lab-test-lake --date auto
+qlab build-alpha-discovery-board --lake-root /tmp/quant-lab-test-lake --date auto
+```
+
 ## systemd
 
 Install timers:
@@ -160,6 +167,7 @@ Silver:
 - `lake/silver/v5_quant_lab_compliance`
 - `lake/silver/v5_quant_lab_cost_usage`
 - `lake/silver/v5_quant_lab_fallback`
+- `lake/silver/v5_candidate_event`
 
 Gold:
 
@@ -171,6 +179,62 @@ Gold:
 - `lake/gold/v5_issue_summary_daily`
 - `lake/gold/v5_quant_lab_mode_daily`
 - `lake/gold/v5_quant_lab_enforcement_daily`
+- `lake/gold/v5_candidate_label`
+- `lake/gold/v5_candidate_quality_daily`
+- `lake/gold/v5_candidate_outcome_summary`
+
+## Candidate Snapshot Contract
+
+V5 bundles should include `reports/candidate_snapshot.csv`. Each row is one
+symbol candidate state for one V5 run. The expected columns are:
+
+- `candidate_id`
+- `run_id`
+- `ts_utc`
+- `symbol`
+- `regime_state`
+- `risk_level`
+- `current_position`
+- `current_weight`
+- `target_weight_raw`
+- `target_weight_after_risk`
+- `final_score`
+- `rank`
+- `f1_mom_5d`
+- `f2_mom_20d`
+- `f3_vol_adj_ret`
+- `f4_volume_expansion`
+- `f5_rsi_trend_confirm`
+- `alpha6_score`
+- `alpha6_side`
+- `ml_score`
+- `mean_reversion_score`
+- `expected_edge_bps`
+- `required_edge_bps`
+- `cost_bps`
+- `cost_source`
+- `eligible_before_filters`
+- `final_decision`
+- `block_reason`
+- `strategy_candidate`
+
+If V5 leaves `candidate_id` empty, quant-lab generates a stable id from
+`run_id + symbol + strategy_candidate`.
+
+Candidate labels are built from closed OKX `silver/market_bar` rows with a
+one-bar decision delay and horizons of 4h, 8h, 12h, 24h, 48h, 72h, and 120h.
+Each label row includes `gross_bps`, `net_bps_after_cost`, `mfe_bps`,
+`mae_bps`, `win`, and `label_status`.
+
+Candidate data quality is written daily:
+
+- candidate rows by run
+- feature completeness
+- label completeness
+- cost source coverage
+
+Candidate outcome summaries can be grouped by `block_reason`,
+`strategy_candidate`, `symbol`, and `horizon_hours`.
 
 ## quant-lab Mode Analysis
 

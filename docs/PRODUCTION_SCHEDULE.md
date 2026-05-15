@@ -9,9 +9,12 @@ Daily and recurring jobs must keep this order:
 
 1. `qlab sync-v5-telemetry`
 2. `qlab analyze-v5-telemetry`
-3. `qlab build-alpha-evidence`
-4. `qlab publish-risk-permission`
-5. `qlab export-daily`
+3. `qlab build-v5-candidate-labels`
+4. `qlab build-alpha-discovery-board`
+5. `qlab build-strategy-evidence`
+6. `qlab build-alpha-evidence`
+7. `qlab publish-risk-permission`
+8. `qlab export-daily`
 
 The ordering matters because `risk_permission` must be evaluated against the
 latest V5 telemetry. If `risk_permission.created_at` is older than the latest
@@ -49,7 +52,8 @@ Suggested production order:
 
 - V5 telemetry sync: every 3 minutes.
 - V5 telemetry analysis: every 5 minutes.
-- Alpha evidence and gate publishing: every 15 minutes.
+- Candidate labels, alpha discovery board, strategy evidence, alpha evidence,
+  and gate publishing: every 15 minutes.
 - Risk permission publish: every 3 minutes, after telemetry and gate refresh.
 - Daily expert export: after telemetry and risk permission have had time to run.
 

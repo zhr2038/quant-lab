@@ -368,6 +368,226 @@ def test_key_pages_render_fixture_lake_without_network_or_mutation(tmp_path):
     assert any(call[0] == "dataframe" for call in fake.calls)
 
 
+def test_alpha_gates_page_shows_strategy_evidence_discovery(tmp_path):
+    lake_root = _fixture_lake(tmp_path)
+    start = datetime(2026, 5, 10, tzinfo=UTC)
+    write_parquet_dataset(
+        pl.DataFrame(
+            [
+                {
+                    "strategy": "v5",
+                    "board_schema_version": "alpha_discovery_board.v1",
+                    "as_of_date": "2026-05-10",
+                    "strategy_candidate": "v5.sol_protect_exception",
+                    "candidate_name": "v5.sol_protect_exception",
+                    "symbol": "SOL-USDT",
+                    "regime_state": "trend",
+                    "horizon_hours": 24,
+                    "sample_count": 35,
+                    "complete_sample_count": 35,
+                    "avg_net_bps": 12.5,
+                    "median_net_bps": 12.5,
+                    "p25_net_bps": -8.0,
+                    "win_rate": 0.6,
+                    "avg_mfe_bps": 20.0,
+                    "avg_mae_bps": -6.0,
+                    "cost_source_mix": '[{"cost_source":"quant_lab","count":35,"ratio":1.0}]',
+                    "stability_by_day": "[]",
+                    "paper_days": 0,
+                    "cost_source_has_global_default": False,
+                    "decision": "KEEP_SHADOW",
+                    "decision_reasons": '["sol_protect_exception_requires_shadow_review"]',
+                    "risk_permission": "UNKNOWN",
+                    "risk_permission_status": "UNKNOWN",
+                    "enforce_readiness_status": "WARN",
+                    "block_reason_mix": '{"protect":35}',
+                    "final_decision_mix": '{"SHADOW":35}',
+                    "created_at": start,
+                    "source": "test",
+                }
+            ]
+        ),
+        lake_root / "gold" / "alpha_discovery_board",
+    )
+    write_parquet_dataset(
+        pl.DataFrame(
+            [
+                {
+                    "candidate_name": "v5.sol_protect_exception",
+                    "evidence_version": "strategy-evidence-v0.1",
+                    "as_of_date": "2026-05-10",
+                    "sample_count": 35,
+                    "complete_sample_count": 35,
+                    "avg_net_bps_by_horizon": '{"24h":12.5}',
+                    "win_rate_by_horizon": '{"24h":0.6}',
+                    "downside_p25_by_horizon": '{"24h":-8.0}',
+                    "max_drawdown_proxy": 22.0,
+                    "cost_sensitivity": '{"avg_cost_bps":4.0}',
+                    "symbol_breakdown": '[{"symbol":"SOL-USDT"}]',
+                    "regime_breakdown": '[{"regime_state":"trend"}]',
+                    "decision": "KEEP_SHADOW",
+                    "decision_reasons": '["candidate_is_shadow_or_protect_exception"]',
+                    "start_ts": start,
+                    "end_ts": start + timedelta(hours=35),
+                    "created_at": start,
+                    "source": "test",
+                }
+            ]
+        ),
+        lake_root / "gold" / "strategy_evidence",
+    )
+    write_parquet_dataset(
+        pl.DataFrame(
+            [
+                {
+                    "ts_utc": start,
+                    "symbol": "SOL-USDT",
+                    "candidate_name": "v5.sol_protect_exception",
+                    "entry_condition_signal": "protect_exception",
+                    "block_reason": "protect",
+                    "final_score": 0.71,
+                    "f1": 0.1,
+                    "f2": 0.2,
+                    "f3": 0.3,
+                    "f4": 0.4,
+                    "f5": 0.5,
+                    "alpha6_score": 0.8,
+                    "alpha6_side": "long",
+                    "regime_state": "trend",
+                    "protect_level": "SOL_PROTECT",
+                    "expected_edge_bps": 18.0,
+                    "required_edge_bps": 4.0,
+                    "cost_source": "quant_lab",
+                    "cost_bps": 4.0,
+                    "label_status": "complete",
+                    "net_bps_after_cost_24h": 12.5,
+                    "win_24h": True,
+                    "drawdown_proxy_bps_24h": 22.0,
+                    "net_bps_after_cost_72h": 15.0,
+                    "win_72h": True,
+                    "drawdown_proxy_bps_72h": 25.0,
+                    "source_dataset": "v5_router_decision",
+                    "created_at": start,
+                    "source": "test",
+                }
+            ]
+        ),
+        lake_root / "gold" / "strategy_evidence_sample",
+    )
+    write_parquet_dataset(
+        pl.DataFrame(
+            [
+                {
+                    "candidate_id": "cand_test",
+                    "run_id": "run_001",
+                    "ts_utc": start,
+                    "symbol": "SOL-USDT",
+                    "strategy_candidate": "v5.sol_protect_exception",
+                    "final_decision": "KEEP_SHADOW",
+                    "block_reason": "protect",
+                    "final_score": 0.71,
+                    "alpha6_score": 0.8,
+                    "alpha6_side": "long",
+                    "expected_edge_bps": 18.0,
+                    "required_edge_bps": 4.0,
+                    "cost_bps": 4.0,
+                    "cost_source": "quant_lab",
+                }
+            ]
+        ),
+        lake_root / "silver" / "v5_candidate_event",
+    )
+    write_parquet_dataset(
+        pl.DataFrame(
+            [
+                {
+                    "candidate_id": "cand_test",
+                    "run_id": "run_001",
+                    "ts_utc": start,
+                    "symbol": "SOL-USDT",
+                    "strategy_candidate": "v5.sol_protect_exception",
+                    "block_reason": "protect",
+                    "horizon_hours": 24,
+                    "gross_bps": 16.5,
+                    "net_bps_after_cost": 12.5,
+                    "mfe_bps": 20.0,
+                    "mae_bps": -6.0,
+                    "win": True,
+                    "label_status": "complete",
+                    "label_reason": "ok",
+                    "cost_bps": 4.0,
+                    "cost_source": "quant_lab",
+                }
+            ]
+        ),
+        lake_root / "gold" / "v5_candidate_label",
+    )
+    write_parquet_dataset(
+        pl.DataFrame(
+            [
+                {
+                    "strategy": "v5",
+                    "date": "2026-05-10",
+                    "status": "PASS",
+                    "candidate_event_rows": 1,
+                    "feature_completeness": 1.0,
+                    "label_completeness": 1.0,
+                    "cost_source_coverage": 1.0,
+                    "created_at": start,
+                }
+            ]
+        ),
+        lake_root / "gold" / "v5_candidate_quality_daily",
+    )
+    write_parquet_dataset(
+        pl.DataFrame(
+            [
+                {
+                    "strategy": "v5",
+                    "date": "2026-05-10",
+                    "block_reason": "protect",
+                    "strategy_candidate": "v5.sol_protect_exception",
+                    "symbol": "SOL-USDT",
+                    "horizon_hours": 24,
+                    "sample_count": 1,
+                    "complete_sample_count": 1,
+                    "avg_net_bps": 12.5,
+                    "median_net_bps": 12.5,
+                    "win_rate": 1.0,
+                    "downside_p25_bps": 12.5,
+                    "created_at": start,
+                }
+            ]
+        ),
+        lake_root / "gold" / "v5_candidate_outcome_summary",
+    )
+    fake = FakeStreamlit()
+
+    alpha_gates.render(lake_root, fake)
+
+    subheaders = _call_values(fake, "subheader")
+    metrics = _call_values(fake, "metric")
+    frames = _call_values(fake, "dataframe")
+    assert "Alpha Discovery Board" in subheaders
+    assert "Strategy Evidence / Alpha Discovery Samples" in subheaders
+    assert "Strategy Evidence Samples" in subheaders
+    assert "V5 Candidate Events" in subheaders
+    assert "V5 Candidate Forward Labels" in subheaders
+    assert "V5 Candidate Outcome Summary" in subheaders
+    assert "V5 Candidate Data Quality" in subheaders
+    assert ("KEEP_SHADOW", 1) in metrics
+    assert any(
+        "v5.sol_protect_exception" in frame.get_column("strategy_candidate").to_list()
+        for frame in frames
+        if isinstance(frame, pl.DataFrame) and "strategy_candidate" in frame.columns
+    )
+    assert any(
+        "v5.sol_protect_exception" in frame.get_column("candidate_name").to_list()
+        for frame in frames
+        if isinstance(frame, pl.DataFrame) and "candidate_name" in frame.columns
+    )
+
+
 def test_web_launcher_hides_streamlit_file_navigation(monkeypatch, tmp_path):
     captured = {}
 

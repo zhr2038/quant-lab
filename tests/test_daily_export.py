@@ -111,6 +111,14 @@ def test_export_empty_csv_members_have_fixed_headers(tmp_path):
             "market/trade_activity.csv",
             "research/alpha_evidence.csv",
             "research/gate_decisions.csv",
+            "reports/alpha_discovery_board.csv",
+            "reports/candidate_kill_list.csv",
+            "reports/candidate_shadow_watchlist.csv",
+            "reports/candidate_paper_ready.csv",
+            "v5/v5_candidate_events.csv",
+            "v5/v5_candidate_labels.csv",
+            "v5/v5_candidate_quality.csv",
+            "v5/v5_candidate_outcome_summary.csv",
         ]:
             first_line = archive.read(member).decode("utf-8").splitlines()[0]
             assert first_line == ",".join(CSV_SCHEMAS[member])

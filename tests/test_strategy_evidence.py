@@ -1,0 +1,299 @@
+import csv
+import io
+import json
+import zipfile
+from datetime import UTC, datetime, timedelta
+from pathlib import Path
+
+import polars as pl
+
+from quant_lab.data.lake import read_parquet_dataset, write_market_bars, write_parquet_dataset
+from quant_lab.export.daily import export_daily_pack
+from quant_lab.research.alpha_discovery import build_and_publish_alpha_discovery_board
+from quant_lab.research.strategy_evidence import build_and_publish_strategy_evidence
+
+
+def test_strategy_evidence_builds_candidate_board_without_broad_btc_mixing(tmp_path):
+    lake = tmp_path / "lake"
+    _write_market_bars(lake)
+    _write_strategy_sources(lake)
+
+    result = build_and_publish_strategy_evidence(lake, as_of_date="2026-05-10")
+
+    samples = read_parquet_dataset(lake / "gold" / "strategy_evidence_sample")
+    summary = read_parquet_dataset(lake / "gold" / "strategy_evidence")
+    rows = {row["candidate_name"]: row for row in summary.to_dicts()}
+
+    assert result.extracted_sample_count == samples.height
+    assert set(rows) >= {
+        "v5.btc_leadership_probe_strict",
+        "v5.sol_protect_exception",
+        "v5.alt_impulse_shadow",
+        "v5.swing_f4_f5_alpha6",
+        "v5.f3_dominant_entry",
+        "v5.mean_reversion_sideways",
+    }
+    assert rows["v5.btc_leadership_probe_strict"]["sample_count"] == 2
+    assert rows["v5.sol_protect_exception"]["sample_count"] == 35
+    assert rows["v5.sol_protect_exception"]["decision"] == "KEEP_SHADOW"
+    assert rows["v5.alt_impulse_shadow"]["decision"] in {"KILL", "KEEP_SHADOW"}
+    assert rows["v5.alt_impulse_shadow"]["decision"] != "LIVE_SMALL_READY"
+    assert all(
+        row["sample_count"] >= 30
+        for row in summary.filter(pl.col("decision") == "LIVE_SMALL_READY").to_dicts()
+    )
+    assert "net_bps_after_cost_24h" in samples.columns
+
+
+def test_daily_export_includes_alpha_discovery_reports(tmp_path):
+    lake = tmp_path / "lake"
+    _write_market_bars(lake)
+    _write_strategy_sources(lake)
+    build_and_publish_strategy_evidence(lake, as_of_date="2026-05-10")
+    _write_alpha_discovery_labels(lake)
+    build_and_publish_alpha_discovery_board(lake, as_of_date="2026-05-10")
+
+    result = export_daily_pack(
+        export_date="2026-05-10",
+        lake_root=lake,
+        out_dir=tmp_path / "exports",
+        profile="expert",
+        command_line=["qlab", "export-daily"],
+    )
+
+    with zipfile.ZipFile(result.zip_path) as archive:
+        names = set(archive.namelist())
+        assert "reports/alpha_discovery_board.csv" in names
+        assert "reports/strategy_evidence_summary.md" in names
+        assert "reports/candidate_kill_list.csv" in names
+        assert "reports/candidate_shadow_watchlist.csv" in names
+        assert "reports/candidate_paper_ready.csv" in names
+        assert "research/strategy_evidence.csv" in names
+        assert "research/strategy_evidence_samples.csv" in names
+        board = list(
+            csv.DictReader(
+                io.StringIO(archive.read("reports/alpha_discovery_board.csv").decode("utf-8"))
+            )
+        )
+        evidence_rows = list(
+            csv.DictReader(
+                io.StringIO(archive.read("research/strategy_evidence.csv").decode("utf-8"))
+            )
+        )
+        sample_rows = list(
+            csv.DictReader(
+                io.StringIO(
+                    archive.read("research/strategy_evidence_samples.csv").decode("utf-8")
+                )
+            )
+        )
+        watch = list(
+            csv.DictReader(
+                io.StringIO(
+                    archive.read("reports/candidate_shadow_watchlist.csv").decode("utf-8")
+                )
+            )
+        )
+
+    board_by_candidate = {row["candidate_name"]: row for row in board}
+    assert board_by_candidate["v5.sol_protect_exception"]["decision"] == "KEEP_SHADOW"
+    assert len(evidence_rows) > 0
+    assert len(board) > 0
+    assert any(row["candidate_name"] == "v5.sol_protect_exception" for row in sample_rows)
+    assert "entry_conditions_json" in sample_rows[0]
+    assert "net_bps_after_cost_24h" in sample_rows[0]
+    assert any(row["candidate_name"] == "v5.sol_protect_exception" for row in watch)
+
+
+def _write_market_bars(lake: Path) -> None:
+    start = datetime(2026, 5, 9, tzinfo=UTC)
+    rows = []
+    for symbol, hourly_return in {
+        "BTC-USDT": 0.0015,
+        "SOL-USDT": 0.001,
+        "ETH-USDT": -0.001,
+    }.items():
+        for index in range(180):
+            close = 100.0 * ((1.0 + hourly_return) ** index)
+            rows.append(
+                {
+                    "venue": "okx",
+                    "symbol": symbol,
+                    "market_type": "SPOT",
+                    "timeframe": "1H",
+                    "ts": start + timedelta(hours=index),
+                    "open": close,
+                    "high": close * 1.002,
+                    "low": close * 0.998,
+                    "close": close,
+                    "volume": 100.0,
+                    "quote_volume": close * 100.0,
+                    "source": "test",
+                    "ingest_ts": start + timedelta(hours=index, minutes=1),
+                }
+            )
+    write_market_bars(lake, rows)
+
+
+def _write_alpha_discovery_labels(lake: Path) -> None:
+    start = datetime(2026, 5, 9, tzinfo=UTC)
+    rows = []
+    for index in range(12):
+        rows.append(
+            {
+                "strategy": "v5",
+                "candidate_id": f"sol-{index}",
+                "run_id": f"run-sol-{index}",
+                "ts_utc": start + timedelta(hours=index),
+                "symbol": "SOL-USDT",
+                "strategy_candidate": "v5.sol_protect_exception",
+                "block_reason": "protect_exception",
+                "final_decision": "SHADOW",
+                "horizon_hours": 24,
+                "gross_bps": 10.0,
+                "net_bps_after_cost": 6.0,
+                "mfe_bps": 12.0,
+                "mae_bps": -4.0,
+                "win": True,
+                "label_status": "complete",
+                "cost_bps": 4.0,
+                "cost_source": "quant_lab",
+                "regime_state": "trend",
+                "created_at": start + timedelta(hours=index, minutes=1),
+            }
+        )
+    write_parquet_dataset(pl.DataFrame(rows), lake / "gold" / "v5_candidate_label")
+
+
+def _write_strategy_sources(lake: Path) -> None:
+    start = datetime(2026, 5, 9, tzinfo=UTC)
+    write_parquet_dataset(
+        pl.DataFrame(
+            [
+                {
+                    "strategy": "v5",
+                    "bundle_sha256": "sol",
+                    "bundle_name": "bundle.tar.gz",
+                    "bundle_ts": start + timedelta(hours=index),
+                    "ingest_ts": start + timedelta(hours=index, minutes=1),
+                    "source_path_inside_bundle": "summaries/router_decisions.csv",
+                    "row_index": index,
+                    "candidate_name": "sol_protect_exception",
+                    "ts_utc": (start + timedelta(hours=index)).isoformat().replace("+00:00", "Z"),
+                    "symbol": "SOL-USDT",
+                    "reason": "protect_exception",
+                    "final_score": "0.71",
+                    "f1": "0.1",
+                    "f2": "0.2",
+                    "f3": "0.3",
+                    "f4": "0.4",
+                    "f5": "0.5",
+                    "alpha6_score": "0.8",
+                    "alpha6_side": "long",
+                    "regime_state": "trend",
+                    "protect_level": "SOL_PROTECT",
+                    "expected_edge_bps": "18",
+                    "raw_payload_json": json.dumps({"candidate_name": "sol_protect_exception"}),
+                }
+                for index in range(35)
+            ]
+        ),
+        lake / "silver" / "v5_router_decision",
+    )
+    write_parquet_dataset(
+        pl.DataFrame(
+            [
+                {
+                    "strategy": "v5",
+                    "bundle_sha256": "btc",
+                    "bundle_name": "bundle.tar.gz",
+                    "bundle_ts": start,
+                    "ingest_ts": start,
+                    "source_path_inside_bundle": "summaries/probe_diagnostics.csv",
+                    "row_index": 0,
+                    "probe_name": "btc_leadership_blocker",
+                    "ts_utc": start.isoformat().replace("+00:00", "Z"),
+                    "symbol": "BTC-USDT",
+                    "raw_payload_json": json.dumps({"probe_name": "btc_leadership_blocker"}),
+                },
+                {
+                    "strategy": "v5",
+                    "bundle_sha256": "btc",
+                    "bundle_name": "bundle.tar.gz",
+                    "bundle_ts": start + timedelta(hours=1),
+                    "ingest_ts": start + timedelta(hours=1),
+                    "source_path_inside_bundle": "summaries/probe_diagnostics.csv",
+                    "row_index": 1,
+                    "probe_name": "btc_leadership_probe_strict",
+                    "ts_utc": (start + timedelta(hours=1)).isoformat().replace("+00:00", "Z"),
+                    "symbol": "BTC-USDT",
+                    "final_score": "0.9",
+                    "alpha6_side": "long",
+                    "raw_payload_json": json.dumps({"probe_name": "btc_leadership_probe_strict"}),
+                },
+                {
+                    "strategy": "v5",
+                    "bundle_sha256": "btc",
+                    "bundle_name": "bundle.tar.gz",
+                    "bundle_ts": start + timedelta(hours=2),
+                    "ingest_ts": start + timedelta(hours=2),
+                    "source_path_inside_bundle": "summaries/probe_diagnostics.csv",
+                    "row_index": 2,
+                    "probe_name": "strict_btc_leadership_probe",
+                    "ts_utc": (start + timedelta(hours=2)).isoformat().replace("+00:00", "Z"),
+                    "symbol": "BTC-USDT",
+                    "final_score": "0.91",
+                    "alpha6_side": "long",
+                    "raw_payload_json": json.dumps({"probe_name": "strict_btc_leadership_probe"}),
+                },
+            ]
+        ),
+        lake / "silver" / "v5_probe_diagnostic",
+    )
+    write_parquet_dataset(
+        pl.DataFrame(
+            [
+                {
+                    "strategy": "v5",
+                    "bundle_sha256": "alt",
+                    "bundle_name": "bundle.tar.gz",
+                    "bundle_ts": start + timedelta(hours=index),
+                    "ingest_ts": start + timedelta(hours=index),
+                    "source_path_inside_bundle": "summaries/alt_impulse_shadow.csv",
+                    "row_index": index,
+                    "candidate_name": "alt_impulse_shadow",
+                    "ts_utc": (start + timedelta(hours=index)).isoformat().replace("+00:00", "Z"),
+                    "symbol": "ETH-USDT",
+                    "final_score": "0.8",
+                    "alpha6_side": "long",
+                    "regime_state": "impulse",
+                    "raw_payload_json": json.dumps({"candidate_name": "alt_impulse_shadow"}),
+                }
+                for index in range(5)
+            ]
+        ),
+        lake / "silver" / "v5_shadow_outcome",
+    )
+    write_parquet_dataset(
+        pl.DataFrame(
+            [
+                {
+                    "strategy": "v5",
+                    "bundle_sha256": "cost",
+                    "bundle_name": "bundle.tar.gz",
+                    "bundle_ts": start,
+                    "ingest_ts": start,
+                    "source_path_inside_bundle": "summaries/quant_lab_cost_usage.csv",
+                    "row_index": 0,
+                    "symbol": symbol,
+                    "cost_source": "quant_lab",
+                    "cost_bps": "4.0",
+                    "raw_payload_json": json.dumps(
+                        {"symbol": symbol, "cost_source": "quant_lab", "cost_bps": 4.0}
+                    ),
+                }
+                for symbol in ["BTC-USDT", "SOL-USDT", "ETH-USDT"]
+            ]
+        ),
+        lake / "silver" / "v5_quant_lab_cost_usage",
+    )

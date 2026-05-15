@@ -58,7 +58,13 @@ SECTION_DATASETS = {
         "okx_private_readonly_fills",
         "okx_private_readonly_bills",
     ],
-    "research": ["alpha_evidence", "gate_decision"],
+    "research": [
+        "alpha_evidence",
+        "alpha_discovery_board",
+        "strategy_evidence",
+        "strategy_evidence_sample",
+        "gate_decision",
+    ],
     "risk": ["risk_permission"],
     "anomalies": ["market_bar", "feature_value", "cost_bucket_daily", "gate_decision"],
     "v5": [
@@ -76,6 +82,10 @@ SECTION_DATASETS = {
         "v5_quant_lab_compliance",
         "v5_quant_lab_cost_usage",
         "v5_quant_lab_fallback",
+        "v5_candidate_event",
+        "v5_candidate_label",
+        "v5_candidate_quality_daily",
+        "v5_candidate_outcome_summary",
     ],
     "charts": ["market_bar", "gate_decision", "cost_bucket_daily", "strategy_health_daily"],
 }
@@ -100,6 +110,8 @@ REQUIRED_MEMBERS = [
     "costs/cost_estimate_examples.json",
     "costs/cost_fallbacks.csv",
     "research/alpha_evidence.csv",
+    "research/strategy_evidence.csv",
+    "research/strategy_evidence_samples.csv",
     "research/gate_decisions.csv",
     "research/research_conclusions.csv",
     "risk/risk_permission.json",
@@ -121,11 +133,20 @@ REQUIRED_MEMBERS = [
     "v5/v5_quant_lab_compliance.csv",
     "v5/v5_quant_lab_cost_usage.csv",
     "v5/v5_quant_lab_fallbacks.csv",
+    "v5/v5_candidate_events.csv",
+    "v5/v5_candidate_labels.csv",
+    "v5/v5_candidate_quality.csv",
+    "v5/v5_candidate_outcome_summary.csv",
     "charts/market_close.png",
     "charts/market_returns.png",
     "charts/gate_status_counts.png",
     "charts/cost_distribution.png",
     "charts/v5_health_summary.png",
+    "reports/alpha_discovery_board.csv",
+    "reports/strategy_evidence_summary.md",
+    "reports/candidate_kill_list.csv",
+    "reports/candidate_shadow_watchlist.csv",
+    "reports/candidate_paper_ready.csv",
     f"reports/{ENFORCE_READINESS_JSON}",
     f"reports/{ENFORCE_READINESS_CSV}",
 ]
@@ -259,6 +280,169 @@ CSV_SCHEMAS: dict[str, list[str]] = {
         "metrics",
         "next_action",
         "created_at",
+    ],
+    "research/strategy_evidence.csv": [
+        "candidate_name",
+        "evidence_version",
+        "as_of_date",
+        "sample_count",
+        "complete_sample_count",
+        "avg_net_bps_by_horizon",
+        "median_net_bps_by_horizon",
+        "win_rate_by_horizon",
+        "downside_p25_by_horizon",
+        "max_drawdown_proxy",
+        "cost_sensitivity",
+        "symbol_breakdown",
+        "regime_breakdown",
+        "decision",
+        "decision_reasons",
+        "start_ts",
+        "end_ts",
+        "created_at",
+        "source",
+    ],
+    "research/strategy_evidence_samples.csv": [
+        "ts_utc",
+        "symbol",
+        "candidate_name",
+        "entry_condition_name",
+        "entry_condition_side",
+        "entry_condition_signal",
+        "entry_condition_passed",
+        "entry_conditions_json",
+        "block_reason",
+        "final_score",
+        "f1",
+        "f2",
+        "f3",
+        "f4",
+        "f5",
+        "alpha6_score",
+        "alpha6_side",
+        "regime_state",
+        "protect_level",
+        "expected_edge_bps",
+        "required_edge_bps",
+        "cost_source",
+        "cost_bps",
+        "source_dataset",
+        "source_path_inside_bundle",
+        "source_event_key",
+        "source_bundle_ts",
+        "decision_ts",
+        "label_status",
+        "net_bps_after_cost_4h",
+        "win_4h",
+        "drawdown_proxy_bps_4h",
+        "net_bps_after_cost_8h",
+        "win_8h",
+        "drawdown_proxy_bps_8h",
+        "net_bps_after_cost_12h",
+        "win_12h",
+        "drawdown_proxy_bps_12h",
+        "net_bps_after_cost_24h",
+        "win_24h",
+        "drawdown_proxy_bps_24h",
+        "net_bps_after_cost_48h",
+        "win_48h",
+        "drawdown_proxy_bps_48h",
+        "net_bps_after_cost_72h",
+        "win_72h",
+        "drawdown_proxy_bps_72h",
+        "net_bps_after_cost_120h",
+        "win_120h",
+        "drawdown_proxy_bps_120h",
+        "created_at",
+        "source",
+    ],
+    "reports/alpha_discovery_board.csv": [
+        "strategy",
+        "board_schema_version",
+        "as_of_date",
+        "strategy_candidate",
+        "candidate_name",
+        "symbol",
+        "regime_state",
+        "horizon_hours",
+        "sample_count",
+        "complete_sample_count",
+        "avg_net_bps",
+        "median_net_bps",
+        "p25_net_bps",
+        "win_rate",
+        "avg_mfe_bps",
+        "avg_mae_bps",
+        "cost_source_mix",
+        "stability_by_day",
+        "paper_days",
+        "cost_source_has_global_default",
+        "decision",
+        "decision_reasons",
+        "risk_permission",
+        "risk_permission_status",
+        "enforce_readiness_status",
+        "block_reason_mix",
+        "final_decision_mix",
+        "high_score_blocked_outcome_count",
+        "shadow_outcome_count",
+        "start_ts",
+        "end_ts",
+        "created_at",
+        "source",
+    ],
+    "reports/candidate_kill_list.csv": [
+        "strategy_candidate",
+        "candidate_name",
+        "symbol",
+        "regime_state",
+        "horizon_hours",
+        "as_of_date",
+        "sample_count",
+        "complete_sample_count",
+        "avg_net_bps",
+        "median_net_bps",
+        "p25_net_bps",
+        "win_rate",
+        "cost_source_mix",
+        "decision",
+        "decision_reasons",
+    ],
+    "reports/candidate_shadow_watchlist.csv": [
+        "strategy_candidate",
+        "candidate_name",
+        "symbol",
+        "regime_state",
+        "horizon_hours",
+        "as_of_date",
+        "sample_count",
+        "complete_sample_count",
+        "avg_net_bps",
+        "median_net_bps",
+        "p25_net_bps",
+        "win_rate",
+        "paper_days",
+        "cost_source_mix",
+        "decision",
+        "decision_reasons",
+    ],
+    "reports/candidate_paper_ready.csv": [
+        "strategy_candidate",
+        "candidate_name",
+        "symbol",
+        "regime_state",
+        "horizon_hours",
+        "as_of_date",
+        "sample_count",
+        "complete_sample_count",
+        "avg_net_bps",
+        "median_net_bps",
+        "p25_net_bps",
+        "win_rate",
+        "paper_days",
+        "cost_source_mix",
+        "decision",
+        "decision_reasons",
     ],
     "v5/v5_strategy_health.csv": [
         "strategy",
@@ -443,6 +627,132 @@ CSV_SCHEMAS: dict[str, list[str]] = {
         "fallback_reason",
         "count",
         "raw_payload_json",
+    ],
+    "v5/v5_candidate_events.csv": [
+        "strategy",
+        "bundle_sha256",
+        "bundle_name",
+        "bundle_ts",
+        "ingest_ts",
+        "schema_version",
+        "source_path_inside_bundle",
+        "row_index",
+        "event_type",
+        "candidate_event_schema_version",
+        "candidate_id",
+        "run_id",
+        "ts_utc",
+        "symbol",
+        "normalized_symbol",
+        "candidate_quality_key",
+        "regime_state",
+        "risk_level",
+        "current_position",
+        "current_weight",
+        "target_weight_raw",
+        "target_weight_after_risk",
+        "final_score",
+        "rank",
+        "f1_mom_5d",
+        "f2_mom_20d",
+        "f3_vol_adj_ret",
+        "f4_volume_expansion",
+        "f5_rsi_trend_confirm",
+        "alpha6_score",
+        "alpha6_side",
+        "ml_score",
+        "mean_reversion_score",
+        "expected_edge_bps",
+        "required_edge_bps",
+        "cost_bps",
+        "cost_source",
+        "eligible_before_filters",
+        "final_decision",
+        "block_reason",
+        "strategy_candidate",
+        "raw_payload_json",
+    ],
+    "v5/v5_candidate_labels.csv": [
+        "strategy",
+        "candidate_label_schema_version",
+        "candidate_id",
+        "run_id",
+        "ts_utc",
+        "symbol",
+        "strategy_candidate",
+        "block_reason",
+        "final_decision",
+        "horizon_hours",
+        "decision_ts",
+        "label_ts",
+        "entry_close",
+        "label_close",
+        "gross_bps",
+        "net_bps_after_cost",
+        "mfe_bps",
+        "mae_bps",
+        "win",
+        "label_status",
+        "label_reason",
+        "cost_bps",
+        "cost_source",
+        "alpha6_side",
+        "regime_state",
+        "risk_level",
+        "protect_level",
+        "final_score",
+        "expected_edge_bps",
+        "required_edge_bps",
+        "source_event_bundle_sha256",
+        "source_path_inside_bundle",
+        "created_at",
+        "source",
+    ],
+    "v5/v5_candidate_quality.csv": [
+        "strategy",
+        "date",
+        "schema_version",
+        "status",
+        "candidate_event_rows",
+        "run_count",
+        "runs_with_candidate_event",
+        "runs_without_candidate_event",
+        "runs_without_candidate_event_json",
+        "candidate_rows_by_run_json",
+        "candidate_symbol_rows_by_run_json",
+        "run_symbol_min_rows",
+        "feature_completeness",
+        "feature_completeness_by_field_json",
+        "expected_label_rows",
+        "label_rows",
+        "complete_label_rows",
+        "label_completeness",
+        "cost_source_coverage",
+        "cost_source_counts_json",
+        "warnings_json",
+        "created_at",
+        "source",
+    ],
+    "v5/v5_candidate_outcome_summary.csv": [
+        "strategy",
+        "date",
+        "schema_version",
+        "block_reason",
+        "strategy_candidate",
+        "symbol",
+        "horizon_hours",
+        "sample_count",
+        "complete_sample_count",
+        "avg_gross_bps",
+        "avg_net_bps",
+        "median_net_bps",
+        "win_rate",
+        "downside_p25_bps",
+        "avg_mfe_bps",
+        "avg_mae_bps",
+        "label_status_counts_json",
+        "created_at",
+        "source",
     ],
     f"reports/{ENFORCE_READINESS_CSV}": [
         "as_of_ts",
@@ -730,6 +1040,15 @@ def _dataset_members(frames: dict[str, pl.DataFrame]) -> dict[str, _MemberPayloa
     costs = _normalize_symbol_frame(frames.get("cost_bucket_daily", pl.DataFrame()))
     cost_health = frames.get("cost_health_daily", pl.DataFrame())
     evidence = _alpha_evidence_for_export(frames.get("alpha_evidence", pl.DataFrame()))
+    alpha_discovery_board = _alpha_discovery_board_for_export(
+        frames.get("alpha_discovery_board", pl.DataFrame())
+    )
+    strategy_evidence = _strategy_evidence_for_export(
+        frames.get("strategy_evidence", pl.DataFrame())
+    )
+    strategy_samples = _strategy_evidence_samples_for_export(
+        frames.get("strategy_evidence_sample", pl.DataFrame())
+    )
     gates = frames.get("gate_decision", pl.DataFrame())
     risk = _risk_permissions_for_export(frames.get("risk_permission", pl.DataFrame()), frames)
     trades = _normalize_symbol_frame(frames.get("trade_print", pl.DataFrame()))
@@ -747,6 +1066,10 @@ def _dataset_members(frames: dict[str, pl.DataFrame]) -> dict[str, _MemberPayloa
     v5_compliance = frames.get("v5_quant_lab_compliance", pl.DataFrame())
     v5_cost_usage = frames.get("v5_quant_lab_cost_usage", pl.DataFrame())
     v5_fallbacks = _dedupe_v5_event_frame(frames.get("v5_quant_lab_fallback", pl.DataFrame()))
+    v5_candidate_events = frames.get("v5_candidate_event", pl.DataFrame())
+    v5_candidate_labels = frames.get("v5_candidate_label", pl.DataFrame())
+    v5_candidate_quality = frames.get("v5_candidate_quality_daily", pl.DataFrame())
+    v5_candidate_outcomes = frames.get("v5_candidate_outcome_summary", pl.DataFrame())
 
     return {
         "market/market_snapshot.csv": _csv_member(
@@ -784,9 +1107,37 @@ def _dataset_members(frames: dict[str, pl.DataFrame]) -> dict[str, _MemberPayloa
         "costs/cost_estimate_examples.json": _json_text(_cost_examples(costs)),
         "costs/cost_fallbacks.csv": _csv_text(_cost_fallbacks(costs)),
         "research/alpha_evidence.csv": _csv_member("research/alpha_evidence.csv", evidence),
+        "research/strategy_evidence.csv": _csv_member(
+            "research/strategy_evidence.csv",
+            strategy_evidence,
+        ),
+        "research/strategy_evidence_samples.csv": _csv_member(
+            "research/strategy_evidence_samples.csv",
+            strategy_samples,
+        ),
         "research/gate_decisions.csv": _csv_member("research/gate_decisions.csv", gates),
         "research/research_conclusions.csv": _csv_text(
             pl.DataFrame(schema={"alpha_id": pl.Utf8, "conclusion": pl.Utf8, "source": pl.Utf8})
+        ),
+        "reports/alpha_discovery_board.csv": _csv_member(
+            "reports/alpha_discovery_board.csv",
+            alpha_discovery_board,
+        ),
+        "reports/strategy_evidence_summary.md": _strategy_evidence_summary_md(
+            alpha_discovery_board,
+            strategy_evidence,
+        ),
+        "reports/candidate_kill_list.csv": _csv_member(
+            "reports/candidate_kill_list.csv",
+            _candidate_decision_rows(alpha_discovery_board, "KILL"),
+        ),
+        "reports/candidate_shadow_watchlist.csv": _csv_member(
+            "reports/candidate_shadow_watchlist.csv",
+            _candidate_decision_rows(alpha_discovery_board, "KEEP_SHADOW"),
+        ),
+        "reports/candidate_paper_ready.csv": _csv_member(
+            "reports/candidate_paper_ready.csv",
+            _candidate_decision_rows(alpha_discovery_board, "PAPER_READY"),
         ),
         "risk/risk_permission.json": _json_text({"rows": _rows(risk)}),
         "risk/risk_flags.csv": _csv_text(_risk_flags(risk)),
@@ -819,6 +1170,22 @@ def _dataset_members(frames: dict[str, pl.DataFrame]) -> dict[str, _MemberPayloa
         ),
         "v5/v5_quant_lab_fallbacks.csv": _csv_member(
             "v5/v5_quant_lab_fallbacks.csv", v5_fallbacks
+        ),
+        "v5/v5_candidate_events.csv": _csv_member(
+            "v5/v5_candidate_events.csv",
+            _tail_by_time(v5_candidate_events, "ts_utc", limit=50_000),
+        ),
+        "v5/v5_candidate_labels.csv": _csv_member(
+            "v5/v5_candidate_labels.csv",
+            _tail_by_time(v5_candidate_labels, "ts_utc", limit=100_000),
+        ),
+        "v5/v5_candidate_quality.csv": _csv_member(
+            "v5/v5_candidate_quality.csv",
+            v5_candidate_quality,
+        ),
+        "v5/v5_candidate_outcome_summary.csv": _csv_member(
+            "v5/v5_candidate_outcome_summary.csv",
+            v5_candidate_outcomes,
         ),
     }
 
@@ -1040,6 +1407,11 @@ def _data_quality_payload(
 
     gates = snapshot.frames.get("gate_decision", pl.DataFrame())
     evidence = snapshot.frames.get("alpha_evidence", pl.DataFrame())
+    alpha_discovery_board = snapshot.frames.get("alpha_discovery_board", pl.DataFrame())
+    strategy_evidence = snapshot.frames.get("strategy_evidence", pl.DataFrame())
+    candidate_events = snapshot.frames.get("v5_candidate_event", pl.DataFrame())
+    candidate_labels = snapshot.frames.get("v5_candidate_label", pl.DataFrame())
+    candidate_quality = snapshot.frames.get("v5_candidate_quality_daily", pl.DataFrame())
     checks.append(
         _check(
             "gate_decision_present",
@@ -1054,6 +1426,96 @@ def _data_quality_payload(
             evidence.height > 0,
             f"rows={evidence.height}",
             severity="critical" if research_enabled else "warning",
+        )
+    )
+    checks.append(
+        _check(
+            "strategy_evidence_present",
+            strategy_evidence.height > 0,
+            f"rows={strategy_evidence.height}",
+            severity="critical" if research_enabled else "warning",
+        )
+    )
+    checks.append(
+        _check(
+            "alpha_discovery_board_present",
+            alpha_discovery_board.height > 0,
+            f"rows={alpha_discovery_board.height}",
+            severity="critical" if research_enabled else "warning",
+        )
+    )
+    checks.append(
+        _check(
+            "alpha_discovery_board_live_rules",
+            _alpha_discovery_live_rules_ok(alpha_discovery_board),
+            "alt_impulse/sol protect cannot be LIVE_SMALL_READY; live rows need samples >= 60",
+            severity="critical",
+        )
+    )
+    checks.append(
+        _check(
+            "strategy_evidence_candidate_coverage",
+            _strategy_evidence_has_required_candidates(strategy_evidence),
+            "strategy_evidence should include all configured V5 strategy candidates",
+            warning_only=True,
+        )
+    )
+    checks.append(
+        _check(
+            "strategy_evidence_live_sample_floor",
+            _strategy_evidence_live_sample_floor_ok(strategy_evidence),
+            "LIVE_SMALL_READY requires sample_count >= 30",
+            severity="critical",
+        )
+    )
+    latest_candidate_quality = _latest_candidate_quality(candidate_quality)
+    checks.append(
+        _check(
+            "v5_candidate_event_present",
+            candidate_events.height > 0,
+            f"rows={candidate_events.height}",
+            warning_only=True,
+        )
+    )
+    checks.append(
+        _check(
+            "v5_candidate_rows_by_run",
+            int(latest_candidate_quality.get("runs_without_candidate_event") or 0) == 0
+            and int(latest_candidate_quality.get("run_symbol_min_rows") or 0) >= 1,
+            (
+                "runs_without_candidate_event="
+                f"{latest_candidate_quality.get('runs_without_candidate_event', 'n/a')}; "
+                f"run_symbol_min_rows={latest_candidate_quality.get('run_symbol_min_rows', 'n/a')}"
+            ),
+            warning_only=True,
+        )
+    )
+    checks.append(
+        _check(
+            "v5_candidate_feature_completeness",
+            float(latest_candidate_quality.get("feature_completeness") or 0.0) >= 0.8,
+            f"feature_completeness={latest_candidate_quality.get('feature_completeness', 'n/a')}",
+            warning_only=True,
+        )
+    )
+    checks.append(
+        _check(
+            "v5_candidate_label_completeness",
+            candidate_labels.height > 0
+            and float(latest_candidate_quality.get("label_completeness") or 0.0) >= 0.8,
+            f"label_completeness={latest_candidate_quality.get('label_completeness', 'n/a')}",
+            warning_only=True,
+        )
+    )
+    checks.append(
+        _check(
+            "v5_candidate_cost_source_coverage",
+            float(latest_candidate_quality.get("cost_source_coverage") or 0.0) >= 0.8,
+            (
+                "cost_source_coverage="
+                f"{latest_candidate_quality.get('cost_source_coverage', 'n/a')}"
+            ),
+            warning_only=True,
         )
     )
     checks.append(
@@ -1289,8 +1751,15 @@ def _executive_summary(
     data_quality: dict[str, Any],
 ) -> str:
     gates = snapshot.frames.get("gate_decision", pl.DataFrame())
+    alpha_discovery_board = snapshot.frames.get("alpha_discovery_board", pl.DataFrame())
+    strategy_evidence = snapshot.frames.get("strategy_evidence", pl.DataFrame())
+    candidate_quality = _latest_candidate_quality(
+        snapshot.frames.get("v5_candidate_quality_daily", pl.DataFrame())
+    )
     risk = snapshot.frames.get("risk_permission", pl.DataFrame())
     gate_counts = _value_counts(gates, "status")
+    alpha_discovery_counts = _value_counts(alpha_discovery_board, "decision")
+    strategy_decision_counts = _value_counts(strategy_evidence, "decision")
     risk_quality = data_quality.get("risk_permission", {})
     permission_counts = _value_counts(risk, "permission_status")
     if not permission_counts:
@@ -1306,6 +1775,13 @@ def _executive_summary(
         f"Dataset row counts: {safe_json_dumps(snapshot.row_counts)}",
         f"Cost fallback rows: {fallback_rows.height}",
         f"Gate status counts: {safe_json_dumps(gate_counts)}",
+        f"Alpha discovery decision counts: {safe_json_dumps(alpha_discovery_counts)}",
+        f"Strategy evidence decision counts: {safe_json_dumps(strategy_decision_counts)}",
+        f"V5 candidate_event rows: {snapshot.row_counts.get('v5_candidate_event', 0)}",
+        "V5 candidate label completeness: "
+        f"{candidate_quality.get('label_completeness', 'n/a')}",
+        "V5 candidate cost source coverage: "
+        f"{candidate_quality.get('cost_source_coverage', 'n/a')}",
         f"Risk permission counts: {safe_json_dumps(permission_counts)}",
         f"Risk permission status: {risk_quality.get('permission_status', 'UNKNOWN')}",
         f"Risk permission as_of_ts: {risk_quality.get('as_of_ts')}",
@@ -1354,6 +1830,12 @@ def _question_lines(snapshot: _DatasetSnapshot, data_quality: dict[str, Any]) ->
         questions.append("为什么 gate_decision / alpha_evidence 为空？")
     elif snapshot.row_counts.get("alpha_evidence", 0) == 0:
         questions.append("alpha_evidence 研究证据尚未生成：何时运行 walk-forward/evidence 任务？")
+    if snapshot.row_counts.get("strategy_evidence", 0) == 0:
+        questions.append("Why is strategy_evidence empty for V5 candidate discovery?")
+    if snapshot.row_counts.get("v5_candidate_event", 0) == 0:
+        questions.append("Why is reports/candidate_snapshot.csv missing from V5 bundles?")
+    if snapshot.row_counts.get("v5_candidate_label", 0) == 0:
+        questions.append("Why are v5_candidate_label forward labels empty?")
     if snapshot.row_counts.get("risk_permission", 0) == 0:
         questions.append("为什么 risk_permission 为空？")
     if snapshot.row_counts.get("strategy_health_daily", 0) == 0:
@@ -1370,6 +1852,8 @@ def _question_lines(snapshot: _DatasetSnapshot, data_quality: dict[str, Any]) ->
     )
     if config_question:
         questions.append(config_question)
+    if snapshot.row_counts.get("alpha_discovery_board", 0) == 0:
+        questions.append("Why is alpha_discovery_board empty for V5 candidate decisions?")
     warnings = data_quality.get("warnings", [])
     if warnings:
         questions.append("哪些 data_quality 告警需要先处理，才能继续研究复盘？")
@@ -1417,6 +1901,136 @@ def _alpha_evidence_for_export(evidence: pl.DataFrame) -> pl.DataFrame:
             .alias("evidence_status")
         )
     return normalized
+
+
+def _strategy_evidence_for_export(evidence: pl.DataFrame) -> pl.DataFrame:
+    path = "research/strategy_evidence.csv"
+    if evidence.is_empty() and not evidence.columns:
+        return _empty_csv_schema_frame(path)
+    normalized = evidence
+    sort_columns = [
+        column
+        for column in ["candidate_name", "as_of_date", "created_at"]
+        if column in normalized.columns
+    ]
+    if sort_columns:
+        normalized = normalized.sort(sort_columns)
+    if {"candidate_name", "as_of_date"}.issubset(normalized.columns):
+        normalized = normalized.group_by("candidate_name", maintain_order=True).tail(1)
+    for column in CSV_SCHEMAS[path]:
+        if column not in normalized.columns:
+            normalized = normalized.with_columns(pl.lit(None, dtype=pl.Utf8).alias(column))
+    return normalized.select(CSV_SCHEMAS[path]).sort("candidate_name")
+
+
+def _strategy_evidence_samples_for_export(samples: pl.DataFrame) -> pl.DataFrame:
+    path = "research/strategy_evidence_samples.csv"
+    if samples.is_empty() and not samples.columns:
+        return _empty_csv_schema_frame(path)
+    selected = _tail_by_time(samples, "ts_utc", limit=20_000)
+    for column in CSV_SCHEMAS[path]:
+        if column not in selected.columns:
+            selected = selected.with_columns(pl.lit(None, dtype=pl.Utf8).alias(column))
+    sort_columns = [
+        column
+        for column in ["candidate_name", "symbol", "ts_utc"]
+        if column in selected.columns
+    ]
+    if sort_columns:
+        selected = selected.sort(sort_columns)
+    return selected.select(CSV_SCHEMAS[path])
+
+
+def _alpha_discovery_board_for_export(board: pl.DataFrame) -> pl.DataFrame:
+    path = "reports/alpha_discovery_board.csv"
+    if board.is_empty() and not board.columns:
+        return _empty_csv_schema_frame(path)
+    selected = board
+    for column in CSV_SCHEMAS[path]:
+        if column not in selected.columns:
+            selected = selected.with_columns(pl.lit(None, dtype=pl.Utf8).alias(column))
+    sort_columns = [
+        column
+        for column in ["decision", "strategy_candidate", "symbol", "horizon_hours"]
+        if column in selected.columns
+    ]
+    selected = selected.sort(sort_columns) if sort_columns else selected
+    return selected.select(CSV_SCHEMAS[path])
+
+
+def _candidate_decision_rows(board: pl.DataFrame, decision: str) -> pl.DataFrame:
+    paths = {
+        "KILL": "reports/candidate_kill_list.csv",
+        "KEEP_SHADOW": "reports/candidate_shadow_watchlist.csv",
+        "PAPER_READY": "reports/candidate_paper_ready.csv",
+    }
+    path = paths.get(decision, "reports/candidate_shadow_watchlist.csv")
+    if board.is_empty():
+        return _empty_csv_schema_frame(path)
+    if "decision" not in board.columns:
+        return _empty_csv_schema_frame(path)
+    selected = board.filter(pl.col("decision") == decision)
+    if selected.is_empty():
+        return _empty_csv_schema_frame(path)
+    for column in CSV_SCHEMAS[path]:
+        if column not in selected.columns:
+            selected = selected.with_columns(pl.lit(None, dtype=pl.Utf8).alias(column))
+    sort_columns = [
+        column
+        for column in ["strategy_candidate", "symbol", "horizon_hours"]
+        if column in selected.columns
+    ]
+    selected = selected.sort(sort_columns) if sort_columns else selected
+    return selected.select(CSV_SCHEMAS[path])
+
+
+def _strategy_evidence_summary_md(
+    alpha_discovery_board: pl.DataFrame,
+    strategy_evidence: pl.DataFrame,
+) -> str:
+    lines = [
+        "# Strategy Evidence Summary",
+        "",
+        "Alpha discovery evaluates V5 strategy candidates by candidate snapshot and "
+        "forward labels, not only by `v5.core.momentum` feature gates.",
+        "",
+    ]
+    if alpha_discovery_board.is_empty():
+        lines.extend(["No alpha discovery board rows are available.", ""])
+        if strategy_evidence.is_empty():
+            lines.extend(["No legacy strategy evidence rows are available.", ""])
+        return "\n".join(lines)
+
+    counts = _value_counts(alpha_discovery_board, "decision")
+    lines.extend(
+        [
+            f"Decision counts: {safe_json_dumps(counts)}",
+            "",
+            "| Candidate | Symbol | Regime | Horizon | Decision | Samples | Complete |",
+        ]
+    )
+    lines.append("| --- | --- | --- | ---: | --- | ---: | ---: |")
+    sort_columns = [
+        column
+        for column in ["strategy_candidate", "symbol", "regime_state", "horizon_hours"]
+        if column in alpha_discovery_board.columns
+    ]
+    board = alpha_discovery_board.sort(sort_columns) if sort_columns else alpha_discovery_board
+    for row in board.to_dicts():
+        lines.append(
+            "| {candidate} | {symbol} | {regime} | {horizon} | {decision} | "
+            "{samples} | {complete} |".format(
+                candidate=row.get("strategy_candidate") or row.get("candidate_name", ""),
+                symbol=row.get("symbol", ""),
+                regime=row.get("regime_state", ""),
+                horizon=row.get("horizon_hours", ""),
+                decision=row.get("decision", ""),
+                samples=row.get("sample_count", 0),
+                complete=row.get("complete_sample_count", 0),
+            )
+        )
+    lines.append("")
+    return "\n".join(lines)
 
 
 def _latest_v5_mode(frames: dict[str, pl.DataFrame]) -> str | None:
@@ -1641,6 +2255,16 @@ def _latest_by_dataset_time(dataset_name: str, frame: pl.DataFrame) -> dict[str,
             )
         )
         return parsed.sort(column).tail(1).to_dicts()[0]
+    return frame.tail(1).to_dicts()[0]
+
+
+def _latest_candidate_quality(frame: pl.DataFrame) -> dict[str, Any]:
+    if frame.is_empty():
+        return {}
+    if "created_at" in frame.columns:
+        return _latest_by_dataset_time("v5_candidate_quality_daily", frame)
+    if "date" in frame.columns:
+        return frame.sort("date").tail(1).to_dicts()[0]
     return frame.tail(1).to_dicts()[0]
 
 
@@ -1952,6 +2576,20 @@ def _missing_dataset_reason(dataset_name: str) -> str:
         return "legacy_optional_non_v5_research_missing"
     if dataset_name == "v5_decision_audit":
         return "v5_decision_audit_missing_or_empty"
+    if dataset_name == "alpha_discovery_board":
+        return "alpha_discovery_board_missing_or_empty"
+    if dataset_name == "strategy_evidence":
+        return "strategy_candidate_evidence_missing_or_empty"
+    if dataset_name == "strategy_evidence_sample":
+        return "strategy_candidate_samples_missing_or_empty"
+    if dataset_name == "v5_candidate_event":
+        return "v5_candidate_snapshot_missing_or_empty"
+    if dataset_name == "v5_candidate_label":
+        return "v5_candidate_forward_labels_missing_or_empty"
+    if dataset_name == "v5_candidate_quality_daily":
+        return "v5_candidate_quality_missing_or_empty"
+    if dataset_name == "v5_candidate_outcome_summary":
+        return "v5_candidate_outcome_summary_missing_or_empty"
     return "missing_or_empty"
 
 
@@ -2005,6 +2643,56 @@ def _gates_have_evidence(gates: pl.DataFrame, evidence: pl.DataFrame) -> bool:
         return False
     joined = gates.join(evidence.select(keys).unique(), on=keys, how="anti")
     return joined.is_empty()
+
+
+def _strategy_evidence_has_required_candidates(strategy_evidence: pl.DataFrame) -> bool:
+    if strategy_evidence.is_empty() or "candidate_name" not in strategy_evidence.columns:
+        return False
+    required = {
+        "v5.btc_leadership_probe_strict",
+        "v5.sol_protect_exception",
+        "v5.alt_impulse_shadow",
+        "v5.swing_f4_f5_alpha6",
+        "v5.f3_dominant_entry",
+        "v5.mean_reversion_sideways",
+    }
+    observed = {str(value) for value in strategy_evidence["candidate_name"].drop_nulls()}
+    return required.issubset(observed)
+
+
+def _strategy_evidence_live_sample_floor_ok(strategy_evidence: pl.DataFrame) -> bool:
+    if strategy_evidence.is_empty() or "decision" not in strategy_evidence.columns:
+        return True
+    if "sample_count" not in strategy_evidence.columns:
+        return False
+    live = strategy_evidence.filter(pl.col("decision") == "LIVE_SMALL_READY")
+    if live.is_empty():
+        return True
+    return live.filter(pl.col("sample_count").cast(pl.Int64, strict=False) < 30).is_empty()
+
+
+def _alpha_discovery_live_rules_ok(board: pl.DataFrame) -> bool:
+    if board.is_empty() or "decision" not in board.columns:
+        return False
+    if "sample_count" not in board.columns:
+        return False
+    live = board.filter(pl.col("decision") == "LIVE_SMALL_READY")
+    if live.is_empty():
+        return True
+    if not live.filter(pl.col("sample_count").cast(pl.Int64, strict=False) < 60).is_empty():
+        return False
+    if "strategy_candidate" in live.columns:
+        blocked = live.filter(
+            pl.col("strategy_candidate").is_in(
+                ["v5.alt_impulse_shadow", "v5.sol_protect_exception"]
+            )
+        )
+        if not blocked.is_empty():
+            return False
+    if "cost_source_has_global_default" in live.columns:
+        if bool(live["cost_source_has_global_default"].fill_null(True).any()):
+            return False
+    return True
 
 
 def _risk_has_versions(risk: pl.DataFrame) -> bool:

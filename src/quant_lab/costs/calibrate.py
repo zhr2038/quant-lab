@@ -537,7 +537,10 @@ def _v5_order_lifecycle_fill_samples(v5_order_lifecycle: pl.DataFrame) -> list[d
         )
         if fee_bps is None and fee_abs_usdt is not None:
             fee_bps = fee_abs_usdt / abs(notional) * 10_000
-        arrival_slippage = _first_float(row, ["arrival_slippage_bps", "realized_slippage_bps", "slippage_bps"])
+        arrival_slippage = _first_float(
+            row,
+            ["arrival_slippage_bps", "realized_slippage_bps", "slippage_bps"],
+        )
         delay_cost = _first_float(row, ["delay_cost_bps"])
         slippage_parts = [part for part in [arrival_slippage, delay_cost] if part is not None]
         slippage = sum(slippage_parts) if slippage_parts else None
@@ -556,8 +559,15 @@ def _v5_order_lifecycle_fill_samples(v5_order_lifecycle: pl.DataFrame) -> list[d
                 "source_kind": "v5_order_lifecycle",
                 "notional": abs(notional),
                 "notional_bucket": _notional_bucket(abs(notional)),
-                "trade_id": str(row.get("trade_ids") or row.get("trade_id") or row.get("tradeId") or ""),
-                "order_id": str(row.get("exchange_order_id") or row.get("order_id") or row.get("cl_ord_id") or ""),
+                "trade_id": str(
+                    row.get("trade_ids") or row.get("trade_id") or row.get("tradeId") or ""
+                ),
+                "order_id": str(
+                    row.get("exchange_order_id")
+                    or row.get("order_id")
+                    or row.get("cl_ord_id")
+                    or ""
+                ),
                 "side": str(row.get("side") or ""),
                 "action": str(row.get("intent") or row.get("action") or ""),
                 "fill_px": avg_fill_px,
@@ -565,7 +575,12 @@ def _v5_order_lifecycle_fill_samples(v5_order_lifecycle: pl.DataFrame) -> list[d
                 "fee": fee,
                 "fee_ccy": fee_ccy,
                 "fee_usdt": fee_abs_usdt,
-                "ts": row.get("last_fill_ts") or row.get("ts_utc") or row.get("submit_ts") or row.get("decision_ts"),
+                "ts": (
+                    row.get("last_fill_ts")
+                    or row.get("ts_utc")
+                    or row.get("submit_ts")
+                    or row.get("decision_ts")
+                ),
                 "fee_bps": fee_bps,
                 "slippage_bps": slippage if slippage is not None and slippage >= 0 else None,
                 "spread_bps": spread_bps if spread_bps is not None and spread_bps >= 0 else None,

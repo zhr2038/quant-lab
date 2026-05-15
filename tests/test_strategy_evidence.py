@@ -17,40 +17,44 @@ def test_strategy_evidence_builds_candidate_board_without_broad_btc_mixing(tmp_p
     lake = tmp_path / "lake"
     _write_market_bars(lake)
     _write_strategy_sources(lake)
+    _write_alpha_discovery_labels(lake)
 
     result = build_and_publish_strategy_evidence(lake, as_of_date="2026-05-10")
 
     samples = read_parquet_dataset(lake / "gold" / "strategy_evidence_sample")
     summary = read_parquet_dataset(lake / "gold" / "strategy_evidence")
-    rows = {row["candidate_name"]: row for row in summary.to_dicts()}
+    rows = {
+        (
+            row["strategy_candidate"],
+            row["symbol"],
+            row["regime_state"],
+            row["horizon_hours"],
+        ): row
+        for row in summary.to_dicts()
+    }
 
     assert result.extracted_sample_count == samples.height
-    assert set(rows) >= {
-        "v5.btc_leadership_probe_strict",
-        "v5.sol_protect_exception",
-        "v5.alt_impulse_shadow",
-        "v5.swing_f4_f5_alpha6",
-        "v5.f3_dominant_entry",
-        "v5.mean_reversion_sideways",
-    }
-    assert rows["v5.btc_leadership_probe_strict"]["sample_count"] == 2
-    assert rows["v5.sol_protect_exception"]["sample_count"] == 35
-    assert rows["v5.sol_protect_exception"]["decision"] == "KEEP_SHADOW"
-    assert rows["v5.alt_impulse_shadow"]["decision"] in {"KILL", "KEEP_SHADOW"}
-    assert rows["v5.alt_impulse_shadow"]["decision"] != "LIVE_SMALL_READY"
+    key = ("v5.sol_protect_exception", "SOL-USDT", "trend", 24)
+    assert key in rows
+    assert rows[key]["sample_count"] == 35
+    assert rows[key]["complete_sample_count"] == 35
+    assert rows[key]["avg_net_bps"] == 6.0
+    assert rows[key]["win_rate"] == 1.0
+    assert rows[key]["decision"] == "KEEP_SHADOW"
     assert all(
         row["sample_count"] >= 30
         for row in summary.filter(pl.col("decision") == "LIVE_SMALL_READY").to_dicts()
     )
-    assert "net_bps_after_cost_24h" in samples.columns
+    assert "candidate_id" in samples.columns
+    assert "net_bps_after_cost" in samples.columns
 
 
 def test_daily_export_includes_alpha_discovery_reports(tmp_path):
     lake = tmp_path / "lake"
     _write_market_bars(lake)
     _write_strategy_sources(lake)
-    build_and_publish_strategy_evidence(lake, as_of_date="2026-05-10")
     _write_alpha_discovery_labels(lake)
+    build_and_publish_strategy_evidence(lake, as_of_date="2026-05-10")
     build_and_publish_alpha_discovery_board(lake, as_of_date="2026-05-10")
 
     result = export_daily_pack(
@@ -99,9 +103,9 @@ def test_daily_export_includes_alpha_discovery_reports(tmp_path):
     assert board_by_candidate["v5.sol_protect_exception"]["decision"] == "KEEP_SHADOW"
     assert len(evidence_rows) > 0
     assert len(board) > 0
-    assert any(row["candidate_name"] == "v5.sol_protect_exception" for row in sample_rows)
-    assert "entry_conditions_json" in sample_rows[0]
-    assert "net_bps_after_cost_24h" in sample_rows[0]
+    assert any(row["strategy_candidate"] == "v5.sol_protect_exception" for row in sample_rows)
+    assert "candidate_id" in sample_rows[0]
+    assert "net_bps_after_cost" in sample_rows[0]
     assert any(row["candidate_name"] == "v5.sol_protect_exception" for row in watch)
 
 
@@ -138,7 +142,7 @@ def _write_market_bars(lake: Path) -> None:
 def _write_alpha_discovery_labels(lake: Path) -> None:
     start = datetime(2026, 5, 9, tzinfo=UTC)
     rows = []
-    for index in range(12):
+    for index in range(35):
         rows.append(
             {
                 "strategy": "v5",

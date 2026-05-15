@@ -304,19 +304,21 @@ CSV_SCHEMAS: dict[str, list[str]] = {
         "created_at",
     ],
     "research/strategy_evidence.csv": [
-        "candidate_name",
+        "strategy",
         "evidence_version",
+        "candidate_name",
         "as_of_date",
+        "strategy_candidate",
+        "symbol",
+        "regime_state",
+        "horizon_hours",
         "sample_count",
         "complete_sample_count",
-        "avg_net_bps_by_horizon",
-        "median_net_bps_by_horizon",
-        "win_rate_by_horizon",
-        "downside_p25_by_horizon",
-        "max_drawdown_proxy",
-        "cost_sensitivity",
-        "symbol_breakdown",
-        "regime_breakdown",
+        "avg_net_bps",
+        "median_net_bps",
+        "p25_net_bps",
+        "win_rate",
+        "cost_source_mix",
         "decision",
         "decision_reasons",
         "start_ts",
@@ -325,56 +327,42 @@ CSV_SCHEMAS: dict[str, list[str]] = {
         "source",
     ],
     "research/strategy_evidence_samples.csv": [
+        "strategy",
+        "evidence_version",
+        "as_of_date",
+        "candidate_id",
+        "run_id",
         "ts_utc",
         "symbol",
+        "strategy_candidate",
         "candidate_name",
-        "entry_condition_name",
-        "entry_condition_side",
-        "entry_condition_signal",
-        "entry_condition_passed",
-        "entry_conditions_json",
-        "block_reason",
-        "final_score",
-        "f1",
-        "f2",
-        "f3",
-        "f4",
-        "f5",
-        "alpha6_score",
-        "alpha6_side",
         "regime_state",
-        "protect_level",
+        "horizon_hours",
+        "decision_ts",
+        "label_ts",
+        "entry_close",
+        "label_close",
+        "gross_bps",
+        "net_bps_after_cost",
+        "mfe_bps",
+        "mae_bps",
+        "win",
+        "label_status",
+        "label_reason",
+        "cost_bps",
+        "cost_source",
+        "block_reason",
+        "final_decision",
+        "final_score",
         "expected_edge_bps",
         "required_edge_bps",
-        "cost_source",
-        "cost_bps",
-        "source_dataset",
+        "alpha6_score",
+        "alpha6_side",
+        "protect_level",
+        "risk_level",
         "source_path_inside_bundle",
         "source_event_key",
         "source_bundle_ts",
-        "decision_ts",
-        "label_status",
-        "net_bps_after_cost_4h",
-        "win_4h",
-        "drawdown_proxy_bps_4h",
-        "net_bps_after_cost_8h",
-        "win_8h",
-        "drawdown_proxy_bps_8h",
-        "net_bps_after_cost_12h",
-        "win_12h",
-        "drawdown_proxy_bps_12h",
-        "net_bps_after_cost_24h",
-        "win_24h",
-        "drawdown_proxy_bps_24h",
-        "net_bps_after_cost_48h",
-        "win_48h",
-        "drawdown_proxy_bps_48h",
-        "net_bps_after_cost_72h",
-        "win_72h",
-        "drawdown_proxy_bps_72h",
-        "net_bps_after_cost_120h",
-        "win_120h",
-        "drawdown_proxy_bps_120h",
         "created_at",
         "source",
     ],
@@ -1975,17 +1963,41 @@ def _strategy_evidence_for_export(evidence: pl.DataFrame) -> pl.DataFrame:
     normalized = evidence
     sort_columns = [
         column
-        for column in ["candidate_name", "as_of_date", "created_at"]
+        for column in [
+            "strategy_candidate",
+            "symbol",
+            "regime_state",
+            "horizon_hours",
+            "as_of_date",
+            "created_at",
+        ]
         if column in normalized.columns
     ]
     if sort_columns:
         normalized = normalized.sort(sort_columns)
-    if {"candidate_name", "as_of_date"}.issubset(normalized.columns):
-        normalized = normalized.group_by("candidate_name", maintain_order=True).tail(1)
+    keys = [
+        key
+        for key in [
+            "strategy_candidate",
+            "symbol",
+            "regime_state",
+            "horizon_hours",
+            "as_of_date",
+        ]
+        if key in normalized.columns
+    ]
+    if keys:
+        normalized = normalized.group_by(keys, maintain_order=True).tail(1)
     for column in CSV_SCHEMAS[path]:
         if column not in normalized.columns:
             normalized = normalized.with_columns(pl.lit(None, dtype=pl.Utf8).alias(column))
-    return normalized.select(CSV_SCHEMAS[path]).sort("candidate_name")
+    final_sort = [
+        column
+        for column in ["strategy_candidate", "symbol", "regime_state", "horizon_hours"]
+        if column in normalized.columns
+    ]
+    selected = normalized.select(CSV_SCHEMAS[path])
+    return selected.sort(final_sort) if final_sort else selected
 
 
 def _strategy_evidence_samples_for_export(samples: pl.DataFrame) -> pl.DataFrame:
@@ -1998,7 +2010,7 @@ def _strategy_evidence_samples_for_export(samples: pl.DataFrame) -> pl.DataFrame
             selected = selected.with_columns(pl.lit(None, dtype=pl.Utf8).alias(column))
     sort_columns = [
         column
-        for column in ["candidate_name", "symbol", "ts_utc"]
+        for column in ["strategy_candidate", "symbol", "horizon_hours", "ts_utc"]
         if column in selected.columns
     ]
     if sort_columns:

@@ -355,12 +355,15 @@ def test_analysis_writes_gold(tmp_path):
 def test_analysis_publishes_strategy_evidence_summary(tmp_path):
     lake = tmp_path / "lake"
     _write_manifest(lake)
+    _write_candidate_label(lake)
 
     analyze_v5_telemetry(lake, date="2026-05-10")
 
     evidence = read_parquet_dataset(lake / "gold/strategy_evidence")
     assert evidence.height > 0
-    assert "candidate_name" in evidence.columns
+    assert {"strategy_candidate", "symbol", "regime_state", "horizon_hours"}.issubset(
+        evidence.columns
+    )
 
 
 def _run_summary_row(source_path, payload):
@@ -391,6 +394,52 @@ def _event_row(label, bundle_ts=datetime(2026, 5, 10, 14, 2, 49, tzinfo=UTC)):
         "row_index": 0,
         "raw_payload_json": "{}",
     }
+
+
+def _write_candidate_label(lake):
+    write_parquet_dataset(
+        pl.DataFrame(
+            [
+                {
+                    "strategy": "v5",
+                    "candidate_label_schema_version": "test",
+                    "candidate_id": "candidate-1",
+                    "run_id": "run-1",
+                    "ts_utc": datetime(2026, 5, 10, 12, tzinfo=UTC),
+                    "symbol": "BNB-USDT",
+                    "strategy_candidate": "v5.alt_impulse_shadow",
+                    "block_reason": "shadow",
+                    "final_decision": "SHADOW",
+                    "horizon_hours": 24,
+                    "decision_ts": datetime(2026, 5, 10, 13, tzinfo=UTC),
+                    "label_ts": datetime(2026, 5, 11, 13, tzinfo=UTC),
+                    "entry_close": 100.0,
+                    "label_close": 101.0,
+                    "gross_bps": 100.0,
+                    "net_bps_after_cost": 90.0,
+                    "mfe_bps": 120.0,
+                    "mae_bps": -20.0,
+                    "win": True,
+                    "label_status": "complete",
+                    "label_reason": "",
+                    "cost_bps": 10.0,
+                    "cost_source": "mixed_actual_proxy",
+                    "alpha6_side": "long",
+                    "regime_state": "trend",
+                    "risk_level": "normal",
+                    "protect_level": "",
+                    "final_score": 0.7,
+                    "expected_edge_bps": 120.0,
+                    "required_edge_bps": 20.0,
+                    "source_event_bundle_sha256": "abc",
+                    "source_path_inside_bundle": "raw/candidate_events.jsonl",
+                    "created_at": datetime(2026, 5, 10, 12, 1, tzinfo=UTC),
+                    "source": "test",
+                }
+            ]
+        ),
+        lake / "gold/v5_candidate_label",
+    )
 
 
 def _config_row(key, *, status="", consumed=None):

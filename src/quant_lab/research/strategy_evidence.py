@@ -32,70 +32,66 @@ STRATEGY_CANDIDATES = (
     "v5.mean_reversion_sideways",
 )
 
-SOURCE_DATASETS = {
-    "v5_decision_audit": Path("silver") / "v5_decision_audit",
-    "v5_shadow_outcome": Path("silver") / "v5_shadow_outcome",
-    "v5_high_score_blocked_target": Path("silver") / "v5_high_score_blocked_target",
-    "v5_high_score_blocked_outcome": Path("silver") / "v5_high_score_blocked_outcome",
-    "v5_skipped_candidate_outcome": Path("silver") / "v5_skipped_candidate_outcome",
-    "v5_router_decision": Path("silver") / "v5_router_decision",
-    "v5_probe_diagnostic": Path("silver") / "v5_probe_diagnostic",
-    "v5_quant_lab_cost_usage": Path("silver") / "v5_quant_lab_cost_usage",
-}
+LABEL_DATASET = Path("gold") / "v5_candidate_label"
+EVENT_DATASET = Path("silver") / "v5_candidate_event"
 
 SAMPLE_SCHEMA: dict[str, Any] = {
+    "strategy": pl.Utf8,
+    "evidence_version": pl.Utf8,
+    "as_of_date": pl.Utf8,
+    "candidate_id": pl.Utf8,
+    "run_id": pl.Utf8,
     "ts_utc": pl.Datetime(time_zone="UTC"),
     "symbol": pl.Utf8,
+    "strategy_candidate": pl.Utf8,
     "candidate_name": pl.Utf8,
-    "entry_condition_name": pl.Utf8,
-    "entry_condition_side": pl.Utf8,
-    "entry_condition_signal": pl.Utf8,
-    "entry_condition_passed": pl.Boolean,
-    "entry_conditions_json": pl.Utf8,
-    "block_reason": pl.Utf8,
-    "final_score": pl.Float64,
-    "f1": pl.Float64,
-    "f2": pl.Float64,
-    "f3": pl.Float64,
-    "f4": pl.Float64,
-    "f5": pl.Float64,
-    "alpha6_score": pl.Float64,
-    "alpha6_side": pl.Utf8,
     "regime_state": pl.Utf8,
-    "protect_level": pl.Utf8,
+    "horizon_hours": pl.Int64,
+    "decision_ts": pl.Datetime(time_zone="UTC"),
+    "label_ts": pl.Datetime(time_zone="UTC"),
+    "entry_close": pl.Float64,
+    "label_close": pl.Float64,
+    "gross_bps": pl.Float64,
+    "net_bps_after_cost": pl.Float64,
+    "mfe_bps": pl.Float64,
+    "mae_bps": pl.Float64,
+    "win": pl.Boolean,
+    "label_status": pl.Utf8,
+    "label_reason": pl.Utf8,
+    "cost_bps": pl.Float64,
+    "cost_source": pl.Utf8,
+    "block_reason": pl.Utf8,
+    "final_decision": pl.Utf8,
+    "final_score": pl.Float64,
     "expected_edge_bps": pl.Float64,
     "required_edge_bps": pl.Float64,
-    "cost_source": pl.Utf8,
-    "cost_bps": pl.Float64,
-    "source_dataset": pl.Utf8,
+    "alpha6_score": pl.Float64,
+    "alpha6_side": pl.Utf8,
+    "protect_level": pl.Utf8,
+    "risk_level": pl.Utf8,
     "source_path_inside_bundle": pl.Utf8,
     "source_event_key": pl.Utf8,
     "source_bundle_ts": pl.Datetime(time_zone="UTC"),
-    "decision_ts": pl.Datetime(time_zone="UTC"),
-    "label_status": pl.Utf8,
     "created_at": pl.Datetime(time_zone="UTC"),
     "source": pl.Utf8,
 }
-for _hours in HORIZON_HOURS:
-    SAMPLE_SCHEMA[f"gross_bps_{_hours}h"] = pl.Float64
-    SAMPLE_SCHEMA[f"net_bps_after_cost_{_hours}h"] = pl.Float64
-    SAMPLE_SCHEMA[f"win_{_hours}h"] = pl.Boolean
-    SAMPLE_SCHEMA[f"drawdown_proxy_bps_{_hours}h"] = pl.Float64
 
 SUMMARY_SCHEMA: dict[str, Any] = {
-    "candidate_name": pl.Utf8,
+    "strategy": pl.Utf8,
     "evidence_version": pl.Utf8,
     "as_of_date": pl.Utf8,
+    "strategy_candidate": pl.Utf8,
+    "candidate_name": pl.Utf8,
+    "symbol": pl.Utf8,
+    "regime_state": pl.Utf8,
+    "horizon_hours": pl.Int64,
     "sample_count": pl.Int64,
     "complete_sample_count": pl.Int64,
-    "avg_net_bps_by_horizon": pl.Utf8,
-    "median_net_bps_by_horizon": pl.Utf8,
-    "win_rate_by_horizon": pl.Utf8,
-    "downside_p25_by_horizon": pl.Utf8,
-    "max_drawdown_proxy": pl.Float64,
-    "cost_sensitivity": pl.Utf8,
-    "symbol_breakdown": pl.Utf8,
-    "regime_breakdown": pl.Utf8,
+    "avg_net_bps": pl.Float64,
+    "median_net_bps": pl.Float64,
+    "p25_net_bps": pl.Float64,
+    "win_rate": pl.Float64,
+    "cost_source_mix": pl.Utf8,
     "decision": pl.Utf8,
     "decision_reasons": pl.Utf8,
     "start_ts": pl.Datetime(time_zone="UTC"),
@@ -153,27 +149,23 @@ def build_strategy_evidence_samples(
 ) -> tuple[pl.DataFrame, list[str]]:
     root = Path(lake_root)
     warnings: list[str] = []
-    cost_context = _CostContext(root)
-    rows: list[dict[str, Any]] = []
-    for dataset_name, relative_path in SOURCE_DATASETS.items():
-        frame = read_parquet_dataset(root / relative_path)
-        if frame.is_empty():
-            continue
-        for row in frame.to_dicts():
-            sample = _sample_from_telemetry_row(dataset_name, row, cost_context)
-            if sample is not None:
-                rows.append(sample)
-
-    rows = _dedupe_sample_rows(_filter_samples_as_of(rows, as_of_date))
-    if not rows:
+    labels = read_parquet_dataset(root / LABEL_DATASET)
+    events = read_parquet_dataset(root / EVENT_DATASET)
+    if labels.is_empty():
+        warnings.append("v5_candidate_label_empty")
         return pl.DataFrame(schema=SAMPLE_SCHEMA), warnings
 
-    samples = _samples_frame(rows)
-    market_bars = read_parquet_dataset(root / "silver" / "market_bar")
-    if market_bars.is_empty():
-        warnings.append("market_bar missing; strategy evidence samples have no forward labels")
-        return _samples_frame([_with_empty_labels(row) for row in rows]), warnings
-    return _attach_forward_labels(samples, market_bars), warnings
+    event_context = _event_context_by_candidate_id(events)
+    rows: list[dict[str, Any]] = []
+    for label in labels.to_dicts():
+        sample = _sample_from_candidate_label(label, event_context)
+        if sample is not None:
+            rows.append(sample)
+
+    rows = _dedupe_formal_sample_rows(_filter_samples_as_of(rows, as_of_date))
+    if not rows:
+        return pl.DataFrame(schema=SAMPLE_SCHEMA), warnings
+    return _formal_samples_frame(rows), warnings
 
 
 def summarize_strategy_evidence(
@@ -185,14 +177,23 @@ def summarize_strategy_evidence(
     created_at = datetime.now(UTC)
     rows: list[dict[str, Any]] = []
     sample_rows = samples.to_dicts() if not samples.is_empty() else []
-    for candidate_name in STRATEGY_CANDIDATES:
-        candidate_rows = [
-            row for row in sample_rows if row.get("candidate_name") == candidate_name
-        ]
+    groups: dict[tuple[str, str, str, int], list[dict[str, Any]]] = {}
+    for row in sample_rows:
+        key = (
+            str(row.get("strategy_candidate") or row.get("candidate_name") or "UNKNOWN"),
+            normalize_symbol(row.get("symbol")),
+            str(row.get("regime_state") or "UNKNOWN"),
+            int(row.get("horizon_hours") or 0),
+        )
+        groups.setdefault(key, []).append(row)
+    for (candidate, symbol, regime, horizon), candidate_rows in sorted(groups.items()):
         rows.append(
-            _summary_row(
-                candidate_name,
-                candidate_rows,
+            _formal_summary_row(
+                strategy_candidate=candidate,
+                symbol=symbol,
+                regime_state=regime,
+                horizon_hours=horizon,
+                rows=candidate_rows,
                 as_of_date=as_of_date,
                 created_at=created_at,
                 min_live_samples=min_live_samples,
@@ -208,7 +209,7 @@ def publish_strategy_evidence_samples(lake_root: str | Path, samples: pl.DataFra
     return upsert_parquet_dataset(
         samples,
         dataset_path,
-        key_columns=["candidate_name", "symbol", "ts_utc", "source_dataset", "source_event_key"],
+        key_columns=["strategy", "candidate_id", "horizon_hours"],
     )
 
 
@@ -223,8 +224,205 @@ def publish_strategy_evidence_summary(
     return upsert_parquet_dataset(
         frame,
         dataset_path,
-        key_columns=["candidate_name", "evidence_version", "as_of_date"],
+        key_columns=[
+            "strategy",
+            "evidence_version",
+            "as_of_date",
+            "strategy_candidate",
+            "symbol",
+            "regime_state",
+            "horizon_hours",
+        ],
     )
+
+
+def _event_context_by_candidate_id(events: pl.DataFrame) -> dict[str, dict[str, Any]]:
+    if events.is_empty() or "candidate_id" not in events.columns:
+        return {}
+    context: dict[str, dict[str, Any]] = {}
+    for row in events.to_dicts():
+        candidate_id = str(row.get("candidate_id") or "").strip()
+        if candidate_id:
+            context[candidate_id] = row
+    return context
+
+
+def _sample_from_candidate_label(
+    label: dict[str, Any],
+    event_context: dict[str, dict[str, Any]],
+) -> dict[str, Any] | None:
+    candidate_id = str(label.get("candidate_id") or "").strip()
+    strategy_candidate = str(label.get("strategy_candidate") or "").strip()
+    ts_utc = _parse_timestamp(label.get("ts_utc"))
+    horizon_hours = _int_or_none(label.get("horizon_hours"))
+    if not candidate_id or not strategy_candidate or ts_utc is None or horizon_hours is None:
+        return None
+
+    event = event_context.get(candidate_id, {})
+    symbol = normalize_symbol(label.get("symbol") or event.get("symbol"))
+    regime_state = str(label.get("regime_state") or event.get("regime_state") or "UNKNOWN")
+    created_at = _parse_timestamp(label.get("created_at")) or datetime.now(UTC)
+    return {
+        "strategy": str(label.get("strategy") or "v5"),
+        "evidence_version": EVIDENCE_VERSION,
+        "as_of_date": ts_utc.date().isoformat(),
+        "candidate_id": candidate_id,
+        "run_id": str(label.get("run_id") or event.get("run_id") or ""),
+        "ts_utc": ts_utc,
+        "symbol": symbol,
+        "strategy_candidate": strategy_candidate,
+        "candidate_name": strategy_candidate,
+        "regime_state": regime_state,
+        "horizon_hours": horizon_hours,
+        "decision_ts": _parse_timestamp(label.get("decision_ts")),
+        "label_ts": _parse_timestamp(label.get("label_ts")),
+        "entry_close": _finite_float(label.get("entry_close")),
+        "label_close": _finite_float(label.get("label_close")),
+        "gross_bps": _finite_float(label.get("gross_bps")),
+        "net_bps_after_cost": _finite_float(label.get("net_bps_after_cost")),
+        "mfe_bps": _finite_float(label.get("mfe_bps")),
+        "mae_bps": _finite_float(label.get("mae_bps")),
+        "win": label.get("win"),
+        "label_status": str(label.get("label_status") or ""),
+        "label_reason": str(label.get("label_reason") or ""),
+        "cost_bps": _finite_float(label.get("cost_bps")),
+        "cost_source": str(label.get("cost_source") or "MISSING"),
+        "block_reason": str(label.get("block_reason") or event.get("block_reason") or ""),
+        "final_decision": str(label.get("final_decision") or event.get("final_decision") or ""),
+        "final_score": _finite_float(label.get("final_score") or event.get("final_score")),
+        "expected_edge_bps": _finite_float(
+            label.get("expected_edge_bps") or event.get("expected_edge_bps")
+        ),
+        "required_edge_bps": _finite_float(
+            label.get("required_edge_bps") or event.get("required_edge_bps")
+        ),
+        "alpha6_score": _finite_float(label.get("alpha6_score") or event.get("alpha6_score")),
+        "alpha6_side": str(label.get("alpha6_side") or event.get("alpha6_side") or ""),
+        "protect_level": str(label.get("protect_level") or event.get("protect_level") or ""),
+        "risk_level": str(label.get("risk_level") or event.get("risk_level") or ""),
+        "source_path_inside_bundle": str(
+            label.get("source_path_inside_bundle")
+            or event.get("source_path_inside_bundle")
+            or ""
+        ),
+        "source_event_key": candidate_id,
+        "source_bundle_ts": _parse_timestamp(event.get("bundle_ts") or event.get("ingest_ts")),
+        "created_at": created_at,
+        "source": SOURCE_NAME,
+    }
+
+
+def _formal_summary_row(
+    *,
+    strategy_candidate: str,
+    symbol: str,
+    regime_state: str,
+    horizon_hours: int,
+    rows: list[dict[str, Any]],
+    as_of_date: date,
+    created_at: datetime,
+    min_live_samples: int,
+) -> dict[str, Any]:
+    complete = [row for row in rows if str(row.get("label_status") or "") == "complete"]
+    net_values = _values(complete, "net_bps_after_cost")
+    wins = [bool(row.get("win")) for row in complete if row.get("win") is not None]
+    cost_mix = _cost_source_mix(rows)
+    avg_net = _mean(net_values)
+    median_net = _median(net_values)
+    p25_net = _p25(net_values)
+    win_rate = (sum(wins) / len(wins)) if wins else None
+    decision, reasons = _formal_decision(
+        sample_count=len(rows),
+        complete_sample_count=len(complete),
+        avg_net_bps=avg_net,
+        p25_net_bps=p25_net,
+        win_rate=win_rate,
+        min_live_samples=min_live_samples,
+    )
+    timestamps = [
+        value
+        for value in (_parse_timestamp(row.get("ts_utc")) for row in rows)
+        if value is not None
+    ]
+    return {
+        "strategy": "v5",
+        "evidence_version": EVIDENCE_VERSION,
+        "as_of_date": as_of_date.isoformat(),
+        "strategy_candidate": strategy_candidate,
+        "candidate_name": strategy_candidate,
+        "symbol": symbol,
+        "regime_state": regime_state,
+        "horizon_hours": horizon_hours,
+        "sample_count": len(rows),
+        "complete_sample_count": len(complete),
+        "avg_net_bps": avg_net,
+        "median_net_bps": median_net,
+        "p25_net_bps": p25_net,
+        "win_rate": win_rate,
+        "cost_source_mix": _json(cost_mix),
+        "decision": decision,
+        "decision_reasons": _json(reasons),
+        "start_ts": min(timestamps) if timestamps else None,
+        "end_ts": max(timestamps) if timestamps else None,
+        "created_at": created_at,
+        "source": SOURCE_NAME,
+    }
+
+
+def _formal_decision(
+    *,
+    sample_count: int,
+    complete_sample_count: int,
+    avg_net_bps: float | None,
+    p25_net_bps: float | None,
+    win_rate: float | None,
+    min_live_samples: int,
+) -> tuple[str, list[str]]:
+    reasons: list[str] = []
+    if sample_count < min_live_samples:
+        reasons.append("sample_count_below_min_live_samples")
+    if complete_sample_count <= 0:
+        reasons.append("no_complete_forward_labels")
+    if avg_net_bps is not None and avg_net_bps <= 0:
+        reasons.append("non_positive_after_cost_edge")
+    if p25_net_bps is not None and p25_net_bps < 0:
+        reasons.append("negative_downside_p25")
+    if win_rate is not None and win_rate < 0.50:
+        reasons.append("win_rate_below_50pct")
+    if "non_positive_after_cost_edge" in reasons or "win_rate_below_50pct" in reasons:
+        return "KILL", reasons
+    if sample_count >= min_live_samples and complete_sample_count > 0:
+        return "KEEP_SHADOW", reasons or ["needs_paper_observation_before_live"]
+    return "KEEP_SHADOW", reasons or ["insufficient_evidence"]
+
+
+def _cost_source_mix(rows: list[dict[str, Any]]) -> dict[str, int]:
+    counts: dict[str, int] = {}
+    for row in rows:
+        key = str(row.get("cost_source") or "MISSING")
+        counts[key] = counts.get(key, 0) + 1
+    return counts
+
+
+def _formal_samples_frame(rows: list[dict[str, Any]]) -> pl.DataFrame:
+    if not rows:
+        return pl.DataFrame(schema=SAMPLE_SCHEMA)
+    return pl.DataFrame(rows, schema=SAMPLE_SCHEMA, orient="row")
+
+
+def _dedupe_formal_sample_rows(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    keyed: dict[tuple[str, int], dict[str, Any]] = {}
+    for row in rows:
+        key = (str(row.get("candidate_id") or ""), int(row.get("horizon_hours") or 0))
+        keyed[key] = row
+    return list(keyed.values())
+
+
+def _int_or_none(value: Any) -> int | None:
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return None
 
 
 def _sample_from_telemetry_row(

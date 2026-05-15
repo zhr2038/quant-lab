@@ -12,6 +12,7 @@ def test_bundle_validation_accepts_valid_fixture(tmp_path):
     assert result.rejected is False
     assert result.sha256
     assert "raw/state/kill_switch.json" in result.detected_files
+    assert "reports/candidate_snapshot.csv" in result.detected_files
 
 
 def test_bundle_validation_rejects_path_traversal(tmp_path):

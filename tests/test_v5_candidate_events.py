@@ -46,7 +46,7 @@ def test_ingest_candidate_snapshot_writes_silver_events_and_gold_labels(tmp_path
                 "source": "test_fixture",
                 "ingest_ts": start + timedelta(hours=idx, minutes=1),
             }
-            for idx in range(0, 121)
+            for idx in range(0, 123)
         ],
     )
 

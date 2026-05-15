@@ -61,6 +61,18 @@ def make_v5_bundle_fixture(
             "symbol,matured,profitable\nBTC-USDT,true,true\n"
         ),
         "summaries/skipped_candidate_maturity_audit.csv": "symbol,matured\nETH-USDT,true\n",
+        "reports/candidate_snapshot.csv": (
+            "candidate_id,run_id,ts_utc,symbol,regime_state,risk_level,current_position,"
+            "current_weight,target_weight_raw,target_weight_after_risk,final_score,rank,"
+            "f1_mom_5d,f2_mom_20d,f3_vol_adj_ret,f4_volume_expansion,"
+            "f5_rsi_trend_confirm,alpha6_score,alpha6_side,ml_score,"
+            "mean_reversion_score,expected_edge_bps,required_edge_bps,cost_bps,"
+            "cost_source,eligible_before_filters,final_decision,block_reason,"
+            "strategy_candidate\n"
+            ",run_001,2026-05-10T01:00:00Z,BTC-USDT,trend,LOW,0,0,0.05,0.05,"
+            "0.91,1,0.12,0.24,0.31,0.42,0.53,0.74,long,0.66,0.11,18,5,3.5,"
+            "quant_lab,true,KEEP_SHADOW,risk_gate,v5.btc_leadership_probe_strict\n"
+        ),
         "summaries/config_runtime_consumption_audit.csv": (
             "key,status\nalpha_threshold,not_consumed\n"
         ),

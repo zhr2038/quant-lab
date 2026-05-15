@@ -33,6 +33,7 @@ from quant_lab.risk.publish import (
     is_permission_status_enforceable,
     permission_freshness_sec,
     permission_status,
+    publish_risk_permission,
     risk_permission_stale_vs_telemetry,
 )
 from quant_lab.strategy_telemetry.analyze import _event_key as _v5_telemetry_event_key
@@ -819,6 +820,9 @@ def export_daily_pack(
     out_dir: str | Path,
     profile: str = "expert",
     command_line: list[str] | None = None,
+    refresh_risk_permission: bool = False,
+    risk_strategy: str = "v5",
+    risk_version: str = "5.0.0",
 ) -> DailyExportResult:
     day = _parse_date(export_date)
     root = Path(lake_root)
@@ -826,9 +830,21 @@ def export_daily_pack(
     output_root.mkdir(parents=True, exist_ok=True)
 
     generated_at = datetime.now(UTC)
+    pre_export_warnings = (
+        _refresh_risk_permission_before_export(root, strategy=risk_strategy, version=risk_version)
+        if refresh_risk_permission
+        else []
+    )
     snapshot = _load_snapshot(root)
     missing_sections = _missing_sections(snapshot.row_counts)
-    data_quality = _data_quality_payload(root, snapshot, day, generated_at)
+    data_quality = _data_quality_payload(
+        root,
+        snapshot,
+        day,
+        generated_at,
+        pre_export_risk_refresh_attempted=refresh_risk_permission,
+        pre_export_warnings=pre_export_warnings,
+    )
     warnings = sorted(set([*snapshot.warnings, *data_quality["warnings"]]))
 
     members: dict[str, _MemberPayload] = {}
@@ -1336,6 +1352,32 @@ def _manifest_payload(
     }
 
 
+def _refresh_risk_permission_before_export(
+    lake_root: Path,
+    *,
+    strategy: str,
+    version: str,
+) -> list[str]:
+    try:
+        result = publish_risk_permission(lake_root=lake_root, strategy=strategy, version=version)
+    except Exception as exc:  # pragma: no cover - exact errors depend on production lake state.
+        return [
+            "risk_permission_republish_failed: "
+            f"{type(exc).__name__}: {_safe_warning_text(str(exc))}"
+        ]
+    return [
+        f"risk_permission_republish_warning: {_safe_warning_text(str(warning))}"
+        for warning in result.warnings
+    ]
+
+
+def _safe_warning_text(value: str, *, limit: int = 500) -> str:
+    text = value.replace("\n", " ").replace("\r", " ").strip()
+    for pattern, _severity, _label in SECRET_PATTERNS:
+        text = pattern.sub("<REDACTED>", text)
+    return text[:limit]
+
+
 def _provenance_payload(
     *,
     day: date,
@@ -1381,9 +1423,13 @@ def _data_quality_payload(
     snapshot: _DatasetSnapshot,
     day: date,
     generated_at: datetime,
+    *,
+    pre_export_risk_refresh_attempted: bool = False,
+    pre_export_warnings: list[str] | None = None,
 ) -> dict[str, Any]:
     warnings: list[str] = []
     checks: list[dict[str, Any]] = []
+    refresh_warnings = pre_export_warnings or []
 
     health = _snapshot_market_health(snapshot)
     warnings.extend(str(item) for item in health.get("warnings", []))
@@ -1626,6 +1672,16 @@ def _data_quality_payload(
             severity="critical" if v5_integration_enabled else "warning",
         )
     )
+    if pre_export_risk_refresh_attempted:
+        checks.append(
+            _check(
+                "risk_permission_pre_export_refresh",
+                not refresh_warnings,
+                "; ".join(refresh_warnings) if refresh_warnings else "publish-risk-permission ok",
+                warning_only=True,
+            )
+        )
+        warnings.extend(refresh_warnings)
     checks.append(
         _check(
             "risk_permission_versions",
@@ -1830,9 +1886,12 @@ def _executive_summary(
     alpha_discovery_counts = _value_counts(alpha_discovery_board, "decision")
     strategy_decision_counts = _value_counts(strategy_evidence, "decision")
     risk_quality = data_quality.get("risk_permission", {})
-    permission_counts = _value_counts(risk, "permission_status")
-    if not permission_counts:
-        permission_counts = _value_counts(risk, "permission")
+    quality_status = str(risk_quality.get("permission_status") or "").strip()
+    permission_counts = (
+        {quality_status: 1}
+        if quality_status
+        else _value_counts(risk, "permission_status") or _value_counts(risk, "permission")
+    )
     fallback_rows = _cost_fallbacks(snapshot.frames.get("cost_bucket_daily", pl.DataFrame()))
     questions = _question_lines(snapshot, data_quality)
     readiness = data_quality.get("quant_lab_enforce_readiness", {})

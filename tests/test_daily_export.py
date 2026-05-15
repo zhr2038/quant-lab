@@ -5,9 +5,11 @@ import os
 import zipfile
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
+from types import SimpleNamespace
 
 import polars as pl
 
+import quant_lab.export.daily as daily_export_module
 from quant_lab.contracts.v5_quant_lab import V5_QUANT_LAB_CONTRACT_VERSION
 from quant_lab.data.lake import write_market_bars, write_parquet_dataset
 from quant_lab.export.daily import (
@@ -478,6 +480,104 @@ def test_export_marks_expired_risk_permission_fail_with_rerun_action(tmp_path):
         warning.startswith("risk_permission_not_expired_at_export: risk_permission expired")
         for warning in data_quality["warnings"]
     )
+
+
+def test_export_refreshes_expired_risk_permission_before_snapshot(tmp_path, monkeypatch):
+    lake_root = _fixture_lake(tmp_path)
+    now = datetime.now(UTC)
+    _write_risk_permission_for_export(
+        lake_root,
+        as_of=now - timedelta(hours=2),
+        expires_at=now - timedelta(minutes=1),
+    )
+    calls = []
+
+    def fake_publish_risk_permission(*, lake_root, strategy, version):
+        calls.append((Path(lake_root), strategy, version))
+        refreshed_at = datetime.now(UTC)
+        _write_risk_permission_for_export(
+            Path(lake_root),
+            as_of=refreshed_at,
+            expires_at=refreshed_at + timedelta(minutes=90),
+        )
+        return SimpleNamespace(warnings=[])
+
+    monkeypatch.setattr(
+        daily_export_module,
+        "publish_risk_permission",
+        fake_publish_risk_permission,
+    )
+
+    result = export_daily_pack(
+        export_date=now.date().isoformat(),
+        lake_root=lake_root,
+        out_dir=tmp_path / "exports",
+        profile="expert",
+        command_line=["qlab", "export-daily"],
+        refresh_risk_permission=True,
+        risk_strategy="v5",
+        risk_version="5.0.0",
+    )
+
+    with zipfile.ZipFile(result.zip_path) as archive:
+        manifest = json.loads(archive.read("manifest.json").decode("utf-8"))
+        data_quality = json.loads(archive.read("data_quality.json").decode("utf-8"))
+        executive_summary = archive.read("executive_summary.md").decode("utf-8")
+
+    checks = {check["name"]: check for check in data_quality["checks"]}
+    assert calls == [(lake_root, "v5", "5.0.0")]
+    assert manifest["permission_expired_at_export"] is False
+    assert data_quality["risk_permission"]["permission_status"] == "ACTIVE_ALLOW"
+    assert checks["risk_permission_pre_export_refresh"]["status"] == "PASS"
+    assert checks["risk_permission_not_expired_at_export"]["status"] == "PASS"
+    assert "EXPIRED_ALLOW" not in executive_summary
+
+
+def test_export_warns_when_risk_permission_republish_fails(tmp_path, monkeypatch):
+    lake_root = _fixture_lake(tmp_path)
+    now = datetime.now(UTC)
+    _write_risk_permission_for_export(
+        lake_root,
+        as_of=now - timedelta(hours=2),
+        expires_at=now - timedelta(minutes=1),
+    )
+
+    def fail_publish_risk_permission(*, lake_root, strategy, version):
+        raise RuntimeError("publisher unavailable")
+
+    monkeypatch.setattr(
+        daily_export_module,
+        "publish_risk_permission",
+        fail_publish_risk_permission,
+    )
+
+    result = export_daily_pack(
+        export_date=now.date().isoformat(),
+        lake_root=lake_root,
+        out_dir=tmp_path / "exports",
+        profile="expert",
+        command_line=["qlab", "export-daily"],
+        refresh_risk_permission=True,
+    )
+
+    with zipfile.ZipFile(result.zip_path) as archive:
+        data_quality = json.loads(archive.read("data_quality.json").decode("utf-8"))
+        executive_summary = archive.read("executive_summary.md").decode("utf-8")
+
+    checks = {check["name"]: check for check in data_quality["checks"]}
+    assert data_quality["risk_permission"]["permission_status"] == "EXPIRED_ALLOW"
+    assert checks["risk_permission_pre_export_refresh"]["status"] == "WARN"
+    assert (
+        "risk_permission_republish_failed"
+        in checks["risk_permission_pre_export_refresh"]["detail"]
+    )
+    assert checks["risk_permission_not_expired_at_export"]["status"] == "FAIL"
+    assert any(
+        "risk_permission_republish_failed" in warning for warning in data_quality["warnings"]
+    )
+    assert "Risk permission counts:" in executive_summary
+    assert "EXPIRED_ALLOW" in executive_summary
+    assert "ACTIVE_ALLOW" not in executive_summary
 
 
 def test_export_warns_on_risk_version_mismatch_with_v5_telemetry(tmp_path):

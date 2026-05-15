@@ -68,6 +68,9 @@ def _generate_today_pack(st: Any, *, lake_root: Path, exports_root: Path) -> Non
                     "--out-dir",
                     str(exports_root),
                 ],
+                refresh_risk_permission=True,
+                risk_strategy="v5",
+                risk_version="5.0.0",
             )
         _success(st, f"已生成专家包：{result.zip_path}")
     except Exception as exc:

@@ -686,6 +686,15 @@ def export_daily(
         ),
     ],
     profile: Annotated[str, typer.Option("--profile", help="Export profile name.")] = "expert",
+    refresh_risk_permission: Annotated[
+        bool,
+        typer.Option(
+            "--refresh-risk-permission/--no-refresh-risk-permission",
+            help="Run publish-risk-permission before creating the expert pack.",
+        ),
+    ] = True,
+    risk_strategy: Annotated[str, typer.Option("--risk-strategy")] = "v5",
+    risk_version: Annotated[str, typer.Option("--risk-version")] = "5.0.0",
 ) -> None:
     result = export_daily_pack(
         export_date=export_date,
@@ -693,6 +702,9 @@ def export_daily(
         out_dir=out_dir,
         profile=profile,
         command_line=sys.argv,
+        refresh_risk_permission=refresh_risk_permission,
+        risk_strategy=risk_strategy,
+        risk_version=risk_version,
     )
     typer.echo(result.model_dump_json(indent=2))
 

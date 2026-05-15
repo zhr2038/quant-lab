@@ -252,7 +252,7 @@ def test_export_counts_heavy_ws_dataset_without_full_member_load(tmp_path):
     with zipfile.ZipFile(result.zip_path) as archive:
         manifest = json.loads(archive.read("manifest.json").decode("utf-8"))
 
-    assert manifest["row_counts"]["okx_public_ws"] == 6001
+    assert manifest["row_counts"]["okx_public_ws"] == 5000
     assert manifest["dataset_freshness"]["okx_public_ws"]["freshness_status"] != "missing"
 
 

@@ -10,7 +10,7 @@ import subprocess
 import sys
 import zipfile
 from dataclasses import dataclass
-from datetime import UTC, date, datetime, timedelta
+from datetime import UTC, date, datetime
 from pathlib import Path, PurePosixPath
 from typing import Any
 
@@ -22,7 +22,6 @@ from quant_lab.contracts.v5_quant_lab import (
     V5_QUANT_LAB_CONTRACT_VERSION,
     V5_TELEMETRY_DATASET_SCHEMA_VERSION,
 )
-from quant_lab.data.lake import read_parquet_lazy
 from quant_lab.reports.enforce_readiness import (
     ENFORCE_READINESS_CSV,
     ENFORCE_READINESS_JSON,
@@ -48,12 +47,10 @@ HEAVY_EXPORT_DATASET_LIMITS = {
     "orderbook_snapshot": 20_000,
 }
 HEAVY_EXPORT_RECENT_FILE_LIMITS = {
-    "okx_public_ws": 300,
-    "trade_print": 300,
-    "orderbook_snapshot": 300,
+    "okx_public_ws": 50,
+    "trade_print": 50,
+    "orderbook_snapshot": 50,
 }
-HEAVY_EXPORT_LOOKBACK_HOURS = 6
-
 SECTION_DATASETS = {
     "market": ["market_bar", "trade_print", "orderbook_snapshot", "okx_public_ws"],
     "features": ["feature_value", "feature_coverage_daily", "feature_anomaly_daily"],
@@ -984,20 +981,14 @@ def _load_export_frame(
     try:
         recent_files = _recent_heavy_dataset_files(
             dataset_path,
-            max_files=HEAVY_EXPORT_RECENT_FILE_LIMITS.get(dataset_name, 300),
+            max_files=HEAVY_EXPORT_RECENT_FILE_LIMITS.get(dataset_name, 50),
         )
-        lazy_frame = (
-            pl.scan_parquet([str(path) for path in recent_files])
-            if recent_files
-            else read_parquet_lazy(dataset_path)
-        )
-        row_count = _lazy_row_count(lazy_frame)
-        frame = _collect_recent_heavy_frame(
-            lazy_frame,
+        frame = _collect_recent_heavy_files(
+            recent_files,
             dataset_name,
             limit=HEAVY_EXPORT_DATASET_LIMITS[dataset_name],
         )
-        return frame, row_count, None
+        return frame, frame.height, None
     except Exception as exc:
         return pl.DataFrame(), 0, f"{dataset_name} sampled read failed: {exc}"
 
@@ -1014,47 +1005,39 @@ def _recent_heavy_dataset_files(dataset_path: Path, *, max_files: int) -> list[P
     return files[-max_files:]
 
 
-def _lazy_row_count(lazy_frame: pl.LazyFrame) -> int:
-    try:
-        return int(lazy_frame.select(pl.len().alias("rows")).collect().item())
-    except Exception:
-        return 0
-
-
-def _collect_recent_heavy_frame(
-    lazy_frame: pl.LazyFrame,
+def _collect_recent_heavy_files(
+    files: list[Path],
     dataset_name: str,
     *,
     limit: int,
 ) -> pl.DataFrame:
-    columns = list(lazy_frame.collect_schema().names())
+    frames: list[pl.DataFrame] = []
+    rows = 0
+    for path in reversed(files):
+        try:
+            frame = pl.read_parquet(path)
+        except Exception:
+            continue
+        if frame.is_empty():
+            continue
+        frames.append(frame)
+        rows += frame.height
+        if rows >= limit:
+            break
+    if not frames:
+        return pl.DataFrame()
+    combined = pl.concat(list(reversed(frames)), how="diagonal_relaxed")
     timestamp_column = next(
         (
             column
             for column in readers.DATASET_TIMESTAMP_COLUMNS.get(dataset_name, ())
-            if column in columns
+            if column in combined.columns
         ),
         None,
     )
     if timestamp_column is None:
-        return lazy_frame.tail(limit).collect()
-
-    latest_frame = lazy_frame.select(
-        pl.col(timestamp_column).max().alias(timestamp_column)
-    ).collect()
-    latest_value = latest_frame.item() if latest_frame.height else None
-    latest_ts = readers._coerce_timestamp(latest_value)  # type: ignore[attr-defined]
-    if latest_ts is None:
-        return lazy_frame.tail(limit).collect()
-
-    threshold = latest_ts - timedelta(hours=HEAVY_EXPORT_LOOKBACK_HOURS)
-    try:
-        frame = lazy_frame.filter(pl.col(timestamp_column) >= threshold).collect()
-    except Exception:
-        frame = lazy_frame.tail(limit).collect()
-    if frame.height > limit:
-        frame = _tail_by_time(frame, timestamp_column, limit=limit)
-    return frame
+        return combined.tail(limit)
+    return _tail_by_time(combined, timestamp_column, limit=limit)
 
 
 def _dataset_members(frames: dict[str, pl.DataFrame]) -> dict[str, _MemberPayload]:

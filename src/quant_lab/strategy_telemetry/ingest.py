@@ -431,7 +431,12 @@ def _append_file_rows(
     }
     if logical.startswith("summaries/high_score_blocked_outcomes"):
         rows["v5_high_score_blocked_outcome"].extend(_csv_rows(metadata, relative, file_path))
-    elif logical.startswith("summaries/alt_impulse_shadow"):
+    elif (
+        logical.startswith("summaries/alt_impulse_shadow")
+        or logical.startswith("summaries/btc_leadership_probe_blocked_outcomes")
+        or logical.startswith("summaries/multi_position_swing_shadow")
+        or logical.startswith("summaries/factor_contribution_outcomes_by_factor")
+    ):
         rows["v5_shadow_outcome"].extend(_csv_rows(metadata, relative, file_path))
     elif logical == "summaries/quant_lab_fallbacks.csv":
         rows["v5_quant_lab_fallback"].extend(_fallback_csv_rows(metadata, relative, file_path))

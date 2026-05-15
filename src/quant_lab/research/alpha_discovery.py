@@ -21,6 +21,7 @@ BOARD_SCHEMA_VERSION = "alpha_discovery_board.v1"
 
 LABEL_DATASET = Path("gold") / "v5_candidate_label"
 EVENT_DATASET = Path("silver") / "v5_candidate_event"
+STRATEGY_EVIDENCE_DATASET = Path("gold") / "strategy_evidence"
 HIGH_SCORE_BLOCKED_OUTCOME_DATASET = Path("silver") / "v5_high_score_blocked_outcome"
 SHADOW_OUTCOME_DATASET = Path("silver") / "v5_shadow_outcome"
 COST_BUCKET_DAILY_DATASET = Path("gold") / "cost_bucket_daily"
@@ -95,6 +96,7 @@ def build_and_publish_alpha_discovery_board(
 
     labels = read_parquet_dataset(root / LABEL_DATASET)
     events = read_parquet_dataset(root / EVENT_DATASET)
+    strategy_evidence = read_parquet_dataset(root / STRATEGY_EVIDENCE_DATASET)
     cost_bucket_daily = read_parquet_dataset(root / COST_BUCKET_DAILY_DATASET)
     trades = read_parquet_dataset(root / TRADE_EVENT_DATASET)
     risk_permission = read_parquet_dataset(root / RISK_PERMISSION_DATASET)
@@ -102,18 +104,31 @@ def build_and_publish_alpha_discovery_board(
     shadow_outcomes = read_parquet_dataset(root / SHADOW_OUTCOME_DATASET)
     readiness = _enforce_readiness_context(root)
 
-    board = build_alpha_discovery_board(
-        labels=labels,
-        events=events,
-        cost_bucket_daily=cost_bucket_daily,
-        trades=trades,
-        risk_permission=risk_permission,
-        blocked_outcomes=blocked_outcomes,
-        shadow_outcomes=shadow_outcomes,
-        as_of_date=day,
-        created_at=created_at,
-        readiness=readiness,
-    )
+    if not strategy_evidence.is_empty():
+        board = build_alpha_discovery_board_from_strategy_evidence(
+            strategy_evidence=strategy_evidence,
+            events=events,
+            trades=trades,
+            risk_permission=risk_permission,
+            blocked_outcomes=blocked_outcomes,
+            shadow_outcomes=shadow_outcomes,
+            as_of_date=day,
+            created_at=created_at,
+            readiness=readiness,
+        )
+    else:
+        board = build_alpha_discovery_board(
+            labels=labels,
+            events=events,
+            cost_bucket_daily=cost_bucket_daily,
+            trades=trades,
+            risk_permission=risk_permission,
+            blocked_outcomes=blocked_outcomes,
+            shadow_outcomes=shadow_outcomes,
+            as_of_date=day,
+            created_at=created_at,
+            readiness=readiness,
+        )
     rows = _upsert_if_not_empty(
         board,
         root / ALPHA_DISCOVERY_BOARD_DATASET,
@@ -128,7 +143,7 @@ def build_and_publish_alpha_discovery_board(
         ],
     )
     warnings: list[str] = []
-    if labels.is_empty():
+    if labels.is_empty() and strategy_evidence.is_empty():
         warnings.append("v5_candidate_label_empty")
     if board.is_empty():
         warnings.append("alpha_discovery_board_empty")
@@ -208,6 +223,85 @@ def build_alpha_discovery_board(
             )
         )
     return pl.DataFrame(rows, schema=BOARD_SCHEMA, orient="row")
+
+
+def build_alpha_discovery_board_from_strategy_evidence(
+    *,
+    strategy_evidence: pl.DataFrame,
+    events: pl.DataFrame,
+    trades: pl.DataFrame,
+    risk_permission: pl.DataFrame,
+    blocked_outcomes: pl.DataFrame,
+    shadow_outcomes: pl.DataFrame,
+    as_of_date: date,
+    created_at: datetime | None = None,
+    readiness: dict[str, Any] | None = None,
+) -> pl.DataFrame:
+    if strategy_evidence.is_empty():
+        return pl.DataFrame(schema=BOARD_SCHEMA)
+    cutoff = datetime.combine(as_of_date + timedelta(days=1), time.min, tzinfo=UTC)
+    rows = [
+        row
+        for row in strategy_evidence.to_dicts()
+        if _within_as_of(
+            row.get("end_ts") or row.get("created_at") or row.get("as_of_date"),
+            cutoff,
+        )
+    ]
+    if not rows:
+        return pl.DataFrame(schema=BOARD_SCHEMA)
+    paper_days = _paper_days_by_group(events, trades, as_of_date=as_of_date)
+    risk = _risk_context(risk_permission)
+    readiness = readiness or {"readiness_status": "UNKNOWN"}
+    blocked_counts = _legacy_counts(blocked_outcomes, default_candidate="UNKNOWN")
+    shadow_counts = _legacy_counts(shadow_outcomes, default_candidate="v5.alt_impulse_shadow")
+    created = created_at or datetime.now(UTC)
+    board_rows: list[dict[str, Any]] = []
+    for row in rows:
+        candidate = _clean_text(row.get("strategy_candidate") or row.get("candidate_name"))
+        symbol = normalize_symbol(_clean_text(row.get("symbol"))) or "UNKNOWN"
+        regime = _clean_text(row.get("regime_state")) or "UNKNOWN"
+        horizon = int(_finite_float(row.get("horizon_hours")) or 0)
+        decision, reasons = _strategy_evidence_decision(row)
+        board_rows.append(
+            {
+                "strategy": _clean_text(row.get("strategy")) or "v5",
+                "board_schema_version": BOARD_SCHEMA_VERSION,
+                "as_of_date": as_of_date.isoformat(),
+                "strategy_candidate": candidate,
+                "candidate_name": _clean_text(row.get("candidate_name")) or candidate,
+                "symbol": symbol,
+                "regime_state": regime,
+                "horizon_hours": horizon,
+                "sample_count": int(_finite_float(row.get("sample_count")) or 0),
+                "complete_sample_count": int(_finite_float(row.get("complete_sample_count")) or 0),
+                "avg_net_bps": _finite_float(row.get("avg_net_bps")),
+                "median_net_bps": _finite_float(row.get("median_net_bps")),
+                "p25_net_bps": _finite_float(row.get("p25_net_bps")),
+                "win_rate": _finite_float(row.get("win_rate")),
+                "avg_mfe_bps": None,
+                "avg_mae_bps": None,
+                "cost_source_mix": _clean_text(row.get("cost_source_mix")) or "[]",
+                "stability_by_day": "[]",
+                "paper_days": paper_days.get((candidate, symbol, regime), 0),
+                "cost_source_has_global_default": "global_default"
+                in (_clean_text(row.get("cost_source_mix")).lower()),
+                "decision": decision,
+                "decision_reasons": safe_json_dumps(reasons),
+                "risk_permission": str(risk.get("permission") or "UNKNOWN"),
+                "risk_permission_status": str(risk.get("permission_status") or "UNKNOWN"),
+                "enforce_readiness_status": str(readiness.get("readiness_status") or "UNKNOWN"),
+                "block_reason_mix": "{}",
+                "final_decision_mix": "{}",
+                "high_score_blocked_outcome_count": blocked_counts.get((candidate, symbol), 0),
+                "shadow_outcome_count": shadow_counts.get((candidate, symbol), 0),
+                "start_ts": _coerce_timestamp(row.get("start_ts")),
+                "end_ts": _coerce_timestamp(row.get("end_ts")),
+                "created_at": created,
+                "source": SOURCE_NAME,
+            }
+        )
+    return pl.DataFrame(board_rows, schema=BOARD_SCHEMA, orient="row")
 
 
 def _board_row(
@@ -337,6 +431,34 @@ def _decision(
     if sample_count >= 10 and avg_net_bps is not None and avg_net_bps > 0.0:
         return "KEEP_SHADOW", ["positive_avg_net_bps_needs_more_evidence"]
     return "RESEARCH_ONLY", ["evidence_inconclusive"]
+
+
+def _strategy_evidence_decision(row: dict[str, Any]) -> tuple[str, list[str]]:
+    candidate = _clean_text(row.get("strategy_candidate") or row.get("candidate_name"))
+    stored = _clean_text(row.get("decision")).upper()
+    reasons = _json_list(row.get("decision_reasons"))
+    if candidate == "v5.sol_protect_exception":
+        return "KEEP_SHADOW", reasons or ["sol_protect_exception_requires_shadow_review"]
+    if candidate == "v5.alt_impulse_shadow" and stored == "LIVE_SMALL_READY":
+        return "KEEP_SHADOW", ["alt_impulse_shadow_not_live_eligible"]
+    if candidate in {"v5.multi_position_k2", "v5.multi_position_k3"}:
+        return "KILL", reasons or ["multi_position_k2_k3_not_eligible"]
+    if stored in DECISIONS:
+        return stored, reasons or ["strategy_evidence_decision"]
+    sample_count = int(_finite_float(row.get("sample_count")) or 0)
+    avg_net = _finite_float(row.get("avg_net_bps"))
+    win_rate = _finite_float(row.get("win_rate"))
+    p25 = _finite_float(row.get("p25_net_bps"))
+    cost_mix = _clean_text(row.get("cost_source_mix")).lower()
+    return _decision(
+        candidate=candidate,
+        sample_count=sample_count,
+        avg_net_bps=avg_net,
+        win_rate=win_rate,
+        p25_net_bps=p25,
+        paper_days=0,
+        cost_source_counts=Counter(["global_default"] if "global_default" in cost_mix else []),
+    )
 
 
 def _normalize_label_row(

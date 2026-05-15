@@ -132,6 +132,45 @@ def test_strategy_evidence_replaces_legacy_schema(tmp_path):
     assert "legacy" not in set(evidence["candidate_name"].drop_nulls())
 
 
+def test_strategy_evidence_uses_historical_shadow_and_blocked_outcomes(tmp_path):
+    lake = tmp_path / "lake"
+    _write_historical_outcomes(lake)
+
+    result = build_and_publish_strategy_evidence(lake, as_of_date="2026-05-10")
+    build_and_publish_alpha_discovery_board(lake, as_of_date="2026-05-10")
+
+    samples = read_parquet_dataset(lake / "gold" / "strategy_evidence_sample")
+    evidence = read_parquet_dataset(lake / "gold" / "strategy_evidence")
+    board = read_parquet_dataset(lake / "gold" / "alpha_discovery_board")
+    summary = {
+        (row["strategy_candidate"], row["symbol"], row["regime_state"], row["horizon_hours"]): row
+        for row in evidence.to_dicts()
+    }
+    board_rows = {
+        (row["strategy_candidate"], row["symbol"], row["regime_state"], row["horizon_hours"]): row
+        for row in board.to_dicts()
+    }
+
+    assert result.extracted_sample_count == samples.height
+    assert summary[("v5.alt_impulse_shadow", "ETH-USDT", "impulse", 24)]["decision"] == "KILL"
+    assert board_rows[("v5.alt_impulse_shadow", "ETH-USDT", "impulse", 24)]["decision"] == (
+        "KILL"
+    )
+    assert summary[("v5.sol_protect_exception", "SOL-USDT", "protect", 24)]["decision"] == (
+        "KEEP_SHADOW"
+    )
+    assert summary[("v5.multi_position_k2", "BNB-USDT", "trend", 24)]["decision"] == "KILL"
+    assert summary[("v5.multi_position_k3", "SOL-USDT", "trend", 24)]["decision"] == "KILL"
+    assert ("v5.btc_leadership_probe_strict", "BTC-USDT", "trend", 24) in summary
+    assert ("v5.btc_leadership_blocked_relaxed", "BTC-USDT", "trend", 24) in summary
+    assert summary[("v5.f3_dominant_entry", "BNB-USDT", "trend", 24)]["decision"] == (
+        "KEEP_SHADOW"
+    )
+    assert summary[("v5.f4_volume_expansion_entry", "ETH-USDT", "trend", 24)]["decision"] == (
+        "KEEP_SHADOW"
+    )
+
+
 def _write_market_bars(lake: Path) -> None:
     start = datetime(2026, 5, 9, tzinfo=UTC)
     rows = []
@@ -324,3 +363,129 @@ def _write_strategy_sources(lake: Path) -> None:
         ),
         lake / "silver" / "v5_quant_lab_cost_usage",
     )
+
+
+def _write_historical_outcomes(lake: Path) -> None:
+    start = datetime(2026, 5, 8, tzinfo=UTC)
+    high_score_rows = []
+    shadow_rows = []
+    _add_outcome_rows(
+        high_score_rows,
+        start=start,
+        source_path="summaries/high_score_blocked_outcomes.csv",
+        candidate="sol_protect_exception",
+        symbol="SOL-USDT",
+        regime="protect",
+        net_values=[15.0] * 12,
+    )
+    _add_outcome_rows(
+        high_score_rows,
+        start=start,
+        source_path="summaries/high_score_blocked_outcomes.csv",
+        candidate="btc_leadership_blocked_relaxed",
+        symbol="BTC-USDT",
+        regime="trend",
+        net_values=[8.0] * 12,
+    )
+    _add_outcome_rows(
+        shadow_rows,
+        start=start,
+        source_path="summaries/btc_leadership_probe_blocked_outcomes.csv",
+        candidate="btc_leadership_probe_strict",
+        symbol="BTC-USDT",
+        regime="trend",
+        net_values=[12.0] * 12,
+    )
+    _add_outcome_rows(
+        shadow_rows,
+        start=start,
+        source_path="summaries/alt_impulse_shadow_outcomes.csv",
+        candidate="alt_impulse_shadow",
+        symbol="ETH-USDT",
+        regime="impulse",
+        net_values=[-35.0] * 12,
+    )
+    _add_outcome_rows(
+        shadow_rows,
+        start=start,
+        source_path="summaries/multi_position_swing_shadow_outcomes.csv",
+        candidate="multi_position_k2",
+        symbol="BNB-USDT",
+        regime="trend",
+        net_values=[20.0] * 12,
+    )
+    _add_outcome_rows(
+        shadow_rows,
+        start=start,
+        source_path="summaries/multi_position_swing_shadow_outcomes.csv",
+        candidate="multi_position_k3",
+        symbol="SOL-USDT",
+        regime="trend",
+        net_values=[-10.0] * 12,
+    )
+    _add_outcome_rows(
+        shadow_rows,
+        start=start,
+        source_path="summaries/factor_contribution_outcomes_by_factor.csv",
+        candidate="f3_dominant_entry",
+        symbol="BNB-USDT",
+        regime="trend",
+        net_values=[18.0] * 12,
+    )
+    _add_outcome_rows(
+        shadow_rows,
+        start=start,
+        source_path="summaries/factor_contribution_outcomes_by_factor.csv",
+        candidate="f4_volume_expansion_entry",
+        symbol="ETH-USDT",
+        regime="trend",
+        net_values=[16.0] * 12,
+    )
+    write_parquet_dataset(
+        pl.DataFrame(high_score_rows),
+        lake / "silver/v5_high_score_blocked_outcome",
+    )
+    write_parquet_dataset(pl.DataFrame(shadow_rows), lake / "silver/v5_shadow_outcome")
+
+
+def _add_outcome_rows(
+    rows: list[dict],
+    *,
+    start: datetime,
+    source_path: str,
+    candidate: str,
+    symbol: str,
+    regime: str,
+    net_values: list[float],
+) -> None:
+    for index, net in enumerate(net_values):
+        ts = start + timedelta(hours=index)
+        rows.append(
+            {
+                "strategy": "v5",
+                "bundle_sha256": "hist",
+                "bundle_name": "bundle.tar.gz",
+                "bundle_ts": ts,
+                "ingest_ts": ts + timedelta(minutes=1),
+                "source_path_inside_bundle": source_path,
+                "row_index": index,
+                "candidate_name": candidate,
+                "event_id": f"{candidate}-{symbol}-{index}",
+                "ts_utc": ts.isoformat().replace("+00:00", "Z"),
+                "symbol": symbol,
+                "regime_state": regime,
+                "horizon_hours": "24",
+                "net_bps_after_cost": str(net),
+                "gross_bps": str(net + 4.0),
+                "win": str(net > 0).lower(),
+                "cost_bps": "4.0",
+                "cost_source": "quant_lab_actual",
+                "raw_payload_json": json.dumps(
+                    {
+                        "candidate_name": candidate,
+                        "event_id": f"{candidate}-{symbol}-{index}",
+                        "net_bps_after_cost": net,
+                    }
+                ),
+            }
+        )

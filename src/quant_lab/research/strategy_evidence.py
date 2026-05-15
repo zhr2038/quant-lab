@@ -25,15 +25,24 @@ HORIZON_HOURS = (4, 8, 12, 24, 48, 72, 120)
 
 STRATEGY_CANDIDATES = (
     "v5.btc_leadership_probe_strict",
+    "v5.btc_leadership_blocked_relaxed",
     "v5.sol_protect_exception",
     "v5.alt_impulse_shadow",
+    "v5.multi_position_k1",
+    "v5.multi_position_k2",
+    "v5.multi_position_k3",
     "v5.swing_f4_f5_alpha6",
     "v5.f3_dominant_entry",
+    "v5.f4_volume_expansion_entry",
     "v5.mean_reversion_sideways",
 )
 
 LABEL_DATASET = Path("gold") / "v5_candidate_label"
 EVENT_DATASET = Path("silver") / "v5_candidate_event"
+OUTCOME_DATASETS = {
+    "v5_high_score_blocked_outcome": Path("silver") / "v5_high_score_blocked_outcome",
+    "v5_shadow_outcome": Path("silver") / "v5_shadow_outcome",
+}
 
 SAMPLE_SCHEMA: dict[str, Any] = {
     "strategy": pl.Utf8,
@@ -151,9 +160,9 @@ def build_strategy_evidence_samples(
     warnings: list[str] = []
     labels = read_parquet_dataset(root / LABEL_DATASET)
     events = read_parquet_dataset(root / EVENT_DATASET)
+    cost_context = _CostContext(root)
     if labels.is_empty():
         warnings.append("v5_candidate_label_empty")
-        return pl.DataFrame(schema=SAMPLE_SCHEMA), warnings
 
     event_context = _event_context_by_candidate_id(events)
     rows: list[dict[str, Any]] = []
@@ -161,6 +170,14 @@ def build_strategy_evidence_samples(
         sample = _sample_from_candidate_label(label, event_context)
         if sample is not None:
             rows.append(sample)
+    for dataset_name, relative_path in OUTCOME_DATASETS.items():
+        frame = read_parquet_dataset(root / relative_path)
+        if frame.is_empty():
+            continue
+        for outcome in frame.to_dicts():
+            sample = _sample_from_outcome_row(dataset_name, outcome, cost_context)
+            if sample is not None:
+                rows.append(sample)
 
     rows = _dedupe_formal_sample_rows(_filter_samples_as_of(rows, as_of_date))
     if not rows:
@@ -327,6 +344,128 @@ def _sample_from_candidate_label(
     }
 
 
+def _sample_from_outcome_row(
+    dataset_name: str,
+    row: dict[str, Any],
+    cost_context: _CostContext,
+) -> dict[str, Any] | None:
+    payload = _payload(row)
+    strategy_candidate = _candidate_name(dataset_name, row, payload)
+    ts_utc = _first_timestamp(
+        row,
+        payload,
+        [
+            "ts_utc",
+            "decision_ts",
+            "event_ts",
+            "label_ts",
+            "created_at",
+            "timestamp",
+            "time",
+            "ts",
+            "bundle_ts",
+            "ingest_ts",
+        ],
+    )
+    horizon_hours = _horizon_hours(row, payload)
+    if strategy_candidate is None or ts_utc is None or horizon_hours is None:
+        return None
+
+    symbol = _symbol(row, payload, strategy_candidate)
+    cost = cost_context.for_sample(symbol=symbol, ts_utc=ts_utc, row=row, payload=payload)
+    net_bps = _outcome_net_bps(row, payload)
+    gross_bps = _first_numeric(
+        row,
+        payload,
+        ["gross_bps", "gross_return_bps", "return_bps", "forward_return_bps"],
+    )
+    if gross_bps is None and net_bps is not None:
+        gross_bps = net_bps + float(cost["cost_bps"] or 0.0)
+    win = _first_bool(
+        row,
+        payload,
+        ["win", "profitable", "is_profitable", "success", "label_win", "outcome_win"],
+    )
+    if win is None and net_bps is not None:
+        win = net_bps > 0.0
+    source_event_key = _source_event_key(dataset_name, row, payload)
+    run_id = str(row.get("run_id") or _first_text(row, payload, ["run_id"]) or "")
+    return {
+        "strategy": str(row.get("strategy") or payload.get("strategy") or "v5"),
+        "evidence_version": EVIDENCE_VERSION,
+        "as_of_date": ts_utc.date().isoformat(),
+        "candidate_id": _first_text(
+            row,
+            payload,
+            ["candidate_id", "event_id", "event_key", "request_id", "id"],
+        )
+        or f"{dataset_name}:{source_event_key}",
+        "run_id": run_id,
+        "ts_utc": ts_utc,
+        "symbol": symbol,
+        "strategy_candidate": strategy_candidate,
+        "candidate_name": strategy_candidate,
+        "regime_state": _first_text(
+            row,
+            payload,
+            ["regime_state", "regime", "market_regime", "state"],
+        )
+        or "UNKNOWN",
+        "horizon_hours": horizon_hours,
+        "decision_ts": _first_timestamp(row, payload, ["decision_ts", "ts_utc", "ts"]),
+        "label_ts": _first_timestamp(row, payload, ["label_ts", "outcome_ts", "matured_ts"]),
+        "entry_close": _first_numeric(row, payload, ["entry_close", "entry_price", "price"]),
+        "label_close": _first_numeric(row, payload, ["label_close", "exit_price", "future_close"]),
+        "gross_bps": gross_bps,
+        "net_bps_after_cost": net_bps,
+        "mfe_bps": _first_numeric(row, payload, ["mfe_bps", "max_favorable_bps"]),
+        "mae_bps": _first_numeric(row, payload, ["mae_bps", "max_adverse_bps", "drawdown_bps"]),
+        "win": win,
+        "label_status": "complete" if net_bps is not None else "unlabeled",
+        "label_reason": _first_text(row, payload, ["label_reason", "outcome_reason", "reason"]),
+        "cost_bps": float(cost["cost_bps"] or 0.0),
+        "cost_source": str(cost["cost_source"] or "MISSING"),
+        "block_reason": _first_text(
+            row,
+            payload,
+            ["block_reason", "blocked_reason", "router_reason", "reason", "skip_reason"],
+        ),
+        "final_decision": _first_text(
+            row,
+            payload,
+            ["final_decision", "decision", "outcome_decision", "action"],
+        ),
+        "final_score": _first_numeric(
+            row,
+            payload,
+            ["final_score", "score", "candidate_score", "total_score", "composite_score"],
+        ),
+        "expected_edge_bps": _first_numeric(
+            row,
+            payload,
+            ["expected_edge_bps", "expected_net_edge_bps", "edge_bps", "gross_edge_bps"],
+        ),
+        "required_edge_bps": _first_numeric(
+            row,
+            payload,
+            ["required_edge_bps", "min_required_edge_bps", "edge_required_bps"],
+        ),
+        "alpha6_score": _first_numeric(row, payload, ["alpha6_score", "alpha6"]),
+        "alpha6_side": _first_text(row, payload, ["alpha6_side", "side", "direction"]),
+        "protect_level": _first_text(
+            row,
+            payload,
+            ["protect_level", "protection_level", "auto_risk_level", "risk_level"],
+        ),
+        "risk_level": _first_text(row, payload, ["risk_level", "auto_risk_level"]),
+        "source_path_inside_bundle": str(row.get("source_path_inside_bundle") or ""),
+        "source_event_key": source_event_key,
+        "source_bundle_ts": _first_timestamp(row, payload, ["bundle_ts", "ingest_ts"]),
+        "created_at": datetime.now(UTC),
+        "source": SOURCE_NAME,
+    }
+
+
 def _formal_summary_row(
     *,
     strategy_candidate: str,
@@ -347,6 +486,7 @@ def _formal_summary_row(
     p25_net = _p25(net_values)
     win_rate = (sum(wins) / len(wins)) if wins else None
     decision, reasons = _formal_decision(
+        strategy_candidate=strategy_candidate,
         sample_count=len(rows),
         complete_sample_count=len(complete),
         avg_net_bps=avg_net,
@@ -386,6 +526,7 @@ def _formal_summary_row(
 
 def _formal_decision(
     *,
+    strategy_candidate: str,
     sample_count: int,
     complete_sample_count: int,
     avg_net_bps: float | None,
@@ -394,21 +535,32 @@ def _formal_decision(
     min_live_samples: int,
 ) -> tuple[str, list[str]]:
     reasons: list[str] = []
-    if sample_count < min_live_samples:
-        reasons.append("sample_count_below_min_live_samples")
+    if sample_count < 10:
+        return "RESEARCH_ONLY", [f"sample_count_below_10:{sample_count}"]
     if complete_sample_count <= 0:
-        reasons.append("no_complete_forward_labels")
-    if avg_net_bps is not None and avg_net_bps <= 0:
-        reasons.append("non_positive_after_cost_edge")
-    if p25_net_bps is not None and p25_net_bps < 0:
-        reasons.append("negative_downside_p25")
-    if win_rate is not None and win_rate < 0.50:
-        reasons.append("win_rate_below_50pct")
-    if "non_positive_after_cost_edge" in reasons or "win_rate_below_50pct" in reasons:
-        return "KILL", reasons
-    if sample_count >= min_live_samples and complete_sample_count > 0:
-        return "KEEP_SHADOW", reasons or ["needs_paper_observation_before_live"]
-    return "KEEP_SHADOW", reasons or ["insufficient_evidence"]
+        return "RESEARCH_ONLY", ["no_complete_forward_labels"]
+    if strategy_candidate in {"v5.sol_protect_exception", "v5.alt_impulse_shadow"}:
+        if avg_net_bps is not None and avg_net_bps < 0 and win_rate is not None and win_rate < 0.45:
+            return "KILL", ["avg_net_bps_negative_and_win_rate_below_45pct"]
+        return "KEEP_SHADOW", [f"{strategy_candidate.removeprefix('v5.')}_not_live_eligible"]
+    if strategy_candidate in {"v5.multi_position_k2", "v5.multi_position_k3"}:
+        return "KILL", ["multi_position_k2_k3_not_eligible"]
+    if avg_net_bps is not None and avg_net_bps < 0 and win_rate is not None and win_rate < 0.45:
+        return "KILL", ["avg_net_bps_negative_and_win_rate_below_45pct"]
+    paper_ready = (
+        sample_count >= min_live_samples
+        and win_rate is not None
+        and win_rate > 0.55
+        and p25_net_bps is not None
+        and p25_net_bps > -50.0
+    )
+    if sample_count >= 60 and paper_ready:
+        reasons.append("paper_days_required_before_live_small")
+    if paper_ready:
+        return "PAPER_READY", reasons or ["paper_ready_thresholds_met"]
+    if sample_count >= 10 and avg_net_bps is not None and avg_net_bps > 0:
+        return "KEEP_SHADOW", ["positive_avg_net_bps_needs_more_evidence"]
+    return "RESEARCH_ONLY", ["evidence_inconclusive"]
 
 
 def _cost_source_mix(rows: list[dict[str, Any]]) -> dict[str, int]:
@@ -613,15 +765,30 @@ def _normalize_candidate_text(value: str | None, *, dataset_name: str) -> str | 
         "btc_leadership_probe_strict": "v5.btc_leadership_probe_strict",
         "btc_strict_probe": "v5.btc_leadership_probe_strict",
         "strict_btc_leadership_probe": "v5.btc_leadership_probe_strict",
+        "btc_leadership_probe_blocked_outcomes": "v5.btc_leadership_probe_strict",
+        "btc_leadership_blocked_relaxed": "v5.btc_leadership_blocked_relaxed",
+        "btc_leadership_relaxed_blocker": "v5.btc_leadership_blocked_relaxed",
+        "btc_relaxed_blocker": "v5.btc_leadership_blocked_relaxed",
         "v5_sol_protect_exception": "v5.sol_protect_exception",
         "sol_protect_exception": "v5.sol_protect_exception",
         "v5_alt_impulse_shadow": "v5.alt_impulse_shadow",
         "alt_impulse_shadow": "v5.alt_impulse_shadow",
+        "alt_impulse_shadow_outcomes": "v5.alt_impulse_shadow",
         "alt_impulse": "v5.alt_impulse_shadow",
+        "multi_position_k1": "v5.multi_position_k1",
+        "multi_position_k2": "v5.multi_position_k2",
+        "multi_position_k3": "v5.multi_position_k3",
+        "multi_position_swing_k1": "v5.multi_position_k1",
+        "multi_position_swing_k2": "v5.multi_position_k2",
+        "multi_position_swing_k3": "v5.multi_position_k3",
         "v5_swing_f4_f5_alpha6": "v5.swing_f4_f5_alpha6",
         "swing_f4_f5_alpha6": "v5.swing_f4_f5_alpha6",
         "v5_f3_dominant_entry": "v5.f3_dominant_entry",
         "f3_dominant_entry": "v5.f3_dominant_entry",
+        "f3_dominant": "v5.f3_dominant_entry",
+        "v5_f4_volume_expansion_entry": "v5.f4_volume_expansion_entry",
+        "f4_volume_expansion_entry": "v5.f4_volume_expansion_entry",
+        "f4_volume_expansion": "v5.f4_volume_expansion_entry",
         "v5_mean_reversion_sideways": "v5.mean_reversion_sideways",
         "mean_reversion_sideways": "v5.mean_reversion_sideways",
     }
@@ -632,6 +799,8 @@ def _normalize_candidate_text(value: str | None, *, dataset_name: str) -> str | 
     if "btc" in normalized and "leadership" in normalized and "probe" in normalized:
         if "strict" in normalized:
             return "v5.btc_leadership_probe_strict"
+        if "relaxed" in normalized or "blocker" in normalized:
+            return "v5.btc_leadership_blocked_relaxed"
         return None
     if "sol" in normalized and "protect" in normalized and "exception" in normalized:
         return "v5.sol_protect_exception"
@@ -639,8 +808,16 @@ def _normalize_candidate_text(value: str | None, *, dataset_name: str) -> str | 
         return "v5.alt_impulse_shadow"
     if "swing" in normalized and "f4" in normalized and "f5" in normalized:
         return "v5.swing_f4_f5_alpha6"
+    if "multi" in normalized and "position" in normalized:
+        if "k3" in normalized:
+            return "v5.multi_position_k3"
+        if "k2" in normalized:
+            return "v5.multi_position_k2"
+        return "v5.multi_position_k1"
     if "f3" in normalized and "dominant" in normalized:
         return "v5.f3_dominant_entry"
+    if "f4" in normalized and ("volume" in normalized or "expansion" in normalized):
+        return "v5.f4_volume_expansion_entry"
     if "mean" in normalized and "reversion" in normalized and "sideways" in normalized:
         return "v5.mean_reversion_sideways"
     return None
@@ -1317,6 +1494,49 @@ def _first_timestamp(
         parsed = _parse_timestamp(_first_value(row, payload, [key]))
         if parsed is not None:
             return parsed
+    return None
+
+
+def _horizon_hours(row: dict[str, Any], payload: dict[str, Any]) -> int | None:
+    value = _first_value(
+        row,
+        payload,
+        ["horizon_hours", "horizon_hour", "horizon_h", "horizon", "label_horizon_hours"],
+    )
+    if value is None:
+        return 24
+    text = str(value).strip().lower().replace("hours", "h").replace("hour", "h")
+    if text.endswith("h"):
+        text = text[:-1]
+    return _int_or_none(text)
+
+
+def _outcome_net_bps(row: dict[str, Any], payload: dict[str, Any]) -> float | None:
+    direct = _first_numeric(
+        row,
+        payload,
+        [
+            "net_bps_after_cost",
+            "net_bps",
+            "net_return_bps",
+            "net_pnl_bps",
+            "outcome_net_bps",
+            "realized_net_bps",
+            "after_cost_bps",
+            "net_after_cost_bps",
+            "profit_bps",
+            "pnl_bps",
+        ],
+    )
+    if direct is not None:
+        return direct
+    pct = _first_numeric(
+        row,
+        payload,
+        ["net_return_pct", "return_pct", "pnl_pct", "profit_pct"],
+    )
+    if pct is not None:
+        return pct * 10_000.0 if abs(pct) <= 1 else pct * 100.0
     return None
 
 

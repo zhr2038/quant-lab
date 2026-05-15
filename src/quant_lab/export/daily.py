@@ -2795,10 +2795,15 @@ def _strategy_evidence_has_required_candidates(strategy_evidence: pl.DataFrame) 
         return False
     required = {
         "v5.btc_leadership_probe_strict",
+        "v5.btc_leadership_blocked_relaxed",
         "v5.sol_protect_exception",
         "v5.alt_impulse_shadow",
+        "v5.multi_position_k1",
+        "v5.multi_position_k2",
+        "v5.multi_position_k3",
         "v5.swing_f4_f5_alpha6",
         "v5.f3_dominant_entry",
+        "v5.f4_volume_expansion_entry",
         "v5.mean_reversion_sideways",
     }
     observed = {str(value) for value in strategy_evidence["candidate_name"].drop_nulls()}
@@ -2829,7 +2834,12 @@ def _alpha_discovery_live_rules_ok(board: pl.DataFrame) -> bool:
     if "strategy_candidate" in live.columns:
         blocked = live.filter(
             pl.col("strategy_candidate").is_in(
-                ["v5.alt_impulse_shadow", "v5.sol_protect_exception"]
+                [
+                    "v5.alt_impulse_shadow",
+                    "v5.sol_protect_exception",
+                    "v5.multi_position_k2",
+                    "v5.multi_position_k3",
+                ]
             )
         )
         if not blocked.is_empty():

@@ -1433,7 +1433,11 @@ def _data_quality_payload(
             "strategy_evidence_present",
             strategy_evidence.height > 0,
             f"rows={strategy_evidence.height}",
-            severity="critical" if research_enabled else "warning",
+            severity=(
+                "critical"
+                if research_enabled and alpha_discovery_board.height == 0
+                else "warning"
+            ),
         )
     )
     checks.append(

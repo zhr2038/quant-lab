@@ -109,6 +109,29 @@ def test_daily_export_includes_alpha_discovery_reports(tmp_path):
     assert any(row["candidate_name"] == "v5.sol_protect_exception" for row in watch)
 
 
+def test_strategy_evidence_replaces_legacy_schema(tmp_path):
+    lake = tmp_path / "lake"
+    _write_market_bars(lake)
+    _write_strategy_sources(lake)
+    _write_alpha_discovery_labels(lake)
+    write_parquet_dataset(
+        pl.DataFrame([{"candidate_name": "legacy", "sample_count": 1}]),
+        lake / "gold" / "strategy_evidence",
+    )
+    write_parquet_dataset(
+        pl.DataFrame([{"candidate_name": "legacy", "ts_utc": datetime(2026, 5, 9, tzinfo=UTC)}]),
+        lake / "gold" / "strategy_evidence_sample",
+    )
+
+    build_and_publish_strategy_evidence(lake, as_of_date="2026-05-10")
+
+    evidence = read_parquet_dataset(lake / "gold" / "strategy_evidence")
+    samples = read_parquet_dataset(lake / "gold" / "strategy_evidence_sample")
+    assert "strategy_candidate" in evidence.columns
+    assert "candidate_id" in samples.columns
+    assert "legacy" not in set(evidence["candidate_name"].drop_nulls())
+
+
 def _write_market_bars(lake: Path) -> None:
     start = datetime(2026, 5, 9, tzinfo=UTC)
     rows = []

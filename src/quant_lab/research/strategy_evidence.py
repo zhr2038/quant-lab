@@ -11,7 +11,7 @@ from typing import Any
 import polars as pl
 from pydantic import BaseModel, ConfigDict, Field
 
-from quant_lab.data.lake import read_parquet_dataset, upsert_parquet_dataset
+from quant_lab.data.lake import read_parquet_dataset, upsert_parquet_dataset, write_parquet_dataset
 from quant_lab.research.evidence import DEFAULT_RESEARCH_COST_BPS
 from quant_lab.strategy_telemetry.sanitize import safe_json_dumps
 from quant_lab.symbols import normalize_symbol
@@ -206,6 +206,10 @@ def publish_strategy_evidence_samples(lake_root: str | Path, samples: pl.DataFra
     dataset_path = Path(lake_root) / STRATEGY_EVIDENCE_SAMPLE_DATASET
     if samples.is_empty():
         return read_parquet_dataset(dataset_path).height
+    existing = read_parquet_dataset(dataset_path)
+    if _needs_formal_schema_replace(existing, ["strategy", "candidate_id", "horizon_hours"]):
+        write_parquet_dataset(samples, dataset_path)
+        return samples.height
     return upsert_parquet_dataset(
         samples,
         dataset_path,
@@ -221,6 +225,13 @@ def publish_strategy_evidence_summary(
     if not rows:
         return read_parquet_dataset(dataset_path).height
     frame = pl.DataFrame(rows, schema=SUMMARY_SCHEMA, orient="row")
+    existing = read_parquet_dataset(dataset_path)
+    if _needs_formal_schema_replace(
+        existing,
+        ["strategy", "strategy_candidate", "symbol", "regime_state", "horizon_hours"],
+    ):
+        write_parquet_dataset(frame, dataset_path)
+        return frame.height
     return upsert_parquet_dataset(
         frame,
         dataset_path,
@@ -234,6 +245,10 @@ def publish_strategy_evidence_summary(
             "horizon_hours",
         ],
     )
+
+
+def _needs_formal_schema_replace(existing: pl.DataFrame, required_columns: list[str]) -> bool:
+    return not existing.is_empty() and not set(required_columns).issubset(existing.columns)
 
 
 def _event_context_by_candidate_id(events: pl.DataFrame) -> dict[str, dict[str, Any]]:

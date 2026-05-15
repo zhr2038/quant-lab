@@ -439,7 +439,7 @@ def _strategy_evidence_decision(row: dict[str, Any]) -> tuple[str, list[str]]:
     reasons = _json_list(row.get("decision_reasons"))
     if candidate == "v5.sol_protect_exception":
         return "KEEP_SHADOW", reasons or ["sol_protect_exception_requires_shadow_review"]
-    if candidate == "v5.alt_impulse_shadow" and stored == "LIVE_SMALL_READY":
+    if candidate == "v5.alt_impulse_shadow" and stored != "KILL":
         return "KEEP_SHADOW", ["alt_impulse_shadow_not_live_eligible"]
     if candidate in {"v5.multi_position_k2", "v5.multi_position_k3"}:
         return "KILL", reasons or ["multi_position_k2_k3_not_eligible"]

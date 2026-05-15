@@ -537,14 +537,14 @@ def _formal_decision(
     reasons: list[str] = []
     if sample_count < 10:
         return "RESEARCH_ONLY", [f"sample_count_below_10:{sample_count}"]
-    if complete_sample_count <= 0:
-        return "RESEARCH_ONLY", ["no_complete_forward_labels"]
     if strategy_candidate in {"v5.sol_protect_exception", "v5.alt_impulse_shadow"}:
         if avg_net_bps is not None and avg_net_bps < 0 and win_rate is not None and win_rate < 0.45:
             return "KILL", ["avg_net_bps_negative_and_win_rate_below_45pct"]
         return "KEEP_SHADOW", [f"{strategy_candidate.removeprefix('v5.')}_not_live_eligible"]
     if strategy_candidate in {"v5.multi_position_k2", "v5.multi_position_k3"}:
         return "KILL", ["multi_position_k2_k3_not_eligible"]
+    if complete_sample_count <= 0:
+        return "RESEARCH_ONLY", ["no_complete_forward_labels"]
     if avg_net_bps is not None and avg_net_bps < 0 and win_rate is not None and win_rate < 0.45:
         return "KILL", ["avg_net_bps_negative_and_win_rate_below_45pct"]
     paper_ready = (

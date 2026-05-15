@@ -828,7 +828,7 @@ def export_daily_pack(
     generated_at = datetime.now(UTC)
     snapshot = _load_snapshot(root)
     missing_sections = _missing_sections(snapshot.row_counts)
-    data_quality = _data_quality_payload(root, snapshot, day)
+    data_quality = _data_quality_payload(root, snapshot, day, generated_at)
     warnings = sorted(set([*snapshot.warnings, *data_quality["warnings"]]))
 
     members: dict[str, _MemberPayload] = {}
@@ -1294,9 +1294,16 @@ def _manifest_payload(
     snapshot: _DatasetSnapshot,
 ) -> dict[str, Any]:
     git = _git_info()
+    risk_export_status = _risk_permission_export_status(snapshot.frames, generated_at)
     return {
         "export_date": day.isoformat(),
         "generated_at": generated_at.isoformat(),
+        "export_generated_at": generated_at.isoformat(),
+        "risk_permission_generated_at": risk_export_status.get("risk_permission_generated_at"),
+        "risk_permission_expires_at": risk_export_status.get("risk_permission_expires_at"),
+        "permission_expired_at_export": risk_export_status.get(
+            "permission_expired_at_export"
+        ),
         "profile": profile,
         "quant_lab_version": __version__,
         "contract_version": V5_QUANT_LAB_CONTRACT_VERSION,
@@ -1316,6 +1323,7 @@ def _manifest_payload(
             name: _dataset_freshness_payload(name, frame)
             for name, frame in sorted(snapshot.frames.items())
         },
+        "risk_permission_export_status": risk_export_status,
         "files": [
             {
                 "path": path,
@@ -1372,6 +1380,7 @@ def _data_quality_payload(
     lake_root: Path,
     snapshot: _DatasetSnapshot,
     day: date,
+    generated_at: datetime,
 ) -> dict[str, Any]:
     warnings: list[str] = []
     checks: list[dict[str, Any]] = []
@@ -1607,6 +1616,7 @@ def _data_quality_payload(
     risk = _risk_permissions_for_export(
         snapshot.frames.get("risk_permission", pl.DataFrame()),
         snapshot.frames,
+        reference_at=generated_at,
     )
     checks.append(
         _check(
@@ -1624,13 +1634,22 @@ def _data_quality_payload(
             warning_only=True,
         )
     )
-    risk_quality = _risk_permission_quality(risk, snapshot.frames)
+    risk_quality = _risk_permission_quality(risk, snapshot.frames, reference_at=generated_at)
     risk_is_stale_vs_v5 = str(risk_quality["permission_status"]).startswith("STALE_")
+    risk_expired_at_export = bool(risk_quality.get("permission_expired_at_export"))
     checks.append(
         _check(
             "risk_permission_fresh_vs_v5_telemetry",
             not risk_is_stale_vs_v5,
             _risk_permission_quality_detail(risk_quality),
+            severity="critical",
+        )
+    )
+    checks.append(
+        _check(
+            "risk_permission_not_expired_at_export",
+            not risk_expired_at_export,
+            _risk_permission_expired_detail(risk_quality),
             severity="critical",
         )
     )
@@ -2167,7 +2186,10 @@ def _decision_audit_quality(frames: dict[str, pl.DataFrame]) -> dict[str, Any]:
 def _risk_permission_quality(
     risk: pl.DataFrame,
     frames: dict[str, pl.DataFrame],
+    *,
+    reference_at: datetime | None = None,
 ) -> dict[str, Any]:
+    checked_at = reference_at or datetime.now(UTC)
     telemetry_latest_ts = _latest_v5_bundle_ts(frames)
     if risk.is_empty():
         return {
@@ -2180,6 +2202,10 @@ def _risk_permission_quality(
             "permission_api_lag_sec": None,
             "permission_api_consistent_with_gold": False,
             "created_at": None,
+            "risk_permission_generated_at": None,
+            "risk_permission_expires_at": None,
+            "export_generated_at": checked_at.isoformat(),
+            "permission_expired_at_export": False,
             "source_bundle_ts": None,
             "telemetry_latest_ts": _iso_or_none(telemetry_latest_ts),
             "permission_freshness_sec": None,
@@ -2205,7 +2231,7 @@ def _risk_permission_quality(
     expired = False
     expires_at = _risk_row_timestamp(row, ["expires_at"])
     if expires_at is not None:
-        expired = expires_at < datetime.now(UTC)
+        expired = expires_at < checked_at
     status = (
         stored_status
         if stored_status.startswith(("ACTIVE_", "STALE_", "EXPIRED_"))
@@ -2229,6 +2255,10 @@ def _risk_permission_quality(
         "permission_api_lag_sec": 0,
         "permission_api_consistent_with_gold": True,
         "created_at": _iso_or_none(created_at),
+        "risk_permission_generated_at": _iso_or_none(as_of_ts or created_at),
+        "risk_permission_expires_at": _iso_or_none(expires_at),
+        "export_generated_at": checked_at.isoformat(),
+        "permission_expired_at_export": expired,
         "source_bundle_ts": _iso_or_none(row_telemetry_ts),
         "telemetry_latest_ts": _iso_or_none(effective_telemetry_ts),
         "permission_freshness_sec": freshness,
@@ -2245,9 +2275,12 @@ def _risk_permission_quality(
 def _risk_permissions_for_export(
     risk: pl.DataFrame,
     frames: dict[str, pl.DataFrame],
+    *,
+    reference_at: datetime | None = None,
 ) -> pl.DataFrame:
     if risk.is_empty():
         return risk
+    checked_at = reference_at or datetime.now(UTC)
     telemetry_latest_ts = _latest_v5_bundle_ts(frames)
     rows: list[dict[str, Any]] = []
     for row in risk.to_dicts():
@@ -2264,7 +2297,7 @@ def _risk_permissions_for_export(
             threshold_seconds=DEFAULT_TELEMETRY_STALE_THRESHOLD_SECONDS,
         )
         expires_at = _risk_row_timestamp(row, ["expires_at"])
-        expired = expires_at is not None and expires_at < datetime.now(UTC)
+        expired = expires_at is not None and expires_at < checked_at
         status = permission_status(permission, stale=stale and not expired, expired=expired).value
         rows.append(
             row
@@ -2281,6 +2314,41 @@ def _risk_permissions_for_export(
             }
         )
     return pl.DataFrame(rows) if rows else risk
+
+
+def _risk_permission_export_status(
+    frames: dict[str, pl.DataFrame],
+    generated_at: datetime,
+) -> dict[str, Any]:
+    risk = _risk_permissions_for_export(
+        frames.get("risk_permission", pl.DataFrame()),
+        frames,
+        reference_at=generated_at,
+    )
+    quality = _risk_permission_quality(risk, frames, reference_at=generated_at)
+    return {
+        "risk_permission_generated_at": quality.get("risk_permission_generated_at"),
+        "risk_permission_expires_at": quality.get("risk_permission_expires_at"),
+        "export_generated_at": quality.get("export_generated_at"),
+        "permission_expired_at_export": quality.get("permission_expired_at_export"),
+        "permission_status": quality.get("permission_status"),
+        "next_action": quality.get("next_action"),
+    }
+
+
+def _risk_permission_expired_detail(risk_quality: dict[str, Any]) -> str:
+    if not risk_quality.get("permission_expired_at_export"):
+        return (
+            f"ok; risk_permission_expires_at={risk_quality.get('risk_permission_expires_at')}; "
+            f"export_generated_at={risk_quality.get('export_generated_at')}"
+        )
+    return (
+        "risk_permission expired before expert export; "
+        f"risk_permission_generated_at={risk_quality.get('risk_permission_generated_at')}; "
+        f"risk_permission_expires_at={risk_quality.get('risk_permission_expires_at')}; "
+        f"export_generated_at={risk_quality.get('export_generated_at')}; "
+        "next_action=run qlab publish-risk-permission before qlab export-daily"
+    )
 
 
 def _risk_permission_quality_detail(risk_quality: dict[str, Any]) -> str:

@@ -417,6 +417,69 @@ def test_export_warns_when_risk_permission_older_than_v5_telemetry(tmp_path):
     assert risk_flags[0]["enforceable"].lower() == "false"
 
 
+def test_export_manifest_records_fresh_risk_permission_not_expired(tmp_path):
+    lake_root = _fixture_lake(tmp_path)
+    now = datetime.now(UTC)
+    _write_risk_permission_for_export(
+        lake_root,
+        as_of=now,
+        expires_at=now + timedelta(minutes=20),
+    )
+
+    result = export_daily_pack(
+        export_date=now.date().isoformat(),
+        lake_root=lake_root,
+        out_dir=tmp_path / "exports",
+        profile="expert",
+        command_line=["qlab", "export-daily"],
+    )
+
+    with zipfile.ZipFile(result.zip_path) as archive:
+        manifest = json.loads(archive.read("manifest.json").decode("utf-8"))
+        data_quality = json.loads(archive.read("data_quality.json").decode("utf-8"))
+
+    checks = {check["name"]: check for check in data_quality["checks"]}
+    assert manifest["export_generated_at"]
+    assert manifest["risk_permission_generated_at"].startswith(now.isoformat()[:19])
+    assert manifest["risk_permission_expires_at"]
+    assert manifest["permission_expired_at_export"] is False
+    assert checks["risk_permission_not_expired_at_export"]["status"] == "PASS"
+
+
+def test_export_marks_expired_risk_permission_fail_with_rerun_action(tmp_path):
+    lake_root = _fixture_lake(tmp_path)
+    now = datetime.now(UTC)
+    _write_risk_permission_for_export(
+        lake_root,
+        as_of=now - timedelta(hours=2),
+        expires_at=now - timedelta(minutes=1),
+    )
+
+    result = export_daily_pack(
+        export_date=now.date().isoformat(),
+        lake_root=lake_root,
+        out_dir=tmp_path / "exports",
+        profile="expert",
+        command_line=["qlab", "export-daily"],
+    )
+
+    with zipfile.ZipFile(result.zip_path) as archive:
+        manifest = json.loads(archive.read("manifest.json").decode("utf-8"))
+        data_quality = json.loads(archive.read("data_quality.json").decode("utf-8"))
+
+    checks = {check["name"]: check for check in data_quality["checks"]}
+    expired_check = checks["risk_permission_not_expired_at_export"]
+    assert manifest["permission_expired_at_export"] is True
+    assert data_quality["risk_permission"]["permission_status"] == "EXPIRED_ALLOW"
+    assert data_quality["status"] == "CRITICAL"
+    assert expired_check["status"] == "FAIL"
+    assert "run qlab publish-risk-permission before qlab export-daily" in expired_check["detail"]
+    assert any(
+        warning.startswith("risk_permission_not_expired_at_export: risk_permission expired")
+        for warning in data_quality["warnings"]
+    )
+
+
 def test_export_warns_on_risk_version_mismatch_with_v5_telemetry(tmp_path):
     lake_root = _fixture_lake(tmp_path)
     write_parquet_dataset(
@@ -771,6 +834,37 @@ def _fixture_lake(tmp_path) -> Path:
         lake_root / "gold" / "risk_permission",
     )
     return lake_root
+
+
+def _write_risk_permission_for_export(
+    lake_root: Path,
+    *,
+    as_of: datetime,
+    expires_at: datetime,
+) -> None:
+    write_parquet_dataset(
+        pl.DataFrame(
+            [
+                {
+                    "strategy": "v5",
+                    "version": "v1",
+                    "permission": "ALLOW",
+                    "allowed_modes": ["paper", "live_canary"],
+                    "max_gross_exposure": 0.25,
+                    "max_single_weight": 0.05,
+                    "cost_model_version": "costs-v1",
+                    "gate_version": "default-v0.1",
+                    "reasons": ["fixture"],
+                    "created_at": as_of,
+                    "as_of_ts": as_of,
+                    "expires_at": expires_at,
+                    "permission_status": "ACTIVE_ALLOW",
+                    "enforceable": True,
+                }
+            ]
+        ),
+        lake_root / "gold" / "risk_permission",
+    )
 
 
 def _bar(ts: datetime, close: float) -> dict:

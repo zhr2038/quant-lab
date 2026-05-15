@@ -18,7 +18,7 @@ COST_HEALTH_DAILY_DATASET = Path("gold") / "cost_health_daily"
 MARKET_BAR_DATASET = Path("silver") / "market_bar"
 V5_GATE_COMPLIANCE_DATASET = Path("gold") / "v5_gate_compliance_daily"
 STRATEGY_HEALTH_DAILY_DATASET = Path("gold") / "strategy_health_daily"
-DEFAULT_TELEMETRY_STALE_THRESHOLD_SECONDS = 30 * 60
+DEFAULT_TELEMETRY_STALE_THRESHOLD_SECONDS = 90 * 60
 
 RISK_PERMISSION_SCHEMA = {
     "schema_version": pl.Utf8,

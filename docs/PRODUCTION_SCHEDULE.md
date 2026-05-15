@@ -8,19 +8,49 @@ cancel, amend, transfer, withdraw, or mutate exchange state.
 Daily and recurring jobs must keep this order:
 
 1. `qlab sync-v5-telemetry`
-2. `qlab analyze-v5-telemetry`
-3. `qlab build-v5-candidate-labels`
-4. `qlab build-alpha-discovery-board`
-5. `qlab build-alpha-evidence`
-6. `qlab publish-risk-permission`
-7. `qlab export-daily`
+2. `qlab calibrate-costs`
+3. `qlab build-alpha-evidence`
+4. `qlab publish-gate-decisions`
+5. `qlab publish-risk-permission`
+6. `qlab export-daily`
+
+Additional V5 telemetry analysis and candidate research jobs should run before
+`publish-risk-permission` when they are enabled:
+
+- `qlab analyze-v5-telemetry`
+- `qlab build-v5-candidate-labels`
+- `qlab build-alpha-discovery-board`
+- `qlab build-strategy-evidence`
 
 The ordering matters because `risk_permission` must be evaluated against the
-latest V5 telemetry. If `risk_permission.created_at` is older than the latest
-V5 bundle timestamp, the expert export reports:
+latest V5 telemetry, gate, cost, and data-health state. The daily export service
+must force a final `qlab publish-risk-permission` immediately before
+`qlab export-daily`; `systemd After=` ordering alone is not enough because it
+does not start the dependency on demand. The repository service template uses:
+
+```text
+ExecStartPre=/opt/quant-lab/.venv/bin/qlab publish-risk-permission --lake-root /var/lib/quant-lab/lake --strategy v5 --version 5.0.0
+```
+
+If `risk_permission.as_of_ts` is older than the latest V5 bundle timestamp, the
+expert export reports:
 
 ```text
 risk_permission_stale_vs_v5_telemetry
+```
+
+If `risk_permission.expires_at` is earlier than the export timestamp, the
+expert export reports a critical check:
+
+```text
+risk_permission_not_expired_at_export
+```
+
+In that case rerun:
+
+```bash
+qlab publish-risk-permission --lake-root /var/lib/quant-lab/lake --strategy v5 --version 5.0.0
+qlab export-daily --date "$(date -u +%F)" --lake-root /var/lib/quant-lab/lake --out-dir /var/lib/quant-lab/exports
 ```
 
 ## Strategy Version

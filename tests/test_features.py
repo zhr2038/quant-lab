@@ -272,5 +272,5 @@ def test_data_health_labels_feature_and_alpha_gaps_as_not_yet_generated(tmp_path
     status_rows = readers.data_health_summary(tmp_path / "lake")["stale_datasets"].to_dicts()
     status_by_dataset = {row["dataset"]: row["status"] for row in status_rows}
 
-    assert status_by_dataset["feature_value"] == "features not published yet"
-    assert status_by_dataset["alpha_evidence"] == "research evidence not generated yet"
+    assert status_by_dataset["feature_value"] == "特征尚未发布"
+    assert status_by_dataset["alpha_evidence"] == "研究证据尚未生成"

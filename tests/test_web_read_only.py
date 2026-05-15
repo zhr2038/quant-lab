@@ -332,7 +332,7 @@ def test_market_regime_warns_when_ws_universe_is_incomplete(tmp_path):
     summary = readers.market_regime_summary(lake_root)
 
     warnings = "\n".join(summary["warnings"])
-    assert "okx_ws_universe_incomplete" in warnings
+    assert "OKX WebSocket universe 不完整" in warnings
     assert "ETH-USDT" in warnings
 
 
@@ -568,23 +568,23 @@ def test_alpha_gates_page_shows_strategy_evidence_discovery(tmp_path):
     subheaders = _call_values(fake, "subheader")
     metrics = _call_values(fake, "metric")
     frames = _call_values(fake, "dataframe")
-    assert "Alpha Discovery Board" in subheaders
-    assert "Strategy Evidence / Alpha Discovery Samples" in subheaders
-    assert "Strategy Evidence Samples" in subheaders
-    assert "V5 Candidate Events" in subheaders
-    assert "V5 Candidate Forward Labels" in subheaders
-    assert "V5 Candidate Outcome Summary" in subheaders
-    assert "V5 Candidate Data Quality" in subheaders
-    assert ("KEEP_SHADOW", 1) in metrics
+    assert "Alpha 候选决策面板" in subheaders
+    assert "策略候选证据" in subheaders
+    assert "策略候选证据样本" in subheaders
+    assert "V5 候选事件" in subheaders
+    assert "V5 候选前向标签" in subheaders
+    assert "V5 候选后验汇总" in subheaders
+    assert "V5 候选数据质量" in subheaders
+    assert ("继续 Shadow", 1) in metrics
     assert any(
-        "v5.sol_protect_exception" in frame.get_column("strategy_candidate").to_list()
+        "v5.sol_protect_exception" in frame.get_column("策略候选").to_list()
         for frame in frames
-        if isinstance(frame, pl.DataFrame) and "strategy_candidate" in frame.columns
+        if isinstance(frame, pl.DataFrame) and "策略候选" in frame.columns
     )
     assert any(
-        "v5.sol_protect_exception" in frame.get_column("candidate_name").to_list()
+        "v5.sol_protect_exception" in frame.get_column("候选名称").to_list()
         for frame in frames
-        if isinstance(frame, pl.DataFrame) and "candidate_name" in frame.columns
+        if isinstance(frame, pl.DataFrame) and "候选名称" in frame.columns
     )
 
 
@@ -623,7 +623,7 @@ def test_alpha_gates_does_not_warn_for_empty_legacy_strategy_evidence_when_board
 
     summary = readers.alpha_gate_summary(lake_root)
 
-    assert "strategy_evidence candidate discovery evidence not generated yet" not in (
+    assert "strategy_evidence 候选发现证据尚未生成" not in (
         summary["warnings"]
     )
 
@@ -683,7 +683,7 @@ def test_okx_collectors_warns_when_orderbook_parquet_is_invalid(tmp_path):
     okx_collectors.render(lake_root, fake)
 
     warnings = "\n".join(str(warning) for warning in _call_values(fake, "warning"))
-    assert "orderbook_snapshot invalid parquet files ignored" in warnings
+    assert "orderbook_snapshot 已忽略无效 Parquet 文件" in warnings
     assert str(bad_path) in warnings
 
 

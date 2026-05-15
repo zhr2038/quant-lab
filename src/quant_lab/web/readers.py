@@ -119,7 +119,7 @@ BOOTSTRAP_GOLD_HEALTH_COMMAND = (
     "qlab bootstrap-gold-health --lake-root {lake_root} "
     "--strategy v5 --version bootstrap --day auto"
 )
-BOOTSTRAP_PLACEHOLDER_WARNING = "bootstrap conservative placeholder, not live-ready evidence"
+BOOTSTRAP_PLACEHOLDER_WARNING = "bootstrap 保守占位数据，不是 live-ready 证据"
 DISPLAY_LIMIT = 500
 WEB_HEAVY_DATASET_LIMITS = {
     "market_bar": 20_000,
@@ -207,7 +207,7 @@ def read_recent_dataset_with_warning(
         )
         return frame, warning
     except Exception as exc:
-        return pl.DataFrame(), f"{dataset_name} sampled read failed: {exc}"
+        return pl.DataFrame(), f"{dataset_name} 抽样读取失败：{exc}"
 
 
 def dataset_path_for(lake_root: str | Path, dataset_name: str) -> Path:
@@ -287,9 +287,9 @@ def _read_parquet_dataset_with_warning(
         )
     if invalid_files:
         rendered = ", ".join(str(file_path) for file_path in invalid_files[:5])
-        suffix = "" if len(invalid_files) <= 5 else f" (+{len(invalid_files) - 5} more)"
+        suffix = "" if len(invalid_files) <= 5 else f"（另有 {len(invalid_files) - 5} 个）"
         return df, (
-            f"{dataset_label} invalid parquet files ignored: {rendered}{suffix}"
+            f"{dataset_label} 已忽略无效 Parquet 文件：{rendered}{suffix}"
         )
     return df, None
 
@@ -333,7 +333,7 @@ def _dataset_snapshot(
             exists=path.exists(),
             parquet_file_count=len(files),
             freshness=_freshness_payload(None, None, is_empty=True, now=now),
-            warning=f"{dataset_name} metadata read failed: {exc}",
+            warning=f"{dataset_name} 元数据读取失败：{exc}",
         )
 
     return DatasetSnapshot(
@@ -615,8 +615,8 @@ def _invalid_parquet_warning(dataset_label: str, invalid_files: list[Path]) -> s
     if not invalid_files:
         return None
     rendered = ", ".join(str(file_path) for file_path in invalid_files[:5])
-    suffix = "" if len(invalid_files) <= 5 else f" (+{len(invalid_files) - 5} more)"
-    return f"{dataset_label} invalid parquet files ignored: {rendered}{suffix}"
+    suffix = "" if len(invalid_files) <= 5 else f"（另有 {len(invalid_files) - 5} 个）"
+    return f"{dataset_label} 已忽略无效 Parquet 文件：{rendered}{suffix}"
 
 
 def dataset_states(lake_root: str | Path) -> list[DatasetState]:
@@ -689,7 +689,7 @@ def _overview_market_health(lake_root: str | Path) -> dict[str, Any]:
             "missing_bar_ratio": 0.0,
             "schema_violation_count": 1,
             "unclosed_bar_count": 0,
-            "warnings": [*warnings, "market_bar dataset is missing or empty"],
+            "warnings": [*warnings, "market_bar 数据集缺失或为空"],
         }
     market = _normalize_market_frame(market)
     schema_violations = market_bar_schema_violations(market)
@@ -709,7 +709,7 @@ def _overview_okx_ws_status(lake_root: str | Path) -> tuple[str, list[str]]:
     warnings = [health_warning] if health_warning else []
     latest_health = _latest_collector_health(health)
     if not latest_health:
-        return "WARNING", [*warnings, "OKX public WebSocket collector_health is missing or empty"]
+        return "WARNING", [*warnings, "OKX 公共 WebSocket 采集器健康数据缺失或为空"]
     return str(latest_health.get("status") or "UNKNOWN"), warnings
 
 
@@ -771,7 +771,7 @@ def lake_diagnostics(lake_root: str | Path) -> dict[str, Any]:
             f"{MARKET_BOOTSTRAP_COMMAND.format(lake_root=root)}"
         )
 
-        suggested_commands.append({"purpose": "backfill market_bar", "command": command})
+        suggested_commands.append({"purpose": "补齐 market_bar", "command": command})
 
     gold_health_missing = any(
         dataset_row_counts.get(dataset_name, 0) == 0
@@ -783,8 +783,8 @@ def lake_diagnostics(lake_root: str | Path) -> dict[str, Any]:
     )
     if gold_health_missing:
         command = BOOTSTRAP_GOLD_HEALTH_COMMAND.format(lake_root=root)
-        warnings.append(f"gold health bootstrap suggested: {command}")
-        suggested_commands.append({"purpose": "bootstrap gold health", "command": command})
+        warnings.append(f"建议初始化 gold 健康数据：{command}")
+        suggested_commands.append({"purpose": "初始化 gold 健康数据", "command": command})
 
     ws_health, ws_health_warning = _read_parquet_dataset_with_warning(
         root / DATASET_PATHS["okx_public_ws_health"],
@@ -794,10 +794,8 @@ def lake_diagnostics(lake_root: str | Path) -> dict[str, Any]:
         warnings.append(ws_health_warning)
     if ws_health.is_empty():
         command = OKX_WS_COLLECT_COMMAND.format(lake_root=root)
-        warnings.append(
-            f"OKX public WebSocket collector health is empty. Suggested command: {command}"
-        )
-        suggested_commands.append({"purpose": "run OKX public WebSocket", "command": command})
+        warnings.append(f"OKX 公共 WebSocket 采集器健康为空。建议命令：{command}")
+        suggested_commands.append({"purpose": "启动 OKX 公共 WebSocket", "command": command})
 
     if dataset_row_counts.get("gold/strategy_health_daily", 0) == 0:
         warnings.append(
@@ -805,7 +803,7 @@ def lake_diagnostics(lake_root: str | Path) -> dict[str, Any]:
         )
 
         suggested_commands.append(
-            {"purpose": "sync V5 telemetry", "command": V5_TELEMETRY_SYNC_COMMAND}
+            {"purpose": "同步 V5 遥测", "command": V5_TELEMETRY_SYNC_COMMAND}
         )
 
     experts = expert_export_summary(default_exports_root(root))
@@ -813,7 +811,7 @@ def lake_diagnostics(lake_root: str | Path) -> dict[str, Any]:
         warnings.append(EXPERT_PACK_MISSING_MESSAGE)
         suggested_commands.append(
             {
-                "purpose": "create expert pack",
+                "purpose": "生成专家包",
                 "command": (
                     "qlab export-daily --date YYYY-MM-DD "
                     f"--lake-root {root} --out-dir {default_exports_root(root)}"
@@ -941,7 +939,7 @@ def okx_collector_summary(lake_root: str | Path) -> dict[str, Any]:
         warnings.append("OKX 公共 WebSocket bronze 数据集缺失或为空")
 
     if ws_health.is_empty():
-        warnings.append("OKX public WebSocket collector_health is missing or empty")
+        warnings.append("OKX 公共 WebSocket 采集器健康数据缺失或为空")
 
     return {
         "collectors": pl.DataFrame(rows),
@@ -1020,12 +1018,12 @@ def _market_universe_warnings(
     trade_symbols = _symbols_from_frame(trade_activity)
     if spread_symbols and (missing_spread := sorted(market_symbols - spread_symbols)):
         warnings.append(
-            "okx_ws_universe_incomplete: orderbook missing "
+            "OKX WebSocket universe 不完整：订单簿缺少 "
             + ", ".join(missing_spread[:8])
         )
     if trade_symbols and (missing_trades := sorted(market_symbols - trade_symbols)):
         warnings.append(
-            "okx_ws_universe_incomplete: trades missing " + ", ".join(missing_trades[:8])
+            "OKX WebSocket universe 不完整：成交缺少 " + ", ".join(missing_trades[:8])
         )
     return warnings
 
@@ -1132,15 +1130,15 @@ def alpha_gate_summary(lake_root: str | Path) -> dict[str, Any]:
     if gates.is_empty():
         warnings.append("gate_decision 数据集缺失或为空")
     if evidence.is_empty():
-        warnings.append("alpha_evidence research evidence not generated yet")
+        warnings.append("alpha_evidence 研究证据尚未生成")
     if discovery_board.is_empty():
-        warnings.append("alpha_discovery_board candidate decision board not generated yet")
+        warnings.append("alpha_discovery_board 候选决策面板尚未生成")
     if strategy_evidence.is_empty() and discovery_board.is_empty():
-        warnings.append("strategy_evidence candidate discovery evidence not generated yet")
+        warnings.append("strategy_evidence 候选发现证据尚未生成")
     if candidate_events.is_empty():
-        warnings.append("v5_candidate_event snapshots not ingested yet")
+        warnings.append("v5_candidate_event 候选快照尚未入湖")
     if candidate_labels.is_empty():
-        warnings.append("v5_candidate_label forward labels not generated yet")
+        warnings.append("v5_candidate_label 前向标签尚未生成")
     counts: dict[str, int] = {}
     if "status" in gates.columns:
         counts = {
@@ -1416,7 +1414,7 @@ def feature_summary(lake_root: str | Path) -> dict[str, Any]:
         if warning
     ]
     if features.is_empty():
-        warnings.append("feature_value dataset is missing or empty")
+        warnings.append("feature_value 数据集缺失或为空")
     latest = _latest_features_table(features)
     null_ratio = 0.0
     if not features.is_empty() and "value" in features.columns:
@@ -1868,11 +1866,11 @@ def _stale_dataset_rows(lake_root: str | Path) -> pl.DataFrame:
 
 def _empty_dataset_status(dataset_name: str) -> str:
     if dataset_name == "alpha_evidence":
-        return "research evidence not generated yet"
+        return "研究证据尚未生成"
     if dataset_name == "feature_value":
-        return "features not published yet"
+        return "特征尚未发布"
     if dataset_name == "decision_audit":
-        return "legacy optional"
+        return "旧链路可选"
     return "missing"
 
 

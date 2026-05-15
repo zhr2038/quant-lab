@@ -36,12 +36,12 @@ def render(lake_root: str | Path, st_module: Any | None = None) -> None:
         diagnostics["datasets"],
         "暂无核心数据集诊断信息。",
     )
-    st.metric("Latest V5 bundle", display_unknown(diagnostics.get("latest_v5_bundle_ts")))
-    st.metric("Latest expert pack", display_unknown(diagnostics.get("latest_expert_pack")))
+    st.metric("最新 V5 bundle", display_unknown(diagnostics.get("latest_v5_bundle_ts")))
+    st.metric("最新专家包", display_unknown(diagnostics.get("latest_expert_pack")))
     show_frame(
         st,
         diagnostics.get("suggested_commands", pl.DataFrame()),
-        "No suggested commands.",
+        "暂无建议命令。",
     )
     show_warnings(st, diagnostics["warnings"])
 
@@ -51,7 +51,7 @@ def render(lake_root: str | Path, st_module: Any | None = None) -> None:
     st.metric("最新 market_bar", display_unknown(snapshot["latest_market_bar_ts"]))
     st.metric("缺失 K 线比例", f"{snapshot['missing_bar_ratio']:.2%}")
     fallback_ratio = snapshot["cost_fallback_ratio"]
-    st.metric("成本回退比例", "N/A" if fallback_ratio is None else f"{fallback_ratio:.2%}")
+    st.metric("成本回退比例", "不适用" if fallback_ratio is None else f"{fallback_ratio:.2%}")
 
     collector_rows = [
         {"collector": "OKX 公共 REST", "status": display_value(snapshot["okx_public_rest_status"])},

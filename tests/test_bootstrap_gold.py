@@ -141,7 +141,7 @@ def test_web_diagnostics_show_bootstrap_warning_without_gold_missing(tmp_path):
     assert "gold/cost_bucket_daily 数据集缺失或为空" not in warnings
     assert "gold/gate_decision 数据集缺失或为空" not in warnings
     assert "gold/risk_permission 数据集缺失或为空" not in warnings
-    assert BOOTSTRAP_WARNING in warnings
+    assert readers.BOOTSTRAP_PLACEHOLDER_WARNING in warnings
 
 
 def test_web_diagnostics_do_not_warn_when_latest_gate_and_risk_are_research_rows(tmp_path):

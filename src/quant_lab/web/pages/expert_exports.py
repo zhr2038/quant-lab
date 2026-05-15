@@ -35,9 +35,9 @@ def render(
     show_frame(st, summary["packs"], "未找到专家包。")
     _render_pack_downloads(st, summary["packs"])
 
-    st.subheader("Manifest 摘要")
+    st.subheader("清单摘要")
     manifest_rows = _dict_rows(summary["manifest_summary"])
-    show_frame(st, manifest_rows, "暂无 manifest 摘要。")
+    show_frame(st, manifest_rows, "暂无清单摘要。")
 
     st.subheader("数据质量摘要")
     quality_rows = _dict_rows(summary["data_quality_summary"])

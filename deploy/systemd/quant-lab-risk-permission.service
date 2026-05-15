@@ -8,6 +8,6 @@ User=quantlab
 Group=quantlab
 WorkingDirectory=/opt/quant-lab
 RuntimeMaxSec=5min
-MemoryMax=512M
+MemoryMax=1G
 CPUQuota=60%
 ExecStart=/opt/quant-lab/.venv/bin/qlab publish-risk-permission --lake-root /var/lib/quant-lab/lake --strategy v5 --version 5.0.0

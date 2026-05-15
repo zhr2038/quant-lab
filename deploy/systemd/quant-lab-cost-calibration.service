@@ -8,6 +8,6 @@ User=quantlab
 Group=quantlab
 WorkingDirectory=/opt/quant-lab
 RuntimeMaxSec=10min
-MemoryMax=2G
+MemoryMax=3G
 CPUQuota=80%
 ExecStart=/bin/bash -lc '/opt/quant-lab/.venv/bin/qlab calibrate-costs --lake-root /var/lib/quant-lab/lake --day "$(date -u +%%F)" --min-sample-count 30'

@@ -12,7 +12,7 @@ Environment=POLARS_MAX_THREADS=1
 Environment=MALLOC_ARENA_MAX=2
 ExecStart=/opt/quant-lab/.venv/bin/qlab sync-v5-telemetry --config /etc/quant-lab/v5_telemetry_remote.yaml
 RuntimeMaxSec=8min
-MemoryHigh=1G
-MemoryMax=1536M
+MemoryHigh=2G
+MemoryMax=3G
 NoNewPrivileges=true
 PrivateTmp=true

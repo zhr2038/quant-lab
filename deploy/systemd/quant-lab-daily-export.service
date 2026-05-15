@@ -8,6 +8,6 @@ User=quantlab
 Group=quantlab
 WorkingDirectory=/opt/quant-lab
 RuntimeMaxSec=20min
-MemoryMax=1G
+MemoryMax=5G
 CPUQuota=80%
 ExecStart=/bin/bash -lc '/opt/quant-lab/.venv/bin/qlab export-daily --date "$(date -u +%%F)" --lake-root /var/lib/quant-lab/lake --out-dir /var/lib/quant-lab/exports'

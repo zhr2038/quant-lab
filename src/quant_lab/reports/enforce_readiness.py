@@ -27,7 +27,7 @@ class EnforceReadinessThresholds(BaseModel):
     cost_symbol_hit_rate_min: float = Field(default=0.95, ge=0, le=1)
     actual_or_mixed_cost_coverage_min: float = Field(default=0.50, ge=0, le=1)
     telemetry_duplicate_rate_warn: float = Field(default=0.10, ge=0, le=1)
-    telemetry_duplicate_rate_block: float = Field(default=0.50, ge=0, le=1)
+    telemetry_event_key_coverage_min: float = Field(default=0.95, ge=0, le=1)
     fallback_rate_max: float = Field(default=0.05, ge=0, le=1)
 
 
@@ -87,7 +87,7 @@ def build_enforce_readiness_report(
         now=now,
     )
     strategy_health = _latest_row(root / "gold" / "strategy_health_daily")
-    telemetry_metrics = _telemetry_metrics(root, strategy_health)
+    telemetry_metrics = _telemetry_metrics(root, strategy_health, limits)
     gate_metrics = _gate_metrics(root)
 
     checks: list[EnforceReadinessCheck] = [
@@ -127,14 +127,12 @@ def build_enforce_readiness_report(
             detail=cost_metrics["coverage_detail"],
         ),
         _check(
-            "telemetry_duplicate_rate",
-            telemetry_metrics["duplicate_rate"] <= limits.telemetry_duplicate_rate_warn,
-            value=telemetry_metrics["duplicate_rate"],
-            threshold=f"<= {limits.telemetry_duplicate_rate_warn}",
+            "telemetry_dedupe_health",
+            telemetry_metrics["dedupe_health_status"] == "PASS",
+            value=telemetry_metrics["dedupe_health_status"],
+            threshold="not BLOCKED",
             detail=telemetry_metrics["detail"],
-            warn_only=(
-                telemetry_metrics["duplicate_rate"] <= limits.telemetry_duplicate_rate_block
-            ),
+            warn_only=telemetry_metrics["dedupe_health_status"] == "WARN",
         ),
         _check(
             "fallback_rate",
@@ -399,25 +397,102 @@ def _permission_from_row(row: dict[str, Any]) -> RiskPermission:
     return RiskPermission.model_validate(cleaned)
 
 
-def _telemetry_metrics(root: Path, strategy_health: dict[str, Any]) -> dict[str, Any]:
+def _telemetry_metrics(
+    root: Path,
+    strategy_health: dict[str, Any],
+    limits: EnforceReadinessThresholds,
+) -> dict[str, Any]:
     decisions = _rows(root / "silver" / "v5_decision_audit")
     decision_count = int(strategy_health.get("decision_audit_count_24h") or len(decisions))
     duplicate_rate = _float(strategy_health.get("duplicate_rate"))
     fallback_rate = _float(strategy_health.get("fallback_rate"))
+    raw_imported_rows = _int(strategy_health.get("raw_imported_rows"))
+    unique_event_rows = _int(strategy_health.get("unique_event_rows"))
+    duplicate_event_rows = _int(
+        strategy_health.get("duplicate_event_rows")
+        or strategy_health.get("duplicate_event_count")
+    )
+    unique_request_count = _int(strategy_health.get("unique_request_count"))
+    unique_actual_fallback_count = _int(strategy_health.get("unique_actual_fallback_count"))
     if duplicate_rate == 0 and not strategy_health:
         duplicate_rate = 1.0
+    if duplicate_event_rows == 0 and raw_imported_rows and unique_event_rows:
+        duplicate_event_rows = max(raw_imported_rows - unique_event_rows, 0)
+    event_key_coverage = _event_key_coverage(root)
+    dedupe_status, dedupe_reason = _dedupe_health(
+        duplicate_rate=duplicate_rate,
+        raw_imported_rows=raw_imported_rows,
+        unique_event_rows=unique_event_rows,
+        duplicate_event_rows=duplicate_event_rows,
+        unique_request_count=unique_request_count,
+        unique_actual_fallback_count=unique_actual_fallback_count,
+        event_key_coverage=event_key_coverage,
+        limits=limits,
+    )
     return {
         "telemetry_duplicate_rate": duplicate_rate,
         "duplicate_rate": duplicate_rate,
+        "raw_imported_rows": raw_imported_rows,
+        "unique_event_rows": unique_event_rows,
+        "duplicate_event_rows": duplicate_event_rows,
+        "duplicate_event_count": duplicate_event_rows,
+        "event_key_coverage": event_key_coverage,
+        "unique_request_count": unique_request_count,
+        "unique_actual_fallback_count": unique_actual_fallback_count,
+        "dedupe_health_status": dedupe_status,
+        "dedupe_block_reason": dedupe_reason,
         "fallback_rate": fallback_rate,
         "decision_audit_count": decision_count,
         "decision_audit_present": decision_count > 0,
         "latest_bundle_ts": _iso(_parse_dt(strategy_health.get("latest_bundle_ts"))),
+        "first_seen_bundle_ts": _iso(_parse_dt(strategy_health.get("first_seen_bundle_ts"))),
+        "last_seen_bundle_ts": _iso(_parse_dt(strategy_health.get("last_seen_bundle_ts"))),
         "detail": (
             f"duplicate_rate={duplicate_rate:.4f}; fallback_rate={fallback_rate:.4f}; "
-            f"decision_audit_count={decision_count}"
+            f"decision_audit_count={decision_count}; dedupe_health_status={dedupe_status}; "
+            f"dedupe_block_reason={dedupe_reason or 'none'}"
         ),
     }
+
+
+def _event_key_coverage(root: Path) -> float:
+    rows = [
+        *_rows(root / "silver" / "v5_quant_lab_request"),
+        *_rows(root / "silver" / "v5_quant_lab_fallback"),
+    ]
+    if not rows:
+        return 1.0
+    keyed = sum(1 for row in rows if str(row.get("event_key") or "").strip())
+    return keyed / len(rows)
+
+
+def _dedupe_health(
+    *,
+    duplicate_rate: float,
+    raw_imported_rows: int,
+    unique_event_rows: int,
+    duplicate_event_rows: int,
+    unique_request_count: int,
+    unique_actual_fallback_count: int,
+    event_key_coverage: float,
+    limits: EnforceReadinessThresholds,
+) -> tuple[str, str]:
+    if event_key_coverage < limits.telemetry_event_key_coverage_min:
+        missing_rate = 1.0 - event_key_coverage
+        return "BLOCKED", f"event_key_missing_rate={missing_rate:.4f}"
+    if raw_imported_rows and unique_event_rows <= 0:
+        return "BLOCKED", "raw_rows_present_but_unique_event_rows_zero"
+    if raw_imported_rows and unique_event_rows > raw_imported_rows:
+        return "BLOCKED", "unique_event_rows_exceeds_raw_imported_rows"
+    if raw_imported_rows and duplicate_event_rows < 0:
+        return "BLOCKED", "negative_duplicate_event_rows"
+    if unique_event_rows and unique_request_count > unique_event_rows:
+        return "BLOCKED", "unique_request_count_exceeds_unique_event_rows"
+    if unique_request_count and unique_actual_fallback_count > unique_request_count:
+        return "BLOCKED", "unique_actual_fallback_count_exceeds_unique_request_count"
+    if duplicate_rate > limits.telemetry_duplicate_rate_warn:
+        return "WARN", "high_duplicate_rate_expected_for_rolling_followup_bundles"
+    return "PASS", ""
 
 
 def _gate_metrics(root: Path) -> dict[str, Any]:
@@ -473,7 +548,9 @@ def _required_actions(blocked: list[str], warnings: list[str]) -> list[str]:
         "actual_or_mixed_cost_coverage": (
             "enable OKX read-only fills/bills or V5 trades cost backfill"
         ),
-        "telemetry_duplicate_rate": "dedupe overlapping V5 follow-up bundles by event_key",
+        "telemetry_dedupe_health": (
+            "fix V5 telemetry event_id/event_key coverage before enforce"
+        ),
         "fallback_rate": "reduce Quant Lab API timeout/local fallback rate",
         "alpha_gate_status_not_dead": (
             "publish valid alpha evidence and remove DEAD gates before enforce"
@@ -495,6 +572,12 @@ def _csv_text(report: EnforceReadinessReport) -> str:
         "version",
         "readiness_status",
         "shadow_only_recommended",
+        "raw_imported_rows",
+        "unique_event_rows",
+        "duplicate_event_rows",
+        "duplicate_rate",
+        "dedupe_health_status",
+        "dedupe_block_reason",
         "blocked_reasons",
         "warning_reasons",
         "required_actions",
@@ -506,6 +589,12 @@ def _csv_text(report: EnforceReadinessReport) -> str:
         "version": report.version,
         "readiness_status": report.readiness_status,
         "shadow_only_recommended": str(report.shadow_only_recommended).lower(),
+        "raw_imported_rows": report.metrics.get("raw_imported_rows", 0),
+        "unique_event_rows": report.metrics.get("unique_event_rows", 0),
+        "duplicate_event_rows": report.metrics.get("duplicate_event_rows", 0),
+        "duplicate_rate": report.metrics.get("duplicate_rate", 0.0),
+        "dedupe_health_status": report.metrics.get("dedupe_health_status", "PASS"),
+        "dedupe_block_reason": report.metrics.get("dedupe_block_reason", ""),
         "blocked_reasons": json.dumps(report.blocked_reasons, sort_keys=True),
         "warning_reasons": json.dumps(report.warning_reasons, sort_keys=True),
         "required_actions": json.dumps(report.required_actions, sort_keys=True),
@@ -563,6 +652,13 @@ def _float(value: Any) -> float:
         return float(value or 0.0)
     except (TypeError, ValueError):
         return 0.0
+
+
+def _int(value: Any) -> int:
+    try:
+        return int(float(value or 0))
+    except (TypeError, ValueError):
+        return 0
 
 
 def _iso(value: datetime | None) -> str | None:

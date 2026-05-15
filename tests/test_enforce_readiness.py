@@ -50,13 +50,50 @@ def test_enforce_readiness_blocks_stale_risk_permission(tmp_path):
 
 def test_enforce_readiness_warns_on_high_telemetry_duplicate_rate(tmp_path):
     lake = tmp_path / "lake"
-    _write_common_ready_inputs(lake, duplicate_rate=0.2)
+    _write_common_ready_inputs(
+        lake,
+        duplicate_rate=0.99,
+        raw_imported_rows=10_000,
+        unique_event_rows=100,
+        duplicate_event_rows=9_900,
+        unique_request_count=96,
+        unique_actual_fallback_count=2,
+    )
     _write_cost_rows(lake, source="mixed_actual_proxy")
 
     report = build_enforce_readiness_report(lake)
 
     assert report.readiness_status == "WARN"
-    assert "telemetry_duplicate_rate" in report.warning_reasons
+    assert "telemetry_dedupe_health" in report.warning_reasons
+    assert "telemetry_dedupe_health" not in report.blocked_reasons
+    assert report.metrics["duplicate_rate"] == 0.99
+    assert report.metrics["dedupe_health_status"] == "WARN"
+    assert (
+        report.metrics["dedupe_block_reason"]
+        == "high_duplicate_rate_expected_for_rolling_followup_bundles"
+    )
+
+
+def test_enforce_readiness_blocks_when_event_key_coverage_missing(tmp_path):
+    lake = tmp_path / "lake"
+    _write_common_ready_inputs(
+        lake,
+        duplicate_rate=0.99,
+        raw_imported_rows=10,
+        unique_event_rows=5,
+        duplicate_event_rows=5,
+        unique_request_count=5,
+        unique_actual_fallback_count=1,
+        write_unkeyed_request=True,
+    )
+    _write_cost_rows(lake, source="mixed_actual_proxy")
+
+    report = build_enforce_readiness_report(lake)
+
+    assert report.readiness_status == "BLOCKED"
+    assert "telemetry_dedupe_health" in report.blocked_reasons
+    assert report.metrics["dedupe_health_status"] == "BLOCKED"
+    assert report.metrics["dedupe_block_reason"].startswith("event_key_missing_rate=")
 
 
 def test_enforce_readiness_ready_when_all_checks_pass(tmp_path):
@@ -85,7 +122,17 @@ def test_write_enforce_readiness_report_outputs_json_and_csv(tmp_path):
     assert "readiness_status" in csv_text
 
 
-def _write_common_ready_inputs(lake, *, duplicate_rate: float = 0.0) -> None:
+def _write_common_ready_inputs(
+    lake,
+    *,
+    duplicate_rate: float = 0.0,
+    raw_imported_rows: int = 0,
+    unique_event_rows: int = 0,
+    duplicate_event_rows: int = 0,
+    unique_request_count: int = 1,
+    unique_actual_fallback_count: int = 0,
+    write_unkeyed_request: bool = False,
+) -> None:
     now = datetime.now(UTC)
     _write_risk_permission(lake, status="ACTIVE_ABORT", enforceable=True)
     write_parquet_dataset(
@@ -98,6 +145,11 @@ def _write_common_ready_inputs(lake, *, duplicate_rate: float = 0.0) -> None:
                     "latest_bundle_ts": now.isoformat(),
                     "decision_audit_count_24h": 1,
                     "duplicate_rate": duplicate_rate,
+                    "raw_imported_rows": raw_imported_rows,
+                    "unique_event_rows": unique_event_rows,
+                    "duplicate_event_rows": duplicate_event_rows,
+                    "unique_request_count": unique_request_count,
+                    "unique_actual_fallback_count": unique_actual_fallback_count,
                     "fallback_rate": 0.0,
                 }
             ]
@@ -117,6 +169,22 @@ def _write_common_ready_inputs(lake, *, duplicate_rate: float = 0.0) -> None:
         ),
         lake / "silver/v5_decision_audit",
     )
+    if write_unkeyed_request:
+        write_parquet_dataset(
+            pl.DataFrame(
+                [
+                    {
+                        "strategy": "v5",
+                        "event_key": "",
+                        "event_type": "request",
+                        "endpoint": "/v1/costs/estimate",
+                        "ts_utc": now.isoformat(),
+                        "raw_payload_json": "{}",
+                    }
+                ]
+            ),
+            lake / "silver/v5_quant_lab_request",
+        )
     write_parquet_dataset(
         pl.DataFrame(
             [

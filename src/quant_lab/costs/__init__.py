@@ -10,6 +10,7 @@ from quant_lab.costs.health import (
     CostHealthDaily,
     build_cost_health_daily,
     read_cost_health_daily,
+    summarize_cost_api_usage,
 )
 from quant_lab.costs.model import (
     CostBucket,
@@ -34,4 +35,5 @@ __all__ = [
     "estimate_cost_from_lake",
     "publish_cost_bucket_daily",
     "read_cost_health_daily",
+    "summarize_cost_api_usage",
 ]

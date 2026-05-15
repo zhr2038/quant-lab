@@ -88,6 +88,49 @@ def test_without_fills_uses_public_spread_proxy_only(tmp_path):
     assert "actual" not in row["source"]
 
 
+def test_cost_calibration_writes_api_usage_counts_to_cost_health(tmp_path):
+    lake_root = tmp_path / "lake"
+    _write_orderbooks(lake_root, symbol="BNB-USDT")
+    write_parquet_dataset(
+        pl.DataFrame(
+            [
+                {
+                    "bundle_ts": "2026-05-10T01:00:00Z",
+                    "symbol": "UNKNOWN-USDT",
+                    "cost_source": "global_default",
+                    "fallback_level": "GLOBAL_DEFAULT",
+                    "degraded_cost_model": "true",
+                },
+                {
+                    "bundle_ts": "2026-05-10T01:01:00Z",
+                    "symbol": "BNB-USDT",
+                    "cost_source": "public_spread_proxy",
+                    "fallback_level": "NONE",
+                    "degraded_cost_model": "false",
+                },
+                {
+                    "bundle_ts": "2026-05-10T01:02:00Z",
+                    "raw_payload_json": (
+                        '{"response": {"cost_source": "public_spread_proxy", '
+                        '"fallback_level": "REGIME_FALLBACK", '
+                        '"degraded_cost_model": true}}'
+                    ),
+                },
+            ]
+        ),
+        lake_root / "silver" / "v5_quant_lab_cost_usage",
+    )
+
+    calibrate_costs_for_day(lake_root, "2026-05-10", min_sample_count=1)
+
+    health = read_parquet_dataset(lake_root / "gold" / "cost_health_daily").to_dicts()[0]
+    assert health["api_cost_usage_rows"] == 3
+    assert health["api_global_default_count"] == 1
+    assert health["api_symbol_proxy_hit_count"] == 2
+    assert health["api_regime_fallback_count"] == 1
+    assert health["api_degraded_cost_count"] == 2
+
+
 def test_v5_trade_events_generate_actual_fill_bucket_before_spread_proxy(tmp_path):
     lake_root = tmp_path / "lake"
     _write_v5_trades(lake_root)

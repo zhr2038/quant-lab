@@ -7,7 +7,11 @@ from typing import Any
 import polars as pl
 from pydantic import BaseModel, ConfigDict, Field
 
-from quant_lab.costs.health import build_cost_health_daily, publish_cost_health_daily
+from quant_lab.costs.health import (
+    build_cost_health_daily,
+    publish_cost_health_daily,
+    summarize_cost_api_usage,
+)
 from quant_lab.costs.model import DEFAULT_FALLBACK_COST_BPS, CostBucketDaily
 from quant_lab.data.lake import read_parquet_dataset, read_parquet_lazy, write_parquet_dataset
 from quant_lab.ingest.okx_readonly_private import (
@@ -23,6 +27,7 @@ ACCOUNT_BILL_DATASET = Path("silver") / "account_bill"
 ORDERBOOK_SNAPSHOT_DATASET = Path("silver") / "orderbook_snapshot"
 TRADE_PRINT_DATASET = Path("silver") / "trade_print"
 V5_TRADE_EVENT_DATASET = Path("silver") / "v5_trade_event"
+V5_QUANT_LAB_COST_USAGE_DATASET = Path("silver") / "v5_quant_lab_cost_usage"
 MARKET_BAR_DATASET = Path("silver") / "market_bar"
 COST_BUCKET_DAILY_DATASET = Path("gold") / "cost_bucket_daily"
 COST_HEALTH_DAILY_DATASET = Path("gold") / "cost_health_daily"
@@ -82,6 +87,7 @@ def calibrate_costs_for_day(
     fill_events = _private_fill_events_for_day(root, day)
     account_bills = _private_account_bills_for_day(root, day)
     v5_trade_events = _v5_trade_events_for_day(root, day)
+    v5_cost_usage = _v5_cost_usage_for_day(root, day)
     rows = build_cost_bucket_daily_rows(
         fill_events=fill_events,
         account_bills=account_bills,
@@ -113,6 +119,7 @@ def calibrate_costs_for_day(
         v5_trade_rows=v5_trade_events.height,
         fee_bps_missing_count=_fee_missing_count(fill_events)
         + _v5_trade_fee_missing_count(v5_trade_events),
+        **summarize_cost_api_usage(v5_cost_usage),
     )
     health_rows_written = publish_cost_health_daily(root, health)
     return CostCalibrationResult(
@@ -662,6 +669,22 @@ def _v5_trade_events_for_day(root: Path, day: str) -> pl.DataFrame:
             lookback_days=PRIVATE_COST_LOOKBACK_DAYS,
             timestamp_columns=("ts_utc", "ts", "timestamp", "time", "created_at"),
         )
+    )
+
+
+def _v5_cost_usage_for_day(root: Path, day: str) -> pl.DataFrame:
+    return _filter_recent_window(
+        read_parquet_dataset(root / V5_QUANT_LAB_COST_USAGE_DATASET),
+        day=day,
+        lookback_days=1,
+        timestamp_columns=(
+            "ts_utc",
+            "ts",
+            "timestamp",
+            "created_at",
+            "bundle_ts",
+            "ingest_ts",
+        ),
     )
 
 

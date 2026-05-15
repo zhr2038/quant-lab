@@ -37,6 +37,7 @@ COST_HEALTH_DAILY_SCHEMA = {
     "api_symbol_proxy_hit_count": pl.Int64,
     "api_regime_fallback_count": pl.Int64,
     "api_degraded_cost_count": pl.Int64,
+    "api_cost_usage_rows": pl.Int64,
     "warnings_json": pl.Utf8,
     "created_at": pl.Utf8,
 }
@@ -64,6 +65,7 @@ class CostHealthDaily(BaseModel):
     api_symbol_proxy_hit_count: int = Field(default=0, ge=0)
     api_regime_fallback_count: int = Field(default=0, ge=0)
     api_degraded_cost_count: int = Field(default=0, ge=0)
+    api_cost_usage_rows: int = Field(default=0, ge=0)
     warnings_json: str = "[]"
     created_at: datetime = Field(default_factory=lambda: datetime.now(UTC))
 
@@ -78,6 +80,11 @@ def build_cost_health_daily(
     private_bill_rows: int = 0,
     v5_trade_rows: int = 0,
     fee_bps_missing_count: int = 0,
+    api_global_default_count: int = 0,
+    api_symbol_proxy_hit_count: int = 0,
+    api_regime_fallback_count: int = 0,
+    api_degraded_cost_count: int = 0,
+    api_cost_usage_rows: int = 0,
 ) -> CostHealthDaily:
     expected = set(expected_symbols or [])
     if cost_rows.is_empty():
@@ -104,6 +111,11 @@ def build_cost_health_daily(
                 )
             ),
             min_sample_count=min_sample_count,
+            api_global_default_count=api_global_default_count,
+            api_symbol_proxy_hit_count=api_symbol_proxy_hit_count,
+            api_regime_fallback_count=api_regime_fallback_count,
+            api_degraded_cost_count=api_degraded_cost_count,
+            api_cost_usage_rows=api_cost_usage_rows,
             warnings_json=_json(warnings),
         )
 
@@ -188,8 +200,60 @@ def build_cost_health_daily(
         actual_sample_count_by_symbol=_actual_sample_count_by_symbol(actual_rows),
         data_quality_checks_json=_json(data_quality_checks),
         min_sample_count=min_sample_count,
+        api_global_default_count=api_global_default_count,
+        api_symbol_proxy_hit_count=api_symbol_proxy_hit_count,
+        api_regime_fallback_count=api_regime_fallback_count,
+        api_degraded_cost_count=api_degraded_cost_count,
+        api_cost_usage_rows=api_cost_usage_rows,
         warnings_json=_json(warnings),
     )
+
+
+def summarize_cost_api_usage(cost_usage: pl.DataFrame) -> dict[str, int]:
+    if cost_usage.is_empty():
+        return {
+            "api_global_default_count": 0,
+            "api_symbol_proxy_hit_count": 0,
+            "api_regime_fallback_count": 0,
+            "api_degraded_cost_count": 0,
+            "api_cost_usage_rows": 0,
+        }
+
+    global_default = 0
+    symbol_proxy_hit = 0
+    regime_fallback = 0
+    degraded = 0
+    rows = cost_usage.to_dicts()
+    for row in rows:
+        payload = _payload(row.get("raw_payload_json"))
+        source = _lower_text(
+            _first_value(row, payload, ["cost_source", "source", "response.cost_source"])
+        )
+        fallback_level = _upper_text(
+            _first_value(row, payload, ["fallback_level", "response.fallback_level"])
+        )
+        if source == DEFAULT_SOURCE or fallback_level == "GLOBAL_DEFAULT":
+            global_default += 1
+        if source in {PROXY_SOURCE, "public_proxy"}:
+            symbol_proxy_hit += 1
+        if "REGIME_FALLBACK" in fallback_level:
+            regime_fallback += 1
+        if _truthy(
+            _first_value(
+                row,
+                payload,
+                ["degraded_cost_model", "response.degraded_cost_model"],
+            )
+        ):
+            degraded += 1
+
+    return {
+        "api_global_default_count": global_default,
+        "api_symbol_proxy_hit_count": symbol_proxy_hit,
+        "api_regime_fallback_count": regime_fallback,
+        "api_degraded_cost_count": degraded,
+        "api_cost_usage_rows": len(rows),
+    }
 
 
 def publish_cost_health_daily(lake_root: str | Path, row: CostHealthDaily) -> int:
@@ -242,6 +306,50 @@ def cost_health_daily_frame(rows: list[CostHealthDaily]) -> pl.DataFrame:
         schema=COST_HEALTH_DAILY_SCHEMA,
         orient="row",
     )
+
+
+def _payload(value: Any) -> dict[str, Any]:
+    if not isinstance(value, str) or not value.strip():
+        return {}
+    try:
+        parsed = json.loads(value)
+    except json.JSONDecodeError:
+        return {}
+    return parsed if isinstance(parsed, dict) else {}
+
+
+def _first_value(row: dict[str, Any], payload: dict[str, Any], fields: list[str]) -> Any:
+    for field in fields:
+        value = _nested_value(row, field)
+        if value not in {None, ""}:
+            return value
+        value = _nested_value(payload, field)
+        if value not in {None, ""}:
+            return value
+    return None
+
+
+def _nested_value(source: dict[str, Any], field: str) -> Any:
+    current: Any = source
+    for part in field.split("."):
+        if not isinstance(current, dict) or part not in current:
+            return None
+        current = current[part]
+    return current
+
+
+def _lower_text(value: Any) -> str:
+    return str(value or "").strip().lower()
+
+
+def _upper_text(value: Any) -> str:
+    return str(value or "").strip().upper()
+
+
+def _truthy(value: Any) -> bool:
+    if isinstance(value, bool):
+        return value
+    return str(value or "").strip().lower() in {"1", "true", "yes", "y", "on"}
 
 
 def _is_fallback_row(row: dict[str, Any]) -> bool:

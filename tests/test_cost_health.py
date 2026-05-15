@@ -6,6 +6,7 @@ from quant_lab.costs.health import (
     build_cost_health_daily,
     publish_cost_health_daily,
     read_cost_health_daily,
+    summarize_cost_api_usage,
 )
 
 
@@ -26,12 +27,53 @@ def test_cost_health_ok_with_actual_rows(tmp_path):
         day="2026-05-10",
         min_sample_count=30,
         expected_symbols=["BTC-USDT"],
+        api_global_default_count=1,
+        api_symbol_proxy_hit_count=2,
+        api_regime_fallback_count=3,
+        api_degraded_cost_count=4,
+        api_cost_usage_rows=5,
     )
 
     assert row.status == "OK"
     assert row.actual_rows == 1
     assert row.fallback_ratio == 0
-    assert row.api_degraded_cost_count == 0
+    assert row.api_global_default_count == 1
+    assert row.api_symbol_proxy_hit_count == 2
+    assert row.api_regime_fallback_count == 3
+    assert row.api_degraded_cost_count == 4
+    assert row.api_cost_usage_rows == 5
+
+
+def test_cost_health_summarizes_api_cost_usage_rows():
+    stats = summarize_cost_api_usage(
+        pl.DataFrame(
+            [
+                {
+                    "cost_source": "global_default",
+                    "fallback_level": "GLOBAL_DEFAULT",
+                    "degraded_cost_model": "true",
+                },
+                {
+                    "cost_source": "public_spread_proxy",
+                    "fallback_level": "NONE",
+                    "degraded_cost_model": "false",
+                },
+                {
+                    "raw_payload_json": (
+                        '{"response": {"cost_source": "public_spread_proxy", '
+                        '"fallback_level": "REGIME_FALLBACK", '
+                        '"degraded_cost_model": true}}'
+                    )
+                },
+            ]
+        )
+    )
+
+    assert stats["api_cost_usage_rows"] == 3
+    assert stats["api_global_default_count"] == 1
+    assert stats["api_symbol_proxy_hit_count"] == 2
+    assert stats["api_regime_fallback_count"] == 1
+    assert stats["api_degraded_cost_count"] == 2
 
 
 def test_cost_health_counts_actual_fills_source():

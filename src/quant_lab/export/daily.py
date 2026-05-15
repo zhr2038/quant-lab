@@ -541,7 +541,7 @@ def export_daily_pack(
 
     _fail_on_secrets(members)
 
-    zip_path = output_root / f"quant_lab_expert_pack_{day.isoformat()}.zip"
+    zip_path = _unique_export_zip_path(output_root, day, generated_at)
     _write_zip(zip_path, members)
     return DailyExportResult(
         export_date=day.isoformat(),
@@ -552,6 +552,17 @@ def export_daily_pack(
         warnings=warnings,
         row_counts=snapshot.row_counts,
     )
+
+
+def _unique_export_zip_path(output_root: Path, day: date, generated_at: datetime) -> Path:
+    timestamp = generated_at.astimezone(UTC).strftime("%Y%m%dT%H%M%S%fZ")
+    base_name = f"quant_lab_expert_pack_{day.isoformat()}_{timestamp}"
+    candidate = output_root / f"{base_name}.zip"
+    counter = 1
+    while candidate.exists():
+        candidate = output_root / f"{base_name}_{counter}.zip"
+        counter += 1
+    return candidate
 
 
 def validate_expert_pack(path: str | Path) -> ExpertPackValidationResult:

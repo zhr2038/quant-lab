@@ -1,3 +1,5 @@
+import json
+import os
 import zipfile
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
@@ -510,6 +512,31 @@ def test_expert_exports_generate_today_button_invokes_export(tmp_path, monkeypat
     assert captured["out_dir"] == tmp_path / "exports"
     assert captured["profile"] == "expert"
     assert any("已生成专家包" in str(value) for value in _call_values(fake, "success"))
+    downloads = _call_values(fake, "download_button")
+    assert any(item["file_name"] == "quant_lab_expert_pack_test.zip" for item in downloads)
+
+
+def test_expert_exports_summary_uses_mtime_for_latest_pack(tmp_path):
+    exports_root = tmp_path / "exports"
+    exports_root.mkdir()
+    old_pack = exports_root / "quant_lab_expert_pack_2026-05-15_999999.zip"
+    new_pack = exports_root / "quant_lab_expert_pack_2026-05-15_000001.zip"
+    for pack, marker in [(old_pack, "old"), (new_pack, "new")]:
+        with zipfile.ZipFile(pack, "w") as archive:
+            archive.writestr("manifest.json", json.dumps({"marker": marker}))
+            archive.writestr("data_quality.json", "{}")
+            archive.writestr("expert_questions.md", "")
+    old_time = datetime(2026, 5, 15, 1, tzinfo=UTC).timestamp()
+    new_time = datetime(2026, 5, 15, 2, tzinfo=UTC).timestamp()
+    old_pack.touch()
+    new_pack.touch()
+    os.utime(old_pack, (old_time, old_time))
+    os.utime(new_pack, (new_time, new_time))
+
+    summary = readers.expert_export_summary(exports_root)
+
+    assert summary["latest_pack"] == str(new_pack)
+    assert summary["manifest_summary"]["marker"] == "new"
 
 
 def _call_values(fake: "FakeStreamlit", name: str) -> list[object]:

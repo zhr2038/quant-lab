@@ -27,6 +27,7 @@ def render(
     st.caption(f"导出根目录：{root}")
     if _button(st, "生成今日专家包", key="generate_today_expert_pack"):
         _generate_today_pack(st, lake_root=Path(lake_root), exports_root=root)
+    _button(st, "刷新专家包列表", key="refresh_expert_pack_list")
 
     summary = readers.expert_export_summary(root)
 

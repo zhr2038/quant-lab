@@ -1186,7 +1186,7 @@ def v5_telemetry_summary(lake_root: str | Path) -> dict[str, Any]:
 
 def expert_export_summary(exports_root: str | Path) -> dict[str, Any]:
     root = Path(exports_root)
-    packs = sorted(root.glob("quant_lab_expert_pack_*.zip")) if root.exists() else []
+    packs = _expert_pack_paths(root)
     if not packs:
         return {
             "latest_pack": None,
@@ -1197,7 +1197,7 @@ def expert_export_summary(exports_root: str | Path) -> dict[str, Any]:
             "warnings": [f"未在目录下找到专家包：{root}"],
         }
 
-    latest = packs[-1]
+    latest = packs[0]
     manifest = _read_json_from_zip(latest, "manifest.json")
     data_quality = _read_json_from_zip(latest, "data_quality.json")
     questions = _read_text_from_zip(latest, "expert_questions.md").splitlines()
@@ -1218,6 +1218,16 @@ def expert_export_summary(exports_root: str | Path) -> dict[str, Any]:
         "expert_questions": [line for line in questions if line.strip()][:20],
         "warnings": [],
     }
+
+
+def _expert_pack_paths(root: Path) -> list[Path]:
+    if not root.exists():
+        return []
+    return sorted(
+        root.glob("quant_lab_expert_pack_*.zip"),
+        key=lambda path: (path.stat().st_mtime, path.name),
+        reverse=True,
+    )
 
 
 def default_exports_root(lake_root: str | Path) -> Path:

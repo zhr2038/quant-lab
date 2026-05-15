@@ -67,6 +67,32 @@ def test_export_daily_pack_writes_required_members(tmp_path):
         assert archive.read("charts/market_close.png").startswith(b"\x89PNG")
 
 
+def test_export_daily_pack_uses_unique_same_day_file_names(tmp_path):
+    lake_root = _fixture_lake(tmp_path)
+    out_dir = tmp_path / "exports"
+
+    first = export_daily_pack(
+        export_date="2026-05-11",
+        lake_root=lake_root,
+        out_dir=out_dir,
+        profile="expert",
+        command_line=["qlab", "export-daily"],
+    )
+    second = export_daily_pack(
+        export_date="2026-05-11",
+        lake_root=lake_root,
+        out_dir=out_dir,
+        profile="expert",
+        command_line=["qlab", "export-daily"],
+    )
+
+    assert first.zip_path != second.zip_path
+    assert Path(first.zip_path).exists()
+    assert Path(second.zip_path).exists()
+    assert Path(first.zip_path).name.startswith("quant_lab_expert_pack_2026-05-11_")
+    assert Path(second.zip_path).name.startswith("quant_lab_expert_pack_2026-05-11_")
+
+
 def test_export_empty_csv_members_have_fixed_headers(tmp_path):
     result = export_daily_pack(
         export_date="2026-05-11",

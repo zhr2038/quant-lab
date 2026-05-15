@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import math
 import statistics
 from collections import Counter, defaultdict
@@ -11,7 +12,6 @@ import polars as pl
 from pydantic import BaseModel, ConfigDict, Field
 
 from quant_lab.data.lake import read_parquet_dataset, upsert_parquet_dataset
-from quant_lab.reports.enforce_readiness import build_enforce_readiness_report
 from quant_lab.strategy_telemetry.sanitize import safe_json_dumps
 from quant_lab.symbols import normalize_symbol
 
@@ -26,6 +26,7 @@ SHADOW_OUTCOME_DATASET = Path("silver") / "v5_shadow_outcome"
 COST_BUCKET_DAILY_DATASET = Path("gold") / "cost_bucket_daily"
 TRADE_EVENT_DATASET = Path("silver") / "v5_trade_event"
 RISK_PERMISSION_DATASET = Path("gold") / "risk_permission"
+V5_ENFORCEMENT_DATASET = Path("gold") / "v5_quant_lab_enforcement_daily"
 
 DECISIONS = (
     "KILL",
@@ -466,15 +467,28 @@ def _risk_context(risk_permission: pl.DataFrame) -> dict[str, Any]:
 
 
 def _enforce_readiness_context(root: Path) -> dict[str, Any]:
-    try:
-        report = build_enforce_readiness_report(root)
-    except Exception as exc:
-        return {"readiness_status": "UNKNOWN", "error": str(exc)}
+    frame = read_parquet_dataset(root / V5_ENFORCEMENT_DATASET)
+    if frame.is_empty():
+        return {"readiness_status": "UNKNOWN"}
+    rows = frame.to_dicts()
+    selected = max(
+        rows,
+        key=lambda row: _coerce_timestamp(
+            row.get("created_at") or row.get("latest_bundle_ts") or row.get("date")
+        )
+        or datetime.min.replace(tzinfo=UTC),
+    )
+    status = _clean_text(selected.get("status")).upper()
+    readiness_status = {
+        "OK": "READY",
+        "WARNING": "WARN",
+        "CRITICAL": "BLOCKED",
+    }.get(status, status or "UNKNOWN")
     return {
-        "readiness_status": report.readiness_status,
-        "shadow_only_recommended": report.shadow_only_recommended,
-        "blocked_reasons": report.blocked_reasons,
-        "warning_reasons": report.warning_reasons,
+        "readiness_status": readiness_status,
+        "shadow_only_recommended": readiness_status != "READY",
+        "blocked_reasons": _json_list(selected.get("critical_reasons_json")),
+        "warning_reasons": _json_list(selected.get("warnings_json")),
     }
 
 
@@ -603,3 +617,15 @@ def _parse_day(value: str | date | None) -> date:
     if value and str(value).strip().lower() != "auto":
         return date.fromisoformat(str(value))
     return datetime.now(UTC).date()
+
+
+def _json_list(value: Any) -> list[str]:
+    if not isinstance(value, str) or not value.strip():
+        return []
+    try:
+        parsed = json.loads(value)
+    except json.JSONDecodeError:
+        return []
+    if not isinstance(parsed, list):
+        return []
+    return [str(item) for item in parsed]

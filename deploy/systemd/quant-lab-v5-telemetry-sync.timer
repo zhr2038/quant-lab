@@ -1,10 +1,10 @@
 [Unit]
-Description=Run quant-lab V5 telemetry sync every 10 minutes
+Description=Run quant-lab V5 telemetry sync every 3 minutes
 
 [Timer]
 OnActiveSec=2min
-OnUnitActiveSec=10min
-RandomizedDelaySec=1min
+OnUnitActiveSec=3min
+RandomizedDelaySec=30s
 Persistent=false
 
 [Install]

@@ -118,13 +118,13 @@ sudo systemctl enable --now quant-lab-v5-telemetry-sync.timer
 sudo systemctl enable --now quant-lab-v5-daily-analysis.timer
 ```
 
-Incremental sync runs every 10 minutes:
+Incremental sync runs every 3 minutes:
 
 ```text
 /opt/quant-lab/.venv/bin/qlab sync-v5-telemetry --config /etc/quant-lab/v5_telemetry_remote.yaml
 ```
 
-Daily analysis runs at 00:10:
+Telemetry analysis runs every 5 minutes:
 
 ```text
 /opt/quant-lab/.venv/bin/qlab analyze-v5-telemetry --lake-root /var/lib/quant-lab/lake

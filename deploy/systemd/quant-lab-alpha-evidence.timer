@@ -1,10 +1,10 @@
 [Unit]
-Description=Run quant-lab alpha evidence publisher hourly
+Description=Run quant-lab alpha evidence publisher every 15 minutes
 
 [Timer]
-OnActiveSec=20min
-OnUnitActiveSec=1h
-RandomizedDelaySec=3min
+OnActiveSec=8min
+OnUnitActiveSec=15min
+RandomizedDelaySec=1min
 Persistent=false
 
 [Install]

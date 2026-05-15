@@ -269,8 +269,10 @@ def _attach_costs(
     join_cols = ["symbol", cost_column]
     if "cost_model_version" in latest.columns:
         join_cols.append("cost_model_version")
-    if "source" in latest.columns:
-        latest = latest.rename({"source": "cost_source"})
+    if "cost_source" in latest.columns:
+        join_cols.append("cost_source")
+    elif "source" in latest.columns:
+        latest = latest.with_columns(pl.col("source").alias("cost_source"))
         join_cols.append("cost_source")
     joined = dataset.join(latest.select(join_cols), on="symbol", how="left")
     if cost_column not in joined.columns:

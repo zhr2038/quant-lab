@@ -1,9 +1,11 @@
 [Unit]
-Description=Run quant-lab V5 telemetry daily analysis
+Description=Run quant-lab V5 telemetry analysis every 5 minutes
 
 [Timer]
-OnCalendar=*-*-* 00:10:00
-Persistent=true
+OnActiveSec=4min
+OnUnitActiveSec=5min
+RandomizedDelaySec=45s
+Persistent=false
 
 [Install]
 WantedBy=timers.target

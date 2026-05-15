@@ -23,6 +23,18 @@ def test_build_alpha_dataset_joins_features_to_delayed_labels(tmp_path):
     assert "alpha_score" in result.frame.columns
 
 
+def test_build_alpha_dataset_handles_cost_bucket_with_source_and_cost_source(tmp_path):
+    lake = tmp_path / "lake"
+    _write_research_fixture(lake, include_cost_source=True)
+    spec = _spec(min_samples=10)
+
+    result = build_alpha_dataset(lake, spec)
+
+    assert result.frame.height > 0
+    assert "cost_source" in result.frame.columns
+    assert result.frame["cost_source"].drop_nulls().to_list()[0] == "public_spread_proxy"
+
+
 def test_build_alpha_evidence_computes_metrics_without_paper_live_ready(tmp_path):
     lake = tmp_path / "lake"
     _write_research_fixture(lake)
@@ -89,10 +101,10 @@ def _spec(min_samples: int) -> AlphaResearchSpec:
     )
 
 
-def _write_research_fixture(lake) -> None:
+def _write_research_fixture(lake, *, include_cost_source: bool = False) -> None:
     _write_market_fixture(lake)
     _write_feature_fixture(lake)
-    _write_cost_fixture(lake)
+    _write_cost_fixture(lake, include_cost_source=include_cost_source)
 
 
 def _write_market_fixture(lake) -> None:
@@ -156,36 +168,37 @@ def _write_feature_fixture(lake) -> None:
     write_parquet_dataset(pl.DataFrame(rows), lake / "gold" / "feature_value")
 
 
-def _write_cost_fixture(lake) -> None:
+def _write_cost_fixture(lake, *, include_cost_source: bool = False) -> None:
+    rows = []
+    for symbol in ["BTC-USDT", "ETH-USDT", "SOL-USDT", "BNB-USDT"]:
+        row = {
+            "day": "2026-05-10",
+            "symbol": symbol,
+            "regime": "public_proxy",
+            "event_type": "spread_proxy",
+            "notional_bucket": "all",
+            "sample_count": 30,
+            "fee_bps_p50": 0.0,
+            "fee_bps_p75": 0.0,
+            "fee_bps_p90": 0.0,
+            "slippage_bps_p50": 0.0,
+            "slippage_bps_p75": 0.0,
+            "slippage_bps_p90": 0.0,
+            "spread_bps_p50": 1.0,
+            "spread_bps_p75": 1.0,
+            "spread_bps_p90": 1.0,
+            "total_cost_bps_p50": 1.0,
+            "total_cost_bps_p75": 1.0,
+            "total_cost_bps_p90": 1.0,
+            "fallback_level": "PUBLIC_SPREAD_PROXY",
+            "source": "public_spread_proxy",
+            "cost_model_version": "costs-test",
+            "created_at": "2026-05-10T00:00:00Z",
+        }
+        if include_cost_source:
+            row["cost_source"] = "public_spread_proxy"
+        rows.append(row)
     write_parquet_dataset(
-        pl.DataFrame(
-            [
-                {
-                    "day": "2026-05-10",
-                    "symbol": symbol,
-                    "regime": "public_proxy",
-                    "event_type": "spread_proxy",
-                    "notional_bucket": "all",
-                    "sample_count": 30,
-                    "fee_bps_p50": 0.0,
-                    "fee_bps_p75": 0.0,
-                    "fee_bps_p90": 0.0,
-                    "slippage_bps_p50": 0.0,
-                    "slippage_bps_p75": 0.0,
-                    "slippage_bps_p90": 0.0,
-                    "spread_bps_p50": 1.0,
-                    "spread_bps_p75": 1.0,
-                    "spread_bps_p90": 1.0,
-                    "total_cost_bps_p50": 1.0,
-                    "total_cost_bps_p75": 1.0,
-                    "total_cost_bps_p90": 1.0,
-                    "fallback_level": "PUBLIC_SPREAD_PROXY",
-                    "source": "public_spread_proxy",
-                    "cost_model_version": "costs-test",
-                    "created_at": "2026-05-10T00:00:00Z",
-                }
-                for symbol in ["BTC-USDT", "ETH-USDT", "SOL-USDT", "BNB-USDT"]
-            ]
-        ),
+        pl.DataFrame(rows),
         lake / "gold" / "cost_bucket_daily",
     )

@@ -43,13 +43,33 @@ from quant_lab.web import readers
 SECTIONS = ["market", "features", "costs", "research", "risk", "anomalies", "v5", "charts"]
 HEAVY_EXPORT_DATASET_LIMITS = {
     "okx_public_ws": 5_000,
+    "feature_value": 20_000,
+    "strategy_evidence_sample": 20_000,
     "trade_print": 20_000,
     "orderbook_snapshot": 20_000,
+    "v5_decision_audit": 20_000,
+    "v5_trade_event": 20_000,
+    "v5_quant_lab_usage": 20_000,
+    "v5_quant_lab_compliance": 20_000,
+    "v5_quant_lab_cost_usage": 20_000,
+    "v5_quant_lab_fallback": 20_000,
+    "v5_candidate_event": 50_000,
+    "v5_candidate_label": 50_000,
 }
 HEAVY_EXPORT_RECENT_FILE_LIMITS = {
     "okx_public_ws": 50,
+    "feature_value": 100,
+    "strategy_evidence_sample": 100,
     "trade_print": 50,
     "orderbook_snapshot": 50,
+    "v5_decision_audit": 100,
+    "v5_trade_event": 100,
+    "v5_quant_lab_usage": 100,
+    "v5_quant_lab_compliance": 100,
+    "v5_quant_lab_cost_usage": 100,
+    "v5_quant_lab_fallback": 100,
+    "v5_candidate_event": 100,
+    "v5_candidate_label": 100,
 }
 SECTION_DATASETS = {
     "market": ["market_bar", "trade_print", "orderbook_snapshot", "okx_public_ws"],
@@ -1015,7 +1035,8 @@ def _collect_recent_heavy_files(
     rows = 0
     for path in reversed(files):
         try:
-            frame = pl.read_parquet(path)
+            remaining = max(limit - rows, 1)
+            frame = pl.scan_parquet(str(path)).tail(remaining).collect()
         except Exception:
             continue
         if frame.is_empty():
@@ -1038,6 +1059,34 @@ def _collect_recent_heavy_files(
     if timestamp_column is None:
         return combined.tail(limit)
     return _tail_by_time(combined, timestamp_column, limit=limit)
+
+
+def _snapshot_market_health(snapshot: _DatasetSnapshot) -> dict[str, Any]:
+    market = snapshot.frames.get("market_bar", pl.DataFrame())
+    warnings: list[str] = []
+    if market.is_empty():
+        return {
+            "duplicate_bar_count": 0,
+            "unclosed_bar_count": 0,
+            "schema_violations": ["market_bar dataset missing or empty"],
+            "warnings": ["market_bar dataset missing or empty"],
+        }
+
+    market = readers._normalize_market_frame(market)  # type: ignore[attr-defined]
+    schema_violations = readers.market_bar_schema_violations(market)
+    duplicate_count = readers.duplicate_market_bar_count(market)
+    unclosed_count = readers.unclosed_market_bar_count(market)
+    if duplicate_count:
+        warnings.append(f"market_bar duplicate primary keys: {duplicate_count}")
+    if unclosed_count:
+        warnings.append(f"unclosed market_bar rows: {unclosed_count}")
+    warnings.extend(schema_violations)
+    return {
+        "duplicate_bar_count": duplicate_count,
+        "unclosed_bar_count": unclosed_count,
+        "schema_violations": schema_violations,
+        "warnings": warnings,
+    }
 
 
 def _dataset_members(frames: dict[str, pl.DataFrame]) -> dict[str, _MemberPayload]:
@@ -1339,10 +1388,7 @@ def _data_quality_payload(
     warnings: list[str] = []
     checks: list[dict[str, Any]] = []
 
-    try:
-        health = readers.data_health_summary(lake_root)
-    except Exception as exc:
-        health = {"warnings": [f"data health summary failed: {exc}"]}
+    health = _snapshot_market_health(snapshot)
     warnings.extend(str(item) for item in health.get("warnings", []))
 
     market = snapshot.frames.get("market_bar", pl.DataFrame())

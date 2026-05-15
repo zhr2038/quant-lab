@@ -35,6 +35,7 @@ DATASET_PATHS = {
     "v5_quant_lab_compliance": Path("silver") / "v5_quant_lab_compliance",
     "v5_quant_lab_cost_usage": Path("silver") / "v5_quant_lab_cost_usage",
     "v5_quant_lab_fallback": Path("silver") / "v5_quant_lab_fallback",
+    "v5_decision_audit": Path("silver") / "v5_decision_audit",
     "v5_trade_event": Path("silver") / "v5_trade_event",
     "trade_print": Path("silver") / "trade_print",
     "orderbook_snapshot": Path("silver") / "orderbook_snapshot",
@@ -73,6 +74,7 @@ DATASET_TIMESTAMP_COLUMNS: dict[str, tuple[str, ...]] = {
     "v5_quant_lab_compliance": ("ingest_ts", "bundle_ts"),
     "v5_quant_lab_cost_usage": ("ingest_ts", "bundle_ts"),
     "v5_quant_lab_fallback": ("ingest_ts", "bundle_ts"),
+    "v5_decision_audit": ("ingest_ts", "bundle_ts"),
     "v5_trade_event": ("ts_utc", "ts", "ingest_ts", "bundle_ts"),
 }
 

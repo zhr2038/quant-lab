@@ -428,6 +428,61 @@ def test_export_warns_on_risk_version_mismatch_with_v5_telemetry(tmp_path):
     )
 
 
+def test_data_quality_separates_generic_and_v5_decision_audit(tmp_path):
+    lake_root = _fixture_lake(tmp_path)
+    now = datetime.now(UTC)
+    write_parquet_dataset(
+        pl.DataFrame(
+            [
+                {
+                    "strategy": "v5",
+                    "date": now.date().isoformat(),
+                    "status": "OK",
+                    "latest_bundle_ts": now,
+                    "decision_audit_count_24h": 31,
+                    "duplicate_rate": 0.0,
+                    "fallback_rate": 0.0,
+                }
+            ]
+        ),
+        lake_root / "gold" / "strategy_health_daily",
+    )
+
+    result = export_daily_pack(
+        export_date="2026-05-12",
+        lake_root=lake_root,
+        out_dir=tmp_path / "exports",
+        profile="expert",
+        command_line=["qlab", "export-daily"],
+    )
+
+    with zipfile.ZipFile(result.zip_path) as archive:
+        data_quality = json.loads(archive.read("data_quality.json").decode("utf-8"))
+        missing_rows = list(
+            csv.DictReader(io.StringIO(archive.read("anomalies/missing_data.csv").decode("utf-8")))
+        )
+
+    checks = {check["name"]: check for check in data_quality["checks"]}
+    assert checks["generic_decision_audit_present"]["status"] == "WARN"
+    assert "legacy generic silver/decision_audit is optional for V5" in checks[
+        "generic_decision_audit_present"
+    ]["detail"]
+    assert checks["v5_decision_audit_present"]["status"] == "PASS"
+    assert checks["v5_decision_audit_count"]["detail"] == "v5_decision_audit_count=31"
+    assert data_quality["decision_audit"]["generic_decision_audit_present"] is False
+    assert data_quality["decision_audit"]["v5_decision_audit_count"] == 31
+    assert data_quality["decision_audit"]["v5_decision_audit_present"] is True
+    assert any(
+        row["dataset"] == "decision_audit"
+        and row["reason"] == "legacy_optional_non_v5_research_missing"
+        for row in missing_rows
+    )
+    assert (
+        data_quality["quant_lab_enforce_readiness"]["metrics"]["decision_audit_count"]
+        == 31
+    )
+
+
 def test_export_warns_public_proxy_cost_without_private_actuals(tmp_path):
     lake_root = _fixture_lake(tmp_path)
     write_parquet_dataset(

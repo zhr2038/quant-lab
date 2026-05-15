@@ -62,6 +62,7 @@ SECTION_DATASETS = {
     "risk": ["risk_permission"],
     "anomalies": ["market_bar", "feature_value", "cost_bucket_daily", "gate_decision"],
     "v5": [
+        "v5_decision_audit",
         "v5_trade_event",
         "strategy_health_daily",
         "v5_execution_quality_daily",
@@ -108,6 +109,7 @@ REQUIRED_MEMBERS = [
     "anomalies/stale_data.csv",
     "anomalies/schema_violations.csv",
     "v5/v5_strategy_health.csv",
+    "v5/v5_decision_audit.csv",
     "v5/v5_execution_quality.csv",
     "v5/v5_gate_compliance.csv",
     "v5/v5_missed_opportunity.csv",
@@ -292,6 +294,16 @@ CSV_SCHEMAS: dict[str, list[str]] = {
         "duplicate_rate",
         "first_seen_bundle_ts",
         "last_seen_bundle_ts",
+    ],
+    "v5/v5_decision_audit.csv": [
+        "strategy",
+        "bundle_sha256",
+        "bundle_name",
+        "bundle_ts",
+        "source_path_inside_bundle",
+        "run_id",
+        "ingest_ts",
+        "raw_payload_json",
     ],
     "v5/v5_execution_quality.csv": [
         "strategy",
@@ -638,7 +650,7 @@ def _load_snapshot(lake_root: Path) -> _DatasetSnapshot:
             warnings.append(warning)
     for name, count in sorted(row_counts.items()):
         if count == 0:
-            warnings.append(f"{name} dataset is missing or empty")
+            warnings.append(f"{name} dataset is {_missing_dataset_reason(name)}")
     return _DatasetSnapshot(frames=frames, row_counts=row_counts, warnings=warnings)
 
 
@@ -723,6 +735,7 @@ def _dataset_members(frames: dict[str, pl.DataFrame]) -> dict[str, _MemberPayloa
     trades = _normalize_symbol_frame(frames.get("trade_print", pl.DataFrame()))
     books = _normalize_symbol_frame(frames.get("orderbook_snapshot", pl.DataFrame()))
     v5_health = frames.get("strategy_health_daily", pl.DataFrame())
+    v5_decisions = frames.get("v5_decision_audit", pl.DataFrame())
     v5_execution = frames.get("v5_execution_quality_daily", pl.DataFrame())
     v5_gate = frames.get("v5_gate_compliance_daily", pl.DataFrame())
     v5_missed = frames.get("v5_missed_opportunity_daily", pl.DataFrame())
@@ -782,6 +795,10 @@ def _dataset_members(frames: dict[str, pl.DataFrame]) -> dict[str, _MemberPayloa
         "anomalies/stale_data.csv": _csv_text(_stale_rows(frames)),
         "anomalies/schema_violations.csv": _csv_text(_schema_violation_rows(market)),
         "v5/v5_strategy_health.csv": _csv_member("v5/v5_strategy_health.csv", v5_health),
+        "v5/v5_decision_audit.csv": _csv_member(
+            "v5/v5_decision_audit.csv",
+            v5_decisions,
+        ),
         "v5/v5_execution_quality.csv": _csv_member("v5/v5_execution_quality.csv", v5_execution),
         "v5/v5_gate_compliance.csv": _csv_member("v5/v5_gate_compliance.csv", v5_gate),
         "v5/v5_missed_opportunity.csv": _csv_member("v5/v5_missed_opportunity.csv", v5_missed),
@@ -988,6 +1005,7 @@ def _data_quality_payload(
     cost_api_enabled = _flag_enabled("QUANT_LAB_COST_API_ENABLED", default=True)
     v5_integration_enabled = _flag_enabled("QUANT_LAB_V5_INTEGRATION_ENABLED", default=True)
     research_enabled = _flag_enabled("QUANT_LAB_RESEARCH_ENABLED", default=False)
+    decision_audit_quality = _decision_audit_quality(snapshot.frames)
 
     costs = snapshot.frames.get("cost_bucket_daily", pl.DataFrame())
     fallback_rows = _cost_fallbacks(costs)
@@ -1043,6 +1061,33 @@ def _data_quality_payload(
             "gate_has_alpha_evidence",
             _gates_have_evidence(gates, evidence),
             "gate_decision rows should have matching alpha_evidence when both datasets exist",
+            warning_only=True,
+        )
+    )
+    checks.append(
+        _check(
+            "generic_decision_audit_present",
+            bool(decision_audit_quality["generic_decision_audit_present"]),
+            (
+                "legacy generic silver/decision_audit is optional for V5; "
+                f"rows={decision_audit_quality['generic_decision_audit_rows']}"
+            ),
+            warning_only=True,
+        )
+    )
+    checks.append(
+        _check(
+            "v5_decision_audit_present",
+            bool(decision_audit_quality["v5_decision_audit_present"]),
+            f"v5_decision_audit_count={decision_audit_quality['v5_decision_audit_count']}",
+            severity="critical" if v5_integration_enabled else "warning",
+        )
+    )
+    checks.append(
+        _check(
+            "v5_decision_audit_count",
+            True,
+            f"v5_decision_audit_count={decision_audit_quality['v5_decision_audit_count']}",
             warning_only=True,
         )
     )
@@ -1196,6 +1241,7 @@ def _data_quality_payload(
         "checks": checks,
         "warnings": sorted(set(warnings)),
         "risk_permission": risk_quality,
+        "decision_audit": decision_audit_quality,
         "quant_lab_enforce_readiness": enforce_readiness.model_dump(mode="json"),
         "shadow_only_recommended": enforce_readiness.shadow_only_recommended,
     }
@@ -1393,6 +1439,38 @@ def _latest_v5_bundle_ts(frames: dict[str, pl.DataFrame]) -> datetime | None:
     ]
     parsed = [value for value in timestamps if value is not None]
     return max(parsed) if parsed else None
+
+
+def _decision_audit_quality(frames: dict[str, pl.DataFrame]) -> dict[str, Any]:
+    generic = frames.get("decision_audit", pl.DataFrame())
+    v5_decisions = frames.get("v5_decision_audit", pl.DataFrame())
+    strategy_health = frames.get("strategy_health_daily", pl.DataFrame())
+    health_count = 0
+    if not strategy_health.is_empty():
+        latest = _latest_by_dataset_time("strategy_health_daily", strategy_health)
+        for field in ["decision_audit_count_24h", "decision_audit_count"]:
+            value = latest.get(field)
+            if value is None:
+                continue
+            try:
+                health_count = max(health_count, int(float(value)))
+            except (TypeError, ValueError):
+                continue
+    v5_count = max(v5_decisions.height, health_count)
+    return {
+        "generic_decision_audit_present": generic.height > 0,
+        "generic_decision_audit_rows": generic.height,
+        "v5_decision_audit_count": v5_count,
+        "v5_decision_audit_present": v5_count > 0,
+        "v5_decision_audit_rows": v5_decisions.height,
+        "v5_decision_audit_count_source": (
+            "strategy_health_daily"
+            if health_count >= v5_decisions.height and health_count > 0
+            else "silver/v5_decision_audit"
+            if v5_decisions.height > 0
+            else "none"
+        ),
+    }
 
 
 def _risk_permission_quality(
@@ -1858,7 +1936,7 @@ def _anomaly_rows(frames: dict[str, pl.DataFrame]) -> pl.DataFrame:
 
 def _missing_dataset_rows(frames: dict[str, pl.DataFrame]) -> pl.DataFrame:
     rows = [
-        {"dataset": name, "reason": "missing_or_empty"}
+        {"dataset": name, "reason": _missing_dataset_reason(name)}
         for name, frame in sorted(frames.items())
         if frame.is_empty()
     ]
@@ -1867,6 +1945,14 @@ def _missing_dataset_rows(frames: dict[str, pl.DataFrame]) -> pl.DataFrame:
         if rows
         else pl.DataFrame(schema={"dataset": pl.Utf8, "reason": pl.Utf8})
     )
+
+
+def _missing_dataset_reason(dataset_name: str) -> str:
+    if dataset_name == "decision_audit":
+        return "legacy_optional_non_v5_research_missing"
+    if dataset_name == "v5_decision_audit":
+        return "v5_decision_audit_missing_or_empty"
+    return "missing_or_empty"
 
 
 def _stale_rows(frames: dict[str, pl.DataFrame]) -> pl.DataFrame:

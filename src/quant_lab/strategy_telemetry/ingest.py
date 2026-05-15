@@ -5,7 +5,7 @@ import hashlib
 import json
 import shutil
 import tempfile
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any
 
@@ -63,6 +63,12 @@ SILVER_DATASETS = {
     "v5_quant_lab_compliance": Path("silver/v5_quant_lab_compliance"),
     "v5_quant_lab_cost_usage": Path("silver/v5_quant_lab_cost_usage"),
     "v5_quant_lab_fallback": Path("silver/v5_quant_lab_fallback"),
+    "v5_candidate_event": Path("silver/v5_candidate_event"),
+}
+
+GOLD_DATASETS = {
+    "v5_candidate_label": Path("gold/v5_candidate_label"),
+    "v5_candidate_quality_daily": Path("gold/v5_candidate_quality_daily"),
 }
 
 QUANT_LAB_USAGE_PATHS = {
@@ -89,6 +95,9 @@ EVENT_KEY_METADATA_FIELDS = {
     "first_seen_bundle_ts",
     "last_seen_bundle_ts",
 }
+CANDIDATE_EVENT_SCHEMA_VERSION = "v5.candidate_snapshot.v1"
+CANDIDATE_LABEL_SCHEMA_VERSION = "v5.candidate_label.v1"
+CANDIDATE_LABEL_HORIZONS_HOURS = (4, 8, 12, 24, 48, 72, 120)
 
 
 def archive_v5_bundle(
@@ -188,6 +197,7 @@ def ingest_v5_bundle(
 
         bronze_rows = _write_bronze(lake_root, inspection, validation, secret_scan, metadata)
         silver_rows, warnings = _write_silver(lake_root, redacted_root / "redacted_files", metadata)
+        candidate_gold_rows = _write_candidate_gold(lake_root)
 
     from quant_lab.strategy_telemetry.analyze import analyze_v5_telemetry
 
@@ -204,7 +214,7 @@ def ingest_v5_bundle(
         redacted_archive_path=str(redacted_root),
         bronze_rows=bronze_rows,
         silver_rows=silver_rows,
-        gold_rows={"strategy_health_daily": 1 if analysis else 0},
+        gold_rows={"strategy_health_daily": 1 if analysis else 0, **candidate_gold_rows},
         warnings=warnings,
     )
 
@@ -321,6 +331,12 @@ def _write_silver(
         dataset_path = lake_root / dataset
         if name in EVENT_KEY_DATASETS:
             counts[name] = _upsert_event_rows(dataset_path, dataset_rows)
+        elif name == "v5_candidate_event":
+            counts[name] = _upsert_rows(
+                dataset_path,
+                dataset_rows,
+                ["strategy", "candidate_id"],
+            )
         else:
             counts[name] = _upsert_rows(
                 dataset_path,
@@ -328,6 +344,217 @@ def _write_silver(
                 ["strategy", "bundle_sha256", "source_path_inside_bundle", "row_index"],
             )
     return counts, warnings
+
+
+def _write_candidate_gold(lake_root: Path) -> dict[str, int]:
+    candidates = read_parquet_dataset(lake_root / SILVER_DATASETS["v5_candidate_event"])
+    if candidates.is_empty():
+        return {}
+    market_bars = read_parquet_dataset(lake_root / "silver/market_bar")
+    label_rows = _candidate_label_rows(candidates, market_bars)
+    quality_rows = [_candidate_quality_row(candidates, label_rows)]
+    counts: dict[str, int] = {}
+    if label_rows:
+        counts["v5_candidate_label"] = _upsert_rows(
+            lake_root / GOLD_DATASETS["v5_candidate_label"],
+            label_rows,
+            ["strategy", "candidate_id", "horizon_hours"],
+        )
+    counts["v5_candidate_quality_daily"] = _upsert_rows(
+        lake_root / GOLD_DATASETS["v5_candidate_quality_daily"],
+        quality_rows,
+        ["strategy", "date"],
+    )
+    return counts
+
+
+def _candidate_label_rows(
+    candidates: pl.DataFrame,
+    market_bars: pl.DataFrame,
+) -> list[dict[str, Any]]:
+    bars_by_symbol = _market_bars_by_symbol(market_bars)
+    rows: list[dict[str, Any]] = []
+    for candidate in candidates.to_dicts():
+        candidate_id = _clean_text(candidate.get("candidate_id"))
+        if not candidate_id:
+            continue
+        symbol = normalize_symbol(
+            candidate.get("normalized_symbol") or candidate.get("symbol") or ""
+        )
+        candidate_ts = _parse_utc_dt(candidate.get("ts_utc") or candidate.get("ts"))
+        bars = bars_by_symbol.get(symbol, [])
+        cost_bps = _numeric(candidate.get("cost_bps")) or 0.0
+        side_multiplier = _candidate_side_multiplier(candidate)
+        for horizon in CANDIDATE_LABEL_HORIZONS_HOURS:
+            label = _candidate_label_for_horizon(
+                bars=bars,
+                candidate_ts=candidate_ts,
+                horizon_hours=horizon,
+                side_multiplier=side_multiplier,
+                cost_bps=cost_bps,
+            )
+            rows.append(
+                {
+                    "strategy": candidate.get("strategy") or "v5",
+                    "candidate_label_schema_version": CANDIDATE_LABEL_SCHEMA_VERSION,
+                    "candidate_id": candidate_id,
+                    "run_id": candidate.get("run_id"),
+                    "ts_utc": candidate.get("ts_utc"),
+                    "symbol": symbol,
+                    "strategy_candidate": candidate.get("strategy_candidate"),
+                    "block_reason": candidate.get("block_reason"),
+                    "final_decision": candidate.get("final_decision"),
+                    "cost_bps": cost_bps,
+                    "cost_source": candidate.get("cost_source"),
+                    "horizon_hours": horizon,
+                    **label,
+                    "source_candidate_bundle_sha256": candidate.get("bundle_sha256"),
+                    "source_path_inside_bundle": candidate.get("source_path_inside_bundle"),
+                    "created_at": datetime.now(UTC),
+                }
+            )
+    return rows
+
+
+def _market_bars_by_symbol(market_bars: pl.DataFrame) -> dict[str, list[dict[str, Any]]]:
+    if market_bars.is_empty():
+        return {}
+    required = {"symbol", "ts", "close"}
+    if not required.issubset(set(market_bars.columns)):
+        return {}
+    rows: dict[str, list[dict[str, Any]]] = {}
+    for row in market_bars.to_dicts():
+        symbol = normalize_symbol(row.get("symbol"))
+        ts = _parse_utc_dt(row.get("ts"))
+        close = _numeric(row.get("close"))
+        if not symbol or ts is None or close is None:
+            continue
+        rows.setdefault(symbol, []).append({"ts": ts, "close": close})
+    for symbol, values in rows.items():
+        rows[symbol] = sorted(values, key=lambda item: item["ts"])
+    return rows
+
+
+def _candidate_label_for_horizon(
+    *,
+    bars: list[dict[str, Any]],
+    candidate_ts: datetime | None,
+    horizon_hours: int,
+    side_multiplier: float,
+    cost_bps: float,
+) -> dict[str, Any]:
+    if candidate_ts is None or not bars:
+        return _empty_candidate_label(horizon_hours, "insufficient_market_bar")
+    start = _first_bar_at_or_after(bars, candidate_ts)
+    future = _first_bar_at_or_after(bars, candidate_ts + timedelta(hours=horizon_hours))
+    if start is None or future is None:
+        return _empty_candidate_label(horizon_hours, "insufficient_market_bar")
+    start_close = float(start["close"])
+    future_close = float(future["close"])
+    if start_close <= 0:
+        return _empty_candidate_label(horizon_hours, "invalid_start_price")
+    horizon_ts = candidate_ts + timedelta(hours=horizon_hours)
+    path = [bar for bar in bars if candidate_ts <= bar["ts"] <= horizon_ts]
+    gross_bps = ((future_close / start_close) - 1.0) * 10_000.0 * side_multiplier
+    path_returns = [
+        ((float(bar["close"]) / start_close) - 1.0) * 10_000.0 * side_multiplier
+        for bar in path
+    ]
+    mfe_bps = max(path_returns) if path_returns else gross_bps
+    mae_bps = min(path_returns) if path_returns else gross_bps
+    net_bps = gross_bps - float(cost_bps or 0.0)
+    return {
+        "decision_ts": start["ts"],
+        "label_ts": future["ts"],
+        "gross_bps": gross_bps,
+        "net_bps_after_cost": net_bps,
+        "mfe_bps": mfe_bps,
+        "mae_bps": mae_bps,
+        "win": net_bps > 0,
+        "label_status": "complete",
+    }
+
+
+def _empty_candidate_label(horizon_hours: int, status: str) -> dict[str, Any]:
+    return {
+        "decision_ts": None,
+        "label_ts": None,
+        "gross_bps": None,
+        "net_bps_after_cost": None,
+        "mfe_bps": None,
+        "mae_bps": None,
+        "win": None,
+        "label_status": status,
+    }
+
+
+def _first_bar_at_or_after(
+    bars: list[dict[str, Any]],
+    ts: datetime,
+) -> dict[str, Any] | None:
+    for bar in bars:
+        if bar["ts"] >= ts:
+            return bar
+    return None
+
+
+def _candidate_side_multiplier(candidate: dict[str, Any]) -> float:
+    side = _clean_text(candidate.get("alpha6_side") or "").lower()
+    decision = _clean_text(candidate.get("final_decision") or "").lower()
+    if side == "sell" or "sell" in decision or "close" in decision:
+        return -1.0
+    return 1.0
+
+
+def _parse_utc_dt(value: Any) -> datetime | None:
+    normalized = _normalize_event_time(value)
+    if not normalized:
+        return None
+    try:
+        parsed = datetime.fromisoformat(str(normalized).replace("Z", "+00:00"))
+    except ValueError:
+        return None
+    return parsed.astimezone(UTC)
+
+
+def _candidate_quality_row(
+    candidates: pl.DataFrame,
+    label_rows: list[dict[str, Any]],
+) -> dict[str, Any]:
+    rows = candidates.to_dicts()
+    total = len(rows)
+    completed = sum(1 for row in label_rows if row.get("label_status") == "complete")
+    expected_labels = total * len(CANDIDATE_LABEL_HORIZONS_HOURS)
+    required_feature_fields = [
+        "final_score",
+        "f4_volume_expansion",
+        "f5_rsi_trend_confirm",
+        "alpha6_score",
+        "expected_edge_bps",
+    ]
+    feature_values = 0
+    for row in rows:
+        feature_values += sum(1 for field in required_feature_fields if _clean_text(row.get(field)))
+    feature_total = max(total * len(required_feature_fields), 1)
+    cost_covered = sum(1 for row in rows if _clean_text(row.get("cost_source")))
+    bundle_ts = max(
+        (_parse_utc_dt(row.get("bundle_ts")) for row in rows),
+        default=None,
+        key=lambda value: value or datetime.min.replace(tzinfo=UTC),
+    )
+    return {
+        "strategy": "v5",
+        "date": (bundle_ts or datetime.now(UTC)).date().isoformat(),
+        "candidate_event_rows": total,
+        "candidate_run_count": len(
+            {_clean_text(row.get("run_id")) for row in rows if _clean_text(row.get("run_id"))}
+        ),
+        "feature_completeness": feature_values / feature_total,
+        "label_completeness": completed / max(expected_labels, 1),
+        "cost_source_coverage": cost_covered / max(total, 1),
+        "label_horizons_json": json.dumps(list(CANDIDATE_LABEL_HORIZONS_HOURS)),
+        "created_at": datetime.now(UTC),
+    }
 
 
 def _append_file_rows(
@@ -366,6 +593,9 @@ def _append_file_rows(
         return
     if logical.endswith("/trades.csv"):
         rows["v5_trade_event"].extend(_v5_trade_rows(metadata, relative, file_path))
+        return
+    if logical.endswith("/candidate_snapshot.csv") or logical == "candidate_snapshot.csv":
+        rows["v5_candidate_event"].extend(_candidate_event_rows(metadata, relative, file_path))
         return
     if logical.startswith("raw/state/") and logical.endswith(".json"):
         state_type = Path(logical).stem
@@ -523,6 +753,80 @@ def _v5_trade_rows(
             }
         )
     return rows
+
+
+def _candidate_event_rows(
+    metadata: dict[str, Any],
+    relative: str,
+    file_path: Path,
+) -> list[dict[str, Any]]:
+    rows: list[dict[str, Any]] = []
+    for row in _csv_rows(metadata, relative, file_path):
+        payload = _loads_payload(row.get("raw_payload_json"))
+        run_id = _clean_text(_first_value(row, payload, ["run_id"]) or row.get("run_id"))
+        symbol_value = _clean_text(_first_value(row, payload, ["symbol", "normalized_symbol"]))
+        normalized_symbol = normalize_symbol(symbol_value) if symbol_value else ""
+        strategy_candidate = _clean_text(
+            _first_value(row, payload, ["strategy_candidate", "strategy_id", "strategy"])
+            or "portfolio"
+        )
+        candidate_id = _clean_text(_first_value(row, payload, ["candidate_id"]))
+        if not candidate_id:
+            candidate_id = _candidate_id(
+                run_id,
+                normalized_symbol or symbol_value,
+                strategy_candidate,
+            )
+        ts_utc = _normalize_event_time(_first_value(row, payload, ["ts_utc", "ts", "timestamp"]))
+        event = row | {
+            "event_type": "candidate_event",
+            "candidate_event_schema_version": CANDIDATE_EVENT_SCHEMA_VERSION,
+            "candidate_id": candidate_id,
+            "run_id": run_id or row.get("run_id"),
+            "ts_utc": ts_utc,
+            "symbol": normalized_symbol or symbol_value,
+            "normalized_symbol": normalized_symbol,
+            "strategy_candidate": strategy_candidate,
+            "candidate_quality_key": _candidate_quality_key(
+                run_id,
+                normalized_symbol,
+                strategy_candidate,
+            ),
+            "raw_payload_json": safe_json_dumps(
+                {
+                    **payload,
+                    "candidate_id": candidate_id,
+                    "run_id": run_id,
+                    "ts_utc": ts_utc,
+                    "symbol": normalized_symbol or symbol_value,
+                    "normalized_symbol": normalized_symbol,
+                    "strategy_candidate": strategy_candidate,
+                }
+            ),
+        }
+        rows.append(event)
+    return rows
+
+
+def _candidate_id(run_id: str, symbol: str, strategy_candidate: str) -> str:
+    material = "|".join(
+        [
+            str(run_id or "").strip(),
+            str(symbol or "").strip().upper(),
+            str(strategy_candidate or "portfolio").strip(),
+        ]
+    )
+    return "cand_" + hashlib.sha256(material.encode("utf-8")).hexdigest()[:24]
+
+
+def _candidate_quality_key(run_id: str, symbol: str, strategy_candidate: str) -> str:
+    return "|".join(
+        [
+            str(run_id or "").strip(),
+            str(symbol or "").strip().upper(),
+            str(strategy_candidate or "portfolio").strip(),
+        ]
+    )
 
 
 def _trade_fee_usdt(

@@ -47,6 +47,11 @@ HEAVY_EXPORT_DATASET_LIMITS = {
     "trade_print": 20_000,
     "orderbook_snapshot": 20_000,
 }
+HEAVY_EXPORT_RECENT_FILE_LIMITS = {
+    "okx_public_ws": 2_000,
+    "trade_print": 2_000,
+    "orderbook_snapshot": 2_000,
+}
 HEAVY_EXPORT_LOOKBACK_HOURS = 6
 
 SECTION_DATASETS = {
@@ -977,7 +982,15 @@ def _load_export_frame(
 
     dataset_path = readers.dataset_path_for(lake_root, dataset_name)
     try:
-        lazy_frame = read_parquet_lazy(dataset_path)
+        recent_files = _recent_heavy_dataset_files(
+            dataset_path,
+            max_files=HEAVY_EXPORT_RECENT_FILE_LIMITS.get(dataset_name, 2_000),
+        )
+        lazy_frame = (
+            pl.scan_parquet([str(path) for path in recent_files])
+            if recent_files
+            else read_parquet_lazy(dataset_path)
+        )
         row_count = _lazy_row_count(lazy_frame)
         frame = _collect_recent_heavy_frame(
             lazy_frame,
@@ -987,6 +1000,18 @@ def _load_export_frame(
         return frame, row_count, None
     except Exception as exc:
         return pl.DataFrame(), 0, f"{dataset_name} sampled read failed: {exc}"
+
+
+def _recent_heavy_dataset_files(dataset_path: Path, *, max_files: int) -> list[Path]:
+    if not dataset_path.exists():
+        return []
+    if dataset_path.is_file():
+        return [dataset_path]
+    files = [path for path in dataset_path.rglob("*.parquet") if path.is_file()]
+    if not files:
+        return []
+    files.sort(key=lambda path: path.stat().st_mtime)
+    return files[-max_files:]
 
 
 def _lazy_row_count(lazy_frame: pl.LazyFrame) -> int:

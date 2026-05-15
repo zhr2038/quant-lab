@@ -1,6 +1,7 @@
 import csv
 import io
 import json
+import os
 import zipfile
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
@@ -12,6 +13,7 @@ from quant_lab.data.lake import write_market_bars, write_parquet_dataset
 from quant_lab.export.daily import (
     CSV_SCHEMAS,
     REQUIRED_MEMBERS,
+    _recent_heavy_dataset_files,
     export_daily_pack,
     validate_expert_pack,
 )
@@ -252,6 +254,23 @@ def test_export_counts_heavy_ws_dataset_without_full_member_load(tmp_path):
 
     assert manifest["row_counts"]["okx_public_ws"] == 6001
     assert manifest["dataset_freshness"]["okx_public_ws"]["freshness_status"] != "missing"
+
+
+def test_recent_heavy_dataset_files_limits_to_newest_parquet_files(tmp_path):
+    dataset = tmp_path / "heavy"
+    dataset.mkdir()
+    paths = []
+    for index in range(5):
+        path = dataset / f"part-{index}.parquet"
+        pl.DataFrame([{"value": index}]).write_parquet(path)
+        mtime = 1_700_000_000 + index
+        path.touch()
+        os.utime(path, (mtime, mtime))
+        paths.append(path)
+
+    recent = _recent_heavy_dataset_files(dataset, max_files=2)
+
+    assert recent == paths[-2:]
 
 
 def test_expert_questions_are_dynamic_for_missing_daily_inputs(tmp_path):

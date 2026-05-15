@@ -154,6 +154,55 @@ def test_v5_trade_events_generate_actual_fill_bucket_before_spread_proxy(tmp_pat
     assert health["actual_rows"] == len(rows)
 
 
+def test_v5_order_lifecycle_generates_actual_fills_bucket(tmp_path):
+    lake_root = tmp_path / "lake"
+    write_parquet_dataset(
+        pl.DataFrame(
+            [
+                {
+                    "strategy": "v5",
+                    "source_path_inside_bundle": "raw/recent_runs/run_lifecycle/order_lifecycle.csv",
+                    "run_id": "run_lifecycle",
+                    "ts_utc": "2026-05-15T01:00:04Z",
+                    "symbol": "BNB-USDT",
+                    "normalized_symbol": "BNB-USDT",
+                    "side": "buy",
+                    "intent": "OPEN_LONG",
+                    "signal_price": "600",
+                    "arrival_mid": "600",
+                    "spread_cost_bps": "16.6666666667",
+                    "arrival_slippage_bps": "33.3333333333",
+                    "delay_cost_bps": "0",
+                    "avg_fill_px": "602",
+                    "filled_qty": "0.2",
+                    "fee": "-0.1204",
+                    "fee_ccy": "USDT",
+                    "fee_usdt": "0.1204",
+                    "notional_usdt": "120.4",
+                    "exchange_order_id": "okx-1",
+                    "trade_ids": "trade-1",
+                    "last_fill_ts": "2026-05-15T01:00:04Z",
+                }
+            ]
+        ),
+        lake_root / "silver" / "v5_order_lifecycle",
+    )
+
+    result = calibrate_costs_for_day(lake_root, "2026-05-15", min_sample_count=1)
+
+    assert result.sources == ["actual_fills"]
+    rows = read_parquet_dataset(lake_root / "gold" / "cost_bucket_daily").to_dicts()
+    all_row = [
+        row for row in rows if row["symbol"] == "BNB-USDT" and row["notional_bucket"] == "all"
+    ][0]
+    assert all_row["source"] == "actual_fills"
+    assert all_row["actual_fill_count"] == 1
+    assert all_row["mixed_fill_count"] == 0
+    assert all_row["fee_bps_p50"] > 0
+    assert all_row["slippage_bps_p50"] > 0
+    assert all_row["spread_bps_p50"] > 0
+
+
 def test_recent_v5_trades_feed_later_day_mixed_actual_cost(tmp_path):
     lake_root = tmp_path / "lake"
     write_parquet_dataset(

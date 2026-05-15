@@ -64,6 +64,7 @@ SILVER_DATASETS = {
     "v5_quant_lab_cost_usage": Path("silver/v5_quant_lab_cost_usage"),
     "v5_quant_lab_fallback": Path("silver/v5_quant_lab_fallback"),
     "v5_candidate_event": Path("silver/v5_candidate_event"),
+    "v5_order_lifecycle": Path("silver/v5_order_lifecycle"),
 }
 
 QUANT_LAB_USAGE_PATHS = {
@@ -387,6 +388,9 @@ def _append_file_rows(
     if logical.endswith("/trades.csv"):
         rows["v5_trade_event"].extend(_v5_trade_rows(metadata, relative, file_path))
         return
+    if logical.endswith("/order_lifecycle.csv") or logical == "order_lifecycle.csv":
+        rows["v5_order_lifecycle"].extend(_order_lifecycle_rows(metadata, relative, file_path))
+        return
     if logical.endswith("/candidate_snapshot.csv") or logical == "candidate_snapshot.csv":
         rows["v5_candidate_event"].extend(_candidate_event_rows(metadata, relative, file_path))
         return
@@ -548,6 +552,91 @@ def _v5_trade_rows(
     return rows
 
 
+def _order_lifecycle_rows(
+    metadata: dict[str, Any],
+    relative: str,
+    file_path: Path,
+) -> list[dict[str, Any]]:
+    rows: list[dict[str, Any]] = []
+    for row in _csv_rows(metadata, relative, file_path):
+        payload = _loads_payload(row.get("raw_payload_json"))
+        symbol_value = _clean_text(
+            _first_value(row, payload, ["normalized_symbol", "symbol", "inst_id", "instId"])
+        )
+        normalized_symbol = normalize_symbol(symbol_value) if symbol_value else ""
+        side = _clean_text(_first_value(row, payload, ["side", "order_side"])).lower()
+        arrival_mid = _numeric(_first_value(row, payload, ["arrival_mid", "mid_px_at_decision"]))
+        signal_price = _numeric(_first_value(row, payload, ["signal_price", "decision_price"]))
+        avg_fill_px = _numeric(_first_value(row, payload, ["avg_fill_px", "fill_px", "avg_px"]))
+        filled_qty = _numeric(_first_value(row, payload, ["filled_qty", "fill_qty", "fill_sz", "qty"]))
+        notional = _numeric(_first_value(row, payload, ["notional_usdt", "notional", "requested_notional_usdt"]))
+        if (notional is None or notional <= 0) and avg_fill_px is not None and filled_qty is not None:
+            notional = abs(avg_fill_px * filled_qty)
+        fee_usdt = _numeric(_first_value(row, payload, ["fee_usdt", "fee_abs_usdt"]))
+        fee = _numeric(_first_value(row, payload, ["fee", "commission", "fee_abs"]))
+        fee_ccy = _clean_text(_first_value(row, payload, ["fee_ccy", "fee_currency"]))
+        if fee_usdt is None:
+            fee_usdt = _trade_fee_usdt(
+                fee=fee,
+                fee_ccy=fee_ccy,
+                symbol=normalized_symbol,
+                price=avg_fill_px,
+            )
+        spread_bps = _numeric(_first_value(row, payload, ["spread_bps_at_decision", "spread_bps"]))
+        arrival_slippage_bps = _arrival_slippage_bps(
+            side=side,
+            avg_fill_px=avg_fill_px,
+            arrival_mid=arrival_mid,
+        )
+        delay_cost_bps = _delay_cost_bps(
+            side=side,
+            signal_price=signal_price,
+            arrival_mid=arrival_mid,
+        )
+        spread_cost_bps = (max(spread_bps, 0.0) / 2.0) if spread_bps is not None else None
+        fee_bps = (
+            abs(float(fee_usdt)) / abs(float(notional)) * 10_000.0
+            if fee_usdt is not None and notional is not None and abs(float(notional)) > 0
+            else None
+        )
+        total_cost = _sum_cost_parts(delay_cost_bps, arrival_slippage_bps, fee_bps)
+        ts_utc = _normalize_event_time(
+            _first_value(row, payload, ["ts_utc", "last_fill_ts", "submit_ts", "decision_ts", "ts"])
+        )
+        enriched_payload = {
+            **payload,
+            "symbol": normalized_symbol or symbol_value,
+            "normalized_symbol": normalized_symbol,
+            "ts_utc": ts_utc,
+            "notional_usdt": notional,
+            "fee_usdt": fee_usdt,
+            "arrival_slippage_bps": arrival_slippage_bps,
+            "delay_cost_bps": delay_cost_bps,
+            "spread_cost_bps": spread_cost_bps,
+            "fee_bps": fee_bps,
+            "total_realized_cost_bps": total_cost,
+        }
+        rows.append(
+            row
+            | {
+                "event_type": "order_lifecycle",
+                "ts_utc": ts_utc,
+                "symbol": normalized_symbol or symbol_value,
+                "normalized_symbol": normalized_symbol,
+                "side": side,
+                "notional_usdt": "" if notional is None else str(abs(notional)),
+                "fee_usdt": "" if fee_usdt is None else str(abs(fee_usdt)),
+                "arrival_slippage_bps": "" if arrival_slippage_bps is None else str(arrival_slippage_bps),
+                "delay_cost_bps": "" if delay_cost_bps is None else str(delay_cost_bps),
+                "spread_cost_bps": "" if spread_cost_bps is None else str(spread_cost_bps),
+                "fee_bps": "" if fee_bps is None else str(fee_bps),
+                "total_realized_cost_bps": "" if total_cost is None else str(total_cost),
+                "raw_payload_json": safe_json_dumps(enriched_payload),
+            }
+        )
+    return rows
+
+
 def _candidate_event_rows(
     metadata: dict[str, Any],
     relative: str,
@@ -645,6 +734,39 @@ def _trade_fee_usdt(
 
 def _trade_slippage_usdt(row: dict[str, Any], payload: dict[str, Any]) -> float | None:
     return _numeric(_first_value(row, payload, ["slippage_usdt", "realized_slippage_usdt"]))
+
+
+def _arrival_slippage_bps(
+    *,
+    side: str,
+    avg_fill_px: float | None,
+    arrival_mid: float | None,
+) -> float | None:
+    if avg_fill_px is None or arrival_mid is None or arrival_mid <= 0:
+        return None
+    if side == "sell":
+        return (arrival_mid - avg_fill_px) / arrival_mid * 10_000.0
+    return (avg_fill_px - arrival_mid) / arrival_mid * 10_000.0
+
+
+def _delay_cost_bps(
+    *,
+    side: str,
+    signal_price: float | None,
+    arrival_mid: float | None,
+) -> float | None:
+    if signal_price is None or arrival_mid is None or signal_price <= 0:
+        return None
+    if side == "sell":
+        return (signal_price - arrival_mid) / signal_price * 10_000.0
+    return (arrival_mid - signal_price) / signal_price * 10_000.0
+
+
+def _sum_cost_parts(*parts: float | None) -> float | None:
+    observed = [float(part) for part in parts if part is not None]
+    if not observed:
+        return None
+    return sum(observed)
 
 
 def _normalize_csv_symbol_fields(row: dict[str, Any]) -> dict[str, Any]:

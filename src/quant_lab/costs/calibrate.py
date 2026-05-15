@@ -28,6 +28,7 @@ ORDERBOOK_SNAPSHOT_DATASET = Path("silver") / "orderbook_snapshot"
 TRADE_PRINT_DATASET = Path("silver") / "trade_print"
 V5_TRADE_EVENT_DATASET = Path("silver") / "v5_trade_event"
 V5_QUANT_LAB_COST_USAGE_DATASET = Path("silver") / "v5_quant_lab_cost_usage"
+V5_ORDER_LIFECYCLE_DATASET = Path("silver") / "v5_order_lifecycle"
 MARKET_BAR_DATASET = Path("silver") / "market_bar"
 COST_BUCKET_DAILY_DATASET = Path("gold") / "cost_bucket_daily"
 COST_HEALTH_DAILY_DATASET = Path("gold") / "cost_health_daily"
@@ -87,6 +88,7 @@ def calibrate_costs_for_day(
     fill_events = _private_fill_events_for_day(root, day)
     account_bills = _private_account_bills_for_day(root, day)
     v5_trade_events = _v5_trade_events_for_day(root, day)
+    v5_order_lifecycle = _v5_order_lifecycle_for_day(root, day)
     v5_cost_usage = _v5_cost_usage_for_day(root, day)
     rows = build_cost_bucket_daily_rows(
         fill_events=fill_events,
@@ -99,6 +101,7 @@ def calibrate_costs_for_day(
         orderbook_snapshots=_read_day_dataset(root, ORDERBOOK_SNAPSHOT_DATASET, day),
         trade_prints=_read_day_dataset(root, TRADE_PRINT_DATASET, day),
         v5_trade_events=v5_trade_events,
+        v5_order_lifecycle=v5_order_lifecycle,
         market_bars=market_bars,
         day=day,
         min_sample_count=min_sample_count,
@@ -113,6 +116,7 @@ def calibrate_costs_for_day(
             set(_symbols_from_public_data(pl.DataFrame(), market_bars))
             | _symbols_from_fill_events(fill_events)
             | _symbols_from_v5_trade_events(v5_trade_events)
+            | _symbols_from_v5_order_lifecycle(v5_order_lifecycle)
         ),
         private_fill_rows=fill_events.height,
         private_bill_rows=account_bills.height,
@@ -143,6 +147,7 @@ def build_cost_bucket_daily_rows(
     day: str,
     order_events: pl.DataFrame | None = None,
     v5_trade_events: pl.DataFrame | None = None,
+    v5_order_lifecycle: pl.DataFrame | None = None,
     min_sample_count: int = DEFAULT_MIN_SAMPLE_COUNT,
 ) -> list[CostBucketDaily]:
     spread_samples = _spread_samples_by_symbol(orderbook_snapshots)
@@ -151,6 +156,9 @@ def build_cost_bucket_daily_rows(
     )
     fill_samples = [
         *_fill_samples(fill_events, reference_prices),
+        *_v5_order_lifecycle_fill_samples(
+            v5_order_lifecycle if v5_order_lifecycle is not None else pl.DataFrame()
+        ),
         *_v5_trade_fill_samples(v5_trade_events if v5_trade_events is not None else pl.DataFrame()),
     ]
 
@@ -259,7 +267,13 @@ def _actual_fill_row(
         sample["slippage_bps"] for sample in samples if sample["slippage_bps"] is not None
     ]
     fee_missing = len(fee_samples) != len(samples)
-    spread_values = spread_samples.get(symbol, [])
+    public_spreads = spread_samples.get(symbol, [])
+    sample_spreads = [
+        sample["spread_bps"]
+        for sample in samples
+        if sample.get("spread_bps") is not None
+    ]
+    spread_values = [*public_spreads, *sample_spreads]
     spread_fallback = not spread_values
     sample_too_small = len(samples) < min_sample_count
     slippage_unknown = len(slippage_samples) != len(samples)
@@ -281,6 +295,8 @@ def _actual_fill_row(
         fallback_parts.append("SLIPPAGE_UNKNOWN")
     if spread_fallback:
         fallback_parts.append("SPREAD_MISSING")
+    elif sample_spreads and not public_spreads:
+        fallback_parts.append("SPREAD_AT_DECISION")
     else:
         fallback_parts.append("SPREAD_PROXY")
     if _uses_private_fill_lookback(samples, day):
@@ -494,6 +510,70 @@ def _v5_trade_fill_samples(v5_trade_events: pl.DataFrame) -> list[dict[str, Any]
     return samples
 
 
+def _v5_order_lifecycle_fill_samples(v5_order_lifecycle: pl.DataFrame) -> list[dict[str, Any]]:
+    samples: list[dict[str, Any]] = []
+    if v5_order_lifecycle.is_empty():
+        return samples
+    for row in v5_order_lifecycle.to_dicts():
+        symbol = _symbol_from_trade_row(row)
+        if not symbol:
+            continue
+        avg_fill_px = _first_float(row, ["avg_fill_px", "fill_px", "avg_px"])
+        filled_qty = _first_float(row, ["filled_qty", "fill_qty", "fill_sz", "qty"])
+        notional = _first_float(row, ["notional_usdt", "notional", "requested_notional_usdt"])
+        if notional is None and avg_fill_px is not None and filled_qty is not None:
+            notional = abs(avg_fill_px * filled_qty)
+        if notional is None or notional <= 0:
+            continue
+        fee_bps = _first_float(row, ["fee_bps"])
+        fee_usdt = _first_float(row, ["fee_usdt", "fee_abs_usdt"])
+        fee = _first_float(row, ["fee", "commission", "fee_abs"])
+        fee_ccy = str(row.get("fee_ccy") or row.get("fee_currency") or "")
+        fee_abs_usdt = abs(fee_usdt) if fee_usdt is not None else _fee_abs_usdt(
+            fee=fee,
+            fee_currency=fee_ccy,
+            symbol=symbol,
+            fill_price=avg_fill_px,
+        )
+        if fee_bps is None and fee_abs_usdt is not None:
+            fee_bps = fee_abs_usdt / abs(notional) * 10_000
+        arrival_slippage = _first_float(row, ["arrival_slippage_bps", "realized_slippage_bps", "slippage_bps"])
+        delay_cost = _first_float(row, ["delay_cost_bps"])
+        slippage_parts = [part for part in [arrival_slippage, delay_cost] if part is not None]
+        slippage = sum(slippage_parts) if slippage_parts else None
+        if slippage is None:
+            arrival_mid = _first_float(row, ["arrival_mid", "mid_px_at_decision"])
+            side = str(row.get("side") or "").lower()
+            if avg_fill_px is not None and arrival_mid is not None and arrival_mid > 0:
+                if side == "sell":
+                    slippage = (arrival_mid - avg_fill_px) / arrival_mid * 10_000
+                else:
+                    slippage = (avg_fill_px - arrival_mid) / arrival_mid * 10_000
+        spread_bps = _first_float(row, ["spread_cost_bps", "spread_bps_at_decision", "spread_bps"])
+        samples.append(
+            {
+                "symbol": symbol,
+                "source_kind": "v5_order_lifecycle",
+                "notional": abs(notional),
+                "notional_bucket": _notional_bucket(abs(notional)),
+                "trade_id": str(row.get("trade_ids") or row.get("trade_id") or row.get("tradeId") or ""),
+                "order_id": str(row.get("exchange_order_id") or row.get("order_id") or row.get("cl_ord_id") or ""),
+                "side": str(row.get("side") or ""),
+                "action": str(row.get("intent") or row.get("action") or ""),
+                "fill_px": avg_fill_px,
+                "fill_qty": filled_qty,
+                "fee": fee,
+                "fee_ccy": fee_ccy,
+                "fee_usdt": fee_abs_usdt,
+                "ts": row.get("last_fill_ts") or row.get("ts_utc") or row.get("submit_ts") or row.get("decision_ts"),
+                "fee_bps": fee_bps,
+                "slippage_bps": slippage if slippage is not None and slippage >= 0 else None,
+                "spread_bps": spread_bps if spread_bps is not None and spread_bps >= 0 else None,
+            }
+        )
+    return samples
+
+
 def _symbol_from_trade_row(row: dict[str, Any]) -> str:
     for key in ["symbol", "normalized_symbol", "inst_id", "instId", "instrument", "pair"]:
         value = row.get(key)
@@ -635,6 +715,17 @@ def _symbols_from_v5_trade_events(v5_trade_events: pl.DataFrame) -> set[str]:
     return symbols
 
 
+def _symbols_from_v5_order_lifecycle(v5_order_lifecycle: pl.DataFrame) -> set[str]:
+    if v5_order_lifecycle.is_empty():
+        return set()
+    symbols: set[str] = set()
+    for row in v5_order_lifecycle.to_dicts():
+        symbol = _symbol_from_trade_row(row)
+        if symbol:
+            symbols.add(symbol)
+    return symbols
+
+
 def _private_fill_events_for_day(root: Path, day: str) -> pl.DataFrame:
     silver = read_parquet_dataset(root / FILL_EVENT_DATASET)
     bronze = _bronze_private_fills_frame(read_parquet_dataset(root / BRONZE_FILLS_DATASET))
@@ -669,6 +760,23 @@ def _v5_trade_events_for_day(root: Path, day: str) -> pl.DataFrame:
             lookback_days=PRIVATE_COST_LOOKBACK_DAYS,
             timestamp_columns=("ts_utc", "ts", "timestamp", "time", "created_at"),
         )
+    )
+
+
+def _v5_order_lifecycle_for_day(root: Path, day: str) -> pl.DataFrame:
+    return _filter_recent_window(
+        read_parquet_dataset(root / V5_ORDER_LIFECYCLE_DATASET),
+        day=day,
+        lookback_days=PRIVATE_COST_LOOKBACK_DAYS,
+        timestamp_columns=(
+            "last_fill_ts",
+            "ts_utc",
+            "submit_ts",
+            "decision_ts",
+            "ts",
+            "bundle_ts",
+            "ingest_ts",
+        ),
     )
 
 

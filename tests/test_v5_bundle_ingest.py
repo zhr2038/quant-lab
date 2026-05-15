@@ -80,6 +80,37 @@ def test_ingest_v5_trades_csv_normalizes_cost_schema(tmp_path):
     assert row["strategy_id"] == "v5"
 
 
+def test_ingest_v5_order_lifecycle_computes_realized_cost_parts(tmp_path):
+    bundle = make_tar(
+        tmp_path / "v5_live_followup_bundle_20260515T010500Z.tar.gz",
+        {
+            "raw/recent_runs/run_lifecycle/order_lifecycle.csv": (
+                "schema_version,lifecycle_id,run_id,ts_utc,symbol,normalized_symbol,side,intent,order_state,"
+                "decision_ts,signal_price,arrival_bid,arrival_ask,arrival_mid,spread_bps_at_decision,"
+                "submit_ts,order_type,order_px,cl_ord_id,exchange_order_id,first_fill_ts,last_fill_ts,"
+                "fill_px,avg_fill_px,filled_qty,fee,fee_ccy,fee_usdt,notional_usdt,requested_notional_usdt,trade_ids,fill_count\n"
+                "v5.order_lifecycle.v1,olc-1,run_lifecycle,2026-05-15T01:00:04Z,BNB/USDT,BNB-USDT,buy,OPEN_LONG,FILLED,"
+                "2026-05-15T01:00:00Z,600,599,601,600,33.3333333333,"
+                "2026-05-15T01:00:01Z,market,,clid-1,okx-1,2026-05-15T01:00:04Z,2026-05-15T01:00:04Z,"
+                "602,602,0.2,-0.1204,USDT,0.1204,120.4,120,trade-1,1\n"
+            ),
+        },
+    )
+    lake = tmp_path / "lake"
+
+    result = ingest_v5_bundle(bundle, lake, tmp_path / "restricted", tmp_path / "redacted")
+
+    assert result.silver_rows["v5_order_lifecycle"] == 1
+    rows = read_parquet_dataset(lake / "silver/v5_order_lifecycle").to_dicts()
+    row = rows[0]
+    assert row["symbol"] == "BNB-USDT"
+    assert row["normalized_symbol"] == "BNB-USDT"
+    assert float(row["arrival_slippage_bps"]) > 0
+    assert float(row["spread_cost_bps"]) > 0
+    assert float(row["fee_bps"]) > 0
+    assert float(row["total_realized_cost_bps"]) > 0
+
+
 def test_ingest_parses_quant_lab_usage_files(tmp_path):
     bundle = make_v5_bundle_fixture(tmp_path / "v5_live_followup_bundle_20260510T140249Z.tar.gz")
     lake = tmp_path / "lake"

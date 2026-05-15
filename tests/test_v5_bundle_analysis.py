@@ -352,6 +352,17 @@ def test_analysis_writes_gold(tmp_path):
     assert health.height == 1
 
 
+def test_analysis_publishes_strategy_evidence_summary(tmp_path):
+    lake = tmp_path / "lake"
+    _write_manifest(lake)
+
+    analyze_v5_telemetry(lake, date="2026-05-10")
+
+    evidence = read_parquet_dataset(lake / "gold/strategy_evidence")
+    assert evidence.height > 0
+    assert "candidate_name" in evidence.columns
+
+
 def _run_summary_row(source_path, payload):
     return {
         "strategy": "v5",

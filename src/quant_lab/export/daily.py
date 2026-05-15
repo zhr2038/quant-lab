@@ -48,9 +48,9 @@ HEAVY_EXPORT_DATASET_LIMITS = {
     "orderbook_snapshot": 20_000,
 }
 HEAVY_EXPORT_RECENT_FILE_LIMITS = {
-    "okx_public_ws": 2_000,
-    "trade_print": 2_000,
-    "orderbook_snapshot": 2_000,
+    "okx_public_ws": 300,
+    "trade_print": 300,
+    "orderbook_snapshot": 300,
 }
 HEAVY_EXPORT_LOOKBACK_HOURS = 6
 
@@ -984,7 +984,7 @@ def _load_export_frame(
     try:
         recent_files = _recent_heavy_dataset_files(
             dataset_path,
-            max_files=HEAVY_EXPORT_RECENT_FILE_LIMITS.get(dataset_name, 2_000),
+            max_files=HEAVY_EXPORT_RECENT_FILE_LIMITS.get(dataset_name, 300),
         )
         lazy_frame = (
             pl.scan_parquet([str(path) for path in recent_files])

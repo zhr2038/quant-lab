@@ -93,6 +93,7 @@ def test_daily_export_uses_alpha_discovery_board_lists(tmp_path):
                 io.StringIO(archive.read("reports/candidate_paper_ready.csv").decode("utf-8"))
             )
         )
+        data_quality = json.loads(archive.read("data_quality.json").decode("utf-8"))
         summary = archive.read("reports/strategy_evidence_summary.md").decode("utf-8")
 
     assert {row["strategy_candidate"] for row in board} >= {
@@ -104,6 +105,10 @@ def test_daily_export_uses_alpha_discovery_board_lists(tmp_path):
     assert any(row["strategy_candidate"] == "v5.sol_protect_exception" for row in watch)
     assert any(row["strategy_candidate"] == "v5.swing_f4_f5_alpha6" for row in paper)
     assert "v5.f3_dominant_entry" in summary
+    assert not any(
+        str(warning).startswith("strategy_evidence_present")
+        for warning in data_quality["warnings"]
+    )
 
 
 def _write_candidate_labels(lake: Path) -> None:

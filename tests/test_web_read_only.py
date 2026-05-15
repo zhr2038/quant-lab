@@ -588,6 +588,46 @@ def test_alpha_gates_page_shows_strategy_evidence_discovery(tmp_path):
     )
 
 
+def test_alpha_gates_does_not_warn_for_empty_legacy_strategy_evidence_when_board_exists(
+    tmp_path,
+):
+    lake_root = tmp_path / "lake"
+    start = datetime(2026, 5, 10, tzinfo=UTC)
+    write_parquet_dataset(
+        pl.DataFrame(
+            [
+                {
+                    "strategy": "v5",
+                    "board_schema_version": "alpha_discovery_board.v1",
+                    "as_of_date": "2026-05-10",
+                    "strategy_candidate": "v5.f3_dominant_entry",
+                    "candidate_name": "v5.f3_dominant_entry",
+                    "symbol": "BNB-USDT",
+                    "regime_state": "trend",
+                    "horizon_hours": 24,
+                    "sample_count": 12,
+                    "complete_sample_count": 12,
+                    "avg_net_bps": 8.0,
+                    "median_net_bps": 8.0,
+                    "p25_net_bps": 2.0,
+                    "win_rate": 0.75,
+                    "decision": "KEEP_SHADOW",
+                    "decision_reasons": "[]",
+                    "created_at": start,
+                    "source": "test",
+                }
+            ]
+        ),
+        lake_root / "gold" / "alpha_discovery_board",
+    )
+
+    summary = readers.alpha_gate_summary(lake_root)
+
+    assert "strategy_evidence candidate discovery evidence not generated yet" not in (
+        summary["warnings"]
+    )
+
+
 def test_web_launcher_hides_streamlit_file_navigation(monkeypatch, tmp_path):
     captured = {}
 

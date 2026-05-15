@@ -1431,8 +1431,12 @@ def _data_quality_payload(
     checks.append(
         _check(
             "strategy_evidence_present",
-            strategy_evidence.height > 0,
-            f"rows={strategy_evidence.height}",
+            strategy_evidence.height > 0 or alpha_discovery_board.height > 0,
+            (
+                f"rows={strategy_evidence.height}; "
+                f"alpha_discovery_board_rows={alpha_discovery_board.height}; "
+                "legacy_optional_when_alpha_discovery_board_present"
+            ),
             severity=(
                 "critical"
                 if research_enabled and alpha_discovery_board.height == 0
@@ -1834,7 +1838,10 @@ def _question_lines(snapshot: _DatasetSnapshot, data_quality: dict[str, Any]) ->
         questions.append("为什么 gate_decision / alpha_evidence 为空？")
     elif snapshot.row_counts.get("alpha_evidence", 0) == 0:
         questions.append("alpha_evidence 研究证据尚未生成：何时运行 walk-forward/evidence 任务？")
-    if snapshot.row_counts.get("strategy_evidence", 0) == 0:
+    if (
+        snapshot.row_counts.get("strategy_evidence", 0) == 0
+        and snapshot.row_counts.get("alpha_discovery_board", 0) == 0
+    ):
         questions.append("Why is strategy_evidence empty for V5 candidate discovery?")
     if snapshot.row_counts.get("v5_candidate_event", 0) == 0:
         questions.append("Why is reports/candidate_snapshot.csv missing from V5 bundles?")

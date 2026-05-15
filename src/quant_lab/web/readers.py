@@ -1135,7 +1135,7 @@ def alpha_gate_summary(lake_root: str | Path) -> dict[str, Any]:
         warnings.append("alpha_evidence research evidence not generated yet")
     if discovery_board.is_empty():
         warnings.append("alpha_discovery_board candidate decision board not generated yet")
-    if strategy_evidence.is_empty():
+    if strategy_evidence.is_empty() and discovery_board.is_empty():
         warnings.append("strategy_evidence candidate discovery evidence not generated yet")
     if candidate_events.is_empty():
         warnings.append("v5_candidate_event snapshots not ingested yet")

@@ -262,7 +262,6 @@ def analyze_v5_telemetry(lake_root: Path, date: str | None = None) -> V5Telemetr
     )
     _build_candidate_labels_safely(root, analysis_date)
     _build_alpha_discovery_board_safely(root, analysis_date)
-    _build_strategy_evidence_safely(root, analysis_date)
     return result
 
 

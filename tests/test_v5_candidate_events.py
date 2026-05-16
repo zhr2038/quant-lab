@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 from datetime import UTC, datetime, timedelta
 
 from quant_lab.data.lake import read_parquet_dataset, write_market_bars
@@ -66,3 +67,62 @@ def test_ingest_candidate_snapshot_writes_silver_events_and_gold_labels(tmp_path
     assert quality["feature_completeness"][0] == 1.0
     assert quality["label_completeness"][0] == 1.0
     assert quality["cost_source_coverage"][0] == 1.0
+    assert events["cost_source"][0] == "public_spread_proxy"
+    assert events["cost_bps"][0] == "5"
+
+
+def test_ingest_candidate_snapshot_preserves_many_cost_sources_and_candidates(tmp_path):
+    header = (
+        "candidate_id,run_id,ts_utc,symbol,regime_state,risk_level,current_position,"
+        "current_weight,target_weight_raw,target_weight_after_risk,final_score,rank,"
+        "expected_edge_bps,required_edge_bps,cost_bps,selected_total_cost_bps,"
+        "cost_source,cost_model_version,cost_gate_verified,would_block_by_cost,"
+        "final_decision,block_reason,strategy_candidate\n"
+    )
+    candidates = [
+        "f3_dominant_entry",
+        "btc_leadership_alpha6_low_blocked",
+        "portfolio_trend_following",
+        "f4_volume_expansion_entry",
+    ]
+    lines = [header]
+    start = datetime(2026, 5, 10, 1, tzinfo=UTC)
+    for index in range(112):
+        ts = (start + timedelta(minutes=index)).isoformat().replace("+00:00", "Z")
+        symbol = ["BNB/USDT", "BTC-USDT", "ETH-USDT", "SOL-USDT"][index % 4]
+        source = "local_estimate" if index % 2 == 0 else "cost_not_requested_no_order"
+        candidate = candidates[index % len(candidates)]
+        lines.append(
+            f",run_112,{ts},{symbol},Normal,LOW,0,0,0.2,0.15,0.91,{index},"
+            f"60,45,5,5.5,{source},cost-v1,true,false,KEEP_SHADOW,,{candidate}\n"
+        )
+    bundle = make_tar(
+        tmp_path / "v5_live_followup_bundle_20260510T140249Z.tar.gz",
+        {
+            "summaries/candidate_snapshot.csv": "".join(lines),
+            "summaries/window_summary.json": '{"run_count": 1}',
+        },
+    )
+    lake = tmp_path / "lake"
+
+    result = ingest_v5_bundle(bundle, lake, tmp_path / "restricted", tmp_path / "redacted")
+
+    events = read_parquet_dataset(lake / "silver/v5_candidate_event")
+    quality = read_parquet_dataset(lake / "gold/v5_candidate_quality_daily").to_dicts()[0]
+    assert result.silver_rows["v5_candidate_event"] == 112
+    assert events.height == 112
+    assert events["candidate_id"].n_unique() == 112
+    assert set(events["cost_source"].drop_nulls().to_list()) == {
+        "local_estimate",
+        "cost_not_requested_no_order",
+    }
+    assert set(events["strategy_candidate"].drop_nulls().to_list()) == set(candidates)
+    assert "selected_total_cost_bps" in events.columns
+    assert "cost_model_version" in events.columns
+    assert "cost_gate_verified" in events.columns
+    assert "would_block_by_cost" in events.columns
+    assert quality["candidate_event_rows"] == 112
+    assert quality["cost_source_coverage"] > 0.8
+    quality_counts = json.loads(quality["cost_source_quality_counts"])
+    assert quality_counts["covered"] == 112
+    assert quality_counts["missing"] == 0

@@ -23,7 +23,7 @@ def test_candidate_snapshot_ingest_builds_events_labels_quality_and_summary(tmp_
     summary = read_parquet_dataset(lake / "gold/v5_candidate_outcome_summary")
 
     expected_id = "cand_" + hashlib.sha256(
-        b"run_001|BTC-USDT|v5.btc_leadership_probe_strict"
+        b"run_001|2026-05-10T01:00:00Z|BTC-USDT|v5.btc_leadership_probe_strict|0"
     ).hexdigest()[:24]
 
     assert result.silver_rows["v5_candidate_event"] == 1
@@ -52,6 +52,7 @@ def test_candidate_snapshot_ingest_builds_events_labels_quality_and_summary(tmp_
     assert q["feature_completeness"] == pytest.approx(1.0)
     assert q["label_completeness"] == pytest.approx(1.0)
     assert q["cost_source_coverage"] == pytest.approx(1.0)
+    assert "quant_lab" in q["cost_source_quality_counts"]
 
     assert summary.height == 7
     s4 = summary.filter(summary["horizon_hours"] == 4).to_dicts()[0]

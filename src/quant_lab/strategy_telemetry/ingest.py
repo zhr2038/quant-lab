@@ -670,14 +670,47 @@ def _candidate_event_rows(
             _first_value(row, payload, ["strategy_candidate", "strategy_id", "strategy"])
             or "portfolio"
         )
-        candidate_id = _clean_text(_first_value(row, payload, ["candidate_id"]))
+        ts_utc = _normalize_event_time(_first_value(row, payload, ["ts_utc", "ts", "timestamp"]))
+        candidate_id = _candidate_text(_first_value(row, payload, ["candidate_id"]))
         if not candidate_id:
             candidate_id = _candidate_id(
                 run_id,
                 normalized_symbol or symbol_value,
                 strategy_candidate,
+                ts_utc,
+                row.get("row_index"),
             )
-        ts_utc = _normalize_event_time(_first_value(row, payload, ["ts_utc", "ts", "timestamp"]))
+        cost_source = _candidate_text(
+            _first_value(row, payload, ["cost_source", "cost.source", "cost.cost_source"])
+        )
+        cost_bps = _candidate_text(_first_value(row, payload, ["cost_bps", "cost.bps", "cost"]))
+        selected_total_cost_bps = _candidate_text(
+            _first_value(
+                row,
+                payload,
+                [
+                    "selected_total_cost_bps",
+                    "total_cost_bps",
+                    "cost.selected_total_cost_bps",
+                    "cost.total_cost_bps",
+                ],
+            )
+        )
+        cost_model_version = _candidate_text(
+            _first_value(row, payload, ["cost_model_version", "cost.model_version"])
+        )
+        cost_gate_verified = _candidate_text(
+            _first_value(row, payload, ["cost_gate_verified", "cost.gate_verified"])
+        )
+        would_block_by_cost = _candidate_text(
+            _first_value(row, payload, ["would_block_by_cost", "cost.would_block"])
+        )
+        expected_edge_bps = _candidate_text(
+            _first_value(row, payload, ["expected_edge_bps", "edge_bps", "expected_edge"])
+        )
+        required_edge_bps = _candidate_text(
+            _first_value(row, payload, ["required_edge_bps", "required_edge"])
+        )
         event = row | {
             "event_type": "candidate_event",
             "candidate_event_schema_version": CANDIDATE_EVENT_SCHEMA_VERSION,
@@ -692,6 +725,14 @@ def _candidate_event_rows(
                 normalized_symbol,
                 strategy_candidate,
             ),
+            "cost_source": cost_source,
+            "cost_bps": cost_bps,
+            "selected_total_cost_bps": selected_total_cost_bps,
+            "cost_model_version": cost_model_version,
+            "cost_gate_verified": cost_gate_verified,
+            "would_block_by_cost": would_block_by_cost,
+            "expected_edge_bps": expected_edge_bps,
+            "required_edge_bps": required_edge_bps,
             "raw_payload_json": safe_json_dumps(
                 {
                     **payload,
@@ -701,6 +742,14 @@ def _candidate_event_rows(
                     "symbol": normalized_symbol or symbol_value,
                     "normalized_symbol": normalized_symbol,
                     "strategy_candidate": strategy_candidate,
+                    "cost_source": cost_source,
+                    "cost_bps": cost_bps,
+                    "selected_total_cost_bps": selected_total_cost_bps,
+                    "cost_model_version": cost_model_version,
+                    "cost_gate_verified": cost_gate_verified,
+                    "would_block_by_cost": would_block_by_cost,
+                    "expected_edge_bps": expected_edge_bps,
+                    "required_edge_bps": required_edge_bps,
                 }
             ),
         }
@@ -708,15 +757,29 @@ def _candidate_event_rows(
     return rows
 
 
-def _candidate_id(run_id: str, symbol: str, strategy_candidate: str) -> str:
+def _candidate_id(
+    run_id: str,
+    symbol: str,
+    strategy_candidate: str,
+    ts_utc: str,
+    row_index: Any,
+) -> str:
     material = "|".join(
         [
             str(run_id or "").strip(),
+            str(ts_utc or "").strip(),
             str(symbol or "").strip().upper(),
             str(strategy_candidate or "portfolio").strip(),
+            "" if row_index is None else str(row_index).strip(),
         ]
     )
     return "cand_" + hashlib.sha256(material.encode("utf-8")).hexdigest()[:24]
+
+
+def _candidate_text(value: Any) -> str:
+    if value is None:
+        return ""
+    return str(value).strip()
 
 
 def _candidate_quality_key(run_id: str, symbol: str, strategy_candidate: str) -> str:

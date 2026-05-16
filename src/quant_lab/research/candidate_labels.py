@@ -194,14 +194,16 @@ def build_candidate_quality(
     expected_labels = len(event_rows) * len(HORIZON_HOURS)
     complete_labels = sum(1 for row in label_rows if row.get("label_status") == "complete")
     label_completeness = complete_labels / expected_labels if expected_labels else 0.0
-    cost_sources = Counter(
-        _clean_text(row.get("cost_source")) or "MISSING"
-        for row in event_rows
-    )
+    cost_sources = Counter(_candidate_cost_source(row.get("cost_source")) for row in event_rows)
     cost_source_covered = sum(
         count for source, count in cost_sources.items() if source != "MISSING"
     )
     cost_source_coverage = cost_source_covered / len(event_rows) if event_rows else 0.0
+    cost_source_quality_counts = {
+        "covered": cost_source_covered,
+        "missing": cost_sources.get("MISSING", 0),
+        "by_source": dict(sorted(cost_sources.items())),
+    }
     run_symbol_min_rows = min(
         (count for symbols in symbol_rows_by_run.values() for count in symbols.values()),
         default=0,
@@ -248,6 +250,7 @@ def build_candidate_quality(
                 "label_completeness": label_completeness,
                 "cost_source_coverage": cost_source_coverage,
                 "cost_source_counts_json": safe_json_dumps(dict(sorted(cost_sources.items()))),
+                "cost_source_quality_counts": safe_json_dumps(cost_source_quality_counts),
                 "warnings_json": safe_json_dumps(sorted(warnings)),
                 "created_at": created,
                 "source": SOURCE_NAME,
@@ -683,6 +686,15 @@ def _clean_text(value: Any) -> str:
         return ""
     rendered = str(value).strip()
     return "" if rendered.lower() in {"", "none", "null", "nan", "n/a", "na"} else rendered
+
+
+def _candidate_cost_source(value: Any) -> str:
+    if value is None:
+        return "MISSING"
+    rendered = str(value).strip()
+    if not rendered or rendered.lower() in {"none", "null", "nan", "n/a", "na", "missing"}:
+        return "MISSING"
+    return rendered
 
 
 def _finite_float(value: Any) -> float | None:

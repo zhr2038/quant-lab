@@ -53,6 +53,13 @@ qlab publish-risk-permission --lake-root /var/lib/quant-lab/lake --strategy v5 -
 qlab export-daily --date "$(date -u +%F)" --lake-root /var/lib/quant-lab/lake --out-dir /var/lib/quant-lab/exports
 ```
 
+Production `risk_permission` rows use a 90 minute validity window. The
+`quant-lab-risk-permission.timer` must therefore run at least every 30 minutes;
+the repository template runs it every 10 minutes so a missed single run does not
+leave V5 reading expired permission for hours. If the API sees only expired
+published rows, `/v1/risk/live-permission` returns `NO_FRESH_PERMISSION` instead
+of repeatedly returning `EXPIRED_*`.
+
 ## Strategy Version
 
 Use one stable pair across V5 and quant-lab:
@@ -83,7 +90,8 @@ Suggested production order:
 - V5 telemetry analysis: every 5 minutes.
 - Candidate labels, alpha discovery board, alpha evidence, and gate publishing:
   every 15 minutes.
-- Risk permission publish: every 3 minutes, after telemetry and gate refresh.
+- Risk permission publish: every 10 minutes, after telemetry and gate refresh
+  and no less frequently than every 30 minutes.
 - Daily expert export: after telemetry and risk permission have had time to run.
 
 `qlab build-strategy-evidence` remains available for offline legacy telemetry

@@ -113,6 +113,56 @@ def test_publish_risk_permission_marks_active_when_telemetry_within_threshold(tm
     assert permission["contract_version"] == "risk_permission.v0.2"
 
 
+def test_publish_risk_permission_refreshes_expired_periodic_row(tmp_path):
+    lake = tmp_path / "lake"
+    _write_gate(lake, GateStatus.DEAD)
+    _write_fresh_market_bar(lake)
+    _write_actual_cost(lake)
+    expired_as_of = datetime.now(UTC) - timedelta(hours=2)
+    write_parquet_dataset(
+        pl.DataFrame(
+            [
+                {
+                    "schema_version": "v5.risk_permission.response.v0.2",
+                    "strategy": "v5",
+                    "version": "5.0.0",
+                    "permission": "ABORT",
+                    "allowed_modes": "[]",
+                    "max_gross_exposure": 0.0,
+                    "max_single_weight": 0.0,
+                    "max_gross_exposure_usdt": 0.0,
+                    "max_single_order_usdt": 0.0,
+                    "cost_model_version": "costs-old",
+                    "gate_version": "default-v0.1",
+                    "reasons": '["old_abort"]',
+                    "reason": "old_abort",
+                    "created_at": expired_as_of.isoformat(),
+                    "as_of_ts": expired_as_of.isoformat(),
+                    "source_bundle_ts": None,
+                    "expires_at": (datetime.now(UTC) - timedelta(minutes=1)).isoformat(),
+                    "telemetry_latest_ts": None,
+                    "permission_freshness_sec": 0,
+                    "contract_version": "risk_permission.v0.2",
+                    "permission_status": "EXPIRED_ABORT",
+                    "enforceable": False,
+                    "risk_reason_codes": '["permission_expired"]',
+                    "source": "test",
+                    "fallback_level": "NONE",
+                }
+            ]
+        ),
+        lake / "gold" / "risk_permission",
+    )
+
+    publish_risk_permission(lake, strategy="v5", version="5.0.0")
+
+    permission = read_parquet_dataset(lake / "gold" / "risk_permission").to_dicts()[0]
+    assert permission["permission"] == "ABORT"
+    assert permission["permission_status"] == "ACTIVE_ABORT"
+    assert datetime.fromisoformat(permission["expires_at"]) > datetime.now(UTC)
+    assert permission["enforceable"] is True
+
+
 def test_publish_risk_permission_marks_stale_when_telemetry_is_newer_by_48h(tmp_path):
     lake = tmp_path / "lake"
     _write_gate(lake, GateStatus.DEAD)

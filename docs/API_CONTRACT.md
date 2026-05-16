@@ -275,10 +275,12 @@ Returns the current read-only risk permission for a strategy/version pair. The
 API reads `lake/gold/risk_permission` when published and fresh, otherwise it
 computes a conservative response from gate, cost, market-data, and V5 telemetry
 health. Published permissions older than
-`QUANT_LAB_RISK_PERMISSION_TTL_SECONDS` (default `300`) are recomputed. If the
-recomputed permission is more conservative than the published row, the API
-returns the recomputed permission. It is a research permission signal, not an
-execution command.
+`QUANT_LAB_RISK_PERMISSION_TTL_SECONDS` (default `5400`) are treated as stale.
+If a published permission is expired, the API returns `NO_FRESH_PERMISSION`
+until the periodic `publish-risk-permission` job writes a fresh row. If the
+current recomputed context is more conservative than a still-fresh published
+row, the API returns the recomputed permission. It is a research permission
+signal, not an execution command.
 
 Request params:
 
@@ -335,6 +337,13 @@ Example response:
   "permission_source": "recomputed",
   "permission_freshness_seconds": 420,
   "published_permission_stale": true,
+  "permission_health": {
+    "latest_permission_status": "NO_FRESH_PERMISSION",
+    "permission_age_sec": 0,
+    "expires_in_sec": 5399,
+    "permission_refresh_lag_sec": 420,
+    "gold_latest_permission_status": "EXPIRED_ABORT"
+  },
   "data_health": {"status": "ok"},
   "cost_health": {"status": "missing"},
   "gate_summary": {"total": 1, "status_counts": {"LIVE_READY": 1}},

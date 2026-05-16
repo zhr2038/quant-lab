@@ -155,6 +155,8 @@ def test_live_permission_api_reads_published_risk_permission(tmp_path, monkeypat
     assert detail_payload["permission"]["permission"] == "SELL_ONLY"
     assert detail_payload["permission_source"] == "published_cache"
     assert detail_payload["published_permission_stale"] is False
+    assert detail_payload["permission_health"]["latest_permission_status"] == "ACTIVE_SELL_ONLY"
+    assert detail_payload["permission_health"]["expires_in_sec"] is not None
     assert detail_payload["permission_freshness_seconds"] >= 0
     assert detail_payload["data_health"]["status"] == "ok"
     assert detail_payload["cost_health"]["status"] == "ok"
@@ -168,6 +170,7 @@ def test_live_permission_api_recomputes_stale_published_allow(tmp_path, monkeypa
     _write_gate(lake, GateStatus.LIVE_READY)
     _write_cost_bucket(lake)
     _write_stale_market_bar(lake)
+    as_of_ts = datetime.now(UTC) - timedelta(hours=2)
     write_parquet_dataset(
         pl.DataFrame(
             [
@@ -181,7 +184,10 @@ def test_live_permission_api_recomputes_stale_published_allow(tmp_path, monkeypa
                     "cost_model_version": "costs-test",
                     "gate_version": "default-v0.1",
                     "reasons": '["old_allow"]',
-                    "created_at": (datetime.now(UTC) - timedelta(hours=1)).isoformat(),
+                    "created_at": as_of_ts.isoformat(),
+                    "as_of_ts": as_of_ts.isoformat(),
+                    "source_bundle_ts": datetime.now(UTC).isoformat(),
+                    "expires_at": (datetime.now(UTC) + timedelta(hours=1)).isoformat(),
                     "source": "test",
                     "fallback_level": "NONE",
                 }
@@ -413,9 +419,9 @@ def test_live_permission_api_downgrades_expired_active_permission(
     ).json()
 
     assert payload["permission"] == "ABORT"
-    assert payload["permission_status"] == "EXPIRED_ABORT"
+    assert payload["permission_status"] == "NO_FRESH_PERMISSION"
     assert payload["enforceable"] is False
-    assert "permission_expired" in payload["risk_reason_codes"]
+    assert "no_fresh_published_permission" in payload["risk_reason_codes"]
 
 
 def test_live_permission_api_no_fresh_permission_has_empty_allowed_modes(

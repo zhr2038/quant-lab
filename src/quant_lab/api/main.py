@@ -90,6 +90,7 @@ class LivePermissionDetailResponse(BaseModel):
     permission_source: str
     permission_freshness_seconds: int | None = None
     published_permission_stale: bool
+    permission_health: dict[str, Any]
     data_health: dict[str, Any]
     cost_health: dict[str, Any]
     gate_summary: dict[str, Any]
@@ -307,16 +308,24 @@ def _live_permission_evaluation(
         source = "published_cache"
         permission = selection["active"]
     elif selection["active"] is None and selection["stale"] is not None:
-        source = "published_stale"
-        permission = selection["stale"]
-        if _is_more_conservative(recomputed, selection["stale"]):
-            source = "recomputed_stale_context"
-            permission = recomputed
-        permission = _force_non_enforceable_permission(
-            permission,
-            telemetry_latest_ts=telemetry_latest_ts,
-            reason="no_fresh_published_permission",
-        )
+        stale_permission = selection["stale"]
+        if _permission_expired(stale_permission):
+            source = "no_fresh_expired_published_permission"
+            permission = _force_no_fresh_permission(
+                recomputed,
+                telemetry_latest_ts=telemetry_latest_ts,
+            )
+        else:
+            source = "published_stale"
+            permission = stale_permission
+            if _is_more_conservative(recomputed, stale_permission):
+                source = "recomputed_stale_context"
+                permission = recomputed
+            permission = _force_non_enforceable_permission(
+                permission,
+                telemetry_latest_ts=telemetry_latest_ts,
+                reason="no_fresh_published_permission",
+            )
     elif selection["active"] is None and selection["stale"] is None:
         source = "no_fresh_permission"
         permission = _force_no_fresh_permission(
@@ -328,6 +337,10 @@ def _live_permission_evaluation(
         "permission_source": source,
         "permission_freshness_seconds": _permission_freshness_seconds(published),
         "published_permission_stale": stale,
+        "permission_health": _risk_permission_health(
+            response_permission=permission,
+            gold_latest=selection["gold_latest"],
+        ),
         "data_health": computed["data_health"],
         "cost_health": computed["cost_health"],
         "gate_summary": computed["gate_summary"],
@@ -463,11 +476,12 @@ def _client_ip_allowed(request: Request) -> bool:
 
 
 def _risk_permission_ttl_seconds() -> int:
-    value = os.environ.get("QUANT_LAB_RISK_PERMISSION_TTL_SECONDS", "300")
+    default_ttl = DEFAULT_TELEMETRY_STALE_THRESHOLD_SECONDS
+    value = os.environ.get("QUANT_LAB_RISK_PERMISSION_TTL_SECONDS", str(default_ttl))
     try:
         ttl = int(value)
     except ValueError:
-        return 300
+        return default_ttl
     return max(ttl, 0)
 
 
@@ -891,6 +905,30 @@ def _risk_permission_api_consistency(
         "permission_api_lag_sec": lag_seconds,
         "permission_api_consistent_with_gold": status_value == "PASS",
         "api_response_permission_status": str(response_permission.permission_status or ""),
+        "gold_latest_permission_status": str(gold_latest.permission_status or "")
+        if gold_latest
+        else None,
+    }
+
+
+def _risk_permission_health(
+    *,
+    response_permission: RiskPermission,
+    gold_latest: RiskPermission | None,
+) -> dict[str, Any]:
+    now = datetime.now(UTC)
+    response_as_of = response_permission.as_of_ts or response_permission.created_at
+    response_expires_at = response_permission.expires_at
+    gold_as_of = gold_latest.as_of_ts or gold_latest.created_at if gold_latest else None
+    return {
+        "latest_permission_status": str(response_permission.permission_status or ""),
+        "permission_age_sec": max(0, int((now - response_as_of).total_seconds())),
+        "expires_in_sec": int((response_expires_at - now).total_seconds())
+        if response_expires_at
+        else None,
+        "permission_refresh_lag_sec": max(0, int((now - gold_as_of).total_seconds()))
+        if gold_as_of
+        else None,
         "gold_latest_permission_status": str(gold_latest.permission_status or "")
         if gold_latest
         else None,

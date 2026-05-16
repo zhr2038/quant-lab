@@ -1,11 +1,11 @@
 [Unit]
-Description=Run quant-lab risk permission publisher every 3 minutes
+Description=Run quant-lab risk permission publisher every 10 minutes
 
 [Timer]
-OnActiveSec=10min
-OnUnitActiveSec=3min
+OnBootSec=3min
+OnUnitActiveSec=10min
 RandomizedDelaySec=30s
-Persistent=false
+Persistent=true
 
 [Install]
 WantedBy=timers.target

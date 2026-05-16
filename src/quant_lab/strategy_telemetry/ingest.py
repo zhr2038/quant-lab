@@ -436,6 +436,7 @@ def _append_file_rows(
         or logical.startswith("summaries/btc_leadership_probe_blocked_outcomes")
         or logical.startswith("summaries/multi_position_swing_shadow")
         or logical.startswith("summaries/factor_contribution_outcomes_by_factor")
+        or logical.startswith("summaries/protect_sol_exception_shadow_outcomes")
     ):
         rows["v5_shadow_outcome"].extend(_csv_rows(metadata, relative, file_path))
     elif logical == "summaries/quant_lab_fallbacks.csv":

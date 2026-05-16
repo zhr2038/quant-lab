@@ -4,6 +4,7 @@ import bisect
 import hashlib
 import json
 import math
+import re
 from datetime import UTC, date, datetime, time, timedelta
 from pathlib import Path
 from typing import Any
@@ -26,7 +27,12 @@ HORIZON_HOURS = (4, 8, 12, 24, 48, 72, 120)
 STRATEGY_CANDIDATES = (
     "v5.btc_leadership_probe_strict",
     "v5.btc_leadership_blocked_relaxed",
+    "v5.btc_leadership_alpha6_low_blocked",
+    "v5.btc_leadership_f5_low_blocked",
+    "v5.btc_leadership_no_breakout_blocked",
     "v5.sol_protect_exception",
+    "v5.sol_protect_alpha6_low_exception",
+    "v5.sol_protect_rsi_weak_exception",
     "v5.alt_impulse_shadow",
     "v5.multi_position_k1",
     "v5.multi_position_k2",
@@ -54,6 +60,7 @@ SAMPLE_SCHEMA: dict[str, Any] = {
     "symbol": pl.Utf8,
     "strategy_candidate": pl.Utf8,
     "candidate_name": pl.Utf8,
+    "source_type": pl.Utf8,
     "regime_state": pl.Utf8,
     "horizon_hours": pl.Int64,
     "decision_ts": pl.Datetime(time_zone="UTC"),
@@ -175,11 +182,13 @@ def build_strategy_evidence_samples(
         if frame.is_empty():
             continue
         for outcome in frame.to_dicts():
-            sample = _sample_from_outcome_row(dataset_name, outcome, cost_context)
-            if sample is not None:
-                rows.append(sample)
+            rows.extend(_samples_from_outcome_row(dataset_name, outcome, cost_context))
 
     rows = _dedupe_formal_sample_rows(_filter_samples_as_of(rows, as_of_date))
+    skipped_unknown = _unknown_symbol_count(rows)
+    rows = _drop_unknown_symbol_samples(rows)
+    if skipped_unknown:
+        warnings.append(f"strategy_evidence_unknown_symbol_samples_skipped:{skipped_unknown}")
     if not rows:
         return pl.DataFrame(schema=SAMPLE_SCHEMA), warnings
     return _formal_samples_frame(rows), warnings
@@ -327,6 +336,7 @@ def _sample_from_candidate_label(
         "symbol": symbol,
         "strategy_candidate": strategy_candidate,
         "candidate_name": strategy_candidate,
+        "source_type": "candidate_event_label",
         "regime_state": regime_state,
         "horizon_hours": horizon_hours,
         "decision_ts": _parse_timestamp(label.get("decision_ts")),
@@ -367,10 +377,32 @@ def _sample_from_candidate_label(
     }
 
 
+def _samples_from_outcome_row(
+    dataset_name: str,
+    row: dict[str, Any],
+    cost_context: _CostContext,
+) -> list[dict[str, Any]]:
+    payload = _payload(row)
+    horizons = _outcome_horizons(row, payload)
+    samples: list[dict[str, Any]] = []
+    for horizon_hours in horizons:
+        sample = _sample_from_outcome_row(
+            dataset_name,
+            row,
+            cost_context,
+            horizon_hours=horizon_hours,
+        )
+        if sample is not None:
+            samples.append(sample)
+    return samples
+
+
 def _sample_from_outcome_row(
     dataset_name: str,
     row: dict[str, Any],
     cost_context: _CostContext,
+    *,
+    horizon_hours: int | None = None,
 ) -> dict[str, Any] | None:
     payload = _payload(row)
     strategy_candidate = _candidate_name(dataset_name, row, payload)
@@ -390,24 +422,32 @@ def _sample_from_outcome_row(
             "ingest_ts",
         ],
     )
-    horizon_hours = _horizon_hours(row, payload)
+    horizon_hours = horizon_hours or _horizon_hours(row, payload)
     if strategy_candidate is None or ts_utc is None or horizon_hours is None:
         return None
 
     symbol = _symbol(row, payload, strategy_candidate)
     cost = cost_context.for_sample(symbol=symbol, ts_utc=ts_utc, row=row, payload=payload)
-    net_bps = _outcome_net_bps(row, payload)
+    net_bps = _outcome_net_bps(row, payload, horizon_hours=horizon_hours)
+    if net_bps is None:
+        return None
     gross_bps = _first_numeric(
         row,
         payload,
-        ["gross_bps", "gross_return_bps", "return_bps", "forward_return_bps"],
+        _horizon_keys(
+            horizon_hours,
+            ["gross_bps", "gross_return_bps", "return_bps", "forward_return_bps"],
+        ),
     )
     if gross_bps is None and net_bps is not None:
         gross_bps = net_bps + float(cost["cost_bps"] or 0.0)
     win = _first_bool(
         row,
         payload,
-        ["win", "profitable", "is_profitable", "success", "label_win", "outcome_win"],
+        _horizon_keys(
+            horizon_hours,
+            ["win", "profitable", "is_profitable", "success", "label_win", "outcome_win"],
+        ),
     )
     if win is None and net_bps is not None:
         win = net_bps > 0.0
@@ -428,12 +468,13 @@ def _sample_from_outcome_row(
         "symbol": symbol,
         "strategy_candidate": strategy_candidate,
         "candidate_name": strategy_candidate,
+        "source_type": _source_type(dataset_name, row, payload),
         "regime_state": _first_text(
             row,
             payload,
             ["regime_state", "regime", "market_regime", "state"],
         )
-        or "UNKNOWN",
+        or _default_regime_state(strategy_candidate),
         "horizon_hours": horizon_hours,
         "decision_ts": _first_timestamp(row, payload, ["decision_ts", "ts_utc", "ts"]),
         "label_ts": _first_timestamp(row, payload, ["label_ts", "outcome_ts", "matured_ts"]),
@@ -441,10 +482,18 @@ def _sample_from_outcome_row(
         "label_close": _first_numeric(row, payload, ["label_close", "exit_price", "future_close"]),
         "gross_bps": gross_bps,
         "net_bps_after_cost": net_bps,
-        "mfe_bps": _first_numeric(row, payload, ["mfe_bps", "max_favorable_bps"]),
-        "mae_bps": _first_numeric(row, payload, ["mae_bps", "max_adverse_bps", "drawdown_bps"]),
+        "mfe_bps": _first_numeric(
+            row,
+            payload,
+            _horizon_keys(horizon_hours, ["mfe_bps", "max_favorable_bps"]),
+        ),
+        "mae_bps": _first_numeric(
+            row,
+            payload,
+            _horizon_keys(horizon_hours, ["mae_bps", "max_adverse_bps", "drawdown_bps"]),
+        ),
         "win": win,
-        "label_status": "complete" if net_bps is not None else "unlabeled",
+        "label_status": _outcome_label_status(row, payload, horizon_hours, net_bps),
         "label_reason": _first_text(row, payload, ["label_reason", "outcome_reason", "reason"]),
         "cost_bps": float(cost["cost_bps"] or 0.0),
         "cost_source": str(cost["cost_source"] or "MISSING"),
@@ -657,9 +706,32 @@ def _formal_samples_frame(rows: list[dict[str, Any]]) -> pl.DataFrame:
 def _dedupe_formal_sample_rows(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
     keyed: dict[tuple[str, int], dict[str, Any]] = {}
     for row in rows:
-        key = (str(row.get("candidate_id") or ""), int(row.get("horizon_hours") or 0))
+        candidate_id = str(row.get("candidate_id") or "").strip()
+        if not candidate_id:
+            candidate_id = "|".join(
+                [
+                    str(row.get("ts_utc") or ""),
+                    str(row.get("symbol") or ""),
+                    str(row.get("strategy_candidate") or ""),
+                    str(row.get("source_event_key") or ""),
+                ]
+            )
+        key = (candidate_id, int(row.get("horizon_hours") or 0))
         keyed[key] = row
     return list(keyed.values())
+
+
+def _unknown_symbol_count(rows: list[dict[str, Any]]) -> int:
+    return sum(1 for row in rows if _is_unknown_symbol(row.get("symbol")))
+
+
+def _drop_unknown_symbol_samples(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    return [row for row in rows if not _is_unknown_symbol(row.get("symbol"))]
+
+
+def _is_unknown_symbol(value: Any) -> bool:
+    symbol = normalize_symbol(value)
+    return not symbol or symbol == "UNKNOWN"
 
 
 def _int_or_none(value: Any) -> int | None:
@@ -846,8 +918,13 @@ def _normalize_candidate_text(value: str | None, *, dataset_name: str) -> str | 
         "btc_leadership_blocked_relaxed": "v5.btc_leadership_blocked_relaxed",
         "btc_leadership_relaxed_blocker": "v5.btc_leadership_blocked_relaxed",
         "btc_relaxed_blocker": "v5.btc_leadership_blocked_relaxed",
+        "btc_leadership_alpha6_low_blocked": "v5.btc_leadership_alpha6_low_blocked",
+        "btc_leadership_f5_low_blocked": "v5.btc_leadership_f5_low_blocked",
+        "btc_leadership_no_breakout_blocked": "v5.btc_leadership_no_breakout_blocked",
         "v5_sol_protect_exception": "v5.sol_protect_exception",
         "sol_protect_exception": "v5.sol_protect_exception",
+        "sol_protect_alpha6_low_exception": "v5.sol_protect_alpha6_low_exception",
+        "sol_protect_rsi_weak_exception": "v5.sol_protect_rsi_weak_exception",
         "v5_alt_impulse_shadow": "v5.alt_impulse_shadow",
         "alt_impulse_shadow": "v5.alt_impulse_shadow",
         "alt_impulse_shadow_outcomes": "v5.alt_impulse_shadow",
@@ -873,13 +950,25 @@ def _normalize_candidate_text(value: str | None, *, dataset_name: str) -> str | 
         return direct[normalized]
     if dataset_name == "v5_shadow_outcome" and "alt_impulse" in normalized:
         return "v5.alt_impulse_shadow"
-    if "btc" in normalized and "leadership" in normalized and "probe" in normalized:
+    if "btc" in normalized and "leadership" in normalized:
+        if "alpha6" in normalized and "low" in normalized:
+            return "v5.btc_leadership_alpha6_low_blocked"
+        if "f5" in normalized and "low" in normalized:
+            return "v5.btc_leadership_f5_low_blocked"
+        if "no_breakout" in normalized or ("no" in normalized and "breakout" in normalized):
+            return "v5.btc_leadership_no_breakout_blocked"
+        if "probe" not in normalized and "block" not in normalized:
+            return None
         if "strict" in normalized:
             return "v5.btc_leadership_probe_strict"
         if "relaxed" in normalized or "blocker" in normalized:
             return "v5.btc_leadership_blocked_relaxed"
         return None
     if "sol" in normalized and "protect" in normalized and "exception" in normalized:
+        if "alpha6" in normalized and "low" in normalized:
+            return "v5.sol_protect_alpha6_low_exception"
+        if "rsi" in normalized and "weak" in normalized:
+            return "v5.sol_protect_rsi_weak_exception"
         return "v5.sol_protect_exception"
     if "alt" in normalized and "impulse" in normalized:
         return "v5.alt_impulse_shadow"
@@ -1219,7 +1308,12 @@ def _candidate_decision(
             reasons.append("weak_24h_win_rate")
         return "KILL", reasons
 
-    if candidate_name in {"v5.sol_protect_exception", "v5.alt_impulse_shadow"}:
+    if candidate_name in {
+        "v5.sol_protect_exception",
+        "v5.sol_protect_alpha6_low_exception",
+        "v5.sol_protect_rsi_weak_exception",
+        "v5.alt_impulse_shadow",
+    }:
         reasons.append("candidate_is_shadow_or_protect_exception")
         return "KEEP_SHADOW", reasons
 
@@ -1588,22 +1682,60 @@ def _horizon_hours(row: dict[str, Any], payload: dict[str, Any]) -> int | None:
     return _int_or_none(text)
 
 
-def _outcome_net_bps(row: dict[str, Any], payload: dict[str, Any]) -> float | None:
+def _outcome_horizons(row: dict[str, Any], payload: dict[str, Any]) -> list[int]:
+    keys: set[str] = set(row)
+    keys.update(payload)
+    keys.update(_raw_payload(payload))
+    horizons: set[int] = set()
+    for key in keys:
+        text = str(key)
+        for match in re.finditer(r"(?:^|_)(\d{1,3})h(?:_|$)", text.lower()):
+            hours = _int_or_none(match.group(1))
+            if hours in HORIZON_HOURS:
+                horizons.add(hours)
+    if horizons:
+        return sorted(horizons)
+    direct = _horizon_hours(row, payload)
+    return [direct or 24]
+
+
+def _horizon_keys(horizon_hours: int, base_keys: list[str]) -> list[str]:
+    prefixed = []
+    for key in base_keys:
+        prefixed.extend(
+            [
+                f"label_{horizon_hours}h_{key}",
+                f"{key}_{horizon_hours}h",
+                f"{horizon_hours}h_{key}",
+            ]
+        )
+    return prefixed + base_keys
+
+
+def _outcome_net_bps(
+    row: dict[str, Any],
+    payload: dict[str, Any],
+    *,
+    horizon_hours: int | None = None,
+) -> float | None:
+    keys = [
+        "net_bps_after_cost",
+        "net_bps",
+        "net_return_bps",
+        "net_pnl_bps",
+        "outcome_net_bps",
+        "realized_net_bps",
+        "after_cost_bps",
+        "net_after_cost_bps",
+        "profit_bps",
+        "pnl_bps",
+    ]
+    if horizon_hours is not None:
+        keys = _horizon_keys(horizon_hours, keys)
     direct = _first_numeric(
         row,
         payload,
-        [
-            "net_bps_after_cost",
-            "net_bps",
-            "net_return_bps",
-            "net_pnl_bps",
-            "outcome_net_bps",
-            "realized_net_bps",
-            "after_cost_bps",
-            "net_after_cost_bps",
-            "profit_bps",
-            "pnl_bps",
-        ],
+        keys,
     )
     if direct is not None:
         return direct
@@ -1615,6 +1747,62 @@ def _outcome_net_bps(row: dict[str, Any], payload: dict[str, Any]) -> float | No
     if pct is not None:
         return pct * 10_000.0 if abs(pct) <= 1 else pct * 100.0
     return None
+
+
+def _outcome_label_status(
+    row: dict[str, Any],
+    payload: dict[str, Any],
+    horizon_hours: int,
+    net_bps: float | None,
+) -> str:
+    status = _first_text(
+        row,
+        payload,
+        _horizon_keys(horizon_hours, ["label_status", "status", "outcome_status"]),
+    ).lower()
+    if status in {"complete", "completed", "matured", "labeled"}:
+        return "complete"
+    if status in {"partial", "pending", "incomplete", "unlabeled"}:
+        return status
+    return "complete" if net_bps is not None else "unlabeled"
+
+
+def _source_type(dataset_name: str, row: dict[str, Any], payload: dict[str, Any]) -> str:
+    path = str(row.get("source_path_inside_bundle") or "").lower()
+    if "high_score_blocked_outcomes" in path:
+        return "high_score_blocked_outcome"
+    if "btc_leadership_probe_blocked_outcomes" in path:
+        return "btc_leadership_blocked_outcome"
+    if "alt_impulse_shadow_outcomes" in path:
+        return "alt_impulse_shadow_outcome"
+    if "multi_position_swing_shadow_outcomes" in path:
+        return "multi_position_swing_shadow_outcome"
+    if "factor_contribution_outcomes_by_factor" in path:
+        return "factor_contribution_outcome"
+    if "protect_sol_exception_shadow_outcomes" in path:
+        return "protect_sol_exception_shadow_outcome"
+    if dataset_name == "v5_high_score_blocked_outcome":
+        return "high_score_blocked_outcome"
+    if dataset_name == "v5_shadow_outcome":
+        return "shadow_outcome"
+    explicit = _first_text(row, payload, ["source_type", "outcome_source_type"])
+    return explicit or dataset_name
+
+
+def _default_regime_state(strategy_candidate: str) -> str:
+    lowered = strategy_candidate.lower()
+    if "alt_impulse" in lowered:
+        return "impulse"
+    if "sol_protect" in lowered:
+        return "protect"
+    if (
+        "multi_position" in lowered
+        or "btc_leadership" in lowered
+        or "f3_" in lowered
+        or "f4_" in lowered
+    ):
+        return "trend"
+    return "UNKNOWN"
 
 
 def _parse_timestamp(value: Any) -> datetime | None:

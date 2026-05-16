@@ -229,15 +229,21 @@ def test_strategy_evidence_uses_historical_shadow_and_blocked_outcomes(tmp_path)
     }
 
     assert result.extracted_sample_count == samples.height
+    assert samples.filter(
+        (pl.col("strategy_candidate") == "v5.alt_impulse_shadow")
+        & (pl.col("horizon_hours") == 24)
+    ).height == 16
+    assert summary[("v5.alt_impulse_shadow", "ETH-USDT", "impulse", 4)]["decision"] == "KILL"
     assert summary[("v5.alt_impulse_shadow", "ETH-USDT", "impulse", 24)]["decision"] == "KILL"
     assert board_rows[("v5.alt_impulse_shadow", "ETH-USDT", "impulse", 24)]["decision"] == (
         "KILL"
     )
-    assert summary[("v5.sol_protect_exception", "SOL-USDT", "protect", 24)]["decision"] == (
-        "KEEP_SHADOW"
-    )
-    assert summary[("v5.multi_position_k2", "BNB-USDT", "trend", 24)]["decision"] == (
-        "KEEP_SHADOW"
+    assert summary[
+        ("v5.sol_protect_alpha6_low_exception", "SOL-USDT", "protect", 24)
+    ]["decision"] == "KEEP_SHADOW"
+    assert summary[("v5.multi_position_k2", "BNB-USDT", "trend", 24)]["decision"] == "KILL"
+    assert board_rows[("v5.multi_position_k2", "BNB-USDT", "trend", 24)]["decision"] == (
+        "KILL"
     )
     assert summary[("v5.multi_position_k3", "SOL-USDT", "trend", 24)]["decision"] == "KILL"
     assert ("v5.btc_leadership_probe_strict", "BTC-USDT", "trend", 24) in summary
@@ -248,6 +254,14 @@ def test_strategy_evidence_uses_historical_shadow_and_blocked_outcomes(tmp_path)
     assert summary[("v5.f4_volume_expansion_entry", "ETH-USDT", "trend", 24)]["decision"] == (
         "KEEP_SHADOW"
     )
+    assert {
+        "high_score_blocked_outcome",
+        "btc_leadership_blocked_outcome",
+        "alt_impulse_shadow_outcome",
+        "multi_position_swing_shadow_outcome",
+        "factor_contribution_outcome",
+        "protect_sol_exception_shadow_outcome",
+    }.issubset(set(samples["source_type"].drop_nulls()))
     for key, evidence_row in summary.items():
         assert board_rows[key]["decision"] == evidence_row["decision"]
 
@@ -451,10 +465,10 @@ def _write_historical_outcomes(lake: Path) -> None:
     high_score_rows = []
     shadow_rows = []
     _add_outcome_rows(
-        high_score_rows,
+        shadow_rows,
         start=start,
-        source_path="summaries/high_score_blocked_outcomes.csv",
-        candidate="sol_protect_exception",
+        source_path="summaries/protect_sol_exception_shadow_outcomes.csv",
+        candidate="sol_protect_alpha6_low_exception",
         symbol="SOL-USDT",
         regime="protect",
         net_values=[15.0] * 12,
@@ -477,14 +491,14 @@ def _write_historical_outcomes(lake: Path) -> None:
         regime="trend",
         net_values=[12.0] * 12,
     )
-    _add_outcome_rows(
+    _add_multi_horizon_outcome_rows(
         shadow_rows,
         start=start,
         source_path="summaries/alt_impulse_shadow_outcomes.csv",
         candidate="alt_impulse_shadow",
         symbol="ETH-USDT",
         regime="impulse",
-        net_values=[-35.0] * 12,
+        net_values=[-35.0] * 16,
     )
     _add_outcome_rows(
         shadow_rows,
@@ -493,7 +507,7 @@ def _write_historical_outcomes(lake: Path) -> None:
         candidate="multi_position_k2",
         symbol="BNB-USDT",
         regime="trend",
-        net_values=[20.0] * 12,
+        net_values=[-12.0] * 12,
     )
     _add_outcome_rows(
         shadow_rows,
@@ -527,6 +541,49 @@ def _write_historical_outcomes(lake: Path) -> None:
         lake / "silver/v5_high_score_blocked_outcome",
     )
     write_parquet_dataset(pl.DataFrame(shadow_rows), lake / "silver/v5_shadow_outcome")
+
+
+def _add_multi_horizon_outcome_rows(
+    rows: list[dict],
+    *,
+    start: datetime,
+    source_path: str,
+    candidate: str,
+    symbol: str,
+    regime: str,
+    net_values: list[float],
+) -> None:
+    for index, net in enumerate(net_values):
+        ts = start + timedelta(hours=index)
+        payload = {
+            "candidate_name": candidate,
+            "event_id": f"{candidate}-{symbol}-{index}",
+        }
+        row = {
+            "strategy": "v5",
+            "bundle_sha256": "hist",
+            "bundle_name": "bundle.tar.gz",
+            "bundle_ts": ts,
+            "ingest_ts": ts + timedelta(minutes=1),
+            "source_path_inside_bundle": source_path,
+            "row_index": index,
+            "candidate_name": candidate,
+            "event_id": f"{candidate}-{symbol}-{index}",
+            "ts_utc": ts.isoformat().replace("+00:00", "Z"),
+            "symbol": symbol,
+            "regime_state": regime,
+            "cost_bps": "4.0",
+            "cost_source": "quant_lab_actual",
+        }
+        for horizon in [4, 8, 12, 24, 48, 72, 120]:
+            adjusted = net - (horizon / 100.0)
+            row[f"label_{horizon}h_net_bps"] = str(adjusted)
+            row[f"label_{horizon}h_gross_bps"] = str(adjusted + 4.0)
+            row[f"label_{horizon}h_win"] = str(adjusted > 0).lower()
+            row[f"label_{horizon}h_status"] = "complete"
+            payload[f"label_{horizon}h_net_bps"] = adjusted
+        row["raw_payload_json"] = json.dumps(payload)
+        rows.append(row)
 
 
 def _add_outcome_rows(

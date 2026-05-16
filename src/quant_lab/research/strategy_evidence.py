@@ -486,13 +486,13 @@ def _formal_summary_row(
     p25_net = _p25(net_values)
     win_rate = (sum(wins) / len(wins)) if wins else None
     decision, reasons = _formal_decision(
-        strategy_candidate=strategy_candidate,
         sample_count=len(rows),
         complete_sample_count=len(complete),
         avg_net_bps=avg_net,
         p25_net_bps=p25_net,
         win_rate=win_rate,
         min_live_samples=min_live_samples,
+        cost_source_mix=cost_mix,
     )
     timestamps = [
         value
@@ -526,41 +526,95 @@ def _formal_summary_row(
 
 def _formal_decision(
     *,
-    strategy_candidate: str,
     sample_count: int,
     complete_sample_count: int,
     avg_net_bps: float | None,
     p25_net_bps: float | None,
     win_rate: float | None,
     min_live_samples: int,
+    paper_days: int = 0,
+    cost_source_mix: Any = None,
+) -> tuple[str, list[str]]:
+    return strategy_evidence_decision_ladder(
+        sample_count=sample_count,
+        complete_sample_count=complete_sample_count,
+        avg_net_bps=avg_net_bps,
+        p25_net_bps=p25_net_bps,
+        win_rate=win_rate,
+        paper_days=paper_days,
+        cost_source_mix=cost_source_mix,
+        paper_ready_sample_count=min_live_samples,
+    )
+
+
+def strategy_evidence_decision_ladder(
+    *,
+    sample_count: int,
+    complete_sample_count: int,
+    avg_net_bps: float | None,
+    p25_net_bps: float | None,
+    win_rate: float | None,
+    paper_days: int = 0,
+    cost_source_mix: Any = None,
+    paper_ready_sample_count: int = MIN_LIVE_SMALL_READY_SAMPLES,
 ) -> tuple[str, list[str]]:
     reasons: list[str] = []
     if sample_count < 10:
-        return "RESEARCH_ONLY", [f"sample_count_below_10:{sample_count}"]
-    if strategy_candidate in {"v5.sol_protect_exception", "v5.alt_impulse_shadow"}:
-        if avg_net_bps is not None and avg_net_bps < 0 and win_rate is not None and win_rate < 0.45:
-            return "KILL", ["avg_net_bps_negative_and_win_rate_below_45pct"]
-        return "KEEP_SHADOW", [f"{strategy_candidate.removeprefix('v5.')}_not_live_eligible"]
-    if strategy_candidate in {"v5.multi_position_k2", "v5.multi_position_k3"}:
-        return "KILL", ["multi_position_k2_k3_not_eligible"]
-    if complete_sample_count <= 0:
-        return "RESEARCH_ONLY", ["no_complete_forward_labels"]
-    if avg_net_bps is not None and avg_net_bps < 0 and win_rate is not None and win_rate < 0.45:
-        return "KILL", ["avg_net_bps_negative_and_win_rate_below_45pct"]
+        reasons.append("insufficient_total_samples")
+    if complete_sample_count < 5:
+        reasons.append("insufficient_complete_samples")
+    if reasons:
+        return "RESEARCH_ONLY", reasons
+
+    if complete_sample_count >= 10 and _is_negative_after_cost_edge(avg_net_bps):
+        if win_rate is not None and win_rate < 0.45:
+            return "KILL", ["non_positive_after_cost_edge", "win_rate_below_threshold"]
+
     paper_ready = (
-        sample_count >= min_live_samples
+        complete_sample_count >= paper_ready_sample_count
         and win_rate is not None
         and win_rate > 0.55
         and p25_net_bps is not None
         and p25_net_bps > -50.0
     )
-    if sample_count >= 60 and paper_ready:
-        reasons.append("paper_days_required_before_live_small")
+    if (
+        complete_sample_count >= 60
+        and paper_days >= 14
+        and not _cost_source_mix_contains_global_default(cost_source_mix)
+        and paper_ready
+    ):
+        return "LIVE_SMALL_READY", ["live_small_ready_thresholds_met"]
     if paper_ready:
-        return "PAPER_READY", reasons or ["paper_ready_thresholds_met"]
-    if sample_count >= 10 and avg_net_bps is not None and avg_net_bps > 0:
+        return "PAPER_READY", ["paper_ready_thresholds_met"]
+    if complete_sample_count >= 10 and avg_net_bps is not None and avg_net_bps > 0:
         return "KEEP_SHADOW", ["positive_avg_net_bps_needs_more_evidence"]
-    return "RESEARCH_ONLY", ["evidence_inconclusive"]
+
+    if _is_negative_after_cost_edge(avg_net_bps):
+        reasons.append("non_positive_after_cost_edge")
+    if win_rate is None or win_rate < 0.45:
+        reasons.append("win_rate_below_threshold")
+    return "RESEARCH_ONLY", reasons or ["evidence_inconclusive"]
+
+
+def _is_negative_after_cost_edge(avg_net_bps: float | None) -> bool:
+    return avg_net_bps is not None and avg_net_bps < 0.0
+
+
+def _cost_source_mix_contains_global_default(cost_source_mix: Any) -> bool:
+    if cost_source_mix is None:
+        return False
+    if isinstance(cost_source_mix, dict):
+        return any(str(key).lower() == "global_default" for key in cost_source_mix)
+    if isinstance(cost_source_mix, list):
+        for item in cost_source_mix:
+            if isinstance(item, dict):
+                source = item.get("cost_source") or item.get("source")
+            else:
+                source = item
+            if str(source).lower() == "global_default":
+                return True
+        return False
+    return "global_default" in str(cost_source_mix).lower()
 
 
 def _cost_source_mix(rows: list[dict[str, Any]]) -> dict[str, int]:

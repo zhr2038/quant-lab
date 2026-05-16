@@ -10,7 +10,47 @@ import polars as pl
 from quant_lab.data.lake import read_parquet_dataset, write_market_bars, write_parquet_dataset
 from quant_lab.export.daily import export_daily_pack
 from quant_lab.research.alpha_discovery import build_and_publish_alpha_discovery_board
-from quant_lab.research.strategy_evidence import build_and_publish_strategy_evidence
+from quant_lab.research.strategy_evidence import (
+    build_and_publish_strategy_evidence,
+    strategy_evidence_decision_ladder,
+)
+
+
+def test_strategy_evidence_ladder_requires_complete_sample_floor():
+    decision, reasons = strategy_evidence_decision_ladder(
+        sample_count=12,
+        complete_sample_count=2,
+        avg_net_bps=-25.0,
+        p25_net_bps=-40.0,
+        win_rate=0.2,
+    )
+
+    assert decision == "RESEARCH_ONLY"
+    assert "insufficient_complete_samples" in reasons
+
+    decision, reasons = strategy_evidence_decision_ladder(
+        sample_count=8,
+        complete_sample_count=8,
+        avg_net_bps=25.0,
+        p25_net_bps=10.0,
+        win_rate=1.0,
+    )
+    assert decision == "RESEARCH_ONLY"
+    assert "insufficient_total_samples" in reasons
+
+
+def test_strategy_evidence_ladder_kills_only_after_complete_sample_floor():
+    decision, reasons = strategy_evidence_decision_ladder(
+        sample_count=12,
+        complete_sample_count=12,
+        avg_net_bps=-25.0,
+        p25_net_bps=-40.0,
+        win_rate=0.2,
+    )
+
+    assert decision == "KILL"
+    assert "non_positive_after_cost_edge" in reasons
+    assert "win_rate_below_threshold" in reasons
 
 
 def test_strategy_evidence_builds_candidate_board_without_broad_btc_mixing(tmp_path):
@@ -40,7 +80,7 @@ def test_strategy_evidence_builds_candidate_board_without_broad_btc_mixing(tmp_p
     assert rows[key]["complete_sample_count"] == 35
     assert rows[key]["avg_net_bps"] == 6.0
     assert rows[key]["win_rate"] == 1.0
-    assert rows[key]["decision"] == "KEEP_SHADOW"
+    assert rows[key]["decision"] == "PAPER_READY"
     assert all(
         row["sample_count"] >= 30
         for row in summary.filter(pl.col("decision") == "LIVE_SMALL_READY").to_dicts()
@@ -100,13 +140,13 @@ def test_daily_export_includes_alpha_discovery_reports(tmp_path):
         )
 
     board_by_candidate = {row["candidate_name"]: row for row in board}
-    assert board_by_candidate["v5.sol_protect_exception"]["decision"] == "KEEP_SHADOW"
+    assert board_by_candidate["v5.sol_protect_exception"]["decision"] == "PAPER_READY"
     assert len(evidence_rows) > 0
     assert len(board) > 0
     assert any(row["strategy_candidate"] == "v5.sol_protect_exception" for row in sample_rows)
     assert "candidate_id" in sample_rows[0]
     assert "net_bps_after_cost" in sample_rows[0]
-    assert any(row["candidate_name"] == "v5.sol_protect_exception" for row in watch)
+    assert not any(row["candidate_name"] == "v5.sol_protect_exception" for row in watch)
 
 
 def test_strategy_evidence_replaces_legacy_schema(tmp_path):
@@ -159,7 +199,9 @@ def test_strategy_evidence_uses_historical_shadow_and_blocked_outcomes(tmp_path)
     assert summary[("v5.sol_protect_exception", "SOL-USDT", "protect", 24)]["decision"] == (
         "KEEP_SHADOW"
     )
-    assert summary[("v5.multi_position_k2", "BNB-USDT", "trend", 24)]["decision"] == "KILL"
+    assert summary[("v5.multi_position_k2", "BNB-USDT", "trend", 24)]["decision"] == (
+        "KEEP_SHADOW"
+    )
     assert summary[("v5.multi_position_k3", "SOL-USDT", "trend", 24)]["decision"] == "KILL"
     assert ("v5.btc_leadership_probe_strict", "BTC-USDT", "trend", 24) in summary
     assert ("v5.btc_leadership_blocked_relaxed", "BTC-USDT", "trend", 24) in summary
@@ -169,6 +211,8 @@ def test_strategy_evidence_uses_historical_shadow_and_blocked_outcomes(tmp_path)
     assert summary[("v5.f4_volume_expansion_entry", "ETH-USDT", "trend", 24)]["decision"] == (
         "KEEP_SHADOW"
     )
+    for key, evidence_row in summary.items():
+        assert board_rows[key]["decision"] == evidence_row["decision"]
 
 
 def _write_market_bars(lake: Path) -> None:

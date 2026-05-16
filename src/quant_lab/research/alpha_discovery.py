@@ -12,6 +12,7 @@ import polars as pl
 from pydantic import BaseModel, ConfigDict, Field
 
 from quant_lab.data.lake import read_parquet_dataset, upsert_parquet_dataset
+from quant_lab.research.strategy_evidence import strategy_evidence_decision_ladder
 from quant_lab.strategy_telemetry.sanitize import safe_json_dumps
 from quant_lab.symbols import normalize_symbol
 
@@ -329,8 +330,8 @@ def _board_row(
     cost_source_counts = Counter(_clean_text(row.get("cost_source")) or "MISSING" for row in rows)
     has_global_default = any(source.lower() == "global_default" for source in cost_source_counts)
     decision, reasons = _decision(
-        candidate=candidate,
         sample_count=len(rows),
+        complete_sample_count=len(complete),
         avg_net_bps=avg_net,
         win_rate=win_rate,
         p25_net_bps=p25_net,
@@ -381,83 +382,40 @@ def _board_row(
 
 def _decision(
     *,
-    candidate: str,
     sample_count: int,
+    complete_sample_count: int,
     avg_net_bps: float | None,
     win_rate: float | None,
     p25_net_bps: float | None,
     paper_days: int,
     cost_source_counts: Counter[str],
 ) -> tuple[str, list[str]]:
-    reasons: list[str] = []
-    if sample_count < 10:
-        return "RESEARCH_ONLY", [f"sample_count_below_10:{sample_count}"]
-
-    negative_expectancy = (
-        avg_net_bps is not None
-        and avg_net_bps < 0.0
-        and win_rate is not None
-        and win_rate < 0.45
+    return strategy_evidence_decision_ladder(
+        sample_count=sample_count,
+        complete_sample_count=complete_sample_count,
+        avg_net_bps=avg_net_bps,
+        p25_net_bps=p25_net_bps,
+        win_rate=win_rate,
+        paper_days=paper_days,
+        cost_source_mix=cost_source_counts,
     )
-    if candidate == "v5.sol_protect_exception":
-        return "KEEP_SHADOW", ["sol_protect_exception_requires_shadow_review"]
-    if negative_expectancy:
-        return "KILL", ["avg_net_bps_negative_and_win_rate_below_45pct"]
-    if candidate == "v5.alt_impulse_shadow":
-        return "KEEP_SHADOW", ["alt_impulse_shadow_not_live_eligible"]
-
-    paper_ready = (
-        sample_count >= 30
-        and win_rate is not None
-        and win_rate > 0.55
-        and p25_net_bps is not None
-        and p25_net_bps > -50.0
-    )
-    cost_source_known = bool(cost_source_counts) and "MISSING" not in cost_source_counts
-    has_global_default = any(source.lower() == "global_default" for source in cost_source_counts)
-    if sample_count >= 60 and paper_ready and paper_days >= 14 and cost_source_known:
-        if has_global_default:
-            reasons.append("cost_source_contains_global_default")
-        else:
-            return "LIVE_SMALL_READY", ["paper_days_and_cost_source_floor_met"]
-    if paper_ready:
-        if sample_count < 60:
-            reasons.append("sample_count_below_60_for_live")
-        if paper_days < 14:
-            reasons.append("paper_days_below_14_for_live")
-        if not cost_source_known:
-            reasons.append("cost_source_missing_for_live")
-        return "PAPER_READY", reasons or ["paper_ready_thresholds_met"]
-    if sample_count >= 10 and avg_net_bps is not None and avg_net_bps > 0.0:
-        return "KEEP_SHADOW", ["positive_avg_net_bps_needs_more_evidence"]
-    return "RESEARCH_ONLY", ["evidence_inconclusive"]
 
 
 def _strategy_evidence_decision(row: dict[str, Any]) -> tuple[str, list[str]]:
-    candidate = _clean_text(row.get("strategy_candidate") or row.get("candidate_name"))
-    stored = _clean_text(row.get("decision")).upper()
-    reasons = _json_list(row.get("decision_reasons"))
-    if candidate == "v5.sol_protect_exception":
-        return "KEEP_SHADOW", reasons or ["sol_protect_exception_requires_shadow_review"]
-    if candidate == "v5.alt_impulse_shadow" and stored != "KILL":
-        return "KEEP_SHADOW", ["alt_impulse_shadow_not_live_eligible"]
-    if candidate in {"v5.multi_position_k2", "v5.multi_position_k3"}:
-        return "KILL", reasons or ["multi_position_k2_k3_not_eligible"]
-    if stored in DECISIONS:
-        return stored, reasons or ["strategy_evidence_decision"]
     sample_count = int(_finite_float(row.get("sample_count")) or 0)
+    complete_sample_count = int(_finite_float(row.get("complete_sample_count")) or 0)
     avg_net = _finite_float(row.get("avg_net_bps"))
     win_rate = _finite_float(row.get("win_rate"))
     p25 = _finite_float(row.get("p25_net_bps"))
-    cost_mix = _clean_text(row.get("cost_source_mix")).lower()
-    return _decision(
-        candidate=candidate,
+    paper_days = int(_finite_float(row.get("paper_days")) or 0)
+    return strategy_evidence_decision_ladder(
         sample_count=sample_count,
+        complete_sample_count=complete_sample_count,
         avg_net_bps=avg_net,
         win_rate=win_rate,
         p25_net_bps=p25,
-        paper_days=0,
-        cost_source_counts=Counter(["global_default"] if "global_default" in cost_mix else []),
+        paper_days=paper_days,
+        cost_source_mix=row.get("cost_source_mix"),
     )
 
 

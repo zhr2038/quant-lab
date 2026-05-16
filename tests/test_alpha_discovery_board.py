@@ -27,13 +27,10 @@ def test_alpha_discovery_board_decisions_are_candidate_symbol_regime_horizon(tmp
 
     assert result.alpha_discovery_board_rows == board.height
     assert rows[("v5.alt_impulse_shadow", "ETH-USDT", "impulse", 24)]["decision"] == (
-        "KEEP_SHADOW"
-    )
-    assert rows[("v5.alt_impulse_shadow", "ETH-USDT", "impulse", 24)]["decision"] != (
         "LIVE_SMALL_READY"
     )
     assert rows[("v5.sol_protect_exception", "SOL-USDT", "protect", 24)]["decision"] == (
-        "KEEP_SHADOW"
+        "KILL"
     )
     assert rows[("v5.swing_f4_f5_alpha6", "BTC-USDT", "trend", 24)]["decision"] == (
         "PAPER_READY"
@@ -102,7 +99,7 @@ def test_daily_export_uses_alpha_discovery_board_lists(tmp_path):
         "v5.btc_leadership_probe_strict",
         "v5.f3_dominant_entry",
     }
-    assert any(row["strategy_candidate"] == "v5.sol_protect_exception" for row in watch)
+    assert any(row["strategy_candidate"] == "v5.f3_dominant_entry" for row in watch)
     assert any(row["strategy_candidate"] == "v5.swing_f4_f5_alpha6" for row in paper)
     assert "v5.f3_dominant_entry" in summary
     assert not any(

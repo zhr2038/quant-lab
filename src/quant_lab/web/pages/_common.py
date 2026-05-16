@@ -3,6 +3,8 @@ from typing import Any
 
 import polars as pl
 
+from quant_lab.time_display import format_beijing_time, is_time_column
+
 VALUE_LABELS = {
     None: "未知",
     True: "是",
@@ -232,6 +234,8 @@ def lake_caption(st: Any, lake_root: str | Path) -> None:
 
 
 def display_value(value: Any) -> Any:
+    if _is_display_time_value(value):
+        return format_beijing_time(value)
     return VALUE_LABELS.get(value, value)
 
 
@@ -260,6 +264,20 @@ def localize_frame(df: pl.DataFrame) -> pl.DataFrame:
 def _localize_frame_values(df: pl.DataFrame) -> pl.DataFrame:
     expressions = []
     for column in df.columns:
+        if is_time_column(column):
+            expressions.append(
+                pl.col(column)
+                .map_elements(_display_time_cell, return_dtype=pl.Utf8)
+                .alias(column)
+            )
+            continue
+        if column == "value" and "key" in df.columns:
+            expressions.append(
+                pl.struct(["key", "value"])
+                .map_elements(_display_key_value_cell, return_dtype=pl.Utf8)
+                .alias(column)
+            )
+            continue
         if column not in VALUE_LOCALIZED_COLUMNS:
             continue
         expressions.append(
@@ -273,3 +291,24 @@ def _localize_frame_values(df: pl.DataFrame) -> pl.DataFrame:
     if not expressions:
         return df
     return df.with_columns(expressions)
+
+
+def _display_time_cell(value: Any) -> str:
+    if value is None:
+        return ""
+    return str(display_value(value))
+
+
+def _display_key_value_cell(row: dict[str, Any]) -> str:
+    key = str(row.get("key") or "")
+    value = row.get("value")
+    if is_time_column(key):
+        return _display_time_cell(value)
+    return "" if value is None else str(display_value(value))
+
+
+def _is_display_time_value(value: Any) -> bool:
+    if hasattr(value, "tzinfo"):
+        return True
+    text = str(value) if value is not None else ""
+    return bool(text and ("T" in text or text.endswith("Z")) and format_beijing_time(text) != text)

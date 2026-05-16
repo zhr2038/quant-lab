@@ -46,6 +46,8 @@ def test_export_daily_pack_writes_required_members(tmp_path):
         provenance = json.loads(archive.read("provenance.json").decode("utf-8"))
         assert set(REQUIRED_MEMBERS).issubset(names)
         assert manifest["export_date"] == "2026-05-11"
+        assert manifest["display_timezone"] == "Asia/Shanghai"
+        assert manifest["generated_at_beijing"].endswith("+08:00")
         assert manifest["row_counts"]["market_bar"] == 2
         assert manifest["git_commit"]
         assert "git_branch" in manifest
@@ -55,6 +57,8 @@ def test_export_daily_pack_writes_required_members(tmp_path):
         assert manifest["export_command"] == "qlab export-daily"
         assert manifest["contract_version"] == V5_QUANT_LAB_CONTRACT_VERSION
         assert provenance["contract_version"] == V5_QUANT_LAB_CONTRACT_VERSION
+        assert provenance["display_timezone"] == "Asia/Shanghai"
+        assert provenance["generated_at_beijing"].endswith("+08:00")
         assert "dataset_freshness" in manifest
         assert provenance["git_commit"]
         assert "freshness_seconds" in provenance["datasets"][0]

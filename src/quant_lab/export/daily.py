@@ -41,6 +41,7 @@ from quant_lab.risk.publish import (
 from quant_lab.strategy_telemetry.analyze import _event_key as _v5_telemetry_event_key
 from quant_lab.strategy_telemetry.sanitize import SECRET_PATTERNS, safe_json_dumps
 from quant_lab.symbols import normalize_symbol
+from quant_lab.time_display import BEIJING_TZ, DISPLAY_TIMEZONE, beijing_iso
 from quant_lab.web import readers
 
 SECTIONS = ["market", "features", "costs", "research", "risk", "anomalies", "v5", "charts"]
@@ -914,7 +915,7 @@ def export_daily_pack(
 
 
 def _unique_export_zip_path(output_root: Path, day: date, generated_at: datetime) -> Path:
-    timestamp = generated_at.astimezone(UTC).strftime("%Y%m%dT%H%M%S%fZ")
+    timestamp = generated_at.astimezone(BEIJING_TZ).strftime("%Y%m%dT%H%M%S%f+0800")
     base_name = f"quant_lab_expert_pack_{day.isoformat()}_{timestamp}"
     candidate = output_root / f"{base_name}.zip"
     counter = 1
@@ -1325,6 +1326,9 @@ def _manifest_payload(
         "export_date": day.isoformat(),
         "generated_at": generated_at.isoformat(),
         "export_generated_at": generated_at.isoformat(),
+        "display_timezone": DISPLAY_TIMEZONE,
+        "generated_at_beijing": beijing_iso(generated_at),
+        "export_generated_at_beijing": beijing_iso(generated_at),
         "risk_permission_generated_at": risk_export_status.get("risk_permission_generated_at"),
         "risk_permission_expires_at": risk_export_status.get("risk_permission_expires_at"),
         "permission_expired_at_export": risk_export_status.get(
@@ -1401,6 +1405,8 @@ def _provenance_payload(
     return {
         "export_date": day.isoformat(),
         "generated_at": generated_at.isoformat(),
+        "display_timezone": DISPLAY_TIMEZONE,
+        "generated_at_beijing": beijing_iso(generated_at),
         "quant_lab_version": __version__,
         "contract_version": V5_QUANT_LAB_CONTRACT_VERSION,
         "schema_version": V5_TELEMETRY_DATASET_SCHEMA_VERSION,
@@ -1835,6 +1841,9 @@ def _data_quality_payload(
     return {
         "status": status,
         "export_date": day.isoformat(),
+        "generated_at": generated_at.isoformat(),
+        "display_timezone": DISPLAY_TIMEZONE,
+        "generated_at_beijing": beijing_iso(generated_at),
         "checks": checks,
         "warnings": sorted(set(warnings)),
         "risk_permission": risk_quality,

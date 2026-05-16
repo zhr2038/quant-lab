@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import json
 import zipfile
-from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
@@ -15,6 +14,7 @@ from quant_lab.research.candidate_labels import build_and_publish_candidate_labe
 from quant_lab.research.strategy_evidence import build_and_publish_strategy_evidence
 from quant_lab.risk.publish import publish_risk_permission
 from quant_lab.strategy_telemetry.analyze import analyze_v5_telemetry
+from quant_lab.time_display import beijing_today
 from quant_lab.web import readers
 from quant_lab.web.pages._common import show_frame, show_warnings, streamlit_module
 
@@ -61,7 +61,8 @@ def render(
 
 
 def _generate_today_pack(st: Any, *, lake_root: Path, exports_root: Path) -> Path | None:
-    export_date = datetime.now(UTC).date().isoformat()
+    export_date = beijing_today().isoformat()
+    exports_root.mkdir(parents=True, exist_ok=True)
     try:
         with _spinner(st, f"正在生成 {export_date} 专家包..."):
             refresh_warnings = _refresh_lake_before_export(lake_root, export_date=export_date)

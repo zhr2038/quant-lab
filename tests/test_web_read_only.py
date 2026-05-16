@@ -734,7 +734,7 @@ def test_overview_diagnostics_shows_latest_market_bar_ts(tmp_path):
     overview.render(lake_root, fake)
 
     metrics = _call_values(fake, "metric")
-    assert ("最新 market_bar 时间", "2026-05-10 02:00:00+00:00") in metrics
+    assert ("最新 market_bar 时间", "2026-05-10 10:00:00 Asia/Shanghai") in metrics
 
 
 def test_expert_exports_page_downloads_listed_packs(tmp_path):
@@ -782,10 +782,44 @@ def test_expert_exports_generate_today_button_invokes_export(tmp_path, monkeypat
     assert refresh_calls[0][0] == lake_root
     assert captured["lake_root"] == lake_root
     assert captured["out_dir"] == tmp_path / "exports"
+    assert captured["export_date"]
     assert captured["profile"] == "expert"
     assert any("已生成专家包" in str(value) for value in _call_values(fake, "success"))
     downloads = _call_values(fake, "download_button")
     assert any(item["file_name"] == "quant_lab_expert_pack_test.zip" for item in downloads)
+
+
+def test_expert_exports_generate_today_uses_beijing_date_and_creates_export_dir(
+    tmp_path,
+    monkeypatch,
+):
+    lake_root = tmp_path / "lake"
+    exports_root = tmp_path / "missing_exports"
+    fake = FakeStreamlit()
+    captured = {}
+
+    def fake_export_daily_pack(**kwargs):
+        captured.update(kwargs)
+        pack_path = Path(kwargs["out_dir"]) / "quant_lab_expert_pack_test.zip"
+        with zipfile.ZipFile(pack_path, "w") as archive:
+            archive.writestr("manifest.json", "{}")
+            archive.writestr("data_quality.json", "{}")
+            archive.writestr("expert_questions.md", "")
+        return SimpleNamespace(zip_path=str(pack_path))
+
+    monkeypatch.setattr(expert_exports, "beijing_today", lambda: datetime(2026, 5, 16).date())
+    monkeypatch.setattr(expert_exports, "_refresh_lake_before_export", lambda *_args, **_kwargs: [])
+    monkeypatch.setattr(expert_exports, "export_daily_pack", fake_export_daily_pack)
+
+    pack_path = expert_exports._generate_today_pack(
+        fake,
+        lake_root=lake_root,
+        exports_root=exports_root,
+    )
+
+    assert exports_root.exists()
+    assert pack_path == exports_root / "quant_lab_expert_pack_test.zip"
+    assert captured["export_date"] == "2026-05-16"
 
 
 def test_expert_exports_generated_pack_is_listed_first(tmp_path):

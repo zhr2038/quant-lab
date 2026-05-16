@@ -754,6 +754,7 @@ def test_expert_exports_generate_today_button_invokes_export(tmp_path, monkeypat
     lake_root = _fixture_lake(tmp_path)
     fake = FakeStreamlit(button_values={"生成今日专家包": True})
     captured = {}
+    refresh_calls = []
 
     def fake_export_daily_pack(**kwargs):
         captured.update(kwargs)
@@ -764,16 +765,48 @@ def test_expert_exports_generate_today_button_invokes_export(tmp_path, monkeypat
             archive.writestr("expert_questions.md", "")
         return SimpleNamespace(zip_path=str(pack_path))
 
+    def fake_refresh_lake_before_export(lake_root_arg, *, export_date):
+        refresh_calls.append((lake_root_arg, export_date))
+        return []
+
+    monkeypatch.setattr(
+        expert_exports,
+        "_refresh_lake_before_export",
+        fake_refresh_lake_before_export,
+    )
     monkeypatch.setattr(expert_exports, "export_daily_pack", fake_export_daily_pack)
 
     expert_exports.render(lake_root, fake, exports_root=tmp_path / "exports")
 
+    assert refresh_calls
+    assert refresh_calls[0][0] == lake_root
     assert captured["lake_root"] == lake_root
     assert captured["out_dir"] == tmp_path / "exports"
     assert captured["profile"] == "expert"
     assert any("已生成专家包" in str(value) for value in _call_values(fake, "success"))
     downloads = _call_values(fake, "download_button")
     assert any(item["file_name"] == "quant_lab_expert_pack_test.zip" for item in downloads)
+
+
+def test_expert_exports_generated_pack_is_listed_first(tmp_path):
+    exports_root = tmp_path / "exports"
+    exports_root.mkdir()
+    old_pack = exports_root / "quant_lab_expert_pack_2026-05-16_old.zip"
+    generated = exports_root / "quant_lab_expert_pack_2026-05-16_generated.zip"
+    for pack, marker in [(old_pack, "old"), (generated, "new")]:
+        with zipfile.ZipFile(pack, "w") as archive:
+            archive.writestr("manifest.json", json.dumps({"marker": marker}))
+            archive.writestr("data_quality.json", "{}")
+            archive.writestr("expert_questions.md", "")
+    os.utime(generated, (datetime(2026, 5, 16, 1, tzinfo=UTC).timestamp(),) * 2)
+    os.utime(old_pack, (datetime(2026, 5, 16, 2, tzinfo=UTC).timestamp(),) * 2)
+
+    summary = expert_exports._summary_preferring_generated_pack(exports_root, generated)
+    packs = summary["packs"].to_dicts()
+
+    assert summary["latest_pack"] == str(generated)
+    assert summary["manifest_summary"]["marker"] == "new"
+    assert packs[0]["path"] == str(generated)
 
 
 def test_expert_exports_summary_uses_mtime_for_latest_pack(tmp_path):

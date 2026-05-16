@@ -28,6 +28,8 @@ from quant_lab.reports.enforce_readiness import (
     build_enforce_readiness_report,
     enforce_readiness_members,
 )
+from quant_lab.research.alpha_discovery import normalize_alpha_discovery_board_decisions
+from quant_lab.research.strategy_evidence import normalize_strategy_evidence_decisions
 from quant_lab.risk.publish import (
     DEFAULT_TELEMETRY_STALE_THRESHOLD_SECONDS,
     is_permission_status_enforceable,
@@ -2038,7 +2040,7 @@ def _strategy_evidence_for_export(evidence: pl.DataFrame) -> pl.DataFrame:
     path = "research/strategy_evidence.csv"
     if evidence.is_empty() and not evidence.columns:
         return _empty_csv_schema_frame(path)
-    normalized = evidence
+    normalized = normalize_strategy_evidence_decisions(evidence)
     sort_columns = [
         column
         for column in [
@@ -2100,7 +2102,7 @@ def _alpha_discovery_board_for_export(board: pl.DataFrame) -> pl.DataFrame:
     path = "reports/alpha_discovery_board.csv"
     if board.is_empty() and not board.columns:
         return _empty_csv_schema_frame(path)
-    selected = board
+    selected = normalize_alpha_discovery_board_decisions(board)
     for column in CSV_SCHEMAS[path]:
         if column not in selected.columns:
             selected = selected.with_columns(pl.lit(None, dtype=pl.Utf8).alias(column))
@@ -2110,6 +2112,19 @@ def _alpha_discovery_board_for_export(board: pl.DataFrame) -> pl.DataFrame:
         if column in selected.columns
     ]
     selected = selected.sort(sort_columns) if sort_columns else selected
+    keys = [
+        key
+        for key in [
+            "strategy_candidate",
+            "symbol",
+            "regime_state",
+            "horizon_hours",
+            "as_of_date",
+        ]
+        if key in selected.columns
+    ]
+    if keys:
+        selected = selected.group_by(keys, maintain_order=True).tail(1)
     return selected.select(CSV_SCHEMAS[path])
 
 

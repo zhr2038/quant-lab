@@ -624,7 +624,30 @@ def _within_as_of(value: Any, cutoff: datetime) -> bool:
 def _upsert_if_not_empty(df: pl.DataFrame, dataset_path: Path, keys: list[str]) -> int:
     if df.is_empty():
         return read_parquet_dataset(dataset_path).height
-    return upsert_parquet_dataset(df, dataset_path, key_columns=keys)
+    upsert_parquet_dataset(df, dataset_path, key_columns=keys)
+    normalized = normalize_alpha_discovery_board_decisions(read_parquet_dataset(dataset_path))
+    upsert_parquet_dataset(normalized, dataset_path, key_columns=keys)
+    return normalized.height
+
+
+def normalize_alpha_discovery_board_decisions(board: pl.DataFrame) -> pl.DataFrame:
+    if board.is_empty() or "decision" not in board.columns:
+        return board
+    rows: list[dict[str, Any]] = []
+    for row in board.to_dicts():
+        decision, reasons = strategy_evidence_decision_ladder(
+            sample_count=int(_finite_float(row.get("sample_count")) or 0),
+            complete_sample_count=int(_finite_float(row.get("complete_sample_count")) or 0),
+            avg_net_bps=_finite_float(row.get("avg_net_bps")),
+            p25_net_bps=_finite_float(row.get("p25_net_bps")),
+            win_rate=_finite_float(row.get("win_rate")),
+            paper_days=int(_finite_float(row.get("paper_days")) or 0),
+            cost_source_mix=row.get("cost_source_mix"),
+        )
+        row["decision"] = decision
+        row["decision_reasons"] = safe_json_dumps(reasons)
+        rows.append(row)
+    return pl.DataFrame(rows, schema=board.schema, orient="row")
 
 
 def _decision_counts(board: pl.DataFrame) -> dict[str, int]:

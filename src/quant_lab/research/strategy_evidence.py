@@ -247,10 +247,10 @@ def publish_strategy_evidence_summary(
         existing,
         ["strategy", "strategy_candidate", "symbol", "regime_state", "horizon_hours"],
     ):
-        write_parquet_dataset(frame, dataset_path)
+        write_parquet_dataset(normalize_strategy_evidence_decisions(frame), dataset_path)
         return frame.height
-    return upsert_parquet_dataset(
-        frame,
+    upsert_parquet_dataset(
+        normalize_strategy_evidence_decisions(frame),
         dataset_path,
         key_columns=[
             "strategy",
@@ -262,6 +262,29 @@ def publish_strategy_evidence_summary(
             "horizon_hours",
         ],
     )
+    normalized = normalize_strategy_evidence_decisions(read_parquet_dataset(dataset_path))
+    write_parquet_dataset(normalized, dataset_path)
+    return normalized.height
+
+
+def normalize_strategy_evidence_decisions(evidence: pl.DataFrame) -> pl.DataFrame:
+    if evidence.is_empty() or "decision" not in evidence.columns:
+        return evidence
+    rows: list[dict[str, Any]] = []
+    for row in evidence.to_dicts():
+        decision, reasons = strategy_evidence_decision_ladder(
+            sample_count=int(_finite_float(row.get("sample_count")) or 0),
+            complete_sample_count=int(_finite_float(row.get("complete_sample_count")) or 0),
+            avg_net_bps=_finite_float(row.get("avg_net_bps")),
+            p25_net_bps=_finite_float(row.get("p25_net_bps")),
+            win_rate=_finite_float(row.get("win_rate")),
+            paper_days=int(_finite_float(row.get("paper_days")) or 0),
+            cost_source_mix=row.get("cost_source_mix"),
+        )
+        row["decision"] = decision
+        row["decision_reasons"] = _json(reasons)
+        rows.append(row)
+    return pl.DataFrame(rows, schema=evidence.schema, orient="row")
 
 
 def _needs_formal_schema_replace(existing: pl.DataFrame, required_columns: list[str]) -> bool:

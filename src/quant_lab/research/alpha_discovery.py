@@ -11,7 +11,7 @@ from typing import Any
 import polars as pl
 from pydantic import BaseModel, ConfigDict, Field
 
-from quant_lab.data.lake import read_parquet_dataset, upsert_parquet_dataset, write_parquet_dataset
+from quant_lab.data.lake import read_parquet_dataset, write_parquet_dataset
 from quant_lab.research.strategy_evidence import (
     _canonical_candidate_name,
     strategy_evidence_decision_ladder,
@@ -243,6 +243,7 @@ def build_alpha_discovery_board_from_strategy_evidence(
 ) -> pl.DataFrame:
     if strategy_evidence.is_empty():
         return pl.DataFrame(schema=BOARD_SCHEMA)
+    strategy_evidence = _latest_strategy_evidence_as_of(strategy_evidence, as_of_date)
     cutoff = datetime.combine(as_of_date + timedelta(days=1), time.min, tzinfo=UTC)
     rows = [
         row
@@ -624,13 +625,58 @@ def _within_as_of(value: Any, cutoff: datetime) -> bool:
     return ts is not None and ts < cutoff
 
 
-def _upsert_if_not_empty(df: pl.DataFrame, dataset_path: Path, keys: list[str]) -> int:
+def _upsert_if_not_empty(df: pl.DataFrame, dataset_path: Path, _keys: list[str]) -> int:
     if df.is_empty():
         return read_parquet_dataset(dataset_path).height
-    upsert_parquet_dataset(df, dataset_path, key_columns=keys)
-    normalized = normalize_alpha_discovery_board_decisions(read_parquet_dataset(dataset_path))
+    existing = read_parquet_dataset(dataset_path)
+    combined = _replace_matching_as_of_dates(existing, df)
+    normalized = normalize_alpha_discovery_board_decisions(combined)
     write_parquet_dataset(normalized, dataset_path)
     return normalized.height
+
+
+def _latest_strategy_evidence_as_of(
+    strategy_evidence: pl.DataFrame,
+    as_of_date: date,
+) -> pl.DataFrame:
+    if "as_of_date" not in strategy_evidence.columns:
+        return strategy_evidence
+    rows = strategy_evidence.to_dicts()
+    dated_rows: list[tuple[date, dict[str, Any]]] = []
+    for row in rows:
+        row_day = _date_from_value(row.get("as_of_date"))
+        if row_day is not None and row_day <= as_of_date:
+            dated_rows.append((row_day, row))
+    if not dated_rows:
+        return pl.DataFrame(schema=strategy_evidence.schema)
+    latest_day = max(row_day for row_day, _ in dated_rows)
+    latest_rows = [row for row_day, row in dated_rows if row_day == latest_day]
+    return pl.DataFrame(latest_rows, schema=strategy_evidence.schema, orient="row")
+
+
+def _replace_matching_as_of_dates(existing: pl.DataFrame, incoming: pl.DataFrame) -> pl.DataFrame:
+    if existing.is_empty():
+        return incoming
+    if incoming.is_empty():
+        return existing
+    if "as_of_date" not in existing.columns or "as_of_date" not in incoming.columns:
+        return pl.concat([existing, incoming], how="diagonal_relaxed")
+    dates = {
+        str(value)
+        for value in incoming["as_of_date"].drop_nulls().cast(pl.Utf8).unique().to_list()
+        if str(value).strip()
+    }
+    if not dates:
+        return pl.concat([existing, incoming], how="diagonal_relaxed")
+    retained = existing.filter(~pl.col("as_of_date").cast(pl.Utf8).is_in(sorted(dates)))
+    if retained.is_empty():
+        return incoming
+    return pl.concat([retained, incoming], how="diagonal_relaxed")
+
+
+def _date_from_value(value: Any) -> date | None:
+    ts = _coerce_timestamp(value)
+    return ts.date() if ts is not None else None
 
 
 def normalize_alpha_discovery_board_decisions(board: pl.DataFrame) -> pl.DataFrame:
@@ -657,7 +703,7 @@ def normalize_alpha_discovery_board_decisions(board: pl.DataFrame) -> pl.DataFra
         row["decision"] = decision
         row["decision_reasons"] = safe_json_dumps(reasons)
         rows.append(row)
-    normalized = pl.DataFrame(rows, schema=board.schema, orient="row")
+    normalized = _drop_unknown_symbol_rows(pl.DataFrame(rows, schema=board.schema, orient="row"))
     keys = [
         column
         for column in [
@@ -672,6 +718,13 @@ def normalize_alpha_discovery_board_decisions(board: pl.DataFrame) -> pl.DataFra
         if column in normalized.columns
     ]
     return normalized.unique(subset=keys, keep="last", maintain_order=True) if keys else normalized
+
+
+def _drop_unknown_symbol_rows(frame: pl.DataFrame) -> pl.DataFrame:
+    if frame.is_empty() or "symbol" not in frame.columns:
+        return frame
+    symbol = pl.col("symbol").fill_null("").cast(pl.Utf8).str.to_uppercase()
+    return frame.filter(symbol != "UNKNOWN")
 
 
 def _decision_counts(board: pl.DataFrame) -> dict[str, int]:

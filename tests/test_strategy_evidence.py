@@ -360,6 +360,90 @@ def test_strategy_evidence_counts_historical_outcomes_by_unique_event_not_aggreg
     )
     assert summary[("v5.alt_impulse_shadow", "ETH-USDT", "impulse", 24)]["avg_net_bps"] == -42.0
 
+    legacy_sample = samples.to_dicts()[0].copy()
+    legacy_sample.update(
+        {
+            "candidate_id": "legacy-unknown",
+            "source_event_key": "legacy-unknown",
+            "symbol": "UNKNOWN",
+            "as_of_date": "2026-05-10",
+        }
+    )
+    legacy_evidence = evidence.to_dicts()[0].copy()
+    legacy_evidence.update(
+        {
+            "strategy_candidate": "v5.alt_impulse_shadow",
+            "candidate_name": "v5.alt_impulse_shadow",
+            "symbol": "UNKNOWN",
+            "as_of_date": "2026-05-10",
+            "sample_count": 999,
+            "complete_sample_count": 0,
+        }
+    )
+    stale_evidence = evidence.to_dicts()[0].copy()
+    stale_evidence.update(
+        {
+            "strategy_candidate": "v5.alt_impulse_shadow",
+            "candidate_name": "v5.alt_impulse_shadow",
+            "symbol": "UNKNOWN",
+            "as_of_date": "2026-05-09",
+            "sample_count": 999,
+            "complete_sample_count": 0,
+        }
+    )
+    legacy_board = board.to_dicts()[0].copy()
+    legacy_board.update(
+        {
+            "strategy_candidate": "v5.alt_impulse_shadow",
+            "candidate_name": "v5.alt_impulse_shadow",
+            "symbol": "UNKNOWN",
+            "as_of_date": "2026-05-10",
+            "sample_count": 999,
+            "complete_sample_count": 0,
+        }
+    )
+    write_parquet_dataset(
+        pl.concat(
+            [samples, pl.DataFrame([legacy_sample], schema=samples.schema)],
+            how="diagonal_relaxed",
+        ),
+        lake / "gold" / "strategy_evidence_sample",
+    )
+    write_parquet_dataset(
+        pl.concat(
+            [evidence, pl.DataFrame([legacy_evidence, stale_evidence], schema=evidence.schema)],
+            how="diagonal_relaxed",
+        ),
+        lake / "gold" / "strategy_evidence",
+    )
+    write_parquet_dataset(
+        pl.concat(
+            [board, pl.DataFrame([legacy_board], schema=board.schema)],
+            how="diagonal_relaxed",
+        ),
+        lake / "gold" / "alpha_discovery_board",
+    )
+
+    build_and_publish_strategy_evidence(lake, as_of_date="2026-05-10")
+    build_and_publish_alpha_discovery_board(lake, as_of_date="2026-05-10")
+
+    samples = read_parquet_dataset(lake / "gold" / "strategy_evidence_sample")
+    evidence = read_parquet_dataset(lake / "gold" / "strategy_evidence")
+    board = read_parquet_dataset(lake / "gold" / "alpha_discovery_board")
+    current_samples = samples.filter(pl.col("as_of_date") == "2026-05-10")
+    current_evidence = evidence.filter(pl.col("as_of_date") == "2026-05-10")
+    current_board = board.filter(pl.col("as_of_date") == "2026-05-10")
+    assert "UNKNOWN" not in set(samples["symbol"].drop_nulls())
+    assert "UNKNOWN" not in set(current_samples["symbol"].drop_nulls())
+    assert "UNKNOWN" not in set(current_evidence["symbol"].drop_nulls())
+    assert "UNKNOWN" not in set(current_board["symbol"].drop_nulls())
+    assert evidence.filter(
+        (pl.col("as_of_date") == "2026-05-10") & (pl.col("sample_count") == 999)
+    ).is_empty()
+    assert board.filter(
+        (pl.col("as_of_date") == "2026-05-10") & (pl.col("sample_count") == 999)
+    ).is_empty()
+
 
 def _write_market_bars(lake: Path) -> None:
     start = datetime(2026, 5, 9, tzinfo=UTC)

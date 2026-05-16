@@ -12,7 +12,7 @@ from typing import Any
 import polars as pl
 from pydantic import BaseModel, ConfigDict, Field
 
-from quant_lab.data.lake import read_parquet_dataset, upsert_parquet_dataset, write_parquet_dataset
+from quant_lab.data.lake import read_parquet_dataset, write_parquet_dataset
 from quant_lab.research.evidence import DEFAULT_RESEARCH_COST_BPS
 from quant_lab.strategy_telemetry.sanitize import safe_json_dumps
 from quant_lab.symbols import normalize_symbol
@@ -239,12 +239,8 @@ def publish_strategy_evidence_samples(lake_root: str | Path, samples: pl.DataFra
     if _needs_formal_schema_replace(existing, ["strategy", "candidate_id", "horizon_hours"]):
         write_parquet_dataset(samples, dataset_path)
         return samples.height
-    upsert_parquet_dataset(
-        samples,
-        dataset_path,
-        key_columns=["strategy", "candidate_id", "horizon_hours"],
-    )
-    normalized = normalize_strategy_evidence_samples(read_parquet_dataset(dataset_path))
+    combined = _replace_matching_as_of_dates(existing, samples)
+    normalized = _drop_unknown_symbol_rows(normalize_strategy_evidence_samples(combined))
     write_parquet_dataset(normalized, dataset_path)
     return normalized.height
 
@@ -264,22 +260,31 @@ def publish_strategy_evidence_summary(
     ):
         write_parquet_dataset(normalize_strategy_evidence_decisions(frame), dataset_path)
         return frame.height
-    upsert_parquet_dataset(
-        normalize_strategy_evidence_decisions(frame),
-        dataset_path,
-        key_columns=[
-            "strategy",
-            "evidence_version",
-            "as_of_date",
-            "strategy_candidate",
-            "symbol",
-            "regime_state",
-            "horizon_hours",
-        ],
-    )
-    normalized = normalize_strategy_evidence_decisions(read_parquet_dataset(dataset_path))
+    combined = _replace_matching_as_of_dates(existing, normalize_strategy_evidence_decisions(frame))
+    normalized = _drop_unknown_symbol_rows(normalize_strategy_evidence_decisions(combined))
     write_parquet_dataset(normalized, dataset_path)
     return normalized.height
+
+
+def _replace_matching_as_of_dates(existing: pl.DataFrame, incoming: pl.DataFrame) -> pl.DataFrame:
+    """Replace complete daily evidence snapshots instead of preserving stale daily rows."""
+    if existing.is_empty():
+        return incoming
+    if incoming.is_empty():
+        return existing
+    if "as_of_date" not in existing.columns or "as_of_date" not in incoming.columns:
+        return pl.concat([existing, incoming], how="diagonal_relaxed")
+    dates = {
+        str(value)
+        for value in incoming["as_of_date"].drop_nulls().cast(pl.Utf8).unique().to_list()
+        if str(value).strip()
+    }
+    if not dates:
+        return pl.concat([existing, incoming], how="diagonal_relaxed")
+    retained = existing.filter(~pl.col("as_of_date").cast(pl.Utf8).is_in(sorted(dates)))
+    if retained.is_empty():
+        return incoming
+    return pl.concat([retained, incoming], how="diagonal_relaxed")
 
 
 def normalize_strategy_evidence_decisions(evidence: pl.DataFrame) -> pl.DataFrame:
@@ -344,6 +349,13 @@ def normalize_strategy_evidence_samples(samples: pl.DataFrame) -> pl.DataFrame:
             )
         rows.append({column: row.get(column) for column in SAMPLE_SCHEMA})
     return pl.DataFrame(rows, schema=SAMPLE_SCHEMA, orient="row")
+
+
+def _drop_unknown_symbol_rows(frame: pl.DataFrame) -> pl.DataFrame:
+    if frame.is_empty() or "symbol" not in frame.columns:
+        return frame
+    symbol = pl.col("symbol").fill_null("").cast(pl.Utf8).str.to_uppercase()
+    return frame.filter(symbol != "UNKNOWN")
 
 
 def _needs_formal_schema_replace(existing: pl.DataFrame, required_columns: list[str]) -> bool:

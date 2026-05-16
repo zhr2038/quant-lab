@@ -191,7 +191,7 @@ def build_strategy_evidence_samples(
         warnings.append(f"strategy_evidence_unknown_symbol_samples_skipped:{skipped_unknown}")
     if not rows:
         return pl.DataFrame(schema=SAMPLE_SCHEMA), warnings
-    return _formal_samples_frame(rows), warnings
+    return normalize_strategy_evidence_samples(_formal_samples_frame(rows)), warnings
 
 
 def summarize_strategy_evidence(
@@ -232,15 +232,19 @@ def publish_strategy_evidence_samples(lake_root: str | Path, samples: pl.DataFra
     dataset_path = Path(lake_root) / STRATEGY_EVIDENCE_SAMPLE_DATASET
     if samples.is_empty():
         return read_parquet_dataset(dataset_path).height
+    samples = normalize_strategy_evidence_samples(samples)
     existing = read_parquet_dataset(dataset_path)
     if _needs_formal_schema_replace(existing, ["strategy", "candidate_id", "horizon_hours"]):
         write_parquet_dataset(samples, dataset_path)
         return samples.height
-    return upsert_parquet_dataset(
+    upsert_parquet_dataset(
         samples,
         dataset_path,
         key_columns=["strategy", "candidate_id", "horizon_hours"],
     )
+    normalized = normalize_strategy_evidence_samples(read_parquet_dataset(dataset_path))
+    write_parquet_dataset(normalized, dataset_path)
+    return normalized.height
 
 
 def publish_strategy_evidence_summary(
@@ -281,6 +285,13 @@ def normalize_strategy_evidence_decisions(evidence: pl.DataFrame) -> pl.DataFram
         return evidence
     rows: list[dict[str, Any]] = []
     for row in evidence.to_dicts():
+        candidate = _canonical_candidate_name(
+            row.get("strategy_candidate") or row.get("candidate_name"),
+            dataset_name="strategy_evidence",
+        )
+        if candidate:
+            row["strategy_candidate"] = candidate
+            row["candidate_name"] = candidate
         decision, reasons = strategy_evidence_decision_ladder(
             sample_count=int(_finite_float(row.get("sample_count")) or 0),
             complete_sample_count=int(_finite_float(row.get("complete_sample_count")) or 0),
@@ -293,7 +304,44 @@ def normalize_strategy_evidence_decisions(evidence: pl.DataFrame) -> pl.DataFram
         row["decision"] = decision
         row["decision_reasons"] = _json(reasons)
         rows.append(row)
-    return pl.DataFrame(rows, schema=evidence.schema, orient="row")
+    normalized = pl.DataFrame(rows, schema=evidence.schema, orient="row")
+    keys = [
+        column
+        for column in [
+            "strategy",
+            "evidence_version",
+            "as_of_date",
+            "strategy_candidate",
+            "symbol",
+            "regime_state",
+            "horizon_hours",
+        ]
+        if column in normalized.columns
+    ]
+    return normalized.unique(subset=keys, keep="last", maintain_order=True) if keys else normalized
+
+
+def normalize_strategy_evidence_samples(samples: pl.DataFrame) -> pl.DataFrame:
+    if samples.is_empty():
+        return pl.DataFrame(schema=SAMPLE_SCHEMA)
+    rows: list[dict[str, Any]] = []
+    for row in samples.to_dicts():
+        payload = _payload(row)
+        candidate = _canonical_candidate_name(
+            row.get("strategy_candidate") or row.get("candidate_name"),
+            dataset_name="strategy_evidence_sample",
+        )
+        if candidate:
+            row["strategy_candidate"] = candidate
+            row["candidate_name"] = candidate
+        if not str(row.get("source_type") or "").strip():
+            row["source_type"] = _source_type(
+                str(row.get("source_dataset") or "strategy_evidence_sample"),
+                row,
+                payload,
+            )
+        rows.append({column: row.get(column) for column in SAMPLE_SCHEMA})
+    return pl.DataFrame(rows, schema=SAMPLE_SCHEMA, orient="row")
 
 
 def _needs_formal_schema_replace(existing: pl.DataFrame, required_columns: list[str]) -> bool:
@@ -316,7 +364,10 @@ def _sample_from_candidate_label(
     event_context: dict[str, dict[str, Any]],
 ) -> dict[str, Any] | None:
     candidate_id = str(label.get("candidate_id") or "").strip()
-    strategy_candidate = str(label.get("strategy_candidate") or "").strip()
+    strategy_candidate = _canonical_candidate_name(
+        label.get("strategy_candidate"),
+        dataset_name="v5_candidate_label",
+    )
     ts_utc = _parse_timestamp(label.get("ts_utc"))
     horizon_hours = _int_or_none(label.get("horizon_hours"))
     if not candidate_id or not strategy_candidate or ts_utc is None or horizon_hours is None:
@@ -948,6 +999,11 @@ def _candidate_name(
 
     text = _row_search_text(row, payload)
     return _normalize_candidate_text(text, dataset_name=dataset_name)
+
+
+def _canonical_candidate_name(value: Any, *, dataset_name: str) -> str:
+    raw = str(value or "").strip()
+    return _normalize_candidate_text(raw, dataset_name=dataset_name) or raw
 
 
 def _normalize_candidate_text(value: str | None, *, dataset_name: str) -> str | None:

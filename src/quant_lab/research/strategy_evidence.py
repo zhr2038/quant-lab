@@ -181,7 +181,7 @@ def build_strategy_evidence_samples(
         frame = read_parquet_dataset(root / relative_path)
         if frame.is_empty():
             continue
-        for outcome in frame.to_dicts():
+        for outcome in _dedupe_outcome_source_rows(dataset_name, frame.to_dicts()):
             rows.extend(_samples_from_outcome_row(dataset_name, outcome, cost_context))
 
     rows = _dedupe_formal_sample_rows(_filter_samples_as_of(rows, as_of_date))
@@ -719,6 +719,57 @@ def _dedupe_formal_sample_rows(rows: list[dict[str, Any]]) -> list[dict[str, Any
         key = (candidate_id, int(row.get("horizon_hours") or 0))
         keyed[key] = row
     return list(keyed.values())
+
+
+def _dedupe_outcome_source_rows(
+    dataset_name: str,
+    rows: list[dict[str, Any]],
+) -> list[dict[str, Any]]:
+    keyed: dict[tuple[str, ...], dict[str, Any]] = {}
+    for row in rows:
+        payload = _payload(row)
+        key = _outcome_source_key(dataset_name, row, payload)
+        current = keyed.get(key)
+        if current is None or _source_row_seen_time(row) >= _source_row_seen_time(current):
+            keyed[key] = row
+    return list(keyed.values())
+
+
+def _outcome_source_key(
+    dataset_name: str,
+    row: dict[str, Any],
+    payload: dict[str, Any],
+) -> tuple[str, ...]:
+    explicit = _first_text(row, payload, ["event_id", "event_key", "candidate_id", "id"])
+    path = str(row.get("source_path_inside_bundle") or "")
+    if explicit:
+        return (dataset_name, path, explicit)
+    ts = _first_timestamp(
+        row,
+        payload,
+        ["ts_utc", "decision_ts", "event_ts", "label_ts", "created_at", "timestamp", "time", "ts"],
+    )
+    candidate = _candidate_name(dataset_name, row, payload) or ""
+    symbol = normalize_symbol(_first_text(row, payload, ["symbol", "normalized_symbol", "inst_id"]))
+    row_index = str(row.get("row_index") or "")
+    run_id = str(row.get("run_id") or "")
+    return (
+        dataset_name,
+        path,
+        run_id,
+        _iso(ts),
+        symbol,
+        candidate,
+        row_index,
+    )
+
+
+def _source_row_seen_time(row: dict[str, Any]) -> datetime:
+    for key in ["bundle_ts", "ingest_ts", "source_bundle_ts", "ts_utc", "created_at"]:
+        value = _parse_timestamp(row.get(key))
+        if value is not None:
+            return value
+    return datetime.min.replace(tzinfo=UTC)
 
 
 def _unknown_symbol_count(rows: list[dict[str, Any]]) -> int:

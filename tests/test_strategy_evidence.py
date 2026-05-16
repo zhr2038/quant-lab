@@ -246,9 +246,13 @@ def test_strategy_evidence_uses_historical_shadow_and_blocked_outcomes(tmp_path)
         "KILL"
     )
     assert summary[("v5.multi_position_k3", "SOL-USDT", "trend", 24)]["decision"] == "KILL"
-    assert summary[("v5.multi_position_k2", "PORTFOLIO", "trend", 24)]["decision"] == "KILL"
-    assert summary[("v5.multi_position_k2", "PORTFOLIO", "trend", 24)]["sample_count"] == 12
-    assert summary[("v5.multi_position_k3", "PORTFOLIO", "trend", 24)]["decision"] == "KILL"
+    assert summary[("v5.multi_position_k2", "PORTFOLIO", "trend", 24)]["decision"] == (
+        "RESEARCH_ONLY"
+    )
+    assert summary[("v5.multi_position_k2", "PORTFOLIO", "trend", 24)]["sample_count"] == 1
+    assert summary[("v5.multi_position_k3", "PORTFOLIO", "trend", 24)]["decision"] == (
+        "RESEARCH_ONLY"
+    )
     assert ("v5.btc_leadership_probe_strict", "BTC-USDT", "trend", 24) in summary
     assert ("v5.btc_leadership_blocked_relaxed", "BTC-USDT", "trend", 24) in summary
     assert summary[("v5.f3_dominant_entry", "BNB-USDT", "trend", 24)]["decision"] == (
@@ -267,6 +271,94 @@ def test_strategy_evidence_uses_historical_shadow_and_blocked_outcomes(tmp_path)
     }.issubset(set(samples["source_type"].drop_nulls()))
     for key, evidence_row in summary.items():
         assert board_rows[key]["decision"] == evidence_row["decision"]
+
+
+def test_strategy_evidence_counts_historical_outcomes_by_unique_event_not_aggregate_count(
+    tmp_path,
+):
+    lake = tmp_path / "lake"
+    start = datetime(2026, 5, 8, tzinfo=UTC)
+    duplicate_payload = {
+        "candidate_name": "alt_impulse_shadow",
+        "label_4h_net_bps": -31.0,
+        "label_4h_status": "complete",
+        "label_24h_net_bps": -42.0,
+        "label_24h_status": "complete",
+    }
+    rows = [
+        {
+            "strategy": "v5",
+            "bundle_sha256": f"bundle-{index}",
+            "bundle_name": f"bundle-{index}.tar.gz",
+            "bundle_ts": start + timedelta(minutes=index),
+            "ingest_ts": start + timedelta(minutes=index),
+            "source_path_inside_bundle": "summaries/alt_impulse_shadow_outcomes.csv",
+            "row_index": index,
+            "candidate_name": "alt_impulse_shadow",
+            "ts_utc": start.isoformat().replace("+00:00", "Z"),
+            "symbol": "ETH-USDT",
+            "regime_state": "impulse",
+            "sample_count": "999",
+            "complete_sample_count": "0",
+            "label_4h_net_bps": "-31",
+            "label_4h_status": "complete",
+            "label_24h_net_bps": "-42",
+            "label_24h_status": "complete",
+            "cost_bps": "4.0",
+            "cost_source": "quant_lab_actual",
+            "raw_payload_json": json.dumps(duplicate_payload),
+        }
+        for index in range(2)
+    ]
+    rows.append(
+        {
+            "strategy": "v5",
+            "bundle_sha256": "unknown",
+            "bundle_name": "unknown.tar.gz",
+            "bundle_ts": start,
+            "ingest_ts": start,
+            "source_path_inside_bundle": "summaries/alt_impulse_shadow_outcomes.csv",
+            "row_index": 99,
+            "candidate_name": "alt_impulse_shadow",
+            "ts_utc": (start + timedelta(hours=1)).isoformat().replace("+00:00", "Z"),
+            "regime_state": "impulse",
+            "label_24h_net_bps": "12",
+            "label_24h_status": "complete",
+            "raw_payload_json": json.dumps(
+                {
+                    "candidate_name": "alt_impulse_shadow",
+                    "label_24h_net_bps": 12.0,
+                    "label_24h_status": "complete",
+                }
+            ),
+        }
+    )
+    write_parquet_dataset(pl.DataFrame(rows), lake / "silver" / "v5_shadow_outcome")
+
+    result = build_and_publish_strategy_evidence(lake, as_of_date="2026-05-10")
+    build_and_publish_alpha_discovery_board(lake, as_of_date="2026-05-10")
+
+    samples = read_parquet_dataset(lake / "gold" / "strategy_evidence_sample")
+    evidence = read_parquet_dataset(lake / "gold" / "strategy_evidence")
+    board = read_parquet_dataset(lake / "gold" / "alpha_discovery_board")
+    summary = {
+        (row["strategy_candidate"], row["symbol"], row["regime_state"], row["horizon_hours"]): row
+        for row in evidence.to_dicts()
+    }
+
+    assert "strategy_evidence_unknown_symbol_samples_skipped:1" in result.warnings
+    assert "UNKNOWN" not in set(samples["symbol"].drop_nulls())
+    assert "UNKNOWN" not in set(evidence["symbol"].drop_nulls())
+    assert "UNKNOWN" not in set(board["symbol"].drop_nulls())
+    assert samples.filter(pl.col("horizon_hours") == 24).height == 1
+    assert summary[("v5.alt_impulse_shadow", "ETH-USDT", "impulse", 24)]["sample_count"] == 1
+    assert (
+        summary[("v5.alt_impulse_shadow", "ETH-USDT", "impulse", 24)][
+            "complete_sample_count"
+        ]
+        == 1
+    )
+    assert summary[("v5.alt_impulse_shadow", "ETH-USDT", "impulse", 24)]["avg_net_bps"] == -42.0
 
 
 def _write_market_bars(lake: Path) -> None:

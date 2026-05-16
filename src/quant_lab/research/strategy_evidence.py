@@ -507,32 +507,38 @@ def _sample_from_outcome_row(
     if win is None and net_bps is not None:
         win_rate_value = _first_numeric(row, payload, _horizon_keys(horizon_hours, ["win_rate"]))
         win = (win_rate_value > 0.5) if win_rate_value is not None else net_bps > 0.0
-    source_count = _source_sample_count(row, payload)
     label_status = _outcome_label_status(row, payload, horizon_hours, net_bps)
+    source_type = _source_type(dataset_name, row, payload)
+    source_count = _source_sample_count(row, payload, source_type=source_type)
     source_event_key = _source_event_key(dataset_name, row, payload)
     run_id = str(row.get("run_id") or _first_text(row, payload, ["run_id"]) or "")
+    candidate_id = _outcome_candidate_id(
+        dataset_name=dataset_name,
+        row=row,
+        payload=payload,
+        source_type=source_type,
+        strategy_candidate=strategy_candidate,
+        symbol=symbol,
+        ts_utc=ts_utc,
+    )
     return {
         "strategy": str(row.get("strategy") or payload.get("strategy") or "v5"),
         "evidence_version": EVIDENCE_VERSION,
         "as_of_date": ts_utc.date().isoformat(),
-        "candidate_id": _first_text(
-            row,
-            payload,
-            ["candidate_id", "event_id", "event_key", "request_id", "id"],
-        )
-        or f"{dataset_name}:{source_event_key}",
+        "candidate_id": candidate_id,
         "run_id": run_id,
         "ts_utc": ts_utc,
         "symbol": symbol,
         "strategy_candidate": strategy_candidate,
         "candidate_name": strategy_candidate,
-        "source_type": _source_type(dataset_name, row, payload),
+        "source_type": source_type,
         "sample_count": source_count,
         "complete_sample_count": _source_complete_sample_count(
             row,
             payload,
             source_count,
             label_status,
+            source_type=source_type,
         ),
         "regime_state": _first_text(
             row,
@@ -857,15 +863,28 @@ def _outcome_source_key(
 ) -> tuple[str, ...]:
     explicit = _first_text(row, payload, ["event_id", "event_key", "candidate_id", "id"])
     path = str(row.get("source_path_inside_bundle") or "")
+    candidate = _candidate_name(dataset_name, row, payload) or ""
+    symbol = normalize_symbol(
+        _first_text(
+            row,
+            payload,
+            [
+                "symbol",
+                "normalized_symbol",
+                "candidate_symbol",
+                "target_symbol",
+                "base_symbol",
+                "inst_id",
+            ],
+        )
+    )
     if explicit:
-        return (dataset_name, path, explicit)
+        return (dataset_name, explicit, candidate, symbol)
     ts = _first_timestamp(
         row,
         payload,
         ["ts_utc", "decision_ts", "event_ts", "label_ts", "created_at", "timestamp", "time", "ts"],
     )
-    candidate = _candidate_name(dataset_name, row, payload) or ""
-    symbol = normalize_symbol(_first_text(row, payload, ["symbol", "normalized_symbol", "inst_id"]))
     row_index = str(row.get("row_index") or "")
     run_id = str(row.get("run_id") or "")
     return (
@@ -1740,7 +1759,19 @@ def _symbol(row: dict[str, Any], payload: dict[str, Any], candidate_name: str) -
     raw = _first_text(
         row,
         payload,
-        ["symbol", "normalized_symbol", "inst_id", "instId", "instrument", "pair"],
+        [
+            "symbol",
+            "normalized_symbol",
+            "candidate_symbol",
+            "target_symbol",
+            "base_symbol",
+            "coin",
+            "asset",
+            "inst_id",
+            "instId",
+            "instrument",
+            "pair",
+        ],
     )
     normalized = normalize_symbol(raw)
     if normalized:
@@ -1868,8 +1899,8 @@ def _horizon_hours(row: dict[str, Any], payload: dict[str, Any]) -> int | None:
 
 def _outcome_horizons(row: dict[str, Any], payload: dict[str, Any]) -> list[int]:
     keys: set[str] = set(row)
-    keys.update(payload)
-    keys.update(_raw_payload(payload))
+    keys.update(_payload_keys(payload))
+    keys.update(_payload_keys(_raw_payload(payload)))
     horizons: set[int] = set()
     for key in keys:
         text = str(key)
@@ -1881,6 +1912,21 @@ def _outcome_horizons(row: dict[str, Any], payload: dict[str, Any]) -> list[int]
         return sorted(horizons)
     direct = _horizon_hours(row, payload)
     return [direct or 24]
+
+
+def _payload_keys(payload: dict[str, Any]) -> set[str]:
+    keys: set[str] = set()
+    stack: list[Any] = [payload]
+    while stack:
+        current = stack.pop()
+        if isinstance(current, dict):
+            for key, value in current.items():
+                keys.add(str(key))
+                if isinstance(value, (dict, list)):
+                    stack.append(value)
+        elif isinstance(current, list):
+            stack.extend(item for item in current if isinstance(item, (dict, list)))
+    return keys
 
 
 def _horizon_keys(horizon_hours: int, base_keys: list[str]) -> list[str]:
@@ -1928,14 +1974,36 @@ def _outcome_net_bps(
     pct = _first_numeric(
         row,
         payload,
-        ["net_return_pct", "return_pct", "pnl_pct", "profit_pct"],
+        _horizon_keys(
+            horizon_hours,
+            ["net_return_pct", "return_pct", "pnl_pct", "profit_pct"],
+        )
+        if horizon_hours is not None
+        else ["net_return_pct", "return_pct", "pnl_pct", "profit_pct"],
     )
     if pct is not None:
         return pct * 10_000.0 if abs(pct) <= 1 else pct * 100.0
     return None
 
 
-def _source_sample_count(row: dict[str, Any], payload: dict[str, Any]) -> int:
+OUTCOME_EVENT_SOURCE_TYPES = {
+    "high_score_blocked_outcome",
+    "btc_leadership_blocked_outcome",
+    "alt_impulse_shadow_outcome",
+    "multi_position_swing_shadow_outcome",
+    "factor_contribution_outcome",
+    "protect_sol_exception_shadow_outcome",
+}
+
+
+def _source_sample_count(
+    row: dict[str, Any],
+    payload: dict[str, Any],
+    *,
+    source_type: str,
+) -> int:
+    if source_type in OUTCOME_EVENT_SOURCE_TYPES:
+        return 1
     value = _first_numeric(
         row,
         payload,
@@ -1949,7 +2017,11 @@ def _source_complete_sample_count(
     payload: dict[str, Any],
     sample_count: int,
     label_status: str,
+    *,
+    source_type: str,
 ) -> int:
+    if source_type in OUTCOME_EVENT_SOURCE_TYPES:
+        return 1 if label_status == "complete" else 0
     value = _first_numeric(
         row,
         payload,
@@ -1978,6 +2050,33 @@ def _outcome_label_status(
     return "complete" if net_bps is not None else "unlabeled"
 
 
+def _outcome_candidate_id(
+    *,
+    dataset_name: str,
+    row: dict[str, Any],
+    payload: dict[str, Any],
+    source_type: str,
+    strategy_candidate: str,
+    symbol: str,
+    ts_utc: datetime,
+) -> str:
+    explicit = _first_text(
+        row,
+        payload,
+        ["candidate_id", "event_id", "event_key", "request_id", "id"],
+    )
+    if explicit:
+        return f"{source_type}:{explicit}"
+    return "|".join(
+        [
+            source_type or dataset_name,
+            _iso(ts_utc),
+            normalize_symbol(symbol),
+            strategy_candidate,
+        ]
+    )
+
+
 def _source_type(dataset_name: str, row: dict[str, Any], payload: dict[str, Any]) -> str:
     path = str(row.get("source_path_inside_bundle") or "").lower()
     if "high_score_blocked_outcomes" in path:
@@ -1995,6 +2094,18 @@ def _source_type(dataset_name: str, row: dict[str, Any], payload: dict[str, Any]
     if dataset_name == "v5_high_score_blocked_outcome":
         return "high_score_blocked_outcome"
     if dataset_name == "v5_shadow_outcome":
+        candidate = _candidate_name(dataset_name, row, payload) or ""
+        lowered = candidate.lower()
+        if "alt_impulse" in lowered:
+            return "alt_impulse_shadow_outcome"
+        if "multi_position" in lowered:
+            return "multi_position_swing_shadow_outcome"
+        if "btc_leadership" in lowered:
+            return "btc_leadership_blocked_outcome"
+        if "sol_protect" in lowered:
+            return "protect_sol_exception_shadow_outcome"
+        if "f3_" in lowered or "f4_" in lowered:
+            return "factor_contribution_outcome"
         return "shadow_outcome"
     explicit = _first_text(row, payload, ["source_type", "outcome_source_type"])
     return explicit or dataset_name

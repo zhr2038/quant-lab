@@ -61,6 +61,8 @@ SAMPLE_SCHEMA: dict[str, Any] = {
     "strategy_candidate": pl.Utf8,
     "candidate_name": pl.Utf8,
     "source_type": pl.Utf8,
+    "sample_count": pl.Int64,
+    "complete_sample_count": pl.Int64,
     "regime_state": pl.Utf8,
     "horizon_hours": pl.Int64,
     "decision_ts": pl.Datetime(time_zone="UTC"),
@@ -388,6 +390,8 @@ def _sample_from_candidate_label(
         "strategy_candidate": strategy_candidate,
         "candidate_name": strategy_candidate,
         "source_type": "candidate_event_label",
+        "sample_count": 1,
+        "complete_sample_count": 1 if str(label.get("label_status") or "") == "complete" else 0,
         "regime_state": regime_state,
         "horizon_hours": horizon_hours,
         "decision_ts": _parse_timestamp(label.get("decision_ts")),
@@ -501,7 +505,10 @@ def _sample_from_outcome_row(
         ),
     )
     if win is None and net_bps is not None:
-        win = net_bps > 0.0
+        win_rate_value = _first_numeric(row, payload, _horizon_keys(horizon_hours, ["win_rate"]))
+        win = (win_rate_value > 0.5) if win_rate_value is not None else net_bps > 0.0
+    source_count = _source_sample_count(row, payload)
+    label_status = _outcome_label_status(row, payload, horizon_hours, net_bps)
     source_event_key = _source_event_key(dataset_name, row, payload)
     run_id = str(row.get("run_id") or _first_text(row, payload, ["run_id"]) or "")
     return {
@@ -520,6 +527,13 @@ def _sample_from_outcome_row(
         "strategy_candidate": strategy_candidate,
         "candidate_name": strategy_candidate,
         "source_type": _source_type(dataset_name, row, payload),
+        "sample_count": source_count,
+        "complete_sample_count": _source_complete_sample_count(
+            row,
+            payload,
+            source_count,
+            label_status,
+        ),
         "regime_state": _first_text(
             row,
             payload,
@@ -544,7 +558,7 @@ def _sample_from_outcome_row(
             _horizon_keys(horizon_hours, ["mae_bps", "max_adverse_bps", "drawdown_bps"]),
         ),
         "win": win,
-        "label_status": _outcome_label_status(row, payload, horizon_hours, net_bps),
+        "label_status": label_status,
         "label_reason": _first_text(row, payload, ["label_reason", "outcome_reason", "reason"]),
         "cost_bps": float(cost["cost_bps"] or 0.0),
         "cost_source": str(cost["cost_source"] or "MISSING"),
@@ -601,16 +615,26 @@ def _formal_summary_row(
     min_live_samples: int,
 ) -> dict[str, Any]:
     complete = [row for row in rows if str(row.get("label_status") or "") == "complete"]
-    net_values = _values(complete, "net_bps_after_cost")
-    wins = [bool(row.get("win")) for row in complete if row.get("win") is not None]
+    sample_count = sum(_sample_weight(row) for row in rows)
+    complete_sample_count = sum(_complete_weight(row) for row in complete)
+    weighted_net_values = _weighted_values(complete, "net_bps_after_cost")
+    wins = [
+        (bool(row.get("win")), _complete_weight(row))
+        for row in complete
+        if row.get("win") is not None and _complete_weight(row) > 0
+    ]
     cost_mix = _cost_source_mix(rows)
-    avg_net = _mean(net_values)
-    median_net = _median(net_values)
-    p25_net = _p25(net_values)
-    win_rate = (sum(wins) / len(wins)) if wins else None
+    avg_net = _weighted_mean(weighted_net_values)
+    median_net = _weighted_quantile(weighted_net_values, 0.5)
+    p25_net = _weighted_quantile(weighted_net_values, 0.25)
+    win_rate = (
+        sum(weight for won, weight in wins if won) / sum(weight for _, weight in wins)
+        if wins
+        else None
+    )
     decision, reasons = _formal_decision(
-        sample_count=len(rows),
-        complete_sample_count=len(complete),
+        sample_count=sample_count,
+        complete_sample_count=complete_sample_count,
         avg_net_bps=avg_net,
         p25_net_bps=p25_net,
         win_rate=win_rate,
@@ -631,8 +655,8 @@ def _formal_summary_row(
         "symbol": symbol,
         "regime_state": regime_state,
         "horizon_hours": horizon_hours,
-        "sample_count": len(rows),
-        "complete_sample_count": len(complete),
+        "sample_count": sample_count,
+        "complete_sample_count": complete_sample_count,
         "avg_net_bps": avg_net,
         "median_net_bps": median_net,
         "p25_net_bps": p25_net,
@@ -744,8 +768,48 @@ def _cost_source_mix(rows: list[dict[str, Any]]) -> dict[str, int]:
     counts: dict[str, int] = {}
     for row in rows:
         key = str(row.get("cost_source") or "MISSING")
-        counts[key] = counts.get(key, 0) + 1
+        counts[key] = counts.get(key, 0) + _sample_weight(row)
     return counts
+
+
+def _sample_weight(row: dict[str, Any]) -> int:
+    return max(int(_finite_float(row.get("sample_count")) or 1), 1)
+
+
+def _complete_weight(row: dict[str, Any]) -> int:
+    if str(row.get("label_status") or "") != "complete":
+        return 0
+    return max(int(_finite_float(row.get("complete_sample_count")) or 1), 1)
+
+
+def _weighted_values(rows: list[dict[str, Any]], column: str) -> list[tuple[float, int]]:
+    values: list[tuple[float, int]] = []
+    for row in rows:
+        value = _finite_float(row.get(column))
+        weight = _complete_weight(row)
+        if value is not None and weight > 0:
+            values.append((value, weight))
+    return values
+
+
+def _weighted_mean(values: list[tuple[float, int]]) -> float | None:
+    total_weight = sum(weight for _, weight in values)
+    if not total_weight:
+        return None
+    return sum(value * weight for value, weight in values) / total_weight
+
+
+def _weighted_quantile(values: list[tuple[float, int]], q: float) -> float | None:
+    total_weight = sum(weight for _, weight in values)
+    if not total_weight:
+        return None
+    threshold = total_weight * q
+    cumulative = 0
+    for value, weight in sorted(values, key=lambda item: item[0]):
+        cumulative += weight
+        if cumulative >= threshold:
+            return value
+    return values[-1][0] if values else None
 
 
 def _formal_samples_frame(rows: list[dict[str, Any]]) -> pl.DataFrame:
@@ -993,9 +1057,20 @@ def _candidate_name(
             "entry_rule",
         ],
     )
-    explicit_candidate = _normalize_candidate_text(explicit, dataset_name=dataset_name)
-    if explicit_candidate is not None:
-        return explicit_candidate
+    if explicit:
+        explicit_candidate = _normalize_candidate_text(explicit, dataset_name=dataset_name)
+        if explicit_candidate is not None:
+            return explicit_candidate
+
+    path = str(row.get("source_path_inside_bundle") or "").lower()
+    if "multi_position_swing" in path:
+        k_value = _first_text(row, payload, ["k", "position_k", "slot", "position_slot"])
+        if k_value in {"1", "k1"}:
+            return "v5.multi_position_k1"
+        if k_value in {"2", "k2"}:
+            return "v5.multi_position_k2"
+        if k_value in {"3", "k3"}:
+            return "v5.multi_position_k3"
 
     text = _row_search_text(row, payload)
     return _normalize_candidate_text(text, dataset_name=dataset_name)
@@ -1082,9 +1157,9 @@ def _normalize_candidate_text(value: str | None, *, dataset_name: str) -> str | 
     if "swing" in normalized and "f4" in normalized and "f5" in normalized:
         return "v5.swing_f4_f5_alpha6"
     if "multi" in normalized and "position" in normalized:
-        if "k3" in normalized:
+        if "k3" in normalized or re.search(r"(?:^|_)k_+3(?:_|$)", normalized):
             return "v5.multi_position_k3"
-        if "k2" in normalized:
+        if "k2" in normalized or re.search(r"(?:^|_)k_+2(?:_|$)", normalized):
             return "v5.multi_position_k2"
         return "v5.multi_position_k1"
     if "f3" in normalized and "dominant" in normalized:
@@ -1674,6 +1749,8 @@ def _symbol(row: dict[str, Any], payload: dict[str, Any], candidate_name: str) -
         return "BTC-USDT"
     if "sol" in candidate_name:
         return "SOL-USDT"
+    if "multi_position" in candidate_name:
+        return "PORTFOLIO"
     return "UNKNOWN"
 
 
@@ -1813,6 +1890,7 @@ def _horizon_keys(horizon_hours: int, base_keys: list[str]) -> list[str]:
             [
                 f"label_{horizon_hours}h_{key}",
                 f"{key}_{horizon_hours}h",
+                f"avg_{horizon_hours}h_{key}",
                 f"{horizon_hours}h_{key}",
             ]
         )
@@ -1828,6 +1906,7 @@ def _outcome_net_bps(
     keys = [
         "net_bps_after_cost",
         "net_bps",
+        "avg_net_bps",
         "net_return_bps",
         "net_pnl_bps",
         "outcome_net_bps",
@@ -1856,6 +1935,31 @@ def _outcome_net_bps(
     return None
 
 
+def _source_sample_count(row: dict[str, Any], payload: dict[str, Any]) -> int:
+    value = _first_numeric(
+        row,
+        payload,
+        ["sample_count", "count", "rows", "label_count", "candidate_count"],
+    )
+    return max(int(value or 1), 1)
+
+
+def _source_complete_sample_count(
+    row: dict[str, Any],
+    payload: dict[str, Any],
+    sample_count: int,
+    label_status: str,
+) -> int:
+    value = _first_numeric(
+        row,
+        payload,
+        ["complete_sample_count", "complete_count", "matured_count", "labeled_count"],
+    )
+    if value is not None:
+        return max(int(value), 0)
+    return sample_count if label_status == "complete" else 0
+
+
 def _outcome_label_status(
     row: dict[str, Any],
     payload: dict[str, Any],
@@ -1880,9 +1984,9 @@ def _source_type(dataset_name: str, row: dict[str, Any], payload: dict[str, Any]
         return "high_score_blocked_outcome"
     if "btc_leadership_probe_blocked_outcomes" in path:
         return "btc_leadership_blocked_outcome"
-    if "alt_impulse_shadow_outcomes" in path:
+    if "alt_impulse_shadow" in path:
         return "alt_impulse_shadow_outcome"
-    if "multi_position_swing_shadow_outcomes" in path:
+    if "multi_position_swing_shadow" in path:
         return "multi_position_swing_shadow_outcome"
     if "factor_contribution_outcomes_by_factor" in path:
         return "factor_contribution_outcome"

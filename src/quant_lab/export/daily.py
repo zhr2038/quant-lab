@@ -340,6 +340,8 @@ CSV_SCHEMAS: dict[str, list[str]] = {
         "strategy_candidate",
         "candidate_name",
         "source_type",
+        "sample_count",
+        "complete_sample_count",
         "regime_state",
         "horizon_hours",
         "decision_ts",

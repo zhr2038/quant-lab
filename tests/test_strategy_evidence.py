@@ -246,6 +246,9 @@ def test_strategy_evidence_uses_historical_shadow_and_blocked_outcomes(tmp_path)
         "KILL"
     )
     assert summary[("v5.multi_position_k3", "SOL-USDT", "trend", 24)]["decision"] == "KILL"
+    assert summary[("v5.multi_position_k2", "PORTFOLIO", "trend", 24)]["decision"] == "KILL"
+    assert summary[("v5.multi_position_k2", "PORTFOLIO", "trend", 24)]["sample_count"] == 12
+    assert summary[("v5.multi_position_k3", "PORTFOLIO", "trend", 24)]["decision"] == "KILL"
     assert ("v5.btc_leadership_probe_strict", "BTC-USDT", "trend", 24) in summary
     assert ("v5.btc_leadership_blocked_relaxed", "BTC-USDT", "trend", 24) in summary
     assert summary[("v5.f3_dominant_entry", "BNB-USDT", "trend", 24)]["decision"] == (
@@ -518,6 +521,20 @@ def _write_historical_outcomes(lake: Path) -> None:
         regime="trend",
         net_values=[-10.0] * 12,
     )
+    _add_multi_position_by_k_rows(
+        shadow_rows,
+        start=start,
+        k=2,
+        net_24h=-95.0,
+        count=12,
+    )
+    _add_multi_position_by_k_rows(
+        shadow_rows,
+        start=start + timedelta(hours=1),
+        k=3,
+        net_24h=-120.0,
+        count=12,
+    )
     _add_outcome_rows(
         shadow_rows,
         start=start,
@@ -584,6 +601,42 @@ def _add_multi_horizon_outcome_rows(
             payload[f"label_{horizon}h_net_bps"] = adjusted
         row["raw_payload_json"] = json.dumps(payload)
         rows.append(row)
+
+
+def _add_multi_position_by_k_rows(
+    rows: list[dict],
+    *,
+    start: datetime,
+    k: int,
+    net_24h: float,
+    count: int,
+) -> None:
+    rows.append(
+        {
+            "strategy": "v5",
+            "bundle_sha256": "hist",
+            "bundle_name": "bundle.tar.gz",
+            "bundle_ts": start,
+            "ingest_ts": start + timedelta(minutes=1),
+            "source_path_inside_bundle": "summaries/multi_position_swing_shadow_by_k.csv",
+            "row_index": k,
+            "ts_utc": start.isoformat().replace("+00:00", "Z"),
+            "k": str(k),
+            "count": str(count),
+            "complete_count": str(count),
+            "avg_24h_net_bps": str(net_24h),
+            "win_rate_24h": "0.1",
+            "raw_payload_json": json.dumps(
+                {
+                    "k": str(k),
+                    "count": str(count),
+                    "complete_count": str(count),
+                    "avg_24h_net_bps": net_24h,
+                    "win_rate_24h": 0.1,
+                }
+            ),
+        }
+    )
 
 
 def _add_outcome_rows(

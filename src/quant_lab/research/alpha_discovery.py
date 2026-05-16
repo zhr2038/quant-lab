@@ -11,8 +11,11 @@ from typing import Any
 import polars as pl
 from pydantic import BaseModel, ConfigDict, Field
 
-from quant_lab.data.lake import read_parquet_dataset, upsert_parquet_dataset
-from quant_lab.research.strategy_evidence import strategy_evidence_decision_ladder
+from quant_lab.data.lake import read_parquet_dataset, upsert_parquet_dataset, write_parquet_dataset
+from quant_lab.research.strategy_evidence import (
+    _canonical_candidate_name,
+    strategy_evidence_decision_ladder,
+)
 from quant_lab.strategy_telemetry.sanitize import safe_json_dumps
 from quant_lab.symbols import normalize_symbol
 
@@ -626,7 +629,7 @@ def _upsert_if_not_empty(df: pl.DataFrame, dataset_path: Path, keys: list[str]) 
         return read_parquet_dataset(dataset_path).height
     upsert_parquet_dataset(df, dataset_path, key_columns=keys)
     normalized = normalize_alpha_discovery_board_decisions(read_parquet_dataset(dataset_path))
-    upsert_parquet_dataset(normalized, dataset_path, key_columns=keys)
+    write_parquet_dataset(normalized, dataset_path)
     return normalized.height
 
 
@@ -635,6 +638,13 @@ def normalize_alpha_discovery_board_decisions(board: pl.DataFrame) -> pl.DataFra
         return board
     rows: list[dict[str, Any]] = []
     for row in board.to_dicts():
+        candidate = _canonical_candidate_name(
+            row.get("strategy_candidate") or row.get("candidate_name"),
+            dataset_name="alpha_discovery_board",
+        )
+        if candidate:
+            row["strategy_candidate"] = candidate
+            row["candidate_name"] = candidate
         decision, reasons = strategy_evidence_decision_ladder(
             sample_count=int(_finite_float(row.get("sample_count")) or 0),
             complete_sample_count=int(_finite_float(row.get("complete_sample_count")) or 0),
@@ -647,7 +657,21 @@ def normalize_alpha_discovery_board_decisions(board: pl.DataFrame) -> pl.DataFra
         row["decision"] = decision
         row["decision_reasons"] = safe_json_dumps(reasons)
         rows.append(row)
-    return pl.DataFrame(rows, schema=board.schema, orient="row")
+    normalized = pl.DataFrame(rows, schema=board.schema, orient="row")
+    keys = [
+        column
+        for column in [
+            "strategy",
+            "board_schema_version",
+            "as_of_date",
+            "strategy_candidate",
+            "symbol",
+            "regime_state",
+            "horizon_hours",
+        ]
+        if column in normalized.columns
+    ]
+    return normalized.unique(subset=keys, keep="last", maintain_order=True) if keys else normalized
 
 
 def _decision_counts(board: pl.DataFrame) -> dict[str, int]:

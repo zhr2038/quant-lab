@@ -12,15 +12,11 @@ from typing import Any
 import polars as pl
 
 from quant_lab.export.daily import export_daily_pack
-from quant_lab.reports.enforce_readiness import write_enforce_readiness_report
-from quant_lab.research.alpha_discovery import build_and_publish_alpha_discovery_board
-from quant_lab.research.candidate_labels import build_and_publish_candidate_labels
-from quant_lab.research.strategy_evidence import build_and_publish_strategy_evidence
-from quant_lab.risk.publish import publish_risk_permission
-from quant_lab.strategy_telemetry.analyze import analyze_v5_telemetry
 from quant_lab.time_display import beijing_today
 from quant_lab.web import readers
 from quant_lab.web.pages._common import show_frame, show_warnings, streamlit_module
+
+WEB_EXPORT_MODE = "snapshot_only"
 
 
 def render(
@@ -54,7 +50,11 @@ def render(
                 lake_root=Path(lake_root),
                 exports_root=root,
             )
-            _info(st, f"Expert pack generation started in background. PID={started.get('pid')}")
+            _info(
+                st,
+                "Snapshot expert pack generation started in background. "
+                f"PID={started.get('pid')}",
+            )
             if _rerun(st):
                 return
         else:
@@ -99,7 +99,7 @@ def _render_export_job_status(st: Any, status: dict[str, Any]) -> None:
     if state == "running":
         _info(
             st,
-            "Expert pack generation is running in the background. "
+            "Snapshot expert pack generation is running in the background. "
             f"PID={status.get('pid')}; started_at={status.get('started_at')}",
         )
     elif state == "failed":
@@ -120,6 +120,7 @@ def _start_export_job(
     log_path = _export_job_log_path(exports_root, export_date)
     status = {
         "state": "starting",
+        "mode": WEB_EXPORT_MODE,
         "export_date": export_date,
         "started_at": datetime.now(UTC).isoformat(),
         "status_path": str(status_path),
@@ -181,6 +182,7 @@ def write_status(payload):
 started_at = datetime.now(UTC).isoformat()
 write_status({
     "state": "running",
+    "mode": "snapshot_only",
     "export_date": export_date,
     "lake_root": str(lake_root),
     "exports_root": str(exports_root),
@@ -202,13 +204,17 @@ try:
             str(lake_root),
             "--out-dir",
             str(exports_root),
+            "--no-refresh-risk-permission",
+            "--no-pre-export-v5-refresh",
         ],
-        refresh_risk_permission=True,
+        refresh_risk_permission=False,
         risk_strategy="v5",
         risk_version="5.0.0",
+        pre_export_v5_refresh=False,
     )
     write_status({
         "state": "succeeded",
+        "mode": "snapshot_only",
         "export_date": export_date,
         "lake_root": str(lake_root),
         "exports_root": str(exports_root),
@@ -221,6 +227,7 @@ try:
 except Exception as exc:
     write_status({
         "state": "failed",
+        "mode": "snapshot_only",
         "export_date": export_date,
         "lake_root": str(lake_root),
         "exports_root": str(exports_root),
@@ -347,10 +354,13 @@ def _export_daily_from_web(
             str(lake_root),
             "--out-dir",
             str(exports_root),
+            "--no-refresh-risk-permission",
+            "--no-pre-export-v5-refresh",
         ],
-        refresh_risk_permission=True,
+        refresh_risk_permission=False,
         risk_strategy="v5",
         risk_version="5.0.0",
+        pre_export_v5_refresh=False,
     )
     return Path(result.zip_path), list(result.warnings)
 
@@ -368,8 +378,10 @@ def _export_daily_in_subprocess(
         "lake=Path(sys.argv[1]); out=Path(sys.argv[2]); day=sys.argv[3];"
         "result=export_daily_pack("
         "export_date=day, lake_root=lake, out_dir=out, profile='expert',"
-        "command_line=['qlab','export-daily','--date',day,'--lake-root',str(lake),'--out-dir',str(out)],"
-        "refresh_risk_permission=True, risk_strategy='v5', risk_version='5.0.0');"
+        "command_line=['qlab','export-daily','--date',day,'--lake-root',str(lake),'--out-dir',str(out),"
+        "'--no-refresh-risk-permission','--no-pre-export-v5-refresh'],"
+        "refresh_risk_permission=False, risk_strategy='v5', risk_version='5.0.0',"
+        "pre_export_v5_refresh=False);"
         "print(json.dumps({'zip_path': result.zip_path, 'warnings': result.warnings}))"
     )
     completed = subprocess.run(
@@ -389,47 +401,6 @@ def _export_daily_in_subprocess(
     except (IndexError, json.JSONDecodeError) as exc:
         raise RuntimeError("export subprocess did not return valid JSON") from exc
     return Path(str(payload["zip_path"])), list(payload.get("warnings") or [])
-
-
-def _refresh_lake_before_export(lake_root: Path, *, export_date: str) -> list[str]:
-    warnings: list[str] = []
-    steps = [
-        (
-            "analyze_v5_telemetry",
-            lambda: analyze_v5_telemetry(lake_root=lake_root, date=export_date),
-        ),
-        (
-            "build_candidate_labels",
-            lambda: build_and_publish_candidate_labels(lake_root, as_of_date=export_date),
-        ),
-        (
-            "build_strategy_evidence",
-            lambda: build_and_publish_strategy_evidence(lake_root, as_of_date=export_date),
-        ),
-        (
-            "build_alpha_discovery_board",
-            lambda: build_and_publish_alpha_discovery_board(lake_root, as_of_date=export_date),
-        ),
-        (
-            "publish_risk_permission",
-            lambda: publish_risk_permission(lake_root, strategy="v5", version="5.0.0"),
-        ),
-        (
-            "write_enforce_readiness_report",
-            lambda: write_enforce_readiness_report(
-                lake_root=lake_root,
-                out_dir=readers.default_exports_root(lake_root),
-                strategy="v5",
-                version="5.0.0",
-            ),
-        ),
-    ]
-    for name, step in steps:
-        try:
-            step()
-        except Exception as exc:
-            warnings.append(f"pre_export_refresh_failed:{name}:{exc}")
-    return warnings
 
 
 def _summary_preferring_generated_pack(exports_root: Path, generated_pack: Path) -> dict[str, Any]:

@@ -1,5 +1,5 @@
 [Unit]
-Description=quant-lab daily expert export
+Description=quant-lab daily expert snapshot export
 After=quant-lab-risk-permission.service quant-lab-v5-telemetry-sync.service
 
 [Service]
@@ -10,5 +10,4 @@ WorkingDirectory=/opt/quant-lab
 RuntimeMaxSec=20min
 MemoryMax=5G
 CPUQuota=80%
-ExecStartPre=/opt/quant-lab/.venv/bin/qlab publish-risk-permission --lake-root /var/lib/quant-lab/lake --strategy v5 --version 5.0.0
-ExecStart=/bin/bash -lc '/opt/quant-lab/.venv/bin/qlab export-daily --date "$(date -u +%%F)" --lake-root /var/lib/quant-lab/lake --out-dir /var/lib/quant-lab/exports'
+ExecStart=/bin/bash -lc '/opt/quant-lab/.venv/bin/qlab export-daily --date "$(date -u +%%F)" --lake-root /var/lib/quant-lab/lake --out-dir /var/lib/quant-lab/exports --no-refresh-risk-permission --no-pre-export-v5-refresh'

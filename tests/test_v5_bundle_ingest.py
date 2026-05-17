@@ -122,8 +122,14 @@ def test_ingest_parses_quant_lab_usage_files(tmp_path):
     assert result.silver_rows["v5_quant_lab_compliance"] == 1
     assert result.silver_rows["v5_quant_lab_cost_usage"] == 1
     assert result.silver_rows["v5_quant_lab_fallback"] == 1
+    assert result.silver_rows["v5_paper_strategy_run"] == 1
+    assert result.silver_rows["v5_paper_strategy_daily"] == 1
+    assert result.silver_rows["v5_paper_slippage_coverage"] == 1
     assert read_parquet_dataset(lake / "silver/v5_quant_lab_usage").height == 1
     assert read_parquet_dataset(lake / "silver/v5_quant_lab_compliance").height == 1
+    paper_rows = read_parquet_dataset(lake / "silver/v5_paper_strategy_run").to_dicts()
+    assert paper_rows[0]["proposal_id"] == "SOL_F4_VOLUME_EXPANSION_PAPER_V1"
+    assert paper_rows[0]["recommended_mode"] == "paper"
 
 
 def test_ingest_parses_quant_lab_usage_legacy_report_paths(tmp_path):

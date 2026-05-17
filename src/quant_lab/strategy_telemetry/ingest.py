@@ -65,6 +65,9 @@ SILVER_DATASETS = {
     "v5_quant_lab_fallback": Path("silver/v5_quant_lab_fallback"),
     "v5_candidate_event": Path("silver/v5_candidate_event"),
     "v5_order_lifecycle": Path("silver/v5_order_lifecycle"),
+    "v5_paper_strategy_run": Path("silver/v5_paper_strategy_run"),
+    "v5_paper_strategy_daily": Path("silver/v5_paper_strategy_daily"),
+    "v5_paper_slippage_coverage": Path("silver/v5_paper_slippage_coverage"),
 }
 
 QUANT_LAB_USAGE_PATHS = {
@@ -469,6 +472,9 @@ def _append_file_rows(
         "summaries/probe_diagnostics.csv": "v5_probe_diagnostic",
         "summaries/quant_lab_compliance.csv": "v5_quant_lab_compliance",
         "summaries/quant_lab_cost_usage.csv": "v5_quant_lab_cost_usage",
+        "summaries/paper_strategy_runs.csv": "v5_paper_strategy_run",
+        "summaries/paper_strategy_daily.csv": "v5_paper_strategy_daily",
+        "summaries/paper_slippage_coverage.csv": "v5_paper_slippage_coverage",
     }
     if logical.startswith("summaries/high_score_blocked_outcomes"):
         rows["v5_high_score_blocked_outcome"].extend(_csv_rows(metadata, relative, file_path))

@@ -53,6 +53,28 @@ def make_v5_bundle_fixture(
         "summaries/quant_lab_fallbacks.csv": (
             "fallback_reason,count\nquant_lab_unavailable_local_fallback,1\n"
         ),
+        "summaries/paper_strategy_runs.csv": (
+            "as_of_date,proposal_id,strategy_candidate,symbol,recommended_mode,"
+            "would_enter,would_exit,would_size,paper_pnl,paper_pnl_bps,"
+            "live_block_reason,required_paper_days,required_slippage_coverage\n"
+            "2026-05-10,SOL_F4_VOLUME_EXPANSION_PAPER_V1,"
+            "v5.f4_volume_expansion_entry,SOL-USDT,paper,true,false,100,0.42,42,"
+            "[\"cost_source_not_actual_or_mixed\"],14,0.8\n"
+        ),
+        "summaries/paper_strategy_daily.csv": (
+            "as_of_date,proposal_id,strategy_candidate,symbol,recommended_mode,"
+            "paper_days,cumulative_paper_pnl_usdt,required_paper_days,"
+            "required_slippage_coverage,live_eligible\n"
+            "2026-05-10,SOL_F4_VOLUME_EXPANSION_PAPER_V1,"
+            "v5.f4_volume_expansion_entry,SOL-USDT,paper,1,0.42,14,0.8,false\n"
+        ),
+        "summaries/paper_slippage_coverage.csv": (
+            "as_of_date,proposal_id,strategy_candidate,symbol,paper_days,"
+            "paper_slippage_coverage,required_slippage_coverage,coverage_status\n"
+            "2026-05-10,SOL_F4_VOLUME_EXPANSION_PAPER_V1,"
+            "v5.f4_volume_expansion_entry,SOL-USDT,1,0.0,0.8,"
+            "insufficient_slippage_observations\n"
+        ),
         "summaries/router_decisions.csv": "reason,count\nrisk_gate,2\n",
         "summaries/trades_roundtrips.csv": "symbol,pnl\nBTC-USDT,1.2\n",
         "summaries/open_positions.csv": "symbol,size\nBTC-USDT,0\n",

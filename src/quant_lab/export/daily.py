@@ -519,6 +519,7 @@ CSV_SCHEMAS: dict[str, list[str]] = {
         "horizon_hours",
         "would_enter",
         "would_exit",
+        "would_size",
         "would_size_usdt",
         "paper_pnl_bps",
         "paper_pnl_usdt",

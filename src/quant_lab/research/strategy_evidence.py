@@ -19,6 +19,7 @@ from quant_lab.symbols import normalize_symbol
 
 STRATEGY_EVIDENCE_DATASET = Path("gold") / "strategy_evidence"
 STRATEGY_EVIDENCE_SAMPLE_DATASET = Path("gold") / "strategy_evidence_sample"
+STRATEGY_EVIDENCE_QUALITY_DATASET = Path("gold") / "strategy_evidence_quality"
 EVIDENCE_VERSION = "strategy-evidence-v0.1"
 SOURCE_NAME = "research.strategy_evidence.v0.1"
 MIN_LIVE_SMALL_READY_SAMPLES = 30
@@ -118,6 +119,18 @@ SUMMARY_SCHEMA: dict[str, Any] = {
     "source": pl.Utf8,
 }
 
+QUALITY_SCHEMA: dict[str, Any] = {
+    "strategy": pl.Utf8,
+    "evidence_version": pl.Utf8,
+    "as_of_date": pl.Utf8,
+    "severity": pl.Utf8,
+    "warning_type": pl.Utf8,
+    "warning_count": pl.Int64,
+    "detail": pl.Utf8,
+    "created_at": pl.Datetime(time_zone="UTC"),
+    "source": pl.Utf8,
+}
+
 
 class StrategyEvidenceBuildResult(BaseModel):
     model_config = ConfigDict(extra="forbid", frozen=True)
@@ -148,6 +161,7 @@ def build_and_publish_strategy_evidence(
     )
     sample_rows = publish_strategy_evidence_samples(root, samples)
     summary_rows = publish_strategy_evidence_summary(root, summaries)
+    publish_strategy_evidence_quality(root, day, warnings)
     return StrategyEvidenceBuildResult(
         lake_root=str(root),
         as_of_date=day.isoformat(),
@@ -243,6 +257,60 @@ def publish_strategy_evidence_samples(lake_root: str | Path, samples: pl.DataFra
     normalized = _drop_unknown_symbol_rows(normalize_strategy_evidence_samples(combined))
     write_parquet_dataset(normalized, dataset_path)
     return normalized.height
+
+
+def publish_strategy_evidence_quality(
+    lake_root: str | Path,
+    as_of_date: date,
+    warnings: list[str],
+) -> int:
+    dataset_path = Path(lake_root) / STRATEGY_EVIDENCE_QUALITY_DATASET
+    created_at = datetime.now(UTC)
+    rows = _quality_rows_for_warnings(as_of_date, warnings, created_at)
+    frame = pl.DataFrame(rows, schema=QUALITY_SCHEMA, orient="row")
+    existing = read_parquet_dataset(dataset_path)
+    combined = _replace_matching_as_of_dates(existing, frame)
+    write_parquet_dataset(combined, dataset_path)
+    return combined.height
+
+
+def _quality_rows_for_warnings(
+    as_of_date: date,
+    warnings: list[str],
+    created_at: datetime,
+) -> list[dict[str, Any]]:
+    rows: list[dict[str, Any]] = []
+    for warning in warnings:
+        warning_type, _, raw_count = warning.partition(":")
+        count = _int_or_none(raw_count) if raw_count else None
+        rows.append(
+            {
+                "strategy": "v5",
+                "evidence_version": EVIDENCE_VERSION,
+                "as_of_date": as_of_date.isoformat(),
+                "severity": "WARN",
+                "warning_type": warning_type,
+                "warning_count": int(count if count is not None else 1),
+                "detail": warning,
+                "created_at": created_at,
+                "source": SOURCE_NAME,
+            }
+        )
+    if rows:
+        return rows
+    return [
+        {
+            "strategy": "v5",
+            "evidence_version": EVIDENCE_VERSION,
+            "as_of_date": as_of_date.isoformat(),
+            "severity": "PASS",
+            "warning_type": "none",
+            "warning_count": 0,
+            "detail": "",
+            "created_at": created_at,
+            "source": SOURCE_NAME,
+        }
+    ]
 
 
 def publish_strategy_evidence_summary(
@@ -551,6 +619,7 @@ def _sample_from_outcome_row(
             source_count,
             label_status,
             source_type=source_type,
+            horizon_hours=horizon_hours,
         ),
         "regime_state": _first_text(
             row,
@@ -1831,7 +1900,12 @@ def _symbol(row: dict[str, Any], payload: dict[str, Any], candidate_name: str) -
             "inst_id",
             "instId",
             "instrument",
+            "instrument_id",
+            "coin_symbol",
+            "asset_symbol",
+            "base",
             "pair",
+            "ticker",
         ],
     )
     normalized = normalize_symbol(raw)
@@ -2080,8 +2154,12 @@ def _source_complete_sample_count(
     label_status: str,
     *,
     source_type: str,
+    horizon_hours: int | None = None,
 ) -> int:
     if source_type in OUTCOME_EVENT_SOURCE_TYPES:
+        horizon_status = _outcome_completion_status(row, payload, horizon_hours)
+        if horizon_status:
+            return 1 if horizon_status == "complete" else 0
         return 1 if label_status == "complete" else 0
     value = _first_numeric(
         row,
@@ -2091,6 +2169,40 @@ def _source_complete_sample_count(
     if value is not None:
         return max(int(value), 0)
     return sample_count if label_status == "complete" else 0
+
+
+def _outcome_completion_status(
+    row: dict[str, Any],
+    payload: dict[str, Any],
+    horizon_hours: int | None,
+) -> str:
+    if horizon_hours is None:
+        return ""
+    status = _first_text(
+        row,
+        payload,
+        _horizon_keys(
+            horizon_hours,
+            [
+                "label_status",
+                "status",
+                "outcome_status",
+                "complete_status",
+                "completion_status",
+            ],
+        )
+        + [
+            f"label_{horizon_hours}h_complete",
+            f"{horizon_hours}h_complete",
+            f"is_{horizon_hours}h_complete",
+            f"complete_{horizon_hours}h",
+        ],
+    ).lower()
+    if status in {"complete", "completed", "matured", "labeled", "true", "1", "yes"}:
+        return "complete"
+    if status in {"partial", "pending", "incomplete", "unlabeled", "false", "0", "no"}:
+        return "incomplete"
+    return ""
 
 
 def _outcome_label_status(

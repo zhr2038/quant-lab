@@ -368,6 +368,7 @@ def test_strategy_evidence_counts_historical_outcomes_by_unique_event_not_aggreg
 
     samples = read_parquet_dataset(lake / "gold" / "strategy_evidence_sample")
     evidence = read_parquet_dataset(lake / "gold" / "strategy_evidence")
+    quality = read_parquet_dataset(lake / "gold" / "strategy_evidence_quality")
     board = read_parquet_dataset(lake / "gold" / "alpha_discovery_board")
     summary = {
         (row["strategy_candidate"], row["symbol"], row["regime_state"], row["horizon_hours"]): row
@@ -375,6 +376,13 @@ def test_strategy_evidence_counts_historical_outcomes_by_unique_event_not_aggreg
     }
 
     assert "strategy_evidence_unknown_symbol_samples_skipped:1" in result.warnings
+    quality_rows = {
+        row["warning_type"]: row
+        for row in quality.filter(pl.col("as_of_date") == "2026-05-10").to_dicts()
+    }
+    assert quality_rows["strategy_evidence_unknown_symbol_samples_skipped"][
+        "warning_count"
+    ] == 1
     assert "UNKNOWN" not in set(samples["symbol"].drop_nulls())
     assert "UNKNOWN" not in set(evidence["symbol"].drop_nulls())
     assert "UNKNOWN" not in set(board["symbol"].drop_nulls())
@@ -471,6 +479,134 @@ def test_strategy_evidence_counts_historical_outcomes_by_unique_event_not_aggreg
     assert board.filter(
         (pl.col("as_of_date") == "2026-05-10") & (pl.col("sample_count") == 999)
     ).is_empty()
+
+
+def test_alt_impulse_outcomes_preserve_symbol_horizon_and_complete_counts(tmp_path):
+    lake = tmp_path / "lake"
+    start = datetime(2026, 5, 10, tzinfo=UTC)
+    horizons = [4, 8, 12, 24, 48, 72, 120]
+    rows = []
+    expected: dict[tuple[str, int], float] = {}
+    for symbol_index, symbol in enumerate(["SOL-USDT", "ETH-USDT", "BNB-USDT"]):
+        payload = {
+            "event_id": f"alt-{symbol_index}",
+            "candidate_name": "alt_impulse_shadow",
+            "symbol": symbol,
+        }
+        for horizon in horizons:
+            net_bps = float((symbol_index + 1) * horizon)
+            payload[f"label_{horizon}h_net_bps"] = net_bps
+            payload[f"label_{horizon}h_status"] = "complete"
+            expected[(symbol, horizon)] = net_bps
+        rows.append(
+            {
+                "strategy": "v5",
+                "bundle_sha256": "bundle",
+                "bundle_name": "bundle.tar.gz",
+                "bundle_ts": start,
+                "ingest_ts": start,
+                "source_path_inside_bundle": "summaries/alt_impulse_shadow_outcomes.csv",
+                "row_index": symbol_index,
+                "event_id": f"alt-{symbol_index}",
+                "candidate_name": "alt_impulse_shadow",
+                "ts_utc": (start + timedelta(minutes=symbol_index)).isoformat().replace(
+                    "+00:00", "Z"
+                ),
+                "symbol": symbol,
+                "regime_state": "impulse",
+                "sample_count": "999",
+                "complete_sample_count": "0",
+                "cost_bps": "1.0",
+                "cost_source": "mixed_actual_proxy",
+                "raw_payload_json": json.dumps(payload),
+            }
+        )
+    rows.append(
+        {
+            "strategy": "v5",
+            "bundle_sha256": "pending",
+            "bundle_name": "pending.tar.gz",
+            "bundle_ts": start,
+            "ingest_ts": start,
+            "source_path_inside_bundle": "summaries/alt_impulse_shadow_outcomes.csv",
+            "row_index": 99,
+            "event_id": "pending-large",
+            "candidate_name": "alt_impulse_shadow",
+            "ts_utc": (start + timedelta(hours=1)).isoformat().replace("+00:00", "Z"),
+            "symbol": "SOL-USDT",
+            "regime_state": "impulse",
+            "sample_count": "999",
+            "complete_sample_count": "0",
+            "label_24h_net_bps": "1000",
+            "label_24h_status": "pending",
+            "cost_source": "mixed_actual_proxy",
+        }
+    )
+    rows.append(
+        {
+            "strategy": "v5",
+            "bundle_sha256": "unknown",
+            "bundle_name": "unknown.tar.gz",
+            "bundle_ts": start,
+            "ingest_ts": start,
+            "source_path_inside_bundle": "summaries/alt_impulse_shadow_outcomes.csv",
+            "row_index": 100,
+            "event_id": "unknown-large",
+            "candidate_name": "alt_impulse_shadow",
+            "ts_utc": (start + timedelta(hours=2)).isoformat().replace("+00:00", "Z"),
+            "symbol": "UNKNOWN",
+            "regime_state": "impulse",
+            "sample_count": "999",
+            "complete_sample_count": "0",
+            "label_24h_net_bps": "500",
+            "label_24h_status": "complete",
+        }
+    )
+    write_parquet_dataset(pl.DataFrame(rows), lake / "silver" / "v5_shadow_outcome")
+
+    result = build_and_publish_strategy_evidence(lake, as_of_date="2026-05-10")
+    build_and_publish_alpha_discovery_board(lake, as_of_date="2026-05-10")
+
+    samples = read_parquet_dataset(lake / "gold" / "strategy_evidence_sample")
+    evidence = read_parquet_dataset(lake / "gold" / "strategy_evidence")
+    board = read_parquet_dataset(lake / "gold" / "alpha_discovery_board")
+    quality = read_parquet_dataset(lake / "gold" / "strategy_evidence_quality")
+
+    assert "strategy_evidence_unknown_symbol_samples_skipped:1" in result.warnings
+    assert "UNKNOWN" not in set(samples["symbol"].drop_nulls())
+    assert "UNKNOWN" not in set(evidence["symbol"].drop_nulls())
+    assert "UNKNOWN" not in set(board["symbol"].drop_nulls())
+    assert set(
+        samples.filter(pl.col("strategy_candidate") == "v5.alt_impulse_shadow")[
+            "horizon_hours"
+        ].unique()
+    ) == set(horizons)
+
+    evidence_rows = {
+        (row["symbol"], row["horizon_hours"]): row
+        for row in evidence.filter(
+            pl.col("strategy_candidate") == "v5.alt_impulse_shadow"
+        ).to_dicts()
+    }
+    for key, net_bps in expected.items():
+        row = evidence_rows[key]
+        if key == ("SOL-USDT", 24):
+            continue
+        assert row["sample_count"] == 1
+        assert row["complete_sample_count"] == 1
+        assert row["avg_net_bps"] == net_bps
+    pending_row = evidence_rows[("SOL-USDT", 24)]
+    assert pending_row["sample_count"] == 2
+    assert pending_row["complete_sample_count"] == 1
+    assert pending_row["decision"] == "RESEARCH_ONLY"
+    assert board.filter(
+        (pl.col("strategy_candidate") == "v5.alt_impulse_shadow")
+        & (pl.col("symbol") == "UNKNOWN")
+    ).is_empty()
+    assert quality.filter(
+        (pl.col("warning_type") == "strategy_evidence_unknown_symbol_samples_skipped")
+        & (pl.col("warning_count") == 1)
+    ).height == 1
 
 
 def _write_market_bars(lake: Path) -> None:

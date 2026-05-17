@@ -119,6 +119,7 @@ def test_export_empty_csv_members_have_fixed_headers(tmp_path):
             "market/trade_activity.csv",
             "research/alpha_evidence.csv",
             "research/gate_decisions.csv",
+            "research/strategy_evidence_quality.csv",
             "reports/alpha_discovery_board.csv",
             "reports/candidate_kill_list.csv",
             "reports/candidate_shadow_watchlist.csv",

@@ -479,6 +479,11 @@ def test_strategy_evidence_counts_historical_outcomes_by_unique_event_not_aggreg
     assert board.filter(
         (pl.col("as_of_date") == "2026-05-10") & (pl.col("sample_count") == 999)
     ).is_empty()
+    assert board.filter(
+        (pl.col("strategy_candidate") == "v5.alt_impulse_shadow")
+        & (pl.col("complete_sample_count") == 0)
+        & (pl.col("sample_count") > 10)
+    ).is_empty()
 
 
 def test_alt_impulse_outcomes_preserve_symbol_horizon_and_complete_counts(tmp_path):

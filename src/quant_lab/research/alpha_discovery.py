@@ -703,7 +703,9 @@ def normalize_alpha_discovery_board_decisions(board: pl.DataFrame) -> pl.DataFra
         row["decision"] = decision
         row["decision_reasons"] = safe_json_dumps(reasons)
         rows.append(row)
-    normalized = _drop_unknown_symbol_rows(pl.DataFrame(rows, schema=board.schema, orient="row"))
+    normalized = _drop_invalid_alpha_discovery_rows(
+        _drop_unknown_symbol_rows(pl.DataFrame(rows, schema=board.schema, orient="row"))
+    )
     keys = [
         column
         for column in [
@@ -725,6 +727,23 @@ def _drop_unknown_symbol_rows(frame: pl.DataFrame) -> pl.DataFrame:
         return frame
     symbol = pl.col("symbol").fill_null("").cast(pl.Utf8).str.to_uppercase()
     return frame.filter(symbol != "UNKNOWN")
+
+
+def _drop_invalid_alpha_discovery_rows(frame: pl.DataFrame) -> pl.DataFrame:
+    if frame.is_empty():
+        return frame
+    required = {"strategy_candidate", "sample_count", "complete_sample_count"}
+    if not required.issubset(frame.columns):
+        return frame
+    candidate = pl.col("strategy_candidate").fill_null("").cast(pl.Utf8)
+    sample_count = pl.col("sample_count").fill_null(0).cast(pl.Int64, strict=False)
+    complete_count = pl.col("complete_sample_count").fill_null(0).cast(pl.Int64, strict=False)
+    invalid_alt_impulse = (
+        (candidate == "v5.alt_impulse_shadow")
+        & (sample_count > 10)
+        & (complete_count == 0)
+    )
+    return frame.filter(~invalid_alt_impulse)
 
 
 def _decision_counts(board: pl.DataFrame) -> dict[str, int]:

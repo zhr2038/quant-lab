@@ -1565,6 +1565,7 @@ def _latest_v5_bundle_ts_in_inbox(inbox_dir: Path) -> datetime | None:
 
 def _pending_v5_bundle_paths_for_export(inbox_dir: Path, lake_root: Path) -> list[Path]:
     max_pending = _export_v5_max_pending_bundles()
+    max_scan = _export_v5_max_scan_bundles(max_pending)
     ingested = _ingested_bundle_sha256s(lake_root)
     from quant_lab.strategy_telemetry.bundle import compute_sha256, parse_bundle_ts
 
@@ -1578,11 +1579,16 @@ def _pending_v5_bundle_paths_for_export(inbox_dir: Path, lake_root: Path) -> lis
         return parsed, path.name
 
     selected: list[Path] = []
-    for path in sorted(
-        inbox_dir.glob("v5_live_followup_bundle_*.tar.gz"),
-        key=sort_key,
-        reverse=True,
+    for scanned_count, path in enumerate(
+        sorted(
+            inbox_dir.glob("v5_live_followup_bundle_*.tar.gz"),
+            key=sort_key,
+            reverse=True,
+        ),
+        start=1,
     ):
+        if scanned_count > max_scan:
+            break
         try:
             sha256 = compute_sha256(path)
         except OSError:
@@ -1601,6 +1607,14 @@ def _export_v5_max_pending_bundles() -> int:
         return max(1, int(raw_value))
     except ValueError:
         return 5
+
+
+def _export_v5_max_scan_bundles(max_pending: int) -> int:
+    raw_value = os.environ.get("QUANT_LAB_EXPORT_V5_MAX_SCAN_BUNDLES", "20")
+    try:
+        return max(max_pending, int(raw_value))
+    except ValueError:
+        return max(max_pending, 20)
 
 
 def _ingested_bundle_sha256s(lake_root: Path) -> set[str]:

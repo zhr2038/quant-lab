@@ -121,6 +121,8 @@ def test_export_daily_ingests_pending_v5_inbox_before_snapshot(tmp_path):
     assert manifest["latest_v5_bundle_ingested_at_export"].startswith("2026-05-17T06:00:00")
     assert manifest["candidate_event_rows"] >= 1
     assert manifest["candidate_event_latest_ts"].startswith("2026-05-17T06:00:00")
+    assert manifest["latest_candidate_event_ts"].startswith("2026-05-17T06:00:00")
+    assert manifest["v5_bundle_lag_seconds"] is not None
     assert data_quality["v5_pre_export"]["processed_bundle_count"] == 1
     assert not any(
         "build_strategy_evidence" in str(warning)

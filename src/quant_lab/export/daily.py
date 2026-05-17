@@ -1377,6 +1377,11 @@ def _manifest_payload(
     candidate_events = snapshot.frames.get("v5_candidate_event", pl.DataFrame())
     latest_ingested_bundle_ts = _latest_v5_bundle_ts(snapshot.frames)
     candidate_event_latest_ts = _latest_dataset_timestamp("v5_candidate_event", candidate_events)
+    v5_bundle_lag_seconds = (
+        max(0, int((generated_at - latest_ingested_bundle_ts).total_seconds()))
+        if latest_ingested_bundle_ts is not None
+        else None
+    )
     v5_context = pre_export_v5 or {}
     return {
         "export_date": day.isoformat(),
@@ -1399,7 +1404,9 @@ def _manifest_payload(
         ),
         "latest_v5_bundle_ingested_at_export": _iso_or_none(latest_ingested_bundle_ts),
         "candidate_event_latest_ts": _iso_or_none(candidate_event_latest_ts),
+        "latest_candidate_event_ts": _iso_or_none(candidate_event_latest_ts),
         "candidate_event_rows": candidate_events.height,
+        "v5_bundle_lag_seconds": v5_bundle_lag_seconds,
         "pre_export_v5_refresh": v5_context,
         "git_commit": git["git_commit"],
         "git_branch": git["git_branch"],
@@ -1496,6 +1503,8 @@ def _refresh_v5_before_export(
                 redacted_archive_dir=Path(cfg["redacted_archive_dir"]),
                 strategy=str(cfg["strategy"]),
                 limits=cfg.get("limits"),
+                run_analysis=False,
+                refresh_candidate_gold=False,
             )
             if result.skipped:
                 skipped_count += 1

@@ -124,6 +124,71 @@ def test_export_daily_ingests_pending_v5_inbox_before_snapshot(tmp_path):
     assert data_quality["v5_pre_export"]["processed_bundle_count"] == 1
 
 
+def test_export_daily_limits_pre_export_v5_ingest_to_latest_pending(tmp_path, monkeypatch):
+    lake_root = _fixture_lake(tmp_path)
+    inbox = tmp_path / "inbox"
+    monkeypatch.setenv("QUANT_LAB_EXPORT_V5_MAX_PENDING_BUNDLES", "1")
+    make_tar(
+        inbox / "v5_live_followup_bundle_20260516T120000Z.tar.gz",
+        {
+            "reports/candidate_snapshot.csv": (
+                "candidate_id,run_id,ts_utc,symbol,regime_state,risk_level,"
+                "current_position,current_weight,target_weight_raw,"
+                "target_weight_after_risk,final_score,rank,f1_mom_5d,f2_mom_20d,"
+                "f3_vol_adj_ret,f4_volume_expansion,f5_rsi_trend_confirm,"
+                "alpha6_score,alpha6_side,ml_score,mean_reversion_score,"
+                "expected_edge_bps,required_edge_bps,cost_bps,cost_source,"
+                "eligible_before_filters,final_decision,block_reason,"
+                "strategy_candidate\n"
+                "old,run_old,2026-05-16T12:00:00Z,BTC-USDT,trend,LOW,0,0,"
+                "0.05,0.05,0.91,1,0.12,0.24,0.31,0.42,0.53,0.74,long,"
+                "0.66,0.11,18,5,3.5,quant_lab,true,KEEP_SHADOW,risk_gate,"
+                "v5.old_candidate\n"
+            ),
+        },
+    )
+    make_tar(
+        inbox / "v5_live_followup_bundle_20260517T060000Z.tar.gz",
+        {
+            "reports/candidate_snapshot.csv": (
+                "candidate_id,run_id,ts_utc,symbol,regime_state,risk_level,"
+                "current_position,current_weight,target_weight_raw,"
+                "target_weight_after_risk,final_score,rank,f1_mom_5d,f2_mom_20d,"
+                "f3_vol_adj_ret,f4_volume_expansion,f5_rsi_trend_confirm,"
+                "alpha6_score,alpha6_side,ml_score,mean_reversion_score,"
+                "expected_edge_bps,required_edge_bps,cost_bps,cost_source,"
+                "eligible_before_filters,final_decision,block_reason,"
+                "strategy_candidate\n"
+                "new,run_new,2026-05-17T06:00:00Z,BNB-USDT,trend,LOW,0,0,"
+                "0.05,0.05,0.91,1,0.12,0.24,0.31,0.42,0.53,0.74,long,"
+                "0.66,0.11,18,5,3.5,quant_lab,true,KEEP_SHADOW,risk_gate,"
+                "v5.new_candidate\n"
+            ),
+        },
+    )
+    config = _v5_telemetry_config(tmp_path, inbox, lake_root)
+
+    result = export_daily_pack(
+        export_date="2026-05-17",
+        lake_root=lake_root,
+        out_dir=tmp_path / "exports",
+        command_line=["qlab", "export-daily"],
+        pre_export_v5_refresh=True,
+        v5_telemetry_config=config,
+    )
+
+    with zipfile.ZipFile(result.zip_path) as archive:
+        manifest = json.loads(archive.read("manifest.json").decode("utf-8"))
+
+    refresh = manifest["pre_export_v5_refresh"]
+    assert refresh["selected_bundle_count"] == 1
+    assert refresh["processed_bundle_count"] == 1
+    assert refresh["selected_bundle_names"] == [
+        "v5_live_followup_bundle_20260517T060000Z.tar.gz"
+    ]
+    assert manifest["candidate_event_latest_ts"].startswith("2026-05-17T06:00:00")
+
+
 def test_data_quality_fails_when_v5_bundle_is_stale_at_export(tmp_path):
     lake_root = _fixture_lake(tmp_path)
     write_parquet_dataset(

@@ -22,6 +22,7 @@ from quant_lab.contracts.v5_quant_lab import (
     V5_QUANT_LAB_CONTRACT_VERSION,
     V5_TELEMETRY_DATASET_SCHEMA_VERSION,
 )
+from quant_lab.data.lake import read_parquet_dataset
 from quant_lab.reports.enforce_readiness import (
     ENFORCE_READINESS_CSV,
     ENFORCE_READINESS_JSON,
@@ -1459,21 +1460,29 @@ def _refresh_v5_before_export(
         return context
 
     try:
-        from quant_lab.strategy_telemetry.ingest import ingest_v5_inbox
+        from quant_lab.strategy_telemetry.ingest import ingest_v5_bundle
 
-        inbox_result = ingest_v5_inbox(
-            inbox_dir=inbox_dir,
-            lake_root=lake_root,
-            restricted_archive_dir=Path(cfg["restricted_archive_dir"]),
-            redacted_archive_dir=Path(cfg["redacted_archive_dir"]),
-            strategy=str(cfg["strategy"]),
-            limits=cfg.get("limits"),
-        )
-        context["processed_bundle_count"] = len(inbox_result.processed)
-        context["skipped_bundle_count"] = len(inbox_result.skipped_files)
-        warnings.extend(str(item) for item in inbox_result.warnings)
-        for item in inbox_result.processed:
-            warnings.extend(str(warning) for warning in item.warnings)
+        pending_paths = _pending_v5_bundle_paths_for_export(inbox_dir, lake_root)
+        context["selected_bundle_count"] = len(pending_paths)
+        context["selected_bundle_names"] = [path.name for path in pending_paths]
+        processed_count = 0
+        skipped_count = 0
+        for bundle_path in pending_paths:
+            result = ingest_v5_bundle(
+                bundle_path=bundle_path,
+                lake_root=lake_root,
+                restricted_archive_dir=Path(cfg["restricted_archive_dir"]),
+                redacted_archive_dir=Path(cfg["redacted_archive_dir"]),
+                strategy=str(cfg["strategy"]),
+                limits=cfg.get("limits"),
+            )
+            if result.skipped:
+                skipped_count += 1
+            else:
+                processed_count += 1
+            warnings.extend(str(warning) for warning in result.warnings)
+        context["processed_bundle_count"] = processed_count
+        context["skipped_bundle_count"] = skipped_count
     except Exception as exc:  # pragma: no cover - exact production tar/parquet errors vary.
         warnings.append(
             "v5_pre_export_inbox_ingest_failed: "
@@ -1532,6 +1541,61 @@ def _latest_v5_bundle_ts_in_inbox(inbox_dir: Path) -> datetime | None:
         except OSError:
             continue
     return max(timestamps) if timestamps else None
+
+
+def _pending_v5_bundle_paths_for_export(inbox_dir: Path, lake_root: Path) -> list[Path]:
+    max_pending = _export_v5_max_pending_bundles()
+    ingested = _ingested_bundle_sha256s(lake_root)
+    from quant_lab.strategy_telemetry.bundle import compute_sha256, parse_bundle_ts
+
+    def sort_key(path: Path) -> tuple[datetime, str]:
+        parsed = parse_bundle_ts(path.name)
+        if parsed is None:
+            try:
+                parsed = datetime.fromtimestamp(path.stat().st_mtime, tz=UTC)
+            except OSError:
+                parsed = datetime.min.replace(tzinfo=UTC)
+        return parsed, path.name
+
+    selected: list[Path] = []
+    for path in sorted(
+        inbox_dir.glob("v5_live_followup_bundle_*.tar.gz"),
+        key=sort_key,
+        reverse=True,
+    ):
+        try:
+            sha256 = compute_sha256(path)
+        except OSError:
+            continue
+        if sha256 in ingested:
+            continue
+        selected.append(path)
+        if len(selected) >= max_pending:
+            break
+    return list(reversed(selected))
+
+
+def _export_v5_max_pending_bundles() -> int:
+    raw_value = os.environ.get("QUANT_LAB_EXPORT_V5_MAX_PENDING_BUNDLES", "5")
+    try:
+        return max(1, int(raw_value))
+    except ValueError:
+        return 5
+
+
+def _ingested_bundle_sha256s(lake_root: Path) -> set[str]:
+    path = lake_root / "bronze" / "strategy_telemetry" / "v5" / "bundle_manifest"
+    try:
+        frame = read_parquet_dataset(path)
+    except Exception:
+        return set()
+    if "bundle_sha256" not in frame.columns or frame.is_empty():
+        return set()
+    return {
+        str(value)
+        for value in frame.get_column("bundle_sha256").drop_nulls().unique().to_list()
+        if value
+    }
 
 
 def _refresh_v5_derived_outputs(lake_root: Path, export_day: date) -> list[str]:

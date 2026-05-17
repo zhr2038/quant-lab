@@ -481,14 +481,18 @@ CSV_SCHEMAS: dict[str, list[str]] = {
         "proposal_id",
         "strategy_candidate",
         "symbol",
+        "entry_conditions",
         "recommended_mode",
         "suggested_horizon",
         "sample_count",
+        "complete_sample_count",
         "avg_net_bps",
-        "win_rate",
         "p25_net_bps",
+        "win_rate",
         "cost_source_mix",
         "live_block_reason",
+        "required_paper_days",
+        "required_slippage_coverage",
         "as_of_date",
         "created_at",
     ],
@@ -2551,12 +2555,20 @@ def _paper_strategy_proposals_for_export(board: pl.DataFrame) -> pl.DataFrame:
     path = "reports/paper_strategy_proposals.csv"
     if board.is_empty() or "decision" not in board.columns:
         return _empty_csv_schema_frame(path)
+    board_rows = board.to_dicts()
+    latest_as_of_date = _latest_as_of_date(board_rows)
     rows = [
         row
-        for row in board.to_dicts()
+        for row in board_rows
         if str(row.get("decision") or "").upper() == "PAPER_READY"
         and str(row.get("symbol") or "").strip().upper() != "UNKNOWN"
     ]
+    if latest_as_of_date is not None:
+        rows = [
+            row
+            for row in rows
+            if str(row.get("as_of_date") or "").strip() == latest_as_of_date
+        ]
     if not rows:
         return _empty_csv_schema_frame(path)
 
@@ -2573,14 +2585,18 @@ def _paper_strategy_proposals_for_export(board: pl.DataFrame) -> pl.DataFrame:
             "proposal_id": _paper_proposal_id(row),
             "strategy_candidate": row.get("strategy_candidate"),
             "symbol": row.get("symbol"),
+            "entry_conditions": safe_json_dumps(_paper_entry_conditions(row)),
             "recommended_mode": "paper",
             "suggested_horizon": _paper_suggested_horizon(row),
             "sample_count": _optional_int(row.get("sample_count")),
+            "complete_sample_count": _optional_int(row.get("complete_sample_count")),
             "avg_net_bps": _optional_float(row.get("avg_net_bps")),
-            "win_rate": _optional_float(row.get("win_rate")),
             "p25_net_bps": _optional_float(row.get("p25_net_bps")),
+            "win_rate": _optional_float(row.get("win_rate")),
             "cost_source_mix": row.get("cost_source_mix"),
             "live_block_reason": safe_json_dumps(_paper_live_block_reasons(row)),
+            "required_paper_days": 14,
+            "required_slippage_coverage": 0.8,
             "as_of_date": row.get("as_of_date"),
             "created_at": created_at,
         }
@@ -2593,6 +2609,15 @@ def _paper_strategy_proposals_for_export(board: pl.DataFrame) -> pl.DataFrame:
         )
     ]
     return pl.DataFrame(proposals).select(CSV_SCHEMAS[path])
+
+
+def _latest_as_of_date(rows: list[dict[str, Any]]) -> str | None:
+    values = [
+        str(row.get("as_of_date") or "").strip()
+        for row in rows
+        if str(row.get("as_of_date") or "").strip()
+    ]
+    return max(values) if values else None
 
 
 def _paper_proposal_rank(row: dict[str, Any]) -> tuple[float, float, int, int, int]:
@@ -2619,6 +2644,25 @@ def _paper_proposal_id(row: dict[str, Any]) -> str:
 def _paper_suggested_horizon(row: dict[str, Any]) -> str:
     horizon = _optional_int(row.get("horizon_hours"))
     return f"{horizon}h" if horizon is not None else ""
+
+
+def _paper_entry_conditions(row: dict[str, Any]) -> dict[str, Any]:
+    conditions: dict[str, Any] = {
+        "strategy_candidate": row.get("strategy_candidate"),
+        "symbol": row.get("symbol"),
+        "board_decision": "PAPER_READY",
+    }
+    for source, target in [
+        ("regime_state", "regime_state"),
+        ("source_type", "evidence_source"),
+        ("horizon_hours", "horizon_hours"),
+        ("block_reason_mix", "block_reason_mix"),
+        ("final_decision_mix", "final_decision_mix"),
+    ]:
+        value = row.get(source)
+        if value not in (None, ""):
+            conditions[target] = value
+    return conditions
 
 
 def _paper_live_block_reasons(row: dict[str, Any]) -> list[str]:

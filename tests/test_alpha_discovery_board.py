@@ -169,15 +169,84 @@ def test_daily_export_uses_alpha_discovery_board_lists(tmp_path):
     sol_proposals = [row for row in proposals if row["symbol"] == "SOL-USDT"]
     assert sol_proposals
     assert {row["recommended_mode"] for row in sol_proposals} == {"paper"}
+    assert {row["required_paper_days"] for row in sol_proposals} == {"14"}
+    assert {row["required_slippage_coverage"] for row in sol_proposals} == {"0.8"}
     assert not any("LIVE_SMALL_READY" in json.dumps(row) for row in proposals)
     assert all(
         "cost_source_not_actual_or_mixed" in row["live_block_reason"]
+        for row in sol_proposals
+    )
+    assert all(row["complete_sample_count"] for row in sol_proposals)
+    assert all(
+        json.loads(row["entry_conditions"])["board_decision"] == "PAPER_READY"
         for row in sol_proposals
     )
     assert "v5.f3_dominant_entry" in summary
     assert not any(
         str(warning).startswith("strategy_evidence_present")
         for warning in data_quality["warnings"]
+    )
+
+
+def test_paper_strategy_proposals_use_latest_board_date(tmp_path):
+    lake = tmp_path / "lake"
+    stale = _board_row(
+        strategy_candidate="v5.sol_protect_alpha6_low_exception",
+        symbol="SOL-USDT",
+        source_type="protect_sol_exception_shadow_outcome",
+        avg_net_bps=250.0,
+        decision="PAPER_READY",
+        cost_source_mix='[{"cost_source":"public_spread_proxy","count":72}]',
+    ) | {"as_of_date": "2026-05-16", "horizon_hours": 120}
+    latest_protect = _board_row(
+        strategy_candidate="v5.sol_protect_alpha6_low_exception",
+        symbol="SOL-USDT",
+        source_type="protect_sol_exception_shadow_outcome",
+        avg_net_bps=45.0,
+        decision="PAPER_READY",
+        cost_source_mix='[{"cost_source":"public_spread_proxy","count":72}]',
+    ) | {"as_of_date": "2026-05-17", "horizon_hours": 72}
+    latest_f4 = _board_row(
+        strategy_candidate="v5.f4_volume_expansion_entry",
+        symbol="SOL-USDT",
+        source_type="candidate_event_label",
+        avg_net_bps=55.0,
+        decision="PAPER_READY",
+        cost_source_mix='[{"cost_source":"public_spread_proxy","count":72}]',
+    ) | {"as_of_date": "2026-05-17", "horizon_hours": 48}
+    write_parquet_dataset(
+        pl.DataFrame([stale, latest_protect, latest_f4]),
+        lake / "gold" / "alpha_discovery_board",
+    )
+
+    result = export_daily_pack(
+        export_date="2026-05-17",
+        lake_root=lake,
+        out_dir=tmp_path / "exports",
+        profile="expert",
+        command_line=["qlab", "export-daily"],
+        pre_export_v5_refresh=False,
+    )
+
+    with zipfile.ZipFile(result.zip_path) as archive:
+        proposals = list(
+            csv.DictReader(
+                io.StringIO(
+                    archive.read("reports/paper_strategy_proposals.csv").decode("utf-8")
+                )
+            )
+        )
+
+    assert {row["proposal_id"] for row in proposals} == {
+        "SOL_PROTECT_ALPHA6_LOW_EXCEPTION_PAPER_V1",
+        "SOL_F4_VOLUME_EXPANSION_PAPER_V1",
+    }
+    assert {row["as_of_date"] for row in proposals} == {"2026-05-17"}
+    assert {row["recommended_mode"] for row in proposals} == {"paper"}
+    assert not any("LIVE_SMALL_READY" in json.dumps(row) for row in proposals)
+    assert all(
+        "cost_source_not_actual_or_mixed" in row["live_block_reason"]
+        for row in proposals
     )
 
 

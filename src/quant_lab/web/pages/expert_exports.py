@@ -102,7 +102,6 @@ def _export_daily_from_web(
             exports_root=exports_root,
         )
 
-    refresh_warnings = _refresh_lake_before_export(lake_root, export_date=export_date)
     result = export_daily_pack(
         export_date=export_date,
         lake_root=lake_root,
@@ -122,7 +121,7 @@ def _export_daily_from_web(
         risk_strategy="v5",
         risk_version="5.0.0",
     )
-    return Path(result.zip_path), refresh_warnings
+    return Path(result.zip_path), list(result.warnings)
 
 
 def _export_daily_in_subprocess(
@@ -134,15 +133,13 @@ def _export_daily_in_subprocess(
     script = (
         "import json, sys;"
         "from pathlib import Path;"
-        "from quant_lab.web.pages.expert_exports import _refresh_lake_before_export;"
         "from quant_lab.export.daily import export_daily_pack;"
         "lake=Path(sys.argv[1]); out=Path(sys.argv[2]); day=sys.argv[3];"
-        "warnings=_refresh_lake_before_export(lake, export_date=day);"
         "result=export_daily_pack("
         "export_date=day, lake_root=lake, out_dir=out, profile='expert',"
         "command_line=['qlab','export-daily','--date',day,'--lake-root',str(lake),'--out-dir',str(out)],"
         "refresh_risk_permission=True, risk_strategy='v5', risk_version='5.0.0');"
-        "print(json.dumps({'zip_path': result.zip_path, 'warnings': warnings}))"
+        "print(json.dumps({'zip_path': result.zip_path, 'warnings': result.warnings}))"
     )
     completed = subprocess.run(
         [sys.executable, "-c", script, str(lake_root), str(exports_root), export_date],

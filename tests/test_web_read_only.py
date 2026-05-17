@@ -764,7 +764,6 @@ def test_expert_exports_generate_today_button_invokes_export(tmp_path, monkeypat
     lake_root = _fixture_lake(tmp_path)
     fake = FakeStreamlit(button_values={"生成今日专家包": True})
     captured = {}
-    refresh_calls = []
 
     def fake_export_daily_pack(**kwargs):
         captured.update(kwargs)
@@ -773,23 +772,12 @@ def test_expert_exports_generate_today_button_invokes_export(tmp_path, monkeypat
             archive.writestr("manifest.json", "{}")
             archive.writestr("data_quality.json", "{}")
             archive.writestr("expert_questions.md", "")
-        return SimpleNamespace(zip_path=str(pack_path))
+        return SimpleNamespace(zip_path=str(pack_path), warnings=[])
 
-    def fake_refresh_lake_before_export(lake_root_arg, *, export_date):
-        refresh_calls.append((lake_root_arg, export_date))
-        return []
-
-    monkeypatch.setattr(
-        expert_exports,
-        "_refresh_lake_before_export",
-        fake_refresh_lake_before_export,
-    )
     monkeypatch.setattr(expert_exports, "export_daily_pack", fake_export_daily_pack)
 
     expert_exports.render(lake_root, fake, exports_root=tmp_path / "exports")
 
-    assert refresh_calls
-    assert refresh_calls[0][0] == lake_root
     assert captured["lake_root"] == lake_root
     assert captured["out_dir"] == tmp_path / "exports"
     assert captured["export_date"]
@@ -815,10 +803,9 @@ def test_expert_exports_generate_today_uses_beijing_date_and_creates_export_dir(
             archive.writestr("manifest.json", "{}")
             archive.writestr("data_quality.json", "{}")
             archive.writestr("expert_questions.md", "")
-        return SimpleNamespace(zip_path=str(pack_path))
+        return SimpleNamespace(zip_path=str(pack_path), warnings=[])
 
     monkeypatch.setattr(expert_exports, "beijing_today", lambda: datetime(2026, 5, 16).date())
-    monkeypatch.setattr(expert_exports, "_refresh_lake_before_export", lambda *_args, **_kwargs: [])
     monkeypatch.setattr(expert_exports, "export_daily_pack", fake_export_daily_pack)
 
     pack_path = expert_exports._generate_today_pack(
@@ -892,9 +879,8 @@ def test_expert_exports_generate_today_persists_pack_across_streamlit_rerun(
             archive.writestr("manifest.json", json.dumps({"fresh": True}))
             archive.writestr("data_quality.json", "{}")
             archive.writestr("expert_questions.md", "")
-        return SimpleNamespace(zip_path=str(pack_path))
+        return SimpleNamespace(zip_path=str(pack_path), warnings=[])
 
-    monkeypatch.setattr(expert_exports, "_refresh_lake_before_export", lambda *_args, **_kwargs: [])
     monkeypatch.setattr(expert_exports, "export_daily_pack", fake_export_daily_pack)
 
     expert_exports.render(lake_root, first_fake, exports_root=exports_root)

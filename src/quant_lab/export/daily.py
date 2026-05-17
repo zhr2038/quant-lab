@@ -847,6 +847,8 @@ def export_daily_pack(
     refresh_risk_permission: bool = False,
     risk_strategy: str = "v5",
     risk_version: str = "5.0.0",
+    pre_export_v5_refresh: bool = True,
+    v5_telemetry_config: str | Path | None = None,
 ) -> DailyExportResult:
     day = _parse_date(export_date)
     root = Path(lake_root)
@@ -854,7 +856,15 @@ def export_daily_pack(
     output_root.mkdir(parents=True, exist_ok=True)
 
     generated_at = datetime.now(UTC)
-    pre_export_warnings = (
+    pre_export_v5 = (
+        _refresh_v5_before_export(root, day, config_path=v5_telemetry_config)
+        if pre_export_v5_refresh
+        else {"enabled": False, "warnings": []}
+    )
+    pre_export_warnings = [
+        str(warning) for warning in pre_export_v5.get("warnings", [])
+    ]
+    pre_export_warnings.extend(
         _refresh_risk_permission_before_export(root, strategy=risk_strategy, version=risk_version)
         if refresh_risk_permission
         else []
@@ -867,6 +877,7 @@ def export_daily_pack(
         day,
         generated_at,
         pre_export_risk_refresh_attempted=refresh_risk_permission,
+        pre_export_v5=pre_export_v5,
         pre_export_warnings=pre_export_warnings,
     )
     warnings = sorted(set([*snapshot.warnings, *data_quality["warnings"]]))
@@ -901,6 +912,7 @@ def export_daily_pack(
         row_counts=snapshot.row_counts,
         command_line=command_line or sys.argv,
         snapshot=snapshot,
+        pre_export_v5=pre_export_v5,
     )
     manifest["files"].append(
         {
@@ -1336,9 +1348,14 @@ def _manifest_payload(
     row_counts: dict[str, int],
     command_line: list[str],
     snapshot: _DatasetSnapshot,
+    pre_export_v5: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     git = _git_info()
     risk_export_status = _risk_permission_export_status(snapshot.frames, generated_at)
+    candidate_events = snapshot.frames.get("v5_candidate_event", pl.DataFrame())
+    latest_ingested_bundle_ts = _latest_v5_bundle_ts(snapshot.frames)
+    candidate_event_latest_ts = _latest_dataset_timestamp("v5_candidate_event", candidate_events)
+    v5_context = pre_export_v5 or {}
     return {
         "export_date": day.isoformat(),
         "generated_at": generated_at.isoformat(),
@@ -1355,6 +1372,13 @@ def _manifest_payload(
         "quant_lab_version": __version__,
         "contract_version": V5_QUANT_LAB_CONTRACT_VERSION,
         "schema_version": V5_TELEMETRY_DATASET_SCHEMA_VERSION,
+        "latest_v5_bundle_seen_at_export": v5_context.get(
+            "latest_v5_bundle_seen_at_export"
+        ),
+        "latest_v5_bundle_ingested_at_export": _iso_or_none(latest_ingested_bundle_ts),
+        "candidate_event_latest_ts": _iso_or_none(candidate_event_latest_ts),
+        "candidate_event_rows": candidate_events.height,
+        "pre_export_v5_refresh": v5_context,
         "git_commit": git["git_commit"],
         "git_branch": git["git_branch"],
         "dirty_worktree": git["dirty_worktree"],
@@ -1400,6 +1424,169 @@ def _refresh_risk_permission_before_export(
         f"risk_permission_republish_warning: {_safe_warning_text(str(warning))}"
         for warning in result.warnings
     ]
+
+
+def _refresh_v5_before_export(
+    lake_root: Path,
+    export_day: date,
+    *,
+    config_path: str | Path | None = None,
+) -> dict[str, Any]:
+    context: dict[str, Any] = {
+        "enabled": True,
+        "processed_bundle_count": 0,
+        "skipped_bundle_count": 0,
+        "latest_v5_bundle_seen_at_export": None,
+        "local_inbox_dir": None,
+        "warnings": [],
+    }
+    warnings: list[str] = []
+    try:
+        cfg = _load_export_v5_config(lake_root, config_path=config_path)
+    except Exception as exc:  # pragma: no cover - production config errors vary.
+        context["warnings"] = [
+            "v5_pre_export_config_failed: "
+            f"{type(exc).__name__}: {_safe_warning_text(str(exc))}"
+        ]
+        return context
+
+    inbox_dir = Path(cfg["local_inbox_dir"])
+    context["local_inbox_dir"] = str(inbox_dir)
+    latest_seen = _latest_v5_bundle_ts_in_inbox(inbox_dir)
+    context["latest_v5_bundle_seen_at_export"] = _iso_or_none(latest_seen)
+    if not inbox_dir.exists():
+        context["warnings"] = []
+        return context
+
+    try:
+        from quant_lab.strategy_telemetry.ingest import ingest_v5_inbox
+
+        inbox_result = ingest_v5_inbox(
+            inbox_dir=inbox_dir,
+            lake_root=lake_root,
+            restricted_archive_dir=Path(cfg["restricted_archive_dir"]),
+            redacted_archive_dir=Path(cfg["redacted_archive_dir"]),
+            strategy=str(cfg["strategy"]),
+            limits=cfg.get("limits"),
+        )
+        context["processed_bundle_count"] = len(inbox_result.processed)
+        context["skipped_bundle_count"] = len(inbox_result.skipped_files)
+        warnings.extend(str(item) for item in inbox_result.warnings)
+        for item in inbox_result.processed:
+            warnings.extend(str(warning) for warning in item.warnings)
+    except Exception as exc:  # pragma: no cover - exact production tar/parquet errors vary.
+        warnings.append(
+            "v5_pre_export_inbox_ingest_failed: "
+            f"{type(exc).__name__}: {_safe_warning_text(str(exc))}"
+        )
+
+    if int(context.get("processed_bundle_count") or 0) > 0:
+        warnings.extend(_refresh_v5_derived_outputs(lake_root, export_day))
+    context["warnings"] = sorted(set(warnings))
+    return context
+
+
+def _load_export_v5_config(
+    lake_root: Path,
+    *,
+    config_path: str | Path | None,
+) -> dict[str, Any]:
+    resolved = config_path or os.environ.get("QUANT_LAB_V5_TELEMETRY_CONFIG")
+    if resolved is None:
+        default_path = Path("/etc/quant-lab/v5_telemetry_remote.yaml")
+        resolved = default_path if default_path.exists() else None
+    if resolved is not None:
+        from quant_lab.strategy_telemetry.config import load_v5_telemetry_remote_config
+
+        cfg = load_v5_telemetry_remote_config(resolved)
+        return {
+            "strategy": cfg.strategy,
+            "local_inbox_dir": cfg.local_inbox_dir,
+            "restricted_archive_dir": cfg.restricted_archive_dir,
+            "redacted_archive_dir": cfg.redacted_archive_dir,
+            "limits": cfg.bundle_limits,
+        }
+    base = lake_root.parent if lake_root.name == "lake" else lake_root
+    return {
+        "strategy": "v5",
+        "local_inbox_dir": base / "inbox" / "v5" / "bundles",
+        "restricted_archive_dir": base / "archive_restricted" / "v5" / "bundles",
+        "redacted_archive_dir": base / "archive" / "v5" / "bundles",
+        "limits": None,
+    }
+
+
+def _latest_v5_bundle_ts_in_inbox(inbox_dir: Path) -> datetime | None:
+    if not inbox_dir.exists():
+        return None
+    from quant_lab.strategy_telemetry.bundle import parse_bundle_ts
+
+    timestamps: list[datetime] = []
+    for path in inbox_dir.glob("v5_live_followup_bundle_*.tar.gz"):
+        parsed = parse_bundle_ts(path.name)
+        if parsed is not None:
+            timestamps.append(parsed)
+            continue
+        try:
+            timestamps.append(datetime.fromtimestamp(path.stat().st_mtime, tz=UTC))
+        except OSError:
+            continue
+    return max(timestamps) if timestamps else None
+
+
+def _refresh_v5_derived_outputs(lake_root: Path, export_day: date) -> list[str]:
+    warnings: list[str] = []
+    steps = [
+        (
+            "analyze_v5_telemetry",
+            lambda: __import__(
+                "quant_lab.strategy_telemetry.analyze",
+                fromlist=["analyze_v5_telemetry"],
+            ).analyze_v5_telemetry(lake_root=lake_root, date=export_day.isoformat()),
+        ),
+        (
+            "build_candidate_labels",
+            lambda: __import__(
+                "quant_lab.research.candidate_labels",
+                fromlist=["build_and_publish_candidate_labels"],
+            ).build_and_publish_candidate_labels(lake_root, as_of_date=export_day),
+        ),
+        (
+            "build_strategy_evidence",
+            lambda: __import__(
+                "quant_lab.research.strategy_evidence",
+                fromlist=["build_and_publish_strategy_evidence"],
+            ).build_and_publish_strategy_evidence(lake_root, as_of_date=export_day),
+        ),
+        (
+            "build_alpha_discovery_board",
+            lambda: __import__(
+                "quant_lab.research.alpha_discovery",
+                fromlist=["build_and_publish_alpha_discovery_board"],
+            ).build_and_publish_alpha_discovery_board(lake_root, as_of_date=export_day),
+        ),
+        (
+            "write_enforce_readiness_report",
+            lambda: __import__(
+                "quant_lab.reports.enforce_readiness",
+                fromlist=["write_enforce_readiness_report"],
+            ).write_enforce_readiness_report(
+                lake_root=lake_root,
+                out_dir=readers.default_exports_root(lake_root),
+                strategy="v5",
+                version="5.0.0",
+            ),
+        ),
+    ]
+    for name, step in steps:
+        try:
+            step()
+        except Exception as exc:
+            warnings.append(
+                f"pre_export_v5_refresh_failed:{name}:"
+                f"{type(exc).__name__}:{_safe_warning_text(str(exc))}"
+            )
+    return warnings
 
 
 def _safe_warning_text(value: str, *, limit: int = 500) -> str:
@@ -1458,11 +1645,13 @@ def _data_quality_payload(
     generated_at: datetime,
     *,
     pre_export_risk_refresh_attempted: bool = False,
+    pre_export_v5: dict[str, Any] | None = None,
     pre_export_warnings: list[str] | None = None,
 ) -> dict[str, Any]:
     warnings: list[str] = []
     checks: list[dict[str, Any]] = []
     refresh_warnings = pre_export_warnings or []
+    v5_refresh = pre_export_v5 or {}
 
     health = _snapshot_market_health(snapshot)
     warnings.extend(str(item) for item in health.get("warnings", []))
@@ -1503,6 +1692,12 @@ def _data_quality_payload(
     v5_integration_enabled = _flag_enabled("QUANT_LAB_V5_INTEGRATION_ENABLED", default=True)
     research_enabled = _flag_enabled("QUANT_LAB_RESEARCH_ENABLED", default=False)
     decision_audit_quality = _decision_audit_quality(snapshot.frames)
+    latest_v5_bundle_ts = _latest_v5_bundle_ts(snapshot.frames)
+    v5_lag_seconds = (
+        max(0, int((generated_at - latest_v5_bundle_ts).total_seconds()))
+        if latest_v5_bundle_ts is not None
+        else None
+    )
 
     costs = snapshot.frames.get("cost_bucket_daily", pl.DataFrame())
     fallback_rows = _cost_fallbacks(costs)
@@ -1691,6 +1886,20 @@ def _data_quality_payload(
             warning_only=True,
         )
     )
+    checks.append(
+        _check(
+            "v5_bundle_fresh_at_export",
+            latest_v5_bundle_ts is not None
+            and v5_lag_seconds is not None
+            and v5_lag_seconds <= 3 * 60 * 60,
+            (
+                f"latest_v5_bundle_ts={_iso_or_none(latest_v5_bundle_ts)}; "
+                f"lag_seconds={v5_lag_seconds}; "
+                f"latest_seen_inbox={v5_refresh.get('latest_v5_bundle_seen_at_export')}"
+            ),
+            severity="critical" if v5_integration_enabled else "warning",
+        )
+    )
 
     risk = _risk_permissions_for_export(
         snapshot.frames.get("risk_permission", pl.DataFrame()),
@@ -1865,6 +2074,7 @@ def _data_quality_payload(
         "warnings": sorted(set(warnings)),
         "risk_permission": risk_quality,
         "decision_audit": decision_audit_quality,
+        "v5_pre_export": v5_refresh,
         "quant_lab_enforce_readiness": enforce_readiness.model_dump(mode="json"),
         "shadow_only_recommended": enforce_readiness.shadow_only_recommended,
     }

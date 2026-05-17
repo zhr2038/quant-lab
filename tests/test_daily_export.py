@@ -19,6 +19,7 @@ from quant_lab.export.daily import (
     export_daily_pack,
     validate_expert_pack,
 )
+from tests.v5_bundle_fixture import make_tar
 
 
 def test_export_daily_pack_writes_required_members(tmp_path):
@@ -73,6 +74,87 @@ def test_export_daily_pack_writes_required_members(tmp_path):
         assert "quant_lab_enforce_readiness:" in executive_summary
         assert "charts/market_close.png" in names
         assert archive.read("charts/market_close.png").startswith(b"\x89PNG")
+
+
+def test_export_daily_ingests_pending_v5_inbox_before_snapshot(tmp_path):
+    lake_root = _fixture_lake(tmp_path)
+    inbox = tmp_path / "inbox"
+    make_tar(
+        inbox / "v5_live_followup_bundle_20260517T060000Z.tar.gz",
+        {
+            "summaries/window_summary.json": (
+                '{"run_count": 1, "recent_24h_decision_audit_count": 1}'
+            ),
+            "reports/candidate_snapshot.csv": (
+                "candidate_id,run_id,ts_utc,symbol,regime_state,risk_level,"
+                "current_position,current_weight,target_weight_raw,"
+                "target_weight_after_risk,final_score,rank,f1_mom_5d,f2_mom_20d,"
+                "f3_vol_adj_ret,f4_volume_expansion,f5_rsi_trend_confirm,"
+                "alpha6_score,alpha6_side,ml_score,mean_reversion_score,"
+                "expected_edge_bps,required_edge_bps,cost_bps,cost_source,"
+                "eligible_before_filters,final_decision,block_reason,"
+                "strategy_candidate\n"
+                "c1,run_001,2026-05-17T06:00:00Z,BNB-USDT,trend,LOW,0,0,"
+                "0.05,0.05,0.91,1,0.12,0.24,0.31,0.42,0.53,0.74,long,"
+                "0.66,0.11,18,5,3.5,quant_lab,true,KEEP_SHADOW,risk_gate,"
+                "v5.f3_dominant_entry\n"
+            ),
+        },
+    )
+    config = _v5_telemetry_config(tmp_path, inbox, lake_root)
+
+    result = export_daily_pack(
+        export_date="2026-05-17",
+        lake_root=lake_root,
+        out_dir=tmp_path / "exports",
+        command_line=["qlab", "export-daily"],
+        pre_export_v5_refresh=True,
+        v5_telemetry_config=config,
+    )
+
+    with zipfile.ZipFile(result.zip_path) as archive:
+        manifest = json.loads(archive.read("manifest.json").decode("utf-8"))
+        data_quality = json.loads(archive.read("data_quality.json").decode("utf-8"))
+
+    assert manifest["pre_export_v5_refresh"]["processed_bundle_count"] == 1
+    assert manifest["latest_v5_bundle_seen_at_export"].startswith("2026-05-17T06:00:00")
+    assert manifest["latest_v5_bundle_ingested_at_export"].startswith("2026-05-17T06:00:00")
+    assert manifest["candidate_event_rows"] >= 1
+    assert manifest["candidate_event_latest_ts"].startswith("2026-05-17T06:00:00")
+    assert data_quality["v5_pre_export"]["processed_bundle_count"] == 1
+
+
+def test_data_quality_fails_when_v5_bundle_is_stale_at_export(tmp_path):
+    lake_root = _fixture_lake(tmp_path)
+    write_parquet_dataset(
+        pl.DataFrame(
+            [
+                {
+                    "strategy": "v5",
+                    "date": "2026-05-10",
+                    "status": "OK",
+                    "latest_bundle_ts": datetime(2026, 5, 10, tzinfo=UTC),
+                    "created_at": datetime(2026, 5, 10, tzinfo=UTC),
+                }
+            ]
+        ),
+        lake_root / "gold" / "strategy_health_daily",
+    )
+
+    result = export_daily_pack(
+        export_date="2026-05-17",
+        lake_root=lake_root,
+        out_dir=tmp_path / "exports",
+        command_line=["qlab", "export-daily"],
+        pre_export_v5_refresh=False,
+    )
+
+    with zipfile.ZipFile(result.zip_path) as archive:
+        data_quality = json.loads(archive.read("data_quality.json").decode("utf-8"))
+
+    checks = {check["name"]: check for check in data_quality["checks"]}
+    assert checks["v5_bundle_fresh_at_export"]["status"] == "FAIL"
+    assert checks["v5_bundle_fresh_at_export"]["severity"] == "critical"
 
 
 def test_export_daily_pack_uses_unique_same_day_file_names(tmp_path):
@@ -970,6 +1052,37 @@ def _write_risk_permission_for_export(
         ),
         lake_root / "gold" / "risk_permission",
     )
+
+
+def _v5_telemetry_config(tmp_path: Path, inbox: Path, lake_root: Path) -> Path:
+    identity = tmp_path / "v5readonly_ed25519"
+    identity.write_text("fixture-key", encoding="utf-8")
+    config = tmp_path / "v5_telemetry_remote.yaml"
+    config.write_text(
+        "\n".join(
+            [
+                'strategy: "v5"',
+                'remote_host: "example.invalid"',
+                'remote_user: "v5readonly"',
+                "remote_port: 22",
+                'remote_bundle_dir: "/var/lib/v5/exports/bundles"',
+                'filename_glob: "v5_live_followup_bundle_*.tar.gz"',
+                f'ssh_identity_file: "{identity.as_posix()}"',
+                f'local_inbox_dir: "{inbox.as_posix()}"',
+                f'restricted_archive_dir: "{(tmp_path / "restricted").as_posix()}"',
+                f'redacted_archive_dir: "{(tmp_path / "redacted").as_posix()}"',
+                f'lake_root: "{lake_root.as_posix()}"',
+                "max_bundle_size_mb: 512",
+                "max_extracted_size_mb: 2048",
+                "max_file_count: 5000",
+                "min_stable_age_seconds: 0",
+                "keep_remote_files: true",
+                "dry_run: false",
+            ]
+        ),
+        encoding="utf-8",
+    )
+    return config
 
 
 def _bar(ts: datetime, close: float) -> dict:

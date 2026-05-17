@@ -695,6 +695,17 @@ def export_daily(
     ] = True,
     risk_strategy: Annotated[str, typer.Option("--risk-strategy")] = "v5",
     risk_version: Annotated[str, typer.Option("--risk-version")] = "5.0.0",
+    pre_export_v5_refresh: Annotated[
+        bool,
+        typer.Option(
+            "--pre-export-v5-refresh/--no-pre-export-v5-refresh",
+            help="Ingest pending V5 inbox bundles and rebuild V5 research outputs first.",
+        ),
+    ] = True,
+    v5_telemetry_config: Annotated[
+        Path | None,
+        typer.Option("--v5-telemetry-config", help="Optional V5 telemetry YAML config."),
+    ] = None,
 ) -> None:
     result = export_daily_pack(
         export_date=export_date,
@@ -705,6 +716,8 @@ def export_daily(
         refresh_risk_permission=refresh_risk_permission,
         risk_strategy=risk_strategy,
         risk_version=risk_version,
+        pre_export_v5_refresh=pre_export_v5_refresh,
+        v5_telemetry_config=v5_telemetry_config,
     )
     typer.echo(result.model_dump_json(indent=2))
 

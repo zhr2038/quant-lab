@@ -185,6 +185,8 @@ class V5TelemetryAnalysisResult(TelemetryModel):
     duplicate_rate: float = 0.0
     first_seen_bundle_ts: datetime | None = None
     last_seen_bundle_ts: datetime | None = None
+    latest_permission_status: str | None = None
+    stale_permission_consecutive_count: int = 0
     quant_lab_actual_violation_count: int = 0
     quant_lab_hypothetical_violation_count: int = 0
     warnings: list[str] = Field(default_factory=list)

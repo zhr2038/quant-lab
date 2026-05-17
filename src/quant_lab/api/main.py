@@ -340,6 +340,10 @@ def _live_permission_evaluation(
         "permission_health": _risk_permission_health(
             response_permission=permission,
             gold_latest=selection["gold_latest"],
+            stale_permission_consecutive_count=_stale_permission_consecutive_count(
+                lake_root,
+                strategy,
+            ),
         ),
         "data_health": computed["data_health"],
         "cost_health": computed["cost_health"],
@@ -915,24 +919,46 @@ def _risk_permission_health(
     *,
     response_permission: RiskPermission,
     gold_latest: RiskPermission | None,
+    stale_permission_consecutive_count: int = 0,
 ) -> dict[str, Any]:
     now = datetime.now(UTC)
     response_as_of = response_permission.as_of_ts or response_permission.created_at
     response_expires_at = response_permission.expires_at
     gold_as_of = gold_latest.as_of_ts or gold_latest.created_at if gold_latest else None
+    refresh_lag = max(0, int((now - gold_as_of).total_seconds())) if gold_as_of else None
     return {
         "latest_permission_status": str(response_permission.permission_status or ""),
         "permission_age_sec": max(0, int((now - response_as_of).total_seconds())),
         "expires_in_sec": int((response_expires_at - now).total_seconds())
         if response_expires_at
         else None,
-        "permission_refresh_lag_sec": max(0, int((now - gold_as_of).total_seconds()))
-        if gold_as_of
-        else None,
+        "permission_refresh_lag_sec": refresh_lag,
+        "refresh_lag_sec": refresh_lag,
+        "stale_permission_consecutive_count": stale_permission_consecutive_count,
         "gold_latest_permission_status": str(gold_latest.permission_status or "")
         if gold_latest
         else None,
     }
+
+
+def _stale_permission_consecutive_count(lake_root: Path, strategy: str) -> int:
+    health = read_parquet_dataset(lake_root / "gold" / "strategy_health_daily")
+    if health.is_empty() or "stale_permission_consecutive_count" not in health.columns:
+        return 0
+    scoped = health
+    if "strategy" in scoped.columns:
+        scoped = scoped.filter(pl.col("strategy") == strategy)
+    if scoped.is_empty():
+        return 0
+    for column in ["latest_bundle_ts", "created_at", "date"]:
+        if column in scoped.columns:
+            scoped = _normalize_datetime_column(scoped, column).sort(column)
+            break
+    latest = scoped.tail(1).to_dicts()[0]
+    try:
+        return max(0, int(latest.get("stale_permission_consecutive_count") or 0))
+    except (TypeError, ValueError):
+        return 0
 
 
 def _datetime_sort_value(value: datetime | None) -> float:

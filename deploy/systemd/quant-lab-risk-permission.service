@@ -7,6 +7,7 @@ Type=oneshot
 User=quantlab
 Group=quantlab
 WorkingDirectory=/opt/quant-lab
+Environment=QUANT_LAB_RISK_PERMISSION_TTL_SECONDS=5400
 RuntimeMaxSec=5min
 MemoryMax=1G
 CPUQuota=60%

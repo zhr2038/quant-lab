@@ -148,6 +148,12 @@ def analyze_v5_telemetry(lake_root: Path, date: str | None = None) -> V5Telemetr
     fallback_count = int(quant_lab_summary["actual_fallback_count"])
     if fallback_count:
         warnings.append(f"quant_lab actual fallback used {fallback_count} times")
+    stale_permission_count = int(quant_lab_summary["stale_permission_consecutive_count"])
+    if stale_permission_count >= 2:
+        warnings.append(
+            f"quant_lab stale or expired remote permission repeated {stale_permission_count} times"
+        )
+        next_actions.append("run quant-lab publish-risk-permission and verify risk timer")
 
     status = "OK"
     if warnings:
@@ -245,6 +251,8 @@ def analyze_v5_telemetry(lake_root: Path, date: str | None = None) -> V5Telemetr
         duplicate_rate=float(quant_lab_summary["duplicate_rate"]),
         first_seen_bundle_ts=quant_lab_summary["first_seen_bundle_ts"],
         last_seen_bundle_ts=quant_lab_summary["last_seen_bundle_ts"],
+        latest_permission_status=quant_lab_summary["latest_permission_status"],
+        stale_permission_consecutive_count=stale_permission_count,
         quant_lab_actual_violation_count=len(quant_lab_summary["actual_violations"]),
         quant_lab_hypothetical_violation_count=len(
             quant_lab_summary["hypothetical_violations"]
@@ -723,6 +731,10 @@ def _quant_lab_mode_summary(
         **request_health,
         "cost_usage_count": cost_usage.height,
         "fallback_count": request_health["actual_fallback_count"],
+        "latest_permission_status": request_health["latest_permission_status"],
+        "stale_permission_consecutive_count": request_health[
+            "stale_permission_consecutive_count"
+        ],
         "actual_violations": sorted(set(actual)),
         "hypothetical_violations": sorted(set(hypothetical)),
     }
@@ -766,6 +778,9 @@ def _quant_lab_request_health(requests: pl.DataFrame, fallback: pl.DataFrame) ->
         degraded_reason = "request_errors_present"
     else:
         degraded_reason = "none"
+    latest_permission_status, stale_permission_consecutive_count = (
+        _permission_status_consecutive_health(request_rows.values())
+    )
     return {
         "unique_request_count": total_requests,
         "unique_success_count": success_count,
@@ -783,6 +798,8 @@ def _quant_lab_request_health(requests: pl.DataFrame, fallback: pl.DataFrame) ->
         "duplicate_rate": duplicate_rate,
         "first_seen_bundle_ts": first_seen,
         "last_seen_bundle_ts": last_seen,
+        "latest_permission_status": latest_permission_status,
+        "stale_permission_consecutive_count": stale_permission_consecutive_count,
     }
 
 
@@ -796,6 +813,75 @@ def _unique_event_rows(df: pl.DataFrame) -> dict[str, dict[str, Any]]:
         if current is None or _row_seen_sort_value(row) >= _row_seen_sort_value(current):
             rows_by_key[key] = row
     return rows_by_key
+
+
+def _permission_status_consecutive_health(
+    rows: Any,
+) -> tuple[str | None, int]:
+    ordered = sorted(list(rows), key=_request_event_time)
+    latest_status: str | None = None
+    consecutive = 0
+    for row in ordered:
+        payload = _payload(row)
+        status = _request_permission_status(row, payload)
+        if not status:
+            continue
+        latest_status = status
+        if _permission_status_is_stale_or_expired(status):
+            consecutive += 1
+        else:
+            consecutive = 0
+    return latest_status, consecutive
+
+
+def _request_permission_status(row: dict[str, Any], payload: dict[str, Any]) -> str | None:
+    value = _first_value(
+        row,
+        payload,
+        [
+            "permission_status",
+            "remote_permission_status",
+            "risk_permission_status",
+            "response.permission_status",
+            "response_json.permission_status",
+            "response_body.permission_status",
+            "body.permission_status",
+            "json.permission_status",
+            "quant_lab.permission_status",
+            "risk_permission.permission_status",
+        ],
+    )
+    if value is None:
+        return None
+    status = str(value).strip().upper()
+    return status or None
+
+
+def _permission_status_is_stale_or_expired(status: str | None) -> bool:
+    normalized = str(status or "").strip().upper()
+    return (
+        normalized.startswith("EXPIRED_")
+        or normalized.startswith("STALE_")
+        or normalized == "NO_FRESH_PERMISSION"
+    )
+
+
+def _request_event_time(row: dict[str, Any]) -> datetime:
+    payload = _payload(row)
+    for field in [
+        "ts_utc",
+        "ts",
+        "timestamp",
+        "request_ts",
+        "created_at",
+        "ingest_ts",
+        "bundle_ts",
+    ]:
+        value = _first_value(row, payload, [field])
+        parsed = _parse_seen_time(value)
+        if parsed is not None:
+            return parsed
+    return _row_seen_sort_value(row)
 
 
 def _event_key(row: dict[str, Any]) -> str:

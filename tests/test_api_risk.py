@@ -157,6 +157,8 @@ def test_live_permission_api_reads_published_risk_permission(tmp_path, monkeypat
     assert detail_payload["published_permission_stale"] is False
     assert detail_payload["permission_health"]["latest_permission_status"] == "ACTIVE_SELL_ONLY"
     assert detail_payload["permission_health"]["expires_in_sec"] is not None
+    assert detail_payload["permission_health"]["refresh_lag_sec"] is not None
+    assert detail_payload["permission_health"]["stale_permission_consecutive_count"] == 0
     assert detail_payload["permission_freshness_seconds"] >= 0
     assert detail_payload["data_health"]["status"] == "ok"
     assert detail_payload["cost_health"]["status"] == "ok"

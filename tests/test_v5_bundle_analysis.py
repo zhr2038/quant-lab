@@ -366,6 +366,50 @@ def test_analysis_publishes_strategy_evidence_summary(tmp_path):
     )
 
 
+def test_analyze_warns_on_consecutive_expired_remote_permissions(tmp_path):
+    lake = tmp_path / "lake"
+    _write_manifest(lake)
+    rows = []
+    for index, status in enumerate(["EXPIRED_ABORT", "EXPIRED_ABORT"]):
+        rows.append(
+            {
+                **_event_row(f"permission-{index}"),
+                "source_path_inside_bundle": "raw/reports/quant_lab_requests.jsonl",
+                "event_id": f"permission-{index}",
+                "ts_utc": datetime(2026, 5, 10, 12, index, tzinfo=UTC),
+                "path": "/v1/risk/live-permission",
+                "status_code": 200,
+                "success": True,
+                "fallback_used": False,
+                "permission_status": status,
+                "raw_payload_json": __import__("json").dumps(
+                    {
+                        "event_id": f"permission-{index}",
+                        "ts_utc": f"2026-05-10T12:0{index}:00Z",
+                        "path": "/v1/risk/live-permission",
+                        "status_code": 200,
+                        "success": True,
+                        "fallback_used": False,
+                        "permission_status": status,
+                    }
+                ),
+            }
+        )
+    write_parquet_dataset(pl.DataFrame(rows), lake / "silver/v5_quant_lab_request")
+
+    result = analyze_v5_telemetry(lake, date="2026-05-10")
+    health = read_parquet_dataset(lake / "gold/strategy_health_daily")
+
+    assert result.latest_permission_status == "EXPIRED_ABORT"
+    assert result.stale_permission_consecutive_count == 2
+    assert any(
+        "stale or expired remote permission repeated 2 times" in item
+        for item in result.warnings
+    )
+    assert "run quant-lab publish-risk-permission and verify risk timer" in result.next_actions
+    assert health["stale_permission_consecutive_count"][0] == 2
+
+
 def _run_summary_row(source_path, payload):
     return {
         "strategy": "v5",

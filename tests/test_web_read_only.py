@@ -774,6 +774,7 @@ def test_expert_exports_generate_today_button_invokes_export(tmp_path, monkeypat
             archive.writestr("expert_questions.md", "")
         return SimpleNamespace(zip_path=str(pack_path), warnings=[])
 
+    monkeypatch.setenv("QUANT_LAB_WEB_EXPORT_BACKGROUND", "false")
     monkeypatch.setattr(expert_exports, "export_daily_pack", fake_export_daily_pack)
 
     expert_exports.render(lake_root, fake, exports_root=tmp_path / "exports")
@@ -785,6 +786,41 @@ def test_expert_exports_generate_today_button_invokes_export(tmp_path, monkeypat
     assert any("已生成专家包" in str(value) for value in _call_values(fake, "success"))
     downloads = _call_values(fake, "download_button")
     assert any(item["file_name"] == "quant_lab_expert_pack_test.zip" for item in downloads)
+
+
+def test_expert_exports_generate_today_button_starts_background_job(tmp_path, monkeypatch):
+    lake_root = _fixture_lake(tmp_path)
+    exports_root = tmp_path / "exports"
+    fake = RerunStreamlit(
+        button_values={"generate_today_expert_pack": True},
+        session_state={},
+    )
+    captured = {}
+
+    class FakeProcess:
+        pid = 4242
+
+    def fake_popen(command, **kwargs):
+        captured["command"] = command
+        captured["kwargs"] = kwargs
+        return FakeProcess()
+
+    monkeypatch.delenv("QUANT_LAB_WEB_EXPORT_BACKGROUND", raising=False)
+    monkeypatch.setattr(expert_exports, "beijing_today", lambda: datetime(2026, 5, 10).date())
+    monkeypatch.setattr(expert_exports.subprocess, "Popen", fake_popen)
+    monkeypatch.setattr(expert_exports, "_pid_is_running", lambda pid: pid == 4242)
+
+    expert_exports.render(lake_root, fake, exports_root=exports_root)
+
+    status = json.loads(
+        (exports_root / ".quant_lab_web_export_2026-05-10.json").read_text(encoding="utf-8")
+    )
+    assert status["state"] == "running"
+    assert status["pid"] == 4242
+    assert captured["command"][0]
+    assert captured["command"][1] == "-c"
+    assert fake.rerun_count == 1
+    assert any("PID=4242" in str(value) for value in _call_values(fake, "info"))
 
 
 def test_expert_exports_generate_today_uses_beijing_date_and_creates_export_dir(
@@ -806,6 +842,7 @@ def test_expert_exports_generate_today_uses_beijing_date_and_creates_export_dir(
         return SimpleNamespace(zip_path=str(pack_path), warnings=[])
 
     monkeypatch.setattr(expert_exports, "beijing_today", lambda: datetime(2026, 5, 16).date())
+    monkeypatch.setenv("QUANT_LAB_WEB_EXPORT_BACKGROUND", "false")
     monkeypatch.setattr(expert_exports, "export_daily_pack", fake_export_daily_pack)
 
     pack_path = expert_exports._generate_today_pack(
@@ -881,6 +918,7 @@ def test_expert_exports_generate_today_persists_pack_across_streamlit_rerun(
             archive.writestr("expert_questions.md", "")
         return SimpleNamespace(zip_path=str(pack_path), warnings=[])
 
+    monkeypatch.setenv("QUANT_LAB_WEB_EXPORT_BACKGROUND", "false")
     monkeypatch.setattr(expert_exports, "export_daily_pack", fake_export_daily_pack)
 
     expert_exports.render(lake_root, first_fake, exports_root=exports_root)
@@ -995,7 +1033,7 @@ class FakeStreamlit:
 
     def button(self, label, **kwargs):
         self.calls.append(("button", {"label": label, **kwargs}))
-        return self.button_values.get(label, False)
+        return self.button_values.get(label, self.button_values.get(kwargs.get("key"), False))
 
     def download_button(self, **kwargs) -> None:
         self.calls.append(("download_button", kwargs))

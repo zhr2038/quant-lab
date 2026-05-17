@@ -5,6 +5,7 @@ import os
 import subprocess
 import sys
 import zipfile
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
@@ -36,15 +37,34 @@ def render(
 
     st.title("专家包导出")
     st.caption(f"导出根目录：{root}")
+    export_date = beijing_today().isoformat()
+    job_status = _poll_export_job(root, export_date)
     generated_pack = _consume_generated_pack(st)
+    if generated_pack is None and job_status.get("state") == "succeeded":
+        zip_path = Path(str(job_status.get("zip_path") or ""))
+        if zip_path.is_file():
+            generated_pack = zip_path
+    _render_export_job_status(st, job_status)
     if generated_pack is not None:
         _success(st, f"已生成专家包：{generated_pack}")
     if _button(st, "生成今日专家包", key="generate_today_expert_pack"):
-        generated_pack = _generate_today_pack(st, lake_root=Path(lake_root), exports_root=root)
-        if generated_pack is not None:
-            _remember_generated_pack(st, generated_pack)
+        if _web_background_export_enabled():
+            started = _start_export_job(
+                export_date=export_date,
+                lake_root=Path(lake_root),
+                exports_root=root,
+            )
+            _info(st, f"Expert pack generation started in background. PID={started.get('pid')}")
             if _rerun(st):
                 return
+        else:
+            generated_pack = _generate_today_pack(
+                st, lake_root=Path(lake_root), exports_root=root
+            )
+            if generated_pack is not None:
+                _remember_generated_pack(st, generated_pack)
+                if _rerun(st):
+                    return
     _button(st, "刷新专家包列表", key="refresh_expert_pack_list")
 
     summary = readers.expert_export_summary(root)
@@ -67,6 +87,217 @@ def render(
     questions = pl.DataFrame({"question": summary["expert_questions"]})
     show_frame(st, questions, "未找到专家问题。")
     show_warnings(st, summary["warnings"])
+
+
+def _web_background_export_enabled() -> bool:
+    value = os.environ.get("QUANT_LAB_WEB_EXPORT_BACKGROUND", "true").strip().lower()
+    return value not in {"0", "false", "no", "off"}
+
+
+def _render_export_job_status(st: Any, status: dict[str, Any]) -> None:
+    state = str(status.get("state") or "")
+    if state == "running":
+        _info(
+            st,
+            "Expert pack generation is running in the background. "
+            f"PID={status.get('pid')}; started_at={status.get('started_at')}",
+        )
+    elif state == "failed":
+        _error(st, f"Expert pack generation failed: {status.get('error')}")
+
+
+def _start_export_job(
+    *,
+    export_date: str,
+    lake_root: Path,
+    exports_root: Path,
+) -> dict[str, Any]:
+    exports_root.mkdir(parents=True, exist_ok=True)
+    running = _poll_export_job(exports_root, export_date)
+    if running.get("state") == "running":
+        return running
+    status_path = _export_job_status_path(exports_root, export_date)
+    log_path = _export_job_log_path(exports_root, export_date)
+    status = {
+        "state": "starting",
+        "export_date": export_date,
+        "started_at": datetime.now(UTC).isoformat(),
+        "status_path": str(status_path),
+        "log_path": str(log_path),
+    }
+    _write_export_job_status(status_path, status)
+    with log_path.open("ab") as log_file:
+        popen_kwargs: dict[str, Any] = {
+            "stdout": log_file,
+            "stderr": subprocess.STDOUT,
+            "stdin": subprocess.DEVNULL,
+            "cwd": str(Path.cwd()),
+        }
+        if os.name == "nt":
+            popen_kwargs["creationflags"] = getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0)
+        else:
+            popen_kwargs["start_new_session"] = True
+        process = subprocess.Popen(
+            [
+                sys.executable,
+                "-c",
+                _export_job_script(),
+                str(status_path),
+                str(lake_root),
+                str(exports_root),
+                export_date,
+            ],
+            **popen_kwargs,
+        )
+    status["state"] = "running"
+    status["pid"] = process.pid
+    _write_export_job_status(status_path, status)
+    return status
+
+
+def _export_job_script() -> str:
+    return r"""
+import json
+import os
+import sys
+import traceback
+from datetime import UTC, datetime
+from pathlib import Path
+
+from quant_lab.export.daily import export_daily_pack
+
+status_path = Path(sys.argv[1])
+lake_root = Path(sys.argv[2])
+exports_root = Path(sys.argv[3])
+export_date = sys.argv[4]
+
+
+def write_status(payload):
+    tmp = status_path.with_suffix(status_path.suffix + ".tmp")
+    tmp.write_text(json.dumps(payload, ensure_ascii=False, sort_keys=True), encoding="utf-8")
+    tmp.replace(status_path)
+
+
+started_at = datetime.now(UTC).isoformat()
+write_status({
+    "state": "running",
+    "export_date": export_date,
+    "lake_root": str(lake_root),
+    "exports_root": str(exports_root),
+    "pid": os.getpid(),
+    "started_at": started_at,
+})
+try:
+    result = export_daily_pack(
+        export_date=export_date,
+        lake_root=lake_root,
+        out_dir=exports_root,
+        profile="expert",
+        command_line=[
+            "qlab",
+            "export-daily",
+            "--date",
+            export_date,
+            "--lake-root",
+            str(lake_root),
+            "--out-dir",
+            str(exports_root),
+        ],
+        refresh_risk_permission=True,
+        risk_strategy="v5",
+        risk_version="5.0.0",
+    )
+    write_status({
+        "state": "succeeded",
+        "export_date": export_date,
+        "lake_root": str(lake_root),
+        "exports_root": str(exports_root),
+        "zip_path": result.zip_path,
+        "warnings": result.warnings,
+        "pid": os.getpid(),
+        "started_at": started_at,
+        "finished_at": datetime.now(UTC).isoformat(),
+    })
+except Exception as exc:
+    write_status({
+        "state": "failed",
+        "export_date": export_date,
+        "lake_root": str(lake_root),
+        "exports_root": str(exports_root),
+        "error": f"{type(exc).__name__}: {exc}",
+        "traceback_tail": traceback.format_exc()[-4000:],
+        "pid": os.getpid(),
+        "started_at": started_at,
+        "finished_at": datetime.now(UTC).isoformat(),
+    })
+    raise
+"""
+
+
+def _poll_export_job(exports_root: Path, export_date: str) -> dict[str, Any]:
+    status_path = _export_job_status_path(exports_root, export_date)
+    status = _read_export_job_status(status_path)
+    if status.get("state") != "running":
+        return status
+    pid = status.get("pid")
+    if isinstance(pid, int) and _pid_is_running(pid):
+        return status
+    status = {
+        **status,
+        "state": "failed",
+        "error": "export process exited before writing completion status",
+        "finished_at": datetime.now(UTC).isoformat(),
+    }
+    _write_export_job_status(status_path, status)
+    return status
+
+
+def _read_export_job_status(status_path: Path) -> dict[str, Any]:
+    try:
+        return json.loads(status_path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return {}
+
+
+def _write_export_job_status(status_path: Path, status: dict[str, Any]) -> None:
+    status_path.parent.mkdir(parents=True, exist_ok=True)
+    tmp_path = status_path.with_suffix(status_path.suffix + ".tmp")
+    tmp_path.write_text(json.dumps(status, ensure_ascii=False, sort_keys=True), encoding="utf-8")
+    tmp_path.replace(status_path)
+
+
+def _export_job_status_path(exports_root: Path, export_date: str) -> Path:
+    return exports_root / f".quant_lab_web_export_{export_date}.json"
+
+
+def _export_job_log_path(exports_root: Path, export_date: str) -> Path:
+    return exports_root / f".quant_lab_web_export_{export_date}.log"
+
+
+def _pid_is_running(pid: int) -> bool:
+    if pid <= 0:
+        return False
+    if os.name == "nt":
+        try:
+            result = subprocess.run(
+                ["tasklist", "/FI", f"PID eq {pid}"],
+                capture_output=True,
+                check=False,
+                text=True,
+                timeout=2,
+            )
+        except (OSError, subprocess.SubprocessError):
+            return False
+        return str(pid) in result.stdout
+    try:
+        os.kill(pid, 0)
+    except ProcessLookupError:
+        return False
+    except PermissionError:
+        return True
+    except OSError:
+        return os.name == "nt"
+    return True
 
 
 def _generate_today_pack(st: Any, *, lake_root: Path, exports_root: Path) -> Path | None:
@@ -301,6 +532,13 @@ def _error(st: Any, value: str) -> None:
 def _warning(st: Any, value: str) -> None:
     if hasattr(st, "warning"):
         st.warning(value)
+    else:
+        st.write(value)
+
+
+def _info(st: Any, value: str) -> None:
+    if hasattr(st, "info"):
+        st.info(value)
     else:
         st.write(value)
 

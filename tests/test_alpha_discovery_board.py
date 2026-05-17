@@ -13,6 +13,7 @@ from quant_lab.research.alpha_discovery import (
     build_and_publish_alpha_discovery_board,
     normalize_alpha_discovery_board_decisions,
 )
+from quant_lab.research.paper_tracking import build_and_publish_paper_strategy_tracking
 
 
 def test_alpha_discovery_board_decisions_are_candidate_symbol_regime_horizon(tmp_path):
@@ -248,6 +249,73 @@ def test_paper_strategy_proposals_use_latest_board_date(tmp_path):
         "cost_source_not_actual_or_mixed" in row["live_block_reason"]
         for row in proposals
     )
+
+
+def test_sol_paper_strategy_tracking_outputs_runs_daily_and_slippage(tmp_path):
+    lake = tmp_path / "lake"
+    rows = [
+        _board_row(
+            strategy_candidate="v5.sol_protect_alpha6_low_exception",
+            symbol="SOL-USDT",
+            source_type="protect_sol_exception_shadow_outcome",
+            avg_net_bps=42.0,
+            decision="PAPER_READY",
+            cost_source_mix='[{"cost_source":"public_spread_proxy","count":72}]',
+        )
+        | {"as_of_date": "2026-05-17", "horizon_hours": 72},
+        _board_row(
+            strategy_candidate="v5.f4_volume_expansion_entry",
+            symbol="SOL-USDT",
+            source_type="candidate_event_label",
+            avg_net_bps=35.0,
+            decision="PAPER_READY",
+            cost_source_mix='[{"cost_source":"public_spread_proxy","count":72}]',
+        )
+        | {"as_of_date": "2026-05-17", "horizon_hours": 48},
+    ]
+    write_parquet_dataset(
+        pl.DataFrame(rows),
+        lake / "gold" / "alpha_discovery_board",
+    )
+
+    result = build_and_publish_paper_strategy_tracking(lake, as_of_date="2026-05-17")
+
+    runs = read_parquet_dataset(lake / "gold" / "paper_strategy_runs")
+    daily = read_parquet_dataset(lake / "gold" / "paper_strategy_daily")
+    slippage = read_parquet_dataset(lake / "gold" / "paper_slippage_coverage")
+    assert result.paper_strategy_runs == 2
+    assert set(runs["proposal_id"].to_list()) == {
+        "SOL_PROTECT_ALPHA6_LOW_EXCEPTION_PAPER_V1",
+        "SOL_F4_VOLUME_EXPANSION_PAPER_V1",
+    }
+    assert set(runs["recommended_mode"].to_list()) == {"paper"}
+    assert set(runs["would_enter"].to_list()) == {True}
+    assert set(runs["would_exit"].to_list()) == {False}
+    assert "paper_pnl_usdt" in runs.columns
+    assert set(daily["paper_days"].to_list()) == {1}
+    assert set(daily["live_eligible"].to_list()) == {False}
+    assert set(slippage["paper_slippage_coverage"].to_list()) == {0.0}
+
+    export = export_daily_pack(
+        export_date="2026-05-17",
+        lake_root=lake,
+        out_dir=tmp_path / "exports",
+        profile="expert",
+        command_line=["qlab", "export-daily"],
+        pre_export_v5_refresh=False,
+    )
+    with zipfile.ZipFile(export.zip_path) as archive:
+        names = set(archive.namelist())
+        assert "reports/paper_strategy_runs.csv" in names
+        assert "reports/paper_strategy_daily.csv" in names
+        assert "reports/paper_slippage_coverage.csv" in names
+        exported_runs = list(
+            csv.DictReader(
+                io.StringIO(archive.read("reports/paper_strategy_runs.csv").decode("utf-8"))
+            )
+        )
+    assert {row["recommended_mode"] for row in exported_runs} == {"paper"}
+    assert not any("LIVE_SMALL_READY" in json.dumps(row) for row in exported_runs)
 
 
 def _write_candidate_labels(lake: Path) -> None:

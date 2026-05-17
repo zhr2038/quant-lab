@@ -362,6 +362,28 @@ def _dataset_lock(dataset_path: Path, *, timeout_seconds: float = 30.0) -> objec
 
 def _lock_is_stale(lock_path: Path, *, stale_seconds: float = 600.0) -> bool:
     try:
-        return time.time() - lock_path.stat().st_mtime > stale_seconds
+        stat = lock_path.stat()
     except FileNotFoundError:
         return False
+    age_seconds = time.time() - stat.st_mtime
+    try:
+        payload = lock_path.read_text(encoding="ascii").strip()
+    except OSError:
+        payload = ""
+    if not payload:
+        return age_seconds > 5.0
+    try:
+        pid = int(payload)
+    except ValueError:
+        return age_seconds > 5.0
+    if pid <= 0:
+        return age_seconds > 5.0
+    try:
+        os.kill(pid, 0)
+    except ProcessLookupError:
+        return True
+    except PermissionError:
+        return False
+    except OSError:
+        return True
+    return age_seconds > stale_seconds

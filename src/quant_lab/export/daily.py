@@ -91,6 +91,9 @@ SECTION_DATASETS = {
         "strategy_evidence",
         "strategy_evidence_sample",
         "strategy_evidence_quality",
+        "paper_strategy_runs",
+        "paper_strategy_daily",
+        "paper_slippage_coverage",
         "gate_decision",
     ],
     "risk": ["risk_permission"],
@@ -177,6 +180,9 @@ REQUIRED_MEMBERS = [
     "reports/candidate_shadow_watchlist.csv",
     "reports/candidate_paper_ready.csv",
     "reports/paper_strategy_proposals.csv",
+    "reports/paper_strategy_runs.csv",
+    "reports/paper_strategy_daily.csv",
+    "reports/paper_slippage_coverage.csv",
     f"reports/{ENFORCE_READINESS_JSON}",
     f"reports/{ENFORCE_READINESS_CSV}",
 ]
@@ -501,6 +507,69 @@ CSV_SCHEMAS: dict[str, list[str]] = {
         "required_slippage_coverage",
         "as_of_date",
         "created_at",
+    ],
+    "reports/paper_strategy_runs.csv": [
+        "as_of_date",
+        "proposal_id",
+        "strategy_candidate",
+        "symbol",
+        "recommended_mode",
+        "board_decision",
+        "suggested_horizon",
+        "horizon_hours",
+        "would_enter",
+        "would_exit",
+        "would_size_usdt",
+        "paper_pnl_bps",
+        "paper_pnl_usdt",
+        "sample_count",
+        "complete_sample_count",
+        "avg_net_bps",
+        "p25_net_bps",
+        "win_rate",
+        "cost_source_mix",
+        "live_block_reason",
+        "required_paper_days",
+        "required_slippage_coverage",
+        "created_at",
+        "source",
+        "schema_version",
+    ],
+    "reports/paper_strategy_daily.csv": [
+        "as_of_date",
+        "proposal_id",
+        "strategy_candidate",
+        "symbol",
+        "recommended_mode",
+        "paper_days",
+        "latest_board_decision",
+        "latest_horizon",
+        "would_enter_count",
+        "latest_paper_pnl_usdt",
+        "cumulative_paper_pnl_usdt",
+        "avg_paper_pnl_bps",
+        "required_paper_days",
+        "required_slippage_coverage",
+        "live_eligible",
+        "live_block_reason",
+        "created_at",
+        "source",
+        "schema_version",
+    ],
+    "reports/paper_slippage_coverage.csv": [
+        "as_of_date",
+        "proposal_id",
+        "strategy_candidate",
+        "symbol",
+        "paper_days",
+        "observed_slippage_count",
+        "required_observation_count",
+        "paper_slippage_coverage",
+        "required_slippage_coverage",
+        "coverage_status",
+        "created_at",
+        "source",
+        "schema_version",
     ],
     "v5/v5_strategy_health.csv": [
         "strategy",
@@ -1174,6 +1243,9 @@ def _dataset_members(frames: dict[str, pl.DataFrame]) -> dict[str, _MemberPayloa
     strategy_samples = _strategy_evidence_samples_for_export(
         frames.get("strategy_evidence_sample", pl.DataFrame())
     )
+    paper_runs = frames.get("paper_strategy_runs", pl.DataFrame())
+    paper_daily = frames.get("paper_strategy_daily", pl.DataFrame())
+    paper_slippage = frames.get("paper_slippage_coverage", pl.DataFrame())
     gates = frames.get("gate_decision", pl.DataFrame())
     risk = _risk_permissions_for_export(frames.get("risk_permission", pl.DataFrame()), frames)
     trades = _normalize_symbol_frame(frames.get("trade_print", pl.DataFrame()))
@@ -1271,6 +1343,18 @@ def _dataset_members(frames: dict[str, pl.DataFrame]) -> dict[str, _MemberPayloa
         "reports/paper_strategy_proposals.csv": _csv_member(
             "reports/paper_strategy_proposals.csv",
             _paper_strategy_proposals_for_export(alpha_discovery_board),
+        ),
+        "reports/paper_strategy_runs.csv": _csv_member(
+            "reports/paper_strategy_runs.csv",
+            paper_runs,
+        ),
+        "reports/paper_strategy_daily.csv": _csv_member(
+            "reports/paper_strategy_daily.csv",
+            paper_daily,
+        ),
+        "reports/paper_slippage_coverage.csv": _csv_member(
+            "reports/paper_slippage_coverage.csv",
+            paper_slippage,
         ),
         "risk/risk_permission.json": _json_text({"rows": _rows(risk)}),
         "risk/risk_flags.csv": _csv_text(_risk_flags(risk)),
@@ -1715,6 +1799,13 @@ def _refresh_v5_derived_outputs(lake_root: Path, export_day: date) -> list[str]:
                 "quant_lab.research.alpha_discovery",
                 fromlist=["build_and_publish_alpha_discovery_board"],
             ).build_and_publish_alpha_discovery_board(lake_root, as_of_date=export_day),
+        ),
+        (
+            "build_paper_strategy_tracking",
+            lambda: __import__(
+                "quant_lab.research.paper_tracking",
+                fromlist=["build_and_publish_paper_strategy_tracking"],
+            ).build_and_publish_paper_strategy_tracking(lake_root, as_of_date=export_day),
         ),
         (
             "write_enforce_readiness_report",

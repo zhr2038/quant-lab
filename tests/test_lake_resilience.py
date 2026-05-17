@@ -4,6 +4,7 @@ import polars as pl
 import pytest
 
 from quant_lab.data.lake import (
+    _lock_is_stale,
     invalid_parquet_files,
     read_parquet_dataset,
     upsert_parquet_dataset,
@@ -94,3 +95,19 @@ def test_concurrent_writes_do_not_create_invalid_parquet(tmp_path):
     assert result.height == 1
     assert result["id"][0] in set(range(20))
     assert not invalid_parquet_files(dataset)
+
+
+def test_empty_dataset_lock_becomes_stale(tmp_path, monkeypatch):
+    lock = tmp_path / ".dataset.lock"
+    lock.write_text("", encoding="ascii")
+
+    monkeypatch.setattr("quant_lab.data.lake.time.time", lambda: lock.stat().st_mtime + 6)
+
+    assert _lock_is_stale(lock)
+
+
+def test_dead_pid_dataset_lock_is_stale(tmp_path):
+    lock = tmp_path / ".dataset.lock"
+    lock.write_text("999999999", encoding="ascii")
+
+    assert _lock_is_stale(lock)

@@ -216,6 +216,12 @@ CSV_SCHEMAS: dict[str, list[str]] = {
         "proxy_rows",
         "global_default_rows",
         "fallback_ratio",
+        "hard_fallback_count",
+        "hard_fallback_ratio",
+        "soft_fallback_count",
+        "soft_fallback_ratio",
+        "proxy_only_count",
+        "global_default_count",
         "symbols_with_actual_cost",
         "symbols_with_mixed_cost",
         "symbols_with_proxy_only",
@@ -1845,6 +1851,13 @@ def _data_quality_payload(
     )
 
     costs = snapshot.frames.get("cost_bucket_daily", pl.DataFrame())
+    cost_health = snapshot.frames.get("cost_health_daily", pl.DataFrame())
+    latest_cost_health = (
+        cost_health.sort("day").tail(1).to_dicts()[0]
+        if not cost_health.is_empty() and "day" in cost_health.columns
+        else {}
+    )
+    fallback_stats = _cost_fallback_stats(costs, latest_cost_health)
     fallback_rows = _cost_fallbacks(costs)
     checks.append(
         _check(
@@ -1865,13 +1878,40 @@ def _data_quality_payload(
             )
         )
     else:
-        fallback_ratio = fallback_rows.height / costs.height
         checks.append(
             _check(
                 "cost_fallback_ratio",
-                fallback_ratio <= 0.25,
-                f"fallback_rows={fallback_rows.height}; ratio={fallback_ratio:.2%}",
-                severity="warning",
+                fallback_stats["fallback_ratio"] <= 0.25,
+                (
+                    f"fallback_rows={fallback_rows.height}; "
+                    f"ratio={fallback_stats['fallback_ratio']:.2%}; "
+                    "legacy metric includes soft/proxy fallbacks"
+                ),
+                warning_only=True,
+            )
+        )
+        checks.append(
+            _check(
+                "cost_hard_fallback_ratio",
+                fallback_stats["hard_fallback_ratio"] <= 0.25,
+                (
+                    f"hard_fallback_count={fallback_stats['hard_fallback_count']}; "
+                    f"ratio={fallback_stats['hard_fallback_ratio']:.2%}; "
+                    f"global_default_count={fallback_stats['global_default_count']}"
+                ),
+                severity="critical",
+            )
+        )
+        checks.append(
+            _check(
+                "cost_soft_fallback_ratio",
+                fallback_stats["soft_fallback_ratio"] <= 0.5,
+                (
+                    f"soft_fallback_count={fallback_stats['soft_fallback_count']}; "
+                    f"ratio={fallback_stats['soft_fallback_ratio']:.2%}; "
+                    f"proxy_only_count={fallback_stats['proxy_only_count']}"
+                ),
+                warning_only=True,
             )
         )
 
@@ -2114,13 +2154,7 @@ def _data_quality_payload(
     fills = snapshot.frames.get("okx_private_readonly_fills", pl.DataFrame())
     bills = snapshot.frames.get("okx_private_readonly_bills", pl.DataFrame())
     v5_trades = snapshot.frames.get("v5_trade_event", pl.DataFrame())
-    cost_health = snapshot.frames.get("cost_health_daily", pl.DataFrame())
     proxy_only = _all_cost_rows_public_proxy(costs)
-    latest_cost_health = (
-        cost_health.sort("day").tail(1).to_dicts()[0]
-        if not cost_health.is_empty() and "day" in cost_health.columns
-        else {}
-    )
     health_checks = _jsonish_dict(latest_cost_health.get("data_quality_checks_json"))
     actual_rows = int(latest_cost_health.get("actual_rows") or 0)
     checks.append(
@@ -3264,6 +3298,95 @@ def _cost_fallbacks(costs: pl.DataFrame) -> pl.DataFrame:
     if costs.is_empty() or "fallback_level" not in costs.columns:
         return pl.DataFrame(schema={"symbol": pl.Utf8, "fallback_level": pl.Utf8})
     return costs.filter(~pl.col("fallback_level").is_in(["actual_okx_fills_and_bills", "NONE"]))
+
+
+def _cost_fallback_stats(costs: pl.DataFrame, latest_cost_health: dict[str, Any]) -> dict[str, Any]:
+    row_count = costs.height
+    legacy_ratio = _float_or_none(latest_cost_health.get("fallback_ratio"))
+    hard_ratio = _float_or_none(latest_cost_health.get("hard_fallback_ratio"))
+    soft_ratio = _float_or_none(latest_cost_health.get("soft_fallback_ratio"))
+    hard_count = _int_or_none(latest_cost_health.get("hard_fallback_count"))
+    soft_count = _int_or_none(latest_cost_health.get("soft_fallback_count"))
+    proxy_only_count = _int_or_none(latest_cost_health.get("proxy_only_count"))
+    global_default_count = _int_or_none(latest_cost_health.get("global_default_count"))
+    if row_count > 0 and (
+        hard_ratio is None
+        or soft_ratio is None
+        or hard_count is None
+        or soft_count is None
+        or proxy_only_count is None
+        or global_default_count is None
+    ):
+        rows = costs.to_dicts()
+        hard_count = sum(1 for row in rows if _is_hard_cost_fallback(row))
+        soft_count = sum(1 for row in rows if _is_soft_cost_fallback(row))
+        proxy_only_count = sum(
+            1
+            for row in rows
+            if str(row.get("source") or row.get("cost_source") or "").lower()
+            == "public_spread_proxy"
+        )
+        global_default_count = sum(
+            1
+            for row in rows
+            if str(row.get("source") or row.get("cost_source") or "").lower()
+            == "global_default"
+        )
+        hard_ratio = hard_count / row_count
+        soft_ratio = soft_count / row_count
+    if legacy_ratio is None:
+        legacy_ratio = 0.0 if row_count == 0 else _cost_fallbacks(costs).height / row_count
+    return {
+        "fallback_ratio": legacy_ratio,
+        "hard_fallback_count": hard_count or 0,
+        "hard_fallback_ratio": hard_ratio or 0.0,
+        "soft_fallback_count": soft_count or 0,
+        "soft_fallback_ratio": soft_ratio or 0.0,
+        "proxy_only_count": proxy_only_count or 0,
+        "global_default_count": global_default_count or 0,
+    }
+
+
+def _is_hard_cost_fallback(row: dict[str, Any]) -> bool:
+    text = _cost_fallback_text(row)
+    source = str(row.get("source") or row.get("cost_source") or "").lower()
+    return source == "global_default" or any(
+        token in text
+        for token in [
+            "GLOBAL_DEFAULT",
+            "SYMBOL_MISSING",
+            "SERVICE_UNAVAILABLE",
+            "STALE_COST_BUCKET",
+        ]
+    )
+
+
+def _is_soft_cost_fallback(row: dict[str, Any]) -> bool:
+    if _is_hard_cost_fallback(row):
+        return False
+    text = _cost_fallback_text(row)
+    return any(token in text for token in ["SAMPLE_TOO_SMALL", "SLIPPAGE_UNKNOWN", "SPREAD_PROXY"])
+
+
+def _cost_fallback_text(row: dict[str, Any]) -> str:
+    return " ".join(
+        str(row.get(column) or "").upper()
+        for column in ["source", "cost_source", "fallback_level", "fallback_reason"]
+    )
+
+
+def _float_or_none(value: Any) -> float | None:
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return None
+
+
+def _int_or_none(value: Any) -> int | None:
+    try:
+        return int(float(value))
+    except (TypeError, ValueError):
+        return None
 
 
 def _risk_flags(risk: pl.DataFrame) -> pl.DataFrame:

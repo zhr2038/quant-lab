@@ -37,6 +37,8 @@ def test_cost_health_ok_with_actual_rows(tmp_path):
     assert row.status == "OK"
     assert row.actual_rows == 1
     assert row.fallback_ratio == 0
+    assert row.hard_fallback_ratio == 0
+    assert row.soft_fallback_ratio == 0
     assert row.api_global_default_count == 1
     assert row.api_symbol_proxy_hit_count == 2
     assert row.api_regime_fallback_count == 3
@@ -114,6 +116,12 @@ def test_cost_health_counts_actual_fills_source():
     assert row.actual_rows == 1
     assert row.proxy_rows == 1
     assert row.global_default_rows == 1
+    assert row.hard_fallback_count == 1
+    assert row.hard_fallback_ratio == 1 / 3
+    assert row.soft_fallback_count == 1
+    assert row.soft_fallback_ratio == 1 / 3
+    assert row.proxy_only_count == 1
+    assert row.global_default_count == 1
     assert row.symbols_with_actual_cost == ["BNB-USDT"]
     assert row.symbols_with_proxy_only == ["SOL-USDT"]
     assert row.symbols_proxy_only == ["SOL-USDT"]
@@ -151,6 +159,9 @@ def test_cost_health_counts_mixed_actual_proxy_as_private_cost_available():
 
     assert row.status == "WARNING"
     assert row.actual_rows == 1
+    assert row.hard_fallback_ratio == 0
+    assert row.soft_fallback_ratio == 1
+    assert row.proxy_only_count == 1
     assert row.symbols_with_mixed_cost == ["BNB-USDT"]
     assert row.symbols_with_proxy_only == ["SOL-USDT"]
     checks = json.loads(row.data_quality_checks_json)
@@ -230,6 +241,9 @@ def test_cost_health_proxy_only_is_warning():
     assert row.status == "WARNING"
     assert row.proxy_rows == 1
     assert row.fallback_ratio == 1
+    assert row.hard_fallback_ratio == 0
+    assert row.soft_fallback_ratio == 1
+    assert row.proxy_only_count == 1
     assert "all_rows_public_spread_proxy" in json.loads(row.warnings_json)
 
 
@@ -252,6 +266,9 @@ def test_cost_health_global_default_is_critical():
 
     assert row.status == "CRITICAL"
     assert row.global_default_rows == 1
+    assert row.hard_fallback_count == 1
+    assert row.hard_fallback_ratio == 1
+    assert row.global_default_count == 1
 
 
 def test_cost_health_publish_and_read(tmp_path):
@@ -263,4 +280,5 @@ def test_cost_health_publish_and_read(tmp_path):
 
     assert payload["status"] == "CRITICAL"
     assert payload["rows"] == 1
+    assert payload["hard_fallback_ratio"] == 1.0
     assert payload["warnings"] == ["cost_bucket_daily empty"]

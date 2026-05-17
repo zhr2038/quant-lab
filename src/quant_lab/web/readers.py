@@ -1049,6 +1049,9 @@ def cost_model_summary(lake_root: str | Path) -> dict[str, Any]:
             "proxy_rows": 0,
             "global_default_rows": 0,
             "fallback_ratio": None,
+            "hard_fallback_ratio": None,
+            "soft_fallback_ratio": None,
+            "proxy_only_count": 0,
             "fallback_ratio_status": "N/A",
             "warnings": [*warnings, "cost_bucket_daily 数据集缺失或为空"],
         }
@@ -1067,10 +1070,17 @@ def cost_model_summary(lake_root: str | Path) -> dict[str, Any]:
         "actual_rows": int(latest_health.get("actual_rows") or 0),
         "proxy_rows": int(latest_health.get("proxy_rows") or 0),
         "global_default_rows": int(latest_health.get("global_default_rows") or 0),
+        "hard_fallback_count": int(latest_health.get("hard_fallback_count") or 0),
+        "hard_fallback_ratio": latest_health.get("hard_fallback_ratio"),
+        "soft_fallback_count": int(latest_health.get("soft_fallback_count") or 0),
+        "soft_fallback_ratio": latest_health.get("soft_fallback_ratio"),
+        "proxy_only_count": int(latest_health.get("proxy_only_count") or 0),
         "symbols_with_actual_cost": latest_health.get("symbols_with_actual_cost"),
         "symbols_with_proxy_only": latest_health.get("symbols_with_proxy_only"),
         "fallback_ratio": fallback_ratio,
-        "fallback_ratio_status": "OK" if fallback_ratio <= 0.25 else "WARNING",
+        "fallback_ratio_status": (
+            "OK" if float(latest_health.get("hard_fallback_ratio") or 0.0) <= 0.25 else "FAIL"
+        ),
         "warnings": warnings,
     }
 

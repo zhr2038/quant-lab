@@ -25,6 +25,12 @@ COST_HEALTH_DAILY_SCHEMA = {
     "proxy_rows": pl.Int64,
     "global_default_rows": pl.Int64,
     "fallback_ratio": pl.Float64,
+    "hard_fallback_count": pl.Int64,
+    "hard_fallback_ratio": pl.Float64,
+    "soft_fallback_count": pl.Int64,
+    "soft_fallback_ratio": pl.Float64,
+    "proxy_only_count": pl.Int64,
+    "global_default_count": pl.Int64,
     "symbols_with_actual_cost": pl.Utf8,
     "symbols_with_mixed_cost": pl.Utf8,
     "symbols_with_proxy_only": pl.Utf8,
@@ -53,6 +59,12 @@ class CostHealthDaily(BaseModel):
     proxy_rows: int = Field(ge=0)
     global_default_rows: int = Field(ge=0)
     fallback_ratio: float = Field(ge=0, le=1)
+    hard_fallback_count: int = Field(default=0, ge=0)
+    hard_fallback_ratio: float = Field(default=0.0, ge=0, le=1)
+    soft_fallback_count: int = Field(default=0, ge=0)
+    soft_fallback_ratio: float = Field(default=0.0, ge=0, le=1)
+    proxy_only_count: int = Field(default=0, ge=0)
+    global_default_count: int = Field(default=0, ge=0)
     symbols_with_actual_cost: list[str] = Field(default_factory=list)
     symbols_with_mixed_cost: list[str] = Field(default_factory=list)
     symbols_with_proxy_only: list[str] = Field(default_factory=list)
@@ -97,6 +109,12 @@ def build_cost_health_daily(
             proxy_rows=0,
             global_default_rows=0,
             fallback_ratio=1.0,
+            hard_fallback_count=1,
+            hard_fallback_ratio=1.0,
+            soft_fallback_count=0,
+            soft_fallback_ratio=0.0,
+            proxy_only_count=0,
+            global_default_count=0,
             symbols_missing_cost=sorted(expected),
             data_quality_checks_json=_json(
                 _data_quality_checks(
@@ -132,6 +150,10 @@ def build_cost_health_daily(
     global_rows = [row for row in rows if str(row.get("source")) == DEFAULT_SOURCE]
     fallback_count = sum(1 for row in rows if _is_fallback_row(row))
     fallback_ratio = fallback_count / len(rows)
+    hard_fallback_count = sum(1 for row in rows if _is_hard_fallback_row(row))
+    soft_fallback_count = sum(1 for row in rows if _is_soft_fallback_row(row))
+    hard_fallback_ratio = hard_fallback_count / len(rows)
+    soft_fallback_ratio = soft_fallback_count / len(rows)
 
     actual_symbols = {
         str(row.get("symbol"))
@@ -160,6 +182,10 @@ def build_cost_health_daily(
         warnings.append("fallback_ratio_gt_0.8")
     elif fallback_ratio > 0.5:
         warnings.append("fallback_ratio_gt_0.5")
+    if hard_fallback_ratio > 0.25:
+        warnings.append("hard_fallback_ratio_gt_0.25")
+    if soft_fallback_ratio > 0.5:
+        warnings.append("soft_fallback_ratio_gt_0.5")
     if len(proxy_rows) == len(rows):
         warnings.append("all_rows_public_spread_proxy")
     if len(global_rows) == len(rows):
@@ -175,13 +201,13 @@ def build_cost_health_daily(
     status = "OK"
     if (
         all_global
-        or (fallback_ratio > 0.8 and not all_proxy and not actual_rows)
+        or (hard_fallback_ratio > 0.25 and not actual_rows)
         or (missing and not actual_rows)
         or data_quality_checks.get("private_fills_present_but_actual_cost_zero") is False
         or data_quality_checks.get("trades_present_but_not_in_cost_model") is False
     ):
         status = "CRITICAL"
-    elif all_proxy or fallback_ratio > 0.5 or not trusted_actual_rows:
+    elif all_proxy or soft_fallback_ratio > 0.5 or not trusted_actual_rows:
         status = "WARNING"
 
     return CostHealthDaily(
@@ -192,6 +218,12 @@ def build_cost_health_daily(
         proxy_rows=len(proxy_rows),
         global_default_rows=len(global_rows),
         fallback_ratio=fallback_ratio,
+        hard_fallback_count=hard_fallback_count,
+        hard_fallback_ratio=hard_fallback_ratio,
+        soft_fallback_count=soft_fallback_count,
+        soft_fallback_ratio=soft_fallback_ratio,
+        proxy_only_count=len(proxy_only),
+        global_default_count=len(global_rows),
         symbols_with_actual_cost=sorted(actual_symbols),
         symbols_with_mixed_cost=sorted(mixed_symbols),
         symbols_with_proxy_only=sorted(proxy_only),
@@ -358,6 +390,37 @@ def _is_fallback_row(row: dict[str, Any]) -> bool:
     if source in {PROXY_SOURCE, DEFAULT_SOURCE, FEE_ONLY_SOURCE}:
         return True
     return fallback not in {"", "NONE"}
+
+
+def _is_hard_fallback_row(row: dict[str, Any]) -> bool:
+    source = str(row.get("source") or row.get("cost_source") or "").strip().lower()
+    rendered = _fallback_text(row)
+    return source == DEFAULT_SOURCE or any(
+        token in rendered
+        for token in [
+            "GLOBAL_DEFAULT",
+            "SYMBOL_MISSING",
+            "SERVICE_UNAVAILABLE",
+            "STALE_COST_BUCKET",
+        ]
+    )
+
+
+def _is_soft_fallback_row(row: dict[str, Any]) -> bool:
+    if _is_hard_fallback_row(row):
+        return False
+    rendered = _fallback_text(row)
+    return any(
+        token in rendered
+        for token in ["SAMPLE_TOO_SMALL", "SLIPPAGE_UNKNOWN", "SPREAD_PROXY"]
+    )
+
+
+def _fallback_text(row: dict[str, Any]) -> str:
+    return " ".join(
+        str(row.get(column) or "").strip().upper()
+        for column in ["source", "cost_source", "fallback_level", "fallback_reason"]
+    )
 
 
 def _actual_sample_count_by_symbol(rows: list[dict[str, Any]]) -> dict[str, int]:

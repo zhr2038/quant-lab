@@ -347,6 +347,48 @@ def test_cost_fallback_ratio_is_not_pass_when_cost_bucket_daily_is_empty(tmp_pat
     assert checks["cost_fallback_ratio"]["status"] in {"N/A", "FAIL"}
 
 
+def test_soft_cost_fallbacks_do_not_create_hard_failure(tmp_path):
+    lake_root = tmp_path / "lake"
+    write_parquet_dataset(
+        pl.DataFrame(
+            [
+                {
+                    "day": "2026-05-11",
+                    "symbol": "BNB-USDT",
+                    "source": "mixed_actual_proxy",
+                    "sample_count": 2,
+                    "fallback_level": "SAMPLE_TOO_SMALL;SLIPPAGE_UNKNOWN;SPREAD_PROXY",
+                },
+                {
+                    "day": "2026-05-11",
+                    "symbol": "SOL-USDT",
+                    "source": "public_spread_proxy",
+                    "sample_count": 100,
+                    "fallback_level": "PUBLIC_SPREAD_PROXY",
+                },
+            ]
+        ),
+        lake_root / "gold" / "cost_bucket_daily",
+    )
+
+    result = export_daily_pack(
+        export_date="2026-05-11",
+        lake_root=lake_root,
+        out_dir=tmp_path / "exports",
+        profile="expert",
+        command_line=["qlab", "export-daily"],
+    )
+
+    with zipfile.ZipFile(result.zip_path) as archive:
+        data_quality = json.loads(archive.read("data_quality.json").decode("utf-8"))
+
+    checks = {check["name"]: check for check in data_quality["checks"]}
+    assert checks["cost_hard_fallback_ratio"]["status"] == "PASS"
+    assert "ratio=0.00%" in checks["cost_hard_fallback_ratio"]["detail"]
+    assert checks["cost_soft_fallback_ratio"]["status"] == "WARN"
+    assert checks["cost_fallback_ratio"]["status"] == "WARN"
+
+
 def test_dataset_freshness_uses_dataset_specific_timestamps(tmp_path):
     lake_root = _fixture_lake(tmp_path)
     created_at = datetime.now(UTC)

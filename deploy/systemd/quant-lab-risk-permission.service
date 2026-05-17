@@ -1,6 +1,7 @@
 [Unit]
 Description=quant-lab risk permission publisher
-After=quant-lab-v5-telemetry-sync.service quant-lab-alpha-evidence.service quant-lab-cost-calibration.service
+After=network-online.target
+Wants=network-online.target
 
 [Service]
 Type=oneshot
@@ -8,7 +9,7 @@ User=quantlab
 Group=quantlab
 WorkingDirectory=/opt/quant-lab
 Environment=QUANT_LAB_RISK_PERMISSION_TTL_SECONDS=5400
-RuntimeMaxSec=5min
+TimeoutStartSec=5min
 MemoryMax=1G
 CPUQuota=60%
 ExecStart=/opt/quant-lab/.venv/bin/qlab publish-risk-permission --lake-root /var/lib/quant-lab/lake --strategy v5 --version 5.0.0

@@ -394,6 +394,7 @@ CSV_SCHEMAS: dict[str, list[str]] = {
         "as_of_date",
         "strategy_candidate",
         "candidate_name",
+        "source_type",
         "symbol",
         "regime_state",
         "horizon_hours",
@@ -2402,11 +2403,11 @@ def _strategy_evidence_for_export(evidence: pl.DataFrame) -> pl.DataFrame:
     keys = [
         key
         for key in [
+            "as_of_date",
             "strategy_candidate",
             "symbol",
-            "regime_state",
             "horizon_hours",
-            "as_of_date",
+            "source_type",
         ]
         if key in normalized.columns
     ]

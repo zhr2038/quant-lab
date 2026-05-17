@@ -24,6 +24,8 @@ EVIDENCE_VERSION = "strategy-evidence-v0.1"
 SOURCE_NAME = "research.strategy_evidence.v0.1"
 MIN_LIVE_SMALL_READY_SAMPLES = 30
 HORIZON_HOURS = (4, 8, 12, 24, 48, 72, 120)
+LIVE_READY_COST_SOURCES = {"mixed_actual_proxy", "actual_fills"}
+LIVE_BLOCKING_COST_SOURCES = {"global_default", "cost_not_requested_no_order"}
 
 STRATEGY_CANDIDATES = (
     "v5.btc_leadership_probe_strict",
@@ -374,6 +376,7 @@ def normalize_strategy_evidence_decisions(evidence: pl.DataFrame) -> pl.DataFram
             p25_net_bps=_finite_float(row.get("p25_net_bps")),
             win_rate=_finite_float(row.get("win_rate")),
             paper_days=int(_finite_float(row.get("paper_days")) or 0),
+            paper_slippage_coverage=_finite_float(row.get("paper_slippage_coverage")) or 0.0,
             cost_source_mix=row.get("cost_source_mix"),
         )
         row["decision"] = decision
@@ -789,6 +792,7 @@ def strategy_evidence_decision_ladder(
     p25_net_bps: float | None,
     win_rate: float | None,
     paper_days: int = 0,
+    paper_slippage_coverage: float = 0.0,
     cost_source_mix: Any = None,
     paper_ready_sample_count: int = MIN_LIVE_SMALL_READY_SAMPLES,
 ) -> tuple[str, list[str]]:
@@ -812,23 +816,29 @@ def strategy_evidence_decision_ladder(
         and p25_net_bps > -50.0
     )
     has_global_default_cost = _cost_source_mix_contains_global_default(cost_source_mix)
-    has_live_untrusted_cost = _cost_source_mix_contains_any(
-        cost_source_mix,
-        {"global_default", "cost_not_requested_no_order"},
+    has_live_blocking_cost = _cost_source_mix_contains_any(
+        cost_source_mix, LIVE_BLOCKING_COST_SOURCES
     )
+    has_live_ready_cost = _cost_source_mix_contains_any(cost_source_mix, LIVE_READY_COST_SOURCES)
     if (
-        complete_sample_count >= 60
+        paper_ready
+        and complete_sample_count >= 60
         and paper_days >= 14
-        and not has_live_untrusted_cost
-        and paper_ready
+        and paper_slippage_coverage >= 0.8
+        and has_live_ready_cost
+        and not has_live_blocking_cost
     ):
         return "LIVE_SMALL_READY", ["live_small_ready_thresholds_met"]
     if paper_ready and has_global_default_cost:
         return "KEEP_SHADOW", ["paper_ready_thresholds_met", "cost_source_not_trusted"]
     if paper_ready:
         reasons = ["paper_ready_thresholds_met"]
-        if has_live_untrusted_cost:
+        if has_live_blocking_cost or not has_live_ready_cost:
             reasons.append("cost_source_not_trusted")
+        if paper_days < 14:
+            reasons.append("no_paper_days")
+        if paper_slippage_coverage < 0.8:
+            reasons.append("no_live_slippage_coverage")
         return "PAPER_READY", reasons
     if complete_sample_count >= 10 and avg_net_bps is not None and avg_net_bps > 0:
         return "KEEP_SHADOW", ["positive_avg_net_bps_needs_more_evidence"]
@@ -1608,10 +1618,10 @@ def _candidate_decision(
     edge_cost_ratio = _cost_sensitivity(rows).get("expected_edge_to_cost_ratio")
     cost_source_mix = _cost_source_mix(rows)
     has_global_default_cost = _cost_source_mix_contains_global_default(cost_source_mix)
-    has_live_untrusted_cost = _cost_source_mix_contains_any(
-        cost_source_mix,
-        {"global_default", "cost_not_requested_no_order"},
+    has_live_blocking_cost = _cost_source_mix_contains_any(
+        cost_source_mix, LIVE_BLOCKING_COST_SOURCES
     )
+    has_live_ready_cost = _cost_source_mix_contains_any(cost_source_mix, LIVE_READY_COST_SOURCES)
     bad_24h = avg_24h is not None and avg_24h < -5.0
     bad_72h = avg_72h is not None and avg_72h < -5.0
     weak_win = win_24h is not None and win_24h < 0.42
@@ -1652,12 +1662,15 @@ def _candidate_decision(
                 "positive_net_edge_and_sample_floor_met",
                 "cost_source_not_trusted",
             ]
-        if has_live_untrusted_cost:
+        if has_live_blocking_cost or not has_live_ready_cost:
             return "PAPER_READY", [
                 "positive_24h_net_edge_needs_paper_confirmation",
                 "cost_source_not_trusted",
             ]
-        return "LIVE_SMALL_READY", ["positive_net_edge_and_sample_floor_met"]
+        return "PAPER_READY", [
+            "positive_24h_net_edge_needs_paper_confirmation",
+            "no_live_slippage_coverage",
+        ]
 
     paper_ready = (
         (avg_24h is not None and avg_24h > 0.0)

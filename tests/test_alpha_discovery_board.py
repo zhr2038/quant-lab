@@ -9,7 +9,10 @@ import polars as pl
 
 from quant_lab.data.lake import read_parquet_dataset, write_parquet_dataset
 from quant_lab.export.daily import export_daily_pack
-from quant_lab.research.alpha_discovery import build_and_publish_alpha_discovery_board
+from quant_lab.research.alpha_discovery import (
+    build_and_publish_alpha_discovery_board,
+    normalize_alpha_discovery_board_decisions,
+)
 
 
 def test_alpha_discovery_board_decisions_are_candidate_symbol_regime_horizon(tmp_path):
@@ -27,7 +30,7 @@ def test_alpha_discovery_board_decisions_are_candidate_symbol_regime_horizon(tmp
 
     assert result.alpha_discovery_board_rows == board.height
     assert rows[("v5.alt_impulse_shadow", "ETH-USDT", "impulse", 24)]["decision"] == (
-        "LIVE_SMALL_READY"
+        "PAPER_READY"
     )
     assert rows[("v5.sol_protect_exception", "SOL-USDT", "protect", 24)]["decision"] == (
         "KILL"
@@ -41,6 +44,9 @@ def test_alpha_discovery_board_decisions_are_candidate_symbol_regime_horizon(tmp
     assert rows[("v5.f4_volume_expansion_entry", "BNB-USDT", "trend", 24)][
         "decision"
     ] == "PAPER_READY"
+    sol_proxy = rows[("v5.f4_volume_expansion_entry", "SOL-USDT", "trend", 24)]
+    assert sol_proxy["decision"] == "PAPER_READY"
+    assert "cost_source_not_trusted" in json.loads(sol_proxy["decision_reasons"])
     assert rows[("v5.btc_leadership_probe_strict", "BTC-USDT", "trend", 24)][
         "sample_count"
     ] == 12
@@ -57,6 +63,48 @@ def test_alpha_discovery_board_decisions_are_candidate_symbol_regime_horizon(tmp
     assert json.loads(
         rows[("v5.swing_f4_f5_alpha6", "BTC-USDT", "trend", 24)]["stability_by_day"]
     )
+
+
+def test_alpha_discovery_board_normalization_dedupes_by_source_type_and_cost_rules():
+    rows = [
+        _board_row(
+            strategy_candidate="v5.f4_volume_expansion_entry",
+            symbol="SOL-USDT",
+            source_type="candidate_event_label",
+            avg_net_bps=20.0,
+            decision="LIVE_SMALL_READY",
+            cost_source_mix='[{"cost_source":"public_spread_proxy","count":72}]',
+        ),
+        _board_row(
+            strategy_candidate="v5.f4_volume_expansion_entry",
+            symbol="SOL-USDT",
+            source_type="candidate_event_label",
+            avg_net_bps=30.0,
+            decision="LIVE_SMALL_READY",
+            cost_source_mix='[{"cost_source":"public_spread_proxy","count":72}]',
+        ),
+        _board_row(
+            strategy_candidate="v5.swing_f4_f5_alpha6",
+            symbol="BNB-USDT",
+            source_type="candidate_event_label",
+            avg_net_bps=30.0,
+            decision="PAPER_READY",
+            cost_source_mix='[{"cost_source":"global_default","count":72}]',
+        ),
+    ]
+
+    normalized = normalize_alpha_discovery_board_decisions(pl.DataFrame(rows))
+    output = {
+        (row["strategy_candidate"], row["symbol"], row["source_type"]): row
+        for row in normalized.to_dicts()
+    }
+
+    assert normalized.height == 2
+    sol = output[("v5.f4_volume_expansion_entry", "SOL-USDT", "candidate_event_label")]
+    assert sol["avg_net_bps"] == 30.0
+    assert sol["decision"] == "PAPER_READY"
+    bnb = output[("v5.swing_f4_f5_alpha6", "BNB-USDT", "candidate_event_label")]
+    assert bnb["decision"] == "KEEP_SHADOW"
 
 
 def test_daily_export_uses_alpha_discovery_board_lists(tmp_path):
@@ -221,6 +269,53 @@ def _write_candidate_labels(lake: Path) -> None:
         net_values=[8.0] * 8,
     )
     write_parquet_dataset(pl.DataFrame(rows), lake / "gold" / "v5_candidate_label")
+
+
+def _board_row(
+    *,
+    strategy_candidate: str,
+    symbol: str,
+    source_type: str,
+    avg_net_bps: float,
+    decision: str,
+    cost_source_mix: str,
+) -> dict:
+    return {
+        "strategy": "v5",
+        "board_schema_version": "alpha_discovery_board.v1",
+        "as_of_date": "2026-05-10",
+        "strategy_candidate": strategy_candidate,
+        "candidate_name": strategy_candidate,
+        "source_type": source_type,
+        "symbol": symbol,
+        "regime_state": "trend",
+        "horizon_hours": 24,
+        "sample_count": 72,
+        "complete_sample_count": 72,
+        "avg_net_bps": avg_net_bps,
+        "median_net_bps": avg_net_bps,
+        "p25_net_bps": 1.0,
+        "win_rate": 0.72,
+        "avg_mfe_bps": None,
+        "avg_mae_bps": None,
+        "cost_source_mix": cost_source_mix,
+        "stability_by_day": "[]",
+        "paper_days": 20,
+        "cost_source_has_global_default": "global_default" in cost_source_mix,
+        "decision": decision,
+        "decision_reasons": "[]",
+        "risk_permission": "ALLOW",
+        "risk_permission_status": "ACTIVE_ALLOW",
+        "enforce_readiness_status": "READY",
+        "block_reason_mix": "{}",
+        "final_decision_mix": "{}",
+        "high_score_blocked_outcome_count": 0,
+        "shadow_outcome_count": 0,
+        "start_ts": datetime(2026, 5, 10, tzinfo=UTC),
+        "end_ts": datetime(2026, 5, 10, tzinfo=UTC),
+        "created_at": datetime(2026, 5, 10, tzinfo=UTC),
+        "source": "test",
+    }
 
 
 def _add_labels(

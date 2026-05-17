@@ -82,6 +82,38 @@ def test_strategy_evidence_ladder_allows_paper_ready_on_mixed_actual_proxy():
     assert "paper_ready_thresholds_met" in reasons
 
 
+def test_strategy_evidence_ladder_allows_paper_not_live_on_public_spread_proxy():
+    decision, reasons = strategy_evidence_decision_ladder(
+        sample_count=72,
+        complete_sample_count=72,
+        avg_net_bps=25.0,
+        p25_net_bps=1.0,
+        win_rate=0.72,
+        paper_days=20,
+        paper_slippage_coverage=0.9,
+        cost_source_mix={"public_spread_proxy": 72},
+    )
+
+    assert decision == "PAPER_READY"
+    assert "cost_source_not_trusted" in reasons
+
+
+def test_strategy_evidence_ladder_requires_actual_or_mixed_for_live_small_ready():
+    decision, reasons = strategy_evidence_decision_ladder(
+        sample_count=72,
+        complete_sample_count=72,
+        avg_net_bps=25.0,
+        p25_net_bps=1.0,
+        win_rate=0.72,
+        paper_days=20,
+        paper_slippage_coverage=0.9,
+        cost_source_mix={"mixed_actual_proxy": 72},
+    )
+
+    assert decision == "LIVE_SMALL_READY"
+    assert reasons == ["live_small_ready_thresholds_met"]
+
+
 def test_strategy_evidence_normalizes_stale_low_complete_decision():
     stale = pl.DataFrame(
         [

@@ -47,6 +47,7 @@ BOARD_SCHEMA: dict[str, Any] = {
     "as_of_date": pl.Utf8,
     "strategy_candidate": pl.Utf8,
     "candidate_name": pl.Utf8,
+    "source_type": pl.Utf8,
     "symbol": pl.Utf8,
     "regime_state": pl.Utf8,
     "horizon_hours": pl.Int64,
@@ -142,8 +143,8 @@ def build_and_publish_alpha_discovery_board(
             "as_of_date",
             "strategy_candidate",
             "symbol",
-            "regime_state",
             "horizon_hours",
+            "source_type",
         ],
     )
     warnings: list[str] = []
@@ -275,6 +276,7 @@ def build_alpha_discovery_board_from_strategy_evidence(
                 "as_of_date": as_of_date.isoformat(),
                 "strategy_candidate": candidate,
                 "candidate_name": _clean_text(row.get("candidate_name")) or candidate,
+                "source_type": _clean_text(row.get("source_type")) or "strategy_evidence",
                 "symbol": symbol,
                 "regime_state": regime,
                 "horizon_hours": horizon,
@@ -353,6 +355,7 @@ def _board_row(
         "as_of_date": as_of_date.isoformat(),
         "strategy_candidate": candidate,
         "candidate_name": candidate,
+        "source_type": "candidate_event_label",
         "symbol": symbol,
         "regime_state": regime,
         "horizon_hours": horizon,
@@ -401,6 +404,7 @@ def _decision(
         p25_net_bps=p25_net_bps,
         win_rate=win_rate,
         paper_days=paper_days,
+        paper_slippage_coverage=0.0,
         cost_source_mix=cost_source_counts,
     )
 
@@ -419,6 +423,7 @@ def _strategy_evidence_decision(row: dict[str, Any]) -> tuple[str, list[str]]:
         win_rate=win_rate,
         p25_net_bps=p25,
         paper_days=paper_days,
+        paper_slippage_coverage=_finite_float(row.get("paper_slippage_coverage")) or 0.0,
         cost_source_mix=row.get("cost_source_mix"),
     )
 
@@ -684,6 +689,7 @@ def normalize_alpha_discovery_board_decisions(board: pl.DataFrame) -> pl.DataFra
         return board
     rows: list[dict[str, Any]] = []
     for row in board.to_dicts():
+        row["source_type"] = _clean_text(row.get("source_type")) or "legacy"
         candidate = _canonical_candidate_name(
             row.get("strategy_candidate") or row.get("candidate_name"),
             dataset_name="alpha_discovery_board",
@@ -698,13 +704,16 @@ def normalize_alpha_discovery_board_decisions(board: pl.DataFrame) -> pl.DataFra
             p25_net_bps=_finite_float(row.get("p25_net_bps")),
             win_rate=_finite_float(row.get("win_rate")),
             paper_days=int(_finite_float(row.get("paper_days")) or 0),
+            paper_slippage_coverage=_finite_float(row.get("paper_slippage_coverage")) or 0.0,
             cost_source_mix=row.get("cost_source_mix"),
         )
         row["decision"] = decision
         row["decision_reasons"] = safe_json_dumps(reasons)
         rows.append(row)
+    schema = dict(board.schema)
+    schema.setdefault("source_type", pl.Utf8)
     normalized = _drop_invalid_alpha_discovery_rows(
-        _drop_unknown_symbol_rows(pl.DataFrame(rows, schema=board.schema, orient="row"))
+        _drop_unknown_symbol_rows(pl.DataFrame(rows, schema=schema, orient="row"))
     )
     keys = [
         column
@@ -714,8 +723,8 @@ def normalize_alpha_discovery_board_decisions(board: pl.DataFrame) -> pl.DataFra
             "as_of_date",
             "strategy_candidate",
             "symbol",
-            "regime_state",
             "horizon_hours",
+            "source_type",
         ]
         if column in normalized.columns
     ]

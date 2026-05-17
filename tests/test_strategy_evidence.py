@@ -54,6 +54,34 @@ def test_strategy_evidence_ladder_kills_only_after_complete_sample_floor():
     assert "win_rate_below_threshold" in reasons
 
 
+def test_strategy_evidence_ladder_blocks_paper_ready_on_global_default_cost():
+    decision, reasons = strategy_evidence_decision_ladder(
+        sample_count=72,
+        complete_sample_count=72,
+        avg_net_bps=25.0,
+        p25_net_bps=1.0,
+        win_rate=0.72,
+        cost_source_mix={"global_default": 72},
+    )
+
+    assert decision == "KEEP_SHADOW"
+    assert "cost_source_not_trusted" in reasons
+
+
+def test_strategy_evidence_ladder_allows_paper_ready_on_mixed_actual_proxy():
+    decision, reasons = strategy_evidence_decision_ladder(
+        sample_count=72,
+        complete_sample_count=72,
+        avg_net_bps=25.0,
+        p25_net_bps=1.0,
+        win_rate=0.72,
+        cost_source_mix={"mixed_actual_proxy": 72},
+    )
+
+    assert decision == "PAPER_READY"
+    assert "paper_ready_thresholds_met" in reasons
+
+
 def test_strategy_evidence_normalizes_stale_low_complete_decision():
     stale = pl.DataFrame(
         [

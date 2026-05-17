@@ -742,15 +742,25 @@ def strategy_evidence_decision_ladder(
         and p25_net_bps is not None
         and p25_net_bps > -50.0
     )
+    has_global_default_cost = _cost_source_mix_contains_global_default(cost_source_mix)
+    has_live_untrusted_cost = _cost_source_mix_contains_any(
+        cost_source_mix,
+        {"global_default", "cost_not_requested_no_order"},
+    )
     if (
         complete_sample_count >= 60
         and paper_days >= 14
-        and not _cost_source_mix_contains_global_default(cost_source_mix)
+        and not has_live_untrusted_cost
         and paper_ready
     ):
         return "LIVE_SMALL_READY", ["live_small_ready_thresholds_met"]
+    if paper_ready and has_global_default_cost:
+        return "KEEP_SHADOW", ["paper_ready_thresholds_met", "cost_source_not_trusted"]
     if paper_ready:
-        return "PAPER_READY", ["paper_ready_thresholds_met"]
+        reasons = ["paper_ready_thresholds_met"]
+        if has_live_untrusted_cost:
+            reasons.append("cost_source_not_trusted")
+        return "PAPER_READY", reasons
     if complete_sample_count >= 10 and avg_net_bps is not None and avg_net_bps > 0:
         return "KEEP_SHADOW", ["positive_avg_net_bps_needs_more_evidence"]
 
@@ -766,20 +776,38 @@ def _is_negative_after_cost_edge(avg_net_bps: float | None) -> bool:
 
 
 def _cost_source_mix_contains_global_default(cost_source_mix: Any) -> bool:
+    return _cost_source_mix_contains_any(cost_source_mix, {"global_default"})
+
+
+def _cost_source_mix_contains_any(cost_source_mix: Any, blocked_sources: set[str]) -> bool:
+    return any(source in blocked_sources for source in _cost_source_mix_sources(cost_source_mix))
+
+
+def _cost_source_mix_sources(cost_source_mix: Any) -> set[str]:
     if cost_source_mix is None:
-        return False
+        return set()
     if isinstance(cost_source_mix, dict):
-        return any(str(key).lower() == "global_default" for key in cost_source_mix)
+        return {_normalize_cost_source(source) for source in cost_source_mix}
     if isinstance(cost_source_mix, list):
+        sources: set[str] = set()
         for item in cost_source_mix:
             if isinstance(item, dict):
                 source = item.get("cost_source") or item.get("source")
             else:
                 source = item
-            if str(source).lower() == "global_default":
-                return True
-        return False
-    return "global_default" in str(cost_source_mix).lower()
+            sources.add(_normalize_cost_source(source))
+        return sources
+    if isinstance(cost_source_mix, str):
+        try:
+            parsed = json.loads(cost_source_mix)
+        except json.JSONDecodeError:
+            return {_normalize_cost_source(cost_source_mix)}
+        return _cost_source_mix_sources(parsed)
+    return {_normalize_cost_source(cost_source_mix)}
+
+
+def _normalize_cost_source(source: Any) -> str:
+    return str(source or "").strip().lower()
 
 
 def _cost_source_mix(rows: list[dict[str, Any]]) -> dict[str, int]:
@@ -1509,6 +1537,12 @@ def _candidate_decision(
     win_24h = win_rates.get("24h")
     downside_24h = downside.get("24h")
     edge_cost_ratio = _cost_sensitivity(rows).get("expected_edge_to_cost_ratio")
+    cost_source_mix = _cost_source_mix(rows)
+    has_global_default_cost = _cost_source_mix_contains_global_default(cost_source_mix)
+    has_live_untrusted_cost = _cost_source_mix_contains_any(
+        cost_source_mix,
+        {"global_default", "cost_not_requested_no_order"},
+    )
     bad_24h = avg_24h is not None and avg_24h < -5.0
     bad_72h = avg_72h is not None and avg_72h < -5.0
     weak_win = win_24h is not None and win_24h < 0.42
@@ -1544,6 +1578,16 @@ def _candidate_decision(
         and (edge_cost_ratio is None or edge_cost_ratio >= 1.5)
     )
     if live_ready:
+        if has_global_default_cost:
+            return "KEEP_SHADOW", [
+                "positive_net_edge_and_sample_floor_met",
+                "cost_source_not_trusted",
+            ]
+        if has_live_untrusted_cost:
+            return "PAPER_READY", [
+                "positive_24h_net_edge_needs_paper_confirmation",
+                "cost_source_not_trusted",
+            ]
         return "LIVE_SMALL_READY", ["positive_net_edge_and_sample_floor_met"]
 
     paper_ready = (
@@ -1552,6 +1596,11 @@ def _candidate_decision(
         and (downside_24h is None or downside_24h > -100.0)
     )
     if paper_ready:
+        if has_global_default_cost:
+            return "KEEP_SHADOW", [
+                "positive_24h_net_edge_needs_paper_confirmation",
+                "cost_source_not_trusted",
+            ]
         return "PAPER_READY", ["positive_24h_net_edge_needs_paper_confirmation"]
 
     reasons.append("evidence_not_strong_enough_for_paper")

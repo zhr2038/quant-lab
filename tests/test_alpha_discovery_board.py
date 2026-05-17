@@ -35,6 +35,12 @@ def test_alpha_discovery_board_decisions_are_candidate_symbol_regime_horizon(tmp
     assert rows[("v5.swing_f4_f5_alpha6", "BTC-USDT", "trend", 24)]["decision"] == (
         "PAPER_READY"
     )
+    bnb_global = rows[("v5.swing_f4_f5_alpha6", "BNB-USDT", "trend", 24)]
+    assert bnb_global["decision"] == "KEEP_SHADOW"
+    assert "cost_source_not_trusted" in json.loads(bnb_global["decision_reasons"])
+    assert rows[("v5.f4_volume_expansion_entry", "BNB-USDT", "trend", 24)][
+        "decision"
+    ] == "PAPER_READY"
     assert rows[("v5.btc_leadership_probe_strict", "BTC-USDT", "trend", 24)][
         "sample_count"
     ] == 12
@@ -154,6 +160,24 @@ def _write_candidate_labels(lake: Path) -> None:
     _add_labels(
         rows,
         start=start,
+        candidate="v5.swing_f4_f5_alpha6",
+        symbol="BNB-USDT",
+        regime="trend",
+        net_values=[28.0] * 72,
+        cost_source="global_default",
+    )
+    _add_labels(
+        rows,
+        start=start,
+        candidate="v5.f4_volume_expansion_entry",
+        symbol="BNB-USDT",
+        regime="trend",
+        net_values=[28.0] * 72,
+        cost_source="mixed_actual_proxy",
+    )
+    _add_labels(
+        rows,
+        start=start,
         candidate="v5.mean_reversion_sideways",
         symbol="XRP-USDT",
         regime="sideways",
@@ -170,6 +194,7 @@ def _add_labels(
     symbol: str,
     regime: str,
     net_values: list[float],
+    cost_source: str = "quant_lab_actual",
 ) -> None:
     for index, net in enumerate(net_values):
         ts = start + timedelta(hours=index)
@@ -191,7 +216,7 @@ def _add_labels(
                 "win": net > 0.0,
                 "label_status": "complete",
                 "cost_bps": 4.0,
-                "cost_source": "quant_lab_actual",
+                "cost_source": cost_source,
                 "alpha6_side": "long",
                 "regime_state": regime,
                 "created_at": ts + timedelta(minutes=1),

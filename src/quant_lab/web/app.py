@@ -40,7 +40,7 @@ def render_dashboard(lake_root: str | Path, st_module: Any | None = None) -> Non
     st.set_page_config(page_title="quant-lab", layout="wide")
     st.sidebar.title("quant-lab")
     st.sidebar.caption("OKX 优先的只读研究观测面板。")
-    selected_page = st.sidebar.selectbox("页面", list(PAGES))
+    selected_page = st.sidebar.radio("页面", list(PAGES))
     selected_lake_root = st.sidebar.text_input("Lake 根目录", value=str(lake_root))
     st.sidebar.caption("此 dashboard 不提供任何策略或交易所状态变更能力。")
     PAGES[selected_page](Path(selected_lake_root), st)

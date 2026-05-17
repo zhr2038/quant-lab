@@ -661,6 +661,16 @@ def test_web_launcher_hides_streamlit_file_navigation(monkeypatch, tmp_path):
     assert option_index < command.index("--")
 
 
+def test_dashboard_uses_flat_page_radio_not_dropdown(tmp_path):
+    fake = FakeStreamlit(radio_value="专家包导出")
+
+    web_app.render_dashboard(tmp_path / "lake", fake)
+
+    assert any(call["label"] == "页面" for call in _call_values(fake, "radio"))
+    assert not _call_values(fake, "selectbox")
+    assert any(value == "专家包导出" for value in _call_values(fake, "title"))
+
+
 def test_pages_warn_but_do_not_crash_when_lake_is_empty(tmp_path):
     fake = FakeStreamlit()
 
@@ -960,10 +970,15 @@ def _call_values(fake: "FakeStreamlit", name: str) -> list[object]:
 
 
 class FakeStreamlit:
-    def __init__(self, button_values: dict[str, bool] | None = None) -> None:
+    def __init__(
+        self,
+        button_values: dict[str, bool] | None = None,
+        radio_value: str | None = None,
+    ) -> None:
         self.calls: list[tuple[str, object]] = []
         self.sidebar = self
         self.button_values = button_values or {}
+        self.radio_value = radio_value
 
     def set_page_config(self, **kwargs) -> None:
         self.calls.append(("set_page_config", kwargs))
@@ -1010,7 +1025,15 @@ class FakeStreamlit:
         return _FakeSpinner()
 
     def selectbox(self, _label, options):
+        self.calls.append(("selectbox", {"label": _label, "options": list(options)}))
         return list(options)[0]
+
+    def radio(self, label, options):
+        values = list(options)
+        self.calls.append(("radio", {"label": label, "options": values}))
+        if self.radio_value is not None:
+            return self.radio_value
+        return values[0]
 
     def text_input(self, _label, value):
         return value

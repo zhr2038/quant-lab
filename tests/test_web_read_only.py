@@ -843,6 +843,66 @@ def test_expert_exports_generated_pack_is_listed_first(tmp_path):
     assert packs[0]["path"] == str(generated)
 
 
+def test_expert_exports_generated_pack_is_first_download_even_with_older_mtime(tmp_path):
+    exports_root = tmp_path / "exports"
+    exports_root.mkdir()
+    old_pack = exports_root / "quant_lab_expert_pack_2026-05-16_old.zip"
+    generated = exports_root / "quant_lab_expert_pack_2026-05-16_generated.zip"
+    for pack, marker in [(old_pack, "old"), (generated, "new")]:
+        with zipfile.ZipFile(pack, "w") as archive:
+            archive.writestr("manifest.json", json.dumps({"marker": marker}))
+            archive.writestr("data_quality.json", "{}")
+            archive.writestr("expert_questions.md", "")
+    os.utime(generated, (datetime(2026, 5, 16, 1, tzinfo=UTC).timestamp(),) * 2)
+    os.utime(old_pack, (datetime(2026, 5, 16, 2, tzinfo=UTC).timestamp(),) * 2)
+
+    summary = expert_exports._summary_preferring_generated_pack(exports_root, generated)
+    fake = FakeStreamlit()
+    expert_exports._render_pack_downloads(fake, summary["packs"])
+
+    downloads = _call_values(fake, "download_button")
+    assert downloads[0]["file_name"] == generated.name
+
+
+def test_expert_exports_generate_today_persists_pack_across_streamlit_rerun(
+    tmp_path,
+    monkeypatch,
+):
+    lake_root = _fixture_lake(tmp_path)
+    exports_root = tmp_path / "exports"
+    session_state = {}
+    first_fake = RerunStreamlit(
+        button_values={"生成今日专家包": True},
+        session_state=session_state,
+    )
+
+    def fake_export_daily_pack(**kwargs):
+        pack_path = Path(kwargs["out_dir"]) / "quant_lab_expert_pack_test.zip"
+        with zipfile.ZipFile(pack_path, "w") as archive:
+            archive.writestr("manifest.json", json.dumps({"fresh": True}))
+            archive.writestr("data_quality.json", "{}")
+            archive.writestr("expert_questions.md", "")
+        return SimpleNamespace(zip_path=str(pack_path))
+
+    monkeypatch.setattr(expert_exports, "_refresh_lake_before_export", lambda *_args, **_kwargs: [])
+    monkeypatch.setattr(expert_exports, "export_daily_pack", fake_export_daily_pack)
+
+    expert_exports.render(lake_root, first_fake, exports_root=exports_root)
+
+    assert first_fake.rerun_count == 1
+    assert session_state["expert_exports_generated_pack"].endswith(
+        "quant_lab_expert_pack_test.zip"
+    )
+
+    second_fake = RerunStreamlit(session_state=session_state)
+    expert_exports.render(lake_root, second_fake, exports_root=exports_root)
+
+    assert "expert_exports_generated_pack" not in session_state
+    assert any("已生成专家包" in str(value) for value in _call_values(second_fake, "success"))
+    downloads = _call_values(second_fake, "download_button")
+    assert downloads[0]["file_name"] == "quant_lab_expert_pack_test.zip"
+
+
 def test_expert_exports_summary_uses_mtime_for_latest_pack(tmp_path):
     exports_root = tmp_path / "exports"
     exports_root.mkdir()
@@ -925,6 +985,21 @@ class FakeStreamlit:
 
     def text_input(self, _label, value):
         return value
+
+
+class RerunStreamlit(FakeStreamlit):
+    def __init__(
+        self,
+        button_values: dict[str, bool] | None = None,
+        session_state: dict[str, str] | None = None,
+    ) -> None:
+        super().__init__(button_values=button_values)
+        self.session_state = session_state if session_state is not None else {}
+        self.rerun_count = 0
+
+    def rerun(self) -> None:
+        self.rerun_count += 1
+        self.calls.append(("rerun", None))
 
 
 class _FakeSpinner:

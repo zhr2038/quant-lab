@@ -33,9 +33,15 @@ def render(
 
     st.title("专家包导出")
     st.caption(f"导出根目录：{root}")
-    generated_pack = None
+    generated_pack = _consume_generated_pack(st)
+    if generated_pack is not None:
+        _success(st, f"已生成专家包：{generated_pack}")
     if _button(st, "生成今日专家包", key="generate_today_expert_pack"):
         generated_pack = _generate_today_pack(st, lake_root=Path(lake_root), exports_root=root)
+        if generated_pack is not None:
+            _remember_generated_pack(st, generated_pack)
+            if _rerun(st):
+                return
     _button(st, "刷新专家包列表", key="refresh_expert_pack_list")
 
     summary = readers.expert_export_summary(root)
@@ -184,7 +190,10 @@ def _render_pack_downloads(st: Any, packs: pl.DataFrame) -> None:
     if packs.is_empty() or "path" not in packs.columns or not hasattr(st, "download_button"):
         return
     st.subheader("下载")
-    for row in packs.sort("modified_at", descending=True).head(20).to_dicts():
+    # The caller may intentionally place a just-generated pack first even when
+    # filesystem mtimes are tied or stale on a remote volume. Preserve that
+    # order so the visible download list matches the success message.
+    for row in packs.head(20).to_dicts():
         path = Path(str(row["path"]))
         if not path.is_file():
             continue
@@ -236,6 +245,39 @@ def _warning(st: Any, value: str) -> None:
         st.warning(value)
     else:
         st.write(value)
+
+
+def _remember_generated_pack(st: Any, pack_path: Path) -> None:
+    session_state = getattr(st, "session_state", None)
+    if session_state is None:
+        return
+    try:
+        session_state["expert_exports_generated_pack"] = str(pack_path)
+    except (TypeError, AttributeError):
+        return
+
+
+def _consume_generated_pack(st: Any) -> Path | None:
+    session_state = getattr(st, "session_state", None)
+    if session_state is None:
+        return None
+    try:
+        value = session_state.pop("expert_exports_generated_pack", None)
+    except (TypeError, AttributeError):
+        return None
+    return Path(str(value)) if value else None
+
+
+def _rerun(st: Any) -> bool:
+    rerun = getattr(st, "rerun", None)
+    if callable(rerun):
+        rerun()
+        return True
+    experimental_rerun = getattr(st, "experimental_rerun", None)
+    if callable(experimental_rerun):
+        experimental_rerun()
+        return True
+    return False
 
 
 def _dict_rows(values: dict[str, Any]) -> pl.DataFrame:

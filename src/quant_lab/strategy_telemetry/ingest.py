@@ -116,6 +116,8 @@ def ingest_v5_bundle(
     redacted_archive_dir: Path,
     strategy: str = "v5",
     limits: BundleLimits | None = None,
+    run_analysis: bool = True,
+    refresh_candidate_gold: bool = True,
 ) -> V5BundleIngestResult:
     effective_limits = limits or BundleLimits()
     validation = validate_v5_bundle(bundle_path, effective_limits)
@@ -191,11 +193,15 @@ def ingest_v5_bundle(
 
         bronze_rows = _write_bronze(lake_root, inspection, validation, secret_scan, metadata)
         silver_rows, warnings = _write_silver(lake_root, redacted_root / "redacted_files", metadata)
-        candidate_gold_rows = _write_candidate_gold(lake_root, bundle_day)
+        candidate_gold_rows = (
+            _write_candidate_gold(lake_root, bundle_day) if refresh_candidate_gold else {}
+        )
 
-    from quant_lab.strategy_telemetry.analyze import analyze_v5_telemetry
+    analysis = None
+    if run_analysis:
+        from quant_lab.strategy_telemetry.analyze import analyze_v5_telemetry
 
-    analysis = analyze_v5_telemetry(lake_root, date=bundle_day)
+        analysis = analyze_v5_telemetry(lake_root, date=bundle_day)
     return V5BundleIngestResult(
         strategy=strategy,
         bundle_path=str(bundle_path),
@@ -220,29 +226,57 @@ def ingest_v5_inbox(
     redacted_archive_dir: Path,
     strategy: str = "v5",
     limits: BundleLimits | None = None,
+    max_bundles: int | None = None,
+    newest_first: bool = False,
+    max_skipped_files_reported: int | None = None,
+    run_analysis: bool = True,
+    refresh_candidate_gold: bool = True,
 ) -> V5InboxIngestResult:
     processed: list[V5BundleIngestResult] = []
     skipped: list[str] = []
-    for bundle_path in sorted(Path(inbox_dir).glob("v5_live_followup_bundle_*.tar.gz")):
+    warnings: list[str] = []
+    skipped_total = 0
+    existing_sha256s = _ingested_bundle_sha256s(lake_root)
+    bundle_paths = sorted(
+        Path(inbox_dir).glob("v5_live_followup_bundle_*.tar.gz"),
+        key=lambda path: path.name,
+        reverse=newest_first,
+    )
+    for bundle_path in bundle_paths:
+        if max_bundles is not None and len(processed) >= max_bundles:
+            break
         sha256 = compute_sha256(bundle_path)
-        if _already_ingested(lake_root, sha256):
-            skipped.append(str(bundle_path))
+        if sha256 in existing_sha256s:
+            skipped_total += 1
+            if max_skipped_files_reported is None or len(skipped) < max_skipped_files_reported:
+                skipped.append(str(bundle_path))
             continue
-        processed.append(
-            ingest_v5_bundle(
-                bundle_path=bundle_path,
-                lake_root=lake_root,
-                restricted_archive_dir=restricted_archive_dir,
-                redacted_archive_dir=redacted_archive_dir,
-                strategy=strategy,
-                limits=limits,
-            )
+        result = ingest_v5_bundle(
+            bundle_path=bundle_path,
+            lake_root=lake_root,
+            restricted_archive_dir=restricted_archive_dir,
+            redacted_archive_dir=redacted_archive_dir,
+            strategy=strategy,
+            limits=limits,
+            run_analysis=run_analysis,
+            refresh_candidate_gold=refresh_candidate_gold,
         )
+        processed.append(result)
+        existing_sha256s.add(sha256)
+    if max_skipped_files_reported is not None and skipped_total > len(skipped):
+        warnings.append(
+            f"skipped_files_truncated:{len(skipped)}_of_{skipped_total}_already_ingested"
+        )
+    if max_bundles is not None:
+        remaining = max(len([path for path in bundle_paths if path.exists()]) - len(processed), 0)
+        if remaining:
+            warnings.append(f"max_bundles_limit_applied:{max_bundles}")
     return V5InboxIngestResult(
         strategy=strategy,
         inbox_dir=str(inbox_dir),
         processed=processed,
         skipped_files=skipped,
+        warnings=warnings,
     )
 
 
@@ -1487,10 +1521,14 @@ def _json_safe_rows(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
 
 
 def _already_ingested(lake_root: Path, bundle_sha256: str) -> bool:
+    return bundle_sha256 in _ingested_bundle_sha256s(lake_root)
+
+
+def _ingested_bundle_sha256s(lake_root: Path) -> set[str]:
     existing = read_parquet_dataset(lake_root / BRONZE_DATASETS["bundle_manifest"])
-    return not existing.is_empty() and "bundle_sha256" in existing.columns and bundle_sha256 in set(
-        existing["bundle_sha256"].to_list()
-    )
+    if existing.is_empty() or "bundle_sha256" not in existing.columns:
+        return set()
+    return {str(value) for value in existing["bundle_sha256"].to_list() if value}
 
 
 def _read_json(path: Path) -> dict[str, Any]:

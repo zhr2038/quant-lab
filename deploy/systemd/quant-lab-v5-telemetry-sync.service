@@ -10,8 +10,9 @@ Group=quantlab
 WorkingDirectory=/opt/quant-lab
 Environment=POLARS_MAX_THREADS=1
 Environment=MALLOC_ARENA_MAX=2
-ExecStart=/opt/quant-lab/.venv/bin/qlab sync-v5-telemetry --config /etc/quant-lab/v5_telemetry_remote.yaml
-RuntimeMaxSec=8min
+Environment=QUANT_LAB_V5_SYNC_MAX_BUNDLES=1
+ExecStart=/usr/bin/timeout 7m /opt/quant-lab/.venv/bin/qlab sync-v5-telemetry --config /etc/quant-lab/v5_telemetry_remote.yaml --max-bundles 1 --newest-first --max-skipped-files-reported 20
+TimeoutStartSec=8min
 MemoryHigh=2G
 MemoryMax=3G
 NoNewPrivileges=true

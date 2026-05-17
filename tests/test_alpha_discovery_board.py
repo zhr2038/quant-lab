@@ -79,6 +79,7 @@ def test_daily_export_uses_alpha_discovery_board_lists(tmp_path):
         assert "reports/candidate_kill_list.csv" in names
         assert "reports/candidate_shadow_watchlist.csv" in names
         assert "reports/candidate_paper_ready.csv" in names
+        assert "reports/paper_strategy_proposals.csv" in names
         board = list(
             csv.DictReader(
                 io.StringIO(archive.read("reports/alpha_discovery_board.csv").decode("utf-8"))
@@ -96,6 +97,13 @@ def test_daily_export_uses_alpha_discovery_board_lists(tmp_path):
                 io.StringIO(archive.read("reports/candidate_paper_ready.csv").decode("utf-8"))
             )
         )
+        proposals = list(
+            csv.DictReader(
+                io.StringIO(
+                    archive.read("reports/paper_strategy_proposals.csv").decode("utf-8")
+                )
+            )
+        )
         data_quality = json.loads(archive.read("data_quality.json").decode("utf-8"))
         summary = archive.read("reports/strategy_evidence_summary.md").decode("utf-8")
 
@@ -107,6 +115,17 @@ def test_daily_export_uses_alpha_discovery_board_lists(tmp_path):
     }
     assert any(row["strategy_candidate"] == "v5.f3_dominant_entry" for row in watch)
     assert any(row["strategy_candidate"] == "v5.swing_f4_f5_alpha6" for row in paper)
+    proposal_ids = {row["proposal_id"] for row in proposals}
+    assert "SOL_PROTECT_ALPHA6_LOW_EXCEPTION_PAPER_V1" in proposal_ids
+    assert "SOL_F4_VOLUME_EXPANSION_PAPER_V1" in proposal_ids
+    sol_proposals = [row for row in proposals if row["symbol"] == "SOL-USDT"]
+    assert sol_proposals
+    assert {row["recommended_mode"] for row in sol_proposals} == {"paper"}
+    assert not any("LIVE_SMALL_READY" in json.dumps(row) for row in proposals)
+    assert all(
+        "cost_source_not_actual_or_mixed" in row["live_block_reason"]
+        for row in sol_proposals
+    )
     assert "v5.f3_dominant_entry" in summary
     assert not any(
         str(warning).startswith("strategy_evidence_present")
@@ -174,6 +193,24 @@ def _write_candidate_labels(lake: Path) -> None:
         regime="trend",
         net_values=[28.0] * 72,
         cost_source="mixed_actual_proxy",
+    )
+    _add_labels(
+        rows,
+        start=start,
+        candidate="v5.sol_protect_alpha6_low_exception",
+        symbol="SOL-USDT",
+        regime="protect",
+        net_values=[26.0] * 72,
+        cost_source="public_spread_proxy",
+    )
+    _add_labels(
+        rows,
+        start=start,
+        candidate="v5.f4_volume_expansion_entry",
+        symbol="SOL-USDT",
+        regime="trend",
+        net_values=[32.0] * 72,
+        cost_source="public_spread_proxy",
     )
     _add_labels(
         rows,

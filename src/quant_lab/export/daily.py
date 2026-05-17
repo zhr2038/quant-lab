@@ -176,6 +176,7 @@ REQUIRED_MEMBERS = [
     "reports/candidate_kill_list.csv",
     "reports/candidate_shadow_watchlist.csv",
     "reports/candidate_paper_ready.csv",
+    "reports/paper_strategy_proposals.csv",
     f"reports/{ENFORCE_READINESS_JSON}",
     f"reports/{ENFORCE_READINESS_CSV}",
 ]
@@ -474,6 +475,21 @@ CSV_SCHEMAS: dict[str, list[str]] = {
         "cost_source_mix",
         "decision",
         "decision_reasons",
+    ],
+    "reports/paper_strategy_proposals.csv": [
+        "proposal_id",
+        "strategy_candidate",
+        "symbol",
+        "recommended_mode",
+        "suggested_horizon",
+        "sample_count",
+        "avg_net_bps",
+        "win_rate",
+        "p25_net_bps",
+        "cost_source_mix",
+        "live_block_reason",
+        "as_of_date",
+        "created_at",
     ],
     "v5/v5_strategy_health.csv": [
         "strategy",
@@ -1240,6 +1256,10 @@ def _dataset_members(frames: dict[str, pl.DataFrame]) -> dict[str, _MemberPayloa
         "reports/candidate_paper_ready.csv": _csv_member(
             "reports/candidate_paper_ready.csv",
             _candidate_decision_rows(alpha_discovery_board, "PAPER_READY"),
+        ),
+        "reports/paper_strategy_proposals.csv": _csv_member(
+            "reports/paper_strategy_proposals.csv",
+            _paper_strategy_proposals_for_export(alpha_discovery_board),
         ),
         "risk/risk_permission.json": _json_text({"rows": _rows(risk)}),
         "risk/risk_flags.csv": _csv_text(_risk_flags(risk)),
@@ -2460,6 +2480,119 @@ def _candidate_decision_rows(board: pl.DataFrame, decision: str) -> pl.DataFrame
     ]
     selected = selected.sort(sort_columns) if sort_columns else selected
     return selected.select(CSV_SCHEMAS[path])
+
+
+PAPER_PROPOSAL_IDS = {
+    ("v5.sol_protect_alpha6_low_exception", "SOL-USDT"): (
+        "SOL_PROTECT_ALPHA6_LOW_EXCEPTION_PAPER_V1"
+    ),
+    ("v5.f4_volume_expansion_entry", "SOL-USDT"): "SOL_F4_VOLUME_EXPANSION_PAPER_V1",
+}
+
+
+def _paper_strategy_proposals_for_export(board: pl.DataFrame) -> pl.DataFrame:
+    path = "reports/paper_strategy_proposals.csv"
+    if board.is_empty() or "decision" not in board.columns:
+        return _empty_csv_schema_frame(path)
+    rows = [
+        row
+        for row in board.to_dicts()
+        if str(row.get("decision") or "").upper() == "PAPER_READY"
+        and str(row.get("symbol") or "").strip().upper() != "UNKNOWN"
+    ]
+    if not rows:
+        return _empty_csv_schema_frame(path)
+
+    best_by_candidate: dict[tuple[str, str], dict[str, Any]] = {}
+    for row in rows:
+        key = (str(row.get("strategy_candidate") or ""), str(row.get("symbol") or ""))
+        current = best_by_candidate.get(key)
+        if current is None or _paper_proposal_rank(row) > _paper_proposal_rank(current):
+            best_by_candidate[key] = row
+
+    created_at = datetime.now(UTC).isoformat()
+    proposals = [
+        {
+            "proposal_id": _paper_proposal_id(row),
+            "strategy_candidate": row.get("strategy_candidate"),
+            "symbol": row.get("symbol"),
+            "recommended_mode": "paper",
+            "suggested_horizon": _paper_suggested_horizon(row),
+            "sample_count": _optional_int(row.get("sample_count")),
+            "avg_net_bps": _optional_float(row.get("avg_net_bps")),
+            "win_rate": _optional_float(row.get("win_rate")),
+            "p25_net_bps": _optional_float(row.get("p25_net_bps")),
+            "cost_source_mix": row.get("cost_source_mix"),
+            "live_block_reason": safe_json_dumps(_paper_live_block_reasons(row)),
+            "as_of_date": row.get("as_of_date"),
+            "created_at": created_at,
+        }
+        for row in sorted(
+            best_by_candidate.values(),
+            key=lambda item: (
+                str(item.get("symbol") or ""),
+                str(item.get("strategy_candidate") or ""),
+            ),
+        )
+    ]
+    return pl.DataFrame(proposals).select(CSV_SCHEMAS[path])
+
+
+def _paper_proposal_rank(row: dict[str, Any]) -> tuple[float, float, int, int, int]:
+    return (
+        _optional_float(row.get("avg_net_bps")) or float("-inf"),
+        _optional_float(row.get("win_rate")) or float("-inf"),
+        _optional_int(row.get("complete_sample_count")) or 0,
+        _optional_int(row.get("sample_count")) or 0,
+        _optional_int(row.get("horizon_hours")) or 0,
+    )
+
+
+def _paper_proposal_id(row: dict[str, Any]) -> str:
+    candidate = str(row.get("strategy_candidate") or "")
+    symbol = str(row.get("symbol") or "")
+    mapped = PAPER_PROPOSAL_IDS.get((candidate, symbol))
+    if mapped:
+        return mapped
+    stem = candidate.removeprefix("v5.")
+    sanitized = "".join(char if char.isalnum() else "_" for char in f"{symbol}_{stem}")
+    return f"{sanitized.upper()}_PAPER_V1"
+
+
+def _paper_suggested_horizon(row: dict[str, Any]) -> str:
+    horizon = _optional_int(row.get("horizon_hours"))
+    return f"{horizon}h" if horizon is not None else ""
+
+
+def _paper_live_block_reasons(row: dict[str, Any]) -> list[str]:
+    reasons: list[str] = []
+    if not _cost_source_mix_has_actual_or_mixed(row.get("cost_source_mix")):
+        reasons.append("cost_source_not_actual_or_mixed")
+    paper_days = _optional_int(row.get("paper_days")) or 0
+    if paper_days < 14:
+        reasons.append("no_paper_days")
+    reasons.append("no_live_slippage_coverage")
+    return reasons
+
+
+def _cost_source_mix_has_actual_or_mixed(value: Any) -> bool:
+    text = safe_json_dumps(value) if isinstance(value, dict | list | tuple) else str(value or "")
+    text = text.lower()
+    return "actual" in text or "mixed_actual_proxy" in text
+
+
+def _optional_float(value: Any) -> float | None:
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return None
+
+
+def _optional_int(value: Any) -> int | None:
+    try:
+        return int(float(value))
+    except (TypeError, ValueError):
+        return None
 
 
 def _strategy_evidence_summary_md(

@@ -11,4 +11,4 @@ dist/
 .env
 .env.*
 !.env.example
-
+backups_codex_*/

@@ -53,6 +53,9 @@ def test_export_daily_pack_writes_required_members(tmp_path):
         assert manifest["git_commit"]
         assert "git_branch" in manifest
         assert "dirty_worktree" in manifest
+        assert "git_dirty" in manifest
+        assert manifest["provenance_status"] in {"git_clean", "git_dirty"}
+        assert manifest["code_provenance"] in {"ok", "degraded"}
         assert manifest["hostname"]
         assert manifest["python_version"]
         assert manifest["export_command"] == "qlab export-daily"
@@ -62,6 +65,9 @@ def test_export_daily_pack_writes_required_members(tmp_path):
         assert provenance["generated_at_beijing"].endswith("+08:00")
         assert "dataset_freshness" in manifest
         assert provenance["git_commit"]
+        assert "git_dirty" in provenance
+        assert provenance["provenance_status"] in {"git_clean", "git_dirty"}
+        assert provenance["code_provenance"] in {"ok", "degraded"}
         assert "freshness_seconds" in provenance["datasets"][0]
         assert "freshness_status" in provenance["datasets"][0]
         assert "v5/v5_strategy_health.csv" in names
@@ -71,6 +77,7 @@ def test_export_daily_pack_writes_required_members(tmp_path):
         executive_summary = archive.read("executive_summary.md").decode("utf-8")
         assert "quant_lab_enforce_readiness" in data_quality
         assert "shadow_only_recommended" in data_quality
+        assert any(check["name"] == "code_provenance_clean" for check in data_quality["checks"])
         assert "quant_lab_enforce_readiness:" in executive_summary
         assert "charts/market_close.png" in names
         assert archive.read("charts/market_close.png").startswith(b"\x89PNG")

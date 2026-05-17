@@ -1505,6 +1505,9 @@ def _manifest_payload(
         "git_commit": git["git_commit"],
         "git_branch": git["git_branch"],
         "dirty_worktree": git["dirty_worktree"],
+        "git_dirty": git["dirty_worktree"],
+        "provenance_status": git["provenance_status"],
+        "code_provenance": git["code_provenance"],
         "hostname": socket.gethostname(),
         "python_version": sys.version,
         "export_command": " ".join(command_line),
@@ -1859,6 +1862,9 @@ def _provenance_payload(
         "git_commit": git["git_commit"],
         "git_branch": git["git_branch"],
         "dirty_worktree": git["dirty_worktree"],
+        "git_dirty": git["dirty_worktree"],
+        "provenance_status": git["provenance_status"],
+        "code_provenance": git["code_provenance"],
         "hostname": socket.gethostname(),
         "python_version": sys.version,
         "export_command": " ".join(command_line),
@@ -1939,6 +1945,19 @@ def _data_quality_payload(
         max(0, int((generated_at - latest_v5_bundle_ts).total_seconds()))
         if latest_v5_bundle_ts is not None
         else None
+    )
+    git = _git_info()
+    checks.append(
+        _check(
+            "code_provenance_clean",
+            not git["dirty_worktree"],
+            (
+                f"git_commit={git['git_commit']}; "
+                f"git_branch={git['git_branch']}; "
+                f"provenance_status={git['provenance_status']}"
+            ),
+            severity="warning",
+        )
     )
 
     costs = snapshot.frames.get("cost_bucket_daily", pl.DataFrame())
@@ -4055,10 +4074,13 @@ def _sha256_file(path: Path) -> str:
 
 def _git_info() -> dict[str, Any]:
     root = Path(__file__).resolve().parents[3]
+    dirty = bool(_git_command(["status", "--porcelain"], root))
     return {
         "git_commit": _git_command(["rev-parse", "--short", "HEAD"], root),
         "git_branch": _git_command(["branch", "--show-current"], root),
-        "dirty_worktree": bool(_git_command(["status", "--porcelain"], root)),
+        "dirty_worktree": dirty,
+        "provenance_status": "git_dirty" if dirty else "git_clean",
+        "code_provenance": "degraded" if dirty else "ok",
     }
 
 

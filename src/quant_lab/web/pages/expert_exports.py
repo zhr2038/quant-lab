@@ -1,6 +1,9 @@
 from __future__ import annotations
 
 import json
+import os
+import subprocess
+import sys
 import zipfile
 from pathlib import Path
 from typing import Any
@@ -71,27 +74,11 @@ def _generate_today_pack(st: Any, *, lake_root: Path, exports_root: Path) -> Pat
     exports_root.mkdir(parents=True, exist_ok=True)
     try:
         with _spinner(st, f"正在生成 {export_date} 专家包..."):
-            refresh_warnings = _refresh_lake_before_export(lake_root, export_date=export_date)
-            result = export_daily_pack(
+            pack_path, refresh_warnings = _export_daily_from_web(
                 export_date=export_date,
                 lake_root=lake_root,
-                out_dir=exports_root,
-                profile="expert",
-                command_line=[
-                    "qlab",
-                    "export-daily",
-                    "--date",
-                    export_date,
-                    "--lake-root",
-                    str(lake_root),
-                    "--out-dir",
-                    str(exports_root),
-                ],
-                refresh_risk_permission=True,
-                risk_strategy="v5",
-                risk_version="5.0.0",
+                exports_root=exports_root,
             )
-        pack_path = Path(result.zip_path)
         pack_path.touch()
         _success(st, f"已生成专家包：{pack_path}")
         for warning in refresh_warnings:
@@ -100,6 +87,80 @@ def _generate_today_pack(st: Any, *, lake_root: Path, exports_root: Path) -> Pat
     except Exception as exc:
         _error(st, f"生成专家包失败：{exc}")
         return None
+
+
+def _export_daily_from_web(
+    *,
+    export_date: str,
+    lake_root: Path,
+    exports_root: Path,
+) -> tuple[Path, list[str]]:
+    if os.environ.get("QUANT_LAB_WEB_EXPORT_MODE", "in_process") == "subprocess":
+        return _export_daily_in_subprocess(
+            export_date=export_date,
+            lake_root=lake_root,
+            exports_root=exports_root,
+        )
+
+    refresh_warnings = _refresh_lake_before_export(lake_root, export_date=export_date)
+    result = export_daily_pack(
+        export_date=export_date,
+        lake_root=lake_root,
+        out_dir=exports_root,
+        profile="expert",
+        command_line=[
+            "qlab",
+            "export-daily",
+            "--date",
+            export_date,
+            "--lake-root",
+            str(lake_root),
+            "--out-dir",
+            str(exports_root),
+        ],
+        refresh_risk_permission=True,
+        risk_strategy="v5",
+        risk_version="5.0.0",
+    )
+    return Path(result.zip_path), refresh_warnings
+
+
+def _export_daily_in_subprocess(
+    *,
+    export_date: str,
+    lake_root: Path,
+    exports_root: Path,
+) -> tuple[Path, list[str]]:
+    script = (
+        "import json, sys;"
+        "from pathlib import Path;"
+        "from quant_lab.web.pages.expert_exports import _refresh_lake_before_export;"
+        "from quant_lab.export.daily import export_daily_pack;"
+        "lake=Path(sys.argv[1]); out=Path(sys.argv[2]); day=sys.argv[3];"
+        "warnings=_refresh_lake_before_export(lake, export_date=day);"
+        "result=export_daily_pack("
+        "export_date=day, lake_root=lake, out_dir=out, profile='expert',"
+        "command_line=['qlab','export-daily','--date',day,'--lake-root',str(lake),'--out-dir',str(out)],"
+        "refresh_risk_permission=True, risk_strategy='v5', risk_version='5.0.0');"
+        "print(json.dumps({'zip_path': result.zip_path, 'warnings': warnings}))"
+    )
+    completed = subprocess.run(
+        [sys.executable, "-c", script, str(lake_root), str(exports_root), export_date],
+        check=False,
+        capture_output=True,
+        text=True,
+        timeout=int(os.environ.get("QUANT_LAB_WEB_EXPORT_TIMEOUT_SECONDS", "1800")),
+    )
+    if completed.returncode != 0:
+        detail = (completed.stderr or completed.stdout).strip()
+        raise RuntimeError(
+            f"export subprocess failed with code {completed.returncode}: {detail[-2000:]}"
+        )
+    try:
+        payload = json.loads(completed.stdout.strip().splitlines()[-1])
+    except (IndexError, json.JSONDecodeError) as exc:
+        raise RuntimeError("export subprocess did not return valid JSON") from exc
+    return Path(str(payload["zip_path"])), list(payload.get("warnings") or [])
 
 
 def _refresh_lake_before_export(lake_root: Path, *, export_date: str) -> list[str]:

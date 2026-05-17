@@ -903,6 +903,35 @@ def test_expert_exports_generate_today_persists_pack_across_streamlit_rerun(
     assert downloads[0]["file_name"] == "quant_lab_expert_pack_test.zip"
 
 
+def test_expert_exports_subprocess_mode_parses_generated_pack(tmp_path, monkeypatch):
+    pack_path = tmp_path / "exports" / "quant_lab_expert_pack_subprocess.zip"
+    captured = {}
+
+    def fake_run(command, **kwargs):
+        captured["command"] = command
+        captured["kwargs"] = kwargs
+        return SimpleNamespace(
+            returncode=0,
+            stdout=json.dumps({"zip_path": str(pack_path), "warnings": ["sample_warning"]}),
+            stderr="",
+        )
+
+    monkeypatch.setenv("QUANT_LAB_WEB_EXPORT_MODE", "subprocess")
+    monkeypatch.setattr(expert_exports.subprocess, "run", fake_run)
+
+    result_path, warnings = expert_exports._export_daily_from_web(
+        export_date="2026-05-17",
+        lake_root=tmp_path / "lake",
+        exports_root=tmp_path / "exports",
+    )
+
+    assert result_path == pack_path
+    assert warnings == ["sample_warning"]
+    assert captured["command"][0]
+    assert captured["command"][1] == "-c"
+    assert captured["kwargs"]["capture_output"] is True
+
+
 def test_expert_exports_summary_uses_mtime_for_latest_pack(tmp_path):
     exports_root = tmp_path / "exports"
     exports_root.mkdir()

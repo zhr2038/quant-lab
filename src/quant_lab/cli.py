@@ -857,7 +857,6 @@ def sync_v5_telemetry_command(
     pull = RemoteBundlePuller().pull_bundles(cfg)
     inbox = None
     analysis = None
-    derived: dict[str, int | str] = {}
     if not cfg.dry_run:
         inbox = ingest_v5_inbox_dir(
             inbox_dir=cfg.local_inbox_dir,
@@ -873,38 +872,12 @@ def sync_v5_telemetry_command(
             refresh_candidate_gold=False,
         )
         analysis = analyze_v5_telemetry(lake_root=cfg.lake_root)
-        if inbox.processed:
-            analysis_date = analysis.date
-            candidate = build_and_publish_candidate_labels(cfg.lake_root, as_of_date=analysis_date)
-            evidence = build_and_publish_strategy_evidence(
-                cfg.lake_root,
-                as_of_date=analysis_date,
-            )
-            board = build_and_publish_alpha_discovery_board(
-                cfg.lake_root,
-                as_of_date=analysis_date,
-            )
-            readiness = write_enforce_readiness_report(
-                lake_root=cfg.lake_root,
-                out_dir=cfg.lake_root.parent / "exports",
-                strategy=cfg.strategy,
-                version="5.0.0",
-            )
-            derived = {
-                "candidate_label_rows": candidate.candidate_label_rows,
-                "candidate_quality_rows": candidate.candidate_quality_rows,
-                "strategy_evidence_rows": evidence.strategy_evidence_rows,
-                "strategy_evidence_sample_rows": evidence.strategy_evidence_sample_rows,
-                "alpha_discovery_board_rows": board.alpha_discovery_board_rows,
-                "enforce_readiness_status": readiness.readiness_status,
-            }
     typer.echo(
         json.dumps(
             {
                 "pull": pull.model_dump(mode="json"),
                 "inbox": inbox.model_dump(mode="json") if inbox else None,
                 "analysis": analysis.model_dump(mode="json") if analysis else None,
-                "derived": derived,
                 "max_bundles": effective_max_bundles,
                 "newest_first": newest_first,
             },

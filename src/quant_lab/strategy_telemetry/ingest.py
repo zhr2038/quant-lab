@@ -237,6 +237,7 @@ def ingest_v5_inbox(
     warnings: list[str] = []
     skipped_total = 0
     existing_sha256s = _ingested_bundle_sha256s(lake_root)
+    existing_names = _ingested_bundle_names(lake_root)
     bundle_paths = sorted(
         Path(inbox_dir).glob("v5_live_followup_bundle_*.tar.gz"),
         key=lambda path: path.name,
@@ -245,6 +246,11 @@ def ingest_v5_inbox(
     for bundle_path in bundle_paths:
         if max_bundles is not None and len(processed) >= max_bundles:
             break
+        if bundle_path.name in existing_names:
+            skipped_total += 1
+            if max_skipped_files_reported is None or len(skipped) < max_skipped_files_reported:
+                skipped.append(str(bundle_path))
+            continue
         sha256 = compute_sha256(bundle_path)
         if sha256 in existing_sha256s:
             skipped_total += 1
@@ -263,6 +269,7 @@ def ingest_v5_inbox(
         )
         processed.append(result)
         existing_sha256s.add(sha256)
+        existing_names.add(bundle_path.name)
     if max_skipped_files_reported is not None and skipped_total > len(skipped):
         warnings.append(
             f"skipped_files_truncated:{len(skipped)}_of_{skipped_total}_already_ingested"
@@ -1529,6 +1536,13 @@ def _ingested_bundle_sha256s(lake_root: Path) -> set[str]:
     if existing.is_empty() or "bundle_sha256" not in existing.columns:
         return set()
     return {str(value) for value in existing["bundle_sha256"].to_list() if value}
+
+
+def _ingested_bundle_names(lake_root: Path) -> set[str]:
+    existing = read_parquet_dataset(lake_root / BRONZE_DATASETS["bundle_manifest"])
+    if existing.is_empty() or "bundle_name" not in existing.columns:
+        return set()
+    return {str(value) for value in existing["bundle_name"].to_list() if value}
 
 
 def _read_json(path: Path) -> dict[str, Any]:

@@ -6,6 +6,7 @@ import subprocess
 import sys
 import zipfile
 from datetime import UTC, datetime
+from functools import lru_cache
 from pathlib import Path
 from typing import Any
 
@@ -17,6 +18,8 @@ from quant_lab.web import readers
 from quant_lab.web.pages._common import show_frame, show_warnings, streamlit_module
 
 WEB_EXPORT_MODE = "snapshot_only"
+DEFAULT_DOWNLOAD_PACK_LIMIT = 5
+DEFAULT_DOWNLOAD_MAX_BYTES = 128 * 1024 * 1024
 
 
 def render(
@@ -450,20 +453,73 @@ def _render_pack_downloads(st: Any, packs: pl.DataFrame) -> None:
     if packs.is_empty() or "path" not in packs.columns or not hasattr(st, "download_button"):
         return
     st.subheader("下载")
+    limit = _download_pack_limit()
+    max_bytes = _download_max_bytes()
     # The caller may intentionally place a just-generated pack first even when
     # filesystem mtimes are tied or stale on a remote volume. Preserve that
     # order so the visible download list matches the success message.
-    for row in packs.head(20).to_dicts():
+    rendered = 0
+    too_large: list[str] = []
+    for row in packs.to_dicts():
+        if rendered >= limit:
+            break
         path = Path(str(row["path"]))
         if not path.is_file():
             continue
+        stat = path.stat()
+        if stat.st_size > max_bytes:
+            too_large.append(f"{path.name} ({_format_bytes(stat.st_size)})")
+            continue
         st.download_button(
-            label=f"下载 {path.name}",
-            data=path.read_bytes(),
+            label=f"下载 {path.name} ({_format_bytes(stat.st_size)})",
+            data=_download_pack_bytes(str(path), stat.st_size, stat.st_mtime_ns),
             file_name=path.name,
             mime="application/zip",
             key=f"download-expert-pack-{path.name}",
         )
+        rendered += 1
+    if packs.height > rendered:
+        _caption(
+            st,
+            f"直接下载按钮仅加载最近 {rendered} 个可下载专家包；完整历史仍在上方列表中。",
+        )
+    if too_large:
+        _warning(
+            st,
+            "以下专家包超过 Web 直接下载上限，请从服务器路径下载："
+            + "；".join(too_large[:5]),
+        )
+
+
+@lru_cache(maxsize=8)
+def _download_pack_bytes(path: str, size_bytes: int, mtime_ns: int) -> bytes:
+    _ = (size_bytes, mtime_ns)
+    return Path(path).read_bytes()
+
+
+def _download_pack_limit() -> int:
+    return _positive_int_env("QUANT_LAB_WEB_DOWNLOAD_MAX_PACKS", DEFAULT_DOWNLOAD_PACK_LIMIT)
+
+
+def _download_max_bytes() -> int:
+    value = _positive_int_env("QUANT_LAB_WEB_DOWNLOAD_MAX_MB", 128)
+    return value * 1024 * 1024
+
+
+def _positive_int_env(name: str, default: int) -> int:
+    try:
+        value = int(os.environ.get(name, str(default)))
+    except ValueError:
+        return default
+    return value if value > 0 else default
+
+
+def _format_bytes(size_bytes: int) -> str:
+    if size_bytes < 1024:
+        return f"{size_bytes} B"
+    if size_bytes < 1024 * 1024:
+        return f"{size_bytes / 1024:.1f} KB"
+    return f"{size_bytes / (1024 * 1024):.1f} MB"
 
 
 def _button(st: Any, label: str, **kwargs: Any) -> bool:
@@ -510,6 +566,13 @@ def _warning(st: Any, value: str) -> None:
 def _info(st: Any, value: str) -> None:
     if hasattr(st, "info"):
         st.info(value)
+    else:
+        st.write(value)
+
+
+def _caption(st: Any, value: str) -> None:
+    if hasattr(st, "caption"):
+        st.caption(value)
     else:
         st.write(value)
 

@@ -907,6 +907,34 @@ def test_expert_exports_generated_pack_is_first_download_even_with_older_mtime(t
     assert downloads[0]["file_name"] == generated.name
 
 
+def test_expert_exports_download_buttons_are_bounded_to_recent_packs(tmp_path, monkeypatch):
+    exports_root = tmp_path / "exports"
+    exports_root.mkdir()
+    rows = []
+    for index in range(7):
+        pack = exports_root / f"quant_lab_expert_pack_2026-05-16_{index}.zip"
+        with zipfile.ZipFile(pack, "w") as archive:
+            archive.writestr("manifest.json", "{}")
+            archive.writestr("data_quality.json", "{}")
+            archive.writestr("expert_questions.md", "")
+        rows.append({"path": str(pack), "modified_at": f"2026-05-16T00:0{index}:00Z"})
+    monkeypatch.setenv("QUANT_LAB_WEB_DOWNLOAD_MAX_PACKS", "3")
+    expert_exports._download_pack_bytes.cache_clear()
+    fake = FakeStreamlit()
+
+    expert_exports._render_pack_downloads(fake, pl.DataFrame(rows))
+
+    downloads = _call_values(fake, "download_button")
+    assert [item["file_name"] for item in downloads] == [
+        "quant_lab_expert_pack_2026-05-16_0.zip",
+        "quant_lab_expert_pack_2026-05-16_1.zip",
+        "quant_lab_expert_pack_2026-05-16_2.zip",
+    ]
+    assert all(item["data"].startswith(b"PK") for item in downloads)
+    captions = _call_values(fake, "caption")
+    assert any("直接下载按钮仅加载最近 3 个" in str(value) for value in captions)
+
+
 def test_expert_exports_generate_today_persists_pack_across_streamlit_rerun(
     tmp_path,
     monkeypatch,

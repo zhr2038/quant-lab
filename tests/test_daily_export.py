@@ -122,6 +122,10 @@ def test_export_daily_ingests_pending_v5_inbox_before_snapshot(tmp_path):
     assert manifest["candidate_event_rows"] >= 1
     assert manifest["candidate_event_latest_ts"].startswith("2026-05-17T06:00:00")
     assert data_quality["v5_pre_export"]["processed_bundle_count"] == 1
+    assert not any(
+        "build_strategy_evidence" in str(warning)
+        for warning in manifest["pre_export_v5_refresh"]["warnings"]
+    )
 
 
 def test_export_daily_limits_pre_export_v5_ingest_to_latest_pending(tmp_path, monkeypatch):

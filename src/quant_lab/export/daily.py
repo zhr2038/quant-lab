@@ -1654,7 +1654,9 @@ def _refresh_v5_derived_outputs(lake_root: Path, export_day: date) -> list[str]:
             lambda: __import__(
                 "quant_lab.research.strategy_evidence",
                 fromlist=["build_and_publish_strategy_evidence"],
-            ).build_and_publish_strategy_evidence(lake_root, as_of_date=export_day),
+            ).build_and_publish_strategy_evidence(
+                lake_root, as_of_date=export_day.isoformat()
+            ),
         ),
         (
             "build_alpha_discovery_board",

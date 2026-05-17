@@ -889,10 +889,8 @@ def export_daily_pack(
         if pre_export_v5_refresh
         else _observe_v5_before_export(root, config_path=v5_telemetry_config)
     )
-    pre_export_warnings = [
-        str(warning) for warning in pre_export_v5.get("warnings", [])
-    ]
-    pre_export_warnings.extend(
+    pre_export_v5_warnings = [str(warning) for warning in pre_export_v5.get("warnings", [])]
+    pre_export_risk_warnings = (
         _refresh_risk_permission_before_export(root, strategy=risk_strategy, version=risk_version)
         if refresh_risk_permission
         else []
@@ -906,9 +904,11 @@ def export_daily_pack(
         generated_at,
         pre_export_risk_refresh_attempted=refresh_risk_permission,
         pre_export_v5=pre_export_v5,
-        pre_export_warnings=pre_export_warnings,
+        pre_export_warnings=pre_export_risk_warnings,
     )
-    warnings = sorted(set([*snapshot.warnings, *data_quality["warnings"]]))
+    warnings = sorted(
+        set([*snapshot.warnings, *pre_export_v5_warnings, *data_quality["warnings"]])
+    )
 
     members: dict[str, _MemberPayload] = {}
     members.update(_dataset_members(snapshot.frames))

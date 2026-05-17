@@ -228,6 +228,33 @@ def test_data_quality_fails_when_v5_bundle_is_stale_at_export(tmp_path):
     assert checks["v5_bundle_fresh_at_export"]["severity"] == "critical"
 
 
+def test_export_daily_observes_v5_inbox_when_refresh_is_disabled(tmp_path):
+    lake_root = _fixture_lake(tmp_path)
+    inbox = tmp_path / "inbox"
+    make_tar(
+        inbox / "v5_live_followup_bundle_20260517T100000Z.tar.gz",
+        {"summaries/window_summary.json": "{}"},
+    )
+    config = _v5_telemetry_config(tmp_path, inbox, lake_root)
+
+    result = export_daily_pack(
+        export_date="2026-05-17",
+        lake_root=lake_root,
+        out_dir=tmp_path / "exports",
+        command_line=["qlab", "export-daily"],
+        pre_export_v5_refresh=False,
+        v5_telemetry_config=config,
+    )
+
+    with zipfile.ZipFile(result.zip_path) as archive:
+        manifest = json.loads(archive.read("manifest.json").decode("utf-8"))
+
+    assert manifest["pre_export_v5_refresh"]["enabled"] is False
+    assert manifest["latest_v5_bundle_seen_at_export"].startswith("2026-05-17T10:00:00")
+    assert "latest_candidate_event_ts" in manifest
+    assert "v5_bundle_lag_seconds" in manifest
+
+
 def test_export_daily_pack_uses_unique_same_day_file_names(tmp_path):
     lake_root = _fixture_lake(tmp_path)
     out_dir = tmp_path / "exports"

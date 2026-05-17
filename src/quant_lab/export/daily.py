@@ -877,7 +877,7 @@ def export_daily_pack(
     pre_export_v5 = (
         _refresh_v5_before_export(root, day, config_path=v5_telemetry_config)
         if pre_export_v5_refresh
-        else {"enabled": False, "warnings": []}
+        else _observe_v5_before_export(root, config_path=v5_telemetry_config)
     )
     pre_export_warnings = [
         str(warning) for warning in pre_export_v5.get("warnings", [])
@@ -1553,6 +1553,37 @@ def _load_export_v5_config(
         "redacted_archive_dir": base / "archive" / "v5" / "bundles",
         "limits": None,
     }
+
+
+def _observe_v5_before_export(
+    lake_root: Path,
+    *,
+    config_path: str | Path | None = None,
+) -> dict[str, Any]:
+    context: dict[str, Any] = {
+        "enabled": False,
+        "processed_bundle_count": 0,
+        "skipped_bundle_count": 0,
+        "selected_bundle_count": 0,
+        "selected_bundle_names": [],
+        "latest_v5_bundle_seen_at_export": None,
+        "local_inbox_dir": None,
+        "warnings": [],
+    }
+    try:
+        cfg = _load_export_v5_config(lake_root, config_path=config_path)
+    except Exception as exc:  # pragma: no cover - production config errors vary.
+        context["warnings"] = [
+            "v5_pre_export_observation_failed: "
+            f"{type(exc).__name__}: {_safe_warning_text(str(exc))}"
+        ]
+        return context
+    inbox_dir = Path(cfg["local_inbox_dir"])
+    context["local_inbox_dir"] = str(inbox_dir)
+    context["latest_v5_bundle_seen_at_export"] = _iso_or_none(
+        _latest_v5_bundle_ts_in_inbox(inbox_dir)
+    )
+    return context
 
 
 def _latest_v5_bundle_ts_in_inbox(inbox_dir: Path) -> datetime | None:

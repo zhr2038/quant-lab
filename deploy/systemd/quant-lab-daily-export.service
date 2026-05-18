@@ -14,5 +14,4 @@ Environment=QUANT_LAB_EXPORT_V5_MAX_SCAN_BUNDLES=30
 MemoryHigh=4G
 MemoryMax=5G
 CPUQuota=80%
-ExecStartPre=/bin/systemctl start quant-lab-v5-telemetry-sync.service
 ExecStart=/bin/bash -lc '/usr/bin/timeout 20m /opt/quant-lab/.venv/bin/qlab export-daily --date "$(date +%%F)" --lake-root /var/lib/quant-lab/lake --out-dir /var/lib/quant-lab/exports --no-refresh-risk-permission --no-pre-export-v5-refresh'

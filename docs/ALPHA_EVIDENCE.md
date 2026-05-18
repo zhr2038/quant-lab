@@ -95,7 +95,12 @@ Candidate decisions are:
 exceptions remain shadow/protective candidates unless future policy explicitly
 changes their promotion cap. Alt impulse shadow evidence is evaluated by
 `regime_state` and can only emit `REGIME_SHADOW`, `KEEP_SHADOW`, or `KILL`;
-it is not eligible for paper/live promotion from this board. The strict BTC
+it is not eligible for paper/live promotion from this board. When V5 emits
+context fields, quant-lab preserves them on `v5_candidate_label` and
+`strategy_evidence_sample`: `risk_level`, `btc_trend_state`,
+`broad_market_positive_count`, `funding_state`, and `volatility_bucket`. The
+regime exports aggregate by `regime_state` first; the extra fields remain
+sample-level context for diagnostics and future refinements. The strict BTC
 leadership probe is matched only from explicit strict probe telemetry; broad BTC
 leadership blockers are not mixed into that candidate.
 

@@ -212,6 +212,11 @@ def test_strategy_evidence_builds_candidate_board_without_broad_btc_mixing(tmp_p
     )
     assert "candidate_id" in samples.columns
     assert "net_bps_after_cost" in samples.columns
+    sol_sample = samples.filter(pl.col("strategy_candidate") == "v5.sol_protect_exception").head(1)
+    assert sol_sample["btc_trend_state"][0] == "uptrend"
+    assert sol_sample["broad_market_positive_count"][0] == 4
+    assert sol_sample["funding_state"][0] == "neutral"
+    assert sol_sample["volatility_bucket"][0] == "medium"
 
 
 def test_strategy_evidence_incremental_mode_skips_old_raw_labels(tmp_path):
@@ -829,6 +834,11 @@ def _write_alpha_discovery_labels(lake: Path) -> None:
                 "cost_bps": 4.0,
                 "cost_source": "quant_lab",
                 "regime_state": "trend",
+                "risk_level": "normal",
+                "btc_trend_state": "uptrend",
+                "broad_market_positive_count": 4,
+                "funding_state": "neutral",
+                "volatility_bucket": "medium",
                 "created_at": start + timedelta(hours=index, minutes=1),
             }
         )

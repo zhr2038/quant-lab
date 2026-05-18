@@ -41,6 +41,12 @@ def test_candidate_snapshot_ingest_builds_events_labels_quality_and_summary(tmp_
     assert h4["candidate_id"] == expected_id
     assert h4["block_reason"] == "risk_gate"
     assert h4["strategy_candidate"] == "v5.btc_leadership_probe_strict"
+    assert h4["regime_state"] == "trend"
+    assert h4["risk_level"] == "LOW"
+    assert h4["btc_trend_state"] == "uptrend"
+    assert h4["broad_market_positive_count"] == 3
+    assert h4["funding_state"] == "neutral"
+    assert h4["volatility_bucket"] == "medium"
     assert h4["win"] is True
     assert h4["gross_bps"] == pytest.approx(((106.0 / 102.0) - 1.0) * 10_000.0)
     assert h4["net_bps_after_cost"] == pytest.approx(h4["gross_bps"] - 3.5)
@@ -103,6 +109,11 @@ def _candidate_event(candidate_id: str, ts: datetime) -> dict[str, object]:
         "cost_bps": 3.5,
         "cost_source": "mixed_actual_proxy",
         "regime_state": "TRENDING",
+        "risk_level": "normal",
+        "btc_trend_state": "uptrend",
+        "broad_market_positive_count": 3,
+        "funding_state": "neutral",
+        "volatility_bucket": "medium",
         "bundle_ts": ts,
         "ingest_ts": ts,
     }

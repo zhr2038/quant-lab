@@ -99,6 +99,10 @@ SAMPLE_SCHEMA: dict[str, Any] = {
     "alpha6_side": pl.Utf8,
     "protect_level": pl.Utf8,
     "risk_level": pl.Utf8,
+    "btc_trend_state": pl.Utf8,
+    "broad_market_positive_count": pl.Int64,
+    "funding_state": pl.Utf8,
+    "volatility_bucket": pl.Utf8,
     "source_path_inside_bundle": pl.Utf8,
     "source_event_key": pl.Utf8,
     "source_bundle_ts": pl.Datetime(time_zone="UTC"),
@@ -650,6 +654,17 @@ def _sample_from_candidate_label(
         "alpha6_side": str(label.get("alpha6_side") or event.get("alpha6_side") or ""),
         "protect_level": str(label.get("protect_level") or event.get("protect_level") or ""),
         "risk_level": str(label.get("risk_level") or event.get("risk_level") or ""),
+        "btc_trend_state": str(
+            label.get("btc_trend_state") or event.get("btc_trend_state") or ""
+        ),
+        "broad_market_positive_count": _int_or_none(
+            label.get("broad_market_positive_count")
+            or event.get("broad_market_positive_count")
+        ),
+        "funding_state": str(label.get("funding_state") or event.get("funding_state") or ""),
+        "volatility_bucket": str(
+            label.get("volatility_bucket") or event.get("volatility_bucket") or ""
+        ),
         "source_path_inside_bundle": str(
             label.get("source_path_inside_bundle")
             or event.get("source_path_inside_bundle")
@@ -832,6 +847,18 @@ def _sample_from_outcome_row(
             ["protect_level", "protection_level", "auto_risk_level", "risk_level"],
         ),
         "risk_level": _first_text(row, payload, ["risk_level", "auto_risk_level"]),
+        "btc_trend_state": _first_text(
+            row,
+            payload,
+            ["btc_trend_state", "btc_state", "btc_regime"],
+        ),
+        "broad_market_positive_count": _first_int(
+            row,
+            payload,
+            ["broad_market_positive_count", "positive_count", "breadth_positive_count"],
+        ),
+        "funding_state": _first_text(row, payload, ["funding_state"]),
+        "volatility_bucket": _first_text(row, payload, ["volatility_bucket", "vol_bucket"]),
         "source_path_inside_bundle": str(row.get("source_path_inside_bundle") or ""),
         "source_event_key": source_event_key,
         "source_bundle_ts": _first_timestamp(row, payload, ["bundle_ts", "ingest_ts"]),
@@ -2212,6 +2239,10 @@ def _first_text(row: dict[str, Any], payload: dict[str, Any], keys: list[str]) -
 
 def _first_numeric(row: dict[str, Any], payload: dict[str, Any], keys: list[str]) -> float | None:
     return _finite_float(_first_value(row, payload, keys))
+
+
+def _first_int(row: dict[str, Any], payload: dict[str, Any], keys: list[str]) -> int | None:
+    return _int_or_none(_first_value(row, payload, keys))
 
 
 def _first_existing_numeric(row: dict[str, Any], keys: list[str]) -> float | None:

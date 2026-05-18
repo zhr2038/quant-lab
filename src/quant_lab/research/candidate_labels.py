@@ -72,6 +72,10 @@ LABEL_SCHEMA = {
     "alpha6_side": pl.Utf8,
     "regime_state": pl.Utf8,
     "risk_level": pl.Utf8,
+    "btc_trend_state": pl.Utf8,
+    "broad_market_positive_count": pl.Int64,
+    "funding_state": pl.Utf8,
+    "volatility_bucket": pl.Utf8,
     "protect_level": pl.Utf8,
     "final_score": pl.Float64,
     "expected_edge_bps": pl.Float64,
@@ -458,6 +462,20 @@ def _base_label_row(
         "alpha6_side": _clean_text(_first_value(event, payload, ["alpha6_side"])),
         "regime_state": _clean_text(_first_value(event, payload, ["regime_state", "regime"])),
         "risk_level": _clean_text(_first_value(event, payload, ["risk_level"])),
+        "btc_trend_state": _clean_text(
+            _first_value(event, payload, ["btc_trend_state", "btc_state", "btc_regime"])
+        ),
+        "broad_market_positive_count": _finite_int(
+            _first_value(
+                event,
+                payload,
+                ["broad_market_positive_count", "positive_count", "breadth_positive_count"],
+            )
+        ),
+        "funding_state": _clean_text(_first_value(event, payload, ["funding_state"])),
+        "volatility_bucket": _clean_text(
+            _first_value(event, payload, ["volatility_bucket", "vol_bucket"])
+        ),
         "protect_level": _clean_text(_first_value(event, payload, ["protect_level"])),
         "final_score": _finite_float(_first_value(event, payload, ["final_score", "score"])),
         "expected_edge_bps": _finite_float(_first_value(event, payload, ["expected_edge_bps"])),
@@ -774,6 +792,11 @@ def _finite_float(value: Any) -> float | None:
     except (TypeError, ValueError):
         return None
     return number if math.isfinite(number) else None
+
+
+def _finite_int(value: Any) -> int | None:
+    number = _finite_float(value)
+    return int(number) if number is not None else None
 
 
 def _float_values(rows: list[dict[str, Any]], column: str) -> list[float]:

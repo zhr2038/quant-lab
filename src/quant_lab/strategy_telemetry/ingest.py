@@ -179,6 +179,11 @@ def ingest_v5_bundle(
     with tempfile.TemporaryDirectory(prefix="quant_lab_v5_bundle_") as temp_name:
         extracted_dir = Path(temp_name) / "extracted"
         safe_extract_v5_bundle(bundle_path, extracted_dir, effective_limits)
+        pruned_historical_outcomes = (
+            _prune_historical_outcome_files(extracted_dir)
+            if not include_historical_outcomes
+            else []
+        )
         secret_scan = scan_for_secrets(extracted_dir)
         redaction = redact_extracted_bundle(extracted_dir, redacted_root / "redacted_files")
 
@@ -204,12 +209,16 @@ def ingest_v5_bundle(
         _write_archive_json(redacted_root, "provenance.json", metadata)
 
         bronze_rows = _write_bronze(lake_root, inspection, validation, secret_scan, metadata)
+        prune_warnings = [
+            f"skipped_historical_outcome_file:{path}" for path in pruned_historical_outcomes
+        ]
         silver_rows, warnings = _write_silver(
             lake_root,
             redacted_root / "redacted_files",
             metadata,
             include_historical_outcomes=include_historical_outcomes,
         )
+        warnings = prune_warnings + warnings
         candidate_gold_rows = (
             _write_candidate_gold(lake_root, bundle_day) if refresh_candidate_gold else {}
         )
@@ -408,6 +417,18 @@ def _write_silver(
 
 def _is_historical_outcome_path(logical: str) -> bool:
     return logical.startswith(HISTORICAL_OUTCOME_PATH_PREFIXES)
+
+
+def _prune_historical_outcome_files(extracted_dir: Path) -> list[str]:
+    pruned: list[str] = []
+    for file_path in sorted(path for path in extracted_dir.rglob("*") if path.is_file()):
+        relative = file_path.relative_to(extracted_dir).as_posix()
+        logical = _logical_bundle_path(relative)
+        if not _is_historical_outcome_path(logical):
+            continue
+        file_path.unlink()
+        pruned.append(logical)
+    return pruned
 
 
 def _write_candidate_gold(lake_root: Path, bundle_day: str) -> dict[str, int]:

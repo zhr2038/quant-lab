@@ -61,7 +61,12 @@ def _read_analysis_dataset(dataset_path: Path, columns: list[str]) -> pl.DataFra
         return pl.DataFrame()
 
 
-def analyze_v5_telemetry(lake_root: Path, date: str | None = None) -> V5TelemetryAnalysisResult:
+def analyze_v5_telemetry(
+    lake_root: Path,
+    date: str | None = None,
+    *,
+    refresh_candidate_gold: bool = True,
+) -> V5TelemetryAnalysisResult:
     root = Path(lake_root)
     analysis_date = date or datetime.now(UTC).date().isoformat()
     manifest = _read_analysis_dataset(
@@ -477,9 +482,10 @@ def analyze_v5_telemetry(lake_root: Path, date: str | None = None) -> V5Telemetr
         fallback_count=fallback_count,
         quant_lab_summary=quant_lab_summary,
     )
-    _build_candidate_labels_safely(root, analysis_date)
-    _build_alpha_discovery_board_safely(root, analysis_date)
-    _build_strategy_evidence_safely(root, analysis_date)
+    if refresh_candidate_gold:
+        _build_candidate_labels_safely(root, analysis_date)
+        _build_alpha_discovery_board_safely(root, analysis_date)
+        _build_strategy_evidence_safely(root, analysis_date)
     return result
 
 

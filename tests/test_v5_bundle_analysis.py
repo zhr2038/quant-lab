@@ -2,6 +2,7 @@ from datetime import UTC, datetime
 
 import polars as pl
 
+import quant_lab.strategy_telemetry.analyze as analyze_module
 from quant_lab.data.lake import read_parquet_dataset, write_parquet_dataset
 from quant_lab.strategy_telemetry.analyze import analyze_v5_telemetry
 from quant_lab.strategy_telemetry.ingest import ingest_v5_bundle
@@ -38,6 +39,37 @@ def test_analyze_flags_missing_recent_bundle(tmp_path):
 
     assert result.status == "WARNING"
     assert "latest bundle is older than 24 hours" in result.warnings
+
+
+def test_analyze_can_skip_candidate_gold_refresh(tmp_path, monkeypatch):
+    lake = tmp_path / "lake"
+    _write_manifest(lake)
+    called: list[str] = []
+
+    monkeypatch.setattr(
+        analyze_module,
+        "_build_candidate_labels_safely",
+        lambda *_args, **_kwargs: called.append("labels"),
+    )
+    monkeypatch.setattr(
+        analyze_module,
+        "_build_alpha_discovery_board_safely",
+        lambda *_args, **_kwargs: called.append("board"),
+    )
+    monkeypatch.setattr(
+        analyze_module,
+        "_build_strategy_evidence_safely",
+        lambda *_args, **_kwargs: called.append("evidence"),
+    )
+
+    result = analyze_v5_telemetry(
+        lake,
+        date="2026-05-10",
+        refresh_candidate_gold=False,
+    )
+
+    assert result.strategy == "v5"
+    assert called == []
 
 
 def test_analyze_detects_high_score_blocked_issue(tmp_path):

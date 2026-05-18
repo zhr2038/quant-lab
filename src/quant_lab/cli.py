@@ -955,11 +955,19 @@ def ingest_v5_inbox_command(
 def analyze_v5_telemetry_command(
     lake_root: Annotated[Path, typer.Option("--lake-root")],
     date: Annotated[str | None, typer.Option("--date")] = None,
+    refresh_candidate_gold: Annotated[
+        bool,
+        typer.Option("--refresh-candidate-gold/--skip-candidate-gold"),
+    ] = True,
 ) -> None:
     result = run_with_job_metrics(
         lake_root=lake_root,
         job_name="analyze-v5-telemetry",
-        func=lambda: analyze_v5_telemetry(lake_root=lake_root, date=date),
+        func=lambda: analyze_v5_telemetry(
+            lake_root=lake_root,
+            date=date,
+            refresh_candidate_gold=refresh_candidate_gold,
+        ),
     )
     typer.echo(result.model_dump_json(indent=2))
 
@@ -1005,7 +1013,10 @@ def sync_v5_telemetry_command(
                 refresh_candidate_gold=False,
                 include_historical_outcomes=include_historical_outcomes,
             )
-            analysis = analyze_v5_telemetry(lake_root=cfg.lake_root)
+            analysis = analyze_v5_telemetry(
+                lake_root=cfg.lake_root,
+                refresh_candidate_gold=False,
+            )
         return {
             "pull": pull.model_dump(mode="json"),
             "inbox": inbox.model_dump(mode="json") if inbox else None,

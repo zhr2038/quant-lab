@@ -2,9 +2,11 @@ from __future__ import annotations
 
 import json
 from datetime import UTC, datetime, timedelta
+from pathlib import Path
 
 import polars as pl
 
+import quant_lab.reports.enforce_readiness as readiness
 from quant_lab.data.lake import write_parquet_dataset
 from quant_lab.reports.enforce_readiness import (
     build_enforce_readiness_report,
@@ -105,6 +107,69 @@ def test_enforce_readiness_ready_when_all_checks_pass(tmp_path):
 
     assert report.readiness_status == "READY"
     assert report.shadow_only_recommended is False
+
+
+def test_enforce_readiness_uses_lazy_telemetry_counts(tmp_path, monkeypatch):
+    lake = tmp_path / "lake"
+    _write_common_ready_inputs(lake)
+    _write_cost_rows(lake, source="mixed_actual_proxy")
+    now = datetime.now(UTC)
+    write_parquet_dataset(
+        pl.DataFrame(
+            [
+                {
+                    "strategy": "v5",
+                    "event_key": "request-1",
+                    "event_type": "request",
+                    "endpoint": "/v1/costs/estimate",
+                    "ts_utc": now.isoformat(),
+                    "raw_payload_json": "{}",
+                },
+                {
+                    "strategy": "v5",
+                    "event_key": "request-2",
+                    "event_type": "request",
+                    "endpoint": "/v1/risk/live-permission",
+                    "ts_utc": now.isoformat(),
+                    "raw_payload_json": "{}",
+                },
+            ]
+        ),
+        lake / "silver/v5_quant_lab_request",
+    )
+    write_parquet_dataset(
+        pl.DataFrame(
+            [
+                {
+                    "strategy": "v5",
+                    "event_key": "fallback-1",
+                    "event_type": "fallback",
+                    "endpoint": "/v1/costs/estimate",
+                    "ts_utc": now.isoformat(),
+                    "raw_payload_json": "{}",
+                }
+            ]
+        ),
+        lake / "silver/v5_quant_lab_fallback",
+    )
+
+    original_rows = readiness._rows
+
+    def guarded_rows(dataset_path):
+        if Path(dataset_path).name in {
+            "v5_decision_audit",
+            "v5_quant_lab_request",
+            "v5_quant_lab_fallback",
+        }:
+            raise AssertionError("large telemetry datasets must not be materialized")
+        return original_rows(dataset_path)
+
+    monkeypatch.setattr(readiness, "_rows", guarded_rows)
+
+    report = readiness.build_enforce_readiness_report(lake)
+
+    assert report.metrics["decision_audit_count"] == 1
+    assert report.metrics["event_key_coverage"] == 1.0
 
 
 def test_actual_or_mixed_coverage_ignores_stale_mixed_when_fresh_proxy_exists(

@@ -6,12 +6,13 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
+import polars as pl
 from pydantic import BaseModel, ConfigDict, Field
 
 from quant_lab.contracts.models import RiskPermission
 from quant_lab.contracts.v5_quant_lab import V5_QUANT_LAB_CONTRACT_VERSION
 from quant_lab.costs.model import _row_is_stale, estimate_cost_from_cost_bucket_daily_rows
-from quant_lab.data.lake import read_parquet_dataset
+from quant_lab.data.lake import read_parquet_dataset, read_parquet_lazy
 from quant_lab.risk.publish import is_permission_status_enforceable
 from quant_lab.symbols import normalize_symbol
 
@@ -438,8 +439,12 @@ def _telemetry_metrics(
     strategy_health: dict[str, Any],
     limits: EnforceReadinessThresholds,
 ) -> dict[str, Any]:
-    decisions = _rows(root / "silver" / "v5_decision_audit")
-    decision_count = int(strategy_health.get("decision_audit_count_24h") or len(decisions))
+    strategy_decision_count = strategy_health.get("decision_audit_count_24h")
+    decision_count = (
+        int(strategy_decision_count)
+        if strategy_decision_count is not None
+        else _dataset_row_count(root / "silver" / "v5_decision_audit")
+    )
     duplicate_rate = _float(strategy_health.get("duplicate_rate"))
     fallback_rate = _float(strategy_health.get("fallback_rate"))
     raw_imported_rows = _int(strategy_health.get("raw_imported_rows"))
@@ -492,14 +497,71 @@ def _telemetry_metrics(
 
 
 def _event_key_coverage(root: Path) -> float:
-    rows = [
-        *_rows(root / "silver" / "v5_quant_lab_request"),
-        *_rows(root / "silver" / "v5_quant_lab_fallback"),
-    ]
-    if not rows:
+    total = 0
+    keyed = 0
+    for dataset in [
+        root / "silver" / "v5_quant_lab_request",
+        root / "silver" / "v5_quant_lab_fallback",
+    ]:
+        metrics = _event_key_dataset_metrics(dataset)
+        total += metrics["total"]
+        keyed += metrics["keyed"]
+    if total == 0:
         return 1.0
-    keyed = sum(1 for row in rows if str(row.get("event_key") or "").strip())
-    return keyed / len(rows)
+    return keyed / total
+
+
+def _dataset_row_count(dataset_path: Path) -> int:
+    try:
+        frame = read_parquet_lazy(dataset_path).select(pl.len().alias("rows"))
+        metrics = _collect_lazy(frame)
+    except Exception:
+        return 0
+    if metrics.is_empty() or "rows" not in metrics.columns:
+        return 0
+    return int(metrics["rows"][0] or 0)
+
+
+def _event_key_dataset_metrics(dataset_path: Path) -> dict[str, int]:
+    try:
+        lazy = read_parquet_lazy(dataset_path)
+        schema = lazy.collect_schema()
+        columns = set(schema.names())
+        keyed_expr = (
+            pl.col("event_key")
+            .cast(pl.Utf8)
+            .str.strip_chars()
+            .ne("")
+            .fill_null(False)
+            .sum()
+            .alias("keyed")
+            if "event_key" in columns
+            else pl.lit(0).alias("keyed")
+        )
+        metrics = _collect_lazy(
+            lazy.select(
+                pl.len().alias("total"),
+                keyed_expr,
+            )
+        )
+    except Exception:
+        return {"total": 0, "keyed": 0}
+    if metrics.is_empty():
+        return {"total": 0, "keyed": 0}
+    return {
+        "total": int(metrics["total"][0] or 0),
+        "keyed": int(metrics["keyed"][0] or 0),
+    }
+
+
+def _collect_lazy(frame: pl.LazyFrame) -> pl.DataFrame:
+    try:
+        return frame.collect(engine="streaming")
+    except TypeError:
+        try:
+            return frame.collect(streaming=True)
+        except TypeError:
+            return frame.collect()
 
 
 def _dedupe_health(

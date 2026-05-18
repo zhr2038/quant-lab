@@ -774,6 +774,7 @@ def test_expert_exports_generate_today_button_invokes_export(tmp_path, monkeypat
             archive.writestr("expert_questions.md", "")
         return SimpleNamespace(zip_path=str(pack_path), warnings=[])
 
+    monkeypatch.setenv("QUANT_LAB_WEB_ON_DEMAND_EXPORT", "true")
     monkeypatch.setenv("QUANT_LAB_WEB_EXPORT_BACKGROUND", "false")
     monkeypatch.setattr(expert_exports, "export_daily_pack", fake_export_daily_pack)
 
@@ -809,7 +810,8 @@ def test_expert_exports_generate_today_button_starts_background_job(tmp_path, mo
         captured["kwargs"] = kwargs
         return FakeProcess()
 
-    monkeypatch.delenv("QUANT_LAB_WEB_EXPORT_BACKGROUND", raising=False)
+    monkeypatch.setenv("QUANT_LAB_WEB_ON_DEMAND_EXPORT", "true")
+    monkeypatch.setenv("QUANT_LAB_WEB_EXPORT_BACKGROUND", "true")
     monkeypatch.setattr(expert_exports, "beijing_today", lambda: datetime(2026, 5, 10).date())
     monkeypatch.setattr(expert_exports.subprocess, "Popen", fake_popen)
     monkeypatch.setattr(expert_exports, "_pid_is_running", lambda pid: pid == 4242)
@@ -849,6 +851,7 @@ def test_expert_exports_generate_today_uses_beijing_date_and_creates_export_dir(
         return SimpleNamespace(zip_path=str(pack_path), warnings=[])
 
     monkeypatch.setattr(expert_exports, "beijing_today", lambda: datetime(2026, 5, 16).date())
+    monkeypatch.setenv("QUANT_LAB_WEB_ON_DEMAND_EXPORT", "true")
     monkeypatch.setenv("QUANT_LAB_WEB_EXPORT_BACKGROUND", "false")
     monkeypatch.setattr(expert_exports, "export_daily_pack", fake_export_daily_pack)
 
@@ -955,6 +958,7 @@ def test_expert_exports_generate_today_persists_pack_across_streamlit_rerun(
             archive.writestr("expert_questions.md", "")
         return SimpleNamespace(zip_path=str(pack_path), warnings=[])
 
+    monkeypatch.setenv("QUANT_LAB_WEB_ON_DEMAND_EXPORT", "true")
     monkeypatch.setenv("QUANT_LAB_WEB_EXPORT_BACKGROUND", "false")
     monkeypatch.setattr(expert_exports, "export_daily_pack", fake_export_daily_pack)
 
@@ -972,6 +976,74 @@ def test_expert_exports_generate_today_persists_pack_across_streamlit_rerun(
     assert any("已生成专家包" in str(value) for value in _call_values(second_fake, "success"))
     downloads = _call_values(second_fake, "download_button")
     assert downloads[0]["file_name"] == "quant_lab_expert_pack_test.zip"
+
+
+def test_expert_exports_generate_today_reuses_existing_pack_by_default(tmp_path, monkeypatch):
+    lake_root = _fixture_lake(tmp_path)
+    exports_root = tmp_path / "exports"
+    exports_root.mkdir(exist_ok=True)
+    pack = exports_root / "quant_lab_expert_pack_2026-05-16_existing.zip"
+    with zipfile.ZipFile(pack, "w") as archive:
+        archive.writestr("manifest.json", json.dumps({"fresh": True}))
+        archive.writestr("data_quality.json", "{}")
+        archive.writestr("expert_questions.md", "")
+    fake = RerunStreamlit(
+        button_values={"生成今日专家包": True},
+        session_state={},
+    )
+
+    def fail_export_daily_pack(**_kwargs):
+        raise AssertionError("web should not run on-demand export by default")
+
+    monkeypatch.delenv("QUANT_LAB_WEB_ON_DEMAND_EXPORT", raising=False)
+    monkeypatch.setattr(expert_exports, "beijing_today", lambda: datetime(2026, 5, 16).date())
+    monkeypatch.setattr(expert_exports, "export_daily_pack", fail_export_daily_pack)
+
+    expert_exports.render(lake_root, fake, exports_root=exports_root)
+
+    assert fake.rerun_count == 1
+    assert fake.session_state["expert_exports_generated_pack"] == str(pack)
+
+
+def test_expert_exports_generate_today_missing_pack_does_not_export_by_default(
+    tmp_path, monkeypatch
+):
+    lake_root = _fixture_lake(tmp_path)
+    fake = FakeStreamlit(button_values={"生成今日专家包": True})
+
+    def fail_export_daily_pack(**_kwargs):
+        raise AssertionError("web should not run on-demand export by default")
+
+    monkeypatch.delenv("QUANT_LAB_WEB_ON_DEMAND_EXPORT", raising=False)
+    monkeypatch.setattr(expert_exports, "beijing_today", lambda: datetime(2026, 5, 16).date())
+    monkeypatch.setattr(expert_exports, "export_daily_pack", fail_export_daily_pack)
+
+    expert_exports.render(lake_root, fake, exports_root=tmp_path / "exports")
+
+    warnings = _call_values(fake, "warning")
+    assert any("Web 不直接运行重计算" in str(value) for value in warnings)
+
+
+def test_expert_exports_stale_running_job_is_marked_failed(tmp_path, monkeypatch):
+    exports_root = tmp_path / "exports"
+    exports_root.mkdir()
+    status_path = exports_root / ".quant_lab_web_export_2026-05-16.json"
+    status_path.write_text(
+        json.dumps(
+            {
+                "state": "running",
+                "pid": 4242,
+                "started_at": "2026-05-16T00:00:00+00:00",
+            }
+        ),
+        encoding="utf-8",
+    )
+    monkeypatch.setenv("QUANT_LAB_WEB_EXPORT_STATUS_STALE_SECONDS", "1")
+
+    status = expert_exports._poll_export_job(exports_root, "2026-05-16")
+
+    assert status["state"] == "failed"
+    assert "exceeded web status timeout" in status["error"]
 
 
 def test_expert_exports_subprocess_mode_parses_generated_pack(tmp_path, monkeypatch):

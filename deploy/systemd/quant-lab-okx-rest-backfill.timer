@@ -2,7 +2,7 @@
 Description=Run quant-lab OKX public REST backfill every hour
 
 [Timer]
-OnActiveSec=5min
+OnActiveSec=15min
 OnUnitActiveSec=1h
 RandomizedDelaySec=2min
 Persistent=false

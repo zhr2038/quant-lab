@@ -2,9 +2,9 @@
 Description=Run quant-lab V5 telemetry analysis every 30 minutes
 
 [Timer]
-OnActiveSec=8min
+OnActiveSec=30min
 OnUnitActiveSec=30min
-RandomizedDelaySec=2min
+RandomizedDelaySec=5min
 Persistent=false
 
 [Install]

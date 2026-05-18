@@ -2,7 +2,7 @@
 Description=Run quant-lab cost calibration every 60 minutes
 
 [Timer]
-OnActiveSec=10min
+OnActiveSec=35min
 OnUnitActiveSec=60min
 RandomizedDelaySec=5min
 Persistent=false

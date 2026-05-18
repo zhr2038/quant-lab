@@ -20,6 +20,7 @@ from quant_lab.web.pages._common import show_frame, show_warnings, streamlit_mod
 WEB_EXPORT_MODE = "snapshot_only"
 DEFAULT_DOWNLOAD_PACK_LIMIT = 5
 DEFAULT_DOWNLOAD_MAX_BYTES = 128 * 1024 * 1024
+DEFAULT_EXPORT_STATUS_STALE_SECONDS = 30 * 60
 
 
 def render(
@@ -47,7 +48,17 @@ def render(
     if generated_pack is not None:
         _success(st, f"已生成专家包：{generated_pack}")
     if _button(st, "生成今日专家包", key="generate_today_expert_pack"):
-        if _web_background_export_enabled():
+        if not _web_on_demand_export_enabled():
+            generated_pack = _reuse_latest_today_pack(
+                st,
+                export_date=export_date,
+                exports_root=root,
+            )
+            if generated_pack is not None:
+                _remember_generated_pack(st, generated_pack)
+                if _rerun(st):
+                    return
+        elif _web_background_export_enabled():
             started = _start_export_job(
                 export_date=export_date,
                 lake_root=Path(lake_root),
@@ -93,8 +104,13 @@ def render(
 
 
 def _web_background_export_enabled() -> bool:
-    value = os.environ.get("QUANT_LAB_WEB_EXPORT_BACKGROUND", "true").strip().lower()
+    value = os.environ.get("QUANT_LAB_WEB_EXPORT_BACKGROUND", "false").strip().lower()
     return value not in {"0", "false", "no", "off"}
+
+
+def _web_on_demand_export_enabled() -> bool:
+    value = os.environ.get("QUANT_LAB_WEB_ON_DEMAND_EXPORT", "false").strip().lower()
+    return value in {"1", "true", "yes", "on"}
 
 
 def _render_export_job_status(st: Any, status: dict[str, Any]) -> None:
@@ -136,6 +152,7 @@ def _start_export_job(
             "stderr": subprocess.STDOUT,
             "stdin": subprocess.DEVNULL,
             "cwd": str(Path.cwd()),
+            "env": _web_export_subprocess_env(),
         }
         if os.name == "nt":
             popen_kwargs["creationflags"] = getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0)
@@ -163,6 +180,7 @@ def _export_job_script() -> str:
     return r"""
 import json
 import os
+import resource
 import sys
 import traceback
 from datetime import UTC, datetime
@@ -183,6 +201,10 @@ def write_status(payload):
 
 
 started_at = datetime.now(UTC).isoformat()
+memory_mb = int(os.environ.get("QUANT_LAB_WEB_EXPORT_MEMORY_LIMIT_MB", "1536"))
+if memory_mb > 0:
+    limit_bytes = memory_mb * 1024 * 1024
+    resource.setrlimit(resource.RLIMIT_AS, (limit_bytes, limit_bytes))
 write_status({
     "state": "running",
     "mode": "snapshot_only",
@@ -244,10 +266,29 @@ except Exception as exc:
 """
 
 
+def _web_export_subprocess_env() -> dict[str, str]:
+    env = dict(os.environ)
+    env.setdefault("POLARS_MAX_THREADS", "1")
+    env.setdefault("OMP_NUM_THREADS", "1")
+    env.setdefault("OPENBLAS_NUM_THREADS", "1")
+    env.setdefault("MKL_NUM_THREADS", "1")
+    env.setdefault("NUMEXPR_NUM_THREADS", "1")
+    return env
+
+
 def _poll_export_job(exports_root: Path, export_date: str) -> dict[str, Any]:
     status_path = _export_job_status_path(exports_root, export_date)
     status = _read_export_job_status(status_path)
     if status.get("state") != "running":
+        return status
+    if _export_job_is_stale(status):
+        status = {
+            **status,
+            "state": "failed",
+            "error": "export process exceeded web status timeout; use scheduled export service",
+            "finished_at": datetime.now(UTC).isoformat(),
+        }
+        _write_export_job_status(status_path, status)
         return status
     pid = status.get("pid")
     if isinstance(pid, int) and _pid_is_running(pid):
@@ -260,6 +301,24 @@ def _poll_export_job(exports_root: Path, export_date: str) -> dict[str, Any]:
     }
     _write_export_job_status(status_path, status)
     return status
+
+
+def _export_job_is_stale(status: dict[str, Any]) -> bool:
+    started_at = status.get("started_at")
+    if not started_at:
+        return False
+    try:
+        started = datetime.fromisoformat(str(started_at).replace("Z", "+00:00"))
+    except ValueError:
+        return False
+    if started.tzinfo is None:
+        started = started.replace(tzinfo=UTC)
+    timeout_seconds = _positive_int_env(
+        "QUANT_LAB_WEB_EXPORT_STATUS_STALE_SECONDS",
+        DEFAULT_EXPORT_STATUS_STALE_SECONDS,
+    )
+    age_seconds = (datetime.now(UTC) - started.astimezone(UTC)).total_seconds()
+    return age_seconds > timeout_seconds
 
 
 def _read_export_job_status(status_path: Path) -> dict[str, Any]:
@@ -313,6 +372,8 @@ def _pid_is_running(pid: int) -> bool:
 def _generate_today_pack(st: Any, *, lake_root: Path, exports_root: Path) -> Path | None:
     export_date = beijing_today().isoformat()
     exports_root.mkdir(parents=True, exist_ok=True)
+    if not _web_on_demand_export_enabled():
+        return _reuse_latest_today_pack(st, export_date=export_date, exports_root=exports_root)
     try:
         with _spinner(st, f"正在生成 {export_date} 专家包..."):
             pack_path, refresh_warnings = _export_daily_from_web(
@@ -328,6 +389,36 @@ def _generate_today_pack(st: Any, *, lake_root: Path, exports_root: Path) -> Pat
     except Exception as exc:
         _error(st, f"生成专家包失败：{exc}")
         return None
+
+
+def _reuse_latest_today_pack(st: Any, *, export_date: str, exports_root: Path) -> Path | None:
+    pack_path = _latest_pack_for_export_date(exports_root, export_date)
+    if pack_path is None:
+        _warning(
+            st,
+            "今日专家包尚未由定时任务生成。为保护 qyun2，Web 不直接运行重计算；"
+            "请等待 quant-lab-daily-export.service，或在维护窗口运行 qlab export-daily。",
+        )
+        return None
+    _success(st, f"已找到今日专家包，可直接下载：{pack_path}")
+    return pack_path
+
+
+def _latest_pack_for_export_date(exports_root: Path, export_date: str) -> Path | None:
+    if not exports_root.exists():
+        return None
+    packs = [
+        path
+        for path in exports_root.glob(f"quant_lab_expert_pack_{export_date}_*.zip")
+        if path.is_file()
+    ]
+    legacy_path = exports_root / f"quant_lab_expert_pack_{export_date}.zip"
+    if legacy_path.is_file():
+        packs.append(legacy_path)
+    if not packs:
+        return None
+    packs.sort(key=lambda path: path.stat().st_mtime_ns, reverse=True)
+    return packs[0]
 
 
 def _export_daily_from_web(

@@ -2,10 +2,11 @@
 Description=Run quant-lab risk permission publisher every 10 minutes
 
 [Timer]
-OnCalendar=*:0/10
-AccuracySec=30s
+OnActiveSec=6min
+OnUnitActiveSec=10min
+AccuracySec=1min
 RandomizedDelaySec=30s
-Persistent=true
+Persistent=false
 
 [Install]
 WantedBy=timers.target

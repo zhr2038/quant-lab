@@ -35,9 +35,10 @@ def test_build_alpha_dataset_handles_cost_bucket_with_source_and_cost_source(tmp
     assert result.frame["cost_source"].drop_nulls().to_list()[0] == "public_spread_proxy"
 
 
-def test_build_alpha_evidence_computes_metrics_without_paper_live_ready(tmp_path):
+def test_build_alpha_evidence_computes_metrics_without_paper_live_ready(tmp_path, monkeypatch):
     lake = tmp_path / "lake"
     _write_research_fixture(lake)
+    monkeypatch.setenv("QUANT_LAB_ALPHA_EVIDENCE_STALE_DAYS", "0")
 
     result = build_alpha_evidence(lake, _spec(min_samples=10))
 

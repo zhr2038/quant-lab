@@ -104,12 +104,12 @@ def render(
 
 
 def _web_background_export_enabled() -> bool:
-    value = os.environ.get("QUANT_LAB_WEB_EXPORT_BACKGROUND", "false").strip().lower()
+    value = os.environ.get("QUANT_LAB_WEB_EXPORT_BACKGROUND", "true").strip().lower()
     return value not in {"0", "false", "no", "off"}
 
 
 def _web_on_demand_export_enabled() -> bool:
-    value = os.environ.get("QUANT_LAB_WEB_ON_DEMAND_EXPORT", "false").strip().lower()
+    value = os.environ.get("QUANT_LAB_WEB_ON_DEMAND_EXPORT", "true").strip().lower()
     return value in {"1", "true", "yes", "on"}
 
 

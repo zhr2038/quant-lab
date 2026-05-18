@@ -1028,7 +1028,10 @@ def test_expert_exports_generate_today_persists_pack_across_streamlit_rerun(
     assert downloads[0]["file_name"] == "quant_lab_expert_pack_test.zip"
 
 
-def test_expert_exports_generate_today_reuses_existing_pack_by_default(tmp_path, monkeypatch):
+def test_expert_exports_generate_today_starts_snapshot_even_when_today_pack_exists(
+    tmp_path,
+    monkeypatch,
+):
     lake_root = _fixture_lake(tmp_path)
     exports_root = tmp_path / "exports"
     exports_root.mkdir(exist_ok=True)
@@ -1038,24 +1041,38 @@ def test_expert_exports_generate_today_reuses_existing_pack_by_default(tmp_path,
         archive.writestr("data_quality.json", "{}")
         archive.writestr("expert_questions.md", "")
     fake = RerunStreamlit(
-        button_values={"生成今日专家包": True},
+        button_values={"generate_today_expert_pack": True},
         session_state={},
     )
+    captured = {}
 
-    def fail_export_daily_pack(**_kwargs):
-        raise AssertionError("web should not run on-demand export by default")
+    class FakeProcess:
+        pid = 5252
+
+    def fake_popen(command, **kwargs):
+        captured["command"] = command
+        captured["kwargs"] = kwargs
+        return FakeProcess()
 
     monkeypatch.delenv("QUANT_LAB_WEB_ON_DEMAND_EXPORT", raising=False)
+    monkeypatch.delenv("QUANT_LAB_WEB_EXPORT_BACKGROUND", raising=False)
+    monkeypatch.setattr(expert_exports.subprocess, "Popen", fake_popen)
+    monkeypatch.setattr(expert_exports, "_pid_is_running", lambda pid: pid == 5252)
     monkeypatch.setattr(expert_exports, "beijing_today", lambda: datetime(2026, 5, 16).date())
-    monkeypatch.setattr(expert_exports, "export_daily_pack", fail_export_daily_pack)
 
     expert_exports.render(lake_root, fake, exports_root=exports_root)
 
     assert fake.rerun_count == 1
-    assert fake.session_state["expert_exports_generated_pack"] == str(pack)
+    assert "expert_exports_generated_pack" not in fake.session_state
+    assert captured["command"][1] == "-c"
+    status = json.loads(
+        (exports_root / ".quant_lab_web_export_2026-05-16.json").read_text(encoding="utf-8")
+    )
+    assert status["state"] == "running"
+    assert status["pid"] == 5252
 
 
-def test_expert_exports_generate_today_missing_pack_does_not_export_by_default(
+def test_expert_exports_generate_today_missing_pack_reuses_only_when_disabled(
     tmp_path, monkeypatch
 ):
     lake_root = _fixture_lake(tmp_path)
@@ -1064,7 +1081,7 @@ def test_expert_exports_generate_today_missing_pack_does_not_export_by_default(
     def fail_export_daily_pack(**_kwargs):
         raise AssertionError("web should not run on-demand export by default")
 
-    monkeypatch.delenv("QUANT_LAB_WEB_ON_DEMAND_EXPORT", raising=False)
+    monkeypatch.setenv("QUANT_LAB_WEB_ON_DEMAND_EXPORT", "false")
     monkeypatch.setattr(expert_exports, "beijing_today", lambda: datetime(2026, 5, 16).date())
     monkeypatch.setattr(expert_exports, "export_daily_pack", fail_export_daily_pack)
 

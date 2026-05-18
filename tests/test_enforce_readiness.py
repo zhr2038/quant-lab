@@ -107,6 +107,64 @@ def test_enforce_readiness_ready_when_all_checks_pass(tmp_path):
     assert report.shadow_only_recommended is False
 
 
+def test_actual_or_mixed_coverage_ignores_stale_mixed_when_fresh_proxy_exists(
+    tmp_path,
+):
+    lake = tmp_path / "lake"
+    _write_common_ready_inputs(lake)
+    now = datetime.now(UTC)
+    stale = now - timedelta(days=3)
+    write_parquet_dataset(
+        pl.DataFrame(
+            [
+                _cost_row(
+                    symbol="BNB-USDT",
+                    source="mixed_actual_proxy",
+                    total=2.0,
+                    created_at=now,
+                ),
+                _cost_row(
+                    symbol="BTC-USDT",
+                    source="mixed_actual_proxy",
+                    total=2.0,
+                    created_at=now,
+                ),
+                _cost_row(
+                    symbol="ETH-USDT",
+                    source="public_spread_proxy",
+                    total=1.0,
+                    created_at=now,
+                ),
+                _cost_row(
+                    symbol="SOL-USDT",
+                    source="mixed_actual_proxy",
+                    total=2.0,
+                    created_at=stale,
+                ),
+                _cost_row(
+                    symbol="SOL-USDT",
+                    source="public_spread_proxy",
+                    total=1.0,
+                    created_at=now,
+                ),
+            ]
+        ),
+        lake / "gold/cost_bucket_daily",
+    )
+
+    report = build_enforce_readiness_report(lake)
+
+    assert report.metrics["actual_or_mixed_cost_coverage"] == 0.5
+    assert report.metrics["fresh_cost_symbols"] == [
+        "BNB-USDT",
+        "BTC-USDT",
+        "ETH-USDT",
+        "SOL-USDT",
+    ]
+    assert report.metrics["stale_actual_or_mixed_cost_symbols"] == ["SOL-USDT"]
+    assert report.metrics["proxy_only_cost_symbols"] == ["ETH-USDT", "SOL-USDT"]
+
+
 def test_write_enforce_readiness_report_outputs_json_and_csv(tmp_path):
     lake = tmp_path / "lake"
     out = tmp_path / "reports"
@@ -257,8 +315,9 @@ def _cost_row(
     source: str,
     total: float,
     fallback_level: str = "NONE",
+    created_at: datetime | None = None,
 ) -> dict:
-    now = datetime.now(UTC)
+    now = created_at or datetime.now(UTC)
     return {
         "day": now.date().isoformat(),
         "symbol": symbol,

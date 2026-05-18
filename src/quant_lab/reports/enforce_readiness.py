@@ -10,7 +10,7 @@ from pydantic import BaseModel, ConfigDict, Field
 
 from quant_lab.contracts.models import RiskPermission
 from quant_lab.contracts.v5_quant_lab import V5_QUANT_LAB_CONTRACT_VERSION
-from quant_lab.costs.model import estimate_cost_from_cost_bucket_daily_rows
+from quant_lab.costs.model import _row_is_stale, estimate_cost_from_cost_bucket_daily_rows
 from quant_lab.data.lake import read_parquet_dataset
 from quant_lab.risk.publish import is_permission_status_enforceable
 from quant_lab.symbols import normalize_symbol
@@ -18,6 +18,13 @@ from quant_lab.symbols import normalize_symbol
 DEFAULT_COST_SYMBOLS = ["BNB-USDT", "BTC-USDT", "ETH-USDT", "SOL-USDT"]
 ENFORCE_READINESS_JSON = "v5_enforce_readiness.json"
 ENFORCE_READINESS_CSV = "v5_enforce_readiness.csv"
+ACTUAL_OR_MIXED_COST_SOURCES = {
+    "actual_fills",
+    "actual_okx_fills_and_bills",
+    "actual_okx_fills_fee_missing",
+    "mixed_actual_proxy",
+}
+PUBLIC_PROXY_COST_SOURCES = {"public_spread_proxy", "public_proxy"}
 
 
 class EnforceReadinessThresholds(BaseModel):
@@ -276,19 +283,38 @@ def _cost_api_metrics(
         item for item in estimates if item.get("cost_source") == "global_default"
     ]
     symbol_hits = [item for item in estimates if item.get("cost_source") != "global_default"]
-    actual_or_mixed = {
-        normalize_symbol(row.get("symbol"))
-        for row in cost_rows
-        if str(row.get("source") or row.get("cost_source") or "").lower()
-        in {"actual_fills", "actual_okx_fills_and_bills", "mixed_actual_proxy"}
-        and str(row.get("symbol") or "").upper() not in {"", "GLOBAL"}
-    }
+    fresh_cost_rows = [row for row in cost_rows if not _row_is_stale(row)]
+    stale_cost_rows = [row for row in cost_rows if _row_is_stale(row)]
     cost_symbols = {
         normalize_symbol(row.get("symbol"))
         for row in cost_rows
         if str(row.get("symbol") or "").upper() not in {"", "GLOBAL"}
     }
-    coverage_denominator = max(len(cost_symbols), 1)
+    fresh_cost_symbols = {
+        normalize_symbol(row.get("symbol"))
+        for row in fresh_cost_rows
+        if str(row.get("symbol") or "").upper() not in {"", "GLOBAL"}
+    }
+    denominator_symbols = fresh_cost_symbols or cost_symbols
+    actual_or_mixed = {
+        normalize_symbol(row.get("symbol"))
+        for row in fresh_cost_rows
+        if _cost_source(row) in ACTUAL_OR_MIXED_COST_SOURCES
+        and str(row.get("symbol") or "").upper() not in {"", "GLOBAL"}
+    }
+    stale_actual_or_mixed = {
+        normalize_symbol(row.get("symbol"))
+        for row in stale_cost_rows
+        if _cost_source(row) in ACTUAL_OR_MIXED_COST_SOURCES
+        and str(row.get("symbol") or "").upper() not in {"", "GLOBAL"}
+    }
+    proxy_only = {
+        normalize_symbol(row.get("symbol"))
+        for row in fresh_cost_rows
+        if _cost_source(row) in PUBLIC_PROXY_COST_SOURCES
+        and str(row.get("symbol") or "").upper() not in {"", "GLOBAL"}
+    } - actual_or_mixed
+    coverage_denominator = max(len(denominator_symbols), 1)
     return {
         "cost_symbols_checked": symbols,
         "cost_api_global_default_count": len(global_default),
@@ -297,6 +323,10 @@ def _cost_api_metrics(
         "cost_symbol_hit_rate": len(symbol_hits) / total,
         "actual_or_mixed_cost_symbol_count": len(actual_or_mixed),
         "actual_or_mixed_cost_coverage": len(actual_or_mixed) / coverage_denominator,
+        "fresh_cost_symbol_count": len(fresh_cost_symbols),
+        "fresh_cost_symbols": sorted(fresh_cost_symbols),
+        "stale_actual_or_mixed_cost_symbols": sorted(stale_actual_or_mixed),
+        "proxy_only_cost_symbols": sorted(proxy_only),
         "cost_estimate_examples": estimates,
         "cost_detail": (
             f"global_default={len(global_default)}; symbol_hits={len(symbol_hits)}; "
@@ -304,9 +334,15 @@ def _cost_api_metrics(
         ),
         "coverage_detail": (
             f"actual_or_mixed_symbols={sorted(actual_or_mixed)}; "
-            f"cost_symbols={sorted(cost_symbols)}"
+            f"fresh_cost_symbols={sorted(fresh_cost_symbols)}; "
+            f"proxy_only_symbols={sorted(proxy_only)}; "
+            f"stale_actual_or_mixed_symbols={sorted(stale_actual_or_mixed)}"
         ),
     }
+
+
+def _cost_source(row: dict[str, Any]) -> str:
+    return str(row.get("source") or row.get("cost_source") or "").lower()
 
 
 def _risk_metrics(

@@ -474,6 +474,10 @@ def compact_lake_dataset_command(
         int,
         typer.Option("--target-rows-per-file", min=1),
     ] = 250_000,
+    max_source_files_per_batch: Annotated[
+        int,
+        typer.Option("--max-source-files-per-batch", min=1),
+    ] = 5_000,
 ) -> None:
     dataset_path, partition_by = _compact_dataset_target(lake_root, dataset)
     result = run_with_job_metrics(
@@ -483,6 +487,7 @@ def compact_lake_dataset_command(
             dataset_path,
             partition_by=partition_by,
             target_rows_per_file=target_rows_per_file,
+            max_source_files_per_batch=max_source_files_per_batch,
         ),
     )
     typer.echo(json.dumps(result.__dict__, indent=2, sort_keys=True))

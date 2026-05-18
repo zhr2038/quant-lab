@@ -66,6 +66,7 @@ class CompactParquetResult:
     rows: int
     partition_by: list[str]
     target_rows_per_file: int
+    max_source_files_per_batch: int
 
 
 def write_parquet_dataset(
@@ -179,6 +180,7 @@ def compact_parquet_dataset(
     *,
     partition_by: str | Sequence[str] | None = None,
     target_rows_per_file: int = 250_000,
+    max_source_files_per_batch: int = 5_000,
 ) -> CompactParquetResult:
     """Rewrite a dataset into fewer deterministic partitioned parquet files."""
 
@@ -195,28 +197,37 @@ def compact_parquet_dataset(
                 rows=0,
                 partition_by=partition_columns,
                 target_rows_per_file=target_rows_per_file,
-            )
-        frame = _read_parquet_files(files)
-        if frame.is_empty():
-            _remove_existing_dataset(path)
-            path.mkdir(parents=True, exist_ok=True)
-            return CompactParquetResult(
-                dataset_path=str(path),
-                source_file_count=source_file_count,
-                output_file_count=0,
-                rows=0,
-                partition_by=partition_columns,
-                target_rows_per_file=target_rows_per_file,
+                max_source_files_per_batch=max_source_files_per_batch,
             )
         staging = path.parent / f"__{path.name}_compact_{uuid.uuid4().hex}"
+        output_file_count = 0
+        rows = 0
         try:
-            result = _append_parquet_dataset_unlocked(
-                frame,
-                staging,
-                partition_by=partition_columns,
-                target_rows_per_file=target_rows_per_file,
-                file_prefix="compact",
-            )
+            for batch_files in _chunks(files, max(max_source_files_per_batch, 1)):
+                frame = _read_parquet_files(batch_files)
+                if frame.is_empty():
+                    continue
+                result = _append_parquet_dataset_unlocked(
+                    frame,
+                    staging,
+                    partition_by=partition_columns,
+                    target_rows_per_file=target_rows_per_file,
+                    file_prefix="compact",
+                )
+                output_file_count += result.file_count
+                rows += result.rows_written
+            if rows == 0:
+                _remove_existing_dataset(path)
+                path.mkdir(parents=True, exist_ok=True)
+                return CompactParquetResult(
+                    dataset_path=str(path),
+                    source_file_count=source_file_count,
+                    output_file_count=0,
+                    rows=0,
+                    partition_by=partition_columns,
+                    target_rows_per_file=target_rows_per_file,
+                    max_source_files_per_batch=max_source_files_per_batch,
+                )
             backup = path.parent / f"__{path.name}_backup_{uuid.uuid4().hex}"
             if path.exists():
                 os.replace(path, backup)
@@ -225,10 +236,11 @@ def compact_parquet_dataset(
             return CompactParquetResult(
                 dataset_path=str(path),
                 source_file_count=source_file_count,
-                output_file_count=result.file_count,
-                rows=result.rows_written,
+                output_file_count=output_file_count,
+                rows=rows,
                 partition_by=partition_columns,
                 target_rows_per_file=target_rows_per_file,
+                max_source_files_per_batch=max_source_files_per_batch,
             )
         except Exception:
             _remove_existing_dataset(staging)
@@ -465,6 +477,10 @@ def _partitioned_chunks(
         values = key if isinstance(key, tuple) else (key,)
         chunks.append((dict(zip(available, values, strict=False)), group))
     return chunks
+
+
+def _chunks(values: Sequence[Path], size: int) -> list[Sequence[Path]]:
+    return [values[index : index + size] for index in range(0, len(values), size)]
 
 
 def _partition_dir(dataset_path: Path, partition_values: dict[str, Any]) -> Path:

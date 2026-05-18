@@ -8,7 +8,7 @@ from typing import Any
 
 import polars as pl
 
-from quant_lab.data.lake import read_parquet_dataset, upsert_parquet_dataset
+from quant_lab.data.lake import read_parquet_lazy, upsert_parquet_dataset
 from quant_lab.strategy_telemetry.models import V5TelemetryAnalysisResult
 from quant_lab.symbols import normalize_symbol
 
@@ -46,28 +46,237 @@ SILVER = {
 }
 
 
+def _read_analysis_dataset(dataset_path: Path, columns: list[str]) -> pl.DataFrame:
+    try:
+        lazy = read_parquet_lazy(dataset_path)
+        available = lazy.collect_schema().names()
+    except Exception:
+        return pl.DataFrame()
+    selected = [column for column in columns if column in available]
+    if not selected:
+        return pl.DataFrame()
+    try:
+        return lazy.select(selected).collect()
+    except Exception:
+        return pl.DataFrame()
+
+
 def analyze_v5_telemetry(lake_root: Path, date: str | None = None) -> V5TelemetryAnalysisResult:
     root = Path(lake_root)
     analysis_date = date or datetime.now(UTC).date().isoformat()
-    manifest = read_parquet_dataset(root / SILVER["manifest"])
-    secret_scan = read_parquet_dataset(root / SILVER["secret_scan"])
-    run_summary = read_parquet_dataset(root / SILVER["run_summary"])
-    decisions = read_parquet_dataset(root / SILVER["decision_audit"])
-    trades = read_parquet_dataset(root / SILVER["trade_event"])
-    roundtrips = read_parquet_dataset(root / SILVER["roundtrip"])
-    routers = read_parquet_dataset(root / SILVER["router_decision"])
-    positions = read_parquet_dataset(root / SILVER["open_position"])
-    states = read_parquet_dataset(root / SILVER["state_snapshot"])
-    issues = read_parquet_dataset(root / SILVER["issue"])
-    config = read_parquet_dataset(root / SILVER["config_audit"])
-    targets = read_parquet_dataset(root / SILVER["high_score_target"])
-    outcomes = read_parquet_dataset(root / SILVER["high_score_outcome"])
-    skipped = read_parquet_dataset(root / SILVER["skipped"])
-    quant_lab_usage = read_parquet_dataset(root / SILVER["quant_lab_usage"])
-    quant_lab_request = read_parquet_dataset(root / SILVER["quant_lab_request"])
-    quant_lab_compliance = read_parquet_dataset(root / SILVER["quant_lab_compliance"])
-    quant_lab_cost_usage = read_parquet_dataset(root / SILVER["quant_lab_cost_usage"])
-    quant_lab_fallback = read_parquet_dataset(root / SILVER["quant_lab_fallback"])
+    manifest = _read_analysis_dataset(
+        root / SILVER["manifest"],
+        ["bundle_ts", "bundle_sha256", "bundle_name", "ingest_ts"],
+    )
+    secret_scan = _read_analysis_dataset(
+        root / SILVER["secret_scan"],
+        ["high_severity_count", "bundle_ts", "ingest_ts"],
+    )
+    run_summary = _read_analysis_dataset(
+        root / SILVER["run_summary"],
+        ["raw_payload_json", "source_path_inside_bundle", "bundle_ts", "ingest_ts"],
+    )
+    decisions = _read_analysis_dataset(
+        root / SILVER["decision_audit"],
+        ["raw_payload_json", "source_path_inside_bundle", "bundle_ts", "ingest_ts"],
+    )
+    trades = _read_analysis_dataset(
+        root / SILVER["trade_event"],
+        ["bundle_ts", "ingest_ts", "source_path_inside_bundle"],
+    )
+    roundtrips = _read_analysis_dataset(
+        root / SILVER["roundtrip"],
+        ["bundle_ts", "ingest_ts", "source_path_inside_bundle"],
+    )
+    routers = _read_analysis_dataset(
+        root / SILVER["router_decision"],
+        ["reason", "router_reason", "decision_reason", "bundle_ts", "ingest_ts"],
+    )
+    positions = _read_analysis_dataset(
+        root / SILVER["open_position"],
+        [
+            "bundle_ts",
+            "ingest_ts",
+            "symbol",
+            "size",
+            "quantity",
+            "dust",
+            "is_dust",
+            "raw_payload_json",
+        ],
+    )
+    states = _read_analysis_dataset(
+        root / SILVER["state_snapshot"],
+        [
+            "state_type",
+            "ok",
+            "enabled",
+            "level",
+            "current_level",
+            "risk_level",
+            "raw_payload_json",
+            "bundle_ts",
+            "ingest_ts",
+        ],
+    )
+    issues = _read_analysis_dataset(
+        root / SILVER["issue"],
+        ["severity", "issue_type", "type", "message", "raw_payload_json", "bundle_ts", "ingest_ts"],
+    )
+    config = _read_analysis_dataset(
+        root / SILVER["config_audit"],
+        [
+            "consumed",
+            "status",
+            "issue_type",
+            "key",
+            "config_key",
+            "path",
+            "name",
+            "blob",
+            "raw_payload_json",
+            "bundle_ts",
+            "ingest_ts",
+        ],
+    )
+    targets = _read_analysis_dataset(
+        root / SILVER["high_score_target"],
+        ["bundle_ts", "ingest_ts"],
+    )
+    outcomes = _read_analysis_dataset(
+        root / SILVER["high_score_outcome"],
+        [
+            "matured",
+            "is_matured",
+            "maturity_reached",
+            "profitable",
+            "is_profitable",
+            "bundle_ts",
+            "ingest_ts",
+        ],
+    )
+    skipped = _read_analysis_dataset(
+        root / SILVER["skipped"],
+        ["matured", "is_matured", "maturity_reached", "bundle_ts", "ingest_ts"],
+    )
+    quant_lab_usage = _read_analysis_dataset(
+        root / SILVER["quant_lab_usage"],
+        [
+            "mode",
+            "quant_lab_mode",
+            "permission_gate_enforced",
+            "apply_permission_gate",
+            "cost_gate_enforced",
+            "apply_cost_gate",
+            "bundle_ts",
+            "ingest_ts",
+        ],
+    )
+    quant_lab_request = _read_analysis_dataset(
+        root / SILVER["quant_lab_request"],
+        [
+            "raw_payload_json",
+            "raw_json",
+            "event_key",
+            "event_id",
+            "strategy",
+            "strategy_id",
+            "source_count",
+            "first_seen_bundle_ts",
+            "last_seen_bundle_ts",
+            "bundle_ts",
+            "ingest_ts",
+            "ts_utc",
+            "ts",
+            "endpoint",
+            "endpoint_path",
+            "event_type",
+            "status_code",
+            "http_status",
+            "error_type",
+            "exception_type",
+            "error",
+            "exception",
+            "fallback_used",
+            "used_fallback",
+            "local_fallback",
+            "request_id",
+            "trace_id",
+            "symbol",
+            "side",
+            "intent",
+            "success",
+            "ok",
+            "request_ok",
+            "permission_status",
+            "remote_permission_status",
+            "risk_permission_status",
+        ],
+    )
+    quant_lab_compliance = _read_analysis_dataset(
+        root / SILVER["quant_lab_compliance"],
+        [
+            "permission",
+            "quant_lab_permission",
+            "actual_violation",
+            "hypothetical_violation",
+            "reduce_only",
+            "is_reduce_only",
+            "new_risk",
+            "risk_increasing",
+            "intent",
+            "action",
+            "router_intent",
+            "side",
+            "order_side",
+            "mode",
+            "quant_lab_mode",
+            "permission_gate_enforced",
+            "apply_permission_gate",
+            "cost_gate_enforced",
+            "apply_cost_gate",
+            "bundle_ts",
+            "ingest_ts",
+        ],
+    )
+    quant_lab_cost_usage = _read_analysis_dataset(
+        root / SILVER["quant_lab_cost_usage"],
+        [
+            "mode",
+            "quant_lab_mode",
+            "cost_gate_enforced",
+            "apply_cost_gate",
+            "bundle_ts",
+            "ingest_ts",
+        ],
+    )
+    quant_lab_fallback = _read_analysis_dataset(
+        root / SILVER["quant_lab_fallback"],
+        [
+            "raw_payload_json",
+            "raw_json",
+            "event_key",
+            "event_id",
+            "strategy",
+            "strategy_id",
+            "source_count",
+            "first_seen_bundle_ts",
+            "last_seen_bundle_ts",
+            "bundle_ts",
+            "ingest_ts",
+            "ts_utc",
+            "ts",
+            "endpoint",
+            "endpoint_path",
+            "event_type",
+            "status_code",
+            "error_type",
+            "error",
+            "fallback_used",
+            "success",
+            "ok",
+        ],
+    )
     window_summary = _window_summary_payload(run_summary)
 
     latest_bundle_ts = _latest_time(manifest, "bundle_ts")

@@ -81,6 +81,14 @@ QUANT_LAB_REQUEST_PATHS = {
     "reports/quant_lab_requests.jsonl",
 }
 EVENT_KEY_DATASETS = {"v5_quant_lab_request", "v5_quant_lab_fallback"}
+HISTORICAL_OUTCOME_PATH_PREFIXES = (
+    "summaries/high_score_blocked_outcomes",
+    "summaries/alt_impulse_shadow",
+    "summaries/btc_leadership_probe_blocked_outcomes",
+    "summaries/multi_position_swing_shadow",
+    "summaries/factor_contribution_outcomes_by_factor",
+    "summaries/protect_sol_exception_shadow_outcomes",
+)
 EVENT_KEY_METADATA_FIELDS = {
     "strategy",
     "bundle_sha256",
@@ -121,6 +129,7 @@ def ingest_v5_bundle(
     limits: BundleLimits | None = None,
     run_analysis: bool = True,
     refresh_candidate_gold: bool = True,
+    include_historical_outcomes: bool = True,
 ) -> V5BundleIngestResult:
     effective_limits = limits or BundleLimits()
     validation = validate_v5_bundle(bundle_path, effective_limits)
@@ -195,7 +204,12 @@ def ingest_v5_bundle(
         _write_archive_json(redacted_root, "provenance.json", metadata)
 
         bronze_rows = _write_bronze(lake_root, inspection, validation, secret_scan, metadata)
-        silver_rows, warnings = _write_silver(lake_root, redacted_root / "redacted_files", metadata)
+        silver_rows, warnings = _write_silver(
+            lake_root,
+            redacted_root / "redacted_files",
+            metadata,
+            include_historical_outcomes=include_historical_outcomes,
+        )
         candidate_gold_rows = (
             _write_candidate_gold(lake_root, bundle_day) if refresh_candidate_gold else {}
         )
@@ -234,6 +248,7 @@ def ingest_v5_inbox(
     max_skipped_files_reported: int | None = None,
     run_analysis: bool = True,
     refresh_candidate_gold: bool = True,
+    include_historical_outcomes: bool = True,
 ) -> V5InboxIngestResult:
     processed: list[V5BundleIngestResult] = []
     skipped: list[str] = []
@@ -269,6 +284,7 @@ def ingest_v5_inbox(
             limits=limits,
             run_analysis=run_analysis,
             refresh_candidate_gold=refresh_candidate_gold,
+            include_historical_outcomes=include_historical_outcomes,
         )
         processed.append(result)
         existing_sha256s.add(sha256)
@@ -343,11 +359,17 @@ def _write_silver(
     lake_root: Path,
     redacted_files_dir: Path,
     metadata: dict[str, Any],
+    *,
+    include_historical_outcomes: bool = True,
 ) -> tuple[dict[str, int], list[str]]:
     rows: dict[str, list[dict[str, Any]]] = {name: [] for name in SILVER_DATASETS}
     warnings: list[str] = []
     for file_path in sorted(path for path in redacted_files_dir.rglob("*") if path.is_file()):
         relative = file_path.relative_to(redacted_files_dir).as_posix()
+        logical = _logical_bundle_path(relative)
+        if not include_historical_outcomes and _is_historical_outcome_path(logical):
+            warnings.append(f"skipped_historical_outcome_file:{logical}")
+            continue
         try:
             _append_file_rows(rows, file_path, relative, metadata)
         except Exception as exc:
@@ -382,6 +404,10 @@ def _write_silver(
                 ["strategy", "bundle_sha256", "source_path_inside_bundle", "row_index"],
             )
     return counts, warnings
+
+
+def _is_historical_outcome_path(logical: str) -> bool:
+    return logical.startswith(HISTORICAL_OUTCOME_PATH_PREFIXES)
 
 
 def _write_candidate_gold(lake_root: Path, bundle_day: str) -> dict[str, int]:

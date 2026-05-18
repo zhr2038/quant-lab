@@ -933,6 +933,10 @@ def ingest_v5_inbox_command(
     strategy: Annotated[str, typer.Option("--strategy")] = "v5",
     max_bundles: Annotated[int | None, typer.Option("--max-bundles", min=1)] = None,
     newest_first: Annotated[bool, typer.Option("--newest-first/--oldest-first")] = False,
+    include_historical_outcomes: Annotated[
+        bool,
+        typer.Option("--include-historical-outcomes/--skip-historical-outcomes"),
+    ] = True,
 ) -> None:
     result = ingest_v5_inbox_dir(
         inbox_dir=inbox_dir,
@@ -942,6 +946,7 @@ def ingest_v5_inbox_command(
         strategy=strategy,
         max_bundles=max_bundles,
         newest_first=newest_first,
+        include_historical_outcomes=include_historical_outcomes,
     )
     typer.echo(result.model_dump_json(indent=2))
 
@@ -969,6 +974,10 @@ def sync_v5_telemetry_command(
         int,
         typer.Option("--max-skipped-files-reported", min=0),
     ] = 25,
+    include_historical_outcomes: Annotated[
+        bool,
+        typer.Option("--include-historical-outcomes/--skip-historical-outcomes"),
+    ] = False,
 ) -> None:
     cfg = load_v5_telemetry_remote_config(
         config,
@@ -994,6 +1003,7 @@ def sync_v5_telemetry_command(
                 max_skipped_files_reported=max_skipped_files_reported,
                 run_analysis=False,
                 refresh_candidate_gold=False,
+                include_historical_outcomes=include_historical_outcomes,
             )
             analysis = analyze_v5_telemetry(lake_root=cfg.lake_root)
         return {
@@ -1002,6 +1012,7 @@ def sync_v5_telemetry_command(
             "analysis": analysis.model_dump(mode="json") if analysis else None,
             "max_bundles": effective_max_bundles,
             "newest_first": newest_first,
+            "include_historical_outcomes": include_historical_outcomes,
         }
 
     payload = run_with_job_metrics(

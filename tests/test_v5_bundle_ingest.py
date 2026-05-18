@@ -49,6 +49,52 @@ def test_ingest_parses_state_files(tmp_path):
     }
 
 
+def test_sync_ingest_can_skip_large_historical_outcomes(tmp_path):
+    bundle = make_tar(
+        tmp_path / "v5_live_followup_bundle_20260510T140249Z.tar.gz",
+        {
+            "summaries/candidate_snapshot.csv": (
+                "candidate_id,run_id,ts_utc,symbol,strategy_candidate,cost_source\n"
+                "cand_1,run_001,2026-05-10T01:00:00Z,SOL/USDT,"
+                "f4_volume_expansion_entry,public_spread_proxy\n"
+            ),
+            "raw/reports/quant_lab_requests.jsonl": (
+                '{"ts":"2026-05-10T01:00:00Z","endpoint":"/v1/costs/estimate",'
+                '"status_code":200,"success":true}\n'
+            ),
+            "summaries/high_score_blocked_outcomes.csv": (
+                "candidate_id,symbol,label_4h_net_bps,label_status\n"
+                "hist_1,SOL-USDT,12,complete\n"
+            ),
+            "summaries/alt_impulse_shadow_outcomes.csv": (
+                "candidate_id,symbol,label_4h_net_bps,label_status\n"
+                "shadow_1,SOL-USDT,10,complete\n"
+            ),
+        },
+    )
+    lake = tmp_path / "lake"
+
+    result = ingest_v5_bundle(
+        bundle,
+        lake,
+        tmp_path / "restricted",
+        tmp_path / "redacted",
+        run_analysis=False,
+        refresh_candidate_gold=False,
+        include_historical_outcomes=False,
+    )
+
+    candidate_events = read_parquet_dataset(lake / "silver/v5_candidate_event")
+    requests = read_parquet_dataset(lake / "silver/v5_quant_lab_request")
+    historical = read_parquet_dataset(lake / "silver/v5_high_score_blocked_outcome")
+    shadow = read_parquet_dataset(lake / "silver/v5_shadow_outcome")
+    assert candidate_events.height == 1
+    assert requests.height == 1
+    assert historical.is_empty()
+    assert shadow.is_empty()
+    assert any("skipped_historical_outcome_file" in warning for warning in result.warnings)
+
+
 def test_ingest_v5_trades_csv_normalizes_cost_schema(tmp_path):
     bundle = make_tar(
         tmp_path / "v5_live_followup_bundle_20260514T070500Z.tar.gz",

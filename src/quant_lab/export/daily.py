@@ -523,6 +523,8 @@ CSV_SCHEMAS: dict[str, list[str]] = {
         "would_size_usdt",
         "paper_pnl_bps",
         "paper_pnl_usdt",
+        "paper_tracking_status",
+        "tracking_stage",
         "sample_count",
         "complete_sample_count",
         "avg_net_bps",
@@ -549,6 +551,8 @@ CSV_SCHEMAS: dict[str, list[str]] = {
         "latest_paper_pnl_usdt",
         "cumulative_paper_pnl_usdt",
         "avg_paper_pnl_bps",
+        "paper_tracking_status",
+        "tracking_stage",
         "required_paper_days",
         "required_slippage_coverage",
         "live_eligible",
@@ -568,6 +572,8 @@ CSV_SCHEMAS: dict[str, list[str]] = {
         "paper_slippage_coverage",
         "required_slippage_coverage",
         "coverage_status",
+        "paper_tracking_status",
+        "tracking_stage",
         "created_at",
         "source",
         "schema_version",
@@ -2414,6 +2420,8 @@ def _executive_summary(
     gates = snapshot.frames.get("gate_decision", pl.DataFrame())
     alpha_discovery_board = snapshot.frames.get("alpha_discovery_board", pl.DataFrame())
     strategy_evidence = snapshot.frames.get("strategy_evidence", pl.DataFrame())
+    paper_runs = snapshot.frames.get("paper_strategy_runs", pl.DataFrame())
+    paper_daily = snapshot.frames.get("paper_strategy_daily", pl.DataFrame())
     candidate_quality = _latest_candidate_quality(
         snapshot.frames.get("v5_candidate_quality_daily", pl.DataFrame())
     )
@@ -2421,6 +2429,8 @@ def _executive_summary(
     gate_counts = _value_counts(gates, "status")
     alpha_discovery_counts = _value_counts(alpha_discovery_board, "decision")
     strategy_decision_counts = _value_counts(strategy_evidence, "decision")
+    paper_tracking_counts = _value_counts(paper_runs, "tracking_stage")
+    paper_status_counts = _value_counts(paper_daily, "paper_tracking_status")
     risk_quality = data_quality.get("risk_permission", {})
     quality_status = str(risk_quality.get("permission_status") or "").strip()
     permission_counts = (
@@ -2441,6 +2451,8 @@ def _executive_summary(
         f"Gate status counts: {safe_json_dumps(gate_counts)}",
         f"Alpha discovery decision counts: {safe_json_dumps(alpha_discovery_counts)}",
         f"Strategy evidence decision counts: {safe_json_dumps(strategy_decision_counts)}",
+        f"Paper tracking stages: {safe_json_dumps(paper_tracking_counts)}",
+        f"Paper tracking status counts: {safe_json_dumps(paper_status_counts)}",
         f"V5 candidate_event rows: {snapshot.row_counts.get('v5_candidate_event', 0)}",
         "V5 candidate label completeness: "
         f"{candidate_quality.get('label_completeness', 'n/a')}",

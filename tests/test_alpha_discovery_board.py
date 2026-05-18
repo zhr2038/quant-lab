@@ -251,7 +251,7 @@ def test_paper_strategy_proposals_use_latest_board_date(tmp_path):
     )
 
 
-def test_sol_paper_strategy_tracking_outputs_runs_daily_and_slippage(tmp_path):
+def test_sol_paper_strategy_tracking_waits_for_v5_telemetry(tmp_path):
     lake = tmp_path / "lake"
     rows = [
         _board_row(
@@ -289,12 +289,21 @@ def test_sol_paper_strategy_tracking_outputs_runs_daily_and_slippage(tmp_path):
         "SOL_F4_VOLUME_EXPANSION_PAPER_V1",
     }
     assert set(runs["recommended_mode"].to_list()) == {"paper"}
-    assert set(runs["would_enter"].to_list()) == {True}
+    assert set(runs["paper_tracking_status"].to_list()) == {
+        "waiting_for_v5_paper_telemetry"
+    }
+    assert set(runs["tracking_stage"].to_list()) == {"proposed_paper_strategy"}
+    assert set(runs["would_enter"].to_list()) == {False}
     assert set(runs["would_exit"].to_list()) == {False}
-    assert "paper_pnl_usdt" in runs.columns
-    assert set(daily["paper_days"].to_list()) == {1}
+    assert set(daily["paper_days"].to_list()) == {0}
+    assert set(daily["paper_tracking_status"].to_list()) == {
+        "waiting_for_v5_paper_telemetry"
+    }
     assert set(daily["live_eligible"].to_list()) == {False}
     assert set(slippage["paper_slippage_coverage"].to_list()) == {0.0}
+    assert set(slippage["coverage_status"].to_list()) == {
+        "waiting_for_v5_paper_telemetry"
+    }
 
     export = export_daily_pack(
         export_date="2026-05-17",
@@ -315,7 +324,90 @@ def test_sol_paper_strategy_tracking_outputs_runs_daily_and_slippage(tmp_path):
             )
         )
     assert {row["recommended_mode"] for row in exported_runs} == {"paper"}
+    assert {row["paper_tracking_status"] for row in exported_runs} == {
+        "waiting_for_v5_paper_telemetry"
+    }
     assert not any("LIVE_SMALL_READY" in json.dumps(row) for row in exported_runs)
+
+
+def test_paper_strategy_tracking_uses_v5_telemetry_when_present(tmp_path):
+    lake = tmp_path / "lake"
+    write_parquet_dataset(
+        pl.DataFrame(
+            [
+                {
+                    "as_of_date": "2026-05-18",
+                    "proposal_id": "SOL_F4_VOLUME_EXPANSION_PAPER_V1",
+                    "strategy_candidate": "v5.f4_volume_expansion_entry",
+                    "symbol": "SOL-USDT",
+                    "recommended_mode": "paper",
+                    "would_enter": "true",
+                    "would_exit": "false",
+                    "would_size": "100",
+                    "paper_pnl": "0.42",
+                    "paper_pnl_bps": "42",
+                    "live_block_reason": '["cost_source_not_actual_or_mixed"]',
+                    "required_paper_days": "14",
+                    "required_slippage_coverage": "0.8",
+                    "raw_payload_json": "{}",
+                }
+            ]
+        ),
+        lake / "silver" / "v5_paper_strategy_run",
+    )
+    write_parquet_dataset(
+        pl.DataFrame(
+            [
+                {
+                    "as_of_date": "2026-05-18",
+                    "proposal_id": "SOL_F4_VOLUME_EXPANSION_PAPER_V1",
+                    "strategy_candidate": "v5.f4_volume_expansion_entry",
+                    "symbol": "SOL-USDT",
+                    "recommended_mode": "paper",
+                    "paper_days": "1",
+                    "cumulative_paper_pnl_usdt": "0.42",
+                    "required_paper_days": "14",
+                    "required_slippage_coverage": "0.8",
+                    "live_eligible": "false",
+                    "raw_payload_json": "{}",
+                }
+            ]
+        ),
+        lake / "silver" / "v5_paper_strategy_daily",
+    )
+    write_parquet_dataset(
+        pl.DataFrame(
+            [
+                {
+                    "as_of_date": "2026-05-18",
+                    "proposal_id": "SOL_F4_VOLUME_EXPANSION_PAPER_V1",
+                    "strategy_candidate": "v5.f4_volume_expansion_entry",
+                    "symbol": "SOL-USDT",
+                    "paper_days": "1",
+                    "paper_slippage_coverage": "0.0",
+                    "required_slippage_coverage": "0.8",
+                    "coverage_status": "insufficient_slippage_observations",
+                    "raw_payload_json": "{}",
+                }
+            ]
+        ),
+        lake / "silver" / "v5_paper_slippage_coverage",
+    )
+
+    result = build_and_publish_paper_strategy_tracking(lake, as_of_date="2026-05-18")
+
+    runs = read_parquet_dataset(lake / "gold" / "paper_strategy_runs")
+    daily = read_parquet_dataset(lake / "gold" / "paper_strategy_daily")
+    slippage = read_parquet_dataset(lake / "gold" / "paper_slippage_coverage")
+    assert result.paper_strategy_runs == 1
+    assert set(runs["paper_tracking_status"].to_list()) == {"v5_paper_telemetry_observed"}
+    assert set(runs["tracking_stage"].to_list()) == {"active_paper_strategy"}
+    assert set(runs["would_enter"].to_list()) == {True}
+    assert set(daily["paper_days"].to_list()) == {1}
+    assert set(daily["paper_tracking_status"].to_list()) == {"v5_paper_telemetry_observed"}
+    assert set(slippage["paper_tracking_status"].to_list()) == {
+        "v5_paper_telemetry_observed"
+    }
 
 
 def _write_candidate_labels(lake: Path) -> None:

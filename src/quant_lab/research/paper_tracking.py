@@ -17,7 +17,11 @@ PAPER_STRATEGY_RUNS_DATASET = Path("gold") / "paper_strategy_runs"
 PAPER_STRATEGY_DAILY_DATASET = Path("gold") / "paper_strategy_daily"
 PAPER_SLIPPAGE_COVERAGE_DATASET = Path("gold") / "paper_slippage_coverage"
 ALPHA_DISCOVERY_BOARD_DATASET = Path("gold") / "alpha_discovery_board"
+V5_PAPER_STRATEGY_RUN_DATASET = Path("silver") / "v5_paper_strategy_run"
+V5_PAPER_STRATEGY_DAILY_DATASET = Path("silver") / "v5_paper_strategy_daily"
+V5_PAPER_SLIPPAGE_COVERAGE_DATASET = Path("silver") / "v5_paper_slippage_coverage"
 PAPER_TRACKING_SOURCE = "research.paper_strategy_tracking.v0.1"
+V5_PAPER_TRACKING_SOURCE = "v5.paper_strategy_telemetry"
 PAPER_TRACKING_SCHEMA_VERSION = "paper_strategy_tracking.v1"
 
 PAPER_RUN_SCHEMA = {
@@ -35,6 +39,8 @@ PAPER_RUN_SCHEMA = {
     "would_size_usdt": pl.Float64,
     "paper_pnl_bps": pl.Float64,
     "paper_pnl_usdt": pl.Float64,
+    "paper_tracking_status": pl.Utf8,
+    "tracking_stage": pl.Utf8,
     "sample_count": pl.Int64,
     "complete_sample_count": pl.Int64,
     "avg_net_bps": pl.Float64,
@@ -62,6 +68,8 @@ PAPER_DAILY_SCHEMA = {
     "latest_paper_pnl_usdt": pl.Float64,
     "cumulative_paper_pnl_usdt": pl.Float64,
     "avg_paper_pnl_bps": pl.Float64,
+    "paper_tracking_status": pl.Utf8,
+    "tracking_stage": pl.Utf8,
     "required_paper_days": pl.Int64,
     "required_slippage_coverage": pl.Float64,
     "live_eligible": pl.Boolean,
@@ -82,6 +90,8 @@ PAPER_SLIPPAGE_SCHEMA = {
     "paper_slippage_coverage": pl.Float64,
     "required_slippage_coverage": pl.Float64,
     "coverage_status": pl.Utf8,
+    "paper_tracking_status": pl.Utf8,
+    "tracking_stage": pl.Utf8,
     "created_at": pl.Utf8,
     "source": pl.Utf8,
     "schema_version": pl.Utf8,
@@ -131,11 +141,30 @@ def build_and_publish_paper_strategy_tracking(
     root = Path(lake_root)
     board = read_parquet_dataset(root / ALPHA_DISCOVERY_BOARD_DATASET)
     day = _resolve_as_of_date(board, as_of_date)
-    runs, warnings = build_paper_strategy_runs(board, as_of_date=day)
+    warnings: list[str] = []
+    v5_runs_raw = read_parquet_dataset(root / V5_PAPER_STRATEGY_RUN_DATASET)
+    v5_daily_raw = read_parquet_dataset(root / V5_PAPER_STRATEGY_DAILY_DATASET)
+    v5_slippage_raw = read_parquet_dataset(root / V5_PAPER_SLIPPAGE_COVERAGE_DATASET)
+    if any(
+        not frame.is_empty()
+        for frame in [v5_runs_raw, v5_daily_raw, v5_slippage_raw]
+    ):
+        runs = build_paper_strategy_runs_from_v5(v5_runs_raw)
+        daily = build_paper_strategy_daily_from_v5(v5_daily_raw)
+        if daily.is_empty() and not runs.is_empty():
+            daily = build_paper_strategy_daily_from_runs(runs, as_of_date=day)
+        coverage = build_paper_slippage_coverage_from_v5(v5_slippage_raw)
+        if coverage.is_empty() and not daily.is_empty():
+            coverage = build_paper_slippage_coverage(daily, as_of_date=day)
+        if runs.is_empty():
+            warnings.append("paper_tracking_v5_runs_missing")
+    else:
+        runs, daily, coverage, warnings = build_pending_paper_strategy_tracking(
+            board,
+            as_of_date=day,
+        )
     run_rows = _publish_runs(root, runs)
-    daily = build_paper_strategy_daily(root, runs, as_of_date=day)
     daily_rows = _publish_daily(root, daily)
-    coverage = build_paper_slippage_coverage(daily, as_of_date=day)
     coverage_rows = _publish_slippage(root, coverage)
     return PaperStrategyTrackingResult(
         lake_root=str(root),
@@ -181,8 +210,79 @@ def build_paper_strategy_runs(
         return _empty_frame(PAPER_RUN_SCHEMA), ["paper_tracking_no_configured_sol_candidate_ready"]
 
     created_at = datetime.now(UTC).isoformat()
-    run_rows = [_run_row(row, by_key[key], created_at) for key, row in sorted(selected.items())]
+    run_rows = [
+        _pending_run_row(row, by_key[key], created_at) for key, row in sorted(selected.items())
+    ]
     return pl.DataFrame(run_rows, schema=PAPER_RUN_SCHEMA, orient="row"), warnings
+
+
+def build_pending_paper_strategy_tracking(
+    board: pl.DataFrame,
+    *,
+    as_of_date: date,
+) -> tuple[pl.DataFrame, pl.DataFrame, pl.DataFrame, list[str]]:
+    runs, warnings = build_paper_strategy_runs(board, as_of_date=as_of_date)
+    daily = build_pending_paper_strategy_daily(runs, as_of_date=as_of_date)
+    coverage = build_paper_slippage_coverage(daily, as_of_date=as_of_date)
+    if not runs.is_empty():
+        warnings.append("paper_tracking_status=waiting_for_v5_paper_telemetry")
+    return runs, daily, coverage, warnings
+
+
+def build_pending_paper_strategy_daily(
+    pending_runs: pl.DataFrame,
+    *,
+    as_of_date: date,
+) -> pl.DataFrame:
+    if pending_runs.is_empty():
+        return _empty_frame(PAPER_DAILY_SCHEMA)
+    created_at = datetime.now(UTC).isoformat()
+    rows: list[dict[str, Any]] = []
+    for row in pending_runs.to_dicts():
+        cfg = _config_for(row.get("proposal_id"), row.get("strategy_candidate"), row.get("symbol"))
+        rows.append(
+            {
+                "as_of_date": as_of_date.isoformat(),
+                "proposal_id": row.get("proposal_id"),
+                "strategy_candidate": row.get("strategy_candidate"),
+                "symbol": row.get("symbol"),
+                "recommended_mode": "paper",
+                "paper_days": 0,
+                "latest_board_decision": str(row.get("board_decision") or "PAPER_READY"),
+                "latest_horizon": str(row.get("suggested_horizon") or ""),
+                "would_enter_count": 0,
+                "latest_paper_pnl_usdt": None,
+                "cumulative_paper_pnl_usdt": 0.0,
+                "avg_paper_pnl_bps": None,
+                "paper_tracking_status": "waiting_for_v5_paper_telemetry",
+                "tracking_stage": "proposed_paper_strategy",
+                "required_paper_days": cfg.required_paper_days,
+                "required_slippage_coverage": cfg.required_slippage_coverage,
+                "live_eligible": False,
+                "live_block_reason": safe_json_dumps(
+                    sorted(
+                        {
+                            *_json_list(row.get("live_block_reason")),
+                            "waiting_for_v5_paper_telemetry",
+                            "no_paper_days",
+                            "no_live_slippage_coverage",
+                        }
+                    )
+                ),
+                "created_at": created_at,
+                "source": PAPER_TRACKING_SOURCE,
+                "schema_version": PAPER_TRACKING_SCHEMA_VERSION,
+            }
+        )
+    return pl.DataFrame(rows, schema=PAPER_DAILY_SCHEMA, orient="row")
+
+
+def build_paper_strategy_daily_from_runs(
+    runs: pl.DataFrame,
+    *,
+    as_of_date: date,
+) -> pl.DataFrame:
+    return _daily_from_runs(runs, as_of_date=as_of_date)
 
 
 def build_paper_strategy_daily(
@@ -191,18 +291,18 @@ def build_paper_strategy_daily(
     *,
     as_of_date: date,
 ) -> pl.DataFrame:
-    root = Path(lake_root)
-    existing_runs = read_parquet_dataset(root / PAPER_STRATEGY_RUNS_DATASET)
-    all_runs = _combine_unique_runs(existing_runs, new_runs)
-    if all_runs.is_empty():
-        return _empty_frame(PAPER_DAILY_SCHEMA)
+    return _daily_from_runs(new_runs, as_of_date=as_of_date)
 
+
+def _daily_from_runs(runs: pl.DataFrame, *, as_of_date: date) -> pl.DataFrame:
+    if runs.is_empty():
+        return _empty_frame(PAPER_DAILY_SCHEMA)
     created_at = datetime.now(UTC).isoformat()
     rows: list[dict[str, Any]] = []
     for cfg in PAPER_STRATEGIES:
         proposal_rows = [
             row
-            for row in all_runs.to_dicts()
+            for row in runs.to_dicts()
             if row.get("proposal_id") == cfg.proposal_id
             and bool(row.get("would_enter")) is True
         ]
@@ -217,6 +317,11 @@ def build_paper_strategy_daily(
             paper_days >= cfg.required_paper_days
             and coverage >= cfg.required_slippage_coverage
             and not latest_reason
+        )
+        tracking_stage = (
+            "completed_paper_observations"
+            if paper_days >= cfg.required_paper_days
+            else "active_paper_strategy"
         )
         rows.append(
             {
@@ -237,6 +342,8 @@ def build_paper_strategy_daily(
                 "avg_paper_pnl_bps": _mean(
                     _optional_float(row.get("paper_pnl_bps")) for row in proposal_rows
                 ),
+                "paper_tracking_status": "v5_paper_telemetry_observed",
+                "tracking_stage": tracking_stage,
                 "required_paper_days": cfg.required_paper_days,
                 "required_slippage_coverage": cfg.required_slippage_coverage,
                 "live_eligible": live_eligible,
@@ -285,7 +392,11 @@ def build_paper_slippage_coverage(
                     row.get("required_slippage_coverage")
                 )
                 or 0.8,
-                "coverage_status": "insufficient_slippage_observations",
+                "coverage_status": _coverage_status(row, coverage),
+                "paper_tracking_status": str(
+                    row.get("paper_tracking_status") or "v5_paper_telemetry_observed"
+                ),
+                "tracking_stage": str(row.get("tracking_stage") or "active_paper_strategy"),
                 "created_at": created_at,
                 "source": PAPER_TRACKING_SOURCE,
                 "schema_version": PAPER_TRACKING_SCHEMA_VERSION,
@@ -296,26 +407,20 @@ def build_paper_slippage_coverage(
 
 def _publish_runs(lake_root: Path, runs: pl.DataFrame) -> int:
     path = lake_root / PAPER_STRATEGY_RUNS_DATASET
-    existing = read_parquet_dataset(path)
-    combined = _combine_unique_runs(existing, runs)
-    write_parquet_dataset(combined, path)
-    return combined.height
+    write_parquet_dataset(runs, path)
+    return runs.height
 
 
 def _publish_daily(lake_root: Path, daily: pl.DataFrame) -> int:
     path = lake_root / PAPER_STRATEGY_DAILY_DATASET
-    existing = read_parquet_dataset(path)
-    combined = _replace_by_key(existing, daily, ["proposal_id", "as_of_date"])
-    write_parquet_dataset(combined, path)
-    return combined.height
+    write_parquet_dataset(daily, path)
+    return daily.height
 
 
 def _publish_slippage(lake_root: Path, coverage: pl.DataFrame) -> int:
     path = lake_root / PAPER_SLIPPAGE_COVERAGE_DATASET
-    existing = read_parquet_dataset(path)
-    combined = _replace_by_key(existing, coverage, ["proposal_id", "as_of_date"])
-    write_parquet_dataset(combined, path)
-    return combined.height
+    write_parquet_dataset(coverage, path)
+    return coverage.height
 
 
 def _combine_unique_runs(existing: pl.DataFrame, new_runs: pl.DataFrame) -> pl.DataFrame:
@@ -342,9 +447,12 @@ def _replace_by_key(
     return combined
 
 
-def _run_row(row: dict[str, Any], cfg: PaperStrategyConfig, created_at: str) -> dict[str, Any]:
+def _pending_run_row(
+    row: dict[str, Any],
+    cfg: PaperStrategyConfig,
+    created_at: str,
+) -> dict[str, Any]:
     avg_net_bps = _optional_float(row.get("avg_net_bps"))
-    paper_pnl_usdt = cfg.paper_size_usdt * (avg_net_bps or 0.0) / 10_000.0
     return {
         "as_of_date": str(row.get("as_of_date") or ""),
         "proposal_id": cfg.proposal_id,
@@ -354,12 +462,14 @@ def _run_row(row: dict[str, Any], cfg: PaperStrategyConfig, created_at: str) -> 
         "board_decision": "PAPER_READY",
         "suggested_horizon": _suggested_horizon(row),
         "horizon_hours": int(_optional_float(row.get("horizon_hours")) or 0),
-        "would_enter": True,
+        "would_enter": False,
         "would_exit": False,
-        "would_size": cfg.paper_size_usdt,
-        "would_size_usdt": cfg.paper_size_usdt,
-        "paper_pnl_bps": avg_net_bps,
-        "paper_pnl_usdt": paper_pnl_usdt,
+        "would_size": 0.0,
+        "would_size_usdt": 0.0,
+        "paper_pnl_bps": None,
+        "paper_pnl_usdt": None,
+        "paper_tracking_status": "waiting_for_v5_paper_telemetry",
+        "tracking_stage": "proposed_paper_strategy",
         "sample_count": int(_optional_float(row.get("sample_count")) or 0),
         "complete_sample_count": int(_optional_float(row.get("complete_sample_count")) or 0),
         "avg_net_bps": avg_net_bps,
@@ -371,6 +481,186 @@ def _run_row(row: dict[str, Any], cfg: PaperStrategyConfig, created_at: str) -> 
         "required_slippage_coverage": cfg.required_slippage_coverage,
         "created_at": created_at,
         "source": PAPER_TRACKING_SOURCE,
+        "schema_version": PAPER_TRACKING_SCHEMA_VERSION,
+    }
+
+
+def build_paper_strategy_runs_from_v5(frame: pl.DataFrame) -> pl.DataFrame:
+    if frame.is_empty():
+        return _empty_frame(PAPER_RUN_SCHEMA)
+    created_at = datetime.now(UTC).isoformat()
+    rows = [_v5_run_row(row, created_at) for row in frame.to_dicts()]
+    return pl.DataFrame(rows, schema=PAPER_RUN_SCHEMA, orient="row")
+
+
+def build_paper_strategy_daily_from_v5(frame: pl.DataFrame) -> pl.DataFrame:
+    if frame.is_empty():
+        return _empty_frame(PAPER_DAILY_SCHEMA)
+    created_at = datetime.now(UTC).isoformat()
+    rows = [_v5_daily_row(row, created_at) for row in frame.to_dicts()]
+    return pl.DataFrame(rows, schema=PAPER_DAILY_SCHEMA, orient="row")
+
+
+def build_paper_slippage_coverage_from_v5(frame: pl.DataFrame) -> pl.DataFrame:
+    if frame.is_empty():
+        return _empty_frame(PAPER_SLIPPAGE_SCHEMA)
+    created_at = datetime.now(UTC).isoformat()
+    rows = [_v5_slippage_row(row, created_at) for row in frame.to_dicts()]
+    return pl.DataFrame(rows, schema=PAPER_SLIPPAGE_SCHEMA, orient="row")
+
+
+def _v5_run_row(row: dict[str, Any], created_at: str) -> dict[str, Any]:
+    payload = _payload(row)
+    candidate = _field(row, payload, "strategy_candidate", "candidate", "strategy")
+    symbol = _field(row, payload, "symbol", "normalized_symbol")
+    proposal_id = _field(row, payload, "proposal_id") or _proposal_id_for(candidate, symbol)
+    would_exit = _optional_bool(_field(row, payload, "would_exit", "exit")) is True
+    return {
+        "as_of_date": _as_of_date(row, payload),
+        "proposal_id": proposal_id,
+        "strategy_candidate": candidate,
+        "symbol": symbol,
+        "recommended_mode": _field(row, payload, "recommended_mode", default="paper"),
+        "board_decision": _field(row, payload, "board_decision", default="PAPER_READY"),
+        "suggested_horizon": _field(row, payload, "suggested_horizon", "horizon"),
+        "horizon_hours": int(_optional_float(_field(row, payload, "horizon_hours")) or 0),
+        "would_enter": _optional_bool(_field(row, payload, "would_enter", "enter")) is True,
+        "would_exit": would_exit,
+        "would_size": _optional_float(_field(row, payload, "would_size", "size")) or 0.0,
+        "would_size_usdt": _optional_float(
+            _field(row, payload, "would_size_usdt", "paper_size_usdt", "would_size")
+        )
+        or 0.0,
+        "paper_pnl_bps": _optional_float(_field(row, payload, "paper_pnl_bps", "pnl_bps")),
+        "paper_pnl_usdt": _optional_float(
+            _field(row, payload, "paper_pnl_usdt", "paper_pnl", "pnl_usdt")
+        ),
+        "paper_tracking_status": _field(
+            row,
+            payload,
+            "paper_tracking_status",
+            default="v5_paper_telemetry_observed",
+        ),
+        "tracking_stage": "completed_paper_observations"
+        if would_exit
+        else "active_paper_strategy",
+        "sample_count": int(_optional_float(_field(row, payload, "sample_count")) or 0),
+        "complete_sample_count": int(
+            _optional_float(_field(row, payload, "complete_sample_count")) or 0
+        ),
+        "avg_net_bps": _optional_float(_field(row, payload, "avg_net_bps")),
+        "p25_net_bps": _optional_float(_field(row, payload, "p25_net_bps")),
+        "win_rate": _optional_float(_field(row, payload, "win_rate")),
+        "cost_source_mix": _field(row, payload, "cost_source_mix"),
+        "live_block_reason": _jsonish_text(_field(row, payload, "live_block_reason")),
+        "required_paper_days": int(
+            _optional_float(_field(row, payload, "required_paper_days")) or 14
+        ),
+        "required_slippage_coverage": _optional_float(
+            _field(row, payload, "required_slippage_coverage")
+        )
+        or 0.8,
+        "created_at": created_at,
+        "source": V5_PAPER_TRACKING_SOURCE,
+        "schema_version": PAPER_TRACKING_SCHEMA_VERSION,
+    }
+
+
+def _v5_daily_row(row: dict[str, Any], created_at: str) -> dict[str, Any]:
+    payload = _payload(row)
+    candidate = _field(row, payload, "strategy_candidate", "candidate", "strategy")
+    symbol = _field(row, payload, "symbol", "normalized_symbol")
+    proposal_id = _field(row, payload, "proposal_id") or _proposal_id_for(candidate, symbol)
+    paper_days = int(_optional_float(_field(row, payload, "paper_days")) or 0)
+    required_days = int(_optional_float(_field(row, payload, "required_paper_days")) or 14)
+    return {
+        "as_of_date": _as_of_date(row, payload),
+        "proposal_id": proposal_id,
+        "strategy_candidate": candidate,
+        "symbol": symbol,
+        "recommended_mode": _field(row, payload, "recommended_mode", default="paper"),
+        "paper_days": paper_days,
+        "latest_board_decision": _field(
+            row,
+            payload,
+            "latest_board_decision",
+            default="PAPER_READY",
+        ),
+        "latest_horizon": _field(row, payload, "latest_horizon", "suggested_horizon", "horizon"),
+        "would_enter_count": int(_optional_float(_field(row, payload, "would_enter_count")) or 0),
+        "latest_paper_pnl_usdt": _optional_float(
+            _field(row, payload, "latest_paper_pnl_usdt", "paper_pnl_usdt")
+        ),
+        "cumulative_paper_pnl_usdt": _optional_float(
+            _field(row, payload, "cumulative_paper_pnl_usdt", "paper_pnl_usdt")
+        )
+        or 0.0,
+        "avg_paper_pnl_bps": _optional_float(
+            _field(row, payload, "avg_paper_pnl_bps", "paper_pnl_bps")
+        ),
+        "paper_tracking_status": _field(
+            row,
+            payload,
+            "paper_tracking_status",
+            default="v5_paper_telemetry_observed",
+        ),
+        "tracking_stage": "completed_paper_observations"
+        if paper_days >= required_days
+        else "active_paper_strategy",
+        "required_paper_days": required_days,
+        "required_slippage_coverage": _optional_float(
+            _field(row, payload, "required_slippage_coverage")
+        )
+        or 0.8,
+        "live_eligible": _optional_bool(_field(row, payload, "live_eligible")) is True,
+        "live_block_reason": _jsonish_text(_field(row, payload, "live_block_reason")),
+        "created_at": created_at,
+        "source": V5_PAPER_TRACKING_SOURCE,
+        "schema_version": PAPER_TRACKING_SCHEMA_VERSION,
+    }
+
+
+def _v5_slippage_row(row: dict[str, Any], created_at: str) -> dict[str, Any]:
+    payload = _payload(row)
+    candidate = _field(row, payload, "strategy_candidate", "candidate", "strategy")
+    symbol = _field(row, payload, "symbol", "normalized_symbol")
+    proposal_id = _field(row, payload, "proposal_id") or _proposal_id_for(candidate, symbol)
+    paper_days = int(_optional_float(_field(row, payload, "paper_days")) or 0)
+    coverage = _optional_float(_field(row, payload, "paper_slippage_coverage")) or 0.0
+    return {
+        "as_of_date": _as_of_date(row, payload),
+        "proposal_id": proposal_id,
+        "strategy_candidate": candidate,
+        "symbol": symbol,
+        "paper_days": paper_days,
+        "observed_slippage_count": int(
+            _optional_float(_field(row, payload, "observed_slippage_count")) or 0
+        ),
+        "required_observation_count": int(
+            _optional_float(_field(row, payload, "required_observation_count")) or 1
+        ),
+        "paper_slippage_coverage": coverage,
+        "required_slippage_coverage": _optional_float(
+            _field(row, payload, "required_slippage_coverage")
+        )
+        or 0.8,
+        "coverage_status": _field(
+            row,
+            payload,
+            "coverage_status",
+            default="insufficient_slippage_observations",
+        ),
+        "paper_tracking_status": _field(
+            row,
+            payload,
+            "paper_tracking_status",
+            default="v5_paper_telemetry_observed",
+        ),
+        "tracking_stage": "completed_paper_observations"
+        if coverage >= 0.8
+        else "active_paper_strategy",
+        "created_at": created_at,
+        "source": V5_PAPER_TRACKING_SOURCE,
         "schema_version": PAPER_TRACKING_SCHEMA_VERSION,
     }
 
@@ -389,6 +679,102 @@ def _resolve_as_of_date(board: pl.DataFrame, value: str | date | None) -> date:
         if values:
             return date.fromisoformat(max(values))
     return datetime.now(UTC).date()
+
+
+def _config_for(
+    proposal_id: Any,
+    strategy_candidate: Any,
+    symbol: Any,
+) -> PaperStrategyConfig:
+    for cfg in PAPER_STRATEGIES:
+        if proposal_id and str(proposal_id) == cfg.proposal_id:
+            return cfg
+        if (
+            str(strategy_candidate or "") == cfg.strategy_candidate
+            and str(symbol or "") == cfg.symbol
+        ):
+            return cfg
+    return PaperStrategyConfig(
+        proposal_id=str(proposal_id or ""),
+        strategy_candidate=str(strategy_candidate or ""),
+        symbol=str(symbol or ""),
+    )
+
+
+def _proposal_id_for(strategy_candidate: Any, symbol: Any) -> str:
+    cfg = _config_for(None, strategy_candidate, symbol)
+    return cfg.proposal_id
+
+
+def _payload(row: dict[str, Any]) -> dict[str, Any]:
+    raw = row.get("raw_payload_json")
+    if not raw:
+        return {}
+    try:
+        loaded = json.loads(str(raw))
+    except json.JSONDecodeError:
+        return {}
+    return loaded if isinstance(loaded, dict) else {}
+
+
+def _field(
+    row: dict[str, Any],
+    payload: dict[str, Any],
+    *keys: str,
+    default: str = "",
+) -> str:
+    for key in keys:
+        for source in (row, payload):
+            value = source.get(key)
+            if value is not None and str(value).strip() != "":
+                return str(value)
+    return default
+
+
+def _as_of_date(row: dict[str, Any], payload: dict[str, Any]) -> str:
+    value = _field(row, payload, "as_of_date", "date")
+    if value:
+        return value[:10]
+    ts_value = _field(row, payload, "ts_utc", "created_at", "ingest_ts", "bundle_ts")
+    if ts_value:
+        return ts_value[:10]
+    return datetime.now(UTC).date().isoformat()
+
+
+def _optional_bool(value: Any) -> bool | None:
+    if isinstance(value, bool):
+        return value
+    if value is None:
+        return None
+    text = str(value).strip().lower()
+    if text in {"true", "1", "yes", "y"}:
+        return True
+    if text in {"false", "0", "no", "n"}:
+        return False
+    return None
+
+
+def _jsonish_text(value: Any) -> str:
+    if isinstance(value, list | dict):
+        return safe_json_dumps(value)
+    text = str(value or "")
+    if not text:
+        return "[]"
+    try:
+        loaded = json.loads(text)
+    except json.JSONDecodeError:
+        return safe_json_dumps([text])
+    return safe_json_dumps(loaded)
+
+
+def _coverage_status(row: dict[str, Any], coverage: float) -> str:
+    status = str(row.get("coverage_status") or "").strip()
+    if status:
+        return status
+    if str(row.get("paper_tracking_status") or "") == "waiting_for_v5_paper_telemetry":
+        return "waiting_for_v5_paper_telemetry"
+    required = _optional_float(row.get("required_slippage_coverage")) or 0.8
+    return "ok" if coverage >= required else "insufficient_slippage_observations"
 
 
 def _proposal_rank(row: dict[str, Any]) -> tuple[float, float, int, int, int]:

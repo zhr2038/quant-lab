@@ -529,15 +529,13 @@ def latest_v5_paper_frame(frame: pl.DataFrame) -> pl.DataFrame:
     )
     if timestamp_column is None:
         return frame
-    values = [
-        str(value)
-        for value in frame.get_column(timestamp_column).drop_nulls().to_list()
-        if str(value).strip()
-    ]
-    if not values:
+    try:
+        latest = frame.select(pl.col(timestamp_column).max().alias("latest"))["latest"][0]
+    except Exception:
         return frame
-    latest = max(values)
-    return frame.filter(pl.col(timestamp_column).cast(pl.Utf8) == latest)
+    if latest is None or str(latest).strip() == "":
+        return frame
+    return frame.filter(pl.col(timestamp_column) == latest)
 
 
 def build_paper_strategy_daily_from_v5(frame: pl.DataFrame) -> pl.DataFrame:

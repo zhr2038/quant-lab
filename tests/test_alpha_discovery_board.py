@@ -480,7 +480,7 @@ def test_export_daily_prefers_v5_paper_telemetry_over_pending_gold(tmp_path):
                     "paper_pnl_bps": "",
                     "required_paper_days": "14",
                     "required_slippage_coverage": "0.8",
-                    "bundle_ts": "2026-05-18T12:00:00Z",
+                    "bundle_ts": datetime(2026, 5, 18, 12, tzinfo=UTC),
                     "raw_payload_json": json.dumps({"heartbeat_index": index}),
                 }
             )
@@ -499,7 +499,7 @@ def test_export_daily_prefers_v5_paper_telemetry_over_pending_gold(tmp_path):
             "paper_pnl_bps": "",
             "required_paper_days": "14",
             "required_slippage_coverage": "0.8",
-            "bundle_ts": "2026-05-17T12:00:00Z",
+            "bundle_ts": datetime(2026, 5, 17, 12, tzinfo=UTC),
             "raw_payload_json": "{}",
         }
     )
@@ -521,7 +521,7 @@ def test_export_daily_prefers_v5_paper_telemetry_over_pending_gold(tmp_path):
                     "required_paper_days": "14",
                     "required_slippage_coverage": "0.8",
                     "live_eligible": "false",
-                    "bundle_ts": "2026-05-18T12:00:00Z",
+                    "bundle_ts": datetime(2026, 5, 18, 12, tzinfo=UTC),
                     "raw_payload_json": "{}",
                 }
                 for proposal_id, candidate in proposals
@@ -540,7 +540,7 @@ def test_export_daily_prefers_v5_paper_telemetry_over_pending_gold(tmp_path):
                     "slippage_coverage": "0.0",
                     "required_slippage_coverage": "0.8",
                     "readiness_status": "insufficient_slippage_observations",
-                    "bundle_ts": "2026-05-18T12:00:00Z",
+                    "bundle_ts": datetime(2026, 5, 18, 12, tzinfo=UTC),
                     "raw_payload_json": "{}",
                 }
                 for proposal_id, candidate in proposals

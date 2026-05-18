@@ -21,6 +21,7 @@ WEB_EXPORT_MODE = "snapshot_only"
 DEFAULT_DOWNLOAD_PACK_LIMIT = 5
 DEFAULT_DOWNLOAD_MAX_BYTES = 128 * 1024 * 1024
 DEFAULT_EXPORT_STATUS_STALE_SECONDS = 30 * 60
+DEFAULT_WEB_EXPORT_MEMORY_LIMIT_MB = 3072
 
 
 def render(
@@ -201,7 +202,7 @@ def write_status(payload):
 
 
 started_at = datetime.now(UTC).isoformat()
-memory_mb = int(os.environ.get("QUANT_LAB_WEB_EXPORT_MEMORY_LIMIT_MB", "1536"))
+memory_mb = int(os.environ.get("QUANT_LAB_WEB_EXPORT_MEMORY_LIMIT_MB", "3072"))
 if memory_mb > 0:
     limit_bytes = memory_mb * 1024 * 1024
     resource.setrlimit(resource.RLIMIT_AS, (limit_bytes, limit_bytes))

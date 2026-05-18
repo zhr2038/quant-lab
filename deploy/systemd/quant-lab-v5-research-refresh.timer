@@ -1,0 +1,11 @@
+[Unit]
+Description=Run quant-lab V5 candidate research refresh every 2 hours
+
+[Timer]
+OnActiveSec=70min
+OnUnitActiveSec=2h
+RandomizedDelaySec=10min
+Persistent=false
+
+[Install]
+WantedBy=timers.target

@@ -10,10 +10,10 @@ Group=quantlab
 WorkingDirectory=/opt/quant-lab
 Environment=POLARS_MAX_THREADS=1
 Environment=MALLOC_ARENA_MAX=2
-RuntimeMaxSec=15min
-MemoryHigh=3G
-MemoryMax=4G
+RuntimeMaxSec=8min
+MemoryHigh=1G
+MemoryMax=2G
 CPUQuota=60%
-ExecStart=/usr/bin/flock -w 120 /var/lock/quant-lab-heavy.lock /opt/quant-lab/.venv/bin/qlab analyze-v5-telemetry --lake-root /var/lib/quant-lab/lake
+ExecStart=/usr/bin/flock -w 120 /var/lock/quant-lab-heavy.lock /opt/quant-lab/.venv/bin/qlab analyze-v5-telemetry --lake-root /var/lib/quant-lab/lake --skip-candidate-gold
 NoNewPrivileges=true
 PrivateTmp=true

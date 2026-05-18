@@ -16,8 +16,13 @@ Daily and recurring jobs must keep this order:
 
 Heavy lake maintenance runs outside the expert export path:
 
-- `qlab compact-lake-dataset` for `okx_public_ws`, `trade_print`, and
-  `orderbook_snapshot` runs every 6 hours.
+- Scheduled compaction must not touch hot OKX WebSocket datasets such as
+  `bronze/okx_public_ws`, `silver/trade_print`, or `silver/orderbook_snapshot`
+  while the collector is running. Those datasets are append-heavy and share
+  dataset locks with the live collector.
+- The default compaction service only compacts cold V5 telemetry index/usage
+  datasets and records lake health. Hot market-data compaction is a manual
+  maintenance operation.
 - `qlab lake-health` records file count, small-file ratio, and partition
   coverage in `gold/lake_file_health_daily`.
 - `qlab ops-summary` reads API request metrics, job durations, and lake file
@@ -27,13 +32,19 @@ The daily export service should package the latest already-computed outputs. It
 must not be used as the normal way to run V5 sync, cost calibration, feature
 publication, or alpha evidence generation.
 
-Additional V5 telemetry analysis and candidate research jobs should run before
-`publish-risk-permission` when they are enabled:
+Additional V5 telemetry analysis and candidate research jobs are intentionally
+split:
 
-- `qlab analyze-v5-telemetry`
-- `qlab build-v5-candidate-labels`
-- `qlab build-alpha-discovery-board`
-- `qlab build-strategy-evidence`
+- High-frequency `qlab sync-v5-telemetry` ingests at most one new bundle and
+  runs lightweight V5 health analysis only. It skips historical outcome files
+  and does not rebuild candidate research outputs.
+- Frequent `qlab analyze-v5-telemetry --skip-candidate-gold` refreshes V5 health
+  gold tables without touching candidate labels, strategy evidence, or the
+  alpha discovery board.
+- Lower-frequency `quant-lab-v5-research-refresh.service` runs:
+  `qlab build-v5-candidate-labels`, `qlab build-strategy-evidence`, and
+  `qlab build-alpha-discovery-board`.
+- `qlab build-alpha-evidence` remains separate from candidate board refresh.
 
 The ordering matters because `risk_permission` must be evaluated against the
 latest V5 telemetry, gate, cost, and data-health state. The daily export service
@@ -93,16 +104,17 @@ The repository includes these timer templates:
 
 - `deploy/systemd/quant-lab-v5-telemetry-sync.timer`
 - `deploy/systemd/quant-lab-v5-daily-analysis.timer`
+- `deploy/systemd/quant-lab-v5-research-refresh.timer`
 - `deploy/systemd/quant-lab-alpha-evidence.timer`
 - `deploy/systemd/quant-lab-risk-permission.timer`
 - `deploy/systemd/quant-lab-daily-export.timer`
 
 Suggested production order:
 
-- V5 telemetry sync: every 3 minutes.
-- V5 telemetry analysis: every 5 minutes.
-- Candidate labels, alpha discovery board, alpha evidence, and gate publishing:
-  every 15 minutes.
+- V5 telemetry sync: every 10 minutes, one newest bundle per run.
+- V5 telemetry analysis: every 30 minutes, using `--skip-candidate-gold`.
+- Candidate labels, strategy evidence, and alpha discovery board: every 2 hours.
+- Alpha evidence and gate publishing: every 15 minutes.
 - Risk permission publish: every 10 minutes, after telemetry and gate refresh
   and no less frequently than every 30 minutes.
 - Daily expert export: after telemetry and risk permission have had time to run.

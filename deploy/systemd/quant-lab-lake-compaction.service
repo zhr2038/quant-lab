@@ -9,14 +9,13 @@ User=quantlab
 Group=quantlab
 WorkingDirectory=/opt/quant-lab
 Environment=PYTHONUNBUFFERED=1
-Environment=POLARS_MAX_THREADS=2
+Environment=POLARS_MAX_THREADS=1
 Environment=MALLOC_ARENA_MAX=2
-ExecStart=/bin/bash -lc '/opt/quant-lab/.venv/bin/qlab compact-lake-dataset --lake-root /var/lib/quant-lab/lake --dataset okx_public_ws --target-rows-per-file 250000 --max-source-files-per-batch 2000 && /opt/quant-lab/.venv/bin/qlab compact-lake-dataset --lake-root /var/lib/quant-lab/lake --dataset trade_print --target-rows-per-file 250000 --max-source-files-per-batch 2000 && /opt/quant-lab/.venv/bin/qlab compact-lake-dataset --lake-root /var/lib/quant-lab/lake --dataset orderbook_snapshot --target-rows-per-file 250000 --max-source-files-per-batch 2000 && /opt/quant-lab/.venv/bin/qlab lake-health --lake-root /var/lib/quant-lab/lake'
-Nice=10
-IOSchedulingClass=best-effort
-IOSchedulingPriority=6
-MemoryHigh=3G
-MemoryMax=4G
-TimeoutStartSec=45min
+ExecStart=/usr/bin/flock -w 10 /var/lock/quant-lab-heavy.lock /bin/bash -lc '/opt/quant-lab/.venv/bin/qlab compact-lake-dataset --lake-root /var/lib/quant-lab/lake --dataset bronze/strategy_telemetry/v5/raw_file_index --target-rows-per-file 250000 --max-source-files-per-batch 500 && /opt/quant-lab/.venv/bin/qlab compact-lake-dataset --lake-root /var/lib/quant-lab/lake --dataset silver/v5_quant_lab_usage --target-rows-per-file 250000 --max-source-files-per-batch 500 && /opt/quant-lab/.venv/bin/qlab compact-lake-dataset --lake-root /var/lib/quant-lab/lake --dataset silver/v5_quant_lab_compliance --target-rows-per-file 250000 --max-source-files-per-batch 500 && /opt/quant-lab/.venv/bin/qlab compact-lake-dataset --lake-root /var/lib/quant-lab/lake --dataset silver/v5_quant_lab_cost_usage --target-rows-per-file 250000 --max-source-files-per-batch 500 && /opt/quant-lab/.venv/bin/qlab lake-health --lake-root /var/lib/quant-lab/lake'
+Nice=15
+IOSchedulingClass=idle
+MemoryHigh=2G
+MemoryMax=3G
+TimeoutStartSec=35min
 NoNewPrivileges=true
 PrivateTmp=true

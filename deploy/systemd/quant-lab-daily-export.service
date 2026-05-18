@@ -9,9 +9,11 @@ Group=quantlab
 WorkingDirectory=/opt/quant-lab
 PermissionsStartOnly=true
 TimeoutStartSec=35min
+Environment=POLARS_MAX_THREADS=1
+Environment=MALLOC_ARENA_MAX=2
 Environment=QUANT_LAB_EXPORT_V5_MAX_PENDING_BUNDLES=1
 Environment=QUANT_LAB_EXPORT_V5_MAX_SCAN_BUNDLES=30
-MemoryHigh=4G
-MemoryMax=5G
+MemoryHigh=2G
+MemoryMax=3G
 CPUQuota=80%
 ExecStart=/bin/bash -lc '/usr/bin/timeout 20m /opt/quant-lab/.venv/bin/qlab export-daily --date "$(date +%%F)" --lake-root /var/lib/quant-lab/lake --out-dir /var/lib/quant-lab/exports --no-refresh-risk-permission --no-pre-export-v5-refresh'

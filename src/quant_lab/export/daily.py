@@ -30,6 +30,14 @@ from quant_lab.reports.enforce_readiness import (
     enforce_readiness_members,
 )
 from quant_lab.research.alpha_discovery import normalize_alpha_discovery_board_decisions
+from quant_lab.research.paper_tracking import (
+    build_paper_slippage_coverage,
+    build_paper_slippage_coverage_from_v5,
+    build_paper_strategy_daily_from_runs,
+    build_paper_strategy_daily_from_v5,
+    build_paper_strategy_runs_from_v5,
+    enrich_paper_strategy_daily_from_runs,
+)
 from quant_lab.research.strategy_evidence import normalize_strategy_evidence_decisions
 from quant_lab.risk.publish import (
     DEFAULT_TELEMETRY_STALE_THRESHOLD_SECONDS,
@@ -549,7 +557,10 @@ CSV_SCHEMAS: dict[str, list[str]] = {
         "paper_days",
         "latest_board_decision",
         "latest_horizon",
+        "heartbeat_day_count",
+        "entry_day_count",
         "would_enter_count",
+        "paper_pnl_observed_count",
         "latest_paper_pnl_usdt",
         "cumulative_paper_pnl_usdt",
         "avg_paper_pnl_bps",
@@ -1235,6 +1246,56 @@ def _snapshot_market_health(snapshot: _DatasetSnapshot) -> dict[str, Any]:
     }
 
 
+def _paper_tracking_frames_for_export(
+    frames: dict[str, pl.DataFrame],
+) -> tuple[pl.DataFrame, pl.DataFrame, pl.DataFrame]:
+    v5_runs_raw = frames.get("v5_paper_strategy_run", pl.DataFrame())
+    v5_daily_raw = frames.get("v5_paper_strategy_daily", pl.DataFrame())
+    v5_slippage_raw = frames.get("v5_paper_slippage_coverage", pl.DataFrame())
+    if any(
+        not frame.is_empty()
+        for frame in [v5_runs_raw, v5_daily_raw, v5_slippage_raw]
+    ):
+        runs = build_paper_strategy_runs_from_v5(v5_runs_raw)
+        export_day = _latest_paper_tracking_date(
+            [runs, v5_daily_raw, v5_slippage_raw],
+        )
+        daily = build_paper_strategy_daily_from_v5(v5_daily_raw)
+        if not runs.is_empty():
+            daily = enrich_paper_strategy_daily_from_runs(
+                daily,
+                runs,
+                as_of_date=export_day,
+            )
+        if daily.is_empty() and not runs.is_empty():
+            daily = build_paper_strategy_daily_from_runs(runs, as_of_date=export_day)
+        slippage = build_paper_slippage_coverage_from_v5(v5_slippage_raw)
+        if slippage.is_empty() and not daily.is_empty():
+            slippage = build_paper_slippage_coverage(daily, as_of_date=export_day)
+        return runs, daily, slippage
+
+    return (
+        frames.get("paper_strategy_runs", pl.DataFrame()),
+        frames.get("paper_strategy_daily", pl.DataFrame()),
+        frames.get("paper_slippage_coverage", pl.DataFrame()),
+    )
+
+
+def _latest_paper_tracking_date(frames: list[pl.DataFrame]) -> date:
+    values: list[str] = []
+    for frame in frames:
+        if frame.is_empty() or "as_of_date" not in frame.columns:
+            continue
+        values.extend(
+            str(value)[:10]
+            for value in frame.get_column("as_of_date").drop_nulls().to_list()
+            if str(value).strip()
+        )
+    if not values:
+        return datetime.now(UTC).date()
+    return date.fromisoformat(max(values))
+
+
 def _dataset_members(frames: dict[str, pl.DataFrame]) -> dict[str, _MemberPayload]:
     market = frames.get("market_bar", pl.DataFrame())
     features = frames.get("feature_value", pl.DataFrame())
@@ -1252,9 +1313,7 @@ def _dataset_members(frames: dict[str, pl.DataFrame]) -> dict[str, _MemberPayloa
     strategy_samples = _strategy_evidence_samples_for_export(
         frames.get("strategy_evidence_sample", pl.DataFrame())
     )
-    paper_runs = frames.get("paper_strategy_runs", pl.DataFrame())
-    paper_daily = frames.get("paper_strategy_daily", pl.DataFrame())
-    paper_slippage = frames.get("paper_slippage_coverage", pl.DataFrame())
+    paper_runs, paper_daily, paper_slippage = _paper_tracking_frames_for_export(frames)
     gates = frames.get("gate_decision", pl.DataFrame())
     risk = _risk_permissions_for_export(frames.get("risk_permission", pl.DataFrame()), frames)
     trades = _normalize_symbol_frame(frames.get("trade_print", pl.DataFrame()))

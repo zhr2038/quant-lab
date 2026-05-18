@@ -404,10 +404,165 @@ def test_paper_strategy_tracking_uses_v5_telemetry_when_present(tmp_path):
     assert set(runs["tracking_stage"].to_list()) == {"active_paper_strategy"}
     assert set(runs["would_enter"].to_list()) == {True}
     assert set(daily["paper_days"].to_list()) == {1}
+    assert set(daily["heartbeat_day_count"].to_list()) == {0}
+    assert set(daily["entry_day_count"].to_list()) == {1}
+    assert set(daily["would_enter_count"].to_list()) == {1}
+    assert set(daily["paper_pnl_observed_count"].to_list()) == {1}
     assert set(daily["paper_tracking_status"].to_list()) == {"v5_paper_telemetry_observed"}
     assert set(slippage["paper_tracking_status"].to_list()) == {
         "v5_paper_telemetry_observed"
     }
+
+
+def test_export_daily_prefers_v5_paper_telemetry_over_pending_gold(tmp_path):
+    lake = tmp_path / "lake"
+    stale_pending = pl.DataFrame(
+        [
+            {
+                "as_of_date": "2026-05-18",
+                "proposal_id": "SOL_F4_VOLUME_EXPANSION_PAPER_V1",
+                "strategy_candidate": "v5.f4_volume_expansion_entry",
+                "symbol": "SOL-USDT",
+                "recommended_mode": "paper",
+                "board_decision": "PAPER_READY",
+                "suggested_horizon": "24h",
+                "horizon_hours": 24,
+                "would_enter": False,
+                "would_exit": False,
+                "would_size": 0.0,
+                "would_size_usdt": 0.0,
+                "paper_pnl_bps": None,
+                "paper_pnl_usdt": None,
+                "paper_tracking_status": "waiting_for_v5_paper_telemetry",
+                "tracking_stage": "proposed_paper_strategy",
+                "sample_count": 72,
+                "complete_sample_count": 72,
+                "avg_net_bps": 30.0,
+                "p25_net_bps": -10.0,
+                "win_rate": 0.7,
+                "cost_source_mix": "public_spread_proxy",
+                "live_block_reason": "[]",
+                "required_paper_days": 14,
+                "required_slippage_coverage": 0.8,
+                "created_at": "2026-05-18T00:00:00Z",
+                "source": "research.paper_strategy_tracking.v0.1",
+                "schema_version": "paper_strategy_tracking.v1",
+            }
+        ]
+    )
+    write_parquet_dataset(stale_pending, lake / "gold" / "paper_strategy_runs")
+
+    proposals = [
+        (
+            "SOL_F4_VOLUME_EXPANSION_PAPER_V1",
+            "v5.f4_volume_expansion_entry",
+        ),
+        (
+            "SOL_PROTECT_ALPHA6_LOW_EXCEPTION_PAPER_V1",
+            "v5.sol_protect_alpha6_low_exception",
+        ),
+    ]
+    run_rows = []
+    for proposal_id, candidate in proposals:
+        for index in range(3):
+            run_rows.append(
+                {
+                    "as_of_date": "2026-05-18",
+                    "proposal_id": proposal_id,
+                    "strategy_candidate": candidate,
+                    "symbol": "SOL-USDT",
+                    "recommended_mode": "paper",
+                    "event_type": "heartbeat",
+                    "would_enter": "false",
+                    "would_exit": "false",
+                    "would_size": "0",
+                    "paper_pnl": "",
+                    "paper_pnl_bps": "",
+                    "required_paper_days": "14",
+                    "required_slippage_coverage": "0.8",
+                    "raw_payload_json": json.dumps({"heartbeat_index": index}),
+                }
+            )
+    write_parquet_dataset(
+        pl.DataFrame(run_rows),
+        lake / "silver" / "v5_paper_strategy_run",
+    )
+    write_parquet_dataset(
+        pl.DataFrame(
+            [
+                {
+                    "as_of_date": "2026-05-18",
+                    "proposal_id": proposal_id,
+                    "strategy_candidate": candidate,
+                    "symbol": "SOL-USDT",
+                    "recommended_mode": "paper",
+                    "paper_days": "1",
+                    "cumulative_paper_pnl_usdt": "0",
+                    "required_paper_days": "14",
+                    "required_slippage_coverage": "0.8",
+                    "live_eligible": "false",
+                    "raw_payload_json": "{}",
+                }
+                for proposal_id, candidate in proposals
+            ]
+        ),
+        lake / "silver" / "v5_paper_strategy_daily",
+    )
+    write_parquet_dataset(
+        pl.DataFrame(
+            [
+                {
+                    "as_of_date": "2026-05-18",
+                    "proposal_id": proposal_id,
+                    "strategy_candidate": candidate,
+                    "symbol": "SOL-USDT",
+                    "paper_days": "1",
+                    "paper_slippage_coverage": "0.0",
+                    "required_slippage_coverage": "0.8",
+                    "coverage_status": "insufficient_slippage_observations",
+                    "raw_payload_json": "{}",
+                }
+                for proposal_id, candidate in proposals
+            ]
+        ),
+        lake / "silver" / "v5_paper_slippage_coverage",
+    )
+
+    export = export_daily_pack(
+        export_date="2026-05-18",
+        lake_root=lake,
+        out_dir=tmp_path / "exports",
+        profile="expert",
+        command_line=["qlab", "export-daily"],
+        pre_export_v5_refresh=False,
+    )
+
+    with zipfile.ZipFile(export.zip_path) as archive:
+        runs = list(
+            csv.DictReader(
+                io.StringIO(archive.read("reports/paper_strategy_runs.csv").decode("utf-8"))
+            )
+        )
+        daily = list(
+            csv.DictReader(
+                io.StringIO(archive.read("reports/paper_strategy_daily.csv").decode("utf-8"))
+            )
+        )
+
+    assert len(runs) == 6
+    assert {row["paper_tracking_status"] for row in runs} == {
+        "v5_paper_telemetry_observed"
+    }
+    assert {row["tracking_stage"] for row in runs} == {"active_paper_strategy"}
+    assert {row["would_enter"] for row in runs} == {"False"}
+    assert {row["paper_pnl_usdt"] for row in runs} == {""}
+    assert {row["paper_tracking_status"] for row in daily} == {
+        "v5_paper_telemetry_observed"
+    }
+    assert {row["heartbeat_day_count"] for row in daily} == {"1"}
+    assert {row["entry_day_count"] for row in daily} == {"0"}
+    assert {row["would_enter_count"] for row in daily} == {"0"}
+    assert {row["paper_pnl_observed_count"] for row in daily} == {"0"}
 
 
 def _write_candidate_labels(lake: Path) -> None:

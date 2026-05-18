@@ -64,7 +64,10 @@ PAPER_DAILY_SCHEMA = {
     "paper_days": pl.Int64,
     "latest_board_decision": pl.Utf8,
     "latest_horizon": pl.Utf8,
+    "heartbeat_day_count": pl.Int64,
+    "entry_day_count": pl.Int64,
     "would_enter_count": pl.Int64,
+    "paper_pnl_observed_count": pl.Int64,
     "latest_paper_pnl_usdt": pl.Float64,
     "cumulative_paper_pnl_usdt": pl.Float64,
     "avg_paper_pnl_bps": pl.Float64,
@@ -151,6 +154,12 @@ def build_and_publish_paper_strategy_tracking(
     ):
         runs = build_paper_strategy_runs_from_v5(v5_runs_raw)
         daily = build_paper_strategy_daily_from_v5(v5_daily_raw)
+        if not runs.is_empty():
+            daily = enrich_paper_strategy_daily_from_runs(
+                daily,
+                runs,
+                as_of_date=day,
+            )
         if daily.is_empty() and not runs.is_empty():
             daily = build_paper_strategy_daily_from_runs(runs, as_of_date=day)
         coverage = build_paper_slippage_coverage_from_v5(v5_slippage_raw)
@@ -250,7 +259,10 @@ def build_pending_paper_strategy_daily(
                 "paper_days": 0,
                 "latest_board_decision": str(row.get("board_decision") or "PAPER_READY"),
                 "latest_horizon": str(row.get("suggested_horizon") or ""),
+                "heartbeat_day_count": 0,
+                "entry_day_count": 0,
                 "would_enter_count": 0,
+                "paper_pnl_observed_count": 0,
                 "latest_paper_pnl_usdt": None,
                 "cumulative_paper_pnl_usdt": 0.0,
                 "avg_paper_pnl_bps": None,
@@ -299,18 +311,22 @@ def _daily_from_runs(runs: pl.DataFrame, *, as_of_date: date) -> pl.DataFrame:
         return _empty_frame(PAPER_DAILY_SCHEMA)
     created_at = datetime.now(UTC).isoformat()
     rows: list[dict[str, Any]] = []
-    for cfg in PAPER_STRATEGIES:
-        proposal_rows = [
-            row
-            for row in runs.to_dicts()
-            if row.get("proposal_id") == cfg.proposal_id
-            and bool(row.get("would_enter")) is True
-        ]
-        if not proposal_rows:
+    for group in _group_run_rows(runs.to_dicts()).values():
+        cfg = _config_for(
+            group["proposal_id"],
+            group["strategy_candidate"],
+            group["symbol"],
+        )
+        run_rows = group["rows"]
+        entry_rows = [row for row in run_rows if bool(row.get("would_enter")) is True]
+        if not run_rows:
             continue
-        proposal_rows.sort(key=lambda row: str(row.get("as_of_date") or ""))
-        latest = proposal_rows[-1]
-        paper_days = len({str(row.get("as_of_date") or "") for row in proposal_rows})
+        run_rows.sort(key=lambda row: str(row.get("as_of_date") or ""))
+        latest = run_rows[-1]
+        paper_days = len({str(row.get("as_of_date") or "") for row in run_rows})
+        heartbeat_days = _heartbeat_day_count(run_rows)
+        entry_days = len({str(row.get("as_of_date") or "") for row in entry_rows})
+        pnl_rows = _paper_pnl_rows(entry_rows)
         latest_reason = _json_list(latest.get("live_block_reason"))
         coverage = 0.0
         live_eligible = (
@@ -333,14 +349,19 @@ def _daily_from_runs(runs: pl.DataFrame, *, as_of_date: date) -> pl.DataFrame:
                 "paper_days": paper_days,
                 "latest_board_decision": str(latest.get("board_decision") or ""),
                 "latest_horizon": str(latest.get("suggested_horizon") or ""),
-                "would_enter_count": len(proposal_rows),
-                "latest_paper_pnl_usdt": _optional_float(latest.get("paper_pnl_usdt")),
+                "heartbeat_day_count": heartbeat_days,
+                "entry_day_count": entry_days,
+                "would_enter_count": len(entry_rows),
+                "paper_pnl_observed_count": len(pnl_rows),
+                "latest_paper_pnl_usdt": _optional_float(pnl_rows[-1].get("paper_pnl_usdt"))
+                if pnl_rows
+                else None,
                 "cumulative_paper_pnl_usdt": sum(
                     _optional_float(row.get("paper_pnl_usdt")) or 0.0
-                    for row in proposal_rows
+                    for row in pnl_rows
                 ),
                 "avg_paper_pnl_bps": _mean(
-                    _optional_float(row.get("paper_pnl_bps")) for row in proposal_rows
+                    _optional_float(row.get("paper_pnl_bps")) for row in pnl_rows
                 ),
                 "paper_tracking_status": "v5_paper_telemetry_observed",
                 "tracking_stage": tracking_stage,
@@ -501,6 +522,45 @@ def build_paper_strategy_daily_from_v5(frame: pl.DataFrame) -> pl.DataFrame:
     return pl.DataFrame(rows, schema=PAPER_DAILY_SCHEMA, orient="row")
 
 
+def enrich_paper_strategy_daily_from_runs(
+    daily: pl.DataFrame,
+    runs: pl.DataFrame,
+    *,
+    as_of_date: date,
+) -> pl.DataFrame:
+    run_daily = build_paper_strategy_daily_from_runs(runs, as_of_date=as_of_date)
+    if daily.is_empty():
+        return run_daily
+    if run_daily.is_empty():
+        return daily
+    metrics = {
+        _paper_daily_key(row): row
+        for row in run_daily.to_dicts()
+    }
+    enriched: list[dict[str, Any]] = []
+    metric_fields = [
+        "heartbeat_day_count",
+        "entry_day_count",
+        "would_enter_count",
+        "paper_pnl_observed_count",
+    ]
+    fallback_fields = [
+        "latest_paper_pnl_usdt",
+        "cumulative_paper_pnl_usdt",
+        "avg_paper_pnl_bps",
+    ]
+    for row in daily.to_dicts():
+        metric = metrics.get(_paper_daily_key(row), {})
+        updated = dict(row)
+        for field in metric_fields:
+            updated[field] = int(_optional_float(metric.get(field)) or 0)
+        for field in fallback_fields:
+            if updated.get(field) in {None, ""} and metric.get(field) not in {None, ""}:
+                updated[field] = metric.get(field)
+        enriched.append(updated)
+    return pl.DataFrame(enriched, schema=PAPER_DAILY_SCHEMA, orient="row")
+
+
 def build_paper_slippage_coverage_from_v5(frame: pl.DataFrame) -> pl.DataFrame:
     if frame.is_empty():
         return _empty_frame(PAPER_SLIPPAGE_SCHEMA)
@@ -587,7 +647,16 @@ def _v5_daily_row(row: dict[str, Any], created_at: str) -> dict[str, Any]:
             default="PAPER_READY",
         ),
         "latest_horizon": _field(row, payload, "latest_horizon", "suggested_horizon", "horizon"),
+        "heartbeat_day_count": int(
+            _optional_float(_field(row, payload, "heartbeat_day_count")) or 0
+        ),
+        "entry_day_count": int(
+            _optional_float(_field(row, payload, "entry_day_count")) or 0
+        ),
         "would_enter_count": int(_optional_float(_field(row, payload, "would_enter_count")) or 0),
+        "paper_pnl_observed_count": int(
+            _optional_float(_field(row, payload, "paper_pnl_observed_count")) or 0
+        ),
         "latest_paper_pnl_usdt": _optional_float(
             _field(row, payload, "latest_paper_pnl_usdt", "paper_pnl_usdt")
         ),
@@ -775,6 +844,52 @@ def _coverage_status(row: dict[str, Any], coverage: float) -> str:
         return "waiting_for_v5_paper_telemetry"
     required = _optional_float(row.get("required_slippage_coverage")) or 0.8
     return "ok" if coverage >= required else "insufficient_slippage_observations"
+
+
+def _paper_daily_key(row: dict[str, Any]) -> tuple[str, str, str]:
+    return (
+        str(row.get("proposal_id") or ""),
+        str(row.get("strategy_candidate") or ""),
+        str(row.get("symbol") or ""),
+    )
+
+
+def _group_run_rows(rows: list[dict[str, Any]]) -> dict[tuple[str, str, str], dict[str, Any]]:
+    groups: dict[tuple[str, str, str], dict[str, Any]] = {}
+    for row in rows:
+        key = _paper_daily_key(row)
+        group = groups.setdefault(
+            key,
+            {
+                "proposal_id": key[0],
+                "strategy_candidate": key[1],
+                "symbol": key[2],
+                "rows": [],
+            },
+        )
+        group["rows"].append(row)
+    return groups
+
+
+def _heartbeat_day_count(rows: list[dict[str, Any]]) -> int:
+    heartbeat_days = {
+        str(row.get("as_of_date") or "")
+        for row in rows
+        if not bool(row.get("would_enter"))
+        and _optional_float(row.get("paper_pnl_usdt")) is None
+        and _optional_float(row.get("paper_pnl_bps")) is None
+    }
+    heartbeat_days.discard("")
+    return len(heartbeat_days)
+
+
+def _paper_pnl_rows(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    return [
+        row
+        for row in rows
+        if _optional_float(row.get("paper_pnl_usdt")) is not None
+        or _optional_float(row.get("paper_pnl_bps")) is not None
+    ]
 
 
 def _proposal_rank(row: dict[str, Any]) -> tuple[float, float, int, int, int]:

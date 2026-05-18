@@ -145,9 +145,15 @@ def build_and_publish_paper_strategy_tracking(
     board = read_parquet_dataset(root / ALPHA_DISCOVERY_BOARD_DATASET)
     day = _resolve_as_of_date(board, as_of_date)
     warnings: list[str] = []
-    v5_runs_raw = read_parquet_dataset(root / V5_PAPER_STRATEGY_RUN_DATASET)
-    v5_daily_raw = read_parquet_dataset(root / V5_PAPER_STRATEGY_DAILY_DATASET)
-    v5_slippage_raw = read_parquet_dataset(root / V5_PAPER_SLIPPAGE_COVERAGE_DATASET)
+    v5_runs_raw = latest_v5_paper_frame(
+        read_parquet_dataset(root / V5_PAPER_STRATEGY_RUN_DATASET)
+    )
+    v5_daily_raw = latest_v5_paper_frame(
+        read_parquet_dataset(root / V5_PAPER_STRATEGY_DAILY_DATASET)
+    )
+    v5_slippage_raw = latest_v5_paper_frame(
+        read_parquet_dataset(root / V5_PAPER_SLIPPAGE_COVERAGE_DATASET)
+    )
     if any(
         not frame.is_empty()
         for frame in [v5_runs_raw, v5_daily_raw, v5_slippage_raw]
@@ -514,6 +520,26 @@ def build_paper_strategy_runs_from_v5(frame: pl.DataFrame) -> pl.DataFrame:
     return pl.DataFrame(rows, schema=PAPER_RUN_SCHEMA, orient="row")
 
 
+def latest_v5_paper_frame(frame: pl.DataFrame) -> pl.DataFrame:
+    if frame.is_empty():
+        return frame
+    timestamp_column = next(
+        (column for column in ["bundle_ts", "ingest_ts"] if column in frame.columns),
+        None,
+    )
+    if timestamp_column is None:
+        return frame
+    values = [
+        str(value)
+        for value in frame.get_column(timestamp_column).drop_nulls().to_list()
+        if str(value).strip()
+    ]
+    if not values:
+        return frame
+    latest = max(values)
+    return frame.filter(pl.col(timestamp_column).cast(pl.Utf8) == latest)
+
+
 def build_paper_strategy_daily_from_v5(frame: pl.DataFrame) -> pl.DataFrame:
     if frame.is_empty():
         return _empty_frame(PAPER_DAILY_SCHEMA)
@@ -571,9 +597,19 @@ def build_paper_slippage_coverage_from_v5(frame: pl.DataFrame) -> pl.DataFrame:
 
 def _v5_run_row(row: dict[str, Any], created_at: str) -> dict[str, Any]:
     payload = _payload(row)
-    candidate = _field(row, payload, "strategy_candidate", "candidate", "strategy")
+    candidate = _field(
+        row,
+        payload,
+        "strategy_candidate",
+        "experiment_name",
+        "candidate",
+        "source_strategy_candidate",
+    )
     symbol = _field(row, payload, "symbol", "normalized_symbol")
-    proposal_id = _field(row, payload, "proposal_id") or _proposal_id_for(candidate, symbol)
+    proposal_id = _field(row, payload, "proposal_id", "strategy_id") or _proposal_id_for(
+        candidate,
+        symbol,
+    )
     would_exit = _optional_bool(_field(row, payload, "would_exit", "exit")) is True
     return {
         "as_of_date": _as_of_date(row, payload),
@@ -586,9 +622,19 @@ def _v5_run_row(row: dict[str, Any], created_at: str) -> dict[str, Any]:
         "horizon_hours": int(_optional_float(_field(row, payload, "horizon_hours")) or 0),
         "would_enter": _optional_bool(_field(row, payload, "would_enter", "enter")) is True,
         "would_exit": would_exit,
-        "would_size": _optional_float(_field(row, payload, "would_size", "size")) or 0.0,
+        "would_size": _optional_float(
+            _field(row, payload, "would_size", "would_size_notional", "size")
+        )
+        or 0.0,
         "would_size_usdt": _optional_float(
-            _field(row, payload, "would_size_usdt", "paper_size_usdt", "would_size")
+            _field(
+                row,
+                payload,
+                "would_size_usdt",
+                "would_size_notional",
+                "paper_size_usdt",
+                "would_size",
+            )
         )
         or 0.0,
         "paper_pnl_bps": _optional_float(_field(row, payload, "paper_pnl_bps", "pnl_bps")),
@@ -628,10 +674,15 @@ def _v5_run_row(row: dict[str, Any], created_at: str) -> dict[str, Any]:
 
 def _v5_daily_row(row: dict[str, Any], created_at: str) -> dict[str, Any]:
     payload = _payload(row)
-    candidate = _field(row, payload, "strategy_candidate", "candidate", "strategy")
+    candidate = _field(row, payload, "strategy_candidate", "experiment_name", "candidate")
     symbol = _field(row, payload, "symbol", "normalized_symbol")
-    proposal_id = _field(row, payload, "proposal_id") or _proposal_id_for(candidate, symbol)
-    paper_days = int(_optional_float(_field(row, payload, "paper_days")) or 0)
+    proposal_id = _field(row, payload, "proposal_id", "strategy_id") or _proposal_id_for(
+        candidate,
+        symbol,
+    )
+    paper_days = int(
+        _optional_float(_field(row, payload, "paper_days", "paper_days_to_date")) or 0
+    )
     required_days = int(_optional_float(_field(row, payload, "required_paper_days")) or 14)
     return {
         "as_of_date": _as_of_date(row, payload),
@@ -653,15 +704,24 @@ def _v5_daily_row(row: dict[str, Any], created_at: str) -> dict[str, Any]:
         "entry_day_count": int(
             _optional_float(_field(row, payload, "entry_day_count")) or 0
         ),
-        "would_enter_count": int(_optional_float(_field(row, payload, "would_enter_count")) or 0),
+        "would_enter_count": int(
+            _optional_float(_field(row, payload, "would_enter_count", "entry_count")) or 0
+        ),
         "paper_pnl_observed_count": int(
-            _optional_float(_field(row, payload, "paper_pnl_observed_count")) or 0
+            _optional_float(_field(row, payload, "paper_pnl_observed_count", "complete_count"))
+            or 0
         ),
         "latest_paper_pnl_usdt": _optional_float(
             _field(row, payload, "latest_paper_pnl_usdt", "paper_pnl_usdt")
         ),
         "cumulative_paper_pnl_usdt": _optional_float(
-            _field(row, payload, "cumulative_paper_pnl_usdt", "paper_pnl_usdt")
+            _field(
+                row,
+                payload,
+                "cumulative_paper_pnl_usdt",
+                "paper_pnl_usdt_sum",
+                "paper_pnl_usdt",
+            )
         )
         or 0.0,
         "avg_paper_pnl_bps": _optional_float(
@@ -681,7 +741,10 @@ def _v5_daily_row(row: dict[str, Any], created_at: str) -> dict[str, Any]:
             _field(row, payload, "required_slippage_coverage")
         )
         or 0.8,
-        "live_eligible": _optional_bool(_field(row, payload, "live_eligible")) is True,
+        "live_eligible": _optional_bool(
+            _field(row, payload, "live_eligible", "live_small_ready")
+        )
+        is True,
         "live_block_reason": _jsonish_text(_field(row, payload, "live_block_reason")),
         "created_at": created_at,
         "source": V5_PAPER_TRACKING_SOURCE,
@@ -691,11 +754,16 @@ def _v5_daily_row(row: dict[str, Any], created_at: str) -> dict[str, Any]:
 
 def _v5_slippage_row(row: dict[str, Any], created_at: str) -> dict[str, Any]:
     payload = _payload(row)
-    candidate = _field(row, payload, "strategy_candidate", "candidate", "strategy")
+    candidate = _field(row, payload, "strategy_candidate", "experiment_name", "candidate")
     symbol = _field(row, payload, "symbol", "normalized_symbol")
-    proposal_id = _field(row, payload, "proposal_id") or _proposal_id_for(candidate, symbol)
+    proposal_id = _field(row, payload, "proposal_id", "strategy_id") or _proposal_id_for(
+        candidate,
+        symbol,
+    )
     paper_days = int(_optional_float(_field(row, payload, "paper_days")) or 0)
-    coverage = _optional_float(_field(row, payload, "paper_slippage_coverage")) or 0.0
+    coverage = _optional_float(
+        _field(row, payload, "paper_slippage_coverage", "slippage_coverage")
+    ) or 0.0
     return {
         "as_of_date": _as_of_date(row, payload),
         "proposal_id": proposal_id,
@@ -703,10 +771,13 @@ def _v5_slippage_row(row: dict[str, Any], created_at: str) -> dict[str, Any]:
         "symbol": symbol,
         "paper_days": paper_days,
         "observed_slippage_count": int(
-            _optional_float(_field(row, payload, "observed_slippage_count")) or 0
+            _optional_float(
+                _field(row, payload, "observed_slippage_count", "slippage_covered_rows")
+            )
+            or 0
         ),
         "required_observation_count": int(
-            _optional_float(_field(row, payload, "required_observation_count")) or 1
+            _optional_float(_field(row, payload, "required_observation_count", "total_rows")) or 1
         ),
         "paper_slippage_coverage": coverage,
         "required_slippage_coverage": _optional_float(
@@ -717,6 +788,7 @@ def _v5_slippage_row(row: dict[str, Any], created_at: str) -> dict[str, Any]:
             row,
             payload,
             "coverage_status",
+            "readiness_status",
             default="insufficient_slippage_observations",
         ),
         "paper_tracking_status": _field(
@@ -801,7 +873,7 @@ def _field(
 
 
 def _as_of_date(row: dict[str, Any], payload: dict[str, Any]) -> str:
-    value = _field(row, payload, "as_of_date", "date")
+    value = _field(row, payload, "as_of_date", "paper_date", "date")
     if value:
         return value[:10]
     ts_value = _field(row, payload, "ts_utc", "created_at", "ingest_ts", "bundle_ts")

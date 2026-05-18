@@ -37,6 +37,7 @@ from quant_lab.research.paper_tracking import (
     build_paper_strategy_daily_from_v5,
     build_paper_strategy_runs_from_v5,
     enrich_paper_strategy_daily_from_runs,
+    latest_v5_paper_frame,
 )
 from quant_lab.research.strategy_evidence import normalize_strategy_evidence_decisions
 from quant_lab.risk.publish import (
@@ -1249,9 +1250,11 @@ def _snapshot_market_health(snapshot: _DatasetSnapshot) -> dict[str, Any]:
 def _paper_tracking_frames_for_export(
     frames: dict[str, pl.DataFrame],
 ) -> tuple[pl.DataFrame, pl.DataFrame, pl.DataFrame]:
-    v5_runs_raw = frames.get("v5_paper_strategy_run", pl.DataFrame())
-    v5_daily_raw = frames.get("v5_paper_strategy_daily", pl.DataFrame())
-    v5_slippage_raw = frames.get("v5_paper_slippage_coverage", pl.DataFrame())
+    v5_runs_raw = latest_v5_paper_frame(frames.get("v5_paper_strategy_run", pl.DataFrame()))
+    v5_daily_raw = latest_v5_paper_frame(frames.get("v5_paper_strategy_daily", pl.DataFrame()))
+    v5_slippage_raw = latest_v5_paper_frame(
+        frames.get("v5_paper_slippage_coverage", pl.DataFrame())
+    )
     if any(
         not frame.is_empty()
         for frame in [v5_runs_raw, v5_daily_raw, v5_slippage_raw]

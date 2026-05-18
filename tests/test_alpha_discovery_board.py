@@ -467,9 +467,9 @@ def test_export_daily_prefers_v5_paper_telemetry_over_pending_gold(tmp_path):
         for index in range(3):
             run_rows.append(
                 {
-                    "as_of_date": "2026-05-18",
-                    "proposal_id": proposal_id,
-                    "strategy_candidate": candidate,
+                    "paper_date": "2026-05-18",
+                    "strategy_id": proposal_id,
+                    "experiment_name": candidate,
                     "symbol": "SOL-USDT",
                     "recommended_mode": "paper",
                     "event_type": "heartbeat",
@@ -480,9 +480,29 @@ def test_export_daily_prefers_v5_paper_telemetry_over_pending_gold(tmp_path):
                     "paper_pnl_bps": "",
                     "required_paper_days": "14",
                     "required_slippage_coverage": "0.8",
+                    "bundle_ts": "2026-05-18T12:00:00Z",
                     "raw_payload_json": json.dumps({"heartbeat_index": index}),
                 }
             )
+    run_rows.append(
+        {
+            "paper_date": "2026-05-17",
+            "strategy_id": "SOL_F4_VOLUME_EXPANSION_PAPER_V1",
+            "experiment_name": "v5.f4_volume_expansion_entry",
+            "symbol": "SOL-USDT",
+            "recommended_mode": "paper",
+            "event_type": "heartbeat",
+            "would_enter": "false",
+            "would_exit": "false",
+            "would_size": "0",
+            "paper_pnl": "",
+            "paper_pnl_bps": "",
+            "required_paper_days": "14",
+            "required_slippage_coverage": "0.8",
+            "bundle_ts": "2026-05-17T12:00:00Z",
+            "raw_payload_json": "{}",
+        }
+    )
     write_parquet_dataset(
         pl.DataFrame(run_rows),
         lake / "silver" / "v5_paper_strategy_run",
@@ -491,16 +511,17 @@ def test_export_daily_prefers_v5_paper_telemetry_over_pending_gold(tmp_path):
         pl.DataFrame(
             [
                 {
-                    "as_of_date": "2026-05-18",
-                    "proposal_id": proposal_id,
-                    "strategy_candidate": candidate,
+                    "paper_date": "2026-05-18",
+                    "strategy_id": proposal_id,
+                    "experiment_name": candidate,
                     "symbol": "SOL-USDT",
                     "recommended_mode": "paper",
-                    "paper_days": "1",
-                    "cumulative_paper_pnl_usdt": "0",
+                    "paper_days_to_date": "1",
+                    "paper_pnl_usdt_sum": "0",
                     "required_paper_days": "14",
                     "required_slippage_coverage": "0.8",
                     "live_eligible": "false",
+                    "bundle_ts": "2026-05-18T12:00:00Z",
                     "raw_payload_json": "{}",
                 }
                 for proposal_id, candidate in proposals
@@ -512,14 +533,14 @@ def test_export_daily_prefers_v5_paper_telemetry_over_pending_gold(tmp_path):
         pl.DataFrame(
             [
                 {
-                    "as_of_date": "2026-05-18",
-                    "proposal_id": proposal_id,
-                    "strategy_candidate": candidate,
+                    "strategy_id": proposal_id,
+                    "experiment_name": candidate,
                     "symbol": "SOL-USDT",
                     "paper_days": "1",
-                    "paper_slippage_coverage": "0.0",
+                    "slippage_coverage": "0.0",
                     "required_slippage_coverage": "0.8",
-                    "coverage_status": "insufficient_slippage_observations",
+                    "readiness_status": "insufficient_slippage_observations",
+                    "bundle_ts": "2026-05-18T12:00:00Z",
                     "raw_payload_json": "{}",
                 }
                 for proposal_id, candidate in proposals
@@ -550,6 +571,14 @@ def test_export_daily_prefers_v5_paper_telemetry_over_pending_gold(tmp_path):
         )
 
     assert len(runs) == 6
+    assert {row["proposal_id"] for row in runs} == {
+        "SOL_F4_VOLUME_EXPANSION_PAPER_V1",
+        "SOL_PROTECT_ALPHA6_LOW_EXCEPTION_PAPER_V1",
+    }
+    assert {row["strategy_candidate"] for row in runs} == {
+        "v5.f4_volume_expansion_entry",
+        "v5.sol_protect_alpha6_low_exception",
+    }
     assert {row["paper_tracking_status"] for row in runs} == {
         "v5_paper_telemetry_observed"
     }

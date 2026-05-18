@@ -76,6 +76,8 @@ HEAVY_EXPORT_RECENT_FILE_LIMITS = {
     "v5_candidate_event": 100,
     "v5_candidate_label": 100,
 }
+EVENT_DRIVEN_V5_DATASETS = {"v5_trade_event"}
+EVENT_DRIVEN_OK_STATUSES = {"event_driven_no_recent_trade"}
 SECTION_DATASETS = {
     "market": ["market_bar", "trade_print", "orderbook_snapshot", "okx_public_ws"],
     "features": ["feature_value", "feature_coverage_daily", "feature_anomaly_daily"],
@@ -3602,10 +3604,13 @@ def _missing_dataset_reason(dataset_name: str) -> str:
 
 def _stale_rows(frames: dict[str, pl.DataFrame]) -> pl.DataFrame:
     rows = []
+    v5_telemetry_is_current = _v5_telemetry_is_current_from_frames(frames)
     for name, frame in sorted(frames.items()):
         freshness = _dataset_freshness_payload(name, frame)
         status = freshness["freshness_status"]
-        if status in {"missing", "unknown", "stale"}:
+        if name in EVENT_DRIVEN_V5_DATASETS and status == "stale" and v5_telemetry_is_current:
+            status = "event_driven_no_recent_trade"
+        if status in {"missing", "unknown", "stale"} and status not in EVENT_DRIVEN_OK_STATUSES:
             rows.append(
                 {
                     "dataset": name,
@@ -3628,6 +3633,14 @@ def _stale_rows(frames: dict[str, pl.DataFrame]) -> pl.DataFrame:
             }
         )
     )
+
+
+def _v5_telemetry_is_current_from_frames(frames: dict[str, pl.DataFrame]) -> bool:
+    health = frames.get("strategy_health_daily", pl.DataFrame())
+    if health.is_empty():
+        return False
+    freshness = _dataset_freshness_payload("strategy_health_daily", health)
+    return str(freshness.get("freshness_status") or "") in {"fresh", "delayed"}
 
 
 def _schema_violation_rows(market: pl.DataFrame) -> pl.DataFrame:

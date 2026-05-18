@@ -136,6 +136,56 @@ def test_data_health_stale_datasets_use_metadata_instead_of_full_raw_reads(
     assert "stale_datasets" in summary
 
 
+def test_data_health_hides_pending_v5_paper_telemetry(tmp_path):
+    lake_root = tmp_path / "lake"
+    stale_rows = readers.data_health_summary(lake_root)["stale_datasets"].to_dicts()
+    datasets = {row["dataset"] for row in stale_rows}
+
+    assert "v5_paper_strategy_run" not in datasets
+    assert "v5_paper_strategy_daily" not in datasets
+    assert "v5_paper_slippage_coverage" not in datasets
+
+
+def test_data_health_treats_v5_trades_as_event_driven_when_telemetry_is_current(
+    tmp_path,
+):
+    lake_root = tmp_path / "lake"
+    now = datetime.now(UTC)
+    old = now - timedelta(days=3)
+    write_parquet_dataset(
+        pl.DataFrame(
+            [
+                {
+                    "strategy": "v5",
+                    "date": now.date().isoformat(),
+                    "status": "OK",
+                    "latest_bundle_ts": now,
+                    "decision_audit_count_24h": 1,
+                }
+            ]
+        ),
+        lake_root / "gold" / "strategy_health_daily",
+    )
+    write_parquet_dataset(
+        pl.DataFrame(
+            [
+                {
+                    "strategy": "v5",
+                    "symbol": "SOL-USDT",
+                    "side": "buy",
+                    "ts_utc": old,
+                    "raw_payload_json": "{}",
+                }
+            ]
+        ),
+        lake_root / "silver" / "v5_trade_event",
+    )
+
+    stale_rows = readers.data_health_summary(lake_root)["stale_datasets"].to_dicts()
+
+    assert not any(row["dataset"] == "v5_trade_event" for row in stale_rows)
+
+
 def test_okx_collector_summary_uses_metadata_for_raw_collector_counts(tmp_path, monkeypatch):
     lake_root = _fixture_lake(tmp_path)
     original = readers.read_dataset_with_warning

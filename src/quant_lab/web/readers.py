@@ -61,6 +61,16 @@ DATASET_PATHS = {
     "okx_private_readonly_bills": Path("bronze") / "okx_private_readonly" / "bills",
     "decision_audit": Path("silver") / "decision_audit",
 }
+V5_PAPER_TELEMETRY_DATASETS = {
+    "v5_paper_strategy_run",
+    "v5_paper_strategy_daily",
+    "v5_paper_slippage_coverage",
+}
+OPTIONAL_EMPTY_DATASET_STATUSES = {
+    "legacy_optional",
+    "waiting_for_v5_paper_telemetry",
+}
+EVENT_DRIVEN_OK_STATUSES = {"event_driven_no_recent_trade"}
 
 DATASET_TIMESTAMP_COLUMNS: dict[str, tuple[str, ...]] = {
     "market_bar": ("ts",),
@@ -1871,6 +1881,7 @@ def _top_feature_anomalies(anomalies: pl.DataFrame) -> pl.DataFrame:
 
 def _stale_dataset_rows(lake_root: str | Path) -> pl.DataFrame:
     rows = []
+    v5_telemetry_is_current = _v5_telemetry_is_current(lake_root)
     for name in sorted(DATASET_PATHS):
         path = dataset_path_for(lake_root, name)
         snapshot = _dataset_snapshot(lake_root, name)
@@ -1878,7 +1889,9 @@ def _stale_dataset_rows(lake_root: str | Path) -> pl.DataFrame:
         status = freshness["freshness_status"]
         if snapshot.rows == 0:
             status = _empty_dataset_status(name)
-        if snapshot.warning or status in {"missing", "unknown", "stale"} or snapshot.rows == 0:
+        if name == "v5_trade_event" and status == "stale" and v5_telemetry_is_current:
+            status = "event_driven_no_recent_trade"
+        if _should_show_stale_dataset_row(snapshot, status):
             rows.append(
                 {
                     "dataset": name,
@@ -1900,8 +1913,25 @@ def _empty_dataset_status(dataset_name: str) -> str:
     if dataset_name == "feature_value":
         return "特征尚未发布"
     if dataset_name == "decision_audit":
-        return "旧链路可选"
+        return "legacy_optional"
+    if dataset_name in V5_PAPER_TELEMETRY_DATASETS:
+        return "waiting_for_v5_paper_telemetry"
     return "missing"
+
+
+def _should_show_stale_dataset_row(snapshot: DatasetSnapshot, status: str) -> bool:
+    if snapshot.warning:
+        return True
+    if status in OPTIONAL_EMPTY_DATASET_STATUSES or status in EVENT_DRIVEN_OK_STATUSES:
+        return False
+    if status in {"missing", "unknown", "stale"}:
+        return True
+    return snapshot.rows == 0
+
+
+def _v5_telemetry_is_current(lake_root: str | Path) -> bool:
+    snapshot = _dataset_snapshot(lake_root, "strategy_health_daily")
+    return str(snapshot.freshness.get("freshness_status") or "") in {"fresh", "delayed"}
 
 
 def _canonical_dataset_name(dataset_name: str) -> str:

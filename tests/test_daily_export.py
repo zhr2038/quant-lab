@@ -907,6 +907,36 @@ def test_data_quality_separates_generic_and_v5_decision_audit(tmp_path):
     )
 
 
+def test_stale_rows_treat_v5_trade_event_as_event_driven_when_telemetry_current():
+    now = datetime.now(UTC)
+    frames = {
+        "strategy_health_daily": pl.DataFrame(
+            [
+                {
+                    "strategy": "v5",
+                    "date": now.date().isoformat(),
+                    "status": "OK",
+                    "latest_bundle_ts": now,
+                }
+            ]
+        ),
+        "v5_trade_event": pl.DataFrame(
+            [
+                {
+                    "strategy": "v5",
+                    "symbol": "SOL-USDT",
+                    "ts_utc": now - timedelta(days=3),
+                    "raw_payload_json": "{}",
+                }
+            ]
+        ),
+    }
+
+    stale = daily_export_module._stale_rows(frames)
+
+    assert not any(row["dataset"] == "v5_trade_event" for row in stale.to_dicts())
+
+
 def test_export_warns_public_proxy_cost_without_private_actuals(tmp_path):
     lake_root = _fixture_lake(tmp_path)
     write_parquet_dataset(

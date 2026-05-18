@@ -371,6 +371,13 @@ def test_paper_strategy_tracking_uses_v5_telemetry_when_present(tmp_path):
                     "would_size": "100",
                     "paper_pnl": "0.42",
                     "paper_pnl_bps": "42",
+                    "arrival_bid": "172.10",
+                    "arrival_ask": "172.14",
+                    "arrival_mid": "172.12",
+                    "estimated_spread_bps": "2.324",
+                    "expected_order_type": "post_only_limit",
+                    "estimated_fill_px": "172.13",
+                    "cost_source_mix": '{"public_spread_proxy":1}',
                     "live_block_reason": '["cost_source_not_actual_or_mixed"]',
                     "required_paper_days": "14",
                     "required_slippage_coverage": "0.8",
@@ -428,15 +435,102 @@ def test_paper_strategy_tracking_uses_v5_telemetry_when_present(tmp_path):
     assert set(runs["paper_tracking_status"].to_list()) == {"active"}
     assert set(runs["tracking_stage"].to_list()) == {"active_paper_strategy"}
     assert set(runs["would_enter"].to_list()) == {True}
+    assert runs["arrival_mid"].to_list() == [172.12]
+    assert runs["expected_order_type"].to_list() == ["post_only_limit"]
     assert set(daily["paper_days"].to_list()) == {1}
     assert set(daily["heartbeat_day_count"].to_list()) == {0}
     assert set(daily["entry_day_count"].to_list()) == {1}
     assert set(daily["would_enter_count"].to_list()) == {1}
     assert set(daily["paper_pnl_observed_count"].to_list()) == {1}
     assert set(daily["paper_tracking_status"].to_list()) == {"active"}
+    assert set(daily["arrival_mid_coverage"].to_list()) == {1.0}
+    assert set(daily["spread_observation_coverage"].to_list()) == {1.0}
+    assert set(daily["live_eligible"].to_list()) == {False}
     assert set(slippage["paper_tracking_status"].to_list()) == {
         "active"
     }
+
+
+def test_paper_strategy_tracking_blocks_live_without_real_cost_quality(tmp_path):
+    lake = tmp_path / "lake"
+    rows = [
+        {
+            "paper_date": f"2026-05-{day:02d}",
+            "strategy_id": "SOL_F4_VOLUME_EXPANSION_PAPER_V1",
+            "experiment_name": "v5.f4_volume_expansion_entry",
+            "symbol": "SOL-USDT",
+            "recommended_mode": "paper",
+            "would_enter": "true",
+            "would_exit": "false",
+            "would_size": "100",
+            "paper_pnl": "0.1",
+            "paper_pnl_bps": "1",
+            "arrival_bid": "170.0",
+            "arrival_ask": "170.1",
+            "arrival_mid": "170.05",
+            "estimated_spread_bps": "5.88",
+            "cost_source_mix": '{"public_spread_proxy":1}',
+            "required_paper_days": "14",
+            "required_slippage_coverage": "0.8",
+            "bundle_ts": datetime(2026, 5, 18, 12, tzinfo=UTC),
+            "raw_payload_json": "{}",
+        }
+        for day in range(1, 15)
+    ]
+    write_parquet_dataset(pl.DataFrame(rows), lake / "silver" / "v5_paper_strategy_run")
+
+    result = build_and_publish_paper_strategy_tracking(lake, as_of_date="2026-05-18")
+
+    daily = read_parquet_dataset(lake / "gold" / "paper_strategy_daily")
+    row = daily.to_dicts()[0]
+    assert result.paper_strategy_daily == 1
+    assert row["paper_days"] == 14
+    assert row["entry_day_count"] == 14
+    assert row["arrival_mid_coverage"] == 1.0
+    assert row["live_eligible"] is False
+    assert "cost_source_not_actual_or_mixed" in row["live_block_reason"]
+
+
+def test_paper_strategy_tracking_can_mark_live_ready_after_mixed_cost_observations(tmp_path):
+    lake = tmp_path / "lake"
+    rows = [
+        {
+            "paper_date": f"2026-05-{day:02d}",
+            "strategy_id": "SOL_F4_VOLUME_EXPANSION_PAPER_V1",
+            "experiment_name": "v5.f4_volume_expansion_entry",
+            "symbol": "SOL-USDT",
+            "recommended_mode": "paper",
+            "would_enter": "true",
+            "would_exit": "false",
+            "would_size": "100",
+            "paper_pnl": "0.1",
+            "paper_pnl_bps": "1",
+            "arrival_bid": "170.0",
+            "arrival_ask": "170.1",
+            "arrival_mid": "170.05",
+            "estimated_spread_bps": "5.88",
+            "cost_source_mix": '{"mixed_actual_proxy":1}',
+            "required_paper_days": "14",
+            "required_slippage_coverage": "0.8",
+            "bundle_ts": datetime(2026, 5, 18, 12, tzinfo=UTC),
+            "raw_payload_json": "{}",
+        }
+        for day in range(1, 15)
+    ]
+    write_parquet_dataset(pl.DataFrame(rows), lake / "silver" / "v5_paper_strategy_run")
+
+    build_and_publish_paper_strategy_tracking(lake, as_of_date="2026-05-18")
+
+    daily = read_parquet_dataset(lake / "gold" / "paper_strategy_daily")
+    slippage = read_parquet_dataset(lake / "gold" / "paper_slippage_coverage")
+    row = daily.to_dicts()[0]
+    assert row["paper_days"] == 14
+    assert row["entry_day_count"] == 14
+    assert row["arrival_mid_coverage"] == 1.0
+    assert row["live_eligible"] is True
+    assert json.loads(row["live_block_reason"]) == []
+    assert slippage["arrival_mid_coverage"].to_list() == [1.0]
+    assert slippage["spread_observation_coverage"].to_list() == [1.0]
 
 
 def test_export_daily_prefers_v5_paper_telemetry_over_pending_gold(tmp_path):

@@ -28,6 +28,7 @@ STRATEGY_EVIDENCE_QUALITY_DATASET = Path("gold") / "strategy_evidence_quality"
 EVIDENCE_VERSION = "strategy-evidence-v0.1"
 SOURCE_NAME = "research.strategy_evidence.v0.1"
 MIN_LIVE_SMALL_READY_SAMPLES = 30
+MIN_LIVE_SMALL_READY_ENTRY_DAYS = 3
 ALT_IMPULSE_SHADOW_CANDIDATE = "v5.alt_impulse_shadow"
 ALT_IMPULSE_REGIME_SHADOW_MIN_COMPLETE_SAMPLES = 5
 ALT_IMPULSE_REGIME_SHADOW_MIN_WIN_RATE = 0.50
@@ -526,6 +527,8 @@ def normalize_strategy_evidence_decisions(evidence: pl.DataFrame) -> pl.DataFram
             p25_net_bps=_finite_float(row.get("p25_net_bps")),
             win_rate=_finite_float(row.get("win_rate")),
             paper_days=int(_finite_float(row.get("paper_days")) or 0),
+            entry_day_count=int(_finite_float(row.get("entry_day_count")) or 0),
+            arrival_mid_coverage=_finite_float(row.get("arrival_mid_coverage")) or 0.0,
             paper_slippage_coverage=_finite_float(row.get("paper_slippage_coverage")) or 0.0,
             cost_source_mix=row.get("cost_source_mix"),
             candidate_name=candidate,
@@ -946,6 +949,8 @@ def _formal_decision(
     win_rate: float | None,
     min_live_samples: int,
     paper_days: int = 0,
+    entry_day_count: int = 0,
+    arrival_mid_coverage: float = 0.0,
     cost_source_mix: Any = None,
 ) -> tuple[str, list[str]]:
     return strategy_evidence_decision_ladder(
@@ -955,6 +960,8 @@ def _formal_decision(
         p25_net_bps=p25_net_bps,
         win_rate=win_rate,
         paper_days=paper_days,
+        entry_day_count=entry_day_count,
+        arrival_mid_coverage=arrival_mid_coverage,
         cost_source_mix=cost_source_mix,
         paper_ready_sample_count=min_live_samples,
         candidate_name=candidate_name,
@@ -969,6 +976,9 @@ def strategy_evidence_decision_ladder(
     p25_net_bps: float | None,
     win_rate: float | None,
     paper_days: int = 0,
+    entry_day_count: int = 0,
+    required_entry_day_count: int = MIN_LIVE_SMALL_READY_ENTRY_DAYS,
+    arrival_mid_coverage: float = 0.0,
     paper_slippage_coverage: float = 0.0,
     cost_source_mix: Any = None,
     paper_ready_sample_count: int = MIN_LIVE_SMALL_READY_SAMPLES,
@@ -1010,6 +1020,8 @@ def strategy_evidence_decision_ladder(
         paper_ready
         and complete_sample_count >= 60
         and paper_days >= 14
+        and entry_day_count >= required_entry_day_count
+        and arrival_mid_coverage >= 0.8
         and paper_slippage_coverage >= 0.8
         and has_live_ready_cost
         and not has_live_blocking_cost
@@ -1023,6 +1035,10 @@ def strategy_evidence_decision_ladder(
             reasons.append("cost_source_not_trusted")
         if paper_days < 14:
             reasons.append("no_paper_days")
+        if entry_day_count < required_entry_day_count:
+            reasons.append("insufficient_entry_days")
+        if arrival_mid_coverage < 0.8:
+            reasons.append("insufficient_arrival_mid_coverage")
         if paper_slippage_coverage < 0.8:
             reasons.append("no_live_slippage_coverage")
         return "PAPER_READY", reasons

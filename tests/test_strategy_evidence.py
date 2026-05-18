@@ -106,12 +106,33 @@ def test_strategy_evidence_ladder_requires_actual_or_mixed_for_live_small_ready(
         p25_net_bps=1.0,
         win_rate=0.72,
         paper_days=20,
+        entry_day_count=3,
+        arrival_mid_coverage=0.9,
         paper_slippage_coverage=0.9,
         cost_source_mix={"mixed_actual_proxy": 72},
     )
 
     assert decision == "LIVE_SMALL_READY"
     assert reasons == ["live_small_ready_thresholds_met"]
+
+
+def test_strategy_evidence_ladder_requires_paper_cost_quality_for_live_small_ready():
+    decision, reasons = strategy_evidence_decision_ladder(
+        sample_count=72,
+        complete_sample_count=72,
+        avg_net_bps=25.0,
+        p25_net_bps=1.0,
+        win_rate=0.72,
+        paper_days=20,
+        entry_day_count=0,
+        arrival_mid_coverage=0.0,
+        paper_slippage_coverage=0.9,
+        cost_source_mix={"mixed_actual_proxy": 72},
+    )
+
+    assert decision == "PAPER_READY"
+    assert "insufficient_entry_days" in reasons
+    assert "insufficient_arrival_mid_coverage" in reasons
 
 
 def test_alt_impulse_ladder_is_regime_shadow_only():
@@ -122,6 +143,8 @@ def test_alt_impulse_ladder_is_regime_shadow_only():
         p25_net_bps=1.0,
         win_rate=0.72,
         paper_days=20,
+        entry_day_count=3,
+        arrival_mid_coverage=0.9,
         paper_slippage_coverage=0.9,
         cost_source_mix={"mixed_actual_proxy": 72},
         candidate_name="v5.alt_impulse_shadow",

@@ -24,6 +24,7 @@ PAPER_TRACKING_SOURCE = "research.paper_strategy_tracking.v0.1"
 V5_PAPER_TRACKING_SOURCE = "v5.paper_strategy_telemetry"
 V5_PAPER_TRACKING_STATUS = "active"
 PAPER_TRACKING_SCHEMA_VERSION = "paper_strategy_tracking.v1"
+DEFAULT_REQUIRED_ENTRY_DAYS_FOR_LIVE = 3
 
 PAPER_RUN_SCHEMA = {
     "as_of_date": pl.Utf8,
@@ -40,6 +41,12 @@ PAPER_RUN_SCHEMA = {
     "would_size_usdt": pl.Float64,
     "paper_pnl_bps": pl.Float64,
     "paper_pnl_usdt": pl.Float64,
+    "arrival_bid": pl.Float64,
+    "arrival_ask": pl.Float64,
+    "arrival_mid": pl.Float64,
+    "estimated_spread_bps": pl.Float64,
+    "expected_order_type": pl.Utf8,
+    "estimated_fill_px": pl.Float64,
     "paper_tracking_status": pl.Utf8,
     "tracking_stage": pl.Utf8,
     "sample_count": pl.Int64,
@@ -75,7 +82,11 @@ PAPER_DAILY_SCHEMA = {
     "paper_tracking_status": pl.Utf8,
     "tracking_stage": pl.Utf8,
     "required_paper_days": pl.Int64,
+    "required_entry_day_count": pl.Int64,
     "required_slippage_coverage": pl.Float64,
+    "arrival_mid_coverage": pl.Float64,
+    "spread_observation_coverage": pl.Float64,
+    "cost_source_mix": pl.Utf8,
     "live_eligible": pl.Boolean,
     "live_block_reason": pl.Utf8,
     "created_at": pl.Utf8,
@@ -93,6 +104,9 @@ PAPER_SLIPPAGE_SCHEMA = {
     "required_observation_count": pl.Int64,
     "paper_slippage_coverage": pl.Float64,
     "required_slippage_coverage": pl.Float64,
+    "arrival_mid_coverage": pl.Float64,
+    "spread_observation_coverage": pl.Float64,
+    "cost_source_mix": pl.Utf8,
     "coverage_status": pl.Utf8,
     "paper_tracking_status": pl.Utf8,
     "tracking_stage": pl.Utf8,
@@ -109,6 +123,7 @@ class PaperStrategyConfig:
     symbol: str
     paper_size_usdt: float = 100.0
     required_paper_days: int = 14
+    required_entry_day_count: int = DEFAULT_REQUIRED_ENTRY_DAYS_FOR_LIVE
     required_slippage_coverage: float = 0.8
 
 
@@ -276,7 +291,11 @@ def build_pending_paper_strategy_daily(
                 "paper_tracking_status": "waiting_for_v5_paper_telemetry",
                 "tracking_stage": "proposed_paper_strategy",
                 "required_paper_days": cfg.required_paper_days,
+                "required_entry_day_count": cfg.required_entry_day_count,
                 "required_slippage_coverage": cfg.required_slippage_coverage,
+                "arrival_mid_coverage": 0.0,
+                "spread_observation_coverage": 0.0,
+                "cost_source_mix": str(row.get("cost_source_mix") or ""),
                 "live_eligible": False,
                 "live_block_reason": safe_json_dumps(
                     sorted(
@@ -284,7 +303,9 @@ def build_pending_paper_strategy_daily(
                             *_json_list(row.get("live_block_reason")),
                             "waiting_for_v5_paper_telemetry",
                             "no_paper_days",
+                            "insufficient_entry_days",
                             "no_live_slippage_coverage",
+                            "insufficient_arrival_mid_coverage",
                         }
                     )
                 ),
@@ -335,12 +356,18 @@ def _daily_from_runs(runs: pl.DataFrame, *, as_of_date: date) -> pl.DataFrame:
         entry_days = len({str(row.get("as_of_date") or "") for row in entry_rows})
         pnl_rows = _paper_pnl_rows(entry_rows)
         latest_reason = _json_list(latest.get("live_block_reason"))
-        coverage = 0.0
-        live_eligible = (
-            paper_days >= cfg.required_paper_days
-            and coverage >= cfg.required_slippage_coverage
-            and not latest_reason
+        quality = _paper_cost_quality(run_rows)
+        block_reasons = _paper_live_block_reasons(
+            paper_days=paper_days,
+            entry_day_count=entry_days,
+            required_paper_days=cfg.required_paper_days,
+            required_entry_day_count=cfg.required_entry_day_count,
+            required_slippage_coverage=cfg.required_slippage_coverage,
+            arrival_mid_coverage=quality["arrival_mid_coverage"],
+            paper_slippage_coverage=quality["paper_slippage_coverage"],
+            cost_source_mix=quality["cost_source_mix"],
         )
+        live_eligible = not block_reasons
         tracking_stage = (
             "completed_paper_observations"
             if paper_days >= cfg.required_paper_days
@@ -373,17 +400,13 @@ def _daily_from_runs(runs: pl.DataFrame, *, as_of_date: date) -> pl.DataFrame:
                 "paper_tracking_status": V5_PAPER_TRACKING_STATUS,
                 "tracking_stage": tracking_stage,
                 "required_paper_days": cfg.required_paper_days,
+                "required_entry_day_count": cfg.required_entry_day_count,
                 "required_slippage_coverage": cfg.required_slippage_coverage,
+                "arrival_mid_coverage": quality["arrival_mid_coverage"],
+                "spread_observation_coverage": quality["spread_observation_coverage"],
+                "cost_source_mix": safe_json_dumps(quality["cost_source_mix"]),
                 "live_eligible": live_eligible,
-                "live_block_reason": safe_json_dumps(
-                    sorted(
-                        {
-                            *latest_reason,
-                            "cost_source_not_actual_or_mixed",
-                            "no_live_slippage_coverage",
-                        }
-                    )
-                ),
+                "live_block_reason": safe_json_dumps(sorted({*latest_reason, *block_reasons})),
                 "created_at": created_at,
                 "source": PAPER_TRACKING_SOURCE,
                 "schema_version": PAPER_TRACKING_SCHEMA_VERSION,
@@ -403,9 +426,13 @@ def build_paper_slippage_coverage(
     rows: list[dict[str, Any]] = []
     for row in daily.to_dicts():
         paper_days = int(_optional_float(row.get("paper_days")) or 0)
-        observed = 0
         required = max(paper_days, 1)
-        coverage = observed / required
+        arrival_mid_coverage = _optional_float(row.get("arrival_mid_coverage")) or 0.0
+        spread_observation_coverage = (
+            _optional_float(row.get("spread_observation_coverage")) or 0.0
+        )
+        coverage = min(arrival_mid_coverage, spread_observation_coverage)
+        observed = int(round(coverage * required))
         rows.append(
             {
                 "as_of_date": as_of_date.isoformat(),
@@ -420,6 +447,9 @@ def build_paper_slippage_coverage(
                     row.get("required_slippage_coverage")
                 )
                 or 0.8,
+                "arrival_mid_coverage": arrival_mid_coverage,
+                "spread_observation_coverage": spread_observation_coverage,
+                "cost_source_mix": str(row.get("cost_source_mix") or ""),
                 "coverage_status": _coverage_status(row, coverage),
                 "paper_tracking_status": str(
                     row.get("paper_tracking_status") or V5_PAPER_TRACKING_STATUS
@@ -496,6 +526,12 @@ def _pending_run_row(
         "would_size_usdt": 0.0,
         "paper_pnl_bps": None,
         "paper_pnl_usdt": None,
+        "arrival_bid": None,
+        "arrival_ask": None,
+        "arrival_mid": None,
+        "estimated_spread_bps": None,
+        "expected_order_type": "",
+        "estimated_fill_px": None,
         "paper_tracking_status": "waiting_for_v5_paper_telemetry",
         "tracking_stage": "proposed_paper_strategy",
         "sample_count": int(_optional_float(row.get("sample_count")) or 0),
@@ -573,6 +609,9 @@ def enrich_paper_strategy_daily_from_runs(
         "latest_paper_pnl_usdt",
         "cumulative_paper_pnl_usdt",
         "avg_paper_pnl_bps",
+        "arrival_mid_coverage",
+        "spread_observation_coverage",
+        "cost_source_mix",
     ]
     for row in daily.to_dicts():
         metric = metrics.get(_paper_daily_key(row), {})
@@ -582,6 +621,32 @@ def enrich_paper_strategy_daily_from_runs(
         for field in fallback_fields:
             if updated.get(field) in {None, ""} and metric.get(field) not in {None, ""}:
                 updated[field] = metric.get(field)
+        for field in ["arrival_mid_coverage", "spread_observation_coverage", "cost_source_mix"]:
+            if metric.get(field) not in {None, ""}:
+                updated[field] = metric.get(field)
+        required_days = int(_optional_float(updated.get("required_paper_days")) or 14)
+        required_entries = int(
+            _optional_float(updated.get("required_entry_day_count"))
+            or DEFAULT_REQUIRED_ENTRY_DAYS_FOR_LIVE
+        )
+        required_coverage = _optional_float(updated.get("required_slippage_coverage")) or 0.8
+        block_reasons = _paper_live_block_reasons(
+            paper_days=int(_optional_float(updated.get("paper_days")) or 0),
+            entry_day_count=int(_optional_float(updated.get("entry_day_count")) or 0),
+            required_paper_days=required_days,
+            required_entry_day_count=required_entries,
+            required_slippage_coverage=required_coverage,
+            arrival_mid_coverage=_optional_float(updated.get("arrival_mid_coverage")) or 0.0,
+            paper_slippage_coverage=min(
+                _optional_float(updated.get("arrival_mid_coverage")) or 0.0,
+                _optional_float(updated.get("spread_observation_coverage")) or 0.0,
+            ),
+            cost_source_mix=updated.get("cost_source_mix"),
+        )
+        updated["live_eligible"] = not block_reasons
+        updated["live_block_reason"] = safe_json_dumps(
+            sorted({*_json_list(updated.get("live_block_reason")), *block_reasons})
+        )
         enriched.append(updated)
     return pl.DataFrame(enriched, schema=PAPER_DAILY_SCHEMA, orient="row")
 
@@ -639,6 +704,29 @@ def _v5_run_row(row: dict[str, Any], created_at: str) -> dict[str, Any]:
         "paper_pnl_bps": _optional_float(_field(row, payload, "paper_pnl_bps", "pnl_bps")),
         "paper_pnl_usdt": _optional_float(
             _field(row, payload, "paper_pnl_usdt", "paper_pnl", "pnl_usdt")
+        ),
+        "arrival_bid": _optional_float(_field(row, payload, "arrival_bid", "bid_at_arrival")),
+        "arrival_ask": _optional_float(_field(row, payload, "arrival_ask", "ask_at_arrival")),
+        "arrival_mid": _optional_float(_field(row, payload, "arrival_mid", "mid_at_arrival")),
+        "estimated_spread_bps": _optional_float(
+            _field(
+                row,
+                payload,
+                "estimated_spread_bps",
+                "arrival_spread_bps",
+                "spread_bps_at_decision",
+                "spread_bps",
+            )
+        ),
+        "expected_order_type": _field(
+            row,
+            payload,
+            "expected_order_type",
+            "order_type",
+            "paper_order_type",
+        ),
+        "estimated_fill_px": _optional_float(
+            _field(row, payload, "estimated_fill_px", "estimated_fill_price", "paper_fill_px")
         ),
         "paper_tracking_status": _field(
             row,
@@ -736,10 +824,23 @@ def _v5_daily_row(row: dict[str, Any], created_at: str) -> dict[str, Any]:
         if paper_days >= required_days
         else "active_paper_strategy",
         "required_paper_days": required_days,
+        "required_entry_day_count": int(
+            _optional_float(_field(row, payload, "required_entry_day_count"))
+            or DEFAULT_REQUIRED_ENTRY_DAYS_FOR_LIVE
+        ),
         "required_slippage_coverage": _optional_float(
             _field(row, payload, "required_slippage_coverage")
         )
         or 0.8,
+        "arrival_mid_coverage": _optional_float(
+            _field(row, payload, "arrival_mid_coverage")
+        )
+        or 0.0,
+        "spread_observation_coverage": _optional_float(
+            _field(row, payload, "spread_observation_coverage")
+        )
+        or 0.0,
+        "cost_source_mix": _field(row, payload, "cost_source_mix"),
         "live_eligible": _optional_bool(
             _field(row, payload, "live_eligible", "live_small_ready")
         )
@@ -763,6 +864,12 @@ def _v5_slippage_row(row: dict[str, Any], created_at: str) -> dict[str, Any]:
     coverage = _optional_float(
         _field(row, payload, "paper_slippage_coverage", "slippage_coverage")
     ) or 0.0
+    arrival_mid_coverage = _optional_float(
+        _field(row, payload, "arrival_mid_coverage", "mid_coverage")
+    )
+    spread_observation_coverage = _optional_float(
+        _field(row, payload, "spread_observation_coverage", "spread_coverage")
+    )
     return {
         "as_of_date": _as_of_date(row, payload),
         "proposal_id": proposal_id,
@@ -783,6 +890,13 @@ def _v5_slippage_row(row: dict[str, Any], created_at: str) -> dict[str, Any]:
             _field(row, payload, "required_slippage_coverage")
         )
         or 0.8,
+        "arrival_mid_coverage": arrival_mid_coverage
+        if arrival_mid_coverage is not None
+        else coverage,
+        "spread_observation_coverage": spread_observation_coverage
+        if spread_observation_coverage is not None
+        else coverage,
+        "cost_source_mix": _field(row, payload, "cost_source_mix"),
         "coverage_status": _field(
             row,
             payload,
@@ -978,17 +1092,112 @@ def _suggested_horizon(row: dict[str, Any]) -> str:
     return f"{horizon}h" if horizon else ""
 
 
+def _paper_cost_quality(rows: list[dict[str, Any]]) -> dict[str, Any]:
+    entry_rows = [row for row in rows if bool(row.get("would_enter")) is True]
+    observed_rows = entry_rows or rows
+    denominator = max(len(observed_rows), 1)
+    arrival_mid_count = sum(1 for row in observed_rows if _optional_float(row.get("arrival_mid")))
+    spread_count = sum(1 for row in observed_rows if _has_spread_observation(row))
+    cost_mix = _cost_source_mix_counts(observed_rows)
+    arrival_mid_coverage = arrival_mid_count / denominator
+    spread_observation_coverage = spread_count / denominator
+    return {
+        "arrival_mid_coverage": arrival_mid_coverage,
+        "spread_observation_coverage": spread_observation_coverage,
+        "paper_slippage_coverage": min(arrival_mid_coverage, spread_observation_coverage),
+        "cost_source_mix": cost_mix,
+    }
+
+
+def _has_spread_observation(row: dict[str, Any]) -> bool:
+    if _optional_float(row.get("estimated_spread_bps")) is not None:
+        return True
+    return (
+        _optional_float(row.get("arrival_bid")) is not None
+        and _optional_float(row.get("arrival_ask")) is not None
+    )
+
+
+def _paper_live_block_reasons(
+    *,
+    paper_days: int,
+    entry_day_count: int,
+    required_paper_days: int,
+    required_entry_day_count: int,
+    required_slippage_coverage: float,
+    arrival_mid_coverage: float,
+    paper_slippage_coverage: float,
+    cost_source_mix: Any,
+) -> list[str]:
+    reasons: set[str] = set()
+    cost_sources = _cost_source_mix_sources(cost_source_mix)
+    has_actual_or_mixed = bool(cost_sources & {"actual_fills", "mixed_actual_proxy"})
+    has_global_default = "global_default" in cost_sources
+    if paper_days < required_paper_days:
+        reasons.add("no_paper_days")
+    if entry_day_count < required_entry_day_count:
+        reasons.add("insufficient_entry_days")
+    if arrival_mid_coverage < required_slippage_coverage:
+        reasons.add("insufficient_arrival_mid_coverage")
+    if paper_slippage_coverage < required_slippage_coverage:
+        reasons.add("no_live_slippage_coverage")
+    if has_global_default:
+        reasons.add("cost_source_global_default")
+    if not has_actual_or_mixed:
+        reasons.add("cost_source_not_actual_or_mixed")
+    return sorted(reasons)
+
+
 def _live_block_reasons(row: dict[str, Any]) -> list[str]:
-    reasons: set[str] = {"no_paper_days", "no_live_slippage_coverage"}
+    reasons: set[str] = {
+        "no_paper_days",
+        "insufficient_entry_days",
+        "no_live_slippage_coverage",
+        "insufficient_arrival_mid_coverage",
+    }
     if not _cost_source_mix_has_actual_or_mixed(row.get("cost_source_mix")):
         reasons.add("cost_source_not_actual_or_mixed")
     return sorted(reasons)
 
 
 def _cost_source_mix_has_actual_or_mixed(value: Any) -> bool:
-    text = safe_json_dumps(value) if isinstance(value, dict | list | tuple) else str(value or "")
-    text = text.lower()
-    return "actual_fills" in text or "mixed_actual_proxy" in text
+    return bool(_cost_source_mix_sources(value) & {"actual_fills", "mixed_actual_proxy"})
+
+
+def _cost_source_mix_counts(rows: list[dict[str, Any]]) -> dict[str, int]:
+    counts: dict[str, int] = {}
+    for row in rows:
+        sources = _cost_source_mix_sources(row.get("cost_source_mix")) or {
+            str(row.get("cost_source") or "MISSING").strip().lower()
+        }
+        for source in sources:
+            if source:
+                counts[source] = counts.get(source, 0) + 1
+    return counts
+
+
+def _cost_source_mix_sources(value: Any) -> set[str]:
+    if value is None:
+        return set()
+    if isinstance(value, dict):
+        return {str(key).strip().lower() for key in value if str(key).strip()}
+    if isinstance(value, list | tuple | set):
+        sources: set[str] = set()
+        for item in value:
+            if isinstance(item, dict):
+                item = item.get("cost_source") or item.get("source")
+            text = str(item or "").strip().lower()
+            if text:
+                sources.add(text)
+        return sources
+    text = str(value or "").strip()
+    if not text:
+        return set()
+    try:
+        parsed = json.loads(text)
+    except json.JSONDecodeError:
+        return {text.lower()}
+    return _cost_source_mix_sources(parsed)
 
 
 def _json_list(value: Any) -> list[str]:

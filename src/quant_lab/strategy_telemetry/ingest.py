@@ -12,7 +12,7 @@ from typing import Any
 import polars as pl
 
 from quant_lab.contracts.v5_quant_lab import V5_TELEMETRY_DATASET_SCHEMA_VERSION
-from quant_lab.data.lake import read_parquet_dataset, upsert_parquet_dataset
+from quant_lab.data.lake import append_parquet_dataset, read_parquet_dataset, upsert_parquet_dataset
 from quant_lab.strategy_telemetry.bundle import (
     compute_sha256,
     inspect_v5_bundle,
@@ -81,6 +81,7 @@ QUANT_LAB_REQUEST_PATHS = {
     "reports/quant_lab_requests.jsonl",
 }
 EVENT_KEY_DATASETS = {"v5_quant_lab_request", "v5_quant_lab_fallback"}
+APPEND_ONLY_SILVER_DATASETS = set(SILVER_DATASETS) - EVENT_KEY_DATASETS - {"v5_candidate_event"}
 HISTORICAL_OUTCOME_PATH_PREFIXES = (
     "summaries/high_score_blocked_outcomes",
     "summaries/alt_impulse_shadow",
@@ -356,10 +357,9 @@ def _write_bronze(
             [secret_row],
             ["bundle_sha256"],
         ),
-        "raw_file_index": _upsert_rows(
+        "raw_file_index": _append_rows(
             lake_root / BRONZE_DATASETS["raw_file_index"],
             file_rows,
-            ["bundle_sha256", "source_path_inside_bundle"],
         ),
     }
 
@@ -406,6 +406,8 @@ def _write_silver(
                 dataset_rows,
                 ["strategy", "candidate_id"],
             )
+        elif name in APPEND_ONLY_SILVER_DATASETS:
+            counts[name] = _append_rows(dataset_path, dataset_rows)
         else:
             counts[name] = _upsert_rows(
                 dataset_path,
@@ -1477,6 +1479,16 @@ def _upsert_rows(dataset_path: Path, rows: list[dict[str, Any]], keys: list[str]
         return read_parquet_dataset(dataset_path).height
     df = pl.DataFrame(_json_safe_rows(rows))
     return upsert_parquet_dataset(df, dataset_path, key_columns=keys)
+
+
+def _append_rows(dataset_path: Path, rows: list[dict[str, Any]]) -> int:
+    if not rows:
+        return 0
+    df = pl.DataFrame(_json_safe_rows(rows))
+    bundle_sha256 = str(rows[0].get("bundle_sha256") or "batch")
+    prefix = f"bundle_{bundle_sha256[:12]}"
+    result = append_parquet_dataset(df, dataset_path, file_prefix=prefix)
+    return result.rows_written
 
 
 def _upsert_event_rows(dataset_path: Path, rows: list[dict[str, Any]]) -> int:

@@ -648,6 +648,8 @@ def build_strategy_evidence_command(
         typer.Option("--date", help="UTC as-of day in YYYY-MM-DD format or auto."),
     ] = "auto",
     min_live_samples: Annotated[int, typer.Option("--min-live-samples", min=30)] = 30,
+    mode: Annotated[str, typer.Option("--mode", help="full or incremental.")] = "incremental",
+    lookback_days: Annotated[int, typer.Option("--lookback-days", min=1)] = 8,
 ) -> None:
     result = run_with_job_metrics(
         lake_root=lake_root,
@@ -656,6 +658,8 @@ def build_strategy_evidence_command(
             lake_root=lake_root,
             as_of_date=as_of_date,
             min_live_samples=min_live_samples,
+            mode=mode,
+            lookback_days=lookback_days,
         ),
     )
     typer.echo(result.model_dump_json(indent=2))
@@ -668,6 +672,8 @@ def build_v5_candidate_labels_command(
         str,
         typer.Option("--date", help="UTC as-of day in YYYY-MM-DD format or auto."),
     ] = "auto",
+    mode: Annotated[str, typer.Option("--mode", help="full or incremental.")] = "incremental",
+    lookback_days: Annotated[int, typer.Option("--lookback-days", min=1)] = 8,
 ) -> None:
     result = run_with_job_metrics(
         lake_root=lake_root,
@@ -675,6 +681,8 @@ def build_v5_candidate_labels_command(
         func=lambda: build_and_publish_candidate_labels(
             lake_root=lake_root,
             as_of_date=as_of_date,
+            mode=mode,
+            lookback_days=lookback_days,
         ),
     )
     typer.echo(result.model_dump_json(indent=2))
@@ -687,6 +695,10 @@ def build_alpha_discovery_board_command(
         str,
         typer.Option("--date", help="UTC as-of day in YYYY-MM-DD format or auto."),
     ] = "auto",
+    include_legacy_outcome_counts: Annotated[
+        bool,
+        typer.Option("--include-legacy-outcome-counts/--skip-legacy-outcome-counts"),
+    ] = False,
 ) -> None:
     result = run_with_job_metrics(
         lake_root=lake_root,
@@ -694,6 +706,7 @@ def build_alpha_discovery_board_command(
         func=lambda: build_and_publish_alpha_discovery_board(
             lake_root=lake_root,
             as_of_date=as_of_date,
+            include_legacy_outcome_counts=include_legacy_outcome_counts,
         ),
     )
     typer.echo(result.model_dump_json(indent=2))

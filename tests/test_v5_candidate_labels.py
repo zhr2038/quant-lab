@@ -1,9 +1,11 @@
 import hashlib
 from datetime import UTC, datetime, timedelta
 
+import polars as pl
 import pytest
 
-from quant_lab.data.lake import read_parquet_dataset, write_market_bars
+from quant_lab.data.lake import read_parquet_dataset, write_market_bars, write_parquet_dataset
+from quant_lab.research.candidate_labels import build_and_publish_candidate_labels
 from quant_lab.strategy_telemetry.ingest import ingest_v5_bundle
 from tests.v5_bundle_fixture import make_v5_bundle_fixture
 
@@ -60,6 +62,50 @@ def test_candidate_snapshot_ingest_builds_events_labels_quality_and_summary(tmp_
     assert s4["strategy_candidate"] == "v5.btc_leadership_probe_strict"
     assert s4["symbol"] == "BTC-USDT"
     assert s4["complete_sample_count"] == 1
+
+
+def test_candidate_label_incremental_mode_skips_old_raw_events(tmp_path):
+    lake = tmp_path / "lake"
+    _write_btc_bars(lake)
+    write_parquet_dataset(
+        pl.DataFrame(
+            [
+                _candidate_event("old", datetime(2026, 5, 1, 1, tzinfo=UTC)),
+                _candidate_event("recent", datetime(2026, 5, 10, 1, tzinfo=UTC)),
+            ]
+        ),
+        lake / "silver" / "v5_candidate_event",
+    )
+
+    result = build_and_publish_candidate_labels(
+        lake,
+        as_of_date="2026-05-10",
+        mode="incremental",
+        lookback_days=2,
+    )
+    labels = read_parquet_dataset(lake / "gold" / "v5_candidate_label")
+
+    assert result.mode == "incremental"
+    assert result.candidate_event_rows == 1
+    assert set(labels["candidate_id"].to_list()) == {"recent"}
+
+
+def _candidate_event(candidate_id: str, ts: datetime) -> dict[str, object]:
+    return {
+        "strategy": "v5",
+        "candidate_id": candidate_id,
+        "run_id": "run_001",
+        "ts_utc": ts,
+        "symbol": "BTC-USDT",
+        "strategy_candidate": "v5.btc_leadership_probe_strict",
+        "block_reason": "risk_gate",
+        "final_decision": "blocked",
+        "cost_bps": 3.5,
+        "cost_source": "mixed_actual_proxy",
+        "regime_state": "TRENDING",
+        "bundle_ts": ts,
+        "ingest_ts": ts,
+    }
 
 
 def _write_btc_bars(lake) -> None:

@@ -94,6 +94,7 @@ def build_and_publish_alpha_discovery_board(
     lake_root: str | Path,
     *,
     as_of_date: str | date | None = None,
+    include_legacy_outcome_counts: bool = True,
 ) -> AlphaDiscoveryBoardBuildResult:
     root = Path(lake_root)
     day = _parse_day(as_of_date)
@@ -105,8 +106,16 @@ def build_and_publish_alpha_discovery_board(
     cost_bucket_daily = read_parquet_dataset(root / COST_BUCKET_DAILY_DATASET)
     trades = read_parquet_dataset(root / TRADE_EVENT_DATASET)
     risk_permission = read_parquet_dataset(root / RISK_PERMISSION_DATASET)
-    blocked_outcomes = read_parquet_dataset(root / HIGH_SCORE_BLOCKED_OUTCOME_DATASET)
-    shadow_outcomes = read_parquet_dataset(root / SHADOW_OUTCOME_DATASET)
+    blocked_outcomes = (
+        read_parquet_dataset(root / HIGH_SCORE_BLOCKED_OUTCOME_DATASET)
+        if include_legacy_outcome_counts
+        else pl.DataFrame()
+    )
+    shadow_outcomes = (
+        read_parquet_dataset(root / SHADOW_OUTCOME_DATASET)
+        if include_legacy_outcome_counts
+        else pl.DataFrame()
+    )
     readiness = _enforce_readiness_context(root)
 
     if not strategy_evidence.is_empty():

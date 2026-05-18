@@ -5,14 +5,14 @@ import json
 import math
 import statistics
 from collections import Counter, defaultdict
-from datetime import UTC, date, datetime, timedelta
+from datetime import UTC, date, datetime, time, timedelta
 from pathlib import Path
 from typing import Any
 
 import polars as pl
 from pydantic import BaseModel, ConfigDict, Field
 
-from quant_lab.data.lake import read_parquet_dataset, upsert_parquet_dataset
+from quant_lab.data.lake import read_parquet_dataset, read_parquet_lazy, upsert_parquet_dataset
 from quant_lab.strategy_telemetry.sanitize import safe_json_dumps
 from quant_lab.symbols import normalize_symbol
 
@@ -22,6 +22,7 @@ LABEL_SCHEMA_VERSION = "v5.candidate_label.v1"
 QUALITY_SCHEMA_VERSION = "v5.candidate_quality.v1"
 SUMMARY_SCHEMA_VERSION = "v5.candidate_outcome_summary.v1"
 HORIZON_HOURS = (4, 8, 12, 24, 48, 72, 120)
+DEFAULT_INCREMENTAL_LOOKBACK_DAYS = 8
 
 CANDIDATE_EVENT_DATASET = Path("silver") / "v5_candidate_event"
 MARKET_BAR_DATASET = Path("silver") / "market_bar"
@@ -91,6 +92,8 @@ class CandidateLabelBuildResult(BaseModel):
     candidate_quality_rows: int = Field(ge=0)
     candidate_outcome_summary_rows: int = Field(ge=0)
     complete_label_rows: int = Field(ge=0)
+    mode: str = "full"
+    lookback_days: int | None = None
     warnings: list[str] = Field(default_factory=list)
 
 
@@ -98,14 +101,38 @@ def build_and_publish_candidate_labels(
     lake_root: str | Path,
     *,
     as_of_date: str | date | None = None,
+    mode: str = "full",
+    lookback_days: int = DEFAULT_INCREMENTAL_LOOKBACK_DAYS,
 ) -> CandidateLabelBuildResult:
     root = Path(lake_root)
     day = _parse_day(as_of_date)
     created_at = datetime.now(UTC)
+    normalized_mode = _normalize_build_mode(mode)
 
-    events = read_parquet_dataset(root / CANDIDATE_EVENT_DATASET)
-    market_bars = read_parquet_dataset(root / MARKET_BAR_DATASET)
-    run_summary = read_parquet_dataset(root / RUN_SUMMARY_DATASET)
+    if normalized_mode == "incremental":
+        events = _read_recent_dataset(
+            root / CANDIDATE_EVENT_DATASET,
+            day=day,
+            lookback_days=lookback_days,
+            timestamp_columns=("ts_utc", "bundle_ts", "ingest_ts"),
+        )
+        market_bars = _read_recent_dataset(
+            root / MARKET_BAR_DATASET,
+            day=day,
+            lookback_days=lookback_days + 1,
+            timestamp_columns=("ts", "ingest_ts"),
+            future_days=6,
+        )
+        run_summary = _read_recent_dataset(
+            root / RUN_SUMMARY_DATASET,
+            day=day,
+            lookback_days=lookback_days,
+            timestamp_columns=("bundle_ts", "ingest_ts"),
+        )
+    else:
+        events = read_parquet_dataset(root / CANDIDATE_EVENT_DATASET)
+        market_bars = read_parquet_dataset(root / MARKET_BAR_DATASET)
+        run_summary = read_parquet_dataset(root / RUN_SUMMARY_DATASET)
 
     labels = build_candidate_labels(events, market_bars, created_at=created_at)
     quality = build_candidate_quality(
@@ -141,6 +168,8 @@ def build_and_publish_candidate_labels(
         candidate_quality_rows=quality_rows,
         candidate_outcome_summary_rows=summary_rows,
         complete_label_rows=complete_label_rows,
+        mode=normalized_mode,
+        lookback_days=lookback_days if normalized_mode == "incremental" else None,
         warnings=warnings,
     )
 
@@ -634,6 +663,55 @@ def _complete_label_count(labels: pl.DataFrame) -> int:
     if labels.is_empty() or "label_status" not in labels.columns:
         return 0
     return labels.filter(pl.col("label_status") == "complete").height
+
+
+def _normalize_build_mode(mode: str) -> str:
+    normalized = str(mode or "full").strip().lower()
+    if normalized not in {"full", "incremental"}:
+        raise ValueError("mode must be either 'full' or 'incremental'")
+    return normalized
+
+
+def _read_recent_dataset(
+    dataset_path: Path,
+    *,
+    day: date,
+    lookback_days: int,
+    timestamp_columns: tuple[str, ...],
+    future_days: int = 1,
+) -> pl.DataFrame:
+    try:
+        lazy = read_parquet_lazy(dataset_path)
+        columns = lazy.collect_schema().names()
+    except Exception:
+        return pl.DataFrame()
+    ts_column = next((column for column in timestamp_columns if column in columns), None)
+    if ts_column is None:
+        return lazy.collect()
+    start = datetime.combine(day - timedelta(days=max(lookback_days, 0)), time.min, tzinfo=UTC)
+    end = datetime.combine(day + timedelta(days=max(future_days, 0)), time.min, tzinfo=UTC)
+    try:
+        return (
+            lazy.filter(
+                pl.col(ts_column).cast(pl.Datetime(time_zone="UTC")).is_between(
+                    start,
+                    end,
+                    closed="left",
+                )
+            )
+            .collect()
+        )
+    except Exception:
+        frame = read_parquet_dataset(dataset_path)
+        if frame.is_empty() or ts_column not in frame.columns:
+            return frame
+        return frame.filter(
+            pl.col(ts_column).cast(pl.Datetime(time_zone="UTC")).is_between(
+                start,
+                end,
+                closed="left",
+            )
+        )
 
 
 def _quality_warnings(quality: pl.DataFrame) -> list[str]:

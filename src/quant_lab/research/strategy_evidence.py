@@ -12,7 +12,12 @@ from typing import Any
 import polars as pl
 from pydantic import BaseModel, ConfigDict, Field
 
-from quant_lab.data.lake import read_parquet_dataset, write_parquet_dataset
+from quant_lab.data.lake import (
+    read_parquet_dataset,
+    read_parquet_lazy,
+    upsert_parquet_dataset,
+    write_parquet_dataset,
+)
 from quant_lab.research.evidence import DEFAULT_RESEARCH_COST_BPS
 from quant_lab.strategy_telemetry.sanitize import safe_json_dumps
 from quant_lab.symbols import normalize_symbol
@@ -24,6 +29,7 @@ EVIDENCE_VERSION = "strategy-evidence-v0.1"
 SOURCE_NAME = "research.strategy_evidence.v0.1"
 MIN_LIVE_SMALL_READY_SAMPLES = 30
 HORIZON_HOURS = (4, 8, 12, 24, 48, 72, 120)
+DEFAULT_INCREMENTAL_LOOKBACK_DAYS = 8
 LIVE_READY_COST_SOURCES = {"mixed_actual_proxy", "actual_fills"}
 LIVE_BLOCKING_COST_SOURCES = {"global_default", "cost_not_requested_no_order"}
 
@@ -143,6 +149,8 @@ class StrategyEvidenceBuildResult(BaseModel):
     strategy_evidence_rows: int = Field(ge=0)
     extracted_sample_count: int = Field(ge=0)
     candidate_count: int = Field(ge=0)
+    mode: str = "full"
+    lookback_days: int | None = None
     decision_counts: dict[str, int] = Field(default_factory=dict)
     warnings: list[str] = Field(default_factory=list)
 
@@ -152,16 +160,28 @@ def build_and_publish_strategy_evidence(
     *,
     as_of_date: str | None = None,
     min_live_samples: int = MIN_LIVE_SMALL_READY_SAMPLES,
+    mode: str = "full",
+    lookback_days: int = DEFAULT_INCREMENTAL_LOOKBACK_DAYS,
 ) -> StrategyEvidenceBuildResult:
     root = Path(lake_root)
     day = _as_of_date(as_of_date)
-    samples, warnings = build_strategy_evidence_samples(root, as_of_date=day.isoformat())
+    normalized_mode = _normalize_build_mode(mode)
+    samples, warnings = build_strategy_evidence_samples(
+        root,
+        as_of_date=day.isoformat(),
+        mode=normalized_mode,
+        lookback_days=lookback_days,
+    )
     summaries = summarize_strategy_evidence(
-        samples,
+        _samples_for_summary(root, samples, normalized_mode),
         as_of_date=day,
         min_live_samples=min_live_samples,
     )
-    sample_rows = publish_strategy_evidence_samples(root, samples)
+    sample_rows = publish_strategy_evidence_samples(
+        root,
+        samples,
+        replace_as_of_dates=normalized_mode == "full",
+    )
     summary_rows = publish_strategy_evidence_summary(root, summaries)
     publish_strategy_evidence_quality(root, day, warnings)
     return StrategyEvidenceBuildResult(
@@ -171,6 +191,8 @@ def build_and_publish_strategy_evidence(
         strategy_evidence_rows=summary_rows,
         extracted_sample_count=samples.height,
         candidate_count=len(summaries),
+        mode=normalized_mode,
+        lookback_days=lookback_days if normalized_mode == "incremental" else None,
         decision_counts=_decision_counts(summaries),
         warnings=warnings,
     )
@@ -180,11 +202,29 @@ def build_strategy_evidence_samples(
     lake_root: str | Path,
     *,
     as_of_date: str | None = None,
+    mode: str = "full",
+    lookback_days: int = DEFAULT_INCREMENTAL_LOOKBACK_DAYS,
 ) -> tuple[pl.DataFrame, list[str]]:
     root = Path(lake_root)
     warnings: list[str] = []
-    labels = read_parquet_dataset(root / LABEL_DATASET)
-    events = read_parquet_dataset(root / EVENT_DATASET)
+    day = _as_of_date(as_of_date)
+    normalized_mode = _normalize_build_mode(mode)
+    if normalized_mode == "incremental":
+        labels = _read_recent_dataset(
+            root / LABEL_DATASET,
+            day=day,
+            lookback_days=lookback_days,
+            timestamp_columns=("ts_utc", "source_bundle_ts", "created_at"),
+        )
+        events = _read_recent_dataset(
+            root / EVENT_DATASET,
+            day=day,
+            lookback_days=lookback_days,
+            timestamp_columns=("ts_utc", "bundle_ts", "ingest_ts"),
+        )
+    else:
+        labels = read_parquet_dataset(root / LABEL_DATASET)
+        events = read_parquet_dataset(root / EVENT_DATASET)
     cost_context = _CostContext(root)
     if labels.is_empty():
         warnings.append("v5_candidate_label_empty")
@@ -196,7 +236,16 @@ def build_strategy_evidence_samples(
         if sample is not None:
             rows.append(sample)
     for dataset_name, relative_path in OUTCOME_DATASETS.items():
-        frame = read_parquet_dataset(root / relative_path)
+        frame = (
+            _read_recent_dataset(
+                root / relative_path,
+                day=day,
+                lookback_days=lookback_days,
+                timestamp_columns=("source_bundle_ts", "bundle_ts", "ingest_ts", "ts_utc", "ts"),
+            )
+            if normalized_mode == "incremental"
+            else read_parquet_dataset(root / relative_path)
+        )
         if frame.is_empty():
             continue
         for outcome in _dedupe_outcome_source_rows(dataset_name, frame.to_dicts()):
@@ -246,11 +295,30 @@ def summarize_strategy_evidence(
     return rows
 
 
-def publish_strategy_evidence_samples(lake_root: str | Path, samples: pl.DataFrame) -> int:
+def publish_strategy_evidence_samples(
+    lake_root: str | Path,
+    samples: pl.DataFrame,
+    *,
+    replace_as_of_dates: bool = True,
+) -> int:
     dataset_path = Path(lake_root) / STRATEGY_EVIDENCE_SAMPLE_DATASET
     if samples.is_empty():
         return read_parquet_dataset(dataset_path).height
     samples = normalize_strategy_evidence_samples(samples)
+    if not replace_as_of_dates:
+        return upsert_parquet_dataset(
+            samples,
+            dataset_path,
+            key_columns=[
+                "strategy",
+                "source_type",
+                "candidate_id",
+                "symbol",
+                "strategy_candidate",
+                "horizon_hours",
+                "source_event_key",
+            ],
+        )
     existing = read_parquet_dataset(dataset_path)
     if _needs_formal_schema_replace(existing, ["strategy", "candidate_id", "horizon_hours"]):
         write_parquet_dataset(samples, dataset_path)
@@ -355,6 +423,81 @@ def _replace_matching_as_of_dates(existing: pl.DataFrame, incoming: pl.DataFrame
     if retained.is_empty():
         return incoming
     return pl.concat([retained, incoming], how="diagonal_relaxed")
+
+
+def _normalize_build_mode(mode: str) -> str:
+    normalized = str(mode or "full").strip().lower()
+    if normalized not in {"full", "incremental"}:
+        raise ValueError("mode must be either 'full' or 'incremental'")
+    return normalized
+
+
+def _samples_for_summary(
+    lake_root: Path,
+    incoming_samples: pl.DataFrame,
+    mode: str,
+) -> pl.DataFrame:
+    if mode == "full":
+        return incoming_samples
+    existing = read_parquet_dataset(lake_root / STRATEGY_EVIDENCE_SAMPLE_DATASET)
+    frames = [frame for frame in [existing, incoming_samples] if not frame.is_empty()]
+    if not frames:
+        return pl.DataFrame(schema=SAMPLE_SCHEMA)
+    combined = pl.concat(frames, how="diagonal_relaxed")
+    return normalize_strategy_evidence_samples(combined).unique(
+        subset=[
+            "strategy",
+            "source_type",
+            "candidate_id",
+            "symbol",
+            "strategy_candidate",
+            "horizon_hours",
+            "source_event_key",
+        ],
+        keep="last",
+        maintain_order=True,
+    )
+
+
+def _read_recent_dataset(
+    dataset_path: Path,
+    *,
+    day: date,
+    lookback_days: int,
+    timestamp_columns: tuple[str, ...],
+) -> pl.DataFrame:
+    try:
+        lazy = read_parquet_lazy(dataset_path)
+        columns = lazy.collect_schema().names()
+    except Exception:
+        return pl.DataFrame()
+    ts_column = next((column for column in timestamp_columns if column in columns), None)
+    if ts_column is None:
+        return lazy.collect()
+    start = datetime.combine(day - timedelta(days=max(lookback_days, 0)), time.min, tzinfo=UTC)
+    end = datetime.combine(day + timedelta(days=1), time.min, tzinfo=UTC)
+    try:
+        return (
+            lazy.filter(
+                pl.col(ts_column).cast(pl.Datetime(time_zone="UTC")).is_between(
+                    start,
+                    end,
+                    closed="left",
+                )
+            )
+            .collect()
+        )
+    except Exception:
+        frame = read_parquet_dataset(dataset_path)
+        if frame.is_empty() or ts_column not in frame.columns:
+            return frame
+        return frame.filter(
+            pl.col(ts_column).cast(pl.Datetime(time_zone="UTC")).is_between(
+                start,
+                end,
+                closed="left",
+            )
+        )
 
 
 def normalize_strategy_evidence_decisions(evidence: pl.DataFrame) -> pl.DataFrame:

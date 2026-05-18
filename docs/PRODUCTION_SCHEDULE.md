@@ -41,10 +41,19 @@ split:
 - Frequent `qlab analyze-v5-telemetry --skip-candidate-gold` refreshes V5 health
   gold tables without touching candidate labels, strategy evidence, or the
   alpha discovery board.
-- Lower-frequency `quant-lab-v5-research-refresh.service` runs:
-  `qlab build-v5-candidate-labels`, `qlab build-strategy-evidence`, and
-  `qlab build-alpha-discovery-board`.
+- Lower-frequency `quant-lab-v5-research-refresh.service` runs incremental
+  candidate research only:
+  `qlab build-v5-candidate-labels --mode incremental --lookback-days 8`,
+  `qlab build-strategy-evidence --mode incremental --lookback-days 8`, and
+  `qlab build-alpha-discovery-board --skip-legacy-outcome-counts`.
+  It consumes recently ingested raw inputs and previously computed
+  `gold/strategy_evidence_sample` state. It must not rescan all historical
+  shadow/blocked outcome files on every run.
 - `qlab build-alpha-evidence` remains separate from candidate board refresh.
+
+Historical full rebuilds are manual maintenance actions only. Use `--mode full`
+or `--include-legacy-outcome-counts` after a schema/rule migration or a known
+backfill correction, then monitor memory and runtime explicitly.
 
 The ordering matters because `risk_permission` must be evaluated against the
 latest V5 telemetry, gate, cost, and data-health state. The daily export service

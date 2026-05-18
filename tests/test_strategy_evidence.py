@@ -186,6 +186,25 @@ def test_strategy_evidence_builds_candidate_board_without_broad_btc_mixing(tmp_p
     assert "net_bps_after_cost" in samples.columns
 
 
+def test_strategy_evidence_incremental_mode_skips_old_raw_labels(tmp_path):
+    lake = tmp_path / "lake"
+    old_ts = datetime(2026, 5, 1, tzinfo=UTC)
+    recent_ts = datetime(2026, 5, 10, tzinfo=UTC)
+    _write_candidate_labels_for_incremental_test(lake, old_ts, recent_ts)
+
+    result = build_and_publish_strategy_evidence(
+        lake,
+        as_of_date="2026-05-10",
+        mode="incremental",
+        lookback_days=2,
+    )
+    samples = read_parquet_dataset(lake / "gold" / "strategy_evidence_sample")
+
+    assert result.mode == "incremental"
+    assert result.extracted_sample_count == 1
+    assert set(samples["candidate_id"].to_list()) == {"recent"}
+
+
 def test_daily_export_includes_alpha_discovery_reports(tmp_path):
     lake = tmp_path / "lake"
     _write_market_bars(lake)
@@ -701,6 +720,39 @@ def _write_alpha_discovery_labels(lake: Path) -> None:
                 "cost_source": "quant_lab",
                 "regime_state": "trend",
                 "created_at": start + timedelta(hours=index, minutes=1),
+            }
+        )
+    write_parquet_dataset(pl.DataFrame(rows), lake / "gold" / "v5_candidate_label")
+
+
+def _write_candidate_labels_for_incremental_test(
+    lake: Path,
+    old_ts: datetime,
+    recent_ts: datetime,
+) -> None:
+    rows = []
+    for candidate_id, ts in [("old", old_ts), ("recent", recent_ts)]:
+        rows.append(
+            {
+                "strategy": "v5",
+                "candidate_id": candidate_id,
+                "run_id": f"run-{candidate_id}",
+                "ts_utc": ts,
+                "symbol": "SOL-USDT",
+                "strategy_candidate": "v5.sol_protect_exception",
+                "block_reason": "protect_exception",
+                "final_decision": "SHADOW",
+                "horizon_hours": 24,
+                "gross_bps": 10.0,
+                "net_bps_after_cost": 6.0,
+                "mfe_bps": 12.0,
+                "mae_bps": -4.0,
+                "win": True,
+                "label_status": "complete",
+                "cost_bps": 4.0,
+                "cost_source": "mixed_actual_proxy",
+                "regime_state": "trend",
+                "created_at": ts,
             }
         )
     write_parquet_dataset(pl.DataFrame(rows), lake / "gold" / "v5_candidate_label")

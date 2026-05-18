@@ -650,6 +650,10 @@ def build_strategy_evidence_command(
     min_live_samples: Annotated[int, typer.Option("--min-live-samples", min=30)] = 30,
     mode: Annotated[str, typer.Option("--mode", help="full or incremental.")] = "incremental",
     lookback_days: Annotated[int, typer.Option("--lookback-days", min=1)] = 8,
+    include_historical_outcomes: Annotated[
+        bool,
+        typer.Option("--include-historical-outcomes/--skip-historical-outcomes"),
+    ] = False,
 ) -> None:
     result = run_with_job_metrics(
         lake_root=lake_root,
@@ -660,6 +664,7 @@ def build_strategy_evidence_command(
             min_live_samples=min_live_samples,
             mode=mode,
             lookback_days=lookback_days,
+            include_historical_outcomes=include_historical_outcomes,
         ),
     )
     typer.echo(result.model_dump_json(indent=2))

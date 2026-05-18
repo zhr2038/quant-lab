@@ -30,6 +30,7 @@ def test_candidate_research_refresh_is_separate_from_alpha_evidence():
     assert "build-v5-candidate-labels" in refresh_unit
     assert "--mode incremental --lookback-days 8" in refresh_unit
     assert "build-strategy-evidence" in refresh_unit
+    assert "--skip-historical-outcomes" in refresh_unit
     assert "build-alpha-discovery-board" in refresh_unit
     assert "--skip-legacy-outcome-counts" in refresh_unit
 

@@ -44,7 +44,8 @@ split:
 - Lower-frequency `quant-lab-v5-research-refresh.service` runs incremental
   candidate research only:
   `qlab build-v5-candidate-labels --mode incremental --lookback-days 8`,
-  `qlab build-strategy-evidence --mode incremental --lookback-days 8`, and
+  `qlab build-strategy-evidence --mode incremental --lookback-days 8 --skip-historical-outcomes`,
+  and
   `qlab build-alpha-discovery-board --skip-legacy-outcome-counts`.
   It consumes recently ingested raw inputs and previously computed
   `gold/strategy_evidence_sample` state. It must not rescan all historical

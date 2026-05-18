@@ -162,6 +162,7 @@ def build_and_publish_strategy_evidence(
     min_live_samples: int = MIN_LIVE_SMALL_READY_SAMPLES,
     mode: str = "full",
     lookback_days: int = DEFAULT_INCREMENTAL_LOOKBACK_DAYS,
+    include_historical_outcomes: bool | None = None,
 ) -> StrategyEvidenceBuildResult:
     root = Path(lake_root)
     day = _as_of_date(as_of_date)
@@ -171,6 +172,11 @@ def build_and_publish_strategy_evidence(
         as_of_date=day.isoformat(),
         mode=normalized_mode,
         lookback_days=lookback_days,
+        include_historical_outcomes=(
+            normalized_mode == "full"
+            if include_historical_outcomes is None
+            else include_historical_outcomes
+        ),
     )
     summaries = summarize_strategy_evidence(
         _samples_for_summary(root, samples, normalized_mode),
@@ -204,6 +210,7 @@ def build_strategy_evidence_samples(
     as_of_date: str | None = None,
     mode: str = "full",
     lookback_days: int = DEFAULT_INCREMENTAL_LOOKBACK_DAYS,
+    include_historical_outcomes: bool = True,
 ) -> tuple[pl.DataFrame, list[str]]:
     root = Path(lake_root)
     warnings: list[str] = []
@@ -235,7 +242,9 @@ def build_strategy_evidence_samples(
         sample = _sample_from_candidate_label(label, event_context)
         if sample is not None:
             rows.append(sample)
-    for dataset_name, relative_path in OUTCOME_DATASETS.items():
+    for dataset_name, relative_path in (
+        OUTCOME_DATASETS.items() if include_historical_outcomes else []
+    ):
         frame = (
             _read_recent_dataset(
                 root / relative_path,

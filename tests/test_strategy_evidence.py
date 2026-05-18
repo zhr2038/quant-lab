@@ -205,6 +205,47 @@ def test_strategy_evidence_incremental_mode_skips_old_raw_labels(tmp_path):
     assert set(samples["candidate_id"].to_list()) == {"recent"}
 
 
+def test_strategy_evidence_incremental_mode_skips_historical_outcome_inputs(tmp_path):
+    lake = tmp_path / "lake"
+    now = datetime(2026, 5, 10, tzinfo=UTC)
+    write_parquet_dataset(
+        pl.DataFrame(
+            [
+                {
+                    "strategy": "v5",
+                    "bundle_ts": now,
+                    "ingest_ts": now,
+                    "source_path_inside_bundle": "summaries/alt_impulse_shadow_outcomes.csv",
+                    "row_index": 0,
+                    "ts_utc": now.isoformat().replace("+00:00", "Z"),
+                    "symbol": "SOL-USDT",
+                    "strategy_candidate": "v5.alt_impulse_shadow",
+                    "label_4h_net_bps": 20.0,
+                    "label_status": "complete",
+                    "raw_payload_json": json.dumps(
+                        {
+                            "symbol": "SOL-USDT",
+                            "strategy_candidate": "v5.alt_impulse_shadow",
+                            "label_4h_net_bps": 20.0,
+                            "label_status": "complete",
+                        }
+                    ),
+                }
+            ]
+        ),
+        lake / "silver" / "v5_shadow_outcome",
+    )
+
+    result = build_and_publish_strategy_evidence(
+        lake,
+        as_of_date="2026-05-10",
+        mode="incremental",
+        lookback_days=2,
+    )
+
+    assert result.extracted_sample_count == 0
+
+
 def test_daily_export_includes_alpha_discovery_reports(tmp_path):
     lake = tmp_path / "lake"
     _write_market_bars(lake)

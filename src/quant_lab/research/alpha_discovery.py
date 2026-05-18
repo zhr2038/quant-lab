@@ -37,6 +37,7 @@ DECISIONS = (
     "KILL",
     "RESEARCH_ONLY",
     "KEEP_SHADOW",
+    "REGIME_SHADOW",
     "PAPER_READY",
     "LIVE_SMALL_READY",
 )
@@ -345,6 +346,7 @@ def _board_row(
     cost_source_counts = Counter(_clean_text(row.get("cost_source")) or "MISSING" for row in rows)
     has_global_default = any(source.lower() == "global_default" for source in cost_source_counts)
     decision, reasons = _decision(
+        candidate=candidate,
         sample_count=len(rows),
         complete_sample_count=len(complete),
         avg_net_bps=avg_net,
@@ -398,6 +400,7 @@ def _board_row(
 
 def _decision(
     *,
+    candidate: str,
     sample_count: int,
     complete_sample_count: int,
     avg_net_bps: float | None,
@@ -415,10 +418,15 @@ def _decision(
         paper_days=paper_days,
         paper_slippage_coverage=0.0,
         cost_source_mix=cost_source_counts,
+        candidate_name=candidate,
     )
 
 
 def _strategy_evidence_decision(row: dict[str, Any]) -> tuple[str, list[str]]:
+    candidate = _canonical_candidate_name(
+        row.get("strategy_candidate") or row.get("candidate_name"),
+        dataset_name="alpha_discovery_board",
+    )
     sample_count = int(_finite_float(row.get("sample_count")) or 0)
     complete_sample_count = int(_finite_float(row.get("complete_sample_count")) or 0)
     avg_net = _finite_float(row.get("avg_net_bps"))
@@ -434,6 +442,7 @@ def _strategy_evidence_decision(row: dict[str, Any]) -> tuple[str, list[str]]:
         paper_days=paper_days,
         paper_slippage_coverage=_finite_float(row.get("paper_slippage_coverage")) or 0.0,
         cost_source_mix=row.get("cost_source_mix"),
+        candidate_name=candidate,
     )
 
 
@@ -715,6 +724,7 @@ def normalize_alpha_discovery_board_decisions(board: pl.DataFrame) -> pl.DataFra
             paper_days=int(_finite_float(row.get("paper_days")) or 0),
             paper_slippage_coverage=_finite_float(row.get("paper_slippage_coverage")) or 0.0,
             cost_source_mix=row.get("cost_source_mix"),
+            candidate_name=candidate,
         )
         row["decision"] = decision
         row["decision_reasons"] = safe_json_dumps(reasons)

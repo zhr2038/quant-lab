@@ -114,6 +114,34 @@ def test_strategy_evidence_ladder_requires_actual_or_mixed_for_live_small_ready(
     assert reasons == ["live_small_ready_thresholds_met"]
 
 
+def test_alt_impulse_ladder_is_regime_shadow_only():
+    decision, reasons = strategy_evidence_decision_ladder(
+        sample_count=72,
+        complete_sample_count=72,
+        avg_net_bps=25.0,
+        p25_net_bps=1.0,
+        win_rate=0.72,
+        paper_days=20,
+        paper_slippage_coverage=0.9,
+        cost_source_mix={"mixed_actual_proxy": 72},
+        candidate_name="v5.alt_impulse_shadow",
+    )
+
+    assert decision == "REGIME_SHADOW"
+    assert "live_disabled" in reasons
+
+    decision, reasons = strategy_evidence_decision_ladder(
+        sample_count=12,
+        complete_sample_count=12,
+        avg_net_bps=-25.0,
+        p25_net_bps=-40.0,
+        win_rate=0.2,
+        candidate_name="v5.alt_impulse_shadow",
+    )
+    assert decision == "KILL"
+    assert "negative_regime_net_edge" in reasons
+
+
 def test_strategy_evidence_normalizes_stale_low_complete_decision():
     stale = pl.DataFrame(
         [
@@ -270,6 +298,8 @@ def test_daily_export_includes_alpha_discovery_reports(tmp_path):
         assert "reports/candidate_shadow_watchlist.csv" in names
         assert "reports/candidate_paper_ready.csv" in names
         assert "research/strategy_evidence.csv" in names
+        assert "research/alt_impulse_shadow_by_regime.csv" in names
+        assert "research/alt_impulse_shadow_by_symbol_regime_horizon.csv" in names
         assert "research/strategy_evidence_samples.csv" in names
         board = list(
             csv.DictReader(
@@ -695,7 +725,10 @@ def test_alt_impulse_outcomes_preserve_symbol_horizon_and_complete_counts(tmp_pa
     pending_row = evidence_rows[("SOL-USDT", 24)]
     assert pending_row["sample_count"] == 2
     assert pending_row["complete_sample_count"] == 1
-    assert pending_row["decision"] == "RESEARCH_ONLY"
+    assert pending_row["decision"] == "KEEP_SHADOW"
+    assert "insufficient_regime_complete_samples" in json.loads(
+        pending_row["decision_reasons"]
+    )
     assert board.filter(
         (pl.col("strategy_candidate") == "v5.alt_impulse_shadow")
         & (pl.col("symbol") == "UNKNOWN")
@@ -704,6 +737,42 @@ def test_alt_impulse_outcomes_preserve_symbol_horizon_and_complete_counts(tmp_pa
         (pl.col("warning_type") == "strategy_evidence_unknown_symbol_samples_skipped")
         & (pl.col("warning_count") == 1)
     ).height == 1
+
+    export = export_daily_pack(
+        export_date="2026-05-10",
+        lake_root=lake,
+        out_dir=tmp_path / "exports",
+        profile="expert",
+        command_line=["qlab", "export-daily"],
+    )
+    with zipfile.ZipFile(export.zip_path) as archive:
+        alt_by_regime = list(
+            csv.DictReader(
+                io.StringIO(
+                    archive.read("research/alt_impulse_shadow_by_regime.csv").decode("utf-8")
+                )
+            )
+        )
+        alt_by_symbol_regime = list(
+            csv.DictReader(
+                io.StringIO(
+                    archive.read(
+                        "research/alt_impulse_shadow_by_symbol_regime_horizon.csv"
+                    ).decode("utf-8")
+                )
+            )
+        )
+    assert any(
+        row["strategy_candidate"] == "v5.alt_impulse_shadow"
+        and row["regime_state"] == "impulse"
+        for row in alt_by_regime
+    )
+    assert any(
+        row["strategy_candidate"] == "v5.alt_impulse_shadow"
+        and row["symbol"] == "ETH-USDT"
+        and row["regime_state"] == "impulse"
+        for row in alt_by_symbol_regime
+    )
 
 
 def _write_market_bars(lake: Path) -> None:

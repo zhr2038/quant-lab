@@ -4,6 +4,7 @@ import csv
 import hashlib
 import io
 import json
+import math
 import os
 import socket
 import subprocess
@@ -39,7 +40,10 @@ from quant_lab.research.paper_tracking import (
     enrich_paper_strategy_daily_from_runs,
     latest_v5_paper_frame,
 )
-from quant_lab.research.strategy_evidence import normalize_strategy_evidence_decisions
+from quant_lab.research.strategy_evidence import (
+    normalize_strategy_evidence_decisions,
+    strategy_evidence_decision_ladder,
+)
 from quant_lab.risk.publish import (
     DEFAULT_TELEMETRY_STALE_THRESHOLD_SECONDS,
     is_permission_status_enforceable,
@@ -153,6 +157,8 @@ REQUIRED_MEMBERS = [
     "costs/cost_fallbacks.csv",
     "research/alpha_evidence.csv",
     "research/strategy_evidence.csv",
+    "research/alt_impulse_shadow_by_regime.csv",
+    "research/alt_impulse_shadow_by_symbol_regime_horizon.csv",
     "research/strategy_evidence_samples.csv",
     "research/strategy_evidence_quality.csv",
     "research/gate_decisions.csv",
@@ -340,6 +346,47 @@ CSV_SCHEMAS: dict[str, list[str]] = {
         "candidate_name",
         "as_of_date",
         "strategy_candidate",
+        "symbol",
+        "regime_state",
+        "horizon_hours",
+        "sample_count",
+        "complete_sample_count",
+        "avg_net_bps",
+        "median_net_bps",
+        "p25_net_bps",
+        "win_rate",
+        "cost_source_mix",
+        "decision",
+        "decision_reasons",
+        "start_ts",
+        "end_ts",
+        "created_at",
+        "source",
+    ],
+    "research/alt_impulse_shadow_by_regime.csv": [
+        "as_of_date",
+        "strategy_candidate",
+        "candidate_name",
+        "regime_state",
+        "horizon_hours",
+        "sample_count",
+        "complete_sample_count",
+        "avg_net_bps",
+        "median_net_bps",
+        "p25_net_bps",
+        "win_rate",
+        "cost_source_mix",
+        "decision",
+        "decision_reasons",
+        "start_ts",
+        "end_ts",
+        "created_at",
+        "source",
+    ],
+    "research/alt_impulse_shadow_by_symbol_regime_horizon.csv": [
+        "as_of_date",
+        "strategy_candidate",
+        "candidate_name",
         "symbol",
         "regime_state",
         "horizon_hours",
@@ -1378,6 +1425,14 @@ def _dataset_members(frames: dict[str, pl.DataFrame]) -> dict[str, _MemberPayloa
         "research/strategy_evidence.csv": _csv_member(
             "research/strategy_evidence.csv",
             strategy_evidence,
+        ),
+        "research/alt_impulse_shadow_by_regime.csv": _csv_member(
+            "research/alt_impulse_shadow_by_regime.csv",
+            _alt_impulse_shadow_by_regime_for_export(strategy_evidence),
+        ),
+        "research/alt_impulse_shadow_by_symbol_regime_horizon.csv": _csv_member(
+            "research/alt_impulse_shadow_by_symbol_regime_horizon.csv",
+            _alt_impulse_shadow_by_symbol_regime_horizon_for_export(strategy_evidence),
         ),
         "research/strategy_evidence_samples.csv": _csv_member(
             "research/strategy_evidence_samples.csv",
@@ -2690,6 +2745,181 @@ def _strategy_evidence_for_export(evidence: pl.DataFrame) -> pl.DataFrame:
     return selected.sort(final_sort) if final_sort else selected
 
 
+def _alt_impulse_shadow_base_for_export(evidence: pl.DataFrame) -> pl.DataFrame:
+    if evidence.is_empty() and not evidence.columns:
+        return pl.DataFrame()
+    normalized = normalize_strategy_evidence_decisions(evidence)
+    if "strategy_candidate" not in normalized.columns:
+        return pl.DataFrame()
+    selected = normalized.filter(pl.col("strategy_candidate") == "v5.alt_impulse_shadow")
+    if selected.is_empty():
+        return pl.DataFrame()
+    return selected
+
+
+def _alt_impulse_shadow_by_symbol_regime_horizon_for_export(
+    evidence: pl.DataFrame,
+) -> pl.DataFrame:
+    path = "research/alt_impulse_shadow_by_symbol_regime_horizon.csv"
+    selected = _alt_impulse_shadow_base_for_export(evidence)
+    if selected.is_empty():
+        return _empty_csv_schema_frame(path)
+    for column in CSV_SCHEMAS[path]:
+        if column not in selected.columns:
+            selected = selected.with_columns(pl.lit(None, dtype=pl.Utf8).alias(column))
+    keys = [
+        key
+        for key in [
+            "as_of_date",
+            "strategy_candidate",
+            "symbol",
+            "regime_state",
+            "horizon_hours",
+        ]
+        if key in selected.columns
+    ]
+    if keys:
+        sort_keys = [*keys, "created_at"] if "created_at" in selected.columns else keys
+        selected = selected.sort(sort_keys)
+        selected = selected.group_by(keys, maintain_order=True).tail(1)
+    sort_columns = [
+        column
+        for column in ["regime_state", "symbol", "horizon_hours", "as_of_date"]
+        if column in selected.columns
+    ]
+    selected = selected.sort(sort_columns) if sort_columns else selected
+    return selected.select(CSV_SCHEMAS[path])
+
+
+def _alt_impulse_shadow_by_regime_for_export(evidence: pl.DataFrame) -> pl.DataFrame:
+    path = "research/alt_impulse_shadow_by_regime.csv"
+    selected = _alt_impulse_shadow_base_for_export(evidence)
+    if selected.is_empty():
+        return _empty_csv_schema_frame(path)
+    rows = selected.to_dicts()
+    grouped: dict[tuple[str, str, int], list[dict[str, Any]]] = {}
+    for row in rows:
+        key = (
+            str(row.get("as_of_date") or ""),
+            str(row.get("regime_state") or "UNKNOWN"),
+            int(_export_float(row.get("horizon_hours")) or 0),
+        )
+        grouped.setdefault(key, []).append(row)
+
+    output: list[dict[str, Any]] = []
+    for (as_of_date, regime_state, horizon_hours), group_rows in sorted(grouped.items()):
+        sample_count = sum(int(_export_float(row.get("sample_count")) or 0) for row in group_rows)
+        complete_count = sum(
+            int(_export_float(row.get("complete_sample_count")) or 0) for row in group_rows
+        )
+        avg_net = _weighted_export_mean(group_rows, "avg_net_bps")
+        median_net = _weighted_export_mean(group_rows, "median_net_bps")
+        p25_net = _weighted_export_mean(group_rows, "p25_net_bps")
+        win_rate = _weighted_export_mean(group_rows, "win_rate")
+        decision, reasons = strategy_evidence_decision_ladder(
+            sample_count=sample_count,
+            complete_sample_count=complete_count,
+            avg_net_bps=avg_net,
+            p25_net_bps=p25_net,
+            win_rate=win_rate,
+            cost_source_mix=_merge_cost_source_mix(group_rows),
+            candidate_name="v5.alt_impulse_shadow",
+        )
+        output.append(
+            {
+                "as_of_date": as_of_date,
+                "strategy_candidate": "v5.alt_impulse_shadow",
+                "candidate_name": "v5.alt_impulse_shadow",
+                "regime_state": regime_state,
+                "horizon_hours": horizon_hours,
+                "sample_count": sample_count,
+                "complete_sample_count": complete_count,
+                "avg_net_bps": avg_net,
+                "median_net_bps": median_net,
+                "p25_net_bps": p25_net,
+                "win_rate": win_rate,
+                "cost_source_mix": safe_json_dumps(_merge_cost_source_mix(group_rows)),
+                "decision": decision,
+                "decision_reasons": safe_json_dumps(reasons),
+                "start_ts": _min_export_value(group_rows, "start_ts"),
+                "end_ts": _max_export_value(group_rows, "end_ts"),
+                "created_at": _max_export_value(group_rows, "created_at"),
+                "source": "export.alt_impulse_shadow_by_regime.v0.1",
+            }
+        )
+    return pl.DataFrame(output).select(CSV_SCHEMAS[path])
+
+
+def _weighted_export_mean(rows: list[dict[str, Any]], column: str) -> float | None:
+    weighted: list[tuple[float, float]] = []
+    for row in rows:
+        value = _export_float(row.get(column))
+        if value is None:
+            continue
+        weight = _export_float(row.get("complete_sample_count"))
+        if weight is None or weight <= 0:
+            weight = _export_float(row.get("sample_count")) or 1.0
+        weighted.append((value, weight))
+    total_weight = sum(weight for _, weight in weighted)
+    if total_weight <= 0:
+        return None
+    return sum(value * weight for value, weight in weighted) / total_weight
+
+
+def _export_float(value: Any) -> float | None:
+    try:
+        number = float(value)
+    except (TypeError, ValueError):
+        return None
+    return number if math.isfinite(number) else None
+
+
+def _merge_cost_source_mix(rows: list[dict[str, Any]]) -> dict[str, int]:
+    merged: dict[str, int] = {}
+    for row in rows:
+        for source, count in _cost_source_mix_items(row.get("cost_source_mix")).items():
+            merged[source] = merged.get(source, 0) + count
+    return merged
+
+
+def _cost_source_mix_items(value: Any) -> dict[str, int]:
+    if value is None:
+        return {}
+    if isinstance(value, str):
+        try:
+            return _cost_source_mix_items(json.loads(value))
+        except json.JSONDecodeError:
+            cleaned = value.strip()
+            return {cleaned: 1} if cleaned else {}
+    if isinstance(value, dict):
+        return {
+            str(source or "MISSING"): int(_export_float(count) or 0)
+            for source, count in value.items()
+        }
+    if isinstance(value, list):
+        output: dict[str, int] = {}
+        for item in value:
+            if isinstance(item, dict):
+                source = str(item.get("cost_source") or item.get("source") or "MISSING")
+                count = int(_export_float(item.get("count") or item.get("sample_count")) or 1)
+            else:
+                source = str(item or "MISSING")
+                count = 1
+            output[source] = output.get(source, 0) + count
+        return output
+    return {}
+
+
+def _min_export_value(rows: list[dict[str, Any]], column: str) -> Any:
+    values = [row.get(column) for row in rows if row.get(column) is not None]
+    return min(values) if values else None
+
+
+def _max_export_value(rows: list[dict[str, Any]], column: str) -> Any:
+    values = [row.get(column) for row in rows if row.get(column) is not None]
+    return max(values) if values else None
+
+
 def _strategy_evidence_samples_for_export(samples: pl.DataFrame) -> pl.DataFrame:
     path = "research/strategy_evidence_samples.csv"
     if samples.is_empty() and not samples.columns:
@@ -2749,7 +2979,10 @@ def _candidate_decision_rows(board: pl.DataFrame, decision: str) -> pl.DataFrame
         return _empty_csv_schema_frame(path)
     if "decision" not in board.columns:
         return _empty_csv_schema_frame(path)
-    selected = board.filter(pl.col("decision") == decision)
+    if decision == "KEEP_SHADOW":
+        selected = board.filter(pl.col("decision").is_in(["KEEP_SHADOW", "REGIME_SHADOW"]))
+    else:
+        selected = board.filter(pl.col("decision") == decision)
     if selected.is_empty():
         return _empty_csv_schema_frame(path)
     for column in CSV_SCHEMAS[path]:

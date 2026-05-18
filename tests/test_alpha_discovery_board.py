@@ -31,7 +31,12 @@ def test_alpha_discovery_board_decisions_are_candidate_symbol_regime_horizon(tmp
 
     assert result.alpha_discovery_board_rows == board.height
     assert rows[("v5.alt_impulse_shadow", "ETH-USDT", "impulse", 24)]["decision"] == (
-        "PAPER_READY"
+        "REGIME_SHADOW"
+    )
+    assert "live_disabled" in json.loads(
+        rows[("v5.alt_impulse_shadow", "ETH-USDT", "impulse", 24)][
+            "decision_reasons"
+        ]
     )
     assert rows[("v5.sol_protect_exception", "SOL-USDT", "protect", 24)]["decision"] == (
         "KILL"
@@ -125,6 +130,8 @@ def test_daily_export_uses_alpha_discovery_board_lists(tmp_path):
     with zipfile.ZipFile(result.zip_path) as archive:
         names = set(archive.namelist())
         assert "reports/alpha_discovery_board.csv" in names
+        assert "research/alt_impulse_shadow_by_regime.csv" in names
+        assert "research/alt_impulse_shadow_by_symbol_regime_horizon.csv" in names
         assert "reports/candidate_kill_list.csv" in names
         assert "reports/candidate_shadow_watchlist.csv" in names
         assert "reports/candidate_paper_ready.csv" in names
@@ -132,6 +139,22 @@ def test_daily_export_uses_alpha_discovery_board_lists(tmp_path):
         board = list(
             csv.DictReader(
                 io.StringIO(archive.read("reports/alpha_discovery_board.csv").decode("utf-8"))
+            )
+        )
+        by_regime = list(
+            csv.DictReader(
+                io.StringIO(
+                    archive.read("research/alt_impulse_shadow_by_regime.csv").decode("utf-8")
+                )
+            )
+        )
+        by_symbol_regime = list(
+            csv.DictReader(
+                io.StringIO(
+                    archive.read(
+                        "research/alt_impulse_shadow_by_symbol_regime_horizon.csv"
+                    ).decode("utf-8")
+                )
             )
         )
         watch = list(
@@ -162,6 +185,8 @@ def test_daily_export_uses_alpha_discovery_board_lists(tmp_path):
         "v5.btc_leadership_probe_strict",
         "v5.f3_dominant_entry",
     }
+    assert by_regime == []
+    assert by_symbol_regime == []
     assert any(row["strategy_candidate"] == "v5.f3_dominant_entry" for row in watch)
     assert any(row["strategy_candidate"] == "v5.swing_f4_f5_alpha6" for row in paper)
     proposal_ids = {row["proposal_id"] for row in proposals}

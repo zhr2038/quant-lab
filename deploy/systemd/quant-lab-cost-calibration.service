@@ -9,6 +9,7 @@ Group=quantlab
 WorkingDirectory=/opt/quant-lab
 Environment=POLARS_MAX_THREADS=1
 Environment=MALLOC_ARENA_MAX=2
+Environment=QUANT_LAB_COST_MAX_PUBLIC_DAY_FILES=1000
 RuntimeMaxSec=15min
 TimeoutStartSec=16min
 MemoryHigh=3G

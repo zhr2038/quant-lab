@@ -87,12 +87,15 @@ Candidate decisions are:
 
 - `KILL`
 - `KEEP_SHADOW`
+- `REGIME_SHADOW`
 - `PAPER_READY`
 - `LIVE_SMALL_READY`
 
 `LIVE_SMALL_READY` is never emitted when `sample_count < 30`. SOL protect
-exceptions and alt impulse shadow evidence remain shadow/protective candidates
-unless future policy explicitly changes their promotion cap. The strict BTC
+exceptions remain shadow/protective candidates unless future policy explicitly
+changes their promotion cap. Alt impulse shadow evidence is evaluated by
+`regime_state` and can only emit `REGIME_SHADOW`, `KEEP_SHADOW`, or `KILL`;
+it is not eligible for paper/live promotion from this board. The strict BTC
 leadership probe is matched only from explicit strict probe telemetry; broad BTC
 leadership blockers are not mixed into that candidate.
 
@@ -100,6 +103,8 @@ Daily expert exports include the strategy evidence in both raw research form
 and review-board form:
 
 - `research/strategy_evidence.csv`
+- `research/alt_impulse_shadow_by_regime.csv`
+- `research/alt_impulse_shadow_by_symbol_regime_horizon.csv`
 - `research/strategy_evidence_samples.csv`
 - `reports/alpha_discovery_board.csv`
 - `reports/strategy_evidence_summary.md`
@@ -141,10 +146,11 @@ The daily expert pack includes:
 `qlab build-alpha-discovery-board` turns the candidate labels into the daily
 decision panel. It reports sample counts, complete labels, average/median/p25
 net bps, win rate, MFE/MAE, cost source mix, day stability, paper days, and a
-decision of `KILL`, `RESEARCH_ONLY`, `KEEP_SHADOW`, `PAPER_READY`, or
-`LIVE_SMALL_READY`. `LIVE_SMALL_READY` requires at least 60 samples, at least
-14 paper days, no `global_default` cost source, and cannot be assigned to
-`v5.alt_impulse_shadow` or `v5.sol_protect_exception`.
+decision of `KILL`, `RESEARCH_ONLY`, `KEEP_SHADOW`, `REGIME_SHADOW`,
+`PAPER_READY`, or `LIVE_SMALL_READY`. `LIVE_SMALL_READY` requires at least 60
+samples, at least 14 paper days, no `global_default` cost source, and cannot be
+assigned to `v5.alt_impulse_shadow` or `v5.sol_protect_exception`. Alt impulse
+uses `REGIME_SHADOW` to mark positive regimes that remain research-only.
 
 ## Gate Publishing
 

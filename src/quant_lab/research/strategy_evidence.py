@@ -28,6 +28,9 @@ STRATEGY_EVIDENCE_QUALITY_DATASET = Path("gold") / "strategy_evidence_quality"
 EVIDENCE_VERSION = "strategy-evidence-v0.1"
 SOURCE_NAME = "research.strategy_evidence.v0.1"
 MIN_LIVE_SMALL_READY_SAMPLES = 30
+ALT_IMPULSE_SHADOW_CANDIDATE = "v5.alt_impulse_shadow"
+ALT_IMPULSE_REGIME_SHADOW_MIN_COMPLETE_SAMPLES = 5
+ALT_IMPULSE_REGIME_SHADOW_MIN_WIN_RATE = 0.50
 HORIZON_HOURS = (4, 8, 12, 24, 48, 72, 120)
 DEFAULT_INCREMENTAL_LOOKBACK_DAYS = 8
 LIVE_READY_COST_SOURCES = {"mixed_actual_proxy", "actual_fills"}
@@ -521,6 +524,7 @@ def normalize_strategy_evidence_decisions(evidence: pl.DataFrame) -> pl.DataFram
             paper_days=int(_finite_float(row.get("paper_days")) or 0),
             paper_slippage_coverage=_finite_float(row.get("paper_slippage_coverage")) or 0.0,
             cost_source_mix=row.get("cost_source_mix"),
+            candidate_name=candidate,
         )
         row["decision"] = decision
         row["decision_reasons"] = _json(reasons)
@@ -866,6 +870,7 @@ def _formal_summary_row(
         else None
     )
     decision, reasons = _formal_decision(
+        candidate_name=strategy_candidate,
         sample_count=sample_count,
         complete_sample_count=complete_sample_count,
         avg_net_bps=avg_net,
@@ -906,6 +911,7 @@ def _formal_summary_row(
 
 def _formal_decision(
     *,
+    candidate_name: str,
     sample_count: int,
     complete_sample_count: int,
     avg_net_bps: float | None,
@@ -924,6 +930,7 @@ def _formal_decision(
         paper_days=paper_days,
         cost_source_mix=cost_source_mix,
         paper_ready_sample_count=min_live_samples,
+        candidate_name=candidate_name,
     )
 
 
@@ -938,7 +945,16 @@ def strategy_evidence_decision_ladder(
     paper_slippage_coverage: float = 0.0,
     cost_source_mix: Any = None,
     paper_ready_sample_count: int = MIN_LIVE_SMALL_READY_SAMPLES,
+    candidate_name: str | None = None,
 ) -> tuple[str, list[str]]:
+    if _is_alt_impulse_shadow_candidate(candidate_name):
+        return _alt_impulse_regime_shadow_decision(
+            sample_count=sample_count,
+            complete_sample_count=complete_sample_count,
+            avg_net_bps=avg_net_bps,
+            win_rate=win_rate,
+        )
+
     reasons: list[str] = []
     if sample_count < 10:
         reasons.append("insufficient_total_samples")
@@ -991,6 +1007,57 @@ def strategy_evidence_decision_ladder(
     if win_rate is None or win_rate < 0.45:
         reasons.append("win_rate_below_threshold")
     return "RESEARCH_ONLY", reasons or ["evidence_inconclusive"]
+
+
+def _is_alt_impulse_shadow_candidate(candidate_name: str | None) -> bool:
+    return (
+        _canonical_candidate_name(candidate_name, dataset_name="strategy_evidence")
+        == ALT_IMPULSE_SHADOW_CANDIDATE
+    )
+
+
+def _alt_impulse_regime_shadow_decision(
+    *,
+    sample_count: int,
+    complete_sample_count: int,
+    avg_net_bps: float | None,
+    win_rate: float | None,
+) -> tuple[str, list[str]]:
+    if complete_sample_count >= 10 and _is_negative_after_cost_edge(avg_net_bps):
+        if win_rate is not None and win_rate < 0.45:
+            return "KILL", [
+                "alt_impulse_regime_shadow_only",
+                "negative_regime_net_edge",
+                "win_rate_below_threshold",
+            ]
+
+    if (
+        complete_sample_count >= ALT_IMPULSE_REGIME_SHADOW_MIN_COMPLETE_SAMPLES
+        and avg_net_bps is not None
+        and avg_net_bps > 0.0
+        and (
+            win_rate is None
+            or win_rate >= ALT_IMPULSE_REGIME_SHADOW_MIN_WIN_RATE
+        )
+    ):
+        return "REGIME_SHADOW", [
+            "alt_impulse_regime_shadow_only",
+            "positive_regime_net_edge",
+            "live_disabled",
+        ]
+
+    reasons = ["alt_impulse_regime_shadow_only", "live_disabled"]
+    if sample_count < 10:
+        reasons.append("insufficient_total_samples")
+    if complete_sample_count < ALT_IMPULSE_REGIME_SHADOW_MIN_COMPLETE_SAMPLES:
+        reasons.append("insufficient_regime_complete_samples")
+    if avg_net_bps is None:
+        reasons.append("avg_net_bps_not_observable")
+    elif avg_net_bps <= 0.0:
+        reasons.append("regime_net_edge_not_positive")
+    if win_rate is not None and win_rate < ALT_IMPULSE_REGIME_SHADOW_MIN_WIN_RATE:
+        reasons.append("weak_regime_win_rate")
+    return "KEEP_SHADOW", reasons
 
 
 def _is_negative_after_cost_edge(avg_net_bps: float | None) -> bool:
@@ -1777,11 +1844,18 @@ def _candidate_decision(
             reasons.append("weak_24h_win_rate")
         return "KILL", reasons
 
+    if candidate_name == ALT_IMPULSE_SHADOW_CANDIDATE:
+        return _alt_impulse_regime_shadow_decision(
+            sample_count=sample_count,
+            complete_sample_count=complete_sample_count,
+            avg_net_bps=avg_24h,
+            win_rate=win_24h,
+        )
+
     if candidate_name in {
         "v5.sol_protect_exception",
         "v5.sol_protect_alpha6_low_exception",
         "v5.sol_protect_rsi_weak_exception",
-        "v5.alt_impulse_shadow",
     }:
         reasons.append("candidate_is_shadow_or_protect_exception")
         return "KEEP_SHADOW", reasons

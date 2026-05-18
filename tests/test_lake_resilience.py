@@ -5,6 +5,8 @@ import pytest
 
 from quant_lab.data.lake import (
     _lock_is_stale,
+    append_parquet_dataset,
+    compact_parquet_dataset,
     invalid_parquet_files,
     read_parquet_dataset,
     upsert_parquet_dataset,
@@ -111,3 +113,63 @@ def test_dead_pid_dataset_lock_is_stale(tmp_path):
     lock.write_text("999999999", encoding="ascii")
 
     assert _lock_is_stale(lock)
+
+
+def test_append_parquet_dataset_writes_partitioned_batches(tmp_path):
+    dataset = tmp_path / "lake" / "silver" / "trade_print"
+    result = append_parquet_dataset(
+        pl.DataFrame(
+            [
+                {"day": "2026-05-18", "symbol": "BTC-USDT", "value": 1},
+                {"day": "2026-05-18", "symbol": "ETH-USDT", "value": 2},
+            ]
+        ),
+        dataset,
+        partition_by=["day", "symbol"],
+    )
+
+    files = list(dataset.rglob("*.parquet"))
+    read_back = read_parquet_dataset(dataset)
+
+    assert result.rows_written == 2
+    assert result.file_count == 2
+    assert len(files) == 2
+    assert (dataset / "day=2026-05-18" / "symbol=BTC-USDT").exists()
+    assert read_back.height == 2
+    assert set(read_back["symbol"].to_list()) == {"BTC-USDT", "ETH-USDT"}
+
+
+def test_compact_parquet_dataset_preserves_rows_and_reduces_files(tmp_path):
+    dataset = tmp_path / "lake" / "bronze" / "okx_public_ws"
+    for index in range(5):
+        append_parquet_dataset(
+            pl.DataFrame(
+                [
+                    {
+                        "day": "2026-05-18",
+                        "channel": "trades",
+                        "inst_id": "BTC-USDT",
+                        "value": index,
+                    }
+                ]
+            ),
+            dataset,
+            partition_by=["day", "channel", "inst_id"],
+            target_rows_per_file=1,
+        )
+
+    before = len(list(dataset.rglob("*.parquet")))
+    result = compact_parquet_dataset(
+        dataset,
+        partition_by=["day", "channel", "inst_id"],
+        target_rows_per_file=10,
+    )
+    after = len(list(dataset.rglob("*.parquet")))
+    read_back = read_parquet_dataset(dataset)
+
+    assert before == 5
+    assert after == 1
+    assert result.source_file_count == 5
+    assert result.output_file_count == 1
+    assert read_back.height == 5
+    assert sorted(read_back["value"].to_list()) == list(range(5))

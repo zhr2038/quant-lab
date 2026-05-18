@@ -14,6 +14,19 @@ Daily and recurring jobs must keep this order:
 5. `qlab publish-risk-permission`
 6. `qlab export-daily`
 
+Heavy lake maintenance runs outside the expert export path:
+
+- `qlab compact-lake-dataset` for `okx_public_ws`, `trade_print`, and
+  `orderbook_snapshot` runs every 6 hours.
+- `qlab lake-health` records file count, small-file ratio, and partition
+  coverage in `gold/lake_file_health_daily`.
+- `qlab ops-summary` reads API request metrics, job durations, and lake file
+  health without triggering research recomputation.
+
+The daily export service should package the latest already-computed outputs. It
+must not be used as the normal way to run V5 sync, cost calibration, feature
+publication, or alpha evidence generation.
+
 Additional V5 telemetry analysis and candidate research jobs should run before
 `publish-risk-permission` when they are enabled:
 

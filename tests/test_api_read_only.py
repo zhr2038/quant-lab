@@ -42,6 +42,9 @@ def test_read_only_example_endpoints_and_catalog():
         "alpha_evidence",
         "gate_decision",
         "risk_permission",
+        "api_request_metrics",
+        "job_run_history",
+        "lake_file_health_daily",
         "v5_quant_lab_mode_daily",
         "v5_quant_lab_enforcement_daily",
     ]
@@ -94,3 +97,18 @@ def test_docs_can_be_disabled(monkeypatch):
     assert client.get("/docs").status_code == 404
     assert client.get("/redoc").status_code == 404
     assert client.get("/openapi.json").status_code == 404
+
+
+def test_api_metrics_records_request_counts(monkeypatch, tmp_path):
+    monkeypatch.setenv("QUANT_LAB_LAKE_ROOT", str(tmp_path / "lake"))
+    monkeypatch.delenv("QUANT_LAB_API_TOKEN", raising=False)
+    client = TestClient(create_app())
+
+    assert client.get("/v1/health").status_code == 200
+    response = client.get("/v1/ops/api-metrics")
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["request_count"] >= 1
+    assert payload["by_path"]["/v1/health"] == 1
+    assert payload["latency_ms"]["max"] is not None

@@ -203,7 +203,8 @@ def test_ws_stream_appends_large_datasets_without_rewriting_market_bars(tmp_path
     assert second["market_bar_rows"] == 0
     assert read_parquet_dataset(lake_root / "silver" / "market_bar").height == 1
     assert read_parquet_dataset(lake_root / "silver" / "trade_print").height == 2
-    assert len(list((lake_root / "silver" / "trade_print").glob("*.parquet"))) == 2
+    assert len(list((lake_root / "silver" / "trade_print").rglob("*.parquet"))) == 2
+    assert list((lake_root / "silver" / "trade_print").glob("day=*"))
 
 
 def test_read_messages_reconnects_without_long_sleep():

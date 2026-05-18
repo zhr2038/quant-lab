@@ -6,6 +6,7 @@ This API is read-only and must not mutate strategy state or exchange state.
 import hmac
 import json
 import os
+import time
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any
@@ -28,6 +29,7 @@ from quant_lab.costs.health import read_cost_health_daily
 from quant_lab.costs.model import CostBucket, estimate_cost_bps, estimate_cost_from_lake
 from quant_lab.data.lake import read_market_bars, read_parquet_dataset
 from quant_lab.gates.defaults import evaluate_alpha_gate
+from quant_lab.ops.metrics import api_metrics_summary, record_api_request
 from quant_lab.research.bootstrap_gold import BOOTSTRAP_GATE_VERSION
 from quant_lab.risk.permissions import evaluate_live_permission
 from quant_lab.risk.publish import (
@@ -98,6 +100,15 @@ class LivePermissionDetailResponse(BaseModel):
     api_consistency: dict[str, Any] = Field(default_factory=dict)
 
 
+class ApiMetricsResponse(BaseModel):
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    request_count: int
+    by_path: dict[str, int]
+    by_status_code: dict[str, int]
+    latency_ms: dict[str, float | None]
+
+
 KNOWN_DATASETS = [
     "market_bar",
     "feature_value",
@@ -108,6 +119,9 @@ KNOWN_DATASETS = [
     "alpha_evidence",
     "gate_decision",
     "risk_permission",
+    "api_request_metrics",
+    "job_run_history",
+    "lake_file_health_daily",
     "v5_quant_lab_mode_daily",
     "v5_quant_lab_enforcement_daily",
 ]
@@ -132,16 +146,26 @@ def create_app() -> FastAPI:
     )
 
     @app.middleware("http")
-    async def require_bearer_token(request: Request, call_next: Any) -> Any:
+    async def require_bearer_token_and_record_metrics(request: Request, call_next: Any) -> Any:
+        started = time.perf_counter()
+        status_code = 500
         try:
             _authorize_v1_request(request)
         except HTTPException as exc:
-            return JSONResponse(
+            status_code = exc.status_code
+            response = JSONResponse(
                 status_code=exc.status_code,
                 content={"detail": exc.detail},
                 headers=exc.headers,
             )
-        return await call_next(request)
+            _record_api_request_metric(request, status_code, time.perf_counter() - started)
+            return response
+        try:
+            response = await call_next(request)
+            status_code = response.status_code
+            return response
+        finally:
+            _record_api_request_metric(request, status_code, time.perf_counter() - started)
 
     @app.get("/v1/health", response_model=HealthResponse)
     def health() -> HealthResponse:
@@ -150,6 +174,10 @@ def create_app() -> FastAPI:
     @app.get("/v1/catalog/datasets", response_model=CatalogDatasetsResponse)
     def catalog_datasets() -> CatalogDatasetsResponse:
         return CatalogDatasetsResponse(datasets=KNOWN_DATASETS)
+
+    @app.get("/v1/ops/api-metrics", response_model=ApiMetricsResponse)
+    def ops_api_metrics(day: str | None = None) -> ApiMetricsResponse:
+        return ApiMetricsResponse(**api_metrics_summary(_lake_root(), day=day))
 
     @app.get("/v1/gates/example", response_model=GateDecision)
     def gate_example() -> GateDecision:
@@ -477,6 +505,25 @@ def _client_ip_allowed(request: Request) -> bool:
     allowed_hosts = {item.strip() for item in allowed.split(",") if item.strip()}
     host = request.client.host if request.client else ""
     return host in allowed_hosts
+
+
+def _record_api_request_metric(request: Request, status_code: int, duration_seconds: float) -> None:
+    if not request.url.path.startswith("/v1/"):
+        return
+    if not _bool_env("QUANT_LAB_API_METRICS_ENABLED", default=True):
+        return
+    try:
+        record_api_request(
+            lake_root=_lake_root(),
+            method=request.method,
+            path=request.url.path,
+            status_code=status_code,
+            duration_seconds=duration_seconds,
+            client_host=request.client.host if request.client else None,
+            user_agent=request.headers.get("user-agent"),
+        )
+    except Exception:
+        return
 
 
 def _risk_permission_ttl_seconds() -> int:

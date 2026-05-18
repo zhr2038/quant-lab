@@ -1,0 +1,11 @@
+[Unit]
+Description=Run quant-lab lake compaction every 6 hours
+
+[Timer]
+OnActiveSec=45min
+OnUnitActiveSec=6h
+RandomizedDelaySec=15min
+Persistent=false
+
+[Install]
+WantedBy=timers.target

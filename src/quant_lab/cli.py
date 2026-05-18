@@ -11,6 +11,7 @@ import typer
 from quant_lab.contracts.models import AlphaEvidence, AlphaResearchSpec
 from quant_lab.costs.calibrate import calibrate_costs_for_day
 from quant_lab.costs.health import read_cost_health_daily
+from quant_lab.data.lake import compact_parquet_dataset
 from quant_lab.e2e import run_v5_contract_e2e
 from quant_lab.export.daily import export_daily_pack, validate_expert_pack
 from quant_lab.features.publish import feature_health
@@ -31,6 +32,8 @@ from quant_lab.ingest.okx_readonly_private import (
 )
 from quant_lab.ingest.okx_ws_public import collect_okx_public_ws, collect_okx_public_ws_universe
 from quant_lab.ingest.v5_reports import inspect_v5_reports, publish_v5_reports_to_lake
+from quant_lab.ops.lake_health import write_lake_file_health_daily
+from quant_lab.ops.metrics import api_metrics_summary, job_run_summary, run_with_job_metrics
 from quant_lab.reports.enforce_readiness import write_enforce_readiness_report
 from quant_lab.research.alpha_discovery import build_and_publish_alpha_discovery_board
 from quant_lab.research.bootstrap_gold import bootstrap_gold_health
@@ -401,10 +404,14 @@ def calibrate_costs(
     day: Annotated[str, typer.Option("--day", help="UTC day in YYYY-MM-DD format.")],
     min_sample_count: Annotated[int, typer.Option("--min-sample-count", min=1)] = 30,
 ) -> None:
-    result = calibrate_costs_for_day(
+    result = run_with_job_metrics(
         lake_root=lake_root,
-        day=day,
-        min_sample_count=min_sample_count,
+        job_name="calibrate-costs",
+        func=lambda: calibrate_costs_for_day(
+            lake_root=lake_root,
+            day=day,
+            min_sample_count=min_sample_count,
+        ),
     )
     typer.echo(result.model_dump_json(indent=2))
 
@@ -423,6 +430,78 @@ def cost_health_command(
     day: Annotated[str | None, typer.Option("--day")] = None,
 ) -> None:
     typer.echo(json.dumps(read_cost_health_daily(lake_root, day=day), indent=2, sort_keys=True))
+
+
+@app.command("lake-health")
+def lake_health_command(
+    lake_root: Annotated[
+        Path,
+        typer.Option(
+            "--lake-root",
+            file_okay=False,
+            dir_okay=True,
+            help="quant-lab lake root to inspect.",
+        ),
+    ],
+) -> None:
+    result = write_lake_file_health_daily(lake_root)
+    typer.echo(json.dumps(result, indent=2, sort_keys=True, default=str))
+
+
+@app.command("compact-lake-dataset")
+def compact_lake_dataset_command(
+    lake_root: Annotated[
+        Path,
+        typer.Option(
+            "--lake-root",
+            file_okay=False,
+            dir_okay=True,
+            writable=True,
+            help="quant-lab lake root containing the dataset.",
+        ),
+    ],
+    dataset: Annotated[
+        str,
+        typer.Option(
+            "--dataset",
+            help=(
+                "Dataset name: okx_public_ws, trade_print, orderbook_snapshot, "
+                "or a relative path."
+            ),
+        ),
+    ],
+    target_rows_per_file: Annotated[
+        int,
+        typer.Option("--target-rows-per-file", min=1),
+    ] = 250_000,
+) -> None:
+    dataset_path, partition_by = _compact_dataset_target(lake_root, dataset)
+    result = run_with_job_metrics(
+        lake_root=lake_root,
+        job_name=f"compact-lake-dataset:{dataset}",
+        func=lambda: compact_parquet_dataset(
+            dataset_path,
+            partition_by=partition_by,
+            target_rows_per_file=target_rows_per_file,
+        ),
+    )
+    typer.echo(json.dumps(result.__dict__, indent=2, sort_keys=True))
+
+
+@app.command("ops-summary")
+def ops_summary_command(
+    lake_root: Annotated[
+        Path,
+        typer.Option("--lake-root", file_okay=False, dir_okay=True),
+    ],
+    day: Annotated[str | None, typer.Option("--day")] = None,
+) -> None:
+    payload = {
+        "api_metrics": api_metrics_summary(lake_root, day=day),
+        "job_runs": job_run_summary(lake_root, day=day),
+        "lake_file_health": write_lake_file_health_daily(lake_root),
+    }
+    typer.echo(json.dumps(payload, indent=2, sort_keys=True, default=str))
 
 
 @app.command("bootstrap-gold-health")
@@ -481,17 +560,21 @@ def publish_features(
     parsed_symbols = (
         [symbol.strip() for symbol in symbols.split(",") if symbol.strip()] if symbols else None
     )
-    result = publish_feature_values(
+    result = run_with_job_metrics(
         lake_root=lake_root,
-        feature_set=feature_set,
-        feature_version=feature_version,
-        timeframe=timeframe,
-        symbols=parsed_symbols,
-        start=start,
-        end=end,
-        drop_null=drop_null,
-        dry_run=dry_run,
-        allow_schema_replace=allow_schema_replace,
+        job_name="publish-features",
+        func=lambda: publish_feature_values(
+            lake_root=lake_root,
+            feature_set=feature_set,
+            feature_version=feature_version,
+            timeframe=timeframe,
+            symbols=parsed_symbols,
+            start=start,
+            end=end,
+            drop_null=drop_null,
+            dry_run=dry_run,
+            allow_schema_replace=allow_schema_replace,
+        ),
     )
     typer.echo(result.model_dump_json(indent=2))
 
@@ -544,7 +627,11 @@ def build_alpha_evidence_command(
         cost_quantile=cost_quantile,
         min_samples=min_samples,
     )
-    result = build_and_publish_alpha_evidence(lake_root=lake_root, spec=spec)
+    result = run_with_job_metrics(
+        lake_root=lake_root,
+        job_name="build-alpha-evidence",
+        func=lambda: build_and_publish_alpha_evidence(lake_root=lake_root, spec=spec),
+    )
     typer.echo(result.model_dump_json(indent=2))
 
 
@@ -557,10 +644,14 @@ def build_strategy_evidence_command(
     ] = "auto",
     min_live_samples: Annotated[int, typer.Option("--min-live-samples", min=30)] = 30,
 ) -> None:
-    result = build_and_publish_strategy_evidence(
+    result = run_with_job_metrics(
         lake_root=lake_root,
-        as_of_date=as_of_date,
-        min_live_samples=min_live_samples,
+        job_name="build-strategy-evidence",
+        func=lambda: build_and_publish_strategy_evidence(
+            lake_root=lake_root,
+            as_of_date=as_of_date,
+            min_live_samples=min_live_samples,
+        ),
     )
     typer.echo(result.model_dump_json(indent=2))
 
@@ -573,7 +664,14 @@ def build_v5_candidate_labels_command(
         typer.Option("--date", help="UTC as-of day in YYYY-MM-DD format or auto."),
     ] = "auto",
 ) -> None:
-    result = build_and_publish_candidate_labels(lake_root=lake_root, as_of_date=as_of_date)
+    result = run_with_job_metrics(
+        lake_root=lake_root,
+        job_name="build-v5-candidate-labels",
+        func=lambda: build_and_publish_candidate_labels(
+            lake_root=lake_root,
+            as_of_date=as_of_date,
+        ),
+    )
     typer.echo(result.model_dump_json(indent=2))
 
 
@@ -585,9 +683,13 @@ def build_alpha_discovery_board_command(
         typer.Option("--date", help="UTC as-of day in YYYY-MM-DD format or auto."),
     ] = "auto",
 ) -> None:
-    result = build_and_publish_alpha_discovery_board(
+    result = run_with_job_metrics(
         lake_root=lake_root,
-        as_of_date=as_of_date,
+        job_name="build-alpha-discovery-board",
+        func=lambda: build_and_publish_alpha_discovery_board(
+            lake_root=lake_root,
+            as_of_date=as_of_date,
+        ),
     )
     typer.echo(result.model_dump_json(indent=2))
 
@@ -607,10 +709,14 @@ def publish_risk_permission_command(
     strategy: Annotated[str, typer.Option("--strategy")] = "v5",
     version: Annotated[str, typer.Option("--version")] = "5.0.0",
 ) -> None:
-    result = publish_risk_permission_to_lake(
+    result = run_with_job_metrics(
         lake_root=lake_root,
-        strategy=strategy,
-        version=version,
+        job_name="publish-risk-permission",
+        func=lambda: publish_risk_permission_to_lake(
+            lake_root=lake_root,
+            strategy=strategy,
+            version=version,
+        ),
     )
     typer.echo(result.model_dump_json(indent=2))
 
@@ -634,11 +740,15 @@ def enforce_readiness_command(
         typer.Option("--out-dir", file_okay=False, dir_okay=True),
     ] = None,
 ) -> None:
-    result = write_enforce_readiness_report(
+    result = run_with_job_metrics(
         lake_root=lake_root,
-        out_dir=out_dir,
-        strategy=strategy,
-        version=version,
+        job_name="enforce-readiness",
+        func=lambda: write_enforce_readiness_report(
+            lake_root=lake_root,
+            out_dir=out_dir,
+            strategy=strategy,
+            version=version,
+        ),
     )
     typer.echo(result.model_dump_json(indent=2))
 
@@ -708,17 +818,21 @@ def export_daily(
         typer.Option("--v5-telemetry-config", help="Optional V5 telemetry YAML config."),
     ] = None,
 ) -> None:
-    result = export_daily_pack(
-        export_date=export_date,
+    result = run_with_job_metrics(
         lake_root=lake_root,
-        out_dir=out_dir,
-        profile=profile,
-        command_line=sys.argv,
-        refresh_risk_permission=refresh_risk_permission,
-        risk_strategy=risk_strategy,
-        risk_version=risk_version,
-        pre_export_v5_refresh=pre_export_v5_refresh,
-        v5_telemetry_config=v5_telemetry_config,
+        job_name="export-daily",
+        func=lambda: export_daily_pack(
+            export_date=export_date,
+            lake_root=lake_root,
+            out_dir=out_dir,
+            profile=profile,
+            command_line=sys.argv,
+            refresh_risk_permission=refresh_risk_permission,
+            risk_strategy=risk_strategy,
+            risk_version=risk_version,
+            pre_export_v5_refresh=pre_export_v5_refresh,
+            v5_telemetry_config=v5_telemetry_config,
+        ),
     )
     typer.echo(result.model_dump_json(indent=2))
 
@@ -832,7 +946,11 @@ def analyze_v5_telemetry_command(
     lake_root: Annotated[Path, typer.Option("--lake-root")],
     date: Annotated[str | None, typer.Option("--date")] = None,
 ) -> None:
-    result = analyze_v5_telemetry(lake_root=lake_root, date=date)
+    result = run_with_job_metrics(
+        lake_root=lake_root,
+        job_name="analyze-v5-telemetry",
+        func=lambda: analyze_v5_telemetry(lake_root=lake_root, date=date),
+    )
     typer.echo(result.model_dump_json(indent=2))
 
 
@@ -854,33 +972,41 @@ def sync_v5_telemetry_command(
     effective_max_bundles = max_bundles
     if effective_max_bundles is None:
         effective_max_bundles = int(os.environ.get("QUANT_LAB_V5_SYNC_MAX_BUNDLES", "1"))
-    pull = RemoteBundlePuller().pull_bundles(cfg)
-    inbox = None
-    analysis = None
-    if not cfg.dry_run:
-        inbox = ingest_v5_inbox_dir(
-            inbox_dir=cfg.local_inbox_dir,
-            lake_root=cfg.lake_root,
-            restricted_archive_dir=cfg.restricted_archive_dir,
-            redacted_archive_dir=cfg.redacted_archive_dir,
-            strategy=cfg.strategy,
-            limits=cfg.bundle_limits,
-            max_bundles=effective_max_bundles,
-            newest_first=newest_first,
-            max_skipped_files_reported=max_skipped_files_reported,
-            run_analysis=False,
-            refresh_candidate_gold=False,
-        )
-        analysis = analyze_v5_telemetry(lake_root=cfg.lake_root)
+    def _run_sync() -> dict[str, object]:
+        pull = RemoteBundlePuller().pull_bundles(cfg)
+        inbox = None
+        analysis = None
+        if not cfg.dry_run:
+            inbox = ingest_v5_inbox_dir(
+                inbox_dir=cfg.local_inbox_dir,
+                lake_root=cfg.lake_root,
+                restricted_archive_dir=cfg.restricted_archive_dir,
+                redacted_archive_dir=cfg.redacted_archive_dir,
+                strategy=cfg.strategy,
+                limits=cfg.bundle_limits,
+                max_bundles=effective_max_bundles,
+                newest_first=newest_first,
+                max_skipped_files_reported=max_skipped_files_reported,
+                run_analysis=False,
+                refresh_candidate_gold=False,
+            )
+            analysis = analyze_v5_telemetry(lake_root=cfg.lake_root)
+        return {
+            "pull": pull.model_dump(mode="json"),
+            "inbox": inbox.model_dump(mode="json") if inbox else None,
+            "analysis": analysis.model_dump(mode="json") if analysis else None,
+            "max_bundles": effective_max_bundles,
+            "newest_first": newest_first,
+        }
+
+    payload = run_with_job_metrics(
+        lake_root=cfg.lake_root,
+        job_name="sync-v5-telemetry",
+        func=_run_sync,
+    )
     typer.echo(
         json.dumps(
-            {
-                "pull": pull.model_dump(mode="json"),
-                "inbox": inbox.model_dump(mode="json") if inbox else None,
-                "analysis": analysis.model_dump(mode="json") if analysis else None,
-                "max_bundles": effective_max_bundles,
-                "newest_first": newest_first,
-            },
+            payload,
             indent=2,
             sort_keys=True,
         )
@@ -889,6 +1015,33 @@ def sync_v5_telemetry_command(
 
 def main() -> None:
     app()
+
+
+def _compact_dataset_target(lake_root: Path, dataset: str) -> tuple[Path, list[str]]:
+    normalized = dataset.strip().replace("\\", "/")
+    targets = {
+        "okx_public_ws": (
+            lake_root / "bronze" / "okx_public_ws",
+            ["day", "channel", "inst_id"],
+        ),
+        "bronze/okx_public_ws": (
+            lake_root / "bronze" / "okx_public_ws",
+            ["day", "channel", "inst_id"],
+        ),
+        "trade_print": (lake_root / "silver" / "trade_print", ["day", "symbol"]),
+        "silver/trade_print": (lake_root / "silver" / "trade_print", ["day", "symbol"]),
+        "orderbook_snapshot": (
+            lake_root / "silver" / "orderbook_snapshot",
+            ["day", "symbol", "channel"],
+        ),
+        "silver/orderbook_snapshot": (
+            lake_root / "silver" / "orderbook_snapshot",
+            ["day", "symbol", "channel"],
+        ),
+    }
+    if normalized in targets:
+        return targets[normalized]
+    return lake_root / normalized, []
 
 
 if __name__ == "__main__":

@@ -1,11 +1,15 @@
 import logging
 import os
+import subprocess
+import threading
 import time
 import uuid
 from collections.abc import Sequence
 from contextlib import contextmanager
-from datetime import datetime
+from dataclasses import dataclass
+from datetime import UTC, datetime
 from pathlib import Path
+from typing import Any
 
 import duckdb
 import polars as pl
@@ -19,6 +23,8 @@ MARKET_BAR_PRIMARY_KEY = ["venue", "symbol", "timeframe", "ts"]
 PARQUET_MAGIC = b"PAR1"
 MIN_PARQUET_SIZE_BYTES = 12
 logger = logging.getLogger(__name__)
+_PROCESS_LOCKS_GUARD = threading.Lock()
+_PROCESS_LOCKS: dict[str, threading.Lock] = {}
 MARKET_BAR_SCHEMA = {
     "venue": pl.Utf8,
     "symbol": pl.Utf8,
@@ -42,6 +48,24 @@ class LakeConfig(BaseModel):
 
     lake_root: Path
     created_by: str = Field(default="quant-lab", min_length=1)
+
+
+@dataclass(frozen=True)
+class AppendParquetResult:
+    dataset_path: str
+    rows_written: int
+    file_count: int
+    partition_by: list[str]
+
+
+@dataclass(frozen=True)
+class CompactParquetResult:
+    dataset_path: str
+    source_file_count: int
+    output_file_count: int
+    rows: int
+    partition_by: list[str]
+    target_rows_per_file: int
 
 
 def write_parquet_dataset(
@@ -85,11 +109,137 @@ def _write_parquet_dataset_unlocked(
     return path
 
 
+def append_parquet_dataset(
+    df: pl.DataFrame,
+    dataset_path: str | Path,
+    *,
+    partition_by: str | Sequence[str] | None = None,
+    target_rows_per_file: int | None = None,
+    file_prefix: str = "part",
+) -> AppendParquetResult:
+    """Append a batch without reading or rewriting existing dataset files.
+
+    This is intended for high-frequency append-only datasets such as WebSocket
+    trade prints and order book snapshots. Low-frequency gold/silver tables that
+    need logical upsert semantics should keep using ``upsert_parquet_dataset``.
+    """
+
+    path = Path(dataset_path)
+    if df.is_empty():
+        return AppendParquetResult(str(path), 0, 0, _partition_columns(partition_by))
+    with _dataset_lock(path):
+        return _append_parquet_dataset_unlocked(
+            df,
+            path,
+            partition_by=partition_by,
+            target_rows_per_file=target_rows_per_file,
+            file_prefix=file_prefix,
+        )
+
+
+def _append_parquet_dataset_unlocked(
+    df: pl.DataFrame,
+    dataset_path: Path,
+    *,
+    partition_by: str | Sequence[str] | None = None,
+    target_rows_per_file: int | None = None,
+    file_prefix: str = "part",
+) -> AppendParquetResult:
+    path = Path(dataset_path)
+    path.mkdir(parents=True, exist_ok=True)
+    frame = _sort_dataframe(df)
+    partition_columns = _partition_columns(partition_by)
+    chunks = _partitioned_chunks(frame, partition_columns)
+    rows_written = 0
+    file_count = 0
+    max_rows = max(int(target_rows_per_file or frame.height), 1)
+    for partition_values, partition_frame in chunks:
+        partition_dir = _partition_dir(path, partition_values)
+        partition_dir.mkdir(parents=True, exist_ok=True)
+        for offset in range(0, partition_frame.height, max_rows):
+            chunk = partition_frame.slice(offset, max_rows)
+            if chunk.is_empty():
+                continue
+            final_file = partition_dir / _append_file_name(file_prefix)
+            try:
+                chunk.write_parquet(final_file)
+            except Exception:
+                try:
+                    final_file.unlink()
+                except FileNotFoundError:
+                    pass
+                raise
+            rows_written += chunk.height
+            file_count += 1
+    return AppendParquetResult(str(path), rows_written, file_count, partition_columns)
+
+
+def compact_parquet_dataset(
+    dataset_path: str | Path,
+    *,
+    partition_by: str | Sequence[str] | None = None,
+    target_rows_per_file: int = 250_000,
+) -> CompactParquetResult:
+    """Rewrite a dataset into fewer deterministic partitioned parquet files."""
+
+    path = Path(dataset_path)
+    partition_columns = _partition_columns(partition_by)
+    with _dataset_lock(path, timeout_seconds=120.0):
+        files = _parquet_files(path)
+        source_file_count = len(files)
+        if not files:
+            return CompactParquetResult(
+                dataset_path=str(path),
+                source_file_count=0,
+                output_file_count=0,
+                rows=0,
+                partition_by=partition_columns,
+                target_rows_per_file=target_rows_per_file,
+            )
+        frame = _read_parquet_files(files)
+        if frame.is_empty():
+            _remove_existing_dataset(path)
+            path.mkdir(parents=True, exist_ok=True)
+            return CompactParquetResult(
+                dataset_path=str(path),
+                source_file_count=source_file_count,
+                output_file_count=0,
+                rows=0,
+                partition_by=partition_columns,
+                target_rows_per_file=target_rows_per_file,
+            )
+        staging = path.parent / f"__{path.name}_compact_{uuid.uuid4().hex}"
+        try:
+            result = _append_parquet_dataset_unlocked(
+                frame,
+                staging,
+                partition_by=partition_columns,
+                target_rows_per_file=target_rows_per_file,
+                file_prefix="compact",
+            )
+            backup = path.parent / f"__{path.name}_backup_{uuid.uuid4().hex}"
+            if path.exists():
+                os.replace(path, backup)
+            os.replace(staging, path)
+            _remove_existing_dataset(backup)
+            return CompactParquetResult(
+                dataset_path=str(path),
+                source_file_count=source_file_count,
+                output_file_count=result.file_count,
+                rows=result.rows_written,
+                partition_by=partition_columns,
+                target_rows_per_file=target_rows_per_file,
+            )
+        except Exception:
+            _remove_existing_dataset(staging)
+            raise
+
+
 def read_parquet_dataset(dataset_path: str | Path) -> pl.DataFrame:
     files = _parquet_files(dataset_path)
     if not files:
         return pl.DataFrame()
-    return pl.read_parquet([str(path) for path in files])
+    return _read_parquet_files(files)
 
 
 def invalid_parquet_files(dataset_path: str | Path) -> list[Path]:
@@ -189,7 +339,7 @@ def read_market_bars(
 def read_parquet_lazy(path: str | Path) -> pl.LazyFrame:
     files = _parquet_files(path)
     if files:
-        return pl.scan_parquet([str(file_path) for file_path in files])
+        return _scan_parquet_files(files)
     return pl.scan_parquet(str(path))
 
 
@@ -230,6 +380,26 @@ def _all_parquet_files(dataset_path: str | Path) -> list[Path]:
     if not path.exists():
         return []
     return sorted(path.rglob("*.parquet"))
+
+
+def _read_parquet_files(files: Sequence[Path]) -> pl.DataFrame:
+    try:
+        return pl.read_parquet(
+            [str(path) for path in files],
+            hive_partitioning=False,
+        )
+    except TypeError:
+        return pl.read_parquet([str(path) for path in files])
+
+
+def _scan_parquet_files(files: Sequence[Path]) -> pl.LazyFrame:
+    try:
+        return pl.scan_parquet(
+            [str(path) for path in files],
+            hive_partitioning=False,
+        )
+    except TypeError:
+        return pl.scan_parquet([str(path) for path in files])
 
 
 def _is_valid_parquet_file(path: Path) -> bool:
@@ -275,6 +445,56 @@ def _sort_dataframe(df: pl.DataFrame) -> pl.DataFrame:
         return df
 
 
+def _partition_columns(partition_by: str | Sequence[str] | None) -> list[str]:
+    if partition_by is None:
+        return []
+    if isinstance(partition_by, str):
+        return [partition_by]
+    return [str(column) for column in partition_by]
+
+
+def _partitioned_chunks(
+    df: pl.DataFrame,
+    partition_columns: list[str],
+) -> list[tuple[dict[str, Any], pl.DataFrame]]:
+    available = [column for column in partition_columns if column in df.columns]
+    if not available:
+        return [({}, df)]
+    chunks: list[tuple[dict[str, Any], pl.DataFrame]] = []
+    for key, group in df.group_by(available, maintain_order=True):
+        values = key if isinstance(key, tuple) else (key,)
+        chunks.append((dict(zip(available, values, strict=False)), group))
+    return chunks
+
+
+def _partition_dir(dataset_path: Path, partition_values: dict[str, Any]) -> Path:
+    path = dataset_path
+    for column, value in partition_values.items():
+        safe_value = _safe_partition_value(value)
+        path = path / f"{column}={safe_value}"
+    return path
+
+
+def _safe_partition_value(value: Any) -> str:
+    if value is None:
+        return "__null__"
+    text = str(value).strip()
+    if not text:
+        return "__empty__"
+    safe_chars = []
+    for char in text:
+        if char.isalnum() or char in {"-", "_", ".", ":", "T", "Z"}:
+            safe_chars.append(char)
+        else:
+            safe_chars.append("_")
+    return "".join(safe_chars)
+
+
+def _append_file_name(prefix: str) -> str:
+    timestamp = datetime.now(UTC).strftime("%Y%m%dT%H%M%S%fZ")
+    return f"{prefix}_{timestamp}_{os.getpid()}_{time.monotonic_ns()}.parquet"
+
+
 def _normalize_market_bar_frame(df: pl.DataFrame) -> pl.DataFrame:
     normalized = df
     if "quote_volume" not in normalized.columns:
@@ -311,7 +531,10 @@ def _remove_existing_dataset(path: Path) -> None:
         return
     if path.is_dir():
         for parquet_file in path.rglob("*.parquet"):
-            parquet_file.unlink()
+            try:
+                parquet_file.unlink()
+            except FileNotFoundError:
+                pass
         for child in sorted(path.rglob("*"), key=lambda item: len(item.parts), reverse=True):
             if child.is_dir() and not any(child.iterdir()):
                 child.rmdir()
@@ -331,33 +554,38 @@ def _remove_stale_parquet_files(path: Path, keep: Path) -> None:
 def _dataset_lock(dataset_path: Path, *, timeout_seconds: float = 30.0) -> object:
     dataset_path.parent.mkdir(parents=True, exist_ok=True)
     lock_path = dataset_path.parent / f".{dataset_path.name}.lock"
+    process_lock = _process_lock(lock_path)
+    process_lock.acquire()
     start = time.monotonic()
     fd: int | None = None
-    while fd is None:
-        try:
-            fd = os.open(lock_path, os.O_CREAT | os.O_EXCL | os.O_WRONLY)
-            os.write(fd, str(os.getpid()).encode("ascii"))
-        except FileExistsError:
-            if _lock_is_stale(lock_path):
-                try:
-                    lock_path.unlink()
-                except FileNotFoundError:
-                    pass
-                continue
-            if time.monotonic() - start > timeout_seconds:
-                raise TimeoutError(
-                    f"timed out waiting for dataset lock: {dataset_path}"
-                ) from None
-            time.sleep(0.05)
     try:
-        yield
-    finally:
-        if fd is not None:
-            os.close(fd)
+        while fd is None:
+            try:
+                fd = os.open(lock_path, os.O_CREAT | os.O_EXCL | os.O_WRONLY)
+                os.write(fd, str(os.getpid()).encode("ascii"))
+            except FileExistsError:
+                if _lock_is_stale(lock_path):
+                    try:
+                        lock_path.unlink()
+                    except FileNotFoundError:
+                        pass
+                    continue
+                if time.monotonic() - start > timeout_seconds:
+                    raise TimeoutError(
+                        f"timed out waiting for dataset lock: {dataset_path}"
+                    ) from None
+                time.sleep(0.05)
         try:
-            lock_path.unlink()
-        except FileNotFoundError:
-            pass
+            yield
+        finally:
+            if fd is not None:
+                os.close(fd)
+            try:
+                lock_path.unlink()
+            except FileNotFoundError:
+                pass
+    finally:
+        process_lock.release()
 
 
 def _lock_is_stale(lock_path: Path, *, stale_seconds: float = 600.0) -> bool:
@@ -378,6 +606,10 @@ def _lock_is_stale(lock_path: Path, *, stale_seconds: float = 600.0) -> bool:
         return age_seconds > 5.0
     if pid <= 0:
         return age_seconds > 5.0
+    if os.name == "nt":
+        if pid == os.getpid():
+            return age_seconds > stale_seconds
+        return (not _windows_pid_exists(pid)) or age_seconds > stale_seconds
     try:
         os.kill(pid, 0)
     except ProcessLookupError:
@@ -387,3 +619,27 @@ def _lock_is_stale(lock_path: Path, *, stale_seconds: float = 600.0) -> bool:
     except OSError:
         return True
     return age_seconds > stale_seconds
+
+
+def _process_lock(lock_path: Path) -> threading.Lock:
+    key = str(lock_path.resolve())
+    with _PROCESS_LOCKS_GUARD:
+        lock = _PROCESS_LOCKS.get(key)
+        if lock is None:
+            lock = threading.Lock()
+            _PROCESS_LOCKS[key] = lock
+        return lock
+
+
+def _windows_pid_exists(pid: int) -> bool:
+    try:
+        result = subprocess.run(
+            ["tasklist", "/FI", f"PID eq {pid}"],
+            check=False,
+            capture_output=True,
+            text=True,
+            timeout=2,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return True
+    return str(pid) in result.stdout

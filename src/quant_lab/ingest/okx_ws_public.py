@@ -2,7 +2,6 @@ import asyncio
 import inspect
 import json
 import os
-import time
 from collections.abc import AsyncIterator, Awaitable, Callable, Mapping, Sequence
 from datetime import UTC, datetime
 from pathlib import Path
@@ -12,7 +11,7 @@ import polars as pl
 from pydantic import BaseModel, ConfigDict, Field
 
 from quant_lab.contracts.models import MarketBar
-from quant_lab.data.lake import read_parquet_dataset, write_parquet_dataset
+from quant_lab.data.lake import append_parquet_dataset, read_parquet_dataset, write_parquet_dataset
 from quant_lab.ingest.okx_public import (
     MARKET_BAR_DATASET,
     normalize_okx_candles_to_market_bars,
@@ -30,6 +29,7 @@ OKX_PUBLIC_WS_COLLECTOR_NAME = "okx_public_ws"
 RAW_WS_SCHEMA = {
     "channel": pl.Utf8,
     "inst_id": pl.Utf8,
+    "day": pl.Utf8,
     "received_at": pl.Utf8,
     "raw_json": pl.Utf8,
 }
@@ -37,6 +37,7 @@ RAW_WS_SCHEMA = {
 TRADE_PRINT_SCHEMA = {
     "venue": pl.Utf8,
     "symbol": pl.Utf8,
+    "day": pl.Utf8,
     "trade_id": pl.Utf8,
     "price": pl.Float64,
     "size": pl.Float64,
@@ -50,6 +51,7 @@ TRADE_PRINT_SCHEMA = {
 ORDERBOOK_SNAPSHOT_SCHEMA = {
     "venue": pl.Utf8,
     "symbol": pl.Utf8,
+    "day": pl.Utf8,
     "channel": pl.Utf8,
     "ts": pl.Utf8,
     "asks_json": pl.Utf8,
@@ -532,6 +534,7 @@ def normalize_okx_ws_trades(messages: Sequence[Mapping[str, Any]]) -> list[dict[
                 {
                     "venue": "okx",
                     "symbol": normalize_symbol(inst_id),
+                    "day": _timestamp_ms_to_day(item.get("ts")),
                     "trade_id": _optional_string(item.get("tradeId")),
                     "price": _optional_float(item.get("px")),
                     "size": _optional_float(item.get("sz")),
@@ -560,6 +563,7 @@ def normalize_okx_ws_orderbooks(messages: Sequence[Mapping[str, Any]]) -> list[d
                 {
                     "venue": "okx",
                     "symbol": normalize_symbol(inst_id),
+                    "day": _timestamp_ms_to_day(item.get("ts")),
                     "channel": channel,
                     "ts": _timestamp_ms_to_utc_string(item.get("ts")),
                     "asks_json": _json_dumps(item.get("asks", [])),
@@ -617,6 +621,7 @@ def _raw_ws_rows(messages: Sequence[Mapping[str, Any]]) -> list[dict[str, Any]]:
         {
             "channel": _message_channel(message),
             "inst_id": _message_inst_id(message),
+            "day": received_at[:10],
             "received_at": received_at,
             "raw_json": _json_dumps(message),
         }
@@ -628,14 +633,15 @@ def _append_frame(dataset_path: Path, new_df: pl.DataFrame, key_columns: list[st
     if new_df.is_empty():
         return 0
     frame = _dedupe_frame(new_df, key_columns)
-    path = Path(dataset_path)
-    path.mkdir(parents=True, exist_ok=True)
-    batch_name = (
-        f"batch_{datetime.now(UTC).strftime('%Y%m%dT%H%M%S%fZ')}_"
-        f"{os.getpid()}_{time.monotonic_ns()}.parquet"
+    partition_by = _append_partitions_for_dataset(dataset_path)
+    result = append_parquet_dataset(
+        frame,
+        dataset_path,
+        partition_by=partition_by,
+        target_rows_per_file=_append_target_rows_for_dataset(dataset_path),
+        file_prefix="batch",
     )
-    frame.write_parquet(path / batch_name)
-    return frame.height
+    return result.rows_written
 
 
 def _upsert_frame(dataset_path: Path, new_df: pl.DataFrame, key_columns: list[str]) -> int:
@@ -656,6 +662,31 @@ def _dedupe_frame(df: pl.DataFrame, key_columns: list[str]) -> pl.DataFrame:
     if not available_keys:
         return df
     return df.unique(subset=available_keys, keep="last", maintain_order=True)
+
+
+def _append_partitions_for_dataset(dataset_path: Path) -> list[str]:
+    if _dataset_path_endswith(dataset_path, BRONZE_WS_DATASET):
+        return ["day", "channel", "inst_id"]
+    if _dataset_path_endswith(dataset_path, TRADE_PRINT_DATASET):
+        return ["day", "symbol"]
+    if _dataset_path_endswith(dataset_path, ORDERBOOK_SNAPSHOT_DATASET):
+        return ["day", "symbol", "channel"]
+    return []
+
+
+def _append_target_rows_for_dataset(dataset_path: Path) -> int:
+    raw_value = os.environ.get("QUANT_LAB_WS_APPEND_TARGET_ROWS", "50000")
+    try:
+        target = int(raw_value)
+    except ValueError:
+        target = 50_000
+    return max(target, 1)
+
+
+def _dataset_path_endswith(dataset_path: Path, relative: Path) -> bool:
+    parts = dataset_path.parts
+    suffix = relative.parts
+    return len(parts) >= len(suffix) and parts[-len(suffix) :] == suffix
 
 
 def _dataset_paths(root: Path) -> dict[str, str]:
@@ -693,6 +724,11 @@ def _timestamp_ms_to_utc_string(value: Any) -> str | None:
     if value is None:
         return None
     return datetime.fromtimestamp(int(value) / 1000, tz=UTC).isoformat().replace("+00:00", "Z")
+
+
+def _timestamp_ms_to_day(value: Any) -> str | None:
+    timestamp = _timestamp_ms_to_utc_string(value)
+    return timestamp[:10] if timestamp else None
 
 
 def _utc_now_string() -> str:

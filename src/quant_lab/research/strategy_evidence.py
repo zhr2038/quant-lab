@@ -477,27 +477,18 @@ def _read_recent_dataset(
     start = datetime.combine(day - timedelta(days=max(lookback_days, 0)), time.min, tzinfo=UTC)
     end = datetime.combine(day + timedelta(days=1), time.min, tzinfo=UTC)
     try:
-        return (
-            lazy.filter(
-                pl.col(ts_column).cast(pl.Datetime(time_zone="UTC"), strict=False).is_between(
-                    start,
-                    end,
-                    closed="left",
-                )
-            )
-            .collect()
-        )
+        ts_expr = _utc_datetime_expr(ts_column)
+        return lazy.filter(ts_expr.is_between(start, end, closed="left")).collect()
     except Exception:
         frame = read_parquet_dataset(dataset_path)
         if frame.is_empty() or ts_column not in frame.columns:
             return frame
-        return frame.filter(
-            pl.col(ts_column).cast(pl.Datetime(time_zone="UTC"), strict=False).is_between(
-                start,
-                end,
-                closed="left",
-            )
-        )
+        ts_expr = _utc_datetime_expr(ts_column)
+        return frame.filter(ts_expr.is_between(start, end, closed="left"))
+
+
+def _utc_datetime_expr(column: str) -> pl.Expr:
+    return pl.col(column).cast(pl.Utf8).str.to_datetime(time_zone="UTC", strict=False)
 
 
 def normalize_strategy_evidence_decisions(evidence: pl.DataFrame) -> pl.DataFrame:

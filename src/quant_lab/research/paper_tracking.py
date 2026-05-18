@@ -22,6 +22,7 @@ V5_PAPER_STRATEGY_DAILY_DATASET = Path("silver") / "v5_paper_strategy_daily"
 V5_PAPER_SLIPPAGE_COVERAGE_DATASET = Path("silver") / "v5_paper_slippage_coverage"
 PAPER_TRACKING_SOURCE = "research.paper_strategy_tracking.v0.1"
 V5_PAPER_TRACKING_SOURCE = "v5.paper_strategy_telemetry"
+V5_PAPER_TRACKING_STATUS = "active"
 PAPER_TRACKING_SCHEMA_VERSION = "paper_strategy_tracking.v1"
 
 PAPER_RUN_SCHEMA = {
@@ -369,7 +370,7 @@ def _daily_from_runs(runs: pl.DataFrame, *, as_of_date: date) -> pl.DataFrame:
                 "avg_paper_pnl_bps": _mean(
                     _optional_float(row.get("paper_pnl_bps")) for row in pnl_rows
                 ),
-                "paper_tracking_status": "v5_paper_telemetry_observed",
+                "paper_tracking_status": V5_PAPER_TRACKING_STATUS,
                 "tracking_stage": tracking_stage,
                 "required_paper_days": cfg.required_paper_days,
                 "required_slippage_coverage": cfg.required_slippage_coverage,
@@ -421,7 +422,7 @@ def build_paper_slippage_coverage(
                 or 0.8,
                 "coverage_status": _coverage_status(row, coverage),
                 "paper_tracking_status": str(
-                    row.get("paper_tracking_status") or "v5_paper_telemetry_observed"
+                    row.get("paper_tracking_status") or V5_PAPER_TRACKING_STATUS
                 ),
                 "tracking_stage": str(row.get("tracking_stage") or "active_paper_strategy"),
                 "created_at": created_at,
@@ -643,7 +644,7 @@ def _v5_run_row(row: dict[str, Any], created_at: str) -> dict[str, Any]:
             row,
             payload,
             "paper_tracking_status",
-            default="v5_paper_telemetry_observed",
+            default=V5_PAPER_TRACKING_STATUS,
         ),
         "tracking_stage": "completed_paper_observations"
         if would_exit
@@ -729,7 +730,7 @@ def _v5_daily_row(row: dict[str, Any], created_at: str) -> dict[str, Any]:
             row,
             payload,
             "paper_tracking_status",
-            default="v5_paper_telemetry_observed",
+            default=V5_PAPER_TRACKING_STATUS,
         ),
         "tracking_stage": "completed_paper_observations"
         if paper_days >= required_days
@@ -793,7 +794,7 @@ def _v5_slippage_row(row: dict[str, Any], created_at: str) -> dict[str, Any]:
             row,
             payload,
             "paper_tracking_status",
-            default="v5_paper_telemetry_observed",
+            default=V5_PAPER_TRACKING_STATUS,
         ),
         "tracking_stage": "completed_paper_observations"
         if coverage >= 0.8

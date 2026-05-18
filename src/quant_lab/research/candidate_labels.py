@@ -693,7 +693,7 @@ def _read_recent_dataset(
     try:
         return (
             lazy.filter(
-                pl.col(ts_column).cast(pl.Datetime(time_zone="UTC")).is_between(
+                pl.col(ts_column).cast(pl.Datetime(time_zone="UTC"), strict=False).is_between(
                     start,
                     end,
                     closed="left",
@@ -706,7 +706,7 @@ def _read_recent_dataset(
         if frame.is_empty() or ts_column not in frame.columns:
             return frame
         return frame.filter(
-            pl.col(ts_column).cast(pl.Datetime(time_zone="UTC")).is_between(
+            pl.col(ts_column).cast(pl.Datetime(time_zone="UTC"), strict=False).is_between(
                 start,
                 end,
                 closed="left",

@@ -13,6 +13,6 @@ RuntimeMaxSec=20min
 MemoryHigh=2G
 MemoryMax=3G
 CPUQuota=60%
-ExecStart=/usr/bin/flock -w 120 /var/lock/quant-lab-heavy.lock /bin/bash -lc '/opt/quant-lab/.venv/bin/qlab build-v5-candidate-labels --lake-root /var/lib/quant-lab/lake --date auto --mode incremental --lookback-days 8 && /opt/quant-lab/.venv/bin/qlab build-strategy-evidence --lake-root /var/lib/quant-lab/lake --date auto --mode incremental --lookback-days 8 --skip-historical-outcomes && /opt/quant-lab/.venv/bin/qlab build-alpha-discovery-board --lake-root /var/lib/quant-lab/lake --date auto --skip-legacy-outcome-counts'
+ExecStart=/usr/bin/flock -w 30 /var/lock/quant-lab-v5-research.lock /bin/bash -lc '/opt/quant-lab/.venv/bin/qlab build-v5-candidate-labels --lake-root /var/lib/quant-lab/lake --date auto --mode incremental --lookback-days 8 && /opt/quant-lab/.venv/bin/qlab build-strategy-evidence --lake-root /var/lib/quant-lab/lake --date auto --mode incremental --lookback-days 8 --skip-historical-outcomes && /opt/quant-lab/.venv/bin/qlab build-alpha-discovery-board --lake-root /var/lib/quant-lab/lake --date auto --skip-legacy-outcome-counts'
 NoNewPrivileges=true
 PrivateTmp=true

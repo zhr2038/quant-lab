@@ -3,7 +3,7 @@ from pathlib import Path
 
 import polars as pl
 
-from quant_lab.costs.calibrate import calibrate_costs_for_day
+from quant_lab.costs.calibrate import _read_day_dataset, calibrate_costs_for_day
 from quant_lab.costs.model import cost_bucket_daily_to_cost_buckets, estimate_cost_bps
 from quant_lab.data.lake import read_parquet_dataset, write_parquet_dataset
 from quant_lab.ingest.okx_readonly_private import (
@@ -129,6 +129,47 @@ def test_cost_calibration_writes_api_usage_counts_to_cost_health(tmp_path):
     assert health["api_symbol_proxy_hit_count"] == 2
     assert health["api_regime_fallback_count"] == 1
     assert health["api_degraded_cost_count"] == 2
+
+
+def test_read_day_dataset_uses_day_named_files_for_hot_append_dataset(tmp_path):
+    lake_root = tmp_path / "lake"
+    dataset = lake_root / "silver" / "orderbook_snapshot"
+    dataset.mkdir(parents=True)
+    _orderbook_frame("BTC-USDT", "2026-05-10").write_parquet(
+        dataset / "batch_20260510T010000Z.parquet"
+    )
+    _orderbook_frame("ETH-USDT", "2026-05-11").write_parquet(
+        dataset / "batch_20260511T010000Z.parquet"
+    )
+
+    frame = _read_day_dataset(
+        lake_root,
+        Path("silver") / "orderbook_snapshot",
+        "2026-05-10",
+        max_files=10,
+    )
+
+    assert frame.height == 1
+    assert frame["symbol"].to_list() == ["BTC-USDT"]
+
+
+def test_read_day_dataset_does_not_full_scan_hot_dataset_without_day_files(tmp_path):
+    lake_root = tmp_path / "lake"
+    dataset = lake_root / "silver" / "orderbook_snapshot"
+    dataset.mkdir(parents=True)
+    for index in range(3):
+        _orderbook_frame("BTC-USDT", "2026-05-10").write_parquet(
+            dataset / f"data_{index}.parquet"
+        )
+
+    frame = _read_day_dataset(
+        lake_root,
+        Path("silver") / "orderbook_snapshot",
+        "2026-05-10",
+        max_files=2,
+    )
+
+    assert frame.is_empty()
 
 
 def test_v5_trade_events_generate_actual_fill_bucket_before_spread_proxy(tmp_path):
@@ -428,23 +469,27 @@ def _write_orderbooks(lake_root: Path, symbol: str = "BTC-USDT") -> None:
 
 def _write_orderbooks_for_day(lake_root: Path, symbol: str, day: str) -> None:
     write_parquet_dataset(
-        pl.DataFrame(
-            [
-                {
-                    "venue": "okx",
-                    "symbol": symbol,
-                    "channel": "books5",
-                    "ts": f"{day}T00:00:00Z",
-                    "asks_json": json.dumps([["101", "1"]]),
-                    "bids_json": json.dumps([["99", "1"]]),
-                    "checksum": 42,
-                    "source": "okx_public_ws",
-                    "ingest_ts": f"{day}T00:00:00Z",
-                    "raw_json": "{}",
-                }
-            ]
-        ),
+        _orderbook_frame(symbol, day),
         lake_root / "silver" / "orderbook_snapshot",
+    )
+
+
+def _orderbook_frame(symbol: str, day: str) -> pl.DataFrame:
+    return pl.DataFrame(
+        [
+            {
+                "venue": "okx",
+                "symbol": symbol,
+                "channel": "books5",
+                "ts": f"{day}T00:00:00Z",
+                "asks_json": json.dumps([["101", "1"]]),
+                "bids_json": json.dumps([["99", "1"]]),
+                "checksum": 42,
+                "source": "okx_public_ws",
+                "ingest_ts": f"{day}T00:00:00Z",
+                "raw_json": "{}",
+            }
+        ]
     )
 
 

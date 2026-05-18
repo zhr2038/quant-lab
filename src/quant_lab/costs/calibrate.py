@@ -1,4 +1,5 @@
 import json
+import os
 from collections.abc import Sequence
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
@@ -34,6 +35,7 @@ COST_BUCKET_DAILY_DATASET = Path("gold") / "cost_bucket_daily"
 COST_HEALTH_DAILY_DATASET = Path("gold") / "cost_health_daily"
 DEFAULT_MIN_SAMPLE_COUNT = 30
 PRIVATE_COST_LOOKBACK_DAYS = 7
+PUBLIC_DAY_FILE_LIMIT = int(os.getenv("QUANT_LAB_COST_MAX_PUBLIC_DAY_FILES", "5000"))
 
 COST_BUCKET_DAILY_SCHEMA = {
     "day": pl.Utf8,
@@ -98,8 +100,18 @@ def calibrate_costs_for_day(
             day=day,
             lookback_days=PRIVATE_COST_LOOKBACK_DAYS,
         ),
-        orderbook_snapshots=_read_day_dataset(root, ORDERBOOK_SNAPSHOT_DATASET, day),
-        trade_prints=_read_day_dataset(root, TRADE_PRINT_DATASET, day),
+        orderbook_snapshots=_read_day_dataset(
+            root,
+            ORDERBOOK_SNAPSHOT_DATASET,
+            day,
+            max_files=PUBLIC_DAY_FILE_LIMIT,
+        ),
+        trade_prints=_read_day_dataset(
+            root,
+            TRADE_PRINT_DATASET,
+            day,
+            max_files=PUBLIC_DAY_FILE_LIMIT,
+        ),
         v5_trade_events=v5_trade_events,
         v5_order_lifecycle=v5_order_lifecycle,
         market_bars=market_bars,
@@ -683,19 +695,64 @@ def _read_day_dataset(
     dataset: Path,
     day: str,
     timestamp_column: str = "ts",
+    max_files: int | None = None,
 ) -> pl.DataFrame:
     dataset_path = root / dataset
     try:
-        lazy = read_parquet_lazy(dataset_path)
+        files = _candidate_day_files(dataset_path, day, max_files=max_files)
+        if max_files is not None and not files:
+            return pl.DataFrame()
+        lazy = _scan_files(files) if files else read_parquet_lazy(dataset_path)
         columns = lazy.collect_schema().names()
         if timestamp_column not in columns:
-            return lazy.collect(engine="streaming")
+            return lazy.collect(engine="streaming") if files else pl.DataFrame()
         return (
             lazy.filter(pl.col(timestamp_column).cast(pl.Utf8).str.starts_with(day))
             .collect(engine="streaming")
         )
     except Exception:
+        if max_files is not None and dataset_path.is_dir():
+            return pl.DataFrame()
         return _filter_day(read_parquet_dataset(dataset_path), day)
+
+
+def _candidate_day_files(
+    dataset_path: Path,
+    day: str,
+    *,
+    max_files: int | None = None,
+) -> list[Path]:
+    if not dataset_path.exists() or dataset_path.is_file():
+        return []
+    day_compact = day.replace("-", "")
+    all_files: list[Path] = []
+    matches: list[Path] = []
+    for file_path in dataset_path.rglob("*.parquet"):
+        all_files.append(file_path)
+        path_text = str(file_path)
+        if (
+            f"day={day}" in path_text
+            or f"day={day_compact}" in path_text
+            or day in file_path.name
+            or day_compact in file_path.name
+        ):
+            matches.append(file_path)
+    if not matches:
+        if max_files is not None and 0 < len(all_files) <= max_files:
+            all_files.sort(key=lambda path: (path.stat().st_mtime, str(path)), reverse=True)
+            return all_files
+        return []
+    matches.sort(key=lambda path: (path.stat().st_mtime, str(path)), reverse=True)
+    if max_files is not None and max_files > 0:
+        return matches[:max_files]
+    return matches
+
+
+def _scan_files(files: Sequence[Path]) -> pl.LazyFrame:
+    try:
+        return pl.scan_parquet([str(path) for path in files], hive_partitioning=False)
+    except TypeError:
+        return pl.scan_parquet([str(path) for path in files])
 
 
 def _symbols_from_public_data(trade_prints: pl.DataFrame, market_bars: pl.DataFrame) -> list[str]:

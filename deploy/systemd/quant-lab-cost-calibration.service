@@ -10,7 +10,8 @@ WorkingDirectory=/opt/quant-lab
 Environment=POLARS_MAX_THREADS=1
 Environment=MALLOC_ARENA_MAX=2
 RuntimeMaxSec=15min
+TimeoutStartSec=16min
 MemoryHigh=3G
 MemoryMax=4G
 CPUQuota=60%
-ExecStart=/usr/bin/flock -w 120 /var/lock/quant-lab-heavy.lock /bin/bash -lc '/opt/quant-lab/.venv/bin/qlab calibrate-costs --lake-root /var/lib/quant-lab/lake --day "$(date -u +%%F)" --min-sample-count 30'
+ExecStart=/usr/bin/flock -w 10 /var/lock/quant-lab-heavy.lock /usr/bin/timeout 15m /bin/bash -lc '/opt/quant-lab/.venv/bin/qlab calibrate-costs --lake-root /var/lib/quant-lab/lake --day "$(date -u +%%F)" --min-sample-count 30'

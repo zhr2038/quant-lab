@@ -14,8 +14,8 @@ Environment=MALLOC_ARENA_MAX=2
 ExecStart=/usr/bin/flock -w 10 /var/lock/quant-lab-heavy.lock /bin/bash /opt/quant-lab/deploy/scripts/compact_lake_hot_datasets.sh
 Nice=15
 IOSchedulingClass=idle
-MemoryHigh=2G
-MemoryMax=3G
+MemoryHigh=5G
+MemoryMax=6G
 TimeoutStartSec=35min
 NoNewPrivileges=true
 PrivateTmp=true

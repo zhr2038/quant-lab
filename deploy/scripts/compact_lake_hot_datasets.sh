@@ -49,12 +49,38 @@ compact_dataset() {
     --max-source-files-per-batch "${batch_files}"
 }
 
+parquet_file_count() {
+  local dataset="$1"
+  local dataset_path="${LAKE_ROOT}/${dataset}"
+  if [[ ! -d "${dataset_path}" ]]; then
+    echo 0
+    return
+  fi
+  find "${dataset_path}" -type f -name '*.parquet' | wc -l
+}
+
+compact_if_file_count_at_least() {
+  local dataset="$1"
+  local target_rows="$2"
+  local batch_files="$3"
+  local min_files="$4"
+  local file_count
+
+  file_count="$(parquet_file_count "${dataset}")"
+  if (( file_count < min_files )); then
+    echo "SKIP_COMPACT dataset=${dataset} parquet_files=${file_count} min_files=${min_files}"
+    return
+  fi
+
+  compact_dataset "${dataset}" "${target_rows}" "${batch_files}"
+}
+
 for dataset in "${HOT_DATASETS[@]}"; do
-  compact_dataset "${dataset}" 500000 10000
+  compact_if_file_count_at_least "${dataset}" 500000 10000 500
 done
 
 for dataset in "${V5_TELEMETRY_DATASETS[@]}"; do
-  compact_dataset "${dataset}" 250000 5000
+  compact_if_file_count_at_least "${dataset}" 250000 5000 100
 done
 
 "${QLAB_BIN}" lake-health --lake-root "${LAKE_ROOT}"

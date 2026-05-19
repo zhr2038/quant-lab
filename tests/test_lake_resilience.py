@@ -38,6 +38,29 @@ def test_read_parquet_dataset_returns_empty_when_only_invalid_files_exist(tmp_pa
     assert invalid_parquet_files(dataset) == [dataset / "data.parquet"]
 
 
+def test_read_parquet_dataset_inserts_missing_columns_across_schema_versions(tmp_path):
+    dataset = tmp_path / "lake" / "silver" / "v5_paper_strategy_run"
+    dataset.mkdir(parents=True)
+    pl.DataFrame([{"strategy_id": "SOL_PAPER", "symbol": "SOL-USDT"}]).write_parquet(
+        dataset / "part-old.parquet"
+    )
+    pl.DataFrame(
+        [
+            {
+                "strategy_id": "SOL_PAPER",
+                "symbol": "SOL-USDT",
+                "no_sample_reason": "heartbeat_no_candidate",
+            }
+        ]
+    ).write_parquet(dataset / "part-new.parquet")
+
+    df = read_parquet_dataset(dataset)
+
+    assert df.height == 2
+    assert "no_sample_reason" in df.columns
+    assert df.filter(pl.col("no_sample_reason").is_null()).height == 1
+
+
 def test_write_parquet_dataset_keeps_previous_data_when_rewrite_fails(tmp_path, monkeypatch):
     dataset = tmp_path / "lake" / "silver" / "orderbook_snapshot"
     write_parquet_dataset(pl.DataFrame([{"symbol": "BTC-USDT", "spread_bps": 1.25}]), dataset)

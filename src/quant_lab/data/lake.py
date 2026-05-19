@@ -399,6 +399,7 @@ def _read_parquet_files(files: Sequence[Path]) -> pl.DataFrame:
         return pl.read_parquet(
             [str(path) for path in files],
             hive_partitioning=False,
+            missing_columns="insert",
         )
     except TypeError:
         return pl.read_parquet([str(path) for path in files])
@@ -409,6 +410,8 @@ def _scan_parquet_files(files: Sequence[Path]) -> pl.LazyFrame:
         return pl.scan_parquet(
             [str(path) for path in files],
             hive_partitioning=False,
+            missing_columns="insert",
+            extra_columns="ignore",
         )
     except TypeError:
         return pl.scan_parquet([str(path) for path in files])

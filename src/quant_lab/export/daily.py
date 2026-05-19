@@ -3234,7 +3234,15 @@ def _strategy_opportunity_advisory_for_export(
     latest_cost_health = _latest_cost_health_context(cost_health)
 
     rows: list[dict[str, Any]] = []
-    for row in source.to_dicts():
+    source_rows = source.to_dicts()
+    latest_as_of_date = _latest_as_of_date(source_rows)
+    if latest_as_of_date is not None:
+        source_rows = [
+            row
+            for row in source_rows
+            if str(row.get("as_of_date") or "").strip() == latest_as_of_date
+        ]
+    for row in source_rows:
         symbol = normalize_symbol(row.get("symbol")) or "UNKNOWN"
         if symbol == "UNKNOWN":
             continue

@@ -296,6 +296,15 @@ def test_strategy_opportunity_advisory_handles_mixed_numeric_columns(tmp_path):
     lake = tmp_path / "lake"
     board_rows = [
         _board_row(
+            strategy_candidate="v5.stale_candidate",
+            symbol="ETH-USDT",
+            source_type="candidate_event_label",
+            avg_net_bps=99.0,
+            decision="PAPER_READY",
+            cost_source_mix='[{"cost_source":"public_spread_proxy","count":72}]',
+        )
+        | {"as_of_date": "2026-05-09"},
+        _board_row(
             strategy_candidate="v5.multi_position_k2",
             symbol="BTC-USDT",
             source_type="multi_position_swing_shadow_outcome",

@@ -72,7 +72,7 @@ schemas:
     enums:
       quantile: [p50, p75, p90]
   cost_estimate_response:
-    schema_version: v5.cost_estimate.response.v0.1
+    schema_version: v5.cost_estimate.response.v0.2
     required:
       - contract_version
       - schema_version
@@ -98,6 +98,20 @@ schemas:
       - fallback_reason
       - degraded_reason
       - degraded_cost_model
+      - fee_bps
+      - fee_source
+      - spread_bps
+      - spread_source
+      - slippage_bps
+      - slippage_source
+      - delay_cost_bps
+      - delay_cost_source
+      - uncertainty_buffer_bps
+      - one_way_all_in_cost_bps
+      - roundtrip_all_in_cost_bps
+      - cost_quality
+      - cost_trusted_for_paper
+      - cost_trusted_for_live
       - as_of_ts
     nullable:
       - bucket_id
@@ -119,6 +133,14 @@ schemas:
         - actual_okx_fills_fee_missing
         - public_spread_proxy
         - global_default
+      cost_quality:
+        - actual
+        - mixed_actual_proxy
+        - public_proxy_only
+        - global_default
+        - small_sample
+        - stale
+        - unknown
       fallback_reason:
         - NONE
         - no_matching_regime

@@ -110,6 +110,15 @@ def test_cost_bucket_daily_estimate_uses_requested_quantile():
     assert estimate.sample_count == 42
     assert estimate.sample_size == 42
     assert estimate.cost_model_version == "costs-2026-05-10"
+    assert estimate.fee_source == "actual_fills_bills"
+    assert estimate.spread_source == "fresh_orderbook_p75"
+    assert estimate.slippage_source == "v5_order_lifecycle_arrival_mid"
+    assert estimate.uncertainty_buffer_bps == 0.0
+    assert estimate.one_way_all_in_cost_bps == 7.0
+    assert estimate.roundtrip_all_in_cost_bps == 14.0
+    assert estimate.cost_quality == "actual"
+    assert estimate.cost_trusted_for_paper is True
+    assert estimate.cost_trusted_for_live is True
 
 
 def test_cost_bucket_daily_estimate_uses_global_fallback_when_no_bucket_matches():
@@ -176,6 +185,17 @@ def test_cost_bucket_daily_estimate_preserves_proxy_fallback_on_exact_match():
     assert estimate.total_cost_bps == 2.0
     assert estimate.fallback_level == "FEE_MISSING;SLIPPAGE_UNKNOWN;PUBLIC_SPREAD_PROXY"
     assert estimate.source == "public_spread_proxy"
+    assert estimate.fee_bps == 10.0
+    assert estimate.fee_source == "config_fee_bps"
+    assert estimate.slippage_bps == 2.0
+    assert estimate.slippage_source == "config_slippage_bps"
+    assert estimate.spread_source == "fresh_orderbook_p75"
+    assert estimate.uncertainty_buffer_bps == 5.0
+    assert estimate.one_way_all_in_cost_bps == 19.0
+    assert estimate.roundtrip_all_in_cost_bps == 38.0
+    assert estimate.cost_quality == "public_proxy_only"
+    assert estimate.cost_trusted_for_paper is True
+    assert estimate.cost_trusted_for_live is False
 
 
 def test_cost_bucket_daily_estimate_returns_explicit_global_default_without_rows():
@@ -191,6 +211,15 @@ def test_cost_bucket_daily_estimate_returns_explicit_global_default_without_rows
     assert estimate.fallback_level == "GLOBAL_DEFAULT"
     assert estimate.source == "global_default"
     assert estimate.sample_count == 0
+    assert estimate.fee_bps == 10.0
+    assert estimate.spread_bps == 5.0
+    assert estimate.slippage_bps == 5.0
+    assert estimate.uncertainty_buffer_bps == 5.0
+    assert estimate.one_way_all_in_cost_bps == 25.0
+    assert estimate.roundtrip_all_in_cost_bps == 50.0
+    assert estimate.cost_quality == "global_default"
+    assert estimate.cost_trusted_for_paper is False
+    assert estimate.cost_trusted_for_live is False
 
 
 def test_cost_bucket_daily_estimate_normalizes_strategy_symbol_to_cost_bucket():
@@ -277,6 +306,10 @@ def test_cost_bucket_daily_estimate_can_fallback_to_symbol_bucket_across_regime(
     assert estimate.selected_total_cost_bps == 2.0
     assert estimate.fallback_reason in {"no_matching_regime", "cost_bucket_stale"}
     assert estimate.degraded_cost_model is True
+    assert estimate.one_way_all_in_cost_bps > estimate.selected_total_cost_bps
+    assert estimate.roundtrip_all_in_cost_bps == estimate.one_way_all_in_cost_bps * 2.0
+    assert estimate.cost_trusted_for_paper is True
+    assert estimate.cost_trusted_for_live is False
 
 
 def test_cost_bucket_daily_estimate_unknown_symbol_uses_global_default():

@@ -164,6 +164,17 @@ class CostEstimate(ContractModel):
     degraded_cost_model: bool = False
     sample_size: int | None = Field(default=None, ge=0)
     as_of_ts: datetime | None = None
+    fee_source: str = "unknown"
+    spread_source: str = "unknown"
+    slippage_source: str = "unknown"
+    delay_cost_bps: float = Field(default=0.0, ge=0)
+    delay_cost_source: str = "none"
+    uncertainty_buffer_bps: float = Field(default=0.0, ge=0)
+    one_way_all_in_cost_bps: float = Field(default=0.0, ge=0)
+    roundtrip_all_in_cost_bps: float = Field(default=0.0, ge=0)
+    cost_quality: str = "unknown"
+    cost_trusted_for_paper: bool = False
+    cost_trusted_for_live: bool = False
 
     @model_validator(mode="before")
     @classmethod
@@ -184,6 +195,29 @@ class CostEstimate(ContractModel):
             normalized.setdefault("fallback_reason", normalized.get("fallback_level"))
             normalized.setdefault("degraded_reason", "none")
             normalized.setdefault("sample_size", normalized.get("sample_count"))
+            normalized.setdefault("fee_source", "unknown")
+            normalized.setdefault("spread_source", "unknown")
+            normalized.setdefault("slippage_source", "unknown")
+            normalized.setdefault("delay_cost_bps", 0.0)
+            normalized.setdefault("delay_cost_source", "none")
+            normalized.setdefault("uncertainty_buffer_bps", 0.0)
+            normalized.setdefault(
+                "one_way_all_in_cost_bps",
+                _cost_estimate_one_way_all_in(normalized),
+            )
+            normalized.setdefault(
+                "roundtrip_all_in_cost_bps",
+                float(normalized.get("one_way_all_in_cost_bps") or 0.0) * 2.0,
+            )
+            normalized.setdefault("cost_quality", _cost_estimate_quality(normalized))
+            normalized.setdefault(
+                "cost_trusted_for_paper",
+                _cost_estimate_trusted_for_paper(normalized),
+            )
+            normalized.setdefault(
+                "cost_trusted_for_live",
+                _cost_estimate_trusted_for_live(normalized),
+            )
             normalized.setdefault(
                 "degraded_cost_model",
                 _cost_estimate_is_degraded(normalized),
@@ -209,6 +243,62 @@ def _cost_estimate_is_degraded(data: dict[str, Any]) -> bool:
         or fallback_level not in {"", "NONE", "actual_okx_fills_and_bills"}
         or fallback_reason not in {"", "NONE"}
         or degraded_reason not in {"", "none", "None"}
+    )
+
+
+def _cost_estimate_one_way_all_in(data: dict[str, Any]) -> float:
+    fields = [
+        "fee_bps",
+        "spread_bps",
+        "slippage_bps",
+        "delay_cost_bps",
+        "uncertainty_buffer_bps",
+    ]
+    total = 0.0
+    for field in fields:
+        try:
+            total += float(data.get(field) or 0.0)
+        except (TypeError, ValueError):
+            continue
+    if total > 0:
+        return total
+    try:
+        return float(data.get("total_cost_bps") or data.get("cost_bps") or 0.0)
+    except (TypeError, ValueError):
+        return 0.0
+
+
+def _cost_estimate_quality(data: dict[str, Any]) -> str:
+    source = str(data.get("cost_source") or data.get("source") or "").lower()
+    sample_count = int(float(data.get("sample_count") or data.get("sample_size") or 0))
+    if source == "global_default":
+        return "global_default"
+    if source in {"public_spread_proxy", "public_proxy"}:
+        return "public_proxy_only"
+    if sample_count < 30:
+        return "small_sample"
+    if source in {"mixed_actual_proxy", "actual_okx_fills_fee_missing"}:
+        return "mixed_actual_proxy"
+    if source in {"actual_fills", "actual_okx_fills_and_bills"}:
+        return "actual"
+    return "unknown"
+
+
+def _cost_estimate_trusted_for_paper(data: dict[str, Any]) -> bool:
+    source = str(data.get("cost_source") or data.get("source") or "").lower()
+    return (
+        source not in {"", "global_default"}
+        and data.get("degraded_reason") != "cost_bucket_stale"
+    )
+
+
+def _cost_estimate_trusted_for_live(data: dict[str, Any]) -> bool:
+    source = str(data.get("cost_source") or data.get("source") or "").lower()
+    sample_count = int(float(data.get("sample_count") or data.get("sample_size") or 0))
+    return (
+        source in {"actual_fills", "actual_okx_fills_and_bills", "mixed_actual_proxy"}
+        and sample_count >= 30
+        and data.get("degraded_reason") != "cost_bucket_stale"
     )
 
 

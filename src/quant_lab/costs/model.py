@@ -15,6 +15,13 @@ logger = logging.getLogger(__name__)
 DEFAULT_FALLBACK_COST_BPS = 25.0
 SUPPORTED_COST_QUANTILES = {"p50", "p75", "p90"}
 COST_BUCKET_STALE_SECONDS = 36 * 60 * 60
+MIN_TRUSTED_COST_SAMPLE_COUNT = 30
+CONFIG_FEE_BPS = 10.0
+CONFIG_SLIPPAGE_BPS = 2.0
+CONFIG_DELAY_COST_BPS = 0.0
+PUBLIC_PROXY_UNCERTAINTY_BUFFER_BPS = 2.0
+SMALL_SAMPLE_UNCERTAINTY_BUFFER_BPS = 3.0
+STALE_BUCKET_UNCERTAINTY_BUFFER_BPS = 5.0
 
 
 class CostBucket(BaseModel):
@@ -307,31 +314,41 @@ def estimate_cost_from_cost_bucket_daily_rows(
             if fallback_level == "NONE"
             else f"{fallback_level};{row_fallback_level}"
         )
-    fee_bps = _float_value(row, f"fee_bps_{quantile}")
-    slippage_bps = _float_value(row, f"slippage_bps_{quantile}")
-    spread_bps = _float_value(row, f"spread_bps_{quantile}")
+    observed_fee_bps = _float_value(row, f"fee_bps_{quantile}")
+    observed_slippage_bps = _float_value(row, f"slippage_bps_{quantile}")
+    observed_spread_bps = _float_value(row, f"spread_bps_{quantile}")
     total_cost_bps = _float_value(row, f"total_cost_bps_{quantile}")
     if total_cost_bps == 0:
-        total_cost_bps = fee_bps + slippage_bps + spread_bps
+        total_cost_bps = observed_fee_bps + observed_slippage_bps + observed_spread_bps
 
     bucket_id = _cost_bucket_id(row)
     stale = _row_is_stale(row)
     source = str(row.get("source") or "cost_bucket_daily")
+    sample_count = int(row.get("sample_count") or 0)
     fallback_reason = _fallback_reason(fallback_level, stale=stale, source=source)
+    components = _all_in_cost_components(
+        source=source,
+        fallback_level=fallback_level,
+        observed_fee_bps=observed_fee_bps,
+        observed_slippage_bps=observed_slippage_bps,
+        observed_spread_bps=observed_spread_bps,
+        sample_count=sample_count,
+        stale=stale,
+    )
     return CostEstimate(
         symbol=requested_symbol,
         regime=regime,
         notional_usdt=notional_usdt,
         quantile=quantile,
         requested_quantile=quantile,
-        fee_bps=fee_bps,
-        slippage_bps=slippage_bps,
-        spread_bps=spread_bps,
+        fee_bps=components["fee_bps"],
+        slippage_bps=components["slippage_bps"],
+        spread_bps=components["spread_bps"],
         total_cost_bps=total_cost_bps,
         cost_bps=total_cost_bps,
         fallback_level=fallback_level,
         source=source,
-        sample_count=int(row.get("sample_count") or 0),
+        sample_count=sample_count,
         cost_model_version=str(
             row.get("cost_model_version") or f"cost_bucket_daily:{row.get('day', 'unknown')}"
         ),
@@ -352,6 +369,17 @@ def estimate_cost_from_cost_bucket_daily_rows(
             degraded_reason="cost_bucket_stale" if stale else "none",
         ),
         as_of_ts=_row_as_of_ts(row),
+        fee_source=components["fee_source"],
+        spread_source=components["spread_source"],
+        slippage_source=components["slippage_source"],
+        delay_cost_bps=components["delay_cost_bps"],
+        delay_cost_source=components["delay_cost_source"],
+        uncertainty_buffer_bps=components["uncertainty_buffer_bps"],
+        one_way_all_in_cost_bps=components["one_way_all_in_cost_bps"],
+        roundtrip_all_in_cost_bps=components["roundtrip_all_in_cost_bps"],
+        cost_quality=components["cost_quality"],
+        cost_trusted_for_paper=components["cost_trusted_for_paper"],
+        cost_trusted_for_live=components["cost_trusted_for_live"],
     )
 
 
@@ -556,15 +584,16 @@ def _global_default_estimate(
     fallback_reason: str = "symbol_missing",
     degraded_reason: str = "global_default_cost",
 ) -> CostEstimate:
+    components = _global_default_components()
     return CostEstimate(
         symbol=normalize_symbol(symbol),
         regime=regime,
         notional_usdt=notional_usdt,
         quantile=quantile,
         requested_quantile=quantile,
-        fee_bps=0.0,
-        slippage_bps=0.0,
-        spread_bps=0.0,
+        fee_bps=components["fee_bps"],
+        slippage_bps=components["slippage_bps"],
+        spread_bps=components["spread_bps"],
         total_cost_bps=DEFAULT_FALLBACK_COST_BPS,
         cost_bps=DEFAULT_FALLBACK_COST_BPS,
         fallback_level="GLOBAL_DEFAULT",
@@ -583,6 +612,17 @@ def _global_default_estimate(
         degraded_reason=degraded_reason,
         degraded_cost_model=True,
         as_of_ts=datetime.now(UTC),
+        fee_source=components["fee_source"],
+        spread_source=components["spread_source"],
+        slippage_source=components["slippage_source"],
+        delay_cost_bps=components["delay_cost_bps"],
+        delay_cost_source=components["delay_cost_source"],
+        uncertainty_buffer_bps=components["uncertainty_buffer_bps"],
+        one_way_all_in_cost_bps=components["one_way_all_in_cost_bps"],
+        roundtrip_all_in_cost_bps=components["roundtrip_all_in_cost_bps"],
+        cost_quality="global_default",
+        cost_trusted_for_paper=False,
+        cost_trusted_for_live=False,
     )
 
 
@@ -637,6 +677,117 @@ def _estimate_degraded(
         or fallback_reason not in {"", "NONE"}
         or degraded_reason not in {"", "none"}
     )
+
+
+def _all_in_cost_components(
+    *,
+    source: str,
+    fallback_level: str,
+    observed_fee_bps: float,
+    observed_slippage_bps: float,
+    observed_spread_bps: float,
+    sample_count: int,
+    stale: bool,
+) -> dict[str, Any]:
+    normalized_source = source.lower()
+    normalized_fallback = fallback_level.upper()
+    actual_or_mixed = _is_actual_or_mixed_source(normalized_source)
+    fee_is_actual = actual_or_mixed and observed_fee_bps > 0
+    slippage_is_actual = (
+        actual_or_mixed
+        and observed_slippage_bps > 0
+        and "SLIPPAGE_UNKNOWN" not in normalized_fallback
+    )
+
+    fee_bps = observed_fee_bps if fee_is_actual else CONFIG_FEE_BPS
+    slippage_bps = (
+        observed_slippage_bps if slippage_is_actual else CONFIG_SLIPPAGE_BPS
+    )
+    spread_bps = observed_spread_bps
+
+    uncertainty_buffer = 0.0
+    if _is_public_proxy_source(normalized_source):
+        uncertainty_buffer += PUBLIC_PROXY_UNCERTAINTY_BUFFER_BPS
+    if sample_count < MIN_TRUSTED_COST_SAMPLE_COUNT:
+        uncertainty_buffer += SMALL_SAMPLE_UNCERTAINTY_BUFFER_BPS
+    if stale:
+        uncertainty_buffer += STALE_BUCKET_UNCERTAINTY_BUFFER_BPS
+
+    one_way = (
+        fee_bps
+        + spread_bps
+        + slippage_bps
+        + CONFIG_DELAY_COST_BPS
+        + uncertainty_buffer
+    )
+    return {
+        "fee_bps": fee_bps,
+        "fee_source": "actual_fills_bills" if fee_is_actual else "config_fee_bps",
+        "spread_bps": spread_bps,
+        "spread_source": "fresh_orderbook_p75" if spread_bps > 0 and not stale else "unavailable",
+        "slippage_bps": slippage_bps,
+        "slippage_source": (
+            "v5_order_lifecycle_arrival_mid"
+            if slippage_is_actual
+            else "config_slippage_bps"
+        ),
+        "delay_cost_bps": CONFIG_DELAY_COST_BPS,
+        "delay_cost_source": "config_delay_bps",
+        "uncertainty_buffer_bps": uncertainty_buffer,
+        "one_way_all_in_cost_bps": one_way,
+        "roundtrip_all_in_cost_bps": one_way * 2.0,
+        "cost_quality": _cost_quality(
+            source=normalized_source,
+            sample_count=sample_count,
+            stale=stale,
+        ),
+        "cost_trusted_for_paper": normalized_source != "global_default" and not stale,
+        "cost_trusted_for_live": (
+            normalized_source
+            in {"actual_fills", "actual_okx_fills_and_bills", "mixed_actual_proxy"}
+            and sample_count >= MIN_TRUSTED_COST_SAMPLE_COUNT
+            and not stale
+        ),
+    }
+
+
+def _global_default_components() -> dict[str, Any]:
+    fee_bps = CONFIG_FEE_BPS
+    spread_bps = 5.0
+    slippage_bps = 5.0
+    uncertainty_buffer = DEFAULT_FALLBACK_COST_BPS - (
+        fee_bps + spread_bps + slippage_bps + CONFIG_DELAY_COST_BPS
+    )
+    one_way = DEFAULT_FALLBACK_COST_BPS
+    return {
+        "fee_bps": fee_bps,
+        "fee_source": "config_fee_bps",
+        "spread_bps": spread_bps,
+        "spread_source": "global_default_config",
+        "slippage_bps": slippage_bps,
+        "slippage_source": "config_slippage_bps",
+        "delay_cost_bps": CONFIG_DELAY_COST_BPS,
+        "delay_cost_source": "config_delay_bps",
+        "uncertainty_buffer_bps": max(uncertainty_buffer, 0.0),
+        "one_way_all_in_cost_bps": one_way,
+        "roundtrip_all_in_cost_bps": one_way * 2.0,
+    }
+
+
+def _cost_quality(*, source: str, sample_count: int, stale: bool) -> str:
+    if stale:
+        return "stale"
+    if source == "global_default":
+        return "global_default"
+    if source in {"public_spread_proxy", "public_proxy"}:
+        return "public_proxy_only"
+    if sample_count < MIN_TRUSTED_COST_SAMPLE_COUNT:
+        return "small_sample"
+    if source in {"mixed_actual_proxy", "actual_okx_fills_fee_missing"}:
+        return "mixed_actual_proxy"
+    if source in {"actual_fills", "actual_okx_fills_and_bills"}:
+        return "actual"
+    return "unknown"
 
 
 def _fallback_reason(fallback_level: str, *, stale: bool, source: str) -> str:

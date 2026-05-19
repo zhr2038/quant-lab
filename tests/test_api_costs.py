@@ -42,9 +42,17 @@ def test_cost_estimate_api_reads_cost_bucket_daily_from_lake(tmp_path, monkeypat
     assert payload["regime"] == "normal"
     assert payload["quantile"] == "p75"
     assert payload["fee_bps"] == 1.5
+    assert payload["fee_source"] == "actual_fills_bills"
     assert payload["slippage_bps"] == 3.0
+    assert payload["slippage_source"] == "v5_order_lifecycle_arrival_mid"
     assert payload["spread_bps"] == 0.75
+    assert payload["spread_source"] == "fresh_orderbook_p75"
     assert payload["total_cost_bps"] == 5.25
+    assert payload["one_way_all_in_cost_bps"] == 5.25
+    assert payload["roundtrip_all_in_cost_bps"] == 10.5
+    assert payload["cost_quality"] == "actual"
+    assert payload["cost_trusted_for_paper"] is True
+    assert payload["cost_trusted_for_live"] is True
     assert payload["fallback_level"] == "NONE"
     assert payload["source"] == "actual_okx_fills_and_bills"
     assert payload["normalized_symbol"] == "BTC-USDT"
@@ -73,6 +81,14 @@ def test_cost_estimate_api_uses_explicit_global_fallback_without_lake_rows(tmp_p
     assert payload["fallback_level"] == "GLOBAL_DEFAULT"
     assert payload["source"] == "global_default"
     assert payload["sample_count"] == 0
+    assert payload["fee_source"] == "config_fee_bps"
+    assert payload["spread_source"] == "global_default_config"
+    assert payload["slippage_source"] == "config_slippage_bps"
+    assert payload["one_way_all_in_cost_bps"] == DEFAULT_FALLBACK_COST_BPS
+    assert payload["roundtrip_all_in_cost_bps"] == DEFAULT_FALLBACK_COST_BPS * 2.0
+    assert payload["cost_quality"] == "global_default"
+    assert payload["cost_trusted_for_paper"] is False
+    assert payload["cost_trusted_for_live"] is False
 
 
 def test_cost_estimate_api_can_match_requested_notional_bucket(tmp_path, monkeypatch):
@@ -177,6 +193,9 @@ def test_cost_estimate_api_uses_same_symbol_public_proxy_for_trending_regime(
                     total_cost_bps_p50=1.1,
                     total_cost_bps_p75=1.4969,
                     total_cost_bps_p90=2.2,
+                    spread_bps_p50=1.1,
+                    spread_bps_p75=1.4969,
+                    spread_bps_p90=2.2,
                     sample_count=496,
                     fallback_level="PUBLIC_SPREAD_PROXY",
                     source="public_spread_proxy",
@@ -209,6 +228,18 @@ def test_cost_estimate_api_uses_same_symbol_public_proxy_for_trending_regime(
     assert payload["total_cost_bps_p75"] == 1.4969
     assert payload["selected_total_cost_bps"] == 1.4969
     assert payload["total_cost_bps"] == 1.4969
+    assert payload["fee_bps"] == 10.0
+    assert payload["fee_source"] == "config_fee_bps"
+    assert payload["slippage_bps"] == 2.0
+    assert payload["slippage_source"] == "config_slippage_bps"
+    assert payload["spread_bps"] == 1.4969
+    assert payload["spread_source"] == "fresh_orderbook_p75"
+    assert payload["uncertainty_buffer_bps"] == 2.0
+    assert payload["one_way_all_in_cost_bps"] == 15.4969
+    assert payload["roundtrip_all_in_cost_bps"] == 30.9938
+    assert payload["cost_quality"] == "public_proxy_only"
+    assert payload["cost_trusted_for_paper"] is True
+    assert payload["cost_trusted_for_live"] is False
     assert payload["sample_count"] == 496
     assert payload["fallback_level"] == "REGIME_FALLBACK;PUBLIC_SPREAD_PROXY"
     assert payload["fallback_reason"] == "no_matching_regime"

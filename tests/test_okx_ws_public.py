@@ -204,7 +204,32 @@ def test_ws_stream_appends_large_datasets_without_rewriting_market_bars(tmp_path
     assert read_parquet_dataset(lake_root / "silver" / "market_bar").height == 1
     assert read_parquet_dataset(lake_root / "silver" / "trade_print").height == 2
     assert len(list((lake_root / "silver" / "trade_print").rglob("*.parquet"))) == 2
-    assert list((lake_root / "silver" / "trade_print").glob("day=*"))
+    assert not list((lake_root / "silver" / "trade_print").glob("day=*"))
+
+
+def test_ws_batch_append_writes_one_file_per_dataset_flush(tmp_path):
+    lake_root = tmp_path / "lake"
+    publish_okx_public_ws_messages_to_lake(
+        [
+            _trade_message(symbol="BTC-USDT", trade_id="1"),
+            _trade_message(symbol="ETH-USDT", trade_id="2"),
+            _books_message(symbol="BTC-USDT"),
+            _books_message(symbol="ETH-USDT"),
+        ],
+        lake_root=lake_root,
+    )
+
+    assert len(list((lake_root / "bronze" / "okx_public_ws").rglob("*.parquet"))) == 1
+    assert len(list((lake_root / "silver" / "trade_print").rglob("*.parquet"))) == 1
+    assert len(list((lake_root / "silver" / "orderbook_snapshot").rglob("*.parquet"))) == 1
+
+    raw = read_parquet_dataset(lake_root / "bronze" / "okx_public_ws")
+    trades = read_parquet_dataset(lake_root / "silver" / "trade_print")
+    books = read_parquet_dataset(lake_root / "silver" / "orderbook_snapshot")
+
+    assert raw.height == 4
+    assert trades.height == 2
+    assert books.height == 2
 
 
 def test_read_messages_reconnects_without_long_sleep():

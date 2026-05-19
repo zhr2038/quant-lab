@@ -75,6 +75,15 @@ def test_web_export_memory_limit_allows_snapshot_packaging():
     assert "MemoryMax=5G" in unit
 
 
+def test_okx_ws_service_uses_unpartitioned_large_batches():
+    unit = _unit("quant-lab-okx-ws.service")
+
+    assert "QUANT_LAB_WS_APPEND_TARGET_ROWS=500000" in unit
+    assert "QUANT_LAB_WS_APPEND_PARTITIONED=0" in unit
+    assert "--flush-interval-seconds 300" in unit
+    assert "--flush-max-messages 50000" in unit
+
+
 def test_manual_okx_ws_defaults_match_production_batching():
     cli = (ROOT / "src" / "quant_lab" / "cli.py").read_text(encoding="utf-8")
     readers = (ROOT / "src" / "quant_lab" / "web" / "readers.py").read_text(encoding="utf-8")

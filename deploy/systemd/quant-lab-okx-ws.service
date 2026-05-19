@@ -14,6 +14,7 @@ Environment=PYTHONUNBUFFERED=1
 Environment=POLARS_MAX_THREADS=1
 Environment=MALLOC_ARENA_MAX=2
 Environment=QUANT_LAB_WS_APPEND_TARGET_ROWS=500000
+Environment=QUANT_LAB_WS_APPEND_PARTITIONED=0
 ExecStart=/opt/quant-lab/.venv/bin/qlab okx-ws-collect-universe --symbols BTC-USDT,ETH-USDT,SOL-USDT,BNB-USDT --channels tickers,trades,books5 --market-type SPOT --lake-root /var/lib/quant-lab/lake --flush-interval-seconds 300 --flush-max-messages 50000
 Restart=on-failure
 RestartSec=30

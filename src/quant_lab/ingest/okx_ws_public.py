@@ -279,8 +279,8 @@ async def collect_okx_public_ws_universe(
     channels: Sequence[str],
     lake_root: str | Path,
     market_type: str = "SPOT",
-    flush_interval_seconds: float = 10.0,
-    flush_max_messages: int = 100,
+    flush_interval_seconds: float = 300.0,
+    flush_max_messages: int = 50_000,
     config: OKXPublicWSConfig | None = None,
     max_messages: int | None = None,
     connect_factory: ConnectFactory | None = None,
@@ -665,6 +665,13 @@ def _dedupe_frame(df: pl.DataFrame, key_columns: list[str]) -> pl.DataFrame:
 
 
 def _append_partitions_for_dataset(dataset_path: Path) -> list[str]:
+    if os.environ.get("QUANT_LAB_WS_APPEND_PARTITIONED", "").strip().lower() not in {
+        "1",
+        "true",
+        "yes",
+        "on",
+    }:
+        return []
     if _dataset_path_endswith(dataset_path, BRONZE_WS_DATASET):
         return ["day", "channel", "inst_id"]
     if _dataset_path_endswith(dataset_path, TRADE_PRINT_DATASET):

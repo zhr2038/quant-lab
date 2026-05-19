@@ -203,6 +203,31 @@ def test_append_parquet_dataset_writes_partitioned_batches(tmp_path):
     assert set(read_back["symbol"].to_list()) == {"BTC-USDT", "ETH-USDT"}
 
 
+def test_append_parquet_dataset_does_not_leave_parquet_visible_on_failed_write(
+    tmp_path, monkeypatch
+):
+    dataset = tmp_path / "lake" / "silver" / "trade_print"
+    original_write_parquet = pl.DataFrame.write_parquet
+
+    def failing_write_parquet(self, file, *args, **kwargs):
+        file.write_bytes(b"partial")
+        raise OSError("simulated append failure")
+
+    monkeypatch.setattr(pl.DataFrame, "write_parquet", failing_write_parquet)
+
+    with pytest.raises(OSError, match="simulated append failure"):
+        append_parquet_dataset(
+            pl.DataFrame([{"day": "2026-05-18", "symbol": "BTC-USDT", "value": 1}]),
+            dataset,
+            partition_by=["day", "symbol"],
+        )
+
+    monkeypatch.setattr(pl.DataFrame, "write_parquet", original_write_parquet)
+
+    assert list(dataset.rglob("*.parquet")) == []
+    assert read_parquet_dataset(dataset).is_empty()
+
+
 def test_compact_parquet_dataset_preserves_rows_and_reduces_files(tmp_path):
     dataset = tmp_path / "lake" / "bronze" / "okx_public_ws"
     for index in range(5):

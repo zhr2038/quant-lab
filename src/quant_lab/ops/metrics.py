@@ -1,6 +1,10 @@
 from __future__ import annotations
 
+import atexit
 import json
+import os
+import threading
+import time
 from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import UTC, datetime
@@ -13,8 +17,20 @@ from quant_lab.data.lake import append_parquet_dataset, read_parquet_dataset
 
 API_METRICS_DATASET = Path("bronze") / "api_request_metrics"
 JOB_RUN_HISTORY_DATASET = Path("gold") / "job_run_history"
+_API_METRICS_LOCK = threading.Lock()
+_API_METRICS_BUFFERS: dict[str, list[dict[str, Any]]] = {}
+_API_METRICS_LAST_FLUSH: dict[str, float] = {}
 
 F = TypeVar("F")
+
+
+@atexit.register
+def _flush_all_api_request_metrics() -> None:
+    for root_key in list(_API_METRICS_BUFFERS):
+        try:
+            flush_api_request_metrics(root_key)
+        except Exception:
+            pass
 
 
 @dataclass(frozen=True)
@@ -50,13 +66,35 @@ def record_api_request(
         "client_host": client_host,
         "user_agent": _safe_user_agent(user_agent),
     }
-    append_parquet_dataset(
-        pl.DataFrame([row]),
+    root_key = str(Path(lake_root))
+    should_flush = False
+    now_monotonic = time.monotonic()
+    with _API_METRICS_LOCK:
+        buffer = _API_METRICS_BUFFERS.setdefault(root_key, [])
+        buffer.append(row)
+        last_flush = _API_METRICS_LAST_FLUSH.setdefault(root_key, now_monotonic)
+        should_flush = len(buffer) >= _api_metrics_flush_rows() or (
+            now_monotonic - last_flush
+        ) >= _api_metrics_flush_seconds()
+    if should_flush:
+        flush_api_request_metrics(lake_root)
+
+
+def flush_api_request_metrics(lake_root: str | Path) -> int:
+    root_key = str(Path(lake_root))
+    with _API_METRICS_LOCK:
+        rows = _API_METRICS_BUFFERS.pop(root_key, [])
+        _API_METRICS_LAST_FLUSH[root_key] = time.monotonic()
+    if not rows:
+        return 0
+    result = append_parquet_dataset(
+        pl.DataFrame(rows),
         Path(lake_root) / API_METRICS_DATASET,
         partition_by=["day", "path"],
         target_rows_per_file=10_000,
         file_prefix="api",
     )
+    return result.rows_written
 
 
 def record_job_run(
@@ -123,6 +161,7 @@ def api_metrics_summary(
     *,
     day: str | None = None,
 ) -> dict[str, Any]:
+    flush_api_request_metrics(lake_root)
     df = read_parquet_dataset(Path(lake_root) / API_METRICS_DATASET)
     if df.is_empty():
         return {
@@ -203,6 +242,28 @@ def _safe_user_agent(value: str | None) -> str | None:
     if not value:
         return None
     return value[:200]
+
+
+def _api_metrics_flush_rows() -> int:
+    return _positive_int_env("QUANT_LAB_API_METRICS_FLUSH_ROWS", 100)
+
+
+def _api_metrics_flush_seconds() -> float:
+    raw_value = os.environ.get("QUANT_LAB_API_METRICS_FLUSH_SECONDS", "60")
+    try:
+        value = float(raw_value)
+    except ValueError:
+        return 60.0
+    return max(value, 1.0)
+
+
+def _positive_int_env(name: str, default: int) -> int:
+    raw_value = os.environ.get(name, str(default))
+    try:
+        value = int(raw_value)
+    except ValueError:
+        return default
+    return max(value, 1)
 
 
 def _safe_error_message(value: str) -> str:

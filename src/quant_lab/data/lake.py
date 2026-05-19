@@ -102,7 +102,7 @@ def _write_parquet_dataset_unlocked(
     temp_file = path.parent / f".{path.name}.{uuid.uuid4().hex}.tmp.parquet"
     try:
         sorted_df.write_parquet(temp_file)
-        os.replace(temp_file, final_file)
+        _replace_path(temp_file, final_file)
         _remove_stale_parquet_files(path, keep=final_file)
     finally:
         if temp_file.exists():
@@ -162,11 +162,13 @@ def _append_parquet_dataset_unlocked(
             if chunk.is_empty():
                 continue
             final_file = partition_dir / _append_file_name(file_prefix)
+            temp_file = path.parent / f".append_{uuid.uuid4().hex}.tmp.parquet"
             try:
-                chunk.write_parquet(final_file)
+                chunk.write_parquet(temp_file)
+                _replace_path(temp_file, final_file)
             except Exception:
                 try:
-                    final_file.unlink()
+                    temp_file.unlink()
                 except FileNotFoundError:
                     pass
                 raise
@@ -230,8 +232,8 @@ def compact_parquet_dataset(
                 )
             backup = path.parent / f"__{path.name}_backup_{uuid.uuid4().hex}"
             if path.exists():
-                os.replace(path, backup)
-            os.replace(staging, path)
+                _replace_path(path, backup)
+            _replace_path(staging, path)
             _remove_existing_dataset(backup)
             return CompactParquetResult(
                 dataset_path=str(path),
@@ -432,6 +434,21 @@ def _is_valid_parquet_file(path: Path) -> bool:
     except OSError as exc:
         logger.warning("Ignoring unreadable parquet file %s: %s", path, exc)
         return False
+
+
+def _replace_path(source: Path, target: Path) -> None:
+    os.replace(_replaceable_path(source), _replaceable_path(target))
+
+
+def _replaceable_path(path: Path) -> str | Path:
+    if os.name != "nt":
+        return path
+    resolved = str(Path(path).resolve())
+    if resolved.startswith("\\\\?\\"):
+        return resolved
+    if resolved.startswith("\\\\"):
+        return "\\\\?\\UNC\\" + resolved[2:]
+    return "\\\\?\\" + resolved
 
 
 def _sort_dataframe(df: pl.DataFrame) -> pl.DataFrame:

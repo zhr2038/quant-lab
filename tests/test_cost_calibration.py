@@ -39,7 +39,8 @@ def test_actual_fills_and_bills_generate_actual_cost_bucket(tmp_path):
     assert row["fallback_level"] == "SLIPPAGE_UNKNOWN;SPREAD_PROXY"
     assert row["source"] == "mixed_actual_proxy"
     health = read_parquet_dataset(lake_root / "gold" / "cost_health_daily").to_dicts()[0]
-    assert health["actual_rows"] == 2
+    assert health["actual_rows"] == 0
+    assert health["mixed_rows"] == 2
     assert "BTC-USDT" in json.loads(health["symbols_with_mixed_cost"])
 
 
@@ -192,7 +193,8 @@ def test_v5_trade_events_generate_actual_fill_bucket_before_spread_proxy(tmp_pat
     assert "SLIPPAGE_UNKNOWN" in all_row["fallback_level"]
 
     health = read_parquet_dataset(lake_root / "gold" / "cost_health_daily").to_dicts()[0]
-    assert health["actual_rows"] == len(rows)
+    assert health["actual_rows"] == 0
+    assert health["mixed_rows"] == len(rows)
 
 
 def test_v5_order_lifecycle_generates_actual_fills_bucket(tmp_path):
@@ -304,7 +306,8 @@ def test_recent_v5_trades_feed_later_day_mixed_actual_cost(tmp_path):
 
     health = read_parquet_dataset(lake_root / "gold" / "cost_health_daily").to_dicts()[0]
     checks = json.loads(health["data_quality_checks_json"])
-    assert health["actual_rows"] == len(rows)
+    assert health["actual_rows"] == 0
+    assert health["mixed_rows"] == len(rows)
     assert json.loads(health["symbols_with_mixed_cost"]) == ["BNB-USDT"]
     assert json.loads(health["actual_sample_count_by_symbol"]) == {"BNB-USDT": 2}
     assert checks["trades_present_but_not_in_cost_model"] is True
@@ -336,7 +339,8 @@ def test_okx_private_bronze_fills_and_bills_feed_mixed_actual_cost(tmp_path):
     assert "SLIPPAGE_UNKNOWN" in all_row["fallback_level"]
 
     health = read_parquet_dataset(lake_root / "gold" / "cost_health_daily").to_dicts()[0]
-    assert health["actual_rows"] == len(rows)
+    assert health["actual_rows"] == 0
+    assert health["mixed_rows"] == len(rows)
     assert json.loads(health["symbols_with_mixed_cost"]) == ["BNB-USDT"]
     assert json.loads(health["actual_sample_count_by_symbol"]) == {"BNB-USDT": 2}
 

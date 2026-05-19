@@ -36,6 +36,7 @@ def test_cost_health_ok_with_actual_rows(tmp_path):
 
     assert row.status == "OK"
     assert row.actual_rows == 1
+    assert row.mixed_rows == 0
     assert row.fallback_ratio == 0
     assert row.hard_fallback_ratio == 0
     assert row.soft_fallback_ratio == 0
@@ -114,6 +115,7 @@ def test_cost_health_counts_actual_fills_source():
     )
 
     assert row.actual_rows == 1
+    assert row.mixed_rows == 0
     assert row.proxy_rows == 1
     assert row.global_default_rows == 1
     assert row.hard_fallback_count == 1
@@ -158,7 +160,8 @@ def test_cost_health_counts_mixed_actual_proxy_as_private_cost_available():
     )
 
     assert row.status == "WARNING"
-    assert row.actual_rows == 1
+    assert row.actual_rows == 0
+    assert row.mixed_rows == 1
     assert row.hard_fallback_ratio == 0
     assert row.soft_fallback_ratio == 1
     assert row.proxy_only_count == 1

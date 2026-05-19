@@ -42,6 +42,7 @@ COLUMN_LABELS = {
     "abnormal_symbols": "异常标的",
     "actual_bars": "实际 K 线数",
     "actual_rows": "真实成本行数",
+    "mixed_rows": "混合真实+代理成本行数",
     "allowed_modes": "允许模式",
     "alpha_id": "Alpha ID",
     "alpha6_score": "alpha6 分数",

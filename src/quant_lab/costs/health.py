@@ -15,13 +15,15 @@ MIXED_ACTUAL_PROXY_SOURCE = "mixed_actual_proxy"
 FEE_ONLY_SOURCE = "actual_okx_fills_fee_missing"
 PROXY_SOURCE = "public_spread_proxy"
 DEFAULT_SOURCE = "global_default"
-ACTUAL_SOURCES = {ACTUAL_SOURCE, ACTUAL_FILLS_SOURCE, MIXED_ACTUAL_PROXY_SOURCE}
+ACTUAL_SOURCES = {ACTUAL_SOURCE, ACTUAL_FILLS_SOURCE}
+ACTUAL_OR_MIXED_SOURCES = {ACTUAL_SOURCE, ACTUAL_FILLS_SOURCE, MIXED_ACTUAL_PROXY_SOURCE}
 
 COST_HEALTH_DAILY_SCHEMA = {
     "day": pl.Utf8,
     "status": pl.Utf8,
     "cost_model_version": pl.Utf8,
     "actual_rows": pl.Int64,
+    "mixed_rows": pl.Int64,
     "proxy_rows": pl.Int64,
     "global_default_rows": pl.Int64,
     "fallback_ratio": pl.Float64,
@@ -56,6 +58,7 @@ class CostHealthDaily(BaseModel):
     status: str
     cost_model_version: str
     actual_rows: int = Field(ge=0)
+    mixed_rows: int = Field(default=0, ge=0)
     proxy_rows: int = Field(ge=0)
     global_default_rows: int = Field(ge=0)
     fallback_ratio: float = Field(ge=0, le=1)
@@ -106,6 +109,7 @@ def build_cost_health_daily(
             status="CRITICAL",
             cost_model_version=f"cost_bucket_daily:{day}",
             actual_rows=0,
+            mixed_rows=0,
             proxy_rows=0,
             global_default_rows=0,
             fallback_ratio=1.0,
@@ -121,7 +125,7 @@ def build_cost_health_daily(
                     private_fill_rows=private_fill_rows,
                     private_bill_rows=private_bill_rows,
                     v5_trade_rows=v5_trade_rows,
-                    actual_rows=0,
+                    actual_or_mixed_rows=0,
                     fee_bps_missing_count=fee_bps_missing_count,
                     actual_symbols=set(),
                     mixed_symbols=set(),
@@ -139,13 +143,14 @@ def build_cost_health_daily(
 
     rows = cost_rows.to_dicts()
     actual_rows = [row for row in rows if str(row.get("source")) in ACTUAL_SOURCES]
+    mixed_rows = [row for row in rows if str(row.get("source")) == MIXED_ACTUAL_PROXY_SOURCE]
+    actual_or_mixed_rows = [*actual_rows, *mixed_rows]
     trusted_actual_rows = [
         row
-        for row in actual_rows
+        for row in actual_or_mixed_rows
         if str(row.get("source")) in {ACTUAL_SOURCE, ACTUAL_FILLS_SOURCE}
         and int(row.get("sample_count") or 0) >= min_sample_count
     ]
-    mixed_rows = [row for row in rows if str(row.get("source")) == MIXED_ACTUAL_PROXY_SOURCE]
     proxy_rows = [row for row in rows if str(row.get("source")) == PROXY_SOURCE]
     global_rows = [row for row in rows if str(row.get("source")) == DEFAULT_SOURCE]
     fallback_count = sum(1 for row in rows if _is_fallback_row(row))
@@ -170,7 +175,7 @@ def build_cost_health_daily(
         private_fill_rows=private_fill_rows,
         private_bill_rows=private_bill_rows,
         v5_trade_rows=v5_trade_rows,
-        actual_rows=len(actual_rows),
+        actual_or_mixed_rows=len(actual_or_mixed_rows),
         fee_bps_missing_count=fee_bps_missing_count,
         actual_symbols=actual_symbols,
         mixed_symbols=mixed_symbols,
@@ -201,8 +206,8 @@ def build_cost_health_daily(
     status = "OK"
     if (
         all_global
-        or (hard_fallback_ratio > 0.25 and not actual_rows)
-        or (missing and not actual_rows)
+        or (hard_fallback_ratio > 0.25 and not actual_or_mixed_rows)
+        or (missing and not actual_or_mixed_rows)
         or data_quality_checks.get("private_fills_present_but_actual_cost_zero") is False
         or data_quality_checks.get("trades_present_but_not_in_cost_model") is False
     ):
@@ -215,6 +220,7 @@ def build_cost_health_daily(
         status=status,
         cost_model_version=_cost_model_version(rows, day),
         actual_rows=len(actual_rows),
+        mixed_rows=len(mixed_rows),
         proxy_rows=len(proxy_rows),
         global_default_rows=len(global_rows),
         fallback_ratio=fallback_ratio,
@@ -229,7 +235,7 @@ def build_cost_health_daily(
         symbols_with_proxy_only=sorted(proxy_only),
         symbols_proxy_only=sorted(proxy_only),
         symbols_missing_cost=sorted(missing),
-        actual_sample_count_by_symbol=_actual_sample_count_by_symbol(actual_rows),
+        actual_sample_count_by_symbol=_actual_sample_count_by_symbol(actual_or_mixed_rows),
         data_quality_checks_json=_json(data_quality_checks),
         min_sample_count=min_sample_count,
         api_global_default_count=api_global_default_count,
@@ -443,7 +449,7 @@ def _data_quality_checks(
     private_fill_rows: int,
     private_bill_rows: int,
     v5_trade_rows: int,
-    actual_rows: int,
+    actual_or_mixed_rows: int,
     fee_bps_missing_count: int,
     actual_symbols: set[str],
     mixed_symbols: set[str],
@@ -456,9 +462,11 @@ def _data_quality_checks(
     )
     return {
         "private_fills_present_but_actual_cost_zero": not (
-            private_fill_rows > 0 and actual_rows == 0
+            private_fill_rows > 0 and actual_or_mixed_rows == 0
         ),
-        "trades_present_but_not_in_cost_model": not (v5_trade_rows > 0 and actual_rows == 0),
+        "trades_present_but_not_in_cost_model": not (
+            v5_trade_rows > 0 and actual_or_mixed_rows == 0
+        ),
         "bills_present_but_fee_bps_missing": not (
             private_bill_rows > 0 and fee_bps_missing_count > 0
         ),

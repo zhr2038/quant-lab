@@ -2,10 +2,15 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
 SYSTEMD = ROOT / "deploy" / "systemd"
+SCRIPTS = ROOT / "deploy" / "scripts"
 
 
 def _unit(name: str) -> str:
     return (SYSTEMD / name).read_text(encoding="utf-8")
+
+
+def _script(name: str) -> str:
+    return (SCRIPTS / name).read_text(encoding="utf-8")
 
 
 def test_v5_health_analysis_stays_lightweight():
@@ -38,15 +43,18 @@ def test_candidate_research_refresh_is_separate_from_alpha_evidence():
 def test_scheduled_compaction_covers_hot_ws_datasets():
     unit = _unit("quant-lab-lake-compaction.service")
     timer = _unit("quant-lab-lake-compaction.timer")
+    script = _script("compact_lake_hot_datasets.sh")
 
-    assert "compact-lake-dataset" in unit
-    assert "--dataset bronze/okx_public_ws" in unit
-    assert "--dataset silver/trade_print" in unit
-    assert "--dataset silver/orderbook_snapshot" in unit
-    assert "--target-rows-per-file 500000" in unit
-    assert "--max-source-files-per-batch 10000" in unit
-    assert "bronze/strategy_telemetry/v5/raw_file_index" in unit
-    assert "silver/v5_quant_lab_usage" in unit
+    assert "compact_lake_hot_datasets.sh" in unit
+    assert "compact-lake-dataset" in script
+    assert '"bronze/okx_public_ws"' in script
+    assert '"silver/trade_print"' in script
+    assert '"silver/orderbook_snapshot"' in script
+    assert "compact_dataset \"${dataset}\" 500000 10000" in script
+    assert "compact_dataset \"${dataset}\" 250000 5000" in script
+    assert '"bronze/strategy_telemetry/v5/raw_file_index"' in script
+    assert '"silver/v5_quant_lab_usage"' in script
+    assert '"silver/v5_candidate_event"' in script
     assert "OnUnitActiveSec=2h" in timer
 
 

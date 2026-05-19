@@ -2762,6 +2762,7 @@ def _strategy_evidence_for_export(evidence: pl.DataFrame) -> pl.DataFrame:
             "as_of_date",
             "strategy_candidate",
             "symbol",
+            "regime_state",
             "horizon_hours",
             "source_type",
         ]

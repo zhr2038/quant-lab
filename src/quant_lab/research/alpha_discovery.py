@@ -153,6 +153,7 @@ def build_and_publish_alpha_discovery_board(
             "as_of_date",
             "strategy_candidate",
             "symbol",
+            "regime_state",
             "horizon_hours",
             "source_type",
         ],
@@ -756,6 +757,7 @@ def normalize_alpha_discovery_board_decisions(board: pl.DataFrame) -> pl.DataFra
             "as_of_date",
             "strategy_candidate",
             "symbol",
+            "regime_state",
             "horizon_hours",
             "source_type",
         ]

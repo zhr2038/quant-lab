@@ -167,7 +167,8 @@ def test_alt_impulse_ladder_is_regime_shadow_only():
         win_rate=0.2,
         candidate_name="v5.alt_impulse_shadow",
     )
-    assert decision == "KILL"
+    assert decision == "KEEP_SHADOW"
+    assert "live_disabled" in reasons
     assert "negative_regime_net_edge" in reasons
 
 
@@ -417,10 +418,14 @@ def test_strategy_evidence_uses_historical_shadow_and_blocked_outcomes(tmp_path)
         (pl.col("strategy_candidate") == "v5.alt_impulse_shadow")
         & (pl.col("horizon_hours") == 24)
     ).height == 16
-    assert summary[("v5.alt_impulse_shadow", "ETH-USDT", "impulse", 4)]["decision"] == "KILL"
-    assert summary[("v5.alt_impulse_shadow", "ETH-USDT", "impulse", 24)]["decision"] == "KILL"
+    assert summary[("v5.alt_impulse_shadow", "ETH-USDT", "impulse", 4)]["decision"] == (
+        "KEEP_SHADOW"
+    )
+    assert summary[("v5.alt_impulse_shadow", "ETH-USDT", "impulse", 24)]["decision"] == (
+        "KEEP_SHADOW"
+    )
     assert board_rows[("v5.alt_impulse_shadow", "ETH-USDT", "impulse", 24)]["decision"] == (
-        "KILL"
+        "KEEP_SHADOW"
     )
     assert summary[
         ("v5.sol_protect_alpha6_low_exception", "SOL-USDT", "protect", 24)
@@ -807,6 +812,109 @@ def test_alt_impulse_outcomes_preserve_symbol_horizon_and_complete_counts(tmp_pa
         and row["regime_state"] == "impulse"
         for row in alt_by_symbol_regime
     )
+
+
+def test_alt_impulse_outcomes_are_split_by_regime(tmp_path):
+    lake = tmp_path / "lake"
+    start = datetime(2026, 5, 10, tzinfo=UTC)
+    rows = []
+    for regime_state, net_bps, win in [
+        ("impulse", 55.0, True),
+        ("chop", -35.0, False),
+    ]:
+        for index in range(6):
+            rows.append(
+                {
+                    "strategy": "v5",
+                    "bundle_sha256": f"bundle-{regime_state}",
+                    "bundle_name": f"{regime_state}.tar.gz",
+                    "bundle_ts": start,
+                    "ingest_ts": start,
+                    "source_path_inside_bundle": "summaries/alt_impulse_shadow_outcomes.csv",
+                    "row_index": index,
+                    "event_id": f"alt-{regime_state}-{index}",
+                    "candidate_name": "alt_impulse_shadow",
+                    "ts_utc": (start + timedelta(minutes=index)).isoformat().replace(
+                        "+00:00", "Z"
+                    ),
+                    "symbol": "SOL-USDT",
+                    "regime_state": regime_state,
+                    "label_24h_net_bps": str(net_bps),
+                    "label_24h_status": "complete",
+                    "label_24h_win": str(win).lower(),
+                    "cost_source": "mixed_actual_proxy",
+                }
+            )
+    write_parquet_dataset(pl.DataFrame(rows), lake / "silver" / "v5_shadow_outcome")
+
+    build_and_publish_strategy_evidence(lake, as_of_date="2026-05-10")
+    build_and_publish_alpha_discovery_board(lake, as_of_date="2026-05-10")
+
+    evidence = read_parquet_dataset(lake / "gold" / "strategy_evidence")
+    board = read_parquet_dataset(lake / "gold" / "alpha_discovery_board")
+    alt_evidence = evidence.filter(pl.col("strategy_candidate") == "v5.alt_impulse_shadow")
+    alt_board = board.filter(pl.col("strategy_candidate") == "v5.alt_impulse_shadow")
+    evidence_rows = {
+        (row["symbol"], row["regime_state"], row["horizon_hours"]): row
+        for row in alt_evidence.to_dicts()
+    }
+    board_rows = {
+        (row["symbol"], row["regime_state"], row["horizon_hours"]): row
+        for row in alt_board.to_dicts()
+    }
+
+    assert set(row["regime_state"] for row in alt_evidence.to_dicts()) == {
+        "chop",
+        "impulse",
+    }
+    impulse = evidence_rows[("SOL-USDT", "impulse", 24)]
+    chop = evidence_rows[("SOL-USDT", "chop", 24)]
+    assert impulse["sample_count"] == 6
+    assert impulse["complete_sample_count"] == 6
+    assert impulse["avg_net_bps"] == 55.0
+    assert impulse["decision"] == "REGIME_SHADOW"
+    assert chop["sample_count"] == 6
+    assert chop["complete_sample_count"] == 6
+    assert chop["avg_net_bps"] == -35.0
+    assert chop["decision"] == "KEEP_SHADOW"
+    assert board_rows[("SOL-USDT", "impulse", 24)]["decision"] == "REGIME_SHADOW"
+    assert board_rows[("SOL-USDT", "chop", 24)]["decision"] == "KEEP_SHADOW"
+    assert not set(alt_board["decision"].to_list()) & {"PAPER_READY", "LIVE_SMALL_READY"}
+
+    export = export_daily_pack(
+        export_date="2026-05-10",
+        lake_root=lake,
+        out_dir=tmp_path / "exports",
+        profile="expert",
+        command_line=["qlab", "export-daily"],
+    )
+    with zipfile.ZipFile(export.zip_path) as archive:
+        by_regime = list(
+            csv.DictReader(
+                io.StringIO(
+                    archive.read("research/alt_impulse_shadow_by_regime.csv").decode("utf-8")
+                )
+            )
+        )
+        by_symbol_regime = list(
+            csv.DictReader(
+                io.StringIO(
+                    archive.read(
+                        "research/alt_impulse_shadow_by_symbol_regime_horizon.csv"
+                    ).decode("utf-8")
+                )
+            )
+        )
+    assert {
+        (row["regime_state"], int(row["horizon_hours"]))
+        for row in by_regime
+        if row["strategy_candidate"] == "v5.alt_impulse_shadow"
+    } == {("chop", 24), ("impulse", 24)}
+    assert {
+        (row["symbol"], row["regime_state"], int(row["horizon_hours"]))
+        for row in by_symbol_regime
+        if row["strategy_candidate"] == "v5.alt_impulse_shadow"
+    } == {("SOL-USDT", "chop", 24), ("SOL-USDT", "impulse", 24)}
 
 
 def _write_market_bars(lake: Path) -> None:

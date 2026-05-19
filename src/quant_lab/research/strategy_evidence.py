@@ -1083,8 +1083,9 @@ def _alt_impulse_regime_shadow_decision(
 ) -> tuple[str, list[str]]:
     if complete_sample_count >= 10 and _is_negative_after_cost_edge(avg_net_bps):
         if win_rate is not None and win_rate < 0.45:
-            return "KILL", [
+            return "KEEP_SHADOW", [
                 "alt_impulse_regime_shadow_only",
+                "live_disabled",
                 "negative_regime_net_edge",
                 "win_rate_below_threshold",
             ]

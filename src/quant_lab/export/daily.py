@@ -198,6 +198,7 @@ REQUIRED_MEMBERS = [
     "reports/candidate_shadow_watchlist.csv",
     "reports/candidate_paper_ready.csv",
     "reports/paper_strategy_proposals.csv",
+    "reports/strategy_opportunity_advisory.csv",
     "reports/paper_strategy_runs.csv",
     "reports/paper_strategy_daily.csv",
     "reports/paper_slippage_coverage.csv",
@@ -571,6 +572,29 @@ CSV_SCHEMAS: dict[str, list[str]] = {
         "required_slippage_coverage",
         "as_of_date",
         "created_at",
+    ],
+    "reports/strategy_opportunity_advisory.csv": [
+        "as_of_ts",
+        "symbol",
+        "v5_symbol",
+        "strategy_candidate",
+        "decision",
+        "recommended_mode",
+        "horizon_hours",
+        "sample_count",
+        "complete_sample_count",
+        "avg_net_bps",
+        "p25_net_bps",
+        "win_rate",
+        "cost_source_mix",
+        "cost_quality",
+        "paper_days",
+        "entry_day_count",
+        "paper_pnl_observed_count",
+        "slippage_coverage",
+        "live_block_reasons",
+        "max_paper_notional_usdt",
+        "max_live_notional_usdt",
     ],
     "reports/paper_strategy_runs.csv": [
         "as_of_date",
@@ -1400,9 +1424,19 @@ def _dataset_members(frames: dict[str, pl.DataFrame]) -> dict[str, _MemberPayloa
     strategy_samples = _strategy_evidence_samples_for_export(
         frames.get("strategy_evidence_sample", pl.DataFrame())
     )
-    paper_runs, paper_daily, paper_slippage = _paper_tracking_frames_for_export(frames)
-    gates = frames.get("gate_decision", pl.DataFrame())
     risk = _risk_permissions_for_export(frames.get("risk_permission", pl.DataFrame()), frames)
+    paper_runs, paper_daily, paper_slippage = _paper_tracking_frames_for_export(frames)
+    paper_proposals = _paper_strategy_proposals_for_export(alpha_discovery_board)
+    opportunity_advisory = _strategy_opportunity_advisory_for_export(
+        alpha_discovery_board=alpha_discovery_board,
+        strategy_evidence=strategy_evidence,
+        paper_proposals=paper_proposals,
+        risk_permissions=risk,
+        cost_health=cost_health,
+        paper_daily=paper_daily,
+        paper_slippage=paper_slippage,
+    )
+    gates = frames.get("gate_decision", pl.DataFrame())
     trades = _normalize_symbol_frame(frames.get("trade_print", pl.DataFrame()))
     books = _normalize_symbol_frame(frames.get("orderbook_snapshot", pl.DataFrame()))
     v5_health = frames.get("strategy_health_daily", pl.DataFrame())
@@ -1505,7 +1539,11 @@ def _dataset_members(frames: dict[str, pl.DataFrame]) -> dict[str, _MemberPayloa
         ),
         "reports/paper_strategy_proposals.csv": _csv_member(
             "reports/paper_strategy_proposals.csv",
-            _paper_strategy_proposals_for_export(alpha_discovery_board),
+            paper_proposals,
+        ),
+        "reports/strategy_opportunity_advisory.csv": _csv_member(
+            "reports/strategy_opportunity_advisory.csv",
+            opportunity_advisory,
         ),
         "reports/paper_strategy_runs.csv": _csv_member(
             "reports/paper_strategy_runs.csv",
@@ -3168,6 +3206,267 @@ def _paper_live_block_reasons(row: dict[str, Any]) -> list[str]:
         reasons.append("no_paper_days")
     reasons.append("no_live_slippage_coverage")
     return reasons
+
+
+def _strategy_opportunity_advisory_for_export(
+    *,
+    alpha_discovery_board: pl.DataFrame,
+    strategy_evidence: pl.DataFrame,
+    paper_proposals: pl.DataFrame,
+    risk_permissions: pl.DataFrame,
+    cost_health: pl.DataFrame,
+    paper_daily: pl.DataFrame,
+    paper_slippage: pl.DataFrame,
+) -> pl.DataFrame:
+    path = "reports/strategy_opportunity_advisory.csv"
+    source = (
+        alpha_discovery_board
+        if not alpha_discovery_board.is_empty()
+        else _advisory_board_from_strategy_evidence(strategy_evidence)
+    )
+    if source.is_empty():
+        return _empty_csv_schema_frame(path)
+
+    proposal_by_key = _latest_rows_by_candidate_symbol(paper_proposals)
+    paper_daily_by_key = _latest_rows_by_candidate_symbol(paper_daily)
+    slippage_by_key = _latest_rows_by_candidate_symbol(paper_slippage)
+    risk_context = _advisory_risk_context(risk_permissions)
+    latest_cost_health = _latest_cost_health_context(cost_health)
+
+    rows: list[dict[str, Any]] = []
+    for row in source.to_dicts():
+        symbol = normalize_symbol(row.get("symbol")) or "UNKNOWN"
+        if symbol == "UNKNOWN":
+            continue
+        candidate = str(row.get("strategy_candidate") or row.get("candidate_name") or "").strip()
+        key = (candidate, symbol)
+        proposal = proposal_by_key.get(key, {})
+        paper = paper_daily_by_key.get(key, {})
+        slippage = slippage_by_key.get(key, {})
+        decision = str(row.get("decision") or "RESEARCH_ONLY").strip().upper()
+        recommended_mode = _advisory_recommended_mode(decision)
+        cost_quality = _advisory_cost_quality(row.get("cost_source_mix"), latest_cost_health)
+        slippage_coverage = _optional_float(
+            slippage.get("paper_slippage_coverage")
+            or slippage.get("arrival_mid_coverage")
+            or paper.get("arrival_mid_coverage")
+        )
+        paper_days = _optional_int(paper.get("paper_days") or row.get("paper_days")) or 0
+        entry_day_count = _optional_int(paper.get("entry_day_count")) or 0
+        paper_pnl_observed_count = _optional_int(paper.get("paper_pnl_observed_count")) or 0
+        live_block_reasons = _advisory_live_block_reasons(
+            row=row,
+            proposal=proposal,
+            decision=decision,
+            cost_quality=cost_quality,
+            paper_days=paper_days,
+            entry_day_count=entry_day_count,
+            paper_pnl_observed_count=paper_pnl_observed_count,
+            slippage_coverage=slippage_coverage,
+            risk_context=risk_context,
+        )
+        rows.append(
+            {
+                "as_of_ts": _advisory_as_of_ts(row),
+                "symbol": symbol,
+                "v5_symbol": _v5_symbol(symbol),
+                "strategy_candidate": candidate,
+                "decision": decision,
+                "recommended_mode": recommended_mode,
+                "horizon_hours": _optional_int(row.get("horizon_hours")),
+                "sample_count": _optional_int(row.get("sample_count")),
+                "complete_sample_count": _optional_int(row.get("complete_sample_count")),
+                "avg_net_bps": _optional_float(row.get("avg_net_bps")),
+                "p25_net_bps": _optional_float(row.get("p25_net_bps")),
+                "win_rate": _optional_float(row.get("win_rate")),
+                "cost_source_mix": row.get("cost_source_mix"),
+                "cost_quality": cost_quality,
+                "paper_days": paper_days,
+                "entry_day_count": entry_day_count,
+                "paper_pnl_observed_count": paper_pnl_observed_count,
+                "slippage_coverage": slippage_coverage,
+                "live_block_reasons": safe_json_dumps(live_block_reasons),
+                "max_paper_notional_usdt": _advisory_max_paper_notional(recommended_mode),
+                "max_live_notional_usdt": _advisory_max_live_notional(
+                    decision=decision,
+                    risk_context=risk_context,
+                    live_block_reasons=live_block_reasons,
+                ),
+            }
+        )
+    if not rows:
+        return _empty_csv_schema_frame(path)
+    return (
+        pl.DataFrame(rows)
+        .sort(["strategy_candidate", "symbol", "horizon_hours"])
+        .select(CSV_SCHEMAS[path])
+    )
+
+
+def _advisory_board_from_strategy_evidence(strategy_evidence: pl.DataFrame) -> pl.DataFrame:
+    if strategy_evidence.is_empty():
+        return strategy_evidence
+    return normalize_strategy_evidence_decisions(strategy_evidence)
+
+
+def _latest_rows_by_candidate_symbol(frame: pl.DataFrame) -> dict[tuple[str, str], dict[str, Any]]:
+    rows_by_key: dict[tuple[str, str], dict[str, Any]] = {}
+    if frame.is_empty():
+        return rows_by_key
+    for row in frame.to_dicts():
+        candidate = str(row.get("strategy_candidate") or row.get("candidate_name") or "").strip()
+        symbol = normalize_symbol(row.get("symbol")) or "UNKNOWN"
+        if not candidate or symbol == "UNKNOWN":
+            continue
+        key = (candidate, symbol)
+        current = rows_by_key.get(key)
+        if current is None or _advisory_row_time(row) >= _advisory_row_time(current):
+            rows_by_key[key] = row
+    return rows_by_key
+
+
+def _advisory_row_time(row: dict[str, Any]) -> datetime:
+    for field in ["created_at", "as_of_ts", "as_of_date", "end_ts", "ts_utc"]:
+        value = readers._coerce_timestamp(row.get(field))  # type: ignore[attr-defined]
+        if value is not None:
+            return value
+    return datetime.min.replace(tzinfo=UTC)
+
+
+def _advisory_as_of_ts(row: dict[str, Any]) -> str:
+    value = _advisory_row_time(row)
+    if value == datetime.min.replace(tzinfo=UTC):
+        raw_day = str(row.get("as_of_date") or "").strip()
+        if raw_day:
+            return f"{raw_day[:10]}T00:00:00+00:00"
+        return datetime.now(UTC).isoformat()
+    return value.isoformat()
+
+
+def _v5_symbol(symbol: str) -> str:
+    normalized = normalize_symbol(symbol)
+    if "-" in normalized:
+        base, quote, *_rest = normalized.split("-")
+        return f"{base}/{quote}"
+    return normalized
+
+
+def _advisory_recommended_mode(decision: str) -> str:
+    return {
+        "PAPER_READY": "paper",
+        "KEEP_SHADOW": "shadow",
+        "REGIME_SHADOW": "shadow",
+        "KILL": "none",
+        "LIVE_SMALL_READY": "live_small",
+    }.get(decision, "research")
+
+
+def _advisory_cost_quality(cost_source_mix: Any, latest_cost_health: dict[str, Any]) -> str:
+    sources = {source.lower() for source in _cost_source_mix_items(cost_source_mix)}
+    if not sources:
+        status = str(latest_cost_health.get("status") or "").strip().upper()
+        return "unknown" if not status else f"unknown_cost_mix_health_{status.lower()}"
+    if "global_default" in sources:
+        return "global_default"
+    if any("mixed_actual_proxy" in source or "actual" in source for source in sources):
+        return "actual_or_mixed"
+    if any(source in {"public_spread_proxy", "public_proxy"} for source in sources):
+        return "public_spread_proxy"
+    if "cost_not_requested_no_order" in sources:
+        return "cost_not_requested_no_order"
+    return "unknown"
+
+
+def _latest_cost_health_context(cost_health: pl.DataFrame) -> dict[str, Any]:
+    if cost_health.is_empty():
+        return {}
+    return max(cost_health.to_dicts(), key=_advisory_row_time)
+
+
+def _advisory_risk_context(risk_permissions: pl.DataFrame) -> dict[str, Any]:
+    if risk_permissions.is_empty():
+        return {
+            "permission": "UNKNOWN",
+            "permission_status": "NO_FRESH_PERMISSION",
+            "enforceable": False,
+            "max_single_order_usdt": 0.0,
+        }
+    row = max(risk_permissions.to_dicts(), key=_advisory_row_time)
+    return {
+        "permission": str(row.get("permission") or "ABORT").strip().upper(),
+        "permission_status": str(row.get("permission_status") or "").strip().upper(),
+        "enforceable": bool(row.get("enforceable")),
+        "max_single_order_usdt": _optional_float(row.get("max_single_order_usdt")) or 0.0,
+    }
+
+
+def _advisory_live_block_reasons(
+    *,
+    row: dict[str, Any],
+    proposal: dict[str, Any],
+    decision: str,
+    cost_quality: str,
+    paper_days: int,
+    entry_day_count: int,
+    paper_pnl_observed_count: int,
+    slippage_coverage: float | None,
+    risk_context: dict[str, Any],
+) -> list[str]:
+    reasons = set(_json_listish(row.get("decision_reasons")))
+    reasons.update(_json_listish(proposal.get("live_block_reason")))
+    if decision != "LIVE_SMALL_READY":
+        reasons.add(f"decision_{decision.lower()}")
+    if cost_quality not in {"actual_or_mixed"}:
+        reasons.add("cost_source_not_actual_or_mixed")
+    if paper_days < 14:
+        reasons.add("no_paper_days")
+    if entry_day_count <= 0:
+        reasons.add("no_paper_entries")
+    if paper_pnl_observed_count <= 0:
+        reasons.add("no_paper_pnl_observations")
+    if slippage_coverage is None or slippage_coverage < 0.8:
+        reasons.add("no_live_slippage_coverage")
+    if risk_context.get("permission") != "ALLOW" or not risk_context.get("enforceable"):
+        reasons.add("risk_permission_not_live_allow")
+    if decision == "KILL":
+        reasons.add("candidate_killed")
+    return sorted(reason for reason in reasons if reason)
+
+
+def _json_listish(value: Any) -> list[str]:
+    if value is None:
+        return []
+    if isinstance(value, list):
+        return [str(item) for item in value if str(item).strip()]
+    if isinstance(value, tuple | set):
+        return [str(item) for item in value if str(item).strip()]
+    if isinstance(value, str):
+        text = value.strip()
+        if not text:
+            return []
+        try:
+            parsed = json.loads(text)
+        except json.JSONDecodeError:
+            return [text]
+        return _json_listish(parsed)
+    return [str(value)]
+
+
+def _advisory_max_paper_notional(recommended_mode: str) -> float:
+    return 100.0 if recommended_mode == "paper" else 0.0
+
+
+def _advisory_max_live_notional(
+    *,
+    decision: str,
+    risk_context: dict[str, Any],
+    live_block_reasons: list[str],
+) -> float:
+    if decision != "LIVE_SMALL_READY" or live_block_reasons:
+        return 0.0
+    if risk_context.get("permission") != "ALLOW" or not risk_context.get("enforceable"):
+        return 0.0
+    return max(float(risk_context.get("max_single_order_usdt") or 0.0), 0.0)
 
 
 def _cost_source_mix_has_actual_or_mixed(value: Any) -> bool:

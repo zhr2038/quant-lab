@@ -136,6 +136,7 @@ def test_daily_export_uses_alpha_discovery_board_lists(tmp_path):
         assert "reports/candidate_shadow_watchlist.csv" in names
         assert "reports/candidate_paper_ready.csv" in names
         assert "reports/paper_strategy_proposals.csv" in names
+        assert "reports/strategy_opportunity_advisory.csv" in names
         board = list(
             csv.DictReader(
                 io.StringIO(archive.read("reports/alpha_discovery_board.csv").decode("utf-8"))
@@ -176,6 +177,13 @@ def test_daily_export_uses_alpha_discovery_board_lists(tmp_path):
                 )
             )
         )
+        advisory = list(
+            csv.DictReader(
+                io.StringIO(
+                    archive.read("reports/strategy_opportunity_advisory.csv").decode("utf-8")
+                )
+            )
+        )
         data_quality = json.loads(archive.read("data_quality.json").decode("utf-8"))
         summary = archive.read("reports/strategy_evidence_summary.md").decode("utf-8")
 
@@ -207,6 +215,14 @@ def test_daily_export_uses_alpha_discovery_board_lists(tmp_path):
         json.loads(row["entry_conditions"])["board_decision"] == "PAPER_READY"
         for row in sol_proposals
     )
+    assert advisory
+    paper_advisory = [row for row in advisory if row["decision"] == "PAPER_READY"]
+    assert paper_advisory
+    assert {row["recommended_mode"] for row in paper_advisory} == {"paper"}
+    assert all(float(row["max_live_notional_usdt"] or 0) == 0.0 for row in paper_advisory)
+    kill_advisory = [row for row in advisory if row["decision"] == "KILL"]
+    assert kill_advisory
+    assert {row["recommended_mode"] for row in kill_advisory} == {"none"}
     assert "v5.f3_dominant_entry" in summary
     assert not any(
         str(warning).startswith("strategy_evidence_present")

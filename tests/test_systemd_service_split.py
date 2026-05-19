@@ -71,3 +71,12 @@ def test_web_export_memory_limit_allows_snapshot_packaging():
 
     assert "QUANT_LAB_WEB_EXPORT_MEMORY_LIMIT_MB=3072" in unit
     assert "MemoryMax=5G" in unit
+
+
+def test_manual_okx_ws_defaults_match_production_batching():
+    cli = (ROOT / "src" / "quant_lab" / "cli.py").read_text(encoding="utf-8")
+    readers = (ROOT / "src" / "quant_lab" / "web" / "readers.py").read_text(encoding="utf-8")
+
+    assert "] = 300.0" in cli
+    assert "] = 50_000" in cli
+    assert "--flush-interval-seconds 300 --flush-max-messages 50000" in readers

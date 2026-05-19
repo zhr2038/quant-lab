@@ -397,7 +397,7 @@ def _daily_from_runs(runs: pl.DataFrame, *, as_of_date: date) -> pl.DataFrame:
         entry_days = len({str(row.get("as_of_date") or "") for row in entry_rows})
         pnl_rows = _paper_pnl_rows(entry_rows)
         paper_pnl_days = _paper_pnl_day_count(pnl_rows)
-        latest_reason = _json_list(latest.get("live_block_reason"))
+        latest_reason = _paper_block_reason_list(latest.get("live_block_reason"))
         quality = _paper_cost_quality(run_rows)
         block_reasons = _paper_live_block_reasons(
             heartbeat_day_count=heartbeat_days,
@@ -706,7 +706,7 @@ def enrich_paper_strategy_daily_from_runs(
         )
         updated["live_eligible"] = not block_reasons
         updated["live_block_reason"] = safe_json_dumps(
-            sorted({*_json_list(updated.get("live_block_reason")), *block_reasons})
+            sorted({*_paper_block_reason_list(updated.get("live_block_reason")), *block_reasons})
         )
         enriched.append(updated)
     return pl.DataFrame(enriched, schema=PAPER_DAILY_SCHEMA, orient="row")
@@ -1327,6 +1327,20 @@ def _live_block_reasons(row: dict[str, Any]) -> list[str]:
     if not _cost_source_mix_has_actual_or_mixed(row.get("cost_source_mix")):
         reasons.add("cost_source_not_actual_or_mixed")
     return sorted(reasons)
+
+
+def _paper_block_reason_list(value: Any) -> list[str]:
+    normalized: list[str] = []
+    for reason in _json_list(value):
+        for part in str(reason).replace(",", ";").split(";"):
+            text = part.strip()
+            if not text:
+                continue
+            if text == "no_paper_days":
+                text = "insufficient_paper_pnl_days"
+            if text not in normalized:
+                normalized.append(text)
+    return normalized
 
 
 def _cost_source_mix_has_actual_or_mixed(value: Any) -> bool:

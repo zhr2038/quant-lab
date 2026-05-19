@@ -396,11 +396,7 @@ def _all_parquet_files(dataset_path: str | Path) -> list[Path]:
 
 def _read_parquet_files(files: Sequence[Path]) -> pl.DataFrame:
     try:
-        return pl.read_parquet(
-            [str(path) for path in files],
-            hive_partitioning=False,
-            missing_columns="insert",
-        )
+        return _scan_parquet_files(files).collect()
     except TypeError:
         return pl.read_parquet([str(path) for path in files])
 

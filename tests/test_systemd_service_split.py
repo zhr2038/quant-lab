@@ -35,18 +35,19 @@ def test_candidate_research_refresh_is_separate_from_alpha_evidence():
     assert "--skip-legacy-outcome-counts" in refresh_unit
 
 
-def test_scheduled_compaction_avoids_hot_ws_datasets():
+def test_scheduled_compaction_covers_hot_ws_datasets():
     unit = _unit("quant-lab-lake-compaction.service")
+    timer = _unit("quant-lab-lake-compaction.timer")
 
     assert "compact-lake-dataset" in unit
-    assert "--dataset okx_public_ws" not in unit
-    assert "--dataset bronze/okx_public_ws" not in unit
-    assert "--dataset trade_print" not in unit
-    assert "--dataset silver/trade_print" not in unit
-    assert "--dataset orderbook_snapshot" not in unit
-    assert "--dataset silver/orderbook_snapshot" not in unit
+    assert "--dataset bronze/okx_public_ws" in unit
+    assert "--dataset silver/trade_print" in unit
+    assert "--dataset silver/orderbook_snapshot" in unit
+    assert "--target-rows-per-file 500000" in unit
+    assert "--max-source-files-per-batch 10000" in unit
     assert "bronze/strategy_telemetry/v5/raw_file_index" in unit
     assert "silver/v5_quant_lab_usage" in unit
+    assert "OnUnitActiveSec=2h" in timer
 
 
 def test_daily_export_template_is_packaging_only():

@@ -61,6 +61,30 @@ def test_read_parquet_dataset_inserts_missing_columns_across_schema_versions(tmp
     assert df.filter(pl.col("no_sample_reason").is_null()).height == 1
 
 
+def test_read_parquet_dataset_ignores_extra_columns_across_schema_versions(tmp_path):
+    dataset = tmp_path / "lake" / "bronze" / "okx_public_ws"
+    dataset.mkdir(parents=True)
+    pl.DataFrame(
+        [{"channel": "trades", "inst_id": "BTC-USDT", "raw_json": "{}"}]
+    ).write_parquet(dataset / "part-base.parquet")
+    pl.DataFrame(
+        [
+            {
+                "channel": "trades",
+                "inst_id": "BTC-USDT",
+                "raw_json": "{}",
+                "day": "2026-05-18",
+            }
+        ]
+    ).write_parquet(dataset / "part-with-partition-column.parquet")
+
+    df = read_parquet_dataset(dataset)
+
+    assert df.height == 2
+    assert "day" not in df.columns
+    assert set(df["inst_id"].to_list()) == {"BTC-USDT"}
+
+
 def test_write_parquet_dataset_keeps_previous_data_when_rewrite_fails(tmp_path, monkeypatch):
     dataset = tmp_path / "lake" / "silver" / "orderbook_snapshot"
     write_parquet_dataset(pl.DataFrame([{"symbol": "BTC-USDT", "spread_bps": 1.25}]), dataset)

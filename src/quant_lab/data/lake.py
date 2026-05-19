@@ -397,6 +397,9 @@ def _all_parquet_files(dataset_path: str | Path) -> list[Path]:
 def _read_parquet_files(files: Sequence[Path]) -> pl.DataFrame:
     try:
         return _scan_parquet_files(files).collect()
+    except pl.exceptions.SchemaError:
+        frames = [pl.read_parquet(path) for path in files]
+        return pl.concat(frames, how="diagonal_relaxed") if frames else pl.DataFrame()
     except TypeError:
         return pl.read_parquet([str(path) for path in files])
 

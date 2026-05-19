@@ -85,6 +85,23 @@ def test_read_parquet_dataset_ignores_extra_columns_across_schema_versions(tmp_p
     assert set(df["inst_id"].to_list()) == {"BTC-USDT"}
 
 
+def test_read_parquet_dataset_relaxes_null_string_schema_versions(tmp_path):
+    dataset = tmp_path / "lake" / "gold" / "job_run_history"
+    dataset.mkdir(parents=True)
+    pl.DataFrame([{"job_name": "ok", "error_type": None}]).write_parquet(
+        dataset / "part-null.parquet"
+    )
+    pl.DataFrame([{"job_name": "failed", "error_type": "SchemaError"}]).write_parquet(
+        dataset / "part-string.parquet"
+    )
+
+    df = read_parquet_dataset(dataset)
+
+    assert df.height == 2
+    assert df.schema["error_type"] == pl.String
+    assert set(df["job_name"].to_list()) == {"ok", "failed"}
+
+
 def test_write_parquet_dataset_keeps_previous_data_when_rewrite_fails(tmp_path, monkeypatch):
     dataset = tmp_path / "lake" / "silver" / "orderbook_snapshot"
     write_parquet_dataset(pl.DataFrame([{"symbol": "BTC-USDT", "spread_bps": 1.25}]), dataset)

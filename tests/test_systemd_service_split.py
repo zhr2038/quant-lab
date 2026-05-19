@@ -55,6 +55,8 @@ def test_scheduled_compaction_covers_hot_ws_datasets():
     assert '"bronze/strategy_telemetry/v5/raw_file_index"' in script
     assert '"silver/v5_quant_lab_usage"' in script
     assert '"silver/v5_candidate_event"' in script
+    assert '"gold/job_run_history"' in script
+    assert '"bronze/api_request_metrics"' in script
     assert "OnUnitActiveSec=2h" in timer
 
 

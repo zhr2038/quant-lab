@@ -37,6 +37,11 @@ V5_TELEMETRY_DATASETS=(
   "silver/v5_trade_event"
 )
 
+OPS_DATASETS=(
+  "bronze/api_request_metrics"
+  "gold/job_run_history"
+)
+
 compact_dataset() {
   local dataset="$1"
   local target_rows="$2"
@@ -80,6 +85,10 @@ for dataset in "${HOT_DATASETS[@]}"; do
 done
 
 for dataset in "${V5_TELEMETRY_DATASETS[@]}"; do
+  compact_if_file_count_at_least "${dataset}" 250000 5000 100
+done
+
+for dataset in "${OPS_DATASETS[@]}"; do
   compact_if_file_count_at_least "${dataset}" 250000 5000 100
 done
 

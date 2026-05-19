@@ -412,6 +412,11 @@ def _read_parquet_files(files: Sequence[Path]) -> pl.DataFrame:
     except pl.exceptions.SchemaError:
         frames = [pl.read_parquet(path) for path in files]
         return pl.concat(frames, how="diagonal_relaxed") if frames else pl.DataFrame()
+    except Exception as exc:
+        if not _is_parquet_schema_compat_error(exc):
+            raise
+        frames = [pl.read_parquet(path) for path in files]
+        return pl.concat(frames, how="diagonal_relaxed") if frames else pl.DataFrame()
     except TypeError:
         return pl.read_parquet([str(path) for path in files])
 
@@ -426,6 +431,20 @@ def _scan_parquet_files(files: Sequence[Path]) -> pl.LazyFrame:
         )
     except TypeError:
         return pl.scan_parquet([str(path) for path in files])
+
+
+def _is_parquet_schema_compat_error(exc: Exception) -> bool:
+    message = str(exc).lower()
+    return any(
+        marker in message
+        for marker in [
+            "extra column",
+            "outside of expected schema",
+            "schema",
+            "not found",
+            "did not match",
+        ]
+    )
 
 
 def _is_valid_parquet_file(path: Path) -> bool:

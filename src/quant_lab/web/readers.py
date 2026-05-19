@@ -228,7 +228,7 @@ def read_recent_dataset_with_warning(
     row_limit = limit or WEB_HEAVY_DATASET_LIMITS.get(dataset_name, DISPLAY_LIMIT)
     hours = lookback_hours or WEB_RECENT_LOOKBACK_HOURS.get(dataset_name, 6)
     try:
-        lazy = pl.scan_parquet([str(file_path) for file_path in files])
+        lazy = _scan_parquet_files(files)
         frame = _collect_recent_lazy_frame(
             lazy,
             dataset_name,
@@ -348,7 +348,7 @@ def _dataset_snapshot(
         )
 
     try:
-        lazy = pl.scan_parquet([str(file_path) for file_path in files])
+        lazy = _scan_parquet_files(files)
         schema = lazy.collect_schema()
         rows = int(lazy.select(pl.len().alias("rows")).collect().item())
         latest, column = _latest_lazy_timestamp(
@@ -373,6 +373,18 @@ def _dataset_snapshot(
         freshness=_freshness_payload(latest, column, is_empty=rows == 0, now=now),
         warning=warning,
     )
+
+
+def _scan_parquet_files(files: list[Path]) -> pl.LazyFrame:
+    try:
+        return pl.scan_parquet(
+            [str(file_path) for file_path in files],
+            hive_partitioning=False,
+            missing_columns="insert",
+            extra_columns="ignore",
+        )
+    except TypeError:
+        return pl.scan_parquet([str(file_path) for file_path in files])
 
 
 def _heavy_dataset_snapshot(

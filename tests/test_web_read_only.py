@@ -146,6 +146,37 @@ def test_data_health_hides_pending_v5_paper_telemetry(tmp_path):
     assert "v5_paper_slippage_coverage" not in datasets
 
 
+def test_data_health_reads_v5_paper_run_schema_evolution_without_warning(tmp_path):
+    dataset = tmp_path / "lake" / "silver" / "v5_paper_strategy_run"
+    dataset.mkdir(parents=True)
+    pl.DataFrame(
+        [
+            {
+                "strategy_id": "SOL_PAPER",
+                "symbol": "SOL-USDT",
+                "created_at": datetime.now(UTC),
+            }
+        ]
+    ).write_parquet(dataset / "part-old.parquet")
+    pl.DataFrame(
+        [
+            {
+                "strategy_id": "SOL_PAPER",
+                "symbol": "SOL-USDT",
+                "created_at": datetime.now(UTC),
+                "arrival_mid": 150.0,
+                "estimated_spread_bps": 1.5,
+            }
+        ]
+    ).write_parquet(dataset / "part-new.parquet")
+
+    states = {state.name: state for state in readers.dataset_states(tmp_path / "lake")}
+
+    state = states["v5_paper_strategy_run"]
+    assert state.rows == 2
+    assert state.warning is None
+
+
 def test_data_health_treats_v5_trades_as_event_driven_when_telemetry_is_current(
     tmp_path,
 ):

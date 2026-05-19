@@ -74,6 +74,11 @@ compact_if_file_count_at_least() {
   compact_dataset "${dataset}" "${target_rows}" "${batch_files}"
 }
 
+cleanup_internal_compaction_dirs() {
+  find "${LAKE_ROOT}" -type d \( -name '__*_backup_*' -o -name '__*_compact_*' \) \
+    -prune -print -exec rm -rf {} +
+}
+
 compact_if_file_count_at_least "bronze/okx_public_ws" 500000 50 120
 compact_if_file_count_at_least "silver/trade_print" 500000 50 40
 
@@ -88,5 +93,7 @@ done
 for dataset in "${OPS_DATASETS[@]}"; do
   compact_if_file_count_at_least "${dataset}" 250000 100 20
 done
+
+cleanup_internal_compaction_dirs
 
 "${QLAB_BIN}" lake-health --lake-root "${LAKE_ROOT}"

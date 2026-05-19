@@ -277,3 +277,23 @@ def test_compact_parquet_dataset_preserves_rows_and_reduces_files(tmp_path):
     assert result.output_file_count == 1
     assert read_back.height == 5
     assert sorted(read_back["value"].to_list()) == list(range(5))
+
+
+def test_read_parquet_dataset_ignores_internal_compaction_and_temp_files(tmp_path):
+    dataset = tmp_path / "lake" / "silver" / "v5_config_audit"
+    dataset.mkdir(parents=True)
+    pl.DataFrame([{"value": "live"}]).write_parquet(dataset / "data.parquet")
+
+    backup = dataset.parent / "__v5_config_audit_backup_deadbeef"
+    backup.mkdir()
+    pl.DataFrame([{"value": "backup"}]).write_parquet(backup / "data.parquet")
+    pl.DataFrame([{"value": "temp"}]).write_parquet(
+        dataset.parent / ".v5_config_audit.orphan.tmp.parquet"
+    )
+    temp_dir = dataset / "._tmp"
+    temp_dir.mkdir()
+    pl.DataFrame([{"value": "hidden_tmp"}]).write_parquet(temp_dir / "staged.tmp.parquet")
+
+    read_back = read_parquet_dataset(dataset)
+
+    assert read_back["value"].to_list() == ["live"]

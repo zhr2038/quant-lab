@@ -390,11 +390,19 @@ def _parquet_files(dataset_path: str | Path) -> list[Path]:
 def _all_parquet_files(dataset_path: str | Path) -> list[Path]:
     path = Path(dataset_path)
     if path.is_file() and path.suffix == ".parquet":
-        return [path]
+        return [] if _is_internal_lake_file(path) else [path]
     if not path.exists():
         return []
     return sorted(
-        candidate for candidate in path.rglob("*.parquet") if "._tmp" not in candidate.parts
+        candidate for candidate in path.rglob("*.parquet") if not _is_internal_lake_file(candidate)
+    )
+
+
+def _is_internal_lake_file(path: Path) -> bool:
+    return (
+        any(part == "._tmp" or part.startswith("__") for part in path.parts)
+        or path.name.startswith(".")
+        or path.name.endswith(".tmp.parquet")
     )
 
 

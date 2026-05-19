@@ -3297,7 +3297,7 @@ def _strategy_opportunity_advisory_for_export(
     if not rows:
         return _empty_csv_schema_frame(path)
     return (
-        pl.DataFrame(rows)
+        pl.DataFrame(rows, infer_schema_length=None)
         .sort(["strategy_candidate", "symbol", "horizon_hours"])
         .select(CSV_SCHEMAS[path])
     )

@@ -292,6 +292,71 @@ def test_paper_strategy_proposals_use_latest_board_date(tmp_path):
     )
 
 
+def test_strategy_opportunity_advisory_handles_mixed_numeric_columns(tmp_path):
+    lake = tmp_path / "lake"
+    board_rows = [
+        _board_row(
+            strategy_candidate="v5.multi_position_k2",
+            symbol="BTC-USDT",
+            source_type="multi_position_swing_shadow_outcome",
+            avg_net_bps=-25.0,
+            decision="KILL",
+            cost_source_mix='[{"cost_source":"mixed_actual_proxy","count":12}]',
+        ),
+        _board_row(
+            strategy_candidate="v5.f4_volume_expansion_entry",
+            symbol="SOL-USDT",
+            source_type="factor_contribution_outcome",
+            avg_net_bps=42.0,
+            decision="PAPER_READY",
+            cost_source_mix='[{"cost_source":"public_spread_proxy","count":72}]',
+        ),
+    ]
+    write_parquet_dataset(pl.DataFrame(board_rows), lake / "gold" / "alpha_discovery_board")
+    write_parquet_dataset(
+        pl.DataFrame(
+            [
+                {
+                    "as_of_date": "2026-05-10",
+                    "strategy_candidate": "v5.f4_volume_expansion_entry",
+                    "symbol": "SOL-USDT",
+                    "paper_days": 2,
+                    "paper_slippage_coverage": 0.727273,
+                    "arrival_mid_coverage": 0.9,
+                }
+            ]
+        ),
+        lake / "gold" / "paper_slippage_coverage",
+    )
+
+    result = export_daily_pack(
+        export_date="2026-05-10",
+        lake_root=lake,
+        out_dir=tmp_path / "exports",
+        profile="expert",
+        command_line=["qlab", "export-daily"],
+        pre_export_v5_refresh=False,
+    )
+
+    with zipfile.ZipFile(result.zip_path) as archive:
+        rows = list(
+            csv.DictReader(
+                io.StringIO(
+                    archive.read("reports/strategy_opportunity_advisory.csv").decode("utf-8")
+                )
+            )
+        )
+
+    assert {row["strategy_candidate"] for row in rows} == {
+        "v5.f4_volume_expansion_entry",
+        "v5.multi_position_k2",
+    }
+    sol = next(row for row in rows if row["symbol"] == "SOL-USDT")
+    assert sol["recommended_mode"] == "paper"
+    assert float(sol["max_live_notional_usdt"]) == 0.0
+    assert sol["slippage_coverage"] == "0.727273"
+
+
 def test_sol_paper_strategy_tracking_waits_for_v5_telemetry(tmp_path):
     lake = tmp_path / "lake"
     rows = [

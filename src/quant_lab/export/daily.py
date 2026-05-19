@@ -673,6 +673,7 @@ CSV_SCHEMAS: dict[str, list[str]] = {
         "arrival_mid_coverage",
         "spread_observation_coverage",
         "cost_source_mix",
+        "missing_cost_source_count",
         "live_eligible",
         "live_block_reason",
         "created_at",
@@ -692,6 +693,7 @@ CSV_SCHEMAS: dict[str, list[str]] = {
         "arrival_mid_coverage",
         "spread_observation_coverage",
         "cost_source_mix",
+        "missing_cost_source_count",
         "coverage_status",
         "paper_tracking_status",
         "tracking_stage",
@@ -1380,7 +1382,7 @@ def _paper_tracking_frames_for_export(
             )
         if daily.is_empty() and not runs.is_empty():
             daily = build_paper_strategy_daily_from_runs(runs, as_of_date=export_day)
-        slippage = build_paper_slippage_coverage_from_v5(v5_slippage_raw)
+        slippage = build_paper_slippage_coverage_from_v5(v5_slippage_raw, daily=daily)
         if slippage.is_empty() and not daily.is_empty():
             slippage = build_paper_slippage_coverage(daily, as_of_date=export_day)
         return report_runs if not report_runs.is_empty() else runs, daily, slippage

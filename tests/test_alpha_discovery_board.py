@@ -543,6 +543,75 @@ def test_paper_strategy_tracking_uses_v5_telemetry_when_present(tmp_path):
     }
 
 
+def test_paper_daily_and_slippage_use_run_cost_source_mix(tmp_path):
+    lake = tmp_path / "lake"
+    run_rows = [
+        {
+            "as_of_date": f"2026-05-{day:02d}",
+            "proposal_id": "SOL_F4_VOLUME_EXPANSION_PAPER_V1",
+            "strategy_candidate": "v5.f4_volume_expansion_entry",
+            "symbol": "SOL-USDT",
+            "would_enter": "true",
+            "paper_pnl_bps": "12.5",
+            "arrival_bid": "172.10",
+            "arrival_ask": "172.14",
+            "arrival_mid": "172.12",
+            "cost_source": "mixed_actual_proxy",
+            "raw_payload_json": "{}",
+            "bundle_ts": datetime(2026, 5, 18, 12, tzinfo=UTC),
+        }
+        for day in [17, 18]
+    ]
+    write_parquet_dataset(
+        pl.DataFrame(run_rows),
+        lake / "silver" / "v5_paper_strategy_run",
+    )
+    write_parquet_dataset(
+        pl.DataFrame(
+            [
+                {
+                    "as_of_date": "2026-05-18",
+                    "proposal_id": "SOL_F4_VOLUME_EXPANSION_PAPER_V1",
+                    "strategy_candidate": "v5.f4_volume_expansion_entry",
+                    "symbol": "SOL-USDT",
+                    "paper_days": "2",
+                    "cost_source_mix": '{"missing":22}',
+                    "raw_payload_json": "{}",
+                    "bundle_ts": datetime(2026, 5, 18, 12, tzinfo=UTC),
+                }
+            ]
+        ),
+        lake / "silver" / "v5_paper_strategy_daily",
+    )
+    write_parquet_dataset(
+        pl.DataFrame(
+            [
+                {
+                    "as_of_date": "2026-05-18",
+                    "proposal_id": "SOL_F4_VOLUME_EXPANSION_PAPER_V1",
+                    "strategy_candidate": "v5.f4_volume_expansion_entry",
+                    "symbol": "SOL-USDT",
+                    "paper_days": "2",
+                    "paper_slippage_coverage": "1.0",
+                    "cost_source_mix": '{"public_spread_proxy":22}',
+                    "raw_payload_json": "{}",
+                    "bundle_ts": datetime(2026, 5, 18, 12, tzinfo=UTC),
+                }
+            ]
+        ),
+        lake / "silver" / "v5_paper_slippage_coverage",
+    )
+
+    build_and_publish_paper_strategy_tracking(lake, as_of_date="auto")
+
+    daily = read_parquet_dataset(lake / "gold" / "paper_strategy_daily").to_dicts()[0]
+    slippage = read_parquet_dataset(lake / "gold" / "paper_slippage_coverage").to_dicts()[0]
+    assert json.loads(daily["cost_source_mix"]) == {"mixed_actual_proxy": 2}
+    assert json.loads(slippage["cost_source_mix"]) == {"mixed_actual_proxy": 2}
+    assert daily["missing_cost_source_count"] == 0
+    assert slippage["missing_cost_source_count"] == 0
+
+
 def test_paper_strategy_tracking_blocks_live_without_real_cost_quality(tmp_path):
     lake = tmp_path / "lake"
     rows = [

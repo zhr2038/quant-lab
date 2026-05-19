@@ -436,6 +436,13 @@ class RiskPermission(ContractModel):
     permission_status: RiskPermissionStatus | None = None
     enforceable: bool | None = None
     risk_reason_codes: list[str] = Field(default_factory=list)
+    system_safety_status: str | None = None
+    core_alpha_gate_status: str | None = None
+    core_alpha_dead: bool = False
+    strategy_opportunities_available: bool = False
+    allowed_advisory_modes: list[str] = Field(default_factory=list)
+    allowed_live_modes: list[str] = Field(default_factory=list)
+    live_block_reasons: list[str] = Field(default_factory=list)
 
     @model_validator(mode="before")
     @classmethod
@@ -454,6 +461,22 @@ class RiskPermission(ContractModel):
                 except json.JSONDecodeError:
                     reasons = [reasons] if reasons else []
             normalized.setdefault("reason", reasons[0] if reasons else None)
+            for list_field in [
+                "allowed_advisory_modes",
+                "allowed_live_modes",
+                "live_block_reasons",
+            ]:
+                value = normalized.get(list_field)
+                if isinstance(value, str):
+                    try:
+                        import json
+
+                        parsed = json.loads(value)
+                        normalized[list_field] = (
+                            parsed if isinstance(parsed, list) else [str(parsed)]
+                        )
+                    except json.JSONDecodeError:
+                        normalized[list_field] = [value] if value else []
             return normalized
         return data
 

@@ -9,6 +9,11 @@ from pydantic import BaseModel, ConfigDict, Field
 from quant_lab.contracts.models import GateDecision, RiskPermission, RiskPermissionStatus
 from quant_lab.contracts.v5_quant_lab import RISK_PERMISSION_CONTRACT_VERSION
 from quant_lab.data.lake import read_parquet_dataset, upsert_parquet_dataset
+from quant_lab.risk.advisory import (
+    apply_risk_advisory_context,
+    build_risk_advisory_context,
+    json_list,
+)
 from quant_lab.risk.permissions import evaluate_live_permission
 
 GATE_DECISION_DATASET = Path("gold") / "gate_decision"
@@ -44,6 +49,13 @@ RISK_PERMISSION_SCHEMA = {
     "permission_status": pl.Utf8,
     "enforceable": pl.Boolean,
     "risk_reason_codes": pl.Utf8,
+    "system_safety_status": pl.Utf8,
+    "core_alpha_gate_status": pl.Utf8,
+    "core_alpha_dead": pl.Boolean,
+    "strategy_opportunities_available": pl.Boolean,
+    "allowed_advisory_modes": pl.Utf8,
+    "allowed_live_modes": pl.Utf8,
+    "live_block_reasons": pl.Utf8,
     "source": pl.Utf8,
     "fallback_level": pl.Utf8,
 }
@@ -86,6 +98,16 @@ def publish_risk_permission(
         gate_decisions=gate_decisions,
         cost_health=cost_health,
         data_health=data_health,
+    )
+    permission = apply_risk_advisory_context(
+        permission,
+        build_risk_advisory_context(
+            root,
+            gate_decisions=gate_decisions,
+            data_health=data_health,
+            cost_health=cost_health,
+            telemetry_reasons=telemetry_reasons,
+        ),
     )
     permission = annotate_risk_permission(
         permission,
@@ -335,6 +357,9 @@ def risk_permission_row(permission: RiskPermission) -> dict[str, Any]:
         "source": "research.risk_permission.v0.1",
         "fallback_level": "NONE",
         "risk_reason_codes": _json(permission.risk_reason_codes or permission.reasons),
+        "allowed_advisory_modes": _json(permission.allowed_advisory_modes),
+        "allowed_live_modes": _json(permission.allowed_live_modes),
+        "live_block_reasons": _json(permission.live_block_reasons),
     }
 
 
@@ -349,6 +374,9 @@ def parse_risk_permission_row(row: dict[str, Any]) -> RiskPermission | None:
         cleaned["reasons"] = _json_list(cleaned["reasons"])
     if isinstance(cleaned.get("risk_reason_codes"), str):
         cleaned["risk_reason_codes"] = _json_list(cleaned["risk_reason_codes"])
+    for field in ["allowed_advisory_modes", "allowed_live_modes", "live_block_reasons"]:
+        if isinstance(cleaned.get(field), str):
+            cleaned[field] = json_list(cleaned[field])
     for field in [
         "as_of_ts",
         "source_bundle_ts",

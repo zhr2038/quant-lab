@@ -102,6 +102,30 @@ def test_live_permission_api_aborts_on_v5_gate_compliance_violation(tmp_path, mo
     assert "v5_gate_compliance_violation" in payload["reasons"]
 
 
+def test_live_permission_api_allows_advisory_modes_when_core_alpha_dead(
+    tmp_path,
+    monkeypatch,
+):
+    lake = tmp_path / "lake"
+    monkeypatch.setenv("QUANT_LAB_LAKE_ROOT", str(lake))
+    _write_gate(lake, GateStatus.DEAD, alpha_id="v5.core.momentum")
+    _write_cost_bucket(lake)
+    _write_fresh_market_bar(lake)
+    _write_alpha_discovery_board(lake, decision="PAPER_READY")
+
+    payload = _get_permission("v5")
+
+    assert payload["permission"] == "ABORT"
+    assert payload["permission"] != "ALLOW"
+    assert payload["core_alpha_gate_status"] == "DEAD"
+    assert payload["core_alpha_dead"] is True
+    assert payload["system_safety_status"] == "SAFE_FOR_ADVISORY"
+    assert payload["strategy_opportunities_available"] is True
+    assert payload["allowed_advisory_modes"] == ["shadow", "paper"]
+    assert payload["allowed_live_modes"] == []
+    assert "core_alpha_dead" in payload["live_block_reasons"]
+
+
 def test_live_permission_api_reads_published_risk_permission(tmp_path, monkeypatch):
     lake = tmp_path / "lake"
     monkeypatch.setenv("QUANT_LAB_LAKE_ROOT", str(lake))
@@ -501,9 +525,9 @@ def _get_permission(strategy: str) -> dict:
     return response.json()
 
 
-def _write_gate(lake, status: GateStatus) -> None:
+def _write_gate(lake, status: GateStatus, alpha_id: str = "alpha-test") -> None:
     decision = GateDecision(
-        alpha_id="alpha-test",
+        alpha_id=alpha_id,
         version="v1",
         gate_version="default-v0.1",
         status=status,
@@ -516,6 +540,35 @@ def _write_gate(lake, status: GateStatus) -> None:
     write_parquet_dataset(
         pl.DataFrame([decision | {"strategy": "v5"}]),
         lake / "gold/gate_decision",
+    )
+
+
+def _write_alpha_discovery_board(lake, decision: str) -> None:
+    write_parquet_dataset(
+        pl.DataFrame(
+            [
+                {
+                    "strategy": "v5",
+                    "as_of_date": datetime.now(UTC).date().isoformat(),
+                    "strategy_candidate": "v5.f4_volume_expansion_entry",
+                    "candidate_name": "v5.f4_volume_expansion_entry",
+                    "source_type": "test",
+                    "symbol": "SOL-USDT",
+                    "regime_state": "trend",
+                    "horizon_hours": 24,
+                    "sample_count": 72,
+                    "complete_sample_count": 72,
+                    "avg_net_bps": 42.0,
+                    "p25_net_bps": 3.0,
+                    "win_rate": 0.72,
+                    "cost_source_mix": '[{"cost_source":"public_spread_proxy","count":72}]',
+                    "decision": decision,
+                    "decision_reasons": '["paper_ready_thresholds_met"]',
+                    "created_at": datetime.now(UTC),
+                }
+            ]
+        ),
+        lake / "gold/alpha_discovery_board",
     )
 
 

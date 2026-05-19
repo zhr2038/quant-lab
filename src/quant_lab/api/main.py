@@ -31,6 +31,7 @@ from quant_lab.data.lake import read_market_bars, read_parquet_dataset
 from quant_lab.gates.defaults import evaluate_alpha_gate
 from quant_lab.ops.metrics import api_metrics_summary, record_api_request
 from quant_lab.research.bootstrap_gold import BOOTSTRAP_GATE_VERSION
+from quant_lab.risk.advisory import apply_risk_advisory_context, build_risk_advisory_context
 from quant_lab.risk.permissions import evaluate_live_permission
 from quant_lab.risk.publish import (
     DEFAULT_TELEMETRY_STALE_THRESHOLD_SECONDS,
@@ -360,6 +361,12 @@ def _live_permission_evaluation(
             recomputed,
             telemetry_latest_ts=telemetry_latest_ts,
         )
+    permission = apply_risk_advisory_context(
+        permission,
+        computed["advisory_context"],
+    )
+    if not is_permission_status_enforceable(permission.permission_status):
+        permission = _clear_non_enforceable_live_modes(permission)
     return {
         "permission": permission,
         "permission_source": source,
@@ -428,6 +435,14 @@ def _compute_live_permission_with_context(
                 )
             }
         )
+        advisory_context = build_risk_advisory_context(
+            lake_root,
+            gate_decisions=gate_decisions,
+            data_health=data_health,
+            cost_health=cost_health,
+            telemetry_reasons=telemetry_reasons,
+        )
+        permission = apply_risk_advisory_context(permission, advisory_context)
         return {
             "permission": annotate_risk_permission(
                 permission,
@@ -435,6 +450,7 @@ def _compute_live_permission_with_context(
                 as_of_ts=datetime.now(UTC),
                 threshold_seconds=DEFAULT_TELEMETRY_STALE_THRESHOLD_SECONDS,
             ),
+            "advisory_context": advisory_context,
             "data_health": data_health,
             "cost_health": cost_health,
             "gate_summary": _gate_summary(gate_decisions),
@@ -449,6 +465,14 @@ def _compute_live_permission_with_context(
         cost_health=cost_health,
         data_health=data_health,
     )
+    advisory_context = build_risk_advisory_context(
+        lake_root,
+        gate_decisions=gate_decisions,
+        data_health=data_health,
+        cost_health=cost_health,
+        telemetry_reasons=telemetry_reasons,
+    )
+    permission = apply_risk_advisory_context(permission, advisory_context)
     return {
         "permission": annotate_risk_permission(
             permission,
@@ -456,6 +480,7 @@ def _compute_live_permission_with_context(
             as_of_ts=datetime.now(UTC),
             threshold_seconds=DEFAULT_TELEMETRY_STALE_THRESHOLD_SECONDS,
         ),
+        "advisory_context": advisory_context,
         "data_health": data_health,
         "cost_health": cost_health,
         "gate_summary": _gate_summary(gate_decisions),
@@ -914,8 +939,23 @@ def _force_no_fresh_permission(
             "telemetry_latest_ts": _ensure_utc(telemetry_latest_ts),
             "permission_status": RiskPermissionStatus.NO_FRESH_PERMISSION,
             "enforceable": False,
+            "allowed_live_modes": [],
+            "live_block_reasons": _dedupe(
+                [*permission.live_block_reasons, "no_fresh_published_permission"]
+            ),
             "risk_reason_codes": risk_reason_codes,
             "reason": reason,
+        }
+    )
+
+
+def _clear_non_enforceable_live_modes(permission: RiskPermission) -> RiskPermission:
+    return permission.model_copy(
+        update={
+            "allowed_live_modes": [],
+            "live_block_reasons": _dedupe(
+                [*permission.live_block_reasons, "risk_permission_not_enforceable"]
+            ),
         }
     )
 

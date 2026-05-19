@@ -571,7 +571,7 @@ def test_paper_strategy_tracking_blocks_live_without_real_cost_quality(tmp_path)
     ]
     write_parquet_dataset(pl.DataFrame(rows), lake / "silver" / "v5_paper_strategy_run")
 
-    result = build_and_publish_paper_strategy_tracking(lake, as_of_date="2026-05-18")
+    result = build_and_publish_paper_strategy_tracking(lake, as_of_date="auto")
 
     daily = read_parquet_dataset(lake / "gold" / "paper_strategy_daily")
     row = daily.to_dicts()[0]

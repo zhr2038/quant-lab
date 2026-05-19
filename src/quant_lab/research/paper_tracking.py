@@ -1079,7 +1079,9 @@ def _resolve_as_of_date(board: pl.DataFrame, value: str | date | None) -> date:
     if isinstance(value, date):
         return value
     if isinstance(value, str) and value.strip():
-        return date.fromisoformat(value.strip())
+        normalized = value.strip().lower()
+        if normalized != "auto":
+            return date.fromisoformat(value.strip())
     if not board.is_empty() and "as_of_date" in board.columns:
         values = [
             str(item).strip()

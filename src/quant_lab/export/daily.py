@@ -37,6 +37,7 @@ from quant_lab.research.paper_tracking import (
     build_paper_strategy_daily_from_runs,
     build_paper_strategy_daily_from_v5,
     build_paper_strategy_runs_from_v5,
+    build_paper_strategy_runs_report_from_v5,
     enrich_paper_strategy_daily_from_runs,
     latest_v5_paper_frame,
 )
@@ -572,8 +573,11 @@ CSV_SCHEMAS: dict[str, list[str]] = {
     ],
     "reports/paper_strategy_runs.csv": [
         "as_of_date",
+        "strategy_id",
         "proposal_id",
         "strategy_candidate",
+        "run_id",
+        "ts_utc",
         "symbol",
         "recommended_mode",
         "board_decision",
@@ -585,12 +589,20 @@ CSV_SCHEMAS: dict[str, list[str]] = {
         "would_size_usdt",
         "paper_pnl_bps",
         "paper_pnl_usdt",
+        "final_decision",
+        "no_sample_reason",
+        "risk_level",
+        "alpha6_score",
+        "alpha6_side",
+        "f4_volume_expansion",
+        "f5_rsi_trend_confirm",
         "arrival_bid",
         "arrival_ask",
         "arrival_mid",
         "estimated_spread_bps",
         "expected_order_type",
         "estimated_fill_px",
+        "cost_source",
         "paper_tracking_status",
         "tracking_stage",
         "sample_count",
@@ -602,6 +614,10 @@ CSV_SCHEMAS: dict[str, list[str]] = {
         "live_block_reason",
         "required_paper_days",
         "required_slippage_coverage",
+        "label_status",
+        "source_path_inside_bundle",
+        "bundle_ts",
+        "ingest_ts",
         "created_at",
         "source",
         "schema_version",
@@ -1323,6 +1339,7 @@ def _paper_tracking_frames_for_export(
         not frame.is_empty()
         for frame in [v5_runs_raw, v5_daily_raw, v5_slippage_raw]
     ):
+        report_runs = build_paper_strategy_runs_report_from_v5(v5_runs_raw)
         runs = build_paper_strategy_runs_from_v5(v5_runs_raw)
         export_day = _latest_paper_tracking_date(
             [runs, v5_daily_raw, v5_slippage_raw],
@@ -1339,7 +1356,7 @@ def _paper_tracking_frames_for_export(
         slippage = build_paper_slippage_coverage_from_v5(v5_slippage_raw)
         if slippage.is_empty() and not daily.is_empty():
             slippage = build_paper_slippage_coverage(daily, as_of_date=export_day)
-        return runs, daily, slippage
+        return report_runs if not report_runs.is_empty() else runs, daily, slippage
 
     return (
         frames.get("paper_strategy_runs", pl.DataFrame()),

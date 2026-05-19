@@ -588,6 +588,8 @@ def test_export_daily_prefers_v5_paper_telemetry_over_pending_gold(tmp_path):
                 {
                     "paper_date": "2026-05-18",
                     "strategy_id": proposal_id,
+                    "run_id": f"run_{index}",
+                    "ts_utc": f"2026-05-18T0{index}:00:00Z",
                     "experiment_name": candidate,
                     "symbol": "SOL-USDT",
                     "recommended_mode": "paper",
@@ -597,6 +599,19 @@ def test_export_daily_prefers_v5_paper_telemetry_over_pending_gold(tmp_path):
                     "would_size": "0",
                     "paper_pnl": "",
                     "paper_pnl_bps": "",
+                    "final_decision": "heartbeat",
+                    "no_sample_reason": "heartbeat_no_candidate",
+                    "risk_level": "shadow",
+                    "alpha6_score": "0.77",
+                    "alpha6_side": "long",
+                    "f4_volume_expansion": "true",
+                    "f5_rsi_trend_confirm": "false",
+                    "arrival_bid": "170.0",
+                    "arrival_ask": "170.1",
+                    "arrival_mid": "170.05",
+                    "estimated_spread_bps": "5.88",
+                    "cost_source": "public_spread_proxy",
+                    "label_status": "heartbeat",
                     "required_paper_days": "14",
                     "required_slippage_coverage": "0.8",
                     "bundle_ts": datetime(2026, 5, 18, 12, tzinfo=UTC),
@@ -704,6 +719,15 @@ def test_export_daily_prefers_v5_paper_telemetry_over_pending_gold(tmp_path):
     assert {row["tracking_stage"] for row in runs} == {"active_paper_strategy"}
     assert {row["would_enter"] for row in runs} == {"False"}
     assert {row["paper_pnl_usdt"] for row in runs} == {""}
+    assert {row["strategy_id"] for row in runs} == {
+        "SOL_F4_VOLUME_EXPANSION_PAPER_V1",
+        "SOL_PROTECT_ALPHA6_LOW_EXCEPTION_PAPER_V1",
+    }
+    assert {row["final_decision"] for row in runs} == {"heartbeat"}
+    assert {row["no_sample_reason"] for row in runs} == {"heartbeat_no_candidate"}
+    assert {row["arrival_mid"] for row in runs} == {"170.05"}
+    assert {row["cost_source"] for row in runs} == {"public_spread_proxy"}
+    assert {row["label_status"] for row in runs} == {"heartbeat"}
     assert {row["paper_tracking_status"] for row in daily} == {
         "active"
     }

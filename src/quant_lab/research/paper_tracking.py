@@ -26,6 +26,44 @@ V5_PAPER_TRACKING_STATUS = "active"
 PAPER_TRACKING_SCHEMA_VERSION = "paper_strategy_tracking.v1"
 DEFAULT_REQUIRED_ENTRY_DAYS_FOR_LIVE = 3
 
+PAPER_RUN_REPORT_SCHEMA = {
+    "as_of_date": pl.Utf8,
+    "strategy_id": pl.Utf8,
+    "proposal_id": pl.Utf8,
+    "strategy_candidate": pl.Utf8,
+    "run_id": pl.Utf8,
+    "ts_utc": pl.Utf8,
+    "symbol": pl.Utf8,
+    "would_enter": pl.Boolean,
+    "would_exit": pl.Boolean,
+    "final_decision": pl.Utf8,
+    "no_sample_reason": pl.Utf8,
+    "risk_level": pl.Utf8,
+    "alpha6_score": pl.Float64,
+    "alpha6_side": pl.Utf8,
+    "f4_volume_expansion": pl.Utf8,
+    "f5_rsi_trend_confirm": pl.Utf8,
+    "arrival_bid": pl.Float64,
+    "arrival_ask": pl.Float64,
+    "arrival_mid": pl.Float64,
+    "estimated_spread_bps": pl.Float64,
+    "expected_order_type": pl.Utf8,
+    "estimated_fill_px": pl.Float64,
+    "cost_source": pl.Utf8,
+    "cost_source_mix": pl.Utf8,
+    "paper_pnl_bps": pl.Float64,
+    "paper_pnl_usdt": pl.Float64,
+    "label_status": pl.Utf8,
+    "paper_tracking_status": pl.Utf8,
+    "tracking_stage": pl.Utf8,
+    "source_path_inside_bundle": pl.Utf8,
+    "bundle_ts": pl.Utf8,
+    "ingest_ts": pl.Utf8,
+    "created_at": pl.Utf8,
+    "source": pl.Utf8,
+    "schema_version": pl.Utf8,
+}
+
 PAPER_RUN_SCHEMA = {
     "as_of_date": pl.Utf8,
     "proposal_id": pl.Utf8,
@@ -557,6 +595,14 @@ def build_paper_strategy_runs_from_v5(frame: pl.DataFrame) -> pl.DataFrame:
     return pl.DataFrame(rows, schema=PAPER_RUN_SCHEMA, orient="row")
 
 
+def build_paper_strategy_runs_report_from_v5(frame: pl.DataFrame) -> pl.DataFrame:
+    if frame.is_empty():
+        return _empty_frame(PAPER_RUN_REPORT_SCHEMA)
+    created_at = datetime.now(UTC).isoformat()
+    rows = [_v5_run_report_row(row, created_at) for row in frame.to_dicts()]
+    return pl.DataFrame(rows, schema=PAPER_RUN_REPORT_SCHEMA, orient="row")
+
+
 def latest_v5_paper_frame(frame: pl.DataFrame) -> pl.DataFrame:
     if frame.is_empty():
         return frame
@@ -657,6 +703,81 @@ def build_paper_slippage_coverage_from_v5(frame: pl.DataFrame) -> pl.DataFrame:
     created_at = datetime.now(UTC).isoformat()
     rows = [_v5_slippage_row(row, created_at) for row in frame.to_dicts()]
     return pl.DataFrame(rows, schema=PAPER_SLIPPAGE_SCHEMA, orient="row")
+
+
+def _v5_run_report_row(row: dict[str, Any], created_at: str) -> dict[str, Any]:
+    payload = _payload(row)
+    candidate = _field(
+        row,
+        payload,
+        "strategy_candidate",
+        "experiment_name",
+        "candidate",
+        "source_strategy_candidate",
+    )
+    symbol = _field(row, payload, "symbol", "normalized_symbol")
+    strategy_id = _field(row, payload, "strategy_id", "proposal_id")
+    proposal_id = strategy_id or _proposal_id_for(candidate, symbol)
+    would_enter = _optional_bool(_field(row, payload, "would_enter", "enter")) is True
+    would_exit = _optional_bool(_field(row, payload, "would_exit", "exit")) is True
+    return {
+        "as_of_date": _as_of_date(row, payload),
+        "strategy_id": strategy_id or proposal_id,
+        "proposal_id": proposal_id,
+        "strategy_candidate": candidate,
+        "run_id": _field(row, payload, "run_id"),
+        "ts_utc": _field(row, payload, "ts_utc", "ts", "timestamp", "created_at"),
+        "symbol": symbol,
+        "would_enter": would_enter,
+        "would_exit": would_exit,
+        "final_decision": _field(row, payload, "final_decision", "decision"),
+        "no_sample_reason": _field(row, payload, "no_sample_reason", "reason"),
+        "risk_level": _field(row, payload, "risk_level"),
+        "alpha6_score": _optional_float(_field(row, payload, "alpha6_score")),
+        "alpha6_side": _field(row, payload, "alpha6_side"),
+        "f4_volume_expansion": _field(row, payload, "f4_volume_expansion"),
+        "f5_rsi_trend_confirm": _field(row, payload, "f5_rsi_trend_confirm"),
+        "arrival_bid": _optional_float(_field(row, payload, "arrival_bid", "bid_at_arrival")),
+        "arrival_ask": _optional_float(_field(row, payload, "arrival_ask", "ask_at_arrival")),
+        "arrival_mid": _optional_float(_field(row, payload, "arrival_mid", "mid_at_arrival")),
+        "estimated_spread_bps": _optional_float(
+            _field(
+                row,
+                payload,
+                "estimated_spread_bps",
+                "arrival_spread_bps",
+                "spread_bps_at_decision",
+                "spread_bps",
+            )
+        ),
+        "expected_order_type": _field(
+            row,
+            payload,
+            "expected_order_type",
+            "order_type",
+            "paper_order_type",
+        ),
+        "estimated_fill_px": _optional_float(
+            _field(row, payload, "estimated_fill_px", "estimated_fill_price", "paper_fill_px")
+        ),
+        "cost_source": _field(row, payload, "cost_source"),
+        "cost_source_mix": _field(row, payload, "cost_source_mix"),
+        "paper_pnl_bps": _optional_float(_field(row, payload, "paper_pnl_bps", "pnl_bps")),
+        "paper_pnl_usdt": _optional_float(
+            _field(row, payload, "paper_pnl_usdt", "paper_pnl", "pnl_usdt")
+        ),
+        "label_status": _field(row, payload, "label_status"),
+        "paper_tracking_status": V5_PAPER_TRACKING_STATUS,
+        "tracking_stage": "completed_paper_observations"
+        if would_exit
+        else "active_paper_strategy",
+        "source_path_inside_bundle": _field(row, payload, "source_path_inside_bundle"),
+        "bundle_ts": _field(row, payload, "bundle_ts"),
+        "ingest_ts": _field(row, payload, "ingest_ts"),
+        "created_at": created_at,
+        "source": V5_PAPER_TRACKING_SOURCE,
+        "schema_version": PAPER_TRACKING_SCHEMA_VERSION,
+    }
 
 
 def _v5_run_row(row: dict[str, Any], created_at: str) -> dict[str, Any]:

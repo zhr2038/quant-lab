@@ -38,6 +38,7 @@ def test_candidate_research_refresh_is_separate_from_alpha_evidence():
     assert "--skip-historical-outcomes" in refresh_unit
     assert "build-alpha-discovery-board" in refresh_unit
     assert "--skip-legacy-outcome-counts" in refresh_unit
+    assert "build-paper-strategy-tracking" in refresh_unit
 
 
 def test_scheduled_compaction_covers_hot_ws_datasets():

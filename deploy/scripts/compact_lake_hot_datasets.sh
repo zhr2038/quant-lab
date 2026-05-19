@@ -81,7 +81,7 @@ compact_if_file_count_at_least() {
 }
 
 for dataset in "${HOT_DATASETS[@]}"; do
-  compact_if_file_count_at_least "${dataset}" 500000 10000 500
+  compact_if_file_count_at_least "${dataset}" 500000 50 500
 done
 
 for dataset in "${V5_TELEMETRY_DATASETS[@]}"; do

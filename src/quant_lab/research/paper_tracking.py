@@ -108,12 +108,14 @@ PAPER_DAILY_SCHEMA = {
     "symbol": pl.Utf8,
     "recommended_mode": pl.Utf8,
     "paper_days": pl.Int64,
+    "heartbeat_days": pl.Int64,
     "latest_board_decision": pl.Utf8,
     "latest_horizon": pl.Utf8,
     "heartbeat_day_count": pl.Int64,
     "entry_day_count": pl.Int64,
     "would_enter_count": pl.Int64,
     "paper_pnl_observed_count": pl.Int64,
+    "paper_pnl_day_count": pl.Int64,
     "latest_paper_pnl_usdt": pl.Float64,
     "cumulative_paper_pnl_usdt": pl.Float64,
     "avg_paper_pnl_bps": pl.Float64,
@@ -317,12 +319,14 @@ def build_pending_paper_strategy_daily(
                 "symbol": row.get("symbol"),
                 "recommended_mode": "paper",
                 "paper_days": 0,
+                "heartbeat_days": 0,
                 "latest_board_decision": str(row.get("board_decision") or "PAPER_READY"),
                 "latest_horizon": str(row.get("suggested_horizon") or ""),
                 "heartbeat_day_count": 0,
                 "entry_day_count": 0,
                 "would_enter_count": 0,
                 "paper_pnl_observed_count": 0,
+                "paper_pnl_day_count": 0,
                 "latest_paper_pnl_usdt": None,
                 "cumulative_paper_pnl_usdt": 0.0,
                 "avg_paper_pnl_bps": None,
@@ -389,15 +393,17 @@ def _daily_from_runs(runs: pl.DataFrame, *, as_of_date: date) -> pl.DataFrame:
             continue
         run_rows.sort(key=lambda row: str(row.get("as_of_date") or ""))
         latest = run_rows[-1]
-        paper_days = len({str(row.get("as_of_date") or "") for row in run_rows})
         heartbeat_days = _heartbeat_day_count(run_rows)
         entry_days = len({str(row.get("as_of_date") or "") for row in entry_rows})
         pnl_rows = _paper_pnl_rows(entry_rows)
+        paper_pnl_days = _paper_pnl_day_count(pnl_rows)
         latest_reason = _json_list(latest.get("live_block_reason"))
         quality = _paper_cost_quality(run_rows)
         block_reasons = _paper_live_block_reasons(
-            paper_days=paper_days,
+            heartbeat_day_count=heartbeat_days,
             entry_day_count=entry_days,
+            paper_pnl_observed_count=len(pnl_rows),
+            paper_pnl_day_count=paper_pnl_days,
             required_paper_days=cfg.required_paper_days,
             required_entry_day_count=cfg.required_entry_day_count,
             required_slippage_coverage=cfg.required_slippage_coverage,
@@ -408,7 +414,7 @@ def _daily_from_runs(runs: pl.DataFrame, *, as_of_date: date) -> pl.DataFrame:
         live_eligible = not block_reasons
         tracking_stage = (
             "completed_paper_observations"
-            if paper_days >= cfg.required_paper_days
+            if paper_pnl_days >= cfg.required_paper_days
             else "active_paper_strategy"
         )
         rows.append(
@@ -418,13 +424,15 @@ def _daily_from_runs(runs: pl.DataFrame, *, as_of_date: date) -> pl.DataFrame:
                 "strategy_candidate": cfg.strategy_candidate,
                 "symbol": cfg.symbol,
                 "recommended_mode": "paper",
-                "paper_days": paper_days,
+                "paper_days": heartbeat_days,
+                "heartbeat_days": heartbeat_days,
                 "latest_board_decision": str(latest.get("board_decision") or ""),
                 "latest_horizon": str(latest.get("suggested_horizon") or ""),
                 "heartbeat_day_count": heartbeat_days,
                 "entry_day_count": entry_days,
                 "would_enter_count": len(entry_rows),
                 "paper_pnl_observed_count": len(pnl_rows),
+                "paper_pnl_day_count": paper_pnl_days,
                 "latest_paper_pnl_usdt": _optional_float(pnl_rows[-1].get("paper_pnl_usdt"))
                 if pnl_rows
                 else None,
@@ -646,10 +654,13 @@ def enrich_paper_strategy_daily_from_runs(
     }
     enriched: list[dict[str, Any]] = []
     metric_fields = [
+        "paper_days",
+        "heartbeat_days",
         "heartbeat_day_count",
         "entry_day_count",
         "would_enter_count",
         "paper_pnl_observed_count",
+        "paper_pnl_day_count",
     ]
     fallback_fields = [
         "latest_paper_pnl_usdt",
@@ -677,8 +688,12 @@ def enrich_paper_strategy_daily_from_runs(
         )
         required_coverage = _optional_float(updated.get("required_slippage_coverage")) or 0.8
         block_reasons = _paper_live_block_reasons(
-            paper_days=int(_optional_float(updated.get("paper_days")) or 0),
+            heartbeat_day_count=int(_optional_float(updated.get("heartbeat_day_count")) or 0),
             entry_day_count=int(_optional_float(updated.get("entry_day_count")) or 0),
+            paper_pnl_observed_count=int(
+                _optional_float(updated.get("paper_pnl_observed_count")) or 0
+            ),
+            paper_pnl_day_count=int(_optional_float(updated.get("paper_pnl_day_count")) or 0),
             required_paper_days=required_days,
             required_entry_day_count=required_entries,
             required_slippage_coverage=required_coverage,
@@ -888,17 +903,56 @@ def _v5_daily_row(row: dict[str, Any], created_at: str) -> dict[str, Any]:
         candidate,
         symbol,
     )
-    paper_days = int(
+    raw_paper_days = int(
         _optional_float(_field(row, payload, "paper_days", "paper_days_to_date")) or 0
     )
     required_days = int(_optional_float(_field(row, payload, "required_paper_days")) or 14)
+    heartbeat_days = int(
+        _optional_float(_field(row, payload, "heartbeat_days", "heartbeat_day_count"))
+        or raw_paper_days
+    )
+    entry_day_count = int(_optional_float(_field(row, payload, "entry_day_count")) or 0)
+    paper_pnl_observed_count = int(
+        _optional_float(_field(row, payload, "paper_pnl_observed_count", "complete_count"))
+        or 0
+    )
+    paper_pnl_day_count = int(
+        _optional_float(_field(row, payload, "paper_pnl_day_count", "paper_pnl_days")) or 0
+    )
+    required_entry_day_count = int(
+        _optional_float(_field(row, payload, "required_entry_day_count"))
+        or DEFAULT_REQUIRED_ENTRY_DAYS_FOR_LIVE
+    )
+    required_slippage_coverage = (
+        _optional_float(_field(row, payload, "required_slippage_coverage")) or 0.8
+    )
+    arrival_mid_coverage = (
+        _optional_float(_field(row, payload, "arrival_mid_coverage")) or 0.0
+    )
+    spread_observation_coverage = (
+        _optional_float(_field(row, payload, "spread_observation_coverage")) or 0.0
+    )
+    cost_source_mix = _field(row, payload, "cost_source_mix")
+    block_reasons = _paper_live_block_reasons(
+        heartbeat_day_count=heartbeat_days,
+        entry_day_count=entry_day_count,
+        paper_pnl_observed_count=paper_pnl_observed_count,
+        paper_pnl_day_count=paper_pnl_day_count,
+        required_paper_days=required_days,
+        required_entry_day_count=required_entry_day_count,
+        required_slippage_coverage=required_slippage_coverage,
+        arrival_mid_coverage=arrival_mid_coverage,
+        paper_slippage_coverage=min(arrival_mid_coverage, spread_observation_coverage),
+        cost_source_mix=cost_source_mix,
+    )
     return {
         "as_of_date": _as_of_date(row, payload),
         "proposal_id": proposal_id,
         "strategy_candidate": candidate,
         "symbol": symbol,
         "recommended_mode": _field(row, payload, "recommended_mode", default="paper"),
-        "paper_days": paper_days,
+        "paper_days": heartbeat_days,
+        "heartbeat_days": heartbeat_days,
         "latest_board_decision": _field(
             row,
             payload,
@@ -906,19 +960,13 @@ def _v5_daily_row(row: dict[str, Any], created_at: str) -> dict[str, Any]:
             default="PAPER_READY",
         ),
         "latest_horizon": _field(row, payload, "latest_horizon", "suggested_horizon", "horizon"),
-        "heartbeat_day_count": int(
-            _optional_float(_field(row, payload, "heartbeat_day_count")) or 0
-        ),
-        "entry_day_count": int(
-            _optional_float(_field(row, payload, "entry_day_count")) or 0
-        ),
+        "heartbeat_day_count": heartbeat_days,
+        "entry_day_count": entry_day_count,
         "would_enter_count": int(
             _optional_float(_field(row, payload, "would_enter_count", "entry_count")) or 0
         ),
-        "paper_pnl_observed_count": int(
-            _optional_float(_field(row, payload, "paper_pnl_observed_count", "complete_count"))
-            or 0
-        ),
+        "paper_pnl_observed_count": paper_pnl_observed_count,
+        "paper_pnl_day_count": paper_pnl_day_count,
         "latest_paper_pnl_usdt": _optional_float(
             _field(row, payload, "latest_paper_pnl_usdt", "paper_pnl_usdt")
         ),
@@ -942,31 +990,18 @@ def _v5_daily_row(row: dict[str, Any], created_at: str) -> dict[str, Any]:
             default=V5_PAPER_TRACKING_STATUS,
         ),
         "tracking_stage": "completed_paper_observations"
-        if paper_days >= required_days
+        if paper_pnl_day_count >= required_days
         else "active_paper_strategy",
         "required_paper_days": required_days,
-        "required_entry_day_count": int(
-            _optional_float(_field(row, payload, "required_entry_day_count"))
-            or DEFAULT_REQUIRED_ENTRY_DAYS_FOR_LIVE
+        "required_entry_day_count": required_entry_day_count,
+        "required_slippage_coverage": required_slippage_coverage,
+        "arrival_mid_coverage": arrival_mid_coverage,
+        "spread_observation_coverage": spread_observation_coverage,
+        "cost_source_mix": cost_source_mix,
+        "live_eligible": not block_reasons,
+        "live_block_reason": safe_json_dumps(
+            sorted({*_json_list(_field(row, payload, "live_block_reason")), *block_reasons})
         ),
-        "required_slippage_coverage": _optional_float(
-            _field(row, payload, "required_slippage_coverage")
-        )
-        or 0.8,
-        "arrival_mid_coverage": _optional_float(
-            _field(row, payload, "arrival_mid_coverage")
-        )
-        or 0.0,
-        "spread_observation_coverage": _optional_float(
-            _field(row, payload, "spread_observation_coverage")
-        )
-        or 0.0,
-        "cost_source_mix": _field(row, payload, "cost_source_mix"),
-        "live_eligible": _optional_bool(
-            _field(row, payload, "live_eligible", "live_small_ready")
-        )
-        is True,
-        "live_block_reason": _jsonish_text(_field(row, payload, "live_block_reason")),
         "created_at": created_at,
         "source": V5_PAPER_TRACKING_SOURCE,
         "schema_version": PAPER_TRACKING_SCHEMA_VERSION,
@@ -1198,6 +1233,12 @@ def _paper_pnl_rows(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
     ]
 
 
+def _paper_pnl_day_count(rows: list[dict[str, Any]]) -> int:
+    days = {str(row.get("as_of_date") or "") for row in rows}
+    days.discard("")
+    return len(days)
+
+
 def _proposal_rank(row: dict[str, Any]) -> tuple[float, float, int, int, int]:
     return (
         _optional_float(row.get("avg_net_bps")) or float("-inf"),
@@ -1241,8 +1282,10 @@ def _has_spread_observation(row: dict[str, Any]) -> bool:
 
 def _paper_live_block_reasons(
     *,
-    paper_days: int,
+    heartbeat_day_count: int,
     entry_day_count: int,
+    paper_pnl_observed_count: int,
+    paper_pnl_day_count: int,
     required_paper_days: int,
     required_entry_day_count: int,
     required_slippage_coverage: float,
@@ -1254,10 +1297,14 @@ def _paper_live_block_reasons(
     cost_sources = _cost_source_mix_sources(cost_source_mix)
     has_actual_or_mixed = bool(cost_sources & {"actual_fills", "mixed_actual_proxy"})
     has_global_default = "global_default" in cost_sources
-    if paper_days < required_paper_days:
-        reasons.add("no_paper_days")
+    if heartbeat_day_count > 0 and entry_day_count == 0:
+        reasons.add("paper_active_but_no_entries_yet")
     if entry_day_count < required_entry_day_count:
         reasons.add("insufficient_entry_days")
+    if paper_pnl_observed_count <= 0:
+        reasons.add("no_paper_pnl_observations")
+    if paper_pnl_day_count < required_paper_days:
+        reasons.add("insufficient_paper_pnl_days")
     if arrival_mid_coverage < required_slippage_coverage:
         reasons.add("insufficient_arrival_mid_coverage")
     if paper_slippage_coverage < required_slippage_coverage:
@@ -1271,8 +1318,9 @@ def _paper_live_block_reasons(
 
 def _live_block_reasons(row: dict[str, Any]) -> list[str]:
     reasons: set[str] = {
-        "no_paper_days",
+        "insufficient_paper_pnl_days",
         "insufficient_entry_days",
+        "no_paper_pnl_observations",
         "no_live_slippage_coverage",
         "insufficient_arrival_mid_coverage",
     }

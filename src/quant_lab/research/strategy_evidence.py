@@ -528,6 +528,10 @@ def normalize_strategy_evidence_decisions(evidence: pl.DataFrame) -> pl.DataFram
             win_rate=_finite_float(row.get("win_rate")),
             paper_days=int(_finite_float(row.get("paper_days")) or 0),
             entry_day_count=int(_finite_float(row.get("entry_day_count")) or 0),
+            paper_pnl_observed_count=int(
+                _finite_float(row.get("paper_pnl_observed_count")) or 0
+            ),
+            paper_pnl_day_count=int(_finite_float(row.get("paper_pnl_day_count")) or 0),
             arrival_mid_coverage=_finite_float(row.get("arrival_mid_coverage")) or 0.0,
             paper_slippage_coverage=_finite_float(row.get("paper_slippage_coverage")) or 0.0,
             cost_source_mix=row.get("cost_source_mix"),
@@ -950,6 +954,8 @@ def _formal_decision(
     min_live_samples: int,
     paper_days: int = 0,
     entry_day_count: int = 0,
+    paper_pnl_observed_count: int = 0,
+    paper_pnl_day_count: int = 0,
     arrival_mid_coverage: float = 0.0,
     cost_source_mix: Any = None,
 ) -> tuple[str, list[str]]:
@@ -961,6 +967,8 @@ def _formal_decision(
         win_rate=win_rate,
         paper_days=paper_days,
         entry_day_count=entry_day_count,
+        paper_pnl_observed_count=paper_pnl_observed_count,
+        paper_pnl_day_count=paper_pnl_day_count,
         arrival_mid_coverage=arrival_mid_coverage,
         cost_source_mix=cost_source_mix,
         paper_ready_sample_count=min_live_samples,
@@ -977,6 +985,8 @@ def strategy_evidence_decision_ladder(
     win_rate: float | None,
     paper_days: int = 0,
     entry_day_count: int = 0,
+    paper_pnl_observed_count: int = 0,
+    paper_pnl_day_count: int = 0,
     required_entry_day_count: int = MIN_LIVE_SMALL_READY_ENTRY_DAYS,
     arrival_mid_coverage: float = 0.0,
     paper_slippage_coverage: float = 0.0,
@@ -1019,8 +1029,9 @@ def strategy_evidence_decision_ladder(
     if (
         paper_ready
         and complete_sample_count >= 60
-        and paper_days >= 14
         and entry_day_count >= required_entry_day_count
+        and paper_pnl_observed_count > 0
+        and paper_pnl_day_count >= 14
         and arrival_mid_coverage >= 0.8
         and paper_slippage_coverage >= 0.8
         and has_live_ready_cost
@@ -1034,9 +1045,13 @@ def strategy_evidence_decision_ladder(
         if has_live_blocking_cost or not has_live_ready_cost:
             reasons.append("cost_source_not_trusted")
         if paper_days < 14:
-            reasons.append("no_paper_days")
+            reasons.append("heartbeat_days_not_effective_paper_pnl")
         if entry_day_count < required_entry_day_count:
             reasons.append("insufficient_entry_days")
+        if paper_pnl_observed_count <= 0:
+            reasons.append("no_paper_pnl_observations")
+        if paper_pnl_day_count < 14:
+            reasons.append("insufficient_paper_pnl_days")
         if arrival_mid_coverage < 0.8:
             reasons.append("insufficient_arrival_mid_coverage")
         if paper_slippage_coverage < 0.8:

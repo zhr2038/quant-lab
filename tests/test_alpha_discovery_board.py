@@ -437,11 +437,13 @@ def test_paper_strategy_tracking_uses_v5_telemetry_when_present(tmp_path):
     assert set(runs["would_enter"].to_list()) == {True}
     assert runs["arrival_mid"].to_list() == [172.12]
     assert runs["expected_order_type"].to_list() == ["post_only_limit"]
-    assert set(daily["paper_days"].to_list()) == {1}
+    assert set(daily["paper_days"].to_list()) == {0}
+    assert set(daily["heartbeat_days"].to_list()) == {0}
     assert set(daily["heartbeat_day_count"].to_list()) == {0}
     assert set(daily["entry_day_count"].to_list()) == {1}
     assert set(daily["would_enter_count"].to_list()) == {1}
     assert set(daily["paper_pnl_observed_count"].to_list()) == {1}
+    assert set(daily["paper_pnl_day_count"].to_list()) == {1}
     assert set(daily["paper_tracking_status"].to_list()) == {"active"}
     assert set(daily["arrival_mid_coverage"].to_list()) == {1.0}
     assert set(daily["spread_observation_coverage"].to_list()) == {1.0}
@@ -484,8 +486,10 @@ def test_paper_strategy_tracking_blocks_live_without_real_cost_quality(tmp_path)
     daily = read_parquet_dataset(lake / "gold" / "paper_strategy_daily")
     row = daily.to_dicts()[0]
     assert result.paper_strategy_daily == 1
-    assert row["paper_days"] == 14
+    assert row["paper_days"] == 0
+    assert row["heartbeat_days"] == 0
     assert row["entry_day_count"] == 14
+    assert row["paper_pnl_day_count"] == 14
     assert row["arrival_mid_coverage"] == 1.0
     assert row["live_eligible"] is False
     assert "cost_source_not_actual_or_mixed" in row["live_block_reason"]
@@ -524,8 +528,10 @@ def test_paper_strategy_tracking_can_mark_live_ready_after_mixed_cost_observatio
     daily = read_parquet_dataset(lake / "gold" / "paper_strategy_daily")
     slippage = read_parquet_dataset(lake / "gold" / "paper_slippage_coverage")
     row = daily.to_dicts()[0]
-    assert row["paper_days"] == 14
+    assert row["paper_days"] == 0
+    assert row["heartbeat_days"] == 0
     assert row["entry_day_count"] == 14
+    assert row["paper_pnl_day_count"] == 14
     assert row["arrival_mid_coverage"] == 1.0
     assert row["live_eligible"] is True
     assert json.loads(row["live_block_reason"]) == []
@@ -735,6 +741,8 @@ def test_export_daily_prefers_v5_paper_telemetry_over_pending_gold(tmp_path):
     assert {row["entry_day_count"] for row in daily} == {"0"}
     assert {row["would_enter_count"] for row in daily} == {"0"}
     assert {row["paper_pnl_observed_count"] for row in daily} == {"0"}
+    assert {row["paper_pnl_day_count"] for row in daily} == {"0"}
+    assert all("paper_active_but_no_entries_yet" in row["live_block_reason"] for row in daily)
 
 
 def _write_candidate_labels(lake: Path) -> None:

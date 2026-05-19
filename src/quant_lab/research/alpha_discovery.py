@@ -417,6 +417,8 @@ def _decision(
         win_rate=win_rate,
         paper_days=paper_days,
         entry_day_count=0,
+        paper_pnl_observed_count=0,
+        paper_pnl_day_count=0,
         arrival_mid_coverage=0.0,
         paper_slippage_coverage=0.0,
         cost_source_mix=cost_source_counts,
@@ -443,6 +445,8 @@ def _strategy_evidence_decision(row: dict[str, Any]) -> tuple[str, list[str]]:
         p25_net_bps=p25,
         paper_days=paper_days,
         entry_day_count=int(_finite_float(row.get("entry_day_count")) or 0),
+        paper_pnl_observed_count=int(_finite_float(row.get("paper_pnl_observed_count")) or 0),
+        paper_pnl_day_count=int(_finite_float(row.get("paper_pnl_day_count")) or 0),
         arrival_mid_coverage=_finite_float(row.get("arrival_mid_coverage")) or 0.0,
         paper_slippage_coverage=_finite_float(row.get("paper_slippage_coverage")) or 0.0,
         cost_source_mix=row.get("cost_source_mix"),
@@ -727,6 +731,10 @@ def normalize_alpha_discovery_board_decisions(board: pl.DataFrame) -> pl.DataFra
             win_rate=_finite_float(row.get("win_rate")),
             paper_days=int(_finite_float(row.get("paper_days")) or 0),
             entry_day_count=int(_finite_float(row.get("entry_day_count")) or 0),
+            paper_pnl_observed_count=int(
+                _finite_float(row.get("paper_pnl_observed_count")) or 0
+            ),
+            paper_pnl_day_count=int(_finite_float(row.get("paper_pnl_day_count")) or 0),
             arrival_mid_coverage=_finite_float(row.get("arrival_mid_coverage")) or 0.0,
             paper_slippage_coverage=_finite_float(row.get("paper_slippage_coverage")) or 0.0,
             cost_source_mix=row.get("cost_source_mix"),

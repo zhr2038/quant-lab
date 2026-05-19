@@ -13,7 +13,7 @@ from typing import Any, TypeVar
 
 import polars as pl
 
-from quant_lab.data.lake import append_parquet_dataset, read_parquet_dataset
+from quant_lab.data.lake import append_parquet_dataset, read_parquet_dataset, upsert_parquet_dataset
 
 API_METRICS_DATASET = Path("bronze") / "api_request_metrics"
 JOB_RUN_HISTORY_DATASET = Path("gold") / "job_run_history"
@@ -117,12 +117,10 @@ def record_job_run(
         "error_type": type(error).__name__ if error else None,
         "error_message": _safe_error_message(str(error)) if error else None,
     }
-    append_parquet_dataset(
+    upsert_parquet_dataset(
         pl.DataFrame([row]),
         Path(lake_root) / JOB_RUN_HISTORY_DATASET,
-        partition_by=["day", "job_name"],
-        target_rows_per_file=10_000,
-        file_prefix="job",
+        key_columns=["job_name", "started_at", "finished_at"],
     )
 
 

@@ -47,6 +47,11 @@ def test_scheduled_compaction_covers_hot_ws_datasets():
 
     assert "compact_lake_hot_datasets.sh" in unit
     assert "compact-lake-dataset" in script
+    assert "COMPACT_DATASET_TIMEOUT_SECONDS" in script
+    assert "COMPACT_RUN_BUDGET_SECONDS" in script
+    assert "WARN_COMPACT_FAILED" in script
+    assert "SKIP_COMPACT_BUDGET" in script
+    assert "WARN_LAKE_HEALTH_FAILED_OR_TIMED_OUT" in script
     assert '"bronze/okx_public_ws"' in script
     assert '"silver/trade_print"' in script
     assert '"silver/orderbook_snapshot"' in script
@@ -62,7 +67,7 @@ def test_scheduled_compaction_covers_hot_ws_datasets():
     assert '"silver/v5_candidate_event"' in script
     assert '"gold/job_run_history"' in script
     assert '"bronze/api_request_metrics"' in script
-    assert "OnUnitActiveSec=2h" in timer
+    assert "OnUnitActiveSec=1h" in timer
 
 
 def test_daily_export_template_is_packaging_only():

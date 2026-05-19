@@ -1,4 +1,5 @@
 from concurrent.futures import ThreadPoolExecutor
+from datetime import UTC, datetime, timedelta
 
 import polars as pl
 import pytest
@@ -12,6 +13,7 @@ from quant_lab.data.lake import (
     upsert_parquet_dataset,
     write_parquet_dataset,
 )
+from quant_lab.ops.metrics import record_job_run
 
 
 def test_read_parquet_dataset_ignores_invalid_parquet_file(tmp_path):
@@ -115,6 +117,25 @@ def test_read_parquet_dataset_relaxes_null_string_schema_versions(tmp_path):
     assert df.height == 2
     assert df.schema["error_type"] == pl.String
     assert set(df["job_name"].to_list()) == {"ok", "failed"}
+
+
+def test_record_job_run_rewrites_history_instead_of_appending_small_files(tmp_path):
+    lake_root = tmp_path / "lake"
+    for minute in range(3):
+        started = datetime(2026, 5, 19, 1, minute, tzinfo=UTC)
+        record_job_run(
+            lake_root=lake_root,
+            job_name="sync-v5-telemetry",
+            status="succeeded",
+            started_at=started,
+            finished_at=started + timedelta(seconds=2),
+        )
+
+    files = list((lake_root / "gold" / "job_run_history").rglob("*.parquet"))
+    rows = read_parquet_dataset(lake_root / "gold" / "job_run_history")
+
+    assert len(files) == 1
+    assert rows.height == 3
 
 
 def test_write_parquet_dataset_keeps_previous_data_when_rewrite_fails(tmp_path, monkeypatch):

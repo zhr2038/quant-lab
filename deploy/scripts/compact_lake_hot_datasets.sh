@@ -3,6 +3,9 @@ set -euo pipefail
 
 QLAB_BIN="${QLAB_BIN:-/opt/quant-lab/.venv/bin/qlab}"
 LAKE_ROOT="${QUANT_LAB_LAKE_ROOT:-/var/lib/quant-lab/lake}"
+COMPACT_DATASET_TIMEOUT_SECONDS="${COMPACT_DATASET_TIMEOUT_SECONDS:-180}"
+COMPACT_RUN_BUDGET_SECONDS="${COMPACT_RUN_BUDGET_SECONDS:-1500}"
+COMPACT_STARTED_AT="$(date +%s)"
 
 V5_TELEMETRY_DATASETS=(
   "bronze/strategy_telemetry/v5/raw_file_index"
@@ -40,12 +43,23 @@ compact_dataset() {
   local dataset="$1"
   local target_rows="$2"
   local batch_files="$3"
+  local status
 
-  "${QLAB_BIN}" compact-lake-dataset \
+  echo "START_COMPACT dataset=${dataset} timeout_seconds=${COMPACT_DATASET_TIMEOUT_SECONDS}"
+  set +e
+  timeout --kill-after=30s "${COMPACT_DATASET_TIMEOUT_SECONDS}s" \
+    "${QLAB_BIN}" compact-lake-dataset \
     --lake-root "${LAKE_ROOT}" \
     --dataset "${dataset}" \
     --target-rows-per-file "${target_rows}" \
     --max-source-files-per-batch "${batch_files}"
+  status="$?"
+  set -e
+  if (( status != 0 )); then
+    echo "WARN_COMPACT_FAILED dataset=${dataset} status=${status}"
+    return 0
+  fi
+  echo "FINISH_COMPACT dataset=${dataset}"
 }
 
 parquet_file_count() {
@@ -64,10 +78,16 @@ compact_if_file_count_at_least() {
   local batch_files="$3"
   local min_files="$4"
   local file_count
+  local elapsed
 
   file_count="$(parquet_file_count "${dataset}")"
   if (( file_count < min_files )); then
     echo "SKIP_COMPACT dataset=${dataset} parquet_files=${file_count} min_files=${min_files}"
+    return
+  fi
+  elapsed="$(( $(date +%s) - COMPACT_STARTED_AT ))"
+  if (( elapsed >= COMPACT_RUN_BUDGET_SECONDS )); then
+    echo "SKIP_COMPACT_BUDGET dataset=${dataset} elapsed_seconds=${elapsed}"
     return
   fi
 
@@ -96,4 +116,5 @@ done
 
 cleanup_internal_compaction_dirs
 
-"${QLAB_BIN}" lake-health --lake-root "${LAKE_ROOT}"
+timeout --kill-after=30s 120s "${QLAB_BIN}" lake-health --lake-root "${LAKE_ROOT}" \
+  || echo "WARN_LAKE_HEALTH_FAILED_OR_TIMED_OUT"

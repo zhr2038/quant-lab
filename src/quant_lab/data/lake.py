@@ -99,7 +99,7 @@ def _write_parquet_dataset_unlocked(
         path.unlink()
     path.mkdir(parents=True, exist_ok=True)
     final_file = path / "data.parquet"
-    temp_file = path.parent / f".{path.name}.{uuid.uuid4().hex}.tmp.parquet"
+    temp_file = _dataset_temp_file(path)
     try:
         sorted_df.write_parquet(temp_file)
         _replace_path(temp_file, final_file)
@@ -162,7 +162,7 @@ def _append_parquet_dataset_unlocked(
             if chunk.is_empty():
                 continue
             final_file = partition_dir / _append_file_name(file_prefix)
-            temp_file = path.parent / f".append_{uuid.uuid4().hex}.tmp.parquet"
+            temp_file = _dataset_temp_file(path)
             try:
                 chunk.write_parquet(temp_file)
                 _replace_path(temp_file, final_file)
@@ -393,7 +393,9 @@ def _all_parquet_files(dataset_path: str | Path) -> list[Path]:
         return [path]
     if not path.exists():
         return []
-    return sorted(path.rglob("*.parquet"))
+    return sorted(
+        candidate for candidate in path.rglob("*.parquet") if "._tmp" not in candidate.parts
+    )
 
 
 def _read_parquet_files(files: Sequence[Path]) -> pl.DataFrame:
@@ -438,6 +440,12 @@ def _is_valid_parquet_file(path: Path) -> bool:
 
 def _replace_path(source: Path, target: Path) -> None:
     os.replace(_replaceable_path(source), _replaceable_path(target))
+
+
+def _dataset_temp_file(dataset_path: Path) -> Path:
+    temp_dir = dataset_path / "._tmp"
+    temp_dir.mkdir(parents=True, exist_ok=True)
+    return temp_dir / f"{uuid.uuid4().hex}.tmp.parquet"
 
 
 def _replaceable_path(path: Path) -> str | Path:

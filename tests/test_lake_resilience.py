@@ -38,6 +38,21 @@ def test_read_parquet_dataset_returns_empty_when_only_invalid_files_exist(tmp_pa
     assert invalid_parquet_files(dataset) == [dataset / "data.parquet"]
 
 
+def test_read_parquet_dataset_ignores_internal_tmp_dir(tmp_path):
+    dataset = tmp_path / "lake" / "bronze" / "api_request_metrics"
+    write_parquet_dataset(pl.DataFrame([{"path": "/v1/health", "count": 1}]), dataset)
+    tmp_dir = dataset / "._tmp"
+    tmp_dir.mkdir()
+    pl.DataFrame([{"path": "/v1/should_not_read", "count": 99}]).write_parquet(
+        tmp_dir / "leftover.tmp.parquet"
+    )
+
+    df = read_parquet_dataset(dataset)
+
+    assert df.height == 1
+    assert df["path"].to_list() == ["/v1/health"]
+
+
 def test_read_parquet_dataset_inserts_missing_columns_across_schema_versions(tmp_path):
     dataset = tmp_path / "lake" / "silver" / "v5_paper_strategy_run"
     dataset.mkdir(parents=True)

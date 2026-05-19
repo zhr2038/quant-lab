@@ -50,9 +50,11 @@ def test_scheduled_compaction_covers_hot_ws_datasets():
     assert '"bronze/okx_public_ws"' in script
     assert '"silver/trade_print"' in script
     assert '"silver/orderbook_snapshot"' in script
-    assert "compact_if_file_count_at_least \"${dataset}\" 500000 50 500" in script
-    assert 'compact_if_file_count_at_least "silver/orderbook_snapshot" 250000 10 500' in script
-    assert "compact_if_file_count_at_least \"${dataset}\" 250000 5000 100" in script
+    assert 'compact_if_file_count_at_least "bronze/okx_public_ws" 500000 50 120' in script
+    assert 'compact_if_file_count_at_least "silver/trade_print" 500000 50 40' in script
+    assert 'compact_if_file_count_at_least "silver/orderbook_snapshot" 250000 10 80' in script
+    assert 'compact_if_file_count_at_least "${dataset}" 250000 100 10' in script
+    assert 'compact_if_file_count_at_least "${dataset}" 250000 100 20' in script
     assert '"bronze/strategy_telemetry/v5/raw_file_index"' in script
     assert '"silver/v5_quant_lab_usage"' in script
     assert '"silver/v5_candidate_event"' in script

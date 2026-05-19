@@ -4,10 +4,9 @@ set -euo pipefail
 QLAB_BIN="${QLAB_BIN:-/opt/quant-lab/.venv/bin/qlab}"
 LAKE_ROOT="${QUANT_LAB_LAKE_ROOT:-/var/lib/quant-lab/lake}"
 
-HOT_DATASETS=(
+HOT_BATCHED_DATASETS=(
   "bronze/okx_public_ws"
   "silver/trade_print"
-  "silver/orderbook_snapshot"
 )
 
 V5_TELEMETRY_DATASETS=(
@@ -80,9 +79,13 @@ compact_if_file_count_at_least() {
   compact_dataset "${dataset}" "${target_rows}" "${batch_files}"
 }
 
-for dataset in "${HOT_DATASETS[@]}"; do
+for dataset in "${HOT_BATCHED_DATASETS[@]}"; do
   compact_if_file_count_at_least "${dataset}" 500000 50 500
 done
+
+# Order book snapshots are denser than raw websocket and trade-print files.
+# Keep the source batch smaller so scheduled compaction does not exceed qyun2 memory.
+compact_if_file_count_at_least "silver/orderbook_snapshot" 250000 10 500
 
 for dataset in "${V5_TELEMETRY_DATASETS[@]}"; do
   compact_if_file_count_at_least "${dataset}" 250000 5000 100

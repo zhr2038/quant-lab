@@ -442,6 +442,64 @@ def test_analyze_warns_on_consecutive_expired_remote_permissions(tmp_path):
     assert health["stale_permission_consecutive_count"][0] == 2
 
 
+def test_analyze_deduplicates_request_and_summary_fallback_events(tmp_path):
+    lake = tmp_path / "lake"
+    _write_manifest(lake)
+    request_row = {
+        **_event_row("request-timeout"),
+        "source_path_inside_bundle": "raw/reports/quant_lab_requests.jsonl",
+        "run_id": "20260512_23",
+        "ts_utc": "2026-05-12T15:00:26.841187Z",
+        "endpoint_path": "/v1/risk/live-permission",
+        "event_type": "request",
+        "status_code": "not_observable",
+        "success": "false",
+        "fallback_used": True,
+        "error_type": "QuantLabTimeout",
+        "error": "QuantLabTimeout",
+        "raw_payload_json": (
+            '{"event_type":"request","run_id":"20260512_23",'
+            '"ts":"2026-05-12T15:00:26.841187Z",'
+            '"endpoint_path":"/v1/risk/live-permission",'
+            '"status_code":null,"success":false,"fallback_used":true,'
+            '"error_type":"QuantLabTimeout"}'
+        ),
+    }
+    fallback_row = {
+        **_event_row("summary-timeout"),
+        "source_path_inside_bundle": "summaries/quant_lab_fallbacks.csv",
+        "run_id": "20260512_23",
+        "ts_utc": "2026-05-12T15:00:26.841187Z",
+        "endpoint_path": "/v1/risk/live-permission",
+        "event_type": "fallback",
+        "status_code": "not_observable",
+        "success": "false",
+        "fallback_used": True,
+        "error_type": "QuantLabTimeout",
+        "error": "QuantLabTimeout",
+        "diagnosis": "fallback_request",
+        "raw_payload_json": (
+            '{"event_type":"fallback","run_id":"20260512_23",'
+            '"ts":"2026-05-12T15:00:26.841187Z",'
+            '"endpoint_path":"/v1/risk/live-permission",'
+            '"status_code":null,"success":false,"fallback_used":true,'
+            '"error_type":"QuantLabTimeout"}'
+        ),
+    }
+    write_parquet_dataset(pl.DataFrame([request_row]), lake / "silver/v5_quant_lab_request")
+    write_parquet_dataset(pl.DataFrame([fallback_row]), lake / "silver/v5_quant_lab_fallback")
+
+    result = analyze_v5_telemetry(lake, date="2026-05-12")
+    health = read_parquet_dataset(lake / "gold/strategy_health_daily")
+
+    assert result.unique_request_count == 1
+    assert result.unique_actual_fallback_count == 1
+    assert result.actual_fallback_count == 1
+    assert result.unique_event_rows == 1
+    assert result.duplicate_event_rows == 1
+    assert health["actual_fallback_count"][0] == 1
+
+
 def _run_summary_row(source_path, payload):
     return {
         "strategy": "v5",

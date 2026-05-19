@@ -5,6 +5,7 @@ QLAB_BIN="${QLAB_BIN:-/opt/quant-lab/.venv/bin/qlab}"
 LAKE_ROOT="${QUANT_LAB_LAKE_ROOT:-/var/lib/quant-lab/lake}"
 COMPACT_DATASET_TIMEOUT_SECONDS="${COMPACT_DATASET_TIMEOUT_SECONDS:-180}"
 COMPACT_RUN_BUDGET_SECONDS="${COMPACT_RUN_BUDGET_SECONDS:-1500}"
+COMPACT_RAW_OKX_WS="${COMPACT_RAW_OKX_WS:-0}"
 COMPACT_STARTED_AT="$(date +%s)"
 
 V5_TELEMETRY_DATASETS=(
@@ -99,7 +100,13 @@ cleanup_internal_compaction_dirs() {
     -prune -print -exec rm -rf {} +
 }
 
-compact_if_file_count_at_least "bronze/okx_public_ws" 500000 50 120
+if [[ "${COMPACT_RAW_OKX_WS}" == "1" ]]; then
+  # Raw websocket bronze can be very large and memory intensive. Keep it opt-in for
+  # off-hour maintenance so scheduled compaction does not starve the web/API host.
+  compact_if_file_count_at_least "bronze/okx_public_ws" 250000 5 400
+else
+  echo "SKIP_COMPACT_RAW_OKX_WS dataset=bronze/okx_public_ws opt_in=COMPACT_RAW_OKX_WS"
+fi
 compact_if_file_count_at_least "silver/trade_print" 500000 50 40
 
 # Order book snapshots are denser than raw websocket and trade-print files.

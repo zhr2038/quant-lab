@@ -3,10 +3,13 @@
 This API is read-only and must not mutate strategy state or exchange state.
 """
 
+import csv
 import hmac
+import io
 import json
 import os
 import time
+import zipfile
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any
@@ -42,6 +45,7 @@ from quant_lab.risk.publish import (
     permission_status,
     risk_permission_stale_vs_telemetry,
 )
+from quant_lab.symbols import normalize_symbol
 
 
 class HealthResponse(BaseModel):
@@ -108,6 +112,26 @@ class ApiMetricsResponse(BaseModel):
     by_path: dict[str, int]
     by_status_code: dict[str, int]
     latency_ms: dict[str, float | None]
+
+
+class StrategyOpportunityAdvisoryRow(BaseModel):
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    strategy_id: str
+    strategy_candidate: str
+    symbol: str
+    decision: str
+    recommended_mode: str
+    horizon_hours: int | None = None
+    sample_count: int | None = None
+    complete_sample_count: int | None = None
+    avg_net_bps: float | None = None
+    p25_net_bps: float | None = None
+    win_rate: float | None = None
+    cost_source_mix: str | None = None
+    live_block_reasons: list[str] = Field(default_factory=list)
+    max_paper_notional_usdt: float | None = None
+    max_live_notional_usdt: float = 0.0
 
 
 KNOWN_DATASETS = [
@@ -274,6 +298,21 @@ def create_app() -> FastAPI:
             start=start,
             end=end,
         )
+
+    @app.get(
+        "/v1/strategy-opportunity-advisory",
+        response_model=list[StrategyOpportunityAdvisoryRow],
+    )
+    @app.get(
+        "/v1/strategy_opportunity_advisory",
+        response_model=list[StrategyOpportunityAdvisoryRow],
+    )
+    @app.get(
+        "/v1/reports/strategy-opportunity-advisory",
+        response_model=list[StrategyOpportunityAdvisoryRow],
+    )
+    def strategy_opportunity_advisory() -> list[StrategyOpportunityAdvisoryRow]:
+        return _strategy_opportunity_advisory_rows(_lake_root())
 
     @app.get("/v1/risk/live-permission", response_model=RiskPermission)
     def live_permission(strategy: str, version: str) -> RiskPermission:
@@ -703,6 +742,173 @@ def _split_csv(value: str | None) -> list[str] | None:
         return None
     parsed = [item.strip() for item in value.split(",") if item.strip()]
     return parsed or None
+
+
+def _strategy_opportunity_advisory_rows(
+    lake_root: Path,
+) -> list[StrategyOpportunityAdvisoryRow]:
+    df = read_parquet_dataset(lake_root / "gold" / "strategy_opportunity_advisory")
+    raw_rows: list[dict[str, Any]]
+    if df.is_empty():
+        raw_rows = _strategy_opportunity_advisory_report_rows(lake_root)
+    else:
+        raw_rows = _latest_strategy_opportunity_frame(df).to_dicts()
+    parsed: list[StrategyOpportunityAdvisoryRow] = []
+    for row in raw_rows:
+        advisory = _strategy_opportunity_advisory_row(row)
+        if advisory is not None:
+            parsed.append(advisory)
+    return parsed
+
+
+def _latest_strategy_opportunity_frame(df: pl.DataFrame) -> pl.DataFrame:
+    for column in ["as_of_ts", "created_at"]:
+        if column not in df.columns:
+            continue
+        try:
+            normalized = _normalize_datetime_column(df, column)
+            latest = normalized.select(pl.col(column).max()).item()
+        except Exception:
+            continue
+        if latest is not None:
+            return normalized.filter(pl.col(column) == latest)
+    return df
+
+
+def _strategy_opportunity_advisory_report_rows(lake_root: Path) -> list[dict[str, Any]]:
+    exports_root = _exports_root_for_lake(lake_root)
+    if not exports_root.exists():
+        return []
+    packs = sorted(
+        exports_root.glob("quant_lab_expert_pack_*.zip"),
+        key=lambda path: (path.stat().st_mtime, path.name),
+        reverse=True,
+    )
+    for pack in packs:
+        try:
+            with zipfile.ZipFile(pack) as archive:
+                with archive.open("reports/strategy_opportunity_advisory.csv") as handle:
+                    text = handle.read().decode("utf-8")
+        except (KeyError, OSError, UnicodeDecodeError, zipfile.BadZipFile):
+            continue
+        return list(csv.DictReader(io.StringIO(text)))
+    return []
+
+
+def _exports_root_for_lake(lake_root: Path) -> Path:
+    return lake_root.parent / "exports" if lake_root.name == "lake" else lake_root / "exports"
+
+
+def _strategy_opportunity_advisory_row(
+    row: dict[str, Any],
+) -> StrategyOpportunityAdvisoryRow | None:
+    strategy_candidate = _text_value(row.get("strategy_candidate"))
+    symbol = normalize_symbol(row.get("symbol") or row.get("v5_symbol"))
+    if not strategy_candidate or not symbol:
+        return None
+    decision = (_text_value(row.get("decision")) or "RESEARCH_ONLY").upper()
+    recommended_mode = _advisory_recommended_mode(row.get("recommended_mode"), decision)
+    max_live_notional = _optional_float(row.get("max_live_notional_usdt")) or 0.0
+    if decision != "LIVE_SMALL_READY":
+        max_live_notional = 0.0
+    strategy_id = _text_value(row.get("strategy_id")) or _advisory_strategy_id(
+        strategy_candidate,
+        symbol,
+    )
+    return StrategyOpportunityAdvisoryRow(
+        strategy_id=strategy_id,
+        strategy_candidate=strategy_candidate,
+        symbol=symbol,
+        decision=decision,
+        recommended_mode=recommended_mode,
+        horizon_hours=_optional_int(row.get("horizon_hours")),
+        sample_count=_optional_int(row.get("sample_count")),
+        complete_sample_count=_optional_int(row.get("complete_sample_count")),
+        avg_net_bps=_optional_float(row.get("avg_net_bps")),
+        p25_net_bps=_optional_float(row.get("p25_net_bps")),
+        win_rate=_optional_float(row.get("win_rate")),
+        cost_source_mix=_jsonish_text(row.get("cost_source_mix")),
+        live_block_reasons=_advisory_reason_list(row.get("live_block_reasons")),
+        max_paper_notional_usdt=_optional_float(row.get("max_paper_notional_usdt")),
+        max_live_notional_usdt=max_live_notional,
+    )
+
+
+def _advisory_recommended_mode(value: Any, decision: str) -> str:
+    if decision == "KILL":
+        return "none"
+    if decision == "PAPER_READY":
+        return "paper"
+    if decision == "LIVE_SMALL_READY":
+        return _text_value(value).lower() or "live_small"
+    if decision in {"KEEP_SHADOW", "REGIME_SHADOW"}:
+        return _text_value(value).lower() or "shadow"
+    return _text_value(value).lower() or "research"
+
+
+def _advisory_strategy_id(strategy_candidate: str, symbol: str) -> str:
+    raw = f"{symbol}_{strategy_candidate}"
+    normalized = "".join(character if character.isalnum() else "_" for character in raw.upper())
+    while "__" in normalized:
+        normalized = normalized.replace("__", "_")
+    return normalized.strip("_")
+
+
+def _advisory_reason_list(value: Any) -> list[str]:
+    if value is None:
+        return []
+    if isinstance(value, list):
+        return [str(item) for item in value if str(item).strip()]
+    if isinstance(value, dict):
+        return [json.dumps(value, sort_keys=True)]
+    text = str(value).strip()
+    if not text:
+        return []
+    try:
+        loaded = json.loads(text)
+    except json.JSONDecodeError:
+        return [
+            item.strip()
+            for item in text.replace("|", ",").split(",")
+            if item.strip()
+        ]
+    if isinstance(loaded, list):
+        return [str(item) for item in loaded if str(item).strip()]
+    if isinstance(loaded, dict):
+        return [json.dumps(loaded, sort_keys=True)]
+    return [str(loaded)] if str(loaded).strip() else []
+
+
+def _jsonish_text(value: Any) -> str | None:
+    if value is None:
+        return None
+    if isinstance(value, dict | list):
+        return json.dumps(value, sort_keys=True)
+    text = str(value).strip()
+    return text or None
+
+
+def _text_value(value: Any) -> str:
+    if value is None:
+        return ""
+    text = str(value).strip()
+    return "" if text.lower() in {"none", "null", "nan"} else text
+
+
+def _optional_float(value: Any) -> float | None:
+    text = _text_value(value)
+    if not text:
+        return None
+    try:
+        parsed = float(text)
+    except ValueError:
+        return None
+    return None if parsed != parsed else parsed
+
+
+def _optional_int(value: Any) -> int | None:
+    parsed = _optional_float(value)
+    return None if parsed is None else int(parsed)
 
 
 def _load_latest_alpha_evidence(lake_root: Path, alpha_id: str) -> dict[str, Any] | None:

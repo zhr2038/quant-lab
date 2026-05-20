@@ -126,6 +126,58 @@ def test_live_permission_api_allows_advisory_modes_when_core_alpha_dead(
     assert "core_alpha_dead" in payload["live_block_reasons"]
 
 
+def test_live_permission_api_does_not_use_published_allow_when_core_alpha_dead(
+    tmp_path,
+    monkeypatch,
+):
+    lake = tmp_path / "lake"
+    monkeypatch.setenv("QUANT_LAB_LAKE_ROOT", str(lake))
+    monkeypatch.setenv("QUANT_LAB_RISK_PERMISSION_TTL_SECONDS", "3600")
+    _write_gate(lake, GateStatus.DEAD, alpha_id="v5.core.momentum")
+    _write_cost_bucket(lake)
+    _write_fresh_market_bar(lake)
+    _write_alpha_discovery_board(lake, decision="PAPER_READY")
+    as_of_ts = datetime.now(UTC)
+    _write_risk_permissions(
+        lake,
+        [
+            _risk_row(
+                strategy="v5",
+                version="v1",
+                permission="ALLOW",
+                reasons='["published_allow_should_not_override_dead_core_alpha"]',
+                as_of_ts=as_of_ts,
+                expires_at=as_of_ts + timedelta(hours=1),
+                source_bundle_ts=as_of_ts,
+                permission_status="ACTIVE_ALLOW",
+            )
+            | {
+                "allowed_modes": '["paper","live_canary"]',
+                "max_gross_exposure": 0.25,
+                "max_single_weight": 0.05,
+            }
+        ],
+    )
+
+    payload = _get_permission("v5")
+
+    assert payload["permission"] == "ABORT"
+    assert payload["permission"] != "ALLOW"
+    assert payload["core_alpha_dead"] is True
+    assert payload["strategy_opportunities_available"] is True
+    assert payload["allowed_advisory_modes"] == ["shadow", "paper"]
+    assert payload["allowed_live_modes"] == []
+    assert payload["system_safety_status"] == "SAFE_FOR_ADVISORY"
+    assert "core_alpha_dead" in payload["live_block_reasons"]
+
+    detail = TestClient(app).get(
+        "/v1/risk/live-permission-detail",
+        params={"strategy": "v5", "version": "v1"},
+    ).json()
+    assert detail["permission_source"] == "recomputed"
+    assert detail["permission"]["permission"] == "ABORT"
+
+
 def test_live_permission_api_reads_published_risk_permission(tmp_path, monkeypatch):
     lake = tmp_path / "lake"
     monkeypatch.setenv("QUANT_LAB_LAKE_ROOT", str(lake))

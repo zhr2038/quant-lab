@@ -648,6 +648,26 @@ def test_paper_daily_counts_horizon_level_pnl(tmp_path):
         },
     ]
     write_parquet_dataset(pl.DataFrame(rows), lake / "silver" / "v5_paper_strategy_run")
+    write_parquet_dataset(
+        pl.DataFrame(
+            [
+                {
+                    "as_of_date": "2026-05-19",
+                    "proposal_id": "ETH_USDT_F3_DOMINANT_ENTRY_PAPER_V1",
+                    "strategy_candidate": "v5.f3_dominant_entry",
+                    "symbol": "ETH-USDT",
+                    "paper_pnl_observed_count": "0",
+                    "avg_paper_pnl_bps": "",
+                    "paper_pnl_observed_count_by_horizon": "{}",
+                    "avg_paper_pnl_bps_by_horizon": "{}",
+                    "paper_pnl_day_count_by_horizon": "{}",
+                    "raw_payload_json": "{}",
+                    "bundle_ts": datetime(2026, 5, 18, 12, tzinfo=UTC),
+                }
+            ]
+        ),
+        lake / "silver" / "v5_paper_strategy_daily",
+    )
 
     build_and_publish_paper_strategy_tracking(lake, as_of_date="auto")
 

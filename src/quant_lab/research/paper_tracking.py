@@ -708,12 +708,14 @@ def enrich_paper_strategy_daily_from_runs(
         "latest_paper_pnl_usdt",
         "cumulative_paper_pnl_usdt",
         "avg_paper_pnl_bps",
-        "paper_pnl_observed_count_by_horizon",
-        "avg_paper_pnl_bps_by_horizon",
-        "paper_pnl_day_count_by_horizon",
         "arrival_mid_coverage",
         "spread_observation_coverage",
         "cost_source_mix",
+    ]
+    run_preferred_fields = [
+        "paper_pnl_observed_count_by_horizon",
+        "avg_paper_pnl_bps_by_horizon",
+        "paper_pnl_day_count_by_horizon",
     ]
     for row in daily.to_dicts():
         metric = metrics.get(_paper_daily_key(row), {})
@@ -722,6 +724,9 @@ def enrich_paper_strategy_daily_from_runs(
             updated[field] = int(_optional_float(metric.get(field)) or 0)
         for field in fallback_fields:
             if updated.get(field) in {None, ""} and metric.get(field) not in {None, ""}:
+                updated[field] = metric.get(field)
+        for field in run_preferred_fields:
+            if metric.get(field) not in {None, "", "{}"}:
                 updated[field] = metric.get(field)
         for field in ["arrival_mid_coverage", "spread_observation_coverage", "cost_source_mix"]:
             if metric.get(field) not in {None, ""}:

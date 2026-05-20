@@ -728,6 +728,7 @@ def _order_lifecycle_rows(
             "spread_cost_bps": spread_cost_bps,
             "fee_bps": fee_bps,
             "total_realized_cost_bps": total_cost,
+            "realized_total_cost_bps": total_cost,
         }
         rows.append(
             row
@@ -746,6 +747,7 @@ def _order_lifecycle_rows(
                 "spread_cost_bps": "" if spread_cost_bps is None else str(spread_cost_bps),
                 "fee_bps": "" if fee_bps is None else str(fee_bps),
                 "total_realized_cost_bps": "" if total_cost is None else str(total_cost),
+                "realized_total_cost_bps": "" if total_cost is None else str(total_cost),
                 "raw_payload_json": safe_json_dumps(enriched_payload),
             }
         )

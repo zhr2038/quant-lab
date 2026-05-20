@@ -133,8 +133,11 @@ def calibrate_costs_for_day(
         private_fill_rows=fill_events.height,
         private_bill_rows=account_bills.height,
         v5_trade_rows=v5_trade_events.height,
+        v5_order_lifecycle_rows=v5_order_lifecycle.height,
+        v5_lifecycle_zero_fill_count=_v5_lifecycle_zero_fill_count(v5_order_lifecycle),
         fee_bps_missing_count=_fee_missing_count(fill_events)
-        + _v5_trade_fee_missing_count(v5_trade_events),
+        + _v5_trade_fee_missing_count(v5_trade_events)
+        + _v5_order_lifecycle_fee_missing_count(v5_order_lifecycle),
         **summarize_cost_api_usage(v5_cost_usage),
     )
     health_rows_written = publish_cost_health_daily(root, health)
@@ -530,9 +533,11 @@ def _v5_order_lifecycle_fill_samples(v5_order_lifecycle: pl.DataFrame) -> list[d
         symbol = _symbol_from_trade_row(row)
         if not symbol:
             continue
+        if not _is_filled_lifecycle_row(row):
+            continue
         avg_fill_px = _first_float(row, ["avg_fill_px", "fill_px", "avg_px"])
         filled_qty = _first_float(row, ["filled_qty", "fill_qty", "fill_sz", "qty"])
-        notional = _first_float(row, ["notional_usdt", "notional", "requested_notional_usdt"])
+        notional = _first_float(row, ["notional_usdt", "filled_notional_usdt", "notional"])
         if notional is None and avg_fill_px is not None and filled_qty is not None:
             notional = abs(avg_fill_px * filled_qty)
         if notional is None or notional <= 0:
@@ -564,7 +569,10 @@ def _v5_order_lifecycle_fill_samples(v5_order_lifecycle: pl.DataFrame) -> list[d
                     slippage = (arrival_mid - avg_fill_px) / arrival_mid * 10_000
                 else:
                     slippage = (avg_fill_px - arrival_mid) / arrival_mid * 10_000
-        spread_bps = _first_float(row, ["spread_cost_bps", "spread_bps_at_decision", "spread_bps"])
+        spread_bps = _first_float(row, ["spread_bps_at_decision", "spread_bps"])
+        if spread_bps is None:
+            spread_cost_bps = _first_float(row, ["spread_cost_bps"])
+            spread_bps = None if spread_cost_bps is None else spread_cost_bps * 2.0
         samples.append(
             {
                 "symbol": symbol,
@@ -599,6 +607,28 @@ def _v5_order_lifecycle_fill_samples(v5_order_lifecycle: pl.DataFrame) -> list[d
             }
         )
     return samples
+
+
+def _is_filled_lifecycle_row(row: dict[str, Any]) -> bool:
+    state = str(
+        row.get("order_state")
+        or row.get("state")
+        or row.get("status")
+        or row.get("order_status")
+        or ""
+    ).strip().lower()
+    fill_count = _first_float(row, ["fill_count", "fills_count"])
+    filled_qty = _first_float(row, ["filled_qty", "fill_qty", "fill_sz", "qty"])
+    avg_fill_px = _first_float(row, ["avg_fill_px", "fill_px", "avg_px"])
+    trade_ids = str(row.get("trade_ids") or row.get("trade_id") or row.get("tradeId") or "")
+    has_fill_marker = (
+        (fill_count is not None and fill_count > 0)
+        or (filled_qty is not None and filled_qty > 0)
+        or bool(trade_ids.strip())
+    )
+    if state and state not in {"filled", "partially_filled", "partial_fill", "partially-filled"}:
+        return False
+    return has_fill_marker and avg_fill_px is not None
 
 
 def _symbol_from_trade_row(row: dict[str, Any]) -> str:
@@ -1011,6 +1041,38 @@ def _v5_trade_fee_missing_count(v5_trade_events: pl.DataFrame) -> int:
     count = 0
     for row in v5_trade_events.to_dicts():
         if _first_float(row, ["fee_usdt", "fee_abs_usdt", "fee", "commission", "fee_abs"]) is None:
+            count += 1
+    return count
+
+
+def _v5_order_lifecycle_fee_missing_count(v5_order_lifecycle: pl.DataFrame) -> int:
+    if v5_order_lifecycle.is_empty():
+        return 0
+    count = 0
+    for row in v5_order_lifecycle.to_dicts():
+        if not _is_filled_lifecycle_row(row):
+            continue
+        if _first_float(row, ["fee_bps", "fee_usdt", "fee_abs_usdt", "fee", "commission"]) is None:
+            count += 1
+    return count
+
+
+def _v5_lifecycle_zero_fill_count(v5_order_lifecycle: pl.DataFrame) -> int:
+    if v5_order_lifecycle.is_empty():
+        return 0
+    count = 0
+    for row in v5_order_lifecycle.to_dicts():
+        state = str(
+            row.get("order_state")
+            or row.get("state")
+            or row.get("status")
+            or row.get("order_status")
+            or ""
+        ).strip().lower()
+        fill_count = _first_float(row, ["fill_count", "fills_count"])
+        if state in {"filled", "partially_filled", "partial_fill", "partially-filled"} and (
+            fill_count is not None and fill_count <= 0
+        ):
             count += 1
     return count
 

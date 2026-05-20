@@ -155,6 +155,7 @@ def test_ingest_v5_order_lifecycle_computes_realized_cost_parts(tmp_path):
     assert float(row["spread_cost_bps"]) > 0
     assert float(row["fee_bps"]) > 0
     assert float(row["total_realized_cost_bps"]) > 0
+    assert float(row["realized_total_cost_bps"]) > 0
 
 
 def test_ingest_parses_quant_lab_usage_files(tmp_path):

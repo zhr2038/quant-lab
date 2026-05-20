@@ -246,6 +246,57 @@ def test_v5_order_lifecycle_generates_actual_fills_bucket(tmp_path):
     assert all_row["fee_bps_p50"] > 0
     assert all_row["slippage_bps_p50"] > 0
     assert all_row["spread_bps_p50"] > 0
+    health = read_parquet_dataset(lake_root / "gold" / "cost_health_daily").to_dicts()[0]
+    checks = json.loads(health["data_quality_checks_json"])
+    assert checks["lifecycle_present_but_not_in_actual_cost"] is True
+    assert checks["fill_count_zero_for_filled_order"] is True
+
+
+def test_v5_order_lifecycle_zero_fill_is_not_used_as_actual_cost(tmp_path):
+    lake_root = tmp_path / "lake"
+    write_parquet_dataset(
+        pl.DataFrame(
+            [
+                {
+                    "strategy": "v5",
+                    "source_path_inside_bundle": (
+                        "raw/recent_runs/run_lifecycle/order_lifecycle.csv"
+                    ),
+                    "run_id": "run_lifecycle",
+                    "ts_utc": "2026-05-15T01:00:04Z",
+                    "symbol": "BTC-USDT",
+                    "normalized_symbol": "BTC-USDT",
+                    "side": "buy",
+                    "intent": "OPEN_LONG",
+                    "order_state": "FILLED",
+                    "signal_price": "60000",
+                    "arrival_mid": "60000",
+                    "spread_bps_at_decision": "2.5",
+                    "avg_fill_px": "60010",
+                    "filled_qty": "0",
+                    "fee_usdt": "0",
+                    "notional_usdt": "0",
+                    "requested_notional_usdt": "120",
+                    "fill_count": "0",
+                }
+            ]
+        ),
+        lake_root / "silver" / "v5_order_lifecycle",
+    )
+
+    result = calibrate_costs_for_day(lake_root, "2026-05-15", min_sample_count=1)
+
+    assert result.sources == ["global_default"]
+    rows = read_parquet_dataset(lake_root / "gold" / "cost_bucket_daily").to_dicts()
+    assert rows[0]["source"] == "global_default"
+    health = read_parquet_dataset(lake_root / "gold" / "cost_health_daily").to_dicts()[0]
+    checks = json.loads(health["data_quality_checks_json"])
+    assert health["status"] == "CRITICAL"
+    assert checks["lifecycle_present_but_not_in_actual_cost"] is False
+    assert checks["fill_count_zero_for_filled_order"] is False
+    warnings = json.loads(health["warnings_json"])
+    assert "lifecycle_present_but_not_in_actual_cost" in warnings
+    assert "fill_count_zero_for_filled_order" in warnings
 
 
 def test_recent_v5_trades_feed_later_day_mixed_actual_cost(tmp_path):

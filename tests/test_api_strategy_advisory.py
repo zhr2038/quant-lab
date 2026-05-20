@@ -7,6 +7,24 @@ from fastapi.testclient import TestClient
 from quant_lab.api.main import app
 from quant_lab.data.lake import write_parquet_dataset
 
+V5_ADVISORY_FIELDS = {
+    "strategy_id",
+    "strategy_candidate",
+    "symbol",
+    "decision",
+    "recommended_mode",
+    "horizon_hours",
+    "sample_count",
+    "complete_sample_count",
+    "avg_net_bps",
+    "p25_net_bps",
+    "win_rate",
+    "cost_source_mix",
+    "live_block_reasons",
+    "max_paper_notional_usdt",
+    "max_live_notional_usdt",
+}
+
 
 def test_strategy_opportunity_advisory_endpoint_reads_gold(tmp_path, monkeypatch):
     lake = tmp_path / "lake"
@@ -65,6 +83,51 @@ def test_strategy_opportunity_advisory_endpoint_reads_gold(tmp_path, monkeypatch
     assert killed["symbol"] == "BNB-USDT"
     assert killed["recommended_mode"] == "none"
     assert killed["max_live_notional_usdt"] == 0.0
+
+
+def test_strategy_opportunity_advisory_response_is_v5_parseable(
+    tmp_path,
+    monkeypatch,
+):
+    lake = tmp_path / "lake"
+    monkeypatch.setenv("QUANT_LAB_LAKE_ROOT", str(lake))
+    monkeypatch.delenv("QUANT_LAB_API_TOKEN", raising=False)
+    write_parquet_dataset(
+        pl.DataFrame(
+            [
+                {
+                    "as_of_ts": datetime(2026, 5, 20, tzinfo=UTC),
+                    "strategy_id": "SOL_F4_VOLUME_EXPANSION_PAPER_V1",
+                    "strategy_candidate": "v5.f4_volume_expansion_entry",
+                    "symbol": "SOL-USDT",
+                    "decision": "LIVE_SMALL_READY",
+                    "recommended_mode": "live_small",
+                    "horizon_hours": 24,
+                    "sample_count": 80,
+                    "complete_sample_count": 64,
+                    "avg_net_bps": 31.5,
+                    "p25_net_bps": -8.0,
+                    "win_rate": 0.68,
+                    "cost_source_mix": '{"mixed_actual_proxy":64}',
+                    "live_block_reasons": "[]",
+                    "max_paper_notional_usdt": 1000.0,
+                    "max_live_notional_usdt": 250.0,
+                }
+            ]
+        ),
+        lake / "gold" / "strategy_opportunity_advisory",
+    )
+
+    response = TestClient(app).get("/v1/strategy-opportunity-advisory")
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert len(payload) == 1
+    assert V5_ADVISORY_FIELDS <= set(payload[0])
+    assert payload[0]["strategy_id"] == "SOL_F4_VOLUME_EXPANSION_PAPER_V1"
+    assert payload[0]["decision"] == "LIVE_SMALL_READY"
+    assert payload[0]["max_live_notional_usdt"] == 250.0
+    assert isinstance(payload[0]["live_block_reasons"], list)
 
 
 def test_strategy_opportunity_advisory_aliases_and_latest_report_fallback(

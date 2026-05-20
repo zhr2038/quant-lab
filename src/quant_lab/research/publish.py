@@ -8,6 +8,7 @@ from pydantic import BaseModel, ConfigDict, Field
 from quant_lab.contracts.models import AlphaEvidence, AlphaResearchSpec, GateDecision
 from quant_lab.data.lake import read_parquet_dataset, upsert_parquet_dataset
 from quant_lab.gates.defaults import evaluate_alpha_gate
+from quant_lab.research.baselines import alpha_role
 from quant_lab.research.evidence import build_alpha_evidence
 
 ALPHA_EVIDENCE_DATASET = Path("gold") / "alpha_evidence"
@@ -43,6 +44,7 @@ ALPHA_EVIDENCE_SCHEMA = {
     "paper_slippage_coverage": pl.Float64,
     "created_at": pl.Utf8,
     "evidence_status": pl.Utf8,
+    "role": pl.Utf8,
     "source": pl.Utf8,
 }
 
@@ -57,6 +59,10 @@ GATE_DECISION_SCHEMA = {
     "metrics": pl.Utf8,
     "next_action": pl.Utf8,
     "created_at": pl.Utf8,
+    "role": pl.Utf8,
+    "baseline_status": pl.Utf8,
+    "not_live_eligible": pl.Boolean,
+    "not_global_strategy_gate": pl.Boolean,
     "source": pl.Utf8,
     "fallback_level": pl.Utf8,
 }
@@ -273,9 +279,14 @@ def _alpha_evidence_row(evidence: AlphaEvidence) -> dict[str, Any]:
 
 
 def _gate_decision_row(strategy: str, decision: GateDecision) -> dict[str, Any]:
+    role = alpha_role(decision.alpha_id)
     return {
         **decision.model_dump(mode="json"),
         "strategy": strategy,
+        "role": role,
+        "baseline_status": decision.status.value if role == "research_baseline" else "",
+        "not_live_eligible": role == "research_baseline",
+        "not_global_strategy_gate": role == "research_baseline",
         "reasons": _json(decision.reasons),
         "metrics": _json(decision.metrics),
         "source": "research.alpha_evidence.v0.1",

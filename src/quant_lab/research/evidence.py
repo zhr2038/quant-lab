@@ -9,6 +9,7 @@ from quant_lab import __version__
 from quant_lab.contracts.models import AlphaEvidence, AlphaResearchSpec
 from quant_lab.data.lake import read_parquet_dataset
 from quant_lab.research.backtest import simulate_long_only_oos
+from quant_lab.research.baselines import alpha_role
 from quant_lab.research.ic import compute_ic, compute_rank_ic
 from quant_lab.research.labels import build_forward_return_labels, validate_no_label_lookahead
 
@@ -145,6 +146,7 @@ def build_alpha_evidence(
         paper_slippage_coverage=0.0,
         created_at=now,
         evidence_status=status,
+        role=alpha_role(spec.alpha_id),
     )
     return AlphaEvidenceBuildResult(evidence, dataset, _dedupe(warnings), status)
 

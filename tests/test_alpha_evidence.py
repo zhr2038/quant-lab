@@ -48,6 +48,7 @@ def test_build_alpha_evidence_computes_metrics_without_paper_live_ready(tmp_path
     assert result.evidence.paper_days == 0
     assert result.evidence.paper_slippage_coverage == 0.0
     assert result.evidence.evidence_status == "ok"
+    assert result.evidence.role == "research_baseline"
 
 
 def test_insufficient_samples_keeps_metrics_and_marks_status(tmp_path):
@@ -84,7 +85,11 @@ def test_publish_alpha_evidence_writes_evidence_and_gate(tmp_path):
     assert result.alpha_evidence_rows == 1
     assert evidence.height == 1
     assert gates.height == 1
+    assert evidence["role"][0] == "research_baseline"
     assert gates["alpha_id"][0] == "v5.core.momentum"
+    assert gates["role"][0] == "research_baseline"
+    assert gates["not_live_eligible"][0] is True
+    assert gates["not_global_strategy_gate"][0] is True
 
 
 def _spec(min_samples: int) -> AlphaResearchSpec:

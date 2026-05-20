@@ -119,11 +119,15 @@ def test_live_permission_api_allows_advisory_modes_when_core_alpha_dead(
     assert payload["permission"] != "ALLOW"
     assert payload["core_alpha_gate_status"] == "DEAD"
     assert payload["core_alpha_dead"] is True
+    assert payload["baseline_status"] == "DEAD"
+    assert payload["baseline_role"] == "research_baseline"
+    assert payload["baseline_not_live_eligible"] is True
+    assert payload["baseline_not_global_strategy_gate"] is True
     assert payload["system_safety_status"] == "SAFE_FOR_ADVISORY"
     assert payload["strategy_opportunities_available"] is True
     assert payload["allowed_advisory_modes"] == ["shadow", "paper"]
     assert payload["allowed_live_modes"] == []
-    assert "core_alpha_dead" in payload["live_block_reasons"]
+    assert "baseline_not_global_strategy_gate" in payload["live_block_reasons"]
 
 
 def test_live_permission_api_does_not_use_published_allow_when_core_alpha_dead(
@@ -168,7 +172,7 @@ def test_live_permission_api_does_not_use_published_allow_when_core_alpha_dead(
     assert payload["allowed_advisory_modes"] == ["shadow", "paper"]
     assert payload["allowed_live_modes"] == []
     assert payload["system_safety_status"] == "SAFE_FOR_ADVISORY"
-    assert "core_alpha_dead" in payload["live_block_reasons"]
+    assert "baseline_not_global_strategy_gate" in payload["live_block_reasons"]
 
     detail = TestClient(app).get(
         "/v1/risk/live-permission-detail",

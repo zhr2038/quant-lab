@@ -13,6 +13,7 @@ from quant_lab.risk.advisory import (
     apply_risk_advisory_context,
     build_risk_advisory_context,
     json_list,
+    required_gate_decisions,
 )
 from quant_lab.risk.permissions import evaluate_live_permission
 
@@ -52,6 +53,11 @@ RISK_PERMISSION_SCHEMA = {
     "system_safety_status": pl.Utf8,
     "core_alpha_gate_status": pl.Utf8,
     "core_alpha_dead": pl.Boolean,
+    "baseline_status": pl.Utf8,
+    "baseline_alpha_id": pl.Utf8,
+    "baseline_role": pl.Utf8,
+    "baseline_not_live_eligible": pl.Boolean,
+    "baseline_not_global_strategy_gate": pl.Boolean,
     "strategy_opportunities_available": pl.Boolean,
     "allowed_advisory_modes": pl.Utf8,
     "allowed_live_modes": pl.Utf8,
@@ -95,7 +101,7 @@ def publish_risk_permission(
     permission = evaluate_live_permission(
         strategy=strategy,
         version=version,
-        gate_decisions=gate_decisions,
+        gate_decisions=required_gate_decisions(gate_decisions),
         cost_health=cost_health,
         data_health=data_health,
     )
@@ -156,6 +162,10 @@ def load_gate_decisions(root: Path, strategy: str) -> list[GateDecision]:
         cleaned.pop("strategy", None)
         cleaned.pop("source", None)
         cleaned.pop("fallback_level", None)
+        cleaned.pop("role", None)
+        cleaned.pop("baseline_status", None)
+        cleaned.pop("not_live_eligible", None)
+        cleaned.pop("not_global_strategy_gate", None)
         if isinstance(cleaned.get("metrics"), str):
             cleaned["metrics"] = _json_dict(cleaned["metrics"])
         if isinstance(cleaned.get("reasons"), str):

@@ -83,6 +83,138 @@ def test_export_daily_pack_writes_required_members(tmp_path):
         assert archive.read("charts/market_close.png").startswith(b"\x89PNG")
 
 
+def test_export_marks_core_momentum_as_research_baseline_and_prioritizes_strategy_dashboard(
+    tmp_path,
+):
+    lake_root = _fixture_lake(tmp_path)
+    created_at = datetime(2026, 5, 11, 12, tzinfo=UTC)
+    write_parquet_dataset(
+        pl.DataFrame(
+            [
+                {
+                    "alpha_id": "v5.core.momentum",
+                    "version": "v0.1",
+                    "data_version": "market_bar:test",
+                    "feature_version": "core:v0.1",
+                    "cost_model_version": "cost:v0.1",
+                    "universe_id": "okx-major-spot",
+                    "start_ts": "2026-05-10T00:00:00+00:00",
+                    "end_ts": "2026-05-11T00:00:00+00:00",
+                    "coverage": 1.0,
+                    "ic_mean": -0.02,
+                    "ic_tstat": -1.1,
+                    "rank_ic_mean": -0.01,
+                    "rank_ic_tstat": -0.7,
+                    "oos_sharpe": -0.2,
+                    "oos_max_drawdown": 0.12,
+                    "edge_cost_ratio": 0.4,
+                    "paper_days": 0,
+                    "created_at": created_at.isoformat(),
+                    "evidence_status": "ok",
+                }
+            ]
+        ),
+        lake_root / "gold" / "alpha_evidence",
+    )
+    write_parquet_dataset(
+        pl.DataFrame(
+            [
+                {
+                    "strategy": "v5",
+                    "alpha_id": "v5.core.momentum",
+                    "version": "v0.1",
+                    "gate_version": "default-v0.1",
+                    "status": "DEAD",
+                    "passed": False,
+                    "reasons": '["non_positive_ic"]',
+                    "metrics": '{"ic_mean":-0.02}',
+                    "next_action": "discard_or_research_only",
+                    "created_at": created_at.isoformat(),
+                }
+            ]
+        ),
+        lake_root / "gold" / "gate_decision",
+    )
+    write_parquet_dataset(
+        pl.DataFrame(
+            [
+                {
+                    "as_of_date": "2026-05-11",
+                    "strategy_candidate": "v5.sol_protect_alpha6_low_exception",
+                    "symbol": "SOL-USDT",
+                    "horizon_hours": 24,
+                    "sample_count": 32,
+                    "complete_sample_count": 30,
+                    "avg_net_bps": 18.0,
+                    "p25_net_bps": -12.0,
+                    "win_rate": 0.62,
+                    "cost_source_mix": '{"public_spread_proxy":30}',
+                    "decision": "PAPER_READY",
+                    "decision_reasons": '["paper_candidate"]',
+                    "created_at": created_at.isoformat(),
+                },
+                {
+                    "as_of_date": "2026-05-11",
+                    "strategy_candidate": "v5.multi_position_k2",
+                    "symbol": "BTC-USDT",
+                    "horizon_hours": 24,
+                    "sample_count": 20,
+                    "complete_sample_count": 18,
+                    "avg_net_bps": -20.0,
+                    "p25_net_bps": -55.0,
+                    "win_rate": 0.33,
+                    "cost_source_mix": '{"public_spread_proxy":18}',
+                    "decision": "KILL",
+                    "decision_reasons": '["non_positive_after_cost_edge"]',
+                    "created_at": created_at.isoformat(),
+                },
+            ]
+        ),
+        lake_root / "gold" / "alpha_discovery_board",
+    )
+
+    result = export_daily_pack(
+        export_date="2026-05-11",
+        lake_root=lake_root,
+        out_dir=tmp_path / "exports",
+        profile="expert",
+        command_line=["qlab", "export-daily"],
+    )
+
+    with zipfile.ZipFile(result.zip_path) as archive:
+        evidence = list(
+            csv.DictReader(
+                io.StringIO(archive.read("research/alpha_evidence.csv").decode("utf-8"))
+            )
+        )
+        gates = list(
+            csv.DictReader(
+                io.StringIO(archive.read("research/gate_decisions.csv").decode("utf-8"))
+            )
+        )
+        dashboard = list(
+            csv.DictReader(
+                io.StringIO(
+                    archive.read("reports/strategy_level_dashboard.csv").decode("utf-8")
+                )
+            )
+        )
+        executive_summary = archive.read("executive_summary.md").decode("utf-8")
+
+    baseline_evidence = next(row for row in evidence if row["alpha_id"] == "v5.core.momentum")
+    baseline_gate = next(row for row in gates if row["alpha_id"] == "v5.core.momentum")
+    assert baseline_evidence["role"] == "research_baseline"
+    assert baseline_evidence["not_live_eligible"].lower() == "true"
+    assert baseline_evidence["not_global_strategy_gate"].lower() == "true"
+    assert baseline_gate["baseline_status"] == "DEAD"
+    assert baseline_gate["not_live_eligible"].lower() == "true"
+    assert baseline_gate["not_global_strategy_gate"].lower() == "true"
+    assert {row["decision"] for row in dashboard} >= {"PAPER_READY", "KILL"}
+    assert "Core momentum baseline:" in executive_summary
+    assert "Strategy-level dashboard decision counts:" in executive_summary
+    assert "Focus strategy candidates:" in executive_summary
+
+
 def test_export_daily_ingests_pending_v5_inbox_before_snapshot(tmp_path):
     lake_root = _fixture_lake(tmp_path)
     inbox = tmp_path / "inbox"

@@ -31,6 +31,11 @@ from quant_lab.reports.enforce_readiness import (
     enforce_readiness_members,
 )
 from quant_lab.research.alpha_discovery import normalize_alpha_discovery_board_decisions
+from quant_lab.research.baselines import (
+    CORE_MOMENTUM_ALPHA_ID,
+    RESEARCH_BASELINE_ROLE,
+    alpha_role,
+)
 from quant_lab.research.paper_tracking import (
     build_paper_slippage_coverage,
     build_paper_slippage_coverage_from_v5,
@@ -199,6 +204,7 @@ REQUIRED_MEMBERS = [
     "reports/candidate_paper_ready.csv",
     "reports/paper_strategy_proposals.csv",
     "reports/strategy_opportunity_advisory.csv",
+    "reports/strategy_level_dashboard.csv",
     "reports/paper_strategy_runs.csv",
     "reports/paper_strategy_daily.csv",
     "reports/paper_slippage_coverage.csv",
@@ -331,6 +337,10 @@ CSV_SCHEMAS: dict[str, list[str]] = {
         "paper_days",
         "created_at",
         "evidence_status",
+        "role",
+        "baseline_status",
+        "not_live_eligible",
+        "not_global_strategy_gate",
     ],
     "research/gate_decisions.csv": [
         "alpha_id",
@@ -338,6 +348,10 @@ CSV_SCHEMAS: dict[str, list[str]] = {
         "gate_version",
         "status",
         "passed",
+        "role",
+        "baseline_status",
+        "not_live_eligible",
+        "not_global_strategy_gate",
         "reasons",
         "metrics",
         "next_action",
@@ -595,6 +609,23 @@ CSV_SCHEMAS: dict[str, list[str]] = {
         "live_block_reasons",
         "max_paper_notional_usdt",
         "max_live_notional_usdt",
+    ],
+    "reports/strategy_level_dashboard.csv": [
+        "decision",
+        "strategy_candidate",
+        "symbol",
+        "horizon_hours",
+        "recommended_mode",
+        "sample_count",
+        "complete_sample_count",
+        "avg_net_bps",
+        "p25_net_bps",
+        "win_rate",
+        "cost_source_mix",
+        "live_block_reasons",
+        "max_paper_notional_usdt",
+        "max_live_notional_usdt",
+        "as_of_ts",
     ],
     "reports/paper_strategy_runs.csv": [
         "as_of_date",
@@ -1441,7 +1472,8 @@ def _dataset_members(frames: dict[str, pl.DataFrame]) -> dict[str, _MemberPayloa
         paper_daily=paper_daily,
         paper_slippage=paper_slippage,
     )
-    gates = frames.get("gate_decision", pl.DataFrame())
+    strategy_level_dashboard = _strategy_level_dashboard_for_export(opportunity_advisory)
+    gates = _gate_decisions_for_export(frames.get("gate_decision", pl.DataFrame()))
     trades = _normalize_symbol_frame(frames.get("trade_print", pl.DataFrame()))
     books = _normalize_symbol_frame(frames.get("orderbook_snapshot", pl.DataFrame()))
     v5_health = frames.get("strategy_health_daily", pl.DataFrame())
@@ -1549,6 +1581,10 @@ def _dataset_members(frames: dict[str, pl.DataFrame]) -> dict[str, _MemberPayloa
         "reports/strategy_opportunity_advisory.csv": _csv_member(
             "reports/strategy_opportunity_advisory.csv",
             opportunity_advisory,
+        ),
+        "reports/strategy_level_dashboard.csv": _csv_member(
+            "reports/strategy_level_dashboard.csv",
+            strategy_level_dashboard,
         ),
         "reports/paper_strategy_runs.csv": _csv_member(
             "reports/paper_strategy_runs.csv",
@@ -2630,6 +2666,12 @@ def _executive_summary(
     gate_counts = _value_counts(gates, "status")
     alpha_discovery_counts = _value_counts(alpha_discovery_board, "decision")
     strategy_decision_counts = _value_counts(strategy_evidence, "decision")
+    strategy_dashboard_counts = _strategy_dashboard_decision_counts(
+        snapshot.frames.get("strategy_opportunity_advisory", pl.DataFrame()),
+        alpha_discovery_board,
+        strategy_evidence,
+    )
+    baseline = _baseline_gate_summary(gates, snapshot.frames.get("alpha_evidence", pl.DataFrame()))
     paper_tracking_counts = _value_counts(paper_runs, "tracking_stage")
     paper_status_counts = _value_counts(paper_daily, "paper_tracking_status")
     risk_quality = data_quality.get("risk_permission", {})
@@ -2649,7 +2691,18 @@ def _executive_summary(
         f"Data quality status: {data_quality.get('status', 'UNKNOWN')}",
         f"Dataset row counts: {safe_json_dumps(snapshot.row_counts)}",
         f"Cost fallback rows: {fallback_rows.height}",
-        f"Gate status counts: {safe_json_dumps(gate_counts)}",
+        "Core momentum baseline: "
+        f"baseline_status={baseline.get('baseline_status', 'UNKNOWN')}, "
+        f"role={baseline.get('role', RESEARCH_BASELINE_ROLE)}, "
+        f"not_live_eligible={baseline.get('not_live_eligible', True)}, "
+        f"not_global_strategy_gate={baseline.get('not_global_strategy_gate', True)}",
+        f"Strategy-level dashboard decision counts: {safe_json_dumps(strategy_dashboard_counts)}",
+        "Focus strategy candidates: "
+        "SOL_PROTECT_MOMENTUM_CONTINUATION_PAPER_V1, "
+        "ETH_F3_DOMINANT_ENTRY_PAPER_V1, "
+        "ALT_IMPULSE_REGIME_SHADOW_V1, "
+        "BTC_STRICT_PROBE_MONITOR_V1",
+        f"Research gate/baseline status counts: {safe_json_dumps(gate_counts)}",
         f"Alpha discovery decision counts: {safe_json_dumps(alpha_discovery_counts)}",
         f"Strategy evidence decision counts: {safe_json_dumps(strategy_decision_counts)}",
         f"Paper tracking stages: {safe_json_dumps(paper_tracking_counts)}",
@@ -2768,8 +2821,9 @@ def _all_cost_rows_public_proxy(costs: pl.DataFrame) -> bool:
 
 
 def _alpha_evidence_for_export(evidence: pl.DataFrame) -> pl.DataFrame:
+    path = "research/alpha_evidence.csv"
     if evidence.is_empty() and not evidence.columns:
-        return evidence
+        return _empty_csv_schema_frame(path)
     normalized = evidence
     if "evidence_status" not in normalized.columns:
         normalized = normalized.with_columns(pl.lit("unknown").alias("evidence_status"))
@@ -2780,7 +2834,77 @@ def _alpha_evidence_for_export(evidence: pl.DataFrame) -> pl.DataFrame:
             .otherwise(pl.col("evidence_status").cast(pl.Utf8))
             .alias("evidence_status")
         )
-    return normalized
+    if "role" not in normalized.columns:
+        normalized = normalized.with_columns(
+            pl.col("alpha_id")
+            .cast(pl.Utf8)
+            .map_elements(alpha_role, return_dtype=pl.Utf8)
+            .alias("role")
+        )
+    else:
+        normalized = normalized.with_columns(
+            pl.when(pl.col("role").is_null() | (pl.col("role") == ""))
+            .then(
+                pl.col("alpha_id")
+                .cast(pl.Utf8)
+                .map_elements(alpha_role, return_dtype=pl.Utf8)
+            )
+            .otherwise(pl.col("role").cast(pl.Utf8))
+            .alias("role")
+        )
+    normalized = normalized.with_columns(
+        [
+            pl.when(pl.col("role") == RESEARCH_BASELINE_ROLE)
+            .then(pl.col("evidence_status").cast(pl.Utf8))
+            .otherwise(pl.lit(""))
+            .alias("baseline_status"),
+            (pl.col("role") == RESEARCH_BASELINE_ROLE).alias("not_live_eligible"),
+            (pl.col("role") == RESEARCH_BASELINE_ROLE).alias("not_global_strategy_gate"),
+        ]
+    )
+    for column in CSV_SCHEMAS[path]:
+        if column not in normalized.columns:
+            normalized = normalized.with_columns(pl.lit(None, dtype=pl.Utf8).alias(column))
+    return normalized.select(CSV_SCHEMAS[path])
+
+
+def _gate_decisions_for_export(gates: pl.DataFrame) -> pl.DataFrame:
+    path = "research/gate_decisions.csv"
+    if gates.is_empty() and not gates.columns:
+        return _empty_csv_schema_frame(path)
+    normalized = gates
+    if "role" not in normalized.columns:
+        normalized = normalized.with_columns(
+            pl.col("alpha_id")
+            .cast(pl.Utf8)
+            .map_elements(alpha_role, return_dtype=pl.Utf8)
+            .alias("role")
+        )
+    else:
+        normalized = normalized.with_columns(
+            pl.when(pl.col("role").is_null() | (pl.col("role") == ""))
+            .then(
+                pl.col("alpha_id")
+                .cast(pl.Utf8)
+                .map_elements(alpha_role, return_dtype=pl.Utf8)
+            )
+            .otherwise(pl.col("role").cast(pl.Utf8))
+            .alias("role")
+        )
+    normalized = normalized.with_columns(
+        [
+            pl.when(pl.col("role") == RESEARCH_BASELINE_ROLE)
+            .then(pl.col("status").cast(pl.Utf8))
+            .otherwise(pl.lit(""))
+            .alias("baseline_status"),
+            (pl.col("role") == RESEARCH_BASELINE_ROLE).alias("not_live_eligible"),
+            (pl.col("role") == RESEARCH_BASELINE_ROLE).alias("not_global_strategy_gate"),
+        ]
+    )
+    for column in CSV_SCHEMAS[path]:
+        if column not in normalized.columns:
+            normalized = normalized.with_columns(pl.lit(None, dtype=pl.Utf8).alias(column))
+    return normalized.select(CSV_SCHEMAS[path])
 
 
 def _strategy_evidence_for_export(evidence: pl.DataFrame) -> pl.DataFrame:
@@ -3322,6 +3446,34 @@ def _strategy_opportunity_advisory_for_export(
         .sort(["strategy_candidate", "symbol", "horizon_hours"])
         .select(CSV_SCHEMAS[path])
     )
+
+
+def _strategy_level_dashboard_for_export(opportunity_advisory: pl.DataFrame) -> pl.DataFrame:
+    path = "reports/strategy_level_dashboard.csv"
+    if opportunity_advisory.is_empty():
+        return _empty_csv_schema_frame(path)
+    normalized = opportunity_advisory
+    for column in CSV_SCHEMAS[path]:
+        if column not in normalized.columns:
+            normalized = normalized.with_columns(pl.lit(None, dtype=pl.Utf8).alias(column))
+    rows = normalized.select(CSV_SCHEMAS[path]).to_dicts()
+    decision_rank = {
+        "PAPER_READY": 0,
+        "LIVE_SMALL_READY": 1,
+        "KEEP_SHADOW": 2,
+        "REGIME_SHADOW": 3,
+        "KILL": 4,
+        "RESEARCH_ONLY": 5,
+    }
+    rows.sort(
+        key=lambda row: (
+            decision_rank.get(str(row.get("decision") or "").upper(), 99),
+            str(row.get("strategy_candidate") or ""),
+            str(row.get("symbol") or ""),
+            int(row.get("horizon_hours") or 0),
+        )
+    )
+    return pl.DataFrame(rows, infer_schema_length=None).select(CSV_SCHEMAS[path])
 
 
 def _advisory_board_from_strategy_evidence(strategy_evidence: pl.DataFrame) -> pl.DataFrame:
@@ -4532,6 +4684,52 @@ def _value_counts(df: pl.DataFrame, column: str) -> dict[str, int]:
     return {
         str(row[column]): int(row["count"])
         for row in df.group_by(column).len(name="count").to_dicts()
+    }
+
+
+def _strategy_dashboard_decision_counts(
+    opportunity_advisory: pl.DataFrame,
+    alpha_discovery_board: pl.DataFrame,
+    strategy_evidence: pl.DataFrame,
+) -> dict[str, int]:
+    source = opportunity_advisory
+    if source.is_empty():
+        source = alpha_discovery_board
+    if source.is_empty():
+        source = strategy_evidence
+    counts = _value_counts(source, "decision")
+    ordered: dict[str, int] = {}
+    for decision in ["PAPER_READY", "KEEP_SHADOW", "REGIME_SHADOW", "KILL", "LIVE_SMALL_READY"]:
+        ordered[decision] = counts.get(decision, 0)
+    return ordered
+
+
+def _baseline_gate_summary(gates: pl.DataFrame, evidence: pl.DataFrame) -> dict[str, Any]:
+    status = "UNKNOWN"
+    if not gates.is_empty() and "alpha_id" in gates.columns:
+        rows = [
+            row
+            for row in gates.to_dicts()
+            if str(row.get("alpha_id") or "") == CORE_MOMENTUM_ALPHA_ID
+        ]
+        if rows:
+            rows.sort(key=lambda row: str(row.get("created_at") or ""))
+            status = str(rows[-1].get("status") or "UNKNOWN")
+    if status == "UNKNOWN" and not evidence.is_empty() and "alpha_id" in evidence.columns:
+        rows = [
+            row
+            for row in evidence.to_dicts()
+            if str(row.get("alpha_id") or "") == CORE_MOMENTUM_ALPHA_ID
+        ]
+        if rows:
+            rows.sort(key=lambda row: str(row.get("created_at") or ""))
+            status = str(rows[-1].get("evidence_status") or "UNKNOWN")
+    return {
+        "alpha_id": CORE_MOMENTUM_ALPHA_ID,
+        "role": RESEARCH_BASELINE_ROLE,
+        "baseline_status": status,
+        "not_live_eligible": True,
+        "not_global_strategy_gate": True,
     }
 
 

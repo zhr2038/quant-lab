@@ -9,6 +9,7 @@ from pydantic import BaseModel, ConfigDict, Field
 from quant_lab.contracts.models import GateDecision, GateStatus, RiskPermission
 from quant_lab.costs.calibrate import calibrate_costs_for_day
 from quant_lab.data.lake import read_parquet_dataset, upsert_parquet_dataset
+from quant_lab.research.baselines import alpha_role
 from quant_lab.risk.permissions import evaluate_live_permission
 from quant_lab.risk.publish import annotate_risk_permission, latest_strategy_telemetry_ts
 
@@ -34,6 +35,10 @@ GATE_DECISION_SCHEMA = {
     "metrics": pl.Utf8,
     "next_action": pl.Utf8,
     "created_at": pl.Utf8,
+    "role": pl.Utf8,
+    "baseline_status": pl.Utf8,
+    "not_live_eligible": pl.Boolean,
+    "not_global_strategy_gate": pl.Boolean,
     "source": pl.Utf8,
     "fallback_level": pl.Utf8,
 }
@@ -152,6 +157,7 @@ def _dataset_empty(dataset_path: Path) -> bool:
 
 def _bootstrap_gate_row(strategy: str, version: str) -> dict[str, Any]:
     created_at = _utc_now()
+    role = alpha_role(BOOTSTRAP_ALPHA_ID)
     return {
         "strategy": strategy,
         "alpha_id": BOOTSTRAP_ALPHA_ID,
@@ -163,6 +169,10 @@ def _bootstrap_gate_row(strategy: str, version: str) -> dict[str, Any]:
         "metrics": _json({"coverage": None, "ic_tstat": None, "bootstrap": True}),
         "next_action": "generate_alpha_evidence_before_live",
         "created_at": created_at,
+        "role": role,
+        "baseline_status": GateStatus.QUARANTINE.value if role == "research_baseline" else "",
+        "not_live_eligible": role == "research_baseline",
+        "not_global_strategy_gate": role == "research_baseline",
         "source": BOOTSTRAP_SOURCE,
         "fallback_level": "BOOTSTRAP_CONSERVATIVE",
     }
@@ -209,6 +219,10 @@ def _load_gate_decisions(root: Path, strategy: str) -> list[GateDecision]:
         cleaned.pop("strategy", None)
         cleaned.pop("source", None)
         cleaned.pop("fallback_level", None)
+        cleaned.pop("role", None)
+        cleaned.pop("baseline_status", None)
+        cleaned.pop("not_live_eligible", None)
+        cleaned.pop("not_global_strategy_gate", None)
         if isinstance(cleaned.get("metrics"), str):
             cleaned["metrics"] = _json_dict(cleaned["metrics"])
         if isinstance(cleaned.get("reasons"), str):

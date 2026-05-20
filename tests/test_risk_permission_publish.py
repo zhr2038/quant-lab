@@ -180,7 +180,7 @@ def test_publish_risk_permission_marks_stale_when_telemetry_is_newer_by_48h(tmp_
 
 def _write_gate(lake, status: GateStatus) -> None:
     decision = GateDecision(
-        alpha_id="v5.core.momentum",
+        alpha_id="v5.required.alpha",
         version="v0.1",
         gate_version="default-v0.1",
         status=status,

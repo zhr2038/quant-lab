@@ -400,6 +400,7 @@ class AlphaEvidence(ContractModel):
     paper_slippage_coverage: float = Field(ge=0, le=1)
     created_at: datetime
     evidence_status: str = Field(default="ok", min_length=1)
+    role: str = Field(default="strategy_alpha", min_length=1)
 
     @field_validator("start_ts", "end_ts", "created_at")
     @classmethod
@@ -529,6 +530,11 @@ class RiskPermission(ContractModel):
     system_safety_status: str | None = None
     core_alpha_gate_status: str | None = None
     core_alpha_dead: bool = False
+    baseline_status: str | None = None
+    baseline_alpha_id: str | None = None
+    baseline_role: str | None = None
+    baseline_not_live_eligible: bool = False
+    baseline_not_global_strategy_gate: bool = False
     strategy_opportunities_available: bool = False
     allowed_advisory_modes: list[str] = Field(default_factory=list)
     allowed_live_modes: list[str] = Field(default_factory=list)

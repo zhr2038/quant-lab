@@ -8,8 +8,9 @@ import polars as pl
 
 from quant_lab.contracts.models import GateDecision, RiskAction, RiskPermission
 from quant_lab.data.lake import read_parquet_dataset
+from quant_lab.research.baselines import CORE_MOMENTUM_ALPHA_ID, is_research_baseline_alpha
 
-CORE_ALPHA_ID = "v5.core.momentum"
+CORE_ALPHA_ID = CORE_MOMENTUM_ALPHA_ID
 ADVISORY_DECISIONS = {"KEEP_SHADOW", "REGIME_SHADOW", "PAPER_READY", "LIVE_SMALL_READY"}
 SHADOW_DECISIONS = {"KEEP_SHADOW", "REGIME_SHADOW"}
 PAPER_DECISIONS = {"PAPER_READY", "LIVE_SMALL_READY"}
@@ -48,13 +49,13 @@ def build_risk_advisory_context(
     live_block_reasons.extend(cost_reasons)
     live_block_reasons.extend(telemetry_block_reasons)
     if core_dead:
-        live_block_reasons.append("core_alpha_dead")
+        live_block_reasons.append("baseline_not_global_strategy_gate")
     if not opportunity["live_small_ready_available"]:
         live_block_reasons.append("no_strategy_live_small_ready")
 
     if not safe_for_advisory:
         system_status = "BLOCKED"
-    elif opportunity["live_small_ready_available"] and not core_dead and not live_block_reasons:
+    elif opportunity["live_small_ready_available"] and not live_block_reasons:
         system_status = "SAFE_FOR_LIVE_SMALL_REVIEW"
     else:
         system_status = "SAFE_FOR_ADVISORY"
@@ -63,6 +64,11 @@ def build_risk_advisory_context(
         "system_safety_status": system_status,
         "core_alpha_gate_status": core_status,
         "core_alpha_dead": core_dead,
+        "baseline_status": core_status,
+        "baseline_alpha_id": CORE_ALPHA_ID,
+        "baseline_role": "research_baseline",
+        "baseline_not_live_eligible": core_status != "UNKNOWN",
+        "baseline_not_global_strategy_gate": core_status != "UNKNOWN",
         "strategy_opportunities_available": opportunity["strategy_opportunities_available"],
         "allowed_advisory_modes": allowed_advisory_modes,
         "base_allowed_live_modes": ["live_small"]
@@ -91,6 +97,13 @@ def apply_risk_advisory_context(
             "system_safety_status": str(context.get("system_safety_status") or "UNKNOWN"),
             "core_alpha_gate_status": str(context.get("core_alpha_gate_status") or "UNKNOWN"),
             "core_alpha_dead": bool(context.get("core_alpha_dead")),
+            "baseline_status": str(context.get("baseline_status") or "UNKNOWN"),
+            "baseline_alpha_id": str(context.get("baseline_alpha_id") or CORE_ALPHA_ID),
+            "baseline_role": str(context.get("baseline_role") or "research_baseline"),
+            "baseline_not_live_eligible": bool(context.get("baseline_not_live_eligible")),
+            "baseline_not_global_strategy_gate": bool(
+                context.get("baseline_not_global_strategy_gate")
+            ),
             "strategy_opportunities_available": bool(
                 context.get("strategy_opportunities_available")
             ),
@@ -138,6 +151,14 @@ def _core_alpha_gate_status(gate_decisions: list[GateDecision]) -> str:
         return "UNKNOWN"
     latest = max(core, key=lambda decision: decision.created_at)
     return latest.status.value
+
+
+def required_gate_decisions(gate_decisions: list[GateDecision]) -> list[GateDecision]:
+    return [
+        decision
+        for decision in gate_decisions
+        if not is_research_baseline_alpha(decision.alpha_id)
+    ]
 
 
 def _data_block_reasons(data_health: dict[str, Any]) -> list[str]:

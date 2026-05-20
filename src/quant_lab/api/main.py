@@ -34,7 +34,11 @@ from quant_lab.data.lake import read_market_bars, read_parquet_dataset
 from quant_lab.gates.defaults import evaluate_alpha_gate
 from quant_lab.ops.metrics import api_metrics_summary, record_api_request
 from quant_lab.research.bootstrap_gold import BOOTSTRAP_GATE_VERSION
-from quant_lab.risk.advisory import apply_risk_advisory_context, build_risk_advisory_context
+from quant_lab.risk.advisory import (
+    apply_risk_advisory_context,
+    build_risk_advisory_context,
+    required_gate_decisions,
+)
 from quant_lab.risk.permissions import evaluate_live_permission
 from quant_lab.risk.publish import (
     DEFAULT_TELEMETRY_STALE_THRESHOLD_SECONDS,
@@ -459,7 +463,7 @@ def _compute_live_permission_with_context(
         permission = evaluate_live_permission(
             strategy=strategy,
             version=version,
-            gate_decisions=gate_decisions,
+            gate_decisions=required_gate_decisions(gate_decisions),
             cost_health=cost_health,
             data_health=data_health,
         )
@@ -500,7 +504,7 @@ def _compute_live_permission_with_context(
     permission = evaluate_live_permission(
         strategy=strategy,
         version=version,
-        gate_decisions=gate_decisions,
+        gate_decisions=required_gate_decisions(gate_decisions),
         cost_health=cost_health,
         data_health=data_health,
     )
@@ -979,6 +983,10 @@ def _gate_decision_from_row(row: dict[str, Any]) -> GateDecision | None:
     cleaned.pop("strategy", None)
     cleaned.pop("source", None)
     cleaned.pop("fallback_level", None)
+    cleaned.pop("role", None)
+    cleaned.pop("baseline_status", None)
+    cleaned.pop("not_live_eligible", None)
+    cleaned.pop("not_global_strategy_gate", None)
     if isinstance(cleaned.get("metrics"), str):
         cleaned["metrics"] = _json_dict(cleaned["metrics"])
     if isinstance(cleaned.get("reasons"), str):

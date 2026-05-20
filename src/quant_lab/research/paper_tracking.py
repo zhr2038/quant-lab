@@ -26,6 +26,11 @@ V5_PAPER_TRACKING_STATUS = "active"
 PAPER_TRACKING_SCHEMA_VERSION = "paper_strategy_tracking.v1"
 DEFAULT_REQUIRED_ENTRY_DAYS_FOR_LIVE = 3
 PAPER_PNL_HORIZON_HOURS = (4, 8, 12, 24, 48, 72)
+ETH_F3_PAPER_PROPOSAL_ID = "ETH_USDT_F3_DOMINANT_ENTRY_PAPER_V1"
+ETH_F3_STRATEGY_CANDIDATE = "v5.f3_dominant_entry"
+ETH_F3_SYMBOL = "ETH-USDT"
+ETH_F3_REQUIRED_LONGER_HORIZONS = ("24h", "48h", "72h")
+ETH_F3_DOWNGRADE_HORIZONS = ("24h", "48h")
 
 PAPER_RUN_REPORT_SCHEMA = {
     "as_of_date": pl.Utf8,
@@ -190,6 +195,11 @@ PAPER_STRATEGIES = [
         proposal_id="SOL_F4_VOLUME_EXPANSION_PAPER_V1",
         strategy_candidate="v5.f4_volume_expansion_entry",
         symbol="SOL-USDT",
+    ),
+    PaperStrategyConfig(
+        proposal_id=ETH_F3_PAPER_PROPOSAL_ID,
+        strategy_candidate=ETH_F3_STRATEGY_CANDIDATE,
+        symbol=ETH_F3_SYMBOL,
     ),
 ]
 
@@ -431,6 +441,14 @@ def _daily_from_runs(runs: pl.DataFrame, *, as_of_date: date) -> pl.DataFrame:
             paper_slippage_coverage=quality["paper_slippage_coverage"],
             cost_source_mix=quality["cost_source_mix"],
         )
+        latest_board_decision = str(latest.get("board_decision") or "")
+        review = _paper_strategy_review(
+            cfg=cfg,
+            latest_board_decision=latest_board_decision,
+            horizon_stats=horizon_stats,
+        )
+        latest_board_decision = review["latest_board_decision"]
+        block_reasons = [*block_reasons, *review["live_block_reasons"]]
         live_eligible = not block_reasons
         tracking_stage = (
             "completed_paper_observations"
@@ -446,7 +464,7 @@ def _daily_from_runs(runs: pl.DataFrame, *, as_of_date: date) -> pl.DataFrame:
                 "recommended_mode": "paper",
                 "paper_days": heartbeat_days,
                 "heartbeat_days": heartbeat_days,
-                "latest_board_decision": str(latest.get("board_decision") or ""),
+                "latest_board_decision": latest_board_decision,
                 "latest_horizon": str(latest.get("suggested_horizon") or ""),
                 "heartbeat_day_count": heartbeat_days,
                 "entry_day_count": entry_days,
@@ -754,6 +772,25 @@ def enrich_paper_strategy_daily_from_runs(
             ),
             cost_source_mix=updated.get("cost_source_mix"),
         )
+        review = _paper_strategy_review(
+            cfg=_config_for(
+                updated.get("proposal_id"),
+                updated.get("strategy_candidate"),
+                updated.get("symbol"),
+            ),
+            latest_board_decision=str(updated.get("latest_board_decision") or ""),
+            horizon_stats={
+                "observed_count_by_horizon": _json_dict(
+                    updated.get("paper_pnl_observed_count_by_horizon")
+                ),
+                "avg_bps_by_horizon": _json_dict(updated.get("avg_paper_pnl_bps_by_horizon")),
+                "day_count_by_horizon": _json_dict(
+                    updated.get("paper_pnl_day_count_by_horizon")
+                ),
+            },
+        )
+        updated["latest_board_decision"] = review["latest_board_decision"]
+        block_reasons = [*block_reasons, *review["live_block_reasons"]]
         updated["live_eligible"] = not block_reasons
         updated["live_block_reason"] = safe_json_dumps(
             sorted({*_paper_block_reason_list(updated.get("live_block_reason")), *block_reasons})
@@ -1027,7 +1064,7 @@ def _v5_daily_row(row: dict[str, Any], created_at: str) -> dict[str, Any]:
         paper_slippage_coverage=min(arrival_mid_coverage, spread_observation_coverage),
         cost_source_mix=cost_source_mix,
     )
-    return {
+    row_out = {
         "as_of_date": _as_of_date(row, payload),
         "proposal_id": proposal_id,
         "strategy_candidate": candidate,
@@ -1100,6 +1137,11 @@ def _v5_daily_row(row: dict[str, Any], created_at: str) -> dict[str, Any]:
         "source": V5_PAPER_TRACKING_SOURCE,
         "schema_version": PAPER_TRACKING_SCHEMA_VERSION,
     }
+    return _with_paper_strategy_review(
+        row_out,
+        cfg=_config_for(proposal_id, candidate, symbol),
+        extra_live_block_reasons=block_reasons,
+    )
 
 
 def _v5_slippage_row(row: dict[str, Any], created_at: str) -> dict[str, Any]:
@@ -1368,19 +1410,104 @@ def _paper_pnl_horizon_stats(rows: list[dict[str, Any]]) -> dict[str, dict[str, 
             values_by_horizon.setdefault(horizon, []).append(value)
             if row_day:
                 days_by_horizon.setdefault(horizon, set()).add(row_day)
+    horizon_keys = [f"{horizon}h" for horizon in PAPER_PNL_HORIZON_HOURS]
     return {
         "observed_count_by_horizon": {
-            horizon: len(values) for horizon, values in sorted(values_by_horizon.items())
+            horizon: len(values_by_horizon.get(horizon, [])) for horizon in horizon_keys
         },
         "avg_bps_by_horizon": {
-            horizon: round(sum(values) / len(values), 10)
-            for horizon, values in sorted(values_by_horizon.items())
-            if values
+            horizon: (
+                round(sum(values_by_horizon[horizon]) / len(values_by_horizon[horizon]), 10)
+                if values_by_horizon.get(horizon)
+                else None
+            )
+            for horizon in horizon_keys
         },
         "day_count_by_horizon": {
-            horizon: len(days) for horizon, days in sorted(days_by_horizon.items())
+            horizon: len(days_by_horizon.get(horizon, set())) for horizon in horizon_keys
         },
     }
+
+
+def _with_paper_strategy_review(
+    row: dict[str, Any],
+    *,
+    cfg: PaperStrategyConfig,
+    extra_live_block_reasons: list[str] | None = None,
+) -> dict[str, Any]:
+    horizon_stats = {
+        "observed_count_by_horizon": _json_dict(row.get("paper_pnl_observed_count_by_horizon")),
+        "avg_bps_by_horizon": _json_dict(row.get("avg_paper_pnl_bps_by_horizon")),
+        "day_count_by_horizon": _json_dict(row.get("paper_pnl_day_count_by_horizon")),
+    }
+    review = _paper_strategy_review(
+        cfg=cfg,
+        latest_board_decision=str(row.get("latest_board_decision") or ""),
+        horizon_stats=horizon_stats,
+    )
+    reasons = [
+        *_paper_block_reason_list(row.get("live_block_reason")),
+        *(extra_live_block_reasons or []),
+        *review["live_block_reasons"],
+    ]
+    updated = dict(row)
+    updated["latest_board_decision"] = review["latest_board_decision"]
+    updated["live_block_reason"] = safe_json_dumps(sorted(set(reasons)))
+    updated["live_eligible"] = bool(updated.get("live_eligible")) and not reasons
+    return updated
+
+
+def _paper_strategy_review(
+    *,
+    cfg: PaperStrategyConfig,
+    latest_board_decision: str,
+    horizon_stats: dict[str, dict[str, Any]],
+) -> dict[str, Any]:
+    decision = latest_board_decision or "PAPER_READY"
+    reasons: list[str] = []
+    if not _is_eth_f3_config(cfg):
+        return {"latest_board_decision": decision, "live_block_reasons": reasons}
+
+    observed_by_horizon = horizon_stats.get("observed_count_by_horizon", {})
+    avg_by_horizon = horizon_stats.get("avg_bps_by_horizon", {})
+    negative_longer_horizons = [
+        horizon
+        for horizon in ETH_F3_DOWNGRADE_HORIZONS
+        if _optional_float(avg_by_horizon.get(horizon)) is not None
+        and (_optional_float(avg_by_horizon.get(horizon)) or 0.0) < 0.0
+    ]
+    if negative_longer_horizons:
+        if decision.upper() in {"PAPER_READY", "LIVE_SMALL_READY"}:
+            decision = "KEEP_SHADOW"
+        reasons.extend(
+            [
+                "eth_f3_longer_horizon_paper_pnl_negative",
+                "keep_shadow_until_longer_horizon_recovers",
+            ]
+        )
+
+    missing_longer_horizons = [
+        horizon
+        for horizon in ETH_F3_REQUIRED_LONGER_HORIZONS
+        if int(_optional_float(observed_by_horizon.get(horizon)) or 0) <= 0
+    ]
+    if missing_longer_horizons:
+        reasons.append("waiting_for_longer_horizon_labels")
+    reasons.append("eth_f3_paper_only_no_live")
+    return {
+        "latest_board_decision": decision,
+        "live_block_reasons": sorted(set(reasons)),
+    }
+
+
+def _is_eth_f3_config(cfg: PaperStrategyConfig) -> bool:
+    return (
+        cfg.proposal_id == ETH_F3_PAPER_PROPOSAL_ID
+        or (
+            cfg.strategy_candidate == ETH_F3_STRATEGY_CANDIDATE
+            and cfg.symbol == ETH_F3_SYMBOL
+        )
+    )
 
 
 def _proposal_rank(row: dict[str, Any]) -> tuple[float, float, int, int, int]:
@@ -1556,6 +1683,21 @@ def _json_list(value: Any) -> list[str]:
         if isinstance(loaded, list):
             return [str(item) for item in loaded]
     return []
+
+
+def _json_dict(value: Any) -> dict[str, Any]:
+    if isinstance(value, dict):
+        return dict(value)
+    if value is None:
+        return {}
+    text = str(value).strip()
+    if not text:
+        return {}
+    try:
+        loaded = json.loads(text)
+    except json.JSONDecodeError:
+        return {}
+    return loaded if isinstance(loaded, dict) else {}
 
 
 def _optional_float(value: Any) -> float | None:

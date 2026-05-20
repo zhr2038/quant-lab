@@ -3257,6 +3257,14 @@ def _strategy_opportunity_advisory_for_export(
         paper = paper_daily_by_key.get(key, {})
         slippage = slippage_by_key.get(key, {})
         decision = str(row.get("decision") or "RESEARCH_ONLY").strip().upper()
+        paper_decision = str(paper.get("latest_board_decision") or "").strip().upper()
+        if paper_decision in {"KEEP_SHADOW", "REGIME_SHADOW", "KILL"} and decision in {
+            "PAPER_READY",
+            "LIVE_SMALL_READY",
+        }:
+            decision = paper_decision
+        if decision == "LIVE_SMALL_READY" and not bool(paper.get("live_eligible")):
+            decision = "PAPER_READY"
         recommended_mode = _advisory_recommended_mode(decision)
         cost_quality = _advisory_cost_quality(row.get("cost_source_mix"), latest_cost_health)
         slippage_coverage = _optional_float(

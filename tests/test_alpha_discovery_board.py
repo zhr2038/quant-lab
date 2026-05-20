@@ -675,11 +675,152 @@ def test_paper_daily_counts_horizon_level_pnl(tmp_path):
     assert daily["paper_pnl_observed_count"] == 2
     assert daily["paper_pnl_day_count"] == 2
     assert daily["avg_paper_pnl_bps"] < 0
-    assert json.loads(daily["paper_pnl_observed_count_by_horizon"]) == {"4h": 2, "8h": 1}
-    assert json.loads(daily["paper_pnl_day_count_by_horizon"]) == {"4h": 2, "8h": 1}
+    assert json.loads(daily["paper_pnl_observed_count_by_horizon"]) == {
+        "4h": 2,
+        "8h": 1,
+        "12h": 0,
+        "24h": 0,
+        "48h": 0,
+        "72h": 0,
+    }
+    assert json.loads(daily["paper_pnl_day_count_by_horizon"]) == {
+        "4h": 2,
+        "8h": 1,
+        "12h": 0,
+        "24h": 0,
+        "48h": 0,
+        "72h": 0,
+    }
     avg_by_horizon = json.loads(daily["avg_paper_pnl_bps_by_horizon"])
     assert avg_by_horizon["4h"] == -47.7
     assert avg_by_horizon["8h"] == -31.3
+    assert avg_by_horizon["24h"] is None
+    assert "waiting_for_longer_horizon_labels" in daily["live_block_reason"]
+    assert daily["live_eligible"] is False
+
+
+def test_eth_f3_negative_longer_horizon_downgrades_to_keep_shadow(tmp_path):
+    lake = tmp_path / "lake"
+    run_rows = [
+        {
+            "as_of_date": "2026-05-18",
+            "proposal_id": "ETH_USDT_F3_DOMINANT_ENTRY_PAPER_V1",
+            "strategy_candidate": "v5.f3_dominant_entry",
+            "symbol": "ETH-USDT",
+            "board_decision": "PAPER_READY",
+            "would_enter": "true",
+            "paper_pnl_bps_24h": "-12.0",
+            "paper_pnl_bps_48h": "-25.0",
+            "arrival_bid": "3600.0",
+            "arrival_ask": "3600.5",
+            "arrival_mid": "3600.25",
+            "cost_source": "mixed_actual_proxy",
+            "raw_payload_json": "{}",
+            "bundle_ts": datetime(2026, 5, 18, 12, tzinfo=UTC),
+        },
+        {
+            "as_of_date": "2026-05-19",
+            "proposal_id": "ETH_USDT_F3_DOMINANT_ENTRY_PAPER_V1",
+            "strategy_candidate": "v5.f3_dominant_entry",
+            "symbol": "ETH-USDT",
+            "board_decision": "PAPER_READY",
+            "would_enter": "true",
+            "paper_pnl_bps_24h": "-8.0",
+            "paper_pnl_bps_48h": "-10.0",
+            "arrival_bid": "3620.0",
+            "arrival_ask": "3620.5",
+            "arrival_mid": "3620.25",
+            "cost_source": "mixed_actual_proxy",
+            "raw_payload_json": "{}",
+            "bundle_ts": datetime(2026, 5, 18, 12, tzinfo=UTC),
+        },
+    ]
+    write_parquet_dataset(pl.DataFrame(run_rows), lake / "silver" / "v5_paper_strategy_run")
+
+    build_and_publish_paper_strategy_tracking(lake, as_of_date="auto")
+
+    daily = read_parquet_dataset(lake / "gold" / "paper_strategy_daily").to_dicts()[0]
+    assert daily["latest_board_decision"] == "KEEP_SHADOW"
+    assert daily["live_eligible"] is False
+    reasons = json.loads(daily["live_block_reason"])
+    assert "eth_f3_longer_horizon_paper_pnl_negative" in reasons
+    assert "keep_shadow_until_longer_horizon_recovers" in reasons
+
+
+def test_eth_f3_negative_longer_horizon_downgrades_advisory(tmp_path):
+    lake = tmp_path / "lake"
+    write_parquet_dataset(
+        pl.DataFrame(
+            [
+                {
+                    "strategy": "v5",
+                    "board_schema_version": "alpha_discovery_board.v0.1",
+                    "as_of_date": "2026-05-18",
+                    "strategy_candidate": "v5.f3_dominant_entry",
+                    "candidate_name": "v5.f3_dominant_entry",
+                    "source_type": "paper",
+                    "symbol": "ETH-USDT",
+                    "regime_state": "trend",
+                    "horizon_hours": 24,
+                    "sample_count": 80,
+                    "complete_sample_count": 64,
+                    "avg_net_bps": 31.5,
+                    "p25_net_bps": -8.0,
+                    "win_rate": 0.68,
+                    "cost_source_mix": '{"mixed_actual_proxy":64}',
+                    "decision": "PAPER_READY",
+                    "decision_reasons": '["paper_ready_thresholds_met"]',
+                    "created_at": datetime(2026, 5, 18, tzinfo=UTC),
+                }
+            ]
+        ),
+        lake / "gold" / "alpha_discovery_board",
+    )
+    write_parquet_dataset(
+        pl.DataFrame(
+            [
+                {
+                    "as_of_date": "2026-05-18",
+                    "proposal_id": "ETH_USDT_F3_DOMINANT_ENTRY_PAPER_V1",
+                    "strategy_candidate": "v5.f3_dominant_entry",
+                    "symbol": "ETH-USDT",
+                    "board_decision": "PAPER_READY",
+                    "would_enter": "true",
+                    "paper_pnl_bps_24h": "-12.0",
+                    "paper_pnl_bps_48h": "-25.0",
+                    "arrival_bid": "3600.0",
+                    "arrival_ask": "3600.5",
+                    "arrival_mid": "3600.25",
+                    "cost_source": "mixed_actual_proxy",
+                    "raw_payload_json": "{}",
+                    "bundle_ts": datetime(2026, 5, 18, 12, tzinfo=UTC),
+                }
+            ]
+        ),
+        lake / "silver" / "v5_paper_strategy_run",
+    )
+
+    export = export_daily_pack(
+        export_date="2026-05-18",
+        lake_root=lake,
+        out_dir=tmp_path / "exports",
+        profile="expert",
+        command_line=["qlab", "export-daily"],
+        pre_export_v5_refresh=False,
+    )
+
+    with zipfile.ZipFile(export.zip_path) as archive:
+        advisory = list(
+            csv.DictReader(
+                io.StringIO(
+                    archive.read("reports/strategy_opportunity_advisory.csv").decode("utf-8")
+                )
+            )
+        )
+    eth = next(row for row in advisory if row["strategy_candidate"] == "v5.f3_dominant_entry")
+    assert eth["decision"] == "KEEP_SHADOW"
+    assert eth["recommended_mode"] == "shadow"
+    assert eth["max_live_notional_usdt"] == "0.0"
 
 
 def test_paper_strategy_tracking_blocks_live_without_real_cost_quality(tmp_path):

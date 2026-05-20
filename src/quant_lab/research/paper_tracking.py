@@ -133,7 +133,9 @@ PAPER_DAILY_SCHEMA = {
     "cumulative_paper_pnl_usdt": pl.Float64,
     "avg_paper_pnl_bps": pl.Float64,
     "paper_pnl_observed_count_by_horizon": pl.Utf8,
+    "complete_count_by_horizon": pl.Utf8,
     "avg_paper_pnl_bps_by_horizon": pl.Utf8,
+    "win_rate_by_horizon": pl.Utf8,
     "paper_pnl_day_count_by_horizon": pl.Utf8,
     "paper_tracking_status": pl.Utf8,
     "tracking_stage": pl.Utf8,
@@ -354,7 +356,9 @@ def build_pending_paper_strategy_daily(
                 "cumulative_paper_pnl_usdt": 0.0,
                 "avg_paper_pnl_bps": None,
                 "paper_pnl_observed_count_by_horizon": "{}",
+                "complete_count_by_horizon": "{}",
                 "avg_paper_pnl_bps_by_horizon": "{}",
+                "win_rate_by_horizon": "{}",
                 "paper_pnl_day_count_by_horizon": "{}",
                 "paper_tracking_status": "waiting_for_v5_paper_telemetry",
                 "tracking_stage": "proposed_paper_strategy",
@@ -484,9 +488,13 @@ def _daily_from_runs(runs: pl.DataFrame, *, as_of_date: date) -> pl.DataFrame:
                 "paper_pnl_observed_count_by_horizon": safe_json_dumps(
                     horizon_stats["observed_count_by_horizon"]
                 ),
+                "complete_count_by_horizon": safe_json_dumps(
+                    horizon_stats["complete_count_by_horizon"]
+                ),
                 "avg_paper_pnl_bps_by_horizon": safe_json_dumps(
                     horizon_stats["avg_bps_by_horizon"]
                 ),
+                "win_rate_by_horizon": safe_json_dumps(horizon_stats["win_rate_by_horizon"]),
                 "paper_pnl_day_count_by_horizon": safe_json_dumps(
                     horizon_stats["day_count_by_horizon"]
                 ),
@@ -732,7 +740,9 @@ def enrich_paper_strategy_daily_from_runs(
     ]
     run_preferred_fields = [
         "paper_pnl_observed_count_by_horizon",
+        "complete_count_by_horizon",
         "avg_paper_pnl_bps_by_horizon",
+        "win_rate_by_horizon",
         "paper_pnl_day_count_by_horizon",
     ]
     for row in daily.to_dicts():
@@ -1105,8 +1115,20 @@ def _v5_daily_row(row: dict[str, Any], created_at: str) -> dict[str, Any]:
         "paper_pnl_observed_count_by_horizon": _jsonish_text(
             _field(row, payload, "paper_pnl_observed_count_by_horizon", default="{}")
         ),
+        "complete_count_by_horizon": _jsonish_text(
+            _field(
+                row,
+                payload,
+                "complete_count_by_horizon",
+                "paper_pnl_complete_count_by_horizon",
+                default="{}",
+            )
+        ),
         "avg_paper_pnl_bps_by_horizon": _jsonish_text(
             _field(row, payload, "avg_paper_pnl_bps_by_horizon", default="{}")
+        ),
+        "win_rate_by_horizon": _jsonish_text(
+            _field(row, payload, "win_rate_by_horizon", "paper_win_rate_by_horizon", default="{}")
         ),
         "paper_pnl_day_count_by_horizon": _jsonish_text(
             _field(row, payload, "paper_pnl_day_count_by_horizon", default="{}")
@@ -1415,9 +1437,24 @@ def _paper_pnl_horizon_stats(rows: list[dict[str, Any]]) -> dict[str, dict[str, 
         "observed_count_by_horizon": {
             horizon: len(values_by_horizon.get(horizon, [])) for horizon in horizon_keys
         },
+        "complete_count_by_horizon": {
+            horizon: len(values_by_horizon.get(horizon, [])) for horizon in horizon_keys
+        },
         "avg_bps_by_horizon": {
             horizon: (
                 round(sum(values_by_horizon[horizon]) / len(values_by_horizon[horizon]), 10)
+                if values_by_horizon.get(horizon)
+                else None
+            )
+            for horizon in horizon_keys
+        },
+        "win_rate_by_horizon": {
+            horizon: (
+                round(
+                    sum(1 for value in values_by_horizon[horizon] if value > 0)
+                    / len(values_by_horizon[horizon]),
+                    10,
+                )
                 if values_by_horizon.get(horizon)
                 else None
             )

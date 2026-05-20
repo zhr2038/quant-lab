@@ -25,6 +25,7 @@ V5_PAPER_TRACKING_SOURCE = "v5.paper_strategy_telemetry"
 V5_PAPER_TRACKING_STATUS = "active"
 PAPER_TRACKING_SCHEMA_VERSION = "paper_strategy_tracking.v1"
 DEFAULT_REQUIRED_ENTRY_DAYS_FOR_LIVE = 3
+PAPER_PNL_HORIZON_HOURS = (4, 8, 12, 24, 48, 72)
 
 PAPER_RUN_REPORT_SCHEMA = {
     "as_of_date": pl.Utf8,
@@ -78,6 +79,12 @@ PAPER_RUN_SCHEMA = {
     "would_size": pl.Float64,
     "would_size_usdt": pl.Float64,
     "paper_pnl_bps": pl.Float64,
+    "paper_pnl_bps_4h": pl.Float64,
+    "paper_pnl_bps_8h": pl.Float64,
+    "paper_pnl_bps_12h": pl.Float64,
+    "paper_pnl_bps_24h": pl.Float64,
+    "paper_pnl_bps_48h": pl.Float64,
+    "paper_pnl_bps_72h": pl.Float64,
     "paper_pnl_usdt": pl.Float64,
     "arrival_bid": pl.Float64,
     "arrival_ask": pl.Float64,
@@ -120,6 +127,9 @@ PAPER_DAILY_SCHEMA = {
     "latest_paper_pnl_usdt": pl.Float64,
     "cumulative_paper_pnl_usdt": pl.Float64,
     "avg_paper_pnl_bps": pl.Float64,
+    "paper_pnl_observed_count_by_horizon": pl.Utf8,
+    "avg_paper_pnl_bps_by_horizon": pl.Utf8,
+    "paper_pnl_day_count_by_horizon": pl.Utf8,
     "paper_tracking_status": pl.Utf8,
     "tracking_stage": pl.Utf8,
     "required_paper_days": pl.Int64,
@@ -333,6 +343,9 @@ def build_pending_paper_strategy_daily(
                 "latest_paper_pnl_usdt": None,
                 "cumulative_paper_pnl_usdt": 0.0,
                 "avg_paper_pnl_bps": None,
+                "paper_pnl_observed_count_by_horizon": "{}",
+                "avg_paper_pnl_bps_by_horizon": "{}",
+                "paper_pnl_day_count_by_horizon": "{}",
                 "paper_tracking_status": "waiting_for_v5_paper_telemetry",
                 "tracking_stage": "proposed_paper_strategy",
                 "required_paper_days": cfg.required_paper_days,
@@ -401,8 +414,9 @@ def _daily_from_runs(runs: pl.DataFrame, *, as_of_date: date) -> pl.DataFrame:
         latest = run_rows[-1]
         heartbeat_days = _heartbeat_day_count(run_rows)
         entry_days = len({str(row.get("as_of_date") or "") for row in entry_rows})
-        pnl_rows = _paper_pnl_rows(entry_rows)
+        pnl_rows = _paper_pnl_rows(run_rows)
         paper_pnl_days = _paper_pnl_day_count(pnl_rows)
+        horizon_stats = _paper_pnl_horizon_stats(pnl_rows)
         latest_reason = _paper_block_reason_list(latest.get("live_block_reason"))
         quality = _paper_cost_quality(run_rows)
         block_reasons = _paper_live_block_reasons(
@@ -447,7 +461,16 @@ def _daily_from_runs(runs: pl.DataFrame, *, as_of_date: date) -> pl.DataFrame:
                     for row in pnl_rows
                 ),
                 "avg_paper_pnl_bps": _mean(
-                    _optional_float(row.get("paper_pnl_bps")) for row in pnl_rows
+                    value for row in pnl_rows for value in _paper_pnl_bps_values(row)
+                ),
+                "paper_pnl_observed_count_by_horizon": safe_json_dumps(
+                    horizon_stats["observed_count_by_horizon"]
+                ),
+                "avg_paper_pnl_bps_by_horizon": safe_json_dumps(
+                    horizon_stats["avg_bps_by_horizon"]
+                ),
+                "paper_pnl_day_count_by_horizon": safe_json_dumps(
+                    horizon_stats["day_count_by_horizon"]
                 ),
                 "paper_tracking_status": V5_PAPER_TRACKING_STATUS,
                 "tracking_stage": tracking_stage,
@@ -582,6 +605,12 @@ def _pending_run_row(
         "would_size": 0.0,
         "would_size_usdt": 0.0,
         "paper_pnl_bps": None,
+        "paper_pnl_bps_4h": None,
+        "paper_pnl_bps_8h": None,
+        "paper_pnl_bps_12h": None,
+        "paper_pnl_bps_24h": None,
+        "paper_pnl_bps_48h": None,
+        "paper_pnl_bps_72h": None,
         "paper_pnl_usdt": None,
         "arrival_bid": None,
         "arrival_ask": None,
@@ -679,6 +708,9 @@ def enrich_paper_strategy_daily_from_runs(
         "latest_paper_pnl_usdt",
         "cumulative_paper_pnl_usdt",
         "avg_paper_pnl_bps",
+        "paper_pnl_observed_count_by_horizon",
+        "avg_paper_pnl_bps_by_horizon",
+        "paper_pnl_day_count_by_horizon",
         "arrival_mid_coverage",
         "spread_observation_coverage",
         "cost_source_mix",
@@ -876,6 +908,12 @@ def _v5_run_row(row: dict[str, Any], created_at: str) -> dict[str, Any]:
         )
         or 0.0,
         "paper_pnl_bps": _optional_float(_field(row, payload, "paper_pnl_bps", "pnl_bps")),
+        "paper_pnl_bps_4h": _optional_float(_field(row, payload, "paper_pnl_bps_4h")),
+        "paper_pnl_bps_8h": _optional_float(_field(row, payload, "paper_pnl_bps_8h")),
+        "paper_pnl_bps_12h": _optional_float(_field(row, payload, "paper_pnl_bps_12h")),
+        "paper_pnl_bps_24h": _optional_float(_field(row, payload, "paper_pnl_bps_24h")),
+        "paper_pnl_bps_48h": _optional_float(_field(row, payload, "paper_pnl_bps_48h")),
+        "paper_pnl_bps_72h": _optional_float(_field(row, payload, "paper_pnl_bps_72h")),
         "paper_pnl_usdt": _optional_float(
             _field(row, payload, "paper_pnl_usdt", "paper_pnl", "pnl_usdt")
         ),
@@ -1021,6 +1059,15 @@ def _v5_daily_row(row: dict[str, Any], created_at: str) -> dict[str, Any]:
         or 0.0,
         "avg_paper_pnl_bps": _optional_float(
             _field(row, payload, "avg_paper_pnl_bps", "paper_pnl_bps")
+        ),
+        "paper_pnl_observed_count_by_horizon": _jsonish_text(
+            _field(row, payload, "paper_pnl_observed_count_by_horizon", default="{}")
+        ),
+        "avg_paper_pnl_bps_by_horizon": _jsonish_text(
+            _field(row, payload, "avg_paper_pnl_bps_by_horizon", default="{}")
+        ),
+        "paper_pnl_day_count_by_horizon": _jsonish_text(
+            _field(row, payload, "paper_pnl_day_count_by_horizon", default="{}")
         ),
         "paper_tracking_status": _field(
             row,
@@ -1267,6 +1314,7 @@ def _heartbeat_day_count(rows: list[dict[str, Any]]) -> int:
         if not bool(row.get("would_enter"))
         and _optional_float(row.get("paper_pnl_usdt")) is None
         and _optional_float(row.get("paper_pnl_bps")) is None
+        and not _paper_pnl_horizon_values(row)
     }
     heartbeat_days.discard("")
     return len(heartbeat_days)
@@ -1278,6 +1326,7 @@ def _paper_pnl_rows(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
         for row in rows
         if _optional_float(row.get("paper_pnl_usdt")) is not None
         or _optional_float(row.get("paper_pnl_bps")) is not None
+        or bool(_paper_pnl_horizon_values(row))
     ]
 
 
@@ -1285,6 +1334,48 @@ def _paper_pnl_day_count(rows: list[dict[str, Any]]) -> int:
     days = {str(row.get("as_of_date") or "") for row in rows}
     days.discard("")
     return len(days)
+
+
+def _paper_pnl_bps_values(row: dict[str, Any]) -> list[float]:
+    values: list[float] = []
+    main_value = _optional_float(row.get("paper_pnl_bps"))
+    if main_value is not None:
+        values.append(main_value)
+    values.extend(_paper_pnl_horizon_values(row).values())
+    return values
+
+
+def _paper_pnl_horizon_values(row: dict[str, Any]) -> dict[str, float]:
+    values: dict[str, float] = {}
+    for horizon in PAPER_PNL_HORIZON_HOURS:
+        value = _optional_float(row.get(f"paper_pnl_bps_{horizon}h"))
+        if value is not None:
+            values[f"{horizon}h"] = value
+    return values
+
+
+def _paper_pnl_horizon_stats(rows: list[dict[str, Any]]) -> dict[str, dict[str, Any]]:
+    values_by_horizon: dict[str, list[float]] = {}
+    days_by_horizon: dict[str, set[str]] = {}
+    for row in rows:
+        row_day = str(row.get("as_of_date") or "")
+        for horizon, value in _paper_pnl_horizon_values(row).items():
+            values_by_horizon.setdefault(horizon, []).append(value)
+            if row_day:
+                days_by_horizon.setdefault(horizon, set()).add(row_day)
+    return {
+        "observed_count_by_horizon": {
+            horizon: len(values) for horizon, values in sorted(values_by_horizon.items())
+        },
+        "avg_bps_by_horizon": {
+            horizon: round(sum(values) / len(values), 10)
+            for horizon, values in sorted(values_by_horizon.items())
+            if values
+        },
+        "day_count_by_horizon": {
+            horizon: len(days) for horizon, days in sorted(days_by_horizon.items())
+        },
+    }
 
 
 def _proposal_rank(row: dict[str, Any]) -> tuple[float, float, int, int, int]:

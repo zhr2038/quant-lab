@@ -612,6 +612,56 @@ def test_paper_daily_and_slippage_use_run_cost_source_mix(tmp_path):
     assert slippage["missing_cost_source_count"] == 0
 
 
+def test_paper_daily_counts_horizon_level_pnl(tmp_path):
+    lake = tmp_path / "lake"
+    rows = [
+        {
+            "as_of_date": "2026-05-18",
+            "proposal_id": "ETH_USDT_F3_DOMINANT_ENTRY_PAPER_V1",
+            "strategy_candidate": "v5.f3_dominant_entry",
+            "symbol": "ETH-USDT",
+            "would_enter": "true",
+            "paper_pnl_bps": "",
+            "paper_pnl_bps_4h": "-50.0",
+            "paper_pnl_bps_8h": "-31.3",
+            "arrival_bid": "3600.0",
+            "arrival_ask": "3600.5",
+            "arrival_mid": "3600.25",
+            "cost_source": "mixed_actual_proxy",
+            "raw_payload_json": "{}",
+            "bundle_ts": datetime(2026, 5, 18, 12, tzinfo=UTC),
+        },
+        {
+            "as_of_date": "2026-05-19",
+            "proposal_id": "ETH_USDT_F3_DOMINANT_ENTRY_PAPER_V1",
+            "strategy_candidate": "v5.f3_dominant_entry",
+            "symbol": "ETH-USDT",
+            "would_enter": "true",
+            "paper_pnl_bps": "",
+            "paper_pnl_bps_4h": "-45.4",
+            "arrival_bid": "3620.0",
+            "arrival_ask": "3620.5",
+            "arrival_mid": "3620.25",
+            "cost_source": "mixed_actual_proxy",
+            "raw_payload_json": "{}",
+            "bundle_ts": datetime(2026, 5, 18, 12, tzinfo=UTC),
+        },
+    ]
+    write_parquet_dataset(pl.DataFrame(rows), lake / "silver" / "v5_paper_strategy_run")
+
+    build_and_publish_paper_strategy_tracking(lake, as_of_date="auto")
+
+    daily = read_parquet_dataset(lake / "gold" / "paper_strategy_daily").to_dicts()[0]
+    assert daily["paper_pnl_observed_count"] == 2
+    assert daily["paper_pnl_day_count"] == 2
+    assert daily["avg_paper_pnl_bps"] < 0
+    assert json.loads(daily["paper_pnl_observed_count_by_horizon"]) == {"4h": 2, "8h": 1}
+    assert json.loads(daily["paper_pnl_day_count_by_horizon"]) == {"4h": 2, "8h": 1}
+    avg_by_horizon = json.loads(daily["avg_paper_pnl_bps_by_horizon"])
+    assert avg_by_horizon["4h"] == -47.7
+    assert avg_by_horizon["8h"] == -31.3
+
+
 def test_paper_strategy_tracking_blocks_live_without_real_cost_quality(tmp_path):
     lake = tmp_path / "lake"
     rows = [

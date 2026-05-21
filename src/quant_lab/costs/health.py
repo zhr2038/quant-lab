@@ -96,6 +96,7 @@ def build_cost_health_daily(
     v5_trade_rows: int = 0,
     v5_order_lifecycle_rows: int = 0,
     v5_lifecycle_zero_fill_count: int = 0,
+    v5_lifecycle_missing_cost_count: int = 0,
     fee_bps_missing_count: int = 0,
     api_global_default_count: int = 0,
     api_symbol_proxy_hit_count: int = 0,
@@ -129,6 +130,8 @@ def build_cost_health_daily(
                     v5_trade_rows=v5_trade_rows,
                     v5_order_lifecycle_rows=v5_order_lifecycle_rows,
                     v5_lifecycle_zero_fill_count=v5_lifecycle_zero_fill_count,
+                    v5_lifecycle_missing_cost_count=v5_lifecycle_missing_cost_count,
+                    actual_rows_count=0,
                     actual_or_mixed_rows=0,
                     fee_bps_missing_count=fee_bps_missing_count,
                     actual_symbols=set(),
@@ -181,6 +184,8 @@ def build_cost_health_daily(
         v5_trade_rows=v5_trade_rows,
         v5_order_lifecycle_rows=v5_order_lifecycle_rows,
         v5_lifecycle_zero_fill_count=v5_lifecycle_zero_fill_count,
+        v5_lifecycle_missing_cost_count=v5_lifecycle_missing_cost_count,
+        actual_rows_count=len(actual_rows),
         actual_or_mixed_rows=len(actual_or_mixed_rows),
         fee_bps_missing_count=fee_bps_missing_count,
         actual_symbols=actual_symbols,
@@ -217,6 +222,7 @@ def build_cost_health_daily(
         or data_quality_checks.get("private_fills_present_but_actual_cost_zero") is False
         or data_quality_checks.get("trades_present_but_not_in_cost_model") is False
         or data_quality_checks.get("lifecycle_present_but_not_in_actual_cost") is False
+        or data_quality_checks.get("filled_order_missing_lifecycle_cost") is False
     ):
         status = "CRITICAL"
     elif all_proxy or soft_fallback_ratio > 0.5 or not trusted_actual_rows:
@@ -458,6 +464,8 @@ def _data_quality_checks(
     v5_trade_rows: int,
     v5_order_lifecycle_rows: int,
     v5_lifecycle_zero_fill_count: int,
+    v5_lifecycle_missing_cost_count: int,
+    actual_rows_count: int,
     actual_or_mixed_rows: int,
     fee_bps_missing_count: int,
     actual_symbols: set[str],
@@ -477,8 +485,9 @@ def _data_quality_checks(
             v5_trade_rows > 0 and actual_or_mixed_rows == 0
         ),
         "lifecycle_present_but_not_in_actual_cost": not (
-            v5_order_lifecycle_rows > 0 and actual_or_mixed_rows == 0
+            v5_order_lifecycle_rows > 0 and actual_rows_count == 0
         ),
+        "filled_order_missing_lifecycle_cost": v5_lifecycle_missing_cost_count == 0,
         "fill_count_zero_for_filled_order": v5_lifecycle_zero_fill_count == 0,
         "bills_present_but_fee_bps_missing": not (
             private_bill_rows > 0 and fee_bps_missing_count > 0

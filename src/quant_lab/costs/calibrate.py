@@ -135,6 +135,9 @@ def calibrate_costs_for_day(
         v5_trade_rows=v5_trade_events.height,
         v5_order_lifecycle_rows=v5_order_lifecycle.height,
         v5_lifecycle_zero_fill_count=_v5_lifecycle_zero_fill_count(v5_order_lifecycle),
+        v5_lifecycle_missing_cost_count=_v5_lifecycle_missing_cost_count(
+            v5_order_lifecycle
+        ),
         fee_bps_missing_count=_fee_missing_count(fill_events)
         + _v5_trade_fee_missing_count(v5_trade_events)
         + _v5_order_lifecycle_fee_missing_count(v5_order_lifecycle),
@@ -277,6 +280,7 @@ def _actual_fill_row(
     day: str,
     min_sample_count: int,
 ) -> CostBucketDaily:
+    samples = _preferred_cost_samples(samples)
     fee_samples = [sample["fee_bps"] for sample in samples if sample["fee_bps"] is not None]
     slippage_samples = [
         sample["slippage_bps"] for sample in samples if sample["slippage_bps"] is not None
@@ -296,7 +300,6 @@ def _actual_fill_row(
     source = _actual_fill_source(
         samples=samples,
         fee_missing=fee_missing,
-        sample_too_small=sample_too_small,
         slippage_unknown=slippage_unknown,
     )
     fallback_parts = []
@@ -1077,6 +1080,58 @@ def _v5_lifecycle_zero_fill_count(v5_order_lifecycle: pl.DataFrame) -> int:
     return count
 
 
+def _v5_lifecycle_missing_cost_count(v5_order_lifecycle: pl.DataFrame) -> int:
+    if v5_order_lifecycle.is_empty():
+        return 0
+    count = 0
+    for row in v5_order_lifecycle.to_dicts():
+        state = str(
+            row.get("order_state")
+            or row.get("state")
+            or row.get("status")
+            or row.get("order_status")
+            or ""
+        ).strip().lower()
+        filled = _is_filled_lifecycle_row(row)
+        if state and state not in {
+            "filled",
+            "partially_filled",
+            "partial_fill",
+            "partially-filled",
+        }:
+            continue
+        if not state and not filled:
+            continue
+        if not filled or not _lifecycle_has_cost_parts(row):
+            count += 1
+    return count
+
+
+def _lifecycle_has_cost_parts(row: dict[str, Any]) -> bool:
+    notional = _first_float(row, ["notional_usdt", "filled_notional_usdt", "notional"])
+    avg_fill_px = _first_float(row, ["avg_fill_px", "fill_px", "avg_px"])
+    filled_qty = _first_float(row, ["filled_qty", "fill_qty", "fill_sz", "qty"])
+    if notional is None and avg_fill_px is not None and filled_qty is not None:
+        notional = abs(avg_fill_px * filled_qty)
+    if notional is None or notional <= 0:
+        return False
+    fee_bps = _first_float(row, ["fee_bps"])
+    fee_usdt = _first_float(row, ["fee_usdt", "fee_abs_usdt"])
+    fee = _first_float(row, ["fee", "commission", "fee_abs"])
+    has_fee = fee_bps is not None or fee_usdt is not None or fee is not None
+    if not has_fee:
+        return False
+    if _first_float(row, ["realized_total_cost_bps", "total_realized_cost_bps"]) is not None:
+        return True
+    if (
+        _first_float(row, ["arrival_slippage_bps", "realized_slippage_bps", "slippage_bps"])
+        is not None
+    ):
+        return True
+    arrival_mid = _first_float(row, ["arrival_mid", "mid_px_at_decision"])
+    return avg_fill_px is not None and arrival_mid is not None and arrival_mid > 0
+
+
 def _cost_bucket_daily_frame(rows: Sequence[CostBucketDaily]) -> pl.DataFrame:
     return pl.DataFrame(
         [row.model_dump(mode="json") for row in rows],
@@ -1164,12 +1219,24 @@ def _actual_fill_source(
     *,
     samples: list[dict[str, Any]],
     fee_missing: bool,
-    sample_too_small: bool,
     slippage_unknown: bool,
 ) -> str:
     source_kinds = {str(sample.get("source_kind") or "") for sample in samples}
     if fee_missing:
         return "actual_okx_fills_fee_missing"
-    if slippage_unknown or sample_too_small or "v5_trades_csv" in source_kinds:
+    if slippage_unknown:
+        return "mixed_actual_proxy"
+    if "v5_order_lifecycle" in source_kinds:
+        return "actual_fills"
+    if "v5_trades_csv" in source_kinds:
         return "mixed_actual_proxy"
     return "actual_fills"
+
+
+def _preferred_cost_samples(samples: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    lifecycle_samples = [
+        sample
+        for sample in samples
+        if str(sample.get("source_kind") or "") == "v5_order_lifecycle"
+    ]
+    return lifecycle_samples or samples

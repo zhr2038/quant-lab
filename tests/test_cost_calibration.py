@@ -233,7 +233,7 @@ def test_v5_order_lifecycle_generates_actual_fills_bucket(tmp_path):
         lake_root / "silver" / "v5_order_lifecycle",
     )
 
-    result = calibrate_costs_for_day(lake_root, "2026-05-15", min_sample_count=1)
+    result = calibrate_costs_for_day(lake_root, "2026-05-15")
 
     assert result.sources == ["actual_fills"]
     rows = read_parquet_dataset(lake_root / "gold" / "cost_bucket_daily").to_dicts()
@@ -246,10 +246,91 @@ def test_v5_order_lifecycle_generates_actual_fills_bucket(tmp_path):
     assert all_row["fee_bps_p50"] > 0
     assert all_row["slippage_bps_p50"] > 0
     assert all_row["spread_bps_p50"] > 0
+    assert "SAMPLE_TOO_SMALL" in all_row["fallback_level"]
     health = read_parquet_dataset(lake_root / "gold" / "cost_health_daily").to_dicts()[0]
     checks = json.loads(health["data_quality_checks_json"])
+    assert health["actual_rows"] == len(rows)
+    assert health["mixed_rows"] == 0
     assert checks["lifecycle_present_but_not_in_actual_cost"] is True
+    assert checks["filled_order_missing_lifecycle_cost"] is True
     assert checks["fill_count_zero_for_filled_order"] is True
+
+
+def test_v5_order_lifecycle_stays_actual_when_trade_csv_also_exists(tmp_path):
+    lake_root = tmp_path / "lake"
+    write_parquet_dataset(
+        pl.DataFrame(
+            [
+                {
+                    "strategy": "v5",
+                    "source_path_inside_bundle": (
+                        "raw/recent_runs/run_lifecycle/order_lifecycle.csv"
+                    ),
+                    "run_id": "run_lifecycle",
+                    "ts_utc": "2026-05-15T01:00:04Z",
+                    "symbol": "BTC-USDT",
+                    "normalized_symbol": "BTC-USDT",
+                    "side": "buy",
+                    "intent": "OPEN_LONG",
+                    "arrival_mid": "60000",
+                    "spread_bps_at_decision": "2.5",
+                    "arrival_slippage_bps": "1.6666666667",
+                    "delay_cost_bps": "0.5",
+                    "avg_fill_px": "60010",
+                    "filled_qty": "0.01",
+                    "fee_usdt": "0.30005",
+                    "notional_usdt": "600.1",
+                    "fill_count": "1",
+                    "exchange_order_id": "btc-order-1",
+                    "trade_ids": "btc-trade-1",
+                    "last_fill_ts": "2026-05-15T01:00:04Z",
+                }
+            ]
+        ),
+        lake_root / "silver" / "v5_order_lifecycle",
+    )
+    write_parquet_dataset(
+        pl.DataFrame(
+            [
+                {
+                    "strategy": "v5",
+                    "source_path_inside_bundle": "raw/recent_runs/run_lifecycle/trades.csv",
+                    "run_id": "run_lifecycle",
+                    "ts_utc": "2026-05-15T01:00:04Z",
+                    "symbol": "BTC-USDT",
+                    "side": "buy",
+                    "qty": "0.01",
+                    "price": "60010",
+                    "fee": "-0.30005",
+                    "fee_ccy": "USDT",
+                    "order_id": "btc-order-1",
+                    "trade_id": "btc-trade-1",
+                }
+            ]
+        ),
+        lake_root / "silver" / "v5_trade_event",
+    )
+
+    result = calibrate_costs_for_day(lake_root, "2026-05-15")
+
+    assert result.sources == ["actual_fills"]
+    rows = read_parquet_dataset(lake_root / "gold" / "cost_bucket_daily").to_dicts()
+    all_row = [
+        row for row in rows if row["symbol"] == "BTC-USDT" and row["notional_bucket"] == "all"
+    ][0]
+    assert all_row["source"] == "actual_fills"
+    assert all_row["sample_count"] == 1
+    assert all_row["actual_fill_count"] == 1
+    assert all_row["mixed_fill_count"] == 0
+    assert all_row["fee_bps_p50"] > 0
+    assert all_row["slippage_bps_p50"] > 0
+
+    health = read_parquet_dataset(lake_root / "gold" / "cost_health_daily").to_dicts()[0]
+    checks = json.loads(health["data_quality_checks_json"])
+    assert health["actual_rows"] == len(rows)
+    assert health["mixed_rows"] == 0
+    assert checks["lifecycle_present_but_not_in_actual_cost"] is True
+    assert checks["filled_order_missing_lifecycle_cost"] is True
 
 
 def test_v5_order_lifecycle_zero_fill_is_not_used_as_actual_cost(tmp_path):
@@ -293,9 +374,11 @@ def test_v5_order_lifecycle_zero_fill_is_not_used_as_actual_cost(tmp_path):
     checks = json.loads(health["data_quality_checks_json"])
     assert health["status"] == "CRITICAL"
     assert checks["lifecycle_present_but_not_in_actual_cost"] is False
+    assert checks["filled_order_missing_lifecycle_cost"] is False
     assert checks["fill_count_zero_for_filled_order"] is False
     warnings = json.loads(health["warnings_json"])
     assert "lifecycle_present_but_not_in_actual_cost" in warnings
+    assert "filled_order_missing_lifecycle_cost" in warnings
     assert "fill_count_zero_for_filled_order" in warnings
 
 

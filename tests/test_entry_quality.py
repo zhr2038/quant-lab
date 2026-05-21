@@ -14,8 +14,10 @@ from quant_lab.contracts.v5_quant_lab import V5_QUANT_LAB_CONTRACT_VERSION
 from quant_lab.data.lake import read_parquet_dataset, write_parquet_dataset
 from quant_lab.export.daily import export_daily_pack
 from quant_lab.research.entry_quality import (
+    _BuildContext,
     build_and_publish_entry_quality,
     build_and_publish_entry_quality_history,
+    build_entry_quality_advisory,
 )
 
 
@@ -275,7 +277,7 @@ def test_entry_quality_publishes_strategy_opportunity_advisory_for_api(
         for row in gold_rows
         if row["strategy_candidate"] == "v5.pullback_reversal_shadow_btc"
     )
-    assert pullback_btc["recommended_mode"] == "shadow"
+    assert pullback_btc["recommended_mode"] == "research"
     assert pullback_btc["would_enter"] is False
     assert pullback_btc["would_block_if_enabled"] is False
     assert pullback_btc["no_sample_reason"] == "insufficient_sample_count"
@@ -505,7 +507,7 @@ def test_pullback_new_rule_rejects_falling_knife_candidate(tmp_path):
         )
     ]
     assert len(pullback_rows) == 4
-    assert all(row["recommended_mode"] == "shadow" for row in pullback_rows)
+    assert all(row["recommended_mode"] == "research" for row in pullback_rows)
     assert all(row["would_enter"] is False for row in pullback_rows)
     assert all(row["max_live_notional_usdt"] == 0.0 for row in pullback_rows)
     assert {row["no_sample_reason"] for row in pullback_rows} == {
@@ -521,6 +523,51 @@ def test_pullback_new_rule_rejects_falling_knife_candidate(tmp_path):
     assert not any(
         row["rule_name"] == "new_rule" and row["symbol"] == "SOL-USDT" for row in rows
     )
+
+
+def test_pullback_bad_mae_and_negative_edge_stays_research_only():
+    ctx = _BuildContext(
+        as_of_date=datetime(2026, 5, 10, tzinfo=UTC).date(),
+        generated_at=datetime(2026, 5, 10, tzinfo=UTC),
+        generated_from_bundle_id="bundle-1",
+        window_hours=24,
+    )
+    readiness = pl.DataFrame(
+        [
+            {
+                "strategy_candidate": "v5.pullback_reversal_shadow_eth",
+                "symbol": "ETH-USDT",
+                "sample_count": 60,
+                "recent_7d_sample_count": 12,
+                "avg_24h_net_bps": -40.0,
+                "win_rate_24h": 0.30,
+                "p25_24h_net_bps": -90.0,
+                "avg_mae_bps": -180.0,
+                "ready_for_paper": False,
+                "ready_for_live_probe": False,
+                "readiness_reasons": (
+                    '["weak_24h_avg_net_bps","weak_24h_p25_net_bps",'
+                    '"excessive_avg_mae_bps"]'
+                ),
+            }
+        ]
+    )
+
+    advisory = build_entry_quality_advisory(
+        missed_low=pl.DataFrame(),
+        late_threshold=pl.DataFrame(),
+        pullback_readiness=readiness,
+        ctx=ctx,
+    )
+    row = next(
+        item
+        for item in advisory.to_dicts()
+        if item["strategy_candidate"] == "v5.pullback_reversal_shadow_eth"
+    )
+
+    assert row["recommended_mode"] == "research"
+    assert row["would_enter"] is False
+    assert row["no_sample_reason"] == "weak_24h_avg_net_bps"
 
 
 def _write_market_bars(lake, symbol: str) -> None:

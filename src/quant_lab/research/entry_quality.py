@@ -1303,22 +1303,24 @@ def build_entry_quality_advisory(
         symbol = normalize_symbol(row.get("symbol"))
         if symbol:
             observed_pullback_symbols.add(symbol)
+        recommended_mode = _pullback_recommended_mode(row, ready_for_paper=ready_for_paper)
         rows.append(
             _common(ctx, mode="advisory")
             | {
                 "strategy_candidate": row.get("strategy_candidate"),
                 "symbol": symbol,
-                "recommended_mode": "paper" if ready_for_paper else "shadow",
+                "recommended_mode": recommended_mode,
                 "readiness_status": "READY_FOR_PAPER" if ready_for_paper else "SHADOW_ONLY",
                 "sample_count": int(row.get("sample_count") or 0),
                 "avg_net_bps": _float_or_none(row.get("avg_24h_net_bps")),
                 "win_rate": _float_or_none(row.get("win_rate_24h")),
                 "advisory_reasons": str(row.get("readiness_reasons") or "[]"),
                 "would_block_if_enabled": False,
-                "would_enter": True,
-                "no_sample_reason": "not_live_validated"
-                if ready_for_paper
-                else "shadow_only_collect_more_samples",
+                "would_enter": recommended_mode == "paper",
+                "no_sample_reason": _pullback_no_sample_reason(
+                    row,
+                    recommended_mode=recommended_mode,
+                ),
                 "ready_for_live": False,
             }
         )
@@ -1328,8 +1330,8 @@ def build_entry_quality_advisory(
             | {
                 "strategy_candidate": _pullback_candidate_name(symbol),
                 "symbol": symbol,
-                "recommended_mode": "shadow",
-                "readiness_status": "SHADOW_ONLY",
+                "recommended_mode": "research",
+                "readiness_status": "RESEARCH_ONLY",
                 "sample_count": 0,
                 "avg_net_bps": None,
                 "win_rate": None,
@@ -2195,6 +2197,55 @@ def _pullback_readiness_reasons(
     if avg_mae is None or avg_mae <= -120.0:
         reasons.append("excessive_avg_mae_bps")
     return reasons
+
+
+def _pullback_recommended_mode(
+    row: dict[str, Any],
+    *,
+    ready_for_paper: bool,
+) -> str:
+    if ready_for_paper:
+        return "paper"
+    sample_count = int(row.get("sample_count") or 0)
+    recent_count = int(row.get("recent_7d_sample_count") or 0)
+    avg_net = _float_or_none(row.get("avg_24h_net_bps"))
+    win_rate = _float_or_none(row.get("win_rate_24h"))
+    p25 = _float_or_none(row.get("p25_24h_net_bps"))
+    avg_mae = _float_or_none(row.get("avg_mae_bps"))
+    if sample_count < 50 or recent_count < 10:
+        return "research"
+    if avg_net is None or avg_net <= 0.0:
+        return "research"
+    if win_rate is None or win_rate <= 0.45:
+        return "research"
+    if p25 is None or p25 <= -50.0:
+        return "research"
+    if avg_mae is None or avg_mae <= -120.0:
+        return "research"
+    return "shadow"
+
+
+def _pullback_no_sample_reason(
+    row: dict[str, Any],
+    *,
+    recommended_mode: str,
+) -> str:
+    if recommended_mode == "paper":
+        return "not_live_validated"
+    reasons = _json_listish(row.get("readiness_reasons"))
+    if "insufficient_sample_count" in reasons:
+        return "insufficient_sample_count"
+    if "insufficient_recent_7d_samples" in reasons:
+        return "insufficient_recent_7d_samples"
+    if "weak_24h_avg_net_bps" in reasons:
+        return "weak_24h_avg_net_bps"
+    if "weak_24h_p25_net_bps" in reasons:
+        return "weak_24h_p25_net_bps"
+    if "excessive_avg_mae_bps" in reasons:
+        return "excessive_avg_mae_bps"
+    if recommended_mode == "shadow":
+        return "shadow_only_collect_more_samples"
+    return "not_live_validated"
 
 
 def _pullback_candidate_name(symbol: str) -> str:

@@ -36,6 +36,17 @@ DATASET_PATHS = {
     "v5_pullback_reversal_shadow": Path("gold") / "v5_pullback_reversal_shadow",
     "v5_pullback_reversal_readiness": Path("gold") / "v5_pullback_reversal_readiness",
     "v5_entry_quality_advisory": Path("gold") / "v5_entry_quality_advisory",
+    "v5_entry_quality_history_late_entry_chase_threshold_sensitivity": Path("gold")
+    / "v5_entry_quality_history_late_entry_chase_threshold_sensitivity",
+    "v5_entry_quality_history_pullback_by_symbol": Path("gold")
+    / "v5_entry_quality_history_pullback_by_symbol",
+    "v5_entry_quality_history_pullback_by_regime": Path("gold")
+    / "v5_entry_quality_history_pullback_by_regime",
+    "v5_entry_quality_history_pullback_by_horizon": Path("gold")
+    / "v5_entry_quality_history_pullback_by_horizon",
+    "v5_entry_quality_history_anti_leakage_check": Path("gold")
+    / "v5_entry_quality_history_anti_leakage_check",
+    "v5_entry_quality_history_metrics": Path("gold") / "v5_entry_quality_history_metrics",
     "gate_decision": Path("gold") / "gate_decision",
     "risk_permission": Path("gold") / "risk_permission",
     "api_request_metrics": Path("bronze") / "api_request_metrics",
@@ -89,6 +100,12 @@ ENTRY_QUALITY_DATASETS = {
     "v5_pullback_reversal_shadow",
     "v5_pullback_reversal_readiness",
     "v5_entry_quality_advisory",
+    "v5_entry_quality_history_late_entry_chase_threshold_sensitivity",
+    "v5_entry_quality_history_pullback_by_symbol",
+    "v5_entry_quality_history_pullback_by_regime",
+    "v5_entry_quality_history_pullback_by_horizon",
+    "v5_entry_quality_history_anti_leakage_check",
+    "v5_entry_quality_history_metrics",
 }
 EVENT_DRIVEN_OK_STATUSES = {"event_driven_no_recent_trade"}
 
@@ -133,6 +150,15 @@ DATASET_TIMESTAMP_COLUMNS: dict[str, tuple[str, ...]] = {
     "v5_pullback_reversal_shadow": ("generated_at_utc", "ts_utc", "as_of_date"),
     "v5_pullback_reversal_readiness": ("generated_at_utc", "as_of_date"),
     "v5_entry_quality_advisory": ("generated_at_utc", "as_of_date"),
+    "v5_entry_quality_history_late_entry_chase_threshold_sensitivity": (
+        "generated_at_utc",
+        "end_date",
+    ),
+    "v5_entry_quality_history_pullback_by_symbol": ("generated_at_utc", "end_date"),
+    "v5_entry_quality_history_pullback_by_regime": ("generated_at_utc", "end_date"),
+    "v5_entry_quality_history_pullback_by_horizon": ("generated_at_utc", "end_date"),
+    "v5_entry_quality_history_anti_leakage_check": ("generated_at_utc", "end_date"),
+    "v5_entry_quality_history_metrics": ("generated_at_utc", "end_date"),
     "okx_public_ws_health": ("last_message_at", "updated_at", "started_at"),
     "decision_audit": ("ingest_ts", "loaded_at"),
     "v5_quant_lab_usage": ("ingest_ts", "bundle_ts"),

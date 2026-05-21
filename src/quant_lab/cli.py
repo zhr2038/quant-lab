@@ -38,7 +38,10 @@ from quant_lab.reports.enforce_readiness import write_enforce_readiness_report
 from quant_lab.research.alpha_discovery import build_and_publish_alpha_discovery_board
 from quant_lab.research.bootstrap_gold import bootstrap_gold_health
 from quant_lab.research.candidate_labels import build_and_publish_candidate_labels
-from quant_lab.research.entry_quality import build_and_publish_entry_quality
+from quant_lab.research.entry_quality import (
+    build_and_publish_entry_quality,
+    build_and_publish_entry_quality_history,
+)
 from quant_lab.research.paper_tracking import build_and_publish_paper_strategy_tracking
 from quant_lab.research.publish import (
     build_and_publish_alpha_evidence,
@@ -753,6 +756,36 @@ def build_entry_quality_command(
         func=lambda: build_and_publish_entry_quality(
             lake_root=lake_root,
             as_of_date=as_of_date,
+            window_hours=window_hours,
+        ),
+    )
+    typer.echo(result.model_dump_json(indent=2))
+
+
+@app.command("build-entry-quality-history")
+def build_entry_quality_history_command(
+    lake_root: Annotated[Path, typer.Option("--lake-root", file_okay=False, dir_okay=True)],
+    start_date: Annotated[str, typer.Option("--start-date", help="UTC start day YYYY-MM-DD")],
+    end_date: Annotated[str, typer.Option("--end-date", help="UTC end day YYYY-MM-DD")],
+    mode: Annotated[
+        str,
+        typer.Option("--mode", help="full, recent_7d, recent_30d, or walk_forward"),
+    ] = "full",
+    cost_mode: Annotated[
+        str,
+        typer.Option("--cost-mode", help="conservative or quant_lab"),
+    ] = "conservative",
+    window_hours: Annotated[int, typer.Option("--window-hours", min=1)] = 24,
+) -> None:
+    result = run_with_job_metrics(
+        lake_root=lake_root,
+        job_name="build-entry-quality-history",
+        func=lambda: build_and_publish_entry_quality_history(
+            lake_root=lake_root,
+            start_date=start_date,
+            end_date=end_date,
+            mode=mode,
+            cost_mode=cost_mode,
             window_hours=window_hours,
         ),
     )

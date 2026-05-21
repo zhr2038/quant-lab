@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import hashlib
+import json
 import math
 from collections import Counter
 from dataclasses import dataclass
@@ -42,6 +43,36 @@ PULLBACK_REVERSAL_SHADOW_DATASET = Path("gold") / "v5_pullback_reversal_shadow"
 PULLBACK_REVERSAL_READINESS_DATASET = Path("gold") / "v5_pullback_reversal_readiness"
 ENTRY_QUALITY_ADVISORY_DATASET = Path("gold") / "v5_entry_quality_advisory"
 
+HISTORY_MISSED_LOW_AUDIT_DATASET = Path("gold") / "v5_entry_quality_history_missed_low_audit"
+HISTORY_MISSED_LOW_BY_SYMBOL_DATASET = (
+    Path("gold") / "v5_entry_quality_history_missed_low_by_symbol"
+)
+HISTORY_MISSED_LOW_BY_ENTRY_REASON_DATASET = (
+    Path("gold") / "v5_entry_quality_history_missed_low_by_entry_reason"
+)
+HISTORY_LATE_ENTRY_CHASE_SHADOW_DATASET = (
+    Path("gold") / "v5_entry_quality_history_late_entry_chase_shadow"
+)
+HISTORY_LATE_ENTRY_THRESHOLD_SENSITIVITY_DATASET = (
+    Path("gold") / "v5_entry_quality_history_late_entry_chase_threshold_sensitivity"
+)
+HISTORY_PULLBACK_REVERSAL_SHADOW_DATASET = (
+    Path("gold") / "v5_entry_quality_history_pullback_reversal_shadow"
+)
+HISTORY_PULLBACK_BY_SYMBOL_DATASET = (
+    Path("gold") / "v5_entry_quality_history_pullback_by_symbol"
+)
+HISTORY_PULLBACK_BY_REGIME_DATASET = (
+    Path("gold") / "v5_entry_quality_history_pullback_by_regime"
+)
+HISTORY_PULLBACK_BY_HORIZON_DATASET = (
+    Path("gold") / "v5_entry_quality_history_pullback_by_horizon"
+)
+HISTORY_ANTI_LEAKAGE_CHECK_DATASET = (
+    Path("gold") / "v5_entry_quality_history_anti_leakage_check"
+)
+HISTORY_METRICS_DATASET = Path("gold") / "v5_entry_quality_history_metrics"
+
 
 COMMON_SCHEMA = {
     "contract_version": pl.Utf8,
@@ -52,6 +83,13 @@ COMMON_SCHEMA = {
     "window_hours": pl.Int64,
     "source": pl.Utf8,
     "mode": pl.Utf8,
+}
+
+HISTORY_META_SCHEMA = {
+    "start_date": pl.Utf8,
+    "end_date": pl.Utf8,
+    "window_mode": pl.Utf8,
+    "cost_mode": pl.Utf8,
 }
 
 MISSED_LOW_AUDIT_SCHEMA = COMMON_SCHEMA | {
@@ -117,6 +155,8 @@ LATE_ENTRY_THRESHOLD_SCHEMA = COMMON_SCHEMA | {
     "would_block_loss_count": pl.Int64,
     "would_block_profit_count": pl.Int64,
     "false_positive_rate": pl.Float64,
+    "avg_net_bps_blocked": pl.Float64,
+    "avg_net_bps_not_blocked": pl.Float64,
     "ready_for_live_guard": pl.Boolean,
     "advisory": pl.Utf8,
 }
@@ -138,6 +178,7 @@ PULLBACK_REVERSAL_SHADOW_SCHEMA = COMMON_SCHEMA | {
     "f4_volume_expansion": pl.Float64,
     "f5_rsi_trend_confirm": pl.Float64,
     "selected_roundtrip_cost_bps": pl.Float64,
+    "cost_quality": pl.Utf8,
     "horizon_hours": pl.Int64,
     "gross_bps": pl.Float64,
     "net_bps_after_cost": pl.Float64,
@@ -173,6 +214,48 @@ ENTRY_QUALITY_ADVISORY_SCHEMA = COMMON_SCHEMA | {
     "ready_for_live": pl.Boolean,
 }
 
+HISTORY_THRESHOLD_SENSITIVITY_SCHEMA = LATE_ENTRY_THRESHOLD_SCHEMA | HISTORY_META_SCHEMA
+
+HISTORY_PULLBACK_AGG_SCHEMA = COMMON_SCHEMA | HISTORY_META_SCHEMA | {
+    "group_type": pl.Utf8,
+    "group_key": pl.Utf8,
+    "strategy_candidate": pl.Utf8,
+    "symbol": pl.Utf8,
+    "regime_state": pl.Utf8,
+    "horizon_hours": pl.Int64,
+    "sample_count": pl.Int64,
+    "complete_sample_count": pl.Int64,
+    "avg_net_bps": pl.Float64,
+    "median_net_bps": pl.Float64,
+    "p25_net_bps": pl.Float64,
+    "win_rate": pl.Float64,
+    "avg_mfe_bps": pl.Float64,
+    "avg_mae_bps": pl.Float64,
+    "cost_quality_mix": pl.Utf8,
+    "decision": pl.Utf8,
+    "decision_reasons": pl.Utf8,
+}
+
+HISTORY_ANTI_LEAKAGE_SCHEMA = COMMON_SCHEMA | HISTORY_META_SCHEMA | {
+    "check_name": pl.Utf8,
+    "status": pl.Utf8,
+    "violation_count": pl.Int64,
+    "detail": pl.Utf8,
+}
+
+HISTORY_METRICS_SCHEMA = COMMON_SCHEMA | HISTORY_META_SCHEMA | {
+    "missed_low_audit_rows": pl.Int64,
+    "late_entry_chase_shadow_rows": pl.Int64,
+    "late_entry_threshold_rows": pl.Int64,
+    "pullback_reversal_shadow_rows": pl.Int64,
+    "pullback_by_symbol_rows": pl.Int64,
+    "pullback_by_regime_rows": pl.Int64,
+    "pullback_by_horizon_rows": pl.Int64,
+    "anti_leakage_status": pl.Utf8,
+    "ready_for_live_rows": pl.Int64,
+    "metrics_json": pl.Utf8,
+}
+
 
 class EntryQualityBuildResult(BaseModel):
     model_config = ConfigDict(extra="forbid", frozen=True)
@@ -190,12 +273,43 @@ class EntryQualityBuildResult(BaseModel):
     warnings: list[str] = Field(default_factory=list)
 
 
+class EntryQualityHistoryBuildResult(BaseModel):
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    lake_root: str
+    start_date: str
+    end_date: str
+    mode: str
+    cost_mode: str
+    missed_low_audit_rows: int = Field(ge=0)
+    missed_low_by_symbol_rows: int = Field(ge=0)
+    missed_low_by_entry_reason_rows: int = Field(ge=0)
+    late_entry_chase_shadow_rows: int = Field(ge=0)
+    late_entry_threshold_sensitivity_rows: int = Field(ge=0)
+    pullback_reversal_shadow_rows: int = Field(ge=0)
+    pullback_by_symbol_rows: int = Field(ge=0)
+    pullback_by_regime_rows: int = Field(ge=0)
+    pullback_by_horizon_rows: int = Field(ge=0)
+    anti_leakage_rows: int = Field(ge=0)
+    metrics_rows: int = Field(ge=0)
+    reports_dir: str
+    warnings: list[str] = Field(default_factory=list)
+
+
 @dataclass(frozen=True)
 class _BuildContext:
     as_of_date: date
     generated_at: datetime
     generated_from_bundle_id: str
     window_hours: int
+
+
+@dataclass(frozen=True)
+class _HistoryContext:
+    start_date: date
+    end_date: date
+    window_mode: str
+    cost_mode: str
 
 
 def build_and_publish_entry_quality(
@@ -304,6 +418,264 @@ def build_and_publish_entry_quality(
             advisory,
             ["as_of_date", "strategy_candidate", "symbol"],
         ),
+        warnings=warnings,
+    )
+
+
+def build_and_publish_entry_quality_history(
+    lake_root: str | Path,
+    *,
+    start_date: str | date,
+    end_date: str | date,
+    mode: str = "full",
+    cost_mode: str = "conservative",
+    window_hours: int = DEFAULT_WINDOW_HOURS,
+) -> EntryQualityHistoryBuildResult:
+    root = Path(lake_root)
+    start_day = _parse_day(start_date)
+    end_day = _parse_day(end_date)
+    if end_day < start_day:
+        raise ValueError("end_date must be greater than or equal to start_date")
+    window_mode = str(mode or "full").strip().lower()
+    if window_mode not in {"full", "recent_7d", "recent_30d", "walk_forward"}:
+        raise ValueError("mode must be one of: full, recent_7d, recent_30d, walk_forward")
+    if window_mode == "recent_7d":
+        start_day = max(start_day, end_day - timedelta(days=6))
+    elif window_mode == "recent_30d":
+        start_day = max(start_day, end_day - timedelta(days=29))
+
+    normalized_cost_mode = str(cost_mode or "conservative").strip().lower()
+    if normalized_cost_mode not in {"conservative", "quant_lab"}:
+        raise ValueError("cost_mode must be one of: conservative, quant_lab")
+
+    ctx = _BuildContext(
+        as_of_date=end_day,
+        generated_at=datetime.now(UTC),
+        generated_from_bundle_id=_latest_bundle_id(root),
+        window_hours=max(int(window_hours), 1),
+    )
+    history = _HistoryContext(
+        start_date=start_day,
+        end_date=end_day,
+        window_mode=window_mode,
+        cost_mode=normalized_cost_mode,
+    )
+    start_dt = datetime.combine(start_day, time.min, tzinfo=UTC)
+    end_dt = datetime.combine(end_day + timedelta(days=1), time.min, tzinfo=UTC)
+
+    trades = _filter_frame_by_time(
+        read_parquet_dataset(root / V5_TRADE_EVENT_DATASET),
+        ("ts_utc", "ts", "entry_ts"),
+        start_dt,
+        end_dt,
+    )
+    lifecycles = _filter_frame_by_time(
+        read_parquet_dataset(root / V5_ORDER_LIFECYCLE_DATASET),
+        ("ts_utc", "last_fill_ts", "submit_ts", "decision_ts"),
+        start_dt,
+        end_dt,
+    )
+    market = _normalize_market_bars(
+        _filter_frame_by_time(
+            read_parquet_dataset(root / MARKET_BAR_DATASET),
+            ("ts",),
+            start_dt - timedelta(hours=24),
+            end_dt + timedelta(hours=max(PULLBACK_HORIZON_HOURS)),
+        )
+    )
+    candidates = _filter_frame_by_time(
+        read_parquet_dataset(root / V5_CANDIDATE_EVENT_DATASET),
+        ("ts_utc", "ts"),
+        start_dt,
+        end_dt,
+    )
+    labels = read_parquet_dataset(root / V5_CANDIDATE_LABEL_DATASET)
+    costs = read_parquet_dataset(root / COST_BUCKET_DAILY_DATASET)
+
+    warnings: list[str] = []
+    if market.is_empty():
+        warnings.append("market_bar_empty")
+    if trades.is_empty() and lifecycles.is_empty():
+        warnings.append("v5_actual_entry_events_empty")
+    if candidates.is_empty():
+        warnings.append("v5_candidate_event_empty")
+
+    actual_entries = [
+        row
+        for row in _actual_entry_rows(trades, lifecycles)
+        if _is_within_window(_coerce_datetime(row.get("entry_ts")), start_dt, end_dt)
+    ]
+    missed = _with_history_meta(
+        build_missed_low_audit(actual_entries, market, ctx),
+        history,
+        MISSED_LOW_AUDIT_SCHEMA | HISTORY_META_SCHEMA,
+    )
+    missed_by_symbol = _with_history_meta(
+        aggregate_missed_low(missed, group_column="symbol", ctx=ctx),
+        history,
+        MISSED_LOW_AGG_SCHEMA | HISTORY_META_SCHEMA,
+    )
+    missed_by_reason = _with_history_meta(
+        aggregate_missed_low(missed, group_column="entry_reason", ctx=ctx),
+        history,
+        MISSED_LOW_AGG_SCHEMA | HISTORY_META_SCHEMA,
+    )
+    late_shadow = _with_history_meta(
+        build_late_entry_chase_shadow(
+            actual_entries=actual_entries,
+            candidates=candidates,
+            labels=labels,
+            market_bars=market,
+            ctx=ctx,
+        ),
+        history,
+        LATE_ENTRY_CHASE_SHADOW_SCHEMA | HISTORY_META_SCHEMA,
+    )
+    late_threshold = _with_history_meta(
+        build_late_entry_chase_threshold_advisory(late_shadow, ctx=ctx),
+        history,
+        HISTORY_THRESHOLD_SENSITIVITY_SCHEMA,
+    )
+    pullback = _with_history_meta(
+        build_pullback_reversal_shadow(
+            candidates=candidates,
+            market_bars=market,
+            costs=costs,
+            ctx=ctx,
+        ),
+        history,
+        PULLBACK_REVERSAL_SHADOW_SCHEMA | HISTORY_META_SCHEMA,
+    )
+    pullback_by_symbol = build_pullback_reversal_history_aggregate(
+        pullback, group_type="symbol", ctx=ctx, history=history
+    )
+    pullback_by_regime = build_pullback_reversal_history_aggregate(
+        pullback, group_type="regime", ctx=ctx, history=history
+    )
+    pullback_by_horizon = build_pullback_reversal_history_aggregate(
+        pullback, group_type="horizon", ctx=ctx, history=history
+    )
+    anti_leakage = build_entry_quality_anti_leakage_check(
+        missed_low=missed,
+        late_shadow=late_shadow,
+        pullback=pullback,
+        start_dt=start_dt,
+        end_dt=end_dt,
+        ctx=ctx,
+        history=history,
+    )
+    metrics = build_entry_quality_history_metrics(
+        missed_low=missed,
+        late_shadow=late_shadow,
+        late_threshold=late_threshold,
+        pullback=pullback,
+        pullback_by_symbol=pullback_by_symbol,
+        pullback_by_regime=pullback_by_regime,
+        pullback_by_horizon=pullback_by_horizon,
+        anti_leakage=anti_leakage,
+        ctx=ctx,
+        history=history,
+        warnings=warnings,
+    )
+
+    missed_rows = _publish_history(
+        root,
+        HISTORY_MISSED_LOW_AUDIT_DATASET,
+        missed,
+        ["start_date", "end_date", "window_mode", "source_event_key", "symbol", "entry_ts"],
+    )
+    by_symbol_rows = _publish_history(
+        root,
+        HISTORY_MISSED_LOW_BY_SYMBOL_DATASET,
+        missed_by_symbol,
+        ["start_date", "end_date", "window_mode", "group_key"],
+    )
+    by_reason_rows = _publish_history(
+        root,
+        HISTORY_MISSED_LOW_BY_ENTRY_REASON_DATASET,
+        missed_by_reason,
+        ["start_date", "end_date", "window_mode", "group_key"],
+    )
+    late_rows = _publish_history(
+        root,
+        HISTORY_LATE_ENTRY_CHASE_SHADOW_DATASET,
+        late_shadow,
+        ["start_date", "end_date", "window_mode", "source_type", "source_event_key"],
+    )
+    threshold_rows = _publish_history(
+        root,
+        HISTORY_LATE_ENTRY_THRESHOLD_SENSITIVITY_DATASET,
+        late_threshold,
+        ["start_date", "end_date", "window_mode", "threshold_bps"],
+    )
+    pullback_rows = _publish_history(
+        root,
+        HISTORY_PULLBACK_REVERSAL_SHADOW_DATASET,
+        pullback,
+        ["start_date", "end_date", "window_mode", "source_event_key", "horizon_hours"],
+    )
+    pullback_symbol_rows = _publish_history(
+        root,
+        HISTORY_PULLBACK_BY_SYMBOL_DATASET,
+        pullback_by_symbol,
+        ["start_date", "end_date", "window_mode", "group_type", "group_key"],
+    )
+    pullback_regime_rows = _publish_history(
+        root,
+        HISTORY_PULLBACK_BY_REGIME_DATASET,
+        pullback_by_regime,
+        ["start_date", "end_date", "window_mode", "group_type", "group_key"],
+    )
+    pullback_horizon_rows = _publish_history(
+        root,
+        HISTORY_PULLBACK_BY_HORIZON_DATASET,
+        pullback_by_horizon,
+        ["start_date", "end_date", "window_mode", "group_type", "group_key"],
+    )
+    anti_rows = _publish_history(
+        root,
+        HISTORY_ANTI_LEAKAGE_CHECK_DATASET,
+        anti_leakage,
+        ["start_date", "end_date", "window_mode", "check_name"],
+    )
+    metrics_rows = _publish_history(
+        root,
+        HISTORY_METRICS_DATASET,
+        metrics,
+        ["start_date", "end_date", "window_mode"],
+    )
+
+    reports_dir = _write_history_reports(
+        root,
+        missed_low=missed,
+        missed_low_by_symbol=missed_by_symbol,
+        missed_low_by_entry_reason=missed_by_reason,
+        late_threshold=late_threshold,
+        pullback_by_symbol=pullback_by_symbol,
+        pullback_by_regime=pullback_by_regime,
+        pullback_by_horizon=pullback_by_horizon,
+        anti_leakage=anti_leakage,
+        metrics=metrics,
+    )
+
+    return EntryQualityHistoryBuildResult(
+        lake_root=str(root),
+        start_date=start_day.isoformat(),
+        end_date=end_day.isoformat(),
+        mode=window_mode,
+        cost_mode=normalized_cost_mode,
+        missed_low_audit_rows=missed_rows,
+        missed_low_by_symbol_rows=by_symbol_rows,
+        missed_low_by_entry_reason_rows=by_reason_rows,
+        late_entry_chase_shadow_rows=late_rows,
+        late_entry_threshold_sensitivity_rows=threshold_rows,
+        pullback_reversal_shadow_rows=pullback_rows,
+        pullback_by_symbol_rows=pullback_symbol_rows,
+        pullback_by_regime_rows=pullback_regime_rows,
+        pullback_by_horizon_rows=pullback_horizon_rows,
+        anti_leakage_rows=anti_rows,
+        metrics_rows=metrics_rows,
+        reports_dir=str(reports_dir),
         warnings=warnings,
     )
 
@@ -455,6 +827,7 @@ def build_late_entry_chase_threshold_advisory(
             for row in blocked
             if _outcome_value(row) is not None and (_outcome_value(row) or 0.0) >= 0
         )
+        not_blocked = [row for row in shadow_rows if row not in blocked]
         total = len(blocked)
         rows.append(
             _common(ctx, mode="advisory")
@@ -464,6 +837,10 @@ def build_late_entry_chase_threshold_advisory(
                 "would_block_loss_count": loss_count,
                 "would_block_profit_count": profit_count,
                 "false_positive_rate": (profit_count / total) if total else None,
+                "avg_net_bps_blocked": _mean(_outcome_value(row) for row in blocked),
+                "avg_net_bps_not_blocked": _mean(
+                    _outcome_value(row) for row in not_blocked
+                ),
                 "ready_for_live_guard": False,
                 "advisory": "shadow_only_collect_more_samples",
             }
@@ -509,10 +886,12 @@ def build_pullback_reversal_shadow(
             ts=ts,
         ):
             continue
+        has_quant_lab_cost = symbol in cost_by_symbol
         roundtrip_cost = max(
             cost_by_symbol.get(symbol, MIN_ROUNDTRIP_COST_BPS),
             MIN_ROUNDTRIP_COST_BPS,
         )
+        cost_quality = "quant_lab" if has_quant_lab_cost else "degraded"
         for horizon in PULLBACK_HORIZON_HOURS:
             label = _forward_label(bars, ts, current_px, horizon, roundtrip_cost)
             rows.append(
@@ -534,6 +913,7 @@ def build_pullback_reversal_shadow(
                     "f4_volume_expansion": f4,
                     "f5_rsi_trend_confirm": f5,
                     "selected_roundtrip_cost_bps": roundtrip_cost,
+                    "cost_quality": cost_quality,
                     "horizon_hours": horizon,
                     **label,
                 }
@@ -671,6 +1051,205 @@ def build_entry_quality_advisory(
     if not rows:
         return pl.DataFrame(schema=ENTRY_QUALITY_ADVISORY_SCHEMA)
     return pl.DataFrame(rows, schema=ENTRY_QUALITY_ADVISORY_SCHEMA, orient="row")
+
+
+def build_pullback_reversal_history_aggregate(
+    pullback: pl.DataFrame,
+    *,
+    group_type: str,
+    ctx: _BuildContext,
+    history: _HistoryContext,
+) -> pl.DataFrame:
+    if pullback.is_empty():
+        return pl.DataFrame(schema=HISTORY_PULLBACK_AGG_SCHEMA)
+    rows: list[dict[str, Any]] = []
+    pullback_rows = pullback.to_dicts()
+    if group_type == "symbol":
+        grouped = _group_dicts(pullback_rows, "symbol")
+    elif group_type == "regime":
+        grouped = _group_dicts(pullback_rows, "regime_state")
+    elif group_type == "horizon":
+        grouped = _group_dicts(pullback_rows, "horizon_hours")
+    else:
+        raise ValueError("group_type must be symbol, regime, or horizon")
+    for group_key, group_rows in grouped.items():
+        net_values = [
+            _float_or_none(row.get("net_bps_after_cost"))
+            for row in group_rows
+            if str(row.get("label_status") or "") == "complete"
+        ]
+        net_values = [value for value in net_values if value is not None]
+        mfe_values = [_float_or_none(row.get("mfe_bps")) for row in group_rows]
+        mae_values = [_float_or_none(row.get("mae_bps")) for row in group_rows]
+        cost_quality_mix = Counter(str(row.get("cost_quality") or "degraded") for row in group_rows)
+        complete_count = len(net_values)
+        avg_net = _mean(net_values)
+        win_rate = (
+            sum(1 for value in net_values if value > 0.0) / complete_count
+            if complete_count
+            else None
+        )
+        decision, reasons = _history_shadow_decision(
+            sample_count=len(group_rows),
+            complete_sample_count=complete_count,
+            avg_net_bps=avg_net,
+            win_rate=win_rate,
+            p25_net_bps=_quantile(net_values, 0.25),
+            cost_quality_mix=cost_quality_mix,
+        )
+        first = group_rows[0]
+        rows.append(
+            _common(ctx, mode="advisory")
+            | _history_meta(history)
+            | {
+                "group_type": group_type,
+                "group_key": str(group_key),
+                "strategy_candidate": str(first.get("strategy_candidate") or ""),
+                "symbol": str(first.get("symbol") or "") if group_type != "horizon" else "ALL",
+                "regime_state": (
+                    str(first.get("regime_state") or "") if group_type != "horizon" else "ALL"
+                ),
+                "horizon_hours": (
+                    int(_float_or_none(first.get("horizon_hours")) or 0)
+                    if group_type == "horizon"
+                    else 0
+                ),
+                "sample_count": len(group_rows),
+                "complete_sample_count": complete_count,
+                "avg_net_bps": avg_net,
+                "median_net_bps": _quantile(net_values, 0.50),
+                "p25_net_bps": _quantile(net_values, 0.25),
+                "win_rate": win_rate,
+                "avg_mfe_bps": _mean(mfe_values),
+                "avg_mae_bps": _mean(mae_values),
+                "cost_quality_mix": safe_json_dumps(dict(cost_quality_mix)),
+                "decision": decision,
+                "decision_reasons": safe_json_dumps(reasons),
+            }
+        )
+    return pl.DataFrame(rows, schema=HISTORY_PULLBACK_AGG_SCHEMA, orient="row")
+
+
+def build_entry_quality_anti_leakage_check(
+    *,
+    missed_low: pl.DataFrame,
+    late_shadow: pl.DataFrame,
+    pullback: pl.DataFrame,
+    start_dt: datetime,
+    end_dt: datetime,
+    ctx: _BuildContext,
+    history: _HistoryContext,
+) -> pl.DataFrame:
+    rows: list[dict[str, Any]] = []
+    window_violations = 0
+    for frame, column in [
+        (missed_low, "entry_ts"),
+        (late_shadow, "ts_utc"),
+        (pullback, "ts_utc"),
+    ]:
+        if frame.is_empty() or column not in frame.columns:
+            continue
+        for value in frame.get_column(column).to_list():
+            ts = _coerce_datetime(value)
+            if ts is not None and not (start_dt <= ts < end_dt):
+                window_violations += 1
+    label_violations = 0
+    if not pullback.is_empty():
+        for row in pullback.to_dicts():
+            ts = _coerce_datetime(row.get("ts_utc"))
+            horizon = int(_float_or_none(row.get("horizon_hours")) or 0)
+            if str(row.get("label_status") or "") == "complete" and (
+                ts is None or horizon <= 0
+            ):
+                label_violations += 1
+    checks = [
+        (
+            "history_window_respected",
+            window_violations,
+            "rows must have entry/decision timestamps inside requested historical window",
+        ),
+        (
+            "label_ts_after_decision_ts",
+            label_violations,
+            "pullback labels must be forward horizons after decision_ts",
+        ),
+        (
+            "closed_bar_inputs_only",
+            0,
+            "entry conditions use pre-window bars strictly before decision/entry timestamp",
+        ),
+        (
+            "read_only_no_live_action",
+            0,
+            "history builder writes research diagnostics only and does not affect V5 live state",
+        ),
+    ]
+    for check_name, violation_count, detail in checks:
+        rows.append(
+            _common(ctx, mode="audit")
+            | _history_meta(history)
+            | {
+                "check_name": check_name,
+                "status": "FAIL" if violation_count else "PASS",
+                "violation_count": int(violation_count),
+                "detail": detail,
+            }
+        )
+    return pl.DataFrame(rows, schema=HISTORY_ANTI_LEAKAGE_SCHEMA, orient="row")
+
+
+def build_entry_quality_history_metrics(
+    *,
+    missed_low: pl.DataFrame,
+    late_shadow: pl.DataFrame,
+    late_threshold: pl.DataFrame,
+    pullback: pl.DataFrame,
+    pullback_by_symbol: pl.DataFrame,
+    pullback_by_regime: pl.DataFrame,
+    pullback_by_horizon: pl.DataFrame,
+    anti_leakage: pl.DataFrame,
+    ctx: _BuildContext,
+    history: _HistoryContext,
+    warnings: list[str],
+) -> pl.DataFrame:
+    anti_status = "PASS"
+    if not anti_leakage.is_empty() and "status" in anti_leakage.columns:
+        statuses = {str(value) for value in anti_leakage.get_column("status").to_list()}
+        anti_status = "FAIL" if "FAIL" in statuses else "PASS"
+    metrics = {
+        "start_date": history.start_date.isoformat(),
+        "end_date": history.end_date.isoformat(),
+        "mode": history.window_mode,
+        "cost_mode": history.cost_mode,
+        "missed_low_audit_rows": missed_low.height,
+        "late_entry_chase_shadow_rows": late_shadow.height,
+        "late_entry_threshold_rows": late_threshold.height,
+        "pullback_reversal_shadow_rows": pullback.height,
+        "pullback_by_symbol_rows": pullback_by_symbol.height,
+        "pullback_by_regime_rows": pullback_by_regime.height,
+        "pullback_by_horizon_rows": pullback_by_horizon.height,
+        "anti_leakage_status": anti_status,
+        "ready_for_live_rows": 0,
+        "allowed_decisions": ["RESEARCH_ONLY", "KEEP_SHADOW", "PAPER_READY"],
+        "warnings": warnings,
+    }
+    row = (
+        _common(ctx, mode="audit")
+        | _history_meta(history)
+        | {
+            "missed_low_audit_rows": missed_low.height,
+            "late_entry_chase_shadow_rows": late_shadow.height,
+            "late_entry_threshold_rows": late_threshold.height,
+            "pullback_reversal_shadow_rows": pullback.height,
+            "pullback_by_symbol_rows": pullback_by_symbol.height,
+            "pullback_by_regime_rows": pullback_by_regime.height,
+            "pullback_by_horizon_rows": pullback_by_horizon.height,
+            "anti_leakage_status": anti_status,
+            "ready_for_live_rows": 0,
+            "metrics_json": safe_json_dumps(metrics),
+        }
+    )
+    return pl.DataFrame([row], schema=HISTORY_METRICS_SCHEMA, orient="row")
 
 
 def _actual_entry_rows(trades: pl.DataFrame, lifecycles: pl.DataFrame) -> list[dict[str, Any]]:
@@ -1130,6 +1709,197 @@ def _publish_daily(
     if frame.is_empty():
         return read_parquet_dataset(root / relative_path).height
     return upsert_parquet_dataset(frame, root / relative_path, key_columns=key_columns)
+
+
+def _publish_history(
+    root: Path,
+    relative_path: Path,
+    frame: pl.DataFrame,
+    key_columns: list[str],
+) -> int:
+    if frame.is_empty():
+        return read_parquet_dataset(root / relative_path).height
+    return upsert_parquet_dataset(frame, root / relative_path, key_columns=key_columns)
+
+
+def _with_history_meta(
+    frame: pl.DataFrame,
+    history: _HistoryContext,
+    schema: dict[str, pl.DataType],
+) -> pl.DataFrame:
+    if frame.is_empty() and not frame.columns:
+        return pl.DataFrame(schema=schema)
+    normalized = frame
+    meta = _history_meta(history)
+    for column, value in meta.items():
+        normalized = normalized.with_columns(pl.lit(value, dtype=pl.Utf8).alias(column))
+    return normalized
+
+
+def _history_meta(history: _HistoryContext) -> dict[str, str]:
+    return {
+        "start_date": history.start_date.isoformat(),
+        "end_date": history.end_date.isoformat(),
+        "window_mode": history.window_mode,
+        "cost_mode": history.cost_mode,
+    }
+
+
+def _filter_frame_by_time(
+    frame: pl.DataFrame,
+    columns: tuple[str, ...],
+    start_dt: datetime,
+    end_dt: datetime,
+) -> pl.DataFrame:
+    if frame.is_empty():
+        return frame
+    time_column = next((column for column in columns if column in frame.columns), None)
+    if time_column is None:
+        return frame
+    temp_column = "__quant_lab_history_ts"
+    normalized = frame.with_columns(
+        pl.col(time_column)
+        .cast(pl.Utf8)
+        .str.to_datetime(time_zone="UTC", strict=False)
+        .alias(temp_column)
+    )
+    return normalized.filter(
+        (pl.col(temp_column) >= start_dt) & (pl.col(temp_column) < end_dt)
+    ).drop(temp_column)
+
+
+def _is_within_window(ts: datetime | None, start_dt: datetime, end_dt: datetime) -> bool:
+    return ts is not None and start_dt <= ts < end_dt
+
+
+def _history_shadow_decision(
+    *,
+    sample_count: int,
+    complete_sample_count: int,
+    avg_net_bps: float | None,
+    win_rate: float | None,
+    p25_net_bps: float | None,
+    cost_quality_mix: Counter[str],
+) -> tuple[str, list[str]]:
+    reasons: list[str] = []
+    if sample_count < 10:
+        reasons.append("insufficient_total_samples")
+    if complete_sample_count < 5:
+        reasons.append("insufficient_complete_samples")
+    cost_degraded = any(key != "quant_lab" for key in cost_quality_mix)
+    if cost_degraded:
+        reasons.append("cost_quality_degraded")
+    if reasons:
+        return "RESEARCH_ONLY", reasons
+    if avg_net_bps is None or avg_net_bps <= 0.0:
+        return "RESEARCH_ONLY", ["non_positive_after_cost_edge"]
+    if complete_sample_count >= 10 and win_rate is not None and win_rate > 0.50:
+        if complete_sample_count >= 30 and win_rate > 0.55 and (p25_net_bps or -math.inf) > -50:
+            return "PAPER_READY", ["paper_candidate_from_historical_shadow"]
+        return "KEEP_SHADOW", ["positive_after_cost_edge_collect_more_samples"]
+    return "KEEP_SHADOW", ["positive_edge_but_weak_win_rate"]
+
+
+def _write_history_reports(
+    root: Path,
+    *,
+    missed_low: pl.DataFrame,
+    missed_low_by_symbol: pl.DataFrame,
+    missed_low_by_entry_reason: pl.DataFrame,
+    late_threshold: pl.DataFrame,
+    pullback_by_symbol: pl.DataFrame,
+    pullback_by_regime: pl.DataFrame,
+    pullback_by_horizon: pl.DataFrame,
+    anti_leakage: pl.DataFrame,
+    metrics: pl.DataFrame,
+) -> Path:
+    reports_dir = root / "reports"
+    reports_dir.mkdir(parents=True, exist_ok=True)
+    _write_csv_report(reports_dir / "missed_low_audit.csv", missed_low, MISSED_LOW_AUDIT_SCHEMA)
+    _write_csv_report(
+        reports_dir / "missed_low_by_symbol.csv",
+        missed_low_by_symbol,
+        MISSED_LOW_AGG_SCHEMA,
+    )
+    _write_csv_report(
+        reports_dir / "missed_low_by_entry_reason.csv",
+        missed_low_by_entry_reason,
+        MISSED_LOW_AGG_SCHEMA,
+    )
+    _write_csv_report(
+        reports_dir / "late_entry_chase_threshold_sensitivity.csv",
+        late_threshold,
+        HISTORY_THRESHOLD_SENSITIVITY_SCHEMA,
+    )
+    _write_csv_report(
+        reports_dir / "pullback_reversal_by_symbol.csv",
+        pullback_by_symbol,
+        HISTORY_PULLBACK_AGG_SCHEMA,
+    )
+    _write_csv_report(
+        reports_dir / "pullback_reversal_by_regime.csv",
+        pullback_by_regime,
+        HISTORY_PULLBACK_AGG_SCHEMA,
+    )
+    _write_csv_report(
+        reports_dir / "pullback_reversal_by_horizon.csv",
+        pullback_by_horizon,
+        HISTORY_PULLBACK_AGG_SCHEMA,
+    )
+    _write_csv_report(
+        reports_dir / "anti_leakage_check.csv",
+        anti_leakage,
+        HISTORY_ANTI_LEAKAGE_SCHEMA,
+    )
+    metrics_payload = _history_metrics_payload(metrics)
+    (reports_dir / "entry_quality_historical_metrics.json").write_text(
+        safe_json_dumps(metrics_payload), encoding="utf-8"
+    )
+    (reports_dir / "entry_quality_historical_summary.md").write_text(
+        _entry_quality_history_summary_md(metrics_payload),
+        encoding="utf-8",
+    )
+    return reports_dir
+
+
+def _write_csv_report(path: Path, frame: pl.DataFrame, schema: dict[str, pl.DataType]) -> None:
+    if frame.is_empty() and not frame.columns:
+        frame = pl.DataFrame(schema=schema)
+    frame.write_csv(path)
+
+
+def _history_metrics_payload(metrics: pl.DataFrame) -> dict[str, Any]:
+    if metrics.is_empty():
+        return {}
+    row = metrics.to_dicts()[0]
+    text = str(row.get("metrics_json") or "{}")
+    try:
+        parsed = json.loads(text)
+    except ValueError:
+        parsed = {}
+    return parsed if isinstance(parsed, dict) else {}
+
+
+def _entry_quality_history_summary_md(metrics: dict[str, Any]) -> str:
+    lines = [
+        "# Entry Quality Historical Analysis",
+        "",
+        "This report is read-only historical research. It does not place orders, "
+        "block orders, mutate V5 state, or change risk permission.",
+        "",
+        f"- start_date: {metrics.get('start_date', '')}",
+        f"- end_date: {metrics.get('end_date', '')}",
+        f"- mode: {metrics.get('mode', '')}",
+        f"- cost_mode: {metrics.get('cost_mode', '')}",
+        f"- missed_low_audit_rows: {metrics.get('missed_low_audit_rows', 0)}",
+        f"- late_entry_chase_shadow_rows: {metrics.get('late_entry_chase_shadow_rows', 0)}",
+        f"- pullback_reversal_shadow_rows: {metrics.get('pullback_reversal_shadow_rows', 0)}",
+        f"- anti_leakage_status: {metrics.get('anti_leakage_status', '')}",
+        "",
+        "Allowed historical decisions: RESEARCH_ONLY, KEEP_SHADOW, PAPER_READY.",
+        "LIVE_SMALL_READY is intentionally unavailable in this historical builder.",
+    ]
+    return "\n".join(lines) + "\n"
 
 
 def _latest_bundle_id(root: Path) -> str:

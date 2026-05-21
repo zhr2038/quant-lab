@@ -123,6 +123,12 @@ SECTION_DATASETS = {
         "v5_pullback_reversal_shadow",
         "v5_pullback_reversal_readiness",
         "v5_entry_quality_advisory",
+        "v5_entry_quality_history_late_entry_chase_threshold_sensitivity",
+        "v5_entry_quality_history_pullback_by_symbol",
+        "v5_entry_quality_history_pullback_by_regime",
+        "v5_entry_quality_history_pullback_by_horizon",
+        "v5_entry_quality_history_anti_leakage_check",
+        "v5_entry_quality_history_metrics",
         "gate_decision",
     ],
     "risk": ["risk_permission"],
@@ -221,9 +227,16 @@ REQUIRED_MEMBERS = [
     "reports/missed_low_by_entry_reason.csv",
     "reports/late_entry_chase_shadow.csv",
     "reports/late_entry_chase_threshold_advisory.json",
+    "reports/late_entry_chase_threshold_sensitivity.csv",
     "reports/pullback_reversal_shadow_outcomes.csv",
+    "reports/pullback_reversal_by_symbol.csv",
+    "reports/pullback_reversal_by_regime.csv",
+    "reports/pullback_reversal_by_horizon.csv",
     "reports/pullback_reversal_readiness.json",
+    "reports/anti_leakage_check.csv",
     "reports/entry_quality_summary.md",
+    "reports/entry_quality_historical_summary.md",
+    "reports/entry_quality_historical_metrics.json",
     f"reports/{ENFORCE_READINESS_JSON}",
     f"reports/{ENFORCE_READINESS_CSV}",
 ]
@@ -839,6 +852,25 @@ CSV_SCHEMAS: dict[str, list[str]] = {
         "schema_version",
         "contract_version",
     ],
+    "reports/late_entry_chase_threshold_sensitivity.csv": [
+        "start_date",
+        "end_date",
+        "window_mode",
+        "cost_mode",
+        "threshold_bps",
+        "would_block_count",
+        "would_block_loss_count",
+        "would_block_profit_count",
+        "false_positive_rate",
+        "avg_net_bps_blocked",
+        "avg_net_bps_not_blocked",
+        "ready_for_live_guard",
+        "advisory",
+        "mode",
+        "generated_at_utc",
+        "schema_version",
+        "contract_version",
+    ],
     "reports/pullback_reversal_shadow_outcomes.csv": [
         "as_of_date",
         "strategy_candidate",
@@ -857,6 +889,7 @@ CSV_SCHEMAS: dict[str, list[str]] = {
         "f4_volume_expansion",
         "f5_rsi_trend_confirm",
         "selected_roundtrip_cost_bps",
+        "cost_quality",
         "horizon_hours",
         "gross_bps",
         "net_bps_after_cost",
@@ -864,6 +897,101 @@ CSV_SCHEMAS: dict[str, list[str]] = {
         "mae_bps",
         "win",
         "label_status",
+        "mode",
+        "generated_at_utc",
+        "schema_version",
+        "contract_version",
+    ],
+    "reports/pullback_reversal_by_symbol.csv": [
+        "start_date",
+        "end_date",
+        "window_mode",
+        "cost_mode",
+        "group_type",
+        "group_key",
+        "strategy_candidate",
+        "symbol",
+        "regime_state",
+        "horizon_hours",
+        "sample_count",
+        "complete_sample_count",
+        "avg_net_bps",
+        "median_net_bps",
+        "p25_net_bps",
+        "win_rate",
+        "avg_mfe_bps",
+        "avg_mae_bps",
+        "cost_quality_mix",
+        "decision",
+        "decision_reasons",
+        "mode",
+        "generated_at_utc",
+        "schema_version",
+        "contract_version",
+    ],
+    "reports/pullback_reversal_by_regime.csv": [
+        "start_date",
+        "end_date",
+        "window_mode",
+        "cost_mode",
+        "group_type",
+        "group_key",
+        "strategy_candidate",
+        "symbol",
+        "regime_state",
+        "horizon_hours",
+        "sample_count",
+        "complete_sample_count",
+        "avg_net_bps",
+        "median_net_bps",
+        "p25_net_bps",
+        "win_rate",
+        "avg_mfe_bps",
+        "avg_mae_bps",
+        "cost_quality_mix",
+        "decision",
+        "decision_reasons",
+        "mode",
+        "generated_at_utc",
+        "schema_version",
+        "contract_version",
+    ],
+    "reports/pullback_reversal_by_horizon.csv": [
+        "start_date",
+        "end_date",
+        "window_mode",
+        "cost_mode",
+        "group_type",
+        "group_key",
+        "strategy_candidate",
+        "symbol",
+        "regime_state",
+        "horizon_hours",
+        "sample_count",
+        "complete_sample_count",
+        "avg_net_bps",
+        "median_net_bps",
+        "p25_net_bps",
+        "win_rate",
+        "avg_mfe_bps",
+        "avg_mae_bps",
+        "cost_quality_mix",
+        "decision",
+        "decision_reasons",
+        "mode",
+        "generated_at_utc",
+        "schema_version",
+        "contract_version",
+    ],
+    "reports/anti_leakage_check.csv": [
+        "start_date",
+        "end_date",
+        "window_mode",
+        "cost_mode",
+        "check_name",
+        "status",
+        "violation_count",
+        "detail",
         "mode",
         "generated_at_utc",
         "schema_version",
@@ -1610,6 +1738,27 @@ def _dataset_members(frames: dict[str, pl.DataFrame]) -> dict[str, _MemberPayloa
         pl.DataFrame(),
     )
     entry_quality_advisory = frames.get("v5_entry_quality_advisory", pl.DataFrame())
+    history_late_threshold = frames.get(
+        "v5_entry_quality_history_late_entry_chase_threshold_sensitivity",
+        pl.DataFrame(),
+    )
+    history_pullback_by_symbol = frames.get(
+        "v5_entry_quality_history_pullback_by_symbol",
+        pl.DataFrame(),
+    )
+    history_pullback_by_regime = frames.get(
+        "v5_entry_quality_history_pullback_by_regime",
+        pl.DataFrame(),
+    )
+    history_pullback_by_horizon = frames.get(
+        "v5_entry_quality_history_pullback_by_horizon",
+        pl.DataFrame(),
+    )
+    history_anti_leakage = frames.get(
+        "v5_entry_quality_history_anti_leakage_check",
+        pl.DataFrame(),
+    )
+    history_metrics = frames.get("v5_entry_quality_history_metrics", pl.DataFrame())
     paper_proposals = _paper_strategy_proposals_for_export(alpha_discovery_board)
     opportunity_advisory = _strategy_opportunity_advisory_for_export(
         alpha_discovery_board=alpha_discovery_board,
@@ -1766,12 +1915,32 @@ def _dataset_members(frames: dict[str, pl.DataFrame]) -> dict[str, _MemberPayloa
         "reports/late_entry_chase_threshold_advisory.json": _json_text(
             _entry_quality_json(late_entry_threshold)
         ),
+        "reports/late_entry_chase_threshold_sensitivity.csv": _csv_member(
+            "reports/late_entry_chase_threshold_sensitivity.csv",
+            history_late_threshold,
+        ),
         "reports/pullback_reversal_shadow_outcomes.csv": _csv_member(
             "reports/pullback_reversal_shadow_outcomes.csv",
             pullback_reversal_shadow,
         ),
+        "reports/pullback_reversal_by_symbol.csv": _csv_member(
+            "reports/pullback_reversal_by_symbol.csv",
+            history_pullback_by_symbol,
+        ),
+        "reports/pullback_reversal_by_regime.csv": _csv_member(
+            "reports/pullback_reversal_by_regime.csv",
+            history_pullback_by_regime,
+        ),
+        "reports/pullback_reversal_by_horizon.csv": _csv_member(
+            "reports/pullback_reversal_by_horizon.csv",
+            history_pullback_by_horizon,
+        ),
         "reports/pullback_reversal_readiness.json": _json_text(
             _entry_quality_json(pullback_reversal_readiness)
+        ),
+        "reports/anti_leakage_check.csv": _csv_member(
+            "reports/anti_leakage_check.csv",
+            history_anti_leakage,
         ),
         "reports/entry_quality_summary.md": _entry_quality_summary_md(
             missed_low_audit=missed_low_audit,
@@ -1781,6 +1950,12 @@ def _dataset_members(frames: dict[str, pl.DataFrame]) -> dict[str, _MemberPayloa
             pullback_reversal_shadow=pullback_reversal_shadow,
             pullback_reversal_readiness=pullback_reversal_readiness,
             entry_quality_advisory=entry_quality_advisory,
+        ),
+        "reports/entry_quality_historical_summary.md": _entry_quality_history_summary_md(
+            history_metrics
+        ),
+        "reports/entry_quality_historical_metrics.json": _json_text(
+            _entry_quality_history_metrics_json(history_metrics)
         ),
         "risk/risk_permission.json": _json_text({"rows": _rows(risk)}),
         "risk/risk_flags.csv": _csv_text(_risk_flags(risk)),
@@ -4933,6 +5108,53 @@ def _entry_quality_summary_md(
         "- missed-low audit quantifies how far actual OPEN_LONG entries were from recent lows.",
         "- late-entry chase is a shadow guard sensitivity study, not a live guard.",
         "- pullback reversal is shadow/paper research and is not live-ready in v0.1.",
+    ]
+    return "\n".join(lines) + "\n"
+
+
+def _entry_quality_history_metrics_json(metrics: pl.DataFrame) -> dict[str, Any]:
+    if metrics.is_empty():
+        return {"rows": [], "row_count": 0, "source": "quant_lab", "mode": "audit"}
+    rows = _rows(metrics)
+    latest = rows[-1] if rows else {}
+    parsed: dict[str, Any] = {}
+    text = str(latest.get("metrics_json") or "{}")
+    try:
+        payload = json.loads(text)
+    except ValueError:
+        payload = {}
+    if isinstance(payload, dict):
+        parsed = payload
+    return {
+        "rows": rows,
+        "row_count": len(rows),
+        "source": "quant_lab",
+        "mode": "audit",
+        "latest_metrics": parsed,
+    }
+
+
+def _entry_quality_history_summary_md(metrics: pl.DataFrame) -> str:
+    payload = _entry_quality_history_metrics_json(metrics).get("latest_metrics", {})
+    if not isinstance(payload, dict):
+        payload = {}
+    lines = [
+        "# Entry Quality Historical Analysis",
+        "",
+        "This section is read-only historical research. It does not place orders, "
+        "block orders, mutate V5 state, or change risk permission.",
+        "",
+        f"- start_date: {payload.get('start_date', '')}",
+        f"- end_date: {payload.get('end_date', '')}",
+        f"- mode: {payload.get('mode', '')}",
+        f"- cost_mode: {payload.get('cost_mode', '')}",
+        f"- missed_low_audit_rows: {payload.get('missed_low_audit_rows', 0)}",
+        f"- late_entry_chase_shadow_rows: {payload.get('late_entry_chase_shadow_rows', 0)}",
+        f"- pullback_reversal_shadow_rows: {payload.get('pullback_reversal_shadow_rows', 0)}",
+        f"- anti_leakage_status: {payload.get('anti_leakage_status', '')}",
+        "",
+        "Allowed historical decisions: RESEARCH_ONLY, KEEP_SHADOW, PAPER_READY.",
+        "LIVE_SMALL_READY is intentionally unavailable in this historical builder.",
     ]
     return "\n".join(lines) + "\n"
 

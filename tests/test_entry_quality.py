@@ -8,7 +8,10 @@ import polars as pl
 
 from quant_lab.data.lake import read_parquet_dataset, write_parquet_dataset
 from quant_lab.export.daily import export_daily_pack
-from quant_lab.research.entry_quality import build_and_publish_entry_quality
+from quant_lab.research.entry_quality import (
+    build_and_publish_entry_quality,
+    build_and_publish_entry_quality_history,
+)
 
 
 def test_missed_low_audit_flags_late_chase_loss(tmp_path):
@@ -173,10 +176,164 @@ def test_daily_export_contains_entry_quality_reports(tmp_path):
         assert threshold["source"] == "quant_lab"
 
 
+def test_entry_quality_history_outputs_threshold_sensitivity_and_reports(tmp_path):
+    lake = tmp_path / "lake"
+    _write_market_bars(lake, "SOL-USDT")
+    write_parquet_dataset(
+        pl.DataFrame(
+            [
+                {
+                    "run_id": "run-1",
+                    "ts_utc": datetime(2026, 5, 10, 20, tzinfo=UTC),
+                    "symbol": "SOL-USDT",
+                    "side": "buy",
+                    "action": "entry",
+                    "price": 108.0,
+                    "realized_net_bps": -80.0,
+                    "trade_id": "trade-sol-1",
+                }
+            ]
+        ),
+        lake / "silver" / "v5_trade_event",
+    )
+
+    result = build_and_publish_entry_quality_history(
+        lake,
+        start_date="2026-05-10",
+        end_date="2026-05-10",
+        mode="full",
+        cost_mode="conservative",
+    )
+
+    assert result.late_entry_threshold_sensitivity_rows == 6
+    threshold = read_parquet_dataset(
+        lake / "gold" / "v5_entry_quality_history_late_entry_chase_threshold_sensitivity"
+    )
+    row = threshold.filter(pl.col("threshold_bps") == 250).to_dicts()[0]
+    assert row["would_block_loss_count"] == 1
+    assert row["avg_net_bps_blocked"] == -80.0
+    assert row["ready_for_live_guard"] is False
+    assert (lake / "reports" / "late_entry_chase_threshold_sensitivity.csv").exists()
+    assert (lake / "reports" / "entry_quality_historical_metrics.json").exists()
+
+
+def test_entry_quality_history_recent_7d_filters_old_entries(tmp_path):
+    lake = tmp_path / "lake"
+    _write_market_bars_for_range(lake, "BNB-USDT", datetime(2026, 5, 1, tzinfo=UTC), 15 * 24)
+    write_parquet_dataset(
+        pl.DataFrame(
+            [
+                {
+                    "run_id": "old",
+                    "ts_utc": datetime(2026, 5, 2, 20, tzinfo=UTC),
+                    "symbol": "BNB-USDT",
+                    "side": "buy",
+                    "action": "entry",
+                    "price": 108.0,
+                    "trade_id": "old-trade",
+                },
+                {
+                    "run_id": "recent",
+                    "ts_utc": datetime(2026, 5, 10, 20, tzinfo=UTC),
+                    "symbol": "BNB-USDT",
+                    "side": "buy",
+                    "action": "entry",
+                    "price": 108.0,
+                    "trade_id": "recent-trade",
+                },
+            ]
+        ),
+        lake / "silver" / "v5_trade_event",
+    )
+
+    build_and_publish_entry_quality_history(
+        lake,
+        start_date="2026-05-01",
+        end_date="2026-05-10",
+        mode="recent_7d",
+        cost_mode="conservative",
+    )
+
+    missed = read_parquet_dataset(
+        lake / "gold" / "v5_entry_quality_history_missed_low_audit"
+    )
+    assert missed.height == 1
+    assert missed.to_dicts()[0]["run_id"] == "recent"
+
+
+def test_entry_quality_history_pullback_by_symbol_and_anti_leakage(tmp_path):
+    lake = tmp_path / "lake"
+    _write_pullback_market_bars(lake, "ETH-USDT")
+    write_parquet_dataset(
+        pl.DataFrame(
+            [
+                {
+                    "candidate_id": "cand-eth-pullback",
+                    "run_id": "run-pullback",
+                    "ts_utc": datetime(2026, 5, 10, 20, tzinfo=UTC),
+                    "symbol": "ETH-USDT",
+                    "strategy_candidate": "portfolio",
+                    "entry_close": 115.0,
+                    "regime_state": "protect",
+                    "risk_level": "normal",
+                    "f4_volume_expansion": 0.0,
+                    "f5_rsi_trend_confirm": 0.0,
+                    "estimated_spread_bps": 2.0,
+                }
+            ]
+        ),
+        lake / "silver" / "v5_candidate_event",
+    )
+
+    result = build_and_publish_entry_quality_history(
+        lake,
+        start_date="2026-05-10",
+        end_date="2026-05-10",
+        mode="walk_forward",
+        cost_mode="conservative",
+    )
+
+    assert result.pullback_by_symbol_rows == 1
+    by_symbol = read_parquet_dataset(
+        lake / "gold" / "v5_entry_quality_history_pullback_by_symbol"
+    ).to_dicts()[0]
+    assert by_symbol["symbol"] == "ETH-USDT"
+    assert by_symbol["decision"] in {"RESEARCH_ONLY", "KEEP_SHADOW", "PAPER_READY"}
+    assert by_symbol["decision"] != "LIVE_SMALL_READY"
+    checks = read_parquet_dataset(
+        lake / "gold" / "v5_entry_quality_history_anti_leakage_check"
+    )
+    assert set(checks.get_column("status").to_list()) == {"PASS"}
+
+
 def _write_market_bars(lake, symbol: str) -> None:
     start = datetime(2026, 5, 10, tzinfo=UTC)
     rows = []
     for hour in range(30):
+        rows.append(
+            {
+                "venue": "okx",
+                "symbol": symbol,
+                "market_type": "SPOT",
+                "timeframe": "1H",
+                "ts": start + timedelta(hours=hour),
+                "open": 100.0,
+                "high": 110.0,
+                "low": 100.0 if hour > 0 else 90.0,
+                "close": 100.0,
+                "volume": 1000.0,
+                "quote_volume": 100000.0,
+                "source": "test",
+                "ingest_ts": start,
+                "is_closed": True,
+            }
+        )
+    write_parquet_dataset(pl.DataFrame(rows), lake / "silver" / "market_bar")
+
+
+def _write_market_bars_for_range(lake, symbol: str, start: datetime, hours: int) -> None:
+    rows = []
+    for hour in range(hours):
         rows.append(
             {
                 "venue": "okx",

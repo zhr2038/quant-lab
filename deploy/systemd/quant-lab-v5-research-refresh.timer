@@ -2,9 +2,10 @@
 Description=Run quant-lab V5 candidate research refresh every 2 hours
 
 [Timer]
+OnCalendar=*-*-* 00:05:00
 OnActiveSec=70min
 OnUnitActiveSec=2h
-RandomizedDelaySec=10min
+RandomizedDelaySec=5min
 Persistent=false
 
 [Install]

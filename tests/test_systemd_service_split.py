@@ -39,6 +39,7 @@ def test_candidate_research_refresh_is_separate_from_alpha_evidence():
     assert "build-alpha-discovery-board" in refresh_unit
     assert "--skip-legacy-outcome-counts" in refresh_unit
     assert "build-paper-strategy-tracking" in refresh_unit
+    assert "build-entry-quality" in refresh_unit
 
 
 def test_scheduled_compaction_covers_hot_ws_datasets():
@@ -71,6 +72,14 @@ def test_scheduled_compaction_covers_hot_ws_datasets():
     assert '"gold/job_run_history"' in script
     assert '"bronze/api_request_metrics"' in script
     assert "OnUnitActiveSec=1h" in timer
+
+
+def test_candidate_research_refresh_runs_before_daily_export_window():
+    refresh_timer = _unit("quant-lab-v5-research-refresh.timer")
+    export_timer = _unit("quant-lab-daily-export.timer")
+
+    assert "OnCalendar=*-*-* 00:05:00" in refresh_timer
+    assert "OnCalendar=*-*-* 00:20:00" in export_timer
 
 
 def test_daily_export_template_is_packaging_only():

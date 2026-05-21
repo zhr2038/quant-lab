@@ -15,6 +15,7 @@ from quant_lab.data.lake import write_market_bars, write_parquet_dataset
 from quant_lab.export.daily import (
     CSV_SCHEMAS,
     REQUIRED_MEMBERS,
+    _load_export_frame,
     _recent_heavy_dataset_files,
     export_daily_pack,
     validate_expert_pack,
@@ -81,6 +82,36 @@ def test_export_daily_pack_writes_required_members(tmp_path):
         assert "quant_lab_enforce_readiness:" in executive_summary
         assert "charts/market_close.png" in names
         assert archive.read("charts/market_close.png").startswith(b"\x89PNG")
+
+
+def test_export_frame_samples_large_unlisted_dataset_without_full_read(tmp_path, monkeypatch):
+    lake_root = tmp_path / "lake"
+    dataset_path = lake_root / "gold" / "strategy_evidence"
+    dataset_path.mkdir(parents=True)
+    for index in range(3):
+        pl.DataFrame(
+            [
+                {
+                    "strategy_candidate": f"candidate_{index}",
+                    "symbol": "BTC-USDT",
+                    "horizon_hours": 24,
+                    "avg_net_bps": float(index),
+                }
+            ]
+        ).write_parquet(dataset_path / f"part-{index}.parquet")
+
+    monkeypatch.setenv("QUANT_LAB_EXPORT_FULL_READ_MAX_FILES", "1")
+
+    def fail_full_read(*args, **kwargs):
+        raise AssertionError("full dataset read should not be used")
+
+    monkeypatch.setattr(daily_export_module.readers, "read_dataset", fail_full_read)
+
+    frame, row_count, warning = _load_export_frame(lake_root, "strategy_evidence")
+
+    assert warning is None
+    assert row_count == 3
+    assert frame.height == 3
 
 
 def test_export_marks_core_momentum_as_research_baseline_and_prioritizes_strategy_dashboard(

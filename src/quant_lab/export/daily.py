@@ -70,8 +70,11 @@ UNOBSERVABLE_TEXT_VALUES = {"", "none", "null", "nan", "not_observable", "unknow
 
 SECTIONS = ["market", "features", "costs", "research", "risk", "anomalies", "v5", "charts"]
 HEAVY_EXPORT_DATASET_LIMITS = {
+    "market_bar": 20_000,
+    "api_request_metrics": 10_000,
     "okx_public_ws": 5_000,
     "feature_value": 10_000,
+    "job_run_history": 10_000,
     "strategy_evidence_sample": 10_000,
     "trade_print": 10_000,
     "orderbook_snapshot": 10_000,
@@ -83,10 +86,17 @@ HEAVY_EXPORT_DATASET_LIMITS = {
     "v5_quant_lab_fallback": 5_000,
     "v5_candidate_event": 20_000,
     "v5_candidate_label": 20_000,
+    "v5_missed_low_audit": 20_000,
+    "v5_late_entry_chase_shadow": 20_000,
+    "v5_pullback_reversal_shadow": 20_000,
+    "v5_entry_quality_history_anti_leakage_check": 20_000,
 }
 HEAVY_EXPORT_RECENT_FILE_LIMITS = {
+    "market_bar": 120,
+    "api_request_metrics": 50,
     "okx_public_ws": 50,
     "feature_value": 100,
+    "job_run_history": 50,
     "strategy_evidence_sample": 100,
     "trade_print": 50,
     "orderbook_snapshot": 50,
@@ -98,7 +108,15 @@ HEAVY_EXPORT_RECENT_FILE_LIMITS = {
     "v5_quant_lab_fallback": 100,
     "v5_candidate_event": 100,
     "v5_candidate_label": 100,
+    "v5_missed_low_audit": 100,
+    "v5_late_entry_chase_shadow": 100,
+    "v5_pullback_reversal_shadow": 100,
+    "v5_entry_quality_history_anti_leakage_check": 100,
 }
+DEFAULT_EXPORT_SAMPLED_ROW_LIMIT = 20_000
+DEFAULT_EXPORT_RECENT_FILE_LIMIT = 100
+DEFAULT_EXPORT_FULL_READ_MAX_FILES = 80
+DEFAULT_EXPORT_FULL_READ_MAX_BYTES = 128 * 1024 * 1024
 EVENT_DRIVEN_V5_DATASETS = {"v5_trade_event"}
 EVENT_DRIVEN_OK_STATUSES = {"event_driven_no_recent_trade"}
 SECTION_DATASETS = {
@@ -1706,27 +1724,71 @@ def _load_export_frame(
     lake_root: Path,
     dataset_name: str,
 ) -> tuple[pl.DataFrame, int, str | None]:
-    if dataset_name not in HEAVY_EXPORT_DATASET_LIMITS:
+    dataset_path = readers.dataset_path_for(lake_root, dataset_name)
+    if dataset_name not in HEAVY_EXPORT_DATASET_LIMITS and not _should_sample_export_dataset(
+        dataset_path
+    ):
         try:
             frame = readers.read_dataset(lake_root, dataset_name)
             return frame, frame.height, None
         except Exception as exc:
             return pl.DataFrame(), 0, f"{dataset_name} read failed: {exc}"
 
-    dataset_path = readers.dataset_path_for(lake_root, dataset_name)
     try:
+        limit = HEAVY_EXPORT_DATASET_LIMITS.get(dataset_name, DEFAULT_EXPORT_SAMPLED_ROW_LIMIT)
+        max_files = HEAVY_EXPORT_RECENT_FILE_LIMITS.get(
+            dataset_name,
+            DEFAULT_EXPORT_RECENT_FILE_LIMIT,
+        )
         recent_files = _recent_heavy_dataset_files(
             dataset_path,
-            max_files=HEAVY_EXPORT_RECENT_FILE_LIMITS.get(dataset_name, 50),
+            max_files=max_files,
         )
         frame = _collect_recent_heavy_files(
             recent_files,
             dataset_name,
-            limit=HEAVY_EXPORT_DATASET_LIMITS[dataset_name],
+            limit=limit,
         )
         return frame, frame.height, None
     except Exception as exc:
         return pl.DataFrame(), 0, f"{dataset_name} sampled read failed: {exc}"
+
+
+def _should_sample_export_dataset(dataset_path: Path) -> bool:
+    if not dataset_path.exists():
+        return False
+    if dataset_path.is_file():
+        try:
+            return dataset_path.stat().st_size > _export_full_read_max_bytes()
+        except OSError:
+            return True
+    files = [path for path in dataset_path.rglob("*.parquet") if path.is_file()]
+    if len(files) > _export_full_read_max_files():
+        return True
+    total_size = 0
+    for path in files:
+        try:
+            total_size += path.stat().st_size
+        except OSError:
+            return True
+        if total_size > _export_full_read_max_bytes():
+            return True
+    return False
+
+
+def _export_full_read_max_files() -> int:
+    return max(
+        int(os.environ.get("QUANT_LAB_EXPORT_FULL_READ_MAX_FILES", "80")),
+        1,
+    )
+
+
+def _export_full_read_max_bytes() -> int:
+    default_value = str(DEFAULT_EXPORT_FULL_READ_MAX_BYTES)
+    return max(
+        int(os.environ.get("QUANT_LAB_EXPORT_FULL_READ_MAX_BYTES", default_value)),
+        1024,
+    )
 
 
 def _recent_heavy_dataset_files(dataset_path: Path, *, max_files: int) -> list[Path]:

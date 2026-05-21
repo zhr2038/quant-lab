@@ -390,6 +390,33 @@ def test_entry_quality_history_pullback_by_symbol_and_anti_leakage(tmp_path):
 
 def test_pullback_new_rule_rejects_falling_knife_candidate(tmp_path):
     lake = tmp_path / "lake"
+    _write_pullback_market_bars(lake, "SOL-USDT")
+    write_parquet_dataset(
+        pl.DataFrame(
+            [
+                {
+                    "candidate_id": "cand-sol-good",
+                    "run_id": "run-good",
+                    "ts_utc": datetime(2026, 5, 10, 20, tzinfo=UTC),
+                    "symbol": "SOL-USDT",
+                    "strategy_candidate": "portfolio",
+                    "entry_close": 115.0,
+                    "regime_state": "protect",
+                    "risk_level": "normal",
+                    "f4_volume_expansion": 0.0,
+                    "f5_rsi_trend_confirm": 0.0,
+                    "estimated_spread_bps": 2.0,
+                }
+            ]
+        ),
+        lake / "silver" / "v5_candidate_event",
+    )
+    assert (
+        build_and_publish_entry_quality(lake, as_of_date="2026-05-10")
+        .pullback_reversal_shadow_rows
+        > 0
+    )
+
     _write_falling_pullback_market_bars(lake, "SOL-USDT")
     write_parquet_dataset(
         pl.DataFrame(
@@ -415,6 +442,12 @@ def test_pullback_new_rule_rejects_falling_knife_candidate(tmp_path):
     result = build_and_publish_entry_quality(lake, as_of_date="2026-05-10")
 
     assert result.pullback_reversal_shadow_rows == 0
+    assert read_parquet_dataset(lake / "gold" / "v5_pullback_reversal_shadow").height == 0
+    opportunities = read_parquet_dataset(lake / "gold" / "strategy_opportunity_advisory")
+    assert not any(
+        str(row.get("strategy_candidate") or "").startswith("v5.pullback_reversal_shadow_")
+        for row in opportunities.to_dicts()
+    )
     comparison = read_parquet_dataset(
         lake / "gold" / "v5_pullback_reversal_rule_comparison"
     )

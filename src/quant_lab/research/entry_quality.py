@@ -16,7 +16,11 @@ from pydantic import BaseModel, ConfigDict, Field
 
 from quant_lab import __version__
 from quant_lab.contracts.v5_quant_lab import V5_QUANT_LAB_CONTRACT_VERSION
-from quant_lab.data.lake import read_parquet_dataset, upsert_parquet_dataset
+from quant_lab.data.lake import (
+    read_parquet_dataset,
+    upsert_parquet_dataset,
+    write_parquet_dataset,
+)
 from quant_lab.strategy_telemetry.sanitize import safe_json_dumps
 from quant_lab.symbols import normalize_symbol
 
@@ -483,35 +487,29 @@ def build_and_publish_entry_quality(
             late_threshold,
             ["as_of_date", "threshold_bps"],
         ),
-        pullback_reversal_shadow_rows=_publish_daily(
+        pullback_reversal_shadow_rows=_replace_daily(
             root,
             PULLBACK_REVERSAL_SHADOW_DATASET,
             pullback,
-            ["as_of_date", "source_event_key", "symbol", "horizon_hours"],
         ),
-        pullback_reversal_readiness_rows=_publish_daily(
+        pullback_reversal_readiness_rows=_replace_daily(
             root,
             PULLBACK_REVERSAL_READINESS_DATASET,
             readiness,
-            ["as_of_date", "strategy_candidate", "symbol"],
         ),
-        pullback_rule_comparison_rows=_publish_daily(
+        pullback_rule_comparison_rows=_replace_daily(
             root,
             PULLBACK_REVERSAL_RULE_COMPARISON_DATASET,
             pullback_rule_comparison,
-            ["as_of_date", "comparison_name", "rule_name", "symbol", "horizon_hours"],
         ),
-        entry_quality_advisory_rows=_publish_daily(
+        entry_quality_advisory_rows=_replace_daily(
             root,
             ENTRY_QUALITY_ADVISORY_DATASET,
             advisory,
-            ["as_of_date", "strategy_candidate", "symbol"],
         ),
-        strategy_opportunity_advisory_rows=_publish_daily(
+        strategy_opportunity_advisory_rows=_publish_entry_quality_strategy_opportunities(
             root,
-            STRATEGY_OPPORTUNITY_ADVISORY_DATASET,
             strategy_opportunities,
-            ["as_of_ts", "strategy_candidate", "symbol", "horizon_hours"],
         ),
         warnings=warnings,
     )
@@ -2142,6 +2140,48 @@ def _publish_daily(
     if frame.is_empty():
         return read_parquet_dataset(root / relative_path).height
     return upsert_parquet_dataset(frame, root / relative_path, key_columns=key_columns)
+
+
+def _replace_daily(
+    root: Path,
+    relative_path: Path,
+    frame: pl.DataFrame,
+) -> int:
+    write_parquet_dataset(frame, root / relative_path)
+    return frame.height
+
+
+def _publish_entry_quality_strategy_opportunities(
+    root: Path,
+    frame: pl.DataFrame,
+) -> int:
+    dataset_path = root / STRATEGY_OPPORTUNITY_ADVISORY_DATASET
+    existing = read_parquet_dataset(dataset_path)
+    kept_rows = [
+        row
+        for row in existing.to_dicts()
+        if not _is_entry_quality_strategy_candidate(row.get("strategy_candidate"))
+    ] if not existing.is_empty() else []
+    rows = [*kept_rows, *(frame.to_dicts() if not frame.is_empty() else [])]
+    if rows:
+        combined = pl.DataFrame(rows, infer_schema_length=None)
+    elif not frame.is_empty():
+        combined = frame
+    elif not existing.is_empty():
+        combined = existing.clear()
+    else:
+        combined = pl.DataFrame(schema=STRATEGY_OPPORTUNITY_ADVISORY_SCHEMA)
+    write_parquet_dataset(combined, dataset_path)
+    return combined.height
+
+
+def _is_entry_quality_strategy_candidate(value: Any) -> bool:
+    candidate = str(value or "")
+    return (
+        candidate.startswith("v5.entry_quality_")
+        or candidate == "v5.late_entry_chase_guard_shadow"
+        or candidate.startswith("v5.pullback_reversal_shadow_")
+    )
 
 
 def _publish_history(

@@ -771,7 +771,38 @@ def _strategy_opportunity_advisory_rows(
         advisory = _strategy_opportunity_advisory_row(row)
         if advisory is not None:
             parsed.append(advisory)
-    return parsed
+    return _dedupe_strategy_opportunity_advisory_rows(parsed)
+
+
+def _dedupe_strategy_opportunity_advisory_rows(
+    rows: list[StrategyOpportunityAdvisoryRow],
+) -> list[StrategyOpportunityAdvisoryRow]:
+    selected: dict[tuple[str, str, int | None], StrategyOpportunityAdvisoryRow] = {}
+    for row in rows:
+        key = (row.strategy_candidate, row.symbol, row.horizon_hours)
+        current = selected.get(key)
+        if current is None or _advisory_row_preferred(row, current):
+            selected[key] = row
+    return sorted(
+        selected.values(),
+        key=lambda row: (
+            row.strategy_candidate,
+            row.symbol,
+            row.horizon_hours if row.horizon_hours is not None else -1,
+        ),
+    )
+
+
+def _advisory_row_preferred(
+    candidate: StrategyOpportunityAdvisoryRow,
+    current: StrategyOpportunityAdvisoryRow,
+) -> bool:
+    if candidate.generated_at != current.generated_at:
+        return candidate.generated_at > current.generated_at
+    preferred_schema = STRATEGY_OPPORTUNITY_ADVISORY_SCHEMA_VERSION
+    if candidate.schema_version == preferred_schema and current.schema_version != preferred_schema:
+        return True
+    return candidate.as_of_ts > current.as_of_ts
 
 
 def _latest_strategy_opportunity_frame(df: pl.DataFrame) -> pl.DataFrame:

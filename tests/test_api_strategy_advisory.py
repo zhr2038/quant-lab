@@ -142,6 +142,58 @@ def test_strategy_opportunity_advisory_response_is_v5_parseable(
     assert payload[0]["expires_at"]
 
 
+def test_strategy_opportunity_advisory_dedupes_legacy_schema_rows(
+    tmp_path,
+    monkeypatch,
+):
+    lake = tmp_path / "lake"
+    monkeypatch.setenv("QUANT_LAB_LAKE_ROOT", str(lake))
+    monkeypatch.delenv("QUANT_LAB_API_TOKEN", raising=False)
+    as_of = datetime(2026, 5, 20, tzinfo=UTC)
+    base = {
+        "as_of_ts": as_of,
+        "generated_at": as_of,
+        "expires_at": datetime(2026, 5, 20, 3, tzinfo=UTC),
+        "contract_version": "v5_quant_lab_contract.v0.1",
+        "strategy_id": "ETH_ENTRY_QUALITY",
+        "strategy_candidate": "v5.pullback_reversal_shadow_eth",
+        "symbol": "ETH-USDT",
+        "decision": "KEEP_SHADOW",
+        "recommended_mode": "shadow",
+        "horizon_hours": None,
+        "sample_count": 10,
+        "complete_sample_count": 10,
+        "avg_net_bps": 5.0,
+        "p25_net_bps": -12.0,
+        "win_rate": 0.55,
+        "cost_source_mix": '{"entry_quality_research":10}',
+        "live_block_reasons": '["shadow_only"]',
+        "max_paper_notional_usdt": 0.0,
+        "max_live_notional_usdt": 0.0,
+    }
+    write_parquet_dataset(
+        pl.DataFrame(
+            [
+                {**base, "schema_version": "entry_quality.v0.1"},
+                {
+                    **base,
+                    "schema_version": "strategy_opportunity_advisory.v0.1",
+                    "sample_count": 12,
+                },
+            ]
+        ),
+        lake / "gold" / "strategy_opportunity_advisory",
+    )
+
+    response = TestClient(app).get("/v1/strategy-opportunity-advisory")
+
+    assert response.status_code == 200
+    rows = response.json()
+    assert len(rows) == 1
+    assert rows[0]["schema_version"] == "strategy_opportunity_advisory.v0.1"
+    assert rows[0]["sample_count"] == 12
+
+
 def test_strategy_opportunity_advisory_aliases_and_latest_report_fallback(
     tmp_path,
     monkeypatch,

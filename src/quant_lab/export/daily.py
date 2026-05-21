@@ -3822,9 +3822,7 @@ def _strategy_opportunity_advisory_for_export(
                 "as_of_ts": _advisory_as_of_ts(row),
                 "generated_at": generated_at,
                 "expires_at": _advisory_expires_at(row, generated_at),
-                "contract_version": str(
-                    row.get("contract_version") or V5_QUANT_LAB_CONTRACT_VERSION
-                ),
+                "contract_version": V5_QUANT_LAB_CONTRACT_VERSION,
                 "schema_version": str(
                     row.get("schema_version")
                     or STRATEGY_OPPORTUNITY_ADVISORY_SCHEMA_VERSION
@@ -3942,9 +3940,7 @@ def _entry_quality_opportunity_rows(entry_quality_advisory: pl.DataFrame) -> lis
                 "as_of_ts": _entry_quality_as_of_ts(row),
                 "generated_at": generated_at,
                 "expires_at": _advisory_expires_at(row, generated_at),
-                "contract_version": str(
-                    row.get("contract_version") or V5_QUANT_LAB_CONTRACT_VERSION
-                ),
+                "contract_version": V5_QUANT_LAB_CONTRACT_VERSION,
                 "schema_version": str(
                     row.get("schema_version")
                     or STRATEGY_OPPORTUNITY_ADVISORY_SCHEMA_VERSION

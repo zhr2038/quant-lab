@@ -1297,13 +1297,17 @@ def build_entry_quality_advisory(
                     "ready_for_live": False,
                 }
             )
+    observed_pullback_symbols: set[str] = set()
     for row in pullback_readiness.to_dicts() if not pullback_readiness.is_empty() else []:
         ready_for_paper = bool(row.get("ready_for_paper"))
+        symbol = normalize_symbol(row.get("symbol"))
+        if symbol:
+            observed_pullback_symbols.add(symbol)
         rows.append(
             _common(ctx, mode="advisory")
             | {
                 "strategy_candidate": row.get("strategy_candidate"),
-                "symbol": row.get("symbol"),
+                "symbol": symbol,
                 "recommended_mode": "paper" if ready_for_paper else "shadow",
                 "readiness_status": "READY_FOR_PAPER" if ready_for_paper else "SHADOW_ONLY",
                 "sample_count": int(row.get("sample_count") or 0),
@@ -1315,6 +1319,31 @@ def build_entry_quality_advisory(
                 "no_sample_reason": "not_live_validated"
                 if ready_for_paper
                 else "shadow_only_collect_more_samples",
+                "ready_for_live": False,
+            }
+        )
+    for symbol in sorted(ENTRY_QUALITY_SYMBOLS - observed_pullback_symbols):
+        rows.append(
+            _common(ctx, mode="advisory")
+            | {
+                "strategy_candidate": _pullback_candidate_name(symbol),
+                "symbol": symbol,
+                "recommended_mode": "shadow",
+                "readiness_status": "SHADOW_ONLY",
+                "sample_count": 0,
+                "avg_net_bps": None,
+                "win_rate": None,
+                "advisory_reasons": safe_json_dumps(
+                    [
+                        "confirmed_reversal_no_current_samples",
+                        "insufficient_sample_count",
+                        "shadow_only_collect_more_samples",
+                        "not_live_validated",
+                    ]
+                ),
+                "would_block_if_enabled": False,
+                "would_enter": False,
+                "no_sample_reason": "insufficient_sample_count",
                 "ready_for_live": False,
             }
         )

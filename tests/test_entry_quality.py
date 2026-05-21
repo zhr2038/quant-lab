@@ -259,6 +259,27 @@ def test_entry_quality_publishes_strategy_opportunity_advisory_for_api(
         for row in gold_rows
         if row["strategy_candidate"] == "v5.entry_quality_missed_low_audit"
     )
+    pullback_candidates = {
+        row["strategy_candidate"]
+        for row in gold_rows
+        if str(row.get("strategy_candidate") or "").startswith("v5.pullback_reversal_shadow_")
+    }
+    assert pullback_candidates == {
+        "v5.pullback_reversal_shadow_bnb",
+        "v5.pullback_reversal_shadow_btc",
+        "v5.pullback_reversal_shadow_eth",
+        "v5.pullback_reversal_shadow_sol",
+    }
+    pullback_btc = next(
+        row
+        for row in gold_rows
+        if row["strategy_candidate"] == "v5.pullback_reversal_shadow_btc"
+    )
+    assert pullback_btc["recommended_mode"] == "shadow"
+    assert pullback_btc["would_enter"] is False
+    assert pullback_btc["would_block_if_enabled"] is False
+    assert pullback_btc["no_sample_reason"] == "insufficient_sample_count"
+    assert pullback_btc["max_live_notional_usdt"] == 0.0
     assert missed["recommended_mode"] == "research"
     assert missed["as_of_ts"] is not None
     assert missed["generated_at"] is not None
@@ -476,10 +497,20 @@ def test_pullback_new_rule_rejects_falling_knife_candidate(tmp_path):
     assert result.pullback_reversal_shadow_rows == 0
     assert read_parquet_dataset(lake / "gold" / "v5_pullback_reversal_shadow").height == 0
     opportunities = read_parquet_dataset(lake / "gold" / "strategy_opportunity_advisory")
-    assert not any(
-        str(row.get("strategy_candidate") or "").startswith("v5.pullback_reversal_shadow_")
+    pullback_rows = [
+        row
         for row in opportunities.to_dicts()
-    )
+        if str(row.get("strategy_candidate") or "").startswith(
+            "v5.pullback_reversal_shadow_"
+        )
+    ]
+    assert len(pullback_rows) == 4
+    assert all(row["recommended_mode"] == "shadow" for row in pullback_rows)
+    assert all(row["would_enter"] is False for row in pullback_rows)
+    assert all(row["max_live_notional_usdt"] == 0.0 for row in pullback_rows)
+    assert {row["no_sample_reason"] for row in pullback_rows} == {
+        "insufficient_sample_count"
+    }
     comparison = read_parquet_dataset(
         lake / "gold" / "v5_pullback_reversal_rule_comparison"
     )

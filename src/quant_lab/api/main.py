@@ -772,7 +772,7 @@ def _strategy_opportunity_advisory_rows(
     if df.is_empty():
         raw_rows = _strategy_opportunity_advisory_report_rows(lake_root)
     else:
-        raw_rows = _latest_strategy_opportunity_frame(df).to_dicts()
+        raw_rows = df.to_dicts()
     parsed: list[StrategyOpportunityAdvisoryRow] = []
     for row in raw_rows:
         advisory = _strategy_opportunity_advisory_row(row)

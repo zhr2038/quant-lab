@@ -163,6 +163,63 @@ def test_strategy_opportunity_advisory_response_is_v5_parseable(
     assert payload[0]["expires_at"]
 
 
+def test_strategy_opportunity_advisory_keeps_older_strategy_rows_when_entry_quality_is_newer(
+    tmp_path,
+    monkeypatch,
+):
+    lake = tmp_path / "lake"
+    monkeypatch.setenv("QUANT_LAB_LAKE_ROOT", str(lake))
+    monkeypatch.delenv("QUANT_LAB_API_TOKEN", raising=False)
+    write_parquet_dataset(
+        pl.DataFrame(
+            [
+                {
+                    "as_of_ts": datetime(2026, 5, 20, tzinfo=UTC),
+                    "strategy_candidate": "v5.f4_volume_expansion_entry",
+                    "symbol": "SOL-USDT",
+                    "decision": "PAPER_READY",
+                    "recommended_mode": "paper",
+                    "horizon_hours": 24,
+                    "sample_count": 40,
+                    "complete_sample_count": 30,
+                    "avg_net_bps": 20.0,
+                    "p25_net_bps": -10.0,
+                    "win_rate": 0.6,
+                    "cost_source_mix": '{"public_spread_proxy":40}',
+                    "max_paper_notional_usdt": 500.0,
+                    "max_live_notional_usdt": 0.0,
+                },
+                {
+                    "as_of_ts": datetime(2026, 5, 21, tzinfo=UTC),
+                    "strategy_candidate": "v5.entry_quality_missed_low_audit",
+                    "symbol": "ALL",
+                    "decision": "RESEARCH_ONLY",
+                    "recommended_mode": "research",
+                    "horizon_hours": None,
+                    "sample_count": 7,
+                    "complete_sample_count": 7,
+                    "avg_net_bps": -50.0,
+                    "p25_net_bps": None,
+                    "win_rate": None,
+                    "cost_source_mix": '{"entry_quality_research":7}',
+                    "would_block_if_enabled": False,
+                    "would_enter": False,
+                    "no_sample_reason": "audit_only",
+                    "max_paper_notional_usdt": 0.0,
+                    "max_live_notional_usdt": 0.0,
+                },
+            ]
+        ),
+        lake / "gold" / "strategy_opportunity_advisory",
+    )
+
+    rows = TestClient(app).get("/v1/strategy-opportunity-advisory").json()
+
+    candidates = {row["strategy_candidate"] for row in rows}
+    assert "v5.f4_volume_expansion_entry" in candidates
+    assert "v5.entry_quality_missed_low_audit" in candidates
+
+
 def test_strategy_opportunity_advisory_dedupes_legacy_schema_rows(
     tmp_path,
     monkeypatch,

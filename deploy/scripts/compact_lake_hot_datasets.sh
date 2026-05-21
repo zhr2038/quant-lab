@@ -21,6 +21,9 @@ V5_TELEMETRY_DATASETS=(
   "silver/v5_config_audit"
   "silver/v5_issue"
   "silver/v5_probe_diagnostic"
+  "silver/v5_order_lifecycle"
+  "silver/v5_roundtrip"
+  "silver/v5_open_position"
   "silver/v5_paper_strategy_run"
   "silver/v5_paper_strategy_daily"
   "silver/v5_paper_slippage_coverage"
@@ -95,23 +98,52 @@ compact_if_file_count_at_least() {
   compact_dataset "${dataset}" "${target_rows}" "${batch_files}"
 }
 
+compact_leaf_partitions_if_file_count_at_least() {
+  local dataset="$1"
+  local target_rows="$2"
+  local batch_files="$3"
+  local min_files="$4"
+  local dataset_path="${LAKE_ROOT}/${dataset}"
+  local elapsed
+
+  if [[ ! -d "${dataset_path}" ]]; then
+    echo "SKIP_LEAF_COMPACT dataset=${dataset} reason=missing"
+    return
+  fi
+
+  find "${dataset_path}" -type f -name '*.parquet' -printf '%h\n' \
+    | sort | uniq -c | sort -nr \
+    | while read -r file_count leaf_path; do
+        if (( file_count < min_files )); then
+          continue
+        fi
+        elapsed="$(( $(date +%s) - COMPACT_STARTED_AT ))"
+        if (( elapsed >= COMPACT_RUN_BUDGET_SECONDS )); then
+          echo "SKIP_LEAF_COMPACT_BUDGET dataset=${dataset} elapsed_seconds=${elapsed}"
+          return
+        fi
+        compact_dataset "${leaf_path#${LAKE_ROOT}/}" "${target_rows}" "${batch_files}"
+      done
+}
+
 cleanup_internal_compaction_dirs() {
   find "${LAKE_ROOT}" -type d \( -name '__*_backup_*' -o -name '__*_compact_*' \) \
     -prune -print -exec rm -rf {} +
 }
 
 if [[ "${COMPACT_RAW_OKX_WS}" == "1" ]]; then
-  # Raw websocket bronze can be very large and memory intensive. Keep it opt-in for
-  # off-hour maintenance so scheduled compaction does not starve the web/API host.
-  compact_if_file_count_at_least "bronze/okx_public_ws" 250000 5 400
+  # Raw websocket bronze is partitioned by day/channel/inst_id. Compact leaf
+  # partitions instead of the dataset root; root compaction can multiply files by
+  # writing one output per partition per source batch.
+  compact_leaf_partitions_if_file_count_at_least "bronze/okx_public_ws" 500000 100 20
 else
   echo "SKIP_COMPACT_RAW_OKX_WS dataset=bronze/okx_public_ws opt_in=COMPACT_RAW_OKX_WS"
 fi
-compact_if_file_count_at_least "silver/trade_print" 500000 50 40
+compact_leaf_partitions_if_file_count_at_least "silver/trade_print" 500000 100 20
 
 # Order book snapshots are denser than raw websocket and trade-print files.
-# Keep the source batch smaller so scheduled compaction does not exceed qyun2 memory.
-compact_if_file_count_at_least "silver/orderbook_snapshot" 250000 10 80
+# Compact leaf partitions to avoid multiplying partition files across batches.
+compact_leaf_partitions_if_file_count_at_least "silver/orderbook_snapshot" 500000 100 10
 
 for dataset in "${V5_TELEMETRY_DATASETS[@]}"; do
   compact_if_file_count_at_least "${dataset}" 250000 100 10

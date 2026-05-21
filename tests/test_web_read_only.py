@@ -101,10 +101,7 @@ def test_web_diagnostics_use_dataset_freshness_not_missing_for_populated_tables(
     lake_root = _fixture_lake(tmp_path)
 
     diagnostics = readers.lake_diagnostics(lake_root)
-    rows = {
-        row["dataset"]: row
-        for row in diagnostics["datasets"].to_dicts()
-    }
+    rows = {row["dataset"]: row for row in diagnostics["datasets"].to_dicts()}
 
     for dataset in [
         "gold/cost_bucket_daily",
@@ -649,14 +646,12 @@ def test_alpha_gates_page_shows_strategy_evidence_discovery(tmp_path):
     subheaders = _call_values(fake, "subheader")
     metrics = _call_values(fake, "metric")
     frames = _call_values(fake, "dataframe")
-    assert "Alpha 候选决策面板" in subheaders
-    assert "策略候选证据" in subheaders
-    assert "策略候选证据样本" in subheaders
-    assert "V5 候选事件" in subheaders
-    assert "V5 候选前向标签" in subheaders
-    assert "V5 候选后验汇总" in subheaders
-    assert "V5 候选数据质量" in subheaders
-    assert ("继续 Shadow", 1) in metrics
+    assert "📊 候选决策面板" in subheaders
+    assert "🧪 策略证据聚合" in subheaders
+    assert "🧾 V5 候选质量" in subheaders
+    assert "V5 候选事件" not in subheaders
+    assert "V5 候选前向标签" not in subheaders
+    assert ("继续影子观察", 1) in metrics
     assert any(
         "v5.sol_protect_exception" in frame.get_column("策略候选").to_list()
         for frame in frames
@@ -704,9 +699,7 @@ def test_alpha_gates_does_not_warn_for_empty_legacy_strategy_evidence_when_board
 
     summary = readers.alpha_gate_summary(lake_root)
 
-    assert "strategy_evidence 候选发现证据尚未生成" not in (
-        summary["warnings"]
-    )
+    assert "strategy_evidence 候选发现证据尚未生成" not in (summary["warnings"])
 
 
 def test_web_launcher_hides_streamlit_file_navigation(monkeypatch, tmp_path):
@@ -749,7 +742,7 @@ def test_dashboard_uses_flat_page_radio_not_dropdown(tmp_path):
 
     assert any(call["label"] == "页面" for call in _call_values(fake, "radio"))
     assert not _call_values(fake, "selectbox")
-    assert any(value == "专家包导出" for value in _call_values(fake, "title"))
+    assert any("专家包导出" in str(value) for value in _call_values(fake, "title"))
 
 
 def test_pages_warn_but_do_not_crash_when_lake_is_empty(tmp_path):
@@ -786,7 +779,7 @@ def test_overview_diagnostics_warn_when_lake_root_does_not_exist(tmp_path):
 
     warnings = _call_values(fake, "warning")
     assert any("Lake 根目录不存在" in str(warning) for warning in warnings)
-    assert ("Lake 根目录", str(missing_lake)) in _call_values(fake, "metric")
+    assert any(str(missing_lake) in str(caption) for caption in _call_values(fake, "caption"))
 
 
 def test_overview_diagnostics_suggests_commands_when_lake_has_no_parquet(tmp_path):
@@ -797,12 +790,19 @@ def test_overview_diagnostics_suggests_commands_when_lake_has_no_parquet(tmp_pat
     overview.render(lake_root, fake)
 
     warnings = "\n".join(str(warning) for warning in _call_values(fake, "warning"))
+    command_texts = []
+    for frame in _call_values(fake, "dataframe"):
+        if isinstance(frame, pl.DataFrame):
+            for column in frame.columns:
+                if "命令" in column:
+                    command_texts.extend(str(value) for value in frame.get_column(column).to_list())
+    frames = "\n".join(command_texts)
     assert (
         "qlab okx-fetch-candles --inst-id BTC-USDT --bar 1H --market-type SPOT "
         f"--lake-root {lake_root} --history --limit 100"
-    ) in warnings
-    assert "qlab okx-ws-collect-universe" in warnings
-    assert "qlab sync-v5-telemetry --config /etc/quant-lab/v5_telemetry_remote.yaml" in warnings
+    ) in frames
+    assert "qlab okx-ws-collect-universe" in frames
+    assert "qlab sync-v5-telemetry --config /etc/quant-lab/v5_telemetry_remote.yaml" in frames
     assert "qlab export-daily 尚未实现或尚未运行。" in warnings
 
 
@@ -825,7 +825,7 @@ def test_overview_diagnostics_shows_latest_market_bar_ts(tmp_path):
     overview.render(lake_root, fake)
 
     metrics = _call_values(fake, "metric")
-    assert ("最新 market_bar 时间", "2026-05-10 10:00:00 Asia/Shanghai") in metrics
+    assert ("最新行情 K 线", "2026-05-10 10:00:00 Asia/Shanghai") in metrics
 
 
 def test_expert_exports_page_downloads_listed_packs(tmp_path):
@@ -1046,9 +1046,7 @@ def test_expert_exports_generate_today_persists_pack_across_streamlit_rerun(
     expert_exports.render(lake_root, first_fake, exports_root=exports_root)
 
     assert first_fake.rerun_count == 1
-    assert session_state["expert_exports_generated_pack"].endswith(
-        "quant_lab_expert_pack_test.zip"
-    )
+    assert session_state["expert_exports_generated_pack"].endswith("quant_lab_expert_pack_test.zip")
 
     second_fake = RerunStreamlit(session_state=session_state)
     expert_exports.render(lake_root, second_fake, exports_root=exports_root)

@@ -19,7 +19,7 @@ def render(lake_root: str | Path, st_module: Any | None = None) -> None:
     st.metric("缺失 K 线比例", f"{summary['missing_bar_ratio']:.2%}")
 
     st.subheader("各标的 / 周期最新 K 线")
-    show_frame(st, summary["latest_per_symbol"], "暂无 market_bar 数据。")
+    show_frame(st, summary["latest_per_symbol"], "暂无行情 K 线数据。")
 
     st.subheader("缺失 K 线")
     show_frame(st, summary["missing_bars"], "未检测到缺失 K 线。")

@@ -20,9 +20,9 @@ def render(lake_root: str | Path, st_module: Any | None = None) -> None:
     st.title("V5 遥测")
     lake_caption(st, lake_root)
     st.metric("状态", display_value(latest.get("status", "UNKNOWN")))
-    st.metric("最新 bundle 包时间", display_unknown(latest.get("latest_bundle_ts", "unknown")))
+    st.metric("最新数据包时间", display_unknown(latest.get("latest_bundle_ts", "unknown")))
     st.metric(
-        "最新 bundle 包 sha256",
+        "最新数据包 SHA256",
         display_unknown(latest.get("latest_bundle_sha256", "unknown")),
     )
     st.metric("72h 运行次数", latest.get("run_count_72h", 0))

@@ -31,13 +31,11 @@ def render(
 ) -> None:
     st = streamlit_module(st_module)
     root = (
-        Path(exports_root)
-        if exports_root is not None
-        else readers.default_exports_root(lake_root)
+        Path(exports_root) if exports_root is not None else readers.default_exports_root(lake_root)
     )
 
-    st.title("专家包导出")
-    st.caption(f"导出根目录：{root}")
+    st.title("📦 专家包导出")
+    st.caption(f"导出目录：{root}")
     export_date = beijing_today().isoformat()
     job_status = _poll_export_job(root, export_date)
     generated_pack = _consume_generated_pack(st)
@@ -65,17 +63,11 @@ def render(
                 lake_root=Path(lake_root),
                 exports_root=root,
             )
-            _info(
-                st,
-                "Snapshot expert pack generation started in background. "
-                f"PID={started.get('pid')}",
-            )
+            _info(st, f"今日快照包已在后台生成中，进程 PID={started.get('pid')}")
             if _rerun(st):
                 return
         else:
-            generated_pack = _generate_today_pack(
-                st, lake_root=Path(lake_root), exports_root=root
-            )
+            generated_pack = _generate_today_pack(st, lake_root=Path(lake_root), exports_root=root)
             if generated_pack is not None:
                 _remember_generated_pack(st, generated_pack)
                 if _rerun(st):
@@ -86,21 +78,24 @@ def render(
     if generated_pack is not None:
         summary = _summary_preferring_generated_pack(root, generated_pack)
 
-    st.subheader("专家包")
+    st.subheader("📥 可下载专家包")
     show_frame(st, summary["packs"], "未找到专家包。")
     _render_pack_downloads(st, summary["packs"])
 
-    st.subheader("清单摘要")
     manifest_rows = _dict_rows(summary["manifest_summary"])
-    show_frame(st, manifest_rows, "暂无清单摘要。")
+    if not manifest_rows.is_empty():
+        st.subheader("🧾 清单摘要")
+        show_frame(st, manifest_rows, "暂无清单摘要。")
 
-    st.subheader("数据质量摘要")
     quality_rows = _dict_rows(summary["data_quality_summary"])
-    show_frame(st, quality_rows, "暂无数据质量摘要。")
+    if not quality_rows.is_empty():
+        st.subheader("🩺 数据质量摘要")
+        show_frame(st, quality_rows, "暂无数据质量摘要。")
 
-    st.subheader("专家问题")
     questions = pl.DataFrame({"question": summary["expert_questions"]})
-    show_frame(st, questions, "未找到专家问题。")
+    if not questions.is_empty():
+        st.subheader("❓ 专家问题")
+        show_frame(st, questions, "未找到专家问题。")
     show_warnings(st, summary["warnings"])
 
 
@@ -119,11 +114,10 @@ def _render_export_job_status(st: Any, status: dict[str, Any]) -> None:
     if state == "running":
         _info(
             st,
-            "Snapshot expert pack generation is running in the background. "
-            f"PID={status.get('pid')}; started_at={status.get('started_at')}",
+            f"今日快照包正在后台生成。PID={status.get('pid')}；开始时间={status.get('started_at')}",
         )
     elif state == "failed":
-        _error(st, f"Expert pack generation failed: {status.get('error')}")
+        _error(st, f"专家包生成失败：{status.get('error')}")
 
 
 def _start_export_job(
@@ -488,13 +482,11 @@ def _export_daily_in_subprocess(
     )
     if completed.returncode != 0:
         detail = (completed.stderr or completed.stdout).strip()
-        raise RuntimeError(
-            f"export subprocess failed with code {completed.returncode}: {detail[-2000:]}"
-        )
+        raise RuntimeError(f"专家包导出子进程失败，退出码 {completed.returncode}: {detail[-2000:]}")
     try:
         payload = json.loads(completed.stdout.strip().splitlines()[-1])
     except (IndexError, json.JSONDecodeError) as exc:
-        raise RuntimeError("export subprocess did not return valid JSON") from exc
+        raise RuntimeError("专家包导出子进程未返回有效 JSON") from exc
     return Path(str(payload["zip_path"])), list(payload.get("warnings") or [])
 
 
@@ -578,8 +570,7 @@ def _render_pack_downloads(st: Any, packs: pl.DataFrame) -> None:
     if too_large:
         _warning(
             st,
-            "以下专家包超过 Web 直接下载上限，请从服务器路径下载："
-            + "；".join(too_large[:5]),
+            "以下专家包超过 Web 直接下载上限，请从服务器路径下载：" + "；".join(too_large[:5]),
         )
 
 

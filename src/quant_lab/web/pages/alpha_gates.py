@@ -15,64 +15,49 @@ def render(lake_root: str | Path, st_module: Any | None = None) -> None:
     st = streamlit_module(st_module)
     summary = readers.alpha_gate_summary(lake_root)
 
-    st.title("Alpha 门控")
+    st.title("🧭 策略机会")
     lake_caption(st, lake_root)
+    st.caption("优先展示可给 V5 读取的策略候选建议；底层样本表不在首页铺开。")
 
-    st.subheader("Alpha 候选决策面板")
+    st.subheader("🎯 V5 可读策略机会")
+    show_frame(
+        st,
+        summary["strategy_opportunity_advisory"],
+        "暂无策略机会建议数据。",
+    )
+
+    st.subheader("📊 候选决策面板")
     for decision, count in summary["alpha_discovery_counts"].items():
         st.metric(display_value(decision), count)
     show_frame(
         st,
         summary["alpha_discovery_board"],
-        "暂无 alpha_discovery_board 候选决策数据。",
+        "暂无候选决策面板数据。",
     )
 
-    st.subheader("策略候选证据")
+    st.subheader("🧪 策略证据聚合")
     for decision, count in summary["strategy_counts"].items():
         st.metric(display_value(decision), count)
     show_frame(
         st,
         summary["strategy_evidence"],
-        "暂无 strategy_evidence 候选发现数据。",
+        "暂无策略证据聚合数据。",
     )
 
-    st.subheader("策略候选证据样本")
-    show_frame(
-        st,
-        summary["strategy_samples"],
-        "暂无 strategy_evidence_sample 数据。",
-    )
+    st.subheader("🚦 基线因子门控")
+    for status, count in summary["counts"].items():
+        st.metric(display_value(status), count)
+    show_frame(st, summary["gates"], "暂无门控决策数据。")
 
-    st.subheader("V5 候选事件")
-    show_frame(
-        st,
-        summary["candidate_events"],
-        "暂无来自 candidate_snapshot.csv 的 v5_candidate_event 数据。",
-    )
-
-    st.subheader("V5 候选前向标签")
-    show_frame(
-        st,
-        summary["candidate_labels"],
-        "暂无 v5_candidate_label 数据。",
-    )
-
-    st.subheader("V5 候选后验汇总")
-    show_frame(
-        st,
-        summary["candidate_outcomes"],
-        "暂无 v5_candidate_outcome_summary 数据。",
-    )
-
-    st.subheader("V5 候选数据质量")
+    st.subheader("🧾 V5 候选质量")
     show_frame(
         st,
         summary["candidate_quality"],
-        "暂无 v5_candidate_quality_daily 数据。",
+        "暂无 V5 候选质量数据。",
     )
-
-    st.subheader("特征 Alpha 门控决策")
-    for status, count in summary["counts"].items():
-        st.metric(display_value(status), count)
-    show_frame(st, summary["gates"], "暂无 gate_decision 数据。")
+    show_frame(
+        st,
+        summary["candidate_outcomes"],
+        "暂无 V5 候选后验汇总数据。",
+    )
     show_warnings(st, summary["warnings"])

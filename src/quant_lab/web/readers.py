@@ -374,9 +374,7 @@ def _read_parquet_dataset_with_warning(
     if invalid_files:
         rendered = ", ".join(str(file_path) for file_path in invalid_files[:5])
         suffix = "" if len(invalid_files) <= 5 else f"（另有 {len(invalid_files) - 5} 个）"
-        return df, (
-            f"{dataset_label} 已忽略无效 Parquet 文件：{rendered}{suffix}"
-        )
+        return df, (f"{dataset_label} 已忽略无效 Parquet 文件：{rendered}{suffix}")
     return df, None
 
 
@@ -476,9 +474,7 @@ def _metadata_snapshot_files(path: Path, dataset_name: str) -> tuple[list[Path],
     if len(candidates) > WEB_FULL_VALIDATION_FILE_LIMIT:
         return candidates, None
     invalid_files = [
-        file_path
-        for file_path in candidates
-        if not _is_valid_parquet_file_path(file_path)
+        file_path for file_path in candidates if not _is_valid_parquet_file_path(file_path)
     ]
     valid_files = [file_path for file_path in candidates if file_path not in set(invalid_files)]
     return valid_files, _invalid_parquet_warning(dataset_name, invalid_files)
@@ -534,9 +530,7 @@ def _recent_valid_parquet_files(path: Path, dataset_name: str) -> tuple[list[Pat
     max_files = WEB_RECENT_FILE_LIMITS.get(dataset_name, WEB_FULL_VALIDATION_FILE_LIMIT)
     selected = candidates[-max_files:] if len(candidates) > max_files else candidates
     invalid_files = [
-        file_path
-        for file_path in selected
-        if not _is_valid_parquet_file_path(file_path)
+        file_path for file_path in selected if not _is_valid_parquet_file_path(file_path)
     ]
     invalid = set(invalid_files)
     valid_files = [file_path for file_path in selected if file_path not in invalid]
@@ -743,6 +737,14 @@ def dashboard_overview(lake_root: str | Path) -> dict[str, Any]:
     consumers = strategy_consumer_summary(lake_root)
     ws_status, ws_warnings = _overview_okx_ws_status(lake_root)
     experts = expert_export_summary(default_exports_root(lake_root))
+    advisory, advisory_warning = read_dataset_with_warning(
+        lake_root,
+        "strategy_opportunity_advisory",
+    )
+    entry_quality, entry_quality_warning = read_dataset_with_warning(
+        lake_root,
+        "v5_entry_quality_advisory",
+    )
 
     warnings = [
         *diagnostics["warnings"],
@@ -752,6 +754,7 @@ def dashboard_overview(lake_root: str | Path) -> dict[str, Any]:
         *consumers["warnings"],
         *ws_warnings,
         *experts["warnings"],
+        *[warning for warning in [advisory_warning, entry_quality_warning] if warning],
     ]
     status = "OK"
     if warnings:
@@ -771,9 +774,68 @@ def dashboard_overview(lake_root: str | Path) -> dict[str, Any]:
         "cost_fallback_ratio": costs["fallback_ratio"],
         "alpha_gate_counts": gates["counts"],
         "latest_expert_pack": experts["latest_pack"],
+        "strategy_opportunity_advisory": redact_frame(_strategy_opportunity_table(advisory)).head(
+            30
+        ),
+        "entry_quality_advisory": redact_frame(_entry_quality_table(entry_quality)).head(30),
         "diagnostics": diagnostics,
         "warnings": warnings,
     }
+
+
+def _strategy_opportunity_table(frame: pl.DataFrame) -> pl.DataFrame:
+    if frame.is_empty():
+        return frame
+    columns = [
+        "strategy_candidate",
+        "symbol",
+        "decision",
+        "recommended_mode",
+        "horizon_hours",
+        "sample_count",
+        "complete_sample_count",
+        "avg_net_bps",
+        "p25_net_bps",
+        "win_rate",
+        "cost_source_mix",
+        "live_block_reasons",
+        "max_paper_notional_usdt",
+        "max_live_notional_usdt",
+        "as_of_ts",
+    ]
+    selected = [column for column in columns if column in frame.columns]
+    table = frame.select(selected) if selected else frame
+    sort_columns = [
+        column
+        for column in ["decision", "strategy_candidate", "symbol", "horizon_hours"]
+        if column in table.columns
+    ]
+    return table.sort(sort_columns) if sort_columns else table
+
+
+def _entry_quality_table(frame: pl.DataFrame) -> pl.DataFrame:
+    if frame.is_empty():
+        return frame
+    columns = [
+        "strategy_candidate",
+        "symbol",
+        "recommended_mode",
+        "readiness_status",
+        "sample_count",
+        "avg_net_bps",
+        "win_rate",
+        "advisory_reasons",
+        "ready_for_live",
+        "generated_at_utc",
+    ]
+    selected = [column for column in columns if column in frame.columns]
+    table = frame.select(selected) if selected else frame
+    sort_columns = [
+        column
+        for column in ["recommended_mode", "strategy_candidate", "symbol"]
+        if column in table.columns
+    ]
+    return table.sort(sort_columns) if sort_columns else table
 
 
 def _overview_market_health(lake_root: str | Path) -> dict[str, Any]:
@@ -865,8 +927,7 @@ def lake_diagnostics(lake_root: str | Path) -> dict[str, Any]:
     if dataset_row_counts.get("silver/market_bar", 0) == 0:
         command = MARKET_BOOTSTRAP_COMMAND.format(lake_root=root)
         warnings.append(
-            "market_bar 为空。建议命令："
-            f"{MARKET_BOOTSTRAP_COMMAND.format(lake_root=root)}"
+            f"market_bar 为空。建议命令：{MARKET_BOOTSTRAP_COMMAND.format(lake_root=root)}"
         )
 
         suggested_commands.append({"purpose": "补齐 market_bar", "command": command})
@@ -896,13 +957,9 @@ def lake_diagnostics(lake_root: str | Path) -> dict[str, Any]:
         suggested_commands.append({"purpose": "启动 OKX 公共 WebSocket", "command": command})
 
     if dataset_row_counts.get("gold/strategy_health_daily", 0) == 0:
-        warnings.append(
-            "V5 遥测为空。建议命令：" f"{V5_TELEMETRY_SYNC_COMMAND}"
-        )
+        warnings.append(f"V5 遥测为空。建议命令：{V5_TELEMETRY_SYNC_COMMAND}")
 
-        suggested_commands.append(
-            {"purpose": "同步 V5 遥测", "command": V5_TELEMETRY_SYNC_COMMAND}
-        )
+        suggested_commands.append({"purpose": "同步 V5 遥测", "command": V5_TELEMETRY_SYNC_COMMAND})
 
     experts = expert_export_summary(default_exports_root(root))
     if not experts["latest_pack"]:
@@ -1116,13 +1173,10 @@ def _market_universe_warnings(
     trade_symbols = _symbols_from_frame(trade_activity)
     if spread_symbols and (missing_spread := sorted(market_symbols - spread_symbols)):
         warnings.append(
-            "OKX WebSocket universe 不完整：订单簿缺少 "
-            + ", ".join(missing_spread[:8])
+            "OKX WebSocket universe 不完整：订单簿缺少 " + ", ".join(missing_spread[:8])
         )
     if trade_symbols and (missing_trades := sorted(market_symbols - trade_symbols)):
-        warnings.append(
-            "OKX WebSocket universe 不完整：成交缺少 " + ", ".join(missing_trades[:8])
-        )
+        warnings.append("OKX WebSocket universe 不完整：成交缺少 " + ", ".join(missing_trades[:8]))
     return warnings
 
 
@@ -1222,6 +1276,10 @@ def alpha_gate_summary(lake_root: str | Path) -> dict[str, Any]:
         lake_root,
         "v5_candidate_outcome_summary",
     )
+    strategy_opportunities, strategy_opportunities_warning = read_dataset_with_warning(
+        lake_root,
+        "strategy_opportunity_advisory",
+    )
     warnings = [
         warning
         for warning in [
@@ -1234,6 +1292,7 @@ def alpha_gate_summary(lake_root: str | Path) -> dict[str, Any]:
             candidate_labels_warning,
             candidate_quality_warning,
             candidate_outcomes_warning,
+            strategy_opportunities_warning,
         ]
         if warning
     ]
@@ -1285,25 +1344,28 @@ def alpha_gate_summary(lake_root: str | Path) -> dict[str, Any]:
     return {
         "gates": redact_frame(joined).head(DISPLAY_LIMIT),
         "counts": counts,
-        "alpha_discovery_board": redact_frame(
-            _alpha_discovery_board_table(discovery_board)
+        "alpha_discovery_board": redact_frame(_alpha_discovery_board_table(discovery_board)).head(
+            DISPLAY_LIMIT
+        ),
+        "strategy_opportunity_advisory": redact_frame(
+            _strategy_opportunity_table(strategy_opportunities)
         ).head(DISPLAY_LIMIT),
-        "strategy_evidence": redact_frame(
-            _strategy_evidence_table(strategy_evidence)
-        ).head(DISPLAY_LIMIT),
-        "strategy_samples": redact_frame(
-            _strategy_sample_table(strategy_samples)
-        ).head(DISPLAY_LIMIT),
-        "candidate_events": redact_frame(
-            _candidate_event_table(candidate_events)
-        ).head(DISPLAY_LIMIT),
-        "candidate_labels": redact_frame(
-            _candidate_label_table(candidate_labels)
-        ).head(DISPLAY_LIMIT),
+        "strategy_evidence": redact_frame(_strategy_evidence_table(strategy_evidence)).head(
+            DISPLAY_LIMIT
+        ),
+        "strategy_samples": redact_frame(_strategy_sample_table(strategy_samples)).head(
+            DISPLAY_LIMIT
+        ),
+        "candidate_events": redact_frame(_candidate_event_table(candidate_events)).head(
+            DISPLAY_LIMIT
+        ),
+        "candidate_labels": redact_frame(_candidate_label_table(candidate_labels)).head(
+            DISPLAY_LIMIT
+        ),
         "candidate_quality": redact_frame(candidate_quality.tail(5)),
-        "candidate_outcomes": redact_frame(
-            _candidate_outcome_table(candidate_outcomes)
-        ).head(DISPLAY_LIMIT),
+        "candidate_outcomes": redact_frame(_candidate_outcome_table(candidate_outcomes)).head(
+            DISPLAY_LIMIT
+        ),
         "strategy_counts": strategy_counts,
         "alpha_discovery_counts": discovery_counts,
         "warnings": warnings,
@@ -1371,9 +1433,7 @@ def _strategy_evidence_table(strategy_evidence: pl.DataFrame) -> pl.DataFrame:
     if not selected:
         return strategy_evidence
     table = strategy_evidence.select(selected)
-    sort_columns = [
-        column for column in ["decision", "candidate_name"] if column in table.columns
-    ]
+    sort_columns = [column for column in ["decision", "candidate_name"] if column in table.columns]
     return table.sort(sort_columns) if sort_columns else table
 
 
@@ -1414,9 +1474,7 @@ def _strategy_sample_table(strategy_samples: pl.DataFrame) -> pl.DataFrame:
         return strategy_samples
     table = strategy_samples.select(selected)
     sort_columns = [
-        column
-        for column in ["candidate_name", "symbol", "ts_utc"]
-        if column in table.columns
+        column for column in ["candidate_name", "symbol", "ts_utc"] if column in table.columns
     ]
     return table.sort(sort_columns) if sort_columns else table
 
@@ -1449,9 +1507,7 @@ def _candidate_event_table(candidate_events: pl.DataFrame) -> pl.DataFrame:
     selected = [column for column in columns if column in candidate_events.columns]
     table = candidate_events.select(selected) if selected else candidate_events
     sort_columns = [
-        column
-        for column in ["run_id", "symbol", "strategy_candidate"]
-        if column in table.columns
+        column for column in ["run_id", "symbol", "strategy_candidate"] if column in table.columns
     ]
     return table.sort(sort_columns) if sort_columns else table
 
@@ -1519,9 +1575,7 @@ def feature_summary(lake_root: str | Path) -> dict[str, Any]:
     coverage, coverage_warning = read_dataset_with_warning(lake_root, "feature_coverage_daily")
     anomalies, anomaly_warning = read_dataset_with_warning(lake_root, "feature_anomaly_daily")
     warnings = [
-        warning
-        for warning in [feature_warning, coverage_warning, anomaly_warning]
-        if warning
+        warning for warning in [feature_warning, coverage_warning, anomaly_warning] if warning
     ]
     if features.is_empty():
         warnings.append("feature_value 数据集缺失或为空")
@@ -1555,9 +1609,7 @@ def strategy_consumer_summary(lake_root: str | Path) -> dict[str, Any]:
             sort_column = "strategy"
         for row in permissions.sort(sort_column).to_dicts():
             status = row.get("permission_status")
-            latest_by_strategy[str(row["strategy"]).lower()] = str(
-                status or row["permission"]
-            )
+            latest_by_strategy[str(row["strategy"]).lower()] = str(status or row["permission"])
 
     return {
         "permissions": latest_by_strategy,
@@ -2042,6 +2094,7 @@ def _coerce_timestamp(value: Any) -> datetime | None:
             return parsed.replace(tzinfo=UTC)
         return parsed.astimezone(UTC)
     return None
+
 
 def _normalize_market_frame(df: pl.DataFrame) -> pl.DataFrame:
     normalized = _normalize_optional_time(df, "ts")

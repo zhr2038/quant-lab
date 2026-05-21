@@ -15,5 +15,5 @@ def render(lake_root: str | Path, st_module: Any | None = None) -> None:
     show_frame(st, summary["permission_rows"], "暂无 risk_permission 数据。")
 
     st.subheader("回退信号")
-    show_frame(st, summary["fallback_rows"], "decision_audit 中未找到回退行。")
+    show_frame(st, summary["fallback_rows"], "决策审计中未找到回退行。")
     show_warnings(st, summary["warnings"])

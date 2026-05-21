@@ -26,10 +26,10 @@ VALUE_LABELS = {
     "ABORT": "中止",
     "DEAD": "失效",
     "QUARANTINE": "隔离",
-    "PAPER_READY": "Paper 就绪",
-    "LIVE_READY": "Live 就绪",
-    "LIVE_SMALL_READY": "小仓 live 就绪",
-    "KEEP_SHADOW": "继续 Shadow",
+    "PAPER_READY": "纸面就绪",
+    "LIVE_READY": "实盘就绪",
+    "LIVE_SMALL_READY": "小仓实盘就绪",
+    "KEEP_SHADOW": "继续影子观察",
     "RESEARCH_ONLY": "仅研究",
     "KILL": "淘汰",
     "fresh": "新鲜",
@@ -44,7 +44,7 @@ COLUMN_LABELS = {
     "actual_rows": "真实成本行数",
     "mixed_rows": "混合真实+代理成本行数",
     "allowed_modes": "允许模式",
-    "alpha_id": "Alpha ID",
+    "alpha_id": "因子编号",
     "alpha6_score": "alpha6 分数",
     "alpha6_side": "alpha6 方向",
     "as_of_date": "截至日期",
@@ -56,7 +56,7 @@ COLUMN_LABELS = {
     "block_reason": "阻塞原因",
     "board_schema_version": "面板 schema 版本",
     "bucket_index": "分桶索引",
-    "bundle_ts": "bundle 时间",
+    "bundle_ts": "数据包时间",
     "channel": "频道",
     "close": "收盘价",
     "collector": "采集器",
@@ -101,13 +101,13 @@ COLUMN_LABELS = {
     "f4_volume_expansion": "f4 放量",
     "f5": "f5",
     "f5_rsi_trend_confirm": "f5 RSI 趋势确认",
-    "fallback_level": "fallback 级别",
+    "fallback_level": "回退级别",
     "feature_completeness": "特征完整率",
     "final_decision": "最终决策",
     "final_score": "最终分数",
     "freshness_seconds": "新鲜度(秒)",
     "freshness_status": "新鲜度状态",
-    "gate_version": "Gate 版本",
+    "gate_version": "门控版本",
     "global_default_rows": "全局默认成本行数",
     "gross_bps": "毛收益(bps)",
     "high": "最高价",
@@ -118,8 +118,8 @@ COLUMN_LABELS = {
     "label_completeness": "标签完整率",
     "label_status": "标签状态",
     "label_ts": "标签时间",
-    "latest_bundle_sha256": "最新 bundle SHA256",
-    "latest_bundle_ts": "最新 bundle 时间",
+    "latest_bundle_sha256": "最新数据包 SHA256",
+    "latest_bundle_ts": "最新数据包时间",
     "latest_success_ts": "最近成功时间",
     "latest_trade_ts": "最近成交时间",
     "latest_timestamp": "最新数据时间",
@@ -144,7 +144,7 @@ COLUMN_LABELS = {
     "open": "开盘价",
     "parquet_file_count": "Parquet 文件数",
     "passed": "是否通过",
-    "paper_days": "Paper 天数",
+    "paper_days": "纸面观察天数",
     "path": "路径",
     "p25_net_bps": "净收益 P25(bps)",
     "permission": "权限",
@@ -210,6 +210,100 @@ VALUE_LOCALIZED_COLUMNS = {
 }
 
 
+# Additional display translations for newer strategy-advisory and entry-quality surfaces.
+VALUE_LABELS.update(
+    {
+        "paper": "纸面观察",
+        "shadow": "影子观察",
+        "research": "研究观察",
+        "none": "不推荐",
+        "audit": "审计",
+        "advisory": "建议",
+        "shadow_only": "仅影子观察",
+        "not_live_validated": "尚未验证可实盘",
+        "entry_quality_advisory_only": "仅入场质量建议",
+        "not_paper_candidate": "不是纸面候选",
+        "entry_quality_research": "入场质量研究",
+        "public_spread_proxy": "公共盘口价差代理",
+        "mixed_actual_proxy": "真实费用 + 价差代理",
+        "actual_fills": "真实成交成本",
+        "global_default": "全局默认成本",
+        "quant_lab": "中台",
+        "degraded": "降级",
+        "actual_or_mixed": "真实或混合成本",
+        "v5.entry_quality_missed_low_audit": "V5 错失低点审计",
+        "v5.late_entry_chase_guard_shadow": "V5 追高保护影子观察",
+        "v5.pullback_reversal_shadow_btc": "BTC 回调反转影子观察",
+        "v5.pullback_reversal_shadow_sol": "SOL 回调反转影子观察",
+        "v5.pullback_reversal_shadow_eth": "ETH 回调反转影子观察",
+        "v5.pullback_reversal_shadow_bnb": "BNB 回调反转影子观察",
+        "v5.sol_protect_alpha6_low_exception": "SOL 保护态 Alpha6 低分例外",
+        "v5.f4_volume_expansion_entry": "F4 放量入场",
+        "v5.alt_impulse_shadow": "Alt 脉冲影子观察",
+        "v5.multi_position_k1": "多仓位 K1",
+        "v5.multi_position_k2": "多仓位 K2",
+        "v5.multi_position_k3": "多仓位 K3",
+        "v5.f3_dominant_entry": "F3 主导入场",
+        "PAPER_READY": "纸面就绪",
+        "KEEP_SHADOW": "继续影子观察",
+        "REGIME_SHADOW": "分状态影子观察",
+        "RESEARCH_ONLY": "仅研究",
+        "KILL": "淘汰",
+    }
+)
+
+COLUMN_LABELS.update(
+    {
+        "as_of_ts": "截至时间",
+        "strategy_id": "策略编号",
+        "v5_symbol": "V5 标的",
+        "recommended_mode": "推荐模式",
+        "cost_quality": "成本质量",
+        "live_block_reasons": "实盘阻断原因",
+        "max_paper_notional_usdt": "纸面名义上限(USDT)",
+        "max_live_notional_usdt": "实盘名义上限(USDT)",
+        "paper_pnl_observed_count": "纸面收益观测数",
+        "entry_day_count": "入场天数",
+        "slippage_coverage": "滑点覆盖率",
+        "readiness_status": "就绪状态",
+        "advisory_reasons": "建议原因",
+        "ready_for_live": "实盘就绪",
+        "start_date": "开始日期",
+        "end_date": "结束日期",
+        "window_mode": "窗口模式",
+        "cost_mode": "成本模式",
+        "threshold_bps": "阈值(bps)",
+        "would_block_count": "将拦截次数",
+        "would_block_loss_count": "将拦截亏损数",
+        "would_block_profit_count": "将误杀盈利数",
+        "false_positive_rate": "误杀率",
+        "avg_net_bps_blocked": "被拦截平均净收益(bps)",
+        "avg_net_bps_not_blocked": "未拦截平均净收益(bps)",
+        "check_name": "检查项",
+        "violation_count": "违规数",
+        "detail": "详情",
+    }
+)
+
+VALUE_LOCALIZED_COLUMNS.update(
+    {
+        "advisory",
+        "advisory_reasons",
+        "check_name",
+        "cost_quality",
+        "cost_source",
+        "cost_source_mix",
+        "decision_reasons",
+        "live_block_reasons",
+        "mode",
+        "recommended_mode",
+        "readiness_status",
+        "source_type",
+        "strategy_candidate",
+    }
+)
+
+
 def streamlit_module(st_module: Any | None = None) -> Any:
     if st_module is not None:
         return st_module
@@ -237,7 +331,27 @@ def lake_caption(st: Any, lake_root: str | Path) -> None:
 def display_value(value: Any) -> Any:
     if _is_display_time_value(value):
         return format_beijing_time(value)
-    return VALUE_LABELS.get(value, value)
+    if isinstance(value, list):
+        return "、".join(str(display_value(item)) for item in value)
+    if isinstance(value, dict):
+        parts = []
+        for key, item in value.items():
+            label = str(display_value(str(key)))
+            parts.append(f"{label}: {display_value(item)}")
+        return "；".join(parts)
+    if isinstance(value, str):
+        text = value.strip()
+        if not text:
+            return ""
+        if text in VALUE_LABELS:
+            return VALUE_LABELS[text]
+        jsonish = _display_jsonish_value(text)
+        if jsonish is not None:
+            return jsonish
+    try:
+        return VALUE_LABELS.get(value, value)
+    except TypeError:
+        return value
 
 
 def display_unknown(value: Any) -> Any:
@@ -267,9 +381,7 @@ def _localize_frame_values(df: pl.DataFrame) -> pl.DataFrame:
     for column in df.columns:
         if is_time_column(column):
             expressions.append(
-                pl.col(column)
-                .map_elements(_display_time_cell, return_dtype=pl.Utf8)
-                .alias(column)
+                pl.col(column).map_elements(_display_time_cell, return_dtype=pl.Utf8).alias(column)
             )
             continue
         if column == "value" and "key" in df.columns:
@@ -306,6 +418,29 @@ def _display_key_value_cell(row: dict[str, Any]) -> str:
     if is_time_column(key):
         return _display_time_cell(value)
     return "" if value is None else str(display_value(value))
+
+
+def _display_jsonish_value(text: str) -> str | None:
+    if not (
+        (text.startswith("[") and text.endswith("]"))
+        or (text.startswith("{") and text.endswith("}"))
+    ):
+        return None
+    try:
+        import json
+
+        parsed = json.loads(text)
+    except Exception:
+        return None
+    if isinstance(parsed, list):
+        return "、".join(str(display_value(item)) for item in parsed)
+    if isinstance(parsed, dict):
+        parts = []
+        for key, value in parsed.items():
+            label = str(display_value(str(key)))
+            parts.append(f"{label}: {value}")
+        return "；".join(parts)
+    return str(display_value(parsed))
 
 
 def _is_display_time_value(value: Any) -> bool:

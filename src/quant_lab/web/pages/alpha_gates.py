@@ -34,6 +34,17 @@ def render(lake_root: str | Path, st_module: Any | None = None) -> None:
         "\u6682\u65e0\u7b56\u7565\u673a\u4f1a\u5efa\u8bae\u6570\u636e\u3002",
     )
 
+    st.subheader("研究组合裁剪")
+    st.caption(
+        "每天自动给出研究项的保留、降级、暂停和关闭建议；"
+        "该表只用于研究资源管理，不改变 V5 live 或 risk permission。"
+    )
+    show_frame(
+        st,
+        summary["research_portfolio_status"],
+        "暂无研究组合裁剪状态。建议运行 qlab build-research-portfolio-status。",
+    )
+
     st.subheader("\u6269\u5c55\u5e01\u6c60 Shadow \u7814\u7a76")
     st.caption(
         "\u4ece OKX USDT \u73b0\u8d27\u4e2d\u7b5b\u9009\u9ad8\u6d41\u52a8\u6027\u3001"

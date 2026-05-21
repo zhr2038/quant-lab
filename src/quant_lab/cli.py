@@ -48,6 +48,7 @@ from quant_lab.research.expanded_universe import (
     build_and_publish_expanded_crypto_universe_shadow,
 )
 from quant_lab.research.paper_tracking import build_and_publish_paper_strategy_tracking
+from quant_lab.research.portfolio import build_and_publish_research_portfolio_status
 from quant_lab.research.publish import (
     build_and_publish_alpha_evidence,
     publish_gate_decisions_from_evidence,
@@ -860,6 +861,25 @@ def build_paper_strategy_tracking_command(
         lake_root=lake_root,
         job_name="build-paper-strategy-tracking",
         func=lambda: build_and_publish_paper_strategy_tracking(
+            lake_root=lake_root,
+            as_of_date=as_of_date,
+        ),
+    )
+    typer.echo(result.model_dump_json(indent=2))
+
+
+@app.command("build-research-portfolio-status")
+def build_research_portfolio_status_command(
+    lake_root: Annotated[Path, typer.Option("--lake-root", file_okay=False, dir_okay=True)],
+    as_of_date: Annotated[
+        str,
+        typer.Option("--date", help="UTC as-of day in YYYY-MM-DD format or auto."),
+    ] = "auto",
+) -> None:
+    result = run_with_job_metrics(
+        lake_root=lake_root,
+        job_name="build-research-portfolio-status",
+        func=lambda: build_and_publish_research_portfolio_status(
             lake_root=lake_root,
             as_of_date=as_of_date,
         ),

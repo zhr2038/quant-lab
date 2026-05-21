@@ -24,6 +24,7 @@ DATASET_PATHS = {
     "strategy_evidence": Path("gold") / "strategy_evidence",
     "strategy_evidence_sample": Path("gold") / "strategy_evidence_sample",
     "strategy_evidence_quality": Path("gold") / "strategy_evidence_quality",
+    "research_portfolio_status": Path("gold") / "research_portfolio_status",
     "strategy_opportunity_advisory": Path("gold") / "strategy_opportunity_advisory",
     "expanded_crypto_universe_shadow": Path("gold") / "expanded_crypto_universe_shadow",
     "symbol_quality_score": Path("gold") / "symbol_quality_score",
@@ -151,6 +152,7 @@ DATASET_TIMESTAMP_COLUMNS: dict[str, tuple[str, ...]] = {
     "strategy_evidence": ("created_at", "end_ts", "as_of_date"),
     "strategy_evidence_sample": ("created_at", "ts_utc"),
     "strategy_evidence_quality": ("created_at", "as_of_date"),
+    "research_portfolio_status": ("created_at", "last_review_date"),
     "strategy_opportunity_advisory": ("as_of_ts", "created_at"),
     "expanded_crypto_universe_shadow": ("generated_at", "as_of_date"),
     "symbol_quality_score": ("generated_at", "as_of_date"),
@@ -1277,6 +1279,10 @@ def alpha_gate_summary(lake_root: str | Path) -> dict[str, Any]:
         lake_root,
         "strategy_evidence_sample",
     )
+    research_portfolio, research_portfolio_warning = read_dataset_with_warning(
+        lake_root,
+        "research_portfolio_status",
+    )
     candidate_events, candidate_events_warning = read_dataset_with_warning(
         lake_root,
         "v5_candidate_event",
@@ -1317,6 +1323,7 @@ def alpha_gate_summary(lake_root: str | Path) -> dict[str, Any]:
             discovery_board_warning,
             strategy_evidence_warning,
             strategy_samples_warning,
+            research_portfolio_warning,
             candidate_events_warning,
             candidate_labels_warning,
             candidate_quality_warning,
@@ -1392,6 +1399,9 @@ def alpha_gate_summary(lake_root: str | Path) -> dict[str, Any]:
         "strategy_evidence": redact_frame(_strategy_evidence_table(strategy_evidence)).head(
             DISPLAY_LIMIT
         ),
+        "research_portfolio_status": redact_frame(
+            _research_portfolio_table(research_portfolio)
+        ).head(DISPLAY_LIMIT),
         "strategy_samples": redact_frame(_strategy_sample_table(strategy_samples)).head(
             DISPLAY_LIMIT
         ),
@@ -1519,6 +1529,37 @@ def _strategy_evidence_table(strategy_evidence: pl.DataFrame) -> pl.DataFrame:
         return strategy_evidence
     table = strategy_evidence.select(selected)
     sort_columns = [column for column in ["decision", "candidate_name"] if column in table.columns]
+    return table.sort(sort_columns) if sort_columns else table
+
+
+def _research_portfolio_table(frame: pl.DataFrame) -> pl.DataFrame:
+    if frame.is_empty():
+        return frame
+    columns = [
+        "research_id",
+        "module",
+        "strategy_candidate",
+        "status",
+        "action",
+        "reason",
+        "sample_count",
+        "complete_sample_count",
+        "avg_net_bps",
+        "win_rate",
+        "p25_net_bps",
+        "paper_days",
+        "entry_day_count",
+        "cost_source_mix",
+        "last_review_date",
+        "next_review_date",
+    ]
+    selected = [column for column in columns if column in frame.columns]
+    if not selected:
+        return frame
+    table = frame.select(selected)
+    sort_columns = [
+        column for column in ["status", "module", "research_id"] if column in table.columns
+    ]
     return table.sort(sort_columns) if sort_columns else table
 
 

@@ -134,6 +134,7 @@ SECTION_DATASETS = {
         "strategy_evidence",
         "strategy_evidence_sample",
         "strategy_evidence_quality",
+        "research_portfolio_status",
         "strategy_opportunity_advisory",
         "expanded_crypto_universe_shadow",
         "symbol_quality_score",
@@ -210,6 +211,7 @@ REQUIRED_MEMBERS = [
     "research/alt_impulse_shadow_by_symbol_regime_horizon.csv",
     "research/strategy_evidence_samples.csv",
     "research/strategy_evidence_quality.csv",
+    "reports/research_portfolio_status.csv",
     "research/gate_decisions.csv",
     "research/research_conclusions.csv",
     "risk/risk_permission.json",
@@ -542,6 +544,31 @@ CSV_SCHEMAS: dict[str, list[str]] = {
         "warning_type",
         "warning_count",
         "detail",
+        "created_at",
+        "source",
+    ],
+    "reports/research_portfolio_status.csv": [
+        "schema_version",
+        "research_id",
+        "module",
+        "strategy_candidate",
+        "status",
+        "action",
+        "reason",
+        "sample_count",
+        "complete_sample_count",
+        "avg_net_bps",
+        "win_rate",
+        "p25_net_bps",
+        "paper_days",
+        "entry_day_count",
+        "cost_source_mix",
+        "last_review_date",
+        "next_review_date",
+        "recommended_new_research_slots",
+        "freed_research_slots",
+        "active_research_count",
+        "killed_research_count",
         "created_at",
         "source",
     ],
@@ -1531,6 +1558,28 @@ def _publish_strategy_opportunity_advisory_snapshot(
     )
 
 
+def _publish_research_portfolio_status_snapshot(
+    root: Path,
+    snapshot: _DatasetSnapshot,
+    day: date,
+) -> _DatasetSnapshot:
+    result = __import__(
+        "quant_lab.research.portfolio",
+        fromlist=["build_and_publish_research_portfolio_status"],
+    ).build_and_publish_research_portfolio_status(root, as_of_date=day)
+    frames = dict(snapshot.frames)
+    frames["research_portfolio_status"] = read_parquet_dataset(
+        root / "gold" / "research_portfolio_status"
+    )
+    row_counts = dict(snapshot.row_counts)
+    row_counts["research_portfolio_status"] = result.rows_written
+    return _DatasetSnapshot(
+        frames=frames,
+        row_counts=row_counts,
+        warnings=snapshot.warnings + result.warnings,
+    )
+
+
 def export_daily_pack(
     *,
     export_date: str | date,
@@ -1563,6 +1612,7 @@ def export_daily_pack(
     )
     snapshot = _load_snapshot(root)
     snapshot = _publish_strategy_opportunity_advisory_snapshot(root, snapshot)
+    snapshot = _publish_research_portfolio_status_snapshot(root, snapshot, day)
     missing_sections = _missing_sections(snapshot.row_counts)
     data_quality = _data_quality_payload(
         root,
@@ -1938,6 +1988,7 @@ def _dataset_members(frames: dict[str, pl.DataFrame]) -> dict[str, _MemberPayloa
     strategy_samples = _strategy_evidence_samples_for_export(
         frames.get("strategy_evidence_sample", pl.DataFrame())
     )
+    research_portfolio = frames.get("research_portfolio_status", pl.DataFrame())
     risk = _risk_permissions_for_export(frames.get("risk_permission", pl.DataFrame()), frames)
     paper_runs, paper_daily, paper_slippage = _paper_tracking_frames_for_export(frames)
     missed_low_audit = frames.get("v5_missed_low_audit", pl.DataFrame())
@@ -2078,6 +2129,10 @@ def _dataset_members(frames: dict[str, pl.DataFrame]) -> dict[str, _MemberPayloa
         "research/strategy_evidence_quality.csv": _csv_member(
             "research/strategy_evidence_quality.csv",
             frames.get("strategy_evidence_quality", pl.DataFrame()),
+        ),
+        "reports/research_portfolio_status.csv": _csv_member(
+            "reports/research_portfolio_status.csv",
+            research_portfolio,
         ),
         "research/gate_decisions.csv": _csv_member("research/gate_decisions.csv", gates),
         "research/research_conclusions.csv": _csv_text(
@@ -2677,6 +2732,13 @@ def _refresh_v5_derived_outputs(lake_root: Path, export_day: date) -> list[str]:
                 "quant_lab.research.entry_quality",
                 fromlist=["build_and_publish_entry_quality"],
             ).build_and_publish_entry_quality(lake_root, as_of_date=export_day),
+        ),
+        (
+            "build_research_portfolio_status",
+            lambda: __import__(
+                "quant_lab.research.portfolio",
+                fromlist=["build_and_publish_research_portfolio_status"],
+            ).build_and_publish_research_portfolio_status(lake_root, as_of_date=export_day),
         ),
         (
             "write_enforce_readiness_report",

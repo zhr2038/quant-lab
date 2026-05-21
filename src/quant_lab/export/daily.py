@@ -126,6 +126,7 @@ SECTION_DATASETS = {
         "v5_late_entry_chase_threshold_advisory",
         "v5_pullback_reversal_shadow",
         "v5_pullback_reversal_readiness",
+        "v5_pullback_reversal_rule_comparison",
         "v5_entry_quality_advisory",
         "v5_entry_quality_history_late_entry_chase_threshold_sensitivity",
         "v5_entry_quality_history_pullback_by_symbol",
@@ -236,6 +237,7 @@ REQUIRED_MEMBERS = [
     "reports/pullback_reversal_by_symbol.csv",
     "reports/pullback_reversal_by_regime.csv",
     "reports/pullback_reversal_by_horizon.csv",
+    "reports/pullback_reversal_rule_comparison.csv",
     "reports/pullback_reversal_readiness.json",
     "reports/anti_leakage_check.csv",
     "reports/entry_quality_summary.md",
@@ -887,6 +889,7 @@ CSV_SCHEMAS: dict[str, list[str]] = {
     ],
     "reports/pullback_reversal_shadow_outcomes.csv": [
         "as_of_date",
+        "rule_version",
         "strategy_candidate",
         "run_id",
         "candidate_id",
@@ -900,6 +903,10 @@ CSV_SCHEMAS: dict[str, list[str]] = {
         "pre_24h_high",
         "pullback_from_24h_high_bps",
         "recent_2h_no_new_low",
+        "close_reclaim_1h",
+        "current_close_gt_previous_close",
+        "btc_not_sharp_drop",
+        "spread_not_abnormal",
         "f4_volume_expansion",
         "f5_rsi_trend_confirm",
         "selected_roundtrip_cost_bps",
@@ -911,6 +918,24 @@ CSV_SCHEMAS: dict[str, list[str]] = {
         "mae_bps",
         "win",
         "label_status",
+        "mode",
+        "generated_at_utc",
+        "schema_version",
+        "contract_version",
+    ],
+    "reports/pullback_reversal_rule_comparison.csv": [
+        "as_of_date",
+        "comparison_name",
+        "rule_name",
+        "rule_version",
+        "symbol",
+        "horizon_hours",
+        "sample_count",
+        "complete_sample_count",
+        "avg_net_bps",
+        "win_rate",
+        "avg_mae_bps",
+        "p25_net_bps",
         "mode",
         "generated_at_utc",
         "schema_version",
@@ -1777,6 +1802,10 @@ def _dataset_members(frames: dict[str, pl.DataFrame]) -> dict[str, _MemberPayloa
         "v5_pullback_reversal_readiness",
         pl.DataFrame(),
     )
+    pullback_reversal_rule_comparison = frames.get(
+        "v5_pullback_reversal_rule_comparison",
+        pl.DataFrame(),
+    )
     entry_quality_advisory = frames.get("v5_entry_quality_advisory", pl.DataFrame())
     history_late_threshold = frames.get(
         "v5_entry_quality_history_late_entry_chase_threshold_sensitivity",
@@ -1974,6 +2003,10 @@ def _dataset_members(frames: dict[str, pl.DataFrame]) -> dict[str, _MemberPayloa
         "reports/pullback_reversal_by_horizon.csv": _csv_member(
             "reports/pullback_reversal_by_horizon.csv",
             history_pullback_by_horizon,
+        ),
+        "reports/pullback_reversal_rule_comparison.csv": _csv_member(
+            "reports/pullback_reversal_rule_comparison.csv",
+            pullback_reversal_rule_comparison,
         ),
         "reports/pullback_reversal_readiness.json": _json_text(
             _entry_quality_json(pullback_reversal_readiness)

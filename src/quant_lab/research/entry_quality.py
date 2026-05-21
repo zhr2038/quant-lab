@@ -29,6 +29,11 @@ ENTRY_QUALITY_SYMBOLS = {"BTC-USDT", "ETH-USDT", "SOL-USDT", "BNB-USDT"}
 LATE_CHASE_THRESHOLDS_BPS = (100, 150, 200, 250, 300, 400)
 PULLBACK_HORIZON_HOURS = (4, 8, 12, 24, 48, 72)
 MIN_ROUNDTRIP_COST_BPS = 30.0
+PULLBACK_OLD_RULE_VERSION = "old_pullback_v0.1"
+PULLBACK_NEW_RULE_VERSION = "confirmed_reversal_v0.2"
+PULLBACK_SPREAD_MAX_BPS = 20.0
+PULLBACK_BTC_MAX_1H_DROP_BPS = -120.0
+PULLBACK_BTC_MAX_4H_DROP_BPS = -250.0
 
 V5_TRADE_EVENT_DATASET = Path("silver") / "v5_trade_event"
 V5_ORDER_LIFECYCLE_DATASET = Path("silver") / "v5_order_lifecycle"
@@ -46,6 +51,9 @@ LATE_ENTRY_CHASE_THRESHOLD_ADVISORY_DATASET = (
 )
 PULLBACK_REVERSAL_SHADOW_DATASET = Path("gold") / "v5_pullback_reversal_shadow"
 PULLBACK_REVERSAL_READINESS_DATASET = Path("gold") / "v5_pullback_reversal_readiness"
+PULLBACK_REVERSAL_RULE_COMPARISON_DATASET = (
+    Path("gold") / "v5_pullback_reversal_rule_comparison"
+)
 ENTRY_QUALITY_ADVISORY_DATASET = Path("gold") / "v5_entry_quality_advisory"
 STRATEGY_OPPORTUNITY_ADVISORY_DATASET = Path("gold") / "strategy_opportunity_advisory"
 
@@ -170,6 +178,7 @@ LATE_ENTRY_THRESHOLD_SCHEMA = COMMON_SCHEMA | {
 }
 
 PULLBACK_REVERSAL_SHADOW_SCHEMA = COMMON_SCHEMA | {
+    "rule_version": pl.Utf8,
     "strategy_candidate": pl.Utf8,
     "run_id": pl.Utf8,
     "candidate_id": pl.Utf8,
@@ -183,6 +192,10 @@ PULLBACK_REVERSAL_SHADOW_SCHEMA = COMMON_SCHEMA | {
     "pre_24h_high": pl.Float64,
     "pullback_from_24h_high_bps": pl.Float64,
     "recent_2h_no_new_low": pl.Boolean,
+    "close_reclaim_1h": pl.Boolean,
+    "current_close_gt_previous_close": pl.Boolean,
+    "btc_not_sharp_drop": pl.Boolean,
+    "spread_not_abnormal": pl.Boolean,
     "f4_volume_expansion": pl.Float64,
     "f5_rsi_trend_confirm": pl.Float64,
     "selected_roundtrip_cost_bps": pl.Float64,
@@ -208,6 +221,20 @@ PULLBACK_REVERSAL_READINESS_SCHEMA = COMMON_SCHEMA | {
     "ready_for_paper": pl.Boolean,
     "ready_for_live_probe": pl.Boolean,
     "readiness_reasons": pl.Utf8,
+}
+
+PULLBACK_RULE_COMPARISON_SCHEMA = COMMON_SCHEMA | {
+    "comparison_name": pl.Utf8,
+    "rule_name": pl.Utf8,
+    "rule_version": pl.Utf8,
+    "symbol": pl.Utf8,
+    "horizon_hours": pl.Int64,
+    "sample_count": pl.Int64,
+    "complete_sample_count": pl.Int64,
+    "avg_net_bps": pl.Float64,
+    "win_rate": pl.Float64,
+    "avg_mae_bps": pl.Float64,
+    "p25_net_bps": pl.Float64,
 }
 
 ENTRY_QUALITY_ADVISORY_SCHEMA = COMMON_SCHEMA | {
@@ -314,6 +341,7 @@ class EntryQualityBuildResult(BaseModel):
     late_entry_chase_threshold_rows: int = Field(ge=0)
     pullback_reversal_shadow_rows: int = Field(ge=0)
     pullback_reversal_readiness_rows: int = Field(ge=0)
+    pullback_rule_comparison_rows: int = Field(ge=0)
     entry_quality_advisory_rows: int = Field(ge=0)
     strategy_opportunity_advisory_rows: int = Field(ge=0)
     warnings: list[str] = Field(default_factory=list)
@@ -405,6 +433,12 @@ def build_and_publish_entry_quality(
         costs=costs,
         ctx=ctx,
     )
+    pullback_rule_comparison = build_pullback_reversal_rule_comparison(
+        candidates=candidates,
+        market_bars=market,
+        costs=costs,
+        ctx=ctx,
+    )
     readiness = build_pullback_reversal_readiness(pullback, ctx=ctx)
     advisory = build_entry_quality_advisory(
         missed_low=missed,
@@ -460,6 +494,12 @@ def build_and_publish_entry_quality(
             PULLBACK_REVERSAL_READINESS_DATASET,
             readiness,
             ["as_of_date", "strategy_candidate", "symbol"],
+        ),
+        pullback_rule_comparison_rows=_publish_daily(
+            root,
+            PULLBACK_REVERSAL_RULE_COMPARISON_DATASET,
+            pullback_rule_comparison,
+            ["as_of_date", "comparison_name", "rule_name", "symbol", "horizon_hours"],
         ),
         entry_quality_advisory_rows=_publish_daily(
             root,
@@ -909,6 +949,7 @@ def build_pullback_reversal_shadow(
     market_bars: pl.DataFrame,
     costs: pl.DataFrame,
     ctx: _BuildContext,
+    rule_version: str = PULLBACK_NEW_RULE_VERSION,
 ) -> pl.DataFrame:
     if candidates.is_empty() or market_bars.is_empty():
         return pl.DataFrame(schema=PULLBACK_REVERSAL_SHADOW_SCHEMA)
@@ -930,6 +971,14 @@ def build_pullback_reversal_shadow(
         pullback_bps = _pullback_from_high_bps(current_px, pre_24h.get("high"))
         f4 = _float_or_none(candidate.get("f4_volume_expansion"))
         f5 = _float_or_none(candidate.get("f5_rsi_trend_confirm"))
+        conditions = _pullback_reversal_conditions(
+            row=candidate,
+            current_px=current_px,
+            pre_24h=pre_24h,
+            bars=bars,
+            btc_bars=market_by_symbol.get("BTC-USDT", []),
+            ts=ts,
+        )
         if not _pullback_reversal_candidate_ok(
             row=candidate,
             current_px=current_px,
@@ -938,7 +987,9 @@ def build_pullback_reversal_shadow(
             f4=f4,
             f5=f5,
             bars=bars,
+            btc_bars=market_by_symbol.get("BTC-USDT", []),
             ts=ts,
+            rule_version=rule_version,
         ):
             continue
         has_quant_lab_cost = symbol in cost_by_symbol
@@ -953,6 +1004,7 @@ def build_pullback_reversal_shadow(
                 _common(ctx, mode="shadow")
                 | {
                     "strategy_candidate": _pullback_candidate_name(symbol),
+                    "rule_version": rule_version,
                     "run_id": str(candidate.get("run_id") or ""),
                     "candidate_id": str(candidate.get("candidate_id") or ""),
                     "source_event_key": _source_event_key(candidate, symbol=symbol, ts=ts),
@@ -964,7 +1016,13 @@ def build_pullback_reversal_shadow(
                     "pre_24h_low": pre_24h.get("low"),
                     "pre_24h_high": pre_24h.get("high"),
                     "pullback_from_24h_high_bps": pullback_bps,
-                    "recent_2h_no_new_low": _recent_2h_no_new_low(bars, ts),
+                    "recent_2h_no_new_low": conditions["recent_2h_no_new_low"],
+                    "close_reclaim_1h": conditions["close_reclaim_1h"],
+                    "current_close_gt_previous_close": conditions[
+                        "current_close_gt_previous_close"
+                    ],
+                    "btc_not_sharp_drop": conditions["btc_not_sharp_drop"],
+                    "spread_not_abnormal": conditions["spread_not_abnormal"],
                     "f4_volume_expansion": f4,
                     "f5_rsi_trend_confirm": f5,
                     "selected_roundtrip_cost_bps": roundtrip_cost,
@@ -976,6 +1034,99 @@ def build_pullback_reversal_shadow(
     if not rows:
         return pl.DataFrame(schema=PULLBACK_REVERSAL_SHADOW_SCHEMA)
     return pl.DataFrame(rows, schema=PULLBACK_REVERSAL_SHADOW_SCHEMA, orient="row")
+
+
+def build_pullback_reversal_rule_comparison(
+    *,
+    candidates: pl.DataFrame,
+    market_bars: pl.DataFrame,
+    costs: pl.DataFrame,
+    ctx: _BuildContext,
+) -> pl.DataFrame:
+    if candidates.is_empty() or market_bars.is_empty():
+        return pl.DataFrame(schema=PULLBACK_RULE_COMPARISON_SCHEMA)
+    old_shadow = build_pullback_reversal_shadow(
+        candidates=candidates,
+        market_bars=market_bars,
+        costs=costs,
+        ctx=ctx,
+        rule_version=PULLBACK_OLD_RULE_VERSION,
+    )
+    new_shadow = build_pullback_reversal_shadow(
+        candidates=candidates,
+        market_bars=market_bars,
+        costs=costs,
+        ctx=ctx,
+        rule_version=PULLBACK_NEW_RULE_VERSION,
+    )
+    rows: list[dict[str, Any]] = []
+    for rule_name, rule_version, frame in [
+        ("old_rule", PULLBACK_OLD_RULE_VERSION, old_shadow),
+        ("new_rule", PULLBACK_NEW_RULE_VERSION, new_shadow),
+    ]:
+        if frame.is_empty():
+            continue
+        rows.extend(
+            _pullback_rule_comparison_rows(
+                frame,
+                rule_name=rule_name,
+                rule_version=rule_version,
+                ctx=ctx,
+            )
+        )
+    if not rows:
+        return pl.DataFrame(schema=PULLBACK_RULE_COMPARISON_SCHEMA)
+    return pl.DataFrame(rows, schema=PULLBACK_RULE_COMPARISON_SCHEMA, orient="row")
+
+
+def _pullback_rule_comparison_rows(
+    frame: pl.DataFrame,
+    *,
+    rule_name: str,
+    rule_version: str,
+    ctx: _BuildContext,
+) -> list[dict[str, Any]]:
+    rows: list[dict[str, Any]] = []
+    horizon_rows = [
+        row
+        for row in frame.to_dicts()
+        if int(_float_or_none(row.get("horizon_hours")) or 0) == 24
+    ]
+    for symbol, group_rows in _group_dicts(horizon_rows, "symbol").items():
+        complete_values = [
+            _float_or_none(row.get("net_bps_after_cost"))
+            for row in group_rows
+            if str(row.get("label_status") or "") == "complete"
+        ]
+        complete_values = [value for value in complete_values if value is not None]
+        mae_values = [
+            _float_or_none(row.get("mae_bps"))
+            for row in group_rows
+            if str(row.get("label_status") or "") == "complete"
+        ]
+        mae_values = [value for value in mae_values if value is not None]
+        rows.append(
+            _common(ctx, mode="advisory")
+            | {
+                "comparison_name": "old_rule_vs_new_rule",
+                "rule_name": rule_name,
+                "rule_version": rule_version,
+                "symbol": str(symbol),
+                "horizon_hours": 24,
+                "sample_count": len(group_rows),
+                "complete_sample_count": len(complete_values),
+                "avg_net_bps": _mean(complete_values),
+                "win_rate": (
+                    sum(1 for value in complete_values if value > 0.0)
+                    / len(complete_values)
+                    if complete_values
+                    else None
+                ),
+                "avg_mae_bps": _mean(mae_values),
+                "p25_net_bps": _quantile(complete_values, 0.25),
+            }
+        )
+    return rows
 
 
 def build_pullback_reversal_readiness(
@@ -1228,6 +1379,7 @@ def build_pullback_reversal_history_aggregate(
             avg_net_bps=avg_net,
             win_rate=win_rate,
             p25_net_bps=_quantile(net_values, 0.25),
+            avg_mae_bps=_mean(mae_values),
             cost_quality_mix=cost_quality_mix,
         )
         first = group_rows[0]
@@ -1694,6 +1846,54 @@ def _pullback_reversal_candidate_ok(
     f4: float | None,
     f5: float | None,
     bars: list[dict[str, Any]],
+    btc_bars: list[dict[str, Any]],
+    ts: datetime,
+    rule_version: str,
+) -> bool:
+    if rule_version == PULLBACK_OLD_RULE_VERSION:
+        return _pullback_reversal_old_candidate_ok(
+            row=row,
+            current_px=current_px,
+            pre_24h=pre_24h,
+            pullback_bps=pullback_bps,
+            f4=f4,
+            f5=f5,
+            bars=bars,
+            ts=ts,
+        )
+    if str(row.get("regime_state") or row.get("risk_level") or "").lower() == "risk_off":
+        return False
+    low = pre_24h.get("low")
+    if low is None or pullback_bps is None:
+        return False
+    if pullback_bps < 100.0 or pullback_bps > 500.0:
+        return False
+    if current_px <= low * 1.005:
+        return False
+    if f5 is not None and f5 < -0.10:
+        return False
+    if f4 is not None and f4 < -0.50:
+        return False
+    conditions = _pullback_reversal_conditions(
+        row=row,
+        current_px=current_px,
+        pre_24h=pre_24h,
+        bars=bars,
+        btc_bars=btc_bars,
+        ts=ts,
+    )
+    return all(conditions.values())
+
+
+def _pullback_reversal_old_candidate_ok(
+    *,
+    row: dict[str, Any],
+    current_px: float,
+    pre_24h: dict[str, float | None],
+    pullback_bps: float | None,
+    f4: float | None,
+    f5: float | None,
+    bars: list[dict[str, Any]],
     ts: datetime,
 ) -> bool:
     if str(row.get("regime_state") or row.get("risk_level") or "").lower() == "risk_off":
@@ -1715,6 +1915,33 @@ def _pullback_reversal_candidate_ok(
     return spread is None or spread < 50.0
 
 
+def _pullback_reversal_conditions(
+    *,
+    row: dict[str, Any],
+    current_px: float,
+    pre_24h: dict[str, float | None],
+    bars: list[dict[str, Any]],
+    btc_bars: list[dict[str, Any]],
+    ts: datetime,
+) -> dict[str, bool]:
+    return {
+        "recent_2h_no_new_low": _recent_2h_no_new_low(bars, ts),
+        "close_reclaim_1h": _close_reclaim_1h(
+            bars,
+            ts,
+            current_px=current_px,
+            pre_24h_low=pre_24h.get("low"),
+        ),
+        "current_close_gt_previous_close": _current_close_gt_previous_close(
+            bars,
+            ts,
+            current_px=current_px,
+        ),
+        "btc_not_sharp_drop": _btc_not_sharp_drop(btc_bars, ts),
+        "spread_not_abnormal": _spread_not_abnormal(row),
+    }
+
+
 def _pullback_from_high_bps(price: float, high: float | None) -> float | None:
     if high is None or high <= 0:
         return None
@@ -1731,6 +1958,76 @@ def _recent_2h_no_new_low(bars: list[dict[str, Any]], ts: datetime) -> bool:
     recent_low = min(_float_or_none(row.get("low")) or math.inf for row in recent)
     previous_low = min(_float_or_none(row.get("low")) or math.inf for row in previous)
     return recent_low > previous_low
+
+
+def _close_reclaim_1h(
+    bars: list[dict[str, Any]],
+    ts: datetime,
+    *,
+    current_px: float,
+    pre_24h_low: float | None,
+) -> bool:
+    current_bar, previous_bar = _current_and_previous_bar(bars, ts)
+    if current_bar is None or previous_bar is None or pre_24h_low is None:
+        return False
+    current_close = _float_or_none(current_bar.get("close")) or current_px
+    current_open = _float_or_none(current_bar.get("open"))
+    previous_close = _float_or_none(previous_bar.get("close"))
+    if current_open is None or previous_close is None:
+        return False
+    return (
+        current_px > pre_24h_low * 1.005
+        and current_px > previous_close
+        and current_close >= max(current_open, previous_close)
+    )
+
+
+def _current_close_gt_previous_close(
+    bars: list[dict[str, Any]],
+    ts: datetime,
+    *,
+    current_px: float,
+) -> bool:
+    _current_bar, previous_bar = _current_and_previous_bar(bars, ts)
+    if previous_bar is None:
+        return False
+    previous_close = _float_or_none(previous_bar.get("close"))
+    return previous_close is not None and current_px > previous_close
+
+
+def _btc_not_sharp_drop(btc_bars: list[dict[str, Any]], ts: datetime) -> bool:
+    current_bar, previous_bar = _current_and_previous_bar(btc_bars, ts)
+    if current_bar is None or previous_bar is None:
+        return False
+    current_close = _float_or_none(current_bar.get("close"))
+    previous_close = _float_or_none(previous_bar.get("close"))
+    if current_close is None or previous_close is None or previous_close <= 0:
+        return False
+    one_hour_bps = (current_close / previous_close - 1.0) * 10_000.0
+    if one_hour_bps <= PULLBACK_BTC_MAX_1H_DROP_BPS:
+        return False
+    four_hour_close = _market_close_at_or_before(btc_bars, ts - timedelta(hours=4))
+    if four_hour_close is None or four_hour_close <= 0:
+        return False
+    four_hour_bps = (current_close / four_hour_close - 1.0) * 10_000.0
+    return four_hour_bps > PULLBACK_BTC_MAX_4H_DROP_BPS
+
+
+def _spread_not_abnormal(row: dict[str, Any]) -> bool:
+    spread = _float_or_none(row.get("estimated_spread_bps"))
+    if spread is None:
+        spread = _float_or_none(row.get("spread_bps"))
+    return spread is not None and 0.0 <= spread <= PULLBACK_SPREAD_MAX_BPS
+
+
+def _current_and_previous_bar(
+    bars: list[dict[str, Any]],
+    ts: datetime,
+) -> tuple[dict[str, Any] | None, dict[str, Any] | None]:
+    history = [row for row in bars if row["ts"] <= ts]
+    if len(history) < 2:
+        return None, None
+    return history[-1], history[-2]
 
 
 def _forward_label(
@@ -1915,6 +2212,7 @@ def _history_shadow_decision(
     avg_net_bps: float | None,
     win_rate: float | None,
     p25_net_bps: float | None,
+    avg_mae_bps: float | None,
     cost_quality_mix: Counter[str],
 ) -> tuple[str, list[str]]:
     reasons: list[str] = []
@@ -1922,6 +2220,10 @@ def _history_shadow_decision(
         reasons.append("insufficient_total_samples")
     if complete_sample_count < 5:
         reasons.append("insufficient_complete_samples")
+    if avg_mae_bps is None or avg_mae_bps <= -120.0:
+        reasons.append("excessive_avg_mae_bps")
+    if p25_net_bps is None or p25_net_bps <= -50.0:
+        reasons.append("weak_p25_net_bps")
     cost_degraded = any(key != "quant_lab" for key in cost_quality_mix)
     if cost_degraded:
         reasons.append("cost_quality_degraded")

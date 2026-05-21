@@ -125,7 +125,16 @@ def test_pullback_reversal_shadow_outputs_positive_labels_without_live_ready(tmp
     shadow = read_parquet_dataset(lake / "gold" / "v5_pullback_reversal_shadow")
     rows_24h = shadow.filter(pl.col("horizon_hours") == 24).to_dicts()
     assert rows_24h
+    assert rows_24h[0]["rule_version"] == "confirmed_reversal_v0.2"
+    assert rows_24h[0]["close_reclaim_1h"] is True
+    assert rows_24h[0]["current_close_gt_previous_close"] is True
+    assert rows_24h[0]["btc_not_sharp_drop"] is True
+    assert rows_24h[0]["spread_not_abnormal"] is True
     assert rows_24h[0]["net_bps_after_cost"] > 0
+    comparison = read_parquet_dataset(
+        lake / "gold" / "v5_pullback_reversal_rule_comparison"
+    )
+    assert {"old_rule", "new_rule"} <= set(comparison.get_column("rule_name").to_list())
     readiness = read_parquet_dataset(lake / "gold" / "v5_pullback_reversal_readiness")
     row = readiness.to_dicts()[0]
     assert row["ready_for_live_probe"] is False
@@ -168,6 +177,7 @@ def test_daily_export_contains_entry_quality_reports(tmp_path):
         names = set(archive.namelist())
         assert "reports/missed_low_audit.csv" in names
         assert "reports/late_entry_chase_threshold_advisory.json" in names
+        assert "reports/pullback_reversal_rule_comparison.csv" in names
         assert "reports/pullback_reversal_readiness.json" in names
         summary = archive.read("reports/entry_quality_summary.md").decode("utf-8")
         assert "read-only research" in summary
@@ -378,6 +388,45 @@ def test_entry_quality_history_pullback_by_symbol_and_anti_leakage(tmp_path):
     assert set(checks.get_column("status").to_list()) == {"PASS"}
 
 
+def test_pullback_new_rule_rejects_falling_knife_candidate(tmp_path):
+    lake = tmp_path / "lake"
+    _write_falling_pullback_market_bars(lake, "SOL-USDT")
+    write_parquet_dataset(
+        pl.DataFrame(
+            [
+                {
+                    "candidate_id": "cand-sol-falling",
+                    "run_id": "run-falling",
+                    "ts_utc": datetime(2026, 5, 10, 20, tzinfo=UTC),
+                    "symbol": "SOL-USDT",
+                    "strategy_candidate": "portfolio",
+                    "entry_close": 112.5,
+                    "regime_state": "protect",
+                    "risk_level": "normal",
+                    "f4_volume_expansion": 0.0,
+                    "f5_rsi_trend_confirm": 0.0,
+                    "estimated_spread_bps": 2.0,
+                }
+            ]
+        ),
+        lake / "silver" / "v5_candidate_event",
+    )
+
+    result = build_and_publish_entry_quality(lake, as_of_date="2026-05-10")
+
+    assert result.pullback_reversal_shadow_rows == 0
+    comparison = read_parquet_dataset(
+        lake / "gold" / "v5_pullback_reversal_rule_comparison"
+    )
+    rows = comparison.to_dicts()
+    assert any(
+        row["rule_name"] == "old_rule" and row["symbol"] == "SOL-USDT" for row in rows
+    )
+    assert not any(
+        row["rule_name"] == "new_rule" and row["symbol"] == "SOL-USDT" for row in rows
+    )
+
+
 def _write_market_bars(lake, symbol: str) -> None:
     start = datetime(2026, 5, 10, tzinfo=UTC)
     rows = []
@@ -430,32 +479,76 @@ def _write_market_bars_for_range(lake, symbol: str, start: datetime, hours: int)
 def _write_pullback_market_bars(lake, symbol: str) -> None:
     start = datetime(2026, 5, 10, tzinfo=UTC)
     rows = []
-    for hour in range(80):
-        ts = start + timedelta(hours=hour)
-        if hour < 18:
-            high, low, close = 120.0, 108.0, 118.0
-        elif hour < 20:
-            high, low, close = 118.0, 112.0, 116.0
-        elif hour == 20:
-            high, low, close = 116.0, 112.0, 115.0
-        else:
-            high, low, close = 126.0, 114.0, 125.0
-        rows.append(
-            {
-                "venue": "okx",
-                "symbol": symbol,
-                "market_type": "SPOT",
-                "timeframe": "1H",
-                "ts": ts,
-                "open": close,
-                "high": high,
-                "low": low,
-                "close": close,
-                "volume": 1000.0,
-                "quote_volume": 100000.0,
-                "source": "test",
-                "ingest_ts": start,
-                "is_closed": True,
-            }
-        )
+    symbols = [symbol] if symbol == "BTC-USDT" else [symbol, "BTC-USDT"]
+    for current_symbol in symbols:
+        for hour in range(80):
+            ts = start + timedelta(hours=hour)
+            if current_symbol == "BTC-USDT" and symbol != "BTC-USDT":
+                high, low, close = 101.0, 99.0, 100.0 + min(hour, 20) * 0.01
+            elif hour < 18:
+                high, low, close = 120.0, 108.0, 118.0
+            elif hour == 18:
+                high, low, close = 118.0, 112.0, 116.0
+            elif hour == 19:
+                high, low, close = 116.0, 112.0, 114.0
+            elif hour == 20:
+                high, low, close = 116.0, 112.0, 115.0
+            else:
+                high, low, close = 126.0, 114.0, 125.0
+            rows.append(
+                {
+                    "venue": "okx",
+                    "symbol": current_symbol,
+                    "market_type": "SPOT",
+                    "timeframe": "1H",
+                    "ts": ts,
+                    "open": close,
+                    "high": high,
+                    "low": low,
+                    "close": close,
+                    "volume": 1000.0,
+                    "quote_volume": 100000.0,
+                    "source": "test",
+                    "ingest_ts": start,
+                    "is_closed": True,
+                }
+            )
+    write_parquet_dataset(pl.DataFrame(rows), lake / "silver" / "market_bar")
+
+
+def _write_falling_pullback_market_bars(lake, symbol: str) -> None:
+    start = datetime(2026, 5, 10, tzinfo=UTC)
+    rows = []
+    symbols = [symbol] if symbol == "BTC-USDT" else [symbol, "BTC-USDT"]
+    for current_symbol in symbols:
+        for hour in range(80):
+            ts = start + timedelta(hours=hour)
+            if current_symbol == "BTC-USDT" and symbol != "BTC-USDT":
+                high, low, close = 101.0, 99.0, 100.0 + min(hour, 20) * 0.01
+            elif hour < 18:
+                high, low, close = 116.0, 108.0, 115.0
+            elif hour < 20:
+                high, low, close = 115.0, 110.0, 114.0
+            elif hour == 20:
+                high, low, close = 114.0, 110.0, 112.5
+            else:
+                high, low, close = 113.0, 107.0, 108.0
+            rows.append(
+                {
+                    "venue": "okx",
+                    "symbol": current_symbol,
+                    "market_type": "SPOT",
+                    "timeframe": "1H",
+                    "ts": ts,
+                    "open": close,
+                    "high": high,
+                    "low": low,
+                    "close": close,
+                    "volume": 1000.0,
+                    "quote_volume": 100000.0,
+                    "source": "test",
+                    "ingest_ts": start,
+                    "is_closed": True,
+                }
+            )
     write_parquet_dataset(pl.DataFrame(rows), lake / "silver" / "market_bar")

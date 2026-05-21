@@ -1142,6 +1142,32 @@ def test_expert_exports_stale_running_job_is_marked_failed(tmp_path, monkeypatch
     assert "exceeded web status timeout" in status["error"]
 
 
+def test_expert_exports_failed_status_recovers_when_new_pack_exists(tmp_path):
+    exports_root = tmp_path / "exports"
+    exports_root.mkdir()
+    status_path = exports_root / ".quant_lab_web_export_2026-05-16.json"
+    status_path.write_text(
+        json.dumps(
+            {
+                "state": "failed",
+                "error": "MemoryError",
+                "finished_at": "2026-05-16T00:00:00+00:00",
+            }
+        ),
+        encoding="utf-8",
+    )
+    pack_path = exports_root / "quant_lab_expert_pack_2026-05-16_20260516T100000+0800.zip"
+    pack_path.write_bytes(b"zip")
+    new_mtime = datetime(2026, 5, 16, 2, 0, tzinfo=UTC).timestamp()
+    os.utime(pack_path, (new_mtime, new_mtime))
+
+    status = expert_exports._poll_export_job(exports_root, "2026-05-16")
+
+    assert status["state"] == "succeeded"
+    assert status["zip_path"] == str(pack_path)
+    assert status["recovered_from_failed_status"] is True
+
+
 def test_expert_exports_subprocess_mode_parses_generated_pack(tmp_path, monkeypatch):
     pack_path = tmp_path / "exports" / "quant_lab_expert_pack_subprocess.zip"
     captured = {}

@@ -274,6 +274,15 @@ def _web_export_subprocess_env() -> dict[str, str]:
 def _poll_export_job(exports_root: Path, export_date: str) -> dict[str, Any]:
     status_path = _export_job_status_path(exports_root, export_date)
     status = _read_export_job_status(status_path)
+    if status.get("state") == "failed":
+        recovered = _recover_failed_export_status_from_pack(
+            exports_root,
+            export_date,
+            status_path,
+            status,
+        )
+        if recovered is not None:
+            return recovered
     if status.get("state") != "running":
         return status
     if _export_job_is_stale(status):
@@ -298,22 +307,59 @@ def _poll_export_job(exports_root: Path, export_date: str) -> dict[str, Any]:
     return status
 
 
+def _recover_failed_export_status_from_pack(
+    exports_root: Path,
+    export_date: str,
+    status_path: Path,
+    status: dict[str, Any],
+) -> dict[str, Any] | None:
+    pack_path = _latest_pack_for_export_date(exports_root, export_date)
+    if pack_path is None:
+        return None
+    finished_at = _parse_status_datetime(status.get("finished_at"))
+    try:
+        pack_mtime = datetime.fromtimestamp(pack_path.stat().st_mtime, UTC)
+    except OSError:
+        return None
+    if finished_at is not None and pack_mtime <= finished_at:
+        return None
+    recovered = {
+        **status,
+        "state": "succeeded",
+        "zip_path": str(pack_path),
+        "recovered_from_failed_status": True,
+        "finished_at": pack_mtime.isoformat(),
+    }
+    _write_export_job_status(status_path, recovered)
+    return recovered
+
+
 def _export_job_is_stale(status: dict[str, Any]) -> bool:
     started_at = status.get("started_at")
     if not started_at:
         return False
-    try:
-        started = datetime.fromisoformat(str(started_at).replace("Z", "+00:00"))
-    except ValueError:
+    started = _parse_status_datetime(started_at)
+    if started is None:
         return False
-    if started.tzinfo is None:
-        started = started.replace(tzinfo=UTC)
     timeout_seconds = _positive_int_env(
         "QUANT_LAB_WEB_EXPORT_STATUS_STALE_SECONDS",
         DEFAULT_EXPORT_STATUS_STALE_SECONDS,
     )
     age_seconds = (datetime.now(UTC) - started.astimezone(UTC)).total_seconds()
     return age_seconds > timeout_seconds
+
+
+def _parse_status_datetime(value: Any) -> datetime | None:
+    if not value:
+        return None
+    try:
+        parsed = datetime.fromisoformat(str(value).replace("Z", "+00:00"))
+    except ValueError:
+        return None
+    if parsed.tzinfo is None:
+        parsed = parsed.replace(tzinfo=UTC)
+    return parsed.astimezone(UTC)
+
 
 
 def _read_export_job_status(status_path: Path) -> dict[str, Any]:

@@ -1166,6 +1166,7 @@ def test_expert_exports_failed_status_recovers_when_new_pack_exists(tmp_path):
     assert status["state"] == "succeeded"
     assert status["zip_path"] == str(pack_path)
     assert status["recovered_from_failed_status"] is True
+    assert "error" not in status
 
 
 def test_expert_exports_subprocess_mode_parses_generated_pack(tmp_path, monkeypatch):

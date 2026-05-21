@@ -324,7 +324,10 @@ def _recover_failed_export_status_from_pack(
     if finished_at is not None and pack_mtime <= finished_at:
         return None
     recovered = {
-        **status,
+        key: value
+        for key, value in status.items()
+        if key not in {"error", "traceback_tail"}
+    } | {
         "state": "succeeded",
         "zip_path": str(pack_path),
         "recovered_from_failed_status": True,

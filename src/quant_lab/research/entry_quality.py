@@ -42,6 +42,7 @@ LATE_ENTRY_CHASE_THRESHOLD_ADVISORY_DATASET = (
 PULLBACK_REVERSAL_SHADOW_DATASET = Path("gold") / "v5_pullback_reversal_shadow"
 PULLBACK_REVERSAL_READINESS_DATASET = Path("gold") / "v5_pullback_reversal_readiness"
 ENTRY_QUALITY_ADVISORY_DATASET = Path("gold") / "v5_entry_quality_advisory"
+STRATEGY_OPPORTUNITY_ADVISORY_DATASET = Path("gold") / "strategy_opportunity_advisory"
 
 HISTORY_MISSED_LOW_AUDIT_DATASET = Path("gold") / "v5_entry_quality_history_missed_low_audit"
 HISTORY_MISSED_LOW_BY_SYMBOL_DATASET = (
@@ -214,6 +215,31 @@ ENTRY_QUALITY_ADVISORY_SCHEMA = COMMON_SCHEMA | {
     "ready_for_live": pl.Boolean,
 }
 
+STRATEGY_OPPORTUNITY_ADVISORY_SCHEMA = {
+    "as_of_ts": pl.Datetime(time_zone="UTC"),
+    "strategy_id": pl.Utf8,
+    "symbol": pl.Utf8,
+    "v5_symbol": pl.Utf8,
+    "strategy_candidate": pl.Utf8,
+    "decision": pl.Utf8,
+    "recommended_mode": pl.Utf8,
+    "horizon_hours": pl.Int64,
+    "sample_count": pl.Int64,
+    "complete_sample_count": pl.Int64,
+    "avg_net_bps": pl.Float64,
+    "p25_net_bps": pl.Float64,
+    "win_rate": pl.Float64,
+    "cost_source_mix": pl.Utf8,
+    "cost_quality": pl.Utf8,
+    "paper_days": pl.Int64,
+    "entry_day_count": pl.Int64,
+    "paper_pnl_observed_count": pl.Int64,
+    "slippage_coverage": pl.Float64,
+    "live_block_reasons": pl.Utf8,
+    "max_paper_notional_usdt": pl.Float64,
+    "max_live_notional_usdt": pl.Float64,
+}
+
 HISTORY_THRESHOLD_SENSITIVITY_SCHEMA = LATE_ENTRY_THRESHOLD_SCHEMA | HISTORY_META_SCHEMA
 
 HISTORY_PULLBACK_AGG_SCHEMA = COMMON_SCHEMA | HISTORY_META_SCHEMA | {
@@ -270,6 +296,7 @@ class EntryQualityBuildResult(BaseModel):
     pullback_reversal_shadow_rows: int = Field(ge=0)
     pullback_reversal_readiness_rows: int = Field(ge=0)
     entry_quality_advisory_rows: int = Field(ge=0)
+    strategy_opportunity_advisory_rows: int = Field(ge=0)
     warnings: list[str] = Field(default_factory=list)
 
 
@@ -366,6 +393,9 @@ def build_and_publish_entry_quality(
         pullback_readiness=readiness,
         ctx=ctx,
     )
+    strategy_opportunities = build_entry_quality_strategy_opportunity_advisory(
+        advisory
+    )
 
     return EntryQualityBuildResult(
         lake_root=str(root),
@@ -417,6 +447,12 @@ def build_and_publish_entry_quality(
             ENTRY_QUALITY_ADVISORY_DATASET,
             advisory,
             ["as_of_date", "strategy_candidate", "symbol"],
+        ),
+        strategy_opportunity_advisory_rows=_publish_daily(
+            root,
+            STRATEGY_OPPORTUNITY_ADVISORY_DATASET,
+            strategy_opportunities,
+            ["as_of_ts", "strategy_candidate", "symbol", "horizon_hours"],
         ),
         warnings=warnings,
     )
@@ -1051,6 +1087,60 @@ def build_entry_quality_advisory(
     if not rows:
         return pl.DataFrame(schema=ENTRY_QUALITY_ADVISORY_SCHEMA)
     return pl.DataFrame(rows, schema=ENTRY_QUALITY_ADVISORY_SCHEMA, orient="row")
+
+
+def build_entry_quality_strategy_opportunity_advisory(
+    entry_quality_advisory: pl.DataFrame,
+) -> pl.DataFrame:
+    if entry_quality_advisory.is_empty():
+        return pl.DataFrame(schema=STRATEGY_OPPORTUNITY_ADVISORY_SCHEMA)
+    rows: list[dict[str, Any]] = []
+    latest_as_of_date = _latest_as_of_date(entry_quality_advisory.to_dicts())
+    for row in entry_quality_advisory.to_dicts():
+        if latest_as_of_date and str(row.get("as_of_date") or "") != latest_as_of_date:
+            continue
+        candidate = str(row.get("strategy_candidate") or "").strip()
+        if not candidate:
+            continue
+        mode = _entry_quality_recommended_mode(candidate, row.get("recommended_mode"))
+        decision = _entry_quality_strategy_decision(mode)
+        symbol = normalize_symbol(row.get("symbol")) if row.get("symbol") != "ALL" else None
+        rendered_symbol = symbol or "ALL"
+        sample_count = _optional_int(row.get("sample_count")) or 0
+        live_block_reasons = _entry_quality_live_block_reasons(row, mode)
+        rows.append(
+            {
+                "as_of_ts": _entry_quality_as_of_datetime(row),
+                "strategy_id": _strategy_id(candidate, rendered_symbol),
+                "symbol": rendered_symbol,
+                "v5_symbol": _v5_symbol(rendered_symbol),
+                "strategy_candidate": candidate,
+                "decision": decision,
+                "recommended_mode": mode,
+                "horizon_hours": None,
+                "sample_count": sample_count,
+                "complete_sample_count": sample_count,
+                "avg_net_bps": _float_or_none(row.get("avg_net_bps")),
+                "p25_net_bps": None,
+                "win_rate": _float_or_none(row.get("win_rate")),
+                "cost_source_mix": safe_json_dumps({"entry_quality_research": sample_count}),
+                "cost_quality": "entry_quality_research",
+                "paper_days": 0,
+                "entry_day_count": 0,
+                "paper_pnl_observed_count": 0,
+                "slippage_coverage": None,
+                "live_block_reasons": safe_json_dumps(live_block_reasons),
+                "max_paper_notional_usdt": 100.0 if mode == "paper" else 0.0,
+                "max_live_notional_usdt": 0.0,
+            }
+        )
+    if not rows:
+        return pl.DataFrame(schema=STRATEGY_OPPORTUNITY_ADVISORY_SCHEMA)
+    return pl.DataFrame(
+        rows,
+        schema=STRATEGY_OPPORTUNITY_ADVISORY_SCHEMA,
+        orient="row",
+    )
 
 
 def build_pullback_reversal_history_aggregate(
@@ -1798,6 +1888,90 @@ def _history_shadow_decision(
             return "PAPER_READY", ["paper_candidate_from_historical_shadow"]
         return "KEEP_SHADOW", ["positive_after_cost_edge_collect_more_samples"]
     return "KEEP_SHADOW", ["positive_edge_but_weak_win_rate"]
+
+
+def _entry_quality_recommended_mode(candidate: str, value: Any) -> str:
+    if candidate == "v5.entry_quality_missed_low_audit":
+        return "research"
+    mode = str(value or "").strip().lower()
+    if mode == "audit":
+        return "research"
+    if mode in {"paper", "shadow", "research"}:
+        return mode
+    return "shadow"
+
+
+def _entry_quality_strategy_decision(recommended_mode: str) -> str:
+    if recommended_mode == "paper":
+        return "PAPER_READY"
+    if recommended_mode == "shadow":
+        return "KEEP_SHADOW"
+    return "RESEARCH_ONLY"
+
+
+def _entry_quality_live_block_reasons(row: dict[str, Any], recommended_mode: str) -> list[str]:
+    reasons = set(_json_listish(row.get("advisory_reasons")))
+    reasons.add("shadow_only")
+    reasons.add("not_live_validated")
+    if recommended_mode != "paper":
+        reasons.add("not_paper_candidate")
+    reasons.add("entry_quality_advisory_only")
+    return sorted(reason for reason in reasons if reason)
+
+
+def _entry_quality_as_of_datetime(row: dict[str, Any]) -> datetime:
+    value = _coerce_datetime(row.get("generated_at_utc"))
+    if value is not None:
+        return value
+    as_of = str(row.get("as_of_date") or "").strip()
+    if len(as_of) == 10 and as_of[4] == "-":
+        return datetime.combine(date.fromisoformat(as_of), time.min, tzinfo=UTC)
+    return datetime.now(UTC)
+
+
+def _strategy_id(strategy_candidate: str, symbol: str) -> str:
+    raw = f"{symbol}_{strategy_candidate}"
+    normalized = "".join(character if character.isalnum() else "_" for character in raw.upper())
+    while "__" in normalized:
+        normalized = normalized.replace("__", "_")
+    return normalized.strip("_")
+
+
+def _v5_symbol(symbol: str) -> str:
+    return symbol.replace("-", "_") if symbol != "ALL" else "ALL"
+
+
+def _latest_as_of_date(rows: list[dict[str, Any]]) -> str | None:
+    values = [
+        str(row.get("as_of_date") or "").strip()
+        for row in rows
+        if str(row.get("as_of_date") or "").strip()
+    ]
+    return max(values) if values else None
+
+
+def _optional_int(value: Any) -> int | None:
+    number = _float_or_none(value)
+    return int(number) if number is not None else None
+
+
+def _json_listish(value: Any) -> list[str]:
+    if value is None:
+        return []
+    if isinstance(value, list):
+        return [str(item) for item in value if str(item).strip()]
+    if isinstance(value, tuple | set):
+        return [str(item) for item in value if str(item).strip()]
+    if isinstance(value, str):
+        text = value.strip()
+        if not text:
+            return []
+        try:
+            parsed = json.loads(text)
+        except json.JSONDecodeError:
+            return [text]
+        return _json_listish(parsed)
+    return [str(value)]
 
 
 def _write_history_reports(

@@ -5,7 +5,9 @@ import zipfile
 from datetime import UTC, datetime, timedelta
 
 import polars as pl
+from fastapi.testclient import TestClient
 
+from quant_lab.api.main import app
 from quant_lab.data.lake import read_parquet_dataset, write_parquet_dataset
 from quant_lab.export.daily import export_daily_pack
 from quant_lab.research.entry_quality import (
@@ -174,6 +176,58 @@ def test_daily_export_contains_entry_quality_reports(tmp_path):
             archive.read("reports/late_entry_chase_threshold_advisory.json")
         )
         assert threshold["source"] == "quant_lab"
+
+
+def test_entry_quality_publishes_strategy_opportunity_advisory_for_api(
+    tmp_path,
+    monkeypatch,
+):
+    lake = tmp_path / "lake"
+    monkeypatch.setenv("QUANT_LAB_LAKE_ROOT", str(lake))
+    monkeypatch.delenv("QUANT_LAB_API_TOKEN", raising=False)
+    _write_market_bars(lake, "BNB-USDT")
+    write_parquet_dataset(
+        pl.DataFrame(
+            [
+                {
+                    "run_id": "run-1",
+                    "ts_utc": datetime(2026, 5, 10, 20, tzinfo=UTC),
+                    "symbol": "BNB-USDT",
+                    "side": "buy",
+                    "action": "entry",
+                    "price": 108.0,
+                    "realized_net_bps": -60.0,
+                    "exit_reason": "stop_loss",
+                    "trade_id": "trade-1",
+                }
+            ]
+        ),
+        lake / "silver" / "v5_trade_event",
+    )
+
+    result = build_and_publish_entry_quality(lake, as_of_date="2026-05-10")
+
+    assert result.strategy_opportunity_advisory_rows >= 1
+    gold_rows = read_parquet_dataset(
+        lake / "gold" / "strategy_opportunity_advisory"
+    ).to_dicts()
+    missed = next(
+        row
+        for row in gold_rows
+        if row["strategy_candidate"] == "v5.entry_quality_missed_low_audit"
+    )
+    assert missed["recommended_mode"] == "research"
+    assert missed["max_live_notional_usdt"] == 0.0
+    assert "shadow_only" in missed["live_block_reasons"]
+    assert "not_live_validated" in missed["live_block_reasons"]
+
+    response = TestClient(app).get("/v1/strategy-opportunity-advisory")
+    assert response.status_code == 200
+    api_row = response.json()[0]
+    assert api_row["strategy_candidate"] == "v5.entry_quality_missed_low_audit"
+    assert api_row["recommended_mode"] == "research"
+    assert api_row["max_live_notional_usdt"] == 0.0
+    assert {"shadow_only", "not_live_validated"} <= set(api_row["live_block_reasons"])
 
 
 def test_entry_quality_history_outputs_threshold_sensitivity_and_reports(tmp_path):

@@ -23,7 +23,7 @@ from quant_lab.contracts.v5_quant_lab import (
     V5_QUANT_LAB_CONTRACT_VERSION,
     V5_TELEMETRY_DATASET_SCHEMA_VERSION,
 )
-from quant_lab.data.lake import read_parquet_dataset
+from quant_lab.data.lake import read_parquet_dataset, upsert_parquet_dataset
 from quant_lab.reports.enforce_readiness import (
     ENFORCE_READINESS_CSV,
     ENFORCE_READINESS_JSON,
@@ -112,6 +112,7 @@ SECTION_DATASETS = {
         "strategy_evidence",
         "strategy_evidence_sample",
         "strategy_evidence_quality",
+        "strategy_opportunity_advisory",
         "paper_strategy_runs",
         "paper_strategy_daily",
         "paper_slippage_coverage",
@@ -618,6 +619,7 @@ CSV_SCHEMAS: dict[str, list[str]] = {
     ],
     "reports/strategy_opportunity_advisory.csv": [
         "as_of_ts",
+        "strategy_id",
         "symbol",
         "v5_symbol",
         "strategy_candidate",
@@ -1360,6 +1362,31 @@ class _DatasetSnapshot:
     warnings: list[str]
 
 
+def _publish_strategy_opportunity_advisory_snapshot(
+    root: Path,
+    snapshot: _DatasetSnapshot,
+) -> _DatasetSnapshot:
+    opportunity = _strategy_opportunity_advisory_from_frames(snapshot.frames)
+    if opportunity.is_empty():
+        return snapshot
+    rows = upsert_parquet_dataset(
+        opportunity,
+        root / "gold" / "strategy_opportunity_advisory",
+        key_columns=["as_of_ts", "strategy_candidate", "symbol", "horizon_hours"],
+    )
+    frames = dict(snapshot.frames)
+    frames["strategy_opportunity_advisory"] = read_parquet_dataset(
+        root / "gold" / "strategy_opportunity_advisory"
+    )
+    row_counts = dict(snapshot.row_counts)
+    row_counts["strategy_opportunity_advisory"] = rows
+    return _DatasetSnapshot(
+        frames=frames,
+        row_counts=row_counts,
+        warnings=snapshot.warnings,
+    )
+
+
 def export_daily_pack(
     *,
     export_date: str | date,
@@ -1391,6 +1418,7 @@ def export_daily_pack(
         else []
     )
     snapshot = _load_snapshot(root)
+    snapshot = _publish_strategy_opportunity_advisory_snapshot(root, snapshot)
     missing_sections = _missing_sections(snapshot.row_counts)
     data_quality = _data_quality_payload(
         root,
@@ -3777,6 +3805,7 @@ def _strategy_opportunity_advisory_for_export(
         rows.append(
             {
                 "as_of_ts": _advisory_as_of_ts(row),
+                "strategy_id": _advisory_strategy_id(candidate, symbol),
                 "symbol": symbol,
                 "v5_symbol": _v5_symbol(symbol),
                 "strategy_candidate": candidate,
@@ -3817,6 +3846,30 @@ def _strategy_opportunity_advisory_for_export(
     )
 
 
+def _strategy_opportunity_advisory_from_frames(
+    frames: dict[str, pl.DataFrame],
+) -> pl.DataFrame:
+    alpha_discovery_board = _alpha_discovery_board_for_export(
+        frames.get("alpha_discovery_board", pl.DataFrame())
+    )
+    strategy_evidence = _strategy_evidence_for_export(
+        frames.get("strategy_evidence", pl.DataFrame())
+    )
+    risk = _risk_permissions_for_export(frames.get("risk_permission", pl.DataFrame()), frames)
+    _, paper_daily, paper_slippage = _paper_tracking_frames_for_export(frames)
+    paper_proposals = _paper_strategy_proposals_for_export(alpha_discovery_board)
+    return _strategy_opportunity_advisory_for_export(
+        alpha_discovery_board=alpha_discovery_board,
+        strategy_evidence=strategy_evidence,
+        paper_proposals=paper_proposals,
+        risk_permissions=risk,
+        cost_health=frames.get("cost_health_daily", pl.DataFrame()),
+        paper_daily=paper_daily,
+        paper_slippage=paper_slippage,
+        entry_quality_advisory=frames.get("v5_entry_quality_advisory", pl.DataFrame()),
+    )
+
+
 def _entry_quality_opportunity_rows(entry_quality_advisory: pl.DataFrame) -> list[dict[str, Any]]:
     if entry_quality_advisory.is_empty():
         return []
@@ -3825,7 +3878,8 @@ def _entry_quality_opportunity_rows(entry_quality_advisory: pl.DataFrame) -> lis
     for row in entry_quality_advisory.to_dicts():
         if latest_as_of_date and str(row.get("as_of_date") or "") != latest_as_of_date:
             continue
-        mode = str(row.get("recommended_mode") or "shadow").strip().lower()
+        candidate = str(row.get("strategy_candidate") or "").strip()
+        mode = _entry_quality_recommended_mode(candidate, row.get("recommended_mode"))
         if mode == "paper":
             decision = "PAPER_READY"
         elif mode == "shadow":
@@ -3833,9 +3887,14 @@ def _entry_quality_opportunity_rows(entry_quality_advisory: pl.DataFrame) -> lis
         else:
             decision = "RESEARCH_ONLY"
         symbol = normalize_symbol(row.get("symbol")) if row.get("symbol") != "ALL" else "ALL"
+        live_block_reasons = _entry_quality_live_block_reasons(row, mode)
         rows.append(
             {
                 "as_of_ts": _entry_quality_as_of_ts(row),
+                "strategy_id": _advisory_strategy_id(
+                    str(row.get("strategy_candidate") or ""),
+                    symbol or "ALL",
+                ),
                 "symbol": symbol or "ALL",
                 "v5_symbol": _v5_symbol(symbol) if symbol and symbol != "ALL" else "ALL",
                 "strategy_candidate": row.get("strategy_candidate"),
@@ -3853,14 +3912,41 @@ def _entry_quality_opportunity_rows(entry_quality_advisory: pl.DataFrame) -> lis
                 "entry_day_count": 0,
                 "paper_pnl_observed_count": 0,
                 "slippage_coverage": None,
-                "live_block_reasons": (
-                    row.get("advisory_reasons") or '["entry_quality_live_disabled"]'
-                ),
+                "live_block_reasons": safe_json_dumps(live_block_reasons),
                 "max_paper_notional_usdt": _advisory_max_paper_notional(mode),
                 "max_live_notional_usdt": 0.0,
             }
         )
     return rows
+
+
+def _entry_quality_recommended_mode(candidate: str, value: Any) -> str:
+    if candidate == "v5.entry_quality_missed_low_audit":
+        return "research"
+    mode = str(value or "").strip().lower()
+    if mode == "audit":
+        return "research"
+    if mode in {"paper", "shadow", "research"}:
+        return mode
+    return "shadow"
+
+
+def _entry_quality_live_block_reasons(row: dict[str, Any], recommended_mode: str) -> list[str]:
+    reasons = set(_json_listish(row.get("advisory_reasons")))
+    reasons.add("shadow_only")
+    reasons.add("not_live_validated")
+    reasons.add("entry_quality_advisory_only")
+    if recommended_mode != "paper":
+        reasons.add("not_paper_candidate")
+    return sorted(reason for reason in reasons if reason)
+
+
+def _advisory_strategy_id(strategy_candidate: str, symbol: str) -> str:
+    raw = f"{symbol}_{strategy_candidate}"
+    normalized = "".join(character if character.isalnum() else "_" for character in raw.upper())
+    while "__" in normalized:
+        normalized = normalized.replace("__", "_")
+    return normalized.strip("_")
 
 
 def _entry_quality_as_of_ts(row: dict[str, Any]) -> str:

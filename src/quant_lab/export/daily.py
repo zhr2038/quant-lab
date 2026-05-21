@@ -124,6 +124,7 @@ SECTION_DATASETS = {
         "v5_missed_low_by_entry_reason",
         "v5_late_entry_chase_shadow",
         "v5_late_entry_chase_threshold_advisory",
+        "v5_late_entry_chase_threshold_by_symbol",
         "v5_pullback_reversal_shadow",
         "v5_pullback_reversal_readiness",
         "v5_pullback_reversal_rule_comparison",
@@ -233,6 +234,8 @@ REQUIRED_MEMBERS = [
     "reports/late_entry_chase_shadow.csv",
     "reports/late_entry_chase_threshold_advisory.json",
     "reports/late_entry_chase_threshold_sensitivity.csv",
+    "reports/late_entry_chase_threshold_sensitivity_by_symbol.csv",
+    "reports/threshold_advisory_by_symbol.json",
     "reports/pullback_reversal_shadow_outcomes.csv",
     "reports/pullback_reversal_by_symbol.csv",
     "reports/pullback_reversal_by_regime.csv",
@@ -873,6 +876,23 @@ CSV_SCHEMAS: dict[str, list[str]] = {
         "end_date",
         "window_mode",
         "cost_mode",
+        "threshold_bps",
+        "would_block_count",
+        "would_block_loss_count",
+        "would_block_profit_count",
+        "false_positive_rate",
+        "avg_net_bps_blocked",
+        "avg_net_bps_not_blocked",
+        "ready_for_live_guard",
+        "advisory",
+        "mode",
+        "generated_at_utc",
+        "schema_version",
+        "contract_version",
+    ],
+    "reports/late_entry_chase_threshold_sensitivity_by_symbol.csv": [
+        "as_of_date",
+        "symbol",
         "threshold_bps",
         "would_block_count",
         "would_block_loss_count",
@@ -1797,6 +1817,10 @@ def _dataset_members(frames: dict[str, pl.DataFrame]) -> dict[str, _MemberPayloa
         "v5_late_entry_chase_threshold_advisory",
         pl.DataFrame(),
     )
+    late_entry_threshold_by_symbol = frames.get(
+        "v5_late_entry_chase_threshold_by_symbol",
+        pl.DataFrame(),
+    )
     pullback_reversal_shadow = frames.get("v5_pullback_reversal_shadow", pl.DataFrame())
     pullback_reversal_readiness = frames.get(
         "v5_pullback_reversal_readiness",
@@ -1987,6 +2011,13 @@ def _dataset_members(frames: dict[str, pl.DataFrame]) -> dict[str, _MemberPayloa
         "reports/late_entry_chase_threshold_sensitivity.csv": _csv_member(
             "reports/late_entry_chase_threshold_sensitivity.csv",
             history_late_threshold,
+        ),
+        "reports/late_entry_chase_threshold_sensitivity_by_symbol.csv": _csv_member(
+            "reports/late_entry_chase_threshold_sensitivity_by_symbol.csv",
+            late_entry_threshold_by_symbol,
+        ),
+        "reports/threshold_advisory_by_symbol.json": _json_text(
+            _threshold_advisory_by_symbol_json(late_entry_threshold_by_symbol)
         ),
         "reports/pullback_reversal_shadow_outcomes.csv": _csv_member(
             "reports/pullback_reversal_shadow_outcomes.csv",
@@ -5344,6 +5375,30 @@ def _entry_quality_json(df: pl.DataFrame) -> dict[str, Any]:
         "row_count": 0 if df.is_empty() else df.height,
         "source": "quant_lab",
         "mode": "advisory",
+    }
+
+
+def _threshold_advisory_by_symbol_json(df: pl.DataFrame) -> dict[str, Any]:
+    if df.is_empty():
+        return {
+            "rows": [],
+            "by_symbol": {},
+            "ready_for_live_guard": False,
+            "source": "quant_lab",
+            "mode": "shadow",
+        }
+    rows = _rows(df)
+    by_symbol: dict[str, list[dict[str, Any]]] = {}
+    for row in rows:
+        by_symbol.setdefault(str(row.get("symbol") or "UNKNOWN"), []).append(row)
+    return {
+        "rows": rows,
+        "by_symbol": by_symbol,
+        "row_count": len(rows),
+        "thresholds_bps": [50, 100, 150, 200, 250, 300],
+        "ready_for_live_guard": False,
+        "source": "quant_lab",
+        "mode": "shadow",
     }
 
 

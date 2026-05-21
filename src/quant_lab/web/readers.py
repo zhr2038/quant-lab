@@ -34,6 +34,8 @@ DATASET_PATHS = {
     "v5_late_entry_chase_shadow": Path("gold") / "v5_late_entry_chase_shadow",
     "v5_late_entry_chase_threshold_advisory": Path("gold")
     / "v5_late_entry_chase_threshold_advisory",
+    "v5_late_entry_chase_threshold_by_symbol": Path("gold")
+    / "v5_late_entry_chase_threshold_by_symbol",
     "v5_pullback_reversal_shadow": Path("gold") / "v5_pullback_reversal_shadow",
     "v5_pullback_reversal_readiness": Path("gold") / "v5_pullback_reversal_readiness",
     "v5_pullback_reversal_rule_comparison": Path("gold")
@@ -100,6 +102,7 @@ ENTRY_QUALITY_DATASETS = {
     "v5_missed_low_by_entry_reason",
     "v5_late_entry_chase_shadow",
     "v5_late_entry_chase_threshold_advisory",
+    "v5_late_entry_chase_threshold_by_symbol",
     "v5_pullback_reversal_shadow",
     "v5_pullback_reversal_readiness",
     "v5_pullback_reversal_rule_comparison",
@@ -152,6 +155,7 @@ DATASET_TIMESTAMP_COLUMNS: dict[str, tuple[str, ...]] = {
     "v5_missed_low_by_entry_reason": ("generated_at_utc", "as_of_date"),
     "v5_late_entry_chase_shadow": ("generated_at_utc", "ts_utc", "as_of_date"),
     "v5_late_entry_chase_threshold_advisory": ("generated_at_utc", "as_of_date"),
+    "v5_late_entry_chase_threshold_by_symbol": ("generated_at_utc", "as_of_date"),
     "v5_pullback_reversal_shadow": ("generated_at_utc", "ts_utc", "as_of_date"),
     "v5_pullback_reversal_readiness": ("generated_at_utc", "as_of_date"),
     "v5_pullback_reversal_rule_comparison": ("generated_at_utc", "as_of_date"),

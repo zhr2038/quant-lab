@@ -31,6 +31,7 @@ STRATEGY_OPPORTUNITY_ADVISORY_TTL_SECONDS = 3 * 60 * 60
 DEFAULT_WINDOW_HOURS = 24
 ENTRY_QUALITY_SYMBOLS = {"BTC-USDT", "ETH-USDT", "SOL-USDT", "BNB-USDT"}
 LATE_CHASE_THRESHOLDS_BPS = (100, 150, 200, 250, 300, 400)
+LATE_CHASE_BY_SYMBOL_THRESHOLDS_BPS = (50, 100, 150, 200, 250, 300)
 PULLBACK_HORIZON_HOURS = (4, 8, 12, 24, 48, 72)
 MIN_ROUNDTRIP_COST_BPS = 30.0
 PULLBACK_OLD_RULE_VERSION = "old_pullback_v0.1"
@@ -52,6 +53,9 @@ MISSED_LOW_BY_ENTRY_REASON_DATASET = Path("gold") / "v5_missed_low_by_entry_reas
 LATE_ENTRY_CHASE_SHADOW_DATASET = Path("gold") / "v5_late_entry_chase_shadow"
 LATE_ENTRY_CHASE_THRESHOLD_ADVISORY_DATASET = (
     Path("gold") / "v5_late_entry_chase_threshold_advisory"
+)
+LATE_ENTRY_CHASE_THRESHOLD_BY_SYMBOL_DATASET = (
+    Path("gold") / "v5_late_entry_chase_threshold_by_symbol"
 )
 PULLBACK_REVERSAL_SHADOW_DATASET = Path("gold") / "v5_pullback_reversal_shadow"
 PULLBACK_REVERSAL_READINESS_DATASET = Path("gold") / "v5_pullback_reversal_readiness"
@@ -179,6 +183,10 @@ LATE_ENTRY_THRESHOLD_SCHEMA = COMMON_SCHEMA | {
     "avg_net_bps_not_blocked": pl.Float64,
     "ready_for_live_guard": pl.Boolean,
     "advisory": pl.Utf8,
+}
+
+LATE_ENTRY_THRESHOLD_BY_SYMBOL_SCHEMA = LATE_ENTRY_THRESHOLD_SCHEMA | {
+    "symbol": pl.Utf8,
 }
 
 PULLBACK_REVERSAL_SHADOW_SCHEMA = COMMON_SCHEMA | {
@@ -343,6 +351,7 @@ class EntryQualityBuildResult(BaseModel):
     missed_low_by_entry_reason_rows: int = Field(ge=0)
     late_entry_chase_shadow_rows: int = Field(ge=0)
     late_entry_chase_threshold_rows: int = Field(ge=0)
+    late_entry_chase_threshold_by_symbol_rows: int = Field(ge=0)
     pullback_reversal_shadow_rows: int = Field(ge=0)
     pullback_reversal_readiness_rows: int = Field(ge=0)
     pullback_rule_comparison_rows: int = Field(ge=0)
@@ -431,6 +440,10 @@ def build_and_publish_entry_quality(
         ctx=ctx,
     )
     late_threshold = build_late_entry_chase_threshold_advisory(late_shadow, ctx=ctx)
+    late_threshold_by_symbol = build_late_entry_chase_threshold_by_symbol(
+        late_shadow,
+        ctx=ctx,
+    )
     pullback = build_pullback_reversal_shadow(
         candidates=candidates,
         market_bars=market,
@@ -486,6 +499,11 @@ def build_and_publish_entry_quality(
             LATE_ENTRY_CHASE_THRESHOLD_ADVISORY_DATASET,
             late_threshold,
             ["as_of_date", "threshold_bps"],
+        ),
+        late_entry_chase_threshold_by_symbol_rows=_replace_daily(
+            root,
+            LATE_ENTRY_CHASE_THRESHOLD_BY_SYMBOL_DATASET,
+            late_threshold_by_symbol,
         ),
         pullback_reversal_shadow_rows=_replace_daily(
             root,
@@ -901,44 +919,80 @@ def build_late_entry_chase_threshold_advisory(
     *,
     ctx: _BuildContext,
 ) -> pl.DataFrame:
-    rows: list[dict[str, Any]] = []
     shadow_rows = late_shadow.to_dicts() if not late_shadow.is_empty() else []
-    for threshold in LATE_CHASE_THRESHOLDS_BPS:
-        blocked = [
+    rows = [
+        _late_entry_threshold_row(shadow_rows, threshold=threshold, ctx=ctx)
+        for threshold in LATE_CHASE_THRESHOLDS_BPS
+    ]
+    return pl.DataFrame(rows, schema=LATE_ENTRY_THRESHOLD_SCHEMA, orient="row")
+
+
+def build_late_entry_chase_threshold_by_symbol(
+    late_shadow: pl.DataFrame,
+    *,
+    ctx: _BuildContext,
+) -> pl.DataFrame:
+    if late_shadow.is_empty():
+        return pl.DataFrame(schema=LATE_ENTRY_THRESHOLD_BY_SYMBOL_SCHEMA)
+    rows: list[dict[str, Any]] = []
+    shadow_rows = late_shadow.to_dicts()
+    for symbol in sorted(ENTRY_QUALITY_SYMBOLS):
+        symbol_rows = [
             row
             for row in shadow_rows
-            if (_float_or_none(row.get("entry_vs_12h_low_bps")) or 0.0) > threshold
-            and (_float_or_none(row.get("entry_position_in_12h_range")) or 0.0) > 0.70
+            if normalize_symbol(row.get("symbol")) == symbol
         ]
-        loss_count = sum(
-            1
-            for row in blocked
-            if _outcome_value(row) is not None and (_outcome_value(row) or 0.0) < 0
-        )
-        profit_count = sum(
-            1
-            for row in blocked
-            if _outcome_value(row) is not None and (_outcome_value(row) or 0.0) >= 0
-        )
-        not_blocked = [row for row in shadow_rows if row not in blocked]
-        total = len(blocked)
-        rows.append(
-            _common(ctx, mode="advisory")
-            | {
-                "threshold_bps": int(threshold),
-                "would_block_count": total,
-                "would_block_loss_count": loss_count,
-                "would_block_profit_count": profit_count,
-                "false_positive_rate": (profit_count / total) if total else None,
-                "avg_net_bps_blocked": _mean(_outcome_value(row) for row in blocked),
-                "avg_net_bps_not_blocked": _mean(
-                    _outcome_value(row) for row in not_blocked
-                ),
-                "ready_for_live_guard": False,
-                "advisory": "shadow_only_collect_more_samples",
-            }
-        )
-    return pl.DataFrame(rows, schema=LATE_ENTRY_THRESHOLD_SCHEMA, orient="row")
+        for threshold in LATE_CHASE_BY_SYMBOL_THRESHOLDS_BPS:
+            rows.append(
+                _late_entry_threshold_row(
+                    symbol_rows,
+                    threshold=threshold,
+                    ctx=ctx,
+                    symbol=symbol,
+                )
+            )
+    return pl.DataFrame(rows, schema=LATE_ENTRY_THRESHOLD_BY_SYMBOL_SCHEMA, orient="row")
+
+
+def _late_entry_threshold_row(
+    shadow_rows: list[dict[str, Any]],
+    *,
+    threshold: int,
+    ctx: _BuildContext,
+    symbol: str | None = None,
+) -> dict[str, Any]:
+    blocked = [
+        row
+        for row in shadow_rows
+        if (_float_or_none(row.get("entry_vs_12h_low_bps")) or 0.0) > threshold
+        and (_float_or_none(row.get("entry_position_in_12h_range")) or 0.0) > 0.70
+    ]
+    loss_count = sum(
+        1
+        for row in blocked
+        if _outcome_value(row) is not None and (_outcome_value(row) or 0.0) < 0
+    )
+    profit_count = sum(
+        1
+        for row in blocked
+        if _outcome_value(row) is not None and (_outcome_value(row) or 0.0) >= 0
+    )
+    not_blocked = [row for row in shadow_rows if row not in blocked]
+    total = len(blocked)
+    payload = _common(ctx, mode="advisory") | {
+        "threshold_bps": int(threshold),
+        "would_block_count": total,
+        "would_block_loss_count": loss_count,
+        "would_block_profit_count": profit_count,
+        "false_positive_rate": (profit_count / total) if total else None,
+        "avg_net_bps_blocked": _mean(_outcome_value(row) for row in blocked),
+        "avg_net_bps_not_blocked": _mean(_outcome_value(row) for row in not_blocked),
+        "ready_for_live_guard": False,
+        "advisory": "shadow_only_collect_more_samples",
+    }
+    if symbol is not None:
+        payload["symbol"] = symbol
+    return payload
 
 
 def build_pullback_reversal_shadow(

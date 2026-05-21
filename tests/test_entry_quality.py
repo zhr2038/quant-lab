@@ -94,6 +94,19 @@ def test_late_entry_chase_shadow_counts_blocked_losses(tmp_path):
     threshold_250 = threshold.filter(pl.col("threshold_bps") == 250).to_dicts()[0]
     assert threshold_250["would_block_loss_count"] == 1
     assert threshold_250["ready_for_live_guard"] is False
+    by_symbol = read_parquet_dataset(
+        lake / "gold" / "v5_late_entry_chase_threshold_by_symbol"
+    )
+    assert by_symbol.height == 24
+    sol_100 = by_symbol.filter(
+        (pl.col("symbol") == "SOL-USDT") & (pl.col("threshold_bps") == 100)
+    ).to_dicts()[0]
+    assert sol_100["would_block_loss_count"] == 1
+    assert sol_100["ready_for_live_guard"] is False
+    btc_100 = by_symbol.filter(
+        (pl.col("symbol") == "BTC-USDT") & (pl.col("threshold_bps") == 100)
+    ).to_dicts()[0]
+    assert btc_100["would_block_count"] == 0
 
 
 def test_pullback_reversal_shadow_outputs_positive_labels_without_live_ready(tmp_path):
@@ -177,6 +190,8 @@ def test_daily_export_contains_entry_quality_reports(tmp_path):
         names = set(archive.namelist())
         assert "reports/missed_low_audit.csv" in names
         assert "reports/late_entry_chase_threshold_advisory.json" in names
+        assert "reports/late_entry_chase_threshold_sensitivity_by_symbol.csv" in names
+        assert "reports/threshold_advisory_by_symbol.json" in names
         assert "reports/pullback_reversal_rule_comparison.csv" in names
         assert "reports/pullback_reversal_readiness.json" in names
         summary = archive.read("reports/entry_quality_summary.md").decode("utf-8")
@@ -187,6 +202,9 @@ def test_daily_export_contains_entry_quality_reports(tmp_path):
             archive.read("reports/late_entry_chase_threshold_advisory.json")
         )
         assert threshold["source"] == "quant_lab"
+        by_symbol = json.loads(archive.read("reports/threshold_advisory_by_symbol.json"))
+        assert by_symbol["ready_for_live_guard"] is False
+        assert by_symbol["thresholds_bps"] == [50, 100, 150, 200, 250, 300]
 
 
 def test_entry_quality_publishes_strategy_opportunity_advisory_for_api(

@@ -1,0 +1,18 @@
+[Unit]
+Description=Prune regenerable quant-lab storage retention targets
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+WorkingDirectory=/opt/quant-lab
+Environment=PYTHONUNBUFFERED=1
+ExecStart=/usr/bin/flock -w 10 /var/lock/quant-lab-storage-retention.lock /opt/quant-lab/.venv/bin/qlab prune-storage-retention --base-dir /var/lib/quant-lab --keep-redacted-archive-days 3 --keep-inbox-days 2 --keep-export-packs 5 --apply
+ExecStartPost=/usr/bin/journalctl --vacuum-size=200M
+Nice=15
+IOSchedulingClass=idle
+MemoryHigh=512M
+MemoryMax=1G
+TimeoutStartSec=10min
+NoNewPrivileges=true
+PrivateTmp=true

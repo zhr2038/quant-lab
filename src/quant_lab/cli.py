@@ -35,6 +35,7 @@ from quant_lab.ingest.okx_ws_public import collect_okx_public_ws, collect_okx_pu
 from quant_lab.ingest.v5_reports import inspect_v5_reports, publish_v5_reports_to_lake
 from quant_lab.ops.lake_health import write_lake_file_health_daily
 from quant_lab.ops.metrics import api_metrics_summary, job_run_summary, run_with_job_metrics
+from quant_lab.ops.retention import prune_quant_lab_storage
 from quant_lab.reports.enforce_readiness import write_enforce_readiness_report
 from quant_lab.research.alpha_discovery import build_and_publish_alpha_discovery_board
 from quant_lab.research.bootstrap_gold import bootstrap_gold_health
@@ -602,6 +603,41 @@ def ops_summary_command(
         "lake_file_health": write_lake_file_health_daily(lake_root),
     }
     typer.echo(json.dumps(payload, indent=2, sort_keys=True, default=str))
+
+
+@app.command("prune-storage-retention")
+def prune_storage_retention_command(
+    base_dir: Annotated[
+        Path,
+        typer.Option(
+            "--base-dir",
+            file_okay=False,
+            dir_okay=True,
+            help="quant-lab production data root, for example /var/lib/quant-lab.",
+        ),
+    ] = Path("/var/lib/quant-lab"),
+    keep_redacted_archive_days: Annotated[
+        int,
+        typer.Option("--keep-redacted-archive-days", min=1),
+    ] = 3,
+    keep_inbox_days: Annotated[int, typer.Option("--keep-inbox-days", min=1)] = 2,
+    keep_export_packs: Annotated[int, typer.Option("--keep-export-packs", min=1)] = 5,
+    dry_run: Annotated[
+        bool,
+        typer.Option(
+            "--dry-run/--apply",
+            help="Preview removals by default; pass --apply to remove files.",
+        ),
+    ] = True,
+) -> None:
+    result = prune_quant_lab_storage(
+        base_dir=base_dir,
+        keep_redacted_archive_days=keep_redacted_archive_days,
+        keep_inbox_days=keep_inbox_days,
+        keep_export_packs=keep_export_packs,
+        dry_run=dry_run,
+    )
+    typer.echo(json.dumps(result.to_dict(), indent=2, sort_keys=True))
 
 
 @app.command("bootstrap-gold-health")

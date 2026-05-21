@@ -435,7 +435,7 @@ def test_entry_quality_history_pullback_by_symbol_and_anti_leakage(tmp_path):
         lake / "gold" / "v5_entry_quality_history_pullback_by_symbol"
     ).to_dicts()[0]
     assert by_symbol["symbol"] == "ETH-USDT"
-    assert by_symbol["decision"] in {"RESEARCH_ONLY", "KEEP_SHADOW", "PAPER_READY"}
+    assert by_symbol["decision"] in {"RESEARCH_ONLY", "KEEP_SHADOW"}
     assert by_symbol["decision"] != "LIVE_SMALL_READY"
     checks = read_parquet_dataset(
         lake / "gold" / "v5_entry_quality_history_anti_leakage_check"
@@ -568,6 +568,49 @@ def test_pullback_bad_mae_and_negative_edge_stays_research_only():
     assert row["recommended_mode"] == "research"
     assert row["would_enter"] is False
     assert row["no_sample_reason"] == "weak_24h_avg_net_bps"
+
+
+def test_pullback_v2_does_not_promote_to_paper_even_when_metrics_pass():
+    ctx = _BuildContext(
+        as_of_date=datetime(2026, 5, 10, tzinfo=UTC).date(),
+        generated_at=datetime(2026, 5, 10, tzinfo=UTC),
+        generated_from_bundle_id="bundle-1",
+        window_hours=24,
+    )
+    readiness = pl.DataFrame(
+        [
+            {
+                "strategy_candidate": "v5.pullback_reversal_shadow_sol",
+                "symbol": "SOL-USDT",
+                "sample_count": 80,
+                "recent_7d_sample_count": 20,
+                "avg_24h_net_bps": 75.0,
+                "win_rate_24h": 0.62,
+                "p25_24h_net_bps": -20.0,
+                "avg_mae_bps": -70.0,
+                "ready_for_paper": True,
+                "ready_for_live_probe": False,
+                "readiness_reasons": '["legacy_ready_for_paper"]',
+            }
+        ]
+    )
+
+    advisory = build_entry_quality_advisory(
+        missed_low=pl.DataFrame(),
+        late_threshold=pl.DataFrame(),
+        pullback_readiness=readiness,
+        ctx=ctx,
+    )
+    row = next(
+        item
+        for item in advisory.to_dicts()
+        if item["strategy_candidate"] == "v5.pullback_reversal_shadow_sol"
+    )
+
+    assert row["recommended_mode"] == "shadow"
+    assert row["readiness_status"] == "SHADOW_ONLY"
+    assert row["would_enter"] is False
+    assert row["ready_for_live"] is False
 
 
 def _write_market_bars(lake, symbol: str) -> None:

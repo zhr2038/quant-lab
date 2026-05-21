@@ -1223,7 +1223,12 @@ def build_pullback_reversal_readiness(
             p25=p25,
             avg_mae=avg_mae,
         )
-        ready_for_paper = not reasons
+        ready_for_paper = False
+        rendered_reasons = (
+            reasons
+            if reasons
+            else ["pullback_v2_shadow_only_not_paper_ready", "not_live_validated"]
+        )
         rows.append(
             _common(ctx, mode="advisory")
             | {
@@ -1237,9 +1242,7 @@ def build_pullback_reversal_readiness(
                 "avg_mae_bps": avg_mae,
                 "ready_for_paper": ready_for_paper,
                 "ready_for_live_probe": False,
-                "readiness_reasons": safe_json_dumps(
-                    reasons if reasons else ["ready_for_paper_shadow_only"]
-                ),
+                "readiness_reasons": safe_json_dumps(rendered_reasons),
             }
         )
     return pl.DataFrame(rows, schema=PULLBACK_REVERSAL_READINESS_SCHEMA, orient="row")
@@ -1299,7 +1302,7 @@ def build_entry_quality_advisory(
             )
     observed_pullback_symbols: set[str] = set()
     for row in pullback_readiness.to_dicts() if not pullback_readiness.is_empty() else []:
-        ready_for_paper = bool(row.get("ready_for_paper"))
+        ready_for_paper = False
         symbol = normalize_symbol(row.get("symbol"))
         if symbol:
             observed_pullback_symbols.add(symbol)
@@ -1602,7 +1605,7 @@ def build_entry_quality_history_metrics(
         "pullback_by_horizon_rows": pullback_by_horizon.height,
         "anti_leakage_status": anti_status,
         "ready_for_live_rows": 0,
-        "allowed_decisions": ["RESEARCH_ONLY", "KEEP_SHADOW", "PAPER_READY"],
+        "allowed_decisions": ["RESEARCH_ONLY", "KEEP_SHADOW"],
         "warnings": warnings,
     }
     row = (
@@ -2012,7 +2015,11 @@ def _pullback_reversal_conditions(
     ts: datetime,
 ) -> dict[str, bool]:
     return {
-        "recent_2h_no_new_low": _recent_2h_no_new_low(bars, ts),
+        "recent_2h_no_new_low": _recent_2h_no_new_low(
+            bars,
+            ts,
+            require_history=True,
+        ),
         "close_reclaim_1h": _close_reclaim_1h(
             bars,
             ts,
@@ -2035,13 +2042,18 @@ def _pullback_from_high_bps(price: float, high: float | None) -> float | None:
     return (high / price - 1.0) * 10_000.0
 
 
-def _recent_2h_no_new_low(bars: list[dict[str, Any]], ts: datetime) -> bool:
+def _recent_2h_no_new_low(
+    bars: list[dict[str, Any]],
+    ts: datetime,
+    *,
+    require_history: bool = False,
+) -> bool:
     recent_start = ts - timedelta(hours=2)
     previous_start = ts - timedelta(hours=24)
     recent = [row for row in bars if recent_start <= row["ts"] <= ts]
     previous = [row for row in bars if previous_start <= row["ts"] < recent_start]
     if not recent or not previous:
-        return True
+        return not require_history
     recent_low = min(_float_or_none(row.get("low")) or math.inf for row in recent)
     previous_low = min(_float_or_none(row.get("low")) or math.inf for row in previous)
     return recent_low > previous_low
@@ -2409,9 +2421,10 @@ def _history_shadow_decision(
     if avg_net_bps is None or avg_net_bps <= 0.0:
         return "RESEARCH_ONLY", ["non_positive_after_cost_edge"]
     if complete_sample_count >= 10 and win_rate is not None and win_rate > 0.50:
-        if complete_sample_count >= 30 and win_rate > 0.55 and (p25_net_bps or -math.inf) > -50:
-            return "PAPER_READY", ["paper_candidate_from_historical_shadow"]
-        return "KEEP_SHADOW", ["positive_after_cost_edge_collect_more_samples"]
+        return "KEEP_SHADOW", [
+            "positive_after_cost_edge_collect_more_samples",
+            "pullback_v2_shadow_only_not_paper_ready",
+        ]
     return "KEEP_SHADOW", ["positive_edge_but_weak_win_rate"]
 
 
@@ -2654,8 +2667,8 @@ def _entry_quality_history_summary_md(metrics: dict[str, Any]) -> str:
         f"- pullback_reversal_shadow_rows: {metrics.get('pullback_reversal_shadow_rows', 0)}",
         f"- anti_leakage_status: {metrics.get('anti_leakage_status', '')}",
         "",
-        "Allowed historical decisions: RESEARCH_ONLY, KEEP_SHADOW, PAPER_READY.",
-        "LIVE_SMALL_READY is intentionally unavailable in this historical builder.",
+        "Allowed pullback reversal v2 decisions: RESEARCH_ONLY, KEEP_SHADOW.",
+        "PAPER_READY and LIVE_SMALL_READY are intentionally unavailable for pullback v2.",
     ]
     return "\n".join(lines) + "\n"
 

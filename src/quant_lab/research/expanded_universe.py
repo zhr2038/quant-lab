@@ -493,7 +493,7 @@ def _read_recent_market_bars(
     min_coverage_bars: int,
 ) -> tuple[pl.DataFrame, datetime | None]:
     dataset_path = lake_root / MARKET_BAR_DATASET
-    scan = _scan_dataset(dataset_path)
+    scan = _scan_dataset(dataset_path, max_files=800)
     if scan is None:
         return pl.DataFrame(), None
     try:
@@ -503,7 +503,7 @@ def _read_recent_market_bars(
             .item()
         )
     except Exception:
-        return read_parquet_dataset(dataset_path), None
+        return pl.DataFrame(), None
     latest_ts = _parse_dt(max_ts)
     if latest_ts is None:
         return pl.DataFrame(), None
@@ -520,15 +520,13 @@ def _read_recent_market_bars(
             .collect(engine="streaming")
         )
     except Exception:
-        frame = read_parquet_dataset(dataset_path)
-        if not frame.is_empty() and "ts" in frame.columns:
-            frame = frame.filter(pl.col("ts") >= since)
+        frame = pl.DataFrame()
     return frame, latest_ts
 
 
 def _read_recent_orderbook_snapshots(lake_root: Path, *, since: datetime) -> pl.DataFrame:
     dataset_path = lake_root / ORDERBOOK_SNAPSHOT_DATASET
-    scan = _scan_dataset(dataset_path)
+    scan = _scan_dataset(dataset_path, max_files=300)
     if scan is None:
         return pl.DataFrame()
     timestamp = pl.coalesce([pl.col("ts"), pl.col("ingest_ts")])
@@ -540,20 +538,7 @@ def _read_recent_orderbook_snapshots(lake_root: Path, *, since: datetime) -> pl.
             .collect(engine="streaming")
         )
     except Exception:
-        frame = read_parquet_dataset(dataset_path)
-        if frame.is_empty():
-            return frame
-        if "ts" in frame.columns or "ingest_ts" in frame.columns:
-            fallback_timestamp = pl.coalesce(
-                [
-                    pl.col("ts") if "ts" in frame.columns else pl.lit(None),
-                    pl.col("ingest_ts") if "ingest_ts" in frame.columns else pl.lit(None),
-                ]
-            )
-            frame = frame.with_columns(fallback_timestamp.alias("_ql_ts")).filter(
-                pl.col("_ql_ts") >= since
-            )
-        return frame
+        return pl.DataFrame()
 
 
 def _orderbook_since(as_of_date: date, market_end: datetime | None) -> datetime:
@@ -564,14 +549,20 @@ def _orderbook_since(as_of_date: date, market_end: datetime | None) -> datetime:
     )
 
 
-def _scan_dataset(dataset_path: Path) -> pl.LazyFrame | None:
+def _scan_dataset(dataset_path: Path, *, max_files: int | None = None) -> pl.LazyFrame | None:
     if not dataset_path.exists():
         return None
-    parquet_files = [str(path) for path in dataset_path.rglob("*.parquet")]
-    if not parquet_files:
+    parquet_paths = list(dataset_path.rglob("*.parquet"))
+    if not parquet_paths:
         return None
+    if max_files is not None and len(parquet_paths) > max_files:
+        parquet_paths = sorted(
+            parquet_paths,
+            key=lambda path: path.stat().st_mtime,
+            reverse=True,
+        )[:max_files]
     return pl.scan_parquet(
-        parquet_files,
+        [str(path) for path in parquet_paths],
         missing_columns="insert",
         extra_columns="ignore",
         low_memory=True,

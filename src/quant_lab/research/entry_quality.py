@@ -19,6 +19,8 @@ from quant_lab.symbols import normalize_symbol
 
 SOURCE_NAME = "quant_lab"
 ENTRY_QUALITY_SCHEMA_VERSION = "entry_quality.v0.1"
+STRATEGY_OPPORTUNITY_ADVISORY_SCHEMA_VERSION = "strategy_opportunity_advisory.v0.1"
+STRATEGY_OPPORTUNITY_ADVISORY_TTL_SECONDS = 3 * 60 * 60
 DEFAULT_WINDOW_HOURS = 24
 ENTRY_QUALITY_SYMBOLS = {"BTC-USDT", "ETH-USDT", "SOL-USDT", "BNB-USDT"}
 LATE_CHASE_THRESHOLDS_BPS = (100, 150, 200, 250, 300, 400)
@@ -217,6 +219,10 @@ ENTRY_QUALITY_ADVISORY_SCHEMA = COMMON_SCHEMA | {
 
 STRATEGY_OPPORTUNITY_ADVISORY_SCHEMA = {
     "as_of_ts": pl.Datetime(time_zone="UTC"),
+    "generated_at": pl.Datetime(time_zone="UTC"),
+    "expires_at": pl.Datetime(time_zone="UTC"),
+    "contract_version": pl.Utf8,
+    "schema_version": pl.Utf8,
     "strategy_id": pl.Utf8,
     "symbol": pl.Utf8,
     "v5_symbol": pl.Utf8,
@@ -1108,9 +1114,17 @@ def build_entry_quality_strategy_opportunity_advisory(
         rendered_symbol = symbol or "ALL"
         sample_count = _optional_int(row.get("sample_count")) or 0
         live_block_reasons = _entry_quality_live_block_reasons(row, mode)
+        as_of_ts = _entry_quality_as_of_datetime(row)
+        generated_at = _coerce_datetime(row.get("generated_at_utc")) or as_of_ts
         rows.append(
             {
-                "as_of_ts": _entry_quality_as_of_datetime(row),
+                "as_of_ts": as_of_ts,
+                "generated_at": generated_at,
+                "expires_at": _strategy_advisory_expires_at(generated_at),
+                "contract_version": str(
+                    row.get("contract_version") or V5_QUANT_LAB_CONTRACT_VERSION
+                ),
+                "schema_version": STRATEGY_OPPORTUNITY_ADVISORY_SCHEMA_VERSION,
                 "strategy_id": _strategy_id(candidate, rendered_symbol),
                 "symbol": rendered_symbol,
                 "v5_symbol": _v5_symbol(rendered_symbol),
@@ -1927,6 +1941,12 @@ def _entry_quality_as_of_datetime(row: dict[str, Any]) -> datetime:
     if len(as_of) == 10 and as_of[4] == "-":
         return datetime.combine(date.fromisoformat(as_of), time.min, tzinfo=UTC)
     return datetime.now(UTC)
+
+
+def _strategy_advisory_expires_at(generated_at: datetime) -> datetime:
+    return generated_at.astimezone(UTC) + timedelta(
+        seconds=STRATEGY_OPPORTUNITY_ADVISORY_TTL_SECONDS
+    )
 
 
 def _strategy_id(strategy_candidate: str, symbol: str) -> str:

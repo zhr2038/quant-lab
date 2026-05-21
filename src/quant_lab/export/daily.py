@@ -11,7 +11,7 @@ import subprocess
 import sys
 import zipfile
 from dataclasses import dataclass
-from datetime import UTC, date, datetime
+from datetime import UTC, date, datetime, timedelta
 from pathlib import Path, PurePosixPath
 from typing import Any
 
@@ -63,6 +63,9 @@ from quant_lab.strategy_telemetry.sanitize import SECRET_PATTERNS, safe_json_dum
 from quant_lab.symbols import normalize_symbol
 from quant_lab.time_display import BEIJING_TZ, DISPLAY_TIMEZONE, beijing_iso
 from quant_lab.web import readers
+
+STRATEGY_OPPORTUNITY_ADVISORY_SCHEMA_VERSION = "strategy_opportunity_advisory.v0.1"
+STRATEGY_OPPORTUNITY_ADVISORY_TTL_SECONDS = 3 * 60 * 60
 
 SECTIONS = ["market", "features", "costs", "research", "risk", "anomalies", "v5", "charts"]
 HEAVY_EXPORT_DATASET_LIMITS = {
@@ -619,6 +622,10 @@ CSV_SCHEMAS: dict[str, list[str]] = {
     ],
     "reports/strategy_opportunity_advisory.csv": [
         "as_of_ts",
+        "generated_at",
+        "expires_at",
+        "contract_version",
+        "schema_version",
         "strategy_id",
         "symbol",
         "v5_symbol",
@@ -3802,9 +3809,19 @@ def _strategy_opportunity_advisory_for_export(
             slippage_coverage=slippage_coverage,
             risk_context=risk_context,
         )
+        generated_at = _advisory_generated_at(row)
         rows.append(
             {
                 "as_of_ts": _advisory_as_of_ts(row),
+                "generated_at": generated_at,
+                "expires_at": _advisory_expires_at(row, generated_at),
+                "contract_version": str(
+                    row.get("contract_version") or V5_QUANT_LAB_CONTRACT_VERSION
+                ),
+                "schema_version": str(
+                    row.get("schema_version")
+                    or STRATEGY_OPPORTUNITY_ADVISORY_SCHEMA_VERSION
+                ),
                 "strategy_id": _advisory_strategy_id(candidate, symbol),
                 "symbol": symbol,
                 "v5_symbol": _v5_symbol(symbol),
@@ -3888,9 +3905,19 @@ def _entry_quality_opportunity_rows(entry_quality_advisory: pl.DataFrame) -> lis
             decision = "RESEARCH_ONLY"
         symbol = normalize_symbol(row.get("symbol")) if row.get("symbol") != "ALL" else "ALL"
         live_block_reasons = _entry_quality_live_block_reasons(row, mode)
+        generated_at = _advisory_generated_at(row)
         rows.append(
             {
                 "as_of_ts": _entry_quality_as_of_ts(row),
+                "generated_at": generated_at,
+                "expires_at": _advisory_expires_at(row, generated_at),
+                "contract_version": str(
+                    row.get("contract_version") or V5_QUANT_LAB_CONTRACT_VERSION
+                ),
+                "schema_version": str(
+                    row.get("schema_version")
+                    or STRATEGY_OPPORTUNITY_ADVISORY_SCHEMA_VERSION
+                ),
                 "strategy_id": _advisory_strategy_id(
                     str(row.get("strategy_candidate") or ""),
                     symbol or "ALL",
@@ -4025,6 +4052,26 @@ def _advisory_as_of_ts(row: dict[str, Any]) -> str:
             return f"{raw_day[:10]}T00:00:00+00:00"
         return datetime.now(UTC).isoformat()
     return value.isoformat()
+
+
+def _advisory_generated_at(row: dict[str, Any]) -> datetime:
+    for field in ["generated_at", "generated_at_utc", "created_at", "as_of_ts"]:
+        value = readers._coerce_timestamp(row.get(field))  # type: ignore[attr-defined]
+        if value is not None:
+            return value.astimezone(UTC)
+    as_of = _advisory_row_time(row)
+    if as_of != datetime.min.replace(tzinfo=UTC):
+        return as_of.astimezone(UTC)
+    return datetime.now(UTC)
+
+
+def _advisory_expires_at(row: dict[str, Any], generated_at: datetime) -> datetime:
+    value = readers._coerce_timestamp(row.get("expires_at"))  # type: ignore[attr-defined]
+    if value is not None:
+        return value.astimezone(UTC)
+    return generated_at.astimezone(UTC) + timedelta(
+        seconds=STRATEGY_OPPORTUNITY_ADVISORY_TTL_SECONDS
+    )
 
 
 def _v5_symbol(symbol: str) -> str:

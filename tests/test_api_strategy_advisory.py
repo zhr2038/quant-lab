@@ -8,6 +8,11 @@ from quant_lab.api.main import app
 from quant_lab.data.lake import write_parquet_dataset
 
 V5_ADVISORY_FIELDS = {
+    "as_of_ts",
+    "generated_at",
+    "expires_at",
+    "contract_version",
+    "schema_version",
     "strategy_id",
     "strategy_candidate",
     "symbol",
@@ -79,6 +84,11 @@ def test_strategy_opportunity_advisory_endpoint_reads_gold(tmp_path, monkeypatch
     paper = next(row for row in rows if row["decision"] == "PAPER_READY")
     killed = next(row for row in rows if row["decision"] == "KILL")
     assert paper["strategy_id"] == "SOL_USDT_V5_SOL_PROTECT_ALPHA6_LOW_EXCEPTION"
+    assert paper["as_of_ts"].startswith("2026-05-20T00:00:00")
+    assert paper["generated_at"]
+    assert paper["expires_at"]
+    assert paper["contract_version"] == "v5_quant_lab_contract.v0.1"
+    assert paper["schema_version"] == "strategy_opportunity_advisory.v0.1"
     assert paper["max_live_notional_usdt"] == 0.0
     assert killed["symbol"] == "BNB-USDT"
     assert killed["recommended_mode"] == "none"
@@ -128,6 +138,8 @@ def test_strategy_opportunity_advisory_response_is_v5_parseable(
     assert payload[0]["decision"] == "LIVE_SMALL_READY"
     assert payload[0]["max_live_notional_usdt"] == 250.0
     assert isinstance(payload[0]["live_block_reasons"], list)
+    assert payload[0]["generated_at"]
+    assert payload[0]["expires_at"]
 
 
 def test_strategy_opportunity_advisory_aliases_and_latest_report_fallback(
@@ -162,3 +174,5 @@ def test_strategy_opportunity_advisory_aliases_and_latest_report_fallback(
     assert report_alias.status_code == 200
     assert dashed.json() == underscored.json() == report_alias.json()
     assert dashed.json()[0]["strategy_candidate"] == "v5.f4_volume_expansion_entry"
+    assert dashed.json()[0]["contract_version"] == "v5_quant_lab_contract.v0.1"
+    assert dashed.json()[0]["expires_at"]

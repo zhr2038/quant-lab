@@ -28,6 +28,7 @@ from quant_lab.contracts.models import (
     RiskPermission,
     RiskPermissionStatus,
 )
+from quant_lab.contracts.v5_quant_lab import V5_QUANT_LAB_CONTRACT_VERSION
 from quant_lab.costs.health import read_cost_health_daily
 from quant_lab.costs.model import CostBucket, estimate_cost_bps, estimate_cost_from_lake
 from quant_lab.data.lake import read_market_bars, read_parquet_dataset
@@ -50,6 +51,9 @@ from quant_lab.risk.publish import (
     risk_permission_stale_vs_telemetry,
 )
 from quant_lab.symbols import normalize_symbol
+
+STRATEGY_OPPORTUNITY_ADVISORY_SCHEMA_VERSION = "strategy_opportunity_advisory.v0.1"
+STRATEGY_OPPORTUNITY_ADVISORY_TTL_SECONDS = 3 * 60 * 60
 
 
 class HealthResponse(BaseModel):
@@ -121,6 +125,11 @@ class ApiMetricsResponse(BaseModel):
 class StrategyOpportunityAdvisoryRow(BaseModel):
     model_config = ConfigDict(extra="forbid", frozen=True)
 
+    as_of_ts: datetime
+    generated_at: datetime
+    expires_at: datetime
+    contract_version: str
+    schema_version: str = STRATEGY_OPPORTUNITY_ADVISORY_SCHEMA_VERSION
     strategy_id: str
     strategy_candidate: str
     symbol: str
@@ -815,11 +824,32 @@ def _strategy_opportunity_advisory_row(
     max_live_notional = _optional_float(row.get("max_live_notional_usdt")) or 0.0
     if decision != "LIVE_SMALL_READY":
         max_live_notional = 0.0
+    as_of_ts = _advisory_datetime(
+        row,
+        ("as_of_ts", "generated_at", "generated_at_utc", "created_at", "as_of_date"),
+    )
+    generated_at = _advisory_datetime(
+        row,
+        ("generated_at", "generated_at_utc", "created_at", "as_of_ts", "as_of_date"),
+        fallback=as_of_ts,
+    )
+    expires_at = _parse_advisory_datetime(row.get("expires_at"))
+    if expires_at is None:
+        expires_at = generated_at + timedelta(
+            seconds=STRATEGY_OPPORTUNITY_ADVISORY_TTL_SECONDS
+        )
     strategy_id = _text_value(row.get("strategy_id")) or _advisory_strategy_id(
         strategy_candidate,
         symbol,
     )
     return StrategyOpportunityAdvisoryRow(
+        as_of_ts=as_of_ts,
+        generated_at=generated_at,
+        expires_at=expires_at,
+        contract_version=_text_value(row.get("contract_version"))
+        or V5_QUANT_LAB_CONTRACT_VERSION,
+        schema_version=_text_value(row.get("schema_version"))
+        or STRATEGY_OPPORTUNITY_ADVISORY_SCHEMA_VERSION,
         strategy_id=strategy_id,
         strategy_candidate=strategy_candidate,
         symbol=symbol,
@@ -856,6 +886,38 @@ def _advisory_strategy_id(strategy_candidate: str, symbol: str) -> str:
     while "__" in normalized:
         normalized = normalized.replace("__", "_")
     return normalized.strip("_")
+
+
+def _advisory_datetime(
+    row: dict[str, Any],
+    keys: tuple[str, ...],
+    *,
+    fallback: datetime | None = None,
+) -> datetime:
+    for key in keys:
+        parsed = _parse_advisory_datetime(row.get(key))
+        if parsed is not None:
+            return parsed
+    return fallback or datetime.now(UTC)
+
+
+def _parse_advisory_datetime(value: Any) -> datetime | None:
+    if value is None:
+        return None
+    if isinstance(value, datetime):
+        return value.astimezone(UTC) if value.tzinfo else value.replace(tzinfo=UTC)
+    text = str(value).strip()
+    if not text or text.lower() in {"none", "null", "nan"}:
+        return None
+    if len(text) == 10 and text[4] == "-" and text[7] == "-":
+        try:
+            return datetime.fromisoformat(text).replace(tzinfo=UTC)
+        except ValueError:
+            return None
+    try:
+        return datetime.fromisoformat(text.replace("Z", "+00:00")).astimezone(UTC)
+    except ValueError:
+        return None
 
 
 def _advisory_reason_list(value: Any) -> list[str]:

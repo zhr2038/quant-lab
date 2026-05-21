@@ -217,6 +217,11 @@ def test_entry_quality_publishes_strategy_opportunity_advisory_for_api(
         if row["strategy_candidate"] == "v5.entry_quality_missed_low_audit"
     )
     assert missed["recommended_mode"] == "research"
+    assert missed["as_of_ts"] is not None
+    assert missed["generated_at"] is not None
+    assert missed["expires_at"] is not None
+    assert missed["contract_version"] == "v5_quant_lab_contract.v0.1"
+    assert missed["schema_version"] == "strategy_opportunity_advisory.v0.1"
     assert missed["max_live_notional_usdt"] == 0.0
     assert "shadow_only" in missed["live_block_reasons"]
     assert "not_live_validated" in missed["live_block_reasons"]
@@ -226,6 +231,10 @@ def test_entry_quality_publishes_strategy_opportunity_advisory_for_api(
     api_row = response.json()[0]
     assert api_row["strategy_candidate"] == "v5.entry_quality_missed_low_audit"
     assert api_row["recommended_mode"] == "research"
+    assert api_row["as_of_ts"]
+    assert api_row["generated_at"]
+    assert api_row["expires_at"]
+    assert api_row["contract_version"] == "v5_quant_lab_contract.v0.1"
     assert api_row["max_live_notional_usdt"] == 0.0
     assert {"shadow_only", "not_live_validated"} <= set(api_row["live_block_reasons"])
 

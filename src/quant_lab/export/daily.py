@@ -117,6 +117,10 @@ SECTION_DATASETS = {
         "strategy_evidence_sample",
         "strategy_evidence_quality",
         "strategy_opportunity_advisory",
+        "expanded_crypto_universe_shadow",
+        "symbol_quality_score",
+        "expanded_crypto_candidate_outcomes_by_symbol",
+        "expanded_crypto_recommendations",
         "paper_strategy_runs",
         "paper_strategy_daily",
         "paper_slippage_coverage",
@@ -225,6 +229,10 @@ REQUIRED_MEMBERS = [
     "reports/candidate_paper_ready.csv",
     "reports/paper_strategy_proposals.csv",
     "reports/strategy_opportunity_advisory.csv",
+    "reports/expanded_crypto_universe_shadow.csv",
+    "reports/symbol_quality_score.csv",
+    "reports/expanded_crypto_candidate_outcomes_by_symbol.csv",
+    "reports/expanded_crypto_recommendations.json",
     "reports/strategy_level_dashboard.csv",
     "reports/paper_strategy_runs.csv",
     "reports/paper_strategy_daily.csv",
@@ -658,6 +666,65 @@ CSV_SCHEMAS: dict[str, list[str]] = {
         "live_block_reasons",
         "max_paper_notional_usdt",
         "max_live_notional_usdt",
+    ],
+    "reports/expanded_crypto_universe_shadow.csv": [
+        "as_of_date",
+        "generated_at",
+        "schema_version",
+        "rank",
+        "symbol",
+        "is_current_v5_symbol",
+        "quote_volume_24h",
+        "avg_spread_bps",
+        "data_coverage",
+        "btc_correlation",
+        "quality_score",
+        "recommendation",
+        "blocking_reasons",
+        "min_shadow_days_required",
+        "notes",
+        "source",
+    ],
+    "reports/symbol_quality_score.csv": [
+        "as_of_date",
+        "generated_at",
+        "schema_version",
+        "symbol",
+        "quote_volume_24h",
+        "avg_spread_bps",
+        "min_notional_ok",
+        "data_coverage",
+        "avg_24h_net_bps",
+        "avg_48h_net_bps",
+        "win_rate_24h",
+        "win_rate_48h",
+        "f3_dominant_negative_score",
+        "f4_confirmed_win_rate",
+        "f5_confirmed_win_rate",
+        "pullback_shadow_avg_24h",
+        "late_chase_loss_rate",
+        "negative_expectancy_bps",
+        "btc_correlation",
+        "quality_score",
+        "recommendation",
+        "blocking_reasons",
+        "source",
+    ],
+    "reports/expanded_crypto_candidate_outcomes_by_symbol.csv": [
+        "as_of_date",
+        "generated_at",
+        "schema_version",
+        "symbol",
+        "strategy_candidate",
+        "horizon_hours",
+        "sample_count",
+        "complete_sample_count",
+        "avg_net_bps",
+        "p25_net_bps",
+        "win_rate",
+        "cost_source_mix",
+        "decision",
+        "source",
     ],
     "reports/strategy_level_dashboard.csv": [
         "decision",
@@ -1885,6 +1952,13 @@ def _dataset_members(frames: dict[str, pl.DataFrame]) -> dict[str, _MemberPayloa
     v5_candidate_labels = frames.get("v5_candidate_label", pl.DataFrame())
     v5_candidate_quality = frames.get("v5_candidate_quality_daily", pl.DataFrame())
     v5_candidate_outcomes = frames.get("v5_candidate_outcome_summary", pl.DataFrame())
+    expanded_universe = frames.get("expanded_crypto_universe_shadow", pl.DataFrame())
+    symbol_quality = frames.get("symbol_quality_score", pl.DataFrame())
+    expanded_outcomes = frames.get(
+        "expanded_crypto_candidate_outcomes_by_symbol",
+        pl.DataFrame(),
+    )
+    expanded_recommendations = frames.get("expanded_crypto_recommendations", pl.DataFrame())
 
     return {
         "market/market_snapshot.csv": _csv_member(
@@ -1973,6 +2047,21 @@ def _dataset_members(frames: dict[str, pl.DataFrame]) -> dict[str, _MemberPayloa
         "reports/strategy_opportunity_advisory.csv": _csv_member(
             "reports/strategy_opportunity_advisory.csv",
             opportunity_advisory,
+        ),
+        "reports/expanded_crypto_universe_shadow.csv": _csv_member(
+            "reports/expanded_crypto_universe_shadow.csv",
+            expanded_universe,
+        ),
+        "reports/symbol_quality_score.csv": _csv_member(
+            "reports/symbol_quality_score.csv",
+            symbol_quality,
+        ),
+        "reports/expanded_crypto_candidate_outcomes_by_symbol.csv": _csv_member(
+            "reports/expanded_crypto_candidate_outcomes_by_symbol.csv",
+            expanded_outcomes,
+        ),
+        "reports/expanded_crypto_recommendations.json": _json_text(
+            _expanded_recommendations_json(expanded_recommendations)
         ),
         "reports/strategy_level_dashboard.csv": _csv_member(
             "reports/strategy_level_dashboard.csv",
@@ -5380,6 +5469,27 @@ def _entry_quality_json(df: pl.DataFrame) -> dict[str, Any]:
         "row_count": 0 if df.is_empty() else df.height,
         "source": "quant_lab",
         "mode": "advisory",
+    }
+
+
+def _expanded_recommendations_json(df: pl.DataFrame) -> dict[str, Any]:
+    if df.is_empty():
+        return {
+            "rows": [],
+            "row_count": 0,
+            "source": "quant_lab",
+            "mode": "shadow_research",
+            "min_stable_output_days": 7,
+        }
+    rows = _rows(df)
+    latest = rows[-1]
+    return {
+        "rows": rows,
+        "latest": latest,
+        "row_count": len(rows),
+        "source": "quant_lab",
+        "mode": "shadow_research",
+        "min_stable_output_days": latest.get("min_stable_output_days", 7),
     }
 
 

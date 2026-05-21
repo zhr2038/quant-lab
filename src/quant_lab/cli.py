@@ -42,6 +42,9 @@ from quant_lab.research.entry_quality import (
     build_and_publish_entry_quality,
     build_and_publish_entry_quality_history,
 )
+from quant_lab.research.expanded_universe import (
+    build_and_publish_expanded_crypto_universe_shadow,
+)
 from quant_lab.research.paper_tracking import build_and_publish_paper_strategy_tracking
 from quant_lab.research.publish import (
     build_and_publish_alpha_evidence,
@@ -435,6 +438,47 @@ def cost_health_command(
     day: Annotated[str | None, typer.Option("--day")] = None,
 ) -> None:
     typer.echo(json.dumps(read_cost_health_daily(lake_root, day=day), indent=2, sort_keys=True))
+
+
+@app.command("build-expanded-universe-shadow")
+def build_expanded_universe_shadow_command(
+    lake_root: Annotated[
+        Path,
+        typer.Option(
+            "--lake-root",
+            file_okay=False,
+            dir_okay=True,
+            writable=True,
+            help="quant-lab lake root containing market/research datasets.",
+        ),
+    ],
+    as_of_date: Annotated[str | None, typer.Option("--as-of-date")] = None,
+    max_candidates: Annotated[int, typer.Option("--max-candidates", min=1, max=100)] = 30,
+    min_quote_volume_24h: Annotated[
+        float,
+        typer.Option("--min-quote-volume-24h", min=0.0),
+    ] = 1_000_000.0,
+    max_spread_bps: Annotated[float, typer.Option("--max-spread-bps", min=0.0)] = 20.0,
+    min_coverage_bars: Annotated[int, typer.Option("--min-coverage-bars", min=1)] = 24 * 30,
+    blacklist: Annotated[
+        str | None,
+        typer.Option("--blacklist", help="Comma-separated symbols to exclude."),
+    ] = None,
+) -> None:
+    result = run_with_job_metrics(
+        lake_root=lake_root,
+        job_name="build-expanded-universe-shadow",
+        func=lambda: build_and_publish_expanded_crypto_universe_shadow(
+            lake_root,
+            as_of_date=as_of_date,
+            max_candidates=max_candidates,
+            min_quote_volume_24h=min_quote_volume_24h,
+            max_spread_bps=max_spread_bps,
+            min_coverage_bars=min_coverage_bars,
+            blacklist=[item.strip() for item in (blacklist or "").split(",") if item.strip()],
+        ),
+    )
+    typer.echo(result.model_dump_json(indent=2))
 
 
 @app.command("lake-health")

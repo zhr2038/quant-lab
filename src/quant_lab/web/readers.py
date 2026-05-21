@@ -25,6 +25,11 @@ DATASET_PATHS = {
     "strategy_evidence_sample": Path("gold") / "strategy_evidence_sample",
     "strategy_evidence_quality": Path("gold") / "strategy_evidence_quality",
     "strategy_opportunity_advisory": Path("gold") / "strategy_opportunity_advisory",
+    "expanded_crypto_universe_shadow": Path("gold") / "expanded_crypto_universe_shadow",
+    "symbol_quality_score": Path("gold") / "symbol_quality_score",
+    "expanded_crypto_candidate_outcomes_by_symbol": Path("gold")
+    / "expanded_crypto_candidate_outcomes_by_symbol",
+    "expanded_crypto_recommendations": Path("gold") / "expanded_crypto_recommendations",
     "paper_strategy_runs": Path("gold") / "paper_strategy_runs",
     "paper_strategy_daily": Path("gold") / "paper_strategy_daily",
     "paper_slippage_coverage": Path("gold") / "paper_slippage_coverage",
@@ -147,6 +152,10 @@ DATASET_TIMESTAMP_COLUMNS: dict[str, tuple[str, ...]] = {
     "strategy_evidence_sample": ("created_at", "ts_utc"),
     "strategy_evidence_quality": ("created_at", "as_of_date"),
     "strategy_opportunity_advisory": ("as_of_ts", "created_at"),
+    "expanded_crypto_universe_shadow": ("generated_at", "as_of_date"),
+    "symbol_quality_score": ("generated_at", "as_of_date"),
+    "expanded_crypto_candidate_outcomes_by_symbol": ("generated_at", "as_of_date"),
+    "expanded_crypto_recommendations": ("generated_at", "as_of_date"),
     "paper_strategy_runs": ("created_at", "as_of_date"),
     "paper_strategy_daily": ("created_at", "as_of_date"),
     "paper_slippage_coverage": ("created_at", "as_of_date"),
@@ -1288,6 +1297,18 @@ def alpha_gate_summary(lake_root: str | Path) -> dict[str, Any]:
         lake_root,
         "strategy_opportunity_advisory",
     )
+    expanded_universe, expanded_universe_warning = read_dataset_with_warning(
+        lake_root,
+        "expanded_crypto_universe_shadow",
+    )
+    symbol_quality, symbol_quality_warning = read_dataset_with_warning(
+        lake_root,
+        "symbol_quality_score",
+    )
+    expanded_recommendations, expanded_recommendations_warning = read_dataset_with_warning(
+        lake_root,
+        "expanded_crypto_recommendations",
+    )
     warnings = [
         warning
         for warning in [
@@ -1301,6 +1322,9 @@ def alpha_gate_summary(lake_root: str | Path) -> dict[str, Any]:
             candidate_quality_warning,
             candidate_outcomes_warning,
             strategy_opportunities_warning,
+            expanded_universe_warning,
+            symbol_quality_warning,
+            expanded_recommendations_warning,
         ]
         if warning
     ]
@@ -1358,6 +1382,13 @@ def alpha_gate_summary(lake_root: str | Path) -> dict[str, Any]:
         "strategy_opportunity_advisory": redact_frame(
             _strategy_opportunity_table(strategy_opportunities)
         ).head(DISPLAY_LIMIT),
+        "expanded_crypto_universe_shadow": redact_frame(
+            _expanded_universe_table(expanded_universe)
+        ).head(DISPLAY_LIMIT),
+        "symbol_quality_score": redact_frame(_symbol_quality_table(symbol_quality)).head(
+            DISPLAY_LIMIT
+        ),
+        "expanded_crypto_recommendations": redact_frame(expanded_recommendations).tail(1),
         "strategy_evidence": redact_frame(_strategy_evidence_table(strategy_evidence)).head(
             DISPLAY_LIMIT
         ),
@@ -1378,6 +1409,52 @@ def alpha_gate_summary(lake_root: str | Path) -> dict[str, Any]:
         "alpha_discovery_counts": discovery_counts,
         "warnings": warnings,
     }
+
+
+def _expanded_universe_table(frame: pl.DataFrame) -> pl.DataFrame:
+    if frame.is_empty():
+        return frame
+    columns = [
+        "rank",
+        "symbol",
+        "is_current_v5_symbol",
+        "quality_score",
+        "recommendation",
+        "quote_volume_24h",
+        "avg_spread_bps",
+        "data_coverage",
+        "btc_correlation",
+        "blocking_reasons",
+        "notes",
+        "generated_at",
+    ]
+    selected = [column for column in columns if column in frame.columns]
+    table = frame.select(selected) if selected else frame
+    return table.sort("rank") if "rank" in table.columns else table
+
+
+def _symbol_quality_table(frame: pl.DataFrame) -> pl.DataFrame:
+    if frame.is_empty():
+        return frame
+    columns = [
+        "symbol",
+        "quality_score",
+        "recommendation",
+        "quote_volume_24h",
+        "avg_spread_bps",
+        "data_coverage",
+        "avg_24h_net_bps",
+        "avg_48h_net_bps",
+        "win_rate_24h",
+        "win_rate_48h",
+        "btc_correlation",
+        "blocking_reasons",
+    ]
+    selected = [column for column in columns if column in frame.columns]
+    table = frame.select(selected) if selected else frame
+    if "quality_score" in table.columns:
+        return table.sort("quality_score", descending=True)
+    return table
 
 
 def _alpha_discovery_board_table(board: pl.DataFrame) -> pl.DataFrame:

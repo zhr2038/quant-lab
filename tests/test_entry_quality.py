@@ -12,7 +12,10 @@ from fastapi.testclient import TestClient
 from quant_lab.api.main import app
 from quant_lab.contracts.v5_quant_lab import V5_QUANT_LAB_CONTRACT_VERSION
 from quant_lab.data.lake import read_parquet_dataset, write_parquet_dataset
-from quant_lab.export.daily import export_daily_pack
+from quant_lab.export.daily import (
+    _late_entry_threshold_advisory_by_symbol_json,
+    export_daily_pack,
+)
 from quant_lab.research.entry_quality import (
     _BuildContext,
     build_and_publish_entry_quality,
@@ -113,6 +116,73 @@ def test_late_entry_chase_shadow_counts_blocked_losses(tmp_path):
     assert btc_100["would_block_count"] == 0
 
 
+def test_late_entry_threshold_advisory_by_symbol_selects_shadow_thresholds():
+    frame = pl.DataFrame(
+        [
+            {
+                "symbol": "ETH-USDT",
+                "threshold_bps": 100,
+                "would_block_count": 10,
+                "would_block_loss_count": 2,
+                "would_block_profit_count": 8,
+                "false_positive_rate": 0.8,
+            },
+            {
+                "symbol": "ETH-USDT",
+                "threshold_bps": 150,
+                "would_block_count": 6,
+                "would_block_loss_count": 2,
+                "would_block_profit_count": 4,
+                "false_positive_rate": 0.67,
+            },
+            {
+                "symbol": "SOL-USDT",
+                "threshold_bps": 150,
+                "would_block_count": 5,
+                "would_block_loss_count": 4,
+                "would_block_profit_count": 1,
+                "false_positive_rate": 0.2,
+            },
+            {
+                "symbol": "SOL-USDT",
+                "threshold_bps": 200,
+                "would_block_count": 3,
+                "would_block_loss_count": 3,
+                "would_block_profit_count": 0,
+                "false_positive_rate": 0.0,
+            },
+            {
+                "symbol": "BTC-USDT",
+                "threshold_bps": 100,
+                "would_block_count": 2,
+                "would_block_loss_count": 2,
+                "would_block_profit_count": 0,
+                "false_positive_rate": 0.0,
+            },
+            {
+                "symbol": "BTC-USDT",
+                "threshold_bps": 150,
+                "would_block_count": 4,
+                "would_block_loss_count": 2,
+                "would_block_profit_count": 2,
+                "false_positive_rate": 0.5,
+            },
+        ]
+    )
+
+    payload = _late_entry_threshold_advisory_by_symbol_json(frame)
+
+    assert payload["ready_for_live_guard"] is False
+    assert payload["hard_guard_allowed"] is False
+    by_symbol = payload["by_symbol"]
+    assert by_symbol["ETH-USDT"]["recommended_shadow_threshold_bps"] is None
+    assert by_symbol["SOL-USDT"]["recommended_shadow_threshold_bps"] in {150, 200}
+    assert by_symbol["SOL-USDT"]["ready_for_live_guard"] is False
+    assert by_symbol["BTC-USDT"]["recommended_shadow_threshold_bps"] == 100
+    assert by_symbol["BTC-USDT"]["block_loss_count"] == 2
+    assert by_symbol["BTC-USDT"]["block_profit_count"] == 0
+
+
 def test_pullback_reversal_shadow_outputs_positive_labels_without_live_ready(tmp_path):
     lake = tmp_path / "lake"
     _write_pullback_market_bars(lake, "ETH-USDT")
@@ -195,6 +265,7 @@ def test_daily_export_contains_entry_quality_reports(tmp_path):
         assert "reports/missed_low_audit.csv" in names
         assert "reports/late_entry_chase_threshold_advisory.json" in names
         assert "reports/late_entry_chase_threshold_sensitivity_by_symbol.csv" in names
+        assert "reports/late_entry_chase_threshold_advisory_by_symbol.json" in names
         assert "reports/threshold_advisory_by_symbol.json" in names
         assert "reports/pullback_reversal_rule_comparison.csv" in names
         assert "reports/pullback_reversal_readiness.json" in names
@@ -221,6 +292,11 @@ def test_daily_export_contains_entry_quality_reports(tmp_path):
         by_symbol = json.loads(archive.read("reports/threshold_advisory_by_symbol.json"))
         assert by_symbol["ready_for_live_guard"] is False
         assert by_symbol["thresholds_bps"] == [50, 100, 150, 200, 250, 300]
+        symbol_advisory = json.loads(
+            archive.read("reports/late_entry_chase_threshold_advisory_by_symbol.json")
+        )
+        assert symbol_advisory["hard_guard_allowed"] is False
+        assert symbol_advisory["ready_for_live_guard"] is False
 
 
 def test_entry_quality_publishes_strategy_opportunity_advisory_for_api(

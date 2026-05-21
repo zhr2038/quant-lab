@@ -262,6 +262,7 @@ REQUIRED_MEMBERS = [
     "reports/late_entry_chase_threshold_advisory.json",
     "reports/late_entry_chase_threshold_sensitivity.csv",
     "reports/late_entry_chase_threshold_sensitivity_by_symbol.csv",
+    "reports/late_entry_chase_threshold_advisory_by_symbol.json",
     "reports/threshold_advisory_by_symbol.json",
     "reports/pullback_reversal_shadow_outcomes.csv",
     "reports/pullback_reversal_by_symbol.csv",
@@ -2167,6 +2168,9 @@ def _dataset_members(frames: dict[str, pl.DataFrame]) -> dict[str, _MemberPayloa
         "reports/late_entry_chase_threshold_sensitivity_by_symbol.csv": _csv_member(
             "reports/late_entry_chase_threshold_sensitivity_by_symbol.csv",
             late_entry_threshold_by_symbol,
+        ),
+        "reports/late_entry_chase_threshold_advisory_by_symbol.json": _json_text(
+            _late_entry_threshold_advisory_by_symbol_json(late_entry_threshold_by_symbol)
         ),
         "reports/threshold_advisory_by_symbol.json": _json_text(
             _threshold_advisory_by_symbol_json(late_entry_threshold_by_symbol)
@@ -5561,6 +5565,7 @@ def _threshold_advisory_by_symbol_json(df: pl.DataFrame) -> dict[str, Any]:
         return {
             "rows": [],
             "by_symbol": {},
+            "advisory_by_symbol": {},
             "ready_for_live_guard": False,
             "source": "quant_lab",
             "mode": "shadow",
@@ -5572,12 +5577,138 @@ def _threshold_advisory_by_symbol_json(df: pl.DataFrame) -> dict[str, Any]:
     return {
         "rows": rows,
         "by_symbol": by_symbol,
+        "advisory_by_symbol": _late_entry_threshold_advisory_rows(by_symbol),
         "row_count": len(rows),
         "thresholds_bps": [50, 100, 150, 200, 250, 300],
         "ready_for_live_guard": False,
         "source": "quant_lab",
         "mode": "shadow",
     }
+
+
+def _late_entry_threshold_advisory_by_symbol_json(df: pl.DataFrame) -> dict[str, Any]:
+    if df.is_empty():
+        return {
+            "rows": [],
+            "by_symbol": {},
+            "thresholds_bps": [50, 100, 150, 200, 250, 300],
+            "ready_for_live_guard": False,
+            "hard_guard_allowed": False,
+            "source": "quant_lab",
+            "mode": "shadow_research",
+        }
+    grouped: dict[str, list[dict[str, Any]]] = {}
+    for row in _rows(df):
+        grouped.setdefault(str(row.get("symbol") or "UNKNOWN"), []).append(row)
+    advisory = _late_entry_threshold_advisory_rows(grouped)
+    return {
+        "rows": list(advisory.values()),
+        "by_symbol": advisory,
+        "thresholds_bps": [50, 100, 150, 200, 250, 300],
+        "ready_for_live_guard": False,
+        "hard_guard_allowed": False,
+        "source": "quant_lab",
+        "mode": "shadow_research",
+        "notes": [
+            "By-symbol thresholds are read-only shadow research.",
+            "No hard guard is enabled by quant-lab.",
+        ],
+    }
+
+
+def _late_entry_threshold_advisory_rows(
+    by_symbol: dict[str, list[dict[str, Any]]],
+) -> dict[str, dict[str, Any]]:
+    output: dict[str, dict[str, Any]] = {}
+    for symbol, rows in sorted(by_symbol.items()):
+        selected = _select_late_entry_threshold(rows)
+        output[symbol] = _late_entry_symbol_advisory(symbol, selected, rows)
+    return output
+
+
+def _select_late_entry_threshold(rows: list[dict[str, Any]]) -> dict[str, Any] | None:
+    candidates: list[dict[str, Any]] = []
+    for row in rows:
+        block_loss = int(row.get("would_block_loss_count") or 0)
+        block_profit = int(row.get("would_block_profit_count") or 0)
+        would_block = int(row.get("would_block_count") or 0)
+        false_positive = _float_or_none(row.get("false_positive_rate"))
+        if would_block <= 0 or block_loss <= 0:
+            continue
+        if block_loss <= block_profit:
+            continue
+        if false_positive is not None and false_positive > 0.40:
+            continue
+        candidates.append(row)
+    if not candidates:
+        return None
+    return sorted(
+        candidates,
+        key=lambda row: (
+            int(row.get("would_block_loss_count") or 0)
+            - int(row.get("would_block_profit_count") or 0),
+            -int(row.get("would_block_profit_count") or 0),
+            -int(row.get("threshold_bps") or 0),
+        ),
+        reverse=True,
+    )[0]
+
+
+def _late_entry_symbol_advisory(
+    symbol: str,
+    selected: dict[str, Any] | None,
+    rows: list[dict[str, Any]],
+) -> dict[str, Any]:
+    if selected is None:
+        best_observed = _best_observed_late_entry_row(rows)
+        return {
+            "symbol": symbol,
+            "recommended_shadow_threshold_bps": None,
+            "ready_for_live_guard": False,
+            "hard_guard_allowed": False,
+            "false_positive_rate": (
+                _float_or_none(best_observed.get("false_positive_rate"))
+                if best_observed
+                else None
+            ),
+            "block_loss_count": (
+                int(best_observed.get("would_block_loss_count") or 0)
+                if best_observed
+                else 0
+            ),
+            "block_profit_count": (
+                int(best_observed.get("would_block_profit_count") or 0)
+                if best_observed
+                else 0
+            ),
+            "advisory": "research_only_no_shadow_threshold",
+            "reason": "no_symbol_threshold_with_acceptable_false_positive_rate",
+        }
+    return {
+        "symbol": symbol,
+        "recommended_shadow_threshold_bps": int(selected.get("threshold_bps") or 0),
+        "ready_for_live_guard": False,
+        "hard_guard_allowed": False,
+        "false_positive_rate": _float_or_none(selected.get("false_positive_rate")),
+        "block_loss_count": int(selected.get("would_block_loss_count") or 0),
+        "block_profit_count": int(selected.get("would_block_profit_count") or 0),
+        "advisory": "shadow_only_research_threshold",
+        "reason": "loss_filtering_potential_with_guard_disabled",
+    }
+
+
+def _best_observed_late_entry_row(rows: list[dict[str, Any]]) -> dict[str, Any] | None:
+    if not rows:
+        return None
+    return sorted(
+        rows,
+        key=lambda row: (
+            int(row.get("would_block_loss_count") or 0),
+            -int(row.get("would_block_profit_count") or 0),
+            -int(row.get("threshold_bps") or 0),
+        ),
+        reverse=True,
+    )[0]
 
 
 def _entry_quality_summary_md(

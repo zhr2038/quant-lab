@@ -434,12 +434,12 @@ class _FakeExpandedUniverseClient:
         before: str | None = None,
         limit: int = 100,
     ) -> list[list[str]]:
-        assert after is None
         assert bar == "1H"
         assert limit == 100
         self.history_methods.append("history_candles")
-        if before is not None:
+        if after is not None:
             return []
+        assert before is None
         ts = {
             "BTC-USDT": "1771200000000",
             "XRP-USDT": "1771196400000",

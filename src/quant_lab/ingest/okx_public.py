@@ -31,6 +31,9 @@ STABLE_BASES = {
     "USDE",
     "PYUSD",
     "BUSD",
+    "RLUSD",
+    "USDG",
+    "EURT",
 }
 MEME_BASES = {
     "DOGE",
@@ -355,14 +358,14 @@ def backfill_expanded_usdt_spot_market_bars(
     market_bars: list[MarketBar] = []
     fetched_candles = 0
     for candidate in candidates:
-        before: str | None = None
+        after: str | None = None
         seen_cursors: set[str] = set()
         symbol_bar_count = 0
         for _ in range(max(history_pages, 1)):
             candles = effective_client.get_history_candles(
                 candidate.symbol,
                 bar,
-                before=before,
+                after=after,
                 limit=limit,
             )
             if not candles:
@@ -378,11 +381,11 @@ def backfill_expanded_usdt_spot_market_bars(
                 )
             )
             symbol_bar_count += len(normalized_bars)
-            next_before = _oldest_candle_ts(candles)
-            if next_before is None or next_before in seen_cursors:
+            next_after = _oldest_candle_ts(candles)
+            if next_after is None or next_after in seen_cursors:
                 break
-            seen_cursors.add(next_before)
-            before = next_before
+            seen_cursors.add(next_after)
+            after = next_after
             if len(candles) < limit:
                 break
         if symbol_bar_count == 0:

@@ -161,8 +161,8 @@ def build_and_publish_expanded_crypto_universe_shadow(
     root = Path(lake_root)
     day = _parse_day(as_of_date)
     generated_at = datetime.now(UTC)
-    market = read_parquet_dataset(root / MARKET_BAR_DATASET)
-    orderbook = read_parquet_dataset(root / ORDERBOOK_SNAPSHOT_DATASET)
+    market, market_end = _read_recent_market_bars(root, min_coverage_bars=min_coverage_bars)
+    orderbook = _read_recent_orderbook_snapshots(root, since=_orderbook_since(day, market_end))
     evidence = read_parquet_dataset(root / STRATEGY_EVIDENCE_DATASET)
     pullback = read_parquet_dataset(root / PULLBACK_BY_SYMBOL_DATASET)
     late_entry = read_parquet_dataset(root / LATE_ENTRY_BY_SYMBOL_DATASET)
@@ -485,6 +485,98 @@ def _market_rows_by_symbol(market: pl.DataFrame) -> dict[str, list[dict[str, Any
     for rows in rows_by_symbol.values():
         rows.sort(key=lambda item: item["ts"])
     return dict(rows_by_symbol)
+
+
+def _read_recent_market_bars(
+    lake_root: Path,
+    *,
+    min_coverage_bars: int,
+) -> tuple[pl.DataFrame, datetime | None]:
+    dataset_path = lake_root / MARKET_BAR_DATASET
+    scan = _scan_dataset(dataset_path)
+    if scan is None:
+        return pl.DataFrame(), None
+    try:
+        max_ts = (
+            scan.select(pl.col("ts").max().alias("max_ts"))
+            .collect(engine="streaming")
+            .item()
+        )
+    except Exception:
+        return read_parquet_dataset(dataset_path), None
+    latest_ts = _parse_dt(max_ts)
+    if latest_ts is None:
+        return pl.DataFrame(), None
+    lookback_hours = max(min_coverage_bars + 24, 24 * 31)
+    since = latest_ts - timedelta(hours=lookback_hours)
+    columns = ["symbol", "timeframe", "ts", "close", "volume", "quote_volume"]
+    try:
+        frame = (
+            scan.filter(
+                (pl.col("ts") >= pl.lit(since))
+                & (pl.col("timeframe").is_null() | (pl.col("timeframe") == "1H"))
+            )
+            .select(columns)
+            .collect(engine="streaming")
+        )
+    except Exception:
+        frame = read_parquet_dataset(dataset_path)
+        if not frame.is_empty() and "ts" in frame.columns:
+            frame = frame.filter(pl.col("ts") >= since)
+    return frame, latest_ts
+
+
+def _read_recent_orderbook_snapshots(lake_root: Path, *, since: datetime) -> pl.DataFrame:
+    dataset_path = lake_root / ORDERBOOK_SNAPSHOT_DATASET
+    scan = _scan_dataset(dataset_path)
+    if scan is None:
+        return pl.DataFrame()
+    timestamp = pl.coalesce([pl.col("ts"), pl.col("ingest_ts")])
+    columns = ["symbol", "ts", "ingest_ts", "bids_json", "asks_json"]
+    try:
+        return (
+            scan.filter(timestamp >= pl.lit(since))
+            .select(columns)
+            .collect(engine="streaming")
+        )
+    except Exception:
+        frame = read_parquet_dataset(dataset_path)
+        if frame.is_empty():
+            return frame
+        if "ts" in frame.columns or "ingest_ts" in frame.columns:
+            fallback_timestamp = pl.coalesce(
+                [
+                    pl.col("ts") if "ts" in frame.columns else pl.lit(None),
+                    pl.col("ingest_ts") if "ingest_ts" in frame.columns else pl.lit(None),
+                ]
+            )
+            frame = frame.with_columns(fallback_timestamp.alias("_ql_ts")).filter(
+                pl.col("_ql_ts") >= since
+            )
+        return frame
+
+
+def _orderbook_since(as_of_date: date, market_end: datetime | None) -> datetime:
+    if market_end is not None:
+        return market_end - timedelta(hours=24)
+    return datetime.combine(as_of_date + timedelta(days=1), time.min, tzinfo=UTC) - timedelta(
+        hours=24
+    )
+
+
+def _scan_dataset(dataset_path: Path) -> pl.LazyFrame | None:
+    if not dataset_path.exists():
+        return None
+    parquet_files = [str(path) for path in dataset_path.rglob("*.parquet")]
+    if not parquet_files:
+        return None
+    return pl.scan_parquet(
+        parquet_files,
+        missing_columns="insert",
+        extra_columns="ignore",
+        low_memory=True,
+        cache=False,
+    )
 
 
 def _latest_market_ts(rows_by_symbol: dict[str, list[dict[str, Any]]]) -> datetime | None:

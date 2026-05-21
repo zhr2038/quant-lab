@@ -5491,7 +5491,7 @@ def _zip_secret_reasons(archive: zipfile.ZipFile, names: list[str]) -> list[str]
 def _secret_severity_counts(text: str) -> tuple[int, int]:
     high = 0
     medium = 0
-    for line in io.StringIO(text):
+    for line in _iter_text_lines(text):
         for pattern, severity, _label in SECRET_PATTERNS:
             if not pattern.search(line):
                 continue
@@ -5966,8 +5966,7 @@ def _member_row_count(path: str, text: _MemberPayload) -> int | None:
         return None
     suffix = Path(path).suffix.lower()
     if suffix == ".csv":
-        row_count = sum(1 for _row in csv.reader(io.StringIO(text)))
-        return max(row_count - 1, 0)
+        return max(_line_count(text) - 1, 0)
     if suffix == ".json":
         try:
             payload = json.loads(text)
@@ -6007,6 +6006,26 @@ def _payload_byte_chunks(payload: _MemberPayload, chunk_size: int = 1024 * 1024)
 def _text_chunks(text: str, chunk_size: int = 1024 * 1024) -> Any:
     for index in range(0, len(text), chunk_size):
         yield text[index : index + chunk_size]
+
+
+def _iter_text_lines(text: str) -> Any:
+    start = 0
+    while start < len(text):
+        end = text.find("\n", start)
+        if end == -1:
+            yield text[start:]
+            return
+        yield text[start : end + 1]
+        start = end + 1
+
+
+def _line_count(text: str) -> int:
+    if not text:
+        return 0
+    count = text.count("\n")
+    if not text.endswith("\n"):
+        count += 1
+    return count
 
 
 def _sha256_file(path: Path) -> str:

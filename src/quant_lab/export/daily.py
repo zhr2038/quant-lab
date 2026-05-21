@@ -115,6 +115,14 @@ SECTION_DATASETS = {
         "paper_strategy_runs",
         "paper_strategy_daily",
         "paper_slippage_coverage",
+        "v5_missed_low_audit",
+        "v5_missed_low_by_symbol",
+        "v5_missed_low_by_entry_reason",
+        "v5_late_entry_chase_shadow",
+        "v5_late_entry_chase_threshold_advisory",
+        "v5_pullback_reversal_shadow",
+        "v5_pullback_reversal_readiness",
+        "v5_entry_quality_advisory",
         "gate_decision",
     ],
     "risk": ["risk_permission"],
@@ -208,6 +216,14 @@ REQUIRED_MEMBERS = [
     "reports/paper_strategy_runs.csv",
     "reports/paper_strategy_daily.csv",
     "reports/paper_slippage_coverage.csv",
+    "reports/missed_low_audit.csv",
+    "reports/missed_low_by_symbol.csv",
+    "reports/missed_low_by_entry_reason.csv",
+    "reports/late_entry_chase_shadow.csv",
+    "reports/late_entry_chase_threshold_advisory.json",
+    "reports/pullback_reversal_shadow_outcomes.csv",
+    "reports/pullback_reversal_readiness.json",
+    "reports/entry_quality_summary.md",
     f"reports/{ENFORCE_READINESS_JSON}",
     f"reports/{ENFORCE_READINESS_CSV}",
 ]
@@ -736,6 +752,122 @@ CSV_SCHEMAS: dict[str, list[str]] = {
         "created_at",
         "source",
         "schema_version",
+    ],
+    "reports/missed_low_audit.csv": [
+        "as_of_date",
+        "run_id",
+        "source_event_key",
+        "symbol",
+        "entry_ts",
+        "entry_px",
+        "entry_reason",
+        "probe_type",
+        "side",
+        "intent",
+        "entry_vs_pre_4h_low_bps",
+        "entry_vs_pre_8h_low_bps",
+        "entry_vs_pre_12h_low_bps",
+        "entry_vs_pre_24h_low_bps",
+        "entry_position_in_24h_range",
+        "realized_net_bps",
+        "exit_reason",
+        "diagnosis",
+        "mode",
+        "generated_at_utc",
+        "schema_version",
+        "contract_version",
+    ],
+    "reports/missed_low_by_symbol.csv": [
+        "as_of_date",
+        "group_key",
+        "sample_count",
+        "loss_count",
+        "profit_count",
+        "late_chase_loss_count",
+        "late_but_trend_profitable_count",
+        "avg_entry_vs_pre_24h_low_bps",
+        "avg_entry_position_in_24h_range",
+        "avg_realized_net_bps",
+        "diagnosis_mix",
+        "mode",
+        "generated_at_utc",
+        "schema_version",
+        "contract_version",
+    ],
+    "reports/missed_low_by_entry_reason.csv": [
+        "as_of_date",
+        "group_key",
+        "sample_count",
+        "loss_count",
+        "profit_count",
+        "late_chase_loss_count",
+        "late_but_trend_profitable_count",
+        "avg_entry_vs_pre_24h_low_bps",
+        "avg_entry_position_in_24h_range",
+        "avg_realized_net_bps",
+        "diagnosis_mix",
+        "mode",
+        "generated_at_utc",
+        "schema_version",
+        "contract_version",
+    ],
+    "reports/late_entry_chase_shadow.csv": [
+        "as_of_date",
+        "strategy_candidate",
+        "source_type",
+        "run_id",
+        "candidate_id",
+        "source_event_key",
+        "symbol",
+        "ts_utc",
+        "entry_or_candidate_px",
+        "recent_12h_low",
+        "recent_24h_low",
+        "entry_vs_12h_low_bps",
+        "entry_vs_24h_low_bps",
+        "entry_position_in_12h_range",
+        "f4_volume_expansion",
+        "f5_rsi_trend_confirm",
+        "late_chase_risk",
+        "would_block_if_enabled",
+        "realized_net_bps",
+        "forward_24h_net_bps",
+        "forward_48h_net_bps",
+        "outcome_class",
+        "mode",
+        "generated_at_utc",
+        "schema_version",
+        "contract_version",
+    ],
+    "reports/pullback_reversal_shadow_outcomes.csv": [
+        "as_of_date",
+        "strategy_candidate",
+        "run_id",
+        "candidate_id",
+        "source_event_key",
+        "symbol",
+        "ts_utc",
+        "regime_state",
+        "risk_level",
+        "current_px",
+        "pre_24h_low",
+        "pre_24h_high",
+        "pullback_from_24h_high_bps",
+        "recent_2h_no_new_low",
+        "f4_volume_expansion",
+        "f5_rsi_trend_confirm",
+        "selected_roundtrip_cost_bps",
+        "horizon_hours",
+        "gross_bps",
+        "net_bps_after_cost",
+        "mfe_bps",
+        "mae_bps",
+        "win",
+        "label_status",
+        "mode",
+        "generated_at_utc",
+        "schema_version",
+        "contract_version",
     ],
     "v5/v5_strategy_health.csv": [
         "strategy",
@@ -1464,6 +1596,20 @@ def _dataset_members(frames: dict[str, pl.DataFrame]) -> dict[str, _MemberPayloa
     )
     risk = _risk_permissions_for_export(frames.get("risk_permission", pl.DataFrame()), frames)
     paper_runs, paper_daily, paper_slippage = _paper_tracking_frames_for_export(frames)
+    missed_low_audit = frames.get("v5_missed_low_audit", pl.DataFrame())
+    missed_low_by_symbol = frames.get("v5_missed_low_by_symbol", pl.DataFrame())
+    missed_low_by_entry_reason = frames.get("v5_missed_low_by_entry_reason", pl.DataFrame())
+    late_entry_chase_shadow = frames.get("v5_late_entry_chase_shadow", pl.DataFrame())
+    late_entry_threshold = frames.get(
+        "v5_late_entry_chase_threshold_advisory",
+        pl.DataFrame(),
+    )
+    pullback_reversal_shadow = frames.get("v5_pullback_reversal_shadow", pl.DataFrame())
+    pullback_reversal_readiness = frames.get(
+        "v5_pullback_reversal_readiness",
+        pl.DataFrame(),
+    )
+    entry_quality_advisory = frames.get("v5_entry_quality_advisory", pl.DataFrame())
     paper_proposals = _paper_strategy_proposals_for_export(alpha_discovery_board)
     opportunity_advisory = _strategy_opportunity_advisory_for_export(
         alpha_discovery_board=alpha_discovery_board,
@@ -1473,6 +1619,7 @@ def _dataset_members(frames: dict[str, pl.DataFrame]) -> dict[str, _MemberPayloa
         cost_health=cost_health,
         paper_daily=paper_daily,
         paper_slippage=paper_slippage,
+        entry_quality_advisory=entry_quality_advisory,
     )
     strategy_level_dashboard = _strategy_level_dashboard_for_export(opportunity_advisory)
     gates = _gate_decisions_for_export(frames.get("gate_decision", pl.DataFrame()))
@@ -1599,6 +1746,41 @@ def _dataset_members(frames: dict[str, pl.DataFrame]) -> dict[str, _MemberPayloa
         "reports/paper_slippage_coverage.csv": _csv_member(
             "reports/paper_slippage_coverage.csv",
             paper_slippage,
+        ),
+        "reports/missed_low_audit.csv": _csv_member(
+            "reports/missed_low_audit.csv",
+            missed_low_audit,
+        ),
+        "reports/missed_low_by_symbol.csv": _csv_member(
+            "reports/missed_low_by_symbol.csv",
+            missed_low_by_symbol,
+        ),
+        "reports/missed_low_by_entry_reason.csv": _csv_member(
+            "reports/missed_low_by_entry_reason.csv",
+            missed_low_by_entry_reason,
+        ),
+        "reports/late_entry_chase_shadow.csv": _csv_member(
+            "reports/late_entry_chase_shadow.csv",
+            late_entry_chase_shadow,
+        ),
+        "reports/late_entry_chase_threshold_advisory.json": _json_text(
+            _entry_quality_json(late_entry_threshold)
+        ),
+        "reports/pullback_reversal_shadow_outcomes.csv": _csv_member(
+            "reports/pullback_reversal_shadow_outcomes.csv",
+            pullback_reversal_shadow,
+        ),
+        "reports/pullback_reversal_readiness.json": _json_text(
+            _entry_quality_json(pullback_reversal_readiness)
+        ),
+        "reports/entry_quality_summary.md": _entry_quality_summary_md(
+            missed_low_audit=missed_low_audit,
+            missed_low_by_symbol=missed_low_by_symbol,
+            late_entry_chase_shadow=late_entry_chase_shadow,
+            late_entry_threshold=late_entry_threshold,
+            pullback_reversal_shadow=pullback_reversal_shadow,
+            pullback_reversal_readiness=pullback_reversal_readiness,
+            entry_quality_advisory=entry_quality_advisory,
         ),
         "risk/risk_permission.json": _json_text({"rows": _rows(risk)}),
         "risk/risk_flags.csv": _csv_text(_risk_flags(risk)),
@@ -2053,6 +2235,13 @@ def _refresh_v5_derived_outputs(lake_root: Path, export_day: date) -> list[str]:
                 "quant_lab.research.paper_tracking",
                 fromlist=["build_and_publish_paper_strategy_tracking"],
             ).build_and_publish_paper_strategy_tracking(lake_root, as_of_date=export_day),
+        ),
+        (
+            "build_entry_quality",
+            lambda: __import__(
+                "quant_lab.research.entry_quality",
+                fromlist=["build_and_publish_entry_quality"],
+            ).build_and_publish_entry_quality(lake_root, as_of_date=export_day),
         ),
         (
             "write_enforce_readiness_report",
@@ -3348,6 +3537,7 @@ def _strategy_opportunity_advisory_for_export(
     cost_health: pl.DataFrame,
     paper_daily: pl.DataFrame,
     paper_slippage: pl.DataFrame,
+    entry_quality_advisory: pl.DataFrame | None = None,
 ) -> pl.DataFrame:
     path = "reports/strategy_opportunity_advisory.csv"
     source = (
@@ -3355,9 +3545,6 @@ def _strategy_opportunity_advisory_for_export(
         if not alpha_discovery_board.is_empty()
         else _advisory_board_from_strategy_evidence(strategy_evidence)
     )
-    if source.is_empty():
-        return _empty_csv_schema_frame(path)
-
     proposal_by_key = _latest_rows_by_candidate_symbol(paper_proposals)
     paper_daily_by_key = _latest_rows_by_candidate_symbol(paper_daily)
     slippage_by_key = _latest_rows_by_candidate_symbol(paper_slippage)
@@ -3365,7 +3552,7 @@ def _strategy_opportunity_advisory_for_export(
     latest_cost_health = _latest_cost_health_context(cost_health)
 
     rows: list[dict[str, Any]] = []
-    source_rows = source.to_dicts()
+    source_rows = source.to_dicts() if not source.is_empty() else []
     latest_as_of_date = _latest_as_of_date(source_rows)
     if latest_as_of_date is not None:
         source_rows = [
@@ -3441,6 +3628,11 @@ def _strategy_opportunity_advisory_for_export(
                 ),
             }
         )
+    rows.extend(
+        _entry_quality_opportunity_rows(
+            entry_quality_advisory if entry_quality_advisory is not None else pl.DataFrame()
+        )
+    )
     if not rows:
         return _empty_csv_schema_frame(path)
     return (
@@ -3448,6 +3640,62 @@ def _strategy_opportunity_advisory_for_export(
         .sort(["strategy_candidate", "symbol", "horizon_hours"])
         .select(CSV_SCHEMAS[path])
     )
+
+
+def _entry_quality_opportunity_rows(entry_quality_advisory: pl.DataFrame) -> list[dict[str, Any]]:
+    if entry_quality_advisory.is_empty():
+        return []
+    rows: list[dict[str, Any]] = []
+    latest_as_of_date = _latest_as_of_date(entry_quality_advisory.to_dicts())
+    for row in entry_quality_advisory.to_dicts():
+        if latest_as_of_date and str(row.get("as_of_date") or "") != latest_as_of_date:
+            continue
+        mode = str(row.get("recommended_mode") or "shadow").strip().lower()
+        if mode == "paper":
+            decision = "PAPER_READY"
+        elif mode == "shadow":
+            decision = "KEEP_SHADOW"
+        else:
+            decision = "RESEARCH_ONLY"
+        symbol = normalize_symbol(row.get("symbol")) if row.get("symbol") != "ALL" else "ALL"
+        rows.append(
+            {
+                "as_of_ts": _entry_quality_as_of_ts(row),
+                "symbol": symbol or "ALL",
+                "v5_symbol": _v5_symbol(symbol) if symbol and symbol != "ALL" else "ALL",
+                "strategy_candidate": row.get("strategy_candidate"),
+                "decision": decision,
+                "recommended_mode": mode,
+                "horizon_hours": None,
+                "sample_count": _optional_int(row.get("sample_count")),
+                "complete_sample_count": _optional_int(row.get("sample_count")),
+                "avg_net_bps": _optional_float(row.get("avg_net_bps")),
+                "p25_net_bps": None,
+                "win_rate": _optional_float(row.get("win_rate")),
+                "cost_source_mix": None,
+                "cost_quality": "entry_quality_research",
+                "paper_days": 0,
+                "entry_day_count": 0,
+                "paper_pnl_observed_count": 0,
+                "slippage_coverage": None,
+                "live_block_reasons": (
+                    row.get("advisory_reasons") or '["entry_quality_live_disabled"]'
+                ),
+                "max_paper_notional_usdt": _advisory_max_paper_notional(mode),
+                "max_live_notional_usdt": 0.0,
+            }
+        )
+    return rows
+
+
+def _entry_quality_as_of_ts(row: dict[str, Any]) -> str:
+    value = row.get("generated_at_utc") or row.get("as_of_date")
+    if isinstance(value, datetime):
+        return value.astimezone(UTC).isoformat() if value.tzinfo else value.isoformat()
+    raw = str(value or "").strip()
+    if len(raw) == 10 and raw[4] == "-":
+        return f"{raw}T00:00:00+00:00"
+    return raw or datetime.now(UTC).isoformat()
 
 
 def _strategy_level_dashboard_for_export(opportunity_advisory: pl.DataFrame) -> pl.DataFrame:
@@ -4628,6 +4876,65 @@ def _read_zip_json(
         reasons.append(f"{member} is invalid JSON: {exc}")
         return None
     return payload if isinstance(payload, dict) else None
+
+
+def _entry_quality_json(df: pl.DataFrame) -> dict[str, Any]:
+    return {
+        "rows": _rows(df),
+        "row_count": 0 if df.is_empty() else df.height,
+        "source": "quant_lab",
+        "mode": "advisory",
+    }
+
+
+def _entry_quality_summary_md(
+    *,
+    missed_low_audit: pl.DataFrame,
+    missed_low_by_symbol: pl.DataFrame,
+    late_entry_chase_shadow: pl.DataFrame,
+    late_entry_threshold: pl.DataFrame,
+    pullback_reversal_shadow: pl.DataFrame,
+    pullback_reversal_readiness: pl.DataFrame,
+    entry_quality_advisory: pl.DataFrame,
+) -> str:
+    late_block_count = 0
+    if (
+        not late_entry_chase_shadow.is_empty()
+        and "would_block_if_enabled" in late_entry_chase_shadow.columns
+    ):
+        late_block_count = int(
+            late_entry_chase_shadow.filter(pl.col("would_block_if_enabled") == True).height  # noqa: E712
+        )
+    ready_for_paper = 0
+    if (
+        not pullback_reversal_readiness.is_empty()
+        and "ready_for_paper" in pullback_reversal_readiness.columns
+    ):
+        ready_for_paper = int(
+            pullback_reversal_readiness.filter(pl.col("ready_for_paper") == True).height  # noqa: E712
+        )
+    lines = [
+        "# Entry Quality Research",
+        "",
+        "This section is read-only research. It audits entries and builds "
+        "shadow/advisory diagnostics only.",
+        "It does not place orders, block orders, or mutate V5 state.",
+        "",
+        f"- missed_low_audit_rows: {missed_low_audit.height}",
+        f"- missed_low_by_symbol_rows: {missed_low_by_symbol.height}",
+        f"- late_entry_chase_shadow_rows: {late_entry_chase_shadow.height}",
+        f"- late_entry_chase_would_block_rows: {late_block_count}",
+        f"- late_entry_threshold_rows: {late_entry_threshold.height}",
+        f"- pullback_reversal_shadow_rows: {pullback_reversal_shadow.height}",
+        f"- pullback_reversal_ready_for_paper_symbols: {ready_for_paper}",
+        f"- entry_quality_advisory_rows: {entry_quality_advisory.height}",
+        "",
+        "Operational interpretation:",
+        "- missed-low audit quantifies how far actual OPEN_LONG entries were from recent lows.",
+        "- late-entry chase is a shadow guard sensitivity study, not a live guard.",
+        "- pullback reversal is shadow/paper research and is not live-ready in v0.1.",
+    ]
+    return "\n".join(lines) + "\n"
 
 
 def _csv_member(path: str, df: pl.DataFrame) -> str:

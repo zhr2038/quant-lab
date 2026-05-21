@@ -502,6 +502,7 @@ def analyze_v5_telemetry(
         _build_candidate_labels_safely(root, analysis_date)
         _build_alpha_discovery_board_safely(root, analysis_date)
         _build_strategy_evidence_safely(root, analysis_date)
+        _build_entry_quality_safely(root, analysis_date)
     return result
 
 
@@ -535,6 +536,16 @@ def _build_strategy_evidence_safely(lake_root: Path, analysis_date: str) -> None
     except Exception:
         # V5 telemetry health must remain available even if research evidence inputs
         # are incomplete or a future bundle adds an unexpected telemetry shape.
+        return
+
+
+def _build_entry_quality_safely(lake_root: Path, analysis_date: str) -> None:
+    try:
+        from quant_lab.research.entry_quality import build_and_publish_entry_quality
+
+        build_and_publish_entry_quality(lake_root, as_of_date=analysis_date)
+    except Exception:
+        # Entry quality is advisory-only and must not break telemetry health.
         return
 
 

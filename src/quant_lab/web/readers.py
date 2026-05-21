@@ -27,6 +27,15 @@ DATASET_PATHS = {
     "paper_strategy_runs": Path("gold") / "paper_strategy_runs",
     "paper_strategy_daily": Path("gold") / "paper_strategy_daily",
     "paper_slippage_coverage": Path("gold") / "paper_slippage_coverage",
+    "v5_missed_low_audit": Path("gold") / "v5_missed_low_audit",
+    "v5_missed_low_by_symbol": Path("gold") / "v5_missed_low_by_symbol",
+    "v5_missed_low_by_entry_reason": Path("gold") / "v5_missed_low_by_entry_reason",
+    "v5_late_entry_chase_shadow": Path("gold") / "v5_late_entry_chase_shadow",
+    "v5_late_entry_chase_threshold_advisory": Path("gold")
+    / "v5_late_entry_chase_threshold_advisory",
+    "v5_pullback_reversal_shadow": Path("gold") / "v5_pullback_reversal_shadow",
+    "v5_pullback_reversal_readiness": Path("gold") / "v5_pullback_reversal_readiness",
+    "v5_entry_quality_advisory": Path("gold") / "v5_entry_quality_advisory",
     "gate_decision": Path("gold") / "gate_decision",
     "risk_permission": Path("gold") / "risk_permission",
     "api_request_metrics": Path("bronze") / "api_request_metrics",
@@ -69,6 +78,17 @@ V5_PAPER_TELEMETRY_DATASETS = {
 OPTIONAL_EMPTY_DATASET_STATUSES = {
     "legacy_optional",
     "waiting_for_v5_paper_telemetry",
+    "entry_quality_optional",
+}
+ENTRY_QUALITY_DATASETS = {
+    "v5_missed_low_audit",
+    "v5_missed_low_by_symbol",
+    "v5_missed_low_by_entry_reason",
+    "v5_late_entry_chase_shadow",
+    "v5_late_entry_chase_threshold_advisory",
+    "v5_pullback_reversal_shadow",
+    "v5_pullback_reversal_readiness",
+    "v5_entry_quality_advisory",
 }
 EVENT_DRIVEN_OK_STATUSES = {"event_driven_no_recent_trade"}
 
@@ -105,6 +125,14 @@ DATASET_TIMESTAMP_COLUMNS: dict[str, tuple[str, ...]] = {
     "paper_strategy_runs": ("created_at", "as_of_date"),
     "paper_strategy_daily": ("created_at", "as_of_date"),
     "paper_slippage_coverage": ("created_at", "as_of_date"),
+    "v5_missed_low_audit": ("generated_at_utc", "entry_ts", "as_of_date"),
+    "v5_missed_low_by_symbol": ("generated_at_utc", "as_of_date"),
+    "v5_missed_low_by_entry_reason": ("generated_at_utc", "as_of_date"),
+    "v5_late_entry_chase_shadow": ("generated_at_utc", "ts_utc", "as_of_date"),
+    "v5_late_entry_chase_threshold_advisory": ("generated_at_utc", "as_of_date"),
+    "v5_pullback_reversal_shadow": ("generated_at_utc", "ts_utc", "as_of_date"),
+    "v5_pullback_reversal_readiness": ("generated_at_utc", "as_of_date"),
+    "v5_entry_quality_advisory": ("generated_at_utc", "as_of_date"),
     "okx_public_ws_health": ("last_message_at", "updated_at", "started_at"),
     "decision_audit": ("ingest_ts", "loaded_at"),
     "v5_quant_lab_usage": ("ingest_ts", "bundle_ts"),
@@ -1930,6 +1958,8 @@ def _empty_dataset_status(dataset_name: str) -> str:
         return "legacy_optional"
     if dataset_name in V5_PAPER_TELEMETRY_DATASETS:
         return "waiting_for_v5_paper_telemetry"
+    if dataset_name in ENTRY_QUALITY_DATASETS:
+        return "entry_quality_optional"
     return "missing"
 
 

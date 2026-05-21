@@ -1,0 +1,232 @@
+from __future__ import annotations
+
+import json
+import zipfile
+from datetime import UTC, datetime, timedelta
+
+import polars as pl
+
+from quant_lab.data.lake import read_parquet_dataset, write_parquet_dataset
+from quant_lab.export.daily import export_daily_pack
+from quant_lab.research.entry_quality import build_and_publish_entry_quality
+
+
+def test_missed_low_audit_flags_late_chase_loss(tmp_path):
+    lake = tmp_path / "lake"
+    _write_market_bars(lake, "BNB-USDT")
+    write_parquet_dataset(
+        pl.DataFrame(
+            [
+                {
+                    "run_id": "run-1",
+                    "ts_utc": datetime(2026, 5, 10, 20, tzinfo=UTC),
+                    "symbol": "BNB-USDT",
+                    "side": "buy",
+                    "action": "entry",
+                    "price": 108.0,
+                    "realized_net_bps": -60.0,
+                    "exit_reason": "stop_loss",
+                    "trade_id": "trade-1",
+                }
+            ]
+        ),
+        lake / "silver" / "v5_trade_event",
+    )
+
+    result = build_and_publish_entry_quality(lake, as_of_date="2026-05-10")
+
+    assert result.missed_low_audit_rows == 1
+    row = read_parquet_dataset(lake / "gold" / "v5_missed_low_audit").to_dicts()[0]
+    assert row["diagnosis"] == "late_chase_loss"
+    assert row["entry_vs_pre_24h_low_bps"] > 800
+    by_symbol = read_parquet_dataset(lake / "gold" / "v5_missed_low_by_symbol").to_dicts()[0]
+    assert by_symbol["late_chase_loss_count"] == 1
+
+
+def test_late_entry_chase_shadow_counts_blocked_losses(tmp_path):
+    lake = tmp_path / "lake"
+    _write_market_bars(lake, "SOL-USDT")
+    candidate_ts = datetime(2026, 5, 10, 20, tzinfo=UTC)
+    write_parquet_dataset(
+        pl.DataFrame(
+            [
+                {
+                    "candidate_id": "cand-sol-1",
+                    "run_id": "run-1",
+                    "ts_utc": candidate_ts,
+                    "symbol": "SOL-USDT",
+                    "strategy_candidate": "v5.f4_volume_expansion_entry",
+                    "entry_close": 108.0,
+                    "f4_volume_expansion": 0.20,
+                    "f5_rsi_trend_confirm": 0.10,
+                }
+            ]
+        ),
+        lake / "silver" / "v5_candidate_event",
+    )
+    write_parquet_dataset(
+        pl.DataFrame(
+            [
+                {
+                    "candidate_id": "cand-sol-1",
+                    "horizon_hours": 24,
+                    "net_bps_after_cost": -75.0,
+                }
+            ]
+        ),
+        lake / "gold" / "v5_candidate_label",
+    )
+
+    build_and_publish_entry_quality(lake, as_of_date="2026-05-10")
+
+    shadow = read_parquet_dataset(lake / "gold" / "v5_late_entry_chase_shadow")
+    assert shadow.height == 1
+    assert shadow.to_dicts()[0]["would_block_if_enabled"] is True
+    threshold = read_parquet_dataset(
+        lake / "gold" / "v5_late_entry_chase_threshold_advisory"
+    )
+    threshold_250 = threshold.filter(pl.col("threshold_bps") == 250).to_dicts()[0]
+    assert threshold_250["would_block_loss_count"] == 1
+    assert threshold_250["ready_for_live_guard"] is False
+
+
+def test_pullback_reversal_shadow_outputs_positive_labels_without_live_ready(tmp_path):
+    lake = tmp_path / "lake"
+    _write_pullback_market_bars(lake, "ETH-USDT")
+    write_parquet_dataset(
+        pl.DataFrame(
+            [
+                {
+                    "candidate_id": "cand-eth-pullback",
+                    "run_id": "run-pullback",
+                    "ts_utc": datetime(2026, 5, 10, 20, tzinfo=UTC),
+                    "symbol": "ETH-USDT",
+                    "strategy_candidate": "portfolio",
+                    "entry_close": 115.0,
+                    "regime_state": "protect",
+                    "risk_level": "normal",
+                    "f4_volume_expansion": 0.0,
+                    "f5_rsi_trend_confirm": 0.0,
+                    "estimated_spread_bps": 2.0,
+                }
+            ]
+        ),
+        lake / "silver" / "v5_candidate_event",
+    )
+
+    build_and_publish_entry_quality(lake, as_of_date="2026-05-10")
+
+    shadow = read_parquet_dataset(lake / "gold" / "v5_pullback_reversal_shadow")
+    rows_24h = shadow.filter(pl.col("horizon_hours") == 24).to_dicts()
+    assert rows_24h
+    assert rows_24h[0]["net_bps_after_cost"] > 0
+    readiness = read_parquet_dataset(lake / "gold" / "v5_pullback_reversal_readiness")
+    row = readiness.to_dicts()[0]
+    assert row["ready_for_live_probe"] is False
+    assert "insufficient_sample_count" in row["readiness_reasons"]
+
+
+def test_daily_export_contains_entry_quality_reports(tmp_path):
+    lake = tmp_path / "lake"
+    out = tmp_path / "exports"
+    _write_market_bars(lake, "BNB-USDT")
+    write_parquet_dataset(
+        pl.DataFrame(
+            [
+                {
+                    "run_id": "run-1",
+                    "ts_utc": datetime(2026, 5, 10, 20, tzinfo=UTC),
+                    "symbol": "BNB-USDT",
+                    "side": "buy",
+                    "action": "entry",
+                    "price": 108.0,
+                    "realized_net_bps": -60.0,
+                    "trade_id": "trade-1",
+                }
+            ]
+        ),
+        lake / "silver" / "v5_trade_event",
+    )
+    build_and_publish_entry_quality(lake, as_of_date="2026-05-10")
+
+    result = export_daily_pack(
+        export_date="2026-05-10",
+        lake_root=lake,
+        out_dir=out,
+        command_line=["qlab", "export-daily"],
+        refresh_risk_permission=False,
+        pre_export_v5_refresh=False,
+    )
+
+    with zipfile.ZipFile(result.zip_path) as archive:
+        names = set(archive.namelist())
+        assert "reports/missed_low_audit.csv" in names
+        assert "reports/late_entry_chase_threshold_advisory.json" in names
+        assert "reports/pullback_reversal_readiness.json" in names
+        summary = archive.read("reports/entry_quality_summary.md").decode("utf-8")
+        assert "read-only research" in summary
+        advisory = archive.read("reports/strategy_opportunity_advisory.csv").decode("utf-8")
+        assert "v5.entry_quality_missed_low_audit" in advisory
+        threshold = json.loads(
+            archive.read("reports/late_entry_chase_threshold_advisory.json")
+        )
+        assert threshold["source"] == "quant_lab"
+
+
+def _write_market_bars(lake, symbol: str) -> None:
+    start = datetime(2026, 5, 10, tzinfo=UTC)
+    rows = []
+    for hour in range(30):
+        rows.append(
+            {
+                "venue": "okx",
+                "symbol": symbol,
+                "market_type": "SPOT",
+                "timeframe": "1H",
+                "ts": start + timedelta(hours=hour),
+                "open": 100.0,
+                "high": 110.0,
+                "low": 100.0 if hour > 0 else 90.0,
+                "close": 100.0,
+                "volume": 1000.0,
+                "quote_volume": 100000.0,
+                "source": "test",
+                "ingest_ts": start,
+                "is_closed": True,
+            }
+        )
+    write_parquet_dataset(pl.DataFrame(rows), lake / "silver" / "market_bar")
+
+
+def _write_pullback_market_bars(lake, symbol: str) -> None:
+    start = datetime(2026, 5, 10, tzinfo=UTC)
+    rows = []
+    for hour in range(80):
+        ts = start + timedelta(hours=hour)
+        if hour < 18:
+            high, low, close = 120.0, 108.0, 118.0
+        elif hour < 20:
+            high, low, close = 118.0, 112.0, 116.0
+        elif hour == 20:
+            high, low, close = 116.0, 112.0, 115.0
+        else:
+            high, low, close = 126.0, 114.0, 125.0
+        rows.append(
+            {
+                "venue": "okx",
+                "symbol": symbol,
+                "market_type": "SPOT",
+                "timeframe": "1H",
+                "ts": ts,
+                "open": close,
+                "high": high,
+                "low": low,
+                "close": close,
+                "volume": 1000.0,
+                "quote_volume": 100000.0,
+                "source": "test",
+                "ingest_ts": start,
+                "is_closed": True,
+            }
+        )
+    write_parquet_dataset(pl.DataFrame(rows), lake / "silver" / "market_bar")

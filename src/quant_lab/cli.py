@@ -38,6 +38,7 @@ from quant_lab.reports.enforce_readiness import write_enforce_readiness_report
 from quant_lab.research.alpha_discovery import build_and_publish_alpha_discovery_board
 from quant_lab.research.bootstrap_gold import bootstrap_gold_health
 from quant_lab.research.candidate_labels import build_and_publish_candidate_labels
+from quant_lab.research.entry_quality import build_and_publish_entry_quality
 from quant_lab.research.paper_tracking import build_and_publish_paper_strategy_tracking
 from quant_lab.research.publish import (
     build_and_publish_alpha_evidence,
@@ -732,6 +733,27 @@ def build_paper_strategy_tracking_command(
         func=lambda: build_and_publish_paper_strategy_tracking(
             lake_root=lake_root,
             as_of_date=as_of_date,
+        ),
+    )
+    typer.echo(result.model_dump_json(indent=2))
+
+
+@app.command("build-entry-quality")
+def build_entry_quality_command(
+    lake_root: Annotated[Path, typer.Option("--lake-root", file_okay=False, dir_okay=True)],
+    as_of_date: Annotated[
+        str,
+        typer.Option("--date", help="UTC as-of day in YYYY-MM-DD format or auto."),
+    ] = "auto",
+    window_hours: Annotated[int, typer.Option("--window-hours", min=1)] = 24,
+) -> None:
+    result = run_with_job_metrics(
+        lake_root=lake_root,
+        job_name="build-entry-quality",
+        func=lambda: build_and_publish_entry_quality(
+            lake_root=lake_root,
+            as_of_date=as_of_date,
+            window_hours=window_hours,
         ),
     )
     typer.echo(result.model_dump_json(indent=2))

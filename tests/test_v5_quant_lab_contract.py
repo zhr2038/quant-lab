@@ -67,6 +67,8 @@ def test_cost_contract_fixtures_validate_required_fields_enums_and_timestamps():
     ]
 
     for schema_name, payload in cases:
+        if "contract_version" in payload:
+            assert payload["contract_version"] == contract["contract_version"]
         _validate_payload(contract, schema_name, payload)
 
 
@@ -104,6 +106,20 @@ def test_trade_fill_summary_fixture_validates_contract():
         assert row["schema_version"] == schema["schema_version"]
         _validate_payload(contract, "trade_fill_summary", row)
         assert row["normalized_symbol"] == normalize_symbol(row["symbol"])
+
+
+def test_strategy_opportunity_advisory_contract_requires_v5_metadata():
+    contract = _load_contract()
+    schema = contract["schemas"]["strategy_opportunity_advisory"]
+
+    assert schema["schema_version"] == "strategy_opportunity_advisory.v0.1"
+    assert {
+        "contract_version",
+        "source_version",
+        "would_block_if_enabled",
+        "would_enter",
+        "no_sample_reason",
+    } <= set(schema["required"])
 
 
 def test_symbol_normalization_contract_examples():
@@ -169,4 +185,3 @@ def _assert_utc_iso8601(value: str) -> None:
     assert value.endswith("Z") or value.endswith("+00:00")
     parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
     assert parsed.utcoffset() == UTC.utcoffset(parsed)
-

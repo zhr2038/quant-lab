@@ -8,6 +8,7 @@ import polars as pl
 from fastapi.testclient import TestClient
 
 from quant_lab.api.main import app
+from quant_lab.contracts.v5_quant_lab import V5_QUANT_LAB_CONTRACT_VERSION
 from quant_lab.data.lake import read_parquet_dataset, write_parquet_dataset
 from quant_lab.export.daily import export_daily_pack
 from quant_lab.research.entry_quality import (
@@ -220,8 +221,12 @@ def test_entry_quality_publishes_strategy_opportunity_advisory_for_api(
     assert missed["as_of_ts"] is not None
     assert missed["generated_at"] is not None
     assert missed["expires_at"] is not None
-    assert missed["contract_version"] == "v5_quant_lab_contract.v0.1"
+    assert missed["contract_version"] == V5_QUANT_LAB_CONTRACT_VERSION
     assert missed["schema_version"] == "strategy_opportunity_advisory.v0.1"
+    assert missed["source_version"]
+    assert missed["would_block_if_enabled"] is False
+    assert missed["would_enter"] is False
+    assert missed["no_sample_reason"] == "audit_only"
     assert missed["max_live_notional_usdt"] == 0.0
     assert "shadow_only" in missed["live_block_reasons"]
     assert "not_live_validated" in missed["live_block_reasons"]
@@ -234,7 +239,11 @@ def test_entry_quality_publishes_strategy_opportunity_advisory_for_api(
     assert api_row["as_of_ts"]
     assert api_row["generated_at"]
     assert api_row["expires_at"]
-    assert api_row["contract_version"] == "v5_quant_lab_contract.v0.1"
+    assert api_row["contract_version"] == V5_QUANT_LAB_CONTRACT_VERSION
+    assert api_row["source_version"]
+    assert api_row["would_block_if_enabled"] is False
+    assert api_row["would_enter"] is False
+    assert api_row["no_sample_reason"] == "audit_only"
     assert api_row["max_live_notional_usdt"] == 0.0
     assert {"shadow_only", "not_live_validated"} <= set(api_row["live_block_reasons"])
 

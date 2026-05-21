@@ -1,5 +1,5 @@
 {
-  "contract_version": "v5_quant_lab_contract.v0.1",
+  "contract_version": "v5.quant_lab.telemetry.v2",
   "schema_version": "v5.cost_estimate.response.v0.2",
   "symbol": "UNKNOWN-USDT",
   "normalized_symbol": "UNKNOWN-USDT",

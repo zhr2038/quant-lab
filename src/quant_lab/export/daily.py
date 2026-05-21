@@ -626,6 +626,11 @@ CSV_SCHEMAS: dict[str, list[str]] = {
         "expires_at",
         "contract_version",
         "schema_version",
+        "quant_lab_git_commit",
+        "source_version",
+        "would_block_if_enabled",
+        "would_enter",
+        "no_sample_reason",
         "strategy_id",
         "symbol",
         "v5_symbol",
@@ -3760,6 +3765,8 @@ def _strategy_opportunity_advisory_for_export(
     slippage_by_key = _latest_rows_by_candidate_symbol(paper_slippage)
     risk_context = _advisory_risk_context(risk_permissions)
     latest_cost_health = _latest_cost_health_context(cost_health)
+    git_commit = _git_commit()
+    source_version = git_commit or __version__
 
     rows: list[dict[str, Any]] = []
     source_rows = source.to_dicts() if not source.is_empty() else []
@@ -3821,6 +3828,28 @@ def _strategy_opportunity_advisory_for_export(
                 "schema_version": str(
                     row.get("schema_version")
                     or STRATEGY_OPPORTUNITY_ADVISORY_SCHEMA_VERSION
+                ),
+                "quant_lab_git_commit": str(row.get("quant_lab_git_commit") or "")
+                or git_commit,
+                "source_version": str(row.get("source_version") or "")
+                or source_version,
+                "would_block_if_enabled": _advisory_would_block_if_enabled(
+                    decision=decision,
+                    recommended_mode=recommended_mode,
+                    sample_count=_optional_int(row.get("sample_count")),
+                    row=row,
+                ),
+                "would_enter": _advisory_would_enter(
+                    decision=decision,
+                    recommended_mode=recommended_mode,
+                    sample_count=_optional_int(row.get("sample_count")),
+                    row=row,
+                ),
+                "no_sample_reason": _advisory_no_sample_reason(
+                    decision=decision,
+                    recommended_mode=recommended_mode,
+                    sample_count=_optional_int(row.get("sample_count")),
+                    row=row,
                 ),
                 "strategy_id": _advisory_strategy_id(candidate, symbol),
                 "symbol": symbol,
@@ -3891,6 +3920,8 @@ def _entry_quality_opportunity_rows(entry_quality_advisory: pl.DataFrame) -> lis
     if entry_quality_advisory.is_empty():
         return []
     rows: list[dict[str, Any]] = []
+    git_commit = _git_commit()
+    source_version = git_commit or __version__
     latest_as_of_date = _latest_as_of_date(entry_quality_advisory.to_dicts())
     for row in entry_quality_advisory.to_dicts():
         if latest_as_of_date and str(row.get("as_of_date") or "") != latest_as_of_date:
@@ -3918,6 +3949,17 @@ def _entry_quality_opportunity_rows(entry_quality_advisory: pl.DataFrame) -> lis
                     row.get("schema_version")
                     or STRATEGY_OPPORTUNITY_ADVISORY_SCHEMA_VERSION
                 ),
+                "quant_lab_git_commit": str(row.get("quant_lab_git_commit") or "")
+                or git_commit,
+                "source_version": str(row.get("source_version") or "")
+                or source_version,
+                "would_block_if_enabled": _optional_bool(
+                    row.get("would_block_if_enabled")
+                )
+                is True,
+                "would_enter": _optional_bool(row.get("would_enter")) is True,
+                "no_sample_reason": str(row.get("no_sample_reason") or "").strip()
+                or _entry_quality_export_no_sample_reason(row, mode),
                 "strategy_id": _advisory_strategy_id(
                     str(row.get("strategy_candidate") or ""),
                     symbol or "ALL",
@@ -4092,6 +4134,74 @@ def _advisory_recommended_mode(decision: str) -> str:
     }.get(decision, "research")
 
 
+def _advisory_would_block_if_enabled(
+    *,
+    decision: str,
+    recommended_mode: str,
+    sample_count: int | None,
+    row: dict[str, Any],
+) -> bool:
+    explicit = _optional_bool(row.get("would_block_if_enabled"))
+    if explicit is not None:
+        return explicit
+    if decision == "KILL":
+        return True
+    return recommended_mode == "none" and (sample_count or 0) > 0
+
+
+def _advisory_would_enter(
+    *,
+    decision: str,
+    recommended_mode: str,
+    sample_count: int | None,
+    row: dict[str, Any],
+) -> bool:
+    explicit = _optional_bool(row.get("would_enter"))
+    if explicit is not None:
+        return explicit
+    if (sample_count or 0) <= 0:
+        return False
+    return decision in {"PAPER_READY", "LIVE_SMALL_READY"} or recommended_mode in {
+        "paper",
+        "live_small",
+    }
+
+
+def _advisory_no_sample_reason(
+    *,
+    decision: str,
+    recommended_mode: str,
+    sample_count: int | None,
+    row: dict[str, Any],
+) -> str | None:
+    explicit = str(row.get("no_sample_reason") or "").strip()
+    if explicit:
+        return explicit
+    if (sample_count or 0) <= 0:
+        return "no_strategy_evidence_sample"
+    if decision == "KILL":
+        return "killed_candidate"
+    if recommended_mode == "research":
+        return "research_only"
+    if recommended_mode == "shadow":
+        return "shadow_only"
+    return None
+
+
+def _entry_quality_export_no_sample_reason(
+    row: dict[str, Any],
+    recommended_mode: str,
+) -> str | None:
+    candidate = str(row.get("strategy_candidate") or "").strip()
+    if candidate == "v5.entry_quality_missed_low_audit":
+        return "audit_only"
+    if candidate == "v5.late_entry_chase_guard_shadow":
+        return "guard_shadow_only"
+    if recommended_mode == "research":
+        return "research_only"
+    return None
+
+
 def _advisory_cost_quality(cost_source_mix: Any, latest_cost_health: dict[str, Any]) -> str:
     sources = {source.lower() for source in _cost_source_mix_items(cost_source_mix)}
     if not sources:
@@ -4218,6 +4328,19 @@ def _optional_int(value: Any) -> int | None:
         return int(float(value))
     except (TypeError, ValueError):
         return None
+
+
+def _optional_bool(value: Any) -> bool | None:
+    if value is None:
+        return None
+    if isinstance(value, bool):
+        return value
+    text = str(value).strip().lower()
+    if text in {"true", "1", "yes", "y"}:
+        return True
+    if text in {"false", "0", "no", "n"}:
+        return False
+    return None
 
 
 def _strategy_evidence_summary_md(

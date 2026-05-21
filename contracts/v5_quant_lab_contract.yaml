@@ -1,4 +1,4 @@
-contract_version: v5_quant_lab_contract.v0.1
+contract_version: v5.quant_lab.telemetry.v2
 timestamp_rule: UTC ISO8601; use Z or +00:00, never local time.
 symbol_normalization:
   canonical_format: BASE-QUOTE
@@ -307,6 +307,59 @@ schemas:
       - ts_utc
     enums:
       side: [buy, sell, BUY, SELL]
+  strategy_opportunity_advisory:
+    schema_version: strategy_opportunity_advisory.v0.1
+    required:
+      - as_of_ts
+      - generated_at
+      - expires_at
+      - contract_version
+      - schema_version
+      - source_version
+      - would_block_if_enabled
+      - would_enter
+      - no_sample_reason
+      - strategy_id
+      - strategy_candidate
+      - symbol
+      - decision
+      - recommended_mode
+      - horizon_hours
+      - sample_count
+      - complete_sample_count
+      - avg_net_bps
+      - p25_net_bps
+      - win_rate
+      - cost_source_mix
+      - live_block_reasons
+      - max_paper_notional_usdt
+      - max_live_notional_usdt
+    nullable:
+      - quant_lab_git_commit
+      - no_sample_reason
+      - horizon_hours
+      - avg_net_bps
+      - p25_net_bps
+      - win_rate
+      - cost_source_mix
+    timestamps:
+      - as_of_ts
+      - generated_at
+      - expires_at
+    enums:
+      decision:
+        - RESEARCH_ONLY
+        - KEEP_SHADOW
+        - REGIME_SHADOW
+        - PAPER_READY
+        - LIVE_SMALL_READY
+        - KILL
+      recommended_mode:
+        - research
+        - shadow
+        - paper
+        - live_small
+        - none
 datasets:
   v5_telemetry:
     schema_version: v5-telemetry-v0.1

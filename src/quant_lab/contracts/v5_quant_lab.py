@@ -1,6 +1,6 @@
 """Shared V5 <-> quant-lab integration contract versions."""
 
-V5_QUANT_LAB_CONTRACT_VERSION = "v5_quant_lab_contract.v0.1"
+V5_QUANT_LAB_CONTRACT_VERSION = "v5.quant_lab.telemetry.v2"
 
 V5_COST_ESTIMATE_REQUEST_SCHEMA_VERSION = "v5.cost_estimate.request.v0.1"
 V5_COST_ESTIMATE_RESPONSE_SCHEMA_VERSION = "v5.cost_estimate.response.v0.2"

@@ -130,6 +130,11 @@ class StrategyOpportunityAdvisoryRow(BaseModel):
     expires_at: datetime
     contract_version: str
     schema_version: str = STRATEGY_OPPORTUNITY_ADVISORY_SCHEMA_VERSION
+    quant_lab_git_commit: str | None = None
+    source_version: str
+    would_block_if_enabled: bool = False
+    would_enter: bool = False
+    no_sample_reason: str | None = None
     strategy_id: str
     strategy_candidate: str
     symbol: str
@@ -869,6 +874,20 @@ def _strategy_opportunity_advisory_row(
         expires_at = generated_at + timedelta(
             seconds=STRATEGY_OPPORTUNITY_ADVISORY_TTL_SECONDS
         )
+    git_commit = _text_value(row.get("quant_lab_git_commit")) or None
+    source_version = _text_value(row.get("source_version")) or git_commit or __version__
+    sample_count = _optional_int(row.get("sample_count"))
+    would_enter = _optional_bool(row.get("would_enter"))
+    if would_enter is None:
+        would_enter = _default_advisory_would_enter(decision, recommended_mode, sample_count)
+    would_block = _optional_bool(row.get("would_block_if_enabled"))
+    if would_block is None:
+        would_block = _default_advisory_would_block(decision, recommended_mode, sample_count)
+    no_sample_reason = _text_value(row.get("no_sample_reason")) or _default_no_sample_reason(
+        decision,
+        recommended_mode,
+        sample_count,
+    )
     strategy_id = _text_value(row.get("strategy_id")) or _advisory_strategy_id(
         strategy_candidate,
         symbol,
@@ -881,6 +900,11 @@ def _strategy_opportunity_advisory_row(
         or V5_QUANT_LAB_CONTRACT_VERSION,
         schema_version=_text_value(row.get("schema_version"))
         or STRATEGY_OPPORTUNITY_ADVISORY_SCHEMA_VERSION,
+        quant_lab_git_commit=git_commit,
+        source_version=source_version,
+        would_block_if_enabled=would_block,
+        would_enter=would_enter,
+        no_sample_reason=no_sample_reason,
         strategy_id=strategy_id,
         strategy_candidate=strategy_candidate,
         symbol=symbol,
@@ -909,6 +933,45 @@ def _advisory_recommended_mode(value: Any, decision: str) -> str:
     if decision in {"KEEP_SHADOW", "REGIME_SHADOW"}:
         return _text_value(value).lower() or "shadow"
     return _text_value(value).lower() or "research"
+
+
+def _default_advisory_would_enter(
+    decision: str,
+    recommended_mode: str,
+    sample_count: int | None,
+) -> bool:
+    if (sample_count or 0) <= 0:
+        return False
+    return decision in {"PAPER_READY", "LIVE_SMALL_READY"} or recommended_mode in {
+        "paper",
+        "live_small",
+    }
+
+
+def _default_advisory_would_block(
+    decision: str,
+    recommended_mode: str,
+    sample_count: int | None,
+) -> bool:
+    if decision == "KILL":
+        return True
+    return recommended_mode == "none" and (sample_count or 0) > 0
+
+
+def _default_no_sample_reason(
+    decision: str,
+    recommended_mode: str,
+    sample_count: int | None,
+) -> str | None:
+    if (sample_count or 0) <= 0:
+        return "no_strategy_evidence_sample"
+    if decision == "KILL":
+        return "killed_candidate"
+    if recommended_mode == "research":
+        return "research_only"
+    if recommended_mode == "shadow":
+        return "shadow_only"
+    return None
 
 
 def _advisory_strategy_id(strategy_candidate: str, symbol: str) -> str:
@@ -1006,6 +1069,19 @@ def _optional_float(value: Any) -> float | None:
 def _optional_int(value: Any) -> int | None:
     parsed = _optional_float(value)
     return None if parsed is None else int(parsed)
+
+
+def _optional_bool(value: Any) -> bool | None:
+    if value is None:
+        return None
+    if isinstance(value, bool):
+        return value
+    text = str(value).strip().lower()
+    if text in {"true", "1", "yes", "y"}:
+        return True
+    if text in {"false", "0", "no", "n"}:
+        return False
+    return None
 
 
 def _load_latest_alpha_evidence(lake_root: Path, alpha_id: str) -> dict[str, Any] | None:

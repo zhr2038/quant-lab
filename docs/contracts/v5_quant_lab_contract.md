@@ -1,6 +1,6 @@
 # V5 Quant Lab Integration Contract
 
-Contract version: `v5_quant_lab_contract.v0.1`
+Contract version: `v5.quant_lab.telemetry.v2`
 
 This contract defines the read-only integration between V5 and quant-lab.
 quant-lab publishes research, cost, gate, and risk permission data. V5 remains
@@ -28,6 +28,8 @@ The contract covers:
 - V5 `quant_lab_fallback` events.
 - V5 `quant_lab_cost_usage` events.
 - V5 trade/fill summary rows used for cost backfill.
+- Strategy opportunity advisory rows exposed through
+  `GET /v1/strategy-opportunity-advisory`.
 
 ## V5 Trade/Fill Summary
 
@@ -38,6 +40,29 @@ arrival/mid slippage is unavailable. Required cost-backfill fields are
 `notional_usdt`, `fee`, `fee_ccy`, `fee_usdt`, `run_id`, and `strategy_id`.
 `trade_id`, `order_id`, and `slippage_usdt` are optional. Missing optional
 fields must not cause the whole row to be dropped.
+
+## Strategy Opportunity Advisory
+
+`GET /v1/strategy-opportunity-advisory`,
+`GET /v1/strategy_opportunity_advisory`, and
+`GET /v1/reports/strategy-opportunity-advisory` return the same read-only
+advisory rows. Each row must include freshness and provenance metadata:
+
+- `as_of_ts`, `generated_at`, `expires_at`
+- `contract_version = v5.quant_lab.telemetry.v2`
+- `schema_version = strategy_opportunity_advisory.v0.1`
+- `quant_lab_git_commit` when a git commit can be resolved
+- `source_version`, falling back to the quant-lab package version when git is unavailable
+
+Each advisory row must explicitly expose V5-consumable intent fields:
+
+- `would_block_if_enabled`
+- `would_enter`
+- `no_sample_reason`
+
+These fields are advisory metadata only. They do not authorize live execution.
+`PAPER_READY` rows must keep `max_live_notional_usdt = 0`; only
+`LIVE_SMALL_READY` with system safety approval may ever expose live notional.
 
 ## Runtime Version References
 

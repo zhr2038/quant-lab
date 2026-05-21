@@ -5,6 +5,7 @@ import polars as pl
 from fastapi.testclient import TestClient
 
 from quant_lab.api.main import app
+from quant_lab.contracts.v5_quant_lab import V5_QUANT_LAB_CONTRACT_VERSION
 from quant_lab.data.lake import write_parquet_dataset
 
 V5_ADVISORY_FIELDS = {
@@ -13,6 +14,11 @@ V5_ADVISORY_FIELDS = {
     "expires_at",
     "contract_version",
     "schema_version",
+    "quant_lab_git_commit",
+    "source_version",
+    "would_block_if_enabled",
+    "would_enter",
+    "no_sample_reason",
     "strategy_id",
     "strategy_candidate",
     "symbol",
@@ -87,11 +93,18 @@ def test_strategy_opportunity_advisory_endpoint_reads_gold(tmp_path, monkeypatch
     assert paper["as_of_ts"].startswith("2026-05-20T00:00:00")
     assert paper["generated_at"]
     assert paper["expires_at"]
-    assert paper["contract_version"] == "v5_quant_lab_contract.v0.1"
+    assert paper["contract_version"] == V5_QUANT_LAB_CONTRACT_VERSION
     assert paper["schema_version"] == "strategy_opportunity_advisory.v0.1"
+    assert paper["source_version"]
+    assert paper["would_enter"] is True
+    assert paper["would_block_if_enabled"] is False
+    assert paper["no_sample_reason"] is None
     assert paper["max_live_notional_usdt"] == 0.0
     assert killed["symbol"] == "BNB-USDT"
     assert killed["recommended_mode"] == "none"
+    assert killed["would_block_if_enabled"] is True
+    assert killed["would_enter"] is False
+    assert killed["no_sample_reason"] == "killed_candidate"
     assert killed["max_live_notional_usdt"] == 0.0
 
 
@@ -154,7 +167,7 @@ def test_strategy_opportunity_advisory_dedupes_legacy_schema_rows(
         "as_of_ts": as_of,
         "generated_at": as_of,
         "expires_at": datetime(2026, 5, 20, 3, tzinfo=UTC),
-        "contract_version": "v5_quant_lab_contract.v0.1",
+        "contract_version": V5_QUANT_LAB_CONTRACT_VERSION,
         "strategy_id": "ETH_ENTRY_QUALITY",
         "strategy_candidate": "v5.pullback_reversal_shadow_eth",
         "symbol": "ETH-USDT",
@@ -226,5 +239,8 @@ def test_strategy_opportunity_advisory_aliases_and_latest_report_fallback(
     assert report_alias.status_code == 200
     assert dashed.json() == underscored.json() == report_alias.json()
     assert dashed.json()[0]["strategy_candidate"] == "v5.f4_volume_expansion_entry"
-    assert dashed.json()[0]["contract_version"] == "v5_quant_lab_contract.v0.1"
+    assert dashed.json()[0]["contract_version"] == V5_QUANT_LAB_CONTRACT_VERSION
+    assert dashed.json()[0]["source_version"]
+    assert dashed.json()[0]["would_enter"] is False
+    assert dashed.json()[0]["would_block_if_enabled"] is False
     assert dashed.json()[0]["expires_at"]

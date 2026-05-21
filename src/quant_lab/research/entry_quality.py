@@ -3,15 +3,18 @@ from __future__ import annotations
 import hashlib
 import json
 import math
+import subprocess
 from collections import Counter
 from dataclasses import dataclass
 from datetime import UTC, date, datetime, time, timedelta
+from functools import lru_cache
 from pathlib import Path
 from typing import Any
 
 import polars as pl
 from pydantic import BaseModel, ConfigDict, Field
 
+from quant_lab import __version__
 from quant_lab.contracts.v5_quant_lab import V5_QUANT_LAB_CONTRACT_VERSION
 from quant_lab.data.lake import read_parquet_dataset, upsert_parquet_dataset
 from quant_lab.strategy_telemetry.sanitize import safe_json_dumps
@@ -80,6 +83,8 @@ HISTORY_METRICS_DATASET = Path("gold") / "v5_entry_quality_history_metrics"
 COMMON_SCHEMA = {
     "contract_version": pl.Utf8,
     "schema_version": pl.Utf8,
+    "quant_lab_git_commit": pl.Utf8,
+    "source_version": pl.Utf8,
     "generated_at_utc": pl.Datetime(time_zone="UTC"),
     "generated_from_bundle_id": pl.Utf8,
     "as_of_date": pl.Utf8,
@@ -214,6 +219,9 @@ ENTRY_QUALITY_ADVISORY_SCHEMA = COMMON_SCHEMA | {
     "avg_net_bps": pl.Float64,
     "win_rate": pl.Float64,
     "advisory_reasons": pl.Utf8,
+    "would_block_if_enabled": pl.Boolean,
+    "would_enter": pl.Boolean,
+    "no_sample_reason": pl.Utf8,
     "ready_for_live": pl.Boolean,
 }
 
@@ -223,6 +231,11 @@ STRATEGY_OPPORTUNITY_ADVISORY_SCHEMA = {
     "expires_at": pl.Datetime(time_zone="UTC"),
     "contract_version": pl.Utf8,
     "schema_version": pl.Utf8,
+    "quant_lab_git_commit": pl.Utf8,
+    "source_version": pl.Utf8,
+    "would_block_if_enabled": pl.Boolean,
+    "would_enter": pl.Boolean,
+    "no_sample_reason": pl.Utf8,
     "strategy_id": pl.Utf8,
     "symbol": pl.Utf8,
     "v5_symbol": pl.Utf8,
@@ -1050,6 +1063,9 @@ def build_entry_quality_advisory(
                 "advisory_reasons": safe_json_dumps(
                     ["read_only_audit", "does_not_block_live_orders"]
                 ),
+                "would_block_if_enabled": False,
+                "would_enter": False,
+                "no_sample_reason": "audit_only",
                 "ready_for_live": False,
             }
         )
@@ -1071,6 +1087,9 @@ def build_entry_quality_advisory(
                     "advisory_reasons": safe_json_dumps(
                         ["ready_for_live_guard=false", "threshold_sensitivity_only"]
                     ),
+                    "would_block_if_enabled": True,
+                    "would_enter": False,
+                    "no_sample_reason": "guard_shadow_only",
                     "ready_for_live": False,
                 }
             )
@@ -1087,6 +1106,9 @@ def build_entry_quality_advisory(
                 "avg_net_bps": _float_or_none(row.get("avg_24h_net_bps")),
                 "win_rate": _float_or_none(row.get("win_rate_24h")),
                 "advisory_reasons": str(row.get("readiness_reasons") or "[]"),
+                "would_block_if_enabled": False,
+                "would_enter": True,
+                "no_sample_reason": None,
                 "ready_for_live": False,
             }
         )
@@ -1116,6 +1138,8 @@ def build_entry_quality_strategy_opportunity_advisory(
         live_block_reasons = _entry_quality_live_block_reasons(row, mode)
         as_of_ts = _entry_quality_as_of_datetime(row)
         generated_at = _coerce_datetime(row.get("generated_at_utc")) or as_of_ts
+        git_commit = str(row.get("quant_lab_git_commit") or "") or None
+        source_version = str(row.get("source_version") or "") or git_commit or __version__
         rows.append(
             {
                 "as_of_ts": as_of_ts,
@@ -1125,6 +1149,11 @@ def build_entry_quality_strategy_opportunity_advisory(
                     row.get("contract_version") or V5_QUANT_LAB_CONTRACT_VERSION
                 ),
                 "schema_version": STRATEGY_OPPORTUNITY_ADVISORY_SCHEMA_VERSION,
+                "quant_lab_git_commit": git_commit,
+                "source_version": source_version,
+                "would_block_if_enabled": bool(row.get("would_block_if_enabled")),
+                "would_enter": bool(row.get("would_enter")),
+                "no_sample_reason": _entry_quality_no_sample_reason(row, mode, sample_count),
                 "strategy_id": _strategy_id(candidate, rendered_symbol),
                 "symbol": rendered_symbol,
                 "v5_symbol": _v5_symbol(rendered_symbol),
@@ -1792,9 +1821,12 @@ def _pullback_candidate_name(symbol: str) -> str:
 
 
 def _common(ctx: _BuildContext, *, mode: str) -> dict[str, Any]:
+    git_commit = _git_commit()
     return {
         "contract_version": V5_QUANT_LAB_CONTRACT_VERSION,
         "schema_version": ENTRY_QUALITY_SCHEMA_VERSION,
+        "quant_lab_git_commit": git_commit,
+        "source_version": git_commit or __version__,
         "generated_at_utc": ctx.generated_at,
         "generated_from_bundle_id": ctx.generated_from_bundle_id,
         "as_of_date": ctx.as_of_date.isoformat(),
@@ -1933,6 +1965,26 @@ def _entry_quality_live_block_reasons(row: dict[str, Any], recommended_mode: str
     return sorted(reason for reason in reasons if reason)
 
 
+def _entry_quality_no_sample_reason(
+    row: dict[str, Any],
+    recommended_mode: str,
+    sample_count: int,
+) -> str | None:
+    existing = str(row.get("no_sample_reason") or "").strip()
+    if existing:
+        return existing
+    if sample_count <= 0:
+        return "no_entry_quality_samples"
+    candidate = str(row.get("strategy_candidate") or "").strip()
+    if candidate == "v5.entry_quality_missed_low_audit":
+        return "audit_only"
+    if candidate == "v5.late_entry_chase_guard_shadow":
+        return "guard_shadow_only"
+    if recommended_mode == "research":
+        return "research_only"
+    return None
+
+
 def _entry_quality_as_of_datetime(row: dict[str, Any]) -> datetime:
     value = _coerce_datetime(row.get("generated_at_utc"))
     if value is not None:
@@ -1947,6 +1999,23 @@ def _strategy_advisory_expires_at(generated_at: datetime) -> datetime:
     return generated_at.astimezone(UTC) + timedelta(
         seconds=STRATEGY_OPPORTUNITY_ADVISORY_TTL_SECONDS
     )
+
+
+@lru_cache(maxsize=1)
+def _git_commit() -> str | None:
+    root = Path(__file__).resolve().parents[3]
+    try:
+        result = subprocess.run(
+            ["git", "rev-parse", "--short", "HEAD"],
+            check=False,
+            capture_output=True,
+            cwd=root,
+            text=True,
+        )
+    except OSError:
+        return None
+    value = result.stdout.strip()
+    return value or None
 
 
 def _strategy_id(strategy_candidate: str, symbol: str) -> str:

@@ -2157,31 +2157,30 @@ def _publish_entry_quality_strategy_opportunities(
 ) -> int:
     dataset_path = root / STRATEGY_OPPORTUNITY_ADVISORY_DATASET
     existing = read_parquet_dataset(dataset_path)
-    kept_rows = [
-        row
-        for row in existing.to_dicts()
-        if not _is_entry_quality_strategy_candidate(row.get("strategy_candidate"))
-    ] if not existing.is_empty() else []
-    rows = [*kept_rows, *(frame.to_dicts() if not frame.is_empty() else [])]
-    if rows:
-        combined = pl.DataFrame(rows, infer_schema_length=None)
+    kept = _without_entry_quality_strategy_candidates(existing)
+    frames = [candidate for candidate in [kept, frame] if not candidate.is_empty()]
+    if frames:
+        combined = pl.concat(frames, how="diagonal_relaxed")
+    elif not kept.is_empty():
+        combined = kept
     elif not frame.is_empty():
         combined = frame
-    elif not existing.is_empty():
-        combined = existing.clear()
     else:
         combined = pl.DataFrame(schema=STRATEGY_OPPORTUNITY_ADVISORY_SCHEMA)
     write_parquet_dataset(combined, dataset_path)
     return combined.height
 
 
-def _is_entry_quality_strategy_candidate(value: Any) -> bool:
-    candidate = str(value or "")
-    return (
-        candidate.startswith("v5.entry_quality_")
-        or candidate == "v5.late_entry_chase_guard_shadow"
-        or candidate.startswith("v5.pullback_reversal_shadow_")
+def _without_entry_quality_strategy_candidates(frame: pl.DataFrame) -> pl.DataFrame:
+    if frame.is_empty() or "strategy_candidate" not in frame.columns:
+        return frame
+    candidate = pl.col("strategy_candidate").cast(pl.Utf8)
+    entry_quality_mask = (
+        candidate.str.starts_with("v5.entry_quality_")
+        | (candidate == "v5.late_entry_chase_guard_shadow")
+        | candidate.str.starts_with("v5.pullback_reversal_shadow_")
     )
+    return frame.filter(~entry_quality_mask)
 
 
 def _publish_history(

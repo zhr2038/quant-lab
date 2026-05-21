@@ -605,7 +605,7 @@ def _v5_order_lifecycle_fill_samples(v5_order_lifecycle: pl.DataFrame) -> list[d
                     or row.get("decision_ts")
                 ),
                 "fee_bps": fee_bps,
-                "slippage_bps": slippage if slippage is not None and slippage >= 0 else None,
+                "slippage_bps": max(slippage, 0.0) if slippage is not None else None,
                 "spread_bps": spread_bps if spread_bps is not None and spread_bps >= 0 else None,
             }
         )

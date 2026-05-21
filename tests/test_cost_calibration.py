@@ -274,12 +274,12 @@ def test_v5_order_lifecycle_stays_actual_when_trade_csv_also_exists(tmp_path):
                     "intent": "OPEN_LONG",
                     "arrival_mid": "60000",
                     "spread_bps_at_decision": "2.5",
-                    "arrival_slippage_bps": "1.6666666667",
+                    "arrival_slippage_bps": "-1.6666666667",
                     "delay_cost_bps": "0.5",
-                    "avg_fill_px": "60010",
+                    "avg_fill_px": "59990",
                     "filled_qty": "0.01",
-                    "fee_usdt": "0.30005",
-                    "notional_usdt": "600.1",
+                    "fee_usdt": "0.29995",
+                    "notional_usdt": "599.9",
                     "fill_count": "1",
                     "exchange_order_id": "btc-order-1",
                     "trade_ids": "btc-trade-1",
@@ -300,8 +300,8 @@ def test_v5_order_lifecycle_stays_actual_when_trade_csv_also_exists(tmp_path):
                     "symbol": "BTC-USDT",
                     "side": "buy",
                     "qty": "0.01",
-                    "price": "60010",
-                    "fee": "-0.30005",
+                    "price": "59990",
+                    "fee": "-0.29995",
                     "fee_ccy": "USDT",
                     "order_id": "btc-order-1",
                     "trade_id": "btc-trade-1",
@@ -323,7 +323,7 @@ def test_v5_order_lifecycle_stays_actual_when_trade_csv_also_exists(tmp_path):
     assert all_row["actual_fill_count"] == 1
     assert all_row["mixed_fill_count"] == 0
     assert all_row["fee_bps_p50"] > 0
-    assert all_row["slippage_bps_p50"] > 0
+    assert all_row["slippage_bps_p50"] == 0.0
 
     health = read_parquet_dataset(lake_root / "gold" / "cost_health_daily").to_dicts()[0]
     checks = json.loads(health["data_quality_checks_json"])

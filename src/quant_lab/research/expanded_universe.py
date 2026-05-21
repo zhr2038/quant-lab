@@ -17,6 +17,7 @@ from quant_lab.symbols import normalize_symbol
 
 MARKET_BAR_DATASET = Path("silver") / "market_bar"
 ORDERBOOK_SNAPSHOT_DATASET = Path("silver") / "orderbook_snapshot"
+SPOT_UNIVERSE_CANDIDATES_DATASET = Path("bronze") / "okx_public_rest" / "spot_universe_candidates"
 STRATEGY_EVIDENCE_DATASET = Path("gold") / "strategy_evidence"
 PULLBACK_BY_SYMBOL_DATASET = Path("gold") / "v5_entry_quality_history_pullback_by_symbol"
 LATE_ENTRY_BY_SYMBOL_DATASET = Path("gold") / "v5_late_entry_chase_threshold_by_symbol"
@@ -163,6 +164,7 @@ def build_and_publish_expanded_crypto_universe_shadow(
     generated_at = datetime.now(UTC)
     market, market_end = _read_recent_market_bars(root, min_coverage_bars=min_coverage_bars)
     orderbook = _read_recent_orderbook_snapshots(root, since=_orderbook_since(day, market_end))
+    spot_candidates = read_parquet_dataset(root / SPOT_UNIVERSE_CANDIDATES_DATASET)
     evidence = read_parquet_dataset(root / STRATEGY_EVIDENCE_DATASET)
     pullback = read_parquet_dataset(root / PULLBACK_BY_SYMBOL_DATASET)
     late_entry = read_parquet_dataset(root / LATE_ENTRY_BY_SYMBOL_DATASET)
@@ -178,6 +180,7 @@ def build_and_publish_expanded_crypto_universe_shadow(
     quality = build_symbol_quality_score(
         market_bars=market,
         orderbook_snapshots=orderbook,
+        spot_universe_candidates=spot_candidates,
         strategy_evidence=evidence,
         pullback_by_symbol=pullback,
         late_entry_by_symbol=late_entry,
@@ -234,6 +237,7 @@ def build_symbol_quality_score(
     strategy_evidence: pl.DataFrame,
     pullback_by_symbol: pl.DataFrame,
     late_entry_by_symbol: pl.DataFrame,
+    spot_universe_candidates: pl.DataFrame | None = None,
     as_of_date: date,
     generated_at: datetime | None = None,
     min_quote_volume_24h: float = 1_000_000.0,
@@ -252,6 +256,9 @@ def build_symbol_quality_score(
     start_24h = end - timedelta(hours=24)
     start_30d = end - timedelta(days=30)
     spreads = _avg_spread_by_symbol(orderbook_snapshots, since=start_24h)
+    spot_candidate_metrics = _spot_candidate_metrics(
+        spot_universe_candidates if spot_universe_candidates is not None else pl.DataFrame()
+    )
     evidence_metrics = _strategy_evidence_metrics(strategy_evidence)
     pullback_metrics = _pullback_metrics(pullback_by_symbol)
     late_metrics = _late_entry_metrics(late_entry_by_symbol)
@@ -261,10 +268,16 @@ def build_symbol_quality_score(
     for symbol, rows_for_symbol in sorted(bars_by_symbol.items()):
         base, quote = _symbol_parts(symbol)
         latest_close = _latest_close(rows_for_symbol)
-        quote_volume_24h = _quote_volume(rows_for_symbol, since=start_24h)
+        candidate_metrics = spot_candidate_metrics.get(symbol, {})
+        quote_volume_24h = max(
+            _quote_volume(rows_for_symbol, since=start_24h),
+            _float(candidate_metrics.get("quote_volume_24h")) or 0.0,
+        )
         coverage_count = _coverage_count(rows_for_symbol, since=start_30d)
         data_coverage = min(coverage_count / max(min_coverage_bars, 1), 1.0)
         avg_spread = spreads.get(symbol)
+        if avg_spread is None:
+            avg_spread = _float(candidate_metrics.get("avg_spread_bps"))
         metrics = evidence_metrics.get(symbol, {})
         blocking = _blocking_reasons(
             symbol=symbol,
@@ -638,6 +651,29 @@ def _avg_spread_by_symbol(orderbook: pl.DataFrame, *, since: datetime) -> dict[s
             continue
         values[symbol].append((ask - bid) / mid * 10_000.0)
     return {symbol: statistics.fmean(items) for symbol, items in values.items() if items}
+
+
+def _spot_candidate_metrics(frame: pl.DataFrame) -> dict[str, dict[str, float]]:
+    if frame.is_empty() or "symbol" not in frame.columns:
+        return {}
+    metrics: dict[str, dict[str, float]] = {}
+    sort_columns = [column for column in ["generated_at", "rank"] if column in frame.columns]
+    rows = (
+        frame.sort(sort_columns, descending=[True, False][: len(sort_columns)]).to_dicts()
+        if sort_columns
+        else frame.to_dicts()
+    )
+    for row in rows:
+        symbol = normalize_symbol(row.get("symbol"))
+        if not _is_usdt_symbol(symbol) or symbol in metrics:
+            continue
+        quote_volume = _float(row.get("quote_volume_24h"))
+        spread = _float(row.get("avg_spread_bps") or row.get("spread_bps"))
+        metrics[symbol] = {
+            "quote_volume_24h": quote_volume or 0.0,
+            "avg_spread_bps": spread if spread is not None else float("nan"),
+        }
+    return metrics
 
 
 def _strategy_evidence_metrics(strategy_evidence: pl.DataFrame) -> dict[str, dict[str, float]]:

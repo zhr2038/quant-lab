@@ -77,6 +77,39 @@ def test_symbol_quality_uses_btc_correlation_and_spread_filters():
     assert alt["btc_correlation"] is not None
 
 
+def test_symbol_quality_uses_rest_candidate_spread_when_orderbook_missing():
+    market = _market_frame(["BTC-USDT", "XRP-USDT"], hours=6, quote_volume=1_000)
+    spot_candidates = pl.DataFrame(
+        [
+            {
+                "generated_at": datetime(2026, 5, 21, tzinfo=UTC),
+                "rank": 1,
+                "symbol": "XRP-USDT",
+                "quote_volume_24h": 2_000_000.0,
+                "spread_bps": 4.0,
+            }
+        ]
+    )
+
+    quality = build_symbol_quality_score(
+        market_bars=market,
+        orderbook_snapshots=pl.DataFrame(),
+        strategy_evidence=pl.DataFrame(),
+        pullback_by_symbol=pl.DataFrame(),
+        late_entry_by_symbol=pl.DataFrame(),
+        spot_universe_candidates=spot_candidates,
+        as_of_date=datetime(2026, 5, 21, tzinfo=UTC).date(),
+        min_quote_volume_24h=100_000,
+        max_spread_bps=20,
+        min_coverage_bars=4,
+    )
+
+    xrp = [row for row in quality.to_dicts() if row["symbol"] == "XRP-USDT"][0]
+    assert xrp["avg_spread_bps"] == 4.0
+    assert xrp["quote_volume_24h"] == 2_000_000.0
+    assert "spread_not_observed" not in json.loads(xrp["blocking_reasons"])
+
+
 def test_web_strategy_page_reads_expanded_universe(tmp_path):
     lake_root = tmp_path / "lake"
     _write_market(lake_root)

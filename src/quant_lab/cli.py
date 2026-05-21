@@ -20,6 +20,7 @@ from quant_lab.gates.defaults import evaluate_alpha_gate
 from quant_lab.ingest.okx_public import (
     MARKET_BAR_DATASET,
     OKXPublicClient,
+    backfill_expanded_usdt_spot_market_bars,
     normalize_okx_candles_to_market_bars,
     publish_market_bars_to_lake,
 )
@@ -158,6 +159,51 @@ def okx_fetch_candles(
             sort_keys=True,
         )
     )
+
+
+@app.command("okx-backfill-expanded-universe")
+def okx_backfill_expanded_universe(
+    lake_root: Annotated[
+        Path,
+        typer.Option(
+            "--lake-root",
+            file_okay=False,
+            dir_okay=True,
+            writable=True,
+            help="quant-lab lake root to publish expanded OKX spot market bars into.",
+        ),
+    ],
+    bar: Annotated[str, typer.Option("--bar", help="OKX candle bar.")] = "1H",
+    max_symbols: Annotated[int, typer.Option("--max-symbols", min=1, max=100)] = 30,
+    history_pages: Annotated[int, typer.Option("--history-pages", min=1, max=20)] = 8,
+    limit: Annotated[int, typer.Option("--limit", min=1, max=300)] = 100,
+    min_quote_volume_24h: Annotated[
+        float,
+        typer.Option("--min-quote-volume-24h", min=0.0),
+    ] = 1_000_000.0,
+    max_spread_bps: Annotated[float, typer.Option("--max-spread-bps", min=0.0)] = 20.0,
+    min_price: Annotated[float, typer.Option("--min-price", min=0.0)] = 0.01,
+    blacklist: Annotated[
+        str | None,
+        typer.Option("--blacklist", help="Comma-separated symbols to exclude."),
+    ] = None,
+) -> None:
+    result = run_with_job_metrics(
+        lake_root=lake_root,
+        job_name="okx-backfill-expanded-universe",
+        func=lambda: backfill_expanded_usdt_spot_market_bars(
+            lake_root=lake_root,
+            bar=bar,
+            max_symbols=max_symbols,
+            history_pages=history_pages,
+            limit=limit,
+            min_quote_volume_24h=min_quote_volume_24h,
+            max_spread_bps=max_spread_bps,
+            min_price=min_price,
+            blacklist=[item.strip() for item in (blacklist or "").split(",") if item.strip()],
+        ),
+    )
+    typer.echo(result.model_dump_json(indent=2))
 
 
 @app.command("okx-ws-run")

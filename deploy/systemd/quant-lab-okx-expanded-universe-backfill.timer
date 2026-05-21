@@ -1,0 +1,11 @@
+[Unit]
+Description=Run quant-lab OKX expanded USDT spot universe backfill every 6 hours
+
+[Timer]
+OnBootSec=20min
+OnUnitActiveSec=6h
+RandomizedDelaySec=10min
+Persistent=false
+
+[Install]
+WantedBy=timers.target

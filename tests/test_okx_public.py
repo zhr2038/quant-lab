@@ -11,8 +11,10 @@ from quant_lab.ingest.okx_public import (
     OKXPublicClient,
     OKXPublicConfig,
     OKXPublicTimeout,
+    backfill_expanded_usdt_spot_market_bars,
     normalize_okx_candles_to_market_bars,
     publish_market_bars_to_lake,
+    select_okx_usdt_spot_universe,
 )
 
 
@@ -275,6 +277,72 @@ def test_transient_error_retries_without_long_sleep(monkeypatch):
     assert attempts == 2
 
 
+def test_select_okx_usdt_spot_universe_filters_risky_and_illiquid_symbols():
+    instruments = [
+        _instrument("BTC-USDT", "BTC", "USDT"),
+        _instrument("XRP-USDT", "XRP", "USDT"),
+        _instrument("DOGE-USDT", "DOGE", "USDT"),
+        _instrument("USDC-USDT", "USDC", "USDT"),
+        _instrument("ETH3L-USDT", "ETH3L", "USDT"),
+        _instrument("THIN-USDT", "THIN", "USDT"),
+        _instrument("WIDE-USDT", "WIDE", "USDT"),
+    ]
+    tickers = [
+        _ticker("BTC-USDT", quote_volume=2_000_000, bid=100.0, ask=100.05),
+        _ticker("XRP-USDT", quote_volume=5_000_000, bid=2.0, ask=2.001),
+        _ticker("DOGE-USDT", quote_volume=9_000_000, bid=0.2, ask=0.2001),
+        _ticker("USDC-USDT", quote_volume=9_000_000, bid=1.0, ask=1.0001),
+        _ticker("ETH3L-USDT", quote_volume=9_000_000, bid=5.0, ask=5.001),
+        _ticker("THIN-USDT", quote_volume=10_000, bid=10.0, ask=10.001),
+        _ticker("WIDE-USDT", quote_volume=9_000_000, bid=10.0, ask=10.5),
+    ]
+
+    candidates = select_okx_usdt_spot_universe(
+        instruments=instruments,
+        tickers=tickers,
+        max_symbols=10,
+        min_quote_volume_24h=1_000_000,
+        max_spread_bps=20,
+    )
+
+    assert [candidate.symbol for candidate in candidates] == ["BTC-USDT", "XRP-USDT"]
+    assert candidates[0].is_current_v5_symbol is True
+    assert candidates[1].quote_volume_24h == 5_000_000
+
+
+def test_backfill_expanded_usdt_spot_market_bars_publishes_selected_symbols(tmp_path):
+    lake_root = tmp_path / "lake"
+    client = _FakeExpandedUniverseClient()
+
+    result = backfill_expanded_usdt_spot_market_bars(
+        lake_root=lake_root,
+        client=client,
+        max_symbols=2,
+        history_pages=2,
+        min_quote_volume_24h=1_000_000,
+        max_spread_bps=20,
+    )
+    second = backfill_expanded_usdt_spot_market_bars(
+        lake_root=lake_root,
+        client=client,
+        max_symbols=2,
+        history_pages=2,
+        min_quote_volume_24h=1_000_000,
+        max_spread_bps=20,
+    )
+    market = read_parquet_dataset(lake_root / "silver" / "market_bar")
+    candidates = read_parquet_dataset(
+        lake_root / "bronze" / "okx_public_rest" / "spot_universe_candidates"
+    )
+
+    assert result.selected_symbols == ["BTC-USDT", "XRP-USDT"]
+    assert result.published_market_bars == 2
+    assert second.market_bar_rows == 2
+    assert set(market["symbol"].to_list()) == {"BTC-USDT", "XRP-USDT"}
+    assert set(candidates["symbol"].to_list()) == {"BTC-USDT", "XRP-USDT"}
+    assert set(client.history_methods) == {"history_candles"}
+
+
 def test_forbidden_keywords_do_not_appear_in_implementation_code():
     implementation_files = [
         Path("src/quant_lab/ingest/okx_public.py"),
@@ -316,6 +384,67 @@ def _data_for_url(url: str) -> list[dict[str, Any]] | list[list[str]]:
         "/api/v5/market/history-trades": [{"tradeId": "0", "px": "99", "sz": "1"}],
     }
     return responses[url]
+
+
+def _instrument(symbol: str, base: str, quote: str) -> dict[str, str]:
+    return {
+        "instType": "SPOT",
+        "instId": symbol,
+        "baseCcy": base,
+        "quoteCcy": quote,
+        "state": "live",
+    }
+
+
+def _ticker(symbol: str, *, quote_volume: float, bid: float, ask: float) -> dict[str, str]:
+    return {
+        "instId": symbol,
+        "last": str((bid + ask) / 2.0),
+        "bidPx": str(bid),
+        "askPx": str(ask),
+        "volCcy24h": str(quote_volume),
+    }
+
+
+class _FakeExpandedUniverseClient:
+    def __init__(self) -> None:
+        self.history_methods: list[str] = []
+
+    def get_instruments(self, inst_type: str) -> list[dict[str, str]]:
+        assert inst_type == "SPOT"
+        return [
+            _instrument("BTC-USDT", "BTC", "USDT"),
+            _instrument("XRP-USDT", "XRP", "USDT"),
+            _instrument("DOGE-USDT", "DOGE", "USDT"),
+        ]
+
+    def get_tickers(self, inst_type: str) -> list[dict[str, str]]:
+        assert inst_type == "SPOT"
+        return [
+            _ticker("BTC-USDT", quote_volume=2_000_000, bid=100.0, ask=100.05),
+            _ticker("XRP-USDT", quote_volume=3_000_000, bid=2.0, ask=2.001),
+            _ticker("DOGE-USDT", quote_volume=9_000_000, bid=0.2, ask=0.2001),
+        ]
+
+    def get_history_candles(
+        self,
+        inst_id: str,
+        bar: str,
+        after: str | None = None,
+        before: str | None = None,
+        limit: int = 100,
+    ) -> list[list[str]]:
+        assert after is None
+        assert bar == "1H"
+        assert limit == 100
+        self.history_methods.append("history_candles")
+        if before is not None:
+            return []
+        ts = {
+            "BTC-USDT": "1771200000000",
+            "XRP-USDT": "1771196400000",
+        }[inst_id]
+        return [[ts, "100", "101", "99", "100.5", "10", "10", "1005", "1"]]
 
 
 def _forbidden_auth_headers() -> list[str]:

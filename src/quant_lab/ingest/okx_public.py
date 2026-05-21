@@ -1,3 +1,4 @@
+import math
 import time
 from collections.abc import Mapping, Sequence
 from datetime import UTC, datetime
@@ -5,14 +6,60 @@ from pathlib import Path
 from typing import Any
 
 import httpx
+import polars as pl
 from pydantic import BaseModel, ConfigDict, Field
 
 from quant_lab.contracts.models import MarketBar
 from quant_lab.data.lake import MARKET_BAR_DATASET as MARKET_BAR_DATASET
-from quant_lab.data.lake import write_market_bars
+from quant_lab.data.lake import write_market_bars, write_parquet_dataset
 from quant_lab.symbols import normalize_symbol
 
 OKX_PUBLIC_REST_SOURCE = "okx_public_rest"
+OKX_EXPANDED_UNIVERSE_SOURCE = "okx_public_rest_expanded_universe"
+OKX_SPOT_UNIVERSE_CANDIDATES_DATASET = (
+    Path("bronze") / "okx_public_rest" / "spot_universe_candidates"
+)
+CURRENT_V5_UNIVERSE = {"BTC-USDT", "ETH-USDT", "SOL-USDT", "BNB-USDT"}
+STABLE_BASES = {
+    "USDT",
+    "USDC",
+    "USD",
+    "DAI",
+    "FDUSD",
+    "TUSD",
+    "USDD",
+    "USDE",
+    "PYUSD",
+    "BUSD",
+}
+MEME_BASES = {
+    "DOGE",
+    "SHIB",
+    "PEPE",
+    "FLOKI",
+    "BONK",
+    "WIF",
+    "MEME",
+    "TURBO",
+    "BABYDOGE",
+    "AIDOGE",
+}
+LEVERAGED_SUFFIXES = ("3L", "3S", "5L", "5S", "UP", "DOWN", "BULL", "BEAR")
+
+SPOT_UNIVERSE_CANDIDATE_SCHEMA = {
+    "generated_at": pl.Datetime(time_zone="UTC"),
+    "rank": pl.Int64,
+    "symbol": pl.Utf8,
+    "base_ccy": pl.Utf8,
+    "quote_ccy": pl.Utf8,
+    "quote_volume_24h": pl.Float64,
+    "last_px": pl.Float64,
+    "bid_px": pl.Float64,
+    "ask_px": pl.Float64,
+    "spread_bps": pl.Float64,
+    "is_current_v5_symbol": pl.Boolean,
+    "source": pl.Utf8,
+}
 
 
 class OKXPublicConfig(BaseModel):
@@ -182,6 +229,180 @@ class OKXPublicClient:
             time.sleep(self.config.rate_limit_sleep_seconds)
 
 
+class OKXSpotUniverseCandidate(BaseModel):
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    symbol: str
+    base_ccy: str
+    quote_ccy: str
+    quote_volume_24h: float = Field(ge=0)
+    last_px: float = Field(gt=0)
+    bid_px: float = Field(gt=0)
+    ask_px: float = Field(gt=0)
+    spread_bps: float = Field(ge=0)
+    is_current_v5_symbol: bool = False
+
+
+class OKXExpandedUniverseBackfillResult(BaseModel):
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    lake_root: str
+    selected_symbols: list[str]
+    candidates_considered: int = Field(ge=0)
+    selected_count: int = Field(ge=0)
+    fetched_candles: int = Field(ge=0)
+    published_market_bars: int = Field(ge=0)
+    market_bar_rows: int = Field(ge=0)
+    candidate_dataset_path: str
+    market_bar_dataset_path: str
+    warnings: list[str] = Field(default_factory=list)
+
+
+def select_okx_usdt_spot_universe(
+    *,
+    instruments: Sequence[Mapping[str, Any]],
+    tickers: Sequence[Mapping[str, Any]],
+    max_symbols: int = 30,
+    min_quote_volume_24h: float = 1_000_000.0,
+    max_spread_bps: float = 20.0,
+    min_price: float = 0.01,
+    blacklist: Sequence[str] | None = None,
+) -> list[OKXSpotUniverseCandidate]:
+    barred = {normalize_symbol(item) for item in blacklist or []}
+    live_instruments = _spot_instruments_by_symbol(instruments)
+    candidates: list[OKXSpotUniverseCandidate] = []
+    for ticker in tickers:
+        symbol = normalize_symbol(ticker.get("instId"))
+        instrument = live_instruments.get(symbol)
+        if instrument is None:
+            continue
+        base_ccy, quote_ccy = _instrument_ccys(symbol, instrument)
+        if not _is_allowed_spot_symbol(
+            symbol=symbol,
+            base_ccy=base_ccy,
+            quote_ccy=quote_ccy,
+            blacklist=barred,
+        ):
+            continue
+        last_px = _float(ticker.get("last"))
+        bid_px = _float(ticker.get("bidPx"))
+        ask_px = _float(ticker.get("askPx"))
+        if last_px is None or bid_px is None or ask_px is None:
+            continue
+        if last_px < min_price or bid_px <= 0 or ask_px <= bid_px:
+            continue
+        spread_bps = (ask_px - bid_px) / ((ask_px + bid_px) / 2.0) * 10_000.0
+        if spread_bps > max_spread_bps:
+            continue
+        quote_volume = _ticker_quote_volume_24h(ticker, last_px=last_px)
+        if quote_volume < min_quote_volume_24h:
+            continue
+        candidates.append(
+            OKXSpotUniverseCandidate(
+                symbol=symbol,
+                base_ccy=base_ccy,
+                quote_ccy=quote_ccy,
+                quote_volume_24h=quote_volume,
+                last_px=last_px,
+                bid_px=bid_px,
+                ask_px=ask_px,
+                spread_bps=spread_bps,
+                is_current_v5_symbol=symbol in CURRENT_V5_UNIVERSE,
+            )
+        )
+    candidates.sort(
+        key=lambda item: (
+            item.is_current_v5_symbol,
+            item.quote_volume_24h,
+            -item.spread_bps,
+        ),
+        reverse=True,
+    )
+    return candidates[: max(max_symbols, 1)]
+
+
+def backfill_expanded_usdt_spot_market_bars(
+    *,
+    lake_root: str | Path,
+    client: OKXPublicClient | None = None,
+    bar: str = "1H",
+    market_type: str = "SPOT",
+    max_symbols: int = 30,
+    history_pages: int = 8,
+    limit: int = 100,
+    min_quote_volume_24h: float = 1_000_000.0,
+    max_spread_bps: float = 20.0,
+    min_price: float = 0.01,
+    blacklist: Sequence[str] | None = None,
+) -> OKXExpandedUniverseBackfillResult:
+    root = Path(lake_root)
+    effective_client = client or OKXPublicClient()
+    generated_at = datetime.now(UTC)
+    instruments = effective_client.get_instruments("SPOT")
+    tickers = effective_client.get_tickers("SPOT")
+    candidates = select_okx_usdt_spot_universe(
+        instruments=instruments,
+        tickers=tickers,
+        max_symbols=max_symbols,
+        min_quote_volume_24h=min_quote_volume_24h,
+        max_spread_bps=max_spread_bps,
+        min_price=min_price,
+        blacklist=blacklist,
+    )
+    _write_spot_universe_candidates(root, candidates, generated_at=generated_at)
+
+    warnings: list[str] = []
+    market_bars: list[MarketBar] = []
+    fetched_candles = 0
+    for candidate in candidates:
+        before: str | None = None
+        seen_cursors: set[str] = set()
+        symbol_bar_count = 0
+        for _ in range(max(history_pages, 1)):
+            candles = effective_client.get_history_candles(
+                candidate.symbol,
+                bar,
+                before=before,
+                limit=limit,
+            )
+            if not candles:
+                break
+            fetched_candles += len(candles)
+            market_bars.extend(
+                normalized_bars := normalize_okx_candles_to_market_bars(
+                    candles,
+                    inst_id=candidate.symbol,
+                    bar=bar,
+                    market_type=market_type,
+                    source=OKX_EXPANDED_UNIVERSE_SOURCE,
+                )
+            )
+            symbol_bar_count += len(normalized_bars)
+            next_before = _oldest_candle_ts(candles)
+            if next_before is None or next_before in seen_cursors:
+                break
+            seen_cursors.add(next_before)
+            before = next_before
+            if len(candles) < limit:
+                break
+        if symbol_bar_count == 0:
+            warnings.append(f"no_closed_market_bars:{candidate.symbol}")
+    unique_bars = _dedupe_market_bars(market_bars)
+    market_bar_rows = publish_market_bars_to_lake(unique_bars, root) if unique_bars else 0
+    return OKXExpandedUniverseBackfillResult(
+        lake_root=str(root),
+        selected_symbols=[candidate.symbol for candidate in candidates],
+        candidates_considered=len(tickers),
+        selected_count=len(candidates),
+        fetched_candles=fetched_candles,
+        published_market_bars=len(unique_bars),
+        market_bar_rows=market_bar_rows,
+        candidate_dataset_path=str(root / OKX_SPOT_UNIVERSE_CANDIDATES_DATASET),
+        market_bar_dataset_path=str(root / MARKET_BAR_DATASET),
+        warnings=warnings,
+    )
+
+
 def normalize_okx_candles_to_market_bars(
     candles: Sequence[Sequence[Any] | Mapping[str, Any]],
     inst_id: str,
@@ -226,6 +447,115 @@ def normalize_okx_candles_to_market_bars(
 
 def publish_market_bars_to_lake(records: Sequence[MarketBar], lake_root: str | Path) -> int:
     return write_market_bars(lake_root, records)
+
+
+def _write_spot_universe_candidates(
+    lake_root: Path,
+    candidates: Sequence[OKXSpotUniverseCandidate],
+    *,
+    generated_at: datetime,
+) -> None:
+    rows = [
+        {
+            "generated_at": generated_at,
+            "rank": rank,
+            "symbol": candidate.symbol,
+            "base_ccy": candidate.base_ccy,
+            "quote_ccy": candidate.quote_ccy,
+            "quote_volume_24h": candidate.quote_volume_24h,
+            "last_px": candidate.last_px,
+            "bid_px": candidate.bid_px,
+            "ask_px": candidate.ask_px,
+            "spread_bps": candidate.spread_bps,
+            "is_current_v5_symbol": candidate.is_current_v5_symbol,
+            "source": OKX_EXPANDED_UNIVERSE_SOURCE,
+        }
+        for rank, candidate in enumerate(candidates, start=1)
+    ]
+    frame = (
+        pl.DataFrame(rows, schema=SPOT_UNIVERSE_CANDIDATE_SCHEMA, orient="row")
+        if rows
+        else pl.DataFrame(schema=SPOT_UNIVERSE_CANDIDATE_SCHEMA)
+    )
+    write_parquet_dataset(frame, lake_root / OKX_SPOT_UNIVERSE_CANDIDATES_DATASET)
+
+
+def _dedupe_market_bars(records: Sequence[MarketBar]) -> list[MarketBar]:
+    keyed: dict[tuple[str, str, str, datetime], MarketBar] = {}
+    for record in records:
+        keyed[(record.venue, record.symbol, record.timeframe, record.ts)] = record
+    return sorted(keyed.values(), key=lambda item: (item.symbol, item.timeframe, item.ts))
+
+
+def _oldest_candle_ts(candles: Sequence[Sequence[Any] | Mapping[str, Any]]) -> str | None:
+    timestamps: list[int] = []
+    for candle in candles:
+        normalized = _normalize_candle_payload(candle)
+        if normalized is None:
+            continue
+        try:
+            timestamps.append(int(normalized["ts"]))
+        except (TypeError, ValueError):
+            continue
+    return str(min(timestamps)) if timestamps else None
+
+
+def _spot_instruments_by_symbol(
+    instruments: Sequence[Mapping[str, Any]],
+) -> dict[str, Mapping[str, Any]]:
+    output: dict[str, Mapping[str, Any]] = {}
+    for instrument in instruments:
+        symbol = normalize_symbol(instrument.get("instId"))
+        if not symbol:
+            continue
+        if str(instrument.get("instType") or "SPOT").upper() != "SPOT":
+            continue
+        if str(instrument.get("state") or "live").lower() not in {"live", ""}:
+            continue
+        output[symbol] = instrument
+    return output
+
+
+def _instrument_ccys(symbol: str, instrument: Mapping[str, Any]) -> tuple[str, str]:
+    base = str(instrument.get("baseCcy") or "").upper()
+    quote = str(instrument.get("quoteCcy") or "").upper()
+    if base and quote:
+        return base, quote
+    if "-" in symbol:
+        parsed_base, parsed_quote = symbol.split("-", 1)
+        return parsed_base, parsed_quote
+    return symbol, ""
+
+
+def _is_allowed_spot_symbol(
+    *,
+    symbol: str,
+    base_ccy: str,
+    quote_ccy: str,
+    blacklist: set[str],
+) -> bool:
+    if symbol in blacklist:
+        return False
+    if quote_ccy != "USDT" or not symbol.endswith("-USDT"):
+        return False
+    if base_ccy in STABLE_BASES or base_ccy in MEME_BASES:
+        return False
+    return not base_ccy.endswith(LEVERAGED_SUFFIXES)
+
+
+def _ticker_quote_volume_24h(ticker: Mapping[str, Any], *, last_px: float) -> float:
+    direct = _float(
+        ticker.get("volCcyQuote24h")
+        or ticker.get("quoteVolume24h")
+        or ticker.get("quoteVol24h")
+    )
+    if direct is not None:
+        return direct
+    volume_ccy = _float(ticker.get("volCcy24h"))
+    if volume_ccy is not None:
+        return volume_ccy
+    base_volume = _float(ticker.get("vol24h") or ticker.get("vol"))
+    return (base_volume or 0.0) * last_px
 
 
 def _normalize_candle_payload(
@@ -339,3 +669,13 @@ def _first_present(values: Mapping[str, Any], *keys: str) -> Any:
         if key in values and values[key] is not None:
             return values[key]
     return None
+
+
+def _float(value: Any) -> float | None:
+    if value is None:
+        return None
+    try:
+        parsed = float(value)
+    except (TypeError, ValueError):
+        return None
+    return parsed if math.isfinite(parsed) else None

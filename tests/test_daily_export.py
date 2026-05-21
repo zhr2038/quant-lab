@@ -16,7 +16,9 @@ from quant_lab.export.daily import (
     CSV_SCHEMAS,
     REQUIRED_MEMBERS,
     _load_export_frame,
+    _member_row_count,
     _recent_heavy_dataset_files,
+    _sha256_payload,
     export_daily_pack,
     validate_expert_pack,
 )
@@ -82,6 +84,15 @@ def test_export_daily_pack_writes_required_members(tmp_path):
         assert "quant_lab_enforce_readiness:" in executive_summary
         assert "charts/market_close.png" in names
         assert archive.read("charts/market_close.png").startswith(b"\x89PNG")
+
+
+def test_member_row_count_counts_csv_without_materializing_rows() -> None:
+    text = "a,b\n1,2\n3,4\n"
+
+    assert _member_row_count("example.csv", text) == 2
+    assert _sha256_payload(text) == daily_export_module.hashlib.sha256(
+        text.encode("utf-8")
+    ).hexdigest()
 
 
 def test_export_frame_samples_large_unlisted_dataset_without_full_read(tmp_path, monkeypatch):

@@ -5449,8 +5449,9 @@ def _missing_sections(row_counts: dict[str, int]) -> list[str]:
 def _write_zip(path: Path, members: dict[str, _MemberPayload]) -> None:
     with zipfile.ZipFile(path, "w", compression=zipfile.ZIP_DEFLATED) as archive:
         for member, payload in sorted(members.items()):
-            data = payload if isinstance(payload, bytes) else payload.encode("utf-8")
-            archive.writestr(member, data)
+            with archive.open(member, "w") as handle:
+                for chunk in _payload_byte_chunks(payload):
+                    handle.write(chunk)
 
 
 def _fail_on_secrets(members: dict[str, _MemberPayload]) -> None:
@@ -5490,7 +5491,7 @@ def _zip_secret_reasons(archive: zipfile.ZipFile, names: list[str]) -> list[str]
 def _secret_severity_counts(text: str) -> tuple[int, int]:
     high = 0
     medium = 0
-    for line in text.splitlines():
+    for line in io.StringIO(text):
         for pattern, severity, _label in SECRET_PATTERNS:
             if not pattern.search(line):
                 continue
@@ -5965,8 +5966,8 @@ def _member_row_count(path: str, text: _MemberPayload) -> int | None:
         return None
     suffix = Path(path).suffix.lower()
     if suffix == ".csv":
-        rows = list(csv.reader(io.StringIO(text)))
-        return max(len(rows) - 1, 0)
+        row_count = sum(1 for _row in csv.reader(io.StringIO(text)))
+        return max(row_count - 1, 0)
     if suffix == ".json":
         try:
             payload = json.loads(text)
@@ -5982,13 +5983,30 @@ def _is_text_member(name: str) -> bool:
 
 
 def _sha256_text(text: str) -> str:
-    return hashlib.sha256(text.encode("utf-8")).hexdigest()
+    digest = hashlib.sha256()
+    for chunk in _text_chunks(text):
+        digest.update(chunk.encode("utf-8"))
+    return digest.hexdigest()
 
 
 def _sha256_payload(payload: _MemberPayload) -> str:
     if isinstance(payload, bytes):
         return hashlib.sha256(payload).hexdigest()
     return _sha256_text(payload)
+
+
+def _payload_byte_chunks(payload: _MemberPayload, chunk_size: int = 1024 * 1024) -> Any:
+    if isinstance(payload, bytes):
+        for index in range(0, len(payload), chunk_size):
+            yield payload[index : index + chunk_size]
+        return
+    for chunk in _text_chunks(payload, chunk_size):
+        yield chunk.encode("utf-8")
+
+
+def _text_chunks(text: str, chunk_size: int = 1024 * 1024) -> Any:
+    for index in range(0, len(text), chunk_size):
+        yield text[index : index + chunk_size]
 
 
 def _sha256_file(path: Path) -> str:

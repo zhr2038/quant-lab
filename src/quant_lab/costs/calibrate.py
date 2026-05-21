@@ -1073,8 +1073,12 @@ def _v5_lifecycle_zero_fill_count(v5_order_lifecycle: pl.DataFrame) -> int:
             or ""
         ).strip().lower()
         fill_count = _first_float(row, ["fill_count", "fills_count"])
+        filled_qty = _first_float(row, ["filled_qty", "fill_qty", "fill_sz", "qty"])
+        trade_ids = str(row.get("trade_ids") or row.get("trade_id") or row.get("tradeId") or "")
         if state in {"filled", "partially_filled", "partial_fill", "partially-filled"} and (
             fill_count is not None and fill_count <= 0
+            and (filled_qty is None or filled_qty <= 0)
+            and not trade_ids.strip()
         ):
             count += 1
     return count

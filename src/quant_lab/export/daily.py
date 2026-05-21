@@ -66,6 +66,7 @@ from quant_lab.web import readers
 
 STRATEGY_OPPORTUNITY_ADVISORY_SCHEMA_VERSION = "strategy_opportunity_advisory.v0.1"
 STRATEGY_OPPORTUNITY_ADVISORY_TTL_SECONDS = 3 * 60 * 60
+UNOBSERVABLE_TEXT_VALUES = {"", "none", "null", "nan", "not_observable", "unknown"}
 
 SECTIONS = ["market", "features", "costs", "research", "risk", "anomalies", "v5", "charts"]
 HEAVY_EXPORT_DATASET_LIMITS = {
@@ -3830,7 +3831,7 @@ def _strategy_opportunity_advisory_for_export(
     risk_context = _advisory_risk_context(risk_permissions)
     latest_cost_health = _latest_cost_health_context(cost_health)
     git_commit = _git_commit()
-    source_version = git_commit or __version__
+    source_version = _source_version("strategy_opportunity_advisory", git_commit)
 
     rows: list[dict[str, Any]] = []
     source_rows = source.to_dicts() if not source.is_empty() else []
@@ -3891,9 +3892,9 @@ def _strategy_opportunity_advisory_for_export(
                     row.get("schema_version")
                     or STRATEGY_OPPORTUNITY_ADVISORY_SCHEMA_VERSION
                 ),
-                "quant_lab_git_commit": str(row.get("quant_lab_git_commit") or "")
+                "quant_lab_git_commit": _observable_text(row.get("quant_lab_git_commit"))
                 or git_commit,
-                "source_version": str(row.get("source_version") or "")
+                "source_version": _observable_text(row.get("source_version"))
                 or source_version,
                 "would_block_if_enabled": _advisory_would_block_if_enabled(
                     decision=decision,
@@ -3983,7 +3984,7 @@ def _entry_quality_opportunity_rows(entry_quality_advisory: pl.DataFrame) -> lis
         return []
     rows: list[dict[str, Any]] = []
     git_commit = _git_commit()
-    source_version = git_commit or __version__
+    source_version = _source_version("entry_quality_advisory", git_commit)
     latest_as_of_date = _latest_as_of_date(entry_quality_advisory.to_dicts())
     for row in entry_quality_advisory.to_dicts():
         if latest_as_of_date and str(row.get("as_of_date") or "") != latest_as_of_date:
@@ -4009,9 +4010,9 @@ def _entry_quality_opportunity_rows(entry_quality_advisory: pl.DataFrame) -> lis
                     row.get("schema_version")
                     or STRATEGY_OPPORTUNITY_ADVISORY_SCHEMA_VERSION
                 ),
-                "quant_lab_git_commit": str(row.get("quant_lab_git_commit") or "")
+                "quant_lab_git_commit": _observable_text(row.get("quant_lab_git_commit"))
                 or git_commit,
-                "source_version": str(row.get("source_version") or "")
+                "source_version": _observable_text(row.get("source_version"))
                 or source_version,
                 "would_block_if_enabled": _optional_bool(
                     row.get("would_block_if_enabled")
@@ -4257,6 +4258,10 @@ def _entry_quality_export_no_sample_reason(
         return "audit_only"
     if candidate == "v5.late_entry_chase_guard_shadow":
         return "guard_shadow_only"
+    if recommended_mode == "paper":
+        return "not_live_validated"
+    if recommended_mode == "shadow":
+        return "shadow_only_collect_more_samples"
     if recommended_mode == "research":
         return "research_only"
     return None
@@ -5836,6 +5841,18 @@ def _git_info() -> dict[str, Any]:
 
 def _git_commit() -> str | None:
     return _git_info()["git_commit"]
+
+
+def _source_version(component: str, git_commit: str | None) -> str:
+    version = git_commit or __version__
+    return f"{component}:{version}"
+
+
+def _observable_text(value: Any) -> str | None:
+    if value is None:
+        return None
+    text = str(value).strip()
+    return None if text.lower() in UNOBSERVABLE_TEXT_VALUES else text
 
 
 def _git_command(args: list[str], root: Path) -> str | None:

@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import csv
+import io
 import json
 import zipfile
 from datetime import UTC, datetime, timedelta
@@ -198,6 +200,18 @@ def test_daily_export_contains_entry_quality_reports(tmp_path):
         assert "read-only research" in summary
         advisory = archive.read("reports/strategy_opportunity_advisory.csv").decode("utf-8")
         assert "v5.entry_quality_missed_low_audit" in advisory
+        advisory_rows = list(csv.DictReader(io.StringIO(advisory)))
+        entry_row = next(
+            row
+            for row in advisory_rows
+            if row["strategy_candidate"] == "v5.entry_quality_missed_low_audit"
+        )
+        assert entry_row["contract_version"] == V5_QUANT_LAB_CONTRACT_VERSION
+        assert entry_row["quant_lab_git_commit"] != "not_observable"
+        assert entry_row["source_version"].startswith("entry_quality:")
+        assert entry_row["would_block_if_enabled"] in {"False", "false", "0"}
+        assert entry_row["would_enter"] in {"False", "false", "0"}
+        assert entry_row["no_sample_reason"] == "audit_only"
         threshold = json.loads(
             archive.read("reports/late_entry_chase_threshold_advisory.json")
         )

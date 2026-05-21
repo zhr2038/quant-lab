@@ -28,6 +28,7 @@ SOURCE_NAME = "quant_lab"
 ENTRY_QUALITY_SCHEMA_VERSION = "entry_quality.v0.1"
 STRATEGY_OPPORTUNITY_ADVISORY_SCHEMA_VERSION = "strategy_opportunity_advisory.v0.1"
 STRATEGY_OPPORTUNITY_ADVISORY_TTL_SECONDS = 3 * 60 * 60
+UNOBSERVABLE_TEXT_VALUES = {"", "none", "null", "nan", "not_observable", "unknown"}
 DEFAULT_WINDOW_HOURS = 24
 ENTRY_QUALITY_SYMBOLS = {"BTC-USDT", "ETH-USDT", "SOL-USDT", "BNB-USDT"}
 LATE_CHASE_THRESHOLDS_BPS = (100, 150, 200, 250, 300, 400)
@@ -1311,7 +1312,9 @@ def build_entry_quality_advisory(
                 "advisory_reasons": str(row.get("readiness_reasons") or "[]"),
                 "would_block_if_enabled": False,
                 "would_enter": True,
-                "no_sample_reason": None,
+                "no_sample_reason": "not_live_validated"
+                if ready_for_paper
+                else "shadow_only_collect_more_samples",
                 "ready_for_live": False,
             }
         )
@@ -1341,16 +1344,17 @@ def build_entry_quality_strategy_opportunity_advisory(
         live_block_reasons = _entry_quality_live_block_reasons(row, mode)
         as_of_ts = _entry_quality_as_of_datetime(row)
         generated_at = _coerce_datetime(row.get("generated_at_utc")) or as_of_ts
-        git_commit = str(row.get("quant_lab_git_commit") or "") or None
-        source_version = str(row.get("source_version") or "") or git_commit or __version__
+        git_commit = _observable_text(row.get("quant_lab_git_commit")) or _git_commit()
+        source_version = _observable_text(row.get("source_version")) or _source_version(
+            "entry_quality_advisory",
+            git_commit,
+        )
         rows.append(
             {
                 "as_of_ts": as_of_ts,
                 "generated_at": generated_at,
                 "expires_at": _strategy_advisory_expires_at(generated_at),
-                "contract_version": str(
-                    row.get("contract_version") or V5_QUANT_LAB_CONTRACT_VERSION
-                ),
+                "contract_version": V5_QUANT_LAB_CONTRACT_VERSION,
                 "schema_version": STRATEGY_OPPORTUNITY_ADVISORY_SCHEMA_VERSION,
                 "quant_lab_git_commit": git_commit,
                 "source_version": source_version,
@@ -2175,7 +2179,7 @@ def _common(ctx: _BuildContext, *, mode: str) -> dict[str, Any]:
         "contract_version": V5_QUANT_LAB_CONTRACT_VERSION,
         "schema_version": ENTRY_QUALITY_SCHEMA_VERSION,
         "quant_lab_git_commit": git_commit,
-        "source_version": git_commit or __version__,
+        "source_version": _source_version("entry_quality", git_commit),
         "generated_at_utc": ctx.generated_at,
         "generated_from_bundle_id": ctx.generated_from_bundle_id,
         "as_of_date": ctx.as_of_date.isoformat(),
@@ -2375,6 +2379,10 @@ def _entry_quality_no_sample_reason(
         return "audit_only"
     if candidate == "v5.late_entry_chase_guard_shadow":
         return "guard_shadow_only"
+    if recommended_mode == "paper":
+        return "not_live_validated"
+    if recommended_mode == "shadow":
+        return "shadow_only_collect_more_samples"
     if recommended_mode == "research":
         return "research_only"
     return None
@@ -2411,6 +2419,18 @@ def _git_commit() -> str | None:
         return None
     value = result.stdout.strip()
     return value or None
+
+
+def _source_version(component: str, git_commit: str | None) -> str:
+    version = git_commit or __version__
+    return f"{component}:{version}"
+
+
+def _observable_text(value: Any) -> str | None:
+    if value is None:
+        return None
+    text = str(value).strip()
+    return None if text.lower() in UNOBSERVABLE_TEXT_VALUES else text
 
 
 def _strategy_id(strategy_candidate: str, symbol: str) -> str:

@@ -8,6 +8,7 @@ import hmac
 import io
 import json
 import os
+import subprocess
 import time
 import zipfile
 from datetime import UTC, datetime, timedelta
@@ -54,6 +55,7 @@ from quant_lab.symbols import normalize_symbol
 
 STRATEGY_OPPORTUNITY_ADVISORY_SCHEMA_VERSION = "strategy_opportunity_advisory.v0.1"
 STRATEGY_OPPORTUNITY_ADVISORY_TTL_SECONDS = 3 * 60 * 60
+UNOBSERVABLE_TEXT_VALUES = {"", "none", "null", "nan", "not_observable", "unknown"}
 
 
 class HealthResponse(BaseModel):
@@ -874,8 +876,11 @@ def _strategy_opportunity_advisory_row(
         expires_at = generated_at + timedelta(
             seconds=STRATEGY_OPPORTUNITY_ADVISORY_TTL_SECONDS
         )
-    git_commit = _text_value(row.get("quant_lab_git_commit")) or None
-    source_version = _text_value(row.get("source_version")) or git_commit or __version__
+    git_commit = _observable_text(row.get("quant_lab_git_commit")) or _git_commit()
+    source_version = _observable_text(row.get("source_version")) or _source_version(
+        "strategy_opportunity_advisory",
+        git_commit,
+    )
     sample_count = _optional_int(row.get("sample_count"))
     would_enter = _optional_bool(row.get("would_enter"))
     if would_enter is None:
@@ -1052,6 +1057,32 @@ def _text_value(value: Any) -> str:
         return ""
     text = str(value).strip()
     return "" if text.lower() in {"none", "null", "nan"} else text
+
+
+def _observable_text(value: Any) -> str | None:
+    text = _text_value(value)
+    return None if text.lower() in UNOBSERVABLE_TEXT_VALUES else text
+
+
+def _source_version(component: str, git_commit: str | None) -> str:
+    version = git_commit or __version__
+    return f"{component}:{version}"
+
+
+def _git_commit() -> str | None:
+    root = Path(__file__).resolve().parents[3]
+    try:
+        result = subprocess.run(
+            ["git", "rev-parse", "--short", "HEAD"],
+            check=False,
+            capture_output=True,
+            cwd=root,
+            text=True,
+        )
+    except OSError:
+        return None
+    value = result.stdout.strip()
+    return value or None
 
 
 def _optional_float(value: Any) -> float | None:

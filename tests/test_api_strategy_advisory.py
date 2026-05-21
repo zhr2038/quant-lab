@@ -46,6 +46,9 @@ def test_strategy_opportunity_advisory_endpoint_reads_gold(tmp_path, monkeypatch
             [
                 {
                     "as_of_ts": datetime(2026, 5, 20, tzinfo=UTC),
+                    "contract_version": "v5_quant_lab_contract.v0.1",
+                    "quant_lab_git_commit": "not_observable",
+                    "source_version": "not_observable",
                     "strategy_candidate": "v5.sol_protect_alpha6_low_exception",
                     "symbol": "SOL-USDT",
                     "decision": "PAPER_READY",
@@ -63,6 +66,9 @@ def test_strategy_opportunity_advisory_endpoint_reads_gold(tmp_path, monkeypatch
                 },
                 {
                     "as_of_ts": datetime(2026, 5, 20, tzinfo=UTC),
+                    "contract_version": "v5_quant_lab_contract.v0.1",
+                    "quant_lab_git_commit": "not_observable",
+                    "source_version": "not_observable",
                     "strategy_candidate": "v5.multi_position_k3",
                     "symbol": "BNB/USDT",
                     "decision": "KILL",
@@ -95,7 +101,9 @@ def test_strategy_opportunity_advisory_endpoint_reads_gold(tmp_path, monkeypatch
     assert paper["expires_at"]
     assert paper["contract_version"] == V5_QUANT_LAB_CONTRACT_VERSION
     assert paper["schema_version"] == "strategy_opportunity_advisory.v0.1"
-    assert paper["source_version"]
+    assert paper["quant_lab_git_commit"] not in {"", None, "not_observable"}
+    assert paper["source_version"].startswith("strategy_opportunity_advisory:")
+    assert paper["source_version"] != "not_observable"
     assert paper["would_enter"] is True
     assert paper["would_block_if_enabled"] is False
     assert paper["no_sample_reason"] is None

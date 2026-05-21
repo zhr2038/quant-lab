@@ -572,10 +572,7 @@ def _v5_order_lifecycle_fill_samples(v5_order_lifecycle: pl.DataFrame) -> list[d
                     slippage = (arrival_mid - avg_fill_px) / arrival_mid * 10_000
                 else:
                     slippage = (avg_fill_px - arrival_mid) / arrival_mid * 10_000
-        spread_bps = _first_float(row, ["spread_bps_at_decision", "spread_bps"])
-        if spread_bps is None:
-            spread_cost_bps = _first_float(row, ["spread_cost_bps"])
-            spread_bps = None if spread_cost_bps is None else spread_cost_bps * 2.0
+        spread_bps = _lifecycle_spread_bps(row, avg_fill_px=avg_fill_px)
         samples.append(
             {
                 "symbol": symbol,
@@ -599,7 +596,8 @@ def _v5_order_lifecycle_fill_samples(v5_order_lifecycle: pl.DataFrame) -> list[d
                 "fee_ccy": fee_ccy,
                 "fee_usdt": fee_abs_usdt,
                 "ts": (
-                    row.get("last_fill_ts")
+                    row.get("fill_ts")
+                    or row.get("last_fill_ts")
                     or row.get("ts_utc")
                     or row.get("submit_ts")
                     or row.get("decision_ts")
@@ -874,6 +872,7 @@ def _v5_order_lifecycle_for_day(root: Path, day: str) -> pl.DataFrame:
         day=day,
         lookback_days=PRIVATE_COST_LOOKBACK_DAYS,
         timestamp_columns=(
+            "fill_ts",
             "last_fill_ts",
             "ts_utc",
             "submit_ts",
@@ -1217,6 +1216,43 @@ def _symbol_parts(symbol: str) -> tuple[str, str]:
         return normalized, ""
     base, quote = normalized.split("-", 1)
     return base, quote
+
+
+def _lifecycle_spread_bps(row: dict[str, Any], *, avg_fill_px: float | None) -> float | None:
+    explicit = _first_float(
+        row,
+        [
+            "spread_bps_at_decision",
+            "arrival_spread_bps",
+            "estimated_spread_bps",
+            "spread_bps",
+        ],
+    )
+    if explicit is not None:
+        return abs(explicit)
+
+    spread_cost_bps = _first_float(row, ["spread_cost_bps"])
+    if spread_cost_bps is not None:
+        return abs(spread_cost_bps) * 2.0
+
+    bid = _first_float(row, ["arrival_bid", "best_bid", "bid_px", "bid"])
+    ask = _first_float(row, ["arrival_ask", "best_ask", "ask_px", "ask"])
+    arrival_mid = _first_float(row, ["arrival_mid", "mid_px_at_decision"])
+    if arrival_mid is None and bid is not None and ask is not None:
+        arrival_mid = (bid + ask) / 2.0
+    if bid is not None and ask is not None and arrival_mid is not None and arrival_mid > 0:
+        return abs(ask - bid) / arrival_mid * 10_000.0
+
+    generic = _first_float(row, ["spread"])
+    if generic is None:
+        return None
+    unit = str(row.get("spread_unit") or row.get("spread_units") or "").strip().lower()
+    if unit in {"price", "quote", "usdt", "absolute", "px"}:
+        mid = arrival_mid or avg_fill_px
+        if mid is None or mid <= 0:
+            return None
+        return abs(generic) / mid * 10_000.0
+    return abs(generic)
 
 
 def _actual_fill_source(

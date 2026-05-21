@@ -695,7 +695,7 @@ def _order_lifecycle_rows(
                 symbol=normalized_symbol,
                 price=avg_fill_px,
             )
-        spread_bps = _numeric(_first_value(row, payload, ["spread_bps_at_decision", "spread_bps"]))
+        spread_bps = _spread_bps_at_decision(row, payload, arrival_mid)
         arrival_slippage_bps = _arrival_slippage_bps(
             side=side,
             avg_fill_px=avg_fill_px,
@@ -714,7 +714,11 @@ def _order_lifecycle_rows(
         )
         total_cost = _sum_cost_parts(delay_cost_bps, arrival_slippage_bps, fee_bps)
         ts_utc = _normalize_event_time(
-            _first_value(row, payload, ["ts_utc", "last_fill_ts", "submit_ts", "decision_ts", "ts"])
+            _first_value(
+                row,
+                payload,
+                ["ts_utc", "fill_ts", "last_fill_ts", "submit_ts", "decision_ts", "ts"],
+            )
         )
         enriched_payload = {
             **payload,
@@ -744,6 +748,7 @@ def _order_lifecycle_rows(
                     "" if arrival_slippage_bps is None else str(arrival_slippage_bps)
                 ),
                 "delay_cost_bps": "" if delay_cost_bps is None else str(delay_cost_bps),
+                "spread_bps_at_decision": "" if spread_bps is None else str(spread_bps),
                 "spread_cost_bps": "" if spread_cost_bps is None else str(spread_cost_bps),
                 "fee_bps": "" if fee_bps is None else str(fee_bps),
                 "total_realized_cost_bps": "" if total_cost is None else str(total_cost),
@@ -940,6 +945,45 @@ def _delay_cost_bps(
     if side == "sell":
         return (signal_price - arrival_mid) / signal_price * 10_000.0
     return (arrival_mid - signal_price) / signal_price * 10_000.0
+
+
+def _spread_bps_at_decision(
+    row: dict[str, Any],
+    payload: dict[str, Any],
+    arrival_mid: float | None,
+) -> float | None:
+    explicit = _numeric(
+        _first_value(
+            row,
+            payload,
+            [
+                "spread_bps_at_decision",
+                "arrival_spread_bps",
+                "estimated_spread_bps",
+                "spread_bps",
+            ],
+        )
+    )
+    if explicit is not None:
+        return abs(explicit)
+
+    bid = _numeric(_first_value(row, payload, ["arrival_bid", "best_bid", "bid_px", "bid"]))
+    ask = _numeric(_first_value(row, payload, ["arrival_ask", "best_ask", "ask_px", "ask"]))
+    mid = arrival_mid
+    if mid is None and bid is not None and ask is not None:
+        mid = (bid + ask) / 2.0
+    if bid is not None and ask is not None and mid is not None and mid > 0:
+        return abs(ask - bid) / mid * 10_000.0
+
+    generic = _numeric(_first_value(row, payload, ["spread"]))
+    if generic is None:
+        return None
+    unit = str(_first_value(row, payload, ["spread_unit", "spread_units"]) or "").lower()
+    if unit in {"price", "quote", "usdt", "absolute", "px"}:
+        if mid is None or mid <= 0:
+            return None
+        return abs(generic) / mid * 10_000.0
+    return abs(generic)
 
 
 def _sum_cost_parts(*parts: float | None) -> float | None:

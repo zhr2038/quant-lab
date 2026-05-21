@@ -158,6 +158,37 @@ def test_ingest_v5_order_lifecycle_computes_realized_cost_parts(tmp_path):
     assert float(row["realized_total_cost_bps"]) > 0
 
 
+def test_ingest_v5_order_lifecycle_accepts_fill_ts_and_spread_aliases(tmp_path):
+    bundle = make_tar(
+        tmp_path / "v5_live_followup_bundle_20260515T020500Z.tar.gz",
+        {
+            "raw/recent_runs/run_lifecycle/order_lifecycle.csv": (
+                "schema_version,lifecycle_id,run_id,fill_ts,symbol,side,intent,order_state,"
+                "decision_ts,signal_price,arrival_mid,spread,submit_ts,fill_px,fill_qty,"
+                "fee_usdt,notional_usdt,exchange_order_id,trade_id,fill_count\n"
+                "v5.order_lifecycle.v2,olc-btc-1,run_lifecycle,2026-05-15T02:00:04Z,"
+                "BTC/USDT,buy,OPEN_LONG,FILLED,2026-05-15T02:00:00Z,60000,60005,"
+                "2.5,2026-05-15T02:00:01Z,60020,0.01,0.3001,600.2,okx-btc-1,"
+                "trade-btc-1,1\n"
+            ),
+        },
+    )
+    lake = tmp_path / "lake"
+
+    result = ingest_v5_bundle(bundle, lake, tmp_path / "restricted", tmp_path / "redacted")
+
+    assert result.silver_rows["v5_order_lifecycle"] == 1
+    row = read_parquet_dataset(lake / "silver/v5_order_lifecycle").to_dicts()[0]
+    assert row["ts_utc"] == "2026-05-15T02:00:04Z"
+    assert row["symbol"] == "BTC-USDT"
+    assert row["normalized_symbol"] == "BTC-USDT"
+    assert float(row["arrival_slippage_bps"]) > 0
+    assert float(row["delay_cost_bps"]) > 0
+    assert float(row["spread_bps_at_decision"]) == 2.5
+    assert float(row["fee_bps"]) > 0
+    assert float(row["realized_total_cost_bps"]) > 0
+
+
 def test_ingest_parses_quant_lab_usage_files(tmp_path):
     bundle = make_v5_bundle_fixture(tmp_path / "v5_live_followup_bundle_20260510T140249Z.tar.gz")
     lake = tmp_path / "lake"

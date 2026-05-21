@@ -333,6 +333,81 @@ def test_v5_order_lifecycle_stays_actual_when_trade_csv_also_exists(tmp_path):
     assert checks["filled_order_missing_lifecycle_cost"] is True
 
 
+def test_v5_order_lifecycle_fill_ts_rows_enter_btc_actual_cost_bucket(tmp_path):
+    lake_root = tmp_path / "lake"
+    write_parquet_dataset(
+        pl.DataFrame(
+            [
+                {
+                    "strategy": "v5",
+                    "source_path_inside_bundle": (
+                        "raw/recent_runs/run_lifecycle/order_lifecycle.csv"
+                    ),
+                    "run_id": "run_lifecycle",
+                    "fill_ts": "2026-05-15T02:00:04Z",
+                    "symbol": "BTC/USDT",
+                    "side": "buy",
+                    "intent": "OPEN_LONG",
+                    "order_state": "FILLED",
+                    "signal_price": "60000",
+                    "arrival_mid": "60005",
+                    "spread": "2.5",
+                    "fill_px": "60020",
+                    "fill_qty": "0.01",
+                    "fee_usdt": "0.3001",
+                    "notional_usdt": "600.2",
+                    "fill_count": "1",
+                    "exchange_order_id": "btc-open-1",
+                    "trade_id": "btc-trade-open-1",
+                },
+                {
+                    "strategy": "v5",
+                    "source_path_inside_bundle": (
+                        "raw/recent_runs/run_lifecycle/order_lifecycle.csv"
+                    ),
+                    "run_id": "run_lifecycle",
+                    "fill_ts": "2026-05-15T03:00:04Z",
+                    "symbol": "BTC-USDT",
+                    "side": "sell",
+                    "intent": "CLOSE_LONG",
+                    "order_state": "FILLED",
+                    "signal_price": "60100",
+                    "arrival_mid": "60095",
+                    "spread": "2.0",
+                    "fill_px": "60085",
+                    "fill_qty": "0.01",
+                    "fee_usdt": "0.300425",
+                    "notional_usdt": "600.85",
+                    "fill_count": "1",
+                    "exchange_order_id": "btc-close-1",
+                    "trade_id": "btc-trade-close-1",
+                },
+            ]
+        ),
+        lake_root / "silver" / "v5_order_lifecycle",
+    )
+
+    result = calibrate_costs_for_day(lake_root, "2026-05-15", min_sample_count=2)
+
+    assert result.sources == ["actual_fills"]
+    rows = read_parquet_dataset(lake_root / "gold" / "cost_bucket_daily").to_dicts()
+    all_row = [
+        row for row in rows if row["symbol"] == "BTC-USDT" and row["notional_bucket"] == "all"
+    ][0]
+    assert all_row["source"] == "actual_fills"
+    assert all_row["actual_fill_count"] == 2
+    assert all_row["mixed_fill_count"] == 0
+    assert all_row["sample_count"] == 2
+    assert all_row["fee_bps_p50"] > 0
+    assert all_row["slippage_bps_p50"] > 0
+    assert all_row["spread_bps_p50"] == 2.25
+    health = read_parquet_dataset(lake_root / "gold" / "cost_health_daily").to_dicts()[0]
+    checks = json.loads(health["data_quality_checks_json"])
+    assert health["actual_rows"] == len(rows)
+    assert checks["lifecycle_present_but_not_in_actual_cost"] is True
+    assert checks["filled_order_missing_lifecycle_cost"] is True
+
+
 def test_v5_order_lifecycle_zero_fill_is_not_used_as_actual_cost(tmp_path):
     lake_root = tmp_path / "lake"
     write_parquet_dataset(

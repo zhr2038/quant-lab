@@ -53,6 +53,23 @@ def test_live_permission_api_sell_only_when_cost_missing(tmp_path, monkeypatch):
     assert payload["enforceable"] is False
 
 
+def test_lake_data_health_uses_lazy_scan_not_full_market_bar_read(tmp_path, monkeypatch):
+    from quant_lab.api.main import _lake_data_health
+
+    lake = tmp_path / "lake"
+    _write_fresh_market_bar(lake)
+
+    def fail_full_read(*args, **kwargs):
+        raise AssertionError("data health should not fully read market_bar")
+
+    monkeypatch.setattr("quant_lab.api.main.read_parquet_dataset", fail_full_read)
+
+    health = _lake_data_health(lake)
+
+    assert health["status"] == "ok"
+    assert health["latest_market_bar_ts"]
+
+
 def test_live_permission_api_requires_published_permission_even_when_inputs_are_healthy(
     tmp_path,
     monkeypatch,

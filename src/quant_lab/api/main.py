@@ -32,7 +32,7 @@ from quant_lab.contracts.models import (
 from quant_lab.contracts.v5_quant_lab import V5_QUANT_LAB_CONTRACT_VERSION
 from quant_lab.costs.health import read_cost_health_daily
 from quant_lab.costs.model import CostBucket, estimate_cost_bps, estimate_cost_from_lake
-from quant_lab.data.lake import read_market_bars, read_parquet_dataset
+from quant_lab.data.lake import read_market_bars, read_parquet_dataset, read_parquet_lazy
 from quant_lab.gates.defaults import evaluate_alpha_gate
 from quant_lab.ops.metrics import api_metrics_summary, record_api_request
 from quant_lab.research.bootstrap_gold import BOOTSTRAP_GATE_VERSION
@@ -694,9 +694,17 @@ def _latest_features_response(
     timeframe: str | None,
     feature_names: list[str] | None,
 ) -> LatestFeaturesResponse:
-    df = read_parquet_dataset(lake_root / "gold" / "feature_value")
     created_at = datetime.now(UTC)
-    if df.is_empty():
+    lazy, columns = _safe_parquet_lazy(lake_root / "gold" / "feature_value")
+    required_columns = {
+        "feature_set",
+        "feature_name",
+        "feature_version",
+        "symbol",
+        "ts",
+        "value",
+    }
+    if lazy is None:
         return LatestFeaturesResponse(
             feature_set=feature_set,
             feature_version=feature_version,
@@ -705,19 +713,31 @@ def _latest_features_response(
             rows=[],
             warnings=["feature_value dataset is missing or empty"],
         )
-    filtered = df.filter(pl.col("feature_set") == feature_set)
-    if "ts" in filtered.columns:
-        filtered = _normalize_datetime_column(filtered, "ts")
-    if "created_at" in filtered.columns:
-        filtered = _normalize_datetime_column(filtered, "created_at")
-        latest_created = filtered.select(pl.col("created_at").max()).item()
-        if isinstance(latest_created, datetime):
-            created_at = latest_created.astimezone(UTC)
+    missing_columns = sorted(required_columns.difference(columns))
+    if missing_columns:
+        return LatestFeaturesResponse(
+            feature_set=feature_set,
+            feature_version=feature_version,
+            timeframe=timeframe,
+            created_at=created_at,
+            rows=[],
+            warnings=[f"feature_value missing required columns: {','.join(missing_columns)}"],
+        )
+
+    filtered = lazy.filter(pl.col("feature_set") == feature_set).with_columns(
+        _lazy_utc_datetime("ts").alias("ts")
+    )
+    if "created_at" in columns:
+        filtered = filtered.with_columns(_lazy_utc_datetime("created_at").alias("created_at"))
     if feature_version is None:
-        if filtered.is_empty() or "feature_version" not in filtered.columns:
-            version = None
-        else:
-            version = str(filtered.select(pl.col("feature_version").max()).item())
+        version_frame = _collect_lazy_or_empty(
+            filtered.select(pl.col("feature_version").cast(pl.Utf8).max().alias("feature_version"))
+        )
+        version_value = (
+            version_frame.item(0, "feature_version") if not version_frame.is_empty() else None
+        )
+        version = str(version_value) if version_value is not None else None
+        if version:
             filtered = filtered.filter(pl.col("feature_version") == version)
     else:
         version = feature_version
@@ -725,10 +745,25 @@ def _latest_features_response(
     if timeframe:
         filtered = filtered.filter(pl.col("timeframe") == timeframe)
     if symbols:
-        filtered = filtered.filter(pl.col("symbol").is_in(symbols))
+        filtered = filtered.filter(
+            pl.col("symbol").is_in([normalize_symbol(symbol) for symbol in symbols])
+        )
     if feature_names:
         filtered = filtered.filter(pl.col("feature_name").is_in(feature_names))
-    if filtered.is_empty():
+    if "created_at" in columns:
+        latest_created_frame = _collect_lazy_or_empty(
+            filtered.select(pl.col("created_at").max().alias("created_at"))
+        )
+        latest_created = (
+            latest_created_frame.item(0, "created_at")
+            if not latest_created_frame.is_empty()
+            else None
+        )
+        if isinstance(latest_created, datetime):
+            created_at = latest_created.astimezone(UTC)
+    latest_ts = filtered.group_by("symbol").agg(pl.col("ts").max().alias("ts"))
+    latest = _collect_lazy_or_empty(filtered.join(latest_ts, on=["symbol", "ts"], how="inner"))
+    if latest.is_empty():
         return LatestFeaturesResponse(
             feature_set=feature_set,
             feature_version=version,
@@ -737,9 +772,6 @@ def _latest_features_response(
             rows=[],
             warnings=["no feature rows matched query"],
         )
-
-    latest_ts = filtered.group_by("symbol").agg(pl.col("ts").max().alias("ts"))
-    latest = filtered.join(latest_ts, on=["symbol", "ts"], how="inner")
     rows: list[LatestFeatureRow] = []
     for (symbol, ts), group in latest.group_by(["symbol", "ts"], maintain_order=True):
         features = {
@@ -1525,15 +1557,17 @@ def _lake_cost_health(lake_root: Path) -> dict[str, Any]:
 
 
 def _lake_data_health(lake_root: Path) -> dict[str, Any]:
-    df = read_parquet_dataset(lake_root / "silver" / "market_bar")
-    if df.is_empty() or "ts" not in df.columns:
+    lazy, columns = _safe_parquet_lazy(lake_root / "silver" / "market_bar")
+    if lazy is None or "ts" not in columns:
         return {
             "status": "critical",
             "is_critical": True,
             "reasons": ["market_bar_missing"],
         }
-    normalized = _normalize_datetime_column(df, "ts")
-    latest_ts = normalized.select(pl.col("ts").max()).item()
+    latest_frame = _collect_lazy_or_empty(
+        lazy.select(_lazy_utc_datetime("ts").max().alias("latest_ts"))
+    )
+    latest_ts = latest_frame.item(0, "latest_ts") if not latest_frame.is_empty() else None
     if not isinstance(latest_ts, datetime):
         return {
             "status": "critical",
@@ -1637,6 +1671,26 @@ def _normalize_datetime_column(df: pl.DataFrame, column: str) -> pl.DataFrame:
     if df.schema.get(column) == pl.String:
         return df.with_columns(pl.col(column).str.to_datetime(time_zone="UTC", strict=False))
     return df.with_columns(pl.col(column).cast(pl.Datetime(time_zone="UTC")).alias(column))
+
+
+def _safe_parquet_lazy(path: Path) -> tuple[pl.LazyFrame | None, set[str]]:
+    try:
+        lazy = read_parquet_lazy(path)
+        columns = set(lazy.collect_schema().names())
+    except Exception:
+        return None, set()
+    return lazy, columns
+
+
+def _collect_lazy_or_empty(lazy: pl.LazyFrame) -> pl.DataFrame:
+    try:
+        return lazy.collect()
+    except Exception:
+        return pl.DataFrame()
+
+
+def _lazy_utc_datetime(column: str) -> pl.Expr:
+    return pl.col(column).cast(pl.Utf8).str.to_datetime(time_zone="UTC", strict=False)
 
 
 def _json_dict(value: str) -> dict[str, Any]:

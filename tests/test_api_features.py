@@ -63,3 +63,44 @@ def test_features_latest_returns_latest_features(tmp_path, monkeypatch):
     assert payload["feature_version"] == "v0.1"
     assert payload["rows"][0]["symbol"] == "BTC-USDT"
     assert set(payload["rows"][0]["features"]) == {"close_return_1", "range_bps"}
+
+
+def test_features_latest_uses_lazy_scan_not_full_dataset_read(tmp_path, monkeypatch):
+    lake = tmp_path / "lake"
+    start = datetime(2026, 5, 10, tzinfo=UTC)
+    write_market_bars(
+        lake,
+        [
+            {
+                "venue": "okx",
+                "symbol": "BTC-USDT",
+                "market_type": "SPOT",
+                "timeframe": "1H",
+                "ts": start + timedelta(hours=index),
+                "open": 100.0 + index,
+                "high": 102.0 + index,
+                "low": 98.0 + index,
+                "close": 100.0 + index,
+                "volume": 10.0,
+                "quote_volume": 1000.0 + index,
+                "source": "test",
+                "ingest_ts": start + timedelta(hours=index, minutes=1),
+            }
+            for index in range(30)
+        ],
+    )
+    publish_features(lake, symbols=["BTC-USDT"])
+    monkeypatch.setenv("QUANT_LAB_LAKE_ROOT", str(lake))
+
+    def fail_full_read(*args, **kwargs):
+        raise AssertionError("features endpoint should not fully read feature_value")
+
+    monkeypatch.setattr("quant_lab.api.main.read_parquet_dataset", fail_full_read)
+
+    response = TestClient(app).get(
+        "/v1/features/latest",
+        params={"feature_set": "core", "symbols": "BTC-USDT", "timeframe": "1H"},
+    )
+
+    assert response.status_code == 200
+    assert response.json()["rows"]

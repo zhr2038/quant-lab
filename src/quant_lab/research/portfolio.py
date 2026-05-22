@@ -83,7 +83,7 @@ def build_and_publish_research_portfolio_status(
     day = _parse_day(as_of_date)
     frame = build_research_portfolio_status(root, as_of_date=day)
     dataset_path = root / RESEARCH_PORTFOLIO_STATUS_DATASET
-    existing = read_parquet_dataset(dataset_path)
+    existing = _remove_as_of_date(read_parquet_dataset(dataset_path), day.isoformat())
     combined = pl.concat(
         [current for current in [existing, frame] if not current.is_empty()],
         how="diagonal_relaxed",
@@ -167,7 +167,7 @@ def build_research_portfolio_status(
             module="entry_quality",
             strategy_candidate="v5.pullback_reversal_shadow",
             status="KILL",
-            action="CLOSE_RESEARCH_V1",
+            action="CLOSED_RESEARCH_V1",
             reason="historical_pullback_reversal_v1_negative_expectancy_and_large_mae",
             metrics=_frame_metrics(pullback, fallback_sample_count=pullback.height),
             day=day,
@@ -261,6 +261,13 @@ def dedupe_research_portfolio_status(frame: pl.DataFrame) -> pl.DataFrame:
         maintain_order=True,
     )
     return normalized.sort(["as_of_date", "research_id"], descending=[True, False])
+
+
+def _remove_as_of_date(frame: pl.DataFrame, as_of_date: str) -> pl.DataFrame:
+    if frame.is_empty():
+        return frame
+    normalized = _normalize_status_frame(frame)
+    return normalized.filter(pl.col("as_of_date") != as_of_date)
 
 
 def research_portfolio_summary_md(

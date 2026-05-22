@@ -168,6 +168,48 @@ def test_research_portfolio_dedupes_by_as_of_date_research_id_latest_created_at(
     assert "sample=30" in summary
 
 
+def test_research_portfolio_publish_replaces_same_day_obsolete_rows(tmp_path):
+    lake = tmp_path / "lake"
+    write_parquet_dataset(
+        pl.DataFrame(
+            [
+                {
+                    "schema_version": "research_portfolio_status.v0.1",
+                    "as_of_date": "2026-05-20",
+                    "research_id": "obsolete_same_day",
+                    "module": "old",
+                    "strategy_candidate": "old",
+                    "status": "SHADOW",
+                    "action": "OLD",
+                    "reason": "old",
+                    "sample_count": 1,
+                    "complete_sample_count": 1,
+                    "avg_net_bps": 1.0,
+                    "win_rate": 1.0,
+                    "p25_net_bps": 1.0,
+                    "paper_days": 0,
+                    "entry_day_count": 0,
+                    "cost_source_mix": "{}",
+                    "last_review_date": "2026-05-20",
+                    "next_review_date": "2026-05-21",
+                    "recommended_new_research_slots": 0,
+                    "freed_research_slots": 0,
+                    "active_research_count": 0,
+                    "killed_research_count": 0,
+                    "created_at": "2026-05-20T00:00:00Z",
+                    "source": "test",
+                }
+            ]
+        ),
+        lake / "gold" / "research_portfolio_status",
+    )
+
+    build_and_publish_research_portfolio_status(lake, as_of_date="2026-05-20")
+
+    rows = read_parquet_dataset(lake / "gold" / "research_portfolio_status").to_dicts()
+    assert "obsolete_same_day" not in {row["research_id"] for row in rows}
+
+
 def _write_strategy_evidence(lake):
     write_parquet_dataset(
         pl.DataFrame(

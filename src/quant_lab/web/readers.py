@@ -1236,7 +1236,8 @@ def _market_universe_warnings(
     spread_bps: pl.DataFrame,
     trade_activity: pl.DataFrame,
 ) -> list[str]:
-    market_symbols = _symbols_from_frame(market)
+    configured_ws_symbols = set(OKX_WS_UNIVERSE_SYMBOLS)
+    market_symbols = _symbols_from_frame(market) & configured_ws_symbols
     if not market_symbols:
         return []
     warnings: list[str] = []

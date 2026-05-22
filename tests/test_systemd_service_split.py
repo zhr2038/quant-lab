@@ -31,6 +31,12 @@ def test_v5_health_analysis_stays_lightweight():
     assert "QUANT_LAB_V5_SYNC_MAX_SCAN_BUNDLES=1" in sync_unit
 
 
+def test_api_service_uses_async_metrics_flush():
+    unit = _unit("quant-lab-api.service")
+
+    assert "QUANT_LAB_API_METRICS_ASYNC_FLUSH=1" in unit
+
+
 def test_candidate_research_refresh_is_separate_from_alpha_evidence():
     alpha_unit = _unit("quant-lab-alpha-evidence.service")
     refresh_unit = _unit("quant-lab-v5-research-refresh.service")

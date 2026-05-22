@@ -1,5 +1,6 @@
 from datetime import UTC, datetime, timedelta
 
+import quant_lab.ops.metrics as metrics_module
 from quant_lab.ops.metrics import (
     api_metrics_summary,
     job_run_summary,
@@ -30,6 +31,33 @@ def test_api_request_metrics_are_micro_batched(tmp_path, monkeypatch):
     assert len(files) == 1
     assert summary["request_count"] == 10
     assert summary["by_path"]["/v1/health"] == 10
+
+
+def test_api_request_metrics_can_flush_asynchronously(tmp_path, monkeypatch):
+    lake = tmp_path / "lake"
+    monkeypatch.setenv("QUANT_LAB_API_METRICS_FLUSH_ROWS", "1")
+    monkeypatch.setenv("QUANT_LAB_API_METRICS_FLUSH_SECONDS", "3600")
+    monkeypatch.setenv("QUANT_LAB_API_METRICS_ASYNC_FLUSH", "1")
+    scheduled: list[str] = []
+    monkeypatch.setattr(
+        metrics_module,
+        "_schedule_api_request_metrics_flush",
+        lambda lake_root: scheduled.append(str(lake_root)),
+    )
+
+    record_api_request(
+        lake_root=lake,
+        method="GET",
+        path="/v1/strategy-opportunity-advisory",
+        status_code=200,
+        duration_seconds=0.05,
+    )
+
+    assert scheduled == [str(lake)]
+    assert list((lake / "bronze" / "api_request_metrics").rglob("*.parquet")) == []
+    summary = api_metrics_summary(lake)
+    assert summary["request_count"] == 1
+    assert summary["by_path"]["/v1/strategy-opportunity-advisory"] == 1
 
 
 def test_api_request_metrics_summary_uses_lazy_aggregation(tmp_path, monkeypatch):

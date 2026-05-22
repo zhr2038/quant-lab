@@ -25,6 +25,7 @@ JOB_RUN_HISTORY_DATASET = Path("gold") / "job_run_history"
 _API_METRICS_LOCK = threading.Lock()
 _API_METRICS_BUFFERS: dict[str, list[dict[str, Any]]] = {}
 _API_METRICS_LAST_FLUSH: dict[str, float] = {}
+_API_METRICS_FLUSH_THREADS: dict[str, threading.Thread] = {}
 
 F = TypeVar("F")
 
@@ -33,6 +34,7 @@ F = TypeVar("F")
 def _flush_all_api_request_metrics() -> None:
     for root_key in list(_API_METRICS_BUFFERS):
         try:
+            _wait_api_request_metrics_flush(root_key)
             flush_api_request_metrics(root_key)
         except Exception:
             pass
@@ -83,7 +85,10 @@ def record_api_request(
             or (now_monotonic - last_flush) >= _api_metrics_flush_seconds()
         )
     if should_flush:
-        flush_api_request_metrics(lake_root)
+        if _api_metrics_async_flush_enabled():
+            _schedule_api_request_metrics_flush(lake_root)
+        else:
+            flush_api_request_metrics(lake_root)
 
 
 def flush_api_request_metrics(lake_root: str | Path) -> int:
@@ -101,6 +106,41 @@ def flush_api_request_metrics(lake_root: str | Path) -> int:
         file_prefix="api",
     )
     return result.rows_written
+
+
+def _schedule_api_request_metrics_flush(lake_root: str | Path) -> None:
+    root_key = str(Path(lake_root))
+    with _API_METRICS_LOCK:
+        existing = _API_METRICS_FLUSH_THREADS.get(root_key)
+        if existing is not None and existing.is_alive():
+            return
+        thread = threading.Thread(
+            target=_api_metrics_flush_worker,
+            args=(root_key,),
+            name="quant-lab-api-metrics-flush",
+            daemon=True,
+        )
+        _API_METRICS_FLUSH_THREADS[root_key] = thread
+        thread.start()
+
+
+def _api_metrics_flush_worker(root_key: str) -> None:
+    try:
+        flush_api_request_metrics(root_key)
+    finally:
+        with _API_METRICS_LOCK:
+            current = _API_METRICS_FLUSH_THREADS.get(root_key)
+            if current is threading.current_thread():
+                _API_METRICS_FLUSH_THREADS.pop(root_key, None)
+
+
+def _wait_api_request_metrics_flush(lake_root: str | Path) -> None:
+    root_key = str(Path(lake_root))
+    with _API_METRICS_LOCK:
+        thread = _API_METRICS_FLUSH_THREADS.get(root_key)
+    if thread is None or thread is threading.current_thread():
+        return
+    thread.join(timeout=_api_metrics_flush_join_seconds())
 
 
 def record_job_run(
@@ -165,6 +205,7 @@ def api_metrics_summary(
     *,
     day: str | None = None,
 ) -> dict[str, Any]:
+    _wait_api_request_metrics_flush(lake_root)
     flush_api_request_metrics(lake_root)
     lazy = _lazy_dataset_or_none(Path(lake_root) / API_METRICS_DATASET)
     if lazy is None:
@@ -395,6 +436,22 @@ def _api_metrics_flush_seconds() -> float:
     except ValueError:
         return 60.0
     return max(value, 1.0)
+
+
+def _api_metrics_flush_join_seconds() -> float:
+    raw_value = os.environ.get("QUANT_LAB_API_METRICS_FLUSH_JOIN_SECONDS", "5")
+    try:
+        value = float(raw_value)
+    except ValueError:
+        return 5.0
+    return max(value, 0.0)
+
+
+def _api_metrics_async_flush_enabled() -> bool:
+    value = os.environ.get("QUANT_LAB_API_METRICS_ASYNC_FLUSH")
+    if value is None:
+        return False
+    return value.strip().lower() in {"1", "true", "yes", "on"}
 
 
 def _positive_int_env(name: str, default: int) -> int:

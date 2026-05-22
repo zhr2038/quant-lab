@@ -7,6 +7,7 @@ COMPACT_DATASET_TIMEOUT_SECONDS="${COMPACT_DATASET_TIMEOUT_SECONDS:-180}"
 COMPACT_RUN_BUDGET_SECONDS="${COMPACT_RUN_BUDGET_SECONDS:-1500}"
 COMPACT_RAW_OKX_WS="${COMPACT_RAW_OKX_WS:-0}"
 COMPACT_DIRECT_MAX_SOURCE_FILES="${COMPACT_DIRECT_MAX_SOURCE_FILES:-8}"
+COMPACT_MAX_SOURCE_BATCH_BYTES="${COMPACT_MAX_SOURCE_BATCH_BYTES:-134217728}"
 COMPACT_STARTED_AT="$(date +%s)"
 
 V5_TELEMETRY_DATASETS=(
@@ -57,7 +58,8 @@ compact_dataset() {
     --lake-root "${LAKE_ROOT}" \
     --dataset "${dataset}" \
     --target-rows-per-file "${target_rows}" \
-    --max-source-files-per-batch "${batch_files}"
+    --max-source-files-per-batch "${batch_files}" \
+    --max-source-batch-bytes "${COMPACT_MAX_SOURCE_BATCH_BYTES}"
   status="$?"
   set -e
   if (( status != 0 )); then
@@ -81,6 +83,7 @@ compact_dataset_direct_only() {
     --dataset "${dataset}" \
     --target-rows-per-file "${target_rows}" \
     --max-source-files-per-batch "${batch_files}" \
+    --max-source-batch-bytes "${COMPACT_MAX_SOURCE_BATCH_BYTES}" \
     --direct-only
   status="$?"
   set -e
@@ -115,7 +118,8 @@ repair_dataset_partitions() {
     --lake-root "${LAKE_ROOT}" \
     --dataset "${dataset}" \
     --target-rows-per-file "${target_rows}" \
-    --max-source-files-per-batch "${batch_files}"
+    --max-source-files-per-batch "${batch_files}" \
+    --max-source-batch-bytes "${COMPACT_MAX_SOURCE_BATCH_BYTES}"
   status="$?"
   set -e
   if (( status != 0 )); then

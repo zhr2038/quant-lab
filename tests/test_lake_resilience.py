@@ -7,6 +7,7 @@ import pytest
 
 from quant_lab.data.lake import (
     _lock_is_stale,
+    _parquet_file_batches,
     append_parquet_dataset,
     compact_parquet_dataset,
     compact_parquet_directory_files,
@@ -353,6 +354,25 @@ def test_compact_parquet_dataset_preserves_rows_and_reduces_files(tmp_path):
     assert result.output_file_count == 1
     assert read_back.height == 5
     assert sorted(read_back["value"].to_list()) == list(range(5))
+
+
+def test_parquet_file_batches_respect_byte_limit(tmp_path):
+    files = []
+    for index, size in enumerate([10, 40, 40, 10]):
+        path = tmp_path / f"file_{index}.parquet"
+        path.write_bytes(b"x" * size)
+        files.append(path)
+
+    batches = _parquet_file_batches(
+        files,
+        max_source_files_per_batch=10,
+        max_source_batch_bytes=50,
+    )
+
+    assert [[path.name for path in batch] for batch in batches] == [
+        ["file_0.parquet", "file_1.parquet"],
+        ["file_2.parquet", "file_3.parquet"],
+    ]
 
 
 def test_repair_parquet_partition_values_moves_null_day_partition(tmp_path):

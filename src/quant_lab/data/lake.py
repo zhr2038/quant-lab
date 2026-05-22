@@ -67,6 +67,7 @@ class CompactParquetResult:
     partition_by: list[str]
     target_rows_per_file: int
     max_source_files_per_batch: int
+    max_source_batch_bytes: int = 0
 
 
 @dataclass(frozen=True)
@@ -199,11 +200,13 @@ def compact_parquet_dataset(
     partition_by: str | Sequence[str] | None = None,
     target_rows_per_file: int = 250_000,
     max_source_files_per_batch: int = 5_000,
+    max_source_batch_bytes: int | None = None,
 ) -> CompactParquetResult:
     """Rewrite a dataset into fewer deterministic partitioned parquet files."""
 
     path = Path(dataset_path)
     partition_columns = _partition_columns(partition_by)
+    batch_bytes = _resolve_max_source_batch_bytes(max_source_batch_bytes)
     with _dataset_lock(path, timeout_seconds=120.0):
         files = _parquet_files(path)
         source_file_count = len(files)
@@ -216,12 +219,17 @@ def compact_parquet_dataset(
                 partition_by=partition_columns,
                 target_rows_per_file=target_rows_per_file,
                 max_source_files_per_batch=max_source_files_per_batch,
+                max_source_batch_bytes=batch_bytes,
             )
         staging = path.parent / f"__{path.name}_compact_{uuid.uuid4().hex}"
         output_file_count = 0
         rows = 0
         try:
-            for batch_files in _chunks(files, max(max_source_files_per_batch, 1)):
+            for batch_files in _parquet_file_batches(
+                files,
+                max_source_files_per_batch=max_source_files_per_batch,
+                max_source_batch_bytes=batch_bytes,
+            ):
                 frame = _read_parquet_files(batch_files)
                 if frame.is_empty():
                     continue
@@ -246,6 +254,7 @@ def compact_parquet_dataset(
                     partition_by=partition_columns,
                     target_rows_per_file=target_rows_per_file,
                     max_source_files_per_batch=max_source_files_per_batch,
+                    max_source_batch_bytes=batch_bytes,
                 )
             backup = path.parent / f"__{path.name}_backup_{uuid.uuid4().hex}"
             if path.exists():
@@ -260,6 +269,7 @@ def compact_parquet_dataset(
                 partition_by=partition_columns,
                 target_rows_per_file=target_rows_per_file,
                 max_source_files_per_batch=max_source_files_per_batch,
+                max_source_batch_bytes=batch_bytes,
             )
         except Exception:
             _remove_existing_dataset(staging)
@@ -271,6 +281,7 @@ def compact_parquet_directory_files(
     *,
     target_rows_per_file: int = 250_000,
     max_source_files_per_batch: int = 5_000,
+    max_source_batch_bytes: int | None = None,
 ) -> CompactParquetResult:
     """Compact only Parquet files directly inside a directory.
 
@@ -288,6 +299,7 @@ def compact_parquet_directory_files(
             files,
             target_rows_per_file=target_rows_per_file,
             max_source_files_per_batch=max_source_files_per_batch,
+            max_source_batch_bytes=max_source_batch_bytes,
         )
 
 
@@ -314,6 +326,7 @@ def _auto_compact_append_dataset_unlocked(
             target_rows_per_file,
         ),
         max_source_files_per_batch=max_source_files,
+        max_source_batch_bytes=None,
     )
 
 
@@ -323,7 +336,9 @@ def _compact_direct_parquet_files_unlocked(
     *,
     target_rows_per_file: int,
     max_source_files_per_batch: int,
+    max_source_batch_bytes: int | None,
 ) -> CompactParquetResult:
+    batch_bytes = _resolve_max_source_batch_bytes(max_source_batch_bytes)
     source_file_count = len(files)
     if not files:
         return CompactParquetResult(
@@ -334,13 +349,18 @@ def _compact_direct_parquet_files_unlocked(
             partition_by=[],
             target_rows_per_file=target_rows_per_file,
             max_source_files_per_batch=max_source_files_per_batch,
+            max_source_batch_bytes=batch_bytes,
         )
 
     staging = path / f"__direct_compact_{uuid.uuid4().hex}"
     output_file_count = 0
     rows = 0
     try:
-        for batch_files in _chunks(files, max(max_source_files_per_batch, 1)):
+        for batch_files in _parquet_file_batches(
+            files,
+            max_source_files_per_batch=max_source_files_per_batch,
+            max_source_batch_bytes=batch_bytes,
+        ):
             frame = _read_parquet_files(batch_files)
             if frame.is_empty():
                 continue
@@ -369,6 +389,7 @@ def _compact_direct_parquet_files_unlocked(
                 partition_by=[],
                 target_rows_per_file=target_rows_per_file,
                 max_source_files_per_batch=max_source_files_per_batch,
+                max_source_batch_bytes=batch_bytes,
             )
 
         for source_file in files:
@@ -388,6 +409,7 @@ def _compact_direct_parquet_files_unlocked(
             partition_by=[],
             target_rows_per_file=target_rows_per_file,
             max_source_files_per_batch=max_source_files_per_batch,
+            max_source_batch_bytes=batch_bytes,
         )
     except Exception:
         _remove_existing_dataset(staging)
@@ -401,6 +423,7 @@ def repair_parquet_partition_values(
     bad_values: Sequence[str] = ("__null__", "__empty__"),
     target_rows_per_file: int = 250_000,
     max_source_files_per_batch: int = 5_000,
+    max_source_batch_bytes: int | None = None,
 ) -> RepairParquetPartitionResult:
     """Rewrite files from invalid hive partition directories into valid directories.
 
@@ -411,6 +434,7 @@ def repair_parquet_partition_values(
 
     path = Path(dataset_path)
     partition_columns = _partition_columns(partition_by)
+    batch_bytes = _resolve_max_source_batch_bytes(max_source_batch_bytes)
     with _dataset_lock(path, timeout_seconds=120.0):
         bad_files = _bad_partition_files(path, partition_columns, bad_values)
         bad_file_count = len(bad_files)
@@ -429,7 +453,11 @@ def repair_parquet_partition_values(
         repaired_file_count = 0
         repaired_rows = 0
         try:
-            for batch_files in _chunks(bad_files, max(max_source_files_per_batch, 1)):
+            for batch_files in _parquet_file_batches(
+                bad_files,
+                max_source_files_per_batch=max_source_files_per_batch,
+                max_source_batch_bytes=batch_bytes,
+            ):
                 frame = _read_parquet_files(batch_files)
                 if frame.is_empty():
                     continue
@@ -929,6 +957,48 @@ def _move_repaired_staging_files(staging: Path, dataset_path: Path) -> int:
 
 def _chunks(values: Sequence[Path], size: int) -> list[Sequence[Path]]:
     return [values[index : index + size] for index in range(0, len(values), size)]
+
+
+def _parquet_file_batches(
+    files: Sequence[Path],
+    *,
+    max_source_files_per_batch: int,
+    max_source_batch_bytes: int,
+) -> list[list[Path]]:
+    max_files = max(max_source_files_per_batch, 1)
+    max_bytes = max(max_source_batch_bytes, 0)
+    if max_bytes <= 0:
+        return [list(chunk) for chunk in _chunks(files, max_files)]
+
+    batches: list[list[Path]] = []
+    current: list[Path] = []
+    current_bytes = 0
+    for file_path in files:
+        file_size = _safe_file_size(file_path)
+        if current and (
+            len(current) >= max_files or current_bytes + file_size > max_bytes
+        ):
+            batches.append(current)
+            current = []
+            current_bytes = 0
+        current.append(file_path)
+        current_bytes += file_size
+    if current:
+        batches.append(current)
+    return batches
+
+
+def _resolve_max_source_batch_bytes(value: int | None) -> int:
+    if value is not None and value > 0:
+        return value
+    return _int_env("QUANT_LAB_COMPACT_MAX_SOURCE_BATCH_BYTES", 128 * 1024 * 1024)
+
+
+def _safe_file_size(path: Path) -> int:
+    try:
+        return max(path.stat().st_size, 1)
+    except OSError:
+        return 1
 
 
 def _partition_dir(dataset_path: Path, partition_values: dict[str, Any]) -> Path:

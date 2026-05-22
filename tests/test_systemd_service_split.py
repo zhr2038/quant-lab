@@ -69,6 +69,7 @@ def test_scheduled_compaction_covers_hot_ws_datasets():
     assert "COMPACT_DATASET_TIMEOUT_SECONDS" in script
     assert "COMPACT_RUN_BUDGET_SECONDS" in script
     assert "COMPACT_DIRECT_MAX_SOURCE_FILES" in script
+    assert "COMPACT_MAX_SOURCE_BATCH_BYTES" in script
     assert "WARN_COMPACT_FAILED" in script
     assert "SKIP_COMPACT_BUDGET" in script
     assert "WARN_LAKE_HEALTH_FAILED_OR_TIMED_OUT" in script
@@ -77,6 +78,8 @@ def test_scheduled_compaction_covers_hot_ws_datasets():
     assert "COMPACT_RAW_OKX_WS=1" in unit
     assert "COMPACT_DATASET_TIMEOUT_SECONDS=300" in unit
     assert "COMPACT_DIRECT_MAX_SOURCE_FILES=8" in unit
+    assert "COMPACT_MAX_SOURCE_BATCH_BYTES=134217728" in unit
+    assert "--max-source-batch-bytes" in script
     assert "--direct-only" in script
     assert "START_DIRECT_COMPACT" in script
     assert '"${COMPACT_DIRECT_MAX_SOURCE_FILES}"' in script

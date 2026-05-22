@@ -580,6 +580,17 @@ def compact_lake_dataset_command(
         int,
         typer.Option("--max-source-files-per-batch", min=1),
     ] = 5_000,
+    max_source_batch_bytes: Annotated[
+        int,
+        typer.Option(
+            "--max-source-batch-bytes",
+            min=0,
+            help=(
+                "Maximum source Parquet bytes to read per compaction batch. "
+                "Use 0 to read QUANT_LAB_COMPACT_MAX_SOURCE_BATCH_BYTES."
+            ),
+        ),
+    ] = 0,
     direct_only: Annotated[
         bool,
         typer.Option(
@@ -597,6 +608,7 @@ def compact_lake_dataset_command(
                 dataset_path,
                 target_rows_per_file=target_rows_per_file,
                 max_source_files_per_batch=max_source_files_per_batch,
+                max_source_batch_bytes=max_source_batch_bytes,
             )
             if direct_only
             else compact_parquet_dataset(
@@ -604,6 +616,7 @@ def compact_lake_dataset_command(
                 partition_by=partition_by,
                 target_rows_per_file=target_rows_per_file,
                 max_source_files_per_batch=max_source_files_per_batch,
+                max_source_batch_bytes=max_source_batch_bytes,
             )
         ),
     )
@@ -640,6 +653,17 @@ def repair_lake_partitions_command(
         int,
         typer.Option("--max-source-files-per-batch", min=1),
     ] = 5_000,
+    max_source_batch_bytes: Annotated[
+        int,
+        typer.Option(
+            "--max-source-batch-bytes",
+            min=0,
+            help=(
+                "Maximum source Parquet bytes to read per repair batch. "
+                "Use 0 to read QUANT_LAB_COMPACT_MAX_SOURCE_BATCH_BYTES."
+            ),
+        ),
+    ] = 0,
 ) -> None:
     dataset_path, partition_by = _compact_dataset_target(lake_root, dataset)
     result = run_with_job_metrics(
@@ -650,6 +674,7 @@ def repair_lake_partitions_command(
             partition_by=partition_by,
             target_rows_per_file=target_rows_per_file,
             max_source_files_per_batch=max_source_files_per_batch,
+            max_source_batch_bytes=max_source_batch_bytes,
         ),
     )
     typer.echo(json.dumps(result.__dict__, indent=2, sort_keys=True))

@@ -290,11 +290,13 @@ WEB_RESEARCH_SAMPLE_DATASETS = {
     "expanded_universe_candidate_label",
     "expanded_crypto_universe_shadow",
 }
+WEB_FEATURE_SAMPLE_DATASETS = {"feature_value"}
 WEB_RECENT_LOOKBACK_HOURS = {
     "market_bar": 24 * 14,
     "trade_print": 6,
     "orderbook_snapshot": 6,
     "okx_public_ws": 6,
+    "feature_value": 24 * 14,
     "strategy_evidence_sample": 24 * 14,
     "v5_candidate_event": 24 * 14,
     "v5_candidate_label": 24 * 14,
@@ -303,7 +305,9 @@ WEB_RECENT_LOOKBACK_HOURS = {
     "expanded_crypto_universe_shadow": 24 * 14,
 }
 WEB_HEAVY_METADATA_DATASETS = {"okx_public_ws", "trade_print", "orderbook_snapshot"}
-WEB_RECENT_FILE_SAMPLE_DATASETS = WEB_HEAVY_METADATA_DATASETS | WEB_RESEARCH_SAMPLE_DATASETS
+WEB_RECENT_FILE_SAMPLE_DATASETS = (
+    WEB_HEAVY_METADATA_DATASETS | WEB_RESEARCH_SAMPLE_DATASETS | WEB_FEATURE_SAMPLE_DATASETS
+)
 WEB_HEAVY_EXACT_ROW_COUNT_FILE_LIMIT = 64
 WEB_HEAVY_ROW_COUNT_SAMPLE_FILES = 32
 WEB_FULL_VALIDATION_FILE_LIMIT = 512
@@ -311,6 +315,7 @@ WEB_RECENT_FILE_LIMITS = {
     "trade_print": 384,
     "orderbook_snapshot": 384,
     "okx_public_ws": 384,
+    "feature_value": 384,
     "strategy_evidence_sample": 384,
     "v5_candidate_event": 384,
     "v5_candidate_label": 384,
@@ -390,7 +395,7 @@ def _read_web_display_dataset_with_warning(
     lake_root: str | Path,
     dataset_name: str,
 ) -> tuple[pl.DataFrame, str | None]:
-    if dataset_name in WEB_RESEARCH_SAMPLE_DATASETS:
+    if dataset_name in WEB_RESEARCH_SAMPLE_DATASETS | WEB_FEATURE_SAMPLE_DATASETS:
         return read_recent_dataset_with_warning(lake_root, dataset_name)
     return read_dataset_with_warning(lake_root, dataset_name)
 
@@ -1953,7 +1958,10 @@ def _candidate_outcome_table(candidate_outcomes: pl.DataFrame) -> pl.DataFrame:
 
 
 def feature_summary(lake_root: str | Path) -> dict[str, Any]:
-    features, feature_warning = read_dataset_with_warning(lake_root, "feature_value")
+    features, feature_warning = _read_web_display_dataset_with_warning(
+        lake_root,
+        "feature_value",
+    )
     coverage, coverage_warning = read_dataset_with_warning(lake_root, "feature_coverage_daily")
     anomalies, anomaly_warning = read_dataset_with_warning(lake_root, "feature_anomaly_daily")
     warnings = [

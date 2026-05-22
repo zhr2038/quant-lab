@@ -193,6 +193,56 @@ def test_dashboard_overview_uses_lazy_market_bar_aggregates(tmp_path, monkeypatc
     assert summary["missing_bar_ratio"] == 0.0
 
 
+def test_feature_summary_samples_feature_value(tmp_path, monkeypatch):
+    lake_root = tmp_path / "lake"
+    dataset_path = lake_root / "gold" / "feature_value"
+    dataset_path.mkdir(parents=True)
+    start = datetime(2026, 5, 10, tzinfo=UTC)
+    pl.DataFrame(
+        [
+            {
+                "feature_set": "core",
+                "feature_name": "close_return_1",
+                "feature_version": "v0.1",
+                "symbol": "OLD-USDT",
+                "timeframe": "1H",
+                "ts": start,
+                "value": 0.1,
+                "created_at": start,
+            }
+        ]
+    ).write_parquet(dataset_path / "batch_20260510T000000000000Z.parquet")
+    pl.DataFrame(
+        [
+            {
+                "feature_set": "core",
+                "feature_name": "close_return_1",
+                "feature_version": "v0.1",
+                "symbol": "NEW-USDT",
+                "timeframe": "1H",
+                "ts": start + timedelta(hours=1),
+                "value": 0.2,
+                "created_at": start + timedelta(hours=1),
+            }
+        ]
+    ).write_parquet(dataset_path / "batch_20260510T010000000000Z.parquet")
+    monkeypatch.setitem(readers.WEB_RECENT_FILE_LIMITS, "feature_value", 1)
+    original = readers.read_dataset_with_warning
+
+    def guarded_read_dataset_with_warning(lake_root_arg, dataset_name):
+        if dataset_name == "feature_value":
+            raise AssertionError("feature summary should not fully read feature_value")
+        return original(lake_root_arg, dataset_name)
+
+    monkeypatch.setattr(readers, "read_dataset_with_warning", guarded_read_dataset_with_warning)
+
+    summary = readers.feature_summary(lake_root)
+
+    assert summary["features"]["symbol"].to_list() == ["NEW-USDT"]
+    assert summary["latest"]["symbol"].to_list() == ["NEW-USDT"]
+    assert "feature_value 数据集缺失或为空" not in summary["warnings"]
+
+
 def test_data_health_hides_pending_v5_paper_telemetry(tmp_path):
     lake_root = tmp_path / "lake"
     stale_rows = readers.data_health_summary(lake_root)["stale_datasets"].to_dicts()

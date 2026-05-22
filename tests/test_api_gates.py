@@ -95,3 +95,44 @@ def test_research_alpha_route_returns_evidence_and_gate(tmp_path, monkeypatch):
     assert payload["evidence"]["alpha_id"] == "v5.core.momentum"
     assert payload["gate_decision"]["status"] == "LIVE_READY"
     assert payload["warnings"] == []
+
+
+def test_research_alpha_route_uses_lazy_alpha_evidence_lookup(tmp_path, monkeypatch):
+    lake = tmp_path / "lake"
+    monkeypatch.setenv("QUANT_LAB_LAKE_ROOT", str(lake))
+    older = AlphaEvidence.example_live_ready().model_copy(
+        update={
+            "alpha_id": "v5.core.momentum",
+            "version": "old",
+            "created_at": datetime(2026, 5, 10, tzinfo=UTC),
+        }
+    )
+    newer = AlphaEvidence.example_live_ready().model_copy(
+        update={
+            "alpha_id": "v5.core.momentum",
+            "version": "new",
+            "created_at": datetime(2026, 5, 11, tzinfo=UTC),
+        }
+    )
+    write_parquet_dataset(
+        pl.DataFrame(
+            [
+                {**older.model_dump(mode="json"), "source": "test"},
+                {**newer.model_dump(mode="json"), "source": "test"},
+            ]
+        ),
+        lake / "gold" / "alpha_evidence",
+    )
+
+    def fail_full_read(*args, **kwargs):
+        raise AssertionError("research alpha endpoint should lazy-filter alpha_evidence")
+
+    monkeypatch.setattr("quant_lab.api.main.read_parquet_dataset", fail_full_read)
+
+    response = TestClient(app).get("/v1/research/alpha/v5.core.momentum")
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["evidence"]["alpha_id"] == "v5.core.momentum"
+    assert payload["evidence"]["version"] == "new"
+    assert payload["warnings"] == ["gate_decision missing for alpha_id"]

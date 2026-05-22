@@ -1167,13 +1167,20 @@ def _optional_bool(value: Any) -> bool | None:
 
 
 def _load_latest_alpha_evidence(lake_root: Path, alpha_id: str) -> dict[str, Any] | None:
-    df = read_parquet_dataset(lake_root / "gold" / "alpha_evidence")
-    if df.is_empty() or "alpha_id" not in df.columns:
+    lazy, columns = _safe_parquet_lazy(lake_root / "gold" / "alpha_evidence")
+    if lazy is None or "alpha_id" not in columns:
         return None
-    filtered = df.filter(pl.col("alpha_id") == alpha_id)
-    if filtered.is_empty():
+    filtered = lazy.filter(pl.col("alpha_id") == alpha_id)
+    if "created_at" in columns:
+        filtered = filtered.with_columns(_lazy_utc_datetime("created_at").alias("created_at")).sort(
+            "created_at",
+            descending=True,
+            nulls_last=True,
+        )
+    row_frame = _collect_lazy_or_empty(filtered.limit(1))
+    if row_frame.is_empty():
         return None
-    return _latest_row(filtered, "created_at")
+    return row_frame.to_dicts()[0]
 
 
 def _load_latest_gate_decision_for_alpha(lake_root: Path, alpha_id: str) -> GateDecision | None:

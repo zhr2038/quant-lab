@@ -33,6 +33,14 @@ def test_api_request_metrics_are_micro_batched(tmp_path, monkeypatch):
     assert summary["by_path"]["/v1/health"] == 10
 
 
+def test_api_request_metrics_default_flush_window_limits_small_files(monkeypatch):
+    monkeypatch.delenv("QUANT_LAB_API_METRICS_FLUSH_ROWS", raising=False)
+    monkeypatch.delenv("QUANT_LAB_API_METRICS_FLUSH_SECONDS", raising=False)
+
+    assert metrics_module._api_metrics_flush_rows() == 1_000
+    assert metrics_module._api_metrics_flush_seconds() == 300.0
+
+
 def test_api_request_metrics_can_flush_asynchronously(tmp_path, monkeypatch):
     lake = tmp_path / "lake"
     monkeypatch.setenv("QUANT_LAB_API_METRICS_FLUSH_ROWS", "1")
@@ -133,6 +141,37 @@ def test_api_request_metrics_summary_reports_slowest_paths(tmp_path, monkeypatch
     assert summary["latency_by_path_ms"]["/v1/missing"]["client_error_count"] == 1
     assert summary["slow_paths"][0]["path"] == "/v1/slow"
     assert summary["slow_paths"][0]["p95"] >= 300.0
+
+
+def test_api_request_metrics_do_not_partition_by_path(tmp_path, monkeypatch):
+    lake = tmp_path / "lake"
+    monkeypatch.setenv("QUANT_LAB_API_METRICS_FLUSH_ROWS", "2")
+    monkeypatch.setenv("QUANT_LAB_API_METRICS_FLUSH_SECONDS", "3600")
+
+    record_api_request(
+        lake_root=lake,
+        method="GET",
+        path="/v1/health",
+        status_code=200,
+        duration_seconds=0.01,
+    )
+    record_api_request(
+        lake_root=lake,
+        method="GET",
+        path="/v1/strategy-opportunity-advisory",
+        status_code=200,
+        duration_seconds=0.02,
+    )
+
+    dataset = lake / "bronze" / "api_request_metrics"
+    files = list(dataset.rglob("*.parquet"))
+    assert len(files) == 1
+    assert not any(part.startswith("path=") for file in files for part in file.parts)
+
+    summary = api_metrics_summary(lake)
+
+    assert summary["by_path"]["/v1/health"] == 1
+    assert summary["by_path"]["/v1/strategy-opportunity-advisory"] == 1
 
 
 def test_api_request_metrics_summary_can_filter_recent_window(tmp_path, monkeypatch):

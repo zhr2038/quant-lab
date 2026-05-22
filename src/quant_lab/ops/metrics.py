@@ -101,7 +101,7 @@ def flush_api_request_metrics(lake_root: str | Path) -> int:
     result = append_parquet_dataset(
         pl.DataFrame(rows),
         Path(lake_root) / API_METRICS_DATASET,
-        partition_by=["day", "path"],
+        partition_by=["day"],
         target_rows_per_file=10_000,
         file_prefix="api",
     )
@@ -462,15 +462,15 @@ def _safe_user_agent(value: str | None) -> str | None:
 
 
 def _api_metrics_flush_rows() -> int:
-    return _positive_int_env("QUANT_LAB_API_METRICS_FLUSH_ROWS", 100)
+    return _positive_int_env("QUANT_LAB_API_METRICS_FLUSH_ROWS", 1_000)
 
 
 def _api_metrics_flush_seconds() -> float:
-    raw_value = os.environ.get("QUANT_LAB_API_METRICS_FLUSH_SECONDS", "60")
+    raw_value = os.environ.get("QUANT_LAB_API_METRICS_FLUSH_SECONDS", "300")
     try:
         value = float(raw_value)
     except ValueError:
-        return 60.0
+        return 300.0
     return max(value, 1.0)
 
 

@@ -35,6 +35,8 @@ def test_api_service_uses_async_metrics_flush():
     unit = _unit("quant-lab-api.service")
 
     assert "QUANT_LAB_API_METRICS_ASYNC_FLUSH=1" in unit
+    assert "QUANT_LAB_API_METRICS_FLUSH_ROWS=1000" in unit
+    assert "QUANT_LAB_API_METRICS_FLUSH_SECONDS=300" in unit
 
 
 def test_lake_permission_repair_script_targets_service_user():

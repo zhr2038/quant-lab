@@ -249,6 +249,92 @@ def compact_parquet_dataset(
             raise
 
 
+def compact_parquet_directory_files(
+    directory_path: str | Path,
+    *,
+    target_rows_per_file: int = 250_000,
+    max_source_files_per_batch: int = 5_000,
+) -> CompactParquetResult:
+    """Compact only Parquet files directly inside a directory.
+
+    Hot append datasets may contain both direct batch files and older partition
+    directories. Direct compaction rewrites only the current directory's files,
+    preserving partition subdirectories and avoiding an expensive full dataset
+    rewrite.
+    """
+
+    path = Path(directory_path)
+    with _dataset_lock(path, timeout_seconds=120.0):
+        files = _direct_parquet_files(path)
+        source_file_count = len(files)
+        if not files:
+            return CompactParquetResult(
+                dataset_path=str(path),
+                source_file_count=0,
+                output_file_count=0,
+                rows=0,
+                partition_by=[],
+                target_rows_per_file=target_rows_per_file,
+                max_source_files_per_batch=max_source_files_per_batch,
+            )
+
+        staging = path / f"__direct_compact_{uuid.uuid4().hex}"
+        output_file_count = 0
+        rows = 0
+        try:
+            for batch_files in _chunks(files, max(max_source_files_per_batch, 1)):
+                frame = _read_parquet_files(batch_files)
+                if frame.is_empty():
+                    continue
+                result = _append_parquet_dataset_unlocked(
+                    frame,
+                    staging,
+                    partition_by=None,
+                    target_rows_per_file=target_rows_per_file,
+                    file_prefix="compact",
+                )
+                output_file_count += result.file_count
+                rows += result.rows_written
+
+            if rows == 0:
+                for source_file in files:
+                    try:
+                        source_file.unlink()
+                    except FileNotFoundError:
+                        pass
+                return CompactParquetResult(
+                    dataset_path=str(path),
+                    source_file_count=source_file_count,
+                    output_file_count=0,
+                    rows=0,
+                    partition_by=[],
+                    target_rows_per_file=target_rows_per_file,
+                    max_source_files_per_batch=max_source_files_per_batch,
+                )
+
+            for source_file in files:
+                source_file.unlink()
+            for compacted_file in sorted(
+                candidate
+                for candidate in staging.glob("*.parquet")
+                if _is_valid_parquet_file(candidate)
+            ):
+                _replace_path(compacted_file, path / compacted_file.name)
+            _remove_existing_dataset(staging)
+            return CompactParquetResult(
+                dataset_path=str(path),
+                source_file_count=source_file_count,
+                output_file_count=output_file_count,
+                rows=rows,
+                partition_by=[],
+                target_rows_per_file=target_rows_per_file,
+                max_source_files_per_batch=max_source_files_per_batch,
+            )
+        except Exception:
+            _remove_existing_dataset(staging)
+            raise
+
+
 def read_parquet_dataset(dataset_path: str | Path) -> pl.DataFrame:
     files = _parquet_files(dataset_path)
     if not files:
@@ -385,6 +471,17 @@ def query_dataset_sql(lake_root: str | Path, dataset_name: str, sql: str) -> pl.
 
 def _parquet_files(dataset_path: str | Path) -> list[Path]:
     return [path for path in _all_parquet_files(dataset_path) if _is_valid_parquet_file(path)]
+
+
+def _direct_parquet_files(dataset_path: str | Path) -> list[Path]:
+    path = Path(dataset_path)
+    if not path.exists() or not path.is_dir():
+        return []
+    return sorted(
+        candidate
+        for candidate in path.glob("*.parquet")
+        if not _is_internal_lake_file(candidate) and _is_valid_parquet_file(candidate)
+    )
 
 
 def _all_parquet_files(dataset_path: str | Path) -> list[Path]:

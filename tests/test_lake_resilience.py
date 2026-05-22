@@ -8,6 +8,7 @@ from quant_lab.data.lake import (
     _lock_is_stale,
     append_parquet_dataset,
     compact_parquet_dataset,
+    compact_parquet_directory_files,
     invalid_parquet_files,
     read_parquet_dataset,
     upsert_parquet_dataset,
@@ -81,9 +82,9 @@ def test_read_parquet_dataset_inserts_missing_columns_across_schema_versions(tmp
 def test_read_parquet_dataset_ignores_extra_columns_across_schema_versions(tmp_path):
     dataset = tmp_path / "lake" / "bronze" / "okx_public_ws"
     dataset.mkdir(parents=True)
-    pl.DataFrame(
-        [{"channel": "trades", "inst_id": "BTC-USDT", "raw_json": "{}"}]
-    ).write_parquet(dataset / "part-base.parquet")
+    pl.DataFrame([{"channel": "trades", "inst_id": "BTC-USDT", "raw_json": "{}"}]).write_parquet(
+        dataset / "part-base.parquet"
+    )
     pl.DataFrame(
         [
             {
@@ -298,6 +299,31 @@ def test_compact_parquet_dataset_preserves_rows_and_reduces_files(tmp_path):
     assert result.output_file_count == 1
     assert read_back.height == 5
     assert sorted(read_back["value"].to_list()) == list(range(5))
+
+
+def test_compact_parquet_directory_files_preserves_partition_dirs(tmp_path):
+    dataset = tmp_path / "lake" / "bronze" / "okx_public_ws"
+    dataset.mkdir(parents=True)
+    for index in range(5):
+        pl.DataFrame([{"channel": "trades", "inst_id": "BTC-USDT", "value": index}]).write_parquet(
+            dataset / f"batch-{index}.parquet"
+        )
+    partition_dir = dataset / "day=2026-05-18" / "channel=trades" / "inst_id=ETH-USDT"
+    partition_dir.mkdir(parents=True)
+    pl.DataFrame([{"channel": "trades", "inst_id": "ETH-USDT", "value": 99}]).write_parquet(
+        partition_dir / "historical.parquet"
+    )
+
+    result = compact_parquet_directory_files(dataset, target_rows_per_file=10)
+    direct_files = list(dataset.glob("*.parquet"))
+    read_back = read_parquet_dataset(dataset)
+
+    assert result.source_file_count == 5
+    assert result.output_file_count == 1
+    assert len(direct_files) == 1
+    assert (partition_dir / "historical.parquet").exists()
+    assert read_back.height == 6
+    assert sorted(read_back["value"].to_list()) == [0, 1, 2, 3, 4, 99]
 
 
 def test_read_parquet_dataset_ignores_internal_compaction_and_temp_files(tmp_path):

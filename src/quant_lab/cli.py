@@ -11,7 +11,7 @@ import typer
 from quant_lab.contracts.models import AlphaEvidence, AlphaResearchSpec
 from quant_lab.costs.calibrate import calibrate_costs_for_day
 from quant_lab.costs.health import read_cost_health_daily
-from quant_lab.data.lake import compact_parquet_dataset
+from quant_lab.data.lake import compact_parquet_dataset, compact_parquet_directory_files
 from quant_lab.e2e import run_v5_contract_e2e
 from quant_lab.export.daily import export_daily_pack, validate_expert_pack
 from quant_lab.features.publish import feature_health
@@ -575,16 +575,31 @@ def compact_lake_dataset_command(
         int,
         typer.Option("--max-source-files-per-batch", min=1),
     ] = 5_000,
+    direct_only: Annotated[
+        bool,
+        typer.Option(
+            "--direct-only/--recursive",
+            help="Compact only Parquet files directly in the dataset directory.",
+        ),
+    ] = False,
 ) -> None:
     dataset_path, partition_by = _compact_dataset_target(lake_root, dataset)
     result = run_with_job_metrics(
         lake_root=lake_root,
         job_name=f"compact-lake-dataset:{dataset}",
-        func=lambda: compact_parquet_dataset(
-            dataset_path,
-            partition_by=partition_by,
-            target_rows_per_file=target_rows_per_file,
-            max_source_files_per_batch=max_source_files_per_batch,
+        func=lambda: (
+            compact_parquet_directory_files(
+                dataset_path,
+                target_rows_per_file=target_rows_per_file,
+                max_source_files_per_batch=max_source_files_per_batch,
+            )
+            if direct_only
+            else compact_parquet_dataset(
+                dataset_path,
+                partition_by=partition_by,
+                target_rows_per_file=target_rows_per_file,
+                max_source_files_per_batch=max_source_files_per_batch,
+            )
         ),
     )
     typer.echo(json.dumps(result.__dict__, indent=2, sort_keys=True))

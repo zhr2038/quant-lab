@@ -66,6 +66,30 @@ compact_dataset() {
   echo "FINISH_COMPACT dataset=${dataset}"
 }
 
+compact_dataset_direct_only() {
+  local dataset="$1"
+  local target_rows="$2"
+  local batch_files="$3"
+  local status
+
+  echo "START_DIRECT_COMPACT dataset=${dataset} timeout_seconds=${COMPACT_DATASET_TIMEOUT_SECONDS}"
+  set +e
+  timeout --kill-after=30s "${COMPACT_DATASET_TIMEOUT_SECONDS}s" \
+    "${QLAB_BIN}" compact-lake-dataset \
+    --lake-root "${LAKE_ROOT}" \
+    --dataset "${dataset}" \
+    --target-rows-per-file "${target_rows}" \
+    --max-source-files-per-batch "${batch_files}" \
+    --direct-only
+  status="$?"
+  set -e
+  if (( status != 0 )); then
+    echo "WARN_DIRECT_COMPACT_FAILED dataset=${dataset} status=${status}"
+    return 0
+  fi
+  echo "FINISH_DIRECT_COMPACT dataset=${dataset}"
+}
+
 parquet_file_count() {
   local dataset="$1"
   local dataset_path="${LAKE_ROOT}/${dataset}"
@@ -122,7 +146,11 @@ compact_leaf_partitions_if_file_count_at_least() {
           echo "SKIP_LEAF_COMPACT_BUDGET dataset=${dataset} elapsed_seconds=${elapsed}"
           return
         fi
-        compact_dataset "${leaf_path#${LAKE_ROOT}/}" "${target_rows}" "${batch_files}"
+        if [[ "${leaf_path}" == "${dataset_path}" ]]; then
+          compact_dataset_direct_only "${leaf_path#${LAKE_ROOT}/}" "${target_rows}" "${batch_files}"
+        else
+          compact_dataset "${leaf_path#${LAKE_ROOT}/}" "${target_rows}" "${batch_files}"
+        fi
       done
 }
 

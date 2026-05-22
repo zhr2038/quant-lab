@@ -118,6 +118,22 @@ def test_okx_ws_service_uses_unpartitioned_large_batches():
     assert "QUANT_LAB_WS_APPEND_PARTITIONED=0" in unit
     assert "--flush-interval-seconds 300" in unit
     assert "--flush-max-messages 50000" in unit
+    for symbol in [
+        "BTC-USDT",
+        "ETH-USDT",
+        "SOL-USDT",
+        "BNB-USDT",
+        "ADA-USDT",
+        "ASTER-USDT",
+        "CHZ-USDT",
+        "DASH-USDT",
+        "FIL-USDT",
+        "HYPE-USDT",
+        "IP-USDT",
+        "JTO-USDT",
+    ]:
+        assert symbol in unit
+    assert "--channels tickers,trades,books5" in unit
 
 
 def test_manual_okx_ws_defaults_match_production_batching():

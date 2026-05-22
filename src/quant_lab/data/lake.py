@@ -145,6 +145,7 @@ def _append_parquet_dataset_unlocked(
     partition_by: str | Sequence[str] | None = None,
     target_rows_per_file: int | None = None,
     file_prefix: str = "part",
+    auto_compact: bool = True,
 ) -> AppendParquetResult:
     path = Path(dataset_path)
     path.mkdir(parents=True, exist_ok=True)
@@ -174,6 +175,8 @@ def _append_parquet_dataset_unlocked(
                 raise
             rows_written += chunk.height
             file_count += 1
+    if auto_compact:
+        _auto_compact_append_dataset_unlocked(path, target_rows_per_file=max_rows)
     return AppendParquetResult(str(path), rows_written, file_count, partition_columns)
 
 
@@ -215,6 +218,7 @@ def compact_parquet_dataset(
                     partition_by=partition_columns,
                     target_rows_per_file=target_rows_per_file,
                     file_prefix="compact",
+                    auto_compact=False,
                 )
                 output_file_count += result.file_count
                 rows += result.rows_written
@@ -266,11 +270,87 @@ def compact_parquet_directory_files(
     path = Path(directory_path)
     with _dataset_lock(path, timeout_seconds=120.0):
         files = _direct_parquet_files(path)
-        source_file_count = len(files)
-        if not files:
+        return _compact_direct_parquet_files_unlocked(
+            path,
+            files,
+            target_rows_per_file=target_rows_per_file,
+            max_source_files_per_batch=max_source_files_per_batch,
+        )
+
+
+def _auto_compact_append_dataset_unlocked(
+    dataset_path: Path,
+    *,
+    target_rows_per_file: int,
+) -> CompactParquetResult | None:
+    threshold = _int_env("QUANT_LAB_APPEND_AUTO_COMPACT_FILES", 256)
+    if threshold <= 0:
+        return None
+    files = _direct_parquet_files(dataset_path)
+    if len(files) <= threshold:
+        return None
+    max_source_files = _int_env(
+        "QUANT_LAB_APPEND_AUTO_COMPACT_MAX_SOURCE_FILES",
+        max(threshold, 512),
+    )
+    return _compact_direct_parquet_files_unlocked(
+        dataset_path,
+        files,
+        target_rows_per_file=_int_env(
+            "QUANT_LAB_APPEND_AUTO_COMPACT_TARGET_ROWS",
+            target_rows_per_file,
+        ),
+        max_source_files_per_batch=max_source_files,
+    )
+
+
+def _compact_direct_parquet_files_unlocked(
+    path: Path,
+    files: Sequence[Path],
+    *,
+    target_rows_per_file: int,
+    max_source_files_per_batch: int,
+) -> CompactParquetResult:
+    source_file_count = len(files)
+    if not files:
+        return CompactParquetResult(
+            dataset_path=str(path),
+            source_file_count=0,
+            output_file_count=0,
+            rows=0,
+            partition_by=[],
+            target_rows_per_file=target_rows_per_file,
+            max_source_files_per_batch=max_source_files_per_batch,
+        )
+
+    staging = path / f"__direct_compact_{uuid.uuid4().hex}"
+    output_file_count = 0
+    rows = 0
+    try:
+        for batch_files in _chunks(files, max(max_source_files_per_batch, 1)):
+            frame = _read_parquet_files(batch_files)
+            if frame.is_empty():
+                continue
+            result = _append_parquet_dataset_unlocked(
+                frame,
+                staging,
+                partition_by=None,
+                target_rows_per_file=target_rows_per_file,
+                file_prefix="compact",
+                auto_compact=False,
+            )
+            output_file_count += result.file_count
+            rows += result.rows_written
+
+        if rows == 0:
+            for source_file in files:
+                try:
+                    source_file.unlink()
+                except FileNotFoundError:
+                    pass
             return CompactParquetResult(
                 dataset_path=str(path),
-                source_file_count=0,
+                source_file_count=source_file_count,
                 output_file_count=0,
                 rows=0,
                 partition_by=[],
@@ -278,61 +358,27 @@ def compact_parquet_directory_files(
                 max_source_files_per_batch=max_source_files_per_batch,
             )
 
-        staging = path / f"__direct_compact_{uuid.uuid4().hex}"
-        output_file_count = 0
-        rows = 0
-        try:
-            for batch_files in _chunks(files, max(max_source_files_per_batch, 1)):
-                frame = _read_parquet_files(batch_files)
-                if frame.is_empty():
-                    continue
-                result = _append_parquet_dataset_unlocked(
-                    frame,
-                    staging,
-                    partition_by=None,
-                    target_rows_per_file=target_rows_per_file,
-                    file_prefix="compact",
-                )
-                output_file_count += result.file_count
-                rows += result.rows_written
-
-            if rows == 0:
-                for source_file in files:
-                    try:
-                        source_file.unlink()
-                    except FileNotFoundError:
-                        pass
-                return CompactParquetResult(
-                    dataset_path=str(path),
-                    source_file_count=source_file_count,
-                    output_file_count=0,
-                    rows=0,
-                    partition_by=[],
-                    target_rows_per_file=target_rows_per_file,
-                    max_source_files_per_batch=max_source_files_per_batch,
-                )
-
-            for source_file in files:
-                source_file.unlink()
-            for compacted_file in sorted(
-                candidate
-                for candidate in staging.glob("*.parquet")
-                if _is_valid_parquet_file(candidate)
-            ):
-                _replace_path(compacted_file, path / compacted_file.name)
-            _remove_existing_dataset(staging)
-            return CompactParquetResult(
-                dataset_path=str(path),
-                source_file_count=source_file_count,
-                output_file_count=output_file_count,
-                rows=rows,
-                partition_by=[],
-                target_rows_per_file=target_rows_per_file,
-                max_source_files_per_batch=max_source_files_per_batch,
-            )
-        except Exception:
-            _remove_existing_dataset(staging)
-            raise
+        for source_file in files:
+            source_file.unlink()
+        for compacted_file in sorted(
+            candidate
+            for candidate in staging.glob("*.parquet")
+            if _is_valid_parquet_file(candidate)
+        ):
+            _replace_path(compacted_file, path / compacted_file.name)
+        _remove_existing_dataset(staging)
+        return CompactParquetResult(
+            dataset_path=str(path),
+            source_file_count=source_file_count,
+            output_file_count=output_file_count,
+            rows=rows,
+            partition_by=[],
+            target_rows_per_file=target_rows_per_file,
+            max_source_files_per_batch=max_source_files_per_batch,
+        )
+    except Exception:
+        _remove_existing_dataset(staging)
+        raise
 
 
 def read_parquet_dataset(dataset_path: str | Path) -> pl.DataFrame:
@@ -660,6 +706,16 @@ def _safe_partition_value(value: Any) -> str:
 def _append_file_name(prefix: str) -> str:
     timestamp = datetime.now(UTC).strftime("%Y%m%dT%H%M%S%fZ")
     return f"{prefix}_{timestamp}_{os.getpid()}_{time.monotonic_ns()}.parquet"
+
+
+def _int_env(name: str, default: int) -> int:
+    raw_value = os.environ.get(name)
+    if raw_value is None or not raw_value.strip():
+        return default
+    try:
+        return int(raw_value)
+    except ValueError:
+        return default
 
 
 def _normalize_market_bar_frame(df: pl.DataFrame) -> pl.DataFrame:

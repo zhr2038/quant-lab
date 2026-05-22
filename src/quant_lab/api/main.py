@@ -12,6 +12,7 @@ import subprocess
 import time
 import zipfile
 from datetime import UTC, datetime, timedelta
+from functools import lru_cache
 from pathlib import Path
 from typing import Any
 
@@ -1127,6 +1128,7 @@ def _source_version(component: str, git_commit: str | None) -> str:
     return f"{component}:{version}"
 
 
+@lru_cache(maxsize=1)
 def _git_commit() -> str | None:
     root = Path(__file__).resolve().parents[3]
     try:

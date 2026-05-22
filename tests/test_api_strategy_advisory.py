@@ -4,6 +4,7 @@ from datetime import UTC, datetime
 import polars as pl
 from fastapi.testclient import TestClient
 
+import quant_lab.api.main as api_main
 from quant_lab.api.main import app
 from quant_lab.contracts.v5_quant_lab import V5_QUANT_LAB_CONTRACT_VERSION
 from quant_lab.data.lake import write_parquet_dataset
@@ -317,6 +318,51 @@ def test_strategy_opportunity_advisory_dedupes_legacy_schema_rows(
     assert len(rows) == 1
     assert rows[0]["schema_version"] == "strategy_opportunity_advisory.v0.1"
     assert rows[0]["sample_count"] == 12
+
+
+def test_strategy_opportunity_advisory_git_commit_lookup_is_cached(
+    tmp_path,
+    monkeypatch,
+):
+    lake = tmp_path / "lake"
+    monkeypatch.setenv("QUANT_LAB_LAKE_ROOT", str(lake))
+    monkeypatch.delenv("QUANT_LAB_API_TOKEN", raising=False)
+    rows = []
+    for index in range(25):
+        rows.append(
+            {
+                "as_of_ts": datetime(2026, 5, 20, tzinfo=UTC),
+                "strategy_candidate": f"v5.fast_advisory_{index}",
+                "symbol": "SOL-USDT",
+                "decision": "KEEP_SHADOW",
+                "recommended_mode": "shadow",
+                "horizon_hours": 24,
+                "sample_count": 10,
+                "cost_source_mix": '{"public_spread_proxy":10}',
+                "max_live_notional_usdt": 0.0,
+            }
+        )
+    write_parquet_dataset(pl.DataFrame(rows), lake / "gold" / "strategy_opportunity_advisory")
+
+    calls = 0
+
+    class Result:
+        stdout = "abc123\n"
+
+    def fake_run(*args, **kwargs):
+        nonlocal calls
+        calls += 1
+        return Result()
+
+    api_main._git_commit.cache_clear()
+    monkeypatch.setattr(api_main.subprocess, "run", fake_run)
+
+    response = TestClient(app).get("/v1/strategy-opportunity-advisory")
+
+    api_main._git_commit.cache_clear()
+    assert response.status_code == 200
+    assert len(response.json()) == 25
+    assert calls == 1
 
 
 def test_strategy_opportunity_advisory_aliases_and_latest_report_fallback(

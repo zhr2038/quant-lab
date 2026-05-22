@@ -140,6 +140,9 @@ SECTION_DATASETS = {
         "strategy_evidence_quality",
         "research_portfolio_status",
         "strategy_opportunity_advisory",
+        "market_regime_daily",
+        "strategy_regime_matrix",
+        "regime_strategy_advisory",
         "expanded_universe_candidate",
         "expanded_universe_quality",
         "expanded_universe_candidate_event",
@@ -259,6 +262,9 @@ REQUIRED_MEMBERS = [
     "reports/candidate_paper_ready.csv",
     "reports/paper_strategy_proposals.csv",
     "reports/strategy_opportunity_advisory.csv",
+    "reports/market_regime_daily.csv",
+    "reports/strategy_regime_matrix.csv",
+    "reports/regime_strategy_advisory.csv",
     "reports/expanded_universe_candidates.csv",
     "reports/expanded_universe_quality.csv",
     "reports/expanded_universe_daily.md",
@@ -733,6 +739,58 @@ CSV_SCHEMAS: dict[str, list[str]] = {
         "live_block_reasons",
         "max_paper_notional_usdt",
         "max_live_notional_usdt",
+    ],
+    "reports/market_regime_daily.csv": [
+        "as_of_date",
+        "current_regime",
+        "active_regimes_json",
+        "regime_confidence",
+        "btc_24h_return_bps",
+        "eth_24h_return_bps",
+        "sol_24h_return_bps",
+        "bnb_24h_return_bps",
+        "broad_market_positive_count",
+        "realized_vol_bps",
+        "avg_spread_bps",
+        "liquidity_thin",
+        "created_at",
+        "source",
+        "schema_version",
+    ],
+    "reports/strategy_regime_matrix.csv": [
+        "as_of_date",
+        "strategy_candidate",
+        "raw_strategy_candidate",
+        "symbol",
+        "regime_state",
+        "canonical_regime",
+        "horizon_hours",
+        "sample_count",
+        "complete_sample_count",
+        "avg_net_bps",
+        "median_net_bps",
+        "p25_net_bps",
+        "win_rate",
+        "mae_bps",
+        "cost_source_mix",
+        "decision",
+        "decision_reasons",
+        "created_at",
+        "source",
+        "schema_version",
+    ],
+    "reports/regime_strategy_advisory.csv": [
+        "as_of_date",
+        "current_regime",
+        "active_regimes_json",
+        "allowed_strategy_candidates",
+        "blocked_strategy_candidates",
+        "recommended_mode",
+        "regime_confidence",
+        "live_block_reasons",
+        "created_at",
+        "source",
+        "schema_version",
     ],
     "reports/expanded_crypto_universe_shadow.csv": [
         "as_of_date",
@@ -2233,6 +2291,9 @@ def _dataset_members(frames: dict[str, pl.DataFrame]) -> dict[str, _MemberPayloa
     )
     history_metrics = frames.get("v5_entry_quality_history_metrics", pl.DataFrame())
     paper_proposals = _paper_strategy_proposals_for_export(alpha_discovery_board)
+    market_regime = frames.get("market_regime_daily", pl.DataFrame())
+    strategy_regime_matrix = frames.get("strategy_regime_matrix", pl.DataFrame())
+    regime_strategy_advisory = frames.get("regime_strategy_advisory", pl.DataFrame())
     opportunity_advisory = _strategy_opportunity_advisory_for_export(
         alpha_discovery_board=alpha_discovery_board,
         strategy_evidence=strategy_evidence,
@@ -2242,6 +2303,7 @@ def _dataset_members(frames: dict[str, pl.DataFrame]) -> dict[str, _MemberPayloa
         paper_daily=paper_daily,
         paper_slippage=paper_slippage,
         entry_quality_advisory=entry_quality_advisory,
+        regime_strategy_advisory=regime_strategy_advisory,
     )
     strategy_level_dashboard = _strategy_level_dashboard_for_export(opportunity_advisory)
     gates = _gate_decisions_for_export(frames.get("gate_decision", pl.DataFrame()))
@@ -2371,6 +2433,18 @@ def _dataset_members(frames: dict[str, pl.DataFrame]) -> dict[str, _MemberPayloa
         "reports/strategy_opportunity_advisory.csv": _csv_member(
             "reports/strategy_opportunity_advisory.csv",
             opportunity_advisory,
+        ),
+        "reports/market_regime_daily.csv": _csv_member(
+            "reports/market_regime_daily.csv",
+            market_regime,
+        ),
+        "reports/strategy_regime_matrix.csv": _csv_member(
+            "reports/strategy_regime_matrix.csv",
+            strategy_regime_matrix,
+        ),
+        "reports/regime_strategy_advisory.csv": _csv_member(
+            "reports/regime_strategy_advisory.csv",
+            regime_strategy_advisory,
         ),
         "reports/expanded_universe_candidates.csv": _csv_member(
             "reports/expanded_universe_candidates.csv",
@@ -2990,6 +3064,13 @@ def _refresh_v5_derived_outputs(lake_root: Path, export_day: date) -> list[str]:
                 "quant_lab.research.entry_quality",
                 fromlist=["build_and_publish_entry_quality"],
             ).build_and_publish_entry_quality(lake_root, as_of_date=export_day),
+        ),
+        (
+            "build_regime_router",
+            lambda: __import__(
+                "quant_lab.research.regime_router",
+                fromlist=["build_and_publish_regime_router"],
+            ).build_and_publish_regime_router(lake_root, as_of_date=export_day),
         ),
         (
             "build_research_portfolio_status",
@@ -4300,6 +4381,7 @@ def _strategy_opportunity_advisory_for_export(
     paper_daily: pl.DataFrame,
     paper_slippage: pl.DataFrame,
     entry_quality_advisory: pl.DataFrame | None = None,
+    regime_strategy_advisory: pl.DataFrame | None = None,
 ) -> pl.DataFrame:
     path = "reports/strategy_opportunity_advisory.csv"
     source = (
@@ -4428,6 +4510,13 @@ def _strategy_opportunity_advisory_for_export(
             entry_quality_advisory if entry_quality_advisory is not None else pl.DataFrame()
         )
     )
+    rows.extend(
+        _regime_router_opportunity_rows(
+            regime_strategy_advisory
+            if regime_strategy_advisory is not None
+            else pl.DataFrame()
+        )
+    )
     if not rows:
         return _empty_csv_schema_frame(path)
     return (
@@ -4458,6 +4547,7 @@ def _strategy_opportunity_advisory_from_frames(
         paper_daily=paper_daily,
         paper_slippage=paper_slippage,
         entry_quality_advisory=frames.get("v5_entry_quality_advisory", pl.DataFrame()),
+        regime_strategy_advisory=frames.get("regime_strategy_advisory", pl.DataFrame()),
     )
 
 
@@ -4541,6 +4631,115 @@ def _entry_quality_recommended_mode(candidate: str, value: Any) -> str:
     if mode in {"paper", "shadow", "research"}:
         return mode
     return "shadow"
+
+
+def _regime_router_opportunity_rows(regime_advisory: pl.DataFrame) -> list[dict[str, Any]]:
+    if regime_advisory.is_empty():
+        return []
+    rows: list[dict[str, Any]] = []
+    git_commit = _git_commit()
+    source_version = _source_version("regime_router", git_commit)
+    latest_as_of_date = _latest_as_of_date(regime_advisory.to_dicts())
+    for row in regime_advisory.to_dicts():
+        if latest_as_of_date and str(row.get("as_of_date") or "") != latest_as_of_date:
+            continue
+        current_regime = str(row.get("current_regime") or "UNKNOWN").strip().upper()
+        mode = str(row.get("recommended_mode") or "research").strip().lower()
+        if mode not in {"research", "shadow", "paper"}:
+            mode = "research"
+        generated_at = _advisory_generated_at(row)
+        base_reasons = set(_json_listish(row.get("live_block_reasons")))
+        base_reasons.update(
+            {
+                "regime_router_read_only",
+                "not_live_validated",
+                "no_live_small_from_regime_router",
+            }
+        )
+        for candidate in _json_listish(row.get("allowed_strategy_candidates")):
+            decision = "PAPER_READY" if mode == "paper" else "KEEP_SHADOW"
+            if mode == "research":
+                decision = "RESEARCH_ONLY"
+            rows.append(
+                _regime_router_opportunity_row(
+                    row=row,
+                    candidate=candidate,
+                    decision=decision,
+                    recommended_mode=mode,
+                    current_regime=current_regime,
+                    generated_at=generated_at,
+                    git_commit=git_commit,
+                    source_version=source_version,
+                    reasons=sorted(base_reasons),
+                )
+            )
+        for candidate in _json_listish(row.get("blocked_strategy_candidates")):
+            rows.append(
+                _regime_router_opportunity_row(
+                    row=row,
+                    candidate=candidate,
+                    decision="KILL",
+                    recommended_mode="none",
+                    current_regime=current_regime,
+                    generated_at=generated_at,
+                    git_commit=git_commit,
+                    source_version=source_version,
+                    reasons=sorted({*base_reasons, "blocked_in_current_regime"}),
+                )
+            )
+    return rows
+
+
+def _regime_router_opportunity_row(
+    *,
+    row: dict[str, Any],
+    candidate: str,
+    decision: str,
+    recommended_mode: str,
+    current_regime: str,
+    generated_at: datetime,
+    git_commit: str,
+    source_version: str,
+    reasons: list[str],
+) -> dict[str, Any]:
+    strategy_candidate = f"regime_router:{candidate}"
+    return {
+        "as_of_ts": _entry_quality_as_of_ts(row),
+        "generated_at": generated_at,
+        "expires_at": _advisory_expires_at(row, generated_at),
+        "contract_version": V5_QUANT_LAB_CONTRACT_VERSION,
+        "schema_version": STRATEGY_OPPORTUNITY_ADVISORY_SCHEMA_VERSION,
+        "quant_lab_git_commit": git_commit,
+        "source_version": source_version,
+        "would_block_if_enabled": decision == "KILL",
+        "would_enter": decision == "PAPER_READY",
+        "no_sample_reason": (
+            "blocked_in_current_regime"
+            if decision == "KILL"
+            else f"regime_router_{current_regime.lower()}_{recommended_mode}"
+        ),
+        "strategy_id": _advisory_strategy_id(strategy_candidate, "ALL"),
+        "symbol": "ALL",
+        "v5_symbol": "ALL",
+        "strategy_candidate": strategy_candidate,
+        "decision": decision,
+        "recommended_mode": recommended_mode,
+        "horizon_hours": None,
+        "sample_count": None,
+        "complete_sample_count": None,
+        "avg_net_bps": None,
+        "p25_net_bps": None,
+        "win_rate": None,
+        "cost_source_mix": None,
+        "cost_quality": "regime_router",
+        "paper_days": 0,
+        "entry_day_count": 0,
+        "paper_pnl_observed_count": 0,
+        "slippage_coverage": None,
+        "live_block_reasons": safe_json_dumps(reasons),
+        "max_paper_notional_usdt": _advisory_max_paper_notional(recommended_mode),
+        "max_live_notional_usdt": 0.0,
+    }
 
 
 def _entry_quality_live_block_reasons(row: dict[str, Any], recommended_mode: str) -> list[str]:

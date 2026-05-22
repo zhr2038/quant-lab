@@ -496,6 +496,82 @@ def test_recent_heavy_dataset_ignores_stale_data_file_when_batches_exist(tmp_pat
     assert set(recent["symbol"].to_list()) == {"BTC-USDT", "ETH-USDT"}
 
 
+def test_research_display_dataset_uses_recent_file_sampling(tmp_path, monkeypatch):
+    lake_root = tmp_path / "lake"
+    dataset_path = lake_root / "silver" / "v5_candidate_event"
+    dataset_path.mkdir(parents=True)
+    start = datetime(2026, 5, 10, tzinfo=UTC)
+    pl.DataFrame(
+        [
+            {
+                "candidate_id": "old",
+                "ts_utc": start,
+                "symbol": "OLD-USDT",
+                "strategy_candidate": "old",
+            }
+        ]
+    ).write_parquet(dataset_path / "batch_20260510T000000000000Z.parquet")
+    pl.DataFrame(
+        [
+            {
+                "candidate_id": "new",
+                "ts_utc": start + timedelta(hours=1),
+                "symbol": "NEW-USDT",
+                "strategy_candidate": "new",
+            }
+        ]
+    ).write_parquet(dataset_path / "batch_20260510T010000000000Z.parquet")
+    monkeypatch.setitem(readers.WEB_RECENT_FILE_LIMITS, "v5_candidate_event", 1)
+
+    recent, warning = readers.read_recent_dataset_with_warning(
+        lake_root,
+        "v5_candidate_event",
+    )
+
+    assert warning is None
+    assert recent["symbol"].to_list() == ["NEW-USDT"]
+
+
+def test_alpha_gate_summary_samples_research_detail_tables(tmp_path, monkeypatch):
+    lake_root = tmp_path / "lake"
+    start = datetime(2026, 5, 10, tzinfo=UTC)
+    for dataset_name in readers.WEB_RESEARCH_SAMPLE_DATASETS:
+        dataset_path = readers.dataset_path_for(lake_root, dataset_name)
+        dataset_path.mkdir(parents=True)
+        pl.DataFrame(
+            [
+                {
+                    "candidate_id": f"{dataset_name}-sample",
+                    "ts_utc": start,
+                    "label_ts": start + timedelta(hours=4),
+                    "generated_at": start,
+                    "symbol": "SOL-USDT",
+                    "strategy_candidate": "v5.sol_protect_exception",
+                    "candidate_name": "v5.sol_protect_exception",
+                    "source_dataset": "test",
+                    "horizon_hours": 24,
+                    "recommendation": "shadow_only",
+                }
+            ]
+        ).write_parquet(dataset_path / "batch_20260510T000000000000Z.parquet")
+    original = readers.read_dataset_with_warning
+
+    def guarded_read_dataset(lake_root_arg, dataset_name):
+        if dataset_name in readers.WEB_RESEARCH_SAMPLE_DATASETS:
+            raise AssertionError(f"{dataset_name} should use recent sample reads")
+        return original(lake_root_arg, dataset_name)
+
+    monkeypatch.setattr(readers, "read_dataset_with_warning", guarded_read_dataset)
+
+    summary = readers.alpha_gate_summary(lake_root)
+
+    assert summary["candidate_events"].height == 1
+    assert summary["candidate_labels"].height == 1
+    assert summary["strategy_samples"].height == 1
+    assert "v5_candidate_event 候选快照尚未入湖" not in summary["warnings"]
+    assert "v5_candidate_label 前向标签尚未生成" not in summary["warnings"]
+
+
 def test_market_regime_warns_when_ws_universe_is_incomplete(tmp_path):
     lake_root = tmp_path / "lake"
     start = datetime(2026, 5, 10, tzinfo=UTC)

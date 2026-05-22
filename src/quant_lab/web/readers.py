@@ -282,13 +282,28 @@ WEB_HEAVY_DATASET_LIMITS = {
     "orderbook_snapshot": 20_000,
     "okx_public_ws": 5_000,
 }
+WEB_RESEARCH_SAMPLE_DATASETS = {
+    "strategy_evidence_sample",
+    "v5_candidate_event",
+    "v5_candidate_label",
+    "expanded_universe_candidate_event",
+    "expanded_universe_candidate_label",
+    "expanded_crypto_universe_shadow",
+}
 WEB_RECENT_LOOKBACK_HOURS = {
     "market_bar": 24 * 14,
     "trade_print": 6,
     "orderbook_snapshot": 6,
     "okx_public_ws": 6,
+    "strategy_evidence_sample": 24 * 14,
+    "v5_candidate_event": 24 * 14,
+    "v5_candidate_label": 24 * 14,
+    "expanded_universe_candidate_event": 24 * 14,
+    "expanded_universe_candidate_label": 24 * 14,
+    "expanded_crypto_universe_shadow": 24 * 14,
 }
 WEB_HEAVY_METADATA_DATASETS = {"okx_public_ws", "trade_print", "orderbook_snapshot"}
+WEB_RECENT_FILE_SAMPLE_DATASETS = WEB_HEAVY_METADATA_DATASETS | WEB_RESEARCH_SAMPLE_DATASETS
 WEB_HEAVY_EXACT_ROW_COUNT_FILE_LIMIT = 64
 WEB_HEAVY_ROW_COUNT_SAMPLE_FILES = 32
 WEB_FULL_VALIDATION_FILE_LIMIT = 512
@@ -296,6 +311,12 @@ WEB_RECENT_FILE_LIMITS = {
     "trade_print": 384,
     "orderbook_snapshot": 384,
     "okx_public_ws": 384,
+    "strategy_evidence_sample": 384,
+    "v5_candidate_event": 384,
+    "v5_candidate_label": 384,
+    "expanded_universe_candidate_event": 384,
+    "expanded_universe_candidate_label": 384,
+    "expanded_crypto_universe_shadow": 384,
 }
 PARQUET_MAGIC = b"PAR1"
 MIN_PARQUET_SIZE_BYTES = 12
@@ -341,7 +362,7 @@ def read_recent_dataset_with_warning(
     lookback_hours: int | None = None,
 ) -> tuple[pl.DataFrame, str | None]:
     dataset_path = dataset_path_for(lake_root, dataset_name)
-    if dataset_name in WEB_HEAVY_METADATA_DATASETS:
+    if dataset_name in WEB_RECENT_FILE_SAMPLE_DATASETS:
         files, warning = _recent_valid_parquet_files(dataset_path, dataset_name)
     else:
         invalid_files = invalid_parquet_files(dataset_path)
@@ -363,6 +384,15 @@ def read_recent_dataset_with_warning(
         return frame, warning
     except Exception as exc:
         return pl.DataFrame(), f"{dataset_name} 抽样读取失败：{exc}"
+
+
+def _read_web_display_dataset_with_warning(
+    lake_root: str | Path,
+    dataset_name: str,
+) -> tuple[pl.DataFrame, str | None]:
+    if dataset_name in WEB_RESEARCH_SAMPLE_DATASETS:
+        return read_recent_dataset_with_warning(lake_root, dataset_name)
+    return read_dataset_with_warning(lake_root, dataset_name)
 
 
 def dataset_path_for(lake_root: str | Path, dataset_name: str) -> Path:
@@ -1416,7 +1446,7 @@ def alpha_gate_summary(lake_root: str | Path) -> dict[str, Any]:
         lake_root,
         "strategy_evidence",
     )
-    strategy_samples, strategy_samples_warning = read_dataset_with_warning(
+    strategy_samples, strategy_samples_warning = _read_web_display_dataset_with_warning(
         lake_root,
         "strategy_evidence_sample",
     )
@@ -1424,11 +1454,11 @@ def alpha_gate_summary(lake_root: str | Path) -> dict[str, Any]:
         lake_root,
         "research_portfolio_status",
     )
-    candidate_events, candidate_events_warning = read_dataset_with_warning(
+    candidate_events, candidate_events_warning = _read_web_display_dataset_with_warning(
         lake_root,
         "v5_candidate_event",
     )
-    candidate_labels, candidate_labels_warning = read_dataset_with_warning(
+    candidate_labels, candidate_labels_warning = _read_web_display_dataset_with_warning(
         lake_root,
         "v5_candidate_label",
     )
@@ -1452,11 +1482,11 @@ def alpha_gate_summary(lake_root: str | Path) -> dict[str, Any]:
         lake_root,
         "expanded_universe_quality",
     )
-    expanded_events, expanded_events_warning = read_dataset_with_warning(
+    expanded_events, expanded_events_warning = _read_web_display_dataset_with_warning(
         lake_root,
         "expanded_universe_candidate_event",
     )
-    expanded_labels, expanded_labels_warning = read_dataset_with_warning(
+    expanded_labels, expanded_labels_warning = _read_web_display_dataset_with_warning(
         lake_root,
         "expanded_universe_candidate_label",
     )
@@ -1464,7 +1494,7 @@ def alpha_gate_summary(lake_root: str | Path) -> dict[str, Any]:
         lake_root,
         "expanded_universe_promotion_queue",
     )
-    expanded_universe, expanded_universe_warning = read_dataset_with_warning(
+    expanded_universe, expanded_universe_warning = _read_web_display_dataset_with_warning(
         lake_root,
         "expanded_crypto_universe_shadow",
     )

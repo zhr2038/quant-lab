@@ -243,6 +243,45 @@ def test_feature_summary_samples_feature_value(tmp_path, monkeypatch):
     assert "feature_value 数据集缺失或为空" not in summary["warnings"]
 
 
+def test_strategy_consumer_summary_samples_decision_audit(tmp_path, monkeypatch):
+    lake_root = _fixture_lake(tmp_path)
+    dataset_path = lake_root / "silver" / "decision_audit"
+    dataset_path.mkdir(parents=True, exist_ok=True)
+    start = datetime(2026, 5, 10, tzinfo=UTC)
+    pl.DataFrame(
+        [
+            {
+                "strategy": "v5",
+                "message": "old fallback path",
+                "ingest_ts": start,
+            }
+        ]
+    ).write_parquet(dataset_path / "batch_20260510T000000000000Z.parquet")
+    pl.DataFrame(
+        [
+            {
+                "strategy": "v5",
+                "message": "new fallback path",
+                "ingest_ts": start + timedelta(hours=1),
+            }
+        ]
+    ).write_parquet(dataset_path / "batch_20260510T010000000000Z.parquet")
+    monkeypatch.setitem(readers.WEB_RECENT_FILE_LIMITS, "decision_audit", 1)
+    original = readers.read_dataset_with_warning
+
+    def guarded_read_dataset_with_warning(lake_root_arg, dataset_name):
+        if dataset_name == "decision_audit":
+            raise AssertionError("strategy consumers should not fully read decision_audit")
+        return original(lake_root_arg, dataset_name)
+
+    monkeypatch.setattr(readers, "read_dataset_with_warning", guarded_read_dataset_with_warning)
+
+    summary = readers.strategy_consumer_summary(lake_root)
+
+    assert summary["permissions"]["v5"] == "ALLOW"
+    assert summary["fallback_rows"]["message"].to_list() == ["new fallback path"]
+
+
 def test_data_health_hides_pending_v5_paper_telemetry(tmp_path):
     lake_root = tmp_path / "lake"
     stale_rows = readers.data_health_summary(lake_root)["stale_datasets"].to_dicts()

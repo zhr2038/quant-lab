@@ -291,11 +291,13 @@ WEB_RESEARCH_SAMPLE_DATASETS = {
     "expanded_crypto_universe_shadow",
 }
 WEB_FEATURE_SAMPLE_DATASETS = {"feature_value"}
+WEB_AUDIT_SAMPLE_DATASETS = {"decision_audit"}
 WEB_RECENT_LOOKBACK_HOURS = {
     "market_bar": 24 * 14,
     "trade_print": 6,
     "orderbook_snapshot": 6,
     "okx_public_ws": 6,
+    "decision_audit": 24 * 14,
     "feature_value": 24 * 14,
     "strategy_evidence_sample": 24 * 14,
     "v5_candidate_event": 24 * 14,
@@ -306,7 +308,10 @@ WEB_RECENT_LOOKBACK_HOURS = {
 }
 WEB_HEAVY_METADATA_DATASETS = {"okx_public_ws", "trade_print", "orderbook_snapshot"}
 WEB_RECENT_FILE_SAMPLE_DATASETS = (
-    WEB_HEAVY_METADATA_DATASETS | WEB_RESEARCH_SAMPLE_DATASETS | WEB_FEATURE_SAMPLE_DATASETS
+    WEB_HEAVY_METADATA_DATASETS
+    | WEB_RESEARCH_SAMPLE_DATASETS
+    | WEB_FEATURE_SAMPLE_DATASETS
+    | WEB_AUDIT_SAMPLE_DATASETS
 )
 WEB_HEAVY_EXACT_ROW_COUNT_FILE_LIMIT = 64
 WEB_HEAVY_ROW_COUNT_SAMPLE_FILES = 32
@@ -315,6 +320,7 @@ WEB_RECENT_FILE_LIMITS = {
     "trade_print": 384,
     "orderbook_snapshot": 384,
     "okx_public_ws": 384,
+    "decision_audit": 384,
     "feature_value": 384,
     "strategy_evidence_sample": 384,
     "v5_candidate_event": 384,
@@ -395,7 +401,9 @@ def _read_web_display_dataset_with_warning(
     lake_root: str | Path,
     dataset_name: str,
 ) -> tuple[pl.DataFrame, str | None]:
-    if dataset_name in WEB_RESEARCH_SAMPLE_DATASETS | WEB_FEATURE_SAMPLE_DATASETS:
+    if dataset_name in (
+        WEB_RESEARCH_SAMPLE_DATASETS | WEB_FEATURE_SAMPLE_DATASETS | WEB_AUDIT_SAMPLE_DATASETS
+    ):
         return read_recent_dataset_with_warning(lake_root, dataset_name)
     return read_dataset_with_warning(lake_root, dataset_name)
 
@@ -1987,7 +1995,10 @@ def feature_summary(lake_root: str | Path) -> dict[str, Any]:
 
 def strategy_consumer_summary(lake_root: str | Path) -> dict[str, Any]:
     permissions, permissions_warning = read_dataset_with_warning(lake_root, "risk_permission")
-    audits, audits_warning = read_dataset_with_warning(lake_root, "decision_audit")
+    audits, audits_warning = _read_web_display_dataset_with_warning(
+        lake_root,
+        "decision_audit",
+    )
     warnings = [warning for warning in [permissions_warning, audits_warning] if warning]
     if permissions.is_empty():
         warnings.append("risk_permission 数据集缺失或为空")

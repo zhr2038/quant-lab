@@ -1,5 +1,6 @@
 from concurrent.futures import ThreadPoolExecutor
 from datetime import UTC, datetime, timedelta
+from pathlib import Path
 
 import polars as pl
 import pytest
@@ -419,6 +420,48 @@ def test_repair_parquet_partition_values_fills_raw_unknown_keys(tmp_path):
     )
     assert read_back["channel"][0] == "unknown"
     assert read_back["inst_id"][0] == "unknown"
+
+
+def test_repair_parquet_partition_values_failure_does_not_write_visible_repairs(
+    tmp_path,
+    monkeypatch,
+):
+    dataset = tmp_path / "lake" / "silver" / "trade_print"
+    bad_leaf = dataset / "day=__null__" / "symbol=BTC-USDT"
+    bad_leaf.mkdir(parents=True)
+    pl.DataFrame(
+        [
+            {
+                "symbol": "BTC-USDT",
+                "day": None,
+                "trade_id": "1",
+                "ts": None,
+                "ingest_ts": "2026-05-23T01:02:03Z",
+            }
+        ]
+    ).write_parquet(bad_leaf / "bad.parquet")
+
+    import quant_lab.data.lake as lake_module
+
+    original_move = lake_module._move_repaired_staging_files
+
+    def fail_after_staging(staging: Path, dataset_path: Path) -> int:
+        assert list(staging.rglob("*.parquet"))
+        raise RuntimeError("simulated move failure")
+
+    monkeypatch.setattr(lake_module, "_move_repaired_staging_files", fail_after_staging)
+
+    with pytest.raises(RuntimeError, match="simulated move failure"):
+        repair_parquet_partition_values(
+            dataset,
+            partition_by=["day", "symbol"],
+            target_rows_per_file=10,
+        )
+
+    assert original_move
+    assert list(bad_leaf.glob("*.parquet"))
+    assert not list((dataset / "day=2026-05-23").rglob("*.parquet"))
+    assert not list(dataset.parent.glob("__trade_print_repair_*"))
 
 
 def test_compact_parquet_directory_files_preserves_partition_dirs(tmp_path):

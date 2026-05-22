@@ -424,41 +424,48 @@ def repair_parquet_partition_values(
                 partition_by=partition_columns,
             )
 
+        staging = path.parent / f"__{path.name}_repair_{uuid.uuid4().hex}"
         repaired_file_count = 0
         repaired_rows = 0
-        for batch_files in _chunks(bad_files, max(max_source_files_per_batch, 1)):
-            frame = _read_parquet_files(batch_files)
-            if frame.is_empty():
-                continue
-            repaired = _repair_partition_frame(frame, partition_columns)
-            result = _append_parquet_dataset_unlocked(
-                repaired,
-                path,
-                partition_by=partition_columns,
-                target_rows_per_file=target_rows_per_file,
-                file_prefix="repair",
-                auto_compact=False,
-            )
-            repaired_file_count += result.file_count
-            repaired_rows += result.rows_written
+        try:
+            for batch_files in _chunks(bad_files, max(max_source_files_per_batch, 1)):
+                frame = _read_parquet_files(batch_files)
+                if frame.is_empty():
+                    continue
+                repaired = _repair_partition_frame(frame, partition_columns)
+                result = _append_parquet_dataset_unlocked(
+                    repaired,
+                    staging,
+                    partition_by=partition_columns,
+                    target_rows_per_file=target_rows_per_file,
+                    file_prefix="repair",
+                    auto_compact=False,
+                )
+                repaired_file_count += result.file_count
+                repaired_rows += result.rows_written
 
-        removed = 0
-        touched_dirs = {file.parent for file in bad_files}
-        for source_file in bad_files:
-            try:
-                source_file.unlink()
-                removed += 1
-            except FileNotFoundError:
-                pass
-        _remove_empty_directories(touched_dirs, stop_at=path)
-        return RepairParquetPartitionResult(
-            dataset_path=str(path),
-            bad_file_count=bad_file_count,
-            repaired_file_count=repaired_file_count,
-            repaired_rows=repaired_rows,
-            removed_bad_file_count=removed,
-            partition_by=partition_columns,
-        )
+            moved_file_count = _move_repaired_staging_files(staging, path)
+            removed = 0
+            touched_dirs = {file.parent for file in bad_files}
+            for source_file in bad_files:
+                try:
+                    source_file.unlink()
+                    removed += 1
+                except FileNotFoundError:
+                    pass
+            _remove_empty_directories(touched_dirs, stop_at=path)
+            _remove_existing_dataset(staging)
+            return RepairParquetPartitionResult(
+                dataset_path=str(path),
+                bad_file_count=bad_file_count,
+                repaired_file_count=moved_file_count,
+                repaired_rows=repaired_rows,
+                removed_bad_file_count=removed,
+                partition_by=partition_columns,
+            )
+        except Exception:
+            _remove_existing_dataset(staging)
+            raise
 
 
 def read_parquet_dataset(dataset_path: str | Path) -> pl.DataFrame:
@@ -719,10 +726,11 @@ def _is_parquet_schema_compat_error(exc: Exception) -> bool:
 
 def _is_valid_parquet_file(path: Path) -> bool:
     try:
-        if path.stat().st_size < MIN_PARQUET_SIZE_BYTES:
+        readable_path = _replaceable_path(path)
+        if os.stat(readable_path).st_size < MIN_PARQUET_SIZE_BYTES:
             logger.warning("Ignoring undersized parquet file: %s", path)
             return False
-        with path.open("rb") as file:
+        with open(readable_path, "rb") as file:
             header = file.read(len(PARQUET_MAGIC))
             file.seek(-len(PARQUET_MAGIC), os.SEEK_END)
             footer = file.read(len(PARQUET_MAGIC))
@@ -885,6 +893,20 @@ def _remove_empty_directories(directories: set[Path], *, stop_at: Path) -> None:
             current = current.parent
 
 
+def _move_repaired_staging_files(staging: Path, dataset_path: Path) -> int:
+    moved = 0
+    if not staging.exists():
+        return moved
+    for repaired_file in sorted(staging.rglob("*.parquet")):
+        if not _is_valid_parquet_file(repaired_file):
+            continue
+        target = dataset_path / repaired_file.relative_to(staging)
+        target.parent.mkdir(parents=True, exist_ok=True)
+        _replace_path(repaired_file, target)
+        moved += 1
+    return moved
+
+
 def _chunks(values: Sequence[Path], size: int) -> list[Sequence[Path]]:
     return [values[index : index + size] for index in range(0, len(values), size)]
 
@@ -1003,6 +1025,8 @@ def _remove_existing_dataset(path: Path) -> None:
         for child in sorted(path.rglob("*"), key=lambda item: len(item.parts), reverse=True):
             if child.is_dir() and not any(child.iterdir()):
                 child.rmdir()
+        if path.exists() and path.is_dir() and not any(path.iterdir()):
+            path.rmdir()
 
 
 def _remove_stale_parquet_files(path: Path, keep: Path) -> None:

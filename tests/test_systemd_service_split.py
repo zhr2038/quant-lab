@@ -91,6 +91,7 @@ def test_scheduled_compaction_covers_hot_ws_datasets():
     assert 'compact_if_file_count_at_least "${dataset}" 250000 100 20' in script
     assert "cleanup_internal_compaction_dirs" in script
     assert "__*_backup_*" in script
+    assert "__*_repair_*" in script
     assert '"bronze/strategy_telemetry/v5/raw_file_index"' in script
     assert '"silver/v5_quant_lab_usage"' in script
     assert '"silver/v5_candidate_event"' in script

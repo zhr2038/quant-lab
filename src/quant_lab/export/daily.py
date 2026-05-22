@@ -2045,6 +2045,11 @@ def _load_export_frame(
             dataset_name,
             DEFAULT_EXPORT_RECENT_FILE_LIMIT,
         )
+        all_files = (
+            _export_parquet_files(dataset_path)
+            if not dataset_path.is_file()
+            else ([] if _is_internal_export_parquet_path(dataset_path) else [dataset_path])
+        )
         recent_files = _recent_heavy_dataset_files(
             dataset_path,
             max_files=max_files,
@@ -2054,7 +2059,8 @@ def _load_export_frame(
             dataset_name,
             limit=limit,
         )
-        return frame, frame.height, None
+        row_count = _export_parquet_row_count(all_files)
+        return frame, row_count, None
     except Exception as exc:
         return pl.DataFrame(), 0, f"{dataset_name} sampled read failed: {exc}"
 
@@ -2116,6 +2122,50 @@ def _export_parquet_files(dataset_path: Path) -> list[Path]:
         for path in dataset_path.rglob("*.parquet")
         if path.is_file() and not _is_internal_export_parquet_path(path)
     )
+
+
+def _export_parquet_row_count(files: list[Path]) -> int:
+    if not files:
+        return 0
+    try:
+        import pyarrow.parquet as pq
+
+        return sum(int(pq.ParquetFile(path).metadata.num_rows) for path in files)
+    except Exception:
+        pass
+
+    try:
+        return int(
+            pl.scan_parquet(
+                [str(path) for path in files],
+                hive_partitioning=False,
+                missing_columns="insert",
+                extra_columns="ignore",
+            )
+            .select(pl.len().alias("rows"))
+            .collect()
+            .item()
+        )
+    except TypeError:
+        try:
+            return int(
+                pl.scan_parquet([str(path) for path in files])
+                .select(pl.len().alias("rows"))
+                .collect()
+                .item()
+            )
+        except Exception:
+            pass
+    except Exception:
+        pass
+
+    rows = 0
+    for path in files:
+        try:
+            rows += int(pl.scan_parquet(str(path)).select(pl.len().alias("rows")).collect().item())
+        except Exception:
+            continue
+    return rows
 
 
 def _is_internal_export_parquet_path(path: Path) -> bool:

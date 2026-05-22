@@ -125,6 +125,31 @@ def test_export_frame_samples_large_unlisted_dataset_without_full_read(tmp_path,
     assert frame.height == 3
 
 
+def test_export_frame_reports_full_row_count_for_sampled_dataset(tmp_path, monkeypatch):
+    lake_root = tmp_path / "lake"
+    dataset_path = lake_root / "silver" / "trade_print"
+    dataset_path.mkdir(parents=True)
+    for file_index in range(3):
+        rows = [
+            {
+                "symbol": "BTC-USDT",
+                "trade_id": f"{file_index}-{row_index}",
+                "price": 100.0,
+                "size": 1.0,
+                "ts": datetime(2026, 5, 10, file_index, row_index, tzinfo=UTC),
+            }
+            for row_index in range(5)
+        ]
+        pl.DataFrame(rows).write_parquet(dataset_path / f"batch-{file_index}.parquet")
+    monkeypatch.setitem(daily_export_module.HEAVY_EXPORT_DATASET_LIMITS, "trade_print", 4)
+
+    frame, row_count, warning = _load_export_frame(lake_root, "trade_print")
+
+    assert warning is None
+    assert frame.height == 4
+    assert row_count == 15
+
+
 def test_export_frame_ignores_internal_lake_paths(tmp_path, monkeypatch):
     lake_root = tmp_path / "lake"
     dataset_path = lake_root / "silver" / "trade_print"
@@ -713,7 +738,7 @@ def test_export_counts_heavy_ws_dataset_without_full_member_load(tmp_path):
     with zipfile.ZipFile(result.zip_path) as archive:
         manifest = json.loads(archive.read("manifest.json").decode("utf-8"))
 
-    assert manifest["row_counts"]["okx_public_ws"] == 5000
+    assert manifest["row_counts"]["okx_public_ws"] == 6001
     assert manifest["dataset_freshness"]["okx_public_ws"]["freshness_status"] != "missing"
 
 

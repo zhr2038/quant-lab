@@ -1295,6 +1295,13 @@ def analyze_v5_telemetry_command(
         bool,
         typer.Option("--refresh-candidate-gold/--skip-candidate-gold"),
     ] = True,
+    compact_output: Annotated[
+        bool,
+        typer.Option(
+            "--compact-output/--full-output",
+            help="Emit a one-line operational summary instead of the full analysis payload.",
+        ),
+    ] = False,
 ) -> None:
     result = run_with_job_metrics(
         lake_root=lake_root,
@@ -1305,7 +1312,45 @@ def analyze_v5_telemetry_command(
             refresh_candidate_gold=refresh_candidate_gold,
         ),
     )
-    typer.echo(result.model_dump_json(indent=2))
+    if compact_output:
+        typer.echo(json.dumps(_compact_v5_telemetry_payload(result), sort_keys=True))
+    else:
+        typer.echo(result.model_dump_json(indent=2))
+
+
+def _compact_v5_telemetry_payload(result: object) -> dict[str, object]:
+    """Small journald-friendly payload for scheduled telemetry health runs."""
+
+    payload = result.model_dump(mode="json") if hasattr(result, "model_dump") else {}
+    keys = [
+        "strategy",
+        "date",
+        "status",
+        "latest_bundle_ts",
+        "quant_lab_mode",
+        "permission_gate_enforced",
+        "cost_gate_enforced",
+        "unique_request_count",
+        "request_success_count",
+        "request_error_count",
+        "actual_fallback_count",
+        "fallback_rate",
+        "duplicate_rate",
+        "quant_lab_actual_violation_count",
+        "quant_lab_hypothetical_violation_count",
+        "latest_permission_status",
+        "stale_permission_consecutive_count",
+    ]
+    compact = {key: payload.get(key) for key in keys if key in payload}
+    warnings = payload.get("warnings") or []
+    critical = payload.get("critical_reasons") or []
+    next_actions = payload.get("next_actions") or []
+    compact["warning_count"] = len(warnings) if isinstance(warnings, list) else 0
+    compact["critical_count"] = len(critical) if isinstance(critical, list) else 0
+    compact["next_action_count"] = len(next_actions) if isinstance(next_actions, list) else 0
+    compact["warnings"] = warnings[:5] if isinstance(warnings, list) else []
+    compact["critical_reasons"] = critical[:5] if isinstance(critical, list) else []
+    return compact
 
 
 @app.command("sync-v5-telemetry")

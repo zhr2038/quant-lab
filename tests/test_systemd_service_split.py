@@ -19,6 +19,7 @@ def test_v5_health_analysis_stays_lightweight():
 
     assert "analyze-v5-telemetry" in unit
     assert "--skip-candidate-gold" in unit
+    assert "--compact-output" in unit
     assert "build-v5-candidate-labels" not in unit
     assert "build-strategy-evidence" not in unit
     assert "build-alpha-discovery-board" not in unit

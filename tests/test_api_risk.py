@@ -70,6 +70,27 @@ def test_lake_data_health_uses_lazy_scan_not_full_market_bar_read(tmp_path, monk
     assert health["latest_market_bar_ts"]
 
 
+def test_lake_data_health_prefers_market_bar_health_metadata(tmp_path, monkeypatch):
+    from quant_lab.api.main import _lake_data_health
+    from quant_lab.api.main import read_parquet_lazy as real_read_parquet_lazy
+
+    lake = tmp_path / "lake"
+    _write_fresh_market_bar(lake)
+    scanned_paths: list[str] = []
+
+    def track_lazy_read(path):
+        scanned_paths.append(str(path))
+        return real_read_parquet_lazy(path)
+
+    monkeypatch.setattr("quant_lab.api.main.read_parquet_lazy", track_lazy_read)
+
+    health = _lake_data_health(lake)
+
+    assert health["status"] == "ok"
+    assert any(path.endswith("market_bar_health") for path in scanned_paths)
+    assert not any(path.endswith("market_bar") for path in scanned_paths)
+
+
 def test_lake_cost_health_uses_lazy_cost_bucket_fallback(tmp_path, monkeypatch):
     from quant_lab.api.main import _lake_cost_health
 

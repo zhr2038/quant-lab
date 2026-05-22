@@ -1715,6 +1715,10 @@ def _lake_cost_health(lake_root: Path) -> dict[str, Any]:
 
 
 def _lake_data_health(lake_root: Path) -> dict[str, Any]:
+    latest_from_health = _latest_market_bar_health_ts(lake_root)
+    if latest_from_health is not None:
+        return _market_bar_data_health_from_latest(latest_from_health)
+
     lazy, columns = _safe_parquet_lazy(lake_root / "silver" / "market_bar")
     if lazy is None or "ts" not in columns:
         return {
@@ -1732,7 +1736,24 @@ def _lake_data_health(lake_root: Path) -> dict[str, Any]:
             "is_critical": True,
             "reasons": ["market_bar_invalid_timestamp"],
         }
-    latest_utc = latest_ts.astimezone(UTC)
+    return _market_bar_data_health_from_latest(latest_ts)
+
+
+def _latest_market_bar_health_ts(lake_root: Path) -> datetime | None:
+    lazy, columns = _safe_parquet_lazy(lake_root / "silver" / "market_bar_health")
+    if lazy is None or "latest_ts" not in columns:
+        return None
+    latest_frame = _collect_lazy_or_empty(
+        lazy.select(_lazy_utc_datetime("latest_ts").max().alias("latest_ts"))
+    )
+    latest_ts = latest_frame.item(0, "latest_ts") if not latest_frame.is_empty() else None
+    if not isinstance(latest_ts, datetime):
+        return None
+    return latest_ts.astimezone(UTC)
+
+
+def _market_bar_data_health_from_latest(latest_ts: datetime) -> dict[str, Any]:
+    latest_utc = latest_ts.astimezone(UTC) if latest_ts.tzinfo else latest_ts.replace(tzinfo=UTC)
     if latest_utc < datetime.now(UTC) - timedelta(hours=24):
         return {
             "status": "critical",

@@ -19,6 +19,7 @@ from quant_lab.contracts.models import MarketBar, require_utc
 from quant_lab.symbols import normalize_symbol
 
 MARKET_BAR_DATASET = Path("silver") / "market_bar"
+MARKET_BAR_HEALTH_DATASET = Path("silver") / "market_bar_health"
 MARKET_BAR_PRIMARY_KEY = ["venue", "symbol", "timeframe", "ts"]
 PARQUET_MAGIC = b"PAR1"
 MIN_PARQUET_SIZE_BYTES = 12
@@ -602,7 +603,53 @@ def write_market_bars(lake_root: str | Path, records: Sequence[MarketBar | dict]
     new_df = market_bars_to_polars(records)
     if new_df.is_empty():
         return count_parquet_rows(dataset_path)
-    return upsert_parquet_dataset(new_df, dataset_path, key_columns=MARKET_BAR_PRIMARY_KEY)
+    rows = upsert_parquet_dataset(new_df, dataset_path, key_columns=MARKET_BAR_PRIMARY_KEY)
+    try:
+        _write_market_bar_health(Path(lake_root), new_df, row_count=rows)
+    except Exception:
+        logger.exception("failed to update market_bar health metadata")
+    return rows
+
+
+def _write_market_bar_health(lake_root: Path, new_df: pl.DataFrame, *, row_count: int) -> None:
+    new_latest = _frame_latest_datetime(new_df, "ts")
+    if new_latest is None:
+        return
+    path = lake_root / MARKET_BAR_HEALTH_DATASET
+    existing = read_parquet_dataset(path)
+    existing_latest = _frame_latest_datetime(existing, "latest_ts")
+    latest = max([value for value in [existing_latest, new_latest] if value is not None])
+    write_parquet_dataset(
+        pl.DataFrame(
+            [
+                {
+                    "dataset": "market_bar",
+                    "row_count": row_count,
+                    "latest_ts": latest,
+                    "updated_at": datetime.now(UTC),
+                }
+            ]
+        ),
+        path,
+    )
+
+
+def _frame_latest_datetime(frame: pl.DataFrame, column: str) -> datetime | None:
+    if frame.is_empty() or column not in frame.columns:
+        return None
+    try:
+        value = frame.select(
+            pl.col(column)
+            .cast(pl.Utf8)
+            .str.to_datetime(time_zone="UTC", strict=False)
+            .max()
+            .alias(column)
+        ).item()
+    except Exception:
+        return None
+    if not isinstance(value, datetime):
+        return None
+    return value.astimezone(UTC) if value.tzinfo else value.replace(tzinfo=UTC)
 
 
 def read_market_bars(

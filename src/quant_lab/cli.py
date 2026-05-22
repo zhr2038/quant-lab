@@ -1314,6 +1314,10 @@ def sync_v5_telemetry_command(
         bool,
         typer.Option("--include-historical-outcomes/--skip-historical-outcomes"),
     ] = False,
+    run_analysis_after_sync: Annotated[
+        bool,
+        typer.Option("--run-analysis-after-sync/--skip-analysis-after-sync"),
+    ] = True,
 ) -> None:
     cfg = load_v5_telemetry_remote_config(
         config,
@@ -1351,14 +1355,16 @@ def sync_v5_telemetry_command(
                 refresh_candidate_gold=False,
                 include_historical_outcomes=include_historical_outcomes,
             )
-            analysis = analyze_v5_telemetry(
-                lake_root=cfg.lake_root,
-                refresh_candidate_gold=False,
-            )
+            if run_analysis_after_sync:
+                analysis = analyze_v5_telemetry(
+                    lake_root=cfg.lake_root,
+                    refresh_candidate_gold=False,
+                )
         return {
             "pull": pull.model_dump(mode="json"),
             "inbox": inbox.model_dump(mode="json") if inbox else None,
             "analysis": analysis.model_dump(mode="json") if analysis else None,
+            "analysis_after_sync": run_analysis_after_sync,
             "max_bundles": effective_max_bundles,
             "remote_max_files": effective_remote_max_files,
             "max_scan_bundles": effective_max_scan_bundles,

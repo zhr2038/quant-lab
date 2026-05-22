@@ -2,6 +2,7 @@ from datetime import UTC, datetime
 
 from quant_lab.cli import (
     _compact_lake_health_payload,
+    _compact_ops_summary_payload,
     _compact_v5_sync_payload,
     _compact_v5_telemetry_payload,
 )
@@ -118,3 +119,61 @@ def test_compact_lake_health_payload_omits_full_rows():
     assert payload["top_file_count_datasets"][0]["dataset"] == "orderbook_snapshot"
     assert "rows" not in payload
     assert "path" not in str(payload)
+
+
+def test_compact_ops_summary_payload_omits_large_nested_tables():
+    payload = _compact_ops_summary_payload(
+        {
+            "api_metrics": {
+                "request_count": 10,
+                "by_status_code": {"200": 9, "404": 1},
+                "by_path": {f"/v1/path-{index}": index for index in range(20)},
+                "latency_ms": {"p50": 1.0, "p95": 5.0, "max": 8.0},
+                "latency_by_path_ms": {
+                    f"/v1/path-{index}": {"count": index} for index in range(20)
+                },
+                "slow_paths": [{"path": f"/v1/slow-{index}", "p95": index} for index in range(20)],
+            },
+            "job_runs": {
+                "run_count": 100,
+                "jobs": [
+                    {
+                        "job_name": f"job-{index}",
+                        "latest_status": "failed" if index == 3 else "succeeded",
+                        "run_count": index + 1,
+                        "failure_count": 1 if index == 3 else 0,
+                        "latest_duration_s": index,
+                        "p95_s": index,
+                        "max_s": index,
+                        "latest_finished_at": "2026-05-23T00:00:00Z",
+                    }
+                    for index in range(30)
+                ],
+            },
+            "lake_file_health": {
+                "dataset_count": 1,
+                "total_parquet_files": 10,
+                "warning_count": 0,
+                "rows": [
+                    {
+                        "dataset": "okx_public_ws",
+                        "parquet_file_count": 10,
+                        "partition_dir_count": 2,
+                        "status": "OK",
+                        "path": "/var/lib/quant-lab/lake/bronze/okx_public_ws",
+                    }
+                ],
+            },
+        }
+    )
+
+    assert payload["api_metrics"]["request_count"] == 10
+    assert len(payload["api_metrics"]["top_paths"]) == 10
+    assert len(payload["api_metrics"]["slow_paths"]) == 10
+    assert "by_path" not in payload["api_metrics"]
+    assert "latency_by_path_ms" not in payload["api_metrics"]
+    assert payload["job_runs"]["job_count"] == 30
+    assert payload["job_runs"]["failed_job_count"] == 1
+    assert len(payload["job_runs"]["slow_jobs"]) == 20
+    assert "jobs" not in payload["job_runs"]
+    assert "rows" not in payload["lake_file_health"]

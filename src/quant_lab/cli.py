@@ -749,13 +749,109 @@ def ops_summary_command(
         typer.Option("--lake-root", file_okay=False, dir_okay=True),
     ],
     day: Annotated[str | None, typer.Option("--day")] = None,
+    compact_output: Annotated[
+        bool,
+        typer.Option(
+            "--compact-output/--full-output",
+            help="Emit a compact operational summary without large nested tables.",
+        ),
+    ] = False,
 ) -> None:
     payload = {
         "api_metrics": api_metrics_summary(lake_root, day=day),
         "job_runs": job_run_summary(lake_root, day=day),
         "lake_file_health": write_lake_file_health_daily(lake_root),
     }
-    typer.echo(json.dumps(payload, indent=2, sort_keys=True, default=str))
+    output = _compact_ops_summary_payload(payload) if compact_output else payload
+    typer.echo(
+        json.dumps(
+            output,
+            indent=None if compact_output else 2,
+            sort_keys=True,
+            default=str,
+        )
+    )
+
+
+def _compact_ops_summary_payload(payload: dict[str, Any]) -> dict[str, Any]:
+    api_metrics = payload.get("api_metrics") if isinstance(payload.get("api_metrics"), dict) else {}
+    job_runs = payload.get("job_runs") if isinstance(payload.get("job_runs"), dict) else {}
+    lake_health = (
+        payload.get("lake_file_health")
+        if isinstance(payload.get("lake_file_health"), dict)
+        else {}
+    )
+    return {
+        "api_metrics": _compact_api_metrics_payload(api_metrics),
+        "job_runs": _compact_job_run_payload(job_runs),
+        "lake_file_health": _compact_lake_health_payload(lake_health),
+    }
+
+
+def _compact_api_metrics_payload(api_metrics: dict[str, Any]) -> dict[str, Any]:
+    by_path = api_metrics.get("by_path") if isinstance(api_metrics.get("by_path"), dict) else {}
+    top_paths = sorted(
+        (
+            {"path": str(path), "count": int(count or 0)}
+            for path, count in by_path.items()
+        ),
+        key=lambda row: row["count"],
+        reverse=True,
+    )[:10]
+    slow_paths = api_metrics.get("slow_paths")
+    return {
+        "request_count": int(api_metrics.get("request_count") or 0),
+        "by_status_code": api_metrics.get("by_status_code") or {},
+        "latency_ms": api_metrics.get("latency_ms") or {},
+        "top_paths": top_paths,
+        "slow_paths": slow_paths[:10] if isinstance(slow_paths, list) else [],
+    }
+
+
+def _compact_job_run_payload(job_runs: dict[str, Any]) -> dict[str, Any]:
+    jobs = job_runs.get("jobs")
+    job_rows = jobs if isinstance(jobs, list) else []
+    failed_jobs = [
+        row
+        for row in job_rows
+        if isinstance(row, dict) and int(row.get("failure_count") or 0) > 0
+    ]
+    slow_jobs = sorted(
+        (row for row in job_rows if isinstance(row, dict)),
+        key=lambda row: (
+            float(row.get("p95_s") or 0.0),
+            float(row.get("max_s") or 0.0),
+            int(row.get("run_count") or 0),
+        ),
+        reverse=True,
+    )[:20]
+    return {
+        "run_count": int(job_runs.get("run_count") or 0),
+        "job_count": len(job_rows),
+        "failed_job_count": len(failed_jobs),
+        "failed_jobs": _compact_job_rows(failed_jobs[:20]),
+        "slow_jobs": _compact_job_rows(slow_jobs),
+    }
+
+
+def _compact_job_rows(rows: list[Any]) -> list[dict[str, Any]]:
+    output: list[dict[str, Any]] = []
+    for row in rows:
+        if not isinstance(row, dict):
+            continue
+        output.append(
+            {
+                "job_name": row.get("job_name"),
+                "latest_status": row.get("latest_status"),
+                "run_count": row.get("run_count"),
+                "failure_count": row.get("failure_count"),
+                "latest_duration_s": row.get("latest_duration_s"),
+                "p95_s": row.get("p95_s"),
+                "max_s": row.get("max_s"),
+                "latest_finished_at": row.get("latest_finished_at"),
+            }
+        )
+    return output
 
 
 @app.command("prune-storage-retention")

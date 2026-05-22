@@ -358,12 +358,17 @@ def build_and_publish_expanded_crypto_universe_shadow(
         as_of_date=day,
         generated_at=generated_at,
     )
-    events = build_expanded_candidate_events(
+    current_events = build_expanded_candidate_events(
         candidates,
         market_bars=market,
         cost_bucket_daily=costs,
         as_of_date=day,
         generated_at=generated_at,
+    )
+    existing_events = read_parquet_dataset(root / EXPANDED_UNIVERSE_CANDIDATE_EVENT_DATASET)
+    events = _dedupe_frame(
+        _concat_optional(existing_events, current_events),
+        key_columns=["candidate_id"],
     )
     labels = build_expanded_candidate_labels(
         events,
@@ -404,8 +409,18 @@ def build_and_publish_expanded_crypto_universe_shadow(
     write_parquet_dataset(candidates, root / EXPANDED_UNIVERSE_CANDIDATE_DATASET)
     write_parquet_dataset(quality, root / SYMBOL_QUALITY_SCORE_DATASET)
     write_parquet_dataset(quality, root / EXPANDED_UNIVERSE_QUALITY_DATASET)
-    write_parquet_dataset(events, root / EXPANDED_UNIVERSE_CANDIDATE_EVENT_DATASET)
-    write_parquet_dataset(labels, root / EXPANDED_UNIVERSE_CANDIDATE_LABEL_DATASET)
+    if not current_events.is_empty():
+        upsert_parquet_dataset(
+            current_events,
+            root / EXPANDED_UNIVERSE_CANDIDATE_EVENT_DATASET,
+            key_columns=["candidate_id"],
+        )
+    if not labels.is_empty():
+        upsert_parquet_dataset(
+            labels,
+            root / EXPANDED_UNIVERSE_CANDIDATE_LABEL_DATASET,
+            key_columns=["candidate_id", "horizon_hours"],
+        )
     write_parquet_dataset(promotion_queue, root / EXPANDED_UNIVERSE_PROMOTION_QUEUE_DATASET)
     if not expanded_evidence.is_empty():
         upsert_parquet_dataset(
@@ -1038,6 +1053,13 @@ def build_expanded_crypto_recommendations(
 def _concat_optional(*frames: pl.DataFrame) -> pl.DataFrame:
     clean = [frame for frame in frames if not frame.is_empty()]
     return pl.concat(clean, how="diagonal_relaxed") if clean else pl.DataFrame()
+
+
+def _dedupe_frame(frame: pl.DataFrame, *, key_columns: list[str]) -> pl.DataFrame:
+    if frame.is_empty():
+        return frame
+    keys = [column for column in key_columns if column in frame.columns]
+    return frame.unique(subset=keys, keep="last", maintain_order=True) if keys else frame
 
 
 def _candidate_state_from_quality(

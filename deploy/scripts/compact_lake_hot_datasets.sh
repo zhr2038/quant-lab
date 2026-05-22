@@ -7,6 +7,7 @@ COMPACT_DATASET_TIMEOUT_SECONDS="${COMPACT_DATASET_TIMEOUT_SECONDS:-180}"
 COMPACT_RUN_BUDGET_SECONDS="${COMPACT_RUN_BUDGET_SECONDS:-1500}"
 COMPACT_RAW_OKX_WS="${COMPACT_RAW_OKX_WS:-0}"
 COMPACT_DIRECT_MAX_SOURCE_FILES="${COMPACT_DIRECT_MAX_SOURCE_FILES:-8}"
+COMPACT_DIRECT_MIN_SOURCE_FILES="${COMPACT_DIRECT_MIN_SOURCE_FILES:-64}"
 COMPACT_MAX_SOURCE_BATCH_BYTES="${COMPACT_MAX_SOURCE_BATCH_BYTES:-134217728}"
 COMPACT_STARTED_AT="$(date +%s)"
 
@@ -169,8 +170,10 @@ compact_leaf_partitions_if_file_count_at_least() {
   local target_rows="$2"
   local batch_files="$3"
   local min_files="$4"
+  local direct_min_files="${5:-${COMPACT_DIRECT_MIN_SOURCE_FILES}}"
   local dataset_path="${LAKE_ROOT}/${dataset}"
   local elapsed
+  local effective_min_files
 
   if [[ ! -d "${dataset_path}" ]]; then
     echo "SKIP_LEAF_COMPACT dataset=${dataset} reason=missing"
@@ -180,7 +183,14 @@ compact_leaf_partitions_if_file_count_at_least() {
   find "${dataset_path}" -type f -name '*.parquet' -printf '%h\n' \
     | sort | uniq -c | sort -nr \
     | while read -r file_count leaf_path; do
-        if (( file_count < min_files )); then
+        effective_min_files="${min_files}"
+        if [[ "${leaf_path}" == "${dataset_path}" ]]; then
+          effective_min_files="${direct_min_files}"
+        fi
+        if (( file_count < effective_min_files )); then
+          if [[ "${leaf_path}" == "${dataset_path}" ]]; then
+            echo "SKIP_DIRECT_COMPACT dataset=${dataset} parquet_files=${file_count} min_files=${effective_min_files}"
+          fi
           continue
         fi
         elapsed="$(( $(date +%s) - COMPACT_STARTED_AT ))"
@@ -209,17 +219,17 @@ if [[ "${COMPACT_RAW_OKX_WS}" == "1" ]]; then
   # partitions instead of the dataset root; root compaction can multiply files by
   # writing one output per partition per source batch.
   repair_dataset_partitions "bronze/okx_public_ws" 500000 100
-  compact_leaf_partitions_if_file_count_at_least "bronze/okx_public_ws" 500000 100 20
+  compact_leaf_partitions_if_file_count_at_least "bronze/okx_public_ws" 500000 100 20 64
 else
   echo "SKIP_COMPACT_RAW_OKX_WS dataset=bronze/okx_public_ws opt_in=COMPACT_RAW_OKX_WS"
 fi
 repair_dataset_partitions "silver/trade_print" 500000 100
-compact_leaf_partitions_if_file_count_at_least "silver/trade_print" 500000 100 20
+compact_leaf_partitions_if_file_count_at_least "silver/trade_print" 500000 100 20 20
 
 # Order book snapshots are denser than raw websocket and trade-print files.
 # Compact leaf partitions to avoid multiplying partition files across batches.
 repair_dataset_partitions "silver/orderbook_snapshot" 500000 100
-compact_leaf_partitions_if_file_count_at_least "silver/orderbook_snapshot" 500000 100 10
+compact_leaf_partitions_if_file_count_at_least "silver/orderbook_snapshot" 500000 100 10 64
 
 for dataset in "${V5_TELEMETRY_DATASETS[@]}"; do
   compact_if_file_count_at_least "${dataset}" 250000 100 10

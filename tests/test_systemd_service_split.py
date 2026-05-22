@@ -82,6 +82,7 @@ def test_scheduled_compaction_covers_hot_ws_datasets():
     assert "COMPACT_DATASET_TIMEOUT_SECONDS" in script
     assert "COMPACT_RUN_BUDGET_SECONDS" in script
     assert "COMPACT_DIRECT_MAX_SOURCE_FILES" in script
+    assert "COMPACT_DIRECT_MIN_SOURCE_FILES" in script
     assert "COMPACT_MAX_SOURCE_BATCH_BYTES" in script
     assert "WARN_COMPACT_FAILED" in script
     assert "SKIP_COMPACT_BUDGET" in script
@@ -94,12 +95,14 @@ def test_scheduled_compaction_covers_hot_ws_datasets():
     assert "COMPACT_RAW_OKX_WS=1" in unit
     assert "COMPACT_DATASET_TIMEOUT_SECONDS=300" in unit
     assert "COMPACT_DIRECT_MAX_SOURCE_FILES=8" in unit
+    assert "COMPACT_DIRECT_MIN_SOURCE_FILES=64" in unit
     assert "COMPACT_MAX_SOURCE_BATCH_BYTES=134217728" in unit
     assert "--max-source-batch-bytes" in script
     assert "--direct-only" in script
     assert "START_DIRECT_COMPACT" in script
     assert '"${COMPACT_DIRECT_MAX_SOURCE_FILES}"' in script
     assert "WARN_DIRECT_COMPACT_FAILED" in script
+    assert "SKIP_DIRECT_COMPACT" in script
     assert "compact_leaf_partitions_if_file_count_at_least" in script
     assert "SKIP_LEAF_COMPACT_BUDGET" in script
     assert '"bronze/okx_public_ws"' in script
@@ -111,17 +114,17 @@ def test_scheduled_compaction_covers_hot_ws_datasets():
     ) in script
     assert (
         'compact_leaf_partitions_if_file_count_at_least "bronze/okx_public_ws" '
-        "500000 100 20"
+        "500000 100 20 64"
     ) in script
     assert 'repair_dataset_partitions "silver/trade_print" 500000 100' in script
     assert (
         'compact_leaf_partitions_if_file_count_at_least "silver/trade_print" '
-        "500000 100 20"
+        "500000 100 20 20"
     ) in script
     assert 'repair_dataset_partitions "silver/orderbook_snapshot" 500000 100' in script
     assert (
         'compact_leaf_partitions_if_file_count_at_least "silver/orderbook_snapshot" '
-        "500000 100 10"
+        "500000 100 10 64"
     ) in script
     assert 'compact_if_file_count_at_least "${dataset}" 250000 100 10' in script
     assert 'compact_if_file_count_at_least "${dataset}" 250000 100 20' in script

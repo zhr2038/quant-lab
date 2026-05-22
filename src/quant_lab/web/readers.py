@@ -293,6 +293,7 @@ WEB_RESEARCH_SAMPLE_DATASETS = {
 WEB_FEATURE_SAMPLE_DATASETS = {"feature_value"}
 WEB_AUDIT_SAMPLE_DATASETS = {"decision_audit"}
 WEB_COST_SAMPLE_DATASETS = {"cost_bucket_daily"}
+WEB_ADVISORY_SAMPLE_DATASETS = {"strategy_opportunity_advisory", "v5_entry_quality_advisory"}
 WEB_RECENT_LOOKBACK_HOURS = {
     "market_bar": 24 * 14,
     "trade_print": 6,
@@ -301,6 +302,8 @@ WEB_RECENT_LOOKBACK_HOURS = {
     "cost_bucket_daily": 24 * 180,
     "decision_audit": 24 * 14,
     "feature_value": 24 * 14,
+    "strategy_opportunity_advisory": 24 * 14,
+    "v5_entry_quality_advisory": 24 * 14,
     "strategy_evidence_sample": 24 * 14,
     "v5_candidate_event": 24 * 14,
     "v5_candidate_label": 24 * 14,
@@ -315,6 +318,7 @@ WEB_RECENT_FILE_SAMPLE_DATASETS = (
     | WEB_FEATURE_SAMPLE_DATASETS
     | WEB_AUDIT_SAMPLE_DATASETS
     | WEB_COST_SAMPLE_DATASETS
+    | WEB_ADVISORY_SAMPLE_DATASETS
 )
 WEB_HEAVY_EXACT_ROW_COUNT_FILE_LIMIT = 64
 WEB_HEAVY_ROW_COUNT_SAMPLE_FILES = 32
@@ -326,6 +330,8 @@ WEB_RECENT_FILE_LIMITS = {
     "cost_bucket_daily": 384,
     "decision_audit": 384,
     "feature_value": 384,
+    "strategy_opportunity_advisory": 384,
+    "v5_entry_quality_advisory": 384,
     "strategy_evidence_sample": 384,
     "v5_candidate_event": 384,
     "v5_candidate_label": 384,
@@ -410,6 +416,7 @@ def _read_web_display_dataset_with_warning(
         | WEB_FEATURE_SAMPLE_DATASETS
         | WEB_AUDIT_SAMPLE_DATASETS
         | WEB_COST_SAMPLE_DATASETS
+        | WEB_ADVISORY_SAMPLE_DATASETS
     )
     if dataset_name in sampled_datasets:
         return read_recent_dataset_with_warning(lake_root, dataset_name)
@@ -882,11 +889,11 @@ def dashboard_overview(lake_root: str | Path) -> dict[str, Any]:
     consumers = strategy_consumer_summary(lake_root)
     ws_status, ws_warnings = _overview_okx_ws_status(lake_root)
     experts = expert_export_summary(default_exports_root(lake_root))
-    advisory, advisory_warning = read_dataset_with_warning(
+    advisory, advisory_warning = _read_web_display_dataset_with_warning(
         lake_root,
         "strategy_opportunity_advisory",
     )
-    entry_quality, entry_quality_warning = read_dataset_with_warning(
+    entry_quality, entry_quality_warning = _read_web_display_dataset_with_warning(
         lake_root,
         "v5_entry_quality_advisory",
     )
@@ -1494,7 +1501,7 @@ def alpha_gate_summary(lake_root: str | Path) -> dict[str, Any]:
         lake_root,
         "v5_candidate_outcome_summary",
     )
-    strategy_opportunities, strategy_opportunities_warning = read_dataset_with_warning(
+    strategy_opportunities, strategy_opportunities_warning = _read_web_display_dataset_with_warning(
         lake_root,
         "strategy_opportunity_advisory",
     )

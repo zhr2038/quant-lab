@@ -193,6 +193,76 @@ def test_dashboard_overview_uses_lazy_market_bar_aggregates(tmp_path, monkeypatc
     assert summary["missing_bar_ratio"] == 0.0
 
 
+def test_dashboard_overview_samples_advisory_tables(tmp_path, monkeypatch):
+    lake_root = _fixture_lake(tmp_path)
+    start = datetime(2026, 5, 10, tzinfo=UTC)
+    strategy_path = lake_root / "gold" / "strategy_opportunity_advisory"
+    strategy_path.mkdir(parents=True)
+    pl.DataFrame(
+        [
+            {
+                "strategy_candidate": "old_candidate",
+                "symbol": "OLD-USDT",
+                "decision": "KEEP_SHADOW",
+                "recommended_mode": "shadow",
+                "as_of_ts": start,
+            }
+        ]
+    ).write_parquet(strategy_path / "batch_20260510T000000000000Z.parquet")
+    pl.DataFrame(
+        [
+            {
+                "strategy_candidate": "new_candidate",
+                "symbol": "NEW-USDT",
+                "decision": "PAPER_READY",
+                "recommended_mode": "paper",
+                "as_of_ts": start + timedelta(hours=1),
+            }
+        ]
+    ).write_parquet(strategy_path / "batch_20260510T010000000000Z.parquet")
+    entry_path = lake_root / "gold" / "v5_entry_quality_advisory"
+    entry_path.mkdir(parents=True)
+    pl.DataFrame(
+        [
+            {
+                "strategy_candidate": "old_entry",
+                "symbol": "OLD-USDT",
+                "recommended_mode": "shadow",
+                "readiness_status": "RESEARCH_ONLY",
+                "generated_at_utc": start,
+            }
+        ]
+    ).write_parquet(entry_path / "batch_20260510T000000000000Z.parquet")
+    pl.DataFrame(
+        [
+            {
+                "strategy_candidate": "new_entry",
+                "symbol": "NEW-USDT",
+                "recommended_mode": "shadow",
+                "readiness_status": "KEEP_SHADOW",
+                "generated_at_utc": start + timedelta(hours=1),
+            }
+        ]
+    ).write_parquet(entry_path / "batch_20260510T010000000000Z.parquet")
+    monkeypatch.setitem(readers.WEB_RECENT_FILE_LIMITS, "strategy_opportunity_advisory", 1)
+    monkeypatch.setitem(readers.WEB_RECENT_FILE_LIMITS, "v5_entry_quality_advisory", 1)
+    original = readers.read_dataset_with_warning
+
+    def guarded_read_dataset_with_warning(lake_root_arg, dataset_name):
+        if dataset_name in {"strategy_opportunity_advisory", "v5_entry_quality_advisory"}:
+            raise AssertionError(f"{dataset_name} should use recent sample reads")
+        return original(lake_root_arg, dataset_name)
+
+    monkeypatch.setattr(readers, "read_dataset_with_warning", guarded_read_dataset_with_warning)
+
+    summary = readers.dashboard_overview(lake_root)
+
+    assert summary["strategy_opportunity_advisory"]["strategy_candidate"].to_list() == [
+        "new_candidate"
+    ]
+    assert summary["entry_quality_advisory"]["strategy_candidate"].to_list() == ["new_entry"]
+
+
 def test_feature_summary_samples_feature_value(tmp_path, monkeypatch):
     lake_root = tmp_path / "lake"
     dataset_path = lake_root / "gold" / "feature_value"

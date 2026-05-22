@@ -363,6 +363,54 @@ def test_recent_heavy_dataset_filters_string_timestamps_by_lookback(tmp_path):
     assert recent["symbol"].to_list() == ["NEW-USDT"]
 
 
+def test_recent_heavy_dataset_ignores_internal_lake_paths(tmp_path):
+    lake_root = tmp_path / "lake"
+    dataset_path = lake_root / "silver" / "trade_print"
+    dataset_path.mkdir(parents=True)
+    pl.DataFrame(
+        [
+            {
+                "symbol": "BTC-USDT",
+                "trade_id": "live",
+                "price": 100.0,
+                "size": 1.0,
+                "ts": datetime(2026, 5, 10, tzinfo=UTC),
+            }
+        ]
+    ).write_parquet(dataset_path / "batch_20260510T000000000000Z.parquet")
+    tmp_dir = dataset_path / "._tmp"
+    tmp_dir.mkdir()
+    pl.DataFrame(
+        [
+            {
+                "symbol": "TMP-USDT",
+                "trade_id": "tmp",
+                "price": 1.0,
+                "size": 1.0,
+                "ts": datetime(2026, 5, 10, 1, tzinfo=UTC),
+            }
+        ]
+    ).write_parquet(tmp_dir / "staged.tmp.parquet")
+    backup = dataset_path.parent / "__trade_print_backup_deadbeef"
+    backup.mkdir()
+    pl.DataFrame(
+        [
+            {
+                "symbol": "BACKUP-USDT",
+                "trade_id": "backup",
+                "price": 1.0,
+                "size": 1.0,
+                "ts": datetime(2026, 5, 10, 2, tzinfo=UTC),
+            }
+        ]
+    ).write_parquet(backup / "backup.parquet")
+
+    recent, warning = readers.read_recent_dataset_with_warning(lake_root, "trade_print")
+
+    assert warning is None
+    assert recent["symbol"].to_list() == ["BTC-USDT"]
+
+
 def test_recent_heavy_dataset_ignores_stale_data_file_when_batches_exist(tmp_path):
     lake_root = tmp_path / "lake"
     dataset_path = lake_root / "silver" / "trade_print"

@@ -2063,11 +2063,13 @@ def _should_sample_export_dataset(dataset_path: Path) -> bool:
     if not dataset_path.exists():
         return False
     if dataset_path.is_file():
+        if _is_internal_export_parquet_path(dataset_path):
+            return False
         try:
             return dataset_path.stat().st_size > _export_full_read_max_bytes()
         except OSError:
             return True
-    files = [path for path in dataset_path.rglob("*.parquet") if path.is_file()]
+    files = _export_parquet_files(dataset_path)
     if len(files) > _export_full_read_max_files():
         return True
     total_size = 0
@@ -2100,12 +2102,28 @@ def _recent_heavy_dataset_files(dataset_path: Path, *, max_files: int) -> list[P
     if not dataset_path.exists():
         return []
     if dataset_path.is_file():
-        return [dataset_path]
-    files = [path for path in dataset_path.rglob("*.parquet") if path.is_file()]
+        return [] if _is_internal_export_parquet_path(dataset_path) else [dataset_path]
+    files = _export_parquet_files(dataset_path)
     if not files:
         return []
     files.sort(key=lambda path: path.stat().st_mtime)
     return files[-max_files:]
+
+
+def _export_parquet_files(dataset_path: Path) -> list[Path]:
+    return sorted(
+        path
+        for path in dataset_path.rglob("*.parquet")
+        if path.is_file() and not _is_internal_export_parquet_path(path)
+    )
+
+
+def _is_internal_export_parquet_path(path: Path) -> bool:
+    return (
+        any(part == "._tmp" or part.startswith("__") for part in path.parts)
+        or path.name.startswith(".")
+        or path.name.endswith(".tmp.parquet")
+    )
 
 
 def _collect_recent_heavy_files(

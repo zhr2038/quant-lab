@@ -125,6 +125,57 @@ def test_export_frame_samples_large_unlisted_dataset_without_full_read(tmp_path,
     assert frame.height == 3
 
 
+def test_export_frame_ignores_internal_lake_paths(tmp_path, monkeypatch):
+    lake_root = tmp_path / "lake"
+    dataset_path = lake_root / "silver" / "trade_print"
+    dataset_path.mkdir(parents=True)
+    for index in range(3):
+        pl.DataFrame(
+            [
+                {
+                    "symbol": "BTC-USDT",
+                    "trade_id": f"live-{index}",
+                    "price": 100.0,
+                    "size": 1.0,
+                    "ts": datetime(2026, 5, 10, index, tzinfo=UTC),
+                }
+            ]
+        ).write_parquet(dataset_path / f"batch-{index}.parquet")
+    tmp_dir = dataset_path / "._tmp"
+    tmp_dir.mkdir()
+    pl.DataFrame(
+        [
+            {
+                "symbol": "TMP-USDT",
+                "trade_id": "tmp",
+                "price": 1.0,
+                "size": 1.0,
+                "ts": datetime(2026, 5, 10, 3, tzinfo=UTC),
+            }
+        ]
+    ).write_parquet(tmp_dir / "staged.tmp.parquet")
+    backup = dataset_path.parent / "__trade_print_backup_deadbeef"
+    backup.mkdir()
+    pl.DataFrame(
+        [
+            {
+                "symbol": "BACKUP-USDT",
+                "trade_id": "backup",
+                "price": 1.0,
+                "size": 1.0,
+                "ts": datetime(2026, 5, 10, 4, tzinfo=UTC),
+            }
+        ]
+    ).write_parquet(backup / "backup.parquet")
+    monkeypatch.setenv("QUANT_LAB_EXPORT_FULL_READ_MAX_FILES", "1")
+
+    frame, row_count, warning = _load_export_frame(lake_root, "trade_print")
+
+    assert warning is None
+    assert row_count == 3
+    assert set(frame["symbol"].to_list()) == {"BTC-USDT"}
+
+
 def test_export_marks_core_momentum_as_research_baseline_and_prioritizes_strategy_dashboard(
     tmp_path,
 ):

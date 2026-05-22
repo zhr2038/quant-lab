@@ -772,10 +772,20 @@ def _valid_parquet_files(path: Path, *, invalid_files: list[Path] | None = None)
 
 def _parquet_file_candidates(path: Path) -> list[Path]:
     if path.is_file() and path.suffix == ".parquet":
-        return [path]
+        return [] if _is_internal_lake_path(path) else [path]
     if not path.exists():
         return []
-    return sorted(path.rglob("*.parquet"))
+    return sorted(
+        candidate for candidate in path.rglob("*.parquet") if not _is_internal_lake_path(candidate)
+    )
+
+
+def _is_internal_lake_path(path: Path) -> bool:
+    return (
+        any(part == "._tmp" or part.startswith("__") for part in path.parts)
+        or path.name.startswith(".")
+        or path.name.endswith(".tmp.parquet")
+    )
 
 
 def _is_valid_parquet_file_path(path: Path) -> bool:

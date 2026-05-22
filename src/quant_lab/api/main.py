@@ -55,6 +55,7 @@ from quant_lab.symbols import normalize_symbol
 
 STRATEGY_OPPORTUNITY_ADVISORY_SCHEMA_VERSION = "strategy_opportunity_advisory.v0.1"
 STRATEGY_OPPORTUNITY_ADVISORY_TTL_SECONDS = 3 * 60 * 60
+STRATEGY_OPPORTUNITY_ADVISORY_MAX_API_ROWS = 50_000
 UNOBSERVABLE_TEXT_VALUES = {"", "none", "null", "nan", "not_observable", "unknown"}
 
 
@@ -799,18 +800,44 @@ def _split_csv(value: str | None) -> list[str] | None:
 def _strategy_opportunity_advisory_rows(
     lake_root: Path,
 ) -> list[StrategyOpportunityAdvisoryRow]:
-    df = read_parquet_dataset(lake_root / "gold" / "strategy_opportunity_advisory")
     raw_rows: list[dict[str, Any]]
-    if df.is_empty():
+    raw_rows = _strategy_opportunity_advisory_gold_rows(lake_root)
+    if not raw_rows:
         raw_rows = _strategy_opportunity_advisory_report_rows(lake_root)
-    else:
-        raw_rows = df.to_dicts()
     parsed: list[StrategyOpportunityAdvisoryRow] = []
     for row in raw_rows:
         advisory = _strategy_opportunity_advisory_row(row)
         if advisory is not None:
             parsed.append(advisory)
     return _dedupe_strategy_opportunity_advisory_rows(parsed)
+
+
+def _strategy_opportunity_advisory_gold_rows(lake_root: Path) -> list[dict[str, Any]]:
+    lazy, columns = _safe_parquet_lazy(lake_root / "gold" / "strategy_opportunity_advisory")
+    if lazy is None:
+        return []
+    selected = lazy.select([pl.col(column) for column in columns])
+    timestamp_column = next(
+        (
+            column
+            for column in ("generated_at", "as_of_ts", "created_at", "as_of_date")
+            if column in columns
+        ),
+        None,
+    )
+    if timestamp_column is not None:
+        selected = (
+            selected.with_columns(
+                _lazy_utc_datetime(timestamp_column).alias("__api_advisory_sort_ts")
+            )
+            .sort("__api_advisory_sort_ts", descending=True, nulls_last=True)
+            .limit(STRATEGY_OPPORTUNITY_ADVISORY_MAX_API_ROWS)
+            .drop("__api_advisory_sort_ts")
+        )
+    else:
+        selected = selected.tail(STRATEGY_OPPORTUNITY_ADVISORY_MAX_API_ROWS)
+    frame = _collect_lazy_or_empty(selected)
+    return frame.to_dicts()
 
 
 def _dedupe_strategy_opportunity_advisory_rows(

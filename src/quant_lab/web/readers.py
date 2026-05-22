@@ -231,8 +231,43 @@ MARKET_BOOTSTRAP_COMMAND = (
 V5_TELEMETRY_SYNC_COMMAND = (
     "qlab sync-v5-telemetry --config /etc/quant-lab/v5_telemetry_remote.yaml"
 )
+OKX_WS_UNIVERSE_SYMBOLS = (
+    "BTC-USDT",
+    "ETH-USDT",
+    "SOL-USDT",
+    "BNB-USDT",
+    "ADA-USDT",
+    "ASTER-USDT",
+    "BASED-USDT",
+    "CHZ-USDT",
+    "DASH-USDT",
+    "FIL-USDT",
+    "GRASS-USDT",
+    "HYPE-USDT",
+    "ICP-USDT",
+    "IP-USDT",
+    "JTO-USDT",
+    "LINK-USDT",
+    "LIT-USDT",
+    "LPT-USDT",
+    "LTC-USDT",
+    "MON-USDT",
+    "NEAR-USDT",
+    "OKB-USDT",
+    "ONDO-USDT",
+    "PAXG-USDT",
+    "PROS-USDT",
+    "SUI-USDT",
+    "TON-USDT",
+    "TRUMP-USDT",
+    "TRX-USDT",
+    "WLD-USDT",
+    "XAUT-USDT",
+    "XRP-USDT",
+    "ZEC-USDT",
+)
 OKX_WS_COLLECT_COMMAND = (
-    "qlab okx-ws-collect-universe --symbols BTC-USDT,ETH-USDT,SOL-USDT,BNB-USDT "
+    f"qlab okx-ws-collect-universe --symbols {','.join(OKX_WS_UNIVERSE_SYMBOLS)} "
     "--channels tickers,trades,books5 --market-type SPOT --lake-root {lake_root} "
     "--flush-interval-seconds 600 --flush-max-messages 50000"
 )

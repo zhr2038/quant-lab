@@ -464,6 +464,21 @@ def test_repair_parquet_partition_values_failure_does_not_write_visible_repairs(
     assert not list(dataset.parent.glob("__trade_print_repair_*"))
 
 
+def test_repair_parquet_partition_values_removes_empty_bad_partition_dirs(tmp_path):
+    dataset = tmp_path / "lake" / "silver" / "trade_print"
+    bad_leaf = dataset / "day=__null__" / "symbol=BTC-USDT"
+    bad_leaf.mkdir(parents=True)
+
+    result = repair_parquet_partition_values(
+        dataset,
+        partition_by=["day", "symbol"],
+        target_rows_per_file=10,
+    )
+
+    assert result.bad_file_count == 0
+    assert not list(dataset.rglob("*__null__*"))
+
+
 def test_compact_parquet_directory_files_preserves_partition_dirs(tmp_path):
     dataset = tmp_path / "lake" / "bronze" / "okx_public_ws"
     dataset.mkdir(parents=True)

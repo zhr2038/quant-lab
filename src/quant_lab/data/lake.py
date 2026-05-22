@@ -415,6 +415,7 @@ def repair_parquet_partition_values(
         bad_files = _bad_partition_files(path, partition_columns, bad_values)
         bad_file_count = len(bad_files)
         if not bad_files:
+            _remove_empty_bad_partition_directories(path, partition_columns, bad_values)
             return RepairParquetPartitionResult(
                 dataset_path=str(path),
                 bad_file_count=0,
@@ -454,6 +455,7 @@ def repair_parquet_partition_values(
                 except FileNotFoundError:
                     pass
             _remove_empty_directories(touched_dirs, stop_at=path)
+            _remove_empty_bad_partition_directories(path, partition_columns, bad_values)
             _remove_existing_dataset(staging)
             return RepairParquetPartitionResult(
                 dataset_path=str(path),
@@ -891,6 +893,24 @@ def _remove_empty_directories(directories: set[Path], *, stop_at: Path) -> None:
             except OSError:
                 break
             current = current.parent
+
+
+def _remove_empty_bad_partition_directories(
+    dataset_path: Path,
+    partition_columns: Sequence[str],
+    bad_values: Sequence[str],
+) -> None:
+    if not dataset_path.exists():
+        return
+    bad_parts = {
+        f"{column}={bad_value}" for column in partition_columns for bad_value in bad_values
+    }
+    candidates = [
+        path
+        for path in dataset_path.rglob("*")
+        if path.is_dir() and any(part in bad_parts for part in path.relative_to(dataset_path).parts)
+    ]
+    _remove_empty_directories(set(candidates), stop_at=dataset_path)
 
 
 def _move_repaired_staging_files(staging: Path, dataset_path: Path) -> int:

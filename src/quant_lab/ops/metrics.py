@@ -13,7 +13,12 @@ from typing import Any, TypeVar
 
 import polars as pl
 
-from quant_lab.data.lake import append_parquet_dataset, read_parquet_dataset, upsert_parquet_dataset
+from quant_lab.data.lake import (
+    append_parquet_dataset,
+    read_parquet_dataset,
+    read_parquet_lazy,
+    upsert_parquet_dataset,
+)
 
 API_METRICS_DATASET = Path("bronze") / "api_request_metrics"
 JOB_RUN_HISTORY_DATASET = Path("gold") / "job_run_history"
@@ -73,9 +78,10 @@ def record_api_request(
         buffer = _API_METRICS_BUFFERS.setdefault(root_key, [])
         buffer.append(row)
         last_flush = _API_METRICS_LAST_FLUSH.setdefault(root_key, now_monotonic)
-        should_flush = len(buffer) >= _api_metrics_flush_rows() or (
-            now_monotonic - last_flush
-        ) >= _api_metrics_flush_seconds()
+        should_flush = (
+            len(buffer) >= _api_metrics_flush_rows()
+            or (now_monotonic - last_flush) >= _api_metrics_flush_seconds()
+        )
     if should_flush:
         flush_api_request_metrics(lake_root)
 
@@ -160,36 +166,35 @@ def api_metrics_summary(
     day: str | None = None,
 ) -> dict[str, Any]:
     flush_api_request_metrics(lake_root)
-    df = read_parquet_dataset(Path(lake_root) / API_METRICS_DATASET)
-    if df.is_empty():
-        return {
-            "request_count": 0,
-            "by_path": {},
-            "by_status_code": {},
-            "latency_ms": {},
-        }
-    scoped = df.filter(pl.col("day") == day) if day and "day" in df.columns else df
-    if scoped.is_empty():
-        return {
-            "request_count": 0,
-            "by_path": {},
-            "by_status_code": {},
-            "latency_ms": {},
-        }
+    lazy = _lazy_dataset_or_none(Path(lake_root) / API_METRICS_DATASET)
+    if lazy is None:
+        return _empty_api_metrics_summary()
+    schema_names = _lazy_schema_names(lazy)
+    scoped = lazy.filter(pl.col("day") == day) if day and "day" in schema_names else lazy
+    request_count = _lazy_count(scoped)
+    if request_count == 0:
+        return _empty_api_metrics_summary()
     latency = {}
-    if "duration_ms" in scoped.columns:
-        metrics = scoped.select(
-            [
-                pl.col("duration_ms").cast(pl.Float64, strict=False).median().alias("p50"),
-                pl.col("duration_ms").cast(pl.Float64, strict=False).quantile(0.95).alias("p95"),
-                pl.col("duration_ms").cast(pl.Float64, strict=False).max().alias("max"),
-            ]
-        ).to_dicts()[0]
+    if "duration_ms" in schema_names:
+        metrics = (
+            scoped.select(
+                [
+                    pl.col("duration_ms").cast(pl.Float64, strict=False).median().alias("p50"),
+                    pl.col("duration_ms")
+                    .cast(pl.Float64, strict=False)
+                    .quantile(0.95)
+                    .alias("p95"),
+                    pl.col("duration_ms").cast(pl.Float64, strict=False).max().alias("max"),
+                ]
+            )
+            .collect()
+            .to_dicts()[0]
+        )
         latency = {key: _float_or_none(value) for key, value in metrics.items()}
     return {
-        "request_count": scoped.height,
-        "by_path": _count_by(scoped, "path"),
-        "by_status_code": _count_by(scoped, "status_code"),
+        "request_count": request_count,
+        "by_path": _count_by_lazy(scoped, "path", schema_names=schema_names),
+        "by_status_code": _count_by_lazy(scoped, "status_code", schema_names=schema_names),
         "latency_ms": latency,
     }
 
@@ -199,11 +204,16 @@ def job_run_summary(
     *,
     day: str | None = None,
 ) -> dict[str, Any]:
-    df = read_parquet_dataset(Path(lake_root) / JOB_RUN_HISTORY_DATASET)
-    if df.is_empty():
+    lazy = _lazy_dataset_or_none(Path(lake_root) / JOB_RUN_HISTORY_DATASET)
+    if lazy is None:
         return {"run_count": 0, "jobs": []}
-    scoped = df.filter(pl.col("day") == day) if day and "day" in df.columns else df
-    if scoped.is_empty():
+    schema_names = _lazy_schema_names(lazy)
+    scoped = lazy.filter(pl.col("day") == day) if day and "day" in schema_names else lazy
+    run_count = _lazy_count(scoped)
+    if run_count == 0:
+        return {"run_count": 0, "jobs": []}
+    required = {"job_name", "status", "duration_seconds"}
+    if not required.issubset(schema_names):
         return {"run_count": 0, "jobs": []}
     grouped = (
         scoped.group_by("job_name")
@@ -216,17 +226,57 @@ def job_run_summary(
             ]
         )
         .sort("job_name")
+        .collect()
     )
-    return {"run_count": scoped.height, "jobs": grouped.to_dicts()}
+    return {"run_count": run_count, "jobs": grouped.to_dicts()}
 
 
-def _count_by(df: pl.DataFrame, column: str) -> dict[str, int]:
-    if column not in df.columns:
-        return {}
+def _empty_api_metrics_summary() -> dict[str, Any]:
     return {
-        str(row[column]): int(row["count"])
-        for row in df.group_by(column).len(name="count").to_dicts()
+        "request_count": 0,
+        "by_path": {},
+        "by_status_code": {},
+        "latency_ms": {},
     }
+
+
+def _lazy_dataset_or_none(path: Path) -> pl.LazyFrame | None:
+    try:
+        lazy = read_parquet_lazy(path)
+        lazy.collect_schema()
+        return lazy
+    except Exception:
+        try:
+            fallback = read_parquet_dataset(path)
+        except Exception:
+            return None
+        if fallback.is_empty():
+            return None
+        return fallback.lazy()
+
+
+def _lazy_schema_names(lazy: pl.LazyFrame) -> set[str]:
+    return set(lazy.collect_schema().names())
+
+
+def _lazy_count(lazy: pl.LazyFrame) -> int:
+    try:
+        value = lazy.select(pl.len().alias("count")).collect().item(0, "count")
+    except Exception:
+        return 0
+    return int(value or 0)
+
+
+def _count_by_lazy(
+    lazy: pl.LazyFrame,
+    column: str,
+    *,
+    schema_names: set[str],
+) -> dict[str, int]:
+    if column not in schema_names:
+        return {}
+    grouped = lazy.group_by(column).len(name="count").collect()
+    return {str(row[column]): int(row["count"]) for row in grouped.to_dicts()}
 
 
 def _float_or_none(value: Any) -> float | None:

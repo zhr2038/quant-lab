@@ -267,6 +267,61 @@ def test_live_permission_api_allows_advisory_modes_when_core_alpha_dead(
     assert "baseline_not_global_strategy_gate" in payload["live_block_reasons"]
 
 
+def test_live_permission_advisory_modes_use_latest_alpha_board_day(
+    tmp_path,
+    monkeypatch,
+):
+    lake = tmp_path / "lake"
+    monkeypatch.setenv("QUANT_LAB_LAKE_ROOT", str(lake))
+    _write_gate(lake, GateStatus.DEAD, alpha_id="v5.core.momentum")
+    _write_cost_bucket(lake)
+    _write_fresh_market_bar(lake)
+    created_at = datetime.now(UTC)
+    write_parquet_dataset(
+        pl.DataFrame(
+            [
+                {
+                    "strategy": "v5",
+                    "as_of_date": (created_at.date() - timedelta(days=1)).isoformat(),
+                    "strategy_candidate": "v5.old_candidate",
+                    "symbol": "SOL-USDT",
+                    "horizon_hours": 24,
+                    "sample_count": 72,
+                    "complete_sample_count": 72,
+                    "avg_net_bps": 42.0,
+                    "p25_net_bps": 3.0,
+                    "win_rate": 0.72,
+                    "cost_source_mix": '[{"cost_source":"public_spread_proxy","count":72}]',
+                    "decision": "PAPER_READY",
+                    "created_at": created_at - timedelta(days=1),
+                },
+                {
+                    "strategy": "v5",
+                    "as_of_date": created_at.date().isoformat(),
+                    "strategy_candidate": "v5.current_candidate",
+                    "symbol": "SOL-USDT",
+                    "horizon_hours": 24,
+                    "sample_count": 72,
+                    "complete_sample_count": 72,
+                    "avg_net_bps": -30.0,
+                    "p25_net_bps": -80.0,
+                    "win_rate": 0.30,
+                    "cost_source_mix": '[{"cost_source":"public_spread_proxy","count":72}]',
+                    "decision": "KILL",
+                    "created_at": created_at,
+                },
+            ]
+        ),
+        lake / "gold/alpha_discovery_board",
+    )
+
+    payload = _get_permission("v5")
+
+    assert payload["permission"] == "ABORT"
+    assert payload["strategy_opportunities_available"] is False
+    assert payload["allowed_advisory_modes"] == []
+
+
 def test_live_permission_api_does_not_use_published_allow_when_core_alpha_dead(
     tmp_path,
     monkeypatch,

@@ -7,7 +7,7 @@ from typing import Any
 import polars as pl
 
 from quant_lab.contracts.models import GateDecision, RiskAction, RiskPermission
-from quant_lab.data.lake import read_parquet_dataset
+from quant_lab.data.lake import read_parquet_lazy
 from quant_lab.research.baselines import CORE_MOMENTUM_ALPHA_ID, is_research_baseline_alpha
 
 CORE_ALPHA_ID = CORE_MOMENTUM_ALPHA_ID
@@ -115,10 +115,9 @@ def apply_risk_advisory_context(
 
 
 def _strategy_opportunity_context(root: Path) -> dict[str, Any]:
-    board = read_parquet_dataset(root / "gold" / "alpha_discovery_board")
-    if board.is_empty():
-        board = read_parquet_dataset(root / "gold" / "strategy_evidence")
-    decisions = _latest_decisions(board)
+    decisions = _latest_decisions(root / "gold" / "alpha_discovery_board")
+    if not decisions:
+        decisions = _latest_decisions(root / "gold" / "strategy_evidence")
     return {
         "strategy_opportunities_available": bool(decisions & ADVISORY_DECISIONS),
         "shadow_available": bool(decisions & SHADOW_DECISIONS),
@@ -128,21 +127,54 @@ def _strategy_opportunity_context(root: Path) -> dict[str, Any]:
     }
 
 
-def _latest_decisions(frame: pl.DataFrame) -> set[str]:
-    if frame.is_empty() or "decision" not in frame.columns:
+def _latest_decisions(path: Path) -> set[str]:
+    try:
+        lazy = read_parquet_lazy(path)
+        columns = set(lazy.collect_schema().names())
+    except Exception:
         return set()
-    rows = frame.to_dicts()
-    latest_day = max(
-        (
-            str(row.get("as_of_date") or "")[:10]
-            for row in rows
-            if str(row.get("as_of_date") or "").strip()
-        ),
-        default=None,
-    )
+    if "decision" not in columns:
+        return set()
+    scoped = lazy
+    latest_day = _latest_decision_day(lazy, columns)
     if latest_day:
-        rows = [row for row in rows if str(row.get("as_of_date") or "")[:10] == latest_day]
-    return {str(row.get("decision") or "").strip().upper() for row in rows}
+        scoped = scoped.filter(
+            pl.col("as_of_date").cast(pl.Utf8).str.slice(0, 10) == latest_day
+        )
+    try:
+        frame = (
+            scoped.select(pl.col("decision").cast(pl.Utf8).alias("decision"))
+            .filter(pl.col("decision").is_not_null())
+            .unique()
+            .collect()
+        )
+    except Exception:
+        return set()
+    return {
+        str(value).strip().upper()
+        for value in frame.get_column("decision").to_list()
+        if str(value).strip()
+    }
+
+
+def _latest_decision_day(lazy: pl.LazyFrame, columns: set[str]) -> str | None:
+    if "as_of_date" not in columns:
+        return None
+    try:
+        frame = lazy.select(
+            pl.col("as_of_date")
+            .cast(pl.Utf8)
+            .str.slice(0, 10)
+            .max()
+            .alias("latest_day")
+        ).collect()
+    except Exception:
+        return None
+    if frame.is_empty():
+        return None
+    value = frame.item(0, "latest_day")
+    text = str(value).strip() if value is not None else ""
+    return text or None
 
 
 def _core_alpha_gate_status(gate_decisions: list[GateDecision]) -> str:

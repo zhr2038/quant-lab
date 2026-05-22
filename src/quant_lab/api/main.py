@@ -399,6 +399,7 @@ def _live_permission_evaluation(
         lake_root,
         strategy=strategy,
         version=version,
+        telemetry_latest_ts=telemetry_latest_ts,
     )
     recomputed = computed["permission"]
     stale = selection["active"] is None
@@ -469,12 +470,14 @@ def _compute_live_permission_with_context(
     *,
     strategy: str,
     version: str,
+    telemetry_latest_ts: datetime | None = None,
 ) -> dict[str, Any]:
     gate_decisions = _load_gate_decisions(lake_root, strategy=strategy)
     data_health = _lake_data_health(lake_root)
     cost_health = _lake_cost_health(lake_root)
     telemetry_reasons = _strategy_telemetry_reasons(lake_root, strategy=strategy)
-    telemetry_latest_ts = latest_strategy_telemetry_ts(lake_root, strategy)
+    if telemetry_latest_ts is None:
+        telemetry_latest_ts = latest_strategy_telemetry_ts(lake_root, strategy)
     original_data_health = dict(data_health)
     if telemetry_reasons:
         data_health = {

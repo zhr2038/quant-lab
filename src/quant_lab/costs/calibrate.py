@@ -36,6 +36,9 @@ COST_HEALTH_DAILY_DATASET = Path("gold") / "cost_health_daily"
 DEFAULT_MIN_SAMPLE_COUNT = 30
 PRIVATE_COST_LOOKBACK_DAYS = 7
 PUBLIC_DAY_FILE_LIMIT = int(os.getenv("QUANT_LAB_COST_MAX_PUBLIC_DAY_FILES", "5000"))
+PUBLIC_SPREAD_ROWS_PER_SYMBOL_LIMIT = int(
+    os.getenv("QUANT_LAB_COST_MAX_SPREAD_ROWS_PER_SYMBOL", "5000")
+)
 ORDERBOOK_COST_COLUMNS = ("symbol", "day", "ts", "asks_json", "bids_json")
 TRADE_PRINT_COST_COLUMNS = ("symbol", "day", "ts")
 
@@ -108,6 +111,7 @@ def calibrate_costs_for_day(
             day,
             max_files=PUBLIC_DAY_FILE_LIMIT,
             columns=ORDERBOOK_COST_COLUMNS,
+            max_rows_per_symbol=PUBLIC_SPREAD_ROWS_PER_SYMBOL_LIMIT,
         ),
         trade_prints=_read_day_dataset(
             root,
@@ -732,12 +736,21 @@ def _read_day_dataset(
     timestamp_column: str = "ts",
     max_files: int | None = None,
     columns: Sequence[str] | None = None,
+    max_rows_per_symbol: int | None = None,
 ) -> pl.DataFrame:
     dataset_path = root / dataset
     try:
         files = _candidate_day_files(dataset_path, day, max_files=max_files)
         if max_files is not None and not files:
             return pl.DataFrame()
+        if files and max_rows_per_symbol is not None and max_rows_per_symbol > 0:
+            return _collect_day_files_limited(
+                files,
+                day=day,
+                timestamp_column=timestamp_column,
+                columns=columns,
+                max_rows_per_symbol=max_rows_per_symbol,
+            )
         lazy = _scan_files(files) if files else read_parquet_lazy(dataset_path)
         schema_columns = lazy.collect_schema().names()
         if "day" in schema_columns:
@@ -753,6 +766,68 @@ def _read_day_dataset(
             return pl.DataFrame()
         frame = _filter_day(read_parquet_dataset(dataset_path), day)
         return _select_frame_columns(frame, columns)
+
+
+def _collect_day_files_limited(
+    files: Sequence[Path],
+    *,
+    day: str,
+    timestamp_column: str,
+    columns: Sequence[str] | None,
+    max_rows_per_symbol: int,
+) -> pl.DataFrame:
+    """Read hot append files one at a time while capping rows per symbol.
+
+    Public WebSocket order book snapshots can be gigabytes per day. Cost
+    calibration only needs a representative spread sample, so loading the full
+    day into one DataFrame is unnecessary and can push production into swap.
+    """
+
+    counts: dict[str, int] = {}
+    chunks: list[pl.DataFrame] = []
+    for file_path in files:
+        lazy = _scan_files([file_path])
+        schema_columns = lazy.collect_schema().names()
+        lazy = _filter_day_lazy(
+            lazy,
+            schema_columns=schema_columns,
+            day=day,
+            timestamp_column=timestamp_column,
+        )
+        if lazy is None:
+            continue
+        lazy = _select_lazy_columns(lazy, schema_columns, columns)
+        frame = lazy.collect(engine="streaming")
+        if frame.is_empty():
+            continue
+        if "symbol" not in frame.columns:
+            chunks.append(frame.head(max_rows_per_symbol))
+            continue
+        for symbol in frame["symbol"].drop_nulls().unique().to_list():
+            symbol_text = str(symbol)
+            remaining = max_rows_per_symbol - counts.get(symbol_text, 0)
+            if remaining <= 0:
+                continue
+            symbol_frame = frame.filter(pl.col("symbol") == symbol).head(remaining)
+            if symbol_frame.is_empty():
+                continue
+            counts[symbol_text] = counts.get(symbol_text, 0) + symbol_frame.height
+            chunks.append(symbol_frame)
+    return pl.concat(chunks, how="diagonal_relaxed") if chunks else pl.DataFrame()
+
+
+def _filter_day_lazy(
+    lazy: pl.LazyFrame,
+    *,
+    schema_columns: Sequence[str],
+    day: str,
+    timestamp_column: str,
+) -> pl.LazyFrame | None:
+    if "day" in schema_columns:
+        return lazy.filter(pl.col("day").cast(pl.Utf8) == day)
+    if timestamp_column in schema_columns:
+        return lazy.filter(pl.col(timestamp_column).cast(pl.Utf8).str.starts_with(day))
+    return None
 
 
 def _select_lazy_columns(

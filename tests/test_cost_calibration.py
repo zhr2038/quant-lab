@@ -199,6 +199,41 @@ def test_read_day_dataset_uses_day_column_and_projects_hot_dataset_columns(tmp_p
     assert "source" not in frame.columns
 
 
+def test_read_day_dataset_caps_hot_dataset_rows_per_symbol(tmp_path):
+    lake_root = tmp_path / "lake"
+    dataset = lake_root / "silver" / "orderbook_snapshot"
+    dataset.mkdir(parents=True)
+    rows = []
+    for symbol in ["BTC-USDT", "ETH-USDT"]:
+        for minute in range(3):
+            rows.append(
+                {
+                    "venue": "okx",
+                    "symbol": symbol,
+                    "day": "2026-05-10",
+                    "channel": "books5",
+                    "ts": f"2026-05-10T00:0{minute}:00Z",
+                    "asks_json": json.dumps([["101", "1"]]),
+                    "bids_json": json.dumps([["99", "1"]]),
+                    "raw_json": "large-raw-payload",
+                }
+            )
+    pl.DataFrame(rows).write_parquet(dataset / "compact_0.parquet")
+
+    frame = _read_day_dataset(
+        lake_root,
+        Path("silver") / "orderbook_snapshot",
+        "2026-05-10",
+        max_files=10,
+        columns=["symbol", "day", "ts", "asks_json", "bids_json"],
+        max_rows_per_symbol=2,
+    )
+
+    assert frame.height == 4
+    assert frame.group_by("symbol").len()["len"].to_list() == [2, 2]
+    assert "raw_json" not in frame.columns
+
+
 def test_v5_trade_events_generate_actual_fill_bucket_before_spread_proxy(tmp_path):
     lake_root = tmp_path / "lake"
     _write_v5_trades(lake_root)

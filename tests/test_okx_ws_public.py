@@ -154,6 +154,16 @@ def test_ws_orderbook_invalid_timestamp_uses_ingest_time():
     assert books[0]["day"] == books[0]["ts"][:10]
 
 
+def test_ws_trade_and_orderbook_without_inst_id_do_not_write_silver_rows():
+    trade = _trade_message()
+    del trade["arg"]["instId"]
+    book = _books_message()
+    del book["arg"]["instId"]
+
+    assert normalize_okx_ws_trades([trade]) == []
+    assert normalize_okx_ws_orderbooks([book]) == []
+
+
 def test_ws_candle_confirm_not_one_is_filtered():
     bars = normalize_okx_ws_candles_to_market_bars(
         [_candle_message(confirm="0"), _candle_message(confirm="1")]
@@ -198,14 +208,16 @@ def test_partitioned_ws_append_does_not_create_null_day_partition(tmp_path, monk
     del trade["data"][0]["ts"]
     book = _books_message(symbol="BTC-USDT")
     book["data"][0]["ts"] = "invalid-ts"
+    ack = {"event": "subscribe", "data": []}
 
-    result = publish_okx_public_ws_messages_to_lake([trade, book], lake_root=lake_root)
+    result = publish_okx_public_ws_messages_to_lake([trade, book, ack], lake_root=lake_root)
 
     assert result["trade_print_rows"] == 1
     assert result["orderbook_snapshot_rows"] == 1
     parquet_paths = list(lake_root.rglob("*.parquet"))
     assert parquet_paths
     assert all("__null__" not in str(path) for path in parquet_paths)
+    assert any("channel=unknown" in str(path) for path in parquet_paths)
 
 
 def test_ws_stream_appends_large_datasets_without_rewriting_market_bars(tmp_path):

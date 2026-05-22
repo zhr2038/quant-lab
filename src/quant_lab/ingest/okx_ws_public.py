@@ -527,6 +527,8 @@ def normalize_okx_ws_trades(messages: Sequence[Mapping[str, Any]]) -> list[dict[
         if _message_channel(message) != "trades":
             continue
         inst_id = _message_inst_id(message)
+        if not inst_id:
+            continue
         for item in _message_data(message):
             if not isinstance(item, Mapping):
                 continue
@@ -557,6 +559,8 @@ def normalize_okx_ws_orderbooks(messages: Sequence[Mapping[str, Any]]) -> list[d
         if channel not in {"books", "books5"}:
             continue
         inst_id = _message_inst_id(message)
+        if not inst_id:
+            continue
         for item in _message_data(message):
             if not isinstance(item, Mapping):
                 continue
@@ -621,8 +625,8 @@ def _raw_ws_rows(messages: Sequence[Mapping[str, Any]]) -> list[dict[str, Any]]:
     received_at = _utc_now_string()
     return [
         {
-            "channel": _message_channel(message),
-            "inst_id": _message_inst_id(message),
+            "channel": _raw_partition_field(_message_channel(message)),
+            "inst_id": _raw_partition_field(_message_inst_id(message)),
             "day": received_at[:10],
             "received_at": received_at,
             "raw_json": _json_dumps(message),
@@ -727,6 +731,11 @@ def _message_inst_id(message: Mapping[str, Any]) -> str | None:
 def _message_data(message: Mapping[str, Any]) -> list[Any]:
     data = message.get("data", [])
     return data if isinstance(data, list) else []
+
+
+def _raw_partition_field(value: Any) -> str:
+    text = "" if value is None else str(value).strip()
+    return text or "unknown"
 
 
 def _timestamp_ms_to_utc_string(value: Any) -> str | None:

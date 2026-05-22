@@ -9,11 +9,10 @@ Group=quantlab
 WorkingDirectory=/opt/quant-lab
 Environment=POLARS_MAX_THREADS=1
 Environment=MALLOC_ARENA_MAX=2
-RuntimeMaxSec=20min
+TimeoutStartSec=20min
 MemoryHigh=2G
 MemoryMax=3G
 CPUQuota=50%
-ExecStart=/usr/bin/flock -w 30 /var/lock/quant-lab-entry-quality-history.lock /bin/bash -lc 'END_DATE="$(date -u +%%F)"; START_DATE="$(date -u -d "${END_DATE} -29 days" +%%F)"; /opt/quant-lab/.venv/bin/qlab build-entry-quality-history --lake-root /var/lib/quant-lab/lake --start-date "${START_DATE}" --end-date "${END_DATE}" --mode recent_30d --cost-mode conservative'
+ExecStart=/usr/bin/flock -w 30 /var/lock/quant-lab-entry-quality-history.lock /bin/bash -lc 'END_DATE="$(date -u +%%F)"; START_DATE="$(date -u -d "$${END_DATE} -29 days" +%%F)"; /opt/quant-lab/.venv/bin/qlab build-entry-quality-history --lake-root /var/lib/quant-lab/lake --start-date "$${START_DATE}" --end-date "$${END_DATE}" --mode recent_30d --cost-mode conservative'
 NoNewPrivileges=true
 PrivateTmp=true
-

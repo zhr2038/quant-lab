@@ -109,7 +109,10 @@ def test_entry_quality_history_refresh_is_scheduled_separately():
     assert "--mode recent_30d" in unit
     assert "--cost-mode conservative" in unit
     assert "date -u -d" in unit
+    assert "$${END_DATE}" in unit
+    assert "$${START_DATE}" in unit
     assert "/var/lock/quant-lab-entry-quality-history.lock" in unit
+    assert "TimeoutStartSec=20min" in unit
     assert "MemoryMax=3G" in unit
     assert "OnCalendar=*-*-* 01:35:00" in timer
     assert "OnCalendar=*-*-* 13:35:00" in timer

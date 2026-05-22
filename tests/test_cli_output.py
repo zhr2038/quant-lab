@@ -174,6 +174,41 @@ def test_compact_ops_summary_payload_omits_large_nested_tables():
     assert "latency_by_path_ms" not in payload["api_metrics"]
     assert payload["job_runs"]["job_count"] == 30
     assert payload["job_runs"]["failed_job_count"] == 1
+    assert payload["job_runs"]["historical_failed_job_count"] == 1
     assert len(payload["job_runs"]["slow_jobs"]) == 20
     assert "jobs" not in payload["job_runs"]
     assert "rows" not in payload["lake_file_health"]
+
+
+def test_compact_ops_summary_separates_current_and_historical_failures():
+    payload = _compact_ops_summary_payload(
+        {
+            "api_metrics": {},
+            "job_runs": {
+                "run_count": 3,
+                "jobs": [
+                    {
+                        "job_name": "recovered-job",
+                        "latest_status": "succeeded",
+                        "run_count": 2,
+                        "failure_count": 1,
+                    },
+                    {
+                        "job_name": "currently-failed-job",
+                        "latest_status": "failed",
+                        "run_count": 1,
+                        "failure_count": 1,
+                    },
+                ],
+            },
+            "lake_file_health": {},
+        }
+    )
+
+    assert payload["job_runs"]["failed_job_count"] == 1
+    assert payload["job_runs"]["failed_jobs"][0]["job_name"] == "currently-failed-job"
+    assert payload["job_runs"]["historical_failed_job_count"] == 2
+    historical_names = {
+        row["job_name"] for row in payload["job_runs"]["historical_failed_jobs"]
+    }
+    assert historical_names == {"recovered-job", "currently-failed-job"}

@@ -748,7 +748,13 @@ def ops_summary_command(
         Path,
         typer.Option("--lake-root", file_okay=False, dir_okay=True),
     ],
-    day: Annotated[str | None, typer.Option("--day")] = None,
+    day: Annotated[
+        str | None,
+        typer.Option(
+            "--day",
+            help="Metrics day to summarize. Defaults to today; pass 'all' for full history.",
+        ),
+    ] = "auto",
     compact_output: Annotated[
         bool,
         typer.Option(
@@ -757,9 +763,10 @@ def ops_summary_command(
         ),
     ] = False,
 ) -> None:
+    summary_day = None if str(day or "").strip().lower() == "all" else day
     payload = {
-        "api_metrics": api_metrics_summary(lake_root, day=day),
-        "job_runs": job_run_summary(lake_root, day=day),
+        "api_metrics": api_metrics_summary(lake_root, day=summary_day),
+        "job_runs": job_run_summary(lake_root, day=summary_day),
         "lake_file_health": write_lake_file_health_daily(lake_root),
     }
     output = _compact_ops_summary_payload(payload) if compact_output else payload
@@ -811,10 +818,15 @@ def _compact_api_metrics_payload(api_metrics: dict[str, Any]) -> dict[str, Any]:
 def _compact_job_run_payload(job_runs: dict[str, Any]) -> dict[str, Any]:
     jobs = job_runs.get("jobs")
     job_rows = jobs if isinstance(jobs, list) else []
-    failed_jobs = [
+    historical_failed_jobs = [
         row
         for row in job_rows
         if isinstance(row, dict) and int(row.get("failure_count") or 0) > 0
+    ]
+    current_failed_jobs = [
+        row
+        for row in job_rows
+        if isinstance(row, dict) and str(row.get("latest_status") or "").lower() == "failed"
     ]
     slow_jobs = sorted(
         (row for row in job_rows if isinstance(row, dict)),
@@ -828,8 +840,10 @@ def _compact_job_run_payload(job_runs: dict[str, Any]) -> dict[str, Any]:
     return {
         "run_count": int(job_runs.get("run_count") or 0),
         "job_count": len(job_rows),
-        "failed_job_count": len(failed_jobs),
-        "failed_jobs": _compact_job_rows(failed_jobs[:20]),
+        "failed_job_count": len(current_failed_jobs),
+        "historical_failed_job_count": len(historical_failed_jobs),
+        "failed_jobs": _compact_job_rows(current_failed_jobs[:20]),
+        "historical_failed_jobs": _compact_job_rows(historical_failed_jobs[:20]),
         "slow_jobs": _compact_job_rows(slow_jobs),
     }
 

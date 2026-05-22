@@ -49,7 +49,7 @@ def test_compact_v5_sync_payload_omits_nested_bundle_details():
                     }
                 ],
                 "skipped_files": ["already.tar.gz"],
-                "warnings": ["inbox-warning"],
+                "warnings": ["max_scan_bundles_limit_applied:1_of_100", "inbox-warning"],
             },
             "analysis": {
                 "status": "WARNING",
@@ -70,6 +70,7 @@ def test_compact_v5_sync_payload_omits_nested_bundle_details():
     assert payload["processed_bundles"] == ["latest.tar.gz"]
     assert payload["analysis_status"] == "WARNING"
     assert payload["warnings"] == ["pull-warning", "inbox-warning"]
+    assert payload["scan_limited"] is True
     assert "pull" not in payload
     assert "inbox" not in payload
     assert "analysis" not in payload

@@ -1461,6 +1461,11 @@ def _compact_v5_sync_payload(payload: dict[str, object]) -> dict[str, object]:
         warnings.extend(pull_warnings[:5])
     if isinstance(inbox_warnings, list):
         warnings.extend(inbox_warnings[:5])
+    operational_warnings = [
+        warning
+        for warning in warnings
+        if not _v5_sync_warning_is_expected_limit_notice(warning)
+    ]
     return {
         "analysis_after_sync": payload.get("analysis_after_sync"),
         "include_historical_outcomes": payload.get("include_historical_outcomes"),
@@ -1474,12 +1479,25 @@ def _compact_v5_sync_payload(payload: dict[str, object]) -> dict[str, object]:
         "skipped_inbox_count": len(skipped_files) if isinstance(skipped_files, list) else 0,
         "pull_warning_count": len(pull_warnings) if isinstance(pull_warnings, list) else 0,
         "inbox_warning_count": len(inbox_warnings) if isinstance(inbox_warnings, list) else 0,
-        "warnings": warnings,
+        "scan_limited": any(
+            _v5_sync_warning_is_expected_limit_notice(warning) for warning in warnings
+        ),
+        "warnings": operational_warnings,
         "analysis_status": analysis.get("status") if isinstance(analysis, dict) else None,
         "latest_bundle_ts": (
             analysis.get("latest_bundle_ts") if isinstance(analysis, dict) else None
         ),
     }
+
+
+def _v5_sync_warning_is_expected_limit_notice(value: object) -> bool:
+    rendered = str(value)
+    return rendered.startswith(
+        (
+            "max_scan_bundles_limit_applied:",
+            "max_bundles_limit_applied:",
+        )
+    )
 
 
 def main() -> None:

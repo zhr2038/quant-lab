@@ -646,6 +646,13 @@ def compact_lake_dataset_command(
             help="Compact only Parquet files directly in the dataset directory.",
         ),
     ] = False,
+    compact_output: Annotated[
+        bool,
+        typer.Option(
+            "--compact-output/--full-output",
+            help="Emit a single-line summary suitable for systemd journals.",
+        ),
+    ] = False,
 ) -> None:
     dataset_path, partition_by = _compact_dataset_target(lake_root, dataset)
     result = run_with_job_metrics(
@@ -668,7 +675,7 @@ def compact_lake_dataset_command(
             )
         ),
     )
-    typer.echo(json.dumps(result.__dict__, indent=2, sort_keys=True))
+    typer.echo(json.dumps(result.__dict__, indent=None if compact_output else 2, sort_keys=True))
 
 
 @app.command("repair-lake-partitions")
@@ -712,6 +719,13 @@ def repair_lake_partitions_command(
             ),
         ),
     ] = 0,
+    compact_output: Annotated[
+        bool,
+        typer.Option(
+            "--compact-output/--full-output",
+            help="Emit a single-line summary suitable for systemd journals.",
+        ),
+    ] = False,
 ) -> None:
     dataset_path, partition_by = _compact_dataset_target(lake_root, dataset)
     result = run_with_job_metrics(
@@ -725,7 +739,7 @@ def repair_lake_partitions_command(
             max_source_batch_bytes=max_source_batch_bytes,
         ),
     )
-    typer.echo(json.dumps(result.__dict__, indent=2, sort_keys=True))
+    typer.echo(json.dumps(result.__dict__, indent=None if compact_output else 2, sort_keys=True))
 
 
 @app.command("ops-summary")

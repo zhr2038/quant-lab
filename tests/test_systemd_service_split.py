@@ -75,6 +75,7 @@ def test_scheduled_compaction_covers_hot_ws_datasets():
     assert "WARN_LAKE_HEALTH_FAILED_OR_TIMED_OUT" in script
     assert "lake-health --lake-root" in script
     assert "--compact-output" in script
+    assert script.count("--compact-output") >= 4
     assert "COMPACT_RAW_OKX_WS" in script
     assert "SKIP_COMPACT_RAW_OKX_WS" in script
     assert "COMPACT_RAW_OKX_WS=1" in unit

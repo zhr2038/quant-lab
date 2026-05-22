@@ -59,7 +59,8 @@ compact_dataset() {
     --dataset "${dataset}" \
     --target-rows-per-file "${target_rows}" \
     --max-source-files-per-batch "${batch_files}" \
-    --max-source-batch-bytes "${COMPACT_MAX_SOURCE_BATCH_BYTES}"
+    --max-source-batch-bytes "${COMPACT_MAX_SOURCE_BATCH_BYTES}" \
+    --compact-output
   status="$?"
   set -e
   if (( status != 0 )); then
@@ -84,7 +85,8 @@ compact_dataset_direct_only() {
     --target-rows-per-file "${target_rows}" \
     --max-source-files-per-batch "${batch_files}" \
     --max-source-batch-bytes "${COMPACT_MAX_SOURCE_BATCH_BYTES}" \
-    --direct-only
+    --direct-only \
+    --compact-output
   status="$?"
   set -e
   if (( status != 0 )); then
@@ -119,7 +121,8 @@ repair_dataset_partitions() {
     --dataset "${dataset}" \
     --target-rows-per-file "${target_rows}" \
     --max-source-files-per-batch "${batch_files}" \
-    --max-source-batch-bytes "${COMPACT_MAX_SOURCE_BATCH_BYTES}"
+    --max-source-batch-bytes "${COMPACT_MAX_SOURCE_BATCH_BYTES}" \
+    --compact-output
   status="$?"
   set -e
   if (( status != 0 )); then

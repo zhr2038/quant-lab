@@ -1,6 +1,10 @@
 from datetime import UTC, datetime
 
-from quant_lab.cli import _compact_v5_sync_payload, _compact_v5_telemetry_payload
+from quant_lab.cli import (
+    _compact_lake_health_payload,
+    _compact_v5_sync_payload,
+    _compact_v5_telemetry_payload,
+)
 from quant_lab.strategy_telemetry.models import V5TelemetryAnalysisResult
 
 
@@ -74,3 +78,43 @@ def test_compact_v5_sync_payload_omits_nested_bundle_details():
     assert "pull" not in payload
     assert "inbox" not in payload
     assert "analysis" not in payload
+
+
+def test_compact_lake_health_payload_omits_full_rows():
+    payload = _compact_lake_health_payload(
+        {
+            "dataset_count": 2,
+            "total_parquet_files": 123,
+            "warning_count": 1,
+            "rows": [
+                {
+                    "dataset": "orderbook_snapshot",
+                    "parquet_file_count": 100,
+                    "partition_dir_count": 20,
+                    "status": "OK",
+                    "path": "/large/path/that/should/not/be/printed",
+                },
+                {
+                    "dataset": "api_request_metrics",
+                    "parquet_file_count": 23,
+                    "partition_dir_count": 4,
+                    "status": "WARN",
+                    "warning": "small-file ratio is high",
+                },
+            ],
+        }
+    )
+
+    assert payload["dataset_count"] == 2
+    assert payload["total_parquet_files"] == 123
+    assert payload["warnings"] == [
+        {
+            "dataset": "api_request_metrics",
+            "status": "WARN",
+            "warning": "small-file ratio is high",
+            "parquet_file_count": 23,
+        }
+    ]
+    assert payload["top_file_count_datasets"][0]["dataset"] == "orderbook_snapshot"
+    assert "rows" not in payload
+    assert "path" not in str(payload)

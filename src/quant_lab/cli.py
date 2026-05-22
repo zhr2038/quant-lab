@@ -4,7 +4,7 @@ import os
 import sys
 from datetime import datetime
 from pathlib import Path
-from typing import Annotated
+from typing import Annotated, Any
 
 import typer
 
@@ -545,9 +545,57 @@ def lake_health_command(
             help="quant-lab lake root to inspect.",
         ),
     ],
+    compact_output: Annotated[
+        bool,
+        typer.Option(
+            "--compact-output/--full-output",
+            help="Emit a single-line summary suitable for systemd journals.",
+        ),
+    ] = False,
 ) -> None:
     result = write_lake_file_health_daily(lake_root)
-    typer.echo(json.dumps(result, indent=2, sort_keys=True, default=str))
+    if compact_output:
+        typer.echo(json.dumps(_compact_lake_health_payload(result), sort_keys=True, default=str))
+    else:
+        typer.echo(json.dumps(result, indent=2, sort_keys=True, default=str))
+
+
+def _compact_lake_health_payload(payload: dict[str, Any]) -> dict[str, Any]:
+    rows = payload.get("rows")
+    health_rows = rows if isinstance(rows, list) else []
+    warning_rows = [
+        row
+        for row in health_rows
+        if isinstance(row, dict) and str(row.get("status") or "OK") != "OK"
+    ]
+    largest_file_rows = sorted(
+        [row for row in health_rows if isinstance(row, dict)],
+        key=lambda row: int(row.get("parquet_file_count") or 0),
+        reverse=True,
+    )[:5]
+    return {
+        "dataset_count": payload.get("dataset_count", len(health_rows)),
+        "total_parquet_files": payload.get("total_parquet_files", 0),
+        "warning_count": payload.get("warning_count", len(warning_rows)),
+        "warnings": [
+            {
+                "dataset": row.get("dataset"),
+                "status": row.get("status"),
+                "warning": row.get("warning"),
+                "parquet_file_count": row.get("parquet_file_count"),
+            }
+            for row in warning_rows[:10]
+        ],
+        "top_file_count_datasets": [
+            {
+                "dataset": row.get("dataset"),
+                "parquet_file_count": row.get("parquet_file_count"),
+                "partition_dir_count": row.get("partition_dir_count"),
+                "status": row.get("status"),
+            }
+            for row in largest_file_rows
+        ],
+    }
 
 
 @app.command("compact-lake-dataset")

@@ -228,5 +228,5 @@ done
 
 cleanup_internal_compaction_dirs
 
-timeout --kill-after=30s 120s "${QLAB_BIN}" lake-health --lake-root "${LAKE_ROOT}" \
+timeout --kill-after=30s 120s "${QLAB_BIN}" lake-health --lake-root "${LAKE_ROOT}" --compact-output \
   || echo "WARN_LAKE_HEALTH_FAILED_OR_TIMED_OUT"

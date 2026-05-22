@@ -284,6 +284,9 @@ REQUIRED_MEMBERS = [
     "reports/late_entry_chase_threshold_advisory_by_symbol.json",
     "reports/threshold_advisory_by_symbol.json",
     "reports/pullback_reversal_shadow_outcomes.csv",
+    "reports/old_v1_vs_v2_comparison.csv",
+    "reports/pullback_reversal_v2_by_symbol.csv",
+    "reports/pullback_reversal_v2_readiness.json",
     "reports/pullback_reversal_by_symbol.csv",
     "reports/pullback_reversal_by_regime.csv",
     "reports/pullback_reversal_by_horizon.csv",
@@ -1227,6 +1230,42 @@ CSV_SCHEMAS: dict[str, list[str]] = {
         "win_rate",
         "avg_mae_bps",
         "p25_net_bps",
+        "mode",
+        "generated_at_utc",
+        "schema_version",
+        "contract_version",
+    ],
+    "reports/old_v1_vs_v2_comparison.csv": [
+        "as_of_date",
+        "comparison_name",
+        "rule_name",
+        "rule_version",
+        "symbol",
+        "horizon_hours",
+        "sample_count",
+        "complete_sample_count",
+        "avg_net_bps",
+        "win_rate",
+        "avg_mae_bps",
+        "p25_net_bps",
+        "mode",
+        "generated_at_utc",
+        "schema_version",
+        "contract_version",
+    ],
+    "reports/pullback_reversal_v2_by_symbol.csv": [
+        "as_of_date",
+        "rule_version",
+        "strategy_candidate",
+        "symbol",
+        "sample_count",
+        "complete_sample_count",
+        "avg_24h_net_bps",
+        "win_rate_24h",
+        "p25_24h_net_bps",
+        "avg_mae_bps",
+        "decision",
+        "decision_reasons",
         "mode",
         "generated_at_utc",
         "schema_version",
@@ -2448,7 +2487,18 @@ def _dataset_members(frames: dict[str, pl.DataFrame]) -> dict[str, _MemberPayloa
             "reports/pullback_reversal_rule_comparison.csv",
             pullback_reversal_rule_comparison,
         ),
+        "reports/old_v1_vs_v2_comparison.csv": _csv_member(
+            "reports/old_v1_vs_v2_comparison.csv",
+            pullback_reversal_rule_comparison,
+        ),
+        "reports/pullback_reversal_v2_by_symbol.csv": _csv_member(
+            "reports/pullback_reversal_v2_by_symbol.csv",
+            _pullback_v2_by_symbol_for_export(pullback_reversal_shadow),
+        ),
         "reports/pullback_reversal_readiness.json": _json_text(
+            _entry_quality_json(pullback_reversal_readiness)
+        ),
+        "reports/pullback_reversal_v2_readiness.json": _json_text(
             _entry_quality_json(pullback_reversal_readiness)
         ),
         "reports/anti_leakage_check.csv": _csv_member(
@@ -5818,6 +5868,124 @@ def _entry_quality_json(df: pl.DataFrame) -> dict[str, Any]:
         "source": "quant_lab",
         "mode": "advisory",
     }
+
+
+def _pullback_v2_by_symbol_for_export(pullback: pl.DataFrame) -> pl.DataFrame:
+    path = "reports/pullback_reversal_v2_by_symbol.csv"
+    if pullback.is_empty():
+        return _empty_csv_schema_frame(path)
+    required = {"rule_version", "symbol", "horizon_hours"}
+    if not required.issubset(pullback.columns):
+        return _empty_csv_schema_frame(path)
+    rows = [
+        row
+        for row in pullback.to_dicts()
+        if str(row.get("rule_version") or "") == "confirmed_reversal_v0.2"
+        and _optional_int(row.get("horizon_hours")) == 24
+    ]
+    if not rows:
+        return _empty_csv_schema_frame(path)
+    output: list[dict[str, Any]] = []
+    symbols = sorted({str(row.get("symbol") or "") for row in rows if row.get("symbol")})
+    for symbol in symbols:
+        group = [row for row in rows if str(row.get("symbol") or "") == symbol]
+        complete = [
+            row
+            for row in group
+            if str(row.get("label_status") or "").strip().lower() == "complete"
+        ]
+        net_values = [
+            value
+            for value in (_optional_float(row.get("net_bps_after_cost")) for row in complete)
+            if value is not None
+        ]
+        mae_values = [
+            value
+            for value in (_optional_float(row.get("mae_bps")) for row in complete)
+            if value is not None
+        ]
+        avg_net = _float_mean(net_values)
+        win_rate = (
+            sum(1 for value in net_values if value > 0.0) / len(net_values)
+            if net_values
+            else None
+        )
+        p25 = _float_quantile(net_values, 0.25)
+        avg_mae = _float_mean(mae_values)
+        decision, reasons = _pullback_v2_decision(
+            sample_count=len(group),
+            complete_sample_count=len(net_values),
+            avg_net_bps=avg_net,
+            win_rate=win_rate,
+            p25_net_bps=p25,
+            avg_mae_bps=avg_mae,
+        )
+        first = group[0]
+        output.append(
+            {
+                "as_of_date": first.get("as_of_date"),
+                "rule_version": "confirmed_reversal_v0.2",
+                "strategy_candidate": first.get("strategy_candidate"),
+                "symbol": symbol,
+                "sample_count": len(group),
+                "complete_sample_count": len(net_values),
+                "avg_24h_net_bps": avg_net,
+                "win_rate_24h": win_rate,
+                "p25_24h_net_bps": p25,
+                "avg_mae_bps": avg_mae,
+                "decision": decision,
+                "decision_reasons": safe_json_dumps(reasons),
+                "mode": "shadow",
+                "generated_at_utc": first.get("generated_at_utc"),
+                "schema_version": first.get("schema_version"),
+                "contract_version": first.get("contract_version"),
+            }
+        )
+    return pl.DataFrame(output, infer_schema_length=None).select(CSV_SCHEMAS[path])
+
+
+def _pullback_v2_decision(
+    *,
+    sample_count: int,
+    complete_sample_count: int,
+    avg_net_bps: float | None,
+    win_rate: float | None,
+    p25_net_bps: float | None,
+    avg_mae_bps: float | None,
+) -> tuple[str, list[str]]:
+    reasons: list[str] = ["not_live_validated", "paper_disabled_until_more_evidence"]
+    if sample_count < 50:
+        reasons.append("insufficient_sample_count")
+    if complete_sample_count < 10:
+        reasons.append("insufficient_complete_samples")
+    if avg_net_bps is None or avg_net_bps <= 0.0:
+        reasons.append("weak_24h_avg_net_bps")
+    if win_rate is None or win_rate <= 0.45:
+        reasons.append("weak_24h_win_rate")
+    if p25_net_bps is None or p25_net_bps <= -50.0:
+        reasons.append("weak_24h_p25_net_bps")
+    if avg_mae_bps is None or avg_mae_bps <= -120.0:
+        reasons.append("excessive_avg_mae_bps")
+    if len(reasons) > 2:
+        return "RESEARCH_ONLY", reasons
+    return "KEEP_SHADOW", ["v2_not_broadly_negative", *reasons]
+
+
+def _float_mean(values: list[float]) -> float | None:
+    return sum(values) / len(values) if values else None
+
+
+def _float_quantile(values: list[float], q: float) -> float | None:
+    if not values:
+        return None
+    ordered = sorted(values)
+    if len(ordered) == 1:
+        return ordered[0]
+    index = (len(ordered) - 1) * q
+    low = int(index)
+    high = min(low + 1, len(ordered) - 1)
+    weight = index - low
+    return ordered[low] * (1.0 - weight) + ordered[high] * weight
 
 
 def _expanded_recommendations_json(df: pl.DataFrame) -> dict[str, Any]:

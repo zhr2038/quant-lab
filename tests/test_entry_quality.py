@@ -269,6 +269,9 @@ def test_daily_export_contains_entry_quality_reports(tmp_path):
         assert "reports/threshold_advisory_by_symbol.json" in names
         assert "reports/pullback_reversal_rule_comparison.csv" in names
         assert "reports/pullback_reversal_readiness.json" in names
+        assert "reports/old_v1_vs_v2_comparison.csv" in names
+        assert "reports/pullback_reversal_v2_by_symbol.csv" in names
+        assert "reports/pullback_reversal_v2_readiness.json" in names
         summary = archive.read("reports/entry_quality_summary.md").decode("utf-8")
         assert "read-only research" in summary
         advisory = archive.read("reports/strategy_opportunity_advisory.csv").decode("utf-8")
@@ -297,6 +300,71 @@ def test_daily_export_contains_entry_quality_reports(tmp_path):
         )
         assert symbol_advisory["hard_guard_allowed"] is False
         assert symbol_advisory["ready_for_live_guard"] is False
+
+
+def test_daily_export_contains_pullback_reversal_v2_reports(tmp_path):
+    lake = tmp_path / "lake"
+    out = tmp_path / "exports"
+    _write_pullback_market_bars(lake, "ETH-USDT")
+    write_parquet_dataset(
+        pl.DataFrame(
+            [
+                {
+                    "candidate_id": "cand-eth-pullback",
+                    "run_id": "run-pullback",
+                    "ts_utc": datetime(2026, 5, 10, 20, tzinfo=UTC),
+                    "symbol": "ETH-USDT",
+                    "strategy_candidate": "portfolio",
+                    "entry_close": 115.0,
+                    "regime_state": "protect",
+                    "risk_level": "normal",
+                    "f4_volume_expansion": 0.0,
+                    "f5_rsi_trend_confirm": 0.0,
+                    "estimated_spread_bps": 2.0,
+                }
+            ]
+        ),
+        lake / "silver" / "v5_candidate_event",
+    )
+    build_and_publish_entry_quality(lake, as_of_date="2026-05-10")
+
+    result = export_daily_pack(
+        export_date="2026-05-10",
+        lake_root=lake,
+        out_dir=out,
+        command_line=["qlab", "export-daily"],
+        refresh_risk_permission=False,
+        pre_export_v5_refresh=False,
+    )
+
+    with zipfile.ZipFile(result.zip_path) as archive:
+        comparison = archive.read("reports/old_v1_vs_v2_comparison.csv").decode("utf-8")
+        comparison_rows = list(csv.DictReader(io.StringIO(comparison)))
+        assert comparison_rows
+        assert {row["comparison_name"] for row in comparison_rows} == {
+            "old_rule_vs_new_rule"
+        }
+
+        by_symbol = archive.read("reports/pullback_reversal_v2_by_symbol.csv").decode(
+            "utf-8"
+        )
+        rows = list(csv.DictReader(io.StringIO(by_symbol)))
+        assert len(rows) == 1
+        row = rows[0]
+        assert row["rule_version"] == "confirmed_reversal_v0.2"
+        assert row["symbol"] == "ETH-USDT"
+        assert row["decision"] == "RESEARCH_ONLY"
+        reasons = set(json.loads(row["decision_reasons"]))
+        assert {"not_live_validated", "paper_disabled_until_more_evidence"} <= reasons
+        assert "insufficient_sample_count" in reasons
+
+        readiness = json.loads(
+            archive.read("reports/pullback_reversal_v2_readiness.json")
+        )
+        assert readiness["source"] == "quant_lab"
+        assert readiness["mode"] == "advisory"
+        assert readiness["row_count"] == 1
+        assert readiness["rows"][0]["ready_for_live_probe"] is False
 
 
 def test_entry_quality_publishes_strategy_opportunity_advisory_for_api(

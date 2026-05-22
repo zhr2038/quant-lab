@@ -70,6 +70,109 @@ def test_lake_data_health_uses_lazy_scan_not_full_market_bar_read(tmp_path, monk
     assert health["latest_market_bar_ts"]
 
 
+def test_risk_permission_selection_uses_lazy_strategy_version_filter(tmp_path, monkeypatch):
+    from quant_lab.api.main import _select_published_risk_permission
+
+    lake = tmp_path / "lake"
+    as_of_ts = datetime.now(UTC)
+    _write_risk_permissions(
+        lake,
+        [
+            _risk_row(
+                strategy="v7",
+                version="5.0.0",
+                permission="ALLOW",
+                reasons='["wrong_strategy"]',
+                as_of_ts=as_of_ts,
+                permission_status="ACTIVE_ALLOW",
+            ),
+            _risk_row(
+                strategy="v5",
+                version="5.0.0",
+                permission="ABORT",
+                reasons='["selected_abort"]',
+                as_of_ts=as_of_ts,
+                permission_status="ACTIVE_ABORT",
+            ),
+        ],
+    )
+
+    def fail_full_read(*args, **kwargs):
+        raise AssertionError("risk permission selection should lazy-filter rows")
+
+    monkeypatch.setattr("quant_lab.api.main.read_parquet_dataset", fail_full_read)
+
+    selection = _select_published_risk_permission(
+        lake,
+        strategy="v5",
+        version="5.0.0",
+        telemetry_latest_ts=None,
+    )
+
+    assert selection["active"] is not None
+    assert selection["active"].reasons == ["selected_abort"]
+
+
+def test_gate_decision_loading_uses_lazy_strategy_filter(tmp_path, monkeypatch):
+    from quant_lab.api.main import _load_gate_decisions
+
+    lake = tmp_path / "lake"
+    _write_gate(lake, GateStatus.LIVE_READY)
+
+    def fail_full_read(*args, **kwargs):
+        raise AssertionError("gate decision loading should lazy-filter rows")
+
+    monkeypatch.setattr("quant_lab.api.main.read_parquet_dataset", fail_full_read)
+
+    decisions = _load_gate_decisions(lake, strategy="v5")
+
+    assert len(decisions) == 1
+    assert decisions[0].status == GateStatus.LIVE_READY
+
+
+def test_strategy_telemetry_reasons_use_lazy_latest_rows(tmp_path, monkeypatch):
+    from quant_lab.api.main import _strategy_telemetry_reasons
+
+    lake = tmp_path / "lake"
+    now = datetime.now(UTC)
+    _write_strategy_health(lake, now)
+    write_parquet_dataset(
+        pl.DataFrame(
+            [
+                {
+                    "strategy": "v5",
+                    "date": now.date().isoformat(),
+                    "status": "OK",
+                    "violation_count": 1,
+                }
+            ]
+        ),
+        lake / "gold/v5_gate_compliance_daily",
+    )
+
+    def fail_full_read(*args, **kwargs):
+        raise AssertionError("telemetry reasons should lazy-read latest rows")
+
+    monkeypatch.setattr("quant_lab.api.main.read_parquet_dataset", fail_full_read)
+
+    assert _strategy_telemetry_reasons(lake, strategy="v5") == ["v5_gate_compliance_violation"]
+
+
+def test_latest_strategy_telemetry_ts_uses_lazy_aggregation(tmp_path, monkeypatch):
+    from quant_lab.risk.publish import latest_strategy_telemetry_ts
+
+    lake = tmp_path / "lake"
+    latest_ts = datetime.now(UTC).replace(microsecond=0)
+    _write_strategy_health(lake, latest_ts)
+
+    def fail_full_read(*args, **kwargs):
+        raise AssertionError("latest strategy telemetry should lazy-aggregate")
+
+    monkeypatch.setattr("quant_lab.risk.publish.read_parquet_dataset", fail_full_read)
+
+    assert latest_strategy_telemetry_ts(lake, "v5") == latest_ts
+
+
 def test_live_permission_api_requires_published_permission_even_when_inputs_are_healthy(
     tmp_path,
     monkeypatch,
@@ -191,10 +294,14 @@ def test_live_permission_api_does_not_use_published_allow_when_core_alpha_dead(
     assert payload["system_safety_status"] == "SAFE_FOR_ADVISORY"
     assert "baseline_not_global_strategy_gate" in payload["live_block_reasons"]
 
-    detail = TestClient(app).get(
-        "/v1/risk/live-permission-detail",
-        params={"strategy": "v5", "version": "v1"},
-    ).json()
+    detail = (
+        TestClient(app)
+        .get(
+            "/v1/risk/live-permission-detail",
+            params={"strategy": "v5", "version": "v1"},
+        )
+        .json()
+    )
     assert detail["permission_source"] == "recomputed"
     assert detail["permission"]["permission"] == "ABORT"
 
@@ -300,10 +407,14 @@ def test_live_permission_api_recomputes_stale_published_allow(tmp_path, monkeypa
     assert payload["permission"] == "ABORT"
     assert "market_bar_stale" in payload["reasons"]
 
-    detail = TestClient(app).get(
-        "/v1/risk/live-permission-detail",
-        params={"strategy": "v5", "version": "5.0.0"},
-    ).json()
+    detail = (
+        TestClient(app)
+        .get(
+            "/v1/risk/live-permission-detail",
+            params={"strategy": "v5", "version": "5.0.0"},
+        )
+        .json()
+    )
     assert detail["permission_source"] == "recomputed_stale_context"
     assert detail["published_permission_stale"] is True
     assert detail["permission"]["permission"] == "ABORT"
@@ -343,10 +454,14 @@ def test_live_permission_detail_overrides_fresh_allow_when_recomputed_is_more_co
         lake / "gold/risk_permission",
     )
 
-    detail = TestClient(app).get(
-        "/v1/risk/live-permission-detail",
-        params={"strategy": "v5", "version": "5.0.0"},
-    ).json()
+    detail = (
+        TestClient(app)
+        .get(
+            "/v1/risk/live-permission-detail",
+            params={"strategy": "v5", "version": "5.0.0"},
+        )
+        .json()
+    )
 
     assert detail["permission_source"] == "recomputed"
     assert detail["published_permission_stale"] is False
@@ -390,10 +505,14 @@ def test_live_permission_detail_recomputes_permission_stale_vs_v5_telemetry(
         lake / "gold/risk_permission",
     )
 
-    detail = TestClient(app).get(
-        "/v1/risk/live-permission-detail",
-        params={"strategy": "v5", "version": "5.0.0"},
-    ).json()
+    detail = (
+        TestClient(app)
+        .get(
+            "/v1/risk/live-permission-detail",
+            params={"strategy": "v5", "version": "5.0.0"},
+        )
+        .json()
+    )
 
     assert detail["published_permission_stale"] is True
     assert detail["permission_source"] == "published_stale"
@@ -481,10 +600,14 @@ def test_live_permission_api_breaks_ties_by_latest_source_bundle_ts(
         ],
     )
 
-    payload = TestClient(app).get(
-        "/v1/risk/live-permission",
-        params={"strategy": "v5", "version": "5.0.0"},
-    ).json()
+    payload = (
+        TestClient(app)
+        .get(
+            "/v1/risk/live-permission",
+            params={"strategy": "v5", "version": "5.0.0"},
+        )
+        .json()
+    )
 
     assert payload["reasons"] == ["new_bundle_abort"]
     assert payload["source_bundle_ts"] == new_bundle.isoformat().replace("+00:00", "Z")
@@ -512,10 +635,14 @@ def test_live_permission_api_downgrades_expired_active_permission(
         ],
     )
 
-    payload = TestClient(app).get(
-        "/v1/risk/live-permission",
-        params={"strategy": "v5", "version": "5.0.0"},
-    ).json()
+    payload = (
+        TestClient(app)
+        .get(
+            "/v1/risk/live-permission",
+            params={"strategy": "v5", "version": "5.0.0"},
+        )
+        .json()
+    )
 
     assert payload["permission"] == "ABORT"
     assert payload["permission_status"] == "NO_FRESH_PERMISSION"
@@ -533,10 +660,14 @@ def test_live_permission_api_no_fresh_permission_has_empty_allowed_modes(
     _write_cost_bucket(lake)
     _write_fresh_market_bar(lake)
 
-    payload = TestClient(app).get(
-        "/v1/risk/live-permission",
-        params={"strategy": "v5", "version": "5.0.0"},
-    ).json()
+    payload = (
+        TestClient(app)
+        .get(
+            "/v1/risk/live-permission",
+            params={"strategy": "v5", "version": "5.0.0"},
+        )
+        .json()
+    )
 
     assert payload["permission_status"] == "NO_FRESH_PERMISSION"
     assert payload["enforceable"] is False
@@ -580,10 +711,14 @@ def test_live_permission_detail_flags_response_older_than_gold_latest(
         ],
     )
 
-    detail = TestClient(app).get(
-        "/v1/risk/live-permission-detail",
-        params={"strategy": "v5", "version": "5.0.0"},
-    ).json()
+    detail = (
+        TestClient(app)
+        .get(
+            "/v1/risk/live-permission-detail",
+            params={"strategy": "v5", "version": "5.0.0"},
+        )
+        .json()
+    )
 
     assert detail["permission"]["as_of_ts"] == active_as_of.isoformat().replace("+00:00", "Z")
     assert detail["api_consistency"]["compare_gold_latest_vs_api_response"] == "FAIL"

@@ -776,8 +776,7 @@ def _latest_features_response(
     rows: list[LatestFeatureRow] = []
     for (symbol, ts), group in latest.group_by(["symbol", "ts"], maintain_order=True):
         features = {
-            str(row["feature_name"]): row["value"]
-            for row in group.sort("feature_name").to_dicts()
+            str(row["feature_name"]): row["value"] for row in group.sort("feature_name").to_dicts()
         }
         rows.append(LatestFeatureRow(symbol=str(symbol), ts=ts, features=features))
     return LatestFeaturesResponse(
@@ -932,9 +931,7 @@ def _strategy_opportunity_advisory_row(
     )
     expires_at = _parse_advisory_datetime(row.get("expires_at"))
     if expires_at is None:
-        expires_at = generated_at + timedelta(
-            seconds=STRATEGY_OPPORTUNITY_ADVISORY_TTL_SECONDS
-        )
+        expires_at = generated_at + timedelta(seconds=STRATEGY_OPPORTUNITY_ADVISORY_TTL_SECONDS)
     git_commit = _observable_text(row.get("quant_lab_git_commit")) or _git_commit()
     source_version = _observable_text(row.get("source_version")) or _source_version(
         "strategy_opportunity_advisory",
@@ -1090,11 +1087,7 @@ def _advisory_reason_list(value: Any) -> list[str]:
     try:
         loaded = json.loads(text)
     except json.JSONDecodeError:
-        return [
-            item.strip()
-            for item in text.replace("|", ",").split(",")
-            if item.strip()
-        ]
+        return [item.strip() for item in text.replace("|", ",").split(",") if item.strip()]
     if isinstance(loaded, list):
         return [str(item) for item in loaded if str(item).strip()]
     if isinstance(loaded, dict):
@@ -1184,14 +1177,17 @@ def _load_latest_alpha_evidence(lake_root: Path, alpha_id: str) -> dict[str, Any
 
 
 def _load_latest_gate_decision_for_alpha(lake_root: Path, alpha_id: str) -> GateDecision | None:
-    df = read_parquet_dataset(lake_root / "gold" / "gate_decision")
-    if df.is_empty() or "alpha_id" not in df.columns:
+    lazy, columns = _safe_parquet_lazy(lake_root / "gold" / "gate_decision")
+    if lazy is None or "alpha_id" not in columns:
         return None
-    filtered = df.filter(pl.col("alpha_id") == alpha_id)
-    if filtered.is_empty():
+    sort_column = "created_at" if "created_at" in columns else None
+    filtered = lazy.filter(pl.col("alpha_id") == alpha_id)
+    if sort_column:
+        filtered = filtered.sort(sort_column, descending=True, nulls_last=True)
+    row_frame = _collect_lazy_or_empty(filtered.limit(1))
+    if row_frame.is_empty():
         return None
-    row = _latest_row(filtered, "created_at")
-    return _gate_decision_from_row(row)
+    return _gate_decision_from_row(row_frame.to_dicts()[0])
 
 
 def _missing_gate_decision(alpha_id: str) -> GateDecision:
@@ -1209,12 +1205,13 @@ def _missing_gate_decision(alpha_id: str) -> GateDecision:
 
 
 def _load_gate_decisions(lake_root: Path, strategy: str) -> list[GateDecision]:
-    df = read_parquet_dataset(lake_root / "gold" / "gate_decision")
-    if df.is_empty():
+    lazy, columns = _safe_parquet_lazy(lake_root / "gold" / "gate_decision")
+    if lazy is None:
         return []
-    if "strategy" in df.columns:
-        df = df.filter(pl.col("strategy") == strategy)
-    rows = df.to_dicts()
+    if "strategy" in columns:
+        lazy = lazy.filter(pl.col("strategy") == strategy)
+    rows_frame = _collect_lazy_or_empty(lazy)
+    rows = rows_frame.to_dicts()
     decisions: list[GateDecision] = []
     for row in rows:
         cleaned = dict(row)
@@ -1229,9 +1226,7 @@ def _load_gate_decisions(lake_root: Path, strategy: str) -> list[GateDecision]:
 
 def _prefer_research_gate_decisions(decisions: list[GateDecision]) -> list[GateDecision]:
     research_decisions = [
-        decision
-        for decision in decisions
-        if not decision.gate_version.startswith("bootstrap.")
+        decision for decision in decisions if not decision.gate_version.startswith("bootstrap.")
     ]
     return research_decisions or decisions
 
@@ -1262,22 +1257,23 @@ def _select_published_risk_permission(
     version: str,
     telemetry_latest_ts: datetime | None,
 ) -> dict[str, RiskPermission | None]:
-    df = read_parquet_dataset(lake_root / "gold" / "risk_permission")
-    if df.is_empty():
+    lazy, columns = _safe_parquet_lazy(lake_root / "gold" / "risk_permission")
+    if lazy is None:
         return {"active": None, "stale": None, "gold_latest": None}
-    filtered = df
-    if "strategy" in filtered.columns:
+    filtered = lazy
+    if "strategy" in columns:
         filtered = filtered.filter(pl.col("strategy") == strategy)
-    elif "strategy_id" in filtered.columns:
+    elif "strategy_id" in columns:
         filtered = filtered.filter(pl.col("strategy_id") == strategy)
-    if "version" in filtered.columns:
+    if "version" in columns:
         filtered = filtered.filter(pl.col("version") == version)
-    if filtered.is_empty():
+    frame = _collect_lazy_or_empty(filtered)
+    if frame.is_empty():
         return {"active": None, "stale": None, "gold_latest": None}
 
     parsed = [
         permission
-        for row in filtered.to_dicts()
+        for row in frame.to_dicts()
         if (permission := parse_risk_permission_row(row)) is not None
     ]
     if not parsed:
@@ -1352,10 +1348,9 @@ def _normalize_published_risk_permission(
 
 
 def _published_permission_is_active(permission: RiskPermission) -> bool:
-    return (
-        is_permission_status_enforceable(permission.permission_status)
-        and not _permission_expired(permission)
-    )
+    return is_permission_status_enforceable(
+        permission.permission_status
+    ) and not _permission_expired(permission)
 
 
 def _permission_expired(permission: RiskPermission) -> bool:
@@ -1501,19 +1496,22 @@ def _risk_permission_health(
 
 
 def _stale_permission_consecutive_count(lake_root: Path, strategy: str) -> int:
-    health = read_parquet_dataset(lake_root / "gold" / "strategy_health_daily")
-    if health.is_empty() or "stale_permission_consecutive_count" not in health.columns:
+    lazy, columns = _safe_parquet_lazy(lake_root / "gold" / "strategy_health_daily")
+    if lazy is None or "stale_permission_consecutive_count" not in columns:
         return 0
-    scoped = health
-    if "strategy" in scoped.columns:
-        scoped = scoped.filter(pl.col("strategy") == strategy)
-    if scoped.is_empty():
-        return 0
+    scoped = lazy.filter(pl.col("strategy") == strategy) if "strategy" in columns else lazy
     for column in ["latest_bundle_ts", "created_at", "date"]:
-        if column in scoped.columns:
-            scoped = _normalize_datetime_column(scoped, column).sort(column)
+        if column in columns:
+            scoped = scoped.with_columns(_lazy_utc_datetime(column).alias(column)).sort(
+                column,
+                descending=True,
+                nulls_last=True,
+            )
             break
-    latest = scoped.tail(1).to_dicts()[0]
+    latest_frame = _collect_lazy_or_empty(scoped.limit(1))
+    if latest_frame.is_empty():
+        return 0
+    latest = latest_frame.to_dicts()[0]
     try:
         return max(0, int(latest.get("stale_permission_consecutive_count") or 0))
     except (TypeError, ValueError):
@@ -1620,25 +1618,30 @@ def _lake_data_health(lake_root: Path) -> dict[str, Any]:
 
 def _strategy_telemetry_reasons(lake_root: Path, strategy: str) -> list[str]:
     reasons: list[str] = []
-    compliance = read_parquet_dataset(lake_root / "gold" / "v5_gate_compliance_daily")
-    if strategy == "v5" and not compliance.is_empty():
-        latest = _latest_row(compliance, "date")
-        violation_count = int(latest.get("violation_count") or 0)
+    compliance = _latest_lazy_row(
+        lake_root / "gold" / "v5_gate_compliance_daily",
+        filters={"strategy": strategy} if strategy == "v5" else None,
+        sort_columns=["date", "created_at"],
+    )
+    if strategy == "v5" and compliance is not None:
+        violation_count = int(compliance.get("violation_count") or 0)
         if violation_count > 0:
             reasons.append("v5_gate_compliance_violation")
 
-    health = read_parquet_dataset(lake_root / "gold" / "strategy_health_daily")
-    if strategy == "v5" and not health.is_empty():
-        latest = _latest_row(health, "date")
-        if str(latest.get("status") or "").upper() == "CRITICAL":
+    health = _latest_lazy_row(
+        lake_root / "gold" / "strategy_health_daily",
+        filters={"strategy": strategy} if strategy == "v5" else None,
+        sort_columns=["latest_bundle_ts", "created_at", "date"],
+    )
+    if strategy == "v5" and health is not None:
+        if str(health.get("status") or "").upper() == "CRITICAL":
             reasons.append("v5_strategy_health_critical")
     return reasons
 
 
 def _has_bootstrap_gate(gate_decisions: list[GateDecision]) -> bool:
     return any(
-        decision.gate_version == BOOTSTRAP_GATE_VERSION
-        and decision.status.value == "QUARANTINE"
+        decision.gate_version == BOOTSTRAP_GATE_VERSION and decision.status.value == "QUARANTINE"
         for decision in gate_decisions
     )
 
@@ -1714,6 +1717,30 @@ def _collect_lazy_or_empty(lazy: pl.LazyFrame) -> pl.DataFrame:
         return lazy.collect()
     except Exception:
         return pl.DataFrame()
+
+
+def _latest_lazy_row(
+    path: Path,
+    *,
+    filters: dict[str, Any] | None = None,
+    sort_columns: list[str] | None = None,
+) -> dict[str, Any] | None:
+    lazy, columns = _safe_parquet_lazy(path)
+    if lazy is None:
+        return None
+    scoped = lazy
+    for column, value in (filters or {}).items():
+        if column in columns:
+            scoped = scoped.filter(pl.col(column) == value)
+    sort_column = next((column for column in (sort_columns or []) if column in columns), None)
+    if sort_column is not None:
+        scoped = scoped.with_columns(_lazy_utc_datetime(sort_column).alias(sort_column)).sort(
+            sort_column,
+            descending=True,
+            nulls_last=True,
+        )
+    frame = _collect_lazy_or_empty(scoped.limit(1))
+    return None if frame.is_empty() else frame.to_dicts()[0]
 
 
 def _lazy_utc_datetime(column: str) -> pl.Expr:

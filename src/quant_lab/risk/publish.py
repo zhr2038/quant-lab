@@ -8,7 +8,7 @@ from pydantic import BaseModel, ConfigDict, Field
 
 from quant_lab.contracts.models import GateDecision, RiskPermission, RiskPermissionStatus
 from quant_lab.contracts.v5_quant_lab import RISK_PERMISSION_CONTRACT_VERSION
-from quant_lab.data.lake import read_parquet_dataset, upsert_parquet_dataset
+from quant_lab.data.lake import read_parquet_dataset, read_parquet_lazy, upsert_parquet_dataset
 from quant_lab.risk.advisory import (
     apply_risk_advisory_context,
     build_risk_advisory_context,
@@ -179,9 +179,7 @@ def load_gate_decisions(root: Path, strategy: str) -> list[GateDecision]:
 
 def _prefer_research_gate_decisions(decisions: list[GateDecision]) -> list[GateDecision]:
     research_decisions = [
-        decision
-        for decision in decisions
-        if not decision.gate_version.startswith("bootstrap.")
+        decision for decision in decisions if not decision.gate_version.startswith("bootstrap.")
     ]
     return research_decisions or decisions
 
@@ -245,14 +243,20 @@ def strategy_telemetry_reasons(root: Path, strategy: str) -> list[str]:
     if strategy != "v5":
         return []
     reasons: list[str] = []
-    compliance = read_parquet_dataset(root / V5_GATE_COMPLIANCE_DATASET)
-    if not compliance.is_empty():
-        latest = _latest_row(compliance, "date")
+    latest = _latest_lazy_row(
+        root / V5_GATE_COMPLIANCE_DATASET,
+        strategy=strategy,
+        sort_columns=["date", "created_at"],
+    )
+    if latest is not None:
         if int(latest.get("violation_count") or 0) > 0:
             reasons.append("v5_gate_compliance_violation")
-    health = read_parquet_dataset(root / STRATEGY_HEALTH_DAILY_DATASET)
-    if not health.is_empty():
-        latest = _latest_row(health, "date")
+    latest = _latest_lazy_row(
+        root / STRATEGY_HEALTH_DAILY_DATASET,
+        strategy=strategy,
+        sort_columns=["latest_bundle_ts", "created_at", "date"],
+    )
+    if latest is not None:
         if str(latest.get("status") or "").upper() == "CRITICAL":
             reasons.append("v5_strategy_health_critical")
     return reasons
@@ -261,15 +265,28 @@ def strategy_telemetry_reasons(root: Path, strategy: str) -> list[str]:
 def latest_strategy_telemetry_ts(root: Path, strategy: str) -> datetime | None:
     if strategy != "v5":
         return None
-    health = read_parquet_dataset(root / STRATEGY_HEALTH_DAILY_DATASET)
-    if health.is_empty():
+    lazy, columns = _safe_parquet_lazy(root / STRATEGY_HEALTH_DAILY_DATASET)
+    if lazy is None:
         return None
-    if "strategy" in health.columns:
-        scoped = health.filter(pl.col("strategy") == strategy)
-        if not scoped.is_empty():
-            health = scoped
-    latest = _latest_timestamp_value(health, ["latest_bundle_ts", "created_at", "date"])
-    return latest
+    scoped = lazy.filter(pl.col("strategy") == strategy) if "strategy" in columns else lazy
+    timestamp_columns = [
+        column for column in ["latest_bundle_ts", "created_at", "date"] if column in columns
+    ]
+    if not timestamp_columns:
+        return None
+    try:
+        frame = scoped.select(
+            [_lazy_utc_datetime(column).max().alias(column) for column in timestamp_columns]
+        ).collect()
+    except Exception:
+        return None
+    parsed = [
+        _coerce_timestamp(frame.item(0, column))
+        for column in timestamp_columns
+        if column in frame.columns
+    ]
+    clean = [value for value in parsed if value is not None]
+    return max(clean) if clean else None
 
 
 def annotate_risk_permission(
@@ -415,6 +432,45 @@ def _latest_timestamp_value(df: pl.DataFrame, columns: list[str]) -> datetime | 
         if parsed:
             return max(parsed)
     return None
+
+
+def _safe_parquet_lazy(path: Path) -> tuple[pl.LazyFrame | None, set[str]]:
+    try:
+        lazy = read_parquet_lazy(path)
+        columns = set(lazy.collect_schema().names())
+    except Exception:
+        return None, set()
+    return lazy, columns
+
+
+def _latest_lazy_row(
+    path: Path,
+    *,
+    strategy: str | None = None,
+    sort_columns: list[str] | None = None,
+) -> dict[str, Any] | None:
+    lazy, columns = _safe_parquet_lazy(path)
+    if lazy is None:
+        return None
+    scoped = lazy
+    if strategy is not None and "strategy" in columns:
+        scoped = scoped.filter(pl.col("strategy") == strategy)
+    sort_column = next((column for column in (sort_columns or []) if column in columns), None)
+    if sort_column is not None:
+        scoped = scoped.with_columns(_lazy_utc_datetime(sort_column).alias(sort_column)).sort(
+            sort_column,
+            descending=True,
+            nulls_last=True,
+        )
+    try:
+        frame = scoped.limit(1).collect()
+    except Exception:
+        return None
+    return None if frame.is_empty() else frame.to_dicts()[0]
+
+
+def _lazy_utc_datetime(column: str) -> pl.Expr:
+    return pl.col(column).cast(pl.Utf8).str.to_datetime(time_zone="UTC", strict=False)
 
 
 def _coerce_timestamp(value: Any) -> datetime | None:

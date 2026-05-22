@@ -330,6 +330,39 @@ def test_recent_heavy_dataset_keeps_per_symbol_samples(tmp_path):
     assert set(recent["symbol"].to_list()) == {"BTC-USDT", "ETH-USDT"}
 
 
+def test_recent_heavy_dataset_filters_string_timestamps_by_lookback(tmp_path):
+    lake_root = tmp_path / "lake"
+    dataset_path = lake_root / "silver" / "trade_print"
+    dataset_path.mkdir(parents=True)
+    rows = [
+        {
+            "symbol": "OLD-USDT",
+            "trade_id": "old",
+            "price": 1.0,
+            "size": 1.0,
+            "ts": "2026-05-10T00:00:00Z",
+        },
+        {
+            "symbol": "NEW-USDT",
+            "trade_id": "new",
+            "price": 2.0,
+            "size": 1.0,
+            "ts": "2026-05-10T10:00:00Z",
+        },
+    ]
+    pl.DataFrame(rows).write_parquet(dataset_path / "batch_20260510T100000000000Z.parquet")
+
+    recent, warning = readers.read_recent_dataset_with_warning(
+        lake_root,
+        "trade_print",
+        limit=100,
+        lookback_hours=1,
+    )
+
+    assert warning is None
+    assert recent["symbol"].to_list() == ["NEW-USDT"]
+
+
 def test_recent_heavy_dataset_ignores_stale_data_file_when_batches_exist(tmp_path):
     lake_root = tmp_path / "lake"
     dataset_path = lake_root / "silver" / "trade_print"

@@ -635,7 +635,11 @@ def _latest_lazy_timestamp(
         if column not in schema:
             continue
         seen_timestamp_column = column
-        value = lazy.select(pl.col(column).max().alias(column)).collect().item()
+        value = (
+            lazy.select(_lazy_timestamp_expr(schema, column).max().alias(column))
+            .collect()
+            .item()
+        )
         latest = _coerce_timestamp(value)
         if latest is not None:
             return latest, column
@@ -671,13 +675,26 @@ def _collect_recent_lazy_frame(
         return lazy.tail(limit).collect()
 
     threshold = latest - timedelta(hours=lookback_hours)
+    timestamp_expr = _lazy_timestamp_expr(schema, timestamp_column).alias("__qlab_recent_ts")
     try:
-        frame = lazy.filter(pl.col(timestamp_column) >= threshold).collect()
+        frame = (
+            lazy.with_columns(timestamp_expr)
+            .filter(pl.col("__qlab_recent_ts") >= threshold)
+            .drop("__qlab_recent_ts")
+            .collect()
+        )
     except Exception:
         frame = lazy.tail(limit).collect()
     if frame.height > limit:
         frame = _tail_recent_sample(frame, timestamp_column, limit)
     return frame
+
+
+def _lazy_timestamp_expr(schema: pl.Schema, column: str) -> pl.Expr:
+    expression = pl.col(column)
+    if schema.get(column) == pl.String:
+        return expression.str.to_datetime(time_zone="UTC", strict=False)
+    return expression.cast(pl.Datetime(time_zone="UTC"), strict=False)
 
 
 def _tail_recent_sample(df: pl.DataFrame, column: str, limit: int) -> pl.DataFrame:

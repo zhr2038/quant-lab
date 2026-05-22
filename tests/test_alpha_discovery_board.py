@@ -97,6 +97,14 @@ def test_alpha_discovery_board_normalization_dedupes_by_source_type_and_cost_rul
             decision="PAPER_READY",
             cost_source_mix='[{"cost_source":"global_default","count":72}]',
         ),
+        _board_row(
+            strategy_candidate="v5.multi_position_k2",
+            symbol="BNB-USDT",
+            source_type="multi_position_swing_shadow_outcome",
+            avg_net_bps=120.0,
+            decision="PAPER_READY",
+            cost_source_mix='[{"cost_source":"mixed_actual_proxy","count":72}]',
+        ),
     ]
 
     normalized = normalize_alpha_discovery_board_decisions(pl.DataFrame(rows))
@@ -105,12 +113,17 @@ def test_alpha_discovery_board_normalization_dedupes_by_source_type_and_cost_rul
         for row in normalized.to_dicts()
     }
 
-    assert normalized.height == 2
+    assert normalized.height == 3
     sol = output[("v5.f4_volume_expansion_entry", "SOL-USDT", "candidate_event_label")]
     assert sol["avg_net_bps"] == 30.0
     assert sol["decision"] == "PAPER_READY"
     bnb = output[("v5.swing_f4_f5_alpha6", "BNB-USDT", "candidate_event_label")]
     assert bnb["decision"] == "KEEP_SHADOW"
+    closed = output[("v5.multi_position_k2", "BNB-USDT", "multi_position_swing_shadow_outcome")]
+    assert closed["decision"] == "KILL"
+    assert "closed_research_not_in_promotion_queue" in json.loads(
+        closed["decision_reasons"]
+    )
 
 
 def test_daily_export_uses_alpha_discovery_board_lists(tmp_path):

@@ -3604,7 +3604,7 @@ def _executive_summary(
         "SOL_PROTECT_MOMENTUM_CONTINUATION_PAPER_V1, "
         "ETH_F3_DOMINANT_ENTRY_PAPER_V1, "
         "ALT_IMPULSE_REGIME_SHADOW_V1, "
-        "BTC_STRICT_PROBE_MONITOR_V1",
+        "EXPANDED_CRYPTO_UNIVERSE_SHADOW",
         f"Research gate/baseline status counts: {safe_json_dumps(gate_counts)}",
         f"Alpha discovery decision counts: {safe_json_dumps(alpha_discovery_counts)}",
         f"Strategy evidence decision counts: {safe_json_dumps(strategy_decision_counts)}",
@@ -5656,13 +5656,8 @@ def _strategy_evidence_has_required_candidates(strategy_evidence: pl.DataFrame) 
     if strategy_evidence.is_empty() or "candidate_name" not in strategy_evidence.columns:
         return False
     required = {
-        "v5.btc_leadership_probe_strict",
-        "v5.btc_leadership_blocked_relaxed",
         "v5.sol_protect_exception",
         "v5.alt_impulse_shadow",
-        "v5.multi_position_k1",
-        "v5.multi_position_k2",
-        "v5.multi_position_k3",
         "v5.swing_f4_f5_alpha6",
         "v5.f3_dominant_entry",
         "v5.f4_volume_expansion_entry",
@@ -5699,8 +5694,15 @@ def _alpha_discovery_live_rules_ok(board: pl.DataFrame) -> bool:
                 [
                     "v5.alt_impulse_shadow",
                     "v5.sol_protect_exception",
+                    "v5.btc_leadership_blocked_relaxed",
+                    "v5.btc_leadership_alpha6_low_blocked",
+                    "v5.btc_leadership_f5_low_blocked",
+                    "v5.btc_leadership_no_breakout_blocked",
+                    "v5.multi_position_k1",
                     "v5.multi_position_k2",
                     "v5.multi_position_k3",
+                    "v5.portfolio_trend_following",
+                    "v5.pullback_reversal_shadow",
                 ]
             )
         )

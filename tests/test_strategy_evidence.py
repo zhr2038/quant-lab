@@ -10,6 +10,7 @@ import polars as pl
 from quant_lab.data.lake import read_parquet_dataset, write_market_bars, write_parquet_dataset
 from quant_lab.export.daily import export_daily_pack
 from quant_lab.research.alpha_discovery import build_and_publish_alpha_discovery_board
+from quant_lab.research.portfolio import is_closed_research_candidate
 from quant_lab.research.strategy_evidence import (
     build_and_publish_strategy_evidence,
     normalize_strategy_evidence_decisions,
@@ -459,6 +460,9 @@ def test_strategy_evidence_uses_historical_shadow_and_blocked_outcomes(tmp_path)
         "protect_sol_exception_shadow_outcome",
     }.issubset(set(samples["source_type"].drop_nulls()))
     for key, evidence_row in summary.items():
+        if is_closed_research_candidate(key[0]):
+            assert board_rows[key]["decision"] == "KILL"
+            continue
         assert board_rows[key]["decision"] == evidence_row["decision"]
 
 

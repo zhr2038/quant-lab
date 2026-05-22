@@ -12,6 +12,7 @@ import polars as pl
 from pydantic import BaseModel, ConfigDict, Field
 
 from quant_lab.data.lake import read_parquet_dataset, write_parquet_dataset
+from quant_lab.research.portfolio import CLOSED_RESEARCH_REASON, is_closed_research_candidate
 from quant_lab.research.strategy_evidence import (
     _canonical_candidate_name,
     strategy_evidence_decision_ladder,
@@ -421,6 +422,8 @@ def _decision(
     paper_days: int,
     cost_source_counts: Counter[str],
 ) -> tuple[str, list[str]]:
+    if is_closed_research_candidate(candidate):
+        return "KILL", [CLOSED_RESEARCH_REASON, "closed_research_not_in_promotion_queue"]
     return strategy_evidence_decision_ladder(
         sample_count=sample_count,
         complete_sample_count=complete_sample_count,
@@ -443,6 +446,8 @@ def _strategy_evidence_decision(row: dict[str, Any]) -> tuple[str, list[str]]:
         row.get("strategy_candidate") or row.get("candidate_name"),
         dataset_name="alpha_discovery_board",
     )
+    if is_closed_research_candidate(candidate):
+        return "KILL", [CLOSED_RESEARCH_REASON, "closed_research_not_in_promotion_queue"]
     sample_count = int(_finite_float(row.get("sample_count")) or 0)
     complete_sample_count = int(_finite_float(row.get("complete_sample_count")) or 0)
     avg_net = _finite_float(row.get("avg_net_bps"))
@@ -735,23 +740,29 @@ def normalize_alpha_discovery_board_decisions(board: pl.DataFrame) -> pl.DataFra
         if candidate:
             row["strategy_candidate"] = candidate
             row["candidate_name"] = candidate
-        decision, reasons = strategy_evidence_decision_ladder(
-            sample_count=int(_finite_float(row.get("sample_count")) or 0),
-            complete_sample_count=int(_finite_float(row.get("complete_sample_count")) or 0),
-            avg_net_bps=_finite_float(row.get("avg_net_bps")),
-            p25_net_bps=_finite_float(row.get("p25_net_bps")),
-            win_rate=_finite_float(row.get("win_rate")),
-            paper_days=int(_finite_float(row.get("paper_days")) or 0),
-            entry_day_count=int(_finite_float(row.get("entry_day_count")) or 0),
-            paper_pnl_observed_count=int(
-                _finite_float(row.get("paper_pnl_observed_count")) or 0
-            ),
-            paper_pnl_day_count=int(_finite_float(row.get("paper_pnl_day_count")) or 0),
-            arrival_mid_coverage=_finite_float(row.get("arrival_mid_coverage")) or 0.0,
-            paper_slippage_coverage=_finite_float(row.get("paper_slippage_coverage")) or 0.0,
-            cost_source_mix=row.get("cost_source_mix"),
-            candidate_name=candidate,
-        )
+        if is_closed_research_candidate(candidate):
+            decision, reasons = (
+                "KILL",
+                [CLOSED_RESEARCH_REASON, "closed_research_not_in_promotion_queue"],
+            )
+        else:
+            decision, reasons = strategy_evidence_decision_ladder(
+                sample_count=int(_finite_float(row.get("sample_count")) or 0),
+                complete_sample_count=int(_finite_float(row.get("complete_sample_count")) or 0),
+                avg_net_bps=_finite_float(row.get("avg_net_bps")),
+                p25_net_bps=_finite_float(row.get("p25_net_bps")),
+                win_rate=_finite_float(row.get("win_rate")),
+                paper_days=int(_finite_float(row.get("paper_days")) or 0),
+                entry_day_count=int(_finite_float(row.get("entry_day_count")) or 0),
+                paper_pnl_observed_count=int(
+                    _finite_float(row.get("paper_pnl_observed_count")) or 0
+                ),
+                paper_pnl_day_count=int(_finite_float(row.get("paper_pnl_day_count")) or 0),
+                arrival_mid_coverage=_finite_float(row.get("arrival_mid_coverage")) or 0.0,
+                paper_slippage_coverage=_finite_float(row.get("paper_slippage_coverage")) or 0.0,
+                cost_source_mix=row.get("cost_source_mix"),
+                candidate_name=candidate,
+            )
         row["decision"] = decision
         row["decision_reasons"] = safe_json_dumps(reasons)
         rows.append(row)

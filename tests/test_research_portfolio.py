@@ -39,7 +39,11 @@ def test_research_portfolio_status_prunes_and_preserves_paper_items(tmp_path):
         for row in read_parquet_dataset(lake / "gold" / "research_portfolio_status").to_dicts()
     }
     assert rows["v5.core.momentum"]["status"] == "BASELINE_ONLY"
+    assert rows["v5.multi_position_k1"]["status"] == "KILL"
     assert rows["v5.multi_position_k2"]["status"] == "KILL"
+    assert rows["v5.btc_leadership_f5_low"]["status"] == "KILL"
+    assert rows["v5.btc_leadership_no_breakout"]["status"] == "KILL"
+    assert rows["v5.portfolio_trend_following"]["status"] == "KILL"
     assert rows["ETH_F3_DOMINANT_ENTRY_PAPER_V1"]["status"] == "PAPER"
     assert rows["ETH_F3_DOMINANT_ENTRY_PAPER_V1"]["paper_days"] == 3
     assert rows["v5.alt_impulse_shadow"]["status"] == "SHADOW"
@@ -75,6 +79,8 @@ def test_daily_export_contains_research_portfolio_status(tmp_path):
     by_id = {row["research_id"]: row for row in rows}
     assert by_id["v5.core.momentum"]["status"] == "BASELINE_ONLY"
     assert by_id["v5.multi_position_k2"]["status"] == "KILL"
+    assert by_id["v5.multi_position_k1"]["status"] == "KILL"
+    assert by_id["v5.portfolio_trend_following"]["status"] == "KILL"
     assert by_id["SOL_F4_VOLUME_EXPANSION_PAPER_V1"]["status"] == "PAPER"
     assert "freed_research_slots" in rows[0]
     assert "active_research_count" in rows[0]
@@ -86,6 +92,7 @@ def test_daily_export_contains_research_portfolio_status(tmp_path):
     assert "## CONTINUE_PAPER" in summary
     assert "## CONTINUE_SHADOW" in summary
     assert "v5.multi_position_k2" in summary
+    assert "v5.portfolio_trend_following" in summary
     assert "avg_net_bps" in summary
 
 

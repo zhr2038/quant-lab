@@ -16,6 +16,26 @@ RESEARCH_PORTFOLIO_STATUS_DATASET = Path("gold") / "research_portfolio_status"
 SOURCE_NAME = "research.portfolio_pruning.v0.1"
 SCHEMA_VERSION = "research_portfolio_status.v0.1"
 
+CLOSED_RESEARCH_CANDIDATES: frozenset[str] = frozenset(
+    {
+        "v5.btc_broad_leadership",
+        "v5.btc_leadership_blocked_relaxed",
+        "v5.btc_alpha6_factor",
+        "v5.btc_leadership_alpha6_low_blocked",
+        "v5.btc_leadership_f5_low_blocked",
+        "v5.btc_leadership_no_breakout_blocked",
+        "v5.multi_position_k1",
+        "v5.multi_position_k2",
+        "v5.multi_position_k3",
+        "v5.portfolio_trend_following",
+        "v5.portfolio_trend_following_SOL",
+        "v5.pullback_reversal_v1",
+        "v5.pullback_reversal_shadow",
+    }
+)
+
+CLOSED_RESEARCH_REASON = "research_closed_by_operator_after_negative_or_low_quality_evidence"
+
 STATUS_SCHEMA: dict[str, Any] = {
     "schema_version": pl.Utf8,
     "as_of_date": pl.Utf8,
@@ -286,6 +306,13 @@ def research_portfolio_summary_md(
     return "\n".join(lines).rstrip() + "\n"
 
 
+def is_closed_research_candidate(value: Any) -> bool:
+    text = str(value or "").strip()
+    if not text:
+        return False
+    return text in CLOSED_RESEARCH_CANDIDATES
+
+
 def _known_kill_rows(
     evidence: list[dict[str, Any]],
     paper: list[dict[str, Any]],
@@ -295,10 +322,13 @@ def _known_kill_rows(
 ) -> list[dict[str, Any]]:
     items = [
         ("v5.btc_broad_leadership", "v5.btc_leadership_blocked_relaxed"),
-        ("v5.btc_strict_probe", "v5.btc_leadership_probe_strict"),
         ("v5.btc_alpha6_factor", "v5.btc_leadership_alpha6_low_blocked"),
+        ("v5.btc_leadership_f5_low", "v5.btc_leadership_f5_low_blocked"),
+        ("v5.btc_leadership_no_breakout", "v5.btc_leadership_no_breakout_blocked"),
+        ("v5.multi_position_k1", "v5.multi_position_k1"),
         ("v5.multi_position_k2", "v5.multi_position_k2"),
         ("v5.multi_position_k3", "v5.multi_position_k3"),
+        ("v5.portfolio_trend_following", "v5.portfolio_trend_following"),
         ("v5.portfolio_trend_following_SOL", "v5.portfolio_trend_following"),
     ]
     return [
@@ -307,8 +337,8 @@ def _known_kill_rows(
             module="candidate_pruning",
             candidate=candidate,
             status="KILL",
-            action="CLOSE_RESEARCH",
-            reason="initial_pruning_rule_negative_or_low_quality_candidate",
+            action="CLOSED_RESEARCH",
+            reason=CLOSED_RESEARCH_REASON,
             evidence=evidence,
             paper=paper,
             day=day,
@@ -337,8 +367,10 @@ def _data_driven_rows(
         "v5.f4_volume_expansion_entry",
         "v5.alt_impulse_shadow",
         "v5.btc_leadership_blocked_relaxed",
-        "v5.btc_leadership_probe_strict",
         "v5.btc_leadership_alpha6_low_blocked",
+        "v5.btc_leadership_f5_low_blocked",
+        "v5.btc_leadership_no_breakout_blocked",
+        "v5.multi_position_k1",
         "v5.multi_position_k2",
         "v5.multi_position_k3",
         "v5.portfolio_trend_following",
@@ -349,6 +381,7 @@ def _data_driven_rows(
             for row in evidence
             if str(row.get("strategy_candidate") or "")
             and row.get("strategy_candidate") not in fixed
+            and not is_closed_research_candidate(row.get("strategy_candidate"))
         }
     )
     rows = []

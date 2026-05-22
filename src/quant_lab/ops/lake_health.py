@@ -109,10 +109,21 @@ def _lake_file_health_summary(rows: list[dict[str, Any]]) -> dict[str, Any]:
 
 def _parquet_files(path: Path) -> list[Path]:
     if path.is_file() and path.suffix == ".parquet":
-        return [path]
+        return [] if _is_internal_lake_path(path) else [path]
     if not path.exists():
         return []
-    return [item for item in path.rglob("*.parquet") if item.is_file()]
+    return [
+        item
+        for item in path.rglob("*.parquet")
+        if item.is_file() and not _is_internal_lake_path(item)
+    ]
+
+
+def _is_internal_lake_path(path: Path) -> bool:
+    return any(
+        part == "._tmp" or part.startswith("__") or part.startswith(".")
+        for part in path.parts
+    )
 
 
 def _file_sizes(files: list[Path]) -> list[int]:

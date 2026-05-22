@@ -6,7 +6,11 @@ import polars as pl
 
 from quant_lab.data.lake import read_parquet_dataset, write_parquet_dataset
 from quant_lab.export.daily import export_daily_pack
-from quant_lab.research.portfolio import build_and_publish_research_portfolio_status
+from quant_lab.research.portfolio import (
+    build_and_publish_research_portfolio_status,
+    dedupe_research_portfolio_status,
+    research_portfolio_summary_md,
+)
 
 
 def test_research_portfolio_status_prunes_and_preserves_paper_items(tmp_path):
@@ -74,6 +78,87 @@ def test_daily_export_contains_research_portfolio_status(tmp_path):
     assert by_id["SOL_F4_VOLUME_EXPANSION_PAPER_V1"]["status"] == "PAPER"
     assert "freed_research_slots" in rows[0]
     assert "active_research_count" in rows[0]
+
+    with zipfile.ZipFile(result.zip_path) as archive:
+        summary = archive.read("reports/research_portfolio_summary.md").decode("utf-8")
+
+    assert "## CLOSE_RESEARCH" in summary
+    assert "## CONTINUE_PAPER" in summary
+    assert "## CONTINUE_SHADOW" in summary
+    assert "v5.multi_position_k2" in summary
+    assert "avg_net_bps" in summary
+
+
+def test_research_portfolio_dedupes_by_as_of_date_research_id_latest_created_at():
+    frame = pl.DataFrame(
+        [
+            {
+                "schema_version": "research_portfolio_status.v0.1",
+                "as_of_date": "2026-05-20",
+                "research_id": "same",
+                "module": "old",
+                "strategy_candidate": "candidate",
+                "status": "PAUSED",
+                "action": "OLD",
+                "reason": "old_reason",
+                "sample_count": 1,
+                "complete_sample_count": 1,
+                "avg_net_bps": -1.0,
+                "win_rate": 0.1,
+                "p25_net_bps": -10.0,
+                "paper_days": 0,
+                "entry_day_count": 0,
+                "cost_source_mix": "{}",
+                "last_review_date": "2026-05-20",
+                "next_review_date": "2026-05-21",
+                "recommended_new_research_slots": 0,
+                "freed_research_slots": 0,
+                "active_research_count": 0,
+                "killed_research_count": 0,
+                "created_at": "2026-05-20T00:00:00Z",
+                "source": "test",
+            },
+            {
+                "schema_version": "research_portfolio_status.v0.1",
+                "as_of_date": "2026-05-20",
+                "research_id": "same",
+                "module": "new",
+                "strategy_candidate": "candidate",
+                "status": "KILL",
+                "action": "CLOSE_RESEARCH",
+                "reason": "new_reason",
+                "sample_count": 30,
+                "complete_sample_count": 30,
+                "avg_net_bps": -80.0,
+                "win_rate": 0.2,
+                "p25_net_bps": -120.0,
+                "paper_days": 0,
+                "entry_day_count": 0,
+                "cost_source_mix": '{"mixed_actual_proxy":30}',
+                "last_review_date": "2026-05-20",
+                "next_review_date": "2026-05-21",
+                "recommended_new_research_slots": 1,
+                "freed_research_slots": 1,
+                "active_research_count": 0,
+                "killed_research_count": 1,
+                "created_at": "2026-05-20T01:00:00Z",
+                "source": "test",
+            },
+        ]
+    )
+
+    deduped = dedupe_research_portfolio_status(frame)
+
+    assert deduped.height == 1
+    row = deduped.to_dicts()[0]
+    assert row["research_id"] == "same"
+    assert row["status"] == "KILL"
+    assert row["reason"] == "new_reason"
+
+    summary = research_portfolio_summary_md(deduped, as_of_date="2026-05-20")
+    assert "## CLOSE_RESEARCH" in summary
+    assert "new_reason" in summary
+    assert "sample=30" in summary
 
 
 def _write_strategy_evidence(lake):

@@ -46,6 +46,10 @@ from quant_lab.research.paper_tracking import (
     enrich_paper_strategy_daily_from_runs,
     latest_v5_paper_frame,
 )
+from quant_lab.research.portfolio import (
+    dedupe_research_portfolio_status,
+    research_portfolio_summary_md,
+)
 from quant_lab.research.strategy_evidence import (
     normalize_strategy_evidence_decisions,
     strategy_evidence_decision_ladder,
@@ -217,6 +221,7 @@ REQUIRED_MEMBERS = [
     "research/strategy_evidence_samples.csv",
     "research/strategy_evidence_quality.csv",
     "reports/research_portfolio_status.csv",
+    "reports/research_portfolio_summary.md",
     "research/gate_decisions.csv",
     "research/research_conclusions.csv",
     "risk/risk_permission.json",
@@ -561,6 +566,7 @@ CSV_SCHEMAS: dict[str, list[str]] = {
     ],
     "reports/research_portfolio_status.csv": [
         "schema_version",
+        "as_of_date",
         "research_id",
         "module",
         "strategy_candidate",
@@ -1719,8 +1725,8 @@ def _publish_research_portfolio_status_snapshot(
         fromlist=["build_and_publish_research_portfolio_status"],
     ).build_and_publish_research_portfolio_status(root, as_of_date=day)
     frames = dict(snapshot.frames)
-    frames["research_portfolio_status"] = read_parquet_dataset(
-        root / "gold" / "research_portfolio_status"
+    frames["research_portfolio_status"] = dedupe_research_portfolio_status(
+        read_parquet_dataset(root / "gold" / "research_portfolio_status")
     )
     row_counts = dict(snapshot.row_counts)
     row_counts["research_portfolio_status"] = result.rows_written
@@ -2139,7 +2145,9 @@ def _dataset_members(frames: dict[str, pl.DataFrame]) -> dict[str, _MemberPayloa
     strategy_samples = _strategy_evidence_samples_for_export(
         frames.get("strategy_evidence_sample", pl.DataFrame())
     )
-    research_portfolio = frames.get("research_portfolio_status", pl.DataFrame())
+    research_portfolio = dedupe_research_portfolio_status(
+        frames.get("research_portfolio_status", pl.DataFrame())
+    )
     risk = _risk_permissions_for_export(frames.get("risk_permission", pl.DataFrame()), frames)
     paper_runs, paper_daily, paper_slippage = _paper_tracking_frames_for_export(frames)
     missed_low_audit = frames.get("v5_missed_low_audit", pl.DataFrame())
@@ -2288,6 +2296,9 @@ def _dataset_members(frames: dict[str, pl.DataFrame]) -> dict[str, _MemberPayloa
         ),
         "reports/research_portfolio_status.csv": _csv_member(
             "reports/research_portfolio_status.csv",
+            research_portfolio,
+        ),
+        "reports/research_portfolio_summary.md": research_portfolio_summary_md(
             research_portfolio,
         ),
         "research/gate_decisions.csv": _csv_member("research/gate_decisions.csv", gates),
@@ -3542,6 +3553,9 @@ def _executive_summary(
     gates = snapshot.frames.get("gate_decision", pl.DataFrame())
     alpha_discovery_board = snapshot.frames.get("alpha_discovery_board", pl.DataFrame())
     strategy_evidence = snapshot.frames.get("strategy_evidence", pl.DataFrame())
+    research_portfolio = dedupe_research_portfolio_status(
+        snapshot.frames.get("research_portfolio_status", pl.DataFrame())
+    )
     paper_runs = snapshot.frames.get("paper_strategy_runs", pl.DataFrame())
     paper_daily = snapshot.frames.get("paper_strategy_daily", pl.DataFrame())
     candidate_quality = _latest_candidate_quality(
@@ -3551,6 +3565,7 @@ def _executive_summary(
     gate_counts = _value_counts(gates, "status")
     alpha_discovery_counts = _value_counts(alpha_discovery_board, "decision")
     strategy_decision_counts = _value_counts(strategy_evidence, "decision")
+    research_portfolio_counts = _value_counts(research_portfolio, "status")
     strategy_dashboard_counts = _strategy_dashboard_decision_counts(
         snapshot.frames.get("strategy_opportunity_advisory", pl.DataFrame()),
         alpha_discovery_board,
@@ -3582,6 +3597,9 @@ def _executive_summary(
         f"not_live_eligible={baseline.get('not_live_eligible', True)}, "
         f"not_global_strategy_gate={baseline.get('not_global_strategy_gate', True)}",
         f"Strategy-level dashboard decision counts: {safe_json_dumps(strategy_dashboard_counts)}",
+        f"Research portfolio status counts: {safe_json_dumps(research_portfolio_counts)}",
+        "Research portfolio priority: open `reports/research_portfolio_summary.md` "
+        "before reading the full status CSV.",
         "Focus strategy candidates: "
         "SOL_PROTECT_MOMENTUM_CONTINUATION_PAPER_V1, "
         "ETH_F3_DOMINANT_ENTRY_PAPER_V1, "

@@ -9,7 +9,7 @@ from typing import Any
 import polars as pl
 from pydantic import BaseModel, ConfigDict, Field
 
-from quant_lab.data.lake import read_parquet_dataset, upsert_parquet_dataset
+from quant_lab.data.lake import read_parquet_dataset, write_parquet_dataset
 from quant_lab.strategy_telemetry.sanitize import safe_json_dumps
 
 RESEARCH_PORTFOLIO_STATUS_DATASET = Path("gold") / "research_portfolio_status"
@@ -18,6 +18,7 @@ SCHEMA_VERSION = "research_portfolio_status.v0.1"
 
 STATUS_SCHEMA: dict[str, Any] = {
     "schema_version": pl.Utf8,
+    "as_of_date": pl.Utf8,
     "research_id": pl.Utf8,
     "module": pl.Utf8,
     "strategy_candidate": pl.Utf8,
@@ -61,11 +62,15 @@ def build_and_publish_research_portfolio_status(
     root = Path(lake_root)
     day = _parse_day(as_of_date)
     frame = build_research_portfolio_status(root, as_of_date=day)
-    rows_written = upsert_parquet_dataset(
-        frame,
-        root / RESEARCH_PORTFOLIO_STATUS_DATASET,
-        ["research_id", "last_review_date"],
+    dataset_path = root / RESEARCH_PORTFOLIO_STATUS_DATASET
+    existing = read_parquet_dataset(dataset_path)
+    combined = pl.concat(
+        [current for current in [existing, frame] if not current.is_empty()],
+        how="diagonal_relaxed",
     )
+    combined = dedupe_research_portfolio_status(combined)
+    write_parquet_dataset(combined, dataset_path)
+    rows_written = combined.height
     return ResearchPortfolioBuildResult(
         as_of_date=day.isoformat(),
         rows_written=rows_written,
@@ -225,6 +230,62 @@ def build_research_portfolio_status(
     return pl.DataFrame(rows, schema=STATUS_SCHEMA, orient="row")
 
 
+def dedupe_research_portfolio_status(frame: pl.DataFrame) -> pl.DataFrame:
+    if frame.is_empty():
+        return pl.DataFrame(schema=STATUS_SCHEMA)
+    normalized = _normalize_status_frame(frame)
+    normalized = normalized.sort(["as_of_date", "research_id", "created_at"])
+    normalized = normalized.unique(
+        subset=["as_of_date", "research_id"],
+        keep="last",
+        maintain_order=True,
+    )
+    return normalized.sort(["as_of_date", "research_id"], descending=[True, False])
+
+
+def research_portfolio_summary_md(
+    frame: pl.DataFrame,
+    *,
+    as_of_date: str | date | None = None,
+) -> str:
+    day = (
+        _parse_day(as_of_date).isoformat()
+        if as_of_date is not None
+        else _latest_as_of_date(frame)
+    )
+    current = _latest_day_frame(frame, day)
+    lines = [
+        f"# Research Portfolio Summary - {day or 'unknown'}",
+        "",
+        "This summary is read-only. It does not change V5 live configuration or risk permission.",
+        "",
+    ]
+    sections = [
+        (
+            "CLOSE_RESEARCH",
+            current.filter(
+                (pl.col("status") == "KILL") | pl.col("action").str.starts_with("CLOSE")
+            ),
+        ),
+        ("CONTINUE_PAPER", current.filter(pl.col("status") == "PAPER")),
+        (
+            "CONTINUE_SHADOW",
+            current.filter((pl.col("status") == "SHADOW") | (pl.col("action") == "REGIME_SHADOW")),
+        ),
+        ("ACTIVE_DIAGNOSTIC", current.filter(pl.col("action") == "ACTIVE_DIAGNOSTIC")),
+        ("BASELINE_ONLY", current.filter(pl.col("status") == "BASELINE_ONLY")),
+    ]
+    for title, section in sections:
+        lines.extend([f"## {title}", ""])
+        if section.is_empty():
+            lines.extend(["- none", ""])
+            continue
+        for row in section.sort(["status", "research_id"]).to_dicts():
+            lines.append(_summary_line(row, include_metrics=title == "CLOSE_RESEARCH"))
+        lines.append("")
+    return "\n".join(lines).rstrip() + "\n"
+
+
 def _known_kill_rows(
     evidence: list[dict[str, Any]],
     paper: list[dict[str, Any]],
@@ -356,6 +417,7 @@ def _status_row(
 ) -> dict[str, Any]:
     return {
         "schema_version": SCHEMA_VERSION,
+        "as_of_date": day.isoformat(),
         "research_id": research_id,
         "module": module,
         "strategy_candidate": strategy_candidate,
@@ -500,10 +562,104 @@ def _summary_counts(rows: list[dict[str, Any]]) -> dict[str, int]:
 
 
 def _dedupe_rows(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
-    by_id: dict[str, dict[str, Any]] = {}
+    by_id: dict[tuple[str, str], dict[str, Any]] = {}
     for row in rows:
-        by_id[str(row["research_id"])] = row
+        key = (
+            str(row.get("as_of_date") or row.get("last_review_date") or ""),
+            str(row["research_id"]),
+        )
+        previous = by_id.get(key)
+        if previous is None or _created_at_key(row.get("created_at")) >= _created_at_key(
+            previous.get("created_at")
+        ):
+            by_id[key] = row
     return [by_id[key] for key in sorted(by_id)]
+
+
+def _normalize_status_frame(frame: pl.DataFrame) -> pl.DataFrame:
+    normalized = frame
+    if "as_of_date" not in normalized.columns:
+        fallback = (
+            pl.col("last_review_date").cast(pl.Utf8)
+            if "last_review_date" in normalized.columns
+            else pl.lit("")
+        )
+        normalized = normalized.with_columns(fallback.alias("as_of_date"))
+    if "created_at" in normalized.columns:
+        normalized = normalized.with_columns(
+            pl.col("created_at")
+            .cast(pl.Datetime(time_zone="UTC"), strict=False)
+            .alias("created_at")
+        )
+    else:
+        normalized = normalized.with_columns(
+            pl.lit(datetime.min.replace(tzinfo=UTC), dtype=pl.Datetime(time_zone="UTC")).alias(
+                "created_at"
+            )
+        )
+    for column, dtype in STATUS_SCHEMA.items():
+        if column not in normalized.columns:
+            normalized = normalized.with_columns(pl.lit(None, dtype=dtype).alias(column))
+    return normalized.select(list(STATUS_SCHEMA))
+
+
+def _latest_as_of_date(frame: pl.DataFrame) -> str:
+    if frame.is_empty():
+        return ""
+    normalized = _normalize_status_frame(frame)
+    dates = [
+        str(value)
+        for value in normalized.get_column("as_of_date").drop_nulls().to_list()
+        if str(value)
+    ]
+    return max(dates) if dates else ""
+
+
+def _latest_day_frame(frame: pl.DataFrame, day: str) -> pl.DataFrame:
+    if frame.is_empty():
+        return pl.DataFrame(schema=STATUS_SCHEMA)
+    normalized = dedupe_research_portfolio_status(frame)
+    if not day:
+        day = _latest_as_of_date(normalized)
+    if day:
+        normalized = normalized.filter(pl.col("as_of_date") == day)
+    return normalized
+
+
+def _summary_line(row: dict[str, Any], *, include_metrics: bool) -> str:
+    base = (
+        f"- {row.get('research_id')}: {row.get('status')} / {row.get('action')} - "
+        f"{row.get('reason')}"
+    )
+    if not include_metrics:
+        return base
+    metrics = (
+        f"sample={_int(row.get('sample_count'))}, "
+        f"complete={_int(row.get('complete_sample_count'))}, "
+        f"avg_net_bps={_display_metric(row.get('avg_net_bps'))}, "
+        f"win_rate={_display_metric(row.get('win_rate'))}, "
+        f"p25_net_bps={_display_metric(row.get('p25_net_bps'))}, "
+        f"cost_source_mix={row.get('cost_source_mix') or '{}'}"
+    )
+    return f"{base}; {metrics}"
+
+
+def _display_metric(value: Any) -> str:
+    parsed = _float(value)
+    if parsed is None:
+        return "n/a"
+    return f"{parsed:.4g}"
+
+
+def _created_at_key(value: Any) -> datetime:
+    if isinstance(value, datetime):
+        return value if value.tzinfo else value.replace(tzinfo=UTC)
+    if isinstance(value, str) and value:
+        try:
+            return datetime.fromisoformat(value.replace("Z", "+00:00"))
+        except ValueError:
+            return datetime.min.replace(tzinfo=UTC)
+    return datetime.min.replace(tzinfo=UTC)
 
 
 def _combine_cost_sources(values: Any) -> dict[str, int]:

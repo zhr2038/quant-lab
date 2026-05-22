@@ -150,6 +150,42 @@ def test_export_frame_reports_full_row_count_for_sampled_dataset(tmp_path, monke
     assert row_count == 15
 
 
+def test_expanded_universe_event_export_is_treated_as_heavy_dataset(tmp_path, monkeypatch):
+    lake_root = tmp_path / "lake"
+    dataset_path = lake_root / "gold" / "expanded_universe_candidate_event"
+    dataset_path.mkdir(parents=True)
+    for file_index in range(3):
+        rows = [
+            {
+                "candidate_id": f"{file_index}-{row_index}",
+                "ts_utc": datetime(2026, 5, 10, file_index, row_index, tzinfo=UTC),
+                "symbol": "TRX-USDT",
+                "strategy_candidate": "expanded_shadow",
+            }
+            for row_index in range(5)
+        ]
+        pl.DataFrame(rows).write_parquet(dataset_path / f"batch-{file_index}.parquet")
+    monkeypatch.setitem(
+        daily_export_module.HEAVY_EXPORT_DATASET_LIMITS,
+        "expanded_universe_candidate_event",
+        4,
+    )
+
+    def fail_full_read(*args, **kwargs):
+        raise AssertionError("expanded universe events should use sampled export reads")
+
+    monkeypatch.setattr(daily_export_module.readers, "read_dataset", fail_full_read)
+
+    frame, row_count, warning = _load_export_frame(
+        lake_root,
+        "expanded_universe_candidate_event",
+    )
+
+    assert warning is None
+    assert frame.height == 4
+    assert row_count == 15
+
+
 def test_export_frame_ignores_internal_lake_paths(tmp_path, monkeypatch):
     lake_root = tmp_path / "lake"
     dataset_path = lake_root / "silver" / "trade_print"

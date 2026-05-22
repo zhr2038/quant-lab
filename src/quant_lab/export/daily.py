@@ -94,6 +94,12 @@ HEAVY_EXPORT_DATASET_LIMITS = {
     "v5_late_entry_chase_shadow": 20_000,
     "v5_pullback_reversal_shadow": 20_000,
     "v5_entry_quality_history_anti_leakage_check": 20_000,
+    "expanded_universe_candidate_event": 20_000,
+    "expanded_universe_candidate_label": 20_000,
+    "expanded_crypto_universe_shadow": 20_000,
+    "expanded_crypto_candidate_outcomes_by_symbol": 20_000,
+    "v5_paper_strategy_run": 20_000,
+    "paper_strategy_runs": 20_000,
 }
 HEAVY_EXPORT_RECENT_FILE_LIMITS = {
     "market_bar": 120,
@@ -116,6 +122,12 @@ HEAVY_EXPORT_RECENT_FILE_LIMITS = {
     "v5_late_entry_chase_shadow": 100,
     "v5_pullback_reversal_shadow": 100,
     "v5_entry_quality_history_anti_leakage_check": 100,
+    "expanded_universe_candidate_event": 100,
+    "expanded_universe_candidate_label": 100,
+    "expanded_crypto_universe_shadow": 100,
+    "expanded_crypto_candidate_outcomes_by_symbol": 100,
+    "v5_paper_strategy_run": 100,
+    "paper_strategy_runs": 100,
 }
 DEFAULT_EXPORT_SAMPLED_ROW_LIMIT = 20_000
 DEFAULT_EXPORT_RECENT_FILE_LIMIT = 100

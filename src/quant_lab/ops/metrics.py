@@ -167,6 +167,9 @@ def record_job_run(
         pl.DataFrame([row]),
         Path(lake_root) / JOB_RUN_HISTORY_DATASET,
         key_columns=["job_name", "started_at", "finished_at"],
+        max_rows=_job_run_history_max_rows(),
+        max_rows_sort_by=["finished_at", "started_at"],
+        max_rows_descending=True,
     )
 
 
@@ -452,6 +455,10 @@ def _api_metrics_async_flush_enabled() -> bool:
     if value is None:
         return False
     return value.strip().lower() in {"1", "true", "yes", "on"}
+
+
+def _job_run_history_max_rows() -> int:
+    return _positive_int_env("QUANT_LAB_JOB_RUN_HISTORY_MAX_ROWS", 10_000)
 
 
 def _positive_int_env(name: str, default: int) -> int:

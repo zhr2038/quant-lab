@@ -155,6 +155,26 @@ def test_record_job_run_rewrites_history_instead_of_appending_small_files(tmp_pa
     assert rows.height == 3
 
 
+def test_record_job_run_bounds_history_rows(tmp_path, monkeypatch):
+    lake_root = tmp_path / "lake"
+    monkeypatch.setenv("QUANT_LAB_JOB_RUN_HISTORY_MAX_ROWS", "3")
+    started = datetime(2026, 5, 19, 1, 0, tzinfo=UTC)
+    for index in range(6):
+        record_job_run(
+            lake_root=lake_root,
+            job_name=f"job-{index}",
+            status="succeeded",
+            started_at=started + timedelta(minutes=index),
+            finished_at=started + timedelta(minutes=index, seconds=1),
+        )
+
+    rows = read_parquet_dataset(lake_root / "gold" / "job_run_history")
+
+    assert rows.height == 3
+    assert set(rows["job_name"].to_list()) == {"job-3", "job-4", "job-5"}
+    assert len(list((lake_root / "gold" / "job_run_history").rglob("*.parquet"))) == 1
+
+
 def test_write_parquet_dataset_keeps_previous_data_when_rewrite_fails(tmp_path, monkeypatch):
     dataset = tmp_path / "lake" / "silver" / "orderbook_snapshot"
     write_parquet_dataset(pl.DataFrame([{"symbol": "BTC-USDT", "spread_bps": 1.25}]), dataset)

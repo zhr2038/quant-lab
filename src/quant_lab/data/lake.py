@@ -523,6 +523,10 @@ def upsert_parquet_dataset(
     df: pl.DataFrame,
     dataset_path: str | Path,
     key_columns: Sequence[str],
+    *,
+    max_rows: int | None = None,
+    max_rows_sort_by: Sequence[str] | None = None,
+    max_rows_descending: bool = True,
 ) -> int:
     path = Path(dataset_path)
     with _dataset_lock(path):
@@ -533,8 +537,33 @@ def upsert_parquet_dataset(
             available_keys = [column for column in key_columns if column in combined.columns]
             if available_keys:
                 combined = combined.unique(subset=available_keys, keep="last", maintain_order=True)
+            combined = _limit_dataframe_rows(
+                combined,
+                max_rows=max_rows,
+                sort_by=max_rows_sort_by,
+                descending=max_rows_descending,
+            )
         _write_parquet_dataset_unlocked(combined, path)
         return combined.height
+
+
+def _limit_dataframe_rows(
+    df: pl.DataFrame,
+    *,
+    max_rows: int | None,
+    sort_by: Sequence[str] | None,
+    descending: bool,
+) -> pl.DataFrame:
+    if max_rows is None or max_rows <= 0 or df.height <= max_rows:
+        return df
+    sort_columns = [column for column in (sort_by or []) if column in df.columns]
+    limited = df
+    if sort_columns:
+        try:
+            limited = limited.sort(sort_columns, descending=descending)
+        except Exception:
+            limited = df
+    return limited.head(max_rows)
 
 
 def validate_market_bars(records: Sequence[MarketBar | dict]) -> list[MarketBar]:

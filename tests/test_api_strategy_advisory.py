@@ -211,6 +211,49 @@ def test_strategy_opportunity_advisory_uses_lazy_scan_not_full_dataset_read(
     assert payload[0]["max_live_notional_usdt"] == 0.0
 
 
+def test_strategy_opportunity_advisory_caches_unchanged_source_signature(
+    tmp_path,
+    monkeypatch,
+):
+    lake = tmp_path / "lake"
+    monkeypatch.setenv("QUANT_LAB_LAKE_ROOT", str(lake))
+    monkeypatch.delenv("QUANT_LAB_API_TOKEN", raising=False)
+    api_main._STRATEGY_OPPORTUNITY_ADVISORY_CACHE.clear()
+    write_parquet_dataset(
+        pl.DataFrame(
+            [
+                {
+                    "as_of_ts": datetime(2026, 5, 20, tzinfo=UTC),
+                    "strategy_id": "SOL_F4_VOLUME_EXPANSION_PAPER_V1",
+                    "strategy_candidate": "v5.f4_volume_expansion_entry",
+                    "symbol": "SOL-USDT",
+                    "decision": "PAPER_READY",
+                    "recommended_mode": "paper",
+                    "horizon_hours": 24,
+                    "sample_count": 80,
+                    "cost_source_mix": '{"public_spread_proxy":80}',
+                    "max_live_notional_usdt": 0.0,
+                }
+            ]
+        ),
+        lake / "gold" / "strategy_opportunity_advisory",
+    )
+    client = TestClient(app)
+
+    first = client.get("/v1/strategy-opportunity-advisory")
+
+    def fail_gold_rows(*_args, **_kwargs):
+        raise AssertionError("unchanged advisory source should be served from cache")
+
+    monkeypatch.setattr(api_main, "_strategy_opportunity_advisory_gold_rows", fail_gold_rows)
+    second = client.get("/v1/strategy-opportunity-advisory")
+    api_main._STRATEGY_OPPORTUNITY_ADVISORY_CACHE.clear()
+
+    assert first.status_code == 200
+    assert second.status_code == 200
+    assert second.json() == first.json()
+
+
 def test_strategy_opportunity_advisory_keeps_older_strategy_rows_when_entry_quality_is_newer(
     tmp_path,
     monkeypatch,

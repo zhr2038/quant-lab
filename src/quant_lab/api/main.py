@@ -9,6 +9,7 @@ import io
 import json
 import os
 import subprocess
+import threading
 import time
 import zipfile
 from datetime import UTC, datetime, timedelta
@@ -62,6 +63,11 @@ STRATEGY_OPPORTUNITY_ADVISORY_SCHEMA_VERSION = "strategy_opportunity_advisory.v0
 STRATEGY_OPPORTUNITY_ADVISORY_TTL_SECONDS = 3 * 60 * 60
 STRATEGY_OPPORTUNITY_ADVISORY_MAX_API_ROWS = 50_000
 UNOBSERVABLE_TEXT_VALUES = {"", "none", "null", "nan", "not_observable", "unknown"}
+_STRATEGY_OPPORTUNITY_ADVISORY_CACHE_LOCK = threading.Lock()
+_STRATEGY_OPPORTUNITY_ADVISORY_CACHE: dict[
+    str,
+    tuple[tuple[Any, ...], tuple["StrategyOpportunityAdvisoryRow", ...]],
+] = {}
 
 
 class HealthResponse(BaseModel):
@@ -806,6 +812,21 @@ def _split_csv(value: str | None) -> list[str] | None:
 def _strategy_opportunity_advisory_rows(
     lake_root: Path,
 ) -> list[StrategyOpportunityAdvisoryRow]:
+    signature = _strategy_opportunity_advisory_source_signature(lake_root)
+    cache_key = str(lake_root.resolve())
+    with _STRATEGY_OPPORTUNITY_ADVISORY_CACHE_LOCK:
+        cached = _STRATEGY_OPPORTUNITY_ADVISORY_CACHE.get(cache_key)
+        if cached is not None and cached[0] == signature:
+            return list(cached[1])
+    rows = _strategy_opportunity_advisory_rows_uncached(lake_root)
+    with _STRATEGY_OPPORTUNITY_ADVISORY_CACHE_LOCK:
+        _STRATEGY_OPPORTUNITY_ADVISORY_CACHE[cache_key] = (signature, tuple(rows))
+    return rows
+
+
+def _strategy_opportunity_advisory_rows_uncached(
+    lake_root: Path,
+) -> list[StrategyOpportunityAdvisoryRow]:
     raw_rows: list[dict[str, Any]]
     raw_rows = _strategy_opportunity_advisory_gold_rows(lake_root)
     if not raw_rows:
@@ -816,6 +837,52 @@ def _strategy_opportunity_advisory_rows(
         if advisory is not None:
             parsed.append(advisory)
     return _dedupe_strategy_opportunity_advisory_rows(parsed)
+
+
+def _strategy_opportunity_advisory_source_signature(lake_root: Path) -> tuple[Any, ...]:
+    gold_path = lake_root / "gold" / "strategy_opportunity_advisory"
+    gold_files = _parquet_file_signature(gold_path)
+    if gold_files:
+        return ("gold", gold_files)
+    latest_report = _latest_strategy_opportunity_report_pack(lake_root)
+    if latest_report is not None:
+        try:
+            stat = latest_report.stat()
+        except OSError:
+            return ("report", str(latest_report), None, None)
+        return ("report", str(latest_report), stat.st_mtime_ns, stat.st_size)
+    return ("missing",)
+
+
+def _parquet_file_signature(path: Path) -> tuple[tuple[str, int, int], ...]:
+    if path.is_file() and path.suffix == ".parquet":
+        candidates = [path]
+    elif path.exists() and path.is_dir():
+        candidates = sorted(
+            file_path
+            for file_path in path.rglob("*.parquet")
+            if file_path.is_file() and not _is_internal_api_lake_path(file_path)
+        )
+    else:
+        return ()
+    signature: list[tuple[str, int, int]] = []
+    for file_path in candidates:
+        try:
+            stat = file_path.stat()
+        except OSError:
+            continue
+        relative_to = path if path.is_dir() else path.parent
+        signature.append(
+            (str(file_path.relative_to(relative_to)), stat.st_mtime_ns, stat.st_size)
+        )
+    return tuple(signature)
+
+
+def _is_internal_api_lake_path(path: Path) -> bool:
+    return any(
+        part == "._tmp" or part.startswith("__") or part.startswith(".")
+        for part in path.parts
+    )
 
 
 def _strategy_opportunity_advisory_gold_rows(lake_root: Path) -> list[dict[str, Any]]:
@@ -892,9 +959,22 @@ def _latest_strategy_opportunity_frame(df: pl.DataFrame) -> pl.DataFrame:
 
 
 def _strategy_opportunity_advisory_report_rows(lake_root: Path) -> list[dict[str, Any]]:
+    latest_report = _latest_strategy_opportunity_report_pack(lake_root)
+    if latest_report is None:
+        return []
+    try:
+        with zipfile.ZipFile(latest_report) as archive:
+            with archive.open("reports/strategy_opportunity_advisory.csv") as handle:
+                text = handle.read().decode("utf-8")
+    except (KeyError, OSError, UnicodeDecodeError, zipfile.BadZipFile):
+        return []
+    return list(csv.DictReader(io.StringIO(text)))
+
+
+def _latest_strategy_opportunity_report_pack(lake_root: Path) -> Path | None:
     exports_root = _exports_root_for_lake(lake_root)
     if not exports_root.exists():
-        return []
+        return None
     packs = sorted(
         exports_root.glob("quant_lab_expert_pack_*.zip"),
         key=lambda path: (path.stat().st_mtime, path.name),
@@ -903,12 +983,11 @@ def _strategy_opportunity_advisory_report_rows(lake_root: Path) -> list[dict[str
     for pack in packs:
         try:
             with zipfile.ZipFile(pack) as archive:
-                with archive.open("reports/strategy_opportunity_advisory.csv") as handle:
-                    text = handle.read().decode("utf-8")
-        except (KeyError, OSError, UnicodeDecodeError, zipfile.BadZipFile):
+                archive.getinfo("reports/strategy_opportunity_advisory.csv")
+        except (KeyError, OSError, zipfile.BadZipFile):
             continue
-        return list(csv.DictReader(io.StringIO(text)))
-    return []
+        return pack
+    return None
 
 
 def _exports_root_for_lake(lake_root: Path) -> Path:

@@ -840,21 +840,84 @@ def _is_stale(latest_bundle_ts: datetime, analysis_date: str) -> bool:
 def _config_not_consumed_summary(df: pl.DataFrame) -> dict[str, Any]:
     if df.is_empty():
         return {"count": 0, "unknown": False, "top_keys": []}
-    useful_columns = {"consumed", "status", "issue_type", "key", "raw_payload_json"}
+    useful_columns = {
+        "consumed",
+        "status",
+        "issue_type",
+        "key",
+        "config_key",
+        "path",
+        "name",
+        "raw_payload_json",
+        "blob",
+    }
     if not useful_columns.intersection(df.columns):
         return {"count": 0, "unknown": True, "top_keys": []}
 
-    keys: set[str] = set()
-    unknown = False
-    for row in df.to_dicts():
-        payload = _payload(row)
-        key = _first_text(row, payload, ["key", "config_key", "path", "name"])
-        if _row_indicates_not_consumed(row, payload):
-            if key:
-                keys.add(key)
-            else:
-                unknown = True
-    return {"count": len(keys), "unknown": unknown, "top_keys": sorted(keys)[:20]}
+    not_consumed_expr = _config_not_consumed_expr(df)
+    key_candidates = [
+        _non_empty_utf8_expr(column)
+        for column in ["key", "config_key", "path", "name"]
+        if column in df.columns
+    ]
+    key_expr = (
+        pl.coalesce(key_candidates + [pl.lit(None, dtype=pl.Utf8)])
+        if key_candidates
+        else pl.lit(None, dtype=pl.Utf8)
+    )
+    flagged = df.select(
+        [
+            not_consumed_expr.alias("__not_consumed"),
+            key_expr.alias("__config_key"),
+        ]
+    ).filter(pl.col("__not_consumed"))
+    if flagged.is_empty():
+        return {"count": 0, "unknown": False, "top_keys": []}
+    keyed = flagged.filter(pl.col("__config_key").is_not_null())
+    keys = (
+        sorted(
+            str(value)
+            for value in keyed.select(pl.col("__config_key").unique()).to_series().to_list()
+            if value is not None and str(value).strip()
+        )
+        if not keyed.is_empty()
+        else []
+    )
+    unknown = keyed.height < flagged.height
+    return {"count": len(keys), "unknown": unknown, "top_keys": keys[:20]}
+
+
+def _config_not_consumed_expr(df: pl.DataFrame) -> pl.Expr:
+    markers = ("not_consumed", "not consumed", "unused", "not-used")
+    expressions: list[pl.Expr] = []
+    if "consumed" in df.columns:
+        consumed_text = _non_empty_utf8_expr("consumed").str.to_lowercase()
+        expressions.append(consumed_text.is_in(["false", "0", "no"]))
+        if df.schema.get("consumed") == pl.Boolean:
+            expressions.append(pl.col("consumed").fill_null(True).not_())
+    for column in ["status", "issue_type", "raw_payload_json", "blob"]:
+        if column not in df.columns:
+            continue
+        text = _non_empty_utf8_expr(column).str.to_lowercase()
+        marker_expr = pl.lit(False)
+        for marker in markers:
+            marker_expr = marker_expr | text.str.contains(marker, literal=True)
+        expressions.append(marker_expr)
+    if not expressions:
+        return pl.lit(False)
+    combined = expressions[0]
+    for expression in expressions[1:]:
+        combined = combined | expression
+    return combined.fill_null(False)
+
+
+def _non_empty_utf8_expr(column: str) -> pl.Expr:
+    return (
+        pl.col(column)
+        .cast(pl.Utf8, strict=False)
+        .str.strip_chars()
+        .replace("", None)
+    )
 
 
 def _first_text(
@@ -1867,13 +1930,16 @@ def _truthy_column_count(df: pl.DataFrame, columns: list[str]) -> int | None:
     for column in columns:
         if column not in df.columns:
             continue
-        count = 0
-        for value in df[column].to_list():
-            if isinstance(value, bool):
-                count += int(value)
-            elif str(value).strip().lower() in {"true", "1", "yes", "y"}:
-                count += 1
-        return count
+        if df.schema.get(column) == pl.Boolean:
+            return int(df.select(pl.col(column).fill_null(False).sum()).item() or 0)
+        truthy = (
+            pl.col(column)
+            .cast(pl.Utf8, strict=False)
+            .str.strip_chars()
+            .str.to_lowercase()
+            .is_in(["true", "1", "yes", "y"])
+        )
+        return int(df.select(truthy.sum()).item() or 0)
     return None
 
 

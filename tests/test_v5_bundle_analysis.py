@@ -192,6 +192,28 @@ def test_config_not_consumed_count_unknown_when_unparseable(tmp_path):
     assert "config_not_consumed_count_unknown" in result.warnings
 
 
+def test_config_not_consumed_count_uses_vectorized_raw_markers(tmp_path):
+    lake = tmp_path / "lake"
+    _write_manifest(lake)
+    write_parquet_dataset(
+        pl.DataFrame(
+            [
+                {"key": "alpha_threshold", "raw_payload_json": '{"status":"not_consumed"}'},
+                {"key": "alpha_threshold", "raw_payload_json": '{"status":"not_consumed"}'},
+                {"config_key": "risk.max_weight", "consumed": "false"},
+                {"path": "risk.min_score", "status": "consumed", "consumed": "true"},
+            ]
+        ),
+        lake / "silver/v5_config_audit",
+    )
+
+    result = analyze_v5_telemetry(lake, date="2026-05-10")
+
+    assert result.config_not_consumed_count == 2
+    assert result.config_not_consumed_count_unknown is False
+    assert result.config_not_consumed_top_keys == ["alpha_threshold", "risk.max_weight"]
+
+
 def test_high_score_blocked_next_action_matches_matured_count(tmp_path):
     lake = tmp_path / "lake"
     _write_manifest(lake)
@@ -213,6 +235,26 @@ def test_high_score_blocked_next_action_matches_matured_count(tmp_path):
 
     assert "review high_score_blocked_matured_without_label" in result.next_actions
     assert result.high_score_blocked_matured_count == 1
+
+
+def test_matured_and_profitable_counts_handle_string_flags(tmp_path):
+    lake = tmp_path / "lake"
+    _write_manifest(lake)
+    write_parquet_dataset(
+        pl.DataFrame(
+            [
+                {"matured": "true", "profitable": "true", **_event_row("outcome_1")},
+                {"matured": "1", "profitable": "false", **_event_row("outcome_2")},
+                {"matured": "false", "profitable": "yes", **_event_row("outcome_3")},
+            ]
+        ),
+        lake / "silver/v5_high_score_blocked_outcome",
+    )
+
+    result = analyze_v5_telemetry(lake, date="2026-05-10")
+
+    assert result.high_score_blocked_matured_count == 2
+    assert result.high_score_blocked_profitable_count == 2
 
 
 def test_quant_lab_shadow_mode_marks_hypothetical_not_actual_violation(tmp_path):

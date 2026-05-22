@@ -23,7 +23,9 @@ def test_v5_health_analysis_stays_lightweight():
     assert "build-strategy-evidence" not in unit
     assert "build-alpha-discovery-board" not in unit
     assert "--remote-max-files 1" in sync_unit
+    assert "--max-scan-bundles 1" in sync_unit
     assert "QUANT_LAB_V5_SYNC_REMOTE_MAX_FILES=1" in sync_unit
+    assert "QUANT_LAB_V5_SYNC_MAX_SCAN_BUNDLES=1" in sync_unit
 
 
 def test_candidate_research_refresh_is_separate_from_alpha_evidence():

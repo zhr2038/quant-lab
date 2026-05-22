@@ -1256,6 +1256,7 @@ def ingest_v5_inbox_command(
     redacted_archive_dir: Annotated[Path, typer.Option("--redacted-archive-dir")],
     strategy: Annotated[str, typer.Option("--strategy")] = "v5",
     max_bundles: Annotated[int | None, typer.Option("--max-bundles", min=1)] = None,
+    max_scan_bundles: Annotated[int | None, typer.Option("--max-scan-bundles", min=1)] = None,
     newest_first: Annotated[bool, typer.Option("--newest-first/--oldest-first")] = False,
     include_historical_outcomes: Annotated[
         bool,
@@ -1269,6 +1270,7 @@ def ingest_v5_inbox_command(
         redacted_archive_dir=redacted_archive_dir,
         strategy=strategy,
         max_bundles=max_bundles,
+        max_scan_bundles=max_scan_bundles,
         newest_first=newest_first,
         include_historical_outcomes=include_historical_outcomes,
     )
@@ -1307,6 +1309,7 @@ def sync_v5_telemetry_command(
         typer.Option("--max-skipped-files-reported", min=0),
     ] = 25,
     remote_max_files: Annotated[int | None, typer.Option("--remote-max-files", min=1)] = None,
+    max_scan_bundles: Annotated[int | None, typer.Option("--max-scan-bundles", min=1)] = None,
     include_historical_outcomes: Annotated[
         bool,
         typer.Option("--include-historical-outcomes/--skip-historical-outcomes"),
@@ -1323,6 +1326,10 @@ def sync_v5_telemetry_command(
     if effective_remote_max_files is None:
         env_value = os.environ.get("QUANT_LAB_V5_SYNC_REMOTE_MAX_FILES")
         effective_remote_max_files = int(env_value) if env_value else effective_max_bundles
+    effective_max_scan_bundles = max_scan_bundles
+    if effective_max_scan_bundles is None:
+        env_value = os.environ.get("QUANT_LAB_V5_SYNC_MAX_SCAN_BUNDLES")
+        effective_max_scan_bundles = int(env_value) if env_value else effective_remote_max_files
 
     def _run_sync() -> dict[str, object]:
         pull = RemoteBundlePuller().pull_bundles(cfg, max_files=effective_remote_max_files)
@@ -1337,6 +1344,7 @@ def sync_v5_telemetry_command(
                 strategy=cfg.strategy,
                 limits=cfg.bundle_limits,
                 max_bundles=effective_max_bundles,
+                max_scan_bundles=effective_max_scan_bundles,
                 newest_first=newest_first,
                 max_skipped_files_reported=max_skipped_files_reported,
                 run_analysis=False,
@@ -1353,6 +1361,7 @@ def sync_v5_telemetry_command(
             "analysis": analysis.model_dump(mode="json") if analysis else None,
             "max_bundles": effective_max_bundles,
             "remote_max_files": effective_remote_max_files,
+            "max_scan_bundles": effective_max_scan_bundles,
             "newest_first": newest_first,
             "include_historical_outcomes": include_historical_outcomes,
         }

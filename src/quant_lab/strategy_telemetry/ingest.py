@@ -254,6 +254,7 @@ def ingest_v5_inbox(
     strategy: str = "v5",
     limits: BundleLimits | None = None,
     max_bundles: int | None = None,
+    max_scan_bundles: int | None = None,
     newest_first: bool = False,
     max_skipped_files_reported: int | None = None,
     run_analysis: bool = True,
@@ -271,6 +272,9 @@ def ingest_v5_inbox(
         key=lambda path: path.name,
         reverse=newest_first,
     )
+    scanned_bundle_count = len(bundle_paths)
+    if max_scan_bundles is not None:
+        bundle_paths = bundle_paths[: max(int(max_scan_bundles), 1)]
     for bundle_path in bundle_paths:
         if max_bundles is not None and len(processed) >= max_bundles:
             break
@@ -307,6 +311,10 @@ def ingest_v5_inbox(
         remaining = max(len([path for path in bundle_paths if path.exists()]) - len(processed), 0)
         if remaining:
             warnings.append(f"max_bundles_limit_applied:{max_bundles}")
+    if max_scan_bundles is not None and scanned_bundle_count > len(bundle_paths):
+        warnings.append(
+            f"max_scan_bundles_limit_applied:{len(bundle_paths)}_of_{scanned_bundle_count}"
+        )
     return V5InboxIngestResult(
         strategy=strategy,
         inbox_dir=str(inbox_dir),

@@ -11,7 +11,11 @@ import typer
 from quant_lab.contracts.models import AlphaEvidence, AlphaResearchSpec
 from quant_lab.costs.calibrate import calibrate_costs_for_day
 from quant_lab.costs.health import read_cost_health_daily
-from quant_lab.data.lake import compact_parquet_dataset, compact_parquet_directory_files
+from quant_lab.data.lake import (
+    compact_parquet_dataset,
+    compact_parquet_directory_files,
+    repair_parquet_partition_values,
+)
 from quant_lab.e2e import run_v5_contract_e2e
 from quant_lab.export.daily import export_daily_pack, validate_expert_pack
 from quant_lab.features.publish import feature_health
@@ -601,6 +605,51 @@ def compact_lake_dataset_command(
                 target_rows_per_file=target_rows_per_file,
                 max_source_files_per_batch=max_source_files_per_batch,
             )
+        ),
+    )
+    typer.echo(json.dumps(result.__dict__, indent=2, sort_keys=True))
+
+
+@app.command("repair-lake-partitions")
+def repair_lake_partitions_command(
+    lake_root: Annotated[
+        Path,
+        typer.Option(
+            "--lake-root",
+            file_okay=False,
+            dir_okay=True,
+            writable=True,
+            help="quant-lab lake root containing the dataset.",
+        ),
+    ],
+    dataset: Annotated[
+        str,
+        typer.Option(
+            "--dataset",
+            help=(
+                "Dataset name: okx_public_ws, trade_print, orderbook_snapshot, "
+                "or a relative path."
+            ),
+        ),
+    ],
+    target_rows_per_file: Annotated[
+        int,
+        typer.Option("--target-rows-per-file", min=1),
+    ] = 250_000,
+    max_source_files_per_batch: Annotated[
+        int,
+        typer.Option("--max-source-files-per-batch", min=1),
+    ] = 5_000,
+) -> None:
+    dataset_path, partition_by = _compact_dataset_target(lake_root, dataset)
+    result = run_with_job_metrics(
+        lake_root=lake_root,
+        job_name=f"repair-lake-partitions:{dataset}",
+        func=lambda: repair_parquet_partition_values(
+            dataset_path,
+            partition_by=partition_by,
+            target_rows_per_file=target_rows_per_file,
+            max_source_files_per_batch=max_source_files_per_batch,
         ),
     )
     typer.echo(json.dumps(result.__dict__, indent=2, sort_keys=True))

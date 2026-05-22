@@ -90,6 +90,40 @@ compact_dataset_direct_only() {
   echo "FINISH_DIRECT_COMPACT dataset=${dataset}"
 }
 
+repair_dataset_partitions() {
+  local dataset="$1"
+  local target_rows="$2"
+  local batch_files="$3"
+  local dataset_path="${LAKE_ROOT}/${dataset}"
+  local status
+
+  if [[ ! -d "${dataset_path}" ]]; then
+    echo "SKIP_REPAIR_PARTITIONS dataset=${dataset} reason=missing"
+    return
+  fi
+  if ! find "${dataset_path}" -type d \( -name '*=__null__' -o -name '*=__empty__' \) \
+      -print -quit | grep -q .; then
+    echo "SKIP_REPAIR_PARTITIONS dataset=${dataset} reason=no_bad_partitions"
+    return
+  fi
+
+  echo "START_REPAIR_PARTITIONS dataset=${dataset} timeout_seconds=${COMPACT_DATASET_TIMEOUT_SECONDS}"
+  set +e
+  timeout --kill-after=30s "${COMPACT_DATASET_TIMEOUT_SECONDS}s" \
+    "${QLAB_BIN}" repair-lake-partitions \
+    --lake-root "${LAKE_ROOT}" \
+    --dataset "${dataset}" \
+    --target-rows-per-file "${target_rows}" \
+    --max-source-files-per-batch "${batch_files}"
+  status="$?"
+  set -e
+  if (( status != 0 )); then
+    echo "WARN_REPAIR_PARTITIONS_FAILED dataset=${dataset} status=${status}"
+    return 0
+  fi
+  echo "FINISH_REPAIR_PARTITIONS dataset=${dataset}"
+}
+
 parquet_file_count() {
   local dataset="$1"
   local dataset_path="${LAKE_ROOT}/${dataset}"
@@ -163,14 +197,17 @@ if [[ "${COMPACT_RAW_OKX_WS}" == "1" ]]; then
   # Raw websocket bronze is partitioned by day/channel/inst_id. Compact leaf
   # partitions instead of the dataset root; root compaction can multiply files by
   # writing one output per partition per source batch.
+  repair_dataset_partitions "bronze/okx_public_ws" 500000 100
   compact_leaf_partitions_if_file_count_at_least "bronze/okx_public_ws" 500000 100 20
 else
   echo "SKIP_COMPACT_RAW_OKX_WS dataset=bronze/okx_public_ws opt_in=COMPACT_RAW_OKX_WS"
 fi
+repair_dataset_partitions "silver/trade_print" 500000 100
 compact_leaf_partitions_if_file_count_at_least "silver/trade_print" 500000 100 20
 
 # Order book snapshots are denser than raw websocket and trade-print files.
 # Compact leaf partitions to avoid multiplying partition files across batches.
+repair_dataset_partitions "silver/orderbook_snapshot" 500000 100
 compact_leaf_partitions_if_file_count_at_least "silver/orderbook_snapshot" 500000 100 10
 
 for dataset in "${V5_TELEMETRY_DATASETS[@]}"; do

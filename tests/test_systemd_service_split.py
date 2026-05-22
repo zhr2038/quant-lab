@@ -49,6 +49,9 @@ def test_scheduled_compaction_covers_hot_ws_datasets():
 
     assert "compact_lake_hot_datasets.sh" in unit
     assert "compact-lake-dataset" in script
+    assert "repair-lake-partitions" in script
+    assert "START_REPAIR_PARTITIONS" in script
+    assert "WARN_REPAIR_PARTITIONS_FAILED" in script
     assert "COMPACT_DATASET_TIMEOUT_SECONDS" in script
     assert "COMPACT_RUN_BUDGET_SECONDS" in script
     assert "WARN_COMPACT_FAILED" in script
@@ -67,13 +70,19 @@ def test_scheduled_compaction_covers_hot_ws_datasets():
     assert '"silver/trade_print"' in script
     assert '"silver/orderbook_snapshot"' in script
     assert (
+        'repair_dataset_partitions "bronze/okx_public_ws" '
+        "500000 100"
+    ) in script
+    assert (
         'compact_leaf_partitions_if_file_count_at_least "bronze/okx_public_ws" '
         "500000 100 20"
     ) in script
+    assert 'repair_dataset_partitions "silver/trade_print" 500000 100' in script
     assert (
         'compact_leaf_partitions_if_file_count_at_least "silver/trade_print" '
         "500000 100 20"
     ) in script
+    assert 'repair_dataset_partitions "silver/orderbook_snapshot" 500000 100' in script
     assert (
         'compact_leaf_partitions_if_file_count_at_least "silver/orderbook_snapshot" '
         "500000 100 10"

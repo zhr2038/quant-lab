@@ -11,6 +11,7 @@ from quant_lab.data.lake import (
     compact_parquet_directory_files,
     invalid_parquet_files,
     read_parquet_dataset,
+    repair_parquet_partition_values,
     upsert_parquet_dataset,
     write_parquet_dataset,
 )
@@ -351,6 +352,73 @@ def test_compact_parquet_dataset_preserves_rows_and_reduces_files(tmp_path):
     assert result.output_file_count == 1
     assert read_back.height == 5
     assert sorted(read_back["value"].to_list()) == list(range(5))
+
+
+def test_repair_parquet_partition_values_moves_null_day_partition(tmp_path):
+    dataset = tmp_path / "lake" / "silver" / "trade_print"
+    bad_leaf = dataset / "day=__null__" / "symbol=BTC-USDT"
+    bad_leaf.mkdir(parents=True)
+    pl.DataFrame(
+        [
+            {
+                "symbol": "BTC-USDT",
+                "day": None,
+                "trade_id": "1",
+                "ts": None,
+                "ingest_ts": "2026-05-23T01:02:03Z",
+                "price": 100.0,
+            }
+        ]
+    ).write_parquet(bad_leaf / "bad.parquet")
+
+    result = repair_parquet_partition_values(
+        dataset,
+        partition_by=["day", "symbol"],
+        target_rows_per_file=10,
+    )
+    read_back = read_parquet_dataset(dataset)
+
+    assert result.bad_file_count == 1
+    assert result.repaired_rows == 1
+    assert result.removed_bad_file_count == 1
+    assert not list(dataset.rglob("*__null__*"))
+    assert list((dataset / "day=2026-05-23" / "symbol=BTC-USDT").glob("*.parquet"))
+    assert read_back.height == 1
+    assert read_back["day"][0] == "2026-05-23"
+    assert read_back["ts"][0] == "2026-05-23T01:02:03Z"
+
+
+def test_repair_parquet_partition_values_fills_raw_unknown_keys(tmp_path):
+    dataset = tmp_path / "lake" / "bronze" / "okx_public_ws"
+    bad_leaf = dataset / "day=2026-05-23" / "channel=__null__" / "inst_id=__null__"
+    bad_leaf.mkdir(parents=True)
+    pl.DataFrame(
+        [
+            {
+                "day": "2026-05-23",
+                "channel": None,
+                "inst_id": None,
+                "received_at": "2026-05-23T01:02:03Z",
+                "raw_json": "{}",
+            }
+        ]
+    ).write_parquet(bad_leaf / "bad.parquet")
+
+    result = repair_parquet_partition_values(
+        dataset,
+        partition_by=["day", "channel", "inst_id"],
+        target_rows_per_file=10,
+    )
+    read_back = read_parquet_dataset(dataset)
+
+    assert result.bad_file_count == 1
+    assert result.repaired_rows == 1
+    assert not list(dataset.rglob("*__null__*"))
+    assert list(
+        (dataset / "day=2026-05-23" / "channel=unknown" / "inst_id=unknown").glob("*.parquet")
+    )
+    assert read_back["channel"][0] == "unknown"
+    assert read_back["inst_id"][0] == "unknown"
 
 
 def test_compact_parquet_directory_files_preserves_partition_dirs(tmp_path):

@@ -69,6 +69,16 @@ class CompactParquetResult:
     max_source_files_per_batch: int
 
 
+@dataclass(frozen=True)
+class RepairParquetPartitionResult:
+    dataset_path: str
+    bad_file_count: int
+    repaired_file_count: int
+    repaired_rows: int
+    removed_bad_file_count: int
+    partition_by: list[str]
+
+
 def write_parquet_dataset(
     df: pl.DataFrame,
     dataset_path: str | Path,
@@ -384,6 +394,73 @@ def _compact_direct_parquet_files_unlocked(
         raise
 
 
+def repair_parquet_partition_values(
+    dataset_path: str | Path,
+    *,
+    partition_by: str | Sequence[str] | None,
+    bad_values: Sequence[str] = ("__null__", "__empty__"),
+    target_rows_per_file: int = 250_000,
+    max_source_files_per_batch: int = 5_000,
+) -> RepairParquetPartitionResult:
+    """Rewrite files from invalid hive partition directories into valid directories.
+
+    This is a targeted maintenance primitive for append-only datasets. It avoids
+    a full dataset rewrite by reading only files under partition directories such
+    as ``day=__null__`` and rewriting those rows with repairable partition values.
+    """
+
+    path = Path(dataset_path)
+    partition_columns = _partition_columns(partition_by)
+    with _dataset_lock(path, timeout_seconds=120.0):
+        bad_files = _bad_partition_files(path, partition_columns, bad_values)
+        bad_file_count = len(bad_files)
+        if not bad_files:
+            return RepairParquetPartitionResult(
+                dataset_path=str(path),
+                bad_file_count=0,
+                repaired_file_count=0,
+                repaired_rows=0,
+                removed_bad_file_count=0,
+                partition_by=partition_columns,
+            )
+
+        repaired_file_count = 0
+        repaired_rows = 0
+        for batch_files in _chunks(bad_files, max(max_source_files_per_batch, 1)):
+            frame = _read_parquet_files(batch_files)
+            if frame.is_empty():
+                continue
+            repaired = _repair_partition_frame(frame, partition_columns)
+            result = _append_parquet_dataset_unlocked(
+                repaired,
+                path,
+                partition_by=partition_columns,
+                target_rows_per_file=target_rows_per_file,
+                file_prefix="repair",
+                auto_compact=False,
+            )
+            repaired_file_count += result.file_count
+            repaired_rows += result.rows_written
+
+        removed = 0
+        touched_dirs = {file.parent for file in bad_files}
+        for source_file in bad_files:
+            try:
+                source_file.unlink()
+                removed += 1
+            except FileNotFoundError:
+                pass
+        _remove_empty_directories(touched_dirs, stop_at=path)
+        return RepairParquetPartitionResult(
+            dataset_path=str(path),
+            bad_file_count=bad_file_count,
+            repaired_file_count=repaired_file_count,
+            repaired_rows=repaired_rows,
+            removed_bad_file_count=removed,
+            partition_by=partition_columns,
+        )
+
+
 def read_parquet_dataset(dataset_path: str | Path) -> pl.DataFrame:
     files = _parquet_files(dataset_path)
     if not files:
@@ -574,6 +651,23 @@ def _all_parquet_files(dataset_path: str | Path) -> list[Path]:
     )
 
 
+def _bad_partition_files(
+    dataset_path: Path,
+    partition_columns: Sequence[str],
+    bad_values: Sequence[str],
+) -> list[Path]:
+    if not partition_columns:
+        return []
+    bad_parts = {
+        f"{column}={bad_value}" for column in partition_columns for bad_value in bad_values
+    }
+    return [
+        path
+        for path in _parquet_files(dataset_path)
+        if any(part in bad_parts for part in path.relative_to(dataset_path).parts)
+    ]
+
+
 def _is_internal_lake_file(path: Path) -> bool:
     return (
         any(part == "._tmp" or part.startswith("__") for part in path.parts)
@@ -707,6 +801,88 @@ def _partitioned_chunks(
         values = key if isinstance(key, tuple) else (key,)
         chunks.append((dict(zip(available, values, strict=False)), group))
     return chunks
+
+
+def _repair_partition_frame(df: pl.DataFrame, partition_columns: Sequence[str]) -> pl.DataFrame:
+    repaired = _fill_event_timestamp_columns(df)
+    for column in partition_columns:
+        if column == "day":
+            repaired = _fill_day_column(repaired)
+        elif column == "symbol":
+            repaired = _fill_symbol_column(repaired)
+        else:
+            repaired = _fill_text_column(repaired, column, fallback="unknown")
+    return repaired
+
+
+def _fill_event_timestamp_columns(df: pl.DataFrame) -> pl.DataFrame:
+    if "ts" not in df.columns:
+        return df
+    candidates = [
+        column
+        for column in ["ts", "received_at", "ingest_ts", "created_at", "updated_at"]
+        if column in df.columns
+    ]
+    if not candidates:
+        return df
+    expressions = [_non_empty_string_expr(column) for column in candidates]
+    return df.with_columns(pl.coalesce(expressions).alias("ts"))
+
+
+def _fill_day_column(df: pl.DataFrame) -> pl.DataFrame:
+    candidates = []
+    if "day" in df.columns:
+        candidates.append(_non_empty_string_expr("day"))
+    candidates.extend(
+        _non_empty_string_expr(column).str.slice(0, 10)
+        for column in ["ts", "received_at", "ingest_ts", "created_at", "updated_at"]
+        if column in df.columns
+    )
+    if not candidates:
+        return df.with_columns(pl.lit("unknown").alias("day"))
+    return df.with_columns(
+        pl.coalesce(candidates + [pl.lit("unknown", dtype=pl.Utf8)]).alias("day")
+    )
+
+
+def _fill_symbol_column(df: pl.DataFrame) -> pl.DataFrame:
+    candidates = []
+    if "symbol" in df.columns:
+        candidates.append(_non_empty_string_expr("symbol"))
+    if "inst_id" in df.columns:
+        candidates.append(_non_empty_string_expr("inst_id"))
+    if not candidates:
+        return df.with_columns(pl.lit("unknown").alias("symbol"))
+    return df.with_columns(
+        pl.coalesce(candidates + [pl.lit("unknown", dtype=pl.Utf8)])
+        .map_elements(normalize_symbol, return_dtype=pl.Utf8)
+        .alias("symbol")
+    )
+
+
+def _fill_text_column(df: pl.DataFrame, column: str, *, fallback: str) -> pl.DataFrame:
+    if column not in df.columns:
+        return df.with_columns(pl.lit(fallback).alias(column))
+    return df.with_columns(
+        pl.coalesce([_non_empty_string_expr(column), pl.lit(fallback, dtype=pl.Utf8)]).alias(column)
+    )
+
+
+def _non_empty_string_expr(column: str) -> pl.Expr:
+    value = pl.col(column).cast(pl.Utf8).str.strip_chars()
+    return pl.when(value.is_not_null() & (value != "")).then(value).otherwise(None)
+
+
+def _remove_empty_directories(directories: set[Path], *, stop_at: Path) -> None:
+    stop = stop_at.resolve()
+    for directory in sorted(directories, key=lambda item: len(item.parts), reverse=True):
+        current = directory
+        while current != stop and current.exists():
+            try:
+                current.rmdir()
+            except OSError:
+                break
+            current = current.parent
 
 
 def _chunks(values: Sequence[Path], size: int) -> list[Sequence[Path]]:

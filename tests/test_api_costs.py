@@ -264,6 +264,54 @@ def test_cost_estimate_api_uses_same_symbol_public_proxy_for_trending_regime(
         assert variant_payload["source"] != "global_default"
 
 
+def test_cost_estimate_api_uses_lazy_symbol_filtered_lake_read(tmp_path, monkeypatch):
+    lake = tmp_path / "lake"
+    monkeypatch.setenv("QUANT_LAB_LAKE_ROOT", str(lake))
+    write_parquet_dataset(
+        pl.DataFrame(
+            [
+                _cost_row(
+                    symbol="BTC-USDT",
+                    regime="public_proxy",
+                    notional_bucket="all",
+                    total_cost_bps_p75=3.0,
+                    source="public_spread_proxy",
+                ),
+                _cost_row(
+                    symbol="BNB-USDT",
+                    regime="public_proxy",
+                    notional_bucket="all",
+                    total_cost_bps_p75=1.75,
+                    source="public_spread_proxy",
+                ),
+            ]
+        ),
+        lake / "gold/cost_bucket_daily",
+    )
+
+    def fail_full_read(*args, **kwargs):
+        raise AssertionError("cost estimate should lazy-filter cost_bucket_daily")
+
+    monkeypatch.setattr("quant_lab.costs.model.read_parquet_dataset", fail_full_read)
+
+    response = TestClient(app).get(
+        "/v1/costs/estimate",
+        params={
+            "symbol": "OKX:BNB-USDT",
+            "regime": "Trending",
+            "notional_usdt": 5_000,
+            "quantile": "p75",
+        },
+    )
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["normalized_symbol"] == "BNB-USDT"
+    assert payload["selected_total_cost_bps"] == 1.75
+    assert payload["source"] == "public_spread_proxy"
+    assert payload["source"] != "global_default"
+
+
 def test_cost_estimate_api_unknown_symbol_uses_degraded_global_default(tmp_path, monkeypatch):
     lake = tmp_path / "lake"
     monkeypatch.setenv("QUANT_LAB_LAKE_ROOT", str(lake))

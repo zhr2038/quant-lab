@@ -4,10 +4,11 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
+import polars as pl
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 from quant_lab.contracts.models import CostEstimate, FillEvent
-from quant_lab.data.lake import read_parquet_dataset
+from quant_lab.data.lake import read_parquet_dataset, read_parquet_lazy
 from quant_lab.symbols import normalize_optional_symbol, normalize_symbol
 
 logger = logging.getLogger(__name__)
@@ -230,27 +231,108 @@ def estimate_cost_from_lake(
     quantile: str = "p75",
     notional_bucket: str | None = None,
 ) -> CostEstimate:
+    requested_symbol = normalize_symbol(symbol)
     try:
-        df = read_parquet_dataset(Path(lake_root) / "gold" / "cost_bucket_daily")
+        rows, dataset_has_rows = _cost_bucket_rows_for_symbol(Path(lake_root), requested_symbol)
     except Exception:
         logger.warning("Cost bucket daily read failed; using global default", exc_info=True)
         return _global_default_estimate(
-            normalize_symbol(symbol),
+            requested_symbol,
             regime,
             notional_usdt,
             quantile,
             fallback_reason="service_unavailable",
             degraded_reason="global_default_cost",
         )
-    rows = [] if df.is_empty() else df.to_dicts()
+    if not rows:
+        return _global_default_estimate(
+            requested_symbol,
+            regime,
+            notional_usdt,
+            quantile,
+            fallback_reason="symbol_missing" if dataset_has_rows else "service_unavailable",
+            degraded_reason="global_default_cost",
+        )
     return estimate_cost_from_cost_bucket_daily_rows(
-        symbol=symbol,
+        symbol=requested_symbol,
         regime=regime,
         notional_usdt=notional_usdt,
         quantile=quantile,
         rows=rows,
         notional_bucket=notional_bucket,
     )
+
+
+def _cost_bucket_rows_for_symbol(
+    lake_root: Path, normalized_symbol: str
+) -> tuple[list[dict[str, Any]], bool]:
+    dataset_path = lake_root / "gold" / "cost_bucket_daily"
+    try:
+        lazy = read_parquet_lazy(dataset_path)
+        columns = set(lazy.collect_schema().names())
+    except Exception:
+        df = read_parquet_dataset(dataset_path)
+        if df.is_empty():
+            return [], False
+        if "symbol" not in df.columns and "normalized_symbol" not in df.columns:
+            return [], True
+        filtered = df.filter(_eager_cost_symbol_filter(df, normalized_symbol))
+        return filtered.to_dicts(), True
+
+    if "symbol" not in columns and "normalized_symbol" not in columns:
+        dataset_has_rows = _lazy_row_count(lazy) > 0
+        return [], dataset_has_rows
+
+    filtered = lazy.filter(_lazy_cost_symbol_filter(columns, normalized_symbol))
+    rows = filtered.collect().to_dicts()
+    if rows:
+        return rows, True
+    return [], _lazy_row_count(lazy) > 0
+
+
+def _lazy_cost_symbol_filter(columns: set[str], normalized_symbol: str) -> pl.Expr:
+    lookup_values = _cost_symbol_lookup_values(normalized_symbol)
+    global_values = {"", "GLOBAL", "ALL", "*"}
+    expressions: list[pl.Expr] = []
+    for column in ("symbol", "normalized_symbol"):
+        if column not in columns:
+            continue
+        normalized_column = (
+            pl.col(column).cast(pl.Utf8, strict=False).str.to_uppercase().fill_null("")
+        )
+        expressions.append(normalized_column.is_in(sorted(lookup_values | global_values)))
+    return _or_expressions(expressions)
+
+
+def _eager_cost_symbol_filter(df: pl.DataFrame, normalized_symbol: str) -> pl.Expr:
+    return _lazy_cost_symbol_filter(set(df.columns), normalized_symbol)
+
+
+def _cost_symbol_lookup_values(normalized_symbol: str) -> set[str]:
+    symbol = normalize_symbol(normalized_symbol)
+    values = {symbol}
+    if "-" in symbol:
+        values.add(symbol.replace("-", "/"))
+        values.add(symbol.replace("-", "_"))
+        values.add(symbol.replace("-", ""))
+    values.update({f"OKX:{value}" for value in list(values)})
+    return {value.upper() for value in values if value}
+
+
+def _or_expressions(expressions: list[pl.Expr]) -> pl.Expr:
+    if not expressions:
+        return pl.lit(False)
+    combined = expressions[0]
+    for expression in expressions[1:]:
+        combined = combined | expression
+    return combined
+
+
+def _lazy_row_count(lazy: pl.LazyFrame) -> int:
+    try:
+        return int(lazy.select(pl.len().alias("rows")).collect().item(0, "rows") or 0)
+    except Exception:
+        return 0
 
 
 def estimate_cost_from_cost_bucket_daily_rows(
@@ -391,9 +473,7 @@ def build_cost_bucket_daily_inputs(
 
     for raw_event in fill_events:
         event = (
-            raw_event
-            if isinstance(raw_event, FillEvent)
-            else FillEvent.model_validate(raw_event)
+            raw_event if isinstance(raw_event, FillEvent) else FillEvent.model_validate(raw_event)
         )
         notional = abs(event.fill_price * event.fill_size)
         if notional <= 0:
@@ -445,8 +525,7 @@ def cost_bucket_daily_to_cost_buckets(
         buckets.append(
             CostBucket(
                 bucket_id=(
-                    f"{row.day}:{row.symbol}:{row.regime}:"
-                    f"{row.event_type}:{row.notional_bucket}"
+                    f"{row.day}:{row.symbol}:{row.regime}:{row.event_type}:{row.notional_bucket}"
                 ),
                 symbol=row.symbol if row.symbol != "GLOBAL" else None,
                 regime=row.regime if row.regime != "global_default" else None,
@@ -700,9 +779,7 @@ def _all_in_cost_components(
     )
 
     fee_bps = observed_fee_bps if fee_is_actual else CONFIG_FEE_BPS
-    slippage_bps = (
-        observed_slippage_bps if slippage_is_actual else CONFIG_SLIPPAGE_BPS
-    )
+    slippage_bps = observed_slippage_bps if slippage_is_actual else CONFIG_SLIPPAGE_BPS
     spread_bps = observed_spread_bps
 
     uncertainty_buffer = 0.0
@@ -713,13 +790,7 @@ def _all_in_cost_components(
     if stale:
         uncertainty_buffer += STALE_BUCKET_UNCERTAINTY_BUFFER_BPS
 
-    one_way = (
-        fee_bps
-        + spread_bps
-        + slippage_bps
-        + CONFIG_DELAY_COST_BPS
-        + uncertainty_buffer
-    )
+    one_way = fee_bps + spread_bps + slippage_bps + CONFIG_DELAY_COST_BPS + uncertainty_buffer
     return {
         "fee_bps": fee_bps,
         "fee_source": "actual_fills_bills" if fee_is_actual else "config_fee_bps",
@@ -727,9 +798,7 @@ def _all_in_cost_components(
         "spread_source": "fresh_orderbook_p75" if spread_bps > 0 and not stale else "unavailable",
         "slippage_bps": slippage_bps,
         "slippage_source": (
-            "v5_order_lifecycle_arrival_mid"
-            if slippage_is_actual
-            else "config_slippage_bps"
+            "v5_order_lifecycle_arrival_mid" if slippage_is_actual else "config_slippage_bps"
         ),
         "delay_cost_bps": CONFIG_DELAY_COST_BPS,
         "delay_cost_source": "config_delay_bps",

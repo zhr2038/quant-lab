@@ -113,6 +113,29 @@ def test_web_diagnostics_use_dataset_freshness_not_missing_for_populated_tables(
         assert rows[dataset]["freshness_status"] != "missing"
 
 
+def test_lake_diagnostics_uses_metadata_for_core_datasets(tmp_path, monkeypatch):
+    lake_root = _fixture_lake(tmp_path)
+    original = readers.read_parquet_dataset
+    core_paths = {
+        (lake_root / relative_path).resolve()
+        for relative_path in readers.CORE_DIAGNOSTIC_DATASETS.values()
+    }
+
+    def guarded_read_parquet_dataset(path):
+        if Path(path).resolve() in core_paths:
+            raise AssertionError("lake diagnostics should not full-read core datasets")
+        return original(path)
+
+    monkeypatch.setattr(readers, "read_parquet_dataset", guarded_read_parquet_dataset)
+
+    diagnostics = readers.lake_diagnostics(lake_root)
+    rows = {row["dataset"]: row for row in diagnostics["datasets"].to_dicts()}
+
+    assert rows["silver/market_bar"]["rows"] == 3
+    assert rows["gold/risk_permission"]["rows"] == 2
+    assert diagnostics["latest_market_bar_ts"] == datetime(2026, 5, 10, 2, tzinfo=UTC)
+
+
 def test_data_health_stale_datasets_use_metadata_instead_of_full_raw_reads(
     tmp_path,
     monkeypatch,

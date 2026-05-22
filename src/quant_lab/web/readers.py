@@ -33,8 +33,7 @@ DATASET_PATHS = {
     "expanded_universe_quality": Path("gold") / "expanded_universe_quality",
     "expanded_universe_candidate_event": Path("gold") / "expanded_universe_candidate_event",
     "expanded_universe_candidate_label": Path("gold") / "expanded_universe_candidate_label",
-    "expanded_universe_promotion_queue": Path("gold")
-    / "expanded_universe_promotion_queue",
+    "expanded_universe_promotion_queue": Path("gold") / "expanded_universe_promotion_queue",
     "expanded_crypto_universe_shadow": Path("gold") / "expanded_crypto_universe_shadow",
     "symbol_quality_score": Path("gold") / "symbol_quality_score",
     "expanded_crypto_candidate_outcomes_by_symbol": Path("gold")
@@ -53,8 +52,7 @@ DATASET_PATHS = {
     / "v5_late_entry_chase_threshold_by_symbol",
     "v5_pullback_reversal_shadow": Path("gold") / "v5_pullback_reversal_shadow",
     "v5_pullback_reversal_readiness": Path("gold") / "v5_pullback_reversal_readiness",
-    "v5_pullback_reversal_rule_comparison": Path("gold")
-    / "v5_pullback_reversal_rule_comparison",
+    "v5_pullback_reversal_rule_comparison": Path("gold") / "v5_pullback_reversal_rule_comparison",
     "v5_entry_quality_advisory": Path("gold") / "v5_entry_quality_advisory",
     "v5_entry_quality_history_late_entry_chase_threshold_sensitivity": Path("gold")
     / "v5_entry_quality_history_late_entry_chase_threshold_sensitivity",
@@ -636,9 +634,7 @@ def _latest_lazy_timestamp(
             continue
         seen_timestamp_column = column
         value = (
-            lazy.select(_lazy_timestamp_expr(schema, column).max().alias(column))
-            .collect()
-            .item()
+            lazy.select(_lazy_timestamp_expr(schema, column).max().alias(column)).collect().item()
         )
         latest = _coerce_timestamp(value)
         if latest is not None:
@@ -987,23 +983,26 @@ def lake_diagnostics(lake_root: str | Path) -> dict[str, Any]:
 
     for dataset_name, relative_path in CORE_DIAGNOSTIC_DATASETS.items():
         path = root / relative_path
-        row_count = 0
         warning = None
-        df, warning = _read_parquet_dataset_with_warning(path, dataset_name)
         canonical_name = _canonical_dataset_name(dataset_name)
-        freshness = dataset_freshness_payload(canonical_name, df)
-        row_count = df.height
+        snapshot = _dataset_snapshot(
+            root,
+            dataset_name,
+            timestamp_columns=DATASET_TIMESTAMP_COLUMNS.get(canonical_name),
+        )
+        row_count = snapshot.rows
+        warning = snapshot.warning
+        freshness = snapshot.freshness
         if warning:
             warnings.append(warning)
-        if dataset_name == "silver/market_bar" and not df.is_empty():
-            latest_market_bar_ts = _max_datetime(_normalize_market_frame(df), "ts")
+        if dataset_name == "silver/market_bar":
+            latest_market_bar_ts = _coerce_timestamp(freshness.get("latest_timestamp"))
 
-        file_count = _parquet_file_count(path)
         exists = path.exists()
         dataset_row_counts[dataset_name] = row_count
         if not exists or row_count == 0:
             warnings.append(f"{dataset_name} 数据集缺失或为空：{path}")
-        elif _is_bootstrap_placeholder(df):
+        elif _dataset_has_bootstrap_placeholder(path, canonical_name):
             warning = BOOTSTRAP_PLACEHOLDER_WARNING
             warnings.append(f"{dataset_name}: {warning}")
 
@@ -1011,7 +1010,7 @@ def lake_diagnostics(lake_root: str | Path) -> dict[str, Any]:
             {
                 "dataset": dataset_name,
                 "exists": exists,
-                "parquet_file_count": file_count,
+                "parquet_file_count": snapshot.parquet_file_count,
                 "rows": row_count,
                 "path": str(path),
                 "freshness_seconds": freshness["freshness_seconds"],
@@ -1522,12 +1521,8 @@ def alpha_gate_summary(lake_root: str | Path) -> dict[str, Any]:
                 expanded_quality if not expanded_quality.is_empty() else symbol_quality
             )
         ).head(DISPLAY_LIMIT),
-        "expanded_universe_candidate_event": redact_frame(expanded_events).head(
-            DISPLAY_LIMIT
-        ),
-        "expanded_universe_candidate_label": redact_frame(expanded_labels).head(
-            DISPLAY_LIMIT
-        ),
+        "expanded_universe_candidate_event": redact_frame(expanded_events).head(DISPLAY_LIMIT),
+        "expanded_universe_candidate_label": redact_frame(expanded_labels).head(DISPLAY_LIMIT),
         "expanded_universe_promotion_queue": redact_frame(
             _expanded_promotion_table(expanded_promotion)
         ).head(DISPLAY_LIMIT),
@@ -2023,15 +2018,41 @@ def default_exports_root(lake_root: str | Path) -> Path:
 
 
 def _latest_v5_bundle_ts(lake_root: str | Path) -> datetime | None:
-    health, _health_warning = read_dataset_with_warning(lake_root, "strategy_health_daily")
-    if not health.is_empty() and "latest_bundle_ts" in health.columns:
-        normalized = _normalize_optional_time(health, "latest_bundle_ts")
-        return _max_datetime(normalized, "latest_bundle_ts")
-    manifest, _manifest_warning = _read_parquet_dataset_with_warning(
+    latest = _latest_dataset_timestamp_by_path(
+        dataset_path_for(lake_root, "strategy_health_daily"),
+        "strategy_health_daily",
+        timestamp_columns=("latest_bundle_ts", "created_at", "date"),
+    )
+    if latest is not None:
+        return latest
+    return _latest_dataset_timestamp_by_path(
         Path(lake_root) / "bronze/strategy_telemetry/v5/bundle_manifest",
         "bronze/strategy_telemetry/v5/bundle_manifest",
+        timestamp_columns=("bundle_ts", "ingest_ts", "created_at"),
     )
-    return _max_datetime(_normalize_optional_time(manifest, "bundle_ts"), "bundle_ts")
+
+
+def _latest_dataset_timestamp_by_path(
+    path: str | Path,
+    dataset_name: str,
+    *,
+    timestamp_columns: tuple[str, ...],
+) -> datetime | None:
+    files = _valid_parquet_files(Path(path), invalid_files=invalid_parquet_files(path))
+    if not files:
+        return None
+    try:
+        lazy = _scan_parquet_files(files)
+        schema = lazy.collect_schema()
+        latest, _column = _latest_lazy_timestamp(
+            dataset_name,
+            lazy,
+            schema,
+            timestamp_columns=timestamp_columns,
+        )
+        return latest
+    except Exception:
+        return None
 
 
 def _parquet_file_count(path: str | Path) -> int:
@@ -2061,6 +2082,45 @@ def _is_bootstrap_placeholder(df: pl.DataFrame) -> bool:
     if df.is_empty():
         return False
     return _frame_is_bootstrap_placeholder(_latest_placeholder_slice(df))
+
+
+def _dataset_has_bootstrap_placeholder(path: Path, dataset_name: str) -> bool:
+    latest = _latest_dataset_slice(path, dataset_name)
+    return _frame_is_bootstrap_placeholder(latest)
+
+
+def _latest_dataset_slice(path: Path, dataset_name: str) -> pl.DataFrame:
+    files = _valid_parquet_files(path, invalid_files=invalid_parquet_files(path))
+    if not files:
+        return pl.DataFrame()
+    try:
+        lazy = _scan_parquet_files(files)
+        schema = lazy.collect_schema()
+    except Exception:
+        return pl.DataFrame()
+
+    columns = DATASET_TIMESTAMP_COLUMNS.get(dataset_name, ("as_of_ts", "created_at", "ingest_ts"))
+    for column in columns:
+        if column not in schema:
+            continue
+        try:
+            timestamp_expr = _lazy_timestamp_expr(schema, column).alias("__qlab_latest_ts")
+            latest_frame = lazy.select(timestamp_expr.max().alias("__latest_ts")).collect()
+            latest = latest_frame.item(0, "__latest_ts")
+            if latest is None:
+                continue
+            return (
+                lazy.with_columns(timestamp_expr)
+                .filter(pl.col("__qlab_latest_ts") == latest)
+                .drop("__qlab_latest_ts")
+                .collect()
+            )
+        except Exception:
+            continue
+    try:
+        return lazy.limit(100).collect()
+    except Exception:
+        return pl.DataFrame()
 
 
 def _latest_placeholder_slice(df: pl.DataFrame) -> pl.DataFrame:
@@ -2263,12 +2323,10 @@ def _latest_ws_subscription(health: pl.DataFrame) -> tuple[set[str], set[str]] |
     if not latest:
         return None
     symbols = {
-        normalize_symbol(value)
-        for value in _json_string_list(latest.get("subscribed_symbols"))
+        normalize_symbol(value) for value in _json_string_list(latest.get("subscribed_symbols"))
     }
     channels = {
-        str(value).strip()
-        for value in _json_string_list(latest.get("subscribed_channels"))
+        str(value).strip() for value in _json_string_list(latest.get("subscribed_channels"))
     }
     if not symbols and not channels:
         return None

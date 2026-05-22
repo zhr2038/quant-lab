@@ -32,7 +32,11 @@ from quant_lab.contracts.models import (
 from quant_lab.contracts.v5_quant_lab import V5_QUANT_LAB_CONTRACT_VERSION
 from quant_lab.costs.health import read_cost_health_daily
 from quant_lab.costs.model import CostBucket, estimate_cost_bps, estimate_cost_from_lake
-from quant_lab.data.lake import read_market_bars, read_parquet_dataset, read_parquet_lazy
+from quant_lab.data.lake import (
+    read_market_bars,
+    read_parquet_dataset,  # noqa: F401 - kept as a monkeypatch guard for no-eager-read tests.
+    read_parquet_lazy,
+)
 from quant_lab.gates.defaults import evaluate_alpha_gate
 from quant_lab.ops.metrics import api_metrics_summary, record_api_request
 from quant_lab.research.bootstrap_gold import BOOTSTRAP_GATE_VERSION
@@ -1562,20 +1566,56 @@ def _lake_cost_health(lake_root: Path) -> dict[str, Any]:
             "fallback_ratio": float(health.get("fallback_ratio") or 0.0),
             "cost_model_version": str(health.get("cost_model_version") or "cost_health_daily"),
         }
-    df = read_parquet_dataset(lake_root / "gold" / "cost_bucket_daily")
-    if df.is_empty():
+    lazy, columns = _safe_parquet_lazy(lake_root / "gold" / "cost_bucket_daily")
+    if lazy is None:
         return {
             "status": "missing",
             "missing": True,
             "cost_model_version": "missing",
         }
-    latest_day = _latest_string(df, "day")
+    aggregations: list[pl.Expr] = [pl.len().alias("rows")]
+    if "day" in columns:
+        aggregations.append(pl.col("day").cast(pl.String, strict=False).max().alias("latest_day"))
+    else:
+        aggregations.append(pl.lit(None, dtype=pl.String).alias("latest_day"))
+    global_default_exprs: list[pl.Expr] = []
+    if "source" in columns:
+        global_default_exprs.append(
+            pl.col("source").cast(pl.String, strict=False) == "global_default"
+        )
+    if "fallback_level" in columns:
+        global_default_exprs.append(
+            pl.col("fallback_level").cast(pl.String, strict=False) == "GLOBAL_DEFAULT"
+        )
+    if global_default_exprs:
+        global_default_condition = global_default_exprs[0]
+        for expression in global_default_exprs[1:]:
+            global_default_condition = global_default_condition | expression
+        aggregations.append(
+            global_default_condition.fill_null(False)
+            .cast(pl.Int64)
+            .sum()
+            .alias("global_default_rows")
+        )
+    else:
+        aggregations.append(pl.lit(0, dtype=pl.Int64).alias("global_default_rows"))
+    stats = _collect_lazy_or_empty(lazy.select(aggregations))
+    if stats.is_empty() or int(stats.item(0, "rows") or 0) == 0:
+        return {
+            "status": "missing",
+            "missing": True,
+            "cost_model_version": "missing",
+        }
+    rows = int(stats.item(0, "rows") or 0)
+    global_default_rows = int(stats.item(0, "global_default_rows") or 0)
+    latest_day = stats.item(0, "latest_day")
+    latest_day = str(latest_day) if latest_day else None
     status = "ok"
     health: dict[str, Any] = {
         "status": status,
         "cost_model_version": f"cost_bucket_daily:{latest_day or 'unknown'}",
     }
-    if _all_cost_rows_global_default(df):
+    if global_default_rows == rows:
         health.update(
             {
                 "status": "missing",

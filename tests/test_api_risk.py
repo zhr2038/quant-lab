@@ -70,6 +70,23 @@ def test_lake_data_health_uses_lazy_scan_not_full_market_bar_read(tmp_path, monk
     assert health["latest_market_bar_ts"]
 
 
+def test_lake_cost_health_uses_lazy_cost_bucket_fallback(tmp_path, monkeypatch):
+    from quant_lab.api.main import _lake_cost_health
+
+    lake = tmp_path / "lake"
+    _write_cost_bucket(lake)
+
+    def fail_full_read(*args, **kwargs):
+        raise AssertionError("cost health fallback should lazy-read cost_bucket_daily")
+
+    monkeypatch.setattr("quant_lab.api.main.read_parquet_dataset", fail_full_read)
+
+    health = _lake_cost_health(lake)
+
+    assert health["status"] == "ok"
+    assert health["cost_model_version"].startswith("cost_bucket_daily:")
+
+
 def test_risk_permission_selection_uses_lazy_strategy_version_filter(tmp_path, monkeypatch):
     from quant_lab.api.main import _select_published_risk_permission
 

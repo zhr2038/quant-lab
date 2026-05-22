@@ -964,10 +964,10 @@ def _entry_quality_table(frame: pl.DataFrame) -> pl.DataFrame:
 
 def _overview_market_health(lake_root: str | Path) -> dict[str, Any]:
     warnings: list[str] = []
-    market, market_warning = read_dataset_with_warning(lake_root, "market_bar")
-    if market_warning:
-        warnings.append(market_warning)
-    if market.is_empty():
+    market_health = _market_bar_lazy_health(lake_root)
+    if market_health["warning"]:
+        warnings.append(market_health["warning"])
+    if market_health["row_count"] == 0:
         return {
             "latest_market_bar_ts": None,
             "missing_bar_ratio": 0.0,
@@ -975,13 +975,12 @@ def _overview_market_health(lake_root: str | Path) -> dict[str, Any]:
             "unclosed_bar_count": 0,
             "warnings": [*warnings, "market_bar 数据集缺失或为空"],
         }
-    market = _normalize_market_frame(market)
-    schema_violations = market_bar_schema_violations(market)
-    unclosed_count = unclosed_market_bar_count(market)
-    missing_bars = missing_bar_table(market)
+    schema_violations = market_health["schema_violations"]
+    unclosed_count = market_health["unclosed_bar_count"]
+    missing_bars = market_health["missing_bars"]
     return {
-        "latest_market_bar_ts": _max_datetime(market, "ts"),
-        "missing_bar_ratio": _missing_ratio(missing_bars, market.height),
+        "latest_market_bar_ts": market_health["latest_market_bar_ts"],
+        "missing_bar_ratio": _missing_ratio(missing_bars, market_health["row_count"]),
         "schema_violation_count": len(schema_violations),
         "unclosed_bar_count": unclosed_count,
         "warnings": [*warnings, *schema_violations],

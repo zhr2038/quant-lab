@@ -752,9 +752,20 @@ def ops_summary_command(
         str | None,
         typer.Option(
             "--day",
-            help="Metrics day to summarize. Defaults to today; pass 'all' for full history.",
+            help=(
+                "Metrics day to summarize. Combine with --since-minutes 0 for a full day; "
+                "pass 'all' for full history."
+            ),
         ),
-    ] = "auto",
+    ] = None,
+    since_minutes: Annotated[
+        int,
+        typer.Option(
+            "--since-minutes",
+            min=0,
+            help="Recent metrics window. Defaults to 60 minutes; set 0 to disable.",
+        ),
+    ] = 60,
     compact_output: Annotated[
         bool,
         typer.Option(
@@ -763,10 +774,20 @@ def ops_summary_command(
         ),
     ] = False,
 ) -> None:
-    summary_day = None if str(day or "").strip().lower() == "all" else day
+    all_history = str(day or "").strip().lower() == "all"
+    summary_day = None if all_history else day
+    summary_since_minutes = None if all_history or since_minutes <= 0 else since_minutes
     payload = {
-        "api_metrics": api_metrics_summary(lake_root, day=summary_day),
-        "job_runs": job_run_summary(lake_root, day=summary_day),
+        "api_metrics": api_metrics_summary(
+            lake_root,
+            day=summary_day,
+            since_minutes=summary_since_minutes,
+        ),
+        "job_runs": job_run_summary(
+            lake_root,
+            day=summary_day,
+            since_minutes=summary_since_minutes,
+        ),
         "lake_file_health": write_lake_file_health_daily(lake_root),
     }
     output = _compact_ops_summary_payload(payload) if compact_output else payload

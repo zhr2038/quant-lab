@@ -135,6 +135,34 @@ def test_api_request_metrics_summary_reports_slowest_paths(tmp_path, monkeypatch
     assert summary["slow_paths"][0]["p95"] >= 300.0
 
 
+def test_api_request_metrics_summary_can_filter_recent_window(tmp_path, monkeypatch):
+    lake = tmp_path / "lake"
+    monkeypatch.setenv("QUANT_LAB_API_METRICS_FLUSH_ROWS", "1")
+    monkeypatch.setenv("QUANT_LAB_API_METRICS_FLUSH_SECONDS", "3600")
+    now = datetime.now(UTC)
+    record_api_request(
+        lake_root=lake,
+        method="GET",
+        path="/v1/old",
+        status_code=200,
+        duration_seconds=0.100,
+        request_ts=now - timedelta(hours=2),
+    )
+    record_api_request(
+        lake_root=lake,
+        method="GET",
+        path="/v1/current",
+        status_code=200,
+        duration_seconds=0.010,
+        request_ts=now,
+    )
+
+    summary = api_metrics_summary(lake, since_minutes=60)
+
+    assert summary["request_count"] == 1
+    assert summary["by_path"] == {"/v1/current": 1}
+
+
 def test_job_run_summary_uses_lazy_aggregation(tmp_path, monkeypatch):
     lake = tmp_path / "lake"
     started = datetime(2026, 5, 23, 1, 0, tzinfo=UTC)
@@ -201,3 +229,28 @@ def test_job_run_summary_day_auto_uses_current_utc_day(tmp_path):
     assert summary["run_count"] == 1
     assert summary["jobs"][0]["job_name"] == "sync-v5-telemetry"
     assert summary["jobs"][0]["latest_duration_s"] == 3.0
+
+
+def test_job_run_summary_can_filter_recent_window(tmp_path):
+    lake = tmp_path / "lake"
+    now = datetime.now(UTC)
+    old = now - timedelta(hours=2)
+    record_job_run(
+        lake_root=lake,
+        job_name="old-job",
+        status="succeeded",
+        started_at=old,
+        finished_at=old + timedelta(seconds=30),
+    )
+    record_job_run(
+        lake_root=lake,
+        job_name="current-job",
+        status="succeeded",
+        started_at=now,
+        finished_at=now + timedelta(seconds=3),
+    )
+
+    summary = job_run_summary(lake, since_minutes=60)
+
+    assert summary["run_count"] == 1
+    assert summary["jobs"][0]["job_name"] == "current-job"

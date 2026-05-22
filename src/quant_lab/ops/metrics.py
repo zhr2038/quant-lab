@@ -7,7 +7,7 @@ import threading
 import time
 from collections.abc import Callable
 from dataclasses import dataclass
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any, TypeVar
 
@@ -207,6 +207,7 @@ def api_metrics_summary(
     lake_root: str | Path,
     *,
     day: str | None = None,
+    since_minutes: int | None = None,
 ) -> dict[str, Any]:
     _wait_api_request_metrics_flush(lake_root)
     flush_api_request_metrics(lake_root)
@@ -216,6 +217,12 @@ def api_metrics_summary(
     schema_names = _lazy_schema_names(lazy)
     day = _normalize_summary_day(day)
     scoped = lazy.filter(pl.col("day") == day) if day and "day" in schema_names else lazy
+    scoped = _filter_since_minutes(
+        scoped,
+        schema_names=schema_names,
+        timestamp_column="request_ts",
+        since_minutes=since_minutes,
+    )
     request_count = _lazy_count(scoped)
     if request_count == 0:
         return _empty_api_metrics_summary()
@@ -254,6 +261,7 @@ def job_run_summary(
     lake_root: str | Path,
     *,
     day: str | None = None,
+    since_minutes: int | None = None,
 ) -> dict[str, Any]:
     lazy = _lazy_dataset_or_none(Path(lake_root) / JOB_RUN_HISTORY_DATASET)
     if lazy is None:
@@ -261,6 +269,13 @@ def job_run_summary(
     schema_names = _lazy_schema_names(lazy)
     day = _normalize_summary_day(day)
     scoped = lazy.filter(pl.col("day") == day) if day and "day" in schema_names else lazy
+    timestamp_column = "finished_at" if "finished_at" in schema_names else "started_at"
+    scoped = _filter_since_minutes(
+        scoped,
+        schema_names=schema_names,
+        timestamp_column=timestamp_column,
+        since_minutes=since_minutes,
+    )
     run_count = _lazy_count(scoped)
     if run_count == 0:
         return {"run_count": 0, "jobs": []}
@@ -309,6 +324,24 @@ def _normalize_summary_day(day: str | None) -> str | None:
     if normalized in {"auto", "today"}:
         return datetime.now(UTC).date().isoformat()
     return str(day).strip()
+
+
+def _filter_since_minutes(
+    lazy: pl.LazyFrame,
+    *,
+    schema_names: set[str],
+    timestamp_column: str,
+    since_minutes: int | None,
+) -> pl.LazyFrame:
+    if since_minutes is None or since_minutes <= 0 or timestamp_column not in schema_names:
+        return lazy
+    cutoff = datetime.now(UTC) - timedelta(minutes=since_minutes)
+    return lazy.filter(
+        pl.col(timestamp_column)
+        .cast(pl.Utf8)
+        .str.to_datetime(time_zone="UTC", strict=False)
+        >= cutoff
+    )
 
 
 def _empty_api_metrics_summary() -> dict[str, Any]:

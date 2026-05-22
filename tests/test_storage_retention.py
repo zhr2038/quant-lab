@@ -77,6 +77,25 @@ def test_storage_retention_apply_deletes_only_regenerable_targets(tmp_path: Path
     assert sum(pack.exists() for pack in exports) == 5
 
 
+def test_storage_retention_payload_can_truncate_removed_paths(tmp_path: Path) -> None:
+    old_one = _write_file(tmp_path / "inbox" / "v5" / "bundles" / "old-1.tar.gz", "old")
+    old_two = _write_file(tmp_path / "inbox" / "v5" / "bundles" / "old-2.tar.gz", "old")
+    _set_mtime(old_one, datetime(2026, 5, 18, tzinfo=UTC))
+    _set_mtime(old_two, datetime(2026, 5, 18, tzinfo=UTC))
+
+    result = prune_quant_lab_storage(
+        tmp_path,
+        keep_inbox_days=2,
+        dry_run=True,
+        now=datetime(2026, 5, 22, tzinfo=UTC),
+    )
+    payload = result.to_dict(max_removed_paths_reported=1)
+
+    assert payload["removed_path_count"] == 2
+    assert len(payload["removed_paths"]) == 1
+    assert payload["removed_paths_truncated"] is True
+
+
 def _write_file(path: Path, text: str) -> Path:
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(text, encoding="utf-8")

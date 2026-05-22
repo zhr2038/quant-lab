@@ -27,13 +27,21 @@ class RetentionPruneResult:
     export_removed_files: int = 0
     maintenance_removed_dirs: int = 0
 
-    def to_dict(self) -> dict[str, Any]:
+    def to_dict(self, *, max_removed_paths_reported: int | None = None) -> dict[str, Any]:
+        removed_paths = self.removed_paths
+        removed_paths_truncated = False
+        if max_removed_paths_reported is not None:
+            limit = max(int(max_removed_paths_reported), 0)
+            removed_paths_truncated = len(removed_paths) > limit
+            removed_paths = removed_paths[:limit]
         return {
             "base_dir": self.base_dir,
             "dry_run": self.dry_run,
             "started_at": self.started_at.isoformat(),
             "finished_at": self.finished_at.isoformat() if self.finished_at else None,
-            "removed_paths": self.removed_paths,
+            "removed_path_count": len(self.removed_paths),
+            "removed_paths": removed_paths,
+            "removed_paths_truncated": removed_paths_truncated,
             "skipped_paths": self.skipped_paths,
             "warnings": self.warnings,
             "removed_bytes": self.removed_bytes,

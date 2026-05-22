@@ -695,6 +695,10 @@ def prune_storage_retention_command(
             help="Preview removals by default; pass --apply to remove files.",
         ),
     ] = True,
+    max_removed_paths_reported: Annotated[
+        int,
+        typer.Option("--max-removed-paths-reported", min=0),
+    ] = 50,
 ) -> None:
     result = prune_quant_lab_storage(
         base_dir=base_dir,
@@ -703,7 +707,13 @@ def prune_storage_retention_command(
         keep_export_packs=keep_export_packs,
         dry_run=dry_run,
     )
-    typer.echo(json.dumps(result.to_dict(), indent=2, sort_keys=True))
+    typer.echo(
+        json.dumps(
+            result.to_dict(max_removed_paths_reported=max_removed_paths_reported),
+            indent=2,
+            sort_keys=True,
+        )
+    )
 
 
 @app.command("bootstrap-gold-health")

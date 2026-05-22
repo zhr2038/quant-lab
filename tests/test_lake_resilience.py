@@ -59,6 +59,19 @@ def test_read_parquet_dataset_ignores_internal_tmp_dir(tmp_path):
     assert df["path"].to_list() == ["/v1/health"]
 
 
+def test_write_parquet_dataset_falls_back_when_dataset_tmp_path_is_unusable(tmp_path):
+    dataset = tmp_path / "lake" / "gold" / "research_portfolio_status"
+    dataset.mkdir(parents=True)
+    (dataset / "._tmp").write_text("not a directory", encoding="utf-8")
+
+    write_parquet_dataset(pl.DataFrame([{"research_id": "eth_f3", "status": "PAPER"}]), dataset)
+
+    df = read_parquet_dataset(dataset)
+
+    assert df.to_dicts() == [{"research_id": "eth_f3", "status": "PAPER"}]
+    assert not list((dataset.parent / ".research_portfolio_status._tmp").glob("*.parquet"))
+
+
 def test_read_parquet_dataset_inserts_missing_columns_across_schema_versions(tmp_path):
     dataset = tmp_path / "lake" / "silver" / "v5_paper_strategy_run"
     dataset.mkdir(parents=True)

@@ -778,9 +778,35 @@ def _replace_path(source: Path, target: Path) -> None:
 
 
 def _dataset_temp_file(dataset_path: Path) -> Path:
-    temp_dir = dataset_path / "._tmp"
-    temp_dir.mkdir(parents=True, exist_ok=True)
-    return temp_dir / f"{uuid.uuid4().hex}.tmp.parquet"
+    file_name = f"{uuid.uuid4().hex}.tmp.parquet"
+    errors: list[str] = []
+    for temp_dir in _dataset_temp_dirs(dataset_path):
+        temp_file = temp_dir / file_name
+        try:
+            temp_dir.mkdir(parents=True, exist_ok=True)
+            fd = os.open(
+                _replaceable_path(temp_file),
+                os.O_CREAT | os.O_EXCL | os.O_WRONLY,
+            )
+            os.close(fd)
+            temp_file.unlink()
+            return temp_file
+        except OSError as exc:
+            errors.append(f"{temp_dir}: {exc}")
+            try:
+                if temp_file.exists() and temp_file.stat().st_size == 0:
+                    temp_file.unlink()
+            except OSError:
+                pass
+    rendered = "; ".join(errors) if errors else "no temp directory candidates"
+    raise PermissionError(f"unable to create dataset temp file for {dataset_path}: {rendered}")
+
+
+def _dataset_temp_dirs(dataset_path: Path) -> list[Path]:
+    return [
+        dataset_path / "._tmp",
+        dataset_path.parent / f".{dataset_path.name}._tmp",
+    ]
 
 
 def _replaceable_path(path: Path) -> str | Path:

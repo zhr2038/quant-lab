@@ -54,6 +54,7 @@ def test_scheduled_compaction_covers_hot_ws_datasets():
     assert "WARN_REPAIR_PARTITIONS_FAILED" in script
     assert "COMPACT_DATASET_TIMEOUT_SECONDS" in script
     assert "COMPACT_RUN_BUDGET_SECONDS" in script
+    assert "COMPACT_DIRECT_MAX_SOURCE_FILES" in script
     assert "WARN_COMPACT_FAILED" in script
     assert "SKIP_COMPACT_BUDGET" in script
     assert "WARN_LAKE_HEALTH_FAILED_OR_TIMED_OUT" in script
@@ -61,8 +62,10 @@ def test_scheduled_compaction_covers_hot_ws_datasets():
     assert "SKIP_COMPACT_RAW_OKX_WS" in script
     assert "COMPACT_RAW_OKX_WS=1" in unit
     assert "COMPACT_DATASET_TIMEOUT_SECONDS=300" in unit
+    assert "COMPACT_DIRECT_MAX_SOURCE_FILES=8" in unit
     assert "--direct-only" in script
     assert "START_DIRECT_COMPACT" in script
+    assert '"${COMPACT_DIRECT_MAX_SOURCE_FILES}"' in script
     assert "WARN_DIRECT_COMPACT_FAILED" in script
     assert "compact_leaf_partitions_if_file_count_at_least" in script
     assert "SKIP_LEAF_COMPACT_BUDGET" in script

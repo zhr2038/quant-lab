@@ -6,6 +6,7 @@ LAKE_ROOT="${QUANT_LAB_LAKE_ROOT:-/var/lib/quant-lab/lake}"
 COMPACT_DATASET_TIMEOUT_SECONDS="${COMPACT_DATASET_TIMEOUT_SECONDS:-180}"
 COMPACT_RUN_BUDGET_SECONDS="${COMPACT_RUN_BUDGET_SECONDS:-1500}"
 COMPACT_RAW_OKX_WS="${COMPACT_RAW_OKX_WS:-0}"
+COMPACT_DIRECT_MAX_SOURCE_FILES="${COMPACT_DIRECT_MAX_SOURCE_FILES:-8}"
 COMPACT_STARTED_AT="$(date +%s)"
 
 V5_TELEMETRY_DATASETS=(
@@ -181,7 +182,10 @@ compact_leaf_partitions_if_file_count_at_least() {
           return
         fi
         if [[ "${leaf_path}" == "${dataset_path}" ]]; then
-          compact_dataset_direct_only "${leaf_path#${LAKE_ROOT}/}" "${target_rows}" "${batch_files}"
+          compact_dataset_direct_only \
+            "${leaf_path#${LAKE_ROOT}/}" \
+            "${target_rows}" \
+            "${COMPACT_DIRECT_MAX_SOURCE_FILES}"
         else
           compact_dataset "${leaf_path#${LAKE_ROOT}/}" "${target_rows}" "${batch_files}"
         fi

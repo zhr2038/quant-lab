@@ -13,7 +13,7 @@ Environment=MALLOC_ARENA_MAX=2
 Environment=QUANT_LAB_V5_SYNC_MAX_BUNDLES=1
 Environment=QUANT_LAB_V5_SYNC_REMOTE_MAX_FILES=1
 Environment=QUANT_LAB_V5_SYNC_MAX_SCAN_BUNDLES=1
-ExecStart=/usr/bin/flock -w 10 /var/lock/quant-lab-v5-telemetry-sync.lock /usr/bin/timeout 10m /opt/quant-lab/.venv/bin/qlab sync-v5-telemetry --config /etc/quant-lab/v5_telemetry_remote.yaml --max-bundles 1 --remote-max-files 1 --max-scan-bundles 1 --newest-first --max-skipped-files-reported 20 --skip-historical-outcomes --skip-analysis-after-sync
+ExecStart=/usr/bin/flock -w 10 /var/lock/quant-lab-v5-telemetry-sync.lock /usr/bin/timeout 10m /opt/quant-lab/.venv/bin/qlab sync-v5-telemetry --config /etc/quant-lab/v5_telemetry_remote.yaml --max-bundles 1 --remote-max-files 1 --max-scan-bundles 1 --newest-first --max-skipped-files-reported 20 --skip-historical-outcomes --skip-analysis-after-sync --compact-output
 TimeoutStartSec=11min
 MemoryHigh=2G
 MemoryMax=3G

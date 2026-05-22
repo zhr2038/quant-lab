@@ -1,6 +1,6 @@
 from datetime import UTC, datetime
 
-from quant_lab.cli import _compact_v5_telemetry_payload
+from quant_lab.cli import _compact_v5_sync_payload, _compact_v5_telemetry_payload
 from quant_lab.strategy_telemetry.models import V5TelemetryAnalysisResult
 
 
@@ -30,3 +30,46 @@ def test_compact_v5_telemetry_payload_is_journald_friendly():
     assert len(payload["warnings"]) == 5
     assert "router_reason_top" not in payload
     assert "latest_bundle_sha256" not in payload
+
+
+def test_compact_v5_sync_payload_omits_nested_bundle_details():
+    payload = _compact_v5_sync_payload(
+        {
+            "pull": {
+                "pulled_files": ["latest.tar.gz"],
+                "skipped_files": ["old.tar.gz"],
+                "warnings": ["pull-warning"],
+                "command_summary": ["ssh", "rsync"],
+            },
+            "inbox": {
+                "processed": [
+                    {
+                        "bundle_name": "latest.tar.gz",
+                        "validation": {"detected_files": ["a", "b"]},
+                    }
+                ],
+                "skipped_files": ["already.tar.gz"],
+                "warnings": ["inbox-warning"],
+            },
+            "analysis": {
+                "status": "WARNING",
+                "latest_bundle_ts": "2026-05-23T01:00:00Z",
+                "warnings": ["large nested payload"],
+            },
+            "analysis_after_sync": False,
+            "max_bundles": 1,
+            "remote_max_files": 1,
+            "max_scan_bundles": 1,
+            "include_historical_outcomes": False,
+        }
+    )
+
+    assert payload["pulled_count"] == 1
+    assert payload["skipped_pull_count"] == 1
+    assert payload["processed_count"] == 1
+    assert payload["processed_bundles"] == ["latest.tar.gz"]
+    assert payload["analysis_status"] == "WARNING"
+    assert payload["warnings"] == ["pull-warning", "inbox-warning"]
+    assert "pull" not in payload
+    assert "inbox" not in payload
+    assert "analysis" not in payload

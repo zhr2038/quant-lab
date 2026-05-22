@@ -1373,6 +1373,13 @@ def sync_v5_telemetry_command(
         bool,
         typer.Option("--run-analysis-after-sync/--skip-analysis-after-sync"),
     ] = True,
+    compact_output: Annotated[
+        bool,
+        typer.Option(
+            "--compact-output/--full-output",
+            help="Emit a one-line operational summary instead of nested pull/ingest payloads.",
+        ),
+    ] = False,
 ) -> None:
     cfg = load_v5_telemetry_remote_config(
         config,
@@ -1432,13 +1439,47 @@ def sync_v5_telemetry_command(
         job_name="sync-v5-telemetry",
         func=_run_sync,
     )
-    typer.echo(
-        json.dumps(
-            payload,
-            indent=2,
-            sort_keys=True,
-        )
-    )
+    output = _compact_v5_sync_payload(payload) if compact_output else payload
+    typer.echo(json.dumps(output, indent=None if compact_output else 2, sort_keys=True))
+
+
+def _compact_v5_sync_payload(payload: dict[str, object]) -> dict[str, object]:
+    pull = payload.get("pull") if isinstance(payload.get("pull"), dict) else {}
+    inbox = payload.get("inbox") if isinstance(payload.get("inbox"), dict) else {}
+    analysis = payload.get("analysis") if isinstance(payload.get("analysis"), dict) else {}
+    processed = inbox.get("processed") if isinstance(inbox, dict) else []
+    skipped_files = inbox.get("skipped_files") if isinstance(inbox, dict) else []
+    pull_warnings = pull.get("warnings") if isinstance(pull, dict) else []
+    inbox_warnings = inbox.get("warnings") if isinstance(inbox, dict) else []
+    processed_bundles: list[str] = []
+    if isinstance(processed, list):
+        for item in processed[:5]:
+            if isinstance(item, dict) and item.get("bundle_name"):
+                processed_bundles.append(str(item["bundle_name"]))
+    warnings: list[object] = []
+    if isinstance(pull_warnings, list):
+        warnings.extend(pull_warnings[:5])
+    if isinstance(inbox_warnings, list):
+        warnings.extend(inbox_warnings[:5])
+    return {
+        "analysis_after_sync": payload.get("analysis_after_sync"),
+        "include_historical_outcomes": payload.get("include_historical_outcomes"),
+        "max_bundles": payload.get("max_bundles"),
+        "remote_max_files": payload.get("remote_max_files"),
+        "max_scan_bundles": payload.get("max_scan_bundles"),
+        "pulled_count": len(pull.get("pulled_files") or []) if isinstance(pull, dict) else 0,
+        "skipped_pull_count": len(pull.get("skipped_files") or []) if isinstance(pull, dict) else 0,
+        "processed_count": len(processed) if isinstance(processed, list) else 0,
+        "processed_bundles": processed_bundles,
+        "skipped_inbox_count": len(skipped_files) if isinstance(skipped_files, list) else 0,
+        "pull_warning_count": len(pull_warnings) if isinstance(pull_warnings, list) else 0,
+        "inbox_warning_count": len(inbox_warnings) if isinstance(inbox_warnings, list) else 0,
+        "warnings": warnings,
+        "analysis_status": analysis.get("status") if isinstance(analysis, dict) else None,
+        "latest_bundle_ts": (
+            analysis.get("latest_bundle_ts") if isinstance(analysis, dict) else None
+        ),
+    }
 
 
 def main() -> None:

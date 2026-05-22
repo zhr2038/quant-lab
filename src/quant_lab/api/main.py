@@ -127,6 +127,8 @@ class ApiMetricsResponse(BaseModel):
     by_path: dict[str, int]
     by_status_code: dict[str, int]
     latency_ms: dict[str, float | None]
+    latency_by_path_ms: dict[str, dict[str, float | int | None]] = Field(default_factory=dict)
+    slow_paths: list[dict[str, float | int | str | None]] = Field(default_factory=list)
 
 
 class StrategyOpportunityAdvisoryRow(BaseModel):

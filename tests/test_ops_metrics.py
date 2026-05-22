@@ -63,6 +63,48 @@ def test_api_request_metrics_summary_uses_lazy_aggregation(tmp_path, monkeypatch
     assert summary["by_path"]["/v1/health"] == 2
     assert summary["by_status_code"]["500"] == 1
     assert summary["latency_ms"]["max"] == 30.0
+    assert summary["latency_by_path_ms"]["/v1/health"]["count"] == 2
+    assert summary["latency_by_path_ms"]["/v1/health"]["max"] == 30.0
+    assert summary["latency_by_path_ms"]["/v1/health"]["server_error_count"] == 1
+    assert summary["slow_paths"][0]["path"] == "/v1/health"
+
+
+def test_api_request_metrics_summary_reports_slowest_paths(tmp_path, monkeypatch):
+    lake = tmp_path / "lake"
+    monkeypatch.setenv("QUANT_LAB_API_METRICS_FLUSH_ROWS", "10")
+    monkeypatch.setenv("QUANT_LAB_API_METRICS_FLUSH_SECONDS", "3600")
+
+    for duration in [0.005, 0.006, 0.007]:
+        record_api_request(
+            lake_root=lake,
+            method="GET",
+            path="/v1/fast",
+            status_code=200,
+            duration_seconds=duration,
+        )
+    for duration in [0.100, 0.300, 0.500]:
+        record_api_request(
+            lake_root=lake,
+            method="GET",
+            path="/v1/slow",
+            status_code=200,
+            duration_seconds=duration,
+        )
+    record_api_request(
+        lake_root=lake,
+        method="GET",
+        path="/v1/missing",
+        status_code=404,
+        duration_seconds=0.020,
+    )
+
+    summary = api_metrics_summary(lake)
+
+    assert summary["latency_by_path_ms"]["/v1/fast"]["count"] == 3
+    assert summary["latency_by_path_ms"]["/v1/slow"]["max"] == 500.0
+    assert summary["latency_by_path_ms"]["/v1/missing"]["client_error_count"] == 1
+    assert summary["slow_paths"][0]["path"] == "/v1/slow"
+    assert summary["slow_paths"][0]["p95"] >= 300.0
 
 
 def test_job_run_summary_uses_lazy_aggregation(tmp_path, monkeypatch):

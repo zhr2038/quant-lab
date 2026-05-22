@@ -175,6 +175,8 @@ def api_metrics_summary(
     if request_count == 0:
         return _empty_api_metrics_summary()
     latency = {}
+    latency_by_path = {}
+    slow_paths = []
     if "duration_ms" in schema_names:
         metrics = (
             scoped.select(
@@ -191,11 +193,15 @@ def api_metrics_summary(
             .to_dicts()[0]
         )
         latency = {key: _float_or_none(value) for key, value in metrics.items()}
+        latency_by_path = _latency_by_path_lazy(scoped, schema_names=schema_names)
+        slow_paths = _slow_paths(latency_by_path)
     return {
         "request_count": request_count,
         "by_path": _count_by_lazy(scoped, "path", schema_names=schema_names),
         "by_status_code": _count_by_lazy(scoped, "status_code", schema_names=schema_names),
         "latency_ms": latency,
+        "latency_by_path_ms": latency_by_path,
+        "slow_paths": slow_paths,
     }
 
 
@@ -237,6 +243,8 @@ def _empty_api_metrics_summary() -> dict[str, Any]:
         "by_path": {},
         "by_status_code": {},
         "latency_ms": {},
+        "latency_by_path_ms": {},
+        "slow_paths": [],
     }
 
 
@@ -277,6 +285,60 @@ def _count_by_lazy(
         return {}
     grouped = lazy.group_by(column).len(name="count").collect()
     return {str(row[column]): int(row["count"]) for row in grouped.to_dicts()}
+
+
+def _latency_by_path_lazy(
+    lazy: pl.LazyFrame,
+    *,
+    schema_names: set[str],
+) -> dict[str, dict[str, float | int | None]]:
+    if "path" not in schema_names or "duration_ms" not in schema_names:
+        return {}
+    duration = pl.col("duration_ms").cast(pl.Float64, strict=False)
+    aggregations: list[pl.Expr] = [
+        pl.len().alias("count"),
+        duration.median().alias("p50"),
+        duration.quantile(0.95).alias("p95"),
+        duration.max().alias("max"),
+    ]
+    if "status_code" in schema_names:
+        status = pl.col("status_code").cast(pl.Int64, strict=False)
+        aggregations.append((status >= 500).sum().alias("server_error_count"))
+        aggregations.append(((status >= 400) & (status < 500)).sum().alias("client_error_count"))
+    grouped = lazy.group_by("path").agg(aggregations).sort("path").collect()
+    result: dict[str, dict[str, float | int | None]] = {}
+    for row in grouped.to_dicts():
+        metrics: dict[str, float | int | None] = {
+            "count": int(row.get("count") or 0),
+            "p50": _float_or_none(row.get("p50")),
+            "p95": _float_or_none(row.get("p95")),
+            "max": _float_or_none(row.get("max")),
+        }
+        if "server_error_count" in row:
+            metrics["server_error_count"] = int(row.get("server_error_count") or 0)
+        if "client_error_count" in row:
+            metrics["client_error_count"] = int(row.get("client_error_count") or 0)
+        result[str(row["path"])] = metrics
+    return result
+
+
+def _slow_paths(
+    latency_by_path: dict[str, dict[str, float | int | None]],
+    *,
+    limit: int = 10,
+) -> list[dict[str, float | int | str | None]]:
+    rows: list[dict[str, float | int | str | None]] = []
+    for path, metrics in latency_by_path.items():
+        rows.append({"path": path, **metrics})
+    return sorted(
+        rows,
+        key=lambda row: (
+            float(row["p95"] or 0),
+            float(row["max"] or 0),
+            int(row["count"] or 0),
+        ),
+        reverse=True,
+    )[:limit]
 
 
 def _float_or_none(value: Any) -> float | None:

@@ -2340,7 +2340,8 @@ def _publish_history(
     key_columns: list[str],
 ) -> int:
     if frame.is_empty():
-        return read_parquet_dataset(root / relative_path).height
+        write_parquet_dataset(frame, root / relative_path)
+        return 0
     return upsert_parquet_dataset(frame, root / relative_path, key_columns=key_columns)
 
 

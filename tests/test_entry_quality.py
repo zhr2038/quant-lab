@@ -519,6 +519,55 @@ def test_entry_quality_history_pullback_by_symbol_and_anti_leakage(tmp_path):
     assert set(checks.get_column("status").to_list()) == {"PASS"}
 
 
+def test_entry_quality_history_empty_current_window_clears_stale_pullback(tmp_path):
+    lake = tmp_path / "lake"
+    _write_pullback_market_bars(lake, "ETH-USDT")
+    write_parquet_dataset(
+        pl.DataFrame(
+            [
+                {
+                    "candidate_id": "cand-eth-pullback",
+                    "run_id": "run-pullback",
+                    "ts_utc": datetime(2026, 5, 10, 20, tzinfo=UTC),
+                    "symbol": "ETH-USDT",
+                    "strategy_candidate": "portfolio",
+                    "entry_close": 115.0,
+                    "regime_state": "protect",
+                    "risk_level": "normal",
+                    "f4_volume_expansion": 0.0,
+                    "f5_rsi_trend_confirm": 0.0,
+                    "estimated_spread_bps": 2.0,
+                }
+            ]
+        ),
+        lake / "silver" / "v5_candidate_event",
+    )
+    build_and_publish_entry_quality_history(
+        lake,
+        start_date="2026-05-10",
+        end_date="2026-05-10",
+        mode="full",
+        cost_mode="conservative",
+    )
+    assert not read_parquet_dataset(
+        lake / "gold" / "v5_entry_quality_history_pullback_by_symbol"
+    ).is_empty()
+
+    write_parquet_dataset(pl.DataFrame(), lake / "silver" / "v5_candidate_event")
+    result = build_and_publish_entry_quality_history(
+        lake,
+        start_date="2026-05-11",
+        end_date="2026-05-11",
+        mode="full",
+        cost_mode="conservative",
+    )
+
+    assert result.pullback_by_symbol_rows == 0
+    assert read_parquet_dataset(
+        lake / "gold" / "v5_entry_quality_history_pullback_by_symbol"
+    ).is_empty()
+
+
 def test_pullback_new_rule_rejects_falling_knife_candidate(tmp_path):
     lake = tmp_path / "lake"
     _write_pullback_market_bars(lake, "SOL-USDT")

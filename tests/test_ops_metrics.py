@@ -1,3 +1,4 @@
+import time
 from datetime import UTC, datetime, timedelta
 
 import quant_lab.ops.metrics as metrics_module
@@ -171,6 +172,34 @@ def test_api_request_metrics_do_not_partition_by_path(tmp_path, monkeypatch):
     summary = api_metrics_summary(lake)
 
     assert summary["by_path"]["/v1/health"] == 1
+    assert summary["by_path"]["/v1/strategy-opportunity-advisory"] == 1
+
+
+def test_api_request_metrics_async_timer_flushes_without_threshold(tmp_path, monkeypatch):
+    lake = tmp_path / "lake"
+    monkeypatch.setenv("QUANT_LAB_API_METRICS_FLUSH_ROWS", "100")
+    monkeypatch.setenv("QUANT_LAB_API_METRICS_FLUSH_SECONDS", "3600")
+    monkeypatch.setenv("QUANT_LAB_API_METRICS_ASYNC_FLUSH", "1")
+    monkeypatch.setattr(metrics_module, "_api_metrics_flush_seconds", lambda: 0.01)
+
+    record_api_request(
+        lake_root=lake,
+        method="GET",
+        path="/v1/strategy-opportunity-advisory",
+        status_code=200,
+        duration_seconds=0.01,
+    )
+
+    deadline = time.monotonic() + 1.0
+    while (
+        not list((lake / "bronze" / "api_request_metrics").rglob("*.parquet"))
+        and time.monotonic() < deadline
+    ):
+        time.sleep(0.01)
+
+    summary = api_metrics_summary(lake)
+
+    assert summary["request_count"] == 1
     assert summary["by_path"]["/v1/strategy-opportunity-advisory"] == 1
 
 

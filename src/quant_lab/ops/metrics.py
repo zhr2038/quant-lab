@@ -26,6 +26,7 @@ _API_METRICS_LOCK = threading.Lock()
 _API_METRICS_BUFFERS: dict[str, list[dict[str, Any]]] = {}
 _API_METRICS_LAST_FLUSH: dict[str, float] = {}
 _API_METRICS_FLUSH_THREADS: dict[str, threading.Thread] = {}
+_API_METRICS_FLUSH_TIMERS: dict[str, threading.Timer] = {}
 
 F = TypeVar("F")
 
@@ -34,6 +35,7 @@ F = TypeVar("F")
 def _flush_all_api_request_metrics() -> None:
     for root_key in list(_API_METRICS_BUFFERS):
         try:
+            _cancel_api_request_metrics_timer(root_key)
             _wait_api_request_metrics_flush(root_key)
             flush_api_request_metrics(root_key)
         except Exception:
@@ -75,20 +77,28 @@ def record_api_request(
     }
     root_key = str(Path(lake_root))
     should_flush = False
+    should_schedule_timer = False
     now_monotonic = time.monotonic()
     with _API_METRICS_LOCK:
         buffer = _API_METRICS_BUFFERS.setdefault(root_key, [])
+        buffer_was_empty = not buffer
         buffer.append(row)
         last_flush = _API_METRICS_LAST_FLUSH.setdefault(root_key, now_monotonic)
         should_flush = (
             len(buffer) >= _api_metrics_flush_rows()
             or (now_monotonic - last_flush) >= _api_metrics_flush_seconds()
         )
+        should_schedule_timer = (
+            buffer_was_empty and not should_flush and _api_metrics_async_flush_enabled()
+        )
     if should_flush:
+        _cancel_api_request_metrics_timer(root_key)
         if _api_metrics_async_flush_enabled():
             _schedule_api_request_metrics_flush(lake_root)
         else:
             flush_api_request_metrics(lake_root)
+    elif should_schedule_timer:
+        _schedule_api_request_metrics_timer(lake_root)
 
 
 def flush_api_request_metrics(lake_root: str | Path) -> int:
@@ -122,6 +132,44 @@ def _schedule_api_request_metrics_flush(lake_root: str | Path) -> None:
         )
         _API_METRICS_FLUSH_THREADS[root_key] = thread
         thread.start()
+
+
+def _schedule_api_request_metrics_timer(lake_root: str | Path) -> None:
+    root_key = str(Path(lake_root))
+    with _API_METRICS_LOCK:
+        existing = _API_METRICS_FLUSH_TIMERS.get(root_key)
+        if existing is not None and existing.is_alive():
+            return
+        timer = threading.Timer(
+            _api_metrics_flush_seconds(),
+            _api_metrics_timer_worker,
+            args=(root_key,),
+        )
+        timer.daemon = True
+        _API_METRICS_FLUSH_TIMERS[root_key] = timer
+    timer.start()
+
+
+def _api_metrics_timer_worker(root_key: str) -> None:
+    try:
+        flush_api_request_metrics(root_key)
+    finally:
+        schedule_next = False
+        with _API_METRICS_LOCK:
+            current = _API_METRICS_FLUSH_TIMERS.get(root_key)
+            if current is threading.current_thread():
+                _API_METRICS_FLUSH_TIMERS.pop(root_key, None)
+            schedule_next = bool(_API_METRICS_BUFFERS.get(root_key))
+        if schedule_next:
+            _schedule_api_request_metrics_timer(root_key)
+
+
+def _cancel_api_request_metrics_timer(lake_root: str | Path) -> None:
+    root_key = str(Path(lake_root))
+    with _API_METRICS_LOCK:
+        timer = _API_METRICS_FLUSH_TIMERS.pop(root_key, None)
+    if timer is not None and timer is not threading.current_thread():
+        timer.cancel()
 
 
 def _api_metrics_flush_worker(root_key: str) -> None:

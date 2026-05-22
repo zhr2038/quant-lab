@@ -1183,7 +1183,12 @@ def market_regime_summary(lake_root: str | Path) -> dict[str, Any]:
     market, market_warning = read_recent_dataset_with_warning(lake_root, "market_bar")
     books, books_warning = read_recent_dataset_with_warning(lake_root, "orderbook_snapshot")
     trades, trades_warning = read_recent_dataset_with_warning(lake_root, "trade_print")
-    warnings = [warning for warning in [market_warning, books_warning, trades_warning] if warning]
+    ws_health, ws_health_warning = read_dataset_with_warning(lake_root, "okx_public_ws_health")
+    warnings = [
+        warning
+        for warning in [market_warning, books_warning, trades_warning, ws_health_warning]
+        if warning
+    ]
     if market.is_empty():
         return {
             "regimes": pl.DataFrame(),
@@ -1220,7 +1225,14 @@ def market_regime_summary(lake_root: str | Path) -> dict[str, Any]:
 
     spread_bps = orderbook_spread_table(books)
     trade_activity = trade_activity_table(trades)
-    warnings.extend(_market_universe_warnings(market, books, trade_activity))
+    warnings.extend(
+        _market_universe_warnings(
+            market,
+            books,
+            trade_activity,
+            ws_subscription=_latest_ws_subscription(ws_health),
+        )
+    )
 
     return {
         "regimes": redact_frame(regimes),
@@ -1235,11 +1247,19 @@ def _market_universe_warnings(
     market: pl.DataFrame,
     orderbooks: pl.DataFrame,
     trade_activity: pl.DataFrame,
+    *,
+    ws_subscription: tuple[set[str], set[str]] | None = None,
 ) -> list[str]:
     configured_ws_symbols = set(OKX_WS_UNIVERSE_SYMBOLS)
     market_symbols = _symbols_from_frame(market) & configured_ws_symbols
     if not market_symbols:
         return []
+    if ws_subscription is not None:
+        subscribed_symbols, subscribed_channels = ws_subscription
+        has_books = bool({"books", "books5"} & subscribed_channels)
+        has_trades = "trades" in subscribed_channels
+        if market_symbols.issubset(subscribed_symbols) and has_books and has_trades:
+            return []
     warnings: list[str] = []
     spread_symbols = _symbols_from_frame(orderbooks)
     trade_symbols = _symbols_from_frame(trade_activity)
@@ -2209,6 +2229,35 @@ def _latest_collector_health(health: pl.DataFrame) -> dict[str, Any] | None:
         return None
     sort_column = "updated_at" if "updated_at" in health.columns else health.columns[0]
     return health.sort(sort_column).tail(1).to_dicts()[0]
+
+
+def _latest_ws_subscription(health: pl.DataFrame) -> tuple[set[str], set[str]] | None:
+    latest = _latest_collector_health(health)
+    if not latest:
+        return None
+    symbols = {
+        normalize_symbol(value)
+        for value in _json_string_list(latest.get("subscribed_symbols"))
+    }
+    channels = {
+        str(value).strip()
+        for value in _json_string_list(latest.get("subscribed_channels"))
+    }
+    if not symbols and not channels:
+        return None
+    return symbols, channels
+
+
+def _json_string_list(value: Any) -> list[str]:
+    if isinstance(value, list):
+        return [str(item) for item in value if str(item).strip()]
+    if not isinstance(value, str) or not value.strip():
+        return []
+    try:
+        parsed = json.loads(value)
+    except json.JSONDecodeError:
+        return []
+    return _json_string_list(parsed)
 
 
 def _parse_datetime(value: Any) -> datetime | None:

@@ -455,6 +455,67 @@ def test_market_regime_ignores_symbols_outside_configured_ws_universe(tmp_path):
     assert "RLUSD-USDT" not in warnings
 
 
+def test_market_regime_uses_collector_subscription_for_universe_completeness(tmp_path):
+    lake_root = tmp_path / "lake"
+    start = datetime(2026, 5, 10, tzinfo=UTC)
+    eth_bar = _bar(start, close=200.0)
+    eth_bar["symbol"] = "ETH-USDT"
+    write_market_bars(lake_root, [_bar(start, close=100.0), eth_bar])
+    write_parquet_dataset(
+        pl.DataFrame(
+            [
+                {
+                    "symbol": "BTC-USDT",
+                    "channel": "books5",
+                    "ts": start,
+                    "asks_json": '[["101", "1"]]',
+                    "bids_json": '[["99", "1"]]',
+                }
+            ]
+        ),
+        lake_root / "silver" / "orderbook_snapshot",
+    )
+    write_parquet_dataset(
+        pl.DataFrame(
+            [
+                {
+                    "symbol": "BTC-USDT",
+                    "trade_id": "1",
+                    "price": 100.0,
+                    "size": 1.0,
+                    "ts": start,
+                }
+            ]
+        ),
+        lake_root / "silver" / "trade_print",
+    )
+    write_parquet_dataset(
+        pl.DataFrame(
+            [
+                {
+                    "collector_name": "okx_public_ws",
+                    "started_at": start,
+                    "last_message_at": start,
+                    "updated_at": start,
+                    "messages_read": 10,
+                    "reconnect_count": 0,
+                    "error_count": 0,
+                    "subscribed_symbols": '["BTC-USDT", "ETH-USDT"]',
+                    "subscribed_channels": '["trades", "books5"]',
+                    "status": "RUNNING",
+                }
+            ]
+        ),
+        lake_root / "bronze" / "collector_health" / "okx_public_ws",
+    )
+
+    summary = readers.market_regime_summary(lake_root)
+
+    warnings = "\n".join(summary["warnings"])
+    assert "ETH-USDT" not in warnings
+    assert "OKX WebSocket universe" not in warnings
+
+
 def test_dataset_freshness_unknown_when_populated_table_has_no_timestamp():
     payload = readers.dataset_freshness_payload(
         "decision_audit",

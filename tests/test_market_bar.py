@@ -126,3 +126,29 @@ def test_write_empty_market_bars_does_not_delete_existing_dataset(tmp_path):
     )
 
     assert [record.close for record in loaded] == [101.0, 102.0]
+
+
+def test_market_bar_hot_paths_do_not_eager_read_full_dataset(tmp_path, monkeypatch):
+    lake_root = tmp_path / "lake"
+    records = [
+        bar(ts=datetime(2026, 5, 10, 1, tzinfo=UTC), close=101.0),
+        bar(ts=datetime(2026, 5, 10, 2, tzinfo=UTC), close=102.0),
+    ]
+    write_market_bars(lake_root, records)
+
+    def fail_full_read(*_args, **_kwargs):
+        raise AssertionError("market_bar hot path should not eager-read full dataset")
+
+    monkeypatch.setattr("quant_lab.data.lake.read_parquet_dataset", fail_full_read)
+
+    assert write_market_bars(lake_root, []) == 2
+    loaded = read_market_bars(
+        lake_root,
+        venue="okx",
+        symbol="BTC-USDT",
+        timeframe="1H",
+        start=datetime(2026, 5, 10, 0, tzinfo=UTC),
+        end=datetime(2026, 5, 10, 3, tzinfo=UTC),
+    )
+
+    assert [record.close for record in loaded] == [101.0, 102.0]

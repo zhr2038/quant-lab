@@ -391,6 +391,16 @@ def read_parquet_dataset(dataset_path: str | Path) -> pl.DataFrame:
     return _read_parquet_files(files)
 
 
+def count_parquet_rows(dataset_path: str | Path) -> int:
+    files = _parquet_files(dataset_path)
+    if not files:
+        return 0
+    try:
+        return int(_scan_parquet_files(files).select(pl.len().alias("rows")).collect().item())
+    except Exception:
+        return _read_parquet_files(files).height
+
+
 def invalid_parquet_files(dataset_path: str | Path) -> list[Path]:
     return [path for path in _all_parquet_files(dataset_path) if not _is_valid_parquet_file(path)]
 
@@ -445,10 +455,10 @@ def market_bars_to_polars(records: Sequence[MarketBar | dict]) -> pl.DataFrame:
 def write_market_bars(lake_root: str | Path, records: Sequence[MarketBar | dict]) -> int:
     dataset_path = Path(lake_root) / MARKET_BAR_DATASET
     if not records:
-        return read_parquet_dataset(dataset_path).height
+        return count_parquet_rows(dataset_path)
     new_df = market_bars_to_polars(records)
     if new_df.is_empty():
-        return read_parquet_dataset(dataset_path).height
+        return count_parquet_rows(dataset_path)
     return upsert_parquet_dataset(new_df, dataset_path, key_columns=MARKET_BAR_PRIMARY_KEY)
 
 
@@ -465,14 +475,34 @@ def read_market_bars(
     if end_utc < start_utc:
         raise ValueError("end must be greater than or equal to start")
 
-    dataset_path = Path(lake_root) / MARKET_BAR_DATASET
-    df = read_parquet_dataset(dataset_path)
-    if df.is_empty():
+    files = _parquet_files(Path(lake_root) / MARKET_BAR_DATASET)
+    if not files:
         return []
 
-    normalized = _normalize_market_bar_frame(df)
+    lazy = _scan_parquet_files(files)
+    try:
+        schema = lazy.collect_schema()
+    except Exception:
+        df = read_parquet_dataset(Path(lake_root) / MARKET_BAR_DATASET)
+        if df.is_empty():
+            return []
+        normalized = _normalize_market_bar_frame(df)
+        filtered = (
+            normalized.filter(
+                (pl.col("venue") == venue)
+                & (pl.col("symbol") == normalize_symbol(symbol))
+                & (pl.col("timeframe") == timeframe)
+                & (pl.col("ts") >= start_utc)
+                & (pl.col("ts") <= end_utc)
+            )
+            .sort("ts")
+            .select(list(MARKET_BAR_SCHEMA))
+        )
+        return validate_market_bars(filtered.to_dicts())
+
     filtered = (
-        normalized.filter(
+        _normalize_market_bar_lazy_frame(lazy, schema)
+        .filter(
             (pl.col("venue") == venue)
             & (pl.col("symbol") == normalize_symbol(symbol))
             & (pl.col("timeframe") == timeframe)
@@ -482,7 +512,7 @@ def read_market_bars(
         .sort("ts")
         .select(list(MARKET_BAR_SCHEMA))
     )
-    return validate_market_bars(filtered.to_dicts())
+    return validate_market_bars(filtered.collect().to_dicts())
 
 
 def read_parquet_lazy(path: str | Path) -> pl.LazyFrame:
@@ -744,11 +774,44 @@ def _normalize_market_bar_frame(df: pl.DataFrame) -> pl.DataFrame:
     )
 
 
+def _normalize_market_bar_lazy_frame(lazy: pl.LazyFrame, schema: Any) -> pl.LazyFrame:
+    columns = set(schema.names()) if hasattr(schema, "names") else set(schema)
+    normalized = lazy
+    if "quote_volume" not in columns:
+        normalized = normalized.with_columns(
+            pl.lit(None, dtype=pl.Float64).alias("quote_volume")
+        )
+    if "is_closed" not in columns:
+        normalized = normalized.with_columns(pl.lit(True).alias("is_closed"))
+
+    return normalized.with_columns(
+        [
+            pl.col("symbol").map_elements(normalize_symbol, return_dtype=pl.Utf8),
+            _lazy_datetime_column(schema, "ts"),
+            _lazy_datetime_column(schema, "ingest_ts"),
+            pl.col("open").cast(pl.Float64),
+            pl.col("high").cast(pl.Float64),
+            pl.col("low").cast(pl.Float64),
+            pl.col("close").cast(pl.Float64),
+            pl.col("volume").cast(pl.Float64),
+            pl.col("quote_volume").cast(pl.Float64),
+            pl.col("is_closed").cast(pl.Boolean),
+        ]
+    )
+
+
 def _datetime_column(df: pl.DataFrame, column: str) -> pl.Expr:
     expression = pl.col(column)
     if df.schema.get(column) == pl.String:
         return expression.str.to_datetime(time_zone="UTC", strict=False).alias(column)
     return expression.cast(pl.Datetime(time_zone="UTC")).alias(column)
+
+
+def _lazy_datetime_column(schema: Any, column: str) -> pl.Expr:
+    expression = pl.col(column)
+    if schema.get(column) == pl.String:
+        return expression.str.to_datetime(time_zone="UTC", strict=False).alias(column)
+    return expression.cast(pl.Datetime(time_zone="UTC"), strict=False).alias(column)
 
 
 def _remove_existing_dataset(path: Path) -> None:

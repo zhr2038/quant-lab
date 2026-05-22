@@ -101,6 +101,21 @@ def test_candidate_research_refresh_runs_before_daily_export_window():
     assert "OnCalendar=*-*-* 00:20:00" in export_timer
 
 
+def test_entry_quality_history_refresh_is_scheduled_separately():
+    unit = _unit("quant-lab-entry-quality-history.service")
+    timer = _unit("quant-lab-entry-quality-history.timer")
+
+    assert "build-entry-quality-history" in unit
+    assert "--mode recent_30d" in unit
+    assert "--cost-mode conservative" in unit
+    assert "date -u -d" in unit
+    assert "/var/lock/quant-lab-entry-quality-history.lock" in unit
+    assert "MemoryMax=3G" in unit
+    assert "OnCalendar=*-*-* 01:35:00" in timer
+    assert "OnCalendar=*-*-* 13:35:00" in timer
+    assert "Persistent=true" in timer
+
+
 def test_daily_export_template_is_packaging_only():
     unit = _unit("quant-lab-daily-export.service")
 

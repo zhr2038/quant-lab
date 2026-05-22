@@ -292,11 +292,13 @@ WEB_RESEARCH_SAMPLE_DATASETS = {
 }
 WEB_FEATURE_SAMPLE_DATASETS = {"feature_value"}
 WEB_AUDIT_SAMPLE_DATASETS = {"decision_audit"}
+WEB_COST_SAMPLE_DATASETS = {"cost_bucket_daily"}
 WEB_RECENT_LOOKBACK_HOURS = {
     "market_bar": 24 * 14,
     "trade_print": 6,
     "orderbook_snapshot": 6,
     "okx_public_ws": 6,
+    "cost_bucket_daily": 24 * 180,
     "decision_audit": 24 * 14,
     "feature_value": 24 * 14,
     "strategy_evidence_sample": 24 * 14,
@@ -312,6 +314,7 @@ WEB_RECENT_FILE_SAMPLE_DATASETS = (
     | WEB_RESEARCH_SAMPLE_DATASETS
     | WEB_FEATURE_SAMPLE_DATASETS
     | WEB_AUDIT_SAMPLE_DATASETS
+    | WEB_COST_SAMPLE_DATASETS
 )
 WEB_HEAVY_EXACT_ROW_COUNT_FILE_LIMIT = 64
 WEB_HEAVY_ROW_COUNT_SAMPLE_FILES = 32
@@ -320,6 +323,7 @@ WEB_RECENT_FILE_LIMITS = {
     "trade_print": 384,
     "orderbook_snapshot": 384,
     "okx_public_ws": 384,
+    "cost_bucket_daily": 384,
     "decision_audit": 384,
     "feature_value": 384,
     "strategy_evidence_sample": 384,
@@ -401,9 +405,13 @@ def _read_web_display_dataset_with_warning(
     lake_root: str | Path,
     dataset_name: str,
 ) -> tuple[pl.DataFrame, str | None]:
-    if dataset_name in (
-        WEB_RESEARCH_SAMPLE_DATASETS | WEB_FEATURE_SAMPLE_DATASETS | WEB_AUDIT_SAMPLE_DATASETS
-    ):
+    sampled_datasets = (
+        WEB_RESEARCH_SAMPLE_DATASETS
+        | WEB_FEATURE_SAMPLE_DATASETS
+        | WEB_AUDIT_SAMPLE_DATASETS
+        | WEB_COST_SAMPLE_DATASETS
+    )
+    if dataset_name in sampled_datasets:
         return read_recent_dataset_with_warning(lake_root, dataset_name)
     return read_dataset_with_warning(lake_root, dataset_name)
 
@@ -1389,7 +1397,10 @@ def _symbols_from_frame(frame: pl.DataFrame) -> set[str]:
 
 
 def cost_model_summary(lake_root: str | Path) -> dict[str, Any]:
-    costs, costs_warning = read_dataset_with_warning(lake_root, "cost_bucket_daily")
+    costs, costs_warning = _read_web_display_dataset_with_warning(
+        lake_root,
+        "cost_bucket_daily",
+    )
     costs = _normalize_symbol_frame(costs)
     health, health_warning = read_dataset_with_warning(lake_root, "cost_health_daily")
     warnings = [warning for warning in [costs_warning, health_warning] if warning]
@@ -1417,6 +1428,7 @@ def cost_model_summary(lake_root: str | Path) -> dict[str, Any]:
         fallback_ratio = fallback_rows / costs.height
 
     latest_health = health.sort("day").tail(1).to_dicts()[0] if not health.is_empty() else {}
+    fallback_ratio = latest_health.get("fallback_ratio", fallback_ratio)
     return {
         "costs": redact_frame(costs).head(DISPLAY_LIMIT),
         "cost_health": redact_frame(health).head(DISPLAY_LIMIT),

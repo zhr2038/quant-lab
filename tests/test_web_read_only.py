@@ -282,6 +282,51 @@ def test_strategy_consumer_summary_samples_decision_audit(tmp_path, monkeypatch)
     assert summary["fallback_rows"]["message"].to_list() == ["new fallback path"]
 
 
+def test_cost_model_summary_samples_cost_bucket_daily(tmp_path, monkeypatch):
+    lake_root = tmp_path / "lake"
+    dataset_path = lake_root / "gold" / "cost_bucket_daily"
+    dataset_path.mkdir(parents=True)
+    start = datetime(2026, 5, 10, tzinfo=UTC)
+    pl.DataFrame(
+        [
+            {
+                "day": "2026-05-09",
+                "symbol": "OLD/USDT",
+                "regime": "normal",
+                "fallback_level": "GLOBAL_DEFAULT",
+                "source": "global_default",
+                "created_at": start,
+            }
+        ]
+    ).write_parquet(dataset_path / "batch_20260509T000000000000Z.parquet")
+    pl.DataFrame(
+        [
+            {
+                "day": "2026-05-10",
+                "symbol": "NEW/USDT",
+                "regime": "normal",
+                "fallback_level": "NONE",
+                "source": "actual_fills",
+                "created_at": start + timedelta(hours=1),
+            }
+        ]
+    ).write_parquet(dataset_path / "batch_20260510T010000000000Z.parquet")
+    monkeypatch.setitem(readers.WEB_RECENT_FILE_LIMITS, "cost_bucket_daily", 1)
+    original = readers.read_dataset_with_warning
+
+    def guarded_read_dataset_with_warning(lake_root_arg, dataset_name):
+        if dataset_name == "cost_bucket_daily":
+            raise AssertionError("cost model page should not fully read cost_bucket_daily")
+        return original(lake_root_arg, dataset_name)
+
+    monkeypatch.setattr(readers, "read_dataset_with_warning", guarded_read_dataset_with_warning)
+
+    summary = readers.cost_model_summary(lake_root)
+
+    assert summary["costs"]["symbol"].to_list() == ["NEW-USDT"]
+    assert "cost_bucket_daily 数据集缺失或为空" not in summary["warnings"]
+
+
 def test_data_health_hides_pending_v5_paper_telemetry(tmp_path):
     lake_root = tmp_path / "lake"
     stale_rows = readers.data_health_summary(lake_root)["stale_datasets"].to_dicts()

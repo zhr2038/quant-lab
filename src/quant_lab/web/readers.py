@@ -228,7 +228,7 @@ V5_TELEMETRY_SYNC_COMMAND = (
 OKX_WS_COLLECT_COMMAND = (
     "qlab okx-ws-collect-universe --symbols BTC-USDT,ETH-USDT,SOL-USDT,BNB-USDT "
     "--channels tickers,trades,books5 --market-type SPOT --lake-root {lake_root} "
-    "--flush-interval-seconds 300 --flush-max-messages 50000"
+    "--flush-interval-seconds 600 --flush-max-messages 50000"
 )
 EXPERT_PACK_MISSING_MESSAGE = "qlab export-daily 尚未实现或尚未运行。"
 BOOTSTRAP_GOLD_HEALTH_COMMAND = (

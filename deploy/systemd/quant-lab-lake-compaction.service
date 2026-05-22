@@ -11,6 +11,8 @@ WorkingDirectory=/opt/quant-lab
 Environment=PYTHONUNBUFFERED=1
 Environment=POLARS_MAX_THREADS=1
 Environment=MALLOC_ARENA_MAX=2
+Environment=COMPACT_RAW_OKX_WS=1
+Environment=COMPACT_DATASET_TIMEOUT_SECONDS=300
 ExecStart=/usr/bin/flock -w 10 /var/lock/quant-lab-heavy.lock /bin/bash /opt/quant-lab/deploy/scripts/compact_lake_hot_datasets.sh
 Nice=15
 IOSchedulingClass=idle

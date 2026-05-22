@@ -271,7 +271,7 @@ def okx_ws_collect_universe(
     flush_interval_seconds: Annotated[
         float,
         typer.Option("--flush-interval-seconds", min=0.1),
-    ] = 300.0,
+    ] = 600.0,
     flush_max_messages: Annotated[
         int,
         typer.Option("--flush-max-messages", min=1),

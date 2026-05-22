@@ -279,7 +279,7 @@ async def collect_okx_public_ws_universe(
     channels: Sequence[str],
     lake_root: str | Path,
     market_type: str = "SPOT",
-    flush_interval_seconds: float = 300.0,
+    flush_interval_seconds: float = 600.0,
     flush_max_messages: int = 50_000,
     config: OKXPublicWSConfig | None = None,
     max_messages: int | None = None,

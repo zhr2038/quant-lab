@@ -56,6 +56,8 @@ def test_scheduled_compaction_covers_hot_ws_datasets():
     assert "WARN_LAKE_HEALTH_FAILED_OR_TIMED_OUT" in script
     assert "COMPACT_RAW_OKX_WS" in script
     assert "SKIP_COMPACT_RAW_OKX_WS" in script
+    assert "COMPACT_RAW_OKX_WS=1" in unit
+    assert "COMPACT_DATASET_TIMEOUT_SECONDS=300" in unit
     assert "compact_leaf_partitions_if_file_count_at_least" in script
     assert "SKIP_LEAF_COMPACT_BUDGET" in script
     assert '"bronze/okx_public_ws"' in script
@@ -116,7 +118,7 @@ def test_okx_ws_service_uses_unpartitioned_large_batches():
 
     assert "QUANT_LAB_WS_APPEND_TARGET_ROWS=500000" in unit
     assert "QUANT_LAB_WS_APPEND_PARTITIONED=0" in unit
-    assert "--flush-interval-seconds 300" in unit
+    assert "--flush-interval-seconds 600" in unit
     assert "--flush-max-messages 50000" in unit
     for symbol in [
         "BTC-USDT",
@@ -140,6 +142,6 @@ def test_manual_okx_ws_defaults_match_production_batching():
     cli = (ROOT / "src" / "quant_lab" / "cli.py").read_text(encoding="utf-8")
     readers = (ROOT / "src" / "quant_lab" / "web" / "readers.py").read_text(encoding="utf-8")
 
-    assert "] = 300.0" in cli
+    assert "] = 600.0" in cli
     assert "] = 50_000" in cli
-    assert "--flush-interval-seconds 300 --flush-max-messages 50000" in readers
+    assert "--flush-interval-seconds 600 --flush-max-messages 50000" in readers

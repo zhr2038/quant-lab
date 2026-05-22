@@ -173,6 +173,32 @@ def test_read_day_dataset_does_not_full_scan_hot_dataset_without_day_files(tmp_p
     assert frame.is_empty()
 
 
+def test_read_day_dataset_uses_day_column_and_projects_hot_dataset_columns(tmp_path):
+    lake_root = tmp_path / "lake"
+    dataset = lake_root / "silver" / "orderbook_snapshot"
+    dataset.mkdir(parents=True)
+    for index, day in enumerate(["2026-05-09", "2026-05-10", "2026-05-11"]):
+        _orderbook_frame("BTC-USDT", day).with_columns(
+            pl.lit(day).alias("day"),
+            pl.lit("large-raw-payload").alias("raw_json"),
+            pl.lit("ignored").alias("source"),
+        ).write_parquet(dataset / f"compact_{index}.parquet")
+
+    frame = _read_day_dataset(
+        lake_root,
+        Path("silver") / "orderbook_snapshot",
+        "2026-05-10",
+        max_files=10,
+        columns=["symbol", "day", "ts", "asks_json", "bids_json"],
+    )
+
+    assert frame.height == 1
+    assert frame["day"].to_list() == ["2026-05-10"]
+    assert frame["symbol"].to_list() == ["BTC-USDT"]
+    assert "raw_json" not in frame.columns
+    assert "source" not in frame.columns
+
+
 def test_v5_trade_events_generate_actual_fill_bucket_before_spread_proxy(tmp_path):
     lake_root = tmp_path / "lake"
     _write_v5_trades(lake_root)

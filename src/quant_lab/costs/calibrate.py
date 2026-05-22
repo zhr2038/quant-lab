@@ -36,6 +36,8 @@ COST_HEALTH_DAILY_DATASET = Path("gold") / "cost_health_daily"
 DEFAULT_MIN_SAMPLE_COUNT = 30
 PRIVATE_COST_LOOKBACK_DAYS = 7
 PUBLIC_DAY_FILE_LIMIT = int(os.getenv("QUANT_LAB_COST_MAX_PUBLIC_DAY_FILES", "5000"))
+ORDERBOOK_COST_COLUMNS = ("symbol", "day", "ts", "asks_json", "bids_json")
+TRADE_PRINT_COST_COLUMNS = ("symbol", "day", "ts")
 
 COST_BUCKET_DAILY_SCHEMA = {
     "day": pl.Utf8,
@@ -105,12 +107,14 @@ def calibrate_costs_for_day(
             ORDERBOOK_SNAPSHOT_DATASET,
             day,
             max_files=PUBLIC_DAY_FILE_LIMIT,
+            columns=ORDERBOOK_COST_COLUMNS,
         ),
         trade_prints=_read_day_dataset(
             root,
             TRADE_PRINT_DATASET,
             day,
             max_files=PUBLIC_DAY_FILE_LIMIT,
+            columns=TRADE_PRINT_COST_COLUMNS,
         ),
         v5_trade_events=v5_trade_events,
         v5_order_lifecycle=v5_order_lifecycle,
@@ -727,6 +731,7 @@ def _read_day_dataset(
     day: str,
     timestamp_column: str = "ts",
     max_files: int | None = None,
+    columns: Sequence[str] | None = None,
 ) -> pl.DataFrame:
     dataset_path = root / dataset
     try:
@@ -734,17 +739,38 @@ def _read_day_dataset(
         if max_files is not None and not files:
             return pl.DataFrame()
         lazy = _scan_files(files) if files else read_parquet_lazy(dataset_path)
-        columns = lazy.collect_schema().names()
-        if timestamp_column not in columns:
-            return lazy.collect(engine="streaming") if files else pl.DataFrame()
-        return (
-            lazy.filter(pl.col(timestamp_column).cast(pl.Utf8).str.starts_with(day))
-            .collect(engine="streaming")
-        )
+        schema_columns = lazy.collect_schema().names()
+        if "day" in schema_columns:
+            lazy = lazy.filter(pl.col("day").cast(pl.Utf8) == day)
+        elif timestamp_column in schema_columns:
+            lazy = lazy.filter(pl.col(timestamp_column).cast(pl.Utf8).str.starts_with(day))
+        elif not files:
+            return pl.DataFrame()
+        lazy = _select_lazy_columns(lazy, schema_columns, columns)
+        return lazy.collect(engine="streaming")
     except Exception:
         if max_files is not None and dataset_path.is_dir():
             return pl.DataFrame()
-        return _filter_day(read_parquet_dataset(dataset_path), day)
+        frame = _filter_day(read_parquet_dataset(dataset_path), day)
+        return _select_frame_columns(frame, columns)
+
+
+def _select_lazy_columns(
+    lazy: pl.LazyFrame,
+    schema_columns: Sequence[str],
+    columns: Sequence[str] | None,
+) -> pl.LazyFrame:
+    if not columns:
+        return lazy
+    selected = [column for column in columns if column in schema_columns]
+    return lazy.select(selected) if selected else lazy
+
+
+def _select_frame_columns(df: pl.DataFrame, columns: Sequence[str] | None) -> pl.DataFrame:
+    if df.is_empty() or not columns:
+        return df
+    selected = [column for column in columns if column in df.columns]
+    return df.select(selected) if selected else df
 
 
 def _candidate_day_files(

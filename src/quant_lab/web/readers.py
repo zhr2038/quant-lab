@@ -1220,7 +1220,7 @@ def market_regime_summary(lake_root: str | Path) -> dict[str, Any]:
 
     spread_bps = orderbook_spread_table(books)
     trade_activity = trade_activity_table(trades)
-    warnings.extend(_market_universe_warnings(market, spread_bps, trade_activity))
+    warnings.extend(_market_universe_warnings(market, books, trade_activity))
 
     return {
         "regimes": redact_frame(regimes),
@@ -1233,7 +1233,7 @@ def market_regime_summary(lake_root: str | Path) -> dict[str, Any]:
 
 def _market_universe_warnings(
     market: pl.DataFrame,
-    spread_bps: pl.DataFrame,
+    orderbooks: pl.DataFrame,
     trade_activity: pl.DataFrame,
 ) -> list[str]:
     configured_ws_symbols = set(OKX_WS_UNIVERSE_SYMBOLS)
@@ -1241,7 +1241,7 @@ def _market_universe_warnings(
     if not market_symbols:
         return []
     warnings: list[str] = []
-    spread_symbols = _symbols_from_frame(spread_bps)
+    spread_symbols = _symbols_from_frame(orderbooks)
     trade_symbols = _symbols_from_frame(trade_activity)
     if spread_symbols and (missing_spread := sorted(market_symbols - spread_symbols)):
         warnings.append(

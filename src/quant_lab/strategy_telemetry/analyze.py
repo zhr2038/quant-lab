@@ -231,6 +231,15 @@ def analyze_v5_telemetry(
             "is_reduce_only",
             "new_risk",
             "risk_increasing",
+            "raw_permission_decision",
+            "raw_permission_status",
+            "effective_permission_decision",
+            "effective_permission_status",
+            "permission_decision",
+            "effective_decision",
+            "order_decision",
+            "permission_contract_violation",
+            "would_block_if_enforced",
             "intent",
             "action",
             "router_intent",
@@ -924,36 +933,11 @@ def _quant_lab_mode_summary(
     hypothetical: list[str] = []
     request_health = _quant_lab_request_health(requests, fallback)
     if not compliance.is_empty():
-        for row in compliance.to_dicts():
-            payload = _payload(row)
-            permission = _first_text(row, payload, ["permission", "quant_lab_permission"])
-            explicit_actual = _first_bool(row, payload, ["actual_violation"])
-            explicit_hypothetical = _first_bool(row, payload, ["hypothetical_violation"])
-            message = (
-                f"quant_lab {str(permission).upper()} permission with risk-increasing "
-                f"V5 action in mode={mode or 'unknown'}"
-            )
-            if explicit_actual is not None or explicit_hypothetical is not None:
-                if (
-                    explicit_actual
-                    and mode != "shadow"
-                    and _mode_allows_actual_permission_check(mode)
-                ):
-                    actual.append(message)
-                if explicit_hypothetical or (
-                    explicit_actual
-                    and (mode == "shadow" or not _mode_allows_actual_permission_check(mode))
-                ):
-                    hypothetical.append(message)
-                continue
-            if not _row_is_risk_increasing(row, payload):
-                continue
-            if str(permission or "").upper() not in {"ABORT", "SELL_ONLY"}:
-                continue
-            if mode == "shadow" or not enforced or not _mode_allows_actual_permission_check(mode):
-                hypothetical.append(message)
-            else:
-                actual.append(message)
+        actual, hypothetical = _compliance_violation_messages(
+            compliance,
+            mode=mode,
+            enforced=enforced,
+        )
     elif (
         not trades.is_empty()
         and mode not in {None, "local_only", "cost_only"}
@@ -1501,12 +1485,145 @@ def _logical_source_path(source_path: str) -> str:
     return source_path
 
 
+def _compliance_violation_messages(
+    frame: pl.DataFrame,
+    *,
+    mode: str | None,
+    enforced: bool,
+) -> tuple[list[str], list[str]]:
+    if frame.is_empty():
+        return [], []
+    actual_messages: set[str] = set()
+    hypothetical_messages: set[str] = set()
+
+    explicit_actual = _boolean_series(frame, ["actual_violation"])
+    explicit_hypothetical = _boolean_series(frame, ["hypothetical_violation"])
+    if explicit_actual is not None and bool(explicit_actual.any()):
+        message = _violation_message("explicit", mode)
+        if mode != "shadow" and _mode_allows_actual_permission_check(mode):
+            actual_messages.add(message)
+        else:
+            hypothetical_messages.add(message)
+    if explicit_hypothetical is not None and bool(explicit_hypothetical.any()):
+        hypothetical_messages.add(_violation_message("explicit", mode))
+
+    permission = _coalesced_text_series(
+        frame,
+        [
+            "permission",
+            "quant_lab_permission",
+            "raw_permission_decision",
+            "raw_permission_status",
+            "effective_permission_decision",
+            "effective_permission_status",
+            "permission_decision",
+            "effective_decision",
+        ],
+    )
+    if permission is None:
+        return sorted(actual_messages), sorted(hypothetical_messages)
+
+    risky = _risk_increasing_series(frame)
+    permission_upper = permission.str.to_uppercase()
+    permission_blocked = permission_upper.str.contains("ABORT") | permission_upper.str.contains(
+        "SELL_ONLY"
+    )
+    blocked = frame.select((permission_blocked & risky).alias("blocked"))["blocked"]
+    if not bool(blocked.any()):
+        return sorted(actual_messages), sorted(hypothetical_messages)
+
+    blocked_permissions = (
+        frame.with_columns(permission_upper.alias("__permission"))
+        .filter(permission_blocked & risky)
+        .select(pl.col("__permission").unique())
+        .to_series()
+        .to_list()
+    )
+    target = (
+        hypothetical_messages
+        if mode == "shadow" or not enforced or not _mode_allows_actual_permission_check(mode)
+        else actual_messages
+    )
+    for value in blocked_permissions:
+        normalized = "SELL_ONLY" if "SELL_ONLY" in str(value) else "ABORT"
+        target.add(_violation_message(normalized, mode))
+    return sorted(actual_messages), sorted(hypothetical_messages)
+
+
+def _violation_message(permission: str, mode: str | None) -> str:
+    return (
+        f"quant_lab {str(permission).upper()} permission with risk-increasing "
+        f"V5 action in mode={mode or 'unknown'}"
+    )
+
+
+def _boolean_series(frame: pl.DataFrame, columns: list[str]) -> pl.Series | None:
+    existing = [column for column in columns if column in frame.columns]
+    if not existing:
+        return None
+    exprs = [_bool_expr(column) for column in existing]
+    combined = exprs[0]
+    for expr in exprs[1:]:
+        combined = combined | expr
+    return frame.select(combined.fill_null(False).alias("__bool"))["__bool"]
+
+
+def _bool_expr(column: str) -> pl.Expr:
+    return (
+        pl.col(column)
+        .cast(pl.Utf8, strict=False)
+        .str.strip_chars()
+        .str.to_lowercase()
+        .is_in(["1", "true", "yes", "y", "on"])
+    )
+
+
+def _coalesced_text_series(frame: pl.DataFrame, columns: list[str]) -> pl.Series | None:
+    existing = [column for column in columns if column in frame.columns]
+    if not existing:
+        return None
+    exprs = [
+        pl.col(column).cast(pl.Utf8, strict=False).str.strip_chars()
+        for column in existing
+    ]
+    return frame.select(pl.coalesce(exprs).fill_null("").alias("__text"))["__text"]
+
+
+def _risk_increasing_series(frame: pl.DataFrame) -> pl.Series:
+    reduce_only = _boolean_series(frame, ["reduce_only", "is_reduce_only"])
+    new_risk = _boolean_series(frame, ["new_risk", "risk_increasing"])
+    side = _coalesced_text_series(frame, ["side", "order_side"])
+    intent = _coalesced_text_series(frame, ["intent", "action", "router_intent"])
+    order_decision = _coalesced_text_series(frame, ["order_decision", "effective_decision"])
+
+    if new_risk is None:
+        risk = pl.Series("__risk", [False] * frame.height)
+    else:
+        risk = new_risk
+    for values in [side, intent, order_decision]:
+        if values is None:
+            continue
+        lowered = values.str.to_lowercase()
+        risk = risk | lowered.is_in(
+            ["buy", "long", "open_long", "increase", "risk_increase", "enter"]
+        )
+        risk = risk & ~lowered.is_in(["reduce", "close", "close_long", "sell_only_reduce", "exit"])
+    if reduce_only is not None:
+        risk = risk & ~reduce_only
+    return risk
+
+
 def _latest_mode(*frames: pl.DataFrame) -> str | None:
     allowed = {"local_only", "shadow", "cost_only", "permission_only", "enforce"}
     for frame in frames:
         if frame.is_empty():
             continue
-        for row in reversed(frame.to_dicts()):
+        for row in reversed(
+            _recent_relevant_rows(
+                frame,
+                ["mode", "quant_lab_mode", "quant_lab.mode", "quant_lab.quant_lab_mode"],
+            )
+        ):
             payload = _payload(row)
             value = _first_text(
                 row,
@@ -1535,7 +1652,7 @@ def _gate_enforced(
     for frame in frames:
         if frame.is_empty():
             continue
-        for row in reversed(frame.to_dicts()):
+        for row in reversed(_recent_relevant_rows(frame, expanded_fields)):
             payload = _payload(row)
             value = _first_value(row, payload, expanded_fields)
             if value is None and "permission" in field_names[0]:
@@ -1546,6 +1663,55 @@ def _gate_enforced(
     if is_cost_gate:
         return mode in {"enforce", "cost_only"}
     return mode in {"enforce", "permission_only"}
+
+
+def _recent_relevant_rows(
+    frame: pl.DataFrame,
+    fields: list[str],
+    *,
+    limit: int = 500,
+) -> list[dict[str, Any]]:
+    if frame.is_empty():
+        return []
+    root_fields = {field.split(".", maxsplit=1)[0] for field in fields}
+    needed = [
+        column
+        for column in [
+            *sorted(root_fields),
+            "raw_payload_json",
+            "raw_json",
+            "ingest_ts",
+            "bundle_ts",
+        ]
+        if column in frame.columns
+    ]
+    if not needed:
+        return []
+    candidates = frame.select(needed)
+    scalar_fields = [column for column in root_fields if column in candidates.columns]
+    mask: pl.Expr | None = None
+    for column in scalar_fields:
+        expr = (
+            pl.col(column).is_not_null()
+            & (pl.col(column).cast(pl.Utf8, strict=False).str.strip_chars() != "")
+            & (
+                ~pl.col(column)
+                .cast(pl.Utf8, strict=False)
+                .str.strip_chars()
+                .str.to_lowercase()
+                .is_in(["none", "null", "nan", "unknown", "not_observable"])
+            )
+        )
+        mask = expr if mask is None else mask | expr
+    if mask is not None:
+        filtered = candidates.filter(mask)
+        if not filtered.is_empty():
+            candidates = filtered
+    for time_column in ["ingest_ts", "bundle_ts"]:
+        if time_column in candidates.columns:
+            candidates = _normalize_time(candidates, time_column).sort(time_column)
+            break
+    return candidates.tail(max(limit, 1)).to_dicts()
 
 
 def _first_value(row: dict[str, Any], payload: dict[str, Any], fields: list[str]) -> Any:

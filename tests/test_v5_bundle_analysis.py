@@ -296,6 +296,34 @@ def test_quant_lab_reduce_only_buy_is_not_risk_increasing_violation(tmp_path):
     assert result.quant_lab_hypothetical_violation_count == 0
 
 
+def test_quant_lab_compliance_uses_production_permission_fields(tmp_path):
+    lake = tmp_path / "lake"
+    _write_manifest(lake)
+    _write_quant_lab_usage(lake, mode="permission_only", enforced=True)
+    write_parquet_dataset(
+        pl.DataFrame(
+            [
+                {
+                    **_event_row("production-compliance"),
+                    "source_path_inside_bundle": "summaries/quant_lab_compliance.csv",
+                    "mode": "permission_only",
+                    "permission_gate_enforced": "true",
+                    "effective_permission_decision": "SELL_ONLY",
+                    "intent": "OPEN_LONG",
+                    "side": "buy",
+                }
+            ]
+        ),
+        lake / "silver/v5_quant_lab_compliance",
+    )
+
+    result = analyze_v5_telemetry(lake, date="2026-05-10")
+
+    assert result.quant_lab_actual_violation_count == 1
+    assert result.quant_lab_hypothetical_violation_count == 0
+    assert "gate_compliance_violation" in result.critical_reasons
+
+
 def test_quant_lab_mode_can_parse_decision_audit_nested_quant_lab(tmp_path):
     lake = tmp_path / "lake"
     _write_manifest(lake)

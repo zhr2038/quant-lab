@@ -1182,6 +1182,7 @@ def pull_v5_bundles(
     remote_user: Annotated[str | None, typer.Option("--remote-user")] = None,
     remote_dir: Annotated[Path | None, typer.Option("--remote-dir")] = None,
     local_inbox_dir: Annotated[Path | None, typer.Option("--local-inbox-dir")] = None,
+    max_files: Annotated[int | None, typer.Option("--max-files", min=1)] = None,
     dry_run: Annotated[bool, typer.Option("--dry-run")] = False,
 ) -> None:
     cfg = load_v5_telemetry_remote_config(
@@ -1194,7 +1195,7 @@ def pull_v5_bundles(
             "dry_run": dry_run or None,
         },
     )
-    result = RemoteBundlePuller().pull_bundles(cfg)
+    result = RemoteBundlePuller().pull_bundles(cfg, max_files=max_files)
     typer.echo(result.model_dump_json(indent=2))
 
 
@@ -1305,6 +1306,7 @@ def sync_v5_telemetry_command(
         int,
         typer.Option("--max-skipped-files-reported", min=0),
     ] = 25,
+    remote_max_files: Annotated[int | None, typer.Option("--remote-max-files", min=1)] = None,
     include_historical_outcomes: Annotated[
         bool,
         typer.Option("--include-historical-outcomes/--skip-historical-outcomes"),
@@ -1317,8 +1319,13 @@ def sync_v5_telemetry_command(
     effective_max_bundles = max_bundles
     if effective_max_bundles is None:
         effective_max_bundles = int(os.environ.get("QUANT_LAB_V5_SYNC_MAX_BUNDLES", "1"))
+    effective_remote_max_files = remote_max_files
+    if effective_remote_max_files is None:
+        env_value = os.environ.get("QUANT_LAB_V5_SYNC_REMOTE_MAX_FILES")
+        effective_remote_max_files = int(env_value) if env_value else effective_max_bundles
+
     def _run_sync() -> dict[str, object]:
-        pull = RemoteBundlePuller().pull_bundles(cfg)
+        pull = RemoteBundlePuller().pull_bundles(cfg, max_files=effective_remote_max_files)
         inbox = None
         analysis = None
         if not cfg.dry_run:
@@ -1345,6 +1352,7 @@ def sync_v5_telemetry_command(
             "inbox": inbox.model_dump(mode="json") if inbox else None,
             "analysis": analysis.model_dump(mode="json") if analysis else None,
             "max_bundles": effective_max_bundles,
+            "remote_max_files": effective_remote_max_files,
             "newest_first": newest_first,
             "include_historical_outcomes": include_historical_outcomes,
         }

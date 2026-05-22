@@ -15,12 +15,15 @@ def _script(name: str) -> str:
 
 def test_v5_health_analysis_stays_lightweight():
     unit = _unit("quant-lab-v5-daily-analysis.service")
+    sync_unit = _unit("quant-lab-v5-telemetry-sync.service")
 
     assert "analyze-v5-telemetry" in unit
     assert "--skip-candidate-gold" in unit
     assert "build-v5-candidate-labels" not in unit
     assert "build-strategy-evidence" not in unit
     assert "build-alpha-discovery-board" not in unit
+    assert "--remote-max-files 1" in sync_unit
+    assert "QUANT_LAB_V5_SYNC_REMOTE_MAX_FILES=1" in sync_unit
 
 
 def test_candidate_research_refresh_is_separate_from_alpha_evidence():

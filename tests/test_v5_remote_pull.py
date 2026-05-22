@@ -1,7 +1,11 @@
 from pathlib import Path
 
 from quant_lab.strategy_telemetry.config import V5TelemetryRemoteConfig
-from quant_lab.strategy_telemetry.remote_pull import RemoteBundlePuller, build_rsync_command
+from quant_lab.strategy_telemetry.remote_pull import (
+    RemoteBundlePuller,
+    build_remote_bundle_list_command,
+    build_rsync_command,
+)
 
 
 def test_remote_pull_builds_safe_rsync_command(tmp_path):
@@ -45,6 +49,65 @@ def test_remote_pull_dry_run_does_not_execute(tmp_path, monkeypatch):
     assert result.remote_host == "qyun.hrhome.top"
     assert result.command_summary
     assert result.warnings == ["dry_run: rsync was not executed"]
+
+
+def test_remote_pull_can_limit_to_newest_stable_files(tmp_path, monkeypatch):
+    identity = tmp_path / "id_ed25519"
+    identity.write_text("not-a-real-key", encoding="utf-8")
+    config = _config(tmp_path, identity, None)
+    (config.local_inbox_dir).mkdir(parents=True)
+    (config.local_inbox_dir / "v5_live_followup_bundle_20260510T030000Z.tar.gz").write_text(
+        "already local",
+        encoding="utf-8",
+    )
+    calls = []
+
+    class Completed:
+        def __init__(self, stdout: str = "", returncode: int = 0):
+            self.stdout = stdout
+            self.stderr = ""
+            self.returncode = returncode
+
+    def fake_run(command, **kwargs):
+        calls.append((command, kwargs))
+        if command[0] == "ssh":
+            assert "head -n 3" in command[-1]
+            return Completed(
+                "\n".join(
+                    [
+                        "v5_live_followup_bundle_20260510T040000Z.tar.gz",
+                        "v5_live_followup_bundle_20260510T030000Z.tar.gz",
+                    ]
+                )
+            )
+        assert command[0] == "rsync"
+        assert "--files-from=-" in command
+        assert kwargs["input"] == "v5_live_followup_bundle_20260510T040000Z.tar.gz\n"
+        return Completed("v5_live_followup_bundle_20260510T040000Z.tar.gz\n")
+
+    monkeypatch.setattr("subprocess.run", fake_run)
+
+    result = RemoteBundlePuller().pull_bundles(config, max_files=3)
+
+    assert len(calls) == 2
+    assert result.pulled_files == ["v5_live_followup_bundle_20260510T040000Z.tar.gz"]
+    assert result.skipped_files == ["v5_live_followup_bundle_20260510T030000Z.tar.gz"]
+    assert any("head -n 3" in part for part in result.command_summary)
+
+
+def test_remote_bundle_list_command_honors_stable_age(tmp_path):
+    identity = tmp_path / "id_ed25519"
+    identity.write_text("not-a-real-key", encoding="utf-8")
+    config = _config(tmp_path, identity, None)
+
+    command = build_remote_bundle_list_command(config, max_files=2)
+
+    rendered = " ".join(command)
+    assert command[0] == "ssh"
+    assert "v5readonly@qyun.hrhome.top" in command
+    assert "find" in rendered
+    assert "age=\"60\"" in rendered
+    assert "head -n 2" in rendered
 
 
 def _config(tmp_path: Path, identity: Path, known_hosts: Path | None) -> V5TelemetryRemoteConfig:

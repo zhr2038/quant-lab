@@ -1,3 +1,4 @@
+import shlex
 import subprocess
 from datetime import UTC, datetime
 
@@ -5,7 +6,7 @@ from quant_lab.strategy_telemetry.config import V5TelemetryRemoteConfig
 from quant_lab.strategy_telemetry.models import PullResult
 
 
-def build_rsync_command(config: V5TelemetryRemoteConfig) -> list[str]:
+def _ssh_parts(config: V5TelemetryRemoteConfig) -> list[str]:
     ssh_parts = [
         "ssh",
         "-i",
@@ -19,7 +20,35 @@ def build_rsync_command(config: V5TelemetryRemoteConfig) -> list[str]:
     ]
     if config.known_hosts_file is not None:
         ssh_parts.extend(["-o", f"UserKnownHostsFile={config.known_hosts_file}"])
+    return ssh_parts
 
+
+def _ssh_command(config: V5TelemetryRemoteConfig) -> str:
+    return " ".join(shlex.quote(part) for part in _ssh_parts(config))
+
+
+def build_remote_bundle_list_command(
+    config: V5TelemetryRemoteConfig,
+    *,
+    max_files: int,
+) -> list[str]:
+    remote_dir = shlex.quote(str(config.remote_bundle_dir))
+    filename_glob = shlex.quote(config.filename_glob)
+    max_files = max(int(max_files), 1)
+    min_age = max(int(config.min_stable_age_seconds), 0)
+    script = (
+        "now=$(date +%s); "
+        f"find {remote_dir} -maxdepth 1 -type f -name {filename_glob} "
+        "-printf '%T@ %f\\n' 2>/dev/null | "
+        "sort -rn | "
+        f"awk -v now=\"$now\" -v age=\"{min_age}\" "
+        "'($1 <= now-age) {$1=\"\"; sub(/^ /, \"\"); print}' | "
+        f"head -n {max_files}"
+    )
+    return [*_ssh_parts(config), f"{config.remote_user}@{config.remote_host}", script]
+
+
+def build_rsync_command(config: V5TelemetryRemoteConfig) -> list[str]:
     remote = f"{config.remote_user}@{config.remote_host}:{config.remote_bundle_dir}/"
     return [
         "rsync",
@@ -33,7 +62,23 @@ def build_rsync_command(config: V5TelemetryRemoteConfig) -> list[str]:
         "--exclude=.env",
         "--exclude=*",
         "-e",
-        " ".join(ssh_parts),
+        _ssh_command(config),
+        remote,
+        f"{config.local_inbox_dir}/",
+    ]
+
+
+def build_limited_rsync_command(config: V5TelemetryRemoteConfig) -> list[str]:
+    remote = f"{config.remote_user}@{config.remote_host}:{config.remote_bundle_dir}/"
+    return [
+        "rsync",
+        "-av",
+        "--ignore-existing",
+        "--partial",
+        "--protect-args",
+        "--files-from=-",
+        "-e",
+        _ssh_command(config),
         remote,
         f"{config.local_inbox_dir}/",
     ]
@@ -47,12 +92,22 @@ class RemoteBundlePuller:
     def build_rsync_command(self, config: V5TelemetryRemoteConfig) -> list[str]:
         return build_rsync_command(config)
 
-    def pull_bundles(self, config: V5TelemetryRemoteConfig) -> PullResult:
+    def pull_bundles(
+        self,
+        config: V5TelemetryRemoteConfig,
+        *,
+        max_files: int | None = None,
+    ) -> PullResult:
         started_at = datetime.now(UTC)
-        command = self.build_rsync_command(config)
+        command = (
+            build_limited_rsync_command(config)
+            if max_files is not None
+            else self.build_rsync_command(config)
+        )
         warnings: list[str] = []
         pulled_files: list[str] = []
         skipped_files: list[str] = []
+        command_summary = summarize_command(command)
 
         if config.dry_run:
             finished_at = datetime.now(UTC)
@@ -63,7 +118,7 @@ class RemoteBundlePuller:
                 local_inbox_dir=str(config.local_inbox_dir),
                 pulled_files=[],
                 skipped_files=[],
-                command_summary=summarize_command(command),
+                command_summary=command_summary,
                 started_at=started_at,
                 finished_at=finished_at,
                 dry_run=True,
@@ -72,7 +127,50 @@ class RemoteBundlePuller:
 
         config.local_inbox_dir.mkdir(parents=True, exist_ok=True)
         config.require_identity_file()
-        completed = subprocess.run(command, check=False, capture_output=True, text=True)
+        command_input: str | None = None
+        if max_files is not None:
+            list_command = build_remote_bundle_list_command(config, max_files=max_files)
+            command_summary = summarize_command(list_command) + command_summary
+            listed = subprocess.run(list_command, check=False, capture_output=True, text=True)
+            stderr_lines = [line.strip() for line in listed.stderr.splitlines() if line.strip()]
+            if listed.returncode != 0:
+                warnings.append(f"remote bundle list exited with code {listed.returncode}")
+                warnings.extend(stderr_lines[:20])
+            remote_files = [
+                line.strip()
+                for line in listed.stdout.splitlines()
+                if line.strip().endswith((".tar.gz", ".tgz"))
+            ]
+            files_to_pull = []
+            for name in remote_files:
+                if (config.local_inbox_dir / name).exists():
+                    skipped_files.append(name)
+                else:
+                    files_to_pull.append(name)
+            if not files_to_pull:
+                finished_at = datetime.now(UTC)
+                return PullResult(
+                    strategy=config.strategy,
+                    remote_host=config.remote_host,
+                    remote_bundle_dir=str(config.remote_bundle_dir),
+                    local_inbox_dir=str(config.local_inbox_dir),
+                    pulled_files=[],
+                    skipped_files=skipped_files,
+                    command_summary=command_summary,
+                    started_at=started_at,
+                    finished_at=finished_at,
+                    dry_run=False,
+                    warnings=warnings,
+                )
+            command_input = "\n".join(files_to_pull) + "\n"
+
+        completed = subprocess.run(
+            command,
+            check=False,
+            capture_output=True,
+            text=True,
+            input=command_input,
+        )
         stdout_lines = [line.strip() for line in completed.stdout.splitlines() if line.strip()]
         stderr_lines = [line.strip() for line in completed.stderr.splitlines() if line.strip()]
         for line in stdout_lines:
@@ -90,7 +188,7 @@ class RemoteBundlePuller:
             local_inbox_dir=str(config.local_inbox_dir),
             pulled_files=pulled_files,
             skipped_files=skipped_files,
-            command_summary=summarize_command(command),
+            command_summary=command_summary,
             started_at=started_at,
             finished_at=finished_at,
             dry_run=False,

@@ -155,9 +155,11 @@ def _append_parquet_dataset_unlocked(
     rows_written = 0
     file_count = 0
     max_rows = max(int(target_rows_per_file or frame.height), 1)
+    touched_dirs: set[Path] = set()
     for partition_values, partition_frame in chunks:
         partition_dir = _partition_dir(path, partition_values)
         partition_dir.mkdir(parents=True, exist_ok=True)
+        touched_dirs.add(partition_dir)
         for offset in range(0, partition_frame.height, max_rows):
             chunk = partition_frame.slice(offset, max_rows)
             if chunk.is_empty():
@@ -176,7 +178,8 @@ def _append_parquet_dataset_unlocked(
             rows_written += chunk.height
             file_count += 1
     if auto_compact:
-        _auto_compact_append_dataset_unlocked(path, target_rows_per_file=max_rows)
+        for compact_dir in sorted(touched_dirs):
+            _auto_compact_append_dataset_unlocked(compact_dir, target_rows_per_file=max_rows)
     return AppendParquetResult(str(path), rows_written, file_count, partition_columns)
 
 

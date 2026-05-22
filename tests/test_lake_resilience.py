@@ -286,6 +286,37 @@ def test_append_parquet_dataset_auto_compacts_direct_small_files(tmp_path, monke
     assert not invalid_parquet_files(dataset)
 
 
+def test_append_parquet_dataset_auto_compacts_partition_leaf_files(tmp_path, monkeypatch):
+    dataset = tmp_path / "lake" / "silver" / "trade_print"
+    monkeypatch.setenv("QUANT_LAB_APPEND_AUTO_COMPACT_FILES", "3")
+    monkeypatch.setenv("QUANT_LAB_APPEND_AUTO_COMPACT_TARGET_ROWS", "100")
+
+    for index in range(5):
+        append_parquet_dataset(
+            pl.DataFrame(
+                [
+                    {
+                        "day": "2026-05-23",
+                        "symbol": "BTC-USDT",
+                        "value": index,
+                    }
+                ]
+            ),
+            dataset,
+            partition_by=["day", "symbol"],
+            target_rows_per_file=1,
+        )
+
+    leaf = dataset / "day=2026-05-23" / "symbol=BTC-USDT"
+    files = list(leaf.glob("*.parquet"))
+    read_back = read_parquet_dataset(dataset)
+
+    assert len(files) <= 3
+    assert read_back.height == 5
+    assert sorted(read_back["value"].to_list()) == list(range(5))
+    assert not invalid_parquet_files(dataset)
+
+
 def test_compact_parquet_dataset_preserves_rows_and_reduces_files(tmp_path):
     dataset = tmp_path / "lake" / "bronze" / "okx_public_ws"
     for index in range(5):

@@ -9,7 +9,7 @@ from typing import Any
 import polars as pl
 from pydantic import BaseModel, ConfigDict, Field
 
-from quant_lab.data.lake import read_parquet_dataset, write_parquet_dataset
+from quant_lab.data.lake import read_parquet_dataset, read_parquet_lazy, write_parquet_dataset
 from quant_lab.strategy_telemetry.sanitize import safe_json_dumps
 from quant_lab.symbols import normalize_symbol
 
@@ -135,7 +135,7 @@ def build_and_publish_regime_router(
 
 def build_market_regime_daily(lake_root: str | Path, *, as_of_date: date) -> pl.DataFrame:
     created_at = datetime.now(UTC)
-    bars = read_parquet_dataset(Path(lake_root) / "silver" / "market_bar")
+    bars = _recent_market_bars(Path(lake_root), as_of_date=as_of_date)
     if bars.is_empty():
         return pl.DataFrame(schema=MARKET_REGIME_SCHEMA)
     rows = _latest_major_market_rows(bars, as_of_date=as_of_date)
@@ -169,10 +169,10 @@ def build_market_regime_daily(lake_root: str | Path, *, as_of_date: date) -> pl.
 def build_strategy_regime_matrix(lake_root: str | Path, *, as_of_date: date) -> pl.DataFrame:
     root = Path(lake_root)
     created_at = datetime.now(UTC)
-    summary = _latest_as_of(read_parquet_dataset(root / "gold" / "strategy_evidence"), as_of_date)
-    board = _latest_as_of(read_parquet_dataset(root / "gold" / "alpha_discovery_board"), as_of_date)
-    pullback = _latest_as_of(
-        read_parquet_dataset(root / "gold" / "v5_pullback_reversal_shadow"),
+    summary = _read_latest_as_of_dataset(root / "gold" / "strategy_evidence", as_of_date)
+    board = _read_latest_as_of_dataset(root / "gold" / "alpha_discovery_board", as_of_date)
+    pullback = _read_latest_as_of_dataset(
+        root / "gold" / "v5_pullback_reversal_shadow",
         as_of_date,
     )
     rows: list[dict[str, Any]] = []
@@ -257,6 +257,34 @@ def _latest_major_market_rows(
     return rows_by_symbol
 
 
+def _recent_market_bars(lake_root: Path, *, as_of_date: date) -> pl.DataFrame:
+    lazy, columns = _safe_lazy_frame(lake_root / "silver" / "market_bar")
+    if lazy is None or not {"symbol", "ts", "close"}.issubset(columns):
+        return pl.DataFrame()
+    end = datetime.combine(as_of_date + timedelta(days=1), datetime.min.time(), tzinfo=UTC)
+    start = end - timedelta(hours=48)
+    frame = lazy.with_columns(
+        [
+            _lazy_datetime("ts").alias("_ts"),
+            _lazy_normalized_symbol("symbol").alias("_symbol"),
+        ]
+    ).filter(
+        (pl.col("_symbol").is_in(MAJOR_SYMBOLS))
+        & (pl.col("_ts") >= start)
+        & (pl.col("_ts") < end)
+    )
+    if "timeframe" in columns:
+        frame = frame.with_columns(
+            pl.col("timeframe").cast(pl.Utf8).str.to_uppercase().alias("_timeframe")
+        ).filter(pl.col("_timeframe").is_in(["1H", "60M", "1HOUR"]))
+    select_columns = [
+        column
+        for column in ["symbol", "timeframe", "ts", "open", "high", "low", "close", "volume"]
+        if column in columns
+    ]
+    return _collect_lazy(frame.select([*select_columns, "_ts"]))
+
+
 def _return_bps(rows: list[dict[str, Any]]) -> float | None:
     if len(rows) < 2:
         return None
@@ -284,28 +312,35 @@ def _realized_vol_bps(rows_by_symbol: dict[str, list[dict[str, Any]]]) -> float 
 
 
 def _avg_spread_bps(lake_root: Path, *, as_of_date: date) -> float | None:
-    books = read_parquet_dataset(lake_root / "silver" / "orderbook_snapshot")
-    if books.is_empty():
+    lazy, columns = _safe_lazy_frame(lake_root / "silver" / "orderbook_snapshot")
+    if lazy is None or "symbol" not in columns:
         return None
     end = datetime.combine(as_of_date + timedelta(days=1), datetime.min.time(), tzinfo=UTC)
     start = end - timedelta(hours=24)
-    values: list[float] = []
-    for row in books.to_dicts():
-        symbol = normalize_symbol(row.get("symbol"))
-        if symbol not in MAJOR_SYMBOLS:
-            continue
-        ts = _dt(row.get("ts") or row.get("ingest_ts"))
-        if ts is None or ts < start or ts >= end:
-            continue
-        spread = _float(row.get("spread_bps"))
-        if spread is None:
-            bid = _float(row.get("bid_px") or row.get("best_bid"))
-            ask = _float(row.get("ask_px") or row.get("best_ask"))
-            if bid is not None and ask is not None and ask > bid and (ask + bid) > 0:
-                spread = (ask - bid) / ((ask + bid) / 2.0) * 10000.0
-        if spread is not None:
-            values.append(spread)
-    return sum(values) / len(values) if values else None
+    timestamp_expressions = [
+        _lazy_datetime(column) for column in ["ts", "ingest_ts"] if column in columns
+    ]
+    if not timestamp_expressions:
+        return None
+    spread_expression = _spread_bps_expression(columns)
+    if spread_expression is None:
+        return None
+    frame = lazy.with_columns(
+        [
+            pl.coalesce(timestamp_expressions).alias("_ts"),
+            _lazy_normalized_symbol("symbol").alias("_symbol"),
+            spread_expression.alias("_spread_bps"),
+        ]
+    ).filter(
+        (pl.col("_symbol").is_in(MAJOR_SYMBOLS))
+        & (pl.col("_ts") >= start)
+        & (pl.col("_ts") < end)
+        & pl.col("_spread_bps").is_not_null()
+    )
+    values = _collect_lazy(frame.select("_spread_bps")).get_column("_spread_bps").to_list()
+    clean = [_float(value) for value in values]
+    clean_values = [value for value in clean if value is not None]
+    return sum(clean_values) / len(clean_values) if clean_values else None
 
 
 def _active_regimes(
@@ -653,6 +688,101 @@ def _latest_as_of(frame: pl.DataFrame, as_of_date: date) -> pl.DataFrame:
         return pl.DataFrame(schema=frame.schema)
     latest = max(dates)
     return frame.filter(pl.col("as_of_date").cast(pl.Utf8).str.slice(0, 10) == latest)
+
+
+def _read_latest_as_of_dataset(path: Path, as_of_date: date) -> pl.DataFrame:
+    lazy, columns = _safe_lazy_frame(path)
+    if lazy is None:
+        return pl.DataFrame()
+    if "as_of_date" not in columns:
+        return _collect_lazy(lazy.tail(50_000))
+    day_text = as_of_date.isoformat()
+    latest_frame = _collect_lazy(
+        lazy.with_columns(
+            pl.col("as_of_date").cast(pl.Utf8).str.slice(0, 10).alias("_as_of_day")
+        )
+        .filter((pl.col("_as_of_day") <= day_text) & pl.col("_as_of_day").is_not_null())
+        .select(pl.col("_as_of_day").max().alias("latest_as_of_date"))
+    )
+    if latest_frame.is_empty():
+        return pl.DataFrame()
+    latest = latest_frame.item(0, "latest_as_of_date")
+    if latest is None:
+        return pl.DataFrame()
+    return _collect_lazy(
+        lazy.with_columns(
+            pl.col("as_of_date").cast(pl.Utf8).str.slice(0, 10).alias("_as_of_day")
+        )
+        .filter(pl.col("_as_of_day") == str(latest))
+        .drop("_as_of_day")
+    )
+
+
+def _safe_lazy_frame(path: Path) -> tuple[pl.LazyFrame | None, set[str]]:
+    try:
+        lazy = read_parquet_lazy(path)
+        columns = set(lazy.collect_schema().names())
+    except Exception:
+        return None, set()
+    return lazy, columns
+
+
+def _collect_lazy(lazy: pl.LazyFrame) -> pl.DataFrame:
+    try:
+        return lazy.collect()
+    except pl.exceptions.SchemaError:
+        return pl.DataFrame()
+    except Exception as exc:
+        if "not found" in str(exc).lower() or "no such file" in str(exc).lower():
+            return pl.DataFrame()
+        raise
+
+
+def _lazy_datetime(column: str) -> pl.Expr:
+    return pl.col(column).cast(pl.Utf8).str.to_datetime(time_zone="UTC", strict=False)
+
+
+def _lazy_normalized_symbol(column: str) -> pl.Expr:
+    return (
+        pl.col(column)
+        .cast(pl.Utf8)
+        .str.strip_chars()
+        .str.replace("^OKX:", "")
+        .str.replace("/", "-")
+        .str.to_uppercase()
+    )
+
+
+def _spread_bps_expression(columns: set[str]) -> pl.Expr | None:
+    expressions: list[pl.Expr] = []
+    if "spread_bps" in columns:
+        expressions.append(pl.col("spread_bps").cast(pl.Float64, strict=False))
+    bid = _coalesced_float_column(columns, ["bid_px", "best_bid", "bid", "bid_price"])
+    ask = _coalesced_float_column(columns, ["ask_px", "best_ask", "ask", "ask_price"])
+    if bid is not None and ask is not None:
+        computed = (
+            pl.when(
+                bid.is_not_null()
+                & ask.is_not_null()
+                & (ask > bid)
+                & ((ask + bid) > 0)
+            )
+            .then((ask - bid) / ((ask + bid) / 2.0) * 10000.0)
+            .otherwise(None)
+        )
+        expressions.append(computed)
+    if not expressions:
+        return None
+    return pl.coalesce(expressions)
+
+
+def _coalesced_float_column(columns: set[str], candidates: list[str]) -> pl.Expr | None:
+    expressions = [
+        pl.col(column).cast(pl.Float64, strict=False) for column in candidates if column in columns
+    ]
+    if not expressions:
+        return None
+    return pl.coalesce(expressions)
 
 
 def _dedupe_matrix_rows(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:

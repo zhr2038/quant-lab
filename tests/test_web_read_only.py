@@ -156,6 +156,26 @@ def test_data_health_stale_datasets_use_metadata_instead_of_full_raw_reads(
     assert "stale_datasets" in summary
 
 
+def test_data_health_summary_uses_lazy_market_bar_aggregates(tmp_path, monkeypatch):
+    lake_root = _fixture_lake(tmp_path)
+    original = readers.read_dataset_with_warning
+
+    def guarded_read_dataset_with_warning(lake_root_arg, dataset_name):
+        if dataset_name == "market_bar":
+            raise AssertionError("data health should not fully read market_bar")
+        return original(lake_root_arg, dataset_name)
+
+    monkeypatch.setattr(readers, "read_dataset_with_warning", guarded_read_dataset_with_warning)
+
+    summary = readers.data_health_summary(lake_root)
+
+    assert summary["latest_market_bar_ts"] == datetime(2026, 5, 10, 2, tzinfo=UTC)
+    assert summary["duplicate_bar_count"] == 0
+    assert summary["unclosed_bar_count"] == 0
+    assert summary["latest_per_symbol"].height == 1
+    assert summary["missing_bar_ratio"] == 0.0
+
+
 def test_data_health_hides_pending_v5_paper_telemetry(tmp_path):
     lake_root = tmp_path / "lake"
     stale_rows = readers.data_health_summary(lake_root)["stale_datasets"].to_dicts()

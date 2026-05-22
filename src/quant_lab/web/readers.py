@@ -1086,10 +1086,10 @@ def lake_diagnostics(lake_root: str | Path) -> dict[str, Any]:
 
 def data_health_summary(lake_root: str | Path) -> dict[str, Any]:
     warnings: list[str] = []
-    market, market_warning = read_dataset_with_warning(lake_root, "market_bar")
-    if market_warning:
-        warnings.append(market_warning)
-    if market.is_empty():
+    market_health = _market_bar_lazy_health(lake_root)
+    if market_health["warning"]:
+        warnings.append(market_health["warning"])
+    if market_health["row_count"] == 0:
         return {
             "latest_per_symbol": pl.DataFrame(),
             "missing_bars": pl.DataFrame(),
@@ -1103,14 +1103,13 @@ def data_health_summary(lake_root: str | Path) -> dict[str, Any]:
             "warnings": [*warnings, "market_bar 数据集缺失或为空"],
         }
 
-    market = _normalize_market_frame(market)
-    schema_violations = market_bar_schema_violations(market)
-    duplicate_count = duplicate_market_bar_count(market)
-    unclosed_count = unclosed_market_bar_count(market)
-    latest_per_symbol = latest_market_bars(market)
-    missing_bars = missing_bar_table(market)
-    missing_ratio = _missing_ratio(missing_bars, market.height)
-    latest_ts = _max_datetime(market, "ts")
+    schema_violations = market_health["schema_violations"]
+    duplicate_count = market_health["duplicate_bar_count"]
+    unclosed_count = market_health["unclosed_bar_count"]
+    latest_per_symbol = market_health["latest_per_symbol"]
+    missing_bars = market_health["missing_bars"]
+    missing_ratio = _missing_ratio(missing_bars, market_health["row_count"])
+    latest_ts = market_health["latest_market_bar_ts"]
 
     if duplicate_count:
         warnings.append(f"market_bar 主键重复：{duplicate_count}")
@@ -1129,6 +1128,49 @@ def data_health_summary(lake_root: str | Path) -> dict[str, Any]:
         "latest_market_bar_ts": latest_ts,
         "missing_bar_ratio": missing_ratio,
         "warnings": warnings,
+    }
+
+
+def _market_bar_lazy_health(lake_root: str | Path) -> dict[str, Any]:
+    snapshot = _dataset_snapshot(lake_root, "market_bar")
+    path = dataset_path_for(lake_root, "market_bar")
+    files = _valid_parquet_files(path, invalid_files=invalid_parquet_files(path))
+    if not files:
+        return {
+            "row_count": 0,
+            "warning": snapshot.warning,
+            "latest_per_symbol": pl.DataFrame(),
+            "missing_bars": pl.DataFrame(),
+            "duplicate_bar_count": 0,
+            "unclosed_bar_count": 0,
+            "schema_violations": ["market_bar 数据集缺失或为空"],
+            "latest_market_bar_ts": None,
+        }
+    try:
+        lazy = _scan_parquet_files(files)
+        schema = lazy.collect_schema()
+    except Exception as exc:
+        return {
+            "row_count": 0,
+            "warning": f"market_bar 元数据读取失败：{exc}",
+            "latest_per_symbol": pl.DataFrame(),
+            "missing_bars": pl.DataFrame(),
+            "duplicate_bar_count": 0,
+            "unclosed_bar_count": 0,
+            "schema_violations": ["market_bar 数据集读取失败"],
+            "latest_market_bar_ts": None,
+        }
+
+    latest_ts = _coerce_timestamp(snapshot.freshness.get("latest_timestamp"))
+    return {
+        "row_count": snapshot.rows,
+        "warning": snapshot.warning,
+        "latest_per_symbol": _latest_market_bars_lazy(lazy, schema),
+        "missing_bars": _missing_bar_table_lazy(lazy, schema),
+        "duplicate_bar_count": _duplicate_market_bar_count_lazy(lazy, schema),
+        "unclosed_bar_count": _unclosed_market_bar_count_lazy(lazy, schema),
+        "schema_violations": _market_bar_schema_violations_lazy(lazy, schema),
+        "latest_market_bar_ts": latest_ts,
     }
 
 
@@ -2166,6 +2208,21 @@ def latest_market_bars(market: pl.DataFrame) -> pl.DataFrame:
     )
 
 
+def _latest_market_bars_lazy(lazy: pl.LazyFrame, schema: pl.Schema) -> pl.DataFrame:
+    if not {"symbol", "timeframe", "ts"}.issubset(schema):
+        return pl.DataFrame()
+    try:
+        return (
+            lazy.with_columns(_lazy_timestamp_expr(schema, "ts").alias("ts"))
+            .group_by(["symbol", "timeframe"])
+            .agg(pl.col("ts").max().alias("latest_ts"), pl.len().alias("rows"))
+            .sort(["symbol", "timeframe"])
+            .collect()
+        )
+    except Exception:
+        return pl.DataFrame()
+
+
 def duplicate_market_bar_count(market: pl.DataFrame) -> int:
     keys = ["venue", "symbol", "timeframe", "ts"]
     if not set(keys).issubset(market.columns):
@@ -2173,10 +2230,43 @@ def duplicate_market_bar_count(market: pl.DataFrame) -> int:
     return market.group_by(keys).len(name="count").filter(pl.col("count") > 1).height
 
 
+def _duplicate_market_bar_count_lazy(lazy: pl.LazyFrame, schema: pl.Schema) -> int:
+    keys = ["venue", "symbol", "timeframe", "ts"]
+    if not set(keys).issubset(schema):
+        return 0
+    try:
+        return int(
+            lazy.group_by(keys)
+            .len(name="count")
+            .filter(pl.col("count") > 1)
+            .select(pl.len().alias("duplicate_groups"))
+            .collect()
+            .item(0, "duplicate_groups")
+            or 0
+        )
+    except Exception:
+        return 0
+
+
 def unclosed_market_bar_count(market: pl.DataFrame) -> int:
     if "is_closed" not in market.columns:
         return 0
     return market.filter(pl.col("is_closed") == False).height  # noqa: E712
+
+
+def _unclosed_market_bar_count_lazy(lazy: pl.LazyFrame, schema: pl.Schema) -> int:
+    if "is_closed" not in schema:
+        return 0
+    try:
+        return int(
+            lazy.filter(pl.col("is_closed") == False)  # noqa: E712
+            .select(pl.len().alias("rows"))
+            .collect()
+            .item(0, "rows")
+            or 0
+        )
+    except Exception:
+        return 0
 
 
 def market_bar_schema_violations(market: pl.DataFrame) -> list[str]:
@@ -2208,6 +2298,47 @@ def market_bar_schema_violations(market: pl.DataFrame) -> list[str]:
     return violations
 
 
+def _market_bar_schema_violations_lazy(lazy: pl.LazyFrame, schema: pl.Schema) -> list[str]:
+    required = {
+        "venue",
+        "symbol",
+        "market_type",
+        "timeframe",
+        "ts",
+        "open",
+        "high",
+        "low",
+        "close",
+        "volume",
+        "source",
+        "ingest_ts",
+    }
+    violations = [f"缺少字段：{column}" for column in sorted(required - set(schema.names()))]
+    if violations:
+        return violations
+    try:
+        invalid_rows = int(
+            lazy.filter(
+                (pl.col("open").cast(pl.Float64, strict=False) <= 0)
+                | (pl.col("close").cast(pl.Float64, strict=False) <= 0)
+                | (
+                    pl.col("high").cast(pl.Float64, strict=False)
+                    < pl.col("low").cast(pl.Float64, strict=False)
+                )
+                | (pl.col("volume").cast(pl.Float64, strict=False) < 0)
+            )
+            .select(pl.len().alias("rows"))
+            .collect()
+            .item(0, "rows")
+            or 0
+        )
+    except Exception:
+        invalid_rows = 0
+    if invalid_rows:
+        violations.append(f"OHLCV 无效行数：{invalid_rows}")
+    return violations
+
+
 def missing_bar_table(market: pl.DataFrame) -> pl.DataFrame:
     rows: list[dict[str, Any]] = []
     if market.is_empty() or not {"symbol", "timeframe", "ts"}.issubset(market.columns):
@@ -2228,6 +2359,49 @@ def missing_bar_table(market: pl.DataFrame) -> pl.DataFrame:
                     "timeframe": timeframe,
                     "expected_bars": expected,
                     "actual_bars": len(timestamps),
+                    "missing_bars": missing,
+                }
+            )
+    return pl.DataFrame(rows)
+
+
+def _missing_bar_table_lazy(lazy: pl.LazyFrame, schema: pl.Schema) -> pl.DataFrame:
+    rows: list[dict[str, Any]] = []
+    if not {"symbol", "timeframe", "ts"}.issubset(schema):
+        return pl.DataFrame(rows)
+    try:
+        stats = (
+            lazy.with_columns(_lazy_timestamp_expr(schema, "ts").alias("__qlab_ts"))
+            .group_by(["symbol", "timeframe"])
+            .agg(
+                pl.col("__qlab_ts").min().alias("min_ts"),
+                pl.col("__qlab_ts").max().alias("max_ts"),
+                pl.col("__qlab_ts").n_unique().alias("actual_bars"),
+            )
+            .collect()
+        )
+    except Exception:
+        return pl.DataFrame(rows)
+    for row in stats.to_dicts():
+        symbol = row.get("symbol")
+        timeframe = str(row.get("timeframe") or "")
+        step = _timeframe_delta(timeframe)
+        start = _coerce_timestamp(row.get("min_ts"))
+        end = _coerce_timestamp(row.get("max_ts"))
+        if step is None or start is None or end is None:
+            continue
+        actual = int(row.get("actual_bars") or 0)
+        if actual < 2:
+            continue
+        expected = int((end - start) / step) + 1
+        missing = max(expected - actual, 0)
+        if missing:
+            rows.append(
+                {
+                    "symbol": symbol,
+                    "timeframe": timeframe,
+                    "expected_bars": expected,
+                    "actual_bars": actual,
                     "missing_bars": missing,
                 }
             )

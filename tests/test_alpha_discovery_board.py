@@ -770,8 +770,8 @@ def test_eth_f3_negative_longer_horizon_downgrades_to_keep_shadow(tmp_path):
     assert daily["latest_board_decision"] == "KEEP_SHADOW"
     assert daily["live_eligible"] is False
     reasons = json.loads(daily["live_block_reason"])
-    assert "eth_f3_longer_horizon_paper_pnl_negative" in reasons
-    assert "keep_shadow_until_longer_horizon_recovers" in reasons
+    assert "eth_f3_48h_paper_pnl_negative" in reasons
+    assert "keep_shadow_until_48h_recovers" in reasons
 
 
 def test_eth_f3_short_horizon_positive_results_do_not_make_live_ready(tmp_path):
@@ -806,6 +806,47 @@ def test_eth_f3_short_horizon_positive_results_do_not_make_live_ready(tmp_path):
     reasons = json.loads(daily["live_block_reason"])
     assert "waiting_for_longer_horizon_labels" in reasons
     assert "eth_f3_paper_only_no_live" in reasons
+
+
+def test_eth_f3_weak_short_horizons_keep_paper_when_48h_sample_is_positive(tmp_path):
+    lake = tmp_path / "lake"
+    run_rows = []
+    for index in range(30):
+        day = 1 + index
+        run_rows.append(
+            {
+                "as_of_date": f"2026-05-{day:02d}",
+                "proposal_id": "ETH_USDT_F3_DOMINANT_ENTRY_PAPER_V1",
+                "strategy_candidate": "v5.f3_dominant_entry",
+                "symbol": "ETH-USDT",
+                "board_decision": "LIVE_SMALL_READY" if index == 0 else "PAPER_READY",
+                "would_enter": "true",
+                "paper_pnl_bps_4h": "-8.0",
+                "paper_pnl_bps_8h": "-5.0",
+                "paper_pnl_bps_12h": "-3.0",
+                "paper_pnl_bps_24h": "-1.0",
+                "paper_pnl_bps_48h": "12.0",
+                "arrival_bid": "3600.0",
+                "arrival_ask": "3600.5",
+                "arrival_mid": "3600.25",
+                "cost_source": "mixed_actual_proxy",
+                "raw_payload_json": "{}",
+                "bundle_ts": datetime(2026, 5, 30, 12, tzinfo=UTC),
+            }
+        )
+    write_parquet_dataset(pl.DataFrame(run_rows), lake / "silver" / "v5_paper_strategy_run")
+
+    build_and_publish_paper_strategy_tracking(lake, as_of_date="auto")
+
+    daily = read_parquet_dataset(lake / "gold" / "paper_strategy_daily").to_dicts()[0]
+    assert daily["latest_board_decision"] == "PAPER_READY"
+    assert daily["live_eligible"] is False
+    assert json.loads(daily["complete_count_by_horizon"])["48h"] == 30
+    assert json.loads(daily["avg_paper_pnl_bps_by_horizon"])["48h"] == 12.0
+    reasons = json.loads(daily["live_block_reason"])
+    assert "eth_f3_48h_positive_continue_paper" in reasons
+    assert "eth_f3_paper_only_no_live" in reasons
+    assert "eth_f3_48h_paper_pnl_negative" not in reasons
 
 
 def test_eth_f3_negative_longer_horizon_downgrades_advisory(tmp_path):

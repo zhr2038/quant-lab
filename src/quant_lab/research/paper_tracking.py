@@ -29,8 +29,8 @@ PAPER_PNL_HORIZON_HOURS = (4, 8, 12, 24, 48, 72)
 ETH_F3_PAPER_PROPOSAL_ID = "ETH_USDT_F3_DOMINANT_ENTRY_PAPER_V1"
 ETH_F3_STRATEGY_CANDIDATE = "v5.f3_dominant_entry"
 ETH_F3_SYMBOL = "ETH-USDT"
-ETH_F3_REQUIRED_LONGER_HORIZONS = ("24h", "48h", "72h")
-ETH_F3_DOWNGRADE_HORIZONS = ("24h", "48h")
+ETH_F3_PRIMARY_REVIEW_HORIZON = "48h"
+ETH_F3_MIN_PRIMARY_COMPLETE_COUNT = 30
 
 PAPER_RUN_REPORT_SCHEMA = {
     "as_of_date": pl.Utf8,
@@ -793,6 +793,7 @@ def enrich_paper_strategy_daily_from_runs(
                 "observed_count_by_horizon": _json_dict(
                     updated.get("paper_pnl_observed_count_by_horizon")
                 ),
+                "complete_count_by_horizon": _json_dict(updated.get("complete_count_by_horizon")),
                 "avg_bps_by_horizon": _json_dict(updated.get("avg_paper_pnl_bps_by_horizon")),
                 "day_count_by_horizon": _json_dict(
                     updated.get("paper_pnl_day_count_by_horizon")
@@ -1474,6 +1475,7 @@ def _with_paper_strategy_review(
 ) -> dict[str, Any]:
     horizon_stats = {
         "observed_count_by_horizon": _json_dict(row.get("paper_pnl_observed_count_by_horizon")),
+        "complete_count_by_horizon": _json_dict(row.get("complete_count_by_horizon")),
         "avg_bps_by_horizon": _json_dict(row.get("avg_paper_pnl_bps_by_horizon")),
         "day_count_by_horizon": _json_dict(row.get("paper_pnl_day_count_by_horizon")),
     }
@@ -1506,30 +1508,38 @@ def _paper_strategy_review(
         return {"latest_board_decision": decision, "live_block_reasons": reasons}
 
     observed_by_horizon = horizon_stats.get("observed_count_by_horizon", {})
+    complete_by_horizon = horizon_stats.get("complete_count_by_horizon", {})
     avg_by_horizon = horizon_stats.get("avg_bps_by_horizon", {})
-    negative_longer_horizons = [
-        horizon
-        for horizon in ETH_F3_DOWNGRADE_HORIZONS
-        if _optional_float(avg_by_horizon.get(horizon)) is not None
-        and (_optional_float(avg_by_horizon.get(horizon)) or 0.0) < 0.0
-    ]
-    if negative_longer_horizons:
+    primary_avg = _optional_float(avg_by_horizon.get(ETH_F3_PRIMARY_REVIEW_HORIZON))
+    primary_complete_count = int(
+        _optional_float(complete_by_horizon.get(ETH_F3_PRIMARY_REVIEW_HORIZON))
+        or _optional_float(observed_by_horizon.get(ETH_F3_PRIMARY_REVIEW_HORIZON))
+        or 0
+    )
+    if decision.upper() == "LIVE_SMALL_READY":
+        decision = "PAPER_READY"
+        reasons.append("eth_f3_not_live_ready_use_paper_review")
+    if primary_avg is not None and primary_avg < 0.0:
         if decision.upper() in {"PAPER_READY", "LIVE_SMALL_READY"}:
             decision = "KEEP_SHADOW"
         reasons.extend(
             [
-                "eth_f3_longer_horizon_paper_pnl_negative",
-                "keep_shadow_until_longer_horizon_recovers",
+                "eth_f3_48h_paper_pnl_negative",
+                "keep_shadow_until_48h_recovers",
             ]
         )
-
-    missing_longer_horizons = [
-        horizon
-        for horizon in ETH_F3_REQUIRED_LONGER_HORIZONS
-        if int(_optional_float(observed_by_horizon.get(horizon)) or 0) <= 0
-    ]
-    if missing_longer_horizons:
+    elif primary_complete_count >= ETH_F3_MIN_PRIMARY_COMPLETE_COUNT and (
+        primary_avg is not None and primary_avg > 0.0
+    ):
+        if decision.upper() not in {"KEEP_SHADOW", "KILL"}:
+            decision = "PAPER_READY"
+        reasons.append("eth_f3_48h_positive_continue_paper")
+    elif primary_complete_count <= 0:
         reasons.append("waiting_for_longer_horizon_labels")
+    elif primary_complete_count < ETH_F3_MIN_PRIMARY_COMPLETE_COUNT:
+        reasons.append("waiting_for_48h_min_complete_samples")
+    elif primary_avg is None:
+        reasons.append("waiting_for_48h_avg_net_bps")
     reasons.append("eth_f3_paper_only_no_live")
     return {
         "latest_board_decision": decision,

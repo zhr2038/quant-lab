@@ -54,6 +54,39 @@ def test_research_portfolio_status_prunes_and_preserves_paper_items(tmp_path):
     assert rows["v5.multi_position_k2"]["freed_research_slots"] >= 1
 
 
+def test_research_portfolio_downgrades_eth_f3_when_48h_paper_is_negative(tmp_path):
+    lake = tmp_path / "lake"
+    _write_strategy_evidence(lake)
+    write_parquet_dataset(
+        pl.DataFrame(
+            [
+                {
+                    "proposal_id": "ETH_F3_DOMINANT_ENTRY_PAPER_V1",
+                    "strategy_candidate": "v5.f3_dominant_entry",
+                    "symbol": "ETH-USDT",
+                    "latest_board_decision": "KEEP_SHADOW",
+                    "paper_days": 3,
+                    "entry_day_count": 2,
+                    "live_block_reason": '["eth_f3_48h_paper_pnl_negative"]',
+                    "created_at": "2026-05-20T00:00:00Z",
+                }
+            ]
+        ),
+        lake / "gold" / "paper_strategy_daily",
+    )
+
+    build_and_publish_research_portfolio_status(lake, as_of_date="2026-05-20")
+
+    rows = {
+        row["research_id"]: row
+        for row in read_parquet_dataset(lake / "gold" / "research_portfolio_status").to_dicts()
+    }
+    eth = rows["ETH_F3_DOMINANT_ENTRY_PAPER_V1"]
+    assert eth["status"] == "SHADOW"
+    assert eth["action"] == "CONTINUE_SHADOW"
+    assert eth["reason"] == "eth_f3_48h_negative_keep_shadow_no_live"
+
+
 def test_daily_export_contains_research_portfolio_status(tmp_path):
     lake = tmp_path / "lake"
     _write_strategy_evidence(lake)

@@ -122,6 +122,7 @@ def build_research_portfolio_status(
         *(_rows(alpha_board)),
     ]
     paper_rows = _rows(paper_daily)
+    eth_f3_status, eth_f3_action, eth_f3_reason = _eth_f3_portfolio_state(paper_rows)
 
     rows = [
         _status_row(
@@ -178,9 +179,9 @@ def build_research_portfolio_status(
             research_id="ETH_F3_DOMINANT_ENTRY_PAPER_V1",
             module="paper_strategy",
             candidate="v5.f3_dominant_entry",
-            status="PAPER",
-            action="CONTINUE_PAPER",
-            reason="eth_f3_has_active_paper_tracking_wait_for_24h_48h_72h_labels",
+            status=eth_f3_status,
+            action=eth_f3_action,
+            reason=eth_f3_reason,
             evidence=evidence_rows,
             paper=paper_rows,
             day=day,
@@ -355,6 +356,51 @@ def _known_kill_rows(
         )
         for research_id, candidate in items
     ]
+
+
+def _eth_f3_portfolio_state(paper: list[dict[str, Any]]) -> tuple[str, str, str]:
+    rows = [
+        row
+        for row in paper
+        if str(row.get("proposal_id") or "") == "ETH_USDT_F3_DOMINANT_ENTRY_PAPER_V1"
+        or (
+            str(row.get("strategy_candidate") or "") == "v5.f3_dominant_entry"
+            and str(row.get("symbol") or "") == "ETH-USDT"
+        )
+    ]
+    if not rows:
+        return (
+            "PAPER",
+            "CONTINUE_PAPER",
+            "eth_f3_wait_for_48h_paper_labels_no_live",
+        )
+    latest = max(rows, key=_portfolio_row_time)
+    decision = str(latest.get("latest_board_decision") or "").strip().upper()
+    reasons = " ".join(
+        [
+            str(latest.get("live_block_reason") or ""),
+            str(latest.get("decision_reasons") or ""),
+        ]
+    )
+    if decision == "KEEP_SHADOW" or "eth_f3_48h_paper_pnl_negative" in reasons:
+        return (
+            "SHADOW",
+            "CONTINUE_SHADOW",
+            "eth_f3_48h_negative_keep_shadow_no_live",
+        )
+    return (
+        "PAPER",
+        "CONTINUE_PAPER",
+        "eth_f3_continue_paper_until_48h_sample_count_30_and_14_days_validated",
+    )
+
+
+def _portfolio_row_time(row: dict[str, Any]) -> datetime:
+    for field in ["created_at", "as_of_ts", "as_of_date", "bundle_ts", "ingest_ts"]:
+        parsed = _created_at_key(row.get(field))
+        if parsed != datetime.min.replace(tzinfo=UTC):
+            return parsed
+    return datetime.min.replace(tzinfo=UTC)
 
 
 def _data_driven_rows(

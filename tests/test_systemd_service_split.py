@@ -37,6 +37,17 @@ def test_api_service_uses_async_metrics_flush():
     assert "QUANT_LAB_API_METRICS_ASYNC_FLUSH=1" in unit
 
 
+def test_lake_permission_repair_script_targets_service_user():
+    script = _script("repair_lake_permissions.sh")
+
+    assert "LAKE_ROOT=\"${LAKE_ROOT:-/var/lib/quant-lab/lake}\"" in script
+    assert "QUANT_LAB_USER=\"${QUANT_LAB_USER:-quantlab}\"" in script
+    assert "QUANT_LAB_GROUP=\"${QUANT_LAB_GROUP:-quantlab}\"" in script
+    assert "chown -R" in script
+    assert "chmod u+rwX,g+rwX,o+rX" in script
+    assert "chmod u+rw,g+rw,o+r" in script
+
+
 def test_candidate_research_refresh_is_separate_from_alpha_evidence():
     alpha_unit = _unit("quant-lab-alpha-evidence.service")
     refresh_unit = _unit("quant-lab-v5-research-refresh.service")

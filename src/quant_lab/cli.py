@@ -37,7 +37,7 @@ from quant_lab.ingest.okx_readonly_private import (
 )
 from quant_lab.ingest.okx_ws_public import collect_okx_public_ws, collect_okx_public_ws_universe
 from quant_lab.ingest.v5_reports import inspect_v5_reports, publish_v5_reports_to_lake
-from quant_lab.ops.lake_health import write_lake_file_health_daily
+from quant_lab.ops.lake_health import lake_file_health_summary, write_lake_file_health_daily
 from quant_lab.ops.metrics import api_metrics_summary, job_run_summary, run_with_job_metrics
 from quant_lab.ops.retention import prune_quant_lab_storage
 from quant_lab.reports.enforce_readiness import write_enforce_readiness_report
@@ -788,7 +788,7 @@ def ops_summary_command(
             day=summary_day,
             since_minutes=summary_since_minutes,
         ),
-        "lake_file_health": write_lake_file_health_daily(lake_root),
+        "lake_file_health": lake_file_health_summary(lake_root),
     }
     output = _compact_ops_summary_payload(payload) if compact_output else payload
     typer.echo(

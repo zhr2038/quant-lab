@@ -89,6 +89,16 @@ def write_lake_file_health_daily(lake_root: str | Path) -> dict[str, Any]:
     rows = lake_file_health_rows(lake_root)
     df = pl.DataFrame(rows)
     write_parquet_dataset(df, Path(lake_root) / LAKE_FILE_HEALTH_DATASET)
+    return _lake_file_health_summary(rows)
+
+
+def lake_file_health_summary(lake_root: str | Path) -> dict[str, Any]:
+    """Return lake file health without writing a daily health dataset."""
+
+    return _lake_file_health_summary(lake_file_health_rows(lake_root))
+
+
+def _lake_file_health_summary(rows: list[dict[str, Any]]) -> dict[str, Any]:
     return {
         "dataset_count": len(rows),
         "total_parquet_files": sum(int(row["parquet_file_count"]) for row in rows),

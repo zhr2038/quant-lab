@@ -179,9 +179,16 @@ def ingest_v5_bundle(
     ingest_ts = utc_now()
     with tempfile.TemporaryDirectory(prefix="quant_lab_v5_bundle_") as temp_name:
         extracted_dir = Path(temp_name) / "extracted"
-        safe_extract_v5_bundle(bundle_path, extracted_dir, effective_limits)
+        extract_result = safe_extract_v5_bundle(
+            bundle_path,
+            extracted_dir,
+            effective_limits,
+            skip_member=None
+            if include_historical_outcomes
+            else _skip_historical_outcome_member,
+        )
         pruned_historical_outcomes = (
-            _prune_historical_outcome_files(extracted_dir)
+            _historical_outcomes_skipped_by_extract(extract_result.warnings)
             if not include_historical_outcomes
             else []
         )
@@ -427,6 +434,21 @@ def _write_silver(
 
 def _is_historical_outcome_path(logical: str) -> bool:
     return logical.startswith(HISTORICAL_OUTCOME_PATH_PREFIXES)
+
+
+def _skip_historical_outcome_member(member_name: str) -> bool:
+    return _is_historical_outcome_path(_logical_bundle_path(member_name))
+
+
+def _historical_outcomes_skipped_by_extract(warnings: list[str]) -> list[str]:
+    skipped: list[str] = []
+    for warning in warnings:
+        if not warning.startswith("skipped_member:"):
+            continue
+        logical = _logical_bundle_path(warning.removeprefix("skipped_member:"))
+        if _is_historical_outcome_path(logical):
+            skipped.append(logical)
+    return sorted(set(skipped))
 
 
 def _prune_historical_outcome_files(extracted_dir: Path) -> list[str]:

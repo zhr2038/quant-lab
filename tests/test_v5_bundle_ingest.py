@@ -93,6 +93,15 @@ def test_sync_ingest_can_skip_large_historical_outcomes(tmp_path):
     assert historical.is_empty()
     assert shadow.is_empty()
     assert any("skipped_historical_outcome_file" in warning for warning in result.warnings)
+    redacted_root = (
+        tmp_path
+        / "redacted"
+        / "2026-05-10"
+        / result.bundle_sha256
+        / "redacted_files"
+    )
+    assert not (redacted_root / "summaries/high_score_blocked_outcomes.csv").exists()
+    assert not (redacted_root / "summaries/alt_impulse_shadow_outcomes.csv").exists()
 
 
 def test_ingest_v5_trades_csv_normalizes_cost_schema(tmp_path):

@@ -3,6 +3,7 @@ import posixpath
 import re
 import shutil
 import tarfile
+from collections.abc import Callable
 from datetime import UTC, datetime
 from pathlib import Path
 
@@ -141,7 +142,13 @@ def inspect_v5_bundle(path: Path) -> V5BundleInspection:
     )
 
 
-def safe_extract_v5_bundle(path: Path, target_dir: Path, limits: BundleLimits) -> SafeExtractResult:
+def safe_extract_v5_bundle(
+    path: Path,
+    target_dir: Path,
+    limits: BundleLimits,
+    *,
+    skip_member: Callable[[str], bool] | None = None,
+) -> SafeExtractResult:
     validation = validate_v5_bundle(path, limits)
     if validation.rejected:
         raise ValueError(f"unsafe V5 bundle rejected: {validation.reasons}")
@@ -152,8 +159,12 @@ def safe_extract_v5_bundle(path: Path, target_dir: Path, limits: BundleLimits) -
     root.mkdir(parents=True, exist_ok=True)
 
     extracted: list[str] = []
+    skipped: list[str] = []
     with tarfile.open(path, "r:gz") as archive:
         for member in archive.getmembers():
+            if skip_member is not None and skip_member(member.name):
+                skipped.append(member.name)
+                continue
             if member.isdir():
                 destination = (root / member.name).resolve()
                 _ensure_within(root, destination)
@@ -177,6 +188,7 @@ def safe_extract_v5_bundle(path: Path, target_dir: Path, limits: BundleLimits) -
         extracted_files=sorted(extracted),
         file_count=len(extracted),
         total_uncompressed_size_bytes=validation.total_uncompressed_size_bytes,
+        warnings=[f"skipped_member:{name}" for name in sorted(skipped)],
     )
 
 

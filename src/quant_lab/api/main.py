@@ -19,7 +19,7 @@ from typing import Any
 
 import polars as pl
 from fastapi import FastAPI, HTTPException, Request, status
-from fastapi.responses import JSONResponse
+from fastapi.responses import JSONResponse, Response
 from pydantic import BaseModel, ConfigDict, Field
 
 from quant_lab import __version__
@@ -66,7 +66,7 @@ UNOBSERVABLE_TEXT_VALUES = {"", "none", "null", "nan", "not_observable", "unknow
 _STRATEGY_OPPORTUNITY_ADVISORY_CACHE_LOCK = threading.Lock()
 _STRATEGY_OPPORTUNITY_ADVISORY_CACHE: dict[
     str,
-    tuple[tuple[Any, ...], tuple["StrategyOpportunityAdvisoryRow", ...]],
+    tuple[tuple[Any, ...], tuple["StrategyOpportunityAdvisoryRow", ...], bytes | None],
 ] = {}
 
 
@@ -345,8 +345,8 @@ def create_app() -> FastAPI:
         "/v1/reports/strategy-opportunity-advisory",
         response_model=list[StrategyOpportunityAdvisoryRow],
     )
-    def strategy_opportunity_advisory() -> list[StrategyOpportunityAdvisoryRow]:
-        return _strategy_opportunity_advisory_rows(_lake_root())
+    def strategy_opportunity_advisory() -> Response:
+        return _strategy_opportunity_advisory_response(_lake_root())
 
     @app.get("/v1/risk/live-permission", response_model=RiskPermission)
     def live_permission(strategy: str, version: str) -> RiskPermission:
@@ -823,8 +823,28 @@ def _strategy_opportunity_advisory_rows(
             return list(cached[1])
     rows = _strategy_opportunity_advisory_rows_uncached(lake_root)
     with _STRATEGY_OPPORTUNITY_ADVISORY_CACHE_LOCK:
-        _STRATEGY_OPPORTUNITY_ADVISORY_CACHE[cache_key] = (signature, tuple(rows))
+        _STRATEGY_OPPORTUNITY_ADVISORY_CACHE[cache_key] = (signature, tuple(rows), None)
     return rows
+
+
+def _strategy_opportunity_advisory_response(lake_root: Path) -> Response:
+    signature = _strategy_opportunity_advisory_source_signature(lake_root)
+    cache_key = str(lake_root.resolve())
+    with _STRATEGY_OPPORTUNITY_ADVISORY_CACHE_LOCK:
+        cached = _STRATEGY_OPPORTUNITY_ADVISORY_CACHE.get(cache_key)
+        if cached is not None and cached[0] == signature and cached[2] is not None:
+            return Response(content=cached[2], media_type="application/json")
+    rows = _strategy_opportunity_advisory_rows(lake_root)
+    payload = _strategy_opportunity_advisory_json_bytes(rows)
+    with _STRATEGY_OPPORTUNITY_ADVISORY_CACHE_LOCK:
+        _STRATEGY_OPPORTUNITY_ADVISORY_CACHE[cache_key] = (signature, tuple(rows), payload)
+    return Response(content=payload, media_type="application/json")
+
+
+def _strategy_opportunity_advisory_json_bytes(
+    rows: list[StrategyOpportunityAdvisoryRow],
+) -> bytes:
+    return b"[" + b",".join(row.model_dump_json().encode("utf-8") for row in rows) + b"]"
 
 
 def _strategy_opportunity_advisory_rows_uncached(

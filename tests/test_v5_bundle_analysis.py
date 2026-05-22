@@ -257,6 +257,25 @@ def test_matured_and_profitable_counts_handle_string_flags(tmp_path):
     assert result.high_score_blocked_profitable_count == 2
 
 
+def test_matured_and_profitable_counts_ignore_time_only_rows(tmp_path):
+    lake = tmp_path / "lake"
+    _write_manifest(lake)
+    write_parquet_dataset(
+        pl.DataFrame(
+            [
+                {"bundle_ts": datetime(2026, 5, 10, tzinfo=UTC)},
+                {"bundle_ts": datetime(2026, 5, 10, tzinfo=UTC)},
+            ]
+        ),
+        lake / "silver/v5_high_score_blocked_outcome",
+    )
+
+    result = analyze_v5_telemetry(lake, date="2026-05-10")
+
+    assert result.high_score_blocked_matured_count == 0
+    assert result.high_score_blocked_profitable_count == 0
+
+
 def test_quant_lab_shadow_mode_marks_hypothetical_not_actual_violation(tmp_path):
     lake = tmp_path / "lake"
     _write_manifest(lake)

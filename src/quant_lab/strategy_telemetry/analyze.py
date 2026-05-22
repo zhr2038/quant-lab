@@ -1912,8 +1912,7 @@ def _matured_count(df: pl.DataFrame) -> int:
     count = _truthy_column_count(df, ["matured", "is_matured", "maturity_reached"])
     if count is not None:
         return count
-    text = "\n".join(json.dumps(row, sort_keys=True, default=str).lower() for row in df.to_dicts())
-    return text.count("matured")
+    return _marker_text_row_count(df, ["matured", "maturity_reached"])
 
 
 def _profitable_count(df: pl.DataFrame) -> int:
@@ -1922,8 +1921,28 @@ def _profitable_count(df: pl.DataFrame) -> int:
     count = _truthy_column_count(df, ["profitable", "is_profitable"])
     if count is not None:
         return count
-    text = "\n".join(json.dumps(row, sort_keys=True, default=str).lower() for row in df.to_dicts())
-    return text.count("profitable")
+    return _marker_text_row_count(df, ["profitable"])
+
+
+def _marker_text_row_count(df: pl.DataFrame, markers: list[str]) -> int:
+    text_columns = [
+        column
+        for column in ["raw_payload_json", "message", "issue_type", "type", "status"]
+        if column in df.columns
+    ]
+    if not text_columns:
+        return 0
+    marker_expr = pl.lit(False)
+    for column in text_columns:
+        text = (
+            pl.col(column)
+            .cast(pl.Utf8, strict=False)
+            .fill_null("")
+            .str.to_lowercase()
+        )
+        for marker in markers:
+            marker_expr = marker_expr | text.str.contains(marker, literal=True)
+    return int(df.select(marker_expr.sum()).item() or 0)
 
 
 def _truthy_column_count(df: pl.DataFrame, columns: list[str]) -> int | None:

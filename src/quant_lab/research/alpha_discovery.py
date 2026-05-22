@@ -50,6 +50,9 @@ BOARD_SCHEMA: dict[str, Any] = {
     "candidate_name": pl.Utf8,
     "source_type": pl.Utf8,
     "symbol": pl.Utf8,
+    "universe_type": pl.Utf8,
+    "replacement_target_candidate": pl.Utf8,
+    "expansion_state": pl.Utf8,
     "regime_state": pl.Utf8,
     "horizon_hours": pl.Int64,
     "sample_count": pl.Int64,
@@ -289,6 +292,11 @@ def build_alpha_discovery_board_from_strategy_evidence(
                 "candidate_name": _clean_text(row.get("candidate_name")) or candidate,
                 "source_type": _clean_text(row.get("source_type")) or "strategy_evidence",
                 "symbol": symbol,
+                "universe_type": _clean_text(row.get("universe_type")) or "v5_core",
+                "replacement_target_candidate": _clean_text(
+                    row.get("replacement_target_candidate")
+                ),
+                "expansion_state": _clean_text(row.get("expansion_state")),
                 "regime_state": regime,
                 "horizon_hours": horizon,
                 "sample_count": int(_finite_float(row.get("sample_count")) or 0),
@@ -369,6 +377,9 @@ def _board_row(
         "candidate_name": candidate,
         "source_type": "candidate_event_label",
         "symbol": symbol,
+        "universe_type": "v5_core",
+        "replacement_target_candidate": "",
+        "expansion_state": "",
         "regime_state": regime,
         "horizon_hours": horizon,
         "sample_count": len(rows),
@@ -746,6 +757,9 @@ def normalize_alpha_discovery_board_decisions(board: pl.DataFrame) -> pl.DataFra
         rows.append(row)
     schema = dict(board.schema)
     schema.setdefault("source_type", pl.Utf8)
+    schema.setdefault("universe_type", pl.Utf8)
+    schema.setdefault("replacement_target_candidate", pl.Utf8)
+    schema.setdefault("expansion_state", pl.Utf8)
     normalized = _drop_invalid_alpha_discovery_rows(
         _drop_unknown_symbol_rows(pl.DataFrame(rows, schema=schema, orient="row"))
     )
@@ -760,6 +774,7 @@ def normalize_alpha_discovery_board_decisions(board: pl.DataFrame) -> pl.DataFra
             "regime_state",
             "horizon_hours",
             "source_type",
+            "universe_type",
         ]
         if column in normalized.columns
     ]

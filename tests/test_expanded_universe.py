@@ -5,6 +5,7 @@ from pathlib import Path
 import polars as pl
 
 from quant_lab.data.lake import read_parquet_dataset, write_parquet_dataset
+from quant_lab.research.alpha_discovery import build_and_publish_alpha_discovery_board
 from quant_lab.research.expanded_universe import (
     build_and_publish_expanded_crypto_universe_shadow,
     build_symbol_quality_score,
@@ -128,6 +129,61 @@ def test_web_strategy_page_reads_expanded_universe(tmp_path):
     assert not summary["expanded_crypto_universe_shadow"].is_empty()
     assert not summary["symbol_quality_score"].is_empty()
     assert not summary["expanded_crypto_recommendations"].is_empty()
+    assert "expanded_universe_candidate" in summary
+
+
+def test_expanded_universe_automation_builds_events_labels_and_promotion(tmp_path):
+    lake_root = tmp_path / "lake"
+    seed_symbols = [
+        "TRX-USDT",
+        "HYPE-USDT",
+        "SUI-USDT",
+        "XAUT-USDT",
+        "PAXG-USDT",
+        "ZEC-USDT",
+    ]
+    write_parquet_dataset(
+        _market_frame(["BTC-USDT", *seed_symbols], hours=96, quote_volume=2_000_000),
+        lake_root / "silver" / "market_bar",
+    )
+    write_parquet_dataset(
+        _orderbook_frame({symbol: 5.0 for symbol in ["BTC-USDT", *seed_symbols]}),
+        lake_root / "silver" / "orderbook_snapshot",
+    )
+
+    result = build_and_publish_expanded_crypto_universe_shadow(
+        lake_root,
+        as_of_date="2026-05-24",
+        min_quote_volume_24h=100_000,
+        max_spread_bps=20,
+        min_coverage_bars=24,
+    )
+
+    assert result.candidate_rows >= len(seed_symbols)
+    assert result.event_rows >= len(seed_symbols)
+    assert result.label_rows >= len(seed_symbols) * 6
+    candidates = read_parquet_dataset(lake_root / "gold" / "expanded_universe_candidate")
+    assert set(seed_symbols).issubset(set(candidates["symbol"].to_list()))
+
+    events = read_parquet_dataset(lake_root / "gold" / "expanded_universe_candidate_event")
+    assert set(seed_symbols).issubset(set(events["symbol"].to_list()))
+    assert set(events["universe_type"].to_list()) == {"expanded_paper"}
+
+    labels = read_parquet_dataset(lake_root / "gold" / "expanded_universe_candidate_label")
+    assert {4, 8, 12, 24, 48, 72}.issubset(set(labels["horizon_hours"].to_list()))
+
+    evidence = read_parquet_dataset(lake_root / "gold" / "strategy_evidence")
+    expanded = evidence.filter(pl.col("universe_type") == "expanded_paper")
+    assert not expanded.is_empty()
+
+    queue = read_parquet_dataset(lake_root / "gold" / "expanded_universe_promotion_queue")
+    assert not queue.is_empty()
+    assert "LIVE_SMALL_CANDIDATE" not in set(queue["promotion_state"].to_list())
+    assert queue["max_live_notional_usdt"].max() == 0.0
+
+    build_and_publish_alpha_discovery_board(lake_root, as_of_date="2026-05-24")
+    board = read_parquet_dataset(lake_root / "gold" / "alpha_discovery_board")
+    assert "expanded_paper" in set(board["universe_type"].drop_nulls().to_list())
 
 
 def _write_market(lake_root: Path) -> None:

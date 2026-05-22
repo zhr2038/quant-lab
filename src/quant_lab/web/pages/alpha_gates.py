@@ -59,6 +59,32 @@ def render(lake_root: str | Path, st_module: Any | None = None) -> None:
         "\u6682\u65e0\u6269\u5c55\u5e01\u6c60 shadow \u7ed3\u679c\u3002"
         "\u5efa\u8bae\u8fd0\u884c qlab build-expanded-universe-shadow\u3002",
     )
+    st.subheader("扩展币池自动化")
+    st.caption(
+        "自动执行 discover -> score -> candidate_event -> label -> strategy_evidence "
+        "-> advisory -> promotion queue。第一阶段只允许 research/shadow/paper，"
+        "不会自动替换 V5 live 币池。"
+    )
+    show_frame(
+        st,
+        summary["expanded_universe_candidate"],
+        "暂无扩展币池候选池。建议运行 qlab build-expanded-universe-shadow。",
+    )
+    show_frame(
+        st,
+        summary["expanded_universe_quality"],
+        "暂无扩展币池质量评分。",
+    )
+    show_frame(
+        st,
+        summary["expanded_universe_promotion_queue"],
+        "暂无扩展币池 promotion queue。",
+    )
+    show_frame(
+        st,
+        summary["expanded_universe_candidate_event"],
+        "暂无扩展币池 candidate event。",
+    )
     show_frame(st, summary["symbol_quality_score"], "\u6682\u65e0 symbol quality score\u3002")
     show_frame(
         st,

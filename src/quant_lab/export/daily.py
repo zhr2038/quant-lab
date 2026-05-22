@@ -136,6 +136,11 @@ SECTION_DATASETS = {
         "strategy_evidence_quality",
         "research_portfolio_status",
         "strategy_opportunity_advisory",
+        "expanded_universe_candidate",
+        "expanded_universe_quality",
+        "expanded_universe_candidate_event",
+        "expanded_universe_candidate_label",
+        "expanded_universe_promotion_queue",
         "expanded_crypto_universe_shadow",
         "symbol_quality_score",
         "expanded_crypto_candidate_outcomes_by_symbol",
@@ -249,6 +254,13 @@ REQUIRED_MEMBERS = [
     "reports/candidate_paper_ready.csv",
     "reports/paper_strategy_proposals.csv",
     "reports/strategy_opportunity_advisory.csv",
+    "reports/expanded_universe_candidates.csv",
+    "reports/expanded_universe_quality.csv",
+    "reports/expanded_universe_daily.md",
+    "reports/expanded_universe_promotion_queue.csv",
+    "reports/expanded_universe_kill_list.csv",
+    "reports/expanded_universe_replacement_candidates.csv",
+    "reports/expanded_universe_strategy_evidence.csv",
     "reports/expanded_crypto_universe_shadow.csv",
     "reports/symbol_quality_score.csv",
     "reports/expanded_crypto_candidate_outcomes_by_symbol.csv",
@@ -754,6 +766,145 @@ CSV_SCHEMAS: dict[str, list[str]] = {
         "quality_score",
         "recommendation",
         "blocking_reasons",
+        "source",
+    ],
+    "reports/expanded_universe_candidates.csv": [
+        "as_of_date",
+        "generated_at",
+        "schema_version",
+        "symbol",
+        "universe_type",
+        "active_trading",
+        "bar_coverage",
+        "spread_bps_p75",
+        "quote_volume_24h",
+        "min_notional_ok",
+        "candidate_state",
+        "blocking_reasons",
+        "source",
+    ],
+    "reports/expanded_universe_quality.csv": [
+        "as_of_date",
+        "generated_at",
+        "schema_version",
+        "symbol",
+        "quote_volume_24h",
+        "avg_spread_bps",
+        "min_notional_ok",
+        "data_coverage",
+        "avg_24h_net_bps",
+        "avg_48h_net_bps",
+        "win_rate_24h",
+        "win_rate_48h",
+        "f3_dominant_negative_score",
+        "f4_confirmed_win_rate",
+        "f5_confirmed_win_rate",
+        "pullback_shadow_avg_24h",
+        "late_chase_loss_rate",
+        "negative_expectancy_bps",
+        "btc_correlation",
+        "quality_score",
+        "recommendation",
+        "blocking_reasons",
+        "source",
+    ],
+    "reports/expanded_universe_promotion_queue.csv": [
+        "as_of_date",
+        "generated_at",
+        "schema_version",
+        "symbol",
+        "strategy_candidate",
+        "universe_type",
+        "promotion_state",
+        "recommended_mode",
+        "horizon_hours",
+        "sample_count",
+        "complete_sample_count",
+        "avg_net_bps",
+        "p25_net_bps",
+        "win_rate",
+        "cost_source_mix",
+        "live_block_reasons",
+        "replacement_target_candidate",
+        "expansion_state",
+        "min_shadow_days_required",
+        "human_approval_required",
+        "max_live_notional_usdt",
+        "source",
+    ],
+    "reports/expanded_universe_kill_list.csv": [
+        "as_of_date",
+        "generated_at",
+        "schema_version",
+        "symbol",
+        "strategy_candidate",
+        "universe_type",
+        "promotion_state",
+        "recommended_mode",
+        "horizon_hours",
+        "sample_count",
+        "complete_sample_count",
+        "avg_net_bps",
+        "p25_net_bps",
+        "win_rate",
+        "cost_source_mix",
+        "live_block_reasons",
+        "replacement_target_candidate",
+        "expansion_state",
+        "min_shadow_days_required",
+        "human_approval_required",
+        "max_live_notional_usdt",
+        "source",
+    ],
+    "reports/expanded_universe_replacement_candidates.csv": [
+        "as_of_date",
+        "generated_at",
+        "schema_version",
+        "symbol",
+        "strategy_candidate",
+        "universe_type",
+        "promotion_state",
+        "recommended_mode",
+        "horizon_hours",
+        "sample_count",
+        "complete_sample_count",
+        "avg_net_bps",
+        "p25_net_bps",
+        "win_rate",
+        "cost_source_mix",
+        "live_block_reasons",
+        "replacement_target_candidate",
+        "expansion_state",
+        "min_shadow_days_required",
+        "human_approval_required",
+        "max_live_notional_usdt",
+        "source",
+    ],
+    "reports/expanded_universe_strategy_evidence.csv": [
+        "strategy",
+        "evidence_version",
+        "as_of_date",
+        "strategy_candidate",
+        "candidate_name",
+        "source_type",
+        "symbol",
+        "universe_type",
+        "replacement_target_candidate",
+        "expansion_state",
+        "regime_state",
+        "horizon_hours",
+        "sample_count",
+        "complete_sample_count",
+        "avg_net_bps",
+        "median_net_bps",
+        "p25_net_bps",
+        "win_rate",
+        "cost_source_mix",
+        "decision",
+        "decision_reasons",
+        "start_ts",
+        "end_ts",
+        "created_at",
         "source",
     ],
     "reports/expanded_crypto_candidate_outcomes_by_symbol.csv": [
@@ -2066,6 +2217,11 @@ def _dataset_members(frames: dict[str, pl.DataFrame]) -> dict[str, _MemberPayloa
     v5_candidate_labels = frames.get("v5_candidate_label", pl.DataFrame())
     v5_candidate_quality = frames.get("v5_candidate_quality_daily", pl.DataFrame())
     v5_candidate_outcomes = frames.get("v5_candidate_outcome_summary", pl.DataFrame())
+    expanded_candidates = frames.get("expanded_universe_candidate", pl.DataFrame())
+    expanded_quality = frames.get("expanded_universe_quality", pl.DataFrame())
+    expanded_events = frames.get("expanded_universe_candidate_event", pl.DataFrame())
+    expanded_labels = frames.get("expanded_universe_candidate_label", pl.DataFrame())
+    expanded_promotion = frames.get("expanded_universe_promotion_queue", pl.DataFrame())
     expanded_universe = frames.get("expanded_crypto_universe_shadow", pl.DataFrame())
     symbol_quality = frames.get("symbol_quality_score", pl.DataFrame())
     expanded_outcomes = frames.get(
@@ -2165,6 +2321,37 @@ def _dataset_members(frames: dict[str, pl.DataFrame]) -> dict[str, _MemberPayloa
         "reports/strategy_opportunity_advisory.csv": _csv_member(
             "reports/strategy_opportunity_advisory.csv",
             opportunity_advisory,
+        ),
+        "reports/expanded_universe_candidates.csv": _csv_member(
+            "reports/expanded_universe_candidates.csv",
+            expanded_candidates,
+        ),
+        "reports/expanded_universe_quality.csv": _csv_member(
+            "reports/expanded_universe_quality.csv",
+            expanded_quality if not expanded_quality.is_empty() else symbol_quality,
+        ),
+        "reports/expanded_universe_daily.md": _expanded_universe_daily_md(
+            candidates=expanded_candidates,
+            quality=expanded_quality if not expanded_quality.is_empty() else symbol_quality,
+            events=expanded_events,
+            labels=expanded_labels,
+            promotion_queue=expanded_promotion,
+        ),
+        "reports/expanded_universe_promotion_queue.csv": _csv_member(
+            "reports/expanded_universe_promotion_queue.csv",
+            expanded_promotion,
+        ),
+        "reports/expanded_universe_kill_list.csv": _csv_member(
+            "reports/expanded_universe_kill_list.csv",
+            _expanded_promotion_rows(expanded_promotion, "KILL"),
+        ),
+        "reports/expanded_universe_replacement_candidates.csv": _csv_member(
+            "reports/expanded_universe_replacement_candidates.csv",
+            _expanded_replacement_rows(expanded_promotion),
+        ),
+        "reports/expanded_universe_strategy_evidence.csv": _csv_member(
+            "reports/expanded_universe_strategy_evidence.csv",
+            _expanded_strategy_evidence_rows(strategy_evidence),
         ),
         "reports/expanded_crypto_universe_shadow.csv": _csv_member(
             "reports/expanded_crypto_universe_shadow.csv",
@@ -2710,6 +2897,16 @@ def _refresh_v5_derived_outputs(lake_root: Path, export_day: date) -> list[str]:
                 fromlist=["build_and_publish_strategy_evidence"],
             ).build_and_publish_strategy_evidence(
                 lake_root, as_of_date=export_day.isoformat()
+            ),
+        ),
+        (
+            "build_expanded_universe_automation",
+            lambda: __import__(
+                "quant_lab.research.expanded_universe",
+                fromlist=["build_and_publish_expanded_crypto_universe_shadow"],
+            ).build_and_publish_expanded_crypto_universe_shadow(
+                lake_root,
+                as_of_date=export_day.isoformat(),
             ),
         ),
         (
@@ -4537,6 +4734,8 @@ def _advisory_live_block_reasons(
 ) -> list[str]:
     reasons = set(_json_listish(row.get("decision_reasons")))
     reasons.update(_json_listish(proposal.get("live_block_reason")))
+    if str(row.get("universe_type") or "") == "expanded_paper":
+        reasons.add("expanded_universe_not_live_approved")
     if decision != "LIVE_SMALL_READY":
         reasons.add(f"decision_{decision.lower()}")
     if cost_quality not in {"actual_or_mixed"}:
@@ -5620,6 +5819,75 @@ def _expanded_recommendations_json(df: pl.DataFrame) -> dict[str, Any]:
         "mode": "shadow_research",
         "min_stable_output_days": latest.get("min_stable_output_days", 7),
     }
+
+
+def _expanded_universe_daily_md(
+    *,
+    candidates: pl.DataFrame,
+    quality: pl.DataFrame,
+    events: pl.DataFrame,
+    labels: pl.DataFrame,
+    promotion_queue: pl.DataFrame,
+) -> str:
+    lines = [
+        "# Expanded Crypto Universe Automation",
+        "",
+        "该报告只做 research/shadow/paper 研究，不自动加入 V5 live symbols。",
+        "",
+        f"- candidates: {candidates.height}",
+        f"- quality rows: {quality.height}",
+        f"- candidate events: {events.height}",
+        f"- labels: {labels.height}",
+        f"- promotion queue rows: {promotion_queue.height}",
+        "",
+        "## Promotion counts",
+    ]
+    counts = _value_counts(promotion_queue, "promotion_state")
+    if counts:
+        lines.extend(f"- {state}: {count}" for state, count in sorted(counts.items()))
+    else:
+        lines.append("- no promotion rows")
+    lines.extend(
+        [
+            "",
+            "## Safety",
+            "- max_live_notional_usdt is forced to 0 for expanded universe rows.",
+            "- LIVE_SMALL_CANDIDATE requires manual enablement and is not emitted in stage one.",
+        ]
+    )
+    return "\n".join(lines) + "\n"
+
+
+def _expanded_promotion_rows(frame: pl.DataFrame, state: str) -> pl.DataFrame:
+    path = "reports/expanded_universe_promotion_queue.csv"
+    if frame.is_empty() or "promotion_state" not in frame.columns:
+        return _empty_csv_schema_frame(path)
+    filtered = frame.filter(pl.col("promotion_state") == state)
+    return filtered if not filtered.is_empty() else _empty_csv_schema_frame(path)
+
+
+def _expanded_replacement_rows(frame: pl.DataFrame) -> pl.DataFrame:
+    path = "reports/expanded_universe_replacement_candidates.csv"
+    if frame.is_empty():
+        return _empty_csv_schema_frame(path)
+    if "replacement_target_candidate" not in frame.columns:
+        return _empty_csv_schema_frame(path)
+    filtered = frame.filter(
+        pl.col("replacement_target_candidate")
+        .fill_null("")
+        .cast(pl.Utf8)
+        .str.len_chars()
+        > 0
+    )
+    return filtered if not filtered.is_empty() else _empty_csv_schema_frame(path)
+
+
+def _expanded_strategy_evidence_rows(strategy_evidence: pl.DataFrame) -> pl.DataFrame:
+    path = "reports/expanded_universe_strategy_evidence.csv"
+    if strategy_evidence.is_empty() or "universe_type" not in strategy_evidence.columns:
+        return _empty_csv_schema_frame(path)
+    filtered = strategy_evidence.filter(pl.col("universe_type") == "expanded_paper")
+    return filtered if not filtered.is_empty() else _empty_csv_schema_frame(path)
 
 
 def _threshold_advisory_by_symbol_json(df: pl.DataFrame) -> dict[str, Any]:

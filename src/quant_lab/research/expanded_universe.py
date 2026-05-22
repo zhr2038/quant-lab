@@ -11,7 +11,11 @@ from typing import Any
 import polars as pl
 from pydantic import BaseModel, ConfigDict, Field
 
-from quant_lab.data.lake import read_parquet_dataset, write_parquet_dataset
+from quant_lab.data.lake import (
+    read_parquet_dataset,
+    upsert_parquet_dataset,
+    write_parquet_dataset,
+)
 from quant_lab.strategy_telemetry.sanitize import safe_json_dumps
 from quant_lab.symbols import normalize_symbol
 
@@ -19,19 +23,50 @@ MARKET_BAR_DATASET = Path("silver") / "market_bar"
 ORDERBOOK_SNAPSHOT_DATASET = Path("silver") / "orderbook_snapshot"
 SPOT_UNIVERSE_CANDIDATES_DATASET = Path("bronze") / "okx_public_rest" / "spot_universe_candidates"
 STRATEGY_EVIDENCE_DATASET = Path("gold") / "strategy_evidence"
+COST_BUCKET_DAILY_DATASET = Path("gold") / "cost_bucket_daily"
 PULLBACK_BY_SYMBOL_DATASET = Path("gold") / "v5_entry_quality_history_pullback_by_symbol"
 LATE_ENTRY_BY_SYMBOL_DATASET = Path("gold") / "v5_late_entry_chase_threshold_by_symbol"
 
 EXPANDED_UNIVERSE_SHADOW_DATASET = Path("gold") / "expanded_crypto_universe_shadow"
+EXPANDED_UNIVERSE_CANDIDATE_DATASET = Path("gold") / "expanded_universe_candidate"
+EXPANDED_UNIVERSE_QUALITY_DATASET = Path("gold") / "expanded_universe_quality"
+EXPANDED_UNIVERSE_CANDIDATE_EVENT_DATASET = (
+    Path("gold") / "expanded_universe_candidate_event"
+)
+EXPANDED_UNIVERSE_CANDIDATE_LABEL_DATASET = (
+    Path("gold") / "expanded_universe_candidate_label"
+)
+EXPANDED_UNIVERSE_PROMOTION_QUEUE_DATASET = (
+    Path("gold") / "expanded_universe_promotion_queue"
+)
 SYMBOL_QUALITY_SCORE_DATASET = Path("gold") / "symbol_quality_score"
 EXPANDED_CANDIDATE_OUTCOMES_DATASET = (
     Path("gold") / "expanded_crypto_candidate_outcomes_by_symbol"
 )
 EXPANDED_RECOMMENDATIONS_DATASET = Path("gold") / "expanded_crypto_recommendations"
 
-SOURCE_NAME = "research.expanded_crypto_universe_shadow.v0.1"
+SOURCE_NAME = "research.expanded_crypto_universe_automation.v0.1"
 SCHEMA_VERSION = "expanded_crypto_universe_shadow.v0.1"
+AUTOMATION_SCHEMA_VERSION = "expanded_crypto_universe_automation.v0.1"
 RECOMMENDATION_SCHEMA_VERSION = "expanded_crypto_recommendations.v0.1"
+EXPANDED_UNIVERSE_TYPE = "expanded_paper"
+SEED_EXPANDED_SYMBOLS = (
+    "TRX-USDT",
+    "HYPE-USDT",
+    "SUI-USDT",
+    "XAUT-USDT",
+    "PAXG-USDT",
+    "ZEC-USDT",
+)
+EXPANDED_STRATEGY_CANDIDATES = (
+    "Alpha6Factor",
+    "v5.f4_volume_expansion_entry",
+    "v5.f3_dominant_entry",
+    "v5.alt_impulse_shadow",
+    "v5.pullback_reversal_shadow",
+    "v5.late_entry_chase_shadow",
+)
+LABEL_HORIZONS = (4, 8, 12, 24, 48, 72)
 CURRENT_V5_UNIVERSE = {"BTC-USDT", "ETH-USDT", "SOL-USDT", "BNB-USDT"}
 STABLE_BASES = {
     "USDT",
@@ -82,6 +117,124 @@ QUALITY_SCHEMA: dict[str, Any] = {
     "quality_score": pl.Float64,
     "recommendation": pl.Utf8,
     "blocking_reasons": pl.Utf8,
+    "source": pl.Utf8,
+}
+
+CANDIDATE_SCHEMA: dict[str, Any] = {
+    "as_of_date": pl.Utf8,
+    "generated_at": pl.Datetime(time_zone="UTC"),
+    "schema_version": pl.Utf8,
+    "symbol": pl.Utf8,
+    "universe_type": pl.Utf8,
+    "active_trading": pl.Boolean,
+    "bar_coverage": pl.Float64,
+    "spread_bps_p75": pl.Float64,
+    "quote_volume_24h": pl.Float64,
+    "min_notional_ok": pl.Boolean,
+    "candidate_state": pl.Utf8,
+    "blocking_reasons": pl.Utf8,
+    "source": pl.Utf8,
+}
+
+CANDIDATE_EVENT_SCHEMA: dict[str, Any] = {
+    "candidate_id": pl.Utf8,
+    "ts_utc": pl.Datetime(time_zone="UTC"),
+    "generated_at": pl.Datetime(time_zone="UTC"),
+    "schema_version": pl.Utf8,
+    "symbol": pl.Utf8,
+    "universe_type": pl.Utf8,
+    "strategy_candidate": pl.Utf8,
+    "final_score": pl.Float64,
+    "f3": pl.Float64,
+    "f4": pl.Float64,
+    "f5": pl.Float64,
+    "alpha6_score": pl.Float64,
+    "alpha6_side": pl.Utf8,
+    "cost_bps": pl.Float64,
+    "cost_source": pl.Utf8,
+    "regime_state": pl.Utf8,
+    "risk_level": pl.Utf8,
+    "replacement_target_candidate": pl.Utf8,
+    "expansion_state": pl.Utf8,
+    "source": pl.Utf8,
+}
+
+CANDIDATE_LABEL_SCHEMA: dict[str, Any] = {
+    "candidate_id": pl.Utf8,
+    "ts_utc": pl.Datetime(time_zone="UTC"),
+    "decision_ts": pl.Datetime(time_zone="UTC"),
+    "label_ts": pl.Datetime(time_zone="UTC"),
+    "generated_at": pl.Datetime(time_zone="UTC"),
+    "schema_version": pl.Utf8,
+    "symbol": pl.Utf8,
+    "universe_type": pl.Utf8,
+    "strategy_candidate": pl.Utf8,
+    "horizon_hours": pl.Int64,
+    "entry_close": pl.Float64,
+    "label_close": pl.Float64,
+    "gross_bps": pl.Float64,
+    "net_bps_after_cost": pl.Float64,
+    "win": pl.Boolean,
+    "mfe_bps": pl.Float64,
+    "mae_bps": pl.Float64,
+    "label_status": pl.Utf8,
+    "cost_bps": pl.Float64,
+    "cost_source": pl.Utf8,
+    "replacement_target_candidate": pl.Utf8,
+    "expansion_state": pl.Utf8,
+    "source": pl.Utf8,
+}
+
+EXPANDED_STRATEGY_EVIDENCE_SCHEMA: dict[str, Any] = {
+    "strategy": pl.Utf8,
+    "evidence_version": pl.Utf8,
+    "as_of_date": pl.Utf8,
+    "strategy_candidate": pl.Utf8,
+    "candidate_name": pl.Utf8,
+    "source_type": pl.Utf8,
+    "symbol": pl.Utf8,
+    "universe_type": pl.Utf8,
+    "replacement_target_candidate": pl.Utf8,
+    "expansion_state": pl.Utf8,
+    "regime_state": pl.Utf8,
+    "horizon_hours": pl.Int64,
+    "sample_count": pl.Int64,
+    "complete_sample_count": pl.Int64,
+    "avg_net_bps": pl.Float64,
+    "median_net_bps": pl.Float64,
+    "p25_net_bps": pl.Float64,
+    "win_rate": pl.Float64,
+    "cost_source_mix": pl.Utf8,
+    "decision": pl.Utf8,
+    "decision_reasons": pl.Utf8,
+    "start_ts": pl.Datetime(time_zone="UTC"),
+    "end_ts": pl.Datetime(time_zone="UTC"),
+    "created_at": pl.Datetime(time_zone="UTC"),
+    "source": pl.Utf8,
+}
+
+PROMOTION_QUEUE_SCHEMA: dict[str, Any] = {
+    "as_of_date": pl.Utf8,
+    "generated_at": pl.Datetime(time_zone="UTC"),
+    "schema_version": pl.Utf8,
+    "symbol": pl.Utf8,
+    "strategy_candidate": pl.Utf8,
+    "universe_type": pl.Utf8,
+    "promotion_state": pl.Utf8,
+    "recommended_mode": pl.Utf8,
+    "horizon_hours": pl.Int64,
+    "sample_count": pl.Int64,
+    "complete_sample_count": pl.Int64,
+    "avg_net_bps": pl.Float64,
+    "p25_net_bps": pl.Float64,
+    "win_rate": pl.Float64,
+    "cost_source_mix": pl.Utf8,
+    "live_block_reasons": pl.Utf8,
+    "replacement_target_candidate": pl.Utf8,
+    "expansion_state": pl.Utf8,
+    "min_shadow_days_required": pl.Int64,
+    "human_approval_required": pl.Boolean,
+    "max_live_notional_usdt": pl.Float64,
     "source": pl.Utf8,
 }
 
@@ -140,7 +293,12 @@ class ExpandedUniverseBuildResult(BaseModel):
 
     lake_root: str
     as_of_date: str
+    candidate_rows: int = Field(ge=0)
     quality_rows: int = Field(ge=0)
+    event_rows: int = Field(ge=0)
+    label_rows: int = Field(ge=0)
+    strategy_evidence_rows: int = Field(ge=0)
+    promotion_rows: int = Field(ge=0)
     shadow_rows: int = Field(ge=0)
     outcome_rows: int = Field(ge=0)
     recommendation_rows: int = Field(ge=0)
@@ -166,6 +324,7 @@ def build_and_publish_expanded_crypto_universe_shadow(
     orderbook = _read_recent_orderbook_snapshots(root, since=_orderbook_since(day, market_end))
     spot_candidates = read_parquet_dataset(root / SPOT_UNIVERSE_CANDIDATES_DATASET)
     evidence = read_parquet_dataset(root / STRATEGY_EVIDENCE_DATASET)
+    costs = read_parquet_dataset(root / COST_BUCKET_DAILY_DATASET)
     pullback = read_parquet_dataset(root / PULLBACK_BY_SYMBOL_DATASET)
     late_entry = read_parquet_dataset(root / LATE_ENTRY_BY_SYMBOL_DATASET)
 
@@ -192,8 +351,39 @@ def build_and_publish_expanded_crypto_universe_shadow(
         min_price=min_price,
         blacklist=blacklist or [],
     )
+    candidates = build_expanded_universe_candidates(
+        quality,
+        market_bars=market,
+        spot_universe_candidates=spot_candidates,
+        as_of_date=day,
+        generated_at=generated_at,
+    )
+    events = build_expanded_candidate_events(
+        candidates,
+        market_bars=market,
+        cost_bucket_daily=costs,
+        as_of_date=day,
+        generated_at=generated_at,
+    )
+    labels = build_expanded_candidate_labels(
+        events,
+        market_bars=market,
+        as_of_date=day,
+        generated_at=generated_at,
+    )
+    expanded_evidence = build_expanded_strategy_evidence(
+        labels,
+        as_of_date=day,
+        generated_at=generated_at,
+    )
+    promotion_queue = build_expanded_universe_promotion_queue(
+        expanded_evidence,
+        candidates=candidates,
+        as_of_date=day,
+        generated_at=generated_at,
+    )
     outcomes = build_expanded_candidate_outcomes_by_symbol(
-        strategy_evidence=evidence,
+        strategy_evidence=_concat_optional(evidence, expanded_evidence),
         as_of_date=day,
         generated_at=generated_at,
     )
@@ -211,7 +401,26 @@ def build_and_publish_expanded_crypto_universe_shadow(
         warnings=warnings,
     )
 
+    write_parquet_dataset(candidates, root / EXPANDED_UNIVERSE_CANDIDATE_DATASET)
     write_parquet_dataset(quality, root / SYMBOL_QUALITY_SCORE_DATASET)
+    write_parquet_dataset(quality, root / EXPANDED_UNIVERSE_QUALITY_DATASET)
+    write_parquet_dataset(events, root / EXPANDED_UNIVERSE_CANDIDATE_EVENT_DATASET)
+    write_parquet_dataset(labels, root / EXPANDED_UNIVERSE_CANDIDATE_LABEL_DATASET)
+    write_parquet_dataset(promotion_queue, root / EXPANDED_UNIVERSE_PROMOTION_QUEUE_DATASET)
+    if not expanded_evidence.is_empty():
+        upsert_parquet_dataset(
+            expanded_evidence,
+            root / STRATEGY_EVIDENCE_DATASET,
+            key_columns=[
+                "as_of_date",
+                "strategy_candidate",
+                "symbol",
+                "regime_state",
+                "horizon_hours",
+                "source_type",
+                "universe_type",
+            ],
+        )
     write_parquet_dataset(outcomes, root / EXPANDED_CANDIDATE_OUTCOMES_DATASET)
     write_parquet_dataset(shadow, root / EXPANDED_UNIVERSE_SHADOW_DATASET)
     write_parquet_dataset(recommendations, root / EXPANDED_RECOMMENDATIONS_DATASET)
@@ -219,7 +428,12 @@ def build_and_publish_expanded_crypto_universe_shadow(
     return ExpandedUniverseBuildResult(
         lake_root=str(root),
         as_of_date=day.isoformat(),
+        candidate_rows=candidates.height,
         quality_rows=quality.height,
+        event_rows=events.height,
+        label_rows=labels.height,
+        strategy_evidence_rows=expanded_evidence.height,
+        promotion_rows=promotion_queue.height,
         shadow_rows=shadow.height,
         outcome_rows=outcomes.height,
         recommendation_rows=recommendations.height,
@@ -347,6 +561,343 @@ def build_symbol_quality_score(
     return (
         pl.DataFrame(rows, schema=QUALITY_SCHEMA, orient="row")
         .sort(["quality_score", "quote_volume_24h"], descending=[True, True])
+    )
+
+
+def build_expanded_universe_candidates(
+    quality: pl.DataFrame,
+    *,
+    market_bars: pl.DataFrame,
+    spot_universe_candidates: pl.DataFrame,
+    as_of_date: date,
+    generated_at: datetime | None = None,
+) -> pl.DataFrame:
+    generated = generated_at or datetime.now(UTC)
+    quality_by_symbol = {
+        normalize_symbol(row.get("symbol")): row for row in quality.to_dicts()
+    }
+    market_symbols = set(_market_rows_by_symbol(market_bars))
+    spot_metrics = _spot_candidate_metrics(spot_universe_candidates)
+    selected_symbols = sorted(set(SEED_EXPANDED_SYMBOLS) | set(quality_by_symbol))
+    rows: list[dict[str, Any]] = []
+    for symbol in selected_symbols:
+        symbol = normalize_symbol(symbol)
+        if not _is_usdt_symbol(symbol):
+            continue
+        quality_row = quality_by_symbol.get(symbol, {})
+        spot = spot_metrics.get(symbol, {})
+        blocking = _loads_list(quality_row.get("blocking_reasons"))
+        has_market = symbol in market_symbols
+        recommendation = str(quality_row.get("recommendation") or "")
+        candidate_state = _candidate_state_from_quality(
+            recommendation=recommendation,
+            blocking_reasons=blocking,
+            has_market=has_market,
+        )
+        rows.append(
+            {
+                "as_of_date": as_of_date.isoformat(),
+                "generated_at": generated,
+                "schema_version": AUTOMATION_SCHEMA_VERSION,
+                "symbol": symbol,
+                "universe_type": EXPANDED_UNIVERSE_TYPE,
+                "active_trading": has_market or symbol in spot_metrics,
+                "bar_coverage": _float(quality_row.get("data_coverage")) or 0.0,
+                "spread_bps_p75": _float(
+                    quality_row.get("avg_spread_bps") or spot.get("avg_spread_bps")
+                ),
+                "quote_volume_24h": _float(
+                    quality_row.get("quote_volume_24h") or spot.get("quote_volume_24h")
+                )
+                or 0.0,
+                "min_notional_ok": bool(quality_row.get("min_notional_ok", has_market)),
+                "candidate_state": candidate_state,
+                "blocking_reasons": safe_json_dumps(blocking),
+                "source": SOURCE_NAME,
+            }
+        )
+    if not rows:
+        return pl.DataFrame(schema=CANDIDATE_SCHEMA)
+    return pl.DataFrame(rows, schema=CANDIDATE_SCHEMA, orient="row").sort(
+        ["candidate_state", "symbol"]
+    )
+
+
+def build_expanded_candidate_events(
+    candidates: pl.DataFrame,
+    *,
+    market_bars: pl.DataFrame,
+    cost_bucket_daily: pl.DataFrame,
+    as_of_date: date,
+    generated_at: datetime | None = None,
+) -> pl.DataFrame:
+    if candidates.is_empty() or market_bars.is_empty():
+        return pl.DataFrame(schema=CANDIDATE_EVENT_SCHEMA)
+    generated = generated_at or datetime.now(UTC)
+    bars_by_symbol = _market_rows_by_symbol(market_bars)
+    costs_by_symbol = _latest_cost_by_symbol(cost_bucket_daily)
+    candidate_context = {
+        normalize_symbol(row.get("symbol")): row for row in candidates.to_dicts()
+    }
+    rows: list[dict[str, Any]] = []
+    for symbol, context in sorted(candidate_context.items()):
+        symbol_bars = bars_by_symbol.get(symbol, [])
+        if not symbol_bars:
+            continue
+        latest = symbol_bars[-1]
+        ts = _parse_dt(latest.get("ts"))
+        if ts is None:
+            continue
+        factors = _expanded_factor_snapshot(symbol_bars)
+        cost = costs_by_symbol.get(symbol, {})
+        cost_bps = _float(cost.get("total_cost_bps_p75")) or _float(
+            cost.get("selected_total_cost_bps")
+        )
+        cost_source = str(
+            cost.get("cost_source") or cost.get("source") or "public_spread_proxy"
+        )
+        if cost_bps is None:
+            cost_bps = 30.0
+            cost_source = "conservative_default"
+        for strategy_candidate in EXPANDED_STRATEGY_CANDIDATES:
+            candidate_id = _expanded_candidate_id(symbol, strategy_candidate, ts)
+            rows.append(
+                {
+                    "candidate_id": candidate_id,
+                    "ts_utc": ts,
+                    "generated_at": generated,
+                    "schema_version": AUTOMATION_SCHEMA_VERSION,
+                    "symbol": symbol,
+                    "universe_type": EXPANDED_UNIVERSE_TYPE,
+                    "strategy_candidate": strategy_candidate,
+                    "final_score": _strategy_final_score(strategy_candidate, factors),
+                    "f3": factors.get("f3"),
+                    "f4": factors.get("f4"),
+                    "f5": factors.get("f5"),
+                    "alpha6_score": factors.get("alpha6_score"),
+                    "alpha6_side": "long"
+                    if (factors.get("alpha6_score") or 0.0) >= 0
+                    else "short_shadow_only",
+                    "cost_bps": cost_bps,
+                    "cost_source": cost_source,
+                    "regime_state": _expanded_regime_state(factors),
+                    "risk_level": _expanded_risk_level(factors),
+                    "replacement_target_candidate": _replacement_target(context),
+                    "expansion_state": str(context.get("candidate_state") or "RESEARCH"),
+                    "source": SOURCE_NAME,
+                }
+            )
+    if not rows:
+        return pl.DataFrame(schema=CANDIDATE_EVENT_SCHEMA)
+    return pl.DataFrame(rows, schema=CANDIDATE_EVENT_SCHEMA, orient="row").sort(
+        ["symbol", "strategy_candidate"]
+    )
+
+
+def build_expanded_candidate_labels(
+    events: pl.DataFrame,
+    *,
+    market_bars: pl.DataFrame,
+    as_of_date: date,
+    generated_at: datetime | None = None,
+    horizons: tuple[int, ...] = LABEL_HORIZONS,
+) -> pl.DataFrame:
+    if events.is_empty():
+        return pl.DataFrame(schema=CANDIDATE_LABEL_SCHEMA)
+    generated = generated_at or datetime.now(UTC)
+    bars_by_symbol = _market_rows_by_symbol(market_bars)
+    rows: list[dict[str, Any]] = []
+    for event in events.to_dicts():
+        symbol = normalize_symbol(event.get("symbol"))
+        symbol_bars = bars_by_symbol.get(symbol, [])
+        event_ts = _parse_dt(event.get("ts_utc"))
+        entry_bar = _bar_at_or_before(symbol_bars, event_ts)
+        entry_close = _float(entry_bar.get("close")) if entry_bar else None
+        if event_ts is None or entry_close is None or entry_close <= 0:
+            continue
+        for horizon in horizons:
+            label_ts = event_ts + timedelta(hours=horizon)
+            future_bar = _bar_at_or_after(symbol_bars, label_ts)
+            window = _bars_between(symbol_bars, event_ts, label_ts)
+            label_close = _float(future_bar.get("close")) if future_bar else None
+            gross = (
+                (label_close / entry_close - 1.0) * 10_000.0
+                if label_close is not None and label_close > 0
+                else None
+            )
+            cost_bps = _float(event.get("cost_bps")) or 0.0
+            net = gross - cost_bps if gross is not None else None
+            mfe, mae = _mfe_mae_bps(window, entry_close)
+            rows.append(
+                {
+                    "candidate_id": str(event.get("candidate_id") or ""),
+                    "ts_utc": event_ts,
+                    "decision_ts": event_ts,
+                    "label_ts": label_ts,
+                    "generated_at": generated,
+                    "schema_version": AUTOMATION_SCHEMA_VERSION,
+                    "symbol": symbol,
+                    "universe_type": EXPANDED_UNIVERSE_TYPE,
+                    "strategy_candidate": str(event.get("strategy_candidate") or ""),
+                    "horizon_hours": horizon,
+                    "entry_close": entry_close,
+                    "label_close": label_close,
+                    "gross_bps": gross,
+                    "net_bps_after_cost": net,
+                    "win": net is not None and net > 0,
+                    "mfe_bps": mfe,
+                    "mae_bps": mae,
+                    "label_status": "complete" if net is not None else "pending",
+                    "cost_bps": cost_bps,
+                    "cost_source": str(event.get("cost_source") or "unknown"),
+                    "replacement_target_candidate": str(
+                        event.get("replacement_target_candidate") or ""
+                    ),
+                    "expansion_state": str(event.get("expansion_state") or "RESEARCH"),
+                    "source": SOURCE_NAME,
+                }
+            )
+    if not rows:
+        return pl.DataFrame(schema=CANDIDATE_LABEL_SCHEMA)
+    return pl.DataFrame(rows, schema=CANDIDATE_LABEL_SCHEMA, orient="row").sort(
+        ["symbol", "strategy_candidate", "horizon_hours"]
+    )
+
+
+def build_expanded_strategy_evidence(
+    labels: pl.DataFrame,
+    *,
+    as_of_date: date,
+    generated_at: datetime | None = None,
+) -> pl.DataFrame:
+    if labels.is_empty():
+        return pl.DataFrame(schema=EXPANDED_STRATEGY_EVIDENCE_SCHEMA)
+    generated = generated_at or datetime.now(UTC)
+    grouped: dict[tuple[str, str, int], list[dict[str, Any]]] = defaultdict(list)
+    for row in labels.to_dicts():
+        grouped[
+            (
+                str(row.get("strategy_candidate") or ""),
+                normalize_symbol(row.get("symbol")),
+                _int(row.get("horizon_hours")) or 0,
+            )
+        ].append(row)
+    rows: list[dict[str, Any]] = []
+    for (candidate, symbol, horizon), group_rows in sorted(grouped.items()):
+        if not candidate or not _is_usdt_symbol(symbol):
+            continue
+        complete = [row for row in group_rows if row.get("label_status") == "complete"]
+        net_values = [
+            value
+            for row in complete
+            if (value := _float(row.get("net_bps_after_cost"))) is not None
+        ]
+        wins = [bool(row.get("win")) for row in complete if row.get("win") is not None]
+        cost_mix = _cost_source_mix(group_rows)
+        avg_net = statistics.fmean(net_values) if net_values else None
+        p25 = _quantile(net_values, 0.25)
+        win_rate = sum(wins) / len(wins) if wins else None
+        decision, reasons = _expanded_decision(
+            sample_count=len(group_rows),
+            complete_sample_count=len(complete),
+            avg_net_bps=avg_net,
+            p25_net_bps=p25,
+            win_rate=win_rate,
+            cost_source_mix=cost_mix,
+        )
+        ts_values = [_parse_dt(row.get("ts_utc")) for row in group_rows]
+        label_values = [_parse_dt(row.get("label_ts")) for row in group_rows]
+        rows.append(
+            {
+                "strategy": "v5",
+                "evidence_version": AUTOMATION_SCHEMA_VERSION,
+                "as_of_date": as_of_date.isoformat(),
+                "strategy_candidate": candidate,
+                "candidate_name": candidate,
+                "source_type": "expanded_universe_candidate_label",
+                "symbol": symbol,
+                "universe_type": EXPANDED_UNIVERSE_TYPE,
+                "replacement_target_candidate": str(
+                    group_rows[0].get("replacement_target_candidate") or ""
+                ),
+                "expansion_state": _promotion_state_from_decision(decision),
+                "regime_state": "expanded_universe",
+                "horizon_hours": horizon,
+                "sample_count": len(group_rows),
+                "complete_sample_count": len(complete),
+                "avg_net_bps": avg_net,
+                "median_net_bps": statistics.median(net_values) if net_values else None,
+                "p25_net_bps": p25,
+                "win_rate": win_rate,
+                "cost_source_mix": safe_json_dumps(cost_mix),
+                "decision": decision,
+                "decision_reasons": safe_json_dumps(reasons),
+                "start_ts": min([ts for ts in ts_values if ts], default=None),
+                "end_ts": max([ts for ts in label_values if ts], default=None),
+                "created_at": generated,
+                "source": SOURCE_NAME,
+            }
+        )
+    if not rows:
+        return pl.DataFrame(schema=EXPANDED_STRATEGY_EVIDENCE_SCHEMA)
+    return pl.DataFrame(rows, schema=EXPANDED_STRATEGY_EVIDENCE_SCHEMA, orient="row")
+
+
+def build_expanded_universe_promotion_queue(
+    strategy_evidence: pl.DataFrame,
+    *,
+    candidates: pl.DataFrame,
+    as_of_date: date,
+    generated_at: datetime | None = None,
+) -> pl.DataFrame:
+    generated = generated_at or datetime.now(UTC)
+    if strategy_evidence.is_empty():
+        return pl.DataFrame(schema=PROMOTION_QUEUE_SCHEMA)
+    candidate_context = {
+        normalize_symbol(row.get("symbol")): row for row in candidates.to_dicts()
+    }
+    rows: list[dict[str, Any]] = []
+    for row in strategy_evidence.to_dicts():
+        symbol = normalize_symbol(row.get("symbol"))
+        decision = str(row.get("decision") or "RESEARCH_ONLY").upper()
+        promotion_state = _promotion_state_from_decision(decision)
+        recommended_mode = _recommended_mode_from_promotion_state(promotion_state)
+        context = candidate_context.get(symbol, {})
+        rows.append(
+            {
+                "as_of_date": as_of_date.isoformat(),
+                "generated_at": generated,
+                "schema_version": AUTOMATION_SCHEMA_VERSION,
+                "symbol": symbol,
+                "strategy_candidate": str(row.get("strategy_candidate") or ""),
+                "universe_type": EXPANDED_UNIVERSE_TYPE,
+                "promotion_state": promotion_state,
+                "recommended_mode": recommended_mode,
+                "horizon_hours": _int(row.get("horizon_hours")) or 0,
+                "sample_count": _int(row.get("sample_count")) or 0,
+                "complete_sample_count": _int(row.get("complete_sample_count")) or 0,
+                "avg_net_bps": _float(row.get("avg_net_bps")),
+                "p25_net_bps": _float(row.get("p25_net_bps")),
+                "win_rate": _float(row.get("win_rate")),
+                "cost_source_mix": str(row.get("cost_source_mix") or "{}"),
+                "live_block_reasons": safe_json_dumps(
+                    ["expanded_universe_not_live_approved"]
+                ),
+                "replacement_target_candidate": str(
+                    row.get("replacement_target_candidate")
+                    or _replacement_target(context)
+                ),
+                "expansion_state": promotion_state,
+                "min_shadow_days_required": 7,
+                "human_approval_required": True,
+                "max_live_notional_usdt": 0.0,
+                "source": SOURCE_NAME,
+            }
+        )
+    if not rows:
+        return pl.DataFrame(schema=PROMOTION_QUEUE_SCHEMA)
+    return pl.DataFrame(rows, schema=PROMOTION_QUEUE_SCHEMA, orient="row").sort(
+        ["promotion_state", "symbol", "strategy_candidate", "horizon_hours"]
     )
 
 
@@ -484,6 +1035,296 @@ def build_expanded_crypto_recommendations(
     return pl.DataFrame([row], schema=RECOMMENDATION_SCHEMA, orient="row")
 
 
+def _concat_optional(*frames: pl.DataFrame) -> pl.DataFrame:
+    clean = [frame for frame in frames if not frame.is_empty()]
+    return pl.concat(clean, how="diagonal_relaxed") if clean else pl.DataFrame()
+
+
+def _candidate_state_from_quality(
+    *,
+    recommendation: str,
+    blocking_reasons: list[Any],
+    has_market: bool,
+) -> str:
+    if not has_market:
+        return "DISCOVERED"
+    hard_reasons = {
+        "stablecoin",
+        "leveraged_token",
+        "high_risk_meme",
+        "dust_or_ultra_low_price",
+        "configured_blacklist",
+    }
+    if set(str(reason) for reason in blocking_reasons) & hard_reasons:
+        return "RESEARCH"
+    if recommendation.startswith("candidate_replace_"):
+        return "SHADOW"
+    if recommendation in {"shadow_only", "keep_current"}:
+        return "SHADOW"
+    return "RESEARCH"
+
+
+def _latest_cost_by_symbol(cost_bucket_daily: pl.DataFrame) -> dict[str, dict[str, Any]]:
+    if cost_bucket_daily.is_empty() or "symbol" not in cost_bucket_daily.columns:
+        return {}
+    rows: list[tuple[datetime, dict[str, Any]]] = []
+    for row in cost_bucket_daily.to_dicts():
+        symbol = normalize_symbol(row.get("symbol"))
+        if not _is_usdt_symbol(symbol):
+            continue
+        ts = _parse_dt(row.get("created_at") or row.get("as_of_ts"))
+        if ts is None:
+            day = str(row.get("day") or "").strip()
+            try:
+                ts = datetime.combine(date.fromisoformat(day[:10]), time.min, tzinfo=UTC)
+            except ValueError:
+                ts = datetime.min.replace(tzinfo=UTC)
+        row = row | {"symbol": symbol}
+        rows.append((ts, row))
+    latest: dict[str, tuple[datetime, dict[str, Any]]] = {}
+    source_rank = {
+        "actual_fills": 4,
+        "actual_okx_fills_and_bills": 4,
+        "mixed_actual_proxy": 3,
+        "public_spread_proxy": 2,
+        "global_default": 1,
+    }
+    for ts, row in rows:
+        symbol = str(row["symbol"])
+        source = str(row.get("cost_source") or row.get("source") or "")
+        rank = source_rank.get(source, 0)
+        existing = latest.get(symbol)
+        existing_source = (
+            str(existing[1].get("cost_source") or existing[1].get("source") or "")
+            if existing
+            else ""
+        )
+        existing_rank = source_rank.get(existing_source, 0)
+        if existing is None or (ts, rank) >= (existing[0], existing_rank):
+            latest[symbol] = (ts, row)
+    return {symbol: row for symbol, (_, row) in latest.items()}
+
+
+def _expanded_factor_snapshot(rows: list[dict[str, Any]]) -> dict[str, float]:
+    closes = [_float(row.get("close")) for row in rows]
+    volumes = [_float(row.get("quote_volume") or row.get("volume")) for row in rows]
+    clean_closes = [value for value in closes if value is not None and value > 0]
+    clean_volumes = [value for value in volumes if value is not None and value >= 0]
+    latest = clean_closes[-1] if clean_closes else 0.0
+    prev = clean_closes[-2] if len(clean_closes) >= 2 else latest
+    if len(clean_closes) >= 25:
+        prev_24 = clean_closes[-25]
+    elif clean_closes:
+        prev_24 = clean_closes[0]
+    else:
+        prev_24 = latest
+    return_1h = (latest / prev - 1.0) * 100.0 if prev else 0.0
+    return_24h = (latest / prev_24 - 1.0) * 100.0 if prev_24 else 0.0
+    recent_volume = clean_volumes[-1] if clean_volumes else 0.0
+    mean_volume = statistics.fmean(clean_volumes[-24:]) if clean_volumes else 1.0
+    f4 = recent_volume / mean_volume - 1.0 if mean_volume else 0.0
+    f3 = return_24h
+    f5 = return_1h
+    alpha6 = (f3 * 0.45) + (f4 * 20.0) + (f5 * 0.35)
+    return {
+        "f3": round(f3, 6),
+        "f4": round(f4, 6),
+        "f5": round(f5, 6),
+        "alpha6_score": round(alpha6, 6),
+    }
+
+
+def _strategy_final_score(strategy_candidate: str, factors: dict[str, float]) -> float:
+    candidate = strategy_candidate.lower()
+    if "f3" in candidate:
+        return float(factors.get("f3") or 0.0)
+    if "f4" in candidate:
+        return float(factors.get("f4") or 0.0) * 100.0
+    if "late_entry" in candidate:
+        return max(float(factors.get("f3") or 0.0), 0.0)
+    if "pullback" in candidate:
+        return -abs(float(factors.get("f5") or 0.0))
+    return float(factors.get("alpha6_score") or 0.0)
+
+
+def _expanded_regime_state(factors: dict[str, float]) -> str:
+    f3 = float(factors.get("f3") or 0.0)
+    f5 = float(factors.get("f5") or 0.0)
+    if f3 > 3.0 and f5 >= 0:
+        return "risk_on_momentum"
+    if f3 < -3.0:
+        return "risk_off_pullback"
+    return "neutral"
+
+
+def _expanded_risk_level(factors: dict[str, float]) -> str:
+    f3 = abs(float(factors.get("f3") or 0.0))
+    f5 = abs(float(factors.get("f5") or 0.0))
+    if max(f3, f5) > 8.0:
+        return "high"
+    if max(f3, f5) > 3.0:
+        return "medium"
+    return "low"
+
+
+def _replacement_target(row: dict[str, Any]) -> str:
+    recommendation = str(row.get("recommendation") or "")
+    if recommendation == "candidate_replace_eth":
+        return "ETH-USDT"
+    if recommendation == "candidate_replace_bnb":
+        return "BNB-USDT"
+    return ""
+
+
+def _expanded_candidate_id(symbol: str, strategy_candidate: str, ts: datetime) -> str:
+    safe_candidate = strategy_candidate.replace(".", "_").replace("/", "_")
+    return f"{EXPANDED_UNIVERSE_TYPE}:{symbol}:{safe_candidate}:{ts.isoformat()}"
+
+
+def _bar_at_or_before(
+    rows: list[dict[str, Any]],
+    target_ts: datetime | None,
+) -> dict[str, Any] | None:
+    if target_ts is None:
+        return None
+    best = None
+    for row in rows:
+        ts = row.get("ts")
+        if isinstance(ts, datetime) and ts <= target_ts:
+            best = row
+        if isinstance(ts, datetime) and ts > target_ts:
+            break
+    return best
+
+
+def _bar_at_or_after(
+    rows: list[dict[str, Any]],
+    target_ts: datetime | None,
+) -> dict[str, Any] | None:
+    if target_ts is None:
+        return None
+    for row in rows:
+        ts = row.get("ts")
+        if isinstance(ts, datetime) and ts >= target_ts:
+            return row
+    return None
+
+
+def _bars_between(
+    rows: list[dict[str, Any]],
+    start_ts: datetime,
+    end_ts: datetime,
+) -> list[dict[str, Any]]:
+    return [
+        row
+        for row in rows
+        if isinstance(row.get("ts"), datetime) and start_ts <= row["ts"] <= end_ts
+    ]
+
+
+def _mfe_mae_bps(
+    rows: list[dict[str, Any]],
+    entry_close: float,
+) -> tuple[float | None, float | None]:
+    if entry_close <= 0 or not rows:
+        return None, None
+    highs = [
+        _float(row.get("high") or row.get("close"))
+        for row in rows
+        if _float(row.get("high") or row.get("close")) is not None
+    ]
+    lows = [
+        _float(row.get("low") or row.get("close"))
+        for row in rows
+        if _float(row.get("low") or row.get("close")) is not None
+    ]
+    mfe = (max(highs) / entry_close - 1.0) * 10_000.0 if highs else None
+    mae = (min(lows) / entry_close - 1.0) * 10_000.0 if lows else None
+    return mfe, mae
+
+
+def _cost_source_mix(rows: list[dict[str, Any]]) -> dict[str, int]:
+    counts: dict[str, int] = defaultdict(int)
+    for row in rows:
+        source = str(row.get("cost_source") or "missing")
+        counts[source] += 1
+    return dict(sorted(counts.items()))
+
+
+def _expanded_decision(
+    *,
+    sample_count: int,
+    complete_sample_count: int,
+    avg_net_bps: float | None,
+    p25_net_bps: float | None,
+    win_rate: float | None,
+    cost_source_mix: dict[str, int],
+) -> tuple[str, list[str]]:
+    reasons: list[str] = []
+    if sample_count < 10:
+        reasons.append("insufficient_total_samples")
+        return "RESEARCH_ONLY", reasons
+    if complete_sample_count < 5:
+        reasons.append("insufficient_complete_samples")
+        return "RESEARCH_ONLY", reasons
+    avg = avg_net_bps if avg_net_bps is not None else 0.0
+    p25 = p25_net_bps if p25_net_bps is not None else 0.0
+    win = win_rate if win_rate is not None else 0.0
+    has_global_default = "global_default" in {
+        source.lower() for source in cost_source_mix
+    }
+    if complete_sample_count >= 30 and avg < 0 and win < 0.45 and p25 < -50:
+        reasons.extend(["non_positive_after_cost_edge", "win_rate_below_threshold"])
+        return "KILL", reasons
+    if complete_sample_count >= 10 and avg > 0 and win >= 0.55 and p25 > -50:
+        if has_global_default:
+            reasons.append("cost_source_not_trusted")
+            return "KEEP_SHADOW", reasons
+        reasons.append("expanded_universe_paper_only")
+        return "PAPER_READY", reasons
+    if complete_sample_count >= 5 and avg >= 0:
+        reasons.append("positive_shadow_edge_needs_more_samples")
+        return "KEEP_SHADOW", reasons
+    reasons.append("shadow_collect_more_samples")
+    return "SHADOW", reasons
+
+
+def _promotion_state_from_decision(decision: str) -> str:
+    decision = str(decision or "").upper()
+    if decision == "PAPER_READY":
+        return "PAPER"
+    if decision in {"KEEP_SHADOW", "REGIME_SHADOW", "SHADOW"}:
+        return "SHADOW"
+    if decision == "KILL":
+        return "KILL"
+    return "RESEARCH"
+
+
+def _recommended_mode_from_promotion_state(promotion_state: str) -> str:
+    if promotion_state == "PAPER":
+        return "paper"
+    if promotion_state == "SHADOW":
+        return "shadow"
+    if promotion_state == "KILL":
+        return "none"
+    return "research"
+
+
+def _quantile(values: list[float], q: float) -> float | None:
+    if not values:
+        return None
+    sorted_values = sorted(values)
+    if len(sorted_values) == 1:
+        return sorted_values[0]
+    index = (len(sorted_values) - 1) * q
+    lower = math.floor(index)
+    upper = math.ceil(index)
+    if lower == upper:
+        return sorted_values[int(index)]
+    weight = index - lower
+    return sorted_values[lower] * (1 - weight) + sorted_values[upper] * weight
+
+
 def _market_rows_by_symbol(market: pl.DataFrame) -> dict[str, list[dict[str, Any]]]:
     rows_by_symbol: dict[str, list[dict[str, Any]]] = defaultdict(list)
     for row in market.to_dicts():
@@ -522,7 +1363,17 @@ def _read_recent_market_bars(
         return pl.DataFrame(), None
     lookback_hours = max(min_coverage_bars + 24, 24 * 31)
     since = latest_ts - timedelta(hours=lookback_hours)
-    columns = ["symbol", "timeframe", "ts", "close", "volume", "quote_volume"]
+    columns = [
+        "symbol",
+        "timeframe",
+        "ts",
+        "open",
+        "high",
+        "low",
+        "close",
+        "volume",
+        "quote_volume",
+    ]
     try:
         frame = (
             scan.filter(

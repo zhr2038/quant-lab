@@ -26,6 +26,12 @@ DATASET_PATHS = {
     "strategy_evidence_quality": Path("gold") / "strategy_evidence_quality",
     "research_portfolio_status": Path("gold") / "research_portfolio_status",
     "strategy_opportunity_advisory": Path("gold") / "strategy_opportunity_advisory",
+    "expanded_universe_candidate": Path("gold") / "expanded_universe_candidate",
+    "expanded_universe_quality": Path("gold") / "expanded_universe_quality",
+    "expanded_universe_candidate_event": Path("gold") / "expanded_universe_candidate_event",
+    "expanded_universe_candidate_label": Path("gold") / "expanded_universe_candidate_label",
+    "expanded_universe_promotion_queue": Path("gold")
+    / "expanded_universe_promotion_queue",
     "expanded_crypto_universe_shadow": Path("gold") / "expanded_crypto_universe_shadow",
     "symbol_quality_score": Path("gold") / "symbol_quality_score",
     "expanded_crypto_candidate_outcomes_by_symbol": Path("gold")
@@ -154,6 +160,11 @@ DATASET_TIMESTAMP_COLUMNS: dict[str, tuple[str, ...]] = {
     "strategy_evidence_quality": ("created_at", "as_of_date"),
     "research_portfolio_status": ("created_at", "last_review_date"),
     "strategy_opportunity_advisory": ("as_of_ts", "created_at"),
+    "expanded_universe_candidate": ("generated_at", "as_of_date"),
+    "expanded_universe_quality": ("generated_at", "as_of_date"),
+    "expanded_universe_candidate_event": ("ts_utc", "generated_at"),
+    "expanded_universe_candidate_label": ("label_ts", "generated_at"),
+    "expanded_universe_promotion_queue": ("generated_at", "as_of_date"),
     "expanded_crypto_universe_shadow": ("generated_at", "as_of_date"),
     "symbol_quality_score": ("generated_at", "as_of_date"),
     "expanded_crypto_candidate_outcomes_by_symbol": ("generated_at", "as_of_date"),
@@ -1303,6 +1314,26 @@ def alpha_gate_summary(lake_root: str | Path) -> dict[str, Any]:
         lake_root,
         "strategy_opportunity_advisory",
     )
+    expanded_candidates, expanded_candidates_warning = read_dataset_with_warning(
+        lake_root,
+        "expanded_universe_candidate",
+    )
+    expanded_quality, expanded_quality_warning = read_dataset_with_warning(
+        lake_root,
+        "expanded_universe_quality",
+    )
+    expanded_events, expanded_events_warning = read_dataset_with_warning(
+        lake_root,
+        "expanded_universe_candidate_event",
+    )
+    expanded_labels, expanded_labels_warning = read_dataset_with_warning(
+        lake_root,
+        "expanded_universe_candidate_label",
+    )
+    expanded_promotion, expanded_promotion_warning = read_dataset_with_warning(
+        lake_root,
+        "expanded_universe_promotion_queue",
+    )
     expanded_universe, expanded_universe_warning = read_dataset_with_warning(
         lake_root,
         "expanded_crypto_universe_shadow",
@@ -1329,6 +1360,11 @@ def alpha_gate_summary(lake_root: str | Path) -> dict[str, Any]:
             candidate_quality_warning,
             candidate_outcomes_warning,
             strategy_opportunities_warning,
+            expanded_candidates_warning,
+            expanded_quality_warning,
+            expanded_events_warning,
+            expanded_labels_warning,
+            expanded_promotion_warning,
             expanded_universe_warning,
             symbol_quality_warning,
             expanded_recommendations_warning,
@@ -1389,6 +1425,23 @@ def alpha_gate_summary(lake_root: str | Path) -> dict[str, Any]:
         "strategy_opportunity_advisory": redact_frame(
             _strategy_opportunity_table(strategy_opportunities)
         ).head(DISPLAY_LIMIT),
+        "expanded_universe_candidate": redact_frame(
+            _expanded_candidate_table(expanded_candidates)
+        ).head(DISPLAY_LIMIT),
+        "expanded_universe_quality": redact_frame(
+            _symbol_quality_table(
+                expanded_quality if not expanded_quality.is_empty() else symbol_quality
+            )
+        ).head(DISPLAY_LIMIT),
+        "expanded_universe_candidate_event": redact_frame(expanded_events).head(
+            DISPLAY_LIMIT
+        ),
+        "expanded_universe_candidate_label": redact_frame(expanded_labels).head(
+            DISPLAY_LIMIT
+        ),
+        "expanded_universe_promotion_queue": redact_frame(
+            _expanded_promotion_table(expanded_promotion)
+        ).head(DISPLAY_LIMIT),
         "expanded_crypto_universe_shadow": redact_frame(
             _expanded_universe_table(expanded_universe)
         ).head(DISPLAY_LIMIT),
@@ -1441,6 +1494,54 @@ def _expanded_universe_table(frame: pl.DataFrame) -> pl.DataFrame:
     selected = [column for column in columns if column in frame.columns]
     table = frame.select(selected) if selected else frame
     return table.sort("rank") if "rank" in table.columns else table
+
+
+def _expanded_candidate_table(frame: pl.DataFrame) -> pl.DataFrame:
+    if frame.is_empty():
+        return frame
+    columns = [
+        "symbol",
+        "universe_type",
+        "candidate_state",
+        "bar_coverage",
+        "spread_bps_p75",
+        "quote_volume_24h",
+        "min_notional_ok",
+        "active_trading",
+        "blocking_reasons",
+        "generated_at",
+    ]
+    selected = [column for column in columns if column in frame.columns]
+    return frame.select(selected) if selected else frame
+
+
+def _expanded_promotion_table(frame: pl.DataFrame) -> pl.DataFrame:
+    if frame.is_empty():
+        return frame
+    columns = [
+        "symbol",
+        "strategy_candidate",
+        "promotion_state",
+        "recommended_mode",
+        "horizon_hours",
+        "sample_count",
+        "complete_sample_count",
+        "avg_net_bps",
+        "p25_net_bps",
+        "win_rate",
+        "cost_source_mix",
+        "live_block_reasons",
+        "replacement_target_candidate",
+        "max_live_notional_usdt",
+        "generated_at",
+    ]
+    selected = [column for column in columns if column in frame.columns]
+    table = frame.select(selected) if selected else frame
+    return (
+        table.sort(["promotion_state", "symbol", "strategy_candidate"])
+        if {"promotion_state", "symbol", "strategy_candidate"}.issubset(table.columns)
+        else table
+    )
 
 
 def _symbol_quality_table(frame: pl.DataFrame) -> pl.DataFrame:

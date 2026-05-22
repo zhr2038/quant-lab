@@ -170,6 +170,7 @@ def api_metrics_summary(
     if lazy is None:
         return _empty_api_metrics_summary()
     schema_names = _lazy_schema_names(lazy)
+    day = _normalize_summary_day(day)
     scoped = lazy.filter(pl.col("day") == day) if day and "day" in schema_names else lazy
     request_count = _lazy_count(scoped)
     if request_count == 0:
@@ -214,6 +215,7 @@ def job_run_summary(
     if lazy is None:
         return {"run_count": 0, "jobs": []}
     schema_names = _lazy_schema_names(lazy)
+    day = _normalize_summary_day(day)
     scoped = lazy.filter(pl.col("day") == day) if day and "day" in schema_names else lazy
     run_count = _lazy_count(scoped)
     if run_count == 0:
@@ -228,13 +230,41 @@ def job_run_summary(
                 pl.len().alias("run_count"),
                 (pl.col("status") == "failed").sum().alias("failure_count"),
                 pl.col("duration_seconds").cast(pl.Float64, strict=False).mean().alias("avg_s"),
+                pl.col("duration_seconds")
+                .cast(pl.Float64, strict=False)
+                .quantile(0.95)
+                .alias("p95_s"),
                 pl.col("duration_seconds").cast(pl.Float64, strict=False).max().alias("max_s"),
+                pl.col("duration_seconds")
+                .cast(pl.Float64, strict=False)
+                .sort_by("finished_at")
+                .last()
+                .alias("latest_duration_s")
+                if "finished_at" in schema_names
+                else pl.lit(None).alias("latest_duration_s"),
+                pl.col("status").sort_by("finished_at").last().alias("latest_status")
+                if "finished_at" in schema_names
+                else pl.lit(None).alias("latest_status"),
+                pl.col("finished_at").max().alias("latest_finished_at")
+                if "finished_at" in schema_names
+                else pl.lit(None).alias("latest_finished_at"),
             ]
         )
         .sort("job_name")
         .collect()
     )
     return {"run_count": run_count, "jobs": grouped.to_dicts()}
+
+
+def _normalize_summary_day(day: str | None) -> str | None:
+    if day is None:
+        return None
+    normalized = str(day).strip().lower()
+    if not normalized:
+        return None
+    if normalized in {"auto", "today"}:
+        return datetime.now(UTC).date().isoformat()
+    return str(day).strip()
 
 
 def _empty_api_metrics_summary() -> dict[str, Any]:

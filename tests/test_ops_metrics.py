@@ -140,6 +140,36 @@ def test_job_run_summary_uses_lazy_aggregation(tmp_path, monkeypatch):
             "run_count": 2,
             "failure_count": 1,
             "avg_s": 6.0,
+            "p95_s": 7.0,
             "max_s": 7.0,
+            "latest_duration_s": 7.0,
+            "latest_status": "failed",
+            "latest_finished_at": started + timedelta(minutes=10, seconds=7),
         }
     ]
+
+
+def test_job_run_summary_day_auto_uses_current_utc_day(tmp_path):
+    lake = tmp_path / "lake"
+    now = datetime.now(UTC)
+    old = now - timedelta(days=2)
+    record_job_run(
+        lake_root=lake,
+        job_name="sync-v5-telemetry",
+        status="succeeded",
+        started_at=old,
+        finished_at=old + timedelta(seconds=30),
+    )
+    record_job_run(
+        lake_root=lake,
+        job_name="sync-v5-telemetry",
+        status="succeeded",
+        started_at=now,
+        finished_at=now + timedelta(seconds=3),
+    )
+
+    summary = job_run_summary(lake, day="auto")
+
+    assert summary["run_count"] == 1
+    assert summary["jobs"][0]["job_name"] == "sync-v5-telemetry"
+    assert summary["jobs"][0]["latest_duration_s"] == 3.0

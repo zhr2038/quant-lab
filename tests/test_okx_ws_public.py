@@ -130,6 +130,30 @@ def test_ws_message_standardization():
     assert books[0]["checksum"] == 42
 
 
+def test_ws_trade_missing_timestamp_uses_ingest_time():
+    message = _trade_message()
+    del message["data"][0]["ts"]
+
+    trades = normalize_okx_ws_trades([message])
+
+    assert len(trades) == 1
+    assert trades[0]["ts"]
+    assert trades[0]["ts"].endswith("Z")
+    assert trades[0]["day"] == trades[0]["ts"][:10]
+
+
+def test_ws_orderbook_invalid_timestamp_uses_ingest_time():
+    message = _books_message()
+    message["data"][0]["ts"] = "not-a-timestamp"
+
+    books = normalize_okx_ws_orderbooks([message])
+
+    assert len(books) == 1
+    assert books[0]["ts"]
+    assert books[0]["ts"].endswith("Z")
+    assert books[0]["day"] == books[0]["ts"][:10]
+
+
 def test_ws_candle_confirm_not_one_is_filtered():
     bars = normalize_okx_ws_candles_to_market_bars(
         [_candle_message(confirm="0"), _candle_message(confirm="1")]
@@ -165,6 +189,23 @@ def test_publish_ws_messages_to_lake(tmp_path):
     assert trades["symbol"][0] == "BTC-USDT"
     assert books["symbol"][0] == "BTC-USDT"
     assert raw.height == 3
+
+
+def test_partitioned_ws_append_does_not_create_null_day_partition(tmp_path, monkeypatch):
+    monkeypatch.setenv("QUANT_LAB_WS_APPEND_PARTITIONED", "true")
+    lake_root = tmp_path / "lake"
+    trade = _trade_message(symbol="BTC-USDT", trade_id="missing-ts")
+    del trade["data"][0]["ts"]
+    book = _books_message(symbol="BTC-USDT")
+    book["data"][0]["ts"] = "invalid-ts"
+
+    result = publish_okx_public_ws_messages_to_lake([trade, book], lake_root=lake_root)
+
+    assert result["trade_print_rows"] == 1
+    assert result["orderbook_snapshot_rows"] == 1
+    parquet_paths = list(lake_root.rglob("*.parquet"))
+    assert parquet_paths
+    assert all("__null__" not in str(path) for path in parquet_paths)
 
 
 def test_ws_stream_appends_large_datasets_without_rewriting_market_bars(tmp_path):

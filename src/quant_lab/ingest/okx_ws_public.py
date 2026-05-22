@@ -530,16 +530,17 @@ def normalize_okx_ws_trades(messages: Sequence[Mapping[str, Any]]) -> list[dict[
         for item in _message_data(message):
             if not isinstance(item, Mapping):
                 continue
+            event_ts = _event_timestamp_or_ingest(item.get("ts"), ingest_ts)
             rows.append(
                 {
                     "venue": "okx",
                     "symbol": normalize_symbol(inst_id),
-                    "day": _timestamp_ms_to_day(item.get("ts")),
+                    "day": event_ts[:10],
                     "trade_id": _optional_string(item.get("tradeId")),
                     "price": _optional_float(item.get("px")),
                     "size": _optional_float(item.get("sz")),
                     "side": _optional_string(item.get("side")),
-                    "ts": _timestamp_ms_to_utc_string(item.get("ts")),
+                    "ts": event_ts,
                     "source": OKX_PUBLIC_WS_SOURCE,
                     "ingest_ts": ingest_ts,
                     "raw_json": _json_dumps(item),
@@ -559,13 +560,14 @@ def normalize_okx_ws_orderbooks(messages: Sequence[Mapping[str, Any]]) -> list[d
         for item in _message_data(message):
             if not isinstance(item, Mapping):
                 continue
+            event_ts = _event_timestamp_or_ingest(item.get("ts"), ingest_ts)
             rows.append(
                 {
                     "venue": "okx",
                     "symbol": normalize_symbol(inst_id),
-                    "day": _timestamp_ms_to_day(item.get("ts")),
+                    "day": event_ts[:10],
                     "channel": channel,
-                    "ts": _timestamp_ms_to_utc_string(item.get("ts")),
+                    "ts": event_ts,
                     "asks_json": _json_dumps(item.get("asks", [])),
                     "bids_json": _json_dumps(item.get("bids", [])),
                     "checksum": _optional_int(item.get("checksum")),
@@ -730,12 +732,19 @@ def _message_data(message: Mapping[str, Any]) -> list[Any]:
 def _timestamp_ms_to_utc_string(value: Any) -> str | None:
     if value is None:
         return None
-    return datetime.fromtimestamp(int(value) / 1000, tz=UTC).isoformat().replace("+00:00", "Z")
+    try:
+        return datetime.fromtimestamp(int(value) / 1000, tz=UTC).isoformat().replace("+00:00", "Z")
+    except (OSError, OverflowError, TypeError, ValueError):
+        return None
 
 
 def _timestamp_ms_to_day(value: Any) -> str | None:
     timestamp = _timestamp_ms_to_utc_string(value)
     return timestamp[:10] if timestamp else None
+
+
+def _event_timestamp_or_ingest(value: Any, ingest_ts: str) -> str:
+    return _timestamp_ms_to_utc_string(value) or ingest_ts
 
 
 def _utc_now_string() -> str:

@@ -60,6 +60,40 @@ def test_btc_strict_probe_stop_loss_compares_actual_vs_hold_labels(tmp_path):
     assert "probe_stop_loss_may_be_too_early" in summary["decision_reasons"]
 
 
+def test_btc_leadership_probe_roundtrip_is_deduped_across_bundles(tmp_path):
+    lake = tmp_path / "lake"
+    entry_ts = datetime(2026, 5, 20, 0, tzinfo=UTC)
+    duplicated = {
+        "run_id": "20260520_22",
+        "symbol": "BTC-USDT",
+        "probe_type": "btc_leadership_probe",
+        "entry_ts": entry_ts,
+        "exit_ts": entry_ts + timedelta(hours=7),
+        "entry_px": 77_383.7,
+        "exit_px": 77_246.6,
+        "net_bps": -37.6992,
+        "would_have_held_24h_net_bps": 45.9489,
+        "exit_reason": "probe_stop_loss",
+    }
+    write_parquet_dataset(
+        pl.DataFrame(
+            [
+                duplicated | {"bundle_name": "v5_live_followup_bundle_1.tar.gz"},
+                duplicated | {"bundle_name": "v5_live_followup_bundle_2.tar.gz"},
+            ]
+        ),
+        lake / "silver" / "v5_roundtrip",
+    )
+
+    build_and_publish_btc_probe_exit_policy_review(lake, as_of_date="2026-05-20")
+
+    review = read_parquet_dataset(lake / "gold" / "btc_probe_exit_policy_review")
+    assert review.height == 1
+    row = review.to_dicts()[0]
+    assert row["actual_exit_net_bps"] == -37.6992
+    assert row["would_hold_24h_net_bps"] == 45.9489
+
+
 def test_btc_probe_exit_policy_computes_hold_labels_from_market_bar(tmp_path):
     lake = tmp_path / "lake"
     entry_ts = datetime(2026, 5, 20, 0, tzinfo=UTC)

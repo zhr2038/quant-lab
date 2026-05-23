@@ -156,6 +156,7 @@ def build_btc_probe_exit_policy_review(
         return pl.DataFrame(schema=REVIEW_SCHEMA)
     bars = _market_bar_index(market_bars)
     rows: list[dict[str, Any]] = []
+    seen_keys: set[tuple[str, ...]] = set()
     for row in roundtrips.to_dicts():
         payload = _payload(row)
         if not _is_btc_strict_probe_roundtrip(row, payload):
@@ -189,6 +190,22 @@ def build_btc_probe_exit_policy_review(
         )
         if cost_bps is None:
             cost_bps = DEFAULT_ROUNDTRIP_COST_BPS
+        roundtrip_id = str(
+            _field(row, payload, "roundtrip_id", "trade_id", "position_id")
+            or _source_event_key(row)
+        )
+        dedupe_key = _roundtrip_dedupe_key(
+            row=row,
+            payload=payload,
+            roundtrip_id=roundtrip_id,
+            entry_ts=entry_ts,
+            exit_ts=exit_ts,
+            entry_px=entry_px,
+            exit_px=exit_px,
+        )
+        if dedupe_key in seen_keys:
+            continue
+        seen_keys.add(dedupe_key)
         hold_values: dict[int, float | None] = {}
         label_sources: set[str] = set()
         for horizon in HORIZONS:
@@ -229,10 +246,7 @@ def build_btc_probe_exit_policy_review(
                 "strategy_candidate": "v5.btc_leadership_probe_strict",
                 "symbol": "BTC-USDT",
                 "run_id": str(_field(row, payload, "run_id") or row.get("run_id") or ""),
-                "roundtrip_id": str(
-                    _field(row, payload, "roundtrip_id", "trade_id", "position_id")
-                    or _source_event_key(row)
-                ),
+                "roundtrip_id": roundtrip_id,
                 "entry_ts": entry_ts,
                 "exit_ts": exit_ts,
                 "entry_px": entry_px,
@@ -375,9 +389,30 @@ def _is_btc_strict_probe_roundtrip(row: dict[str, Any], payload: dict[str, Any])
             "source_type",
         ]
     ).lower()
-    if "v5.btc_leadership_probe_strict" in haystack:
+    if "v5.btc_leadership_probe_strict" in haystack or "btc_leadership_probe" in haystack:
         return True
     return "btc" in haystack and "strict" in haystack and "probe" in haystack
+
+
+def _roundtrip_dedupe_key(
+    *,
+    row: dict[str, Any],
+    payload: dict[str, Any],
+    roundtrip_id: str,
+    entry_ts: datetime | None,
+    exit_ts: datetime | None,
+    entry_px: float | None,
+    exit_px: float | None,
+) -> tuple[str, ...]:
+    return (
+        str(_field(row, payload, "run_id") or row.get("run_id") or ""),
+        str(roundtrip_id),
+        "" if entry_ts is None else entry_ts.isoformat(),
+        "" if exit_ts is None else exit_ts.isoformat(),
+        "" if entry_px is None else f"{entry_px:.8f}",
+        "" if exit_px is None else f"{exit_px:.8f}",
+        str(_field(row, payload, "exit_reason", "close_reason", "reason") or ""),
+    )
 
 
 def _exit_policy_signal(

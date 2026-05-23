@@ -1436,6 +1436,29 @@ def test_expert_exports_generate_today_button_starts_background_job(tmp_path, mo
     assert any("PID=4242" in str(value) for value in _call_values(fake, "info"))
 
 
+def test_expert_exports_background_job_truncates_stale_log(tmp_path, monkeypatch):
+    exports_root = tmp_path / "exports"
+    exports_root.mkdir()
+    log_path = exports_root / ".quant_lab_web_export_2026-05-10.log"
+    log_path.write_text("old memory allocation error", encoding="utf-8")
+
+    class FakeProcess:
+        pid = 4242
+
+    monkeypatch.setattr(expert_exports.subprocess, "Popen", lambda *_args, **_kwargs: FakeProcess())
+    monkeypatch.setattr(expert_exports, "_pid_is_running", lambda _pid: False)
+
+    status = expert_exports._start_export_job(
+        export_date="2026-05-10",
+        lake_root=tmp_path / "lake",
+        exports_root=exports_root,
+    )
+
+    assert status["state"] == "running"
+    assert status["pid"] == 4242
+    assert log_path.read_text(encoding="utf-8") == ""
+
+
 def test_expert_exports_generate_today_uses_beijing_date_and_creates_export_dir(
     tmp_path,
     monkeypatch,

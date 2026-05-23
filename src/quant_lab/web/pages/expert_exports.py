@@ -141,7 +141,7 @@ def _start_export_job(
         "log_path": str(log_path),
     }
     _write_export_job_status(status_path, status)
-    with log_path.open("ab") as log_file:
+    with log_path.open("wb") as log_file:
         popen_kwargs: dict[str, Any] = {
             "stdout": log_file,
             "stderr": subprocess.STDOUT,

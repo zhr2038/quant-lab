@@ -799,10 +799,10 @@ def enrich_paper_strategy_daily_from_runs(
         return run_daily
     if run_daily.is_empty():
         return daily
-    metrics = {
-        _paper_daily_key(row): row
-        for row in run_daily.to_dicts()
-    }
+    metrics: dict[tuple[str, str, str], dict[str, Any]] = {}
+    for row in run_daily.to_dicts():
+        for key in _paper_daily_key_aliases(row):
+            metrics[key] = row
     enriched: list[dict[str, Any]] = []
     metric_fields = [
         "paper_days",
@@ -832,7 +832,11 @@ def enrich_paper_strategy_daily_from_runs(
         "paper_pnl_day_count_by_horizon",
     ]
     for row in daily.to_dicts():
-        metric = metrics.get(_paper_daily_key(row), {})
+        metric: dict[str, Any] = {}
+        for key in _paper_daily_key_aliases(row):
+            metric = metrics.get(key, {})
+            if metric:
+                break
         updated = dict(row)
         for field in metric_fields:
             updated[field] = int(_optional_float(metric.get(field)) or 0)
@@ -1462,6 +1466,25 @@ def _paper_daily_key(row: dict[str, Any]) -> tuple[str, str, str]:
         str(row.get("strategy_candidate") or ""),
         str(row.get("symbol") or ""),
     )
+
+
+def _paper_daily_key_aliases(row: dict[str, Any]) -> list[tuple[str, str, str]]:
+    proposal_id, candidate, symbol = _paper_daily_key(row)
+    proposals = {proposal_id}
+    candidates = {candidate}
+    if proposal_id == "ETH_USDT_F3_DOMINANT_ENTRY_PAPER_V1":
+        proposals.add("ETH_F3_DOMINANT_ENTRY_PAPER_V1")
+    if proposal_id == "ETH_F3_DOMINANT_ENTRY_PAPER_V1":
+        proposals.add("ETH_USDT_F3_DOMINANT_ENTRY_PAPER_V1")
+    if candidate == "v5.eth_f3_dominant_entry":
+        candidates.add("v5.f3_dominant_entry")
+    if candidate == "v5.f3_dominant_entry":
+        candidates.add("v5.eth_f3_dominant_entry")
+    return [
+        (proposal, strategy_candidate, symbol)
+        for proposal in proposals
+        for strategy_candidate in candidates
+    ]
 
 
 def _group_run_rows(rows: list[dict[str, Any]]) -> dict[tuple[str, str, str], dict[str, Any]]:

@@ -962,6 +962,69 @@ def test_v5_daily_negative_24h_48h_streak_downgrades_paper(tmp_path):
     assert "paper_negative_24h_or_48h_streak" in json.loads(latest["live_block_reason"])
 
 
+def test_v5_daily_eth_alias_merges_run_negative_streak(tmp_path):
+    lake = tmp_path / "lake"
+    bundle_ts = datetime(2026, 5, 23, 12, tzinfo=UTC)
+    write_parquet_dataset(
+        pl.DataFrame(
+            [
+                {
+                    "as_of_date": "2026-05-23",
+                    "proposal_id": "ETH_USDT_F3_DOMINANT_ENTRY_PAPER_V1",
+                    "strategy_candidate": "v5.eth_f3_dominant_entry",
+                    "symbol": "ETH-USDT",
+                    "latest_board_decision": "PAPER_READY",
+                    "avg_paper_pnl_bps_by_horizon": "{}",
+                    "bundle_ts": bundle_ts,
+                    "raw_payload_json": "{}",
+                }
+            ]
+        ),
+        lake / "silver" / "v5_paper_strategy_daily",
+    )
+    write_parquet_dataset(
+        pl.DataFrame(
+            [
+                {
+                    "as_of_date": "2026-05-21",
+                    "proposal_id": "ETH_USDT_F3_DOMINANT_ENTRY_PAPER_V1",
+                    "strategy_candidate": "v5.f3_dominant_entry",
+                    "symbol": "ETH-USDT",
+                    "board_decision": "PAPER_READY",
+                    "would_enter": "true",
+                    "paper_pnl_bps_24h": "-125.0",
+                    "paper_pnl_bps_48h": "-365.0",
+                    "cost_source": "mixed_actual_proxy",
+                    "bundle_ts": bundle_ts,
+                    "raw_payload_json": "{}",
+                },
+                {
+                    "as_of_date": "2026-05-22",
+                    "proposal_id": "ETH_USDT_F3_DOMINANT_ENTRY_PAPER_V1",
+                    "strategy_candidate": "v5.f3_dominant_entry",
+                    "symbol": "ETH-USDT",
+                    "board_decision": "PAPER_READY",
+                    "would_enter": "true",
+                    "paper_pnl_bps_24h": "-341.0",
+                    "cost_source": "mixed_actual_proxy",
+                    "bundle_ts": bundle_ts,
+                    "raw_payload_json": "{}",
+                },
+            ]
+        ),
+        lake / "silver" / "v5_paper_strategy_run",
+    )
+
+    build_and_publish_paper_strategy_tracking(lake, as_of_date="auto")
+
+    daily = read_parquet_dataset(lake / "gold" / "paper_strategy_daily").to_dicts()[0]
+    assert daily["strategy_candidate"] == "v5.eth_f3_dominant_entry"
+    assert daily["latest_board_decision"] == "KEEP_SHADOW"
+    assert daily["negative_entry_day_count"] == 2
+    assert daily["paper_negative_streak"] == 2
+    assert daily["latest_paper_trend"] == "negative_24h_or_48h_streak"
+
+
 def test_eth_f3_negative_longer_horizon_downgrades_advisory(tmp_path):
     lake = tmp_path / "lake"
     write_parquet_dataset(

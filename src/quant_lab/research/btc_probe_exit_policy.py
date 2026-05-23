@@ -178,6 +178,9 @@ def build_btc_probe_exit_policy_review(
                 "roundtrip_net_bps",
             )
         )
+        exit_reason = str(_field(row, payload, "exit_reason", "close_reason", "reason") or "")
+        if entry_ts is None or (actual is None and not exit_reason.strip()):
+            continue
         cost_bps = _float_or_none(
             _field(
                 row,
@@ -197,7 +200,6 @@ def build_btc_probe_exit_policy_review(
         dedupe_key = _roundtrip_dedupe_key(
             row=row,
             payload=payload,
-            roundtrip_id=roundtrip_id,
             entry_ts=entry_ts,
             exit_ts=exit_ts,
             entry_px=entry_px,
@@ -233,7 +235,6 @@ def build_btc_probe_exit_policy_review(
             else:
                 label_sources.add("v5_roundtrip_field")
             hold_values[horizon] = value
-        exit_reason = str(_field(row, payload, "exit_reason", "close_reason", "reason") or "")
         signal = _exit_policy_signal(
             actual_exit_net_bps=actual,
             would_hold_24h_net_bps=hold_values[24],
@@ -398,7 +399,6 @@ def _roundtrip_dedupe_key(
     *,
     row: dict[str, Any],
     payload: dict[str, Any],
-    roundtrip_id: str,
     entry_ts: datetime | None,
     exit_ts: datetime | None,
     entry_px: float | None,
@@ -406,7 +406,6 @@ def _roundtrip_dedupe_key(
 ) -> tuple[str, ...]:
     return (
         str(_field(row, payload, "run_id") or row.get("run_id") or ""),
-        str(roundtrip_id),
         "" if entry_ts is None else entry_ts.isoformat(),
         "" if exit_ts is None else exit_ts.isoformat(),
         "" if entry_px is None else f"{entry_px:.8f}",

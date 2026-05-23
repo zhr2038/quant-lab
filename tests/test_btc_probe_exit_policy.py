@@ -78,8 +78,24 @@ def test_btc_leadership_probe_roundtrip_is_deduped_across_bundles(tmp_path):
     write_parquet_dataset(
         pl.DataFrame(
             [
-                duplicated | {"bundle_name": "v5_live_followup_bundle_1.tar.gz"},
-                duplicated | {"bundle_name": "v5_live_followup_bundle_2.tar.gz"},
+                duplicated
+                | {
+                    "roundtrip_id": "source-a",
+                    "bundle_name": "v5_live_followup_bundle_1.tar.gz",
+                },
+                duplicated
+                | {
+                    "roundtrip_id": "source-b",
+                    "bundle_name": "v5_live_followup_bundle_2.tar.gz",
+                },
+                {
+                    "run_id": "20260520_15",
+                    "symbol": "BTC-USDT",
+                    "probe_type": "btc_leadership_probe",
+                    "entry_ts": entry_ts,
+                    "entry_px": 77_383.7,
+                    "exit_reason": "",
+                },
             ]
         ),
         lake / "silver" / "v5_roundtrip",

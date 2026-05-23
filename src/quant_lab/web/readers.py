@@ -42,6 +42,9 @@ DATASET_PATHS = {
     "paper_strategy_runs": Path("gold") / "paper_strategy_runs",
     "paper_strategy_daily": Path("gold") / "paper_strategy_daily",
     "paper_slippage_coverage": Path("gold") / "paper_slippage_coverage",
+    "sol_protect_paper_loss_attribution": Path("gold")
+    / "sol_protect_paper_loss_attribution",
+    "sol_protect_paper_loss_summary": Path("gold") / "sol_protect_paper_loss_summary",
     "v5_missed_low_audit": Path("gold") / "v5_missed_low_audit",
     "v5_missed_low_by_symbol": Path("gold") / "v5_missed_low_by_symbol",
     "v5_missed_low_by_entry_reason": Path("gold") / "v5_missed_low_by_entry_reason",
@@ -180,6 +183,12 @@ DATASET_TIMESTAMP_COLUMNS: dict[str, tuple[str, ...]] = {
     "paper_strategy_runs": ("created_at", "as_of_date"),
     "paper_strategy_daily": ("created_at", "as_of_date"),
     "paper_slippage_coverage": ("created_at", "as_of_date"),
+    "sol_protect_paper_loss_attribution": (
+        "generated_at_utc",
+        "entry_ts",
+        "as_of_date",
+    ),
+    "sol_protect_paper_loss_summary": ("generated_at_utc", "as_of_date"),
     "v5_missed_low_audit": ("generated_at_utc", "entry_ts", "as_of_date"),
     "v5_missed_low_by_symbol": ("generated_at_utc", "as_of_date"),
     "v5_missed_low_by_entry_reason": ("generated_at_utc", "as_of_date"),

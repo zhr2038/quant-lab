@@ -51,6 +51,9 @@ from quant_lab.research.portfolio import (
     dedupe_research_portfolio_status,
     research_portfolio_summary_md,
 )
+from quant_lab.research.sol_protect_paper_loss import (
+    sol_protect_paper_loss_summary_md,
+)
 from quant_lab.research.strategy_evidence import (
     normalize_strategy_evidence_decisions,
     strategy_evidence_decision_ladder,
@@ -168,6 +171,8 @@ SECTION_DATASETS = {
         "paper_strategy_runs",
         "paper_strategy_daily",
         "paper_slippage_coverage",
+        "sol_protect_paper_loss_attribution",
+        "sol_protect_paper_loss_summary",
         "v5_missed_low_audit",
         "v5_missed_low_by_symbol",
         "v5_missed_low_by_entry_reason",
@@ -295,6 +300,8 @@ REQUIRED_MEMBERS = [
     "reports/paper_strategy_runs.csv",
     "reports/paper_strategy_daily.csv",
     "reports/paper_slippage_coverage.csv",
+    "reports/sol_protect_paper_loss_attribution.csv",
+    "reports/sol_protect_paper_loss_summary.md",
     "reports/missed_low_audit.csv",
     "reports/missed_low_by_symbol.csv",
     "reports/missed_low_by_entry_reason.csv",
@@ -1138,6 +1145,49 @@ CSV_SCHEMAS: dict[str, list[str]] = {
         "created_at",
         "source",
         "schema_version",
+    ],
+    "reports/sol_protect_paper_loss_attribution.csv": [
+        "contract_version",
+        "schema_version",
+        "quant_lab_git_commit",
+        "source_version",
+        "generated_at_utc",
+        "generated_from_bundle_id",
+        "as_of_date",
+        "proposal_id",
+        "strategy_candidate",
+        "strategy_id",
+        "run_id",
+        "entry_ts",
+        "symbol",
+        "entry_px",
+        "alpha6_score",
+        "alpha6_side",
+        "f4_volume_expansion",
+        "f5_rsi_trend_confirm",
+        "risk_level",
+        "btc_trend_state",
+        "market_regime",
+        "entry_position_in_24h_range",
+        "paper_pnl_4h",
+        "paper_pnl_8h",
+        "paper_pnl_12h",
+        "paper_pnl_24h",
+        "mae_bps",
+        "mfe_bps",
+        "mae_bps_4h",
+        "mae_bps_8h",
+        "mae_bps_12h",
+        "mae_bps_24h",
+        "mfe_bps_4h",
+        "mfe_bps_8h",
+        "mfe_bps_12h",
+        "mfe_bps_24h",
+        "loss_horizons",
+        "primary_loss_bps",
+        "attribution_tags",
+        "created_at",
+        "source",
     ],
     "reports/missed_low_audit.csv": [
         "as_of_date",
@@ -2362,6 +2412,11 @@ def _dataset_members(frames: dict[str, pl.DataFrame]) -> dict[str, _MemberPayloa
     )
     risk = _risk_permissions_for_export(frames.get("risk_permission", pl.DataFrame()), frames)
     paper_runs, paper_daily, paper_slippage = _paper_tracking_frames_for_export(frames)
+    sol_protect_loss_attribution = frames.get(
+        "sol_protect_paper_loss_attribution",
+        pl.DataFrame(),
+    )
+    sol_protect_loss_summary = frames.get("sol_protect_paper_loss_summary", pl.DataFrame())
     missed_low_audit = frames.get("v5_missed_low_audit", pl.DataFrame())
     missed_low_by_symbol = frames.get("v5_missed_low_by_symbol", pl.DataFrame())
     missed_low_by_entry_reason = frames.get("v5_missed_low_by_entry_reason", pl.DataFrame())
@@ -2624,6 +2679,14 @@ def _dataset_members(frames: dict[str, pl.DataFrame]) -> dict[str, _MemberPayloa
         "reports/paper_slippage_coverage.csv": _csv_member(
             "reports/paper_slippage_coverage.csv",
             paper_slippage,
+        ),
+        "reports/sol_protect_paper_loss_attribution.csv": _csv_member(
+            "reports/sol_protect_paper_loss_attribution.csv",
+            sol_protect_loss_attribution,
+        ),
+        "reports/sol_protect_paper_loss_summary.md": sol_protect_paper_loss_summary_md(
+            sol_protect_loss_summary,
+            sol_protect_loss_attribution,
         ),
         "reports/missed_low_audit.csv": _csv_member(
             "reports/missed_low_audit.csv",
@@ -3182,6 +3245,16 @@ def _refresh_v5_derived_outputs(lake_root: Path, export_day: date) -> list[str]:
                 "quant_lab.research.paper_tracking",
                 fromlist=["build_and_publish_paper_strategy_tracking"],
             ).build_and_publish_paper_strategy_tracking(lake_root, as_of_date=export_day),
+        ),
+        (
+            "build_sol_protect_paper_loss_attribution",
+            lambda: __import__(
+                "quant_lab.research.sol_protect_paper_loss",
+                fromlist=["build_and_publish_sol_protect_paper_loss_attribution"],
+            ).build_and_publish_sol_protect_paper_loss_attribution(
+                lake_root,
+                as_of_date=export_day,
+            ),
         ),
         (
             "build_entry_quality",

@@ -62,6 +62,9 @@ from quant_lab.research.publish import (
     research_health,
 )
 from quant_lab.research.regime_router import build_and_publish_regime_router
+from quant_lab.research.sol_protect_paper_loss import (
+    build_and_publish_sol_protect_paper_loss_attribution,
+)
 from quant_lab.research.strategy_evidence import build_and_publish_strategy_evidence
 from quant_lab.risk.publish import publish_risk_permission as publish_risk_permission_to_lake
 from quant_lab.strategy_telemetry.analyze import analyze_v5_telemetry
@@ -1176,6 +1179,25 @@ def build_research_portfolio_status_command(
         lake_root=lake_root,
         job_name="build-research-portfolio-status",
         func=lambda: build_and_publish_research_portfolio_status(
+            lake_root=lake_root,
+            as_of_date=as_of_date,
+        ),
+    )
+    typer.echo(result.model_dump_json(indent=2))
+
+
+@app.command("build-sol-protect-paper-loss-attribution")
+def build_sol_protect_paper_loss_attribution_command(
+    lake_root: Annotated[Path, typer.Option("--lake-root", file_okay=False, dir_okay=True)],
+    as_of_date: Annotated[
+        str,
+        typer.Option("--date", help="UTC as-of day in YYYY-MM-DD format or auto."),
+    ] = "auto",
+) -> None:
+    result = run_with_job_metrics(
+        lake_root=lake_root,
+        job_name="build-sol-protect-paper-loss-attribution",
+        func=lambda: build_and_publish_sol_protect_paper_loss_attribution(
             lake_root=lake_root,
             as_of_date=as_of_date,
         ),

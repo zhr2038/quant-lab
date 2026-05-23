@@ -33,6 +33,9 @@ def test_btc_strict_probe_stop_loss_compares_actual_vs_hold_labels(tmp_path):
                     "would_have_held_8h_net_bps": -10.0,
                     "would_have_held_12h_net_bps": 12.0,
                     "would_have_held_24h_net_bps": 45.95,
+                    "would_have_held_48h_net_bps": 82.5,
+                    "mae_bps": -94.0,
+                    "mfe_bps": 131.0,
                     "exit_reason": "probe_stop_loss",
                     "bundle_ts": datetime(2026, 5, 20, 8, tzinfo=UTC),
                 }
@@ -52,10 +55,16 @@ def test_btc_strict_probe_stop_loss_compares_actual_vs_hold_labels(tmp_path):
     review = read_parquet_dataset(lake / "gold" / "btc_probe_exit_policy_review").to_dicts()[0]
     assert review["actual_exit_net_bps"] == -37.70
     assert review["would_hold_24h_net_bps"] == 45.95
+    assert review["would_hold_48h_net_bps"] == 82.5
+    assert review["mae_bps"] == -94.0
+    assert review["mfe_bps"] == 131.0
     assert review["exit_policy_signal"] == "possible_stop_loss_too_early"
     summary = read_parquet_dataset(lake / "gold" / "btc_probe_exit_policy_summary").to_dicts()[0]
     assert summary["sample_count"] == 1
     assert summary["premature_stop_loss_count"] == 1
+    assert summary["avg_would_hold_48h_net_bps"] == 82.5
+    assert summary["avg_mae_bps"] == -94.0
+    assert summary["avg_mfe_bps"] == 131.0
     assert summary["status"] == "RESEARCH_ONLY"
     assert "probe_stop_loss_may_be_too_early" in summary["decision_reasons"]
 
@@ -120,12 +129,12 @@ def test_btc_probe_exit_policy_computes_hold_labels_from_market_bar(tmp_path):
             "timeframe": "1H",
             "ts": entry_ts + timedelta(hours=hour),
             "open": 100_000.0,
-            "high": 101_000.0,
-            "low": 99_000.0,
+            "high": 100_000.0 + hour * 100.0 + 100.0,
+            "low": 100_000.0 + hour * 100.0 - 200.0,
             "close": 100_000.0 + hour * 100.0,
             "volume": 1.0,
         }
-        for hour in range(0, 30)
+        for hour in range(0, 54)
     ]
     write_parquet_dataset(pl.DataFrame(market_rows), lake / "silver" / "market_bar")
     write_parquet_dataset(
@@ -152,6 +161,9 @@ def test_btc_probe_exit_policy_computes_hold_labels_from_market_bar(tmp_path):
 
     row = read_parquet_dataset(lake / "gold" / "btc_probe_exit_policy_review").to_dicts()[0]
     assert round(row["would_hold_24h_net_bps"], 4) == 210.0
+    assert round(row["would_hold_48h_net_bps"], 4) == 450.0
+    assert round(row["mae_bps"], 4) == -10.0
+    assert round(row["mfe_bps"], 4) == 490.0
     assert row["label_source"] == "market_bar_conservative_cost"
 
 
@@ -168,6 +180,9 @@ def test_daily_export_contains_btc_probe_exit_policy_reports(tmp_path):
                     "entry_ts": datetime(2026, 5, 20, tzinfo=UTC),
                     "actual_exit_net_bps": -37.70,
                     "would_have_held_24h_net_bps": 45.95,
+                    "would_have_held_48h_net_bps": 82.5,
+                    "mae_bps": -94.0,
+                    "mfe_bps": 131.0,
                     "exit_reason": "probe_stop_loss",
                 }
             ]
@@ -197,3 +212,6 @@ def test_daily_export_contains_btc_probe_exit_policy_reports(tmp_path):
         )
     assert rows
     assert rows[0]["status"] == "RESEARCH_ONLY"
+    assert rows[0]["would_hold_48h_net_bps"] == "82.5"
+    assert rows[0]["mae_bps"] == "-94.0"
+    assert rows[0]["mfe_bps"] == "131.0"

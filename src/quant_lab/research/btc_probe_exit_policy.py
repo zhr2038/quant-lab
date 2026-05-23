@@ -20,7 +20,7 @@ SOURCE_NAME = "quant_lab.btc_probe_exit_policy_review"
 SCHEMA_VERSION = "btc_probe_exit_policy_review.v0.1"
 DEFAULT_MIN_SAMPLE_COUNT = 10
 DEFAULT_ROUNDTRIP_COST_BPS = 30.0
-HORIZONS = (8, 12, 24)
+HORIZONS = (8, 12, 24, 48)
 
 V5_ROUNDTRIP_DATASET = Path("silver") / "v5_roundtrip"
 V5_TRADE_EVENT_DATASET = Path("silver") / "v5_trade_event"
@@ -48,6 +48,9 @@ REVIEW_SCHEMA: dict[str, Any] = {
     "would_hold_8h_net_bps": pl.Float64,
     "would_hold_12h_net_bps": pl.Float64,
     "would_hold_24h_net_bps": pl.Float64,
+    "would_hold_48h_net_bps": pl.Float64,
+    "mae_bps": pl.Float64,
+    "mfe_bps": pl.Float64,
     "exit_reason": pl.Utf8,
     "probe_hold_hours": pl.Float64,
     "selected_roundtrip_cost_bps": pl.Float64,
@@ -75,7 +78,11 @@ SUMMARY_SCHEMA: dict[str, Any] = {
     "avg_would_hold_8h_net_bps": pl.Float64,
     "avg_would_hold_12h_net_bps": pl.Float64,
     "avg_would_hold_24h_net_bps": pl.Float64,
+    "avg_would_hold_48h_net_bps": pl.Float64,
+    "avg_mae_bps": pl.Float64,
+    "avg_mfe_bps": pl.Float64,
     "actual_vs_24h_delta_bps": pl.Float64,
+    "actual_vs_48h_delta_bps": pl.Float64,
     "status": pl.Utf8,
     "decision": pl.Utf8,
     "decision_reasons": pl.Utf8,
@@ -235,6 +242,46 @@ def build_btc_probe_exit_policy_review(
             else:
                 label_sources.add("v5_roundtrip_field")
             hold_values[horizon] = value
+        mae_bps = _float_or_none(
+            _field(
+                row,
+                payload,
+                "mae_bps",
+                "max_adverse_bps",
+                "adverse_excursion_bps",
+                "label_24h_mae_bps",
+                "label_48h_mae_bps",
+                "mae_bps_24h",
+                "mae_bps_48h",
+                "paper_mae_bps_24h",
+                "paper_mae_bps_48h",
+            )
+        )
+        mfe_bps = _float_or_none(
+            _field(
+                row,
+                payload,
+                "mfe_bps",
+                "max_favorable_bps",
+                "favorable_excursion_bps",
+                "label_24h_mfe_bps",
+                "label_48h_mfe_bps",
+                "mfe_bps_24h",
+                "mfe_bps_48h",
+                "paper_mfe_bps_24h",
+                "paper_mfe_bps_48h",
+            )
+        )
+        if (mae_bps is None or mfe_bps is None) and entry_ts is not None and entry_px is not None:
+            market_mae, market_mfe = _mae_mfe_from_market(
+                bars=bars,
+                entry_ts=entry_ts,
+                entry_px=entry_px,
+                horizon_hours=max(HORIZONS),
+                side=str(_field(row, payload, "side", "entry_side", "direction") or "buy"),
+            )
+            mae_bps = mae_bps if mae_bps is not None else market_mae
+            mfe_bps = mfe_bps if mfe_bps is not None else market_mfe
         signal = _exit_policy_signal(
             actual_exit_net_bps=actual,
             would_hold_24h_net_bps=hold_values[24],
@@ -256,6 +303,9 @@ def build_btc_probe_exit_policy_review(
                 "would_hold_8h_net_bps": hold_values[8],
                 "would_hold_12h_net_bps": hold_values[12],
                 "would_hold_24h_net_bps": hold_values[24],
+                "would_hold_48h_net_bps": hold_values[48],
+                "mae_bps": mae_bps,
+                "mfe_bps": mfe_bps,
                 "exit_reason": exit_reason,
                 "probe_hold_hours": _hold_hours(entry_ts, exit_ts)
                 or _float_or_none(_field(row, payload, "probe_hold_hours", "hold_hours")),
@@ -293,6 +343,9 @@ def build_btc_probe_exit_policy_summary(
     avg_8h = _mean(row.get("would_hold_8h_net_bps") for row in rows)
     avg_12h = _mean(row.get("would_hold_12h_net_bps") for row in rows)
     avg_24h = _mean(row.get("would_hold_24h_net_bps") for row in rows)
+    avg_48h = _mean(row.get("would_hold_48h_net_bps") for row in rows)
+    avg_mae = _mean(row.get("mae_bps") for row in rows)
+    avg_mfe = _mean(row.get("mfe_bps") for row in rows)
     status = "RESEARCH_ONLY" if sample_count < min_sample_count else "REVIEW"
     reasons = []
     if sample_count < min_sample_count:
@@ -316,8 +369,14 @@ def build_btc_probe_exit_policy_summary(
                 "avg_would_hold_8h_net_bps": avg_8h,
                 "avg_would_hold_12h_net_bps": avg_12h,
                 "avg_would_hold_24h_net_bps": avg_24h,
+                "avg_would_hold_48h_net_bps": avg_48h,
+                "avg_mae_bps": avg_mae,
+                "avg_mfe_bps": avg_mfe,
                 "actual_vs_24h_delta_bps": (
                     avg_24h - avg_actual if avg_24h is not None and avg_actual is not None else None
+                ),
+                "actual_vs_48h_delta_bps": (
+                    avg_48h - avg_actual if avg_48h is not None and avg_actual is not None else None
                 ),
                 "status": status,
                 "decision": decision,
@@ -351,7 +410,11 @@ def btc_probe_exit_policy_summary_md(summary: pl.DataFrame, review: pl.DataFrame
         f"- avg_would_hold_8h_net_bps: {_fmt(row.get('avg_would_hold_8h_net_bps'))}",
         f"- avg_would_hold_12h_net_bps: {_fmt(row.get('avg_would_hold_12h_net_bps'))}",
         f"- avg_would_hold_24h_net_bps: {_fmt(row.get('avg_would_hold_24h_net_bps'))}",
+        f"- avg_would_hold_48h_net_bps: {_fmt(row.get('avg_would_hold_48h_net_bps'))}",
+        f"- avg_mae_bps: {_fmt(row.get('avg_mae_bps'))}",
+        f"- avg_mfe_bps: {_fmt(row.get('avg_mfe_bps'))}",
         f"- actual_vs_24h_delta_bps: {_fmt(row.get('actual_vs_24h_delta_bps'))}",
+        f"- actual_vs_48h_delta_bps: {_fmt(row.get('actual_vs_48h_delta_bps'))}",
         f"- decision_reasons: {row.get('decision_reasons')}",
         "",
         "This is read-only research. It does not modify V5 exit policy.",
@@ -442,7 +505,16 @@ def _market_bar_index(market_bars: pl.DataFrame) -> dict[str, list[dict[str, Any
         close = _float_or_none(row.get("close"))
         if not symbol or ts is None or close is None:
             continue
-        rows_by_symbol.setdefault(symbol, []).append({"ts": ts, "close": close})
+        high = _float_or_none(row.get("high"))
+        low = _float_or_none(row.get("low"))
+        rows_by_symbol.setdefault(symbol, []).append(
+            {
+                "ts": ts,
+                "close": close,
+                "high": high if high is not None else close,
+                "low": low if low is not None else close,
+            }
+        )
     for rows in rows_by_symbol.values():
         rows.sort(key=lambda item: item["ts"])
     return rows_by_symbol
@@ -471,6 +543,32 @@ def _would_hold_from_market(
     else:
         gross = (future_close / entry_px - 1.0) * 10_000.0
     return gross - cost_bps
+
+
+def _mae_mfe_from_market(
+    *,
+    bars: dict[str, list[dict[str, Any]]],
+    entry_ts: datetime,
+    entry_px: float,
+    horizon_hours: int,
+    side: str,
+) -> tuple[float | None, float | None]:
+    if entry_px <= 0:
+        return (None, None)
+    end_ts = entry_ts + timedelta(hours=horizon_hours)
+    window = [bar for bar in bars.get("BTC-USDT", []) if entry_ts < bar["ts"] <= end_ts]
+    if not window:
+        return (None, None)
+    side_text = side.lower()
+    max_high = max(float(bar["high"]) for bar in window)
+    min_low = min(float(bar["low"]) for bar in window)
+    if side_text in {"sell", "short"}:
+        mfe = (entry_px / min_low - 1.0) * 10_000.0 if min_low > 0 else None
+        mae = (entry_px / max_high - 1.0) * 10_000.0 if max_high > 0 else None
+    else:
+        mfe = (max_high / entry_px - 1.0) * 10_000.0
+        mae = (min_low / entry_px - 1.0) * 10_000.0
+    return (mae, mfe)
 
 
 def _payload(row: dict[str, Any]) -> dict[str, Any]:

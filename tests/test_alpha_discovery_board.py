@@ -768,8 +768,12 @@ def test_eth_f3_negative_longer_horizon_downgrades_to_keep_shadow(tmp_path):
 
     daily = read_parquet_dataset(lake / "gold" / "paper_strategy_daily").to_dicts()[0]
     assert daily["latest_board_decision"] == "KEEP_SHADOW"
+    assert daily["negative_entry_day_count"] == 2
+    assert daily["paper_negative_streak"] == 2
+    assert daily["latest_paper_trend"] == "negative_24h_or_48h_streak"
     assert daily["live_eligible"] is False
     reasons = json.loads(daily["live_block_reason"])
+    assert "paper_negative_24h_or_48h_streak" in reasons
     assert "eth_f3_48h_paper_pnl_negative" in reasons
     assert "keep_shadow_until_48h_recovers" in reasons
 
@@ -839,14 +843,64 @@ def test_eth_f3_weak_short_horizons_keep_paper_when_48h_sample_is_positive(tmp_p
     build_and_publish_paper_strategy_tracking(lake, as_of_date="auto")
 
     daily = read_parquet_dataset(lake / "gold" / "paper_strategy_daily").to_dicts()[0]
-    assert daily["latest_board_decision"] == "PAPER_READY"
+    assert daily["latest_board_decision"] == "KEEP_SHADOW"
     assert daily["live_eligible"] is False
+    assert daily["negative_entry_day_count"] == 30
+    assert daily["paper_negative_streak"] == 30
+    assert daily["latest_paper_trend"] == "negative_24h_or_48h_streak"
     assert json.loads(daily["complete_count_by_horizon"])["48h"] == 30
     assert json.loads(daily["avg_paper_pnl_bps_by_horizon"])["48h"] == 12.0
     reasons = json.loads(daily["live_block_reason"])
     assert "eth_f3_48h_positive_continue_paper" in reasons
+    assert "paper_negative_24h_or_48h_streak" in reasons
     assert "eth_f3_paper_only_no_live" in reasons
     assert "eth_f3_48h_paper_pnl_negative" not in reasons
+
+
+def test_sol_protect_negative_entry_days_downgrades_to_keep_shadow(tmp_path):
+    lake = tmp_path / "lake"
+    run_rows = [
+        {
+            "as_of_date": "2026-05-21",
+            "proposal_id": "SOL_PROTECT_ALPHA6_LOW_EXCEPTION_PAPER_V1",
+            "strategy_candidate": "v5.sol_protect_alpha6_low_exception",
+            "symbol": "SOL-USDT",
+            "board_decision": "PAPER_READY",
+            "would_enter": "true",
+            "paper_pnl_bps_24h": "-336.0",
+            "arrival_bid": "170.0",
+            "arrival_ask": "170.1",
+            "arrival_mid": "170.05",
+            "cost_source": "mixed_actual_proxy",
+            "raw_payload_json": "{}",
+            "bundle_ts": datetime(2026, 5, 22, 12, tzinfo=UTC),
+        },
+        {
+            "as_of_date": "2026-05-22",
+            "proposal_id": "SOL_PROTECT_ALPHA6_LOW_EXCEPTION_PAPER_V1",
+            "strategy_candidate": "v5.sol_protect_alpha6_low_exception",
+            "symbol": "SOL-USDT",
+            "board_decision": "PAPER_READY",
+            "would_enter": "true",
+            "paper_pnl_bps_24h": "-333.0",
+            "arrival_bid": "168.0",
+            "arrival_ask": "168.1",
+            "arrival_mid": "168.05",
+            "cost_source": "mixed_actual_proxy",
+            "raw_payload_json": "{}",
+            "bundle_ts": datetime(2026, 5, 22, 12, tzinfo=UTC),
+        },
+    ]
+    write_parquet_dataset(pl.DataFrame(run_rows), lake / "silver" / "v5_paper_strategy_run")
+
+    build_and_publish_paper_strategy_tracking(lake, as_of_date="auto")
+
+    daily = read_parquet_dataset(lake / "gold" / "paper_strategy_daily").to_dicts()[0]
+    assert daily["latest_board_decision"] == "KEEP_SHADOW"
+    assert daily["negative_entry_day_count"] == 2
+    assert daily["paper_negative_streak"] == 2
+    assert daily["latest_paper_trend"] == "negative_24h_or_48h_streak"
+    assert "paper_negative_24h_or_48h_streak" in json.loads(daily["live_block_reason"])
 
 
 def test_eth_f3_negative_longer_horizon_downgrades_advisory(tmp_path):

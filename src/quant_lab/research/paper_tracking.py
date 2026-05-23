@@ -137,6 +137,9 @@ PAPER_DAILY_SCHEMA = {
     "avg_paper_pnl_bps_by_horizon": pl.Utf8,
     "win_rate_by_horizon": pl.Utf8,
     "paper_pnl_day_count_by_horizon": pl.Utf8,
+    "negative_entry_day_count": pl.Int64,
+    "paper_negative_streak": pl.Int64,
+    "latest_paper_trend": pl.Utf8,
     "paper_tracking_status": pl.Utf8,
     "tracking_stage": pl.Utf8,
     "required_paper_days": pl.Int64,
@@ -360,6 +363,9 @@ def build_pending_paper_strategy_daily(
                 "avg_paper_pnl_bps_by_horizon": "{}",
                 "win_rate_by_horizon": "{}",
                 "paper_pnl_day_count_by_horizon": "{}",
+                "negative_entry_day_count": 0,
+                "paper_negative_streak": 0,
+                "latest_paper_trend": "waiting_for_v5_paper_telemetry",
                 "paper_tracking_status": "waiting_for_v5_paper_telemetry",
                 "tracking_stage": "proposed_paper_strategy",
                 "required_paper_days": cfg.required_paper_days,
@@ -431,6 +437,7 @@ def _daily_from_runs(runs: pl.DataFrame, *, as_of_date: date) -> pl.DataFrame:
         pnl_rows = _paper_pnl_rows(run_rows)
         paper_pnl_days = _paper_pnl_day_count(pnl_rows)
         horizon_stats = _paper_pnl_horizon_stats(pnl_rows)
+        negative_trend = _paper_negative_trend_stats(run_rows)
         latest_reason = _paper_block_reason_list(latest.get("live_block_reason"))
         quality = _paper_cost_quality(run_rows)
         block_reasons = _paper_live_block_reasons(
@@ -450,6 +457,7 @@ def _daily_from_runs(runs: pl.DataFrame, *, as_of_date: date) -> pl.DataFrame:
             cfg=cfg,
             latest_board_decision=latest_board_decision,
             horizon_stats=horizon_stats,
+            paper_negative_streak=negative_trend["paper_negative_streak"],
         )
         latest_board_decision = review["latest_board_decision"]
         block_reasons = [*block_reasons, *review["live_block_reasons"]]
@@ -498,6 +506,9 @@ def _daily_from_runs(runs: pl.DataFrame, *, as_of_date: date) -> pl.DataFrame:
                 "paper_pnl_day_count_by_horizon": safe_json_dumps(
                     horizon_stats["day_count_by_horizon"]
                 ),
+                "negative_entry_day_count": negative_trend["negative_entry_day_count"],
+                "paper_negative_streak": negative_trend["paper_negative_streak"],
+                "latest_paper_trend": negative_trend["latest_paper_trend"],
                 "paper_tracking_status": V5_PAPER_TRACKING_STATUS,
                 "tracking_stage": tracking_stage,
                 "required_paper_days": cfg.required_paper_days,
@@ -728,6 +739,8 @@ def enrich_paper_strategy_daily_from_runs(
         "would_enter_count",
         "paper_pnl_observed_count",
         "paper_pnl_day_count",
+        "negative_entry_day_count",
+        "paper_negative_streak",
         "missing_cost_source_count",
     ]
     fallback_fields = [
@@ -756,7 +769,12 @@ def enrich_paper_strategy_daily_from_runs(
         for field in run_preferred_fields:
             if metric.get(field) not in {None, "", "{}"}:
                 updated[field] = metric.get(field)
-        for field in ["arrival_mid_coverage", "spread_observation_coverage", "cost_source_mix"]:
+        for field in [
+            "arrival_mid_coverage",
+            "spread_observation_coverage",
+            "cost_source_mix",
+            "latest_paper_trend",
+        ]:
             if metric.get(field) not in {None, ""}:
                 updated[field] = metric.get(field)
         required_days = int(_optional_float(updated.get("required_paper_days")) or 14)
@@ -799,6 +817,7 @@ def enrich_paper_strategy_daily_from_runs(
                     updated.get("paper_pnl_day_count_by_horizon")
                 ),
             },
+            paper_negative_streak=int(_optional_float(updated.get("paper_negative_streak")) or 0),
         )
         updated["latest_board_decision"] = review["latest_board_decision"]
         block_reasons = [*block_reasons, *review["live_block_reasons"]]
@@ -1134,6 +1153,18 @@ def _v5_daily_row(row: dict[str, Any], created_at: str) -> dict[str, Any]:
         "paper_pnl_day_count_by_horizon": _jsonish_text(
             _field(row, payload, "paper_pnl_day_count_by_horizon", default="{}")
         ),
+        "negative_entry_day_count": int(
+            _optional_float(_field(row, payload, "negative_entry_day_count")) or 0
+        ),
+        "paper_negative_streak": int(
+            _optional_float(_field(row, payload, "paper_negative_streak")) or 0
+        ),
+        "latest_paper_trend": _field(
+            row,
+            payload,
+            "latest_paper_trend",
+            default="not_observable",
+        ),
         "paper_tracking_status": _field(
             row,
             payload,
@@ -1467,6 +1498,47 @@ def _paper_pnl_horizon_stats(rows: list[dict[str, Any]]) -> dict[str, dict[str, 
     }
 
 
+def _paper_negative_trend_stats(rows: list[dict[str, Any]]) -> dict[str, Any]:
+    values_by_day_horizon: dict[str, dict[str, list[float]]] = {}
+    for row in rows:
+        if bool(row.get("would_enter")) is not True:
+            continue
+        row_day = str(row.get("as_of_date") or "")
+        if not row_day:
+            continue
+        for horizon in ["24h", "48h"]:
+            value = _paper_pnl_horizon_values(row).get(horizon)
+            if value is None:
+                continue
+            values_by_day_horizon.setdefault(row_day, {}).setdefault(horizon, []).append(value)
+    negative_days: dict[str, bool] = {}
+    for row_day, horizons in values_by_day_horizon.items():
+        negative_days[row_day] = any(
+            values and (sum(values) / len(values)) < 0.0
+            for values in horizons.values()
+        )
+    ordered_days = sorted(negative_days)
+    streak = 0
+    for row_day in reversed(ordered_days):
+        if negative_days[row_day]:
+            streak += 1
+        else:
+            break
+    if not ordered_days:
+        trend = "waiting_for_24h_48h_labels"
+    elif streak >= 2:
+        trend = "negative_24h_or_48h_streak"
+    elif negative_days[ordered_days[-1]]:
+        trend = "latest_entry_day_negative"
+    else:
+        trend = "latest_entry_day_non_negative"
+    return {
+        "negative_entry_day_count": sum(1 for is_negative in negative_days.values() if is_negative),
+        "paper_negative_streak": streak,
+        "latest_paper_trend": trend,
+    }
+
+
 def _with_paper_strategy_review(
     row: dict[str, Any],
     *,
@@ -1483,6 +1555,7 @@ def _with_paper_strategy_review(
         cfg=cfg,
         latest_board_decision=str(row.get("latest_board_decision") or ""),
         horizon_stats=horizon_stats,
+        paper_negative_streak=int(_optional_float(row.get("paper_negative_streak")) or 0),
     )
     reasons = [
         *_paper_block_reason_list(row.get("live_block_reason")),
@@ -1501,9 +1574,19 @@ def _paper_strategy_review(
     cfg: PaperStrategyConfig,
     latest_board_decision: str,
     horizon_stats: dict[str, dict[str, Any]],
+    paper_negative_streak: int = 0,
 ) -> dict[str, Any]:
     decision = latest_board_decision or "PAPER_READY"
     reasons: list[str] = []
+    if paper_negative_streak >= 2:
+        if decision.upper() in {"PAPER_READY", "LIVE_SMALL_READY"}:
+            decision = "KEEP_SHADOW"
+        reasons.extend(
+            [
+                "paper_negative_24h_or_48h_streak",
+                "review_before_resuming_paper_promotion",
+            ]
+        )
     if not _is_eth_f3_config(cfg):
         return {"latest_board_decision": decision, "live_block_reasons": reasons}
 

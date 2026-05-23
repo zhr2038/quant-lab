@@ -83,8 +83,45 @@ def test_research_portfolio_downgrades_eth_f3_when_48h_paper_is_negative(tmp_pat
     }
     eth = rows["ETH_F3_DOMINANT_ENTRY_PAPER_V1"]
     assert eth["status"] == "SHADOW"
-    assert eth["action"] == "CONTINUE_SHADOW"
-    assert eth["reason"] == "eth_f3_48h_negative_keep_shadow_no_live"
+    assert eth["action"] == "KEEP_SHADOW"
+    assert eth["reason"] == "eth_f3_negative_paper_streak_keep_shadow_no_live"
+
+
+def test_research_portfolio_downgrades_negative_paper_streaks(tmp_path):
+    lake = tmp_path / "lake"
+    _write_strategy_evidence(lake)
+    write_parquet_dataset(
+        pl.DataFrame(
+            [
+                {
+                    "proposal_id": "SOL_PROTECT_ALPHA6_LOW_EXCEPTION_PAPER_V1",
+                    "strategy_candidate": "v5.sol_protect_alpha6_low_exception",
+                    "symbol": "SOL-USDT",
+                    "latest_board_decision": "KEEP_SHADOW",
+                    "paper_days": 2,
+                    "entry_day_count": 2,
+                    "paper_negative_streak": 2,
+                    "latest_paper_trend": "negative_24h_or_48h_streak",
+                    "live_block_reason": '["paper_negative_24h_or_48h_streak"]',
+                    "created_at": "2026-05-22T00:00:00Z",
+                }
+            ]
+        ),
+        lake / "gold" / "paper_strategy_daily",
+    )
+
+    build_and_publish_research_portfolio_status(lake, as_of_date="2026-05-22")
+
+    rows = {
+        row["research_id"]: row
+        for row in read_parquet_dataset(lake / "gold" / "research_portfolio_status").to_dicts()
+    }
+    sol = rows["SOL_PROTECT_ALPHA6_LOW_EXCEPTION_PAPER_V1"]
+    assert sol["status"] == "SHADOW"
+    assert sol["action"] == "KEEP_SHADOW"
+    assert sol["paper_negative_streak"] == 2
+    assert sol["downgrade_reason"] == "paper_negative_24h_or_48h_streak"
+    assert sol["reason"] == "sol_protect_negative_paper_streak_keep_shadow_no_live"
 
 
 def test_daily_export_contains_research_portfolio_status(tmp_path):

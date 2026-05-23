@@ -52,6 +52,8 @@ STATUS_SCHEMA: dict[str, Any] = {
     "p25_net_bps": pl.Float64,
     "paper_days": pl.Int64,
     "entry_day_count": pl.Int64,
+    "paper_negative_streak": pl.Int64,
+    "downgrade_reason": pl.Utf8,
     "cost_source_mix": pl.Utf8,
     "last_review_date": pl.Utf8,
     "next_review_date": pl.Utf8,
@@ -122,7 +124,30 @@ def build_research_portfolio_status(
         *(_rows(alpha_board)),
     ]
     paper_rows = _rows(paper_daily)
-    eth_f3_status, eth_f3_action, eth_f3_reason = _eth_f3_portfolio_state(paper_rows)
+    eth_f3_status, eth_f3_action, eth_f3_reason = _paper_portfolio_state(
+        paper_rows,
+        proposal_id="ETH_F3_DOMINANT_ENTRY_PAPER_V1",
+        candidate="v5.f3_dominant_entry",
+        symbol="ETH-USDT",
+        default_reason="eth_f3_continue_paper_until_48h_sample_count_30_and_14_days_validated",
+        negative_reason="eth_f3_negative_paper_streak_keep_shadow_no_live",
+    )
+    sol_protect_status, sol_protect_action, sol_protect_reason = _paper_portfolio_state(
+        paper_rows,
+        proposal_id="SOL_PROTECT_ALPHA6_LOW_EXCEPTION_PAPER_V1",
+        candidate="v5.sol_protect_alpha6_low_exception",
+        symbol="SOL-USDT",
+        default_reason="sol_protect_exception_is_paper_ready_but_not_live_validated",
+        negative_reason="sol_protect_negative_paper_streak_keep_shadow_no_live",
+    )
+    sol_f4_status, sol_f4_action, sol_f4_reason = _paper_portfolio_state(
+        paper_rows,
+        proposal_id="SOL_F4_VOLUME_EXPANSION_PAPER_V1",
+        candidate="v5.f4_volume_expansion_entry",
+        symbol="SOL-USDT",
+        default_reason="sol_f4_volume_expansion_is_paper_ready_but_not_live_validated",
+        negative_reason="sol_f4_negative_paper_streak_keep_shadow_no_live",
+    )
 
     rows = [
         _status_row(
@@ -192,9 +217,9 @@ def build_research_portfolio_status(
             research_id="SOL_PROTECT_ALPHA6_LOW_EXCEPTION_PAPER_V1",
             module="paper_strategy",
             candidate="v5.sol_protect_alpha6_low_exception",
-            status="PAPER",
-            action="CONTINUE_PAPER",
-            reason="sol_protect_exception_is_paper_ready_but_not_live_validated",
+            status=sol_protect_status,
+            action=sol_protect_action,
+            reason=sol_protect_reason,
             evidence=evidence_rows,
             paper=paper_rows,
             day=day,
@@ -205,9 +230,9 @@ def build_research_portfolio_status(
             research_id="SOL_F4_VOLUME_EXPANSION_PAPER_V1",
             module="paper_strategy",
             candidate="v5.f4_volume_expansion_entry",
-            status="PAPER",
-            action="CONTINUE_PAPER",
-            reason="sol_f4_volume_expansion_is_paper_ready_but_not_live_validated",
+            status=sol_f4_status,
+            action=sol_f4_action,
+            reason=sol_f4_reason,
             evidence=evidence_rows,
             paper=paper_rows,
             day=day,
@@ -358,41 +383,44 @@ def _known_kill_rows(
     ]
 
 
-def _eth_f3_portfolio_state(paper: list[dict[str, Any]]) -> tuple[str, str, str]:
+def _paper_portfolio_state(
+    paper: list[dict[str, Any]],
+    *,
+    proposal_id: str,
+    candidate: str,
+    symbol: str,
+    default_reason: str,
+    negative_reason: str,
+) -> tuple[str, str, str]:
     rows = [
         row
         for row in paper
-        if str(row.get("proposal_id") or "") == "ETH_USDT_F3_DOMINANT_ENTRY_PAPER_V1"
+        if str(row.get("proposal_id") or "") == proposal_id
         or (
-            str(row.get("strategy_candidate") or "") == "v5.f3_dominant_entry"
-            and str(row.get("symbol") or "") == "ETH-USDT"
+            str(row.get("strategy_candidate") or "") == candidate
+            and str(row.get("symbol") or "") == symbol
         )
     ]
     if not rows:
-        return (
-            "PAPER",
-            "CONTINUE_PAPER",
-            "eth_f3_wait_for_48h_paper_labels_no_live",
-        )
+        return ("PAPER", "CONTINUE_PAPER", default_reason)
     latest = max(rows, key=_portfolio_row_time)
     decision = str(latest.get("latest_board_decision") or "").strip().upper()
     reasons = " ".join(
         [
             str(latest.get("live_block_reason") or ""),
             str(latest.get("decision_reasons") or ""),
+            str(latest.get("latest_paper_trend") or ""),
         ]
     )
-    if decision == "KEEP_SHADOW" or "eth_f3_48h_paper_pnl_negative" in reasons:
-        return (
-            "SHADOW",
-            "CONTINUE_SHADOW",
-            "eth_f3_48h_negative_keep_shadow_no_live",
-        )
-    return (
-        "PAPER",
-        "CONTINUE_PAPER",
-        "eth_f3_continue_paper_until_48h_sample_count_30_and_14_days_validated",
-    )
+    negative_streak = _int(latest.get("paper_negative_streak"))
+    if (
+        decision == "KEEP_SHADOW"
+        or negative_streak >= 2
+        or "paper_negative_24h_or_48h_streak" in reasons
+        or "eth_f3_48h_paper_pnl_negative" in reasons
+    ):
+        return ("SHADOW", "KEEP_SHADOW", negative_reason)
+    return ("PAPER", "CONTINUE_PAPER", default_reason)
 
 
 def _portfolio_row_time(row: dict[str, Any]) -> datetime:
@@ -517,6 +545,8 @@ def _status_row(
         "p25_net_bps": _float_or_none(metrics.get("p25_net_bps")),
         "paper_days": int(metrics.get("paper_days") or 0),
         "entry_day_count": int(metrics.get("entry_day_count") or 0),
+        "paper_negative_streak": int(metrics.get("paper_negative_streak") or 0),
+        "downgrade_reason": str(metrics.get("downgrade_reason") or ""),
         "cost_source_mix": str(metrics.get("cost_source_mix") or "{}"),
         "last_review_date": day.isoformat(),
         "next_review_date": (day + timedelta(days=review_days)).isoformat(),
@@ -603,6 +633,17 @@ def _with_paper(
     if selected:
         result["paper_days"] = max(_int(row.get("paper_days")) for row in selected)
         result["entry_day_count"] = max(_int(row.get("entry_day_count")) for row in selected)
+        result["paper_negative_streak"] = max(
+            _int(row.get("paper_negative_streak")) for row in selected
+        )
+        downgrade_reasons = [
+            str(row.get("latest_paper_trend") or "")
+            for row in selected
+            if str(row.get("latest_paper_trend") or "") in {"negative_24h_or_48h_streak"}
+        ]
+        live_reasons = " ".join(str(row.get("live_block_reason") or "") for row in selected)
+        if downgrade_reasons or "paper_negative_24h_or_48h_streak" in live_reasons:
+            result["downgrade_reason"] = "paper_negative_24h_or_48h_streak"
     return result
 
 

@@ -132,8 +132,8 @@ def test_research_portfolio_uses_latest_as_of_date_for_paper_downgrade(tmp_path)
             [
                 {
                     "as_of_date": "2026-05-22",
-                    "proposal_id": "ETH_F3_DOMINANT_ENTRY_PAPER_V1",
-                    "strategy_candidate": "v5.f3_dominant_entry",
+                    "proposal_id": "ETH_USDT_F3_DOMINANT_ENTRY_PAPER_V1",
+                    "strategy_candidate": "v5.eth_f3_dominant_entry",
                     "symbol": "ETH-USDT",
                     "latest_board_decision": "PAPER_READY",
                     "paper_days": 4,
@@ -145,8 +145,8 @@ def test_research_portfolio_uses_latest_as_of_date_for_paper_downgrade(tmp_path)
                 },
                 {
                     "as_of_date": "2026-05-23",
-                    "proposal_id": "ETH_F3_DOMINANT_ENTRY_PAPER_V1",
-                    "strategy_candidate": "v5.f3_dominant_entry",
+                    "proposal_id": "ETH_USDT_F3_DOMINANT_ENTRY_PAPER_V1",
+                    "strategy_candidate": "v5.eth_f3_dominant_entry",
                     "symbol": "ETH-USDT",
                     "latest_board_decision": "KEEP_SHADOW",
                     "paper_days": 4,

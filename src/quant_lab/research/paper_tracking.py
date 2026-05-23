@@ -461,6 +461,22 @@ def _daily_from_runs(runs: pl.DataFrame, *, as_of_date: date) -> pl.DataFrame:
         )
         latest_board_decision = review["latest_board_decision"]
         block_reasons = [*block_reasons, *review["live_block_reasons"]]
+        if (
+            "paper_negative_24h_or_48h_streak" in latest_reason
+            or "paper_negative_24h_or_48h_streak" in block_reasons
+        ):
+            negative_trend = {
+                **negative_trend,
+                "negative_entry_day_count": max(
+                    int(negative_trend.get("negative_entry_day_count") or 0),
+                    2,
+                ),
+                "paper_negative_streak": max(
+                    int(negative_trend.get("paper_negative_streak") or 0),
+                    2,
+                ),
+                "latest_paper_trend": "negative_24h_or_48h_streak",
+            }
         live_eligible = not block_reasons
         tracking_stage = (
             "completed_paper_observations"

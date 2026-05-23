@@ -392,12 +392,13 @@ def _paper_portfolio_state(
     default_reason: str,
     negative_reason: str,
 ) -> tuple[str, str, str]:
+    proposal_keys, candidate_keys = _paper_alias_keys(proposal_id, candidate)
     rows = [
         row
         for row in paper
-        if str(row.get("proposal_id") or "") == proposal_id
+        if str(row.get("proposal_id") or "").lower() in proposal_keys
         or (
-            str(row.get("strategy_candidate") or "") == candidate
+            str(row.get("strategy_candidate") or "").lower() in candidate_keys
             and str(row.get("symbol") or "") == symbol
         )
     ]
@@ -421,6 +422,16 @@ def _paper_portfolio_state(
     ):
         return ("SHADOW", "KEEP_SHADOW", negative_reason)
     return ("PAPER", "CONTINUE_PAPER", default_reason)
+
+
+def _paper_alias_keys(proposal_id: str, candidate: str) -> tuple[set[str], set[str]]:
+    proposal_keys = {proposal_id.lower()} if proposal_id else set()
+    candidate_keys = {candidate.lower()} if candidate else set()
+    if proposal_id == "ETH_F3_DOMINANT_ENTRY_PAPER_V1":
+        proposal_keys.add("eth_usdt_f3_dominant_entry_paper_v1")
+    if candidate == "v5.f3_dominant_entry":
+        candidate_keys.add("v5.eth_f3_dominant_entry")
+    return proposal_keys, candidate_keys
 
 
 def _paper_portfolio_row_key(row: dict[str, Any]) -> tuple[datetime, datetime]:
@@ -632,7 +643,8 @@ def _with_paper(
     research_id: str | None = None,
 ) -> dict[str, Any]:
     result = dict(metrics)
-    keys = {candidate.lower()}
+    proposal_aliases, candidate_aliases = _paper_alias_keys(research_id or "", candidate)
+    keys = {*candidate_aliases, *proposal_aliases}
     if research_id:
         keys.add(research_id.lower())
     selected = [

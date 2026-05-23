@@ -903,6 +903,55 @@ def test_sol_protect_negative_entry_days_downgrades_to_keep_shadow(tmp_path):
     assert "paper_negative_24h_or_48h_streak" in json.loads(daily["live_block_reason"])
 
 
+def test_v5_daily_negative_24h_48h_streak_downgrades_paper(tmp_path):
+    lake = tmp_path / "lake"
+    bundle_ts = datetime(2026, 5, 22, 12, tzinfo=UTC)
+    write_parquet_dataset(
+        pl.DataFrame(
+            [
+                {
+                    "as_of_date": "2026-05-21",
+                    "proposal_id": "ETH_USDT_F3_DOMINANT_ENTRY_PAPER_V1",
+                    "strategy_candidate": "v5.f3_dominant_entry",
+                    "symbol": "ETH-USDT",
+                    "latest_board_decision": "PAPER_READY",
+                    "avg_paper_pnl_bps_by_horizon": json.dumps(
+                        {"24h": -110.0, "48h": -352.0}
+                    ),
+                    "bundle_ts": bundle_ts,
+                    "raw_payload_json": "{}",
+                },
+                {
+                    "as_of_date": "2026-05-22",
+                    "proposal_id": "ETH_USDT_F3_DOMINANT_ENTRY_PAPER_V1",
+                    "strategy_candidate": "v5.f3_dominant_entry",
+                    "symbol": "ETH-USDT",
+                    "latest_board_decision": "PAPER_READY",
+                    "avg_paper_pnl_bps_by_horizon": json.dumps(
+                        {"4h": -20.0, "8h": -25.0, "12h": -30.0, "24h": -60.0}
+                    ),
+                    "bundle_ts": bundle_ts,
+                    "raw_payload_json": "{}",
+                },
+            ]
+        ),
+        lake / "silver" / "v5_paper_strategy_daily",
+    )
+
+    build_and_publish_paper_strategy_tracking(lake, as_of_date="auto")
+
+    rows = {
+        row["as_of_date"]: row
+        for row in read_parquet_dataset(lake / "gold" / "paper_strategy_daily").to_dicts()
+    }
+    latest = rows["2026-05-22"]
+    assert latest["latest_board_decision"] == "KEEP_SHADOW"
+    assert latest["negative_entry_day_count"] == 2
+    assert latest["paper_negative_streak"] == 2
+    assert latest["latest_paper_trend"] == "negative_24h_or_48h_streak"
+    assert "paper_negative_24h_or_48h_streak" in json.loads(latest["live_block_reason"])
+
+
 def test_eth_f3_negative_longer_horizon_downgrades_advisory(tmp_path):
     lake = tmp_path / "lake"
     write_parquet_dataset(

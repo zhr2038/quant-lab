@@ -712,7 +712,51 @@ def build_paper_strategy_daily_from_v5(frame: pl.DataFrame) -> pl.DataFrame:
         return _empty_frame(PAPER_DAILY_SCHEMA)
     created_at = datetime.now(UTC).isoformat()
     rows = [_v5_daily_row(row, created_at) for row in frame.to_dicts()]
-    return pl.DataFrame(rows, schema=PAPER_DAILY_SCHEMA, orient="row")
+    return _enrich_daily_negative_streaks(
+        pl.DataFrame(rows, schema=PAPER_DAILY_SCHEMA, orient="row")
+    )
+
+
+def _enrich_daily_negative_streaks(frame: pl.DataFrame) -> pl.DataFrame:
+    if frame.is_empty():
+        return frame
+    groups: dict[tuple[str, str, str], list[dict[str, Any]]] = {}
+    for row in frame.to_dicts():
+        groups.setdefault(_paper_daily_key(row), []).append(row)
+    enriched: list[dict[str, Any]] = []
+    for group_rows in groups.values():
+        negative_count = 0
+        streak = 0
+        for row in sorted(group_rows, key=lambda item: str(item.get("as_of_date") or "")):
+            updated = dict(row)
+            observed = _daily_row_has_24h_48h_pnl(updated)
+            is_negative = _daily_row_24h_48h_negative(updated)
+            if observed:
+                if is_negative:
+                    negative_count += 1
+                    streak += 1
+                else:
+                    streak = 0
+                updated["negative_entry_day_count"] = negative_count
+                updated["paper_negative_streak"] = streak
+                if streak >= 2:
+                    updated["latest_paper_trend"] = "negative_24h_or_48h_streak"
+                elif is_negative:
+                    updated["latest_paper_trend"] = "latest_entry_day_negative"
+                else:
+                    updated["latest_paper_trend"] = "latest_entry_day_non_negative"
+            elif str(updated.get("latest_paper_trend") or "") in {"", "not_observable"}:
+                updated["latest_paper_trend"] = "waiting_for_24h_48h_labels"
+            updated = _with_paper_strategy_review(
+                updated,
+                cfg=_config_for(
+                    updated.get("proposal_id"),
+                    updated.get("strategy_candidate"),
+                    updated.get("symbol"),
+                ),
+            )
+            enriched.append(updated)
+    return pl.DataFrame(enriched, schema=PAPER_DAILY_SCHEMA, orient="row")
 
 
 def enrich_paper_strategy_daily_from_runs(
@@ -1537,6 +1581,19 @@ def _paper_negative_trend_stats(rows: list[dict[str, Any]]) -> dict[str, Any]:
         "paper_negative_streak": streak,
         "latest_paper_trend": trend,
     }
+
+
+def _daily_row_has_24h_48h_pnl(row: dict[str, Any]) -> bool:
+    averages = _json_dict(row.get("avg_paper_pnl_bps_by_horizon"))
+    return any(_optional_float(averages.get(horizon)) is not None for horizon in ["24h", "48h"])
+
+
+def _daily_row_24h_48h_negative(row: dict[str, Any]) -> bool:
+    averages = _json_dict(row.get("avg_paper_pnl_bps_by_horizon"))
+    return any(
+        (value is not None and value < 0.0)
+        for value in (_optional_float(averages.get(horizon)) for horizon in ["24h", "48h"])
+    )
 
 
 def _with_paper_strategy_review(

@@ -403,7 +403,7 @@ def _paper_portfolio_state(
     ]
     if not rows:
         return ("PAPER", "CONTINUE_PAPER", default_reason)
-    latest = max(rows, key=_portfolio_row_time)
+    latest = max(rows, key=_paper_portfolio_row_key)
     decision = str(latest.get("latest_board_decision") or "").strip().upper()
     reasons = " ".join(
         [
@@ -421,6 +421,18 @@ def _paper_portfolio_state(
     ):
         return ("SHADOW", "KEEP_SHADOW", negative_reason)
     return ("PAPER", "CONTINUE_PAPER", default_reason)
+
+
+def _paper_portfolio_row_key(row: dict[str, Any]) -> tuple[datetime, datetime]:
+    return (_portfolio_row_date(row), _portfolio_row_time(row))
+
+
+def _portfolio_row_date(row: dict[str, Any]) -> datetime:
+    for field in ["as_of_date", "as_of_ts", "created_at", "bundle_ts", "ingest_ts"]:
+        parsed = _created_at_key(row.get(field))
+        if parsed != datetime.min.replace(tzinfo=UTC):
+            return parsed
+    return datetime.min.replace(tzinfo=UTC)
 
 
 def _portfolio_row_time(row: dict[str, Any]) -> datetime:

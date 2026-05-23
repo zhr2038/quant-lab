@@ -124,6 +124,56 @@ def test_research_portfolio_downgrades_negative_paper_streaks(tmp_path):
     assert sol["reason"] == "sol_protect_negative_paper_streak_keep_shadow_no_live"
 
 
+def test_research_portfolio_uses_latest_as_of_date_for_paper_downgrade(tmp_path):
+    lake = tmp_path / "lake"
+    _write_strategy_evidence(lake)
+    write_parquet_dataset(
+        pl.DataFrame(
+            [
+                {
+                    "as_of_date": "2026-05-22",
+                    "proposal_id": "ETH_F3_DOMINANT_ENTRY_PAPER_V1",
+                    "strategy_candidate": "v5.f3_dominant_entry",
+                    "symbol": "ETH-USDT",
+                    "latest_board_decision": "PAPER_READY",
+                    "paper_days": 4,
+                    "entry_day_count": 2,
+                    "paper_negative_streak": 0,
+                    "latest_paper_trend": "waiting_for_24h_48h_labels",
+                    "live_block_reason": "[]",
+                    "created_at": "2026-05-23T23:00:00Z",
+                },
+                {
+                    "as_of_date": "2026-05-23",
+                    "proposal_id": "ETH_F3_DOMINANT_ENTRY_PAPER_V1",
+                    "strategy_candidate": "v5.f3_dominant_entry",
+                    "symbol": "ETH-USDT",
+                    "latest_board_decision": "KEEP_SHADOW",
+                    "paper_days": 4,
+                    "entry_day_count": 2,
+                    "paper_negative_streak": 2,
+                    "latest_paper_trend": "negative_24h_or_48h_streak",
+                    "live_block_reason": '["paper_negative_24h_or_48h_streak"]',
+                    "created_at": "2026-05-23T00:00:00Z",
+                },
+            ]
+        ),
+        lake / "gold" / "paper_strategy_daily",
+    )
+
+    build_and_publish_research_portfolio_status(lake, as_of_date="2026-05-23")
+
+    rows = {
+        row["research_id"]: row
+        for row in read_parquet_dataset(lake / "gold" / "research_portfolio_status").to_dicts()
+    }
+    eth = rows["ETH_F3_DOMINANT_ENTRY_PAPER_V1"]
+    assert eth["status"] == "SHADOW"
+    assert eth["action"] == "KEEP_SHADOW"
+    assert eth["paper_negative_streak"] == 2
+    assert eth["downgrade_reason"] == "paper_negative_24h_or_48h_streak"
+
+
 def test_daily_export_contains_research_portfolio_status(tmp_path):
     lake = tmp_path / "lake"
     _write_strategy_evidence(lake)

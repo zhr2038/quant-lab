@@ -6566,8 +6566,8 @@ def _expanded_universe_promotion_summary_md(
             "- complete_sample_count >= 10 and at least two positive short horizons: KEEP_SHADOW.",
             "- complete_sample_count >= 30, win_rate > 55%, p25_net_bps > -50: PAPER_READY.",
             "- LIVE_SMALL_READY is not emitted by expanded universe automation.",
-            "- replacement candidates require strategy evidence and paper evidence, "
-            "not quality_score alone.",
+            "- expanded universe does not output ETH/BNB replacement advice; all rows remain "
+            "research/shadow/paper only.",
         ]
     )
     return "\n".join(lines) + "\n"

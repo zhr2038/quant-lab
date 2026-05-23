@@ -191,6 +191,7 @@ def test_expanded_universe_automation_builds_events_labels_and_promotion(tmp_pat
     assert {
         "quality_watchlist",
         "outcome_watchlist",
+        "reject_list",
     }.issubset(set(watchlist["watchlist_type"].to_list()))
     maturity = read_parquet_dataset(lake_root / "gold" / "expanded_universe_candidate_maturity")
     assert not maturity.is_empty()
@@ -259,7 +260,43 @@ def test_expanded_universe_maturity_rules_and_watchlist():
     )
     assert "TRX-USDT" in set(watchlist["symbol"].to_list())
     assert "NEAR-USDT" in set(watchlist["symbol"].to_list())
-    assert "outcome_watchlist" in set(watchlist["watchlist_type"].to_list())
+    rows = {
+        (row["watchlist_type"], row["symbol"]): row
+        for row in watchlist.to_dicts()
+    }
+    quality_symbols = _watchlist_symbols(watchlist, "quality_watchlist")
+    outcome_symbols = _watchlist_symbols(watchlist, "outcome_watchlist")
+    reject_symbols = _watchlist_symbols(watchlist, "reject_list")
+    assert quality_symbols == {
+        "TRX-USDT",
+        "XAUT-USDT",
+    }
+    assert outcome_symbols == {
+        "NEAR-USDT",
+        "WLD-USDT",
+        "OKB-USDT",
+    }
+    assert reject_symbols == {
+        "HYPE-USDT",
+        "SUI-USDT",
+        "ZEC-USDT",
+        "FIL-USDT",
+    }
+    assert (
+        rows[("reject_list", "HYPE-USDT")]["recommendation"]
+        == "reject_low_priority_current_weak"
+    )
+    assert not any(
+        str(row["recommendation"]).startswith("candidate_replace_")
+        for row in watchlist.to_dicts()
+    )
+
+
+def _watchlist_symbols(watchlist: pl.DataFrame, watchlist_type: str) -> set[str]:
+    return set(
+        row["symbol"]
+        for row in watchlist.filter(pl.col("watchlist_type") == watchlist_type).to_dicts()
+    )
 
 
 def _write_market(lake_root: Path) -> None:

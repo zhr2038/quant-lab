@@ -68,14 +68,10 @@ SEED_EXPANDED_SYMBOLS = (
 )
 QUALITY_WATCHLIST_SYMBOLS = (
     "TRX-USDT",
-    "HYPE-USDT",
-    "SUI-USDT",
     "XAUT-USDT",
-    "ZEC-USDT",
-    "OKB-USDT",
-    "FIL-USDT",
 )
-OUTCOME_WATCHLIST_SYMBOLS = ("NEAR-USDT", "WLD-USDT", "OKB-USDT", "HYPE-USDT")
+OUTCOME_WATCHLIST_SYMBOLS = ("NEAR-USDT", "WLD-USDT", "OKB-USDT")
+REJECT_WATCHLIST_SYMBOLS = ("HYPE-USDT", "SUI-USDT", "ZEC-USDT", "FIL-USDT")
 EXPANDED_STRATEGY_CANDIDATES = (
     "Alpha6Factor",
     "v5.f4_volume_expansion_entry",
@@ -1004,11 +1000,15 @@ def build_expanded_universe_watchlist(
     for watchlist_type, symbols in (
         ("quality_watchlist", QUALITY_WATCHLIST_SYMBOLS),
         ("outcome_watchlist", OUTCOME_WATCHLIST_SYMBOLS),
+        ("reject_list", REJECT_WATCHLIST_SYMBOLS),
     ):
         for raw_symbol in symbols:
             symbol = normalize_symbol(raw_symbol)
             quality_row = quality_by_symbol.get(symbol, {})
             maturity_row = maturity_by_symbol.get(symbol, {})
+            recommendation = str(quality_row.get("recommendation") or "")
+            if watchlist_type == "reject_list":
+                recommendation = "reject_low_priority_current_weak"
             rows.append(
                 {
                     "as_of_date": as_of_date.isoformat(),
@@ -1017,7 +1017,7 @@ def build_expanded_universe_watchlist(
                     "watchlist_type": watchlist_type,
                     "symbol": symbol,
                     "quality_score": _float(quality_row.get("quality_score")),
-                    "recommendation": str(quality_row.get("recommendation") or ""),
+                    "recommendation": recommendation,
                     "sample_count": _int(maturity_row.get("sample_count")) or 0,
                     "complete_sample_count": _int(
                         maturity_row.get("complete_sample_count")
@@ -1396,8 +1396,7 @@ def _expanded_risk_level(factors: dict[str, float]) -> str:
 
 
 def _replacement_target(row: dict[str, Any]) -> str:
-    explicit = normalize_symbol(row.get("replacement_target_candidate"))
-    return explicit if explicit and explicit != "UNKNOWN" else ""
+    return ""
 
 
 def _expanded_candidate_id(symbol: str, strategy_candidate: str, ts: datetime) -> str:
@@ -1628,6 +1627,12 @@ def _watch_reason(*, watchlist_type: str, has_quality: bool, has_maturity: bool)
         if has_quality:
             return "quality_score_monitor"
         return "quality_watch_symbol_not_observed"
+    if watchlist_type == "reject_list":
+        if has_maturity:
+            return "low_priority_current_outcomes_weak"
+        if has_quality:
+            return "low_priority_quality_not_enough"
+        return "low_priority_symbol_not_observed"
     if has_maturity:
         return "early_outcome_signal_monitor"
     return "outcome_watch_symbol_not_observed"
@@ -2141,7 +2146,7 @@ def _shadow_notes(row: dict[str, Any]) -> str:
     recommendation = str(row.get("recommendation") or "")
     reasons = _loads_list(row.get("blocking_reasons"))
     if recommendation == EXPANDED_PAPER_UNIVERSE_RECOMMENDATION:
-        return "质量候选；必须先有策略 evidence 和 paper evidence，不能仅凭质量分替换 ETH/BNB。"
+        return "质量候选；只能进入 expanded paper/shadow 研究，不输出 ETH/BNB 替换建议。"
     if reasons:
         return "阻断原因：" + ",".join(str(reason) for reason in reasons)
     return "当前仅 shadow 观察，不影响 V5 实盘。"

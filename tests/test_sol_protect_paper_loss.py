@@ -31,7 +31,9 @@ def test_sol_protect_paper_loss_attribution_builds_entry_rows_and_summary(tmp_pa
     rows = attribution.to_dicts()
     loss = next(row for row in rows if row["run_id"] == "loss-run")
     assert loss["paper_pnl_24h"] == -333.0
+    assert round(loss["entry_vs_24h_low_bps"], 6) == 1000.0
     assert loss["entry_position_in_24h_range"] is not None
+    assert loss["regime_state"] == "RISK_OFF"
     tags = set(json.loads(loss["attribution_tags"]))
     assert "paper_loss_observed" in tags
     assert "weak_f4_volume_confirmation" in tags
@@ -42,6 +44,8 @@ def test_sol_protect_paper_loss_attribution_builds_entry_rows_and_summary(tmp_pa
     summary_row = summary.to_dicts()[0]
     assert summary_row["entry_count"] == 2
     assert summary_row["loss_entry_count"] == 1
+    assert round(summary_row["avg_entry_vs_24h_low_bps_loss"], 6) == 1000.0
+    assert "RISK_OFF" in summary_row["regime_state_mix_loss"]
     assert "weak_f4_volume_confirmation" in summary_row["common_loss_tags"]
 
     md = sol_protect_paper_loss_summary_md(summary, attribution)
@@ -81,6 +85,8 @@ def test_daily_export_contains_sol_protect_paper_loss_reports(tmp_path):
 
     assert rows
     assert rows[0]["contract_version"] == "v5.quant_lab.telemetry.v2"
+    assert "entry_vs_24h_low_bps" in rows[0]
+    assert "regime_state" in rows[0]
     assert "SOL Protect Paper Loss Attribution" in summary
 
 

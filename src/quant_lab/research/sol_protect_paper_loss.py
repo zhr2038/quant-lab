@@ -53,6 +53,8 @@ ATTRIBUTION_SCHEMA: dict[str, Any] = {
     "risk_level": pl.Utf8,
     "btc_trend_state": pl.Utf8,
     "market_regime": pl.Utf8,
+    "regime_state": pl.Utf8,
+    "entry_vs_24h_low_bps": pl.Float64,
     "entry_position_in_24h_range": pl.Float64,
     "paper_pnl_4h": pl.Float64,
     "paper_pnl_8h": pl.Float64,
@@ -92,6 +94,7 @@ SUMMARY_SCHEMA: dict[str, Any] = {
     "avg_alpha6_score_loss": pl.Float64,
     "avg_f4_volume_expansion_loss": pl.Float64,
     "avg_f5_rsi_trend_confirm_loss": pl.Float64,
+    "avg_entry_vs_24h_low_bps_loss": pl.Float64,
     "avg_entry_position_in_24h_range_loss": pl.Float64,
     "avg_paper_pnl_4h_loss": pl.Float64,
     "avg_paper_pnl_8h_loss": pl.Float64,
@@ -102,6 +105,7 @@ SUMMARY_SCHEMA: dict[str, Any] = {
     "risk_level_mix_loss": pl.Utf8,
     "btc_trend_state_mix_loss": pl.Utf8,
     "market_regime_mix_loss": pl.Utf8,
+    "regime_state_mix_loss": pl.Utf8,
     "alpha6_side_mix_loss": pl.Utf8,
     "common_loss_tags": pl.Utf8,
     "diagnosis": pl.Utf8,
@@ -207,6 +211,12 @@ def build_sol_protect_paper_loss_attribution(
                 entry_ts=entry_ts,
                 entry_px=entry_px,
             )
+        entry_vs_low = _entry_vs_24h_low_bps(
+            bar_index.get(symbol, []),
+            entry_ts=entry_ts,
+            entry_px=entry_px,
+        )
+        regime_state = _field(row, "regime_state", "market_regime")
         pnl = {h: _pnl(row, h) for h in HORIZONS}
         mae = {h: _mae(row, h) for h in HORIZONS}
         mfe = {h: _mfe(row, h) for h in HORIZONS}
@@ -234,6 +244,8 @@ def build_sol_protect_paper_loss_attribution(
             "risk_level": _field(row, "risk_level"),
             "btc_trend_state": _field(row, "btc_trend_state", "btc_trend"),
             "market_regime": _field(row, "market_regime", "regime_state"),
+            "regime_state": regime_state,
+            "entry_vs_24h_low_bps": entry_vs_low,
             "entry_position_in_24h_range": entry_position,
             "paper_pnl_4h": pnl[4],
             "paper_pnl_8h": pnl[8],
@@ -312,6 +324,9 @@ def build_sol_protect_paper_loss_summary(
         "avg_f5_rsi_trend_confirm_loss": _mean(
             row.get("f5_rsi_trend_confirm") for row in source_rows
         ),
+        "avg_entry_vs_24h_low_bps_loss": _mean(
+            row.get("entry_vs_24h_low_bps") for row in source_rows
+        ),
         "avg_entry_position_in_24h_range_loss": _mean(
             row.get("entry_position_in_24h_range") for row in source_rows
         ),
@@ -324,6 +339,7 @@ def build_sol_protect_paper_loss_summary(
         "risk_level_mix_loss": _mix(source_rows, "risk_level"),
         "btc_trend_state_mix_loss": _mix(source_rows, "btc_trend_state"),
         "market_regime_mix_loss": _mix(source_rows, "market_regime"),
+        "regime_state_mix_loss": _mix(source_rows, "regime_state"),
         "alpha6_side_mix_loss": _mix(source_rows, "alpha6_side"),
         "common_loss_tags": safe_json_dumps(dict(tag_counter.most_common())),
         "diagnosis": diagnosis,
@@ -370,6 +386,8 @@ def sol_protect_paper_loss_summary_md(
             f"{_display_number(row.get('avg_f4_volume_expansion_loss'))}",
             "- avg_f5_rsi_trend_confirm: "
             f"{_display_number(row.get('avg_f5_rsi_trend_confirm_loss'))}",
+            "- avg_entry_vs_24h_low_bps: "
+            f"{_display_number(row.get('avg_entry_vs_24h_low_bps_loss'))}",
             "- avg_entry_position_in_24h_range: "
             f"{_display_number(row.get('avg_entry_position_in_24h_range_loss'))}",
             f"- avg_24h_pnl_bps: {_display_number(row.get('avg_paper_pnl_24h_loss'))}",
@@ -377,6 +395,7 @@ def sol_protect_paper_loss_summary_md(
             f"- risk_level_mix: {row.get('risk_level_mix_loss') or '{}'}",
             f"- btc_trend_state_mix: {row.get('btc_trend_state_mix_loss') or '{}'}",
             f"- market_regime_mix: {row.get('market_regime_mix_loss') or '{}'}",
+            f"- regime_state_mix: {row.get('regime_state_mix_loss') or '{}'}",
             f"- common_loss_tags: {row.get('common_loss_tags') or '{}'}",
             "",
         ]
@@ -583,6 +602,28 @@ def _entry_position_in_24h_range(
     if high <= low:
         return None
     return (entry_px - low) / (high - low)
+
+
+def _entry_vs_24h_low_bps(
+    bars: list[dict[str, Any]],
+    *,
+    entry_ts: datetime,
+    entry_px: float | None,
+) -> float | None:
+    if entry_px is None or entry_px <= 0:
+        return None
+    start = entry_ts - timedelta(hours=24)
+    lows = [
+        _float(row.get("low"))
+        for row in bars
+        if start <= row["_ts"] <= entry_ts and _float(row.get("low")) is not None
+    ]
+    if not lows:
+        return None
+    low = min(lows)
+    if low <= 0:
+        return None
+    return (entry_px / low - 1.0) * 10_000.0
 
 
 def _as_of_date(row: dict[str, Any], entry_ts: datetime, ctx: _Context) -> str:

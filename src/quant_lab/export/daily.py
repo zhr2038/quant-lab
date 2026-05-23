@@ -1215,6 +1215,8 @@ CSV_SCHEMAS: dict[str, list[str]] = {
         "risk_level",
         "btc_trend_state",
         "market_regime",
+        "regime_state",
+        "entry_vs_24h_low_bps",
         "entry_position_in_24h_range",
         "paper_pnl_4h",
         "paper_pnl_8h",

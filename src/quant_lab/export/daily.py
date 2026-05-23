@@ -36,6 +36,7 @@ from quant_lab.research.baselines import (
     RESEARCH_BASELINE_ROLE,
     alpha_role,
 )
+from quant_lab.research.btc_probe_exit_policy import btc_probe_exit_policy_summary_md
 from quant_lab.research.paper_tracking import (
     build_paper_slippage_coverage,
     build_paper_slippage_coverage_from_v5,
@@ -176,6 +177,8 @@ SECTION_DATASETS = {
         "v5_pullback_reversal_shadow",
         "v5_pullback_reversal_readiness",
         "v5_pullback_reversal_rule_comparison",
+        "btc_probe_exit_policy_review",
+        "btc_probe_exit_policy_summary",
         "v5_entry_quality_advisory",
         "v5_entry_quality_history_late_entry_chase_threshold_sensitivity",
         "v5_entry_quality_history_pullback_by_symbol",
@@ -305,6 +308,8 @@ REQUIRED_MEMBERS = [
     "reports/old_v1_vs_v2_comparison.csv",
     "reports/pullback_reversal_v2_by_symbol.csv",
     "reports/pullback_reversal_v2_readiness.json",
+    "reports/btc_probe_exit_policy_review.csv",
+    "reports/btc_probe_exit_policy_summary.md",
     "reports/pullback_reversal_by_symbol.csv",
     "reports/pullback_reversal_by_regime.csv",
     "reports/pullback_reversal_by_horizon.csv",
@@ -1346,6 +1351,31 @@ CSV_SCHEMAS: dict[str, list[str]] = {
         "schema_version",
         "contract_version",
     ],
+    "reports/btc_probe_exit_policy_review.csv": [
+        "as_of_date",
+        "strategy_candidate",
+        "symbol",
+        "run_id",
+        "roundtrip_id",
+        "entry_ts",
+        "exit_ts",
+        "entry_px",
+        "exit_px",
+        "actual_exit_net_bps",
+        "would_hold_8h_net_bps",
+        "would_hold_12h_net_bps",
+        "would_hold_24h_net_bps",
+        "exit_reason",
+        "probe_hold_hours",
+        "selected_roundtrip_cost_bps",
+        "label_source",
+        "exit_policy_signal",
+        "status",
+        "generated_at_utc",
+        "generated_from_bundle_id",
+        "schema_version",
+        "contract_version",
+    ],
     "reports/pullback_reversal_by_symbol.csv": [
         "start_date",
         "end_date",
@@ -2353,6 +2383,8 @@ def _dataset_members(frames: dict[str, pl.DataFrame]) -> dict[str, _MemberPayloa
         "v5_pullback_reversal_rule_comparison",
         pl.DataFrame(),
     )
+    btc_probe_exit_policy_review = frames.get("btc_probe_exit_policy_review", pl.DataFrame())
+    btc_probe_exit_policy_summary = frames.get("btc_probe_exit_policy_summary", pl.DataFrame())
     entry_quality_advisory = frames.get("v5_entry_quality_advisory", pl.DataFrame())
     history_late_threshold = frames.get(
         "v5_entry_quality_history_late_entry_chase_threshold_sensitivity",
@@ -2659,6 +2691,14 @@ def _dataset_members(frames: dict[str, pl.DataFrame]) -> dict[str, _MemberPayloa
         ),
         "reports/pullback_reversal_v2_readiness.json": _json_text(
             _entry_quality_json(pullback_reversal_readiness)
+        ),
+        "reports/btc_probe_exit_policy_review.csv": _csv_member(
+            "reports/btc_probe_exit_policy_review.csv",
+            btc_probe_exit_policy_review,
+        ),
+        "reports/btc_probe_exit_policy_summary.md": btc_probe_exit_policy_summary_md(
+            btc_probe_exit_policy_summary,
+            btc_probe_exit_policy_review,
         ),
         "reports/anti_leakage_check.csv": _csv_member(
             "reports/anti_leakage_check.csv",
@@ -3149,6 +3189,16 @@ def _refresh_v5_derived_outputs(lake_root: Path, export_day: date) -> list[str]:
                 "quant_lab.research.entry_quality",
                 fromlist=["build_and_publish_entry_quality"],
             ).build_and_publish_entry_quality(lake_root, as_of_date=export_day),
+        ),
+        (
+            "build_btc_probe_exit_policy_review",
+            lambda: __import__(
+                "quant_lab.research.btc_probe_exit_policy",
+                fromlist=["build_and_publish_btc_probe_exit_policy_review"],
+            ).build_and_publish_btc_probe_exit_policy_review(
+                lake_root,
+                as_of_date=export_day,
+            ),
         ),
         (
             "build_regime_router",

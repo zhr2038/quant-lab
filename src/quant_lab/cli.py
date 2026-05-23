@@ -43,6 +43,9 @@ from quant_lab.ops.retention import prune_quant_lab_storage
 from quant_lab.reports.enforce_readiness import write_enforce_readiness_report
 from quant_lab.research.alpha_discovery import build_and_publish_alpha_discovery_board
 from quant_lab.research.bootstrap_gold import bootstrap_gold_health
+from quant_lab.research.btc_probe_exit_policy import (
+    build_and_publish_btc_probe_exit_policy_review,
+)
 from quant_lab.research.candidate_labels import build_and_publish_candidate_labels
 from quant_lab.research.entry_quality import (
     build_and_publish_entry_quality,
@@ -1245,6 +1248,27 @@ def build_entry_quality_history_command(
             mode=mode,
             cost_mode=cost_mode,
             window_hours=window_hours,
+        ),
+    )
+    typer.echo(result.model_dump_json(indent=2))
+
+
+@app.command("build-btc-probe-exit-policy-review")
+def build_btc_probe_exit_policy_review_command(
+    lake_root: Annotated[Path, typer.Option("--lake-root", file_okay=False, dir_okay=True)],
+    as_of_date: Annotated[
+        str,
+        typer.Option("--date", help="UTC as-of day in YYYY-MM-DD format or auto."),
+    ] = "auto",
+    min_sample_count: Annotated[int, typer.Option("--min-sample-count", min=1)] = 10,
+) -> None:
+    result = run_with_job_metrics(
+        lake_root=lake_root,
+        job_name="build-btc-probe-exit-policy-review",
+        func=lambda: build_and_publish_btc_probe_exit_policy_review(
+            lake_root=lake_root,
+            as_of_date=as_of_date,
+            min_sample_count=min_sample_count,
         ),
     )
     typer.echo(result.model_dump_json(indent=2))

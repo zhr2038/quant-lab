@@ -82,8 +82,8 @@ def test_research_portfolio_downgrades_eth_f3_when_48h_paper_is_negative(tmp_pat
         for row in read_parquet_dataset(lake / "gold" / "research_portfolio_status").to_dicts()
     }
     eth = rows["ETH_F3_DOMINANT_ENTRY_PAPER_V1"]
-    assert eth["status"] == "SHADOW"
-    assert eth["action"] == "KEEP_SHADOW"
+    assert eth["status"] == "DOWNGRADED_FROM_PAPER"
+    assert eth["action"] == "REVIEW"
     assert eth["reason"] == "eth_f3_negative_paper_streak_keep_shadow_no_live"
 
 
@@ -117,11 +117,19 @@ def test_research_portfolio_downgrades_negative_paper_streaks(tmp_path):
         for row in read_parquet_dataset(lake / "gold" / "research_portfolio_status").to_dicts()
     }
     sol = rows["SOL_PROTECT_ALPHA6_LOW_EXCEPTION_PAPER_V1"]
-    assert sol["status"] == "SHADOW"
-    assert sol["action"] == "KEEP_SHADOW"
+    assert sol["status"] == "DOWNGRADED_FROM_PAPER"
+    assert sol["action"] == "REVIEW"
     assert sol["paper_negative_streak"] == 2
     assert sol["downgrade_reason"] == "paper_negative_24h_or_48h_streak"
     assert sol["reason"] == "sol_protect_negative_paper_streak_keep_shadow_no_live"
+
+    summary = research_portfolio_summary_md(
+        read_parquet_dataset(lake / "gold" / "research_portfolio_status"),
+        as_of_date="2026-05-22",
+    )
+    assert "## downgraded_research" in summary
+    assert "SOL_PROTECT_ALPHA6_LOW_EXCEPTION_PAPER_V1" in summary
+    assert "paper_negative_24h_or_48h_streak" in summary
 
 
 def test_research_portfolio_uses_latest_as_of_date_for_paper_downgrade(tmp_path):
@@ -168,8 +176,8 @@ def test_research_portfolio_uses_latest_as_of_date_for_paper_downgrade(tmp_path)
         for row in read_parquet_dataset(lake / "gold" / "research_portfolio_status").to_dicts()
     }
     eth = rows["ETH_F3_DOMINANT_ENTRY_PAPER_V1"]
-    assert eth["status"] == "SHADOW"
-    assert eth["action"] == "KEEP_SHADOW"
+    assert eth["status"] == "DOWNGRADED_FROM_PAPER"
+    assert eth["action"] == "REVIEW"
     assert eth["paper_negative_streak"] == 2
     assert eth["downgrade_reason"] == "paper_negative_24h_or_48h_streak"
 
@@ -208,9 +216,10 @@ def test_daily_export_contains_research_portfolio_status(tmp_path):
     with zipfile.ZipFile(result.zip_path) as archive:
         summary = archive.read("reports/research_portfolio_summary.md").decode("utf-8")
 
-    assert "## CLOSE_RESEARCH" in summary
-    assert "## CONTINUE_PAPER" in summary
-    assert "## CONTINUE_SHADOW" in summary
+    assert "## downgraded_research" in summary
+    assert "## closed_research" in summary
+    assert "## active_paper" in summary
+    assert "## active_shadow" in summary
     assert "v5.multi_position_k2" in summary
     assert "v5.portfolio_trend_following" in summary
     assert "avg_net_bps" in summary
@@ -283,7 +292,7 @@ def test_research_portfolio_dedupes_by_as_of_date_research_id_latest_created_at(
     assert row["reason"] == "new_reason"
 
     summary = research_portfolio_summary_md(deduped, as_of_date="2026-05-20")
-    assert "## CLOSE_RESEARCH" in summary
+    assert "## closed_research" in summary
     assert "new_reason" in summary
     assert "sample=30" in summary
 

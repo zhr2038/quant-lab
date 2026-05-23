@@ -313,28 +313,40 @@ def research_portfolio_summary_md(
         "This summary is read-only. It does not change V5 live configuration or risk permission.",
         "",
     ]
+    downgraded = current.filter(
+        (pl.col("status") == "DOWNGRADED_FROM_PAPER")
+        | (pl.col("action") == "REVIEW")
+        | (pl.col("downgrade_reason") != "")
+    )
     sections = [
         (
-            "CLOSE_RESEARCH",
+            "downgraded_research",
+            downgraded,
+            True,
+        ),
+        (
+            "closed_research",
             current.filter(
                 (pl.col("status") == "KILL") | pl.col("action").str.starts_with("CLOSE")
             ),
+            True,
         ),
-        ("CONTINUE_PAPER", current.filter(pl.col("status") == "PAPER")),
+        ("active_paper", current.filter(pl.col("status") == "PAPER"), False),
         (
-            "CONTINUE_SHADOW",
+            "active_shadow",
             current.filter((pl.col("status") == "SHADOW") | (pl.col("action") == "REGIME_SHADOW")),
+            False,
         ),
-        ("ACTIVE_DIAGNOSTIC", current.filter(pl.col("action") == "ACTIVE_DIAGNOSTIC")),
-        ("BASELINE_ONLY", current.filter(pl.col("status") == "BASELINE_ONLY")),
+        ("active_diagnostic", current.filter(pl.col("action") == "ACTIVE_DIAGNOSTIC"), False),
+        ("baseline_only", current.filter(pl.col("status") == "BASELINE_ONLY"), False),
     ]
-    for title, section in sections:
+    for title, section, include_metrics in sections:
         lines.extend([f"## {title}", ""])
         if section.is_empty():
             lines.extend(["- none", ""])
             continue
         for row in section.sort(["status", "research_id"]).to_dicts():
-            lines.append(_summary_line(row, include_metrics=title == "CLOSE_RESEARCH"))
+            lines.append(_summary_line(row, include_metrics=include_metrics))
         lines.append("")
     return "\n".join(lines).rstrip() + "\n"
 
@@ -420,7 +432,7 @@ def _paper_portfolio_state(
         or "paper_negative_24h_or_48h_streak" in reasons
         or "eth_f3_48h_paper_pnl_negative" in reasons
     ):
-        return ("SHADOW", "KEEP_SHADOW", negative_reason)
+        return ("DOWNGRADED_FROM_PAPER", "REVIEW", negative_reason)
     return ("PAPER", "CONTINUE_PAPER", default_reason)
 
 
@@ -701,7 +713,11 @@ def _kill_condition(metrics: dict[str, Any]) -> bool:
 
 
 def _summary_counts(rows: list[dict[str, Any]]) -> dict[str, int]:
-    active_count = sum(1 for row in rows if row["status"] in {"ACTIVE", "SHADOW", "PAPER"})
+    active_count = sum(
+        1
+        for row in rows
+        if row["status"] in {"ACTIVE", "SHADOW", "PAPER", "DOWNGRADED_FROM_PAPER"}
+    )
     killed_count = sum(1 for row in rows if row["status"] == "KILL")
     freed_slots = sum(1 for row in rows if row["status"] in {"KILL", "PAUSED"})
     return {
@@ -790,6 +806,8 @@ def _summary_line(row: dict[str, Any], *, include_metrics: bool) -> str:
         f"avg_net_bps={_display_metric(row.get('avg_net_bps'))}, "
         f"win_rate={_display_metric(row.get('win_rate'))}, "
         f"p25_net_bps={_display_metric(row.get('p25_net_bps'))}, "
+        f"paper_negative_streak={_int(row.get('paper_negative_streak'))}, "
+        f"downgrade_reason={row.get('downgrade_reason') or 'none'}, "
         f"cost_source_mix={row.get('cost_source_mix') or '{}'}"
     )
     return f"{base}; {metrics}"

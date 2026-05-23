@@ -933,6 +933,16 @@ def test_v5_daily_negative_24h_48h_streak_downgrades_paper(tmp_path):
                     "bundle_ts": bundle_ts,
                     "raw_payload_json": "{}",
                 },
+                {
+                    "as_of_date": "2026-05-23",
+                    "proposal_id": "ETH_USDT_F3_DOMINANT_ENTRY_PAPER_V1",
+                    "strategy_candidate": "v5.f3_dominant_entry",
+                    "symbol": "ETH-USDT",
+                    "latest_board_decision": "PAPER_READY",
+                    "avg_paper_pnl_bps_by_horizon": "{}",
+                    "bundle_ts": bundle_ts,
+                    "raw_payload_json": "{}",
+                },
             ]
         ),
         lake / "silver" / "v5_paper_strategy_daily",
@@ -944,7 +954,7 @@ def test_v5_daily_negative_24h_48h_streak_downgrades_paper(tmp_path):
         row["as_of_date"]: row
         for row in read_parquet_dataset(lake / "gold" / "paper_strategy_daily").to_dicts()
     }
-    latest = rows["2026-05-22"]
+    latest = rows["2026-05-23"]
     assert latest["latest_board_decision"] == "KEEP_SHADOW"
     assert latest["negative_entry_day_count"] == 2
     assert latest["paper_negative_streak"] == 2

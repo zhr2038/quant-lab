@@ -746,7 +746,13 @@ def _enrich_daily_negative_streaks(frame: pl.DataFrame) -> pl.DataFrame:
                 else:
                     updated["latest_paper_trend"] = "latest_entry_day_non_negative"
             elif str(updated.get("latest_paper_trend") or "") in {"", "not_observable"}:
-                updated["latest_paper_trend"] = "waiting_for_24h_48h_labels"
+                updated["negative_entry_day_count"] = negative_count
+                updated["paper_negative_streak"] = streak
+                updated["latest_paper_trend"] = (
+                    "negative_24h_or_48h_streak"
+                    if streak >= 2
+                    else "waiting_for_24h_48h_labels"
+                )
             updated = _with_paper_strategy_review(
                 updated,
                 cfg=_config_for(

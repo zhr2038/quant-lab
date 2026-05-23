@@ -620,6 +620,8 @@ CSV_SCHEMAS: dict[str, list[str]] = {
         "entry_day_count",
         "paper_negative_streak",
         "downgrade_reason",
+        "latest_paper_trend",
+        "priority",
         "cost_source_mix",
         "last_review_date",
         "next_review_date",

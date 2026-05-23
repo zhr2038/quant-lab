@@ -54,6 +54,8 @@ STATUS_SCHEMA: dict[str, Any] = {
     "entry_day_count": pl.Int64,
     "paper_negative_streak": pl.Int64,
     "downgrade_reason": pl.Utf8,
+    "latest_paper_trend": pl.Utf8,
+    "priority": pl.Utf8,
     "cost_source_mix": pl.Utf8,
     "last_review_date": pl.Utf8,
     "next_review_date": pl.Utf8,
@@ -432,7 +434,7 @@ def _paper_portfolio_state(
         or "paper_negative_24h_or_48h_streak" in reasons
         or "eth_f3_48h_paper_pnl_negative" in reasons
     ):
-        return ("DOWNGRADED_FROM_PAPER", "REVIEW", negative_reason)
+        return ("DOWNGRADED_FROM_PAPER", "CONTINUE_SHADOW_OR_REVIEW", negative_reason)
     return ("PAPER", "CONTINUE_PAPER", default_reason)
 
 
@@ -582,6 +584,8 @@ def _status_row(
         "entry_day_count": int(metrics.get("entry_day_count") or 0),
         "paper_negative_streak": int(metrics.get("paper_negative_streak") or 0),
         "downgrade_reason": str(metrics.get("downgrade_reason") or ""),
+        "latest_paper_trend": str(metrics.get("latest_paper_trend") or ""),
+        "priority": str(metrics.get("priority") or "NORMAL"),
         "cost_source_mix": str(metrics.get("cost_source_mix") or "{}"),
         "last_review_date": day.isoformat(),
         "next_review_date": (day + timedelta(days=review_days)).isoformat(),
@@ -667,11 +671,15 @@ def _with_paper(
         or str(row.get("strategy_id") or "").lower() in keys
     ]
     if selected:
+        latest = max(selected, key=_paper_portfolio_row_key)
         result["paper_days"] = max(_int(row.get("paper_days")) for row in selected)
         result["entry_day_count"] = max(_int(row.get("entry_day_count")) for row in selected)
         result["paper_negative_streak"] = max(
             _int(row.get("paper_negative_streak")) for row in selected
         )
+        result["latest_paper_trend"] = str(latest.get("latest_paper_trend") or "")
+        short_horizons_all_negative = _short_horizon_paper_all_negative(latest)
+        result["priority"] = "LOW" if short_horizons_all_negative else "NORMAL"
         downgrade_reasons = [
             str(row.get("latest_paper_trend") or "")
             for row in selected
@@ -680,7 +688,37 @@ def _with_paper(
         live_reasons = " ".join(str(row.get("live_block_reason") or "") for row in selected)
         if downgrade_reasons or "paper_negative_24h_or_48h_streak" in live_reasons:
             result["downgrade_reason"] = "paper_negative_24h_or_48h_streak"
+        if short_horizons_all_negative:
+            existing = str(result.get("downgrade_reason") or "")
+            result["downgrade_reason"] = (
+                f"{existing};short_horizon_all_negative"
+                if existing
+                else "short_horizon_all_negative"
+            )
     return result
+
+
+def _short_horizon_paper_all_negative(row: dict[str, Any]) -> bool:
+    values = _json_dict(row.get("avg_paper_pnl_bps_by_horizon"))
+    observed = []
+    for horizon in ("4h", "8h", "12h", "24h"):
+        value = _float(values.get(horizon))
+        if value is None:
+            return False
+        observed.append(value)
+    return bool(observed) and all(value < 0 for value in observed)
+
+
+def _json_dict(value: Any) -> dict[str, Any]:
+    if isinstance(value, dict):
+        return value
+    if not isinstance(value, str) or not value.strip():
+        return {}
+    try:
+        parsed = json.loads(value)
+    except json.JSONDecodeError:
+        return {}
+    return parsed if isinstance(parsed, dict) else {}
 
 
 def _status_from_metrics(metrics: dict[str, Any]) -> tuple[str, str, str]:
@@ -808,6 +846,8 @@ def _summary_line(row: dict[str, Any], *, include_metrics: bool) -> str:
         f"p25_net_bps={_display_metric(row.get('p25_net_bps'))}, "
         f"paper_negative_streak={_int(row.get('paper_negative_streak'))}, "
         f"downgrade_reason={row.get('downgrade_reason') or 'none'}, "
+        f"latest_paper_trend={row.get('latest_paper_trend') or 'none'}, "
+        f"priority={row.get('priority') or 'NORMAL'}, "
         f"cost_source_mix={row.get('cost_source_mix') or '{}'}"
     )
     return f"{base}; {metrics}"
@@ -872,6 +912,10 @@ def _empty_metrics() -> dict[str, Any]:
         "p25_net_bps": None,
         "paper_days": 0,
         "entry_day_count": 0,
+        "paper_negative_streak": 0,
+        "downgrade_reason": "",
+        "latest_paper_trend": "",
+        "priority": "NORMAL",
         "cost_source_mix": "{}",
     }
 

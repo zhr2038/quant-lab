@@ -34,6 +34,8 @@ DATASET_PATHS = {
     "expanded_universe_candidate_event": Path("gold") / "expanded_universe_candidate_event",
     "expanded_universe_candidate_label": Path("gold") / "expanded_universe_candidate_label",
     "expanded_universe_promotion_queue": Path("gold") / "expanded_universe_promotion_queue",
+    "expanded_universe_candidate_maturity": Path("gold") / "expanded_universe_candidate_maturity",
+    "expanded_universe_watchlist": Path("gold") / "expanded_universe_watchlist",
     "expanded_crypto_universe_shadow": Path("gold") / "expanded_crypto_universe_shadow",
     "symbol_quality_score": Path("gold") / "symbol_quality_score",
     "expanded_crypto_candidate_outcomes_by_symbol": Path("gold")
@@ -176,6 +178,8 @@ DATASET_TIMESTAMP_COLUMNS: dict[str, tuple[str, ...]] = {
     "expanded_universe_candidate_event": ("ts_utc", "generated_at"),
     "expanded_universe_candidate_label": ("label_ts", "generated_at"),
     "expanded_universe_promotion_queue": ("generated_at", "as_of_date"),
+    "expanded_universe_candidate_maturity": ("generated_at", "as_of_date"),
+    "expanded_universe_watchlist": ("generated_at", "as_of_date"),
     "expanded_crypto_universe_shadow": ("generated_at", "as_of_date"),
     "symbol_quality_score": ("generated_at", "as_of_date"),
     "expanded_crypto_candidate_outcomes_by_symbol": ("generated_at", "as_of_date"),
@@ -1540,6 +1544,14 @@ def alpha_gate_summary(lake_root: str | Path) -> dict[str, Any]:
         lake_root,
         "expanded_universe_promotion_queue",
     )
+    expanded_maturity, expanded_maturity_warning = read_dataset_with_warning(
+        lake_root,
+        "expanded_universe_candidate_maturity",
+    )
+    expanded_watchlist, expanded_watchlist_warning = read_dataset_with_warning(
+        lake_root,
+        "expanded_universe_watchlist",
+    )
     expanded_universe, expanded_universe_warning = _read_web_display_dataset_with_warning(
         lake_root,
         "expanded_crypto_universe_shadow",
@@ -1571,6 +1583,8 @@ def alpha_gate_summary(lake_root: str | Path) -> dict[str, Any]:
             expanded_events_warning,
             expanded_labels_warning,
             expanded_promotion_warning,
+            expanded_maturity_warning,
+            expanded_watchlist_warning,
             expanded_universe_warning,
             symbol_quality_warning,
             expanded_recommendations_warning,
@@ -1644,6 +1658,10 @@ def alpha_gate_summary(lake_root: str | Path) -> dict[str, Any]:
         "expanded_universe_promotion_queue": redact_frame(
             _expanded_promotion_table(expanded_promotion)
         ).head(DISPLAY_LIMIT),
+        "expanded_universe_candidate_maturity": redact_frame(expanded_maturity).head(
+            DISPLAY_LIMIT
+        ),
+        "expanded_universe_watchlist": redact_frame(expanded_watchlist).head(DISPLAY_LIMIT),
         "expanded_crypto_universe_shadow": redact_frame(
             _expanded_universe_table(expanded_universe)
         ).head(DISPLAY_LIMIT),

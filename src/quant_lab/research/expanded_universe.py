@@ -44,12 +44,20 @@ EXPANDED_CANDIDATE_OUTCOMES_DATASET = (
     Path("gold") / "expanded_crypto_candidate_outcomes_by_symbol"
 )
 EXPANDED_RECOMMENDATIONS_DATASET = Path("gold") / "expanded_crypto_recommendations"
+EXPANDED_UNIVERSE_WATCHLIST_DATASET = Path("gold") / "expanded_universe_watchlist"
+EXPANDED_UNIVERSE_CANDIDATE_MATURITY_DATASET = (
+    Path("gold") / "expanded_universe_candidate_maturity"
+)
 
 SOURCE_NAME = "research.expanded_crypto_universe_automation.v0.1"
 SCHEMA_VERSION = "expanded_crypto_universe_shadow.v0.1"
 AUTOMATION_SCHEMA_VERSION = "expanded_crypto_universe_automation.v0.1"
 RECOMMENDATION_SCHEMA_VERSION = "expanded_crypto_recommendations.v0.1"
+EXPANDED_MATURITY_SCHEMA_VERSION = "expanded_universe_candidate_maturity.v0.1"
+EXPANDED_WATCHLIST_SCHEMA_VERSION = "expanded_universe_watchlist.v0.1"
 EXPANDED_UNIVERSE_TYPE = "expanded_paper"
+EXPANDED_PAPER_UNIVERSE_RECOMMENDATION = "candidate_for_expanded_paper_universe"
+SHORT_HORIZONS = (4, 8, 12)
 SEED_EXPANDED_SYMBOLS = (
     "TRX-USDT",
     "HYPE-USDT",
@@ -58,6 +66,16 @@ SEED_EXPANDED_SYMBOLS = (
     "PAXG-USDT",
     "ZEC-USDT",
 )
+QUALITY_WATCHLIST_SYMBOLS = (
+    "TRX-USDT",
+    "HYPE-USDT",
+    "SUI-USDT",
+    "XAUT-USDT",
+    "ZEC-USDT",
+    "OKB-USDT",
+    "FIL-USDT",
+)
+OUTCOME_WATCHLIST_SYMBOLS = ("NEAR-USDT", "WLD-USDT", "OKB-USDT", "HYPE-USDT")
 EXPANDED_STRATEGY_CANDIDATES = (
     "Alpha6Factor",
     "v5.f4_volume_expansion_entry",
@@ -287,6 +305,48 @@ RECOMMENDATION_SCHEMA: dict[str, Any] = {
     "source": pl.Utf8,
 }
 
+MATURITY_SCHEMA: dict[str, Any] = {
+    "as_of_date": pl.Utf8,
+    "generated_at": pl.Datetime(time_zone="UTC"),
+    "schema_version": pl.Utf8,
+    "symbol": pl.Utf8,
+    "strategy_candidate": pl.Utf8,
+    "universe_type": pl.Utf8,
+    "sample_count": pl.Int64,
+    "complete_sample_count": pl.Int64,
+    "positive_short_horizon_count": pl.Int64,
+    "positive_short_horizons": pl.Utf8,
+    "best_short_horizon_hours": pl.Int64,
+    "best_short_avg_net_bps": pl.Float64,
+    "win_rate": pl.Float64,
+    "p25_net_bps": pl.Float64,
+    "maturity_state": pl.Utf8,
+    "recommended_mode": pl.Utf8,
+    "maturity_reasons": pl.Utf8,
+    "cost_source_mix": pl.Utf8,
+    "source": pl.Utf8,
+}
+
+WATCHLIST_SCHEMA: dict[str, Any] = {
+    "as_of_date": pl.Utf8,
+    "generated_at": pl.Datetime(time_zone="UTC"),
+    "schema_version": pl.Utf8,
+    "watchlist_type": pl.Utf8,
+    "symbol": pl.Utf8,
+    "quality_score": pl.Float64,
+    "recommendation": pl.Utf8,
+    "sample_count": pl.Int64,
+    "complete_sample_count": pl.Int64,
+    "positive_short_horizon_count": pl.Int64,
+    "best_short_horizon_hours": pl.Int64,
+    "best_short_avg_net_bps": pl.Float64,
+    "win_rate": pl.Float64,
+    "p25_net_bps": pl.Float64,
+    "maturity_state": pl.Utf8,
+    "watch_reason": pl.Utf8,
+    "source": pl.Utf8,
+}
+
 
 class ExpandedUniverseBuildResult(BaseModel):
     model_config = ConfigDict(extra="forbid", frozen=True)
@@ -299,6 +359,8 @@ class ExpandedUniverseBuildResult(BaseModel):
     label_rows: int = Field(ge=0)
     strategy_evidence_rows: int = Field(ge=0)
     promotion_rows: int = Field(ge=0)
+    maturity_rows: int = Field(ge=0)
+    watchlist_rows: int = Field(ge=0)
     shadow_rows: int = Field(ge=0)
     outcome_rows: int = Field(ge=0)
     recommendation_rows: int = Field(ge=0)
@@ -381,9 +443,15 @@ def build_and_publish_expanded_crypto_universe_shadow(
         as_of_date=day,
         generated_at=generated_at,
     )
+    maturity = build_expanded_universe_candidate_maturity(
+        expanded_evidence,
+        as_of_date=day,
+        generated_at=generated_at,
+    )
     promotion_queue = build_expanded_universe_promotion_queue(
         expanded_evidence,
         candidates=candidates,
+        maturity=maturity,
         as_of_date=day,
         generated_at=generated_at,
     )
@@ -405,6 +473,12 @@ def build_and_publish_expanded_crypto_universe_shadow(
         generated_at=generated_at,
         warnings=warnings,
     )
+    watchlist = build_expanded_universe_watchlist(
+        quality,
+        maturity,
+        as_of_date=day,
+        generated_at=generated_at,
+    )
 
     write_parquet_dataset(candidates, root / EXPANDED_UNIVERSE_CANDIDATE_DATASET)
     write_parquet_dataset(quality, root / SYMBOL_QUALITY_SCORE_DATASET)
@@ -422,6 +496,8 @@ def build_and_publish_expanded_crypto_universe_shadow(
             key_columns=["candidate_id", "horizon_hours"],
         )
     write_parquet_dataset(promotion_queue, root / EXPANDED_UNIVERSE_PROMOTION_QUEUE_DATASET)
+    write_parquet_dataset(maturity, root / EXPANDED_UNIVERSE_CANDIDATE_MATURITY_DATASET)
+    write_parquet_dataset(watchlist, root / EXPANDED_UNIVERSE_WATCHLIST_DATASET)
     if not expanded_evidence.is_empty():
         upsert_parquet_dataset(
             expanded_evidence,
@@ -449,6 +525,8 @@ def build_and_publish_expanded_crypto_universe_shadow(
         label_rows=labels.height,
         strategy_evidence_rows=expanded_evidence.height,
         promotion_rows=promotion_queue.height,
+        maturity_rows=maturity.height,
+        watchlist_rows=watchlist.height,
         shadow_rows=shadow.height,
         outcome_rows=outcomes.height,
         recommendation_rows=recommendations.height,
@@ -858,10 +936,122 @@ def build_expanded_strategy_evidence(
     return pl.DataFrame(rows, schema=EXPANDED_STRATEGY_EVIDENCE_SCHEMA, orient="row")
 
 
+def build_expanded_universe_candidate_maturity(
+    strategy_evidence: pl.DataFrame,
+    *,
+    as_of_date: date,
+    generated_at: datetime | None = None,
+) -> pl.DataFrame:
+    generated = generated_at or datetime.now(UTC)
+    if strategy_evidence.is_empty():
+        return pl.DataFrame(schema=MATURITY_SCHEMA)
+    grouped: dict[tuple[str, str], list[dict[str, Any]]] = defaultdict(list)
+    for row in strategy_evidence.to_dicts():
+        symbol = normalize_symbol(row.get("symbol"))
+        candidate = str(row.get("strategy_candidate") or "")
+        if _is_usdt_symbol(symbol) and candidate:
+            grouped[(symbol, candidate)].append(row)
+
+    rows: list[dict[str, Any]] = []
+    for (symbol, candidate), group_rows in grouped.items():
+        state, reasons, stats = _maturity_state_from_evidence_rows(group_rows)
+        rows.append(
+            {
+                "as_of_date": as_of_date.isoformat(),
+                "generated_at": generated,
+                "schema_version": EXPANDED_MATURITY_SCHEMA_VERSION,
+                "symbol": symbol,
+                "strategy_candidate": candidate,
+                "universe_type": EXPANDED_UNIVERSE_TYPE,
+                "sample_count": stats["sample_count"],
+                "complete_sample_count": stats["complete_sample_count"],
+                "positive_short_horizon_count": stats["positive_short_horizon_count"],
+                "positive_short_horizons": safe_json_dumps(stats["positive_short_horizons"]),
+                "best_short_horizon_hours": stats["best_short_horizon_hours"],
+                "best_short_avg_net_bps": stats["best_short_avg_net_bps"],
+                "win_rate": stats["win_rate"],
+                "p25_net_bps": stats["p25_net_bps"],
+                "maturity_state": state,
+                "recommended_mode": _recommended_mode_from_maturity_state(state),
+                "maturity_reasons": safe_json_dumps(reasons),
+                "cost_source_mix": safe_json_dumps(
+                    _merge_cost_source_mix(group_rows),
+                ),
+                "source": SOURCE_NAME,
+            }
+        )
+    if not rows:
+        return pl.DataFrame(schema=MATURITY_SCHEMA)
+    return pl.DataFrame(rows, schema=MATURITY_SCHEMA, orient="row").sort(
+        ["maturity_state", "symbol", "strategy_candidate"],
+        descending=[False, False, False],
+    )
+
+
+def build_expanded_universe_watchlist(
+    quality: pl.DataFrame,
+    maturity: pl.DataFrame,
+    *,
+    as_of_date: date,
+    generated_at: datetime | None = None,
+) -> pl.DataFrame:
+    generated = generated_at or datetime.now(UTC)
+    quality_by_symbol = {
+        normalize_symbol(row.get("symbol")): row for row in quality.to_dicts()
+    } if not quality.is_empty() else {}
+    maturity_by_symbol = _best_maturity_by_symbol(maturity)
+    rows: list[dict[str, Any]] = []
+    for watchlist_type, symbols in (
+        ("quality_watchlist", QUALITY_WATCHLIST_SYMBOLS),
+        ("outcome_watchlist", OUTCOME_WATCHLIST_SYMBOLS),
+    ):
+        for raw_symbol in symbols:
+            symbol = normalize_symbol(raw_symbol)
+            quality_row = quality_by_symbol.get(symbol, {})
+            maturity_row = maturity_by_symbol.get(symbol, {})
+            rows.append(
+                {
+                    "as_of_date": as_of_date.isoformat(),
+                    "generated_at": generated,
+                    "schema_version": EXPANDED_WATCHLIST_SCHEMA_VERSION,
+                    "watchlist_type": watchlist_type,
+                    "symbol": symbol,
+                    "quality_score": _float(quality_row.get("quality_score")),
+                    "recommendation": str(quality_row.get("recommendation") or ""),
+                    "sample_count": _int(maturity_row.get("sample_count")) or 0,
+                    "complete_sample_count": _int(
+                        maturity_row.get("complete_sample_count")
+                    ) or 0,
+                    "positive_short_horizon_count": _int(
+                        maturity_row.get("positive_short_horizon_count")
+                    ) or 0,
+                    "best_short_horizon_hours": _int(
+                        maturity_row.get("best_short_horizon_hours")
+                    ) or 0,
+                    "best_short_avg_net_bps": _float(
+                        maturity_row.get("best_short_avg_net_bps")
+                    ),
+                    "win_rate": _float(maturity_row.get("win_rate")),
+                    "p25_net_bps": _float(maturity_row.get("p25_net_bps")),
+                    "maturity_state": str(
+                        maturity_row.get("maturity_state") or "RESEARCH"
+                    ),
+                    "watch_reason": _watch_reason(
+                        watchlist_type=watchlist_type,
+                        has_quality=bool(quality_row),
+                        has_maturity=bool(maturity_row),
+                    ),
+                    "source": SOURCE_NAME,
+                }
+            )
+    return pl.DataFrame(rows, schema=WATCHLIST_SCHEMA, orient="row")
+
+
 def build_expanded_universe_promotion_queue(
     strategy_evidence: pl.DataFrame,
     *,
     candidates: pl.DataFrame,
+    maturity: pl.DataFrame | None = None,
     as_of_date: date,
     generated_at: datetime | None = None,
 ) -> pl.DataFrame:
@@ -871,11 +1061,25 @@ def build_expanded_universe_promotion_queue(
     candidate_context = {
         normalize_symbol(row.get("symbol")): row for row in candidates.to_dicts()
     }
+    maturity_context = {
+        (
+            normalize_symbol(row.get("symbol")),
+            str(row.get("strategy_candidate") or ""),
+        ): row
+        for row in (maturity.to_dicts() if maturity is not None and not maturity.is_empty() else [])
+    }
     rows: list[dict[str, Any]] = []
     for row in strategy_evidence.to_dicts():
         symbol = normalize_symbol(row.get("symbol"))
         decision = str(row.get("decision") or "RESEARCH_ONLY").upper()
-        promotion_state = _promotion_state_from_decision(decision)
+        candidate = str(row.get("strategy_candidate") or "")
+        maturity_row = maturity_context.get((symbol, candidate), {})
+        maturity_state = str(maturity_row.get("maturity_state") or "")
+        promotion_state = (
+            _promotion_state_from_maturity_state(maturity_state)
+            if maturity_state
+            else _promotion_state_from_decision(decision)
+        )
         recommended_mode = _recommended_mode_from_promotion_state(promotion_state)
         context = candidate_context.get(symbol, {})
         rows.append(
@@ -884,7 +1088,7 @@ def build_expanded_universe_promotion_queue(
                 "generated_at": generated,
                 "schema_version": AUTOMATION_SCHEMA_VERSION,
                 "symbol": symbol,
-                "strategy_candidate": str(row.get("strategy_candidate") or ""),
+                "strategy_candidate": candidate,
                 "universe_type": EXPANDED_UNIVERSE_TYPE,
                 "promotion_state": promotion_state,
                 "recommended_mode": recommended_mode,
@@ -968,8 +1172,8 @@ def build_expanded_universe_shadow(
     candidate_rows = [
         row
         for row in quality.to_dicts()
-        if str(row.get("recommendation") or "").startswith("candidate_replace_")
-        or str(row.get("recommendation") or "") in {"shadow_only", "keep_current"}
+        if str(row.get("recommendation") or "")
+        in {EXPANDED_PAPER_UNIVERSE_RECOMMENDATION, "shadow_only", "keep_current"}
     ]
     candidate_rows = sorted(
         candidate_rows,
@@ -1019,6 +1223,8 @@ def build_expanded_crypto_recommendations(
     shadow_rows = shadow.to_dicts() if not shadow.is_empty() else []
     quality_rows = quality.to_dicts() if not quality.is_empty() else []
     by_symbol = {str(row.get("symbol") or ""): row for row in quality_rows}
+    warning_values = list(warnings or [])
+    warning_values.append("replacement_requires_strategy_evidence_and_paper_evidence")
     row = {
         "as_of_date": as_of_date.isoformat(),
         "generated_at": generated,
@@ -1043,7 +1249,7 @@ def build_expanded_crypto_recommendations(
         "current_universe_json": safe_json_dumps(
             {symbol: by_symbol.get(symbol, {}) for symbol in sorted(CURRENT_V5_UNIVERSE)}
         ),
-        "warnings_json": safe_json_dumps(warnings or []),
+        "warnings_json": safe_json_dumps(sorted(set(warning_values))),
         "min_stable_output_days": 7,
         "source": SOURCE_NAME,
     }
@@ -1079,7 +1285,7 @@ def _candidate_state_from_quality(
     }
     if set(str(reason) for reason in blocking_reasons) & hard_reasons:
         return "RESEARCH"
-    if recommendation.startswith("candidate_replace_"):
+    if recommendation == EXPANDED_PAPER_UNIVERSE_RECOMMENDATION:
         return "SHADOW"
     if recommendation in {"shadow_only", "keep_current"}:
         return "SHADOW"
@@ -1190,12 +1396,8 @@ def _expanded_risk_level(factors: dict[str, float]) -> str:
 
 
 def _replacement_target(row: dict[str, Any]) -> str:
-    recommendation = str(row.get("recommendation") or "")
-    if recommendation == "candidate_replace_eth":
-        return "ETH-USDT"
-    if recommendation == "candidate_replace_bnb":
-        return "BNB-USDT"
-    return ""
+    explicit = normalize_symbol(row.get("replacement_target_candidate"))
+    return explicit if explicit and explicit != "UNKNOWN" else ""
 
 
 def _expanded_candidate_id(symbol: str, strategy_candidate: str, ts: datetime) -> str:
@@ -1311,6 +1513,126 @@ def _expanded_decision(
     return "SHADOW", reasons
 
 
+def _maturity_state_from_evidence_rows(
+    rows: list[dict[str, Any]],
+) -> tuple[str, list[str], dict[str, Any]]:
+    sample_count = max((_int(row.get("sample_count")) or 0 for row in rows), default=0)
+    complete_sample_count = max(
+        (_int(row.get("complete_sample_count")) or 0 for row in rows),
+        default=0,
+    )
+    short_rows = [
+        row
+        for row in rows
+        if (_int(row.get("horizon_hours")) or 0) in SHORT_HORIZONS
+        and (_int(row.get("complete_sample_count")) or 0) > 0
+    ]
+    positive_short_rows = [
+        row for row in short_rows if (_float(row.get("avg_net_bps")) or 0.0) > 0.0
+    ]
+    positive_short_horizons = sorted(
+        {
+            _int(row.get("horizon_hours")) or 0
+            for row in positive_short_rows
+            if _int(row.get("horizon_hours")) is not None
+        }
+    )
+    best_short_row = max(
+        short_rows,
+        key=lambda row: _float(row.get("avg_net_bps")) or float("-inf"),
+        default={},
+    )
+    best_all_row = max(
+        rows,
+        key=lambda row: _float(row.get("avg_net_bps")) or float("-inf"),
+        default={},
+    )
+    p25 = _float(best_all_row.get("p25_net_bps"))
+    win = _float(best_all_row.get("win_rate"))
+    avg = _float(best_all_row.get("avg_net_bps"))
+    state = "RESEARCH"
+    reasons: list[str] = []
+    if complete_sample_count < 10:
+        reasons.append("insufficient_complete_samples")
+    elif (
+        complete_sample_count >= 30
+        and (win or 0.0) > 0.55
+        and (p25 if p25 is not None else float("-inf")) > -50.0
+        and (avg or 0.0) > 0.0
+    ):
+        state = "PAPER_READY"
+        reasons.append("mature_positive_after_cost_evidence")
+    elif len(positive_short_horizons) >= 2:
+        state = "KEEP_SHADOW"
+        reasons.append("two_positive_short_horizons")
+    else:
+        reasons.append("needs_more_outcome_evidence")
+    stats = {
+        "sample_count": sample_count,
+        "complete_sample_count": complete_sample_count,
+        "positive_short_horizon_count": len(positive_short_horizons),
+        "positive_short_horizons": positive_short_horizons,
+        "best_short_horizon_hours": _int(best_short_row.get("horizon_hours")) or 0,
+        "best_short_avg_net_bps": _float(best_short_row.get("avg_net_bps")),
+        "win_rate": win,
+        "p25_net_bps": p25,
+    }
+    return state, reasons, stats
+
+
+def _merge_cost_source_mix(rows: list[dict[str, Any]]) -> dict[str, int]:
+    counts: dict[str, int] = defaultdict(int)
+    for row in rows:
+        raw = row.get("cost_source_mix")
+        if isinstance(raw, str) and raw.strip():
+            try:
+                parsed = json.loads(raw)
+            except json.JSONDecodeError:
+                parsed = {}
+            if isinstance(parsed, dict):
+                for key, value in parsed.items():
+                    counts[str(key)] += _int(value) or 0
+                continue
+        source = str(row.get("cost_source") or "missing")
+        counts[source] += max(_int(row.get("complete_sample_count")) or 1, 1)
+    return dict(sorted(counts.items()))
+
+
+def _best_maturity_by_symbol(maturity: pl.DataFrame) -> dict[str, dict[str, Any]]:
+    if maturity.is_empty():
+        return {}
+    rank = {"PAPER_READY": 3, "KEEP_SHADOW": 2, "RESEARCH": 1}
+    best: dict[str, dict[str, Any]] = {}
+    for row in maturity.to_dicts():
+        symbol = normalize_symbol(row.get("symbol"))
+        current = best.get(symbol)
+        score = (
+            rank.get(str(row.get("maturity_state") or ""), 0),
+            _int(row.get("complete_sample_count")) or 0,
+            _float(row.get("best_short_avg_net_bps")) or float("-inf"),
+        )
+        current_score = (
+            rank.get(str(current.get("maturity_state") or ""), 0),
+            _int(current.get("complete_sample_count")) or 0,
+            _float(current.get("best_short_avg_net_bps")) or float("-inf"),
+        ) if current else (-1, -1, float("-inf"))
+        if current is None or score > current_score:
+            best[symbol] = row
+    return best
+
+
+def _watch_reason(*, watchlist_type: str, has_quality: bool, has_maturity: bool) -> str:
+    if watchlist_type == "quality_watchlist":
+        if has_quality and has_maturity:
+            return "quality_score_and_outcome_monitor"
+        if has_quality:
+            return "quality_score_monitor"
+        return "quality_watch_symbol_not_observed"
+    if has_maturity:
+        return "early_outcome_signal_monitor"
+    return "outcome_watch_symbol_not_observed"
+
+
 def _promotion_state_from_decision(decision: str) -> str:
     decision = str(decision or "").upper()
     if decision == "PAPER_READY":
@@ -1320,6 +1642,21 @@ def _promotion_state_from_decision(decision: str) -> str:
     if decision == "KILL":
         return "KILL"
     return "RESEARCH"
+
+
+def _promotion_state_from_maturity_state(maturity_state: str) -> str:
+    state = str(maturity_state or "").upper()
+    if state == "PAPER_READY":
+        return "PAPER"
+    if state == "KEEP_SHADOW":
+        return "SHADOW"
+    return "RESEARCH"
+
+
+def _recommended_mode_from_maturity_state(maturity_state: str) -> str:
+    return _recommended_mode_from_promotion_state(
+        _promotion_state_from_maturity_state(maturity_state)
+    )
 
 
 def _recommended_mode_from_promotion_state(promotion_state: str) -> str:
@@ -1696,10 +2033,8 @@ def _recommendation(
         return "reject_negative_expectancy"
     if symbol in CURRENT_V5_UNIVERSE:
         return "keep_current" if quality_score >= 45.0 else "shadow_only"
-    if quality_score >= 70.0:
-        return "candidate_replace_eth"
     if quality_score >= 60.0:
-        return "candidate_replace_bnb"
+        return EXPANDED_PAPER_UNIVERSE_RECOMMENDATION
     return "shadow_only"
 
 
@@ -1805,8 +2140,8 @@ def _is_usdt_symbol(symbol: str) -> bool:
 def _shadow_notes(row: dict[str, Any]) -> str:
     recommendation = str(row.get("recommendation") or "")
     reasons = _loads_list(row.get("blocking_reasons"))
-    if recommendation.startswith("candidate_replace_"):
-        return "仅研究候选；至少连续 7 天稳定输出后再讨论替换 V5 币池。"
+    if recommendation == EXPANDED_PAPER_UNIVERSE_RECOMMENDATION:
+        return "质量候选；必须先有策略 evidence 和 paper evidence，不能仅凭质量分替换 ETH/BNB。"
     if reasons:
         return "阻断原因：" + ",".join(str(reason) for reason in reasons)
     return "当前仅 shadow 观察，不影响 V5 实盘。"

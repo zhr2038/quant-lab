@@ -164,6 +164,8 @@ SECTION_DATASETS = {
         "expanded_universe_candidate_event",
         "expanded_universe_candidate_label",
         "expanded_universe_promotion_queue",
+        "expanded_universe_candidate_maturity",
+        "expanded_universe_watchlist",
         "expanded_crypto_universe_shadow",
         "symbol_quality_score",
         "expanded_crypto_candidate_outcomes_by_symbol",
@@ -288,6 +290,9 @@ REQUIRED_MEMBERS = [
     "reports/expanded_universe_candidates.csv",
     "reports/expanded_universe_quality.csv",
     "reports/expanded_universe_daily.md",
+    "reports/expanded_universe_watchlist.csv",
+    "reports/expanded_universe_candidate_maturity.csv",
+    "reports/expanded_universe_promotion_summary.md",
     "reports/expanded_universe_promotion_queue.csv",
     "reports/expanded_universe_kill_list.csv",
     "reports/expanded_universe_replacement_candidates.csv",
@@ -899,6 +904,46 @@ CSV_SCHEMAS: dict[str, list[str]] = {
         "quality_score",
         "recommendation",
         "blocking_reasons",
+        "source",
+    ],
+    "reports/expanded_universe_watchlist.csv": [
+        "as_of_date",
+        "generated_at",
+        "schema_version",
+        "watchlist_type",
+        "symbol",
+        "quality_score",
+        "recommendation",
+        "sample_count",
+        "complete_sample_count",
+        "positive_short_horizon_count",
+        "best_short_horizon_hours",
+        "best_short_avg_net_bps",
+        "win_rate",
+        "p25_net_bps",
+        "maturity_state",
+        "watch_reason",
+        "source",
+    ],
+    "reports/expanded_universe_candidate_maturity.csv": [
+        "as_of_date",
+        "generated_at",
+        "schema_version",
+        "symbol",
+        "strategy_candidate",
+        "universe_type",
+        "sample_count",
+        "complete_sample_count",
+        "positive_short_horizon_count",
+        "positive_short_horizons",
+        "best_short_horizon_hours",
+        "best_short_avg_net_bps",
+        "win_rate",
+        "p25_net_bps",
+        "maturity_state",
+        "recommended_mode",
+        "maturity_reasons",
+        "cost_source_mix",
         "source",
     ],
     "reports/expanded_universe_promotion_queue.csv": [
@@ -2503,6 +2548,8 @@ def _dataset_members(frames: dict[str, pl.DataFrame]) -> dict[str, _MemberPayloa
     expanded_events = frames.get("expanded_universe_candidate_event", pl.DataFrame())
     expanded_labels = frames.get("expanded_universe_candidate_label", pl.DataFrame())
     expanded_promotion = frames.get("expanded_universe_promotion_queue", pl.DataFrame())
+    expanded_maturity = frames.get("expanded_universe_candidate_maturity", pl.DataFrame())
+    expanded_watchlist = frames.get("expanded_universe_watchlist", pl.DataFrame())
     expanded_universe = frames.get("expanded_crypto_universe_shadow", pl.DataFrame())
     symbol_quality = frames.get("symbol_quality_score", pl.DataFrame())
     expanded_outcomes = frames.get(
@@ -2631,6 +2678,21 @@ def _dataset_members(frames: dict[str, pl.DataFrame]) -> dict[str, _MemberPayloa
             quality=expanded_quality if not expanded_quality.is_empty() else symbol_quality,
             events=expanded_events,
             labels=expanded_labels,
+            promotion_queue=expanded_promotion,
+            maturity=expanded_maturity,
+            watchlist=expanded_watchlist,
+        ),
+        "reports/expanded_universe_watchlist.csv": _csv_member(
+            "reports/expanded_universe_watchlist.csv",
+            expanded_watchlist,
+        ),
+        "reports/expanded_universe_candidate_maturity.csv": _csv_member(
+            "reports/expanded_universe_candidate_maturity.csv",
+            expanded_maturity,
+        ),
+        "reports/expanded_universe_promotion_summary.md": _expanded_universe_promotion_summary_md(
+            maturity=expanded_maturity,
+            watchlist=expanded_watchlist,
             promotion_queue=expanded_promotion,
         ),
         "reports/expanded_universe_promotion_queue.csv": _csv_member(
@@ -6423,6 +6485,8 @@ def _expanded_universe_daily_md(
     events: pl.DataFrame,
     labels: pl.DataFrame,
     promotion_queue: pl.DataFrame,
+    maturity: pl.DataFrame,
+    watchlist: pl.DataFrame,
 ) -> str:
     lines = [
         "# Expanded Crypto Universe Automation",
@@ -6434,6 +6498,8 @@ def _expanded_universe_daily_md(
         f"- candidate events: {events.height}",
         f"- labels: {labels.height}",
         f"- promotion queue rows: {promotion_queue.height}",
+        f"- maturity rows: {maturity.height}",
+        f"- watchlist rows: {watchlist.height}",
         "",
         "## Promotion counts",
     ]
@@ -6448,6 +6514,53 @@ def _expanded_universe_daily_md(
             "## Safety",
             "- max_live_notional_usdt is forced to 0 for expanded universe rows.",
             "- LIVE_SMALL_CANDIDATE requires manual enablement and is not emitted in stage one.",
+        ]
+    )
+    return "\n".join(lines) + "\n"
+
+
+def _expanded_universe_promotion_summary_md(
+    *,
+    maturity: pl.DataFrame,
+    watchlist: pl.DataFrame,
+    promotion_queue: pl.DataFrame,
+) -> str:
+    lines = [
+        "# Expanded Universe Promotion Summary",
+        "",
+        "扩展币池只做 research/shadow/paper，不自动替换 ETH/BNB，也不改变 V5 live symbols。",
+        "",
+        "## Maturity counts",
+    ]
+    maturity_counts = _value_counts(maturity, "maturity_state")
+    if maturity_counts:
+        lines.extend(f"- {state}: {count}" for state, count in sorted(maturity_counts.items()))
+    else:
+        lines.append("- no maturity rows")
+    lines.extend(["", "## Watchlists"])
+    watch_counts = _value_counts(watchlist, "watchlist_type")
+    if watch_counts:
+        lines.extend(f"- {kind}: {count}" for kind, count in sorted(watch_counts.items()))
+    else:
+        lines.append("- no watchlist rows")
+    lines.extend(["", "## Promotion states"])
+    promotion_counts = _value_counts(promotion_queue, "promotion_state")
+    if promotion_counts:
+        lines.extend(
+            f"- {state}: {count}" for state, count in sorted(promotion_counts.items())
+        )
+    else:
+        lines.append("- no promotion rows")
+    lines.extend(
+        [
+            "",
+            "## Rules",
+            "- complete_sample_count < 10: RESEARCH.",
+            "- complete_sample_count >= 10 and at least two positive short horizons: KEEP_SHADOW.",
+            "- complete_sample_count >= 30, win_rate > 55%, p25_net_bps > -50: PAPER_READY.",
+            "- LIVE_SMALL_READY is not emitted by expanded universe automation.",
+            "- replacement candidates require strategy evidence and paper evidence, "
+            "not quality_score alone.",
         ]
     )
     return "\n".join(lines) + "\n"

@@ -8,6 +8,8 @@ from quant_lab.data.lake import read_parquet_dataset, write_parquet_dataset
 from quant_lab.research.alpha_discovery import build_and_publish_alpha_discovery_board
 from quant_lab.research.expanded_universe import (
     build_and_publish_expanded_crypto_universe_shadow,
+    build_expanded_universe_candidate_maturity,
+    build_expanded_universe_watchlist,
     build_symbol_quality_score,
 )
 from quant_lab.web import readers
@@ -31,10 +33,11 @@ def test_expanded_universe_filters_and_recommends_replacements(tmp_path):
     quality = read_parquet_dataset(lake_root / "gold" / "symbol_quality_score")
     rows = {row["symbol"]: row for row in quality.to_dicts()}
 
-    assert rows["XRP-USDT"]["recommendation"] in {
-        "candidate_replace_eth",
-        "candidate_replace_bnb",
-    }
+    assert rows["XRP-USDT"]["recommendation"] == "candidate_for_expanded_paper_universe"
+    assert not any(
+        str(row["recommendation"]).startswith("candidate_replace_")
+        for row in quality.to_dicts()
+    )
     assert "high_risk_meme" in json.loads(rows["DOGE-USDT"]["blocking_reasons"])
     assert "low_quote_volume" in json.loads(rows["LOW-USDT"]["blocking_reasons"])
 
@@ -49,6 +52,8 @@ def test_expanded_universe_filters_and_recommends_replacements(tmp_path):
     assert latest["schema_version"] == "expanded_crypto_recommendations.v0.1"
     assert latest["min_stable_output_days"] == 7
     assert "XRP-USDT" in latest["top_symbols_json"]
+    assert json.loads(latest["candidate_replace_eth_json"]) == []
+    assert json.loads(latest["candidate_replace_bnb_json"]) == []
 
 
 def test_symbol_quality_uses_btc_correlation_and_spread_filters():
@@ -130,6 +135,8 @@ def test_web_strategy_page_reads_expanded_universe(tmp_path):
     assert not summary["symbol_quality_score"].is_empty()
     assert not summary["expanded_crypto_recommendations"].is_empty()
     assert "expanded_universe_candidate" in summary
+    assert "expanded_universe_watchlist" in summary
+    assert "expanded_universe_candidate_maturity" in summary
 
 
 def test_expanded_universe_automation_builds_events_labels_and_promotion(tmp_path):
@@ -180,10 +187,79 @@ def test_expanded_universe_automation_builds_events_labels_and_promotion(tmp_pat
     assert not queue.is_empty()
     assert "LIVE_SMALL_CANDIDATE" not in set(queue["promotion_state"].to_list())
     assert queue["max_live_notional_usdt"].max() == 0.0
+    watchlist = read_parquet_dataset(lake_root / "gold" / "expanded_universe_watchlist")
+    assert {
+        "quality_watchlist",
+        "outcome_watchlist",
+    }.issubset(set(watchlist["watchlist_type"].to_list()))
+    maturity = read_parquet_dataset(lake_root / "gold" / "expanded_universe_candidate_maturity")
+    assert not maturity.is_empty()
 
     build_and_publish_alpha_discovery_board(lake_root, as_of_date="2026-05-24")
     board = read_parquet_dataset(lake_root / "gold" / "alpha_discovery_board")
     assert "expanded_paper" in set(board["universe_type"].drop_nulls().to_list())
+
+
+def test_expanded_universe_maturity_rules_and_watchlist():
+    generated_at = datetime(2026, 5, 24, tzinfo=UTC)
+    evidence = pl.DataFrame(
+        [
+            _expanded_evidence_row("NEAR-USDT", "Alpha6Factor", 4, 12, 12, 40.0, 0.60, -20.0),
+            _expanded_evidence_row("NEAR-USDT", "Alpha6Factor", 8, 12, 12, 25.0, 0.58, -30.0),
+            _expanded_evidence_row("WLD-USDT", "Alpha6Factor", 4, 8, 8, 80.0, 0.75, -10.0),
+            _expanded_evidence_row("OKB-USDT", "Alpha6Factor", 4, 35, 35, 65.0, 0.62, -25.0),
+        ]
+    )
+    maturity = build_expanded_universe_candidate_maturity(
+        evidence,
+        as_of_date=generated_at.date(),
+        generated_at=generated_at,
+    )
+    rows = {
+        (row["symbol"], row["strategy_candidate"]): row for row in maturity.to_dicts()
+    }
+    assert rows[("NEAR-USDT", "Alpha6Factor")]["maturity_state"] == "KEEP_SHADOW"
+    assert rows[("WLD-USDT", "Alpha6Factor")]["maturity_state"] == "RESEARCH"
+    assert rows[("OKB-USDT", "Alpha6Factor")]["maturity_state"] == "PAPER_READY"
+
+    quality = pl.DataFrame(
+        [
+            {
+                "as_of_date": "2026-05-24",
+                "generated_at": generated_at,
+                "schema_version": "expanded_crypto_universe_shadow.v0.1",
+                "symbol": "HYPE-USDT",
+                "quote_volume_24h": 1_000_000.0,
+                "avg_spread_bps": 5.0,
+                "min_notional_ok": True,
+                "data_coverage": 1.0,
+                "avg_24h_net_bps": None,
+                "avg_48h_net_bps": None,
+                "win_rate_24h": None,
+                "win_rate_48h": None,
+                "f3_dominant_negative_score": 0.0,
+                "f4_confirmed_win_rate": None,
+                "f5_confirmed_win_rate": None,
+                "pullback_shadow_avg_24h": None,
+                "late_chase_loss_rate": 0.0,
+                "negative_expectancy_bps": 0.0,
+                "btc_correlation": 0.1,
+                "quality_score": 75.0,
+                "recommendation": "candidate_for_expanded_paper_universe",
+                "blocking_reasons": "[]",
+                "source": "fixture",
+            }
+        ]
+    )
+    watchlist = build_expanded_universe_watchlist(
+        quality,
+        maturity,
+        as_of_date=generated_at.date(),
+        generated_at=generated_at,
+    )
+    assert "TRX-USDT" in set(watchlist["symbol"].to_list())
+    assert "NEAR-USDT" in set(watchlist["symbol"].to_list())
+    assert "outcome_watchlist" in set(watchlist["watchlist_type"].to_list())
 
 
 def _write_market(lake_root: Path) -> None:
@@ -315,5 +391,44 @@ def _evidence_row(
         "start_ts": datetime(2026, 5, 1, tzinfo=UTC),
         "end_ts": datetime(2026, 5, 21, tzinfo=UTC),
         "created_at": datetime(2026, 5, 21, tzinfo=UTC),
+        "source": "fixture",
+    }
+
+
+def _expanded_evidence_row(
+    symbol: str,
+    candidate: str,
+    horizon: int,
+    sample_count: int,
+    complete_sample_count: int,
+    avg_net_bps: float,
+    win_rate: float,
+    p25_net_bps: float,
+) -> dict[str, object]:
+    return {
+        "strategy": "v5",
+        "evidence_version": "test",
+        "as_of_date": "2026-05-24",
+        "strategy_candidate": candidate,
+        "candidate_name": candidate,
+        "source_type": "expanded_universe_candidate_label",
+        "symbol": symbol,
+        "universe_type": "expanded_paper",
+        "replacement_target_candidate": "",
+        "expansion_state": "RESEARCH",
+        "regime_state": "expanded_universe",
+        "horizon_hours": horizon,
+        "sample_count": sample_count,
+        "complete_sample_count": complete_sample_count,
+        "avg_net_bps": avg_net_bps,
+        "median_net_bps": avg_net_bps,
+        "p25_net_bps": p25_net_bps,
+        "win_rate": win_rate,
+        "cost_source_mix": json.dumps({"public_spread_proxy": complete_sample_count}),
+        "decision": "KEEP_SHADOW",
+        "decision_reasons": "fixture",
+        "start_ts": datetime(2026, 5, 1, tzinfo=UTC),
+        "end_ts": datetime(2026, 5, 24, tzinfo=UTC),
+        "created_at": datetime(2026, 5, 24, tzinfo=UTC),
         "source": "fixture",
     }

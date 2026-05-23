@@ -1665,6 +1665,43 @@ def test_expert_exports_stale_running_job_is_marked_failed(tmp_path, monkeypatch
     assert "exceeded web status timeout" in status["error"]
 
 
+def test_expert_exports_running_job_recovers_when_process_exited_after_pack(
+    tmp_path, monkeypatch
+):
+    exports_root = tmp_path / "exports"
+    exports_root.mkdir()
+    status_path = exports_root / ".quant_lab_web_export_2026-05-16.json"
+    status_path.write_text(
+        json.dumps(
+            {
+                "state": "running",
+                "pid": 4242,
+                "started_at": "2026-05-16T00:00:00+00:00",
+            }
+        ),
+        encoding="utf-8",
+    )
+    pack_path = exports_root / "quant_lab_expert_pack_2026-05-16_20260516T100000+0800.zip"
+    pack_path.write_bytes(b"zip")
+    new_mtime = datetime(2026, 5, 16, 1, 0, tzinfo=UTC).timestamp()
+    os.utime(pack_path, (new_mtime, new_mtime))
+    monkeypatch.setattr(expert_exports, "_pid_is_running", lambda pid: False)
+    monkeypatch.setenv("QUANT_LAB_WEB_EXPORT_STATUS_STALE_SECONDS", "999999999")
+
+    status = expert_exports._poll_export_job(exports_root, "2026-05-16")
+
+    assert status["state"] == "succeeded"
+    assert status["zip_path"] == str(pack_path)
+    assert status["recovered_from_failed_status"] is True
+
+
+def test_expert_exports_linux_zombie_pid_is_not_running(monkeypatch):
+    monkeypatch.setattr(expert_exports.os, "name", "posix")
+    monkeypatch.setattr(expert_exports, "_linux_proc_state", lambda pid: "Z")
+
+    assert expert_exports._pid_is_running(4242) is False
+
+
 def test_expert_exports_failed_status_recovers_when_new_pack_exists(tmp_path):
     exports_root = tmp_path / "exports"
     exports_root.mkdir()

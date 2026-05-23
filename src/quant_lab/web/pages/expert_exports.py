@@ -21,7 +21,7 @@ WEB_EXPORT_MODE = "snapshot_only"
 DEFAULT_DOWNLOAD_PACK_LIMIT = 5
 DEFAULT_DOWNLOAD_MAX_BYTES = 128 * 1024 * 1024
 DEFAULT_EXPORT_STATUS_STALE_SECONDS = 30 * 60
-DEFAULT_WEB_EXPORT_MEMORY_LIMIT_MB = 3072
+DEFAULT_WEB_EXPORT_MEMORY_LIMIT_MB = 0
 
 
 def render(
@@ -175,13 +175,17 @@ def _export_job_script() -> str:
     return r"""
 import json
 import os
-import resource
 import sys
 import traceback
 from datetime import UTC, datetime
 from pathlib import Path
 
 from quant_lab.export.daily import export_daily_pack
+
+try:
+    import resource
+except ImportError:
+    resource = None
 
 status_path = Path(sys.argv[1])
 lake_root = Path(sys.argv[2])
@@ -196,8 +200,8 @@ def write_status(payload):
 
 
 started_at = datetime.now(UTC).isoformat()
-memory_mb = int(os.environ.get("QUANT_LAB_WEB_EXPORT_MEMORY_LIMIT_MB", "3072"))
-if memory_mb > 0:
+memory_mb = int(os.environ.get("QUANT_LAB_WEB_EXPORT_MEMORY_LIMIT_MB", "0"))
+if resource is not None and memory_mb > 0:
     limit_bytes = memory_mb * 1024 * 1024
     resource.setrlimit(resource.RLIMIT_AS, (limit_bytes, limit_bytes))
 write_status({
@@ -301,8 +305,16 @@ def _poll_export_job(exports_root: Path, export_date: str) -> dict[str, Any]:
         **status,
         "state": "failed",
         "error": "export process exited before writing completion status",
-        "finished_at": datetime.now(UTC).isoformat(),
     }
+    recovered = _recover_failed_export_status_from_pack(
+        exports_root,
+        export_date,
+        status_path,
+        status,
+    )
+    if recovered is not None:
+        return recovered
+    status["finished_at"] = datetime.now(UTC).isoformat()
     _write_export_job_status(status_path, status)
     return status
 
@@ -402,6 +414,11 @@ def _pid_is_running(pid: int) -> bool:
         except (OSError, subprocess.SubprocessError):
             return False
         return str(pid) in result.stdout
+    proc_state = _linux_proc_state(pid)
+    if proc_state == "Z":
+        return False
+    if proc_state is not None:
+        return True
     try:
         os.kill(pid, 0)
     except ProcessLookupError:
@@ -411,6 +428,20 @@ def _pid_is_running(pid: int) -> bool:
     except OSError:
         return os.name == "nt"
     return True
+
+
+def _linux_proc_state(pid: int) -> str | None:
+    if os.name == "nt":
+        return None
+    try:
+        stat_text = Path(f"/proc/{pid}/stat").read_text(encoding="utf-8", errors="replace")
+    except OSError:
+        return None
+    try:
+        after_name = stat_text.rsplit(")", maxsplit=1)[1].strip()
+    except IndexError:
+        return None
+    return after_name.split(maxsplit=1)[0] if after_name else None
 
 
 def _generate_today_pack(st: Any, *, lake_root: Path, exports_root: Path) -> Path | None:

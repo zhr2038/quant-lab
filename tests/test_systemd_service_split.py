@@ -176,10 +176,10 @@ def test_daily_export_template_is_packaging_only():
     assert "--no-pre-export-v5-refresh" in unit
 
 
-def test_web_export_memory_limit_allows_snapshot_packaging():
+def test_web_export_relies_on_systemd_memory_limit_for_snapshot_packaging():
     unit = _unit("quant-lab-web.service")
 
-    assert "QUANT_LAB_WEB_EXPORT_MEMORY_LIMIT_MB=3072" in unit
+    assert "QUANT_LAB_WEB_EXPORT_MEMORY_LIMIT_MB=0" in unit
     assert "MemoryMax=5G" in unit
 
 

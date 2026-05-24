@@ -17,7 +17,11 @@ from quant_lab.research.alpha_discovery import (
     build_and_publish_alpha_discovery_board,
     normalize_alpha_discovery_board_decisions,
 )
-from quant_lab.research.paper_tracking import build_and_publish_paper_strategy_tracking
+from quant_lab.research.paper_tracking import (
+    build_and_publish_paper_strategy_tracking,
+    build_paper_strategy_runs_from_v5,
+    build_paper_strategy_runs_report_from_v5,
+)
 
 
 def test_alpha_discovery_board_decisions_are_candidate_symbol_regime_horizon(tmp_path):
@@ -864,6 +868,111 @@ def test_eth_f3_weak_short_horizons_keep_paper_when_48h_sample_is_positive(tmp_p
     assert "paper_negative_24h_or_48h_streak" in reasons
     assert "eth_f3_paper_only_no_live" in reasons
     assert "eth_f3_48h_paper_pnl_negative" not in reasons
+
+
+def test_eth_f3_downgraded_portfolio_disables_new_v5_paper_entries(tmp_path):
+    lake = tmp_path / "lake"
+    bundle_ts = datetime(2026, 5, 24, 12, tzinfo=UTC)
+    v5_rows = pl.DataFrame(
+        [
+            {
+                "as_of_date": "2026-05-24",
+                "proposal_id": "ETH_USDT_F3_DOMINANT_ENTRY_PAPER_V1",
+                "strategy_candidate": "v5.f3_dominant_entry",
+                "symbol": "ETH-USDT",
+                "would_enter": "true",
+                "would_size_usdt": "100.0",
+                "final_decision": "no_order",
+                "alpha6_side": "sell",
+                "f3_vol_adj_ret": "-0.25",
+                "final_score": "72.0",
+                "current_regime": "TREND_UP",
+                "paper_pnl_bps_24h": "-11.0",
+                "paper_pnl_bps_48h": "-18.0",
+                "raw_payload_json": "{}",
+                "bundle_ts": bundle_ts,
+            }
+        ]
+    )
+    portfolio = pl.DataFrame(
+        [
+            {
+                "as_of_date": "2026-05-24",
+                "research_id": "ETH_F3_DOMINANT_ENTRY_PAPER_V1",
+                "strategy_candidate": "v5.f3_dominant_entry",
+                "symbol": "ETH-USDT",
+                "status": "DOWNGRADED_FROM_PAPER",
+                "created_at": datetime(2026, 5, 24, 0, tzinfo=UTC),
+            }
+        ]
+    )
+    write_parquet_dataset(v5_rows, lake / "silver" / "v5_paper_strategy_run")
+    write_parquet_dataset(portfolio, lake / "gold" / "research_portfolio_status")
+
+    build_and_publish_paper_strategy_tracking(lake, as_of_date="2026-05-24")
+
+    run = read_parquet_dataset(lake / "gold" / "paper_strategy_runs").to_dicts()[0]
+    assert run["would_enter"] is False
+    assert run["would_size_usdt"] == 0.0
+    assert run["paper_disabled_by_research_portfolio"] is True
+    assert run["no_sample_reason"] == "downngraded_from_paper_no_new_entry"
+    assert run["paper_pnl_bps_24h"] is None
+    assert run["tracking_stage"] == "paper_review_disabled_by_research_portfolio"
+
+    report = build_paper_strategy_runs_report_from_v5(
+        v5_rows,
+        research_portfolio=portfolio,
+    ).to_dicts()[0]
+    assert report["would_enter"] is False
+    assert report["paper_disabled_by_research_portfolio"] is True
+    assert report["no_sample_reason"] == "downngraded_from_paper_no_new_entry"
+
+
+def test_eth_f3_new_v5_paper_entry_requires_buy_side_positive_f3_score_and_regime():
+    bad_rows = pl.DataFrame(
+        [
+            {
+                "as_of_date": "2026-05-24",
+                "proposal_id": "ETH_USDT_F3_DOMINANT_ENTRY_PAPER_V1",
+                "strategy_candidate": "v5.f3_dominant_entry",
+                "symbol": "ETH-USDT",
+                "would_enter": "true",
+                "final_decision": "no_order",
+                "alpha6_side": "sell",
+                "f3_vol_adj_ret": "0.5",
+                "final_score": "72.0",
+                "current_regime": "TREND_UP",
+                "raw_payload_json": "{}",
+            }
+        ]
+    )
+    good_rows = pl.DataFrame(
+        [
+            {
+                "as_of_date": "2026-05-24",
+                "proposal_id": "ETH_USDT_F3_DOMINANT_ENTRY_PAPER_V1",
+                "strategy_candidate": "v5.f3_dominant_entry",
+                "symbol": "ETH-USDT",
+                "would_enter": "true",
+                "final_decision": "paper_entry",
+                "alpha6_side": "buy",
+                "f3_vol_adj_ret": "0.5",
+                "final_score": "72.0",
+                "current_regime": "TREND_UP",
+                "would_size_usdt": "100.0",
+                "raw_payload_json": "{}",
+            }
+        ]
+    )
+
+    blocked = build_paper_strategy_runs_from_v5(bad_rows).to_dicts()[0]
+    allowed = build_paper_strategy_runs_from_v5(good_rows).to_dicts()[0]
+
+    assert blocked["would_enter"] is False
+    assert blocked["no_sample_reason"] == "eth_f3_alpha6_side_not_buy_no_new_entry"
+    assert blocked["tracking_stage"] == "paper_review_entry_conditions_not_met"
+    assert allowed["would_enter"] is True
+    assert allowed["would_size_usdt"] == 100.0
 
 
 def test_sol_protect_negative_entry_days_downgrades_to_keep_shadow(tmp_path):

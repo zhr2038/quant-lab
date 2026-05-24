@@ -10,13 +10,16 @@ import polars as pl
 from pydantic import BaseModel, ConfigDict, Field
 
 from quant_lab.data.lake import read_parquet_dataset, write_parquet_dataset
+from quant_lab.research.advisory_overrides import portfolio_status_overrides_by_identifier
 from quant_lab.research.alpha_discovery import normalize_alpha_discovery_board_decisions
 from quant_lab.strategy_telemetry.sanitize import safe_json_dumps
+from quant_lab.symbols import normalize_symbol
 
 PAPER_STRATEGY_RUNS_DATASET = Path("gold") / "paper_strategy_runs"
 PAPER_STRATEGY_DAILY_DATASET = Path("gold") / "paper_strategy_daily"
 PAPER_SLIPPAGE_COVERAGE_DATASET = Path("gold") / "paper_slippage_coverage"
 ALPHA_DISCOVERY_BOARD_DATASET = Path("gold") / "alpha_discovery_board"
+RESEARCH_PORTFOLIO_STATUS_DATASET = Path("gold") / "research_portfolio_status"
 V5_PAPER_STRATEGY_RUN_DATASET = Path("silver") / "v5_paper_strategy_run"
 V5_PAPER_STRATEGY_DAILY_DATASET = Path("silver") / "v5_paper_strategy_daily"
 V5_PAPER_SLIPPAGE_COVERAGE_DATASET = Path("silver") / "v5_paper_slippage_coverage"
@@ -31,6 +34,7 @@ ETH_F3_STRATEGY_CANDIDATE = "v5.f3_dominant_entry"
 ETH_F3_SYMBOL = "ETH-USDT"
 ETH_F3_PRIMARY_REVIEW_HORIZON = "48h"
 ETH_F3_MIN_PRIMARY_COMPLETE_COUNT = 30
+ETH_F3_DISABLED_NO_SAMPLE_REASON = "downngraded_from_paper_no_new_entry"
 
 PAPER_RUN_REPORT_SCHEMA = {
     "as_of_date": pl.Utf8,
@@ -44,6 +48,7 @@ PAPER_RUN_REPORT_SCHEMA = {
     "would_exit": pl.Boolean,
     "final_decision": pl.Utf8,
     "no_sample_reason": pl.Utf8,
+    "paper_disabled_by_research_portfolio": pl.Boolean,
     "risk_level": pl.Utf8,
     "alpha6_score": pl.Float64,
     "alpha6_side": pl.Utf8,
@@ -79,10 +84,12 @@ PAPER_RUN_SCHEMA = {
     "board_decision": pl.Utf8,
     "suggested_horizon": pl.Utf8,
     "horizon_hours": pl.Int64,
+    "no_sample_reason": pl.Utf8,
     "would_enter": pl.Boolean,
     "would_exit": pl.Boolean,
     "would_size": pl.Float64,
     "would_size_usdt": pl.Float64,
+    "paper_disabled_by_research_portfolio": pl.Boolean,
     "paper_pnl_bps": pl.Float64,
     "paper_pnl_bps_4h": pl.Float64,
     "paper_pnl_bps_8h": pl.Float64,
@@ -238,11 +245,15 @@ def build_and_publish_paper_strategy_tracking(
     v5_slippage_raw = latest_v5_paper_frame(
         read_parquet_dataset(root / V5_PAPER_SLIPPAGE_COVERAGE_DATASET)
     )
+    research_portfolio = read_parquet_dataset(root / RESEARCH_PORTFOLIO_STATUS_DATASET)
     if any(
         not frame.is_empty()
         for frame in [v5_runs_raw, v5_daily_raw, v5_slippage_raw]
     ):
-        runs = build_paper_strategy_runs_from_v5(v5_runs_raw)
+        runs = build_paper_strategy_runs_from_v5(
+            v5_runs_raw,
+            research_portfolio=research_portfolio,
+        )
         daily = build_paper_strategy_daily_from_v5(v5_daily_raw)
         if not runs.is_empty():
             daily = enrich_paper_strategy_daily_from_runs(
@@ -653,10 +664,12 @@ def _pending_run_row(
         "board_decision": "PAPER_READY",
         "suggested_horizon": _suggested_horizon(row),
         "horizon_hours": int(_optional_float(row.get("horizon_hours")) or 0),
+        "no_sample_reason": "waiting_for_v5_paper_telemetry",
         "would_enter": False,
         "would_exit": False,
         "would_size": 0.0,
         "would_size_usdt": 0.0,
+        "paper_disabled_by_research_portfolio": False,
         "paper_pnl_bps": None,
         "paper_pnl_bps_4h": None,
         "paper_pnl_bps_8h": None,
@@ -689,19 +702,37 @@ def _pending_run_row(
     }
 
 
-def build_paper_strategy_runs_from_v5(frame: pl.DataFrame) -> pl.DataFrame:
+def build_paper_strategy_runs_from_v5(
+    frame: pl.DataFrame,
+    *,
+    research_portfolio: pl.DataFrame | None = None,
+) -> pl.DataFrame:
     if frame.is_empty():
         return _empty_frame(PAPER_RUN_SCHEMA)
     created_at = datetime.now(UTC).isoformat()
-    rows = [_v5_run_row(row, created_at) for row in frame.to_dicts()]
+    portfolio_frame = research_portfolio if research_portfolio is not None else pl.DataFrame()
+    portfolio_overrides = _paper_portfolio_overrides(portfolio_frame)
+    rows = [
+        _v5_run_row(row, created_at, portfolio_overrides=portfolio_overrides)
+        for row in frame.to_dicts()
+    ]
     return pl.DataFrame(rows, schema=PAPER_RUN_SCHEMA, orient="row")
 
 
-def build_paper_strategy_runs_report_from_v5(frame: pl.DataFrame) -> pl.DataFrame:
+def build_paper_strategy_runs_report_from_v5(
+    frame: pl.DataFrame,
+    *,
+    research_portfolio: pl.DataFrame | None = None,
+) -> pl.DataFrame:
     if frame.is_empty():
         return _empty_frame(PAPER_RUN_REPORT_SCHEMA)
     created_at = datetime.now(UTC).isoformat()
-    rows = [_v5_run_report_row(row, created_at) for row in frame.to_dicts()]
+    portfolio_frame = research_portfolio if research_portfolio is not None else pl.DataFrame()
+    portfolio_overrides = _paper_portfolio_overrides(portfolio_frame)
+    rows = [
+        _v5_run_report_row(row, created_at, portfolio_overrides=portfolio_overrides)
+        for row in frame.to_dicts()
+    ]
     return pl.DataFrame(rows, schema=PAPER_RUN_REPORT_SCHEMA, orient="row")
 
 
@@ -939,7 +970,184 @@ def _align_slippage_cost_source_mix(
     return pl.DataFrame(rows, schema=PAPER_SLIPPAGE_SCHEMA, orient="row")
 
 
-def _v5_run_report_row(row: dict[str, Any], created_at: str) -> dict[str, Any]:
+def _paper_portfolio_overrides(
+    research_portfolio: pl.DataFrame,
+) -> dict[tuple[str, str], dict[str, Any]]:
+    if research_portfolio.is_empty():
+        return {}
+    return portfolio_status_overrides_by_identifier(research_portfolio)
+
+
+def _paper_entry_policy(
+    *,
+    row: dict[str, Any],
+    payload: dict[str, Any],
+    proposal_id: str,
+    candidate: str,
+    symbol: str,
+    raw_would_enter: bool,
+    portfolio_overrides: dict[tuple[str, str], dict[str, Any]],
+) -> dict[str, Any]:
+    if _eth_f3_disabled_by_research_portfolio(
+        row=row,
+        payload=payload,
+        proposal_id=proposal_id,
+        candidate=candidate,
+        symbol=symbol,
+        portfolio_overrides=portfolio_overrides,
+    ):
+        return {
+            "would_enter": False,
+            "no_sample_reason": ETH_F3_DISABLED_NO_SAMPLE_REASON,
+            "paper_disabled_by_research_portfolio": True,
+            "tracking_stage": "paper_review_disabled_by_research_portfolio",
+            "clear_paper_pnl": True,
+        }
+    if (
+        raw_would_enter
+        and _is_eth_f3_tracking_row(proposal_id, candidate, symbol)
+        and _eth_f3_has_restore_gate_fields(row, payload)
+    ):
+        restore_reason = _eth_f3_restore_block_reason(row, payload)
+        if restore_reason:
+            return {
+                "would_enter": False,
+                "no_sample_reason": restore_reason,
+                "paper_disabled_by_research_portfolio": False,
+                "tracking_stage": "paper_review_entry_conditions_not_met",
+                "clear_paper_pnl": True,
+            }
+    return {
+        "would_enter": raw_would_enter,
+        "no_sample_reason": "",
+        "paper_disabled_by_research_portfolio": False,
+        "tracking_stage": "",
+        "clear_paper_pnl": False,
+    }
+
+
+def _eth_f3_disabled_by_research_portfolio(
+    *,
+    row: dict[str, Any],
+    payload: dict[str, Any],
+    proposal_id: str,
+    candidate: str,
+    symbol: str,
+    portfolio_overrides: dict[tuple[str, str], dict[str, Any]],
+) -> bool:
+    if not _is_eth_f3_tracking_row(proposal_id, candidate, symbol):
+        return False
+    override = _eth_f3_portfolio_override(portfolio_overrides, proposal_id, candidate, symbol)
+    if override is None:
+        return False
+    status = str(override.get("status") or "").strip().upper()
+    if status != "DOWNGRADED_FROM_PAPER":
+        return False
+    return _paper_row_is_on_or_after_override(row, payload, override)
+
+
+def _eth_f3_portfolio_override(
+    portfolio_overrides: dict[tuple[str, str], dict[str, Any]],
+    proposal_id: str,
+    candidate: str,
+    symbol: str,
+) -> dict[str, Any] | None:
+    normalized_symbol = normalize_symbol(symbol) or ETH_F3_SYMBOL
+    identifiers = {
+        proposal_id,
+        candidate,
+        ETH_F3_PAPER_PROPOSAL_ID,
+        "ETH_F3_DOMINANT_ENTRY_PAPER_V1",
+        ETH_F3_STRATEGY_CANDIDATE,
+        "v5.eth_f3_dominant_entry",
+    }
+    symbols = {normalized_symbol, ETH_F3_SYMBOL}
+    for identifier in identifiers:
+        if not identifier:
+            continue
+        for item_symbol in symbols:
+            override = portfolio_overrides.get((identifier, item_symbol))
+            if override is not None:
+                return override
+    return None
+
+
+def _paper_row_is_on_or_after_override(
+    row: dict[str, Any],
+    payload: dict[str, Any],
+    override: dict[str, Any],
+) -> bool:
+    row_day = _safe_date(_as_of_date(row, payload))
+    override_day = _safe_date(override.get("as_of_date") or override.get("last_review_date"))
+    if row_day is None or override_day is None:
+        return True
+    return row_day >= override_day
+
+
+def _is_eth_f3_tracking_row(proposal_id: str, candidate: str, symbol: str) -> bool:
+    normalized_symbol = normalize_symbol(symbol)
+    return normalized_symbol == ETH_F3_SYMBOL and (
+        proposal_id in {ETH_F3_PAPER_PROPOSAL_ID, "ETH_F3_DOMINANT_ENTRY_PAPER_V1"}
+        or candidate in {ETH_F3_STRATEGY_CANDIDATE, "v5.eth_f3_dominant_entry"}
+    )
+
+
+def _eth_f3_has_restore_gate_fields(row: dict[str, Any], payload: dict[str, Any]) -> bool:
+    return any(
+        _field(row, payload, field) != ""
+        for field in [
+            "alpha6_side",
+            "f3_vol_adj_ret",
+            "final_score",
+            "current_regime",
+            "regime_state",
+            "market_regime",
+            "final_decision",
+            "decision",
+        ]
+    )
+
+
+def _eth_f3_restore_block_reason(row: dict[str, Any], payload: dict[str, Any]) -> str | None:
+    alpha6_side = str(_field(row, payload, "alpha6_side") or "").strip().lower()
+    if alpha6_side != "buy":
+        return "eth_f3_alpha6_side_not_buy_no_new_entry"
+    f3_value = _optional_float(_field(row, payload, "f3_vol_adj_ret", "f3"))
+    if f3_value is None or f3_value <= 0:
+        return "eth_f3_f3_vol_adj_ret_not_positive_no_new_entry"
+    if _optional_float(_field(row, payload, "final_score")) is None:
+        return "eth_f3_final_score_missing_no_new_entry"
+    regime = str(
+        _field(row, payload, "current_regime", "regime_state", "market_regime") or ""
+    ).strip().upper()
+    if regime == "RISK_OFF":
+        return "eth_f3_risk_off_no_new_entry"
+    final_decision = str(_field(row, payload, "final_decision", "decision") or "").lower()
+    if final_decision in {"no_order", "none", "skip", "skipped"}:
+        return "eth_f3_final_decision_no_order_no_new_entry"
+    return None
+
+
+def _safe_date(value: Any) -> date | None:
+    if isinstance(value, date) and not isinstance(value, datetime):
+        return value
+    if isinstance(value, datetime):
+        return value.astimezone(UTC).date() if value.tzinfo else value.date()
+    text = str(value or "").strip()
+    if not text:
+        return None
+    try:
+        return date.fromisoformat(text[:10])
+    except ValueError:
+        return None
+
+
+def _v5_run_report_row(
+    row: dict[str, Any],
+    created_at: str,
+    *,
+    portfolio_overrides: dict[tuple[str, str], dict[str, Any]] | None = None,
+) -> dict[str, Any]:
     payload = _payload(row)
     candidate = _field(
         row,
@@ -952,8 +1160,24 @@ def _v5_run_report_row(row: dict[str, Any], created_at: str) -> dict[str, Any]:
     symbol = _field(row, payload, "symbol", "normalized_symbol")
     strategy_id = _field(row, payload, "strategy_id", "proposal_id")
     proposal_id = strategy_id or _proposal_id_for(candidate, symbol)
-    would_enter = _optional_bool(_field(row, payload, "would_enter", "enter")) is True
+    raw_would_enter = _optional_bool(_field(row, payload, "would_enter", "enter")) is True
+    enter_policy = _paper_entry_policy(
+        row=row,
+        payload=payload,
+        proposal_id=proposal_id,
+        candidate=candidate,
+        symbol=symbol,
+        raw_would_enter=raw_would_enter,
+        portfolio_overrides=portfolio_overrides or {},
+    )
     would_exit = _optional_bool(_field(row, payload, "would_exit", "exit")) is True
+    paper_pnl_bps = _optional_float(_field(row, payload, "paper_pnl_bps", "pnl_bps"))
+    paper_pnl_usdt = _optional_float(
+        _field(row, payload, "paper_pnl_usdt", "paper_pnl", "pnl_usdt")
+    )
+    if enter_policy["clear_paper_pnl"]:
+        paper_pnl_bps = None
+        paper_pnl_usdt = None
     return {
         "as_of_date": _as_of_date(row, payload),
         "strategy_id": strategy_id or proposal_id,
@@ -962,10 +1186,14 @@ def _v5_run_report_row(row: dict[str, Any], created_at: str) -> dict[str, Any]:
         "run_id": _field(row, payload, "run_id"),
         "ts_utc": _field(row, payload, "ts_utc", "ts", "timestamp", "created_at"),
         "symbol": symbol,
-        "would_enter": would_enter,
+        "would_enter": enter_policy["would_enter"],
         "would_exit": would_exit,
         "final_decision": _field(row, payload, "final_decision", "decision"),
-        "no_sample_reason": _field(row, payload, "no_sample_reason", "reason"),
+        "no_sample_reason": enter_policy["no_sample_reason"]
+        or _field(row, payload, "no_sample_reason", "reason"),
+        "paper_disabled_by_research_portfolio": enter_policy[
+            "paper_disabled_by_research_portfolio"
+        ],
         "risk_level": _field(row, payload, "risk_level"),
         "alpha6_score": _optional_float(_field(row, payload, "alpha6_score")),
         "alpha6_side": _field(row, payload, "alpha6_side"),
@@ -996,15 +1224,12 @@ def _v5_run_report_row(row: dict[str, Any], created_at: str) -> dict[str, Any]:
         ),
         "cost_source": _field(row, payload, "cost_source"),
         "cost_source_mix": _field(row, payload, "cost_source_mix"),
-        "paper_pnl_bps": _optional_float(_field(row, payload, "paper_pnl_bps", "pnl_bps")),
-        "paper_pnl_usdt": _optional_float(
-            _field(row, payload, "paper_pnl_usdt", "paper_pnl", "pnl_usdt")
-        ),
+        "paper_pnl_bps": paper_pnl_bps,
+        "paper_pnl_usdt": paper_pnl_usdt,
         "label_status": _field(row, payload, "label_status"),
         "paper_tracking_status": V5_PAPER_TRACKING_STATUS,
-        "tracking_stage": "completed_paper_observations"
-        if would_exit
-        else "active_paper_strategy",
+        "tracking_stage": enter_policy["tracking_stage"]
+        or ("completed_paper_observations" if would_exit else "active_paper_strategy"),
         "source_path_inside_bundle": _field(row, payload, "source_path_inside_bundle"),
         "bundle_ts": _field(row, payload, "bundle_ts"),
         "ingest_ts": _field(row, payload, "ingest_ts"),
@@ -1014,7 +1239,12 @@ def _v5_run_report_row(row: dict[str, Any], created_at: str) -> dict[str, Any]:
     }
 
 
-def _v5_run_row(row: dict[str, Any], created_at: str) -> dict[str, Any]:
+def _v5_run_row(
+    row: dict[str, Any],
+    created_at: str,
+    *,
+    portfolio_overrides: dict[tuple[str, str], dict[str, Any]] | None = None,
+) -> dict[str, Any]:
     payload = _payload(row)
     candidate = _field(
         row,
@@ -1030,6 +1260,36 @@ def _v5_run_row(row: dict[str, Any], created_at: str) -> dict[str, Any]:
         symbol,
     )
     would_exit = _optional_bool(_field(row, payload, "would_exit", "exit")) is True
+    raw_would_enter = _optional_bool(_field(row, payload, "would_enter", "enter")) is True
+    enter_policy = _paper_entry_policy(
+        row=row,
+        payload=payload,
+        proposal_id=proposal_id,
+        candidate=candidate,
+        symbol=symbol,
+        raw_would_enter=raw_would_enter,
+        portfolio_overrides=portfolio_overrides or {},
+    )
+    effective_would_enter = bool(enter_policy["would_enter"])
+    paper_pnl_bps = _optional_float(_field(row, payload, "paper_pnl_bps", "pnl_bps"))
+    paper_pnl_bps_4h = _optional_float(_field(row, payload, "paper_pnl_bps_4h"))
+    paper_pnl_bps_8h = _optional_float(_field(row, payload, "paper_pnl_bps_8h"))
+    paper_pnl_bps_12h = _optional_float(_field(row, payload, "paper_pnl_bps_12h"))
+    paper_pnl_bps_24h = _optional_float(_field(row, payload, "paper_pnl_bps_24h"))
+    paper_pnl_bps_48h = _optional_float(_field(row, payload, "paper_pnl_bps_48h"))
+    paper_pnl_bps_72h = _optional_float(_field(row, payload, "paper_pnl_bps_72h"))
+    paper_pnl_usdt = _optional_float(
+        _field(row, payload, "paper_pnl_usdt", "paper_pnl", "pnl_usdt")
+    )
+    if enter_policy["clear_paper_pnl"]:
+        paper_pnl_bps = None
+        paper_pnl_bps_4h = None
+        paper_pnl_bps_8h = None
+        paper_pnl_bps_12h = None
+        paper_pnl_bps_24h = None
+        paper_pnl_bps_48h = None
+        paper_pnl_bps_72h = None
+        paper_pnl_usdt = None
     return {
         "as_of_date": _as_of_date(row, payload),
         "proposal_id": proposal_id,
@@ -1039,13 +1299,19 @@ def _v5_run_row(row: dict[str, Any], created_at: str) -> dict[str, Any]:
         "board_decision": _field(row, payload, "board_decision", default="PAPER_READY"),
         "suggested_horizon": _field(row, payload, "suggested_horizon", "horizon"),
         "horizon_hours": int(_optional_float(_field(row, payload, "horizon_hours")) or 0),
-        "would_enter": _optional_bool(_field(row, payload, "would_enter", "enter")) is True,
+        "no_sample_reason": enter_policy["no_sample_reason"]
+        or _field(row, payload, "no_sample_reason", "reason"),
+        "would_enter": effective_would_enter,
         "would_exit": would_exit,
-        "would_size": _optional_float(
+        "would_size": 0.0
+        if not effective_would_enter
+        else _optional_float(
             _field(row, payload, "would_size", "would_size_notional", "size")
         )
         or 0.0,
-        "would_size_usdt": _optional_float(
+        "would_size_usdt": 0.0
+        if not effective_would_enter
+        else _optional_float(
             _field(
                 row,
                 payload,
@@ -1056,16 +1322,17 @@ def _v5_run_row(row: dict[str, Any], created_at: str) -> dict[str, Any]:
             )
         )
         or 0.0,
-        "paper_pnl_bps": _optional_float(_field(row, payload, "paper_pnl_bps", "pnl_bps")),
-        "paper_pnl_bps_4h": _optional_float(_field(row, payload, "paper_pnl_bps_4h")),
-        "paper_pnl_bps_8h": _optional_float(_field(row, payload, "paper_pnl_bps_8h")),
-        "paper_pnl_bps_12h": _optional_float(_field(row, payload, "paper_pnl_bps_12h")),
-        "paper_pnl_bps_24h": _optional_float(_field(row, payload, "paper_pnl_bps_24h")),
-        "paper_pnl_bps_48h": _optional_float(_field(row, payload, "paper_pnl_bps_48h")),
-        "paper_pnl_bps_72h": _optional_float(_field(row, payload, "paper_pnl_bps_72h")),
-        "paper_pnl_usdt": _optional_float(
-            _field(row, payload, "paper_pnl_usdt", "paper_pnl", "pnl_usdt")
-        ),
+        "paper_disabled_by_research_portfolio": enter_policy[
+            "paper_disabled_by_research_portfolio"
+        ],
+        "paper_pnl_bps": paper_pnl_bps,
+        "paper_pnl_bps_4h": paper_pnl_bps_4h,
+        "paper_pnl_bps_8h": paper_pnl_bps_8h,
+        "paper_pnl_bps_12h": paper_pnl_bps_12h,
+        "paper_pnl_bps_24h": paper_pnl_bps_24h,
+        "paper_pnl_bps_48h": paper_pnl_bps_48h,
+        "paper_pnl_bps_72h": paper_pnl_bps_72h,
+        "paper_pnl_usdt": paper_pnl_usdt,
         "arrival_bid": _optional_float(_field(row, payload, "arrival_bid", "bid_at_arrival")),
         "arrival_ask": _optional_float(_field(row, payload, "arrival_ask", "ask_at_arrival")),
         "arrival_mid": _optional_float(_field(row, payload, "arrival_mid", "mid_at_arrival")),
@@ -1095,9 +1362,8 @@ def _v5_run_row(row: dict[str, Any], created_at: str) -> dict[str, Any]:
             "paper_tracking_status",
             default=V5_PAPER_TRACKING_STATUS,
         ),
-        "tracking_stage": "completed_paper_observations"
-        if would_exit
-        else "active_paper_strategy",
+        "tracking_stage": enter_policy["tracking_stage"]
+        or ("completed_paper_observations" if would_exit else "active_paper_strategy"),
         "sample_count": int(_optional_float(_field(row, payload, "sample_count")) or 0),
         "complete_sample_count": int(
             _optional_float(_field(row, payload, "complete_sample_count")) or 0

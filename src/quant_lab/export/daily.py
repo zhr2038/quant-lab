@@ -1432,6 +1432,7 @@ CSV_SCHEMAS: dict[str, list[str]] = {
         "paper_pnl_usdt",
         "final_decision",
         "no_sample_reason",
+        "paper_disabled_by_research_portfolio",
         "risk_level",
         "alpha6_score",
         "alpha6_side",
@@ -2803,8 +2804,15 @@ def _paper_tracking_frames_for_export(
         not frame.is_empty()
         for frame in [v5_runs_raw, v5_daily_raw, v5_slippage_raw]
     ):
-        report_runs = build_paper_strategy_runs_report_from_v5(v5_runs_raw)
-        runs = build_paper_strategy_runs_from_v5(v5_runs_raw)
+        research_portfolio = frames.get("research_portfolio_status", pl.DataFrame())
+        report_runs = build_paper_strategy_runs_report_from_v5(
+            v5_runs_raw,
+            research_portfolio=research_portfolio,
+        )
+        runs = build_paper_strategy_runs_from_v5(
+            v5_runs_raw,
+            research_portfolio=research_portfolio,
+        )
         export_day = _latest_paper_tracking_date(
             [runs, v5_daily_raw, v5_slippage_raw],
         )

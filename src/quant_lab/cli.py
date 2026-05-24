@@ -42,6 +42,7 @@ from quant_lab.ops.metrics import api_metrics_summary, job_run_summary, run_with
 from quant_lab.ops.retention import prune_quant_lab_storage
 from quant_lab.reports.enforce_readiness import write_enforce_readiness_report
 from quant_lab.research.alpha_discovery import build_and_publish_alpha_discovery_board
+from quant_lab.research.alpha_factory import build_and_publish_alpha_factory
 from quant_lab.research.bootstrap_gold import bootstrap_gold_health
 from quant_lab.research.btc_probe_exit_policy import (
     build_and_publish_btc_probe_exit_policy_review,
@@ -62,6 +63,9 @@ from quant_lab.research.publish import (
     research_health,
 )
 from quant_lab.research.regime_router import build_and_publish_regime_router
+from quant_lab.research.second_stage_alpha_factory import (
+    build_and_publish_second_stage_alpha_factory,
+)
 from quant_lab.research.sol_protect_paper_loss import (
     build_and_publish_sol_protect_paper_loss_attribution,
 )
@@ -1096,6 +1100,50 @@ def build_strategy_evidence_command(
             mode=mode,
             lookback_days=lookback_days,
             include_historical_outcomes=include_historical_outcomes,
+        ),
+    )
+    typer.echo(result.model_dump_json(indent=2))
+
+
+@app.command("build-second-stage-alpha-factory")
+def build_second_stage_alpha_factory_command(
+    lake_root: Annotated[Path, typer.Option("--lake-root", file_okay=False, dir_okay=True)],
+    as_of_date: Annotated[
+        str,
+        typer.Option("--date", help="UTC as-of day in YYYY-MM-DD format or auto."),
+    ] = "auto",
+    lookback_days: Annotated[int, typer.Option("--lookback-days", min=1)] = 30,
+) -> None:
+    result = run_with_job_metrics(
+        lake_root=lake_root,
+        job_name="build-second-stage-alpha-factory",
+        func=lambda: build_and_publish_second_stage_alpha_factory(
+            lake_root=lake_root,
+            as_of_date=as_of_date,
+            lookback_days=lookback_days,
+        ),
+    )
+    typer.echo(result.model_dump_json(indent=2))
+
+
+@app.command("build-alpha-factory")
+def build_alpha_factory_command(
+    lake_root: Annotated[Path, typer.Option("--lake-root", file_okay=False, dir_okay=True)],
+    as_of_date: Annotated[
+        str,
+        typer.Option("--date", help="UTC as-of day in YYYY-MM-DD format or auto."),
+    ] = "auto",
+    lookback_days: Annotated[int, typer.Option("--lookback-days", min=1)] = 30,
+    max_candidates: Annotated[int, typer.Option("--max-candidates", min=1, max=200)] = 200,
+) -> None:
+    result = run_with_job_metrics(
+        lake_root=lake_root,
+        job_name="build-alpha-factory",
+        func=lambda: build_and_publish_alpha_factory(
+            lake_root=lake_root,
+            as_of_date=as_of_date,
+            lookback_days=lookback_days,
+            max_candidates=max_candidates,
         ),
     )
     typer.echo(result.model_dump_json(indent=2))

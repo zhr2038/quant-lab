@@ -1552,16 +1552,30 @@ def test_research_portfolio_status_overrides_strategy_advisory_and_paper_proposa
                 decision="PAPER_READY",
                 cost_source_mix='{"mixed_actual_proxy": 72}',
             ),
+            _board_row(
+                strategy_candidate="v5.core.momentum",
+                symbol="BTC-USDT",
+                source_type="research_baseline",
+                avg_net_bps=80.0,
+                decision="PAPER_READY",
+                cost_source_mix='{"mixed_actual_proxy": 72}',
+            ),
         ]
     )
     portfolio = pl.DataFrame(
         [
             _portfolio_override_row("v5.af.failed_candidate", "KILL"),
+            _portfolio_override_row(
+                "v5.af.paused_candidate",
+                "KILL",
+                as_of_date="2026-05-09",
+            ),
             _portfolio_override_row("v5.af.paused_candidate", "PAUSED"),
             _portfolio_override_row(
                 "v5.af.downgraded_candidate",
                 "DOWNGRADED_FROM_PAPER",
             ),
+            _portfolio_override_row("v5.core.momentum", "BASELINE_ONLY"),
         ]
     )
     proposals = _paper_strategy_proposals_for_export(
@@ -1585,6 +1599,7 @@ def test_research_portfolio_status_overrides_strategy_advisory_and_paper_proposa
     killed = by_candidate["v5.af.failed_candidate"]
     paused = by_candidate["v5.af.paused_candidate"]
     downgraded = by_candidate["v5.af.downgraded_candidate"]
+    baseline = by_candidate["v5.core.momentum"]
     assert killed["decision"] == "KILL"
     assert killed["recommended_mode"] == "none"
     assert "research_portfolio_kill" in killed["live_block_reasons"]
@@ -1592,6 +1607,8 @@ def test_research_portfolio_status_overrides_strategy_advisory_and_paper_proposa
     assert "research_paused" in paused["live_block_reasons"]
     assert downgraded["recommended_mode"] == "shadow"
     assert "downgraded_from_paper" in downgraded["live_block_reasons"]
+    assert baseline["recommended_mode"] == "research"
+    assert "baseline_only" in baseline["live_block_reasons"]
     assert all(float(row["max_paper_notional_usdt"] or 0.0) == 0.0 for row in advisory)
 
 
@@ -1755,10 +1772,15 @@ def _downgraded_paper_daily_row(
     }
 
 
-def _portfolio_override_row(strategy_candidate: str, status: str) -> dict:
+def _portfolio_override_row(
+    strategy_candidate: str,
+    status: str,
+    *,
+    as_of_date: str = "2026-05-10",
+) -> dict:
     return {
         "schema_version": "research_portfolio_status.v0.1",
-        "as_of_date": "2026-05-10",
+        "as_of_date": as_of_date,
         "research_id": strategy_candidate,
         "module": "alpha_factory",
         "strategy_candidate": strategy_candidate,

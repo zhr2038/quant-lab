@@ -117,6 +117,79 @@ def test_strategy_opportunity_advisory_endpoint_reads_gold(tmp_path, monkeypatch
     assert killed["max_live_notional_usdt"] == 0.0
 
 
+def test_strategy_opportunity_advisory_endpoint_applies_portfolio_final_overlay(
+    tmp_path,
+    monkeypatch,
+):
+    lake = tmp_path / "lake"
+    monkeypatch.setenv("QUANT_LAB_LAKE_ROOT", str(lake))
+    monkeypatch.delenv("QUANT_LAB_API_TOKEN", raising=False)
+    as_of = datetime(2026, 5, 24, tzinfo=UTC)
+    write_parquet_dataset(
+        pl.DataFrame(
+            [
+                _api_advisory_row("v5.f3_dominant_entry", "ETH-USDT", as_of),
+                _api_advisory_row("v5.af.failed_candidate", "NEAR-USDT", as_of),
+                _api_advisory_row("v5.af.paused_candidate", "WLD-USDT", as_of),
+                _api_advisory_row("v5.core.momentum", "BTC-USDT", as_of),
+            ]
+        ),
+        lake / "gold" / "strategy_opportunity_advisory",
+    )
+    write_parquet_dataset(
+        pl.DataFrame(
+            [
+                _portfolio_status_row(
+                    research_id="v5.af.paused_candidate",
+                    strategy_candidate="v5.af.paused_candidate",
+                    status="KILL",
+                    as_of_date="2026-05-23",
+                ),
+                _portfolio_status_row(
+                    research_id="ETH_F3_DOMINANT_ENTRY_PAPER_V1",
+                    strategy_candidate="v5.f3_dominant_entry",
+                    status="DOWNGRADED_FROM_PAPER",
+                ),
+                _portfolio_status_row(
+                    research_id="v5.af.failed_candidate",
+                    strategy_candidate="v5.af.failed_candidate",
+                    status="KILL",
+                ),
+                _portfolio_status_row(
+                    research_id="v5.af.paused_candidate",
+                    strategy_candidate="v5.af.paused_candidate",
+                    status="PAUSED",
+                ),
+                _portfolio_status_row(
+                    research_id="v5.core.momentum",
+                    strategy_candidate="v5.core.momentum",
+                    status="BASELINE_ONLY",
+                ),
+            ]
+        ),
+        lake / "gold" / "research_portfolio_status",
+    )
+
+    rows = TestClient(app).get("/v1/strategy-opportunity-advisory").json()
+
+    by_candidate = {row["strategy_candidate"]: row for row in rows}
+    eth = by_candidate["v5.f3_dominant_entry"]
+    failed = by_candidate["v5.af.failed_candidate"]
+    paused = by_candidate["v5.af.paused_candidate"]
+    baseline = by_candidate["v5.core.momentum"]
+    assert eth["recommended_mode"] == "shadow"
+    assert eth["decision"] == "KEEP_SHADOW"
+    assert "downgraded_from_paper" in eth["live_block_reasons"]
+    assert failed["decision"] == "KILL"
+    assert failed["recommended_mode"] == "none"
+    assert "research_portfolio_kill" in failed["live_block_reasons"]
+    assert paused["recommended_mode"] == "research"
+    assert "research_paused" in paused["live_block_reasons"]
+    assert baseline["recommended_mode"] == "research"
+    assert "baseline_only" in baseline["live_block_reasons"]
+    assert all(row["max_live_notional_usdt"] == 0.0 for row in rows)
+
+
 def test_strategy_opportunity_advisory_response_is_v5_parseable(
     tmp_path,
     monkeypatch,
@@ -158,7 +231,7 @@ def test_strategy_opportunity_advisory_response_is_v5_parseable(
     assert V5_ADVISORY_FIELDS <= set(payload[0])
     assert payload[0]["strategy_id"] == "SOL_F4_VOLUME_EXPANSION_PAPER_V1"
     assert payload[0]["decision"] == "LIVE_SMALL_READY"
-    assert payload[0]["max_live_notional_usdt"] == 250.0
+    assert payload[0]["max_live_notional_usdt"] == 0.0
     assert isinstance(payload[0]["live_block_reasons"], list)
     assert payload[0]["generated_at"]
     assert payload[0]["expires_at"]
@@ -445,3 +518,50 @@ def test_strategy_opportunity_advisory_aliases_and_latest_report_fallback(
     assert dashed.json()[0]["would_enter"] is False
     assert dashed.json()[0]["would_block_if_enabled"] is False
     assert dashed.json()[0]["expires_at"]
+
+
+def _api_advisory_row(
+    strategy_candidate: str,
+    symbol: str,
+    as_of: datetime,
+) -> dict:
+    return {
+        "as_of_ts": as_of,
+        "generated_at": as_of,
+        "expires_at": as_of,
+        "strategy_candidate": strategy_candidate,
+        "symbol": symbol,
+        "decision": "PAPER_READY",
+        "recommended_mode": "paper",
+        "horizon_hours": 24,
+        "sample_count": 72,
+        "complete_sample_count": 40,
+        "avg_net_bps": 25.0,
+        "p25_net_bps": -15.0,
+        "win_rate": 0.61,
+        "cost_source_mix": '{"mixed_actual_proxy":72}',
+        "live_block_reasons": '["paper_candidate"]',
+        "max_paper_notional_usdt": 1000.0,
+        "max_live_notional_usdt": 999.0,
+    }
+
+
+def _portfolio_status_row(
+    *,
+    research_id: str,
+    strategy_candidate: str,
+    status: str,
+    as_of_date: str = "2026-05-24",
+) -> dict:
+    return {
+        "schema_version": "research_portfolio_status.v0.1",
+        "as_of_date": as_of_date,
+        "research_id": research_id,
+        "module": "test",
+        "strategy_candidate": strategy_candidate,
+        "status": status,
+        "action": status,
+        "reason": "test_portfolio_overlay",
+        "created_at": datetime.fromisoformat(f"{as_of_date}T12:00:00+00:00"),
+        "source": "test",
+    }

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 from datetime import UTC, date, datetime, timedelta
 from pathlib import Path
 from typing import Any
@@ -201,6 +202,11 @@ RESULT_SCHEMA: dict[str, Any] = {
     "p25_net_bps": pl.Float64,
     "win_rate": pl.Float64,
     "cost_source_mix": pl.Utf8,
+    "avg_mae_bps": pl.Float64,
+    "avg_mfe_bps": pl.Float64,
+    "cost_quality_score": pl.Float64,
+    "recent_sample_sufficient": pl.Boolean,
+    "paper_ready_block_reasons": pl.Utf8,
     "train_metrics_json": pl.Utf8,
     "validation_metrics_json": pl.Utf8,
     "recent_7d_metrics_json": pl.Utf8,
@@ -385,6 +391,24 @@ def build_alpha_factory_results(
             sample_groups.get(_sample_group_key(row), []),
             row,
         )
+        avg_mae_bps = _float(split_metrics["all"].get("avg_mae_bps"))
+        avg_mfe_bps = _float(split_metrics["all"].get("avg_mfe_bps"))
+        cost_source_mix = str(row.get("cost_source_mix") or "{}")
+        cost_quality_score = _cost_quality_score(cost_source_mix)
+        recent_complete = _int(split_metrics["recent_7d"].get("complete_sample_count")) or 0
+        recent_sample_sufficient = recent_complete >= 5
+        is_futures_proxy = _is_futures_proxy_candidate(row.get("strategy_candidate"))
+        paper_ready_block_reasons = _paper_ready_block_reasons(
+            complete_sample_count=_int(row.get("complete_sample_count")) or 0,
+            p25_net_bps=_float(row.get("p25_net_bps")),
+            win_rate=_float(row.get("win_rate")),
+            validation_metrics=split_metrics["validation"],
+            recent_7d_metrics=split_metrics["recent_7d"],
+            avg_mae_bps=avg_mae_bps,
+            cost_quality_score=cost_quality_score,
+            cost_source_mix=cost_source_mix,
+            is_futures_proxy=is_futures_proxy,
+        )
         scores = _alpha_factory_scores(
             avg_net_bps=_float(row.get("avg_net_bps")),
             p25_net_bps=_float(row.get("p25_net_bps")),
@@ -400,8 +424,11 @@ def build_alpha_factory_results(
             win_rate=_float(row.get("win_rate")),
             validation_metrics=split_metrics["validation"],
             recent_7d_metrics=split_metrics["recent_7d"],
+            avg_mae_bps=avg_mae_bps,
+            cost_quality_score=cost_quality_score,
+            paper_ready_block_reasons=paper_ready_block_reasons,
         )
-        if _is_futures_proxy_candidate(row.get("strategy_candidate")):
+        if is_futures_proxy:
             if decision == "PAPER_READY":
                 decision = "KEEP_SHADOW"
             reasons = _dedupe_text(
@@ -432,7 +459,12 @@ def build_alpha_factory_results(
                 "median_net_bps": _float(row.get("median_net_bps")),
                 "p25_net_bps": _float(row.get("p25_net_bps")),
                 "win_rate": _float(row.get("win_rate")),
-                "cost_source_mix": str(row.get("cost_source_mix") or "{}"),
+                "cost_source_mix": cost_source_mix,
+                "avg_mae_bps": avg_mae_bps,
+                "avg_mfe_bps": avg_mfe_bps,
+                "cost_quality_score": cost_quality_score,
+                "recent_sample_sufficient": recent_sample_sufficient,
+                "paper_ready_block_reasons": safe_json_dumps(paper_ready_block_reasons),
                 "train_metrics_json": safe_json_dumps(split_metrics["train"]),
                 "validation_metrics_json": safe_json_dumps(split_metrics["validation"]),
                 "recent_7d_metrics_json": safe_json_dumps(split_metrics["recent_7d"]),
@@ -502,6 +534,11 @@ def alpha_factory_decision(
     win_rate: float | None,
     validation_metrics: dict[str, Any] | None = None,
     recent_7d_metrics: dict[str, Any] | None = None,
+    avg_mae_bps: float | None = None,
+    cost_quality_score: float | None = None,
+    cost_source_mix: Any = None,
+    paper_ready_block_reasons: list[str] | None = None,
+    is_futures_proxy: bool = False,
 ) -> tuple[str, list[str]]:
     if complete_sample_count < 10:
         return "RESEARCH", ["insufficient_complete_samples"]
@@ -511,8 +548,6 @@ def alpha_factory_decision(
     reasons: list[str] = []
     validation_avg = _float((validation_metrics or {}).get("avg_net_bps"))
     validation_complete = _int((validation_metrics or {}).get("complete_sample_count")) or 0
-    validation_positive = validation_avg is not None and validation_avg > 0.0
-    validation_blocks_paper = not validation_positive
     if validation_complete <= 0:
         reasons.append("insufficient_validation_samples")
     elif validation_avg is None:
@@ -529,23 +564,34 @@ def alpha_factory_decision(
     elif recent_negative:
         reasons.append("recent_7d_avg_net_bps_negative")
 
-    if (
-        complete_sample_count >= 30
-        and win_rate is not None
-        and win_rate > 0.55
-        and p25_net_bps is not None
-        and p25_net_bps > -50.0
-        and not validation_blocks_paper
-        and not recent_negative
-    ):
+    paper_block_reasons = paper_ready_block_reasons
+    if paper_block_reasons is None:
+        paper_block_reasons = _paper_ready_block_reasons(
+            complete_sample_count=complete_sample_count,
+            p25_net_bps=p25_net_bps,
+            win_rate=win_rate,
+            validation_metrics=validation_metrics or {},
+            recent_7d_metrics=recent_7d_metrics or {},
+            avg_mae_bps=avg_mae_bps,
+            cost_quality_score=cost_quality_score,
+            cost_source_mix=cost_source_mix,
+            is_futures_proxy=is_futures_proxy,
+        )
+
+    if not paper_block_reasons:
         return "PAPER_READY", _dedupe_text(
             [*reasons, "paper_ready_thresholds_met", "live_disabled"]
         )
     if complete_sample_count >= 10 and avg_net_bps is not None and avg_net_bps > 0.0:
         return "KEEP_SHADOW", _dedupe_text(
-            [*reasons, "positive_after_cost_edge", "collect_more_samples"]
+            [
+                *reasons,
+                *paper_block_reasons,
+                "positive_after_cost_edge",
+                "collect_more_samples",
+            ]
         )
-    return "RESEARCH", ["edge_not_confirmed"]
+    return "RESEARCH", _dedupe_text([*reasons, *paper_block_reasons, "edge_not_confirmed"])
 
 
 def alpha_factory_daily_md(
@@ -804,6 +850,7 @@ def _split_sample_metrics(
     if not sample_rows:
         empty = _empty_window_metrics()
         return {
+            "all": _summary_window_metrics(summary_row),
             "train": _summary_window_metrics(summary_row),
             "validation": empty.copy(),
             "recent_7d": empty.copy(),
@@ -817,6 +864,7 @@ def _split_sample_metrics(
     if not rows:
         empty = _empty_window_metrics()
         return {
+            "all": _summary_window_metrics(summary_row),
             "train": _summary_window_metrics(summary_row),
             "validation": empty.copy(),
             "recent_7d": empty.copy(),
@@ -831,6 +879,7 @@ def _split_sample_metrics(
     validation_rows = [row for timestamp, row in rows if timestamp > cut_ts]
     recent_rows = [row for timestamp, row in rows if timestamp >= recent_start]
     return {
+        "all": _window_metrics([row for _, row in rows]),
         "train": _window_metrics(train_rows),
         "validation": _window_metrics(validation_rows),
         "recent_7d": _window_metrics(recent_rows),
@@ -852,6 +901,8 @@ def _summary_window_metrics(row: dict[str, Any]) -> dict[str, Any]:
         "avg_net_bps": _float(row.get("avg_net_bps")),
         "p25_net_bps": _float(row.get("p25_net_bps")),
         "win_rate": _float(row.get("win_rate")),
+        "avg_mae_bps": _float(row.get("avg_mae_bps")),
+        "avg_mfe_bps": _float(row.get("avg_mfe_bps")),
     }
 
 
@@ -868,12 +919,20 @@ def _window_metrics(rows: list[dict[str, Any]]) -> dict[str, Any]:
         if (value := _float(row.get("net_bps_after_cost"))) is not None
     ]
     wins = [_sample_win(row, value) for row, value in zip(complete_rows, net_values, strict=False)]
+    mae_values = [
+        value for row in complete_rows if (value := _float(row.get("mae_bps"))) is not None
+    ]
+    mfe_values = [
+        value for row in complete_rows if (value := _float(row.get("mfe_bps"))) is not None
+    ]
     return {
         "sample_count": len(rows),
         "complete_sample_count": len(net_values),
         "avg_net_bps": _mean(net_values),
         "p25_net_bps": _percentile(net_values, 0.25),
         "win_rate": _mean([1.0 if win else 0.0 for win in wins]) if wins else None,
+        "avg_mae_bps": _mean(mae_values),
+        "avg_mfe_bps": _mean(mfe_values),
     }
 
 
@@ -898,6 +957,8 @@ def _empty_window_metrics() -> dict[str, Any]:
         "avg_net_bps": None,
         "p25_net_bps": None,
         "win_rate": None,
+        "avg_mae_bps": None,
+        "avg_mfe_bps": None,
     }
 
 
@@ -956,6 +1017,129 @@ def _alpha_factory_scores(
         "alpha_factory_score": alpha_factory_score,
         "score_reasons": score_reasons,
     }
+
+
+def _paper_ready_block_reasons(
+    *,
+    complete_sample_count: int,
+    p25_net_bps: float | None,
+    win_rate: float | None,
+    validation_metrics: dict[str, Any],
+    recent_7d_metrics: dict[str, Any],
+    avg_mae_bps: float | None,
+    cost_quality_score: float | None,
+    cost_source_mix: Any,
+    is_futures_proxy: bool,
+) -> list[str]:
+    reasons: list[str] = []
+    if complete_sample_count < 30:
+        reasons.append("insufficient_complete_samples_for_paper")
+    if win_rate is None or win_rate <= 0.55:
+        reasons.append("win_rate_below_paper_threshold")
+    if p25_net_bps is None or p25_net_bps <= -50.0:
+        reasons.append("tail_loss_p25_below_threshold")
+
+    validation_avg = _float(validation_metrics.get("avg_net_bps"))
+    validation_complete = _int(validation_metrics.get("complete_sample_count")) or 0
+    if validation_complete <= 0:
+        reasons.append("insufficient_validation_samples")
+    elif validation_avg is None:
+        reasons.append("validation_avg_net_bps_missing")
+    elif validation_avg <= 0.0:
+        reasons.append("validation_avg_net_bps_non_positive")
+
+    recent_avg = _float(recent_7d_metrics.get("avg_net_bps"))
+    recent_complete = _int(recent_7d_metrics.get("complete_sample_count")) or 0
+    if recent_complete < 5:
+        reasons.append("insufficient_recent_samples")
+    elif recent_avg is None:
+        reasons.append("recent_7d_avg_net_bps_missing")
+    elif recent_avg < 0.0:
+        reasons.append("recent_7d_avg_net_bps_negative")
+
+    if avg_mae_bps is not None and avg_mae_bps <= -150.0:
+        reasons.append("mae_too_deep_for_paper")
+
+    score = cost_quality_score
+    if score is None and cost_source_mix is not None:
+        score = _cost_quality_score(cost_source_mix)
+    if score is not None and score < 0.5:
+        reasons.append("cost_quality_not_paper_ready")
+    if _cost_source_mix_is_local_or_degraded(cost_source_mix):
+        reasons.append("cost_quality_not_paper_ready")
+
+    if is_futures_proxy:
+        reasons.append("futures_proxy_not_paper_ready")
+    return _dedupe_text(reasons)
+
+
+def _cost_quality_score(cost_source_mix: Any) -> float:
+    counts = _cost_source_counts(cost_source_mix)
+    if not counts:
+        return 0.0
+    weights = {
+        "actual_fills": 1.0,
+        "actual_okx_fills_and_bills": 1.0,
+        "quant_lab_actual": 1.0,
+        "mixed_actual_proxy": 0.9,
+        "paper_slippage_observed": 0.8,
+        "public_spread_proxy": 0.6,
+        "local_estimate": 0.25,
+        "degraded": 0.0,
+        "global_default": 0.0,
+        "missing": 0.0,
+        "cost_not_requested_no_order": 0.0,
+    }
+    total = sum(counts.values())
+    if total <= 0:
+        return 0.0
+    return sum(weights.get(source, 0.4) * count for source, count in counts.items()) / total
+
+
+def _cost_source_mix_is_local_or_degraded(cost_source_mix: Any) -> bool:
+    counts = _cost_source_counts(cost_source_mix)
+    if not counts:
+        return False
+    weak_sources = {"local_estimate", "degraded"}
+    weak_count = sum(count for source, count in counts.items() if source in weak_sources)
+    return weak_count / max(sum(counts.values()), 1) >= 0.5
+
+
+def _cost_source_counts(value: Any) -> dict[str, int]:
+    if value is None:
+        return {}
+    if isinstance(value, dict):
+        output: dict[str, int] = {}
+        for source, count in value.items():
+            name = str(source or "").strip().lower()
+            if name:
+                output[name] = output.get(name, 0) + max(_int(count) or 0, 1)
+        return output
+    if isinstance(value, list):
+        output: dict[str, int] = {}
+        for item in value:
+            if isinstance(item, dict):
+                source = str(
+                    item.get("cost_source") or item.get("source") or item.get("name") or ""
+                ).strip().lower()
+                count = max(_int(item.get("count")) or 0, 1)
+                if source:
+                    output[source] = output.get(source, 0) + count
+            elif isinstance(item, str) and item.strip():
+                source = item.strip().lower()
+                output[source] = output.get(source, 0) + 1
+        return output
+    if isinstance(value, str):
+        text = value.strip()
+        if not text:
+            return {}
+        try:
+            parsed = json.loads(text)
+        except json.JSONDecodeError:
+            return {text.lower(): 1}
+        return _cost_source_counts(parsed)
+    text = str(value).strip().lower()
+    return {text: 1} if text else {}
 
 
 def _mean(values: list[float]) -> float | None:

@@ -70,6 +70,9 @@ def test_expanded_relative_strength_uses_decision_time_ranking_not_future_labels
     )
 
     samples = read_parquet_dataset(lake / "gold" / "second_stage_alpha_factory_sample")
+    decision_samples = read_parquet_dataset(
+        lake / "gold" / "expanded_relative_strength_decision_sample"
+    )
     decision_ts = datetime(2026, 5, 23, 11, tzinfo=UTC)
     top1 = samples.filter(
         (pl.col("source_type") == "second_stage_expanded_relative_strength_decision_time")
@@ -87,6 +90,23 @@ def test_expanded_relative_strength_uses_decision_time_ranking_not_future_labels
     assert set(top1["label_reason"].to_list()) == {
         "decision_time_relative_strength_shadow_only"
     }
+
+    explain = decision_samples.filter(
+        (pl.col("decision_ts") == decision_ts)
+        & (pl.col("lookback_hours") == 4)
+        & (pl.col("top_k") == 1)
+        & (pl.col("label_horizon_hours") == 4)
+    )
+    assert not explain.is_empty()
+    assert {"NEAR-USDT", "WLD-USDT"}.issubset(set(explain["symbol"].to_list()))
+    near_row = explain.filter(pl.col("symbol") == "NEAR-USDT").to_dicts()[0]
+    wld_row = explain.filter(pl.col("symbol") == "WLD-USDT").to_dicts()[0]
+    assert near_row["selected"] is True
+    assert near_row["selected_rank"] == 1
+    assert near_row["lookback_return_bps"] > wld_row["lookback_return_bps"]
+    assert wld_row["selected"] is False
+    assert wld_row["future_net_bps"] is not None
+    assert set(explain["anti_leakage_check"].to_list()) == {"pass"}
 
 
 def test_futures_shadow_is_labeled_as_spot_inverse_proxy_and_capped_to_shadow(tmp_path):
@@ -327,6 +347,91 @@ def test_alpha_factory_result_downgrades_when_recent_7d_is_negative():
     assert row["recent_degradation_penalty"] > 0.0
 
 
+def test_alpha_factory_blocks_paper_when_recent_samples_are_insufficient():
+    summary = _alpha_factory_summary_frame(
+        avg_net_bps=45.0,
+        p25_net_bps=5.0,
+        win_rate=0.7,
+        sample_count=30,
+        complete_sample_count=30,
+        cost_source_mix='{"mixed_actual_proxy":30}',
+    )
+    samples = _alpha_factory_sample_frame(
+        [30.0, 35.0, 40.0, 45.0],
+        start=datetime(2026, 5, 21, tzinfo=UTC),
+    )
+
+    results = build_alpha_factory_results(
+        summary,
+        samples=samples,
+        as_of_date=datetime(2026, 5, 24, tzinfo=UTC).date(),
+        generated_at=datetime(2026, 5, 24, tzinfo=UTC),
+    )
+
+    row = results.to_dicts()[0]
+    assert row["decision"] == "KEEP_SHADOW"
+    assert row["recent_sample_sufficient"] is False
+    assert "insufficient_recent_samples" in row["paper_ready_block_reasons"]
+    assert "insufficient_recent_samples" in row["decision_reasons"]
+
+
+def test_alpha_factory_blocks_paper_when_cost_quality_is_degraded():
+    summary = _alpha_factory_summary_frame(
+        avg_net_bps=45.0,
+        p25_net_bps=5.0,
+        win_rate=0.7,
+        sample_count=30,
+        complete_sample_count=30,
+        cost_source_mix='{"local_estimate":30}',
+    )
+    samples = _alpha_factory_sample_frame(
+        [30.0] * 30,
+        start=datetime(2026, 4, 25, tzinfo=UTC),
+    )
+
+    results = build_alpha_factory_results(
+        summary,
+        samples=samples,
+        as_of_date=datetime(2026, 5, 24, tzinfo=UTC).date(),
+        generated_at=datetime(2026, 5, 24, tzinfo=UTC),
+    )
+
+    row = results.to_dicts()[0]
+    assert row["decision"] == "KEEP_SHADOW"
+    assert row["cost_quality_score"] < 0.5
+    assert "cost_quality_not_paper_ready" in row["paper_ready_block_reasons"]
+
+
+def test_alpha_factory_blocks_paper_when_mae_is_too_deep():
+    summary = _alpha_factory_summary_frame(
+        avg_net_bps=45.0,
+        p25_net_bps=5.0,
+        win_rate=0.7,
+        sample_count=30,
+        complete_sample_count=30,
+        cost_source_mix='{"mixed_actual_proxy":30}',
+    )
+    samples = _alpha_factory_sample_frame(
+        [30.0] * 30,
+        start=datetime(2026, 4, 25, tzinfo=UTC),
+        mae_bps=-200.0,
+        mfe_bps=80.0,
+    )
+
+    results = build_alpha_factory_results(
+        summary,
+        samples=samples,
+        as_of_date=datetime(2026, 5, 24, tzinfo=UTC).date(),
+        generated_at=datetime(2026, 5, 24, tzinfo=UTC),
+    )
+
+    row = results.to_dicts()[0]
+    assert row["decision"] == "KEEP_SHADOW"
+    assert row["avg_mae_bps"] == -200.0
+    assert row["avg_mfe_bps"] == 80.0
+    assert "mae_too_deep_for_paper" in row["paper_ready_block_reasons"]
+
+
 def test_daily_export_includes_alpha_factory_reports_and_advisory_is_not_live(tmp_path):
     lake = tmp_path / "lake"
     out_dir = tmp_path / "exports"
@@ -351,6 +456,7 @@ def test_daily_export_includes_alpha_factory_reports_and_advisory_is_not_live(tm
         names = set(archive.namelist())
         assert "reports/second_stage_alpha_factory_summary.csv" in names
         assert "reports/second_stage_alpha_factory_samples.csv" in names
+        assert "reports/expanded_relative_strength_decision_samples.csv" in names
         assert "reports/alpha_factory_template_registry.csv" in names
         assert "reports/alpha_factory_candidates.csv" in names
         assert "reports/alpha_factory_results.csv" in names
@@ -367,11 +473,23 @@ def test_daily_export_includes_alpha_factory_reports_and_advisory_is_not_live(tm
                 )
             )
         )
+        decision_rows = list(
+            csv.DictReader(
+                io.StringIO(
+                    archive.read(
+                        "reports/expanded_relative_strength_decision_samples.csv"
+                    ).decode("utf-8")
+                )
+            )
+        )
 
     second_stage = [
         row for row in advisory if row["strategy_candidate"] in SECOND_STAGE_CANDIDATES
     ]
     assert second_stage
+    assert decision_rows
+    assert "lookback_return_bps" in decision_rows[0]
+    assert "future_net_bps" in decision_rows[0]
     assert all(float(row["max_live_notional_usdt"] or 0.0) == 0.0 for row in second_stage)
     assert "LIVE_SMALL_READY" not in {row["decision"] for row in second_stage}
 
@@ -383,6 +501,7 @@ def _alpha_factory_summary_frame(
     win_rate: float,
     sample_count: int,
     complete_sample_count: int,
+    cost_source_mix: str = '{"public_spread_proxy":30}',
 ) -> pl.DataFrame:
     return pl.DataFrame(
         [
@@ -399,7 +518,7 @@ def _alpha_factory_summary_frame(
                 "median_net_bps": avg_net_bps,
                 "p25_net_bps": p25_net_bps,
                 "win_rate": win_rate,
-                "cost_source_mix": '{"public_spread_proxy":30}',
+                "cost_source_mix": cost_source_mix,
                 "start_ts": datetime(2026, 5, 1, tzinfo=UTC),
                 "end_ts": datetime(2026, 5, 24, tzinfo=UTC),
                 "source_dataset": "test",
@@ -408,7 +527,13 @@ def _alpha_factory_summary_frame(
     )
 
 
-def _alpha_factory_sample_frame(values: list[float], *, start: datetime) -> pl.DataFrame:
+def _alpha_factory_sample_frame(
+    values: list[float],
+    *,
+    start: datetime,
+    mae_bps: float | None = None,
+    mfe_bps: float | None = None,
+) -> pl.DataFrame:
     rows = []
     for index, net_bps in enumerate(values):
         ts = start + timedelta(days=index)
@@ -423,6 +548,8 @@ def _alpha_factory_sample_frame(values: list[float], *, start: datetime) -> pl.D
                 "label_ts": ts + timedelta(hours=24),
                 "net_bps_after_cost": net_bps,
                 "win": net_bps > 0.0,
+                "mae_bps": mae_bps,
+                "mfe_bps": mfe_bps,
                 "label_status": "complete",
             }
         )

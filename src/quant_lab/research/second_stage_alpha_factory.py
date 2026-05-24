@@ -31,6 +31,9 @@ SCHEMA_VERSION = "second_stage_alpha_factory.v0.1"
 
 SECOND_STAGE_SAMPLE_DATASET = Path("gold") / "second_stage_alpha_factory_sample"
 SECOND_STAGE_SUMMARY_DATASET = Path("gold") / "second_stage_alpha_factory_summary"
+EXPANDED_RELATIVE_STRENGTH_DECISION_SAMPLE_DATASET = (
+    Path("gold") / "expanded_relative_strength_decision_sample"
+)
 EXIT_POLICY_REVIEW_SAMPLE_DATASET = Path("gold") / "exit_policy_review_sample"
 EXIT_POLICY_REVIEW_SUMMARY_DATASET = Path("gold") / "exit_policy_review_summary"
 STRATEGY_EVIDENCE_SAMPLE_DATASET = Path("gold") / "strategy_evidence_sample"
@@ -122,6 +125,28 @@ EXIT_POLICY_REVIEW_SUMMARY_SCHEMA: dict[str, Any] = {
     "source": pl.Utf8,
 }
 
+EXPANDED_RELATIVE_STRENGTH_DECISION_SAMPLE_SCHEMA: dict[str, Any] = {
+    "decision_ts": pl.Datetime(time_zone="UTC"),
+    "symbol": pl.Utf8,
+    "lookback_hours": pl.Int64,
+    "lookback_return_bps": pl.Float64,
+    "top_k": pl.Int64,
+    "selected_rank": pl.Int64,
+    "selected": pl.Boolean,
+    "symbol_quality_score": pl.Float64,
+    "spread_bps": pl.Float64,
+    "btc_corr": pl.Float64,
+    "volume_24h_usdt": pl.Float64,
+    "selection_reason": pl.Utf8,
+    "anti_leakage_check": pl.Utf8,
+    "label_horizon_hours": pl.Int64,
+    "future_net_bps": pl.Float64,
+    "label_status": pl.Utf8,
+    "created_at": pl.Datetime(time_zone="UTC"),
+    "schema_version": pl.Utf8,
+    "source": pl.Utf8,
+}
+
 DEFAULT_HORIZONS = (4, 8, 12, 24, 48)
 EXIT_POLICY_HORIZONS = (4, 8, 12, 24, 48)
 DEFAULT_LOOKBACK_DAYS = 30
@@ -147,6 +172,7 @@ class SecondStageAlphaFactoryResult(BaseModel):
     as_of_date: str
     sample_rows: int = Field(ge=0)
     summary_rows: int = Field(ge=0)
+    expanded_relative_strength_decision_sample_rows: int = Field(ge=0)
     strategy_evidence_sample_rows: int = Field(ge=0)
     strategy_evidence_rows: int = Field(ge=0)
     exit_policy_review_sample_rows: int = Field(ge=0)
@@ -164,7 +190,7 @@ def build_and_publish_second_stage_alpha_factory(
 ) -> SecondStageAlphaFactoryResult:
     root = Path(lake_root)
     day = _parse_day(as_of_date)
-    samples, warnings = build_second_stage_alpha_factory_samples(
+    samples, decision_samples, warnings = _build_second_stage_alpha_factory_tables(
         root,
         as_of_date=day,
         lookback_days=lookback_days,
@@ -177,6 +203,10 @@ def build_and_publish_second_stage_alpha_factory(
 
     write_parquet_dataset(sample_frame, root / SECOND_STAGE_SAMPLE_DATASET)
     write_parquet_dataset(summary_frame, root / SECOND_STAGE_SUMMARY_DATASET)
+    write_parquet_dataset(
+        decision_samples,
+        root / EXPANDED_RELATIVE_STRENGTH_DECISION_SAMPLE_DATASET,
+    )
     exit_policy_samples, exit_policy_summary = build_exit_policy_review_tables(
         root,
         as_of_date=day,
@@ -193,6 +223,7 @@ def build_and_publish_second_stage_alpha_factory(
         as_of_date=day.isoformat(),
         sample_rows=sample_frame.height,
         summary_rows=summary_frame.height,
+        expanded_relative_strength_decision_sample_rows=decision_samples.height,
         strategy_evidence_sample_rows=sample_rows,
         strategy_evidence_rows=evidence_rows,
         exit_policy_review_sample_rows=exit_policy_samples.height,
@@ -215,6 +246,20 @@ def build_second_stage_alpha_factory_samples(
     as_of_date: date,
     lookback_days: int = DEFAULT_LOOKBACK_DAYS,
 ) -> tuple[pl.DataFrame, list[str]]:
+    samples, _, warnings = _build_second_stage_alpha_factory_tables(
+        lake_root,
+        as_of_date=as_of_date,
+        lookback_days=lookback_days,
+    )
+    return samples, warnings
+
+
+def _build_second_stage_alpha_factory_tables(
+    lake_root: str | Path,
+    *,
+    as_of_date: date,
+    lookback_days: int = DEFAULT_LOOKBACK_DAYS,
+) -> tuple[pl.DataFrame, pl.DataFrame, list[str]]:
     root = Path(lake_root)
     generated_at = datetime.now(UTC)
     lookback_start = datetime.combine(
@@ -256,16 +301,15 @@ def build_second_stage_alpha_factory_samples(
 
     cost_context = _cost_context(cost_bucket)
     bars_by_symbol = _bars_by_symbol(market_bars)
-    rows: list[dict[str, Any]] = []
-    rows.extend(
-        _expanded_relative_strength_samples(
-            quality=quality,
-            bars_by_symbol=bars_by_symbol,
-            cost_context=cost_context,
-            generated_at=generated_at,
-            regime_state=regime,
-        )
+    relative_strength_rows, decision_rows = _expanded_relative_strength_tables(
+        quality=quality,
+        bars_by_symbol=bars_by_symbol,
+        cost_context=cost_context,
+        generated_at=generated_at,
+        regime_state=regime,
     )
+    rows: list[dict[str, Any]] = []
+    rows.extend(relative_strength_rows)
     rows.extend(
         _futures_short_shadow_samples(
             bars_by_symbol=bars_by_symbol,
@@ -293,11 +337,24 @@ def build_second_stage_alpha_factory_samples(
         )
     )
     rows = _dedupe_rows(rows)
+    decision_frame = (
+        pl.DataFrame(
+            decision_rows,
+            schema=EXPANDED_RELATIVE_STRENGTH_DECISION_SAMPLE_SCHEMA,
+            orient="row",
+        )
+        if decision_rows
+        else pl.DataFrame(schema=EXPANDED_RELATIVE_STRENGTH_DECISION_SAMPLE_SCHEMA)
+    )
     if not rows:
-        return pl.DataFrame(schema=SAMPLE_SCHEMA), warnings
-    return normalize_strategy_evidence_samples(
-        pl.DataFrame(rows, schema=SAMPLE_SCHEMA, orient="row")
-    ), warnings
+        return pl.DataFrame(schema=SAMPLE_SCHEMA), decision_frame, warnings
+    return (
+        normalize_strategy_evidence_samples(
+            pl.DataFrame(rows, schema=SAMPLE_SCHEMA, orient="row")
+        ),
+        decision_frame,
+        warnings,
+    )
 
 
 def build_exit_policy_review_tables(
@@ -494,18 +551,19 @@ def build_exit_policy_review_summary(
     return pl.DataFrame(rows, schema=EXIT_POLICY_REVIEW_SUMMARY_SCHEMA, orient="row")
 
 
-def _expanded_relative_strength_samples(
+def _expanded_relative_strength_tables(
     *,
     quality: pl.DataFrame,
     bars_by_symbol: dict[str, list[dict[str, Any]]],
     cost_context: dict[str, dict[str, Any]],
     generated_at: datetime,
     regime_state: str,
-) -> list[dict[str, Any]]:
+) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
     quality_context = _quality_context_by_symbol(quality)
     if not quality_context or not bars_by_symbol:
-        return []
+        return [], []
     output: list[dict[str, Any]] = []
+    decision_output: list[dict[str, Any]] = []
 
     decision_times = sorted(
         {
@@ -526,7 +584,7 @@ def _expanded_relative_strength_samples(
             if not ranked:
                 continue
             for candidate, top_k in RELATIVE_STRENGTH_SELECTIONS:
-                for selected_rank, selection in enumerate(ranked[:top_k], start=1):
+                for selected_rank, selection in enumerate(ranked, start=1):
                     symbol = selection["symbol"]
                     current_index = _bar_index_at_or_before(
                         bars_by_symbol.get(symbol, []),
@@ -555,6 +613,24 @@ def _expanded_relative_strength_samples(
                             lookback_start_ts=selection.get("lookback_start_ts"),
                             label_ts=label_ts,
                         )
+                        selected = selected_rank <= top_k
+                        decision_output.append(
+                            _relative_strength_decision_sample_row(
+                                decision_ts=decision_ts,
+                                selection=selection,
+                                lookback_hours=lookback_hours,
+                                top_k=top_k,
+                                selected_rank=selected_rank,
+                                selected=selected,
+                                horizon=horizon,
+                                future_net_bps=net_bps,
+                                label_status="complete" if label_ts is not None else "pending",
+                                anti_leakage=anti_leakage,
+                                generated_at=generated_at,
+                            )
+                        )
+                        if not selected or anti_leakage != "pass":
+                            continue
                         source_key = (
                             f"{decision_ts.isoformat()}|lookback={lookback_hours}|"
                             f"top_k={top_k}|rank={selected_rank}"
@@ -605,7 +681,44 @@ def _expanded_relative_strength_samples(
                                 anti_leakage_check=anti_leakage,
                             )
                         )
-    return output
+    return output, decision_output
+
+
+def _relative_strength_decision_sample_row(
+    *,
+    decision_ts: datetime,
+    selection: dict[str, Any],
+    lookback_hours: int,
+    top_k: int,
+    selected_rank: int,
+    selected: bool,
+    horizon: int,
+    future_net_bps: float | None,
+    label_status: str,
+    anti_leakage: str,
+    generated_at: datetime,
+) -> dict[str, Any]:
+    return {
+        "decision_ts": decision_ts,
+        "symbol": normalize_symbol(selection.get("symbol")) or "UNKNOWN",
+        "lookback_hours": int(lookback_hours),
+        "lookback_return_bps": _float(selection.get("rank_score_bps")),
+        "top_k": int(top_k),
+        "selected_rank": int(selected_rank),
+        "selected": bool(selected),
+        "symbol_quality_score": _float(selection.get("quality_score")),
+        "spread_bps": _float(selection.get("spread_bps")),
+        "btc_corr": _float(selection.get("btc_corr")),
+        "volume_24h_usdt": _float(selection.get("volume_24h_usdt")),
+        "selection_reason": _relative_strength_selection_reason(),
+        "anti_leakage_check": anti_leakage,
+        "label_horizon_hours": int(horizon),
+        "future_net_bps": future_net_bps,
+        "label_status": label_status,
+        "created_at": generated_at,
+        "schema_version": SCHEMA_VERSION,
+        "source": SOURCE_NAME,
+    }
 
 
 def _futures_short_shadow_samples(
@@ -1373,6 +1486,9 @@ def _relative_strength_ranking(
                 "symbol": symbol,
                 "rank_score_bps": (current_close / lookback_close - 1.0) * 10_000.0,
                 "quality_score": quality["quality_score"],
+                "spread_bps": quality["spread_bps"],
+                "btc_corr": quality["btc_corr"],
+                "volume_24h_usdt": quality["volume_24h_usdt"],
                 "lookback_start_ts": _parse_dt(bars[lookback_index].get("ts")),
             }
         )

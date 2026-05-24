@@ -30,6 +30,12 @@ from quant_lab.reports.enforce_readiness import (
     build_enforce_readiness_report,
     enforce_readiness_members,
 )
+from quant_lab.research.advisory_overrides import (
+    portfolio_overridden_decision_mode,
+    portfolio_override_for_identifier_symbol,
+    portfolio_override_for_row,
+    portfolio_status_overrides_by_identifier,
+)
 from quant_lab.research.alpha_discovery import normalize_alpha_discovery_board_decisions
 from quant_lab.research.alpha_factory import alpha_factory_daily_md
 from quant_lab.research.baselines import (
@@ -86,6 +92,7 @@ HEAVY_EXPORT_DATASET_LIMITS = {
     "job_run_history": 10_000,
     "strategy_evidence_sample": 10_000,
     "second_stage_alpha_factory_sample": 10_000,
+    "expanded_relative_strength_decision_sample": 20_000,
     "alpha_factory_candidate": 10_000,
     "alpha_factory_result": 10_000,
     "alpha_factory_promotion_queue": 10_000,
@@ -118,6 +125,7 @@ HEAVY_EXPORT_RECENT_FILE_LIMITS = {
     "job_run_history": 50,
     "strategy_evidence_sample": 100,
     "second_stage_alpha_factory_sample": 100,
+    "expanded_relative_strength_decision_sample": 100,
     "alpha_factory_candidate": 100,
     "alpha_factory_result": 100,
     "alpha_factory_promotion_queue": 100,
@@ -167,6 +175,7 @@ SECTION_DATASETS = {
         "strategy_opportunity_advisory",
         "second_stage_alpha_factory_sample",
         "second_stage_alpha_factory_summary",
+        "expanded_relative_strength_decision_sample",
         "alpha_factory_template_registry",
         "alpha_factory_candidate",
         "alpha_factory_result",
@@ -298,6 +307,7 @@ REQUIRED_MEMBERS = [
     "reports/strategy_evidence_summary.md",
     "reports/second_stage_alpha_factory_summary.csv",
     "reports/second_stage_alpha_factory_samples.csv",
+    "reports/expanded_relative_strength_decision_samples.csv",
     "reports/alpha_factory_template_registry.csv",
     "reports/alpha_factory_candidates.csv",
     "reports/alpha_factory_results.csv",
@@ -771,6 +781,11 @@ CSV_SCHEMAS: dict[str, list[str]] = {
         "p25_net_bps",
         "win_rate",
         "cost_source_mix",
+        "avg_mae_bps",
+        "avg_mfe_bps",
+        "cost_quality_score",
+        "recent_sample_sufficient",
+        "paper_ready_block_reasons",
         "train_metrics_json",
         "validation_metrics_json",
         "recent_7d_metrics_json",
@@ -1248,6 +1263,24 @@ CSV_SCHEMAS: dict[str, list[str]] = {
         "end_ts",
         "created_at",
         "source",
+    ],
+    "reports/expanded_relative_strength_decision_samples.csv": [
+        "decision_ts",
+        "symbol",
+        "lookback_hours",
+        "lookback_return_bps",
+        "top_k",
+        "selected_rank",
+        "selected",
+        "symbol_quality_score",
+        "spread_bps",
+        "btc_corr",
+        "volume_24h_usdt",
+        "selection_reason",
+        "anti_leakage_check",
+        "label_horizon_hours",
+        "future_net_bps",
+        "label_status",
     ],
     "reports/expanded_crypto_candidate_outcomes_by_symbol.csv": [
         "as_of_date",
@@ -2692,6 +2725,10 @@ def _dataset_members(frames: dict[str, pl.DataFrame]) -> dict[str, _MemberPayloa
     second_stage_samples = _strategy_evidence_samples_for_export(
         frames.get("second_stage_alpha_factory_sample", pl.DataFrame())
     )
+    relative_strength_decision_samples = frames.get(
+        "expanded_relative_strength_decision_sample",
+        pl.DataFrame(),
+    )
     alpha_factory_registry = frames.get("alpha_factory_template_registry", pl.DataFrame())
     alpha_factory_candidates = frames.get("alpha_factory_candidate", pl.DataFrame())
     alpha_factory_results = frames.get("alpha_factory_result", pl.DataFrame())
@@ -2871,6 +2908,10 @@ def _dataset_members(frames: dict[str, pl.DataFrame]) -> dict[str, _MemberPayloa
         "reports/second_stage_alpha_factory_samples.csv": _csv_member(
             "reports/second_stage_alpha_factory_samples.csv",
             second_stage_samples,
+        ),
+        "reports/expanded_relative_strength_decision_samples.csv": _csv_member(
+            "reports/expanded_relative_strength_decision_samples.csv",
+            relative_strength_decision_samples,
         ),
         "reports/alpha_factory_template_registry.csv": _csv_member(
             "reports/alpha_factory_template_registry.csv",
@@ -5097,11 +5138,7 @@ def _strategy_opportunity_advisory_for_export(
                 "slippage_coverage": slippage_coverage,
                 "live_block_reasons": safe_json_dumps(live_block_reasons),
                 "max_paper_notional_usdt": _advisory_max_paper_notional(recommended_mode),
-                "max_live_notional_usdt": _advisory_max_live_notional(
-                    decision=decision,
-                    risk_context=risk_context,
-                    live_block_reasons=live_block_reasons,
-                ),
+                "max_live_notional_usdt": 0.0,
             }
         )
     rows.extend(
@@ -5427,42 +5464,17 @@ def _latest_rows_by_candidate_symbol(frame: pl.DataFrame) -> dict[tuple[str, str
     return rows_by_key
 
 
-def _candidate_symbol_key(row: dict[str, Any]) -> tuple[str, str]:
-    candidate = str(row.get("strategy_candidate") or row.get("candidate_name") or "").strip()
-    symbol = normalize_symbol(row.get("symbol")) or "UNKNOWN"
-    return (candidate, symbol)
-
-
-PORTFOLIO_ADVISORY_OVERRIDE_STATUSES = {"KILL", "DOWNGRADED_FROM_PAPER", "PAUSED"}
-
-
 def _portfolio_status_overrides_by_candidate_symbol(
     research_portfolio: pl.DataFrame,
 ) -> dict[tuple[str, str], dict[str, Any]]:
-    overrides: dict[tuple[str, str], dict[str, Any]] = {}
-    if research_portfolio.is_empty():
-        return overrides
-    frame = dedupe_research_portfolio_status(research_portfolio)
-    for row in frame.to_dicts():
-        status = str(row.get("status") or "").strip().upper()
-        if status not in PORTFOLIO_ADVISORY_OVERRIDE_STATUSES:
-            continue
-        candidate, symbol = _portfolio_candidate_symbol(row)
-        if not candidate:
-            continue
-        key = (candidate, symbol)
-        current = overrides.get(key)
-        if current is None or _advisory_row_time(row) >= _advisory_row_time(current):
-            overrides[key] = row
-    return overrides
+    return portfolio_status_overrides_by_identifier(research_portfolio)
 
 
 def _portfolio_override_for_row(
     row: dict[str, Any],
     overrides: dict[tuple[str, str], dict[str, Any]],
 ) -> dict[str, Any] | None:
-    candidate, symbol = _candidate_symbol_key(row)
-    return _portfolio_override_for_candidate_symbol(overrides, candidate, symbol)
+    return portfolio_override_for_row(row, overrides)
 
 
 def _portfolio_override_for_candidate_symbol(
@@ -5470,12 +5482,7 @@ def _portfolio_override_for_candidate_symbol(
     candidate: str,
     symbol: str,
 ) -> dict[str, Any] | None:
-    normalized = normalize_symbol(symbol) or "UNKNOWN"
-    return (
-        overrides.get((candidate, normalized))
-        or overrides.get((candidate, "UNKNOWN"))
-        or overrides.get((candidate, ""))
-    )
+    return portfolio_override_for_identifier_symbol(overrides, candidate, symbol)
 
 
 def _portfolio_overridden_decision_mode(
@@ -5484,23 +5491,11 @@ def _portfolio_overridden_decision_mode(
     recommended_mode: str,
     portfolio_override: dict[str, Any] | None,
 ) -> tuple[str, str, list[str]]:
-    if portfolio_override is None:
-        return decision, recommended_mode or _advisory_recommended_mode(decision), []
-    status = str(portfolio_override.get("status") or "").strip().upper()
-    if status == "KILL":
-        return "KILL", "none", ["research_portfolio_kill"]
-    if status == "DOWNGRADED_FROM_PAPER":
-        if decision in {"PAPER_READY", "LIVE_SMALL_READY"} or recommended_mode in {
-            "paper",
-            "live_small",
-        }:
-            return "KEEP_SHADOW", "shadow", ["downgraded_from_paper"]
-        return decision, recommended_mode or _advisory_recommended_mode(decision), [
-            "downgraded_from_paper"
-        ]
-    if status == "PAUSED":
-        return "RESEARCH_ONLY", "research", ["research_paused"]
-    return decision, recommended_mode or _advisory_recommended_mode(decision), []
+    return portfolio_overridden_decision_mode(
+        decision=decision,
+        recommended_mode=recommended_mode,
+        portfolio_override=portfolio_override,
+    )
 
 
 def _apply_research_portfolio_overrides(
@@ -5511,9 +5506,7 @@ def _apply_research_portfolio_overrides(
         return rows
     output: list[dict[str, Any]] = []
     for row in rows:
-        candidate = str(row.get("strategy_candidate") or "").strip()
-        symbol = normalize_symbol(row.get("symbol")) or "UNKNOWN"
-        override = _portfolio_override_for_candidate_symbol(overrides, candidate, symbol)
+        override = _portfolio_override_for_row(row, overrides)
         decision, mode, reasons = _portfolio_overridden_decision_mode(
             decision=str(row.get("decision") or "RESEARCH_ONLY").strip().upper(),
             recommended_mode=str(row.get("recommended_mode") or "").strip(),
@@ -5536,30 +5529,14 @@ def _apply_research_portfolio_overrides(
             "would_enter": False if mode in {"none", "research"} else row.get("would_enter"),
         }
         if mode == "research":
-            updated["no_sample_reason"] = (
-                "research_paused"
-                if "research_paused" in reasons
-                else str(row.get("no_sample_reason") or "research_only")
-            )
+            no_sample_reason = str(row.get("no_sample_reason") or "research_only")
+            if "research_paused" in reasons:
+                no_sample_reason = "research_paused"
+            elif "baseline_only" in reasons:
+                no_sample_reason = "baseline_only"
+            updated["no_sample_reason"] = no_sample_reason
         output.append(updated)
     return output
-
-
-def _portfolio_candidate_symbol(row: dict[str, Any]) -> tuple[str, str]:
-    candidate = str(row.get("strategy_candidate") or "").strip()
-    symbol = normalize_symbol(row.get("symbol")) or "UNKNOWN"
-    research_id = str(row.get("research_id") or "").strip().upper()
-    known = {
-        "ETH_F3_DOMINANT_ENTRY_PAPER_V1": ("v5.f3_dominant_entry", "ETH-USDT"),
-        "SOL_PROTECT_ALPHA6_LOW_EXCEPTION_PAPER_V1": (
-            "v5.sol_protect_alpha6_low_exception",
-            "SOL-USDT",
-        ),
-        "SOL_F4_VOLUME_EXPANSION_PAPER_V1": ("v5.f4_volume_expansion_entry", "SOL-USDT"),
-    }
-    if research_id in known:
-        return known[research_id]
-    return (candidate, symbol)
 
 
 def _advisory_row_time(row: dict[str, Any]) -> datetime:

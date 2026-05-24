@@ -41,6 +41,11 @@ from quant_lab.data.lake import (
 )
 from quant_lab.gates.defaults import evaluate_alpha_gate
 from quant_lab.ops.metrics import api_metrics_summary, record_api_request
+from quant_lab.research.advisory_overrides import (
+    portfolio_overridden_decision_mode,
+    portfolio_override_for_row,
+    portfolio_status_overrides_by_identifier,
+)
 from quant_lab.research.bootstrap_gold import BOOTSTRAP_GATE_VERSION
 from quant_lab.risk.advisory import (
     apply_risk_advisory_context,
@@ -859,22 +864,41 @@ def _strategy_opportunity_advisory_rows_uncached(
         advisory = _strategy_opportunity_advisory_row(row)
         if advisory is not None:
             parsed.append(advisory)
-    return _dedupe_strategy_opportunity_advisory_rows(parsed)
+    deduped = _dedupe_strategy_opportunity_advisory_rows(parsed)
+    return _apply_research_portfolio_overrides_to_advisory_rows(
+        deduped,
+        _strategy_opportunity_portfolio_overrides(lake_root),
+    )
 
 
 def _strategy_opportunity_advisory_source_signature(lake_root: Path) -> tuple[Any, ...]:
     gold_path = lake_root / "gold" / "strategy_opportunity_advisory"
     gold_files = _parquet_file_signature(gold_path)
+    portfolio_files = _parquet_file_signature(lake_root / "gold" / "research_portfolio_status")
     if gold_files:
-        return ("gold", gold_files)
+        return ("gold", gold_files, "research_portfolio_status", portfolio_files)
     latest_report = _latest_strategy_opportunity_report_pack(lake_root)
     if latest_report is not None:
         try:
             stat = latest_report.stat()
         except OSError:
-            return ("report", str(latest_report), None, None)
-        return ("report", str(latest_report), stat.st_mtime_ns, stat.st_size)
-    return ("missing",)
+            return (
+                "report",
+                str(latest_report),
+                None,
+                None,
+                "research_portfolio_status",
+                portfolio_files,
+            )
+        return (
+            "report",
+            str(latest_report),
+            stat.st_mtime_ns,
+            stat.st_size,
+            "research_portfolio_status",
+            portfolio_files,
+        )
+    return ("missing", "research_portfolio_status", portfolio_files)
 
 
 def _parquet_file_signature(path: Path) -> tuple[tuple[str, int, int], ...]:
@@ -955,6 +979,68 @@ def _dedupe_strategy_opportunity_advisory_rows(
     )
 
 
+def _strategy_opportunity_portfolio_overrides(
+    lake_root: Path,
+) -> dict[tuple[str, str], dict[str, Any]]:
+    lazy, columns = _safe_parquet_lazy(lake_root / "gold" / "research_portfolio_status")
+    if lazy is None:
+        return {}
+    selected = lazy.select([pl.col(column) for column in columns])
+    frame = _collect_lazy_or_empty(selected)
+    return portfolio_status_overrides_by_identifier(frame)
+
+
+def _apply_research_portfolio_overrides_to_advisory_rows(
+    rows: list[StrategyOpportunityAdvisoryRow],
+    overrides: dict[tuple[str, str], dict[str, Any]],
+) -> list[StrategyOpportunityAdvisoryRow]:
+    if not overrides:
+        return [row.model_copy(update={"max_live_notional_usdt": 0.0}) for row in rows]
+    output: list[StrategyOpportunityAdvisoryRow] = []
+    for row in rows:
+        override = portfolio_override_for_row(row.model_dump(mode="python"), overrides)
+        decision, mode, reasons = portfolio_overridden_decision_mode(
+            decision=row.decision,
+            recommended_mode=row.recommended_mode,
+            portfolio_override=override,
+        )
+        if not reasons:
+            output.append(row.model_copy(update={"max_live_notional_usdt": 0.0}))
+            continue
+        live_block_reasons = sorted({*row.live_block_reasons, *reasons})
+        no_sample_reason = row.no_sample_reason
+        if mode == "research":
+            if "research_paused" in reasons:
+                no_sample_reason = "research_paused"
+            elif "baseline_only" in reasons:
+                no_sample_reason = "baseline_only"
+            elif not no_sample_reason:
+                no_sample_reason = "research_only"
+        output.append(
+            row.model_copy(
+                update={
+                    "decision": decision,
+                    "recommended_mode": mode,
+                    "live_block_reasons": live_block_reasons,
+                    "max_paper_notional_usdt": _api_advisory_max_paper_notional(mode),
+                    "max_live_notional_usdt": 0.0,
+                    "would_block_if_enabled": True
+                    if decision == "KILL"
+                    else row.would_block_if_enabled,
+                    "would_enter": False
+                    if mode in {"none", "research"}
+                    else row.would_enter,
+                    "no_sample_reason": no_sample_reason,
+                }
+            )
+        )
+    return output
+
+
+def _api_advisory_max_paper_notional(recommended_mode: str) -> float:
+    return 1000.0 if recommended_mode == "paper" else 0.0
+
+
 def _advisory_row_preferred(
     candidate: StrategyOpportunityAdvisoryRow,
     current: StrategyOpportunityAdvisoryRow,
@@ -1026,9 +1112,7 @@ def _strategy_opportunity_advisory_row(
         return None
     decision = (_text_value(row.get("decision")) or "RESEARCH_ONLY").upper()
     recommended_mode = _advisory_recommended_mode(row.get("recommended_mode"), decision)
-    max_live_notional = _optional_float(row.get("max_live_notional_usdt")) or 0.0
-    if decision != "LIVE_SMALL_READY":
-        max_live_notional = 0.0
+    max_live_notional = 0.0
     as_of_ts = _advisory_datetime(
         row,
         ("as_of_ts", "generated_at", "generated_at_utc", "created_at", "as_of_date"),

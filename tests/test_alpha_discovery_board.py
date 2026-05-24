@@ -1432,6 +1432,46 @@ def test_downgraded_paper_strategies_are_not_exported_as_paper(tmp_path):
         pl.DataFrame(paper_daily_rows),
         lake / "gold" / "paper_strategy_daily",
     )
+    write_parquet_dataset(
+        pl.DataFrame(
+            [
+                {
+                    "as_of_ts": "2026-05-09T00:00:00+00:00",
+                    "generated_at": "2026-05-09T00:00:00+00:00",
+                    "expires_at": "2026-05-09T03:00:00+00:00",
+                    "contract_version": "v5.quant_lab.telemetry.v2",
+                    "schema_version": "strategy_opportunity_advisory.v0.1",
+                    "quant_lab_git_commit": "test",
+                    "source_version": "test",
+                    "would_block_if_enabled": False,
+                    "would_enter": True,
+                    "no_sample_reason": "",
+                    "strategy_id": "ETH_USDT_V5_F3_DOMINANT_ENTRY",
+                    "strategy_candidate": "v5.f3_dominant_entry",
+                    "symbol": "ETH-USDT",
+                    "v5_symbol": "ETH/USDT",
+                    "decision": "PAPER_READY",
+                    "recommended_mode": "paper",
+                    "horizon_hours": 48,
+                    "sample_count": 72,
+                    "complete_sample_count": 72,
+                    "avg_net_bps": 35.0,
+                    "p25_net_bps": 10.0,
+                    "win_rate": 0.7,
+                    "cost_source_mix": '{"mixed_actual_proxy": 72}',
+                    "cost_quality": "mixed",
+                    "paper_days": 2,
+                    "entry_day_count": 2,
+                    "paper_pnl_observed_count": 2,
+                    "slippage_coverage": 0.9,
+                    "live_block_reasons": "[]",
+                    "max_paper_notional_usdt": 100.0,
+                    "max_live_notional_usdt": 0.0,
+                }
+            ]
+        ),
+        lake / "gold" / "strategy_opportunity_advisory",
+    )
 
     export = export_daily_pack(
         export_date="2026-05-10",
@@ -1471,6 +1511,9 @@ def test_downgraded_paper_strategies_are_not_exported_as_paper(tmp_path):
     assert "downgraded_from_paper" in sol["live_block_reasons"]
     assert eth["max_paper_notional_usdt"] == "0.0"
     assert sol["max_paper_notional_usdt"] == "0.0"
+
+    published = read_parquet_dataset(lake / "gold" / "strategy_opportunity_advisory")
+    assert published.filter(pl.col("recommended_mode") == "paper").is_empty()
 
 
 def _write_candidate_labels(lake: Path) -> None:

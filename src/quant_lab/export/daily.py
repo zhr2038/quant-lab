@@ -23,7 +23,7 @@ from quant_lab.contracts.v5_quant_lab import (
     V5_QUANT_LAB_CONTRACT_VERSION,
     V5_TELEMETRY_DATASET_SCHEMA_VERSION,
 )
-from quant_lab.data.lake import read_parquet_dataset, upsert_parquet_dataset
+from quant_lab.data.lake import read_parquet_dataset, write_parquet_dataset
 from quant_lab.reports.enforce_readiness import (
     ENFORCE_READINESS_CSV,
     ENFORCE_READINESS_JSON,
@@ -1943,17 +1943,16 @@ def _publish_strategy_opportunity_advisory_snapshot(
     opportunity = _strategy_opportunity_advisory_from_frames(snapshot.frames)
     if opportunity.is_empty():
         return snapshot
-    rows = upsert_parquet_dataset(
+    write_parquet_dataset(
         opportunity,
         root / "gold" / "strategy_opportunity_advisory",
-        key_columns=["as_of_ts", "strategy_candidate", "symbol", "horizon_hours"],
     )
     frames = dict(snapshot.frames)
     frames["strategy_opportunity_advisory"] = read_parquet_dataset(
         root / "gold" / "strategy_opportunity_advisory"
     )
     row_counts = dict(snapshot.row_counts)
-    row_counts["strategy_opportunity_advisory"] = rows
+    row_counts["strategy_opportunity_advisory"] = opportunity.height
     return _DatasetSnapshot(
         frames=frames,
         row_counts=row_counts,

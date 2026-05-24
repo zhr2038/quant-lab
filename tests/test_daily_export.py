@@ -198,6 +198,7 @@ def test_export_includes_missed_opportunity_and_risk_on_multi_buy_shadow(tmp_pat
                     "final_score": 90.0,
                     "expected_edge_bps": 80.0,
                     "required_edge_bps": 30.0,
+                    "cost_gate_verified": True,
                     "final_decision": "OPEN_LONG",
                     "block_reason": "",
                     "regime_state": "ALT_IMPULSE",
@@ -212,6 +213,7 @@ def test_export_includes_missed_opportunity_and_risk_on_multi_buy_shadow(tmp_pat
                     "final_score": 85.0,
                     "expected_edge_bps": 75.0,
                     "required_edge_bps": 30.0,
+                    "cost_gate_verified": True,
                     "final_decision": "BLOCKED",
                     "block_reason": "permission_abort",
                     "regime_state": "ALT_IMPULSE",
@@ -321,16 +323,23 @@ def test_export_includes_missed_opportunity_and_risk_on_multi_buy_shadow(tmp_pat
             )
         )
         summary = archive.read("reports/missed_opportunity_summary.md").decode("utf-8")
+        risk_on_summary = archive.read("reports/risk_on_multi_buy_summary.md").decode("utf-8")
 
     outcomes = {row["symbol"]: row["outcome_if_blocked"] for row in missed_rows}
     assert outcomes["BNB-USDT"] == "quant_lab_would_have_missed_profit"
     assert outcomes["SOL-USDT"] == "v5_missed_opportunity"
+    assert any(
+        row["strategy_candidate"] == "v5.risk_on_multi_buy_top1_shadow"
+        for row in risk_on_rows
+    )
     assert any(
         row["strategy_candidate"] == "v5.risk_on_multi_buy_top2_shadow"
         for row in risk_on_rows
     )
     top2 = next(row for row in risk_on_rows if row["top_k"] == "2")
     assert json.loads(top2["selected_symbols"]) == ["BNB-USDT", "SOL-USDT"]
+    assert top2["would_buy_symbol"] in {"BNB-USDT", "SOL-USDT"}
+    assert top2["actual_v5_bought_symbols"] == '["BNB-USDT"]'
     assert float(top2["avg_portfolio_net_bps"]) > 0
     assert any(
         row["strategy_candidate"] == "v5.risk_on_multi_buy_top2_shadow"
@@ -338,6 +347,7 @@ def test_export_includes_missed_opportunity_and_risk_on_multi_buy_shadow(tmp_pat
         for row in advisory_rows
     )
     assert "quant_lab_would_have_missed_profit" in summary
+    assert "top2" in risk_on_summary
 
 
 def test_member_row_count_counts_csv_without_materializing_rows() -> None:

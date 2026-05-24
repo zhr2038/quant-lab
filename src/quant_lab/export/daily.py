@@ -103,6 +103,7 @@ HEAVY_EXPORT_DATASET_LIMITS = {
     "v5_trade_event": 10_000,
     "v5_missed_opportunity_audit": 20_000,
     "v5_risk_on_multi_buy_shadow": 20_000,
+    "risk_on_multi_buy_shadow": 20_000,
     "v5_quant_lab_usage": 5_000,
     "v5_quant_lab_compliance": 5_000,
     "v5_quant_lab_cost_usage": 5_000,
@@ -138,6 +139,7 @@ HEAVY_EXPORT_RECENT_FILE_LIMITS = {
     "v5_trade_event": 100,
     "v5_missed_opportunity_audit": 100,
     "v5_risk_on_multi_buy_shadow": 100,
+    "risk_on_multi_buy_shadow": 100,
     "v5_quant_lab_usage": 100,
     "v5_quant_lab_compliance": 100,
     "v5_quant_lab_cost_usage": 100,
@@ -190,6 +192,7 @@ SECTION_DATASETS = {
         "regime_strategy_advisory",
         "v5_missed_opportunity_audit",
         "v5_risk_on_multi_buy_shadow",
+        "risk_on_multi_buy_shadow",
         "expanded_universe_candidate",
         "expanded_universe_quality",
         "expanded_universe_candidate_event",
@@ -329,6 +332,7 @@ REQUIRED_MEMBERS = [
     "reports/missed_opportunity_audit.csv",
     "reports/missed_opportunity_summary.md",
     "reports/risk_on_multi_buy_shadow.csv",
+    "reports/risk_on_multi_buy_summary.md",
     "reports/market_regime_daily.csv",
     "reports/strategy_regime_matrix.csv",
     "reports/regime_strategy_advisory.csv",
@@ -1075,12 +1079,18 @@ CSV_SCHEMAS: dict[str, list[str]] = {
         "top_k",
         "selected_symbols",
         "selected_count",
+        "would_buy_symbol",
         "would_buy",
         "would_size_usdt",
+        "final_score",
+        "expected_edge_bps",
+        "required_edge_bps",
+        "entry_px",
         "future_4h_net_bps",
         "future_8h_net_bps",
         "future_24h_net_bps",
         "avg_portfolio_net_bps",
+        "actual_v5_bought_symbols",
         "vs_actual_v5_net_bps",
         "missed_symbols",
         "recommended_mode",
@@ -2339,18 +2349,24 @@ def _publish_missed_opportunity_snapshot(
         v5_trades=frames.get("v5_trade_event", pl.DataFrame()),
         market_bars=frames.get("market_bar", pl.DataFrame()),
         market_regime=frames.get("market_regime_daily", pl.DataFrame()),
+        cost_buckets=frames.get("cost_bucket_daily", pl.DataFrame()),
     )
     write_parquet_dataset(audit, root / "gold" / "v5_missed_opportunity_audit")
     write_parquet_dataset(risk_on, root / "gold" / "v5_risk_on_multi_buy_shadow")
+    write_parquet_dataset(risk_on, root / "gold" / "risk_on_multi_buy_shadow")
     frames["v5_missed_opportunity_audit"] = read_parquet_dataset(
         root / "gold" / "v5_missed_opportunity_audit"
     )
     frames["v5_risk_on_multi_buy_shadow"] = read_parquet_dataset(
         root / "gold" / "v5_risk_on_multi_buy_shadow"
     )
+    frames["risk_on_multi_buy_shadow"] = read_parquet_dataset(
+        root / "gold" / "risk_on_multi_buy_shadow"
+    )
     row_counts = dict(snapshot.row_counts)
     row_counts["v5_missed_opportunity_audit"] = audit.height
     row_counts["v5_risk_on_multi_buy_shadow"] = risk_on.height
+    row_counts["risk_on_multi_buy_shadow"] = risk_on.height
     warnings = [
         warning
         for warning in snapshot.warnings
@@ -3152,6 +3168,9 @@ def _dataset_members(frames: dict[str, pl.DataFrame]) -> dict[str, _MemberPayloa
         "reports/risk_on_multi_buy_shadow.csv": _csv_member(
             "reports/risk_on_multi_buy_shadow.csv",
             risk_on_multi_buy_shadow,
+        ),
+        "reports/risk_on_multi_buy_summary.md": _risk_on_multi_buy_summary_md(
+            risk_on_multi_buy_shadow
         ),
         "reports/market_regime_daily.csv": _csv_member(
             "reports/market_regime_daily.csv",
@@ -5611,6 +5630,7 @@ def _risk_on_multi_buy_opportunity_rows(risk_on_shadow: pl.DataFrame) -> list[di
     for row in risk_on_shadow.to_dicts():
         candidate = str(row.get("strategy_candidate") or "").strip()
         if candidate not in {
+            "v5.risk_on_multi_buy_top1_shadow",
             "v5.risk_on_multi_buy_top2_shadow",
             "v5.risk_on_multi_buy_top3_shadow",
         }:
@@ -5772,6 +5792,7 @@ def _risk_on_multi_buy_shadow_for_export(
     v5_trades: pl.DataFrame,
     market_bars: pl.DataFrame,
     market_regime: pl.DataFrame,
+    cost_buckets: pl.DataFrame | None = None,
 ) -> pl.DataFrame:
     path = "reports/risk_on_multi_buy_shadow.csv"
     if candidate_events.is_empty():
@@ -5779,6 +5800,9 @@ def _risk_on_multi_buy_shadow_for_export(
     market_by_symbol = _market_close_rows_by_symbol(market_bars)
     regime_context = _latest_market_regime_context(market_regime)
     actual_opened = _actual_open_trade_symbols_by_run(v5_trades)
+    shadow_cost_by_symbol = _risk_on_shadow_cost_by_symbol(
+        cost_buckets if cost_buckets is not None else pl.DataFrame()
+    )
     grouped: dict[str, list[dict[str, Any]]] = {}
     for candidate in candidate_events.to_dicts():
         symbol = normalize_symbol(candidate.get("symbol"))
@@ -5798,6 +5822,7 @@ def _risk_on_multi_buy_shadow_for_export(
             reverse=True,
         )
         for top_k, strategy_candidate in [
+            (1, "v5.risk_on_multi_buy_top1_shadow"),
             (2, "v5.risk_on_multi_buy_top2_shadow"),
             (3, "v5.risk_on_multi_buy_top3_shadow"),
         ]:
@@ -5807,20 +5832,48 @@ def _risk_on_multi_buy_shadow_for_export(
             selected_symbols = [normalize_symbol(row.get("symbol")) for row in selected]
             selected_symbols = [symbol for symbol in selected_symbols if symbol]
             decision_ts = min(row["_ts"] for row in selected)
+            selected_metrics: list[dict[str, Any]] = []
+            for row in selected:
+                symbol = normalize_symbol(row.get("symbol"))
+                symbol_market = market_by_symbol.get(symbol, [])
+                entry_px = _candidate_entry_price(row, symbol_market, row["_ts"])
+                shadow_cost_bps = shadow_cost_by_symbol.get(
+                    symbol,
+                    RISK_ON_MULTI_BUY_COST_BPS,
+                )
+                selected_metrics.append(
+                    {
+                        "row": row,
+                        "symbol": symbol,
+                        "entry_px": entry_px,
+                        "future_4h_net_bps": _future_net_bps_after_shadow_cost(
+                            symbol_market,
+                            row["_ts"],
+                            entry_px,
+                            4,
+                            shadow_cost_bps=shadow_cost_bps,
+                        ),
+                        "future_8h_net_bps": _future_net_bps_after_shadow_cost(
+                            symbol_market,
+                            row["_ts"],
+                            entry_px,
+                            8,
+                            shadow_cost_bps=shadow_cost_bps,
+                        ),
+                        "future_24h_net_bps": _future_net_bps_after_shadow_cost(
+                            symbol_market,
+                            row["_ts"],
+                            entry_px,
+                            24,
+                            shadow_cost_bps=shadow_cost_bps,
+                        ),
+                    }
+                )
             pnl_by_horizon = {
                 horizon: _average_optional(
                     [
-                        _future_net_bps_after_shadow_cost(
-                            market_by_symbol.get(normalize_symbol(row.get("symbol")), []),
-                            row["_ts"],
-                            _candidate_entry_price(
-                                row,
-                                market_by_symbol.get(normalize_symbol(row.get("symbol")), []),
-                                row["_ts"],
-                            ),
-                            horizon,
-                        )
-                        for row in selected
+                        _optional_float(metric.get(f"future_{horizon}h_net_bps"))
+                        for metric in selected_metrics
                     ]
                 )
                 for horizon in (4, 8, 24)
@@ -5840,37 +5893,49 @@ def _risk_on_multi_buy_shadow_for_export(
                 ]
             )
             missed_symbols = sorted(set(selected_symbols) - set(actual_symbols))
-            rows.append(
-                {
-                    "generated_at": generated_at,
-                    "schema_version": "v5_risk_on_multi_buy_shadow.v0.1",
-                    "run_id": run_id,
-                    "decision_ts": decision_ts.isoformat(),
-                    "current_regime": regime_context.get("current_regime"),
-                    "broad_market_positive_count": regime_context.get(
-                        "broad_market_positive_count"
-                    ),
-                    "btc_24h_return_bps": regime_context.get("btc_24h_return_bps"),
-                    "strategy_candidate": strategy_candidate,
-                    "top_k": top_k,
-                    "selected_symbols": safe_json_dumps(selected_symbols),
-                    "selected_count": len(selected_symbols),
-                    "would_buy": bool(selected_symbols),
-                    "would_size_usdt": float(len(selected_symbols) * 1000),
-                    "future_4h_net_bps": pnl_by_horizon[4],
-                    "future_8h_net_bps": pnl_by_horizon[8],
-                    "future_24h_net_bps": pnl_by_horizon[24],
-                    "avg_portfolio_net_bps": pnl_by_horizon[24],
-                    "vs_actual_v5_net_bps": (
-                        None if actual_net is None or pnl_by_horizon[24] is None
-                        else pnl_by_horizon[24] - actual_net
-                    ),
-                    "missed_symbols": safe_json_dumps(missed_symbols),
-                    "recommended_mode": "shadow",
-                    "max_live_notional_usdt": 0.0,
-                    "source": "quant_lab_risk_on_multi_buy_shadow",
-                }
-            )
+            for metric in selected_metrics:
+                selected_row = metric["row"]
+                rows.append(
+                    {
+                        "generated_at": generated_at,
+                        "schema_version": "v5_risk_on_multi_buy_shadow.v0.2",
+                        "run_id": run_id,
+                        "decision_ts": decision_ts.isoformat(),
+                        "current_regime": regime_context.get("current_regime"),
+                        "broad_market_positive_count": regime_context.get(
+                            "broad_market_positive_count"
+                        ),
+                        "btc_24h_return_bps": regime_context.get("btc_24h_return_bps"),
+                        "strategy_candidate": strategy_candidate,
+                        "top_k": top_k,
+                        "selected_symbols": safe_json_dumps(selected_symbols),
+                        "selected_count": len(selected_symbols),
+                        "would_buy_symbol": metric["symbol"],
+                        "would_buy": bool(metric["symbol"]),
+                        "would_size_usdt": 1000.0,
+                        "final_score": _optional_float(selected_row.get("final_score")),
+                        "expected_edge_bps": _optional_float(
+                            selected_row.get("expected_edge_bps")
+                        ),
+                        "required_edge_bps": _optional_float(
+                            selected_row.get("required_edge_bps")
+                        ),
+                        "entry_px": metric["entry_px"],
+                        "future_4h_net_bps": metric["future_4h_net_bps"],
+                        "future_8h_net_bps": metric["future_8h_net_bps"],
+                        "future_24h_net_bps": metric["future_24h_net_bps"],
+                        "avg_portfolio_net_bps": pnl_by_horizon[24],
+                        "actual_v5_bought_symbols": safe_json_dumps(actual_symbols),
+                        "vs_actual_v5_net_bps": (
+                            None if actual_net is None or pnl_by_horizon[24] is None
+                            else pnl_by_horizon[24] - actual_net
+                        ),
+                        "missed_symbols": safe_json_dumps(missed_symbols),
+                        "recommended_mode": "shadow",
+                        "max_live_notional_usdt": 0.0,
+                        "source": "quant_lab_risk_on_multi_buy_shadow",
+                    }
+                )
     if not rows:
         return _empty_csv_schema_frame(path)
     return pl.DataFrame(rows, infer_schema_length=None).select(CSV_SCHEMAS[path])
@@ -5911,6 +5976,63 @@ def _missed_opportunity_summary_md(audit: pl.DataFrame, risk_on_shadow: pl.DataF
                 f"24h_net={row.get('future_24h_net_bps')}"
             )
     return "\n".join(lines) + "\n"
+
+
+def _risk_on_multi_buy_summary_md(risk_on_shadow: pl.DataFrame) -> str:
+    lines = [
+        "# Risk-on Multi-buy Shadow",
+        "",
+        (
+            "This is a shadow-only research report for ALT_IMPULSE/TREND_UP "
+            "multi-symbol buying. It does not change V5 live execution."
+        ),
+        "",
+    ]
+    if risk_on_shadow.is_empty():
+        lines.append("- No qualifying risk-on multi-buy shadow samples were observed.")
+        return "\n".join(lines) + "\n"
+
+    rows = sorted(
+        risk_on_shadow.to_dicts(),
+        key=lambda row: (
+            str(row.get("decision_ts") or ""),
+            _optional_int(row.get("top_k")) or 0,
+        ),
+        reverse=True,
+    )
+    latest_by_top_k: dict[int, dict[str, Any]] = {}
+    for row in rows:
+        top_k = _optional_int(row.get("top_k"))
+        if top_k is None or top_k in latest_by_top_k:
+            continue
+        latest_by_top_k[top_k] = row
+
+    lines.append("## Latest portfolios")
+    for top_k in sorted(latest_by_top_k):
+        row = latest_by_top_k[top_k]
+        lines.append(
+            "- "
+            f"top{top_k}: selected={row.get('selected_symbols')}; "
+            f"24h_portfolio_net_bps={_format_summary_number(row.get('avg_portfolio_net_bps'))}; "
+            f"vs_actual_v5_net_bps={_format_summary_number(row.get('vs_actual_v5_net_bps'))}; "
+            f"actual_v5_bought={row.get('actual_v5_bought_symbols')}; "
+            f"missed={row.get('missed_symbols')}"
+        )
+
+    symbol_counts = Counter(
+        str(row.get("would_buy_symbol") or "unknown") for row in risk_on_shadow.to_dicts()
+    )
+    lines.extend(["", "## Selected symbol counts"])
+    for symbol, count in sorted(symbol_counts.items()):
+        lines.append(f"- {symbol}: {count}")
+    return "\n".join(lines) + "\n"
+
+
+def _format_summary_number(value: Any) -> str:
+    number = _optional_float(value)
+    if number is None:
+        return "not_observable"
+    return f"{number:.2f}"
 
 
 def _v5_local_live_vs_quant_lab_shadow_for_export(
@@ -6070,13 +6192,15 @@ def _future_net_bps_after_shadow_cost(
     entry_ts: datetime,
     entry_price: float | None,
     horizon_hours: int,
+    *,
+    shadow_cost_bps: float = RISK_ON_MULTI_BUY_COST_BPS,
 ) -> float | None:
     if entry_price is None or entry_price <= 0:
         return None
     gross = _future_long_pnl_bps(market_rows, entry_ts, entry_price, horizon_hours)
     if gross is None:
         return None
-    return gross - RISK_ON_MULTI_BUY_COST_BPS
+    return gross - shadow_cost_bps
 
 
 def _candidate_is_strong_buy(candidate: dict[str, Any]) -> bool:
@@ -6133,7 +6257,33 @@ def _risk_on_candidate_passes(
         return False
     if not _candidate_is_strong_buy(candidate):
         return False
+    if _optional_bool(candidate.get("cost_gate_verified")) is not True:
+        return False
     return _optional_float(candidate.get("final_score")) is not None
+
+
+def _risk_on_shadow_cost_by_symbol(cost_buckets: pl.DataFrame) -> dict[str, float]:
+    if cost_buckets.is_empty():
+        return {}
+    latest_by_symbol: dict[str, dict[str, Any]] = {}
+    for row in cost_buckets.to_dicts():
+        symbol = normalize_symbol(row.get("symbol"))
+        if not symbol or symbol == "UNKNOWN":
+            continue
+        current = latest_by_symbol.get(symbol)
+        if current is None or _advisory_row_time(row) >= _advisory_row_time(current):
+            latest_by_symbol[symbol] = row
+    output: dict[str, float] = {}
+    for symbol, row in latest_by_symbol.items():
+        cost = (
+            _optional_float(row.get("roundtrip_all_in_cost_bps"))
+            or _optional_float(row.get("total_cost_bps_p75"))
+            or _optional_float(row.get("selected_total_cost_bps"))
+            or _optional_float(row.get("cost_bps"))
+        )
+        if cost is not None and cost >= 0:
+            output[symbol] = max(cost, RISK_ON_MULTI_BUY_COST_BPS)
+    return output
 
 
 def _average_optional(values: list[float | None]) -> float | None:

@@ -220,6 +220,8 @@ def test_actual_or_mixed_coverage_ignores_stale_mixed_when_fresh_proxy_exists(
     report = build_enforce_readiness_report(lake)
 
     assert report.metrics["actual_or_mixed_cost_coverage"] == 0.5
+    assert report.metrics["actual_or_mixed_cost_coverage_live_universe"] == 0.5
+    assert report.metrics["actual_or_mixed_cost_coverage_expanded_universe"] == 0.0
     assert report.metrics["fresh_cost_symbols"] == [
         "BNB-USDT",
         "BTC-USDT",
@@ -228,6 +230,81 @@ def test_actual_or_mixed_coverage_ignores_stale_mixed_when_fresh_proxy_exists(
     ]
     assert report.metrics["stale_actual_or_mixed_cost_symbols"] == ["SOL-USDT"]
     assert report.metrics["proxy_only_cost_symbols"] == ["ETH-USDT", "SOL-USDT"]
+    assert report.metrics["proxy_only_symbols_live"] == ["ETH-USDT", "SOL-USDT"]
+    assert report.metrics["proxy_only_symbols_expanded"] == []
+
+
+def test_cost_coverage_splits_live_and_expanded_universes(tmp_path):
+    lake = tmp_path / "lake"
+    _write_common_ready_inputs(lake)
+    now = datetime.now(UTC)
+    write_parquet_dataset(
+        pl.DataFrame(
+            [
+                _cost_row(
+                    symbol="BNB-USDT",
+                    source="mixed_actual_proxy",
+                    total=2.0,
+                    created_at=now,
+                ),
+                _cost_row(
+                    symbol="BTC-USDT",
+                    source="mixed_actual_proxy",
+                    total=2.0,
+                    created_at=now,
+                ),
+                _cost_row(
+                    symbol="ETH-USDT",
+                    source="public_spread_proxy",
+                    total=1.0,
+                    created_at=now,
+                ),
+                _cost_row(
+                    symbol="SOL-USDT",
+                    source="public_spread_proxy",
+                    total=1.0,
+                    created_at=now,
+                ),
+                _cost_row(
+                    symbol="ADA-USDT",
+                    source="public_spread_proxy",
+                    total=1.0,
+                    created_at=now,
+                ),
+                _cost_row(
+                    symbol="HYPE-USDT",
+                    source="public_spread_proxy",
+                    total=1.0,
+                    created_at=now,
+                ),
+            ]
+        ),
+        lake / "gold/cost_bucket_daily",
+    )
+    write_parquet_dataset(
+        pl.DataFrame(
+            [
+                {"symbol": "ADA-USDT", "universe_type": "expanded_paper"},
+                {"symbol": "HYPE-USDT", "universe_type": "expanded_paper"},
+            ]
+        ),
+        lake / "gold/expanded_universe_candidate",
+    )
+
+    report = build_enforce_readiness_report(lake)
+
+    assert report.metrics["actual_or_mixed_cost_coverage"] == 2 / 6
+    assert report.metrics["actual_or_mixed_cost_coverage_live_universe"] == 0.5
+    assert report.metrics["actual_or_mixed_cost_coverage_expanded_universe"] == 0.0
+    assert report.metrics["cost_symbols_live_universe"] == [
+        "BNB-USDT",
+        "BTC-USDT",
+        "ETH-USDT",
+        "SOL-USDT",
+    ]
+    assert report.metrics["cost_symbols_expanded_universe"] == ["ADA-USDT", "HYPE-USDT"]
+    assert report.metrics["proxy_only_symbols_live"] == ["ETH-USDT", "SOL-USDT"]
+    assert report.metrics["proxy_only_symbols_expanded"] == ["ADA-USDT", "HYPE-USDT"]
 
 
 def test_write_enforce_readiness_report_outputs_json_and_csv(tmp_path):
@@ -243,6 +320,9 @@ def test_write_enforce_readiness_report_outputs_json_and_csv(tmp_path):
     assert payload["readiness_status"] == "READY"
     csv_text = (out / "v5_enforce_readiness.csv").read_text()
     assert "readiness_status" in csv_text
+    assert "actual_or_mixed_cost_coverage_live_universe" in csv_text
+    assert "actual_or_mixed_cost_coverage_expanded_universe" in csv_text
+    assert "proxy_only_symbols_expanded" in csv_text
 
 
 def _write_common_ready_inputs(

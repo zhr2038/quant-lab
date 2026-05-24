@@ -17,6 +17,7 @@ from quant_lab.risk.publish import is_permission_status_enforceable
 from quant_lab.symbols import normalize_symbol
 
 DEFAULT_COST_SYMBOLS = ["BNB-USDT", "BTC-USDT", "ETH-USDT", "SOL-USDT"]
+LIVE_UNIVERSE_SYMBOLS = DEFAULT_COST_SYMBOLS
 ENFORCE_READINESS_JSON = "v5_enforce_readiness.json"
 ENFORCE_READINESS_CSV = "v5_enforce_readiness.csv"
 ACTUAL_OR_MIXED_COST_SOURCES = {
@@ -81,9 +82,13 @@ def build_enforce_readiness_report(
 
     cost_rows = _rows(root / "gold" / "cost_bucket_daily")
     symbols = _cost_symbols(cost_rows, cost_symbols)
+    live_symbols = sorted({normalize_symbol(symbol) for symbol in LIVE_UNIVERSE_SYMBOLS})
+    expanded_symbols = _expanded_universe_symbols(root, cost_rows, live_symbols)
     cost_metrics = _cost_api_metrics(
         cost_rows=cost_rows,
         symbols=symbols,
+        live_symbols=live_symbols,
+        expanded_symbols=expanded_symbols,
         cost_regime=cost_regime,
     )
 
@@ -266,6 +271,8 @@ def _cost_api_metrics(
     *,
     cost_rows: list[dict[str, Any]],
     symbols: list[str],
+    live_symbols: list[str],
+    expanded_symbols: list[str],
     cost_regime: str,
 ) -> dict[str, Any]:
     estimates = []
@@ -315,19 +322,41 @@ def _cost_api_metrics(
         if _cost_source(row) in PUBLIC_PROXY_COST_SOURCES
         and str(row.get("symbol") or "").upper() not in {"", "GLOBAL"}
     } - actual_or_mixed
+    live_symbol_set = _normalized_symbol_set(live_symbols)
+    expanded_symbol_set = _normalized_symbol_set(expanded_symbols) - live_symbol_set
+    actual_or_mixed_live = actual_or_mixed & live_symbol_set
+    actual_or_mixed_expanded = actual_or_mixed & expanded_symbol_set
+    proxy_only_live = proxy_only & live_symbol_set
+    proxy_only_expanded = proxy_only & expanded_symbol_set
     coverage_denominator = max(len(denominator_symbols), 1)
     return {
         "cost_symbols_checked": symbols,
+        "cost_symbols_live_universe": sorted(live_symbol_set),
+        "cost_symbols_expanded_universe": sorted(expanded_symbol_set),
         "cost_api_global_default_count": len(global_default),
         "cost_api_global_default_rate": len(global_default) / total,
         "cost_symbol_hit_count": len(symbol_hits),
         "cost_symbol_hit_rate": len(symbol_hits) / total,
         "actual_or_mixed_cost_symbol_count": len(actual_or_mixed),
         "actual_or_mixed_cost_coverage": len(actual_or_mixed) / coverage_denominator,
+        "actual_or_mixed_cost_symbol_count_live_universe": len(actual_or_mixed_live),
+        "actual_or_mixed_cost_coverage_live_universe": _coverage_rate(
+            actual_or_mixed_live,
+            live_symbol_set,
+        ),
+        "actual_or_mixed_cost_symbol_count_expanded_universe": len(
+            actual_or_mixed_expanded
+        ),
+        "actual_or_mixed_cost_coverage_expanded_universe": _coverage_rate(
+            actual_or_mixed_expanded,
+            expanded_symbol_set,
+        ),
         "fresh_cost_symbol_count": len(fresh_cost_symbols),
         "fresh_cost_symbols": sorted(fresh_cost_symbols),
         "stale_actual_or_mixed_cost_symbols": sorted(stale_actual_or_mixed),
         "proxy_only_cost_symbols": sorted(proxy_only),
+        "proxy_only_symbols_live": sorted(proxy_only_live),
+        "proxy_only_symbols_expanded": sorted(proxy_only_expanded),
         "cost_estimate_examples": estimates,
         "cost_detail": (
             f"global_default={len(global_default)}; symbol_hits={len(symbol_hits)}; "
@@ -335,11 +364,60 @@ def _cost_api_metrics(
         ),
         "coverage_detail": (
             f"actual_or_mixed_symbols={sorted(actual_or_mixed)}; "
+            f"actual_or_mixed_live={sorted(actual_or_mixed_live)}; "
+            f"actual_or_mixed_expanded={sorted(actual_or_mixed_expanded)}; "
             f"fresh_cost_symbols={sorted(fresh_cost_symbols)}; "
             f"proxy_only_symbols={sorted(proxy_only)}; "
+            f"proxy_only_symbols_live={sorted(proxy_only_live)}; "
+            f"proxy_only_symbols_expanded={sorted(proxy_only_expanded)}; "
             f"stale_actual_or_mixed_symbols={sorted(stale_actual_or_mixed)}"
         ),
     }
+
+
+def _expanded_universe_symbols(
+    root: Path,
+    cost_rows: list[dict[str, Any]],
+    live_symbols: list[str],
+) -> list[str]:
+    live_symbol_set = _normalized_symbol_set(live_symbols)
+    symbols: set[str] = set()
+    for dataset in [
+        "expanded_universe_candidate",
+        "expanded_universe_quality",
+        "expanded_universe_watchlist",
+        "expanded_universe_candidate_maturity",
+        "expanded_universe_promotion_queue",
+    ]:
+        symbols.update(
+            _row_symbols(_rows(root / "gold" / dataset), exclude=live_symbol_set)
+        )
+    if not symbols:
+        symbols.update(_row_symbols(cost_rows, exclude=live_symbol_set))
+    return sorted(symbols)
+
+
+def _row_symbols(
+    rows: list[dict[str, Any]],
+    *,
+    exclude: set[str] | None = None,
+) -> set[str]:
+    excluded = exclude or set()
+    symbols: set[str] = set()
+    for row in rows:
+        symbol = normalize_symbol(row.get("symbol"))
+        if not symbol or symbol == "GLOBAL" or symbol in excluded:
+            continue
+        symbols.add(symbol)
+    return symbols
+
+
+def _normalized_symbol_set(symbols: list[str]) -> set[str]:
+    return {symbol for symbol in (normalize_symbol(item) for item in symbols) if symbol}
+
+
+def _coverage_rate(numerator: set[str], denominator: set[str]) -> float:
+    return len(numerator) / len(denominator) if denominator else 0.0
 
 
 def _cost_source(row: dict[str, Any]) -> str:
@@ -676,6 +754,11 @@ def _csv_text(report: EnforceReadinessReport) -> str:
         "duplicate_rate",
         "dedupe_health_status",
         "dedupe_block_reason",
+        "actual_or_mixed_cost_coverage",
+        "actual_or_mixed_cost_coverage_live_universe",
+        "actual_or_mixed_cost_coverage_expanded_universe",
+        "proxy_only_symbols_live",
+        "proxy_only_symbols_expanded",
         "blocked_reasons",
         "warning_reasons",
         "required_actions",
@@ -693,6 +776,26 @@ def _csv_text(report: EnforceReadinessReport) -> str:
         "duplicate_rate": report.metrics.get("duplicate_rate", 0.0),
         "dedupe_health_status": report.metrics.get("dedupe_health_status", "PASS"),
         "dedupe_block_reason": report.metrics.get("dedupe_block_reason", ""),
+        "actual_or_mixed_cost_coverage": report.metrics.get(
+            "actual_or_mixed_cost_coverage",
+            0.0,
+        ),
+        "actual_or_mixed_cost_coverage_live_universe": report.metrics.get(
+            "actual_or_mixed_cost_coverage_live_universe",
+            0.0,
+        ),
+        "actual_or_mixed_cost_coverage_expanded_universe": report.metrics.get(
+            "actual_or_mixed_cost_coverage_expanded_universe",
+            0.0,
+        ),
+        "proxy_only_symbols_live": json.dumps(
+            report.metrics.get("proxy_only_symbols_live", []),
+            sort_keys=True,
+        ),
+        "proxy_only_symbols_expanded": json.dumps(
+            report.metrics.get("proxy_only_symbols_expanded", []),
+            sort_keys=True,
+        ),
         "blocked_reasons": json.dumps(report.blocked_reasons, sort_keys=True),
         "warning_reasons": json.dumps(report.warning_reasons, sort_keys=True),
         "required_actions": json.dumps(report.required_actions, sort_keys=True),

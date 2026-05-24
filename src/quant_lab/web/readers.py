@@ -68,6 +68,8 @@ DATASET_PATHS = {
     "v5_pullback_reversal_rule_comparison": Path("gold") / "v5_pullback_reversal_rule_comparison",
     "btc_probe_exit_policy_review": Path("gold") / "btc_probe_exit_policy_review",
     "btc_probe_exit_policy_summary": Path("gold") / "btc_probe_exit_policy_summary",
+    "exit_policy_review_sample": Path("gold") / "exit_policy_review_sample",
+    "exit_policy_review_summary": Path("gold") / "exit_policy_review_summary",
     "v5_entry_quality_advisory": Path("gold") / "v5_entry_quality_advisory",
     "v5_entry_quality_history_late_entry_chase_threshold_sensitivity": Path("gold")
     / "v5_entry_quality_history_late_entry_chase_threshold_sensitivity",
@@ -136,6 +138,8 @@ ENTRY_QUALITY_DATASETS = {
     "v5_pullback_reversal_rule_comparison",
     "btc_probe_exit_policy_review",
     "btc_probe_exit_policy_summary",
+    "exit_policy_review_sample",
+    "exit_policy_review_summary",
     "v5_entry_quality_advisory",
     "v5_entry_quality_history_late_entry_chase_threshold_sensitivity",
     "v5_entry_quality_history_pullback_by_symbol",
@@ -218,6 +222,8 @@ DATASET_TIMESTAMP_COLUMNS: dict[str, tuple[str, ...]] = {
     "v5_pullback_reversal_rule_comparison": ("generated_at_utc", "as_of_date"),
     "btc_probe_exit_policy_review": ("generated_at_utc", "entry_ts", "as_of_date"),
     "btc_probe_exit_policy_summary": ("generated_at_utc", "as_of_date"),
+    "exit_policy_review_sample": ("generated_at", "entry_ts", "as_of_date"),
+    "exit_policy_review_summary": ("generated_at", "as_of_date"),
     "v5_entry_quality_advisory": ("generated_at_utc", "as_of_date"),
     "v5_entry_quality_history_late_entry_chase_threshold_sensitivity": (
         "generated_at_utc",

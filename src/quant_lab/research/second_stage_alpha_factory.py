@@ -31,11 +31,12 @@ SCHEMA_VERSION = "second_stage_alpha_factory.v0.1"
 
 SECOND_STAGE_SAMPLE_DATASET = Path("gold") / "second_stage_alpha_factory_sample"
 SECOND_STAGE_SUMMARY_DATASET = Path("gold") / "second_stage_alpha_factory_summary"
+EXIT_POLICY_REVIEW_SAMPLE_DATASET = Path("gold") / "exit_policy_review_sample"
+EXIT_POLICY_REVIEW_SUMMARY_DATASET = Path("gold") / "exit_policy_review_summary"
 STRATEGY_EVIDENCE_SAMPLE_DATASET = Path("gold") / "strategy_evidence_sample"
 STRATEGY_EVIDENCE_DATASET = Path("gold") / "strategy_evidence"
 
 MARKET_BAR_DATASET = Path("silver") / "market_bar"
-EXPANDED_LABEL_DATASET = Path("gold") / "expanded_universe_candidate_label"
 EXPANDED_QUALITY_DATASET = Path("gold") / "expanded_universe_quality"
 COST_BUCKET_DAILY_DATASET = Path("gold") / "cost_bucket_daily"
 MARKET_REGIME_DATASET = Path("gold") / "market_regime_daily"
@@ -48,6 +49,10 @@ RELATIVE_STRENGTH_CANDIDATES = (
     "v5.expanded_relative_strength_rotation_shadow",
 )
 FUTURES_SHADOW_CANDIDATES = (
+    "v5.futures_risk_off_hedge_proxy_shadow",
+    "v5.futures_downtrend_short_proxy_shadow",
+)
+TRUE_FUTURES_SHADOW_CANDIDATES = (
     "v5.futures_risk_off_hedge_shadow",
     "v5.futures_downtrend_short_shadow",
 )
@@ -70,9 +75,69 @@ SECOND_STAGE_CANDIDATES = frozenset(
     ]
 )
 
+EXIT_POLICY_REVIEW_SAMPLE_SCHEMA: dict[str, Any] = {
+    "as_of_date": pl.Utf8,
+    "generated_at": pl.Datetime(time_zone="UTC"),
+    "schema_version": pl.Utf8,
+    "strategy_id": pl.Utf8,
+    "strategy_candidate": pl.Utf8,
+    "source_entry_id": pl.Utf8,
+    "symbol": pl.Utf8,
+    "entry_ts": pl.Datetime(time_zone="UTC"),
+    "actual_exit_net_bps": pl.Float64,
+    "fixed_hold_4h_net_bps": pl.Float64,
+    "fixed_hold_8h_net_bps": pl.Float64,
+    "fixed_hold_12h_net_bps": pl.Float64,
+    "fixed_hold_24h_net_bps": pl.Float64,
+    "fixed_hold_48h_net_bps": pl.Float64,
+    "best_alternative_exit_policy": pl.Utf8,
+    "best_alternative_net_bps": pl.Float64,
+    "delta_vs_actual_bps": pl.Float64,
+    "mfe_bps": pl.Float64,
+    "mae_bps": pl.Float64,
+    "exit_reason": pl.Utf8,
+    "decision": pl.Utf8,
+    "decision_reasons": pl.Utf8,
+    "recommended_mode": pl.Utf8,
+    "source": pl.Utf8,
+}
+
+EXIT_POLICY_REVIEW_SUMMARY_SCHEMA: dict[str, Any] = {
+    "as_of_date": pl.Utf8,
+    "generated_at": pl.Datetime(time_zone="UTC"),
+    "schema_version": pl.Utf8,
+    "strategy_id": pl.Utf8,
+    "strategy_candidate": pl.Utf8,
+    "symbol": pl.Utf8,
+    "sample_count": pl.Int64,
+    "actual_exit_count": pl.Int64,
+    "stop_loss_too_early_count": pl.Int64,
+    "hold_24h_better_than_actual_count": pl.Int64,
+    "avg_delta_hold24h_vs_actual": pl.Float64,
+    "avg_delta_best_vs_actual_bps": pl.Float64,
+    "best_alternative_exit_policy": pl.Utf8,
+    "decision": pl.Utf8,
+    "decision_reasons": pl.Utf8,
+    "recommended_mode": pl.Utf8,
+    "source": pl.Utf8,
+}
+
 DEFAULT_HORIZONS = (4, 8, 12, 24, 48)
+EXIT_POLICY_HORIZONS = (4, 8, 12, 24, 48)
 DEFAULT_LOOKBACK_DAYS = 30
 CONSERVATIVE_ROUNDTRIP_COST_BPS = 30.0
+RELATIVE_STRENGTH_LOOKBACK_HOURS = (4, 8, 12, 24)
+RELATIVE_STRENGTH_SELECTIONS = (
+    ("v5.expanded_relative_strength_top1_shadow", 1),
+    ("v5.expanded_relative_strength_top3_shadow", 3),
+    ("v5.expanded_relative_strength_rotation_shadow", 5),
+)
+RELATIVE_STRENGTH_FILTER = {
+    "min_quality_score": 75.0,
+    "max_spread_bps": 5.0,
+    "btc_corr_max": 0.7,
+    "min_24h_volume_usdt": 5_000_000.0,
+}
 
 
 class SecondStageAlphaFactoryResult(BaseModel):
@@ -84,6 +149,8 @@ class SecondStageAlphaFactoryResult(BaseModel):
     summary_rows: int = Field(ge=0)
     strategy_evidence_sample_rows: int = Field(ge=0)
     strategy_evidence_rows: int = Field(ge=0)
+    exit_policy_review_sample_rows: int = Field(ge=0)
+    exit_policy_review_summary_rows: int = Field(ge=0)
     candidate_count: int = Field(ge=0)
     decision_counts: dict[str, int] = Field(default_factory=dict)
     warnings: list[str] = Field(default_factory=list)
@@ -110,6 +177,14 @@ def build_and_publish_second_stage_alpha_factory(
 
     write_parquet_dataset(sample_frame, root / SECOND_STAGE_SAMPLE_DATASET)
     write_parquet_dataset(summary_frame, root / SECOND_STAGE_SUMMARY_DATASET)
+    exit_policy_samples, exit_policy_summary = build_exit_policy_review_tables(
+        root,
+        as_of_date=day,
+        lookback_days=lookback_days,
+        generated_at=datetime.now(UTC),
+    )
+    write_parquet_dataset(exit_policy_samples, root / EXIT_POLICY_REVIEW_SAMPLE_DATASET)
+    write_parquet_dataset(exit_policy_summary, root / EXIT_POLICY_REVIEW_SUMMARY_DATASET)
     sample_rows = _publish_second_stage_samples(root, sample_frame)
     evidence_rows = _publish_second_stage_summaries(root, summary_frame, day)
 
@@ -120,6 +195,8 @@ def build_and_publish_second_stage_alpha_factory(
         summary_rows=summary_frame.height,
         strategy_evidence_sample_rows=sample_rows,
         strategy_evidence_rows=evidence_rows,
+        exit_policy_review_sample_rows=exit_policy_samples.height,
+        exit_policy_review_summary_rows=exit_policy_summary.height,
         candidate_count=len(
             {
                 str(row.get("strategy_candidate") or "")
@@ -155,12 +232,6 @@ def build_second_stage_alpha_factory_samples(
         start=market_start,
         end=market_end,
     )
-    expanded_labels = _read_recent_dataset(
-        root / EXPANDED_LABEL_DATASET,
-        timestamp_columns=("ts_utc", "decision_ts", "generated_at"),
-        start=lookback_start,
-        end=label_end,
-    )
     quality = _latest_day_dataset(read_parquet_dataset(root / EXPANDED_QUALITY_DATASET), as_of_date)
     cost_bucket = read_parquet_dataset(root / COST_BUCKET_DAILY_DATASET)
     regime = _current_regime(read_parquet_dataset(root / MARKET_REGIME_DATASET))
@@ -180,8 +251,6 @@ def build_second_stage_alpha_factory_samples(
     warnings: list[str] = []
     if market_bars.is_empty():
         warnings.append("market_bar_empty")
-    if expanded_labels.is_empty():
-        warnings.append("expanded_universe_candidate_label_empty")
     if quality.is_empty():
         warnings.append("expanded_universe_quality_empty")
 
@@ -190,8 +259,9 @@ def build_second_stage_alpha_factory_samples(
     rows: list[dict[str, Any]] = []
     rows.extend(
         _expanded_relative_strength_samples(
-            expanded_labels=expanded_labels,
             quality=quality,
+            bars_by_symbol=bars_by_symbol,
+            cost_context=cost_context,
             generated_at=generated_at,
             regime_state=regime,
         )
@@ -230,75 +300,311 @@ def build_second_stage_alpha_factory_samples(
     ), warnings
 
 
+def build_exit_policy_review_tables(
+    lake_root: str | Path,
+    *,
+    as_of_date: str | date,
+    lookback_days: int = DEFAULT_LOOKBACK_DAYS,
+    generated_at: datetime | None = None,
+) -> tuple[pl.DataFrame, pl.DataFrame]:
+    root = Path(lake_root)
+    day = _parse_day(as_of_date)
+    generated = generated_at or datetime.now(UTC)
+    lookback_start = datetime.combine(
+        day - timedelta(days=max(lookback_days, 1)),
+        time.min,
+        tzinfo=UTC,
+    )
+    label_end = datetime.combine(day + timedelta(days=1), time.min, tzinfo=UTC)
+    btc_exit = _read_recent_dataset(
+        root / BTC_EXIT_REVIEW_DATASET,
+        timestamp_columns=("entry_ts", "created_at", "as_of_date"),
+        start=lookback_start,
+        end=label_end,
+    )
+    paper_runs = _read_recent_dataset(
+        root / PAPER_RUN_DATASET,
+        timestamp_columns=("ts_utc", "created_at", "as_of_date"),
+        start=lookback_start,
+        end=label_end,
+    )
+    samples = build_exit_policy_review_samples(
+        btc_exit=btc_exit,
+        paper_runs=paper_runs,
+        as_of_date=day,
+        generated_at=generated,
+    )
+    summary = build_exit_policy_review_summary(samples, as_of_date=day, generated_at=generated)
+    return samples, summary
+
+
+def build_exit_policy_review_samples(
+    *,
+    btc_exit: pl.DataFrame,
+    paper_runs: pl.DataFrame,
+    as_of_date: date,
+    generated_at: datetime,
+) -> pl.DataFrame:
+    rows: list[dict[str, Any]] = []
+    for row in btc_exit.to_dicts() if not btc_exit.is_empty() else []:
+        entry_ts = _parse_dt(row.get("entry_ts") or row.get("ts_utc") or row.get("created_at"))
+        if entry_ts is None:
+            continue
+        source_entry_id = str(row.get("run_id") or row.get("trade_id") or entry_ts.isoformat())
+        rows.append(
+            _exit_policy_sample_row(
+                as_of_date=as_of_date,
+                generated_at=generated_at,
+                strategy_id="BTC_STRICT_PROBE_EXIT_POLICY_REVIEW",
+                strategy_candidate="v5.btc_strict_probe_exit_policy_review",
+                source_entry_id=source_entry_id,
+                symbol="BTC-USDT",
+                entry_ts=entry_ts,
+                actual_exit_net_bps=_first_float(
+                    row,
+                    ["actual_exit_net_bps", "realized_net_bps", "exit_net_bps", "net_bps"],
+                ),
+                fixed_hold=_fixed_hold_values(row),
+                mfe_bps=_float(row.get("mfe_bps")),
+                mae_bps=_float(row.get("mae_bps")),
+                exit_reason=str(row.get("exit_reason") or ""),
+            )
+        )
+    for row in paper_runs.to_dicts() if not paper_runs.is_empty() else []:
+        strategy_id = str(row.get("strategy_id") or row.get("proposal_id") or "").upper()
+        if "ETH" in strategy_id and "F3" in strategy_id:
+            candidate = "v5.eth_f3_exit_policy_review"
+            symbol = "ETH-USDT"
+            strategy = "ETH_F3_EXIT_POLICY_REVIEW"
+        elif "SOL" in strategy_id and "PROTECT" in strategy_id:
+            candidate = "v5.sol_paper_exit_policy_review"
+            symbol = "SOL-USDT"
+            strategy = "SOL_PAPER_EXIT_POLICY_REVIEW"
+        else:
+            continue
+        entry_ts = _parse_dt(row.get("ts_utc") or row.get("created_at") or row.get("as_of_date"))
+        if entry_ts is None:
+            continue
+        source_entry_id = str(
+            row.get("run_id") or row.get("source_entry_id") or entry_ts.isoformat()
+        )
+        rows.append(
+            _exit_policy_sample_row(
+                as_of_date=as_of_date,
+                generated_at=generated_at,
+                strategy_id=strategy,
+                strategy_candidate=candidate,
+                source_entry_id=source_entry_id,
+                symbol=symbol,
+                entry_ts=entry_ts,
+                actual_exit_net_bps=_first_float(row, ["actual_exit_net_bps", "paper_pnl_bps"]),
+                fixed_hold={
+                    horizon: _float(row.get(f"paper_pnl_bps_{horizon}h"))
+                    for horizon in EXIT_POLICY_HORIZONS
+                },
+                mfe_bps=_first_float(
+                    row,
+                    ["mfe_bps", *[f"mfe_bps_{horizon}h" for horizon in EXIT_POLICY_HORIZONS]],
+                ),
+                mae_bps=_first_float(
+                    row,
+                    ["mae_bps", *[f"mae_bps_{horizon}h" for horizon in EXIT_POLICY_HORIZONS]],
+                ),
+                exit_reason=str(row.get("exit_reason") or "paper_entry_horizon_review"),
+            )
+        )
+    if not rows:
+        return pl.DataFrame(schema=EXIT_POLICY_REVIEW_SAMPLE_SCHEMA)
+    return pl.DataFrame(rows, schema=EXIT_POLICY_REVIEW_SAMPLE_SCHEMA, orient="row")
+
+
+def build_exit_policy_review_summary(
+    samples: pl.DataFrame,
+    *,
+    as_of_date: date,
+    generated_at: datetime,
+) -> pl.DataFrame:
+    if samples.is_empty():
+        return pl.DataFrame(schema=EXIT_POLICY_REVIEW_SUMMARY_SCHEMA)
+    rows: list[dict[str, Any]] = []
+    for (strategy_id, candidate, symbol), group in samples.group_by(
+        ["strategy_id", "strategy_candidate", "symbol"],
+        maintain_order=True,
+    ):
+        records = group.to_dicts()
+        actual_count = sum(
+            1 for row in records if _float(row.get("actual_exit_net_bps")) is not None
+        )
+        stop_loss_too_early = [
+            row
+            for row in records
+            if "stop" in str(row.get("exit_reason") or "").lower()
+            and (_float(row.get("delta_vs_actual_bps")) or 0.0) > 0.0
+        ]
+        hold24_better = [
+            row
+            for row in records
+            if _float(row.get("fixed_hold_24h_net_bps")) is not None
+            and _float(row.get("actual_exit_net_bps")) is not None
+            and (_float(row.get("fixed_hold_24h_net_bps")) or 0.0)
+            > (_float(row.get("actual_exit_net_bps")) or 0.0)
+        ]
+        delta24 = [
+            (_float(row.get("fixed_hold_24h_net_bps")) or 0.0)
+            - (_float(row.get("actual_exit_net_bps")) or 0.0)
+            for row in hold24_better
+        ]
+        best_deltas = [
+            value
+            for row in records
+            if (value := _float(row.get("delta_vs_actual_bps"))) is not None
+        ]
+        decision, reasons = _exit_policy_summary_decision(
+            stop_loss_too_early_count=len(stop_loss_too_early),
+            avg_delta_hold24h_vs_actual=_mean(delta24),
+            actual_exit_count=actual_count,
+        )
+        rows.append(
+            {
+                "as_of_date": as_of_date.isoformat(),
+                "generated_at": generated_at,
+                "schema_version": SCHEMA_VERSION,
+                "strategy_id": str(strategy_id),
+                "strategy_candidate": str(candidate),
+                "symbol": normalize_symbol(symbol) or "UNKNOWN",
+                "sample_count": len(records),
+                "actual_exit_count": actual_count,
+                "stop_loss_too_early_count": len(stop_loss_too_early),
+                "hold_24h_better_than_actual_count": len(hold24_better),
+                "avg_delta_hold24h_vs_actual": _mean(delta24),
+                "avg_delta_best_vs_actual_bps": _mean(best_deltas),
+                "best_alternative_exit_policy": _most_common(
+                    [
+                        str(row.get("best_alternative_exit_policy") or "")
+                        for row in records
+                        if str(row.get("best_alternative_exit_policy") or "")
+                    ]
+                ),
+                "decision": decision,
+                "decision_reasons": safe_json_dumps(reasons),
+                "recommended_mode": "shadow" if decision == "REVIEW_EXIT_POLICY" else "research",
+                "source": SOURCE_NAME,
+            }
+        )
+    return pl.DataFrame(rows, schema=EXIT_POLICY_REVIEW_SUMMARY_SCHEMA, orient="row")
+
+
 def _expanded_relative_strength_samples(
     *,
-    expanded_labels: pl.DataFrame,
     quality: pl.DataFrame,
+    bars_by_symbol: dict[str, list[dict[str, Any]]],
+    cost_context: dict[str, dict[str, Any]],
     generated_at: datetime,
     regime_state: str,
 ) -> list[dict[str, Any]]:
-    if expanded_labels.is_empty():
+    quality_context = _quality_context_by_symbol(quality)
+    if not quality_context or not bars_by_symbol:
         return []
-    labels = [
-        row
-        for row in expanded_labels.to_dicts()
-        if _int(row.get("horizon_hours")) in DEFAULT_HORIZONS
-        and str(row.get("label_status") or "").lower() == "complete"
-        and normalize_symbol(row.get("symbol"))
-    ]
-    if not labels:
-        return []
-    quality_by_symbol = _quality_score_by_symbol(quality)
-    groups: dict[int, dict[str, list[dict[str, Any]]]] = defaultdict(lambda: defaultdict(list))
-    for row in labels:
-        groups[int(row.get("horizon_hours") or 0)][normalize_symbol(row.get("symbol"))].append(row)
-
     output: list[dict[str, Any]] = []
-    for horizon, by_symbol in groups.items():
-        ranked = sorted(
-            by_symbol.items(),
-            key=lambda item: (
-                _mean(_float(row.get("net_bps_after_cost")) for row in item[1]) or -1e9,
-                quality_by_symbol.get(item[0], 0.0),
-            ),
-            reverse=True,
-        )
-        top1 = {symbol for symbol, _rows in ranked[:1]}
-        top3 = {symbol for symbol, _rows in ranked[:3]}
-        selections = (
-            ("v5.expanded_relative_strength_top1_shadow", top1),
-            ("v5.expanded_relative_strength_top3_shadow", top3),
-            ("v5.expanded_relative_strength_rotation_shadow", top3),
-        )
-        for candidate, selected_symbols in selections:
-            for symbol in selected_symbols:
-                for label in by_symbol.get(symbol, []):
-                    output.append(
-                        _sample_row(
-                            candidate=candidate,
-                            symbol=symbol,
-                            source_type="second_stage_expanded_relative_strength",
-                            source_key=str(label.get("candidate_id") or ""),
-                            ts_utc=_parse_dt(label.get("ts_utc")),
-                            horizon_hours=horizon,
-                            decision_ts=_parse_dt(label.get("decision_ts") or label.get("ts_utc")),
-                            label_ts=_parse_dt(label.get("label_ts")),
-                            entry_close=_float(label.get("entry_close")),
-                            label_close=_float(label.get("label_close")),
-                            gross_bps=_float(label.get("gross_bps")),
-                            net_bps=_float(label.get("net_bps_after_cost")),
-                            mfe_bps=_float(label.get("mfe_bps")),
-                            mae_bps=_float(label.get("mae_bps")),
-                            win=_bool(label.get("win")),
-                            label_status="complete",
-                            label_reason="expanded_relative_strength_shadow_only",
-                            cost_bps=_float(label.get("cost_bps")) or 0.0,
-                            cost_source=str(label.get("cost_source") or "unknown"),
-                            final_score=quality_by_symbol.get(symbol),
-                            regime_state=str(label.get("regime_state") or regime_state),
-                            generated_at=generated_at,
-                        )
+
+    decision_times = sorted(
+        {
+            ts
+            for rows in bars_by_symbol.values()
+            for ts in [_parse_dt(row.get("ts")) for row in rows]
+            if ts is not None
+        }
+    )
+    for decision_ts in decision_times:
+        for lookback_hours in RELATIVE_STRENGTH_LOOKBACK_HOURS:
+            ranked = _relative_strength_ranking(
+                bars_by_symbol=bars_by_symbol,
+                quality_context=quality_context,
+                decision_ts=decision_ts,
+                lookback_hours=lookback_hours,
+            )
+            if not ranked:
+                continue
+            for candidate, top_k in RELATIVE_STRENGTH_SELECTIONS:
+                for selected_rank, selection in enumerate(ranked[:top_k], start=1):
+                    symbol = selection["symbol"]
+                    current_index = _bar_index_at_or_before(
+                        bars_by_symbol.get(symbol, []),
+                        decision_ts,
                     )
+                    if current_index is None:
+                        continue
+                    current_bar = bars_by_symbol[symbol][current_index]
+                    for horizon in DEFAULT_HORIZONS:
+                        future_bar = _future_bar(bars_by_symbol[symbol], current_index, horizon)
+                        entry_close = _float(current_bar.get("close"))
+                        label_close = _float(future_bar.get("close")) if future_bar else None
+                        gross_bps = (
+                            (label_close / entry_close - 1.0) * 10_000.0
+                            if entry_close and label_close
+                            else None
+                        )
+                        cost_bps = max(
+                            _cost_bps(cost_context, symbol),
+                            CONSERVATIVE_ROUNDTRIP_COST_BPS,
+                        )
+                        net_bps = gross_bps - cost_bps if gross_bps is not None else None
+                        label_ts = _parse_dt(future_bar.get("ts")) if future_bar else None
+                        anti_leakage = _relative_strength_anti_leakage_check(
+                            decision_ts=decision_ts,
+                            lookback_start_ts=selection.get("lookback_start_ts"),
+                            label_ts=label_ts,
+                        )
+                        source_key = (
+                            f"{decision_ts.isoformat()}|lookback={lookback_hours}|"
+                            f"top_k={top_k}|rank={selected_rank}"
+                        )
+                        output.append(
+                            _sample_row(
+                                candidate=candidate,
+                                symbol=symbol,
+                                source_type=(
+                                    "second_stage_expanded_relative_strength_decision_time"
+                                ),
+                                source_key=source_key,
+                                ts_utc=decision_ts,
+                                horizon_hours=horizon,
+                                decision_ts=decision_ts,
+                                label_ts=label_ts,
+                                entry_close=entry_close,
+                                label_close=label_close,
+                                gross_bps=gross_bps,
+                                net_bps=net_bps,
+                                mfe_bps=_path_mfe_bps(
+                                    bars_by_symbol[symbol],
+                                    current_index,
+                                    horizon,
+                                ),
+                                mae_bps=_path_mae_bps(
+                                    bars_by_symbol[symbol],
+                                    current_index,
+                                    horizon,
+                                ),
+                                win=net_bps is not None and net_bps > 0.0,
+                                label_status="complete" if label_ts is not None else "pending",
+                                label_reason="decision_time_relative_strength_shadow_only",
+                                cost_bps=cost_bps,
+                                cost_source=str(
+                                    cost_context.get(symbol, {}).get("source")
+                                    or cost_context.get(symbol, {}).get("cost_source")
+                                    or "conservative_default"
+                                ),
+                                final_score=selection.get("quality_score"),
+                                regime_state=regime_state,
+                                generated_at=generated_at,
+                                rank_score_bps=selection.get("rank_score_bps"),
+                                rank_lookback_hours=lookback_hours,
+                                selected_rank=selected_rank,
+                                top_k=top_k,
+                                selection_reason=_relative_strength_selection_reason(),
+                                anti_leakage_check=anti_leakage,
+                            )
+                        )
     return output
 
 
@@ -334,7 +640,7 @@ def _futures_short_shadow_samples(
                     _sample_row(
                         candidate=candidate,
                         symbol="BTC-USDT",
-                        source_type="second_stage_futures_short_proxy",
+                        source_type="second_stage_futures_short_spot_inverse_proxy",
                         source_key=f"{candidate}:{ts_utc.isoformat()}:{horizon}",
                         ts_utc=ts_utc,
                         horizon_hours=horizon,
@@ -348,11 +654,24 @@ def _futures_short_shadow_samples(
                         mae_bps=None,
                         win=net > 0,
                         label_status="complete",
-                        label_reason="futures_proxy_shadow_only;funding_not_observable",
+                        label_reason=(
+                            "spot_inverse_proxy_shadow_only;"
+                            "futures_data_missing;"
+                            "funding_not_observable"
+                        ),
                         cost_bps=cost,
                         cost_source="conservative_roundtrip_proxy",
                         regime_state=regime_state,
                         generated_at=generated_at,
+                        futures_data_available=False,
+                        funding_available=False,
+                        funding_cost_bps=None,
+                        mark_price_source="BTC-USDT spot close inverse proxy",
+                        liquidation_buffer_pct=None,
+                        proxy_warning=(
+                            "spot inverse proxy only; no perp mark, funding, "
+                            "open_interest, liquidation, or borrow constraints observed"
+                        ),
                     )
                 )
     return output
@@ -452,6 +771,127 @@ def _exit_policy_review_samples(
     return rows
 
 
+def _fixed_hold_values(row: dict[str, Any]) -> dict[int, float | None]:
+    return {
+        horizon: _first_float(
+            row,
+            [
+                f"fixed_hold_{horizon}h_net_bps",
+                f"would_hold_{horizon}h_net_bps",
+                f"would_have_held_{horizon}h_net_bps",
+            ],
+        )
+        for horizon in EXIT_POLICY_HORIZONS
+    }
+
+
+def _exit_policy_sample_row(
+    *,
+    as_of_date: date,
+    generated_at: datetime,
+    strategy_id: str,
+    strategy_candidate: str,
+    source_entry_id: str,
+    symbol: str,
+    entry_ts: datetime,
+    actual_exit_net_bps: float | None,
+    fixed_hold: dict[int, float | None],
+    mfe_bps: float | None,
+    mae_bps: float | None,
+    exit_reason: str,
+) -> dict[str, Any]:
+    alternatives = {
+        f"fixed_hold_{horizon}h": value
+        for horizon, value in fixed_hold.items()
+        if value is not None
+    }
+    best_policy = ""
+    best_value = None
+    if alternatives:
+        best_policy, best_value = max(alternatives.items(), key=lambda item: item[1])
+    delta = (
+        best_value - actual_exit_net_bps
+        if best_value is not None and actual_exit_net_bps is not None
+        else None
+    )
+    decision, reasons = _exit_policy_sample_decision(
+        actual_exit_net_bps=actual_exit_net_bps,
+        fixed_hold_24h=fixed_hold.get(24),
+        delta_vs_actual_bps=delta,
+        exit_reason=exit_reason,
+    )
+    return {
+        "as_of_date": as_of_date.isoformat(),
+        "generated_at": generated_at,
+        "schema_version": SCHEMA_VERSION,
+        "strategy_id": strategy_id,
+        "strategy_candidate": strategy_candidate,
+        "source_entry_id": source_entry_id,
+        "symbol": normalize_symbol(symbol) or "UNKNOWN",
+        "entry_ts": entry_ts,
+        "actual_exit_net_bps": actual_exit_net_bps,
+        "fixed_hold_4h_net_bps": fixed_hold.get(4),
+        "fixed_hold_8h_net_bps": fixed_hold.get(8),
+        "fixed_hold_12h_net_bps": fixed_hold.get(12),
+        "fixed_hold_24h_net_bps": fixed_hold.get(24),
+        "fixed_hold_48h_net_bps": fixed_hold.get(48),
+        "best_alternative_exit_policy": best_policy,
+        "best_alternative_net_bps": best_value,
+        "delta_vs_actual_bps": delta,
+        "mfe_bps": mfe_bps,
+        "mae_bps": mae_bps,
+        "exit_reason": exit_reason,
+        "decision": decision,
+        "decision_reasons": safe_json_dumps(reasons),
+        "recommended_mode": "shadow" if decision == "REVIEW_EXIT_POLICY" else "research",
+        "source": SOURCE_NAME,
+    }
+
+
+def _exit_policy_sample_decision(
+    *,
+    actual_exit_net_bps: float | None,
+    fixed_hold_24h: float | None,
+    delta_vs_actual_bps: float | None,
+    exit_reason: str,
+) -> tuple[str, list[str]]:
+    reasons = ["research_only_no_live_exit_change"]
+    if actual_exit_net_bps is None:
+        return "RESEARCH_ONLY", [*reasons, "actual_exit_not_observable"]
+    if delta_vs_actual_bps is None:
+        return "RESEARCH_ONLY", [*reasons, "alternative_exit_not_observable"]
+    if (
+        "stop" in str(exit_reason or "").lower()
+        and fixed_hold_24h is not None
+        and fixed_hold_24h > actual_exit_net_bps
+    ):
+        return "REVIEW_EXIT_POLICY", [
+            *reasons,
+            "stop_loss_exit_underperformed_hold_24h",
+        ]
+    if delta_vs_actual_bps > 0.0:
+        return "REVIEW_EXIT_POLICY", [*reasons, "alternative_exit_better_than_actual"]
+    return "RESEARCH_ONLY", [*reasons, "actual_exit_not_worse_than_alternatives"]
+
+
+def _exit_policy_summary_decision(
+    *,
+    stop_loss_too_early_count: int,
+    avg_delta_hold24h_vs_actual: float | None,
+    actual_exit_count: int,
+) -> tuple[str, list[str]]:
+    reasons = ["research_only_no_live_exit_change"]
+    if actual_exit_count <= 0:
+        return "RESEARCH_ONLY", [*reasons, "actual_exit_not_observable"]
+    if stop_loss_too_early_count > 0 and (avg_delta_hold24h_vs_actual or 0.0) > 0.0:
+        return "REVIEW_EXIT_POLICY", [
+            *reasons,
+            "hold_24h_better_than_actual_observed",
+            "requires_more_samples_before_v5_change",
+        ]
+    return "RESEARCH_ONLY", [*reasons, "no_systematic_exit_policy_issue_confirmed"]
+
+
 def _pair_market_neutral_samples(
     *,
     bars_by_symbol: dict[str, list[dict[str, Any]]],
@@ -545,6 +985,18 @@ def _sample_row(
     generated_at: datetime,
     regime_state: str = "UNKNOWN",
     final_score: float | None = None,
+    rank_score_bps: float | None = None,
+    rank_lookback_hours: int | None = None,
+    selected_rank: int | None = None,
+    top_k: int | None = None,
+    selection_reason: str = "",
+    anti_leakage_check: str = "",
+    futures_data_available: bool | None = None,
+    funding_available: bool | None = None,
+    funding_cost_bps: float | None = None,
+    mark_price_source: str = "",
+    liquidation_buffer_pct: float | None = None,
+    proxy_warning: str = "",
 ) -> dict[str, Any]:
     ts = ts_utc or generated_at
     normalized_symbol = normalize_symbol(symbol) or "UNKNOWN"
@@ -580,6 +1032,18 @@ def _sample_row(
         "block_reason": "second_stage_shadow_only",
         "final_decision": "SHADOW_RESEARCH",
         "final_score": final_score,
+        "rank_score_bps": rank_score_bps,
+        "rank_lookback_hours": rank_lookback_hours,
+        "selected_rank": selected_rank,
+        "top_k": top_k,
+        "selection_reason": selection_reason,
+        "anti_leakage_check": anti_leakage_check,
+        "futures_data_available": futures_data_available,
+        "funding_available": funding_available,
+        "funding_cost_bps": funding_cost_bps,
+        "mark_price_source": mark_price_source,
+        "liquidation_buffer_pct": liquidation_buffer_pct,
+        "proxy_warning": proxy_warning,
         "expected_edge_bps": net_bps,
         "required_edge_bps": cost_bps,
         "alpha6_score": None,
@@ -627,6 +1091,21 @@ def _cap_second_stage_decisions(rows: list[dict[str, Any]]) -> list[dict[str, An
                     "decision": "KEEP_SHADOW",
                     "decision_reasons": safe_json_dumps(_dedupe_text(reasons)),
                 }
+        if candidate in FUTURES_SHADOW_CANDIDATES:
+            reasons = _json_list(row.get("decision_reasons"))
+            reasons.extend(
+                [
+                    "spot_inverse_proxy_only",
+                    "futures_data_missing",
+                    "funding_not_observable",
+                ]
+            )
+            decision = str(row.get("decision") or "")
+            row = {
+                **row,
+                "decision": "KEEP_SHADOW" if decision == "PAPER_READY" else decision,
+                "decision_reasons": safe_json_dumps(_dedupe_text(reasons)),
+            }
         capped.append(row)
     return capped
 
@@ -824,6 +1303,182 @@ def _quality_score_by_symbol(frame: pl.DataFrame) -> dict[str, float]:
     return output
 
 
+def _quality_context_by_symbol(frame: pl.DataFrame) -> dict[str, dict[str, float]]:
+    if frame.is_empty():
+        return {}
+    output: dict[str, dict[str, float]] = {}
+    for row in frame.to_dicts():
+        symbol = normalize_symbol(row.get("symbol"))
+        quality = _float(row.get("symbol_quality_score") or row.get("quality_score"))
+        if not symbol or quality is None:
+            continue
+        output[symbol] = {
+            "quality_score": quality,
+            "spread_bps": _first_float(
+                row,
+                [
+                    "avg_spread_bps",
+                    "spread_bps_p75",
+                    "spread_bps",
+                    "avg_spread",
+                ],
+            )
+            or 0.0,
+            "btc_corr": _first_float(
+                row,
+                ["btc_correlation", "btc_corr", "correlation_to_btc"],
+            )
+            or 0.0,
+            "volume_24h_usdt": _first_float(
+                row,
+                [
+                    "volume_24h_usdt",
+                    "quote_volume_24h",
+                    "quote_volume_24h_usdt",
+                    "volume_usdt_24h",
+                ],
+            )
+            or 0.0,
+        }
+    return output
+
+
+def _relative_strength_ranking(
+    *,
+    bars_by_symbol: dict[str, list[dict[str, Any]]],
+    quality_context: dict[str, dict[str, float]],
+    decision_ts: datetime,
+    lookback_hours: int,
+) -> list[dict[str, Any]]:
+    rows: list[dict[str, Any]] = []
+    for symbol, quality in quality_context.items():
+        if not _passes_relative_strength_filter(quality):
+            continue
+        bars = bars_by_symbol.get(symbol, [])
+        current_index = _bar_index_at_or_before(bars, decision_ts)
+        if current_index is None:
+            continue
+        lookback_index = _bar_index_at_or_before(
+            bars,
+            decision_ts - timedelta(hours=lookback_hours),
+        )
+        if lookback_index is None or lookback_index >= current_index:
+            continue
+        current_close = _float(bars[current_index].get("close"))
+        lookback_close = _float(bars[lookback_index].get("close"))
+        if current_close is None or lookback_close is None or lookback_close <= 0:
+            continue
+        rows.append(
+            {
+                "symbol": symbol,
+                "rank_score_bps": (current_close / lookback_close - 1.0) * 10_000.0,
+                "quality_score": quality["quality_score"],
+                "lookback_start_ts": _parse_dt(bars[lookback_index].get("ts")),
+            }
+        )
+    rows.sort(
+        key=lambda row: (
+            float(row.get("rank_score_bps") or -1e9),
+            float(row.get("quality_score") or 0.0),
+            str(row.get("symbol") or ""),
+        ),
+        reverse=True,
+    )
+    return rows
+
+
+def _passes_relative_strength_filter(quality: dict[str, float]) -> bool:
+    return (
+        quality.get("quality_score", 0.0) >= RELATIVE_STRENGTH_FILTER["min_quality_score"]
+        and quality.get("spread_bps", 0.0) <= RELATIVE_STRENGTH_FILTER["max_spread_bps"]
+        and abs(quality.get("btc_corr", 0.0)) <= RELATIVE_STRENGTH_FILTER["btc_corr_max"]
+        and quality.get("volume_24h_usdt", 0.0)
+        >= RELATIVE_STRENGTH_FILTER["min_24h_volume_usdt"]
+    )
+
+
+def _bar_index_at_or_before(
+    bars: list[dict[str, Any]],
+    ts: datetime,
+) -> int | None:
+    selected: int | None = None
+    for index, row in enumerate(bars):
+        row_ts = _parse_dt(row.get("ts"))
+        if row_ts is None:
+            continue
+        if row_ts <= ts:
+            selected = index
+        else:
+            break
+    return selected
+
+
+def _path_mfe_bps(
+    bars: list[dict[str, Any]],
+    index: int,
+    horizon_hours: int,
+) -> float | None:
+    entry = _float(bars[index].get("close")) if 0 <= index < len(bars) else None
+    if entry is None or entry <= 0:
+        return None
+    future = _future_bar(bars, index, horizon_hours)
+    future_ts = _parse_dt(future.get("ts")) if future else None
+    if future_ts is None:
+        return None
+    highs = [
+        _float(row.get("high") or row.get("close"))
+        for row in bars[index + 1 :]
+        if (_parse_dt(row.get("ts")) or datetime.max.replace(tzinfo=UTC)) <= future_ts
+    ]
+    clean = [value for value in highs if value is not None]
+    return ((max(clean) / entry - 1.0) * 10_000.0) if clean else None
+
+
+def _path_mae_bps(
+    bars: list[dict[str, Any]],
+    index: int,
+    horizon_hours: int,
+) -> float | None:
+    entry = _float(bars[index].get("close")) if 0 <= index < len(bars) else None
+    if entry is None or entry <= 0:
+        return None
+    future = _future_bar(bars, index, horizon_hours)
+    future_ts = _parse_dt(future.get("ts")) if future else None
+    if future_ts is None:
+        return None
+    lows = [
+        _float(row.get("low") or row.get("close"))
+        for row in bars[index + 1 :]
+        if (_parse_dt(row.get("ts")) or datetime.max.replace(tzinfo=UTC)) <= future_ts
+    ]
+    clean = [value for value in lows if value is not None]
+    return ((min(clean) / entry - 1.0) * 10_000.0) if clean else None
+
+
+def _relative_strength_anti_leakage_check(
+    *,
+    decision_ts: datetime,
+    lookback_start_ts: Any,
+    label_ts: datetime | None,
+) -> str:
+    lookback_ts = _parse_dt(lookback_start_ts)
+    if lookback_ts is None or lookback_ts > decision_ts:
+        return "fail"
+    if label_ts is None or label_ts <= decision_ts:
+        return "fail"
+    return "pass"
+
+
+def _relative_strength_selection_reason() -> str:
+    return (
+        "decision_time_relative_strength_rank;"
+        f"min_quality_score={RELATIVE_STRENGTH_FILTER['min_quality_score']};"
+        f"max_spread_bps={RELATIVE_STRENGTH_FILTER['max_spread_bps']};"
+        f"btc_corr_max={RELATIVE_STRENGTH_FILTER['btc_corr_max']};"
+        f"min_24h_volume_usdt={RELATIVE_STRENGTH_FILTER['min_24h_volume_usdt']}"
+    )
+
+
 def _parse_day(value: str | date | None) -> date:
     if isinstance(value, date) and not isinstance(value, datetime):
         return value
@@ -887,6 +1542,17 @@ def _first_float(row: dict[str, Any], keys: list[str]) -> float | None:
 def _mean(values: Any) -> float | None:
     clean = [value for value in values if value is not None]
     return statistics.fmean(clean) if clean else None
+
+
+def _most_common(values: list[str]) -> str:
+    counts: dict[str, int] = {}
+    for value in values:
+        text = str(value).strip()
+        if text:
+            counts[text] = counts.get(text, 0) + 1
+    if not counts:
+        return ""
+    return max(counts.items(), key=lambda item: (item[1], item[0]))[0]
 
 
 def _json_list(value: Any) -> list[str]:

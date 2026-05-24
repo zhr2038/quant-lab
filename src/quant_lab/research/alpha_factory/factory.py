@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from datetime import UTC, date, datetime
+from datetime import UTC, date, datetime, timedelta
 from pathlib import Path
 from typing import Any
 
@@ -10,10 +10,12 @@ from pydantic import BaseModel, ConfigDict, Field
 from quant_lab.data.lake import read_parquet_dataset, write_parquet_dataset
 from quant_lab.research.second_stage_alpha_factory import (
     SECOND_STAGE_CANDIDATES,
+    SECOND_STAGE_SAMPLE_DATASET,
     SECOND_STAGE_SUMMARY_DATASET,
     build_and_publish_second_stage_alpha_factory,
 )
 from quant_lab.research.strategy_evidence import (
+    STRATEGY_EVIDENCE_SAMPLE_DATASET,
     SUMMARY_SCHEMA,
     normalize_strategy_evidence_decisions,
 )
@@ -126,8 +128,11 @@ DEFAULT_TEMPLATE_REGISTRY: tuple[dict[str, Any], ...] = (
         "template_id": "futures_hedge_shadow_v1",
         "template_family": "futures_hedge_shadow",
         "enabled": True,
-        "description": "Paper-only futures hedge and downtrend short research.",
-        "universe_scope": "okx_perpetual_shadow",
+        "description": (
+            "Spot inverse proxy for future futures hedge and downtrend short research. "
+            "No perp mark, funding, or open-interest data is observed in v0.1."
+        ),
+        "universe_scope": "okx_spot_inverse_proxy_for_perpetual_shadow",
         "allowed_regimes": ["RISK_OFF", "TREND_DOWN", "HIGH_VOL"],
         "max_candidates_per_day": 60,
         "parameter_space": {
@@ -137,8 +142,8 @@ DEFAULT_TEMPLATE_REGISTRY: tuple[dict[str, Any], ...] = (
             "max_funding_cost_bps": [5, 10, 20],
         },
         "candidate_patterns": [
-            "v5.futures_risk_off_hedge_shadow",
-            "v5.futures_downtrend_short_shadow",
+            "v5.futures_risk_off_hedge_proxy_shadow",
+            "v5.futures_downtrend_short_proxy_shadow",
         ],
     },
     {
@@ -196,6 +201,14 @@ RESULT_SCHEMA: dict[str, Any] = {
     "p25_net_bps": pl.Float64,
     "win_rate": pl.Float64,
     "cost_source_mix": pl.Utf8,
+    "train_metrics_json": pl.Utf8,
+    "validation_metrics_json": pl.Utf8,
+    "recent_7d_metrics_json": pl.Utf8,
+    "stability_score": pl.Float64,
+    "tail_loss_penalty": pl.Float64,
+    "recent_degradation_penalty": pl.Float64,
+    "validation_failure_penalty": pl.Float64,
+    "alpha_factory_score": pl.Float64,
     "decision": pl.Utf8,
     "decision_reasons": pl.Utf8,
     "recommended_mode": pl.Utf8,
@@ -258,6 +271,7 @@ def build_and_publish_alpha_factory(
         lookback_days=lookback_days,
     )
     summary = _alpha_factory_source_summary(root, day)
+    samples = _alpha_factory_source_samples(root, day)
     candidates = build_alpha_factory_candidates(
         summary,
         as_of_date=day,
@@ -267,6 +281,7 @@ def build_and_publish_alpha_factory(
     )
     results = build_alpha_factory_results(
         summary,
+        samples=samples,
         as_of_date=day,
         generated_at=generated_at,
         max_candidates=max_candidates,
@@ -348,6 +363,7 @@ def build_alpha_factory_candidates(
 def build_alpha_factory_results(
     summary: pl.DataFrame,
     *,
+    samples: pl.DataFrame | None = None,
     as_of_date: date,
     generated_at: datetime | None = None,
     max_candidates: int = MAX_DAILY_CANDIDATES,
@@ -357,6 +373,7 @@ def build_alpha_factory_results(
     registry = registry_lookup or template_registry_lookup(
         build_default_template_registry(generated)
     )
+    sample_groups = _sample_groups(samples if samples is not None else pl.DataFrame(), as_of_date)
     rows = []
     for row in _ranked_summary_rows(
         summary,
@@ -364,13 +381,37 @@ def build_alpha_factory_results(
         max_candidates=max_candidates,
         registry_lookup=registry,
     ):
+        split_metrics = _split_sample_metrics(
+            sample_groups.get(_sample_group_key(row), []),
+            row,
+        )
+        scores = _alpha_factory_scores(
+            avg_net_bps=_float(row.get("avg_net_bps")),
+            p25_net_bps=_float(row.get("p25_net_bps")),
+            train_metrics=split_metrics["train"],
+            validation_metrics=split_metrics["validation"],
+            recent_7d_metrics=split_metrics["recent_7d"],
+        )
         decision, reasons = alpha_factory_decision(
             sample_count=_int(row.get("sample_count")) or 0,
             complete_sample_count=_int(row.get("complete_sample_count")) or 0,
             avg_net_bps=_float(row.get("avg_net_bps")),
             p25_net_bps=_float(row.get("p25_net_bps")),
             win_rate=_float(row.get("win_rate")),
+            validation_metrics=split_metrics["validation"],
+            recent_7d_metrics=split_metrics["recent_7d"],
         )
+        if _is_futures_proxy_candidate(row.get("strategy_candidate")):
+            if decision == "PAPER_READY":
+                decision = "KEEP_SHADOW"
+            reasons = _dedupe_text(
+                [
+                    *reasons,
+                    "spot_inverse_proxy_only",
+                    "futures_data_missing",
+                    "funding_not_observable",
+                ]
+            )
         rows.append(
             {
                 "as_of_date": as_of_date.isoformat(),
@@ -392,8 +433,18 @@ def build_alpha_factory_results(
                 "p25_net_bps": _float(row.get("p25_net_bps")),
                 "win_rate": _float(row.get("win_rate")),
                 "cost_source_mix": str(row.get("cost_source_mix") or "{}"),
+                "train_metrics_json": safe_json_dumps(split_metrics["train"]),
+                "validation_metrics_json": safe_json_dumps(split_metrics["validation"]),
+                "recent_7d_metrics_json": safe_json_dumps(split_metrics["recent_7d"]),
+                "stability_score": scores["stability_score"],
+                "tail_loss_penalty": scores["tail_loss_penalty"],
+                "recent_degradation_penalty": scores["recent_degradation_penalty"],
+                "validation_failure_penalty": scores["validation_failure_penalty"],
+                "alpha_factory_score": scores["alpha_factory_score"],
                 "decision": decision,
-                "decision_reasons": safe_json_dumps(reasons),
+                "decision_reasons": safe_json_dumps(
+                    _dedupe_text([*reasons, *scores["score_reasons"]])
+                ),
                 "recommended_mode": _recommended_mode(decision),
                 "start_ts": _parse_dt(row.get("start_ts")),
                 "end_ts": _parse_dt(row.get("end_ts")),
@@ -449,21 +500,51 @@ def alpha_factory_decision(
     avg_net_bps: float | None,
     p25_net_bps: float | None,
     win_rate: float | None,
+    validation_metrics: dict[str, Any] | None = None,
+    recent_7d_metrics: dict[str, Any] | None = None,
 ) -> tuple[str, list[str]]:
     if complete_sample_count < 10:
         return "RESEARCH", ["insufficient_complete_samples"]
     if sample_count >= 30 and (avg_net_bps or 0.0) < 0.0 and (win_rate or 0.0) < 0.45:
         return "KILL", ["negative_after_cost_edge", "win_rate_below_threshold"]
+
+    reasons: list[str] = []
+    validation_avg = _float((validation_metrics or {}).get("avg_net_bps"))
+    validation_complete = _int((validation_metrics or {}).get("complete_sample_count")) or 0
+    validation_positive = validation_avg is not None and validation_avg > 0.0
+    validation_blocks_paper = not validation_positive
+    if validation_complete <= 0:
+        reasons.append("insufficient_validation_samples")
+    elif validation_avg is None:
+        reasons.append("validation_avg_net_bps_missing")
+    elif validation_avg is not None and validation_avg <= 0.0:
+        reasons.append("validation_avg_net_bps_non_positive")
+
+    recent_avg = _float((recent_7d_metrics or {}).get("avg_net_bps"))
+    recent_complete = _int((recent_7d_metrics or {}).get("complete_sample_count")) or 0
+    recent_insufficient = recent_complete < 5
+    recent_negative = recent_avg is not None and recent_avg < 0.0
+    if recent_insufficient:
+        reasons.append("insufficient_recent_samples")
+    elif recent_negative:
+        reasons.append("recent_7d_avg_net_bps_negative")
+
     if (
         complete_sample_count >= 30
         and win_rate is not None
         and win_rate > 0.55
         and p25_net_bps is not None
         and p25_net_bps > -50.0
+        and not validation_blocks_paper
+        and not recent_negative
     ):
-        return "PAPER_READY", ["paper_ready_thresholds_met", "live_disabled"]
+        return "PAPER_READY", _dedupe_text(
+            [*reasons, "paper_ready_thresholds_met", "live_disabled"]
+        )
     if complete_sample_count >= 10 and avg_net_bps is not None and avg_net_bps > 0.0:
-        return "KEEP_SHADOW", ["positive_after_cost_edge", "collect_more_samples"]
+        return "KEEP_SHADOW", _dedupe_text(
+            [*reasons, "positive_after_cost_edge", "collect_more_samples"]
+        )
     return "RESEARCH", ["edge_not_confirmed"]
 
 
@@ -692,6 +773,212 @@ def _candidate_id(row: dict[str, Any]) -> str:
     )
 
 
+def _sample_group_key(row: dict[str, Any]) -> tuple[str, str, str, int]:
+    return (
+        str(row.get("strategy_candidate") or ""),
+        normalize_symbol(row.get("symbol")) or "UNKNOWN",
+        str(row.get("regime_state") or "UNKNOWN"),
+        _int(row.get("horizon_hours")) or 0,
+    )
+
+
+def _sample_groups(
+    samples: pl.DataFrame,
+    as_of_date: date,
+) -> dict[tuple[str, str, str, int], list[dict[str, Any]]]:
+    groups: dict[tuple[str, str, str, int], list[dict[str, Any]]] = {}
+    if samples.is_empty():
+        return groups
+    for row in samples.to_dicts():
+        if str(row.get("as_of_date") or "")[:10] != as_of_date.isoformat():
+            continue
+        key = _sample_group_key(row)
+        groups.setdefault(key, []).append(row)
+    return groups
+
+
+def _split_sample_metrics(
+    sample_rows: list[dict[str, Any]],
+    summary_row: dict[str, Any],
+) -> dict[str, dict[str, Any]]:
+    if not sample_rows:
+        empty = _empty_window_metrics()
+        return {
+            "train": _summary_window_metrics(summary_row),
+            "validation": empty.copy(),
+            "recent_7d": empty.copy(),
+        }
+
+    rows = [
+        (timestamp, row)
+        for row in sample_rows
+        if (timestamp := _sample_timestamp(row)) is not None
+    ]
+    if not rows:
+        empty = _empty_window_metrics()
+        return {
+            "train": _summary_window_metrics(summary_row),
+            "validation": empty.copy(),
+            "recent_7d": empty.copy(),
+        }
+    rows.sort(key=lambda item: item[0])
+    start_ts = rows[0][0]
+    end_ts = rows[-1][0]
+    total_seconds = max((end_ts - start_ts).total_seconds(), 0.0)
+    cut_ts = start_ts + timedelta(seconds=total_seconds * 0.7)
+    recent_start = end_ts - timedelta(days=7)
+    train_rows = [row for timestamp, row in rows if timestamp <= cut_ts]
+    validation_rows = [row for timestamp, row in rows if timestamp > cut_ts]
+    recent_rows = [row for timestamp, row in rows if timestamp >= recent_start]
+    return {
+        "train": _window_metrics(train_rows),
+        "validation": _window_metrics(validation_rows),
+        "recent_7d": _window_metrics(recent_rows),
+    }
+
+
+def _sample_timestamp(row: dict[str, Any]) -> datetime | None:
+    for column in ("decision_ts", "ts_utc", "label_ts", "created_at"):
+        parsed = _parse_dt(row.get(column))
+        if parsed is not None:
+            return parsed
+    return None
+
+
+def _summary_window_metrics(row: dict[str, Any]) -> dict[str, Any]:
+    return {
+        "sample_count": _int(row.get("sample_count")) or 0,
+        "complete_sample_count": _int(row.get("complete_sample_count")) or 0,
+        "avg_net_bps": _float(row.get("avg_net_bps")),
+        "p25_net_bps": _float(row.get("p25_net_bps")),
+        "win_rate": _float(row.get("win_rate")),
+    }
+
+
+def _window_metrics(rows: list[dict[str, Any]]) -> dict[str, Any]:
+    complete_rows = [
+        row
+        for row in rows
+        if str(row.get("label_status") or "").lower() in {"complete", "completed", ""}
+        and _float(row.get("net_bps_after_cost")) is not None
+    ]
+    net_values = [
+        value
+        for row in complete_rows
+        if (value := _float(row.get("net_bps_after_cost"))) is not None
+    ]
+    wins = [_sample_win(row, value) for row, value in zip(complete_rows, net_values, strict=False)]
+    return {
+        "sample_count": len(rows),
+        "complete_sample_count": len(net_values),
+        "avg_net_bps": _mean(net_values),
+        "p25_net_bps": _percentile(net_values, 0.25),
+        "win_rate": _mean([1.0 if win else 0.0 for win in wins]) if wins else None,
+    }
+
+
+def _sample_win(row: dict[str, Any], net_bps: float) -> bool:
+    value = row.get("win")
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, (int, float)):
+        return bool(value)
+    text = str(value or "").strip().lower()
+    if text in {"true", "1", "yes", "win"}:
+        return True
+    if text in {"false", "0", "no", "loss"}:
+        return False
+    return net_bps > 0.0
+
+
+def _empty_window_metrics() -> dict[str, Any]:
+    return {
+        "sample_count": 0,
+        "complete_sample_count": 0,
+        "avg_net_bps": None,
+        "p25_net_bps": None,
+        "win_rate": None,
+    }
+
+
+def _alpha_factory_scores(
+    *,
+    avg_net_bps: float | None,
+    p25_net_bps: float | None,
+    train_metrics: dict[str, Any],
+    validation_metrics: dict[str, Any],
+    recent_7d_metrics: dict[str, Any],
+) -> dict[str, Any]:
+    validation_avg = _float(validation_metrics.get("avg_net_bps"))
+    validation_complete = _int(validation_metrics.get("complete_sample_count")) or 0
+    recent_avg = _float(recent_7d_metrics.get("avg_net_bps"))
+    recent_complete = _int(recent_7d_metrics.get("complete_sample_count")) or 0
+    train_avg = _float(train_metrics.get("avg_net_bps"))
+
+    tail_loss_penalty = _clip(
+        ((abs(p25_net_bps) - 50.0) / 150.0)
+        if p25_net_bps is not None and p25_net_bps < -50.0
+        else 0.0
+    )
+    validation_failure_penalty = (
+        1.0
+        if validation_complete <= 0 or validation_avg is None or validation_avg <= 0.0
+        else 0.0
+    )
+    recent_degradation_penalty = 0.0
+    if recent_complete >= 5 and recent_avg is not None:
+        reference = validation_avg if validation_avg is not None else train_avg
+        if recent_avg < 0.0:
+            recent_degradation_penalty = 1.0
+        elif reference is not None and recent_avg < reference:
+            recent_degradation_penalty = _clip((reference - recent_avg) / 100.0)
+    stability_score = _clip(
+        1.0
+        - tail_loss_penalty * 0.25
+        - recent_degradation_penalty * 0.35
+        - validation_failure_penalty * 0.40
+    )
+    alpha_factory_score = (avg_net_bps or 0.0) * stability_score - (
+        tail_loss_penalty + recent_degradation_penalty + validation_failure_penalty
+    ) * 25.0
+    score_reasons: list[str] = []
+    if tail_loss_penalty > 0.0:
+        score_reasons.append("tail_loss_penalty_applied")
+    if recent_degradation_penalty > 0.0:
+        score_reasons.append("recent_degradation_penalty_applied")
+    if validation_failure_penalty > 0.0:
+        score_reasons.append("validation_failure_penalty_applied")
+    return {
+        "stability_score": stability_score,
+        "tail_loss_penalty": tail_loss_penalty,
+        "recent_degradation_penalty": recent_degradation_penalty,
+        "validation_failure_penalty": validation_failure_penalty,
+        "alpha_factory_score": alpha_factory_score,
+        "score_reasons": score_reasons,
+    }
+
+
+def _mean(values: list[float]) -> float | None:
+    return sum(values) / len(values) if values else None
+
+
+def _percentile(values: list[float], q: float) -> float | None:
+    if not values:
+        return None
+    ordered = sorted(values)
+    if len(ordered) == 1:
+        return ordered[0]
+    position = (len(ordered) - 1) * q
+    lower = int(position)
+    upper = min(lower + 1, len(ordered) - 1)
+    fraction = position - lower
+    return ordered[lower] * (1.0 - fraction) + ordered[upper] * fraction
+
+
+def _clip(value: float, low: float = 0.0, high: float = 1.0) -> float:
+    return max(low, min(high, value))
+
+
 def _template_for_candidate(
     candidate: Any,
     registry_lookup: dict[str, dict[str, Any]],
@@ -719,6 +1006,13 @@ def _fallback_template_family(candidate: Any) -> str:
     return "alpha_factory"
 
 
+def _is_futures_proxy_candidate(candidate: Any) -> bool:
+    return str(candidate or "") in {
+        "v5.futures_risk_off_hedge_proxy_shadow",
+        "v5.futures_downtrend_short_proxy_shadow",
+    }
+
+
 def _alpha_factory_source_summary(root: Path, day: date) -> pl.DataFrame:
     second_stage = read_parquet_dataset(root / SECOND_STAGE_SUMMARY_DATASET)
     second_stage = _with_source_dataset(
@@ -737,6 +1031,44 @@ def _alpha_factory_source_summary(root: Path, day: date) -> pl.DataFrame:
     if not frames:
         return pl.DataFrame()
     return pl.concat(frames, how="diagonal_relaxed")
+
+
+def _alpha_factory_source_samples(root: Path, day: date) -> pl.DataFrame:
+    second_stage = read_parquet_dataset(root / SECOND_STAGE_SAMPLE_DATASET)
+    second_stage = _filter_samples_for_day(
+        second_stage,
+        day,
+        source_dataset="gold/second_stage_alpha_factory_sample",
+    )
+    strategy_samples = read_parquet_dataset(root / STRATEGY_EVIDENCE_SAMPLE_DATASET)
+    alt_impulse = pl.DataFrame()
+    if not strategy_samples.is_empty() and "strategy_candidate" in strategy_samples.columns:
+        alt_impulse = strategy_samples.filter(
+            (pl.col("strategy_candidate").cast(pl.Utf8) == "v5.alt_impulse_shadow")
+            & (pl.col("as_of_date").cast(pl.Utf8).str.slice(0, 10) == day.isoformat())
+        )
+        alt_impulse = _with_source_dataset(
+            alt_impulse,
+            "gold/strategy_evidence_sample",
+        )
+    frames = [frame for frame in [second_stage, alt_impulse] if not frame.is_empty()]
+    if not frames:
+        return pl.DataFrame()
+    return pl.concat(frames, how="diagonal_relaxed")
+
+
+def _filter_samples_for_day(
+    frame: pl.DataFrame,
+    day: date,
+    *,
+    source_dataset: str,
+) -> pl.DataFrame:
+    if frame.is_empty():
+        return frame
+    if "as_of_date" not in frame.columns:
+        return _with_source_dataset(frame, source_dataset)
+    filtered = frame.filter(pl.col("as_of_date").cast(pl.Utf8).str.slice(0, 10) == day.isoformat())
+    return _with_source_dataset(filtered, source_dataset)
 
 
 def _with_source_dataset(frame: pl.DataFrame, source_dataset: str) -> pl.DataFrame:

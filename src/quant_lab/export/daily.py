@@ -201,6 +201,8 @@ SECTION_DATASETS = {
         "v5_pullback_reversal_rule_comparison",
         "btc_probe_exit_policy_review",
         "btc_probe_exit_policy_summary",
+        "exit_policy_review_sample",
+        "exit_policy_review_summary",
         "v5_entry_quality_advisory",
         "v5_entry_quality_history_late_entry_chase_threshold_sensitivity",
         "v5_entry_quality_history_pullback_by_symbol",
@@ -344,6 +346,8 @@ REQUIRED_MEMBERS = [
     "reports/pullback_reversal_v2_readiness.json",
     "reports/btc_probe_exit_policy_review.csv",
     "reports/btc_probe_exit_policy_summary.md",
+    "reports/exit_policy_review.csv",
+    "reports/exit_policy_summary.md",
     "reports/pullback_reversal_by_symbol.csv",
     "reports/pullback_reversal_by_regime.csv",
     "reports/pullback_reversal_by_horizon.csv",
@@ -597,6 +601,18 @@ CSV_SCHEMAS: dict[str, list[str]] = {
         "block_reason",
         "final_decision",
         "final_score",
+        "rank_score_bps",
+        "rank_lookback_hours",
+        "selected_rank",
+        "top_k",
+        "selection_reason",
+        "anti_leakage_check",
+        "futures_data_available",
+        "funding_available",
+        "funding_cost_bps",
+        "mark_price_source",
+        "liquidation_buffer_pct",
+        "proxy_warning",
         "expected_edge_bps",
         "required_edge_bps",
         "alpha6_score",
@@ -678,6 +694,18 @@ CSV_SCHEMAS: dict[str, list[str]] = {
         "block_reason",
         "final_decision",
         "final_score",
+        "rank_score_bps",
+        "rank_lookback_hours",
+        "selected_rank",
+        "top_k",
+        "selection_reason",
+        "anti_leakage_check",
+        "futures_data_available",
+        "funding_available",
+        "funding_cost_bps",
+        "mark_price_source",
+        "liquidation_buffer_pct",
+        "proxy_warning",
         "expected_edge_bps",
         "required_edge_bps",
         "alpha6_score",
@@ -743,6 +771,14 @@ CSV_SCHEMAS: dict[str, list[str]] = {
         "p25_net_bps",
         "win_rate",
         "cost_source_mix",
+        "train_metrics_json",
+        "validation_metrics_json",
+        "recent_7d_metrics_json",
+        "stability_score",
+        "tail_loss_penalty",
+        "recent_degradation_penalty",
+        "validation_failure_penalty",
+        "alpha_factory_score",
         "decision",
         "decision_reasons",
         "recommended_mode",
@@ -1643,6 +1679,32 @@ CSV_SCHEMAS: dict[str, list[str]] = {
         "generated_from_bundle_id",
         "schema_version",
         "contract_version",
+    ],
+    "reports/exit_policy_review.csv": [
+        "as_of_date",
+        "generated_at",
+        "schema_version",
+        "strategy_id",
+        "strategy_candidate",
+        "source_entry_id",
+        "symbol",
+        "entry_ts",
+        "actual_exit_net_bps",
+        "fixed_hold_4h_net_bps",
+        "fixed_hold_8h_net_bps",
+        "fixed_hold_12h_net_bps",
+        "fixed_hold_24h_net_bps",
+        "fixed_hold_48h_net_bps",
+        "best_alternative_exit_policy",
+        "best_alternative_net_bps",
+        "delta_vs_actual_bps",
+        "mfe_bps",
+        "mae_bps",
+        "exit_reason",
+        "decision",
+        "decision_reasons",
+        "recommended_mode",
+        "source",
     ],
     "reports/pullback_reversal_by_symbol.csv": [
         "start_date",
@@ -2667,6 +2729,8 @@ def _dataset_members(frames: dict[str, pl.DataFrame]) -> dict[str, _MemberPayloa
     )
     btc_probe_exit_policy_review = frames.get("btc_probe_exit_policy_review", pl.DataFrame())
     btc_probe_exit_policy_summary = frames.get("btc_probe_exit_policy_summary", pl.DataFrame())
+    exit_policy_review_sample = frames.get("exit_policy_review_sample", pl.DataFrame())
+    exit_policy_review_summary = frames.get("exit_policy_review_summary", pl.DataFrame())
     entry_quality_advisory = frames.get("v5_entry_quality_advisory", pl.DataFrame())
     history_late_threshold = frames.get(
         "v5_entry_quality_history_late_entry_chase_threshold_sensitivity",
@@ -3039,6 +3103,14 @@ def _dataset_members(frames: dict[str, pl.DataFrame]) -> dict[str, _MemberPayloa
         "reports/btc_probe_exit_policy_summary.md": btc_probe_exit_policy_summary_md(
             btc_probe_exit_policy_summary,
             btc_probe_exit_policy_review,
+        ),
+        "reports/exit_policy_review.csv": _csv_member(
+            "reports/exit_policy_review.csv",
+            exit_policy_review_sample,
+        ),
+        "reports/exit_policy_summary.md": _exit_policy_summary_md(
+            exit_policy_review_summary,
+            exit_policy_review_sample,
         ),
         "reports/anti_leakage_check.csv": _csv_member(
             "reports/anti_leakage_check.csv",
@@ -4757,7 +4829,7 @@ def _paper_strategy_proposals_for_export(
     path = "reports/paper_strategy_proposals.csv"
     if board.is_empty() or "decision" not in board.columns:
         return _empty_csv_schema_frame(path)
-    downgraded = _downgraded_portfolio_by_candidate_symbol(
+    portfolio_overrides = _portfolio_status_overrides_by_candidate_symbol(
         research_portfolio if research_portfolio is not None else pl.DataFrame()
     )
     board_rows = board.to_dicts()
@@ -4767,7 +4839,7 @@ def _paper_strategy_proposals_for_export(
         for row in board_rows
         if str(row.get("decision") or "").upper() == "PAPER_READY"
         and str(row.get("symbol") or "").strip().upper() != "UNKNOWN"
-        and _candidate_symbol_key(row) not in downgraded
+        and _portfolio_override_for_row(row, portfolio_overrides) is None
     ]
     if latest_as_of_date is not None:
         rows = [
@@ -4904,7 +4976,7 @@ def _strategy_opportunity_advisory_for_export(
     proposal_by_key = _latest_rows_by_candidate_symbol(paper_proposals)
     paper_daily_by_key = _latest_rows_by_candidate_symbol(paper_daily)
     slippage_by_key = _latest_rows_by_candidate_symbol(paper_slippage)
-    downgraded_by_key = _downgraded_portfolio_by_candidate_symbol(
+    portfolio_overrides = _portfolio_status_overrides_by_candidate_symbol(
         research_portfolio if research_portfolio is not None else pl.DataFrame()
     )
     risk_context = _advisory_risk_context(risk_permissions)
@@ -4939,12 +5011,16 @@ def _strategy_opportunity_advisory_for_export(
             decision = paper_decision
         if decision == "LIVE_SMALL_READY" and not bool(paper.get("live_eligible")):
             decision = "PAPER_READY"
-        downgraded_portfolio = downgraded_by_key.get(key)
-        if downgraded_portfolio is not None and decision in {
-            "PAPER_READY",
-            "LIVE_SMALL_READY",
-        }:
-            decision = "KEEP_SHADOW"
+        portfolio_override = _portfolio_override_for_candidate_symbol(
+            portfolio_overrides,
+            candidate,
+            symbol,
+        )
+        decision, recommended_mode, portfolio_reasons = _portfolio_overridden_decision_mode(
+            decision=decision,
+            recommended_mode="",
+            portfolio_override=portfolio_override,
+        )
         recommended_mode = _advisory_recommended_mode(decision)
         cost_quality = _advisory_cost_quality(row.get("cost_source_mix"), latest_cost_health)
         slippage_coverage = _optional_float(
@@ -4966,10 +5042,8 @@ def _strategy_opportunity_advisory_for_export(
             slippage_coverage=slippage_coverage,
             risk_context=risk_context,
         )
-        if downgraded_portfolio is not None:
-            live_block_reasons = sorted(
-                {*live_block_reasons, "downgraded_from_paper"}
-            )
+        if portfolio_reasons:
+            live_block_reasons = sorted({*live_block_reasons, *portfolio_reasons})
         generated_at = _advisory_generated_at(row)
         rows.append(
             {
@@ -5044,6 +5118,7 @@ def _strategy_opportunity_advisory_for_export(
     )
     if not rows:
         return _empty_csv_schema_frame(path)
+    rows = _apply_research_portfolio_overrides(rows, portfolio_overrides)
     return (
         pl.DataFrame(rows, infer_schema_length=None)
         .sort(["strategy_candidate", "symbol", "horizon_hours"])
@@ -5358,24 +5433,116 @@ def _candidate_symbol_key(row: dict[str, Any]) -> tuple[str, str]:
     return (candidate, symbol)
 
 
-def _downgraded_portfolio_by_candidate_symbol(
+PORTFOLIO_ADVISORY_OVERRIDE_STATUSES = {"KILL", "DOWNGRADED_FROM_PAPER", "PAUSED"}
+
+
+def _portfolio_status_overrides_by_candidate_symbol(
     research_portfolio: pl.DataFrame,
 ) -> dict[tuple[str, str], dict[str, Any]]:
-    downgraded: dict[tuple[str, str], dict[str, Any]] = {}
+    overrides: dict[tuple[str, str], dict[str, Any]] = {}
     if research_portfolio.is_empty():
-        return downgraded
+        return overrides
     frame = dedupe_research_portfolio_status(research_portfolio)
     for row in frame.to_dicts():
-        if str(row.get("status") or "").strip().upper() != "DOWNGRADED_FROM_PAPER":
+        status = str(row.get("status") or "").strip().upper()
+        if status not in PORTFOLIO_ADVISORY_OVERRIDE_STATUSES:
             continue
         candidate, symbol = _portfolio_candidate_symbol(row)
-        if not candidate or symbol == "UNKNOWN":
+        if not candidate:
             continue
         key = (candidate, symbol)
-        current = downgraded.get(key)
+        current = overrides.get(key)
         if current is None or _advisory_row_time(row) >= _advisory_row_time(current):
-            downgraded[key] = row
-    return downgraded
+            overrides[key] = row
+    return overrides
+
+
+def _portfolio_override_for_row(
+    row: dict[str, Any],
+    overrides: dict[tuple[str, str], dict[str, Any]],
+) -> dict[str, Any] | None:
+    candidate, symbol = _candidate_symbol_key(row)
+    return _portfolio_override_for_candidate_symbol(overrides, candidate, symbol)
+
+
+def _portfolio_override_for_candidate_symbol(
+    overrides: dict[tuple[str, str], dict[str, Any]],
+    candidate: str,
+    symbol: str,
+) -> dict[str, Any] | None:
+    normalized = normalize_symbol(symbol) or "UNKNOWN"
+    return (
+        overrides.get((candidate, normalized))
+        or overrides.get((candidate, "UNKNOWN"))
+        or overrides.get((candidate, ""))
+    )
+
+
+def _portfolio_overridden_decision_mode(
+    *,
+    decision: str,
+    recommended_mode: str,
+    portfolio_override: dict[str, Any] | None,
+) -> tuple[str, str, list[str]]:
+    if portfolio_override is None:
+        return decision, recommended_mode or _advisory_recommended_mode(decision), []
+    status = str(portfolio_override.get("status") or "").strip().upper()
+    if status == "KILL":
+        return "KILL", "none", ["research_portfolio_kill"]
+    if status == "DOWNGRADED_FROM_PAPER":
+        if decision in {"PAPER_READY", "LIVE_SMALL_READY"} or recommended_mode in {
+            "paper",
+            "live_small",
+        }:
+            return "KEEP_SHADOW", "shadow", ["downgraded_from_paper"]
+        return decision, recommended_mode or _advisory_recommended_mode(decision), [
+            "downgraded_from_paper"
+        ]
+    if status == "PAUSED":
+        return "RESEARCH_ONLY", "research", ["research_paused"]
+    return decision, recommended_mode or _advisory_recommended_mode(decision), []
+
+
+def _apply_research_portfolio_overrides(
+    rows: list[dict[str, Any]],
+    overrides: dict[tuple[str, str], dict[str, Any]],
+) -> list[dict[str, Any]]:
+    if not overrides:
+        return rows
+    output: list[dict[str, Any]] = []
+    for row in rows:
+        candidate = str(row.get("strategy_candidate") or "").strip()
+        symbol = normalize_symbol(row.get("symbol")) or "UNKNOWN"
+        override = _portfolio_override_for_candidate_symbol(overrides, candidate, symbol)
+        decision, mode, reasons = _portfolio_overridden_decision_mode(
+            decision=str(row.get("decision") or "RESEARCH_ONLY").strip().upper(),
+            recommended_mode=str(row.get("recommended_mode") or "").strip(),
+            portfolio_override=override,
+        )
+        if not reasons:
+            output.append(row)
+            continue
+        live_reasons = sorted({*_json_listish(row.get("live_block_reasons")), *reasons})
+        updated = {
+            **row,
+            "decision": decision,
+            "recommended_mode": mode,
+            "live_block_reasons": safe_json_dumps(live_reasons),
+            "max_paper_notional_usdt": _advisory_max_paper_notional(mode),
+            "max_live_notional_usdt": 0.0,
+            "would_block_if_enabled": (
+                True if decision == "KILL" else row.get("would_block_if_enabled")
+            ),
+            "would_enter": False if mode in {"none", "research"} else row.get("would_enter"),
+        }
+        if mode == "research":
+            updated["no_sample_reason"] = (
+                "research_paused"
+                if "research_paused" in reasons
+                else str(row.get("no_sample_reason") or "research_only")
+            )
+        output.append(updated)
+    return output
 
 
 def _portfolio_candidate_symbol(row: dict[str, Any]) -> tuple[str, str]:
@@ -7052,6 +7219,40 @@ def _best_observed_late_entry_row(rows: list[dict[str, Any]]) -> dict[str, Any] 
         ),
         reverse=True,
     )[0]
+
+
+def _exit_policy_summary_md(summary: pl.DataFrame, sample: pl.DataFrame) -> str:
+    lines = [
+        "# Exit Policy Review",
+        "",
+        "This section is read-only research. It compares actual exits with "
+        "fixed-hold alternatives.",
+        "It does not change V5 exit policy.",
+        "",
+        f"- sample_rows: {sample.height}",
+        f"- summary_rows: {summary.height}",
+    ]
+    if summary.is_empty():
+        lines.extend(["", "- status: no exit policy samples"])
+        return "\n".join(lines) + "\n"
+    for row in summary.to_dicts():
+        lines.extend(
+            [
+                "",
+                f"## {row.get('strategy_id') or row.get('strategy_candidate')}",
+                f"- symbol: {row.get('symbol')}",
+                f"- decision: {row.get('decision')}",
+                f"- sample_count: {row.get('sample_count')}",
+                f"- actual_exit_count: {row.get('actual_exit_count')}",
+                f"- stop_loss_too_early_count: {row.get('stop_loss_too_early_count')}",
+                "- hold_24h_better_than_actual_count: "
+                f"{row.get('hold_24h_better_than_actual_count')}",
+                f"- avg_delta_hold24h_vs_actual: {row.get('avg_delta_hold24h_vs_actual')}",
+                f"- best_alternative_exit_policy: {row.get('best_alternative_exit_policy')}",
+                f"- decision_reasons: {row.get('decision_reasons')}",
+            ]
+        )
+    return "\n".join(lines) + "\n"
 
 
 def _entry_quality_summary_md(

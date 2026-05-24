@@ -8,7 +8,11 @@ from pathlib import Path
 import polars as pl
 
 from quant_lab.data.lake import read_parquet_dataset, write_parquet_dataset
-from quant_lab.export.daily import export_daily_pack
+from quant_lab.export.daily import (
+    _paper_strategy_proposals_for_export,
+    _strategy_opportunity_advisory_for_export,
+    export_daily_pack,
+)
 from quant_lab.research.alpha_discovery import (
     build_and_publish_alpha_discovery_board,
     normalize_alpha_discovery_board_decisions,
@@ -233,9 +237,14 @@ def test_daily_export_uses_alpha_discovery_board_lists(tmp_path):
     assert paper_advisory
     assert {row["recommended_mode"] for row in paper_advisory} == {"paper"}
     assert all(float(row["max_live_notional_usdt"] or 0) == 0.0 for row in paper_advisory)
-    kill_advisory = [row for row in advisory if row["decision"] == "KILL"]
-    assert kill_advisory
-    assert {row["recommended_mode"] for row in kill_advisory} == {"none"}
+    paused_advisory = [
+        row
+        for row in advisory
+        if row["strategy_candidate"] == "v5.sol_protect_exception"
+    ]
+    assert paused_advisory
+    assert {row["recommended_mode"] for row in paused_advisory} == {"research"}
+    assert all("research_paused" in row["live_block_reasons"] for row in paused_advisory)
     assert "v5.f3_dominant_entry" in summary
     assert not any(
         str(warning).startswith("strategy_evidence_present")
@@ -1516,6 +1525,76 @@ def test_downgraded_paper_strategies_are_not_exported_as_paper(tmp_path):
     assert published.filter(pl.col("recommended_mode") == "paper").is_empty()
 
 
+def test_research_portfolio_status_overrides_strategy_advisory_and_paper_proposals(tmp_path):
+    board = pl.DataFrame(
+        [
+            _board_row(
+                strategy_candidate="v5.af.failed_candidate",
+                symbol="NEAR-USDT",
+                source_type="alpha_factory",
+                avg_net_bps=70.0,
+                decision="PAPER_READY",
+                cost_source_mix='{"mixed_actual_proxy": 72}',
+            ),
+            _board_row(
+                strategy_candidate="v5.af.paused_candidate",
+                symbol="WLD-USDT",
+                source_type="alpha_factory",
+                avg_net_bps=60.0,
+                decision="PAPER_READY",
+                cost_source_mix='{"mixed_actual_proxy": 72}',
+            ),
+            _board_row(
+                strategy_candidate="v5.af.downgraded_candidate",
+                symbol="OKB-USDT",
+                source_type="alpha_factory",
+                avg_net_bps=50.0,
+                decision="PAPER_READY",
+                cost_source_mix='{"mixed_actual_proxy": 72}',
+            ),
+        ]
+    )
+    portfolio = pl.DataFrame(
+        [
+            _portfolio_override_row("v5.af.failed_candidate", "KILL"),
+            _portfolio_override_row("v5.af.paused_candidate", "PAUSED"),
+            _portfolio_override_row(
+                "v5.af.downgraded_candidate",
+                "DOWNGRADED_FROM_PAPER",
+            ),
+        ]
+    )
+    proposals = _paper_strategy_proposals_for_export(
+        board,
+        research_portfolio=portfolio,
+    ).to_dicts()
+    proposal_frame = pl.DataFrame(proposals) if proposals else pl.DataFrame()
+    advisory = _strategy_opportunity_advisory_for_export(
+        alpha_discovery_board=board,
+        strategy_evidence=pl.DataFrame(),
+        paper_proposals=proposal_frame,
+        risk_permissions=pl.DataFrame(),
+        cost_health=pl.DataFrame(),
+        paper_daily=pl.DataFrame(),
+        paper_slippage=pl.DataFrame(),
+        research_portfolio=portfolio,
+    ).to_dicts()
+
+    assert proposals == []
+    by_candidate = {row["strategy_candidate"]: row for row in advisory}
+    killed = by_candidate["v5.af.failed_candidate"]
+    paused = by_candidate["v5.af.paused_candidate"]
+    downgraded = by_candidate["v5.af.downgraded_candidate"]
+    assert killed["decision"] == "KILL"
+    assert killed["recommended_mode"] == "none"
+    assert "research_portfolio_kill" in killed["live_block_reasons"]
+    assert paused["recommended_mode"] == "research"
+    assert "research_paused" in paused["live_block_reasons"]
+    assert downgraded["recommended_mode"] == "shadow"
+    assert "downgraded_from_paper" in downgraded["live_block_reasons"]
+    assert all(float(row["max_paper_notional_usdt"] or 0.0) == 0.0 for row in advisory)
+
+
 def _write_candidate_labels(lake: Path) -> None:
     start = datetime(2026, 4, 1, tzinfo=UTC)
     rows: list[dict] = []
@@ -1673,6 +1752,21 @@ def _downgraded_paper_daily_row(
         "entry_day_count": 2,
         "paper_pnl_observed_count": 2,
         "created_at": datetime(2026, 5, 10, 12, tzinfo=UTC),
+    }
+
+
+def _portfolio_override_row(strategy_candidate: str, status: str) -> dict:
+    return {
+        "schema_version": "research_portfolio_status.v0.1",
+        "as_of_date": "2026-05-10",
+        "research_id": strategy_candidate,
+        "module": "alpha_factory",
+        "strategy_candidate": strategy_candidate,
+        "status": status,
+        "action": f"{status}_ACTION",
+        "reason": "test_portfolio_override",
+        "created_at": datetime(2026, 5, 10, 13, tzinfo=UTC),
+        "source": "test",
     }
 
 

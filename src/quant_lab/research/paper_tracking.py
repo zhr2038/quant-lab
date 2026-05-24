@@ -23,12 +23,16 @@ RESEARCH_PORTFOLIO_STATUS_DATASET = Path("gold") / "research_portfolio_status"
 V5_PAPER_STRATEGY_RUN_DATASET = Path("silver") / "v5_paper_strategy_run"
 V5_PAPER_STRATEGY_DAILY_DATASET = Path("silver") / "v5_paper_strategy_daily"
 V5_PAPER_SLIPPAGE_COVERAGE_DATASET = Path("silver") / "v5_paper_slippage_coverage"
+V5_CANDIDATE_EVENT_DATASET = Path("silver") / "v5_candidate_event"
 PAPER_TRACKING_SOURCE = "research.paper_strategy_tracking.v0.1"
 V5_PAPER_TRACKING_SOURCE = "v5.paper_strategy_telemetry"
 V5_PAPER_TRACKING_STATUS = "active"
 PAPER_TRACKING_SCHEMA_VERSION = "paper_strategy_tracking.v1"
 DEFAULT_REQUIRED_ENTRY_DAYS_FOR_LIVE = 3
 PAPER_PNL_HORIZON_HOURS = (4, 8, 12, 24, 48, 72)
+SOL_F4_PAPER_PROPOSAL_ID = "SOL_F4_VOLUME_EXPANSION_PAPER_V1"
+SOL_F4_STRATEGY_CANDIDATE = "v5.f4_volume_expansion_entry"
+SOL_F4_SYMBOL = "SOL-USDT"
 ETH_F3_PAPER_PROPOSAL_ID = "ETH_USDT_F3_DOMINANT_ENTRY_PAPER_V1"
 ETH_F3_STRATEGY_CANDIDATE = "v5.f3_dominant_entry"
 ETH_F3_SYMBOL = "ETH-USDT"
@@ -49,6 +53,8 @@ PAPER_RUN_REPORT_SCHEMA = {
     "final_decision": pl.Utf8,
     "no_sample_reason": pl.Utf8,
     "paper_disabled_by_research_portfolio": pl.Boolean,
+    "paper_trigger_type": pl.Utf8,
+    "paper_trigger_reason": pl.Utf8,
     "risk_level": pl.Utf8,
     "alpha6_score": pl.Float64,
     "alpha6_side": pl.Utf8,
@@ -90,6 +96,8 @@ PAPER_RUN_SCHEMA = {
     "would_size": pl.Float64,
     "would_size_usdt": pl.Float64,
     "paper_disabled_by_research_portfolio": pl.Boolean,
+    "paper_trigger_type": pl.Utf8,
+    "paper_trigger_reason": pl.Utf8,
     "paper_pnl_bps": pl.Float64,
     "paper_pnl_bps_4h": pl.Float64,
     "paper_pnl_bps_8h": pl.Float64,
@@ -204,9 +212,9 @@ PAPER_STRATEGIES = [
         symbol="SOL-USDT",
     ),
     PaperStrategyConfig(
-        proposal_id="SOL_F4_VOLUME_EXPANSION_PAPER_V1",
-        strategy_candidate="v5.f4_volume_expansion_entry",
-        symbol="SOL-USDT",
+        proposal_id=SOL_F4_PAPER_PROPOSAL_ID,
+        strategy_candidate=SOL_F4_STRATEGY_CANDIDATE,
+        symbol=SOL_F4_SYMBOL,
     ),
     PaperStrategyConfig(
         proposal_id=ETH_F3_PAPER_PROPOSAL_ID,
@@ -245,14 +253,18 @@ def build_and_publish_paper_strategy_tracking(
     v5_slippage_raw = latest_v5_paper_frame(
         read_parquet_dataset(root / V5_PAPER_SLIPPAGE_COVERAGE_DATASET)
     )
+    v5_candidate_raw = latest_v5_paper_frame(
+        read_parquet_dataset(root / V5_CANDIDATE_EVENT_DATASET)
+    )
     research_portfolio = read_parquet_dataset(root / RESEARCH_PORTFOLIO_STATUS_DATASET)
     if any(
         not frame.is_empty()
-        for frame in [v5_runs_raw, v5_daily_raw, v5_slippage_raw]
+        for frame in [v5_runs_raw, v5_daily_raw, v5_slippage_raw, v5_candidate_raw]
     ):
         runs = build_paper_strategy_runs_from_v5(
             v5_runs_raw,
             research_portfolio=research_portfolio,
+            candidate_events=v5_candidate_raw,
         )
         daily = build_paper_strategy_daily_from_v5(v5_daily_raw)
         if not runs.is_empty():
@@ -670,6 +682,8 @@ def _pending_run_row(
         "would_size": 0.0,
         "would_size_usdt": 0.0,
         "paper_disabled_by_research_portfolio": False,
+        "paper_trigger_type": "paper_ready_proposal",
+        "paper_trigger_reason": "waiting_for_v5_paper_telemetry",
         "paper_pnl_bps": None,
         "paper_pnl_bps_4h": None,
         "paper_pnl_bps_8h": None,
@@ -706,8 +720,10 @@ def build_paper_strategy_runs_from_v5(
     frame: pl.DataFrame,
     *,
     research_portfolio: pl.DataFrame | None = None,
+    candidate_events: pl.DataFrame | None = None,
 ) -> pl.DataFrame:
-    if frame.is_empty():
+    candidate_frame = candidate_events if candidate_events is not None else pl.DataFrame()
+    if frame.is_empty() and candidate_frame.is_empty():
         return _empty_frame(PAPER_RUN_SCHEMA)
     created_at = datetime.now(UTC).isoformat()
     portfolio_frame = research_portfolio if research_portfolio is not None else pl.DataFrame()
@@ -715,7 +731,10 @@ def build_paper_strategy_runs_from_v5(
     rows = [
         _v5_run_row(row, created_at, portfolio_overrides=portfolio_overrides)
         for row in frame.to_dicts()
-    ]
+    ] if not frame.is_empty() else []
+    rows.extend(_sol_f4_factor_candidate_run_rows(candidate_frame, created_at, rows))
+    if not rows:
+        return _empty_frame(PAPER_RUN_SCHEMA)
     return pl.DataFrame(rows, schema=PAPER_RUN_SCHEMA, orient="row")
 
 
@@ -723,8 +742,10 @@ def build_paper_strategy_runs_report_from_v5(
     frame: pl.DataFrame,
     *,
     research_portfolio: pl.DataFrame | None = None,
+    candidate_events: pl.DataFrame | None = None,
 ) -> pl.DataFrame:
-    if frame.is_empty():
+    candidate_frame = candidate_events if candidate_events is not None else pl.DataFrame()
+    if frame.is_empty() and candidate_frame.is_empty():
         return _empty_frame(PAPER_RUN_REPORT_SCHEMA)
     created_at = datetime.now(UTC).isoformat()
     portfolio_frame = research_portfolio if research_portfolio is not None else pl.DataFrame()
@@ -732,7 +753,10 @@ def build_paper_strategy_runs_report_from_v5(
     rows = [
         _v5_run_report_row(row, created_at, portfolio_overrides=portfolio_overrides)
         for row in frame.to_dicts()
-    ]
+    ] if not frame.is_empty() else []
+    rows.extend(_sol_f4_factor_candidate_report_rows(candidate_frame, created_at, rows))
+    if not rows:
+        return _empty_frame(PAPER_RUN_REPORT_SCHEMA)
     return pl.DataFrame(rows, schema=PAPER_RUN_REPORT_SCHEMA, orient="row")
 
 
@@ -1002,6 +1026,34 @@ def _paper_entry_policy(
             "paper_disabled_by_research_portfolio": True,
             "tracking_stage": "paper_review_disabled_by_research_portfolio",
             "clear_paper_pnl": True,
+            "paper_trigger_type": "",
+            "paper_trigger_reason": ETH_F3_DISABLED_NO_SAMPLE_REASON,
+        }
+    sol_factor_reason = _sol_f4_factor_trigger_reason(row, payload, proposal_id, candidate, symbol)
+    if sol_factor_reason:
+        return {
+            "would_enter": True,
+            "no_sample_reason": "",
+            "paper_disabled_by_research_portfolio": False,
+            "tracking_stage": "active_paper_strategy",
+            "clear_paper_pnl": False,
+            "paper_trigger_type": "factor_condition_match",
+            "paper_trigger_reason": sol_factor_reason,
+        }
+    if raw_would_enter and _sol_f4_source_candidate_matches(
+        proposal_id,
+        candidate,
+        symbol,
+        payload,
+    ):
+        return {
+            "would_enter": True,
+            "no_sample_reason": "",
+            "paper_disabled_by_research_portfolio": False,
+            "tracking_stage": "",
+            "clear_paper_pnl": False,
+            "paper_trigger_type": "source_candidate_match",
+            "paper_trigger_reason": "source_strategy_candidate_matches_sol_f4",
         }
     if (
         raw_would_enter
@@ -1016,6 +1068,8 @@ def _paper_entry_policy(
                 "paper_disabled_by_research_portfolio": False,
                 "tracking_stage": "paper_review_entry_conditions_not_met",
                 "clear_paper_pnl": True,
+                "paper_trigger_type": "",
+                "paper_trigger_reason": restore_reason,
             }
     return {
         "would_enter": raw_would_enter,
@@ -1023,7 +1077,219 @@ def _paper_entry_policy(
         "paper_disabled_by_research_portfolio": False,
         "tracking_stage": "",
         "clear_paper_pnl": False,
+        "paper_trigger_type": "source_candidate_match" if raw_would_enter else "",
+        "paper_trigger_reason": "explicit_v5_would_enter" if raw_would_enter else "",
     }
+
+
+def _sol_f4_factor_candidate_run_rows(
+    candidate_events: pl.DataFrame,
+    created_at: str,
+    existing_rows: list[dict[str, Any]],
+) -> list[dict[str, Any]]:
+    if candidate_events.is_empty():
+        return []
+    existing_keys = _sol_f4_existing_candidate_keys(existing_rows)
+    rows: list[dict[str, Any]] = []
+    for candidate in candidate_events.to_dicts():
+        synthetic = _sol_f4_candidate_event_as_paper_row(candidate)
+        payload = _payload(synthetic)
+        trigger_reason = _sol_f4_factor_trigger_reason(
+            synthetic,
+            payload,
+            SOL_F4_PAPER_PROPOSAL_ID,
+            SOL_F4_STRATEGY_CANDIDATE,
+            SOL_F4_SYMBOL,
+        )
+        if not trigger_reason:
+            continue
+        key = _sol_f4_candidate_key(synthetic, payload)
+        if key in existing_keys:
+            continue
+        existing_keys.add(key)
+        synthetic["paper_trigger_reason"] = trigger_reason
+        rows.append(_v5_run_row(synthetic, created_at))
+    return rows
+
+
+def _sol_f4_factor_candidate_report_rows(
+    candidate_events: pl.DataFrame,
+    created_at: str,
+    existing_rows: list[dict[str, Any]],
+) -> list[dict[str, Any]]:
+    if candidate_events.is_empty():
+        return []
+    existing_keys = _sol_f4_existing_candidate_keys(existing_rows)
+    rows: list[dict[str, Any]] = []
+    for candidate in candidate_events.to_dicts():
+        synthetic = _sol_f4_candidate_event_as_paper_row(candidate)
+        payload = _payload(synthetic)
+        trigger_reason = _sol_f4_factor_trigger_reason(
+            synthetic,
+            payload,
+            SOL_F4_PAPER_PROPOSAL_ID,
+            SOL_F4_STRATEGY_CANDIDATE,
+            SOL_F4_SYMBOL,
+        )
+        if not trigger_reason:
+            continue
+        key = _sol_f4_candidate_key(synthetic, payload)
+        if key in existing_keys:
+            continue
+        existing_keys.add(key)
+        synthetic["paper_trigger_reason"] = trigger_reason
+        rows.append(_v5_run_report_row(synthetic, created_at))
+    return rows
+
+
+def _sol_f4_existing_candidate_keys(rows: list[dict[str, Any]]) -> set[tuple[str, str, str, str]]:
+    keys: set[tuple[str, str, str, str]] = set()
+    for row in rows:
+        proposal_id = str(row.get("proposal_id") or row.get("strategy_id") or "")
+        symbol = normalize_symbol(row.get("symbol"))
+        if proposal_id != SOL_F4_PAPER_PROPOSAL_ID or symbol != SOL_F4_SYMBOL:
+            continue
+        payload = _payload(row)
+        keys.add(_sol_f4_candidate_key(row, payload))
+    return keys
+
+
+def _sol_f4_candidate_key(
+    row: dict[str, Any],
+    payload: dict[str, Any],
+) -> tuple[str, str, str, str]:
+    return (
+        _field(row, payload, "candidate_id"),
+        _field(row, payload, "run_id"),
+        _field(row, payload, "ts_utc", "ts", "timestamp", "created_at"),
+        normalize_symbol(_field(row, payload, "symbol", "normalized_symbol")) or SOL_F4_SYMBOL,
+    )
+
+
+def _sol_f4_candidate_event_as_paper_row(candidate: dict[str, Any]) -> dict[str, Any]:
+    payload = _payload(candidate)
+    source_candidate = _field(
+        candidate,
+        payload,
+        "source_strategy_candidate",
+        "strategy_candidate",
+        "candidate",
+    )
+    ts_utc = _field(candidate, payload, "ts_utc", "ts", "timestamp", "created_at")
+    merged_payload = {
+        **payload,
+        **{
+            key: value
+            for key, value in candidate.items()
+            if key not in {"raw_payload_json"} and value is not None
+        },
+        "source_strategy_candidate": source_candidate,
+        "paper_trigger_type": "factor_condition_match",
+    }
+    return {
+        **candidate,
+        "as_of_date": _as_of_date(candidate, payload),
+        "proposal_id": SOL_F4_PAPER_PROPOSAL_ID,
+        "strategy_id": SOL_F4_PAPER_PROPOSAL_ID,
+        "strategy_candidate": SOL_F4_STRATEGY_CANDIDATE,
+        "source_strategy_candidate": source_candidate,
+        "symbol": SOL_F4_SYMBOL,
+        "normalized_symbol": SOL_F4_SYMBOL,
+        "recommended_mode": "paper",
+        "board_decision": "PAPER_READY",
+        "suggested_horizon": "24h",
+        "horizon_hours": "24",
+        "would_enter": "true",
+        "would_exit": "false",
+        "would_size": "100",
+        "would_size_usdt": "100",
+        "final_decision": _field(candidate, payload, "final_decision", "decision"),
+        "ts_utc": ts_utc,
+        "paper_tracking_status": V5_PAPER_TRACKING_STATUS,
+        "tracking_stage": "active_paper_strategy",
+        "paper_trigger_type": "factor_condition_match",
+        "raw_payload_json": safe_json_dumps(merged_payload),
+    }
+
+
+def _sol_f4_factor_trigger_reason(
+    row: dict[str, Any],
+    payload: dict[str, Any],
+    proposal_id: str,
+    candidate: str,
+    symbol: str,
+) -> str:
+    if not _is_sol_f4_tracking_row(proposal_id, candidate, symbol):
+        return ""
+    row_symbol = normalize_symbol(_field(row, payload, "symbol", "normalized_symbol") or symbol)
+    if row_symbol != SOL_F4_SYMBOL:
+        return ""
+    alpha6_side = str(_field(row, payload, "alpha6_side") or "").strip().lower()
+    if alpha6_side != "buy":
+        return ""
+    f4_value = _factor_float(_field(row, payload, "f4_volume_expansion"))
+    if f4_value is None or f4_value < 0:
+        return ""
+    expected = _optional_float(_field(row, payload, "expected_edge_bps", "edge_bps"))
+    required = _optional_float(_field(row, payload, "required_edge_bps", "required_edge"))
+    if expected is None or required is None or expected <= required:
+        return ""
+    if _optional_bool(_field(row, payload, "cost_gate_verified", "cost.gate_verified")) is not True:
+        return ""
+    if _risk_off_for_sol_f4(row, payload):
+        return ""
+    return (
+        "sol_f4_factor_condition_match:"
+        "alpha6_buy,f4_non_negative,expected_edge_gt_required_edge,"
+        "cost_gate_verified,not_risk_off"
+    )
+
+
+def _is_sol_f4_tracking_row(proposal_id: str, candidate: str, symbol: str) -> bool:
+    normalized_symbol = normalize_symbol(symbol)
+    normalized_candidate = str(candidate or "").strip()
+    return normalized_symbol == SOL_F4_SYMBOL and (
+        proposal_id == SOL_F4_PAPER_PROPOSAL_ID
+        or normalized_candidate in {SOL_F4_STRATEGY_CANDIDATE, "f4_volume_expansion_entry"}
+    )
+
+
+def _sol_f4_source_candidate_matches(
+    proposal_id: str,
+    candidate: str,
+    symbol: str,
+    payload: dict[str, Any],
+) -> bool:
+    if not _is_sol_f4_tracking_row(proposal_id, candidate, symbol):
+        return False
+    source_candidate = str(
+        payload.get("source_strategy_candidate")
+        or payload.get("strategy_candidate")
+        or candidate
+        or ""
+    ).strip()
+    return source_candidate in {SOL_F4_STRATEGY_CANDIDATE, "f4_volume_expansion_entry"}
+
+
+def _risk_off_for_sol_f4(row: dict[str, Any], payload: dict[str, Any]) -> bool:
+    explicit = _optional_bool(_field(row, payload, "risk_off", "is_risk_off"))
+    if explicit is not None:
+        return explicit
+    for key in ["current_regime", "regime_state", "market_regime", "risk_level"]:
+        value = str(_field(row, payload, key) or "").strip().upper()
+        if value == "RISK_OFF":
+            return True
+    return False
+
+
+def _factor_float(value: Any) -> float | None:
+    parsed = _optional_float(value)
+    if parsed is not None:
+        return parsed
+    boolean = _optional_bool(value)
+    if boolean is not None:
+        return 1.0 if boolean else 0.0
+    return None
 
 
 def _eth_f3_disabled_by_research_portfolio(
@@ -1194,6 +1460,10 @@ def _v5_run_report_row(
         "paper_disabled_by_research_portfolio": enter_policy[
             "paper_disabled_by_research_portfolio"
         ],
+        "paper_trigger_type": enter_policy["paper_trigger_type"]
+        or _field(row, payload, "paper_trigger_type"),
+        "paper_trigger_reason": enter_policy["paper_trigger_reason"]
+        or _field(row, payload, "paper_trigger_reason"),
         "risk_level": _field(row, payload, "risk_level"),
         "alpha6_score": _optional_float(_field(row, payload, "alpha6_score")),
         "alpha6_side": _field(row, payload, "alpha6_side"),
@@ -1325,6 +1595,10 @@ def _v5_run_row(
         "paper_disabled_by_research_portfolio": enter_policy[
             "paper_disabled_by_research_portfolio"
         ],
+        "paper_trigger_type": enter_policy["paper_trigger_type"]
+        or _field(row, payload, "paper_trigger_type"),
+        "paper_trigger_reason": enter_policy["paper_trigger_reason"]
+        or _field(row, payload, "paper_trigger_reason"),
         "paper_pnl_bps": paper_pnl_bps,
         "paper_pnl_bps_4h": paper_pnl_bps_4h,
         "paper_pnl_bps_8h": paper_pnl_bps_8h,

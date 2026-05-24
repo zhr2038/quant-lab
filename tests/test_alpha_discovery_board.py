@@ -569,6 +569,78 @@ def test_paper_strategy_tracking_uses_v5_telemetry_when_present(tmp_path):
     }
 
 
+def test_sol_f4_factor_condition_candidate_event_generates_paper_entry(tmp_path):
+    lake = tmp_path / "lake"
+    write_parquet_dataset(
+        pl.DataFrame(
+            [
+                {
+                    "as_of_date": "2026-05-24",
+                    "candidate_id": "sol_strong_001",
+                    "run_id": "run_20260524_10",
+                    "ts_utc": "2026-05-24T10:00:00Z",
+                    "symbol": "SOL-USDT",
+                    "strategy_candidate": "v5.f3_dominant_entry",
+                    "final_decision": "no_order",
+                    "alpha6_side": "buy",
+                    "f4_volume_expansion": "0.25",
+                    "expected_edge_bps": "90",
+                    "required_edge_bps": "30",
+                    "cost_gate_verified": "true",
+                    "current_regime": "ALT_IMPULSE",
+                    "final_score": "0.93",
+                    "cost_source": "mixed_actual_proxy",
+                    "raw_payload_json": "{}",
+                    "bundle_ts": datetime(2026, 5, 24, 10, tzinfo=UTC),
+                }
+            ]
+        ),
+        lake / "silver" / "v5_candidate_event",
+    )
+
+    build_and_publish_paper_strategy_tracking(lake, as_of_date="2026-05-24")
+
+    run = read_parquet_dataset(lake / "gold" / "paper_strategy_runs").to_dicts()[0]
+    daily = read_parquet_dataset(lake / "gold" / "paper_strategy_daily").to_dicts()[0]
+    assert run["proposal_id"] == "SOL_F4_VOLUME_EXPANSION_PAPER_V1"
+    assert run["strategy_candidate"] == "v5.f4_volume_expansion_entry"
+    assert run["symbol"] == "SOL-USDT"
+    assert run["would_enter"] is True
+    assert run["paper_trigger_type"] == "factor_condition_match"
+    assert "expected_edge_gt_required_edge" in run["paper_trigger_reason"]
+    assert daily["would_enter_count"] == 1
+    assert daily["entry_day_count"] == 1
+
+
+def test_sol_f4_factor_condition_can_override_no_enter_v5_paper_row():
+    rows = pl.DataFrame(
+        [
+            {
+                "as_of_date": "2026-05-24",
+                "proposal_id": "SOL_F4_VOLUME_EXPANSION_PAPER_V1",
+                "strategy_candidate": "v5.f4_volume_expansion_entry",
+                "source_strategy_candidate": "v5.f3_dominant_entry",
+                "symbol": "SOL-USDT",
+                "would_enter": "false",
+                "final_decision": "no_order",
+                "alpha6_side": "buy",
+                "f4_volume_expansion": "0.10",
+                "expected_edge_bps": "80",
+                "required_edge_bps": "25",
+                "cost_gate_verified": "true",
+                "current_regime": "TREND_UP",
+                "raw_payload_json": "{}",
+            }
+        ]
+    )
+
+    run = build_paper_strategy_runs_from_v5(rows).to_dicts()[0]
+
+    assert run["would_enter"] is True
+    assert run["paper_trigger_type"] == "factor_condition_match"
+    assert "cost_gate_verified" in run["paper_trigger_reason"]
+
+
 def test_paper_daily_and_slippage_use_run_cost_source_mix(tmp_path):
     lake = tmp_path / "lake"
     run_rows = [

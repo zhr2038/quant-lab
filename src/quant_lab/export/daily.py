@@ -2014,8 +2014,8 @@ def export_daily_pack(
         else []
     )
     snapshot = _load_snapshot(root)
-    snapshot = _publish_strategy_opportunity_advisory_snapshot(root, snapshot)
     snapshot = _publish_research_portfolio_status_snapshot(root, snapshot, day)
+    snapshot = _publish_strategy_opportunity_advisory_snapshot(root, snapshot)
     missing_sections = _missing_sections(snapshot.row_counts)
     data_quality = _data_quality_payload(
         root,
@@ -2514,7 +2514,10 @@ def _dataset_members(frames: dict[str, pl.DataFrame]) -> dict[str, _MemberPayloa
         pl.DataFrame(),
     )
     history_metrics = frames.get("v5_entry_quality_history_metrics", pl.DataFrame())
-    paper_proposals = _paper_strategy_proposals_for_export(alpha_discovery_board)
+    paper_proposals = _paper_strategy_proposals_for_export(
+        alpha_discovery_board,
+        research_portfolio=research_portfolio,
+    )
     market_regime = frames.get("market_regime_daily", pl.DataFrame())
     strategy_regime_matrix = frames.get("strategy_regime_matrix", pl.DataFrame())
     regime_strategy_advisory = frames.get("regime_strategy_advisory", pl.DataFrame())
@@ -2526,6 +2529,7 @@ def _dataset_members(frames: dict[str, pl.DataFrame]) -> dict[str, _MemberPayloa
         cost_health=cost_health,
         paper_daily=paper_daily,
         paper_slippage=paper_slippage,
+        research_portfolio=research_portfolio,
         entry_quality_advisory=entry_quality_advisory,
         regime_strategy_advisory=regime_strategy_advisory,
     )
@@ -4523,10 +4527,17 @@ PAPER_PROPOSAL_IDS = {
 }
 
 
-def _paper_strategy_proposals_for_export(board: pl.DataFrame) -> pl.DataFrame:
+def _paper_strategy_proposals_for_export(
+    board: pl.DataFrame,
+    *,
+    research_portfolio: pl.DataFrame | None = None,
+) -> pl.DataFrame:
     path = "reports/paper_strategy_proposals.csv"
     if board.is_empty() or "decision" not in board.columns:
         return _empty_csv_schema_frame(path)
+    downgraded = _downgraded_portfolio_by_candidate_symbol(
+        research_portfolio if research_portfolio is not None else pl.DataFrame()
+    )
     board_rows = board.to_dicts()
     latest_as_of_date = _latest_as_of_date(board_rows)
     rows = [
@@ -4534,6 +4545,7 @@ def _paper_strategy_proposals_for_export(board: pl.DataFrame) -> pl.DataFrame:
         for row in board_rows
         if str(row.get("decision") or "").upper() == "PAPER_READY"
         and str(row.get("symbol") or "").strip().upper() != "UNKNOWN"
+        and _candidate_symbol_key(row) not in downgraded
     ]
     if latest_as_of_date is not None:
         rows = [
@@ -4657,6 +4669,7 @@ def _strategy_opportunity_advisory_for_export(
     cost_health: pl.DataFrame,
     paper_daily: pl.DataFrame,
     paper_slippage: pl.DataFrame,
+    research_portfolio: pl.DataFrame | None = None,
     entry_quality_advisory: pl.DataFrame | None = None,
     regime_strategy_advisory: pl.DataFrame | None = None,
 ) -> pl.DataFrame:
@@ -4669,6 +4682,9 @@ def _strategy_opportunity_advisory_for_export(
     proposal_by_key = _latest_rows_by_candidate_symbol(paper_proposals)
     paper_daily_by_key = _latest_rows_by_candidate_symbol(paper_daily)
     slippage_by_key = _latest_rows_by_candidate_symbol(paper_slippage)
+    downgraded_by_key = _downgraded_portfolio_by_candidate_symbol(
+        research_portfolio if research_portfolio is not None else pl.DataFrame()
+    )
     risk_context = _advisory_risk_context(risk_permissions)
     latest_cost_health = _latest_cost_health_context(cost_health)
     git_commit = _git_commit()
@@ -4701,6 +4717,12 @@ def _strategy_opportunity_advisory_for_export(
             decision = paper_decision
         if decision == "LIVE_SMALL_READY" and not bool(paper.get("live_eligible")):
             decision = "PAPER_READY"
+        downgraded_portfolio = downgraded_by_key.get(key)
+        if downgraded_portfolio is not None and decision in {
+            "PAPER_READY",
+            "LIVE_SMALL_READY",
+        }:
+            decision = "KEEP_SHADOW"
         recommended_mode = _advisory_recommended_mode(decision)
         cost_quality = _advisory_cost_quality(row.get("cost_source_mix"), latest_cost_health)
         slippage_coverage = _optional_float(
@@ -4722,6 +4744,10 @@ def _strategy_opportunity_advisory_for_export(
             slippage_coverage=slippage_coverage,
             risk_context=risk_context,
         )
+        if downgraded_portfolio is not None:
+            live_block_reasons = sorted(
+                {*live_block_reasons, "downgraded_from_paper"}
+            )
         generated_at = _advisory_generated_at(row)
         rows.append(
             {
@@ -4814,7 +4840,13 @@ def _strategy_opportunity_advisory_from_frames(
     )
     risk = _risk_permissions_for_export(frames.get("risk_permission", pl.DataFrame()), frames)
     _, paper_daily, paper_slippage = _paper_tracking_frames_for_export(frames)
-    paper_proposals = _paper_strategy_proposals_for_export(alpha_discovery_board)
+    research_portfolio = dedupe_research_portfolio_status(
+        frames.get("research_portfolio_status", pl.DataFrame())
+    )
+    paper_proposals = _paper_strategy_proposals_for_export(
+        alpha_discovery_board,
+        research_portfolio=research_portfolio,
+    )
     return _strategy_opportunity_advisory_for_export(
         alpha_discovery_board=alpha_discovery_board,
         strategy_evidence=strategy_evidence,
@@ -4823,6 +4855,7 @@ def _strategy_opportunity_advisory_from_frames(
         cost_health=frames.get("cost_health_daily", pl.DataFrame()),
         paper_daily=paper_daily,
         paper_slippage=paper_slippage,
+        research_portfolio=research_portfolio,
         entry_quality_advisory=frames.get("v5_entry_quality_advisory", pl.DataFrame()),
         regime_strategy_advisory=frames.get("regime_strategy_advisory", pl.DataFrame()),
     )
@@ -5095,6 +5128,49 @@ def _latest_rows_by_candidate_symbol(frame: pl.DataFrame) -> dict[tuple[str, str
         if current is None or _advisory_row_time(row) >= _advisory_row_time(current):
             rows_by_key[key] = row
     return rows_by_key
+
+
+def _candidate_symbol_key(row: dict[str, Any]) -> tuple[str, str]:
+    candidate = str(row.get("strategy_candidate") or row.get("candidate_name") or "").strip()
+    symbol = normalize_symbol(row.get("symbol")) or "UNKNOWN"
+    return (candidate, symbol)
+
+
+def _downgraded_portfolio_by_candidate_symbol(
+    research_portfolio: pl.DataFrame,
+) -> dict[tuple[str, str], dict[str, Any]]:
+    downgraded: dict[tuple[str, str], dict[str, Any]] = {}
+    if research_portfolio.is_empty():
+        return downgraded
+    frame = dedupe_research_portfolio_status(research_portfolio)
+    for row in frame.to_dicts():
+        if str(row.get("status") or "").strip().upper() != "DOWNGRADED_FROM_PAPER":
+            continue
+        candidate, symbol = _portfolio_candidate_symbol(row)
+        if not candidate or symbol == "UNKNOWN":
+            continue
+        key = (candidate, symbol)
+        current = downgraded.get(key)
+        if current is None or _advisory_row_time(row) >= _advisory_row_time(current):
+            downgraded[key] = row
+    return downgraded
+
+
+def _portfolio_candidate_symbol(row: dict[str, Any]) -> tuple[str, str]:
+    candidate = str(row.get("strategy_candidate") or "").strip()
+    symbol = normalize_symbol(row.get("symbol")) or "UNKNOWN"
+    research_id = str(row.get("research_id") or "").strip().upper()
+    known = {
+        "ETH_F3_DOMINANT_ENTRY_PAPER_V1": ("v5.f3_dominant_entry", "ETH-USDT"),
+        "SOL_PROTECT_ALPHA6_LOW_EXCEPTION_PAPER_V1": (
+            "v5.sol_protect_alpha6_low_exception",
+            "SOL-USDT",
+        ),
+        "SOL_F4_VOLUME_EXPANSION_PAPER_V1": ("v5.f4_volume_expansion_entry", "SOL-USDT"),
+    }
+    if research_id in known:
+        return known[research_id]
+    return (candidate, symbol)
 
 
 def _advisory_row_time(row: dict[str, Any]) -> datetime:

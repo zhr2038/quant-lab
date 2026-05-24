@@ -1393,6 +1393,86 @@ def test_export_daily_prefers_v5_paper_telemetry_over_pending_gold(tmp_path):
     assert all("paper_active_but_no_entries_yet" in row["live_block_reason"] for row in daily)
 
 
+def test_downgraded_paper_strategies_are_not_exported_as_paper(tmp_path):
+    lake = tmp_path / "lake"
+    board = pl.DataFrame(
+        [
+            _board_row(
+                strategy_candidate="v5.f3_dominant_entry",
+                symbol="ETH-USDT",
+                source_type="candidate_event_label",
+                avg_net_bps=35.0,
+                decision="PAPER_READY",
+                cost_source_mix='{"mixed_actual_proxy": 72}',
+            ),
+            _board_row(
+                strategy_candidate="v5.sol_protect_alpha6_low_exception",
+                symbol="SOL-USDT",
+                source_type="candidate_event_label",
+                avg_net_bps=45.0,
+                decision="PAPER_READY",
+                cost_source_mix='{"public_spread_proxy": 72}',
+            ),
+        ]
+    )
+    write_parquet_dataset(board, lake / "gold" / "alpha_discovery_board")
+    paper_daily_rows = [
+        _downgraded_paper_daily_row(
+            proposal_id="ETH_F3_DOMINANT_ENTRY_PAPER_V1",
+            candidate="v5.f3_dominant_entry",
+            symbol="ETH-USDT",
+        ),
+        _downgraded_paper_daily_row(
+            proposal_id="SOL_PROTECT_ALPHA6_LOW_EXCEPTION_PAPER_V1",
+            candidate="v5.sol_protect_alpha6_low_exception",
+            symbol="SOL-USDT",
+        ),
+    ]
+    write_parquet_dataset(
+        pl.DataFrame(paper_daily_rows),
+        lake / "gold" / "paper_strategy_daily",
+    )
+
+    export = export_daily_pack(
+        export_date="2026-05-10",
+        lake_root=lake,
+        out_dir=tmp_path / "exports",
+        profile="expert",
+        command_line=["qlab", "export-daily"],
+        pre_export_v5_refresh=False,
+    )
+
+    with zipfile.ZipFile(export.zip_path) as archive:
+        proposals = list(
+            csv.DictReader(
+                io.StringIO(
+                    archive.read("reports/paper_strategy_proposals.csv").decode("utf-8")
+                )
+            )
+        )
+        advisory = list(
+            csv.DictReader(
+                io.StringIO(
+                    archive.read("reports/strategy_opportunity_advisory.csv").decode("utf-8")
+                )
+            )
+        )
+
+    assert proposals == []
+    by_candidate = {
+        (row["strategy_candidate"], row["symbol"]): row
+        for row in advisory
+    }
+    eth = by_candidate[("v5.f3_dominant_entry", "ETH-USDT")]
+    sol = by_candidate[("v5.sol_protect_alpha6_low_exception", "SOL-USDT")]
+    assert eth["recommended_mode"] == "shadow"
+    assert sol["recommended_mode"] == "shadow"
+    assert "downgraded_from_paper" in eth["live_block_reasons"]
+    assert "downgraded_from_paper" in sol["live_block_reasons"]
+    assert eth["max_paper_notional_usdt"] == "0.0"
+    assert sol["max_paper_notional_usdt"] == "0.0"
+
+
 def _write_candidate_labels(lake: Path) -> None:
     start = datetime(2026, 4, 1, tzinfo=UTC)
     rows: list[dict] = []
@@ -1527,6 +1607,29 @@ def _board_row(
         "end_ts": datetime(2026, 5, 10, tzinfo=UTC),
         "created_at": datetime(2026, 5, 10, tzinfo=UTC),
         "source": "test",
+    }
+
+
+def _downgraded_paper_daily_row(
+    *,
+    proposal_id: str,
+    candidate: str,
+    symbol: str,
+) -> dict:
+    return {
+        "as_of_date": "2026-05-10",
+        "proposal_id": proposal_id,
+        "strategy_candidate": candidate,
+        "symbol": symbol,
+        "latest_board_decision": "PAPER_READY",
+        "paper_negative_streak": 2,
+        "latest_paper_trend": "negative",
+        "live_block_reason": '["paper_negative_24h_or_48h_streak"]',
+        "decision_reasons": "[]",
+        "paper_days": 2,
+        "entry_day_count": 2,
+        "paper_pnl_observed_count": 2,
+        "created_at": datetime(2026, 5, 10, 12, tzinfo=UTC),
     }
 
 

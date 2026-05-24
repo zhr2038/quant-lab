@@ -26,6 +26,8 @@ DATASET_PATHS = {
     "strategy_evidence_quality": Path("gold") / "strategy_evidence_quality",
     "research_portfolio_status": Path("gold") / "research_portfolio_status",
     "strategy_opportunity_advisory": Path("gold") / "strategy_opportunity_advisory",
+    "v5_missed_opportunity_audit": Path("gold") / "v5_missed_opportunity_audit",
+    "v5_risk_on_multi_buy_shadow": Path("gold") / "v5_risk_on_multi_buy_shadow",
     "alpha_factory_candidate": Path("gold") / "alpha_factory_candidate",
     "alpha_factory_result": Path("gold") / "alpha_factory_result",
     "alpha_factory_promotion_queue": Path("gold") / "alpha_factory_promotion_queue",
@@ -184,6 +186,8 @@ DATASET_TIMESTAMP_COLUMNS: dict[str, tuple[str, ...]] = {
     "strategy_evidence_quality": ("created_at", "as_of_date"),
     "research_portfolio_status": ("created_at", "last_review_date"),
     "strategy_opportunity_advisory": ("as_of_ts", "created_at"),
+    "v5_missed_opportunity_audit": ("ts_utc", "generated_at"),
+    "v5_risk_on_multi_buy_shadow": ("decision_ts", "generated_at"),
     "second_stage_alpha_factory_sample": ("created_at", "ts_utc"),
     "second_stage_alpha_factory_summary": ("created_at", "end_ts", "as_of_date"),
     "expanded_relative_strength_decision_sample": ("created_at", "decision_ts"),
@@ -336,7 +340,12 @@ WEB_RESEARCH_SAMPLE_DATASETS = {
 WEB_FEATURE_SAMPLE_DATASETS = {"feature_value"}
 WEB_AUDIT_SAMPLE_DATASETS = {"decision_audit"}
 WEB_COST_SAMPLE_DATASETS = {"cost_bucket_daily"}
-WEB_ADVISORY_SAMPLE_DATASETS = {"strategy_opportunity_advisory", "v5_entry_quality_advisory"}
+WEB_ADVISORY_SAMPLE_DATASETS = {
+    "strategy_opportunity_advisory",
+    "v5_entry_quality_advisory",
+    "v5_missed_opportunity_audit",
+    "v5_risk_on_multi_buy_shadow",
+}
 WEB_RECENT_LOOKBACK_HOURS = {
     "market_bar": 24 * 14,
     "trade_print": 6,
@@ -346,6 +355,8 @@ WEB_RECENT_LOOKBACK_HOURS = {
     "decision_audit": 24 * 14,
     "feature_value": 24 * 14,
     "strategy_opportunity_advisory": 24 * 14,
+    "v5_missed_opportunity_audit": 24 * 14,
+    "v5_risk_on_multi_buy_shadow": 24 * 14,
     "v5_entry_quality_advisory": 24 * 14,
     "strategy_evidence_sample": 24 * 14,
     "v5_candidate_event": 24 * 14,
@@ -375,6 +386,8 @@ WEB_RECENT_FILE_LIMITS = {
     "decision_audit": 384,
     "feature_value": 384,
     "strategy_opportunity_advisory": 384,
+    "v5_missed_opportunity_audit": 384,
+    "v5_risk_on_multi_buy_shadow": 384,
     "v5_entry_quality_advisory": 384,
     "strategy_evidence_sample": 384,
     "v5_candidate_event": 384,

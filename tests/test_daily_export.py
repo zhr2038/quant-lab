@@ -169,6 +169,177 @@ def test_export_includes_v5_local_live_vs_quant_lab_shadow_report(tmp_path):
     assert row["block_outcome_8h"] == "avoided_loss_if_blocked"
 
 
+def test_export_includes_missed_opportunity_and_risk_on_multi_buy_shadow(tmp_path):
+    lake_root = tmp_path / "lake"
+    entry_ts = datetime(2026, 5, 11, tzinfo=UTC)
+    bars = []
+    for symbol, close_4h, close_8h, close_24h in [
+        ("BTC-USDT", 101.0, 101.5, 102.0),
+        ("BNB-USDT", 102.0, 103.0, 104.0),
+        ("SOL-USDT", 104.0, 105.0, 106.0),
+    ]:
+        bars.extend(
+            [
+                _bar(entry_ts, symbol=symbol, close=100.0),
+                _bar(entry_ts + timedelta(hours=4), symbol=symbol, close=close_4h),
+                _bar(entry_ts + timedelta(hours=8), symbol=symbol, close=close_8h),
+                _bar(entry_ts + timedelta(hours=24), symbol=symbol, close=close_24h),
+            ]
+        )
+    write_parquet_dataset(pl.DataFrame(bars), lake_root / "silver" / "market_bar")
+    write_parquet_dataset(
+        pl.DataFrame(
+            [
+                {
+                    "run_id": "run-risk-on",
+                    "ts_utc": entry_ts.isoformat(),
+                    "symbol": "BNB-USDT",
+                    "alpha6_side": "buy",
+                    "final_score": 90.0,
+                    "expected_edge_bps": 80.0,
+                    "required_edge_bps": 30.0,
+                    "final_decision": "OPEN_LONG",
+                    "block_reason": "",
+                    "regime_state": "ALT_IMPULSE",
+                    "broad_market_positive_count": 4,
+                    "strategy_candidate": "v5.bnb_risk_on_shadow",
+                },
+                {
+                    "run_id": "run-risk-on",
+                    "ts_utc": entry_ts.isoformat(),
+                    "symbol": "SOL-USDT",
+                    "alpha6_side": "buy",
+                    "final_score": 85.0,
+                    "expected_edge_bps": 75.0,
+                    "required_edge_bps": 30.0,
+                    "final_decision": "BLOCKED",
+                    "block_reason": "permission_abort",
+                    "regime_state": "ALT_IMPULSE",
+                    "broad_market_positive_count": 4,
+                    "strategy_candidate": "v5.sol_risk_on_shadow",
+                },
+            ]
+        ),
+        lake_root / "silver" / "v5_candidate_event",
+    )
+    write_parquet_dataset(
+        pl.DataFrame(
+            [
+                {
+                    "run_id": "run-risk-on",
+                    "ts_utc": entry_ts.isoformat(),
+                    "symbol": "BNB-USDT",
+                    "normalized_symbol": "BNB-USDT",
+                    "side": "buy",
+                    "action": "entry",
+                    "price": 100.0,
+                    "trade_id": "trade-bnb-1",
+                }
+            ]
+        ),
+        lake_root / "silver" / "v5_trade_event",
+    )
+    write_parquet_dataset(
+        pl.DataFrame(
+            [
+                {
+                    "as_of_date": "2026-05-11",
+                    "current_regime": "ALT_IMPULSE",
+                    "broad_market_positive_count": 4,
+                    "btc_24h_return_bps": 200.0,
+                    "created_at": entry_ts,
+                }
+            ]
+        ),
+        lake_root / "gold" / "market_regime_daily",
+    )
+    write_parquet_dataset(
+        pl.DataFrame(
+            [
+                {
+                    "as_of_date": "2026-05-11",
+                    "strategy_candidate": "v5.bnb_risk_on_shadow",
+                    "symbol": "BNB-USDT",
+                    "decision": "KILL",
+                    "recommended_mode": "none",
+                    "horizon_hours": 24,
+                    "sample_count": 30,
+                    "complete_sample_count": 30,
+                    "avg_net_bps": -20.0,
+                    "p25_net_bps": -80.0,
+                    "win_rate": 0.3,
+                    "cost_source_mix": '{"mixed_actual_proxy":30}',
+                    "decision_reasons": '["negative_after_cost_edge"]',
+                    "created_at": entry_ts,
+                },
+                {
+                    "as_of_date": "2026-05-11",
+                    "strategy_candidate": "v5.sol_risk_on_shadow",
+                    "symbol": "SOL-USDT",
+                    "decision": "KILL",
+                    "recommended_mode": "none",
+                    "horizon_hours": 24,
+                    "sample_count": 30,
+                    "complete_sample_count": 30,
+                    "avg_net_bps": -20.0,
+                    "p25_net_bps": -80.0,
+                    "win_rate": 0.3,
+                    "cost_source_mix": '{"mixed_actual_proxy":30}',
+                    "decision_reasons": '["negative_after_cost_edge"]',
+                    "created_at": entry_ts,
+                },
+            ]
+        ),
+        lake_root / "gold" / "alpha_discovery_board",
+    )
+
+    result = export_daily_pack(
+        export_date="2026-05-11",
+        lake_root=lake_root,
+        out_dir=tmp_path / "exports",
+        profile="expert",
+        command_line=["qlab", "export-daily"],
+        pre_export_v5_refresh=False,
+    )
+
+    with zipfile.ZipFile(result.zip_path) as archive:
+        missed_rows = list(
+            csv.DictReader(
+                io.StringIO(archive.read("reports/missed_opportunity_audit.csv").decode("utf-8"))
+            )
+        )
+        risk_on_rows = list(
+            csv.DictReader(
+                io.StringIO(archive.read("reports/risk_on_multi_buy_shadow.csv").decode("utf-8"))
+            )
+        )
+        advisory_rows = list(
+            csv.DictReader(
+                io.StringIO(
+                    archive.read("reports/strategy_opportunity_advisory.csv").decode("utf-8")
+                )
+            )
+        )
+        summary = archive.read("reports/missed_opportunity_summary.md").decode("utf-8")
+
+    outcomes = {row["symbol"]: row["outcome_if_blocked"] for row in missed_rows}
+    assert outcomes["BNB-USDT"] == "quant_lab_would_have_missed_profit"
+    assert outcomes["SOL-USDT"] == "v5_missed_opportunity"
+    assert any(
+        row["strategy_candidate"] == "v5.risk_on_multi_buy_top2_shadow"
+        for row in risk_on_rows
+    )
+    top2 = next(row for row in risk_on_rows if row["top_k"] == "2")
+    assert json.loads(top2["selected_symbols"]) == ["BNB-USDT", "SOL-USDT"]
+    assert float(top2["avg_portfolio_net_bps"]) > 0
+    assert any(
+        row["strategy_candidate"] == "v5.risk_on_multi_buy_top2_shadow"
+        and row["recommended_mode"] == "shadow"
+        for row in advisory_rows
+    )
+    assert "quant_lab_would_have_missed_profit" in summary
+
+
 def test_member_row_count_counts_csv_without_materializing_rows() -> None:
     text = "a,b\n1,2\n3,4\n"
 

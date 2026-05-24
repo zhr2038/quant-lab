@@ -33,6 +33,7 @@ DATASET_PATHS = {
     / "second_stage_alpha_factory_sample",
     "second_stage_alpha_factory_summary": Path("gold")
     / "second_stage_alpha_factory_summary",
+    "alpha_factory_template_registry": Path("gold") / "alpha_factory_template_registry",
     "market_regime_daily": Path("gold") / "market_regime_daily",
     "strategy_regime_matrix": Path("gold") / "strategy_regime_matrix",
     "regime_strategy_advisory": Path("gold") / "regime_strategy_advisory",
@@ -179,6 +180,7 @@ DATASET_TIMESTAMP_COLUMNS: dict[str, tuple[str, ...]] = {
     "strategy_opportunity_advisory": ("as_of_ts", "created_at"),
     "second_stage_alpha_factory_sample": ("created_at", "ts_utc"),
     "second_stage_alpha_factory_summary": ("created_at", "end_ts", "as_of_date"),
+    "alpha_factory_template_registry": ("created_at",),
     "alpha_factory_candidate": ("generated_at", "as_of_date"),
     "alpha_factory_result": ("generated_at", "end_ts", "as_of_date"),
     "alpha_factory_promotion_queue": ("generated_at", "as_of_date"),

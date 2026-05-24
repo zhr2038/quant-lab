@@ -24,33 +24,29 @@ SOURCE_NAME = "research.alpha_factory.v0.1"
 SCHEMA_VERSION = "alpha_factory.v0.1"
 MAX_DAILY_CANDIDATES = 200
 
+ALPHA_FACTORY_TEMPLATE_REGISTRY_DATASET = (
+    Path("gold") / "alpha_factory_template_registry"
+)
 ALPHA_FACTORY_CANDIDATE_DATASET = Path("gold") / "alpha_factory_candidate"
 ALPHA_FACTORY_RESULT_DATASET = Path("gold") / "alpha_factory_result"
 ALPHA_FACTORY_PROMOTION_QUEUE_DATASET = Path("gold") / "alpha_factory_promotion_queue"
 STRATEGY_EVIDENCE_DATASET = Path("gold") / "strategy_evidence"
 
-STRATEGY_TEMPLATE_BY_CANDIDATE = {
-    "v5.expanded_relative_strength_top1_shadow": "expanded_relative_strength",
-    "v5.expanded_relative_strength_top3_shadow": "expanded_relative_strength",
-    "v5.expanded_relative_strength_rotation_shadow": "expanded_relative_strength",
-    "v5.btc_strict_probe_exit_policy_review": "exit_policy_review",
-    "v5.eth_f3_exit_policy_review": "exit_policy_review",
-    "v5.sol_paper_exit_policy_review": "exit_policy_review",
-    "v5.futures_risk_off_hedge_shadow": "futures_hedge_shadow",
-    "v5.futures_downtrend_short_shadow": "futures_hedge_shadow",
-    "v5.pair_trade_eth_btc_shadow": "pair_market_neutral_shadow",
-    "v5.pair_trade_sol_eth_shadow": "pair_market_neutral_shadow",
-    "v5.alt_basket_vs_btc_shadow": "pair_market_neutral_shadow",
-    "v5.alt_impulse_shadow": "alt_impulse_regime",
-}
-STRATEGY_TEMPLATES = (
-    "expanded_relative_strength",
-    "exit_policy_review",
-    "futures_hedge_shadow",
-    "pair_market_neutral_shadow",
-    "alt_impulse_regime",
-)
 ALPHA_FACTORY_CANDIDATES = frozenset([*SECOND_STAGE_CANDIDATES, "v5.alt_impulse_shadow"])
+
+TEMPLATE_REGISTRY_SCHEMA: dict[str, Any] = {
+    "template_id": pl.Utf8,
+    "template_family": pl.Utf8,
+    "enabled": pl.Boolean,
+    "description": pl.Utf8,
+    "universe_scope": pl.Utf8,
+    "allowed_regimes": pl.Utf8,
+    "parameter_space_json": pl.Utf8,
+    "max_candidates_per_day": pl.Int64,
+    "safety_mode": pl.Utf8,
+    "created_at": pl.Datetime(time_zone="UTC"),
+    "source": pl.Utf8,
+}
 
 CANDIDATE_SCHEMA: dict[str, Any] = {
     "as_of_date": pl.Utf8,
@@ -71,6 +67,117 @@ CANDIDATE_SCHEMA: dict[str, Any] = {
     "safety_mode": pl.Utf8,
     "source": pl.Utf8,
 }
+
+DEFAULT_TEMPLATE_REGISTRY: tuple[dict[str, Any], ...] = (
+    {
+        "template_id": "expanded_relative_strength_v1",
+        "template_family": "expanded_relative_strength",
+        "enabled": True,
+        "description": "Batch scan expanded spot symbols for relative strength candidates.",
+        "universe_scope": "expanded_crypto_universe",
+        "allowed_regimes": ["TREND_UP", "ALT_IMPULSE", "SOL_STRENGTH", "LOW_VOL"],
+        "max_candidates_per_day": 200,
+        "parameter_space": {
+            "lookback_hours": [4, 8, 12, 24],
+            "top_k": [1, 3, 5],
+            "hold_hours": [4, 8, 12, 24, 48],
+            "max_spread_bps": [1, 2, 5],
+            "btc_corr_max": [0.3, 0.5, 0.7],
+            "min_quality_score": [75, 80],
+            "min_24h_volume_usdt": [5_000_000, 10_000_000],
+        },
+        "candidate_patterns": [
+            "v5.expanded_relative_strength_top1_shadow",
+            "v5.expanded_relative_strength_top3_shadow",
+            "v5.expanded_relative_strength_rotation_shadow",
+        ],
+    },
+    {
+        "template_id": "exit_policy_review_v1",
+        "template_family": "exit_policy_review",
+        "enabled": True,
+        "description": "Compare actual exits against fixed-hold exit policies in paper research.",
+        "universe_scope": "v5_current_universe",
+        "allowed_regimes": ["TREND_UP", "TREND_DOWN", "SIDEWAYS", "HIGH_VOL", "LOW_VOL"],
+        "max_candidates_per_day": 80,
+        "parameter_space": {
+            "target_strategy": [
+                "btc_strict_probe",
+                "eth_f3_dominant",
+                "sol_f4_volume_expansion",
+                "sol_protect_alpha6_low",
+            ],
+            "exit_policy": [
+                "actual_exit",
+                "fixed_hold_4h",
+                "fixed_hold_8h",
+                "fixed_hold_12h",
+                "fixed_hold_24h",
+                "fixed_hold_48h",
+            ],
+        },
+        "candidate_patterns": [
+            "v5.btc_strict_probe_exit_policy_review",
+            "v5.eth_f3_exit_policy_review",
+            "v5.sol_paper_exit_policy_review",
+        ],
+    },
+    {
+        "template_id": "futures_hedge_shadow_v1",
+        "template_family": "futures_hedge_shadow",
+        "enabled": True,
+        "description": "Paper-only futures hedge and downtrend short research.",
+        "universe_scope": "okx_perpetual_shadow",
+        "allowed_regimes": ["RISK_OFF", "TREND_DOWN", "HIGH_VOL"],
+        "max_candidates_per_day": 60,
+        "parameter_space": {
+            "hedge_symbol": ["BTC-USDT-SWAP", "ETH-USDT-SWAP", "SOL-USDT-SWAP"],
+            "hedge_ratio": [0.25, 0.5, 0.75],
+            "hold_hours": [4, 8, 12, 24],
+            "max_funding_cost_bps": [5, 10, 20],
+        },
+        "candidate_patterns": [
+            "v5.futures_risk_off_hedge_shadow",
+            "v5.futures_downtrend_short_shadow",
+        ],
+    },
+    {
+        "template_id": "pair_market_neutral_shadow_v1",
+        "template_family": "pair_market_neutral_shadow",
+        "enabled": True,
+        "description": "Paper-only pair and basket relative-value research.",
+        "universe_scope": "v5_current_and_expanded_universe",
+        "allowed_regimes": ["SIDEWAYS", "LOW_VOL", "LIQUIDITY_THIN"],
+        "max_candidates_per_day": 80,
+        "parameter_space": {
+            "pair": ["ETH/BTC", "SOL/ETH", "ALT_BASKET/BTC"],
+            "zscore_lookback_hours": [24, 48, 72],
+            "entry_zscore": [1.0, 1.5, 2.0],
+            "hold_hours": [8, 12, 24, 48],
+        },
+        "candidate_patterns": [
+            "v5.pair_trade_eth_btc_shadow",
+            "v5.pair_trade_sol_eth_shadow",
+            "v5.alt_basket_vs_btc_shadow",
+        ],
+    },
+    {
+        "template_id": "alt_impulse_regime_v1",
+        "template_family": "alt_impulse_regime",
+        "enabled": True,
+        "description": "Regime-aware alt impulse shadow research.",
+        "universe_scope": "v5_and_expanded_alt_universe",
+        "allowed_regimes": ["ALT_IMPULSE", "TREND_UP"],
+        "max_candidates_per_day": 80,
+        "parameter_space": {
+            "regime_state": ["ALT_IMPULSE", "TREND_UP"],
+            "hold_hours": [4, 8, 12, 24, 48, 72, 120],
+            "min_breadth_count": [3, 5, 8],
+            "min_alpha6_score": [0.4, 0.6],
+        },
+        "candidate_patterns": ["v5.alt_impulse_shadow"],
+    },
+)
 
 RESULT_SCHEMA: dict[str, Any] = {
     "as_of_date": pl.Utf8,
@@ -125,6 +232,7 @@ class AlphaFactoryBuildResult(BaseModel):
     candidate_rows: int = Field(ge=0)
     result_rows: int = Field(ge=0)
     promotion_rows: int = Field(ge=0)
+    template_registry_rows: int = Field(ge=0)
     strategy_evidence_rows: int = Field(ge=0)
     strategy_evidence_sample_rows: int = Field(ge=0)
     decision_counts: dict[str, int] = Field(default_factory=dict)
@@ -141,6 +249,8 @@ def build_and_publish_alpha_factory(
     root = Path(lake_root)
     day = _parse_day(as_of_date)
     generated_at = datetime.now(UTC)
+    registry = publish_alpha_factory_template_registry(root, generated_at=generated_at)
+    registry_lookup = template_registry_lookup(registry)
 
     second_stage = build_and_publish_second_stage_alpha_factory(
         root,
@@ -153,12 +263,14 @@ def build_and_publish_alpha_factory(
         as_of_date=day,
         generated_at=generated_at,
         max_candidates=max_candidates,
+        registry_lookup=registry_lookup,
     )
     results = build_alpha_factory_results(
         summary,
         as_of_date=day,
         generated_at=generated_at,
         max_candidates=max_candidates,
+        registry_lookup=registry_lookup,
     )
     promotion = build_alpha_factory_promotion_queue(results, generated_at=generated_at)
 
@@ -173,6 +285,7 @@ def build_and_publish_alpha_factory(
         candidate_rows=candidates.height,
         result_rows=results.height,
         promotion_rows=promotion.height,
+        template_registry_rows=registry.height,
         strategy_evidence_rows=evidence_rows,
         strategy_evidence_sample_rows=read_parquet_dataset(
             root / "gold" / "strategy_evidence_sample"
@@ -189,12 +302,21 @@ def build_alpha_factory_candidates(
     as_of_date: date,
     generated_at: datetime | None = None,
     max_candidates: int = MAX_DAILY_CANDIDATES,
+    registry_lookup: dict[str, dict[str, Any]] | None = None,
 ) -> pl.DataFrame:
     generated = generated_at or datetime.now(UTC)
+    registry = registry_lookup or template_registry_lookup(
+        build_default_template_registry(generated)
+    )
     rows = []
-    for row in _ranked_summary_rows(summary, as_of_date=as_of_date, max_candidates=max_candidates):
+    for row in _ranked_summary_rows(
+        summary,
+        as_of_date=as_of_date,
+        max_candidates=max_candidates,
+        registry_lookup=registry,
+    ):
         candidate = str(row.get("strategy_candidate") or "")
-        template = _template_name(candidate)
+        template = _template_for_candidate(candidate, registry)
         rows.append(
             {
                 "as_of_date": as_of_date.isoformat(),
@@ -206,7 +328,9 @@ def build_alpha_factory_candidates(
                 "symbol": normalize_symbol(row.get("symbol")) or "UNKNOWN",
                 "regime_state": str(row.get("regime_state") or "UNKNOWN"),
                 "horizon_hours": _int(row.get("horizon_hours")) or 0,
-                "parameter_json": safe_json_dumps(_parameter_payload(row, template)),
+                "parameter_json": safe_json_dumps(
+                    _parameter_payload(row, template, registry)
+                ),
                 "whitelist_json": safe_json_dumps([normalize_symbol(row.get("symbol"))]),
                 "blacklist_json": safe_json_dumps([]),
                 "source_dataset": str(row.get("source_dataset") or "gold/strategy_evidence"),
@@ -227,10 +351,19 @@ def build_alpha_factory_results(
     as_of_date: date,
     generated_at: datetime | None = None,
     max_candidates: int = MAX_DAILY_CANDIDATES,
+    registry_lookup: dict[str, dict[str, Any]] | None = None,
 ) -> pl.DataFrame:
     generated = generated_at or datetime.now(UTC)
+    registry = registry_lookup or template_registry_lookup(
+        build_default_template_registry(generated)
+    )
     rows = []
-    for row in _ranked_summary_rows(summary, as_of_date=as_of_date, max_candidates=max_candidates):
+    for row in _ranked_summary_rows(
+        summary,
+        as_of_date=as_of_date,
+        max_candidates=max_candidates,
+        registry_lookup=registry,
+    ):
         decision, reasons = alpha_factory_decision(
             sample_count=_int(row.get("sample_count")) or 0,
             complete_sample_count=_int(row.get("complete_sample_count")) or 0,
@@ -243,7 +376,10 @@ def build_alpha_factory_results(
                 "as_of_date": as_of_date.isoformat(),
                 "generated_at": generated,
                 "schema_version": SCHEMA_VERSION,
-                "template_name": _template_name(row.get("strategy_candidate")),
+                "template_name": _template_for_candidate(
+                    row.get("strategy_candidate"),
+                    registry,
+                ),
                 "candidate_id": _candidate_id(row),
                 "strategy_candidate": str(row.get("strategy_candidate") or ""),
                 "symbol": normalize_symbol(row.get("symbol")) or "UNKNOWN",
@@ -360,10 +496,74 @@ def alpha_factory_daily_md(
     else:
         lines.append("- none")
     lines.extend(["", "## Templates", ""])
-    for template in STRATEGY_TEMPLATES:
+    default_templates = build_default_template_registry(datetime.now(UTC))
+    families = _template_families_from_results(results, default_templates)
+    for template in families:
         frame = _filter_template(results, template)
         lines.append(f"- {template}: {frame.height} rows")
     return "\n".join(lines).rstrip() + "\n"
+
+
+def build_default_template_registry(generated_at: datetime | None = None) -> pl.DataFrame:
+    generated = generated_at or datetime.now(UTC)
+    rows = []
+    for template in DEFAULT_TEMPLATE_REGISTRY:
+        parameter_space = {
+            **template["parameter_space"],
+            "max_live_notional_usdt": [0],
+        }
+        rows.append(
+            {
+                "template_id": template["template_id"],
+                "template_family": template["template_family"],
+                "enabled": bool(template["enabled"]),
+                "description": template["description"],
+                "universe_scope": template["universe_scope"],
+                "allowed_regimes": safe_json_dumps(template["allowed_regimes"]),
+                "parameter_space_json": safe_json_dumps(parameter_space),
+                "max_candidates_per_day": int(template["max_candidates_per_day"]),
+                "safety_mode": "paper_shadow_only",
+                "created_at": generated,
+                "source": SOURCE_NAME,
+            }
+        )
+    return pl.DataFrame(rows, schema=TEMPLATE_REGISTRY_SCHEMA, orient="row")
+
+
+def publish_alpha_factory_template_registry(
+    lake_root: str | Path,
+    *,
+    generated_at: datetime | None = None,
+) -> pl.DataFrame:
+    root = Path(lake_root)
+    existing = read_parquet_dataset(root / ALPHA_FACTORY_TEMPLATE_REGISTRY_DATASET)
+    defaults = build_default_template_registry(generated_at)
+    registry = _merge_template_registry(existing, defaults)
+    write_parquet_dataset(registry, root / ALPHA_FACTORY_TEMPLATE_REGISTRY_DATASET)
+    return registry
+
+
+def template_registry_lookup(registry: pl.DataFrame) -> dict[str, dict[str, Any]]:
+    lookup: dict[str, dict[str, Any]] = {}
+    if registry.is_empty():
+        return lookup
+    for row in registry.to_dicts():
+        if not bool(row.get("enabled")):
+            continue
+        if str(row.get("safety_mode") or "") != "paper_shadow_only":
+            continue
+        family = str(row.get("template_family") or "")
+        if not family:
+            continue
+        patterns = _candidate_patterns_for_family(family)
+        payload = {
+            **row,
+            "allowed_regimes_list": _json_list(row.get("allowed_regimes")),
+            "parameter_space": _json_dict(row.get("parameter_space_json")),
+        }
+        for candidate in patterns:
+            lookup[candidate] = payload
+    return lookup
 
 
 def _publish_alpha_factory_results_to_strategy_evidence(
@@ -439,14 +639,20 @@ def _ranked_summary_rows(
     *,
     as_of_date: date,
     max_candidates: int,
+    registry_lookup: dict[str, dict[str, Any]] | None = None,
 ) -> list[dict[str, Any]]:
     if summary.is_empty():
         return []
+    enabled_candidates = (
+        set(registry_lookup)
+        if registry_lookup
+        else set(ALPHA_FACTORY_CANDIDATES)
+    )
     rows = [
         row
         for row in summary.to_dicts()
         if str(row.get("as_of_date") or "")[:10] == as_of_date.isoformat()
-        and str(row.get("strategy_candidate") or "") in ALPHA_FACTORY_CANDIDATES
+        and str(row.get("strategy_candidate") or "") in enabled_candidates
     ]
     rows.sort(
         key=lambda row: (
@@ -458,7 +664,20 @@ def _ranked_summary_rows(
         ),
         reverse=True,
     )
-    return rows[: max(max_candidates, 1)]
+    output: list[dict[str, Any]] = []
+    by_family: dict[str, int] = {}
+    for row in rows:
+        candidate = str(row.get("strategy_candidate") or "")
+        template = _template_for_candidate(candidate, registry_lookup or {})
+        template_config = (registry_lookup or {}).get(candidate, {})
+        family_cap = _int(template_config.get("max_candidates_per_day")) or max_candidates
+        if by_family.get(template, 0) >= family_cap:
+            continue
+        output.append(row)
+        by_family[template] = by_family.get(template, 0) + 1
+        if len(output) >= max(max_candidates, 1):
+            break
+    return output
 
 
 def _candidate_id(row: dict[str, Any]) -> str:
@@ -473,8 +692,31 @@ def _candidate_id(row: dict[str, Any]) -> str:
     )
 
 
-def _template_name(candidate: Any) -> str:
-    return STRATEGY_TEMPLATE_BY_CANDIDATE.get(str(candidate or ""), "alpha_factory")
+def _template_for_candidate(
+    candidate: Any,
+    registry_lookup: dict[str, dict[str, Any]],
+) -> str:
+    template = registry_lookup.get(str(candidate or ""), {})
+    return str(template.get("template_family") or _fallback_template_family(candidate))
+
+
+def _fallback_template_family(candidate: Any) -> str:
+    text = str(candidate or "")
+    if text.startswith("v5.expanded_relative_strength"):
+        return "expanded_relative_strength"
+    if text in {
+        "v5.btc_strict_probe_exit_policy_review",
+        "v5.eth_f3_exit_policy_review",
+        "v5.sol_paper_exit_policy_review",
+    }:
+        return "exit_policy_review"
+    if text.startswith("v5.futures_"):
+        return "futures_hedge_shadow"
+    if text.startswith("v5.pair_") or text == "v5.alt_basket_vs_btc_shadow":
+        return "pair_market_neutral_shadow"
+    if text == "v5.alt_impulse_shadow":
+        return "alt_impulse_regime"
+    return "alpha_factory"
 
 
 def _alpha_factory_source_summary(root: Path, day: date) -> pl.DataFrame:
@@ -505,9 +747,16 @@ def _with_source_dataset(frame: pl.DataFrame, source_dataset: str) -> pl.DataFra
     return frame.with_columns(pl.lit(source_dataset).alias("source_dataset"))
 
 
-def _parameter_payload(row: dict[str, Any], template: str) -> dict[str, Any]:
+def _parameter_payload(
+    row: dict[str, Any],
+    template: str,
+    registry_lookup: dict[str, dict[str, Any]],
+) -> dict[str, Any]:
+    config = registry_lookup.get(str(row.get("strategy_candidate") or ""), {})
     return {
         "template": template,
+        "template_id": str(config.get("template_id") or ""),
+        "parameter_space": config.get("parameter_space") or {},
         "horizon_hours": _int(row.get("horizon_hours")) or 0,
         "regime_state": str(row.get("regime_state") or "UNKNOWN"),
         "dry_run_first": True,
@@ -616,6 +865,20 @@ def _json_list(value: Any) -> list[str]:
     return [str(parsed)] if parsed is not None else []
 
 
+def _json_dict(value: Any) -> dict[str, Any]:
+    if isinstance(value, dict):
+        return value
+    if not isinstance(value, str):
+        return {}
+    try:
+        import json
+
+        parsed = json.loads(value)
+    except Exception:
+        return {}
+    return parsed if isinstance(parsed, dict) else {}
+
+
 def _dedupe_text(values: list[str]) -> list[str]:
     seen: set[str] = set()
     output: list[str] = []
@@ -634,3 +897,55 @@ def _decision_counts(frame: pl.DataFrame) -> dict[str, int]:
         str(row["decision"]): int(row["count"])
         for row in frame.group_by("decision").len(name="count").to_dicts()
     }
+
+
+def _merge_template_registry(existing: pl.DataFrame, defaults: pl.DataFrame) -> pl.DataFrame:
+    if existing.is_empty():
+        return defaults
+    existing = _normalize_template_registry(existing)
+    if existing.is_empty():
+        return defaults
+    configured_ids = set(existing.get_column("template_id").drop_nulls().to_list())
+    missing_defaults = defaults.filter(~pl.col("template_id").is_in(configured_ids))
+    merged = pl.concat([existing, missing_defaults], how="diagonal_relaxed")
+    return _normalize_template_registry(merged)
+
+
+def _normalize_template_registry(frame: pl.DataFrame) -> pl.DataFrame:
+    if frame.is_empty():
+        return pl.DataFrame(schema=TEMPLATE_REGISTRY_SCHEMA)
+    normalized = frame
+    for column, dtype in TEMPLATE_REGISTRY_SCHEMA.items():
+        if column not in normalized.columns:
+            normalized = normalized.with_columns(pl.lit(None, dtype=dtype).alias(column))
+    normalized = normalized.with_columns(
+        pl.when(pl.col("safety_mode").is_null() | (pl.col("safety_mode").cast(pl.Utf8) == ""))
+        .then(pl.lit("paper_shadow_only"))
+        .otherwise(pl.col("safety_mode").cast(pl.Utf8))
+        .alias("safety_mode"),
+        pl.when(pl.col("enabled").is_null())
+        .then(pl.lit(True))
+        .otherwise(pl.col("enabled").cast(pl.Boolean))
+        .alias("enabled"),
+    )
+    return normalized.select(list(TEMPLATE_REGISTRY_SCHEMA))
+
+
+def _candidate_patterns_for_family(template_family: str) -> list[str]:
+    for template in DEFAULT_TEMPLATE_REGISTRY:
+        if template["template_family"] == template_family:
+            return [str(value) for value in template["candidate_patterns"]]
+    return []
+
+
+def _template_families_from_results(results: pl.DataFrame, registry: pl.DataFrame) -> list[str]:
+    families = []
+    if not registry.is_empty():
+        families.extend(
+            str(row["template_family"])
+            for row in registry.to_dicts()
+            if bool(row.get("enabled")) and str(row.get("template_family") or "")
+        )
+    if not results.is_empty() and "template_name" in results.columns:
+        families.extend(str(value) for value in results["template_name"].drop_nulls().to_list())
+    return _dedupe_text(families)

@@ -14,6 +14,7 @@ from quant_lab.research.alpha_factory import (
     ALPHA_FACTORY_CANDIDATES,
     alpha_factory_decision,
     build_and_publish_alpha_factory,
+    build_default_template_registry,
 )
 from quant_lab.research.portfolio import build_and_publish_research_portfolio_status
 from quant_lab.research.second_stage_alpha_factory import (
@@ -74,13 +75,23 @@ def test_alpha_factory_outputs_candidates_results_and_queue_without_live(tmp_pat
     assert result.candidate_rows <= 200
     assert result.result_rows == result.candidate_rows
     assert result.promotion_rows == result.candidate_rows
+    assert result.template_registry_rows == 5
     assert "LIVE_SMALL_READY" not in result.decision_counts
 
+    registry = read_parquet_dataset(lake / "gold" / "alpha_factory_template_registry")
     candidates = read_parquet_dataset(lake / "gold" / "alpha_factory_candidate")
     results = read_parquet_dataset(lake / "gold" / "alpha_factory_result")
     promotion = read_parquet_dataset(lake / "gold" / "alpha_factory_promotion_queue")
     strategy_evidence = read_parquet_dataset(lake / "gold" / "strategy_evidence")
 
+    assert registry.height == 5
+    assert set(registry["safety_mode"].to_list()) == {"paper_shadow_only"}
+    assert "expanded_relative_strength_v1" in set(registry["template_id"].to_list())
+    expanded_space = registry.filter(
+        pl.col("template_id") == "expanded_relative_strength_v1"
+    )["parameter_space_json"][0]
+    assert "lookback_hours" in expanded_space
+    assert "max_live_notional_usdt" in expanded_space
     assert set(results["strategy_candidate"].to_list()).issubset(ALPHA_FACTORY_CANDIDATES)
     assert "v5.alt_impulse_shadow" in set(results["strategy_candidate"].to_list())
     assert set(candidates["max_live_notional_usdt"].to_list()) == {0.0}
@@ -89,6 +100,31 @@ def test_alpha_factory_outputs_candidates_results_and_queue_without_live(tmp_pat
     assert "LIVE_SMALL_READY" not in set(results["decision"].drop_nulls().to_list())
     assert "LIVE_SMALL_READY" not in set(promotion["promotion_state"].drop_nulls().to_list())
     assert "v5.alt_impulse_shadow" in set(strategy_evidence["strategy_candidate"].to_list())
+
+
+def test_alpha_factory_reads_template_registry_enabled_flags(tmp_path):
+    lake = tmp_path / "lake"
+    _write_market(lake)
+    _write_expanded_labels(lake)
+    _write_exit_policy_inputs(lake)
+    _write_alt_impulse_evidence(lake)
+
+    registry = build_default_template_registry(datetime(2026, 5, 24, tzinfo=UTC))
+    registry = registry.with_columns(
+        pl.when(pl.col("template_id") == "futures_hedge_shadow_v1")
+        .then(pl.lit(False))
+        .otherwise(pl.col("enabled"))
+        .alias("enabled")
+    )
+    write_parquet_dataset(registry, lake / "gold" / "alpha_factory_template_registry")
+
+    build_and_publish_alpha_factory(lake, as_of_date="2026-05-24")
+
+    results = read_parquet_dataset(lake / "gold" / "alpha_factory_result")
+    assert "futures_hedge_shadow" not in set(results["template_name"].to_list())
+    assert "v5.futures_risk_off_hedge_shadow" not in set(
+        results["strategy_candidate"].to_list()
+    )
 
 
 def test_alpha_factory_decision_ladder_is_shadow_paper_only():
@@ -146,6 +182,7 @@ def test_daily_export_includes_alpha_factory_reports_and_advisory_is_not_live(tm
         names = set(archive.namelist())
         assert "reports/second_stage_alpha_factory_summary.csv" in names
         assert "reports/second_stage_alpha_factory_samples.csv" in names
+        assert "reports/alpha_factory_template_registry.csv" in names
         assert "reports/alpha_factory_candidates.csv" in names
         assert "reports/alpha_factory_results.csv" in names
         assert "reports/alpha_factory_promotion_queue.csv" in names

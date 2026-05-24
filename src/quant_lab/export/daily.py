@@ -167,6 +167,7 @@ SECTION_DATASETS = {
         "strategy_opportunity_advisory",
         "second_stage_alpha_factory_sample",
         "second_stage_alpha_factory_summary",
+        "alpha_factory_template_registry",
         "alpha_factory_candidate",
         "alpha_factory_result",
         "alpha_factory_promotion_queue",
@@ -295,6 +296,7 @@ REQUIRED_MEMBERS = [
     "reports/strategy_evidence_summary.md",
     "reports/second_stage_alpha_factory_summary.csv",
     "reports/second_stage_alpha_factory_samples.csv",
+    "reports/alpha_factory_template_registry.csv",
     "reports/alpha_factory_candidates.csv",
     "reports/alpha_factory_results.csv",
     "reports/alpha_factory_promotion_queue.csv",
@@ -689,6 +691,19 @@ CSV_SCHEMAS: dict[str, list[str]] = {
         "source_path_inside_bundle",
         "source_event_key",
         "source_bundle_ts",
+        "created_at",
+        "source",
+    ],
+    "reports/alpha_factory_template_registry.csv": [
+        "template_id",
+        "template_family",
+        "enabled",
+        "description",
+        "universe_scope",
+        "allowed_regimes",
+        "parameter_space_json",
+        "max_candidates_per_day",
+        "safety_mode",
         "created_at",
         "source",
     ],
@@ -2615,6 +2630,7 @@ def _dataset_members(frames: dict[str, pl.DataFrame]) -> dict[str, _MemberPayloa
     second_stage_samples = _strategy_evidence_samples_for_export(
         frames.get("second_stage_alpha_factory_sample", pl.DataFrame())
     )
+    alpha_factory_registry = frames.get("alpha_factory_template_registry", pl.DataFrame())
     alpha_factory_candidates = frames.get("alpha_factory_candidate", pl.DataFrame())
     alpha_factory_results = frames.get("alpha_factory_result", pl.DataFrame())
     alpha_factory_promotion = frames.get("alpha_factory_promotion_queue", pl.DataFrame())
@@ -2791,6 +2807,10 @@ def _dataset_members(frames: dict[str, pl.DataFrame]) -> dict[str, _MemberPayloa
         "reports/second_stage_alpha_factory_samples.csv": _csv_member(
             "reports/second_stage_alpha_factory_samples.csv",
             second_stage_samples,
+        ),
+        "reports/alpha_factory_template_registry.csv": _csv_member(
+            "reports/alpha_factory_template_registry.csv",
+            alpha_factory_registry,
         ),
         "reports/alpha_factory_candidates.csv": _csv_member(
             "reports/alpha_factory_candidates.csv",

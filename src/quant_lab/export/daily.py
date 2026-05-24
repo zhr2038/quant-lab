@@ -6240,12 +6240,12 @@ def _risk_on_candidate_passes(
     candidate: dict[str, Any],
     regime_context: dict[str, Any],
 ) -> bool:
-    current_regime = str(
+    current_regime = _risk_on_regime_name(
         candidate.get("current_regime")
         or candidate.get("regime_state")
         or regime_context.get("current_regime")
         or ""
-    ).strip().upper()
+    )
     if current_regime not in {"ALT_IMPULSE", "TREND_UP"}:
         return False
     broad = (
@@ -6260,6 +6260,13 @@ def _risk_on_candidate_passes(
     if _optional_bool(candidate.get("cost_gate_verified")) is not True:
         return False
     return _optional_float(candidate.get("final_score")) is not None
+
+
+def _risk_on_regime_name(value: Any) -> str:
+    text = str(value or "").strip().upper().replace("-", "_").replace(" ", "_")
+    if text in {"TRENDING", "TREND", "BULL", "BULLISH"}:
+        return "TREND_UP"
+    return text
 
 
 def _risk_on_shadow_cost_by_symbol(cost_buckets: pl.DataFrame) -> dict[str, float]:

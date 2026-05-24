@@ -32,6 +32,15 @@ V5_ADVISORY_FIELDS = {
     "p25_net_bps",
     "win_rate",
     "cost_source_mix",
+    "source_module",
+    "template_family",
+    "candidate_id",
+    "promotion_state",
+    "alpha_factory_score",
+    "universe_type",
+    "cost_quality_score",
+    "paper_ready_block_reasons",
+    "advisory_intent",
     "live_block_reasons",
     "max_paper_notional_usdt",
     "max_live_notional_usdt",
@@ -106,11 +115,13 @@ def test_strategy_opportunity_advisory_endpoint_reads_gold(tmp_path, monkeypatch
     assert paper["source_version"].startswith("strategy_opportunity_advisory:")
     assert paper["source_version"] != "not_observable"
     assert paper["would_enter"] is True
+    assert paper["advisory_intent"] == "paper_shadow"
     assert paper["would_block_if_enabled"] is False
     assert paper["no_sample_reason"] is None
     assert paper["max_live_notional_usdt"] == 0.0
     assert killed["symbol"] == "BNB-USDT"
     assert killed["recommended_mode"] == "none"
+    assert killed["advisory_intent"] == "research_only"
     assert killed["would_block_if_enabled"] is True
     assert killed["would_enter"] is False
     assert killed["no_sample_reason"] == "killed_candidate"
@@ -188,6 +199,119 @@ def test_strategy_opportunity_advisory_endpoint_applies_portfolio_final_overlay(
     assert baseline["recommended_mode"] == "research"
     assert "baseline_only" in baseline["live_block_reasons"]
     assert all(row["max_live_notional_usdt"] == 0.0 for row in rows)
+
+
+def test_strategy_opportunity_advisory_api_returns_alpha_factory_extension_fields(
+    tmp_path,
+    monkeypatch,
+):
+    lake = tmp_path / "lake"
+    monkeypatch.setenv("QUANT_LAB_LAKE_ROOT", str(lake))
+    monkeypatch.delenv("QUANT_LAB_API_TOKEN", raising=False)
+    write_parquet_dataset(
+        pl.DataFrame(
+            [
+                {
+                    "as_of_ts": datetime(2026, 5, 24, tzinfo=UTC),
+                    "strategy_id": "V5_AF_NEAR_RS_TOP1",
+                    "strategy_candidate": "v5.af.expanded_relative_strength_top1_shadow",
+                    "symbol": "NEAR-USDT",
+                    "decision": "KEEP_SHADOW",
+                    "recommended_mode": "shadow",
+                    "horizon_hours": 24,
+                    "sample_count": 18,
+                    "complete_sample_count": 14,
+                    "avg_net_bps": 16.5,
+                    "p25_net_bps": -22.0,
+                    "win_rate": 0.57,
+                    "cost_source_mix": '{"public_spread_proxy":14}',
+                    "source_module": "alpha_factory",
+                    "template_family": "expanded_relative_strength",
+                    "candidate_id": "af-near-rs-top1-20260524",
+                    "promotion_state": "SHADOW",
+                    "alpha_factory_score": 63.25,
+                    "universe_type": "expanded_paper",
+                    "cost_quality_score": 0.61,
+                    "paper_ready_block_reasons": '["insufficient_recent_samples"]',
+                    "max_live_notional_usdt": 250.0,
+                }
+            ]
+        ),
+        lake / "gold" / "strategy_opportunity_advisory",
+    )
+
+    response = TestClient(app).get("/v1/strategy-opportunity-advisory")
+
+    assert response.status_code == 200
+    payload = response.json()[0]
+    assert payload["source_module"] == "alpha_factory"
+    assert payload["template_family"] == "expanded_relative_strength"
+    assert payload["candidate_id"] == "af-near-rs-top1-20260524"
+    assert payload["promotion_state"] == "SHADOW"
+    assert payload["alpha_factory_score"] == 63.25
+    assert payload["universe_type"] == "expanded_paper"
+    assert payload["cost_quality_score"] == 0.61
+    assert payload["paper_ready_block_reasons"] == ["insufficient_recent_samples"]
+    assert payload["advisory_intent"] == "paper_shadow"
+    assert payload["max_live_notional_usdt"] == 0.0
+
+
+def test_strategy_opportunity_advisory_portfolio_overlay_preserves_extension_fields(
+    tmp_path,
+    monkeypatch,
+):
+    lake = tmp_path / "lake"
+    monkeypatch.setenv("QUANT_LAB_LAKE_ROOT", str(lake))
+    monkeypatch.delenv("QUANT_LAB_API_TOKEN", raising=False)
+    as_of = datetime(2026, 5, 24, tzinfo=UTC)
+    write_parquet_dataset(
+        pl.DataFrame(
+            [
+                {
+                    **_api_advisory_row(
+                        "v5.af.expanded_relative_strength_top3_shadow",
+                        "WLD-USDT",
+                        as_of,
+                    ),
+                    "strategy_id": "V5_AF_WLD_RS_TOP3",
+                    "source_module": "alpha_factory",
+                    "template_family": "expanded_relative_strength",
+                    "candidate_id": "af-wld-rs-top3-20260524",
+                    "promotion_state": "PAPER_READY",
+                    "alpha_factory_score": 71.0,
+                    "universe_type": "expanded_paper",
+                    "cost_quality_score": 0.58,
+                    "paper_ready_block_reasons": '["portfolio_downgrade"]',
+                }
+            ]
+        ),
+        lake / "gold" / "strategy_opportunity_advisory",
+    )
+    write_parquet_dataset(
+        pl.DataFrame(
+            [
+                _portfolio_status_row(
+                    research_id="V5_AF_WLD_RS_TOP3",
+                    strategy_candidate="v5.af.expanded_relative_strength_top3_shadow",
+                    status="DOWNGRADED_FROM_PAPER",
+                )
+            ]
+        ),
+        lake / "gold" / "research_portfolio_status",
+    )
+
+    response = TestClient(app).get("/v1/strategy-opportunity-advisory")
+
+    assert response.status_code == 200
+    payload = response.json()[0]
+    assert payload["recommended_mode"] == "shadow"
+    assert payload["advisory_intent"] == "paper_shadow"
+    assert payload["alpha_factory_score"] == 71.0
+    assert payload["universe_type"] == "expanded_paper"
+    assert payload["candidate_id"] == "af-wld-rs-top3-20260524"
+    assert payload["paper_ready_block_reasons"] == ["portfolio_downgrade"]
+    assert "downgraded_from_paper" in payload["live_block_reasons"]
+    assert payload["max_live_notional_usdt"] == 0.0
 
 
 def test_strategy_opportunity_advisory_response_is_v5_parseable(

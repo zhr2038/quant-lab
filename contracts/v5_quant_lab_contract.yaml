@@ -112,6 +112,10 @@ schemas:
       - cost_quality
       - cost_trusted_for_paper
       - cost_trusted_for_live
+      - cost_trusted_for_live_canary
+      - cost_trusted_for_live_scale
+      - cost_trust_level
+      - cost_trust_block_reasons
       - as_of_ts
     nullable:
       - bucket_id
@@ -147,6 +151,11 @@ schemas:
         - symbol_missing
         - cost_bucket_stale
         - service_unavailable
+      cost_trust_level:
+        - BLOCK
+        - PAPER_ONLY
+        - CANARY
+        - SCALE_READY
       degraded_reason:
         - none
         - global_default_cost
@@ -331,6 +340,7 @@ schemas:
       - p25_net_bps
       - win_rate
       - cost_source_mix
+      - advisory_intent
       - live_block_reasons
       - max_paper_notional_usdt
       - max_live_notional_usdt
@@ -342,6 +352,14 @@ schemas:
       - p25_net_bps
       - win_rate
       - cost_source_mix
+      - source_module
+      - template_family
+      - candidate_id
+      - promotion_state
+      - alpha_factory_score
+      - universe_type
+      - cost_quality_score
+      - paper_ready_block_reasons
     timestamps:
       - as_of_ts
       - generated_at
@@ -360,6 +378,10 @@ schemas:
         - paper
         - live_small
         - none
+      advisory_intent:
+        - research_only
+        - paper_shadow
+        - live_command
 datasets:
   v5_telemetry:
     schema_version: v5-telemetry-v0.1

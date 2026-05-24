@@ -318,6 +318,7 @@ REQUIRED_MEMBERS = [
     "reports/candidate_paper_ready.csv",
     "reports/paper_strategy_proposals.csv",
     "reports/strategy_opportunity_advisory.csv",
+    "reports/v5_local_live_vs_quant_lab_shadow.csv",
     "reports/market_regime_daily.csv",
     "reports/strategy_regime_matrix.csv",
     "reports/regime_strategy_advisory.csv",
@@ -982,6 +983,15 @@ CSV_SCHEMAS: dict[str, list[str]] = {
         "win_rate",
         "cost_source_mix",
         "cost_quality",
+        "source_module",
+        "template_family",
+        "candidate_id",
+        "promotion_state",
+        "alpha_factory_score",
+        "universe_type",
+        "cost_quality_score",
+        "paper_ready_block_reasons",
+        "advisory_intent",
         "paper_days",
         "entry_day_count",
         "paper_pnl_observed_count",
@@ -989,6 +999,33 @@ CSV_SCHEMAS: dict[str, list[str]] = {
         "live_block_reasons",
         "max_paper_notional_usdt",
         "max_live_notional_usdt",
+    ],
+    "reports/v5_local_live_vs_quant_lab_shadow.csv": [
+        "generated_at",
+        "schema_version",
+        "trade_id",
+        "order_id",
+        "run_id",
+        "entry_ts",
+        "symbol",
+        "side",
+        "action",
+        "entry_price",
+        "matching_strategy_candidate",
+        "matching_decision",
+        "matching_recommended_mode",
+        "matching_advisory_intent",
+        "quant_lab_is_live_commander",
+        "quant_lab_would_block_if_enabled",
+        "quant_lab_block_reasons",
+        "pnl_4h_bps",
+        "pnl_8h_bps",
+        "pnl_24h_bps",
+        "block_outcome_4h",
+        "block_outcome_8h",
+        "block_outcome_24h",
+        "block_outcome_summary",
+        "source",
     ],
     "reports/market_regime_daily.csv": [
         "as_of_date",
@@ -2844,6 +2881,12 @@ def _dataset_members(frames: dict[str, pl.DataFrame]) -> dict[str, _MemberPayloa
         pl.DataFrame(),
     )
     expanded_recommendations = frames.get("expanded_crypto_recommendations", pl.DataFrame())
+    v5_trades_for_shadow = frames.get("v5_trade_event", pl.DataFrame())
+    local_live_vs_shadow = _v5_local_live_vs_quant_lab_shadow_for_export(
+        v5_trades=v5_trades_for_shadow,
+        market_bars=market,
+        opportunity_advisory=opportunity_advisory,
+    )
 
     return {
         "market/market_snapshot.csv": _csv_member(
@@ -2972,6 +3015,10 @@ def _dataset_members(frames: dict[str, pl.DataFrame]) -> dict[str, _MemberPayloa
         "reports/strategy_opportunity_advisory.csv": _csv_member(
             "reports/strategy_opportunity_advisory.csv",
             opportunity_advisory,
+        ),
+        "reports/v5_local_live_vs_quant_lab_shadow.csv": _csv_member(
+            "reports/v5_local_live_vs_quant_lab_shadow.csv",
+            local_live_vs_shadow,
         ),
         "reports/market_regime_daily.csv": _csv_member(
             "reports/market_regime_daily.csv",
@@ -5132,6 +5179,17 @@ def _strategy_opportunity_advisory_for_export(
                 "win_rate": _optional_float(row.get("win_rate")),
                 "cost_source_mix": row.get("cost_source_mix"),
                 "cost_quality": cost_quality,
+                "source_module": row.get("source_module"),
+                "template_family": row.get("template_family"),
+                "candidate_id": row.get("candidate_id"),
+                "promotion_state": row.get("promotion_state"),
+                "alpha_factory_score": _optional_float(row.get("alpha_factory_score")),
+                "universe_type": row.get("universe_type"),
+                "cost_quality_score": _optional_float(row.get("cost_quality_score")),
+                "paper_ready_block_reasons": safe_json_dumps(
+                    _json_listish(row.get("paper_ready_block_reasons"))
+                ),
+                "advisory_intent": _export_advisory_intent(recommended_mode),
                 "paper_days": paper_days,
                 "entry_day_count": entry_day_count,
                 "paper_pnl_observed_count": paper_pnl_observed_count,
@@ -5254,6 +5312,15 @@ def _entry_quality_opportunity_rows(entry_quality_advisory: pl.DataFrame) -> lis
                 "win_rate": _optional_float(row.get("win_rate")),
                 "cost_source_mix": None,
                 "cost_quality": "entry_quality_research",
+                "source_module": "entry_quality",
+                "template_family": None,
+                "candidate_id": None,
+                "promotion_state": None,
+                "alpha_factory_score": None,
+                "universe_type": None,
+                "cost_quality_score": None,
+                "paper_ready_block_reasons": "[]",
+                "advisory_intent": _export_advisory_intent(mode),
                 "paper_days": 0,
                 "entry_day_count": 0,
                 "paper_pnl_observed_count": 0,
@@ -5376,6 +5443,15 @@ def _regime_router_opportunity_row(
         "win_rate": None,
         "cost_source_mix": None,
         "cost_quality": "regime_router",
+        "source_module": "regime_router",
+        "template_family": None,
+        "candidate_id": None,
+        "promotion_state": None,
+        "alpha_factory_score": None,
+        "universe_type": None,
+        "cost_quality_score": None,
+        "paper_ready_block_reasons": "[]",
+        "advisory_intent": _export_advisory_intent(recommended_mode),
         "paper_days": 0,
         "entry_day_count": 0,
         "paper_pnl_observed_count": 0,
@@ -5394,6 +5470,179 @@ def _entry_quality_live_block_reasons(row: dict[str, Any], recommended_mode: str
     if recommended_mode != "paper":
         reasons.add("not_paper_candidate")
     return sorted(reason for reason in reasons if reason)
+
+
+def _v5_local_live_vs_quant_lab_shadow_for_export(
+    *,
+    v5_trades: pl.DataFrame,
+    market_bars: pl.DataFrame,
+    opportunity_advisory: pl.DataFrame,
+) -> pl.DataFrame:
+    path = "reports/v5_local_live_vs_quant_lab_shadow.csv"
+    if v5_trades.is_empty():
+        return _empty_csv_schema_frame(path)
+    market_by_symbol = _market_close_rows_by_symbol(market_bars)
+    advisory_by_symbol = _latest_advisory_by_symbol(opportunity_advisory)
+    generated_at = datetime.now(UTC).isoformat()
+    rows: list[dict[str, Any]] = []
+    for trade in v5_trades.to_dicts():
+        if not _is_open_long_trade_event(trade):
+            continue
+        symbol = normalize_symbol(trade.get("normalized_symbol") or trade.get("symbol"))
+        entry_ts = readers._coerce_timestamp(  # type: ignore[attr-defined]
+            trade.get("ts_utc") or trade.get("ts") or trade.get("created_at")
+        )
+        entry_price = _optional_float(
+            trade.get("price") or trade.get("fill_px") or trade.get("avg_fill_px")
+        )
+        if not symbol or symbol == "UNKNOWN" or entry_ts is None or not entry_price:
+            continue
+        advisory = _matching_quant_lab_advisory(trade, symbol, advisory_by_symbol)
+        pnl = {
+            horizon: _future_long_pnl_bps(
+                market_by_symbol.get(symbol, []),
+                entry_ts.astimezone(UTC),
+                entry_price,
+                horizon,
+            )
+            for horizon in (4, 8, 24)
+        }
+        would_block = _advisory_would_block_hypothetically(advisory)
+        block_reasons = _json_listish(advisory.get("live_block_reasons")) if advisory else []
+        if not advisory:
+            block_reasons = ["no_matching_quant_lab_advisory"]
+        rows.append(
+            {
+                "generated_at": generated_at,
+                "schema_version": "v5_local_live_vs_quant_lab_shadow.v0.1",
+                "trade_id": trade.get("trade_id"),
+                "order_id": trade.get("order_id") or trade.get("exchange_order_id"),
+                "run_id": trade.get("run_id"),
+                "entry_ts": entry_ts.astimezone(UTC).isoformat(),
+                "symbol": symbol,
+                "side": str(trade.get("side") or "").lower(),
+                "action": trade.get("action") or trade.get("intent"),
+                "entry_price": entry_price,
+                "matching_strategy_candidate": (
+                    advisory.get("strategy_candidate") if advisory else None
+                ),
+                "matching_decision": advisory.get("decision") if advisory else None,
+                "matching_recommended_mode": advisory.get("recommended_mode") if advisory else None,
+                "matching_advisory_intent": advisory.get("advisory_intent") if advisory else None,
+                "quant_lab_is_live_commander": False,
+                "quant_lab_would_block_if_enabled": would_block,
+                "quant_lab_block_reasons": safe_json_dumps(block_reasons),
+                "pnl_4h_bps": pnl[4],
+                "pnl_8h_bps": pnl[8],
+                "pnl_24h_bps": pnl[24],
+                "block_outcome_4h": _block_outcome(would_block, pnl[4]),
+                "block_outcome_8h": _block_outcome(would_block, pnl[8]),
+                "block_outcome_24h": _block_outcome(would_block, pnl[24]),
+                "block_outcome_summary": _block_outcome_summary(would_block, pnl),
+                "source": "quant_lab_shadow_audit",
+            }
+        )
+    if not rows:
+        return _empty_csv_schema_frame(path)
+    return pl.DataFrame(rows, infer_schema_length=None).select(CSV_SCHEMAS[path])
+
+
+def _market_close_rows_by_symbol(market_bars: pl.DataFrame) -> dict[str, list[dict[str, Any]]]:
+    if market_bars.is_empty() or "close" not in market_bars.columns:
+        return {}
+    output: dict[str, list[dict[str, Any]]] = {}
+    for row in market_bars.to_dicts():
+        symbol = normalize_symbol(row.get("symbol"))
+        ts = readers._coerce_timestamp(row.get("ts"))  # type: ignore[attr-defined]
+        close = _optional_float(row.get("close"))
+        if not symbol or symbol == "UNKNOWN" or ts is None or close is None:
+            continue
+        output.setdefault(symbol, []).append({"ts": ts.astimezone(UTC), "close": close})
+    for rows in output.values():
+        rows.sort(key=lambda row: row["ts"])
+    return output
+
+
+def _latest_advisory_by_symbol(frame: pl.DataFrame) -> dict[str, list[dict[str, Any]]]:
+    if frame.is_empty():
+        return {}
+    output: dict[str, list[dict[str, Any]]] = {}
+    for row in frame.to_dicts():
+        symbol = normalize_symbol(row.get("symbol"))
+        if not symbol or symbol == "UNKNOWN":
+            continue
+        output.setdefault(symbol, []).append(row)
+    for rows in output.values():
+        rows.sort(key=_advisory_row_time, reverse=True)
+    return output
+
+
+def _matching_quant_lab_advisory(
+    trade: dict[str, Any],
+    symbol: str,
+    advisory_by_symbol: dict[str, list[dict[str, Any]]],
+) -> dict[str, Any] | None:
+    candidates = advisory_by_symbol.get(symbol, [])
+    if not candidates:
+        return None
+    trade_candidate = str(
+        trade.get("strategy_candidate")
+        or trade.get("candidate_name")
+        or trade.get("strategy_id")
+        or ""
+    ).lower()
+    if trade_candidate:
+        for row in candidates:
+            if trade_candidate in str(row.get("strategy_candidate") or "").lower():
+                return row
+    return candidates[0]
+
+
+def _is_open_long_trade_event(row: dict[str, Any]) -> bool:
+    text = " ".join(
+        str(row.get(field) or "").lower() for field in ["action", "intent", "event_type", "side"]
+    )
+    if any(token in text for token in ["exit", "close", "sell_only"]):
+        return False
+    return any(token in text for token in ["open_long", "entry", "open", "buy"])
+
+
+def _future_long_pnl_bps(
+    market_rows: list[dict[str, Any]],
+    entry_ts: datetime,
+    entry_price: float,
+    horizon_hours: int,
+) -> float | None:
+    target = entry_ts + timedelta(hours=horizon_hours)
+    for row in market_rows:
+        if row["ts"] >= target:
+            return (float(row["close"]) / entry_price - 1.0) * 10_000.0
+    return None
+
+
+def _advisory_would_block_hypothetically(advisory: dict[str, Any] | None) -> bool:
+    if advisory is None:
+        return False
+    if _optional_bool(advisory.get("would_block_if_enabled")) is True:
+        return True
+    return str(advisory.get("decision") or "").upper() == "KILL"
+
+
+def _block_outcome(would_block: bool, pnl_bps: float | None) -> str:
+    if not would_block:
+        return "not_blocked_by_quant_lab"
+    if pnl_bps is None:
+        return "blocked_outcome_pending"
+    return "missed_profit_if_blocked" if pnl_bps > 0 else "avoided_loss_if_blocked"
+
+
+def _block_outcome_summary(would_block: bool, pnl_by_horizon: dict[int, float | None]) -> str:
+    if not would_block:
+        return "quant_lab_would_not_block"
+    observed = [value for value in pnl_by_horizon.values() if value is not None]
+    if not observed:
+        return "blocked_outcome_pending"
+    return "would_miss_profit" if max(observed) > 0 else "would_avoid_loss"
 
 
 def _advisory_strategy_id(strategy_candidate: str, symbol: str) -> str:
@@ -5521,6 +5770,7 @@ def _apply_research_portfolio_overrides(
             "decision": decision,
             "recommended_mode": mode,
             "live_block_reasons": safe_json_dumps(live_reasons),
+            "advisory_intent": _export_advisory_intent(mode),
             "max_paper_notional_usdt": _advisory_max_paper_notional(mode),
             "max_live_notional_usdt": 0.0,
             "would_block_if_enabled": (
@@ -5593,6 +5843,13 @@ def _advisory_recommended_mode(decision: str) -> str:
         "KILL": "none",
         "LIVE_SMALL_READY": "live_small",
     }.get(decision, "research")
+
+
+def _export_advisory_intent(recommended_mode: str) -> str:
+    mode = str(recommended_mode or "").strip().lower()
+    if mode in {"paper", "shadow", "live_small"}:
+        return "paper_shadow"
+    return "research_only"
 
 
 def _advisory_would_block_if_enabled(
@@ -5734,8 +5991,10 @@ def _advisory_live_block_reasons(
         reasons.add("no_paper_pnl_observations")
     if slippage_coverage is None or slippage_coverage < 0.8:
         reasons.add("no_live_slippage_coverage")
+    reasons.add("quant_lab_live_command_not_allowed")
+    reasons.add("v5_local_live_not_controlled_by_quant_lab")
     if risk_context.get("permission") != "ALLOW" or not risk_context.get("enforceable"):
-        reasons.add("risk_permission_not_live_allow")
+        reasons.add("quant_lab_advisory_permission_not_allow")
     if decision == "KILL":
         reasons.add("candidate_killed")
     return sorted(reason for reason in reasons if reason)
@@ -6495,7 +6754,9 @@ def _risk_flags(risk: pl.DataFrame) -> pl.DataFrame:
                     "permission": permission,
                     "permission_status": status,
                     "enforceable": is_permission_status_enforceable(status),
-                    "reason": "stale_permission" if stale else "risk_limited_permission",
+                    "reason": "stale_permission"
+                    if stale
+                    else "quant_lab_advisory_risk_flag_not_v5_live_command",
                 }
             )
     return (

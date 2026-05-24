@@ -86,6 +86,89 @@ def test_export_daily_pack_writes_required_members(tmp_path):
         assert archive.read("charts/market_close.png").startswith(b"\x89PNG")
 
 
+def test_export_includes_v5_local_live_vs_quant_lab_shadow_report(tmp_path):
+    lake_root = tmp_path / "lake"
+    entry_ts = datetime(2026, 5, 11, tzinfo=UTC)
+    write_parquet_dataset(
+        pl.DataFrame(
+            [
+                _bar(entry_ts, symbol="SOL-USDT", close=100.0),
+                _bar(entry_ts + timedelta(hours=4), symbol="SOL-USDT", close=102.0),
+                _bar(entry_ts + timedelta(hours=8), symbol="SOL-USDT", close=98.0),
+                _bar(entry_ts + timedelta(hours=24), symbol="SOL-USDT", close=103.0),
+            ]
+        ),
+        lake_root / "silver" / "market_bar",
+    )
+    write_parquet_dataset(
+        pl.DataFrame(
+            [
+                {
+                    "run_id": "run-live-1",
+                    "ts_utc": entry_ts.isoformat(),
+                    "symbol": "SOL-USDT",
+                    "normalized_symbol": "SOL-USDT",
+                    "side": "buy",
+                    "action": "entry",
+                    "price": 100.0,
+                    "trade_id": "trade-sol-1",
+                    "order_id": "order-sol-1",
+                }
+            ]
+        ),
+        lake_root / "silver" / "v5_trade_event",
+    )
+    write_parquet_dataset(
+        pl.DataFrame(
+            [
+                {
+                    "as_of_date": "2026-05-11",
+                    "strategy_candidate": "v5.sol_guard_shadow",
+                    "symbol": "SOL-USDT",
+                    "decision": "KILL",
+                    "recommended_mode": "none",
+                    "horizon_hours": 24,
+                    "sample_count": 30,
+                    "complete_sample_count": 30,
+                    "avg_net_bps": -20.0,
+                    "p25_net_bps": -80.0,
+                    "win_rate": 0.3,
+                    "cost_source_mix": '{"mixed_actual_proxy":30}',
+                    "decision_reasons": '["negative_after_cost_edge"]',
+                    "created_at": entry_ts,
+                }
+            ]
+        ),
+        lake_root / "gold" / "alpha_discovery_board",
+    )
+
+    result = export_daily_pack(
+        export_date="2026-05-11",
+        lake_root=lake_root,
+        out_dir=tmp_path / "exports",
+        profile="expert",
+        command_line=["qlab", "export-daily"],
+        pre_export_v5_refresh=False,
+    )
+
+    with zipfile.ZipFile(result.zip_path) as archive:
+        rows = list(
+            csv.DictReader(
+                io.StringIO(
+                    archive.read("reports/v5_local_live_vs_quant_lab_shadow.csv").decode("utf-8")
+                )
+            )
+        )
+
+    assert len(rows) == 1
+    row = rows[0]
+    assert row["trade_id"] == "trade-sol-1"
+    assert row["quant_lab_is_live_commander"].lower() == "false"
+    assert row["quant_lab_would_block_if_enabled"].lower() == "true"
+    assert row["block_outcome_4h"] == "missed_profit_if_blocked"
+    assert row["block_outcome_8h"] == "avoided_loss_if_blocked"
+
+
 def test_member_row_count_counts_csv_without_materializing_rows() -> None:
     text = "a,b\n1,2\n3,4\n"
 
@@ -1548,10 +1631,10 @@ def _v5_telemetry_config(tmp_path: Path, inbox: Path, lake_root: Path) -> Path:
     return config
 
 
-def _bar(ts: datetime, close: float) -> dict:
+def _bar(ts: datetime, close: float, symbol: str = "BTC-USDT") -> dict:
     return {
         "venue": "okx",
-        "symbol": "BTC-USDT",
+        "symbol": symbol,
         "market_type": "SPOT",
         "timeframe": "1H",
         "ts": ts,

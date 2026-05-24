@@ -53,6 +53,9 @@ def build_risk_advisory_context(
     if not opportunity["live_small_ready_available"]:
         live_block_reasons.append("no_strategy_live_small_ready")
 
+    live_block_reasons.append("quant_lab_live_command_not_allowed")
+    live_block_reasons.append("v5_local_live_not_controlled_by_quant_lab")
+
     if not safe_for_advisory:
         system_status = "BLOCKED"
     elif opportunity["live_small_ready_available"] and not live_block_reasons:
@@ -71,9 +74,7 @@ def build_risk_advisory_context(
         "baseline_not_global_strategy_gate": core_status != "UNKNOWN",
         "strategy_opportunities_available": opportunity["strategy_opportunities_available"],
         "allowed_advisory_modes": allowed_advisory_modes,
-        "base_allowed_live_modes": ["live_small"]
-        if system_status == "SAFE_FOR_LIVE_SMALL_REVIEW"
-        else [],
+        "base_allowed_live_modes": [],
         "base_live_block_reasons": _dedupe(live_block_reasons),
     }
 
@@ -86,12 +87,11 @@ def apply_risk_advisory_context(
         *list(permission.live_block_reasons or []),
         *list(context.get("base_live_block_reasons") or []),
     ]
-    allowed_live_modes = list(context.get("base_allowed_live_modes") or [])
+    allowed_live_modes: list[str] = []
     if permission.permission != RiskAction.ALLOW:
-        live_block_reasons.append("global_permission_not_allow")
-        allowed_live_modes = []
-    if permission.permission == RiskAction.ALLOW and "live_small" not in allowed_live_modes:
-        allowed_live_modes = []
+        live_block_reasons.append("quant_lab_advisory_permission_not_allow")
+    live_block_reasons.append("quant_lab_live_command_not_allowed")
+    live_block_reasons.append("v5_local_live_not_controlled_by_quant_lab")
     return permission.model_copy(
         update={
             "system_safety_status": str(context.get("system_safety_status") or "UNKNOWN"),

@@ -56,13 +56,23 @@ advisory rows. Each row must include freshness and provenance metadata:
 
 Each advisory row must explicitly expose V5-consumable intent fields:
 
+- `advisory_intent` (`research_only`, `paper_shadow`, or future `live_command`)
 - `would_block_if_enabled`
 - `would_enter`
 - `no_sample_reason`
 
-These fields are advisory metadata only. They do not authorize live execution.
+These fields are advisory metadata only. quant-lab is not the V5 live
+commander: `risk_permission=ABORT` means quant-lab's research/advisory layer
+does not recommend live promotion, not that V5 must stop its local live
+controller. `cost_trusted_for_live=false` is likewise an advisory risk flag, not
+a strategy-facing hard block.
 `PAPER_READY` rows must keep `max_live_notional_usdt = 0`; only
 `LIVE_SMALL_READY` with system safety approval may ever expose live notional.
+
+Alpha Factory and expanded-universe rows may additionally expose
+`source_module`, `template_family`, `candidate_id`, `promotion_state`,
+`alpha_factory_score`, `universe_type`, `cost_quality_score`, and
+`paper_ready_block_reasons`.
 
 ## Runtime Version References
 

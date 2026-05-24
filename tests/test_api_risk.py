@@ -286,6 +286,8 @@ def test_live_permission_api_allows_advisory_modes_when_core_alpha_dead(
     assert payload["allowed_advisory_modes"] == ["shadow", "paper"]
     assert payload["allowed_live_modes"] == []
     assert "baseline_not_global_strategy_gate" in payload["live_block_reasons"]
+    assert "quant_lab_live_command_not_allowed" in payload["live_block_reasons"]
+    assert "v5_local_live_not_controlled_by_quant_lab" in payload["live_block_reasons"]
 
 
 def test_live_permission_advisory_modes_use_latest_alpha_board_day(
@@ -386,6 +388,8 @@ def test_live_permission_api_does_not_use_published_allow_when_core_alpha_dead(
     assert payload["allowed_live_modes"] == []
     assert payload["system_safety_status"] == "SAFE_FOR_ADVISORY"
     assert "baseline_not_global_strategy_gate" in payload["live_block_reasons"]
+    assert "quant_lab_live_command_not_allowed" in payload["live_block_reasons"]
+    assert "v5_local_live_not_controlled_by_quant_lab" in payload["live_block_reasons"]
 
     detail = (
         TestClient(app)

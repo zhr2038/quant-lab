@@ -175,6 +175,10 @@ class CostEstimate(ContractModel):
     cost_quality: str = "unknown"
     cost_trusted_for_paper: bool = False
     cost_trusted_for_live: bool = False
+    cost_trusted_for_live_canary: bool = False
+    cost_trusted_for_live_scale: bool = False
+    cost_trust_level: str = "BLOCK"
+    cost_trust_block_reasons: list[str] = Field(default_factory=list)
 
     @model_validator(mode="before")
     @classmethod
@@ -214,14 +218,15 @@ class CostEstimate(ContractModel):
                 "cost_trusted_for_paper",
                 _cost_estimate_trusted_for_paper(normalized),
             )
-            normalized.setdefault(
-                "cost_trusted_for_live",
-                _cost_estimate_trusted_for_live(normalized),
-            )
-            normalized.setdefault(
-                "degraded_cost_model",
-                _cost_estimate_is_degraded(normalized),
-            )
+            normalized.setdefault("degraded_cost_model", _cost_estimate_is_degraded(normalized))
+            live_trust = _cost_estimate_live_trust(normalized)
+            normalized["cost_trusted_for_live_canary"] = live_trust[
+                "cost_trusted_for_live_canary"
+            ]
+            normalized["cost_trusted_for_live_scale"] = live_trust["cost_trusted_for_live_scale"]
+            normalized["cost_trust_level"] = live_trust["cost_trust_level"]
+            normalized["cost_trust_block_reasons"] = live_trust["cost_trust_block_reasons"]
+            normalized["cost_trusted_for_live"] = live_trust["cost_trusted_for_live_canary"]
             for suffix in ("p50", "p75", "p90"):
                 normalized.setdefault(f"total_cost_bps_{suffix}", normalized.get("total_cost_bps"))
             return normalized
@@ -293,13 +298,109 @@ def _cost_estimate_trusted_for_paper(data: dict[str, Any]) -> bool:
 
 
 def _cost_estimate_trusted_for_live(data: dict[str, Any]) -> bool:
+    return bool(_cost_estimate_live_trust(data)["cost_trusted_for_live_canary"])
+
+
+def _cost_estimate_live_trust(data: dict[str, Any]) -> dict[str, Any]:
     source = str(data.get("cost_source") or data.get("source") or "").lower()
-    sample_count = int(float(data.get("sample_count") or data.get("sample_size") or 0))
-    return (
+    sample_count = _cost_estimate_sample_count(data)
+    fallback_level = str(data.get("fallback_level") or "")
+    fallback_reason = str(data.get("fallback_reason") or "")
+    fallback_text = f"{fallback_level};{fallback_reason}".upper()
+    degraded_reason = str(data.get("degraded_reason") or "none").lower()
+    degraded_cost_model = bool(data.get("degraded_cost_model")) or _cost_estimate_is_degraded(data)
+    slippage_source = str(data.get("slippage_source") or "").lower()
+    stale = degraded_reason == "cost_bucket_stale" or fallback_reason == "cost_bucket_stale"
+    reasons: list[str] = []
+    if stale:
+        reasons.append("stale_cost_bucket")
+    if sample_count < 30:
+        reasons.append("sample_count_lt_30")
+    if source in {"public_spread_proxy", "public_proxy"}:
+        reasons.append("source_public_proxy_only")
+    if source == "global_default":
+        reasons.append("source_global_default")
+    if degraded_cost_model:
+        reasons.append("degraded_cost_model")
+    if _cost_estimate_has_unsafe_fallback(fallback_level, fallback_reason):
+        reasons.append("fallback_not_live_safe")
+    if "FEE_MISSING" in fallback_text or source == "actual_okx_fills_fee_missing":
+        reasons.append("fee_missing")
+    if "NOTIONAL_BUCKET" in fallback_text:
+        reasons.append("notional_bucket_fallback")
+    if slippage_source not in {
+        "v5_order_lifecycle_arrival_mid",
+        "actual_order_lifecycle_arrival_mid",
+        "actual_arrival_mid",
+        "actual_slippage",
+        "okx_order_lifecycle_arrival_mid",
+    }:
+        reasons.append("slippage_not_actual")
+
+    canary = (
         source in {"actual_fills", "actual_okx_fills_and_bills", "mixed_actual_proxy"}
         and sample_count >= 30
-        and data.get("degraded_reason") != "cost_bucket_stale"
+        and not stale
+        and degraded_reason not in {"global_default_cost", "cost_bucket_stale"}
     )
+    scale = (
+        source in {"actual_fills", "actual_okx_fills_and_bills"}
+        and sample_count >= 100
+        and not stale
+        and _cost_estimate_safe_for_scale(fallback_level, fallback_reason)
+        and not degraded_cost_model
+        and "NOTIONAL_BUCKET" not in fallback_text
+        and "FEE_MISSING" not in fallback_text
+        and slippage_source
+        in {
+            "v5_order_lifecycle_arrival_mid",
+            "actual_order_lifecycle_arrival_mid",
+            "actual_arrival_mid",
+            "actual_slippage",
+            "okx_order_lifecycle_arrival_mid",
+        }
+    )
+    if scale:
+        level = "SCALE_READY"
+    elif canary:
+        level = "CANARY"
+    elif source and source not in {"global_default"} and not stale:
+        level = "PAPER_ONLY"
+    else:
+        level = "BLOCK"
+    return {
+        "cost_trusted_for_live_canary": canary,
+        "cost_trusted_for_live_scale": scale,
+        "cost_trust_level": level,
+        "cost_trust_block_reasons": sorted(set(reasons)),
+    }
+
+
+def _cost_estimate_sample_count(data: dict[str, Any]) -> int:
+    try:
+        return int(float(data.get("sample_count") or data.get("sample_size") or 0))
+    except (TypeError, ValueError):
+        return 0
+
+
+def _cost_estimate_safe_for_scale(fallback_level: str, fallback_reason: str) -> bool:
+    return _cost_estimate_normalized_token(fallback_level) in {
+        "",
+        "NONE",
+        "ACTUAL_OKX_FILLS_AND_BILLS",
+    } and _cost_estimate_normalized_token(fallback_reason) in {"", "NONE"}
+
+
+def _cost_estimate_has_unsafe_fallback(fallback_level: str, fallback_reason: str) -> bool:
+    return not (
+        _cost_estimate_normalized_token(fallback_level)
+        in {"", "NONE", "ACTUAL_OKX_FILLS_AND_BILLS"}
+        and _cost_estimate_normalized_token(fallback_reason) in {"", "NONE"}
+    )
+
+
+def _cost_estimate_normalized_token(value: str) -> str:
+    return str(value or "").strip().upper()
 
 
 class FillEvent(ContractModel):

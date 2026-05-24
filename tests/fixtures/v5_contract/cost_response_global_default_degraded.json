@@ -23,6 +23,16 @@
   "cost_quality": "global_default",
   "cost_trusted_for_paper": false,
   "cost_trusted_for_live": false,
+  "cost_trusted_for_live_canary": false,
+  "cost_trusted_for_live_scale": false,
+  "cost_trust_level": "BLOCK",
+  "cost_trust_block_reasons": [
+    "degraded_cost_model",
+    "fallback_not_live_safe",
+    "sample_count_lt_30",
+    "slippage_not_actual",
+    "source_global_default"
+  ],
   "total_cost_bps_p50": 25.0,
   "total_cost_bps_p75": 25.0,
   "total_cost_bps_p90": 25.0,

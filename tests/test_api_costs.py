@@ -53,6 +53,9 @@ def test_cost_estimate_api_reads_cost_bucket_daily_from_lake(tmp_path, monkeypat
     assert payload["cost_quality"] == "actual"
     assert payload["cost_trusted_for_paper"] is True
     assert payload["cost_trusted_for_live"] is True
+    assert payload["cost_trusted_for_live_canary"] is True
+    assert payload["cost_trusted_for_live_scale"] is False
+    assert payload["cost_trust_level"] == "CANARY"
     assert payload["fallback_level"] == "NONE"
     assert payload["source"] == "actual_okx_fills_and_bills"
     assert payload["normalized_symbol"] == "BTC-USDT"
@@ -89,6 +92,8 @@ def test_cost_estimate_api_uses_explicit_global_fallback_without_lake_rows(tmp_p
     assert payload["cost_quality"] == "global_default"
     assert payload["cost_trusted_for_paper"] is False
     assert payload["cost_trusted_for_live"] is False
+    assert payload["cost_trust_level"] == "BLOCK"
+    assert "source_global_default" in payload["cost_trust_block_reasons"]
 
 
 def test_cost_estimate_api_can_match_requested_notional_bucket(tmp_path, monkeypatch):
@@ -240,6 +245,8 @@ def test_cost_estimate_api_uses_same_symbol_public_proxy_for_trending_regime(
     assert payload["cost_quality"] == "public_proxy_only"
     assert payload["cost_trusted_for_paper"] is True
     assert payload["cost_trusted_for_live"] is False
+    assert payload["cost_trust_level"] == "PAPER_ONLY"
+    assert "source_public_proxy_only" in payload["cost_trust_block_reasons"]
     assert payload["sample_count"] == 496
     assert payload["fallback_level"] == "REGIME_FALLBACK;PUBLIC_SPREAD_PROXY"
     assert payload["fallback_reason"] == "no_matching_regime"
@@ -350,6 +357,161 @@ def test_cost_estimate_api_unknown_symbol_uses_degraded_global_default(tmp_path,
     assert payload["degraded_reason"] == "global_default_cost"
     assert payload["degraded_cost_model"] is True
     assert payload["requested_quantile"] == "p75"
+
+
+def test_cost_estimate_trust_blocks_stale_mixed_actual_proxy(tmp_path, monkeypatch):
+    lake = tmp_path / "lake"
+    monkeypatch.setenv("QUANT_LAB_LAKE_ROOT", str(lake))
+    write_parquet_dataset(
+        pl.DataFrame(
+            [
+                _cost_row(
+                    symbol="BTC-USDT",
+                    sample_count=50,
+                    source="mixed_actual_proxy",
+                    fallback_level="SLIPPAGE_UNKNOWN",
+                    created_at="2026-05-10T00:00:00Z",
+                )
+            ]
+        ),
+        lake / "gold/cost_bucket_daily",
+    )
+
+    response = TestClient(app).get(
+        "/v1/costs/estimate",
+        params={"symbol": "BTC-USDT", "regime": "normal", "notional_usdt": 5_000},
+    )
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["cost_trust_level"] == "BLOCK"
+    assert payload["cost_trusted_for_live"] is False
+    assert payload["cost_trusted_for_live_canary"] is False
+    assert "stale_cost_bucket" in payload["cost_trust_block_reasons"]
+
+
+def test_cost_estimate_trust_allows_fresh_mixed_actual_proxy_canary(tmp_path, monkeypatch):
+    lake = tmp_path / "lake"
+    monkeypatch.setenv("QUANT_LAB_LAKE_ROOT", str(lake))
+    write_parquet_dataset(
+        pl.DataFrame(
+            [
+                _cost_row(
+                    symbol="BTC-USDT",
+                    sample_count=30,
+                    source="mixed_actual_proxy",
+                    fallback_level="SLIPPAGE_UNKNOWN",
+                    created_at=datetime.now(UTC).isoformat(),
+                )
+            ]
+        ),
+        lake / "gold/cost_bucket_daily",
+    )
+
+    response = TestClient(app).get(
+        "/v1/costs/estimate",
+        params={"symbol": "BTC-USDT", "regime": "normal", "notional_usdt": 5_000},
+    )
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["cost_trust_level"] == "CANARY"
+    assert payload["cost_trusted_for_live"] is True
+    assert payload["cost_trusted_for_live_canary"] is True
+    assert payload["cost_trusted_for_live_scale"] is False
+
+
+def test_cost_estimate_trust_scales_actual_fills_with_actual_slippage(tmp_path, monkeypatch):
+    lake = tmp_path / "lake"
+    monkeypatch.setenv("QUANT_LAB_LAKE_ROOT", str(lake))
+    write_parquet_dataset(
+        pl.DataFrame(
+            [
+                _cost_row(
+                    symbol="BTC-USDT",
+                    sample_count=100,
+                    source="actual_fills",
+                    fallback_level="NONE",
+                    created_at=datetime.now(UTC).isoformat(),
+                )
+            ]
+        ),
+        lake / "gold/cost_bucket_daily",
+    )
+
+    response = TestClient(app).get(
+        "/v1/costs/estimate",
+        params={"symbol": "BTC-USDT", "regime": "normal", "notional_usdt": 5_000},
+    )
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["slippage_source"] == "v5_order_lifecycle_arrival_mid"
+    assert payload["cost_trust_level"] == "SCALE_READY"
+    assert payload["cost_trusted_for_live_canary"] is True
+    assert payload["cost_trusted_for_live_scale"] is True
+
+
+def test_cost_estimate_trust_actual_fills_sample_30_is_canary_not_scale(tmp_path, monkeypatch):
+    lake = tmp_path / "lake"
+    monkeypatch.setenv("QUANT_LAB_LAKE_ROOT", str(lake))
+    write_parquet_dataset(
+        pl.DataFrame(
+            [
+                _cost_row(
+                    symbol="BTC-USDT",
+                    sample_count=30,
+                    source="actual_fills",
+                    fallback_level="NONE",
+                    created_at=datetime.now(UTC).isoformat(),
+                )
+            ]
+        ),
+        lake / "gold/cost_bucket_daily",
+    )
+
+    response = TestClient(app).get(
+        "/v1/costs/estimate",
+        params={"symbol": "BTC-USDT", "regime": "normal", "notional_usdt": 5_000},
+    )
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["cost_trust_level"] == "CANARY"
+    assert payload["cost_trusted_for_live_canary"] is True
+    assert payload["cost_trusted_for_live_scale"] is False
+
+
+def test_cost_estimate_trust_regime_fallback_is_not_scale_ready(tmp_path, monkeypatch):
+    lake = tmp_path / "lake"
+    monkeypatch.setenv("QUANT_LAB_LAKE_ROOT", str(lake))
+    write_parquet_dataset(
+        pl.DataFrame(
+            [
+                _cost_row(
+                    symbol="BTC-USDT",
+                    regime="realized",
+                    sample_count=100,
+                    source="actual_fills",
+                    fallback_level="NONE",
+                    created_at=datetime.now(UTC).isoformat(),
+                )
+            ]
+        ),
+        lake / "gold/cost_bucket_daily",
+    )
+
+    response = TestClient(app).get(
+        "/v1/costs/estimate",
+        params={"symbol": "BTC-USDT", "regime": "Trending", "notional_usdt": 5_000},
+    )
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["fallback_level"] == "REGIME_FALLBACK"
+    assert payload["cost_trust_level"] in {"CANARY", "PAPER_ONLY"}
+    assert payload["cost_trusted_for_live_scale"] is False
+    assert "fallback_not_live_safe" in payload["cost_trust_block_reasons"]
 
 
 def _cost_row(**overrides):

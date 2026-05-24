@@ -249,6 +249,12 @@ VALUE_LABELS.update(
         "REGIME_SHADOW": "分状态影子观察",
         "RESEARCH_ONLY": "仅研究",
         "KILL": "淘汰",
+        "research_only": "仅研究",
+        "paper_shadow": "纸面/影子",
+        "live_command": "实盘命令",
+        "quant_lab_live_command_not_allowed": "中台不允许实盘命令",
+        "v5_local_live_not_controlled_by_quant_lab": "V5 本地实盘不由中台控制",
+        "quant_lab_advisory_permission_not_allow": "中台建议未放开实盘",
     }
 )
 
@@ -258,6 +264,7 @@ COLUMN_LABELS.update(
         "strategy_id": "策略编号",
         "v5_symbol": "V5 标的",
         "recommended_mode": "推荐模式",
+        "advisory_intent": "建议意图",
         "cost_quality": "成本质量",
         "live_block_reasons": "实盘阻断原因",
         "max_paper_notional_usdt": "纸面名义上限(USDT)",
@@ -289,6 +296,7 @@ VALUE_LOCALIZED_COLUMNS.update(
     {
         "advisory",
         "advisory_reasons",
+        "advisory_intent",
         "check_name",
         "cost_quality",
         "cost_source",

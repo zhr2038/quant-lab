@@ -168,6 +168,15 @@ class StrategyOpportunityAdvisoryRow(BaseModel):
     p25_net_bps: float | None = None
     win_rate: float | None = None
     cost_source_mix: str | None = None
+    source_module: str | None = None
+    template_family: str | None = None
+    candidate_id: str | None = None
+    promotion_state: str | None = None
+    alpha_factory_score: float | None = None
+    universe_type: str | None = None
+    cost_quality_score: float | None = None
+    paper_ready_block_reasons: list[str] = Field(default_factory=list)
+    advisory_intent: str = "research_only"
     live_block_reasons: list[str] = Field(default_factory=list)
     max_paper_notional_usdt: float | None = None
     max_live_notional_usdt: float = 0.0
@@ -1022,6 +1031,7 @@ def _apply_research_portfolio_overrides_to_advisory_rows(
                     "decision": decision,
                     "recommended_mode": mode,
                     "live_block_reasons": live_block_reasons,
+                    "advisory_intent": _strategy_advisory_intent(mode),
                     "max_paper_notional_usdt": _api_advisory_max_paper_notional(mode),
                     "max_live_notional_usdt": 0.0,
                     "would_block_if_enabled": True
@@ -1170,6 +1180,16 @@ def _strategy_opportunity_advisory_row(
         p25_net_bps=_optional_float(row.get("p25_net_bps")),
         win_rate=_optional_float(row.get("win_rate")),
         cost_source_mix=_jsonish_text(row.get("cost_source_mix")),
+        source_module=_text_value(row.get("source_module")),
+        template_family=_text_value(row.get("template_family")),
+        candidate_id=_text_value(row.get("candidate_id")),
+        promotion_state=_text_value(row.get("promotion_state")),
+        alpha_factory_score=_optional_float(row.get("alpha_factory_score")),
+        universe_type=_text_value(row.get("universe_type")),
+        cost_quality_score=_optional_float(row.get("cost_quality_score")),
+        paper_ready_block_reasons=_advisory_reason_list(row.get("paper_ready_block_reasons")),
+        advisory_intent=_text_value(row.get("advisory_intent"))
+        or _strategy_advisory_intent(recommended_mode),
         live_block_reasons=_advisory_reason_list(row.get("live_block_reasons")),
         max_paper_notional_usdt=_optional_float(row.get("max_paper_notional_usdt")),
         max_live_notional_usdt=max_live_notional,
@@ -1186,6 +1206,12 @@ def _advisory_recommended_mode(value: Any, decision: str) -> str:
     if decision in {"KEEP_SHADOW", "REGIME_SHADOW"}:
         return _text_value(value).lower() or "shadow"
     return _text_value(value).lower() or "research"
+
+
+def _strategy_advisory_intent(recommended_mode: str) -> str:
+    if recommended_mode in {"paper", "shadow", "live_small"}:
+        return "paper_shadow"
+    return "research_only"
 
 
 def _default_advisory_would_enter(

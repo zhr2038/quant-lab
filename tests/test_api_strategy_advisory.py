@@ -256,6 +256,130 @@ def test_strategy_opportunity_advisory_api_returns_alpha_factory_extension_field
     assert payload["max_live_notional_usdt"] == 0.0
 
 
+def test_strategy_opportunity_advisory_uses_alpha_factory_promotion_queue(
+    tmp_path,
+    monkeypatch,
+):
+    lake = tmp_path / "lake"
+    monkeypatch.setenv("QUANT_LAB_LAKE_ROOT", str(lake))
+    monkeypatch.delenv("QUANT_LAB_API_TOKEN", raising=False)
+    as_of = datetime(2026, 5, 25, tzinfo=UTC)
+    write_parquet_dataset(
+        pl.DataFrame(
+            [
+                {
+                    **_api_advisory_row(
+                        "v5.expanded_relative_strength_top1_shadow",
+                        "TRX-USDT",
+                        as_of,
+                    ),
+                    "source_module": "alpha_factory",
+                    "template_family": "expanded_relative_strength",
+                    "promotion_state": "PAPER_READY",
+                    "alpha_factory_score": 80.0,
+                    "universe_type": "expanded_paper",
+                }
+            ]
+        ),
+        lake / "gold" / "strategy_opportunity_advisory",
+    )
+    write_parquet_dataset(
+        pl.DataFrame(
+            [
+                {
+                    "as_of_date": "2026-05-25",
+                    "generated_at": as_of,
+                    "strategy_candidate": "v5.expanded_relative_strength_top1_shadow",
+                    "symbol": "TRX-USDT",
+                    "horizon_hours": 24,
+                    "promotion_state": "KEEP_SHADOW",
+                    "recommended_mode": "shadow",
+                    "reasons": '["recent_7d_negative"]',
+                    "max_live_notional_usdt": 0.0,
+                }
+            ]
+        ),
+        lake / "gold" / "alpha_factory_promotion_queue",
+    )
+
+    response = TestClient(app).get("/v1/strategy-opportunity-advisory")
+
+    assert response.status_code == 200
+    payload = response.json()[0]
+    assert payload["decision"] == "KEEP_SHADOW"
+    assert payload["recommended_mode"] == "shadow"
+    assert payload["promotion_state"] == "KEEP_SHADOW"
+    assert "alpha_factory_promotion_queue_not_paper_ready" in payload["live_block_reasons"]
+    assert payload["would_enter"] is False
+    assert payload["max_live_notional_usdt"] == 0.0
+
+
+def test_strategy_opportunity_advisory_portfolio_shadow_caps_alpha_factory_paper(
+    tmp_path,
+    monkeypatch,
+):
+    lake = tmp_path / "lake"
+    monkeypatch.setenv("QUANT_LAB_LAKE_ROOT", str(lake))
+    monkeypatch.delenv("QUANT_LAB_API_TOKEN", raising=False)
+    as_of = datetime(2026, 5, 25, tzinfo=UTC)
+    write_parquet_dataset(
+        pl.DataFrame(
+            [
+                {
+                    **_api_advisory_row(
+                        "v5.expanded_relative_strength_top3_shadow",
+                        "TRX-USDT",
+                        as_of,
+                    ),
+                    "source_module": "alpha_factory",
+                    "template_family": "expanded_relative_strength",
+                }
+            ]
+        ),
+        lake / "gold" / "strategy_opportunity_advisory",
+    )
+    write_parquet_dataset(
+        pl.DataFrame(
+            [
+                {
+                    "as_of_date": "2026-05-25",
+                    "generated_at": as_of,
+                    "strategy_candidate": "v5.expanded_relative_strength_top3_shadow",
+                    "symbol": "TRX-USDT",
+                    "horizon_hours": 24,
+                    "promotion_state": "PAPER_READY",
+                    "recommended_mode": "paper",
+                    "reasons": "[]",
+                    "max_live_notional_usdt": 0.0,
+                }
+            ]
+        ),
+        lake / "gold" / "alpha_factory_promotion_queue",
+    )
+    write_parquet_dataset(
+        pl.DataFrame(
+            [
+                _portfolio_status_row(
+                    research_id="TRX_RS_TOP3",
+                    strategy_candidate="v5.expanded_relative_strength_top3_shadow",
+                    status="SHADOW",
+                    as_of_date="2026-05-25",
+                )
+            ]
+        ),
+        lake / "gold" / "research_portfolio_status",
+    )
+
+    response = TestClient(app).get("/v1/strategy-opportunity-advisory")
+
+    assert response.status_code == 200
+    payload = response.json()[0]
+    assert payload["decision"] == "KEEP_SHADOW"
+    assert payload["recommended_mode"] == "shadow"
+    assert "research_portfolio_shadow" in payload["live_block_reasons"]
+    assert payload["max_live_notional_usdt"] == 0.0
+
+
 def test_strategy_opportunity_advisory_portfolio_overlay_preserves_extension_fields(
     tmp_path,
     monkeypatch,
@@ -309,7 +433,8 @@ def test_strategy_opportunity_advisory_portfolio_overlay_preserves_extension_fie
     assert payload["alpha_factory_score"] == 71.0
     assert payload["universe_type"] == "expanded_paper"
     assert payload["candidate_id"] == "af-wld-rs-top3-20260524"
-    assert payload["paper_ready_block_reasons"] == ["portfolio_downgrade"]
+    assert "portfolio_downgrade" in payload["paper_ready_block_reasons"]
+    assert "alpha_factory_promotion_queue_missing" in payload["paper_ready_block_reasons"]
     assert "downgraded_from_paper" in payload["live_block_reasons"]
     assert payload["max_live_notional_usdt"] == 0.0
 

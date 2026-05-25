@@ -1793,6 +1793,54 @@ def test_research_portfolio_status_overrides_strategy_advisory_and_paper_proposa
     assert all(float(row["max_paper_notional_usdt"] or 0.0) == 0.0 for row in advisory)
 
 
+def test_strategy_advisory_uses_alpha_factory_promotion_queue_over_board():
+    board = pl.DataFrame(
+        [
+            _board_row(
+                strategy_candidate="v5.expanded_relative_strength_top1_shadow",
+                symbol="TRX-USDT",
+                source_type="alpha_factory",
+                avg_net_bps=42.0,
+                decision="PAPER_READY",
+                cost_source_mix='{"mixed_actual_proxy": 72}',
+            )
+        ]
+    )
+    promotion_queue = pl.DataFrame(
+        [
+            {
+                "as_of_date": "2026-05-25",
+                "generated_at": datetime(2026, 5, 25, tzinfo=UTC),
+                "strategy_candidate": "v5.expanded_relative_strength_top1_shadow",
+                "symbol": "TRX-USDT",
+                "horizon_hours": 24,
+                "promotion_state": "KEEP_SHADOW",
+                "recommended_mode": "shadow",
+                "reasons": '["validation_not_paper_ready"]',
+            }
+        ]
+    )
+
+    advisory = _strategy_opportunity_advisory_for_export(
+        alpha_discovery_board=board,
+        strategy_evidence=pl.DataFrame(),
+        paper_proposals=pl.DataFrame(),
+        risk_permissions=pl.DataFrame(),
+        cost_health=pl.DataFrame(),
+        paper_daily=pl.DataFrame(),
+        paper_slippage=pl.DataFrame(),
+        alpha_factory_promotion_queue=promotion_queue,
+    ).to_dicts()
+
+    assert len(advisory) == 1
+    row = advisory[0]
+    assert row["decision"] == "KEEP_SHADOW"
+    assert row["recommended_mode"] == "shadow"
+    assert row["promotion_state"] == "KEEP_SHADOW"
+    assert "alpha_factory_promotion_queue_not_paper_ready" in row["live_block_reasons"]
+    assert row["max_paper_notional_usdt"] == 0.0
+
+
 def _write_candidate_labels(lake: Path) -> None:
     start = datetime(2026, 4, 1, tzinfo=UTC)
     rows: list[dict] = []

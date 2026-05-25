@@ -10,6 +10,7 @@ from quant_lab.symbols import normalize_symbol
 
 PORTFOLIO_ADVISORY_OVERRIDE_STATUSES = {
     "KILL",
+    "SHADOW",
     "DOWNGRADED_FROM_PAPER",
     "PAUSED",
     "BASELINE_ONLY",
@@ -105,6 +106,17 @@ def portfolio_overridden_decision_mode(
     status = str(portfolio_override.get("status") or "").strip().upper()
     if status == "KILL":
         return "KILL", "none", ["research_portfolio_kill"]
+    if status == "SHADOW":
+        if normalized_decision in {"PAPER_READY", "LIVE_SMALL_READY"} or normalized_mode in {
+            "paper",
+            "live_small",
+        }:
+            return "KEEP_SHADOW", "shadow", ["research_portfolio_shadow"]
+        return (
+            normalized_decision,
+            normalized_mode or advisory_recommended_mode(normalized_decision),
+            [],
+        )
     if status == "DOWNGRADED_FROM_PAPER":
         if normalized_decision in {"PAPER_READY", "LIVE_SMALL_READY"} or normalized_mode in {
             "paper",

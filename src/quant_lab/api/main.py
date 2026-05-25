@@ -46,6 +46,7 @@ from quant_lab.research.advisory_overrides import (
     portfolio_override_for_row,
     portfolio_status_overrides_by_identifier,
 )
+from quant_lab.research.alpha_factory import ALPHA_FACTORY_CANDIDATES
 from quant_lab.research.bootstrap_gold import BOOTSTRAP_GATE_VERSION
 from quant_lab.risk.advisory import (
     apply_risk_advisory_context,
@@ -874,8 +875,12 @@ def _strategy_opportunity_advisory_rows_uncached(
         if advisory is not None:
             parsed.append(advisory)
     deduped = _dedupe_strategy_opportunity_advisory_rows(parsed)
-    return _apply_research_portfolio_overrides_to_advisory_rows(
+    promotion_overridden = _apply_alpha_factory_promotion_overrides_to_advisory_rows(
         deduped,
+        _strategy_opportunity_alpha_factory_promotions(lake_root),
+    )
+    return _apply_research_portfolio_overrides_to_advisory_rows(
+        promotion_overridden,
         _strategy_opportunity_portfolio_overrides(lake_root),
     )
 
@@ -884,8 +889,16 @@ def _strategy_opportunity_advisory_source_signature(lake_root: Path) -> tuple[An
     gold_path = lake_root / "gold" / "strategy_opportunity_advisory"
     gold_files = _parquet_file_signature(gold_path)
     portfolio_files = _parquet_file_signature(lake_root / "gold" / "research_portfolio_status")
+    promotion_files = _parquet_file_signature(lake_root / "gold" / "alpha_factory_promotion_queue")
     if gold_files:
-        return ("gold", gold_files, "research_portfolio_status", portfolio_files)
+        return (
+            "gold",
+            gold_files,
+            "research_portfolio_status",
+            portfolio_files,
+            "alpha_factory_promotion_queue",
+            promotion_files,
+        )
     latest_report = _latest_strategy_opportunity_report_pack(lake_root)
     if latest_report is not None:
         try:
@@ -898,6 +911,8 @@ def _strategy_opportunity_advisory_source_signature(lake_root: Path) -> tuple[An
                 None,
                 "research_portfolio_status",
                 portfolio_files,
+                "alpha_factory_promotion_queue",
+                promotion_files,
             )
         return (
             "report",
@@ -906,8 +921,16 @@ def _strategy_opportunity_advisory_source_signature(lake_root: Path) -> tuple[An
             stat.st_size,
             "research_portfolio_status",
             portfolio_files,
+            "alpha_factory_promotion_queue",
+            promotion_files,
         )
-    return ("missing", "research_portfolio_status", portfolio_files)
+    return (
+        "missing",
+        "research_portfolio_status",
+        portfolio_files,
+        "alpha_factory_promotion_queue",
+        promotion_files,
+    )
 
 
 def _parquet_file_signature(path: Path) -> tuple[tuple[str, int, int], ...]:
@@ -997,6 +1020,164 @@ def _strategy_opportunity_portfolio_overrides(
     selected = lazy.select([pl.col(column) for column in columns])
     frame = _collect_lazy_or_empty(selected)
     return portfolio_status_overrides_by_identifier(frame)
+
+
+def _strategy_opportunity_alpha_factory_promotions(
+    lake_root: Path,
+) -> dict[tuple[str, str, int | None], dict[str, Any]]:
+    lazy, columns = _safe_parquet_lazy(lake_root / "gold" / "alpha_factory_promotion_queue")
+    if lazy is None:
+        return {}
+    selected = lazy.select([pl.col(column) for column in columns])
+    frame = _collect_lazy_or_empty(selected)
+    return _alpha_factory_promotion_overrides_by_candidate_symbol(frame)
+
+
+def _alpha_factory_promotion_overrides_by_candidate_symbol(
+    promotion_queue: pl.DataFrame,
+) -> dict[tuple[str, str, int | None], dict[str, Any]]:
+    overrides: dict[tuple[str, str, int | None], dict[str, Any]] = {}
+    if promotion_queue.is_empty():
+        return overrides
+    rows = promotion_queue.to_dicts()
+    latest_as_of_date = _latest_advisory_as_of_date(rows)
+    if latest_as_of_date:
+        rows = [
+            row
+            for row in rows
+            if str(row.get("as_of_date") or "").strip() == latest_as_of_date
+        ]
+    for row in rows:
+        candidate = _text_value(row.get("strategy_candidate"))
+        symbol = normalize_symbol(row.get("symbol")) or "UNKNOWN"
+        if not candidate:
+            continue
+        key = (candidate, symbol, _optional_int(row.get("horizon_hours")))
+        current = overrides.get(key)
+        if current is None or _advisory_dict_time(row) >= _advisory_dict_time(current):
+            overrides[key] = row
+    return overrides
+
+
+def _latest_advisory_as_of_date(rows: list[dict[str, Any]]) -> str:
+    values = [
+        str(row.get("as_of_date") or "").strip()
+        for row in rows
+        if str(row.get("as_of_date") or "").strip()
+    ]
+    return max(values) if values else ""
+
+
+def _advisory_dict_time(row: dict[str, Any]) -> datetime:
+    for field in ("generated_at", "created_at", "as_of_ts", "as_of_date"):
+        parsed = _parse_advisory_datetime(row.get(field))
+        if parsed is not None:
+            return parsed
+    return datetime.min.replace(tzinfo=UTC)
+
+
+def _is_alpha_factory_advisory_model(row: StrategyOpportunityAdvisoryRow) -> bool:
+    candidate = row.strategy_candidate
+    return (
+        candidate in ALPHA_FACTORY_CANDIDATES
+        or candidate.startswith("v5.af.")
+        or candidate.startswith("v5.expanded_relative_strength")
+        or (row.source_module or "").lower() == "alpha_factory"
+        or bool(row.template_family)
+        or row.alpha_factory_score is not None
+    )
+
+
+def _alpha_factory_promotion_for_advisory_row(
+    row: StrategyOpportunityAdvisoryRow,
+    promotions: dict[tuple[str, str, int | None], dict[str, Any]],
+) -> dict[str, Any] | None:
+    for key in [
+        (row.strategy_candidate, row.symbol, row.horizon_hours),
+        (row.strategy_candidate, row.symbol, None),
+        (row.strategy_candidate, "UNKNOWN", row.horizon_hours),
+        (row.strategy_candidate, "UNKNOWN", None),
+    ]:
+        promotion = promotions.get(key)
+        if promotion is not None:
+            return promotion
+    return None
+
+
+def _alpha_factory_promotion_decision_mode(
+    promotion: dict[str, Any],
+) -> tuple[str, str, list[str]]:
+    state = _text_value(
+        promotion.get("promotion_state")
+        or promotion.get("decision")
+        or "RESEARCH"
+    ).upper()
+    decision = "RESEARCH_ONLY" if state == "RESEARCH" else state
+    mode = _text_value(promotion.get("recommended_mode")).lower()
+    if not mode:
+        mode = _advisory_recommended_mode(None, decision)
+    reasons = _advisory_reason_list(promotion.get("reasons"))
+    if decision != "PAPER_READY":
+        reasons.append("alpha_factory_promotion_queue_not_paper_ready")
+    return decision, mode, sorted(set(reasons))
+
+
+def _apply_alpha_factory_promotion_overrides_to_advisory_rows(
+    rows: list[StrategyOpportunityAdvisoryRow],
+    promotions: dict[tuple[str, str, int | None], dict[str, Any]],
+) -> list[StrategyOpportunityAdvisoryRow]:
+    output: list[StrategyOpportunityAdvisoryRow] = []
+    for row in rows:
+        if not _is_alpha_factory_advisory_model(row):
+            output.append(row.model_copy(update={"max_live_notional_usdt": 0.0}))
+            continue
+        promotion = _alpha_factory_promotion_for_advisory_row(row, promotions)
+        if promotion is None:
+            paper_decision = row.decision in {"PAPER_READY", "LIVE_SMALL_READY"}
+            paper_mode = row.recommended_mode in {"paper", "live_small"}
+            if not paper_decision and not paper_mode:
+                output.append(row.model_copy(update={"max_live_notional_usdt": 0.0}))
+                continue
+            decision = "KEEP_SHADOW"
+            mode = "shadow"
+            reasons = ["alpha_factory_promotion_queue_missing"]
+            promotion_state = row.promotion_state or "KEEP_SHADOW"
+        else:
+            decision, mode, reasons = _alpha_factory_promotion_decision_mode(promotion)
+            promotion_state = _text_value(
+                promotion.get("promotion_state")
+                or promotion.get("decision")
+                or decision
+            ).upper()
+        live_block_reasons = sorted({*row.live_block_reasons, *reasons})
+        paper_ready_block_reasons = sorted(
+            {
+                *row.paper_ready_block_reasons,
+                *(reason for reason in reasons if decision != "PAPER_READY"),
+            }
+        )
+        no_sample_reason = row.no_sample_reason
+        if mode in {"research", "shadow"} and not no_sample_reason:
+            no_sample_reason = "shadow_only" if mode == "shadow" else "research_only"
+        output.append(
+            row.model_copy(
+                update={
+                    "decision": decision,
+                    "recommended_mode": mode,
+                    "promotion_state": promotion_state,
+                    "live_block_reasons": live_block_reasons,
+                    "paper_ready_block_reasons": paper_ready_block_reasons,
+                    "advisory_intent": _strategy_advisory_intent(mode),
+                    "max_paper_notional_usdt": _api_advisory_max_paper_notional(mode),
+                    "max_live_notional_usdt": 0.0,
+                    "would_enter": (
+                        False if mode in {"none", "research", "shadow"} else row.would_enter
+                    ),
+                    "no_sample_reason": no_sample_reason,
+                }
+            )
+        )
+    return output
 
 
 def _apply_research_portfolio_overrides_to_advisory_rows(

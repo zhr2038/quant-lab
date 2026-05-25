@@ -135,6 +135,70 @@ def test_ingest_v5_trades_csv_normalizes_cost_schema(tmp_path):
     assert row["strategy_id"] == "v5"
 
 
+def test_ingest_v5_trade_events_dedupes_overlapping_bundles(tmp_path):
+    trade_csv = (
+        "ts,symbol,side,action,qty,price,fee,fee_ccy,order_id,trade_id\n"
+        "2026-05-12T06:01:00Z,BNB/USDT,buy,entry,0.5,620,-0.031,USDT,"
+        "bnb-order-1,bnb-trade-1\n"
+    )
+    first = make_tar(
+        tmp_path / "v5_live_followup_bundle_20260514T070500Z.tar.gz",
+        {
+            "raw/recent_runs/run_20260512_06/trades.csv": trade_csv,
+            "raw/recent_runs/run_20260512_06/summary.json": '{"bundle_marker":"first"}',
+        },
+    )
+    second = make_tar(
+        tmp_path / "v5_live_followup_bundle_20260514T071500Z.tar.gz",
+        {
+            "raw/recent_runs/run_20260512_06/trades.csv": trade_csv,
+            "raw/recent_runs/run_20260512_06/summary.json": '{"bundle_marker":"second"}',
+        },
+    )
+    lake = tmp_path / "lake"
+
+    ingest_v5_bundle(first, lake, tmp_path / "restricted", tmp_path / "redacted")
+    ingest_v5_bundle(second, lake, tmp_path / "restricted", tmp_path / "redacted")
+
+    trades = read_parquet_dataset(lake / "silver/v5_trade_event")
+    assert trades.height == 1
+    row = trades.to_dicts()[0]
+    assert row["trade_id"] == "bnb-trade-1"
+    assert row["bundle_name"] == second.name
+    assert row["stable_row_key"]
+
+
+def test_ingest_v5_paper_strategy_rows_dedupes_overlapping_summary(tmp_path):
+    paper_csv = (
+        "strategy_id,run_id,ts_utc,symbol,would_enter,final_decision,cost_source\n"
+        "SOL_F4_VOLUME_EXPANSION_PAPER_V1,run_1,2026-05-12T06:01:00Z,SOL-USDT,false,no_order,mixed_actual_proxy\n"
+        "ETH_USDT_F3_DOMINANT_ENTRY_PAPER_V1,run_1,2026-05-12T06:02:00Z,ETH-USDT,true,paper,mixed_actual_proxy\n"
+    )
+    first = make_tar(
+        tmp_path / "v5_live_followup_bundle_20260514T080500Z.tar.gz",
+        {
+            "summaries/paper_strategy_runs.csv": paper_csv,
+            "raw/recent_runs/run_1/summary.json": '{"bundle_marker":"first"}',
+        },
+    )
+    second = make_tar(
+        tmp_path / "v5_live_followup_bundle_20260514T081500Z.tar.gz",
+        {
+            "summaries/paper_strategy_runs.csv": paper_csv,
+            "raw/recent_runs/run_1/summary.json": '{"bundle_marker":"second"}',
+        },
+    )
+    lake = tmp_path / "lake"
+
+    ingest_v5_bundle(first, lake, tmp_path / "restricted", tmp_path / "redacted")
+    ingest_v5_bundle(second, lake, tmp_path / "restricted", tmp_path / "redacted")
+
+    runs = read_parquet_dataset(lake / "silver/v5_paper_strategy_run")
+    assert runs.height == 2
+    assert runs["stable_row_key"].n_unique() == 2
+    assert set(runs["bundle_name"].to_list()) == {second.name}
+
+
 def test_ingest_v5_order_lifecycle_computes_realized_cost_parts(tmp_path):
     bundle = make_tar(
         tmp_path / "v5_live_followup_bundle_20260515T010500Z.tar.gz",

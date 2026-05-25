@@ -12,7 +12,12 @@ from typing import Any
 import polars as pl
 
 from quant_lab.contracts.v5_quant_lab import V5_TELEMETRY_DATASET_SCHEMA_VERSION
-from quant_lab.data.lake import append_parquet_dataset, read_parquet_dataset, upsert_parquet_dataset
+from quant_lab.data.lake import (
+    append_parquet_dataset,
+    read_parquet_dataset,
+    upsert_parquet_dataset,
+    write_parquet_dataset,
+)
 from quant_lab.strategy_telemetry.bundle import (
     compute_sha256,
     inspect_v5_bundle,
@@ -81,7 +86,7 @@ QUANT_LAB_REQUEST_PATHS = {
     "reports/quant_lab_requests.jsonl",
 }
 EVENT_KEY_DATASETS = {"v5_quant_lab_request", "v5_quant_lab_fallback"}
-APPEND_ONLY_SILVER_DATASETS = set(SILVER_DATASETS) - EVENT_KEY_DATASETS - {"v5_candidate_event"}
+STABLE_ROW_KEY_DATASETS = set(SILVER_DATASETS) - EVENT_KEY_DATASETS - {"v5_candidate_event"}
 HISTORICAL_OUTCOME_PATH_PREFIXES = (
     "summaries/high_score_blocked_outcomes",
     "summaries/alt_impulse_shadow",
@@ -421,8 +426,8 @@ def _write_silver(
                 dataset_rows,
                 ["strategy", "candidate_id"],
             )
-        elif name in APPEND_ONLY_SILVER_DATASETS:
-            counts[name] = _append_rows(dataset_path, dataset_rows)
+        elif name in STABLE_ROW_KEY_DATASETS:
+            counts[name] = _upsert_stable_rows(dataset_path, dataset_rows)
         else:
             counts[name] = _upsert_rows(
                 dataset_path,
@@ -1565,6 +1570,53 @@ def _append_rows(dataset_path: Path, rows: list[dict[str, Any]]) -> int:
     prefix = f"bundle_{bundle_sha256[:12]}"
     result = append_parquet_dataset(df, dataset_path, file_prefix=prefix)
     return result.rows_written
+
+
+def _upsert_stable_rows(dataset_path: Path, rows: list[dict[str, Any]]) -> int:
+    if not rows:
+        return read_parquet_dataset(dataset_path).height
+    existing = read_parquet_dataset(dataset_path)
+    combined_rows = existing.to_dicts() if not existing.is_empty() else []
+    combined_rows.extend(rows)
+    keyed_rows = [_with_stable_row_key(row) for row in combined_rows]
+    df = pl.DataFrame(_json_safe_rows(keyed_rows))
+    if not df.is_empty():
+        key_columns = [
+            column
+            for column in ["strategy", "source_path_inside_bundle", "stable_row_key"]
+            if column in df.columns
+        ]
+        if key_columns:
+            df = df.unique(subset=key_columns, keep="last", maintain_order=True)
+    write_parquet_dataset(df, dataset_path)
+    return df.height
+
+
+def _with_stable_row_key(row: dict[str, Any]) -> dict[str, Any]:
+    seeded = dict(row)
+    seeded["stable_row_key"] = _stable_row_key(row)
+    return seeded
+
+
+def _stable_row_key(row: dict[str, Any]) -> str:
+    payload = row.get("raw_payload_json")
+    if isinstance(payload, str) and payload.strip():
+        basis: Any = payload.strip()
+    else:
+        basis = {
+            key: value
+            for key, value in row.items()
+            if key
+            not in {
+                "bundle_sha256",
+                "bundle_name",
+                "bundle_ts",
+                "ingest_ts",
+                "stable_row_key",
+            }
+        }
+    encoded = safe_json_dumps(basis) if not isinstance(basis, str) else basis
+    return hashlib.sha256(encoded.encode("utf-8")).hexdigest()
 
 
 def _upsert_event_rows(dataset_path: Path, rows: list[dict[str, Any]]) -> int:

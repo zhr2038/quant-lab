@@ -649,12 +649,41 @@ def _order_event_frame(records: Sequence[OrderEvent]) -> pl.DataFrame:
 
 
 def _sanitize_private_payload(item: Mapping[str, Any]) -> dict[str, Any]:
-    sensitive_fragments = ("key", "secret", "passphrase", "sign")
     return {
-        str(key): value
+        str(key): _sanitize_private_value(value)
         for key, value in item.items()
-        if not any(fragment in str(key).lower() for fragment in sensitive_fragments)
+        if not _is_sensitive_field_name(str(key))
     }
+
+
+def _sanitize_private_value(value: Any) -> Any:
+    if isinstance(value, Mapping):
+        return {
+            str(key): _sanitize_private_value(nested)
+            for key, nested in value.items()
+            if not _is_sensitive_field_name(str(key))
+        }
+    if isinstance(value, list):
+        return [_sanitize_private_value(item) for item in value]
+    return value
+
+
+def _is_sensitive_field_name(key: str) -> bool:
+    sensitive_fragments = (
+        "api_key",
+        "apikey",
+        "authorization",
+        "credential",
+        "key",
+        "ok-access",
+        "passphrase",
+        "password",
+        "secret",
+        "sign",
+        "token",
+    )
+    lowered = key.lower()
+    return any(fragment in lowered for fragment in sensitive_fragments)
 
 
 def _json_dumps(value: Any) -> str:

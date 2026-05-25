@@ -215,6 +215,12 @@ def test_publish_private_readonly_data_does_not_write_secrets_to_parquet(tmp_pat
         "secretEcho": SECRET_KEY,
         "passphraseEcho": PASSPHRASE,
         "signEcho": "signature-value",
+        "metadata": {
+            "Authorization": f"Bearer {API_KEY}",
+            "nestedToken": "nested-token-value",
+            "safeField": "safe-value",
+        },
+        "events": [{"password": "nested-password", "safeEventField": "safe-event-value"}],
     }
     raw_bill = {
         **_raw_bill(),
@@ -250,9 +256,18 @@ def test_publish_private_readonly_data_does_not_write_secrets_to_parquet(tmp_pat
         ]
     )
     log_text = caplog.text
-    for secret in [API_KEY, SECRET_KEY, PASSPHRASE, "signature-value"]:
+    for secret in [
+        API_KEY,
+        SECRET_KEY,
+        PASSPHRASE,
+        "signature-value",
+        "nested-token-value",
+        "nested-password",
+    ]:
         assert secret not in parquet_text
         assert secret not in log_text
+    assert "safe-value" in parquet_text
+    assert "safe-event-value" in parquet_text
 
 
 def test_publish_private_readonly_data_is_idempotent(tmp_path):

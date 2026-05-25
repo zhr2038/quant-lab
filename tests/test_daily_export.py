@@ -1017,6 +1017,40 @@ def test_export_daily_pack_uses_unique_same_day_file_names(tmp_path):
     assert Path(second.zip_path).name.startswith("quant_lab_expert_pack_2026-05-11_")
 
 
+def test_export_daily_pack_prunes_old_packs_after_generation(tmp_path, monkeypatch):
+    lake_root = _fixture_lake(tmp_path)
+    out_dir = tmp_path / "exports"
+    out_dir.mkdir()
+    sidecar = out_dir / "v5_enforce_readiness.json"
+    sidecar.write_text("{}", encoding="utf-8")
+    unrelated_zip = out_dir / "manual_debug_bundle.zip"
+    unrelated_zip.write_bytes(b"not an expert pack")
+    monkeypatch.setenv("QUANT_LAB_EXPORT_KEEP_PACKS", "3")
+
+    generated = [
+        export_daily_pack(
+            export_date="2026-05-11",
+            lake_root=lake_root,
+            out_dir=out_dir,
+            profile="expert",
+            command_line=["qlab", "export-daily"],
+        )
+        for _ in range(5)
+    ]
+
+    packs = sorted(out_dir.glob("quant_lab_expert_pack_*.zip"))
+    kept_names = {path.name for path in packs}
+
+    assert len(packs) == 3
+    assert Path(generated[-1].zip_path).name in kept_names
+    assert Path(generated[-2].zip_path).name in kept_names
+    assert Path(generated[-3].zip_path).name in kept_names
+    assert not Path(generated[0].zip_path).exists()
+    assert not Path(generated[1].zip_path).exists()
+    assert sidecar.exists()
+    assert unrelated_zip.exists()
+
+
 def test_export_empty_csv_members_have_fixed_headers(tmp_path):
     result = export_daily_pack(
         export_date="2026-05-11",

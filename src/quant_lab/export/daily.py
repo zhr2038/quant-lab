@@ -162,6 +162,7 @@ DEFAULT_EXPORT_SAMPLED_ROW_LIMIT = 20_000
 DEFAULT_EXPORT_RECENT_FILE_LIMIT = 100
 DEFAULT_EXPORT_FULL_READ_MAX_FILES = 80
 DEFAULT_EXPORT_FULL_READ_MAX_BYTES = 128 * 1024 * 1024
+DEFAULT_KEEP_EXPERT_PACKS = 5
 EVENT_DRIVEN_V5_DATASETS = {"v5_trade_event"}
 EVENT_DRIVEN_OK_STATUSES = {"event_driven_no_recent_trade"}
 SECTION_DATASETS = {
@@ -2591,6 +2592,7 @@ def export_daily_pack(
 
     zip_path = _unique_export_zip_path(output_root, day, generated_at)
     _write_zip(zip_path, members)
+    warnings.extend(_prune_old_export_packs(output_root, keep_count=_export_keep_pack_count()))
     return DailyExportResult(
         export_date=day.isoformat(),
         profile=profile,
@@ -2611,6 +2613,35 @@ def _unique_export_zip_path(output_root: Path, day: date, generated_at: datetime
         candidate = output_root / f"{base_name}_{counter}.zip"
         counter += 1
     return candidate
+
+
+def _export_keep_pack_count() -> int:
+    raw = os.environ.get("QUANT_LAB_EXPORT_KEEP_PACKS", str(DEFAULT_KEEP_EXPERT_PACKS))
+    try:
+        value = int(raw)
+    except ValueError:
+        return DEFAULT_KEEP_EXPERT_PACKS
+    return max(value, 1)
+
+
+def _prune_old_export_packs(output_root: Path, *, keep_count: int) -> list[str]:
+    if keep_count < 1 or not output_root.exists():
+        return []
+    try:
+        packs = sorted(
+            [path for path in output_root.glob("quant_lab_expert_pack_*.zip") if path.is_file()],
+            key=lambda path: (path.stat().st_mtime, path.name),
+            reverse=True,
+        )
+    except OSError as exc:
+        return [f"export_pack_prune_failed:{exc}"]
+    warnings: list[str] = []
+    for pack in packs[keep_count:]:
+        try:
+            pack.unlink()
+        except OSError as exc:
+            warnings.append(f"export_pack_prune_failed:{pack.name}:{exc}")
+    return warnings
 
 
 def validate_expert_pack(path: str | Path) -> ExpertPackValidationResult:

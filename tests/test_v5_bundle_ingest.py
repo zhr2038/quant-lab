@@ -199,6 +199,35 @@ def test_ingest_v5_paper_strategy_rows_dedupes_overlapping_summary(tmp_path):
     assert set(runs["bundle_name"].to_list()) == {second.name}
 
 
+def test_ingest_v5_stable_rows_tolerates_late_mixed_schema_values(tmp_path):
+    rows = [
+        (
+            f"strategy_{index},run_1,2026-05-12T06:{index % 60:02d}:00Z,"
+            f"SOL-USDT,false,no_order,{index}.5"
+        )
+        for index in range(120)
+    ]
+    rows.append(
+        "strategy_not_observable,run_1,2026-05-12T08:01:00Z,SOL-USDT,false,no_order,not_observable"
+    )
+    paper_csv = (
+        "strategy_id,run_id,ts_utc,symbol,would_enter,final_decision,alpha6_score\n"
+        + "\n".join(rows)
+        + "\n"
+    )
+    bundle = make_tar(
+        tmp_path / "v5_live_followup_bundle_20260514T082500Z.tar.gz",
+        {"summaries/paper_strategy_runs.csv": paper_csv},
+    )
+    lake = tmp_path / "lake"
+
+    ingest_v5_bundle(bundle, lake, tmp_path / "restricted", tmp_path / "redacted")
+
+    runs = read_parquet_dataset(lake / "silver/v5_paper_strategy_run")
+    assert runs.height == 121
+    assert "not_observable" in runs["alpha6_score"].cast(str).to_list()
+
+
 def test_ingest_v5_order_lifecycle_computes_realized_cost_parts(tmp_path):
     bundle = make_tar(
         tmp_path / "v5_live_followup_bundle_20260515T010500Z.tar.gz",

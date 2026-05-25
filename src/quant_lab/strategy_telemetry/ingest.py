@@ -1558,14 +1558,14 @@ def _manifest_payload(inspection, metadata: dict[str, Any]) -> dict[str, Any]:
 def _upsert_rows(dataset_path: Path, rows: list[dict[str, Any]], keys: list[str]) -> int:
     if not rows:
         return read_parquet_dataset(dataset_path).height
-    df = pl.DataFrame(_json_safe_rows(rows))
+    df = _dataframe_from_rows(rows)
     return upsert_parquet_dataset(df, dataset_path, key_columns=keys)
 
 
 def _append_rows(dataset_path: Path, rows: list[dict[str, Any]]) -> int:
     if not rows:
         return 0
-    df = pl.DataFrame(_json_safe_rows(rows))
+    df = _dataframe_from_rows(rows)
     bundle_sha256 = str(rows[0].get("bundle_sha256") or "batch")
     prefix = f"bundle_{bundle_sha256[:12]}"
     result = append_parquet_dataset(df, dataset_path, file_prefix=prefix)
@@ -1579,7 +1579,7 @@ def _upsert_stable_rows(dataset_path: Path, rows: list[dict[str, Any]]) -> int:
     combined_rows = existing.to_dicts() if not existing.is_empty() else []
     combined_rows.extend(rows)
     keyed_rows = [_with_stable_row_key(row) for row in combined_rows]
-    df = pl.DataFrame(_json_safe_rows(keyed_rows))
+    df = _dataframe_from_rows(keyed_rows)
     if not df.is_empty():
         key_columns = [
             column
@@ -1632,7 +1632,7 @@ def _upsert_event_rows(dataset_path: Path, rows: list[dict[str, Any]]) -> int:
         key = (str(row.get("strategy") or ""), str(row.get("event_key") or ""))
         merged[key] = _merge_event_row(merged.get(key), row)
 
-    df = pl.DataFrame(_json_safe_rows(list(merged.values())))
+    df = _dataframe_from_rows(list(merged.values()))
     return upsert_parquet_dataset(df, dataset_path, key_columns=["strategy", "event_key"])
 
 
@@ -1718,6 +1718,10 @@ def _json_safe_rows(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
             }
         )
     return safe_rows
+
+
+def _dataframe_from_rows(rows: list[dict[str, Any]]) -> pl.DataFrame:
+    return pl.DataFrame(_json_safe_rows(rows), infer_schema_length=None)
 
 
 def _already_ingested(lake_root: Path, bundle_sha256: str) -> bool:

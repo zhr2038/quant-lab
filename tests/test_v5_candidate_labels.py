@@ -5,7 +5,10 @@ import polars as pl
 import pytest
 
 from quant_lab.data.lake import read_parquet_dataset, write_market_bars, write_parquet_dataset
-from quant_lab.research.candidate_labels import build_and_publish_candidate_labels
+from quant_lab.research.candidate_labels import (
+    build_and_publish_candidate_labels,
+    build_candidate_quality,
+)
 from quant_lab.strategy_telemetry.ingest import ingest_v5_bundle
 from tests.v5_bundle_fixture import make_v5_bundle_fixture
 
@@ -94,6 +97,61 @@ def test_candidate_label_incremental_mode_skips_old_raw_events(tmp_path):
     assert result.mode == "incremental"
     assert result.candidate_event_rows == 1
     assert set(labels["candidate_id"].to_list()) == {"recent"}
+
+
+def test_candidate_quality_ignores_pending_future_labels_and_pre_snapshot_runs():
+    created_at = datetime(2026, 5, 20, tzinfo=UTC)
+    events = pl.DataFrame(
+        [
+            _candidate_event("recent", datetime(2026, 5, 20, 1, tzinfo=UTC))
+            | {"run_id": "20260520_01"}
+        ]
+    )
+    labels = pl.DataFrame(
+        [
+            {
+                "candidate_id": "recent",
+                "run_id": "20260520_01",
+                "label_status": "complete",
+                "label_reason": "ok",
+            },
+            {
+                "candidate_id": "recent",
+                "run_id": "20260520_01",
+                "label_status": "partial",
+                "label_reason": "future_bar_unavailable",
+            },
+        ]
+    )
+    run_summary = pl.DataFrame(
+        [
+            {
+                "run_id": "20260519_23",
+                "source_path_inside_bundle": "raw/recent_runs/old/summary.json",
+            },
+            {
+                "run_id": "20260520_01",
+                "source_path_inside_bundle": "raw/recent_runs/current/summary.json",
+            },
+        ]
+    )
+
+    quality = build_candidate_quality(
+        events,
+        labels,
+        run_summary,
+        as_of_date=created_at.date(),
+        created_at=created_at,
+    )
+    row = quality.to_dicts()[0]
+
+    assert row["runs_without_candidate_event"] == 0
+    assert row["future_pending_label_rows"] == 1
+    assert row["eligible_label_rows"] == 1
+    assert row["label_completeness"] == pytest.approx(1.0)
+    assert row["raw_label_completeness"] == pytest.approx(1 / 7)
+    assert "candidate_label_completeness_below_80pct" not in row["warnings_json"]
+    assert "runs_without_candidate_event" not in row["warnings_json"]
 
 
 def _candidate_event(candidate_id: str, ts: datetime) -> dict[str, object]:

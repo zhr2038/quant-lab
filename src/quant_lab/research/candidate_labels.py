@@ -219,14 +219,23 @@ def build_candidate_quality(
         rows_by_run[run_id] += 1
         symbol_rows_by_run[run_id][symbol] += 1
 
-    missing_runs = sorted(summary_runs - event_run_ids)
+    summary_runs_in_candidate_window = _summary_runs_in_candidate_window(
+        summary_runs,
+        event_run_ids,
+    )
+    missing_runs = sorted(summary_runs_in_candidate_window - event_run_ids)
     feature_by_field = _feature_completeness_by_field(event_rows)
     feature_completeness = (
         statistics.fmean(feature_by_field.values()) if feature_by_field else 0.0
     )
     expected_labels = len(event_rows) * len(HORIZON_HOURS)
     complete_labels = sum(1 for row in label_rows if row.get("label_status") == "complete")
-    label_completeness = complete_labels / expected_labels if expected_labels else 0.0
+    future_pending_labels = sum(
+        1 for row in label_rows if row.get("label_reason") == "future_bar_unavailable"
+    )
+    eligible_labels = max(len(label_rows) - future_pending_labels, 0)
+    label_completeness = complete_labels / eligible_labels if eligible_labels else 0.0
+    raw_label_completeness = complete_labels / expected_labels if expected_labels else 0.0
     cost_sources = Counter(_candidate_cost_source(row.get("cost_source")) for row in event_rows)
     cost_source_covered = sum(
         count for source, count in cost_sources.items() if source != "MISSING"
@@ -263,7 +272,7 @@ def build_candidate_quality(
                 "schema_version": QUALITY_SCHEMA_VERSION,
                 "status": status,
                 "candidate_event_rows": len(event_rows),
-                "run_count": len(summary_runs or event_run_ids),
+                "run_count": len(summary_runs_in_candidate_window or event_run_ids),
                 "runs_with_candidate_event": len(event_run_ids),
                 "runs_without_candidate_event": len(missing_runs),
                 "runs_without_candidate_event_json": safe_json_dumps(missing_runs),
@@ -279,8 +288,11 @@ def build_candidate_quality(
                 "feature_completeness_by_field_json": safe_json_dumps(feature_by_field),
                 "expected_label_rows": expected_labels,
                 "label_rows": len(label_rows),
+                "eligible_label_rows": eligible_labels,
+                "future_pending_label_rows": future_pending_labels,
                 "complete_label_rows": complete_labels,
                 "label_completeness": label_completeness,
+                "raw_label_completeness": raw_label_completeness,
                 "cost_source_coverage": cost_source_coverage,
                 "cost_source_counts_json": safe_json_dumps(dict(sorted(cost_sources.items()))),
                 "cost_source_quality_counts": safe_json_dumps(cost_source_quality_counts),
@@ -598,6 +610,31 @@ def _run_ids_from_summary(run_summary: pl.DataFrame) -> set[str]:
         if run_id:
             run_ids.add(run_id)
     return run_ids
+
+
+def _summary_runs_in_candidate_window(
+    summary_runs: set[str],
+    event_run_ids: set[str],
+) -> set[str]:
+    if not summary_runs or not event_run_ids:
+        return summary_runs
+    first_candidate_run = min(event_run_ids, key=_run_id_sort_key)
+    first_candidate_key = _run_id_sort_key(first_candidate_run)
+    return {
+        run_id
+        for run_id in summary_runs
+        if _run_id_sort_key(run_id) >= first_candidate_key
+    }
+
+
+def _run_id_sort_key(run_id: str) -> tuple[int, str, str]:
+    text = _clean_text(run_id)
+    if len(text) >= 11 and text[8] == "_":
+        day = text[:8]
+        hour = text[9:11]
+        if day.isdigit() and hour.isdigit():
+            return (0, day, hour)
+    return (1, text, "")
 
 
 def _feature_completeness_by_field(rows: list[dict[str, Any]]) -> dict[str, float]:

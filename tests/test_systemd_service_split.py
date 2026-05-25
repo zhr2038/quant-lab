@@ -93,7 +93,9 @@ def test_deploy_permission_repair_script_targets_deploy_user():
     assert "SERVICE_GROUP=\"${SERVICE_GROUP:-quantlab}\"" in script
     assert "START_REPAIR_DEPLOY_PERMISSIONS" in script
     assert "chown -R \"${DEPLOY_USER}:${SERVICE_GROUP}\" \"${APP_ROOT}\"" in script
-    assert "chmod u+rwX,g+rX,o=,g+s" in script
+    assert "chmod u=rwx,g=rx,o=,g+s" in script
+    assert "chmod u=rwX,g=rX,o=" in script
+    assert "g+rw" not in script
     assert "FINISH_REPAIR_DEPLOY_PERMISSIONS" in script
 
 

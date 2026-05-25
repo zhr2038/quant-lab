@@ -85,6 +85,18 @@ def test_lake_permission_repair_script_targets_service_user():
     assert "chmod u+rw,g+rw,o+r" in script
 
 
+def test_deploy_permission_repair_script_targets_deploy_user():
+    script = _script("repair_deploy_permissions.sh")
+
+    assert "APP_ROOT=\"${APP_ROOT:-/opt/quant-lab}\"" in script
+    assert "DEPLOY_USER=\"${DEPLOY_USER:-ubuntu}\"" in script
+    assert "SERVICE_GROUP=\"${SERVICE_GROUP:-quantlab}\"" in script
+    assert "START_REPAIR_DEPLOY_PERMISSIONS" in script
+    assert "chown -R \"${DEPLOY_USER}:${SERVICE_GROUP}\" \"${APP_ROOT}\"" in script
+    assert "chmod u+rwX,g+rX,o=,g+s" in script
+    assert "FINISH_REPAIR_DEPLOY_PERMISSIONS" in script
+
+
 def test_candidate_research_refresh_is_separate_from_alpha_evidence():
     alpha_unit = _unit("quant-lab-alpha-evidence.service")
     refresh_unit = _unit("quant-lab-v5-research-refresh.service")

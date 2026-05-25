@@ -144,3 +144,20 @@ Recommended permissions:
   logs must not contain API secrets, secret keys, or passphrases.
 
 Prefer API access over direct filesystem reads for strategy consumers.
+
+Recommended deploy flow:
+
+```bash
+cd /opt/quant-lab
+git fetch origin main
+git pull --ff-only origin main
+sudo deploy/scripts/repair_deploy_permissions.sh
+sudo systemctl restart quant-lab-api.service quant-lab-web.service
+```
+
+Run Git commands as the deploy user (`ubuntu`), not as the service user
+(`quantlab`). The service user runs systemd jobs and writes lake/export data,
+but it should not own or mutate the application Git checkout. If a previous
+manual operation wrote root-owned or service-owned files under `/opt/quant-lab`,
+run `sudo deploy/scripts/repair_deploy_permissions.sh` before the next
+fast-forward deploy.

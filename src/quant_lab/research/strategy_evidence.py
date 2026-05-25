@@ -199,7 +199,13 @@ def build_and_publish_strategy_evidence(
         ),
     )
     summaries = summarize_strategy_evidence(
-        _samples_for_summary(root, samples, normalized_mode),
+        _samples_for_summary(
+            root,
+            samples,
+            normalized_mode,
+            as_of_date=day,
+            lookback_days=lookback_days,
+        ),
         as_of_date=day,
         min_live_samples=min_live_samples,
     )
@@ -465,10 +471,18 @@ def _samples_for_summary(
     lake_root: Path,
     incoming_samples: pl.DataFrame,
     mode: str,
+    *,
+    as_of_date: date,
+    lookback_days: int,
 ) -> pl.DataFrame:
     if mode == "full":
         return incoming_samples
-    existing = read_parquet_dataset(lake_root / STRATEGY_EVIDENCE_SAMPLE_DATASET)
+    existing = _read_recent_dataset(
+        lake_root / STRATEGY_EVIDENCE_SAMPLE_DATASET,
+        day=as_of_date,
+        lookback_days=lookback_days,
+        timestamp_columns=("ts_utc", "decision_ts", "label_ts"),
+    )
     frames = [frame for frame in [existing, incoming_samples] if not frame.is_empty()]
     if not frames:
         return pl.DataFrame(schema=SAMPLE_SCHEMA)

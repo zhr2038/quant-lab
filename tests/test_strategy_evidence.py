@@ -269,6 +269,31 @@ def test_strategy_evidence_incremental_mode_skips_old_raw_labels(tmp_path):
     assert set(samples["candidate_id"].to_list()) == {"recent"}
 
 
+def test_strategy_evidence_incremental_summary_uses_recent_sample_window(tmp_path):
+    lake = tmp_path / "lake"
+    old_ts = datetime(2026, 5, 1, tzinfo=UTC)
+    recent_ts = datetime(2026, 5, 10, tzinfo=UTC)
+
+    _write_single_candidate_label(lake, candidate_id="old", ts=old_ts)
+    build_and_publish_strategy_evidence(lake, as_of_date="2026-05-01", mode="full")
+
+    _write_single_candidate_label(lake, candidate_id="recent", ts=recent_ts)
+    result = build_and_publish_strategy_evidence(
+        lake,
+        as_of_date="2026-05-10",
+        mode="incremental",
+        lookback_days=2,
+    )
+
+    evidence = read_parquet_dataset(lake / "gold" / "strategy_evidence")
+    latest = evidence.filter(pl.col("as_of_date") == "2026-05-10")
+
+    assert result.mode == "incremental"
+    assert result.extracted_sample_count == 1
+    assert latest.height == 1
+    assert latest["sample_count"][0] == 1
+
+
 def test_strategy_evidence_incremental_mode_skips_historical_outcome_inputs(tmp_path):
     lake = tmp_path / "lake"
     now = datetime(2026, 5, 10, tzinfo=UTC)
@@ -1017,6 +1042,37 @@ def _write_candidate_labels_for_incremental_test(
             }
         )
     write_parquet_dataset(pl.DataFrame(rows), lake / "gold" / "v5_candidate_label")
+
+
+def _write_single_candidate_label(lake: Path, *, candidate_id: str, ts: datetime) -> None:
+    write_parquet_dataset(
+        pl.DataFrame(
+            [
+                {
+                    "strategy": "v5",
+                    "candidate_id": candidate_id,
+                    "run_id": f"run-{candidate_id}",
+                    "ts_utc": ts,
+                    "symbol": "SOL-USDT",
+                    "strategy_candidate": "v5.sol_protect_exception",
+                    "block_reason": "protect_exception",
+                    "final_decision": "SHADOW",
+                    "horizon_hours": 24,
+                    "gross_bps": 10.0,
+                    "net_bps_after_cost": 6.0,
+                    "mfe_bps": 12.0,
+                    "mae_bps": -4.0,
+                    "win": True,
+                    "label_status": "complete",
+                    "cost_bps": 4.0,
+                    "cost_source": "mixed_actual_proxy",
+                    "regime_state": "trend",
+                    "created_at": ts,
+                }
+            ]
+        ),
+        lake / "gold" / "v5_candidate_label",
+    )
 
 
 def _write_strategy_sources(lake: Path) -> None:

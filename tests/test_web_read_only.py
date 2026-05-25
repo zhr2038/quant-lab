@@ -518,6 +518,44 @@ def test_data_health_hides_pending_v5_paper_telemetry(tmp_path):
     assert "v5_paper_slippage_coverage" not in datasets
 
 
+def test_data_health_stale_rows_include_takeaway_severity_and_action(tmp_path):
+    lake_root = tmp_path / "lake"
+    old = datetime.now(UTC) - timedelta(days=3)
+    write_parquet_dataset(
+        pl.DataFrame(
+            [
+                {
+                    "venue": "okx",
+                    "symbol": "BTC-USDT",
+                    "market_type": "SPOT",
+                    "timeframe": "1H",
+                    "ts": old,
+                    "open": 100.0,
+                    "high": 101.0,
+                    "low": 99.0,
+                    "close": 100.0,
+                    "volume": 1.0,
+                    "source": "test",
+                    "ingest_ts": old,
+                }
+            ]
+        ),
+        lake_root / "silver" / "market_bar",
+    )
+
+    table = readers.data_health_summary(lake_root)["stale_datasets"]
+    localized = localize_frame(table)
+    market_row = next(row for row in table.to_dicts() if row["dataset"] == "market_bar")
+
+    assert {"takeaway", "severity", "next_action"}.issubset(table.columns)
+    assert "行情 K 线 已过期" in market_row["takeaway"]
+    assert market_row["severity"] == "CRITICAL"
+    assert "OKX REST/WS" in market_row["next_action"]
+    assert "重点结论" in localized.columns
+    assert "影响级别" in localized.columns
+    assert "建议动作" in localized.columns
+
+
 def test_data_health_reads_v5_paper_run_schema_evolution_without_warning(tmp_path):
     dataset = tmp_path / "lake" / "silver" / "v5_paper_strategy_run"
     dataset.mkdir(parents=True)

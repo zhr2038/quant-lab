@@ -3397,11 +3397,15 @@ def _stale_dataset_rows(lake_root: str | Path) -> pl.DataFrame:
         if name in HISTORICAL_RESEARCH_DATASETS and status == "stale":
             status = "historical_research_snapshot"
         if _should_show_stale_dataset_row(snapshot, status):
+            status_text = str(status)
             rows.append(
                 {
+                    "takeaway": _stale_dataset_takeaway(name, status_text, snapshot),
+                    "severity": _stale_dataset_severity(name, status_text, snapshot),
+                    "next_action": _stale_dataset_next_action(name, status_text, snapshot),
                     "dataset": name,
                     "rows": snapshot.rows,
-                    "status": status,
+                    "status": status_text,
                     "path": str(path),
                     "freshness_seconds": freshness["freshness_seconds"],
                     "timestamp_column": freshness["timestamp_column"] or "",
@@ -3410,6 +3414,93 @@ def _stale_dataset_rows(lake_root: str | Path) -> pl.DataFrame:
                 }
             )
     return pl.DataFrame(rows)
+
+
+def _stale_dataset_takeaway(dataset_name: str, status: str, snapshot: DatasetSnapshot) -> str:
+    dataset_label = _dataset_display_name(dataset_name)
+    status_label = str(display_value(status))
+    if snapshot.warning:
+        return f"{dataset_label} 读取异常：{snapshot.warning}"
+    if snapshot.rows == 0:
+        return f"{dataset_label} 暂无数据：{status_label}"
+    if status == "stale":
+        return f"{dataset_label} 已过期：下游页面可能看到旧结果"
+    if status == "missing":
+        return f"{dataset_label} 缺失：对应链路尚未产出"
+    if status == "unknown":
+        return f"{dataset_label} 时间不可判定：缺少可用时间列"
+    return f"{dataset_label} 需要关注：{status_label}"
+
+
+def _stale_dataset_severity(
+    dataset_name: str,
+    status: str,
+    snapshot: DatasetSnapshot,
+) -> str:
+    if snapshot.warning:
+        return "CRITICAL"
+    if dataset_name in {"market_bar", "cost_bucket_daily", "risk_permission"}:
+        return "CRITICAL"
+    if status in {"missing", "unknown"}:
+        return "CRITICAL"
+    if dataset_name in {"feature_value", "alpha_evidence", "gate_decision"}:
+        return "WARNING"
+    return "WARNING"
+
+
+def _stale_dataset_next_action(
+    dataset_name: str,
+    status: str,
+    snapshot: DatasetSnapshot,
+) -> str:
+    if snapshot.warning:
+        return "先修复数据集读取异常，再重新打开页面验证"
+    if dataset_name == "market_bar":
+        return "检查 OKX REST/WS 采集任务并补齐 market_bar"
+    if dataset_name == "feature_value":
+        return "运行 qlab publish-features 重新生成核心特征"
+    if dataset_name == "alpha_evidence":
+        return "运行 qlab build-alpha-evidence 生成研究证据"
+    if dataset_name in {"cost_bucket_daily", "cost_health_daily"}:
+        return "运行 qlab calibrate-costs 刷新成本模型"
+    if dataset_name == "risk_permission":
+        return "运行 qlab publish-risk-permission 刷新风险许可"
+    if dataset_name in {"gate_decision", "strategy_health_daily", "v5_gate_compliance_daily"}:
+        return "先同步 V5 telemetry，再刷新 gate/risk/report"
+    if dataset_name.startswith("v5_") or dataset_name.startswith("strategy_"):
+        return "检查 V5 telemetry sync 与对应 research refresh 任务"
+    if status == "stale":
+        return "检查对应 systemd timer 是否运行，并按需手动刷新"
+    return "确认该数据集是否仍需要；需要则运行对应构建命令"
+
+
+def _dataset_display_name(dataset_name: str) -> str:
+    labels = {
+        "market_bar": "行情 K 线",
+        "feature_value": "特征值",
+        "alpha_evidence": "Alpha 证据",
+        "gate_decision": "门控决策",
+        "risk_permission": "风险许可",
+        "cost_bucket_daily": "成本桶",
+        "cost_health_daily": "成本健康",
+        "strategy_health_daily": "V5 策略健康",
+        "v5_gate_compliance_daily": "V5 门控合规",
+        "v5_candidate_event": "V5 候选事件",
+        "v5_candidate_label": "V5 候选标签",
+        "strategy_opportunity_advisory": "策略机会建议",
+        "research_portfolio_status": "研究组合裁剪",
+        "strategy_evidence": "策略证据",
+        "strategy_evidence_sample": "策略证据样本",
+        "paper_strategy_runs": "纸面策略运行",
+        "paper_strategy_daily": "纸面策略日汇总",
+        "paper_slippage_coverage": "纸面滑点覆盖",
+        "trade_print": "OKX 成交流",
+        "orderbook_snapshot": "OKX 订单簿",
+        "okx_public_ws": "OKX WebSocket 原始数据",
+    }
+    if dataset_name in labels:
+        return labels[dataset_name]
+    return dataset_name.replace("_", " ")
 
 
 def _empty_dataset_status(dataset_name: str) -> str:

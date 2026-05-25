@@ -423,6 +423,8 @@ COLUMN_LABELS.update(
         "action": "研究动作",
         "takeaway": "重点结论",
         "key_metrics": "关键指标",
+        "severity": "影响级别",
+        "next_action": "建议动作",
         "research_id": "研究编号",
         "module": "模块",
         "reason": "原因",

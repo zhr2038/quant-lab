@@ -274,3 +274,9 @@ def test_data_health_labels_feature_and_alpha_gaps_as_not_yet_generated(tmp_path
 
     assert status_by_dataset["feature_value"] == "特征尚未发布"
     assert status_by_dataset["alpha_evidence"] == "研究证据尚未生成"
+    feature_row = next(row for row in status_rows if row["dataset"] == "feature_value")
+    alpha_row = next(row for row in status_rows if row["dataset"] == "alpha_evidence")
+    assert feature_row["takeaway"].startswith("特征值 暂无数据")
+    assert "qlab publish-features" in feature_row["next_action"]
+    assert alpha_row["severity"] == "WARNING"
+    assert "qlab build-alpha-evidence" in alpha_row["next_action"]

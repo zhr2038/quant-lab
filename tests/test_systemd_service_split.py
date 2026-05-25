@@ -53,6 +53,14 @@ def test_all_quant_lab_jobs_run_as_service_user_except_root_only_helpers():
         assert "Group=quantlab" in unit, unit_path.name
 
 
+def test_oneshot_services_do_not_use_ignored_runtime_max_sec():
+    for unit_path in SYSTEMD.glob("*.service"):
+        unit = unit_path.read_text(encoding="utf-8")
+        if "Type=oneshot" not in unit:
+            continue
+        assert "RuntimeMaxSec=" not in unit, unit_path.name
+
+
 def test_storage_retention_does_not_create_root_owned_lake_files():
     unit = _unit("quant-lab-storage-retention.service")
 

@@ -9,7 +9,7 @@ Group=quantlab
 WorkingDirectory=/opt/quant-lab
 Environment=POLARS_MAX_THREADS=1
 Environment=MALLOC_ARENA_MAX=2
-RuntimeMaxSec=15min
+TimeoutStartSec=16min
 MemoryHigh=1G
 MemoryMax=2G
 CPUQuota=80%

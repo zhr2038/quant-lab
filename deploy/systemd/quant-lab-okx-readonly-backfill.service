@@ -10,7 +10,7 @@ Group=quantlab
 WorkingDirectory=/opt/quant-lab
 Environment=PYTHONUNBUFFERED=1
 EnvironmentFile=/etc/quant-lab/okx_readonly.env
-RuntimeMaxSec=15min
+TimeoutStartSec=16min
 MemoryMax=1536M
 CPUQuota=80%
 ExecStart=/opt/quant-lab/.venv/bin/qlab okx-backfill-readonly --inst-type SPOT --lake-root /var/lib/quant-lab/lake --max-pages 5

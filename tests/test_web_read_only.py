@@ -518,6 +518,17 @@ def test_data_health_hides_pending_v5_paper_telemetry(tmp_path):
     assert "v5_paper_slippage_coverage" not in datasets
 
 
+def test_stale_dataset_rows_keep_schema_when_empty(tmp_path, monkeypatch):
+    monkeypatch.setattr(readers, "DATASET_PATHS", {})
+
+    table = readers._stale_dataset_rows(tmp_path / "lake")
+
+    assert table.is_empty()
+    assert {"takeaway", "severity", "next_action", "dataset", "status"}.issubset(
+        table.columns
+    )
+
+
 def test_data_health_stale_rows_include_takeaway_severity_and_action(tmp_path):
     lake_root = tmp_path / "lake"
     old = datetime.now(UTC) - timedelta(days=3)

@@ -168,6 +168,19 @@ HISTORICAL_RESEARCH_DATASETS = {
     "v5_entry_quality_history_metrics",
 }
 EVENT_DRIVEN_OK_STATUSES = {"event_driven_no_recent_trade"}
+STALE_DATASET_SCHEMA: dict[str, Any] = {
+    "takeaway": pl.Utf8,
+    "severity": pl.Utf8,
+    "next_action": pl.Utf8,
+    "dataset": pl.Utf8,
+    "rows": pl.Int64,
+    "status": pl.Utf8,
+    "path": pl.Utf8,
+    "freshness_seconds": pl.Int64,
+    "timestamp_column": pl.Utf8,
+    "latest_timestamp": pl.Utf8,
+    "warning": pl.Utf8,
+}
 
 DATASET_TIMESTAMP_COLUMNS: dict[str, tuple[str, ...]] = {
     "market_bar": ("ts",),
@@ -3413,7 +3426,9 @@ def _stale_dataset_rows(lake_root: str | Path) -> pl.DataFrame:
                     "warning": snapshot.warning or "",
                 }
             )
-    return pl.DataFrame(rows)
+    if not rows:
+        return pl.DataFrame(schema=STALE_DATASET_SCHEMA)
+    return pl.DataFrame(rows, schema=STALE_DATASET_SCHEMA, orient="row")
 
 
 def _stale_dataset_takeaway(dataset_name: str, status: str, snapshot: DatasetSnapshot) -> str:

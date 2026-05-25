@@ -5727,10 +5727,12 @@ def _v5_missed_opportunity_audit_for_export(
         ts = readers._coerce_timestamp(candidate.get("ts_utc") or candidate.get("ts"))
         if not symbol or symbol == "UNKNOWN" or ts is None:
             continue
-        regime_context = _market_regime_context_for_ts(
+        regime_context = _candidate_market_regime_context(
+            candidate,
             ts,
             regime_by_date,
             latest_regime_context,
+            market_by_symbol=market_by_symbol,
         )
         run_id = str(candidate.get("run_id") or "").strip()
         entry_price = _candidate_entry_price(candidate, market_by_symbol.get(symbol, []), ts)
@@ -5818,10 +5820,12 @@ def _risk_on_multi_buy_shadow_for_export(
         ts = readers._coerce_timestamp(candidate.get("ts_utc") or candidate.get("ts"))
         if ts is None:
             continue
-        regime_context = _market_regime_context_for_ts(
+        regime_context = _candidate_market_regime_context(
+            candidate,
             ts,
             regime_by_date,
             latest_regime_context,
+            market_by_symbol=market_by_symbol,
         )
         if not _risk_on_candidate_passes(candidate, regime_context):
             continue
@@ -6189,6 +6193,35 @@ def _market_regime_context_for_ts(
     return regime_by_date.get(day) or fallback or _empty_market_regime_context()
 
 
+def _candidate_market_regime_context(
+    candidate: dict[str, Any],
+    ts: datetime,
+    regime_by_date: dict[str, dict[str, Any]],
+    fallback: dict[str, Any],
+    *,
+    market_by_symbol: dict[str, list[dict[str, Any]]] | None = None,
+) -> dict[str, Any]:
+    base = dict(_market_regime_context_for_ts(ts, regime_by_date, fallback))
+    candidate_regime = candidate.get("current_regime") or candidate.get("regime_state")
+    if str(candidate_regime or "").strip():
+        base["current_regime"] = _risk_on_regime_name(candidate_regime)
+    candidate_broad = _optional_int(candidate.get("broad_market_positive_count"))
+    if candidate_broad is not None:
+        base["broad_market_positive_count"] = candidate_broad
+    candidate_btc = _optional_float(candidate.get("btc_24h_return_bps"))
+    if candidate_btc is not None:
+        base["btc_24h_return_bps"] = candidate_btc
+    elif market_by_symbol:
+        computed_btc = _historical_return_bps(
+            market_by_symbol.get("BTC-USDT", []),
+            ts.astimezone(UTC),
+            24,
+        )
+        if computed_btc is not None:
+            base["btc_24h_return_bps"] = computed_btc
+    return base
+
+
 def _market_regime_row_date(row: dict[str, Any]) -> str | None:
     raw = row.get("as_of_date") or row.get("date") or row.get("day")
     if raw:
@@ -6249,6 +6282,32 @@ def _market_close_at_or_after(
         if row["ts"] >= ts:
             return _optional_float(row.get("close"))
     return _optional_float(market_rows[-1].get("close"))
+
+
+def _market_close_at_or_before(
+    market_rows: list[dict[str, Any]],
+    ts: datetime,
+) -> float | None:
+    if not market_rows:
+        return None
+    previous: float | None = None
+    for row in market_rows:
+        if row["ts"] > ts:
+            break
+        previous = _optional_float(row.get("close"))
+    return previous
+
+
+def _historical_return_bps(
+    market_rows: list[dict[str, Any]],
+    ts: datetime,
+    lookback_hours: int,
+) -> float | None:
+    current = _market_close_at_or_before(market_rows, ts)
+    previous = _market_close_at_or_before(market_rows, ts - timedelta(hours=lookback_hours))
+    if current is None or previous is None or previous <= 0:
+        return None
+    return (current / previous - 1.0) * 10000.0
 
 
 def _future_net_bps_after_shadow_cost(

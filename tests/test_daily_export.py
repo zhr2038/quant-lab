@@ -186,6 +186,7 @@ def test_export_includes_missed_opportunity_and_risk_on_multi_buy_shadow(tmp_pat
                 _bar(entry_ts + timedelta(hours=24), symbol=symbol, close=close_24h),
             ]
         )
+    bars.append(_bar(entry_ts - timedelta(hours=24), symbol="BTC-USDT", close=98.0))
     write_parquet_dataset(pl.DataFrame(bars), lake_root / "silver" / "market_bar")
     write_parquet_dataset(
         pl.DataFrame(
@@ -250,6 +251,13 @@ def test_export_includes_missed_opportunity_and_risk_on_multi_buy_shadow(tmp_pat
                     "broad_market_positive_count": 4,
                     "btc_24h_return_bps": 200.0,
                     "created_at": entry_ts,
+                },
+                {
+                    "as_of_date": "2026-05-11",
+                    "current_regime": "SIDEWAYS",
+                    "broad_market_positive_count": 0,
+                    "btc_24h_return_bps": -300.0,
+                    "created_at": entry_ts + timedelta(hours=12),
                 },
                 {
                     "as_of_date": "2026-05-12",

@@ -17,6 +17,7 @@ from quant_lab.research.alpha_factory import (
     build_alpha_factory_results,
     build_and_publish_alpha_factory,
     build_default_template_registry,
+    publish_alpha_factory_template_registry,
 )
 from quant_lab.research.portfolio import build_and_publish_research_portfolio_status
 from quant_lab.research.second_stage_alpha_factory import (
@@ -246,6 +247,18 @@ def test_alpha_factory_reads_template_registry_enabled_flags(tmp_path):
     assert "v5.futures_risk_off_hedge_proxy_shadow" not in set(
         results["strategy_candidate"].to_list()
     )
+
+
+def test_alpha_factory_refreshes_template_registry_publication_timestamp(tmp_path):
+    lake = tmp_path / "lake"
+    old = datetime(2026, 5, 24, tzinfo=UTC)
+    new = datetime(2026, 5, 25, 12, tzinfo=UTC)
+    registry = build_default_template_registry(old)
+    write_parquet_dataset(registry, lake / "gold" / "alpha_factory_template_registry")
+
+    published = publish_alpha_factory_template_registry(lake, generated_at=new)
+
+    assert set(published["created_at"].to_list()) == {new}
 
 
 def test_alpha_factory_decision_ladder_is_shadow_paper_only():

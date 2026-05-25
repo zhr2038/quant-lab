@@ -663,9 +663,12 @@ def publish_alpha_factory_template_registry(
     generated_at: datetime | None = None,
 ) -> pl.DataFrame:
     root = Path(lake_root)
+    published_at = generated_at or datetime.now(UTC)
     existing = read_parquet_dataset(root / ALPHA_FACTORY_TEMPLATE_REGISTRY_DATASET)
-    defaults = build_default_template_registry(generated_at)
+    defaults = build_default_template_registry(published_at)
     registry = _merge_template_registry(existing, defaults)
+    if not registry.is_empty():
+        registry = registry.with_columns(pl.lit(published_at).alias("created_at"))
     write_parquet_dataset(registry, root / ALPHA_FACTORY_TEMPLATE_REGISTRY_DATASET)
     return registry
 

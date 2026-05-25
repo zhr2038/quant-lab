@@ -15,6 +15,7 @@ ADVISORY_DECISIONS = {"KEEP_SHADOW", "REGIME_SHADOW", "PAPER_READY", "LIVE_SMALL
 SHADOW_DECISIONS = {"KEEP_SHADOW", "REGIME_SHADOW"}
 PAPER_DECISIONS = {"PAPER_READY", "LIVE_SMALL_READY"}
 LIVE_DECISIONS = {"LIVE_SMALL_READY"}
+LEGACY_NON_LIVE_ALLOWED_MODES = {"paper", "shadow", "sell_only"}
 
 
 def build_risk_advisory_context(
@@ -92,8 +93,14 @@ def apply_risk_advisory_context(
         live_block_reasons.append("quant_lab_advisory_permission_not_allow")
     live_block_reasons.append("quant_lab_live_command_not_allowed")
     live_block_reasons.append("v5_local_live_not_controlled_by_quant_lab")
+    allowed_modes = _safe_legacy_allowed_modes(permission, context)
     return permission.model_copy(
         update={
+            "allowed_modes": allowed_modes,
+            "max_gross_exposure": 0.0,
+            "max_single_weight": 0.0,
+            "max_gross_exposure_usdt": 0.0,
+            "max_single_order_usdt": 0.0,
             "system_safety_status": str(context.get("system_safety_status") or "UNKNOWN"),
             "core_alpha_gate_status": str(context.get("core_alpha_gate_status") or "UNKNOWN"),
             "core_alpha_dead": bool(context.get("core_alpha_dead")),
@@ -112,6 +119,44 @@ def apply_risk_advisory_context(
             "live_block_reasons": _dedupe(live_block_reasons),
         }
     )
+
+
+def _safe_legacy_allowed_modes(
+    permission: RiskPermission,
+    context: dict[str, Any],
+) -> list[str]:
+    """Keep the legacy field useful without exposing live escalation modes."""
+    if not _permission_is_active(permission):
+        return []
+    if permission.permission == RiskAction.SELL_ONLY:
+        return ["sell_only"]
+    if permission.permission != RiskAction.ALLOW:
+        return []
+
+    advisory_modes = [
+        str(mode)
+        for mode in context.get("allowed_advisory_modes") or []
+        if str(mode) in LEGACY_NON_LIVE_ALLOWED_MODES
+    ]
+    existing_modes = [
+        str(mode)
+        for mode in permission.allowed_modes
+        if str(mode) in LEGACY_NON_LIVE_ALLOWED_MODES
+    ]
+    return _dedupe([*existing_modes, *advisory_modes])
+
+
+def _permission_is_active(permission: RiskPermission) -> bool:
+    if permission.enforceable is False:
+        return False
+    if permission.permission_status is None:
+        return True
+    value = (
+        permission.permission_status.value
+        if hasattr(permission.permission_status, "value")
+        else str(permission.permission_status)
+    )
+    return value.startswith("ACTIVE_")
 
 
 def _strategy_opportunity_context(root: Path) -> dict[str, Any]:

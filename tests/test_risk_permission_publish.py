@@ -41,6 +41,13 @@ def test_publish_risk_permission_allows_live_ready_with_healthy_inputs(tmp_path)
 
     assert result.permission == "ALLOW"
     assert result.reasons == ["all_required_alpha_gates_live_ready"]
+    permission = read_parquet_dataset(lake / "gold" / "risk_permission").to_dicts()[0]
+    assert permission["allowed_modes"] == '["paper"]'
+    assert permission["allowed_live_modes"] == "[]"
+    assert permission["max_gross_exposure"] == 0
+    assert permission["max_single_weight"] == 0
+    assert "quant_lab_live_command_not_allowed" in permission["live_block_reasons"]
+    assert "v5_local_live_not_controlled_by_quant_lab" in permission["live_block_reasons"]
 
 
 def test_publish_risk_permission_ignores_bootstrap_gate_when_research_gate_exists(tmp_path):

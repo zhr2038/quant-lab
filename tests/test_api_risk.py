@@ -403,6 +403,50 @@ def test_live_permission_api_does_not_use_published_allow_when_core_alpha_dead(
     assert detail["permission"]["permission"] == "ABORT"
 
 
+def test_live_permission_api_strips_legacy_live_modes_from_published_allow(
+    tmp_path,
+    monkeypatch,
+):
+    lake = tmp_path / "lake"
+    monkeypatch.setenv("QUANT_LAB_LAKE_ROOT", str(lake))
+    monkeypatch.setenv("QUANT_LAB_RISK_PERMISSION_TTL_SECONDS", "3600")
+    _write_gate(lake, GateStatus.LIVE_READY)
+    _write_cost_bucket(lake)
+    _write_fresh_market_bar(lake)
+    as_of_ts = datetime.now(UTC)
+    _write_risk_permissions(
+        lake,
+        [
+            _risk_row(
+                strategy="v5",
+                version="5.0.0",
+                permission="ALLOW",
+                reasons='["legacy_allow_row"]',
+                as_of_ts=as_of_ts,
+                expires_at=as_of_ts + timedelta(hours=1),
+                source_bundle_ts=as_of_ts,
+                permission_status="ACTIVE_ALLOW",
+            )
+            | {
+                "allowed_modes": '["paper","live_canary"]',
+                "max_gross_exposure": 0.25,
+                "max_single_weight": 0.05,
+            }
+        ],
+    )
+
+    payload = _get_permission("v5", version="5.0.0")
+
+    assert payload["permission"] == "ALLOW"
+    assert payload["permission_status"] == "ACTIVE_ALLOW"
+    assert payload["allowed_modes"] == ["paper"]
+    assert payload["allowed_live_modes"] == []
+    assert payload["max_gross_exposure"] == 0.0
+    assert payload["max_single_weight"] == 0.0
+    assert "quant_lab_live_command_not_allowed" in payload["live_block_reasons"]
+    assert "v5_local_live_not_controlled_by_quant_lab" in payload["live_block_reasons"]
+
+
 def test_live_permission_api_reads_published_risk_permission(tmp_path, monkeypatch):
     lake = tmp_path / "lake"
     monkeypatch.setenv("QUANT_LAB_LAKE_ROOT", str(lake))
@@ -821,10 +865,10 @@ def test_live_permission_detail_flags_response_older_than_gold_latest(
     assert detail["api_consistency"]["compare_gold_latest_vs_api_response"] == "FAIL"
 
 
-def _get_permission(strategy: str) -> dict:
+def _get_permission(strategy: str, version: str = "v1") -> dict:
     response = TestClient(app).get(
         "/v1/risk/live-permission",
-        params={"strategy": strategy, "version": "v1"},
+        params={"strategy": strategy, "version": version},
     )
     assert response.status_code == 200
     return response.json()

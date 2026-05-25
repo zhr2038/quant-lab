@@ -1073,6 +1073,11 @@ CSV_SCHEMAS: dict[str, list[str]] = {
         "run_id",
         "decision_ts",
         "current_regime",
+        "regime_source",
+        "candidate_buy_count",
+        "market_regime_daily_state",
+        "v5_candidate_regime_state",
+        "trigger_reason",
         "broad_market_positive_count",
         "btc_24h_return_bps",
         "strategy_candidate",
@@ -5717,6 +5722,7 @@ def _entry_quality_live_block_reasons(row: dict[str, Any], recommended_mode: str
 
 RISK_ON_MULTI_BUY_SYMBOLS = {"BTC-USDT", "ETH-USDT", "SOL-USDT", "BNB-USDT"}
 RISK_ON_MULTI_BUY_COST_BPS = 30.0
+RISK_ON_MULTI_BUY_REGIMES = {"ALT_IMPULSE", "TREND_UP"}
 
 
 def _v5_missed_opportunity_audit_for_export(
@@ -5835,6 +5841,11 @@ def _risk_on_multi_buy_shadow_for_export(
         ts = readers._coerce_timestamp(candidate.get("ts_utc") or candidate.get("ts"))
         if ts is None:
             continue
+        market_regime_context = _market_regime_context_for_ts(
+            ts,
+            regime_by_date,
+            latest_regime_context,
+        )
         regime_context = _candidate_market_regime_context(
             candidate,
             ts,
@@ -5842,15 +5853,27 @@ def _risk_on_multi_buy_shadow_for_export(
             latest_regime_context,
             market_by_symbol=market_by_symbol,
         )
-        if not _risk_on_candidate_passes(candidate, regime_context):
-            continue
         run_id = str(candidate.get("run_id") or "").strip() or ts.astimezone(UTC).isoformat()
         grouped.setdefault(run_id, []).append(
-            candidate | {"_ts": ts.astimezone(UTC), "_regime_context": regime_context}
+            candidate
+            | {
+                "_ts": ts.astimezone(UTC),
+                "_regime_context": regime_context,
+                "_market_regime_context": market_regime_context,
+                "_v5_candidate_regime_state": _risk_on_candidate_v5_regime(candidate),
+            }
         )
     generated_at = datetime.now(UTC).isoformat()
     rows: list[dict[str, Any]] = []
-    for run_id, candidates in grouped.items():
+    for run_id, raw_candidates in grouped.items():
+        candidate_buy_count = _risk_on_candidate_buy_count(raw_candidates)
+        candidates = [
+            row
+            for row in raw_candidates
+            if _risk_on_candidate_passes(row, candidate_buy_count=candidate_buy_count)
+        ]
+        if not candidates:
+            continue
         candidates = sorted(
             candidates,
             key=lambda row: _optional_float(row.get("final_score")) or float("-inf"),
@@ -5868,6 +5891,10 @@ def _risk_on_multi_buy_shadow_for_export(
             selected_symbols = [symbol for symbol in selected_symbols if symbol]
             decision_ts = min(row["_ts"] for row in selected)
             selected_regime_context = selected[0].get("_regime_context") or latest_regime_context
+            selected_market_regime_context = (
+                selected[0].get("_market_regime_context") or latest_regime_context
+            )
+            trigger = _risk_on_trigger_context(selected[0], candidate_buy_count)
             selected_metrics: list[dict[str, Any]] = []
             for row in selected:
                 symbol = normalize_symbol(row.get("symbol"))
@@ -5938,6 +5965,15 @@ def _risk_on_multi_buy_shadow_for_export(
                         "run_id": run_id,
                         "decision_ts": decision_ts.isoformat(),
                         "current_regime": selected_regime_context.get("current_regime"),
+                        "regime_source": trigger["regime_source"],
+                        "candidate_buy_count": candidate_buy_count,
+                        "market_regime_daily_state": selected_market_regime_context.get(
+                            "current_regime"
+                        ),
+                        "v5_candidate_regime_state": selected_row.get(
+                            "_v5_candidate_regime_state"
+                        ),
+                        "trigger_reason": trigger["trigger_reason"],
                         "broad_market_positive_count": selected_regime_context.get(
                             "broad_market_positive_count"
                         ),
@@ -6378,28 +6414,78 @@ def _missed_opportunity_outcome(
 
 def _risk_on_candidate_passes(
     candidate: dict[str, Any],
-    regime_context: dict[str, Any],
+    *,
+    candidate_buy_count: int = 0,
 ) -> bool:
-    current_regime = _risk_on_regime_name(
-        candidate.get("current_regime")
-        or candidate.get("regime_state")
-        or regime_context.get("current_regime")
-        or ""
-    )
-    if current_regime not in {"ALT_IMPULSE", "TREND_UP"}:
-        return False
-    broad = (
-        _optional_int(candidate.get("broad_market_positive_count"))
-        or int(regime_context.get("broad_market_positive_count") or 0)
-    )
-    btc_return = _optional_float(regime_context.get("btc_24h_return_bps"))
-    if broad < 3 or btc_return is None or btc_return <= 0:
+    trigger = _risk_on_trigger_context(candidate, candidate_buy_count)
+    if not trigger["triggered"]:
         return False
     if not _candidate_is_strong_buy(candidate):
         return False
     if _optional_bool(candidate.get("cost_gate_verified")) is not True:
         return False
     return _optional_float(candidate.get("final_score")) is not None
+
+
+def _risk_on_trigger_context(
+    candidate: dict[str, Any],
+    candidate_buy_count: int,
+) -> dict[str, Any]:
+    market_context = candidate.get("_market_regime_context") or {}
+    market_regime = _risk_on_regime_name(market_context.get("current_regime") or "")
+    broad = int(market_context.get("broad_market_positive_count") or 0)
+    btc_return = _optional_float(market_context.get("btc_24h_return_bps"))
+    market_trigger = (
+        market_regime in RISK_ON_MULTI_BUY_REGIMES
+        and broad >= 3
+        and btc_return is not None
+        and btc_return > 0
+    )
+    v5_regime = _risk_on_candidate_v5_regime(candidate)
+    intraday_trigger = (
+        v5_regime in RISK_ON_MULTI_BUY_REGIMES and candidate_buy_count >= 2
+    )
+    if market_trigger:
+        return {
+            "triggered": True,
+            "regime_source": "market_regime_daily",
+            "trigger_reason": "market_regime_daily_risk_on",
+        }
+    if intraday_trigger:
+        return {
+            "triggered": True,
+            "regime_source": "v5_candidate_event",
+            "trigger_reason": "intraday_v5_candidate_risk_on",
+        }
+    return {
+        "triggered": False,
+        "regime_source": "none",
+        "trigger_reason": "risk_on_conditions_not_met",
+    }
+
+
+def _risk_on_candidate_buy_count(candidates: list[dict[str, Any]]) -> int:
+    symbols = {
+        normalize_symbol(candidate.get("symbol"))
+        for candidate in candidates
+        if _risk_on_candidate_v5_regime(candidate) in RISK_ON_MULTI_BUY_REGIMES
+        and _risk_on_candidate_is_buy(candidate)
+    }
+    return sum(1 for symbol in symbols if symbol and symbol != "UNKNOWN")
+
+
+def _risk_on_candidate_is_buy(candidate: dict[str, Any]) -> bool:
+    side = str(candidate.get("alpha6_side") or candidate.get("side") or "").lower()
+    return "buy" in side or "long" in side
+
+
+def _risk_on_candidate_v5_regime(candidate: dict[str, Any]) -> str:
+    return _risk_on_regime_name(
+        candidate.get("_v5_candidate_regime_state")
+        or candidate.get("current_regime")
+        or candidate.get("regime_state")
+        or ""
+    )
 
 
 def _risk_on_regime_name(value: Any) -> str:

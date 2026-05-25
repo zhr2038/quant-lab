@@ -365,6 +365,84 @@ def test_export_includes_missed_opportunity_and_risk_on_multi_buy_shadow(tmp_pat
     assert "top2" in risk_on_summary
 
 
+def test_risk_on_multi_buy_uses_intraday_v5_candidate_regime_when_daily_sideways():
+    entry_ts = datetime(2026, 5, 25, 6, tzinfo=UTC)
+    bars = []
+    for symbol, close_4h, close_8h, close_24h in [
+        ("BTC-USDT", 101.0, 102.0, 103.0),
+        ("BNB-USDT", 102.0, 103.0, 104.0),
+        ("SOL-USDT", 103.0, 104.0, 105.0),
+    ]:
+        bars.extend(
+            [
+                _bar(entry_ts, symbol=symbol, close=100.0),
+                _bar(entry_ts + timedelta(hours=4), symbol=symbol, close=close_4h),
+                _bar(entry_ts + timedelta(hours=8), symbol=symbol, close=close_8h),
+                _bar(entry_ts + timedelta(hours=24), symbol=symbol, close=close_24h),
+            ]
+        )
+    candidate_events = pl.DataFrame(
+        [
+            {
+                "run_id": "run-20260525",
+                "ts_utc": entry_ts.isoformat(),
+                "symbol": "SOL-USDT",
+                "alpha6_side": "buy",
+                "final_score": 91.0,
+                "expected_edge_bps": 90.0,
+                "required_edge_bps": 30.0,
+                "cost_gate_verified": True,
+                "final_decision": "BLOCKED",
+                "regime_state": "Trending",
+                "broad_market_positive_count": 1,
+            },
+            {
+                "run_id": "run-20260525",
+                "ts_utc": entry_ts.isoformat(),
+                "symbol": "BNB-USDT",
+                "alpha6_side": "buy",
+                "final_score": 88.0,
+                "expected_edge_bps": 85.0,
+                "required_edge_bps": 30.0,
+                "cost_gate_verified": True,
+                "final_decision": "OPEN_LONG",
+                "regime_state": "Trending",
+                "broad_market_positive_count": 1,
+            },
+        ]
+    )
+    market_regime = pl.DataFrame(
+        [
+            {
+                "as_of_date": "2026-05-25",
+                "current_regime": "SIDEWAYS",
+                "broad_market_positive_count": 1,
+                "btc_24h_return_bps": -20.0,
+                "created_at": entry_ts,
+            }
+        ]
+    )
+
+    risk_on = daily_export_module._risk_on_multi_buy_shadow_for_export(
+        candidate_events=candidate_events,
+        v5_trades=pl.DataFrame(),
+        market_bars=pl.DataFrame(bars),
+        market_regime=market_regime,
+        cost_buckets=pl.DataFrame(),
+    )
+
+    assert risk_on.height > 0
+    top2 = next(row for row in risk_on.to_dicts() if row["top_k"] == 2)
+    assert json.loads(top2["selected_symbols"]) == ["SOL-USDT", "BNB-USDT"]
+    assert top2["regime_source"] == "v5_candidate_event"
+    assert top2["trigger_reason"] == "intraday_v5_candidate_risk_on"
+    assert top2["candidate_buy_count"] == 2
+    assert top2["market_regime_daily_state"] == "SIDEWAYS"
+    assert top2["v5_candidate_regime_state"] == "TREND_UP"
+    assert top2["recommended_mode"] == "shadow"
+    assert float(top2["max_live_notional_usdt"]) == 0.0
+
+
 def test_member_row_count_counts_csv_without_materializing_rows() -> None:
     text = "a,b\n1,2\n3,4\n"
 

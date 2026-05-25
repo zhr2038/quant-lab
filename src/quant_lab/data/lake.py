@@ -312,7 +312,7 @@ def compact_parquet_directory_files(
 
     path = Path(directory_path)
     with _dataset_lock(path, timeout_seconds=120.0):
-        files = _direct_parquet_files(path)
+        files = _direct_compaction_source_files(path)
         return _compact_direct_parquet_files_unlocked(
             path,
             files,
@@ -769,6 +769,27 @@ def _direct_parquet_files(dataset_path: str | Path) -> list[Path]:
         for candidate in path.glob("*.parquet")
         if not _is_internal_lake_file(candidate) and _is_valid_parquet_file(candidate)
     )
+
+
+def _direct_compaction_source_files(dataset_path: str | Path) -> list[Path]:
+    """Return direct append files that still need compaction.
+
+    Hot append datasets accumulate small ``part_``/``api_`` style files between
+    compaction runs. Previously direct compaction also re-read existing
+    ``compact_*.parquet`` outputs on every run, causing large historical tables
+    to be decompressed repeatedly and pushing production memory into swap.
+    """
+
+    return [
+        file
+        for file in _direct_parquet_files(dataset_path)
+        if _is_direct_compaction_source_file(file)
+    ]
+
+
+def _is_direct_compaction_source_file(path: Path) -> bool:
+    name = path.name
+    return not (name.startswith("compact_") or name == "data.parquet")
 
 
 def _all_parquet_files(dataset_path: str | Path) -> list[Path]:

@@ -101,9 +101,12 @@ def test_scheduled_compaction_covers_hot_ws_datasets():
     assert "SKIP_COMPACT_RAW_OKX_WS" in script
     assert "COMPACT_RAW_OKX_WS=1" in unit
     assert "COMPACT_DATASET_TIMEOUT_SECONDS=300" in unit
-    assert "COMPACT_DIRECT_MAX_SOURCE_FILES=8" in unit
+    assert "COMPACT_DIRECT_MAX_SOURCE_FILES=4" in unit
     assert "COMPACT_DIRECT_MIN_SOURCE_FILES=64" in unit
-    assert "COMPACT_MAX_SOURCE_BATCH_BYTES=134217728" in unit
+    assert "COMPACT_MAX_SOURCE_BATCH_BYTES=67108864" in unit
+    assert "CPUQuota=40%" in unit
+    assert "MemoryHigh=2G" in unit
+    assert "MemoryMax=3G" in unit
     assert "--max-source-batch-bytes" in script
     assert "--direct-only" in script
     assert "START_DIRECT_COMPACT" in script

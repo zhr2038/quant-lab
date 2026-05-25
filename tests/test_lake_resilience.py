@@ -588,6 +588,38 @@ def test_compact_parquet_directory_files_preserves_partition_dirs(tmp_path):
     assert sorted(read_back["value"].to_list()) == [0, 1, 2, 3, 4, 99]
 
 
+def test_compact_parquet_directory_files_skips_existing_compact_outputs(tmp_path):
+    dataset = tmp_path / "lake" / "silver" / "orderbook_snapshot"
+    dataset.mkdir(parents=True)
+    pl.DataFrame([{"value": 100}]).write_parquet(dataset / "compact_existing.parquet")
+    for index in range(3):
+        pl.DataFrame([{"value": index}]).write_parquet(dataset / f"part-{index}.parquet")
+
+    result = compact_parquet_directory_files(dataset, target_rows_per_file=10)
+    direct_files = sorted(path.name for path in dataset.glob("*.parquet"))
+    read_back = read_parquet_dataset(dataset)
+
+    assert result.source_file_count == 3
+    assert result.output_file_count == 1
+    assert "compact_existing.parquet" in direct_files
+    assert not any(name.startswith("part-") for name in direct_files)
+    assert len(direct_files) == 2
+    assert sorted(read_back["value"].to_list()) == [0, 1, 2, 100]
+
+
+def test_compact_parquet_directory_files_noops_when_only_compact_outputs_exist(tmp_path):
+    dataset = tmp_path / "lake" / "silver" / "trade_print"
+    dataset.mkdir(parents=True)
+    pl.DataFrame([{"value": 1}]).write_parquet(dataset / "compact_existing.parquet")
+
+    result = compact_parquet_directory_files(dataset, target_rows_per_file=10)
+
+    assert result.source_file_count == 0
+    assert result.output_file_count == 0
+    assert (dataset / "compact_existing.parquet").exists()
+    assert read_parquet_dataset(dataset)["value"].to_list() == [1]
+
+
 def test_read_parquet_dataset_ignores_internal_compaction_and_temp_files(tmp_path):
     dataset = tmp_path / "lake" / "silver" / "v5_config_audit"
     dataset.mkdir(parents=True)

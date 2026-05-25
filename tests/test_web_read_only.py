@@ -356,7 +356,7 @@ def test_strategy_opportunity_web_takeaway_localizes_regime_router_candidates():
     frame = pl.DataFrame(
         [
             {
-                "strategy_candidate": "regime_router:ETH_F3_DOMINANT_ENTRY_PAPER_V1",
+                "strategy_candidate": "regime_router:ETH_USDT_F3_DOMINANT_ENTRY_PAPER_V1",
                 "symbol": "ALL",
                 "decision": "PAPER_READY",
                 "recommended_mode": "paper",
@@ -372,6 +372,7 @@ def test_strategy_opportunity_web_takeaway_localizes_regime_router_candidates():
     takeaway = localized["重点结论"][0]
     assert "行情路由：ETH F3 主导纸面策略" in takeaway
     assert "regime_router:" not in takeaway
+    assert "ETH_USDT_F3" not in takeaway
 
 
 def test_feature_summary_samples_feature_value(tmp_path, monkeypatch):

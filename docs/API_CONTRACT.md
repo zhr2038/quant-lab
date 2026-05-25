@@ -266,16 +266,22 @@ Example response:
 
 ## GET /v1/risk/live-permission
 
-Returns the current read-only risk permission for a strategy/version pair. The
-API reads `lake/gold/risk_permission` when published and fresh, otherwise it
-computes a conservative response from gate, cost, market-data, and V5 telemetry
-health. Published permissions older than
+Returns the current read-only risk permission and advisory safety context for a
+strategy/version pair. The API reads `lake/gold/risk_permission` when published
+and fresh, otherwise it computes a conservative response from gate, cost,
+market-data, and V5 telemetry health. Published permissions older than
 `QUANT_LAB_RISK_PERMISSION_TTL_SECONDS` (default `5400`) are treated as stale.
 If a published permission is expired, the API returns `NO_FRESH_PERMISSION`
 until the periodic `publish-risk-permission` job writes a fresh row. If the
 current recomputed context is more conservative than a still-fresh published
-row, the API returns the recomputed permission. It is a research permission
-signal, not an execution command.
+row, the API returns the recomputed permission.
+
+This endpoint is not a V5 live commander. `permission=ABORT` means quant-lab's
+research/advisory layer is not recommending live promotion; V5 local execution
+and kill-switch policy remain V5-owned. Use `allowed_advisory_modes` for
+shadow/paper display and `allowed_live_modes` for any future live escalation.
+In the current contract quant-lab keeps `allowed_live_modes=[]` unless a
+separate, explicitly reviewed live-small path is introduced.
 
 Request params:
 
@@ -287,19 +293,39 @@ Example response:
 ```json
 {
   "strategy": "v5",
-  "version": "v1",
-  "permission": "ALLOW",
-  "allowed_modes": ["paper", "live_canary"],
-  "max_gross_exposure": 0.25,
-  "max_single_weight": 0.05,
+  "version": "5.0.0",
+  "permission": "ABORT",
+  "permission_status": "ACTIVE_ABORT",
+  "enforceable": true,
+  "allowed_modes": [],
+  "allowed_advisory_modes": ["shadow", "paper"],
+  "allowed_live_modes": [],
+  "max_gross_exposure": 0.0,
+  "max_single_weight": 0.0,
   "cost_model_version": "costs-v1",
   "gate_version": "default-v0.1",
-  "reasons": ["all_required_alpha_gates_live_ready"],
-  "created_at": "2026-05-10T00:00:00Z"
+  "system_safety_status": "SAFE_FOR_ADVISORY",
+  "core_alpha_gate_status": "DEAD",
+  "core_alpha_dead": true,
+  "strategy_opportunities_available": true,
+  "live_block_reasons": [
+    "baseline_not_global_strategy_gate",
+    "no_strategy_live_small_ready",
+    "quant_lab_live_command_not_allowed",
+    "v5_local_live_not_controlled_by_quant_lab"
+  ],
+  "reasons": ["required_alpha_gate_dead"],
+  "created_at": "2026-05-10T00:00:00Z",
+  "as_of_ts": "2026-05-10T00:00:00Z",
+  "expires_at": "2026-05-10T01:30:00Z",
+  "contract_version": "risk_permission.v0.2"
 }
 ```
 
 Allowed permissions: `ALLOW`, `SELL_ONLY`, `ABORT`.
+Allowed live modes are intentionally separate from `allowed_modes`; strategy
+consumers must not infer live permission from historical `allowed_modes`
+compatibility fields when `allowed_live_modes` is empty.
 
 ## GET /v1/risk/live-permission-detail
 

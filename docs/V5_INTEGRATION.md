@@ -54,11 +54,27 @@ unavailable, it must write this exact audit value:
 decision_audit["cost_source"] = "quant_lab_unavailable_local_fallback"
 ```
 
-## Live Permission
+## Risk Permission And Advisory
 
-V5/V7 should request live permission before entering paper or live modes.
-Permission is a research/risk signal only; V5/V7 still decide and execute their
-own state transitions.
+V5/V7 can read quant-lab risk permission before entering paper or local live
+modes, but quant-lab is not the V5 live commander. Permission is a
+research/advisory signal only; V5/V7 still own execution, reconcile,
+positions, local kill-switches, and state transitions.
+
+Use the newer fields first:
+
+- `allowed_advisory_modes` tells V5 whether quant-lab has shadow/paper
+  opportunities worth displaying or recording.
+- `allowed_live_modes` is the only quant-lab field that may ever be interpreted
+  as live escalation advice. In the current production contract it is normally
+  empty.
+- `live_block_reasons` explains why quant-lab is not recommending live
+  promotion, for example `quant_lab_live_command_not_allowed` or
+  `v5_local_live_not_controlled_by_quant_lab`.
+
+Do not treat `permission=ABORT` as an instruction that V5 must stop local live
+trading. It means quant-lab is not recommending live promotion from the
+research/advisory layer.
 
 ```python
 from quant_lab.client import QuantLabPermissionError, QuantLabUnavailable
@@ -66,39 +82,35 @@ from quant_lab.client import QuantLabPermissionError, QuantLabUnavailable
 try:
     permission = client.get_live_permission(strategy="v5", version=STRATEGY_VERSION)
 except (QuantLabUnavailable, QuantLabPermissionError):
-    permission_value = operator_policy.default_when_quant_lab_unavailable
-    if permission_value not in {"ABORT", "SELL_ONLY"}:
-        permission_value = "ABORT"
+    decision_audit["quant_lab_permission"] = "UNAVAILABLE"
+    decision_audit["quant_lab_advisory_modes"] = []
+    decision_audit["quant_lab_live_modes"] = []
 else:
-    permission_value = permission.permission
+    decision_audit["quant_lab_permission"] = permission.permission
+    decision_audit["quant_lab_permission_status"] = permission.permission_status
+    decision_audit["quant_lab_advisory_modes"] = permission.allowed_advisory_modes
+    decision_audit["quant_lab_live_modes"] = permission.allowed_live_modes
+    decision_audit["quant_lab_live_block_reasons"] = permission.live_block_reasons
 
-if permission_value == "ABORT":
-    decision_audit["quant_lab_permission"] = "ABORT"
-    return "ABORT"
+    if target_mode in {"shadow", "paper"}:
+        if target_mode not in permission.allowed_advisory_modes:
+            decision_audit["quant_lab_advisory"] = "NOT_RECOMMENDED"
+        else:
+            decision_audit["quant_lab_advisory"] = "RECOMMENDED"
 
-if permission_value == "SELL_ONLY":
-    decision_audit["quant_lab_permission"] = "SELL_ONLY"
-    risk_mode = "SELL_ONLY"
-    return risk_mode
-
-if permission_value == "ALLOW":
-    if target_mode not in permission.allowed_modes:
-        decision_audit["quant_lab_permission"] = "MODE_NOT_ALLOWED"
-        return "ABORT"
-    decision_audit["quant_lab_permission"] = "ALLOW"
-    decision_audit["max_gross_exposure"] = permission.max_gross_exposure
-    decision_audit["max_single_weight"] = permission.max_single_weight
+    if target_mode.startswith("live") and target_mode not in permission.allowed_live_modes:
+        decision_audit["quant_lab_live_advisory"] = "NOT_RECOMMENDED"
 ```
 
-If live permission cannot be read, the default must be conservative:
-
-- `ABORT`, or
-- `SELL_ONLY` if the V5 operator policy explicitly allows that degraded mode.
+If quant-lab cannot be read, V5 should record the failure and use its own
+operator-approved local degraded policy. quant-lab unavailability must not cause
+V5 to invent a live approval.
 
 ## Gate Decision
 
-Gate decisions are read from quant-lab and used as evidence. V5/V7 must not
-write gold gate tables.
+Gate decisions are read from quant-lab and used as evidence. The generic
+`v5.core.momentum` gate is a research baseline, not the global V5 live gate.
+V5/V7 must not write gold gate tables.
 
 ```python
 decision = client.get_gate_decision(alpha_id="mean-reversion-btc-1h")
@@ -110,7 +122,7 @@ if decision.status == "QUARANTINE":
 if decision.status == "PAPER_READY":
     target_mode = "paper"
 if decision.status == "LIVE_READY":
-    target_mode = "live_canary"
+    target_mode = "paper_or_manual_live_review"
 ```
 
 ## Boundary

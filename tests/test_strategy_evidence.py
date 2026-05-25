@@ -294,6 +294,44 @@ def test_strategy_evidence_incremental_summary_uses_recent_sample_window(tmp_pat
     assert latest["sample_count"][0] == 1
 
 
+def test_strategy_evidence_incremental_appends_without_rewriting_history(tmp_path):
+    lake = tmp_path / "lake"
+    old_ts = datetime(2026, 5, 1, tzinfo=UTC)
+    recent_ts = datetime(2026, 5, 10, tzinfo=UTC)
+
+    _write_single_candidate_label(lake, candidate_id="old", ts=old_ts)
+    build_and_publish_strategy_evidence(lake, as_of_date="2026-05-01", mode="full")
+    sample_path = lake / "gold" / "strategy_evidence_sample"
+    original_files = set(sample_path.glob("*.parquet"))
+
+    _write_single_candidate_label(lake, candidate_id="recent", ts=recent_ts)
+    build_and_publish_strategy_evidence(
+        lake,
+        as_of_date="2026-05-10",
+        mode="incremental",
+        lookback_days=2,
+    )
+    after_incremental_files = set(sample_path.glob("*.parquet"))
+    samples = read_parquet_dataset(sample_path)
+
+    assert original_files
+    assert original_files.issubset(after_incremental_files)
+    assert len(after_incremental_files) > len(original_files)
+    assert set(samples["candidate_id"].to_list()) == {"old", "recent"}
+
+    build_and_publish_strategy_evidence(
+        lake,
+        as_of_date="2026-05-10",
+        mode="incremental",
+        lookback_days=2,
+    )
+    after_rerun_files = set(sample_path.glob("*.parquet"))
+    rerun_samples = read_parquet_dataset(sample_path)
+
+    assert after_rerun_files == after_incremental_files
+    assert rerun_samples.height == 2
+
+
 def test_strategy_evidence_incremental_mode_skips_historical_outcome_inputs(tmp_path):
     lake = tmp_path / "lake"
     now = datetime(2026, 5, 10, tzinfo=UTC)

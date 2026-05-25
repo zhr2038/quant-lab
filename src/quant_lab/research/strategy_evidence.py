@@ -13,9 +13,10 @@ import polars as pl
 from pydantic import BaseModel, ConfigDict, Field
 
 from quant_lab.data.lake import (
+    append_parquet_dataset,
+    count_parquet_rows,
     read_parquet_dataset,
     read_parquet_lazy,
-    upsert_parquet_dataset,
     write_parquet_dataset,
 )
 from quant_lab.research.evidence import DEFAULT_RESEARCH_COST_BPS
@@ -36,6 +37,15 @@ HORIZON_HOURS = (4, 8, 12, 24, 48, 72, 120)
 DEFAULT_INCREMENTAL_LOOKBACK_DAYS = 8
 LIVE_READY_COST_SOURCES = {"mixed_actual_proxy", "actual_fills"}
 LIVE_BLOCKING_COST_SOURCES = {"global_default", "cost_not_requested_no_order"}
+STRATEGY_EVIDENCE_SAMPLE_KEY_COLUMNS = [
+    "strategy",
+    "source_type",
+    "candidate_id",
+    "symbol",
+    "strategy_candidate",
+    "horizon_hours",
+    "source_event_key",
+]
 
 STRATEGY_CANDIDATES = (
     "v5.btc_leadership_probe_strict",
@@ -213,6 +223,8 @@ def build_and_publish_strategy_evidence(
         root,
         samples,
         replace_as_of_dates=normalized_mode == "full",
+        as_of_date=day,
+        lookback_days=lookback_days,
     )
     summary_rows = publish_strategy_evidence_summary(root, summaries)
     publish_strategy_evidence_quality(root, day, warnings)
@@ -335,24 +347,19 @@ def publish_strategy_evidence_samples(
     samples: pl.DataFrame,
     *,
     replace_as_of_dates: bool = True,
+    as_of_date: date | None = None,
+    lookback_days: int = DEFAULT_INCREMENTAL_LOOKBACK_DAYS,
 ) -> int:
     dataset_path = Path(lake_root) / STRATEGY_EVIDENCE_SAMPLE_DATASET
     if samples.is_empty():
-        return read_parquet_dataset(dataset_path).height
+        return count_parquet_rows(dataset_path)
     samples = normalize_strategy_evidence_samples(samples)
     if not replace_as_of_dates:
-        return upsert_parquet_dataset(
-            samples,
+        return _append_incremental_strategy_evidence_samples(
             dataset_path,
-            key_columns=[
-                "strategy",
-                "source_type",
-                "candidate_id",
-                "symbol",
-                "strategy_candidate",
-                "horizon_hours",
-                "source_event_key",
-            ],
+            samples,
+            as_of_date=as_of_date,
+            lookback_days=lookback_days,
         )
     existing = read_parquet_dataset(dataset_path)
     if _needs_formal_schema_replace(existing, ["strategy", "candidate_id", "horizon_hours"]):
@@ -362,6 +369,56 @@ def publish_strategy_evidence_samples(
     normalized = _drop_unknown_symbol_rows(normalize_strategy_evidence_samples(combined))
     write_parquet_dataset(normalized, dataset_path)
     return normalized.height
+
+
+def _append_incremental_strategy_evidence_samples(
+    dataset_path: Path,
+    samples: pl.DataFrame,
+    *,
+    as_of_date: date | None,
+    lookback_days: int,
+) -> int:
+    existing_total = count_parquet_rows(dataset_path)
+    if existing_total == 0:
+        write_parquet_dataset(samples, dataset_path)
+        return samples.height
+
+    try:
+        existing_columns = read_parquet_lazy(dataset_path).collect_schema().names()
+    except Exception:
+        existing_columns = read_parquet_dataset(dataset_path).columns
+    if not {"strategy", "candidate_id", "horizon_hours"}.issubset(existing_columns):
+        write_parquet_dataset(samples, dataset_path)
+        return samples.height
+
+    day = as_of_date or _latest_sample_as_of_date(samples)
+    samples = samples.unique(
+        subset=[
+            column for column in STRATEGY_EVIDENCE_SAMPLE_KEY_COLUMNS if column in samples.columns
+        ],
+        keep="last",
+        maintain_order=True,
+    )
+    recent_existing = _read_recent_dataset(
+        dataset_path,
+        day=day,
+        lookback_days=lookback_days,
+        timestamp_columns=("ts_utc", "decision_ts", "label_ts"),
+    )
+    if recent_existing.is_empty():
+        new_samples = samples
+    else:
+        existing_keys = _sample_key_set(normalize_strategy_evidence_samples(recent_existing))
+        new_rows = [
+            row
+            for row in samples.to_dicts()
+            if _sample_key(row) not in existing_keys
+        ]
+        if not new_rows:
+            return existing_total
+        new_samples = pl.DataFrame(new_rows, schema=SAMPLE_SCHEMA, orient="row")
+    append_parquet_dataset(new_samples, dataset_path, target_rows_per_file=250_000)
+    return existing_total + new_samples.height
 
 
 def publish_strategy_evidence_quality(
@@ -500,6 +557,54 @@ def _samples_for_summary(
         keep="last",
         maintain_order=True,
     )
+
+
+def _latest_sample_as_of_date(samples: pl.DataFrame) -> date:
+    if samples.is_empty():
+        return datetime.now(UTC).date()
+    if "as_of_date" in samples.columns:
+        values = [
+            _parse_date(value)
+            for value in samples["as_of_date"].drop_nulls().cast(pl.Utf8).to_list()
+        ]
+        values = [value for value in values if value is not None]
+        if values:
+            return max(values)
+    if "ts_utc" in samples.columns:
+        timestamps = [
+            value
+            for value in (
+                samples.select(
+                    _utc_datetime_expr("ts_utc").alias("ts_utc")
+                )["ts_utc"].drop_nulls().to_list()
+            )
+            if isinstance(value, datetime)
+        ]
+        if timestamps:
+            return max(timestamps).date()
+    return datetime.now(UTC).date()
+
+
+def _parse_date(value: Any) -> date | None:
+    if isinstance(value, date) and not isinstance(value, datetime):
+        return value
+    text = str(value or "").strip()
+    if not text:
+        return None
+    try:
+        return date.fromisoformat(text[:10])
+    except ValueError:
+        return None
+
+
+def _sample_key_set(samples: pl.DataFrame) -> set[tuple[str, ...]]:
+    if samples.is_empty():
+        return set()
+    return {_sample_key(row) for row in samples.to_dicts()}
+
+
+def _sample_key(row: dict[str, Any]) -> tuple[str, ...]:
+    return tuple(str(row.get(column) or "") for column in STRATEGY_EVIDENCE_SAMPLE_KEY_COLUMNS)
 
 
 def _read_recent_dataset(

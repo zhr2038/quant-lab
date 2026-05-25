@@ -44,6 +44,7 @@ from quant_lab.research.baselines import (
     RESEARCH_BASELINE_ROLE,
     alpha_role,
 )
+from quant_lab.research.bnb_swing_exit_policy import bnb_swing_exit_policy_summary_md
 from quant_lab.research.btc_probe_exit_policy import btc_probe_exit_policy_summary_md
 from quant_lab.research.paper_tracking import (
     build_paper_slippage_coverage,
@@ -220,6 +221,8 @@ SECTION_DATASETS = {
         "v5_pullback_reversal_rule_comparison",
         "btc_probe_exit_policy_review",
         "btc_probe_exit_policy_summary",
+        "bnb_swing_exit_policy_review",
+        "bnb_swing_exit_policy_summary",
         "exit_policy_review_sample",
         "exit_policy_review_summary",
         "v5_entry_quality_advisory",
@@ -371,6 +374,8 @@ REQUIRED_MEMBERS = [
     "reports/pullback_reversal_v2_readiness.json",
     "reports/btc_probe_exit_policy_review.csv",
     "reports/btc_probe_exit_policy_summary.md",
+    "reports/bnb_swing_exit_policy_review.csv",
+    "reports/bnb_swing_exit_policy_summary.md",
     "reports/exit_policy_review.csv",
     "reports/exit_policy_summary.md",
     "reports/pullback_reversal_by_symbol.csv",
@@ -1828,6 +1833,38 @@ CSV_SCHEMAS: dict[str, list[str]] = {
         "schema_version",
         "contract_version",
     ],
+    "reports/bnb_swing_exit_policy_review.csv": [
+        "as_of_date",
+        "strategy_candidate",
+        "symbol",
+        "run_id",
+        "source_entry_id",
+        "entry_ts",
+        "entry_px",
+        "highest_px_after_entry",
+        "max_unrealized_bps",
+        "actual_exit_ts",
+        "actual_exit_px",
+        "actual_exit_net_bps",
+        "fixed_hold_4h_net_bps",
+        "fixed_hold_8h_net_bps",
+        "fixed_hold_12h_net_bps",
+        "fixed_hold_24h_net_bps",
+        "profit_lock_30bps_exit",
+        "profit_lock_50bps_exit",
+        "trailing_atr_exit",
+        "best_exit_policy",
+        "best_exit_net_bps",
+        "delta_vs_actual_bps",
+        "exit_reason",
+        "selected_roundtrip_cost_bps",
+        "diagnosis",
+        "status",
+        "generated_at_utc",
+        "generated_from_bundle_id",
+        "schema_version",
+        "contract_version",
+    ],
     "reports/exit_policy_review.csv": [
         "as_of_date",
         "generated_at",
@@ -2945,6 +2982,8 @@ def _dataset_members(frames: dict[str, pl.DataFrame]) -> dict[str, _MemberPayloa
     )
     btc_probe_exit_policy_review = frames.get("btc_probe_exit_policy_review", pl.DataFrame())
     btc_probe_exit_policy_summary = frames.get("btc_probe_exit_policy_summary", pl.DataFrame())
+    bnb_swing_exit_policy_review = frames.get("bnb_swing_exit_policy_review", pl.DataFrame())
+    bnb_swing_exit_policy_summary = frames.get("bnb_swing_exit_policy_summary", pl.DataFrame())
     exit_policy_review_sample = frames.get("exit_policy_review_sample", pl.DataFrame())
     exit_policy_review_summary = frames.get("exit_policy_review_summary", pl.DataFrame())
     entry_quality_advisory = frames.get("v5_entry_quality_advisory", pl.DataFrame())
@@ -3352,6 +3391,14 @@ def _dataset_members(frames: dict[str, pl.DataFrame]) -> dict[str, _MemberPayloa
         "reports/btc_probe_exit_policy_summary.md": btc_probe_exit_policy_summary_md(
             btc_probe_exit_policy_summary,
             btc_probe_exit_policy_review,
+        ),
+        "reports/bnb_swing_exit_policy_review.csv": _csv_member(
+            "reports/bnb_swing_exit_policy_review.csv",
+            bnb_swing_exit_policy_review,
+        ),
+        "reports/bnb_swing_exit_policy_summary.md": bnb_swing_exit_policy_summary_md(
+            bnb_swing_exit_policy_summary,
+            bnb_swing_exit_policy_review,
         ),
         "reports/exit_policy_review.csv": _csv_member(
             "reports/exit_policy_review.csv",
@@ -3867,6 +3914,16 @@ def _refresh_v5_derived_outputs(lake_root: Path, export_day: date) -> list[str]:
                 "quant_lab.research.btc_probe_exit_policy",
                 fromlist=["build_and_publish_btc_probe_exit_policy_review"],
             ).build_and_publish_btc_probe_exit_policy_review(
+                lake_root,
+                as_of_date=export_day,
+            ),
+        ),
+        (
+            "build_bnb_swing_exit_policy_review",
+            lambda: __import__(
+                "quant_lab.research.bnb_swing_exit_policy",
+                fromlist=["build_and_publish_bnb_swing_exit_policy_review"],
+            ).build_and_publish_bnb_swing_exit_policy_review(
                 lake_root,
                 as_of_date=export_day,
             ),

@@ -250,6 +250,13 @@ def test_export_includes_missed_opportunity_and_risk_on_multi_buy_shadow(tmp_pat
                     "broad_market_positive_count": 4,
                     "btc_24h_return_bps": 200.0,
                     "created_at": entry_ts,
+                },
+                {
+                    "as_of_date": "2026-05-12",
+                    "current_regime": "RISK_OFF",
+                    "broad_market_positive_count": 1,
+                    "btc_24h_return_bps": -300.0,
+                    "created_at": entry_ts + timedelta(days=1),
                 }
             ]
         ),
@@ -327,7 +334,7 @@ def test_export_includes_missed_opportunity_and_risk_on_multi_buy_shadow(tmp_pat
 
     outcomes = {row["symbol"]: row["outcome_if_blocked"] for row in missed_rows}
     assert outcomes["BNB-USDT"] == "quant_lab_would_have_missed_profit"
-    assert outcomes["SOL-USDT"] == "v5_missed_opportunity"
+    assert outcomes["SOL-USDT"] == "v5_missed_profit_opportunity"
     assert any(
         row["strategy_candidate"] == "v5.risk_on_multi_buy_top1_shadow"
         for row in risk_on_rows

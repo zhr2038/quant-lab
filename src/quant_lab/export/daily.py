@@ -5718,7 +5718,8 @@ def _v5_missed_opportunity_audit_for_export(
     market_by_symbol = _market_close_rows_by_symbol(market_bars)
     advisory_by_symbol = _latest_advisory_by_symbol(opportunity_advisory)
     trade_opened = _actual_open_trade_symbols_by_run(v5_trades)
-    regime_context = _latest_market_regime_context(market_regime)
+    regime_by_date = _market_regime_context_by_date(market_regime)
+    latest_regime_context = _latest_market_regime_context(market_regime)
     generated_at = datetime.now(UTC).isoformat()
     rows: list[dict[str, Any]] = []
     for candidate in candidate_events.to_dicts():
@@ -5726,6 +5727,11 @@ def _v5_missed_opportunity_audit_for_export(
         ts = readers._coerce_timestamp(candidate.get("ts_utc") or candidate.get("ts"))
         if not symbol or symbol == "UNKNOWN" or ts is None:
             continue
+        regime_context = _market_regime_context_for_ts(
+            ts,
+            regime_by_date,
+            latest_regime_context,
+        )
         run_id = str(candidate.get("run_id") or "").strip()
         entry_price = _candidate_entry_price(candidate, market_by_symbol.get(symbol, []), ts)
         future = {
@@ -5798,7 +5804,8 @@ def _risk_on_multi_buy_shadow_for_export(
     if candidate_events.is_empty():
         return _empty_csv_schema_frame(path)
     market_by_symbol = _market_close_rows_by_symbol(market_bars)
-    regime_context = _latest_market_regime_context(market_regime)
+    regime_by_date = _market_regime_context_by_date(market_regime)
+    latest_regime_context = _latest_market_regime_context(market_regime)
     actual_opened = _actual_open_trade_symbols_by_run(v5_trades)
     shadow_cost_by_symbol = _risk_on_shadow_cost_by_symbol(
         cost_buckets if cost_buckets is not None else pl.DataFrame()
@@ -5809,10 +5816,19 @@ def _risk_on_multi_buy_shadow_for_export(
         if symbol not in RISK_ON_MULTI_BUY_SYMBOLS:
             continue
         ts = readers._coerce_timestamp(candidate.get("ts_utc") or candidate.get("ts"))
-        if ts is None or not _risk_on_candidate_passes(candidate, regime_context):
+        if ts is None:
+            continue
+        regime_context = _market_regime_context_for_ts(
+            ts,
+            regime_by_date,
+            latest_regime_context,
+        )
+        if not _risk_on_candidate_passes(candidate, regime_context):
             continue
         run_id = str(candidate.get("run_id") or "").strip() or ts.astimezone(UTC).isoformat()
-        grouped.setdefault(run_id, []).append(candidate | {"_ts": ts.astimezone(UTC)})
+        grouped.setdefault(run_id, []).append(
+            candidate | {"_ts": ts.astimezone(UTC), "_regime_context": regime_context}
+        )
     generated_at = datetime.now(UTC).isoformat()
     rows: list[dict[str, Any]] = []
     for run_id, candidates in grouped.items():
@@ -5832,6 +5848,7 @@ def _risk_on_multi_buy_shadow_for_export(
             selected_symbols = [normalize_symbol(row.get("symbol")) for row in selected]
             selected_symbols = [symbol for symbol in selected_symbols if symbol]
             decision_ts = min(row["_ts"] for row in selected)
+            selected_regime_context = selected[0].get("_regime_context") or latest_regime_context
             selected_metrics: list[dict[str, Any]] = []
             for row in selected:
                 symbol = normalize_symbol(row.get("symbol"))
@@ -5901,11 +5918,13 @@ def _risk_on_multi_buy_shadow_for_export(
                         "schema_version": "v5_risk_on_multi_buy_shadow.v0.2",
                         "run_id": run_id,
                         "decision_ts": decision_ts.isoformat(),
-                        "current_regime": regime_context.get("current_regime"),
-                        "broad_market_positive_count": regime_context.get(
+                        "current_regime": selected_regime_context.get("current_regime"),
+                        "broad_market_positive_count": selected_regime_context.get(
                             "broad_market_positive_count"
                         ),
-                        "btc_24h_return_bps": regime_context.get("btc_24h_return_bps"),
+                        "btc_24h_return_bps": selected_regime_context.get(
+                            "btc_24h_return_bps"
+                        ),
                         "strategy_candidate": strategy_candidate,
                         "top_k": top_k,
                         "selected_symbols": safe_json_dumps(selected_symbols),
@@ -6142,17 +6161,62 @@ def _actual_open_trade_symbols_by_run(v5_trades: pl.DataFrame) -> set[tuple[str,
 
 def _latest_market_regime_context(market_regime: pl.DataFrame) -> dict[str, Any]:
     if market_regime.is_empty():
-        return {
-            "current_regime": "UNKNOWN",
-            "broad_market_positive_count": 0,
-            "btc_24h_return_bps": None,
-        }
+        return _empty_market_regime_context()
     row = max(market_regime.to_dicts(), key=_advisory_row_time)
+    return _market_regime_context_from_row(row)
+
+
+def _market_regime_context_by_date(market_regime: pl.DataFrame) -> dict[str, dict[str, Any]]:
+    if market_regime.is_empty():
+        return {}
+    latest_by_date: dict[str, dict[str, Any]] = {}
+    for row in market_regime.to_dicts():
+        as_of = _market_regime_row_date(row)
+        if not as_of:
+            continue
+        current = latest_by_date.get(as_of)
+        if current is None or _advisory_row_time(row) >= _advisory_row_time(current):
+            latest_by_date[as_of] = row
+    return {day: _market_regime_context_from_row(row) for day, row in latest_by_date.items()}
+
+
+def _market_regime_context_for_ts(
+    ts: datetime,
+    regime_by_date: dict[str, dict[str, Any]],
+    fallback: dict[str, Any],
+) -> dict[str, Any]:
+    day = ts.astimezone(UTC).date().isoformat()
+    return regime_by_date.get(day) or fallback or _empty_market_regime_context()
+
+
+def _market_regime_row_date(row: dict[str, Any]) -> str | None:
+    raw = row.get("as_of_date") or row.get("date") or row.get("day")
+    if raw:
+        text = str(raw).strip()
+        if text:
+            return text[:10]
+    ts = readers._coerce_timestamp(
+        row.get("created_at") or row.get("latest_bundle_ts") or row.get("ts")
+    )
+    if ts is None:
+        return None
+    return ts.astimezone(UTC).date().isoformat()
+
+
+def _market_regime_context_from_row(row: dict[str, Any]) -> dict[str, Any]:
     return {
-        "current_regime": str(row.get("current_regime") or "UNKNOWN").strip().upper(),
+        "current_regime": _risk_on_regime_name(row.get("current_regime") or "UNKNOWN"),
         "broad_market_positive_count": _optional_int(row.get("broad_market_positive_count"))
         or 0,
         "btc_24h_return_bps": _optional_float(row.get("btc_24h_return_bps")),
+    }
+
+
+def _empty_market_regime_context() -> dict[str, Any]:
+    return {
+        "current_regime": "UNKNOWN",
+        "broad_market_positive_count": 0,
+        "btc_24h_return_bps": None,
     }
 
 
@@ -6224,16 +6288,18 @@ def _missed_opportunity_outcome(
 ) -> str:
     observed = [value for value in future_net_bps.values() if value is not None]
     if not observed:
-        return "pending_future_label"
+        return "pending"
     best_future = max(observed)
     worst_future = min(observed)
     if actual_trade_opened and quant_lab_would_block_live and best_future > 0:
         return "quant_lab_would_have_missed_profit"
     if not actual_trade_opened and strong_candidate and best_future > 0:
-        return "v5_missed_opportunity"
+        return "v5_missed_profit_opportunity"
     if quant_lab_would_block_live and worst_future < 0:
         return "quant_lab_correctly_avoided_loss"
-    return "no_clear_missed_opportunity"
+    if not actual_trade_opened and strong_candidate and worst_future < 0:
+        return "v5_correctly_skipped_loss"
+    return "pending"
 
 
 def _risk_on_candidate_passes(

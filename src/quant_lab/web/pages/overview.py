@@ -28,9 +28,21 @@ def render(lake_root: str | Path, st_module: Any | None = None) -> None:
     st.metric("V5 风险权限", display_value(snapshot["v5_permission"]))
     st.metric("最新行情 K 线", display_unknown(snapshot["latest_market_bar_ts"]))
     st.metric("最新 V5 数据包", display_unknown(diagnostics.get("latest_v5_bundle_ts")))
-    fallback_ratio = snapshot["cost_fallback_ratio"]
-    st.metric("成本回退比例", "不适用" if fallback_ratio is None else f"{fallback_ratio:.2%}")
+    hard_fallback_ratio = snapshot.get("cost_hard_fallback_ratio")
+    soft_fallback_ratio = snapshot.get("cost_soft_fallback_ratio")
+    st.metric(
+        "成本硬回退比例",
+        "不适用" if hard_fallback_ratio is None else f"{hard_fallback_ratio:.2%}",
+    )
+    st.metric(
+        "成本软回退比例",
+        "不适用" if soft_fallback_ratio is None else f"{soft_fallback_ratio:.2%}",
+    )
     st.metric("Lake Parquet 文件数", diagnostics["parquet_file_count"])
+    st.caption(
+        "硬回退代表 global default、标的缺失、成本过期或服务不可用；"
+        "软回退代表样本不足、滑点未知或价差代理。"
+    )
 
     st.subheader("🎯 策略机会与入场质量")
     show_frame(

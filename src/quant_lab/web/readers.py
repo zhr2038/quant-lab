@@ -1086,6 +1086,8 @@ def dashboard_overview(lake_root: str | Path) -> dict[str, Any]:
         "latest_market_bar_ts": market_health["latest_market_bar_ts"],
         "missing_bar_ratio": market_health["missing_bar_ratio"],
         "cost_fallback_ratio": costs["fallback_ratio"],
+        "cost_hard_fallback_ratio": costs["hard_fallback_ratio"],
+        "cost_soft_fallback_ratio": costs["soft_fallback_ratio"],
         "alpha_gate_counts": gates["counts"],
         "latest_expert_pack": experts["latest_pack"],
         "strategy_opportunity_advisory": redact_frame(_strategy_opportunity_table(advisory)).head(

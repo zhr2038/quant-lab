@@ -1628,6 +1628,18 @@ def test_overview_diagnostics_shows_latest_market_bar_ts(tmp_path):
     assert ("最新行情 K 线", "2026-05-10 10:00:00 Asia/Shanghai") in metrics
 
 
+def test_overview_uses_hard_soft_cost_fallback_metrics(tmp_path):
+    lake_root = _fixture_lake(tmp_path)
+    fake = FakeStreamlit()
+
+    overview.render(lake_root, fake)
+
+    metrics = dict(_call_values(fake, "metric"))
+    assert metrics["成本硬回退比例"] == "0.00%"
+    assert metrics["成本软回退比例"] == "50.00%"
+    assert "成本回退比例" not in metrics
+
+
 def test_expert_exports_page_downloads_listed_packs(tmp_path):
     lake_root = _fixture_lake(tmp_path)
     fake = FakeStreamlit()
@@ -2219,6 +2231,35 @@ def _fixture_lake(tmp_path) -> Path:
             ]
         ),
         lake_root / "gold" / "cost_bucket_daily",
+    )
+    write_parquet_dataset(
+        pl.DataFrame(
+            [
+                {
+                    "day": "2026-05-10",
+                    "status": "WARNING",
+                    "actual_rows": 1,
+                    "mixed_rows": 0,
+                    "proxy_rows": 1,
+                    "global_default_rows": 0,
+                    "hard_fallback_count": 0,
+                    "hard_fallback_ratio": 0.0,
+                    "soft_fallback_count": 1,
+                    "soft_fallback_ratio": 0.5,
+                    "proxy_only_count": 1,
+                    "api_global_default_count": 0,
+                    "api_symbol_proxy_hit_count": 1,
+                    "api_regime_fallback_count": 0,
+                    "api_degraded_cost_count": 1,
+                    "symbols_with_actual_cost": "BTC-USDT",
+                    "symbols_with_mixed_cost": "",
+                    "symbols_with_proxy_only": "SOL-USDT",
+                    "warnings_json": '["soft_fallback_ratio_high"]',
+                    "created_at": start,
+                }
+            ]
+        ),
+        lake_root / "gold" / "cost_health_daily",
     )
     write_parquet_dataset(
         pl.DataFrame(

@@ -1696,7 +1696,7 @@ def test_data_quality_separates_generic_and_v5_decision_audit(tmp_path):
         )
 
     checks = {check["name"]: check for check in data_quality["checks"]}
-    assert checks["generic_decision_audit_present"]["status"] == "WARN"
+    assert checks["generic_decision_audit_present"]["status"] == "PASS"
     assert "legacy generic silver/decision_audit is optional for V5" in checks[
         "generic_decision_audit_present"
     ]["detail"]
@@ -1714,6 +1714,36 @@ def test_data_quality_separates_generic_and_v5_decision_audit(tmp_path):
         data_quality["quant_lab_enforce_readiness"]["metrics"]["decision_audit_count"]
         == 31
     )
+
+
+def test_gate_evidence_quality_ignores_bootstrap_placeholder_gate():
+    gates = pl.DataFrame(
+        [
+            {
+                "alpha_id": "v5.core",
+                "version": "bootstrap",
+                "status": "QUARANTINE",
+                "source": "bootstrap conservative placeholder",
+            },
+            {
+                "alpha_id": "v5.core.momentum",
+                "version": "v0.1",
+                "status": "DEAD",
+                "source": "gate_engine",
+            },
+        ]
+    )
+    evidence = pl.DataFrame(
+        [
+            {
+                "alpha_id": "v5.core.momentum",
+                "version": "v0.1",
+                "evidence_status": "ok",
+            }
+        ]
+    )
+
+    assert daily_export_module._gates_have_evidence(gates, evidence) is True
 
 
 def test_stale_rows_treat_v5_trade_event_as_event_driven_when_telemetry_current():

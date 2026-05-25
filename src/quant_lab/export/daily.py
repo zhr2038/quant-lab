@@ -4390,10 +4390,14 @@ def _data_quality_payload(
     checks.append(
         _check(
             "generic_decision_audit_present",
-            bool(decision_audit_quality["generic_decision_audit_present"]),
+            bool(
+                decision_audit_quality["generic_decision_audit_present"]
+                or decision_audit_quality["v5_decision_audit_present"]
+            ),
             (
                 "legacy generic silver/decision_audit is optional for V5; "
-                f"rows={decision_audit_quality['generic_decision_audit_rows']}"
+                f"rows={decision_audit_quality['generic_decision_audit_rows']}; "
+                f"v5_decision_audit_count={decision_audit_quality['v5_decision_audit_count']}"
             ),
             warning_only=True,
         )
@@ -8118,6 +8122,9 @@ def _schema_violation_rows(market: pl.DataFrame) -> pl.DataFrame:
 def _gates_have_evidence(gates: pl.DataFrame, evidence: pl.DataFrame) -> bool:
     if gates.is_empty() or evidence.is_empty():
         return False
+    gates = _non_bootstrap_gate_rows(gates)
+    if gates.is_empty():
+        return True
     keys = [
         key for key in ["alpha_id", "version"] if key in gates.columns and key in evidence.columns
     ]
@@ -8125,6 +8132,34 @@ def _gates_have_evidence(gates: pl.DataFrame, evidence: pl.DataFrame) -> bool:
         return False
     joined = gates.join(evidence.select(keys).unique(), on=keys, how="anti")
     return joined.is_empty()
+
+
+def _non_bootstrap_gate_rows(gates: pl.DataFrame) -> pl.DataFrame:
+    filtered = gates
+    for column in ["version", "source", "fallback_level"]:
+        if column not in filtered.columns:
+            continue
+        filtered = filtered.filter(
+            ~pl.col(column)
+            .fill_null("")
+            .cast(pl.Utf8)
+            .str.to_lowercase()
+            .str.contains("bootstrap")
+        )
+    if "alpha_id" in filtered.columns and "version" in filtered.columns:
+        filtered = filtered.filter(
+            ~(
+                pl.col("alpha_id").fill_null("").cast(pl.Utf8).str.ends_with(".core")
+                & (
+                    pl.col("version")
+                    .fill_null("")
+                    .cast(pl.Utf8)
+                    .str.to_lowercase()
+                    == "bootstrap"
+                )
+            )
+        )
+    return filtered
 
 
 def _strategy_evidence_has_required_candidates(strategy_evidence: pl.DataFrame) -> bool:

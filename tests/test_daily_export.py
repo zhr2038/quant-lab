@@ -169,6 +169,92 @@ def test_export_includes_v5_local_live_vs_quant_lab_shadow_report(tmp_path):
     assert row["block_outcome_8h"] == "avoided_loss_if_blocked"
 
 
+def test_export_continues_when_derived_gold_publication_is_denied(tmp_path, monkeypatch):
+    lake_root = _fixture_lake(tmp_path)
+    risk_on_frame = pl.DataFrame(
+        [
+            {
+                "generated_at": datetime(2026, 5, 25, 7, tzinfo=UTC),
+                "schema_version": "v5_risk_on_multi_buy_shadow.v0.2",
+                "run_id": "run-1",
+                "decision_ts": datetime(2026, 5, 25, 6, tzinfo=UTC),
+                "current_regime": "ALT_IMPULSE",
+                "regime_source": "v5_candidate_event",
+                "candidate_buy_count": 2,
+                "market_regime_daily_state": "SIDEWAYS",
+                "v5_candidate_regime_state": "Trending",
+                "trigger_reason": "intraday_v5_candidate_risk_on",
+                "broad_market_positive_count": 2,
+                "btc_24h_return_bps": 120.0,
+                "strategy_candidate": "v5.risk_on_multi_buy_top2_shadow",
+                "top_k": 2,
+                "selected_symbols": '["BNB-USDT","SOL-USDT"]',
+                "selected_count": 2,
+                "would_buy_symbol": "BNB-USDT",
+                "would_buy": True,
+                "would_size_usdt": 0.0,
+                "final_score": 0.91,
+                "expected_edge_bps": 40.0,
+                "required_edge_bps": 10.0,
+                "entry_px": 650.0,
+                "future_4h_net_bps": 12.0,
+                "future_8h_net_bps": 18.0,
+                "future_24h_net_bps": 25.0,
+                "avg_portfolio_net_bps": 21.5,
+                "actual_v5_bought_symbols": '["BNB-USDT"]',
+                "vs_actual_v5_net_bps": 4.0,
+                "missed_symbols": '["SOL-USDT"]',
+                "recommended_mode": "shadow",
+                "max_live_notional_usdt": 0.0,
+                "source": "quant_lab_risk_on_multi_buy_shadow",
+            }
+        ]
+    )
+
+    monkeypatch.setattr(
+        daily_export_module,
+        "_v5_missed_opportunity_audit_for_export",
+        lambda **_: pl.DataFrame(),
+    )
+    monkeypatch.setattr(
+        daily_export_module,
+        "_risk_on_multi_buy_shadow_for_export",
+        lambda **_: risk_on_frame,
+    )
+    original_write = daily_export_module.write_parquet_dataset
+
+    def failing_write(frame, dataset_path, *args, **kwargs):
+        if Path(dataset_path).name in {"v5_risk_on_multi_buy_shadow", "risk_on_multi_buy_shadow"}:
+            raise PermissionError("simulated lake permission drift")
+        return original_write(frame, dataset_path, *args, **kwargs)
+
+    monkeypatch.setattr(daily_export_module, "write_parquet_dataset", failing_write)
+
+    result = export_daily_pack(
+        export_date="2026-05-25",
+        lake_root=lake_root,
+        out_dir=tmp_path / "exports",
+        profile="expert",
+        command_line=["qlab", "export-daily"],
+        pre_export_v5_refresh=False,
+    )
+
+    assert any(
+        warning.startswith("v5_risk_on_multi_buy_shadow publish skipped: PermissionError")
+        for warning in result.warnings
+    )
+    with zipfile.ZipFile(result.zip_path) as archive:
+        rows = list(
+            csv.DictReader(
+                io.StringIO(archive.read("reports/risk_on_multi_buy_shadow.csv").decode("utf-8"))
+            )
+        )
+        manifest = json.loads(archive.read("manifest.json").decode("utf-8"))
+
+    assert rows[0]["strategy_candidate"] == "v5.risk_on_multi_buy_top2_shadow"
+    assert manifest["row_counts"]["v5_risk_on_multi_buy_shadow"] == 1
+
+
 def test_export_includes_missed_opportunity_and_risk_on_multi_buy_shadow(tmp_path):
     lake_root = tmp_path / "lake"
     entry_ts = datetime(2026, 5, 11, tzinfo=UTC)

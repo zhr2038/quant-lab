@@ -102,9 +102,27 @@ def _write_parquet_dataset_unlocked(
     sorted_df = _sort_dataframe(df)
 
     if partition_by:
-        _remove_existing_dataset(path)
-        path.mkdir(parents=True, exist_ok=True)
-        sorted_df.write_parquet(path, partition_by=partition_by, mkdir=True)
+        staging = path.parent / f"__{path.name}_write_{uuid.uuid4().hex}"
+        backup = path.parent / f"__{path.name}_backup_{uuid.uuid4().hex}"
+        try:
+            sorted_df.write_parquet(staging, partition_by=partition_by, mkdir=True)
+            if path.exists():
+                _replace_path(path, backup)
+            try:
+                _replace_path(staging, path)
+            except Exception:
+                if backup.exists() and not path.exists():
+                    _replace_path(backup, path)
+                raise
+            try:
+                _remove_existing_dataset(backup)
+            except OSError as exc:
+                logger.warning("failed to remove parquet dataset backup %s: %s", backup, exc)
+        except Exception:
+            _remove_existing_dataset(staging)
+            if backup.exists() and not path.exists():
+                _replace_path(backup, path)
+            raise
         return path
 
     if path.is_file():

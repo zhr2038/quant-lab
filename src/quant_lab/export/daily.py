@@ -2356,21 +2356,52 @@ def _publish_strategy_opportunity_advisory_snapshot(
     opportunity = _strategy_opportunity_advisory_from_frames(snapshot.frames)
     if opportunity.is_empty():
         return snapshot
-    write_parquet_dataset(
-        opportunity,
-        root / "gold" / "strategy_opportunity_advisory",
-    )
     frames = dict(snapshot.frames)
-    frames["strategy_opportunity_advisory"] = read_parquet_dataset(
-        root / "gold" / "strategy_opportunity_advisory"
-    )
     row_counts = dict(snapshot.row_counts)
-    row_counts["strategy_opportunity_advisory"] = opportunity.height
+    warnings = list(snapshot.warnings)
+    _publish_export_frame(
+        root,
+        frames=frames,
+        row_counts=row_counts,
+        warnings=warnings,
+        dataset_name="strategy_opportunity_advisory",
+        frame=opportunity,
+    )
     return _DatasetSnapshot(
         frames=frames,
         row_counts=row_counts,
-        warnings=snapshot.warnings,
+        warnings=warnings,
     )
+
+
+def _publish_export_frame(
+    root: Path,
+    *,
+    frames: dict[str, pl.DataFrame],
+    row_counts: dict[str, int],
+    warnings: list[str],
+    dataset_name: str,
+    frame: pl.DataFrame,
+) -> None:
+    """Best-effort publication for export-derived datasets.
+
+    Expert pack generation should remain available even when a production lake
+    directory has drifted to read-only or mixed ownership. In that case the
+    derived frame is still exported from memory and the failed lake publication
+    is surfaced as an explicit warning for ops follow-up.
+    """
+
+    dataset_path = root / readers.DATASET_PATHS.get(dataset_name, Path("gold") / dataset_name)
+    try:
+        write_parquet_dataset(frame, dataset_path)
+        frames[dataset_name] = read_parquet_dataset(dataset_path)
+    except Exception as exc:
+        frames[dataset_name] = frame
+        warnings.append(
+            f"{dataset_name} publish skipped: "
+            f"{type(exc).__name__}:{_safe_warning_text(str(exc))}"
+        )
+    row_counts[dataset_name] = frame.height
 
 
 def _publish_missed_opportunity_snapshot(
@@ -2393,28 +2424,37 @@ def _publish_missed_opportunity_snapshot(
         market_regime=frames.get("market_regime_daily", pl.DataFrame()),
         cost_buckets=frames.get("cost_bucket_daily", pl.DataFrame()),
     )
-    write_parquet_dataset(audit, root / "gold" / "v5_missed_opportunity_audit")
-    write_parquet_dataset(risk_on, root / "gold" / "v5_risk_on_multi_buy_shadow")
-    write_parquet_dataset(risk_on, root / "gold" / "risk_on_multi_buy_shadow")
-    frames["v5_missed_opportunity_audit"] = read_parquet_dataset(
-        root / "gold" / "v5_missed_opportunity_audit"
-    )
-    frames["v5_risk_on_multi_buy_shadow"] = read_parquet_dataset(
-        root / "gold" / "v5_risk_on_multi_buy_shadow"
-    )
-    frames["risk_on_multi_buy_shadow"] = read_parquet_dataset(
-        root / "gold" / "risk_on_multi_buy_shadow"
-    )
     row_counts = dict(snapshot.row_counts)
-    row_counts["v5_missed_opportunity_audit"] = audit.height
-    row_counts["v5_risk_on_multi_buy_shadow"] = risk_on.height
-    row_counts["risk_on_multi_buy_shadow"] = risk_on.height
     warnings = [
         warning
         for warning in snapshot.warnings
         if not warning.startswith("v5_missed_opportunity_audit dataset is ")
         and not warning.startswith("v5_risk_on_multi_buy_shadow dataset is ")
     ]
+    _publish_export_frame(
+        root,
+        frames=frames,
+        row_counts=row_counts,
+        warnings=warnings,
+        dataset_name="v5_missed_opportunity_audit",
+        frame=audit,
+    )
+    _publish_export_frame(
+        root,
+        frames=frames,
+        row_counts=row_counts,
+        warnings=warnings,
+        dataset_name="v5_risk_on_multi_buy_shadow",
+        frame=risk_on,
+    )
+    _publish_export_frame(
+        root,
+        frames=frames,
+        row_counts=row_counts,
+        warnings=warnings,
+        dataset_name="risk_on_multi_buy_shadow",
+        frame=risk_on,
+    )
     return _DatasetSnapshot(
         frames=frames,
         row_counts=row_counts,
@@ -2427,20 +2467,32 @@ def _publish_research_portfolio_status_snapshot(
     snapshot: _DatasetSnapshot,
     day: date,
 ) -> _DatasetSnapshot:
-    result = __import__(
-        "quant_lab.research.portfolio",
-        fromlist=["build_and_publish_research_portfolio_status"],
-    ).build_and_publish_research_portfolio_status(root, as_of_date=day)
     frames = dict(snapshot.frames)
-    frames["research_portfolio_status"] = dedupe_research_portfolio_status(
-        read_parquet_dataset(root / "gold" / "research_portfolio_status")
-    )
     row_counts = dict(snapshot.row_counts)
-    row_counts["research_portfolio_status"] = result.rows_written
+    warnings = list(snapshot.warnings)
+    try:
+        result = __import__(
+            "quant_lab.research.portfolio",
+            fromlist=["build_and_publish_research_portfolio_status"],
+        ).build_and_publish_research_portfolio_status(root, as_of_date=day)
+        frames["research_portfolio_status"] = dedupe_research_portfolio_status(
+            read_parquet_dataset(root / "gold" / "research_portfolio_status")
+        )
+        row_counts["research_portfolio_status"] = result.rows_written
+        warnings.extend(result.warnings)
+    except Exception as exc:
+        frames["research_portfolio_status"] = dedupe_research_portfolio_status(
+            frames.get("research_portfolio_status", pl.DataFrame())
+        )
+        row_counts["research_portfolio_status"] = frames["research_portfolio_status"].height
+        warnings.append(
+            "research_portfolio_status publish skipped: "
+            f"{type(exc).__name__}:{_safe_warning_text(str(exc))}"
+        )
     return _DatasetSnapshot(
         frames=frames,
         row_counts=row_counts,
-        warnings=snapshot.warnings + result.warnings,
+        warnings=warnings,
     )
 
 

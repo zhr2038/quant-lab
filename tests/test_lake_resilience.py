@@ -197,6 +197,37 @@ def test_write_parquet_dataset_keeps_previous_data_when_rewrite_fails(tmp_path, 
     assert not invalid_parquet_files(dataset)
 
 
+def test_partitioned_write_keeps_previous_data_when_rewrite_fails(tmp_path, monkeypatch):
+    dataset = tmp_path / "lake" / "silver" / "market_bar_partitioned"
+    write_parquet_dataset(
+        pl.DataFrame([{"day": "2026-05-25", "symbol": "BTC-USDT", "close": 100.0}]),
+        dataset,
+        partition_by="day",
+    )
+    original = read_parquet_dataset(dataset)
+    original_write_parquet = pl.DataFrame.write_parquet
+
+    def failing_write_parquet(self, file, *args, **kwargs):
+        if kwargs.get("partition_by") == "day":
+            raise OSError("simulated interrupted partitioned parquet write")
+        return original_write_parquet(self, file, *args, **kwargs)
+
+    monkeypatch.setattr(pl.DataFrame, "write_parquet", failing_write_parquet)
+
+    with pytest.raises(OSError, match="simulated interrupted partitioned parquet write"):
+        write_parquet_dataset(
+            pl.DataFrame([{"day": "2026-05-26", "symbol": "ETH-USDT", "close": 200.0}]),
+            dataset,
+            partition_by="day",
+        )
+
+    monkeypatch.setattr(pl.DataFrame, "write_parquet", original_write_parquet)
+    after = read_parquet_dataset(dataset)
+
+    assert after.to_dicts() == original.to_dicts()
+    assert not invalid_parquet_files(dataset)
+
+
 def test_concurrent_upserts_do_not_corrupt_parquet(tmp_path):
     dataset = tmp_path / "lake" / "silver" / "concurrent"
 

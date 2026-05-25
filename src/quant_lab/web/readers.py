@@ -130,6 +130,7 @@ OPTIONAL_EMPTY_DATASET_STATUSES = {
     "legacy_optional",
     "waiting_for_v5_paper_telemetry",
     "entry_quality_optional",
+    "historical_research_snapshot",
 }
 ENTRY_QUALITY_DATASETS = {
     "v5_missed_low_audit",
@@ -146,6 +147,14 @@ ENTRY_QUALITY_DATASETS = {
     "exit_policy_review_sample",
     "exit_policy_review_summary",
     "v5_entry_quality_advisory",
+    "v5_entry_quality_history_late_entry_chase_threshold_sensitivity",
+    "v5_entry_quality_history_pullback_by_symbol",
+    "v5_entry_quality_history_pullback_by_regime",
+    "v5_entry_quality_history_pullback_by_horizon",
+    "v5_entry_quality_history_anti_leakage_check",
+    "v5_entry_quality_history_metrics",
+}
+HISTORICAL_RESEARCH_DATASETS = {
     "v5_entry_quality_history_late_entry_chase_threshold_sensitivity",
     "v5_entry_quality_history_pullback_by_symbol",
     "v5_entry_quality_history_pullback_by_regime",
@@ -188,8 +197,8 @@ DATASET_TIMESTAMP_COLUMNS: dict[str, tuple[str, ...]] = {
     "research_portfolio_status": ("created_at", "last_review_date"),
     "strategy_opportunity_advisory": ("as_of_ts", "created_at"),
     "v5_missed_opportunity_audit": ("ts_utc", "generated_at"),
-    "v5_risk_on_multi_buy_shadow": ("decision_ts", "generated_at"),
-    "risk_on_multi_buy_shadow": ("decision_ts", "generated_at"),
+    "v5_risk_on_multi_buy_shadow": ("generated_at", "decision_ts"),
+    "risk_on_multi_buy_shadow": ("generated_at", "decision_ts"),
     "second_stage_alpha_factory_sample": ("created_at", "ts_utc"),
     "second_stage_alpha_factory_summary": ("created_at", "end_ts", "as_of_date"),
     "expanded_relative_strength_decision_sample": ("created_at", "decision_ts"),
@@ -2734,6 +2743,8 @@ def _stale_dataset_rows(lake_root: str | Path) -> pl.DataFrame:
             status = _empty_dataset_status(name)
         if name == "v5_trade_event" and status == "stale" and v5_telemetry_is_current:
             status = "event_driven_no_recent_trade"
+        if name in HISTORICAL_RESEARCH_DATASETS and status == "stale":
+            status = "historical_research_snapshot"
         if _should_show_stale_dataset_row(snapshot, status):
             rows.append(
                 {

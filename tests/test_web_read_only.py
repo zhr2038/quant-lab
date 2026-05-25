@@ -478,6 +478,45 @@ def test_data_health_treats_v5_trades_as_event_driven_when_telemetry_is_current(
     assert not any(row["dataset"] == "v5_trade_event" for row in stale_rows)
 
 
+def test_data_health_uses_generation_time_for_risk_on_shadow_and_hides_history_snapshots(
+    tmp_path,
+):
+    lake_root = tmp_path / "lake"
+    now = datetime.now(UTC)
+    old = now - timedelta(days=5)
+    write_parquet_dataset(
+        pl.DataFrame(
+            [
+                {
+                    "run_id": "run-1",
+                    "decision_ts": old,
+                    "generated_at": now,
+                    "strategy_candidate": "v5.risk_on_multi_buy_top1_shadow",
+                }
+            ]
+        ),
+        lake_root / "gold" / "risk_on_multi_buy_shadow",
+    )
+    write_parquet_dataset(
+        pl.DataFrame(
+            [
+                {
+                    "generated_at_utc": old,
+                    "check_name": "anti_leakage",
+                    "status": "PASS",
+                }
+            ]
+        ),
+        lake_root / "gold" / "v5_entry_quality_history_anti_leakage_check",
+    )
+
+    stale_rows = readers.data_health_summary(lake_root)["stale_datasets"].to_dicts()
+    datasets = {row["dataset"] for row in stale_rows}
+
+    assert "risk_on_multi_buy_shadow" not in datasets
+    assert "v5_entry_quality_history_anti_leakage_check" not in datasets
+
+
 def test_okx_collector_summary_uses_metadata_for_raw_collector_counts(tmp_path, monkeypatch):
     lake_root = _fixture_lake(tmp_path)
     original = readers.read_dataset_with_warning

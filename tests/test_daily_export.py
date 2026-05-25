@@ -1024,6 +1024,39 @@ def test_dataset_freshness_uses_dataset_specific_timestamps(tmp_path):
     )
 
 
+def test_stale_dataset_check_ignores_optional_entry_quality_history_and_generated_risk_on():
+    now = datetime.now(UTC)
+    old = now - timedelta(days=5)
+    stale = daily_export_module._stale_rows(
+        {
+            "risk_on_multi_buy_shadow": pl.DataFrame(
+                [
+                    {
+                        "decision_ts": old,
+                        "generated_at": now,
+                        "strategy_candidate": "v5.risk_on_multi_buy_top1_shadow",
+                    }
+                ]
+            ),
+            "v5_entry_quality_history_anti_leakage_check": pl.DataFrame(
+                [
+                    {
+                        "generated_at_utc": old,
+                        "check_name": "anti_leakage",
+                        "status": "PASS",
+                    }
+                ]
+            ),
+            "v5_pullback_reversal_shadow": pl.DataFrame(),
+        }
+    )
+
+    datasets = set(stale["dataset"].to_list()) if "dataset" in stale.columns else set()
+    assert "risk_on_multi_buy_shadow" not in datasets
+    assert "v5_entry_quality_history_anti_leakage_check" not in datasets
+    assert "v5_pullback_reversal_shadow" not in datasets
+
+
 def test_export_counts_heavy_ws_dataset_without_full_member_load(tmp_path):
     lake_root = tmp_path / "lake"
     base_ts = datetime(2026, 5, 11, tzinfo=UTC)

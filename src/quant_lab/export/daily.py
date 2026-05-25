@@ -7686,8 +7686,14 @@ def _stale_rows(frames: dict[str, pl.DataFrame]) -> pl.DataFrame:
     for name, frame in sorted(frames.items()):
         freshness = _dataset_freshness_payload(name, frame)
         status = freshness["freshness_status"]
+        if frame.is_empty():
+            empty_status = readers._empty_dataset_status(name)  # type: ignore[attr-defined]
+            if empty_status in readers.OPTIONAL_EMPTY_DATASET_STATUSES:
+                continue
         if name in EVENT_DRIVEN_V5_DATASETS and status == "stale" and v5_telemetry_is_current:
             status = "event_driven_no_recent_trade"
+        if name in readers.HISTORICAL_RESEARCH_DATASETS and status == "stale":
+            status = "historical_research_snapshot"
         if status in {"missing", "unknown", "stale"} and status not in EVENT_DRIVEN_OK_STATUSES:
             rows.append(
                 {

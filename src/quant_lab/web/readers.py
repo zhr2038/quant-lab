@@ -1822,7 +1822,7 @@ def cost_model_summary(lake_root: str | Path) -> dict[str, Any]:
     if costs.is_empty():
         return {
             "costs": pl.DataFrame(),
-            "cost_health": redact_frame(health).head(DISPLAY_LIMIT),
+            "cost_health": redact_frame(_cost_health_table(health)).head(DISPLAY_LIMIT),
             "actual_rows": 0,
             "mixed_rows": 0,
             "proxy_rows": 0,
@@ -1845,8 +1845,8 @@ def cost_model_summary(lake_root: str | Path) -> dict[str, Any]:
     latest_health = health.sort("day").tail(1).to_dicts()[0] if not health.is_empty() else {}
     fallback_ratio = latest_health.get("fallback_ratio", fallback_ratio)
     return {
-        "costs": redact_frame(costs).head(DISPLAY_LIMIT),
-        "cost_health": redact_frame(health).head(DISPLAY_LIMIT),
+        "costs": redact_frame(_cost_bucket_table(costs)).head(DISPLAY_LIMIT),
+        "cost_health": redact_frame(_cost_health_table(health)).head(DISPLAY_LIMIT),
         "actual_rows": int(latest_health.get("actual_rows") or 0),
         "mixed_rows": int(latest_health.get("mixed_rows") or 0),
         "proxy_rows": int(latest_health.get("proxy_rows") or 0),
@@ -1864,6 +1864,327 @@ def cost_model_summary(lake_root: str | Path) -> dict[str, Any]:
         ),
         "warnings": warnings,
     }
+
+
+def _cost_health_table(frame: pl.DataFrame) -> pl.DataFrame:
+    if frame.is_empty():
+        return frame
+    columns = [
+        "day",
+        "status",
+        "actual_rows",
+        "mixed_rows",
+        "proxy_rows",
+        "global_default_rows",
+        "hard_fallback_ratio",
+        "soft_fallback_ratio",
+        "proxy_only_count",
+        "api_global_default_count",
+        "api_symbol_proxy_hit_count",
+        "api_regime_fallback_count",
+        "api_degraded_cost_count",
+        "symbols_with_actual_cost",
+        "symbols_with_mixed_cost",
+        "symbols_with_proxy_only",
+        "warnings_json",
+        "created_at",
+    ]
+    table = _select_existing_columns(frame, columns)
+    table = _with_cost_health_focus(table)
+    sort_columns = [column for column in ["day", "created_at"] if column in table.columns]
+    if sort_columns:
+        table = table.sort(sort_columns, descending=True)
+    return _select_existing_columns(
+        table,
+        [
+            "takeaway",
+            "severity",
+            "next_action",
+            "key_metrics",
+            "day",
+            "status",
+            "symbols_with_actual_cost",
+            "symbols_with_mixed_cost",
+            "symbols_with_proxy_only",
+            "created_at",
+        ],
+    )
+
+
+def _with_cost_health_focus(table: pl.DataFrame) -> pl.DataFrame:
+    fields = [
+        column
+        for column in [
+            "status",
+            "actual_rows",
+            "mixed_rows",
+            "proxy_rows",
+            "global_default_rows",
+            "hard_fallback_ratio",
+            "soft_fallback_ratio",
+            "proxy_only_count",
+            "api_global_default_count",
+            "api_symbol_proxy_hit_count",
+            "api_regime_fallback_count",
+            "api_degraded_cost_count",
+            "warnings_json",
+        ]
+        if column in table.columns
+    ]
+    if not fields:
+        return table
+    return table.with_columns(
+        pl.struct(fields)
+        .map_elements(_cost_health_takeaway, return_dtype=pl.Utf8)
+        .alias("takeaway"),
+        pl.struct(fields)
+        .map_elements(_cost_health_severity, return_dtype=pl.Utf8)
+        .alias("severity"),
+        pl.struct(fields)
+        .map_elements(_cost_health_next_action, return_dtype=pl.Utf8)
+        .alias("next_action"),
+        pl.struct(fields)
+        .map_elements(_cost_health_key_metrics, return_dtype=pl.Utf8)
+        .alias("key_metrics"),
+    )
+
+
+def _cost_health_takeaway(row: dict[str, Any]) -> str:
+    hard_ratio = _as_float(row.get("hard_fallback_ratio")) or 0.0
+    soft_ratio = _as_float(row.get("soft_fallback_ratio")) or 0.0
+    actual = _as_int(row.get("actual_rows")) or 0
+    mixed = _as_int(row.get("mixed_rows")) or 0
+    proxy = _as_int(row.get("proxy_rows")) or 0
+    global_default = _as_int(row.get("global_default_rows")) or 0
+    api_global = _as_int(row.get("api_global_default_count")) or 0
+    if hard_ratio > 0.25 or global_default or api_global:
+        return "硬回退偏高：存在全局默认或成本服务缺口，不能按这些成本做实盘判断"
+    if actual + mixed > 0 and proxy > 0:
+        return "成本可用但不完整：已有真实/混合成本，仍有标的只靠盘口代理"
+    if proxy > 0 and actual + mixed == 0:
+        return "仅代理成本：当前主要是 public spread proxy，只适合 paper/shadow 参考"
+    if soft_ratio > 0:
+        return "软回退较多：样本或滑点还不充分，先看 canary/paper"
+    return "成本健康：没有明显硬回退"
+
+
+def _cost_health_severity(row: dict[str, Any]) -> str:
+    hard_ratio = _as_float(row.get("hard_fallback_ratio")) or 0.0
+    global_default = _as_int(row.get("global_default_rows")) or 0
+    api_global = _as_int(row.get("api_global_default_count")) or 0
+    if hard_ratio > 0.25 or global_default or api_global:
+        return "CRITICAL"
+    soft_ratio = _as_float(row.get("soft_fallback_ratio")) or 0.0
+    proxy = _as_int(row.get("proxy_rows")) or 0
+    actual = _as_int(row.get("actual_rows")) or 0
+    mixed = _as_int(row.get("mixed_rows")) or 0
+    if soft_ratio > 0 or (proxy and not (actual + mixed)):
+        return "WARNING"
+    return "OK"
+
+
+def _cost_health_next_action(row: dict[str, Any]) -> str:
+    hard_ratio = _as_float(row.get("hard_fallback_ratio")) or 0.0
+    global_default = _as_int(row.get("global_default_rows")) or 0
+    api_global = _as_int(row.get("api_global_default_count")) or 0
+    if hard_ratio > 0.25 or global_default or api_global:
+        return "优先排查 symbol 命中、成本桶新鲜度和 global_default API 命中"
+    actual = _as_int(row.get("actual_rows")) or 0
+    mixed = _as_int(row.get("mixed_rows")) or 0
+    proxy = _as_int(row.get("proxy_rows")) or 0
+    if proxy and not (actual + mixed):
+        return "接入 V5 order_lifecycle 或 OKX fills/bills，补真实费用和滑点样本"
+    if proxy:
+        return "补齐代理标的的真实或混合成本，降低 soft fallback"
+    return "保持成本刷新与样本积累"
+
+
+def _cost_health_key_metrics(row: dict[str, Any]) -> str:
+    parts: list[str] = []
+    actual = _as_int(row.get("actual_rows"))
+    mixed = _as_int(row.get("mixed_rows"))
+    proxy = _as_int(row.get("proxy_rows"))
+    global_default = _as_int(row.get("global_default_rows"))
+    if actual is not None:
+        parts.append(f"真实 {actual}")
+    if mixed is not None:
+        parts.append(f"混合 {mixed}")
+    if proxy is not None:
+        parts.append(f"代理 {proxy}")
+    if global_default is not None:
+        parts.append(f"全局默认 {global_default}")
+    hard = _as_float(row.get("hard_fallback_ratio"))
+    if hard is not None:
+        parts.append(f"硬回退 {_format_pct(hard)}")
+    soft = _as_float(row.get("soft_fallback_ratio"))
+    if soft is not None:
+        parts.append(f"软回退 {_format_pct(soft)}")
+    api_global = _as_int(row.get("api_global_default_count"))
+    if api_global:
+        parts.append(f"API 全局默认 {api_global}")
+    api_proxy = _as_int(row.get("api_symbol_proxy_hit_count"))
+    if api_proxy:
+        parts.append(f"API 标的代理命中 {api_proxy}")
+    return "；".join(parts) if parts else "暂无关键指标"
+
+
+def _cost_bucket_table(frame: pl.DataFrame) -> pl.DataFrame:
+    if frame.is_empty():
+        return frame
+    columns = [
+        "symbol",
+        "regime",
+        "notional_bucket",
+        "source",
+        "cost_source",
+        "sample_count",
+        "actual_fill_count",
+        "mixed_fill_count",
+        "proxy_sample_count",
+        "fee_bps_p75",
+        "spread_bps_p75",
+        "slippage_bps_p75",
+        "total_cost_bps_p50",
+        "total_cost_bps_p75",
+        "total_cost_bps_p90",
+        "one_way_all_in_cost_bps",
+        "roundtrip_all_in_cost_bps",
+        "cost_trust_level",
+        "cost_trusted_for_live_canary",
+        "cost_trusted_for_live_scale",
+        "fallback_level",
+        "fallback_reason",
+        "created_at",
+        "day",
+    ]
+    table = _select_existing_columns(frame, columns)
+    table = _with_cost_bucket_focus(table)
+    sort_columns = [
+        column
+        for column in ["symbol", "cost_source", "source", "regime"]
+        if column in table.columns
+    ]
+    if sort_columns:
+        table = table.sort(sort_columns)
+    return _select_existing_columns(
+        table,
+        [
+            "takeaway",
+            "cost_trust_level",
+            "symbol",
+            "regime",
+            "key_metrics",
+            "source",
+            "cost_source",
+            "sample_count",
+            "fallback_level",
+            "fallback_reason",
+            "day",
+            "created_at",
+        ],
+    )
+
+
+def _with_cost_bucket_focus(table: pl.DataFrame) -> pl.DataFrame:
+    fields = [
+        column
+        for column in [
+            "symbol",
+            "source",
+            "cost_source",
+            "sample_count",
+            "actual_fill_count",
+            "mixed_fill_count",
+            "proxy_sample_count",
+            "fee_bps_p75",
+            "spread_bps_p75",
+            "slippage_bps_p75",
+            "total_cost_bps_p50",
+            "total_cost_bps_p75",
+            "total_cost_bps_p90",
+            "one_way_all_in_cost_bps",
+            "roundtrip_all_in_cost_bps",
+            "cost_trust_level",
+            "cost_trusted_for_live_canary",
+            "cost_trusted_for_live_scale",
+            "fallback_level",
+            "fallback_reason",
+        ]
+        if column in table.columns
+    ]
+    if not fields:
+        return table
+    return table.with_columns(
+        pl.struct(fields)
+        .map_elements(_cost_bucket_takeaway, return_dtype=pl.Utf8)
+        .alias("takeaway"),
+        pl.struct(fields)
+        .map_elements(_cost_bucket_key_metrics, return_dtype=pl.Utf8)
+        .alias("key_metrics"),
+    )
+
+
+def _cost_bucket_takeaway(row: dict[str, Any]) -> str:
+    symbol = str(row.get("symbol") or "未知标的")
+    source = str(row.get("cost_source") or row.get("source") or "").lower()
+    trust = str(row.get("cost_trust_level") or "").upper()
+    sample_count = _as_int(row.get("sample_count")) or 0
+    fallback = str(row.get("fallback_level") or row.get("fallback_reason") or "")
+    if "global_default" in source or "GLOBAL_DEFAULT" in fallback:
+        return f"硬回退：{symbol} 使用全局默认成本，不能作为 paper/live 晋级证据"
+    if "public_spread_proxy" in source:
+        return f"代理成本：{symbol} 只有盘口价差代理，适合观察但不是完整交易成本"
+    if "mixed" in source:
+        if trust == "CANARY":
+            return f"混合成本：{symbol} 可作为 canary 级参考，放大前还要补真实滑点"
+        return f"混合成本：{symbol} 有真实费用但滑点仍依赖代理"
+    if "actual" in source:
+        if trust == "SCALE_READY":
+            return f"真实成本：{symbol} 样本和滑点质量达到 scale 级"
+        if sample_count >= 30:
+            return f"真实成本：{symbol} 可作为 canary 级参考"
+        return f"真实成本样本少：{symbol} 还需积累到至少 30 笔"
+    return f"成本桶：{symbol} 请关注来源、样本数和 fallback"
+
+
+def _cost_bucket_key_metrics(row: dict[str, Any]) -> str:
+    parts: list[str] = []
+    sample_count = _as_int(row.get("sample_count"))
+    if sample_count is not None:
+        parts.append(f"样本 {sample_count}")
+    p50 = _as_float(row.get("total_cost_bps_p50"))
+    p75 = _as_float(row.get("total_cost_bps_p75"))
+    p90 = _as_float(row.get("total_cost_bps_p90"))
+    if p75 is not None:
+        pieces = []
+        if p50 is not None:
+            pieces.append(f"P50 {_format_bps(p50)}")
+        pieces.append(f"P75 {_format_bps(p75)}")
+        if p90 is not None:
+            pieces.append(f"P90 {_format_bps(p90)}")
+        parts.append("总成本 " + " / ".join(pieces))
+    roundtrip = _as_float(row.get("roundtrip_all_in_cost_bps"))
+    if roundtrip is not None:
+        parts.append(f"往返 all-in {_format_bps(roundtrip)}")
+    fee = _as_float(row.get("fee_bps_p75"))
+    spread = _as_float(row.get("spread_bps_p75"))
+    slip = _as_float(row.get("slippage_bps_p75"))
+    components = []
+    if fee is not None:
+        components.append(f"费 {_format_bps(fee)}")
+    if spread is not None:
+        components.append(f"价差 {_format_bps(spread)}")
+    if slip is not None:
+        components.append(f"滑点 {_format_bps(slip)}")
+    if components:
+        parts.append(" / ".join(components))
+    canary = row.get("cost_trusted_for_live_canary")
+    scale = row.get("cost_trusted_for_live_scale")
+    if scale is True:
+        parts.append("scale 可信")
+    elif canary is True:
+        parts.append("canary 可信")
+    return "；".join(parts) if parts else "暂无关键指标"
 
 
 def _normalize_symbol_frame(frame: pl.DataFrame, column: str = "symbol") -> pl.DataFrame:
@@ -2087,7 +2408,9 @@ def alpha_gate_summary(lake_root: str | Path) -> dict[str, Any]:
         "expanded_universe_candidate_maturity": redact_frame(expanded_maturity).head(
             DISPLAY_LIMIT
         ),
-        "expanded_universe_watchlist": redact_frame(expanded_watchlist).head(DISPLAY_LIMIT),
+        "expanded_universe_watchlist": redact_frame(
+            _expanded_watchlist_table(expanded_watchlist)
+        ).head(DISPLAY_LIMIT),
         "expanded_crypto_universe_shadow": redact_frame(
             _expanded_universe_table(expanded_universe)
         ).head(DISPLAY_LIMIT),
@@ -2243,10 +2566,89 @@ def _missed_opportunity_table(frame: pl.DataFrame) -> pl.DataFrame:
         "ts_utc",
     ]
     table = _select_existing_columns(frame, columns)
+    table = _with_missed_opportunity_focus(table)
     sort_columns = [
         column for column in ["outcome_if_blocked", "symbol", "ts_utc"] if column in table.columns
     ]
-    return table.sort(sort_columns) if sort_columns else table
+    table = table.sort(sort_columns) if sort_columns else table
+    return _select_existing_columns(
+        table,
+        [
+            "takeaway",
+            "outcome_if_blocked",
+            "symbol",
+            "current_regime",
+            "key_metrics",
+            "v5_final_decision",
+            "actual_trade_opened",
+            "quant_lab_recommended_mode",
+            "ts_utc",
+        ],
+    )
+
+
+def _with_missed_opportunity_focus(table: pl.DataFrame) -> pl.DataFrame:
+    fields = [
+        column
+        for column in [
+            "outcome_if_blocked",
+            "symbol",
+            "current_regime",
+            "final_score",
+            "actual_trade_opened",
+            "quant_lab_recommended_mode",
+            "future_4h_net_bps",
+            "future_8h_net_bps",
+            "future_24h_net_bps",
+        ]
+        if column in table.columns
+    ]
+    if not fields:
+        return table
+    return table.with_columns(
+        pl.struct(fields)
+        .map_elements(_missed_opportunity_takeaway, return_dtype=pl.Utf8)
+        .alias("takeaway"),
+        pl.struct(fields)
+        .map_elements(_missed_opportunity_key_metrics, return_dtype=pl.Utf8)
+        .alias("key_metrics"),
+    )
+
+
+def _missed_opportunity_takeaway(row: dict[str, Any]) -> str:
+    symbol = str(row.get("symbol") or "未知标的")
+    outcome = str(row.get("outcome_if_blocked") or "")
+    if outcome == "quant_lab_would_have_missed_profit":
+        return f"中台偏保守：若硬拦 {symbol} 会错过盈利"
+    if outcome == "quant_lab_correctly_avoided_loss":
+        return f"中台有效避险：拦截 {symbol} 会避开亏损"
+    if outcome == "v5_missed_profit_opportunity":
+        return f"V5 可能错过机会：{symbol} 后续为正"
+    if outcome == "v5_correctly_skipped_loss":
+        return f"V5 跳过正确：{symbol} 后续为负"
+    return f"待观察：{symbol} 结果尚未成熟"
+
+
+def _missed_opportunity_key_metrics(row: dict[str, Any]) -> str:
+    parts: list[str] = []
+    score = _as_float(row.get("final_score"))
+    if score is not None:
+        parts.append(f"最终分 {score:.2f}")
+    for label, column in [
+        ("4h", "future_4h_net_bps"),
+        ("8h", "future_8h_net_bps"),
+        ("24h", "future_24h_net_bps"),
+    ]:
+        value = _as_float(row.get(column))
+        if value is not None:
+            parts.append(f"{label} {_format_bps(value)}")
+    mode = row.get("quant_lab_recommended_mode")
+    if mode:
+        parts.append(f"中台建议 {display_value(mode)}")
+    opened = row.get("actual_trade_opened")
+    if opened is not None:
+        parts.append(f"V5开仓 {display_value(opened)}")
+    return "；".join(parts) if parts else "暂无关键指标"
 
 
 def _risk_on_multi_buy_table(frame: pl.DataFrame) -> pl.DataFrame:
@@ -2269,12 +2671,90 @@ def _risk_on_multi_buy_table(frame: pl.DataFrame) -> pl.DataFrame:
         "vs_actual_v5_net_bps",
     ]
     table = _select_existing_columns(frame, columns)
+    table = _with_risk_on_multi_buy_focus(table)
     sort_columns = [
         column
         for column in ["ts_utc", "top_k", "would_buy_symbol"]
         if column in table.columns
     ]
-    return table.sort(sort_columns, descending=True) if sort_columns else table
+    table = table.sort(sort_columns, descending=True) if sort_columns else table
+    return _select_existing_columns(
+        table,
+        [
+            "takeaway",
+            "current_regime",
+            "regime_source",
+            "selected_symbols",
+            "top_k",
+            "key_metrics",
+            "actual_v5_bought_symbols",
+            "missed_symbols",
+            "ts_utc",
+        ],
+    )
+
+
+def _with_risk_on_multi_buy_focus(table: pl.DataFrame) -> pl.DataFrame:
+    fields = [
+        column
+        for column in [
+            "current_regime",
+            "regime_source",
+            "top_k",
+            "selected_symbols",
+            "would_buy_symbol",
+            "final_score",
+            "future_4h_net_bps",
+            "future_8h_net_bps",
+            "future_24h_net_bps",
+            "portfolio_avg_net_bps",
+            "actual_v5_bought_symbols",
+            "missed_symbols",
+            "vs_actual_v5_net_bps",
+        ]
+        if column in table.columns
+    ]
+    if not fields:
+        return table
+    return table.with_columns(
+        pl.struct(fields)
+        .map_elements(_risk_on_multi_buy_takeaway, return_dtype=pl.Utf8)
+        .alias("takeaway"),
+        pl.struct(fields)
+        .map_elements(_risk_on_multi_buy_key_metrics, return_dtype=pl.Utf8)
+        .alias("key_metrics"),
+    )
+
+
+def _risk_on_multi_buy_takeaway(row: dict[str, Any]) -> str:
+    top_k = _as_int(row.get("top_k")) or 0
+    selected = row.get("selected_symbols")
+    selected_text = str(display_value(selected)) if selected is not None else "暂无标的"
+    portfolio = _as_float(row.get("portfolio_avg_net_bps"))
+    missed = row.get("missed_symbols")
+    if portfolio is not None and portfolio > 0:
+        return f"Risk-on 影子：Top{top_k} {selected_text} 后验为正，继续比较是否漏买"
+    if missed not in (None, "", "[]", []):
+        return f"Risk-on 影子：发现未买标的 {display_value(missed)}，需要继续观察"
+    return f"Risk-on 影子：Top{top_k} {selected_text} 仅作多币买入研究"
+
+
+def _risk_on_multi_buy_key_metrics(row: dict[str, Any]) -> str:
+    parts: list[str] = []
+    score = _as_float(row.get("final_score"))
+    if score is not None:
+        parts.append(f"最终分 {score:.2f}")
+    for label, column in [
+        ("组合", "portfolio_avg_net_bps"),
+        ("相对V5", "vs_actual_v5_net_bps"),
+        ("4h", "future_4h_net_bps"),
+        ("8h", "future_8h_net_bps"),
+        ("24h", "future_24h_net_bps"),
+    ]:
+        value = _as_float(row.get(column))
+        if value is not None:
+            parts.append(f"{label} {_format_bps(value)}")
+    return "；".join(parts) if parts else "暂无关键指标"
 
 
 def _expanded_candidate_table(frame: pl.DataFrame) -> pl.DataFrame:
@@ -2294,6 +2774,110 @@ def _expanded_candidate_table(frame: pl.DataFrame) -> pl.DataFrame:
     ]
     selected = [column for column in columns if column in frame.columns]
     return frame.select(selected) if selected else frame
+
+
+def _expanded_watchlist_table(frame: pl.DataFrame) -> pl.DataFrame:
+    if frame.is_empty():
+        return frame
+    columns = [
+        "watchlist_type",
+        "symbol",
+        "quality_score",
+        "recommendation",
+        "complete_sample_count",
+        "positive_short_horizon_count",
+        "best_short_horizon_hours",
+        "best_short_avg_net_bps",
+        "win_rate",
+        "p25_net_bps",
+        "maturity_state",
+        "watch_reason",
+        "generated_at",
+    ]
+    table = _select_existing_columns(frame, columns)
+    table = _with_expanded_watchlist_focus(table)
+    sort_columns = [column for column in ["watchlist_type", "symbol"] if column in table.columns]
+    if sort_columns:
+        table = table.sort(sort_columns)
+    return _select_existing_columns(
+        table,
+        [
+            "takeaway",
+            "watchlist_type",
+            "symbol",
+            "recommendation",
+            "key_metrics",
+            "maturity_state",
+            "watch_reason",
+            "generated_at",
+        ],
+    )
+
+
+def _with_expanded_watchlist_focus(table: pl.DataFrame) -> pl.DataFrame:
+    fields = [
+        column
+        for column in [
+            "watchlist_type",
+            "symbol",
+            "quality_score",
+            "recommendation",
+            "complete_sample_count",
+            "positive_short_horizon_count",
+            "best_short_horizon_hours",
+            "best_short_avg_net_bps",
+            "win_rate",
+            "p25_net_bps",
+            "maturity_state",
+        ]
+        if column in table.columns
+    ]
+    if not fields:
+        return table
+    return table.with_columns(
+        pl.struct(fields)
+        .map_elements(_expanded_watchlist_takeaway, return_dtype=pl.Utf8)
+        .alias("takeaway"),
+        pl.struct(fields)
+        .map_elements(_expanded_watchlist_key_metrics, return_dtype=pl.Utf8)
+        .alias("key_metrics"),
+    )
+
+
+def _expanded_watchlist_takeaway(row: dict[str, Any]) -> str:
+    symbol = str(row.get("symbol") or "未知标的")
+    watchlist_type = str(row.get("watchlist_type") or "")
+    if watchlist_type == "outcome_watchlist":
+        return f"收益苗头：{symbol} 短周期表现值得继续 shadow"
+    if watchlist_type == "quality_watchlist":
+        return f"质量观察：{symbol} 流动性/点差较好，先补收益样本"
+    if watchlist_type == "reject_list":
+        return f"低优先：{symbol} 当前不进扩展重点"
+    return f"扩展币池观察：{symbol}"
+
+
+def _expanded_watchlist_key_metrics(row: dict[str, Any]) -> str:
+    parts: list[str] = []
+    quality = _as_float(row.get("quality_score"))
+    if quality is not None:
+        parts.append(f"质量分 {quality:.1f}")
+    complete = _as_int(row.get("complete_sample_count"))
+    if complete is not None:
+        parts.append(f"完整样本 {complete}")
+    positive_count = _as_int(row.get("positive_short_horizon_count"))
+    if positive_count is not None:
+        parts.append(f"短周期为正 {positive_count}")
+    best_horizon = _as_int(row.get("best_short_horizon_hours"))
+    best_net = _as_float(row.get("best_short_avg_net_bps"))
+    if best_horizon is not None and best_net is not None:
+        parts.append(f"最佳 {best_horizon}h {_format_bps(best_net)}")
+    win_rate = _as_float(row.get("win_rate"))
+    if win_rate is not None:
+        parts.append(f"胜率 {_format_pct(win_rate)}")
+    p25 = _as_float(row.get("p25_net_bps"))
+    if p25 is not None:
+        parts.append(f"P25 {_format_bps(p25)}")
+    return "；".join(parts) if parts else "暂无关键指标"
 
 
 def _expanded_promotion_table(frame: pl.DataFrame) -> pl.DataFrame:
@@ -2318,8 +2902,22 @@ def _expanded_promotion_table(frame: pl.DataFrame) -> pl.DataFrame:
     ]
     selected = [column for column in columns if column in frame.columns]
     table = frame.select(selected) if selected else frame
+    table = _with_expanded_promotion_focus(table)
     return (
-        table.sort(["promotion_state", "symbol", "strategy_candidate"])
+        _select_existing_columns(
+            table.sort(["promotion_state", "symbol", "strategy_candidate"]),
+            [
+                "takeaway",
+                "recommended_mode",
+                "symbol",
+                "strategy_candidate",
+                "horizon_hours",
+                "key_metrics",
+                "live_block_reasons",
+                "replacement_target_candidate",
+                "generated_at",
+            ],
+        )
         if {"promotion_state", "symbol", "strategy_candidate"}.issubset(table.columns)
         else table
     )
@@ -2344,9 +2942,132 @@ def _symbol_quality_table(frame: pl.DataFrame) -> pl.DataFrame:
     ]
     selected = [column for column in columns if column in frame.columns]
     table = frame.select(selected) if selected else frame
+    table = _with_symbol_quality_focus(table)
     if "quality_score" in table.columns:
-        return table.sort("quality_score", descending=True)
-    return table
+        table = table.sort("quality_score", descending=True)
+    return _select_existing_columns(
+        table,
+        [
+            "takeaway",
+            "symbol",
+            "recommendation",
+            "key_metrics",
+            "blocking_reasons",
+        ],
+    )
+
+
+def _with_expanded_promotion_focus(table: pl.DataFrame) -> pl.DataFrame:
+    fields = [
+        column
+        for column in [
+            "promotion_state",
+            "recommended_mode",
+            "symbol",
+            "strategy_candidate",
+            "horizon_hours",
+            "complete_sample_count",
+            "avg_net_bps",
+            "p25_net_bps",
+            "win_rate",
+            "cost_source_mix",
+            "max_live_notional_usdt",
+        ]
+        if column in table.columns
+    ]
+    if not fields:
+        return table
+    return table.with_columns(
+        pl.struct(fields)
+        .map_elements(_expanded_promotion_takeaway, return_dtype=pl.Utf8)
+        .alias("takeaway"),
+        pl.struct(fields)
+        .map_elements(_strategy_key_metrics, return_dtype=pl.Utf8)
+        .alias("key_metrics"),
+    )
+
+
+def _expanded_promotion_takeaway(row: dict[str, Any]) -> str:
+    symbol = str(row.get("symbol") or "未知标的")
+    candidate = _friendly_label(row.get("strategy_candidate"))
+    state = str(row.get("promotion_state") or "").upper()
+    mode = str(row.get("recommended_mode") or "").lower()
+    if state == "KILL" or mode == "none":
+        return f"扩展币池淘汰：{symbol} {candidate} 暂不继续"
+    if state == "PAPER_READY" or mode == "paper":
+        return f"扩展币池 paper：{symbol} {candidate} 只允许纸面观察，实盘为 0"
+    if state == "KEEP_SHADOW" or mode == "shadow":
+        return f"扩展币池影子：{symbol} {candidate} 有苗头但样本仍不足"
+    return f"扩展币池研究：{symbol} {candidate} 等待更多样本"
+
+
+def _with_symbol_quality_focus(table: pl.DataFrame) -> pl.DataFrame:
+    fields = [
+        column
+        for column in [
+            "symbol",
+            "quality_score",
+            "recommendation",
+            "quote_volume_24h",
+            "avg_spread_bps",
+            "data_coverage",
+            "avg_24h_net_bps",
+            "avg_48h_net_bps",
+            "win_rate_24h",
+            "win_rate_48h",
+            "btc_correlation",
+        ]
+        if column in table.columns
+    ]
+    if not fields:
+        return table
+    return table.with_columns(
+        pl.struct(fields)
+        .map_elements(_symbol_quality_takeaway, return_dtype=pl.Utf8)
+        .alias("takeaway"),
+        pl.struct(fields)
+        .map_elements(_symbol_quality_key_metrics, return_dtype=pl.Utf8)
+        .alias("key_metrics"),
+    )
+
+
+def _symbol_quality_takeaway(row: dict[str, Any]) -> str:
+    symbol = str(row.get("symbol") or "未知标的")
+    recommendation = str(row.get("recommendation") or "")
+    quality = _as_float(row.get("quality_score"))
+    if "reject" in recommendation:
+        return f"暂不扩展：{symbol} 被过滤或优先级低"
+    if "outcome" in recommendation:
+        return f"收益苗头观察：{symbol} 需要继续补样本"
+    if "quality" in recommendation or (quality is not None and quality >= 75):
+        return f"质量观察：{symbol} 流动性/点差较好，但还不是替换建议"
+    return f"扩展观察：{symbol} 等待质量和收益证据"
+
+
+def _symbol_quality_key_metrics(row: dict[str, Any]) -> str:
+    parts: list[str] = []
+    quality = _as_float(row.get("quality_score"))
+    if quality is not None:
+        parts.append(f"质量分 {quality:.1f}")
+    spread = _as_float(row.get("avg_spread_bps"))
+    if spread is not None:
+        parts.append(f"平均价差 {_format_bps(spread)}")
+    coverage = _as_float(row.get("data_coverage"))
+    if coverage is not None:
+        parts.append(f"K线覆盖 {_format_pct(coverage)}")
+    avg_24 = _as_float(row.get("avg_24h_net_bps"))
+    if avg_24 is not None:
+        parts.append(f"24h {_format_bps(avg_24)}")
+    avg_48 = _as_float(row.get("avg_48h_net_bps"))
+    if avg_48 is not None:
+        parts.append(f"48h {_format_bps(avg_48)}")
+    win_24 = _as_float(row.get("win_rate_24h"))
+    if win_24 is not None:
+        parts.append(f"24h胜率 {_format_pct(win_24)}")
+    corr = _as_float(row.get("btc_correlation"))
+    if corr is not None:
+        parts.append(f"BTC相关 {corr:.2f}")
+    return "；".join(parts) if parts else "暂无关键指标"
 
 
 def _alpha_discovery_board_table(board: pl.DataFrame) -> pl.DataFrame:
@@ -2581,7 +3302,7 @@ def _with_normalized_research_action(frame: pl.DataFrame) -> pl.DataFrame:
 
 
 def _normalize_research_action_row(row: dict[str, Any]) -> str:
-    status = str(row.get("status") or "").strip()
+    status = str(row.get("status") or "").strip().upper()
     action = str(row.get("action") or "").strip()
     lowered = action.lower()
     if status == "KILL" or lowered.startswith("close") or "closed" in lowered:

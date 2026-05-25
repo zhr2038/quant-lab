@@ -508,6 +508,83 @@ def test_cost_model_summary_samples_cost_bucket_daily(tmp_path, monkeypatch):
     assert "cost_bucket_daily 数据集缺失或为空" not in summary["warnings"]
 
 
+def test_cost_model_web_tables_emphasize_hard_soft_fallbacks(tmp_path):
+    lake_root = tmp_path / "lake"
+    created = datetime(2026, 5, 10, tzinfo=UTC)
+    write_parquet_dataset(
+        pl.DataFrame(
+            [
+                {
+                    "day": "2026-05-10",
+                    "status": "WARNING",
+                    "actual_rows": 1,
+                    "mixed_rows": 1,
+                    "proxy_rows": 2,
+                    "global_default_rows": 0,
+                    "hard_fallback_count": 0,
+                    "hard_fallback_ratio": 0.0,
+                    "soft_fallback_count": 2,
+                    "soft_fallback_ratio": 0.5,
+                    "proxy_only_count": 2,
+                    "api_global_default_count": 0,
+                    "api_symbol_proxy_hit_count": 4,
+                    "api_regime_fallback_count": 1,
+                    "api_degraded_cost_count": 2,
+                    "symbols_with_actual_cost": "BTC-USDT",
+                    "symbols_with_mixed_cost": "BNB-USDT",
+                    "symbols_with_proxy_only": "SOL-USDT,ETH-USDT",
+                    "warnings_json": '["soft_fallback_ratio_high"]',
+                    "created_at": created,
+                }
+            ]
+        ),
+        lake_root / "gold" / "cost_health_daily",
+    )
+    write_parquet_dataset(
+        pl.DataFrame(
+            [
+                {
+                    "day": "2026-05-10",
+                    "symbol": "BNB/USDT",
+                    "regime": "normal",
+                    "source": "mixed_actual_proxy",
+                    "cost_source": "mixed_actual_proxy",
+                    "sample_count": 35,
+                    "fee_bps_p75": 1.0,
+                    "spread_bps_p75": 1.5,
+                    "slippage_bps_p75": 0.0,
+                    "total_cost_bps_p50": 2.0,
+                    "total_cost_bps_p75": 2.5,
+                    "total_cost_bps_p90": 3.0,
+                    "roundtrip_all_in_cost_bps": 5.0,
+                    "cost_trust_level": "CANARY",
+                    "cost_trusted_for_live_canary": True,
+                    "cost_trusted_for_live_scale": False,
+                    "fallback_level": "SLIPPAGE_UNKNOWN",
+                    "fallback_reason": "slippage_unknown",
+                    "created_at": created,
+                }
+            ]
+        ),
+        lake_root / "gold" / "cost_bucket_daily",
+    )
+
+    summary = readers.cost_model_summary(lake_root)
+    health = summary["cost_health"]
+    costs = summary["costs"]
+    localized_health = localize_frame(health)
+    localized_costs = localize_frame(costs)
+
+    assert "重点结论" in localized_health.columns
+    assert "关键指标" in localized_health.columns
+    assert "硬回退" in localized_health["关键指标"][0]
+    assert "软回退" in localized_health["关键指标"][0]
+    assert "重点结论" in localized_costs.columns
+    assert localized_costs["标的"][0] == "BNB-USDT"
+    assert "混合成本" in localized_costs["重点结论"][0]
+    assert "往返 all-in" in localized_costs["关键指标"][0]
+
+
 def test_data_health_hides_pending_v5_paper_telemetry(tmp_path):
     lake_root = tmp_path / "lake"
     stale_rows = readers.data_health_summary(lake_root)["stale_datasets"].to_dicts()

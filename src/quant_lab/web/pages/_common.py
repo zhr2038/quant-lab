@@ -109,6 +109,8 @@ COLUMN_LABELS = {
     "freshness_status": "新鲜度状态",
     "gate_version": "门控版本",
     "global_default_rows": "全局默认成本行数",
+    "hard_fallback_count": "硬回退行数",
+    "hard_fallback_ratio": "硬回退比例",
     "gross_bps": "毛收益(bps)",
     "high": "最高价",
     "horizon_hours": "标签周期(小时)",
@@ -150,6 +152,8 @@ COLUMN_LABELS = {
     "permission": "权限",
     "protect_level": "保护等级",
     "proxy_rows": "代理成本行数",
+    "soft_fallback_count": "软回退行数",
+    "soft_fallback_ratio": "软回退比例",
     "purpose": "用途",
     "question": "问题",
     "rate_limit_warnings": "限频警告数",
@@ -248,6 +252,10 @@ VALUE_LABELS.update(
         "KEEP_SHADOW": "继续影子观察",
         "REGIME_SHADOW": "分状态影子观察",
         "RESEARCH_ONLY": "仅研究",
+        "RESEARCH": "研究中",
+        "DISCOVERED": "已发现",
+        "SHADOW_ONLY": "仅影子观察",
+        "READY_FOR_PAPER": "纸面观察就绪",
         "KILL": "淘汰",
         "research_only": "仅研究",
         "paper_shadow": "纸面/影子",
@@ -358,6 +366,17 @@ VALUE_LABELS.update(
         "funding_not_observable": "资金费率不可观测",
         "local_estimate": "本地估算成本",
         "cost_not_requested_no_order": "未下单未请求成本",
+        "BLOCK": "阻断",
+        "PAPER_ONLY": "仅 paper 可信",
+        "CANARY": "小规模 canary 可信",
+        "SCALE_READY": "可放大级可信",
+        "NONE": "无",
+        "GLOBAL_DEFAULT": "全局默认",
+        "REGIME_FALLBACK": "状态回退",
+        "SAMPLE_TOO_SMALL": "样本不足",
+        "SLIPPAGE_UNKNOWN": "滑点未知",
+        "PUBLIC_SPREAD_PROXY": "公共盘口价差代理",
+        "FEE_MISSING": "费用缺失",
         "negative_after_cost_edge": "扣成本后边际为负",
         "complete_samples_sufficient_and_negative_after_cost_edge": "样本充足且扣成本后为负",
         "historical_pullback_reversal_v1_negative_expectancy_and_large_mae": (
@@ -415,6 +434,16 @@ VALUE_LABELS.update(
         "BTC_STRICT_PROBE_MONITOR_V1": "BTC 严格探针监控",
         "v5.missed_opportunity_audit": "错失机会审计",
         "research_baseline": "研究基线",
+        "candidate_for_expanded_paper_universe": "扩展纸面币池候选",
+        "quality_watchlist": "质量观察名单",
+        "outcome_watchlist": "收益观察名单",
+        "reject_list": "低优先/拒绝名单",
+        "reject_low_priority_current_weak": "当前结果弱，低优先",
+        "reject_low_liquidity": "流动性不足",
+        "reject_high_spread": "价差过高",
+        "reject_f3_noise": "F3 噪声偏高",
+        "reject_negative_expectancy": "负期望",
+        "keep_current": "保留当前币池",
     }
 )
 
@@ -465,6 +494,37 @@ COLUMN_LABELS.update(
         "vs_actual_v5_net_bps": "相对 V5 实际净收益(bps)",
         "regime_source": "行情来源",
         "recent_sample_sufficient": "近期样本充足",
+        "actual_fill_count": "真实成交数",
+        "api_cost_usage_rows": "API 成本请求数",
+        "api_degraded_cost_count": "API 降级成本数",
+        "api_global_default_count": "API 全局默认数",
+        "api_regime_fallback_count": "API 状态回退数",
+        "api_symbol_proxy_hit_count": "API 标的代理命中数",
+        "cost_trust_level": "成本可信等级",
+        "cost_trusted_for_live_canary": "canary 级可信",
+        "cost_trusted_for_live_scale": "scale 级可信",
+        "fallback_reason": "回退原因",
+        "fee_bps_p75": "P75 费用(bps)",
+        "mixed_fill_count": "混合成本成交数",
+        "notional_bucket": "名义金额分桶",
+        "one_way_all_in_cost_bps": "单边 all-in 成本(bps)",
+        "proxy_only_count": "纯代理成本数",
+        "proxy_sample_count": "代理样本数",
+        "roundtrip_all_in_cost_bps": "往返 all-in 成本(bps)",
+        "slippage_bps_p75": "P75 滑点(bps)",
+        "symbols_with_actual_cost": "有真实成本标的",
+        "symbols_with_mixed_cost": "有混合成本标的",
+        "symbols_with_proxy_only": "仅代理成本标的",
+        "total_cost_bps_p50": "P50 总成本(bps)",
+        "total_cost_bps_p75": "P75 总成本(bps)",
+        "total_cost_bps_p90": "P90 总成本(bps)",
+        "warnings_json": "告警明细",
+        "best_short_avg_net_bps": "最佳短周期净收益(bps)",
+        "best_short_horizon_hours": "最佳短周期(小时)",
+        "maturity_state": "成熟度状态",
+        "positive_short_horizon_count": "为正短周期数",
+        "watch_reason": "观察原因",
+        "watchlist_type": "观察名单类型",
     }
 )
 
@@ -479,10 +539,22 @@ VALUE_LOCALIZED_COLUMNS.update(
         "paper_ready_block_reasons",
         "outcome_if_blocked",
         "current_regime",
+        "cost_trust_level",
+        "fallback_level",
+        "fallback_reason",
+        "recommendation",
         "regime_source",
         "research_id",
+        "selected_symbols",
         "source_module",
+        "source",
         "universe_type",
+        "actual_v5_bought_symbols",
+        "blocking_reasons",
+        "missed_symbols",
+        "maturity_state",
+        "watch_reason",
+        "watchlist_type",
     }
 )
 
@@ -504,7 +576,11 @@ def show_frame(st: Any, df: pl.DataFrame, empty_message: str) -> None:
     if df.is_empty():
         st.info(empty_message)
         return
-    st.dataframe(localize_frame(df))
+    localized = localize_frame(df)
+    try:
+        st.dataframe(localized, use_container_width=True, hide_index=True)
+    except TypeError:
+        st.dataframe(localized)
 
 
 def lake_caption(st: Any, lake_root: str | Path) -> None:

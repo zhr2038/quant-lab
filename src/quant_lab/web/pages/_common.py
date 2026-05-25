@@ -324,10 +324,16 @@ VALUE_LABELS.update(
         "PAPER": "纸面观察",
         "BASELINE_ONLY": "仅作基线",
         "ACTIVE_DIAGNOSTIC": "诊断中",
+        "TRACK_AS_RESEARCH_BASELINE": "作为研究基线跟踪",
         "CONTINUE_PAPER": "继续纸面观察",
         "CONTINUE_SHADOW": "继续影子观察",
         "CONTINUE_SHADOW_OR_REVIEW": "转影子观察/复查",
         "PAUSED_TO_WEEKLY": "降为周度复查",
+        "WAIT_FOR_MORE_SAMPLES": "等待更多样本",
+        "WAIT_FOR_UNIVERSE_OUTPUT": "等待扩展币池输出",
+        "IMPROVE_COST_QUALITY": "改善成本质量",
+        "REVIEW_WEEKLY": "周度复查",
+        "PAPER_RESEARCH": "纸面研究",
         "KEEP_RESEARCH": "继续研究",
         "REGIME_SHADOW": "分状态影子观察",
         "insufficient_complete_samples": "完整样本不足",
@@ -353,6 +359,28 @@ VALUE_LABELS.update(
         "local_estimate": "本地估算成本",
         "cost_not_requested_no_order": "未下单未请求成本",
         "negative_after_cost_edge": "扣成本后边际为负",
+        "complete_samples_sufficient_and_negative_after_cost_edge": "样本充足且扣成本后为负",
+        "historical_pullback_reversal_v1_negative_expectancy_and_large_mae": (
+            "回调反转 v1 历史负期望且 MAE 偏大"
+        ),
+        "research_closed_by_operator_after_negative_or_low_quality_evidence": (
+            "负收益或低质量证据，人工关闭研究"
+        ),
+        "generic_momentum_baseline_not_global_strategy_gate": (
+            "通用动量仅作研究基线，不再作为全局 gate"
+        ),
+        "eth_f3_negative_paper_streak_keep_shadow_no_live": "ETH f3 纸面连续转弱，退回影子观察",
+        "sol_protect_negative_paper_streak_keep_shadow_no_live": (
+            "SOL protect 纸面连续转弱，退回影子观察"
+        ),
+        "sol_f4_negative_paper_streak_keep_shadow_no_live": "SOL f4 纸面连续转弱，退回影子观察",
+        "symbol_thresholds_are_research_only_no_hard_guard": "分币种阈值仍是研究，不启用硬拦截",
+        "alt_impulse_is_regime_dependent_and_not_live_validated": (
+            "Alt 脉冲依赖行情状态，尚未验证可实盘"
+        ),
+        "expanded_universe_shadow_collecting_replacement_candidates": (
+            "扩展币池影子观察，继续收集替代候选"
+        ),
         "no_recent_trigger": "近期无触发",
         "cost_source_not_paper_ready": "成本质量不足以纸面晋级",
         "insufficient_recent_samples": "近期样本不足",
@@ -392,6 +420,8 @@ VALUE_LABELS.update(
 COLUMN_LABELS.update(
     {
         "action": "研究动作",
+        "takeaway": "重点结论",
+        "key_metrics": "关键指标",
         "research_id": "研究编号",
         "module": "模块",
         "reason": "原因",

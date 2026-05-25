@@ -300,10 +300,16 @@ def test_research_portfolio_web_table_normalizes_close_actions():
     localized = localize_frame(table)
 
     assert "研究动作" in localized.columns
+    assert "重点结论" in localized.columns
+    assert "关键指标" in localized.columns
     actions = localized.get_column("研究动作").to_list()
     assert "关闭研究" in actions
     assert "转影子观察/复查" in actions
     assert "收盘价" not in actions
+    takeaways = localized.get_column("重点结论").to_list()
+    assert any("关闭" in value for value in takeaways)
+    assert any("降级" in value for value in takeaways)
+    assert all("complete_sample_count" not in value for value in localized.get_column("关键指标"))
 
 
 def test_strategy_opportunity_web_table_keeps_high_signal_extension_fields():
@@ -336,8 +342,11 @@ def test_strategy_opportunity_web_table_keeps_high_signal_extension_fields():
 
     assert "Alpha Factory 分数" in localized.columns
     assert "币池类型" in localized.columns
+    assert "重点结论" in localized.columns
+    assert "关键指标" in localized.columns
     assert localized["推荐模式"][0] == "影子观察"
     assert localized["币池类型"][0] == "扩展币池纸面"
+    assert "完整样本 18" in localized["关键指标"][0]
 
 
 def test_feature_summary_samples_feature_value(tmp_path, monkeypatch):

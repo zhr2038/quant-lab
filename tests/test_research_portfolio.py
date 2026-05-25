@@ -44,12 +44,14 @@ def test_research_portfolio_status_prunes_and_preserves_paper_items(tmp_path):
     assert rows["v5.btc_leadership_f5_low"]["status"] == "KILL"
     assert rows["v5.btc_leadership_no_breakout"]["status"] == "KILL"
     assert rows["v5.portfolio_trend_following"]["status"] == "KILL"
+    assert rows["v5.portfolio_trend_following"]["action"] == "CLOSE_RESEARCH"
     assert rows["ETH_F3_DOMINANT_ENTRY_PAPER_V1"]["status"] == "PAPER"
     assert rows["ETH_F3_DOMINANT_ENTRY_PAPER_V1"]["paper_days"] == 3
     assert rows["v5.alt_impulse_shadow"]["status"] == "SHADOW"
     assert rows["v5.alt_impulse_shadow"]["action"] == "REGIME_SHADOW"
     assert rows["v5.late_entry_chase_guard_shadow"]["status"] == "SHADOW"
     assert rows["v5.pullback_reversal_v1"]["status"] == "KILL"
+    assert rows["v5.pullback_reversal_v1"]["action"] == "CLOSE_RESEARCH"
     assert rows["v5.multi_position_k2"]["killed_research_count"] >= 1
     assert rows["v5.multi_position_k2"]["freed_research_slots"] >= 1
 

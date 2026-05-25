@@ -450,6 +450,37 @@ DECISION_PRIORITY = {
 RECOMMENDED_MODE_PRIORITY = {"paper": 0, "shadow": 1, "research": 2, "audit": 3, "none": 4}
 
 
+def _format_bps(value: Any) -> str:
+    parsed = _as_float(value)
+    return "n/a" if parsed is None else f"{parsed:.1f}bps"
+
+
+def _format_pct(value: Any) -> str:
+    parsed = _as_float(value)
+    return "n/a" if parsed is None else f"{parsed * 100:.1f}%"
+
+
+def _as_float(value: Any) -> float | None:
+    if value is None:
+        return None
+    try:
+        parsed = float(value)
+    except (TypeError, ValueError):
+        return None
+    if parsed != parsed:
+        return None
+    return parsed
+
+
+def _as_int(value: Any) -> int | None:
+    if value is None:
+        return None
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return None
+
+
 @dataclass(frozen=True)
 class DatasetState:
     name: str
@@ -1102,6 +1133,8 @@ def _strategy_opportunity_table(frame: pl.DataFrame) -> pl.DataFrame:
         "promotion_state",
         "universe_type",
         "alpha_factory_score",
+        "cost_quality_score",
+        "paper_ready_block_reasons",
         "live_block_reasons",
         "max_live_notional_usdt",
         "as_of_ts",
@@ -1112,18 +1145,208 @@ def _strategy_opportunity_table(frame: pl.DataFrame) -> pl.DataFrame:
         keys=["strategy_candidate", "symbol", "horizon_hours"],
         timestamp_columns=["as_of_ts", "created_at"],
     )
+    table = _with_strategy_opportunity_focus(table)
     table = _sort_by_priority(
         table,
         "recommended_mode",
         RECOMMENDED_MODE_PRIORITY,
         ["decision", "strategy_candidate", "symbol", "horizon_hours"],
     )
-    return _sort_by_priority(
+    table = _sort_by_priority(
         table,
         "decision",
         DECISION_PRIORITY,
         ["recommended_mode", "strategy_candidate", "symbol", "horizon_hours"],
     )
+    return _select_existing_columns(
+        table,
+        [
+            "takeaway",
+            "recommended_mode",
+            "strategy_candidate",
+            "symbol",
+            "horizon_hours",
+            "key_metrics",
+            "alpha_factory_score",
+            "cost_quality_score",
+            "paper_ready_block_reasons",
+            "live_block_reasons",
+            "source_module",
+            "promotion_state",
+            "universe_type",
+            "as_of_ts",
+        ],
+    )
+
+
+def _with_strategy_opportunity_focus(table: pl.DataFrame) -> pl.DataFrame:
+    fields = [
+        column
+        for column in [
+            "decision",
+            "recommended_mode",
+            "strategy_candidate",
+            "symbol",
+            "horizon_hours",
+            "complete_sample_count",
+            "avg_net_bps",
+            "p25_net_bps",
+            "win_rate",
+            "alpha_factory_score",
+            "max_live_notional_usdt",
+        ]
+        if column in table.columns
+    ]
+    if not fields:
+        return table
+    return table.with_columns(
+        pl.struct(fields)
+        .map_elements(_strategy_opportunity_takeaway, return_dtype=pl.Utf8)
+        .alias("takeaway"),
+        pl.struct(fields)
+        .map_elements(_strategy_key_metrics, return_dtype=pl.Utf8)
+        .alias("key_metrics"),
+    )
+
+
+def _with_alpha_factory_focus(table: pl.DataFrame) -> pl.DataFrame:
+    fields = [
+        column
+        for column in [
+            "decision",
+            "promotion_state",
+            "recommended_mode",
+            "strategy_candidate",
+            "symbol",
+            "horizon_hours",
+            "complete_sample_count",
+            "avg_net_bps",
+            "p25_net_bps",
+            "win_rate",
+            "alpha_factory_score",
+            "cost_quality_score",
+        ]
+        if column in table.columns
+    ]
+    if not fields:
+        return table
+    return table.with_columns(
+        pl.struct(fields)
+        .map_elements(_alpha_factory_takeaway, return_dtype=pl.Utf8)
+        .alias("takeaway"),
+        pl.struct(fields)
+        .map_elements(_strategy_key_metrics, return_dtype=pl.Utf8)
+        .alias("key_metrics"),
+    )
+
+
+def _with_research_result_focus(table: pl.DataFrame) -> pl.DataFrame:
+    fields = [
+        column
+        for column in [
+            "decision",
+            "strategy_candidate",
+            "candidate_name",
+            "symbol",
+            "horizon_hours",
+            "sample_count",
+            "complete_sample_count",
+            "avg_net_bps",
+            "p25_net_bps",
+            "win_rate",
+            "avg_mae_bps",
+            "avg_mfe_bps",
+            "paper_days",
+        ]
+        if column in table.columns
+    ]
+    if not fields:
+        return table
+    return table.with_columns(
+        pl.struct(fields)
+        .map_elements(_research_result_takeaway, return_dtype=pl.Utf8)
+        .alias("takeaway"),
+        pl.struct(fields)
+        .map_elements(_strategy_key_metrics, return_dtype=pl.Utf8)
+        .alias("key_metrics"),
+    )
+
+
+def _strategy_opportunity_takeaway(row: dict[str, Any]) -> str:
+    decision = str(row.get("decision") or "").upper()
+    mode = str(row.get("recommended_mode") or "").lower()
+    candidate = str(row.get("strategy_candidate") or "候选")
+    live_notional = _as_float(row.get("max_live_notional_usdt")) or 0.0
+    if decision == "KILL" or mode == "none":
+        return f"不推荐：{candidate} 已淘汰或当前无正边际"
+    if mode == "paper":
+        suffix = "，实盘名义仍为 0" if live_notional <= 0 else ""
+        return f"纸面观察：{candidate} 可继续做 paper{suffix}"
+    if mode == "shadow":
+        return f"影子观察：{candidate} 继续收集样本，不放实盘"
+    if mode == "research":
+        return f"研究观察：{candidate} 证据不足，暂不进 paper"
+    if mode == "audit":
+        return f"审计：{candidate} 仅用于诊断"
+    return f"待判断：{candidate}"
+
+
+def _alpha_factory_takeaway(row: dict[str, Any]) -> str:
+    decision = str(row.get("decision") or row.get("promotion_state") or "").upper()
+    candidate = str(row.get("strategy_candidate") or "候选")
+    if decision == "KILL":
+        return f"淘汰：{candidate} 未通过 Alpha Factory"
+    if decision == "PAPER_READY":
+        return f"纸面候选：{candidate} 通过基础筛选，但仍只允许 paper"
+    if decision == "KEEP_SHADOW":
+        return f"继续影子：{candidate} 有苗头但未达 paper 门槛"
+    return f"研究中：{candidate} 继续等待样本和验证"
+
+
+def _research_result_takeaway(row: dict[str, Any]) -> str:
+    decision = str(row.get("decision") or "").upper()
+    candidate = str(row.get("strategy_candidate") or row.get("candidate_name") or "候选")
+    if decision == "KILL":
+        return f"淘汰：{candidate} 负收益或尾部风险不合格"
+    if decision == "PAPER_READY":
+        return f"纸面就绪：{candidate} 可观察 paper，不能直接 live"
+    if decision == "KEEP_SHADOW":
+        return f"继续影子：{candidate} 有正边际但仍需验证"
+    if decision == "REGIME_SHADOW":
+        return f"分行情观察：{candidate} 只在特定 regime 下研究"
+    return f"仅研究：{candidate} 样本或成本质量不足"
+
+
+def _strategy_key_metrics(row: dict[str, Any]) -> str:
+    parts: list[str] = []
+    complete = _as_int(row.get("complete_sample_count"))
+    sample = _as_int(row.get("sample_count"))
+    if complete is not None:
+        parts.append(f"完整样本 {complete}")
+    elif sample is not None:
+        parts.append(f"样本 {sample}")
+    avg = _as_float(row.get("avg_net_bps"))
+    if avg is not None:
+        parts.append(f"平均净收益 {_format_bps(avg)}")
+    p25 = _as_float(row.get("p25_net_bps"))
+    if p25 is not None:
+        parts.append(f"P25 {_format_bps(p25)}")
+    win_rate = _as_float(row.get("win_rate"))
+    if win_rate is not None:
+        parts.append(f"胜率 {_format_pct(win_rate)}")
+    score = _as_float(row.get("alpha_factory_score"))
+    if score is not None:
+        parts.append(f"工厂分 {score:.2f}")
+    cost_score = _as_float(row.get("cost_quality_score"))
+    if cost_score is not None:
+        parts.append(f"成本分 {cost_score:.2f}")
+    paper_days = _as_int(row.get("paper_days"))
+    if paper_days is not None:
+        parts.append(f"paper {paper_days}天")
+    negative_streak = _as_int(row.get("paper_negative_streak"))
+    if negative_streak:
+        parts.append(f"连续转弱 {negative_streak}天")
+    return "；".join(parts) if parts else "暂无关键指标"
 
 
 def _entry_quality_table(frame: pl.DataFrame) -> pl.DataFrame:
@@ -1915,11 +2138,26 @@ def _alpha_factory_result_table(frame: pl.DataFrame) -> pl.DataFrame:
         "generated_at",
     ]
     table = _select_existing_columns(frame, columns)
-    return _sort_by_priority(
+    table = _with_alpha_factory_focus(table)
+    table = _sort_by_priority(
         table,
         "decision",
         DECISION_PRIORITY,
         ["strategy_candidate", "horizon_hours"],
+    )
+    return _select_existing_columns(
+        table,
+        [
+            "takeaway",
+            "decision",
+            "strategy_candidate",
+            "horizon_hours",
+            "key_metrics",
+            "recent_sample_sufficient",
+            "cost_quality_score",
+            "paper_ready_block_reasons",
+            "generated_at",
+        ],
     )
 
 
@@ -1941,11 +2179,25 @@ def _alpha_factory_promotion_table(frame: pl.DataFrame) -> pl.DataFrame:
         "generated_at",
     ]
     table = _select_existing_columns(frame, columns)
-    return _sort_by_priority(
+    table = _with_alpha_factory_focus(table)
+    table = _sort_by_priority(
         table,
         "recommended_mode",
         RECOMMENDED_MODE_PRIORITY,
         ["promotion_state", "strategy_candidate", "symbol", "horizon_hours"],
+    )
+    return _select_existing_columns(
+        table,
+        [
+            "takeaway",
+            "recommended_mode",
+            "strategy_candidate",
+            "symbol",
+            "horizon_hours",
+            "key_metrics",
+            "live_block_reasons",
+            "generated_at",
+        ],
     )
 
 
@@ -2101,11 +2353,26 @@ def _alpha_discovery_board_table(board: pl.DataFrame) -> pl.DataFrame:
         keys=["strategy_candidate", "symbol", "horizon_hours"],
         timestamp_columns=["as_of_date", "created_at"],
     )
-    return _sort_by_priority(
+    table = _with_research_result_focus(table)
+    table = _sort_by_priority(
         table,
         "decision",
         DECISION_PRIORITY,
         ["strategy_candidate", "symbol", "horizon_hours"],
+    )
+    return _select_existing_columns(
+        table,
+        [
+            "takeaway",
+            "decision",
+            "strategy_candidate",
+            "symbol",
+            "horizon_hours",
+            "key_metrics",
+            "decision_reasons",
+            "cost_source_mix",
+            "as_of_date",
+        ],
     )
 
 
@@ -2136,7 +2403,22 @@ def _strategy_evidence_table(strategy_evidence: pl.DataFrame) -> pl.DataFrame:
     candidate_column = (
         "strategy_candidate" if "strategy_candidate" in table.columns else "candidate_name"
     )
-    return _sort_by_priority(table, "decision", DECISION_PRIORITY, [candidate_column])
+    table = _with_research_result_focus(table)
+    table = _sort_by_priority(table, "decision", DECISION_PRIORITY, [candidate_column])
+    return _select_existing_columns(
+        table,
+        [
+            "takeaway",
+            "decision",
+            candidate_column,
+            "symbol",
+            "horizon_hours",
+            "key_metrics",
+            "decision_reasons",
+            "regime_breakdown",
+            "as_of_date",
+        ],
+    )
 
 
 def _research_portfolio_table(frame: pl.DataFrame) -> pl.DataFrame:
@@ -2165,10 +2447,100 @@ def _research_portfolio_table(frame: pl.DataFrame) -> pl.DataFrame:
         timestamp_columns=["as_of_date", "created_at", "last_review_date"],
     )
     table = _with_normalized_research_action(table)
+    table = _with_research_portfolio_focus(table)
     table = _sort_by_priority(table, "status", RESEARCH_STATUS_PRIORITY, ["module", "research_id"])
     table = _sort_by_priority(table, "action", RESEARCH_ACTION_PRIORITY, ["status", "research_id"])
-    hidden = [column for column in ["created_at"] if column in table.columns]
-    return table.drop(hidden) if hidden else table
+    return _select_existing_columns(
+        table,
+        [
+            "takeaway",
+            "action",
+            "strategy_candidate",
+            "key_metrics",
+            "reason",
+            "downgrade_reason",
+            "next_review_date",
+            "module",
+            "research_id",
+        ],
+    )
+
+
+def _with_research_portfolio_focus(table: pl.DataFrame) -> pl.DataFrame:
+    fields = [
+        column
+        for column in [
+            "status",
+            "action",
+            "research_id",
+            "strategy_candidate",
+            "complete_sample_count",
+            "avg_net_bps",
+            "win_rate",
+            "paper_days",
+            "entry_day_count",
+            "paper_negative_streak",
+            "priority",
+        ]
+        if column in table.columns
+    ]
+    if not fields:
+        return table
+    return table.with_columns(
+        pl.struct(fields)
+        .map_elements(_research_portfolio_takeaway, return_dtype=pl.Utf8)
+        .alias("takeaway"),
+        pl.struct(fields)
+        .map_elements(_research_portfolio_key_metrics, return_dtype=pl.Utf8)
+        .alias("key_metrics"),
+    )
+
+
+def _research_portfolio_takeaway(row: dict[str, Any]) -> str:
+    status = str(row.get("status") or "").upper()
+    action = str(row.get("action") or "").upper()
+    research_id = str(row.get("research_id") or row.get("strategy_candidate") or "研究项")
+    if status == "KILL" or action == "CLOSE_RESEARCH":
+        return f"关闭：{research_id} 不再进入重点日报或晋级队列"
+    if status == "DOWNGRADED_FROM_PAPER":
+        return f"降级：{research_id} 停止 paper 推荐，回到 shadow/复查"
+    if status == "PAPER":
+        return f"继续纸面：{research_id} 只做 paper，不放 live"
+    if status == "SHADOW" or action in {"CONTINUE_SHADOW", "REGIME_SHADOW"}:
+        return f"继续影子：{research_id} 收集更多样本"
+    if status == "ACTIVE" or action == "ACTIVE_DIAGNOSTIC":
+        return f"诊断中：{research_id} 用于定位问题，不做交易建议"
+    if status == "BASELINE_ONLY":
+        return f"基线：{research_id} 只作对照，不再当全局 gate"
+    if status == "PAUSED":
+        return f"暂停：{research_id} 等待样本、触发或成本质量改善"
+    return f"继续观察：{research_id}"
+
+
+def _research_portfolio_key_metrics(row: dict[str, Any]) -> str:
+    parts: list[str] = []
+    complete = _as_int(row.get("complete_sample_count"))
+    if complete is not None:
+        parts.append(f"完整样本 {complete}")
+    avg = _as_float(row.get("avg_net_bps"))
+    if avg is not None:
+        parts.append(f"平均净收益 {_format_bps(avg)}")
+    win_rate = _as_float(row.get("win_rate"))
+    if win_rate is not None:
+        parts.append(f"胜率 {_format_pct(win_rate)}")
+    entry_days = _as_int(row.get("entry_day_count"))
+    if entry_days:
+        parts.append(f"入场日 {entry_days}")
+    paper_days = _as_int(row.get("paper_days"))
+    if paper_days:
+        parts.append(f"paper {paper_days}天")
+    negative_streak = _as_int(row.get("paper_negative_streak"))
+    if negative_streak:
+        parts.append(f"连续转弱 {negative_streak}天")
+    priority = str(row.get("priority") or "").upper()
+    if priority == "LOW":
+        parts.append("优先级低")
+    return "；".join(parts) if parts else "暂无关键指标"
 
 
 def _with_normalized_research_action(frame: pl.DataFrame) -> pl.DataFrame:

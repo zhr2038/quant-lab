@@ -195,7 +195,7 @@ def build_research_portfolio_status(
             module="entry_quality",
             strategy_candidate="v5.pullback_reversal_shadow",
             status="KILL",
-            action="CLOSED_RESEARCH_V1",
+            action="CLOSE_RESEARCH",
             reason="historical_pullback_reversal_v1_negative_expectancy_and_large_mae",
             metrics=_frame_metrics(pullback, fallback_sample_count=pullback.height),
             day=day,
@@ -384,7 +384,7 @@ def _known_kill_rows(
             module="candidate_pruning",
             candidate=candidate,
             status="KILL",
-            action="CLOSED_RESEARCH",
+            action="CLOSE_RESEARCH",
             reason=CLOSED_RESEARCH_REASON,
             evidence=evidence,
             paper=paper,
@@ -573,7 +573,7 @@ def _status_row(
         "module": module,
         "strategy_candidate": strategy_candidate,
         "status": status,
-        "action": action,
+        "action": _canonical_research_action(status, action),
         "reason": reason,
         "sample_count": int(metrics.get("sample_count") or 0),
         "complete_sample_count": int(metrics.get("complete_sample_count") or 0),
@@ -596,6 +596,15 @@ def _status_row(
         "created_at": created_at,
         "source": SOURCE_NAME,
     }
+
+
+def _canonical_research_action(status: str, action: str) -> str:
+    normalized_status = str(status or "").strip().upper()
+    normalized_action = str(action or "").strip()
+    lowered = normalized_action.lower()
+    if normalized_status == "KILL" or lowered.startswith(("close", "closed")):
+        return "CLOSE_RESEARCH"
+    return normalized_action or "KEEP_RESEARCH"
 
 
 def _metrics_for(

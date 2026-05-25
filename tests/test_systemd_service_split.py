@@ -20,6 +20,9 @@ def test_v5_health_analysis_stays_lightweight():
     assert "analyze-v5-telemetry" in unit
     assert "--skip-candidate-gold" in unit
     assert "--compact-output" in unit
+    assert "SKIP_V5_DAILY_ANALYSIS_LOCK_BUSY" in unit
+    assert "flock -E 75 -w 5" in unit
+    assert "/usr/bin/timeout 8m" in unit
     assert "build-v5-candidate-labels" not in unit
     assert "build-strategy-evidence" not in unit
     assert "build-alpha-discovery-board" not in unit
@@ -68,6 +71,9 @@ def test_candidate_research_refresh_is_separate_from_alpha_evidence():
     assert "build-paper-strategy-tracking" in refresh_unit
     assert "build-entry-quality" in refresh_unit
     assert "build-regime-router" in refresh_unit
+    assert "flock -E 75 -w 30" in refresh_unit
+    assert "/usr/bin/timeout 20m" in refresh_unit
+    assert "TimeoutStartSec=25min" in refresh_unit
 
 
 def test_scheduled_compaction_covers_hot_ws_datasets():

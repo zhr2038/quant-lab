@@ -11,9 +11,10 @@ WorkingDirectory=/opt/quant-lab
 Environment=POLARS_MAX_THREADS=1
 Environment=MALLOC_ARENA_MAX=2
 RuntimeMaxSec=8min
+TimeoutStartSec=9min
 MemoryHigh=1G
 MemoryMax=2G
 CPUQuota=60%
-ExecStart=/usr/bin/flock -w 30 /var/lock/quant-lab-v5-research.lock /opt/quant-lab/.venv/bin/qlab analyze-v5-telemetry --lake-root /var/lib/quant-lab/lake --skip-candidate-gold --compact-output
+ExecStart=/bin/bash -lc '/usr/bin/flock -E 75 -w 5 /var/lock/quant-lab-v5-research.lock /usr/bin/timeout 8m /opt/quant-lab/.venv/bin/qlab analyze-v5-telemetry --lake-root /var/lib/quant-lab/lake --skip-candidate-gold --compact-output || { code="$?"; if [ "$${code}" = "75" ]; then echo "SKIP_V5_DAILY_ANALYSIS_LOCK_BUSY"; exit 0; fi; exit "$${code}"; }'
 NoNewPrivileges=true
 PrivateTmp=true

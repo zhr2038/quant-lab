@@ -8,7 +8,7 @@ from typing import Annotated, Any
 
 import typer
 
-from quant_lab.contracts.models import AlphaEvidence, AlphaResearchSpec
+from quant_lab.contracts.models import AlphaResearchSpec
 from quant_lab.costs.calibrate import calibrate_costs_for_day
 from quant_lab.costs.health import read_cost_health_daily
 from quant_lab.data.lake import (
@@ -20,7 +20,7 @@ from quant_lab.e2e import run_v5_contract_e2e
 from quant_lab.export.daily import export_daily_pack, validate_expert_pack
 from quant_lab.features.publish import feature_health
 from quant_lab.features.publish import publish_features as publish_feature_values
-from quant_lab.gates.defaults import evaluate_alpha_gate
+from quant_lab.gates.defaults import conservative_example_gate_decision
 from quant_lab.ingest.okx_public import (
     MARKET_BAR_DATASET,
     OKXPublicClient,
@@ -96,7 +96,7 @@ ReportsDirArgument = Annotated[
 
 @app.command("gate-example")
 def gate_example() -> None:
-    decision = evaluate_alpha_gate(AlphaEvidence.example_live_ready())
+    decision = conservative_example_gate_decision()
     typer.echo(decision.model_dump_json(indent=2))
 
 

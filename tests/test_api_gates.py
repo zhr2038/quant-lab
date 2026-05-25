@@ -8,18 +8,18 @@ from quant_lab.contracts.models import AlphaEvidence, GateDecision, GateStatus
 from quant_lab.data.lake import write_parquet_dataset
 
 
-def test_gate_example_returns_live_ready_decision():
+def test_gate_example_returns_conservative_decision():
     response = TestClient(app).get("/v1/gates/example")
 
     assert response.status_code == 200
     payload = response.json()
     assert payload["alpha_id"] == "example-alpha"
-    assert payload["version"] == "v1"
-    assert payload["gate_version"] == "default-v0.1"
-    assert payload["status"] == "LIVE_READY"
-    assert payload["passed"] is True
-    assert payload["reasons"] == ["all_default_gates_passed"]
-    assert payload["metrics"]["ic_tstat"] == 3.1
+    assert payload["version"] == "example"
+    assert payload["gate_version"] == "example-conservative-v0.1"
+    assert payload["status"] == "QUARANTINE"
+    assert payload["passed"] is False
+    assert payload["reasons"] == ["example_not_live_ready_evidence"]
+    assert payload["metrics"] == {}
 
 
 def test_gate_decision_route_returns_conservative_missing_decision(tmp_path, monkeypatch):

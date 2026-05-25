@@ -24,7 +24,6 @@ from pydantic import BaseModel, ConfigDict, Field
 
 from quant_lab import __version__
 from quant_lab.contracts.models import (
-    AlphaEvidence,
     CostEstimate,
     GateDecision,
     MarketBar,
@@ -39,7 +38,7 @@ from quant_lab.data.lake import (
     read_parquet_dataset,  # noqa: F401 - kept as a monkeypatch guard for no-eager-read tests.
     read_parquet_lazy,
 )
-from quant_lab.gates.defaults import evaluate_alpha_gate
+from quant_lab.gates.defaults import conservative_example_gate_decision
 from quant_lab.ops.metrics import api_metrics_summary, record_api_request
 from quant_lab.research.advisory_overrides import (
     portfolio_overridden_decision_mode,
@@ -255,8 +254,7 @@ def create_app() -> FastAPI:
 
     @app.get("/v1/gates/example", response_model=GateDecision)
     def gate_example() -> GateDecision:
-        evidence = AlphaEvidence.example_live_ready()
-        return evaluate_alpha_gate(evidence)
+        return conservative_example_gate_decision()
 
     @app.get("/v1/gates/decision/{alpha_id}", response_model=GateDecision)
     def gate_decision(alpha_id: str) -> GateDecision:

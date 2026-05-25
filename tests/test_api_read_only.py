@@ -49,7 +49,8 @@ def test_read_only_example_endpoints_and_catalog():
         "v5_quant_lab_enforcement_daily",
     ]
     assert gate.status_code == 200
-    assert gate.json()["status"] == "LIVE_READY"
+    assert gate.json()["status"] == "QUARANTINE"
+    assert gate.json()["passed"] is False
     assert costs.status_code == 200
     assert costs.json()["fallback_level"] == "NONE"
 

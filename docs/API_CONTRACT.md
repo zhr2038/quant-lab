@@ -200,7 +200,8 @@ Example response:
 
 ## GET /v1/gates/example
 
-Returns a deterministic example gate decision.
+Returns a deterministic conservative example gate decision. This endpoint is
+for client-shape smoke checks only; it is not live-ready research evidence.
 
 Request params: none.
 
@@ -209,19 +210,13 @@ Example response:
 ```json
 {
   "alpha_id": "example-alpha",
-  "version": "v1",
-  "gate_version": "default-v0.1",
-  "status": "LIVE_READY",
-  "passed": true,
-  "reasons": ["all_default_gates_passed"],
-  "metrics": {
-    "coverage": 0.99,
-    "ic_tstat": 3.1,
-    "edge_cost_ratio": 2.4,
-    "oos_sharpe": 1.2,
-    "paper_days": 21
-  },
-  "next_action": "eligible_for_strategy_consumer_review",
+  "version": "example",
+  "gate_version": "example-conservative-v0.1",
+  "status": "QUARANTINE",
+  "passed": false,
+  "reasons": ["example_not_live_ready_evidence"],
+  "metrics": {},
+  "next_action": "replace_example_with_real_alpha_evidence",
   "created_at": "2026-05-10T00:00:00Z"
 }
 ```

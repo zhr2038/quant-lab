@@ -1,9 +1,26 @@
 import os
+from datetime import UTC, datetime
 from typing import Any
 
 from quant_lab.contracts.models import AlphaEvidence, GateDecision, GateStatus
 
 DEFAULT_GATE_VERSION = "default-v0.1"
+EXAMPLE_GATE_VERSION = "example-conservative-v0.1"
+
+
+def conservative_example_gate_decision() -> GateDecision:
+    """Return a fail-closed example response for docs and smoke checks."""
+    return GateDecision(
+        alpha_id="example-alpha",
+        version="example",
+        gate_version=EXAMPLE_GATE_VERSION,
+        status=GateStatus.QUARANTINE,
+        passed=False,
+        reasons=["example_not_live_ready_evidence"],
+        metrics={},
+        next_action="replace_example_with_real_alpha_evidence",
+        created_at=datetime.now(UTC),
+    )
 
 
 def evaluate_alpha_gate(evidence: AlphaEvidence) -> GateDecision:

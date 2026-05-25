@@ -8165,13 +8165,16 @@ def _non_bootstrap_gate_rows(gates: pl.DataFrame) -> pl.DataFrame:
 def _strategy_evidence_has_required_candidates(strategy_evidence: pl.DataFrame) -> bool:
     if strategy_evidence.is_empty() or "candidate_name" not in strategy_evidence.columns:
         return False
+    # Keep this list to active V5 candidate families with current telemetry or
+    # historical outcome sources. Do not include dormant/planned candidates here:
+    # otherwise daily export reports a false coverage warning even when V5 is not
+    # emitting those candidates.
     required = {
         "v5.sol_protect_exception",
         "v5.alt_impulse_shadow",
         "v5.swing_f4_f5_alpha6",
         "v5.f3_dominant_entry",
         "v5.f4_volume_expansion_entry",
-        "v5.mean_reversion_sideways",
     }
     observed = {str(value) for value in strategy_evidence["candidate_name"].drop_nulls()}
     return required.issubset(observed)

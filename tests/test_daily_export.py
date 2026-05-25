@@ -19,6 +19,7 @@ from quant_lab.export.daily import (
     _member_row_count,
     _recent_heavy_dataset_files,
     _sha256_payload,
+    _strategy_evidence_has_required_candidates,
     export_daily_pack,
     validate_expert_pack,
 )
@@ -84,6 +85,22 @@ def test_export_daily_pack_writes_required_members(tmp_path):
         assert "quant_lab_enforce_readiness:" in executive_summary
         assert "charts/market_close.png" in names
         assert archive.read("charts/market_close.png").startswith(b"\x89PNG")
+
+
+def test_strategy_evidence_coverage_does_not_require_dormant_candidates():
+    evidence = pl.DataFrame(
+        {
+            "candidate_name": [
+                "v5.sol_protect_exception",
+                "v5.alt_impulse_shadow",
+                "v5.swing_f4_f5_alpha6",
+                "v5.f3_dominant_entry",
+                "v5.f4_volume_expansion_entry",
+            ]
+        }
+    )
+
+    assert _strategy_evidence_has_required_candidates(evidence)
 
 
 def test_export_includes_v5_local_live_vs_quant_lab_shadow_report(tmp_path):

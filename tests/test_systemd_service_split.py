@@ -65,10 +65,13 @@ def test_lake_permission_repair_script_targets_service_user():
     script = _script("repair_lake_permissions.sh")
 
     assert "LAKE_ROOT=\"${LAKE_ROOT:-/var/lib/quant-lab/lake}\"" in script
+    assert "QUANT_LAB_BASE_DIR=" in script
+    assert "EXPORTS_DIR=" in script
     assert "QUANT_LAB_USER=\"${QUANT_LAB_USER:-quantlab}\"" in script
     assert "QUANT_LAB_GROUP=\"${QUANT_LAB_GROUP:-quantlab}\"" in script
+    assert "install -d" in script
     assert "chown -R" in script
-    assert "chmod u+rwX,g+rwX,o+rX" in script
+    assert "chmod u+rwX,g+rwX,o+rX,g+s" in script
     assert "chmod u+rw,g+rw,o+r" in script
 
 

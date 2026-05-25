@@ -42,6 +42,25 @@ def test_api_service_uses_async_metrics_flush():
     assert "QUANT_LAB_API_METRICS_FLUSH_SECONDS=300" in unit
 
 
+def test_all_quant_lab_jobs_run_as_service_user_except_root_only_helpers():
+    for unit_path in SYSTEMD.glob("*.service"):
+        unit = unit_path.read_text(encoding="utf-8")
+        if "ExecStart=" not in unit:
+            continue
+        assert "User=quantlab" in unit, unit_path.name
+        assert "Group=quantlab" in unit, unit_path.name
+
+
+def test_storage_retention_does_not_create_root_owned_lake_files():
+    unit = _unit("quant-lab-storage-retention.service")
+
+    assert "User=quantlab" in unit
+    assert "Group=quantlab" in unit
+    assert "PermissionsStartOnly=true" in unit
+    assert "prune-storage-retention --base-dir /var/lib/quant-lab" in unit
+    assert "journalctl --vacuum-size=200M" in unit
+
+
 def test_lake_permission_repair_script_targets_service_user():
     script = _script("repair_lake_permissions.sh")
 

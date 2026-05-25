@@ -5,7 +5,10 @@ Wants=network-online.target
 
 [Service]
 Type=oneshot
+User=quantlab
+Group=quantlab
 WorkingDirectory=/opt/quant-lab
+PermissionsStartOnly=true
 Environment=PYTHONUNBUFFERED=1
 ExecStart=/usr/bin/flock -w 10 /var/lock/quant-lab-storage-retention.lock /opt/quant-lab/.venv/bin/qlab prune-storage-retention --base-dir /var/lib/quant-lab --keep-redacted-archive-days 3 --keep-inbox-days 2 --keep-export-packs 5 --apply
 ExecStartPost=/usr/bin/journalctl --vacuum-size=200M

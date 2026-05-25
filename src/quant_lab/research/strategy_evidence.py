@@ -315,29 +315,97 @@ def summarize_strategy_evidence(
     min_live_samples: int = MIN_LIVE_SMALL_READY_SAMPLES,
 ) -> list[dict[str, Any]]:
     created_at = datetime.now(UTC)
+    if samples.is_empty():
+        return []
+    prepared = _prepare_strategy_evidence_summary_frame(samples)
+    group_columns = [
+        "_summary_candidate",
+        "_summary_symbol",
+        "_summary_regime",
+        "_summary_horizon",
+    ]
+    aggregated = prepared.group_by(group_columns).agg(
+        [
+            pl.col("_sample_weight").sum().alias("sample_count"),
+            pl.col("_complete_weight").sum().alias("complete_sample_count"),
+            (pl.col("_net_bps") * pl.col("_net_weight")).sum().alias("_net_weighted_sum"),
+            pl.col("_net_weight").sum().alias("_net_weight_sum"),
+            pl.col("_net_bps").filter(pl.col("_net_weight") > 0).alias("_net_values"),
+            pl.col("_net_weight").filter(pl.col("_net_weight") > 0).alias("_net_weights"),
+            pl.col("_win_weight").sum().alias("_win_weight_sum"),
+            pl.col("_win_denominator_weight").sum().alias("_win_denominator_weight_sum"),
+            pl.col("ts_utc").min().alias("start_ts"),
+            pl.col("ts_utc").max().alias("end_ts"),
+        ]
+    )
+    cost_mix_by_group = _summary_cost_source_mix(prepared, group_columns)
     rows: list[dict[str, Any]] = []
-    sample_rows = samples.to_dicts() if not samples.is_empty() else []
-    groups: dict[tuple[str, str, str, int], list[dict[str, Any]]] = {}
-    for row in sample_rows:
+    for row in aggregated.sort(group_columns).to_dicts():
         key = (
-            str(row.get("strategy_candidate") or row.get("candidate_name") or "UNKNOWN"),
-            normalize_symbol(row.get("symbol")),
-            str(row.get("regime_state") or "UNKNOWN"),
-            int(row.get("horizon_hours") or 0),
+            str(row.get("_summary_candidate") or "UNKNOWN"),
+            str(row.get("_summary_symbol") or "UNKNOWN"),
+            str(row.get("_summary_regime") or "UNKNOWN"),
+            int(row.get("_summary_horizon") or 0),
         )
-        groups.setdefault(key, []).append(row)
-    for (candidate, symbol, regime, horizon), candidate_rows in sorted(groups.items()):
+        sample_count = int(row.get("sample_count") or 0)
+        complete_sample_count = int(row.get("complete_sample_count") or 0)
+        net_weight_sum = float(row.get("_net_weight_sum") or 0.0)
+        avg_net = (
+            float(row.get("_net_weighted_sum") or 0.0) / net_weight_sum
+            if net_weight_sum
+            else None
+        )
+        median_net = _weighted_quantile_from_lists(
+            row.get("_net_values"),
+            row.get("_net_weights"),
+            0.5,
+        )
+        p25_net = _weighted_quantile_from_lists(
+            row.get("_net_values"),
+            row.get("_net_weights"),
+            0.25,
+        )
+        win_denominator = float(row.get("_win_denominator_weight_sum") or 0.0)
+        win_rate = (
+            float(row.get("_win_weight_sum") or 0.0) / win_denominator
+            if win_denominator
+            else None
+        )
+        cost_mix = cost_mix_by_group.get(key, {})
+        decision, reasons = _formal_decision(
+            candidate_name=key[0],
+            sample_count=sample_count,
+            complete_sample_count=complete_sample_count,
+            avg_net_bps=avg_net,
+            p25_net_bps=p25_net,
+            win_rate=win_rate,
+            min_live_samples=min_live_samples,
+            cost_source_mix=cost_mix,
+        )
         rows.append(
-            _formal_summary_row(
-                strategy_candidate=candidate,
-                symbol=symbol,
-                regime_state=regime,
-                horizon_hours=horizon,
-                rows=candidate_rows,
-                as_of_date=as_of_date,
-                created_at=created_at,
-                min_live_samples=min_live_samples,
-            )
+            {
+                "strategy": "v5",
+                "evidence_version": EVIDENCE_VERSION,
+                "as_of_date": as_of_date.isoformat(),
+                "strategy_candidate": key[0],
+                "candidate_name": key[0],
+                "symbol": key[1],
+                "regime_state": key[2],
+                "horizon_hours": key[3],
+                "sample_count": sample_count,
+                "complete_sample_count": complete_sample_count,
+                "avg_net_bps": avg_net,
+                "median_net_bps": median_net,
+                "p25_net_bps": p25_net,
+                "win_rate": win_rate,
+                "cost_source_mix": _json(cost_mix),
+                "decision": decision,
+                "decision_reasons": _json(reasons),
+                "start_ts": row.get("start_ts"),
+                "end_ts": row.get("end_ts"),
+                "created_at": created_at,
+                "source": SOURCE_NAME,
+            }
         )
     return rows
 
@@ -1072,6 +1140,100 @@ def _formal_summary_row(
         "created_at": created_at,
         "source": SOURCE_NAME,
     }
+
+
+def _prepare_strategy_evidence_summary_frame(samples: pl.DataFrame) -> pl.DataFrame:
+    return samples.with_columns(
+        [
+            pl.coalesce(
+                [
+                    pl.col("strategy_candidate").cast(pl.Utf8, strict=False),
+                    pl.col("candidate_name").cast(pl.Utf8, strict=False),
+                    pl.lit("UNKNOWN"),
+                ]
+            ).alias("_summary_candidate"),
+            pl.col("symbol")
+            .map_elements(normalize_symbol, return_dtype=pl.Utf8)
+            .fill_null("UNKNOWN")
+            .alias("_summary_symbol"),
+            pl.col("regime_state")
+            .cast(pl.Utf8, strict=False)
+            .fill_null("UNKNOWN")
+            .alias("_summary_regime"),
+            pl.col("horizon_hours")
+            .cast(pl.Int64, strict=False)
+            .fill_null(0)
+            .alias("_summary_horizon"),
+            _positive_int_expr("sample_count").alias("_sample_weight"),
+            (
+                pl.when(pl.col("label_status").fill_null("").cast(pl.Utf8) == "complete")
+                .then(_positive_int_expr("complete_sample_count"))
+                .otherwise(0)
+            ).alias("_complete_weight"),
+            pl.col("net_bps_after_cost").cast(pl.Float64, strict=False).alias("_net_bps"),
+            pl.col("cost_source")
+            .cast(pl.Utf8, strict=False)
+            .fill_null("MISSING")
+            .alias("_summary_cost_source"),
+        ]
+    ).with_columns(
+        [
+            (
+                pl.when(pl.col("_net_bps").is_not_null() & ~pl.col("_net_bps").is_nan())
+                .then(pl.col("_complete_weight"))
+                .otherwise(0)
+            ).alias("_net_weight"),
+            (
+                pl.when(pl.col("win").is_not_null())
+                .then(pl.col("_complete_weight"))
+                .otherwise(0)
+            ).alias("_win_denominator_weight"),
+            (
+                pl.when(pl.col("win").fill_null(False).cast(pl.Boolean, strict=False))
+                .then(pl.col("_complete_weight"))
+                .otherwise(0)
+            ).alias("_win_weight"),
+        ]
+    )
+
+
+def _positive_int_expr(column: str) -> pl.Expr:
+    value = pl.col(column).cast(pl.Float64, strict=False)
+    return pl.when(value.is_not_null() & ~value.is_nan() & (value > 0)).then(
+        value.cast(pl.Int64)
+    ).otherwise(1)
+
+
+def _summary_cost_source_mix(
+    prepared: pl.DataFrame,
+    group_columns: list[str],
+) -> dict[tuple[str, str, str, int], dict[str, int]]:
+    grouped = prepared.group_by([*group_columns, "_summary_cost_source"]).agg(
+        pl.col("_sample_weight").sum().alias("_cost_source_count")
+    )
+    mixes: dict[tuple[str, str, str, int], dict[str, int]] = {}
+    for row in grouped.to_dicts():
+        key = (
+            str(row.get("_summary_candidate") or "UNKNOWN"),
+            str(row.get("_summary_symbol") or "UNKNOWN"),
+            str(row.get("_summary_regime") or "UNKNOWN"),
+            int(row.get("_summary_horizon") or 0),
+        )
+        source = str(row.get("_summary_cost_source") or "MISSING")
+        mixes.setdefault(key, {})[source] = int(row.get("_cost_source_count") or 0)
+    return mixes
+
+
+def _weighted_quantile_from_lists(values: Any, weights: Any, q: float) -> float | None:
+    if values is None or weights is None:
+        return None
+    pairs: list[tuple[float, int]] = []
+    for value, weight in zip(values, weights, strict=False):
+        numeric = _finite_float(value)
+        count = int(_finite_float(weight) or 0)
+        if numeric is not None and count > 0:
+            pairs.append((numeric, count))
+    return _weighted_quantile(pairs, q)
 
 
 def _formal_decision(

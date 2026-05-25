@@ -309,6 +309,7 @@ def test_research_portfolio_web_table_normalizes_close_actions():
     takeaways = localized.get_column("重点结论").to_list()
     assert any("关闭" in value for value in takeaways)
     assert any("降级" in value for value in takeaways)
+    assert any("ETH F3" in value for value in takeaways)
     assert all("complete_sample_count" not in value for value in localized.get_column("关键指标"))
 
 
@@ -347,6 +348,30 @@ def test_strategy_opportunity_web_table_keeps_high_signal_extension_fields():
     assert localized["推荐模式"][0] == "影子观察"
     assert localized["币池类型"][0] == "扩展币池纸面"
     assert "完整样本 18" in localized["关键指标"][0]
+    assert "Alpha Factory" in localized["重点结论"][0]
+    assert "v5.af." not in localized["重点结论"][0]
+
+
+def test_strategy_opportunity_web_takeaway_localizes_regime_router_candidates():
+    frame = pl.DataFrame(
+        [
+            {
+                "strategy_candidate": "regime_router:ETH_F3_DOMINANT_ENTRY_PAPER_V1",
+                "symbol": "ALL",
+                "decision": "PAPER_READY",
+                "recommended_mode": "paper",
+                "max_live_notional_usdt": 0.0,
+                "as_of_ts": "2026-05-25T00:00:00+00:00",
+            }
+        ]
+    )
+
+    table = readers._strategy_opportunity_table(frame)
+    localized = localize_frame(table)
+
+    takeaway = localized["重点结论"][0]
+    assert "行情路由：ETH F3 主导纸面策略" in takeaway
+    assert "regime_router:" not in takeaway
 
 
 def test_feature_summary_samples_feature_value(tmp_path, monkeypatch):

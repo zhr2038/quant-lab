@@ -11,6 +11,7 @@ import polars as pl
 
 from quant_lab.data.lake import invalid_parquet_files, read_parquet_dataset
 from quant_lab.symbols import normalize_symbol
+from quant_lab.web.pages._common import display_value
 
 DATASET_PATHS = {
     "market_bar": Path("silver") / "market_bar",
@@ -479,6 +480,16 @@ def _as_int(value: Any) -> int | None:
         return int(value)
     except (TypeError, ValueError):
         return None
+
+
+def _friendly_label(value: Any) -> str:
+    text = str(value or "").strip()
+    if not text:
+        return "候选"
+    if text.startswith("regime_router:"):
+        return "行情路由：" + _friendly_label(text.removeprefix("regime_router:"))
+    displayed = display_value(text)
+    return str(displayed) if displayed != text else text
 
 
 @dataclass(frozen=True)
@@ -1275,7 +1286,7 @@ def _with_research_result_focus(table: pl.DataFrame) -> pl.DataFrame:
 def _strategy_opportunity_takeaway(row: dict[str, Any]) -> str:
     decision = str(row.get("decision") or "").upper()
     mode = str(row.get("recommended_mode") or "").lower()
-    candidate = str(row.get("strategy_candidate") or "候选")
+    candidate = _friendly_label(row.get("strategy_candidate"))
     live_notional = _as_float(row.get("max_live_notional_usdt")) or 0.0
     if decision == "KILL" or mode == "none":
         return f"不推荐：{candidate} 已淘汰或当前无正边际"
@@ -1293,7 +1304,7 @@ def _strategy_opportunity_takeaway(row: dict[str, Any]) -> str:
 
 def _alpha_factory_takeaway(row: dict[str, Any]) -> str:
     decision = str(row.get("decision") or row.get("promotion_state") or "").upper()
-    candidate = str(row.get("strategy_candidate") or "候选")
+    candidate = _friendly_label(row.get("strategy_candidate"))
     if decision == "KILL":
         return f"淘汰：{candidate} 未通过 Alpha Factory"
     if decision == "PAPER_READY":
@@ -1305,7 +1316,7 @@ def _alpha_factory_takeaway(row: dict[str, Any]) -> str:
 
 def _research_result_takeaway(row: dict[str, Any]) -> str:
     decision = str(row.get("decision") or "").upper()
-    candidate = str(row.get("strategy_candidate") or row.get("candidate_name") or "候选")
+    candidate = _friendly_label(row.get("strategy_candidate") or row.get("candidate_name"))
     if decision == "KILL":
         return f"淘汰：{candidate} 负收益或尾部风险不合格"
     if decision == "PAPER_READY":
@@ -2499,7 +2510,7 @@ def _with_research_portfolio_focus(table: pl.DataFrame) -> pl.DataFrame:
 def _research_portfolio_takeaway(row: dict[str, Any]) -> str:
     status = str(row.get("status") or "").upper()
     action = str(row.get("action") or "").upper()
-    research_id = str(row.get("research_id") or row.get("strategy_candidate") or "研究项")
+    research_id = _friendly_label(row.get("strategy_candidate") or row.get("research_id"))
     if status == "KILL" or action == "CLOSE_RESEARCH":
         return f"关闭：{research_id} 不再进入重点日报或晋级队列"
     if status == "DOWNGRADED_FROM_PAPER":

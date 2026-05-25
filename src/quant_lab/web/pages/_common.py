@@ -407,6 +407,7 @@ VALUE_LABELS.update(
         "v5.risk_on_multi_buy_top3_shadow": "Risk-on 多币 Top3 影子",
         "v5.af.expanded_relative_strength_top1_shadow": "Alpha Factory 扩展相对强度 Top1",
         "v5.af.expanded_relative_strength_top3_shadow": "Alpha Factory 扩展相对强度 Top3",
+        "v5.af.expanded_relative_strength": "Alpha Factory 扩展相对强度",
         "ETH_F3_DOMINANT_ENTRY_PAPER_V1": "ETH F3 主导纸面策略",
         "SOL_PROTECT_ALPHA6_LOW_EXCEPTION_PAPER_V1": "SOL 保护态 Alpha6 低分例外纸面策略",
         "SOL_F4_VOLUME_EXPANSION_PAPER_V1": "SOL F4 放量纸面策略",

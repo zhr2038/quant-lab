@@ -419,6 +419,35 @@ WEB_RECENT_FILE_LIMITS = {
 }
 PARQUET_MAGIC = b"PAR1"
 MIN_PARQUET_SIZE_BYTES = 12
+RESEARCH_STATUS_PRIORITY = {
+    "DOWNGRADED_FROM_PAPER": 0,
+    "REVIEW": 1,
+    "PAPER": 2,
+    "SHADOW": 3,
+    "ACTIVE": 4,
+    "ACTIVE_DIAGNOSTIC": 5,
+    "PAUSED": 6,
+    "BASELINE_ONLY": 7,
+    "KILL": 8,
+}
+RESEARCH_ACTION_PRIORITY = {
+    "CONTINUE_PAPER": 0,
+    "CONTINUE_SHADOW_OR_REVIEW": 1,
+    "CONTINUE_SHADOW": 2,
+    "ACTIVE_DIAGNOSTIC": 3,
+    "KEEP_RESEARCH": 4,
+    "PAUSED_TO_WEEKLY": 5,
+    "BASELINE_ONLY": 6,
+    "CLOSE_RESEARCH": 7,
+}
+DECISION_PRIORITY = {
+    "PAPER_READY": 0,
+    "KEEP_SHADOW": 1,
+    "REGIME_SHADOW": 2,
+    "RESEARCH_ONLY": 3,
+    "KILL": 4,
+}
+RECOMMENDED_MODE_PRIORITY = {"paper": 0, "shadow": 1, "research": 2, "audit": 3, "none": 4}
 
 
 @dataclass(frozen=True)
@@ -1013,34 +1042,88 @@ def dashboard_overview(lake_root: str | Path) -> dict[str, Any]:
     }
 
 
+def _select_existing_columns(frame: pl.DataFrame, columns: list[str]) -> pl.DataFrame:
+    selected = [column for column in columns if column in frame.columns]
+    return frame.select(selected) if selected else frame
+
+
+def _sort_by_priority(
+    frame: pl.DataFrame,
+    column: str,
+    priority: dict[str, int],
+    secondary: list[str] | None = None,
+) -> pl.DataFrame:
+    if frame.is_empty():
+        return frame
+    sort_columns = [column for column in (secondary or []) if column in frame.columns]
+    if column not in frame.columns:
+        return frame.sort(sort_columns) if sort_columns else frame
+    priority_column = "__web_display_priority"
+    fallback_priority = len(priority) + 100
+    table = frame.with_columns(
+        pl.col(column)
+        .cast(pl.Utf8, strict=False)
+        .map_elements(
+            lambda value: priority.get(str(value), fallback_priority),
+            return_dtype=pl.Int64,
+        )
+        .alias(priority_column)
+    )
+    return table.sort([priority_column, *sort_columns]).drop(priority_column)
+
+
+def _dedupe_latest_web_rows(
+    frame: pl.DataFrame,
+    keys: list[str],
+    timestamp_columns: list[str],
+) -> pl.DataFrame:
+    if frame.is_empty() or not all(key in frame.columns for key in keys):
+        return frame
+    sort_columns = [column for column in timestamp_columns if column in frame.columns]
+    if sort_columns:
+        frame = frame.sort(sort_columns)
+    return frame.unique(subset=keys, keep="last", maintain_order=True)
+
+
 def _strategy_opportunity_table(frame: pl.DataFrame) -> pl.DataFrame:
     if frame.is_empty():
         return frame
     columns = [
-        "strategy_candidate",
-        "symbol",
         "decision",
         "recommended_mode",
+        "strategy_candidate",
+        "symbol",
         "horizon_hours",
-        "sample_count",
-        "complete_sample_count",
         "avg_net_bps",
         "p25_net_bps",
         "win_rate",
-        "cost_source_mix",
+        "complete_sample_count",
+        "source_module",
+        "promotion_state",
+        "universe_type",
+        "alpha_factory_score",
         "live_block_reasons",
-        "max_paper_notional_usdt",
         "max_live_notional_usdt",
         "as_of_ts",
     ]
-    selected = [column for column in columns if column in frame.columns]
-    table = frame.select(selected) if selected else frame
-    sort_columns = [
-        column
-        for column in ["decision", "strategy_candidate", "symbol", "horizon_hours"]
-        if column in table.columns
-    ]
-    return table.sort(sort_columns) if sort_columns else table
+    table = _select_existing_columns(frame, columns)
+    table = _dedupe_latest_web_rows(
+        table,
+        keys=["strategy_candidate", "symbol", "horizon_hours"],
+        timestamp_columns=["as_of_ts", "created_at"],
+    )
+    table = _sort_by_priority(
+        table,
+        "recommended_mode",
+        RECOMMENDED_MODE_PRIORITY,
+        ["decision", "strategy_candidate", "symbol", "horizon_hours"],
+    )
+    return _sort_by_priority(
+        table,
+        "decision",
+        DECISION_PRIORITY,
+        ["recommended_mode", "strategy_candidate", "symbol", "horizon_hours"],
+    )
 
 
 def _entry_quality_table(frame: pl.DataFrame) -> pl.DataFrame:
@@ -1060,12 +1143,12 @@ def _entry_quality_table(frame: pl.DataFrame) -> pl.DataFrame:
     ]
     selected = [column for column in columns if column in frame.columns]
     table = frame.select(selected) if selected else frame
-    sort_columns = [
-        column
-        for column in ["recommended_mode", "strategy_candidate", "symbol"]
-        if column in table.columns
-    ]
-    return table.sort(sort_columns) if sort_columns else table
+    return _sort_by_priority(
+        table,
+        "recommended_mode",
+        RECOMMENDED_MODE_PRIORITY,
+        ["strategy_candidate", "symbol"],
+    )
 
 
 def _overview_market_health(lake_root: str | Path) -> dict[str, Any]:
@@ -1583,6 +1666,27 @@ def alpha_gate_summary(lake_root: str | Path) -> dict[str, Any]:
         lake_root,
         "strategy_opportunity_advisory",
     )
+    alpha_factory_results, alpha_factory_results_warning = read_dataset_with_warning(
+        lake_root,
+        "alpha_factory_result",
+    )
+    alpha_factory_promotion, alpha_factory_promotion_warning = read_dataset_with_warning(
+        lake_root,
+        "alpha_factory_promotion_queue",
+    )
+    missed_opportunity, missed_opportunity_warning = _read_web_display_dataset_with_warning(
+        lake_root,
+        "v5_missed_opportunity_audit",
+    )
+    risk_on_multi_buy, risk_on_multi_buy_warning = _read_web_display_dataset_with_warning(
+        lake_root,
+        "risk_on_multi_buy_shadow",
+    )
+    if risk_on_multi_buy.is_empty():
+        risk_on_multi_buy, risk_on_multi_buy_warning = _read_web_display_dataset_with_warning(
+            lake_root,
+            "v5_risk_on_multi_buy_shadow",
+        )
     expanded_candidates, expanded_candidates_warning = read_dataset_with_warning(
         lake_root,
         "expanded_universe_candidate",
@@ -1637,6 +1741,10 @@ def alpha_gate_summary(lake_root: str | Path) -> dict[str, Any]:
             candidate_quality_warning,
             candidate_outcomes_warning,
             strategy_opportunities_warning,
+            alpha_factory_results_warning,
+            alpha_factory_promotion_warning,
+            missed_opportunity_warning,
+            risk_on_multi_buy_warning,
             expanded_candidates_warning,
             expanded_quality_warning,
             expanded_events_warning,
@@ -1703,6 +1811,18 @@ def alpha_gate_summary(lake_root: str | Path) -> dict[str, Any]:
         ),
         "strategy_opportunity_advisory": redact_frame(
             _strategy_opportunity_table(strategy_opportunities)
+        ).head(DISPLAY_LIMIT),
+        "alpha_factory_result": redact_frame(
+            _alpha_factory_result_table(alpha_factory_results)
+        ).head(DISPLAY_LIMIT),
+        "alpha_factory_promotion_queue": redact_frame(
+            _alpha_factory_promotion_table(alpha_factory_promotion)
+        ).head(DISPLAY_LIMIT),
+        "missed_opportunity_audit": redact_frame(
+            _missed_opportunity_table(missed_opportunity)
+        ).head(DISPLAY_LIMIT),
+        "risk_on_multi_buy_shadow": redact_frame(
+            _risk_on_multi_buy_table(risk_on_multi_buy)
         ).head(DISPLAY_LIMIT),
         "expanded_universe_candidate": redact_frame(
             _expanded_candidate_table(expanded_candidates)
@@ -1773,6 +1893,112 @@ def _expanded_universe_table(frame: pl.DataFrame) -> pl.DataFrame:
     selected = [column for column in columns if column in frame.columns]
     table = frame.select(selected) if selected else frame
     return table.sort("rank") if "rank" in table.columns else table
+
+
+def _alpha_factory_result_table(frame: pl.DataFrame) -> pl.DataFrame:
+    if frame.is_empty():
+        return frame
+    columns = [
+        "decision",
+        "strategy_candidate",
+        "template_family",
+        "universe_type",
+        "horizon_hours",
+        "alpha_factory_score",
+        "avg_net_bps",
+        "p25_net_bps",
+        "win_rate",
+        "complete_sample_count",
+        "recent_sample_sufficient",
+        "cost_quality_score",
+        "paper_ready_block_reasons",
+        "generated_at",
+    ]
+    table = _select_existing_columns(frame, columns)
+    return _sort_by_priority(
+        table,
+        "decision",
+        DECISION_PRIORITY,
+        ["strategy_candidate", "horizon_hours"],
+    )
+
+
+def _alpha_factory_promotion_table(frame: pl.DataFrame) -> pl.DataFrame:
+    if frame.is_empty():
+        return frame
+    columns = [
+        "promotion_state",
+        "recommended_mode",
+        "strategy_candidate",
+        "symbol",
+        "horizon_hours",
+        "alpha_factory_score",
+        "avg_net_bps",
+        "p25_net_bps",
+        "win_rate",
+        "complete_sample_count",
+        "live_block_reasons",
+        "generated_at",
+    ]
+    table = _select_existing_columns(frame, columns)
+    return _sort_by_priority(
+        table,
+        "recommended_mode",
+        RECOMMENDED_MODE_PRIORITY,
+        ["promotion_state", "strategy_candidate", "symbol", "horizon_hours"],
+    )
+
+
+def _missed_opportunity_table(frame: pl.DataFrame) -> pl.DataFrame:
+    if frame.is_empty():
+        return frame
+    columns = [
+        "outcome_if_blocked",
+        "symbol",
+        "current_regime",
+        "final_score",
+        "alpha6_side",
+        "v5_final_decision",
+        "actual_trade_opened",
+        "quant_lab_recommended_mode",
+        "future_4h_net_bps",
+        "future_8h_net_bps",
+        "future_24h_net_bps",
+        "ts_utc",
+    ]
+    table = _select_existing_columns(frame, columns)
+    sort_columns = [
+        column for column in ["outcome_if_blocked", "symbol", "ts_utc"] if column in table.columns
+    ]
+    return table.sort(sort_columns) if sort_columns else table
+
+
+def _risk_on_multi_buy_table(frame: pl.DataFrame) -> pl.DataFrame:
+    if frame.is_empty():
+        return frame
+    columns = [
+        "ts_utc",
+        "current_regime",
+        "regime_source",
+        "top_k",
+        "selected_symbols",
+        "would_buy_symbol",
+        "final_score",
+        "future_4h_net_bps",
+        "future_8h_net_bps",
+        "future_24h_net_bps",
+        "portfolio_avg_net_bps",
+        "actual_v5_bought_symbols",
+        "missed_symbols",
+        "vs_actual_v5_net_bps",
+    ]
+    table = _select_existing_columns(frame, columns)
+    sort_columns = [
+        column
+        for column in ["ts_utc", "top_k", "would_buy_symbol"]
+        if column in table.columns
+    ]
+    return table.sort(sort_columns, descending=True) if sort_columns else table
 
 
 def _expanded_candidate_table(frame: pl.DataFrame) -> pl.DataFrame:
@@ -1851,38 +2077,36 @@ def _alpha_discovery_board_table(board: pl.DataFrame) -> pl.DataFrame:
     if board.is_empty():
         return board
     columns = [
+        "decision",
         "strategy_candidate",
         "symbol",
         "regime_state",
         "horizon_hours",
-        "decision",
-        "sample_count",
-        "complete_sample_count",
         "avg_net_bps",
-        "median_net_bps",
         "p25_net_bps",
         "win_rate",
+        "complete_sample_count",
+        "sample_count",
         "avg_mfe_bps",
         "avg_mae_bps",
         "cost_source_mix",
-        "stability_by_day",
         "paper_days",
-        "risk_permission_status",
-        "enforce_readiness_status",
         "decision_reasons",
         "as_of_date",
         "created_at",
     ]
-    selected = [column for column in columns if column in board.columns]
-    if not selected:
-        return board
-    table = board.select(selected)
-    sort_columns = [
-        column
-        for column in ["decision", "strategy_candidate", "symbol", "horizon_hours"]
-        if column in table.columns
-    ]
-    return table.sort(sort_columns) if sort_columns else table
+    table = _select_existing_columns(board, columns)
+    table = _dedupe_latest_web_rows(
+        table,
+        keys=["strategy_candidate", "symbol", "horizon_hours"],
+        timestamp_columns=["as_of_date", "created_at"],
+    )
+    return _sort_by_priority(
+        table,
+        "decision",
+        DECISION_PRIORITY,
+        ["strategy_candidate", "symbol", "horizon_hours"],
+    )
 
 
 def _strategy_evidence_table(strategy_evidence: pl.DataFrame) -> pl.DataFrame:
@@ -1890,57 +2114,95 @@ def _strategy_evidence_table(strategy_evidence: pl.DataFrame) -> pl.DataFrame:
         return strategy_evidence
     columns = [
         "candidate_name",
+        "strategy_candidate",
+        "symbol",
+        "horizon_hours",
         "decision",
+        "avg_net_bps",
+        "p25_net_bps",
+        "win_rate",
         "sample_count",
         "complete_sample_count",
         "avg_net_bps_by_horizon",
         "win_rate_by_horizon",
         "downside_p25_by_horizon",
-        "max_drawdown_proxy",
         "cost_sensitivity",
-        "symbol_breakdown",
         "regime_breakdown",
         "decision_reasons",
         "as_of_date",
         "created_at",
     ]
-    selected = [column for column in columns if column in strategy_evidence.columns]
-    if not selected:
-        return strategy_evidence
-    table = strategy_evidence.select(selected)
-    sort_columns = [column for column in ["decision", "candidate_name"] if column in table.columns]
-    return table.sort(sort_columns) if sort_columns else table
+    table = _select_existing_columns(strategy_evidence, columns)
+    candidate_column = (
+        "strategy_candidate" if "strategy_candidate" in table.columns else "candidate_name"
+    )
+    return _sort_by_priority(table, "decision", DECISION_PRIORITY, [candidate_column])
 
 
 def _research_portfolio_table(frame: pl.DataFrame) -> pl.DataFrame:
     if frame.is_empty():
         return frame
     columns = [
-        "research_id",
-        "module",
-        "strategy_candidate",
         "status",
         "action",
+        "strategy_candidate",
         "reason",
-        "sample_count",
-        "complete_sample_count",
         "avg_net_bps",
         "win_rate",
-        "p25_net_bps",
+        "complete_sample_count",
         "paper_days",
         "entry_day_count",
-        "cost_source_mix",
-        "last_review_date",
+        "paper_negative_streak",
         "next_review_date",
+        "module",
+        "research_id",
+        "created_at",
     ]
-    selected = [column for column in columns if column in frame.columns]
-    if not selected:
+    table = _select_existing_columns(frame, columns)
+    table = _dedupe_latest_web_rows(
+        table,
+        keys=["research_id"],
+        timestamp_columns=["as_of_date", "created_at", "last_review_date"],
+    )
+    table = _with_normalized_research_action(table)
+    table = _sort_by_priority(table, "status", RESEARCH_STATUS_PRIORITY, ["module", "research_id"])
+    table = _sort_by_priority(table, "action", RESEARCH_ACTION_PRIORITY, ["status", "research_id"])
+    hidden = [column for column in ["created_at"] if column in table.columns]
+    return table.drop(hidden) if hidden else table
+
+
+def _with_normalized_research_action(frame: pl.DataFrame) -> pl.DataFrame:
+    if frame.is_empty() or "action" not in frame.columns:
         return frame
-    table = frame.select(selected)
-    sort_columns = [
-        column for column in ["status", "module", "research_id"] if column in table.columns
-    ]
-    return table.sort(sort_columns) if sort_columns else table
+    fields = [column for column in ["status", "action"] if column in frame.columns]
+    if not fields:
+        return frame
+    return frame.with_columns(
+        pl.struct(fields)
+        .map_elements(_normalize_research_action_row, return_dtype=pl.Utf8)
+        .alias("action")
+    )
+
+
+def _normalize_research_action_row(row: dict[str, Any]) -> str:
+    status = str(row.get("status") or "").strip()
+    action = str(row.get("action") or "").strip()
+    lowered = action.lower()
+    if status == "KILL" or lowered.startswith("close") or "closed" in lowered:
+        return "CLOSE_RESEARCH"
+    if status == "DOWNGRADED_FROM_PAPER":
+        return "CONTINUE_SHADOW_OR_REVIEW"
+    if status == "PAUSED":
+        return "PAUSED_TO_WEEKLY"
+    if status == "BASELINE_ONLY":
+        return "BASELINE_ONLY"
+    if status == "PAPER":
+        return "CONTINUE_PAPER"
+    if status in {"SHADOW", "REGIME_SHADOW"}:
+        return "CONTINUE_SHADOW"
+    if status in {"ACTIVE", "ACTIVE_DIAGNOSTIC"}:
+        return "ACTIVE_DIAGNOSTIC"
+    return action or "KEEP_RESEARCH"
 
 
 def _strategy_sample_table(strategy_samples: pl.DataFrame) -> pl.DataFrame:

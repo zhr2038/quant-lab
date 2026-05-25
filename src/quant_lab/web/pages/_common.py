@@ -311,6 +311,148 @@ VALUE_LOCALIZED_COLUMNS.update(
     }
 )
 
+VALUE_LABELS.update(
+    {
+        "CLOSE_RESEARCH": "关闭研究",
+        "CLOSED": "已关闭",
+        "CLOSE": "关闭",
+        "REVIEW": "复查",
+        "DOWNGRADED_FROM_PAPER": "已从纸面降级",
+        "PAUSED": "暂停",
+        "ACTIVE": "进行中",
+        "SHADOW": "影子观察",
+        "PAPER": "纸面观察",
+        "BASELINE_ONLY": "仅作基线",
+        "ACTIVE_DIAGNOSTIC": "诊断中",
+        "CONTINUE_PAPER": "继续纸面观察",
+        "CONTINUE_SHADOW": "继续影子观察",
+        "CONTINUE_SHADOW_OR_REVIEW": "转影子观察/复查",
+        "PAUSED_TO_WEEKLY": "降为周度复查",
+        "KEEP_RESEARCH": "继续研究",
+        "REGIME_SHADOW": "分状态影子观察",
+        "insufficient_complete_samples": "完整样本不足",
+        "insufficient_total_samples": "总样本不足",
+        "non_positive_after_cost_edge": "扣成本后没有正边际",
+        "win_rate_below_threshold": "胜率低于阈值",
+        "paper_negative_streak": "纸面结果连续转弱",
+        "downgraded_from_paper": "已从纸面降级",
+        "research_portfolio_kill": "研究组合已淘汰",
+        "research_paused": "研究已暂停",
+        "baseline_only": "仅作研究基线",
+        "research_portfolio_shadow": "研究组合限制为影子观察",
+        "cost_source_not_trusted": "成本来源不够可信",
+        "cost_source_not_actual_or_mixed": "成本还不是真实或混合真实成本",
+        "no_paper_days": "纸面观察天数不足",
+        "no_live_slippage_coverage": "实盘滑点覆盖不足",
+        "shadow_only_collect_more_samples": "仅影子观察并继续收集样本",
+        "insufficient_sample_count": "样本数量不足",
+        "weak_24h_avg_net_bps": "24h 平均净收益偏弱",
+        "expanded_universe_not_live_approved": "扩展币池未获准实盘",
+        "futures_data_missing": "合约数据缺失",
+        "funding_not_observable": "资金费率不可观测",
+        "local_estimate": "本地估算成本",
+        "cost_not_requested_no_order": "未下单未请求成本",
+        "negative_after_cost_edge": "扣成本后边际为负",
+        "no_recent_trigger": "近期无触发",
+        "cost_source_not_paper_ready": "成本质量不足以纸面晋级",
+        "insufficient_recent_samples": "近期样本不足",
+        "validation_negative": "验证集为负",
+        "recent_7d_negative": "近 7 天转弱",
+        "futures_proxy_not_paper_ready": "合约代理结果不能纸面晋级",
+        "ready_for_review": "需要复查",
+        "quant_lab_would_have_missed_profit": "中台若硬拦会错过盈利",
+        "quant_lab_correctly_avoided_loss": "中台正确避开亏损",
+        "v5_missed_profit_opportunity": "V5 错过盈利机会",
+        "v5_correctly_skipped_loss": "V5 正确跳过亏损",
+        "pending": "待观察",
+        "expanded_paper": "扩展币池纸面",
+        "second_stage_alpha_factory": "二阶段 Alpha Factory",
+        "alpha_factory": "Alpha Factory",
+        "v5.core.momentum": "核心动量基线",
+        "v5.expanded_relative_strength_top1_shadow": "扩展币池相对强度 Top1 影子",
+        "v5.expanded_relative_strength_top3_shadow": "扩展币池相对强度 Top3 影子",
+        "v5.expanded_relative_strength_rotation_shadow": "扩展币池相对强度轮动影子",
+        "v5.futures_risk_off_hedge_proxy_shadow": "风险关闭合约对冲代理影子",
+        "v5.futures_downtrend_short_proxy_shadow": "下跌趋势做空代理影子",
+        "v5.risk_on_multi_buy_top1_shadow": "Risk-on 多币 Top1 影子",
+        "v5.risk_on_multi_buy_top2_shadow": "Risk-on 多币 Top2 影子",
+        "v5.risk_on_multi_buy_top3_shadow": "Risk-on 多币 Top3 影子",
+        "v5.af.expanded_relative_strength_top1_shadow": "Alpha Factory 扩展相对强度 Top1",
+        "v5.af.expanded_relative_strength_top3_shadow": "Alpha Factory 扩展相对强度 Top3",
+        "ETH_F3_DOMINANT_ENTRY_PAPER_V1": "ETH F3 主导纸面策略",
+        "SOL_PROTECT_ALPHA6_LOW_EXCEPTION_PAPER_V1": "SOL 保护态 Alpha6 低分例外纸面策略",
+        "SOL_F4_VOLUME_EXPANSION_PAPER_V1": "SOL F4 放量纸面策略",
+        "ALT_IMPULSE_REGIME_SHADOW_V1": "Alt 脉冲分状态影子策略",
+        "BTC_STRICT_PROBE_MONITOR_V1": "BTC 严格探针监控",
+        "v5.missed_opportunity_audit": "错失机会审计",
+        "research_baseline": "研究基线",
+    }
+)
+
+COLUMN_LABELS.update(
+    {
+        "action": "研究动作",
+        "research_id": "研究编号",
+        "module": "模块",
+        "reason": "原因",
+        "downgrade_reason": "降级原因",
+        "paper_negative_streak": "纸面连续转弱天数",
+        "latest_paper_trend": "最新纸面趋势",
+        "last_review_date": "最近复查日",
+        "next_review_date": "下次复查日",
+        "priority": "优先级",
+        "source_module": "来源模块",
+        "template_family": "模板族",
+        "promotion_state": "晋级状态",
+        "alpha_factory_score": "Alpha Factory 分数",
+        "universe_type": "币池类型",
+        "cost_quality_score": "成本质量分",
+        "paper_ready_block_reasons": "纸面阻断原因",
+        "avg_net_bps_by_horizon": "分周期平均净收益",
+        "win_rate_by_horizon": "分周期胜率",
+        "downside_p25_by_horizon": "分周期 P25",
+        "quality_score": "质量分",
+        "bar_coverage": "K 线覆盖率",
+        "spread_bps_p75": "P75 价差(bps)",
+        "quote_volume_24h": "24h 成交额",
+        "replacement_target_candidate": "替换目标候选",
+        "candidate_state": "候选状态",
+        "outcome_if_blocked": "如果拦截的结果",
+        "current_regime": "当前行情",
+        "actual_trade_opened": "V5 实际开仓",
+        "quant_lab_recommended_mode": "中台建议模式",
+        "future_4h_net_bps": "未来 4h 净收益(bps)",
+        "future_8h_net_bps": "未来 8h 净收益(bps)",
+        "future_24h_net_bps": "未来 24h 净收益(bps)",
+        "selected_symbols": "选中标的",
+        "would_buy_symbol": "影子买入标的",
+        "portfolio_avg_net_bps": "组合平均净收益(bps)",
+        "actual_v5_bought_symbols": "V5 实际买入标的",
+        "missed_symbols": "错过标的",
+        "vs_actual_v5_net_bps": "相对 V5 实际净收益(bps)",
+        "regime_source": "行情来源",
+        "recent_sample_sufficient": "近期样本充足",
+    }
+)
+
+VALUE_LOCALIZED_COLUMNS.update(
+    {
+        "action",
+        "module",
+        "promotion_state",
+        "reason",
+        "downgrade_reason",
+        "latest_paper_trend",
+        "paper_ready_block_reasons",
+        "outcome_if_blocked",
+        "current_regime",
+        "regime_source",
+        "research_id",
+        "source_module",
+        "universe_type",
+    }
+)
+
 
 def streamlit_module(st_module: Any | None = None) -> Any:
     if st_module is not None:
@@ -446,7 +588,7 @@ def _display_jsonish_value(text: str) -> str | None:
         parts = []
         for key, value in parsed.items():
             label = str(display_value(str(key)))
-            parts.append(f"{label}: {value}")
+            parts.append(f"{label}: {display_value(value)}")
         return "；".join(parts)
     return str(display_value(parsed))
 

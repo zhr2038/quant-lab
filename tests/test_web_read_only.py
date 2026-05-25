@@ -21,6 +21,7 @@ from quant_lab.web.pages import (
     strategy_consumers,
     v5_telemetry,
 )
+from quant_lab.web.pages._common import localize_frame
 
 FORBIDDEN_WEB_TERMS = [
     "place_order",
@@ -261,6 +262,82 @@ def test_dashboard_overview_samples_advisory_tables(tmp_path, monkeypatch):
         "new_candidate"
     ]
     assert summary["entry_quality_advisory"]["strategy_candidate"].to_list() == ["new_entry"]
+
+
+def test_research_portfolio_web_table_normalizes_close_actions():
+    frame = pl.DataFrame(
+        [
+            {
+                "research_id": "btc_broad_leadership",
+                "module": "research_portfolio",
+                "strategy_candidate": "v5.btc_broad_leadership",
+                "status": "KILL",
+                "action": "close_research",
+                "reason": "negative_after_cost_edge",
+                "sample_count": 40,
+                "complete_sample_count": 40,
+                "avg_net_bps": -12.5,
+                "win_rate": 0.3,
+                "p25_net_bps": -80.0,
+            },
+            {
+                "research_id": "eth_f3",
+                "module": "paper",
+                "strategy_candidate": "ETH_F3_DOMINANT_ENTRY_PAPER_V1",
+                "status": "DOWNGRADED_FROM_PAPER",
+                "action": "continue_paper",
+                "reason": "paper_negative_streak",
+                "sample_count": 20,
+                "complete_sample_count": 20,
+                "avg_net_bps": -4.0,
+                "win_rate": 0.45,
+                "p25_net_bps": -55.0,
+            },
+        ]
+    )
+
+    table = readers._research_portfolio_table(frame)
+    localized = localize_frame(table)
+
+    assert "研究动作" in localized.columns
+    actions = localized.get_column("研究动作").to_list()
+    assert "关闭研究" in actions
+    assert "转影子观察/复查" in actions
+    assert "收盘价" not in actions
+
+
+def test_strategy_opportunity_web_table_keeps_high_signal_extension_fields():
+    frame = pl.DataFrame(
+        [
+            {
+                "strategy_candidate": "v5.af.expanded_relative_strength",
+                "symbol": "TRX-USDT",
+                "decision": "KEEP_SHADOW",
+                "recommended_mode": "shadow",
+                "horizon_hours": 48,
+                "sample_count": 18,
+                "complete_sample_count": 18,
+                "avg_net_bps": 14.0,
+                "p25_net_bps": -10.0,
+                "win_rate": 0.61,
+                "source_module": "alpha_factory",
+                "promotion_state": "KEEP_SHADOW",
+                "universe_type": "expanded_paper",
+                "alpha_factory_score": 0.72,
+                "cost_quality_score": 0.4,
+                "paper_ready_block_reasons": '["cost_quality_not_paper_ready"]',
+                "max_live_notional_usdt": 0.0,
+            }
+        ]
+    )
+
+    table = readers._strategy_opportunity_table(frame)
+    localized = localize_frame(table)
+
+    assert "Alpha Factory 分数" in localized.columns
+    assert "币池类型" in localized.columns
+    assert localized["推荐模式"][0] == "影子观察"
+    assert localized["币池类型"][0] == "扩展币池纸面"
 
 
 def test_feature_summary_samples_feature_value(tmp_path, monkeypatch):

@@ -22,22 +22,15 @@ def render(lake_root: str | Path, st_module: Any | None = None) -> None:
     st.caption(
         "\u53ea\u8bfb\u7814\u7a76\u9875\u9762\u3002\u91cd\u70b9\u5c55\u793a V5 "
         "\u53ef\u8bfb\u53d6\u7684\u7b56\u7565\u5019\u9009\u3001"
-        "\u6269\u5c55\u5e01\u6c60 shadow\u3001strategy evidence "
-        "\u4e0e\u57fa\u7ebf\u95e8\u63a7\uff1b"
+        "\u7814\u7a76\u7ec4\u5408\u88c1\u526a\u3001Alpha Factory "
+        "\u548c\u6269\u5c55\u5e01\u6c60 shadow\uff1b"
         "\u4e0d\u63d0\u4f9b\u4efb\u4f55\u4ea4\u6613\u64cd\u4f5c\u3002"
     )
 
-    st.subheader("V5 \u53ef\u8bfb\u7b56\u7565\u673a\u4f1a")
-    show_frame(
-        st,
-        summary["strategy_opportunity_advisory"],
-        "\u6682\u65e0\u7b56\u7565\u673a\u4f1a\u5efa\u8bae\u6570\u636e\u3002",
-    )
-
-    st.subheader("研究组合裁剪")
+    st.subheader("今日先看：研究组合裁剪")
     st.caption(
-        "每天自动给出研究项的保留、降级、暂停和关闭建议；"
-        "该表只用于研究资源管理，不改变 V5 live 或 risk permission。"
+        "这里是最终研究资源管理视图。"
+        "“关闭研究”表示该方向不再进入重点日报或晋级队列，不是交易平仓。"
     )
     show_frame(
         st,
@@ -45,35 +38,45 @@ def render(lake_root: str | Path, st_module: Any | None = None) -> None:
         "暂无研究组合裁剪状态。建议运行 qlab build-research-portfolio-status。",
     )
 
-    st.subheader("\u6269\u5c55\u5e01\u6c60 Shadow \u7814\u7a76")
+    st.subheader("给 V5 的只读策略建议")
+    st.caption(
+        "这是 V5 可读取的最终 advisory。"
+        "即使推荐 paper/shadow，max_live_notional_usdt 也必须保持 0。"
+    )
+    show_frame(
+        st,
+        summary["strategy_opportunity_advisory"],
+        "\u6682\u65e0\u7b56\u7565\u673a\u4f1a\u5efa\u8bae\u6570\u636e\u3002",
+    )
+
+    st.subheader("Alpha Factory 与自动候选")
+    st.caption(
+        "自动生成新候选、做 train/validation/recent 分层，再进入 shadow/paper 队列。"
+        "这里优先看晋级状态、近期稳定性和纸面阻断原因。"
+    )
+    show_frame(
+        st,
+        summary["alpha_factory_promotion_queue"],
+        "暂无 Alpha Factory promotion queue。",
+    )
+    show_frame(
+        st,
+        summary["alpha_factory_result"],
+        "暂无 Alpha Factory 结果。",
+    )
+
+    st.subheader("\u6269\u5c55\u5e01\u6c60\u91cd\u70b9")
     st.caption(
         "\u4ece OKX USDT \u73b0\u8d27\u4e2d\u7b5b\u9009\u9ad8\u6d41\u52a8\u6027\u3001"
         "\u4f4e\u70b9\u5dee\u3001\u975e\u7a33\u5b9a\u5e01\u3001\u975e\u9ad8\u98ce\u9669 meme "
-        "\u7684\u5019\u9009\uff0c\u89c2\u5bdf\u662f\u5426\u6709\u6bd4 ETH/BNB "
-        "\u66f4\u9002\u5408 V5 \u7684\u66ff\u4ee3\u6807\u7684\u3002\u8be5\u6a21\u5757\u53ea\u505a "
-        "shadow/recommendation\uff0c\u4e0d\u4fee\u6539 V5 \u5b9e\u76d8\u914d\u7f6e\u3002"
+        "\u7684\u5019\u9009\u3002\u5148\u770b watchlist\u3001quality \u548c promotion queue；"
+        "\u5019\u9009\u4e8b\u4ef6\u548c label \u4e0d\u518d\u9ed8\u8ba4"
+        "\u94fa\u6ee1\u9875\u9762\u3002"
     )
     show_frame(
         st,
-        summary["expanded_crypto_universe_shadow"],
-        "\u6682\u65e0\u6269\u5c55\u5e01\u6c60 shadow \u7ed3\u679c\u3002"
-        "\u5efa\u8bae\u8fd0\u884c qlab build-expanded-universe-shadow\u3002",
-    )
-    st.subheader("扩展币池自动化")
-    st.caption(
-        "自动执行 discover -> score -> candidate_event -> label -> strategy_evidence "
-        "-> advisory -> promotion queue。第一阶段只允许 research/shadow/paper，"
-        "不会自动替换 V5 live 币池。"
-    )
-    show_frame(
-        st,
-        summary["expanded_universe_candidate"],
-        "暂无扩展币池候选池。建议运行 qlab build-expanded-universe-shadow。",
-    )
-    show_frame(
-        st,
-        summary["expanded_universe_quality"],
-        "暂无扩展币池质量评分。",
+        summary["expanded_universe_watchlist"],
+        "暂无扩展币池 watchlist。",
     )
     show_frame(
         st,
@@ -82,14 +85,24 @@ def render(lake_root: str | Path, st_module: Any | None = None) -> None:
     )
     show_frame(
         st,
-        summary["expanded_universe_candidate_event"],
-        "暂无扩展币池 candidate event。",
+        summary["expanded_universe_quality"],
+        "暂无扩展币池质量评分。",
     )
-    show_frame(st, summary["symbol_quality_score"], "\u6682\u65e0 symbol quality score\u3002")
+
+    st.subheader("错失机会与 Risk-on 多币影子")
+    st.caption(
+        "用于回答“中台如果过度保守会错过什么”以及“上涨状态下是否应该同时观察多个主池币”。"
+        "这些结果只做审计和 shadow，不改变 V5 live。"
+    )
     show_frame(
         st,
-        summary["expanded_crypto_recommendations"],
-        "\u6682\u65e0\u6269\u5c55\u5e01\u6c60\u63a8\u8350\u6458\u8981\u3002",
+        summary["missed_opportunity_audit"],
+        "暂无错失机会审计。",
+    )
+    show_frame(
+        st,
+        summary["risk_on_multi_buy_shadow"],
+        "暂无 risk-on 多币影子结果。",
     )
 
     st.subheader("\U0001f4ca \u5019\u9009\u51b3\u7b56\u9762\u677f")
@@ -110,7 +123,7 @@ def render(lake_root: str | Path, st_module: Any | None = None) -> None:
         "\u6682\u65e0\u7b56\u7565\u8bc1\u636e\u805a\u5408\u6570\u636e\u3002",
     )
 
-    st.subheader("\u57fa\u7ebf\u56e0\u5b50\u95e8\u63a7")
+    st.subheader("\u57fa\u7ebf\u56e0\u5b50\u95e8\u63a7\uff08\u4ec5\u4f5c\u57fa\u7ebf\uff09")
     for status, count in summary["counts"].items():
         st.metric(display_value(status), count)
     show_frame(st, summary["gates"], "\u6682\u65e0\u95e8\u63a7\u51b3\u7b56\u6570\u636e\u3002")

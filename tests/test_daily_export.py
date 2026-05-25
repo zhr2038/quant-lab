@@ -1057,6 +1057,19 @@ def test_stale_dataset_check_ignores_optional_entry_quality_history_and_generate
     assert "v5_pullback_reversal_shadow" not in datasets
 
 
+def test_load_snapshot_does_not_warn_for_optional_empty_entry_quality_outputs(tmp_path):
+    snapshot = daily_export_module._load_snapshot(tmp_path / "empty-lake")
+
+    assert not any(
+        warning.startswith("v5_pullback_reversal_shadow dataset is ")
+        for warning in snapshot.warnings
+    )
+    assert not any(
+        warning.startswith("v5_entry_quality_history_pullback_by_symbol dataset is ")
+        for warning in snapshot.warnings
+    )
+
+
 def test_export_counts_heavy_ws_dataset_without_full_member_load(tmp_path):
     lake_root = tmp_path / "lake"
     base_ts = datetime(2026, 5, 11, tzinfo=UTC)

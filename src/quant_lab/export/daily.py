@@ -2591,6 +2591,9 @@ def _load_snapshot(lake_root: Path) -> _DatasetSnapshot:
             warnings.append(warning)
     for name, count in sorted(row_counts.items()):
         if count == 0:
+            empty_status = readers._empty_dataset_status(name)  # type: ignore[attr-defined]
+            if empty_status in readers.OPTIONAL_EMPTY_DATASET_STATUSES:
+                continue
             warnings.append(f"{name} dataset is {_missing_dataset_reason(name)}")
     return _DatasetSnapshot(frames=frames, row_counts=row_counts, warnings=warnings)
 

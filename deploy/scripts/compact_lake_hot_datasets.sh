@@ -212,6 +212,10 @@ compact_leaf_partitions_if_file_count_at_least() {
 cleanup_internal_compaction_dirs() {
   find "${LAKE_ROOT}" -type d \( -name '__*_backup_*' -o -name '__*_compact_*' -o -name '__*_repair_*' \) \
     -prune -print -exec rm -rf {} +
+  find "${LAKE_ROOT}" -type d -name '__*_write_*' -mmin +60 \
+    -prune -print -exec rm -rf {} +
+  find "${LAKE_ROOT}" -type d -name '._tmp' -empty -mmin +60 \
+    -print -delete
 }
 
 if [[ "${COMPACT_RAW_OKX_WS}" == "1" ]]; then

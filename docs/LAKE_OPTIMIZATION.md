@@ -5,7 +5,10 @@ strategy consumers. The production lake must avoid many tiny Parquet files.
 
 ## Current Policy
 
-High-frequency datasets use deterministic partitions:
+High-frequency datasets are written as append-only batches and compacted
+periodically. Current production writes direct batch files by default to avoid
+creating one small file per symbol/channel on every flush. Historical or
+opt-in partitioned datasets may use deterministic partitions:
 
 - `bronze/okx_public_ws/day=YYYY-MM-DD/channel=<channel>/inst_id=<symbol>/`
 - `silver/trade_print/day=YYYY-MM-DD/symbol=<symbol>/`
@@ -25,7 +28,10 @@ qlab compact-lake-dataset --lake-root /var/lib/quant-lab/lake --dataset orderboo
 qlab lake-health --lake-root /var/lib/quant-lab/lake
 ```
 
-The systemd template `quant-lab-lake-compaction.timer` runs this every 6 hours.
+The systemd template `quant-lab-lake-compaction.timer` runs this every hour.
+The compaction script also prunes stale internal staging directories and empty
+`._tmp` directories older than 60 minutes. Active writers use dataset locks and
+short-lived temp files; the cleanup deliberately avoids fresh temp paths.
 
 ## Metrics
 

@@ -123,7 +123,7 @@ def test_paper_ready_allows_paper_only():
     assert permission.reasons == ["required_alpha_gate_paper_ready"]
 
 
-def test_live_ready_allows_configured_live_modes():
+def test_live_ready_does_not_emit_live_modes():
     permission = evaluate_live_permission(
         strategy="v5",
         version="v1",
@@ -138,9 +138,9 @@ def test_live_ready_allows_configured_live_modes():
     )
 
     assert permission.permission == RiskAction.ALLOW
-    assert permission.allowed_modes == ["paper", "live_canary"]
-    assert permission.max_gross_exposure == 0.12
-    assert permission.max_single_weight == 0.03
+    assert permission.allowed_modes == ["paper"]
+    assert permission.max_gross_exposure == 0
+    assert permission.max_single_weight == 0
     assert permission.cost_model_version == "costs-v1"
     assert permission.gate_version == "default-v0.1"
     assert permission.created_at == CREATED_AT

@@ -2300,7 +2300,7 @@ def _fixture_lake(tmp_path) -> Path:
     write_parquet_dataset(
         pl.DataFrame(
             [
-                _permission_row("v5", "ALLOW", ["paper", "live_canary"]),
+                _permission_row("v5", "ALLOW", ["paper"]),
                 _permission_row("v7", "SELL_ONLY", ["sell_only"]),
             ]
         ),

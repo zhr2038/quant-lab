@@ -102,7 +102,8 @@ def test_successful_live_permission_parse():
 
     assert permission.strategy == "v5"
     assert permission.permission == RiskAction.ALLOW
-    assert permission.allowed_modes == ["paper", "live_canary"]
+    assert permission.allowed_modes == ["paper"]
+    assert permission.allowed_live_modes == []
     assert permission.created_at == datetime(2026, 5, 10, tzinfo=UTC)
 
 
@@ -155,9 +156,10 @@ def _permission_payload() -> dict[str, Any]:
         "strategy": "v5",
         "version": "v1",
         "permission": "ALLOW",
-        "allowed_modes": ["paper", "live_canary"],
-        "max_gross_exposure": 0.25,
-        "max_single_weight": 0.05,
+        "allowed_modes": ["paper"],
+        "allowed_live_modes": [],
+        "max_gross_exposure": 0.0,
+        "max_single_weight": 0.0,
         "cost_model_version": "costs-v1",
         "gate_version": "default-v0.1",
         "reasons": ["all_required_alpha_gates_live_ready"],

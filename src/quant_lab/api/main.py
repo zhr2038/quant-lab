@@ -2073,7 +2073,7 @@ def _market_bar_data_health_from_latest(latest_ts: datetime) -> dict[str, Any]:
     return {
         "status": "ok",
         "latest_market_bar_ts": latest_utc.isoformat(),
-        "allowed_modes": ["paper", "live_canary"],
+        "allowed_modes": ["paper"],
         "max_gross_exposure": 0.25,
         "max_single_weight": 0.05,
     }

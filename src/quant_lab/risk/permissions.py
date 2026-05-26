@@ -4,9 +4,10 @@ from typing import Any
 
 from quant_lab.contracts.models import GateDecision, GateStatus, RiskAction, RiskPermission
 
-DEFAULT_LIVE_ALLOWED_MODES = ["paper", "live_canary"]
+DEFAULT_LIVE_ALLOWED_MODES = ["paper"]
 PAPER_ONLY_ALLOWED_MODES = ["paper"]
 SELL_ONLY_ALLOWED_MODES = ["sell_only"]
+NON_LIVE_ALLOWED_MODES = {"paper", "shadow", "sell_only"}
 
 
 def evaluate_live_permission(
@@ -104,8 +105,6 @@ def evaluate_live_permission(
         cost_model_version=cost_model_version,
         gate_version=gate_version,
         created_at=created_at,
-        max_gross_exposure=_health_float(data_health, "max_gross_exposure", default=0.25),
-        max_single_weight=_health_float(data_health, "max_single_weight", default=0.05),
     )
 
 
@@ -181,7 +180,7 @@ def _configured_live_modes(data_health: Mapping[str, Any] | None) -> list[str]:
     modes = data_health.get("allowed_modes")
     if not isinstance(modes, Sequence) or isinstance(modes, str):
         return list(DEFAULT_LIVE_ALLOWED_MODES)
-    normalized = [str(mode) for mode in modes if str(mode)]
+    normalized = [str(mode) for mode in modes if str(mode) in NON_LIVE_ALLOWED_MODES]
     return normalized or list(DEFAULT_LIVE_ALLOWED_MODES)
 
 
@@ -197,17 +196,6 @@ def _health_value(
     if value is None:
         return default
     return str(value)
-
-
-def _health_float(
-    health: Mapping[str, Any] | None,
-    key: str,
-    *,
-    default: float,
-) -> float:
-    if not health or health.get(key) is None:
-        return default
-    return float(health[key])
 
 
 def _gate_version(gate_decisions: Sequence[GateDecision]) -> str:

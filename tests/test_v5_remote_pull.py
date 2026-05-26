@@ -1,3 +1,4 @@
+import subprocess
 from pathlib import Path
 
 from quant_lab.strategy_telemetry.config import V5TelemetryRemoteConfig
@@ -72,6 +73,7 @@ def test_remote_pull_can_limit_to_newest_stable_files(tmp_path, monkeypatch):
         calls.append((command, kwargs))
         if command[0] == "ssh":
             assert "head -n 3" in command[-1]
+            assert kwargs["timeout"] == config.remote_list_timeout_seconds
             return Completed(
                 "\n".join(
                     [
@@ -83,6 +85,7 @@ def test_remote_pull_can_limit_to_newest_stable_files(tmp_path, monkeypatch):
         assert command[0] == "rsync"
         assert "--files-from=-" in command
         assert kwargs["input"] == "v5_live_followup_bundle_20260510T040000Z.tar.gz\n"
+        assert kwargs["timeout"] == config.rsync_timeout_seconds
         return Completed("v5_live_followup_bundle_20260510T040000Z.tar.gz\n")
 
     monkeypatch.setattr("subprocess.run", fake_run)
@@ -93,6 +96,46 @@ def test_remote_pull_can_limit_to_newest_stable_files(tmp_path, monkeypatch):
     assert result.pulled_files == ["v5_live_followup_bundle_20260510T040000Z.tar.gz"]
     assert result.skipped_files == ["v5_live_followup_bundle_20260510T030000Z.tar.gz"]
     assert any("head -n 3" in part for part in result.command_summary)
+
+
+def test_remote_pull_remote_list_timeout_returns_warning(tmp_path, monkeypatch):
+    identity = tmp_path / "id_ed25519"
+    identity.write_text("not-a-real-key", encoding="utf-8")
+    config = _config(tmp_path, identity, None).model_copy(
+        update={"remote_list_timeout_seconds": 7}
+    )
+
+    def fake_run(command, **kwargs):
+        assert command[0] == "ssh"
+        assert kwargs["timeout"] == 7
+        raise subprocess.TimeoutExpired(command, timeout=7)
+
+    monkeypatch.setattr("subprocess.run", fake_run)
+
+    result = RemoteBundlePuller().pull_bundles(config, max_files=2)
+
+    assert result.pulled_files == []
+    assert result.warnings == ["remote bundle list timed out after 7s"]
+
+
+def test_remote_pull_rsync_timeout_returns_warning(tmp_path, monkeypatch):
+    identity = tmp_path / "id_ed25519"
+    identity.write_text("not-a-real-key", encoding="utf-8")
+    config = _config(tmp_path, identity, None).model_copy(
+        update={"rsync_timeout_seconds": 11}
+    )
+
+    def fake_run(command, **kwargs):
+        assert command[0] == "rsync"
+        assert kwargs["timeout"] == 11
+        raise subprocess.TimeoutExpired(command, timeout=11)
+
+    monkeypatch.setattr("subprocess.run", fake_run)
+
+    result = RemoteBundlePuller().pull_bundles(config)
+
+    assert result.pulled_files == []
+    assert result.warnings == ["rsync timed out after 11s"]
 
 
 def test_remote_bundle_list_command_honors_stable_age(tmp_path):

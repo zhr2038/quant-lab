@@ -43,11 +43,16 @@ local_inbox_dir: "/var/lib/quant-lab/inbox/v5/bundles"
 restricted_archive_dir: "/var/lib/quant-lab/archive_restricted/v5/bundles"
 redacted_archive_dir: "/var/lib/quant-lab/archive/v5/bundles"
 lake_root: "/var/lib/quant-lab/lake"
+remote_list_timeout_seconds: 30
+rsync_timeout_seconds: 300
 keep_remote_files: true
 dry_run: false
 ```
 
 Do not put passwords or key material in this file.
+The list and rsync timeouts are Python-side guardrails. The systemd unit still
+has an outer timeout, but these fields let `sync-v5-telemetry` return a clear
+warning when SSH or rsync stalls instead of waiting for a hard service kill.
 
 ## Remote Permissions
 

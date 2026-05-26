@@ -131,7 +131,33 @@ class RemoteBundlePuller:
         if max_files is not None:
             list_command = build_remote_bundle_list_command(config, max_files=max_files)
             command_summary = summarize_command(list_command) + command_summary
-            listed = subprocess.run(list_command, check=False, capture_output=True, text=True)
+            try:
+                listed = subprocess.run(
+                    list_command,
+                    check=False,
+                    capture_output=True,
+                    text=True,
+                    timeout=config.remote_list_timeout_seconds,
+                )
+            except subprocess.TimeoutExpired:
+                finished_at = datetime.now(UTC)
+                warnings.append(
+                    "remote bundle list timed out after "
+                    f"{config.remote_list_timeout_seconds}s"
+                )
+                return PullResult(
+                    strategy=config.strategy,
+                    remote_host=config.remote_host,
+                    remote_bundle_dir=str(config.remote_bundle_dir),
+                    local_inbox_dir=str(config.local_inbox_dir),
+                    pulled_files=[],
+                    skipped_files=skipped_files,
+                    command_summary=command_summary,
+                    started_at=started_at,
+                    finished_at=finished_at,
+                    dry_run=False,
+                    warnings=warnings,
+                )
             stderr_lines = [line.strip() for line in listed.stderr.splitlines() if line.strip()]
             if listed.returncode != 0:
                 warnings.append(f"remote bundle list exited with code {listed.returncode}")
@@ -164,13 +190,31 @@ class RemoteBundlePuller:
                 )
             command_input = "\n".join(files_to_pull) + "\n"
 
-        completed = subprocess.run(
-            command,
-            check=False,
-            capture_output=True,
-            text=True,
-            input=command_input,
-        )
+        try:
+            completed = subprocess.run(
+                command,
+                check=False,
+                capture_output=True,
+                text=True,
+                input=command_input,
+                timeout=config.rsync_timeout_seconds,
+            )
+        except subprocess.TimeoutExpired:
+            finished_at = datetime.now(UTC)
+            warnings.append(f"rsync timed out after {config.rsync_timeout_seconds}s")
+            return PullResult(
+                strategy=config.strategy,
+                remote_host=config.remote_host,
+                remote_bundle_dir=str(config.remote_bundle_dir),
+                local_inbox_dir=str(config.local_inbox_dir),
+                pulled_files=pulled_files,
+                skipped_files=skipped_files,
+                command_summary=command_summary,
+                started_at=started_at,
+                finished_at=finished_at,
+                dry_run=False,
+                warnings=warnings,
+            )
         stdout_lines = [line.strip() for line in completed.stdout.splitlines() if line.strip()]
         stderr_lines = [line.strip() for line in completed.stderr.splitlines() if line.strip()]
         for line in stdout_lines:

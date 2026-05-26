@@ -32,6 +32,8 @@ class V5TelemetryRemoteConfig(BaseModel):
     max_extracted_size_mb: int = Field(default=2048, gt=0)
     max_file_count: int = Field(default=5000, gt=0)
     min_stable_age_seconds: int = Field(default=60, ge=0)
+    remote_list_timeout_seconds: int = Field(default=30, gt=0)
+    rsync_timeout_seconds: int = Field(default=300, gt=0)
     keep_remote_files: bool = True
     dry_run: bool = False
 

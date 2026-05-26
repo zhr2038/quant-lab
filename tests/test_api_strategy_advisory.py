@@ -314,6 +314,142 @@ def test_strategy_opportunity_advisory_uses_alpha_factory_promotion_queue(
     assert payload["max_live_notional_usdt"] == 0.0
 
 
+def test_strategy_opportunity_advisory_enriches_alpha_factory_score_from_results(
+    tmp_path,
+    monkeypatch,
+):
+    lake = tmp_path / "lake"
+    monkeypatch.setenv("QUANT_LAB_LAKE_ROOT", str(lake))
+    monkeypatch.delenv("QUANT_LAB_API_TOKEN", raising=False)
+    as_of = datetime(2026, 5, 25, tzinfo=UTC)
+    write_parquet_dataset(
+        pl.DataFrame(
+            [
+                {
+                    **_api_advisory_row(
+                        "v5.expanded_relative_strength_top1_shadow",
+                        "ZEC-USDT",
+                        as_of,
+                    ),
+                    "source_module": "alpha_factory",
+                    "template_family": "",
+                    "candidate_id": "",
+                    "promotion_state": "",
+                    "alpha_factory_score": None,
+                    "universe_type": "expanded_paper",
+                }
+            ]
+        ),
+        lake / "gold" / "strategy_opportunity_advisory",
+    )
+    write_parquet_dataset(
+        pl.DataFrame(
+            [
+                {
+                    "as_of_date": "2026-05-25",
+                    "generated_at": as_of,
+                    "template_name": "expanded_relative_strength_v1",
+                    "candidate_id": "af-zec-rs-top1-20260525",
+                    "strategy_candidate": "v5.expanded_relative_strength_top1_shadow",
+                    "symbol": "ZEC-USDT",
+                    "horizon_hours": 24,
+                    "alpha_factory_score": 87.25,
+                    "cost_quality_score": 0.74,
+                    "paper_ready_block_reasons": '["insufficient_recent_samples"]',
+                    "decision": "KEEP_SHADOW",
+                }
+            ]
+        ),
+        lake / "gold" / "alpha_factory_result",
+    )
+    write_parquet_dataset(
+        pl.DataFrame(
+            [
+                {
+                    "as_of_date": "2026-05-25",
+                    "generated_at": as_of,
+                    "template_name": "expanded_relative_strength_v1",
+                    "candidate_id": "af-zec-rs-top1-20260525",
+                    "strategy_candidate": "v5.expanded_relative_strength_top1_shadow",
+                    "symbol": "ZEC-USDT",
+                    "horizon_hours": 24,
+                    "promotion_state": "KEEP_SHADOW",
+                    "recommended_mode": "shadow",
+                    "reasons": "[]",
+                    "max_live_notional_usdt": 0.0,
+                }
+            ]
+        ),
+        lake / "gold" / "alpha_factory_promotion_queue",
+    )
+
+    response = TestClient(app).get("/v1/strategy-opportunity-advisory")
+
+    assert response.status_code == 200
+    payload = response.json()[0]
+    assert payload["alpha_factory_score"] == 87.25
+    assert payload["template_family"] == "expanded_relative_strength"
+    assert payload["candidate_id"] == "af-zec-rs-top1-20260525"
+    assert payload["promotion_state"] == "KEEP_SHADOW"
+    assert payload["cost_quality_score"] == 0.74
+    assert payload["paper_ready_block_reasons"] == [
+        "alpha_factory_promotion_queue_not_paper_ready",
+        "insufficient_recent_samples",
+    ]
+
+
+def test_strategy_opportunity_advisory_does_not_enrich_regime_router_score(
+    tmp_path,
+    monkeypatch,
+):
+    lake = tmp_path / "lake"
+    monkeypatch.setenv("QUANT_LAB_LAKE_ROOT", str(lake))
+    monkeypatch.delenv("QUANT_LAB_API_TOKEN", raising=False)
+    as_of = datetime(2026, 5, 25, tzinfo=UTC)
+    write_parquet_dataset(
+        pl.DataFrame(
+            [
+                {
+                    **_api_advisory_row(
+                        "v5.expanded_relative_strength_top1_shadow",
+                        "ZEC-USDT",
+                        as_of,
+                    ),
+                    "source_module": "regime_router",
+                    "alpha_factory_score": None,
+                }
+            ]
+        ),
+        lake / "gold" / "strategy_opportunity_advisory",
+    )
+    write_parquet_dataset(
+        pl.DataFrame(
+            [
+                {
+                    "as_of_date": "2026-05-25",
+                    "generated_at": as_of,
+                    "template_name": "expanded_relative_strength_v1",
+                    "candidate_id": "af-zec-rs-top1-20260525",
+                    "strategy_candidate": "v5.expanded_relative_strength_top1_shadow",
+                    "symbol": "ZEC-USDT",
+                    "horizon_hours": 24,
+                    "alpha_factory_score": 87.25,
+                    "decision": "KEEP_SHADOW",
+                }
+            ]
+        ),
+        lake / "gold" / "alpha_factory_result",
+    )
+
+    response = TestClient(app).get("/v1/strategy-opportunity-advisory")
+
+    assert response.status_code == 200
+    payload = response.json()[0]
+    assert payload["source_module"] == "regime_router"
+    assert payload["alpha_factory_score"] is None
+    assert payload["candidate_id"] in {"", None}
+
+
 def test_strategy_opportunity_advisory_portfolio_shadow_caps_alpha_factory_paper(
     tmp_path,
     monkeypatch,

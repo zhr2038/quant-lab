@@ -3112,6 +3112,7 @@ def _dataset_members(frames: dict[str, pl.DataFrame]) -> dict[str, _MemberPayloa
         entry_quality_advisory=entry_quality_advisory,
         regime_strategy_advisory=regime_strategy_advisory,
         risk_on_multi_buy_shadow=risk_on_multi_buy_shadow,
+        alpha_factory_results=frames.get("alpha_factory_result", pl.DataFrame()),
         alpha_factory_promotion_queue=alpha_factory_promotion,
     )
     strategy_level_dashboard = _strategy_level_dashboard_for_export(opportunity_advisory)
@@ -5360,6 +5361,7 @@ def _strategy_opportunity_advisory_for_export(
     entry_quality_advisory: pl.DataFrame | None = None,
     regime_strategy_advisory: pl.DataFrame | None = None,
     risk_on_multi_buy_shadow: pl.DataFrame | None = None,
+    alpha_factory_results: pl.DataFrame | None = None,
     alpha_factory_promotion_queue: pl.DataFrame | None = None,
 ) -> pl.DataFrame:
     path = "reports/strategy_opportunity_advisory.csv"
@@ -5378,6 +5380,9 @@ def _strategy_opportunity_advisory_for_export(
         alpha_factory_promotion_queue
         if alpha_factory_promotion_queue is not None
         else pl.DataFrame()
+    )
+    alpha_factory_metadata = _alpha_factory_result_metadata_by_candidate_symbol(
+        alpha_factory_results if alpha_factory_results is not None else pl.DataFrame()
     )
     alpha_factory_promotions = _alpha_factory_promotion_overrides_by_candidate_symbol(
         promotion_frame
@@ -5447,6 +5452,24 @@ def _strategy_opportunity_advisory_for_export(
         )
         if portfolio_reasons:
             live_block_reasons = sorted({*live_block_reasons, *portfolio_reasons})
+        alpha_factory_meta = _alpha_factory_metadata_for_row(row, alpha_factory_metadata)
+        source_module = row.get("source_module") or alpha_factory_meta.get("source_module")
+        template_family = row.get("template_family") or alpha_factory_meta.get("template_family")
+        candidate_id = row.get("candidate_id") or alpha_factory_meta.get("candidate_id")
+        promotion_state = row.get("promotion_state") or alpha_factory_meta.get(
+            "promotion_state"
+        )
+        alpha_factory_score = _optional_float(row.get("alpha_factory_score"))
+        if alpha_factory_score is None:
+            alpha_factory_score = _optional_float(alpha_factory_meta.get("alpha_factory_score"))
+        cost_quality_score = _optional_float(row.get("cost_quality_score"))
+        if cost_quality_score is None:
+            cost_quality_score = _optional_float(alpha_factory_meta.get("cost_quality_score"))
+        paper_ready_block_reasons = _json_listish(row.get("paper_ready_block_reasons"))
+        if not paper_ready_block_reasons:
+            paper_ready_block_reasons = _json_listish(
+                alpha_factory_meta.get("paper_ready_block_reasons")
+            )
         generated_at = _advisory_generated_at(row)
         rows.append(
             {
@@ -5494,16 +5517,14 @@ def _strategy_opportunity_advisory_for_export(
                 "win_rate": _optional_float(row.get("win_rate")),
                 "cost_source_mix": row.get("cost_source_mix"),
                 "cost_quality": cost_quality,
-                "source_module": row.get("source_module"),
-                "template_family": row.get("template_family"),
-                "candidate_id": row.get("candidate_id"),
-                "promotion_state": row.get("promotion_state"),
-                "alpha_factory_score": _optional_float(row.get("alpha_factory_score")),
+                "source_module": source_module,
+                "template_family": template_family,
+                "candidate_id": candidate_id,
+                "promotion_state": promotion_state,
+                "alpha_factory_score": alpha_factory_score,
                 "universe_type": row.get("universe_type"),
-                "cost_quality_score": _optional_float(row.get("cost_quality_score")),
-                "paper_ready_block_reasons": safe_json_dumps(
-                    _json_listish(row.get("paper_ready_block_reasons"))
-                ),
+                "cost_quality_score": cost_quality_score,
+                "paper_ready_block_reasons": safe_json_dumps(paper_ready_block_reasons),
                 "advisory_intent": _export_advisory_intent(recommended_mode),
                 "paper_days": paper_days,
                 "entry_day_count": entry_day_count,
@@ -5572,6 +5593,7 @@ def _strategy_opportunity_advisory_from_frames(
         entry_quality_advisory=frames.get("v5_entry_quality_advisory", pl.DataFrame()),
         regime_strategy_advisory=frames.get("regime_strategy_advisory", pl.DataFrame()),
         risk_on_multi_buy_shadow=frames.get("v5_risk_on_multi_buy_shadow", pl.DataFrame()),
+        alpha_factory_results=frames.get("alpha_factory_result", pl.DataFrame()),
         alpha_factory_promotion_queue=frames.get("alpha_factory_promotion_queue", pl.DataFrame()),
     )
 
@@ -6880,6 +6902,74 @@ def _alpha_factory_promotion_overrides_by_candidate_symbol(
     return overrides
 
 
+def _alpha_factory_result_metadata_by_candidate_symbol(
+    results: pl.DataFrame,
+) -> dict[tuple[str, str, int | None], dict[str, Any]]:
+    metadata: dict[tuple[str, str, int | None], dict[str, Any]] = {}
+    if results.is_empty():
+        return metadata
+    rows = results.to_dicts()
+    latest_as_of_date = _latest_as_of_date(rows)
+    if latest_as_of_date:
+        rows = [
+            row
+            for row in rows
+            if str(row.get("as_of_date") or "").strip() == latest_as_of_date
+        ]
+    for row in rows:
+        candidate = str(row.get("strategy_candidate") or "").strip()
+        symbol = normalize_symbol(row.get("symbol")) or "UNKNOWN"
+        if not candidate:
+            continue
+        enriched = {
+            "source_module": "alpha_factory",
+            "template_family": _alpha_factory_template_family(row),
+            "candidate_id": row.get("candidate_id"),
+            "promotion_state": row.get("promotion_state") or row.get("decision"),
+            "alpha_factory_score": _optional_float(row.get("alpha_factory_score")),
+            "cost_quality_score": _optional_float(row.get("cost_quality_score")),
+            "paper_ready_block_reasons": row.get("paper_ready_block_reasons"),
+        }
+        key = (candidate, symbol, _optional_int(row.get("horizon_hours")))
+        current = metadata.get(key)
+        if current is None or _advisory_row_time(row) >= _advisory_row_time(current):
+            metadata[key] = {**row, **enriched}
+    return metadata
+
+
+def _alpha_factory_template_family(row: dict[str, Any]) -> str:
+    explicit = str(row.get("template_family") or "").strip()
+    if explicit:
+        return explicit
+    template_name = str(row.get("template_name") or "").strip()
+    if not template_name:
+        return ""
+    if "_v" in template_name:
+        prefix, suffix = template_name.rsplit("_v", 1)
+        if prefix and suffix.isdigit():
+            return prefix
+    return template_name
+
+
+def _alpha_factory_metadata_for_row(
+    row: dict[str, Any],
+    metadata: dict[tuple[str, str, int | None], dict[str, Any]],
+) -> dict[str, Any]:
+    candidate = str(row.get("strategy_candidate") or "").strip()
+    symbol = normalize_symbol(row.get("symbol")) or "UNKNOWN"
+    horizon = _optional_int(row.get("horizon_hours"))
+    for key in (
+        (candidate, symbol, horizon),
+        (candidate, symbol, None),
+        (candidate, "UNKNOWN", horizon),
+        (candidate, "UNKNOWN", None),
+    ):
+        value = metadata.get(key)
+        if value is not None:
+            return value
+    return {}
+
+
 def _alpha_factory_promotion_for_row(
     row: dict[str, Any],
     promotions: dict[tuple[str, str, int | None], dict[str, Any]],
@@ -6902,6 +6992,8 @@ def _alpha_factory_promotion_for_row(
 def _is_alpha_factory_advisory_row(row: dict[str, Any]) -> bool:
     candidate = str(row.get("strategy_candidate") or "").strip()
     source_module = str(row.get("source_module") or "").strip().lower()
+    if source_module == "regime_router":
+        return False
     template_family = str(row.get("template_family") or "").strip()
     return (
         candidate in ALPHA_FACTORY_CANDIDATES
@@ -6973,6 +7065,11 @@ def _apply_alpha_factory_promotion_overrides(
             **row,
             "decision": decision,
             "recommended_mode": mode,
+            "source_module": row.get("source_module") or "alpha_factory",
+            "template_family": row.get("template_family")
+            or _alpha_factory_template_family(promotion or {}),
+            "candidate_id": row.get("candidate_id")
+            or (promotion or {}).get("candidate_id"),
             "promotion_state": promotion_state,
             "live_block_reasons": safe_json_dumps(live_reasons),
             "paper_ready_block_reasons": safe_json_dumps(paper_ready_reasons),

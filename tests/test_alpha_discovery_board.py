@@ -1841,6 +1841,76 @@ def test_strategy_advisory_uses_alpha_factory_promotion_queue_over_board():
     assert row["max_paper_notional_usdt"] == 0.0
 
 
+def test_strategy_advisory_enriches_alpha_factory_score_from_results():
+    board = pl.DataFrame(
+        [
+            _board_row(
+                strategy_candidate="v5.expanded_relative_strength_top3_shadow",
+                symbol="ONDO-USDT",
+                source_type="alpha_factory",
+                avg_net_bps=32.0,
+                decision="KEEP_SHADOW",
+                cost_source_mix='{"mixed_actual_proxy": 34}',
+            )
+        ]
+    )
+    alpha_factory_results = pl.DataFrame(
+        [
+            {
+                "as_of_date": "2026-05-25",
+                "generated_at": datetime(2026, 5, 25, tzinfo=UTC),
+                "template_name": "expanded_relative_strength_v1",
+                "candidate_id": "af-ondo-rs-top3-20260525",
+                "strategy_candidate": "v5.expanded_relative_strength_top3_shadow",
+                "symbol": "ONDO-USDT",
+                "horizon_hours": 24,
+                "alpha_factory_score": 74.5,
+                "cost_quality_score": 0.67,
+                "paper_ready_block_reasons": '["validation_not_paper_ready"]',
+                "decision": "KEEP_SHADOW",
+            }
+        ]
+    )
+    promotion_queue = pl.DataFrame(
+        [
+            {
+                "as_of_date": "2026-05-25",
+                "generated_at": datetime(2026, 5, 25, tzinfo=UTC),
+                "template_name": "expanded_relative_strength_v1",
+                "candidate_id": "af-ondo-rs-top3-20260525",
+                "strategy_candidate": "v5.expanded_relative_strength_top3_shadow",
+                "symbol": "ONDO-USDT",
+                "horizon_hours": 24,
+                "promotion_state": "KEEP_SHADOW",
+                "recommended_mode": "shadow",
+                "reasons": '["validation_not_paper_ready"]',
+            }
+        ]
+    )
+
+    advisory = _strategy_opportunity_advisory_for_export(
+        alpha_discovery_board=board,
+        strategy_evidence=pl.DataFrame(),
+        paper_proposals=pl.DataFrame(),
+        risk_permissions=pl.DataFrame(),
+        cost_health=pl.DataFrame(),
+        paper_daily=pl.DataFrame(),
+        paper_slippage=pl.DataFrame(),
+        alpha_factory_results=alpha_factory_results,
+        alpha_factory_promotion_queue=promotion_queue,
+    ).to_dicts()
+
+    assert len(advisory) == 1
+    row = advisory[0]
+    assert row["source_module"] == "alpha_factory"
+    assert row["template_family"] == "expanded_relative_strength"
+    assert row["candidate_id"] == "af-ondo-rs-top3-20260525"
+    assert row["promotion_state"] == "KEEP_SHADOW"
+    assert row["alpha_factory_score"] == 74.5
+    assert row["cost_quality_score"] == 0.67
+    assert "validation_not_paper_ready" in row["paper_ready_block_reasons"]
+
+
 def _write_candidate_labels(lake: Path) -> None:
     start = datetime(2026, 4, 1, tzinfo=UTC)
     rows: list[dict] = []

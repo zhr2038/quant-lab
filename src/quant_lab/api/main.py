@@ -873,8 +873,12 @@ def _strategy_opportunity_advisory_rows_uncached(
         if advisory is not None:
             parsed.append(advisory)
     deduped = _dedupe_strategy_opportunity_advisory_rows(parsed)
-    promotion_overridden = _apply_alpha_factory_promotion_overrides_to_advisory_rows(
+    alpha_factory_enriched = _apply_alpha_factory_result_metadata_to_advisory_rows(
         deduped,
+        _strategy_opportunity_alpha_factory_result_metadata(lake_root),
+    )
+    promotion_overridden = _apply_alpha_factory_promotion_overrides_to_advisory_rows(
+        alpha_factory_enriched,
         _strategy_opportunity_alpha_factory_promotions(lake_root),
     )
     return _apply_research_portfolio_overrides_to_advisory_rows(
@@ -888,6 +892,7 @@ def _strategy_opportunity_advisory_source_signature(lake_root: Path) -> tuple[An
     gold_files = _parquet_file_signature(gold_path)
     portfolio_files = _parquet_file_signature(lake_root / "gold" / "research_portfolio_status")
     promotion_files = _parquet_file_signature(lake_root / "gold" / "alpha_factory_promotion_queue")
+    result_files = _parquet_file_signature(lake_root / "gold" / "alpha_factory_result")
     if gold_files:
         return (
             "gold",
@@ -896,6 +901,8 @@ def _strategy_opportunity_advisory_source_signature(lake_root: Path) -> tuple[An
             portfolio_files,
             "alpha_factory_promotion_queue",
             promotion_files,
+            "alpha_factory_result",
+            result_files,
         )
     latest_report = _latest_strategy_opportunity_report_pack(lake_root)
     if latest_report is not None:
@@ -911,6 +918,8 @@ def _strategy_opportunity_advisory_source_signature(lake_root: Path) -> tuple[An
                 portfolio_files,
                 "alpha_factory_promotion_queue",
                 promotion_files,
+                "alpha_factory_result",
+                result_files,
             )
         return (
             "report",
@@ -921,6 +930,8 @@ def _strategy_opportunity_advisory_source_signature(lake_root: Path) -> tuple[An
             portfolio_files,
             "alpha_factory_promotion_queue",
             promotion_files,
+            "alpha_factory_result",
+            result_files,
         )
     return (
         "missing",
@@ -928,6 +939,8 @@ def _strategy_opportunity_advisory_source_signature(lake_root: Path) -> tuple[An
         portfolio_files,
         "alpha_factory_promotion_queue",
         promotion_files,
+        "alpha_factory_result",
+        result_files,
     )
 
 
@@ -1031,6 +1044,17 @@ def _strategy_opportunity_alpha_factory_promotions(
     return _alpha_factory_promotion_overrides_by_candidate_symbol(frame)
 
 
+def _strategy_opportunity_alpha_factory_result_metadata(
+    lake_root: Path,
+) -> dict[tuple[str, str, int | None], dict[str, Any]]:
+    lazy, columns = _safe_parquet_lazy(lake_root / "gold" / "alpha_factory_result")
+    if lazy is None:
+        return {}
+    selected = lazy.select([pl.col(column) for column in columns])
+    frame = _collect_lazy_or_empty(selected)
+    return _alpha_factory_result_metadata_by_candidate_symbol(frame)
+
+
 def _alpha_factory_promotion_overrides_by_candidate_symbol(
     promotion_queue: pl.DataFrame,
 ) -> dict[tuple[str, str, int | None], dict[str, Any]]:
@@ -1057,6 +1081,71 @@ def _alpha_factory_promotion_overrides_by_candidate_symbol(
     return overrides
 
 
+def _alpha_factory_result_metadata_by_candidate_symbol(
+    results: pl.DataFrame,
+) -> dict[tuple[str, str, int | None], dict[str, Any]]:
+    metadata: dict[tuple[str, str, int | None], dict[str, Any]] = {}
+    if results.is_empty():
+        return metadata
+    rows = results.to_dicts()
+    latest_as_of_date = _latest_advisory_as_of_date(rows)
+    if latest_as_of_date:
+        rows = [
+            row
+            for row in rows
+            if _text_value(row.get("as_of_date")) == latest_as_of_date
+        ]
+    for row in rows:
+        candidate = _text_value(row.get("strategy_candidate"))
+        symbol = normalize_symbol(row.get("symbol")) or "UNKNOWN"
+        if not candidate:
+            continue
+        enriched = {
+            "source_module": "alpha_factory",
+            "template_family": _alpha_factory_template_family(row),
+            "candidate_id": _text_value(row.get("candidate_id")),
+            "promotion_state": _text_value(row.get("promotion_state") or row.get("decision")),
+            "alpha_factory_score": _optional_float(row.get("alpha_factory_score")),
+            "cost_quality_score": _optional_float(row.get("cost_quality_score")),
+            "paper_ready_block_reasons": row.get("paper_ready_block_reasons"),
+        }
+        key = (candidate, symbol, _optional_int(row.get("horizon_hours")))
+        current = metadata.get(key)
+        if current is None or _advisory_dict_time(row) >= _advisory_dict_time(current):
+            metadata[key] = {**row, **enriched}
+    return metadata
+
+
+def _alpha_factory_template_family(row: dict[str, Any]) -> str:
+    explicit = _text_value(row.get("template_family"))
+    if explicit:
+        return explicit
+    template_name = _text_value(row.get("template_name"))
+    if not template_name:
+        return ""
+    if "_v" in template_name:
+        prefix, suffix = template_name.rsplit("_v", 1)
+        if prefix and suffix.isdigit():
+            return prefix
+    return template_name
+
+
+def _alpha_factory_metadata_for_advisory_row(
+    row: StrategyOpportunityAdvisoryRow,
+    metadata: dict[tuple[str, str, int | None], dict[str, Any]],
+) -> dict[str, Any] | None:
+    for key in [
+        (row.strategy_candidate, row.symbol, row.horizon_hours),
+        (row.strategy_candidate, row.symbol, None),
+        (row.strategy_candidate, "UNKNOWN", row.horizon_hours),
+        (row.strategy_candidate, "UNKNOWN", None),
+    ]:
+        value = metadata.get(key)
+        if value is not None:
+            return value
+    return None
+
+
 def _latest_advisory_as_of_date(rows: list[dict[str, Any]]) -> str:
     values = [
         str(row.get("as_of_date") or "").strip()
@@ -1075,6 +1164,8 @@ def _advisory_dict_time(row: dict[str, Any]) -> datetime:
 
 
 def _is_alpha_factory_advisory_model(row: StrategyOpportunityAdvisoryRow) -> bool:
+    if (row.source_module or "").lower() == "regime_router":
+        return False
     candidate = row.strategy_candidate
     return (
         candidate in ALPHA_FACTORY_CANDIDATES
@@ -1084,6 +1175,49 @@ def _is_alpha_factory_advisory_model(row: StrategyOpportunityAdvisoryRow) -> boo
         or bool(row.template_family)
         or row.alpha_factory_score is not None
     )
+
+
+def _apply_alpha_factory_result_metadata_to_advisory_rows(
+    rows: list[StrategyOpportunityAdvisoryRow],
+    metadata: dict[tuple[str, str, int | None], dict[str, Any]],
+) -> list[StrategyOpportunityAdvisoryRow]:
+    if not metadata:
+        return [row.model_copy(update={"max_live_notional_usdt": 0.0}) for row in rows]
+    output: list[StrategyOpportunityAdvisoryRow] = []
+    for row in rows:
+        if not _is_alpha_factory_advisory_model(row):
+            output.append(row.model_copy(update={"max_live_notional_usdt": 0.0}))
+            continue
+        meta = _alpha_factory_metadata_for_advisory_row(row, metadata)
+        if meta is None:
+            output.append(row.model_copy(update={"max_live_notional_usdt": 0.0}))
+            continue
+        paper_ready_block_reasons = row.paper_ready_block_reasons
+        if not paper_ready_block_reasons:
+            paper_ready_block_reasons = _advisory_reason_list(
+                meta.get("paper_ready_block_reasons")
+            )
+        output.append(
+            row.model_copy(
+                update={
+                    "source_module": row.source_module or _text_value(meta.get("source_module")),
+                    "template_family": row.template_family
+                    or _text_value(meta.get("template_family")),
+                    "candidate_id": row.candidate_id or _text_value(meta.get("candidate_id")),
+                    "promotion_state": row.promotion_state
+                    or _text_value(meta.get("promotion_state")).upper(),
+                    "alpha_factory_score": row.alpha_factory_score
+                    if row.alpha_factory_score is not None
+                    else _optional_float(meta.get("alpha_factory_score")),
+                    "cost_quality_score": row.cost_quality_score
+                    if row.cost_quality_score is not None
+                    else _optional_float(meta.get("cost_quality_score")),
+                    "paper_ready_block_reasons": paper_ready_block_reasons,
+                    "max_live_notional_usdt": 0.0,
+                }
+            )
+        )
+    return output
 
 
 def _alpha_factory_promotion_for_advisory_row(
@@ -1162,6 +1296,11 @@ def _apply_alpha_factory_promotion_overrides_to_advisory_rows(
                 update={
                     "decision": decision,
                     "recommended_mode": mode,
+                    "source_module": row.source_module or "alpha_factory",
+                    "template_family": row.template_family
+                    or _alpha_factory_template_family(promotion or {}),
+                    "candidate_id": row.candidate_id
+                    or _text_value((promotion or {}).get("candidate_id")),
                     "promotion_state": promotion_state,
                     "live_block_reasons": live_block_reasons,
                     "paper_ready_block_reasons": paper_ready_block_reasons,

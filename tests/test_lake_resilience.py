@@ -69,7 +69,34 @@ def test_write_parquet_dataset_falls_back_when_dataset_tmp_path_is_unusable(tmp_
     df = read_parquet_dataset(dataset)
 
     assert df.to_dicts() == [{"research_id": "eth_f3", "status": "PAPER"}]
+    assert not (dataset / "._tmp").exists()
     assert not list((dataset.parent / ".research_portfolio_status._tmp").glob("*.parquet"))
+
+
+def test_write_parquet_dataset_replaces_directory_when_inner_file_replace_is_unusable(
+    tmp_path, monkeypatch
+):
+    dataset = tmp_path / "lake" / "gold" / "v5_risk_on_multi_buy_shadow"
+    write_parquet_dataset(pl.DataFrame([{"symbol": "BTC-USDT", "value": 1}]), dataset)
+
+    import quant_lab.data.lake as lake_module
+
+    original_replace_path = lake_module._replace_path
+
+    def guarded_replace_path(source: Path, target: Path) -> None:
+        if Path(target) == dataset / "data.parquet":
+            raise PermissionError("simulated dataset directory permission drift")
+        original_replace_path(source, target)
+
+    monkeypatch.setattr(lake_module, "_replace_path", guarded_replace_path)
+
+    write_parquet_dataset(pl.DataFrame([{"symbol": "SOL-USDT", "value": 2}]), dataset)
+
+    read_back = read_parquet_dataset(dataset)
+
+    assert read_back.to_dicts() == [{"symbol": "SOL-USDT", "value": 2}]
+    assert not list(dataset.parent.glob("__v5_risk_on_multi_buy_shadow_backup_*"))
+    assert not list(dataset.parent.glob("__v5_risk_on_multi_buy_shadow_write_*"))
 
 
 def test_read_parquet_dataset_inserts_missing_columns_across_schema_versions(tmp_path):

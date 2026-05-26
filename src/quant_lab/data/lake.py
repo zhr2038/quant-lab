@@ -1,5 +1,6 @@
 import logging
 import os
+import shutil
 import subprocess
 import threading
 import time
@@ -114,29 +115,33 @@ def _write_parquet_dataset_unlocked(
                 if backup.exists() and not path.exists():
                     _replace_path(backup, path)
                 raise
-            try:
-                _remove_existing_dataset(backup)
-            except OSError as exc:
-                logger.warning("failed to remove parquet dataset backup %s: %s", backup, exc)
+            _remove_internal_path(backup)
         except Exception:
-            _remove_existing_dataset(staging)
+            _remove_internal_path(staging)
             if backup.exists() and not path.exists():
                 _replace_path(backup, path)
             raise
         return path
 
-    if path.is_file():
-        path.unlink()
-    path.mkdir(parents=True, exist_ok=True)
-    final_file = path / "data.parquet"
-    temp_file = _dataset_temp_file(path)
+    staging = path.parent / f"__{path.name}_write_{uuid.uuid4().hex}"
+    backup = path.parent / f"__{path.name}_backup_{uuid.uuid4().hex}"
     try:
-        sorted_df.write_parquet(temp_file)
-        _replace_path(temp_file, final_file)
-        _remove_stale_parquet_files(path, keep=final_file)
-    finally:
-        if temp_file.exists():
-            temp_file.unlink()
+        staging.mkdir(parents=True, exist_ok=False)
+        sorted_df.write_parquet(staging / "data.parquet")
+        if path.exists():
+            _replace_path(path, backup)
+        try:
+            _replace_path(staging, path)
+        except Exception:
+            if backup.exists() and not path.exists():
+                _replace_path(backup, path)
+            raise
+        _remove_internal_path(backup)
+    except Exception:
+        _remove_internal_path(staging)
+        if backup.exists() and not path.exists():
+            _replace_path(backup, path)
+        raise
     return path
 
 
@@ -279,7 +284,7 @@ def compact_parquet_dataset(
             if path.exists():
                 _replace_path(path, backup)
             _replace_path(staging, path)
-            _remove_existing_dataset(backup)
+            _remove_internal_path(backup)
             return CompactParquetResult(
                 dataset_path=str(path),
                 source_file_count=source_file_count,
@@ -291,7 +296,7 @@ def compact_parquet_dataset(
                 max_source_batch_bytes=batch_bytes,
             )
         except Exception:
-            _remove_existing_dataset(staging)
+            _remove_internal_path(staging)
             raise
 
 
@@ -419,7 +424,7 @@ def _compact_direct_parquet_files_unlocked(
             if _is_valid_parquet_file(candidate)
         ):
             _replace_path(compacted_file, path / compacted_file.name)
-        _remove_existing_dataset(staging)
+        _remove_internal_path(staging)
         return CompactParquetResult(
             dataset_path=str(path),
             source_file_count=source_file_count,
@@ -431,7 +436,7 @@ def _compact_direct_parquet_files_unlocked(
             max_source_batch_bytes=batch_bytes,
         )
     except Exception:
-        _remove_existing_dataset(staging)
+        _remove_internal_path(staging)
         raise
 
 
@@ -503,7 +508,7 @@ def repair_parquet_partition_values(
                     pass
             _remove_empty_directories(touched_dirs, stop_at=path)
             _remove_empty_bad_partition_directories(path, partition_columns, bad_values)
-            _remove_existing_dataset(staging)
+            _remove_internal_path(staging)
             return RepairParquetPartitionResult(
                 dataset_path=str(path),
                 bad_file_count=bad_file_count,
@@ -513,7 +518,7 @@ def repair_parquet_partition_values(
                 partition_by=partition_columns,
             )
         except Exception:
-            _remove_existing_dataset(staging)
+            _remove_internal_path(staging)
             raise
 
 
@@ -1258,6 +1263,22 @@ def _remove_existing_dataset(path: Path) -> None:
                 child.rmdir()
         if path.exists() and path.is_dir() and not any(path.iterdir()):
             path.rmdir()
+
+
+def _remove_internal_path(path: Path) -> None:
+    """Remove an internal staging/backup path without touching user datasets."""
+
+    if not path.exists():
+        return
+    if not _is_internal_lake_file(path):
+        raise ValueError(f"refusing to remove non-internal lake path: {path}")
+    try:
+        if path.is_dir():
+            shutil.rmtree(_replaceable_path(path))
+        else:
+            path.unlink()
+    except OSError as exc:
+        logger.warning("failed to remove internal lake path %s: %s", path, exc)
 
 
 def _remove_stale_parquet_files(path: Path, keep: Path) -> None:

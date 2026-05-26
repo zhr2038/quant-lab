@@ -34,9 +34,12 @@ def test_bnb_swing_exit_policy_reviews_giveback_after_unrealized_profit(tmp_path
     assert row["highest_px_after_entry"] == pytest.approx(665.0)
     assert row["max_unrealized_bps"] > 100
     assert row["profit_lock_50bps_exit"] > row["actual_exit_net_bps"]
+    assert row["delayed_exit_12h_net_bps"] > row["actual_exit_net_bps"]
+    assert row["best_shadow_exit_policy"] == row["best_exit_policy"]
     assert row["best_exit_policy"] in {
         "profit_lock_50bps",
         "fixed_hold_4h",
+        "delayed_exit_12h",
         "trailing_atr",
     }
     assert row["delta_vs_actual_bps"] > 0
@@ -45,6 +48,54 @@ def test_bnb_swing_exit_policy_reviews_giveback_after_unrealized_profit(tmp_path
         "gave_back_unrealized_profit",
         "trailing_variant_may_improve",
     }
+    summary = read_parquet_dataset(lake / "gold" / "bnb_swing_exit_policy_summary").to_dicts()[0]
+    assert summary["sample_count"] == 1
+    assert summary["min_sample_count_for_exit_change"] == 10
+    assert summary["decision"] == "RESEARCH_ONLY"
+    assert "insufficient_sample_count_for_exit_change" in summary["decision_reasons"]
+
+
+def test_bnb_swing_exit_policy_reads_v5_profit_lock_shadow(tmp_path):
+    lake = tmp_path / "lake"
+    write_parquet_dataset(
+        pl.DataFrame(
+            [
+                {
+                    "run_id": "run-bnb-shadow",
+                    "entry_ts": "2026-05-23T22:00:00Z",
+                    "symbol": "BNB/USDT",
+                    "entry_px": "657.9",
+                    "actual_exit_ts": "2026-05-24T22:01:00Z",
+                    "actual_exit_px": "651.3",
+                    "actual_exit_net_bps": "-120.22",
+                    "max_unrealized_bps": "69.9",
+                    "profit_lock_30bps_exit": "0.0",
+                    "profit_lock_50bps_exit": "20.0",
+                    "delayed_exit_6h": "-40.0",
+                    "delayed_exit_12h": "29.28",
+                    "delayed_exit_24h": "-12.0",
+                    "best_shadow_exit_policy": "delayed_exit_12h",
+                    "exit_reason": "atr_trailing/exit_signal_priority",
+                    "source_entry_id": "bnb-shadow-entry",
+                }
+            ]
+        ),
+        lake / "silver" / "v5_bnb_profit_lock_shadow",
+    )
+
+    result = build_and_publish_bnb_swing_exit_policy_review(lake, as_of_date="2026-05-24")
+
+    assert result.review_rows == 1
+    row = read_parquet_dataset(lake / "gold" / "bnb_swing_exit_policy_review").to_dicts()[0]
+    assert row["symbol"] == "BNB-USDT"
+    assert row["actual_exit_net_bps"] == pytest.approx(-120.22)
+    assert row["delayed_exit_12h_net_bps"] == pytest.approx(29.28)
+    assert row["best_shadow_exit_policy"] == "delayed_exit_12h"
+    summary = read_parquet_dataset(lake / "gold" / "bnb_swing_exit_policy_summary").to_dicts()[0]
+    assert summary["sample_count"] == 1
+    assert summary["decision"] == "RESEARCH_ONLY"
+    assert summary["delayed_exit_better_count"] == 1
+    assert "delayed_exit_would_improve_exit" in summary["decision_reasons"]
 
 
 def test_daily_export_contains_bnb_swing_exit_policy_review(tmp_path):
@@ -127,6 +178,7 @@ def _write_bnb_swing_inputs(lake, *, entry_ts: datetime) -> None:
         _bar(entry_ts + timedelta(hours=8), close=655.0, high=657.0, low=654.0),
         _bar(entry_ts + timedelta(hours=12), close=652.0, high=653.0, low=651.0),
         _bar(entry_ts + timedelta(hours=24), close=651.3, high=652.0, low=650.0),
+        _bar(entry_ts + timedelta(hours=37), close=660.0, high=661.0, low=659.0),
     ]
     write_parquet_dataset(pl.DataFrame(bars), lake / "silver" / "market_bar")
 

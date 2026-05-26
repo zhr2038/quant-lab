@@ -75,6 +75,15 @@ def make_v5_bundle_fixture(
             "v5.f4_volume_expansion_entry,SOL-USDT,1,0.0,0.8,"
             "insufficient_slippage_observations\n"
         ),
+        "summaries/bnb_profit_lock_shadow.csv": (
+            "run_id,entry_ts,symbol,entry_px,actual_exit_ts,actual_exit_px,"
+            "actual_exit_net_bps,max_unrealized_bps,profit_lock_30bps_exit,"
+            "profit_lock_50bps_exit,delayed_exit_6h,delayed_exit_12h,"
+            "delayed_exit_24h,best_shadow_exit_policy\n"
+            "run-bnb-shadow,2026-05-23T22:00:00Z,BNB/USDT,657.9,"
+            "2026-05-24T22:01:00Z,651.3,-120.22,69.9,0.0,20.0,"
+            "-40.0,29.28,-12.0,delayed_exit_12h\n"
+        ),
         "summaries/router_decisions.csv": "reason,count\nrisk_gate,2\n",
         "summaries/trades_roundtrips.csv": "symbol,pnl\nBTC-USDT,1.2\n",
         "summaries/open_positions.csv": "symbol,size\nBTC-USDT,0\n",

@@ -111,6 +111,7 @@ DATASET_PATHS = {
     "v5_paper_strategy_run": Path("silver") / "v5_paper_strategy_run",
     "v5_paper_strategy_daily": Path("silver") / "v5_paper_strategy_daily",
     "v5_paper_slippage_coverage": Path("silver") / "v5_paper_slippage_coverage",
+    "v5_bnb_profit_lock_shadow": Path("silver") / "v5_bnb_profit_lock_shadow",
     "v5_candidate_event": Path("silver") / "v5_candidate_event",
     "v5_candidate_label": Path("gold") / "v5_candidate_label",
     "v5_candidate_quality_daily": Path("gold") / "v5_candidate_quality_daily",

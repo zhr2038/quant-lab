@@ -21,11 +21,14 @@ SCHEMA_VERSION = "bnb_swing_exit_policy_review.v0.1"
 SUMMARY_SCHEMA_VERSION = "bnb_swing_exit_policy_summary.v0.1"
 DEFAULT_ROUNDTRIP_COST_BPS = 30.0
 HORIZONS = (4, 8, 12, 24)
+DELAYED_EXIT_HOURS = (6, 12, 24)
 PROFIT_LOCK_BPS = (30, 50)
 ATR_LOOKBACK_BARS = 14
 ATR_MULTIPLIER = 2.0
+MIN_SAMPLE_COUNT_FOR_EXIT_CHANGE = 10
 
 V5_TRADE_EVENT_DATASET = Path("silver") / "v5_trade_event"
+V5_BNB_PROFIT_LOCK_SHADOW_DATASET = Path("silver") / "v5_bnb_profit_lock_shadow"
 MARKET_BAR_DATASET = Path("silver") / "market_bar"
 BNB_SWING_EXIT_POLICY_REVIEW_DATASET = Path("gold") / "bnb_swing_exit_policy_review"
 BNB_SWING_EXIT_POLICY_SUMMARY_DATASET = Path("gold") / "bnb_swing_exit_policy_summary"
@@ -55,8 +58,12 @@ REVIEW_SCHEMA: dict[str, Any] = {
     "fixed_hold_24h_net_bps": pl.Float64,
     "profit_lock_30bps_exit": pl.Float64,
     "profit_lock_50bps_exit": pl.Float64,
+    "delayed_exit_6h_net_bps": pl.Float64,
+    "delayed_exit_12h_net_bps": pl.Float64,
+    "delayed_exit_24h_net_bps": pl.Float64,
     "trailing_atr_exit": pl.Float64,
     "best_exit_policy": pl.Utf8,
+    "best_shadow_exit_policy": pl.Utf8,
     "best_exit_net_bps": pl.Float64,
     "delta_vs_actual_bps": pl.Float64,
     "exit_reason": pl.Utf8,
@@ -78,12 +85,15 @@ SUMMARY_SCHEMA: dict[str, Any] = {
     "strategy_candidate": pl.Utf8,
     "symbol": pl.Utf8,
     "sample_count": pl.Int64,
+    "min_sample_count_for_exit_change": pl.Int64,
     "avg_actual_exit_net_bps": pl.Float64,
     "avg_max_unrealized_bps": pl.Float64,
     "avg_delta_best_vs_actual_bps": pl.Float64,
     "profit_lock_better_count": pl.Int64,
+    "delayed_exit_better_count": pl.Int64,
     "trailing_better_count": pl.Int64,
     "best_exit_policy_mix": pl.Utf8,
+    "best_shadow_exit_policy_mix": pl.Utf8,
     "status": pl.Utf8,
     "decision": pl.Utf8,
     "decision_reasons": pl.Utf8,
@@ -123,9 +133,11 @@ def build_and_publish_bnb_swing_exit_policy_review(
         git_commit=_git_commit(),
     )
     trades = read_parquet_dataset(root / V5_TRADE_EVENT_DATASET)
+    profit_lock_shadow = read_parquet_dataset(root / V5_BNB_PROFIT_LOCK_SHADOW_DATASET)
     market = read_parquet_dataset(root / MARKET_BAR_DATASET)
     review = build_bnb_swing_exit_policy_review(
         trade_events=trades,
+        profit_lock_shadow=profit_lock_shadow,
         market_bars=market,
         ctx=ctx,
     )
@@ -150,10 +162,12 @@ def build_and_publish_bnb_swing_exit_policy_review(
 def build_bnb_swing_exit_policy_review(
     *,
     trade_events: pl.DataFrame,
+    profit_lock_shadow: pl.DataFrame | None = None,
     market_bars: pl.DataFrame,
     ctx: _Context,
 ) -> pl.DataFrame:
-    if trade_events.is_empty():
+    shadow_frame = profit_lock_shadow if profit_lock_shadow is not None else pl.DataFrame()
+    if trade_events.is_empty() and shadow_frame.is_empty():
         return pl.DataFrame(schema=REVIEW_SCHEMA)
     bars = _market_bar_index(market_bars)
     bnb_trades = _bnb_trade_rows(trade_events)
@@ -161,6 +175,19 @@ def build_bnb_swing_exit_policy_review(
     exits = [row for row in bnb_trades if _is_bnb_exit(row)]
     rows: list[dict[str, Any]] = []
     seen: set[tuple[str, str, str]] = set()
+    for shadow in _bnb_profit_lock_shadow_rows(shadow_frame):
+        shadow_row = _review_row_from_profit_lock_shadow(shadow, ctx=ctx)
+        if shadow_row is None:
+            continue
+        key = (
+            str(shadow_row.get("run_id") or ""),
+            shadow_row["entry_ts"].isoformat(),
+            f"{shadow_row['entry_px']:.8f}",
+        )
+        if key in seen:
+            continue
+        seen.add(key)
+        rows.append(shadow_row)
     for entry in entries:
         entry_ts = _parse_datetime(entry.get("ts_utc") or entry.get("ts"))
         entry_px = _float_or_none(entry.get("price") or entry.get("fill_px"))
@@ -222,6 +249,16 @@ def build_bnb_swing_exit_policy_review(
             )
             for bps in PROFIT_LOCK_BPS
         }
+        delayed_exit = {
+            hours: _delayed_exit_net_bps(
+                bars.get("BNB-USDT", []),
+                actual_exit_ts=actual_exit_ts,
+                entry_px=entry_px,
+                delay_hours=hours,
+                cost_bps=cost_bps,
+            )
+            for hours in DELAYED_EXIT_HOURS
+        }
         trailing_atr = _trailing_atr_exit_net_bps(
             bars.get("BNB-USDT", []),
             entry_ts=entry_ts,
@@ -234,6 +271,7 @@ def build_bnb_swing_exit_policy_review(
             **{f"fixed_hold_{horizon}h": value for horizon, value in fixed_hold.items()},
             "profit_lock_30bps": profit_lock[30],
             "profit_lock_50bps": profit_lock[50],
+            **{f"delayed_exit_{hours}h": value for hours, value in delayed_exit.items()},
             "trailing_atr": trailing_atr,
         }
         best_policy, best_value = _best_policy(alternatives)
@@ -273,8 +311,12 @@ def build_bnb_swing_exit_policy_review(
                 "fixed_hold_24h_net_bps": fixed_hold[24],
                 "profit_lock_30bps_exit": profit_lock[30],
                 "profit_lock_50bps_exit": profit_lock[50],
+                "delayed_exit_6h_net_bps": delayed_exit[6],
+                "delayed_exit_12h_net_bps": delayed_exit[12],
+                "delayed_exit_24h_net_bps": delayed_exit[24],
                 "trailing_atr_exit": trailing_atr,
                 "best_exit_policy": best_policy,
+                "best_shadow_exit_policy": best_policy,
                 "best_exit_net_bps": best_value,
                 "delta_vs_actual_bps": delta,
                 "exit_reason": exit_reason,
@@ -312,11 +354,26 @@ def build_bnb_swing_exit_policy_summary(
         if str(row.get("best_exit_policy") or "") == "trailing_atr"
         and (_float_or_none(row.get("delta_vs_actual_bps")) or 0.0) > 0
     ]
+    delayed_better = [
+        row
+        for row in rows
+        if str(row.get("best_exit_policy") or "").startswith("delayed_exit")
+        and (_float_or_none(row.get("delta_vs_actual_bps")) or 0.0) > 0
+    ]
     if profit_better:
         reasons.append("profit_lock_would_improve_exit")
+    if delayed_better:
+        reasons.append("delayed_exit_would_improve_exit")
     if trailing_better:
         reasons.append("atr_trailing_variant_would_improve_exit")
-    decision = "REVIEW_EXIT_POLICY" if profit_better or trailing_better else "RESEARCH_ONLY"
+    if sample_count < MIN_SAMPLE_COUNT_FOR_EXIT_CHANGE:
+        reasons.append("insufficient_sample_count_for_exit_change")
+    improvement_observed = bool(profit_better or delayed_better or trailing_better)
+    decision = (
+        "REVIEW_EXIT_POLICY"
+        if improvement_observed and sample_count >= MIN_SAMPLE_COUNT_FOR_EXIT_CHANGE
+        else "RESEARCH_ONLY"
+    )
     return pl.DataFrame(
         [
             _common(ctx, schema_version=SUMMARY_SCHEMA_VERSION)
@@ -325,15 +382,20 @@ def build_bnb_swing_exit_policy_summary(
                 "strategy_candidate": "v5.bnb_swing_exit_policy_review",
                 "symbol": "BNB-USDT",
                 "sample_count": sample_count,
+                "min_sample_count_for_exit_change": MIN_SAMPLE_COUNT_FOR_EXIT_CHANGE,
                 "avg_actual_exit_net_bps": _mean(row.get("actual_exit_net_bps") for row in rows),
                 "avg_max_unrealized_bps": _mean(row.get("max_unrealized_bps") for row in rows),
                 "avg_delta_best_vs_actual_bps": _mean(
                     row.get("delta_vs_actual_bps") for row in rows
                 ),
                 "profit_lock_better_count": len(profit_better),
+                "delayed_exit_better_count": len(delayed_better),
                 "trailing_better_count": len(trailing_better),
                 "best_exit_policy_mix": safe_json_dumps(
                     _counts(row.get("best_exit_policy") for row in rows)
+                ),
+                "best_shadow_exit_policy_mix": safe_json_dumps(
+                    _counts(row.get("best_shadow_exit_policy") for row in rows)
                 ),
                 "status": "REVIEW" if rows else "RESEARCH_ONLY",
                 "decision": decision,
@@ -363,12 +425,15 @@ def bnb_swing_exit_policy_summary_md(summary: pl.DataFrame, review: pl.DataFrame
         f"- status: {row.get('status')}",
         f"- decision: {row.get('decision')}",
         f"- sample_count: {row.get('sample_count')}",
+        f"- min_sample_count_for_exit_change: {row.get('min_sample_count_for_exit_change')}",
         f"- avg_actual_exit_net_bps: {_fmt(row.get('avg_actual_exit_net_bps'))}",
         f"- avg_max_unrealized_bps: {_fmt(row.get('avg_max_unrealized_bps'))}",
         f"- avg_delta_best_vs_actual_bps: {_fmt(row.get('avg_delta_best_vs_actual_bps'))}",
         f"- profit_lock_better_count: {row.get('profit_lock_better_count')}",
+        f"- delayed_exit_better_count: {row.get('delayed_exit_better_count')}",
         f"- trailing_better_count: {row.get('trailing_better_count')}",
         f"- best_exit_policy_mix: {row.get('best_exit_policy_mix')}",
+        f"- best_shadow_exit_policy_mix: {row.get('best_shadow_exit_policy_mix')}",
         f"- decision_reasons: {row.get('decision_reasons')}",
     ]
     if not review.is_empty():
@@ -386,6 +451,7 @@ def bnb_swing_exit_policy_summary_md(summary: pl.DataFrame, review: pl.DataFrame
                 f"- actual_exit_net_bps: {_fmt(latest.get('actual_exit_net_bps'))}",
                 f"- max_unrealized_bps: {_fmt(latest.get('max_unrealized_bps'))}",
                 f"- best_exit_policy: {latest.get('best_exit_policy')}",
+                f"- delayed_exit_12h_net_bps: {_fmt(latest.get('delayed_exit_12h_net_bps'))}",
                 f"- delta_vs_actual_bps: {_fmt(latest.get('delta_vs_actual_bps'))}",
                 f"- diagnosis: {latest.get('diagnosis')}",
             ]
@@ -406,6 +472,117 @@ def _bnb_trade_rows(trade_events: pl.DataFrame) -> list[dict[str, Any]]:
         rows.append(row | {"_ts": ts, "_price": price})
     rows.sort(key=lambda item: item["_ts"])
     return rows
+
+
+def _bnb_profit_lock_shadow_rows(frame: pl.DataFrame) -> list[dict[str, Any]]:
+    if frame.is_empty():
+        return []
+    rows: list[dict[str, Any]] = []
+    for row in frame.to_dicts():
+        symbol = normalize_symbol(row.get("normalized_symbol") or row.get("symbol"))
+        if symbol != "BNB-USDT":
+            continue
+        entry_ts = _parse_datetime(_field(row, "entry_ts", "ts_utc", "ts"))
+        entry_px = _float_or_none(_field(row, "entry_px", "entry_price", "fill_px", "price"))
+        if entry_ts is None or entry_px is None:
+            continue
+        rows.append(row | {"_ts": entry_ts, "_price": entry_px})
+    rows.sort(key=lambda item: item["_ts"])
+    return rows
+
+
+def _review_row_from_profit_lock_shadow(
+    row: dict[str, Any],
+    *,
+    ctx: _Context,
+) -> dict[str, Any] | None:
+    entry_ts = _parse_datetime(_field(row, "entry_ts", "ts_utc", "ts"))
+    entry_px = _float_or_none(_field(row, "entry_px", "entry_price", "fill_px", "price"))
+    if entry_ts is None or entry_px is None or entry_px <= 0:
+        return None
+    actual_exit_ts = _parse_datetime(_field(row, "actual_exit_ts", "exit_ts"))
+    actual_exit_px = _float_or_none(_field(row, "actual_exit_px", "exit_px"))
+    actual_net = _float_or_none(_field(row, "actual_exit_net_bps", "actual_net_bps"))
+    delayed = {
+        hours: _float_or_none(
+            _field(
+                row,
+                f"delayed_exit_{hours}h",
+                f"delayed_exit_{hours}h_net_bps",
+                f"delayed_exit_{hours}h_bps",
+            )
+        )
+        for hours in DELAYED_EXIT_HOURS
+    }
+    profit_lock = {
+        bps: _float_or_none(
+            _field(row, f"profit_lock_{bps}bps_exit", f"profit_lock_{bps}bps_net_bps")
+        )
+        for bps in PROFIT_LOCK_BPS
+    }
+    trailing_atr = _float_or_none(_field(row, "trailing_atr_exit", "atr_trailing_exit"))
+    alternatives = {
+        "actual_exit": actual_net,
+        "profit_lock_30bps": profit_lock[30],
+        "profit_lock_50bps": profit_lock[50],
+        **{f"delayed_exit_{hours}h": value for hours, value in delayed.items()},
+        "trailing_atr": trailing_atr,
+    }
+    best_policy = str(
+        _field(row, "best_shadow_exit_policy", "best_exit_policy") or ""
+    ).strip()
+    best_value = _float_or_none(_field(row, "best_exit_net_bps", "best_shadow_exit_net_bps"))
+    if not best_policy or best_value is None:
+        best_policy, best_value = _best_policy(alternatives)
+    delta = (
+        best_value - actual_net if best_value is not None and actual_net is not None else None
+    )
+    exit_reason = str(_field(row, "exit_reason", "actual_exit_reason") or "")
+    max_unrealized = _float_or_none(_field(row, "max_unrealized_bps"))
+    diagnosis = _diagnosis(
+        actual_exit_net_bps=actual_net,
+        max_unrealized_bps=max_unrealized,
+        best_exit_policy=best_policy,
+        delta_vs_actual_bps=delta,
+        exit_reason=exit_reason,
+    )
+    return _common(ctx) | {
+        "as_of_date": ctx.as_of_date.isoformat(),
+        "strategy_candidate": "v5.bnb_swing_exit_policy_review",
+        "symbol": "BNB-USDT",
+        "run_id": str(_field(row, "run_id") or ""),
+        "source_entry_id": str(_field(row, "source_entry_id", "trade_id", "order_id") or ""),
+        "entry_ts": entry_ts,
+        "entry_px": entry_px,
+        "highest_px_after_entry": _float_or_none(_field(row, "highest_px_after_entry")),
+        "max_unrealized_bps": max_unrealized,
+        "actual_exit_ts": actual_exit_ts,
+        "actual_exit_px": actual_exit_px,
+        "actual_exit_net_bps": actual_net,
+        "fixed_hold_4h_net_bps": _float_or_none(_field(row, "fixed_hold_4h_net_bps")),
+        "fixed_hold_8h_net_bps": _float_or_none(_field(row, "fixed_hold_8h_net_bps")),
+        "fixed_hold_12h_net_bps": _float_or_none(_field(row, "fixed_hold_12h_net_bps")),
+        "fixed_hold_24h_net_bps": _float_or_none(_field(row, "fixed_hold_24h_net_bps")),
+        "profit_lock_30bps_exit": profit_lock[30],
+        "profit_lock_50bps_exit": profit_lock[50],
+        "delayed_exit_6h_net_bps": delayed[6],
+        "delayed_exit_12h_net_bps": delayed[12],
+        "delayed_exit_24h_net_bps": delayed[24],
+        "trailing_atr_exit": trailing_atr,
+        "best_exit_policy": best_policy,
+        "best_shadow_exit_policy": best_policy,
+        "best_exit_net_bps": best_value,
+        "delta_vs_actual_bps": delta,
+        "exit_reason": exit_reason,
+        "selected_roundtrip_cost_bps": _float_or_none(
+            _field(row, "selected_roundtrip_cost_bps", "cost_bps")
+        )
+        or DEFAULT_ROUNDTRIP_COST_BPS,
+        "diagnosis": diagnosis,
+        "status": "REVIEW",
+        "created_at": ctx.generated_at,
+        "source": SOURCE_NAME,
+    }
 
 
 def _is_bnb_swing_entry(row: dict[str, Any]) -> bool:
@@ -546,6 +723,22 @@ def _profit_lock_exit_net_bps(
         if entry_ts < row["ts"] <= end_ts and high >= threshold_px:
             return float(threshold_bps) - cost_bps
     return None
+
+
+def _delayed_exit_net_bps(
+    rows: list[dict[str, Any]],
+    *,
+    actual_exit_ts: datetime | None,
+    entry_px: float,
+    delay_hours: int,
+    cost_bps: float,
+) -> float | None:
+    if actual_exit_ts is None or entry_px <= 0:
+        return None
+    close = _market_close_at_or_after(rows, actual_exit_ts + timedelta(hours=delay_hours))
+    if close is None:
+        return None
+    return (close / entry_px - 1.0) * 10_000.0 - cost_bps
 
 
 def _trailing_atr_exit_net_bps(

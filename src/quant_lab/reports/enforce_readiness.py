@@ -531,6 +531,13 @@ def _telemetry_metrics(
         strategy_health.get("duplicate_event_rows")
         or strategy_health.get("duplicate_event_count")
     )
+    exact_duplicate_event_rows = _int(strategy_health.get("exact_duplicate_event_rows"))
+    conflicting_duplicate_event_rows = _int(
+        strategy_health.get("conflicting_duplicate_event_rows")
+    )
+    conflicting_duplicate_event_key_count = _int(
+        strategy_health.get("conflicting_duplicate_event_key_count")
+    )
     unique_request_count = _int(strategy_health.get("unique_request_count"))
     unique_actual_fallback_count = _int(strategy_health.get("unique_actual_fallback_count"))
     if duplicate_rate == 0 and not strategy_health:
@@ -543,6 +550,7 @@ def _telemetry_metrics(
         raw_imported_rows=raw_imported_rows,
         unique_event_rows=unique_event_rows,
         duplicate_event_rows=duplicate_event_rows,
+        conflicting_duplicate_event_rows=conflicting_duplicate_event_rows,
         unique_request_count=unique_request_count,
         unique_actual_fallback_count=unique_actual_fallback_count,
         event_key_coverage=event_key_coverage,
@@ -555,6 +563,10 @@ def _telemetry_metrics(
         "unique_event_rows": unique_event_rows,
         "duplicate_event_rows": duplicate_event_rows,
         "duplicate_event_count": duplicate_event_rows,
+        "exact_duplicate_event_rows": exact_duplicate_event_rows,
+        "conflicting_duplicate_event_rows": conflicting_duplicate_event_rows,
+        "conflicting_duplicate_event_key_count": conflicting_duplicate_event_key_count,
+        "duplicate_explanation": strategy_health.get("duplicate_explanation") or "",
         "event_key_coverage": event_key_coverage,
         "unique_request_count": unique_request_count,
         "unique_actual_fallback_count": unique_actual_fallback_count,
@@ -568,6 +580,8 @@ def _telemetry_metrics(
         "last_seen_bundle_ts": _iso(_parse_dt(strategy_health.get("last_seen_bundle_ts"))),
         "detail": (
             f"duplicate_rate={duplicate_rate:.4f}; fallback_rate={fallback_rate:.4f}; "
+            f"exact_duplicate_event_rows={exact_duplicate_event_rows}; "
+            f"conflicting_duplicate_event_rows={conflicting_duplicate_event_rows}; "
             f"decision_audit_count={decision_count}; dedupe_health_status={dedupe_status}; "
             f"dedupe_block_reason={dedupe_reason or 'none'}"
         ),
@@ -648,6 +662,7 @@ def _dedupe_health(
     raw_imported_rows: int,
     unique_event_rows: int,
     duplicate_event_rows: int,
+    conflicting_duplicate_event_rows: int,
     unique_request_count: int,
     unique_actual_fallback_count: int,
     event_key_coverage: float,
@@ -662,6 +677,8 @@ def _dedupe_health(
         return "BLOCKED", "unique_event_rows_exceeds_raw_imported_rows"
     if raw_imported_rows and duplicate_event_rows < 0:
         return "BLOCKED", "negative_duplicate_event_rows"
+    if conflicting_duplicate_event_rows > 0:
+        return "BLOCKED", f"conflicting_duplicate_event_rows={conflicting_duplicate_event_rows}"
     if unique_event_rows and unique_request_count > unique_event_rows:
         return "BLOCKED", "unique_request_count_exceeds_unique_event_rows"
     if unique_request_count and unique_actual_fallback_count > unique_request_count:

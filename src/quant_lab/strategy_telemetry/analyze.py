@@ -488,6 +488,14 @@ def analyze_v5_telemetry(
         duplicate_event_count=int(quant_lab_summary["duplicate_event_count"]),
         duplicate_event_rows=int(quant_lab_summary["duplicate_event_rows"]),
         duplicate_rate=float(quant_lab_summary["duplicate_rate"]),
+        exact_duplicate_event_rows=int(quant_lab_summary["exact_duplicate_event_rows"]),
+        conflicting_duplicate_event_rows=int(
+            quant_lab_summary["conflicting_duplicate_event_rows"]
+        ),
+        conflicting_duplicate_event_key_count=int(
+            quant_lab_summary["conflicting_duplicate_event_key_count"]
+        ),
+        duplicate_explanation=str(quant_lab_summary["duplicate_explanation"]),
         first_seen_bundle_ts=quant_lab_summary["first_seen_bundle_ts"],
         last_seen_bundle_ts=quant_lab_summary["last_seen_bundle_ts"],
         latest_permission_status=quant_lab_summary["latest_permission_status"],
@@ -617,6 +625,14 @@ def _write_gold(
                 "duplicate_event_count": quant_lab_summary["duplicate_event_count"],
                 "duplicate_event_rows": quant_lab_summary["duplicate_event_rows"],
                 "duplicate_rate": quant_lab_summary["duplicate_rate"],
+                "exact_duplicate_event_rows": quant_lab_summary["exact_duplicate_event_rows"],
+                "conflicting_duplicate_event_rows": quant_lab_summary[
+                    "conflicting_duplicate_event_rows"
+                ],
+                "conflicting_duplicate_event_key_count": quant_lab_summary[
+                    "conflicting_duplicate_event_key_count"
+                ],
+                "duplicate_explanation": quant_lab_summary["duplicate_explanation"],
                 "first_seen_bundle_ts": quant_lab_summary["first_seen_bundle_ts"],
                 "last_seen_bundle_ts": quant_lab_summary["last_seen_bundle_ts"],
                 "cost_usage_count": quant_lab_summary["cost_usage_count"],
@@ -1058,6 +1074,10 @@ def _quant_lab_request_health(requests: pl.DataFrame, fallback: pl.DataFrame) ->
     unique_event_rows = len(unique_event_keys)
     duplicate_event_rows = max(raw_imported_rows - unique_event_rows, 0)
     duplicate_rate = duplicate_event_rows / raw_imported_rows if raw_imported_rows else 0.0
+    duplicate_breakdown = _duplicate_event_breakdown(
+        [*request_rows.values(), *fallback_rows.values()],
+        duplicate_event_rows=duplicate_event_rows,
+    )
     first_seen, last_seen = _event_seen_range(
         list(request_rows.values()) + list(fallback_rows.values())
     )
@@ -1085,11 +1105,71 @@ def _quant_lab_request_health(requests: pl.DataFrame, fallback: pl.DataFrame) ->
         "duplicate_event_count": duplicate_event_rows,
         "duplicate_event_rows": duplicate_event_rows,
         "duplicate_rate": duplicate_rate,
+        "exact_duplicate_event_rows": duplicate_breakdown["exact_duplicate_event_rows"],
+        "conflicting_duplicate_event_rows": duplicate_breakdown[
+            "conflicting_duplicate_event_rows"
+        ],
+        "conflicting_duplicate_event_key_count": duplicate_breakdown[
+            "conflicting_duplicate_event_key_count"
+        ],
+        "duplicate_explanation": duplicate_breakdown["duplicate_explanation"],
         "first_seen_bundle_ts": first_seen,
         "last_seen_bundle_ts": last_seen,
         "latest_permission_status": latest_permission_status,
         "stale_permission_consecutive_count": stale_permission_consecutive_count,
     }
+
+
+def _duplicate_event_breakdown(
+    rows: list[dict[str, Any]],
+    *,
+    duplicate_event_rows: int,
+) -> dict[str, Any]:
+    conflicting_rows = 0
+    conflicting_keys = 0
+    for row in rows:
+        if _boolish(row.get("conflicting_duplicate")) or _payload_hash_count(row) > 1:
+            conflicting_keys += 1
+            conflicting_rows += max(_row_source_count(row) - 1, 0)
+    exact_rows = max(duplicate_event_rows - conflicting_rows, 0)
+    explanation = (
+        "conflicting_duplicate_payloads_present"
+        if conflicting_rows
+        else "exact_duplicate_reingest_or_overlapping_followup_bundle"
+        if duplicate_event_rows
+        else "none"
+    )
+    return {
+        "exact_duplicate_event_rows": exact_rows,
+        "conflicting_duplicate_event_rows": conflicting_rows,
+        "conflicting_duplicate_event_key_count": conflicting_keys,
+        "duplicate_explanation": explanation,
+    }
+
+
+def _payload_hash_count(row: dict[str, Any]) -> int:
+    value = row.get("payload_hash_count")
+    try:
+        parsed = int(float(value))
+    except (TypeError, ValueError):
+        parsed = 0
+    if parsed > 0:
+        return parsed
+    raw = row.get("payload_hashes_json")
+    if isinstance(raw, str) and raw.strip():
+        try:
+            payload = json.loads(raw)
+        except json.JSONDecodeError:
+            payload = []
+        if isinstance(payload, list):
+            return len({str(item) for item in payload if str(item).strip()})
+    return 1
+
+
+def _boolish(value: Any) -> bool:
+    if isinstance(value, bool):
+        return value
+    return str(value).strip().lower() in {"1", "true", "yes", "y", "on"}
 
 
 def _unique_event_rows(df: pl.DataFrame) -> dict[str, dict[str, Any]]:

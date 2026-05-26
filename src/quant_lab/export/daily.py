@@ -77,6 +77,7 @@ from quant_lab.risk.publish import (
     risk_permission_stale_vs_telemetry,
 )
 from quant_lab.strategy_telemetry.analyze import _event_key as _v5_telemetry_event_key
+from quant_lab.strategy_telemetry.bundle import compute_sha256
 from quant_lab.strategy_telemetry.sanitize import SECRET_PATTERNS, safe_json_dumps
 from quant_lab.symbols import normalize_symbol
 from quant_lab.time_display import BEIJING_TZ, DISPLAY_TIMEZONE, beijing_iso
@@ -2529,6 +2530,7 @@ def export_daily_pack(
     risk_version: str = "5.0.0",
     pre_export_v5_refresh: bool = True,
     v5_telemetry_config: str | Path | None = None,
+    allow_stale_v5: bool = False,
 ) -> DailyExportResult:
     day = _parse_date(export_date)
     root = Path(lake_root)
@@ -2548,6 +2550,18 @@ def export_daily_pack(
         else []
     )
     snapshot = _load_snapshot(root)
+    v5_consistency = _v5_export_consistency(
+        snapshot.frames,
+        pre_export_v5=pre_export_v5,
+        pre_export_v5_refresh=pre_export_v5_refresh,
+        allow_stale_v5=allow_stale_v5,
+    )
+    pre_export_v5.update(v5_consistency)
+    if v5_consistency["stale_v5_bundle"] and pre_export_v5_refresh and not allow_stale_v5:
+        raise RuntimeError(v5_consistency["warning_reason"])
+    if v5_consistency["warning_reason"]:
+        pre_export_v5.setdefault("warnings", []).append(v5_consistency["warning_reason"])
+    pre_export_v5_warnings = [str(warning) for warning in pre_export_v5.get("warnings", [])]
     snapshot = _publish_research_portfolio_status_snapshot(root, snapshot, day)
     snapshot = _publish_strategy_opportunity_advisory_snapshot(root, snapshot)
     snapshot = _publish_missed_opportunity_snapshot(root, snapshot)
@@ -2585,9 +2599,11 @@ def export_daily_pack(
         )
     )
 
+    export_finished_at = datetime.now(UTC)
     manifest = _manifest_payload(
         day=day,
         generated_at=generated_at,
+        export_finished_at=export_finished_at,
         root=root,
         profile=profile,
         missing_sections=missing_sections,
@@ -2597,6 +2613,7 @@ def export_daily_pack(
         command_line=command_line or sys.argv,
         snapshot=snapshot,
         pre_export_v5=pre_export_v5,
+        allow_stale_v5=allow_stale_v5,
     )
     manifest["files"].append(
         {
@@ -3106,6 +3123,24 @@ def _dataset_members(frames: dict[str, pl.DataFrame]) -> dict[str, _MemberPayloa
         "v5_entry_quality_history_pullback_by_horizon",
         pl.DataFrame(),
     )
+    if history_pullback_by_symbol.is_empty() and not pullback_reversal_shadow.is_empty():
+        history_pullback_by_symbol = _pullback_shadow_aggregate_for_export(
+            pullback_reversal_shadow,
+            group_type="symbol",
+            path="reports/pullback_reversal_by_symbol.csv",
+        )
+    if history_pullback_by_regime.is_empty() and not pullback_reversal_shadow.is_empty():
+        history_pullback_by_regime = _pullback_shadow_aggregate_for_export(
+            pullback_reversal_shadow,
+            group_type="regime",
+            path="reports/pullback_reversal_by_regime.csv",
+        )
+    if history_pullback_by_horizon.is_empty() and not pullback_reversal_shadow.is_empty():
+        history_pullback_by_horizon = _pullback_shadow_aggregate_for_export(
+            pullback_reversal_shadow,
+            group_type="horizon",
+            path="reports/pullback_reversal_by_horizon.csv",
+        )
     history_anti_leakage = frames.get(
         "v5_entry_quality_history_anti_leakage_check",
         pl.DataFrame(),
@@ -3632,6 +3667,7 @@ def _manifest_payload(
     *,
     day: date,
     generated_at: datetime,
+    export_finished_at: datetime,
     root: Path,
     profile: str,
     missing_sections: list[str],
@@ -3641,6 +3677,7 @@ def _manifest_payload(
     command_line: list[str],
     snapshot: _DatasetSnapshot,
     pre_export_v5: dict[str, Any] | None = None,
+    allow_stale_v5: bool = False,
 ) -> dict[str, Any]:
     git = _git_info()
     risk_export_status = _risk_permission_export_status(snapshot.frames, generated_at)
@@ -3653,13 +3690,19 @@ def _manifest_payload(
         else None
     )
     v5_context = pre_export_v5 or {}
+    stale_v5_bundle = bool(v5_context.get("stale_v5_bundle"))
+    authoritative_snapshot = bool(v5_context.get("authoritative_snapshot"))
     return {
         "export_date": day.isoformat(),
         "generated_at": generated_at.isoformat(),
         "export_generated_at": generated_at.isoformat(),
+        "export_started_at": generated_at.isoformat(),
+        "export_finished_at": export_finished_at.isoformat(),
         "display_timezone": DISPLAY_TIMEZONE,
         "generated_at_beijing": beijing_iso(generated_at),
         "export_generated_at_beijing": beijing_iso(generated_at),
+        "export_started_at_beijing": beijing_iso(generated_at),
+        "export_finished_at_beijing": beijing_iso(export_finished_at),
         "risk_permission_generated_at": risk_export_status.get("risk_permission_generated_at"),
         "risk_permission_expires_at": risk_export_status.get("risk_permission_expires_at"),
         "permission_expired_at_export": risk_export_status.get(
@@ -3673,6 +3716,26 @@ def _manifest_payload(
             "latest_v5_bundle_seen_at_export"
         ),
         "latest_v5_bundle_ingested_at_export": _iso_or_none(latest_ingested_bundle_ts),
+        "authoritative_snapshot": authoritative_snapshot,
+        "stale_v5_bundle": stale_v5_bundle,
+        "allow_stale_v5": allow_stale_v5,
+        "selected_v5_bundle_path": v5_context.get("selected_v5_bundle_path"),
+        "selected_v5_bundle_sha256": v5_context.get("selected_v5_bundle_sha256"),
+        "selected_v5_bundle_built_at": v5_context.get("selected_v5_bundle_built_at"),
+        "selected_v5_bundle_ingested_at": v5_context.get("selected_v5_bundle_ingested_at"),
+        "selected_v5_bundle_event_counts": v5_context.get(
+            "selected_v5_bundle_event_counts",
+            {},
+        ),
+        "v5_export_consistency": {
+            "authoritative_snapshot": authoritative_snapshot,
+            "stale_v5_bundle": stale_v5_bundle,
+            "warning_reason": v5_context.get("warning_reason"),
+            "latest_v5_bundle_seen_at_export": v5_context.get(
+                "latest_v5_bundle_seen_at_export"
+            ),
+            "latest_v5_bundle_ingested_at_export": _iso_or_none(latest_ingested_bundle_ts),
+        },
         "candidate_event_latest_ts": _iso_or_none(candidate_event_latest_ts),
         "latest_candidate_event_ts": _iso_or_none(candidate_event_latest_ts),
         "candidate_event_rows": candidate_events.height,
@@ -3740,6 +3803,11 @@ def _refresh_v5_before_export(
         "skipped_bundle_count": 0,
         "latest_v5_bundle_seen_at_export": None,
         "local_inbox_dir": None,
+        "selected_v5_bundle_path": None,
+        "selected_v5_bundle_sha256": None,
+        "selected_v5_bundle_built_at": None,
+        "selected_v5_bundle_ingested_at": None,
+        "selected_v5_bundle_event_counts": {},
         "warnings": [],
     }
     warnings: list[str] = []
@@ -3754,8 +3822,22 @@ def _refresh_v5_before_export(
 
     inbox_dir = Path(cfg["local_inbox_dir"])
     context["local_inbox_dir"] = str(inbox_dir)
-    latest_seen = _latest_v5_bundle_ts_in_inbox(inbox_dir)
+    latest_seen_path = _latest_v5_bundle_path_in_inbox(inbox_dir)
+    latest_seen = _bundle_ts_for_path(latest_seen_path) if latest_seen_path is not None else None
     context["latest_v5_bundle_seen_at_export"] = _iso_or_none(latest_seen)
+    if latest_seen_path is not None:
+        context["selected_v5_bundle_path"] = str(latest_seen_path)
+        context["selected_v5_bundle_built_at"] = _iso_or_none(latest_seen)
+        try:
+            latest_seen_sha = compute_sha256(latest_seen_path)
+            context["selected_v5_bundle_sha256"] = latest_seen_sha
+            manifest_row = _bundle_manifest_row_by_sha(lake_root, latest_seen_sha)
+            if manifest_row:
+                context["selected_v5_bundle_ingested_at"] = _iso_or_none(
+                    _parse_v5_context_ts(manifest_row.get("ingest_ts"))
+                )
+        except OSError:
+            latest_seen_sha = None
     if not inbox_dir.exists():
         context["warnings"] = []
         return context
@@ -3783,6 +3865,12 @@ def _refresh_v5_before_export(
                 skipped_count += 1
             else:
                 processed_count += 1
+            if result.bundle_sha256 == context.get("selected_v5_bundle_sha256"):
+                context["selected_v5_bundle_ingested_at"] = datetime.now(UTC).isoformat()
+                context["selected_v5_bundle_event_counts"] = {
+                    **result.silver_rows,
+                    **result.gold_rows,
+                }
             warnings.extend(str(warning) for warning in result.warnings)
         context["processed_bundle_count"] = processed_count
         context["skipped_bundle_count"] = skipped_count
@@ -3841,6 +3929,11 @@ def _observe_v5_before_export(
         "selected_bundle_names": [],
         "latest_v5_bundle_seen_at_export": None,
         "local_inbox_dir": None,
+        "selected_v5_bundle_path": None,
+        "selected_v5_bundle_sha256": None,
+        "selected_v5_bundle_built_at": None,
+        "selected_v5_bundle_ingested_at": None,
+        "selected_v5_bundle_event_counts": {},
         "warnings": [],
     }
     try:
@@ -3853,28 +3946,59 @@ def _observe_v5_before_export(
         return context
     inbox_dir = Path(cfg["local_inbox_dir"])
     context["local_inbox_dir"] = str(inbox_dir)
-    context["latest_v5_bundle_seen_at_export"] = _iso_or_none(
-        _latest_v5_bundle_ts_in_inbox(inbox_dir)
-    )
+    latest_seen_path = _latest_v5_bundle_path_in_inbox(inbox_dir)
+    latest_seen = _bundle_ts_for_path(latest_seen_path) if latest_seen_path is not None else None
+    context["latest_v5_bundle_seen_at_export"] = _iso_or_none(latest_seen)
+    if latest_seen_path is not None:
+        context["selected_v5_bundle_path"] = str(latest_seen_path)
+        context["selected_v5_bundle_built_at"] = _iso_or_none(latest_seen)
+        try:
+            latest_seen_sha = compute_sha256(latest_seen_path)
+            context["selected_v5_bundle_sha256"] = latest_seen_sha
+            manifest_row = _bundle_manifest_row_by_sha(lake_root, latest_seen_sha)
+            if manifest_row:
+                context["selected_v5_bundle_ingested_at"] = _iso_or_none(
+                    _parse_v5_context_ts(manifest_row.get("ingest_ts"))
+                )
+        except OSError:
+            pass
     return context
 
 
 def _latest_v5_bundle_ts_in_inbox(inbox_dir: Path) -> datetime | None:
+    latest_path = _latest_v5_bundle_path_in_inbox(inbox_dir)
+    return _bundle_ts_for_path(latest_path) if latest_path is not None else None
+
+
+def _latest_v5_bundle_path_in_inbox(inbox_dir: Path) -> Path | None:
     if not inbox_dir.exists():
         return None
     from quant_lab.strategy_telemetry.bundle import parse_bundle_ts
 
-    timestamps: list[datetime] = []
+    candidates: list[tuple[datetime, Path]] = []
     for path in inbox_dir.glob("v5_live_followup_bundle_*.tar.gz"):
         parsed = parse_bundle_ts(path.name)
-        if parsed is not None:
-            timestamps.append(parsed)
-            continue
-        try:
-            timestamps.append(datetime.fromtimestamp(path.stat().st_mtime, tz=UTC))
-        except OSError:
-            continue
-    return max(timestamps) if timestamps else None
+        if parsed is None:
+            try:
+                parsed = datetime.fromtimestamp(path.stat().st_mtime, tz=UTC)
+            except OSError:
+                continue
+        candidates.append((parsed, path))
+    return max(candidates, key=lambda item: (item[0], item[1].name))[1] if candidates else None
+
+
+def _bundle_ts_for_path(path: Path | None) -> datetime | None:
+    if path is None:
+        return None
+    from quant_lab.strategy_telemetry.bundle import parse_bundle_ts
+
+    parsed = parse_bundle_ts(path.name)
+    if parsed is not None:
+        return parsed
+    try:
+        return datetime.fromtimestamp(path.stat().st_mtime, tz=UTC)
+    except OSError:
+        return None
 
 
 def _pending_v5_bundle_paths_for_export(inbox_dir: Path, lake_root: Path) -> list[Path]:
@@ -3944,6 +4068,68 @@ def _ingested_bundle_sha256s(lake_root: Path) -> set[str]:
         for value in frame.get_column("bundle_sha256").drop_nulls().unique().to_list()
         if value
     }
+
+
+def _bundle_manifest_row_by_sha(lake_root: Path, sha256: str | None) -> dict[str, Any] | None:
+    if not sha256:
+        return None
+    path = lake_root / "bronze" / "strategy_telemetry" / "v5" / "bundle_manifest"
+    try:
+        frame = read_parquet_dataset(path)
+    except Exception:
+        return None
+    if frame.is_empty() or "bundle_sha256" not in frame.columns:
+        return None
+    rows = frame.filter(pl.col("bundle_sha256").cast(pl.Utf8) == str(sha256)).to_dicts()
+    if not rows:
+        return None
+    return max(
+        rows,
+        key=lambda row: _parse_v5_context_ts(row.get("ingest_ts"))
+        or datetime.min.replace(tzinfo=UTC),
+    )
+
+
+def _v5_export_consistency(
+    frames: dict[str, pl.DataFrame],
+    *,
+    pre_export_v5: dict[str, Any],
+    pre_export_v5_refresh: bool,
+    allow_stale_v5: bool,
+) -> dict[str, Any]:
+    latest_seen = _parse_v5_context_ts(pre_export_v5.get("latest_v5_bundle_seen_at_export"))
+    latest_ingested = _latest_v5_bundle_ts(frames)
+    stale = (
+        latest_seen is not None
+        and (latest_ingested is None or latest_seen > latest_ingested + timedelta(seconds=1))
+    )
+    reason = ""
+    if stale:
+        reason = (
+            "stale_v5_bundle_at_export:"
+            f"latest_seen={_iso_or_none(latest_seen)};"
+            f"latest_ingested={_iso_or_none(latest_ingested)};"
+            f"pre_export_v5_refresh={pre_export_v5_refresh};"
+            f"allow_stale_v5={allow_stale_v5}"
+        )
+    authoritative = bool(pre_export_v5_refresh and not stale)
+    return {
+        "authoritative_snapshot": authoritative,
+        "stale_v5_bundle": stale,
+        "warning_reason": reason,
+    }
+
+
+def _parse_v5_context_ts(value: Any) -> datetime | None:
+    if isinstance(value, datetime):
+        return value.astimezone(UTC)
+    if value is None or value == "":
+        return None
+    try:
+        parsed = datetime.fromisoformat(str(value).replace("Z", "+00:00"))
+    except ValueError:
+        return None
+    return parsed.astimezone(UTC)
 
 
 def _refresh_v5_derived_outputs(lake_root: Path, export_day: date) -> list[str]:
@@ -8435,12 +8621,139 @@ def _read_zip_json(
 
 
 def _entry_quality_json(df: pl.DataFrame) -> dict[str, Any]:
+    row_count = 0 if df.is_empty() else df.height
+    if not df.is_empty() and "row_count" in df.columns:
+        counts = [
+            value
+            for value in (_optional_int(item) for item in df["row_count"].to_list())
+            if value is not None
+        ]
+        if counts:
+            row_count = max(row_count, max(counts))
     return {
         "rows": _rows(df),
-        "row_count": 0 if df.is_empty() else df.height,
+        "row_count": row_count,
         "source": "quant_lab",
         "mode": "advisory",
     }
+
+
+def _pullback_shadow_aggregate_for_export(
+    pullback: pl.DataFrame,
+    *,
+    group_type: str,
+    path: str,
+) -> pl.DataFrame:
+    if pullback.is_empty():
+        return _empty_csv_schema_frame(path)
+    rows = pullback.to_dicts()
+    if group_type == "symbol":
+        keys = sorted({str(row.get("symbol") or "") for row in rows if row.get("symbol")})
+    elif group_type == "regime":
+        keys = sorted({str(row.get("regime_state") or "UNKNOWN") for row in rows})
+    elif group_type == "horizon":
+        keys = sorted(
+            {
+                int(value)
+                for value in (_optional_int(row.get("horizon_hours")) for row in rows)
+                if value is not None
+            }
+        )
+    else:
+        return _empty_csv_schema_frame(path)
+    output: list[dict[str, Any]] = []
+    ts_values = [
+        parsed
+        for parsed in (_parse_export_ts(row.get("ts_utc")) for row in rows)
+        if parsed is not None
+    ]
+    start_date = min(ts_values).date().isoformat() if ts_values else None
+    end_date = max(ts_values).date().isoformat() if ts_values else None
+    for key in keys:
+        if group_type == "symbol":
+            group = [row for row in rows if str(row.get("symbol") or "") == key]
+        elif group_type == "regime":
+            group = [row for row in rows if str(row.get("regime_state") or "UNKNOWN") == key]
+        else:
+            group = [row for row in rows if _optional_int(row.get("horizon_hours")) == key]
+        complete = [
+            row
+            for row in group
+            if str(row.get("label_status") or "").strip().lower() == "complete"
+        ]
+        net_values = [
+            value
+            for value in (_optional_float(row.get("net_bps_after_cost")) for row in complete)
+            if value is not None
+        ]
+        mfe_values = [
+            value
+            for value in (_optional_float(row.get("mfe_bps")) for row in complete)
+            if value is not None
+        ]
+        mae_values = [
+            value
+            for value in (_optional_float(row.get("mae_bps")) for row in complete)
+            if value is not None
+        ]
+        first = group[0]
+        avg_net = _float_mean(net_values)
+        win_rate = (
+            sum(1 for value in net_values if value > 0.0) / len(net_values)
+            if net_values
+            else None
+        )
+        decision = "RESEARCH_ONLY"
+        reasons = ["v5_bundle_pullback_import"]
+        if len(net_values) >= 5 and avg_net is not None:
+            if avg_net > 0 and (win_rate or 0.0) >= 0.5:
+                decision = "KEEP_SHADOW"
+            elif avg_net < 0 and (win_rate or 0.0) < 0.45:
+                decision = "KILL"
+        output.append(
+            {
+                "start_date": start_date,
+                "end_date": end_date,
+                "window_mode": "v5_bundle",
+                "cost_mode": "reported",
+                "group_type": group_type,
+                "group_key": str(key),
+                "strategy_candidate": first.get("strategy_candidate")
+                or "v5.pullback_reversal_shadow",
+                "symbol": first.get("symbol") if group_type != "horizon" else "ALL",
+                "regime_state": first.get("regime_state") if group_type != "horizon" else "ALL",
+                "horizon_hours": key if group_type == "horizon" else 0,
+                "sample_count": len(group),
+                "complete_sample_count": len(net_values),
+                "avg_net_bps": avg_net,
+                "median_net_bps": _float_quantile(net_values, 0.5),
+                "p25_net_bps": _float_quantile(net_values, 0.25),
+                "win_rate": win_rate,
+                "avg_mfe_bps": _float_mean(mfe_values),
+                "avg_mae_bps": _float_mean(mae_values),
+                "cost_quality_mix": safe_json_dumps(
+                    dict(Counter(str(row.get("cost_quality") or "reported") for row in group))
+                ),
+                "decision": decision,
+                "decision_reasons": safe_json_dumps(reasons),
+                "mode": "shadow",
+                "generated_at_utc": first.get("generated_at_utc"),
+                "schema_version": first.get("schema_version"),
+                "contract_version": first.get("contract_version"),
+            }
+        )
+    return pl.DataFrame(output, infer_schema_length=None).select(CSV_SCHEMAS[path])
+
+
+def _parse_export_ts(value: Any) -> datetime | None:
+    if isinstance(value, datetime):
+        return value.astimezone(UTC)
+    if value is None or value == "":
+        return None
+    try:
+        return datetime.fromisoformat(str(value).replace("Z", "+00:00")).astimezone(UTC)
+    except ValueError:
+        return None
 
 
 def _pullback_v2_by_symbol_for_export(pullback: pl.DataFrame) -> pl.DataFrame:

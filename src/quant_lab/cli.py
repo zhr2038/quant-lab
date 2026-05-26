@@ -1509,6 +1509,13 @@ def export_daily(
         Path | None,
         typer.Option("--v5-telemetry-config", help="Optional V5 telemetry YAML config."),
     ] = None,
+    allow_stale_v5: Annotated[
+        bool,
+        typer.Option(
+            "--allow-stale-v5/--no-allow-stale-v5",
+            help="Allow an expert pack when the V5 inbox has a newer bundle than the lake.",
+        ),
+    ] = False,
 ) -> None:
     result = run_with_job_metrics(
         lake_root=lake_root,
@@ -1524,6 +1531,7 @@ def export_daily(
             risk_version=risk_version,
             pre_export_v5_refresh=pre_export_v5_refresh,
             v5_telemetry_config=v5_telemetry_config,
+            allow_stale_v5=allow_stale_v5,
         ),
     )
     typer.echo(result.model_dump_json(indent=2))

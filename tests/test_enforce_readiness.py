@@ -76,6 +76,26 @@ def test_enforce_readiness_warns_on_high_telemetry_duplicate_rate(tmp_path):
     )
 
 
+def test_enforce_readiness_blocks_on_conflicting_duplicate_events(tmp_path):
+    lake = tmp_path / "lake"
+    _write_common_ready_inputs(
+        lake,
+        duplicate_rate=0.2,
+        raw_imported_rows=10,
+        unique_event_rows=8,
+        duplicate_event_rows=2,
+        conflicting_duplicate_event_rows=1,
+    )
+    _write_cost_rows(lake, source="mixed_actual_proxy")
+
+    report = build_enforce_readiness_report(lake)
+
+    assert report.readiness_status == "BLOCKED"
+    assert "telemetry_dedupe_health" in report.blocked_reasons
+    assert report.metrics["dedupe_health_status"] == "BLOCKED"
+    assert report.metrics["dedupe_block_reason"] == "conflicting_duplicate_event_rows=1"
+
+
 def test_enforce_readiness_blocks_when_event_key_coverage_missing(tmp_path):
     lake = tmp_path / "lake"
     _write_common_ready_inputs(
@@ -332,6 +352,7 @@ def _write_common_ready_inputs(
     raw_imported_rows: int = 0,
     unique_event_rows: int = 0,
     duplicate_event_rows: int = 0,
+    conflicting_duplicate_event_rows: int = 0,
     unique_request_count: int = 1,
     unique_actual_fallback_count: int = 0,
     write_unkeyed_request: bool = False,
@@ -351,6 +372,7 @@ def _write_common_ready_inputs(
                     "raw_imported_rows": raw_imported_rows,
                     "unique_event_rows": unique_event_rows,
                     "duplicate_event_rows": duplicate_event_rows,
+                    "conflicting_duplicate_event_rows": conflicting_duplicate_event_rows,
                     "unique_request_count": unique_request_count,
                     "unique_actual_fallback_count": unique_actual_fallback_count,
                     "fallback_rate": 0.0,

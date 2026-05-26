@@ -183,6 +183,10 @@ class V5TelemetryAnalysisResult(TelemetryModel):
     duplicate_event_count: int = 0
     duplicate_event_rows: int = 0
     duplicate_rate: float = 0.0
+    exact_duplicate_event_rows: int = 0
+    conflicting_duplicate_event_rows: int = 0
+    conflicting_duplicate_event_key_count: int = 0
+    duplicate_explanation: str = "none"
     first_seen_bundle_ts: datetime | None = None
     last_seen_bundle_ts: datetime | None = None
     latest_permission_status: str | None = None

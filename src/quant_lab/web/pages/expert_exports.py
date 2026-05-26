@@ -17,7 +17,7 @@ from quant_lab.time_display import beijing_today
 from quant_lab.web import readers
 from quant_lab.web.pages._common import show_frame, show_warnings, streamlit_module
 
-WEB_EXPORT_MODE = "snapshot_only"
+WEB_EXPORT_MODE = "authoritative_snapshot"
 DEFAULT_DOWNLOAD_PACK_LIMIT = 5
 DEFAULT_DOWNLOAD_MAX_BYTES = 128 * 1024 * 1024
 DEFAULT_EXPORT_STATUS_STALE_SECONDS = 30 * 60
@@ -206,7 +206,7 @@ if resource is not None and memory_mb > 0:
     resource.setrlimit(resource.RLIMIT_AS, (limit_bytes, limit_bytes))
 write_status({
     "state": "running",
-    "mode": "snapshot_only",
+    "mode": "authoritative_snapshot",
     "export_date": export_date,
     "lake_root": str(lake_root),
     "exports_root": str(exports_root),
@@ -229,16 +229,16 @@ try:
             "--out-dir",
             str(exports_root),
             "--no-refresh-risk-permission",
-            "--no-pre-export-v5-refresh",
+            "--pre-export-v5-refresh",
         ],
         refresh_risk_permission=False,
         risk_strategy="v5",
         risk_version="5.0.0",
-        pre_export_v5_refresh=False,
+        pre_export_v5_refresh=True,
     )
     write_status({
         "state": "succeeded",
-        "mode": "snapshot_only",
+        "mode": "authoritative_snapshot",
         "export_date": export_date,
         "lake_root": str(lake_root),
         "exports_root": str(exports_root),
@@ -251,7 +251,7 @@ try:
 except Exception as exc:
     write_status({
         "state": "failed",
-        "mode": "snapshot_only",
+        "mode": "authoritative_snapshot",
         "export_date": export_date,
         "lake_root": str(lake_root),
         "exports_root": str(exports_root),
@@ -524,12 +524,12 @@ def _export_daily_from_web(
             "--out-dir",
             str(exports_root),
             "--no-refresh-risk-permission",
-            "--no-pre-export-v5-refresh",
+            "--pre-export-v5-refresh",
         ],
         refresh_risk_permission=False,
         risk_strategy="v5",
         risk_version="5.0.0",
-        pre_export_v5_refresh=False,
+        pre_export_v5_refresh=True,
     )
     return Path(result.zip_path), list(result.warnings)
 
@@ -548,9 +548,9 @@ def _export_daily_in_subprocess(
         "result=export_daily_pack("
         "export_date=day, lake_root=lake, out_dir=out, profile='expert',"
         "command_line=['qlab','export-daily','--date',day,'--lake-root',str(lake),'--out-dir',str(out),"
-        "'--no-refresh-risk-permission','--no-pre-export-v5-refresh'],"
+        "'--no-refresh-risk-permission','--pre-export-v5-refresh'],"
         "refresh_risk_permission=False, risk_strategy='v5', risk_version='5.0.0',"
-        "pre_export_v5_refresh=False);"
+        "pre_export_v5_refresh=True);"
         "print(json.dumps({'zip_path': result.zip_path, 'warnings': result.warnings}))"
     )
     completed = subprocess.run(

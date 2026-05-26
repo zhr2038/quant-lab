@@ -8,6 +8,7 @@ from pathlib import Path
 from types import SimpleNamespace
 
 import polars as pl
+import pytest
 
 import quant_lab.export.daily as daily_export_module
 from quant_lab.contracts.v5_quant_lab import V5_QUANT_LAB_CONTRACT_VERSION
@@ -870,6 +871,12 @@ def test_export_daily_ingests_pending_v5_inbox_before_snapshot(tmp_path):
         data_quality = json.loads(archive.read("data_quality.json").decode("utf-8"))
 
     assert manifest["pre_export_v5_refresh"]["processed_bundle_count"] == 1
+    assert manifest["authoritative_snapshot"] is True
+    assert manifest["stale_v5_bundle"] is False
+    assert manifest["selected_v5_bundle_sha256"]
+    assert manifest["selected_v5_bundle_built_at"].startswith("2026-05-17T06:00:00")
+    assert manifest["selected_v5_bundle_ingested_at"]
+    assert manifest["selected_v5_bundle_event_counts"]["v5_candidate_event"] >= 1
     assert manifest["latest_v5_bundle_seen_at_export"].startswith("2026-05-17T06:00:00")
     assert manifest["latest_v5_bundle_ingested_at_export"].startswith("2026-05-17T06:00:00")
     assert manifest["candidate_event_rows"] >= 1
@@ -1003,9 +1010,46 @@ def test_export_daily_observes_v5_inbox_when_refresh_is_disabled(tmp_path):
         manifest = json.loads(archive.read("manifest.json").decode("utf-8"))
 
     assert manifest["pre_export_v5_refresh"]["enabled"] is False
+    assert manifest["authoritative_snapshot"] is False
+    assert manifest["stale_v5_bundle"] is True
     assert manifest["latest_v5_bundle_seen_at_export"].startswith("2026-05-17T10:00:00")
     assert "latest_candidate_event_ts" in manifest
     assert "v5_bundle_lag_seconds" in manifest
+
+
+def test_export_daily_fails_when_newer_v5_bundle_cannot_be_ingested(tmp_path):
+    lake_root = _fixture_lake(tmp_path)
+    inbox = tmp_path / "inbox"
+    make_tar(
+        inbox / "v5_live_followup_bundle_20260517T090000Z.tar.gz",
+        {
+            "reports/candidate_snapshot.csv": (
+                "candidate_id,run_id,ts_utc,symbol\n"
+                "old,run_old,2026-05-17T09:00:00Z,BTC-USDT\n"
+            )
+        },
+    )
+    config = _v5_telemetry_config(tmp_path, inbox, lake_root)
+    export_daily_pack(
+        export_date="2026-05-17",
+        lake_root=lake_root,
+        out_dir=tmp_path / "exports",
+        command_line=["qlab", "export-daily"],
+        pre_export_v5_refresh=True,
+        v5_telemetry_config=config,
+    )
+    bad_bundle = inbox / "v5_live_followup_bundle_20260517T100000Z.tar.gz"
+    bad_bundle.write_bytes(b"not a tar archive")
+
+    with pytest.raises(RuntimeError, match="stale_v5_bundle_at_export"):
+        export_daily_pack(
+            export_date="2026-05-17",
+            lake_root=lake_root,
+            out_dir=tmp_path / "exports",
+            command_line=["qlab", "export-daily"],
+            pre_export_v5_refresh=True,
+            v5_telemetry_config=config,
+        )
 
 
 def test_export_daily_pack_uses_unique_same_day_file_names(tmp_path):

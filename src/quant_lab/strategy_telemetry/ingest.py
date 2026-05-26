@@ -11,7 +11,10 @@ from typing import Any
 
 import polars as pl
 
-from quant_lab.contracts.v5_quant_lab import V5_TELEMETRY_DATASET_SCHEMA_VERSION
+from quant_lab.contracts.v5_quant_lab import (
+    V5_QUANT_LAB_CONTRACT_VERSION,
+    V5_TELEMETRY_DATASET_SCHEMA_VERSION,
+)
 from quant_lab.data.lake import (
     append_parquet_dataset,
     read_parquet_dataset,
@@ -74,6 +77,8 @@ SILVER_DATASETS = {
     "v5_paper_strategy_daily": Path("silver/v5_paper_strategy_daily"),
     "v5_paper_slippage_coverage": Path("silver/v5_paper_slippage_coverage"),
     "v5_bnb_profit_lock_shadow": Path("silver/v5_bnb_profit_lock_shadow"),
+    "v5_pullback_reversal_shadow": Path("gold/v5_pullback_reversal_shadow"),
+    "v5_pullback_reversal_readiness": Path("gold/v5_pullback_reversal_readiness"),
 }
 
 QUANT_LAB_USAGE_PATHS = {
@@ -425,7 +430,7 @@ def _write_silver(
             counts[name] = _upsert_rows(
                 dataset_path,
                 dataset_rows,
-                ["strategy", "candidate_id"],
+                ["strategy", "candidate_id", "run_id", "ts_utc", "symbol", "strategy_candidate"],
             )
         elif name in STABLE_ROW_KEY_DATASETS:
             counts[name] = _upsert_stable_rows(dataset_path, dataset_rows)
@@ -526,6 +531,22 @@ def _append_file_rows(
     if logical.endswith("/candidate_snapshot.csv") or logical == "candidate_snapshot.csv":
         rows["v5_candidate_event"].extend(_candidate_event_rows(metadata, relative, file_path))
         return
+    if logical in {
+        "reports/pullback_reversal_shadow_outcomes.csv",
+        "summaries/pullback_reversal_shadow_outcomes.csv",
+    }:
+        rows["v5_pullback_reversal_shadow"].extend(
+            _pullback_shadow_rows(metadata, relative, file_path)
+        )
+        return
+    if logical in {
+        "reports/pullback_reversal_readiness.json",
+        "summaries/pullback_reversal_readiness.json",
+    }:
+        rows["v5_pullback_reversal_readiness"].extend(
+            _pullback_readiness_rows(metadata, relative, _read_json(file_path))
+        )
+        return
     if logical.startswith("raw/state/") and logical.endswith(".json"):
         state_type = Path(logical).stem
         payload = _read_json(file_path)
@@ -614,6 +635,82 @@ def _csv_rows(metadata: dict[str, Any], relative: str, file_path: Path) -> list[
                 | {key: str(value) for key, value in safe_row.items()}
                 | {"raw_payload_json": safe_json_dumps(safe_row)}
             )
+    return rows
+
+
+def _pullback_shadow_rows(
+    metadata: dict[str, Any],
+    relative: str,
+    file_path: Path,
+) -> list[dict[str, Any]]:
+    output: list[dict[str, Any]] = []
+    for row in _csv_rows(metadata, relative, file_path):
+        payload = _loads_payload(row.get("raw_payload_json"))
+        symbol_value = _clean_text(_first_value(row, payload, ["symbol", "normalized_symbol"]))
+        normalized_symbol = normalize_symbol(symbol_value) if symbol_value else ""
+        ts_utc = _normalize_event_time(_first_value(row, payload, ["ts_utc", "decision_ts", "ts"]))
+        enriched_payload = {
+            **payload,
+            "symbol": normalized_symbol or symbol_value,
+            "ts_utc": ts_utc,
+            "contract_version": _first_value(row, payload, ["contract_version"])
+            or V5_QUANT_LAB_CONTRACT_VERSION,
+            "schema_version": _first_value(row, payload, ["schema_version"]) or SCHEMA_VERSION,
+        }
+        output.append(
+            row
+            | {
+                "symbol": normalized_symbol or symbol_value,
+                "normalized_symbol": normalized_symbol,
+                "ts_utc": ts_utc,
+                "generated_at_utc": _first_value(row, payload, ["generated_at_utc", "generated_at"])
+                or metadata.get("ingest_ts"),
+                "contract_version": enriched_payload["contract_version"],
+                "schema_version": enriched_payload["schema_version"],
+                "source": _first_value(row, payload, ["source"]) or "v5_followup_bundle",
+                "raw_payload_json": safe_json_dumps(enriched_payload),
+            }
+        )
+    return output
+
+
+def _pullback_readiness_rows(
+    metadata: dict[str, Any],
+    relative: str,
+    payload: dict[str, Any],
+) -> list[dict[str, Any]]:
+    raw_rows = payload.get("rows")
+    if not isinstance(raw_rows, list):
+        raw_rows = [payload]
+    rows: list[dict[str, Any]] = []
+    for index, raw_row in enumerate(raw_rows):
+        item = raw_row if isinstance(raw_row, dict) else {"value": raw_row}
+        safe_item = redact_json_like(dict(item))
+        symbol_value = _clean_text(
+            _first_value(safe_item, safe_item, ["symbol", "normalized_symbol"])
+        )
+        normalized_symbol = normalize_symbol(symbol_value) if symbol_value else symbol_value
+        rows.append(
+            _base_row(metadata, relative, None, index)
+            | {
+                **{
+                    key: json.dumps(value, ensure_ascii=False, sort_keys=True, default=str)
+                    if isinstance(value, (dict, list))
+                    else value
+                    for key, value in safe_item.items()
+                },
+                "row_count": safe_item.get("row_count") or payload.get("row_count"),
+                "symbol": normalized_symbol,
+                "generated_at_utc": safe_item.get("generated_at_utc")
+                or safe_item.get("generated_at")
+                or metadata.get("ingest_ts"),
+                "contract_version": safe_item.get("contract_version")
+                or V5_QUANT_LAB_CONTRACT_VERSION,
+                "schema_version": safe_item.get("schema_version") or SCHEMA_VERSION,
+                "source": safe_item.get("source") or "v5_followup_bundle",
+                "raw_payload_json": safe_json_dumps(payload),
+            }
+        )
     return rows
 
 
@@ -1647,6 +1744,10 @@ def _merge_event_row(
         seeded["source_count"] = _source_count(row)
         seeded["first_seen_bundle_ts"] = _first_seen_bundle_ts(row)
         seeded["last_seen_bundle_ts"] = _last_seen_bundle_ts(row)
+        hashes = _payload_hash_set(seeded)
+        seeded["payload_hashes_json"] = safe_json_dumps(sorted(hashes))
+        seeded["payload_hash_count"] = len(hashes)
+        seeded["conflicting_duplicate"] = False
         return seeded
 
     current_count = _source_count(current)
@@ -1661,7 +1762,30 @@ def _merge_event_row(
     merged["source_count"] = current_count + row_count
     merged["first_seen_bundle_ts"] = first_seen
     merged["last_seen_bundle_ts"] = last_seen
+    hashes = _payload_hash_set(current) | _payload_hash_set(row)
+    merged["payload_hashes_json"] = safe_json_dumps(sorted(hashes))
+    merged["payload_hash_count"] = len(hashes)
+    merged["conflicting_duplicate"] = len(hashes) > 1
     return merged
+
+
+def _payload_hash_set(row: dict[str, Any]) -> set[str]:
+    raw_hashes = row.get("payload_hashes_json")
+    hashes: set[str] = set()
+    if isinstance(raw_hashes, str) and raw_hashes.strip():
+        try:
+            parsed = json.loads(raw_hashes)
+        except json.JSONDecodeError:
+            parsed = []
+        if isinstance(parsed, list):
+            hashes.update(str(item) for item in parsed if str(item).strip())
+    for field in ["raw_payload_hash", "payload_hash"]:
+        value = row.get(field)
+        if value is not None and str(value).strip():
+            hashes.add(str(value).strip())
+    if not hashes:
+        hashes.add(_stable_row_key(row))
+    return hashes
 
 
 def _source_count(row: dict[str, Any]) -> int:

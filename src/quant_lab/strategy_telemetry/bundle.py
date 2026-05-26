@@ -50,6 +50,8 @@ KNOWN_FILE_PATTERNS = [
     re.compile(r"^reports/order_lifecycle\.csv$"),
     re.compile(r"^summaries/order_lifecycle\.csv$"),
     re.compile(r"^raw/reports/order_lifecycle\.csv$"),
+    re.compile(r"^(reports|summaries)/pullback_reversal_shadow_outcomes\.csv$"),
+    re.compile(r"^(reports|summaries)/pullback_reversal_readiness\.json$"),
     re.compile(r"^summaries/config_runtime_consumption_audit\.csv$"),
     re.compile(r"^raw/config_live_prod\.yaml$"),
     re.compile(r"^raw/reports/effective_live_config\.json$"),

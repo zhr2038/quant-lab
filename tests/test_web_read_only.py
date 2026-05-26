@@ -1678,9 +1678,9 @@ def test_expert_exports_generate_today_button_invokes_export(tmp_path, monkeypat
     assert captured["export_date"]
     assert captured["profile"] == "expert"
     assert captured["refresh_risk_permission"] is False
-    assert captured["pre_export_v5_refresh"] is False
+    assert captured["pre_export_v5_refresh"] is True
     assert "--no-refresh-risk-permission" in captured["command_line"]
-    assert "--no-pre-export-v5-refresh" in captured["command_line"]
+    assert "--pre-export-v5-refresh" in captured["command_line"]
     assert any("已生成专家包" in str(value) for value in _call_values(fake, "success"))
     downloads = _call_values(fake, "download_button")
     assert any(item["file_name"] == "quant_lab_expert_pack_test.zip" for item in downloads)
@@ -1715,12 +1715,12 @@ def test_expert_exports_generate_today_button_starts_background_job(tmp_path, mo
         (exports_root / ".quant_lab_web_export_2026-05-10.json").read_text(encoding="utf-8")
     )
     assert status["state"] == "running"
-    assert status["mode"] == "snapshot_only"
+    assert status["mode"] == "authoritative_snapshot"
     assert status["pid"] == 4242
     assert captured["command"][0]
     assert captured["command"][1] == "-c"
     assert "refresh_risk_permission=False" in captured["command"][2]
-    assert "pre_export_v5_refresh=False" in captured["command"][2]
+    assert "pre_export_v5_refresh=True" in captured["command"][2]
     assert fake.rerun_count == 1
     assert any("PID=4242" in str(value) for value in _call_values(fake, "info"))
 
@@ -1781,7 +1781,7 @@ def test_expert_exports_generate_today_uses_beijing_date_and_creates_export_dir(
     assert pack_path == exports_root / "quant_lab_expert_pack_test.zip"
     assert captured["export_date"] == "2026-05-16"
     assert captured["refresh_risk_permission"] is False
-    assert captured["pre_export_v5_refresh"] is False
+    assert captured["pre_export_v5_refresh"] is True
 
 
 def test_expert_exports_generated_pack_is_listed_first(tmp_path):
@@ -2068,7 +2068,7 @@ def test_expert_exports_subprocess_mode_parses_generated_pack(tmp_path, monkeypa
     assert captured["command"][0]
     assert captured["command"][1] == "-c"
     assert "refresh_risk_permission=False" in captured["command"][2]
-    assert "pre_export_v5_refresh=False" in captured["command"][2]
+    assert "pre_export_v5_refresh=True" in captured["command"][2]
     assert captured["kwargs"]["capture_output"] is True
 
 

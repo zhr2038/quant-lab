@@ -1,8 +1,10 @@
 import csv
 import json
+import zipfile
 from io import StringIO
 
 from quant_lab.data.lake import read_parquet_dataset
+from quant_lab.export.daily import export_daily_pack
 from quant_lab.strategy_telemetry.ingest import ingest_v5_bundle
 from tests.v5_bundle_fixture import make_tar, make_v5_bundle_fixture
 
@@ -166,6 +168,89 @@ def test_ingest_v5_trade_events_dedupes_overlapping_bundles(tmp_path):
     assert row["trade_id"] == "bnb-trade-1"
     assert row["bundle_name"] == second.name
     assert row["stable_row_key"]
+
+
+def test_ingest_exports_v5_pullback_reversal_artifacts(tmp_path):
+    pullback_csv = (
+        "as_of_date,rule_version,strategy_candidate,run_id,candidate_id,"
+        "source_event_key,symbol,ts_utc,regime_state,risk_level,current_px,"
+        "pre_24h_low,pre_24h_high,pullback_from_24h_high_bps,"
+        "recent_2h_no_new_low,close_reclaim_1h,current_close_gt_previous_close,"
+        "btc_not_sharp_drop,spread_not_abnormal,f4_volume_expansion,"
+        "f5_rsi_trend_confirm,selected_roundtrip_cost_bps,cost_quality,"
+        "horizon_hours,gross_bps,net_bps_after_cost,mfe_bps,mae_bps,win,"
+        "label_status,mode,generated_at_utc,schema_version,contract_version\n"
+        "2026-05-26,confirmed_reversal_v0.2,v5.pullback_reversal_shadow_bnb,"
+        "run_1,cand_pb_1,key_1,BNB-USDT,2026-05-26T11:00:00Z,Trending,"
+        "PROTECT,650,640,670,120,true,true,true,true,true,0.2,0.1,30,"
+        "mixed_actual_proxy,24,80,50,110,-60,true,complete,shadow,"
+        "2026-05-26T11:05:00Z,entry_quality.v0.1,v5.quant_lab.telemetry.v2\n"
+    )
+    readiness_json = json.dumps(
+        {
+            "row_count": 4,
+            "rows": [
+                {
+                    "strategy_candidate": "v5.pullback_reversal_shadow_bnb",
+                    "symbol": "BNB-USDT",
+                    "sample_count": 1,
+                    "ready_for_paper": False,
+                }
+            ],
+        }
+    )
+    bundle = make_tar(
+        tmp_path / "v5_live_followup_bundle_20260526T110000Z.tar.gz",
+        {
+            "reports/pullback_reversal_shadow_outcomes.csv": pullback_csv,
+            "reports/pullback_reversal_readiness.json": readiness_json,
+        },
+    )
+    lake = tmp_path / "lake"
+
+    result = ingest_v5_bundle(
+        bundle,
+        lake,
+        tmp_path / "restricted",
+        tmp_path / "redacted",
+        run_analysis=False,
+        refresh_candidate_gold=False,
+    )
+    assert result.silver_rows["v5_pullback_reversal_shadow"] == 1
+    assert result.silver_rows["v5_pullback_reversal_readiness"] == 1
+
+    export = export_daily_pack(
+        export_date="2026-05-26",
+        lake_root=lake,
+        out_dir=tmp_path / "exports",
+        command_line=["qlab", "export-daily", "--no-pre-export-v5-refresh"],
+        pre_export_v5_refresh=False,
+    )
+    with zipfile.ZipFile(export.zip_path) as archive:
+        shadow_rows = list(
+            csv.DictReader(
+                StringIO(
+                    archive.read("reports/pullback_reversal_shadow_outcomes.csv").decode(
+                        "utf-8"
+                    )
+                )
+            )
+        )
+        by_symbol_rows = list(
+            csv.DictReader(
+                StringIO(archive.read("reports/pullback_reversal_by_symbol.csv").decode("utf-8"))
+            )
+        )
+        readiness = json.loads(archive.read("reports/pullback_reversal_readiness.json"))
+        manifest = json.loads(archive.read("manifest.json"))
+
+    assert shadow_rows
+    assert shadow_rows[0]["symbol"] == "BNB-USDT"
+    assert by_symbol_rows
+    assert by_symbol_rows[0]["group_key"] == "BNB-USDT"
+    assert readiness["row_count"] == 4
+    files = {item["path"]: item for item in manifest["files"]}
+    assert files["reports/pullback_reversal_shadow_outcomes.csv"]["rows"] == 1
 
 
 def test_ingest_v5_paper_strategy_rows_dedupes_overlapping_summary(tmp_path):
@@ -560,6 +645,12 @@ def test_ingest_overlapping_bundles_deduplicate_quant_lab_timeout(tmp_path):
     assert health["unique_event_rows"][0] == 1
     assert health["duplicate_event_count"][0] == 5
     assert health["duplicate_event_rows"][0] == 5
+    assert health["exact_duplicate_event_rows"][0] == 5
+    assert health["conflicting_duplicate_event_rows"][0] == 0
+    assert (
+        health["duplicate_explanation"][0]
+        == "exact_duplicate_reingest_or_overlapping_followup_bundle"
+    )
     assert health["first_seen_bundle_ts"][0].isoformat().startswith("2026-05-14T23:01:00")
     assert health["last_seen_bundle_ts"][0].isoformat().startswith("2026-05-14T23:10:00")
 

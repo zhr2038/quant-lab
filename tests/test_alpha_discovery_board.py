@@ -19,8 +19,11 @@ from quant_lab.research.alpha_discovery import (
 )
 from quant_lab.research.paper_tracking import (
     build_and_publish_paper_strategy_tracking,
+    build_paper_strategy_daily_from_v5,
     build_paper_strategy_runs_from_v5,
     build_paper_strategy_runs_report_from_v5,
+    enrich_paper_strategy_daily_from_runs,
+    paper_strategy_summary_md,
 )
 
 
@@ -609,7 +612,71 @@ def test_sol_f4_factor_condition_candidate_event_generates_paper_entry(tmp_path)
     assert run["paper_trigger_type"] == "factor_condition_match"
     assert "expected_edge_gt_required_edge" in run["paper_trigger_reason"]
     assert daily["would_enter_count"] == 1
+    assert daily["daily_would_enter_count"] == 1
+    assert daily["cumulative_would_enter_count"] == 1
+    assert daily["count_scope"] == "cumulative"
     assert daily["entry_day_count"] == 1
+
+
+def test_paper_strategy_daily_keeps_v5_entry_count_daily_when_runs_are_cumulative():
+    as_of = "2026-05-24"
+    v5_daily = build_paper_strategy_daily_from_v5(
+        pl.DataFrame(
+            [
+                {
+                    "as_of_date": as_of,
+                    "proposal_id": "SOL_F4_VOLUME_EXPANSION_PAPER_V1",
+                    "strategy_candidate": "v5.f4_volume_expansion_entry",
+                    "symbol": "SOL-USDT",
+                    "entry_count": "0",
+                    "complete_count": "0",
+                    "paper_days": "3",
+                    "raw_payload_json": "{}",
+                }
+            ]
+        )
+    )
+    v5_runs = build_paper_strategy_runs_from_v5(
+        pl.DataFrame(
+            [
+                {
+                    "as_of_date": "2026-05-23",
+                    "proposal_id": "SOL_F4_VOLUME_EXPANSION_PAPER_V1",
+                    "strategy_candidate": "v5.f4_volume_expansion_entry",
+                    "symbol": "SOL-USDT",
+                    "would_enter": "true",
+                    "paper_pnl_bps_24h": "12.0",
+                    "raw_payload_json": "{}",
+                },
+                {
+                    "as_of_date": "2026-05-23",
+                    "proposal_id": "SOL_F4_VOLUME_EXPANSION_PAPER_V1",
+                    "strategy_candidate": "v5.f4_volume_expansion_entry",
+                    "symbol": "SOL-USDT",
+                    "would_enter": "true",
+                    "paper_pnl_bps_24h": "-8.0",
+                    "raw_payload_json": "{}",
+                },
+            ]
+        )
+    )
+
+    enriched = enrich_paper_strategy_daily_from_runs(
+        v5_daily,
+        v5_runs,
+        as_of_date=datetime(2026, 5, 24, tzinfo=UTC).date(),
+    ).to_dicts()[0]
+
+    assert enriched["daily_would_enter_count"] == 0
+    assert enriched["cumulative_would_enter_count"] == 2
+    assert enriched["would_enter_count"] == 2
+    assert enriched["daily_paper_pnl_observed_count"] == 0
+    assert enriched["cumulative_paper_pnl_observed_count"] == 2
+    assert enriched["paper_pnl_observed_count"] == 2
+    assert enriched["count_scope"] == "cumulative"
+    summary = paper_strategy_summary_md(pl.DataFrame([enriched]))
+    assert "今日新 entry 数: 0" in summary
+    assert "累计 entry 数: 2" in summary
 
 
 def test_sol_f4_factor_condition_can_override_no_enter_v5_paper_row():

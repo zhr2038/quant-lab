@@ -141,8 +141,13 @@ PAPER_DAILY_SCHEMA = {
     "latest_horizon": pl.Utf8,
     "heartbeat_day_count": pl.Int64,
     "entry_day_count": pl.Int64,
+    "daily_would_enter_count": pl.Int64,
+    "cumulative_would_enter_count": pl.Int64,
     "would_enter_count": pl.Int64,
+    "daily_paper_pnl_observed_count": pl.Int64,
+    "cumulative_paper_pnl_observed_count": pl.Int64,
     "paper_pnl_observed_count": pl.Int64,
+    "count_scope": pl.Utf8,
     "paper_pnl_day_count": pl.Int64,
     "latest_paper_pnl_usdt": pl.Float64,
     "cumulative_paper_pnl_usdt": pl.Float64,
@@ -375,8 +380,13 @@ def build_pending_paper_strategy_daily(
                 "latest_horizon": str(row.get("suggested_horizon") or ""),
                 "heartbeat_day_count": 0,
                 "entry_day_count": 0,
+                "daily_would_enter_count": 0,
+                "cumulative_would_enter_count": 0,
                 "would_enter_count": 0,
+                "daily_paper_pnl_observed_count": 0,
+                "cumulative_paper_pnl_observed_count": 0,
                 "paper_pnl_observed_count": 0,
+                "count_scope": "cumulative",
                 "paper_pnl_day_count": 0,
                 "latest_paper_pnl_usdt": None,
                 "cumulative_paper_pnl_usdt": 0.0,
@@ -455,9 +465,17 @@ def _daily_from_runs(runs: pl.DataFrame, *, as_of_date: date) -> pl.DataFrame:
             continue
         run_rows.sort(key=lambda row: str(row.get("as_of_date") or ""))
         latest = run_rows[-1]
+        as_of_text = as_of_date.isoformat()
+        daily_run_rows = [
+            row for row in run_rows if str(row.get("as_of_date") or "")[:10] == as_of_text
+        ]
         heartbeat_days = _heartbeat_day_count(run_rows)
         entry_days = len({str(row.get("as_of_date") or "") for row in entry_rows})
+        daily_entry_rows = [
+            row for row in daily_run_rows if bool(row.get("would_enter")) is True
+        ]
         pnl_rows = _paper_pnl_rows(run_rows)
+        daily_pnl_rows = _paper_pnl_rows(daily_run_rows)
         paper_pnl_days = _paper_pnl_day_count(pnl_rows)
         horizon_stats = _paper_pnl_horizon_stats(pnl_rows)
         negative_trend = _paper_negative_trend_stats(run_rows)
@@ -519,8 +537,13 @@ def _daily_from_runs(runs: pl.DataFrame, *, as_of_date: date) -> pl.DataFrame:
                 "latest_horizon": str(latest.get("suggested_horizon") or ""),
                 "heartbeat_day_count": heartbeat_days,
                 "entry_day_count": entry_days,
+                "daily_would_enter_count": len(daily_entry_rows),
+                "cumulative_would_enter_count": len(entry_rows),
                 "would_enter_count": len(entry_rows),
+                "daily_paper_pnl_observed_count": len(daily_pnl_rows),
+                "cumulative_paper_pnl_observed_count": len(pnl_rows),
                 "paper_pnl_observed_count": len(pnl_rows),
+                "count_scope": "cumulative",
                 "paper_pnl_day_count": paper_pnl_days,
                 "latest_paper_pnl_usdt": _optional_float(pnl_rows[-1].get("paper_pnl_usdt"))
                 if pnl_rows
@@ -788,6 +811,68 @@ def build_paper_strategy_daily_from_v5(frame: pl.DataFrame) -> pl.DataFrame:
     )
 
 
+def paper_strategy_summary_md(daily: pl.DataFrame) -> str:
+    lines = [
+        "# 纸面策略日汇总",
+        "",
+        (
+            "口径说明：`daily_*` 是当天新增，`cumulative_*` 和兼容字段 "
+            "`would_enter_count` / `paper_pnl_observed_count` 是累计值。"
+        ),
+        "",
+    ]
+    if daily.is_empty():
+        lines.append("- 当前没有纸面策略日汇总数据。")
+        return "\n".join(lines).rstrip() + "\n"
+    rows = daily.to_dicts()
+    daily_entries = sum(
+        int(_optional_float(row.get("daily_would_enter_count")) or 0) for row in rows
+    )
+    cumulative_entries = sum(
+        int(_optional_float(row.get("cumulative_would_enter_count")) or 0) for row in rows
+    )
+    daily_pnl = sum(
+        int(_optional_float(row.get("daily_paper_pnl_observed_count")) or 0)
+        for row in rows
+    )
+    cumulative_pnl = sum(
+        int(_optional_float(row.get("cumulative_paper_pnl_observed_count")) or 0)
+        for row in rows
+    )
+    lines.extend(
+        [
+            f"- 今日新 entry 数: {daily_entries}",
+            f"- 累计 entry 数: {cumulative_entries}",
+            f"- 今日新增 PnL 标签数: {daily_pnl}",
+            f"- 累计 PnL 标签数: {cumulative_pnl}",
+            "",
+            (
+                "| 策略 | 标的 | 今日 entry | 累计 entry | 今日 PnL 标签 | "
+                "累计 PnL 标签 | 状态 | 趋势 |"
+            ),
+            "| --- | --- | ---: | ---: | ---: | ---: | --- | --- |",
+        ]
+    )
+    for row in sorted(rows, key=lambda item: str(item.get("proposal_id") or "")):
+        lines.append(
+            "| "
+            + " | ".join(
+                [
+                    str(row.get("proposal_id") or row.get("strategy_candidate") or ""),
+                    str(row.get("symbol") or ""),
+                    str(int(_optional_float(row.get("daily_would_enter_count")) or 0)),
+                    str(int(_optional_float(row.get("cumulative_would_enter_count")) or 0)),
+                    str(int(_optional_float(row.get("daily_paper_pnl_observed_count")) or 0)),
+                    str(int(_optional_float(row.get("cumulative_paper_pnl_observed_count")) or 0)),
+                    str(row.get("latest_board_decision") or ""),
+                    str(row.get("latest_paper_trend") or ""),
+                ]
+            )
+            + " |"
+        )
+    return "\n".join(lines).rstrip() + "\n"
+
+
 def _enrich_daily_negative_streaks(frame: pl.DataFrame) -> pl.DataFrame:
     if frame.is_empty():
         return frame
@@ -864,7 +949,9 @@ def enrich_paper_strategy_daily_from_runs(
         "heartbeat_days",
         "heartbeat_day_count",
         "entry_day_count",
+        "cumulative_would_enter_count",
         "would_enter_count",
+        "cumulative_paper_pnl_observed_count",
         "paper_pnl_observed_count",
         "paper_pnl_day_count",
         "negative_entry_day_count",
@@ -895,6 +982,10 @@ def enrich_paper_strategy_daily_from_runs(
         updated = dict(row)
         for field in metric_fields:
             updated[field] = int(_optional_float(metric.get(field)) or 0)
+        for field in ["daily_would_enter_count", "daily_paper_pnl_observed_count"]:
+            if updated.get(field) in {None, ""}:
+                updated[field] = int(_optional_float(metric.get(field)) or 0)
+        updated["count_scope"] = "cumulative"
         for field in fallback_fields:
             if updated.get(field) in {None, ""} and metric.get(field) not in {None, ""}:
                 updated[field] = metric.get(field)
@@ -1678,9 +1769,43 @@ def _v5_daily_row(row: dict[str, Any], created_at: str) -> dict[str, Any]:
         or raw_paper_days
     )
     entry_day_count = int(_optional_float(_field(row, payload, "entry_day_count")) or 0)
-    paper_pnl_observed_count = int(
-        _optional_float(_field(row, payload, "paper_pnl_observed_count", "complete_count"))
+    daily_would_enter_count = int(
+        _optional_float(_field(row, payload, "daily_would_enter_count", "entry_count")) or 0
+    )
+    cumulative_would_raw = _field(
+        row,
+        payload,
+        "cumulative_would_enter_count",
+        "would_enter_count",
+    )
+    cumulative_would_value = _optional_float(cumulative_would_raw)
+    cumulative_would_enter_count = (
+        daily_would_enter_count
+        if cumulative_would_value is None
+        else int(cumulative_would_value)
+    )
+    daily_paper_pnl_observed_count = int(
+        _optional_float(
+            _field(
+                row,
+                payload,
+                "daily_paper_pnl_observed_count",
+                "complete_count",
+            )
+        )
         or 0
+    )
+    cumulative_pnl_raw = _field(
+        row,
+        payload,
+        "cumulative_paper_pnl_observed_count",
+        "paper_pnl_observed_count",
+    )
+    cumulative_pnl_value = _optional_float(cumulative_pnl_raw)
+    cumulative_paper_pnl_observed_count = (
+        daily_paper_pnl_observed_count
+        if cumulative_pnl_value is None
+        else int(cumulative_pnl_value)
     )
     paper_pnl_day_count = int(
         _optional_float(_field(row, payload, "paper_pnl_day_count", "paper_pnl_days")) or 0
@@ -1702,7 +1827,7 @@ def _v5_daily_row(row: dict[str, Any], created_at: str) -> dict[str, Any]:
     block_reasons = _paper_live_block_reasons(
         heartbeat_day_count=heartbeat_days,
         entry_day_count=entry_day_count,
-        paper_pnl_observed_count=paper_pnl_observed_count,
+        paper_pnl_observed_count=cumulative_paper_pnl_observed_count,
         paper_pnl_day_count=paper_pnl_day_count,
         required_paper_days=required_days,
         required_entry_day_count=required_entry_day_count,
@@ -1728,10 +1853,13 @@ def _v5_daily_row(row: dict[str, Any], created_at: str) -> dict[str, Any]:
         "latest_horizon": _field(row, payload, "latest_horizon", "suggested_horizon", "horizon"),
         "heartbeat_day_count": heartbeat_days,
         "entry_day_count": entry_day_count,
-        "would_enter_count": int(
-            _optional_float(_field(row, payload, "would_enter_count", "entry_count")) or 0
-        ),
-        "paper_pnl_observed_count": paper_pnl_observed_count,
+        "daily_would_enter_count": daily_would_enter_count,
+        "cumulative_would_enter_count": cumulative_would_enter_count,
+        "would_enter_count": cumulative_would_enter_count,
+        "daily_paper_pnl_observed_count": daily_paper_pnl_observed_count,
+        "cumulative_paper_pnl_observed_count": cumulative_paper_pnl_observed_count,
+        "paper_pnl_observed_count": cumulative_paper_pnl_observed_count,
+        "count_scope": "cumulative",
         "paper_pnl_day_count": paper_pnl_day_count,
         "latest_paper_pnl_usdt": _optional_float(
             _field(row, payload, "latest_paper_pnl_usdt", "paper_pnl_usdt")

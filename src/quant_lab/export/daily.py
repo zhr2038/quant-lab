@@ -55,6 +55,7 @@ from quant_lab.research.paper_tracking import (
     build_paper_strategy_runs_report_from_v5,
     enrich_paper_strategy_daily_from_runs,
     latest_v5_paper_frame,
+    paper_strategy_summary_md,
 )
 from quant_lab.research.portfolio import (
     dedupe_research_portfolio_status,
@@ -357,6 +358,7 @@ REQUIRED_MEMBERS = [
     "reports/strategy_level_dashboard.csv",
     "reports/paper_strategy_runs.csv",
     "reports/paper_strategy_daily.csv",
+    "reports/paper_strategy_summary.md",
     "reports/paper_slippage_coverage.csv",
     "reports/sol_protect_paper_loss_attribution.csv",
     "reports/sol_protect_paper_loss_summary.md",
@@ -1499,8 +1501,13 @@ CSV_SCHEMAS: dict[str, list[str]] = {
         "latest_horizon",
         "heartbeat_day_count",
         "entry_day_count",
+        "daily_would_enter_count",
+        "cumulative_would_enter_count",
         "would_enter_count",
+        "daily_paper_pnl_observed_count",
+        "cumulative_paper_pnl_observed_count",
         "paper_pnl_observed_count",
+        "count_scope",
         "paper_pnl_day_count",
         "latest_paper_pnl_usdt",
         "cumulative_paper_pnl_usdt",
@@ -3389,6 +3396,7 @@ def _dataset_members(frames: dict[str, pl.DataFrame]) -> dict[str, _MemberPayloa
             "reports/paper_strategy_daily.csv",
             paper_daily,
         ),
+        "reports/paper_strategy_summary.md": paper_strategy_summary_md(paper_daily),
         "reports/paper_slippage_coverage.csv": _csv_member(
             "reports/paper_slippage_coverage.csv",
             paper_slippage,

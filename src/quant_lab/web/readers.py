@@ -10,6 +10,7 @@ from typing import Any
 import polars as pl
 
 from quant_lab.data.lake import invalid_parquet_files, read_parquet_dataset
+from quant_lab.research.portfolio import research_portfolio_closed_keys
 from quant_lab.symbols import normalize_symbol
 from quant_lab.web.pages._common import display_value
 
@@ -131,6 +132,7 @@ V5_PAPER_TELEMETRY_DATASETS = {
     "v5_paper_slippage_coverage",
 }
 OPTIONAL_EMPTY_DATASET_STATUSES = {
+    "closed_research_snapshot",
     "legacy_optional",
     "waiting_for_v5_paper_telemetry",
     "entry_quality_optional",
@@ -167,6 +169,32 @@ HISTORICAL_RESEARCH_DATASETS = {
     "v5_entry_quality_history_pullback_by_horizon",
     "v5_entry_quality_history_anti_leakage_check",
     "v5_entry_quality_history_metrics",
+}
+RESEARCH_DIAGNOSTIC_DATASET_KEYS: dict[str, tuple[str, ...]] = {
+    "sol_protect_paper_loss_attribution": (
+        "SOL_PROTECT_ALPHA6_LOW_EXCEPTION_PAPER_V1",
+        "v5.sol_protect_alpha6_low_exception",
+    ),
+    "sol_protect_paper_loss_summary": (
+        "SOL_PROTECT_ALPHA6_LOW_EXCEPTION_PAPER_V1",
+        "v5.sol_protect_alpha6_low_exception",
+    ),
+    "btc_probe_exit_policy_review": (
+        "BTC_STRICT_PROBE_EXIT_POLICY_REVIEW",
+        "v5.btc_strict_probe_exit_policy_review",
+    ),
+    "btc_probe_exit_policy_summary": (
+        "BTC_STRICT_PROBE_EXIT_POLICY_REVIEW",
+        "v5.btc_strict_probe_exit_policy_review",
+    ),
+    "bnb_swing_exit_policy_review": (
+        "BNB_SWING_EXIT_POLICY_REVIEW",
+        "v5.bnb_swing_exit_policy_review",
+    ),
+    "bnb_swing_exit_policy_summary": (
+        "BNB_SWING_EXIT_POLICY_REVIEW",
+        "v5.bnb_swing_exit_policy_review",
+    ),
 }
 EVENT_DRIVEN_OK_STATUSES = {"event_driven_no_recent_trade"}
 STALE_DATASET_SCHEMA: dict[str, Any] = {
@@ -4122,6 +4150,7 @@ def _top_feature_anomalies(anomalies: pl.DataFrame) -> pl.DataFrame:
 def _stale_dataset_rows(lake_root: str | Path) -> pl.DataFrame:
     rows = []
     v5_telemetry_is_current = _v5_telemetry_is_current(lake_root)
+    closed_research_keys = _closed_research_keys(lake_root)
     for name in sorted(DATASET_PATHS):
         path = dataset_path_for(lake_root, name)
         snapshot = _dataset_snapshot(lake_root, name)
@@ -4129,6 +4158,8 @@ def _stale_dataset_rows(lake_root: str | Path) -> pl.DataFrame:
         status = freshness["freshness_status"]
         if snapshot.rows == 0:
             status = _empty_dataset_status(name)
+        if _dataset_belongs_to_closed_research(name, closed_research_keys):
+            status = "closed_research_snapshot"
         if name == "v5_trade_event" and status == "stale" and v5_telemetry_is_current:
             status = "event_driven_no_recent_trade"
         if name in HISTORICAL_RESEARCH_DATASETS and status == "stale":
@@ -4153,6 +4184,23 @@ def _stale_dataset_rows(lake_root: str | Path) -> pl.DataFrame:
     if not rows:
         return pl.DataFrame(schema=STALE_DATASET_SCHEMA)
     return pl.DataFrame(rows, schema=STALE_DATASET_SCHEMA, orient="row")
+
+
+def _closed_research_keys(lake_root: str | Path) -> set[str]:
+    try:
+        frame = read_parquet_dataset(dataset_path_for(lake_root, "research_portfolio_status"))
+    except Exception:
+        return set()
+    return research_portfolio_closed_keys(frame)
+
+
+def _dataset_belongs_to_closed_research(dataset_name: str, closed_keys: set[str]) -> bool:
+    if not closed_keys:
+        return False
+    keys = RESEARCH_DIAGNOSTIC_DATASET_KEYS.get(dataset_name)
+    if not keys:
+        return False
+    return bool(set(keys).intersection(closed_keys))
 
 
 def _stale_dataset_takeaway(dataset_name: str, status: str, snapshot: DatasetSnapshot) -> str:

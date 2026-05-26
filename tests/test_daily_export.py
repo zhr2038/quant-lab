@@ -1272,6 +1272,38 @@ def test_stale_dataset_check_ignores_optional_entry_quality_history_and_generate
     assert "v5_pullback_reversal_shadow" not in datasets
 
 
+def test_stale_dataset_check_ignores_closed_research_diagnostics():
+    now = datetime.now(UTC)
+    old = now - timedelta(days=3)
+    stale = daily_export_module._stale_rows(
+        {
+            "research_portfolio_status": pl.DataFrame(
+                [
+                    {
+                        "as_of_date": "2026-05-26",
+                        "research_id": "BTC_STRICT_PROBE_EXIT_POLICY_REVIEW",
+                        "strategy_candidate": "v5.btc_strict_probe_exit_policy_review",
+                        "status": "KILL",
+                        "action": "CLOSE_RESEARCH",
+                        "created_at": now,
+                    }
+                ]
+            ),
+            "btc_probe_exit_policy_review": pl.DataFrame(
+                [
+                    {
+                        "generated_at_utc": old,
+                        "strategy_candidate": "v5.btc_strict_probe_exit_policy_review",
+                    }
+                ]
+            ),
+        }
+    )
+
+    datasets = set(stale["dataset"].to_list()) if "dataset" in stale.columns else set()
+    assert "btc_probe_exit_policy_review" not in datasets
+
+
 def test_load_snapshot_does_not_warn_for_optional_empty_entry_quality_outputs(tmp_path):
     snapshot = daily_export_module._load_snapshot(tmp_path / "empty-lake")
 

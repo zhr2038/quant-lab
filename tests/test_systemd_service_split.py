@@ -115,10 +115,12 @@ def test_candidate_research_refresh_is_separate_from_alpha_evidence():
     assert "build-alpha-discovery-board" in refresh_unit
     assert "--skip-legacy-outcome-counts" in refresh_unit
     assert "build-paper-strategy-tracking" in refresh_unit
-    assert "build-sol-protect-paper-loss-attribution" in refresh_unit
+    assert "build-research-portfolio-status" in refresh_unit
+    assert "refresh-research-diagnostics" in refresh_unit
+    assert "build-sol-protect-paper-loss-attribution" not in refresh_unit
+    assert "build-btc-probe-exit-policy-review" not in refresh_unit
+    assert "build-bnb-swing-exit-policy-review" not in refresh_unit
     assert "build-entry-quality" in refresh_unit
-    assert "build-btc-probe-exit-policy-review" in refresh_unit
-    assert "build-bnb-swing-exit-policy-review" in refresh_unit
     assert "build-regime-router" in refresh_unit
     assert "flock -E 75 -w 30" in refresh_unit
     assert "/usr/bin/timeout 20m" in refresh_unit

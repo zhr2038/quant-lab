@@ -35,6 +35,13 @@ CLOSED_RESEARCH_CANDIDATES: frozenset[str] = frozenset(
 )
 
 CLOSED_RESEARCH_REASON = "research_closed_by_operator_after_negative_or_low_quality_evidence"
+DAILY_REFRESH_BLOCKING_STATUSES: frozenset[str] = frozenset(
+    {
+        "CLOSED",
+        "KILL",
+        "PAUSED",
+    }
+)
 
 STATUS_SCHEMA: dict[str, Any] = {
     "schema_version": pl.Utf8,
@@ -360,6 +367,31 @@ def is_closed_research_candidate(value: Any) -> bool:
     return text in CLOSED_RESEARCH_CANDIDATES
 
 
+def research_portfolio_closed_keys(frame: pl.DataFrame) -> set[str]:
+    if frame.is_empty():
+        return set()
+    latest = _latest_day_frame(frame, "")
+    keys: set[str] = set()
+    for row in latest.to_dicts():
+        if not _portfolio_row_blocks_daily_refresh(row):
+            continue
+        for field in ("research_id", "strategy_candidate"):
+            value = str(row.get(field) or "").strip()
+            if value:
+                keys.add(value)
+    return keys
+
+
+def research_portfolio_blocks_daily_refresh(
+    frame: pl.DataFrame,
+    keys: set[str] | frozenset[str] | tuple[str, ...],
+) -> bool:
+    if not keys:
+        return False
+    closed = research_portfolio_closed_keys(frame)
+    return bool(closed.intersection(set(keys)))
+
+
 def _known_kill_rows(
     evidence: list[dict[str, Any]],
     paper: list[dict[str, Any]],
@@ -605,6 +637,12 @@ def _canonical_research_action(status: str, action: str) -> str:
     if normalized_status == "KILL" or lowered.startswith(("close", "closed")):
         return "CLOSE_RESEARCH"
     return normalized_action or "KEEP_RESEARCH"
+
+
+def _portfolio_row_blocks_daily_refresh(row: dict[str, Any]) -> bool:
+    status = str(row.get("status") or "").strip().upper()
+    action = str(row.get("action") or "").strip().lower()
+    return status in DAILY_REFRESH_BLOCKING_STATUSES or action.startswith(("close", "closed"))
 
 
 def _metrics_for(

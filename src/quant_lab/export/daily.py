@@ -3988,11 +3988,18 @@ def _refresh_v5_derived_outputs(lake_root: Path, export_day: date) -> list[str]:
             ).build_and_publish_paper_strategy_tracking(lake_root, as_of_date=export_day),
         ),
         (
-            "build_sol_protect_paper_loss_attribution",
+            "build_research_portfolio_status_before_diagnostics",
             lambda: __import__(
-                "quant_lab.research.sol_protect_paper_loss",
-                fromlist=["build_and_publish_sol_protect_paper_loss_attribution"],
-            ).build_and_publish_sol_protect_paper_loss_attribution(
+                "quant_lab.research.portfolio",
+                fromlist=["build_and_publish_research_portfolio_status"],
+            ).build_and_publish_research_portfolio_status(lake_root, as_of_date=export_day),
+        ),
+        (
+            "refresh_research_diagnostics",
+            lambda: __import__(
+                "quant_lab.research.diagnostics_refresh",
+                fromlist=["refresh_research_diagnostics"],
+            ).refresh_research_diagnostics(
                 lake_root,
                 as_of_date=export_day,
             ),
@@ -4003,26 +4010,6 @@ def _refresh_v5_derived_outputs(lake_root: Path, export_day: date) -> list[str]:
                 "quant_lab.research.entry_quality",
                 fromlist=["build_and_publish_entry_quality"],
             ).build_and_publish_entry_quality(lake_root, as_of_date=export_day),
-        ),
-        (
-            "build_btc_probe_exit_policy_review",
-            lambda: __import__(
-                "quant_lab.research.btc_probe_exit_policy",
-                fromlist=["build_and_publish_btc_probe_exit_policy_review"],
-            ).build_and_publish_btc_probe_exit_policy_review(
-                lake_root,
-                as_of_date=export_day,
-            ),
-        ),
-        (
-            "build_bnb_swing_exit_policy_review",
-            lambda: __import__(
-                "quant_lab.research.bnb_swing_exit_policy",
-                fromlist=["build_and_publish_bnb_swing_exit_policy_review"],
-            ).build_and_publish_bnb_swing_exit_policy_review(
-                lake_root,
-                as_of_date=export_day,
-            ),
         ),
         (
             "build_alpha_factory",
@@ -8174,6 +8161,9 @@ def _missing_dataset_reason(dataset_name: str) -> str:
 def _stale_rows(frames: dict[str, pl.DataFrame]) -> pl.DataFrame:
     rows = []
     v5_telemetry_is_current = _v5_telemetry_is_current_from_frames(frames)
+    closed_research_keys = readers.research_portfolio_closed_keys(
+        frames.get("research_portfolio_status", pl.DataFrame())
+    )
     for name, frame in sorted(frames.items()):
         freshness = _dataset_freshness_payload(name, frame)
         status = freshness["freshness_status"]
@@ -8181,6 +8171,8 @@ def _stale_rows(frames: dict[str, pl.DataFrame]) -> pl.DataFrame:
             empty_status = readers._empty_dataset_status(name)  # type: ignore[attr-defined]
             if empty_status in readers.OPTIONAL_EMPTY_DATASET_STATUSES:
                 continue
+        if readers._dataset_belongs_to_closed_research(name, closed_research_keys):  # type: ignore[attr-defined]
+            status = "closed_research_snapshot"
         if name in EVENT_DRIVEN_V5_DATASETS and status == "stale" and v5_telemetry_is_current:
             status = "event_driven_no_recent_trade"
         if name in readers.HISTORICAL_RESEARCH_DATASETS and status == "stale":

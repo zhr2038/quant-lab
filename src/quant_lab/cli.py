@@ -51,6 +51,7 @@ from quant_lab.research.btc_probe_exit_policy import (
     build_and_publish_btc_probe_exit_policy_review,
 )
 from quant_lab.research.candidate_labels import build_and_publish_candidate_labels
+from quant_lab.research.diagnostics_refresh import refresh_research_diagnostics
 from quant_lab.research.entry_quality import (
     build_and_publish_entry_quality,
     build_and_publish_entry_quality_history,
@@ -1359,6 +1360,25 @@ def build_bnb_swing_exit_policy_review_command(
         lake_root=lake_root,
         job_name="build-bnb-swing-exit-policy-review",
         func=lambda: build_and_publish_bnb_swing_exit_policy_review(
+            lake_root=lake_root,
+            as_of_date=as_of_date,
+        ),
+    )
+    typer.echo(result.model_dump_json(indent=2))
+
+
+@app.command("refresh-research-diagnostics")
+def refresh_research_diagnostics_command(
+    lake_root: Annotated[Path, typer.Option("--lake-root", file_okay=False, dir_okay=True)],
+    as_of_date: Annotated[
+        str,
+        typer.Option("--date", help="UTC as-of day in YYYY-MM-DD format or auto."),
+    ] = "auto",
+) -> None:
+    result = run_with_job_metrics(
+        lake_root=lake_root,
+        job_name="refresh-research-diagnostics",
+        func=lambda: refresh_research_diagnostics(
             lake_root=lake_root,
             as_of_date=as_of_date,
         ),

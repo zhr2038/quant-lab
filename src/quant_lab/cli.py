@@ -43,6 +43,9 @@ from quant_lab.ops.retention import prune_quant_lab_storage
 from quant_lab.reports.enforce_readiness import write_enforce_readiness_report
 from quant_lab.research.alpha_discovery import build_and_publish_alpha_discovery_board
 from quant_lab.research.alpha_factory import build_and_publish_alpha_factory
+from quant_lab.research.bnb_swing_exit_policy import (
+    build_and_publish_bnb_swing_exit_policy_review,
+)
 from quant_lab.research.bootstrap_gold import bootstrap_gold_health
 from quant_lab.research.btc_probe_exit_policy import (
     build_and_publish_btc_probe_exit_policy_review,
@@ -1339,6 +1342,25 @@ def build_btc_probe_exit_policy_review_command(
             lake_root=lake_root,
             as_of_date=as_of_date,
             min_sample_count=min_sample_count,
+        ),
+    )
+    typer.echo(result.model_dump_json(indent=2))
+
+
+@app.command("build-bnb-swing-exit-policy-review")
+def build_bnb_swing_exit_policy_review_command(
+    lake_root: Annotated[Path, typer.Option("--lake-root", file_okay=False, dir_okay=True)],
+    as_of_date: Annotated[
+        str,
+        typer.Option("--date", help="UTC as-of day in YYYY-MM-DD format or auto."),
+    ] = "auto",
+) -> None:
+    result = run_with_job_metrics(
+        lake_root=lake_root,
+        job_name="build-bnb-swing-exit-policy-review",
+        func=lambda: build_and_publish_bnb_swing_exit_policy_review(
+            lake_root=lake_root,
+            as_of_date=as_of_date,
         ),
     )
     typer.echo(result.model_dump_json(indent=2))

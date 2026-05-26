@@ -11,6 +11,7 @@ import pytest
 from quant_lab.data.lake import read_parquet_dataset, write_parquet_dataset
 from quant_lab.export.daily import export_daily_pack
 from quant_lab.research.bnb_swing_exit_policy import (
+    bnb_swing_exit_policy_summary_md,
     build_and_publish_bnb_swing_exit_policy_review,
 )
 
@@ -96,6 +97,96 @@ def test_bnb_swing_exit_policy_reads_v5_profit_lock_shadow(tmp_path):
     assert summary["decision"] == "RESEARCH_ONLY"
     assert summary["delayed_exit_better_count"] == 1
     assert "delayed_exit_would_improve_exit" in summary["decision_reasons"]
+
+
+def test_bnb_swing_exit_policy_dedupes_shadow_and_trade_rows_for_latest_summary(tmp_path):
+    lake = tmp_path / "lake"
+    entry_ts = datetime(2026, 5, 24, 6, tzinfo=UTC)
+    exit_ts = entry_ts + timedelta(hours=24, minutes=1)
+    write_parquet_dataset(
+        pl.DataFrame(
+            [
+                {
+                    "entry_ts": entry_ts.isoformat(),
+                    "symbol": "BNB/USDT",
+                    "entry_px": "657.9",
+                    "actual_exit_ts": exit_ts.isoformat(),
+                    "actual_exit_px": "651.3",
+                    "actual_exit_net_bps": "-120.22",
+                    "max_unrealized_bps": "-30.0",
+                    "delayed_exit_12h": "29.28",
+                    "best_shadow_exit_policy": "delayed_exit_12h",
+                    "exit_reason": "atr_trailing/exit_signal_priority",
+                }
+            ]
+        ),
+        lake / "silver" / "v5_bnb_profit_lock_shadow",
+    )
+    write_parquet_dataset(
+        pl.DataFrame(
+            [
+                {
+                    "run_id": "20260524_06",
+                    "ts_utc": entry_ts.isoformat(),
+                    "symbol": "BNB-USDT",
+                    "normalized_symbol": "BNB-USDT",
+                    "side": "buy",
+                    "action": "entry",
+                    "qty": "1",
+                    "price": "657.9",
+                    "notional_usdt": "657.9",
+                    "fee_usdt": "0.647",
+                    "strategy_id": "BNB_SWING_F3",
+                    "trade_id": "46678654",
+                },
+                {
+                    "run_id": "20260524_06",
+                    "ts_utc": exit_ts.isoformat(),
+                    "symbol": "BNB-USDT",
+                    "normalized_symbol": "BNB-USDT",
+                    "side": "sell",
+                    "action": "exit",
+                    "qty": "1",
+                    "price": "651.3",
+                    "notional_usdt": "651.3",
+                    "fee_usdt": "0.647",
+                    "strategy_id": "BNB_SWING_F3",
+                    "exit_reason": "atr_trailing/exit_signal_priority",
+                    "trade_id": "bnb-exit-46678654",
+                },
+            ]
+        ),
+        lake / "silver" / "v5_trade_event",
+    )
+    bars = [
+        _bar(entry_ts, close=657.9, high=658.0, low=657.0),
+        _bar(entry_ts + timedelta(hours=1), close=662.0, high=662.5, low=661.0),
+        _bar(entry_ts + timedelta(hours=4), close=660.0, high=661.0, low=659.0),
+        _bar(entry_ts + timedelta(hours=8), close=655.0, high=657.0, low=654.0),
+        _bar(entry_ts + timedelta(hours=12), close=652.0, high=653.0, low=651.0),
+        _bar(entry_ts + timedelta(hours=24), close=651.3, high=652.0, low=650.0),
+        _bar(exit_ts + timedelta(hours=24), close=664.0, high=664.5, low=663.0),
+    ]
+    write_parquet_dataset(pl.DataFrame(bars), lake / "silver" / "market_bar")
+
+    result = build_and_publish_bnb_swing_exit_policy_review(lake, as_of_date="2026-05-25")
+
+    assert result.review_rows == 1
+    review = read_parquet_dataset(lake / "gold" / "bnb_swing_exit_policy_review")
+    row = review.to_dicts()[0]
+    assert row["run_id"] == "20260524_06"
+    assert row["source_entry_id"] == "46678654"
+    assert row["duplicate_row_count"] == 2
+    assert row["selected_for_summary"] is True
+    assert row["max_unrealized_bps"] == pytest.approx(69.92, abs=0.2)
+    assert row["max_unrealized_bps"] > 0
+
+    summary = read_parquet_dataset(lake / "gold" / "bnb_swing_exit_policy_summary")
+    markdown = bnb_swing_exit_policy_summary_md(summary, review)
+    assert "source_entry_id: 46678654" in markdown
+    assert "duplicate_row_count: 2" in markdown
+    assert "max_unrealized_bps: 69." in markdown
+    assert "max_unrealized_bps: -30" not in markdown
 
 
 def test_daily_export_contains_bnb_swing_exit_policy_review(tmp_path):

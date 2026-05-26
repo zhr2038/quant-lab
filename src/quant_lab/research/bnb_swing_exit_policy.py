@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import math
 import subprocess
 from dataclasses import dataclass
 from datetime import UTC, date, datetime, timedelta
@@ -70,6 +71,9 @@ REVIEW_SCHEMA: dict[str, Any] = {
     "selected_roundtrip_cost_bps": pl.Float64,
     "diagnosis": pl.Utf8,
     "status": pl.Utf8,
+    "duplicate_group_key": pl.Utf8,
+    "duplicate_row_count": pl.Int64,
+    "selected_for_summary": pl.Boolean,
     "created_at": pl.Datetime(time_zone="UTC"),
     "source": pl.Utf8,
 }
@@ -174,19 +178,10 @@ def build_bnb_swing_exit_policy_review(
     entries = [row for row in bnb_trades if _is_bnb_swing_entry(row)]
     exits = [row for row in bnb_trades if _is_bnb_exit(row)]
     rows: list[dict[str, Any]] = []
-    seen: set[tuple[str, str, str]] = set()
     for shadow in _bnb_profit_lock_shadow_rows(shadow_frame):
         shadow_row = _review_row_from_profit_lock_shadow(shadow, ctx=ctx)
         if shadow_row is None:
             continue
-        key = (
-            str(shadow_row.get("run_id") or ""),
-            shadow_row["entry_ts"].isoformat(),
-            f"{shadow_row['entry_px']:.8f}",
-        )
-        if key in seen:
-            continue
-        seen.add(key)
         rows.append(shadow_row)
     for entry in entries:
         entry_ts = _parse_datetime(entry.get("ts_utc") or entry.get("ts"))
@@ -202,14 +197,6 @@ def build_bnb_swing_exit_policy_review(
         actual_exit_px = (
             _float_or_none(exit_row.get("price") or exit_row.get("fill_px")) if exit_row else None
         )
-        key = (
-            str(entry.get("run_id") or ""),
-            entry_ts.isoformat(),
-            f"{entry_px:.8f}",
-        )
-        if key in seen:
-            continue
-        seen.add(key)
         cost_bps = _roundtrip_cost_bps(entry, exit_row, entry_px)
         actual_net = _actual_exit_net_bps(
             entry_px=entry_px,
@@ -329,7 +316,7 @@ def build_bnb_swing_exit_policy_review(
         )
     if not rows:
         return pl.DataFrame(schema=REVIEW_SCHEMA)
-    return pl.DataFrame(rows, schema=REVIEW_SCHEMA, orient="row")
+    return pl.DataFrame(_dedupe_review_rows(rows), schema=REVIEW_SCHEMA, orient="row")
 
 
 def build_bnb_swing_exit_policy_summary(
@@ -337,7 +324,7 @@ def build_bnb_swing_exit_policy_summary(
     *,
     ctx: _Context,
 ) -> pl.DataFrame:
-    rows = review.to_dicts() if not review.is_empty() else []
+    rows = _selected_review_rows(review)
     sample_count = len(rows)
     reasons = ["read_only_research_no_live_exit_change"]
     if not rows:
@@ -437,11 +424,7 @@ def bnb_swing_exit_policy_summary_md(summary: pl.DataFrame, review: pl.DataFrame
         f"- decision_reasons: {row.get('decision_reasons')}",
     ]
     if not review.is_empty():
-        latest = sorted(
-            review.to_dicts(),
-            key=lambda item: str(item.get("entry_ts") or ""),
-            reverse=True,
-        )[0]
+        latest = _latest_selected_review_row(review)
         lines.extend(
             [
                 "",
@@ -451,12 +434,103 @@ def bnb_swing_exit_policy_summary_md(summary: pl.DataFrame, review: pl.DataFrame
                 f"- actual_exit_net_bps: {_fmt(latest.get('actual_exit_net_bps'))}",
                 f"- max_unrealized_bps: {_fmt(latest.get('max_unrealized_bps'))}",
                 f"- best_exit_policy: {latest.get('best_exit_policy')}",
+                f"- source_entry_id: {latest.get('source_entry_id')}",
+                f"- duplicate_group_key: {latest.get('duplicate_group_key')}",
+                f"- duplicate_row_count: {latest.get('duplicate_row_count')}",
                 f"- delayed_exit_12h_net_bps: {_fmt(latest.get('delayed_exit_12h_net_bps'))}",
                 f"- delta_vs_actual_bps: {_fmt(latest.get('delta_vs_actual_bps'))}",
                 f"- diagnosis: {latest.get('diagnosis')}",
             ]
         )
     return "\n".join(lines) + "\n"
+
+
+def _dedupe_review_rows(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    grouped: dict[str, list[dict[str, Any]]] = {}
+    order: list[str] = []
+    for row in rows:
+        key = _duplicate_group_key(row)
+        if key not in grouped:
+            grouped[key] = []
+            order.append(key)
+        grouped[key].append(row)
+
+    selected: list[dict[str, Any]] = []
+    for key in order:
+        candidates = grouped[key]
+        best = max(
+            enumerate(candidates),
+            key=lambda item: (_review_completeness_score(item[1]), item[0]),
+        )[1]
+        selected.append(
+            best
+            | {
+                "duplicate_group_key": key,
+                "duplicate_row_count": len(candidates),
+                "selected_for_summary": True,
+            }
+        )
+    return selected
+
+
+def _selected_review_rows(review: pl.DataFrame) -> list[dict[str, Any]]:
+    if review.is_empty():
+        return []
+    rows = review.to_dicts()
+    if "selected_for_summary" in review.columns:
+        selected = [row for row in rows if bool(row.get("selected_for_summary"))]
+        return selected or rows
+    return _dedupe_review_rows(rows)
+
+
+def _latest_selected_review_row(review: pl.DataFrame) -> dict[str, Any]:
+    rows = _selected_review_rows(review)
+    if not rows:
+        return {}
+    return max(
+        rows,
+        key=lambda row: (
+            _parse_datetime(row.get("actual_exit_ts") or row.get("entry_ts"))
+            or datetime.min.replace(tzinfo=UTC),
+            _review_completeness_score(row),
+        ),
+    )
+
+
+def _duplicate_group_key(row: dict[str, Any]) -> str:
+    return "|".join(
+        [
+            _ts_key(row.get("entry_ts")),
+            _float_key(row.get("entry_px")),
+            _ts_key(row.get("actual_exit_ts")),
+            _float_key(row.get("actual_exit_px")),
+        ]
+    )
+
+
+def _review_completeness_score(row: dict[str, Any]) -> tuple[int, int, int, int, float]:
+    max_unrealized = _float_or_none(row.get("max_unrealized_bps"))
+    return (
+        1 if _observable(row.get("run_id")) else 0,
+        1 if _observable(row.get("source_entry_id")) else 0,
+        1 if _float_or_none(row.get("highest_px_after_entry")) is not None else 0,
+        1 if _reasonable_bps(max_unrealized) else 0,
+        max_unrealized if _reasonable_bps(max_unrealized) else float("-inf"),
+    )
+
+
+def _reasonable_bps(value: float | None) -> bool:
+    return value is not None and math.isfinite(value) and -1_000.0 <= value <= 10_000.0
+
+
+def _ts_key(value: Any) -> str:
+    parsed = _parse_datetime(value)
+    return parsed.isoformat() if parsed is not None else ""
+
+
+def _float_key(value: Any) -> str:
+    number = _float_or_none(value)
+    return f"{number:.8f}" if number is not None else ""
 
 
 def _bnb_trade_rows(trade_events: pl.DataFrame) -> list[dict[str, Any]]:

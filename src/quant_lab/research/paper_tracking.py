@@ -55,6 +55,8 @@ PAPER_RUN_REPORT_SCHEMA = {
     "paper_disabled_by_research_portfolio": pl.Boolean,
     "paper_trigger_type": pl.Utf8,
     "paper_trigger_reason": pl.Utf8,
+    "paper_source": pl.Utf8,
+    "paper_count_scope": pl.Utf8,
     "risk_level": pl.Utf8,
     "alpha6_score": pl.Float64,
     "alpha6_side": pl.Utf8,
@@ -98,6 +100,8 @@ PAPER_RUN_SCHEMA = {
     "paper_disabled_by_research_portfolio": pl.Boolean,
     "paper_trigger_type": pl.Utf8,
     "paper_trigger_reason": pl.Utf8,
+    "paper_source": pl.Utf8,
+    "paper_count_scope": pl.Utf8,
     "paper_pnl_bps": pl.Float64,
     "paper_pnl_bps_4h": pl.Float64,
     "paper_pnl_bps_8h": pl.Float64,
@@ -141,6 +145,10 @@ PAPER_DAILY_SCHEMA = {
     "latest_horizon": pl.Utf8,
     "heartbeat_day_count": pl.Int64,
     "entry_day_count": pl.Int64,
+    "daily_v5_entry_count": pl.Int64,
+    "daily_synthetic_would_enter_count": pl.Int64,
+    "cumulative_v5_entry_count": pl.Int64,
+    "cumulative_synthetic_would_enter_count": pl.Int64,
     "daily_would_enter_count": pl.Int64,
     "cumulative_would_enter_count": pl.Int64,
     "would_enter_count": pl.Int64,
@@ -380,6 +388,10 @@ def build_pending_paper_strategy_daily(
                 "latest_horizon": str(row.get("suggested_horizon") or ""),
                 "heartbeat_day_count": 0,
                 "entry_day_count": 0,
+                "daily_v5_entry_count": 0,
+                "daily_synthetic_would_enter_count": 0,
+                "cumulative_v5_entry_count": 0,
+                "cumulative_synthetic_would_enter_count": 0,
                 "daily_would_enter_count": 0,
                 "cumulative_would_enter_count": 0,
                 "would_enter_count": 0,
@@ -461,6 +473,12 @@ def _daily_from_runs(runs: pl.DataFrame, *, as_of_date: date) -> pl.DataFrame:
         )
         run_rows = group["rows"]
         entry_rows = [row for row in run_rows if bool(row.get("would_enter")) is True]
+        v5_entry_rows = [
+            row for row in entry_rows if _paper_source(row) == "v5_telemetry"
+        ]
+        synthetic_entry_rows = [
+            row for row in entry_rows if _paper_source(row) != "v5_telemetry"
+        ]
         if not run_rows:
             continue
         run_rows.sort(key=lambda row: str(row.get("as_of_date") or ""))
@@ -473,6 +491,12 @@ def _daily_from_runs(runs: pl.DataFrame, *, as_of_date: date) -> pl.DataFrame:
         entry_days = len({str(row.get("as_of_date") or "") for row in entry_rows})
         daily_entry_rows = [
             row for row in daily_run_rows if bool(row.get("would_enter")) is True
+        ]
+        daily_v5_entry_rows = [
+            row for row in daily_entry_rows if _paper_source(row) == "v5_telemetry"
+        ]
+        daily_synthetic_entry_rows = [
+            row for row in daily_entry_rows if _paper_source(row) != "v5_telemetry"
         ]
         pnl_rows = _paper_pnl_rows(run_rows)
         daily_pnl_rows = _paper_pnl_rows(daily_run_rows)
@@ -537,6 +561,10 @@ def _daily_from_runs(runs: pl.DataFrame, *, as_of_date: date) -> pl.DataFrame:
                 "latest_horizon": str(latest.get("suggested_horizon") or ""),
                 "heartbeat_day_count": heartbeat_days,
                 "entry_day_count": entry_days,
+                "daily_v5_entry_count": len(daily_v5_entry_rows),
+                "daily_synthetic_would_enter_count": len(daily_synthetic_entry_rows),
+                "cumulative_v5_entry_count": len(v5_entry_rows),
+                "cumulative_synthetic_would_enter_count": len(synthetic_entry_rows),
                 "daily_would_enter_count": len(daily_entry_rows),
                 "cumulative_would_enter_count": len(entry_rows),
                 "would_enter_count": len(entry_rows),
@@ -707,6 +735,8 @@ def _pending_run_row(
         "paper_disabled_by_research_portfolio": False,
         "paper_trigger_type": "paper_ready_proposal",
         "paper_trigger_reason": "waiting_for_v5_paper_telemetry",
+        "paper_source": "opportunity_paper",
+        "paper_count_scope": "daily",
         "paper_pnl_bps": None,
         "paper_pnl_bps_4h": None,
         "paper_pnl_bps_8h": None,
@@ -817,7 +847,8 @@ def paper_strategy_summary_md(daily: pl.DataFrame) -> str:
         "",
         (
             "口径说明：`daily_*` 是当天新增，`cumulative_*` 和兼容字段 "
-            "`would_enter_count` / `paper_pnl_observed_count` 是累计值。"
+            "`would_enter_count` / `paper_pnl_observed_count` 是累计总值；"
+            "V5 telemetry entry 与中台 synthetic would-enter 分开统计。"
         ),
         "",
     ]
@@ -839,18 +870,27 @@ def paper_strategy_summary_md(daily: pl.DataFrame) -> str:
         int(_optional_float(row.get("cumulative_paper_pnl_observed_count")) or 0)
         for row in rows
     )
+    daily_v5_entries = sum(
+        int(_optional_float(row.get("daily_v5_entry_count")) or 0) for row in rows
+    )
+    daily_synthetic_entries = sum(
+        int(_optional_float(row.get("daily_synthetic_would_enter_count")) or 0)
+        for row in rows
+    )
     lines.extend(
         [
             f"- 今日新 entry 数: {daily_entries}",
+            f"- 今日 V5 实际 paper entry: {daily_v5_entries}",
+            f"- 今日中台 synthetic would_enter: {daily_synthetic_entries}",
             f"- 累计 entry 数: {cumulative_entries}",
             f"- 今日新增 PnL 标签数: {daily_pnl}",
             f"- 累计 PnL 标签数: {cumulative_pnl}",
             "",
             (
-                "| 策略 | 标的 | 今日 entry | 累计 entry | 今日 PnL 标签 | "
-                "累计 PnL 标签 | 状态 | 趋势 |"
+                "| 策略 | 标的 | 今日 V5 entry | 今日 synthetic | 累计 entry | "
+                "今日 PnL 标签 | 累计 PnL 标签 | 状态 | 趋势 |"
             ),
-            "| --- | --- | ---: | ---: | ---: | ---: | --- | --- |",
+            "| --- | --- | ---: | ---: | ---: | ---: | ---: | --- | --- |",
         ]
     )
     for row in sorted(rows, key=lambda item: str(item.get("proposal_id") or "")):
@@ -860,7 +900,10 @@ def paper_strategy_summary_md(daily: pl.DataFrame) -> str:
                 [
                     str(row.get("proposal_id") or row.get("strategy_candidate") or ""),
                     str(row.get("symbol") or ""),
-                    str(int(_optional_float(row.get("daily_would_enter_count")) or 0)),
+                    str(int(_optional_float(row.get("daily_v5_entry_count")) or 0)),
+                    str(
+                        int(_optional_float(row.get("daily_synthetic_would_enter_count")) or 0)
+                    ),
                     str(int(_optional_float(row.get("cumulative_would_enter_count")) or 0)),
                     str(int(_optional_float(row.get("daily_paper_pnl_observed_count")) or 0)),
                     str(int(_optional_float(row.get("cumulative_paper_pnl_observed_count")) or 0)),
@@ -949,6 +992,9 @@ def enrich_paper_strategy_daily_from_runs(
         "heartbeat_days",
         "heartbeat_day_count",
         "entry_day_count",
+        "daily_synthetic_would_enter_count",
+        "cumulative_v5_entry_count",
+        "cumulative_synthetic_would_enter_count",
         "cumulative_would_enter_count",
         "would_enter_count",
         "cumulative_paper_pnl_observed_count",
@@ -980,8 +1026,32 @@ def enrich_paper_strategy_daily_from_runs(
             if metric:
                 break
         updated = dict(row)
+        updated["daily_v5_entry_count"] = int(
+            _optional_float(updated.get("daily_v5_entry_count"))
+            or _optional_float(updated.get("daily_would_enter_count"))
+            or 0
+        )
+        existing_cumulative_v5_count = int(
+            _optional_float(updated.get("cumulative_v5_entry_count"))
+            or _optional_float(updated.get("cumulative_would_enter_count"))
+            or 0
+        )
         for field in metric_fields:
             updated[field] = int(_optional_float(metric.get(field)) or 0)
+        if metric:
+            metric_v5_count = _optional_float(metric.get("cumulative_v5_entry_count"))
+            updated["cumulative_v5_entry_count"] = max(
+                existing_cumulative_v5_count,
+                int(metric_v5_count or 0),
+            )
+            total_would_enter_count = (
+                int(_optional_float(updated.get("cumulative_v5_entry_count")) or 0)
+                + int(
+                    _optional_float(updated.get("cumulative_synthetic_would_enter_count")) or 0
+                )
+            )
+            updated["cumulative_would_enter_count"] = total_would_enter_count
+            updated["would_enter_count"] = total_would_enter_count
         for field in ["daily_would_enter_count", "daily_paper_pnl_observed_count"]:
             if updated.get(field) in {None, ""}:
                 updated[field] = int(_optional_float(metric.get(field)) or 0)
@@ -1299,6 +1369,8 @@ def _sol_f4_candidate_event_as_paper_row(candidate: dict[str, Any]) -> dict[str,
         "paper_tracking_status": V5_PAPER_TRACKING_STATUS,
         "tracking_stage": "active_paper_strategy",
         "paper_trigger_type": "factor_condition_match",
+        "paper_source": "quant_lab_synthetic",
+        "paper_count_scope": "daily",
         "raw_payload_json": safe_json_dumps(merged_payload),
     }
 
@@ -1499,6 +1571,26 @@ def _safe_date(value: Any) -> date | None:
         return None
 
 
+def _paper_source_for_run(
+    row: dict[str, Any],
+    payload: dict[str, Any],
+    enter_policy: dict[str, Any],
+    raw_would_enter: bool,
+) -> str:
+    explicit = str(_field(row, payload, "paper_source") or "").strip()
+    if explicit:
+        return explicit
+    trigger_type = str(enter_policy.get("paper_trigger_type") or "").strip()
+    if trigger_type == "factor_condition_match" and not raw_would_enter:
+        return "quant_lab_synthetic"
+    return "v5_telemetry"
+
+
+def _paper_source(row: dict[str, Any]) -> str:
+    source = str(row.get("paper_source") or "").strip()
+    return source or "v5_telemetry"
+
+
 def _v5_run_report_row(
     row: dict[str, Any],
     created_at: str,
@@ -1535,6 +1627,7 @@ def _v5_run_report_row(
     if enter_policy["clear_paper_pnl"]:
         paper_pnl_bps = None
         paper_pnl_usdt = None
+    paper_source = _paper_source_for_run(row, payload, enter_policy, raw_would_enter)
     return {
         "as_of_date": _as_of_date(row, payload),
         "strategy_id": strategy_id or proposal_id,
@@ -1555,6 +1648,8 @@ def _v5_run_report_row(
         or _field(row, payload, "paper_trigger_type"),
         "paper_trigger_reason": enter_policy["paper_trigger_reason"]
         or _field(row, payload, "paper_trigger_reason"),
+        "paper_source": paper_source,
+        "paper_count_scope": _field(row, payload, "paper_count_scope", default="daily"),
         "risk_level": _field(row, payload, "risk_level"),
         "alpha6_score": _optional_float(_field(row, payload, "alpha6_score")),
         "alpha6_side": _field(row, payload, "alpha6_side"),
@@ -1651,6 +1746,7 @@ def _v5_run_row(
         paper_pnl_bps_48h = None
         paper_pnl_bps_72h = None
         paper_pnl_usdt = None
+    paper_source = _paper_source_for_run(row, payload, enter_policy, raw_would_enter)
     return {
         "as_of_date": _as_of_date(row, payload),
         "proposal_id": proposal_id,
@@ -1690,6 +1786,8 @@ def _v5_run_row(
         or _field(row, payload, "paper_trigger_type"),
         "paper_trigger_reason": enter_policy["paper_trigger_reason"]
         or _field(row, payload, "paper_trigger_reason"),
+        "paper_source": paper_source,
+        "paper_count_scope": _field(row, payload, "paper_count_scope", default="daily"),
         "paper_pnl_bps": paper_pnl_bps,
         "paper_pnl_bps_4h": paper_pnl_bps_4h,
         "paper_pnl_bps_8h": paper_pnl_bps_8h,
@@ -1853,6 +1951,14 @@ def _v5_daily_row(row: dict[str, Any], created_at: str) -> dict[str, Any]:
         "latest_horizon": _field(row, payload, "latest_horizon", "suggested_horizon", "horizon"),
         "heartbeat_day_count": heartbeat_days,
         "entry_day_count": entry_day_count,
+        "daily_v5_entry_count": daily_would_enter_count,
+        "daily_synthetic_would_enter_count": int(
+            _optional_float(_field(row, payload, "daily_synthetic_would_enter_count")) or 0
+        ),
+        "cumulative_v5_entry_count": cumulative_would_enter_count,
+        "cumulative_synthetic_would_enter_count": int(
+            _optional_float(_field(row, payload, "cumulative_synthetic_would_enter_count")) or 0
+        ),
         "daily_would_enter_count": daily_would_enter_count,
         "cumulative_would_enter_count": cumulative_would_enter_count,
         "would_enter_count": cumulative_would_enter_count,

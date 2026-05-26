@@ -679,6 +679,84 @@ def test_paper_strategy_daily_keeps_v5_entry_count_daily_when_runs_are_cumulativ
     assert "累计 entry 数: 2" in summary
 
 
+def test_paper_strategy_daily_splits_v5_entries_from_synthetic_would_enter():
+    as_of = "2026-05-26"
+    v5_daily = build_paper_strategy_daily_from_v5(
+        pl.DataFrame(
+            [
+                {
+                    "as_of_date": as_of,
+                    "proposal_id": "SOL_F4_VOLUME_EXPANSION_PAPER_V1",
+                    "strategy_candidate": "v5.f4_volume_expansion_entry",
+                    "symbol": "SOL-USDT",
+                    "entry_count": "0",
+                    "complete_count": "0",
+                    "paper_days": "4",
+                    "raw_payload_json": "{}",
+                }
+            ]
+        )
+    )
+    v5_runs = pl.DataFrame(
+        [
+            {
+                "as_of_date": as_of,
+                "proposal_id": "SOL_F4_VOLUME_EXPANSION_PAPER_V1",
+                "strategy_candidate": "v5.f4_volume_expansion_entry",
+                "symbol": "SOL-USDT",
+                "would_enter": "false",
+                "final_decision": "heartbeat",
+                "alpha6_side": "sell",
+                "raw_payload_json": "{}",
+            }
+        ]
+    )
+    candidate_events = pl.DataFrame(
+        [
+            {
+                "as_of_date": as_of,
+                "candidate_id": f"sol_synthetic_{index}",
+                "run_id": f"run_20260526_{index}",
+                "ts_utc": f"2026-05-26T{index:02d}:00:00Z",
+                "symbol": "SOL-USDT",
+                "strategy_candidate": "v5.f3_dominant_entry",
+                "final_decision": "no_order",
+                "alpha6_side": "buy",
+                "f4_volume_expansion": "0.25",
+                "expected_edge_bps": "90",
+                "required_edge_bps": "30",
+                "cost_gate_verified": "true",
+                "current_regime": "ALT_IMPULSE",
+                "final_score": "0.93",
+                "cost_source": "mixed_actual_proxy",
+                "raw_payload_json": "{}",
+            }
+            for index in range(9)
+        ]
+    )
+    runs = build_paper_strategy_runs_from_v5(v5_runs, candidate_events=candidate_events)
+
+    enriched = enrich_paper_strategy_daily_from_runs(
+        v5_daily,
+        runs,
+        as_of_date=datetime(2026, 5, 26, tzinfo=UTC).date(),
+    ).to_dicts()[0]
+
+    run_rows = runs.to_dicts()
+    assert sum(row["paper_source"] == "v5_telemetry" for row in run_rows) == 1
+    assert sum(row["paper_source"] == "quant_lab_synthetic" for row in run_rows) == 9
+    assert enriched["daily_v5_entry_count"] == 0
+    assert enriched["daily_synthetic_would_enter_count"] == 9
+    assert enriched["cumulative_v5_entry_count"] == 0
+    assert enriched["cumulative_synthetic_would_enter_count"] == 9
+    assert enriched["daily_would_enter_count"] == 0
+    assert enriched["cumulative_would_enter_count"] == 9
+    assert enriched["would_enter_count"] == 9
+    summary = paper_strategy_summary_md(pl.DataFrame([enriched]))
+    assert "今日 V5 实际 paper entry: 0" in summary
+    assert "今日中台 synthetic would_enter: 9" in summary
+
+
 def test_sol_f4_factor_condition_can_override_no_enter_v5_paper_row():
     rows = pl.DataFrame(
         [

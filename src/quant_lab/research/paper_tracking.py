@@ -856,26 +856,30 @@ def paper_strategy_summary_md(daily: pl.DataFrame) -> str:
         lines.append("- 当前没有纸面策略日汇总数据。")
         return "\n".join(lines).rstrip() + "\n"
     rows = daily.to_dicts()
+    latest_as_of_date = max(str(row.get("as_of_date") or "")[:10] for row in rows)
+    display_rows = [
+        row for row in rows if str(row.get("as_of_date") or "")[:10] == latest_as_of_date
+    ] or rows
     daily_entries = sum(
-        int(_optional_float(row.get("daily_would_enter_count")) or 0) for row in rows
+        int(_optional_float(row.get("daily_would_enter_count")) or 0) for row in display_rows
     )
     cumulative_entries = sum(
-        int(_optional_float(row.get("cumulative_would_enter_count")) or 0) for row in rows
+        int(_optional_float(row.get("cumulative_would_enter_count")) or 0) for row in display_rows
     )
     daily_pnl = sum(
         int(_optional_float(row.get("daily_paper_pnl_observed_count")) or 0)
-        for row in rows
+        for row in display_rows
     )
     cumulative_pnl = sum(
         int(_optional_float(row.get("cumulative_paper_pnl_observed_count")) or 0)
-        for row in rows
+        for row in display_rows
     )
     daily_v5_entries = sum(
-        int(_optional_float(row.get("daily_v5_entry_count")) or 0) for row in rows
+        int(_optional_float(row.get("daily_v5_entry_count")) or 0) for row in display_rows
     )
     daily_synthetic_entries = sum(
         int(_optional_float(row.get("daily_synthetic_would_enter_count")) or 0)
-        for row in rows
+        for row in display_rows
     )
     lines.extend(
         [
@@ -893,7 +897,7 @@ def paper_strategy_summary_md(daily: pl.DataFrame) -> str:
             "| --- | --- | ---: | ---: | ---: | ---: | ---: | --- | --- |",
         ]
     )
-    for row in sorted(rows, key=lambda item: str(item.get("proposal_id") or "")):
+    for row in sorted(display_rows, key=lambda item: str(item.get("proposal_id") or "")):
         lines.append(
             "| "
             + " | ".join(
@@ -1026,6 +1030,7 @@ def enrich_paper_strategy_daily_from_runs(
             if metric:
                 break
         updated = dict(row)
+        row_as_of_date = str(updated.get("as_of_date") or "")[:10]
         updated["daily_v5_entry_count"] = int(
             _optional_float(updated.get("daily_v5_entry_count"))
             or _optional_float(updated.get("daily_would_enter_count"))
@@ -1038,6 +1043,8 @@ def enrich_paper_strategy_daily_from_runs(
         )
         for field in metric_fields:
             updated[field] = int(_optional_float(metric.get(field)) or 0)
+        if row_as_of_date != as_of_date.isoformat():
+            updated["daily_synthetic_would_enter_count"] = 0
         if metric:
             metric_v5_count = _optional_float(metric.get("cumulative_v5_entry_count"))
             updated["cumulative_v5_entry_count"] = max(

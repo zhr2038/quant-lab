@@ -624,6 +624,16 @@ def test_paper_strategy_daily_keeps_v5_entry_count_daily_when_runs_are_cumulativ
         pl.DataFrame(
             [
                 {
+                    "as_of_date": "2026-05-25",
+                    "proposal_id": "SOL_F4_VOLUME_EXPANSION_PAPER_V1",
+                    "strategy_candidate": "v5.f4_volume_expansion_entry",
+                    "symbol": "SOL-USDT",
+                    "entry_count": "0",
+                    "complete_count": "0",
+                    "paper_days": "3",
+                    "raw_payload_json": "{}",
+                },
+                {
                     "as_of_date": as_of,
                     "proposal_id": "SOL_F4_VOLUME_EXPANSION_PAPER_V1",
                     "strategy_candidate": "v5.f4_volume_expansion_entry",
@@ -685,6 +695,16 @@ def test_paper_strategy_daily_splits_v5_entries_from_synthetic_would_enter():
         pl.DataFrame(
             [
                 {
+                    "as_of_date": "2026-05-25",
+                    "proposal_id": "SOL_F4_VOLUME_EXPANSION_PAPER_V1",
+                    "strategy_candidate": "v5.f4_volume_expansion_entry",
+                    "symbol": "SOL-USDT",
+                    "entry_count": "0",
+                    "complete_count": "0",
+                    "paper_days": "3",
+                    "raw_payload_json": "{}",
+                },
+                {
                     "as_of_date": as_of,
                     "proposal_id": "SOL_F4_VOLUME_EXPANSION_PAPER_V1",
                     "strategy_candidate": "v5.f4_volume_expansion_entry",
@@ -740,19 +760,23 @@ def test_paper_strategy_daily_splits_v5_entries_from_synthetic_would_enter():
         v5_daily,
         runs,
         as_of_date=datetime(2026, 5, 26, tzinfo=UTC).date(),
-    ).to_dicts()[0]
+    )
+    enriched_by_date = {row["as_of_date"]: row for row in enriched.to_dicts()}
+    enriched_latest = enriched_by_date[as_of]
+    enriched_previous = enriched_by_date["2026-05-25"]
 
     run_rows = runs.to_dicts()
     assert sum(row["paper_source"] == "v5_telemetry" for row in run_rows) == 1
     assert sum(row["paper_source"] == "quant_lab_synthetic" for row in run_rows) == 9
-    assert enriched["daily_v5_entry_count"] == 0
-    assert enriched["daily_synthetic_would_enter_count"] == 9
-    assert enriched["cumulative_v5_entry_count"] == 0
-    assert enriched["cumulative_synthetic_would_enter_count"] == 9
-    assert enriched["daily_would_enter_count"] == 0
-    assert enriched["cumulative_would_enter_count"] == 9
-    assert enriched["would_enter_count"] == 9
-    summary = paper_strategy_summary_md(pl.DataFrame([enriched]))
+    assert enriched_previous["daily_synthetic_would_enter_count"] == 0
+    assert enriched_latest["daily_v5_entry_count"] == 0
+    assert enriched_latest["daily_synthetic_would_enter_count"] == 9
+    assert enriched_latest["cumulative_v5_entry_count"] == 0
+    assert enriched_latest["cumulative_synthetic_would_enter_count"] == 9
+    assert enriched_latest["daily_would_enter_count"] == 0
+    assert enriched_latest["cumulative_would_enter_count"] == 9
+    assert enriched_latest["would_enter_count"] == 9
+    summary = paper_strategy_summary_md(enriched)
     assert "今日 V5 实际 paper entry: 0" in summary
     assert "今日中台 synthetic would_enter: 9" in summary
 

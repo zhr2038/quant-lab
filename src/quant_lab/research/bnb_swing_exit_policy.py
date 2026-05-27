@@ -27,6 +27,8 @@ PROFIT_LOCK_BPS = (30, 50)
 ATR_LOOKBACK_BARS = 14
 ATR_MULTIPLIER = 2.0
 MIN_SAMPLE_COUNT_FOR_EXIT_CHANGE = 10
+MIN_SHADOW_HELP_RATE_FOR_EXIT_REVIEW = 0.60
+MIN_AVG_SHADOW_IMPROVEMENT_BPS_FOR_EXIT_REVIEW = 50.0
 
 V5_TRADE_EVENT_DATASET = Path("silver") / "v5_trade_event"
 V5_BNB_PROFIT_LOCK_SHADOW_DATASET = Path("silver") / "v5_bnb_profit_lock_shadow"
@@ -96,6 +98,12 @@ SUMMARY_SCHEMA: dict[str, Any] = {
     "profit_lock_better_count": pl.Int64,
     "delayed_exit_better_count": pl.Int64,
     "trailing_better_count": pl.Int64,
+    "shadow_help_count": pl.Int64,
+    "shadow_help_rate": pl.Float64,
+    "avg_best_shadow_improvement_bps": pl.Float64,
+    "recommendation": pl.Utf8,
+    "review_reason": pl.Utf8,
+    "sample_count_gate_met_for_exit_change_review": pl.Boolean,
     "best_exit_policy_mix": pl.Utf8,
     "best_shadow_exit_policy_mix": pl.Utf8,
     "status": pl.Utf8,
@@ -347,20 +355,48 @@ def build_bnb_swing_exit_policy_summary(
         if str(row.get("best_exit_policy") or "").startswith("delayed_exit")
         and (_float_or_none(row.get("delta_vs_actual_bps")) or 0.0) > 0
     ]
+    shadow_help_rows = [
+        row
+        for row in rows
+        if str(row.get("best_shadow_exit_policy") or "")
+        not in {"", "actual_exit", "not_observable"}
+        and (_float_or_none(row.get("delta_vs_actual_bps")) or 0.0) > 0
+    ]
+    improvement_values = [
+        value
+        for value in (_float_or_none(row.get("delta_vs_actual_bps")) for row in rows)
+        if value is not None
+    ]
+    shadow_help_rate = len(shadow_help_rows) / sample_count if sample_count else None
+    avg_best_shadow_improvement = _mean(improvement_values)
     if profit_better:
         reasons.append("profit_lock_would_improve_exit")
     if delayed_better:
         reasons.append("delayed_exit_would_improve_exit")
     if trailing_better:
         reasons.append("atr_trailing_variant_would_improve_exit")
-    if sample_count < MIN_SAMPLE_COUNT_FOR_EXIT_CHANGE:
-        reasons.append("insufficient_sample_count_for_exit_change")
-    improvement_observed = bool(profit_better or delayed_better or trailing_better)
-    decision = (
-        "REVIEW_EXIT_POLICY"
-        if improvement_observed and sample_count >= MIN_SAMPLE_COUNT_FOR_EXIT_CHANGE
-        else "RESEARCH_ONLY"
+    sample_gate_met = sample_count >= MIN_SAMPLE_COUNT_FOR_EXIT_CHANGE
+    clear_shadow_advantage = (
+        shadow_help_rate is not None
+        and shadow_help_rate >= MIN_SHADOW_HELP_RATE_FOR_EXIT_REVIEW
+        and avg_best_shadow_improvement is not None
+        and avg_best_shadow_improvement >= MIN_AVG_SHADOW_IMPROVEMENT_BPS_FOR_EXIT_REVIEW
     )
+    if not sample_gate_met:
+        reasons.append("insufficient_sample_count_for_exit_change")
+        recommendation = "collect_more_samples"
+        review_reason = "sample_count_lt_10"
+        decision = "RESEARCH_ONLY"
+    elif clear_shadow_advantage:
+        reasons.append("sample_gate_met_shadow_exit_outperforms_actual")
+        recommendation = "REVIEW_EXIT_POLICY"
+        review_reason = "sample_gate_met_shadow_exit_outperforms_actual"
+        decision = "REVIEW_EXIT_POLICY"
+    else:
+        reasons.append("sample_gate_met_no_clear_shadow_advantage")
+        recommendation = "no_change_recommended"
+        review_reason = "sample_gate_met_no_clear_shadow_advantage"
+        decision = "RESEARCH_ONLY"
     return pl.DataFrame(
         [
             _common(ctx, schema_version=SUMMARY_SCHEMA_VERSION)
@@ -378,6 +414,12 @@ def build_bnb_swing_exit_policy_summary(
                 "profit_lock_better_count": len(profit_better),
                 "delayed_exit_better_count": len(delayed_better),
                 "trailing_better_count": len(trailing_better),
+                "shadow_help_count": len(shadow_help_rows),
+                "shadow_help_rate": shadow_help_rate,
+                "avg_best_shadow_improvement_bps": avg_best_shadow_improvement,
+                "recommendation": recommendation,
+                "review_reason": review_reason,
+                "sample_count_gate_met_for_exit_change_review": sample_gate_met,
                 "best_exit_policy_mix": safe_json_dumps(
                     _counts(row.get("best_exit_policy") for row in rows)
                 ),
@@ -419,6 +461,13 @@ def bnb_swing_exit_policy_summary_md(summary: pl.DataFrame, review: pl.DataFrame
         f"- profit_lock_better_count: {row.get('profit_lock_better_count')}",
         f"- delayed_exit_better_count: {row.get('delayed_exit_better_count')}",
         f"- trailing_better_count: {row.get('trailing_better_count')}",
+        f"- shadow_help_count: {row.get('shadow_help_count')}",
+        f"- shadow_help_rate: {_fmt(row.get('shadow_help_rate'))}",
+        f"- avg_best_shadow_improvement_bps: {_fmt(row.get('avg_best_shadow_improvement_bps'))}",
+        f"- sample_count_gate_met_for_exit_change_review: "
+        f"{row.get('sample_count_gate_met_for_exit_change_review')}",
+        f"- recommendation: {row.get('recommendation')}",
+        f"- review_reason: {row.get('review_reason')}",
         f"- best_exit_policy_mix: {row.get('best_exit_policy_mix')}",
         f"- best_shadow_exit_policy_mix: {row.get('best_shadow_exit_policy_mix')}",
         f"- decision_reasons: {row.get('decision_reasons')}",

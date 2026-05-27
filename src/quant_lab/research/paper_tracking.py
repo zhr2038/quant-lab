@@ -55,6 +55,9 @@ PAPER_RUN_REPORT_SCHEMA = {
     "paper_disabled_by_research_portfolio": pl.Boolean,
     "paper_trigger_type": pl.Utf8,
     "paper_trigger_reason": pl.Utf8,
+    "source_candidate_symbol": pl.Utf8,
+    "source_candidate_id": pl.Utf8,
+    "symbol_match_verified": pl.Boolean,
     "paper_source": pl.Utf8,
     "paper_count_scope": pl.Utf8,
     "risk_level": pl.Utf8,
@@ -100,6 +103,9 @@ PAPER_RUN_SCHEMA = {
     "paper_disabled_by_research_portfolio": pl.Boolean,
     "paper_trigger_type": pl.Utf8,
     "paper_trigger_reason": pl.Utf8,
+    "source_candidate_symbol": pl.Utf8,
+    "source_candidate_id": pl.Utf8,
+    "symbol_match_verified": pl.Boolean,
     "paper_source": pl.Utf8,
     "paper_count_scope": pl.Utf8,
     "paper_pnl_bps": pl.Float64,
@@ -1180,6 +1186,28 @@ def _paper_entry_policy(
     raw_would_enter: bool,
     portfolio_overrides: dict[tuple[str, str], dict[str, Any]],
 ) -> dict[str, Any]:
+    if _is_sol_f4_tracking_row(proposal_id, candidate, symbol):
+        if not _sol_f4_symbol_match_verified(row, payload, symbol):
+            return {
+                "would_enter": False,
+                "no_sample_reason": "symbol_mismatch",
+                "paper_disabled_by_research_portfolio": False,
+                "tracking_stage": "paper_review_entry_conditions_not_met",
+                "clear_paper_pnl": True,
+                "paper_trigger_type": "",
+                "paper_trigger_reason": "source_candidate_symbol_mismatch",
+            }
+        sol_no_sample_reason = _sol_f4_factor_no_sample_reason(row, payload, symbol)
+        if sol_no_sample_reason == "alpha6_not_buy":
+            return {
+                "would_enter": False,
+                "no_sample_reason": sol_no_sample_reason,
+                "paper_disabled_by_research_portfolio": False,
+                "tracking_stage": "paper_review_entry_conditions_not_met",
+                "clear_paper_pnl": True,
+                "paper_trigger_type": "",
+                "paper_trigger_reason": sol_no_sample_reason,
+            }
     if _eth_f3_disabled_by_research_portfolio(
         row=row,
         payload=payload,
@@ -1260,6 +1288,9 @@ def _sol_f4_factor_candidate_run_rows(
     existing_keys = _sol_f4_existing_candidate_keys(existing_rows)
     rows: list[dict[str, Any]] = []
     for candidate in candidate_events.to_dicts():
+        candidate_payload = _payload(candidate)
+        if not _sol_f4_candidate_symbol_matches(candidate, candidate_payload):
+            continue
         synthetic = _sol_f4_candidate_event_as_paper_row(candidate)
         payload = _payload(synthetic)
         trigger_reason = _sol_f4_factor_trigger_reason(
@@ -1269,13 +1300,21 @@ def _sol_f4_factor_candidate_run_rows(
             SOL_F4_STRATEGY_CANDIDATE,
             SOL_F4_SYMBOL,
         )
-        if not trigger_reason:
-            continue
         key = _sol_f4_candidate_key(synthetic, payload)
         if key in existing_keys:
             continue
         existing_keys.add(key)
-        synthetic["paper_trigger_reason"] = trigger_reason
+        if trigger_reason:
+            synthetic["paper_trigger_reason"] = trigger_reason
+            synthetic["would_enter"] = "true"
+        else:
+            synthetic["paper_trigger_reason"] = ""
+            synthetic["would_enter"] = "false"
+            synthetic["no_sample_reason"] = _sol_f4_factor_no_sample_reason(
+                synthetic,
+                payload,
+                SOL_F4_SYMBOL,
+            )
         rows.append(_v5_run_row(synthetic, created_at))
     return rows
 
@@ -1290,6 +1329,9 @@ def _sol_f4_factor_candidate_report_rows(
     existing_keys = _sol_f4_existing_candidate_keys(existing_rows)
     rows: list[dict[str, Any]] = []
     for candidate in candidate_events.to_dicts():
+        candidate_payload = _payload(candidate)
+        if not _sol_f4_candidate_symbol_matches(candidate, candidate_payload):
+            continue
         synthetic = _sol_f4_candidate_event_as_paper_row(candidate)
         payload = _payload(synthetic)
         trigger_reason = _sol_f4_factor_trigger_reason(
@@ -1299,13 +1341,21 @@ def _sol_f4_factor_candidate_report_rows(
             SOL_F4_STRATEGY_CANDIDATE,
             SOL_F4_SYMBOL,
         )
-        if not trigger_reason:
-            continue
         key = _sol_f4_candidate_key(synthetic, payload)
         if key in existing_keys:
             continue
         existing_keys.add(key)
-        synthetic["paper_trigger_reason"] = trigger_reason
+        if trigger_reason:
+            synthetic["paper_trigger_reason"] = trigger_reason
+            synthetic["would_enter"] = "true"
+        else:
+            synthetic["paper_trigger_reason"] = ""
+            synthetic["would_enter"] = "false"
+            synthetic["no_sample_reason"] = _sol_f4_factor_no_sample_reason(
+                synthetic,
+                payload,
+                SOL_F4_SYMBOL,
+            )
         rows.append(_v5_run_report_row(synthetic, created_at))
     return rows
 
@@ -1343,6 +1393,10 @@ def _sol_f4_candidate_event_as_paper_row(candidate: dict[str, Any]) -> dict[str,
         "strategy_candidate",
         "candidate",
     )
+    source_symbol = normalize_symbol(
+        _field(candidate, payload, "source_candidate_symbol", "symbol", "normalized_symbol")
+    )
+    source_candidate_id = _field(candidate, payload, "source_candidate_id", "candidate_id")
     ts_utc = _field(candidate, payload, "ts_utc", "ts", "timestamp", "created_at")
     merged_payload = {
         **payload,
@@ -1352,6 +1406,9 @@ def _sol_f4_candidate_event_as_paper_row(candidate: dict[str, Any]) -> dict[str,
             if key not in {"raw_payload_json"} and value is not None
         },
         "source_strategy_candidate": source_candidate,
+        "source_candidate_symbol": source_symbol,
+        "source_candidate_id": source_candidate_id,
+        "symbol_match_verified": source_symbol == SOL_F4_SYMBOL,
         "paper_trigger_type": "factor_condition_match",
     }
     return {
@@ -1361,13 +1418,16 @@ def _sol_f4_candidate_event_as_paper_row(candidate: dict[str, Any]) -> dict[str,
         "strategy_id": SOL_F4_PAPER_PROPOSAL_ID,
         "strategy_candidate": SOL_F4_STRATEGY_CANDIDATE,
         "source_strategy_candidate": source_candidate,
+        "source_candidate_symbol": source_symbol,
+        "source_candidate_id": source_candidate_id,
+        "symbol_match_verified": source_symbol == SOL_F4_SYMBOL,
         "symbol": SOL_F4_SYMBOL,
         "normalized_symbol": SOL_F4_SYMBOL,
         "recommended_mode": "paper",
         "board_decision": "PAPER_READY",
         "suggested_horizon": "24h",
         "horizon_hours": "24",
-        "would_enter": "true",
+        "would_enter": "false",
         "would_exit": "false",
         "would_size": "100",
         "would_size_usdt": "100",
@@ -1391,6 +1451,8 @@ def _sol_f4_factor_trigger_reason(
 ) -> str:
     if not _is_sol_f4_tracking_row(proposal_id, candidate, symbol):
         return ""
+    if not _sol_f4_symbol_match_verified(row, payload, symbol):
+        return ""
     row_symbol = normalize_symbol(_field(row, payload, "symbol", "normalized_symbol") or symbol)
     if row_symbol != SOL_F4_SYMBOL:
         return ""
@@ -1413,6 +1475,56 @@ def _sol_f4_factor_trigger_reason(
         "alpha6_buy,f4_non_negative,expected_edge_gt_required_edge,"
         "cost_gate_verified,not_risk_off"
     )
+
+
+def _sol_f4_factor_no_sample_reason(
+    row: dict[str, Any],
+    payload: dict[str, Any],
+    symbol: str,
+) -> str:
+    if not _sol_f4_symbol_match_verified(row, payload, symbol):
+        return "symbol_mismatch"
+    alpha6_side = str(_field(row, payload, "alpha6_side") or "").strip().lower()
+    if alpha6_side and alpha6_side not in {"buy", "long"}:
+        return "alpha6_not_buy"
+    f4_value = _factor_float(_field(row, payload, "f4_volume_expansion"))
+    if f4_value is None or f4_value < 0:
+        return "f4_not_expanding"
+    expected = _optional_float(_field(row, payload, "expected_edge_bps", "edge_bps"))
+    required = _optional_float(_field(row, payload, "required_edge_bps", "required_edge"))
+    if expected is None or required is None or expected <= required:
+        return "edge_not_above_required"
+    if _optional_bool(_field(row, payload, "cost_gate_verified", "cost.gate_verified")) is not True:
+        return "cost_gate_not_verified"
+    if _risk_off_for_sol_f4(row, payload):
+        return "risk_off"
+    return ""
+
+
+def _sol_f4_source_candidate_symbol(
+    row: dict[str, Any],
+    payload: dict[str, Any],
+) -> str:
+    return normalize_symbol(
+        _field(row, payload, "source_candidate_symbol", "candidate_symbol")
+        or _field(row, payload, "symbol", "normalized_symbol")
+    )
+
+
+def _sol_f4_symbol_match_verified(
+    row: dict[str, Any],
+    payload: dict[str, Any],
+    symbol: str,
+) -> bool:
+    paper_symbol = normalize_symbol(symbol) or normalize_symbol(
+        _field(row, payload, "symbol", "normalized_symbol")
+    )
+    source_symbol = _sol_f4_source_candidate_symbol(row, payload)
+    return paper_symbol == SOL_F4_SYMBOL and source_symbol == SOL_F4_SYMBOL
+
+
+def _sol_f4_candidate_symbol_matches(candidate: dict[str, Any], payload: dict[str, Any]) -> bool:
+    return _sol_f4_source_candidate_symbol(candidate, payload) == SOL_F4_SYMBOL
 
 
 def _is_sol_f4_tracking_row(proposal_id: str, candidate: str, symbol: str) -> bool:
@@ -1598,6 +1710,28 @@ def _paper_source(row: dict[str, Any]) -> str:
     return source or "v5_telemetry"
 
 
+def _source_candidate_metadata(
+    row: dict[str, Any],
+    payload: dict[str, Any],
+    symbol: str,
+) -> dict[str, Any]:
+    raw_source_symbol = _field(row, payload, "source_candidate_symbol", "candidate_symbol")
+    source_symbol = normalize_symbol(raw_source_symbol) if raw_source_symbol else ""
+    normalized_symbol = normalize_symbol(symbol)
+    explicit_verified = _optional_bool(_field(row, payload, "symbol_match_verified"))
+    if explicit_verified is None:
+        symbol_match_verified = (
+            not source_symbol or not normalized_symbol or source_symbol == normalized_symbol
+        )
+    else:
+        symbol_match_verified = explicit_verified
+    return {
+        "source_candidate_symbol": source_symbol,
+        "source_candidate_id": _field(row, payload, "source_candidate_id", "candidate_id"),
+        "symbol_match_verified": symbol_match_verified,
+    }
+
+
 def _v5_run_report_row(
     row: dict[str, Any],
     created_at: str,
@@ -1635,6 +1769,7 @@ def _v5_run_report_row(
         paper_pnl_bps = None
         paper_pnl_usdt = None
     paper_source = _paper_source_for_run(row, payload, enter_policy, raw_would_enter)
+    source_candidate = _source_candidate_metadata(row, payload, str(symbol or ""))
     return {
         "as_of_date": _as_of_date(row, payload),
         "strategy_id": strategy_id or proposal_id,
@@ -1655,6 +1790,7 @@ def _v5_run_report_row(
         or _field(row, payload, "paper_trigger_type"),
         "paper_trigger_reason": enter_policy["paper_trigger_reason"]
         or _field(row, payload, "paper_trigger_reason"),
+        **source_candidate,
         "paper_source": paper_source,
         "paper_count_scope": _field(row, payload, "paper_count_scope", default="daily"),
         "risk_level": _field(row, payload, "risk_level"),
@@ -1754,6 +1890,7 @@ def _v5_run_row(
         paper_pnl_bps_72h = None
         paper_pnl_usdt = None
     paper_source = _paper_source_for_run(row, payload, enter_policy, raw_would_enter)
+    source_candidate = _source_candidate_metadata(row, payload, str(symbol or ""))
     return {
         "as_of_date": _as_of_date(row, payload),
         "proposal_id": proposal_id,
@@ -1793,6 +1930,7 @@ def _v5_run_row(
         or _field(row, payload, "paper_trigger_type"),
         "paper_trigger_reason": enter_policy["paper_trigger_reason"]
         or _field(row, payload, "paper_trigger_reason"),
+        **source_candidate,
         "paper_source": paper_source,
         "paper_count_scope": _field(row, payload, "paper_count_scope", default="daily"),
         "paper_pnl_bps": paper_pnl_bps,

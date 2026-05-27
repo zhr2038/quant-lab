@@ -810,6 +810,96 @@ def test_sol_f4_factor_condition_can_override_no_enter_v5_paper_row():
     assert "cost_gate_verified" in run["paper_trigger_reason"]
 
 
+def test_sol_f4_synthetic_uses_sol_candidate_not_bnb_metrics():
+    candidate_events = pl.DataFrame(
+        [
+            {
+                "candidate_id": "bnb-candidate",
+                "run_id": "run_20260527_01",
+                "ts_utc": "2026-05-27T01:00:00Z",
+                "symbol": "BNB-USDT",
+                "strategy_candidate": "v5.f3_dominant_entry",
+                "final_decision": "no_order",
+                "alpha6_side": "buy",
+                "f4_volume_expansion": "0.081574",
+                "f5_rsi_trend_confirm": "-0.027027",
+                "expected_edge_bps": "75",
+                "required_edge_bps": "25",
+                "cost_gate_verified": "true",
+                "current_regime": "TREND_UP",
+                "raw_payload_json": "{}",
+            },
+            {
+                "candidate_id": "sol-candidate",
+                "run_id": "run_20260527_01",
+                "ts_utc": "2026-05-27T01:00:00Z",
+                "symbol": "SOL-USDT",
+                "strategy_candidate": "v5.f3_dominant_entry",
+                "final_decision": "no_order",
+                "alpha6_side": "sell",
+                "f4_volume_expansion": "0.222222",
+                "f5_rsi_trend_confirm": "0.333333",
+                "expected_edge_bps": "75",
+                "required_edge_bps": "25",
+                "cost_gate_verified": "true",
+                "current_regime": "TREND_UP",
+                "raw_payload_json": "{}",
+            },
+        ]
+    )
+
+    rows = build_paper_strategy_runs_from_v5(pl.DataFrame(), candidate_events=candidate_events)
+    report_rows = build_paper_strategy_runs_report_from_v5(
+        pl.DataFrame(),
+        candidate_events=candidate_events,
+    )
+
+    assert rows.height == 1
+    run = rows.to_dicts()[0]
+    assert run["proposal_id"] == "SOL_F4_VOLUME_EXPANSION_PAPER_V1"
+    assert run["symbol"] == "SOL-USDT"
+    assert run["source_candidate_symbol"] == "SOL-USDT"
+    assert run["source_candidate_id"] == "sol-candidate"
+    assert run["symbol_match_verified"] is True
+    assert run["would_enter"] is False
+    assert run["no_sample_reason"] == "alpha6_not_buy"
+    report = report_rows.to_dicts()[0]
+    assert report["alpha6_side"] == "sell"
+    assert report["f4_volume_expansion"] == "0.222222"
+    assert report["f5_rsi_trend_confirm"] == "0.333333"
+
+
+def test_sol_f4_symbol_mismatch_blocks_synthetic_enter():
+    rows = pl.DataFrame(
+        [
+            {
+                "as_of_date": "2026-05-27",
+                "proposal_id": "SOL_F4_VOLUME_EXPANSION_PAPER_V1",
+                "strategy_candidate": "v5.f4_volume_expansion_entry",
+                "source_strategy_candidate": "v5.f3_dominant_entry",
+                "source_candidate_symbol": "BNB-USDT",
+                "source_candidate_id": "bnb-candidate",
+                "symbol": "SOL-USDT",
+                "would_enter": "true",
+                "final_decision": "no_order",
+                "alpha6_side": "buy",
+                "f4_volume_expansion": "0.10",
+                "expected_edge_bps": "80",
+                "required_edge_bps": "25",
+                "cost_gate_verified": "true",
+                "current_regime": "TREND_UP",
+                "raw_payload_json": "{}",
+            }
+        ]
+    )
+
+    run = build_paper_strategy_runs_from_v5(rows).to_dicts()[0]
+
+    assert run["symbol_match_verified"] is False
+    assert run["would_enter"] is False
+    assert run["no_sample_reason"] == "symbol_mismatch"
+
+
 def test_paper_daily_and_slippage_use_run_cost_source_mix(tmp_path):
     lake = tmp_path / "lake"
     run_rows = [

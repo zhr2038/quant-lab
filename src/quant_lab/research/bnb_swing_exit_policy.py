@@ -19,7 +19,7 @@ from quant_lab.symbols import normalize_symbol
 
 SOURCE_NAME = "quant_lab.bnb_swing_exit_policy_review"
 SCHEMA_VERSION = "bnb_swing_exit_policy_review.v0.1"
-SUMMARY_SCHEMA_VERSION = "bnb_swing_exit_policy_summary.v0.1"
+SUMMARY_SCHEMA_VERSION = "bnb_swing_exit_policy_summary.v0.2"
 DEFAULT_ROUNDTRIP_COST_BPS = 30.0
 HORIZONS = (4, 8, 12, 24)
 DELAYED_EXIT_HOURS = (6, 12, 24)

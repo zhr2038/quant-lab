@@ -4,6 +4,7 @@ This API is read-only and must not mutate strategy state or exchange state.
 """
 
 import csv
+import hashlib
 import hmac
 import io
 import json
@@ -846,12 +847,47 @@ def _strategy_opportunity_advisory_response(lake_root: Path) -> Response:
     with _STRATEGY_OPPORTUNITY_ADVISORY_CACHE_LOCK:
         cached = _STRATEGY_OPPORTUNITY_ADVISORY_CACHE.get(cache_key)
         if cached is not None and cached[0] == signature and cached[2] is not None:
-            return Response(content=cached[2], media_type="application/json")
+            headers = _strategy_opportunity_advisory_response_headers(
+                lake_root,
+                list(cached[1]),
+                cache_hit=True,
+            )
+            return Response(content=cached[2], media_type="application/json", headers=headers)
     rows = _strategy_opportunity_advisory_rows(lake_root)
     payload = _strategy_opportunity_advisory_json_bytes(rows)
     with _STRATEGY_OPPORTUNITY_ADVISORY_CACHE_LOCK:
         _STRATEGY_OPPORTUNITY_ADVISORY_CACHE[cache_key] = (signature, tuple(rows), payload)
-    return Response(content=payload, media_type="application/json")
+    headers = _strategy_opportunity_advisory_response_headers(lake_root, rows, cache_hit=False)
+    return Response(content=payload, media_type="application/json", headers=headers)
+
+
+def _strategy_opportunity_advisory_response_headers(
+    lake_root: Path,
+    rows: list[StrategyOpportunityAdvisoryRow] | tuple[StrategyOpportunityAdvisoryRow, ...],
+    *,
+    cache_hit: bool,
+) -> dict[str, str]:
+    latest_generated = max((row.generated_at for row in rows), default=None)
+    latest_generated_text = (
+        latest_generated.astimezone(UTC).isoformat().replace("+00:00", "Z")
+        if latest_generated is not None
+        else ""
+    )
+    try:
+        resolved_lake = str(lake_root.resolve())
+    except OSError:
+        resolved_lake = str(lake_root)
+    lake_root_hash = hashlib.sha256(resolved_lake.encode("utf-8")).hexdigest()[:16]
+    return {
+        "X-Advisory-Dataset-Generated-At": latest_generated_text,
+        "X-Advisory-Row-Count": str(len(rows)),
+        "X-Lake-Root-Hash": lake_root_hash,
+        "X-Advisory-Cache-Hit": "true" if cache_hit else "false",
+        "X-Quant-Lab-Advisory-Dataset-Generated-At": latest_generated_text,
+        "X-Quant-Lab-Advisory-Row-Count": str(len(rows)),
+        "X-Quant-Lab-Lake-Root-Hash": lake_root_hash,
+        "X-Quant-Lab-Api-Cache-Hit": "true" if cache_hit else "false",
+    }
 
 
 def _strategy_opportunity_advisory_json_bytes(

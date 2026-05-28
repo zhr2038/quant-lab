@@ -102,6 +102,18 @@ def test_strategy_opportunity_advisory_endpoint_reads_gold(tmp_path, monkeypatch
     response = TestClient(app).get("/v1/strategy-opportunity-advisory")
 
     assert response.status_code == 200
+    assert response.headers["x-advisory-dataset-generated-at"].startswith(
+        "2026-05-20T00:00:00"
+    )
+    assert response.headers["x-advisory-row-count"] == "2"
+    assert response.headers["x-lake-root-hash"]
+    assert response.headers["x-advisory-cache-hit"] == "false"
+    assert response.headers["x-quant-lab-advisory-dataset-generated-at"].startswith(
+        "2026-05-20T00:00:00"
+    )
+    assert response.headers["x-quant-lab-advisory-row-count"] == "2"
+    assert response.headers["x-quant-lab-lake-root-hash"]
+    assert response.headers["x-quant-lab-api-cache-hit"] == "false"
     rows = response.json()
     paper = next(row for row in rows if row["decision"] == "PAPER_READY")
     killed = next(row for row in rows if row["decision"] == "KILL")
@@ -126,6 +138,11 @@ def test_strategy_opportunity_advisory_endpoint_reads_gold(tmp_path, monkeypatch
     assert killed["would_enter"] is False
     assert killed["no_sample_reason"] == "killed_candidate"
     assert killed["max_live_notional_usdt"] == 0.0
+
+    cached_response = TestClient(app).get("/v1/strategy-opportunity-advisory")
+    assert cached_response.status_code == 200
+    assert cached_response.headers["x-quant-lab-api-cache-hit"] == "true"
+    assert cached_response.headers["x-quant-lab-advisory-row-count"] == "2"
 
 
 def test_strategy_opportunity_advisory_endpoint_applies_portfolio_final_overlay(
@@ -709,6 +726,17 @@ def test_strategy_opportunity_advisory_caches_unchanged_source_signature(
 
     assert first.status_code == 200
     assert second.status_code == 200
+    assert first.headers["x-advisory-row-count"] == "1"
+    assert first.headers["x-advisory-dataset-generated-at"].startswith("2026-05-20T00:00:00")
+    assert first.headers["x-lake-root-hash"]
+    assert first.headers["x-advisory-cache-hit"] == "false"
+    assert second.headers["x-advisory-row-count"] == "1"
+    assert (
+        second.headers["x-advisory-dataset-generated-at"]
+        == first.headers["x-advisory-dataset-generated-at"]
+    )
+    assert second.headers["x-lake-root-hash"] == first.headers["x-lake-root-hash"]
+    assert second.headers["x-advisory-cache-hit"] == "true"
     assert second.json() == first.json()
 
 

@@ -2,12 +2,15 @@ import json
 from datetime import UTC, datetime
 
 import polars as pl
+from typer.testing import CliRunner
 
-from quant_lab.cli import data_quality_command
+from quant_lab.cli import app
 from quant_lab.data.lake import write_parquet_dataset
 
+runner = CliRunner()
 
-def test_data_quality_command_outputs_full_json(tmp_path, capsys):
+
+def test_data_quality_command_outputs_full_json(tmp_path):
     lake = tmp_path / "lake"
     write_parquet_dataset(
         pl.DataFrame(
@@ -31,19 +34,67 @@ def test_data_quality_command_outputs_full_json(tmp_path, capsys):
         lake / "gold" / "cost_bucket_daily",
     )
 
-    data_quality_command(
-        lake_root=lake,
-        dataset="cost_bucket_daily",
-        compact_output=False,
+    result = runner.invoke(
+        app,
+        [
+            "data-quality",
+            "--lake-root",
+            str(lake),
+            "--dataset",
+            "cost_bucket_daily",
+        ],
     )
 
-    payload = json.loads(capsys.readouterr().out)
+    assert result.exit_code == 0
+    payload = json.loads(result.stdout)
     assert payload["dataset_count"] == 1
     assert payload["checks"]
     assert any(check["rule"] == "cost_negative_bps" for check in payload["checks"])
 
 
-def test_data_quality_command_compact_output_includes_top_failing_checks(tmp_path, capsys):
+def test_data_quality_command_dataset_filter_runs_only_requested_dataset(tmp_path):
+    lake = tmp_path / "lake"
+    write_parquet_dataset(
+        pl.DataFrame(
+            [
+                {
+                    "venue": "okx",
+                    "symbol": "BTC-USDT",
+                    "market_type": "SPOT",
+                    "timeframe": "1H",
+                    "ts": datetime(2026, 5, 28, 1, tzinfo=UTC),
+                    "open": 100.0,
+                    "high": 101.0,
+                    "low": 99.0,
+                    "close": 100.5,
+                    "volume": 1.0,
+                    "source": "fixture",
+                    "ingest_ts": datetime(2026, 5, 28, 1, 1, tzinfo=UTC),
+                    "is_closed": True,
+                }
+            ]
+        ),
+        lake / "silver" / "market_bar",
+    )
+
+    result = runner.invoke(
+        app,
+        [
+            "data-quality",
+            "--lake-root",
+            str(lake),
+            "--dataset",
+            "market_bar",
+        ],
+    )
+
+    assert result.exit_code == 0
+    payload = json.loads(result.stdout)
+    assert payload["dataset_count"] == 1
+    assert {check["dataset"] for check in payload["checks"]} == {"market_bar"}
+
+
+def test_data_quality_command_compact_output_includes_top_failing_checks(tmp_path):
     lake = tmp_path / "lake"
     write_parquet_dataset(
         pl.DataFrame(
@@ -67,12 +118,20 @@ def test_data_quality_command_compact_output_includes_top_failing_checks(tmp_pat
         lake / "gold" / "cost_bucket_daily",
     )
 
-    data_quality_command(
-        lake_root=lake,
-        dataset="cost_bucket_daily",
-        compact_output=True,
+    result = runner.invoke(
+        app,
+        [
+            "data-quality",
+            "--lake-root",
+            str(lake),
+            "--dataset",
+            "cost_bucket_daily",
+            "--compact-output",
+        ],
     )
 
-    payload = json.loads(capsys.readouterr().out)
+    assert result.exit_code == 0
+    payload = json.loads(result.stdout)
     assert payload["status"] == "FAIL"
+    assert "checks" not in payload
     assert payload["failing_checks"][0]["rule"] == "cost_negative_bps"

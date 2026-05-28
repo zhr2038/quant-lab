@@ -6,6 +6,7 @@ from quant_lab.ops.dataset_registry import (
     dataset_registry_rows,
     get_dataset_spec,
 )
+from quant_lab.research.publish import ALPHA_EVIDENCE_SCHEMA, GATE_DECISION_SCHEMA
 
 
 def test_dataset_registry_declares_core_ownership_and_sla():
@@ -71,3 +72,25 @@ def test_dataset_registry_rows_are_serializable():
     assert market_bar["owner"] == "market-data"
     assert "primary_key_json" in market_bar
     assert "quality_rules_json" in market_bar
+
+
+def test_research_dataset_required_columns_match_published_schemas():
+    alpha_evidence = get_dataset_spec("alpha_evidence")
+    gate_decision = get_dataset_spec("gate_decision")
+
+    assert alpha_evidence is not None
+    assert set(alpha_evidence.required_columns).issubset(ALPHA_EVIDENCE_SCHEMA)
+    assert "status" not in alpha_evidence.required_columns
+    assert "sample_count" not in alpha_evidence.required_columns
+
+    assert gate_decision is not None
+    assert set(gate_decision.required_columns).issubset(GATE_DECISION_SCHEMA)
+    assert "decision" not in gate_decision.required_columns
+
+
+def test_job_run_history_uses_duration_seconds_schema():
+    job_run_history = get_dataset_spec("job_run_history")
+
+    assert job_run_history is not None
+    assert "duration_seconds" in job_run_history.required_columns
+    assert "duration_s" not in job_run_history.required_columns

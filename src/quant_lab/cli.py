@@ -37,6 +37,7 @@ from quant_lab.ingest.okx_readonly_private import (
 )
 from quant_lab.ingest.okx_ws_public import collect_okx_public_ws, collect_okx_public_ws_universe
 from quant_lab.ingest.v5_reports import inspect_v5_reports, publish_v5_reports_to_lake
+from quant_lab.ops.data_quality import run_data_quality
 from quant_lab.ops.lake_health import (
     lake_dataset_quality_summary,
     lake_file_health_summary,
@@ -625,11 +626,10 @@ def data_quality_command(
         ),
     ] = False,
 ) -> None:
-    result = lake_dataset_quality_summary(
+    result = run_data_quality(
         lake_root,
         dataset_names=_parse_dataset_names(dataset),
-        include_checks=True,
-    )
+    ).to_dict(include_checks=True)
     output = _compact_data_quality_payload(result) if compact_output else result
     typer.echo(
         json.dumps(
@@ -958,7 +958,7 @@ def _compact_data_quality_payload(data_quality: dict[str, Any]) -> dict[str, Any
                 "detail": check.get("detail"),
                 "next_action": check.get("next_action"),
             }
-            for check in failing[:10]
+            for check in failing[:20]
         ],
     }
 

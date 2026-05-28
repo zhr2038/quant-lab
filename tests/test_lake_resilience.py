@@ -1,3 +1,4 @@
+import os
 from concurrent.futures import ThreadPoolExecutor
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
@@ -8,6 +9,7 @@ import pytest
 from quant_lab.data.lake import (
     _lock_is_stale,
     _parquet_file_batches,
+    _remove_internal_path,
     append_parquet_dataset,
     compact_parquet_dataset,
     compact_parquet_directory_files,
@@ -57,6 +59,21 @@ def test_read_parquet_dataset_ignores_internal_tmp_dir(tmp_path):
 
     assert df.height == 1
     assert df["path"].to_list() == ["/v1/health"]
+
+
+@pytest.mark.skipif(os.name == "nt", reason="POSIX mode repair is not meaningful on Windows")
+def test_remove_internal_path_repairs_unwritable_internal_directory(tmp_path):
+    dataset = tmp_path / "lake" / "gold" / "lake_file_health_daily"
+    internal = dataset.parent / "__lake_file_health_daily_backup_test"
+    internal.mkdir(parents=True)
+    data_file = internal / "data.parquet"
+    data_file.write_bytes(b"PAR1xxxxPAR1")
+    data_file.chmod(0o444)
+    internal.chmod(0o555)
+
+    _remove_internal_path(internal)
+
+    assert not internal.exists()
 
 
 def test_write_parquet_dataset_falls_back_when_dataset_tmp_path_is_unusable(tmp_path):

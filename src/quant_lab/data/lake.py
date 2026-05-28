@@ -1,6 +1,7 @@
 import logging
 import os
 import shutil
+import stat
 import subprocess
 import threading
 import time
@@ -99,6 +100,7 @@ def _write_parquet_dataset_unlocked(
 ) -> Path:
     path = Path(dataset_path)
     path.parent.mkdir(parents=True, exist_ok=True)
+    _ensure_lake_dir_permissions(path.parent)
 
     sorted_df = _sort_dataframe(df)
 
@@ -107,10 +109,12 @@ def _write_parquet_dataset_unlocked(
         backup = path.parent / f"__{path.name}_backup_{uuid.uuid4().hex}"
         try:
             sorted_df.write_parquet(staging, partition_by=partition_by, mkdir=True)
+            _ensure_internal_tree_permissions(staging)
             if path.exists():
                 _replace_path(path, backup)
             try:
                 _replace_path(staging, path)
+                _ensure_internal_tree_permissions(path)
             except Exception:
                 if backup.exists() and not path.exists():
                     _replace_path(backup, path)
@@ -127,11 +131,13 @@ def _write_parquet_dataset_unlocked(
     backup = path.parent / f"__{path.name}_backup_{uuid.uuid4().hex}"
     try:
         staging.mkdir(parents=True, exist_ok=False)
+        _ensure_lake_dir_permissions(staging)
         sorted_df.write_parquet(staging / "data.parquet")
         if path.exists():
             _replace_path(path, backup)
         try:
             _replace_path(staging, path)
+            _ensure_lake_dir_permissions(path)
         except Exception:
             if backup.exists() and not path.exists():
                 _replace_path(backup, path)
@@ -184,6 +190,7 @@ def _append_parquet_dataset_unlocked(
 ) -> AppendParquetResult:
     path = Path(dataset_path)
     path.mkdir(parents=True, exist_ok=True)
+    _ensure_lake_dir_permissions(path)
     frame = _sort_dataframe(df)
     partition_columns = _partition_columns(partition_by)
     chunks = _partitioned_chunks(frame, partition_columns)
@@ -194,6 +201,7 @@ def _append_parquet_dataset_unlocked(
     for partition_values, partition_frame in chunks:
         partition_dir = _partition_dir(path, partition_values)
         partition_dir.mkdir(parents=True, exist_ok=True)
+        _ensure_lake_dir_permissions(partition_dir)
         touched_dirs.add(partition_dir)
         for offset in range(0, partition_frame.height, max_rows):
             chunk = partition_frame.slice(offset, max_rows)
@@ -270,6 +278,7 @@ def compact_parquet_dataset(
             if rows == 0:
                 _remove_existing_dataset(path)
                 path.mkdir(parents=True, exist_ok=True)
+                _ensure_lake_dir_permissions(path)
                 return CompactParquetResult(
                     dataset_path=str(path),
                     source_file_count=source_file_count,
@@ -914,6 +923,7 @@ def _dataset_temp_file(dataset_path: Path) -> Path:
         temp_file = temp_dir / file_name
         try:
             temp_dir.mkdir(parents=True, exist_ok=True)
+            _ensure_lake_dir_permissions(temp_dir)
             fd = os.open(
                 _replaceable_path(temp_file),
                 os.O_CREAT | os.O_EXCL | os.O_WRONLY,
@@ -937,6 +947,45 @@ def _dataset_temp_dirs(dataset_path: Path) -> list[Path]:
         dataset_path / "._tmp",
         dataset_path.parent / f".{dataset_path.name}._tmp",
     ]
+
+
+def _ensure_lake_dir_permissions(path: Path) -> None:
+    """Keep lake-created directories group-writable for service/user handoff."""
+
+    if os.name == "nt":
+        return
+    try:
+        current_mode = stat.S_IMODE(path.stat().st_mode)
+        desired_mode = current_mode | stat.S_IRGRP | stat.S_IWGRP | stat.S_IXGRP | stat.S_ISGID
+        if desired_mode != current_mode:
+            os.chmod(_replaceable_path(path), desired_mode)
+    except OSError as exc:
+        logger.debug("failed to adjust lake directory permissions for %s: %s", path, exc)
+
+
+def _ensure_internal_tree_permissions(path: Path) -> None:
+    if os.name == "nt" or not path.exists():
+        return
+    for directory in [path, *(item for item in path.rglob("*") if item.is_dir())]:
+        _ensure_lake_dir_permissions(directory)
+
+
+def _make_path_removable(path: Path) -> None:
+    if os.name == "nt" or not path.exists():
+        return
+    targets = [path]
+    if path.is_dir():
+        targets.extend(path.rglob("*"))
+    for target in targets:
+        try:
+            mode = stat.S_IMODE(target.stat().st_mode)
+            writable_mode = mode | stat.S_IWUSR
+            if target.is_dir():
+                writable_mode |= stat.S_IXUSR | stat.S_IWGRP | stat.S_IXGRP
+            if writable_mode != mode:
+                os.chmod(_replaceable_path(target), writable_mode)
+        except OSError:
+            continue
 
 
 def _replaceable_path(path: Path) -> str | Path:
@@ -1106,6 +1155,7 @@ def _move_repaired_staging_files(staging: Path, dataset_path: Path) -> int:
             continue
         target = dataset_path / repaired_file.relative_to(staging)
         target.parent.mkdir(parents=True, exist_ok=True)
+        _ensure_lake_dir_permissions(target.parent)
         _replace_path(repaired_file, target)
         moved += 1
     return moved
@@ -1283,6 +1333,7 @@ def _remove_internal_path(path: Path) -> None:
     if not _is_internal_lake_file(path):
         raise ValueError(f"refusing to remove non-internal lake path: {path}")
     try:
+        _make_path_removable(path)
         if path.is_dir():
             shutil.rmtree(_replaceable_path(path))
         else:
@@ -1304,6 +1355,7 @@ def _remove_stale_parquet_files(path: Path, keep: Path) -> None:
 @contextmanager
 def _dataset_lock(dataset_path: Path, *, timeout_seconds: float = 30.0) -> object:
     dataset_path.parent.mkdir(parents=True, exist_ok=True)
+    _ensure_lake_dir_permissions(dataset_path.parent)
     lock_path = dataset_path.parent / f".{dataset_path.name}.lock"
     process_lock = _process_lock(lock_path)
     process_lock.acquire()

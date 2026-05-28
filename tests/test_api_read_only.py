@@ -36,6 +36,8 @@ def test_read_only_example_endpoints_and_catalog():
     assert "market_bar" in datasets
     assert "cost_bucket_daily" in datasets
     assert "risk_permission" in datasets
+    assert "v5_quant_lab_mode_daily" in datasets
+    assert "v5_quant_lab_enforcement_daily" in datasets
     assert "v5_candidate_event" in datasets
     assert gate.status_code == 200
     assert gate.json()["status"] == "QUARANTINE"

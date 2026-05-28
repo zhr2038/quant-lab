@@ -40,6 +40,7 @@ from quant_lab.data.lake import (
     read_parquet_lazy,
 )
 from quant_lab.gates.defaults import conservative_example_gate_decision
+from quant_lab.ops.dataset_registry import dataset_names
 from quant_lab.ops.metrics import api_metrics_summary, record_api_request
 from quant_lab.research.advisory_overrides import (
     portfolio_overridden_decision_mode,
@@ -183,22 +184,7 @@ class StrategyOpportunityAdvisoryRow(BaseModel):
     max_live_notional_usdt: float = 0.0
 
 
-KNOWN_DATASETS = [
-    "market_bar",
-    "feature_value",
-    "feature_coverage_daily",
-    "feature_anomaly_daily",
-    "cost_bucket_daily",
-    "cost_health_daily",
-    "alpha_evidence",
-    "gate_decision",
-    "risk_permission",
-    "api_request_metrics",
-    "job_run_history",
-    "lake_file_health_daily",
-    "v5_quant_lab_mode_daily",
-    "v5_quant_lab_enforcement_daily",
-]
+KNOWN_DATASETS = dataset_names()
 
 
 def _bool_env(name: str, *, default: bool) -> bool:

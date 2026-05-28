@@ -1,7 +1,11 @@
 import polars as pl
 
 from quant_lab.data.lake import write_parquet_dataset
-from quant_lab.ops.lake_health import lake_file_health_summary, write_lake_file_health_daily
+from quant_lab.ops.lake_health import (
+    lake_dataset_quality_summary,
+    lake_file_health_summary,
+    write_lake_file_health_daily,
+)
 
 
 def test_lake_file_health_summary_is_read_only(tmp_path):
@@ -53,3 +57,17 @@ def test_lake_file_health_ignores_internal_temp_and_backup_parquet(tmp_path):
     market_bar = next(row for row in summary["rows"] if row["dataset"] == "market_bar")
 
     assert market_bar["parquet_file_count"] == 1
+
+
+def test_lake_dataset_quality_summary_is_read_only(tmp_path):
+    lake = tmp_path / "lake"
+    write_parquet_dataset(
+        pl.DataFrame([{"symbol": "BTC-USDT", "value": 1.0}]),
+        lake / "silver" / "market_bar",
+    )
+
+    summary = lake_dataset_quality_summary(lake, dataset_names=["market_bar"])
+
+    assert summary["dataset_count"] == 1
+    assert summary["check_count"] > 0
+    assert not (lake / "gold" / "lake_file_health_daily").exists()

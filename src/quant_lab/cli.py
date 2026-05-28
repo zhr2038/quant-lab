@@ -37,7 +37,11 @@ from quant_lab.ingest.okx_readonly_private import (
 )
 from quant_lab.ingest.okx_ws_public import collect_okx_public_ws, collect_okx_public_ws_universe
 from quant_lab.ingest.v5_reports import inspect_v5_reports, publish_v5_reports_to_lake
-from quant_lab.ops.lake_health import lake_file_health_summary, write_lake_file_health_daily
+from quant_lab.ops.lake_health import (
+    lake_dataset_quality_summary,
+    lake_file_health_summary,
+    write_lake_file_health_daily,
+)
 from quant_lab.ops.metrics import api_metrics_summary, job_run_summary, run_with_job_metrics
 from quant_lab.ops.retention import prune_quant_lab_storage
 from quant_lab.reports.enforce_readiness import write_enforce_readiness_report
@@ -566,8 +570,29 @@ def lake_health_command(
             help="Emit a single-line summary suitable for systemd journals.",
         ),
     ] = False,
+    include_quality: Annotated[
+        bool,
+        typer.Option(
+            "--include-quality/--file-health-only",
+            help="Also run registry-driven schema/freshness/key quality checks.",
+        ),
+    ] = False,
+    dataset: Annotated[
+        str | None,
+        typer.Option(
+            "--dataset",
+            help="Optional comma-separated dataset names to inspect.",
+        ),
+    ] = None,
 ) -> None:
     result = write_lake_file_health_daily(lake_root)
+    dataset_names = _parse_dataset_names(dataset)
+    if include_quality:
+        result["data_quality"] = lake_dataset_quality_summary(
+            lake_root,
+            dataset_names=dataset_names,
+            include_checks=not compact_output,
+        )
     if compact_output:
         typer.echo(json.dumps(_compact_lake_health_payload(result), sort_keys=True, default=str))
     else:
@@ -591,6 +616,9 @@ def _compact_lake_health_payload(payload: dict[str, Any]) -> dict[str, Any]:
         "dataset_count": payload.get("dataset_count", len(health_rows)),
         "total_parquet_files": payload.get("total_parquet_files", 0),
         "warning_count": payload.get("warning_count", len(warning_rows)),
+        "data_quality": _compact_data_quality_payload(
+            payload.get("data_quality") if isinstance(payload.get("data_quality"), dict) else {}
+        ),
         "warnings": [
             {
                 "dataset": row.get("dataset"),
@@ -798,6 +826,20 @@ def ops_summary_command(
             help="Emit a compact operational summary without large nested tables.",
         ),
     ] = False,
+    include_quality: Annotated[
+        bool,
+        typer.Option(
+            "--include-quality/--skip-quality",
+            help="Include registry-driven dataset quality checks.",
+        ),
+    ] = False,
+    dataset: Annotated[
+        str | None,
+        typer.Option(
+            "--dataset",
+            help="Optional comma-separated dataset names for --include-quality.",
+        ),
+    ] = None,
 ) -> None:
     all_history = str(day or "").strip().lower() == "all"
     summary_day = None if all_history else day
@@ -815,6 +857,12 @@ def ops_summary_command(
         ),
         "lake_file_health": lake_file_health_summary(lake_root),
     }
+    if include_quality:
+        payload["data_quality"] = lake_dataset_quality_summary(
+            lake_root,
+            dataset_names=_parse_dataset_names(dataset),
+            include_checks=not compact_output,
+        )
     output = _compact_ops_summary_payload(payload) if compact_output else payload
     typer.echo(
         json.dumps(
@@ -838,7 +886,46 @@ def _compact_ops_summary_payload(payload: dict[str, Any]) -> dict[str, Any]:
         "api_metrics": _compact_api_metrics_payload(api_metrics),
         "job_runs": _compact_job_run_payload(job_runs),
         "lake_file_health": _compact_lake_health_payload(lake_health),
+        "data_quality": _compact_data_quality_payload(
+            payload.get("data_quality") if isinstance(payload.get("data_quality"), dict) else {}
+        ),
     }
+
+
+def _compact_data_quality_payload(data_quality: dict[str, Any]) -> dict[str, Any]:
+    if not data_quality:
+        return {}
+    checks = data_quality.get("checks") if isinstance(data_quality.get("checks"), list) else []
+    failing = [
+        check
+        for check in checks
+        if isinstance(check, dict) and str(check.get("status") or "PASS") != "PASS"
+    ]
+    return {
+        "status": data_quality.get("status"),
+        "dataset_count": data_quality.get("dataset_count"),
+        "check_count": data_quality.get("check_count"),
+        "fail_count": data_quality.get("fail_count"),
+        "warning_count": data_quality.get("warning_count"),
+        "failing_checks": [
+            {
+                "dataset": check.get("dataset"),
+                "rule": check.get("rule"),
+                "status": check.get("status"),
+                "severity": check.get("severity"),
+                "detail": check.get("detail"),
+                "next_action": check.get("next_action"),
+            }
+            for check in failing[:10]
+        ],
+    }
+
+
+def _parse_dataset_names(dataset: str | None) -> list[str] | None:
+    if dataset is None:
+        return None
+    parsed = [item.strip() for item in dataset.split(",") if item.strip()]
+    return parsed or None
 
 
 def _compact_api_metrics_payload(api_metrics: dict[str, Any]) -> dict[str, Any]:

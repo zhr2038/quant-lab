@@ -121,6 +121,37 @@ def test_compact_lake_health_payload_omits_full_rows():
     assert "path" not in str(payload)
 
 
+def test_compact_lake_health_payload_includes_data_quality_summary():
+    payload = _compact_lake_health_payload(
+        {
+            "dataset_count": 1,
+            "total_parquet_files": 1,
+            "warning_count": 0,
+            "rows": [],
+            "data_quality": {
+                "status": "WARN",
+                "dataset_count": 1,
+                "check_count": 2,
+                "fail_count": 0,
+                "warning_count": 1,
+                "checks": [
+                    {
+                        "dataset": "market_bar",
+                        "rule": "freshness",
+                        "status": "WARN",
+                        "severity": "warning",
+                        "detail": "age_seconds=999",
+                        "next_action": "refresh",
+                    }
+                ],
+            },
+        }
+    )
+
+    assert payload["data_quality"]["status"] == "WARN"
+    assert payload["data_quality"]["failing_checks"][0]["rule"] == "freshness"
+
+
 def test_compact_ops_summary_payload_omits_large_nested_tables():
     payload = _compact_ops_summary_payload(
         {

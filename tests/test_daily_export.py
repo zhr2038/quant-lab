@@ -82,6 +82,8 @@ def test_export_daily_pack_writes_required_members(tmp_path):
         executive_summary = archive.read("executive_summary.md").decode("utf-8")
         assert "quant_lab_enforce_readiness" in data_quality
         assert "shadow_only_recommended" in data_quality
+        assert "dataset_governance" in data_quality
+        assert "check_count" in data_quality["dataset_governance"]
         assert any(check["name"] == "code_provenance_clean" for check in data_quality["checks"])
         assert "quant_lab_enforce_readiness:" in executive_summary
         assert "charts/market_close.png" in names

@@ -32,22 +32,11 @@ def test_read_only_example_endpoints_and_catalog():
         "mode": "read-only",
     }
     assert catalog.status_code == 200
-    assert catalog.json()["datasets"] == [
-        "market_bar",
-        "feature_value",
-        "feature_coverage_daily",
-        "feature_anomaly_daily",
-        "cost_bucket_daily",
-        "cost_health_daily",
-        "alpha_evidence",
-        "gate_decision",
-        "risk_permission",
-        "api_request_metrics",
-        "job_run_history",
-        "lake_file_health_daily",
-        "v5_quant_lab_mode_daily",
-        "v5_quant_lab_enforcement_daily",
-    ]
+    datasets = catalog.json()["datasets"]
+    assert "market_bar" in datasets
+    assert "cost_bucket_daily" in datasets
+    assert "risk_permission" in datasets
+    assert "v5_candidate_event" in datasets
     assert gate.status_code == 200
     assert gate.json()["status"] == "QUARANTINE"
     assert gate.json()["passed"] is False

@@ -25,6 +25,7 @@ from quant_lab.contracts.v5_quant_lab import (
     V5_TELEMETRY_DATASET_SCHEMA_VERSION,
 )
 from quant_lab.data.lake import read_parquet_dataset, write_parquet_dataset
+from quant_lab.ops.data_quality import run_data_quality
 from quant_lab.reports.enforce_readiness import (
     ENFORCE_READINESS_CSV,
     ENFORCE_READINESS_JSON,
@@ -4933,6 +4934,27 @@ def _data_quality_payload(
             severity="critical" if v5_integration_enabled else "warning",
         )
     )
+    dataset_governance = run_data_quality(
+        lake_root,
+        dataset_names=[
+            name
+            for name, row_count in snapshot.row_counts.items()
+            if row_count > 0
+        ],
+        reference_at=generated_at,
+    ).to_dict(include_checks=True)
+    checks.append(
+        _check(
+            "dataset_registry_quality",
+            int(dataset_governance.get("fail_count") or 0) == 0,
+            (
+                f"status={dataset_governance.get('status')}; "
+                f"fail_count={dataset_governance.get('fail_count')}; "
+                f"warning_count={dataset_governance.get('warning_count')}"
+            ),
+            warning_only=True,
+        )
+    )
 
     risk = _risk_permissions_for_export(
         snapshot.frames.get("risk_permission", pl.DataFrame()),
@@ -5104,6 +5126,7 @@ def _data_quality_payload(
         "risk_permission": risk_quality,
         "decision_audit": decision_audit_quality,
         "v5_pre_export": v5_refresh,
+        "dataset_governance": dataset_governance,
         "quant_lab_enforce_readiness": enforce_readiness.model_dump(mode="json"),
         "shadow_only_recommended": enforce_readiness.shadow_only_recommended,
     }

@@ -9,23 +9,11 @@ from typing import Any
 import polars as pl
 
 from quant_lab.data.lake import write_parquet_dataset
+from quant_lab.ops.data_quality import run_data_quality
+from quant_lab.ops.dataset_registry import dataset_path_map, get_dataset_spec
 
 LAKE_FILE_HEALTH_DATASET = Path("gold") / "lake_file_health_daily"
-DEFAULT_DATASET_PATHS = {
-    "okx_public_ws": Path("bronze") / "okx_public_ws",
-    "trade_print": Path("silver") / "trade_print",
-    "orderbook_snapshot": Path("silver") / "orderbook_snapshot",
-    "market_bar": Path("silver") / "market_bar",
-    "cost_bucket_daily": Path("gold") / "cost_bucket_daily",
-    "feature_value": Path("gold") / "feature_value",
-    "alpha_evidence": Path("gold") / "alpha_evidence",
-    "gate_decision": Path("gold") / "gate_decision",
-    "risk_permission": Path("gold") / "risk_permission",
-    "strategy_health_daily": Path("gold") / "strategy_health_daily",
-    "api_request_metrics": Path("bronze") / "api_request_metrics",
-    "job_run_history": Path("gold") / "job_run_history",
-    "lake_file_health_daily": Path("gold") / "lake_file_health_daily",
-}
+DEFAULT_DATASET_PATHS = dataset_path_map()
 
 
 @dataclass(frozen=True)
@@ -66,10 +54,13 @@ def lake_file_health_rows(
             small_file_ratio=small_ratio,
             partition_dir_count=partition_dirs,
         )
+        spec = get_dataset_spec(name)
         rows.append(
             {
                 "day": created_at.date().isoformat(),
                 "dataset": name,
+                "layer": spec.layer if spec is not None else None,
+                "owner": spec.owner if spec is not None else None,
                 "path": str(path),
                 "parquet_file_count": file_count,
                 "total_size_bytes": sum(sizes),
@@ -79,6 +70,8 @@ def lake_file_health_rows(
                 "largest_file_bytes": max(sizes) if sizes else 0,
                 "status": status,
                 "warning": warning,
+                "sla_freshness_seconds": spec.freshness_seconds if spec is not None else None,
+                "retention_days": spec.retention_days if spec is not None else None,
                 "created_at": created_at,
             }
         )
@@ -96,6 +89,20 @@ def lake_file_health_summary(lake_root: str | Path) -> dict[str, Any]:
     """Return lake file health without writing a daily health dataset."""
 
     return _lake_file_health_summary(lake_file_health_rows(lake_root))
+
+
+def lake_dataset_quality_summary(
+    lake_root: str | Path,
+    *,
+    dataset_names: Iterable[str] | None = None,
+    include_checks: bool = True,
+) -> dict[str, Any]:
+    """Return registry-driven dataset quality without mutating the lake."""
+
+    return run_data_quality(
+        lake_root,
+        dataset_names=set(dataset_names) if dataset_names is not None else None,
+    ).to_dict(include_checks=include_checks)
 
 
 def _lake_file_health_summary(rows: list[dict[str, Any]]) -> dict[str, Any]:

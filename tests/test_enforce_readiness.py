@@ -327,6 +327,94 @@ def test_cost_coverage_splits_live_and_expanded_universes(tmp_path):
     assert report.metrics["proxy_only_symbols_expanded"] == ["ADA-USDT", "HYPE-USDT"]
 
 
+def test_live_universe_cost_coverage_blocks_when_only_one_symbol_has_actual_cost(
+    tmp_path,
+):
+    lake = tmp_path / "lake"
+    _write_common_ready_inputs(lake)
+    now = datetime.now(UTC)
+    write_parquet_dataset(
+        pl.DataFrame(
+            [
+                _cost_row(
+                    symbol="BNB-USDT",
+                    source="mixed_actual_proxy",
+                    total=2.0,
+                    created_at=now,
+                ),
+                _cost_row(
+                    symbol="BTC-USDT",
+                    source="public_spread_proxy",
+                    total=1.0,
+                    created_at=now,
+                ),
+                _cost_row(
+                    symbol="ETH-USDT",
+                    source="public_spread_proxy",
+                    total=1.0,
+                    created_at=now,
+                ),
+            ]
+        ),
+        lake / "gold/cost_bucket_daily",
+    )
+
+    report = build_enforce_readiness_report(lake)
+
+    assert report.readiness_status == "BLOCKED"
+    assert "actual_or_mixed_cost_coverage_live_universe" in report.blocked_reasons
+    assert "cost_live_symbol_hit_rate" in report.blocked_reasons
+    assert report.metrics["actual_or_mixed_cost_coverage_live_universe"] == 0.25
+    assert report.metrics["cost_symbols_checked"] == [
+        "BNB-USDT",
+        "BTC-USDT",
+        "ETH-USDT",
+        "SOL-USDT",
+    ]
+    assert report.metrics["missing_live_cost_symbols"] == ["SOL-USDT"]
+    assert any(
+        "BTC/ETH/SOL/BNB before enforce" in action
+        for action in report.required_actions
+    )
+
+
+def test_live_universe_actual_cost_coverage_passes_when_all_live_symbols_have_actual_cost(
+    tmp_path,
+):
+    lake = tmp_path / "lake"
+    _write_common_ready_inputs(lake)
+    _write_cost_rows(lake, source="mixed_actual_proxy")
+
+    report = build_enforce_readiness_report(lake)
+
+    assert "actual_or_mixed_cost_coverage_live_universe" not in report.blocked_reasons
+    assert "cost_live_symbol_hit_rate" not in report.blocked_reasons
+    assert report.metrics["actual_or_mixed_cost_coverage_live_universe"] == 1.0
+    assert report.metrics["cost_live_symbol_hit_rate"] == 1.0
+
+
+def test_soft_proxy_fallback_blocks_with_live_coverage_reason_not_generic_cost_failure(
+    tmp_path,
+):
+    lake = tmp_path / "lake"
+    _write_common_ready_inputs(lake)
+    _write_cost_rows(lake, source="public_spread_proxy")
+
+    report = build_enforce_readiness_report(lake)
+
+    assert report.metrics["cost_api_global_default_rate"] == 0.0
+    assert report.metrics["cost_live_symbol_hit_rate"] == 1.0
+    assert "cost_api_global_default_rate" not in report.blocked_reasons
+    assert "cost_live_symbol_hit_rate" not in report.blocked_reasons
+    assert "actual_or_mixed_cost_coverage_live_universe" in report.blocked_reasons
+    assert report.metrics["proxy_only_symbols_live"] == [
+        "BNB-USDT",
+        "BTC-USDT",
+        "ETH-USDT",
+        "SOL-USDT",
+    ]
+
+
 def test_write_enforce_readiness_report_outputs_json_and_csv(tmp_path):
     lake = tmp_path / "lake"
     out = tmp_path / "reports"

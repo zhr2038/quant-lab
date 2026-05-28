@@ -2583,7 +2583,6 @@ def export_daily_pack(
         pre_export_v5.setdefault("warnings", []).append(v5_consistency["warning_reason"])
     pre_export_v5_warnings = [str(warning) for warning in pre_export_v5.get("warnings", [])]
     snapshot = _publish_research_portfolio_status_snapshot(root, snapshot, day)
-    snapshot = _publish_strategy_opportunity_advisory_snapshot(root, snapshot)
     snapshot = _publish_missed_opportunity_snapshot(root, snapshot)
     snapshot = _publish_strategy_opportunity_advisory_snapshot(root, snapshot)
     missing_sections = _missing_sections(snapshot.row_counts)
@@ -3743,6 +3742,21 @@ def _manifest_payload(
         "selected_v5_bundle_sha256": v5_context.get("selected_v5_bundle_sha256"),
         "selected_v5_bundle_built_at": v5_context.get("selected_v5_bundle_built_at"),
         "selected_v5_bundle_ingested_at": v5_context.get("selected_v5_bundle_ingested_at"),
+        "selected_v5_bundle_manifest_match": bool(
+            v5_context.get("selected_v5_bundle_manifest_match")
+        ),
+        "selected_v5_bundle_authoritative_reason": v5_context.get(
+            "selected_v5_bundle_authoritative_reason"
+        ),
+        "selected_v5_bundle_manifest_ingest_ts": v5_context.get(
+            "selected_v5_bundle_manifest_ingest_ts"
+        ),
+        "selected_v5_bundle_manifest_bundle_ts": v5_context.get(
+            "selected_v5_bundle_manifest_bundle_ts"
+        ),
+        "selected_v5_bundle_manifest_bundle_name": v5_context.get(
+            "selected_v5_bundle_manifest_bundle_name"
+        ),
         "selected_v5_bundle_event_counts": v5_context.get(
             "selected_v5_bundle_event_counts",
             {},
@@ -3755,7 +3769,21 @@ def _manifest_payload(
                 "latest_v5_bundle_seen_at_export"
             ),
             "latest_v5_bundle_ingested_at_export": _iso_or_none(latest_ingested_bundle_ts),
+            "selected_v5_bundle_manifest_match": bool(
+                v5_context.get("selected_v5_bundle_manifest_match")
+            ),
+            "selected_v5_bundle_authoritative_reason": v5_context.get(
+                "selected_v5_bundle_authoritative_reason"
+            ),
         },
+        "scanned_bundle_count": v5_context.get("scanned_bundle_count", 0),
+        "selected_bundle_count": v5_context.get("selected_bundle_count", 0),
+        "unscanned_bundle_count": v5_context.get("unscanned_bundle_count", 0),
+        "oldest_scanned_bundle_ts": v5_context.get("oldest_scanned_bundle_ts"),
+        "newest_scanned_bundle_ts": v5_context.get("newest_scanned_bundle_ts"),
+        "possible_historical_gap": bool(v5_context.get("possible_historical_gap")),
+        "max_scan_bundles": v5_context.get("max_scan_bundles"),
+        "max_pending_bundles": v5_context.get("max_pending_bundles"),
         "candidate_event_latest_ts": _iso_or_none(candidate_event_latest_ts),
         "latest_candidate_event_ts": _iso_or_none(candidate_event_latest_ts),
         "candidate_event_rows": candidate_events.height,
@@ -3827,7 +3855,20 @@ def _refresh_v5_before_export(
         "selected_v5_bundle_sha256": None,
         "selected_v5_bundle_built_at": None,
         "selected_v5_bundle_ingested_at": None,
+        "selected_v5_bundle_manifest_match": False,
+        "selected_v5_bundle_manifest_ingest_ts": None,
+        "selected_v5_bundle_manifest_bundle_ts": None,
+        "selected_v5_bundle_manifest_bundle_name": None,
         "selected_v5_bundle_event_counts": {},
+        "scanned_bundle_count": 0,
+        "selected_bundle_count": 0,
+        "selected_bundle_names": [],
+        "unscanned_bundle_count": 0,
+        "oldest_scanned_bundle_ts": None,
+        "newest_scanned_bundle_ts": None,
+        "possible_historical_gap": False,
+        "max_scan_bundles": _export_v5_max_scan_bundles(_export_v5_max_pending_bundles()),
+        "max_pending_bundles": _export_v5_max_pending_bundles(),
         "warnings": [],
     }
     warnings: list[str] = []
@@ -3853,9 +3894,7 @@ def _refresh_v5_before_export(
             context["selected_v5_bundle_sha256"] = latest_seen_sha
             manifest_row = _bundle_manifest_row_by_sha(lake_root, latest_seen_sha)
             if manifest_row:
-                context["selected_v5_bundle_ingested_at"] = _iso_or_none(
-                    _parse_v5_context_ts(manifest_row.get("ingest_ts"))
-                )
+                _apply_selected_bundle_manifest_context(context, manifest_row)
         except OSError:
             latest_seen_sha = None
     if not inbox_dir.exists():
@@ -3865,7 +3904,9 @@ def _refresh_v5_before_export(
     try:
         from quant_lab.strategy_telemetry.ingest import ingest_v5_bundle
 
-        pending_paths = _pending_v5_bundle_paths_for_export(inbox_dir, lake_root)
+        scan = _pending_v5_bundle_scan_for_export(inbox_dir, lake_root)
+        context.update(scan["context"])
+        pending_paths = scan["pending_paths"]
         context["selected_bundle_count"] = len(pending_paths)
         context["selected_bundle_names"] = [path.name for path in pending_paths]
         processed_count = 0
@@ -3886,11 +3927,13 @@ def _refresh_v5_before_export(
             else:
                 processed_count += 1
             if result.bundle_sha256 == context.get("selected_v5_bundle_sha256"):
-                context["selected_v5_bundle_ingested_at"] = datetime.now(UTC).isoformat()
                 context["selected_v5_bundle_event_counts"] = {
                     **result.silver_rows,
                     **result.gold_rows,
                 }
+                manifest_row = _bundle_manifest_row_by_sha(lake_root, result.bundle_sha256)
+                if manifest_row:
+                    _apply_selected_bundle_manifest_context(context, manifest_row)
             warnings.extend(str(warning) for warning in result.warnings)
         context["processed_bundle_count"] = processed_count
         context["skipped_bundle_count"] = skipped_count
@@ -3945,15 +3988,26 @@ def _observe_v5_before_export(
         "enabled": False,
         "processed_bundle_count": 0,
         "skipped_bundle_count": 0,
-        "selected_bundle_count": 0,
-        "selected_bundle_names": [],
         "latest_v5_bundle_seen_at_export": None,
         "local_inbox_dir": None,
         "selected_v5_bundle_path": None,
         "selected_v5_bundle_sha256": None,
         "selected_v5_bundle_built_at": None,
         "selected_v5_bundle_ingested_at": None,
+        "selected_v5_bundle_manifest_match": False,
+        "selected_v5_bundle_manifest_ingest_ts": None,
+        "selected_v5_bundle_manifest_bundle_ts": None,
+        "selected_v5_bundle_manifest_bundle_name": None,
         "selected_v5_bundle_event_counts": {},
+        "scanned_bundle_count": 0,
+        "selected_bundle_count": 0,
+        "selected_bundle_names": [],
+        "unscanned_bundle_count": 0,
+        "oldest_scanned_bundle_ts": None,
+        "newest_scanned_bundle_ts": None,
+        "possible_historical_gap": False,
+        "max_scan_bundles": _export_v5_max_scan_bundles(_export_v5_max_pending_bundles()),
+        "max_pending_bundles": _export_v5_max_pending_bundles(),
         "warnings": [],
     }
     try:
@@ -3977,11 +4031,12 @@ def _observe_v5_before_export(
             context["selected_v5_bundle_sha256"] = latest_seen_sha
             manifest_row = _bundle_manifest_row_by_sha(lake_root, latest_seen_sha)
             if manifest_row:
-                context["selected_v5_bundle_ingested_at"] = _iso_or_none(
-                    _parse_v5_context_ts(manifest_row.get("ingest_ts"))
-                )
+                _apply_selected_bundle_manifest_context(context, manifest_row)
         except OSError:
             pass
+    if inbox_dir.exists():
+        scan = _pending_v5_bundle_scan_for_export(inbox_dir, lake_root)
+        context.update(scan["context"])
     return context
 
 
@@ -4022,6 +4077,10 @@ def _bundle_ts_for_path(path: Path | None) -> datetime | None:
 
 
 def _pending_v5_bundle_paths_for_export(inbox_dir: Path, lake_root: Path) -> list[Path]:
+    return _pending_v5_bundle_scan_for_export(inbox_dir, lake_root)["pending_paths"]
+
+
+def _pending_v5_bundle_scan_for_export(inbox_dir: Path, lake_root: Path) -> dict[str, Any]:
     max_pending = _export_v5_max_pending_bundles()
     max_scan = _export_v5_max_scan_bundles(max_pending)
     ingested = _ingested_bundle_sha256s(lake_root)
@@ -4036,27 +4095,60 @@ def _pending_v5_bundle_paths_for_export(inbox_dir: Path, lake_root: Path) -> lis
                 parsed = datetime.min.replace(tzinfo=UTC)
         return parsed, path.name
 
+    all_paths = sorted(
+        inbox_dir.glob("v5_live_followup_bundle_*.tar.gz"),
+        key=sort_key,
+        reverse=True,
+    )
+    scanned_paths = all_paths[:max_scan]
+    scanned_ts = [sort_key(path)[0] for path in scanned_paths]
     selected: list[Path] = []
-    for scanned_count, path in enumerate(
-        sorted(
-            inbox_dir.glob("v5_live_followup_bundle_*.tar.gz"),
-            key=sort_key,
-            reverse=True,
-        ),
-        start=1,
-    ):
-        if scanned_count > max_scan:
-            break
+    pending_scanned_count = 0
+    for path in scanned_paths:
         try:
             sha256 = compute_sha256(path)
         except OSError:
             continue
         if sha256 in ingested:
             continue
+        pending_scanned_count += 1
         selected.append(path)
         if len(selected) >= max_pending:
-            break
-    return list(reversed(selected))
+            continue
+    selected = selected[:max_pending]
+    unscanned_count = max(len(all_paths) - len(scanned_paths), 0)
+    possible_historical_gap = unscanned_count > 0 or pending_scanned_count > len(selected)
+    context = {
+        "scanned_bundle_count": len(scanned_paths),
+        "selected_bundle_count": len(selected),
+        "selected_bundle_names": [path.name for path in selected],
+        "unscanned_bundle_count": unscanned_count,
+        "oldest_scanned_bundle_ts": _iso_or_none(min(scanned_ts)) if scanned_ts else None,
+        "newest_scanned_bundle_ts": _iso_or_none(max(scanned_ts)) if scanned_ts else None,
+        "possible_historical_gap": possible_historical_gap,
+        "max_scan_bundles": max_scan,
+        "max_pending_bundles": max_pending,
+        "pending_scanned_bundle_count": pending_scanned_count,
+        "total_inbox_bundle_count": len(all_paths),
+    }
+    return {"pending_paths": list(reversed(selected)), "context": context}
+
+
+def _apply_selected_bundle_manifest_context(
+    context: dict[str, Any],
+    manifest_row: dict[str, Any],
+) -> None:
+    context["selected_v5_bundle_ingested_at"] = _iso_or_none(
+        _parse_v5_context_ts(manifest_row.get("ingest_ts"))
+    )
+    context["selected_v5_bundle_manifest_ingest_ts"] = context[
+        "selected_v5_bundle_ingested_at"
+    ]
+    context["selected_v5_bundle_manifest_bundle_ts"] = _iso_or_none(
+        _parse_v5_context_ts(manifest_row.get("bundle_ts"))
+    )
+    context["selected_v5_bundle_manifest_bundle_name"] = manifest_row.get("bundle_name")
+    context["selected_v5_bundle_manifest_match"] = True
 
 
 def _export_v5_max_pending_bundles() -> int:
@@ -4119,6 +4211,12 @@ def _v5_export_consistency(
 ) -> dict[str, Any]:
     latest_seen = _parse_v5_context_ts(pre_export_v5.get("latest_v5_bundle_seen_at_export"))
     latest_ingested = _latest_v5_bundle_ts(frames)
+    selected_sha = str(pre_export_v5.get("selected_v5_bundle_sha256") or "").strip()
+    selected_ingested_at = _parse_v5_context_ts(
+        pre_export_v5.get("selected_v5_bundle_ingested_at")
+    )
+    manifest_match = bool(pre_export_v5.get("selected_v5_bundle_manifest_match"))
+    possible_historical_gap = bool(pre_export_v5.get("possible_historical_gap"))
     stale = (
         latest_seen is not None
         and (latest_ingested is None or latest_seen > latest_ingested + timedelta(seconds=1))
@@ -4132,11 +4230,40 @@ def _v5_export_consistency(
             f"pre_export_v5_refresh={pre_export_v5_refresh};"
             f"allow_stale_v5={allow_stale_v5}"
         )
-    authoritative = bool(pre_export_v5_refresh and not stale)
+    authoritative_blockers: list[str] = []
+    if not pre_export_v5_refresh:
+        authoritative_blockers.append("pre_export_v5_refresh_disabled")
+    if stale:
+        authoritative_blockers.append("stale_v5_bundle")
+    if not selected_sha:
+        authoritative_blockers.append("selected_v5_bundle_sha256_missing")
+    if selected_ingested_at is None:
+        authoritative_blockers.append("selected_v5_bundle_ingested_at_missing")
+    if not manifest_match:
+        authoritative_blockers.append("selected_v5_bundle_manifest_missing")
+    if possible_historical_gap:
+        authoritative_blockers.append("possible_historical_gap")
+    authoritative = not authoritative_blockers
+    authoritative_reason = (
+        "selected_bundle_sha_matched_bundle_manifest"
+        if authoritative
+        else ";".join(authoritative_blockers)
+    )
+    if not reason and authoritative_blockers:
+        reason = (
+            "non_authoritative_v5_snapshot:"
+            f"reason={authoritative_reason};"
+            f"latest_seen={_iso_or_none(latest_seen)};"
+            f"latest_ingested={_iso_or_none(latest_ingested)};"
+            f"pre_export_v5_refresh={pre_export_v5_refresh};"
+            f"allow_stale_v5={allow_stale_v5}"
+        )
     return {
         "authoritative_snapshot": authoritative,
         "stale_v5_bundle": stale,
         "warning_reason": reason,
+        "selected_v5_bundle_authoritative_reason": authoritative_reason,
+        "selected_v5_bundle_manifest_match": manifest_match,
     }
 
 

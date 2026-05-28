@@ -874,6 +874,14 @@ def test_export_daily_ingests_pending_v5_inbox_before_snapshot(tmp_path):
     assert manifest["authoritative_snapshot"] is True
     assert manifest["stale_v5_bundle"] is False
     assert manifest["selected_v5_bundle_sha256"]
+    assert manifest["selected_v5_bundle_manifest_match"] is True
+    assert (
+        manifest["selected_v5_bundle_authoritative_reason"]
+        == "selected_bundle_sha_matched_bundle_manifest"
+    )
+    assert manifest["selected_v5_bundle_manifest_bundle_name"].startswith(
+        "v5_live_followup_bundle_20260517T060000Z"
+    )
     assert manifest["selected_v5_bundle_built_at"].startswith("2026-05-17T06:00:00")
     assert manifest["selected_v5_bundle_ingested_at"]
     assert manifest["selected_v5_bundle_event_counts"]["v5_candidate_event"] >= 1
@@ -1011,6 +1019,10 @@ def test_export_daily_observes_v5_inbox_when_refresh_is_disabled(tmp_path):
 
     assert manifest["pre_export_v5_refresh"]["enabled"] is False
     assert manifest["authoritative_snapshot"] is False
+    assert manifest["selected_v5_bundle_manifest_match"] is False
+    assert "pre_export_v5_refresh_disabled" in manifest[
+        "selected_v5_bundle_authoritative_reason"
+    ]
     assert manifest["stale_v5_bundle"] is True
     assert manifest["latest_v5_bundle_seen_at_export"].startswith("2026-05-17T10:00:00")
     assert "latest_candidate_event_ts" in manifest
@@ -1131,8 +1143,142 @@ def test_export_daily_refreshes_v5_derived_outputs_when_latest_bundle_already_in
     assert manifest["pre_export_v5_refresh"]["derived_refresh_retry_attempted"] is True
     assert manifest["stale_v5_bundle"] is False
     assert manifest["authoritative_snapshot"] is True
+    assert manifest["selected_v5_bundle_manifest_match"] is True
     assert manifest["latest_v5_bundle_seen_at_export"].startswith("2026-05-17T10:00:00")
     assert manifest["latest_v5_bundle_ingested_at_export"].startswith("2026-05-17T10:00:00")
+
+
+def test_export_daily_non_authoritative_when_selected_bundle_sha_missing_from_manifest(
+    tmp_path,
+    monkeypatch,
+):
+    lake_root = _fixture_lake(tmp_path)
+    inbox = tmp_path / "inbox"
+    bundle = make_tar(
+        inbox / "v5_live_followup_bundle_20260517T100000Z.tar.gz",
+        {"summaries/window_summary.json": "{}"},
+    )
+    latest_ts = datetime(2026, 5, 17, 10, tzinfo=UTC)
+    write_parquet_dataset(
+        pl.DataFrame(
+            [
+                {
+                    "strategy": "v5",
+                    "date": "2026-05-17",
+                    "status": "OK",
+                    "latest_bundle_ts": latest_ts,
+                    "created_at": latest_ts,
+                }
+            ]
+        ),
+        lake_root / "gold" / "strategy_health_daily",
+    )
+    monkeypatch.setattr(
+        daily_export_module,
+        "_pending_v5_bundle_scan_for_export",
+        lambda inbox_dir, lake_arg: {
+            "pending_paths": [],
+            "context": {
+                "scanned_bundle_count": 1,
+                "selected_bundle_count": 0,
+                "selected_bundle_names": [],
+                "unscanned_bundle_count": 0,
+                "oldest_scanned_bundle_ts": latest_ts.isoformat(),
+                "newest_scanned_bundle_ts": latest_ts.isoformat(),
+                "possible_historical_gap": False,
+                "max_scan_bundles": 20,
+                "max_pending_bundles": 5,
+            },
+        },
+    )
+    config = _v5_telemetry_config(tmp_path, inbox, lake_root)
+
+    result = export_daily_pack(
+        export_date="2026-05-17",
+        lake_root=lake_root,
+        out_dir=tmp_path / "exports",
+        command_line=["qlab", "export-daily"],
+        pre_export_v5_refresh=True,
+        v5_telemetry_config=config,
+    )
+
+    with zipfile.ZipFile(result.zip_path) as archive:
+        manifest = json.loads(archive.read("manifest.json").decode("utf-8"))
+
+    assert manifest["selected_v5_bundle_sha256"] == daily_export_module.compute_sha256(bundle)
+    assert manifest["stale_v5_bundle"] is False
+    assert manifest["authoritative_snapshot"] is False
+    assert manifest["selected_v5_bundle_manifest_match"] is False
+    assert "selected_v5_bundle_manifest_missing" in manifest[
+        "selected_v5_bundle_authoritative_reason"
+    ]
+
+
+def test_export_daily_marks_possible_historical_gap_when_scan_window_is_incomplete(
+    tmp_path,
+    monkeypatch,
+):
+    lake_root = _fixture_lake(tmp_path)
+    inbox = tmp_path / "inbox"
+    monkeypatch.setenv("QUANT_LAB_EXPORT_V5_MAX_SCAN_BUNDLES", "20")
+    base_ts = datetime(2026, 5, 17, 10, tzinfo=UTC)
+    manifests = []
+    for index in range(25):
+        ts = base_ts - timedelta(hours=index)
+        bundle = make_tar(
+            inbox / f"v5_live_followup_bundle_{ts:%Y%m%dT%H%M%SZ}.tar.gz",
+            {"summaries/window_summary.json": f'{{"index":{index}}}'},
+        )
+        if index < 20:
+            manifests.append(
+                {
+                    "strategy": "v5",
+                    "bundle_sha256": daily_export_module.compute_sha256(bundle),
+                    "bundle_name": bundle.name,
+                    "bundle_ts": ts,
+                    "ingest_ts": ts + timedelta(minutes=1),
+                    "schema_version": "v5_quant_lab_telemetry.v0.1",
+                }
+            )
+    write_parquet_dataset(
+        pl.DataFrame(manifests),
+        lake_root / "bronze" / "strategy_telemetry" / "v5" / "bundle_manifest",
+    )
+    write_parquet_dataset(
+        pl.DataFrame(
+            [
+                {
+                    "strategy": "v5",
+                    "date": "2026-05-17",
+                    "status": "OK",
+                    "latest_bundle_ts": base_ts,
+                    "created_at": base_ts,
+                }
+            ]
+        ),
+        lake_root / "gold" / "strategy_health_daily",
+    )
+    config = _v5_telemetry_config(tmp_path, inbox, lake_root)
+
+    result = export_daily_pack(
+        export_date="2026-05-17",
+        lake_root=lake_root,
+        out_dir=tmp_path / "exports",
+        command_line=["qlab", "export-daily"],
+        pre_export_v5_refresh=True,
+        v5_telemetry_config=config,
+    )
+
+    with zipfile.ZipFile(result.zip_path) as archive:
+        manifest = json.loads(archive.read("manifest.json").decode("utf-8"))
+
+    assert manifest["scanned_bundle_count"] == 20
+    assert manifest["unscanned_bundle_count"] == 5
+    assert manifest["possible_historical_gap"] is True
+    assert manifest["authoritative_snapshot"] is False
+    assert "possible_historical_gap" in manifest[
+        "selected_v5_bundle_authoritative_reason"
+    ]
 
 
 def test_export_daily_pack_uses_unique_same_day_file_names(tmp_path):

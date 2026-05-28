@@ -93,6 +93,10 @@ QUANT_LAB_REQUEST_PATHS = {
 }
 EVENT_KEY_DATASETS = {"v5_quant_lab_request", "v5_quant_lab_fallback"}
 STABLE_ROW_KEY_DATASETS = set(SILVER_DATASETS) - EVENT_KEY_DATASETS - {"v5_candidate_event"}
+PULLBACK_STABLE_ROW_KEY_DATASETS = {
+    "v5_pullback_reversal_shadow",
+    "v5_pullback_reversal_readiness",
+}
 HISTORICAL_OUTCOME_PATH_PREFIXES = (
     "summaries/high_score_blocked_outcomes",
     "summaries/alt_impulse_shadow",
@@ -1307,7 +1311,7 @@ def _event_key_from_fields(fields: dict[str, Any]) -> str:
         stable = {
             key: value
             for key, value in fields.items()
-            if key not in {"event_id", "fallback_used"}
+            if key not in {"event_id", "fallback_used", "raw_payload_hash"}
             and value is not None
             and value != ""
         }
@@ -1328,32 +1332,105 @@ def _raw_payload_hash(
     payload: dict[str, Any],
     fields: dict[str, Any],
 ) -> str:
-    stable_event = {
-        key: fields.get(key)
-        for key in [
-            "event_id",
-            "strategy_id",
-            "event_type",
-            "endpoint_path",
-            "ts_utc",
-            "status_code",
-            "error_type",
-            "request_id",
-            "symbol",
-            "side",
-            "intent",
-        ]
-        if fields.get(key) not in {None, ""}
-    }
-    has_event_identity = any(
-        stable_event.get(key) for key in ["event_id", "endpoint_path", "ts_utc", "request_id"]
-    )
-    if has_event_identity or (
-        stable_event.get("status_code") and stable_event.get("error_type")
-    ):
-        rendered = json.dumps(stable_event, ensure_ascii=False, sort_keys=True, default=str)
-        return hashlib.sha256(rendered.encode("utf-8")).hexdigest()
-    return _payload_hash(row, payload)
+    del fields
+    return _event_payload_conflict_hash(row, payload)
+
+
+_EVENT_PAYLOAD_IDENTITY_ALIASES = {
+    "event_id",
+    "eventId",
+    "source_event_id",
+    "strategy_id",
+    "strategyId",
+    "strategy",
+    "run_id",
+    "runId",
+    "run",
+    "event_type",
+    "type",
+    "kind",
+    "endpoint",
+    "endpoint_path",
+    "path",
+    "url",
+    "route",
+    "api_path",
+    "request_path",
+    "ts_utc",
+    "ts",
+    "timestamp",
+    "created_at",
+    "time",
+    "request_ts",
+    "event_ts",
+    "status_code",
+    "error_type",
+    "exception_type",
+    "request_id",
+    "trace_id",
+    "id",
+    "uuid",
+    "symbol",
+    "normalized_symbol",
+    "inst_id",
+    "instId",
+    "instrument",
+    "pair",
+    "side",
+    "order_side",
+    "intent",
+    "action",
+    "router_intent",
+    "fallback_used",
+    "used_fallback",
+    "local_fallback",
+    "raw_payload_hash",
+    "payload_hash",
+    "payload_hashes_json",
+    "payload_hash_count",
+    "conflicting_duplicate",
+    "event_key",
+    "event_key_fields_json",
+}
+
+
+def _event_payload_conflict_hash(row: dict[str, Any], payload: dict[str, Any]) -> str:
+    source: Any = payload if payload else row
+    if isinstance(source, dict):
+        source = {
+            key: _normalize_payload_conflict_value(value)
+            for key, value in source.items()
+            if key not in EVENT_KEY_METADATA_FIELDS
+            and key not in _EVENT_PAYLOAD_IDENTITY_ALIASES
+            and not _payload_conflict_value_is_empty(value)
+        }
+    rendered = json.dumps(source, ensure_ascii=False, sort_keys=True, default=str)
+    return hashlib.sha256(rendered.encode("utf-8")).hexdigest()
+
+
+def _payload_conflict_value_is_empty(value: Any) -> bool:
+    if value is None:
+        return True
+    rendered = str(value).strip().lower()
+    return rendered in {"", "not_observable", "not-observable", "none", "null", "nan"}
+
+
+def _normalize_payload_conflict_value(value: Any) -> Any:
+    if isinstance(value, str):
+        rendered = value.strip()
+        lowered = rendered.lower()
+        if lowered in {"true", "false"}:
+            return lowered == "true"
+        return rendered
+    if isinstance(value, list):
+        return [_normalize_payload_conflict_value(item) for item in value]
+    if isinstance(value, dict):
+        return {
+            key: _normalize_payload_conflict_value(item)
+            for key, item in value.items()
+            if not _payload_conflict_value_is_empty(item)
+        }
+    return value
 
 
 def _payload_hash(row: dict[str, Any], payload: dict[str, Any]) -> str:
@@ -1680,9 +1757,14 @@ def _upsert_stable_rows(dataset_path: Path, rows: list[dict[str, Any]]) -> int:
     keyed_rows = [_with_stable_row_key(row) for row in combined_rows]
     df = _dataframe_from_rows(keyed_rows)
     if not df.is_empty():
+        candidate_keys = (
+            ["strategy", "stable_row_key"]
+            if dataset_path.name in PULLBACK_STABLE_ROW_KEY_DATASETS
+            else ["strategy", "source_path_inside_bundle", "stable_row_key"]
+        )
         key_columns = [
             column
-            for column in ["strategy", "source_path_inside_bundle", "stable_row_key"]
+            for column in candidate_keys
             if column in df.columns
         ]
         if key_columns:
@@ -1698,6 +1780,17 @@ def _with_stable_row_key(row: dict[str, Any]) -> dict[str, Any]:
 
 
 def _stable_row_key(row: dict[str, Any]) -> str:
+    source_path = _logical_bundle_path(str(row.get("source_path_inside_bundle") or ""))
+    if source_path in {
+        "reports/pullback_reversal_shadow_outcomes.csv",
+        "summaries/pullback_reversal_shadow_outcomes.csv",
+    }:
+        return _pullback_shadow_stable_row_key(row)
+    if source_path in {
+        "reports/pullback_reversal_readiness.json",
+        "summaries/pullback_reversal_readiness.json",
+    }:
+        return _pullback_readiness_stable_row_key(row)
     payload = row.get("raw_payload_json")
     if isinstance(payload, str) and payload.strip():
         basis: Any = payload.strip()
@@ -1715,6 +1808,72 @@ def _stable_row_key(row: dict[str, Any]) -> str:
             }
         }
     encoded = safe_json_dumps(basis) if not isinstance(basis, str) else basis
+    return hashlib.sha256(encoded.encode("utf-8")).hexdigest()
+
+
+def _pullback_shadow_stable_row_key(row: dict[str, Any]) -> str:
+    payload = _loads_payload(row.get("raw_payload_json"))
+    symbol_value = _first_value(row, payload, ["normalized_symbol", "symbol"])
+    symbol = normalize_symbol(_clean_text(symbol_value)) if symbol_value else ""
+    ts_utc = _normalize_event_time(
+        _first_value(row, payload, ["ts_utc", "decision_ts", "ts", "entry_ts"])
+    )
+    strategy_candidate = _clean_text(
+        _first_value(row, payload, ["strategy_candidate", "candidate", "strategy_id"])
+    )
+    horizon = _clean_text(
+        _first_value(
+            row,
+            payload,
+            ["horizon_hours", "label_horizon_hours", "horizon", "label_horizon"],
+        )
+    )
+    candidate_id = _clean_text(
+        _first_value(row, payload, ["candidate_id", "source_event_id", "event_id"])
+    )
+    run_id = _clean_text(_first_value(row, payload, ["run_id", "runId", "run"]))
+    row_index = "" if candidate_id else _clean_text(row.get("row_index"))
+    basis = {
+        "strategy": _clean_text(row.get("strategy")),
+        "symbol": symbol,
+        "ts_utc": ts_utc,
+        "strategy_candidate": strategy_candidate,
+        "horizon_hours": horizon,
+        "candidate_id": candidate_id,
+        "run_id": run_id if not candidate_id else "",
+        "row_index": row_index if not candidate_id else "",
+    }
+    encoded = safe_json_dumps({key: value for key, value in basis.items() if value})
+    return hashlib.sha256(encoded.encode("utf-8")).hexdigest()
+
+
+def _pullback_readiness_stable_row_key(row: dict[str, Any]) -> str:
+    payload = _loads_payload(row.get("raw_payload_json"))
+    symbol_value = _first_value(row, payload, ["normalized_symbol", "symbol"])
+    symbol = normalize_symbol(_clean_text(symbol_value)) if symbol_value else ""
+    generated_at = _normalize_event_time(
+        _first_value(row, payload, ["generated_at_utc", "generated_at", "as_of_ts", "as_of_date"])
+    )
+    if not generated_at:
+        generated_at = _clean_text(_first_value(row, payload, ["as_of_date", "day"]))
+    basis = {
+        "strategy": _clean_text(row.get("strategy")),
+        "symbol": symbol,
+        "generated_at_utc": generated_at,
+        "contract_version": _clean_text(
+            _first_value(row, payload, ["contract_version"]) or row.get("contract_version")
+        ),
+        "schema_version": _clean_text(
+            _first_value(row, payload, ["schema_version"]) or row.get("schema_version")
+        ),
+        "readiness_item": _clean_text(
+            _first_value(row, payload, ["readiness_item", "metric", "name", "strategy_candidate"])
+        ),
+        "horizon_hours": _clean_text(
+            _first_value(row, payload, ["horizon_hours", "label_horizon_hours", "horizon"])
+        ),
+    }
+    encoded = safe_json_dumps({key: value for key, value in basis.items() if value})
     return hashlib.sha256(encoded.encode("utf-8")).hexdigest()
 
 

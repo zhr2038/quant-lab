@@ -189,6 +189,10 @@ def analyze_v5_telemetry(
             "strategy_id",
             "run_id",
             "source_count",
+            "payload_hash_count",
+            "payload_hashes_json",
+            "conflicting_duplicate",
+            "raw_payload_hash",
             "first_seen_bundle_ts",
             "last_seen_bundle_ts",
             "bundle_ts",
@@ -278,6 +282,10 @@ def analyze_v5_telemetry(
             "strategy_id",
             "run_id",
             "source_count",
+            "payload_hash_count",
+            "payload_hashes_json",
+            "conflicting_duplicate",
+            "raw_payload_hash",
             "first_seen_bundle_ts",
             "last_seen_bundle_ts",
             "bundle_ts",
@@ -1269,6 +1277,7 @@ def _event_key(row: dict[str, Any]) -> str:
     ):
         fields.pop("run_id", None)
         fields.pop("fallback_used", None)
+    fields.pop("raw_payload_hash", None)
     rendered = json.dumps(fields, ensure_ascii=False, sort_keys=True, default=str)
     return hashlib.sha256(rendered.encode("utf-8")).hexdigest()
 
@@ -1347,33 +1356,110 @@ def _analysis_raw_payload_hash(
     payload: dict[str, Any],
     fields: dict[str, Any],
 ) -> str:
-    stable_event = {
-        key: fields.get(key)
-        for key in [
-            "event_id",
-            "strategy_id",
-            "event_type",
-            "endpoint_path",
-            "ts_utc",
-            "status_code",
-            "error_type",
-            "request_id",
-            "symbol",
-            "side",
-            "intent",
-        ]
-        if fields.get(key) not in {None, ""}
-    }
-    has_event_identity = any(
-        stable_event.get(key) for key in ["event_id", "endpoint_path", "ts_utc", "request_id"]
-    )
-    if has_event_identity or (
-        stable_event.get("status_code") and stable_event.get("error_type")
-    ):
-        rendered = json.dumps(stable_event, ensure_ascii=False, sort_keys=True, default=str)
-        return hashlib.sha256(rendered.encode("utf-8")).hexdigest()
-    rendered = json.dumps(payload or row, ensure_ascii=False, sort_keys=True, default=str)
+    del fields
+    source: Any = payload if payload else row
+    if isinstance(source, dict):
+        source = {
+            key: _normalize_analysis_payload_conflict_value(value)
+            for key, value in source.items()
+            if key not in _ANALYSIS_EVENT_PAYLOAD_IDENTITY_ALIASES
+            and not _analysis_payload_conflict_value_is_empty(value)
+        }
+    rendered = json.dumps(source, ensure_ascii=False, sort_keys=True, default=str)
     return hashlib.sha256(rendered.encode("utf-8")).hexdigest()
+
+
+_ANALYSIS_EVENT_PAYLOAD_IDENTITY_ALIASES = {
+    "event_id",
+    "eventId",
+    "source_event_id",
+    "strategy_id",
+    "strategyId",
+    "strategy",
+    "run_id",
+    "runId",
+    "run",
+    "event_type",
+    "type",
+    "kind",
+    "endpoint",
+    "endpoint_path",
+    "path",
+    "url",
+    "route",
+    "api_path",
+    "request_path",
+    "source_path_inside_bundle",
+    "bundle_sha256",
+    "bundle_name",
+    "bundle_ts",
+    "ingest_ts",
+    "schema_version",
+    "row_index",
+    "source_count",
+    "first_seen_bundle_ts",
+    "last_seen_bundle_ts",
+    "ts_utc",
+    "ts",
+    "timestamp",
+    "created_at",
+    "time",
+    "request_ts",
+    "event_ts",
+    "status_code",
+    "error_type",
+    "exception_type",
+    "request_id",
+    "trace_id",
+    "id",
+    "uuid",
+    "symbol",
+    "normalized_symbol",
+    "inst_id",
+    "instId",
+    "instrument",
+    "pair",
+    "side",
+    "order_side",
+    "intent",
+    "action",
+    "router_intent",
+    "fallback_used",
+    "used_fallback",
+    "local_fallback",
+    "raw_payload_hash",
+    "payload_hash",
+    "payload_hashes_json",
+    "payload_hash_count",
+    "conflicting_duplicate",
+    "event_key",
+    "event_key_fields_json",
+}
+
+
+def _analysis_payload_conflict_value_is_empty(value: Any) -> bool:
+    if value is None:
+        return True
+    rendered = str(value).strip().lower()
+    return rendered in {"", "not_observable", "not-observable", "none", "null", "nan"}
+
+
+def _normalize_analysis_payload_conflict_value(value: Any) -> Any:
+    if isinstance(value, str):
+        rendered = value.strip()
+        lowered = rendered.lower()
+        if lowered in {"true", "false"}:
+            return lowered == "true"
+        return rendered
+    if isinstance(value, list):
+        return [_normalize_analysis_payload_conflict_value(item) for item in value]
+    if isinstance(value, dict):
+        return {
+            key: _normalize_analysis_payload_conflict_value(item)
+            for key, item in value.items()
+            if not _analysis_payload_conflict_value_is_empty(item)
+        }
+    return value
 
 
 def _analysis_event_type(

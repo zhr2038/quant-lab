@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import csv
 import json
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any
 
@@ -81,13 +81,14 @@ def build_enforce_readiness_report(
     now = datetime.now(UTC)
 
     cost_rows = _rows(root / "gold" / "cost_bucket_daily")
-    symbols = _cost_symbols(cost_rows, cost_symbols)
-    live_symbols = sorted({normalize_symbol(symbol) for symbol in LIVE_UNIVERSE_SYMBOLS})
+    live_symbols, live_universe_source = _live_universe_symbols(root)
+    symbols = _cost_symbols(cost_rows, cost_symbols, live_symbols=live_symbols)
     expanded_symbols = _expanded_universe_symbols(root, cost_rows, live_symbols)
     cost_metrics = _cost_api_metrics(
         cost_rows=cost_rows,
         symbols=symbols,
         live_symbols=live_symbols,
+        live_universe_source=live_universe_source,
         expanded_symbols=expanded_symbols,
         cost_regime=cost_regime,
     )
@@ -130,6 +131,14 @@ def build_enforce_readiness_report(
             value=cost_metrics["cost_symbol_hit_rate"],
             threshold=f">= {limits.cost_symbol_hit_rate_min}",
             detail=cost_metrics["cost_detail"],
+            warn_only=True,
+        ),
+        _check(
+            "cost_live_symbol_hit_rate",
+            cost_metrics["cost_live_symbol_hit_rate"] >= limits.cost_symbol_hit_rate_min,
+            value=cost_metrics["cost_live_symbol_hit_rate"],
+            threshold=f">= {limits.cost_symbol_hit_rate_min}",
+            detail=cost_metrics["live_cost_detail"],
         ),
         _check(
             "actual_or_mixed_cost_coverage",
@@ -138,6 +147,15 @@ def build_enforce_readiness_report(
             value=cost_metrics["actual_or_mixed_cost_coverage"],
             threshold=f">= {limits.actual_or_mixed_cost_coverage_min}",
             detail=cost_metrics["coverage_detail"],
+            warn_only=True,
+        ),
+        _check(
+            "actual_or_mixed_cost_coverage_live_universe",
+            cost_metrics["actual_or_mixed_cost_coverage_live_universe"]
+            >= limits.actual_or_mixed_cost_coverage_min,
+            value=cost_metrics["actual_or_mixed_cost_coverage_live_universe"],
+            threshold=f">= {limits.actual_or_mixed_cost_coverage_min}",
+            detail=cost_metrics["live_coverage_detail"],
         ),
         _check(
             "telemetry_dedupe_health",
@@ -256,7 +274,12 @@ def _latest_row(dataset_path: Path) -> dict[str, Any]:
     return max(rows, key=_row_sort_ts)
 
 
-def _cost_symbols(rows: list[dict[str, Any]], explicit: list[str] | None) -> list[str]:
+def _cost_symbols(
+    rows: list[dict[str, Any]],
+    explicit: list[str] | None,
+    *,
+    live_symbols: list[str],
+) -> list[str]:
     if explicit:
         return sorted({normalize_symbol(symbol) for symbol in explicit})
     symbols = {
@@ -264,7 +287,101 @@ def _cost_symbols(rows: list[dict[str, Any]], explicit: list[str] | None) -> lis
         for row in rows
         if str(row.get("symbol") or "").upper() not in {"", "GLOBAL"}
     }
+    symbols.update(_normalized_symbol_set(live_symbols))
     return sorted(symbols) or DEFAULT_COST_SYMBOLS
+
+
+def _live_universe_symbols(root: Path) -> tuple[list[str], str]:
+    configured = _live_universe_from_effective_config(root)
+    if configured:
+        return configured, "effective_live_config"
+    telemetry_symbols = _live_universe_from_candidate_events(root)
+    if telemetry_symbols:
+        return telemetry_symbols, "v5_candidate_event"
+    return sorted({normalize_symbol(symbol) for symbol in LIVE_UNIVERSE_SYMBOLS}), (
+        "default_fallback"
+    )
+
+
+def _live_universe_from_effective_config(root: Path) -> list[str]:
+    rows = _rows(root / "silver" / "v5_state_snapshot")
+    candidates: list[str] = []
+    for row in rows:
+        state_type = str(row.get("state_type") or "").lower()
+        source_path = str(row.get("source_path_inside_bundle") or "").lower()
+        if "effective_live_config" not in state_type and "effective_live_config" not in source_path:
+            continue
+        payload = _json_dict(row.get("raw_payload_json"))
+        for key in [
+            "symbols",
+            "live_symbols",
+            "trade_symbols",
+            "symbol_universe",
+            "allowed_symbols",
+        ]:
+            candidates.extend(_symbols_from_value(payload.get(key)))
+        if "universe" in payload:
+            candidates.extend(_symbols_from_value(payload.get("universe")))
+    return _live_symbols_if_complete(candidates)
+
+
+def _live_universe_from_candidate_events(root: Path) -> list[str]:
+    rows = _rows(root / "silver" / "v5_candidate_event")
+    if not rows:
+        return []
+    latest_ts = max((_parse_dt(row.get("ts_utc")) for row in rows), default=None)
+    if latest_ts is None:
+        return []
+    recent_cutoff = latest_ts - timedelta(hours=48)
+    symbols = [
+        normalize_symbol(row.get("symbol"))
+        for row in rows
+        if (_parse_dt(row.get("ts_utc")) or latest_ts) >= recent_cutoff
+        and normalize_symbol(row.get("symbol")) in set(DEFAULT_COST_SYMBOLS)
+    ]
+    return _live_symbols_if_complete(symbols)
+
+
+def _live_symbols_if_complete(symbols: list[str]) -> list[str]:
+    normalized = sorted(
+        {normalize_symbol(symbol) for symbol in symbols if normalize_symbol(symbol)}
+    )
+    default_set = set(DEFAULT_COST_SYMBOLS)
+    return normalized if default_set.issubset(set(normalized)) else []
+
+
+def _symbols_from_value(value: Any) -> list[str]:
+    if value is None:
+        return []
+    if isinstance(value, list):
+        return [normalize_symbol(item) for item in value if normalize_symbol(item)]
+    if isinstance(value, dict):
+        symbols: list[str] = []
+        for key in ["symbols", "live_symbols", "trade_symbols", "items"]:
+            symbols.extend(_symbols_from_value(value.get(key)))
+        return symbols
+    if isinstance(value, str):
+        text = value.strip()
+        if not text:
+            return []
+        try:
+            parsed = json.loads(text)
+        except json.JSONDecodeError:
+            return [normalize_symbol(part) for part in text.replace(";", ",").split(",")]
+        return _symbols_from_value(parsed)
+    return []
+
+
+def _json_dict(value: Any) -> dict[str, Any]:
+    if isinstance(value, dict):
+        return value
+    if not isinstance(value, str) or not value.strip():
+        return {}
+    try:
+        parsed = json.loads(value)
+    except json.JSONDecodeError:
+        return {}
+    return parsed if isinstance(parsed, dict) else {}
 
 
 def _cost_api_metrics(
@@ -272,6 +389,7 @@ def _cost_api_metrics(
     cost_rows: list[dict[str, Any]],
     symbols: list[str],
     live_symbols: list[str],
+    live_universe_source: str,
     expanded_symbols: list[str],
     cost_regime: str,
 ) -> dict[str, Any]:
@@ -291,6 +409,11 @@ def _cost_api_metrics(
         item for item in estimates if item.get("cost_source") == "global_default"
     ]
     symbol_hits = [item for item in estimates if item.get("cost_source") != "global_default"]
+    hit_symbols = {
+        normalize_symbol(item.get("normalized_symbol") or item.get("symbol"))
+        for item in symbol_hits
+        if normalize_symbol(item.get("normalized_symbol") or item.get("symbol"))
+    }
     fresh_cost_rows = [row for row in cost_rows if not _row_is_stale(row)]
     stale_cost_rows = [row for row in cost_rows if _row_is_stale(row)]
     cost_symbols = {
@@ -328,15 +451,20 @@ def _cost_api_metrics(
     actual_or_mixed_expanded = actual_or_mixed & expanded_symbol_set
     proxy_only_live = proxy_only & live_symbol_set
     proxy_only_expanded = proxy_only & expanded_symbol_set
+    missing_live_cost_symbols = live_symbol_set - hit_symbols
     coverage_denominator = max(len(denominator_symbols), 1)
     return {
         "cost_symbols_checked": symbols,
         "cost_symbols_live_universe": sorted(live_symbol_set),
         "cost_symbols_expanded_universe": sorted(expanded_symbol_set),
+        "live_universe_source": live_universe_source,
         "cost_api_global_default_count": len(global_default),
         "cost_api_global_default_rate": len(global_default) / total,
         "cost_symbol_hit_count": len(symbol_hits),
         "cost_symbol_hit_rate": len(symbol_hits) / total,
+        "cost_live_symbol_hit_count": len(hit_symbols & live_symbol_set),
+        "cost_live_symbol_hit_rate": _coverage_rate(hit_symbols & live_symbol_set, live_symbol_set),
+        "missing_live_cost_symbols": sorted(missing_live_cost_symbols),
         "actual_or_mixed_cost_symbol_count": len(actual_or_mixed),
         "actual_or_mixed_cost_coverage": len(actual_or_mixed) / coverage_denominator,
         "actual_or_mixed_cost_symbol_count_live_universe": len(actual_or_mixed_live),
@@ -362,6 +490,12 @@ def _cost_api_metrics(
             f"global_default={len(global_default)}; symbol_hits={len(symbol_hits)}; "
             f"symbols={symbols}"
         ),
+        "live_cost_detail": (
+            f"live_symbols={sorted(live_symbol_set)}; "
+            f"live_symbol_hits={sorted(hit_symbols & live_symbol_set)}; "
+            f"missing_live_cost_symbols={sorted(missing_live_cost_symbols)}; "
+            f"live_universe_source={live_universe_source}"
+        ),
         "coverage_detail": (
             f"actual_or_mixed_symbols={sorted(actual_or_mixed)}; "
             f"actual_or_mixed_live={sorted(actual_or_mixed_live)}; "
@@ -371,6 +505,12 @@ def _cost_api_metrics(
             f"proxy_only_symbols_live={sorted(proxy_only_live)}; "
             f"proxy_only_symbols_expanded={sorted(proxy_only_expanded)}; "
             f"stale_actual_or_mixed_symbols={sorted(stale_actual_or_mixed)}"
+        ),
+        "live_coverage_detail": (
+            f"actual_or_mixed_live={sorted(actual_or_mixed_live)}; "
+            f"proxy_only_symbols_live={sorted(proxy_only_live)}; "
+            f"missing_live_cost_symbols={sorted(missing_live_cost_symbols)}; "
+            f"live_universe_source={live_universe_source}"
         ),
     }
 
@@ -737,9 +877,16 @@ def _required_actions(blocked: list[str], warnings: list[str]) -> list[str]:
             "verify /v1/risk/live-permission returns latest gold row"
         ),
         "cost_api_global_default_rate": "fix cost_bucket_daily/API symbol matching before enforce",
-        "cost_symbol_hit_rate": "ensure all V5 symbols hit symbol-level cost buckets",
+        "cost_symbol_hit_rate": "review non-live cost symbol coverage for advisory reporting",
+        "cost_live_symbol_hit_rate": (
+            "ensure every V5 live symbol hits a symbol-level cost bucket before enforce"
+        ),
         "actual_or_mixed_cost_coverage": (
-            "enable OKX read-only fills/bills or V5 trades cost backfill"
+            "improve actual/mixed cost coverage for research and expanded symbols"
+        ),
+        "actual_or_mixed_cost_coverage_live_universe": (
+            "enable OKX read-only fills/bills or V5 order lifecycle cost backfill "
+            "for BTC/ETH/SOL/BNB before enforce"
         ),
         "telemetry_dedupe_health": (
             "fix V5 telemetry event_id/event_key coverage before enforce"
@@ -771,6 +918,10 @@ def _csv_text(report: EnforceReadinessReport) -> str:
         "duplicate_rate",
         "dedupe_health_status",
         "dedupe_block_reason",
+        "cost_symbol_hit_rate",
+        "cost_live_symbol_hit_rate",
+        "missing_live_cost_symbols",
+        "live_universe_source",
         "actual_or_mixed_cost_coverage",
         "actual_or_mixed_cost_coverage_live_universe",
         "actual_or_mixed_cost_coverage_expanded_universe",
@@ -793,6 +944,13 @@ def _csv_text(report: EnforceReadinessReport) -> str:
         "duplicate_rate": report.metrics.get("duplicate_rate", 0.0),
         "dedupe_health_status": report.metrics.get("dedupe_health_status", "PASS"),
         "dedupe_block_reason": report.metrics.get("dedupe_block_reason", ""),
+        "cost_symbol_hit_rate": report.metrics.get("cost_symbol_hit_rate", 0.0),
+        "cost_live_symbol_hit_rate": report.metrics.get("cost_live_symbol_hit_rate", 0.0),
+        "missing_live_cost_symbols": json.dumps(
+            report.metrics.get("missing_live_cost_symbols", []),
+            sort_keys=True,
+        ),
+        "live_universe_source": report.metrics.get("live_universe_source", "unknown"),
         "actual_or_mixed_cost_coverage": report.metrics.get(
             "actual_or_mixed_cost_coverage",
             0.0,

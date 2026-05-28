@@ -5,7 +5,11 @@ from io import StringIO
 
 from quant_lab.data.lake import read_parquet_dataset
 from quant_lab.export.daily import export_daily_pack
-from quant_lab.strategy_telemetry.ingest import ingest_v5_bundle
+from quant_lab.strategy_telemetry.ingest import (
+    _event_key_fields,
+    _event_key_from_fields,
+    ingest_v5_bundle,
+)
 from tests.v5_bundle_fixture import make_tar, make_v5_bundle_fixture
 
 
@@ -251,6 +255,63 @@ def test_ingest_exports_v5_pullback_reversal_artifacts(tmp_path):
     assert readiness["row_count"] == 4
     files = {item["path"]: item for item in manifest["files"]}
     assert files["reports/pullback_reversal_shadow_outcomes.csv"]["rows"] == 1
+
+
+def test_pullback_reversal_shadow_uses_semantic_dedupe_across_reports_and_summaries(
+    tmp_path,
+):
+    header = (
+        "as_of_date,rule_version,strategy_candidate,run_id,candidate_id,"
+        "source_event_key,symbol,ts_utc,horizon_hours,net_bps_after_cost,"
+        "label_status,generated_at_utc,schema_version,contract_version\n"
+    )
+    reports_csv = (
+        header
+        + "2026-05-26,confirmed_reversal_v0.2,v5.pullback_reversal_shadow_bnb,"
+        "run_1,cand_pb_1,key_1,BNB-USDT,2026-05-26T11:00:00Z,24,50,"
+        "complete,2026-05-26T11:05:00Z,entry_quality.v0.1,"
+        "v5.quant_lab.telemetry.v2\n"
+    )
+    summaries_csv = (
+        header
+        + "2026-05-26,confirmed_reversal_v0.2,v5.pullback_reversal_shadow_bnb,"
+        "run_1,cand_pb_1,key_1,BNB-USDT,2026-05-26T11:00:00Z,24,50,"
+        "complete,2026-05-26T12:05:00Z,entry_quality.v0.1,"
+        "v5.quant_lab.telemetry.v2\n"
+        + "2026-05-26,confirmed_reversal_v0.2,v5.pullback_reversal_shadow_bnb,"
+        "run_1,cand_pb_1,key_1,BNB-USDT,2026-05-26T11:00:00Z,48,70,"
+        "complete,2026-05-26T12:05:00Z,entry_quality.v0.1,"
+        "v5.quant_lab.telemetry.v2\n"
+        + "2026-05-26,confirmed_reversal_v0.2,v5.pullback_reversal_shadow_sol,"
+        "run_1,cand_pb_2,key_2,SOL-USDT,2026-05-26T11:00:00Z,24,30,"
+        "complete,2026-05-26T12:05:00Z,entry_quality.v0.1,"
+        "v5.quant_lab.telemetry.v2\n"
+    )
+    bundle = make_tar(
+        tmp_path / "v5_live_followup_bundle_20260526T110000Z.tar.gz",
+        {
+            "reports/pullback_reversal_shadow_outcomes.csv": reports_csv,
+            "summaries/pullback_reversal_shadow_outcomes.csv": summaries_csv,
+        },
+    )
+    lake = tmp_path / "lake"
+
+    ingest_v5_bundle(
+        bundle,
+        lake,
+        tmp_path / "restricted",
+        tmp_path / "redacted",
+        run_analysis=False,
+        refresh_candidate_gold=False,
+    )
+
+    rows = read_parquet_dataset(lake / "gold/v5_pullback_reversal_shadow")
+    assert rows.height == 3
+    assert rows["stable_row_key"].n_unique() == 3
+    grouped = rows.group_by(["symbol", "horizon_hours"]).len()
+    assert {
+        (row["symbol"], str(row["horizon_hours"])) for row in grouped.to_dicts()
+    } == {("BNB-USDT", "24"), ("BNB-USDT", "48"), ("SOL-USDT", "24")}
 
 
 def test_ingest_v5_paper_strategy_rows_dedupes_overlapping_summary(tmp_path):
@@ -593,6 +654,115 @@ def test_ingest_event_key_prefers_trading_event_id(tmp_path):
     assert int(requests["source_count"][0]) == 2
     assert health["unique_actual_fallback_count"][0] == 1
     assert health["duplicate_event_count"][0] == 3
+
+
+def test_quant_lab_exact_duplicate_reingest_keeps_single_canonical_event(tmp_path):
+    request = (
+        '{"event_type":"request","strategy_id":"v5","run_id":"run_same",'
+        '"ts":"2026-05-14T23:01:00Z","path":"/v1/costs/estimate",'
+        '"request_id":"request-a","status_code":200,"success":true,'
+        '"fallback_used":false,"latency_ms":10}\n'
+    )
+    first = make_tar(
+        tmp_path / "v5_live_followup_bundle_20260514T230100Z.tar.gz",
+        {"raw/reports/quant_lab_requests.jsonl": request},
+    )
+    second = make_tar(
+        tmp_path / "v5_live_followup_bundle_20260514T231000Z.tar.gz",
+        {
+            "raw/reports/quant_lab_requests.jsonl": request,
+            "summaries/window_summary.json": '{"marker":"different_bundle_same_event"}',
+        },
+    )
+    lake = tmp_path / "lake"
+
+    ingest_v5_bundle(first, lake, tmp_path / "restricted", tmp_path / "redacted")
+    ingest_v5_bundle(second, lake, tmp_path / "restricted", tmp_path / "redacted")
+
+    requests = read_parquet_dataset(lake / "silver/v5_quant_lab_request")
+    health = read_parquet_dataset(lake / "gold/strategy_health_daily")
+
+    assert requests.height == 1
+    row = requests.to_dicts()[0]
+    assert int(row["source_count"]) == 2
+    assert int(row["payload_hash_count"]) == 1
+    assert row["conflicting_duplicate"] is False
+    assert health["unique_event_rows"][0] == 1
+    assert health["exact_duplicate_event_rows"][0] == 1
+    assert health["conflicting_duplicate_event_rows"][0] == 0
+
+
+def test_quant_lab_conflicting_duplicate_keeps_same_event_key_and_blocks_dedupe_health(
+    tmp_path,
+):
+    first_request = (
+        '{"event_type":"request","strategy_id":"v5","run_id":"run_same",'
+        '"ts":"2026-05-14T23:01:00Z","path":"/v1/costs/estimate",'
+        '"request_id":"request-a","status_code":200,"success":true,'
+        '"fallback_used":false,"latency_ms":10}\n'
+    )
+    changed_payload_same_identity = (
+        '{"event_type":"request","strategy_id":"v5","run_id":"run_same",'
+        '"ts":"2026-05-14T23:01:00Z","path":"/v1/costs/estimate",'
+        '"request_id":"request-a","status_code":200,"success":true,'
+        '"fallback_used":false,"latency_ms":25}\n'
+    )
+    first = make_tar(
+        tmp_path / "v5_live_followup_bundle_20260514T230100Z.tar.gz",
+        {"raw/reports/quant_lab_requests.jsonl": first_request},
+    )
+    second = make_tar(
+        tmp_path / "v5_live_followup_bundle_20260514T231000Z.tar.gz",
+        {"raw/reports/quant_lab_requests.jsonl": changed_payload_same_identity},
+    )
+    lake = tmp_path / "lake"
+
+    ingest_v5_bundle(first, lake, tmp_path / "restricted", tmp_path / "redacted")
+    ingest_v5_bundle(second, lake, tmp_path / "restricted", tmp_path / "redacted")
+
+    requests = read_parquet_dataset(lake / "silver/v5_quant_lab_request")
+    health = read_parquet_dataset(lake / "gold/strategy_health_daily")
+
+    assert requests.height == 1
+    row = requests.to_dicts()[0]
+    assert int(row["source_count"]) == 2
+    assert int(row["payload_hash_count"]) == 2
+    assert row["conflicting_duplicate"] is True
+    assert health["unique_event_rows"][0] == 1
+    assert health["conflicting_duplicate_event_rows"][0] == 1
+    assert health["conflicting_duplicate_event_key_count"][0] == 1
+    assert health["duplicate_explanation"][0] == "conflicting_duplicate_payloads_present"
+
+
+def test_raw_payload_hash_variation_does_not_change_event_key():
+    first_payload = {
+        "event_type": "request",
+        "strategy_id": "v5",
+        "run_id": "run_same",
+        "ts": "2026-05-14T23:01:00Z",
+        "path": "/v1/costs/estimate",
+        "request_id": "request-a",
+        "status_code": 200,
+        "success": True,
+        "fallback_used": False,
+        "latency_ms": 10,
+    }
+    second_payload = dict(first_payload)
+    second_payload["latency_ms"] = 25
+
+    first_fields = _event_key_fields(
+        first_payload,
+        first_payload,
+        default_event_type="request",
+    )
+    second_fields = _event_key_fields(
+        second_payload,
+        second_payload,
+        default_event_type="request",
+    )
+
+    assert first_fields["raw_payload_hash"] != second_fields["raw_payload_hash"]
+    assert _event_key_from_fields(first_fields) == _event_key_from_fields(second_fields)
 
 
 def test_ingest_overlapping_bundles_deduplicate_quant_lab_timeout(tmp_path):

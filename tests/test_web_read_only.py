@@ -114,6 +114,26 @@ def test_web_diagnostics_use_dataset_freshness_not_missing_for_populated_tables(
         assert rows[dataset]["freshness_status"] != "missing"
 
 
+def test_lake_diagnostics_parquet_count_excludes_internal_compaction_dirs(tmp_path):
+    lake_root = _fixture_lake(tmp_path)
+    baseline = readers.lake_diagnostics(lake_root)["parquet_file_count"]
+
+    internal = lake_root / "silver" / "orderbook_snapshot" / "__direct_compact_leftover"
+    internal.mkdir(parents=True)
+    pl.DataFrame([{"symbol": "SOL-USDT", "value": 1}]).write_parquet(
+        internal / "compact_temp.parquet"
+    )
+    tmp_dir = lake_root / "silver" / "orderbook_snapshot" / "._tmp"
+    tmp_dir.mkdir()
+    pl.DataFrame([{"symbol": "SOL-USDT", "value": 2}]).write_parquet(
+        tmp_dir / "part.tmp.parquet"
+    )
+
+    diagnostics = readers.lake_diagnostics(lake_root)
+
+    assert diagnostics["parquet_file_count"] == baseline
+
+
 def test_lake_diagnostics_uses_metadata_for_core_datasets(tmp_path, monkeypatch):
     lake_root = _fixture_lake(tmp_path)
     original = readers.read_parquet_dataset

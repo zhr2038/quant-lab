@@ -16,6 +16,7 @@ Environment=COMPACT_DATASET_TIMEOUT_SECONDS=300
 Environment=COMPACT_DIRECT_MAX_SOURCE_FILES=4
 Environment=COMPACT_DIRECT_MIN_SOURCE_FILES=64
 Environment=COMPACT_MAX_SOURCE_BATCH_BYTES=67108864
+Environment=COMPACT_CONSOLIDATE_EXISTING_COMPACT_OUTPUTS=0
 ExecStart=/usr/bin/flock -w 10 /var/lock/quant-lab-heavy.lock /bin/bash /opt/quant-lab/deploy/scripts/compact_lake_hot_datasets.sh
 Nice=15
 IOSchedulingClass=idle

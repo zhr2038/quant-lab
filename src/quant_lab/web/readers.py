@@ -3676,10 +3676,10 @@ def _parquet_file_count(path: str | Path) -> int:
     root = Path(path)
     try:
         if root.is_file():
-            return 1 if root.suffix == ".parquet" else 0
+            return 1 if root.suffix == ".parquet" and not _is_internal_lake_path(root) else 0
         if not root.exists():
             return 0
-        return sum(1 for _ in root.rglob("*.parquet"))
+        return len(_parquet_file_candidates(root))
     except OSError:
         return 0
 

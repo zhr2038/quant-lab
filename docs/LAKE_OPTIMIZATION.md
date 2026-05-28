@@ -33,6 +33,13 @@ The compaction script also prunes stale internal staging directories and empty
 `._tmp` directories older than 60 minutes. Active writers use dataset locks and
 short-lived temp files; the cleanup deliberately avoids fresh temp paths.
 
+For hot direct-append datasets, daily compaction skips existing
+`compact_*.parquet` outputs by default and only compacts new direct batch files.
+This prevents hourly maintenance from repeatedly decompressing already-compacted
+history and temporarily multiplying `__direct_compact_*` staging files. A
+separate manual maintenance pass may opt into consolidating existing compact
+outputs when the lake is quiet.
+
 ## Metrics
 
 API requests are recorded in `bronze/api_request_metrics` when

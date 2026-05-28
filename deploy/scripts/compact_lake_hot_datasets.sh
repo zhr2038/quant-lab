@@ -9,7 +9,7 @@ COMPACT_RAW_OKX_WS="${COMPACT_RAW_OKX_WS:-0}"
 COMPACT_DIRECT_MAX_SOURCE_FILES="${COMPACT_DIRECT_MAX_SOURCE_FILES:-8}"
 COMPACT_DIRECT_MIN_SOURCE_FILES="${COMPACT_DIRECT_MIN_SOURCE_FILES:-64}"
 COMPACT_MAX_SOURCE_BATCH_BYTES="${COMPACT_MAX_SOURCE_BATCH_BYTES:-134217728}"
-COMPACT_CONSOLIDATE_EXISTING_COMPACT_OUTPUTS="${COMPACT_CONSOLIDATE_EXISTING_COMPACT_OUTPUTS:-1}"
+COMPACT_CONSOLIDATE_EXISTING_COMPACT_OUTPUTS="${COMPACT_CONSOLIDATE_EXISTING_COMPACT_OUTPUTS:-0}"
 COMPACT_STARTED_AT="$(date +%s)"
 
 V5_TELEMETRY_DATASETS=(
@@ -148,7 +148,14 @@ parquet_file_count() {
     echo 0
     return
   fi
-  find "${dataset_path}" -type f -name '*.parquet' | wc -l
+  visible_parquet_files "${dataset_path}" | wc -l
+}
+
+visible_parquet_files() {
+  local root_path="$1"
+  find "${root_path}" \
+    \( -type d \( -name '__*' -o -name '.*' \) -prune \) -o \
+    \( -type f -name '*.parquet' ! -name '.*' ! -name '*.tmp.parquet' -print \)
 }
 
 compact_if_file_count_at_least() {
@@ -188,7 +195,7 @@ compact_leaf_partitions_if_file_count_at_least() {
     return
   fi
 
-  find "${dataset_path}" -type f -name '*.parquet' -printf '%h\n' \
+  visible_parquet_files "${dataset_path}" | sed 's#/[^/]*$##' \
     | sort | uniq -c | sort -nr \
     | while read -r file_count leaf_path; do
         effective_min_files="${min_files}"

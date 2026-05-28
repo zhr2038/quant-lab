@@ -133,6 +133,7 @@ V5_PAPER_TELEMETRY_DATASETS = {
 }
 OPTIONAL_EMPTY_DATASET_STATUSES = {
     "closed_research_snapshot",
+    "expanded_universe_automation_active",
     "legacy_optional",
     "waiting_for_v5_paper_telemetry",
     "entry_quality_optional",
@@ -196,7 +197,11 @@ RESEARCH_DIAGNOSTIC_DATASET_KEYS: dict[str, tuple[str, ...]] = {
         "v5.bnb_swing_exit_policy_review",
     ),
 }
-EVENT_DRIVEN_OK_STATUSES = {"event_driven_no_recent_trade"}
+EVENT_DRIVEN_V5_DATASET_STATUSES = {
+    "v5_trade_event": "event_driven_no_recent_trade",
+    "v5_bnb_profit_lock_shadow": "event_driven_no_recent_bnb_profit_lock",
+}
+EVENT_DRIVEN_OK_STATUSES = set(EVENT_DRIVEN_V5_DATASET_STATUSES.values())
 STALE_DATASET_SCHEMA: dict[str, Any] = {
     "takeaway": pl.Utf8,
     "severity": pl.Utf8,
@@ -310,6 +315,7 @@ DATASET_TIMESTAMP_COLUMNS: dict[str, tuple[str, ...]] = {
     "v5_paper_strategy_run": ("created_at", "as_of_date", "ingest_ts", "bundle_ts"),
     "v5_paper_strategy_daily": ("created_at", "as_of_date", "ingest_ts", "bundle_ts"),
     "v5_paper_slippage_coverage": ("created_at", "as_of_date", "ingest_ts", "bundle_ts"),
+    "v5_bnb_profit_lock_shadow": ("ingest_ts", "bundle_ts", "exit_ts", "entry_ts"),
     "v5_candidate_event": ("ts_utc", "ingest_ts", "bundle_ts"),
     "v5_candidate_label": ("label_ts", "decision_ts", "ts_utc", "created_at"),
     "v5_candidate_quality_daily": ("created_at", "date"),
@@ -4150,6 +4156,7 @@ def _top_feature_anomalies(anomalies: pl.DataFrame) -> pl.DataFrame:
 def _stale_dataset_rows(lake_root: str | Path) -> pl.DataFrame:
     rows = []
     v5_telemetry_is_current = _v5_telemetry_is_current(lake_root)
+    expanded_universe_automation_is_active = _expanded_universe_automation_is_active(lake_root)
     closed_research_keys = _closed_research_keys(lake_root)
     for name in sorted(DATASET_PATHS):
         path = dataset_path_for(lake_root, name)
@@ -4158,10 +4165,20 @@ def _stale_dataset_rows(lake_root: str | Path) -> pl.DataFrame:
         status = freshness["freshness_status"]
         if snapshot.rows == 0:
             status = _empty_dataset_status(name)
+        if (
+            name == "expanded_crypto_universe_shadow"
+            and snapshot.rows == 0
+            and expanded_universe_automation_is_active
+        ):
+            status = "expanded_universe_automation_active"
         if _dataset_belongs_to_closed_research(name, closed_research_keys):
             status = "closed_research_snapshot"
-        if name == "v5_trade_event" and status == "stale" and v5_telemetry_is_current:
-            status = "event_driven_no_recent_trade"
+        if (
+            name in EVENT_DRIVEN_V5_DATASET_STATUSES
+            and status == "stale"
+            and v5_telemetry_is_current
+        ):
+            status = EVENT_DRIVEN_V5_DATASET_STATUSES[name]
         if name in HISTORICAL_RESEARCH_DATASETS and status == "stale":
             status = "historical_research_snapshot"
         if _should_show_stale_dataset_row(snapshot, status):
@@ -4201,6 +4218,20 @@ def _dataset_belongs_to_closed_research(dataset_name: str, closed_keys: set[str]
     if not keys:
         return False
     return bool(set(keys).intersection(closed_keys))
+
+
+def _expanded_universe_automation_is_active(lake_root: str | Path) -> bool:
+    for dataset_name in (
+        "expanded_universe_candidate",
+        "expanded_universe_quality",
+        "expanded_universe_candidate_event",
+        "expanded_universe_watchlist",
+    ):
+        snapshot = _dataset_snapshot(lake_root, dataset_name)
+        status = str(snapshot.freshness.get("freshness_status") or "")
+        if snapshot.rows > 0 and status in {"fresh", "delayed"} and not snapshot.warning:
+            return True
+    return False
 
 
 def _stale_dataset_takeaway(dataset_name: str, status: str, snapshot: DatasetSnapshot) -> str:

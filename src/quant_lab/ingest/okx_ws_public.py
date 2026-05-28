@@ -81,6 +81,7 @@ class OKXPublicWSConfig(BaseModel):
 
     url: str = "wss://ws.okx.com:8443/ws/v5/public"
     heartbeat_seconds: int = Field(default=20, gt=0)
+    receive_timeout_seconds: float = Field(default=90.0, gt=0)
     reconnect_max_attempts: int = Field(default=10, ge=0)
     reconnect_backoff_seconds: float = Field(default=1.0, ge=0)
 
@@ -180,13 +181,27 @@ class OKXPublicWSClient:
                 await self.connect()
 
             try:
-                raw_message = await self._ws.recv()
+                raw_message = await asyncio.wait_for(
+                    self._ws.recv(),
+                    timeout=self.config.receive_timeout_seconds,
+                )
+            except TimeoutError:
+                reconnect_attempts += 1
+                self.reconnect_count += 1
+                self.error_count += 1
+                if reconnect_attempts > self.config.reconnect_max_attempts:
+                    raise
+                await self._close_connection()
+                await self._sleep(self.config.reconnect_backoff_seconds)
+                await self.connect()
+                continue
             except Exception:
                 reconnect_attempts += 1
                 self.reconnect_count += 1
                 self.error_count += 1
                 if reconnect_attempts > self.config.reconnect_max_attempts:
                     raise
+                await self._close_connection()
                 await self._sleep(self.config.reconnect_backoff_seconds)
                 await self.connect()
                 continue
@@ -225,6 +240,18 @@ class OKXPublicWSClient:
             self.config.url,
             ping_interval=self.config.heartbeat_seconds,
         )
+
+    async def _close_connection(self) -> None:
+        ws = self._ws
+        self._ws = None
+        if ws is None:
+            return
+        close = getattr(ws, "close", None)
+        if close is None:
+            return
+        result = close()
+        if inspect.isawaitable(result):
+            await result
 
 
 async def collect_okx_public_ws(

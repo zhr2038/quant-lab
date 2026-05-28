@@ -165,8 +165,8 @@ DEFAULT_EXPORT_RECENT_FILE_LIMIT = 100
 DEFAULT_EXPORT_FULL_READ_MAX_FILES = 80
 DEFAULT_EXPORT_FULL_READ_MAX_BYTES = 128 * 1024 * 1024
 DEFAULT_KEEP_EXPERT_PACKS = 5
-EVENT_DRIVEN_V5_DATASETS = {"v5_trade_event"}
-EVENT_DRIVEN_OK_STATUSES = {"event_driven_no_recent_trade"}
+EVENT_DRIVEN_V5_DATASETS = readers.EVENT_DRIVEN_V5_DATASET_STATUSES
+EVENT_DRIVEN_OK_STATUSES = readers.EVENT_DRIVEN_OK_STATUSES
 SECTION_DATASETS = {
     "market": ["market_bar", "trade_print", "orderbook_snapshot", "okx_public_ws"],
     "features": ["feature_value", "feature_coverage_daily", "feature_anomaly_daily"],
@@ -8503,6 +8503,9 @@ def _missing_dataset_reason(dataset_name: str) -> str:
 def _stale_rows(frames: dict[str, pl.DataFrame]) -> pl.DataFrame:
     rows = []
     v5_telemetry_is_current = _v5_telemetry_is_current_from_frames(frames)
+    expanded_universe_automation_is_active = _expanded_universe_automation_is_active_from_frames(
+        frames
+    )
     closed_research_keys = readers.research_portfolio_closed_keys(
         frames.get("research_portfolio_status", pl.DataFrame())
     )
@@ -8513,10 +8516,15 @@ def _stale_rows(frames: dict[str, pl.DataFrame]) -> pl.DataFrame:
             empty_status = readers._empty_dataset_status(name)  # type: ignore[attr-defined]
             if empty_status in readers.OPTIONAL_EMPTY_DATASET_STATUSES:
                 continue
+            if (
+                name == "expanded_crypto_universe_shadow"
+                and expanded_universe_automation_is_active
+            ):
+                continue
         if readers._dataset_belongs_to_closed_research(name, closed_research_keys):  # type: ignore[attr-defined]
             status = "closed_research_snapshot"
         if name in EVENT_DRIVEN_V5_DATASETS and status == "stale" and v5_telemetry_is_current:
-            status = "event_driven_no_recent_trade"
+            status = EVENT_DRIVEN_V5_DATASETS[name]
         if name in readers.HISTORICAL_RESEARCH_DATASETS and status == "stale":
             status = "historical_research_snapshot"
         if status in {"missing", "unknown", "stale"} and status not in EVENT_DRIVEN_OK_STATUSES:
@@ -8542,6 +8550,22 @@ def _stale_rows(frames: dict[str, pl.DataFrame]) -> pl.DataFrame:
             }
         )
     )
+
+
+def _expanded_universe_automation_is_active_from_frames(frames: dict[str, pl.DataFrame]) -> bool:
+    for dataset_name in (
+        "expanded_universe_candidate",
+        "expanded_universe_quality",
+        "expanded_universe_candidate_event",
+        "expanded_universe_watchlist",
+    ):
+        frame = frames.get(dataset_name, pl.DataFrame())
+        if frame.is_empty():
+            continue
+        status = str(_dataset_freshness_payload(dataset_name, frame)["freshness_status"] or "")
+        if status in {"fresh", "delayed"}:
+            return True
+    return False
 
 
 def _v5_telemetry_is_current_from_frames(frames: dict[str, pl.DataFrame]) -> bool:

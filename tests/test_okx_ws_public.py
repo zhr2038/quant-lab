@@ -320,6 +320,48 @@ def test_read_messages_reconnects_without_long_sleep():
     assert len(second_ws.sent) == 1
 
 
+def test_read_messages_reconnects_after_receive_timeout():
+    first_ws = HangingWebSocket()
+    second_ws = FakeWebSocket(messages=[json.dumps(_trade_message())])
+    sockets = [first_ws, second_ws]
+    sleeps: list[float] = []
+
+    async def fake_sleep(seconds: float) -> None:
+        sleeps.append(seconds)
+
+    def connect_factory(url: str) -> Any:
+        return sockets.pop(0)
+
+    client = OKXPublicWSClient(
+        config=OKXPublicWSConfig(
+            receive_timeout_seconds=0.001,
+            reconnect_max_attempts=1,
+            reconnect_backoff_seconds=0,
+        ),
+        connect_factory=connect_factory,
+        sleep=fake_sleep,
+    )
+
+    async def scenario() -> list[dict[str, Any]]:
+        await client.connect()
+        await client.subscribe_trades("BTC-USDT")
+        messages = []
+        async for message in client.read_messages(max_messages=1):
+            messages.append(message)
+        return messages
+
+    messages = asyncio.run(scenario())
+
+    assert len(messages) == 1
+    assert messages[0]["arg"]["channel"] == "trades"
+    assert client.reconnect_count == 1
+    assert client.error_count == 1
+    assert sleeps == [0]
+    assert first_ws.closed is True
+    assert len(first_ws.sent) == 1
+    assert len(second_ws.sent) == 1
+
+
 def test_collect_okx_public_ws_summary(tmp_path):
     fake_ws = FakeWebSocket(messages=[json.dumps(_trade_message())])
 
@@ -418,6 +460,25 @@ class FakeWebSocket:
         if not self.messages:
             raise ConnectionError("no more test messages")
         return self.messages.pop(0)
+
+    async def close(self) -> None:
+        return None
+
+
+class HangingWebSocket:
+    def __init__(self) -> None:
+        self.sent: list[str] = []
+        self.closed = False
+
+    async def send(self, message: str) -> None:
+        self.sent.append(message)
+
+    async def recv(self) -> str:
+        await asyncio.sleep(1)
+        raise AssertionError("timeout should reconnect before recv returns")
+
+    async def close(self) -> None:
+        self.closed = True
 
 
 async def _no_sleep(seconds: float) -> None:

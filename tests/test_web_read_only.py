@@ -716,6 +716,82 @@ def test_data_health_treats_v5_trades_as_event_driven_when_telemetry_is_current(
     assert not any(row["dataset"] == "v5_trade_event" for row in stale_rows)
 
 
+def test_data_health_treats_bnb_profit_lock_as_event_driven_when_telemetry_current(
+    tmp_path,
+):
+    lake_root = tmp_path / "lake"
+    now = datetime.now(UTC)
+    old = now - timedelta(days=3)
+    write_parquet_dataset(
+        pl.DataFrame(
+            [
+                {
+                    "strategy": "v5",
+                    "date": now.date().isoformat(),
+                    "status": "OK",
+                    "latest_bundle_ts": now,
+                    "decision_audit_count_24h": 1,
+                }
+            ]
+        ),
+        lake_root / "gold" / "strategy_health_daily",
+    )
+    write_parquet_dataset(
+        pl.DataFrame(
+            [
+                {
+                    "strategy_id": "BNB_SWING_EXIT_POLICY_REVIEW",
+                    "symbol": "BNB-USDT",
+                    "entry_ts": old,
+                    "exit_ts": old + timedelta(hours=24),
+                    "bundle_ts": old,
+                    "ingest_ts": old,
+                }
+            ]
+        ),
+        lake_root / "silver" / "v5_bnb_profit_lock_shadow",
+    )
+
+    stale_rows = readers.data_health_summary(lake_root)["stale_datasets"].to_dicts()
+
+    assert not any(row["dataset"] == "v5_bnb_profit_lock_shadow" for row in stale_rows)
+
+
+def test_data_health_hides_empty_legacy_expanded_shadow_when_automation_is_active(
+    tmp_path,
+):
+    lake_root = tmp_path / "lake"
+    now = datetime.now(UTC)
+    write_parquet_dataset(
+        pl.DataFrame(
+            schema={
+                "as_of_date": pl.Utf8,
+                "generated_at": pl.Datetime(time_zone="UTC"),
+                "symbol": pl.Utf8,
+                "quality_score": pl.Float64,
+            }
+        ),
+        lake_root / "gold" / "expanded_crypto_universe_shadow",
+    )
+    write_parquet_dataset(
+        pl.DataFrame(
+            [
+                {
+                    "as_of_date": now.date().isoformat(),
+                    "generated_at": now,
+                    "symbol": "TRX-USDT",
+                    "universe_type": "expanded_paper",
+                }
+            ]
+        ),
+        lake_root / "gold" / "expanded_universe_candidate",
+    )
+
+    stale_rows = readers.data_health_summary(lake_root)["stale_datasets"].to_dicts()
+
+    assert not any(row["dataset"] == "expanded_crypto_universe_shadow" for row in stale_rows)
+
+
 def test_data_health_uses_generation_time_for_risk_on_shadow_and_hides_history_snapshots(
     tmp_path,
 ):

@@ -1052,6 +1052,89 @@ def test_export_daily_fails_when_newer_v5_bundle_cannot_be_ingested(tmp_path):
         )
 
 
+def test_export_daily_refreshes_v5_derived_outputs_when_latest_bundle_already_ingested(
+    tmp_path,
+    monkeypatch,
+):
+    lake_root = _fixture_lake(tmp_path)
+    inbox = tmp_path / "inbox"
+    latest_bundle = make_tar(
+        inbox / "v5_live_followup_bundle_20260517T100000Z.tar.gz",
+        {"summaries/window_summary.json": "{}"},
+    )
+    latest_sha = daily_export_module.compute_sha256(latest_bundle)
+    latest_ts = datetime(2026, 5, 17, 10, tzinfo=UTC)
+    write_parquet_dataset(
+        pl.DataFrame(
+            [
+                {
+                    "strategy": "v5",
+                    "bundle_sha256": latest_sha,
+                    "bundle_name": latest_bundle.name,
+                    "bundle_ts": latest_ts,
+                    "ingest_ts": datetime(2026, 5, 17, 10, 1, tzinfo=UTC),
+                    "schema_version": "v5_quant_lab_telemetry.v0.1",
+                }
+            ]
+        ),
+        lake_root / "bronze" / "strategy_telemetry" / "v5" / "bundle_manifest",
+    )
+    write_parquet_dataset(
+        pl.DataFrame(
+            [
+                {
+                    "strategy": "v5",
+                    "date": "2026-05-17",
+                    "status": "OK",
+                    "latest_bundle_ts": datetime(2026, 5, 17, 9, tzinfo=UTC),
+                    "created_at": datetime(2026, 5, 17, 9, tzinfo=UTC),
+                }
+            ]
+        ),
+        lake_root / "gold" / "strategy_health_daily",
+    )
+
+    def fake_refresh(lake_root_arg: Path, export_day) -> list[str]:
+        assert Path(lake_root_arg) == lake_root
+        write_parquet_dataset(
+            pl.DataFrame(
+                [
+                    {
+                        "strategy": "v5",
+                        "date": str(export_day),
+                        "status": "OK",
+                        "latest_bundle_ts": latest_ts,
+                        "created_at": datetime(2026, 5, 17, 10, 2, tzinfo=UTC),
+                    }
+                ]
+            ),
+            lake_root / "gold" / "strategy_health_daily",
+        )
+        return []
+
+    monkeypatch.setattr(daily_export_module, "_refresh_v5_derived_outputs", fake_refresh)
+    config = _v5_telemetry_config(tmp_path, inbox, lake_root)
+
+    result = export_daily_pack(
+        export_date="2026-05-17",
+        lake_root=lake_root,
+        out_dir=tmp_path / "exports",
+        command_line=["qlab", "export-daily"],
+        pre_export_v5_refresh=True,
+        v5_telemetry_config=config,
+    )
+
+    with zipfile.ZipFile(result.zip_path) as archive:
+        manifest = json.loads(archive.read("manifest.json").decode("utf-8"))
+
+    assert manifest["pre_export_v5_refresh"]["processed_bundle_count"] == 0
+    assert manifest["pre_export_v5_refresh"]["derived_refresh_retry_attempted"] is True
+    assert manifest["stale_v5_bundle"] is False
+    assert manifest["authoritative_snapshot"] is True
+    assert manifest["latest_v5_bundle_seen_at_export"].startswith("2026-05-17T10:00:00")
+    assert manifest["latest_v5_bundle_ingested_at_export"].startswith("2026-05-17T10:00:00")
+
+
 def test_export_daily_pack_uses_unique_same_day_file_names(tmp_path):
     lake_root = _fixture_lake(tmp_path)
     out_dir = tmp_path / "exports"

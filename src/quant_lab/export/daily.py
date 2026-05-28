@@ -2559,6 +2559,23 @@ def export_daily_pack(
         pre_export_v5_refresh=pre_export_v5_refresh,
         allow_stale_v5=allow_stale_v5,
     )
+    if v5_consistency["stale_v5_bundle"] and pre_export_v5_refresh and not allow_stale_v5:
+        pre_export_v5["derived_refresh_retry_attempted"] = True
+        retry_warnings = _refresh_v5_derived_outputs(root, day)
+        if retry_warnings:
+            pre_export_v5.setdefault("warnings", []).extend(
+                f"pre_export_v5_derived_refresh_retry:{warning}"
+                for warning in retry_warnings
+            )
+        snapshot = _load_snapshot(root)
+        v5_consistency = _v5_export_consistency(
+            snapshot.frames,
+            pre_export_v5=pre_export_v5,
+            pre_export_v5_refresh=pre_export_v5_refresh,
+            allow_stale_v5=allow_stale_v5,
+        )
+    else:
+        pre_export_v5["derived_refresh_retry_attempted"] = False
     pre_export_v5.update(v5_consistency)
     if v5_consistency["stale_v5_bundle"] and pre_export_v5_refresh and not allow_stale_v5:
         raise RuntimeError(v5_consistency["warning_reason"])

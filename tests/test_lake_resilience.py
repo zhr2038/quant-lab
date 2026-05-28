@@ -647,6 +647,28 @@ def test_compact_parquet_directory_files_noops_when_only_compact_outputs_exist(t
     assert read_parquet_dataset(dataset)["value"].to_list() == [1]
 
 
+def test_compact_parquet_directory_files_can_consolidate_existing_compact_outputs(tmp_path):
+    dataset = tmp_path / "lake" / "silver" / "trade_print"
+    dataset.mkdir(parents=True)
+    for index in range(5):
+        pl.DataFrame([{"value": index}]).write_parquet(dataset / f"compact_{index}.parquet")
+
+    result = compact_parquet_directory_files(
+        dataset,
+        target_rows_per_file=10,
+        include_existing_compact_files=True,
+    )
+
+    direct_files = sorted(path.name for path in dataset.glob("*.parquet"))
+    read_back = read_parquet_dataset(dataset)
+
+    assert result.source_file_count == 5
+    assert result.output_file_count == 1
+    assert len(direct_files) == 1
+    assert direct_files[0].startswith("compact_")
+    assert sorted(read_back["value"].to_list()) == [0, 1, 2, 3, 4]
+
+
 def test_read_parquet_dataset_ignores_internal_compaction_and_temp_files(tmp_path):
     dataset = tmp_path / "lake" / "silver" / "v5_config_audit"
     dataset.mkdir(parents=True)

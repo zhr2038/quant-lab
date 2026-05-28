@@ -660,6 +660,16 @@ def compact_lake_dataset_command(
             help="Compact only Parquet files directly in the dataset directory.",
         ),
     ] = False,
+    include_existing_compact_files: Annotated[
+        bool,
+        typer.Option(
+            "--include-existing-compact-files/--skip-existing-compact-files",
+            help=(
+                "When using --direct-only, also consolidate existing compact_*.parquet "
+                "outputs. Default skips them to avoid repeatedly reading historical data."
+            ),
+        ),
+    ] = False,
     compact_output: Annotated[
         bool,
         typer.Option(
@@ -678,6 +688,7 @@ def compact_lake_dataset_command(
                 target_rows_per_file=target_rows_per_file,
                 max_source_files_per_batch=max_source_files_per_batch,
                 max_source_batch_bytes=max_source_batch_bytes,
+                include_existing_compact_files=include_existing_compact_files,
             )
             if direct_only
             else compact_parquet_dataset(

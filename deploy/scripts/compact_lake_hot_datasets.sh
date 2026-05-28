@@ -9,6 +9,7 @@ COMPACT_RAW_OKX_WS="${COMPACT_RAW_OKX_WS:-0}"
 COMPACT_DIRECT_MAX_SOURCE_FILES="${COMPACT_DIRECT_MAX_SOURCE_FILES:-8}"
 COMPACT_DIRECT_MIN_SOURCE_FILES="${COMPACT_DIRECT_MIN_SOURCE_FILES:-64}"
 COMPACT_MAX_SOURCE_BATCH_BYTES="${COMPACT_MAX_SOURCE_BATCH_BYTES:-134217728}"
+COMPACT_CONSOLIDATE_EXISTING_COMPACT_OUTPUTS="${COMPACT_CONSOLIDATE_EXISTING_COMPACT_OUTPUTS:-1}"
 COMPACT_STARTED_AT="$(date +%s)"
 
 V5_TELEMETRY_DATASETS=(
@@ -75,7 +76,13 @@ compact_dataset_direct_only() {
   local dataset="$1"
   local target_rows="$2"
   local batch_files="$3"
+  local include_existing="${4:-0}"
   local status
+  local include_args=()
+
+  if [[ "${include_existing}" == "1" ]]; then
+    include_args=(--include-existing-compact-files)
+  fi
 
   echo "START_DIRECT_COMPACT dataset=${dataset} timeout_seconds=${COMPACT_DATASET_TIMEOUT_SECONDS}"
   set +e
@@ -87,6 +94,7 @@ compact_dataset_direct_only() {
     --max-source-files-per-batch "${batch_files}" \
     --max-source-batch-bytes "${COMPACT_MAX_SOURCE_BATCH_BYTES}" \
     --direct-only \
+    "${include_args[@]}" \
     --compact-output
   status="$?"
   set -e
@@ -202,7 +210,8 @@ compact_leaf_partitions_if_file_count_at_least() {
           compact_dataset_direct_only \
             "${leaf_path#${LAKE_ROOT}/}" \
             "${target_rows}" \
-            "${COMPACT_DIRECT_MAX_SOURCE_FILES}"
+            "${COMPACT_DIRECT_MAX_SOURCE_FILES}" \
+            "${COMPACT_CONSOLIDATE_EXISTING_COMPACT_OUTPUTS}"
         else
           compact_dataset "${leaf_path#${LAKE_ROOT}/}" "${target_rows}" "${batch_files}"
         fi

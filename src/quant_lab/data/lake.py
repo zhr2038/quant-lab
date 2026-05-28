@@ -306,6 +306,7 @@ def compact_parquet_directory_files(
     target_rows_per_file: int = 250_000,
     max_source_files_per_batch: int = 5_000,
     max_source_batch_bytes: int | None = None,
+    include_existing_compact_files: bool = False,
 ) -> CompactParquetResult:
     """Compact only Parquet files directly inside a directory.
 
@@ -317,7 +318,10 @@ def compact_parquet_directory_files(
 
     path = Path(directory_path)
     with _dataset_lock(path, timeout_seconds=120.0):
-        files = _direct_compaction_source_files(path)
+        files = _direct_compaction_source_files(
+            path,
+            include_existing_compact_files=include_existing_compact_files,
+        )
         return _compact_direct_parquet_files_unlocked(
             path,
             files,
@@ -776,7 +780,11 @@ def _direct_parquet_files(dataset_path: str | Path) -> list[Path]:
     )
 
 
-def _direct_compaction_source_files(dataset_path: str | Path) -> list[Path]:
+def _direct_compaction_source_files(
+    dataset_path: str | Path,
+    *,
+    include_existing_compact_files: bool = False,
+) -> list[Path]:
     """Return direct append files that still need compaction.
 
     Hot append datasets accumulate small ``part_``/``api_`` style files between
@@ -785,6 +793,8 @@ def _direct_compaction_source_files(dataset_path: str | Path) -> list[Path]:
     to be decompressed repeatedly and pushing production memory into swap.
     """
 
+    if include_existing_compact_files:
+        return _direct_parquet_files(dataset_path)
     return [
         file
         for file in _direct_parquet_files(dataset_path)

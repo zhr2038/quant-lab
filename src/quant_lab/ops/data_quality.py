@@ -183,6 +183,8 @@ def _dataset_checks(
     checks.extend(_primary_key_checks(spec, path, lazy, available_columns))
     checks.extend(_closed_bar_checks(spec, path, lazy, available_columns))
     checks.extend(_freshness_checks(spec, path, lazy, available_columns, reference_at))
+    checks.extend(_market_bar_ohlc_checks(spec, path, lazy, available_columns))
+    checks.extend(_feature_value_checks(spec, path, lazy, available_columns))
     checks.extend(_cost_checks(spec, path, lazy, available_columns))
     checks.extend(_risk_permission_checks(spec, path, lazy, available_columns, reference_at))
     return checks
@@ -377,13 +379,96 @@ def _cost_checks(
 ) -> list[DataQualityCheck]:
     if spec.dataset_id != "cost_bucket_daily":
         return []
+    checks: list[DataQualityCheck] = []
+    if "sample_count" in available_columns:
+        try:
+            low_sample_count = (
+                lazy.filter(pl.col("sample_count").cast(pl.Int64, strict=False) < 30)
+                .select(pl.len().alias("low_sample_count"))
+                .collect()
+                .item()
+            )
+            checks.append(
+                _check(
+                    spec,
+                    "cost_low_sample_count",
+                    int(low_sample_count or 0) == 0,
+                    f"low_sample_count={int(low_sample_count or 0)}; threshold=30",
+                    path,
+                    severity="warning",
+                    status="PASS" if int(low_sample_count or 0) == 0 else "WARN",
+                    next_action="collect more actual/mixed cost samples before trusting live cost",
+                    observed_value=str(int(low_sample_count or 0)),
+                    expected_value="0",
+                )
+            )
+        except Exception as exc:
+            checks.append(
+                _check(
+                    spec,
+                    "cost_low_sample_count",
+                    False,
+                    f"cost_low_sample_check_failed={type(exc).__name__}:{exc}",
+                    path,
+                    severity="warning",
+                    status="WARN",
+                    next_action="inspect cost_bucket_daily sample_count schema",
+                )
+            )
+    bps_columns = [
+        column
+        for column in available_columns
+        if column.endswith("_bps")
+        or "_bps_" in column
+        or column in {"cost_bps", "selected_total_cost_bps"}
+    ]
+    if bps_columns:
+        try:
+            negative_conditions = [
+                pl.col(column).cast(pl.Float64, strict=False) < 0 for column in bps_columns
+            ]
+            negative_bps_count = (
+                lazy.filter(pl.any_horizontal(negative_conditions))
+                .select(pl.len().alias("negative_bps_count"))
+                .collect()
+                .item()
+            )
+            checks.append(
+                _check(
+                    spec,
+                    "cost_negative_bps",
+                    int(negative_bps_count or 0) == 0,
+                    f"negative_bps_count={int(negative_bps_count or 0)}; columns={bps_columns}",
+                    path,
+                    severity="critical",
+                    next_action=(
+                        "repair cost calibration output; cost bps fields must be non-negative"
+                    ),
+                    observed_value=str(int(negative_bps_count or 0)),
+                    expected_value="0",
+                )
+            )
+        except Exception as exc:
+            checks.append(
+                _check(
+                    spec,
+                    "cost_negative_bps",
+                    False,
+                    f"cost_negative_bps_check_failed={type(exc).__name__}:{exc}",
+                    path,
+                    severity="warning",
+                    status="WARN",
+                    next_action="inspect cost bps schema drift",
+                )
+            )
     columns = {"cost_source", "source", "fallback_level"}.intersection(available_columns)
     if not columns:
-        return []
+        return checks
     source_expr = pl.concat_str([pl.col(column).cast(pl.Utf8) for column in sorted(columns)])
     try:
+        with_cost_text = lazy.with_columns(source_expr.str.to_lowercase().alias("_cost_text"))
         hard_fallback_count = (
-            lazy.with_columns(source_expr.str.to_lowercase().alias("_cost_text"))
+            with_cost_text
             .filter(
                 pl.col("_cost_text").str.contains("global_default")
                 | pl.col("_cost_text").str.contains("service_unavailable")
@@ -393,8 +478,15 @@ def _cost_checks(
             .collect()
             .item()
         )
+        public_proxy_count = (
+            with_cost_text
+            .filter(pl.col("_cost_text").str.contains("public_spread_proxy"))
+            .select(pl.len().alias("public_proxy_count"))
+            .collect()
+            .item()
+        )
     except Exception as exc:
-        return [
+        checks.append(
             _check(
                 spec,
                 "cost_hard_fallback_visibility",
@@ -405,8 +497,27 @@ def _cost_checks(
                 status="WARN",
                 next_action="inspect cost_bucket_daily fallback schema",
             )
+        )
+        return checks
+    checks.extend(
+        [
+            _check(
+                spec,
+                "cost_public_proxy_visibility",
+                int(public_proxy_count or 0) == 0,
+                f"public_proxy_count={int(public_proxy_count or 0)}",
+                path,
+                severity="warning",
+                status="PASS" if int(public_proxy_count or 0) == 0 else "WARN",
+                next_action=(
+                    "replace public spread proxy with actual/mixed cost evidence when possible"
+                ),
+                observed_value=str(int(public_proxy_count or 0)),
+                expected_value="0",
+            ),
         ]
-    return [
+    )
+    checks.append(
         _check(
             spec,
             "cost_hard_fallback_visibility",
@@ -418,7 +529,193 @@ def _cost_checks(
             observed_value=str(int(hard_fallback_count or 0)),
             expected_value="0",
         )
+    )
+    return checks
+
+
+def _market_bar_ohlc_checks(
+    spec: DatasetSpec,
+    path: Path,
+    lazy: pl.LazyFrame,
+    available_columns: set[str],
+) -> list[DataQualityCheck]:
+    if spec.dataset_id != "market_bar":
+        return []
+    required = {"open", "high", "low", "close"}
+    if not required.issubset(available_columns):
+        return []
+    try:
+        invalid_count = (
+            lazy.filter(
+                (pl.col("open") <= 0)
+                | (pl.col("high") <= 0)
+                | (pl.col("low") <= 0)
+                | (pl.col("close") <= 0)
+                | (pl.col("high") < pl.col("low"))
+                | (pl.col("high") < pl.max_horizontal("open", "close"))
+                | (pl.col("low") > pl.min_horizontal("open", "close"))
+            )
+            .select(pl.len().alias("invalid_ohlc_count"))
+            .collect()
+            .item()
+        )
+    except Exception as exc:
+        return [
+            _check(
+                spec,
+                "market_bar_ohlc_valid",
+                False,
+                f"ohlc_check_failed={type(exc).__name__}:{exc}",
+                path,
+                severity="critical",
+                next_action="repair market_bar numeric schema before feature publishing",
+            )
+        ]
+    return [
+        _check(
+            spec,
+            "market_bar_ohlc_valid",
+            int(invalid_count or 0) == 0,
+            f"invalid_ohlc_count={int(invalid_count or 0)}",
+            path,
+            severity="critical",
+            next_action="drop or repair invalid OHLC bars before feature publishing",
+            observed_value=str(int(invalid_count or 0)),
+            expected_value="0",
+        )
     ]
+
+
+def _feature_value_checks(
+    spec: DatasetSpec,
+    path: Path,
+    lazy: pl.LazyFrame,
+    available_columns: set[str],
+) -> list[DataQualityCheck]:
+    if spec.dataset_id != "feature_value":
+        return []
+    checks: list[DataQualityCheck] = []
+    if "value" in available_columns:
+        try:
+            infinite_count = (
+                lazy.filter(
+                    pl.col("value")
+                    .cast(pl.Float64, strict=False)
+                    .is_infinite()
+                    .fill_null(False)
+                )
+                .select(pl.len().alias("infinite_count"))
+                .collect()
+                .item()
+            )
+            checks.append(
+                _check(
+                    spec,
+                    "feature_value_no_infinite",
+                    int(infinite_count or 0) == 0,
+                    f"infinite_count={int(infinite_count or 0)}",
+                    path,
+                    severity="critical",
+                    next_action="repair feature computation; values must be finite or null",
+                    observed_value=str(int(infinite_count or 0)),
+                    expected_value="0",
+                )
+            )
+        except Exception as exc:
+            checks.append(
+                _check(
+                    spec,
+                    "feature_value_no_infinite",
+                    False,
+                    f"infinite_check_failed={type(exc).__name__}:{exc}",
+                    path,
+                    severity="warning",
+                    status="WARN",
+                    next_action="inspect feature_value value dtype",
+                )
+            )
+    if {"value", "is_valid"}.issubset(available_columns):
+        invalid_reason_expr = (
+            pl.col("invalid_reason").cast(pl.Utf8).fill_null("")
+            if "invalid_reason" in available_columns
+            else pl.lit("")
+        )
+        try:
+            null_valid_count = (
+                lazy.with_columns(invalid_reason_expr.alias("_invalid_reason"))
+                .filter(
+                    pl.col("value").is_null()
+                    & (pl.col("is_valid") == True)  # noqa: E712
+                    & (pl.col("_invalid_reason").str.strip_chars() == "")
+                )
+                .select(pl.len().alias("null_valid_count"))
+                .collect()
+                .item()
+            )
+            checks.append(
+                _check(
+                    spec,
+                    "feature_value_null_valid_consistency",
+                    int(null_valid_count or 0) == 0,
+                    f"null_valid_without_reason_count={int(null_valid_count or 0)}",
+                    path,
+                    severity="critical",
+                    next_action="mark null feature values invalid or provide invalid_reason",
+                    observed_value=str(int(null_valid_count or 0)),
+                    expected_value="0",
+                )
+            )
+        except Exception as exc:
+            checks.append(
+                _check(
+                    spec,
+                    "feature_value_null_valid_consistency",
+                    False,
+                    f"null_valid_check_failed={type(exc).__name__}:{exc}",
+                    path,
+                    severity="warning",
+                    status="WARN",
+                    next_action="inspect feature_value is_valid/value schema",
+                )
+            )
+    if {"invalid_reason", "is_valid"}.issubset(available_columns):
+        try:
+            reason_valid_count = (
+                lazy.filter(
+                    (pl.col("is_valid") == True)  # noqa: E712
+                    & (pl.col("invalid_reason").cast(pl.Utf8).fill_null("").str.strip_chars() != "")
+                )
+                .select(pl.len().alias("reason_valid_count"))
+                .collect()
+                .item()
+            )
+            checks.append(
+                _check(
+                    spec,
+                    "feature_value_invalid_reason_consistency",
+                    int(reason_valid_count or 0) == 0,
+                    f"valid_with_invalid_reason_count={int(reason_valid_count or 0)}",
+                    path,
+                    severity="critical",
+                    next_action="set is_valid=false when invalid_reason is populated",
+                    observed_value=str(int(reason_valid_count or 0)),
+                    expected_value="0",
+                )
+            )
+        except Exception as exc:
+            checks.append(
+                _check(
+                    spec,
+                    "feature_value_invalid_reason_consistency",
+                    False,
+                    f"invalid_reason_check_failed={type(exc).__name__}:{exc}",
+                    path,
+                    severity="warning",
+                    status="WARN",
+                    next_action="inspect feature_value invalid_reason schema",
+                )
+            )
+    return checks
 
 
 def _risk_permission_checks(
@@ -430,6 +727,7 @@ def _risk_permission_checks(
 ) -> list[DataQualityCheck]:
     if spec.dataset_id != "risk_permission" or "expires_at" not in available_columns:
         return []
+    checks: list[DataQualityCheck] = []
     try:
         latest = (
             lazy.select(
@@ -460,7 +758,7 @@ def _risk_permission_checks(
         if isinstance(latest, datetime)
         else "latest_expires_at not observable"
     )
-    return [
+    checks.append(
         _check(
             spec,
             "risk_permission_not_expired",
@@ -470,7 +768,88 @@ def _risk_permission_checks(
             severity="critical",
             next_action="run qlab publish-risk-permission before qlab export-daily",
         )
-    ]
+    )
+    if {"permission_status", "expires_at"}.issubset(available_columns):
+        try:
+            active_expired_count = (
+                lazy.with_columns(
+                    pl.col("expires_at")
+                    .cast(pl.Utf8)
+                    .str.to_datetime(time_zone="UTC", strict=False)
+                    .alias("_expires_at")
+                )
+                .filter(
+                    pl.col("permission_status")
+                    .cast(pl.Utf8)
+                    .str.starts_with("ACTIVE_")
+                    & (pl.col("_expires_at") <= reference_at)
+                )
+                .select(pl.len().alias("active_expired_count"))
+                .collect()
+                .item()
+            )
+            checks.append(
+                _check(
+                    spec,
+                    "risk_permission_active_not_expired",
+                    int(active_expired_count or 0) == 0,
+                    f"active_expired_count={int(active_expired_count or 0)}",
+                    path,
+                    severity="critical",
+                    next_action="republish risk_permission; ACTIVE_* rows must not be expired",
+                    observed_value=str(int(active_expired_count or 0)),
+                    expected_value="0",
+                )
+            )
+        except Exception as exc:
+            checks.append(
+                _check(
+                    spec,
+                    "risk_permission_active_not_expired",
+                    False,
+                    f"active_expiry_check_failed={type(exc).__name__}:{exc}",
+                    path,
+                    severity="critical",
+                    next_action="inspect risk_permission permission_status/expires_at schema",
+                )
+            )
+    if {"permission_status", "enforceable"}.issubset(available_columns):
+        try:
+            non_active_enforceable_count = (
+                lazy.filter(
+                    ~pl.col("permission_status").cast(pl.Utf8).str.starts_with("ACTIVE_")
+                    & (pl.col("enforceable") == True)  # noqa: E712
+                )
+                .select(pl.len().alias("non_active_enforceable_count"))
+                .collect()
+                .item()
+            )
+            checks.append(
+                _check(
+                    spec,
+                    "risk_permission_enforceable_consistency",
+                    int(non_active_enforceable_count or 0) == 0,
+                    f"non_active_enforceable_count={int(non_active_enforceable_count or 0)}",
+                    path,
+                    severity="critical",
+                    next_action="set enforceable=false for STALE/EXPIRED/NO_FRESH permissions",
+                    observed_value=str(int(non_active_enforceable_count or 0)),
+                    expected_value="0",
+                )
+            )
+        except Exception as exc:
+            checks.append(
+                _check(
+                    spec,
+                    "risk_permission_enforceable_consistency",
+                    False,
+                    f"enforceable_consistency_check_failed={type(exc).__name__}:{exc}",
+                    path,
+                    severity="critical",
+                    next_action="inspect risk_permission enforceable schema",
+                )
+            )
+    return checks
 
 
 def _check(

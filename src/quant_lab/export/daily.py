@@ -4934,23 +4934,37 @@ def _data_quality_payload(
             severity="critical" if v5_integration_enabled else "warning",
         )
     )
-    dataset_governance = run_data_quality(
-        lake_root,
-        dataset_names=[
-            name
-            for name, row_count in snapshot.row_counts.items()
-            if row_count > 0
-        ],
-        reference_at=generated_at,
-    ).to_dict(include_checks=True)
+    try:
+        registry_quality = run_data_quality(
+            lake_root,
+            dataset_names=[
+                name
+                for name, row_count in snapshot.row_counts.items()
+                if row_count > 0
+            ],
+            reference_at=generated_at,
+        ).to_dict(include_checks=True)
+    except Exception as exc:
+        registry_quality = {
+            "status": "degraded",
+            "generated_at": generated_at.isoformat(),
+            "dataset_count": 0,
+            "check_count": 0,
+            "fail_count": 0,
+            "warning_count": 1,
+            "checks": [],
+            "error_message": _safe_warning_text(f"{type(exc).__name__}:{exc}"),
+        }
+    dataset_governance = registry_quality
     checks.append(
         _check(
             "dataset_registry_quality",
-            int(dataset_governance.get("fail_count") or 0) == 0,
+            int(registry_quality.get("fail_count") or 0) == 0
+            and str(registry_quality.get("status") or "").lower() != "degraded",
             (
-                f"status={dataset_governance.get('status')}; "
-                f"fail_count={dataset_governance.get('fail_count')}; "
-                f"warning_count={dataset_governance.get('warning_count')}"
+                f"status={registry_quality.get('status')}; "
+                f"fail_count={registry_quality.get('fail_count')}; "
+                f"warning_count={registry_quality.get('warning_count')}"
             ),
             warning_only=True,
         )
@@ -5127,6 +5141,7 @@ def _data_quality_payload(
         "decision_audit": decision_audit_quality,
         "v5_pre_export": v5_refresh,
         "dataset_governance": dataset_governance,
+        "registry_quality": registry_quality,
         "quant_lab_enforce_readiness": enforce_readiness.model_dump(mode="json"),
         "shadow_only_recommended": enforce_readiness.shadow_only_recommended,
     }

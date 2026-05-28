@@ -76,4 +76,48 @@ def test_cost_quality_allows_symbol_level_public_proxy_but_keeps_visibility(tmp_
     hard_fallback = next(
         check for check in result["checks"] if check["rule"] == "cost_hard_fallback_visibility"
     )
+    public_proxy = next(
+        check for check in result["checks"] if check["rule"] == "cost_public_proxy_visibility"
+    )
+    low_sample = next(
+        check for check in result["checks"] if check["rule"] == "cost_low_sample_count"
+    )
     assert hard_fallback["status"] == "PASS"
+    assert public_proxy["status"] == "WARN"
+    assert low_sample["status"] == "WARN"
+
+
+def test_cost_quality_fails_for_negative_bps(tmp_path):
+    lake = tmp_path / "lake"
+    write_parquet_dataset(
+        pl.DataFrame(
+            [
+                {
+                    "day": "2026-05-28",
+                    "symbol": "BNB-USDT",
+                    "regime": "Trending",
+                    "event_type": "entry",
+                    "notional_bucket": "all",
+                    "sample_count": 30,
+                    "total_cost_bps_p50": -1.0,
+                    "total_cost_bps_p75": 1.5,
+                    "total_cost_bps_p90": 2.0,
+                    "cost_source": "mixed_actual_proxy",
+                    "fallback_level": "NONE",
+                    "created_at": datetime(2026, 5, 28, 2, tzinfo=UTC),
+                }
+            ]
+        ),
+        lake / "gold" / "cost_bucket_daily",
+    )
+
+    result = run_data_quality(
+        lake,
+        dataset_names=["cost_bucket_daily"],
+        reference_at=datetime(2026, 5, 28, 3, tzinfo=UTC),
+    ).to_dict()
+
+    negative = next(check for check in result["checks"] if check["rule"] == "cost_negative_bps")
+    assert result["status"] == "FAIL"
+    assert negative["status"] == "FAIL"
+    assert negative["observed_value"] == "1"

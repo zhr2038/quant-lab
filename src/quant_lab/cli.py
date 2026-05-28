@@ -599,6 +599,48 @@ def lake_health_command(
         typer.echo(json.dumps(result, indent=2, sort_keys=True, default=str))
 
 
+@app.command("data-quality")
+def data_quality_command(
+    lake_root: Annotated[
+        Path,
+        typer.Option(
+            "--lake-root",
+            file_okay=False,
+            dir_okay=True,
+            help="quant-lab lake root to inspect.",
+        ),
+    ],
+    dataset: Annotated[
+        str | None,
+        typer.Option(
+            "--dataset",
+            help="Optional comma-separated dataset names to inspect.",
+        ),
+    ] = None,
+    compact_output: Annotated[
+        bool,
+        typer.Option(
+            "--compact-output/--full-output",
+            help="Emit a compact data-quality summary with top failing checks.",
+        ),
+    ] = False,
+) -> None:
+    result = lake_dataset_quality_summary(
+        lake_root,
+        dataset_names=_parse_dataset_names(dataset),
+        include_checks=True,
+    )
+    output = _compact_data_quality_payload(result) if compact_output else result
+    typer.echo(
+        json.dumps(
+            output,
+            indent=None if compact_output else 2,
+            sort_keys=True,
+            default=str,
+        )
+    )
+
+
 def _compact_lake_health_payload(payload: dict[str, Any]) -> dict[str, Any]:
     rows = payload.get("rows")
     health_rows = rows if isinstance(rows, list) else []

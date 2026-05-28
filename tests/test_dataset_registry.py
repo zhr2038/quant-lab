@@ -33,6 +33,37 @@ def test_dataset_registry_exposes_paths_for_api_and_lake_health():
     assert paths["v5_candidate_event"] == Path("silver") / "v5_candidate_event"
 
 
+def test_dataset_registry_covers_v5_and_research_governance_datasets():
+    names = set(dataset_names())
+    expected = {
+        "fill_event",
+        "account_bill",
+        "order_event",
+        "v5_decision_audit",
+        "v5_trade_event",
+        "v5_quant_lab_request",
+        "v5_quant_lab_cost_usage",
+        "v5_quant_lab_fallback",
+        "v5_quant_lab_compliance",
+        "v5_candidate_label",
+        "v5_shadow_outcome",
+        "v5_paper_strategy_run",
+        "v5_paper_strategy_daily",
+        "v5_paper_slippage_coverage",
+        "strategy_evidence",
+        "strategy_evidence_sample",
+        "strategy_evidence_quality",
+        "alpha_discovery_board",
+        "v5_execution_quality_daily",
+        "v5_gate_compliance_daily",
+        "v5_missed_opportunity_daily",
+        "v5_config_health_daily",
+        "v5_issue_summary_daily",
+    }
+
+    assert expected.issubset(names)
+
+
 def test_dataset_registry_rows_are_serializable():
     rows = dataset_registry_rows()
     market_bar = next(row for row in rows if row["dataset_id"] == "market_bar")

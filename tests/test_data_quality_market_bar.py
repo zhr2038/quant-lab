@@ -71,6 +71,25 @@ def test_market_bar_quality_fails_for_unclosed_or_duplicate_bars(tmp_path):
     assert checks[("market_bar", "primary_key_unique")]["status"] == "FAIL"
 
 
+def test_market_bar_quality_fails_for_invalid_ohlc_shape(tmp_path):
+    lake = tmp_path / "lake"
+    write_parquet_dataset(
+        pl.DataFrame([_market_bar_row(high=100.0, low=99.0, close=101.0)]),
+        lake / "silver" / "market_bar",
+    )
+
+    result = run_data_quality(
+        lake,
+        dataset_names=["market_bar"],
+        reference_at=datetime(2026, 5, 28, 2, 30, tzinfo=UTC),
+    ).to_dict()
+
+    ohlc = next(check for check in result["checks"] if check["rule"] == "market_bar_ohlc_valid")
+    assert result["status"] == "FAIL"
+    assert ohlc["status"] == "FAIL"
+    assert ohlc["observed_value"] == "1"
+
+
 def test_market_bar_quality_fails_for_stale_dataset(tmp_path):
     lake = tmp_path / "lake"
     write_parquet_dataset(

@@ -191,6 +191,8 @@ def core_dataset_specs() -> dict[str, DatasetSpec]:
                 "day",
                 "symbol",
                 "regime",
+                "event_type",
+                "notional_bucket",
                 "sample_count",
                 "total_cost_bps_p50",
                 "total_cost_bps_p75",
@@ -238,7 +240,7 @@ def core_dataset_specs() -> dict[str, DatasetSpec]:
             owner="research",
             producer="qlab build-alpha-evidence",
             consumers=("gate", "web", "expert-export"),
-            primary_key=("alpha_id", "symbol", "horizon_hours", "created_at"),
+            primary_key=("alpha_id", "version", "created_at"),
             required_columns=(
                 "alpha_id",
                 "version",

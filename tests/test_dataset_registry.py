@@ -8,6 +8,11 @@ from quant_lab.ops.dataset_registry import (
 )
 from quant_lab.research.publish import ALPHA_EVIDENCE_SCHEMA, GATE_DECISION_SCHEMA
 
+KNOWN_DATASET_SCHEMAS = {
+    "alpha_evidence": set(ALPHA_EVIDENCE_SCHEMA),
+    "gate_decision": set(GATE_DECISION_SCHEMA),
+}
+
 
 def test_dataset_registry_declares_core_ownership_and_sla():
     market_bar = get_dataset_spec("market_bar")
@@ -86,6 +91,30 @@ def test_research_dataset_required_columns_match_published_schemas():
     assert gate_decision is not None
     assert set(gate_decision.required_columns).issubset(GATE_DECISION_SCHEMA)
     assert "decision" not in gate_decision.required_columns
+
+
+def test_dataset_registry_primary_keys_are_declared_schema_subsets():
+    bad_specs: dict[str, tuple[str, ...]] = {}
+    for name in dataset_names():
+        spec = get_dataset_spec(name)
+        assert spec is not None
+        if not spec.primary_key:
+            continue
+        allowed_columns = set(spec.required_columns) | KNOWN_DATASET_SCHEMAS.get(name, set())
+        missing = tuple(column for column in spec.primary_key if column not in allowed_columns)
+        if missing:
+            bad_specs[name] = missing
+
+    assert bad_specs == {}
+
+
+def test_alpha_evidence_primary_key_matches_real_schema():
+    alpha_evidence = get_dataset_spec("alpha_evidence")
+
+    assert alpha_evidence is not None
+    assert set(alpha_evidence.primary_key).issubset(ALPHA_EVIDENCE_SCHEMA)
+    assert "symbol" not in alpha_evidence.primary_key
+    assert "horizon_hours" not in alpha_evidence.primary_key
 
 
 def test_job_run_history_uses_duration_seconds_schema():

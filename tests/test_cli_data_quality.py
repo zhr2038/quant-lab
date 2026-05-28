@@ -135,3 +135,26 @@ def test_data_quality_command_compact_output_includes_top_failing_checks(tmp_pat
     assert payload["status"] == "FAIL"
     assert "checks" not in payload
     assert payload["failing_checks"][0]["rule"] == "cost_negative_bps"
+
+
+def test_lake_health_include_quality_compact_outputs_quality_summary(tmp_path):
+    lake = tmp_path / "lake"
+
+    result = runner.invoke(
+        app,
+        [
+            "lake-health",
+            "--lake-root",
+            str(lake),
+            "--dataset",
+            "market_bar",
+            "--include-quality",
+            "--compact-output",
+        ],
+    )
+
+    assert result.exit_code == 0
+    payload = json.loads(result.stdout)
+    assert "data_quality" in payload
+    assert payload["data_quality"]["dataset_count"] == 1
+    assert "checks" not in payload["data_quality"]

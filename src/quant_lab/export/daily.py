@@ -2559,7 +2559,11 @@ def export_daily_pack(
         pre_export_v5_refresh=pre_export_v5_refresh,
         allow_stale_v5=allow_stale_v5,
     )
-    if v5_consistency["stale_v5_bundle"] and pre_export_v5_refresh and not allow_stale_v5:
+    if (
+        pre_export_v5_refresh
+        and not allow_stale_v5
+        and v5_consistency["stale_v5_bundle"]
+    ):
         pre_export_v5["derived_refresh_retry_attempted"] = True
         retry_warnings = _refresh_v5_derived_outputs(root, day)
         if retry_warnings:
@@ -2577,8 +2581,16 @@ def export_daily_pack(
     else:
         pre_export_v5["derived_refresh_retry_attempted"] = False
     pre_export_v5.update(v5_consistency)
-    if v5_consistency["stale_v5_bundle"] and pre_export_v5_refresh and not allow_stale_v5:
-        raise RuntimeError(v5_consistency["warning_reason"])
+    if (
+        pre_export_v5_refresh
+        and not allow_stale_v5
+        and not v5_consistency["authoritative_snapshot"]
+        and _v5_context_requires_authoritative_failure(pre_export_v5)
+    ):
+        raise RuntimeError(
+            v5_consistency["warning_reason"]
+            or v5_consistency["selected_v5_bundle_authoritative_reason"]
+        )
     if v5_consistency["warning_reason"]:
         pre_export_v5.setdefault("warnings", []).append(v5_consistency["warning_reason"])
     pre_export_v5_warnings = [str(warning) for warning in pre_export_v5.get("warnings", [])]
@@ -3775,13 +3787,51 @@ def _manifest_payload(
             "selected_v5_bundle_authoritative_reason": v5_context.get(
                 "selected_v5_bundle_authoritative_reason"
             ),
+            "audit_bundle_count": v5_context.get("audit_bundle_count", 0),
+            "scanned_bundle_count": v5_context.get("scanned_bundle_count", 0),
+            "selected_bundle_count": v5_context.get("selected_bundle_count", 0),
+            "unscanned_bundle_count": v5_context.get("unscanned_bundle_count", 0),
+            "pending_uningested_bundle_count": v5_context.get(
+                "pending_uningested_bundle_count",
+                0,
+            ),
+            "pending_uningested_bundle_names": v5_context.get(
+                "pending_uningested_bundle_names",
+                [],
+            ),
+            "unreadable_bundle_count": v5_context.get("unreadable_bundle_count", 0),
+            "unreadable_bundle_names": v5_context.get("unreadable_bundle_names", []),
+            "historical_gap_detected": bool(
+                v5_context.get("historical_gap_detected")
+            ),
+            "historical_gap_reason": v5_context.get("historical_gap_reason"),
+            "possible_historical_gap": bool(v5_context.get("possible_historical_gap")),
+            "max_scan_bundles": v5_context.get("max_scan_bundles"),
+            "max_pending_bundles": v5_context.get("max_pending_bundles"),
         },
         "scanned_bundle_count": v5_context.get("scanned_bundle_count", 0),
+        "audit_bundle_count": v5_context.get("audit_bundle_count", 0),
         "selected_bundle_count": v5_context.get("selected_bundle_count", 0),
         "unscanned_bundle_count": v5_context.get("unscanned_bundle_count", 0),
         "oldest_scanned_bundle_ts": v5_context.get("oldest_scanned_bundle_ts"),
         "newest_scanned_bundle_ts": v5_context.get("newest_scanned_bundle_ts"),
         "possible_historical_gap": bool(v5_context.get("possible_historical_gap")),
+        "historical_gap_detected": bool(v5_context.get("historical_gap_detected")),
+        "historical_gap_reason": v5_context.get("historical_gap_reason"),
+        "pending_uningested_bundle_count": v5_context.get(
+            "pending_uningested_bundle_count",
+            0,
+        ),
+        "pending_uningested_bundle_names": v5_context.get(
+            "pending_uningested_bundle_names",
+            [],
+        ),
+        "pending_uningested_bundle_sha256s": v5_context.get(
+            "pending_uningested_bundle_sha256s",
+            [],
+        ),
+        "unreadable_bundle_count": v5_context.get("unreadable_bundle_count", 0),
+        "unreadable_bundle_names": v5_context.get("unreadable_bundle_names", []),
         "max_scan_bundles": v5_context.get("max_scan_bundles"),
         "max_pending_bundles": v5_context.get("max_pending_bundles"),
         "candidate_event_latest_ts": _iso_or_none(candidate_event_latest_ts),
@@ -3861,12 +3911,20 @@ def _refresh_v5_before_export(
         "selected_v5_bundle_manifest_bundle_name": None,
         "selected_v5_bundle_event_counts": {},
         "scanned_bundle_count": 0,
+        "audit_bundle_count": 0,
         "selected_bundle_count": 0,
         "selected_bundle_names": [],
         "unscanned_bundle_count": 0,
         "oldest_scanned_bundle_ts": None,
         "newest_scanned_bundle_ts": None,
         "possible_historical_gap": False,
+        "historical_gap_detected": False,
+        "historical_gap_reason": "",
+        "pending_uningested_bundle_count": 0,
+        "pending_uningested_bundle_names": [],
+        "pending_uningested_bundle_sha256s": [],
+        "unreadable_bundle_count": 0,
+        "unreadable_bundle_names": [],
         "max_scan_bundles": _export_v5_max_scan_bundles(_export_v5_max_pending_bundles()),
         "max_pending_bundles": _export_v5_max_pending_bundles(),
         "warnings": [],
@@ -3937,6 +3995,13 @@ def _refresh_v5_before_export(
             warnings.extend(str(warning) for warning in result.warnings)
         context["processed_bundle_count"] = processed_count
         context["skipped_bundle_count"] = skipped_count
+        post_scan = _pending_v5_bundle_scan_for_export(inbox_dir, lake_root)
+        _apply_post_refresh_v5_scan_context(context, post_scan["context"])
+        selected_sha = str(context.get("selected_v5_bundle_sha256") or "").strip()
+        if selected_sha:
+            manifest_row = _bundle_manifest_row_by_sha(lake_root, selected_sha)
+            if manifest_row:
+                _apply_selected_bundle_manifest_context(context, manifest_row)
     except Exception as exc:  # pragma: no cover - exact production tar/parquet errors vary.
         warnings.append(
             "v5_pre_export_inbox_ingest_failed: "
@@ -4000,12 +4065,20 @@ def _observe_v5_before_export(
         "selected_v5_bundle_manifest_bundle_name": None,
         "selected_v5_bundle_event_counts": {},
         "scanned_bundle_count": 0,
+        "audit_bundle_count": 0,
         "selected_bundle_count": 0,
         "selected_bundle_names": [],
         "unscanned_bundle_count": 0,
         "oldest_scanned_bundle_ts": None,
         "newest_scanned_bundle_ts": None,
         "possible_historical_gap": False,
+        "historical_gap_detected": False,
+        "historical_gap_reason": "",
+        "pending_uningested_bundle_count": 0,
+        "pending_uningested_bundle_names": [],
+        "pending_uningested_bundle_sha256s": [],
+        "unreadable_bundle_count": 0,
+        "unreadable_bundle_names": [],
         "max_scan_bundles": _export_v5_max_scan_bundles(_export_v5_max_pending_bundles()),
         "max_pending_bundles": _export_v5_max_pending_bundles(),
         "warnings": [],
@@ -4101,37 +4174,92 @@ def _pending_v5_bundle_scan_for_export(inbox_dir: Path, lake_root: Path) -> dict
         reverse=True,
     )
     scanned_paths = all_paths[:max_scan]
+    scanned_path_set = set(scanned_paths)
     scanned_ts = [sort_key(path)[0] for path in scanned_paths]
-    selected: list[Path] = []
-    pending_scanned_count = 0
-    for path in scanned_paths:
+    pending: list[tuple[Path, str, datetime]] = []
+    unreadable: list[Path] = []
+    for path in all_paths:
+        bundle_ts = sort_key(path)[0]
         try:
             sha256 = compute_sha256(path)
         except OSError:
+            unreadable.append(path)
             continue
         if sha256 in ingested:
             continue
-        pending_scanned_count += 1
-        selected.append(path)
-        if len(selected) >= max_pending:
-            continue
+        pending.append((path, sha256, bundle_ts))
+    pending_scanned = [
+        item for item in pending if item[0] in scanned_path_set
+    ]
+    selected = [item[0] for item in pending_scanned[:max_pending]]
     selected = selected[:max_pending]
     unscanned_count = max(len(all_paths) - len(scanned_paths), 0)
-    possible_historical_gap = unscanned_count > 0 or pending_scanned_count > len(selected)
+    pending_uningested_count = len(pending)
+    pending_uningested_names = [item[0].name for item in pending]
+    pending_uningested_sha256s = [item[1] for item in pending]
+    unreadable_names = [path.name for path in unreadable]
+    pending_outside_selection_scan = [
+        item[0].name for item in pending if item[0] not in scanned_path_set
+    ]
+    historical_gap_reasons: list[str] = []
+    if unreadable:
+        historical_gap_reasons.append("unreadable_bundle_sha256")
+    if pending_uningested_count > max_pending:
+        historical_gap_reasons.append("pending_uningested_bundle_count_exceeds_max_pending")
+    if pending_outside_selection_scan:
+        historical_gap_reasons.append("pending_uningested_bundle_outside_selection_scan")
+    if pending_uningested_count > len(selected) and not historical_gap_reasons:
+        historical_gap_reasons.append("pending_uningested_bundles_not_selected_for_refresh")
+    historical_gap_detected = bool(historical_gap_reasons)
+    historical_gap_reason = ";".join(historical_gap_reasons)
     context = {
         "scanned_bundle_count": len(scanned_paths),
+        "audit_bundle_count": len(all_paths),
         "selected_bundle_count": len(selected),
         "selected_bundle_names": [path.name for path in selected],
         "unscanned_bundle_count": unscanned_count,
         "oldest_scanned_bundle_ts": _iso_or_none(min(scanned_ts)) if scanned_ts else None,
         "newest_scanned_bundle_ts": _iso_or_none(max(scanned_ts)) if scanned_ts else None,
-        "possible_historical_gap": possible_historical_gap,
+        "possible_historical_gap": historical_gap_detected,
+        "historical_gap_detected": historical_gap_detected,
+        "historical_gap_reason": historical_gap_reason,
         "max_scan_bundles": max_scan,
         "max_pending_bundles": max_pending,
-        "pending_scanned_bundle_count": pending_scanned_count,
+        "pending_scanned_bundle_count": len(pending_scanned),
+        "pending_uningested_bundle_count": pending_uningested_count,
+        "pending_uningested_bundle_names": pending_uningested_names,
+        "pending_uningested_bundle_sha256s": pending_uningested_sha256s,
+        "unreadable_bundle_count": len(unreadable),
+        "unreadable_bundle_names": unreadable_names,
         "total_inbox_bundle_count": len(all_paths),
     }
     return {"pending_paths": list(reversed(selected)), "context": context}
+
+
+def _apply_post_refresh_v5_scan_context(
+    context: dict[str, Any],
+    scan_context: dict[str, Any],
+) -> None:
+    for key in (
+        "audit_bundle_count",
+        "scanned_bundle_count",
+        "unscanned_bundle_count",
+        "oldest_scanned_bundle_ts",
+        "newest_scanned_bundle_ts",
+        "possible_historical_gap",
+        "historical_gap_detected",
+        "historical_gap_reason",
+        "max_scan_bundles",
+        "max_pending_bundles",
+        "pending_scanned_bundle_count",
+        "pending_uningested_bundle_count",
+        "pending_uningested_bundle_names",
+        "pending_uningested_bundle_sha256s",
+        "unreadable_bundle_count",
+        "unreadable_bundle_names",
+        "total_inbox_bundle_count",
+    ):
+        context[key] = scan_context.get(key)
 
 
 def _apply_selected_bundle_manifest_context(
@@ -4216,7 +4344,15 @@ def _v5_export_consistency(
         pre_export_v5.get("selected_v5_bundle_ingested_at")
     )
     manifest_match = bool(pre_export_v5.get("selected_v5_bundle_manifest_match"))
-    possible_historical_gap = bool(pre_export_v5.get("possible_historical_gap"))
+    historical_gap_detected = bool(
+        pre_export_v5.get("historical_gap_detected")
+        or pre_export_v5.get("possible_historical_gap")
+    )
+    historical_gap_reason = str(pre_export_v5.get("historical_gap_reason") or "").strip()
+    pending_uningested_bundle_count = int(
+        pre_export_v5.get("pending_uningested_bundle_count") or 0
+    )
+    has_v5_bundle_context = _v5_context_requires_authoritative_failure(pre_export_v5)
     stale = (
         latest_seen is not None
         and (latest_ingested is None or latest_seen > latest_ingested + timedelta(seconds=1))
@@ -4241,15 +4377,23 @@ def _v5_export_consistency(
         authoritative_blockers.append("selected_v5_bundle_ingested_at_missing")
     if not manifest_match:
         authoritative_blockers.append("selected_v5_bundle_manifest_missing")
-    if possible_historical_gap:
-        authoritative_blockers.append("possible_historical_gap")
+    if historical_gap_detected:
+        authoritative_blockers.append(
+            f"historical_gap_detected:{historical_gap_reason}"
+            if historical_gap_reason
+            else "historical_gap_detected"
+        )
+    if pending_uningested_bundle_count > 0:
+        authoritative_blockers.append(
+            f"pending_uningested_bundle_count={pending_uningested_bundle_count}"
+        )
     authoritative = not authoritative_blockers
     authoritative_reason = (
         "selected_bundle_sha_matched_bundle_manifest"
         if authoritative
         else ";".join(authoritative_blockers)
     )
-    if not reason and authoritative_blockers:
+    if not reason and authoritative_blockers and has_v5_bundle_context:
         reason = (
             "non_authoritative_v5_snapshot:"
             f"reason={authoritative_reason};"
@@ -4265,6 +4409,21 @@ def _v5_export_consistency(
         "selected_v5_bundle_authoritative_reason": authoritative_reason,
         "selected_v5_bundle_manifest_match": manifest_match,
     }
+
+
+def _v5_context_requires_authoritative_failure(pre_export_v5: dict[str, Any]) -> bool:
+    return any(
+        (
+            bool(pre_export_v5.get("latest_v5_bundle_seen_at_export")),
+            bool(pre_export_v5.get("selected_v5_bundle_path")),
+            bool(pre_export_v5.get("selected_v5_bundle_sha256")),
+            int(pre_export_v5.get("audit_bundle_count") or 0) > 0,
+            int(pre_export_v5.get("pending_uningested_bundle_count") or 0) > 0,
+            int(pre_export_v5.get("unreadable_bundle_count") or 0) > 0,
+            bool(pre_export_v5.get("historical_gap_detected")),
+            bool(pre_export_v5.get("possible_historical_gap")),
+        )
+    )
 
 
 def _parse_v5_context_ts(value: Any) -> datetime | None:

@@ -1524,7 +1524,10 @@ def export_daily(
         bool,
         typer.Option(
             "--allow-stale-v5/--no-allow-stale-v5",
-            help="Allow an expert pack when the V5 inbox has a newer bundle than the lake.",
+            help=(
+                "Allow a non-authoritative expert pack when V5 bundle consistency "
+                "checks fail."
+            ),
         ),
     ] = False,
 ) -> None:

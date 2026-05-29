@@ -1,5 +1,5 @@
 import zipfile
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 
 import polars as pl
 from fastapi.testclient import TestClient
@@ -847,6 +847,43 @@ def test_strategy_opportunity_advisory_dedupes_legacy_schema_rows(
     assert len(rows) == 1
     assert rows[0]["schema_version"] == "strategy_opportunity_advisory.v0.1"
     assert rows[0]["sample_count"] == 12
+
+
+def test_strategy_opportunity_advisory_api_repairs_expires_before_generated(
+    tmp_path,
+    monkeypatch,
+):
+    lake = tmp_path / "lake"
+    monkeypatch.setenv("QUANT_LAB_LAKE_ROOT", str(lake))
+    monkeypatch.delenv("QUANT_LAB_API_TOKEN", raising=False)
+    generated_at = datetime(2026, 5, 29, 2, 26, 22, tzinfo=UTC)
+    write_parquet_dataset(
+        pl.DataFrame(
+            [
+                {
+                    "as_of_ts": generated_at,
+                    "generated_at": generated_at,
+                    "expires_at": generated_at - timedelta(hours=1),
+                    "strategy_candidate": "v5.f4_volume_expansion_entry",
+                    "symbol": "SOL-USDT",
+                    "decision": "KEEP_SHADOW",
+                    "recommended_mode": "shadow",
+                    "sample_count": 12,
+                    "max_live_notional_usdt": 0.0,
+                }
+            ]
+        ),
+        lake / "gold" / "strategy_opportunity_advisory",
+    )
+
+    response = TestClient(app).get("/v1/strategy-opportunity-advisory")
+
+    assert response.status_code == 200
+    row = response.json()[0]
+    assert row["generated_at"] == generated_at.isoformat().replace("+00:00", "Z")
+    assert row["expires_at"] == (
+        generated_at + timedelta(seconds=api_main.STRATEGY_OPPORTUNITY_ADVISORY_TTL_SECONDS)
+    ).isoformat().replace("+00:00", "Z")
 
 
 def test_strategy_opportunity_advisory_git_commit_lookup_is_cached(

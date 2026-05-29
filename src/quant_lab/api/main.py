@@ -1472,9 +1472,7 @@ def _strategy_opportunity_advisory_row(
         ("generated_at", "generated_at_utc", "created_at", "as_of_ts", "as_of_date"),
         fallback=as_of_ts,
     )
-    expires_at = _parse_advisory_datetime(row.get("expires_at"))
-    if expires_at is None:
-        expires_at = generated_at + timedelta(seconds=STRATEGY_OPPORTUNITY_ADVISORY_TTL_SECONDS)
+    expires_at = generated_at + timedelta(seconds=STRATEGY_OPPORTUNITY_ADVISORY_TTL_SECONDS)
     git_commit = _observable_text(row.get("quant_lab_git_commit")) or _git_commit()
     source_version = _observable_text(row.get("source_version")) or _source_version(
         "strategy_opportunity_advisory",

@@ -9,6 +9,7 @@ import polars as pl
 
 from quant_lab.data.lake import read_parquet_dataset, write_parquet_dataset
 from quant_lab.export.daily import (
+    STRATEGY_OPPORTUNITY_ADVISORY_TTL_SECONDS,
     _paper_strategy_proposals_for_export,
     _strategy_opportunity_advisory_for_export,
     export_daily_pack,
@@ -1963,6 +1964,42 @@ def test_downgraded_paper_strategies_are_not_exported_as_paper(tmp_path):
 
     published = read_parquet_dataset(lake / "gold" / "strategy_opportunity_advisory")
     assert published.filter(pl.col("recommended_mode") == "paper").is_empty()
+
+
+def test_strategy_opportunity_advisory_export_resets_expiry_from_generated_at():
+    generated_at = datetime(2026, 5, 29, 2, 26, 22, tzinfo=UTC)
+    board = pl.DataFrame(
+        [
+            {
+                **_board_row(
+                    strategy_candidate="v5.f4_volume_expansion_entry",
+                    symbol="SOL-USDT",
+                    source_type="candidate_event_label",
+                    avg_net_bps=20.0,
+                    decision="KEEP_SHADOW",
+                    cost_source_mix='{"mixed_actual_proxy": 12}',
+                ),
+                "generated_at": generated_at,
+                "expires_at": generated_at - timedelta(hours=1),
+            }
+        ]
+    )
+
+    advisory = _strategy_opportunity_advisory_for_export(
+        alpha_discovery_board=board,
+        strategy_evidence=pl.DataFrame(),
+        paper_proposals=pl.DataFrame(),
+        risk_permissions=pl.DataFrame(),
+        cost_health=pl.DataFrame(),
+        paper_daily=pl.DataFrame(),
+        paper_slippage=pl.DataFrame(),
+    )
+
+    row = advisory.to_dicts()[0]
+    assert row["generated_at"] == generated_at
+    assert row["expires_at"] == generated_at + timedelta(
+        seconds=STRATEGY_OPPORTUNITY_ADVISORY_TTL_SECONDS
+    )
 
 
 def test_research_portfolio_status_overrides_strategy_advisory_and_paper_proposals(tmp_path):

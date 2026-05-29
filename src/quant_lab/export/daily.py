@@ -7698,9 +7698,7 @@ def _advisory_generated_at(row: dict[str, Any]) -> datetime:
 
 
 def _advisory_expires_at(row: dict[str, Any], generated_at: datetime) -> datetime:
-    value = readers._coerce_timestamp(row.get("expires_at"))  # type: ignore[attr-defined]
-    if value is not None:
-        return value.astimezone(UTC)
+    del row
     return generated_at.astimezone(UTC) + timedelta(
         seconds=STRATEGY_OPPORTUNITY_ADVISORY_TTL_SECONDS
     )

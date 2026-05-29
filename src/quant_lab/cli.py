@@ -943,6 +943,15 @@ def _compact_data_quality_payload(data_quality: dict[str, Any]) -> dict[str, Any
         for check in checks
         if isinstance(check, dict) and str(check.get("status") or "PASS") != "PASS"
     ]
+    failing = sorted(
+        failing,
+        key=lambda check: (
+            1 if str(check.get("rule") or "") == "freshness" else 0,
+            str(check.get("status") or ""),
+            str(check.get("dataset") or ""),
+            str(check.get("rule") or ""),
+        ),
+    )
     return {
         "status": data_quality.get("status"),
         "dataset_count": data_quality.get("dataset_count"),

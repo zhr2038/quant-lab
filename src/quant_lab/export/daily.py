@@ -344,9 +344,13 @@ REQUIRED_MEMBERS = [
     "reports/bnb_missed_opportunity_summary.md",
     "reports/final_score_vs_alpha6_conflict.csv",
     "reports/final_score_vs_alpha6_conflict_summary.md",
+    "reports/bnb_strong_alpha6_bypass_shadow.csv",
+    "reports/bnb_strong_alpha6_bypass_summary.md",
     "reports/risk_on_multi_buy_shadow.csv",
     "reports/risk_on_multi_buy_summary.md",
     "reports/bnb_negative_expectancy_attribution.csv",
+    "reports/negative_expectancy_attribution.csv",
+    "reports/negative_expectancy_attribution_summary.md",
     "reports/market_regime_daily.csv",
     "reports/strategy_regime_matrix.csv",
     "reports/regime_strategy_advisory.csv",
@@ -368,6 +372,10 @@ REQUIRED_MEMBERS = [
     "reports/paper_strategy_runs.csv",
     "reports/paper_strategy_daily.csv",
     "reports/paper_strategy_summary.md",
+    "reports/bnb_paper_strategy_runs.csv",
+    "reports/bnb_paper_strategy_daily.csv",
+    "reports/bnb_paper_strategy_summary.md",
+    "reports/v5_quant_lab_consistency_dashboard.md",
     "reports/paper_slippage_coverage.csv",
     "reports/sol_protect_paper_loss_attribution.csv",
     "reports/sol_protect_paper_loss_summary.md",
@@ -1108,22 +1116,45 @@ CSV_SCHEMAS: dict[str, list[str]] = {
         "final_score",
         "alpha6_score",
         "alpha6_side",
-        "f1",
-        "f2",
+        "f3_vol_adj_ret",
+        "f4_volume_expansion",
+        "f5_rsi_trend_confirm",
+        "expected_edge_bps",
+        "required_edge_bps",
+        "cost_gate_verified",
+        "final_decision",
+        "block_reason",
+        "no_signal_reason",
+        "negative_expectancy_net_bps",
+        "negative_expectancy_fast_fail_net_bps",
+        "future_4h_net_bps",
+        "future_8h_net_bps",
+        "future_12h_net_bps",
+        "future_24h_net_bps",
+        "label_status",
+        "missed_profit_flag",
+    ],
+    "reports/bnb_strong_alpha6_bypass_shadow.csv": [
+        "run_id",
+        "ts_utc",
+        "would_bypass",
+        "alpha6_score",
         "f3",
         "f4",
         "f5",
         "expected_edge_bps",
         "required_edge_bps",
+        "final_score",
         "final_decision",
         "block_reason",
         "no_signal_reason",
-        "negative_expectancy_stats",
+        "negative_expectancy_blocked",
         "future_4h_net_bps",
         "future_8h_net_bps",
         "future_12h_net_bps",
         "future_24h_net_bps",
-        "missed_profit_flag",
+        "label_status",
+        "live_order_effect",
     ],
     "reports/risk_on_multi_buy_shadow.csv": [
         "generated_at",
@@ -1175,6 +1206,27 @@ CSV_SCHEMAS: dict[str, list[str]] = {
         "gave_back_profit",
         "trailing_too_early",
         "unknown",
+    ],
+    "reports/negative_expectancy_attribution.csv": [
+        "symbol",
+        "cycle_index",
+        "entry_ts",
+        "exit_ts",
+        "exit_reason",
+        "exit_priority",
+        "net_bps",
+        "attribution",
+        "entry_bad",
+        "exit_bad",
+        "min_hold_violation",
+        "gave_back_profit",
+        "trailing_too_early",
+        "unknown",
+        "adjusted_entry_expectancy_bps",
+        "raw_would_block",
+        "adjusted_would_block",
+        "would_unblock_if_adjusted",
+        "block_attribution_conflict",
     ],
     "reports/market_regime_daily.csv": [
         "as_of_date",
@@ -3251,8 +3303,14 @@ def _dataset_members(frames: dict[str, pl.DataFrame]) -> dict[str, _MemberPayloa
     )
     risk = _risk_permissions_for_export(frames.get("risk_permission", pl.DataFrame()), frames)
     paper_runs, paper_daily, paper_slippage = _paper_tracking_frames_for_export(frames)
-    bnb_paper_runs = _filter_bnb_paper_frame(paper_runs)
-    bnb_paper_daily = _filter_bnb_paper_frame(paper_daily)
+    bnb_paper_runs = _prefer_frame(
+        frames.get("v5_bnb_paper_strategy_runs", pl.DataFrame()),
+        _filter_bnb_paper_frame(paper_runs),
+    )
+    bnb_paper_daily = _prefer_frame(
+        frames.get("v5_bnb_paper_strategy_daily", pl.DataFrame()),
+        _filter_bnb_paper_frame(paper_daily),
+    )
     sol_protect_loss_attribution = frames.get(
         "sol_protect_paper_loss_attribution",
         pl.DataFrame(),
@@ -3285,6 +3343,10 @@ def _dataset_members(frames: dict[str, pl.DataFrame]) -> dict[str, _MemberPayloa
     bnb_negative_expectancy_attribution = frames.get(
         "v5_bnb_negative_expectancy_attribution",
         pl.DataFrame(),
+    )
+    negative_expectancy_attribution = _prefer_frame(
+        frames.get("v5_negative_expectancy_attribution", pl.DataFrame()),
+        bnb_negative_expectancy_attribution,
     )
     bnb_exit_policy_v5_vs_quant_lab_consistency = frames.get(
         "bnb_exit_policy_v5_vs_quant_lab_consistency",
@@ -3346,10 +3408,18 @@ def _dataset_members(frames: dict[str, pl.DataFrame]) -> dict[str, _MemberPayloa
         candidate_events=frames.get("v5_candidate_event", pl.DataFrame()),
         market_bars=market,
     )
-    final_score_alpha6_conflict = _final_score_vs_alpha6_conflict_for_export(
-        candidate_events=frames.get("v5_candidate_event", pl.DataFrame()),
-        market_bars=market,
-        negative_expectancy=frames.get("v5_negative_expectancy_consistency", pl.DataFrame()),
+    final_score_alpha6_conflict = _prefer_frame(
+        _normalize_final_score_alpha6_conflict_frame(
+            frames.get("v5_final_score_vs_alpha6_conflict", pl.DataFrame())
+        ),
+        _final_score_vs_alpha6_conflict_for_export(
+            candidate_events=frames.get("v5_candidate_event", pl.DataFrame()),
+            market_bars=market,
+            negative_expectancy=frames.get("v5_negative_expectancy_consistency", pl.DataFrame()),
+        ),
+    )
+    bnb_strong_alpha6_bypass_shadow = _normalize_bnb_strong_alpha6_bypass_frame(
+        frames.get("v5_bnb_strong_alpha6_bypass_shadow", pl.DataFrame())
     )
     opportunity_advisory = _strategy_opportunity_advisory_for_export(
         alpha_discovery_board=alpha_discovery_board,
@@ -3562,6 +3632,13 @@ def _dataset_members(frames: dict[str, pl.DataFrame]) -> dict[str, _MemberPayloa
         "reports/final_score_vs_alpha6_conflict_summary.md": (
             _final_score_vs_alpha6_conflict_summary_md(final_score_alpha6_conflict)
         ),
+        "reports/bnb_strong_alpha6_bypass_shadow.csv": _csv_member(
+            "reports/bnb_strong_alpha6_bypass_shadow.csv",
+            bnb_strong_alpha6_bypass_shadow,
+        ),
+        "reports/bnb_strong_alpha6_bypass_summary.md": (
+            _bnb_strong_alpha6_bypass_summary_md(bnb_strong_alpha6_bypass_shadow)
+        ),
         "reports/risk_on_multi_buy_shadow.csv": _csv_member(
             "reports/risk_on_multi_buy_shadow.csv",
             risk_on_multi_buy_shadow,
@@ -3662,6 +3739,18 @@ def _dataset_members(frames: dict[str, pl.DataFrame]) -> dict[str, _MemberPayloa
             "reports/bnb_paper_strategy_daily.csv",
             bnb_paper_daily,
         ),
+        "reports/bnb_paper_strategy_summary.md": paper_strategy_summary_md(bnb_paper_daily),
+        "reports/v5_quant_lab_consistency_dashboard.md": (
+            _v5_quant_lab_consistency_dashboard_md(
+                frames=frames,
+                final_score_alpha6_conflict=final_score_alpha6_conflict,
+                bnb_strong_alpha6_bypass_shadow=bnb_strong_alpha6_bypass_shadow,
+                negative_expectancy_attribution=negative_expectancy_attribution,
+                bnb_paper_daily=bnb_paper_daily,
+                risk_on_multi_buy_shadow=risk_on_multi_buy_shadow,
+                opportunity_advisory=opportunity_advisory,
+            )
+        ),
         "reports/paper_strategy_summary.md": paper_strategy_summary_md(paper_daily),
         "reports/paper_slippage_coverage.csv": _csv_member(
             "reports/paper_slippage_coverage.csv",
@@ -3757,6 +3846,13 @@ def _dataset_members(frames: dict[str, pl.DataFrame]) -> dict[str, _MemberPayloa
         "reports/bnb_negative_expectancy_attribution.csv": _csv_member(
             "reports/bnb_negative_expectancy_attribution.csv",
             bnb_negative_expectancy_attribution,
+        ),
+        "reports/negative_expectancy_attribution.csv": _csv_member(
+            "reports/negative_expectancy_attribution.csv",
+            negative_expectancy_attribution,
+        ),
+        "reports/negative_expectancy_attribution_summary.md": (
+            _negative_expectancy_attribution_summary_md(negative_expectancy_attribution)
         ),
         "reports/bnb_exit_policy_v5_vs_quant_lab_consistency.csv": _csv_member(
             "reports/bnb_exit_policy_v5_vs_quant_lab_consistency.csv",
@@ -6853,34 +6949,47 @@ def _final_score_vs_alpha6_conflict_for_export(
                 "final_score": _optional_float(candidate.get("final_score")),
                 "alpha6_score": _optional_float(candidate.get("alpha6_score")),
                 "alpha6_side": candidate.get("alpha6_side"),
-                "f1": _candidate_factor_value(candidate, "f1", "f1_mom_5d", "f1_score"),
-                "f2": _candidate_factor_value(candidate, "f2", "f2_mom_20d", "f2_score"),
-                "f3": _candidate_factor_value(candidate, "f3", "f3_vol_adj_ret", "f3_score"),
-                "f4": _candidate_factor_value(
+                "f3_vol_adj_ret": _candidate_factor_value(
                     candidate,
-                    "f4",
+                    "f3_vol_adj_ret",
+                    "f3",
+                    "f3_score",
+                ),
+                "f4_volume_expansion": _candidate_factor_value(
+                    candidate,
                     "f4_volume_expansion",
+                    "f4",
                     "f4_score",
                 ),
-                "f5": _candidate_factor_value(
+                "f5_rsi_trend_confirm": _candidate_factor_value(
                     candidate,
-                    "f5",
                     "f5_rsi_trend_confirm",
+                    "f5",
                     "f5_score",
                 ),
                 "expected_edge_bps": _optional_float(candidate.get("expected_edge_bps")),
                 "required_edge_bps": _optional_float(candidate.get("required_edge_bps")),
+                "cost_gate_verified": _optional_bool(candidate.get("cost_gate_verified")),
                 "final_decision": candidate.get("final_decision"),
                 "block_reason": candidate.get("block_reason"),
                 "no_signal_reason": candidate.get("no_signal_reason"),
-                "negative_expectancy_stats": negative_expectancy_by_symbol.get(
+                "negative_expectancy_net_bps": _negative_expectancy_value(
+                    negative_expectancy_by_symbol,
                     symbol,
-                    "not_observable",
+                    "negexp_net_expectancy_bps",
+                    "net_expectancy_bps",
+                ),
+                "negative_expectancy_fast_fail_net_bps": _negative_expectancy_value(
+                    negative_expectancy_by_symbol,
+                    symbol,
+                    "negexp_fast_fail_net_expectancy_bps",
+                    "fast_fail_net_expectancy_bps",
                 ),
                 "future_4h_net_bps": future[4],
                 "future_8h_net_bps": future[8],
                 "future_12h_net_bps": future[12],
                 "future_24h_net_bps": future[24],
+                "label_status": candidate.get("label_status") or "shadow_pending",
                 "missed_profit_flag": bool(observed and max(observed) > 0),
             }
         )
@@ -6911,7 +7020,7 @@ def _is_final_score_alpha6_conflict_candidate(candidate: dict[str, Any]) -> bool
     return (final_score is not None and final_score < 0.0) or final_decision in {"no_order", "blocked"}
 
 
-def _negative_expectancy_stats_by_symbol(frame: pl.DataFrame) -> dict[str, str]:
+def _negative_expectancy_stats_by_symbol(frame: pl.DataFrame) -> dict[str, dict[str, Any]]:
     if frame.is_empty():
         return {}
     fields = (
@@ -6927,7 +7036,7 @@ def _negative_expectancy_stats_by_symbol(frame: pl.DataFrame) -> dict[str, str]:
         "excluded_from_fast_fail_count",
         "diagnosis",
     )
-    out: dict[str, str] = {}
+    out: dict[str, dict[str, Any]] = {}
     for row in frame.to_dicts():
         symbol = normalize_symbol(row.get("symbol"))
         if not symbol:
@@ -6939,8 +7048,21 @@ def _negative_expectancy_stats_by_symbol(frame: pl.DataFrame) -> dict[str, str]:
                 continue
             payload[field] = value
         if payload:
-            out[symbol] = safe_json_dumps(payload)
+            out[symbol] = payload
     return out
+
+
+def _negative_expectancy_value(
+    stats_by_symbol: dict[str, dict[str, Any]],
+    symbol: str,
+    *fields: str,
+) -> Any:
+    payload = stats_by_symbol.get(symbol, {})
+    for field in fields:
+        value = payload.get(field)
+        if value is not None and value != "":
+            return value
+    return None
 
 
 def _candidate_shadow_cost_bps(candidate: dict[str, Any]) -> float:
@@ -6994,7 +7116,8 @@ def _final_score_vs_alpha6_conflict_summary_md(conflicts: pl.DataFrame) -> str:
             [
                 str(row.get("block_reason") or ""),
                 str(row.get("no_signal_reason") or ""),
-                str(row.get("negative_expectancy_stats") or ""),
+                str(row.get("negative_expectancy_net_bps") or ""),
+                str(row.get("negative_expectancy_fast_fail_net_bps") or ""),
             ]
         ).lower()
     )
@@ -7021,6 +7144,163 @@ def _final_score_vs_alpha6_conflict_summary_md(conflicts: pl.DataFrame) -> str:
             "",
         ]
     )
+
+
+def _bnb_strong_alpha6_bypass_summary_md(frame: pl.DataFrame) -> str:
+    rows = frame.to_dicts() if not frame.is_empty() else []
+    profitable_count = sum(
+        1 for row in rows if str(row.get("outcome") or "").strip() == "profitable_shadow"
+    )
+    negative_expectancy_blocked_count = sum(
+        1 for row in rows if _optional_bool(row.get("negative_expectancy_blocked")) is True
+    )
+    return "\n".join(
+        [
+            "# BNB strong Alpha6 bypass shadow",
+            "",
+            "Shadow only. This report never creates a live recommendation.",
+            "",
+            f"- row_count: {len(rows)}",
+            f"- profitable_shadow_count: {profitable_count}",
+            f"- negative_expectancy_blocked_count: {negative_expectancy_blocked_count}",
+            "- live_order_effect: read_only_no_live_order",
+            "- live_recommendation: none",
+            "",
+        ]
+    )
+
+
+def _negative_expectancy_attribution_summary_md(frame: pl.DataFrame) -> str:
+    rows = frame.to_dicts() if not frame.is_empty() else []
+
+    def count_true(field: str) -> int:
+        return sum(1 for row in rows if _optional_bool(row.get(field)) is True)
+
+    return "\n".join(
+        [
+            "# Negative expectancy attribution",
+            "",
+            "Diagnostic only. Attribution separates entry losses from exit/min-hold failures.",
+            "",
+            f"- row_count: {len(rows)}",
+            f"- entry_bad_count: {count_true('entry_bad')}",
+            f"- exit_bad_count: {count_true('exit_bad')}",
+            f"- min_hold_violation_count: {count_true('min_hold_violation')}",
+            f"- gave_back_profit_count: {count_true('gave_back_profit')}",
+            f"- trailing_too_early_count: {count_true('trailing_too_early')}",
+            "",
+        ]
+    )
+
+
+def _v5_quant_lab_consistency_dashboard_md(
+    *,
+    frames: dict[str, pl.DataFrame],
+    final_score_alpha6_conflict: pl.DataFrame,
+    bnb_strong_alpha6_bypass_shadow: pl.DataFrame,
+    negative_expectancy_attribution: pl.DataFrame,
+    bnb_paper_daily: pl.DataFrame,
+    risk_on_multi_buy_shadow: pl.DataFrame,
+    opportunity_advisory: pl.DataFrame,
+) -> str:
+    live_state_ok = _live_state_consistency_ok(frames)
+    conflict_rows = final_score_alpha6_conflict.to_dicts() if not final_score_alpha6_conflict.is_empty() else []
+    bnb_conflicts = [row for row in conflict_rows if normalize_symbol(row.get("symbol")) == "BNB-USDT"]
+    bnb_future_positive = any(
+        (_optional_float(row.get("future_24h_net_bps")) or 0.0) > 0
+        or (_optional_float(row.get("future_12h_net_bps")) or 0.0) > 0
+        for row in bnb_conflicts
+    )
+    attribution_rows = (
+        negative_expectancy_attribution.to_dicts()
+        if not negative_expectancy_attribution.is_empty()
+        else []
+    )
+    entry_bad_count = sum(1 for row in attribution_rows if _optional_bool(row.get("entry_bad")) is True)
+    exit_bad_count = sum(1 for row in attribution_rows if _optional_bool(row.get("exit_bad")) is True)
+    min_hold_count = sum(
+        1 for row in attribution_rows if _optional_bool(row.get("min_hold_violation")) is True
+    )
+    would_unblock_count = sum(
+        1 for row in attribution_rows if _optional_bool(row.get("would_unblock_if_adjusted")) is True
+    )
+    return "\n".join(
+        [
+            "# V5 / Quant Lab consistency dashboard",
+            "",
+            "Read-only dashboard. It does not modify V5 live behavior.",
+            "",
+            f"- live_state_consistency_ok: {str(live_state_ok).lower()}",
+            f"- final_score_vs_alpha6_conflict_count: {len(conflict_rows)}",
+            f"- bnb_conflict_future_pnl_positive: {str(bnb_future_positive).lower()}",
+            f"- negative_expectancy_entry_bad_count: {entry_bad_count}",
+            f"- negative_expectancy_exit_bad_count: {exit_bad_count}",
+            f"- negative_expectancy_min_hold_violation_count: {min_hold_count}",
+            f"- negative_expectancy_mainly_entry_bad: {str(entry_bad_count > max(exit_bad_count, min_hold_count)).lower()}",
+            f"- would_unblock_if_adjusted_count: {would_unblock_count}",
+            f"- bnb_paper_today_entry_count: {_bnb_paper_today_entry_count(bnb_paper_daily)}",
+            f"- risk_on_selected_symbols_observable: {str(_risk_on_selected_symbols_observable(risk_on_multi_buy_shadow)).lower()}",
+            f"- alpha_factory_paper_ready_count: {_count_decision_rows(opportunity_advisory, 'PAPER_READY')}",
+            f"- stale_advisory_count: {_stale_advisory_count(opportunity_advisory)}",
+            f"- bnb_strong_alpha6_bypass_shadow_rows: {bnb_strong_alpha6_bypass_shadow.height}",
+            "",
+        ]
+    )
+
+
+def _live_state_consistency_ok(frames: dict[str, pl.DataFrame]) -> bool:
+    issues = frames.get("v5_issue", pl.DataFrame())
+    if issues.is_empty():
+        return True
+    texts: list[str] = []
+    for row in issues.to_dicts():
+        texts.extend(str(row.get(field) or "").lower() for field in ("issue_type", "type", "code", "message"))
+    blocked_markers = (
+        "lifecycle_close_filled_but_position_open",
+        "reconcile_flat_but_open_positions_nonzero",
+        "close_lifecycle_missing_trade_export",
+    )
+    return not any(any(marker in text for marker in blocked_markers) for text in texts)
+
+
+def _bnb_paper_today_entry_count(frame: pl.DataFrame) -> int:
+    if frame.is_empty():
+        return 0
+    if "entry_count" in frame.columns:
+        return sum(int(_optional_float(value) or 0) for value in frame.get_column("entry_count").to_list())
+    if "would_enter_count" in frame.columns:
+        return sum(int(_optional_float(value) or 0) for value in frame.get_column("would_enter_count").to_list())
+    return 0
+
+
+def _risk_on_selected_symbols_observable(frame: pl.DataFrame) -> bool:
+    if frame.is_empty() or "selected_symbols" not in frame.columns:
+        return False
+    for value in frame.get_column("selected_symbols").to_list():
+        text = str(value or "").strip().lower()
+        if text and text not in {"not_observable", "[]", "null", "none"}:
+            return True
+    return False
+
+
+def _count_decision_rows(frame: pl.DataFrame, decision: str) -> int:
+    if frame.is_empty() or "decision" not in frame.columns:
+        return 0
+    target = decision.strip().upper()
+    return sum(1 for value in frame.get_column("decision").to_list() if str(value or "").strip().upper() == target)
+
+
+def _stale_advisory_count(frame: pl.DataFrame) -> int:
+    if frame.is_empty():
+        return 0
+    count = 0
+    for row in frame.to_dicts():
+        fresh = row.get("advisory_fresh")
+        source_stale = row.get("selected_source_is_stale")
+        stale_reason = str(row.get("stale_reason") or "").strip()
+        if _optional_bool(fresh) is False or _optional_bool(source_stale) is True or stale_reason:
+            count += 1
+    return count
 
 
 def _risk_on_multi_buy_shadow_for_export(
@@ -9387,6 +9667,42 @@ def _non_bootstrap_gate_rows(gates: pl.DataFrame) -> pl.DataFrame:
             )
         )
     return filtered
+
+
+def _prefer_frame(primary: pl.DataFrame, fallback: pl.DataFrame) -> pl.DataFrame:
+    return primary if not primary.is_empty() else fallback
+
+
+def _normalize_final_score_alpha6_conflict_frame(frame: pl.DataFrame) -> pl.DataFrame:
+    path = "reports/final_score_vs_alpha6_conflict.csv"
+    if frame.is_empty():
+        return _empty_csv_schema_frame(path)
+    normalized = frame
+    rename_map = {
+        "f3": "f3_vol_adj_ret",
+        "f4": "f4_volume_expansion",
+        "f5": "f5_rsi_trend_confirm",
+        "negexp_net_expectancy_bps": "negative_expectancy_net_bps",
+        "negexp_fast_fail_net_expectancy_bps": "negative_expectancy_fast_fail_net_bps",
+    }
+    for old, new in rename_map.items():
+        if old in normalized.columns and new not in normalized.columns:
+            normalized = normalized.rename({old: new})
+    return _csv_frame_with_schema(normalized, CSV_SCHEMAS[path])
+
+
+def _normalize_bnb_strong_alpha6_bypass_frame(frame: pl.DataFrame) -> pl.DataFrame:
+    path = "reports/bnb_strong_alpha6_bypass_shadow.csv"
+    if frame.is_empty():
+        return _empty_csv_schema_frame(path)
+    normalized = frame
+    if "negative_expectancy_blocked" not in normalized.columns and "would_bypass_negative_expectancy" in normalized.columns:
+        normalized = normalized.rename({"would_bypass_negative_expectancy": "negative_expectancy_blocked"})
+    if "would_bypass" not in normalized.columns:
+        normalized = normalized.with_columns(pl.lit(True).alias("would_bypass"))
+    if "live_order_effect" not in normalized.columns:
+        normalized = normalized.with_columns(pl.lit("read_only_no_live_order").alias("live_order_effect"))
+    return _csv_frame_with_schema(normalized, CSV_SCHEMAS[path])
 
 
 def _strategy_evidence_has_required_candidates(strategy_evidence: pl.DataFrame) -> bool:

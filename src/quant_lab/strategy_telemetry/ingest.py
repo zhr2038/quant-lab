@@ -78,6 +78,11 @@ SILVER_DATASETS = {
     "v5_paper_slippage_coverage": Path("silver/v5_paper_slippage_coverage"),
     "v5_bnb_profit_lock_shadow": Path("silver/v5_bnb_profit_lock_shadow"),
     "v5_bnb_negative_expectancy_attribution": Path("silver/v5_bnb_negative_expectancy_attribution"),
+    "v5_final_score_vs_alpha6_conflict": Path("silver/v5_final_score_vs_alpha6_conflict"),
+    "v5_bnb_strong_alpha6_bypass_shadow": Path("silver/v5_bnb_strong_alpha6_bypass_shadow"),
+    "v5_negative_expectancy_attribution": Path("silver/v5_negative_expectancy_attribution"),
+    "v5_bnb_paper_strategy_runs": Path("silver/v5_bnb_paper_strategy_runs"),
+    "v5_bnb_paper_strategy_daily": Path("silver/v5_bnb_paper_strategy_daily"),
     "v5_negative_expectancy_consistency": Path("silver/v5_negative_expectancy_consistency"),
     "v5_pullback_reversal_shadow": Path("gold/v5_pullback_reversal_shadow"),
     "v5_pullback_reversal_readiness": Path("gold/v5_pullback_reversal_readiness"),
@@ -589,6 +594,11 @@ def _append_file_rows(
         "summaries/paper_slippage_coverage.csv": "v5_paper_slippage_coverage",
         "summaries/bnb_profit_lock_shadow.csv": "v5_bnb_profit_lock_shadow",
         "summaries/bnb_negative_expectancy_attribution.csv": "v5_bnb_negative_expectancy_attribution",
+        "summaries/final_score_vs_alpha6_conflict.csv": "v5_final_score_vs_alpha6_conflict",
+        "summaries/bnb_strong_alpha6_bypass_shadow.csv": "v5_bnb_strong_alpha6_bypass_shadow",
+        "summaries/negative_expectancy_attribution.csv": "v5_negative_expectancy_attribution",
+        "summaries/bnb_paper_strategy_runs.csv": "v5_bnb_paper_strategy_runs",
+        "summaries/bnb_paper_strategy_daily.csv": "v5_bnb_paper_strategy_daily",
         "summaries/negative_expectancy_consistency.csv": "v5_negative_expectancy_consistency",
     }
     if logical.startswith("summaries/high_score_blocked_outcomes"):

@@ -1043,15 +1043,15 @@ def test_final_score_vs_alpha6_conflict_quantifies_bnb_no_order():
     assert row["alpha6_score"] == 0.994
     assert row["final_decision"] == "no_order"
     assert row["block_reason"] == "negative_expectancy_fast_fail_open_block"
-    neg_stats = json.loads(row["negative_expectancy_stats"])
-    assert neg_stats["min_hold_violation_cycles"] == "1"
-    assert neg_stats["adjusted_entry_expectancy_bps"] == "0"
+    assert row["negative_expectancy_net_bps"] == "-151.83"
+    assert row["negative_expectancy_fast_fail_net_bps"] is None
     assert row["future_4h_net_bps"] > 400.0
     assert row["future_24h_net_bps"] > 1100.0
     assert row["missed_profit_flag"] is True
     blocked = next(row for row in rows if row["symbol"] == "BTC-USDT")
     assert blocked["final_decision"] == "blocked"
-    assert blocked["negative_expectancy_stats"] == "not_observable"
+    assert blocked["negative_expectancy_net_bps"] is None
+    assert blocked["negative_expectancy_fast_fail_net_bps"] is None
 
     summary = _final_score_vs_alpha6_conflict_summary_md(pl.DataFrame(rows))
     assert "conflict_count: 2" in summary
@@ -1113,6 +1113,67 @@ def test_export_daily_pack_includes_final_score_alpha6_conflict(tmp_path):
         ),
         lake / "silver" / "v5_negative_expectancy_consistency",
     )
+    write_parquet_dataset(
+        pl.DataFrame(
+            [
+                {
+                    "run_id": "run_20260530_03",
+                    "ts_utc": ts,
+                    "symbol": "BNB-USDT",
+                    "would_bypass": "true",
+                    "alpha6_score": "0.994",
+                    "f3": "12",
+                    "f4": "5.82",
+                    "f5": "0.832",
+                    "expected_edge_bps": "180",
+                    "required_edge_bps": "45",
+                    "final_score": "-0.17",
+                    "final_decision": "no_order",
+                    "block_reason": "negative_expectancy_fast_fail_open_block",
+                    "negative_expectancy_blocked": "true",
+                    "future_4h_net_bps": "500",
+                    "future_8h_net_bps": "700",
+                    "future_12h_net_bps": "900",
+                    "future_24h_net_bps": "1100",
+                    "label_status": "complete",
+                    "live_order_effect": "read_only_no_live_order",
+                }
+            ]
+        ),
+        lake / "gold" / "v5_bnb_strong_alpha6_bypass_shadow",
+    )
+    write_parquet_dataset(
+        pl.DataFrame(
+            [
+                {
+                    "symbol": "BNB-USDT",
+                    "cycle_index": "0",
+                    "entry_bad": "false",
+                    "exit_bad": "true",
+                    "min_hold_violation": "true",
+                    "would_unblock_if_adjusted": "true",
+                    "block_attribution_conflict": "true",
+                }
+            ]
+        ),
+        lake / "gold" / "v5_negative_expectancy_attribution",
+    )
+    write_parquet_dataset(
+        pl.DataFrame(
+            [
+                {
+                    "as_of_date": "2026-05-30",
+                    "proposal_id": "BNB_F3_DOMINANT_ENTRY_PAPER_V1",
+                    "strategy_candidate": "v5.f3_dominant_entry",
+                    "symbol": "BNB-USDT",
+                    "recommended_mode": "paper",
+                    "entry_count": "1",
+                    "live_eligible": "false",
+                }
+            ]
+        ),
+        lake / "gold" / "v5_bnb_paper_strategy_daily",
+    )
 
     export = export_daily_pack(
         export_date="2026-05-30",
@@ -1127,6 +1188,12 @@ def test_export_daily_pack_includes_final_score_alpha6_conflict(tmp_path):
         names = set(archive.namelist())
         assert "reports/final_score_vs_alpha6_conflict.csv" in names
         assert "reports/final_score_vs_alpha6_conflict_summary.md" in names
+        assert "reports/bnb_strong_alpha6_bypass_shadow.csv" in names
+        assert "reports/bnb_strong_alpha6_bypass_summary.md" in names
+        assert "reports/negative_expectancy_attribution.csv" in names
+        assert "reports/negative_expectancy_attribution_summary.md" in names
+        assert "reports/bnb_paper_strategy_summary.md" in names
+        assert "reports/v5_quant_lab_consistency_dashboard.md" in names
         rows = list(
             csv.DictReader(
                 io.StringIO(
@@ -1135,11 +1202,16 @@ def test_export_daily_pack_includes_final_score_alpha6_conflict(tmp_path):
             )
         )
         summary = archive.read("reports/final_score_vs_alpha6_conflict_summary.md").decode("utf-8")
+        bypass_summary = archive.read("reports/bnb_strong_alpha6_bypass_summary.md").decode("utf-8")
+        dashboard = archive.read("reports/v5_quant_lab_consistency_dashboard.md").decode("utf-8")
     assert len(rows) == 1
     assert rows[0]["symbol"] == "BNB-USDT"
-    assert "min_hold_violation_cycles" in rows[0]["negative_expectancy_stats"]
+    assert rows[0]["negative_expectancy_net_bps"] == "-151.83"
     assert rows[0]["missed_profit_flag"] == "True"
     assert "conflict_count: 1" in summary
+    assert "live_recommendation: none" in bypass_summary
+    assert "final_score_vs_alpha6_conflict_count" in dashboard
+    assert "would_unblock_if_adjusted_count" in dashboard
 
 
 def test_sol_f4_synthetic_uses_sol_candidate_not_bnb_metrics():

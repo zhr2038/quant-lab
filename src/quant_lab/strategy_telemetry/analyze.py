@@ -8,7 +8,7 @@ from typing import Any
 
 import polars as pl
 
-from quant_lab.data.lake import read_parquet_lazy, upsert_parquet_dataset
+from quant_lab.data.lake import read_parquet_dataset, read_parquet_lazy, upsert_parquet_dataset, write_parquet_dataset
 from quant_lab.strategy_telemetry.models import V5TelemetryAnalysisResult
 from quant_lab.symbols import normalize_symbol
 
@@ -21,6 +21,11 @@ GOLD_DATASETS = {
     "v5_issue_summary_daily": Path("gold/v5_issue_summary_daily"),
     "v5_quant_lab_mode_daily": Path("gold/v5_quant_lab_mode_daily"),
     "v5_quant_lab_enforcement_daily": Path("gold/v5_quant_lab_enforcement_daily"),
+    "v5_final_score_vs_alpha6_conflict": Path("gold/v5_final_score_vs_alpha6_conflict"),
+    "v5_bnb_strong_alpha6_bypass_shadow": Path("gold/v5_bnb_strong_alpha6_bypass_shadow"),
+    "v5_negative_expectancy_attribution": Path("gold/v5_negative_expectancy_attribution"),
+    "v5_bnb_paper_strategy_runs": Path("gold/v5_bnb_paper_strategy_runs"),
+    "v5_bnb_paper_strategy_daily": Path("gold/v5_bnb_paper_strategy_daily"),
 }
 
 SILVER = {
@@ -43,6 +48,19 @@ SILVER = {
     "quant_lab_compliance": Path("silver/v5_quant_lab_compliance"),
     "quant_lab_cost_usage": Path("silver/v5_quant_lab_cost_usage"),
     "quant_lab_fallback": Path("silver/v5_quant_lab_fallback"),
+    "final_score_alpha6_conflict": Path("silver/v5_final_score_vs_alpha6_conflict"),
+    "bnb_strong_alpha6_bypass_shadow": Path("silver/v5_bnb_strong_alpha6_bypass_shadow"),
+    "negative_expectancy_attribution": Path("silver/v5_negative_expectancy_attribution"),
+    "bnb_paper_strategy_runs": Path("silver/v5_bnb_paper_strategy_runs"),
+    "bnb_paper_strategy_daily": Path("silver/v5_bnb_paper_strategy_daily"),
+}
+
+GOLD_TELEMETRY_MIRRORS = {
+    "final_score_alpha6_conflict": "v5_final_score_vs_alpha6_conflict",
+    "bnb_strong_alpha6_bypass_shadow": "v5_bnb_strong_alpha6_bypass_shadow",
+    "negative_expectancy_attribution": "v5_negative_expectancy_attribution",
+    "bnb_paper_strategy_runs": "v5_bnb_paper_strategy_runs",
+    "bnb_paper_strategy_daily": "v5_bnb_paper_strategy_daily",
 }
 
 
@@ -523,12 +541,24 @@ def analyze_v5_telemetry(
         fallback_count=fallback_count,
         quant_lab_summary=quant_lab_summary,
     )
+    _mirror_v5_consistency_gold(root)
     if refresh_candidate_gold:
         _build_candidate_labels_safely(root, analysis_date)
         _build_alpha_discovery_board_safely(root, analysis_date)
         _build_strategy_evidence_safely(root, analysis_date)
         _build_entry_quality_safely(root, analysis_date)
     return result
+
+
+def _mirror_v5_consistency_gold(lake_root: Path) -> None:
+    for silver_name, gold_name in GOLD_TELEMETRY_MIRRORS.items():
+        try:
+            frame = read_parquet_dataset(lake_root / SILVER[silver_name])
+        except Exception:
+            continue
+        if frame.is_empty():
+            continue
+        write_parquet_dataset(frame, lake_root / GOLD_DATASETS[gold_name])
 
 
 def _build_candidate_labels_safely(lake_root: Path, analysis_date: str) -> None:

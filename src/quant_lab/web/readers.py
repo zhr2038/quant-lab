@@ -59,6 +59,12 @@ DATASET_PATHS = {
     "paper_strategy_runs": Path("gold") / "paper_strategy_runs",
     "paper_strategy_daily": Path("gold") / "paper_strategy_daily",
     "paper_slippage_coverage": Path("gold") / "paper_slippage_coverage",
+    "v5_final_score_vs_alpha6_conflict": Path("gold") / "v5_final_score_vs_alpha6_conflict",
+    "v5_bnb_strong_alpha6_bypass_shadow": Path("gold")
+    / "v5_bnb_strong_alpha6_bypass_shadow",
+    "v5_negative_expectancy_attribution": Path("gold") / "v5_negative_expectancy_attribution",
+    "v5_bnb_paper_strategy_runs": Path("gold") / "v5_bnb_paper_strategy_runs",
+    "v5_bnb_paper_strategy_daily": Path("gold") / "v5_bnb_paper_strategy_daily",
     "sol_protect_paper_loss_attribution": Path("gold")
     / "sol_protect_paper_loss_attribution",
     "sol_protect_paper_loss_summary": Path("gold") / "sol_protect_paper_loss_summary",
@@ -117,6 +123,14 @@ DATASET_PATHS = {
     "v5_bnb_profit_lock_shadow": Path("silver") / "v5_bnb_profit_lock_shadow",
     "v5_bnb_negative_expectancy_attribution": Path("silver")
     / "v5_bnb_negative_expectancy_attribution",
+    "v5_final_score_vs_alpha6_conflict_silver": Path("silver")
+    / "v5_final_score_vs_alpha6_conflict",
+    "v5_bnb_strong_alpha6_bypass_shadow_silver": Path("silver")
+    / "v5_bnb_strong_alpha6_bypass_shadow",
+    "v5_negative_expectancy_attribution_silver": Path("silver")
+    / "v5_negative_expectancy_attribution",
+    "v5_bnb_paper_strategy_runs_silver": Path("silver") / "v5_bnb_paper_strategy_runs",
+    "v5_bnb_paper_strategy_daily_silver": Path("silver") / "v5_bnb_paper_strategy_daily",
     "v5_negative_expectancy_consistency": Path("silver")
     / "v5_negative_expectancy_consistency",
     "v5_candidate_event": Path("silver") / "v5_candidate_event",

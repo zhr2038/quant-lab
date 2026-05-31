@@ -453,6 +453,11 @@ def test_ingest_parses_quant_lab_usage_files(tmp_path):
     assert result.silver_rows["v5_paper_slippage_coverage"] == 1
     assert result.silver_rows["v5_bnb_profit_lock_shadow"] == 1
     assert result.silver_rows["v5_bnb_negative_expectancy_attribution"] == 1
+    assert result.silver_rows["v5_final_score_vs_alpha6_conflict"] == 1
+    assert result.silver_rows["v5_bnb_strong_alpha6_bypass_shadow"] == 1
+    assert result.silver_rows["v5_negative_expectancy_attribution"] == 1
+    assert result.silver_rows["v5_bnb_paper_strategy_runs"] == 1
+    assert result.silver_rows["v5_bnb_paper_strategy_daily"] == 1
     assert result.silver_rows["v5_negative_expectancy_consistency"] == 1
     assert read_parquet_dataset(lake / "silver/v5_quant_lab_usage").height == 1
     assert read_parquet_dataset(lake / "silver/v5_quant_lab_compliance").height == 1
@@ -462,6 +467,13 @@ def test_ingest_parses_quant_lab_usage_files(tmp_path):
     bnb_attr = read_parquet_dataset(lake / "silver/v5_bnb_negative_expectancy_attribution").to_dicts()
     assert bnb_attr[0]["symbol"] == "BNB-USDT"
     assert bnb_attr[0]["min_hold_violation"] == "true"
+    conflict = read_parquet_dataset(lake / "silver/v5_final_score_vs_alpha6_conflict").to_dicts()
+    assert conflict[0]["symbol"] == "BNB-USDT"
+    assert conflict[0]["missed_profit_flag"] == "true"
+    bypass = read_parquet_dataset(lake / "silver/v5_bnb_strong_alpha6_bypass_shadow").to_dicts()
+    assert bypass[0]["live_order_effect"] == "read_only_no_live_order"
+    generic_attr = read_parquet_dataset(lake / "silver/v5_negative_expectancy_attribution").to_dicts()
+    assert generic_attr[0]["would_unblock_if_adjusted"] == "true"
     negexp = read_parquet_dataset(lake / "silver/v5_negative_expectancy_consistency").to_dicts()
     assert negexp[0]["symbol"] == "BNB-USDT"
     assert negexp[0]["min_hold_violation_cycles"] == "1"

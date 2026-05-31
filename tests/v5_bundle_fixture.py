@@ -92,6 +92,54 @@ def make_v5_bundle_fixture(
             "atr_trailing,soft,-142.89,\"[\"\"exit_bad\"\", \"\"min_hold_violation\"\"]\","
             "false,true,true,false,true,false\n"
         ),
+        "summaries/negative_expectancy_attribution.csv": (
+            "symbol,cycle_index,entry_ts,exit_ts,exit_reason,exit_priority,net_bps,"
+            "attribution,entry_bad,exit_bad,min_hold_violation,gave_back_profit,"
+            "trailing_too_early,unknown,adjusted_entry_expectancy_bps,raw_would_block,"
+            "adjusted_would_block,would_unblock_if_adjusted,block_attribution_conflict\n"
+            "BNB/USDT,0,2026-05-28T22:00:59Z,2026-05-29T03:00:54Z,"
+            "atr_trailing,soft,-142.89,\"[\"\"exit_bad\"\", \"\"min_hold_violation\"\"]\","
+            "false,true,true,false,true,false,0,true,false,true,true\n"
+        ),
+        "summaries/final_score_vs_alpha6_conflict.csv": (
+            "run_id,ts_utc,symbol,final_score,alpha6_score,alpha6_side,"
+            "f3_vol_adj_ret,f4_volume_expansion,f5_rsi_trend_confirm,"
+            "expected_edge_bps,required_edge_bps,cost_gate_verified,final_decision,"
+            "block_reason,no_signal_reason,negative_expectancy_net_bps,"
+            "negative_expectancy_fast_fail_net_bps,future_4h_net_bps,"
+            "future_8h_net_bps,future_12h_net_bps,future_24h_net_bps,"
+            "label_status,missed_profit_flag\n"
+            "run_bnb_conflict,2026-05-30T03:00:00Z,BNB/USDT,-0.17,0.994,buy,"
+            "12,5.82,0.832,180,45,true,no_order,"
+            "negative_expectancy_fast_fail_open_block,final_score_negative,"
+            "-151.83,-142.89,500,700,900,1100,complete,true\n"
+        ),
+        "summaries/bnb_strong_alpha6_bypass_shadow.csv": (
+            "run_id,ts_utc,would_bypass,alpha6_score,f3,f4,f5,expected_edge_bps,"
+            "required_edge_bps,final_score,final_decision,block_reason,"
+            "no_signal_reason,negative_expectancy_blocked,future_4h_net_bps,"
+            "future_8h_net_bps,future_12h_net_bps,future_24h_net_bps,"
+            "label_status,live_order_effect\n"
+            "run_bnb_conflict,2026-05-30T03:00:00Z,true,0.994,12,5.82,0.832,"
+            "180,45,-0.17,no_order,negative_expectancy_fast_fail_open_block,"
+            "final_score_negative,true,500,700,900,1100,complete,"
+            "read_only_no_live_order\n"
+        ),
+        "summaries/bnb_paper_strategy_runs.csv": (
+            "as_of_date,proposal_id,strategy_candidate,symbol,recommended_mode,"
+            "would_enter,would_exit,would_size,paper_pnl,paper_pnl_bps,"
+            "live_block_reason,required_paper_days,required_slippage_coverage\n"
+            "2026-05-10,BNB_F3_DOMINANT_ENTRY_PAPER_V1,"
+            "v5.f3_dominant_entry,BNB-USDT,paper,true,false,100,0.42,42,"
+            "[\"bnb_paper_only_no_live\"],14,0.8\n"
+        ),
+        "summaries/bnb_paper_strategy_daily.csv": (
+            "as_of_date,proposal_id,strategy_candidate,symbol,recommended_mode,"
+            "paper_days,entry_count,cumulative_paper_pnl_usdt,required_paper_days,"
+            "required_slippage_coverage,live_eligible\n"
+            "2026-05-10,BNB_F3_DOMINANT_ENTRY_PAPER_V1,"
+            "v5.f3_dominant_entry,BNB-USDT,paper,1,1,0.42,14,0.8,false\n"
+        ),
         "summaries/negative_expectancy_consistency.csv": (
             "symbol,negexp_closed_cycles,negexp_net_expectancy_bps,"
             "adjusted_entry_expectancy_bps,entry_bad_cycles,exit_bad_cycles,"

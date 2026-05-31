@@ -635,6 +635,7 @@ anomalies/
 | `reports/paper_strategy_runs.csv` | V5 paper run/heartbeat |
 | `reports/paper_strategy_daily.csv` | V5 paper daily |
 | `reports/paper_slippage_coverage.csv` | paper slippage coverage |
+| `reports/final_score_vs_alpha6_conflict.csv` | Alpha6 强买入但 final_score/no_order 压制的只读审计 |
 | `reports/v5_enforce_readiness.json` | enforce readiness |
 
 专家包不是交易指令。它是证据包。

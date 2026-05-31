@@ -11,6 +11,7 @@ import subprocess
 import sys
 import zipfile
 from collections import Counter
+from collections.abc import Iterable
 from dataclasses import dataclass
 from datetime import UTC, date, datetime, timedelta
 from pathlib import Path, PurePosixPath
@@ -341,6 +342,8 @@ REQUIRED_MEMBERS = [
     "reports/missed_opportunity_summary.md",
     "reports/bnb_missed_opportunity_samples.csv",
     "reports/bnb_missed_opportunity_summary.md",
+    "reports/final_score_vs_alpha6_conflict.csv",
+    "reports/final_score_vs_alpha6_conflict_summary.md",
     "reports/risk_on_multi_buy_shadow.csv",
     "reports/risk_on_multi_buy_summary.md",
     "reports/market_regime_daily.csv",
@@ -1091,6 +1094,29 @@ CSV_SCHEMAS: dict[str, list[str]] = {
         "f5",
         "final_score",
         "final_decision",
+        "future_4h_net_bps",
+        "future_8h_net_bps",
+        "future_12h_net_bps",
+        "future_24h_net_bps",
+        "missed_profit_flag",
+    ],
+    "reports/final_score_vs_alpha6_conflict.csv": [
+        "run_id",
+        "ts_utc",
+        "symbol",
+        "final_score",
+        "alpha6_score",
+        "alpha6_side",
+        "f1",
+        "f2",
+        "f3",
+        "f4",
+        "f5",
+        "expected_edge_bps",
+        "required_edge_bps",
+        "final_decision",
+        "no_signal_reason",
+        "block_reason",
         "future_4h_net_bps",
         "future_8h_net_bps",
         "future_12h_net_bps",
@@ -3298,6 +3324,10 @@ def _dataset_members(frames: dict[str, pl.DataFrame]) -> dict[str, _MemberPayloa
         candidate_events=frames.get("v5_candidate_event", pl.DataFrame()),
         market_bars=market,
     )
+    final_score_alpha6_conflict = _final_score_vs_alpha6_conflict_for_export(
+        candidate_events=frames.get("v5_candidate_event", pl.DataFrame()),
+        market_bars=market,
+    )
     opportunity_advisory = _strategy_opportunity_advisory_for_export(
         alpha_discovery_board=alpha_discovery_board,
         strategy_evidence=strategy_evidence,
@@ -3501,6 +3531,13 @@ def _dataset_members(frames: dict[str, pl.DataFrame]) -> dict[str, _MemberPayloa
         ),
         "reports/bnb_missed_opportunity_summary.md": _bnb_missed_opportunity_summary_md(
             bnb_missed_opportunity
+        ),
+        "reports/final_score_vs_alpha6_conflict.csv": _csv_member(
+            "reports/final_score_vs_alpha6_conflict.csv",
+            final_score_alpha6_conflict,
+        ),
+        "reports/final_score_vs_alpha6_conflict_summary.md": (
+            _final_score_vs_alpha6_conflict_summary_md(final_score_alpha6_conflict)
         ),
         "reports/risk_on_multi_buy_shadow.csv": _csv_member(
             "reports/risk_on_multi_buy_shadow.csv",
@@ -6650,6 +6687,7 @@ def _v5_missed_opportunity_audit_for_export(
 
 
 BNB_MISSED_OPPORTUNITY_START_TS = datetime(2026, 5, 30, tzinfo=UTC)
+FINAL_SCORE_ALPHA6_CONFLICT_SYMBOLS = {"BTC-USDT", "ETH-USDT", "SOL-USDT", "BNB-USDT"}
 
 
 def _bnb_missed_opportunity_samples_for_export(
@@ -6741,6 +6779,165 @@ def _candidate_factor_value(candidate: dict[str, Any], *field_names: str) -> flo
         if value is not None:
             return value
     return None
+
+
+def _final_score_vs_alpha6_conflict_for_export(
+    *,
+    candidate_events: pl.DataFrame,
+    market_bars: pl.DataFrame,
+) -> pl.DataFrame:
+    path = "reports/final_score_vs_alpha6_conflict.csv"
+    if candidate_events.is_empty():
+        return _empty_csv_schema_frame(path)
+    market_by_symbol = _market_close_rows_by_symbol(market_bars)
+    rows: list[dict[str, Any]] = []
+    for candidate in candidate_events.to_dicts():
+        symbol = normalize_symbol(candidate.get("symbol"))
+        if symbol not in FINAL_SCORE_ALPHA6_CONFLICT_SYMBOLS:
+            continue
+        if not _is_final_score_alpha6_conflict_candidate(candidate):
+            continue
+        ts = readers._coerce_timestamp(candidate.get("ts_utc") or candidate.get("ts"))
+        if ts is None:
+            continue
+        symbol_market = market_by_symbol.get(symbol, [])
+        entry_close = _candidate_entry_price(candidate, symbol_market, ts)
+        shadow_cost_bps = _candidate_shadow_cost_bps(candidate)
+        future = {
+            horizon: _future_net_bps_after_shadow_cost(
+                symbol_market,
+                ts.astimezone(UTC),
+                entry_close,
+                horizon,
+                shadow_cost_bps=shadow_cost_bps,
+            )
+            for horizon in (4, 8, 12, 24)
+        }
+        observed = [value for value in future.values() if value is not None]
+        rows.append(
+            {
+                "run_id": str(candidate.get("run_id") or "").strip(),
+                "ts_utc": ts.astimezone(UTC).isoformat(),
+                "symbol": symbol,
+                "final_score": _optional_float(candidate.get("final_score")),
+                "alpha6_score": _optional_float(candidate.get("alpha6_score")),
+                "alpha6_side": candidate.get("alpha6_side"),
+                "f1": _candidate_factor_value(candidate, "f1", "f1_mom_5d", "f1_score"),
+                "f2": _candidate_factor_value(candidate, "f2", "f2_mom_20d", "f2_score"),
+                "f3": _candidate_factor_value(candidate, "f3", "f3_vol_adj_ret", "f3_score"),
+                "f4": _candidate_factor_value(
+                    candidate,
+                    "f4",
+                    "f4_volume_expansion",
+                    "f4_score",
+                ),
+                "f5": _candidate_factor_value(
+                    candidate,
+                    "f5",
+                    "f5_rsi_trend_confirm",
+                    "f5_score",
+                ),
+                "expected_edge_bps": _optional_float(candidate.get("expected_edge_bps")),
+                "required_edge_bps": _optional_float(candidate.get("required_edge_bps")),
+                "final_decision": candidate.get("final_decision"),
+                "no_signal_reason": candidate.get("no_signal_reason"),
+                "block_reason": candidate.get("block_reason"),
+                "future_4h_net_bps": future[4],
+                "future_8h_net_bps": future[8],
+                "future_12h_net_bps": future[12],
+                "future_24h_net_bps": future[24],
+                "missed_profit_flag": bool(observed and max(observed) > 0),
+            }
+        )
+    if not rows:
+        return _empty_csv_schema_frame(path)
+    return (
+        pl.DataFrame(rows, infer_schema_length=None)
+        .select(CSV_SCHEMAS[path])
+        .sort(["ts_utc", "symbol", "run_id"])
+    )
+
+
+def _is_final_score_alpha6_conflict_candidate(candidate: dict[str, Any]) -> bool:
+    side = str(candidate.get("alpha6_side") or "").strip().lower()
+    if side != "buy":
+        return False
+    alpha6_score = _optional_float(candidate.get("alpha6_score"))
+    if alpha6_score is None or alpha6_score < 0.9:
+        return False
+    expected = _optional_float(candidate.get("expected_edge_bps"))
+    required = _optional_float(candidate.get("required_edge_bps"))
+    if expected is None or required is None or expected <= required:
+        return False
+    if _optional_bool(candidate.get("cost_gate_verified")) is not True:
+        return False
+    final_score = _optional_float(candidate.get("final_score"))
+    final_decision = str(candidate.get("final_decision") or "").strip().lower()
+    return (final_score is not None and final_score < 0.0) or final_decision == "no_order"
+
+
+def _candidate_shadow_cost_bps(candidate: dict[str, Any]) -> float:
+    for field in (
+        "selected_entry_gate_cost_bps",
+        "roundtrip_all_in_cost_bps",
+        "selected_total_cost_bps",
+        "cost_bps",
+    ):
+        value = _optional_float(candidate.get(field))
+        if value is not None:
+            return max(value, 0.0)
+    return RISK_ON_MULTI_BUY_COST_BPS
+
+
+def _conflict_avg_optional(values: Iterable[Any]) -> float | None:
+    observed = [_optional_float(value) for value in values]
+    observed = [value for value in observed if value is not None]
+    if not observed:
+        return None
+    return sum(observed) / len(observed)
+
+
+def _conflict_display_number(value: Any) -> str:
+    number = _optional_float(value)
+    if number is None:
+        return "not_observable"
+    return f"{number:.6f}".rstrip("0").rstrip(".")
+
+
+def _final_score_vs_alpha6_conflict_summary_md(conflicts: pl.DataFrame) -> str:
+    rows = conflicts.to_dicts() if not conflicts.is_empty() else []
+    conflict_count = len(rows)
+    avg_4h = _conflict_avg_optional(row.get("future_4h_net_bps") for row in rows)
+    avg_8h = _conflict_avg_optional(row.get("future_8h_net_bps") for row in rows)
+    avg_24h = _conflict_avg_optional(row.get("future_24h_net_bps") for row in rows)
+    symbol_counts: dict[str, int] = {}
+    for row in rows:
+        symbol = str(row.get("symbol") or "UNKNOWN")
+        symbol_counts[symbol] = symbol_counts.get(symbol, 0) + 1
+    missed_profit_count = sum(
+        1 for row in rows if _optional_bool(row.get("missed_profit_flag")) is True
+    )
+    if conflict_count == 0:
+        recommendation = "no_conflict_observed"
+    elif missed_profit_count > 0:
+        recommendation = "review_final_score_alpha6_conflict"
+    else:
+        recommendation = "collect_more_samples"
+    return "\n".join(
+        [
+            "# Final score vs Alpha6 conflict",
+            "",
+            "Diagnostic only. This report does not change V5 live orders.",
+            "",
+            f"- conflict_count: {conflict_count}",
+            f"- avg_future_4h_net_bps: {_conflict_display_number(avg_4h)}",
+            f"- avg_future_8h_net_bps: {_conflict_display_number(avg_8h)}",
+            f"- avg_future_24h_net_bps: {_conflict_display_number(avg_24h)}",
+            f"- symbol_breakdown: {safe_json_dumps(symbol_counts)}",
+            f"- recommendation: {recommendation}",
+            "",
+        ]
+    )
 
 
 def _risk_on_multi_buy_shadow_for_export(

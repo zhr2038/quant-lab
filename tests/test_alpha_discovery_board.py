@@ -10,6 +10,8 @@ import polars as pl
 from quant_lab.data.lake import read_parquet_dataset, write_parquet_dataset
 from quant_lab.export.daily import (
     STRATEGY_OPPORTUNITY_ADVISORY_TTL_SECONDS,
+    _final_score_vs_alpha6_conflict_for_export,
+    _final_score_vs_alpha6_conflict_summary_md,
     _paper_strategy_proposals_for_export,
     _strategy_opportunity_advisory_for_export,
     export_daily_pack,
@@ -946,6 +948,142 @@ def test_export_daily_pack_includes_bnb_paper_reports(tmp_path):
     }
     assert {row["would_enter"] for row in rows} == {"True"}
     assert {row["live_eligible"].lower() for row in daily} == {"false"}
+
+
+def test_final_score_vs_alpha6_conflict_quantifies_bnb_no_order():
+    ts = datetime(2026, 5, 30, 3, tzinfo=UTC)
+    candidate_events = pl.DataFrame(
+        [
+            {
+                "candidate_id": "bnb-conflict",
+                "run_id": "run_20260530_03",
+                "ts_utc": ts,
+                "symbol": "BNB-USDT",
+                "strategy_candidate": "v5.f3_dominant_entry",
+                "final_score": "-0.17",
+                "final_decision": "no_order",
+                "no_signal_reason": "final_score_negative",
+                "block_reason": "negative_expectancy_fast_fail_open_block",
+                "alpha6_score": "0.994",
+                "alpha6_side": "buy",
+                "f1_mom_5d": "0.2",
+                "f2_mom_20d": "0.3",
+                "f3_vol_adj_ret": "0.91",
+                "f4_volume_expansion": "5.82",
+                "f5_rsi_trend_confirm": "0.832",
+                "expected_edge_bps": "180",
+                "required_edge_bps": "45",
+                "cost_gate_verified": "true",
+                "cost_bps": "30",
+            },
+            {
+                "candidate_id": "eth-weak",
+                "run_id": "run_20260530_03",
+                "ts_utc": ts,
+                "symbol": "ETH-USDT",
+                "final_score": "-0.1",
+                "final_decision": "no_order",
+                "alpha6_score": "0.5",
+                "alpha6_side": "buy",
+                "expected_edge_bps": "180",
+                "required_edge_bps": "45",
+                "cost_gate_verified": "true",
+            },
+        ]
+    )
+    market_bars = pl.DataFrame(
+        [
+            {"symbol": "BNB-USDT", "ts": ts, "close": 642.3},
+            {"symbol": "BNB-USDT", "ts": ts + timedelta(hours=4), "close": 675.0},
+            {"symbol": "BNB-USDT", "ts": ts + timedelta(hours=8), "close": 680.0},
+            {"symbol": "BNB-USDT", "ts": ts + timedelta(hours=12), "close": 690.0},
+            {"symbol": "BNB-USDT", "ts": ts + timedelta(hours=24), "close": 720.0},
+        ]
+    )
+
+    rows = _final_score_vs_alpha6_conflict_for_export(
+        candidate_events=candidate_events,
+        market_bars=market_bars,
+    ).to_dicts()
+
+    assert len(rows) == 1
+    row = rows[0]
+    assert row["symbol"] == "BNB-USDT"
+    assert row["alpha6_score"] == 0.994
+    assert row["final_decision"] == "no_order"
+    assert row["block_reason"] == "negative_expectancy_fast_fail_open_block"
+    assert row["future_4h_net_bps"] > 400.0
+    assert row["future_24h_net_bps"] > 1100.0
+    assert row["missed_profit_flag"] is True
+
+    summary = _final_score_vs_alpha6_conflict_summary_md(pl.DataFrame(rows))
+    assert "conflict_count: 1" in summary
+    assert "BNB-USDT" in summary
+    assert "review_final_score_alpha6_conflict" in summary
+
+
+def test_export_daily_pack_includes_final_score_alpha6_conflict(tmp_path):
+    lake = tmp_path / "lake"
+    ts = datetime(2026, 5, 30, 3, tzinfo=UTC)
+    write_parquet_dataset(
+        pl.DataFrame(
+            [
+                {
+                    "candidate_id": "bnb-conflict",
+                    "run_id": "run_20260530_03",
+                    "ts_utc": ts,
+                    "symbol": "BNB-USDT",
+                    "strategy_candidate": "v5.f3_dominant_entry",
+                    "final_score": "-0.17",
+                    "final_decision": "no_order",
+                    "alpha6_score": "0.994",
+                    "alpha6_side": "buy",
+                    "expected_edge_bps": "180",
+                    "required_edge_bps": "45",
+                    "cost_gate_verified": "true",
+                    "cost_bps": "30",
+                    "bundle_ts": ts,
+                }
+            ]
+        ),
+        lake / "silver" / "v5_candidate_event",
+    )
+    write_parquet_dataset(
+        pl.DataFrame(
+            [
+                {"symbol": "BNB-USDT", "ts": ts, "close": 642.3},
+                {"symbol": "BNB-USDT", "ts": ts + timedelta(hours=4), "close": 675.0},
+                {"symbol": "BNB-USDT", "ts": ts + timedelta(hours=24), "close": 720.0},
+            ]
+        ),
+        lake / "silver" / "market_bar",
+    )
+
+    export = export_daily_pack(
+        export_date="2026-05-30",
+        lake_root=lake,
+        out_dir=tmp_path / "exports",
+        profile="expert",
+        command_line=["qlab", "export-daily"],
+        pre_export_v5_refresh=False,
+    )
+
+    with zipfile.ZipFile(export.zip_path) as archive:
+        names = set(archive.namelist())
+        assert "reports/final_score_vs_alpha6_conflict.csv" in names
+        assert "reports/final_score_vs_alpha6_conflict_summary.md" in names
+        rows = list(
+            csv.DictReader(
+                io.StringIO(
+                    archive.read("reports/final_score_vs_alpha6_conflict.csv").decode("utf-8")
+                )
+            )
+        )
+        summary = archive.read("reports/final_score_vs_alpha6_conflict_summary.md").decode("utf-8")
+    assert len(rows) == 1
+    assert rows[0]["symbol"] == "BNB-USDT"
+    assert rows[0]["missed_profit_flag"] == "True"
+    assert "conflict_count: 1" in summary
 
 
 def test_sol_f4_synthetic_uses_sol_candidate_not_bnb_metrics():

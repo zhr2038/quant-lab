@@ -903,10 +903,11 @@ def _strategy_opportunity_advisory_rows_uncached(
         alpha_factory_enriched,
         _strategy_opportunity_alpha_factory_promotions(lake_root),
     )
-    return _apply_research_portfolio_overrides_to_advisory_rows(
+    portfolio_overridden = _apply_research_portfolio_overrides_to_advisory_rows(
         promotion_overridden,
         _strategy_opportunity_portfolio_overrides(lake_root),
     )
+    return _dedupe_strategy_opportunity_advisory_rows(portfolio_overridden)
 
 
 def _strategy_opportunity_advisory_source_signature(lake_root: Path) -> tuple[Any, ...]:
@@ -1028,9 +1029,15 @@ def _strategy_opportunity_advisory_gold_rows(lake_root: Path) -> list[dict[str, 
 def _dedupe_strategy_opportunity_advisory_rows(
     rows: list[StrategyOpportunityAdvisoryRow],
 ) -> list[StrategyOpportunityAdvisoryRow]:
-    selected: dict[tuple[str, str, int | None], StrategyOpportunityAdvisoryRow] = {}
+    selected: dict[tuple[str, str, int | None, str, str], StrategyOpportunityAdvisoryRow] = {}
     for row in rows:
-        key = (row.strategy_candidate, row.symbol, row.horizon_hours)
+        key = (
+            row.strategy_candidate,
+            row.symbol,
+            row.horizon_hours,
+            row.source_module or "",
+            row.candidate_id or "",
+        )
         current = selected.get(key)
         if current is None or _advisory_row_preferred(row, current):
             selected[key] = row
@@ -1040,6 +1047,8 @@ def _dedupe_strategy_opportunity_advisory_rows(
             row.strategy_candidate,
             row.symbol,
             row.horizon_hours if row.horizon_hours is not None else -1,
+            row.source_module or "",
+            row.candidate_id or "",
         ),
     )
 
@@ -1199,6 +1208,19 @@ def _is_alpha_factory_advisory_model(row: StrategyOpportunityAdvisoryRow) -> boo
     )
 
 
+def _is_alpha_factory_promotion_capped_model(row: StrategyOpportunityAdvisoryRow) -> bool:
+    candidate = row.strategy_candidate
+    candidate_key = candidate.split(":", 1)[1] if candidate.startswith("regime_router:") else candidate
+    return (
+        candidate_key in ALPHA_FACTORY_CANDIDATES
+        or candidate_key.startswith("v5.af.")
+        or candidate_key.startswith("v5.expanded_relative_strength")
+        or (row.source_module or "").lower() == "alpha_factory"
+        or bool(row.template_family)
+        or row.alpha_factory_score is not None
+    )
+
+
 def _apply_alpha_factory_result_metadata_to_advisory_rows(
     rows: list[StrategyOpportunityAdvisoryRow],
     metadata: dict[tuple[str, str, int | None], dict[str, Any]],
@@ -1246,15 +1268,19 @@ def _alpha_factory_promotion_for_advisory_row(
     row: StrategyOpportunityAdvisoryRow,
     promotions: dict[tuple[str, str, int | None], dict[str, Any]],
 ) -> dict[str, Any] | None:
-    for key in [
-        (row.strategy_candidate, row.symbol, row.horizon_hours),
-        (row.strategy_candidate, row.symbol, None),
-        (row.strategy_candidate, "UNKNOWN", row.horizon_hours),
-        (row.strategy_candidate, "UNKNOWN", None),
-    ]:
-        promotion = promotions.get(key)
-        if promotion is not None:
-            return promotion
+    candidates = [row.strategy_candidate]
+    if row.strategy_candidate.startswith("regime_router:"):
+        candidates.append(row.strategy_candidate.split(":", 1)[1])
+    for candidate in candidates:
+        for key in [
+            (candidate, row.symbol, row.horizon_hours),
+            (candidate, row.symbol, None),
+            (candidate, "UNKNOWN", row.horizon_hours),
+            (candidate, "UNKNOWN", None),
+        ]:
+            promotion = promotions.get(key)
+            if promotion is not None:
+                return promotion
     return None
 
 
@@ -1282,7 +1308,7 @@ def _apply_alpha_factory_promotion_overrides_to_advisory_rows(
 ) -> list[StrategyOpportunityAdvisoryRow]:
     output: list[StrategyOpportunityAdvisoryRow] = []
     for row in rows:
-        if not _is_alpha_factory_advisory_model(row):
+        if not _is_alpha_factory_promotion_capped_model(row):
             output.append(row.model_copy(update={"max_live_notional_usdt": 0.0}))
             continue
         promotion = _alpha_factory_promotion_for_advisory_row(row, promotions)

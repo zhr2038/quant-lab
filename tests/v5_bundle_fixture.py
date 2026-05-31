@@ -87,19 +87,19 @@ def make_v5_bundle_fixture(
         "summaries/bnb_negative_expectancy_attribution.csv": (
             "symbol,cycle_index,entry_ts,exit_ts,exit_reason,exit_priority,net_bps,"
             "attribution,entry_bad,exit_bad,min_hold_violation,gave_back_profit,"
-            "trailing_too_early,unknown\n"
+            "trailing_too_early,unknown,exit_metadata_missing\n"
             "BNB/USDT,0,2026-05-28T22:00:59Z,2026-05-29T03:00:54Z,"
             "atr_trailing,soft,-142.89,\"[\"\"exit_bad\"\", \"\"min_hold_violation\"\"]\","
-            "false,true,true,false,true,false\n"
+            "false,true,true,false,true,false,false\n"
         ),
         "summaries/negative_expectancy_attribution.csv": (
             "symbol,cycle_index,entry_ts,exit_ts,exit_reason,exit_priority,net_bps,"
             "attribution,entry_bad,exit_bad,min_hold_violation,gave_back_profit,"
-            "trailing_too_early,unknown,adjusted_entry_expectancy_bps,raw_would_block,"
+            "trailing_too_early,unknown,exit_metadata_missing,adjusted_entry_expectancy_bps,raw_would_block,"
             "adjusted_would_block,would_unblock_if_adjusted,block_attribution_conflict\n"
             "BNB/USDT,0,2026-05-28T22:00:59Z,2026-05-29T03:00:54Z,"
             "atr_trailing,soft,-142.89,\"[\"\"exit_bad\"\", \"\"min_hold_violation\"\"]\","
-            "false,true,true,false,true,false,0,true,false,true,true\n"
+            "false,true,true,false,true,false,false,0,true,false,true,true\n"
         ),
         "summaries/final_score_vs_alpha6_conflict.csv": (
             "run_id,ts_utc,symbol,final_score,alpha6_score,alpha6_side,"
@@ -108,11 +108,13 @@ def make_v5_bundle_fixture(
             "block_reason,no_signal_reason,negative_expectancy_net_bps,"
             "negative_expectancy_fast_fail_net_bps,future_4h_net_bps,"
             "future_8h_net_bps,future_12h_net_bps,future_24h_net_bps,"
-            "label_status,missed_profit_flag\n"
+            "label_4h_status,label_8h_status,label_12h_status,label_24h_status,"
+            "any_label_complete,all_labels_complete,label_status,missed_profit_flag\n"
             "run_bnb_conflict,2026-05-30T03:00:00Z,BNB/USDT,-0.17,0.994,buy,"
             "12,5.82,0.832,180,45,true,no_order,"
             "negative_expectancy_fast_fail_open_block,final_score_negative,"
-            "-151.83,-142.89,500,700,900,1100,complete,true\n"
+            "-151.83,-142.89,500,700,900,1100,"
+            "complete,complete,complete,complete,true,true,complete,true\n"
         ),
         "summaries/bnb_strong_alpha6_bypass_shadow.csv": (
             "run_id,ts_utc,would_bypass,alpha6_score,f3,f4,f5,expected_edge_bps,"

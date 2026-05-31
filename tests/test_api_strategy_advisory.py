@@ -331,6 +331,59 @@ def test_strategy_opportunity_advisory_uses_alpha_factory_promotion_queue(
     assert payload["max_live_notional_usdt"] == 0.0
 
 
+def test_strategy_opportunity_advisory_caps_regime_router_alpha_factory_rows(
+    tmp_path,
+    monkeypatch,
+):
+    lake = tmp_path / "lake"
+    monkeypatch.setenv("QUANT_LAB_LAKE_ROOT", str(lake))
+    monkeypatch.delenv("QUANT_LAB_API_TOKEN", raising=False)
+    as_of = datetime(2026, 5, 25, tzinfo=UTC)
+    write_parquet_dataset(
+        pl.DataFrame(
+            [
+                {
+                    **_api_advisory_row(
+                        "v5.expanded_relative_strength_top1_shadow",
+                        "TRX-USDT",
+                        as_of,
+                    ),
+                    "source_module": "regime_router",
+                    "promotion_state": "PAPER_READY",
+                }
+            ]
+        ),
+        lake / "gold" / "strategy_opportunity_advisory",
+    )
+    write_parquet_dataset(
+        pl.DataFrame(
+            [
+                {
+                    "as_of_date": "2026-05-25",
+                    "generated_at": as_of,
+                    "strategy_candidate": "v5.expanded_relative_strength_top1_shadow",
+                    "symbol": "TRX-USDT",
+                    "horizon_hours": 24,
+                    "promotion_state": "KEEP_SHADOW",
+                    "recommended_mode": "shadow",
+                    "reasons": '["recent_7d_negative"]',
+                }
+            ]
+        ),
+        lake / "gold" / "alpha_factory_promotion_queue",
+    )
+
+    response = TestClient(app).get("/v1/strategy-opportunity-advisory")
+
+    assert response.status_code == 200
+    payload = response.json()[0]
+    assert payload["source_module"] == "regime_router"
+    assert payload["decision"] == "KEEP_SHADOW"
+    assert payload["recommended_mode"] == "shadow"
+    assert payload["would_enter"] is False
+    assert "alpha_factory_promotion_queue_not_paper_ready" in payload["live_block_reasons"]
+
+
 def test_strategy_opportunity_advisory_enriches_alpha_factory_score_from_results(
     tmp_path,
     monkeypatch,

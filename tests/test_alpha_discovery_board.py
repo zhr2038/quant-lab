@@ -1047,6 +1047,13 @@ def test_final_score_vs_alpha6_conflict_quantifies_bnb_no_order():
     assert row["negative_expectancy_fast_fail_net_bps"] is None
     assert row["future_4h_net_bps"] > 400.0
     assert row["future_24h_net_bps"] > 1100.0
+    assert row["label_4h_status"] == "complete"
+    assert row["label_8h_status"] == "complete"
+    assert row["label_12h_status"] == "complete"
+    assert row["label_24h_status"] == "complete"
+    assert row["any_label_complete"] is True
+    assert row["all_labels_complete"] is True
+    assert row["label_status"] == "complete"
     assert row["missed_profit_flag"] is True
     blocked = next(row for row in rows if row["symbol"] == "BTC-USDT")
     assert blocked["final_decision"] == "blocked"
@@ -1057,6 +1064,7 @@ def test_final_score_vs_alpha6_conflict_quantifies_bnb_no_order():
     assert "conflict_count: 2" in summary
     assert "blocked_final_decision_count: 1" in summary
     assert "negative_expectancy_block_count: 2" in summary
+    assert "partial_complete_count: 1" in summary
     assert "BNB-USDT" in summary
     assert "review_final_score_alpha6_conflict" in summary
 
@@ -1212,6 +1220,13 @@ def test_export_daily_pack_includes_final_score_alpha6_conflict(tmp_path):
     assert "live_recommendation: none" in bypass_summary
     assert "final_score_vs_alpha6_conflict_count" in dashboard
     assert "would_unblock_if_adjusted_count" in dashboard
+    assert "advisory_duplicate_key_count" in dashboard
+    assert "alpha_factory_paper_ready_count_from_queue" in dashboard
+    assert "bnb_paper_v5_entry_count: 1" in dashboard
+    assert "bnb_paper_entry_count_match: true" in dashboard
+    assert "negative_expectancy_metadata_missing_count" in dashboard
+    assert "final_score_conflict_partial_complete_count" in dashboard
+    assert "alpha_factory_source_mismatch_count" in dashboard
 
 
 def test_sol_f4_synthetic_uses_sol_candidate_not_bnb_metrics():
@@ -2545,6 +2560,55 @@ def test_strategy_advisory_uses_alpha_factory_promotion_queue_over_board():
     assert row["promotion_state"] == "KEEP_SHADOW"
     assert "alpha_factory_promotion_queue_not_paper_ready" in row["live_block_reasons"]
     assert row["max_paper_notional_usdt"] == 0.0
+
+
+def test_strategy_advisory_caps_regime_router_alpha_factory_paper_ready():
+    regime_advisory = pl.DataFrame(
+        [
+            {
+                "as_of_date": "2026-05-25",
+                "generated_at": datetime(2026, 5, 25, tzinfo=UTC),
+                "current_regime": "ALT_IMPULSE",
+                "recommended_mode": "paper",
+                "allowed_strategy_candidates": '["v5.expanded_relative_strength_top1_shadow"]',
+            }
+        ]
+    )
+    promotion_queue = pl.DataFrame(
+        [
+            {
+                "as_of_date": "2026-05-25",
+                "generated_at": datetime(2026, 5, 25, tzinfo=UTC),
+                "strategy_candidate": "v5.expanded_relative_strength_top1_shadow",
+                "symbol": "UNKNOWN",
+                "horizon_hours": None,
+                "promotion_state": "KEEP_SHADOW",
+                "recommended_mode": "shadow",
+                "reasons": '["queue_kept_shadow"]',
+            }
+        ]
+    )
+
+    advisory = _strategy_opportunity_advisory_for_export(
+        alpha_discovery_board=pl.DataFrame(),
+        strategy_evidence=pl.DataFrame(),
+        paper_proposals=pl.DataFrame(),
+        risk_permissions=pl.DataFrame(),
+        cost_health=pl.DataFrame(),
+        paper_daily=pl.DataFrame(),
+        paper_slippage=pl.DataFrame(),
+        regime_strategy_advisory=regime_advisory,
+        alpha_factory_promotion_queue=promotion_queue,
+    ).to_dicts()
+
+    assert len(advisory) == 1
+    row = advisory[0]
+    assert row["strategy_candidate"] == "regime_router:v5.expanded_relative_strength_top1_shadow"
+    assert row["decision"] == "KEEP_SHADOW"
+    assert row["recommended_mode"] == "shadow"
+    assert row["would_enter"] is False
+    assert row["max_paper_notional_usdt"] == 0.0
+    assert "alpha_factory_promotion_queue_not_paper_ready" in row["live_block_reasons"]
 
 
 def test_strategy_advisory_enriches_alpha_factory_score_from_results():

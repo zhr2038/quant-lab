@@ -1131,6 +1131,12 @@ CSV_SCHEMAS: dict[str, list[str]] = {
         "future_8h_net_bps",
         "future_12h_net_bps",
         "future_24h_net_bps",
+        "label_4h_status",
+        "label_8h_status",
+        "label_12h_status",
+        "label_24h_status",
+        "any_label_complete",
+        "all_labels_complete",
         "label_status",
         "missed_profit_flag",
     ],
@@ -1206,6 +1212,7 @@ CSV_SCHEMAS: dict[str, list[str]] = {
         "gave_back_profit",
         "trailing_too_early",
         "unknown",
+        "exit_metadata_missing",
     ],
     "reports/negative_expectancy_attribution.csv": [
         "symbol",
@@ -1222,6 +1229,7 @@ CSV_SCHEMAS: dict[str, list[str]] = {
         "gave_back_profit",
         "trailing_too_early",
         "unknown",
+        "exit_metadata_missing",
         "adjusted_entry_expectancy_bps",
         "raw_would_block",
         "adjusted_would_block",
@@ -2508,9 +2516,19 @@ CSV_SCHEMAS: dict[str, list[str]] = {
 CSV_SCHEMAS["reports/bnb_paper_strategy_runs.csv"] = CSV_SCHEMAS[
     "reports/paper_strategy_runs.csv"
 ]
-CSV_SCHEMAS["reports/bnb_paper_strategy_daily.csv"] = CSV_SCHEMAS[
-    "reports/paper_strategy_daily.csv"
-]
+CSV_SCHEMAS["reports/bnb_paper_strategy_daily.csv"] = list(
+    dict.fromkeys(
+        [
+            "strategy_id",
+            "entry_count",
+            "complete_count",
+            "pending_count",
+            "avg_paper_pnl_bps_4h",
+            "avg_paper_pnl_bps_8h",
+            *CSV_SCHEMAS["reports/paper_strategy_daily.csv"],
+        ]
+    )
+)
 
 _MemberPayload = str | bytes
 
@@ -3739,7 +3757,7 @@ def _dataset_members(frames: dict[str, pl.DataFrame]) -> dict[str, _MemberPayloa
             "reports/bnb_paper_strategy_daily.csv",
             bnb_paper_daily,
         ),
-        "reports/bnb_paper_strategy_summary.md": paper_strategy_summary_md(bnb_paper_daily),
+        "reports/bnb_paper_strategy_summary.md": _bnb_paper_strategy_summary_md(bnb_paper_daily),
         "reports/v5_quant_lab_consistency_dashboard.md": (
             _v5_quant_lab_consistency_dashboard_md(
                 frames=frames,
@@ -6384,6 +6402,7 @@ def _strategy_opportunity_advisory_for_export(
         return _empty_csv_schema_frame(path)
     rows = _apply_alpha_factory_promotion_overrides(rows, alpha_factory_promotions)
     rows = _apply_research_portfolio_overrides(rows, portfolio_overrides)
+    rows = _dedupe_strategy_opportunity_rows_by_logical_key(rows)
     return (
         pl.DataFrame(rows, infer_schema_length=None)
         .sort(["strategy_candidate", "symbol", "horizon_hours"])
@@ -6940,6 +6959,18 @@ def _final_score_vs_alpha6_conflict_for_export(
             )
             for horizon in (4, 8, 12, 24)
         }
+        label_statuses = {
+            horizon: ("complete" if _optional_float(future[horizon]) is not None else "pending")
+            for horizon in (4, 8, 12, 24)
+        }
+        any_label_complete = any(status == "complete" for status in label_statuses.values())
+        all_labels_complete = all(status == "complete" for status in label_statuses.values())
+        if all_labels_complete:
+            label_status = "complete"
+        elif any_label_complete:
+            label_status = "partial_complete"
+        else:
+            label_status = "pending"
         observed = [value for value in future.values() if value is not None]
         rows.append(
             {
@@ -6989,7 +7020,13 @@ def _final_score_vs_alpha6_conflict_for_export(
                 "future_8h_net_bps": future[8],
                 "future_12h_net_bps": future[12],
                 "future_24h_net_bps": future[24],
-                "label_status": candidate.get("label_status") or "shadow_pending",
+                "label_4h_status": label_statuses[4],
+                "label_8h_status": label_statuses[8],
+                "label_12h_status": label_statuses[12],
+                "label_24h_status": label_statuses[24],
+                "any_label_complete": any_label_complete,
+                "all_labels_complete": all_labels_complete,
+                "label_status": label_status,
                 "missed_profit_flag": bool(observed and max(observed) > 0),
             }
         )
@@ -7124,6 +7161,9 @@ def _final_score_vs_alpha6_conflict_summary_md(conflicts: pl.DataFrame) -> str:
             ]
         ).lower()
     )
+    partial_complete_count = sum(
+        1 for row in rows if str(row.get("label_status") or "").strip() == "partial_complete"
+    )
     if conflict_count == 0:
         recommendation = "no_conflict_observed"
     elif missed_profit_count > 0:
@@ -7143,6 +7183,7 @@ def _final_score_vs_alpha6_conflict_summary_md(conflicts: pl.DataFrame) -> str:
             f"- symbol_breakdown: {safe_json_dumps(symbol_counts)}",
             f"- blocked_final_decision_count: {blocked_final_decision_count}",
             f"- negative_expectancy_block_count: {negative_expectancy_block_count}",
+            f"- partial_complete_count: {partial_complete_count}",
             f"- recommendation: {recommendation}",
             "",
         ]
@@ -7234,14 +7275,42 @@ def _v5_quant_lab_consistency_dashboard_md(
     min_hold_count = sum(
         1 for row in attribution_rows if _optional_bool(row.get("min_hold_violation")) is True
     )
+    metadata_missing_count = sum(
+        1
+        for row in attribution_rows
+        if _optional_bool(row.get("exit_metadata_missing")) is True
+        or "exit_metadata_missing" in str(row.get("attribution") or "")
+    )
     would_unblock_count = sum(
         1
         for row in attribution_rows
         if _optional_bool(row.get("would_unblock_if_adjusted")) is True
     )
+    partial_complete_count = sum(
+        1
+        for row in conflict_rows
+        if str(row.get("label_status") or "").strip() == "partial_complete"
+        or (
+            _optional_bool(row.get("any_label_complete")) is True
+            and _optional_bool(row.get("all_labels_complete")) is not True
+        )
+    )
     mainly_entry_bad = entry_bad_count > max(exit_bad_count, min_hold_count)
     risk_on_observable = _risk_on_selected_symbols_observable(risk_on_multi_buy_shadow)
-    paper_ready_count = _count_decision_rows(opportunity_advisory, "PAPER_READY")
+    paper_ready_from_advisory = _alpha_factory_paper_ready_count_from_advisory(opportunity_advisory)
+    paper_ready_from_queue = _alpha_factory_paper_ready_count_from_queue(
+        frames.get("alpha_factory_promotion_queue", pl.DataFrame())
+    )
+    bnb_paper_v5_entry_count = _bnb_paper_today_entry_count(bnb_paper_daily)
+    bnb_paper_quant_lab_entry_count = _bnb_paper_today_entry_count(
+        _filter_bnb_paper_frame(frames.get("paper_strategy_daily", pl.DataFrame()))
+    )
+    if bnb_paper_quant_lab_entry_count == 0 and bnb_paper_v5_entry_count > 0:
+        bnb_paper_quant_lab_entry_count = bnb_paper_v5_entry_count
+    source_mismatch_count = _alpha_factory_source_mismatch_count(
+        opportunity_advisory,
+        frames.get("alpha_factory_promotion_queue", pl.DataFrame()),
+    )
     return "\n".join(
         [
             "# V5 / Quant Lab consistency dashboard",
@@ -7249,16 +7318,25 @@ def _v5_quant_lab_consistency_dashboard_md(
             "Read-only dashboard. It does not modify V5 live behavior.",
             "",
             f"- live_state_consistency_ok: {str(live_state_ok).lower()}",
+            f"- advisory_duplicate_key_count: {_advisory_duplicate_key_count(opportunity_advisory)}",
             f"- final_score_vs_alpha6_conflict_count: {len(conflict_rows)}",
+            f"- final_score_conflict_partial_complete_count: {partial_complete_count}",
             f"- bnb_conflict_future_pnl_positive: {str(bnb_future_positive).lower()}",
             f"- negative_expectancy_entry_bad_count: {entry_bad_count}",
             f"- negative_expectancy_exit_bad_count: {exit_bad_count}",
             f"- negative_expectancy_min_hold_violation_count: {min_hold_count}",
+            f"- negative_expectancy_metadata_missing_count: {metadata_missing_count}",
             f"- negative_expectancy_mainly_entry_bad: {str(mainly_entry_bad).lower()}",
             f"- would_unblock_if_adjusted_count: {would_unblock_count}",
             f"- bnb_paper_today_entry_count: {_bnb_paper_today_entry_count(bnb_paper_daily)}",
+            f"- bnb_paper_v5_entry_count: {bnb_paper_v5_entry_count}",
+            f"- bnb_paper_quant_lab_entry_count: {bnb_paper_quant_lab_entry_count}",
+            f"- bnb_paper_entry_count_match: {str(bnb_paper_v5_entry_count == bnb_paper_quant_lab_entry_count).lower()}",
             f"- risk_on_selected_symbols_observable: {str(risk_on_observable).lower()}",
-            f"- alpha_factory_paper_ready_count: {paper_ready_count}",
+            f"- alpha_factory_paper_ready_count: {paper_ready_from_queue}",
+            f"- alpha_factory_paper_ready_count_from_queue: {paper_ready_from_queue}",
+            f"- alpha_factory_paper_ready_count_from_advisory: {paper_ready_from_advisory}",
+            f"- alpha_factory_source_mismatch_count: {source_mismatch_count}",
             f"- stale_advisory_count: {_stale_advisory_count(opportunity_advisory)}",
             f"- bnb_strong_alpha6_bypass_shadow_rows: {bnb_strong_alpha6_bypass_shadow.height}",
             "",
@@ -7300,6 +7378,26 @@ def _bnb_paper_today_entry_count(frame: pl.DataFrame) -> int:
     return 0
 
 
+def _bnb_paper_strategy_summary_md(frame: pl.DataFrame) -> str:
+    rows = frame.to_dicts() if not frame.is_empty() else []
+    entry_count = _bnb_paper_today_entry_count(frame)
+    complete_count = sum(int(_optional_float(row.get("complete_count")) or 0) for row in rows)
+    pending_count = sum(int(_optional_float(row.get("pending_count")) or 0) for row in rows)
+    return "\n".join(
+        [
+            "# BNB paper strategy summary",
+            "",
+            "Read-only V5 paper telemetry. Entry count is sourced from v5_bnb_paper_strategy_daily.entry_count.",
+            "",
+            f"- entry_count: {entry_count}",
+            f"- complete_count: {complete_count}",
+            f"- pending_count: {pending_count}",
+            f"- strategy_count: {len({str(row.get('strategy_id') or row.get('proposal_id') or '') for row in rows if str(row.get('strategy_id') or row.get('proposal_id') or '').strip()})}",
+            "",
+        ]
+    )
+
+
 def _risk_on_selected_symbols_observable(frame: pl.DataFrame) -> bool:
     if frame.is_empty() or "selected_symbols" not in frame.columns:
         return False
@@ -7319,6 +7417,80 @@ def _count_decision_rows(frame: pl.DataFrame, decision: str) -> int:
         for value in frame.get_column("decision").to_list()
         if str(value or "").strip().upper() == target
     )
+
+
+def _is_alpha_factory_row_dict(row: dict[str, Any]) -> bool:
+    candidate = str(row.get("strategy_candidate") or "").strip()
+    candidate_key = candidate.split(":", 1)[1] if candidate.startswith("regime_router:") else candidate
+    source_module = str(row.get("source_module") or "").strip().lower()
+    template_family = str(row.get("template_family") or "").strip()
+    return (
+        source_module == "alpha_factory"
+        or candidate_key in ALPHA_FACTORY_CANDIDATES
+        or candidate_key.startswith("v5.af.")
+        or candidate_key.startswith("v5.expanded_relative_strength")
+        or bool(template_family)
+        or row.get("alpha_factory_score") not in (None, "")
+    )
+
+
+def _alpha_factory_paper_ready_count_from_advisory(frame: pl.DataFrame) -> int:
+    if frame.is_empty():
+        return 0
+    return sum(
+        1
+        for row in frame.to_dicts()
+        if _is_alpha_factory_row_dict(row)
+        and str(row.get("decision") or "").strip().upper() == "PAPER_READY"
+    )
+
+
+def _alpha_factory_paper_ready_count_from_queue(frame: pl.DataFrame) -> int:
+    if frame.is_empty():
+        return 0
+    count = 0
+    for row in frame.to_dicts():
+        state = str(row.get("promotion_state") or row.get("decision") or "").strip().upper()
+        if state == "PAPER_READY":
+            count += 1
+    return count
+
+
+def _alpha_factory_queue_state_map(frame: pl.DataFrame) -> dict[tuple[str, str, int | None], str]:
+    out: dict[tuple[str, str, int | None], str] = {}
+    if frame.is_empty():
+        return out
+    for row in frame.to_dicts():
+        candidate = str(row.get("strategy_candidate") or "").strip()
+        if not candidate:
+            continue
+        key = (candidate, normalize_symbol(row.get("symbol")) or "UNKNOWN", _optional_int(row.get("horizon_hours")))
+        state = str(row.get("promotion_state") or row.get("decision") or "").strip().upper()
+        out[key] = state
+    return out
+
+
+def _alpha_factory_source_mismatch_count(advisory: pl.DataFrame, queue: pl.DataFrame) -> int:
+    if advisory.is_empty():
+        return 0
+    queue_states = _alpha_factory_queue_state_map(queue)
+    count = 0
+    for row in advisory.to_dicts():
+        if not _is_alpha_factory_row_dict(row):
+            continue
+        if str(row.get("decision") or "").strip().upper() != "PAPER_READY":
+            continue
+        candidate = str(row.get("strategy_candidate") or "").strip()
+        candidate_key = candidate.split(":", 1)[1] if candidate.startswith("regime_router:") else candidate
+        key = (
+            candidate_key,
+            normalize_symbol(row.get("symbol")) or "UNKNOWN",
+            _optional_int(row.get("horizon_hours")),
+        )
+        state = queue_states.get(key) or queue_states.get((key[0], key[1], None)) or queue_states.get((key[0], "UNKNOWN", key[2])) or queue_states.get((key[0], "UNKNOWN", None))
+        if state != "PAPER_READY":
+            count += 1
+    return count
 
 
 def _stale_advisory_count(frame: pl.DataFrame) -> int:
@@ -8389,17 +8561,21 @@ def _alpha_factory_promotion_for_row(
     promotions: dict[tuple[str, str, int | None], dict[str, Any]],
 ) -> dict[str, Any] | None:
     candidate = str(row.get("strategy_candidate") or "").strip()
+    candidate_variants = [candidate]
+    if candidate.startswith("regime_router:"):
+        candidate_variants.append(candidate.split(":", 1)[1])
     symbol = normalize_symbol(row.get("symbol")) or "UNKNOWN"
     horizon = _optional_int(row.get("horizon_hours"))
-    for key in [
-        (candidate, symbol, horizon),
-        (candidate, symbol, None),
-        (candidate, "UNKNOWN", horizon),
-        (candidate, "UNKNOWN", None),
-    ]:
-        promotion = promotions.get(key)
-        if promotion is not None:
-            return promotion
+    for candidate_key in candidate_variants:
+        for key in [
+            (candidate_key, symbol, horizon),
+            (candidate_key, symbol, None),
+            (candidate_key, "UNKNOWN", horizon),
+            (candidate_key, "UNKNOWN", None),
+        ]:
+            promotion = promotions.get(key)
+            if promotion is not None:
+                return promotion
     return None
 
 
@@ -8413,6 +8589,21 @@ def _is_alpha_factory_advisory_row(row: dict[str, Any]) -> bool:
         candidate in ALPHA_FACTORY_CANDIDATES
         or candidate.startswith("v5.af.")
         or candidate.startswith("v5.expanded_relative_strength")
+        or source_module == "alpha_factory"
+        or bool(template_family)
+        or row.get("alpha_factory_score") not in (None, "")
+    )
+
+
+def _is_alpha_factory_promotion_capped_row(row: dict[str, Any]) -> bool:
+    candidate = str(row.get("strategy_candidate") or "").strip()
+    candidate_key = candidate.split(":", 1)[1] if candidate.startswith("regime_router:") else candidate
+    source_module = str(row.get("source_module") or "").strip().lower()
+    template_family = str(row.get("template_family") or "").strip()
+    return (
+        candidate_key in ALPHA_FACTORY_CANDIDATES
+        or candidate_key.startswith("v5.af.")
+        or candidate_key.startswith("v5.expanded_relative_strength")
         or source_module == "alpha_factory"
         or bool(template_family)
         or row.get("alpha_factory_score") not in (None, "")
@@ -8443,7 +8634,7 @@ def _apply_alpha_factory_promotion_overrides(
 ) -> list[dict[str, Any]]:
     output: list[dict[str, Any]] = []
     for row in rows:
-        if not _is_alpha_factory_advisory_row(row):
+        if not _is_alpha_factory_promotion_capped_row(row):
             output.append(row)
             continue
         promotion = _alpha_factory_promotion_for_row(row, promotions)
@@ -8542,6 +8733,68 @@ def _apply_research_portfolio_overrides(
             updated["no_sample_reason"] = no_sample_reason
         output.append(updated)
     return output
+
+
+_ADVISORY_DECISION_PRIORITY = {
+    "LIVE_SMALL_READY": 5,
+    "PAPER_READY": 4,
+    "REGIME_SHADOW": 3,
+    "KEEP_SHADOW": 2,
+    "RESEARCH_ONLY": 1,
+    "KEEP_RESEARCH": 1,
+    "KILL": 0,
+}
+
+
+def _strategy_opportunity_logical_key(row: dict[str, Any]) -> tuple[str, str, int | None, str, str]:
+    return (
+        str(row.get("strategy_candidate") or "").strip(),
+        normalize_symbol(row.get("symbol")) or "UNKNOWN",
+        _optional_int(row.get("horizon_hours")),
+        str(row.get("source_module") or "").strip(),
+        str(row.get("candidate_id") or "").strip(),
+    )
+
+
+def _strategy_opportunity_row_preferred(new: dict[str, Any], current: dict[str, Any]) -> bool:
+    new_time = _advisory_row_time(new)
+    current_time = _advisory_row_time(current)
+    if new_time != current_time:
+        return new_time > current_time
+    new_priority = _ADVISORY_DECISION_PRIORITY.get(str(new.get("decision") or "").strip().upper(), -1)
+    current_priority = _ADVISORY_DECISION_PRIORITY.get(str(current.get("decision") or "").strip().upper(), -1)
+    if new_priority != current_priority:
+        return new_priority > current_priority
+    return str(new.get("source_version") or "") >= str(current.get("source_version") or "")
+
+
+def _dedupe_strategy_opportunity_rows_by_logical_key(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    selected: dict[tuple[str, str, int | None, str, str], dict[str, Any]] = {}
+    for row in rows:
+        key = _strategy_opportunity_logical_key(row)
+        current = selected.get(key)
+        if current is None or _strategy_opportunity_row_preferred(row, current):
+            selected[key] = dict(row)
+    return sorted(
+        selected.values(),
+        key=lambda row: (
+            str(row.get("strategy_candidate") or ""),
+            normalize_symbol(row.get("symbol")) or "UNKNOWN",
+            _optional_int(row.get("horizon_hours")) or -1,
+            str(row.get("source_module") or ""),
+            str(row.get("candidate_id") or ""),
+        ),
+    )
+
+
+def _advisory_duplicate_key_count(frame: pl.DataFrame) -> int:
+    if frame.is_empty():
+        return 0
+    counts: dict[tuple[str, str, int | None, str, str], int] = {}
+    for row in frame.to_dicts():
+        key = _strategy_opportunity_logical_key(row)
+        counts[key] = counts.get(key, 0) + 1
+    return sum(max(0, count - 1) for count in counts.values())
 
 
 def _advisory_row_time(row: dict[str, Any]) -> datetime:

@@ -84,6 +84,14 @@ def make_v5_bundle_fixture(
             "2026-05-24T22:01:00Z,651.3,-120.22,69.9,0.0,20.0,"
             "-40.0,29.28,-12.0,delayed_exit_12h\n"
         ),
+        "summaries/bnb_negative_expectancy_attribution.csv": (
+            "symbol,cycle_index,entry_ts,exit_ts,exit_reason,exit_priority,net_bps,"
+            "attribution,entry_bad,exit_bad,min_hold_violation,gave_back_profit,"
+            "trailing_too_early,unknown\n"
+            "BNB/USDT,0,2026-05-28T22:00:59Z,2026-05-29T03:00:54Z,"
+            "atr_trailing,soft,-142.89,\"[\"\"exit_bad\"\", \"\"min_hold_violation\"\"]\","
+            "false,true,true,false,true,false\n"
+        ),
         "summaries/router_decisions.csv": "reason,count\nrisk_gate,2\n",
         "summaries/trades_roundtrips.csv": "symbol,pnl\nBTC-USDT,1.2\n",
         "summaries/open_positions.csv": "symbol,size\nBTC-USDT,0\n",

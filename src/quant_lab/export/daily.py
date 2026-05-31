@@ -346,6 +346,7 @@ REQUIRED_MEMBERS = [
     "reports/final_score_vs_alpha6_conflict_summary.md",
     "reports/risk_on_multi_buy_shadow.csv",
     "reports/risk_on_multi_buy_summary.md",
+    "reports/bnb_negative_expectancy_attribution.csv",
     "reports/market_regime_daily.csv",
     "reports/strategy_regime_matrix.csv",
     "reports/regime_strategy_advisory.csv",
@@ -1157,6 +1158,22 @@ CSV_SCHEMAS: dict[str, list[str]] = {
         "recommended_mode",
         "max_live_notional_usdt",
         "source",
+    ],
+    "reports/bnb_negative_expectancy_attribution.csv": [
+        "symbol",
+        "cycle_index",
+        "entry_ts",
+        "exit_ts",
+        "exit_reason",
+        "exit_priority",
+        "net_bps",
+        "attribution",
+        "entry_bad",
+        "exit_bad",
+        "min_hold_violation",
+        "gave_back_profit",
+        "trailing_too_early",
+        "unknown",
     ],
     "reports/market_regime_daily.csv": [
         "as_of_date",
@@ -3264,6 +3281,10 @@ def _dataset_members(frames: dict[str, pl.DataFrame]) -> dict[str, _MemberPayloa
     btc_probe_exit_policy_review = frames.get("btc_probe_exit_policy_review", pl.DataFrame())
     btc_probe_exit_policy_summary = frames.get("btc_probe_exit_policy_summary", pl.DataFrame())
     bnb_swing_exit_policy_review = frames.get("bnb_swing_exit_policy_review", pl.DataFrame())
+    bnb_negative_expectancy_attribution = frames.get(
+        "v5_bnb_negative_expectancy_attribution",
+        pl.DataFrame(),
+    )
     bnb_exit_policy_v5_vs_quant_lab_consistency = frames.get(
         "bnb_exit_policy_v5_vs_quant_lab_consistency",
         pl.DataFrame(),
@@ -3730,6 +3751,10 @@ def _dataset_members(frames: dict[str, pl.DataFrame]) -> dict[str, _MemberPayloa
         "reports/bnb_swing_exit_policy_review.csv": _csv_member(
             "reports/bnb_swing_exit_policy_review.csv",
             bnb_swing_exit_policy_review,
+        ),
+        "reports/bnb_negative_expectancy_attribution.csv": _csv_member(
+            "reports/bnb_negative_expectancy_attribution.csv",
+            bnb_negative_expectancy_attribution,
         ),
         "reports/bnb_exit_policy_v5_vs_quant_lab_consistency.csv": _csv_member(
             "reports/bnb_exit_policy_v5_vs_quant_lab_consistency.csv",

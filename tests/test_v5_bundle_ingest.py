@@ -452,11 +452,15 @@ def test_ingest_parses_quant_lab_usage_files(tmp_path):
     assert result.silver_rows["v5_paper_strategy_daily"] == 1
     assert result.silver_rows["v5_paper_slippage_coverage"] == 1
     assert result.silver_rows["v5_bnb_profit_lock_shadow"] == 1
+    assert result.silver_rows["v5_bnb_negative_expectancy_attribution"] == 1
     assert read_parquet_dataset(lake / "silver/v5_quant_lab_usage").height == 1
     assert read_parquet_dataset(lake / "silver/v5_quant_lab_compliance").height == 1
     bnb_shadow = read_parquet_dataset(lake / "silver/v5_bnb_profit_lock_shadow").to_dicts()
     assert bnb_shadow[0]["symbol"] == "BNB-USDT"
     assert bnb_shadow[0]["best_shadow_exit_policy"] == "delayed_exit_12h"
+    bnb_attr = read_parquet_dataset(lake / "silver/v5_bnb_negative_expectancy_attribution").to_dicts()
+    assert bnb_attr[0]["symbol"] == "BNB-USDT"
+    assert bnb_attr[0]["min_hold_violation"] == "true"
     paper_rows = read_parquet_dataset(lake / "silver/v5_paper_strategy_run").to_dicts()
     assert paper_rows[0]["proposal_id"] == "SOL_F4_VOLUME_EXPANSION_PAPER_V1"
     assert paper_rows[0]["recommended_mode"] == "paper"

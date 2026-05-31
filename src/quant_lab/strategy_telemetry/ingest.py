@@ -77,6 +77,7 @@ SILVER_DATASETS = {
     "v5_paper_strategy_daily": Path("silver/v5_paper_strategy_daily"),
     "v5_paper_slippage_coverage": Path("silver/v5_paper_slippage_coverage"),
     "v5_bnb_profit_lock_shadow": Path("silver/v5_bnb_profit_lock_shadow"),
+    "v5_bnb_negative_expectancy_attribution": Path("silver/v5_bnb_negative_expectancy_attribution"),
     "v5_pullback_reversal_shadow": Path("gold/v5_pullback_reversal_shadow"),
     "v5_pullback_reversal_readiness": Path("gold/v5_pullback_reversal_readiness"),
 }
@@ -586,6 +587,7 @@ def _append_file_rows(
         "summaries/paper_strategy_daily.csv": "v5_paper_strategy_daily",
         "summaries/paper_slippage_coverage.csv": "v5_paper_slippage_coverage",
         "summaries/bnb_profit_lock_shadow.csv": "v5_bnb_profit_lock_shadow",
+        "summaries/bnb_negative_expectancy_attribution.csv": "v5_bnb_negative_expectancy_attribution",
     }
     if logical.startswith("summaries/high_score_blocked_outcomes"):
         rows["v5_high_score_blocked_outcome"].extend(_csv_rows(metadata, relative, file_path))

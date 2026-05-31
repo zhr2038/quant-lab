@@ -453,6 +453,29 @@ def test_daily_export_contains_bnb_swing_exit_policy_review(tmp_path):
     lake = tmp_path / "lake"
     entry_ts = datetime(2026, 5, 23, 22, tzinfo=UTC)
     _write_bnb_swing_inputs(lake, entry_ts=entry_ts)
+    write_parquet_dataset(
+        pl.DataFrame(
+            [
+                {
+                    "symbol": "BNB-USDT",
+                    "cycle_index": "0",
+                    "entry_ts": "2026-05-28T22:00:59Z",
+                    "exit_ts": "2026-05-29T03:00:54Z",
+                    "exit_reason": "atr_trailing",
+                    "exit_priority": "soft",
+                    "net_bps": "-142.89",
+                    "attribution": '["exit_bad", "min_hold_violation"]',
+                    "entry_bad": "false",
+                    "exit_bad": "true",
+                    "min_hold_violation": "true",
+                    "gave_back_profit": "false",
+                    "trailing_too_early": "true",
+                    "unknown": "false",
+                }
+            ]
+        ),
+        lake / "silver" / "v5_bnb_negative_expectancy_attribution",
+    )
     build_and_publish_bnb_swing_exit_policy_review(lake, as_of_date="2026-05-24")
 
     result = export_daily_pack(
@@ -467,6 +490,7 @@ def test_daily_export_contains_bnb_swing_exit_policy_review(tmp_path):
     with zipfile.ZipFile(result.zip_path) as archive:
         names = set(archive.namelist())
         assert "reports/bnb_swing_exit_policy_review.csv" in names
+        assert "reports/bnb_negative_expectancy_attribution.csv" in names
         assert "reports/bnb_exit_policy_v5_vs_quant_lab_consistency.csv" in names
         assert "reports/bnb_swing_exit_policy_summary.md" in names
         rows = list(
@@ -486,8 +510,18 @@ def test_daily_export_contains_bnb_swing_exit_policy_review(tmp_path):
                 )
             )
         )
+        attribution_rows = list(
+            csv.DictReader(
+                io.StringIO(
+                    archive.read(
+                        "reports/bnb_negative_expectancy_attribution.csv"
+                    ).decode("utf-8")
+                )
+            )
+        )
 
     assert len(rows) == 1
+    assert attribution_rows[0]["min_hold_violation"] == "true"
     assert len(consistency_rows) == 1
     assert rows[0]["symbol"] == "BNB-USDT"
     assert float(rows[0]["actual_exit_net_bps"]) == pytest.approx(-120.0, abs=0.5)

@@ -348,7 +348,7 @@ def _auto_compact_append_dataset_unlocked(
     threshold = _int_env("QUANT_LAB_APPEND_AUTO_COMPACT_FILES", 256)
     if threshold <= 0:
         return None
-    files = _direct_parquet_files(dataset_path)
+    files = _direct_compaction_source_files(dataset_path)
     if len(files) <= threshold:
         return None
     max_source_files = _int_env(

@@ -15,9 +15,11 @@ Environment=POLARS_MAX_THREADS=1
 Environment=MALLOC_ARENA_MAX=2
 Environment=QUANT_LAB_WS_APPEND_TARGET_ROWS=500000
 Environment=QUANT_LAB_WS_APPEND_PARTITIONED=0
-ExecStart=/opt/quant-lab/.venv/bin/qlab okx-ws-collect-universe --symbols BTC-USDT,ETH-USDT,SOL-USDT,BNB-USDT,ADA-USDT,ASTER-USDT,BASED-USDT,CHZ-USDT,DASH-USDT,FIL-USDT,GRASS-USDT,HYPE-USDT,ICP-USDT,IP-USDT,JTO-USDT,LINK-USDT,LIT-USDT,LPT-USDT,LTC-USDT,MON-USDT,NEAR-USDT,OKB-USDT,ONDO-USDT,PAXG-USDT,PROS-USDT,SUI-USDT,TON-USDT,TRUMP-USDT,TRX-USDT,WLD-USDT,XAUT-USDT,XRP-USDT,ZEC-USDT --channels tickers,trades,books5 --market-type SPOT --lake-root /var/lib/quant-lab/lake --flush-interval-seconds 600 --flush-max-messages 50000
-Restart=on-failure
+Environment=QUANT_LAB_APPEND_AUTO_COMPACT_FILES=0
+ExecStart=/opt/quant-lab/.venv/bin/qlab okx-ws-collect-universe --symbols BTC-USDT,ETH-USDT,SOL-USDT,BNB-USDT,ADA-USDT,ASTER-USDT,BASED-USDT,CHZ-USDT,DASH-USDT,FIL-USDT,GRASS-USDT,HYPE-USDT,ICP-USDT,IP-USDT,JTO-USDT,LINK-USDT,LIT-USDT,LPT-USDT,LTC-USDT,MON-USDT,NEAR-USDT,OKB-USDT,ONDO-USDT,PAXG-USDT,PROS-USDT,SUI-USDT,TON-USDT,TRUMP-USDT,TRX-USDT,WLD-USDT,XAUT-USDT,XRP-USDT,ZEC-USDT --channels tickers,trades,books5 --market-type SPOT --lake-root /var/lib/quant-lab/lake --flush-interval-seconds 60 --flush-max-messages 10000
+Restart=always
 RestartSec=30
+RuntimeMaxSec=2h
 MemoryHigh=2G
 MemoryMax=3G
 KillSignal=SIGINT

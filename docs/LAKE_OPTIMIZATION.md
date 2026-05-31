@@ -7,8 +7,10 @@ strategy consumers. The production lake must avoid many tiny Parquet files.
 
 High-frequency datasets are written as append-only batches and compacted
 periodically. Current production writes direct batch files by default to avoid
-creating one small file per symbol/channel on every flush. Historical or
-opt-in partitioned datasets may use deterministic partitions:
+creating one small file per symbol/channel on every flush. The WebSocket
+collector disables append-path auto-compaction; scheduled maintenance compacts
+only new direct batch files and skips existing `compact_*.parquet` outputs.
+Historical or opt-in partitioned datasets may use deterministic partitions:
 
 - `bronze/okx_public_ws/day=YYYY-MM-DD/channel=<channel>/inst_id=<symbol>/`
 - `silver/trade_print/day=YYYY-MM-DD/symbol=<symbol>/`
@@ -29,9 +31,14 @@ qlab lake-health --lake-root /var/lib/quant-lab/lake
 ```
 
 The systemd template `quant-lab-lake-compaction.timer` runs this every hour.
-The compaction script also prunes stale internal staging directories and empty
-`._tmp` directories older than 60 minutes. Active writers use dataset locks and
-short-lived temp files; the cleanup deliberately avoids fresh temp paths.
+For hot WebSocket datasets it does direct-root compaction only by default, using
+the same dataset lock as the active collector. Partition repair and leaf
+partition compaction are manual opt-in maintenance (`COMPACT_HOT_WS_PARTITION_REPAIR=1`)
+because they can race with the long-running collector when production is writing
+unpartitioned direct batches. The compaction script also prunes stale internal
+staging directories and empty `._tmp` directories older than 60 minutes. Active
+writers use dataset locks and short-lived temp files; the cleanup deliberately
+avoids fresh temp paths.
 
 For hot direct-append datasets, daily compaction skips existing
 `compact_*.parquet` outputs by default and only compacts new direct batch files.

@@ -8,7 +8,12 @@ from typing import Any
 
 import polars as pl
 
-from quant_lab.data.lake import read_parquet_dataset, read_parquet_lazy, upsert_parquet_dataset, write_parquet_dataset
+from quant_lab.data.lake import (
+    read_parquet_dataset,
+    read_parquet_lazy,
+    upsert_parquet_dataset,
+    write_parquet_dataset,
+)
 from quant_lab.strategy_telemetry.models import V5TelemetryAnalysisResult
 from quant_lab.symbols import normalize_symbol
 

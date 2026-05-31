@@ -7017,7 +7017,10 @@ def _is_final_score_alpha6_conflict_candidate(candidate: dict[str, Any]) -> bool
         return False
     final_score = _optional_float(candidate.get("final_score"))
     final_decision = str(candidate.get("final_decision") or "").strip().lower()
-    return (final_score is not None and final_score < 0.0) or final_decision in {"no_order", "blocked"}
+    return (final_score is not None and final_score < 0.0) or final_decision in {
+        "no_order",
+        "blocked",
+    }
 
 
 def _negative_expectancy_stats_by_symbol(frame: pl.DataFrame) -> dict[str, dict[str, Any]]:
@@ -7204,8 +7207,14 @@ def _v5_quant_lab_consistency_dashboard_md(
     opportunity_advisory: pl.DataFrame,
 ) -> str:
     live_state_ok = _live_state_consistency_ok(frames)
-    conflict_rows = final_score_alpha6_conflict.to_dicts() if not final_score_alpha6_conflict.is_empty() else []
-    bnb_conflicts = [row for row in conflict_rows if normalize_symbol(row.get("symbol")) == "BNB-USDT"]
+    conflict_rows = (
+        final_score_alpha6_conflict.to_dicts()
+        if not final_score_alpha6_conflict.is_empty()
+        else []
+    )
+    bnb_conflicts = [
+        row for row in conflict_rows if normalize_symbol(row.get("symbol")) == "BNB-USDT"
+    ]
     bnb_future_positive = any(
         (_optional_float(row.get("future_24h_net_bps")) or 0.0) > 0
         or (_optional_float(row.get("future_12h_net_bps")) or 0.0) > 0
@@ -7216,14 +7225,23 @@ def _v5_quant_lab_consistency_dashboard_md(
         if not negative_expectancy_attribution.is_empty()
         else []
     )
-    entry_bad_count = sum(1 for row in attribution_rows if _optional_bool(row.get("entry_bad")) is True)
-    exit_bad_count = sum(1 for row in attribution_rows if _optional_bool(row.get("exit_bad")) is True)
+    entry_bad_count = sum(
+        1 for row in attribution_rows if _optional_bool(row.get("entry_bad")) is True
+    )
+    exit_bad_count = sum(
+        1 for row in attribution_rows if _optional_bool(row.get("exit_bad")) is True
+    )
     min_hold_count = sum(
         1 for row in attribution_rows if _optional_bool(row.get("min_hold_violation")) is True
     )
     would_unblock_count = sum(
-        1 for row in attribution_rows if _optional_bool(row.get("would_unblock_if_adjusted")) is True
+        1
+        for row in attribution_rows
+        if _optional_bool(row.get("would_unblock_if_adjusted")) is True
     )
+    mainly_entry_bad = entry_bad_count > max(exit_bad_count, min_hold_count)
+    risk_on_observable = _risk_on_selected_symbols_observable(risk_on_multi_buy_shadow)
+    paper_ready_count = _count_decision_rows(opportunity_advisory, "PAPER_READY")
     return "\n".join(
         [
             "# V5 / Quant Lab consistency dashboard",
@@ -7236,11 +7254,11 @@ def _v5_quant_lab_consistency_dashboard_md(
             f"- negative_expectancy_entry_bad_count: {entry_bad_count}",
             f"- negative_expectancy_exit_bad_count: {exit_bad_count}",
             f"- negative_expectancy_min_hold_violation_count: {min_hold_count}",
-            f"- negative_expectancy_mainly_entry_bad: {str(entry_bad_count > max(exit_bad_count, min_hold_count)).lower()}",
+            f"- negative_expectancy_mainly_entry_bad: {str(mainly_entry_bad).lower()}",
             f"- would_unblock_if_adjusted_count: {would_unblock_count}",
             f"- bnb_paper_today_entry_count: {_bnb_paper_today_entry_count(bnb_paper_daily)}",
-            f"- risk_on_selected_symbols_observable: {str(_risk_on_selected_symbols_observable(risk_on_multi_buy_shadow)).lower()}",
-            f"- alpha_factory_paper_ready_count: {_count_decision_rows(opportunity_advisory, 'PAPER_READY')}",
+            f"- risk_on_selected_symbols_observable: {str(risk_on_observable).lower()}",
+            f"- alpha_factory_paper_ready_count: {paper_ready_count}",
             f"- stale_advisory_count: {_stale_advisory_count(opportunity_advisory)}",
             f"- bnb_strong_alpha6_bypass_shadow_rows: {bnb_strong_alpha6_bypass_shadow.height}",
             "",
@@ -7254,7 +7272,10 @@ def _live_state_consistency_ok(frames: dict[str, pl.DataFrame]) -> bool:
         return True
     texts: list[str] = []
     for row in issues.to_dicts():
-        texts.extend(str(row.get(field) or "").lower() for field in ("issue_type", "type", "code", "message"))
+        texts.extend(
+            str(row.get(field) or "").lower()
+            for field in ("issue_type", "type", "code", "message")
+        )
     blocked_markers = (
         "lifecycle_close_filled_but_position_open",
         "reconcile_flat_but_open_positions_nonzero",
@@ -7267,9 +7288,15 @@ def _bnb_paper_today_entry_count(frame: pl.DataFrame) -> int:
     if frame.is_empty():
         return 0
     if "entry_count" in frame.columns:
-        return sum(int(_optional_float(value) or 0) for value in frame.get_column("entry_count").to_list())
+        return sum(
+            int(_optional_float(value) or 0)
+            for value in frame.get_column("entry_count").to_list()
+        )
     if "would_enter_count" in frame.columns:
-        return sum(int(_optional_float(value) or 0) for value in frame.get_column("would_enter_count").to_list())
+        return sum(
+            int(_optional_float(value) or 0)
+            for value in frame.get_column("would_enter_count").to_list()
+        )
     return 0
 
 
@@ -7287,7 +7314,11 @@ def _count_decision_rows(frame: pl.DataFrame, decision: str) -> int:
     if frame.is_empty() or "decision" not in frame.columns:
         return 0
     target = decision.strip().upper()
-    return sum(1 for value in frame.get_column("decision").to_list() if str(value or "").strip().upper() == target)
+    return sum(
+        1
+        for value in frame.get_column("decision").to_list()
+        if str(value or "").strip().upper() == target
+    )
 
 
 def _stale_advisory_count(frame: pl.DataFrame) -> int:
@@ -9696,12 +9727,19 @@ def _normalize_bnb_strong_alpha6_bypass_frame(frame: pl.DataFrame) -> pl.DataFra
     if frame.is_empty():
         return _empty_csv_schema_frame(path)
     normalized = frame
-    if "negative_expectancy_blocked" not in normalized.columns and "would_bypass_negative_expectancy" in normalized.columns:
-        normalized = normalized.rename({"would_bypass_negative_expectancy": "negative_expectancy_blocked"})
+    if (
+        "negative_expectancy_blocked" not in normalized.columns
+        and "would_bypass_negative_expectancy" in normalized.columns
+    ):
+        normalized = normalized.rename(
+            {"would_bypass_negative_expectancy": "negative_expectancy_blocked"}
+        )
     if "would_bypass" not in normalized.columns:
         normalized = normalized.with_columns(pl.lit(True).alias("would_bypass"))
     if "live_order_effect" not in normalized.columns:
-        normalized = normalized.with_columns(pl.lit("read_only_no_live_order").alias("live_order_effect"))
+        normalized = normalized.with_columns(
+            pl.lit("read_only_no_live_order").alias("live_order_effect")
+        )
     return _csv_frame_with_schema(normalized, CSV_SCHEMAS[path])
 
 

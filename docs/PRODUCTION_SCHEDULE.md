@@ -16,13 +16,17 @@ Daily and recurring jobs must keep this order:
 
 Heavy lake maintenance runs outside the expert export path:
 
-- Scheduled compaction must not touch hot OKX WebSocket datasets such as
+- Scheduled compaction must not rewrite hot OKX WebSocket partitions such as
   `bronze/okx_public_ws`, `silver/trade_print`, or `silver/orderbook_snapshot`
-  while the collector is running. Those datasets are append-heavy and share
-  dataset locks with the live collector.
+  while the collector is running. Those datasets are append-heavy; safe
+  maintenance is limited to direct-root batch compaction that shares the
+  dataset lock with the live collector.
 - The default compaction service only compacts cold V5 telemetry index/usage
-  datasets and records lake health. Hot market-data compaction is a manual
-  maintenance operation.
+  datasets and records lake health. For hot market data it only compacts new
+  direct batch files under the dataset root with the same dataset lock as the
+  collector. Partition repair and leaf-partition compaction for hot WebSocket
+  datasets are manual maintenance operations and require
+  `COMPACT_HOT_WS_PARTITION_REPAIR=1`.
 - `qlab lake-health` records file count, small-file ratio, and partition
   coverage in `gold/lake_file_health_daily`.
 - `qlab ops-summary` reads API request metrics, job durations, and lake file

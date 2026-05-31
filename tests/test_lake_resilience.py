@@ -397,6 +397,29 @@ def test_append_parquet_dataset_auto_compacts_direct_small_files(tmp_path, monke
     assert not invalid_parquet_files(dataset)
 
 
+def test_append_auto_compaction_skips_existing_compact_outputs(tmp_path, monkeypatch):
+    dataset = tmp_path / "lake" / "bronze" / "okx_public_ws"
+    dataset.mkdir(parents=True)
+    pl.DataFrame([{"value": 100}]).write_parquet(dataset / "compact_existing.parquet")
+    monkeypatch.setenv("QUANT_LAB_APPEND_AUTO_COMPACT_FILES", "2")
+    monkeypatch.setenv("QUANT_LAB_APPEND_AUTO_COMPACT_TARGET_ROWS", "100")
+
+    for index in range(3):
+        append_parquet_dataset(
+            pl.DataFrame([{"value": index}]),
+            dataset,
+            target_rows_per_file=1,
+        )
+
+    files = sorted(path.name for path in dataset.glob("*.parquet"))
+    read_back = read_parquet_dataset(dataset)
+
+    assert "compact_existing.parquet" in files
+    assert sum(1 for name in files if name.startswith("compact_")) == 2
+    assert sorted(read_back["value"].to_list()) == [0, 1, 2, 100]
+    assert not invalid_parquet_files(dataset)
+
+
 def test_append_parquet_dataset_auto_compacts_partition_leaf_files(tmp_path, monkeypatch):
     dataset = tmp_path / "lake" / "silver" / "trade_print"
     monkeypatch.setenv("QUANT_LAB_APPEND_AUTO_COMPACT_FILES", "3")

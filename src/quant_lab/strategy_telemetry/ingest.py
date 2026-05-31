@@ -593,7 +593,9 @@ def _append_file_rows(
         "summaries/paper_strategy_daily.csv": "v5_paper_strategy_daily",
         "summaries/paper_slippage_coverage.csv": "v5_paper_slippage_coverage",
         "summaries/bnb_profit_lock_shadow.csv": "v5_bnb_profit_lock_shadow",
-        "summaries/bnb_negative_expectancy_attribution.csv": "v5_bnb_negative_expectancy_attribution",
+        "summaries/bnb_negative_expectancy_attribution.csv": (
+            "v5_bnb_negative_expectancy_attribution"
+        ),
         "summaries/final_score_vs_alpha6_conflict.csv": "v5_final_score_vs_alpha6_conflict",
         "summaries/bnb_strong_alpha6_bypass_shadow.csv": "v5_bnb_strong_alpha6_bypass_shadow",
         "summaries/negative_expectancy_attribution.csv": "v5_negative_expectancy_attribution",

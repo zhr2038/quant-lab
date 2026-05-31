@@ -153,8 +153,10 @@ def test_scheduled_compaction_covers_hot_ws_datasets():
     assert "--compact-output" in script
     assert script.count("--compact-output") >= 4
     assert "COMPACT_RAW_OKX_WS" in script
+    assert "COMPACT_HOT_WS_PARTITION_REPAIR" in script
     assert "SKIP_COMPACT_RAW_OKX_WS" in script
     assert "COMPACT_RAW_OKX_WS=1" in unit
+    assert "COMPACT_HOT_WS_PARTITION_REPAIR=0" in unit
     assert "COMPACT_DATASET_TIMEOUT_SECONDS=300" in unit
     assert "COMPACT_DIRECT_MAX_SOURCE_FILES=4" in unit
     assert "COMPACT_DIRECT_MIN_SOURCE_FILES=64" in unit
@@ -173,29 +175,20 @@ def test_scheduled_compaction_covers_hot_ws_datasets():
     assert '"${COMPACT_DIRECT_MAX_SOURCE_FILES}"' in script
     assert "WARN_DIRECT_COMPACT_FAILED" in script
     assert "SKIP_DIRECT_COMPACT" in script
+    assert "direct_source_parquet_file_count" in script
+    assert "compact_hot_ws_dataset" in script
+    assert "SKIP_HOT_WS_PARTITION_REPAIR" in script
     assert "compact_leaf_partitions_if_file_count_at_least" in script
     assert "SKIP_LEAF_COMPACT_BUDGET" in script
     assert '"bronze/okx_public_ws"' in script
     assert '"silver/trade_print"' in script
     assert '"silver/orderbook_snapshot"' in script
+    assert 'compact_hot_ws_dataset "bronze/okx_public_ws" 500000 100 64 20' in script
+    assert 'compact_hot_ws_dataset "silver/trade_print" 500000 100 20 20' in script
     assert (
-        'repair_dataset_partitions "bronze/okx_public_ws" '
-        "500000 100"
-    ) in script
-    assert (
-        'compact_leaf_partitions_if_file_count_at_least "bronze/okx_public_ws" '
-        "500000 100 20 64"
-    ) in script
-    assert 'repair_dataset_partitions "silver/trade_print" 500000 100' in script
-    assert (
-        'compact_leaf_partitions_if_file_count_at_least "silver/trade_print" '
-        "500000 100 20 20"
-    ) in script
-    assert 'repair_dataset_partitions "silver/orderbook_snapshot" 500000 100' in script
-    assert (
-        'compact_leaf_partitions_if_file_count_at_least "silver/orderbook_snapshot" '
-        "500000 100 10 64"
-    ) in script
+        'compact_hot_ws_dataset "silver/orderbook_snapshot" 500000 100 64 10'
+        in script
+    )
     assert 'compact_if_file_count_at_least "${dataset}" 250000 100 10' in script
     assert 'compact_if_file_count_at_least "${dataset}" 250000 100 20' in script
     assert "cleanup_internal_compaction_dirs" in script
@@ -255,13 +248,16 @@ def test_web_export_relies_on_systemd_memory_limit_for_snapshot_packaging():
     assert "MemoryMax=5G" in unit
 
 
-def test_okx_ws_service_uses_unpartitioned_large_batches():
+def test_okx_ws_service_uses_unpartitioned_bounded_batches():
     unit = _unit("quant-lab-okx-ws.service")
 
     assert "QUANT_LAB_WS_APPEND_TARGET_ROWS=500000" in unit
     assert "QUANT_LAB_WS_APPEND_PARTITIONED=0" in unit
-    assert "--flush-interval-seconds 600" in unit
-    assert "--flush-max-messages 50000" in unit
+    assert "QUANT_LAB_APPEND_AUTO_COMPACT_FILES=0" in unit
+    assert "--flush-interval-seconds 60" in unit
+    assert "--flush-max-messages 10000" in unit
+    assert "Restart=always" in unit
+    assert "RuntimeMaxSec=2h" in unit
     for symbol in [
         "BTC-USDT",
         "ETH-USDT",
@@ -305,6 +301,6 @@ def test_manual_okx_ws_defaults_match_production_batching():
     cli = (ROOT / "src" / "quant_lab" / "cli.py").read_text(encoding="utf-8")
     readers = (ROOT / "src" / "quant_lab" / "web" / "readers.py").read_text(encoding="utf-8")
 
-    assert "] = 600.0" in cli
-    assert "] = 50_000" in cli
-    assert "--flush-interval-seconds 600 --flush-max-messages 50000" in readers
+    assert "] = 60.0" in cli
+    assert "] = 10_000" in cli
+    assert "--flush-interval-seconds 60 --flush-max-messages 10000" in readers

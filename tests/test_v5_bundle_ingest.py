@@ -464,7 +464,9 @@ def test_ingest_parses_quant_lab_usage_files(tmp_path):
     bnb_shadow = read_parquet_dataset(lake / "silver/v5_bnb_profit_lock_shadow").to_dicts()
     assert bnb_shadow[0]["symbol"] == "BNB-USDT"
     assert bnb_shadow[0]["best_shadow_exit_policy"] == "delayed_exit_12h"
-    bnb_attr = read_parquet_dataset(lake / "silver/v5_bnb_negative_expectancy_attribution").to_dicts()
+    bnb_attr = read_parquet_dataset(
+        lake / "silver/v5_bnb_negative_expectancy_attribution"
+    ).to_dicts()
     assert bnb_attr[0]["symbol"] == "BNB-USDT"
     assert bnb_attr[0]["min_hold_violation"] == "true"
     conflict = read_parquet_dataset(lake / "silver/v5_final_score_vs_alpha6_conflict").to_dicts()
@@ -472,7 +474,9 @@ def test_ingest_parses_quant_lab_usage_files(tmp_path):
     assert conflict[0]["missed_profit_flag"] == "true"
     bypass = read_parquet_dataset(lake / "silver/v5_bnb_strong_alpha6_bypass_shadow").to_dicts()
     assert bypass[0]["live_order_effect"] == "read_only_no_live_order"
-    generic_attr = read_parquet_dataset(lake / "silver/v5_negative_expectancy_attribution").to_dicts()
+    generic_attr = read_parquet_dataset(
+        lake / "silver/v5_negative_expectancy_attribution"
+    ).to_dicts()
     assert generic_attr[0]["would_unblock_if_adjusted"] == "true"
     negexp = read_parquet_dataset(lake / "silver/v5_negative_expectancy_consistency").to_dicts()
     assert negexp[0]["symbol"] == "BNB-USDT"

@@ -6,6 +6,7 @@ LAKE_ROOT="${QUANT_LAB_LAKE_ROOT:-/var/lib/quant-lab/lake}"
 COMPACT_DATASET_TIMEOUT_SECONDS="${COMPACT_DATASET_TIMEOUT_SECONDS:-180}"
 COMPACT_RUN_BUDGET_SECONDS="${COMPACT_RUN_BUDGET_SECONDS:-1500}"
 COMPACT_RAW_OKX_WS="${COMPACT_RAW_OKX_WS:-0}"
+COMPACT_HOT_WS_PARTITION_REPAIR="${COMPACT_HOT_WS_PARTITION_REPAIR:-0}"
 COMPACT_DIRECT_MAX_SOURCE_FILES="${COMPACT_DIRECT_MAX_SOURCE_FILES:-8}"
 COMPACT_DIRECT_MIN_SOURCE_FILES="${COMPACT_DIRECT_MIN_SOURCE_FILES:-64}"
 COMPACT_MAX_SOURCE_BATCH_BYTES="${COMPACT_MAX_SOURCE_BATCH_BYTES:-134217728}"
@@ -180,6 +181,59 @@ compact_if_file_count_at_least() {
   compact_dataset "${dataset}" "${target_rows}" "${batch_files}"
 }
 
+direct_source_parquet_file_count() {
+  local dataset="$1"
+  local dataset_path="${LAKE_ROOT}/${dataset}"
+  if [[ ! -d "${dataset_path}" ]]; then
+    echo 0
+    return
+  fi
+  find "${dataset_path}" -maxdepth 1 \
+    -type f -name '*.parquet' ! -name '.*' ! -name '*.tmp.parquet' \
+    ! -name 'compact_*' ! -name 'data.parquet' | wc -l
+}
+
+compact_direct_if_file_count_at_least() {
+  local dataset="$1"
+  local target_rows="$2"
+  local batch_files="$3"
+  local min_files="$4"
+  local file_count
+  local elapsed
+
+  file_count="$(direct_source_parquet_file_count "${dataset}")"
+  if (( file_count < min_files )); then
+    echo "SKIP_DIRECT_COMPACT dataset=${dataset} direct_source_files=${file_count} min_files=${min_files}"
+    return
+  fi
+  elapsed="$(( $(date +%s) - COMPACT_STARTED_AT ))"
+  if (( elapsed >= COMPACT_RUN_BUDGET_SECONDS )); then
+    echo "SKIP_DIRECT_COMPACT_BUDGET dataset=${dataset} elapsed_seconds=${elapsed}"
+    return
+  fi
+
+  compact_dataset_direct_only "${dataset}" "${target_rows}" "${batch_files}" 0
+}
+
+compact_hot_ws_dataset() {
+  local dataset="$1"
+  local target_rows="$2"
+  local partition_batch_files="$3"
+  local direct_min_files="$4"
+  local partition_min_files="$5"
+
+  if [[ "${COMPACT_HOT_WS_PARTITION_REPAIR}" == "1" ]]; then
+    repair_dataset_partitions "${dataset}" "${target_rows}" 100
+    compact_leaf_partitions_if_file_count_at_least \
+      "${dataset}" "${target_rows}" "${partition_batch_files}" "${partition_min_files}" "${direct_min_files}"
+    return
+  fi
+
+  echo "SKIP_HOT_WS_PARTITION_REPAIR dataset=${dataset} opt_in=COMPACT_HOT_WS_PARTITION_REPAIR"
+  compact_direct_if_file_count_at_least \
+    "${dataset}" "${target_rows}" "${COMPACT_DIRECT_MAX_SOURCE_FILES}" "${direct_min_files}"
+}
+
 compact_leaf_partitions_if_file_count_at_least() {
   local dataset="$1"
   local target_rows="$2"
@@ -235,21 +289,15 @@ cleanup_internal_compaction_dirs() {
 }
 
 if [[ "${COMPACT_RAW_OKX_WS}" == "1" ]]; then
-  # Raw websocket bronze is partitioned by day/channel/inst_id. Compact leaf
-  # partitions instead of the dataset root; root compaction can multiply files by
-  # writing one output per partition per source batch.
-  repair_dataset_partitions "bronze/okx_public_ws" 500000 100
-  compact_leaf_partitions_if_file_count_at_least "bronze/okx_public_ws" 500000 100 20 64
+  compact_hot_ws_dataset "bronze/okx_public_ws" 500000 100 64 20
 else
   echo "SKIP_COMPACT_RAW_OKX_WS dataset=bronze/okx_public_ws opt_in=COMPACT_RAW_OKX_WS"
 fi
-repair_dataset_partitions "silver/trade_print" 500000 100
-compact_leaf_partitions_if_file_count_at_least "silver/trade_print" 500000 100 20 20
+compact_hot_ws_dataset "silver/trade_print" 500000 100 20 20
 
 # Order book snapshots are denser than raw websocket and trade-print files.
-# Compact leaf partitions to avoid multiplying partition files across batches.
-repair_dataset_partitions "silver/orderbook_snapshot" 500000 100
-compact_leaf_partitions_if_file_count_at_least "silver/orderbook_snapshot" 500000 100 10 64
+# Compact only direct append files by default while the long-running collector is active.
+compact_hot_ws_dataset "silver/orderbook_snapshot" 500000 100 64 10
 
 for dataset in "${V5_TELEMETRY_DATASETS[@]}"; do
   compact_if_file_count_at_least "${dataset}" 250000 100 10

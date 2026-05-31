@@ -459,8 +459,8 @@ WEB_HEAVY_EXACT_ROW_COUNT_FILE_LIMIT = 64
 WEB_HEAVY_ROW_COUNT_SAMPLE_FILES = 32
 WEB_FULL_VALIDATION_FILE_LIMIT = 512
 WEB_RECENT_FILE_LIMITS = {
-    "trade_print": 96,
-    "orderbook_snapshot": 96,
+    "trade_print": 6,
+    "orderbook_snapshot": 6,
     "okx_public_ws": 384,
     "cost_bucket_daily": 384,
     "decision_audit": 384,

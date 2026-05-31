@@ -36,11 +36,14 @@ def test_bnb_swing_exit_policy_reviews_giveback_after_unrealized_profit(tmp_path
     assert row["max_unrealized_bps"] > 100
     assert row["profit_lock_50bps_exit"] > row["actual_exit_net_bps"]
     assert row["delayed_exit_12h_net_bps"] > row["actual_exit_net_bps"]
+    assert row["fixed_hold_12h_from_entry_net_bps"] == row["fixed_hold_12h_net_bps"]
+    assert row["delayed_exit_12h_from_actual_exit_net_bps"] == row["delayed_exit_12h_net_bps"]
     assert row["best_shadow_exit_policy"] == row["best_exit_policy"]
     assert row["best_exit_policy"] in {
         "profit_lock_50bps",
-        "fixed_hold_4h",
-        "delayed_exit_12h",
+        "fixed_hold_4h_from_entry",
+        "fixed_hold_12h_from_entry",
+        "delayed_exit_12h_from_actual_exit",
         "trailing_atr",
     }
     assert row["delta_vs_actual_bps"] > 0
@@ -94,7 +97,12 @@ def test_bnb_swing_exit_policy_reads_v5_profit_lock_shadow(tmp_path):
     assert row["symbol"] == "BNB-USDT"
     assert row["actual_exit_net_bps"] == pytest.approx(-120.22)
     assert row["delayed_exit_12h_net_bps"] == pytest.approx(29.28)
-    assert row["best_shadow_exit_policy"] == "delayed_exit_12h"
+    assert row["delayed_exit_12h_from_actual_exit_net_bps"] == pytest.approx(29.28)
+    assert row["best_shadow_exit_policy"] == "delayed_exit_12h_from_actual_exit"
+    consistency = read_parquet_dataset(
+        lake / "gold" / "bnb_exit_policy_v5_vs_quant_lab_consistency"
+    ).to_dicts()[0]
+    assert consistency["consistency_status"] == "V5_ONLY"
     summary = read_parquet_dataset(lake / "gold" / "bnb_swing_exit_policy_summary").to_dicts()[0]
     assert summary["sample_count"] == 1
     assert summary["decision"] == "RESEARCH_ONLY"
@@ -235,6 +243,8 @@ def test_bnb_swing_exit_policy_dedupes_shadow_and_trade_rows_for_latest_summary(
     assert row["source_entry_id"] == "46678654"
     assert row["duplicate_row_count"] == 2
     assert row["selected_for_summary"] is True
+    assert row["summary_eligible"] is True
+    assert row["v5_vs_quant_lab_consistency_status"] != "MISMATCH"
     assert row["max_unrealized_bps"] == pytest.approx(69.92, abs=0.2)
     assert row["max_unrealized_bps"] > 0
 
@@ -244,6 +254,93 @@ def test_bnb_swing_exit_policy_dedupes_shadow_and_trade_rows_for_latest_summary(
     assert "duplicate_row_count: 2" in markdown
     assert "max_unrealized_bps: 69." in markdown
     assert "max_unrealized_bps: -30" not in markdown
+
+
+def test_bnb_swing_exit_policy_excludes_v5_quant_lab_mismatch_from_summary(tmp_path):
+    lake = tmp_path / "lake"
+    entry_ts = datetime(2026, 5, 24, 6, tzinfo=UTC)
+    exit_ts = entry_ts + timedelta(hours=24, minutes=1)
+    write_parquet_dataset(
+        pl.DataFrame(
+            [
+                {
+                    "entry_ts": entry_ts.isoformat(),
+                    "symbol": "BNB/USDT",
+                    "entry_px": "657.9",
+                    "actual_exit_ts": exit_ts.isoformat(),
+                    "actual_exit_px": "651.3",
+                    "actual_exit_net_bps": "-120.22",
+                    "max_unrealized_bps": "69.9",
+                    "delayed_exit_12h": "29.28",
+                    "best_shadow_exit_policy": "delayed_exit_12h",
+                    "source_entry_id": "46678654",
+                }
+            ]
+        ),
+        lake / "silver" / "v5_bnb_profit_lock_shadow",
+    )
+    write_parquet_dataset(
+        pl.DataFrame(
+            [
+                {
+                    "run_id": "20260524_06",
+                    "ts_utc": entry_ts.isoformat(),
+                    "symbol": "BNB-USDT",
+                    "normalized_symbol": "BNB-USDT",
+                    "side": "buy",
+                    "action": "entry",
+                    "qty": "1",
+                    "price": "657.9",
+                    "strategy_id": "BNB_SWING_F3",
+                    "trade_id": "46678654",
+                },
+                {
+                    "run_id": "20260524_06",
+                    "ts_utc": exit_ts.isoformat(),
+                    "symbol": "BNB-USDT",
+                    "normalized_symbol": "BNB-USDT",
+                    "side": "sell",
+                    "action": "exit",
+                    "qty": "1",
+                    "price": "651.3",
+                    "strategy_id": "BNB_SWING_F3",
+                    "trade_id": "bnb-exit-46678654",
+                },
+            ]
+        ),
+        lake / "silver" / "v5_trade_event",
+    )
+    write_parquet_dataset(
+        pl.DataFrame(
+            [
+                _bar(entry_ts, close=657.9, high=658.0, low=657.0),
+                _bar(exit_ts, close=651.3, high=652.0, low=650.0),
+                _bar(exit_ts + timedelta(hours=12), close=653.0, high=653.5, low=652.0),
+            ]
+        ),
+        lake / "silver" / "market_bar",
+    )
+
+    result = build_and_publish_bnb_swing_exit_policy_review(lake, as_of_date="2026-05-25")
+
+    assert result.review_rows == 1
+    assert "bnb_exit_policy_v5_quant_lab_mismatch" in result.warnings
+    review = read_parquet_dataset(lake / "gold" / "bnb_swing_exit_policy_review").to_dicts()[0]
+    assert review["selected_for_summary"] is False
+    assert review["summary_eligible"] is False
+    assert review["v5_vs_quant_lab_consistency_status"] == "MISMATCH"
+    assert (
+        "delayed_exit_12h_from_actual_exit_net_bps_mismatch"
+        in review["v5_vs_quant_lab_mismatch_reason"]
+    )
+    consistency = read_parquet_dataset(
+        lake / "gold" / "bnb_exit_policy_v5_vs_quant_lab_consistency"
+    ).to_dicts()[0]
+    assert consistency["consistency_status"] == "MISMATCH"
+    assert consistency["selected_for_summary_allowed"] is False
+    summary = read_parquet_dataset(lake / "gold" / "bnb_swing_exit_policy_summary").to_dicts()[0]
+    assert summary["sample_count"] == 0
+    assert "bnb_exit_policy_v5_quant_lab_mismatch_excluded" in summary["decision_reasons"]
 
 
 def test_daily_export_contains_bnb_swing_exit_policy_review(tmp_path):
@@ -264,6 +361,7 @@ def test_daily_export_contains_bnb_swing_exit_policy_review(tmp_path):
     with zipfile.ZipFile(result.zip_path) as archive:
         names = set(archive.namelist())
         assert "reports/bnb_swing_exit_policy_review.csv" in names
+        assert "reports/bnb_exit_policy_v5_vs_quant_lab_consistency.csv" in names
         assert "reports/bnb_swing_exit_policy_summary.md" in names
         rows = list(
             csv.DictReader(
@@ -273,10 +371,21 @@ def test_daily_export_contains_bnb_swing_exit_policy_review(tmp_path):
             )
         )
         summary = archive.read("reports/bnb_swing_exit_policy_summary.md").decode("utf-8")
+        consistency_rows = list(
+            csv.DictReader(
+                io.StringIO(
+                    archive.read(
+                        "reports/bnb_exit_policy_v5_vs_quant_lab_consistency.csv"
+                    ).decode("utf-8")
+                )
+            )
+        )
 
     assert len(rows) == 1
+    assert len(consistency_rows) == 1
     assert rows[0]["symbol"] == "BNB-USDT"
     assert float(rows[0]["actual_exit_net_bps"]) == pytest.approx(-120.0, abs=0.5)
+    assert "delayed_exit_12h_from_actual_exit_net_bps" in rows[0]
     assert "BNB Swing Exit Policy Review" in summary
     assert "read-only research" in summary
 

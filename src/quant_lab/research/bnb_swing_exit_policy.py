@@ -18,11 +18,16 @@ from quant_lab.strategy_telemetry.sanitize import safe_json_dumps
 from quant_lab.symbols import normalize_symbol
 
 SOURCE_NAME = "quant_lab.bnb_swing_exit_policy_review"
-SCHEMA_VERSION = "bnb_swing_exit_policy_review.v0.1"
-SUMMARY_SCHEMA_VERSION = "bnb_swing_exit_policy_summary.v0.2"
+SCHEMA_VERSION = "bnb_swing_exit_policy_review.v0.2"
+SUMMARY_SCHEMA_VERSION = "bnb_swing_exit_policy_summary.v0.3"
+CONSISTENCY_SCHEMA_VERSION = "bnb_exit_policy_v5_vs_quant_lab_consistency.v0.1"
 DEFAULT_ROUNDTRIP_COST_BPS = 30.0
 HORIZONS = (4, 8, 12, 24)
+FIXED_HOLD_FROM_ENTRY_HOURS = (6, 12, 24)
 DELAYED_EXIT_HOURS = (6, 12, 24)
+V5_PRICE_BEFORE_TOLERANCE = timedelta(minutes=5)
+V5_PRICE_AFTER_TOLERANCE = timedelta(hours=2)
+CONSISTENCY_TOLERANCE_BPS = 0.05
 PROFIT_LOCK_BPS = (30, 50)
 ATR_LOOKBACK_BARS = 14
 ATR_MULTIPLIER = 2.0
@@ -35,6 +40,9 @@ V5_BNB_PROFIT_LOCK_SHADOW_DATASET = Path("silver") / "v5_bnb_profit_lock_shadow"
 MARKET_BAR_DATASET = Path("silver") / "market_bar"
 BNB_SWING_EXIT_POLICY_REVIEW_DATASET = Path("gold") / "bnb_swing_exit_policy_review"
 BNB_SWING_EXIT_POLICY_SUMMARY_DATASET = Path("gold") / "bnb_swing_exit_policy_summary"
+BNB_EXIT_POLICY_V5_VS_QUANT_LAB_CONSISTENCY_DATASET = (
+    Path("gold") / "bnb_exit_policy_v5_vs_quant_lab_consistency"
+)
 
 REVIEW_SCHEMA: dict[str, Any] = {
     "contract_version": pl.Utf8,
@@ -55,12 +63,18 @@ REVIEW_SCHEMA: dict[str, Any] = {
     "actual_exit_ts": pl.Datetime(time_zone="UTC"),
     "actual_exit_px": pl.Float64,
     "actual_exit_net_bps": pl.Float64,
+    "fixed_hold_6h_from_entry_net_bps": pl.Float64,
+    "fixed_hold_12h_from_entry_net_bps": pl.Float64,
+    "fixed_hold_24h_from_entry_net_bps": pl.Float64,
     "fixed_hold_4h_net_bps": pl.Float64,
     "fixed_hold_8h_net_bps": pl.Float64,
     "fixed_hold_12h_net_bps": pl.Float64,
     "fixed_hold_24h_net_bps": pl.Float64,
     "profit_lock_30bps_exit": pl.Float64,
     "profit_lock_50bps_exit": pl.Float64,
+    "delayed_exit_6h_from_actual_exit_net_bps": pl.Float64,
+    "delayed_exit_12h_from_actual_exit_net_bps": pl.Float64,
+    "delayed_exit_24h_from_actual_exit_net_bps": pl.Float64,
     "delayed_exit_6h_net_bps": pl.Float64,
     "delayed_exit_12h_net_bps": pl.Float64,
     "delayed_exit_24h_net_bps": pl.Float64,
@@ -76,6 +90,55 @@ REVIEW_SCHEMA: dict[str, Any] = {
     "duplicate_group_key": pl.Utf8,
     "duplicate_row_count": pl.Int64,
     "selected_for_summary": pl.Boolean,
+    "summary_eligible": pl.Boolean,
+    "review_row_source": pl.Utf8,
+    "v5_vs_quant_lab_consistency_status": pl.Utf8,
+    "v5_vs_quant_lab_mismatch_reason": pl.Utf8,
+    "v5_delayed_exit_6h_from_actual_exit_net_bps": pl.Float64,
+    "quant_lab_delayed_exit_6h_from_actual_exit_net_bps": pl.Float64,
+    "diff_delayed_exit_6h_from_actual_exit_net_bps": pl.Float64,
+    "v5_delayed_exit_12h_from_actual_exit_net_bps": pl.Float64,
+    "quant_lab_delayed_exit_12h_from_actual_exit_net_bps": pl.Float64,
+    "diff_delayed_exit_12h_from_actual_exit_net_bps": pl.Float64,
+    "v5_delayed_exit_24h_from_actual_exit_net_bps": pl.Float64,
+    "quant_lab_delayed_exit_24h_from_actual_exit_net_bps": pl.Float64,
+    "diff_delayed_exit_24h_from_actual_exit_net_bps": pl.Float64,
+    "created_at": pl.Datetime(time_zone="UTC"),
+    "source": pl.Utf8,
+}
+
+CONSISTENCY_SCHEMA: dict[str, Any] = {
+    "contract_version": pl.Utf8,
+    "schema_version": pl.Utf8,
+    "quant_lab_git_commit": pl.Utf8,
+    "source_version": pl.Utf8,
+    "generated_at_utc": pl.Datetime(time_zone="UTC"),
+    "generated_from_bundle_id": pl.Utf8,
+    "as_of_date": pl.Utf8,
+    "strategy_candidate": pl.Utf8,
+    "symbol": pl.Utf8,
+    "run_id": pl.Utf8,
+    "source_entry_id": pl.Utf8,
+    "entry_ts": pl.Datetime(time_zone="UTC"),
+    "actual_exit_ts": pl.Datetime(time_zone="UTC"),
+    "duplicate_group_key": pl.Utf8,
+    "duplicate_row_count": pl.Int64,
+    "v5_shadow_row_present": pl.Boolean,
+    "quant_lab_recomputed_row_present": pl.Boolean,
+    "consistency_status": pl.Utf8,
+    "mismatch_reason": pl.Utf8,
+    "selected_for_summary_allowed": pl.Boolean,
+    "compared_field_count": pl.Int64,
+    "mismatch_field_count": pl.Int64,
+    "v5_delayed_exit_6h_from_actual_exit_net_bps": pl.Float64,
+    "quant_lab_delayed_exit_6h_from_actual_exit_net_bps": pl.Float64,
+    "diff_delayed_exit_6h_from_actual_exit_net_bps": pl.Float64,
+    "v5_delayed_exit_12h_from_actual_exit_net_bps": pl.Float64,
+    "quant_lab_delayed_exit_12h_from_actual_exit_net_bps": pl.Float64,
+    "diff_delayed_exit_12h_from_actual_exit_net_bps": pl.Float64,
+    "v5_delayed_exit_24h_from_actual_exit_net_bps": pl.Float64,
+    "quant_lab_delayed_exit_24h_from_actual_exit_net_bps": pl.Float64,
+    "diff_delayed_exit_24h_from_actual_exit_net_bps": pl.Float64,
     "created_at": pl.Datetime(time_zone="UTC"),
     "source": pl.Utf8,
 }
@@ -120,6 +183,7 @@ class BnbSwingExitPolicyReviewResult(BaseModel):
     as_of_date: str
     review_rows: int = Field(ge=0)
     summary_rows: int = Field(ge=0)
+    consistency_rows: int = Field(ge=0)
     status: str
     warnings: list[str] = Field(default_factory=list)
 
@@ -153,8 +217,13 @@ def build_and_publish_bnb_swing_exit_policy_review(
         market_bars=market,
         ctx=ctx,
     )
+    consistency = build_bnb_exit_policy_v5_vs_quant_lab_consistency(review, ctx=ctx)
     summary = build_bnb_swing_exit_policy_summary(review, ctx=ctx)
     write_parquet_dataset(review, root / BNB_SWING_EXIT_POLICY_REVIEW_DATASET)
+    write_parquet_dataset(
+        consistency,
+        root / BNB_EXIT_POLICY_V5_VS_QUANT_LAB_CONSISTENCY_DATASET,
+    )
     write_parquet_dataset(summary, root / BNB_SWING_EXIT_POLICY_SUMMARY_DATASET)
     status = (
         str(summary["status"][0])
@@ -162,10 +231,17 @@ def build_and_publish_bnb_swing_exit_policy_review(
         else "RESEARCH_ONLY"
     )
     warnings = [] if review.height else ["bnb_swing_trade_missing"]
+    if (
+        not consistency.is_empty()
+        and "consistency_status" in consistency.columns
+        and "MISMATCH" in set(consistency["consistency_status"].to_list())
+    ):
+        warnings.append("bnb_exit_policy_v5_quant_lab_mismatch")
     return BnbSwingExitPolicyReviewResult(
         as_of_date=ctx.as_of_date.isoformat(),
         review_rows=review.height,
         summary_rows=summary.height,
+        consistency_rows=consistency.height,
         status=status,
         warnings=warnings,
     )
@@ -254,6 +330,16 @@ def build_bnb_swing_exit_policy_review(
             )
             for hours in DELAYED_EXIT_HOURS
         }
+        fixed_hold_from_entry = {
+            hours: _fixed_hold_net_bps(
+                bars.get("BNB-USDT", []),
+                entry_ts=entry_ts,
+                entry_px=entry_px,
+                horizon_hours=hours,
+                cost_bps=cost_bps,
+            )
+            for hours in FIXED_HOLD_FROM_ENTRY_HOURS
+        }
         trailing_atr = _trailing_atr_exit_net_bps(
             bars.get("BNB-USDT", []),
             entry_ts=entry_ts,
@@ -263,10 +349,20 @@ def build_bnb_swing_exit_policy_review(
         )
         alternatives = {
             "actual_exit": actual_net,
-            **{f"fixed_hold_{horizon}h": value for horizon, value in fixed_hold.items()},
+            **{
+                f"fixed_hold_{horizon}h_from_entry": value
+                for horizon, value in fixed_hold.items()
+            },
+            **{
+                f"fixed_hold_{hours}h_from_entry": value
+                for hours, value in fixed_hold_from_entry.items()
+            },
             "profit_lock_30bps": profit_lock[30],
             "profit_lock_50bps": profit_lock[50],
-            **{f"delayed_exit_{hours}h": value for hours, value in delayed_exit.items()},
+            **{
+                f"delayed_exit_{hours}h_from_actual_exit": value
+                for hours, value in delayed_exit.items()
+            },
             "trailing_atr": trailing_atr,
         }
         best_policy, best_value = _best_policy(alternatives)
@@ -300,12 +396,18 @@ def build_bnb_swing_exit_policy_review(
                 "actual_exit_ts": actual_exit_ts,
                 "actual_exit_px": actual_exit_px,
                 "actual_exit_net_bps": actual_net,
+                "fixed_hold_6h_from_entry_net_bps": fixed_hold_from_entry[6],
+                "fixed_hold_12h_from_entry_net_bps": fixed_hold_from_entry[12],
+                "fixed_hold_24h_from_entry_net_bps": fixed_hold_from_entry[24],
                 "fixed_hold_4h_net_bps": fixed_hold[4],
                 "fixed_hold_8h_net_bps": fixed_hold[8],
                 "fixed_hold_12h_net_bps": fixed_hold[12],
                 "fixed_hold_24h_net_bps": fixed_hold[24],
                 "profit_lock_30bps_exit": profit_lock[30],
                 "profit_lock_50bps_exit": profit_lock[50],
+                "delayed_exit_6h_from_actual_exit_net_bps": delayed_exit[6],
+                "delayed_exit_12h_from_actual_exit_net_bps": delayed_exit[12],
+                "delayed_exit_24h_from_actual_exit_net_bps": delayed_exit[24],
                 "delayed_exit_6h_net_bps": delayed_exit[6],
                 "delayed_exit_12h_net_bps": delayed_exit[12],
                 "delayed_exit_24h_net_bps": delayed_exit[24],
@@ -318,6 +420,7 @@ def build_bnb_swing_exit_policy_review(
                 "selected_roundtrip_cost_bps": cost_bps,
                 "diagnosis": diagnosis,
                 "status": "REVIEW",
+                "review_row_source": "quant_lab_recomputed",
                 "created_at": ctx.generated_at,
                 "source": SOURCE_NAME,
             }
@@ -336,7 +439,10 @@ def build_bnb_swing_exit_policy_summary(
     sample_count = len(rows)
     reasons = ["read_only_research_no_live_exit_change"]
     if not rows:
-        reasons.append("no_bnb_swing_roundtrip")
+        if not review.is_empty():
+            reasons.append("bnb_exit_policy_v5_quant_lab_mismatch_excluded")
+        else:
+            reasons.append("no_bnb_swing_roundtrip")
     profit_better = [
         row
         for row in rows
@@ -438,6 +544,91 @@ def build_bnb_swing_exit_policy_summary(
     )
 
 
+def build_bnb_exit_policy_v5_vs_quant_lab_consistency(
+    review: pl.DataFrame,
+    *,
+    ctx: _Context,
+) -> pl.DataFrame:
+    if review.is_empty():
+        return pl.DataFrame(schema=CONSISTENCY_SCHEMA)
+    rows: list[dict[str, Any]] = []
+    for row in review.to_dicts():
+        compared = 0
+        mismatches = 0
+        for hours in DELAYED_EXIT_HOURS:
+            diff = _float_or_none(
+                row.get(f"diff_delayed_exit_{hours}h_from_actual_exit_net_bps")
+            )
+            if diff is None:
+                continue
+            compared += 1
+            if abs(diff) > CONSISTENCY_TOLERANCE_BPS:
+                mismatches += 1
+        rows.append(
+            _common(ctx, schema_version=CONSISTENCY_SCHEMA_VERSION)
+            | {
+                "as_of_date": str(row.get("as_of_date") or ctx.as_of_date.isoformat()),
+                "strategy_candidate": str(
+                    row.get("strategy_candidate") or "v5.bnb_swing_exit_policy_review"
+                ),
+                "symbol": str(row.get("symbol") or "BNB-USDT"),
+                "run_id": str(row.get("run_id") or ""),
+                "source_entry_id": str(row.get("source_entry_id") or ""),
+                "entry_ts": _parse_datetime(row.get("entry_ts")),
+                "actual_exit_ts": _parse_datetime(row.get("actual_exit_ts")),
+                "duplicate_group_key": str(row.get("duplicate_group_key") or ""),
+                "duplicate_row_count": int(_float_or_none(row.get("duplicate_row_count")) or 0),
+                "v5_shadow_row_present": _observable(
+                    row.get("v5_delayed_exit_6h_from_actual_exit_net_bps")
+                )
+                or _observable(row.get("v5_delayed_exit_12h_from_actual_exit_net_bps"))
+                or _observable(row.get("v5_delayed_exit_24h_from_actual_exit_net_bps")),
+                "quant_lab_recomputed_row_present": _observable(
+                    row.get("quant_lab_delayed_exit_6h_from_actual_exit_net_bps")
+                )
+                or _observable(row.get("quant_lab_delayed_exit_12h_from_actual_exit_net_bps"))
+                or _observable(row.get("quant_lab_delayed_exit_24h_from_actual_exit_net_bps")),
+                "consistency_status": str(
+                    row.get("v5_vs_quant_lab_consistency_status") or "NOT_APPLICABLE"
+                ),
+                "mismatch_reason": str(row.get("v5_vs_quant_lab_mismatch_reason") or ""),
+                "selected_for_summary_allowed": bool(row.get("summary_eligible")),
+                "compared_field_count": compared,
+                "mismatch_field_count": mismatches,
+                "v5_delayed_exit_6h_from_actual_exit_net_bps": _float_or_none(
+                    row.get("v5_delayed_exit_6h_from_actual_exit_net_bps")
+                ),
+                "quant_lab_delayed_exit_6h_from_actual_exit_net_bps": _float_or_none(
+                    row.get("quant_lab_delayed_exit_6h_from_actual_exit_net_bps")
+                ),
+                "diff_delayed_exit_6h_from_actual_exit_net_bps": _float_or_none(
+                    row.get("diff_delayed_exit_6h_from_actual_exit_net_bps")
+                ),
+                "v5_delayed_exit_12h_from_actual_exit_net_bps": _float_or_none(
+                    row.get("v5_delayed_exit_12h_from_actual_exit_net_bps")
+                ),
+                "quant_lab_delayed_exit_12h_from_actual_exit_net_bps": _float_or_none(
+                    row.get("quant_lab_delayed_exit_12h_from_actual_exit_net_bps")
+                ),
+                "diff_delayed_exit_12h_from_actual_exit_net_bps": _float_or_none(
+                    row.get("diff_delayed_exit_12h_from_actual_exit_net_bps")
+                ),
+                "v5_delayed_exit_24h_from_actual_exit_net_bps": _float_or_none(
+                    row.get("v5_delayed_exit_24h_from_actual_exit_net_bps")
+                ),
+                "quant_lab_delayed_exit_24h_from_actual_exit_net_bps": _float_or_none(
+                    row.get("quant_lab_delayed_exit_24h_from_actual_exit_net_bps")
+                ),
+                "diff_delayed_exit_24h_from_actual_exit_net_bps": _float_or_none(
+                    row.get("diff_delayed_exit_24h_from_actual_exit_net_bps")
+                ),
+                "created_at": ctx.generated_at,
+                "source": SOURCE_NAME,
+            }
+        )
+    return pl.DataFrame(rows, schema=CONSISTENCY_SCHEMA, orient="row")
+
+
 def bnb_swing_exit_policy_summary_md(summary: pl.DataFrame, review: pl.DataFrame) -> str:
     if summary.is_empty():
         return (
@@ -472,8 +663,10 @@ def bnb_swing_exit_policy_summary_md(summary: pl.DataFrame, review: pl.DataFrame
         f"- best_shadow_exit_policy_mix: {row.get('best_shadow_exit_policy_mix')}",
         f"- decision_reasons: {row.get('decision_reasons')}",
     ]
+    latest: dict[str, Any] = {}
     if not review.is_empty():
         latest = _latest_selected_review_row(review)
+    if latest:
         lines.extend(
             [
                 "",
@@ -486,7 +679,12 @@ def bnb_swing_exit_policy_summary_md(summary: pl.DataFrame, review: pl.DataFrame
                 f"- source_entry_id: {latest.get('source_entry_id')}",
                 f"- duplicate_group_key: {latest.get('duplicate_group_key')}",
                 f"- duplicate_row_count: {latest.get('duplicate_row_count')}",
-                f"- delayed_exit_12h_net_bps: {_fmt(latest.get('delayed_exit_12h_net_bps'))}",
+                f"- delayed_exit_12h_from_actual_exit_net_bps: "
+                f"{_fmt(latest.get('delayed_exit_12h_from_actual_exit_net_bps'))}",
+                f"- v5_vs_quant_lab_consistency_status: "
+                f"{latest.get('v5_vs_quant_lab_consistency_status')}",
+                f"- v5_vs_quant_lab_mismatch_reason: "
+                f"{latest.get('v5_vs_quant_lab_mismatch_reason')}",
                 f"- delta_vs_actual_bps: {_fmt(latest.get('delta_vs_actual_bps'))}",
                 f"- diagnosis: {latest.get('diagnosis')}",
             ]
@@ -507,6 +705,8 @@ def _dedupe_review_rows(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
     selected: list[dict[str, Any]] = []
     for key in order:
         candidates = grouped[key]
+        consistency = _consistency_for_duplicate_group(candidates)
+        summary_eligible = consistency["v5_vs_quant_lab_consistency_status"] != "MISMATCH"
         best = max(
             enumerate(candidates),
             key=lambda item: (_review_completeness_score(item[1]), item[0]),
@@ -516,8 +716,10 @@ def _dedupe_review_rows(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
             | {
                 "duplicate_group_key": key,
                 "duplicate_row_count": len(candidates),
-                "selected_for_summary": True,
+                "selected_for_summary": summary_eligible,
+                "summary_eligible": summary_eligible,
             }
+            | consistency
         )
     return selected
 
@@ -527,8 +729,7 @@ def _selected_review_rows(review: pl.DataFrame) -> list[dict[str, Any]]:
         return []
     rows = review.to_dicts()
     if "selected_for_summary" in review.columns:
-        selected = [row for row in rows if bool(row.get("selected_for_summary"))]
-        return selected or rows
+        return [row for row in rows if bool(row.get("selected_for_summary"))]
     return _dedupe_review_rows(rows)
 
 
@@ -566,6 +767,52 @@ def _review_completeness_score(row: dict[str, Any]) -> tuple[int, int, int, int,
         1 if _reasonable_bps(max_unrealized) else 0,
         max_unrealized if _reasonable_bps(max_unrealized) else float("-inf"),
     )
+
+
+def _consistency_for_duplicate_group(candidates: list[dict[str, Any]]) -> dict[str, Any]:
+    v5_row = _best_source_row(candidates, "v5_profit_lock_shadow")
+    quant_row = _best_source_row(candidates, "quant_lab_recomputed")
+    result: dict[str, Any] = {
+        "v5_vs_quant_lab_consistency_status": "NOT_APPLICABLE",
+        "v5_vs_quant_lab_mismatch_reason": "",
+    }
+    mismatch_reasons: list[str] = []
+    mismatches = 0
+    for hours in DELAYED_EXIT_HOURS:
+        field = f"delayed_exit_{hours}h_from_actual_exit_net_bps"
+        v5_value = _float_or_none(v5_row.get(field) if v5_row else None)
+        quant_value = _float_or_none(quant_row.get(field) if quant_row else None)
+        diff = (
+            quant_value - v5_value
+            if quant_value is not None and v5_value is not None
+            else None
+        )
+        result[f"v5_delayed_exit_{hours}h_from_actual_exit_net_bps"] = v5_value
+        result[f"quant_lab_delayed_exit_{hours}h_from_actual_exit_net_bps"] = quant_value
+        result[f"diff_delayed_exit_{hours}h_from_actual_exit_net_bps"] = diff
+        if diff is None:
+            continue
+        if abs(diff) > CONSISTENCY_TOLERANCE_BPS:
+            mismatches += 1
+            mismatch_reasons.append(f"{field}_mismatch")
+    if v5_row and quant_row:
+        status = "MISMATCH" if mismatches else "MATCH"
+    elif v5_row:
+        status = "V5_ONLY"
+    elif quant_row:
+        status = "QUANT_LAB_ONLY"
+    else:
+        status = "NOT_APPLICABLE"
+    result["v5_vs_quant_lab_consistency_status"] = status
+    result["v5_vs_quant_lab_mismatch_reason"] = ";".join(mismatch_reasons)
+    return result
+
+
+def _best_source_row(candidates: list[dict[str, Any]], source: str) -> dict[str, Any] | None:
+    rows = [row for row in candidates if str(row.get("review_row_source") or "") == source]
+    if not rows:
+        return None
+    return max(enumerate(rows), key=lambda item: (_review_completeness_score(item[1]), item[0]))[1]
 
 
 def _reasonable_bps(value: float | None) -> bool:
@@ -630,12 +877,23 @@ def _review_row_from_profit_lock_shadow(
         hours: _float_or_none(
             _field(
                 row,
+                f"delayed_exit_{hours}h_from_actual_exit_net_bps",
                 f"delayed_exit_{hours}h",
                 f"delayed_exit_{hours}h_net_bps",
                 f"delayed_exit_{hours}h_bps",
             )
         )
         for hours in DELAYED_EXIT_HOURS
+    }
+    fixed_hold_from_entry = {
+        hours: _float_or_none(
+            _field(
+                row,
+                f"fixed_hold_{hours}h_from_entry_net_bps",
+                f"fixed_hold_{hours}h_net_bps",
+            )
+        )
+        for hours in FIXED_HOLD_FROM_ENTRY_HOURS
     }
     profit_lock = {
         bps: _float_or_none(
@@ -648,12 +906,19 @@ def _review_row_from_profit_lock_shadow(
         "actual_exit": actual_net,
         "profit_lock_30bps": profit_lock[30],
         "profit_lock_50bps": profit_lock[50],
-        **{f"delayed_exit_{hours}h": value for hours, value in delayed.items()},
+        **{
+            f"fixed_hold_{hours}h_from_entry": value
+            for hours, value in fixed_hold_from_entry.items()
+        },
+        **{
+            f"delayed_exit_{hours}h_from_actual_exit": value
+            for hours, value in delayed.items()
+        },
         "trailing_atr": trailing_atr,
     }
-    best_policy = str(
-        _field(row, "best_shadow_exit_policy", "best_exit_policy") or ""
-    ).strip()
+    best_policy = _normalize_exit_policy_name(
+        str(_field(row, "best_shadow_exit_policy", "best_exit_policy") or "").strip()
+    )
     best_value = _float_or_none(_field(row, "best_exit_net_bps", "best_shadow_exit_net_bps"))
     if not best_policy or best_value is None:
         best_policy, best_value = _best_policy(alternatives)
@@ -682,12 +947,18 @@ def _review_row_from_profit_lock_shadow(
         "actual_exit_ts": actual_exit_ts,
         "actual_exit_px": actual_exit_px,
         "actual_exit_net_bps": actual_net,
+        "fixed_hold_6h_from_entry_net_bps": fixed_hold_from_entry[6],
+        "fixed_hold_12h_from_entry_net_bps": fixed_hold_from_entry[12],
+        "fixed_hold_24h_from_entry_net_bps": fixed_hold_from_entry[24],
         "fixed_hold_4h_net_bps": _float_or_none(_field(row, "fixed_hold_4h_net_bps")),
         "fixed_hold_8h_net_bps": _float_or_none(_field(row, "fixed_hold_8h_net_bps")),
-        "fixed_hold_12h_net_bps": _float_or_none(_field(row, "fixed_hold_12h_net_bps")),
-        "fixed_hold_24h_net_bps": _float_or_none(_field(row, "fixed_hold_24h_net_bps")),
+        "fixed_hold_12h_net_bps": fixed_hold_from_entry[12],
+        "fixed_hold_24h_net_bps": fixed_hold_from_entry[24],
         "profit_lock_30bps_exit": profit_lock[30],
         "profit_lock_50bps_exit": profit_lock[50],
+        "delayed_exit_6h_from_actual_exit_net_bps": delayed[6],
+        "delayed_exit_12h_from_actual_exit_net_bps": delayed[12],
+        "delayed_exit_24h_from_actual_exit_net_bps": delayed[24],
         "delayed_exit_6h_net_bps": delayed[6],
         "delayed_exit_12h_net_bps": delayed[12],
         "delayed_exit_24h_net_bps": delayed[24],
@@ -703,6 +974,7 @@ def _review_row_from_profit_lock_shadow(
         or DEFAULT_ROUNDTRIP_COST_BPS,
         "diagnosis": diagnosis,
         "status": "REVIEW",
+        "review_row_source": "v5_profit_lock_shadow",
         "created_at": ctx.generated_at,
         "source": SOURCE_NAME,
     }
@@ -903,6 +1175,19 @@ def _best_policy(alternatives: dict[str, float | None]) -> tuple[str, float | No
     return max(observed.items(), key=lambda item: item[1])
 
 
+def _normalize_exit_policy_name(name: str) -> str:
+    text = str(name or "").strip()
+    if not text:
+        return ""
+    if text.startswith("delayed_exit_") and text.endswith("h"):
+        return f"{text}_from_actual_exit"
+    if text.startswith("fixed_hold_") and text.endswith("h"):
+        return f"{text}_from_entry"
+    if text.startswith("profit_lock_") and text.endswith("bps_exit"):
+        return text.removesuffix("_exit")
+    return text
+
+
 def _diagnosis(
     *,
     actual_exit_net_bps: float | None,
@@ -952,10 +1237,31 @@ def _market_bar_index(market_bars: pl.DataFrame) -> dict[str, list[dict[str, Any
 
 
 def _market_close_at_or_after(rows: list[dict[str, Any]], ts: datetime) -> float | None:
+    return _market_close_near_v5_target(rows, ts)
+
+
+def _market_close_near_v5_target(rows: list[dict[str, Any]], ts: datetime) -> float | None:
+    candidates: list[tuple[float, int, datetime, float]] = []
+    lower = ts - V5_PRICE_BEFORE_TOLERANCE
+    upper = ts + V5_PRICE_AFTER_TOLERANCE
     for row in rows:
-        if row["ts"] >= ts:
-            return _float_or_none(row.get("close"))
-    return None
+        row_ts = row["ts"]
+        if row_ts < lower or row_ts > upper:
+            continue
+        close = _float_or_none(row.get("close"))
+        if close is None:
+            continue
+        candidates.append(
+            (
+                abs((row_ts - ts).total_seconds()),
+                0 if row_ts >= ts else 1,
+                row_ts,
+                close,
+            )
+        )
+    if not candidates:
+        return None
+    return min(candidates)[3]
 
 
 def _average_range(rows: list[dict[str, Any]]) -> float | None:

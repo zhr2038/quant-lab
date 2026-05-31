@@ -76,6 +76,8 @@ DATASET_PATHS = {
     "btc_probe_exit_policy_review": Path("gold") / "btc_probe_exit_policy_review",
     "btc_probe_exit_policy_summary": Path("gold") / "btc_probe_exit_policy_summary",
     "bnb_swing_exit_policy_review": Path("gold") / "bnb_swing_exit_policy_review",
+    "bnb_exit_policy_v5_vs_quant_lab_consistency": Path("gold")
+    / "bnb_exit_policy_v5_vs_quant_lab_consistency",
     "bnb_swing_exit_policy_summary": Path("gold") / "bnb_swing_exit_policy_summary",
     "exit_policy_review_sample": Path("gold") / "exit_policy_review_sample",
     "exit_policy_review_summary": Path("gold") / "exit_policy_review_summary",
@@ -152,6 +154,7 @@ ENTRY_QUALITY_DATASETS = {
     "btc_probe_exit_policy_review",
     "btc_probe_exit_policy_summary",
     "bnb_swing_exit_policy_review",
+    "bnb_exit_policy_v5_vs_quant_lab_consistency",
     "bnb_swing_exit_policy_summary",
     "exit_policy_review_sample",
     "exit_policy_review_summary",
@@ -189,6 +192,10 @@ RESEARCH_DIAGNOSTIC_DATASET_KEYS: dict[str, tuple[str, ...]] = {
         "v5.btc_strict_probe_exit_policy_review",
     ),
     "bnb_swing_exit_policy_review": (
+        "BNB_SWING_EXIT_POLICY_REVIEW",
+        "v5.bnb_swing_exit_policy_review",
+    ),
+    "bnb_exit_policy_v5_vs_quant_lab_consistency": (
         "BNB_SWING_EXIT_POLICY_REVIEW",
         "v5.bnb_swing_exit_policy_review",
     ),
@@ -293,6 +300,11 @@ DATASET_TIMESTAMP_COLUMNS: dict[str, tuple[str, ...]] = {
     "btc_probe_exit_policy_review": ("generated_at_utc", "entry_ts", "as_of_date"),
     "btc_probe_exit_policy_summary": ("generated_at_utc", "as_of_date"),
     "bnb_swing_exit_policy_review": ("generated_at_utc", "entry_ts", "as_of_date"),
+    "bnb_exit_policy_v5_vs_quant_lab_consistency": (
+        "generated_at_utc",
+        "entry_ts",
+        "as_of_date",
+    ),
     "bnb_swing_exit_policy_summary": ("generated_at_utc", "as_of_date"),
     "exit_policy_review_sample": ("generated_at", "entry_ts", "as_of_date"),
     "exit_policy_review_summary": ("generated_at", "as_of_date"),

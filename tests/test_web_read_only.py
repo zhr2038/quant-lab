@@ -886,6 +886,43 @@ def test_market_regime_summary_samples_heavy_market_datasets(tmp_path, monkeypat
     assert not summary["trade_activity"].is_empty()
 
 
+def test_market_regime_summary_uses_lazy_aggregation_for_heavy_streams(tmp_path, monkeypatch):
+    lake_root = _fixture_lake(tmp_path)
+    start = datetime(2026, 5, 10, tzinfo=UTC)
+    write_parquet_dataset(
+        pl.DataFrame(
+            [
+                {
+                    "symbol": "BTC-USDT",
+                    "channel": "books5",
+                    "ts": start,
+                    "asks_json": '[["101", "1"]]',
+                    "bids_json": '[["99", "1"]]',
+                }
+            ]
+        ),
+        lake_root / "silver" / "orderbook_snapshot",
+    )
+    original = readers.read_recent_dataset_with_warning
+
+    def guarded_read_recent_dataset_with_warning(lake_root_arg, dataset_name, **kwargs):
+        if dataset_name in {"trade_print", "orderbook_snapshot"}:
+            raise AssertionError(f"{dataset_name} should be lazily aggregated for market status")
+        return original(lake_root_arg, dataset_name, **kwargs)
+
+    monkeypatch.setattr(
+        readers,
+        "read_recent_dataset_with_warning",
+        guarded_read_recent_dataset_with_warning,
+    )
+
+    summary = readers.market_regime_summary(lake_root)
+
+    assert not summary["regimes"].is_empty()
+    assert not summary["spread_bps"].is_empty()
+    assert not summary["trade_activity"].is_empty()
+
+
 def test_recent_heavy_dataset_read_uses_latest_file_window(tmp_path, monkeypatch):
     lake_root = tmp_path / "lake"
     dataset_path = lake_root / "silver" / "trade_print"

@@ -459,8 +459,8 @@ WEB_HEAVY_EXACT_ROW_COUNT_FILE_LIMIT = 64
 WEB_HEAVY_ROW_COUNT_SAMPLE_FILES = 32
 WEB_FULL_VALIDATION_FILE_LIMIT = 512
 WEB_RECENT_FILE_LIMITS = {
-    "trade_print": 384,
-    "orderbook_snapshot": 384,
+    "trade_print": 96,
+    "orderbook_snapshot": 96,
     "okx_public_ws": 384,
     "cost_bucket_daily": 384,
     "decision_audit": 384,
@@ -1763,8 +1763,8 @@ def okx_collector_summary(lake_root: str | Path) -> dict[str, Any]:
 
 def market_regime_summary(lake_root: str | Path) -> dict[str, Any]:
     market, market_warning = read_recent_dataset_with_warning(lake_root, "market_bar")
-    books, books_warning = read_recent_dataset_with_warning(lake_root, "orderbook_snapshot")
-    trades, trades_warning = read_recent_dataset_with_warning(lake_root, "trade_print")
+    spread_bps, books_warning = _latest_orderbook_spread_for_market_status(lake_root)
+    trade_activity, trades_warning = _recent_trade_activity_for_market_status(lake_root)
     ws_health, ws_health_warning = read_dataset_with_warning(lake_root, "okx_public_ws_health")
     warnings = [
         warning
@@ -1774,8 +1774,8 @@ def market_regime_summary(lake_root: str | Path) -> dict[str, Any]:
     if market.is_empty():
         return {
             "regimes": pl.DataFrame(),
-            "spread_bps": pl.DataFrame(),
-            "trade_activity": pl.DataFrame(),
+            "spread_bps": spread_bps,
+            "trade_activity": trade_activity,
             "abnormal_symbols": pl.DataFrame(),
             "warnings": [*warnings, "market_bar 数据集缺失或为空"],
         }
@@ -1805,12 +1805,10 @@ def market_regime_summary(lake_root: str | Path) -> dict[str, Any]:
         .sort(["symbol", "timeframe"])
     )
 
-    spread_bps = orderbook_spread_table(books)
-    trade_activity = trade_activity_table(trades)
     warnings.extend(
         _market_universe_warnings(
             market,
-            books,
+            spread_bps,
             trade_activity,
             ws_subscription=_latest_ws_subscription(ws_health),
         )
@@ -1823,6 +1821,104 @@ def market_regime_summary(lake_root: str | Path) -> dict[str, Any]:
         "abnormal_symbols": regimes.filter(pl.col("mean_abs_return") > 0.03),
         "warnings": warnings,
     }
+
+
+def _latest_orderbook_spread_for_market_status(
+    lake_root: str | Path,
+) -> tuple[pl.DataFrame, str | None]:
+    dataset_name = "orderbook_snapshot"
+    dataset_path = dataset_path_for(lake_root, dataset_name)
+    files, warning = _recent_valid_parquet_files(dataset_path, dataset_name)
+    if not files:
+        return pl.DataFrame(), warning
+    try:
+        lazy = _scan_parquet_files(files)
+        schema = lazy.collect_schema()
+        required = {"symbol", "asks_json", "bids_json"}
+        if not required.issubset(schema.names()):
+            return pl.DataFrame(), warning
+        timestamp_column = _web_status_timestamp_column(schema)
+        selected_columns = ["symbol", "asks_json", "bids_json"]
+        if "channel" in schema:
+            selected_columns.append("channel")
+        if timestamp_column is None:
+            frame = lazy.select(selected_columns).tail(DISPLAY_LIMIT).collect()
+            return orderbook_spread_table(frame), warning
+
+        ts_expr = _lazy_timestamp_expr(schema, timestamp_column).alias("__qlab_ts")
+        latest, _column = _latest_lazy_timestamp(
+            dataset_name,
+            lazy,
+            schema,
+            timestamp_columns=(timestamp_column,),
+        )
+        filtered = lazy.with_columns(ts_expr)
+        if latest is not None:
+            filtered = filtered.filter(
+                pl.col("__qlab_ts")
+                >= latest - timedelta(hours=WEB_RECENT_LOOKBACK_HOURS.get(dataset_name, 6))
+            )
+        group_keys = ["symbol", "channel"] if "channel" in schema else ["symbol"]
+        frame = (
+            filtered.select([*selected_columns, "__qlab_ts"])
+            .sort([*group_keys, "__qlab_ts"])
+            .group_by(group_keys, maintain_order=True)
+            .tail(1)
+            .rename({"__qlab_ts": "ts"})
+            .collect()
+        )
+        return orderbook_spread_table(frame), warning
+    except Exception as exc:
+        return pl.DataFrame(), f"{dataset_name} 市场状态聚合失败：{exc}"
+
+
+def _recent_trade_activity_for_market_status(
+    lake_root: str | Path,
+) -> tuple[pl.DataFrame, str | None]:
+    dataset_name = "trade_print"
+    dataset_path = dataset_path_for(lake_root, dataset_name)
+    files, warning = _recent_valid_parquet_files(dataset_path, dataset_name)
+    if not files:
+        return pl.DataFrame(), warning
+    try:
+        lazy = _scan_parquet_files(files)
+        schema = lazy.collect_schema()
+        if "symbol" not in schema.names():
+            return pl.DataFrame(), warning
+        timestamp_column = _web_status_timestamp_column(schema)
+        filtered = lazy
+        aggregations = [pl.len().alias("trade_count")]
+        if "size" in schema:
+            aggregations.append(
+                pl.col("size").cast(pl.Float64, strict=False).sum().alias("size_sum")
+            )
+        if timestamp_column is not None:
+            filtered = filtered.with_columns(
+                _lazy_timestamp_expr(schema, timestamp_column).alias("__qlab_ts")
+            )
+            latest, _column = _latest_lazy_timestamp(
+                dataset_name,
+                lazy,
+                schema,
+                timestamp_columns=(timestamp_column,),
+            )
+            if latest is not None:
+                filtered = filtered.filter(
+                    pl.col("__qlab_ts")
+                    >= latest - timedelta(hours=WEB_RECENT_LOOKBACK_HOURS.get(dataset_name, 6))
+                )
+            aggregations.append(pl.col("__qlab_ts").max().alias("latest_trade_ts"))
+        return filtered.group_by("symbol").agg(aggregations).sort("symbol").collect(), warning
+    except Exception as exc:
+        return pl.DataFrame(), f"{dataset_name} 市场状态聚合失败：{exc}"
+
+
+def _web_status_timestamp_column(schema: pl.Schema) -> str | None:
+    if "ts" in schema:
+        return "ts"
+    if "ingest_ts" in schema:
+        return "ingest_ts"
+    return None
 
 
 def _market_universe_warnings(

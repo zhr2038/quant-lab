@@ -2409,6 +2409,12 @@ CSV_SCHEMAS: dict[str, list[str]] = {
         "contract_version",
     ],
 }
+CSV_SCHEMAS["reports/bnb_paper_strategy_runs.csv"] = CSV_SCHEMAS[
+    "reports/paper_strategy_runs.csv"
+]
+CSV_SCHEMAS["reports/bnb_paper_strategy_daily.csv"] = CSV_SCHEMAS[
+    "reports/paper_strategy_daily.csv"
+]
 
 _MemberPayload = str | bytes
 
@@ -3085,21 +3091,21 @@ def _paper_tracking_frames_for_export(
     v5_slippage_raw = latest_v5_paper_frame(
         frames.get("v5_paper_slippage_coverage", pl.DataFrame())
     )
+    v5_candidate_raw = latest_v5_paper_frame(frames.get("v5_candidate_event", pl.DataFrame()))
     if any(
         not frame.is_empty()
-        for frame in [v5_runs_raw, v5_daily_raw, v5_slippage_raw]
+        for frame in [v5_runs_raw, v5_daily_raw, v5_slippage_raw, v5_candidate_raw]
     ):
         research_portfolio = frames.get("research_portfolio_status", pl.DataFrame())
-        candidate_events = frames.get("v5_candidate_event", pl.DataFrame())
         report_runs = build_paper_strategy_runs_report_from_v5(
             v5_runs_raw,
             research_portfolio=research_portfolio,
-            candidate_events=candidate_events,
+            candidate_events=v5_candidate_raw,
         )
         runs = build_paper_strategy_runs_from_v5(
             v5_runs_raw,
             research_portfolio=research_portfolio,
-            candidate_events=candidate_events,
+            candidate_events=v5_candidate_raw,
         )
         export_day = _latest_paper_tracking_date(
             [runs, v5_daily_raw, v5_slippage_raw],
@@ -3123,6 +3129,31 @@ def _paper_tracking_frames_for_export(
         frames.get("paper_strategy_daily", pl.DataFrame()),
         frames.get("paper_slippage_coverage", pl.DataFrame()),
     )
+
+
+def _filter_bnb_paper_frame(frame: pl.DataFrame) -> pl.DataFrame:
+    if frame.is_empty():
+        return frame
+    strategy_columns = [
+        column for column in ["proposal_id", "strategy_id"] if column in frame.columns
+    ]
+    if not strategy_columns:
+        return frame.head(0)
+    predicate = None
+    bnb_ids = {"BNB_F3_DOMINANT_ENTRY_PAPER_V1", "BNB_RISK_ON_BUY_PAPER_V1"}
+    for column in strategy_columns:
+        expr = pl.col(column).cast(pl.Utf8, strict=False).is_in(bnb_ids)
+        predicate = expr if predicate is None else predicate | expr
+    if "symbol" in frame.columns:
+        symbol_expr = (
+            pl.col("symbol")
+            .cast(pl.Utf8, strict=False)
+            .str.to_uppercase()
+            .str.replace("-", "/")
+            == "BNB/USDT"
+        )
+        predicate = predicate & symbol_expr if predicate is not None else symbol_expr
+    return frame.filter(predicate) if predicate is not None else frame.head(0)
 
 
 def _latest_paper_tracking_date(frames: list[pl.DataFrame]) -> date:
@@ -3176,6 +3207,8 @@ def _dataset_members(frames: dict[str, pl.DataFrame]) -> dict[str, _MemberPayloa
     )
     risk = _risk_permissions_for_export(frames.get("risk_permission", pl.DataFrame()), frames)
     paper_runs, paper_daily, paper_slippage = _paper_tracking_frames_for_export(frames)
+    bnb_paper_runs = _filter_bnb_paper_frame(paper_runs)
+    bnb_paper_daily = _filter_bnb_paper_frame(paper_daily)
     sol_protect_loss_attribution = frames.get(
         "sol_protect_paper_loss_attribution",
         pl.DataFrame(),
@@ -3560,6 +3593,14 @@ def _dataset_members(frames: dict[str, pl.DataFrame]) -> dict[str, _MemberPayloa
         "reports/paper_strategy_daily.csv": _csv_member(
             "reports/paper_strategy_daily.csv",
             paper_daily,
+        ),
+        "reports/bnb_paper_strategy_runs.csv": _csv_member(
+            "reports/bnb_paper_strategy_runs.csv",
+            bnb_paper_runs,
+        ),
+        "reports/bnb_paper_strategy_daily.csv": _csv_member(
+            "reports/bnb_paper_strategy_daily.csv",
+            bnb_paper_daily,
         ),
         "reports/paper_strategy_summary.md": paper_strategy_summary_md(paper_daily),
         "reports/paper_slippage_coverage.csv": _csv_member(

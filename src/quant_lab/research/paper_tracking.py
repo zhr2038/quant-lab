@@ -39,6 +39,17 @@ ETH_F3_SYMBOL = "ETH-USDT"
 ETH_F3_PRIMARY_REVIEW_HORIZON = "48h"
 ETH_F3_MIN_PRIMARY_COMPLETE_COUNT = 30
 ETH_F3_DISABLED_NO_SAMPLE_REASON = "downngraded_from_paper_no_new_entry"
+BNB_F3_PAPER_PROPOSAL_ID = "BNB_F3_DOMINANT_ENTRY_PAPER_V1"
+BNB_RISK_ON_BUY_PAPER_PROPOSAL_ID = "BNB_RISK_ON_BUY_PAPER_V1"
+BNB_F3_STRATEGY_CANDIDATE = "v5.bnb_f3_dominant_entry"
+BNB_RISK_ON_BUY_STRATEGY_CANDIDATE = "v5.bnb_risk_on_buy"
+BNB_SYMBOL = "BNB-USDT"
+BNB_ALLOWED_PAPER_REGIMES = {"ALT_IMPULSE", "TREND_UP", "TRENDING"}
+BNB_F3_SOURCE_CANDIDATES = {
+    "f3_dominant_entry",
+    "v5.f3_dominant_entry",
+    "v5.bnb_f3_dominant_entry",
+}
 
 PAPER_RUN_REPORT_SCHEMA = {
     "as_of_date": pl.Utf8,
@@ -239,6 +250,16 @@ PAPER_STRATEGIES = [
         proposal_id=ETH_F3_PAPER_PROPOSAL_ID,
         strategy_candidate=ETH_F3_STRATEGY_CANDIDATE,
         symbol=ETH_F3_SYMBOL,
+    ),
+    PaperStrategyConfig(
+        proposal_id=BNB_F3_PAPER_PROPOSAL_ID,
+        strategy_candidate=BNB_F3_STRATEGY_CANDIDATE,
+        symbol=BNB_SYMBOL,
+    ),
+    PaperStrategyConfig(
+        proposal_id=BNB_RISK_ON_BUY_PAPER_PROPOSAL_ID,
+        strategy_candidate=BNB_RISK_ON_BUY_STRATEGY_CANDIDATE,
+        symbol=BNB_SYMBOL,
     ),
 ]
 
@@ -792,6 +813,7 @@ def build_paper_strategy_runs_from_v5(
         for row in frame.to_dicts()
     ] if not frame.is_empty() else []
     rows.extend(_sol_f4_factor_candidate_run_rows(candidate_frame, created_at, rows))
+    rows.extend(_bnb_paper_candidate_run_rows(candidate_frame, created_at, rows))
     if not rows:
         return _empty_frame(PAPER_RUN_SCHEMA)
     return pl.DataFrame(rows, schema=PAPER_RUN_SCHEMA, orient="row")
@@ -814,6 +836,7 @@ def build_paper_strategy_runs_report_from_v5(
         for row in frame.to_dicts()
     ] if not frame.is_empty() else []
     rows.extend(_sol_f4_factor_candidate_report_rows(candidate_frame, created_at, rows))
+    rows.extend(_bnb_paper_candidate_report_rows(candidate_frame, created_at, rows))
     if not rows:
         return _empty_frame(PAPER_RUN_REPORT_SCHEMA)
     return pl.DataFrame(rows, schema=PAPER_RUN_REPORT_SCHEMA, orient="row")
@@ -1236,6 +1259,17 @@ def _paper_entry_policy(
             "paper_trigger_type": "factor_condition_match",
             "paper_trigger_reason": sol_factor_reason,
         }
+    bnb_factor_reason = _bnb_paper_trigger_reason(row, payload, proposal_id)
+    if bnb_factor_reason:
+        return {
+            "would_enter": True,
+            "no_sample_reason": "",
+            "paper_disabled_by_research_portfolio": False,
+            "tracking_stage": "active_paper_strategy",
+            "clear_paper_pnl": False,
+            "paper_trigger_type": "bnb_factor_condition_match",
+            "paper_trigger_reason": bnb_factor_reason,
+        }
     if raw_would_enter and _sol_f4_source_candidate_matches(
         proposal_id,
         candidate,
@@ -1562,6 +1596,273 @@ def _risk_off_for_sol_f4(row: dict[str, Any], payload: dict[str, Any]) -> bool:
         if value == "RISK_OFF":
             return True
     return False
+
+
+def _bnb_paper_candidate_run_rows(
+    candidate_events: pl.DataFrame,
+    created_at: str,
+    existing_rows: list[dict[str, Any]],
+) -> list[dict[str, Any]]:
+    if candidate_events.is_empty():
+        return []
+    existing_keys = _bnb_existing_candidate_keys(existing_rows)
+    rows: list[dict[str, Any]] = []
+    for candidate in candidate_events.to_dicts():
+        payload = _payload(candidate)
+        symbol = normalize_symbol(
+            _field(candidate, payload, "symbol", "normalized_symbol")
+        )
+        if symbol != BNB_SYMBOL:
+            continue
+        for proposal_id, strategy_candidate in (
+            (BNB_F3_PAPER_PROPOSAL_ID, BNB_F3_STRATEGY_CANDIDATE),
+            (BNB_RISK_ON_BUY_PAPER_PROPOSAL_ID, BNB_RISK_ON_BUY_STRATEGY_CANDIDATE),
+        ):
+            synthetic = _bnb_candidate_event_as_paper_row(
+                candidate,
+                proposal_id=proposal_id,
+                strategy_candidate=strategy_candidate,
+            )
+            synthetic_payload = _payload(synthetic)
+            key = _bnb_candidate_key(synthetic, synthetic_payload)
+            if key in existing_keys:
+                continue
+            existing_keys.add(key)
+            trigger_reason = _bnb_paper_trigger_reason(
+                synthetic,
+                synthetic_payload,
+                proposal_id,
+            )
+            if trigger_reason:
+                synthetic["paper_trigger_reason"] = trigger_reason
+                synthetic["would_enter"] = "true"
+            else:
+                synthetic["paper_trigger_reason"] = ""
+                synthetic["would_enter"] = "false"
+                synthetic["no_sample_reason"] = _bnb_paper_no_sample_reason(
+                    synthetic,
+                    synthetic_payload,
+                    proposal_id,
+                )
+            rows.append(_v5_run_row(synthetic, created_at))
+    return rows
+
+
+def _bnb_paper_candidate_report_rows(
+    candidate_events: pl.DataFrame,
+    created_at: str,
+    existing_rows: list[dict[str, Any]],
+) -> list[dict[str, Any]]:
+    if candidate_events.is_empty():
+        return []
+    existing_keys = _bnb_existing_candidate_keys(existing_rows)
+    rows: list[dict[str, Any]] = []
+    for candidate in candidate_events.to_dicts():
+        payload = _payload(candidate)
+        symbol = normalize_symbol(
+            _field(candidate, payload, "symbol", "normalized_symbol")
+        )
+        if symbol != BNB_SYMBOL:
+            continue
+        for proposal_id, strategy_candidate in (
+            (BNB_F3_PAPER_PROPOSAL_ID, BNB_F3_STRATEGY_CANDIDATE),
+            (BNB_RISK_ON_BUY_PAPER_PROPOSAL_ID, BNB_RISK_ON_BUY_STRATEGY_CANDIDATE),
+        ):
+            synthetic = _bnb_candidate_event_as_paper_row(
+                candidate,
+                proposal_id=proposal_id,
+                strategy_candidate=strategy_candidate,
+            )
+            synthetic_payload = _payload(synthetic)
+            key = _bnb_candidate_key(synthetic, synthetic_payload)
+            if key in existing_keys:
+                continue
+            existing_keys.add(key)
+            trigger_reason = _bnb_paper_trigger_reason(
+                synthetic,
+                synthetic_payload,
+                proposal_id,
+            )
+            if trigger_reason:
+                synthetic["paper_trigger_reason"] = trigger_reason
+                synthetic["would_enter"] = "true"
+            else:
+                synthetic["paper_trigger_reason"] = ""
+                synthetic["would_enter"] = "false"
+                synthetic["no_sample_reason"] = _bnb_paper_no_sample_reason(
+                    synthetic,
+                    synthetic_payload,
+                    proposal_id,
+                )
+            rows.append(_v5_run_report_row(synthetic, created_at))
+    return rows
+
+
+def _bnb_existing_candidate_keys(
+    rows: list[dict[str, Any]],
+) -> set[tuple[str, str, str, str, str]]:
+    keys: set[tuple[str, str, str, str, str]] = set()
+    for row in rows:
+        proposal_id = str(row.get("proposal_id") or row.get("strategy_id") or "")
+        if proposal_id not in {
+            BNB_F3_PAPER_PROPOSAL_ID,
+            BNB_RISK_ON_BUY_PAPER_PROPOSAL_ID,
+        }:
+            continue
+        if normalize_symbol(row.get("symbol")) != BNB_SYMBOL:
+            continue
+        keys.add(_bnb_candidate_key(row, _payload(row)))
+    return keys
+
+
+def _bnb_candidate_key(
+    row: dict[str, Any],
+    payload: dict[str, Any],
+) -> tuple[str, str, str, str, str]:
+    return (
+        str(_field(row, payload, "proposal_id", "strategy_id") or ""),
+        _field(row, payload, "candidate_id", "source_candidate_id"),
+        _field(row, payload, "run_id"),
+        _field(row, payload, "ts_utc", "ts", "timestamp", "created_at"),
+        normalize_symbol(_field(row, payload, "symbol", "normalized_symbol")) or BNB_SYMBOL,
+    )
+
+
+def _bnb_candidate_event_as_paper_row(
+    candidate: dict[str, Any],
+    *,
+    proposal_id: str,
+    strategy_candidate: str,
+) -> dict[str, Any]:
+    payload = _payload(candidate)
+    source_candidate = _field(
+        candidate,
+        payload,
+        "source_strategy_candidate",
+        "strategy_candidate",
+        "candidate",
+    )
+    source_candidate_id = _field(candidate, payload, "source_candidate_id", "candidate_id")
+    ts_utc = _field(candidate, payload, "ts_utc", "ts", "timestamp", "created_at")
+    merged_payload = {
+        **payload,
+        **{
+            key: value
+            for key, value in candidate.items()
+            if key not in {"raw_payload_json"} and value is not None
+        },
+        "source_strategy_candidate": source_candidate,
+        "source_candidate_symbol": BNB_SYMBOL,
+        "source_candidate_id": source_candidate_id,
+        "symbol_match_verified": True,
+        "paper_trigger_type": "bnb_factor_condition_match",
+    }
+    return {
+        **candidate,
+        "as_of_date": _as_of_date(candidate, payload),
+        "proposal_id": proposal_id,
+        "strategy_id": proposal_id,
+        "strategy_candidate": strategy_candidate,
+        "source_strategy_candidate": source_candidate,
+        "source_candidate_symbol": BNB_SYMBOL,
+        "source_candidate_id": source_candidate_id,
+        "symbol_match_verified": True,
+        "symbol": BNB_SYMBOL,
+        "normalized_symbol": BNB_SYMBOL,
+        "recommended_mode": "paper",
+        "board_decision": "PAPER_READY",
+        "suggested_horizon": "24h",
+        "horizon_hours": "24",
+        "would_enter": "false",
+        "would_exit": "false",
+        "would_size": "100",
+        "would_size_usdt": "100",
+        "final_decision": _field(candidate, payload, "final_decision", "decision"),
+        "ts_utc": ts_utc,
+        "paper_tracking_status": V5_PAPER_TRACKING_STATUS,
+        "tracking_stage": "active_paper_strategy",
+        "paper_trigger_type": "bnb_factor_condition_match",
+        "paper_source": "quant_lab_synthetic",
+        "paper_count_scope": "daily",
+        "live_block_reason": safe_json_dumps(
+            ["bnb_paper_only_no_live", "bnb_negative_expectancy_recovery_research_only"]
+        ),
+        "raw_payload_json": safe_json_dumps(merged_payload),
+    }
+
+
+def _bnb_paper_trigger_reason(
+    row: dict[str, Any],
+    payload: dict[str, Any],
+    proposal_id: str,
+) -> str:
+    if normalize_symbol(_field(row, payload, "symbol", "normalized_symbol")) != BNB_SYMBOL:
+        return ""
+    if proposal_id == BNB_F3_PAPER_PROPOSAL_ID:
+        source_candidate = str(
+            _field(row, payload, "source_strategy_candidate", "strategy_candidate") or ""
+        ).strip()
+        if source_candidate not in BNB_F3_SOURCE_CANDIDATES:
+            return ""
+    alpha6_side = str(_field(row, payload, "alpha6_side") or "").strip().lower()
+    if alpha6_side != "buy":
+        return ""
+    alpha6_score = _optional_float(_field(row, payload, "alpha6_score"))
+    if alpha6_score is None or alpha6_score < 0.9:
+        return ""
+    expected = _optional_float(_field(row, payload, "expected_edge_bps", "edge_bps"))
+    required = _optional_float(_field(row, payload, "required_edge_bps", "required_edge"))
+    if expected is None or required is None or expected <= required:
+        return ""
+    if _optional_bool(_field(row, payload, "cost_gate_verified", "cost.gate_verified")) is not True:
+        return ""
+    if _bnb_regime(row, payload) not in BNB_ALLOWED_PAPER_REGIMES:
+        return ""
+    return (
+        "bnb_factor_condition_match:"
+        "alpha6_buy,alpha6_score_gte_0_9,expected_edge_gt_required_edge,"
+        "cost_gate_verified,risk_on_or_trending_regime"
+    )
+
+
+def _bnb_paper_no_sample_reason(
+    row: dict[str, Any],
+    payload: dict[str, Any],
+    proposal_id: str,
+) -> str:
+    if normalize_symbol(_field(row, payload, "symbol", "normalized_symbol")) != BNB_SYMBOL:
+        return "symbol_mismatch"
+    if proposal_id == BNB_F3_PAPER_PROPOSAL_ID:
+        source_candidate = str(
+            _field(row, payload, "source_strategy_candidate", "strategy_candidate") or ""
+        ).strip()
+        if source_candidate not in BNB_F3_SOURCE_CANDIDATES:
+            return "bnb_f3_strategy_candidate_not_matched"
+    alpha6_side = str(_field(row, payload, "alpha6_side") or "").strip().lower()
+    if alpha6_side != "buy":
+        return "alpha6_not_buy"
+    alpha6_score = _optional_float(_field(row, payload, "alpha6_score"))
+    if alpha6_score is None or alpha6_score < 0.9:
+        return "alpha6_score_below_threshold"
+    expected = _optional_float(_field(row, payload, "expected_edge_bps", "edge_bps"))
+    required = _optional_float(_field(row, payload, "required_edge_bps", "required_edge"))
+    if expected is None or required is None or expected <= required:
+        return "edge_not_above_required"
+    if _optional_bool(_field(row, payload, "cost_gate_verified", "cost.gate_verified")) is not True:
+        return "cost_gate_not_verified"
+    if _bnb_regime(row, payload) not in BNB_ALLOWED_PAPER_REGIMES:
+        return "regime_not_allowed"
+    return ""
+
+
+def _bnb_regime(row: dict[str, Any], payload: dict[str, Any]) -> str:
+    return (
+        str(_field(row, payload, "current_regime", "regime_state", "market_regime") or "")
+        .strip()
+        .upper()
+        .replace("-", "_")
+        .replace(" ", "_")
+    )
 
 
 def _factor_float(value: Any) -> float | None:

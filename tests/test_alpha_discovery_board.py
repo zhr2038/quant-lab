@@ -811,6 +811,143 @@ def test_sol_f4_factor_condition_can_override_no_enter_v5_paper_row():
     assert "cost_gate_verified" in run["paper_trigger_reason"]
 
 
+def test_bnb_paper_synthetic_tracks_alpha6_buy_no_order():
+    candidate_events = pl.DataFrame(
+        [
+            {
+                "candidate_id": "bnb-20260530-03",
+                "run_id": "run_20260530_03",
+                "ts_utc": "2026-05-30T03:00:00Z",
+                "symbol": "BNB-USDT",
+                "strategy_candidate": "v5.f3_dominant_entry",
+                "final_decision": "no_order",
+                "alpha6_score": "0.994",
+                "alpha6_side": "buy",
+                "f4_volume_expansion": "5.82",
+                "f5_rsi_trend_confirm": "0.832",
+                "expected_edge_bps": "180",
+                "required_edge_bps": "45",
+                "cost_gate_verified": "true",
+                "current_regime": "TREND_UP",
+                "raw_payload_json": "{}",
+            }
+        ]
+    )
+
+    runs = build_paper_strategy_runs_from_v5(pl.DataFrame(), candidate_events=candidate_events)
+    report_rows = build_paper_strategy_runs_report_from_v5(
+        pl.DataFrame(),
+        candidate_events=candidate_events,
+    )
+
+    by_proposal = {row["proposal_id"]: row for row in runs.to_dicts()}
+    assert set(by_proposal) == {
+        "BNB_F3_DOMINANT_ENTRY_PAPER_V1",
+        "BNB_RISK_ON_BUY_PAPER_V1",
+    }
+    assert {row["would_enter"] for row in by_proposal.values()} == {True}
+    assert all(row["paper_source"] == "quant_lab_synthetic" for row in by_proposal.values())
+    assert all(row["would_size_usdt"] == 100.0 for row in by_proposal.values())
+    assert all(
+        "bnb_factor_condition_match" in row["paper_trigger_reason"]
+        for row in by_proposal.values()
+    )
+
+    reports_by_proposal = {row["proposal_id"]: row for row in report_rows.to_dicts()}
+    assert reports_by_proposal["BNB_F3_DOMINANT_ENTRY_PAPER_V1"]["alpha6_score"] == 0.994
+    assert reports_by_proposal["BNB_RISK_ON_BUY_PAPER_V1"]["symbol"] == "BNB-USDT"
+
+
+def test_bnb_paper_synthetic_blocks_when_edge_not_verified():
+    candidate_events = pl.DataFrame(
+        [
+            {
+                "candidate_id": "bnb-edge-fail",
+                "run_id": "run_20260530_10",
+                "ts_utc": "2026-05-30T10:00:00Z",
+                "symbol": "BNB-USDT",
+                "strategy_candidate": "v5.f3_dominant_entry",
+                "final_decision": "no_order",
+                "alpha6_score": "0.95",
+                "alpha6_side": "buy",
+                "expected_edge_bps": "20",
+                "required_edge_bps": "45",
+                "cost_gate_verified": "true",
+                "current_regime": "ALT_IMPULSE",
+                "raw_payload_json": "{}",
+            }
+        ]
+    )
+
+    rows = build_paper_strategy_runs_from_v5(
+        pl.DataFrame(),
+        candidate_events=candidate_events,
+    ).to_dicts()
+
+    assert len(rows) == 2
+    assert {row["would_enter"] for row in rows} == {False}
+    assert {row["no_sample_reason"] for row in rows} == {"edge_not_above_required"}
+
+
+def test_export_daily_pack_includes_bnb_paper_reports(tmp_path):
+    lake = tmp_path / "lake"
+    write_parquet_dataset(
+        pl.DataFrame(
+            [
+                {
+                    "candidate_id": "bnb-20260530-16",
+                    "run_id": "run_20260530_16",
+                    "ts_utc": "2026-05-30T16:00:00Z",
+                    "symbol": "BNB-USDT",
+                    "strategy_candidate": "v5.f3_dominant_entry",
+                    "final_decision": "no_order",
+                    "alpha6_score": "0.994",
+                    "alpha6_side": "buy",
+                    "f4_volume_expansion": "5.82",
+                    "f5_rsi_trend_confirm": "0.832",
+                    "expected_edge_bps": "180",
+                    "required_edge_bps": "45",
+                    "cost_gate_verified": "true",
+                    "current_regime": "ALT_IMPULSE",
+                    "raw_payload_json": "{}",
+                    "bundle_ts": datetime(2026, 5, 30, 16, tzinfo=UTC),
+                }
+            ]
+        ),
+        lake / "silver" / "v5_candidate_event",
+    )
+
+    export = export_daily_pack(
+        export_date="2026-05-30",
+        lake_root=lake,
+        out_dir=tmp_path / "exports",
+        profile="expert",
+        command_line=["qlab", "export-daily"],
+        pre_export_v5_refresh=False,
+    )
+
+    with zipfile.ZipFile(export.zip_path) as archive:
+        names = set(archive.namelist())
+        assert "reports/bnb_paper_strategy_runs.csv" in names
+        assert "reports/bnb_paper_strategy_daily.csv" in names
+        rows = list(
+            csv.DictReader(
+                io.StringIO(archive.read("reports/bnb_paper_strategy_runs.csv").decode("utf-8"))
+            )
+        )
+        daily = list(
+            csv.DictReader(
+                io.StringIO(archive.read("reports/bnb_paper_strategy_daily.csv").decode("utf-8"))
+            )
+        )
+    assert {row["proposal_id"] for row in rows} == {
+        "BNB_F3_DOMINANT_ENTRY_PAPER_V1",
+        "BNB_RISK_ON_BUY_PAPER_V1",
+    }
+    assert {row["would_enter"] for row in rows} == {"True"}
+    assert {row["live_eligible"].lower() for row in daily} == {"false"}
+
+
 def test_sol_f4_synthetic_uses_sol_candidate_not_bnb_metrics():
     candidate_events = pl.DataFrame(
         [
@@ -855,8 +992,12 @@ def test_sol_f4_synthetic_uses_sol_candidate_not_bnb_metrics():
         candidate_events=candidate_events,
     )
 
-    assert rows.height == 1
-    run = rows.to_dicts()[0]
+    sol_rows = [
+        row for row in rows.to_dicts()
+        if row["proposal_id"] == "SOL_F4_VOLUME_EXPANSION_PAPER_V1"
+    ]
+    assert len(sol_rows) == 1
+    run = sol_rows[0]
     assert run["proposal_id"] == "SOL_F4_VOLUME_EXPANSION_PAPER_V1"
     assert run["symbol"] == "SOL-USDT"
     assert run["source_candidate_symbol"] == "SOL-USDT"
@@ -864,7 +1005,10 @@ def test_sol_f4_synthetic_uses_sol_candidate_not_bnb_metrics():
     assert run["symbol_match_verified"] is True
     assert run["would_enter"] is False
     assert run["no_sample_reason"] == "alpha6_not_buy"
-    report = report_rows.to_dicts()[0]
+    report = next(
+        row for row in report_rows.to_dicts()
+        if row["proposal_id"] == "SOL_F4_VOLUME_EXPANSION_PAPER_V1"
+    )
     assert report["alpha6_side"] == "sell"
     assert report["f4_volume_expansion"] == "0.222222"
     assert report["f5_rsi_trend_confirm"] == "0.333333"

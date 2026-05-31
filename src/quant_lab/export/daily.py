@@ -339,6 +339,8 @@ REQUIRED_MEMBERS = [
     "reports/v5_local_live_vs_quant_lab_shadow.csv",
     "reports/missed_opportunity_audit.csv",
     "reports/missed_opportunity_summary.md",
+    "reports/bnb_missed_opportunity_samples.csv",
+    "reports/bnb_missed_opportunity_summary.md",
     "reports/risk_on_multi_buy_shadow.csv",
     "reports/risk_on_multi_buy_summary.md",
     "reports/market_regime_daily.csv",
@@ -1078,6 +1080,22 @@ CSV_SCHEMAS: dict[str, list[str]] = {
         "future_24h_net_bps",
         "outcome_if_blocked",
         "source",
+    ],
+    "reports/bnb_missed_opportunity_samples.csv": [
+        "run_id",
+        "ts_utc",
+        "entry_close",
+        "alpha6_score",
+        "f3",
+        "f4",
+        "f5",
+        "final_score",
+        "final_decision",
+        "future_4h_net_bps",
+        "future_8h_net_bps",
+        "future_12h_net_bps",
+        "future_24h_net_bps",
+        "missed_profit_flag",
     ],
     "reports/risk_on_multi_buy_shadow.csv": [
         "generated_at",
@@ -3243,6 +3261,10 @@ def _dataset_members(frames: dict[str, pl.DataFrame]) -> dict[str, _MemberPayloa
     regime_strategy_advisory = frames.get("regime_strategy_advisory", pl.DataFrame())
     missed_opportunity_audit = frames.get("v5_missed_opportunity_audit", pl.DataFrame())
     risk_on_multi_buy_shadow = frames.get("v5_risk_on_multi_buy_shadow", pl.DataFrame())
+    bnb_missed_opportunity = _bnb_missed_opportunity_samples_for_export(
+        candidate_events=frames.get("v5_candidate_event", pl.DataFrame()),
+        market_bars=market,
+    )
     opportunity_advisory = _strategy_opportunity_advisory_for_export(
         alpha_discovery_board=alpha_discovery_board,
         strategy_evidence=strategy_evidence,
@@ -3439,6 +3461,13 @@ def _dataset_members(frames: dict[str, pl.DataFrame]) -> dict[str, _MemberPayloa
         "reports/missed_opportunity_summary.md": _missed_opportunity_summary_md(
             missed_opportunity_audit,
             risk_on_multi_buy_shadow,
+        ),
+        "reports/bnb_missed_opportunity_samples.csv": _csv_member(
+            "reports/bnb_missed_opportunity_samples.csv",
+            bnb_missed_opportunity,
+        ),
+        "reports/bnb_missed_opportunity_summary.md": _bnb_missed_opportunity_summary_md(
+            bnb_missed_opportunity
         ),
         "reports/risk_on_multi_buy_shadow.csv": _csv_member(
             "reports/risk_on_multi_buy_shadow.csv",
@@ -6579,6 +6608,100 @@ def _v5_missed_opportunity_audit_for_export(
     return pl.DataFrame(rows, infer_schema_length=None).select(CSV_SCHEMAS[path])
 
 
+BNB_MISSED_OPPORTUNITY_START_TS = datetime(2026, 5, 30, tzinfo=UTC)
+
+
+def _bnb_missed_opportunity_samples_for_export(
+    *,
+    candidate_events: pl.DataFrame,
+    market_bars: pl.DataFrame,
+) -> pl.DataFrame:
+    path = "reports/bnb_missed_opportunity_samples.csv"
+    if candidate_events.is_empty():
+        return _empty_csv_schema_frame(path)
+    market_by_symbol = _market_close_rows_by_symbol(market_bars)
+    bnb_market = market_by_symbol.get("BNB-USDT", [])
+    rows: list[dict[str, Any]] = []
+    for candidate in candidate_events.to_dicts():
+        symbol = normalize_symbol(candidate.get("symbol"))
+        if symbol != "BNB-USDT":
+            continue
+        ts = readers._coerce_timestamp(candidate.get("ts_utc") or candidate.get("ts"))
+        if ts is None or ts.astimezone(UTC) < BNB_MISSED_OPPORTUNITY_START_TS:
+            continue
+        side = str(candidate.get("alpha6_side") or "").strip().lower()
+        if side != "buy":
+            continue
+        decision = str(candidate.get("final_decision") or "").strip().lower()
+        if decision not in {"no_order", "blocked"}:
+            continue
+        expected = _optional_float(candidate.get("expected_edge_bps"))
+        required = _optional_float(candidate.get("required_edge_bps"))
+        if expected is None or required is None or expected <= required:
+            continue
+        entry_close = _candidate_entry_price(candidate, bnb_market, ts)
+        future = {
+            horizon: _future_net_bps_after_shadow_cost(
+                bnb_market,
+                ts.astimezone(UTC),
+                entry_close,
+                horizon,
+            )
+            for horizon in (4, 8, 12, 24)
+        }
+        observed = [value for value in future.values() if value is not None]
+        rows.append(
+            {
+                "run_id": str(candidate.get("run_id") or "").strip(),
+                "ts_utc": ts.astimezone(UTC).isoformat(),
+                "entry_close": entry_close,
+                "alpha6_score": _optional_float(candidate.get("alpha6_score")),
+                "f3": _candidate_factor_value(
+                    candidate,
+                    "f3",
+                    "f3_vol_adj_ret",
+                    "f3_score",
+                    "f3_dominant",
+                    "f3_dominant_score",
+                ),
+                "f4": _candidate_factor_value(
+                    candidate,
+                    "f4",
+                    "f4_volume_expansion",
+                    "f4_score",
+                ),
+                "f5": _candidate_factor_value(
+                    candidate,
+                    "f5",
+                    "f5_rsi_trend_confirm",
+                    "f5_score",
+                ),
+                "final_score": _optional_float(candidate.get("final_score")),
+                "final_decision": candidate.get("final_decision"),
+                "future_4h_net_bps": future[4],
+                "future_8h_net_bps": future[8],
+                "future_12h_net_bps": future[12],
+                "future_24h_net_bps": future[24],
+                "missed_profit_flag": bool(observed and max(observed) > 0),
+            }
+        )
+    if not rows:
+        return _empty_csv_schema_frame(path)
+    return (
+        pl.DataFrame(rows, infer_schema_length=None)
+        .select(CSV_SCHEMAS[path])
+        .sort(["ts_utc", "run_id"])
+    )
+
+
+def _candidate_factor_value(candidate: dict[str, Any], *field_names: str) -> float | None:
+    for field in field_names:
+        value = _optional_float(candidate.get(field))
+        if value is not None:
+            return value
+    return None
+
+
 def _risk_on_multi_buy_shadow_for_export(
     *,
     candidate_events: pl.DataFrame,
@@ -6813,6 +6936,67 @@ def _missed_opportunity_summary_md(audit: pl.DataFrame, risk_on_shadow: pl.DataF
                 f"{row.get('strategy_candidate')} selected {row.get('selected_symbols')} "
                 f"24h_net={row.get('future_24h_net_bps')}"
             )
+    return "\n".join(lines) + "\n"
+
+
+def _bnb_missed_opportunity_summary_md(samples: pl.DataFrame) -> str:
+    lines = [
+        "# BNB Missed Opportunity Summary",
+        "",
+        (
+            "Scope: BNB-USDT candidate events from 2026-05-30 onward where "
+            "alpha6_side=buy, final_decision is no_order/blocked, and "
+            "expected_edge_bps exceeded required_edge_bps."
+        ),
+        (
+            "Forward returns are conservative shadow net bps using the same 30 bps "
+            "roundtrip cost floor as the risk-on shadow reports."
+        ),
+        "",
+    ]
+    if samples.is_empty():
+        lines.append("- No qualifying BNB alpha6 buy no-order/blocked samples were found.")
+        return "\n".join(lines) + "\n"
+
+    rows = samples.to_dicts()
+    missed_profit_count = sum(
+        1 for row in rows if _optional_bool(row.get("missed_profit_flag")) is True
+    )
+    lines.extend(
+        [
+            f"- qualifying_samples: {len(rows)}",
+            f"- missed_profit_samples: {missed_profit_count}",
+        ]
+    )
+    for horizon in (4, 8, 12, 24):
+        values = [
+            _optional_float(row.get(f"future_{horizon}h_net_bps"))
+            for row in rows
+        ]
+        observed = [value for value in values if value is not None]
+        if not observed:
+            lines.append(f"- avg_future_{horizon}h_net_bps: pending")
+        else:
+            lines.append(
+                f"- avg_future_{horizon}h_net_bps: "
+                f"{sum(observed) / len(observed):.2f} "
+                f"(observed={len(observed)})"
+            )
+
+    latest_rows = sorted(rows, key=lambda row: str(row.get("ts_utc") or ""), reverse=True)[:10]
+    lines.extend(["", "## Latest qualifying samples", ""])
+    for row in latest_rows:
+        lines.append(
+            "- "
+            f"{row.get('ts_utc')} run={row.get('run_id')} "
+            f"decision={row.get('final_decision')} "
+            f"score={row.get('final_score')} "
+            f"4h={row.get('future_4h_net_bps')} "
+            f"8h={row.get('future_8h_net_bps')} "
+            f"12h={row.get('future_12h_net_bps')} "
+            f"24h={row.get('future_24h_net_bps')} "
+            f"missed_profit={row.get('missed_profit_flag')}"
+        )
     return "\n".join(lines) + "\n"
 
 

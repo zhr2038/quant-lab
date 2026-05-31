@@ -20,7 +20,7 @@ from quant_lab.symbols import normalize_symbol
 SOURCE_NAME = "quant_lab.bnb_swing_exit_policy_review"
 SCHEMA_VERSION = "bnb_swing_exit_policy_review.v0.2"
 SUMMARY_SCHEMA_VERSION = "bnb_swing_exit_policy_summary.v0.3"
-CONSISTENCY_SCHEMA_VERSION = "bnb_exit_policy_v5_vs_quant_lab_consistency.v0.1"
+CONSISTENCY_SCHEMA_VERSION = "bnb_exit_policy_v5_vs_quant_lab_consistency.v0.2"
 DEFAULT_ROUNDTRIP_COST_BPS = 30.0
 HORIZONS = (4, 8, 12, 24)
 FIXED_HOLD_FROM_ENTRY_HOURS = (6, 12, 24)
@@ -94,6 +94,15 @@ REVIEW_SCHEMA: dict[str, Any] = {
     "review_row_source": pl.Utf8,
     "v5_vs_quant_lab_consistency_status": pl.Utf8,
     "v5_vs_quant_lab_mismatch_reason": pl.Utf8,
+    "v5_fixed_hold_6h_from_entry_net_bps": pl.Float64,
+    "quant_lab_fixed_hold_6h_from_entry_net_bps": pl.Float64,
+    "diff_fixed_hold_6h_from_entry_net_bps": pl.Float64,
+    "v5_fixed_hold_12h_from_entry_net_bps": pl.Float64,
+    "quant_lab_fixed_hold_12h_from_entry_net_bps": pl.Float64,
+    "diff_fixed_hold_12h_from_entry_net_bps": pl.Float64,
+    "v5_fixed_hold_24h_from_entry_net_bps": pl.Float64,
+    "quant_lab_fixed_hold_24h_from_entry_net_bps": pl.Float64,
+    "diff_fixed_hold_24h_from_entry_net_bps": pl.Float64,
     "v5_delayed_exit_6h_from_actual_exit_net_bps": pl.Float64,
     "quant_lab_delayed_exit_6h_from_actual_exit_net_bps": pl.Float64,
     "diff_delayed_exit_6h_from_actual_exit_net_bps": pl.Float64,
@@ -130,6 +139,15 @@ CONSISTENCY_SCHEMA: dict[str, Any] = {
     "selected_for_summary_allowed": pl.Boolean,
     "compared_field_count": pl.Int64,
     "mismatch_field_count": pl.Int64,
+    "v5_fixed_hold_6h_from_entry_net_bps": pl.Float64,
+    "quant_lab_fixed_hold_6h_from_entry_net_bps": pl.Float64,
+    "diff_fixed_hold_6h_from_entry_net_bps": pl.Float64,
+    "v5_fixed_hold_12h_from_entry_net_bps": pl.Float64,
+    "quant_lab_fixed_hold_12h_from_entry_net_bps": pl.Float64,
+    "diff_fixed_hold_12h_from_entry_net_bps": pl.Float64,
+    "v5_fixed_hold_24h_from_entry_net_bps": pl.Float64,
+    "quant_lab_fixed_hold_24h_from_entry_net_bps": pl.Float64,
+    "diff_fixed_hold_24h_from_entry_net_bps": pl.Float64,
     "v5_delayed_exit_6h_from_actual_exit_net_bps": pl.Float64,
     "quant_lab_delayed_exit_6h_from_actual_exit_net_bps": pl.Float64,
     "diff_delayed_exit_6h_from_actual_exit_net_bps": pl.Float64,
@@ -555,6 +573,15 @@ def build_bnb_exit_policy_v5_vs_quant_lab_consistency(
     for row in review.to_dicts():
         compared = 0
         mismatches = 0
+        for hours in FIXED_HOLD_FROM_ENTRY_HOURS:
+            diff = _float_or_none(
+                row.get(f"diff_fixed_hold_{hours}h_from_entry_net_bps")
+            )
+            if diff is None:
+                continue
+            compared += 1
+            if abs(diff) > CONSISTENCY_TOLERANCE_BPS:
+                mismatches += 1
         for hours in DELAYED_EXIT_HOURS:
             diff = _float_or_none(
                 row.get(f"diff_delayed_exit_{hours}h_from_actual_exit_net_bps")
@@ -579,11 +606,21 @@ def build_bnb_exit_policy_v5_vs_quant_lab_consistency(
                 "duplicate_group_key": str(row.get("duplicate_group_key") or ""),
                 "duplicate_row_count": int(_float_or_none(row.get("duplicate_row_count")) or 0),
                 "v5_shadow_row_present": _observable(
+                    row.get("v5_fixed_hold_6h_from_entry_net_bps")
+                )
+                or _observable(row.get("v5_fixed_hold_12h_from_entry_net_bps"))
+                or _observable(row.get("v5_fixed_hold_24h_from_entry_net_bps"))
+                or _observable(
                     row.get("v5_delayed_exit_6h_from_actual_exit_net_bps")
                 )
                 or _observable(row.get("v5_delayed_exit_12h_from_actual_exit_net_bps"))
                 or _observable(row.get("v5_delayed_exit_24h_from_actual_exit_net_bps")),
                 "quant_lab_recomputed_row_present": _observable(
+                    row.get("quant_lab_fixed_hold_6h_from_entry_net_bps")
+                )
+                or _observable(row.get("quant_lab_fixed_hold_12h_from_entry_net_bps"))
+                or _observable(row.get("quant_lab_fixed_hold_24h_from_entry_net_bps"))
+                or _observable(
                     row.get("quant_lab_delayed_exit_6h_from_actual_exit_net_bps")
                 )
                 or _observable(row.get("quant_lab_delayed_exit_12h_from_actual_exit_net_bps"))
@@ -595,6 +632,33 @@ def build_bnb_exit_policy_v5_vs_quant_lab_consistency(
                 "selected_for_summary_allowed": bool(row.get("summary_eligible")),
                 "compared_field_count": compared,
                 "mismatch_field_count": mismatches,
+                "v5_fixed_hold_6h_from_entry_net_bps": _float_or_none(
+                    row.get("v5_fixed_hold_6h_from_entry_net_bps")
+                ),
+                "quant_lab_fixed_hold_6h_from_entry_net_bps": _float_or_none(
+                    row.get("quant_lab_fixed_hold_6h_from_entry_net_bps")
+                ),
+                "diff_fixed_hold_6h_from_entry_net_bps": _float_or_none(
+                    row.get("diff_fixed_hold_6h_from_entry_net_bps")
+                ),
+                "v5_fixed_hold_12h_from_entry_net_bps": _float_or_none(
+                    row.get("v5_fixed_hold_12h_from_entry_net_bps")
+                ),
+                "quant_lab_fixed_hold_12h_from_entry_net_bps": _float_or_none(
+                    row.get("quant_lab_fixed_hold_12h_from_entry_net_bps")
+                ),
+                "diff_fixed_hold_12h_from_entry_net_bps": _float_or_none(
+                    row.get("diff_fixed_hold_12h_from_entry_net_bps")
+                ),
+                "v5_fixed_hold_24h_from_entry_net_bps": _float_or_none(
+                    row.get("v5_fixed_hold_24h_from_entry_net_bps")
+                ),
+                "quant_lab_fixed_hold_24h_from_entry_net_bps": _float_or_none(
+                    row.get("quant_lab_fixed_hold_24h_from_entry_net_bps")
+                ),
+                "diff_fixed_hold_24h_from_entry_net_bps": _float_or_none(
+                    row.get("diff_fixed_hold_24h_from_entry_net_bps")
+                ),
                 "v5_delayed_exit_6h_from_actual_exit_net_bps": _float_or_none(
                     row.get("v5_delayed_exit_6h_from_actual_exit_net_bps")
                 ),
@@ -679,6 +743,8 @@ def bnb_swing_exit_policy_summary_md(summary: pl.DataFrame, review: pl.DataFrame
                 f"- source_entry_id: {latest.get('source_entry_id')}",
                 f"- duplicate_group_key: {latest.get('duplicate_group_key')}",
                 f"- duplicate_row_count: {latest.get('duplicate_row_count')}",
+                f"- fixed_hold_12h_from_entry_net_bps: "
+                f"{_fmt(latest.get('fixed_hold_12h_from_entry_net_bps'))}",
                 f"- delayed_exit_12h_from_actual_exit_net_bps: "
                 f"{_fmt(latest.get('delayed_exit_12h_from_actual_exit_net_bps'))}",
                 f"- v5_vs_quant_lab_consistency_status: "
@@ -778,6 +844,23 @@ def _consistency_for_duplicate_group(candidates: list[dict[str, Any]]) -> dict[s
     }
     mismatch_reasons: list[str] = []
     mismatches = 0
+    for hours in FIXED_HOLD_FROM_ENTRY_HOURS:
+        field = f"fixed_hold_{hours}h_from_entry_net_bps"
+        v5_value = _float_or_none(v5_row.get(field) if v5_row else None)
+        quant_value = _float_or_none(quant_row.get(field) if quant_row else None)
+        diff = (
+            quant_value - v5_value
+            if quant_value is not None and v5_value is not None
+            else None
+        )
+        result[f"v5_fixed_hold_{hours}h_from_entry_net_bps"] = v5_value
+        result[f"quant_lab_fixed_hold_{hours}h_from_entry_net_bps"] = quant_value
+        result[f"diff_fixed_hold_{hours}h_from_entry_net_bps"] = diff
+        if diff is None:
+            continue
+        if abs(diff) > CONSISTENCY_TOLERANCE_BPS:
+            mismatches += 1
+            mismatch_reasons.append(f"{field}_mismatch")
     for hours in DELAYED_EXIT_HOURS:
         field = f"delayed_exit_{hours}h_from_actual_exit_net_bps"
         v5_value = _float_or_none(v5_row.get(field) if v5_row else None)

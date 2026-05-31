@@ -92,6 +92,12 @@ def make_v5_bundle_fixture(
             "atr_trailing,soft,-142.89,\"[\"\"exit_bad\"\", \"\"min_hold_violation\"\"]\","
             "false,true,true,false,true,false\n"
         ),
+        "summaries/negative_expectancy_consistency.csv": (
+            "symbol,negexp_closed_cycles,negexp_net_expectancy_bps,"
+            "adjusted_entry_expectancy_bps,entry_bad_cycles,exit_bad_cycles,"
+            "min_hold_violation_cycles,diagnosis\n"
+            "BNB/USDT,3,-151.83,0,0,1,1,ok\n"
+        ),
         "summaries/router_decisions.csv": "reason,count\nrisk_gate,2\n",
         "summaries/trades_roundtrips.csv": "symbol,pnl\nBTC-USDT,1.2\n",
         "summaries/open_positions.csv": "symbol,size\nBTC-USDT,0\n",

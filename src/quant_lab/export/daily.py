@@ -1116,8 +1116,9 @@ CSV_SCHEMAS: dict[str, list[str]] = {
         "expected_edge_bps",
         "required_edge_bps",
         "final_decision",
-        "no_signal_reason",
         "block_reason",
+        "no_signal_reason",
+        "negative_expectancy_stats",
         "future_4h_net_bps",
         "future_8h_net_bps",
         "future_12h_net_bps",
@@ -3348,6 +3349,7 @@ def _dataset_members(frames: dict[str, pl.DataFrame]) -> dict[str, _MemberPayloa
     final_score_alpha6_conflict = _final_score_vs_alpha6_conflict_for_export(
         candidate_events=frames.get("v5_candidate_event", pl.DataFrame()),
         market_bars=market,
+        negative_expectancy=frames.get("v5_negative_expectancy_consistency", pl.DataFrame()),
     )
     opportunity_advisory = _strategy_opportunity_advisory_for_export(
         alpha_discovery_board=alpha_discovery_board,
@@ -6810,11 +6812,15 @@ def _final_score_vs_alpha6_conflict_for_export(
     *,
     candidate_events: pl.DataFrame,
     market_bars: pl.DataFrame,
+    negative_expectancy: pl.DataFrame | None = None,
 ) -> pl.DataFrame:
     path = "reports/final_score_vs_alpha6_conflict.csv"
     if candidate_events.is_empty():
         return _empty_csv_schema_frame(path)
     market_by_symbol = _market_close_rows_by_symbol(market_bars)
+    negative_expectancy_by_symbol = _negative_expectancy_stats_by_symbol(
+        negative_expectancy if negative_expectancy is not None else pl.DataFrame()
+    )
     rows: list[dict[str, Any]] = []
     for candidate in candidate_events.to_dicts():
         symbol = normalize_symbol(candidate.get("symbol"))
@@ -6865,8 +6871,12 @@ def _final_score_vs_alpha6_conflict_for_export(
                 "expected_edge_bps": _optional_float(candidate.get("expected_edge_bps")),
                 "required_edge_bps": _optional_float(candidate.get("required_edge_bps")),
                 "final_decision": candidate.get("final_decision"),
-                "no_signal_reason": candidate.get("no_signal_reason"),
                 "block_reason": candidate.get("block_reason"),
+                "no_signal_reason": candidate.get("no_signal_reason"),
+                "negative_expectancy_stats": negative_expectancy_by_symbol.get(
+                    symbol,
+                    "not_observable",
+                ),
                 "future_4h_net_bps": future[4],
                 "future_8h_net_bps": future[8],
                 "future_12h_net_bps": future[12],
@@ -6898,7 +6908,39 @@ def _is_final_score_alpha6_conflict_candidate(candidate: dict[str, Any]) -> bool
         return False
     final_score = _optional_float(candidate.get("final_score"))
     final_decision = str(candidate.get("final_decision") or "").strip().lower()
-    return (final_score is not None and final_score < 0.0) or final_decision == "no_order"
+    return (final_score is not None and final_score < 0.0) or final_decision in {"no_order", "blocked"}
+
+
+def _negative_expectancy_stats_by_symbol(frame: pl.DataFrame) -> dict[str, str]:
+    if frame.is_empty():
+        return {}
+    fields = (
+        "negexp_closed_cycles",
+        "negexp_net_expectancy_bps",
+        "adjusted_entry_expectancy_bps",
+        "negexp_fast_fail_net_expectancy_bps",
+        "adjusted_fast_fail_net_expectancy_bps",
+        "entry_bad_cycles",
+        "exit_bad_cycles",
+        "min_hold_violation_cycles",
+        "premature_soft_exit_count",
+        "excluded_from_fast_fail_count",
+        "diagnosis",
+    )
+    out: dict[str, str] = {}
+    for row in frame.to_dicts():
+        symbol = normalize_symbol(row.get("symbol"))
+        if not symbol:
+            continue
+        payload: dict[str, Any] = {}
+        for field in fields:
+            value = row.get(field)
+            if value is None or value == "":
+                continue
+            payload[field] = value
+        if payload:
+            out[symbol] = safe_json_dumps(payload)
+    return out
 
 
 def _candidate_shadow_cost_bps(candidate: dict[str, Any]) -> float:
@@ -6942,6 +6984,20 @@ def _final_score_vs_alpha6_conflict_summary_md(conflicts: pl.DataFrame) -> str:
     missed_profit_count = sum(
         1 for row in rows if _optional_bool(row.get("missed_profit_flag")) is True
     )
+    blocked_final_decision_count = sum(
+        1 for row in rows if str(row.get("final_decision") or "").strip().lower() == "blocked"
+    )
+    negative_expectancy_block_count = sum(
+        1
+        for row in rows
+        if "negative_expectancy" in " ".join(
+            [
+                str(row.get("block_reason") or ""),
+                str(row.get("no_signal_reason") or ""),
+                str(row.get("negative_expectancy_stats") or ""),
+            ]
+        ).lower()
+    )
     if conflict_count == 0:
         recommendation = "no_conflict_observed"
     elif missed_profit_count > 0:
@@ -6959,6 +7015,8 @@ def _final_score_vs_alpha6_conflict_summary_md(conflicts: pl.DataFrame) -> str:
             f"- avg_future_8h_net_bps: {_conflict_display_number(avg_8h)}",
             f"- avg_future_24h_net_bps: {_conflict_display_number(avg_24h)}",
             f"- symbol_breakdown: {safe_json_dumps(symbol_counts)}",
+            f"- blocked_final_decision_count: {blocked_final_decision_count}",
+            f"- negative_expectancy_block_count: {negative_expectancy_block_count}",
             f"- recommendation: {recommendation}",
             "",
         ]

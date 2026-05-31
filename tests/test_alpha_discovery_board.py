@@ -989,6 +989,21 @@ def test_final_score_vs_alpha6_conflict_quantifies_bnb_no_order():
                 "required_edge_bps": "45",
                 "cost_gate_verified": "true",
             },
+            {
+                "candidate_id": "btc-blocked",
+                "run_id": "run_20260530_03",
+                "ts_utc": ts,
+                "symbol": "BTC-USDT",
+                "final_score": "0.2",
+                "final_decision": "blocked",
+                "block_reason": "negative_expectancy_fast_fail_open_block",
+                "alpha6_score": "0.95",
+                "alpha6_side": "buy",
+                "expected_edge_bps": "120",
+                "required_edge_bps": "45",
+                "cost_gate_verified": "true",
+                "cost_bps": "30",
+            },
         ]
     )
     market_bars = pl.DataFrame(
@@ -998,26 +1013,50 @@ def test_final_score_vs_alpha6_conflict_quantifies_bnb_no_order():
             {"symbol": "BNB-USDT", "ts": ts + timedelta(hours=8), "close": 680.0},
             {"symbol": "BNB-USDT", "ts": ts + timedelta(hours=12), "close": 690.0},
             {"symbol": "BNB-USDT", "ts": ts + timedelta(hours=24), "close": 720.0},
+            {"symbol": "BTC-USDT", "ts": ts, "close": 70000.0},
+            {"symbol": "BTC-USDT", "ts": ts + timedelta(hours=4), "close": 71000.0},
+        ]
+    )
+    negative_expectancy = pl.DataFrame(
+        [
+            {
+                "symbol": "BNB-USDT",
+                "negexp_closed_cycles": "3",
+                "negexp_net_expectancy_bps": "-151.83",
+                "adjusted_entry_expectancy_bps": "0",
+                "entry_bad_cycles": "0",
+                "exit_bad_cycles": "1",
+                "min_hold_violation_cycles": "1",
+            }
         ]
     )
 
     rows = _final_score_vs_alpha6_conflict_for_export(
         candidate_events=candidate_events,
         market_bars=market_bars,
+        negative_expectancy=negative_expectancy,
     ).to_dicts()
 
-    assert len(rows) == 1
-    row = rows[0]
+    assert len(rows) == 2
+    row = next(row for row in rows if row["symbol"] == "BNB-USDT")
     assert row["symbol"] == "BNB-USDT"
     assert row["alpha6_score"] == 0.994
     assert row["final_decision"] == "no_order"
     assert row["block_reason"] == "negative_expectancy_fast_fail_open_block"
+    neg_stats = json.loads(row["negative_expectancy_stats"])
+    assert neg_stats["min_hold_violation_cycles"] == "1"
+    assert neg_stats["adjusted_entry_expectancy_bps"] == "0"
     assert row["future_4h_net_bps"] > 400.0
     assert row["future_24h_net_bps"] > 1100.0
     assert row["missed_profit_flag"] is True
+    blocked = next(row for row in rows if row["symbol"] == "BTC-USDT")
+    assert blocked["final_decision"] == "blocked"
+    assert blocked["negative_expectancy_stats"] == "not_observable"
 
     summary = _final_score_vs_alpha6_conflict_summary_md(pl.DataFrame(rows))
-    assert "conflict_count: 1" in summary
+    assert "conflict_count: 2" in summary
+    assert "blocked_final_decision_count: 1" in summary
+    assert "negative_expectancy_block_count: 2" in summary
     assert "BNB-USDT" in summary
     assert "review_final_score_alpha6_conflict" in summary
 
@@ -1058,6 +1097,22 @@ def test_export_daily_pack_includes_final_score_alpha6_conflict(tmp_path):
         ),
         lake / "silver" / "market_bar",
     )
+    write_parquet_dataset(
+        pl.DataFrame(
+            [
+                {
+                    "symbol": "BNB-USDT",
+                    "negexp_closed_cycles": "3",
+                    "negexp_net_expectancy_bps": "-151.83",
+                    "adjusted_entry_expectancy_bps": "0",
+                    "entry_bad_cycles": "0",
+                    "exit_bad_cycles": "1",
+                    "min_hold_violation_cycles": "1",
+                }
+            ]
+        ),
+        lake / "silver" / "v5_negative_expectancy_consistency",
+    )
 
     export = export_daily_pack(
         export_date="2026-05-30",
@@ -1082,6 +1137,7 @@ def test_export_daily_pack_includes_final_score_alpha6_conflict(tmp_path):
         summary = archive.read("reports/final_score_vs_alpha6_conflict_summary.md").decode("utf-8")
     assert len(rows) == 1
     assert rows[0]["symbol"] == "BNB-USDT"
+    assert "min_hold_violation_cycles" in rows[0]["negative_expectancy_stats"]
     assert rows[0]["missed_profit_flag"] == "True"
     assert "conflict_count: 1" in summary
 

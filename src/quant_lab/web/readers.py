@@ -117,6 +117,8 @@ DATASET_PATHS = {
     "v5_bnb_profit_lock_shadow": Path("silver") / "v5_bnb_profit_lock_shadow",
     "v5_bnb_negative_expectancy_attribution": Path("silver")
     / "v5_bnb_negative_expectancy_attribution",
+    "v5_negative_expectancy_consistency": Path("silver")
+    / "v5_negative_expectancy_consistency",
     "v5_candidate_event": Path("silver") / "v5_candidate_event",
     "v5_candidate_label": Path("gold") / "v5_candidate_label",
     "v5_candidate_quality_daily": Path("gold") / "v5_candidate_quality_daily",

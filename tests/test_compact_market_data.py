@@ -93,6 +93,43 @@ def test_market_data_rollups_are_written_idempotently(tmp_path):
     assert spread_row["spread_bps"] > 0
 
 
+def test_market_data_rollups_parse_iso_string_timestamps(tmp_path):
+    lake = tmp_path / "lake"
+    ts = datetime(2026, 5, 31, 10, 0, 15, tzinfo=UTC)
+    write_parquet_dataset(
+        pl.DataFrame(
+            [
+                {"symbol": "BNB-USDT", "ts": ts.isoformat().replace("+00:00", "Z"), "size": 1.0},
+                {
+                    "symbol": "BNB-USDT",
+                    "ts": (ts + timedelta(seconds=10)).isoformat().replace("+00:00", "Z"),
+                    "size": 2.0,
+                },
+            ]
+        ),
+        lake / "silver/trade_print",
+    )
+    write_parquet_dataset(
+        pl.DataFrame(
+            [
+                {
+                    "symbol": "BNB-USDT",
+                    "channel": "books5",
+                    "ts": ts.isoformat().replace("+00:00", "Z"),
+                    "asks_json": "[[\"101\", \"1\"]]",
+                    "bids_json": "[[\"100\", \"1\"]]",
+                }
+            ]
+        ),
+        lake / "silver/orderbook_snapshot",
+    )
+
+    result = build_market_data_1m_rollups(lake, dry_run=False)
+
+    assert result.rollup_rows == {"trade_activity_1m": 1, "orderbook_spread_1m": 1}
+    assert read_parquet_dataset(lake / "silver/trade_activity_1m")["trade_count"][0] == 2
+
+
 def test_market_data_rollup_lookback_skips_old_source_files(tmp_path):
     lake = tmp_path / "lake"
     source = lake / "silver/trade_print"

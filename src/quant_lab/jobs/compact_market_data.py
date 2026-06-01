@@ -134,7 +134,7 @@ def build_trade_activity_1m_rollup(
         if "size" in schema
         else pl.lit(None).cast(pl.Float64).alias("size_sum")
     )
-    ts_expr = pl.col("ts").cast(pl.Datetime(time_zone="UTC"), strict=False)
+    ts_expr = _timestamp_expr("ts")
     filtered = lazy.with_columns(ts_expr.alias("_ts"))
     if since is not None:
         filtered = filtered.filter(pl.col("_ts") >= since)
@@ -180,7 +180,7 @@ def build_orderbook_spread_1m_rollup(
         lazy.select(selected_columns)
         .with_columns(
             [
-                pl.col("ts").cast(pl.Datetime(time_zone="UTC"), strict=False).alias("_ts"),
+                _timestamp_expr("ts").alias("_ts"),
                 channel_expr,
                 pl.struct(["asks_json", "bids_json"])
                 .map_elements(_spread_bps, return_dtype=pl.Float64)
@@ -213,6 +213,17 @@ def _rollup_since(now: datetime, lookback_hours: int | None) -> datetime | None:
     if hours <= 0:
         return None
     return now - timedelta(hours=hours)
+
+
+def _timestamp_expr(column: str) -> pl.Expr:
+    return pl.coalesce(
+        [
+            pl.col(column).cast(pl.Datetime(time_zone="UTC"), strict=False),
+            pl.col(column)
+            .cast(pl.Utf8, strict=False)
+            .str.to_datetime(time_zone="UTC", strict=False),
+        ]
+    )
 
 
 def _source_lazy(path: Path, *, since: datetime | None) -> pl.LazyFrame | None:

@@ -9,7 +9,7 @@ from typing import Any
 
 import polars as pl
 
-from quant_lab.data.lake import read_parquet_lazy, write_parquet_dataset
+from quant_lab.data.lake import read_parquet_lazy, upsert_parquet_dataset
 
 HF_DATASETS = {
     "okx_public_ws": Path("bronze") / "okx_public_ws",
@@ -18,6 +18,8 @@ HF_DATASETS = {
 }
 ORDERBOOK_SPREAD_ROLLUP = Path("silver") / "orderbook_spread_1m"
 TRADE_ACTIVITY_ROLLUP = Path("silver") / "trade_activity_1m"
+ORDERBOOK_SPREAD_ROLLUP_KEYS = ["symbol", "channel", "minute_ts"]
+TRADE_ACTIVITY_ROLLUP_KEYS = ["symbol", "minute_ts"]
 
 
 @dataclass
@@ -52,20 +54,51 @@ def compact_market_data(
     current = now or datetime.now(UTC)
     root = Path(lake_root)
     result = MarketDataCompactionResult(lake_root=str(root), dry_run=dry_run, started_at=current)
-    trade_rollup = build_trade_activity_1m_rollup(root)
-    orderbook_rollup = build_orderbook_spread_1m_rollup(root)
-    if not dry_run:
-        if not trade_rollup.is_empty():
-            write_parquet_dataset(trade_rollup, root / TRADE_ACTIVITY_ROLLUP)
-        if not orderbook_rollup.is_empty():
-            write_parquet_dataset(orderbook_rollup, root / ORDERBOOK_SPREAD_ROLLUP)
-    result.rollup_rows["trade_activity_1m"] = trade_rollup.height
-    result.rollup_rows["orderbook_spread_1m"] = orderbook_rollup.height
+    _build_and_write_rollups(root, dry_run=dry_run, result=result)
     _archive_old_okx_public_ws(
         root, hot_hours=hot_hours, dry_run=dry_run, now=current, result=result
     )
     result.finished_at = datetime.now(UTC)
     return result
+
+
+def build_market_data_1m_rollups(
+    lake_root: str | Path,
+    *,
+    dry_run: bool = True,
+    now: datetime | None = None,
+) -> MarketDataCompactionResult:
+    current = now or datetime.now(UTC)
+    root = Path(lake_root)
+    result = MarketDataCompactionResult(lake_root=str(root), dry_run=dry_run, started_at=current)
+    _build_and_write_rollups(root, dry_run=dry_run, result=result)
+    result.finished_at = datetime.now(UTC)
+    return result
+
+
+def _build_and_write_rollups(
+    root: Path,
+    *,
+    dry_run: bool,
+    result: MarketDataCompactionResult,
+) -> None:
+    trade_rollup = build_trade_activity_1m_rollup(root)
+    orderbook_rollup = build_orderbook_spread_1m_rollup(root)
+    if not dry_run:
+        if not trade_rollup.is_empty():
+            upsert_parquet_dataset(
+                trade_rollup,
+                root / TRADE_ACTIVITY_ROLLUP,
+                key_columns=TRADE_ACTIVITY_ROLLUP_KEYS,
+            )
+        if not orderbook_rollup.is_empty():
+            upsert_parquet_dataset(
+                orderbook_rollup,
+                root / ORDERBOOK_SPREAD_ROLLUP,
+                key_columns=ORDERBOOK_SPREAD_ROLLUP_KEYS,
+            )
+    result.rollup_rows["trade_activity_1m"] = trade_rollup.height
+    result.rollup_rows["orderbook_spread_1m"] = orderbook_rollup.height
 
 
 def build_trade_activity_1m_rollup(lake_root: str | Path) -> pl.DataFrame:

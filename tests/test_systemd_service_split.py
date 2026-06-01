@@ -134,6 +134,9 @@ def test_scheduled_compaction_covers_hot_ws_datasets():
 
     assert "compact_lake_hot_datasets.sh" in unit
     assert "compact-lake-dataset" in script
+    assert "build-market-data-rollups" in script
+    assert "START_MARKET_DATA_ROLLUPS" in script
+    assert "WARN_MARKET_DATA_ROLLUPS_FAILED" in script
     assert "repair-lake-partitions" in script
     assert "START_REPAIR_PARTITIONS" in script
     assert "WARN_REPAIR_PARTITIONS_FAILED" in script

@@ -106,6 +106,25 @@ compact_dataset_direct_only() {
   echo "FINISH_DIRECT_COMPACT dataset=${dataset}"
 }
 
+build_market_data_rollups() {
+  local status
+
+  echo "START_MARKET_DATA_ROLLUPS timeout_seconds=${COMPACT_DATASET_TIMEOUT_SECONDS}"
+  set +e
+  timeout --kill-after=30s "${COMPACT_DATASET_TIMEOUT_SECONDS}s" \
+    "${QLAB_BIN}" build-market-data-rollups \
+    --lake-root "${LAKE_ROOT}" \
+    --apply \
+    --compact-output
+  status="$?"
+  set -e
+  if (( status != 0 )); then
+    echo "WARN_MARKET_DATA_ROLLUPS_FAILED status=${status}"
+    return 0
+  fi
+  echo "FINISH_MARKET_DATA_ROLLUPS"
+}
+
 repair_dataset_partitions() {
   local dataset="$1"
   local target_rows="$2"
@@ -306,6 +325,8 @@ done
 for dataset in "${OPS_DATASETS[@]}"; do
   compact_if_file_count_at_least "${dataset}" 250000 100 20
 done
+
+build_market_data_rollups
 
 cleanup_internal_compaction_dirs
 

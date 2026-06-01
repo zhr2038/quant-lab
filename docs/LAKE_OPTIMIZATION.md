@@ -27,6 +27,7 @@ Run compaction periodically:
 qlab compact-lake-dataset --lake-root /var/lib/quant-lab/lake --dataset okx_public_ws
 qlab compact-lake-dataset --lake-root /var/lib/quant-lab/lake --dataset trade_print
 qlab compact-lake-dataset --lake-root /var/lib/quant-lab/lake --dataset orderbook_snapshot
+qlab build-market-data-rollups --lake-root /var/lib/quant-lab/lake --apply
 qlab lake-health --lake-root /var/lib/quant-lab/lake
 ```
 
@@ -39,6 +40,16 @@ unpartitioned direct batches. The compaction script also prunes stale internal
 staging directories and empty `._tmp` directories older than 60 minutes. Active
 writers use dataset locks and short-lived temp files; the cleanup deliberately
 avoids fresh temp paths.
+
+The same maintenance pass also builds derived 1-minute rollups:
+
+- `silver/trade_activity_1m` from `silver/trade_print`
+- `silver/orderbook_spread_1m` from `silver/orderbook_snapshot`
+
+These rollups are read-only cache/reporting datasets. If raw WebSocket source
+datasets exist but the rollups are absent, the web data-health page reports a
+warning with the `build-market-data-rollups` command instead of treating the
+raw market feed as missing.
 
 For hot direct-append datasets, daily compaction skips existing
 `compact_*.parquet` outputs by default and only compacts new direct batch files.

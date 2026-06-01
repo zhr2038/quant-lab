@@ -231,6 +231,11 @@ EVENT_DRIVEN_V5_DATASET_STATUSES = {
     "v5_bnb_profit_lock_shadow": "event_driven_no_recent_bnb_profit_lock",
 }
 EVENT_DRIVEN_OK_STATUSES = set(EVENT_DRIVEN_V5_DATASET_STATUSES.values())
+DERIVED_ROLLUP_SOURCE_DATASETS = {
+    "trade_activity_1m": "trade_print",
+    "orderbook_spread_1m": "orderbook_snapshot",
+}
+DERIVED_ROLLUP_PENDING_STATUS = "derived_rollup_pending"
 STALE_DATASET_SCHEMA: dict[str, Any] = {
     "takeaway": pl.Utf8,
     "severity": pl.Utf8,
@@ -4313,6 +4318,7 @@ def _stale_dataset_rows(lake_root: str | Path) -> pl.DataFrame:
             status = EVENT_DRIVEN_V5_DATASET_STATUSES[name]
         if name in HISTORICAL_RESEARCH_DATASETS and status == "stale":
             status = "historical_research_snapshot"
+        status = _derived_rollup_status(lake_root, name, snapshot, status)
         if _should_show_stale_dataset_row(snapshot, status):
             status_text = str(status)
             rows.append(
@@ -4371,6 +4377,9 @@ def _stale_dataset_takeaway(dataset_name: str, status: str, snapshot: DatasetSna
     status_label = str(display_value(status))
     if snapshot.warning:
         return f"{dataset_label} 读取异常：{snapshot.warning}"
+    if status == DERIVED_ROLLUP_PENDING_STATUS:
+        source_label = _dataset_display_name(DERIVED_ROLLUP_SOURCE_DATASETS[dataset_name])
+        return f"{dataset_label} 暂无派生数据：{source_label} 已存在，需运行 1m rollup 构建"
     if snapshot.rows == 0:
         return f"{dataset_label} 暂无数据：{status_label}"
     if status == "stale":
@@ -4389,6 +4398,8 @@ def _stale_dataset_severity(
 ) -> str:
     if snapshot.warning:
         return "CRITICAL"
+    if status == DERIVED_ROLLUP_PENDING_STATUS:
+        return "WARNING"
     if dataset_name in {"market_bar", "cost_bucket_daily", "risk_permission"}:
         return "CRITICAL"
     if status in {"missing", "unknown"}:
@@ -4405,6 +4416,11 @@ def _stale_dataset_next_action(
 ) -> str:
     if snapshot.warning:
         return "先修复数据集读取异常，再重新打开页面验证"
+    if status == DERIVED_ROLLUP_PENDING_STATUS or dataset_name in DERIVED_ROLLUP_SOURCE_DATASETS:
+        return (
+            "运行 qlab build-market-data-rollups --lake-root /var/lib/quant-lab/lake "
+            "--apply 刷新 1m 派生表"
+        )
     if dataset_name == "market_bar":
         return "检查 OKX REST/WS 采集任务并补齐 market_bar"
     if dataset_name == "feature_value":
@@ -4446,6 +4462,8 @@ def _dataset_display_name(dataset_name: str) -> str:
         "paper_slippage_coverage": "纸面滑点覆盖",
         "trade_print": "OKX 成交流",
         "orderbook_snapshot": "OKX 订单簿",
+        "trade_activity_1m": "成交活跃度 1m 聚合",
+        "orderbook_spread_1m": "订单簿价差 1m 聚合",
         "okx_public_ws": "OKX WebSocket 原始数据",
     }
     if dataset_name in labels:
@@ -4465,6 +4483,25 @@ def _empty_dataset_status(dataset_name: str) -> str:
     if dataset_name in ENTRY_QUALITY_DATASETS:
         return "entry_quality_optional"
     return "missing"
+
+
+def _derived_rollup_status(
+    lake_root: str | Path,
+    dataset_name: str,
+    snapshot: DatasetSnapshot,
+    status: str,
+) -> str:
+    source_dataset = DERIVED_ROLLUP_SOURCE_DATASETS.get(dataset_name)
+    if not source_dataset:
+        return status
+    if snapshot.rows > 0:
+        return status
+    if status not in {"missing", "unknown"}:
+        return status
+    source_snapshot = _dataset_snapshot(lake_root, source_dataset)
+    if source_snapshot.rows > 0 and not source_snapshot.warning:
+        return DERIVED_ROLLUP_PENDING_STATUS
+    return status
 
 
 def _should_show_stale_dataset_row(snapshot: DatasetSnapshot, status: str) -> bool:

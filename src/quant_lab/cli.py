@@ -37,6 +37,7 @@ from quant_lab.ingest.okx_readonly_private import (
 )
 from quant_lab.ingest.okx_ws_public import collect_okx_public_ws, collect_okx_public_ws_universe
 from quant_lab.ingest.v5_reports import inspect_v5_reports, publish_v5_reports_to_lake
+from quant_lab.jobs.compact_market_data import build_market_data_1m_rollups
 from quant_lab.ops.data_quality import run_data_quality
 from quant_lab.ops.lake_health import (
     lake_dataset_quality_summary,
@@ -771,6 +772,41 @@ def compact_lake_dataset_command(
         ),
     )
     typer.echo(json.dumps(result.__dict__, indent=None if compact_output else 2, sort_keys=True))
+
+
+@app.command("build-market-data-rollups")
+def build_market_data_rollups_command(
+    lake_root: Annotated[
+        Path,
+        typer.Option(
+            "--lake-root",
+            file_okay=False,
+            dir_okay=True,
+            writable=True,
+            help="quant-lab lake root containing silver trade/orderbook source datasets.",
+        ),
+    ],
+    apply: Annotated[
+        bool,
+        typer.Option(
+            "--apply/--dry-run",
+            help="Write derived 1m rollups. Default is dry-run.",
+        ),
+    ] = False,
+    compact_output: Annotated[
+        bool,
+        typer.Option(
+            "--compact-output/--full-output",
+            help="Emit a single-line summary suitable for systemd journals.",
+        ),
+    ] = False,
+) -> None:
+    result = run_with_job_metrics(
+        lake_root=lake_root,
+        job_name="build-market-data-rollups",
+        func=lambda: build_market_data_1m_rollups(lake_root, dry_run=not apply),
+    )
+    typer.echo(json.dumps(result.to_dict(), indent=None if compact_output else 2, sort_keys=True))
 
 
 @app.command("repair-lake-partitions")

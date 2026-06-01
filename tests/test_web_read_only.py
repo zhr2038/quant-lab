@@ -665,6 +665,40 @@ def test_data_health_stale_rows_include_takeaway_severity_and_action(tmp_path):
     assert "建议动作" in localized.columns
 
 
+def test_data_health_marks_missing_market_rollups_as_pending_when_sources_exist(tmp_path):
+    lake_root = tmp_path / "lake"
+    now = datetime.now(UTC)
+    write_parquet_dataset(
+        pl.DataFrame(
+            [{"symbol": "BNB-USDT", "ts": now, "size": 1.0}]
+        ),
+        lake_root / "silver" / "trade_print",
+    )
+    write_parquet_dataset(
+        pl.DataFrame(
+            [
+                {
+                    "symbol": "BNB-USDT",
+                    "channel": "books5",
+                    "ts": now,
+                    "asks_json": "[[\"101\", \"1\"]]",
+                    "bids_json": "[[\"100\", \"1\"]]",
+                }
+            ]
+        ),
+        lake_root / "silver" / "orderbook_snapshot",
+    )
+
+    rows = readers.data_health_summary(lake_root)["stale_datasets"].to_dicts()
+    by_dataset = {row["dataset"]: row for row in rows}
+
+    for dataset in ("trade_activity_1m", "orderbook_spread_1m"):
+        assert by_dataset[dataset]["status"] == "derived_rollup_pending"
+        assert by_dataset[dataset]["severity"] == "WARNING"
+        assert "build-market-data-rollups" in by_dataset[dataset]["next_action"]
+        assert "暂无派生数据" in by_dataset[dataset]["takeaway"]
+
+
 def test_data_health_reads_v5_paper_run_schema_evolution_without_warning(tmp_path):
     dataset = tmp_path / "lake" / "silver" / "v5_paper_strategy_run"
     dataset.mkdir(parents=True)

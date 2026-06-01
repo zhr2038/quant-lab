@@ -93,12 +93,14 @@ SNAPSHOT_META_DATASETS = {
     "cost_bucket_daily",
     "cost_health_daily",
     "gate_decision",
+    "strategy_health_daily",
     "strategy_opportunity_advisory",
     "risk_permission",
     "risk_permission_api_dependency_meta",
     "research_portfolio_status",
     "alpha_factory_promotion_queue",
     "alpha_factory_result",
+    "v5_gate_compliance_daily",
 }
 STRATEGY_OPPORTUNITY_ADVISORY_TTL_SECONDS = 3 * 60 * 60
 UNOBSERVABLE_TEXT_VALUES = {"", "none", "null", "nan", "not_observable", "unknown"}

@@ -198,6 +198,9 @@ def test_publish_ws_messages_to_lake(tmp_path):
 
     assert trades["symbol"][0] == "BTC-USDT"
     assert books["symbol"][0] == "BTC-USDT"
+    assert books["best_ask"][0] == 101.0
+    assert books["best_bid"][0] == 100.0
+    assert books["spread_bps"][0] > 0
     assert raw.height == 3
 
 

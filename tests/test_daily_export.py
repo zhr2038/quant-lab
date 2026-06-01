@@ -188,6 +188,8 @@ def test_snapshot_meta_written_for_api_dependency_datasets(tmp_path):
         "alpha_factory_result",
         "risk_permission",
         "gate_decision",
+        "strategy_health_daily",
+        "v5_gate_compliance_daily",
         "cost_bucket_daily",
         "cost_health_daily",
         "risk_permission_api_dependency_meta",

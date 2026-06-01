@@ -193,6 +193,31 @@ def test_orderbook_spread_rollup_prefers_spread_bps_without_json_udf(tmp_path, m
     assert spreads["spread_bps"][0] == 12.5
 
 
+def test_orderbook_spread_rollup_warns_on_legacy_json_udf_fallback(tmp_path):
+    lake = tmp_path / "lake"
+    ts = datetime(2026, 5, 31, 10, 0, 15, tzinfo=UTC)
+    write_parquet_dataset(
+        pl.DataFrame(
+            [
+                {
+                    "symbol": "BNB-USDT",
+                    "channel": "books5",
+                    "ts": ts,
+                    "asks_json": "[[\"101\", \"1\"]]",
+                    "bids_json": "[[\"100\", \"1\"]]",
+                }
+            ]
+        ),
+        lake / "silver/orderbook_snapshot",
+    )
+    warnings: list[str] = []
+
+    spreads = build_orderbook_spread_1m_rollup(lake, warnings=warnings)
+
+    assert spreads.height == 1
+    assert "orderbook_rollup_python_udf_fallback" in warnings
+
+
 def test_recent_file_selection_uses_index_max_ts_not_mtime(tmp_path):
     lake = tmp_path / "lake"
     source = lake / "silver/trade_print"
@@ -214,6 +239,25 @@ def test_recent_file_selection_uses_index_max_ts_not_mtime(tmp_path):
 
     assert trades.height == 1
     assert trades["size_sum"][0] == 2.0
+
+
+def test_rollup_records_warning_when_file_index_missing(tmp_path):
+    lake = tmp_path / "lake"
+    ts = datetime(2026, 5, 31, 10, 0, 15, tzinfo=UTC)
+    write_parquet_dataset(
+        pl.DataFrame([{"symbol": "BNB-USDT", "ts": ts, "size": 2.0}]),
+        lake / "silver/trade_print",
+    )
+    warnings: list[str] = []
+
+    trades = build_trade_activity_1m_rollup(
+        lake,
+        since=ts - timedelta(hours=1),
+        warnings=warnings,
+    )
+
+    assert trades.height == 1
+    assert any(item.startswith("file_index_missing_fallback_rglob:") for item in warnings)
 
 
 def test_compact_market_data_archives_only_old_ws_files_when_applied(tmp_path):

@@ -101,8 +101,12 @@ def _build_and_write_rollups(
             root,
             [HF_DATASETS["trade_print"], HF_DATASETS["orderbook_snapshot"]],
         )
-    trade_rollup = build_trade_activity_1m_rollup(root, since=since)
-    orderbook_rollup = build_orderbook_spread_1m_rollup(root, since=since)
+    trade_rollup = build_trade_activity_1m_rollup(root, since=since, warnings=result.warnings)
+    orderbook_rollup = build_orderbook_spread_1m_rollup(
+        root,
+        since=since,
+        warnings=result.warnings,
+    )
     if not dry_run:
         if not trade_rollup.is_empty():
             upsert_parquet_dataset(
@@ -124,10 +128,11 @@ def build_trade_activity_1m_rollup(
     lake_root: str | Path,
     *,
     since: datetime | None = None,
+    warnings: list[str] | None = None,
 ) -> pl.DataFrame:
     path = Path(lake_root) / HF_DATASETS["trade_print"]
     try:
-        lazy = _source_lazy(path, since=since)
+        lazy = _source_lazy(path, since=since, warnings=warnings)
         if lazy is None:
             return pl.DataFrame()
         schema = set(lazy.collect_schema().names())
@@ -163,10 +168,11 @@ def build_orderbook_spread_1m_rollup(
     lake_root: str | Path,
     *,
     since: datetime | None = None,
+    warnings: list[str] | None = None,
 ) -> pl.DataFrame:
     path = Path(lake_root) / HF_DATASETS["orderbook_snapshot"]
     try:
-        lazy = _source_lazy(path, since=since)
+        lazy = _source_lazy(path, since=since, warnings=warnings)
         if lazy is None:
             return pl.DataFrame()
         schema = set(lazy.collect_schema().names())
@@ -184,6 +190,8 @@ def build_orderbook_spread_1m_rollup(
         ]
         spread_expr = pl.col("spread_bps").cast(pl.Float64, strict=False).alias("spread_bps")
     elif {"asks_json", "bids_json"}.issubset(schema):
+        if warnings is not None:
+            warnings.append("orderbook_rollup_python_udf_fallback")
         selected_columns = [
             "symbol",
             "ts",
@@ -246,10 +254,15 @@ def _timestamp_expr(column: str) -> pl.Expr:
     )
 
 
-def _source_lazy(path: Path, *, since: datetime | None) -> pl.LazyFrame | None:
+def _source_lazy(
+    path: Path,
+    *,
+    since: datetime | None,
+    warnings: list[str] | None = None,
+) -> pl.LazyFrame | None:
     if since is None:
         return read_parquet_lazy(path)
-    files = _recent_parquet_files(path, since=since)
+    files = _recent_parquet_files(path, since=since, warnings=warnings)
     if not files:
         return None
     try:
@@ -263,12 +276,19 @@ def _source_lazy(path: Path, *, since: datetime | None) -> pl.LazyFrame | None:
         return pl.scan_parquet([str(file_path) for file_path in files], hive_partitioning=False)
 
 
-def _recent_parquet_files(path: Path, *, since: datetime) -> list[Path]:
+def _recent_parquet_files(
+    path: Path,
+    *,
+    since: datetime,
+    warnings: list[str] | None = None,
+) -> list[Path]:
     if not path.exists() or not path.is_dir():
         return []
     indexed_files = _recent_parquet_files_from_index(path, since=since)
     if indexed_files is not None:
         return indexed_files
+    if warnings is not None:
+        warnings.append(f"file_index_missing_fallback_rglob:{path.as_posix()}")
     cutoff = since.timestamp()
     files: list[Path] = []
     for candidate in sorted(path.rglob("*.parquet")):

@@ -54,6 +54,9 @@ ORDERBOOK_SNAPSHOT_SCHEMA = {
     "day": pl.Utf8,
     "channel": pl.Utf8,
     "ts": pl.Utf8,
+    "best_ask": pl.Float64,
+    "best_bid": pl.Float64,
+    "spread_bps": pl.Float64,
     "asks_json": pl.Utf8,
     "bids_json": pl.Utf8,
     "checksum": pl.Int64,
@@ -592,6 +595,8 @@ def normalize_okx_ws_orderbooks(messages: Sequence[Mapping[str, Any]]) -> list[d
             if not isinstance(item, Mapping):
                 continue
             event_ts = _event_timestamp_or_ingest(item.get("ts"), ingest_ts)
+            best_ask = _best_orderbook_price(item.get("asks"))
+            best_bid = _best_orderbook_price(item.get("bids"))
             rows.append(
                 {
                     "venue": "okx",
@@ -599,6 +604,9 @@ def normalize_okx_ws_orderbooks(messages: Sequence[Mapping[str, Any]]) -> list[d
                     "day": event_ts[:10],
                     "channel": channel,
                     "ts": event_ts,
+                    "best_ask": best_ask,
+                    "best_bid": best_bid,
+                    "spread_bps": _spread_bps_from_best(best_ask, best_bid),
                     "asks_json": _json_dumps(item.get("asks", [])),
                     "bids_json": _json_dumps(item.get("bids", [])),
                     "checksum": _optional_int(item.get("checksum")),
@@ -802,6 +810,24 @@ def _optional_float(value: Any) -> float | None:
         return float(value)
     except (TypeError, ValueError):
         return None
+
+
+def _best_orderbook_price(value: Any) -> float | None:
+    if not isinstance(value, Sequence) or isinstance(value, (str, bytes)) or not value:
+        return None
+    first = value[0]
+    if isinstance(first, Sequence) and not isinstance(first, (str, bytes)) and first:
+        first = first[0]
+    return _optional_float(first)
+
+
+def _spread_bps_from_best(ask: float | None, bid: float | None) -> float | None:
+    if ask is None or bid is None or ask <= bid:
+        return None
+    mid = (ask + bid) / 2.0
+    if mid <= 0:
+        return None
+    return ((ask - bid) / mid) * 10_000.0
 
 
 def _optional_int(value: Any) -> int | None:

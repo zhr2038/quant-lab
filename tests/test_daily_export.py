@@ -92,6 +92,80 @@ def test_export_daily_pack_writes_required_members(tmp_path):
         assert archive.read("charts/market_close.png").startswith(b"\x89PNG")
 
 
+def test_bnb_paper_summary_uses_latest_strategy_day_view():
+    from quant_lab.strategy_telemetry.analyze import _latest_bnb_paper_strategy_daily
+
+    frame = pl.DataFrame(
+        [
+            {
+                "strategy_id": "BNB_F3_DOMINANT_ENTRY_PAPER_V1",
+                "paper_date": "2026-05-31",
+                "entry_count": 2,
+                "bundle_ts": datetime(2026, 5, 31, 10, tzinfo=UTC),
+            },
+            {
+                "strategy_id": "BNB_F3_DOMINANT_ENTRY_PAPER_V1",
+                "paper_date": "2026-05-31",
+                "entry_count": 7,
+                "bundle_ts": datetime(2026, 5, 31, 12, tzinfo=UTC),
+            },
+        ]
+    )
+
+    latest = _latest_bnb_paper_strategy_daily(frame)
+    summary = daily_export_module._bnb_paper_strategy_summary_md(latest)
+
+    assert latest.height == 1
+    assert latest["entry_count"][0] == 7
+    assert "- entry_count: 7" in summary
+
+
+def test_market_export_uses_rollup_frames_without_raw_shape():
+    trade_rollup = pl.DataFrame(
+        [
+            {
+                "symbol": "BNB-USDT",
+                "minute_ts": datetime(2026, 5, 31, 10, tzinfo=UTC),
+                "trade_count": 2,
+                "size_sum": 1.5,
+                "latest_trade_ts": datetime(2026, 5, 31, 10, 0, 30, tzinfo=UTC),
+            },
+            {
+                "symbol": "BNB-USDT",
+                "minute_ts": datetime(2026, 5, 31, 10, 1, tzinfo=UTC),
+                "trade_count": 3,
+                "size_sum": 2.5,
+                "latest_trade_ts": datetime(2026, 5, 31, 10, 1, 30, tzinfo=UTC),
+            },
+        ]
+    )
+    spread_rollup = pl.DataFrame(
+        [
+            {
+                "symbol": "BNB-USDT",
+                "channel": "books5",
+                "minute_ts": datetime(2026, 5, 31, 10, tzinfo=UTC),
+                "spread_bps": 4.0,
+                "ts": datetime(2026, 5, 31, 10, tzinfo=UTC),
+            },
+            {
+                "symbol": "BNB-USDT",
+                "channel": "books5",
+                "minute_ts": datetime(2026, 5, 31, 10, 1, tzinfo=UTC),
+                "spread_bps": 5.0,
+                "ts": datetime(2026, 5, 31, 10, 1, tzinfo=UTC),
+            },
+        ]
+    )
+
+    trade = daily_export_module._trade_activity_export_table(trade_rollup).to_dicts()[0]
+    spread = daily_export_module._orderbook_spread_export_table(spread_rollup).to_dicts()[0]
+
+    assert trade["trade_count"] == 5
+    assert trade["size_sum"] == 4.0
+    assert spread["spread_bps"] == 5.0
+
+
 def test_strategy_evidence_coverage_does_not_require_dormant_candidates():
     evidence = pl.DataFrame(
         {

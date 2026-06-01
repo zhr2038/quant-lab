@@ -129,6 +129,51 @@ def test_enforce_readiness_ready_when_all_checks_pass(tmp_path):
     assert report.shadow_only_recommended is False
 
 
+def test_enforce_readiness_dedupe_counts_only_v5_event_datasets(tmp_path):
+    lake = tmp_path / "lake"
+    _write_common_ready_inputs(
+        lake,
+        duplicate_rate=0.99,
+        raw_imported_rows=193_000_000,
+        unique_event_rows=1,
+        duplicate_event_rows=192_999_999,
+        unique_request_count=2,
+        unique_actual_fallback_count=0,
+    )
+    _write_cost_rows(lake, source="mixed_actual_proxy")
+    now = datetime.now(UTC)
+    write_parquet_dataset(
+        pl.DataFrame(
+            [
+                {
+                    "event_key": "req-1",
+                    "event_type": "request",
+                    "ts_utc": now.isoformat(),
+                    "raw_payload_json": "{}",
+                },
+                {
+                    "event_key": "req-2",
+                    "event_type": "request",
+                    "ts_utc": now.isoformat(),
+                    "raw_payload_json": "{}",
+                },
+            ]
+        ),
+        lake / "silver/v5_quant_lab_request",
+    )
+    write_parquet_dataset(
+        pl.DataFrame(
+            [{"symbol": "BNB-USDT", "ts": now.isoformat(), "close": 1.0}]
+        ),
+        lake / "silver/market_bar",
+    )
+
+    report = build_enforce_readiness_report(lake)
+
+    assert report.metrics["raw_imported_rows"] == 2
+    assert report.metrics["duplicate_rate"] == 0.0
+
+
 def test_enforce_readiness_uses_lazy_telemetry_counts(tmp_path, monkeypatch):
     lake = tmp_path / "lake"
     _write_common_ready_inputs(lake)

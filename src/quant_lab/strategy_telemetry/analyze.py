@@ -31,6 +31,7 @@ GOLD_DATASETS = {
     "v5_negative_expectancy_attribution": Path("gold/v5_negative_expectancy_attribution"),
     "v5_bnb_paper_strategy_runs": Path("gold/v5_bnb_paper_strategy_runs"),
     "v5_bnb_paper_strategy_daily": Path("gold/v5_bnb_paper_strategy_daily"),
+    "v5_bnb_paper_strategy_daily_latest": Path("gold/v5_bnb_paper_strategy_daily_latest"),
 }
 
 SILVER = {
@@ -564,6 +565,42 @@ def _mirror_v5_consistency_gold(lake_root: Path) -> None:
         if frame.is_empty():
             continue
         write_parquet_dataset(frame, lake_root / GOLD_DATASETS[gold_name])
+        if gold_name == "v5_bnb_paper_strategy_daily":
+            latest = _latest_bnb_paper_strategy_daily(frame)
+            if not latest.is_empty():
+                write_parquet_dataset(
+                    latest,
+                    lake_root / GOLD_DATASETS["v5_bnb_paper_strategy_daily_latest"],
+                )
+
+
+def _latest_bnb_paper_strategy_daily(frame: pl.DataFrame) -> pl.DataFrame:
+    if frame.is_empty():
+        return frame
+    working = frame
+    if "paper_date" not in working.columns and "as_of_date" in working.columns:
+        working = working.with_columns(
+            pl.col("as_of_date").cast(pl.Utf8, strict=False).alias("paper_date")
+        )
+    if "paper_date" not in working.columns:
+        return working
+    key_columns = [column for column in ["strategy_id", "paper_date"] if column in working.columns]
+    if not key_columns:
+        return working
+    if "bundle_ts" in working.columns:
+        sort_column = "bundle_ts"
+    elif "ingest_ts" in working.columns:
+        sort_column = "ingest_ts"
+    else:
+        sort_column = None
+    if sort_column is None:
+        return working.unique(subset=key_columns, keep="last", maintain_order=True)
+    normalized = _normalize_time(working, sort_column)
+    return (
+        normalized.sort([*key_columns, sort_column])
+        .group_by(key_columns, maintain_order=True)
+        .tail(1)
+    )
 
 
 def _build_candidate_labels_safely(lake_root: Path, analysis_date: str) -> None:

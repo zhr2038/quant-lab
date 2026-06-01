@@ -17,6 +17,8 @@ from datetime import UTC, date, datetime, timedelta
 from pathlib import Path, PurePosixPath
 from typing import Any
 
+os.environ.setdefault("POLARS_MAX_THREADS", "2")
+
 import polars as pl
 from pydantic import BaseModel, ConfigDict, Field
 
@@ -104,6 +106,8 @@ HEAVY_EXPORT_DATASET_LIMITS = {
     "alpha_factory_promotion_queue": 10_000,
     "trade_print": 10_000,
     "orderbook_snapshot": 10_000,
+    "trade_activity_1m": 10_000,
+    "orderbook_spread_1m": 10_000,
     "v5_decision_audit": 5_000,
     "v5_trade_event": 10_000,
     "v5_missed_opportunity_audit": 20_000,
@@ -2987,6 +2991,16 @@ def _load_export_frame(
     dataset_name: str,
 ) -> tuple[pl.DataFrame, int, str | None]:
     dataset_path = readers.dataset_path_for(lake_root, dataset_name)
+    rollup_name = {
+        "trade_print": "trade_activity_1m",
+        "orderbook_snapshot": "orderbook_spread_1m",
+    }.get(dataset_name)
+    if rollup_name:
+        rollup_path = readers.dataset_path_for(lake_root, rollup_name)
+        if rollup_path.exists():
+            row_count = _export_parquet_row_count(_export_parquet_files(dataset_path))
+            warning = f"{dataset_name} export frame skipped; using {rollup_name} rollup"
+            return pl.DataFrame(), row_count, warning
     if dataset_name not in HEAVY_EXPORT_DATASET_LIMITS and not _should_sample_export_dataset(
         dataset_path
     ):
@@ -3270,6 +3284,53 @@ def _filter_bnb_paper_frame(frame: pl.DataFrame) -> pl.DataFrame:
     return frame.filter(predicate) if predicate is not None else frame.head(0)
 
 
+def _trade_activity_export_table(frame: pl.DataFrame) -> pl.DataFrame:
+    if frame.is_empty():
+        return pl.DataFrame()
+    if "trade_count" in frame.columns:
+        aggregations = [
+            pl.col("trade_count").cast(pl.Int64, strict=False).sum().alias("trade_count")
+        ]
+        if "size_sum" in frame.columns:
+            aggregations.append(
+                pl.col("size_sum").cast(pl.Float64, strict=False).sum().alias("size_sum")
+            )
+        if "latest_trade_ts" in frame.columns:
+            aggregations.append(pl.col("latest_trade_ts").max().alias("latest_trade_ts"))
+        elif "minute_ts" in frame.columns:
+            aggregations.append(pl.col("minute_ts").max().alias("latest_trade_ts"))
+        return frame.group_by("symbol").agg(aggregations).sort("symbol")
+    return readers.trade_activity_table(frame)
+
+
+def _orderbook_spread_export_table(frame: pl.DataFrame) -> pl.DataFrame:
+    if frame.is_empty():
+        return pl.DataFrame()
+    if (
+        "spread_bps" in frame.columns
+        and "asks_json" not in frame.columns
+        and "bids_json" not in frame.columns
+    ):
+        working = frame
+        if "ts" not in working.columns and "minute_ts" in working.columns:
+            working = working.rename({"minute_ts": "ts"})
+        sort_columns = [
+            column for column in ["symbol", "channel", "ts"] if column in working.columns
+        ]
+        if sort_columns:
+            group_columns = [
+                column for column in ["symbol", "channel"] if column in working.columns
+            ]
+            if group_columns:
+                return (
+                    working.sort(sort_columns)
+                    .group_by(group_columns, maintain_order=True)
+                    .tail(1)
+                )
+        return working
+    return readers.orderbook_spread_table(frame)
+
+
 def _latest_paper_tracking_date(frames: list[pl.DataFrame]) -> date:
     values: list[str] = []
     for frame in frames:
@@ -3326,7 +3387,10 @@ def _dataset_members(frames: dict[str, pl.DataFrame]) -> dict[str, _MemberPayloa
         _filter_bnb_paper_frame(paper_runs),
     )
     bnb_paper_daily = _prefer_frame(
-        frames.get("v5_bnb_paper_strategy_daily", pl.DataFrame()),
+        frames.get(
+            "v5_bnb_paper_strategy_daily_latest",
+            frames.get("v5_bnb_paper_strategy_daily", pl.DataFrame()),
+        ),
         _filter_bnb_paper_frame(paper_daily),
     )
     sol_protect_loss_attribution = frames.get(
@@ -3456,8 +3520,18 @@ def _dataset_members(frames: dict[str, pl.DataFrame]) -> dict[str, _MemberPayloa
     )
     strategy_level_dashboard = _strategy_level_dashboard_for_export(opportunity_advisory)
     gates = _gate_decisions_for_export(frames.get("gate_decision", pl.DataFrame()))
-    trades = _normalize_symbol_frame(frames.get("trade_print", pl.DataFrame()))
-    books = _normalize_symbol_frame(frames.get("orderbook_snapshot", pl.DataFrame()))
+    trades = _normalize_symbol_frame(
+        _prefer_frame(
+            frames.get("trade_activity_1m", pl.DataFrame()),
+            frames.get("trade_print", pl.DataFrame()),
+        )
+    )
+    books = _normalize_symbol_frame(
+        _prefer_frame(
+            frames.get("orderbook_spread_1m", pl.DataFrame()),
+            frames.get("orderbook_snapshot", pl.DataFrame()),
+        )
+    )
     v5_health = frames.get("strategy_health_daily", pl.DataFrame())
     v5_decisions = frames.get("v5_decision_audit", pl.DataFrame())
     v5_execution = frames.get("v5_execution_quality_daily", pl.DataFrame())
@@ -3504,10 +3578,10 @@ def _dataset_members(frames: dict[str, pl.DataFrame]) -> dict[str, _MemberPayloa
             "market/market_bars_tail.csv", _tail_by_time(market, "ts")
         ),
         "market/trade_activity.csv": _csv_member(
-            "market/trade_activity.csv", readers.trade_activity_table(trades)
+            "market/trade_activity.csv", _trade_activity_export_table(trades)
         ),
         "market/orderbook_spread.csv": _csv_member(
-            "market/orderbook_spread.csv", readers.orderbook_spread_table(books)
+            "market/orderbook_spread.csv", _orderbook_spread_export_table(books)
         ),
         "market/funding_open_interest.csv": _csv_text(
             pl.DataFrame(schema={"symbol": pl.Utf8, "metric": pl.Utf8, "value": pl.Utf8})
@@ -7311,6 +7385,8 @@ def _v5_quant_lab_consistency_dashboard_md(
         opportunity_advisory,
         frames.get("alpha_factory_promotion_queue", pl.DataFrame()),
     )
+    advisory_duplicate_count = _advisory_duplicate_key_count(opportunity_advisory)
+    bnb_paper_count_match = bnb_paper_v5_entry_count == bnb_paper_quant_lab_entry_count
     return "\n".join(
         [
             "# V5 / Quant Lab consistency dashboard",
@@ -7318,7 +7394,7 @@ def _v5_quant_lab_consistency_dashboard_md(
             "Read-only dashboard. It does not modify V5 live behavior.",
             "",
             f"- live_state_consistency_ok: {str(live_state_ok).lower()}",
-            f"- advisory_duplicate_key_count: {_advisory_duplicate_key_count(opportunity_advisory)}",
+            f"- advisory_duplicate_key_count: {advisory_duplicate_count}",
             f"- final_score_vs_alpha6_conflict_count: {len(conflict_rows)}",
             f"- final_score_conflict_partial_complete_count: {partial_complete_count}",
             f"- bnb_conflict_future_pnl_positive: {str(bnb_future_positive).lower()}",
@@ -7331,7 +7407,7 @@ def _v5_quant_lab_consistency_dashboard_md(
             f"- bnb_paper_today_entry_count: {_bnb_paper_today_entry_count(bnb_paper_daily)}",
             f"- bnb_paper_v5_entry_count: {bnb_paper_v5_entry_count}",
             f"- bnb_paper_quant_lab_entry_count: {bnb_paper_quant_lab_entry_count}",
-            f"- bnb_paper_entry_count_match: {str(bnb_paper_v5_entry_count == bnb_paper_quant_lab_entry_count).lower()}",
+            f"- bnb_paper_entry_count_match: {str(bnb_paper_count_match).lower()}",
             f"- risk_on_selected_symbols_observable: {str(risk_on_observable).lower()}",
             f"- alpha_factory_paper_ready_count: {paper_ready_from_queue}",
             f"- alpha_factory_paper_ready_count_from_queue: {paper_ready_from_queue}",
@@ -7383,16 +7459,29 @@ def _bnb_paper_strategy_summary_md(frame: pl.DataFrame) -> str:
     entry_count = _bnb_paper_today_entry_count(frame)
     complete_count = sum(int(_optional_float(row.get("complete_count")) or 0) for row in rows)
     pending_count = sum(int(_optional_float(row.get("pending_count")) or 0) for row in rows)
+    strategy_count = len(
+        {
+            strategy
+            for strategy in (
+                str(row.get("strategy_id") or row.get("proposal_id") or "").strip()
+                for row in rows
+            )
+            if strategy
+        }
+    )
     return "\n".join(
         [
             "# BNB paper strategy summary",
             "",
-            "Read-only V5 paper telemetry. Entry count is sourced from v5_bnb_paper_strategy_daily.entry_count.",
+            (
+                "Read-only V5 paper telemetry. Entry count is sourced from "
+                "v5_bnb_paper_strategy_daily.entry_count."
+            ),
             "",
             f"- entry_count: {entry_count}",
             f"- complete_count: {complete_count}",
             f"- pending_count: {pending_count}",
-            f"- strategy_count: {len({str(row.get('strategy_id') or row.get('proposal_id') or '') for row in rows if str(row.get('strategy_id') or row.get('proposal_id') or '').strip()})}",
+            f"- strategy_count: {strategy_count}",
             "",
         ]
     )
@@ -7421,7 +7510,9 @@ def _count_decision_rows(frame: pl.DataFrame, decision: str) -> int:
 
 def _is_alpha_factory_row_dict(row: dict[str, Any]) -> bool:
     candidate = str(row.get("strategy_candidate") or "").strip()
-    candidate_key = candidate.split(":", 1)[1] if candidate.startswith("regime_router:") else candidate
+    candidate_key = (
+        candidate.split(":", 1)[1] if candidate.startswith("regime_router:") else candidate
+    )
     source_module = str(row.get("source_module") or "").strip().lower()
     template_family = str(row.get("template_family") or "").strip()
     return (
@@ -7464,7 +7555,11 @@ def _alpha_factory_queue_state_map(frame: pl.DataFrame) -> dict[tuple[str, str, 
         candidate = str(row.get("strategy_candidate") or "").strip()
         if not candidate:
             continue
-        key = (candidate, normalize_symbol(row.get("symbol")) or "UNKNOWN", _optional_int(row.get("horizon_hours")))
+        key = (
+            candidate,
+            normalize_symbol(row.get("symbol")) or "UNKNOWN",
+            _optional_int(row.get("horizon_hours")),
+        )
         state = str(row.get("promotion_state") or row.get("decision") or "").strip().upper()
         out[key] = state
     return out
@@ -7481,13 +7576,20 @@ def _alpha_factory_source_mismatch_count(advisory: pl.DataFrame, queue: pl.DataF
         if str(row.get("decision") or "").strip().upper() != "PAPER_READY":
             continue
         candidate = str(row.get("strategy_candidate") or "").strip()
-        candidate_key = candidate.split(":", 1)[1] if candidate.startswith("regime_router:") else candidate
+        candidate_key = (
+            candidate.split(":", 1)[1] if candidate.startswith("regime_router:") else candidate
+        )
         key = (
             candidate_key,
             normalize_symbol(row.get("symbol")) or "UNKNOWN",
             _optional_int(row.get("horizon_hours")),
         )
-        state = queue_states.get(key) or queue_states.get((key[0], key[1], None)) or queue_states.get((key[0], "UNKNOWN", key[2])) or queue_states.get((key[0], "UNKNOWN", None))
+        state = (
+            queue_states.get(key)
+            or queue_states.get((key[0], key[1], None))
+            or queue_states.get((key[0], "UNKNOWN", key[2]))
+            or queue_states.get((key[0], "UNKNOWN", None))
+        )
         if state != "PAPER_READY":
             count += 1
     return count
@@ -8597,7 +8699,9 @@ def _is_alpha_factory_advisory_row(row: dict[str, Any]) -> bool:
 
 def _is_alpha_factory_promotion_capped_row(row: dict[str, Any]) -> bool:
     candidate = str(row.get("strategy_candidate") or "").strip()
-    candidate_key = candidate.split(":", 1)[1] if candidate.startswith("regime_router:") else candidate
+    candidate_key = (
+        candidate.split(":", 1)[1] if candidate.startswith("regime_router:") else candidate
+    )
     source_module = str(row.get("source_module") or "").strip().lower()
     template_family = str(row.get("template_family") or "").strip()
     return (
@@ -8761,14 +8865,20 @@ def _strategy_opportunity_row_preferred(new: dict[str, Any], current: dict[str, 
     current_time = _advisory_row_time(current)
     if new_time != current_time:
         return new_time > current_time
-    new_priority = _ADVISORY_DECISION_PRIORITY.get(str(new.get("decision") or "").strip().upper(), -1)
-    current_priority = _ADVISORY_DECISION_PRIORITY.get(str(current.get("decision") or "").strip().upper(), -1)
+    new_priority = _ADVISORY_DECISION_PRIORITY.get(
+        str(new.get("decision") or "").strip().upper(), -1
+    )
+    current_priority = _ADVISORY_DECISION_PRIORITY.get(
+        str(current.get("decision") or "").strip().upper(), -1
+    )
     if new_priority != current_priority:
         return new_priority > current_priority
     return str(new.get("source_version") or "") >= str(current.get("source_version") or "")
 
 
-def _dedupe_strategy_opportunity_rows_by_logical_key(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
+def _dedupe_strategy_opportunity_rows_by_logical_key(
+    rows: list[dict[str, Any]],
+) -> list[dict[str, Any]]:
     selected: dict[tuple[str, str, int | None, str, str], dict[str, Any]] = {}
     for row in rows:
         key = _strategy_opportunity_logical_key(row)

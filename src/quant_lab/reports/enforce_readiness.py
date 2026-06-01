@@ -680,6 +680,17 @@ def _telemetry_metrics(
     )
     unique_request_count = _int(strategy_health.get("unique_request_count"))
     unique_actual_fallback_count = _int(strategy_health.get("unique_actual_fallback_count"))
+    v5_event_metrics = _v5_telemetry_event_dedupe_metrics(root)
+    if v5_event_metrics["raw_imported_rows"] > 0:
+        raw_imported_rows = v5_event_metrics["raw_imported_rows"]
+        unique_event_rows = v5_event_metrics["unique_event_rows"]
+        duplicate_event_rows = v5_event_metrics["duplicate_event_rows"]
+        duplicate_rate = v5_event_metrics["duplicate_rate"]
+        exact_duplicate_event_rows = v5_event_metrics["exact_duplicate_event_rows"]
+        conflicting_duplicate_event_rows = v5_event_metrics["conflicting_duplicate_event_rows"]
+        conflicting_duplicate_event_key_count = v5_event_metrics[
+            "conflicting_duplicate_event_key_count"
+        ]
     if duplicate_rate == 0 and not strategy_health:
         duplicate_rate = 1.0
     if duplicate_event_rows == 0 and raw_imported_rows and unique_event_rows:
@@ -725,6 +736,71 @@ def _telemetry_metrics(
             f"decision_audit_count={decision_count}; dedupe_health_status={dedupe_status}; "
             f"dedupe_block_reason={dedupe_reason or 'none'}"
         ),
+    }
+
+
+def _v5_telemetry_event_dedupe_metrics(root: Path) -> dict[str, Any]:
+    rows: list[dict[str, Any]] = []
+    for dataset in (
+        root / "silver" / "v5_quant_lab_request",
+        root / "silver" / "v5_quant_lab_fallback",
+    ):
+        try:
+            lazy = read_parquet_lazy(dataset)
+            schema = set(lazy.collect_schema().names())
+            selected = [
+                column
+                for column in [
+                    "event_id",
+                    "event_key",
+                    "request_id",
+                    "payload_hash",
+                    "raw_payload_hash",
+                ]
+                if column in schema
+            ]
+            if not selected:
+                continue
+            rows.extend(lazy.select(selected).collect().to_dicts())
+        except Exception:
+            continue
+    raw_rows = len(rows)
+    if raw_rows == 0:
+        return {
+            "raw_imported_rows": 0,
+            "unique_event_rows": 0,
+            "duplicate_event_rows": 0,
+            "duplicate_rate": 0.0,
+            "exact_duplicate_event_rows": 0,
+            "conflicting_duplicate_event_rows": 0,
+            "conflicting_duplicate_event_key_count": 0,
+        }
+    by_key: dict[str, set[str]] = {}
+    for row in rows:
+        key = str(
+            row.get("event_id") or row.get("event_key") or row.get("request_id") or ""
+        ).strip()
+        if not key:
+            key = json.dumps(row, sort_keys=True, default=str)
+        payload_hash = str(row.get("payload_hash") or row.get("raw_payload_hash") or "").strip()
+        by_key.setdefault(key, set()).add(payload_hash)
+    unique_rows = len(by_key)
+    duplicate_rows = max(raw_rows - unique_rows, 0)
+    conflicting_keys = sum(1 for hashes in by_key.values() if len({h for h in hashes if h}) > 1)
+    conflicting_rows = sum(
+        max(len(hashes) - 1, 0)
+        for hashes in by_key.values()
+        if len({h for h in hashes if h}) > 1
+    )
+    exact_rows = max(duplicate_rows - conflicting_rows, 0)
+    return {
+        "raw_imported_rows": raw_rows,
+        "unique_event_rows": unique_rows,
+        "duplicate_event_rows": duplicate_rows,
+        "duplicate_rate": duplicate_rows / raw_rows if raw_rows else 0.0,
+        "exact_duplicate_event_rows": exact_rows,
+        "conflicting_duplicate_event_rows": conflicting_rows,
+        "conflicting_duplicate_event_key_count": conflicting_keys,
     }
 
 

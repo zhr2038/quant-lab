@@ -65,6 +65,8 @@ DATASET_PATHS = {
     "v5_negative_expectancy_attribution": Path("gold") / "v5_negative_expectancy_attribution",
     "v5_bnb_paper_strategy_runs": Path("gold") / "v5_bnb_paper_strategy_runs",
     "v5_bnb_paper_strategy_daily": Path("gold") / "v5_bnb_paper_strategy_daily",
+    "v5_bnb_paper_strategy_daily_latest": Path("gold")
+    / "v5_bnb_paper_strategy_daily_latest",
     "sol_protect_paper_loss_attribution": Path("gold")
     / "sol_protect_paper_loss_attribution",
     "sol_protect_paper_loss_summary": Path("gold") / "sol_protect_paper_loss_summary",
@@ -141,6 +143,8 @@ DATASET_PATHS = {
     "v5_trade_event": Path("silver") / "v5_trade_event",
     "trade_print": Path("silver") / "trade_print",
     "orderbook_snapshot": Path("silver") / "orderbook_snapshot",
+    "trade_activity_1m": Path("silver") / "trade_activity_1m",
+    "orderbook_spread_1m": Path("silver") / "orderbook_spread_1m",
     "okx_public_ws": Path("bronze") / "okx_public_ws",
     "okx_private_readonly_fills": Path("bronze") / "okx_private_readonly" / "fills_history",
     "okx_private_readonly_bills": Path("bronze") / "okx_private_readonly" / "bills",
@@ -246,6 +250,8 @@ DATASET_TIMESTAMP_COLUMNS: dict[str, tuple[str, ...]] = {
     "okx_public_ws": ("received_at",),
     "trade_print": ("ts", "ingest_ts"),
     "orderbook_snapshot": ("ts", "ingest_ts"),
+    "trade_activity_1m": ("latest_trade_ts", "minute_ts"),
+    "orderbook_spread_1m": ("ts", "minute_ts"),
     "cost_bucket_daily": ("created_at", "day"),
     "cost_health_daily": ("created_at", "day"),
     "gate_decision": ("created_at",),

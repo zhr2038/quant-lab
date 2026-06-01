@@ -93,6 +93,37 @@ def test_market_data_rollups_are_written_idempotently(tmp_path):
     assert spread_row["spread_bps"] > 0
 
 
+def test_market_data_rollup_lookback_skips_old_source_files(tmp_path):
+    lake = tmp_path / "lake"
+    source = lake / "silver/trade_print"
+    source.mkdir(parents=True)
+    old_ts = datetime(2026, 5, 30, 10, 0, tzinfo=UTC)
+    new_ts = datetime(2026, 5, 31, 10, 0, tzinfo=UTC)
+    old_file = source / "old.parquet"
+    new_file = source / "new.parquet"
+    pl.DataFrame([{"symbol": "BNB-USDT", "ts": old_ts, "size": 100.0}]).write_parquet(
+        old_file
+    )
+    pl.DataFrame([{"symbol": "BNB-USDT", "ts": new_ts, "size": 2.0}]).write_parquet(
+        new_file
+    )
+    old_mtime = old_ts.timestamp()
+    new_mtime = new_ts.timestamp()
+    os.utime(old_file, (old_mtime, old_mtime))
+    os.utime(new_file, (new_mtime, new_mtime))
+
+    result = build_market_data_1m_rollups(
+        lake,
+        dry_run=False,
+        now=new_ts + timedelta(hours=1),
+        lookback_hours=2,
+    )
+
+    assert result.rollup_rows["trade_activity_1m"] == 1
+    trade_row = read_parquet_dataset(lake / "silver/trade_activity_1m").to_dicts()[0]
+    assert trade_row["size_sum"] == 2.0
+
+
 def test_compact_market_data_archives_only_old_ws_files_when_applied(tmp_path):
     lake = tmp_path / "lake"
     hot = lake / "bronze/okx_public_ws/hot.parquet"

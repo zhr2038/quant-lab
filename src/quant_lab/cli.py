@@ -793,6 +793,14 @@ def build_market_data_rollups_command(
             help="Write derived 1m rollups. Default is dry-run.",
         ),
     ] = False,
+    lookback_hours: Annotated[
+        int,
+        typer.Option(
+            "--lookback-hours",
+            min=1,
+            help="Only scan source files and rows from the recent lookback window.",
+        ),
+    ] = 24,
     compact_output: Annotated[
         bool,
         typer.Option(
@@ -804,7 +812,11 @@ def build_market_data_rollups_command(
     result = run_with_job_metrics(
         lake_root=lake_root,
         job_name="build-market-data-rollups",
-        func=lambda: build_market_data_1m_rollups(lake_root, dry_run=not apply),
+        func=lambda: build_market_data_1m_rollups(
+            lake_root,
+            dry_run=not apply,
+            lookback_hours=lookback_hours,
+        ),
     )
     typer.echo(json.dumps(result.to_dict(), indent=None if compact_output else 2, sort_keys=True))
 

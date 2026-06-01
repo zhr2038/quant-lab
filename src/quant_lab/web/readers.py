@@ -4419,7 +4419,7 @@ def _stale_dataset_next_action(
     if status == DERIVED_ROLLUP_PENDING_STATUS or dataset_name in DERIVED_ROLLUP_SOURCE_DATASETS:
         return (
             "运行 qlab build-market-data-rollups --lake-root /var/lib/quant-lab/lake "
-            "--apply 刷新 1m 派生表"
+            "--lookback-hours 24 --apply 刷新 1m 派生表"
         )
     if dataset_name == "market_bar":
         return "检查 OKX REST/WS 采集任务并补齐 market_bar"

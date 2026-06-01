@@ -50,11 +50,17 @@ def compact_market_data(
     hot_hours: int = 24,
     dry_run: bool = True,
     now: datetime | None = None,
+    rollup_lookback_hours: int | None = None,
 ) -> MarketDataCompactionResult:
     current = now or datetime.now(UTC)
     root = Path(lake_root)
     result = MarketDataCompactionResult(lake_root=str(root), dry_run=dry_run, started_at=current)
-    _build_and_write_rollups(root, dry_run=dry_run, result=result)
+    _build_and_write_rollups(
+        root,
+        dry_run=dry_run,
+        result=result,
+        since=_rollup_since(current, rollup_lookback_hours),
+    )
     _archive_old_okx_public_ws(
         root, hot_hours=hot_hours, dry_run=dry_run, now=current, result=result
     )
@@ -67,11 +73,17 @@ def build_market_data_1m_rollups(
     *,
     dry_run: bool = True,
     now: datetime | None = None,
+    lookback_hours: int | None = None,
 ) -> MarketDataCompactionResult:
     current = now or datetime.now(UTC)
     root = Path(lake_root)
     result = MarketDataCompactionResult(lake_root=str(root), dry_run=dry_run, started_at=current)
-    _build_and_write_rollups(root, dry_run=dry_run, result=result)
+    _build_and_write_rollups(
+        root,
+        dry_run=dry_run,
+        result=result,
+        since=_rollup_since(current, lookback_hours),
+    )
     result.finished_at = datetime.now(UTC)
     return result
 
@@ -81,9 +93,10 @@ def _build_and_write_rollups(
     *,
     dry_run: bool,
     result: MarketDataCompactionResult,
+    since: datetime | None,
 ) -> None:
-    trade_rollup = build_trade_activity_1m_rollup(root)
-    orderbook_rollup = build_orderbook_spread_1m_rollup(root)
+    trade_rollup = build_trade_activity_1m_rollup(root, since=since)
+    orderbook_rollup = build_orderbook_spread_1m_rollup(root, since=since)
     if not dry_run:
         if not trade_rollup.is_empty():
             upsert_parquet_dataset(
@@ -101,10 +114,16 @@ def _build_and_write_rollups(
     result.rollup_rows["orderbook_spread_1m"] = orderbook_rollup.height
 
 
-def build_trade_activity_1m_rollup(lake_root: str | Path) -> pl.DataFrame:
+def build_trade_activity_1m_rollup(
+    lake_root: str | Path,
+    *,
+    since: datetime | None = None,
+) -> pl.DataFrame:
     path = Path(lake_root) / HF_DATASETS["trade_print"]
     try:
-        lazy = read_parquet_lazy(path)
+        lazy = _source_lazy(path, since=since)
+        if lazy is None:
+            return pl.DataFrame()
         schema = set(lazy.collect_schema().names())
     except Exception:
         return pl.DataFrame()
@@ -115,19 +134,18 @@ def build_trade_activity_1m_rollup(lake_root: str | Path) -> pl.DataFrame:
         if "size" in schema
         else pl.lit(None).cast(pl.Float64).alias("size_sum")
     )
+    ts_expr = pl.col("ts").cast(pl.Datetime(time_zone="UTC"), strict=False)
+    filtered = lazy.with_columns(ts_expr.alias("_ts"))
+    if since is not None:
+        filtered = filtered.filter(pl.col("_ts") >= since)
     return (
-        lazy.with_columns(
-            pl.col("ts")
-            .cast(pl.Datetime(time_zone="UTC"), strict=False)
-            .dt.truncate("1m")
-            .alias("minute_ts")
-        )
+        filtered.with_columns(pl.col("_ts").dt.truncate("1m").alias("minute_ts"))
         .group_by(["symbol", "minute_ts"])
         .agg(
             [
                 pl.len().alias("trade_count"),
                 size_expr,
-                pl.col("ts").max().alias("latest_trade_ts"),
+                pl.col("_ts").max().alias("latest_trade_ts"),
             ]
         )
         .sort(["symbol", "minute_ts"])
@@ -135,10 +153,16 @@ def build_trade_activity_1m_rollup(lake_root: str | Path) -> pl.DataFrame:
     )
 
 
-def build_orderbook_spread_1m_rollup(lake_root: str | Path) -> pl.DataFrame:
+def build_orderbook_spread_1m_rollup(
+    lake_root: str | Path,
+    *,
+    since: datetime | None = None,
+) -> pl.DataFrame:
     path = Path(lake_root) / HF_DATASETS["orderbook_snapshot"]
     try:
-        lazy = read_parquet_lazy(path)
+        lazy = _source_lazy(path, since=since)
+        if lazy is None:
+            return pl.DataFrame()
         schema = set(lazy.collect_schema().names())
     except Exception:
         return pl.DataFrame()
@@ -156,28 +180,79 @@ def build_orderbook_spread_1m_rollup(lake_root: str | Path) -> pl.DataFrame:
         lazy.select(selected_columns)
         .with_columns(
             [
-                pl.col("ts")
-                .cast(pl.Datetime(time_zone="UTC"), strict=False)
-                .dt.truncate("1m")
-                .alias("minute_ts"),
+                pl.col("ts").cast(pl.Datetime(time_zone="UTC"), strict=False).alias("_ts"),
                 channel_expr,
                 pl.struct(["asks_json", "bids_json"])
                 .map_elements(_spread_bps, return_dtype=pl.Float64)
                 .alias("spread_bps"),
             ]
         )
+        .filter(pl.col("_ts") >= since if since is not None else pl.lit(True))
+        .with_columns(pl.col("_ts").dt.truncate("1m").alias("minute_ts"))
         .filter(pl.col("spread_bps").is_not_null())
         .group_by(["symbol", "channel", "minute_ts"])
         .agg(
             [
                 pl.col("spread_bps").mean().alias("spread_bps"),
-                pl.col("ts").max().alias("ts"),
+                pl.col("_ts").max().alias("ts"),
             ]
         )
         .sort(["symbol", "channel", "minute_ts"])
         .collect()
     )
     return frame
+
+
+def _rollup_since(now: datetime, lookback_hours: int | None) -> datetime | None:
+    if lookback_hours is None:
+        return None
+    try:
+        hours = int(lookback_hours)
+    except (TypeError, ValueError):
+        return None
+    if hours <= 0:
+        return None
+    return now - timedelta(hours=hours)
+
+
+def _source_lazy(path: Path, *, since: datetime | None) -> pl.LazyFrame | None:
+    if since is None:
+        return read_parquet_lazy(path)
+    files = _recent_parquet_files(path, since=since)
+    if not files:
+        return None
+    try:
+        return pl.scan_parquet(
+            [str(file_path) for file_path in files],
+            hive_partitioning=False,
+            missing_columns="insert",
+            extra_columns="ignore",
+        )
+    except TypeError:
+        return pl.scan_parquet([str(file_path) for file_path in files], hive_partitioning=False)
+
+
+def _recent_parquet_files(path: Path, *, since: datetime) -> list[Path]:
+    if not path.exists() or not path.is_dir():
+        return []
+    cutoff = since.timestamp()
+    files: list[Path] = []
+    for candidate in sorted(path.rglob("*.parquet")):
+        if not candidate.is_file() or _is_internal_file(candidate):
+            continue
+        try:
+            if candidate.stat().st_mtime < cutoff:
+                continue
+        except OSError:
+            continue
+        files.append(candidate)
+    return files
+
+
+def _is_internal_file(path: Path) -> bool:
+    if path.name.startswith(".") or path.name.endswith(".tmp.parquet"):
+        return True
+    return any(part.startswith("__") or part.startswith(".") for part in path.parts)
 
 
 def _archive_old_okx_public_ws(

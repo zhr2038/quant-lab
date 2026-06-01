@@ -27,7 +27,7 @@ Run compaction periodically:
 qlab compact-lake-dataset --lake-root /var/lib/quant-lab/lake --dataset okx_public_ws
 qlab compact-lake-dataset --lake-root /var/lib/quant-lab/lake --dataset trade_print
 qlab compact-lake-dataset --lake-root /var/lib/quant-lab/lake --dataset orderbook_snapshot
-qlab build-market-data-rollups --lake-root /var/lib/quant-lab/lake --apply
+qlab build-market-data-rollups --lake-root /var/lib/quant-lab/lake --lookback-hours 24 --apply
 qlab lake-health --lake-root /var/lib/quant-lab/lake
 ```
 
@@ -49,7 +49,9 @@ The same maintenance pass also builds derived 1-minute rollups:
 These rollups are read-only cache/reporting datasets. If raw WebSocket source
 datasets exist but the rollups are absent, the web data-health page reports a
 warning with the `build-market-data-rollups` command instead of treating the
-raw market feed as missing.
+raw market feed as missing. Production builds the rollups from a recent
+lookback window by default so the hourly job does not scan the full
+high-frequency history.
 
 For hot direct-append datasets, daily compaction skips existing
 `compact_*.parquet` outputs by default and only compacts new direct batch files.

@@ -6,6 +6,7 @@ import polars as pl
 from fastapi.testclient import TestClient
 
 import quant_lab.api.main as api_main
+from quant_lab.api.cache import StrategyOpportunityAdvisoryResponseCache
 from quant_lab.api.main import app
 from quant_lab.contracts.v5_quant_lab import V5_QUANT_LAB_CONTRACT_VERSION
 from quant_lab.data.lake import write_parquet_dataset
@@ -910,6 +911,66 @@ def test_strategy_opportunity_advisory_uses_snapshot_meta_for_source_signature(
     assert response.status_code == 200
     assert response.headers["x-quant-lab-advisory-row-count"] == "1"
     assert float(response.headers["x-advisory-source-signature-ms"]) >= 0.0
+
+
+def test_strategy_opportunity_advisory_marks_signature_fallback_when_meta_missing(
+    tmp_path,
+    monkeypatch,
+):
+    lake = tmp_path / "lake"
+    monkeypatch.setenv("QUANT_LAB_LAKE_ROOT", str(lake))
+    monkeypatch.delenv("QUANT_LAB_API_TOKEN", raising=False)
+    api_main._STRATEGY_OPPORTUNITY_ADVISORY_CACHE.clear()
+    api_main._STRATEGY_OPPORTUNITY_ADVISORY_RESPONSE_CACHE.clear()
+    as_of = datetime(2026, 5, 20, tzinfo=UTC)
+    write_parquet_dataset(
+        pl.DataFrame([_api_advisory_row("v5.f4_volume_expansion_entry", "SOL-USDT", as_of)]),
+        lake / "gold" / "strategy_opportunity_advisory",
+    )
+
+    response = TestClient(app).get("/v1/strategy-opportunity-advisory/v5-compact")
+    api_main._STRATEGY_OPPORTUNITY_ADVISORY_CACHE.clear()
+    api_main._STRATEGY_OPPORTUNITY_ADVISORY_RESPONSE_CACHE.clear()
+
+    assert response.status_code == 200
+    assert response.headers["x-quant-lab-signature-fallback"] == "parquet_rglob"
+
+
+def test_strategy_opportunity_response_cache_bounds_and_clears_old_sources():
+    cache = StrategyOpportunityAdvisoryResponseCache(max_entries=2)
+    cache.set(
+        ("sha-old", "a"),
+        payload=b"[]",
+        etag='"a"',
+        row_count=0,
+        latest_generated_at="",
+        serialize_ms=0.0,
+    )
+    cache.set(
+        ("sha-new", "b"),
+        payload=b"[]",
+        etag='"b"',
+        row_count=0,
+        latest_generated_at="",
+        serialize_ms=0.0,
+    )
+    cache.set(
+        ("sha-new", "c"),
+        payload=b"[]",
+        etag='"c"',
+        row_count=0,
+        latest_generated_at="",
+        serialize_ms=0.0,
+    )
+
+    assert cache.size() == 2
+    assert cache.get(("sha-old", "a")) is None
+    cache.clear_for_source_sha("sha-new")
+    assert cache.size() == 2
+    assert cache.get(("sha-new", "b")) is not None
+    assert cache.get(("sha-new", "c")) is not None
+    cache.clear_for_source_sha("another-sha")
+    assert cache.size() == 0
 
 
 def test_strategy_opportunity_advisory_keeps_older_strategy_rows_when_entry_quality_is_newer(

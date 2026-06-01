@@ -19,6 +19,7 @@ from quant_lab.risk.permissions import evaluate_live_permission
 
 GATE_DECISION_DATASET = Path("gold") / "gate_decision"
 RISK_PERMISSION_DATASET = Path("gold") / "risk_permission"
+RISK_PERMISSION_API_DEPENDENCY_META_DATASET = Path("gold") / "risk_permission_api_dependency_meta"
 COST_BUCKET_DAILY_DATASET = Path("gold") / "cost_bucket_daily"
 COST_HEALTH_DAILY_DATASET = Path("gold") / "cost_health_daily"
 MARKET_BAR_DATASET = Path("silver") / "market_bar"
@@ -131,6 +132,13 @@ def publish_risk_permission(
         root / RISK_PERMISSION_DATASET,
         key_columns=["strategy", "version"],
     )
+    _publish_risk_permission_api_dependency_meta(
+        root,
+        strategy=strategy,
+        version=version,
+        permission=permission,
+        telemetry_latest_ts=telemetry_latest_ts,
+    )
     warnings: list[str] = []
     if not gate_decisions:
         warnings.append("gate_decision missing or empty")
@@ -148,6 +156,76 @@ def publish_risk_permission(
         reasons=permission.reasons,
         warnings=warnings,
     )
+
+
+def _publish_risk_permission_api_dependency_meta(
+    root: Path,
+    *,
+    strategy: str,
+    version: str,
+    permission: RiskPermission,
+    telemetry_latest_ts: datetime | None,
+) -> None:
+    generated_at = datetime.now(UTC)
+    source_sha = _dependency_source_sha(
+        strategy=strategy,
+        version=version,
+        permission=permission,
+        telemetry_latest_ts=telemetry_latest_ts,
+    )
+    frame = pl.DataFrame(
+        [
+            {
+                "strategy": strategy,
+                "version": version,
+                "risk_permission_source_sha": source_sha,
+                "gate_decision_source_sha": _dataset_quick_signature(root / GATE_DECISION_DATASET),
+                "cost_health_source_sha": _dataset_quick_signature(
+                    root / COST_HEALTH_DAILY_DATASET
+                ),
+                "telemetry_latest_ts": (
+                    telemetry_latest_ts.isoformat() if telemetry_latest_ts else ""
+                ),
+                "source_sha": source_sha,
+                "generated_at": generated_at.isoformat().replace("+00:00", "Z"),
+            }
+        ],
+        infer_schema_length=None,
+    )
+    upsert_parquet_dataset(
+        frame,
+        root / RISK_PERMISSION_API_DEPENDENCY_META_DATASET,
+        key_columns=["strategy", "version"],
+    )
+
+
+def _dependency_source_sha(
+    *,
+    strategy: str,
+    version: str,
+    permission: RiskPermission,
+    telemetry_latest_ts: datetime | None,
+) -> str:
+    import hashlib
+
+    digest = hashlib.sha256()
+    digest.update(str(strategy).encode("utf-8"))
+    digest.update(str(version).encode("utf-8"))
+    digest.update(str(permission.as_of_ts or permission.created_at).encode("utf-8"))
+    digest.update(str(permission.expires_at or "").encode("utf-8"))
+    digest.update(str(telemetry_latest_ts or "").encode("utf-8"))
+    digest.update("|".join(permission.reasons).encode("utf-8"))
+    return digest.hexdigest()
+
+
+def _dataset_quick_signature(path: Path) -> str:
+    if not path.exists():
+        return "missing"
+    try:
+        stat = path.stat()
+    except OSError:
+        return "unavailable"
+    return f"{stat.st_mtime_ns}:{stat.st_size}"
 
 
 def load_gate_decisions(root: Path, strategy: str) -> list[GateDecision]:

@@ -3,6 +3,8 @@ from datetime import UTC, datetime, timedelta
 
 import polars as pl
 
+import quant_lab.jobs.compact_market_data as compact_market_data_module
+from quant_lab.data.file_index import build_lake_file_index
 from quant_lab.data.lake import (
     count_parquet_rows,
     read_parquet_dataset,
@@ -159,6 +161,59 @@ def test_market_data_rollup_lookback_skips_old_source_files(tmp_path):
     assert result.rollup_rows["trade_activity_1m"] == 1
     trade_row = read_parquet_dataset(lake / "silver/trade_activity_1m").to_dicts()[0]
     assert trade_row["size_sum"] == 2.0
+
+
+def test_orderbook_spread_rollup_prefers_spread_bps_without_json_udf(tmp_path, monkeypatch):
+    lake = tmp_path / "lake"
+    ts = datetime(2026, 5, 31, 10, 0, 15, tzinfo=UTC)
+    write_parquet_dataset(
+        pl.DataFrame(
+            [
+                {
+                    "symbol": "BNB-USDT",
+                    "channel": "books5",
+                    "ts": ts,
+                    "spread_bps": 12.5,
+                    "asks_json": "[[\"999\", \"1\"]]",
+                    "bids_json": "[[\"1\", \"1\"]]",
+                }
+            ]
+        ),
+        lake / "silver/orderbook_snapshot",
+    )
+
+    def fail_json_udf(_row):
+        raise AssertionError("spread_bps fast path should not parse orderbook JSON")
+
+    monkeypatch.setattr(compact_market_data_module, "_spread_bps", fail_json_udf)
+
+    spreads = build_orderbook_spread_1m_rollup(lake)
+
+    assert spreads.height == 1
+    assert spreads["spread_bps"][0] == 12.5
+
+
+def test_recent_file_selection_uses_index_max_ts_not_mtime(tmp_path):
+    lake = tmp_path / "lake"
+    source = lake / "silver/trade_print"
+    source.mkdir(parents=True)
+    old_mtime_ts = datetime(2026, 5, 30, 10, 0, tzinfo=UTC)
+    recent_data_ts = datetime(2026, 5, 31, 10, 0, tzinfo=UTC)
+    file_path = source / "recent-data-old-mtime.parquet"
+    pl.DataFrame(
+        [{"symbol": "BNB-USDT", "ts": recent_data_ts, "size": 2.0}]
+    ).write_parquet(file_path)
+    old_mtime = old_mtime_ts.timestamp()
+    os.utime(file_path, (old_mtime, old_mtime))
+    build_lake_file_index(lake, ["silver/trade_print"])
+
+    trades = build_trade_activity_1m_rollup(
+        lake,
+        since=recent_data_ts - timedelta(hours=1),
+    )
+
+    assert trades.height == 1
+    assert trades["size_sum"][0] == 2.0
 
 
 def test_compact_market_data_archives_only_old_ws_files_when_applied(tmp_path):

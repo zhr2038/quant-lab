@@ -90,7 +90,12 @@ from quant_lab.web import readers
 
 STRATEGY_OPPORTUNITY_ADVISORY_SCHEMA_VERSION = "strategy_opportunity_advisory.v0.1"
 SNAPSHOT_META_DATASETS = {
+    "cost_bucket_daily",
+    "cost_health_daily",
+    "gate_decision",
     "strategy_opportunity_advisory",
+    "risk_permission",
+    "risk_permission_api_dependency_meta",
     "research_portfolio_status",
     "alpha_factory_promotion_queue",
     "alpha_factory_result",
@@ -2618,6 +2623,72 @@ def _publish_strategy_opportunity_advisory_snapshot(
     )
 
 
+def _publish_risk_permission_dependency_meta_snapshot(
+    root: Path,
+    snapshot: _DatasetSnapshot,
+) -> _DatasetSnapshot:
+    frames = dict(snapshot.frames)
+    risk = frames.get("risk_permission", pl.DataFrame())
+    gates = frames.get("gate_decision", pl.DataFrame())
+    cost_health = frames.get("cost_health_daily", pl.DataFrame())
+    telemetry_latest_ts = _frame_latest_iso(
+        risk,
+        ("telemetry_latest_ts", "source_bundle_ts", "as_of_ts", "created_at"),
+    )
+    generated_at = datetime.now(UTC).isoformat().replace("+00:00", "Z")
+    dependency_source_sha = _dependency_source_sha(
+        {
+            "risk_permission": risk,
+            "gate_decision": gates,
+            "cost_health_daily": cost_health,
+        },
+        telemetry_latest_ts=telemetry_latest_ts,
+    )
+    strategies = _frame_unique_texts(risk, "strategy") or ["v5"]
+    versions = _frame_unique_texts(risk, "version") or ["unknown"]
+    rows = [
+        {
+            "strategy": strategy,
+            "version": version,
+            "risk_permission_source_sha": _frame_source_sha(
+                "risk_permission",
+                risk,
+                _frame_latest_iso(risk, ("as_of_ts", "created_at")),
+                _frame_latest_iso(risk, ("expires_at",)),
+            ),
+            "gate_decision_source_sha": _frame_source_sha(
+                "gate_decision",
+                gates,
+                _frame_latest_iso(gates, ("created_at", "as_of_ts")),
+                "",
+            ),
+            "cost_health_source_sha": _frame_source_sha(
+                "cost_health_daily",
+                cost_health,
+                _frame_latest_iso(cost_health, ("created_at", "day")),
+                "",
+            ),
+            "telemetry_latest_ts": telemetry_latest_ts,
+            "source_sha": dependency_source_sha,
+            "generated_at": generated_at,
+        }
+        for strategy in strategies
+        for version in versions
+    ]
+    frame = pl.DataFrame(rows, infer_schema_length=None)
+    row_counts = dict(snapshot.row_counts)
+    warnings = list(snapshot.warnings)
+    _publish_export_frame(
+        root,
+        frames=frames,
+        row_counts=row_counts,
+        warnings=warnings,
+        dataset_name="risk_permission_api_dependency_meta",
+        frame=frame,
+    )
+    return _DatasetSnapshot(frames=frames, row_counts=row_counts, warnings=warnings)
+
+
 def _publish_export_frame(
     root: Path,
     *,
@@ -2674,10 +2745,13 @@ def _write_snapshot_meta(dataset_path: Path, *, dataset_name: str, frame: pl.Dat
         ),
         "created_at": datetime.now(UTC).isoformat().replace("+00:00", "Z"),
     }
-    (dataset_path / "_snapshot_meta.json").write_text(
+    meta_path = dataset_path / "_snapshot_meta.json"
+    tmp_path = dataset_path / "._snapshot_meta.tmp"
+    tmp_path.write_text(
         json.dumps(payload, sort_keys=True, separators=(",", ":")),
         encoding="utf-8",
     )
+    tmp_path.replace(meta_path)
 
 
 def _frame_latest_iso(frame: pl.DataFrame, columns: Iterable[str]) -> str:
@@ -2717,6 +2791,19 @@ def _frame_text_value(frame: pl.DataFrame, column: str) -> str:
     return ",".join(sorted(values))
 
 
+def _frame_unique_texts(frame: pl.DataFrame, column: str) -> list[str]:
+    if frame.is_empty() or column not in frame.columns:
+        return []
+    try:
+        return [
+            str(value).strip()
+            for value in frame.get_column(column).drop_nulls().unique().to_list()
+            if str(value).strip()
+        ]
+    except Exception:
+        return []
+
+
 def _frame_source_sha(
     dataset_name: str,
     frame: pl.DataFrame,
@@ -2732,12 +2819,25 @@ def _frame_source_sha(
     return digest.hexdigest()
 
 
+def _dependency_source_sha(frames: dict[str, pl.DataFrame], *, telemetry_latest_ts: str) -> str:
+    digest = hashlib.sha256()
+    digest.update(str(telemetry_latest_ts or "").encode("utf-8"))
+    for dataset_name, frame in sorted(frames.items()):
+        generated_at = _frame_latest_iso(
+            frame,
+            ("generated_at", "created_at", "as_of_ts", "date", "day"),
+        )
+        expires_at = _frame_latest_iso(frame, ("expires_at",))
+        digest.update(dataset_name.encode("utf-8"))
+        source_sha = _frame_source_sha(dataset_name, frame, generated_at, expires_at)
+        digest.update(source_sha.encode("ascii"))
+    return digest.hexdigest()
+
+
 def _write_source_snapshot_metas(root: Path, frames: dict[str, pl.DataFrame]) -> list[str]:
     warnings: list[str] = []
     for dataset_name in sorted(SNAPSHOT_META_DATASETS):
         frame = frames.get(dataset_name, pl.DataFrame())
-        if frame.is_empty():
-            continue
         dataset_path = root / readers.DATASET_PATHS.get(
             dataset_name,
             Path("gold") / dataset_name,
@@ -2920,6 +3020,7 @@ def export_daily_pack(
     snapshot = _publish_research_portfolio_status_snapshot(root, snapshot, day)
     snapshot = _publish_missed_opportunity_snapshot(root, snapshot)
     snapshot = _publish_strategy_opportunity_advisory_snapshot(root, snapshot)
+    snapshot = _publish_risk_permission_dependency_meta_snapshot(root, snapshot)
     meta_warnings = _write_source_snapshot_metas(root, snapshot.frames)
     if meta_warnings:
         snapshot = _DatasetSnapshot(

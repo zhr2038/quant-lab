@@ -103,6 +103,7 @@ DATASET_PATHS = {
     "v5_entry_quality_history_metrics": Path("gold") / "v5_entry_quality_history_metrics",
     "gate_decision": Path("gold") / "gate_decision",
     "risk_permission": Path("gold") / "risk_permission",
+    "risk_permission_api_dependency_meta": Path("gold") / "risk_permission_api_dependency_meta",
     "api_request_metrics": Path("bronze") / "api_request_metrics",
     "job_run_history": Path("gold") / "job_run_history",
     "lake_file_health_daily": Path("gold") / "lake_file_health_daily",

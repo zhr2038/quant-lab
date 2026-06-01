@@ -9,6 +9,7 @@ from typing import Any
 
 import polars as pl
 
+from quant_lab.data.file_index import build_lake_file_index
 from quant_lab.data.lake import read_parquet_lazy, upsert_parquet_dataset
 
 HF_DATASETS = {
@@ -95,6 +96,11 @@ def _build_and_write_rollups(
     result: MarketDataCompactionResult,
     since: datetime | None,
 ) -> None:
+    if since is not None:
+        build_lake_file_index(
+            root,
+            [HF_DATASETS["trade_print"], HF_DATASETS["orderbook_snapshot"]],
+        )
     trade_rollup = build_trade_activity_1m_rollup(root, since=since)
     orderbook_rollup = build_orderbook_spread_1m_rollup(root, since=since)
     if not dry_run:
@@ -166,25 +172,39 @@ def build_orderbook_spread_1m_rollup(
         schema = set(lazy.collect_schema().names())
     except Exception:
         return pl.DataFrame()
-    if not {"symbol", "ts", "asks_json", "bids_json"}.issubset(schema):
+    if not {"symbol", "ts"}.issubset(schema):
         return pl.DataFrame()
     channel_expr = pl.col("channel") if "channel" in schema else pl.lit("").alias("channel")
-    selected_columns = [
-        "symbol",
-        "ts",
-        "asks_json",
-        "bids_json",
-        *(["channel"] if "channel" in schema else []),
-    ]
+    if "spread_bps" in schema:
+        selected_columns = [
+            "symbol",
+            "ts",
+            "spread_bps",
+            *(["channel"] if "channel" in schema else []),
+        ]
+        spread_expr = pl.col("spread_bps").cast(pl.Float64, strict=False).alias("spread_bps")
+    elif {"asks_json", "bids_json"}.issubset(schema):
+        selected_columns = [
+            "symbol",
+            "ts",
+            "asks_json",
+            "bids_json",
+            *(["channel"] if "channel" in schema else []),
+        ]
+        spread_expr = (
+            pl.struct(["asks_json", "bids_json"])
+            .map_elements(_spread_bps, return_dtype=pl.Float64)
+            .alias("spread_bps")
+        )
+    else:
+        return pl.DataFrame()
     frame = (
         lazy.select(selected_columns)
         .with_columns(
             [
                 _timestamp_expr("ts").alias("_ts"),
                 channel_expr,
-                pl.struct(["asks_json", "bids_json"])
-                .map_elements(_spread_bps, return_dtype=pl.Float64)
-                .alias("spread_bps"),
+                spread_expr,
             ]
         )
         .filter(pl.col("_ts") >= since if since is not None else pl.lit(True))
@@ -246,6 +266,9 @@ def _source_lazy(path: Path, *, since: datetime | None) -> pl.LazyFrame | None:
 def _recent_parquet_files(path: Path, *, since: datetime) -> list[Path]:
     if not path.exists() or not path.is_dir():
         return []
+    indexed_files = _recent_parquet_files_from_index(path, since=since)
+    if indexed_files is not None:
+        return indexed_files
     cutoff = since.timestamp()
     files: list[Path] = []
     for candidate in sorted(path.rglob("*.parquet")):
@@ -258,6 +281,15 @@ def _recent_parquet_files(path: Path, *, since: datetime) -> list[Path]:
             continue
         files.append(candidate)
     return files
+
+
+def _recent_parquet_files_from_index(path: Path, *, since: datetime) -> list[Path] | None:
+    try:
+        from quant_lab.data.file_index import recent_files_for_dataset
+
+        return recent_files_for_dataset(path, since=since)
+    except Exception:
+        return None
 
 
 def _is_internal_file(path: Path) -> bool:

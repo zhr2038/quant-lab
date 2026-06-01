@@ -12,7 +12,7 @@ import pytest
 
 import quant_lab.export.daily as daily_export_module
 from quant_lab.contracts.v5_quant_lab import V5_QUANT_LAB_CONTRACT_VERSION
-from quant_lab.data.lake import write_market_bars, write_parquet_dataset
+from quant_lab.data.lake import read_parquet_dataset, write_market_bars, write_parquet_dataset
 from quant_lab.export.daily import (
     CSV_SCHEMAS,
     REQUIRED_MEMBERS,
@@ -126,6 +126,86 @@ def test_api_latency_summary_export_includes_cache_and_payload_fields(
     assert row["avg_lake_scan_ms"] == 1.2
     assert row["avg_serialize_ms"] == 3.4
     assert row["error_count"] == 0
+
+
+def test_snapshot_meta_written_for_api_dependency_datasets(tmp_path):
+    lake = tmp_path / "lake"
+    generated_at = datetime(2026, 5, 31, 10, tzinfo=UTC)
+    frames = {
+        "strategy_opportunity_advisory": pl.DataFrame(
+            [
+                {
+                    "strategy_candidate": "v5.f4_volume_expansion_entry",
+                    "symbol": "SOL-USDT",
+                    "generated_at": generated_at,
+                    "expires_at": generated_at + timedelta(hours=1),
+                }
+            ]
+        ),
+        "risk_permission": pl.DataFrame(
+            [
+                {
+                    "strategy": "v5",
+                    "version": "5.0.0",
+                    "as_of_ts": generated_at,
+                }
+            ]
+        ),
+        "gate_decision": pl.DataFrame(
+            [
+                {
+                    "strategy": "v5",
+                    "created_at": generated_at,
+                }
+            ]
+        ),
+        "cost_health_daily": pl.DataFrame(
+            [
+                {
+                    "date": generated_at.date().isoformat(),
+                    "created_at": generated_at,
+                }
+            ]
+        ),
+    }
+    snapshot = daily_export_module._DatasetSnapshot(
+        frames=frames,
+        row_counts={name: frame.height for name, frame in frames.items()},
+        warnings=[],
+    )
+
+    snapshot = daily_export_module._publish_risk_permission_dependency_meta_snapshot(
+        lake,
+        snapshot,
+    )
+    warnings = daily_export_module._write_source_snapshot_metas(lake, snapshot.frames)
+
+    assert warnings == []
+    critical_datasets = [
+        "strategy_opportunity_advisory",
+        "research_portfolio_status",
+        "alpha_factory_promotion_queue",
+        "alpha_factory_result",
+        "risk_permission",
+        "gate_decision",
+        "cost_bucket_daily",
+        "cost_health_daily",
+        "risk_permission_api_dependency_meta",
+    ]
+    for dataset in critical_datasets:
+        dataset_path = lake / daily_export_module.readers.DATASET_PATHS.get(
+            dataset,
+            Path("gold") / dataset,
+        )
+        meta = json.loads((dataset_path / "_snapshot_meta.json").read_text(encoding="utf-8"))
+        assert meta["dataset"] == dataset
+        assert "source_sha" in meta
+
+    dependency = read_parquet_dataset(lake / "gold/risk_permission_api_dependency_meta")
+    row = dependency.to_dicts()[0]
+    assert row["strategy"] == "v5"
+    assert row["version"] == "5.0.0"
+    assert row["source_sha"]
 
 
 def test_bnb_paper_summary_uses_latest_strategy_day_view():

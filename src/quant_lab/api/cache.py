@@ -35,6 +35,17 @@ class StrategyOpportunityAdvisoryResponse:
 
 
 @dataclass(frozen=True)
+class CostBucketSnapshot:
+    signature: tuple[Any, ...]
+    rows: tuple[dict[str, Any], ...]
+    dataset_has_rows: bool
+    source_sha: str
+    loaded_at: datetime
+    source_signature_ms: float
+    lake_scan_ms: float
+
+
+@dataclass(frozen=True)
 class CachedValue(Generic[T]):
     key: tuple[Any, ...]
     value: T
@@ -97,8 +108,9 @@ class StrategyOpportunityAdvisoryCache(Generic[T]):
 class StrategyOpportunityAdvisoryResponseCache:
     """In-memory cache for filtered/serialized advisory responses."""
 
-    def __init__(self) -> None:
+    def __init__(self, *, max_entries: int = 128) -> None:
         self._lock = threading.Lock()
+        self._max_entries = max(1, int(max_entries))
         self._responses: dict[tuple[Any, ...], StrategyOpportunityAdvisoryResponse] = {}
 
     def clear(self) -> None:
@@ -108,6 +120,18 @@ class StrategyOpportunityAdvisoryResponseCache:
     def get(self, key: tuple[Any, ...]) -> StrategyOpportunityAdvisoryResponse | None:
         with self._lock:
             return self._responses.get(key)
+
+    def clear_for_source_sha(self, source_sha: str) -> None:
+        with self._lock:
+            self._responses = {
+                key: value
+                for key, value in self._responses.items()
+                if str(key[0] if key else "") == source_sha
+            }
+
+    def size(self) -> int:
+        with self._lock:
+            return len(self._responses)
 
     def set(
         self,
@@ -130,7 +154,61 @@ class StrategyOpportunityAdvisoryResponseCache:
         )
         with self._lock:
             self._responses[key] = response
+            if len(self._responses) > self._max_entries:
+                oldest = min(
+                    self._responses,
+                    key=lambda item_key: self._responses[item_key].created_at,
+                )
+                self._responses.pop(oldest, None)
         return response
+
+
+class CostBucketCache:
+    """Process-local snapshot cache for cost_bucket_daily rows."""
+
+    def __init__(self) -> None:
+        self._lock = threading.Lock()
+        self._snapshots: dict[str, CostBucketSnapshot] = {}
+
+    def clear(self) -> None:
+        with self._lock:
+            self._snapshots.clear()
+
+    def get_snapshot(
+        self,
+        lake_root: Path,
+        *,
+        signature_builder: Callable[[Path], tuple[Any, ...]],
+        loader: Callable[[Path], tuple[list[dict[str, Any]], bool]],
+        monotonic_seconds: Callable[[], float],
+    ) -> tuple[CostBucketSnapshot, bool, float]:
+        signature_started = monotonic_seconds()
+        signature = signature_builder(lake_root)
+        source_signature_ms = round((monotonic_seconds() - signature_started) * 1000.0, 3)
+        root_key = str(lake_root.resolve())
+        with self._lock:
+            cached = self._snapshots.get(root_key)
+            if cached is not None and cached.signature == signature:
+                return cached, True, source_signature_ms
+
+        scan_started = monotonic_seconds()
+        rows, dataset_has_rows = loader(lake_root)
+        lake_scan_ms = round((monotonic_seconds() - scan_started) * 1000.0, 3)
+        snapshot = CostBucketSnapshot(
+            signature=signature,
+            rows=tuple(dict(row) for row in rows),
+            dataset_has_rows=bool(dataset_has_rows),
+            source_sha=_source_sha(signature),
+            loaded_at=datetime.now(UTC),
+            source_signature_ms=source_signature_ms,
+            lake_scan_ms=lake_scan_ms,
+        )
+        with self._lock:
+            current = self._snapshots.get(root_key)
+            if current is not None and current.signature == signature:
+                return current, True, source_signature_ms
+            self._snapshots[root_key] = snapshot
+        return snapshot, False, source_signature_ms
 
 
 class ExactKeyCache(Generic[T]):

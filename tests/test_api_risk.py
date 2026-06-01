@@ -76,6 +76,52 @@ def test_live_permission_api_reuses_server_cache_for_same_context(tmp_path, monk
     assert second.json()["permission"] == "ALLOW"
 
 
+def test_live_permission_cache_key_uses_light_dependency_meta(tmp_path, monkeypatch):
+    lake = tmp_path / "lake"
+    write_parquet_dataset(
+        pl.DataFrame(
+            [
+                {
+                    "strategy": "v5",
+                    "version": "5.0.0",
+                    "risk_permission_source_sha": "risk-a",
+                    "gate_decision_source_sha": "gate-a",
+                    "cost_health_source_sha": "cost-a",
+                    "telemetry_latest_ts": "",
+                    "source_sha": "dependency-a",
+                    "generated_at": datetime.now(UTC).isoformat(),
+                }
+            ]
+        ),
+        lake / "gold/risk_permission_api_dependency_meta",
+    )
+    touched: list[str] = []
+    original_signature = api_main._dataset_snapshot_signature
+
+    def recording_signature(path):
+        text = str(path).replace("\\", "/")
+        touched.append(text)
+        if any(
+            heavy in text
+            for heavy in ("market_bar", "strategy_health_daily", "v5_gate_compliance_daily")
+        ):
+            raise AssertionError(f"risk permission cache key touched heavy dataset: {text}")
+        return original_signature(path)
+
+    monkeypatch.setattr(api_main, "_dataset_snapshot_signature", recording_signature)
+
+    key = api_main._risk_permission_cache_key(
+        lake,
+        strategy="v5",
+        version="5.0.0",
+        telemetry_latest_ts=None,
+    )
+
+    assert "risk_permission_api_dependency_meta" in key
+    assert any(path.endswith("gold/risk_permission_api_dependency_meta") for path in touched)
+    assert not any("market_bar" in path for path in touched)
+
+
 def test_live_permission_api_aborts_on_stale_market_data(tmp_path, monkeypatch):
     lake = tmp_path / "lake"
     monkeypatch.setenv("QUANT_LAB_LAKE_ROOT", str(lake))

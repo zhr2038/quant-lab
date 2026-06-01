@@ -263,6 +263,51 @@ def estimate_cost_from_lake(
     )
 
 
+def estimate_cost_from_cost_bucket_table_rows(
+    *,
+    symbol: str,
+    regime: str,
+    notional_usdt: float,
+    quantile: str = "p75",
+    rows: Iterable[Mapping[str, Any]],
+    dataset_has_rows: bool,
+    notional_bucket: str | None = None,
+) -> CostEstimate:
+    requested_symbol = normalize_symbol(symbol)
+    row_list = list(rows)
+    if not row_list:
+        return _global_default_estimate(
+            requested_symbol,
+            regime,
+            notional_usdt,
+            quantile,
+            fallback_reason="service_unavailable",
+            degraded_reason="global_default_cost",
+        )
+    filtered = [
+        row
+        for row in row_list
+        if _cost_row_matches_symbol(row, requested_symbol)
+    ]
+    if not filtered:
+        return _global_default_estimate(
+            requested_symbol,
+            regime,
+            notional_usdt,
+            quantile,
+            fallback_reason="symbol_missing" if dataset_has_rows else "service_unavailable",
+            degraded_reason="global_default_cost",
+        )
+    return estimate_cost_from_cost_bucket_daily_rows(
+        symbol=requested_symbol,
+        regime=regime,
+        notional_usdt=notional_usdt,
+        quantile=quantile,
+        rows=filtered,
+        notional_bucket=notional_bucket,
+    )
+
+
 def _cost_bucket_rows_for_symbol(
     lake_root: Path, normalized_symbol: str
 ) -> tuple[list[dict[str, Any]], bool]:
@@ -317,6 +362,16 @@ def _cost_symbol_lookup_values(normalized_symbol: str) -> set[str]:
         values.add(symbol.replace("-", ""))
     values.update({f"OKX:{value}" for value in list(values)})
     return {value.upper() for value in values if value}
+
+
+def _cost_row_matches_symbol(row: Mapping[str, Any], normalized_symbol: str) -> bool:
+    lookup_values = _cost_symbol_lookup_values(normalized_symbol)
+    global_values = {"", "GLOBAL", "ALL", "*"}
+    for column in ("symbol", "normalized_symbol"):
+        value = str(row.get(column) or "").strip().upper()
+        if value in lookup_values or value in global_values:
+            return True
+    return False
 
 
 def _or_expressions(expressions: list[pl.Expr]) -> pl.Expr:

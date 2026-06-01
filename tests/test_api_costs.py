@@ -70,6 +70,7 @@ def test_cost_estimate_api_reuses_server_cache_for_same_cost_key(tmp_path, monke
     lake = tmp_path / "lake"
     monkeypatch.setenv("QUANT_LAB_LAKE_ROOT", str(lake))
     api_main._COST_ESTIMATE_CACHE.clear()
+    api_main._COST_BUCKET_CACHE.clear()
     write_parquet_dataset(
         pl.DataFrame(
             [
@@ -97,15 +98,68 @@ def test_cost_estimate_api_reuses_server_cache_for_same_cost_key(tmp_path, monke
     def fail_cost_estimate(*_args, **_kwargs):
         raise AssertionError("same cost request should be served from server cache")
 
-    monkeypatch.setattr(api_main, "estimate_cost_from_lake", fail_cost_estimate)
+    monkeypatch.setattr(api_main, "_cost_bucket_rows_for_api", fail_cost_estimate)
     second = client.get("/v1/costs/estimate", params=params)
     api_main._COST_ESTIMATE_CACHE.clear()
+    api_main._COST_BUCKET_CACHE.clear()
 
     assert first.status_code == 200
     assert second.status_code == 200
     assert first.headers["x-cost-cache-hit"] == "false"
     assert second.headers["x-cost-cache-hit"] == "true"
+    assert second.headers["x-cost-bucket-cache-hit"] == "true"
     assert second.headers["x-quant-lab-api-cache-hit"] == "true"
+    assert float(second.headers["x-quant-lab-lake-scan-ms"]) == 0.0
+    assert second.json()["total_cost_bps"] == first.json()["total_cost_bps"]
+
+
+def test_cost_estimate_api_uses_bucket_snapshot_when_request_cache_misses(
+    tmp_path,
+    monkeypatch,
+):
+    lake = tmp_path / "lake"
+    monkeypatch.setenv("QUANT_LAB_LAKE_ROOT", str(lake))
+    api_main._COST_ESTIMATE_CACHE.clear()
+    api_main._COST_BUCKET_CACHE.clear()
+    write_parquet_dataset(
+        pl.DataFrame(
+            [
+                _cost_row(
+                    symbol="BTC-USDT",
+                    regime="normal",
+                    notional_bucket="1k-10k",
+                    total_cost_bps_p75=5.25,
+                    sample_count=42,
+                )
+            ]
+        ),
+        lake / "gold/cost_bucket_daily",
+    )
+    client = TestClient(app)
+    params = {
+        "symbol": "BTC-USDT",
+        "regime": "normal",
+        "notional_usdt": 5_000,
+        "quantile": "p75",
+    }
+
+    first = client.get("/v1/costs/estimate", params=params)
+    api_main._COST_ESTIMATE_CACHE.clear()
+
+    def fail_cost_bucket_loader(*_args, **_kwargs):
+        raise AssertionError("cost bucket snapshot should avoid lake reload")
+
+    monkeypatch.setattr(api_main, "_cost_bucket_rows_for_api", fail_cost_bucket_loader)
+    second = client.get("/v1/costs/estimate", params={**params, "notional_usdt": 6_000})
+    api_main._COST_ESTIMATE_CACHE.clear()
+    api_main._COST_BUCKET_CACHE.clear()
+
+    assert first.status_code == 200
+    assert second.status_code == 200
+    assert second.headers["x-cost-cache-hit"] == "false"
+    assert second.headers["x-cost-bucket-cache-hit"] == "true"
+    assert second.headers["x-quant-lab-api-cache-hit"] == "true"
+    assert float(second.headers["x-quant-lab-lake-scan-ms"]) == 0.0
     assert second.json()["total_cost_bps"] == first.json()["total_cost_bps"]
 
 

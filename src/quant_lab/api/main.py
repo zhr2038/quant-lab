@@ -24,6 +24,7 @@ from pydantic import BaseModel, ConfigDict, Field
 
 from quant_lab import __version__
 from quant_lab.api.cache import (
+    CostBucketCache,
     ExactKeyCache,
     StrategyOpportunityAdvisoryCache,
     StrategyOpportunityAdvisoryResponseCache,
@@ -37,7 +38,11 @@ from quant_lab.contracts.models import (
 )
 from quant_lab.contracts.v5_quant_lab import V5_QUANT_LAB_CONTRACT_VERSION
 from quant_lab.costs.health import read_cost_health_daily
-from quant_lab.costs.model import CostBucket, estimate_cost_bps, estimate_cost_from_lake
+from quant_lab.costs.model import (
+    CostBucket,
+    estimate_cost_bps,
+    estimate_cost_from_cost_bucket_table_rows,
+)
 from quant_lab.data.lake import (
     read_market_bars,
     read_parquet_dataset,  # noqa: F401 - kept as a monkeypatch guard for no-eager-read tests.
@@ -80,6 +85,7 @@ _STRATEGY_OPPORTUNITY_ADVISORY_CACHE: StrategyOpportunityAdvisoryCache[
 _STRATEGY_OPPORTUNITY_ADVISORY_RESPONSE_CACHE = StrategyOpportunityAdvisoryResponseCache()
 _RISK_PERMISSION_EVALUATION_CACHE: ExactKeyCache[dict[str, Any]] = ExactKeyCache()
 _COST_ESTIMATE_CACHE: ExactKeyCache[CostEstimate] = ExactKeyCache()
+_COST_BUCKET_CACHE = CostBucketCache()
 
 
 class HealthResponse(BaseModel):
@@ -260,7 +266,11 @@ def create_app() -> FastAPI:
         try:
             _strategy_opportunity_advisory_snapshot(_lake_root())
         except Exception:
-            return
+            pass
+        try:
+            _cost_bucket_snapshot(_lake_root())
+        except Exception:
+            pass
 
     @app.get("/v1/health", response_model=HealthResponse)
     def health() -> HealthResponse:
@@ -319,7 +329,13 @@ def create_app() -> FastAPI:
         quantile: str = "p75",
         notional_bucket: str | None = None,
     ) -> CostEstimate:
-        estimate, cache_hit, compute_ms = _cost_estimate_cached(
+        (
+            estimate,
+            request_cache_hit,
+            bucket_cache_hit,
+            compute_ms,
+            lake_scan_ms,
+        ) = _cost_estimate_cached(
             _lake_root(),
             symbol=symbol,
             regime=regime,
@@ -327,11 +343,21 @@ def create_app() -> FastAPI:
             quantile=quantile,
             notional_bucket=notional_bucket,
         )
-        response.headers["X-Cost-Cache-Hit"] = "true" if cache_hit else "false"
+        response.headers["X-Cost-Cache-Hit"] = "true" if request_cache_hit else "false"
+        response.headers["X-Cost-Bucket-Cache-Hit"] = (
+            "true" if bucket_cache_hit else "false"
+        )
         response.headers["X-Cost-Compute-Ms"] = f"{compute_ms:.3f}"
-        response.headers["X-Quant-Lab-Api-Cache-Hit"] = "true" if cache_hit else "false"
-        response.headers["X-Quant-Lab-Lake-Scan-Ms"] = f"{compute_ms:.3f}"
+        response.headers["X-Quant-Lab-Api-Cache-Hit"] = (
+            "true" if request_cache_hit or bucket_cache_hit else "false"
+        )
+        response.headers["X-Quant-Lab-Lake-Scan-Ms"] = f"{lake_scan_ms:.3f}"
         response.headers["X-Quant-Lab-Serialize-Ms"] = "0.000"
+        fallback = _signature_fallback_header(
+            _cost_signature_paths(_lake_root()),
+        )
+        if fallback:
+            response.headers["X-Quant-Lab-Signature-Fallback"] = fallback
         return estimate
 
     @app.get("/v1/features/latest", response_model=LatestFeaturesResponse)
@@ -446,6 +472,9 @@ def create_app() -> FastAPI:
         response.headers["X-Quant-Lab-Api-Cache-Hit"] = "true" if cache_hit else "false"
         response.headers["X-Quant-Lab-Lake-Scan-Ms"] = f"{compute_ms:.3f}"
         response.headers["X-Quant-Lab-Serialize-Ms"] = "0.000"
+        fallback = _signature_fallback_header(_risk_permission_signature_paths(_lake_root()))
+        if fallback:
+            response.headers["X-Quant-Lab-Signature-Fallback"] = fallback
         return evaluation["permission"]
 
     @app.get("/v1/risk/live-permission-detail", response_model=LivePermissionDetailResponse)
@@ -464,6 +493,9 @@ def create_app() -> FastAPI:
         response.headers["X-Quant-Lab-Api-Cache-Hit"] = "true" if cache_hit else "false"
         response.headers["X-Quant-Lab-Lake-Scan-Ms"] = f"{compute_ms:.3f}"
         response.headers["X-Quant-Lab-Serialize-Ms"] = "0.000"
+        fallback = _signature_fallback_header(_risk_permission_signature_paths(_lake_root()))
+        if fallback:
+            response.headers["X-Quant-Lab-Signature-Fallback"] = fallback
         return LivePermissionDetailResponse(**evaluation)
 
     return app
@@ -604,18 +636,8 @@ def _risk_permission_cache_key(
         str(lake_root.resolve()),
         str(strategy or "").strip(),
         str(version or "").strip(),
-        "risk_permission",
-        _dataset_snapshot_signature(lake_root / "gold" / "risk_permission"),
-        "gate_decision",
-        _dataset_snapshot_signature(lake_root / "gold" / "gate_decision"),
-        "cost_health_daily",
-        _dataset_snapshot_signature(lake_root / "gold" / "cost_health_daily"),
-        "market_bar",
-        _dataset_snapshot_signature(lake_root / "silver" / "market_bar"),
-        "strategy_health_daily",
-        _dataset_snapshot_signature(lake_root / "gold" / "strategy_health_daily"),
-        "v5_gate_compliance_daily",
-        _dataset_snapshot_signature(lake_root / "gold" / "v5_gate_compliance_daily"),
+        "risk_permission_api_dependency_meta",
+        _risk_permission_dependency_meta_signature(lake_root),
         "telemetry_latest_ts",
         telemetry_latest_ts.isoformat() if telemetry_latest_ts is not None else "",
     )
@@ -639,9 +661,11 @@ def _cost_estimate_cached(
     notional_usdt: float,
     quantile: str,
     notional_bucket: str | None,
-) -> tuple[CostEstimate, bool, float]:
+) -> tuple[CostEstimate, bool, bool, float, float]:
+    snapshot, bucket_cache_hit, _source_signature_ms = _cost_bucket_snapshot(lake_root)
+    lake_scan_ms = 0.0 if bucket_cache_hit else snapshot.lake_scan_ms
     key = _cost_estimate_cache_key(
-        lake_root,
+        source_sha=snapshot.source_sha,
         symbol=symbol,
         regime=regime,
         notional_usdt=notional_usdt,
@@ -650,24 +674,25 @@ def _cost_estimate_cached(
     )
     cached = _COST_ESTIMATE_CACHE.get(key)
     if cached is not None:
-        return cached, True, 0.0
+        return cached, True, bucket_cache_hit, 0.0, lake_scan_ms
     started = time.perf_counter()
-    estimate = estimate_cost_from_lake(
-        lake_root=lake_root,
+    estimate = estimate_cost_from_cost_bucket_table_rows(
         symbol=symbol,
         regime=regime,
         notional_usdt=notional_usdt,
         quantile=quantile,
+        rows=snapshot.rows,
+        dataset_has_rows=snapshot.dataset_has_rows,
         notional_bucket=notional_bucket,
     )
     compute_ms = round((time.perf_counter() - started) * 1000.0, 3)
     _COST_ESTIMATE_CACHE.set(key, estimate)
-    return estimate, False, compute_ms
+    return estimate, False, bucket_cache_hit, compute_ms, lake_scan_ms
 
 
 def _cost_estimate_cache_key(
-    lake_root: Path,
     *,
+    source_sha: str,
     symbol: str,
     regime: str,
     notional_usdt: float,
@@ -675,16 +700,71 @@ def _cost_estimate_cache_key(
     notional_bucket: str | None,
 ) -> tuple[Any, ...]:
     return (
-        str(lake_root.resolve()),
-        "cost_bucket_daily",
-        _dataset_snapshot_signature(lake_root / "gold" / "cost_bucket_daily"),
-        "cost_health_daily",
-        _dataset_snapshot_signature(lake_root / "gold" / "cost_health_daily"),
+        source_sha,
         normalize_symbol(symbol),
         str(regime or "").strip(),
         round(float(notional_usdt or 0.0), 2),
         str(quantile or "p75").strip(),
         str(notional_bucket or "").strip(),
+    )
+
+
+def _cost_bucket_snapshot(lake_root: Path):
+    return _COST_BUCKET_CACHE.get_snapshot(
+        lake_root,
+        signature_builder=_cost_bucket_source_signature,
+        loader=_cost_bucket_rows_for_api,
+        monotonic_seconds=time.perf_counter,
+    )
+
+
+def _cost_bucket_source_signature(lake_root: Path) -> tuple[Any, ...]:
+    return (
+        "cost_bucket_daily",
+        _dataset_snapshot_signature(lake_root / "gold" / "cost_bucket_daily"),
+        "cost_health_daily",
+        _dataset_snapshot_signature(lake_root / "gold" / "cost_health_daily"),
+    )
+
+
+def _cost_bucket_rows_for_api(lake_root: Path) -> tuple[list[dict[str, Any]], bool]:
+    dataset_path = lake_root / "gold" / "cost_bucket_daily"
+    try:
+        frame = read_parquet_lazy(dataset_path).collect()
+    except Exception:
+        return [], False
+    if frame.is_empty():
+        return [], False
+    return frame.to_dicts(), True
+
+
+def _cost_signature_paths(lake_root: Path) -> list[Path]:
+    return [
+        lake_root / "gold" / "cost_bucket_daily",
+        lake_root / "gold" / "cost_health_daily",
+    ]
+
+
+def _risk_permission_signature_paths(lake_root: Path) -> list[Path]:
+    meta_path = lake_root / "gold" / "risk_permission_api_dependency_meta"
+    if meta_path.exists():
+        return [meta_path]
+    return [
+        lake_root / "gold" / "risk_permission",
+        lake_root / "gold" / "gate_decision",
+        lake_root / "gold" / "cost_health_daily",
+    ]
+
+
+def _risk_permission_dependency_meta_signature(lake_root: Path) -> tuple[Any, ...]:
+    meta_path = lake_root / "gold" / "risk_permission_api_dependency_meta"
+    if meta_path.exists():
+        return _dataset_snapshot_signature(meta_path)
+    return (
+        "fallback_dependency_meta_missing",
+        _dataset_snapshot_signature(lake_root / "gold" / "risk_permission"),
+        _dataset_snapshot_signature(lake_root / "gold" / "gate_decision"),
+        _dataset_snapshot_signature(lake_root / "gold" / "cost_health_daily"),
     )
 
 
@@ -1108,6 +1188,7 @@ def _strategy_opportunity_advisory_response(
     fields: str | None = None,
 ) -> Response:
     snapshot, cache_hit, source_signature_ms = _strategy_opportunity_advisory_snapshot(lake_root)
+    _STRATEGY_OPPORTUNITY_ADVISORY_RESPONSE_CACHE.clear_for_source_sha(snapshot.source_sha)
     response_key = _strategy_opportunity_advisory_response_cache_key(
         source_sha=snapshot.source_sha,
         symbols=symbols,
@@ -1130,6 +1211,11 @@ def _strategy_opportunity_advisory_response(
             serialize_ms=0.0,
             etag=cached_response.etag,
         )
+        fallback = _signature_fallback_header(
+            _strategy_opportunity_signature_paths(lake_root)
+        )
+        if fallback:
+            headers["X-Quant-Lab-Signature-Fallback"] = fallback
         if request is not None and request.headers.get("if-none-match") == cached_response.etag:
             return Response(status_code=304, headers=headers)
         return Response(
@@ -1174,6 +1260,9 @@ def _strategy_opportunity_advisory_response(
         serialize_ms=serialize_ms,
         etag=etag,
     )
+    fallback = _signature_fallback_header(_strategy_opportunity_signature_paths(lake_root))
+    if fallback:
+        headers["X-Quant-Lab-Signature-Fallback"] = fallback
     if request is not None and request.headers.get("if-none-match") == etag:
         return Response(status_code=304, headers=headers)
     return Response(content=payload, media_type="application/json", headers=headers)
@@ -1219,6 +1308,9 @@ def _strategy_opportunity_advisory_response_headers(
         "X-Quant-Lab-Source-Signature-Ms": f"{float(source_signature_ms):.3f}",
         "X-Quant-Lab-Lake-Scan-Ms": f"{float(lake_scan_ms):.3f}",
         "X-Quant-Lab-Serialize-Ms": f"{float(serialize_ms):.3f}",
+        "X-Quant-Lab-Advisory-Response-Cache-Size": str(
+            _STRATEGY_OPPORTUNITY_ADVISORY_RESPONSE_CACHE.size()
+        ),
         "ETag": etag,
     }
 
@@ -1469,6 +1561,15 @@ def _strategy_opportunity_advisory_source_signature(lake_root: Path) -> tuple[An
     )
 
 
+def _strategy_opportunity_signature_paths(lake_root: Path) -> list[Path]:
+    return [
+        lake_root / "gold" / "strategy_opportunity_advisory",
+        lake_root / "gold" / "research_portfolio_status",
+        lake_root / "gold" / "alpha_factory_promotion_queue",
+        lake_root / "gold" / "alpha_factory_result",
+    ]
+
+
 def _dataset_snapshot_signature(path: Path) -> tuple[Any, ...]:
     meta = path / "_snapshot_meta.json" if path.is_dir() or not path.suffix else None
     if meta is not None and meta.exists():
@@ -1489,6 +1590,13 @@ def _dataset_snapshot_signature(path: Path) -> tuple[Any, ...]:
         except Exception:
             return _parquet_file_signature(path)
     return _parquet_file_signature(path)
+
+
+def _signature_fallback_header(paths: list[Path]) -> str:
+    for path in paths:
+        if path.exists() and path.is_dir() and not (path / "_snapshot_meta.json").exists():
+            return "parquet_rglob"
+    return ""
 
 
 def _parquet_file_signature(path: Path) -> tuple[tuple[str, int, int], ...]:

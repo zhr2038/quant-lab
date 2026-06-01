@@ -3,8 +3,9 @@ from datetime import UTC, datetime, timedelta
 import polars as pl
 from fastapi.testclient import TestClient
 
+import quant_lab.api.main as api_main
 from quant_lab.api.main import app
-from quant_lab.contracts.models import GateDecision, GateStatus
+from quant_lab.contracts.models import GateDecision, GateStatus, RiskAction, RiskPermission
 from quant_lab.data.lake import write_market_bars, write_parquet_dataset
 
 
@@ -23,6 +24,56 @@ def test_live_permission_api_aborts_without_gate_decision(tmp_path, monkeypatch)
 
     assert payload["permission"] == "ABORT"
     assert payload["reasons"] == ["no_required_gate_decisions"]
+
+
+def test_live_permission_api_reuses_server_cache_for_same_context(tmp_path, monkeypatch):
+    lake = tmp_path / "lake"
+    monkeypatch.setenv("QUANT_LAB_LAKE_ROOT", str(lake))
+    api_main._RISK_PERMISSION_EVALUATION_CACHE.clear()
+    now = datetime.now(UTC)
+    calls = 0
+
+    def fake_live_permission_evaluation(_lake_root, *, strategy: str, version: str):
+        nonlocal calls
+        calls += 1
+        return {
+            "permission": RiskPermission(
+                strategy=strategy,
+                version=version,
+                permission=RiskAction.ALLOW,
+                allowed_modes=["paper"],
+                max_gross_exposure=0.0,
+                max_single_weight=0.0,
+                cost_model_version="costs-test",
+                gate_version="default-v0.1",
+                reasons=["cached_test"],
+                created_at=now,
+                as_of_ts=now,
+                expires_at=now + timedelta(minutes=5),
+                enforceable=True,
+            )
+        }
+
+    monkeypatch.setattr(api_main, "_live_permission_evaluation", fake_live_permission_evaluation)
+    client = TestClient(app)
+
+    first = client.get(
+        "/v1/risk/live-permission",
+        params={"strategy": "v5", "version": "5.0.0"},
+    )
+    second = client.get(
+        "/v1/risk/live-permission",
+        params={"strategy": "v5", "version": "5.0.0"},
+    )
+    api_main._RISK_PERMISSION_EVALUATION_CACHE.clear()
+
+    assert first.status_code == 200
+    assert second.status_code == 200
+    assert calls == 1
+    assert first.headers["x-risk-permission-cache-hit"] == "false"
+    assert second.headers["x-risk-permission-cache-hit"] == "true"
+    assert second.headers["x-quant-lab-api-cache-hit"] == "true"
+    assert second.json()["permission"] == "ALLOW"
 
 
 def test_live_permission_api_aborts_on_stale_market_data(tmp_path, monkeypatch):

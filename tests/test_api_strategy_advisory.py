@@ -1,3 +1,4 @@
+import json
 import zipfile
 from datetime import UTC, datetime, timedelta
 
@@ -747,6 +748,7 @@ def test_strategy_opportunity_advisory_caches_unchanged_source_signature(
     monkeypatch.setenv("QUANT_LAB_LAKE_ROOT", str(lake))
     monkeypatch.delenv("QUANT_LAB_API_TOKEN", raising=False)
     api_main._STRATEGY_OPPORTUNITY_ADVISORY_CACHE.clear()
+    api_main._STRATEGY_OPPORTUNITY_ADVISORY_RESPONSE_CACHE.clear()
     write_parquet_dataset(
         pl.DataFrame(
             [
@@ -776,6 +778,7 @@ def test_strategy_opportunity_advisory_caches_unchanged_source_signature(
     monkeypatch.setattr(api_main, "_strategy_opportunity_advisory_gold_rows", fail_gold_rows)
     second = client.get("/v1/strategy-opportunity-advisory")
     api_main._STRATEGY_OPPORTUNITY_ADVISORY_CACHE.clear()
+    api_main._STRATEGY_OPPORTUNITY_ADVISORY_RESPONSE_CACHE.clear()
 
     assert first.status_code == 200
     assert second.status_code == 200
@@ -798,6 +801,7 @@ def test_strategy_opportunity_advisory_compact_filters_and_etag(tmp_path, monkey
     monkeypatch.setenv("QUANT_LAB_LAKE_ROOT", str(lake))
     monkeypatch.delenv("QUANT_LAB_API_TOKEN", raising=False)
     api_main._STRATEGY_OPPORTUNITY_ADVISORY_CACHE.clear()
+    api_main._STRATEGY_OPPORTUNITY_ADVISORY_RESPONSE_CACHE.clear()
     generated = datetime.now(UTC)
     write_parquet_dataset(
         pl.DataFrame(
@@ -851,6 +855,7 @@ def test_strategy_opportunity_advisory_compact_filters_and_etag(tmp_path, monkey
 
     assert response.status_code == 200
     assert response.headers["x-quant-lab-api-cache-hit"] == "false"
+    assert response.headers["x-advisory-response-cache-hit"] == "false"
     rows = response.json()
     assert len(rows) == 1
     assert rows[0]["symbol"] == "SOL-USDT"
@@ -859,6 +864,52 @@ def test_strategy_opportunity_advisory_compact_filters_and_etag(tmp_path, monkey
     assert response.headers["x-quant-lab-advisory-source-sha"]
     assert not_modified.status_code == 304
     assert not_modified.headers["etag"] == etag
+    assert not_modified.headers["x-advisory-response-cache-hit"] == "true"
+
+
+def test_strategy_opportunity_advisory_uses_snapshot_meta_for_source_signature(
+    tmp_path,
+    monkeypatch,
+):
+    lake = tmp_path / "lake"
+    monkeypatch.setenv("QUANT_LAB_LAKE_ROOT", str(lake))
+    monkeypatch.delenv("QUANT_LAB_API_TOKEN", raising=False)
+    api_main._STRATEGY_OPPORTUNITY_ADVISORY_CACHE.clear()
+    api_main._STRATEGY_OPPORTUNITY_ADVISORY_RESPONSE_CACHE.clear()
+    as_of = datetime(2026, 5, 20, tzinfo=UTC)
+    dataset_path = lake / "gold" / "strategy_opportunity_advisory"
+    write_parquet_dataset(
+        pl.DataFrame([_api_advisory_row("v5.f4_volume_expansion_entry", "SOL-USDT", as_of)]),
+        dataset_path,
+    )
+    (dataset_path / "_snapshot_meta.json").write_text(
+        json.dumps(
+            {
+                "dataset": "strategy_opportunity_advisory",
+                "generated_at": as_of.isoformat().replace("+00:00", "Z"),
+                "expires_at": (as_of + timedelta(hours=1)).isoformat().replace("+00:00", "Z"),
+                "row_count": 1,
+                "source_sha": "snapshot-meta-test",
+            }
+        ),
+        encoding="utf-8",
+    )
+    original_signature = api_main._parquet_file_signature
+
+    def fail_advisory_rglob_signature(path):
+        if str(path).replace("\\", "/").endswith("gold/strategy_opportunity_advisory"):
+            raise AssertionError("advisory source signature should use _snapshot_meta.json")
+        return original_signature(path)
+
+    monkeypatch.setattr(api_main, "_parquet_file_signature", fail_advisory_rglob_signature)
+
+    response = TestClient(app).get("/v1/strategy-opportunity-advisory/v5-compact")
+    api_main._STRATEGY_OPPORTUNITY_ADVISORY_CACHE.clear()
+    api_main._STRATEGY_OPPORTUNITY_ADVISORY_RESPONSE_CACHE.clear()
+
+    assert response.status_code == 200
+    assert response.headers["x-quant-lab-advisory-row-count"] == "1"
+    assert float(response.headers["x-advisory-source-signature-ms"]) >= 0.0
 
 
 def test_strategy_opportunity_advisory_keeps_older_strategy_rows_when_entry_quality_is_newer(

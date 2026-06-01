@@ -24,6 +24,7 @@ from quant_lab.export.daily import (
     export_daily_pack,
     validate_expert_pack,
 )
+from quant_lab.ops.metrics import record_api_request
 from tests.v5_bundle_fixture import make_tar
 
 
@@ -58,6 +59,7 @@ def test_export_daily_pack_writes_required_members(tmp_path):
         assert manifest["git_commit"]
         assert "git_branch" in manifest
         assert "dirty_worktree" in manifest
+
         assert "git_dirty" in manifest
         assert manifest["provenance_status"] in {"git_clean", "git_dirty"}
         assert manifest["code_provenance"] in {"ok", "degraded"}
@@ -90,6 +92,40 @@ def test_export_daily_pack_writes_required_members(tmp_path):
         assert "quant_lab_enforce_readiness:" in executive_summary
         assert "charts/market_close.png" in names
         assert archive.read("charts/market_close.png").startswith(b"\x89PNG")
+
+
+def test_api_latency_summary_export_includes_cache_and_payload_fields(
+    tmp_path,
+    monkeypatch,
+):
+    lake = tmp_path / "lake"
+    monkeypatch.setenv("QUANT_LAB_API_METRICS_FLUSH_ROWS", "1")
+    monkeypatch.setenv("QUANT_LAB_API_METRICS_FLUSH_SECONDS", "3600")
+    record_api_request(
+        lake_root=lake,
+        method="GET",
+        path="/v1/strategy-opportunity-advisory",
+        status_code=200,
+        duration_seconds=0.123,
+        cache_hit=True,
+        rows_returned=233,
+        response_bytes=12_345,
+        lake_scan_ms=1.2,
+        serialize_ms=3.4,
+    )
+
+    frame = daily_export_module._api_latency_summary_for_export(lake)
+    rows = {row["endpoint"]: row for row in frame.to_dicts()}
+    row = rows["/v1/strategy-opportunity-advisory"]
+
+    assert "cache_hit_rate" in CSV_SCHEMAS["reports/api_latency_summary.csv"]
+    assert row["count"] == 1
+    assert row["cache_hit_rate"] == 1.0
+    assert row["avg_rows_returned"] == 233.0
+    assert row["avg_response_bytes"] == 12345.0
+    assert row["avg_lake_scan_ms"] == 1.2
+    assert row["avg_serialize_ms"] == 3.4
+    assert row["error_count"] == 0
 
 
 def test_bnb_paper_summary_uses_latest_strategy_day_view():

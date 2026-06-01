@@ -296,8 +296,16 @@ def api_metrics_summary(
                     pl.col("duration_ms").cast(pl.Float64, strict=False).median().alias("p50"),
                     pl.col("duration_ms")
                     .cast(pl.Float64, strict=False)
+                    .quantile(0.90)
+                    .alias("p90"),
+                    pl.col("duration_ms")
+                    .cast(pl.Float64, strict=False)
                     .quantile(0.95)
                     .alias("p95"),
+                    pl.col("duration_ms")
+                    .cast(pl.Float64, strict=False)
+                    .quantile(0.99)
+                    .alias("p99"),
                     pl.col("duration_ms").cast(pl.Float64, strict=False).max().alias("max"),
                 ]
             )
@@ -315,8 +323,16 @@ def api_metrics_summary(
         "latency_by_path_ms": latency_by_path,
         "slow_paths": slow_paths,
         "cache_hit_count": _sum_bool_lazy(scoped, "cache_hit", schema_names=schema_names),
-        "rows_returned_total": _sum_numeric_lazy(scoped, "rows_returned", schema_names=schema_names),
-        "response_bytes_total": _sum_numeric_lazy(scoped, "response_bytes", schema_names=schema_names),
+        "rows_returned_total": _sum_numeric_lazy(
+            scoped,
+            "rows_returned",
+            schema_names=schema_names,
+        ),
+        "response_bytes_total": _sum_numeric_lazy(
+            scoped,
+            "response_bytes",
+            schema_names=schema_names,
+        ),
         "lake_scan_ms_total": _sum_numeric_lazy(scoped, "lake_scan_ms", schema_names=schema_names),
         "serialize_ms_total": _sum_numeric_lazy(scoped, "serialize_ms", schema_names=schema_names),
         "by_error_type": _count_by_non_empty_lazy(scoped, "error_type", schema_names=schema_names),
@@ -496,7 +512,11 @@ def _sum_bool_lazy(
     if column not in schema_names:
         return 0
     try:
-        value = lazy.select(pl.col(column).fill_null(False).cast(pl.Int64).sum().alias("sum")).collect().item(0, "sum")
+        value = (
+            lazy.select(pl.col(column).fill_null(False).cast(pl.Int64).sum().alias("sum"))
+            .collect()
+            .item(0, "sum")
+        )
     except Exception:
         return 0
     return int(value or 0)
@@ -532,9 +552,45 @@ def _latency_by_path_lazy(
     aggregations: list[pl.Expr] = [
         pl.len().alias("count"),
         duration.median().alias("p50"),
+        duration.quantile(0.90).alias("p90"),
         duration.quantile(0.95).alias("p95"),
+        duration.quantile(0.99).alias("p99"),
         duration.max().alias("max"),
     ]
+    if "cache_hit" in schema_names:
+        aggregations.append(
+            pl.col("cache_hit")
+            .fill_null(False)
+            .cast(pl.Int64)
+            .sum()
+            .alias("cache_hit_count")
+        )
+    if "rows_returned" in schema_names:
+        aggregations.append(
+            pl.col("rows_returned")
+            .cast(pl.Float64, strict=False)
+            .sum()
+            .alias("rows_returned_total")
+        )
+    if "response_bytes" in schema_names:
+        aggregations.append(
+            pl.col("response_bytes")
+            .cast(pl.Float64, strict=False)
+            .sum()
+            .alias("response_bytes_total")
+        )
+    if "lake_scan_ms" in schema_names:
+        aggregations.append(
+            pl.col("lake_scan_ms").cast(pl.Float64, strict=False).sum().alias("lake_scan_ms_total")
+        )
+    if "serialize_ms" in schema_names:
+        aggregations.append(
+            pl.col("serialize_ms").cast(pl.Float64, strict=False).sum().alias("serialize_ms_total")
+        )
+    if "error_type" in schema_names:
+        aggregations.append(
+            pl.col("error_type").is_not_null().cast(pl.Int64).sum().alias("error_count")
+        )
     if "status_code" in schema_names:
         status = pl.col("status_code").cast(pl.Int64, strict=False)
         aggregations.append((status >= 500).sum().alias("server_error_count"))
@@ -545,9 +601,21 @@ def _latency_by_path_lazy(
         metrics: dict[str, float | int | None] = {
             "count": int(row.get("count") or 0),
             "p50": _float_or_none(row.get("p50")),
+            "p90": _float_or_none(row.get("p90")),
             "p95": _float_or_none(row.get("p95")),
+            "p99": _float_or_none(row.get("p99")),
             "max": _float_or_none(row.get("max")),
         }
+        for metric in (
+            "cache_hit_count",
+            "rows_returned_total",
+            "response_bytes_total",
+            "lake_scan_ms_total",
+            "serialize_ms_total",
+            "error_count",
+        ):
+            if metric in row:
+                metrics[metric] = _float_or_none(row.get(metric)) or 0
         if "server_error_count" in row:
             metrics["server_error_count"] = int(row.get("server_error_count") or 0)
         if "client_error_count" in row:

@@ -3,6 +3,7 @@ from datetime import UTC, datetime
 import polars as pl
 from fastapi.testclient import TestClient
 
+import quant_lab.api.main as api_main
 from quant_lab.api.main import app
 from quant_lab.costs.model import DEFAULT_FALLBACK_COST_BPS
 from quant_lab.data.lake import write_parquet_dataset
@@ -63,6 +64,49 @@ def test_cost_estimate_api_reads_cost_bucket_daily_from_lake(tmp_path, monkeypat
     assert payload["sample_size"] == 42
     assert payload["sample_count"] == 42
     assert payload["cost_model_version"] == "costs-2026-05-10"
+
+
+def test_cost_estimate_api_reuses_server_cache_for_same_cost_key(tmp_path, monkeypatch):
+    lake = tmp_path / "lake"
+    monkeypatch.setenv("QUANT_LAB_LAKE_ROOT", str(lake))
+    api_main._COST_ESTIMATE_CACHE.clear()
+    write_parquet_dataset(
+        pl.DataFrame(
+            [
+                _cost_row(
+                    symbol="BTC-USDT",
+                    regime="normal",
+                    notional_bucket="1k-10k",
+                    total_cost_bps_p75=5.25,
+                    sample_count=42,
+                )
+            ]
+        ),
+        lake / "gold/cost_bucket_daily",
+    )
+    client = TestClient(app)
+    params = {
+        "symbol": "BTC-USDT",
+        "regime": "normal",
+        "notional_usdt": 5_000,
+        "quantile": "p75",
+    }
+
+    first = client.get("/v1/costs/estimate", params=params)
+
+    def fail_cost_estimate(*_args, **_kwargs):
+        raise AssertionError("same cost request should be served from server cache")
+
+    monkeypatch.setattr(api_main, "estimate_cost_from_lake", fail_cost_estimate)
+    second = client.get("/v1/costs/estimate", params=params)
+    api_main._COST_ESTIMATE_CACHE.clear()
+
+    assert first.status_code == 200
+    assert second.status_code == 200
+    assert first.headers["x-cost-cache-hit"] == "false"
+    assert second.headers["x-cost-cache-hit"] == "true"
+    assert second.headers["x-quant-lab-api-cache-hit"] == "true"
+    assert second.json()["total_cost_bps"] == first.json()["total_cost_bps"]
 
 
 def test_cost_estimate_api_uses_explicit_global_fallback_without_lake_rows(tmp_path, monkeypatch):

@@ -23,7 +23,11 @@ from fastapi.responses import JSONResponse, Response
 from pydantic import BaseModel, ConfigDict, Field
 
 from quant_lab import __version__
-from quant_lab.api.cache import StrategyOpportunityAdvisoryCache
+from quant_lab.api.cache import (
+    ExactKeyCache,
+    StrategyOpportunityAdvisoryCache,
+    StrategyOpportunityAdvisoryResponseCache,
+)
 from quant_lab.contracts.models import (
     CostEstimate,
     GateDecision,
@@ -40,8 +44,8 @@ from quant_lab.data.lake import (
     read_parquet_lazy,
 )
 from quant_lab.gates.defaults import conservative_example_gate_decision
-from quant_lab.ops.dataset_registry import dataset_names
 from quant_lab.ops.api_metrics import api_metrics_summary, record_api_request
+from quant_lab.ops.dataset_registry import dataset_names
 from quant_lab.research.advisory_overrides import (
     portfolio_overridden_decision_mode,
     portfolio_override_for_row,
@@ -73,6 +77,9 @@ UNOBSERVABLE_TEXT_VALUES = {"", "none", "null", "nan", "not_observable", "unknow
 _STRATEGY_OPPORTUNITY_ADVISORY_CACHE: StrategyOpportunityAdvisoryCache[
     "StrategyOpportunityAdvisoryRow"
 ] = StrategyOpportunityAdvisoryCache()
+_STRATEGY_OPPORTUNITY_ADVISORY_RESPONSE_CACHE = StrategyOpportunityAdvisoryResponseCache()
+_RISK_PERMISSION_EVALUATION_CACHE: ExactKeyCache[dict[str, Any]] = ExactKeyCache()
+_COST_ESTIMATE_CACHE: ExactKeyCache[CostEstimate] = ExactKeyCache()
 
 
 class HealthResponse(BaseModel):
@@ -305,20 +312,27 @@ def create_app() -> FastAPI:
 
     @app.get("/v1/costs/estimate", response_model=CostEstimate)
     def costs_estimate(
+        response: Response,
         symbol: str,
         regime: str,
         notional_usdt: float,
         quantile: str = "p75",
         notional_bucket: str | None = None,
     ) -> CostEstimate:
-        return estimate_cost_from_lake(
-            lake_root=_lake_root(),
+        estimate, cache_hit, compute_ms = _cost_estimate_cached(
+            _lake_root(),
             symbol=symbol,
             regime=regime,
             notional_usdt=notional_usdt,
             quantile=quantile,
             notional_bucket=notional_bucket,
         )
+        response.headers["X-Cost-Cache-Hit"] = "true" if cache_hit else "false"
+        response.headers["X-Cost-Compute-Ms"] = f"{compute_ms:.3f}"
+        response.headers["X-Quant-Lab-Api-Cache-Hit"] = "true" if cache_hit else "false"
+        response.headers["X-Quant-Lab-Lake-Scan-Ms"] = f"{compute_ms:.3f}"
+        response.headers["X-Quant-Lab-Serialize-Ms"] = "0.000"
+        return estimate
 
     @app.get("/v1/features/latest", response_model=LatestFeaturesResponse)
     def features_latest(
@@ -421,20 +435,35 @@ def create_app() -> FastAPI:
         )
 
     @app.get("/v1/risk/live-permission", response_model=RiskPermission)
-    def live_permission(strategy: str, version: str) -> RiskPermission:
-        return _live_permission_evaluation(
-            _lake_root(),
-            strategy=strategy,
-            version=version,
-        )["permission"]
-
-    @app.get("/v1/risk/live-permission-detail", response_model=LivePermissionDetailResponse)
-    def live_permission_detail(strategy: str, version: str) -> LivePermissionDetailResponse:
-        evaluation = _live_permission_evaluation(
+    def live_permission(response: Response, strategy: str, version: str) -> RiskPermission:
+        evaluation, cache_hit, compute_ms = _live_permission_evaluation_cached(
             _lake_root(),
             strategy=strategy,
             version=version,
         )
+        response.headers["X-Risk-Permission-Cache-Hit"] = "true" if cache_hit else "false"
+        response.headers["X-Risk-Permission-Compute-Ms"] = f"{compute_ms:.3f}"
+        response.headers["X-Quant-Lab-Api-Cache-Hit"] = "true" if cache_hit else "false"
+        response.headers["X-Quant-Lab-Lake-Scan-Ms"] = f"{compute_ms:.3f}"
+        response.headers["X-Quant-Lab-Serialize-Ms"] = "0.000"
+        return evaluation["permission"]
+
+    @app.get("/v1/risk/live-permission-detail", response_model=LivePermissionDetailResponse)
+    def live_permission_detail(
+        response: Response,
+        strategy: str,
+        version: str,
+    ) -> LivePermissionDetailResponse:
+        evaluation, cache_hit, compute_ms = _live_permission_evaluation_cached(
+            _lake_root(),
+            strategy=strategy,
+            version=version,
+        )
+        response.headers["X-Risk-Permission-Cache-Hit"] = "true" if cache_hit else "false"
+        response.headers["X-Risk-Permission-Compute-Ms"] = f"{compute_ms:.3f}"
+        response.headers["X-Quant-Lab-Api-Cache-Hit"] = "true" if cache_hit else "false"
+        response.headers["X-Quant-Lab-Lake-Scan-Ms"] = f"{compute_ms:.3f}"
+        response.headers["X-Quant-Lab-Serialize-Ms"] = "0.000"
         return LivePermissionDetailResponse(**evaluation)
 
     return app
@@ -535,6 +564,128 @@ def _live_permission_evaluation(
             gold_latest=selection["gold_latest"],
         ),
     }
+
+
+def _live_permission_evaluation_cached(
+    lake_root: Path,
+    *,
+    strategy: str,
+    version: str,
+) -> tuple[dict[str, Any], bool, float]:
+    telemetry_latest_ts = latest_strategy_telemetry_ts(lake_root, strategy)
+    key = _risk_permission_cache_key(
+        lake_root,
+        strategy=strategy,
+        version=version,
+        telemetry_latest_ts=telemetry_latest_ts,
+    )
+    cached = _RISK_PERMISSION_EVALUATION_CACHE.get(key)
+    if cached is not None and _cached_live_permission_valid(cached):
+        return cached, True, 0.0
+    started = time.perf_counter()
+    evaluation = _live_permission_evaluation(
+        lake_root,
+        strategy=strategy,
+        version=version,
+    )
+    compute_ms = round((time.perf_counter() - started) * 1000.0, 3)
+    _RISK_PERMISSION_EVALUATION_CACHE.set(key, evaluation)
+    return evaluation, False, compute_ms
+
+
+def _risk_permission_cache_key(
+    lake_root: Path,
+    *,
+    strategy: str,
+    version: str,
+    telemetry_latest_ts: datetime | None,
+) -> tuple[Any, ...]:
+    return (
+        str(lake_root.resolve()),
+        str(strategy or "").strip(),
+        str(version or "").strip(),
+        "risk_permission",
+        _dataset_snapshot_signature(lake_root / "gold" / "risk_permission"),
+        "gate_decision",
+        _dataset_snapshot_signature(lake_root / "gold" / "gate_decision"),
+        "cost_health_daily",
+        _dataset_snapshot_signature(lake_root / "gold" / "cost_health_daily"),
+        "market_bar",
+        _dataset_snapshot_signature(lake_root / "silver" / "market_bar"),
+        "strategy_health_daily",
+        _dataset_snapshot_signature(lake_root / "gold" / "strategy_health_daily"),
+        "v5_gate_compliance_daily",
+        _dataset_snapshot_signature(lake_root / "gold" / "v5_gate_compliance_daily"),
+        "telemetry_latest_ts",
+        telemetry_latest_ts.isoformat() if telemetry_latest_ts is not None else "",
+    )
+
+
+def _cached_live_permission_valid(evaluation: dict[str, Any]) -> bool:
+    permission = evaluation.get("permission")
+    if not isinstance(permission, RiskPermission):
+        return False
+    expires_at = permission.expires_at
+    if expires_at is None:
+        return True
+    return expires_at >= datetime.now(UTC)
+
+
+def _cost_estimate_cached(
+    lake_root: Path,
+    *,
+    symbol: str,
+    regime: str,
+    notional_usdt: float,
+    quantile: str,
+    notional_bucket: str | None,
+) -> tuple[CostEstimate, bool, float]:
+    key = _cost_estimate_cache_key(
+        lake_root,
+        symbol=symbol,
+        regime=regime,
+        notional_usdt=notional_usdt,
+        quantile=quantile,
+        notional_bucket=notional_bucket,
+    )
+    cached = _COST_ESTIMATE_CACHE.get(key)
+    if cached is not None:
+        return cached, True, 0.0
+    started = time.perf_counter()
+    estimate = estimate_cost_from_lake(
+        lake_root=lake_root,
+        symbol=symbol,
+        regime=regime,
+        notional_usdt=notional_usdt,
+        quantile=quantile,
+        notional_bucket=notional_bucket,
+    )
+    compute_ms = round((time.perf_counter() - started) * 1000.0, 3)
+    _COST_ESTIMATE_CACHE.set(key, estimate)
+    return estimate, False, compute_ms
+
+
+def _cost_estimate_cache_key(
+    lake_root: Path,
+    *,
+    symbol: str,
+    regime: str,
+    notional_usdt: float,
+    quantile: str,
+    notional_bucket: str | None,
+) -> tuple[Any, ...]:
+    return (
+        str(lake_root.resolve()),
+        "cost_bucket_daily",
+        _dataset_snapshot_signature(lake_root / "gold" / "cost_bucket_daily"),
+        "cost_health_daily",
+        _dataset_snapshot_signature(lake_root / "gold" / "cost_health_daily"),
+        normalize_symbol(symbol),
+        str(regime or "").strip(),
+        round(float(notional_usdt or 0.0), 2),
+        str(quantile or "p75").strip(),
+        str(notional_bucket or "").strip(),
+    )
 
 
 def _compute_live_permission_with_context(
@@ -932,11 +1083,11 @@ def _split_csv(value: str | None) -> list[str] | None:
 def _strategy_opportunity_advisory_rows(
     lake_root: Path,
 ) -> list[StrategyOpportunityAdvisoryRow]:
-    snapshot, _cache_hit = _strategy_opportunity_advisory_snapshot(lake_root)
+    snapshot, _cache_hit, _signature_ms = _strategy_opportunity_advisory_snapshot(lake_root)
     return list(snapshot.rows)
 
 
-def _strategy_opportunity_advisory_snapshot(lake_root: Path) -> tuple[Any, bool]:
+def _strategy_opportunity_advisory_snapshot(lake_root: Path) -> tuple[Any, bool, float]:
     return _STRATEGY_OPPORTUNITY_ADVISORY_CACHE.get_snapshot(
         lake_root,
         signature_builder=_strategy_opportunity_advisory_source_signature,
@@ -956,7 +1107,36 @@ def _strategy_opportunity_advisory_response(
     fresh_only: bool = False,
     fields: str | None = None,
 ) -> Response:
-    snapshot, cache_hit = _strategy_opportunity_advisory_snapshot(lake_root)
+    snapshot, cache_hit, source_signature_ms = _strategy_opportunity_advisory_snapshot(lake_root)
+    response_key = _strategy_opportunity_advisory_response_cache_key(
+        source_sha=snapshot.source_sha,
+        symbols=symbols,
+        families=families,
+        latest_only=latest_only,
+        fresh_only=fresh_only,
+        fields=fields,
+    )
+    cached_response = _STRATEGY_OPPORTUNITY_ADVISORY_RESPONSE_CACHE.get(response_key)
+    if cached_response is not None:
+        headers = _strategy_opportunity_advisory_response_headers(
+            lake_root,
+            row_count=cached_response.row_count,
+            latest_generated_text=cached_response.latest_generated_at,
+            cache_hit=cache_hit,
+            response_cache_hit=True,
+            source_sha=snapshot.source_sha,
+            source_signature_ms=source_signature_ms,
+            lake_scan_ms=0.0,
+            serialize_ms=0.0,
+            etag=cached_response.etag,
+        )
+        if request is not None and request.headers.get("if-none-match") == cached_response.etag:
+            return Response(status_code=304, headers=headers)
+        return Response(
+            content=cached_response.payload,
+            media_type="application/json",
+            headers=headers,
+        )
     rows = _filter_strategy_opportunity_advisory_rows(
         list(snapshot.rows),
         symbols=symbols,
@@ -973,11 +1153,23 @@ def _strategy_opportunity_advisory_response(
     )
     serialize_ms = round((time.perf_counter() - serialize_started) * 1000.0, 3)
     etag = _advisory_etag(snapshot.source_sha, payload)
+    latest_generated_text = _latest_advisory_generated_text(rows)
+    _STRATEGY_OPPORTUNITY_ADVISORY_RESPONSE_CACHE.set(
+        response_key,
+        payload=payload,
+        etag=etag,
+        row_count=len(rows),
+        latest_generated_at=latest_generated_text,
+        serialize_ms=serialize_ms,
+    )
     headers = _strategy_opportunity_advisory_response_headers(
         lake_root,
-        rows,
+        row_count=len(rows),
+        latest_generated_text=latest_generated_text,
         cache_hit=cache_hit,
+        response_cache_hit=False,
         source_sha=snapshot.source_sha,
+        source_signature_ms=source_signature_ms,
         lake_scan_ms=0.0 if cache_hit else snapshot.lake_scan_ms,
         serialize_ms=serialize_ms,
         etag=etag,
@@ -989,38 +1181,42 @@ def _strategy_opportunity_advisory_response(
 
 def _strategy_opportunity_advisory_response_headers(
     lake_root: Path,
-    rows: list[StrategyOpportunityAdvisoryRow] | tuple[StrategyOpportunityAdvisoryRow, ...],
     *,
+    row_count: int,
+    latest_generated_text: str,
     cache_hit: bool,
+    response_cache_hit: bool,
     source_sha: str,
+    source_signature_ms: float,
     lake_scan_ms: float,
     serialize_ms: float,
     etag: str,
 ) -> dict[str, str]:
-    latest_generated = max((row.generated_at for row in rows), default=None)
-    latest_generated_text = (
-        latest_generated.astimezone(UTC).isoformat().replace("+00:00", "Z")
-        if latest_generated is not None
-        else ""
-    )
     try:
         resolved_lake = str(lake_root.resolve())
     except OSError:
         resolved_lake = str(lake_root)
     lake_root_hash = hashlib.sha256(resolved_lake.encode("utf-8")).hexdigest()[:16]
+    api_cache_hit = cache_hit or response_cache_hit
     return {
         "X-Advisory-Dataset-Generated-At": latest_generated_text,
-        "X-Advisory-Row-Count": str(len(rows)),
+        "X-Advisory-Row-Count": str(row_count),
         "X-Advisory-Source-Sha": source_sha,
         "X-Lake-Root-Hash": lake_root_hash,
         "X-Advisory-Cache-Hit": "true" if cache_hit else "false",
+        "X-Advisory-Response-Cache-Hit": "true" if response_cache_hit else "false",
+        "X-Advisory-Source-Signature-Ms": f"{float(source_signature_ms):.3f}",
         "X-Advisory-Lake-Scan-Ms": f"{float(lake_scan_ms):.3f}",
         "X-Advisory-Serialize-Ms": f"{float(serialize_ms):.3f}",
         "X-Quant-Lab-Advisory-Dataset-Generated-At": latest_generated_text,
-        "X-Quant-Lab-Advisory-Row-Count": str(len(rows)),
+        "X-Quant-Lab-Advisory-Row-Count": str(row_count),
         "X-Quant-Lab-Advisory-Source-Sha": source_sha,
         "X-Quant-Lab-Lake-Root-Hash": lake_root_hash,
-        "X-Quant-Lab-Api-Cache-Hit": "true" if cache_hit else "false",
+        "X-Quant-Lab-Api-Cache-Hit": "true" if api_cache_hit else "false",
+        "X-Quant-Lab-Advisory-Response-Cache-Hit": (
+            "true" if response_cache_hit else "false"
+        ),
+        "X-Quant-Lab-Source-Signature-Ms": f"{float(source_signature_ms):.3f}",
         "X-Quant-Lab-Lake-Scan-Ms": f"{float(lake_scan_ms):.3f}",
         "X-Quant-Lab-Serialize-Ms": f"{float(serialize_ms):.3f}",
         "ETag": etag,
@@ -1033,6 +1229,34 @@ def _strategy_opportunity_advisory_json_bytes(
     return b"[" + b",".join(row.model_dump_json().encode("utf-8") for row in rows) + b"]"
 
 
+def _strategy_opportunity_advisory_response_cache_key(
+    *,
+    source_sha: str,
+    symbols: list[str] | None,
+    families: list[str] | None,
+    latest_only: bool,
+    fresh_only: bool,
+    fields: str | None,
+) -> tuple[Any, ...]:
+    return (
+        source_sha,
+        tuple(sorted(_normalize_query_symbol(symbol) for symbol in (symbols or []))),
+        tuple(sorted(str(family).strip().lower() for family in (families or []))),
+        bool(latest_only),
+        bool(fresh_only),
+        str(fields or "").strip().lower(),
+    )
+
+
+def _latest_advisory_generated_text(rows: list[StrategyOpportunityAdvisoryRow]) -> str:
+    latest_generated = max((row.generated_at for row in rows), default=None)
+    return (
+        latest_generated.astimezone(UTC).isoformat().replace("+00:00", "Z")
+        if latest_generated is not None
+        else ""
+    )
+
+
 def _strategy_opportunity_advisory_minimal_json_bytes(
     rows: list[StrategyOpportunityAdvisoryRow],
 ) -> bytes:
@@ -1040,7 +1264,9 @@ def _strategy_opportunity_advisory_minimal_json_bytes(
     return json.dumps(compact_rows, separators=(",", ":"), default=str).encode("utf-8")
 
 
-def _strategy_opportunity_advisory_minimal_row(row: StrategyOpportunityAdvisoryRow) -> dict[str, Any]:
+def _strategy_opportunity_advisory_minimal_row(
+    row: StrategyOpportunityAdvisoryRow,
+) -> dict[str, Any]:
     return {
         "as_of_ts": row.as_of_ts,
         "generated_at": row.generated_at,
@@ -1089,7 +1315,11 @@ def _filter_strategy_opportunity_advisory_rows(
             row for row in selected if _normalize_query_symbol(row.symbol) in wanted_symbols
         ]
     if families:
-        wanted_families = {str(family).strip().lower() for family in families if str(family).strip()}
+        wanted_families = {
+            str(family).strip().lower()
+            for family in families
+            if str(family).strip()
+        }
         selected = [
             row for row in selected if _advisory_row_matches_family(row, wanted_families)
         ]
@@ -1180,10 +1410,14 @@ def _strategy_opportunity_advisory_rows_uncached(
 
 def _strategy_opportunity_advisory_source_signature(lake_root: Path) -> tuple[Any, ...]:
     gold_path = lake_root / "gold" / "strategy_opportunity_advisory"
-    gold_files = _parquet_file_signature(gold_path)
-    portfolio_files = _parquet_file_signature(lake_root / "gold" / "research_portfolio_status")
-    promotion_files = _parquet_file_signature(lake_root / "gold" / "alpha_factory_promotion_queue")
-    result_files = _parquet_file_signature(lake_root / "gold" / "alpha_factory_result")
+    gold_files = _dataset_snapshot_signature(gold_path)
+    portfolio_files = _dataset_snapshot_signature(
+        lake_root / "gold" / "research_portfolio_status"
+    )
+    promotion_files = _dataset_snapshot_signature(
+        lake_root / "gold" / "alpha_factory_promotion_queue"
+    )
+    result_files = _dataset_snapshot_signature(lake_root / "gold" / "alpha_factory_result")
     if gold_files:
         return (
             "gold",
@@ -1233,6 +1467,28 @@ def _strategy_opportunity_advisory_source_signature(lake_root: Path) -> tuple[An
         "alpha_factory_result",
         result_files,
     )
+
+
+def _dataset_snapshot_signature(path: Path) -> tuple[Any, ...]:
+    meta = path / "_snapshot_meta.json" if path.is_dir() or not path.suffix else None
+    if meta is not None and meta.exists():
+        try:
+            meta_stat = meta.stat()
+            root_stat = path.stat() if path.exists() else None
+            payload = json.loads(meta.read_text(encoding="utf-8"))
+            return (
+                "meta",
+                meta_stat.st_mtime_ns,
+                meta_stat.st_size,
+                root_stat.st_mtime_ns if root_stat is not None else None,
+                root_stat.st_size if root_stat is not None else None,
+                str(payload.get("source_sha") or ""),
+                str(payload.get("generated_at") or ""),
+                int(payload.get("row_count") or 0),
+            )
+        except Exception:
+            return _parquet_file_signature(path)
+    return _parquet_file_signature(path)
 
 
 def _parquet_file_signature(path: Path) -> tuple[tuple[str, int, int], ...]:
@@ -1478,7 +1734,11 @@ def _is_alpha_factory_advisory_model(row: StrategyOpportunityAdvisoryRow) -> boo
 
 def _is_alpha_factory_promotion_capped_model(row: StrategyOpportunityAdvisoryRow) -> bool:
     candidate = row.strategy_candidate
-    candidate_key = candidate.split(":", 1)[1] if candidate.startswith("regime_router:") else candidate
+    candidate_key = (
+        candidate.split(":", 1)[1]
+        if candidate.startswith("regime_router:")
+        else candidate
+    )
     return (
         candidate_key in ALPHA_FACTORY_CANDIDATES
         or candidate_key.startswith("v5.af.")

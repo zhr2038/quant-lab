@@ -28,8 +28,8 @@ from quant_lab.contracts.v5_quant_lab import (
     V5_TELEMETRY_DATASET_SCHEMA_VERSION,
 )
 from quant_lab.data.lake import read_parquet_dataset, write_parquet_dataset
-from quant_lab.ops.data_quality import run_data_quality
 from quant_lab.ops.api_metrics import api_metrics_summary
+from quant_lab.ops.data_quality import run_data_quality
 from quant_lab.reports.enforce_readiness import (
     ENFORCE_READINESS_CSV,
     ENFORCE_READINESS_JSON,
@@ -89,6 +89,12 @@ from quant_lab.time_display import BEIJING_TZ, DISPLAY_TIMEZONE, beijing_iso
 from quant_lab.web import readers
 
 STRATEGY_OPPORTUNITY_ADVISORY_SCHEMA_VERSION = "strategy_opportunity_advisory.v0.1"
+SNAPSHOT_META_DATASETS = {
+    "strategy_opportunity_advisory",
+    "research_portfolio_status",
+    "alpha_factory_promotion_queue",
+    "alpha_factory_result",
+}
 STRATEGY_OPPORTUNITY_ADVISORY_TTL_SECONDS = 3 * 60 * 60
 UNOBSERVABLE_TEXT_VALUES = {"", "none", "null", "nan", "not_observable", "unknown"}
 
@@ -526,17 +532,18 @@ CSV_SCHEMAS: dict[str, list[str]] = {
     "market/trade_activity.csv": ["symbol", "trade_count", "size_sum", "latest_trade_ts"],
     "reports/api_latency_summary.csv": [
         "endpoint",
-        "request_count",
+        "count",
         "p50_ms",
+        "p90_ms",
         "p95_ms",
+        "p99_ms",
         "max_ms",
-        "cache_hit_count",
-        "rows_returned_total",
-        "response_bytes_total",
-        "lake_scan_ms_total",
-        "serialize_ms_total",
-        "server_error_count",
-        "client_error_count",
+        "cache_hit_rate",
+        "avg_rows_returned",
+        "avg_response_bytes",
+        "avg_lake_scan_ms",
+        "avg_serialize_ms",
+        "error_count",
     ],
     "research/alpha_evidence.csv": [
         "alpha_id",
@@ -2631,6 +2638,8 @@ def _publish_export_frame(
     dataset_path = root / readers.DATASET_PATHS.get(dataset_name, Path("gold") / dataset_name)
     try:
         write_parquet_dataset(frame, dataset_path)
+        if dataset_name in SNAPSHOT_META_DATASETS:
+            _write_snapshot_meta(dataset_path, dataset_name=dataset_name, frame=frame)
         frames[dataset_name] = read_parquet_dataset(dataset_path)
     except Exception as exc:
         frames[dataset_name] = frame
@@ -2639,6 +2648,108 @@ def _publish_export_frame(
             f"{type(exc).__name__}:{_safe_warning_text(str(exc))}"
         )
     row_counts[dataset_name] = frame.height
+
+
+def _write_snapshot_meta(dataset_path: Path, *, dataset_name: str, frame: pl.DataFrame) -> None:
+    dataset_path.mkdir(parents=True, exist_ok=True)
+    generated_at = _frame_latest_iso(
+        frame,
+        ("generated_at", "created_at", "as_of_ts", "as_of_date", "latest_bundle_ts", "date"),
+    )
+    expires_at = _frame_latest_iso(frame, ("expires_at",))
+    schema_version = _frame_text_value(frame, "schema_version")
+    parquet_count = sum(1 for path in dataset_path.rglob("*.parquet") if path.is_file())
+    payload = {
+        "dataset": dataset_name,
+        "generated_at": generated_at,
+        "expires_at": expires_at,
+        "row_count": frame.height,
+        "source_sha": _frame_source_sha(dataset_name, frame, generated_at, expires_at),
+        "file_count": parquet_count,
+        "schema_version": schema_version
+        or (
+            STRATEGY_OPPORTUNITY_ADVISORY_SCHEMA_VERSION
+            if dataset_name == "strategy_opportunity_advisory"
+            else dataset_name
+        ),
+        "created_at": datetime.now(UTC).isoformat().replace("+00:00", "Z"),
+    }
+    (dataset_path / "_snapshot_meta.json").write_text(
+        json.dumps(payload, sort_keys=True, separators=(",", ":")),
+        encoding="utf-8",
+    )
+
+
+def _frame_latest_iso(frame: pl.DataFrame, columns: Iterable[str]) -> str:
+    if frame.is_empty():
+        return ""
+    for column in columns:
+        if column not in frame.columns:
+            continue
+        try:
+            value = frame.select(
+                pl.col(column)
+                .cast(pl.Utf8, strict=False)
+                .str.to_datetime(time_zone="UTC", strict=False)
+                .max()
+                .alias(column)
+            ).item()
+        except Exception:
+            continue
+        if isinstance(value, datetime):
+            return value.astimezone(UTC).isoformat().replace("+00:00", "Z")
+        if value not in (None, ""):
+            return str(value)
+    return ""
+
+
+def _frame_text_value(frame: pl.DataFrame, column: str) -> str:
+    if frame.is_empty() or column not in frame.columns:
+        return ""
+    try:
+        values = [
+            str(value)
+            for value in frame.get_column(column).drop_nulls().unique().head(5).to_list()
+            if str(value).strip()
+        ]
+    except Exception:
+        return ""
+    return ",".join(sorted(values))
+
+
+def _frame_source_sha(
+    dataset_name: str,
+    frame: pl.DataFrame,
+    generated_at: str,
+    expires_at: str,
+) -> str:
+    digest = hashlib.sha256()
+    digest.update(dataset_name.encode("utf-8"))
+    digest.update(str(frame.height).encode("ascii"))
+    digest.update("|".join(frame.columns).encode("utf-8"))
+    digest.update(str(generated_at or "").encode("utf-8"))
+    digest.update(str(expires_at or "").encode("utf-8"))
+    return digest.hexdigest()
+
+
+def _write_source_snapshot_metas(root: Path, frames: dict[str, pl.DataFrame]) -> list[str]:
+    warnings: list[str] = []
+    for dataset_name in sorted(SNAPSHOT_META_DATASETS):
+        frame = frames.get(dataset_name, pl.DataFrame())
+        if frame.is_empty():
+            continue
+        dataset_path = root / readers.DATASET_PATHS.get(
+            dataset_name,
+            Path("gold") / dataset_name,
+        )
+        try:
+            _write_snapshot_meta(dataset_path, dataset_name=dataset_name, frame=frame)
+        except Exception as exc:
+            warnings.append(
+                f"{dataset_name} snapshot meta skipped: "
+                f"{type(exc).__name__}:{_safe_warning_text(str(exc))}"
+            )
+    return warnings
 
 
 def _publish_missed_opportunity_snapshot(
@@ -2809,6 +2920,13 @@ def export_daily_pack(
     snapshot = _publish_research_portfolio_status_snapshot(root, snapshot, day)
     snapshot = _publish_missed_opportunity_snapshot(root, snapshot)
     snapshot = _publish_strategy_opportunity_advisory_snapshot(root, snapshot)
+    meta_warnings = _write_source_snapshot_metas(root, snapshot.frames)
+    if meta_warnings:
+        snapshot = _DatasetSnapshot(
+            frames=snapshot.frames,
+            row_counts=snapshot.row_counts,
+            warnings=[*snapshot.warnings, *meta_warnings],
+        )
     missing_sections = _missing_sections(snapshot.row_counts)
     data_quality = _data_quality_payload(
         root,
@@ -6296,37 +6414,82 @@ def _api_latency_summary_for_export(root: Path) -> pl.DataFrame:
     rows: list[dict[str, Any]] = [
         {
             "endpoint": "__all__",
-            "request_count": int(summary.get("request_count") or 0),
+            "count": int(summary.get("request_count") or 0),
             "p50_ms": _float_or_blank(latency.get("p50")),
+            "p90_ms": _float_or_blank(latency.get("p90")),
             "p95_ms": _float_or_blank(latency.get("p95")),
+            "p99_ms": _float_or_blank(latency.get("p99")),
             "max_ms": _float_or_blank(latency.get("max")),
-            "cache_hit_count": int(summary.get("cache_hit_count") or 0),
-            "rows_returned_total": _float_or_blank(summary.get("rows_returned_total")),
-            "response_bytes_total": _float_or_blank(summary.get("response_bytes_total")),
-            "lake_scan_ms_total": _float_or_blank(summary.get("lake_scan_ms_total")),
-            "serialize_ms_total": _float_or_blank(summary.get("serialize_ms_total")),
-            "server_error_count": "",
-            "client_error_count": "",
+            "cache_hit_rate": _safe_rate(
+                summary.get("cache_hit_count"),
+                summary.get("request_count"),
+            ),
+            "avg_rows_returned": _safe_avg(
+                summary.get("rows_returned_total"),
+                summary.get("request_count"),
+            ),
+            "avg_response_bytes": _safe_avg(
+                summary.get("response_bytes_total"),
+                summary.get("request_count"),
+            ),
+            "avg_lake_scan_ms": _safe_avg(
+                summary.get("lake_scan_ms_total"),
+                summary.get("request_count"),
+            ),
+            "avg_serialize_ms": _safe_avg(
+                summary.get("serialize_ms_total"),
+                summary.get("request_count"),
+            ),
+            "error_count": sum(
+                int(value or 0)
+                for value in (
+                    summary.get("by_error_type")
+                    if isinstance(summary.get("by_error_type"), dict)
+                    else {}
+                ).values()
+            ),
         }
     ]
-    by_path = summary.get("latency_by_path_ms") if isinstance(summary.get("latency_by_path_ms"), dict) else {}
+    by_path = (
+        summary.get("latency_by_path_ms")
+        if isinstance(summary.get("latency_by_path_ms"), dict)
+        else {}
+    )
     for endpoint, metrics in sorted(by_path.items()):
         if not isinstance(metrics, dict):
             continue
         rows.append(
             {
                 "endpoint": endpoint,
-                "request_count": int(metrics.get("count") or 0),
+                "count": int(metrics.get("count") or 0),
                 "p50_ms": _float_or_blank(metrics.get("p50")),
+                "p90_ms": _float_or_blank(metrics.get("p90")),
                 "p95_ms": _float_or_blank(metrics.get("p95")),
+                "p99_ms": _float_or_blank(metrics.get("p99")),
                 "max_ms": _float_or_blank(metrics.get("max")),
-                "cache_hit_count": "",
-                "rows_returned_total": "",
-                "response_bytes_total": "",
-                "lake_scan_ms_total": "",
-                "serialize_ms_total": "",
-                "server_error_count": int(metrics.get("server_error_count") or 0),
-                "client_error_count": int(metrics.get("client_error_count") or 0),
+                "cache_hit_rate": _safe_rate(metrics.get("cache_hit_count"), metrics.get("count")),
+                "avg_rows_returned": _safe_avg(
+                    metrics.get("rows_returned_total"),
+                    metrics.get("count"),
+                ),
+                "avg_response_bytes": _safe_avg(
+                    metrics.get("response_bytes_total"),
+                    metrics.get("count"),
+                ),
+                "avg_lake_scan_ms": _safe_avg(
+                    metrics.get("lake_scan_ms_total"),
+                    metrics.get("count"),
+                ),
+                "avg_serialize_ms": _safe_avg(
+                    metrics.get("serialize_ms_total"),
+                    metrics.get("count"),
+                ),
+                "error_count": int(
+                    metrics.get("error_count")
+                    or metrics.get("server_error_count")
+                    or 0
+                )
+                + int(metrics.get("client_error_count") or 0),
             }
         )
     return pl.DataFrame(rows, infer_schema_length=None).select(
@@ -6341,14 +6504,15 @@ def _api_latency_summary_md(root: Path) -> str:
     lines = [
         "# API Latency Summary",
         "",
-        "Recent read-only API latency. `/v1/health` is intentionally light; lake freshness checks belong to `/v1/health/deep`.",
+        "Recent read-only API latency. `/v1/health` is intentionally light; "
+        "lake freshness checks belong to `/v1/health/deep`.",
         "",
         "| endpoint | count | p50 ms | p95 ms | max ms |",
         "| --- | ---: | ---: | ---: | ---: |",
     ]
     for row in frame.head(12).to_dicts():
         lines.append(
-            f"| {row.get('endpoint') or ''} | {row.get('request_count') or 0} | "
+            f"| {row.get('endpoint') or ''} | {row.get('count') or 0} | "
             f"{row.get('p50_ms') or ''} | {row.get('p95_ms') or ''} | {row.get('max_ms') or ''} |"
         )
     return "\n".join(lines) + "\n"
@@ -6357,6 +6521,26 @@ def _api_latency_summary_md(root: Path) -> str:
 def _float_or_blank(value: Any) -> float | str:
     try:
         return round(float(value), 3)
+    except Exception:
+        return ""
+
+
+def _safe_rate(numerator: Any, denominator: Any) -> float | str:
+    try:
+        denom = float(denominator or 0)
+        if denom <= 0:
+            return ""
+        return round(float(numerator or 0) / denom, 4)
+    except Exception:
+        return ""
+
+
+def _safe_avg(total: Any, count: Any) -> float | str:
+    try:
+        denom = float(count or 0)
+        if denom <= 0:
+            return ""
+        return round(float(total or 0) / denom, 3)
     except Exception:
         return ""
 

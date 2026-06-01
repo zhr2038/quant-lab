@@ -71,6 +71,7 @@ from quant_lab.risk.publish import (
     latest_strategy_telemetry_ts,
     parse_risk_permission_row,
     permission_status,
+    rebuild_risk_permission_api_dependency_meta_from_latest_permission,
     risk_permission_stale_vs_telemetry,
 )
 from quant_lab.symbols import normalize_symbol
@@ -263,6 +264,10 @@ def create_app() -> FastAPI:
 
     @app.on_event("startup")
     def warm_strategy_opportunity_advisory_cache() -> None:
+        try:
+            _ensure_risk_permission_dependency_meta(_lake_root())
+        except Exception:
+            pass
         try:
             _strategy_opportunity_advisory_snapshot(_lake_root())
         except Exception:
@@ -772,6 +777,12 @@ def _risk_permission_dependency_meta_status(lake_root: Path) -> str:
     if meta_path.is_dir() and not (meta_path / "_snapshot_meta.json").exists():
         return "missing_snapshot_meta"
     return "ok"
+
+
+def _ensure_risk_permission_dependency_meta(lake_root: Path) -> int:
+    if _risk_permission_dependency_meta_status(lake_root) == "ok":
+        return 0
+    return rebuild_risk_permission_api_dependency_meta_from_latest_permission(lake_root)
 
 
 def _risk_permission_dependency_meta_health(lake_root: Path) -> dict[str, Any]:

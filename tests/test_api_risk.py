@@ -168,6 +168,44 @@ def test_health_deep_warns_when_risk_dependency_meta_missing(tmp_path, monkeypat
     assert dependency_meta["warning"] == "risk_permission_dependency_meta_missing"
 
 
+def test_api_startup_rebuilds_missing_risk_dependency_meta_from_latest_permission(
+    tmp_path,
+    monkeypatch,
+):
+    lake = tmp_path / "lake"
+    monkeypatch.setenv("QUANT_LAB_LAKE_ROOT", str(lake))
+    monkeypatch.delenv("QUANT_LAB_API_TOKEN", raising=False)
+    as_of_ts = datetime.now(UTC)
+    _write_risk_permissions(
+        lake,
+        [
+            _risk_row(
+                strategy="v5",
+                version="5.0.0",
+                permission="ABORT",
+                reasons='["published_abort"]',
+                as_of_ts=as_of_ts,
+                permission_status="ACTIVE_ABORT",
+            )
+        ],
+    )
+    meta_path = lake / "gold/risk_permission_api_dependency_meta"
+    assert not meta_path.exists()
+
+    with TestClient(app) as client:
+        response = client.get("/v1/health/deep")
+
+    assert response.status_code == 200
+    dependency_meta = response.json()["risk_permission_dependency_meta"]
+    assert dependency_meta["status"] == "ok"
+    assert (meta_path / "_snapshot_meta.json").is_file()
+    frame = read_parquet_dataset(meta_path)
+    row = frame.to_dicts()[0]
+    assert row["strategy"] == "v5"
+    assert row["version"] == "5.0.0"
+    assert row["source_sha"]
+
+
 def test_live_permission_api_aborts_on_stale_market_data(tmp_path, monkeypatch):
     lake = tmp_path / "lake"
     monkeypatch.setenv("QUANT_LAB_LAKE_ROOT", str(lake))

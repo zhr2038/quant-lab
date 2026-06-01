@@ -167,42 +167,158 @@ def _publish_risk_permission_api_dependency_meta(
     telemetry_latest_ts: datetime | None,
 ) -> None:
     generated_at = datetime.now(UTC)
-    source_sha = _dependency_source_sha(
-        strategy=strategy,
-        version=version,
-        permission=permission,
-        telemetry_latest_ts=telemetry_latest_ts,
-    )
-    frame = pl.DataFrame(
+    frame = _risk_permission_dependency_meta_frame(
         [
-            {
-                "strategy": strategy,
-                "version": version,
-                "risk_permission_source_sha": source_sha,
-                "gate_decision_source_sha": _dataset_quick_signature(root / GATE_DECISION_DATASET),
-                "cost_health_source_sha": _dataset_quick_signature(
-                    root / COST_HEALTH_DAILY_DATASET
-                ),
-                "telemetry_latest_ts": (
-                    telemetry_latest_ts.isoformat() if telemetry_latest_ts else ""
-                ),
-                "source_sha": source_sha,
-                "generated_at": generated_at.isoformat().replace("+00:00", "Z"),
-            }
+            _risk_permission_dependency_meta_row(
+                root,
+                strategy=strategy,
+                version=version,
+                permission=permission,
+                telemetry_latest_ts=telemetry_latest_ts,
+                generated_at=generated_at,
+            )
         ],
-        infer_schema_length=None,
     )
     upsert_parquet_dataset(
         frame,
         root / RISK_PERMISSION_API_DEPENDENCY_META_DATASET,
         key_columns=["strategy", "version"],
     )
+    stored = read_parquet_dataset(root / RISK_PERMISSION_API_DEPENDENCY_META_DATASET)
+    snapshot_frame = stored if not stored.is_empty() else frame
     _write_dependency_snapshot_meta(
         root / RISK_PERMISSION_API_DEPENDENCY_META_DATASET,
-        frame=frame,
-        source_sha=source_sha,
+        frame=snapshot_frame,
+        source_sha=_dependency_meta_source_sha(snapshot_frame),
         generated_at=generated_at,
     )
+
+
+def rebuild_risk_permission_api_dependency_meta_from_latest_permission(
+    lake_root: str | Path,
+) -> int:
+    root = Path(lake_root)
+    risk_permission = read_parquet_dataset(root / RISK_PERMISSION_DATASET)
+    if risk_permission.is_empty() or not {"strategy", "version"}.issubset(
+        set(risk_permission.columns)
+    ):
+        return 0
+    generated_at = datetime.now(UTC)
+    rows: list[dict[str, Any]] = []
+    for row in _latest_risk_permission_rows(risk_permission):
+        permission = parse_risk_permission_row(row)
+        if permission is None:
+            continue
+        strategy = str(row.get("strategy") or permission.strategy or "").strip()
+        version = str(row.get("version") or permission.version or "").strip()
+        if not strategy or not version:
+            continue
+        telemetry_latest_ts = _ensure_utc(
+            permission.telemetry_latest_ts or permission.source_bundle_ts
+        )
+        rows.append(
+            _risk_permission_dependency_meta_row(
+                root,
+                strategy=strategy,
+                version=version,
+                permission=permission,
+                telemetry_latest_ts=telemetry_latest_ts,
+                generated_at=generated_at,
+            )
+        )
+    if not rows:
+        return 0
+    frame = _risk_permission_dependency_meta_frame(rows)
+    written = upsert_parquet_dataset(
+        frame,
+        root / RISK_PERMISSION_API_DEPENDENCY_META_DATASET,
+        key_columns=["strategy", "version"],
+    )
+    stored = read_parquet_dataset(root / RISK_PERMISSION_API_DEPENDENCY_META_DATASET)
+    snapshot_frame = stored if not stored.is_empty() else frame
+    _write_dependency_snapshot_meta(
+        root / RISK_PERMISSION_API_DEPENDENCY_META_DATASET,
+        frame=snapshot_frame,
+        source_sha=_dependency_meta_source_sha(snapshot_frame),
+        generated_at=generated_at,
+    )
+    return written
+
+
+def _risk_permission_dependency_meta_row(
+    root: Path,
+    *,
+    strategy: str,
+    version: str,
+    permission: RiskPermission,
+    telemetry_latest_ts: datetime | None,
+    generated_at: datetime,
+) -> dict[str, Any]:
+    source_sha = _dependency_source_sha(
+        strategy=strategy,
+        version=version,
+        permission=permission,
+        telemetry_latest_ts=telemetry_latest_ts,
+    )
+    return {
+        "strategy": strategy,
+        "version": version,
+        "risk_permission_source_sha": source_sha,
+        "gate_decision_source_sha": _dataset_quick_signature(root / GATE_DECISION_DATASET),
+        "cost_health_source_sha": _dataset_quick_signature(root / COST_HEALTH_DAILY_DATASET),
+        "telemetry_latest_ts": telemetry_latest_ts.isoformat() if telemetry_latest_ts else "",
+        "source_sha": source_sha,
+        "generated_at": generated_at.isoformat().replace("+00:00", "Z"),
+    }
+
+
+def _risk_permission_dependency_meta_frame(
+    rows: list[dict[str, Any]],
+) -> pl.DataFrame:
+    return pl.DataFrame(rows, infer_schema_length=None)
+
+
+def _latest_risk_permission_rows(frame: pl.DataFrame) -> list[dict[str, Any]]:
+    sortable_columns = [
+        column
+        for column in ("as_of_ts", "source_bundle_ts", "created_at")
+        if column in frame.columns
+    ]
+    normalized = frame
+    for column in sortable_columns:
+        normalized = normalized.with_columns(_lazy_utc_datetime(column).alias(column))
+    if sortable_columns:
+        normalized = normalized.sort(sortable_columns, descending=True, nulls_last=True)
+    seen: set[tuple[str, str]] = set()
+    rows: list[dict[str, Any]] = []
+    for row in normalized.to_dicts():
+        key = (str(row.get("strategy") or ""), str(row.get("version") or ""))
+        if key in seen:
+            continue
+        seen.add(key)
+        rows.append(row)
+    return rows
+
+
+def _dependency_meta_source_sha(frame: pl.DataFrame) -> str:
+    if frame.is_empty():
+        return "empty"
+    import hashlib
+
+    digest = hashlib.sha256()
+    digest.update(str(frame.height).encode("ascii"))
+    for row in sorted(
+        frame.to_dicts(),
+        key=lambda item: (
+            str(item.get("strategy") or ""),
+            str(item.get("version") or ""),
+            str(item.get("source_sha") or ""),
+        ),
+    ):
+        digest.update(str(row.get("strategy") or "").encode("utf-8"))
+        digest.update(str(row.get("version") or "").encode("utf-8"))
+        digest.update(str(row.get("source_sha") or "").encode("utf-8"))
+    return digest.hexdigest()
 
 
 def _write_dependency_snapshot_meta(

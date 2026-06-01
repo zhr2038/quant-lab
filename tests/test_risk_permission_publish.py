@@ -1,3 +1,4 @@
+import json
 from datetime import UTC, datetime, timedelta
 
 import polars as pl
@@ -101,6 +102,11 @@ def test_publish_risk_permission_writes_idempotently(tmp_path):
 
     assert first.risk_permission_rows == second.risk_permission_rows == 1
     assert read_parquet_dataset(lake / "gold" / "risk_permission").height == 1
+    meta_path = lake / "gold" / "risk_permission_api_dependency_meta" / "_snapshot_meta.json"
+    meta = json.loads(meta_path.read_text(encoding="utf-8"))
+    assert meta["dataset"] == "risk_permission_api_dependency_meta"
+    assert meta["row_count"] == 1
+    assert meta["source_sha"]
 
 
 def test_publish_risk_permission_marks_active_when_telemetry_within_threshold(tmp_path):

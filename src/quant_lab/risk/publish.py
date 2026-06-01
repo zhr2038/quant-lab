@@ -197,6 +197,38 @@ def _publish_risk_permission_api_dependency_meta(
         root / RISK_PERMISSION_API_DEPENDENCY_META_DATASET,
         key_columns=["strategy", "version"],
     )
+    _write_dependency_snapshot_meta(
+        root / RISK_PERMISSION_API_DEPENDENCY_META_DATASET,
+        frame=frame,
+        source_sha=source_sha,
+        generated_at=generated_at,
+    )
+
+
+def _write_dependency_snapshot_meta(
+    dataset_path: Path,
+    *,
+    frame: pl.DataFrame,
+    source_sha: str,
+    generated_at: datetime,
+) -> None:
+    dataset_path.mkdir(parents=True, exist_ok=True)
+    payload = {
+        "dataset": "risk_permission_api_dependency_meta",
+        "generated_at": generated_at.isoformat().replace("+00:00", "Z"),
+        "expires_at": "",
+        "row_count": frame.height,
+        "source_sha": source_sha,
+        "file_count": sum(1 for path in dataset_path.rglob("*.parquet") if path.is_file()),
+        "schema_version": "risk_permission_api_dependency_meta",
+        "created_at": datetime.now(UTC).isoformat().replace("+00:00", "Z"),
+    }
+    tmp_path = dataset_path / "._snapshot_meta.tmp"
+    tmp_path.write_text(
+        json.dumps(payload, sort_keys=True, separators=(",", ":")),
+        encoding="utf-8",
+    )
+    tmp_path.replace(dataset_path / "_snapshot_meta.json")
 
 
 def _dependency_source_sha(

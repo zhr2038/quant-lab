@@ -63,6 +63,12 @@ def record_api_request(
     client_host: str | None = None,
     user_agent: str | None = None,
     request_ts: datetime | None = None,
+    cache_hit: bool | None = None,
+    rows_returned: int | None = None,
+    response_bytes: int | None = None,
+    lake_scan_ms: float | None = None,
+    serialize_ms: float | None = None,
+    error_type: str | None = None,
 ) -> None:
     timestamp = request_ts or datetime.now(UTC)
     row = {
@@ -74,6 +80,12 @@ def record_api_request(
         "duration_ms": round(float(duration_seconds) * 1000.0, 3),
         "client_host": client_host,
         "user_agent": _safe_user_agent(user_agent),
+        "cache_hit": bool(cache_hit) if cache_hit is not None else None,
+        "rows_returned": int(rows_returned) if rows_returned is not None else None,
+        "response_bytes": int(response_bytes) if response_bytes is not None else None,
+        "lake_scan_ms": round(float(lake_scan_ms), 3) if lake_scan_ms is not None else None,
+        "serialize_ms": round(float(serialize_ms), 3) if serialize_ms is not None else None,
+        "error_type": error_type,
     }
     root_key = str(Path(lake_root))
     should_flush = False
@@ -302,6 +314,12 @@ def api_metrics_summary(
         "latency_ms": latency,
         "latency_by_path_ms": latency_by_path,
         "slow_paths": slow_paths,
+        "cache_hit_count": _sum_bool_lazy(scoped, "cache_hit", schema_names=schema_names),
+        "rows_returned_total": _sum_numeric_lazy(scoped, "rows_returned", schema_names=schema_names),
+        "response_bytes_total": _sum_numeric_lazy(scoped, "response_bytes", schema_names=schema_names),
+        "lake_scan_ms_total": _sum_numeric_lazy(scoped, "lake_scan_ms", schema_names=schema_names),
+        "serialize_ms_total": _sum_numeric_lazy(scoped, "serialize_ms", schema_names=schema_names),
+        "by_error_type": _count_by_non_empty_lazy(scoped, "error_type", schema_names=schema_names),
     }
 
 
@@ -400,6 +418,12 @@ def _empty_api_metrics_summary() -> dict[str, Any]:
         "latency_ms": {},
         "latency_by_path_ms": {},
         "slow_paths": [],
+        "cache_hit_count": 0,
+        "rows_returned_total": 0,
+        "response_bytes_total": 0,
+        "lake_scan_ms_total": 0.0,
+        "serialize_ms_total": 0.0,
+        "by_error_type": {},
     }
 
 
@@ -440,6 +464,61 @@ def _count_by_lazy(
         return {}
     grouped = lazy.group_by(column).len(name="count").collect()
     return {str(row[column]): int(row["count"]) for row in grouped.to_dicts()}
+
+
+def _count_by_non_empty_lazy(
+    lazy: pl.LazyFrame,
+    column: str,
+    *,
+    schema_names: set[str],
+) -> dict[str, int]:
+    if column not in schema_names:
+        return {}
+    text = pl.col(column).cast(pl.Utf8, strict=False)
+    try:
+        grouped = (
+            lazy.filter(text.is_not_null() & (text.str.strip_chars() != ""))
+            .group_by(column)
+            .len(name="count")
+            .collect()
+        )
+    except Exception:
+        return {}
+    return {str(row[column]): int(row["count"]) for row in grouped.to_dicts()}
+
+
+def _sum_bool_lazy(
+    lazy: pl.LazyFrame,
+    column: str,
+    *,
+    schema_names: set[str],
+) -> int:
+    if column not in schema_names:
+        return 0
+    try:
+        value = lazy.select(pl.col(column).fill_null(False).cast(pl.Int64).sum().alias("sum")).collect().item(0, "sum")
+    except Exception:
+        return 0
+    return int(value or 0)
+
+
+def _sum_numeric_lazy(
+    lazy: pl.LazyFrame,
+    column: str,
+    *,
+    schema_names: set[str],
+) -> float:
+    if column not in schema_names:
+        return 0.0
+    try:
+        value = (
+            lazy.select(pl.col(column).cast(pl.Float64, strict=False).sum().alias("sum"))
+            .collect()
+            .item(0, "sum")
+        )
+    except Exception:
+        return 0.0
+    return round(float(value or 0.0), 3)
 
 
 def _latency_by_path_lazy(

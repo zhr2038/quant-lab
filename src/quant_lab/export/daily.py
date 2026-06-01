@@ -29,6 +29,7 @@ from quant_lab.contracts.v5_quant_lab import (
 )
 from quant_lab.data.lake import read_parquet_dataset, write_parquet_dataset
 from quant_lab.ops.data_quality import run_data_quality
+from quant_lab.ops.api_metrics import api_metrics_summary
 from quant_lab.reports.enforce_readiness import (
     ENFORCE_READINESS_CSV,
     ENFORCE_READINESS_JSON,
@@ -341,6 +342,8 @@ REQUIRED_MEMBERS = [
     "reports/candidate_paper_ready.csv",
     "reports/paper_strategy_proposals.csv",
     "reports/strategy_opportunity_advisory.csv",
+    "reports/api_latency_summary.csv",
+    "reports/api_latency_summary.md",
     "reports/v5_local_live_vs_quant_lab_shadow.csv",
     "reports/missed_opportunity_audit.csv",
     "reports/missed_opportunity_summary.md",
@@ -521,6 +524,20 @@ CSV_SCHEMAS: dict[str, list[str]] = {
     ],
     "market/orderbook_spread.csv": ["symbol", "channel", "ts", "spread_bps"],
     "market/trade_activity.csv": ["symbol", "trade_count", "size_sum", "latest_trade_ts"],
+    "reports/api_latency_summary.csv": [
+        "endpoint",
+        "request_count",
+        "p50_ms",
+        "p95_ms",
+        "max_ms",
+        "cache_hit_count",
+        "rows_returned_total",
+        "response_bytes_total",
+        "lake_scan_ms_total",
+        "serialize_ms_total",
+        "server_error_count",
+        "client_error_count",
+    ],
     "research/alpha_evidence.csv": [
         "alpha_id",
         "version",
@@ -2807,7 +2824,7 @@ def export_daily_pack(
     )
 
     members: dict[str, _MemberPayload] = {}
-    members.update(_dataset_members(snapshot.frames))
+    members.update(_dataset_members(snapshot.frames, root))
     members.update(_chart_members(snapshot.frames))
     members.update(enforce_readiness_members(root))
     members["README.md"] = _readme(day, root, profile)
@@ -3346,7 +3363,7 @@ def _latest_paper_tracking_date(frames: list[pl.DataFrame]) -> date:
     return date.fromisoformat(max(values))
 
 
-def _dataset_members(frames: dict[str, pl.DataFrame]) -> dict[str, _MemberPayload]:
+def _dataset_members(frames: dict[str, pl.DataFrame], root: Path) -> dict[str, _MemberPayload]:
     market = frames.get("market_bar", pl.DataFrame())
     features = frames.get("feature_value", pl.DataFrame())
     feature_coverage = frames.get("feature_coverage_daily", pl.DataFrame())
@@ -3698,6 +3715,11 @@ def _dataset_members(frames: dict[str, pl.DataFrame]) -> dict[str, _MemberPayloa
             "reports/strategy_opportunity_advisory.csv",
             opportunity_advisory,
         ),
+        "reports/api_latency_summary.csv": _csv_member(
+            "reports/api_latency_summary.csv",
+            _api_latency_summary_for_export(root),
+        ),
+        "reports/api_latency_summary.md": _api_latency_summary_md(root),
         "reports/v5_local_live_vs_quant_lab_shadow.csv": _csv_member(
             "reports/v5_local_live_vs_quant_lab_shadow.csv",
             local_live_vs_shadow,
@@ -6266,6 +6288,77 @@ def _paper_live_block_reasons(row: dict[str, Any]) -> list[str]:
         reasons.append("no_paper_days")
     reasons.append("no_live_slippage_coverage")
     return reasons
+
+
+def _api_latency_summary_for_export(root: Path) -> pl.DataFrame:
+    summary = api_metrics_summary(root, since_minutes=24 * 60)
+    latency = summary.get("latency_ms") if isinstance(summary.get("latency_ms"), dict) else {}
+    rows: list[dict[str, Any]] = [
+        {
+            "endpoint": "__all__",
+            "request_count": int(summary.get("request_count") or 0),
+            "p50_ms": _float_or_blank(latency.get("p50")),
+            "p95_ms": _float_or_blank(latency.get("p95")),
+            "max_ms": _float_or_blank(latency.get("max")),
+            "cache_hit_count": int(summary.get("cache_hit_count") or 0),
+            "rows_returned_total": _float_or_blank(summary.get("rows_returned_total")),
+            "response_bytes_total": _float_or_blank(summary.get("response_bytes_total")),
+            "lake_scan_ms_total": _float_or_blank(summary.get("lake_scan_ms_total")),
+            "serialize_ms_total": _float_or_blank(summary.get("serialize_ms_total")),
+            "server_error_count": "",
+            "client_error_count": "",
+        }
+    ]
+    by_path = summary.get("latency_by_path_ms") if isinstance(summary.get("latency_by_path_ms"), dict) else {}
+    for endpoint, metrics in sorted(by_path.items()):
+        if not isinstance(metrics, dict):
+            continue
+        rows.append(
+            {
+                "endpoint": endpoint,
+                "request_count": int(metrics.get("count") or 0),
+                "p50_ms": _float_or_blank(metrics.get("p50")),
+                "p95_ms": _float_or_blank(metrics.get("p95")),
+                "max_ms": _float_or_blank(metrics.get("max")),
+                "cache_hit_count": "",
+                "rows_returned_total": "",
+                "response_bytes_total": "",
+                "lake_scan_ms_total": "",
+                "serialize_ms_total": "",
+                "server_error_count": int(metrics.get("server_error_count") or 0),
+                "client_error_count": int(metrics.get("client_error_count") or 0),
+            }
+        )
+    return pl.DataFrame(rows, infer_schema_length=None).select(
+        CSV_SCHEMAS["reports/api_latency_summary.csv"]
+    )
+
+
+def _api_latency_summary_md(root: Path) -> str:
+    frame = _api_latency_summary_for_export(root)
+    if frame.is_empty():
+        return "# API Latency Summary\n\nNo API metrics observed.\n"
+    lines = [
+        "# API Latency Summary",
+        "",
+        "Recent read-only API latency. `/v1/health` is intentionally light; lake freshness checks belong to `/v1/health/deep`.",
+        "",
+        "| endpoint | count | p50 ms | p95 ms | max ms |",
+        "| --- | ---: | ---: | ---: | ---: |",
+    ]
+    for row in frame.head(12).to_dicts():
+        lines.append(
+            f"| {row.get('endpoint') or ''} | {row.get('request_count') or 0} | "
+            f"{row.get('p50_ms') or ''} | {row.get('p95_ms') or ''} | {row.get('max_ms') or ''} |"
+        )
+    return "\n".join(lines) + "\n"
+
+
+def _float_or_blank(value: Any) -> float | str:
+    try:
+        return round(float(value), 3)
+    except Exception:
+        return ""
 
 
 def _strategy_opportunity_advisory_for_export(

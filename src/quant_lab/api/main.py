@@ -10,7 +10,6 @@ import io
 import json
 import os
 import subprocess
-import threading
 import time
 import zipfile
 from datetime import UTC, datetime, timedelta
@@ -24,6 +23,7 @@ from fastapi.responses import JSONResponse, Response
 from pydantic import BaseModel, ConfigDict, Field
 
 from quant_lab import __version__
+from quant_lab.api.cache import StrategyOpportunityAdvisoryCache
 from quant_lab.contracts.models import (
     CostEstimate,
     GateDecision,
@@ -41,7 +41,7 @@ from quant_lab.data.lake import (
 )
 from quant_lab.gates.defaults import conservative_example_gate_decision
 from quant_lab.ops.dataset_registry import dataset_names
-from quant_lab.ops.metrics import api_metrics_summary, record_api_request
+from quant_lab.ops.api_metrics import api_metrics_summary, record_api_request
 from quant_lab.research.advisory_overrides import (
     portfolio_overridden_decision_mode,
     portfolio_override_for_row,
@@ -70,11 +70,9 @@ STRATEGY_OPPORTUNITY_ADVISORY_SCHEMA_VERSION = "strategy_opportunity_advisory.v0
 STRATEGY_OPPORTUNITY_ADVISORY_TTL_SECONDS = 3 * 60 * 60
 STRATEGY_OPPORTUNITY_ADVISORY_MAX_API_ROWS = 50_000
 UNOBSERVABLE_TEXT_VALUES = {"", "none", "null", "nan", "not_observable", "unknown"}
-_STRATEGY_OPPORTUNITY_ADVISORY_CACHE_LOCK = threading.Lock()
-_STRATEGY_OPPORTUNITY_ADVISORY_CACHE: dict[
-    str,
-    tuple[tuple[Any, ...], tuple["StrategyOpportunityAdvisoryRow", ...], bytes | None],
-] = {}
+_STRATEGY_OPPORTUNITY_ADVISORY_CACHE: StrategyOpportunityAdvisoryCache[
+    "StrategyOpportunityAdvisoryRow"
+] = StrategyOpportunityAdvisoryCache()
 
 
 class HealthResponse(BaseModel):
@@ -143,6 +141,12 @@ class ApiMetricsResponse(BaseModel):
     latency_ms: dict[str, float | None]
     latency_by_path_ms: dict[str, dict[str, float | int | None]] = Field(default_factory=dict)
     slow_paths: list[dict[str, float | int | str | None]] = Field(default_factory=list)
+    cache_hit_count: int = 0
+    rows_returned_total: float = 0.0
+    response_bytes_total: float = 0.0
+    lake_scan_ms_total: float = 0.0
+    serialize_ms_total: float = 0.0
+    by_error_type: dict[str, int] = Field(default_factory=dict)
 
 
 class StrategyOpportunityAdvisoryRow(BaseModel):
@@ -209,6 +213,8 @@ def create_app() -> FastAPI:
     async def require_bearer_token_and_record_metrics(request: Request, call_next: Any) -> Any:
         started = time.perf_counter()
         status_code = 500
+        response: Response | None = None
+        error_type: str | None = None
         try:
             _authorize_v1_request(request)
         except HTTPException as exc:
@@ -218,18 +224,51 @@ def create_app() -> FastAPI:
                 content={"detail": exc.detail},
                 headers=exc.headers,
             )
-            _record_api_request_metric(request, status_code, time.perf_counter() - started)
+            _record_api_request_metric(
+                request,
+                status_code,
+                time.perf_counter() - started,
+                response=response,
+                error_type="HTTPException",
+            )
             return response
         try:
             response = await call_next(request)
             status_code = response.status_code
             return response
+        except Exception as exc:
+            error_type = type(exc).__name__
+            raise
         finally:
-            _record_api_request_metric(request, status_code, time.perf_counter() - started)
+            _record_api_request_metric(
+                request,
+                status_code,
+                time.perf_counter() - started,
+                response=response,
+                error_type=error_type,
+            )
+
+    @app.on_event("startup")
+    def warm_strategy_opportunity_advisory_cache() -> None:
+        try:
+            _strategy_opportunity_advisory_snapshot(_lake_root())
+        except Exception:
+            return
 
     @app.get("/v1/health", response_model=HealthResponse)
     def health() -> HealthResponse:
         return HealthResponse()
+
+    @app.get("/v1/health/deep")
+    def health_deep() -> dict[str, Any]:
+        lake_root = _lake_root()
+        return {
+            "status": "ok",
+            "service": "quant-lab",
+            "mode": "read-only",
+            "data_health": _lake_data_health(lake_root),
+            "cost_health": _lake_cost_health(lake_root),
+        }
 
     @app.get("/v1/catalog/datasets", response_model=CatalogDatasetsResponse)
     def catalog_datasets() -> CatalogDatasetsResponse:
@@ -345,8 +384,41 @@ def create_app() -> FastAPI:
         "/v1/reports/strategy-opportunity-advisory",
         response_model=list[StrategyOpportunityAdvisoryRow],
     )
-    def strategy_opportunity_advisory() -> Response:
-        return _strategy_opportunity_advisory_response(_lake_root())
+    def strategy_opportunity_advisory(
+        request: Request,
+        symbols: str | None = None,
+        families: str | None = None,
+        latest_only: bool = False,
+        fresh_only: bool = False,
+        fields: str | None = None,
+    ) -> Response:
+        return _strategy_opportunity_advisory_response(
+            _lake_root(),
+            request=request,
+            symbols=_split_csv(symbols),
+            families=_split_csv(families),
+            latest_only=latest_only,
+            fresh_only=fresh_only,
+            fields=fields,
+        )
+
+    @app.get("/v1/strategy-opportunity-advisory/v5-compact")
+    def strategy_opportunity_advisory_v5_compact(
+        request: Request,
+        symbols: str | None = None,
+        families: str | None = None,
+        latest_only: bool = True,
+        fresh_only: bool = False,
+    ) -> Response:
+        return _strategy_opportunity_advisory_response(
+            _lake_root(),
+            request=request,
+            symbols=_split_csv(symbols),
+            families=_split_csv(families),
+            latest_only=latest_only,
+            fresh_only=fresh_only,
+            fields="minimal",
+        )
 
     @app.get("/v1/risk/live-permission", response_model=RiskPermission)
     def live_permission(strategy: str, version: str) -> RiskPermission:
@@ -608,11 +680,19 @@ def _client_ip_allowed(request: Request) -> bool:
     return host in allowed_hosts
 
 
-def _record_api_request_metric(request: Request, status_code: int, duration_seconds: float) -> None:
+def _record_api_request_metric(
+    request: Request,
+    status_code: int,
+    duration_seconds: float,
+    *,
+    response: Response | None = None,
+    error_type: str | None = None,
+) -> None:
     if not request.url.path.startswith("/v1/"):
         return
     if not _bool_env("QUANT_LAB_API_METRICS_ENABLED", default=True):
         return
+    headers = getattr(response, "headers", {}) or {}
     try:
         record_api_request(
             lake_root=_lake_root(),
@@ -622,9 +702,46 @@ def _record_api_request_metric(request: Request, status_code: int, duration_seco
             duration_seconds=duration_seconds,
             client_host=request.client.host if request.client else None,
             user_agent=request.headers.get("user-agent"),
+            cache_hit=_truthy(_header_lookup(headers, "x-quant-lab-api-cache-hit"))
+            or _truthy(_header_lookup(headers, "x-advisory-cache-hit")),
+            rows_returned=_int_or_none(_header_lookup(headers, "x-quant-lab-advisory-row-count"))
+            or _int_or_none(_header_lookup(headers, "x-advisory-row-count")),
+            response_bytes=_int_or_none(_header_lookup(headers, "content-length")),
+            lake_scan_ms=_float_or_none(_header_lookup(headers, "x-quant-lab-lake-scan-ms")),
+            serialize_ms=_float_or_none(_header_lookup(headers, "x-quant-lab-serialize-ms")),
+            error_type=error_type,
         )
     except Exception:
         return
+
+
+def _header_lookup(headers: Any, name: str) -> str:
+    target = str(name or "").lower()
+    try:
+        for key, value in dict(headers or {}).items():
+            if str(key).lower() == target:
+                return str(value)
+    except Exception:
+        return ""
+    return ""
+
+
+def _truthy(value: Any) -> bool:
+    return str(value or "").strip().lower() in {"1", "true", "yes", "y", "on"}
+
+
+def _int_or_none(value: Any) -> int | None:
+    try:
+        return int(float(str(value).strip()))
+    except Exception:
+        return None
+
+
+def _float_or_none(value: Any) -> float | None:
+    try:
+        return float(str(value).strip())
+    except Exception:
+        return None
 
 
 def _risk_permission_ttl_seconds() -> int:
@@ -815,35 +932,58 @@ def _split_csv(value: str | None) -> list[str] | None:
 def _strategy_opportunity_advisory_rows(
     lake_root: Path,
 ) -> list[StrategyOpportunityAdvisoryRow]:
-    signature = _strategy_opportunity_advisory_source_signature(lake_root)
-    cache_key = str(lake_root.resolve())
-    with _STRATEGY_OPPORTUNITY_ADVISORY_CACHE_LOCK:
-        cached = _STRATEGY_OPPORTUNITY_ADVISORY_CACHE.get(cache_key)
-        if cached is not None and cached[0] == signature:
-            return list(cached[1])
-    rows = _strategy_opportunity_advisory_rows_uncached(lake_root)
-    with _STRATEGY_OPPORTUNITY_ADVISORY_CACHE_LOCK:
-        _STRATEGY_OPPORTUNITY_ADVISORY_CACHE[cache_key] = (signature, tuple(rows), None)
-    return rows
+    snapshot, _cache_hit = _strategy_opportunity_advisory_snapshot(lake_root)
+    return list(snapshot.rows)
 
 
-def _strategy_opportunity_advisory_response(lake_root: Path) -> Response:
-    signature = _strategy_opportunity_advisory_source_signature(lake_root)
-    cache_key = str(lake_root.resolve())
-    with _STRATEGY_OPPORTUNITY_ADVISORY_CACHE_LOCK:
-        cached = _STRATEGY_OPPORTUNITY_ADVISORY_CACHE.get(cache_key)
-        if cached is not None and cached[0] == signature and cached[2] is not None:
-            headers = _strategy_opportunity_advisory_response_headers(
-                lake_root,
-                list(cached[1]),
-                cache_hit=True,
-            )
-            return Response(content=cached[2], media_type="application/json", headers=headers)
-    rows = _strategy_opportunity_advisory_rows(lake_root)
-    payload = _strategy_opportunity_advisory_json_bytes(rows)
-    with _STRATEGY_OPPORTUNITY_ADVISORY_CACHE_LOCK:
-        _STRATEGY_OPPORTUNITY_ADVISORY_CACHE[cache_key] = (signature, tuple(rows), payload)
-    headers = _strategy_opportunity_advisory_response_headers(lake_root, rows, cache_hit=False)
+def _strategy_opportunity_advisory_snapshot(lake_root: Path) -> tuple[Any, bool]:
+    return _STRATEGY_OPPORTUNITY_ADVISORY_CACHE.get_snapshot(
+        lake_root,
+        signature_builder=_strategy_opportunity_advisory_source_signature,
+        loader=_strategy_opportunity_advisory_rows_uncached,
+        serializer=_strategy_opportunity_advisory_json_bytes,
+        monotonic_seconds=time.perf_counter,
+    )
+
+
+def _strategy_opportunity_advisory_response(
+    lake_root: Path,
+    *,
+    request: Request | None = None,
+    symbols: list[str] | None = None,
+    families: list[str] | None = None,
+    latest_only: bool = False,
+    fresh_only: bool = False,
+    fields: str | None = None,
+) -> Response:
+    snapshot, cache_hit = _strategy_opportunity_advisory_snapshot(lake_root)
+    rows = _filter_strategy_opportunity_advisory_rows(
+        list(snapshot.rows),
+        symbols=symbols,
+        families=families,
+        latest_only=latest_only,
+        fresh_only=fresh_only,
+    )
+    minimal = str(fields or "").strip().lower() in {"minimal", "compact", "v5"}
+    serialize_started = time.perf_counter()
+    payload = (
+        _strategy_opportunity_advisory_minimal_json_bytes(rows)
+        if minimal
+        else _strategy_opportunity_advisory_json_bytes(rows)
+    )
+    serialize_ms = round((time.perf_counter() - serialize_started) * 1000.0, 3)
+    etag = _advisory_etag(snapshot.source_sha, payload)
+    headers = _strategy_opportunity_advisory_response_headers(
+        lake_root,
+        rows,
+        cache_hit=cache_hit,
+        source_sha=snapshot.source_sha,
+        lake_scan_ms=0.0 if cache_hit else snapshot.lake_scan_ms,
+        serialize_ms=serialize_ms,
+        etag=etag,
+    )
+    if request is not None and request.headers.get("if-none-match") == etag:
+        return Response(status_code=304, headers=headers)
     return Response(content=payload, media_type="application/json", headers=headers)
 
 
@@ -852,6 +992,10 @@ def _strategy_opportunity_advisory_response_headers(
     rows: list[StrategyOpportunityAdvisoryRow] | tuple[StrategyOpportunityAdvisoryRow, ...],
     *,
     cache_hit: bool,
+    source_sha: str,
+    lake_scan_ms: float,
+    serialize_ms: float,
+    etag: str,
 ) -> dict[str, str]:
     latest_generated = max((row.generated_at for row in rows), default=None)
     latest_generated_text = (
@@ -867,12 +1011,19 @@ def _strategy_opportunity_advisory_response_headers(
     return {
         "X-Advisory-Dataset-Generated-At": latest_generated_text,
         "X-Advisory-Row-Count": str(len(rows)),
+        "X-Advisory-Source-Sha": source_sha,
         "X-Lake-Root-Hash": lake_root_hash,
         "X-Advisory-Cache-Hit": "true" if cache_hit else "false",
+        "X-Advisory-Lake-Scan-Ms": f"{float(lake_scan_ms):.3f}",
+        "X-Advisory-Serialize-Ms": f"{float(serialize_ms):.3f}",
         "X-Quant-Lab-Advisory-Dataset-Generated-At": latest_generated_text,
         "X-Quant-Lab-Advisory-Row-Count": str(len(rows)),
+        "X-Quant-Lab-Advisory-Source-Sha": source_sha,
         "X-Quant-Lab-Lake-Root-Hash": lake_root_hash,
         "X-Quant-Lab-Api-Cache-Hit": "true" if cache_hit else "false",
+        "X-Quant-Lab-Lake-Scan-Ms": f"{float(lake_scan_ms):.3f}",
+        "X-Quant-Lab-Serialize-Ms": f"{float(serialize_ms):.3f}",
+        "ETag": etag,
     }
 
 
@@ -880,6 +1031,123 @@ def _strategy_opportunity_advisory_json_bytes(
     rows: list[StrategyOpportunityAdvisoryRow],
 ) -> bytes:
     return b"[" + b",".join(row.model_dump_json().encode("utf-8") for row in rows) + b"]"
+
+
+def _strategy_opportunity_advisory_minimal_json_bytes(
+    rows: list[StrategyOpportunityAdvisoryRow],
+) -> bytes:
+    compact_rows = [_strategy_opportunity_advisory_minimal_row(row) for row in rows]
+    return json.dumps(compact_rows, separators=(",", ":"), default=str).encode("utf-8")
+
+
+def _strategy_opportunity_advisory_minimal_row(row: StrategyOpportunityAdvisoryRow) -> dict[str, Any]:
+    return {
+        "as_of_ts": row.as_of_ts,
+        "generated_at": row.generated_at,
+        "expires_at": row.expires_at,
+        "contract_version": row.contract_version,
+        "quant_lab_git_commit": row.quant_lab_git_commit,
+        "source_version": row.source_version,
+        "strategy_id": row.strategy_id,
+        "strategy_candidate": row.strategy_candidate,
+        "symbol": row.symbol,
+        "decision": row.decision,
+        "recommended_mode": row.recommended_mode,
+        "horizon_hours": row.horizon_hours,
+        "source_module": row.source_module,
+        "template_family": row.template_family,
+        "candidate_id": row.candidate_id,
+        "promotion_state": row.promotion_state,
+        "alpha_factory_score": row.alpha_factory_score,
+        "universe_type": row.universe_type,
+        "would_block_if_enabled": row.would_block_if_enabled,
+        "would_enter": row.would_enter,
+        "no_sample_reason": row.no_sample_reason,
+        "live_block_reasons": row.live_block_reasons,
+        "max_paper_notional_usdt": row.max_paper_notional_usdt,
+        "max_live_notional_usdt": row.max_live_notional_usdt,
+        "sample_count": row.sample_count,
+        "complete_sample_count": row.complete_sample_count,
+        "avg_net_bps": row.avg_net_bps,
+        "win_rate": row.win_rate,
+        "cost_source_mix": row.cost_source_mix,
+    }
+
+
+def _filter_strategy_opportunity_advisory_rows(
+    rows: list[StrategyOpportunityAdvisoryRow],
+    *,
+    symbols: list[str] | None,
+    families: list[str] | None,
+    latest_only: bool,
+    fresh_only: bool,
+) -> list[StrategyOpportunityAdvisoryRow]:
+    selected = rows
+    if symbols:
+        wanted_symbols = {_normalize_query_symbol(symbol) for symbol in symbols}
+        selected = [
+            row for row in selected if _normalize_query_symbol(row.symbol) in wanted_symbols
+        ]
+    if families:
+        wanted_families = {str(family).strip().lower() for family in families if str(family).strip()}
+        selected = [
+            row for row in selected if _advisory_row_matches_family(row, wanted_families)
+        ]
+    if fresh_only:
+        now = datetime.now(UTC)
+        selected = [row for row in selected if row.expires_at >= now]
+    if latest_only:
+        latest: dict[tuple[str, str, str, str], StrategyOpportunityAdvisoryRow] = {}
+        for row in selected:
+            key = (
+                row.strategy_candidate,
+                row.symbol,
+                row.source_module or "",
+                row.candidate_id or "",
+            )
+            current = latest.get(key)
+            if current is None or row.generated_at > current.generated_at:
+                latest[key] = row
+        selected = list(latest.values())
+    return sorted(
+        selected,
+        key=lambda row: (
+            row.generated_at,
+            row.strategy_candidate,
+            row.symbol,
+            row.horizon_hours or -1,
+        ),
+        reverse=True,
+    )
+
+
+def _advisory_row_matches_family(row: StrategyOpportunityAdvisoryRow, families: set[str]) -> bool:
+    haystack = " ".join(
+        str(value or "").lower()
+        for value in (
+            row.source_module,
+            row.template_family,
+            row.strategy_candidate,
+            row.strategy_id,
+            row.candidate_id,
+        )
+    )
+    return any(family in haystack for family in families)
+
+
+def _normalize_query_symbol(symbol: Any) -> str:
+    text = str(symbol or "").strip()
+    if not text:
+        return ""
+    try:
+        return normalize_symbol(text).replace("/", "-").upper()
+    except Exception:
+        return text.replace("/", "-").upper()
+
+
+def _advisory_etag(source_sha: str, payload: bytes) -> str:
+    digest = hashlib.sha256(source_sha.encode("utf-8") + b":" + payload).hexdigest()
+    return f'"{digest}"'
 
 
 def _strategy_opportunity_advisory_rows_uncached(

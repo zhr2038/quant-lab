@@ -106,6 +106,34 @@ def test_api_request_metrics_summary_uses_lazy_aggregation(tmp_path, monkeypatch
     assert summary["slow_paths"][0]["path"] == "/v1/health"
 
 
+def test_api_request_metrics_records_cache_and_payload_fields(tmp_path, monkeypatch):
+    lake = tmp_path / "lake"
+    monkeypatch.setenv("QUANT_LAB_API_METRICS_FLUSH_ROWS", "1")
+    monkeypatch.setenv("QUANT_LAB_API_METRICS_FLUSH_SECONDS", "3600")
+
+    record_api_request(
+        lake_root=lake,
+        method="GET",
+        path="/v1/strategy-opportunity-advisory",
+        status_code=200,
+        duration_seconds=0.01,
+        cache_hit=True,
+        rows_returned=233,
+        response_bytes=12345,
+        lake_scan_ms=0.0,
+        serialize_ms=3.2,
+        error_type=None,
+    )
+
+    summary = api_metrics_summary(lake)
+
+    assert summary["cache_hit_count"] == 1
+    assert summary["rows_returned_total"] == 233.0
+    assert summary["response_bytes_total"] == 12345.0
+    assert summary["serialize_ms_total"] == 3.2
+    assert summary["by_error_type"] == {}
+
+
 def test_api_request_metrics_summary_reports_slowest_paths(tmp_path, monkeypatch):
     lake = tmp_path / "lake"
     monkeypatch.setenv("QUANT_LAB_API_METRICS_FLUSH_ROWS", "10")

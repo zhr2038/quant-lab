@@ -793,6 +793,74 @@ def test_strategy_opportunity_advisory_caches_unchanged_source_signature(
     assert second.json() == first.json()
 
 
+def test_strategy_opportunity_advisory_compact_filters_and_etag(tmp_path, monkeypatch):
+    lake = tmp_path / "lake"
+    monkeypatch.setenv("QUANT_LAB_LAKE_ROOT", str(lake))
+    monkeypatch.delenv("QUANT_LAB_API_TOKEN", raising=False)
+    api_main._STRATEGY_OPPORTUNITY_ADVISORY_CACHE.clear()
+    generated = datetime.now(UTC)
+    write_parquet_dataset(
+        pl.DataFrame(
+            [
+                {
+                    "as_of_ts": generated,
+                    "generated_at": generated,
+                    "expires_at": generated + timedelta(hours=1),
+                    "strategy_id": "SOL_F4_VOLUME_EXPANSION_PAPER_V1",
+                    "strategy_candidate": "v5.f4_volume_expansion_entry",
+                    "source_module": "paper_tracking",
+                    "symbol": "SOL-USDT",
+                    "decision": "PAPER_READY",
+                    "recommended_mode": "paper",
+                    "horizon_hours": 24,
+                    "sample_count": 80,
+                    "cost_source_mix": '{"public_spread_proxy":80}',
+                    "max_live_notional_usdt": 0.0,
+                },
+                {
+                    "as_of_ts": generated - timedelta(minutes=5),
+                    "generated_at": generated - timedelta(minutes=5),
+                    "expires_at": generated + timedelta(hours=1),
+                    "strategy_id": "ETH_F3_DOMINANT_ENTRY_PAPER_V1",
+                    "strategy_candidate": "v5.f3_dominant_entry",
+                    "source_module": "paper_tracking",
+                    "symbol": "ETH-USDT",
+                    "decision": "KEEP_SHADOW",
+                    "recommended_mode": "shadow",
+                    "horizon_hours": 48,
+                    "sample_count": 30,
+                    "max_live_notional_usdt": 0.0,
+                },
+            ]
+        ),
+        lake / "gold" / "strategy_opportunity_advisory",
+    )
+    client = TestClient(app)
+
+    response = client.get(
+        "/v1/strategy-opportunity-advisory/v5-compact",
+        params={"symbols": "SOL/USDT", "families": "f4", "fresh_only": "true"},
+    )
+    etag = response.headers["etag"]
+    not_modified = client.get(
+        "/v1/strategy-opportunity-advisory/v5-compact",
+        params={"symbols": "SOL/USDT", "families": "f4", "fresh_only": "true"},
+        headers={"If-None-Match": etag},
+    )
+    api_main._STRATEGY_OPPORTUNITY_ADVISORY_CACHE.clear()
+
+    assert response.status_code == 200
+    assert response.headers["x-quant-lab-api-cache-hit"] == "false"
+    rows = response.json()
+    assert len(rows) == 1
+    assert rows[0]["symbol"] == "SOL-USDT"
+    assert "schema_version" not in rows[0]
+    assert rows[0]["strategy_candidate"] == "v5.f4_volume_expansion_entry"
+    assert response.headers["x-quant-lab-advisory-source-sha"]
+    assert not_modified.status_code == 304
+    assert not_modified.headers["etag"] == etag
+
+
 def test_strategy_opportunity_advisory_keeps_older_strategy_rows_when_entry_quality_is_newer(
     tmp_path,
     monkeypatch,

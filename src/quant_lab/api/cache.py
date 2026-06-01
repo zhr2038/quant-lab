@@ -121,13 +121,16 @@ class StrategyOpportunityAdvisoryResponseCache:
         with self._lock:
             return self._responses.get(key)
 
-    def clear_for_source_sha(self, source_sha: str) -> None:
+    def clear_except_source_sha(self, source_sha: str) -> None:
         with self._lock:
             self._responses = {
                 key: value
                 for key, value in self._responses.items()
                 if str(key[0] if key else "") == source_sha
             }
+
+    def clear_for_source_sha(self, source_sha: str) -> None:
+        self.clear_except_source_sha(source_sha)
 
     def size(self) -> int:
         with self._lock:

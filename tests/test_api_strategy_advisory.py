@@ -965,11 +965,11 @@ def test_strategy_opportunity_response_cache_bounds_and_clears_old_sources():
 
     assert cache.size() == 2
     assert cache.get(("sha-old", "a")) is None
-    cache.clear_for_source_sha("sha-new")
+    cache.clear_except_source_sha("sha-new")
     assert cache.size() == 2
     assert cache.get(("sha-new", "b")) is not None
     assert cache.get(("sha-new", "c")) is not None
-    cache.clear_for_source_sha("another-sha")
+    cache.clear_except_source_sha("another-sha")
     assert cache.size() == 0
 
 

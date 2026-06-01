@@ -285,6 +285,9 @@ def create_app() -> FastAPI:
             "mode": "read-only",
             "data_health": _lake_data_health(lake_root),
             "cost_health": _lake_cost_health(lake_root),
+            "risk_permission_dependency_meta": _risk_permission_dependency_meta_health(
+                lake_root
+            ),
         }
 
     @app.get("/v1/catalog/datasets", response_model=CatalogDatasetsResponse)
@@ -475,6 +478,9 @@ def create_app() -> FastAPI:
         fallback = _signature_fallback_header(_risk_permission_signature_paths(_lake_root()))
         if fallback:
             response.headers["X-Quant-Lab-Signature-Fallback"] = fallback
+        dependency_meta_status = _risk_permission_dependency_meta_status(_lake_root())
+        if dependency_meta_status != "ok":
+            response.headers["X-Risk-Permission-Dependency-Meta"] = dependency_meta_status
         return evaluation["permission"]
 
     @app.get("/v1/risk/live-permission-detail", response_model=LivePermissionDetailResponse)
@@ -496,6 +502,9 @@ def create_app() -> FastAPI:
         fallback = _signature_fallback_header(_risk_permission_signature_paths(_lake_root()))
         if fallback:
             response.headers["X-Quant-Lab-Signature-Fallback"] = fallback
+        dependency_meta_status = _risk_permission_dependency_meta_status(_lake_root())
+        if dependency_meta_status != "ok":
+            response.headers["X-Risk-Permission-Dependency-Meta"] = dependency_meta_status
         return LivePermissionDetailResponse(**evaluation)
 
     return app
@@ -756,6 +765,25 @@ def _risk_permission_signature_paths(lake_root: Path) -> list[Path]:
     ]
 
 
+def _risk_permission_dependency_meta_status(lake_root: Path) -> str:
+    meta_path = lake_root / "gold" / "risk_permission_api_dependency_meta"
+    if not meta_path.exists():
+        return "missing"
+    if meta_path.is_dir() and not (meta_path / "_snapshot_meta.json").exists():
+        return "missing_snapshot_meta"
+    return "ok"
+
+
+def _risk_permission_dependency_meta_health(lake_root: Path) -> dict[str, Any]:
+    status = _risk_permission_dependency_meta_status(lake_root)
+    if status == "ok":
+        return {"status": "ok", "warning": ""}
+    return {
+        "status": "warning",
+        "warning": f"risk_permission_dependency_meta_{status}",
+    }
+
+
 def _risk_permission_dependency_meta_signature(lake_root: Path) -> tuple[Any, ...]:
     meta_path = lake_root / "gold" / "risk_permission_api_dependency_meta"
     if meta_path.exists():
@@ -924,6 +952,10 @@ def _record_api_request_metric(
     if not _bool_env("QUANT_LAB_API_METRICS_ENABLED", default=True):
         return
     headers = getattr(response, "headers", {}) or {}
+    effective_error_type = error_type
+    dependency_meta = _header_lookup(headers, "x-risk-permission-dependency-meta")
+    if effective_error_type is None and dependency_meta:
+        effective_error_type = f"dependency_meta_{dependency_meta}"
     try:
         record_api_request(
             lake_root=_lake_root(),
@@ -940,7 +972,7 @@ def _record_api_request_metric(
             response_bytes=_int_or_none(_header_lookup(headers, "content-length")),
             lake_scan_ms=_float_or_none(_header_lookup(headers, "x-quant-lab-lake-scan-ms")),
             serialize_ms=_float_or_none(_header_lookup(headers, "x-quant-lab-serialize-ms")),
-            error_type=error_type,
+            error_type=effective_error_type,
         )
     except Exception:
         return
@@ -1188,7 +1220,9 @@ def _strategy_opportunity_advisory_response(
     fields: str | None = None,
 ) -> Response:
     snapshot, cache_hit, source_signature_ms = _strategy_opportunity_advisory_snapshot(lake_root)
-    _STRATEGY_OPPORTUNITY_ADVISORY_RESPONSE_CACHE.clear_for_source_sha(snapshot.source_sha)
+    _STRATEGY_OPPORTUNITY_ADVISORY_RESPONSE_CACHE.clear_except_source_sha(
+        snapshot.source_sha
+    )
     response_key = _strategy_opportunity_advisory_response_cache_key(
         source_sha=snapshot.source_sha,
         symbols=symbols,

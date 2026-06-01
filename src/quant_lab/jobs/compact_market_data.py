@@ -9,7 +9,7 @@ from typing import Any
 
 import polars as pl
 
-from quant_lab.data.file_index import build_lake_file_index
+from quant_lab.data.file_index import build_lake_file_index, old_files_for_dataset
 from quant_lab.data.lake import read_parquet_lazy, upsert_parquet_dataset
 
 HF_DATASETS = {
@@ -331,7 +331,15 @@ def _archive_old_okx_public_ws(
         return
     cutoff = now - timedelta(hours=max(int(hot_hours), 1))
     archive_root = root / "archive" / "high_frequency" / "bronze" / "okx_public_ws"
-    for path in sorted(dataset_root.rglob("*.parquet")):
+    indexed_files = _old_archive_files_from_index(dataset_root, before=cutoff)
+    if indexed_files is None:
+        result.warnings.append(f"archive_fallback_rglob:{dataset_root.as_posix()}")
+        files = sorted(dataset_root.rglob("*.parquet"))
+    else:
+        files = sorted(indexed_files)
+    for path in files:
+        if not path.exists() or not path.is_file() or _is_internal_file(path):
+            continue
         try:
             mtime = datetime.fromtimestamp(path.stat().st_mtime, UTC)
         except OSError as exc:
@@ -352,6 +360,13 @@ def _archive_old_okx_public_ws(
             continue
         dest.parent.mkdir(parents=True, exist_ok=True)
         shutil.move(str(path), str(dest))
+
+
+def _old_archive_files_from_index(path: Path, *, before: datetime) -> list[Path] | None:
+    try:
+        return old_files_for_dataset(path, before=before)
+    except Exception:
+        return None
 
 
 def _spread_bps(row: dict[str, Any]) -> float | None:

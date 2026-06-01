@@ -6,7 +6,7 @@ from fastapi.testclient import TestClient
 import quant_lab.api.main as api_main
 from quant_lab.api.main import app
 from quant_lab.contracts.models import GateDecision, GateStatus, RiskAction, RiskPermission
-from quant_lab.data.lake import write_market_bars, write_parquet_dataset
+from quant_lab.data.lake import read_parquet_dataset, write_market_bars, write_parquet_dataset
 
 
 def test_live_permission_api_aborts_without_gate_decision(tmp_path, monkeypatch):
@@ -120,6 +120,52 @@ def test_live_permission_cache_key_uses_light_dependency_meta(tmp_path, monkeypa
     assert "risk_permission_api_dependency_meta" in key
     assert any(path.endswith("gold/risk_permission_api_dependency_meta") for path in touched)
     assert not any("market_bar" in path for path in touched)
+
+
+def test_live_permission_api_marks_missing_dependency_meta_header_and_metric(
+    tmp_path,
+    monkeypatch,
+):
+    lake = tmp_path / "lake"
+    monkeypatch.setenv("QUANT_LAB_LAKE_ROOT", str(lake))
+    monkeypatch.setenv("QUANT_LAB_API_METRICS_FLUSH_ROWS", "1")
+    monkeypatch.setenv("QUANT_LAB_API_METRICS_FLUSH_SECONDS", "3600")
+    monkeypatch.setenv("QUANT_LAB_API_METRICS_ASYNC_FLUSH", "false")
+    monkeypatch.delenv("QUANT_LAB_API_TOKEN", raising=False)
+    api_main._RISK_PERMISSION_EVALUATION_CACHE.clear()
+    _write_gate(lake, GateStatus.LIVE_READY)
+    _write_cost_bucket(lake)
+    _write_fresh_market_bar(lake)
+
+    response = TestClient(app).get(
+        "/v1/risk/live-permission",
+        params={"strategy": "v5", "version": "5.0.0"},
+    )
+    api_main._RISK_PERMISSION_EVALUATION_CACHE.clear()
+
+    assert response.status_code == 200
+    assert response.headers["x-risk-permission-dependency-meta"] == "missing"
+    metrics = read_parquet_dataset(lake / "bronze/api_request_metrics")
+    rows = [
+        row
+        for row in metrics.to_dicts()
+        if row["path"] == "/v1/risk/live-permission"
+    ]
+    assert rows
+    assert rows[-1]["error_type"] == "dependency_meta_missing"
+
+
+def test_health_deep_warns_when_risk_dependency_meta_missing(tmp_path, monkeypatch):
+    lake = tmp_path / "lake"
+    monkeypatch.setenv("QUANT_LAB_LAKE_ROOT", str(lake))
+    monkeypatch.delenv("QUANT_LAB_API_TOKEN", raising=False)
+
+    response = TestClient(app).get("/v1/health/deep")
+
+    assert response.status_code == 200
+    dependency_meta = response.json()["risk_permission_dependency_meta"]
+    assert dependency_meta["status"] == "warning"
+    assert dependency_meta["warning"] == "risk_permission_dependency_meta_missing"
 
 
 def test_live_permission_api_aborts_on_stale_market_data(tmp_path, monkeypatch):

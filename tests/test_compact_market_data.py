@@ -1,10 +1,12 @@
 import os
 from datetime import UTC, datetime, timedelta
+from pathlib import Path
 
 import polars as pl
 
+import quant_lab.data.file_index as file_index_module
 import quant_lab.jobs.compact_market_data as compact_market_data_module
-from quant_lab.data.file_index import build_lake_file_index
+from quant_lab.data.file_index import build_lake_file_index, old_files_for_dataset
 from quant_lab.data.lake import (
     count_parquet_rows,
     read_parquet_dataset,
@@ -241,6 +243,69 @@ def test_recent_file_selection_uses_index_max_ts_not_mtime(tmp_path):
     assert trades["size_sum"][0] == 2.0
 
 
+def test_old_file_selection_uses_index_max_ts_before_cutoff(tmp_path):
+    lake = tmp_path / "lake"
+    source = lake / "bronze/okx_public_ws"
+    source.mkdir(parents=True)
+    old_ts = datetime(2026, 5, 30, 10, 0, tzinfo=UTC)
+    hot_ts = datetime(2026, 5, 31, 10, 0, tzinfo=UTC)
+    old = source / "old.parquet"
+    hot = source / "hot.parquet"
+    pl.DataFrame([{"symbol": "BNB-USDT", "received_at": old_ts}]).write_parquet(old)
+    pl.DataFrame([{"symbol": "BNB-USDT", "received_at": hot_ts}]).write_parquet(hot)
+    build_lake_file_index(lake, ["bronze/okx_public_ws"])
+
+    files = old_files_for_dataset(source, before=datetime(2026, 5, 31, tzinfo=UTC))
+
+    assert files == [old]
+
+
+def test_lake_file_index_reuses_unchanged_rows_and_scans_only_new_files(
+    tmp_path,
+    monkeypatch,
+):
+    lake = tmp_path / "lake"
+    source = lake / "silver/trade_print"
+    source.mkdir(parents=True)
+    first = source / "first.parquet"
+    second = source / "second.parquet"
+    pl.DataFrame(
+        [{"symbol": "BNB-USDT", "ts": datetime(2026, 5, 31, 9, tzinfo=UTC), "size": 1.0}]
+    ).write_parquet(first)
+    pl.DataFrame(
+        [{"symbol": "BNB-USDT", "ts": datetime(2026, 5, 31, 10, tzinfo=UTC), "size": 2.0}]
+    ).write_parquet(second)
+    original_bounds = file_index_module._file_time_bounds
+    build_lake_file_index(lake, ["silver/trade_print"])
+
+    def fail_scan(_path):
+        raise AssertionError("unchanged file should reuse indexed bounds")
+
+    monkeypatch.setattr(file_index_module, "_file_time_bounds", fail_scan)
+    reused = build_lake_file_index(lake, ["silver/trade_print"])
+    assert reused.height == 2
+    assert "indexed_at" in reused.columns
+    assert "index_version" in reused.columns
+
+    third = source / "third.parquet"
+    pl.DataFrame(
+        [{"symbol": "BNB-USDT", "ts": datetime(2026, 5, 31, 11, tzinfo=UTC), "size": 3.0}]
+    ).write_parquet(third)
+    scanned: list[str] = []
+
+    def count_new_file_scan(path):
+        if Path(path).name != "third.parquet":
+            raise AssertionError("only newly added files should be scanned")
+        scanned.append(Path(path).name)
+        return original_bounds(path)
+
+    monkeypatch.setattr(file_index_module, "_file_time_bounds", count_new_file_scan)
+    updated = build_lake_file_index(lake, ["silver/trade_print"])
+
+    assert updated.height == 3
+    assert scanned == ["third.parquet"]
+
+
 def test_rollup_records_warning_when_file_index_missing(tmp_path):
     lake = tmp_path / "lake"
     ts = datetime(2026, 5, 31, 10, 0, 15, tzinfo=UTC)
@@ -276,9 +341,30 @@ def test_compact_market_data_archives_only_old_ws_files_when_applied(tmp_path):
     hot_mtime = (now - timedelta(hours=1)).timestamp()
     os.utime(old, (old_mtime, old_mtime))
     os.utime(hot, (hot_mtime, hot_mtime))
+    build_lake_file_index(lake, ["bronze/okx_public_ws"])
 
     result = compact_market_data(lake, dry_run=False, now=now)
 
     assert str(old) in result.archived_files
     assert hot.exists()
     assert not old.exists()
+    assert not any(item.startswith("archive_fallback_rglob:") for item in result.warnings)
+
+
+def test_compact_market_data_warns_when_archive_file_index_missing(
+    tmp_path,
+):
+    lake = tmp_path / "lake"
+    old = lake / "bronze/okx_public_ws/old.parquet"
+    old.parent.mkdir(parents=True, exist_ok=True)
+    pl.DataFrame(
+        [{"symbol": "BNB-USDT", "received_at": datetime(2026, 5, 30, tzinfo=UTC)}]
+    ).write_parquet(old)
+    now = datetime(2026, 6, 1, tzinfo=UTC)
+    old_mtime = (now - timedelta(hours=30)).timestamp()
+    os.utime(old, (old_mtime, old_mtime))
+
+    result = compact_market_data(lake, dry_run=False, now=now)
+
+    assert str(old) in result.archived_files
+    assert any(item.startswith("archive_fallback_rglob:") for item in result.warnings)

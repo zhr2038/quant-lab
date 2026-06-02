@@ -3037,7 +3037,7 @@ def export_daily_pack(
 
     generated_at = datetime.now(UTC)
     export_stage_timings: list[dict[str, Any]] = []
-    stage_started = _export_stage_start()
+    stage_started = _export_stage_start("pre_export_v5")
     pre_export_v5 = (
         _refresh_v5_before_export(root, day, config_path=v5_telemetry_config)
         if pre_export_v5_refresh
@@ -3045,7 +3045,7 @@ def export_daily_pack(
     )
     pre_export_v5["allow_stale_v5"] = allow_stale_v5
     _record_export_stage(export_stage_timings, "pre_export_v5", stage_started)
-    stage_started = _export_stage_start()
+    stage_started = _export_stage_start("pre_export_risk_permission")
     pre_export_v5_warnings = [str(warning) for warning in pre_export_v5.get("warnings", [])]
     pre_export_risk_warnings = (
         _refresh_risk_permission_before_export(root, strategy=risk_strategy, version=risk_version)
@@ -3053,10 +3053,10 @@ def export_daily_pack(
         else []
     )
     _record_export_stage(export_stage_timings, "pre_export_risk_permission", stage_started)
-    stage_started = _export_stage_start()
+    stage_started = _export_stage_start("load_snapshot")
     snapshot = _load_snapshot(root)
     _record_export_stage(export_stage_timings, "load_snapshot", stage_started)
-    stage_started = _export_stage_start()
+    stage_started = _export_stage_start("v5_consistency")
     v5_consistency = _v5_export_consistency(
         snapshot.frames,
         pre_export_v5=pre_export_v5,
@@ -3099,23 +3099,23 @@ def export_daily_pack(
         pre_export_v5.setdefault("warnings", []).append(v5_consistency["warning_reason"])
     pre_export_v5_warnings = [str(warning) for warning in pre_export_v5.get("warnings", [])]
     _record_export_stage(export_stage_timings, "v5_consistency", stage_started)
-    stage_started = _export_stage_start()
+    stage_started = _export_stage_start("publish_research_portfolio_status")
     snapshot = _publish_research_portfolio_status_snapshot(root, snapshot, day)
     _record_export_stage(export_stage_timings, "publish_research_portfolio_status", stage_started)
-    stage_started = _export_stage_start()
+    stage_started = _export_stage_start("publish_missed_opportunity")
     snapshot = _publish_missed_opportunity_snapshot(root, snapshot)
     _record_export_stage(export_stage_timings, "publish_missed_opportunity", stage_started)
-    stage_started = _export_stage_start()
+    stage_started = _export_stage_start("publish_strategy_opportunity_advisory")
     snapshot = _publish_strategy_opportunity_advisory_snapshot(root, snapshot)
     _record_export_stage(
         export_stage_timings,
         "publish_strategy_opportunity_advisory",
         stage_started,
     )
-    stage_started = _export_stage_start()
+    stage_started = _export_stage_start("publish_risk_dependency_meta")
     snapshot = _publish_risk_permission_dependency_meta_snapshot(root, snapshot)
     _record_export_stage(export_stage_timings, "publish_risk_dependency_meta", stage_started)
-    stage_started = _export_stage_start()
+    stage_started = _export_stage_start("write_source_snapshot_metas")
     meta_warnings = _write_source_snapshot_metas(root, snapshot.frames)
     if meta_warnings:
         snapshot = _DatasetSnapshot(
@@ -3124,7 +3124,7 @@ def export_daily_pack(
             warnings=[*snapshot.warnings, *meta_warnings],
         )
     _record_export_stage(export_stage_timings, "write_source_snapshot_metas", stage_started)
-    stage_started = _export_stage_start()
+    stage_started = _export_stage_start("data_quality_payload")
     missing_sections = _missing_sections(snapshot.row_counts)
     data_quality = _data_quality_payload(
         root,
@@ -3136,7 +3136,7 @@ def export_daily_pack(
         pre_export_warnings=pre_export_risk_warnings,
     )
     _record_export_stage(export_stage_timings, "data_quality_payload", stage_started)
-    stage_started = _export_stage_start()
+    stage_started = _export_stage_start("build_members")
     warnings = sorted(
         set([*snapshot.warnings, *pre_export_v5_warnings, *data_quality["warnings"]])
     )
@@ -12090,7 +12090,9 @@ def _json_text(payload: Any) -> str:
     return safe_json_dumps(payload) + "\n"
 
 
-def _export_stage_start() -> float:
+def _export_stage_start(stage: str | None = None) -> float:
+    if stage:
+        _log_export_stage_event("start", stage)
     return time.perf_counter()
 
 
@@ -12100,14 +12102,43 @@ def _record_export_stage(
     started_at: float,
 ) -> None:
     elapsed_ms = max(0.0, (time.perf_counter() - started_at) * 1000.0)
+    max_rss_mb = _process_max_rss_mb()
     rows.append(
         {
             "stage": stage,
             "elapsed_ms": round(elapsed_ms, 3),
-            "max_rss_mb": _process_max_rss_mb(),
+            "max_rss_mb": max_rss_mb,
             "recorded_at": datetime.now(UTC).isoformat(),
         }
     )
+    _log_export_stage_event(
+        "end",
+        stage,
+        elapsed_ms=round(elapsed_ms, 3),
+        max_rss_mb=max_rss_mb,
+    )
+
+
+def _log_export_stage_event(
+    event: str,
+    stage: str,
+    **extra: Any,
+) -> None:
+    log_path = os.environ.get("QUANT_LAB_EXPORT_STAGE_LOG_PATH")
+    if not log_path:
+        return
+    payload = {
+        "event": event,
+        "stage": stage,
+        "recorded_at": datetime.now(UTC).isoformat(),
+        "max_rss_mb": _process_max_rss_mb(),
+        **extra,
+    }
+    try:
+        with Path(log_path).open("a", encoding="utf-8") as fh:
+            fh.write(json.dumps(payload, ensure_ascii=False, sort_keys=True) + "\n")
+    except OSError:
+        return
 
 
 def _export_stage_timings_frame(rows: list[dict[str, Any]]) -> pl.DataFrame:

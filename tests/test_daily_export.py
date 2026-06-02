@@ -102,6 +102,17 @@ def test_export_daily_pack_writes_required_members(tmp_path):
         assert "charts/market_close.png" in names
         assert archive.read("charts/market_close.png").startswith(b"\x89PNG")
 
+    for dataset in daily_export_module.SNAPSHOT_META_DATASETS:
+        dataset_path = lake_root / daily_export_module.readers.DATASET_PATHS.get(
+            dataset,
+            Path("gold") / dataset,
+        )
+        meta_path = dataset_path / "_snapshot_meta.json"
+        assert meta_path.is_file(), dataset
+        meta = json.loads(meta_path.read_text(encoding="utf-8"))
+        assert meta["dataset"] == dataset
+        assert meta.get("source_sha"), dataset
+
 
 def test_api_latency_summary_export_includes_cache_and_payload_fields(
     tmp_path,
@@ -124,6 +135,7 @@ def test_api_latency_summary_export_includes_cache_and_payload_fields(
         serialize_ms=3.4,
         source_signature_ms=2.1,
         response_cache_hit=True,
+        dependency_meta_missing=True,
     )
 
     frame = daily_export_module._api_latency_summary_for_export(lake)
@@ -133,6 +145,8 @@ def test_api_latency_summary_export_includes_cache_and_payload_fields(
     assert "cache_hit_rate" in CSV_SCHEMAS["reports/api_latency_summary.csv"]
     assert "avg_source_signature_ms" in CSV_SCHEMAS["reports/api_latency_summary.csv"]
     assert "response_cache_hit_rate" in CSV_SCHEMAS["reports/api_latency_summary.csv"]
+    assert "dependency_meta_missing_count" in CSV_SCHEMAS["reports/api_latency_summary.csv"]
+    assert "dependency_meta_missing_rate" in CSV_SCHEMAS["reports/api_latency_summary.csv"]
     assert row["count"] == 1
     assert row["cache_hit_rate"] == 1.0
     assert row["avg_rows_returned"] == 233.0
@@ -141,6 +155,8 @@ def test_api_latency_summary_export_includes_cache_and_payload_fields(
     assert row["avg_serialize_ms"] == 3.4
     assert row["avg_source_signature_ms"] == 2.1
     assert row["response_cache_hit_rate"] == 1.0
+    assert row["dependency_meta_missing_count"] == 1
+    assert row["dependency_meta_missing_rate"] == 1.0
     assert row["error_count"] == 0
 
 
@@ -229,20 +245,7 @@ def test_snapshot_meta_written_for_api_dependency_datasets(tmp_path):
     warnings = daily_export_module._write_source_snapshot_metas(lake, snapshot.frames)
 
     assert warnings == []
-    critical_datasets = [
-        "strategy_opportunity_advisory",
-        "research_portfolio_status",
-        "alpha_factory_promotion_queue",
-        "alpha_factory_result",
-        "risk_permission",
-        "gate_decision",
-        "strategy_health_daily",
-        "v5_gate_compliance_daily",
-        "cost_bucket_daily",
-        "cost_health_daily",
-        "risk_permission_api_dependency_meta",
-    ]
-    for dataset in critical_datasets:
+    for dataset in daily_export_module.SNAPSHOT_META_DATASETS:
         dataset_path = lake / daily_export_module.readers.DATASET_PATHS.get(
             dataset,
             Path("gold") / dataset,

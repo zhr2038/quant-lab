@@ -153,6 +153,7 @@ def test_live_permission_api_marks_missing_dependency_meta_header_and_metric(
     ]
     assert rows
     assert rows[-1]["error_type"] == "dependency_meta_missing"
+    assert rows[-1]["dependency_meta_missing"] is True
 
 
 def test_health_deep_warns_when_risk_dependency_meta_missing(tmp_path, monkeypatch):

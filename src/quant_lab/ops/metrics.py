@@ -70,6 +70,7 @@ def record_api_request(
     serialize_ms: float | None = None,
     source_signature_ms: float | None = None,
     response_cache_hit: bool | None = None,
+    dependency_meta_missing: bool | None = None,
     error_type: str | None = None,
 ) -> None:
     timestamp = request_ts or datetime.now(UTC)
@@ -92,6 +93,9 @@ def record_api_request(
         ),
         "response_cache_hit": (
             bool(response_cache_hit) if response_cache_hit is not None else None
+        ),
+        "dependency_meta_missing": (
+            bool(dependency_meta_missing) if dependency_meta_missing is not None else None
         ),
         "error_type": error_type,
     }
@@ -353,6 +357,11 @@ def api_metrics_summary(
             "response_cache_hit",
             schema_names=schema_names,
         ),
+        "dependency_meta_missing_count": _sum_bool_lazy(
+            scoped,
+            "dependency_meta_missing",
+            schema_names=schema_names,
+        ),
         "by_error_type": _count_by_non_empty_lazy(scoped, "error_type", schema_names=schema_names),
     }
 
@@ -459,6 +468,7 @@ def _empty_api_metrics_summary() -> dict[str, Any]:
         "serialize_ms_total": 0.0,
         "source_signature_ms_total": 0.0,
         "response_cache_hit_count": 0,
+        "dependency_meta_missing_count": 0,
         "by_error_type": {},
     }
 
@@ -666,6 +676,14 @@ def _latency_by_path_lazy(
             .sum()
             .alias("response_cache_hit_count")
         )
+    if "dependency_meta_missing" in schema_names:
+        aggregations.append(
+            pl.col("dependency_meta_missing")
+            .fill_null(False)
+            .cast(pl.Int64)
+            .sum()
+            .alias("dependency_meta_missing_count")
+        )
     if "error_type" in schema_names:
         aggregations.append(
             pl.col("error_type").is_not_null().cast(pl.Int64).sum().alias("error_count")
@@ -693,6 +711,7 @@ def _latency_by_path_lazy(
             "serialize_ms_total",
             "source_signature_ms_total",
             "response_cache_hit_count",
+            "dependency_meta_missing_count",
             "error_count",
         ):
             if metric in row:

@@ -567,6 +567,8 @@ CSV_SCHEMAS: dict[str, list[str]] = {
         "avg_serialize_ms",
         "avg_source_signature_ms",
         "response_cache_hit_rate",
+        "dependency_meta_missing_count",
+        "dependency_meta_missing_rate",
         "error_count",
     ],
     "research/alpha_evidence.csv": [
@@ -6757,6 +6759,13 @@ def _api_latency_summary_for_export(root: Path) -> pl.DataFrame:
                 summary.get("response_cache_hit_count"),
                 summary.get("request_count"),
             ),
+            "dependency_meta_missing_count": int(
+                summary.get("dependency_meta_missing_count") or 0
+            ),
+            "dependency_meta_missing_rate": _safe_rate(
+                summary.get("dependency_meta_missing_count"),
+                summary.get("request_count"),
+            ),
             "error_count": sum(
                 int(value or 0)
                 for value in (
@@ -6807,6 +6816,13 @@ def _api_latency_summary_for_export(root: Path) -> pl.DataFrame:
                 ),
                 "response_cache_hit_rate": _safe_rate(
                     metrics.get("response_cache_hit_count"),
+                    metrics.get("count"),
+                ),
+                "dependency_meta_missing_count": int(
+                    metrics.get("dependency_meta_missing_count") or 0
+                ),
+                "dependency_meta_missing_rate": _safe_rate(
+                    metrics.get("dependency_meta_missing_count"),
                     metrics.get("count"),
                 ),
                 "error_count": int(
@@ -6863,15 +6879,16 @@ def _api_latency_summary_md(root: Path) -> str:
         "lake freshness checks belong to `/v1/health/deep`.",
         "",
         "| endpoint | count | p50 ms | p95 ms | max ms | cache hit | "
-        "response cache hit | avg source signature ms |",
-        "| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: |",
+        "response cache hit | avg source signature ms | dependency meta missing |",
+        "| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |",
     ]
     for row in frame.head(12).to_dicts():
         lines.append(
             f"| {row.get('endpoint') or ''} | {row.get('count') or 0} | "
             f"{row.get('p50_ms') or ''} | {row.get('p95_ms') or ''} | {row.get('max_ms') or ''} | "
             f"{row.get('cache_hit_rate') or ''} | {row.get('response_cache_hit_rate') or ''} | "
-            f"{row.get('avg_source_signature_ms') or ''} |"
+            f"{row.get('avg_source_signature_ms') or ''} | "
+            f"{row.get('dependency_meta_missing_count') or 0} |"
         )
     return "\n".join(lines) + "\n"
 

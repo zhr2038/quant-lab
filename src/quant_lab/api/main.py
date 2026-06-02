@@ -163,6 +163,7 @@ class ApiMetricsResponse(BaseModel):
     serialize_ms_total: float = 0.0
     source_signature_ms_total: float = 0.0
     response_cache_hit_count: int = 0
+    dependency_meta_missing_count: int = 0
     by_error_type: dict[str, int] = Field(default_factory=dict)
 
 
@@ -970,6 +971,7 @@ def _record_api_request_metric(
     headers = getattr(response, "headers", {}) or {}
     effective_error_type = error_type
     dependency_meta = _header_lookup(headers, "x-risk-permission-dependency-meta")
+    dependency_meta_missing = dependency_meta == "missing"
     if effective_error_type is None and dependency_meta:
         effective_error_type = f"dependency_meta_{dependency_meta}"
     try:
@@ -998,6 +1000,7 @@ def _record_api_request_metric(
                 _header_lookup(headers, "x-quant-lab-response-cache-hit")
             )
             or _truthy(_header_lookup(headers, "x-advisory-response-cache-hit")),
+            dependency_meta_missing=dependency_meta_missing,
             error_type=effective_error_type,
         )
     except Exception:

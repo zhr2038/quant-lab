@@ -860,6 +860,7 @@ def test_strategy_opportunity_advisory_compact_filters_and_etag(tmp_path, monkey
     assert response.status_code == 200
     assert response.headers["x-quant-lab-api-cache-hit"] == "false"
     assert response.headers["x-advisory-response-cache-hit"] == "false"
+    assert int(response.headers["x-quant-lab-advisory-response-cache-size"]) >= 1
     assert int(response.headers["x-quant-lab-response-bytes"]) > 0
     metrics = api_metrics_summary(lake)
     by_path = metrics["latency_by_path_ms"]["/v1/strategy-opportunity-advisory/v5-compact"]
@@ -921,6 +922,7 @@ def test_strategy_opportunity_advisory_uses_snapshot_meta_for_source_signature(
     assert response.status_code == 200
     assert response.headers["x-quant-lab-advisory-row-count"] == "1"
     assert float(response.headers["x-advisory-source-signature-ms"]) >= 0.0
+    assert response.headers.get("x-quant-lab-signature-fallback") is None
 
 
 def test_strategy_opportunity_advisory_marks_signature_fallback_when_meta_missing(
@@ -981,6 +983,7 @@ def test_strategy_opportunity_response_cache_bounds_and_clears_old_sources():
     assert cache.get(("sha-new", "c")) is not None
     cache.clear_except_source_sha("another-sha")
     assert cache.size() == 0
+    assert not hasattr(cache, "clear_for_source_sha")
 
 
 def test_strategy_opportunity_advisory_keeps_older_strategy_rows_when_entry_quality_is_newer(

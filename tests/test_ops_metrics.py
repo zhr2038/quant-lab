@@ -126,6 +126,7 @@ def test_api_request_metrics_records_cache_and_payload_fields(tmp_path, monkeypa
         serialize_ms=3.2,
         source_signature_ms=1.7,
         response_cache_hit=True,
+        dependency_meta_missing=True,
         error_type=None,
     )
 
@@ -137,6 +138,7 @@ def test_api_request_metrics_records_cache_and_payload_fields(tmp_path, monkeypa
     assert summary["serialize_ms_total"] == 3.2
     assert summary["source_signature_ms_total"] == 1.7
     assert summary["response_cache_hit_count"] == 1
+    assert summary["dependency_meta_missing_count"] == 1
     assert summary["by_error_type"] == {}
 
 
@@ -177,6 +179,7 @@ def test_api_request_metrics_summary_unions_evolved_parquet_schema(tmp_path, mon
                 "response_bytes": 313521,
                 "source_signature_ms": 0.4,
                 "response_cache_hit": True,
+                "dependency_meta_missing": True,
             }
         ]
     ).write_parquet(dataset / "new_schema.parquet")
@@ -189,8 +192,10 @@ def test_api_request_metrics_summary_unions_evolved_parquet_schema(tmp_path, mon
     assert summary["response_bytes_total"] == 313521.0
     assert summary["source_signature_ms_total"] == 0.4
     assert summary["response_cache_hit_count"] == 1
+    assert summary["dependency_meta_missing_count"] == 1
     assert path_summary["rows_returned_total"] == 201.0
     assert path_summary["response_bytes_total"] == 313521.0
+    assert path_summary["dependency_meta_missing_count"] == 1
 
 
 def test_api_request_metrics_summary_reports_slowest_paths(tmp_path, monkeypatch):

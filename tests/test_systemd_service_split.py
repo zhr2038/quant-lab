@@ -251,7 +251,21 @@ def test_web_export_relies_on_systemd_memory_limit_for_snapshot_packaging():
     unit = _unit("quant-lab-web.service")
 
     assert "QUANT_LAB_WEB_EXPORT_MEMORY_LIMIT_MB=0" in unit
+    assert "QUANT_LAB_WEB_EXPORT_BACKGROUND_TRIGGER=request_file" in unit
     assert "MemoryMax=5G" in unit
+
+
+def test_web_export_request_worker_is_scheduled_outside_dashboard_cgroup():
+    service = _unit("quant-lab-web-export-request.service")
+    path = _unit("quant-lab-web-export-request.path")
+
+    assert "run-web-export-request" in service
+    assert "--request-path /var/lib/quant-lab/exports/.quant_lab_web_export_request.json" in service
+    assert "QUANT_LAB_EXPORT_V5_MAX_PENDING_BUNDLES=1" in service
+    assert "QUANT_LAB_EXPORT_V5_MAX_SCAN_BUNDLES=30" in service
+    assert "MemoryMax=6G" in service
+    assert "PathExists=/var/lib/quant-lab/exports/.quant_lab_web_export_request.json" in path
+    assert "Unit=quant-lab-web-export-request.service" in path
 
 
 def test_okx_ws_service_uses_unpartitioned_bounded_batches():

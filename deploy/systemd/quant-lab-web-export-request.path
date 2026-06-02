@@ -1,0 +1,9 @@
+[Unit]
+Description=Watch for quant-lab web expert export requests
+
+[Path]
+PathExists=/var/lib/quant-lab/exports/.quant_lab_web_export_request.json
+Unit=quant-lab-web-export-request.service
+
+[Install]
+WantedBy=multi-user.target

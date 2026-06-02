@@ -22,6 +22,7 @@ DEFAULT_DOWNLOAD_PACK_LIMIT = 5
 DEFAULT_DOWNLOAD_MAX_BYTES = 128 * 1024 * 1024
 DEFAULT_EXPORT_STATUS_STALE_SECONDS = 30 * 60
 DEFAULT_WEB_EXPORT_MEMORY_LIMIT_MB = 0
+REQUEST_FILE_BACKGROUND_TRIGGER = "request_file"
 
 
 def render(
@@ -63,7 +64,14 @@ def render(
                 lake_root=Path(lake_root),
                 exports_root=root,
             )
-            _info(st, f"今日快照包已在后台生成中，进程 PID={started.get('pid')}")
+            if started.get("pid") is not None:
+                _info(st, f"今日快照包已在后台生成中，进程 PID={started.get('pid')}")
+            else:
+                _info(
+                    st,
+                    "今日快照包请求已提交给后台导出 worker："
+                    f"{started.get('systemd_unit') or started.get('trigger')}",
+                )
             if _rerun(st):
                 return
         else:
@@ -109,13 +117,19 @@ def _web_on_demand_export_enabled() -> bool:
     return value in {"1", "true", "yes", "on"}
 
 
+def _web_background_export_trigger() -> str:
+    return os.environ.get("QUANT_LAB_WEB_EXPORT_BACKGROUND_TRIGGER", "subprocess").strip().lower()
+
+
 def _render_export_job_status(st: Any, status: dict[str, Any]) -> None:
     state = str(status.get("state") or "")
     if state == "running":
-        _info(
-            st,
-            f"今日快照包正在后台生成。PID={status.get('pid')}；开始时间={status.get('started_at')}",
+        worker = (
+            f"PID={status.get('pid')}"
+            if status.get("pid") is not None
+            else str(status.get("systemd_unit") or status.get("trigger") or "background")
         )
+        _info(st, f"今日快照包正在后台生成。{worker}；开始时间={status.get('started_at')}")
     elif state == "failed":
         _error(st, f"专家包生成失败：{status.get('error')}")
 
@@ -141,6 +155,14 @@ def _start_export_job(
         "log_path": str(log_path),
     }
     _write_export_job_status(status_path, status)
+    if _web_background_export_trigger() == REQUEST_FILE_BACKGROUND_TRIGGER:
+        return _start_export_request_file(
+            status=status,
+            status_path=status_path,
+            export_date=export_date,
+            lake_root=lake_root,
+            exports_root=exports_root,
+        )
     with log_path.open("wb") as log_file:
         popen_kwargs: dict[str, Any] = {
             "stdout": log_file,
@@ -167,6 +189,37 @@ def _start_export_job(
         )
     status["state"] = "running"
     status["pid"] = process.pid
+    _write_export_job_status(status_path, status)
+    return status
+
+
+def _start_export_request_file(
+    *,
+    status: dict[str, Any],
+    status_path: Path,
+    export_date: str,
+    lake_root: Path,
+    exports_root: Path,
+) -> dict[str, Any]:
+    request_path = _export_job_request_path(exports_root)
+    request = {
+        "export_date": export_date,
+        "lake_root": str(lake_root),
+        "exports_root": str(exports_root),
+        "status_path": str(status_path),
+        "requested_at": datetime.now(UTC).isoformat(),
+        "trigger": REQUEST_FILE_BACKGROUND_TRIGGER,
+    }
+    tmp_path = request_path.with_suffix(request_path.suffix + ".tmp")
+    tmp_path.write_text(json.dumps(request, ensure_ascii=False, sort_keys=True), encoding="utf-8")
+    tmp_path.replace(request_path)
+    status = {
+        **status,
+        "state": "running",
+        "trigger": REQUEST_FILE_BACKGROUND_TRIGGER,
+        "request_path": str(request_path),
+        "systemd_unit": "quant-lab-web-export-request.service",
+    }
     _write_export_job_status(status_path, status)
     return status
 
@@ -291,6 +344,14 @@ def _poll_export_job(exports_root: Path, export_date: str) -> dict[str, Any]:
             return recovered
     if status.get("state") != "running":
         return status
+    recovered = _recover_failed_export_status_from_pack(
+        exports_root,
+        export_date,
+        status_path,
+        status,
+    )
+    if recovered is not None:
+        return recovered
     if _export_job_is_stale(status):
         status = {
             **status,
@@ -302,6 +363,8 @@ def _poll_export_job(exports_root: Path, export_date: str) -> dict[str, Any]:
         return status
     pid = status.get("pid")
     if isinstance(pid, int) and _pid_is_running(pid):
+        return status
+    if status.get("trigger") == REQUEST_FILE_BACKGROUND_TRIGGER:
         return status
     status = {
         **status,
@@ -336,9 +399,10 @@ def _recover_failed_export_status_from_pack(
         pack_mtime = datetime.fromtimestamp(pack_path.stat().st_mtime, UTC)
     except OSError:
         return None
-    if started_at is not None and pack_mtime < started_at:
-        return None
-    if finished_at is not None and pack_mtime <= finished_at:
+    if started_at is not None:
+        if pack_mtime < started_at:
+            return None
+    elif finished_at is not None and pack_mtime <= finished_at:
         return None
     recovered = {
         key: value
@@ -404,6 +468,10 @@ def _export_job_status_path(exports_root: Path, export_date: str) -> Path:
 
 def _export_job_log_path(exports_root: Path, export_date: str) -> Path:
     return exports_root / f".quant_lab_web_export_{export_date}.log"
+
+
+def _export_job_request_path(exports_root: Path) -> Path:
+    return exports_root / ".quant_lab_web_export_request.json"
 
 
 def _pid_is_running(pid: int) -> bool:

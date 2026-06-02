@@ -9,7 +9,7 @@ import polars as pl
 
 from quant_lab.data.lake import write_market_bars, write_parquet_dataset
 from quant_lab.web import app as web_app
-from quant_lab.web import readers
+from quant_lab.web import export_request, readers
 from quant_lab.web.pages import (
     alpha_gates,
     cost_model,
@@ -1895,6 +1895,83 @@ def test_expert_exports_generate_today_button_starts_background_job(tmp_path, mo
     assert any("PID=4242" in str(value) for value in _call_values(fake, "info"))
 
 
+def test_expert_exports_generate_today_writes_request_file_for_systemd_worker(
+    tmp_path, monkeypatch
+):
+    lake_root = _fixture_lake(tmp_path)
+    exports_root = tmp_path / "exports"
+    fake = RerunStreamlit(
+        button_values={"generate_today_expert_pack": True},
+        session_state={},
+    )
+
+    monkeypatch.setenv("QUANT_LAB_WEB_ON_DEMAND_EXPORT", "true")
+    monkeypatch.setenv("QUANT_LAB_WEB_EXPORT_BACKGROUND", "true")
+    monkeypatch.setenv("QUANT_LAB_WEB_EXPORT_BACKGROUND_TRIGGER", "request_file")
+    monkeypatch.setattr(expert_exports, "beijing_today", lambda: datetime(2026, 5, 16).date())
+
+    expert_exports.render(lake_root, fake, exports_root=exports_root)
+
+    status_path = exports_root / ".quant_lab_web_export_2026-05-16.json"
+    request_path = exports_root / ".quant_lab_web_export_request.json"
+    status = json.loads(status_path.read_text(encoding="utf-8"))
+    request = json.loads(request_path.read_text(encoding="utf-8"))
+    assert status["state"] == "running"
+    assert status["trigger"] == "request_file"
+    assert status["systemd_unit"] == "quant-lab-web-export-request.service"
+    assert request["export_date"] == "2026-05-16"
+    assert request["lake_root"] == str(lake_root)
+    assert request["exports_root"] == str(exports_root)
+    assert request["status_path"] == str(status_path)
+    assert fake.rerun_count == 1
+    assert any(
+        "quant-lab-web-export-request.service" in str(value)
+        for value in _call_values(fake, "info")
+    )
+
+
+def test_web_export_request_worker_writes_completion_status(tmp_path, monkeypatch):
+    exports_root = tmp_path / "exports"
+    lake_root = tmp_path / "lake"
+    exports_root.mkdir()
+    lake_root.mkdir()
+    status_path = exports_root / ".quant_lab_web_export_2026-05-16.json"
+    request_path = exports_root / ".quant_lab_web_export_request.json"
+    request_path.write_text(
+        json.dumps(
+            {
+                "export_date": "2026-05-16",
+                "lake_root": str(lake_root),
+                "exports_root": str(exports_root),
+                "status_path": str(status_path),
+                "requested_at": "2026-05-16T01:00:00+00:00",
+            }
+        ),
+        encoding="utf-8",
+    )
+    captured = {}
+
+    def fake_export_daily_pack(**kwargs):
+        captured.update(kwargs)
+        pack_path = exports_root / "quant_lab_expert_pack_2026-05-16_worker.zip"
+        pack_path.write_bytes(b"zip")
+        return SimpleNamespace(zip_path=str(pack_path), warnings=["sample_warning"])
+
+    monkeypatch.setattr(export_request, "export_daily_pack", fake_export_daily_pack)
+
+    status = export_request.run_web_export_request(request_path)
+
+    stored = json.loads(status_path.read_text(encoding="utf-8"))
+    assert status["state"] == "succeeded"
+    assert stored["state"] == "succeeded"
+    assert stored["trigger"] == "request_file"
+    assert stored["zip_path"].endswith("quant_lab_expert_pack_2026-05-16_worker.zip")
+    assert stored["warnings"] == ["sample_warning"]
+    assert captured["pre_export_v5_refresh"] is True
+    assert "--pre-export-v5-refresh" in captured["command_line"]
+    assert not request_path.exists()
+
+
 def test_expert_exports_background_job_truncates_stale_log(tmp_path, monkeypatch):
     exports_root = tmp_path / "exports"
     exports_root.mkdir()
@@ -2181,6 +2258,30 @@ def test_expert_exports_running_job_recovers_when_process_exited_after_pack(
     assert status["recovered_pack_mtime"] == datetime.fromtimestamp(new_mtime, UTC).isoformat()
 
 
+def test_expert_exports_running_request_file_job_stays_running_without_pid(
+    tmp_path, monkeypatch
+):
+    exports_root = tmp_path / "exports"
+    exports_root.mkdir()
+    status_path = exports_root / ".quant_lab_web_export_2026-05-16.json"
+    status_path.write_text(
+        json.dumps(
+            {
+                "state": "running",
+                "trigger": "request_file",
+                "started_at": datetime.now(UTC).isoformat(),
+            }
+        ),
+        encoding="utf-8",
+    )
+    monkeypatch.setenv("QUANT_LAB_WEB_EXPORT_STATUS_STALE_SECONDS", "999999999")
+
+    status = expert_exports._poll_export_job(exports_root, "2026-05-16")
+
+    assert status["state"] == "running"
+    assert "error" not in status
+
+
 def test_expert_exports_linux_zombie_pid_is_not_running(monkeypatch):
     monkeypatch.setattr(expert_exports.os, "name", "posix")
     monkeypatch.setattr(expert_exports, "_linux_proc_state", lambda pid: "Z")
@@ -2241,6 +2342,34 @@ def test_expert_exports_failed_status_does_not_recover_old_pack(tmp_path):
     assert status["state"] == "failed"
     assert status["error"] == "MemoryError"
     assert "zip_path" not in status
+
+
+def test_expert_exports_failed_status_recovers_pack_between_start_and_failure(tmp_path):
+    exports_root = tmp_path / "exports"
+    exports_root.mkdir()
+    status_path = exports_root / ".quant_lab_web_export_2026-05-16.json"
+    status_path.write_text(
+        json.dumps(
+            {
+                "state": "failed",
+                "error": "export process exited before writing completion status",
+                "started_at": "2026-05-16T03:00:00+00:00",
+                "finished_at": "2026-05-16T03:05:00+00:00",
+            }
+        ),
+        encoding="utf-8",
+    )
+    pack_path = exports_root / "quant_lab_expert_pack_2026-05-16_20260516T110300+0800.zip"
+    pack_path.write_bytes(b"zip")
+    pack_mtime = datetime(2026, 5, 16, 3, 3, tzinfo=UTC).timestamp()
+    os.utime(pack_path, (pack_mtime, pack_mtime))
+
+    status = expert_exports._poll_export_job(exports_root, "2026-05-16")
+
+    assert status["state"] == "succeeded"
+    assert status["zip_path"] == str(pack_path)
+    assert status["recovered_from_failed_status"] is True
+    assert "error" not in status
 
 
 def test_expert_exports_subprocess_mode_parses_generated_pack(tmp_path, monkeypatch):

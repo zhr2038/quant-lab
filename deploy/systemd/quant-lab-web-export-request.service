@@ -1,0 +1,24 @@
+[Unit]
+Description=quant-lab web-triggered authoritative expert export
+After=network-online.target quant-lab-v5-telemetry-sync.service
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+User=quantlab
+Group=quantlab
+WorkingDirectory=/opt/quant-lab
+TimeoutStartSec=35min
+Environment=POLARS_MAX_THREADS=1
+Environment=OMP_NUM_THREADS=1
+Environment=OPENBLAS_NUM_THREADS=1
+Environment=MKL_NUM_THREADS=1
+Environment=NUMEXPR_NUM_THREADS=1
+Environment=MALLOC_ARENA_MAX=2
+Environment=QUANT_LAB_EXPORT_V5_MAX_PENDING_BUNDLES=1
+Environment=QUANT_LAB_EXPORT_V5_MAX_SCAN_BUNDLES=30
+EnvironmentFile=-/etc/quant-lab/quant_lab_api.env
+MemoryHigh=5G
+MemoryMax=6G
+CPUQuota=80%
+ExecStart=/bin/bash -lc '/usr/bin/timeout 25m /opt/quant-lab/.venv/bin/qlab run-web-export-request --request-path /var/lib/quant-lab/exports/.quant_lab_web_export_request.json'

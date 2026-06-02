@@ -89,6 +89,7 @@ from quant_lab.strategy_telemetry.ingest import ingest_v5_inbox as ingest_v5_inb
 from quant_lab.strategy_telemetry.models import BundleLimits
 from quant_lab.strategy_telemetry.remote_pull import RemoteBundlePuller
 from quant_lab.strategy_telemetry.sanitize import scan_for_secrets
+from quant_lab.web.export_request import run_web_export_request
 
 app = typer.Typer(help="quant-lab read-only research utilities.")
 
@@ -1745,6 +1746,24 @@ def validate_expert_pack_command(
     typer.echo(result.model_dump_json(indent=2))
     if result.rejected:
         raise typer.Exit(1)
+
+
+@app.command("run-web-export-request")
+def run_web_export_request_command(
+    request_path: Annotated[
+        Path,
+        typer.Option(
+            "--request-path",
+            exists=True,
+            file_okay=True,
+            dir_okay=False,
+            readable=True,
+            help="JSON request file written by the web expert export page.",
+        ),
+    ],
+) -> None:
+    result = run_web_export_request(request_path)
+    typer.echo(json.dumps(result, indent=2, sort_keys=True, default=str))
 
 
 @app.command("pull-v5-bundles")

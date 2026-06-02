@@ -187,6 +187,11 @@ DEFAULT_EXPORT_FULL_READ_MAX_FILES = 80
 DEFAULT_EXPORT_FULL_READ_MAX_BYTES = 128 * 1024 * 1024
 DEFAULT_KEEP_EXPERT_PACKS = 5
 LAKE_FILE_INDEX_DATASET = Path("bronze") / "lake_file_index"
+HEAVY_REGISTRY_QUALITY_DATASETS = {
+    "okx_public_ws",
+    "trade_print",
+    "orderbook_snapshot",
+}
 EVENT_DRIVEN_V5_DATASETS = readers.EVENT_DRIVEN_V5_DATASET_STATUSES
 EVENT_DRIVEN_OK_STATUSES = readers.EVENT_DRIVEN_OK_STATUSES
 SECTION_DATASETS = {
@@ -5672,14 +5677,11 @@ def _data_quality_payload(
             severity="critical" if v5_integration_enabled else "warning",
         )
     )
+    registry_dataset_names, registry_skipped_heavy = _registry_quality_dataset_names(snapshot)
     try:
         registry_quality = run_data_quality(
             lake_root,
-            dataset_names=[
-                name
-                for name, row_count in snapshot.row_counts.items()
-                if row_count > 0
-            ],
+            dataset_names=registry_dataset_names,
             reference_at=generated_at,
         ).to_dict(include_checks=True)
     except Exception as exc:
@@ -5693,6 +5695,8 @@ def _data_quality_payload(
             "checks": [],
             "error_message": _safe_warning_text(f"{type(exc).__name__}:{exc}"),
         }
+    registry_quality["skipped_heavy_datasets"] = registry_skipped_heavy
+    registry_quality["selected_dataset_count"] = len(registry_dataset_names)
     dataset_governance = registry_quality
     checks.append(
         _check(
@@ -5707,6 +5711,19 @@ def _data_quality_payload(
             warning_only=True,
         )
     )
+    if registry_skipped_heavy:
+        checks.append(
+            _check(
+                "dataset_registry_heavy_raw_rollup_fast_path",
+                True,
+                (
+                    "skipped_heavy_raw_datasets="
+                    f"{','.join(registry_skipped_heavy)}; "
+                    "rollup_or_health_dataset_used_for_export_quality"
+                ),
+                warning_only=True,
+            )
+        )
 
     risk = _risk_permissions_for_export(
         snapshot.frames.get("risk_permission", pl.DataFrame()),
@@ -9932,6 +9949,41 @@ def _risk_permission_export_status(
         "permission_status": quality.get("permission_status"),
         "next_action": quality.get("next_action"),
     }
+
+
+def _registry_quality_dataset_names(snapshot: _DatasetSnapshot) -> tuple[list[str], list[str]]:
+    selected: list[str] = []
+    skipped_heavy: list[str] = []
+    for name, row_count in sorted(snapshot.row_counts.items()):
+        if row_count <= 0:
+            continue
+        if name in HEAVY_REGISTRY_QUALITY_DATASETS and _can_skip_heavy_registry_quality(
+            name,
+            snapshot.row_counts,
+        ):
+            skipped_heavy.append(name)
+            continue
+        selected.append(name)
+    return selected, skipped_heavy
+
+
+def _can_skip_heavy_registry_quality(
+    dataset_name: str,
+    row_counts: dict[str, int],
+) -> bool:
+    if dataset_name == "trade_print":
+        return row_counts.get("trade_activity_1m", 0) > 0
+    if dataset_name == "orderbook_snapshot":
+        return row_counts.get("orderbook_spread_1m", 0) > 0
+    if dataset_name == "okx_public_ws":
+        return (
+            row_counts.get("okx_public_ws_health", 0) > 0
+            and (
+                row_counts.get("trade_activity_1m", 0) > 0
+                or row_counts.get("orderbook_spread_1m", 0) > 0
+            )
+        )
+    return False
 
 
 def _risk_permission_expired_detail(risk_quality: dict[str, Any]) -> str:

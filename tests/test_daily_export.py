@@ -866,6 +866,93 @@ def test_export_frame_uses_lake_file_index_for_rollup_skipped_raw_row_count(
     assert warning == "trade_print export frame skipped; using trade_activity_1m rollup"
 
 
+def test_data_quality_registry_skips_heavy_raw_when_rollups_are_available(
+    tmp_path,
+    monkeypatch,
+):
+    captured = {}
+
+    class FakeDataQualitySummary:
+        def to_dict(self, *, include_checks=True):
+            captured["include_checks"] = include_checks
+            return {
+                "status": "PASS",
+                "generated_at": "2026-05-10T00:00:00+00:00",
+                "dataset_count": len(captured["dataset_names"]),
+                "check_count": 0,
+                "fail_count": 0,
+                "warning_count": 0,
+                "checks": [],
+            }
+
+    def fake_run_data_quality(_lake_root, *, dataset_names, reference_at):
+        captured["dataset_names"] = list(dataset_names)
+        captured["reference_at"] = reference_at
+        return FakeDataQualitySummary()
+
+    monkeypatch.setattr(daily_export_module, "run_data_quality", fake_run_data_quality)
+    now = datetime(2026, 5, 10, tzinfo=UTC)
+    snapshot = daily_export_module._DatasetSnapshot(
+        frames={
+            "market_bar": pl.DataFrame(
+                [
+                    {
+                        "venue": "OKX",
+                        "symbol": "BTC-USDT",
+                        "timeframe": "1H",
+                        "ts": now,
+                        "open": 100.0,
+                        "high": 101.0,
+                        "low": 99.0,
+                        "close": 100.5,
+                        "volume": 1.0,
+                        "closed": True,
+                    }
+                ]
+            ),
+            "cost_bucket_daily": pl.DataFrame(),
+            "cost_health_daily": pl.DataFrame(),
+            "gate_decision": pl.DataFrame(),
+            "alpha_evidence": pl.DataFrame(),
+            "alpha_discovery_board": pl.DataFrame(),
+            "strategy_evidence": pl.DataFrame(),
+            "v5_candidate_event": pl.DataFrame(),
+            "v5_candidate_label": pl.DataFrame(),
+            "v5_candidate_quality_daily": pl.DataFrame(),
+            "risk_permission": pl.DataFrame(),
+        },
+        row_counts={
+            "market_bar": 1,
+            "okx_public_ws": 100,
+            "okx_public_ws_health": 1,
+            "trade_print": 100,
+            "trade_activity_1m": 10,
+            "orderbook_snapshot": 100,
+            "orderbook_spread_1m": 10,
+        },
+        warnings=[],
+    )
+
+    payload = daily_export_module._data_quality_payload(
+        tmp_path / "lake",
+        snapshot,
+        now.date(),
+        now,
+    )
+
+    assert "okx_public_ws" not in captured["dataset_names"]
+    assert "trade_print" not in captured["dataset_names"]
+    assert "orderbook_snapshot" not in captured["dataset_names"]
+    assert "okx_public_ws_health" in captured["dataset_names"]
+    assert "trade_activity_1m" in captured["dataset_names"]
+    assert "orderbook_spread_1m" in captured["dataset_names"]
+    assert payload["registry_quality"]["skipped_heavy_datasets"] == [
+        "okx_public_ws",
+        "orderbook_snapshot",
+        "trade_print",
+    ]
+
+
 def test_expanded_universe_event_export_is_treated_as_heavy_dataset(tmp_path, monkeypatch):
     lake_root = tmp_path / "lake"
     dataset_path = lake_root / "gold" / "expanded_universe_candidate_event"

@@ -1260,6 +1260,11 @@ def test_v5_compact_collapses_risk_on_multi_buy_candidates(tmp_path, monkeypatch
         "/v1/strategy-opportunity-advisory/v5-compact",
         params={"families": "risk_on_multi_buy"},
     )
+    gzip_compact = client.get(
+        "/v1/strategy-opportunity-advisory/v5-compact",
+        params={"families": "risk_on_multi_buy"},
+        headers={"Accept-Encoding": "gzip"},
+    )
 
     assert full.status_code == 200
     assert compact.status_code == 200
@@ -1274,6 +1279,8 @@ def test_v5_compact_collapses_risk_on_multi_buy_candidates(tmp_path, monkeypatch
     assert int(compact.headers["x-quant-lab-response-bytes"]) < int(
         full.headers["x-quant-lab-response-bytes"]
     )
+    assert gzip_compact.headers["content-encoding"] == "gzip"
+    assert gzip_compact.json() == compact_rows
 
 
 def _api_advisory_row(

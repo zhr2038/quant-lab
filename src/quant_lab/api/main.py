@@ -21,6 +21,7 @@ import polars as pl
 from fastapi import FastAPI, HTTPException, Request, status
 from fastapi.responses import JSONResponse, Response
 from pydantic import BaseModel, ConfigDict, Field
+from starlette.middleware.gzip import GZipMiddleware
 
 from quant_lab import __version__
 from quant_lab.api.cache import (
@@ -224,6 +225,7 @@ def create_app() -> FastAPI:
         redoc_url=None if disable_docs else "/redoc",
         openapi_url=None if disable_docs else "/openapi.json",
     )
+    app.add_middleware(GZipMiddleware, minimum_size=1024)
 
     @app.middleware("http")
     async def require_bearer_token_and_record_metrics(request: Request, call_next: Any) -> Any:

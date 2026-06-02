@@ -267,11 +267,13 @@ except Exception as exc:
 
 def _web_export_subprocess_env() -> dict[str, str]:
     env = dict(os.environ)
-    env.setdefault("POLARS_MAX_THREADS", "1")
-    env.setdefault("OMP_NUM_THREADS", "1")
-    env.setdefault("OPENBLAS_NUM_THREADS", "1")
-    env.setdefault("MKL_NUM_THREADS", "1")
-    env.setdefault("NUMEXPR_NUM_THREADS", "1")
+    env["POLARS_MAX_THREADS"] = "1"
+    env["OMP_NUM_THREADS"] = "1"
+    env["OPENBLAS_NUM_THREADS"] = "1"
+    env["MKL_NUM_THREADS"] = "1"
+    env["NUMEXPR_NUM_THREADS"] = "1"
+    env["MALLOC_ARENA_MAX"] = "2"
+    env.setdefault("PYTHONUNBUFFERED", "1")
     return env
 
 
@@ -329,9 +331,12 @@ def _recover_failed_export_status_from_pack(
     if pack_path is None:
         return None
     finished_at = _parse_status_datetime(status.get("finished_at"))
+    started_at = _parse_status_datetime(status.get("started_at"))
     try:
         pack_mtime = datetime.fromtimestamp(pack_path.stat().st_mtime, UTC)
     except OSError:
+        return None
+    if started_at is not None and pack_mtime < started_at:
         return None
     if finished_at is not None and pack_mtime <= finished_at:
         return None
@@ -343,6 +348,8 @@ def _recover_failed_export_status_from_pack(
         "state": "succeeded",
         "zip_path": str(pack_path),
         "recovered_from_failed_status": True,
+        "recovery_reason": "pack_created_after_export_job",
+        "recovered_pack_mtime": pack_mtime.isoformat(),
         "finished_at": pack_mtime.isoformat(),
     }
     _write_export_job_status(status_path, recovered)
@@ -502,7 +509,7 @@ def _export_daily_from_web(
     lake_root: Path,
     exports_root: Path,
 ) -> tuple[Path, list[str]]:
-    if os.environ.get("QUANT_LAB_WEB_EXPORT_MODE", "in_process") == "subprocess":
+    if os.environ.get("QUANT_LAB_WEB_EXPORT_MODE", "subprocess") == "subprocess":
         return _export_daily_in_subprocess(
             export_date=export_date,
             lake_root=lake_root,

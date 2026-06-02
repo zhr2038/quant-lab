@@ -12,6 +12,7 @@ import pytest
 
 import quant_lab.export.daily as daily_export_module
 from quant_lab.contracts.v5_quant_lab import V5_QUANT_LAB_CONTRACT_VERSION
+from quant_lab.data.file_index import build_lake_file_index
 from quant_lab.data.lake import read_parquet_dataset, write_market_bars, write_parquet_dataset
 from quant_lab.export.daily import (
     CSV_SCHEMAS,
@@ -80,6 +81,14 @@ def test_export_daily_pack_writes_required_members(tmp_path):
         assert "v5/v5_strategy_health.csv" in names
         assert "reports/v5_enforce_readiness.json" in names
         assert "reports/v5_enforce_readiness.csv" in names
+        assert "diagnostics/export_timing.csv" in names
+        assert "diagnostics/export_timing.json" in names
+        export_timing = list(
+            csv.DictReader(
+                io.StringIO(archive.read("diagnostics/export_timing.csv").decode("utf-8"))
+            )
+        )
+        assert any(row["stage"] == "load_snapshot" for row in export_timing)
         data_quality = json.loads(archive.read("data_quality.json").decode("utf-8"))
         executive_summary = archive.read("executive_summary.md").decode("utf-8")
         assert "quant_lab_enforce_readiness" in data_quality
@@ -805,6 +814,56 @@ def test_export_frame_reports_full_row_count_for_sampled_dataset(tmp_path, monke
     assert warning is None
     assert frame.height == 4
     assert row_count == 15
+
+
+def test_export_frame_uses_lake_file_index_for_rollup_skipped_raw_row_count(
+    tmp_path,
+    monkeypatch,
+):
+    lake_root = tmp_path / "lake"
+    dataset_path = lake_root / "silver" / "trade_print"
+    dataset_path.mkdir(parents=True)
+    for file_index in range(3):
+        rows = [
+            {
+                "symbol": "BTC-USDT",
+                "trade_id": f"{file_index}-{row_index}",
+                "price": 100.0,
+                "size": 1.0,
+                "ts": datetime(2026, 5, 10, file_index, row_index, tzinfo=UTC),
+            }
+            for row_index in range(5)
+        ]
+        pl.DataFrame(rows).write_parquet(dataset_path / f"batch-{file_index}.parquet")
+    write_parquet_dataset(
+        pl.DataFrame(
+            [
+                {
+                    "symbol": "BTC-USDT",
+                    "minute_ts": datetime(2026, 5, 10, 0, tzinfo=UTC),
+                    "trade_count": 15,
+                    "notional_usdt": 1500.0,
+                }
+            ]
+        ),
+        lake_root / "silver" / "trade_activity_1m",
+    )
+    build_lake_file_index(lake_root, ["silver/trade_print"])
+
+    def fail_metadata_row_count(_files):
+        raise AssertionError("rollup-skipped raw row count should use lake_file_index")
+
+    monkeypatch.setattr(
+        daily_export_module,
+        "_export_parquet_metadata_row_count",
+        fail_metadata_row_count,
+    )
+
+    frame, row_count, warning = _load_export_frame(lake_root, "trade_print")
+
+    assert frame.is_empty()
+    assert row_count == 15
+    assert warning == "trade_print export frame skipped; using trade_activity_1m rollup"
 
 
 def test_expanded_universe_event_export_is_treated_as_heavy_dataset(tmp_path, monkeypatch):

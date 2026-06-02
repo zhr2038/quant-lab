@@ -9,6 +9,7 @@ import os
 import socket
 import subprocess
 import sys
+import time
 import zipfile
 from collections import Counter
 from collections.abc import Iterable
@@ -185,6 +186,7 @@ DEFAULT_EXPORT_RECENT_FILE_LIMIT = 100
 DEFAULT_EXPORT_FULL_READ_MAX_FILES = 80
 DEFAULT_EXPORT_FULL_READ_MAX_BYTES = 128 * 1024 * 1024
 DEFAULT_KEEP_EXPERT_PACKS = 5
+LAKE_FILE_INDEX_DATASET = Path("bronze") / "lake_file_index"
 EVENT_DRIVEN_V5_DATASETS = readers.EVENT_DRIVEN_V5_DATASET_STATUSES
 EVENT_DRIVEN_OK_STATUSES = readers.EVENT_DRIVEN_OK_STATUSES
 SECTION_DATASETS = {
@@ -2966,18 +2968,26 @@ def export_daily_pack(
     output_root.mkdir(parents=True, exist_ok=True)
 
     generated_at = datetime.now(UTC)
+    export_stage_timings: list[dict[str, Any]] = []
+    stage_started = _export_stage_start()
     pre_export_v5 = (
         _refresh_v5_before_export(root, day, config_path=v5_telemetry_config)
         if pre_export_v5_refresh
         else _observe_v5_before_export(root, config_path=v5_telemetry_config)
     )
+    _record_export_stage(export_stage_timings, "pre_export_v5", stage_started)
+    stage_started = _export_stage_start()
     pre_export_v5_warnings = [str(warning) for warning in pre_export_v5.get("warnings", [])]
     pre_export_risk_warnings = (
         _refresh_risk_permission_before_export(root, strategy=risk_strategy, version=risk_version)
         if refresh_risk_permission
         else []
     )
+    _record_export_stage(export_stage_timings, "pre_export_risk_permission", stage_started)
+    stage_started = _export_stage_start()
     snapshot = _load_snapshot(root)
+    _record_export_stage(export_stage_timings, "load_snapshot", stage_started)
+    stage_started = _export_stage_start()
     v5_consistency = _v5_export_consistency(
         snapshot.frames,
         pre_export_v5=pre_export_v5,
@@ -3019,10 +3029,24 @@ def export_daily_pack(
     if v5_consistency["warning_reason"]:
         pre_export_v5.setdefault("warnings", []).append(v5_consistency["warning_reason"])
     pre_export_v5_warnings = [str(warning) for warning in pre_export_v5.get("warnings", [])]
+    _record_export_stage(export_stage_timings, "v5_consistency", stage_started)
+    stage_started = _export_stage_start()
     snapshot = _publish_research_portfolio_status_snapshot(root, snapshot, day)
+    _record_export_stage(export_stage_timings, "publish_research_portfolio_status", stage_started)
+    stage_started = _export_stage_start()
     snapshot = _publish_missed_opportunity_snapshot(root, snapshot)
+    _record_export_stage(export_stage_timings, "publish_missed_opportunity", stage_started)
+    stage_started = _export_stage_start()
     snapshot = _publish_strategy_opportunity_advisory_snapshot(root, snapshot)
+    _record_export_stage(
+        export_stage_timings,
+        "publish_strategy_opportunity_advisory",
+        stage_started,
+    )
+    stage_started = _export_stage_start()
     snapshot = _publish_risk_permission_dependency_meta_snapshot(root, snapshot)
+    _record_export_stage(export_stage_timings, "publish_risk_dependency_meta", stage_started)
+    stage_started = _export_stage_start()
     meta_warnings = _write_source_snapshot_metas(root, snapshot.frames)
     if meta_warnings:
         snapshot = _DatasetSnapshot(
@@ -3030,6 +3054,8 @@ def export_daily_pack(
             row_counts=snapshot.row_counts,
             warnings=[*snapshot.warnings, *meta_warnings],
         )
+    _record_export_stage(export_stage_timings, "write_source_snapshot_metas", stage_started)
+    stage_started = _export_stage_start()
     missing_sections = _missing_sections(snapshot.row_counts)
     data_quality = _data_quality_payload(
         root,
@@ -3040,6 +3066,8 @@ def export_daily_pack(
         pre_export_v5=pre_export_v5,
         pre_export_warnings=pre_export_risk_warnings,
     )
+    _record_export_stage(export_stage_timings, "data_quality_payload", stage_started)
+    stage_started = _export_stage_start()
     warnings = sorted(
         set([*snapshot.warnings, *pre_export_v5_warnings, *data_quality["warnings"]])
     )
@@ -3061,6 +3089,18 @@ def export_daily_pack(
             snapshot=snapshot,
             command_line=command_line or sys.argv,
         )
+    )
+    _record_export_stage(export_stage_timings, "build_members", stage_started)
+    members["diagnostics/export_timing.csv"] = _csv_member(
+        "diagnostics/export_timing.csv",
+        _export_stage_timings_frame(export_stage_timings),
+    )
+    members["diagnostics/export_timing.json"] = _json_text(
+        {
+            "rows": export_stage_timings,
+            "row_count": len(export_stage_timings),
+            "generated_at": datetime.now(UTC).isoformat(),
+        }
     )
 
     export_finished_at = datetime.now(UTC)
@@ -3236,7 +3276,10 @@ def _load_export_frame(
     if rollup_name:
         rollup_path = readers.dataset_path_for(lake_root, rollup_name)
         if rollup_path.exists():
-            row_count = _export_parquet_row_count(_export_parquet_files(dataset_path))
+            row_count = _export_parquet_row_count(
+                _export_parquet_files(dataset_path),
+                dataset_path=dataset_path,
+            )
             warning = f"{dataset_name} export frame skipped; using {rollup_name} rollup"
             return pl.DataFrame(), row_count, warning
     if dataset_name not in HEAVY_EXPORT_DATASET_LIMITS and not _should_sample_export_dataset(
@@ -3268,7 +3311,7 @@ def _load_export_frame(
             dataset_name,
             limit=limit,
         )
-        row_count = _export_parquet_row_count(all_files)
+        row_count = _export_parquet_row_count(all_files, dataset_path=dataset_path)
         return frame, row_count, None
     except Exception as exc:
         return pl.DataFrame(), 0, f"{dataset_name} sampled read failed: {exc}"
@@ -3333,9 +3376,64 @@ def _export_parquet_files(dataset_path: Path) -> list[Path]:
     )
 
 
-def _export_parquet_row_count(files: list[Path]) -> int:
+def _export_parquet_row_count(files: list[Path], *, dataset_path: Path | None = None) -> int:
     if not files:
         return 0
+    indexed_count = _export_parquet_row_count_from_file_index(files, dataset_path=dataset_path)
+    if indexed_count is not None:
+        return indexed_count
+    return _export_parquet_metadata_row_count(files)
+
+
+def _export_parquet_row_count_from_file_index(
+    files: list[Path],
+    *,
+    dataset_path: Path | None,
+) -> int | None:
+    if dataset_path is None:
+        return None
+    lake_root = _infer_lake_root(dataset_path)
+    if lake_root is None:
+        return None
+    try:
+        relative_dataset = str(dataset_path.relative_to(lake_root)).replace("\\", "/")
+    except ValueError:
+        return None
+    index = read_parquet_dataset(lake_root / LAKE_FILE_INDEX_DATASET)
+    required = {"dataset", "path", "row_count", "mtime_ns", "file_size"}
+    if index.is_empty() or not required.issubset(set(index.columns)):
+        return None
+    scoped = index.filter(pl.col("dataset") == relative_dataset)
+    if scoped.is_empty():
+        return None
+    rows_by_path = {
+        str(row.get("path") or ""): row
+        for row in scoped.select(sorted(required)).to_dicts()
+    }
+    total = 0
+    for file_path in files:
+        try:
+            relative_file = str(file_path.relative_to(lake_root)).replace("\\", "/")
+            stat = file_path.stat()
+        except OSError:
+            return None
+        except ValueError:
+            return None
+        row = rows_by_path.get(relative_file)
+        if row is None:
+            return None
+        if _safe_int(row.get("mtime_ns")) != stat.st_mtime_ns:
+            return None
+        if _safe_int(row.get("file_size")) != stat.st_size:
+            return None
+        row_count = _safe_int(row.get("row_count"))
+        if row_count is None:
+            return None
+        total += row_count
+    return total
+
+
+def _export_parquet_metadata_row_count(files: list[Path]) -> int:
     try:
         import pyarrow.parquet as pq
 
@@ -3375,6 +3473,20 @@ def _export_parquet_row_count(files: list[Path]) -> int:
         except Exception:
             continue
     return rows
+
+
+def _infer_lake_root(path: Path) -> Path | None:
+    for idx, part in enumerate(path.parts):
+        if part in {"bronze", "silver", "gold"} and idx > 0:
+            return Path(*path.parts[:idx])
+    return None
+
+
+def _safe_int(value: Any) -> int | None:
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return None
 
 
 def _is_internal_export_parquet_path(path: Path) -> bool:
@@ -3624,11 +3736,12 @@ def _dataset_members(frames: dict[str, pl.DataFrame], root: Path) -> dict[str, _
         frames.get("v5_bnb_paper_strategy_runs", pl.DataFrame()),
         _filter_bnb_paper_frame(paper_runs),
     )
+    v5_bnb_paper_daily = _prefer_frame(
+        frames.get("v5_bnb_paper_strategy_daily_latest", pl.DataFrame()),
+        frames.get("v5_bnb_paper_strategy_daily", pl.DataFrame()),
+    )
     bnb_paper_daily = _prefer_frame(
-        frames.get(
-            "v5_bnb_paper_strategy_daily_latest",
-            frames.get("v5_bnb_paper_strategy_daily", pl.DataFrame()),
-        ),
+        v5_bnb_paper_daily,
         _filter_bnb_paper_frame(paper_daily),
     )
     sol_protect_loss_attribution = frames.get(
@@ -11373,6 +11486,55 @@ def _csv_value(value: Any) -> Any:
 
 def _json_text(payload: Any) -> str:
     return safe_json_dumps(payload) + "\n"
+
+
+def _export_stage_start() -> float:
+    return time.perf_counter()
+
+
+def _record_export_stage(
+    rows: list[dict[str, Any]],
+    stage: str,
+    started_at: float,
+) -> None:
+    elapsed_ms = max(0.0, (time.perf_counter() - started_at) * 1000.0)
+    rows.append(
+        {
+            "stage": stage,
+            "elapsed_ms": round(elapsed_ms, 3),
+            "max_rss_mb": _process_max_rss_mb(),
+            "recorded_at": datetime.now(UTC).isoformat(),
+        }
+    )
+
+
+def _export_stage_timings_frame(rows: list[dict[str, Any]]) -> pl.DataFrame:
+    if not rows:
+        return pl.DataFrame(
+            schema={
+                "stage": pl.Utf8,
+                "elapsed_ms": pl.Float64,
+                "max_rss_mb": pl.Float64,
+                "recorded_at": pl.Utf8,
+            }
+        )
+    return pl.DataFrame(rows, infer_schema_length=None).select(
+        ["stage", "elapsed_ms", "max_rss_mb", "recorded_at"]
+    )
+
+
+def _process_max_rss_mb() -> float | None:
+    try:
+        import resource
+    except ImportError:
+        return None
+    try:
+        rss = float(resource.getrusage(resource.RUSAGE_SELF).ru_maxrss)
+    except Exception:
+        return None
+    if sys.platform == "darwin":
+        return round(rss / (1024 * 1024), 3)
+    return round(rss / 1024, 3)
 
 
 def _value_counts(df: pl.DataFrame, column: str) -> dict[str, int]:

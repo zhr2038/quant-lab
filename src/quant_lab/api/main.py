@@ -1479,12 +1479,11 @@ def _filter_strategy_opportunity_advisory_rows(
     return sorted(
         selected,
         key=lambda row: (
-            row.generated_at,
+            -_datetime_sort_value(row.generated_at),
             row.strategy_candidate,
             row.symbol,
             row.horizon_hours or -1,
         ),
-        reverse=True,
     )
 
 

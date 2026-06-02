@@ -1836,6 +1836,7 @@ def test_expert_exports_generate_today_button_invokes_export(tmp_path, monkeypat
 
     monkeypatch.setenv("QUANT_LAB_WEB_ON_DEMAND_EXPORT", "true")
     monkeypatch.setenv("QUANT_LAB_WEB_EXPORT_BACKGROUND", "false")
+    monkeypatch.setenv("QUANT_LAB_WEB_EXPORT_MODE", "in_process")
     monkeypatch.setattr(expert_exports, "export_daily_pack", fake_export_daily_pack)
 
     expert_exports.render(lake_root, fake, exports_root=tmp_path / "exports")
@@ -1888,6 +1889,8 @@ def test_expert_exports_generate_today_button_starts_background_job(tmp_path, mo
     assert captured["command"][1] == "-c"
     assert "refresh_risk_permission=False" in captured["command"][2]
     assert "pre_export_v5_refresh=True" in captured["command"][2]
+    assert captured["kwargs"]["env"]["POLARS_MAX_THREADS"] == "1"
+    assert captured["kwargs"]["env"]["MALLOC_ARENA_MAX"] == "2"
     assert fake.rerun_count == 1
     assert any("PID=4242" in str(value) for value in _call_values(fake, "info"))
 
@@ -1936,6 +1939,7 @@ def test_expert_exports_generate_today_uses_beijing_date_and_creates_export_dir(
     monkeypatch.setattr(expert_exports, "beijing_today", lambda: datetime(2026, 5, 16).date())
     monkeypatch.setenv("QUANT_LAB_WEB_ON_DEMAND_EXPORT", "true")
     monkeypatch.setenv("QUANT_LAB_WEB_EXPORT_BACKGROUND", "false")
+    monkeypatch.setenv("QUANT_LAB_WEB_EXPORT_MODE", "in_process")
     monkeypatch.setattr(expert_exports, "export_daily_pack", fake_export_daily_pack)
 
     pack_path = expert_exports._generate_today_pack(
@@ -2043,6 +2047,7 @@ def test_expert_exports_generate_today_persists_pack_across_streamlit_rerun(
 
     monkeypatch.setenv("QUANT_LAB_WEB_ON_DEMAND_EXPORT", "true")
     monkeypatch.setenv("QUANT_LAB_WEB_EXPORT_BACKGROUND", "false")
+    monkeypatch.setenv("QUANT_LAB_WEB_EXPORT_MODE", "in_process")
     monkeypatch.setattr(expert_exports, "export_daily_pack", fake_export_daily_pack)
 
     expert_exports.render(lake_root, first_fake, exports_root=exports_root)
@@ -2172,6 +2177,8 @@ def test_expert_exports_running_job_recovers_when_process_exited_after_pack(
     assert status["state"] == "succeeded"
     assert status["zip_path"] == str(pack_path)
     assert status["recovered_from_failed_status"] is True
+    assert status["recovery_reason"] == "pack_created_after_export_job"
+    assert status["recovered_pack_mtime"] == datetime.fromtimestamp(new_mtime, UTC).isoformat()
 
 
 def test_expert_exports_linux_zombie_pid_is_not_running(monkeypatch):
@@ -2205,7 +2212,35 @@ def test_expert_exports_failed_status_recovers_when_new_pack_exists(tmp_path):
     assert status["state"] == "succeeded"
     assert status["zip_path"] == str(pack_path)
     assert status["recovered_from_failed_status"] is True
+    assert status["recovery_reason"] == "pack_created_after_export_job"
     assert "error" not in status
+
+
+def test_expert_exports_failed_status_does_not_recover_old_pack(tmp_path):
+    exports_root = tmp_path / "exports"
+    exports_root.mkdir()
+    status_path = exports_root / ".quant_lab_web_export_2026-05-16.json"
+    status_path.write_text(
+        json.dumps(
+            {
+                "state": "failed",
+                "error": "MemoryError",
+                "started_at": "2026-05-16T03:00:00+00:00",
+                "finished_at": "2026-05-16T03:05:00+00:00",
+            }
+        ),
+        encoding="utf-8",
+    )
+    pack_path = exports_root / "quant_lab_expert_pack_2026-05-16_20260516T100000+0800.zip"
+    pack_path.write_bytes(b"zip")
+    old_mtime = datetime(2026, 5, 16, 2, 0, tzinfo=UTC).timestamp()
+    os.utime(pack_path, (old_mtime, old_mtime))
+
+    status = expert_exports._poll_export_job(exports_root, "2026-05-16")
+
+    assert status["state"] == "failed"
+    assert status["error"] == "MemoryError"
+    assert "zip_path" not in status
 
 
 def test_expert_exports_subprocess_mode_parses_generated_pack(tmp_path, monkeypatch):

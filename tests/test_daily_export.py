@@ -1535,6 +1535,117 @@ def test_export_daily_refreshes_v5_derived_outputs_when_latest_bundle_already_in
     assert manifest["latest_v5_bundle_ingested_at_export"].startswith("2026-05-17T10:00:00")
 
 
+def test_refresh_v5_derived_outputs_uses_incremental_research_builds(
+    tmp_path,
+    monkeypatch,
+):
+    import quant_lab.reports.enforce_readiness as enforce_readiness
+    import quant_lab.research.alpha_discovery as alpha_discovery
+    import quant_lab.research.alpha_factory as alpha_factory
+    import quant_lab.research.candidate_labels as candidate_labels
+    import quant_lab.research.diagnostics_refresh as diagnostics_refresh
+    import quant_lab.research.entry_quality as entry_quality
+    import quant_lab.research.expanded_universe as expanded_universe
+    import quant_lab.research.paper_tracking as paper_tracking
+    import quant_lab.research.portfolio as portfolio
+    import quant_lab.research.regime_router as regime_router
+    import quant_lab.research.strategy_evidence as strategy_evidence
+    import quant_lab.strategy_telemetry.analyze as telemetry_analyze
+
+    calls: dict[str, list[dict[str, object]]] = {}
+
+    def capture(name: str):
+        def _call(*args, **kwargs):
+            calls.setdefault(name, []).append({"args": args, "kwargs": kwargs})
+            return SimpleNamespace()
+
+        return _call
+
+    monkeypatch.setattr(telemetry_analyze, "analyze_v5_telemetry", capture("telemetry"))
+    monkeypatch.setattr(
+        candidate_labels,
+        "build_and_publish_candidate_labels",
+        capture("candidate_labels"),
+    )
+    monkeypatch.setattr(
+        strategy_evidence,
+        "build_and_publish_strategy_evidence",
+        capture("strategy_evidence"),
+    )
+    monkeypatch.setattr(
+        expanded_universe,
+        "build_and_publish_expanded_crypto_universe_shadow",
+        capture("expanded_universe"),
+    )
+    monkeypatch.setattr(
+        alpha_discovery,
+        "build_and_publish_alpha_discovery_board",
+        capture("alpha_discovery"),
+    )
+    monkeypatch.setattr(
+        paper_tracking,
+        "build_and_publish_paper_strategy_tracking",
+        capture("paper_tracking"),
+    )
+    monkeypatch.setattr(
+        portfolio,
+        "build_and_publish_research_portfolio_status",
+        capture("portfolio"),
+    )
+    monkeypatch.setattr(
+        diagnostics_refresh,
+        "refresh_research_diagnostics",
+        capture("diagnostics"),
+    )
+    monkeypatch.setattr(
+        entry_quality,
+        "build_and_publish_entry_quality",
+        capture("entry_quality"),
+    )
+    monkeypatch.setattr(
+        alpha_factory,
+        "build_and_publish_alpha_factory",
+        capture("alpha_factory"),
+    )
+    monkeypatch.setattr(
+        regime_router,
+        "build_and_publish_regime_router",
+        capture("regime_router"),
+    )
+    monkeypatch.setattr(
+        enforce_readiness,
+        "write_enforce_readiness_report",
+        capture("enforce_readiness"),
+    )
+
+    lake_root = tmp_path / "lake"
+    export_day = datetime(2026, 5, 17, tzinfo=UTC).date()
+
+    warnings = daily_export_module._refresh_v5_derived_outputs(lake_root, export_day)
+
+    assert warnings == []
+    assert calls["candidate_labels"][0]["kwargs"] == {
+        "as_of_date": export_day,
+        "mode": "incremental",
+        "lookback_days": daily_export_module.EXPORT_V5_DERIVED_LOOKBACK_DAYS,
+    }
+    assert calls["strategy_evidence"][0]["kwargs"] == {
+        "as_of_date": export_day.isoformat(),
+        "mode": "incremental",
+        "lookback_days": daily_export_module.EXPORT_V5_DERIVED_LOOKBACK_DAYS,
+        "include_historical_outcomes": False,
+    }
+    assert all(
+        call["kwargs"].get("include_legacy_outcome_counts") is False
+        for call in calls["alpha_discovery"]
+    )
+    assert calls["alpha_factory"][0]["kwargs"] == {
+        "as_of_date": export_day,
+        "lookback_days": daily_export_module.EXPORT_V5_ALPHA_FACTORY_LOOKBACK_DAYS,
+        "max_candidates": daily_export_module.EXPORT_V5_ALPHA_FACTORY_MAX_CANDIDATES,
+    }
+
+
 def test_export_daily_non_authoritative_when_selected_bundle_sha_missing_from_manifest(
     tmp_path,
     monkeypatch,

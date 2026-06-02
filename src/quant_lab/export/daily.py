@@ -5259,6 +5259,11 @@ def _parse_v5_context_ts(value: Any) -> datetime | None:
     return parsed.astimezone(UTC)
 
 
+EXPORT_V5_DERIVED_LOOKBACK_DAYS = 8
+EXPORT_V5_ALPHA_FACTORY_LOOKBACK_DAYS = 30
+EXPORT_V5_ALPHA_FACTORY_MAX_CANDIDATES = 200
+
+
 def _refresh_v5_derived_outputs(lake_root: Path, export_day: date) -> list[str]:
     warnings: list[str] = []
     steps = [
@@ -5274,7 +5279,12 @@ def _refresh_v5_derived_outputs(lake_root: Path, export_day: date) -> list[str]:
             lambda: __import__(
                 "quant_lab.research.candidate_labels",
                 fromlist=["build_and_publish_candidate_labels"],
-            ).build_and_publish_candidate_labels(lake_root, as_of_date=export_day),
+            ).build_and_publish_candidate_labels(
+                lake_root,
+                as_of_date=export_day,
+                mode="incremental",
+                lookback_days=EXPORT_V5_DERIVED_LOOKBACK_DAYS,
+            ),
         ),
         (
             "build_strategy_evidence",
@@ -5282,7 +5292,11 @@ def _refresh_v5_derived_outputs(lake_root: Path, export_day: date) -> list[str]:
                 "quant_lab.research.strategy_evidence",
                 fromlist=["build_and_publish_strategy_evidence"],
             ).build_and_publish_strategy_evidence(
-                lake_root, as_of_date=export_day.isoformat()
+                lake_root,
+                as_of_date=export_day.isoformat(),
+                mode="incremental",
+                lookback_days=EXPORT_V5_DERIVED_LOOKBACK_DAYS,
+                include_historical_outcomes=False,
             ),
         ),
         (
@@ -5300,7 +5314,11 @@ def _refresh_v5_derived_outputs(lake_root: Path, export_day: date) -> list[str]:
             lambda: __import__(
                 "quant_lab.research.alpha_discovery",
                 fromlist=["build_and_publish_alpha_discovery_board"],
-            ).build_and_publish_alpha_discovery_board(lake_root, as_of_date=export_day),
+            ).build_and_publish_alpha_discovery_board(
+                lake_root,
+                as_of_date=export_day,
+                include_legacy_outcome_counts=False,
+            ),
         ),
         (
             "build_paper_strategy_tracking",
@@ -5341,7 +5359,8 @@ def _refresh_v5_derived_outputs(lake_root: Path, export_day: date) -> list[str]:
             ).build_and_publish_alpha_factory(
                 lake_root,
                 as_of_date=export_day,
-                max_candidates=200,
+                lookback_days=EXPORT_V5_ALPHA_FACTORY_LOOKBACK_DAYS,
+                max_candidates=EXPORT_V5_ALPHA_FACTORY_MAX_CANDIDATES,
             ),
         ),
         (
@@ -5349,7 +5368,11 @@ def _refresh_v5_derived_outputs(lake_root: Path, export_day: date) -> list[str]:
             lambda: __import__(
                 "quant_lab.research.alpha_discovery",
                 fromlist=["build_and_publish_alpha_discovery_board"],
-            ).build_and_publish_alpha_discovery_board(lake_root, as_of_date=export_day),
+            ).build_and_publish_alpha_discovery_board(
+                lake_root,
+                as_of_date=export_day,
+                include_legacy_outcome_counts=False,
+            ),
         ),
         (
             "build_regime_router",

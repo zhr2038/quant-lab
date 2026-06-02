@@ -58,11 +58,13 @@ def run_web_export_request(request_path: Path) -> dict[str, Any]:
                 str(exports_root),
                 "--no-refresh-risk-permission",
                 "--pre-export-v5-refresh",
+                "--allow-stale-v5",
             ],
             refresh_risk_permission=False,
             risk_strategy="v5",
             risk_version="5.0.0",
             pre_export_v5_refresh=True,
+            allow_stale_v5=True,
         )
         status = {
             **base_status,

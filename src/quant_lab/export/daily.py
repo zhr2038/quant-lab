@@ -193,6 +193,7 @@ DEFAULT_EXPORT_FULL_READ_MAX_FILES = 80
 DEFAULT_EXPORT_FULL_READ_MAX_BYTES = 128 * 1024 * 1024
 DEFAULT_KEEP_EXPERT_PACKS = 5
 LAKE_FILE_INDEX_DATASET = Path("bronze") / "lake_file_index"
+_EXPORT_FILE_INDEX_CACHE: dict[Path, pl.DataFrame | None] = {}
 HEAVY_REGISTRY_QUALITY_DATASETS = {
     "okx_public_ws",
     "trade_print",
@@ -2782,7 +2783,7 @@ def _publish_export_frame(
         write_parquet_dataset(frame, dataset_path)
         if dataset_name in SNAPSHOT_META_DATASETS:
             _write_snapshot_meta(dataset_path, dataset_name=dataset_name, frame=frame)
-        frames[dataset_name] = read_parquet_dataset(dataset_path)
+        frames[dataset_name] = frame
     except Exception as exc:
         frames[dataset_name] = frame
         warnings.append(
@@ -3453,6 +3454,13 @@ def _should_sample_export_dataset(dataset_path: Path) -> bool:
             return dataset_path.stat().st_size > _export_full_read_max_bytes()
         except OSError:
             return True
+    indexed_stats = _export_indexed_dataset_stats(dataset_path)
+    if indexed_stats is not None:
+        file_count, total_size, _row_count = indexed_stats
+        return (
+            file_count > _export_full_read_max_files()
+            or total_size > _export_full_read_max_bytes()
+        )
     files = _export_parquet_files(dataset_path)
     if len(files) > _export_full_read_max_files():
         return True
@@ -3495,6 +3503,9 @@ def _recent_heavy_dataset_files(dataset_path: Path, *, max_files: int) -> list[P
 
 
 def _export_parquet_files(dataset_path: Path) -> list[Path]:
+    indexed_files = _export_indexed_parquet_files(dataset_path)
+    if indexed_files is not None:
+        return indexed_files
     return sorted(
         path
         for path in dataset_path.rglob("*.parquet")
@@ -3525,7 +3536,9 @@ def _export_parquet_row_count_from_file_index(
         relative_dataset = str(dataset_path.relative_to(lake_root)).replace("\\", "/")
     except ValueError:
         return None
-    index = read_parquet_dataset(lake_root / LAKE_FILE_INDEX_DATASET)
+    index = _export_file_index(lake_root)
+    if index is None:
+        return None
     required = {"dataset", "path", "row_count", "mtime_ns", "file_size"}
     if index.is_empty() or not required.issubset(set(index.columns)):
         return None
@@ -3557,6 +3570,96 @@ def _export_parquet_row_count_from_file_index(
             return None
         total += row_count
     return total
+
+
+def _export_file_index(lake_root: Path) -> pl.DataFrame | None:
+    root = lake_root.resolve()
+    if root not in _EXPORT_FILE_INDEX_CACHE:
+        index_path = root / LAKE_FILE_INDEX_DATASET
+        try:
+            _EXPORT_FILE_INDEX_CACHE[root] = _read_export_file_index(index_path)
+        except Exception:
+            _EXPORT_FILE_INDEX_CACHE[root] = None
+    return _EXPORT_FILE_INDEX_CACHE[root]
+
+
+def _read_export_file_index(index_path: Path) -> pl.DataFrame:
+    if index_path.is_file():
+        return pl.scan_parquet(str(index_path), hive_partitioning=False).collect()
+    files = sorted(
+        path
+        for path in index_path.glob("*.parquet")
+        if path.is_file() and not _is_internal_export_parquet_path(path)
+    )
+    if not files:
+        return pl.DataFrame()
+    return pl.scan_parquet(
+        [str(path) for path in files],
+        hive_partitioning=False,
+        missing_columns="insert",
+        extra_columns="ignore",
+    ).collect()
+
+
+def _export_index_rows_for_dataset(dataset_path: Path) -> tuple[Path, pl.DataFrame] | None:
+    lake_root = _infer_lake_root(dataset_path)
+    if lake_root is None:
+        return None
+    try:
+        relative_dataset = str(dataset_path.relative_to(lake_root)).replace("\\", "/")
+    except ValueError:
+        return None
+    index = _export_file_index(lake_root)
+    required = {"dataset", "path", "row_count", "mtime_ns", "file_size"}
+    if index is None or index.is_empty() or not required.issubset(set(index.columns)):
+        return None
+    scoped = index.filter(pl.col("dataset") == relative_dataset)
+    if scoped.is_empty():
+        return None
+    return lake_root, scoped
+
+
+def _export_indexed_parquet_files(dataset_path: Path) -> list[Path] | None:
+    indexed = _export_index_rows_for_dataset(dataset_path)
+    if indexed is None:
+        return None
+    lake_root, scoped = indexed
+    rows = (
+        scoped.select(["path", "mtime_ns"])
+        .sort(["mtime_ns", "path"])
+        .to_dicts()
+    )
+    files = []
+    for row in rows:
+        rel = str(row.get("path") or "")
+        if not rel:
+            continue
+        path = lake_root / rel
+        if path.is_file() and not _is_internal_export_parquet_path(path):
+            files.append(path)
+    return files
+
+
+def _export_indexed_dataset_stats(dataset_path: Path) -> tuple[int, int, int] | None:
+    indexed = _export_index_rows_for_dataset(dataset_path)
+    if indexed is None:
+        return None
+    _lake_root, scoped = indexed
+    try:
+        stats = scoped.select(
+            [
+                pl.len().alias("file_count"),
+                pl.col("file_size").cast(pl.Int64, strict=False).sum().alias("total_size"),
+                pl.col("row_count").cast(pl.Int64, strict=False).sum().alias("row_count"),
+            ]
+        )
+        return (
+            int(stats.item(0, "file_count") or 0),
+            int(stats.item(0, "total_size") or 0),
+            int(stats.item(0, "row_count") or 0),
+        )
+    except Exception:
+        return None
 
 
 def _export_parquet_metadata_row_count(files: list[Path]) -> int:

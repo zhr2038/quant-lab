@@ -916,6 +916,41 @@ def test_export_frame_uses_lake_file_index_for_rollup_skipped_raw_row_count(
     assert warning == "trade_print export frame skipped; using trade_activity_1m rollup"
 
 
+def test_export_frame_uses_lake_file_index_for_file_candidates(
+    tmp_path,
+    monkeypatch,
+):
+    lake_root = tmp_path / "lake"
+    dataset_path = lake_root / "gold" / "strategy_evidence"
+    dataset_path.mkdir(parents=True)
+    for file_index in range(3):
+        pl.DataFrame(
+            [
+                {
+                    "strategy_candidate": f"candidate_{file_index}_{row_index}",
+                    "symbol": "BTC-USDT",
+                    "horizon_hours": 24,
+                    "avg_net_bps": float(row_index),
+                }
+                for row_index in range(5)
+            ]
+        ).write_parquet(dataset_path / f"part-{file_index}.parquet")
+    build_lake_file_index(lake_root, ["gold/strategy_evidence"])
+    daily_export_module._EXPORT_FILE_INDEX_CACHE.clear()
+    monkeypatch.setenv("QUANT_LAB_EXPORT_FULL_READ_MAX_FILES", "1")
+
+    def fail_rglob(*args, **kwargs):
+        raise AssertionError("export should use lake_file_index instead of rglob")
+
+    monkeypatch.setattr(Path, "rglob", fail_rglob)
+
+    frame, row_count, warning = _load_export_frame(lake_root, "strategy_evidence")
+
+    assert warning is None
+    assert row_count == 15
+    assert frame.height == 15
+
+
 def test_data_quality_registry_skips_heavy_raw_when_rollups_are_available(
     tmp_path,
     monkeypatch,

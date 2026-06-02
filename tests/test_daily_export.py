@@ -1340,6 +1340,7 @@ def test_export_daily_limits_pre_export_v5_ingest_to_latest_pending(tmp_path, mo
         manifest = json.loads(archive.read("manifest.json").decode("utf-8"))
 
     refresh = manifest["pre_export_v5_refresh"]
+    assert refresh["allow_stale_v5"] is True
     assert refresh["selected_bundle_count"] == 1
     assert refresh["processed_bundle_count"] == 1
     assert refresh["selected_bundle_names"] == [

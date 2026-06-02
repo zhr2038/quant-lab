@@ -3042,6 +3042,7 @@ def export_daily_pack(
         if pre_export_v5_refresh
         else _observe_v5_before_export(root, config_path=v5_telemetry_config)
     )
+    pre_export_v5["allow_stale_v5"] = allow_stale_v5
     _record_export_stage(export_stage_timings, "pre_export_v5", stage_started)
     stage_started = _export_stage_start()
     pre_export_v5_warnings = [str(warning) for warning in pre_export_v5.get("warnings", [])]

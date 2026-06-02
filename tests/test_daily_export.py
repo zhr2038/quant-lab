@@ -992,6 +992,20 @@ def test_export_frame_skips_okx_public_ws_raw_when_health_rollup_exists(
     assert frame.is_empty()
     assert row_count == 0
     assert warning == "okx_public_ws export frame skipped; using okx_public_ws_health rollup"
+    missing = daily_export_module._missing_dataset_rows(
+        {
+            "okx_public_ws": frame,
+            "okx_public_ws_health": pl.DataFrame(
+                [
+                    {
+                        "collector": "okx_public_ws",
+                        "status": "OK",
+                    }
+                ]
+            ),
+        }
+    )
+    assert missing.is_empty()
 
 
 def test_data_quality_registry_skips_heavy_raw_when_rollups_are_available(

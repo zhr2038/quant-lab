@@ -3387,6 +3387,8 @@ def _load_snapshot(lake_root: Path) -> _DatasetSnapshot:
             empty_status = readers._empty_dataset_status(name)  # type: ignore[attr-defined]
             if empty_status in readers.OPTIONAL_EMPTY_DATASET_STATUSES:
                 continue
+            if _raw_export_rollup_name(lake_root, name):
+                continue
             warnings.append(f"{name} dataset is {_missing_dataset_reason(name)}")
     return _DatasetSnapshot(frames=frames, row_counts=row_counts, warnings=warnings)
 
@@ -10980,7 +10982,7 @@ def _missing_dataset_rows(frames: dict[str, pl.DataFrame]) -> pl.DataFrame:
     rows = [
         {"dataset": name, "reason": _missing_dataset_reason(name)}
         for name, frame in sorted(frames.items())
-        if frame.is_empty()
+        if frame.is_empty() and not _empty_frame_covered_by_rollup(name, frames)
     ]
     return (
         pl.DataFrame(rows)
@@ -11009,6 +11011,22 @@ def _missing_dataset_reason(dataset_name: str) -> str:
     if dataset_name == "v5_candidate_outcome_summary":
         return "v5_candidate_outcome_summary_missing_or_empty"
     return "missing_or_empty"
+
+
+def _empty_frame_covered_by_rollup(
+    dataset_name: str,
+    frames: dict[str, pl.DataFrame],
+) -> bool:
+    rollup_candidates = {
+        "trade_print": ("trade_activity_1m",),
+        "orderbook_snapshot": ("orderbook_spread_1m",),
+        "okx_public_ws": (
+            "okx_public_ws_health",
+            "trade_activity_1m",
+            "orderbook_spread_1m",
+        ),
+    }.get(dataset_name, ())
+    return any(not frames.get(name, pl.DataFrame()).is_empty() for name in rollup_candidates)
 
 
 def _stale_rows(frames: dict[str, pl.DataFrame]) -> pl.DataFrame:

@@ -5139,7 +5139,7 @@ def _pending_v5_bundle_paths_for_export(inbox_dir: Path, lake_root: Path) -> lis
 def _pending_v5_bundle_scan_for_export(inbox_dir: Path, lake_root: Path) -> dict[str, Any]:
     max_pending = _export_v5_max_pending_bundles()
     max_scan = _export_v5_max_scan_bundles(max_pending)
-    ingested = _ingested_bundle_sha256s(lake_root)
+    ingested_sha256s, ingested_names = _ingested_bundle_manifest_keys(lake_root)
     from quant_lab.strategy_telemetry.bundle import compute_sha256, parse_bundle_ts
 
     def sort_key(path: Path) -> tuple[datetime, str]:
@@ -5157,33 +5157,34 @@ def _pending_v5_bundle_scan_for_export(inbox_dir: Path, lake_root: Path) -> dict
         reverse=True,
     )
     scanned_paths = all_paths[:max_scan]
-    scanned_path_set = set(scanned_paths)
     scanned_ts = [sort_key(path)[0] for path in scanned_paths]
     pending: list[tuple[Path, str, datetime]] = []
     unreadable: list[Path] = []
-    for path in all_paths:
+    for path in scanned_paths:
         bundle_ts = sort_key(path)[0]
         try:
             sha256 = compute_sha256(path)
         except OSError:
             unreadable.append(path)
             continue
-        if sha256 in ingested:
+        if sha256 in ingested_sha256s:
             continue
         pending.append((path, sha256, bundle_ts))
-    pending_scanned = [
-        item for item in pending if item[0] in scanned_path_set
-    ]
+    pending_scanned = pending
     selected = [item[0] for item in pending_scanned[:max_pending]]
     selected = selected[:max_pending]
     unscanned_count = max(len(all_paths) - len(scanned_paths), 0)
-    pending_uningested_count = len(pending)
-    pending_uningested_names = [item[0].name for item in pending]
-    pending_uningested_sha256s = [item[1] for item in pending]
-    unreadable_names = [path.name for path in unreadable]
-    pending_outside_selection_scan = [
-        item[0].name for item in pending if item[0] not in scanned_path_set
+    unscanned_pending_names = [
+        path.name for path in all_paths[max_scan:] if path.name not in ingested_names
     ]
+    pending_uningested_count = len(pending_scanned) + len(unscanned_pending_names)
+    pending_uningested_names = [
+        *[item[0].name for item in pending_scanned],
+        *unscanned_pending_names,
+    ]
+    pending_uningested_sha256s = [item[1] for item in pending_scanned]
+    unreadable_names = [path.name for path in unreadable]
+    pending_outside_selection_scan = unscanned_pending_names
     historical_gap_reasons: list[str] = []
     if unreadable:
         historical_gap_reasons.append("unreadable_bundle_sha256")
@@ -5209,6 +5210,7 @@ def _pending_v5_bundle_scan_for_export(inbox_dir: Path, lake_root: Path) -> dict
         "max_scan_bundles": max_scan,
         "max_pending_bundles": max_pending,
         "pending_scanned_bundle_count": len(pending_scanned),
+        "pending_unscanned_bundle_count": len(unscanned_pending_names),
         "pending_uningested_bundle_count": pending_uningested_count,
         "pending_uningested_bundle_names": pending_uningested_names,
         "pending_uningested_bundle_sha256s": pending_uningested_sha256s,
@@ -5278,19 +5280,29 @@ def _export_v5_max_scan_bundles(max_pending: int) -> int:
         return max(max_pending, 20)
 
 
-def _ingested_bundle_sha256s(lake_root: Path) -> set[str]:
+def _ingested_bundle_manifest_keys(lake_root: Path) -> tuple[set[str], set[str]]:
     path = lake_root / "bronze" / "strategy_telemetry" / "v5" / "bundle_manifest"
     try:
         frame = read_parquet_dataset(path)
     except Exception:
-        return set()
-    if "bundle_sha256" not in frame.columns or frame.is_empty():
-        return set()
-    return {
-        str(value)
-        for value in frame.get_column("bundle_sha256").drop_nulls().unique().to_list()
-        if value
-    }
+        return set(), set()
+    if frame.is_empty():
+        return set(), set()
+    sha256s = set()
+    names = set()
+    if "bundle_sha256" in frame.columns:
+        sha256s = {
+            str(value)
+            for value in frame.get_column("bundle_sha256").drop_nulls().unique().to_list()
+            if value
+        }
+    if "bundle_name" in frame.columns:
+        names = {
+            str(value)
+            for value in frame.get_column("bundle_name").drop_nulls().unique().to_list()
+            if value
+        }
+    return sha256s, names
 
 
 def _bundle_manifest_row_by_sha(lake_root: Path, sha256: str | None) -> dict[str, Any] | None:

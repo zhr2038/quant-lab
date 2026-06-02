@@ -68,6 +68,8 @@ def record_api_request(
     response_bytes: int | None = None,
     lake_scan_ms: float | None = None,
     serialize_ms: float | None = None,
+    source_signature_ms: float | None = None,
+    response_cache_hit: bool | None = None,
     error_type: str | None = None,
 ) -> None:
     timestamp = request_ts or datetime.now(UTC)
@@ -85,6 +87,12 @@ def record_api_request(
         "response_bytes": int(response_bytes) if response_bytes is not None else None,
         "lake_scan_ms": round(float(lake_scan_ms), 3) if lake_scan_ms is not None else None,
         "serialize_ms": round(float(serialize_ms), 3) if serialize_ms is not None else None,
+        "source_signature_ms": (
+            round(float(source_signature_ms), 3) if source_signature_ms is not None else None
+        ),
+        "response_cache_hit": (
+            bool(response_cache_hit) if response_cache_hit is not None else None
+        ),
         "error_type": error_type,
     }
     root_key = str(Path(lake_root))
@@ -335,6 +343,16 @@ def api_metrics_summary(
         ),
         "lake_scan_ms_total": _sum_numeric_lazy(scoped, "lake_scan_ms", schema_names=schema_names),
         "serialize_ms_total": _sum_numeric_lazy(scoped, "serialize_ms", schema_names=schema_names),
+        "source_signature_ms_total": _sum_numeric_lazy(
+            scoped,
+            "source_signature_ms",
+            schema_names=schema_names,
+        ),
+        "response_cache_hit_count": _sum_bool_lazy(
+            scoped,
+            "response_cache_hit",
+            schema_names=schema_names,
+        ),
         "by_error_type": _count_by_non_empty_lazy(scoped, "error_type", schema_names=schema_names),
     }
 
@@ -439,6 +457,8 @@ def _empty_api_metrics_summary() -> dict[str, Any]:
         "response_bytes_total": 0,
         "lake_scan_ms_total": 0.0,
         "serialize_ms_total": 0.0,
+        "source_signature_ms_total": 0.0,
+        "response_cache_hit_count": 0,
         "by_error_type": {},
     }
 
@@ -587,6 +607,21 @@ def _latency_by_path_lazy(
         aggregations.append(
             pl.col("serialize_ms").cast(pl.Float64, strict=False).sum().alias("serialize_ms_total")
         )
+    if "source_signature_ms" in schema_names:
+        aggregations.append(
+            pl.col("source_signature_ms")
+            .cast(pl.Float64, strict=False)
+            .sum()
+            .alias("source_signature_ms_total")
+        )
+    if "response_cache_hit" in schema_names:
+        aggregations.append(
+            pl.col("response_cache_hit")
+            .fill_null(False)
+            .cast(pl.Int64)
+            .sum()
+            .alias("response_cache_hit_count")
+        )
     if "error_type" in schema_names:
         aggregations.append(
             pl.col("error_type").is_not_null().cast(pl.Int64).sum().alias("error_count")
@@ -612,6 +647,8 @@ def _latency_by_path_lazy(
             "response_bytes_total",
             "lake_scan_ms_total",
             "serialize_ms_total",
+            "source_signature_ms_total",
+            "response_cache_hit_count",
             "error_count",
         ):
             if metric in row:

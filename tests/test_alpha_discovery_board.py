@@ -12,7 +12,9 @@ from quant_lab.export.daily import (
     STRATEGY_OPPORTUNITY_ADVISORY_TTL_SECONDS,
     _final_score_vs_alpha6_conflict_for_export,
     _final_score_vs_alpha6_conflict_summary_md,
+    _late_breakout_failure_shadow_for_export,
     _paper_strategy_proposals_for_export,
+    _post_impulse_overextension_shadow_for_export,
     _strategy_opportunity_advisory_for_export,
     export_daily_pack,
 )
@@ -1054,6 +1056,9 @@ def test_final_score_vs_alpha6_conflict_quantifies_bnb_no_order():
     assert row["any_label_complete"] is True
     assert row["all_labels_complete"] is True
     assert row["label_status"] == "complete"
+    assert row["material_profit_flag"] is True
+    assert row["max_future_net_bps"] > 1100.0
+    assert row["best_future_horizon_hours"] == 24
     assert row["missed_profit_flag"] is True
     blocked = next(row for row in rows if row["symbol"] == "BTC-USDT")
     assert blocked["final_decision"] == "blocked"
@@ -1067,6 +1072,49 @@ def test_final_score_vs_alpha6_conflict_quantifies_bnb_no_order():
     assert "partial_complete_count: 1" in summary
     assert "BNB-USDT" in summary
     assert "review_final_score_alpha6_conflict" in summary
+
+
+def test_post_impulse_overextension_shadow_flags_late_breakout_failure():
+    ts = datetime(2026, 5, 31, 12, tzinfo=UTC)
+    candidates = pl.DataFrame(
+        [
+            {
+                "run_id": "r_overextended_bnb",
+                "ts_utc": ts,
+                "symbol": "BNB-USDT",
+                "alpha6_side": "buy",
+                "alpha6_score": 0.98,
+                "f3_vol_adj_ret": 12.0,
+                "f4_volume_expansion": 2.0,
+                "f5_rsi_trend_confirm": 0.7,
+                "cost_bps": 30.0,
+            }
+        ]
+    )
+    market = pl.DataFrame(
+        [
+            {"symbol": "BNB-USDT", "ts": ts - timedelta(hours=48), "close": 100.0},
+            {"symbol": "BNB-USDT", "ts": ts - timedelta(hours=24), "close": 110.0},
+            {"symbol": "BNB-USDT", "ts": ts, "close": 160.0},
+            {"symbol": "BNB-USDT", "ts": ts + timedelta(hours=4), "close": 150.0},
+            {"symbol": "BNB-USDT", "ts": ts + timedelta(hours=8), "close": 148.0},
+            {"symbol": "BNB-USDT", "ts": ts + timedelta(hours=12), "close": 151.0},
+        ]
+    )
+
+    overextension = _post_impulse_overextension_shadow_for_export(
+        candidate_events=candidates,
+        market_bars=market,
+    )
+    failure = _late_breakout_failure_shadow_for_export(overextension)
+
+    row = overextension.to_dicts()[0]
+    failure_row = failure.to_dicts()[0]
+    assert row["symbol"] == "BNB-USDT"
+    assert row["late_failure_flag"] is True
+    assert "return_24h_ge_300bps" in row["overextension_reason"]
+    assert failure_row["diagnosis"] == "late_breakout_failure_after_overextension"
+    assert failure_row["live_order_effect"] == "read_only_no_live_order"
 
 
 def test_export_daily_pack_includes_final_score_alpha6_conflict(tmp_path):
@@ -1224,6 +1272,8 @@ def test_export_daily_pack_includes_final_score_alpha6_conflict(tmp_path):
     assert "alpha_factory_paper_ready_count_from_queue" in dashboard
     assert "bnb_paper_v5_entry_count: 1" in dashboard
     assert "bnb_paper_entry_count_match: true" in dashboard
+    assert "bnb_paper_quant_lab_raw_entry_count" in dashboard
+    assert "v5_bundle_lag_detected: false" in dashboard
     assert "negative_expectancy_metadata_missing_count" in dashboard
     assert "final_score_conflict_partial_complete_count" in dashboard
     assert "alpha_factory_source_mismatch_count" in dashboard

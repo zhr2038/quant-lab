@@ -10,6 +10,7 @@ from quant_lab.api.cache import StrategyOpportunityAdvisoryResponseCache
 from quant_lab.api.main import app
 from quant_lab.contracts.v5_quant_lab import V5_QUANT_LAB_CONTRACT_VERSION
 from quant_lab.data.lake import write_parquet_dataset
+from quant_lab.ops.metrics import api_metrics_summary
 
 V5_ADVISORY_FIELDS = {
     "as_of_ts",
@@ -800,6 +801,8 @@ def test_strategy_opportunity_advisory_caches_unchanged_source_signature(
 def test_strategy_opportunity_advisory_compact_filters_and_etag(tmp_path, monkeypatch):
     lake = tmp_path / "lake"
     monkeypatch.setenv("QUANT_LAB_LAKE_ROOT", str(lake))
+    monkeypatch.setenv("QUANT_LAB_API_METRICS_FLUSH_ROWS", "1")
+    monkeypatch.setenv("QUANT_LAB_API_METRICS_FLUSH_SECONDS", "3600")
     monkeypatch.delenv("QUANT_LAB_API_TOKEN", raising=False)
     api_main._STRATEGY_OPPORTUNITY_ADVISORY_CACHE.clear()
     api_main._STRATEGY_OPPORTUNITY_ADVISORY_RESPONSE_CACHE.clear()
@@ -857,6 +860,13 @@ def test_strategy_opportunity_advisory_compact_filters_and_etag(tmp_path, monkey
     assert response.status_code == 200
     assert response.headers["x-quant-lab-api-cache-hit"] == "false"
     assert response.headers["x-advisory-response-cache-hit"] == "false"
+    assert int(response.headers["x-quant-lab-response-bytes"]) > 0
+    metrics = api_metrics_summary(lake)
+    by_path = metrics["latency_by_path_ms"]["/v1/strategy-opportunity-advisory/v5-compact"]
+    assert by_path["rows_returned_total"] >= 1
+    assert by_path["response_bytes_total"] > 0
+    assert by_path["source_signature_ms_total"] >= 0
+    assert by_path["response_cache_hit_count"] >= 0
     rows = response.json()
     assert len(rows) == 1
     assert rows[0]["symbol"] == "SOL-USDT"

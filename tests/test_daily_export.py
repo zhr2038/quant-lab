@@ -121,6 +121,8 @@ def test_api_latency_summary_export_includes_cache_and_payload_fields(
         response_bytes=12_345,
         lake_scan_ms=1.2,
         serialize_ms=3.4,
+        source_signature_ms=2.1,
+        response_cache_hit=True,
     )
 
     frame = daily_export_module._api_latency_summary_for_export(lake)
@@ -128,12 +130,16 @@ def test_api_latency_summary_export_includes_cache_and_payload_fields(
     row = rows["/v1/strategy-opportunity-advisory"]
 
     assert "cache_hit_rate" in CSV_SCHEMAS["reports/api_latency_summary.csv"]
+    assert "avg_source_signature_ms" in CSV_SCHEMAS["reports/api_latency_summary.csv"]
+    assert "response_cache_hit_rate" in CSV_SCHEMAS["reports/api_latency_summary.csv"]
     assert row["count"] == 1
     assert row["cache_hit_rate"] == 1.0
     assert row["avg_rows_returned"] == 233.0
     assert row["avg_response_bytes"] == 12345.0
     assert row["avg_lake_scan_ms"] == 1.2
     assert row["avg_serialize_ms"] == 3.4
+    assert row["avg_source_signature_ms"] == 2.1
+    assert row["response_cache_hit_rate"] == 1.0
     assert row["error_count"] == 0
 
 

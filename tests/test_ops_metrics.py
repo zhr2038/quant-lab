@@ -122,6 +122,8 @@ def test_api_request_metrics_records_cache_and_payload_fields(tmp_path, monkeypa
         response_bytes=12345,
         lake_scan_ms=0.0,
         serialize_ms=3.2,
+        source_signature_ms=1.7,
+        response_cache_hit=True,
         error_type=None,
     )
 
@@ -131,6 +133,8 @@ def test_api_request_metrics_records_cache_and_payload_fields(tmp_path, monkeypa
     assert summary["rows_returned_total"] == 233.0
     assert summary["response_bytes_total"] == 12345.0
     assert summary["serialize_ms_total"] == 3.2
+    assert summary["source_signature_ms_total"] == 1.7
+    assert summary["response_cache_hit_count"] == 1
     assert summary["by_error_type"] == {}
 
 

@@ -160,6 +160,8 @@ class ApiMetricsResponse(BaseModel):
     response_bytes_total: float = 0.0
     lake_scan_ms_total: float = 0.0
     serialize_ms_total: float = 0.0
+    source_signature_ms_total: float = 0.0
+    response_cache_hit_count: int = 0
     by_error_type: dict[str, int] = Field(default_factory=dict)
 
 
@@ -980,9 +982,19 @@ def _record_api_request_metric(
             or _truthy(_header_lookup(headers, "x-advisory-cache-hit")),
             rows_returned=_int_or_none(_header_lookup(headers, "x-quant-lab-advisory-row-count"))
             or _int_or_none(_header_lookup(headers, "x-advisory-row-count")),
-            response_bytes=_int_or_none(_header_lookup(headers, "content-length")),
+            response_bytes=_int_or_none(_header_lookup(headers, "x-quant-lab-response-bytes"))
+            or _int_or_none(_header_lookup(headers, "x-advisory-response-bytes"))
+            or _int_or_none(_header_lookup(headers, "content-length")),
             lake_scan_ms=_float_or_none(_header_lookup(headers, "x-quant-lab-lake-scan-ms")),
             serialize_ms=_float_or_none(_header_lookup(headers, "x-quant-lab-serialize-ms")),
+            source_signature_ms=_float_or_none(
+                _header_lookup(headers, "x-quant-lab-source-signature-ms")
+            )
+            or _float_or_none(_header_lookup(headers, "x-advisory-source-signature-ms")),
+            response_cache_hit=_truthy(
+                _header_lookup(headers, "x-quant-lab-response-cache-hit")
+            )
+            or _truthy(_header_lookup(headers, "x-advisory-response-cache-hit")),
             error_type=effective_error_type,
         )
     except Exception:
@@ -1261,6 +1273,8 @@ def _strategy_opportunity_advisory_response(
         )
         if fallback:
             headers["X-Quant-Lab-Signature-Fallback"] = fallback
+        headers["X-Advisory-Response-Bytes"] = str(len(cached_response.payload))
+        headers["X-Quant-Lab-Response-Bytes"] = str(len(cached_response.payload))
         if request is not None and request.headers.get("if-none-match") == cached_response.etag:
             return Response(status_code=304, headers=headers)
         return Response(
@@ -1308,6 +1322,8 @@ def _strategy_opportunity_advisory_response(
     fallback = _signature_fallback_header(_strategy_opportunity_signature_paths(lake_root))
     if fallback:
         headers["X-Quant-Lab-Signature-Fallback"] = fallback
+    headers["X-Advisory-Response-Bytes"] = str(len(payload))
+    headers["X-Quant-Lab-Response-Bytes"] = str(len(payload))
     if request is not None and request.headers.get("if-none-match") == etag:
         return Response(status_code=304, headers=headers)
     return Response(content=payload, media_type="application/json", headers=headers)

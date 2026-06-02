@@ -82,7 +82,12 @@ from quant_lab.risk.publish import (
     publish_risk_permission,
     risk_permission_stale_vs_telemetry,
 )
-from quant_lab.strategy_telemetry.analyze import _event_key as _v5_telemetry_event_key
+from quant_lab.strategy_telemetry.analyze import (
+    _event_key as _v5_telemetry_event_key,
+)
+from quant_lab.strategy_telemetry.analyze import (
+    _latest_bnb_paper_strategy_daily,
+)
 from quant_lab.strategy_telemetry.bundle import compute_sha256
 from quant_lab.strategy_telemetry.sanitize import SECRET_PATTERNS, safe_json_dumps
 from quant_lab.symbols import normalize_symbol
@@ -373,6 +378,8 @@ REQUIRED_MEMBERS = [
     "reports/final_score_vs_alpha6_conflict_summary.md",
     "reports/bnb_strong_alpha6_bypass_shadow.csv",
     "reports/bnb_strong_alpha6_bypass_summary.md",
+    "reports/post_impulse_overextension_shadow.csv",
+    "reports/late_breakout_failure_shadow.csv",
     "reports/risk_on_multi_buy_shadow.csv",
     "reports/risk_on_multi_buy_summary.md",
     "reports/bnb_negative_expectancy_attribution.csv",
@@ -557,6 +564,8 @@ CSV_SCHEMAS: dict[str, list[str]] = {
         "avg_response_bytes",
         "avg_lake_scan_ms",
         "avg_serialize_ms",
+        "avg_source_signature_ms",
+        "response_cache_hit_rate",
         "error_count",
     ],
     "research/alpha_evidence.csv": [
@@ -1173,6 +1182,9 @@ CSV_SCHEMAS: dict[str, list[str]] = {
         "future_8h_net_bps",
         "future_12h_net_bps",
         "future_24h_net_bps",
+        "max_future_net_bps",
+        "best_future_horizon_hours",
+        "material_profit_flag",
         "label_4h_status",
         "label_8h_status",
         "label_12h_status",
@@ -1201,7 +1213,54 @@ CSV_SCHEMAS: dict[str, list[str]] = {
         "future_8h_net_bps",
         "future_12h_net_bps",
         "future_24h_net_bps",
+        "max_future_net_bps",
+        "best_future_horizon_hours",
+        "material_profit_flag",
         "label_status",
+        "outcome",
+        "live_order_effect",
+    ],
+    "reports/post_impulse_overextension_shadow.csv": [
+        "run_id",
+        "ts_utc",
+        "symbol",
+        "alpha6_score",
+        "alpha6_side",
+        "f3_vol_adj_ret",
+        "f4_volume_expansion",
+        "f5_rsi_trend_confirm",
+        "entry_px",
+        "return_24h_bps",
+        "return_48h_bps",
+        "overextension_reason",
+        "future_4h_net_bps",
+        "future_8h_net_bps",
+        "future_12h_net_bps",
+        "max_future_net_bps",
+        "worst_future_net_bps",
+        "late_failure_flag",
+        "response_action",
+        "live_order_effect",
+    ],
+    "reports/late_breakout_failure_shadow.csv": [
+        "run_id",
+        "ts_utc",
+        "symbol",
+        "alpha6_score",
+        "alpha6_side",
+        "f3_vol_adj_ret",
+        "f4_volume_expansion",
+        "f5_rsi_trend_confirm",
+        "entry_px",
+        "return_24h_bps",
+        "return_48h_bps",
+        "future_4h_net_bps",
+        "future_8h_net_bps",
+        "future_12h_net_bps",
+        "failure_horizon_hours",
+        "failure_net_bps",
+        "diagnosis",
+        "response_action",
         "live_order_effect",
     ],
     "reports/risk_on_multi_buy_shadow.csv": [
@@ -3859,6 +3918,13 @@ def _dataset_members(frames: dict[str, pl.DataFrame], root: Path) -> dict[str, _
     bnb_strong_alpha6_bypass_shadow = _normalize_bnb_strong_alpha6_bypass_frame(
         frames.get("v5_bnb_strong_alpha6_bypass_shadow", pl.DataFrame())
     )
+    post_impulse_overextension_shadow = _post_impulse_overextension_shadow_for_export(
+        candidate_events=frames.get("v5_candidate_event", pl.DataFrame()),
+        market_bars=market,
+    )
+    late_breakout_failure_shadow = _late_breakout_failure_shadow_for_export(
+        post_impulse_overextension_shadow
+    )
     opportunity_advisory = _strategy_opportunity_advisory_for_export(
         alpha_discovery_board=alpha_discovery_board,
         strategy_evidence=strategy_evidence,
@@ -4091,6 +4157,14 @@ def _dataset_members(frames: dict[str, pl.DataFrame], root: Path) -> dict[str, _
         ),
         "reports/bnb_strong_alpha6_bypass_summary.md": (
             _bnb_strong_alpha6_bypass_summary_md(bnb_strong_alpha6_bypass_shadow)
+        ),
+        "reports/post_impulse_overextension_shadow.csv": _csv_member(
+            "reports/post_impulse_overextension_shadow.csv",
+            post_impulse_overextension_shadow,
+        ),
+        "reports/late_breakout_failure_shadow.csv": _csv_member(
+            "reports/late_breakout_failure_shadow.csv",
+            late_breakout_failure_shadow,
         ),
         "reports/risk_on_multi_buy_shadow.csv": _csv_member(
             "reports/risk_on_multi_buy_shadow.csv",
@@ -6673,6 +6747,14 @@ def _api_latency_summary_for_export(root: Path) -> pl.DataFrame:
                 summary.get("serialize_ms_total"),
                 summary.get("request_count"),
             ),
+            "avg_source_signature_ms": _safe_avg(
+                summary.get("source_signature_ms_total"),
+                summary.get("request_count"),
+            ),
+            "response_cache_hit_rate": _safe_rate(
+                summary.get("response_cache_hit_count"),
+                summary.get("request_count"),
+            ),
             "error_count": sum(
                 int(value or 0)
                 for value in (
@@ -6717,6 +6799,14 @@ def _api_latency_summary_for_export(root: Path) -> pl.DataFrame:
                     metrics.get("serialize_ms_total"),
                     metrics.get("count"),
                 ),
+                "avg_source_signature_ms": _safe_avg(
+                    metrics.get("source_signature_ms_total"),
+                    metrics.get("count"),
+                ),
+                "response_cache_hit_rate": _safe_rate(
+                    metrics.get("response_cache_hit_count"),
+                    metrics.get("count"),
+                ),
                 "error_count": int(
                     metrics.get("error_count")
                     or metrics.get("server_error_count")
@@ -6740,13 +6830,16 @@ def _api_latency_summary_md(root: Path) -> str:
         "Recent read-only API latency. `/v1/health` is intentionally light; "
         "lake freshness checks belong to `/v1/health/deep`.",
         "",
-        "| endpoint | count | p50 ms | p95 ms | max ms |",
-        "| --- | ---: | ---: | ---: | ---: |",
+        "| endpoint | count | p50 ms | p95 ms | max ms | cache hit | "
+        "response cache hit | avg source signature ms |",
+        "| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: |",
     ]
     for row in frame.head(12).to_dicts():
         lines.append(
             f"| {row.get('endpoint') or ''} | {row.get('count') or 0} | "
-            f"{row.get('p50_ms') or ''} | {row.get('p95_ms') or ''} | {row.get('max_ms') or ''} |"
+            f"{row.get('p50_ms') or ''} | {row.get('p95_ms') or ''} | {row.get('max_ms') or ''} | "
+            f"{row.get('cache_hit_rate') or ''} | {row.get('response_cache_hit_rate') or ''} | "
+            f"{row.get('avg_source_signature_ms') or ''} |"
         )
     return "\n".join(lines) + "\n"
 
@@ -7455,6 +7548,14 @@ def _bnb_missed_opportunity_samples_for_export(
             for horizon in (4, 8, 12, 24)
         }
         observed = [value for value in future.values() if value is not None]
+        best_future = (
+            max(
+                ((horizon, value) for horizon, value in future.items() if value is not None),
+                key=lambda item: item[1],
+            )
+            if observed
+            else (None, None)
+        )
         rows.append(
             {
                 "run_id": str(candidate.get("run_id") or "").strip(),
@@ -7487,7 +7588,7 @@ def _bnb_missed_opportunity_samples_for_export(
                 "future_8h_net_bps": future[8],
                 "future_12h_net_bps": future[12],
                 "future_24h_net_bps": future[24],
-                "missed_profit_flag": bool(observed and max(observed) > 0),
+                "missed_profit_flag": bool(best_future[1] is not None and best_future[1] >= 50.0),
             }
         )
     if not rows:
@@ -7505,6 +7606,144 @@ def _candidate_factor_value(candidate: dict[str, Any], *field_names: str) -> flo
         if value is not None:
             return value
     return None
+
+
+def _post_impulse_overextension_shadow_for_export(
+    *,
+    candidate_events: pl.DataFrame,
+    market_bars: pl.DataFrame,
+) -> pl.DataFrame:
+    path = "reports/post_impulse_overextension_shadow.csv"
+    if candidate_events.is_empty():
+        return _empty_csv_schema_frame(path)
+    market_by_symbol = _market_close_rows_by_symbol(market_bars)
+    rows: list[dict[str, Any]] = []
+    for candidate in candidate_events.to_dicts():
+        side = str(candidate.get("alpha6_side") or "").strip().lower()
+        if side != "buy":
+            continue
+        alpha6_score = _optional_float(candidate.get("alpha6_score"))
+        if alpha6_score is None or alpha6_score < 0.9:
+            continue
+        f3 = _candidate_factor_value(candidate, "f3_vol_adj_ret", "f3", "f3_score")
+        f4 = _candidate_factor_value(candidate, "f4_volume_expansion", "f4", "f4_score")
+        if not ((f3 is not None and f3 >= 10.0) or (f4 is not None and f4 >= 1.0)):
+            continue
+        symbol = normalize_symbol(candidate.get("symbol"))
+        ts = readers._coerce_timestamp(candidate.get("ts_utc") or candidate.get("ts"))
+        if not symbol or symbol == "UNKNOWN" or ts is None:
+            continue
+        market_rows = market_by_symbol.get(symbol, [])
+        ts_utc = ts.astimezone(UTC)
+        entry_px = _candidate_entry_price(candidate, market_rows, ts_utc)
+        return_24h = _historical_return_bps(market_rows, ts_utc, 24)
+        return_48h = _historical_return_bps(market_rows, ts_utc, 48)
+        overextended_24h = return_24h is not None and return_24h >= 300.0
+        overextended_48h = return_48h is not None and return_48h >= 500.0
+        if not (overextended_24h or overextended_48h):
+            continue
+        shadow_cost_bps = _candidate_shadow_cost_bps(candidate)
+        future = {
+            horizon: _future_net_bps_after_shadow_cost(
+                market_rows,
+                ts_utc,
+                entry_px,
+                horizon,
+                shadow_cost_bps=shadow_cost_bps,
+            )
+            for horizon in (4, 8, 12)
+        }
+        observed = [value for value in future.values() if value is not None]
+        reasons = []
+        if overextended_24h:
+            reasons.append("return_24h_ge_300bps")
+        if overextended_48h:
+            reasons.append("return_48h_ge_500bps")
+        rows.append(
+            {
+                "run_id": str(candidate.get("run_id") or "").strip(),
+                "ts_utc": ts_utc.isoformat(),
+                "symbol": symbol,
+                "alpha6_score": alpha6_score,
+                "alpha6_side": side,
+                "f3_vol_adj_ret": f3,
+                "f4_volume_expansion": f4,
+                "f5_rsi_trend_confirm": _candidate_factor_value(
+                    candidate,
+                    "f5_rsi_trend_confirm",
+                    "f5",
+                    "f5_score",
+                ),
+                "entry_px": entry_px,
+                "return_24h_bps": return_24h,
+                "return_48h_bps": return_48h,
+                "overextension_reason": ";".join(reasons),
+                "future_4h_net_bps": future[4],
+                "future_8h_net_bps": future[8],
+                "future_12h_net_bps": future[12],
+                "max_future_net_bps": max(observed) if observed else None,
+                "worst_future_net_bps": min(observed) if observed else None,
+                "late_failure_flag": bool(observed and min(observed) <= -50.0),
+                "response_action": "shadow_tracking",
+                "live_order_effect": "read_only_no_live_order",
+            }
+        )
+    if not rows:
+        return _empty_csv_schema_frame(path)
+    return (
+        pl.DataFrame(rows, infer_schema_length=None)
+        .select(CSV_SCHEMAS[path])
+        .sort(["ts_utc", "symbol", "run_id"])
+    )
+
+
+def _late_breakout_failure_shadow_for_export(overextension: pl.DataFrame) -> pl.DataFrame:
+    path = "reports/late_breakout_failure_shadow.csv"
+    if overextension.is_empty():
+        return _empty_csv_schema_frame(path)
+    rows: list[dict[str, Any]] = []
+    for row in overextension.to_dicts():
+        future = {
+            4: _optional_float(row.get("future_4h_net_bps")),
+            8: _optional_float(row.get("future_8h_net_bps")),
+            12: _optional_float(row.get("future_12h_net_bps")),
+        }
+        observed = [(horizon, value) for horizon, value in future.items() if value is not None]
+        if not observed:
+            continue
+        failure_horizon, failure_value = min(observed, key=lambda item: item[1])
+        if failure_value > -50.0:
+            continue
+        rows.append(
+            {
+                "run_id": row.get("run_id"),
+                "ts_utc": row.get("ts_utc"),
+                "symbol": row.get("symbol"),
+                "alpha6_score": row.get("alpha6_score"),
+                "alpha6_side": row.get("alpha6_side"),
+                "f3_vol_adj_ret": row.get("f3_vol_adj_ret"),
+                "f4_volume_expansion": row.get("f4_volume_expansion"),
+                "f5_rsi_trend_confirm": row.get("f5_rsi_trend_confirm"),
+                "entry_px": row.get("entry_px"),
+                "return_24h_bps": row.get("return_24h_bps"),
+                "return_48h_bps": row.get("return_48h_bps"),
+                "future_4h_net_bps": row.get("future_4h_net_bps"),
+                "future_8h_net_bps": row.get("future_8h_net_bps"),
+                "future_12h_net_bps": row.get("future_12h_net_bps"),
+                "failure_horizon_hours": failure_horizon,
+                "failure_net_bps": failure_value,
+                "diagnosis": "late_breakout_failure_after_overextension",
+                "response_action": "shadow_tracking",
+                "live_order_effect": "read_only_no_live_order",
+            }
+        )
+    if not rows:
+        return _empty_csv_schema_frame(path)
+    return (
+        pl.DataFrame(rows, infer_schema_length=None)
+        .select(CSV_SCHEMAS[path])
+        .sort(["ts_utc", "symbol", "run_id"])
+    )
 
 
 def _final_score_vs_alpha6_conflict_for_export(
@@ -7556,6 +7795,15 @@ def _final_score_vs_alpha6_conflict_for_export(
         else:
             label_status = "pending"
         observed = [value for value in future.values() if value is not None]
+        best_future = (
+            max(
+                ((horizon, value) for horizon, value in future.items() if value is not None),
+                key=lambda item: item[1],
+            )
+            if observed
+            else (None, None)
+        )
+        material_profit = bool(best_future[1] is not None and best_future[1] >= 50.0)
         rows.append(
             {
                 "run_id": str(candidate.get("run_id") or "").strip(),
@@ -7604,6 +7852,9 @@ def _final_score_vs_alpha6_conflict_for_export(
                 "future_8h_net_bps": future[8],
                 "future_12h_net_bps": future[12],
                 "future_24h_net_bps": future[24],
+                "max_future_net_bps": best_future[1],
+                "best_future_horizon_hours": best_future[0],
+                "material_profit_flag": material_profit,
                 "label_4h_status": label_statuses[4],
                 "label_8h_status": label_statuses[8],
                 "label_12h_status": label_statuses[12],
@@ -7611,7 +7862,7 @@ def _final_score_vs_alpha6_conflict_for_export(
                 "any_label_complete": any_label_complete,
                 "all_labels_complete": all_labels_complete,
                 "label_status": label_status,
-                "missed_profit_flag": bool(observed and max(observed) > 0),
+                "missed_profit_flag": material_profit,
             }
         )
     if not rows:
@@ -7886,8 +8137,17 @@ def _v5_quant_lab_consistency_dashboard_md(
         frames.get("alpha_factory_promotion_queue", pl.DataFrame())
     )
     bnb_paper_v5_entry_count = _bnb_paper_today_entry_count(bnb_paper_daily)
+    quant_lab_bnb_paper_daily = _filter_bnb_paper_frame(
+        frames.get("paper_strategy_daily", pl.DataFrame())
+    )
+    quant_lab_bnb_paper_daily_latest = _latest_bnb_paper_strategy_daily(
+        quant_lab_bnb_paper_daily
+    )
+    bnb_paper_quant_lab_raw_entry_count = _bnb_paper_today_entry_count(
+        quant_lab_bnb_paper_daily
+    )
     bnb_paper_quant_lab_entry_count = _bnb_paper_today_entry_count(
-        _filter_bnb_paper_frame(frames.get("paper_strategy_daily", pl.DataFrame()))
+        quant_lab_bnb_paper_daily_latest
     )
     if bnb_paper_quant_lab_entry_count == 0 and bnb_paper_v5_entry_count > 0:
         bnb_paper_quant_lab_entry_count = bnb_paper_v5_entry_count
@@ -7897,6 +8157,7 @@ def _v5_quant_lab_consistency_dashboard_md(
     )
     advisory_duplicate_count = _advisory_duplicate_key_count(opportunity_advisory)
     bnb_paper_count_match = bnb_paper_v5_entry_count == bnb_paper_quant_lab_entry_count
+    v5_bundle_lag_detected = not bnb_paper_count_match
     return "\n".join(
         [
             "# V5 / Quant Lab consistency dashboard",
@@ -7917,7 +8178,9 @@ def _v5_quant_lab_consistency_dashboard_md(
             f"- bnb_paper_today_entry_count: {_bnb_paper_today_entry_count(bnb_paper_daily)}",
             f"- bnb_paper_v5_entry_count: {bnb_paper_v5_entry_count}",
             f"- bnb_paper_quant_lab_entry_count: {bnb_paper_quant_lab_entry_count}",
+            f"- bnb_paper_quant_lab_raw_entry_count: {bnb_paper_quant_lab_raw_entry_count}",
             f"- bnb_paper_entry_count_match: {str(bnb_paper_count_match).lower()}",
+            f"- v5_bundle_lag_detected: {str(v5_bundle_lag_detected).lower()}",
             f"- risk_on_selected_symbols_observable: {str(risk_on_observable).lower()}",
             f"- alpha_factory_paper_ready_count: {paper_ready_from_queue}",
             f"- alpha_factory_paper_ready_count_from_queue: {paper_ready_from_queue}",

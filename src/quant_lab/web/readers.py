@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import json
+import os
+import time as time_module
 import zipfile
 from dataclasses import dataclass
 from datetime import UTC, date, datetime, time, timedelta
@@ -12,6 +14,7 @@ import polars as pl
 from quant_lab.data.lake import invalid_parquet_files, read_parquet_dataset
 from quant_lab.research.portfolio import research_portfolio_closed_keys
 from quant_lab.symbols import normalize_symbol
+from quant_lab.web import perf
 from quant_lab.web.pages._common import display_value
 
 DATASET_PATHS = {
@@ -151,6 +154,9 @@ DATASET_PATHS = {
     "okx_private_readonly_bills": Path("bronze") / "okx_private_readonly" / "bills",
     "decision_audit": Path("silver") / "decision_audit",
 }
+WEB_FILE_INDEX_FALLBACK_WARNING = "web_file_index_missing_fallback_rglob"
+WEB_SNAPSHOT_META_MISSING_WARNING = "web_snapshot_meta_missing"
+WEB_CACHE_DEFAULT_TTL_SECONDS = 30
 V5_PAPER_TELEMETRY_DATASETS = {
     "v5_paper_strategy_run",
     "v5_paper_strategy_daily",
@@ -601,6 +607,42 @@ class DatasetSnapshot:
     warning: str | None = None
 
 
+_WEB_DATASET_CACHE: dict[tuple[Any, ...], tuple[float, Any]] = {}
+
+
+def clear_web_cache() -> None:
+    _WEB_DATASET_CACHE.clear()
+
+
+def _web_cache_ttl_seconds() -> int:
+    raw = os.environ.get("QUANT_LAB_WEB_DATASET_CACHE_TTL_SECONDS", "")
+    try:
+        value = int(raw) if raw else WEB_CACHE_DEFAULT_TTL_SECONDS
+    except ValueError:
+        return WEB_CACHE_DEFAULT_TTL_SECONDS
+    return max(value, 0)
+
+
+def _web_cache_get(key: tuple[Any, ...], *, event: str, dataset_name: str = "") -> Any | None:
+    ttl = _web_cache_ttl_seconds()
+    if ttl <= 0:
+        perf.record_event(event, dataset_name=dataset_name, cache_miss=True)
+        return None
+    cached = _WEB_DATASET_CACHE.get(key)
+    now = time_module.monotonic()
+    if cached is None or now - cached[0] > ttl:
+        perf.record_event(event, dataset_name=dataset_name, cache_miss=True)
+        return None
+    perf.record_event(event, dataset_name=dataset_name, cache_hit=True)
+    return cached[1]
+
+
+def _web_cache_set(key: tuple[Any, ...], value: Any) -> Any:
+    if _web_cache_ttl_seconds() > 0:
+        _WEB_DATASET_CACHE[key] = (time_module.monotonic(), value)
+    return value
+
+
 def read_dataset(lake_root: str | Path, dataset_name: str) -> pl.DataFrame:
     df, _warning = read_dataset_with_warning(lake_root, dataset_name)
     return df
@@ -622,34 +664,69 @@ def read_recent_dataset_with_warning(
     lookback_hours: int | None = None,
 ) -> tuple[pl.DataFrame, str | None]:
     dataset_path = dataset_path_for(lake_root, dataset_name)
+    row_limit = limit or WEB_HEAVY_DATASET_LIMITS.get(dataset_name, DISPLAY_LIMIT)
+    hours = lookback_hours or WEB_RECENT_LOOKBACK_HOURS.get(dataset_name, 6)
+    cache_key = (
+        "read_recent_dataset_with_warning",
+        str(Path(lake_root).resolve()),
+        dataset_name,
+        row_limit,
+        hours,
+        _web_dataset_source_signature(dataset_path),
+    )
+    cached = _web_cache_get(
+        cache_key,
+        event="read_recent_dataset_with_warning",
+        dataset_name=dataset_name,
+    )
+    if cached is not None:
+        return cached
+
     if dataset_name in WEB_RECENT_FILE_SAMPLE_DATASETS:
         files, warning = _recent_valid_parquet_files(dataset_path, dataset_name)
     else:
-        invalid_files = invalid_parquet_files(dataset_path)
-        files = _valid_parquet_files(dataset_path, invalid_files=invalid_files)
-        warning = _invalid_parquet_warning(dataset_name, invalid_files)
+        files, warning = _valid_parquet_files_with_warning(dataset_path, dataset_name)
     if not files:
-        return pl.DataFrame(), warning
+        return _web_cache_set(cache_key, (pl.DataFrame(), warning))
 
-    row_limit = limit or WEB_HEAVY_DATASET_LIMITS.get(dataset_name, DISPLAY_LIMIT)
-    hours = lookback_hours or WEB_RECENT_LOOKBACK_HOURS.get(dataset_name, 6)
     try:
-        lazy = _scan_parquet_files(files)
-        frame = _collect_recent_lazy_frame(
-            lazy,
-            dataset_name,
-            limit=row_limit,
-            lookback_hours=hours,
-        )
-        return frame, warning
+        with perf.timed(
+            "dataset_read",
+            dataset_name=dataset_name,
+            files_scanned=len(files),
+        ):
+            lazy = _scan_parquet_files(files)
+            frame = _collect_recent_lazy_frame(
+                lazy,
+                dataset_name,
+                limit=row_limit,
+                lookback_hours=hours,
+            )
+        perf.record_event("dataset_rows", dataset_name=dataset_name, rows_rendered=frame.height)
+        return _web_cache_set(cache_key, (frame, warning))
     except Exception as exc:
-        return pl.DataFrame(), f"{dataset_name} 抽样读取失败：{exc}"
+        return _web_cache_set(cache_key, (pl.DataFrame(), f"{dataset_name} 抽样读取失败：{exc}"))
 
 
 def _read_web_display_dataset_with_warning(
     lake_root: str | Path,
     dataset_name: str,
 ) -> tuple[pl.DataFrame, str | None]:
+    dataset_path = dataset_path_for(lake_root, dataset_name)
+    cache_key = (
+        "_read_web_display_dataset_with_warning",
+        str(Path(lake_root).resolve()),
+        dataset_name,
+        _web_dataset_source_signature(dataset_path),
+    )
+    cached = _web_cache_get(
+        cache_key,
+        event="_read_web_display_dataset_with_warning",
+        dataset_name=dataset_name,
+    )
+    if cached is not None:
+        return cached
+
     sampled_datasets = (
         WEB_RESEARCH_SAMPLE_DATASETS
         | WEB_FEATURE_SAMPLE_DATASETS
@@ -658,8 +735,10 @@ def _read_web_display_dataset_with_warning(
         | WEB_ADVISORY_SAMPLE_DATASETS
     )
     if dataset_name in sampled_datasets:
-        return read_recent_dataset_with_warning(lake_root, dataset_name)
-    return read_dataset_with_warning(lake_root, dataset_name)
+        result = read_recent_dataset_with_warning(lake_root, dataset_name)
+    else:
+        result = read_dataset_with_warning(lake_root, dataset_name)
+    return _web_cache_set(cache_key, result)
 
 
 def dataset_path_for(lake_root: str | Path, dataset_name: str) -> Path:
@@ -755,9 +834,18 @@ def _dataset_snapshot(
         return _heavy_dataset_snapshot(lake_root, dataset_name, now=now)
 
     path = dataset_path_for(lake_root, dataset_name)
-    invalid_files = invalid_parquet_files(path)
-    files = _valid_parquet_files(path, invalid_files=invalid_files)
-    warning = _invalid_parquet_warning(dataset_name, invalid_files)
+    meta_snapshot = _dataset_snapshot_from_meta(path, now=now)
+    if meta_snapshot is not None:
+        return meta_snapshot
+
+    files, warning = _valid_parquet_files_with_warning(path, dataset_name)
+    if warning:
+        perf.record_event("dataset_snapshot_warning", dataset_name=dataset_name, warning=warning)
+    perf.record_event(
+        "dataset_snapshot_warning",
+        dataset_name=dataset_name,
+        warning=WEB_SNAPSHOT_META_MISSING_WARNING,
+    )
     if not files:
         return DatasetSnapshot(
             rows=0,
@@ -814,7 +902,17 @@ def _heavy_dataset_snapshot(
     now: datetime | None = None,
 ) -> DatasetSnapshot:
     path = dataset_path_for(lake_root, dataset_name)
+    meta_snapshot = _dataset_snapshot_from_meta(path, now=now)
+    if meta_snapshot is not None:
+        return meta_snapshot
     files, warning = _metadata_snapshot_files(path, dataset_name)
+    if warning:
+        perf.record_event("dataset_snapshot_warning", dataset_name=dataset_name, warning=warning)
+    perf.record_event(
+        "dataset_snapshot_warning",
+        dataset_name=dataset_name,
+        warning=WEB_SNAPSHOT_META_MISSING_WARNING,
+    )
     if not files:
         return DatasetSnapshot(
             rows=0,
@@ -892,7 +990,7 @@ def _latest_file_mtime(files: list[Path]) -> datetime | None:
 
 
 def _recent_valid_parquet_files(path: Path, dataset_name: str) -> tuple[list[Path], str | None]:
-    candidates = _recent_parquet_file_candidates(path)
+    candidates, source_warning = _recent_parquet_file_candidates_with_warning(path)
     max_files = WEB_RECENT_FILE_LIMITS.get(dataset_name, WEB_FULL_VALIDATION_FILE_LIMIT)
     selected = candidates[-max_files:] if len(candidates) > max_files else candidates
     invalid_files = [
@@ -900,18 +998,29 @@ def _recent_valid_parquet_files(path: Path, dataset_name: str) -> tuple[list[Pat
     ]
     invalid = set(invalid_files)
     valid_files = [file_path for file_path in selected if file_path not in invalid]
-    return valid_files, _invalid_parquet_warning(dataset_name, invalid_files)
+    return valid_files, _combine_warnings(
+        source_warning,
+        _invalid_parquet_warning(dataset_name, invalid_files),
+    )
 
 
 def _recent_parquet_file_candidates(path: Path) -> list[Path]:
-    candidates = _parquet_file_candidates(path)
+    candidates, _warning = _recent_parquet_file_candidates_with_warning(path)
+    return candidates
+
+
+def _recent_parquet_file_candidates_with_warning(path: Path) -> tuple[list[Path], str | None]:
+    candidates, warning = _parquet_file_candidates_with_warning(path)
     batch_files = [file_path for file_path in candidates if file_path.name.startswith("batch_")]
     if batch_files:
         candidates = batch_files
     try:
-        return sorted(candidates, key=lambda file_path: (file_path.stat().st_mtime, file_path.name))
+        return (
+            sorted(candidates, key=lambda file_path: (file_path.stat().st_mtime, file_path.name)),
+            warning,
+        )
     except OSError:
-        return sorted(candidates)
+        return sorted(candidates), warning
 
 
 def _latest_lazy_timestamp(
@@ -1058,12 +1167,57 @@ def _freshness_payload(
 
 
 def _valid_parquet_files(path: Path, *, invalid_files: list[Path] | None = None) -> list[Path]:
+    if invalid_files is None:
+        files, _warning = _valid_parquet_files_with_warning(path, _dataset_name_from_path(path))
+        return files
     candidates = _parquet_file_candidates(path)
     invalid = set(invalid_files if invalid_files is not None else invalid_parquet_files(path))
     return [file_path for file_path in candidates if file_path not in invalid]
 
 
+def _valid_parquet_files_with_warning(
+    path: Path,
+    dataset_name: str,
+) -> tuple[list[Path], str | None]:
+    candidates, source_warning = _parquet_file_candidates_with_warning(path)
+    invalid_files = [
+        file_path for file_path in candidates if not _is_valid_parquet_file_path(file_path)
+    ]
+    warning = _combine_warnings(
+        source_warning,
+        _invalid_parquet_warning(dataset_name, invalid_files),
+    )
+    return [file_path for file_path in candidates if file_path not in set(invalid_files)], warning
+
+
+def _parquet_file_candidates_with_warning(path: Path) -> tuple[list[Path], str | None]:
+    indexed = _indexed_files_for_web(path)
+    if indexed is not None:
+        perf.record_event(
+            "web_file_index_lookup",
+            dataset_name=_dataset_name_from_path(path),
+            files_scanned=len(indexed),
+        )
+        return indexed, None
+
+    candidates = _parquet_file_candidates_rglob(path)
+    if path.exists():
+        perf.record_event(
+            "web_file_index_lookup",
+            dataset_name=_dataset_name_from_path(path),
+            rglob_fallback=True,
+            files_scanned=len(candidates),
+            warning=WEB_FILE_INDEX_FALLBACK_WARNING,
+        )
+    return candidates, None
+
+
 def _parquet_file_candidates(path: Path) -> list[Path]:
+    candidates, _warning = _parquet_file_candidates_with_warning(path)
+    return candidates
+
+
+def _parquet_file_candidates_rglob(path: Path) -> list[Path]:
     if path.is_file() and path.suffix == ".parquet":
         return [] if _is_internal_lake_path(path) else [path]
     if not path.exists():
@@ -1071,6 +1225,137 @@ def _parquet_file_candidates(path: Path) -> list[Path]:
     return sorted(
         candidate for candidate in path.rglob("*.parquet") if not _is_internal_lake_path(candidate)
     )
+
+
+def _indexed_files_for_web(path: Path) -> list[Path] | None:
+    lake_root = _infer_lake_root_from_path(path)
+    if lake_root is None:
+        return None
+    try:
+        relative_dataset = str(path.relative_to(lake_root)).replace("\\", "/")
+    except ValueError:
+        return None
+    try:
+        index = read_parquet_dataset(lake_root / "bronze" / "lake_file_index")
+    except Exception:
+        return None
+    required = {"dataset", "path"}
+    if index.is_empty() or not required.issubset(set(index.columns)):
+        return None
+    scoped = index.filter(pl.col("dataset").cast(pl.Utf8) == relative_dataset)
+    if scoped.is_empty():
+        return None
+    files = [lake_root / item for item in scoped.get_column("path").cast(pl.Utf8).to_list()]
+    return sorted(
+        file_path
+        for file_path in files
+        if file_path.is_file() and not _is_internal_lake_path(file_path)
+    )
+
+
+def _infer_lake_root_from_path(path: Path) -> Path | None:
+    parts = path.parts
+    for index, part in enumerate(parts):
+        if part in {"bronze", "silver", "gold"} and index > 0:
+            return Path(*parts[:index])
+    return None
+
+
+def _dataset_name_from_path(path: Path) -> str:
+    lake_root = _infer_lake_root_from_path(path)
+    if lake_root is None:
+        return str(path)
+    try:
+        relative = str(path.relative_to(lake_root)).replace("\\", "/")
+    except ValueError:
+        return str(path)
+    for name, dataset_path in DATASET_PATHS.items():
+        if str(dataset_path).replace("\\", "/") == relative:
+            return name
+    return relative
+
+
+def _dataset_snapshot_from_meta(
+    path: Path,
+    *,
+    now: datetime | None = None,
+) -> DatasetSnapshot | None:
+    meta = _snapshot_meta_for_dataset(path)
+    if not meta:
+        return None
+    rows = _int_or_zero(meta.get("row_count", meta.get("rows")))
+    file_count = _int_or_zero(meta.get("file_count", meta.get("parquet_file_count")))
+    latest = _coerce_timestamp(
+        meta.get("latest_timestamp")
+        or meta.get("max_timestamp")
+        or meta.get("latest_ts")
+        or meta.get("generated_at")
+    )
+    column = str(meta.get("timestamp_column") or "snapshot_meta")
+    return DatasetSnapshot(
+        rows=rows,
+        exists=path.exists(),
+        parquet_file_count=file_count,
+        freshness=_freshness_payload(latest, column, is_empty=rows == 0, now=now),
+        warning=None,
+    )
+
+
+def _snapshot_meta_for_dataset(path: Path) -> dict[str, Any] | None:
+    meta_path = path / "_snapshot_meta.json"
+    if not meta_path.is_file():
+        return None
+    try:
+        payload = json.loads(meta_path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return None
+    return payload if isinstance(payload, dict) else None
+
+
+def _web_dataset_source_signature(path: Path) -> tuple[Any, ...]:
+    meta = _snapshot_meta_for_dataset(path)
+    if meta:
+        return (
+            "snapshot_meta",
+            meta.get("source_sha")
+            or meta.get("generated_at")
+            or meta.get("row_count")
+            or meta.get("file_count"),
+        )
+    indexed = _indexed_files_for_web(path)
+    if indexed is not None:
+        newest = 0
+        size_sum = 0
+        for file_path in indexed:
+            try:
+                stat = file_path.stat()
+            except OSError:
+                continue
+            newest = max(newest, stat.st_mtime_ns)
+            size_sum += stat.st_size
+        return ("lake_file_index", len(indexed), newest, size_sum)
+    if not path.exists():
+        return ("missing", str(path))
+    try:
+        stat = path.stat()
+    except OSError:
+        return ("unreadable", str(path))
+    return ("path", stat.st_mtime_ns, stat.st_size)
+
+
+def _combine_warnings(*warnings: str | None) -> str | None:
+    values = [warning for warning in warnings if warning]
+    if not values:
+        return None
+    deduped = list(dict.fromkeys(values))
+    return "; ".join(deduped)
+
+
+def _int_or_zero(value: Any) -> int:
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return 0
 
 
 def _is_internal_lake_path(path: Path) -> bool:
@@ -1103,9 +1388,19 @@ def _invalid_parquet_warning(dataset_label: str, invalid_files: list[Path]) -> s
 
 
 def dataset_states(lake_root: str | Path) -> list[DatasetState]:
+    root = Path(lake_root)
+    cache_key = (
+        "dataset_states",
+        str(root.resolve()),
+        _lake_file_index_signature(root),
+    )
+    cached = _web_cache_get(cache_key, event="dataset_states")
+    if cached is not None:
+        return cached
+
     states: list[DatasetState] = []
     for name in sorted(DATASET_PATHS):
-        path = dataset_path_for(lake_root, name)
+        path = dataset_path_for(root, name)
         snapshot = _dataset_snapshot(lake_root, name)
         states.append(
             DatasetState(
@@ -1117,7 +1412,25 @@ def dataset_states(lake_root: str | Path) -> list[DatasetState]:
                 warning=snapshot.warning,
             )
         )
-    return states
+    return _web_cache_set(cache_key, states)
+
+
+def _lake_file_index_signature(lake_root: Path) -> tuple[Any, ...]:
+    index_path = lake_root / "bronze" / "lake_file_index"
+    meta = _snapshot_meta_for_dataset(index_path)
+    if meta:
+        return (
+            "lake_file_index_meta",
+            meta.get("source_sha") or meta.get("generated_at") or meta.get("row_count"),
+        )
+    try:
+        newest = max(
+            (file_path.stat().st_mtime_ns for file_path in index_path.rglob("*.parquet")),
+            default=0,
+        )
+    except OSError:
+        newest = 0
+    return ("lake_file_index", newest)
 
 
 def dashboard_overview(lake_root: str | Path) -> dict[str, Any]:
@@ -3721,16 +4034,29 @@ def v5_telemetry_summary(lake_root: str | Path) -> dict[str, Any]:
 
 def expert_export_summary(exports_root: str | Path) -> dict[str, Any]:
     root = Path(exports_root)
+    cache_key = (
+        "expert_export_summary",
+        str(root.resolve()),
+        _expert_export_source_signature(root),
+    )
+    cached = _web_cache_get(cache_key, event="expert_export_summary")
+    if cached is not None:
+        return cached
+
+    indexed = _expert_export_summary_from_index(root)
+    if indexed is not None:
+        return _web_cache_set(cache_key, indexed)
+
     packs = _expert_pack_paths(root)
     if not packs:
-        return {
+        return _web_cache_set(cache_key, {
             "latest_pack": None,
             "packs": pl.DataFrame(),
             "manifest_summary": {},
             "data_quality_summary": {},
             "expert_questions": [],
             "warnings": [f"未在目录下找到专家包：{root}"],
-        }
+        })
 
     latest = packs[0]
     manifest = _read_json_from_zip(latest, "manifest.json")
@@ -3745,14 +4071,64 @@ def expert_export_summary(exports_root: str | Path) -> dict[str, Any]:
         }
         for path in packs
     ]
-    return {
+    return _web_cache_set(cache_key, {
         "latest_pack": str(latest),
         "packs": pl.DataFrame(pack_rows),
         "manifest_summary": manifest,
         "data_quality_summary": data_quality,
         "expert_questions": [line for line in questions if line.strip()][:20],
-        "warnings": [],
+        "warnings": [WEB_EXPORT_INDEX_MISSING_WARNING],
+    })
+
+
+WEB_EXPORT_INDEX_MISSING_WARNING = "web_export_index_missing_scan_zip_fallback"
+
+
+def _expert_export_summary_from_index(root: Path) -> dict[str, Any] | None:
+    index_path = root / "export_index.json"
+    if not index_path.is_file():
+        return None
+    try:
+        payload = json.loads(index_path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return None
+    if not isinstance(payload, dict):
+        return None
+    pack_rows = payload.get("packs")
+    if not isinstance(pack_rows, list):
+        pack_rows = []
+    return {
+        "latest_pack": payload.get("latest_pack"),
+        "packs": pl.DataFrame(pack_rows) if pack_rows else pl.DataFrame(),
+        "manifest_summary": payload.get("manifest_summary") or {},
+        "data_quality_summary": payload.get("data_quality_summary") or {},
+        "expert_questions": payload.get("expert_questions") or [],
+        "warnings": payload.get("warnings") or [],
     }
+
+
+def _expert_export_source_signature(root: Path) -> tuple[Any, ...]:
+    index_path = root / "export_index.json"
+    if index_path.is_file():
+        try:
+            stat = index_path.stat()
+            return ("export_index", stat.st_mtime_ns, stat.st_size)
+        except OSError:
+            return ("export_index", "unreadable")
+    latest = _latest_expert_pack_signature(root)
+    return ("zip_scan", latest)
+
+
+def _latest_expert_pack_signature(root: Path) -> tuple[Any, ...]:
+    packs = _expert_pack_paths(root)
+    if not packs:
+        return ("missing",)
+    latest = packs[0]
+    try:
+        stat = latest.stat()
+    except OSError:
+        return (latest.name, "unreadable")
+    return (latest.name, stat.st_mtime_ns, stat.st_size)
 
 
 def _expert_pack_paths(root: Path) -> list[Path]:

@@ -3202,6 +3202,15 @@ def export_daily_pack(
     zip_path = _unique_export_zip_path(output_root, day, generated_at)
     _write_zip(zip_path, members)
     warnings.extend(_prune_old_export_packs(output_root, keep_count=_export_keep_pack_count()))
+    index_warning = _write_export_index(
+        output_root,
+        latest_pack=zip_path,
+        manifest=manifest,
+        data_quality=data_quality,
+        expert_questions=members["expert_questions.md"],
+    )
+    if index_warning:
+        warnings.append(index_warning)
     return DailyExportResult(
         export_date=day.isoformat(),
         profile=profile,
@@ -3251,6 +3260,55 @@ def _prune_old_export_packs(output_root: Path, *, keep_count: int) -> list[str]:
         except OSError as exc:
             warnings.append(f"export_pack_prune_failed:{pack.name}:{exc}")
     return warnings
+
+
+def _write_export_index(
+    output_root: Path,
+    *,
+    latest_pack: Path,
+    manifest: dict[str, Any],
+    data_quality: dict[str, Any],
+    expert_questions: str,
+) -> str | None:
+    try:
+        packs = sorted(
+            [path for path in output_root.glob("quant_lab_expert_pack_*.zip") if path.is_file()],
+            key=lambda path: (path.stat().st_mtime, path.name),
+            reverse=True,
+        )
+        pack_rows = []
+        for path in packs:
+            stat = path.stat()
+            pack_rows.append(
+                {
+                    "path": str(path),
+                    "name": path.name,
+                    "size_bytes": stat.st_size,
+                    "modified_at": datetime.fromtimestamp(stat.st_mtime, tz=UTC).isoformat(),
+                }
+            )
+        payload = {
+            "schema_version": "quant_lab_export_index.v1",
+            "generated_at": datetime.now(UTC).isoformat(),
+            "latest_pack": str(latest_pack),
+            "packs": pack_rows,
+            "manifest_summary": manifest,
+            "data_quality_summary": data_quality,
+            "expert_questions": [
+                line for line in expert_questions.splitlines() if line.strip()
+            ][:20],
+            "warnings": [],
+        }
+        tmp_path = output_root / ".export_index.json.tmp"
+        index_path = output_root / "export_index.json"
+        tmp_path.write_text(
+            json.dumps(payload, ensure_ascii=False, sort_keys=True),
+            encoding="utf-8",
+        )
+        tmp_path.replace(index_path)
+    except OSError as exc:
+        return f"export_index_write_failed:{exc}"
+    return None
 
 
 def validate_expert_pack(path: str | Path) -> ExpertPackValidationResult:

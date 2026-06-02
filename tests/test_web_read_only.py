@@ -7,9 +7,11 @@ from types import SimpleNamespace
 
 import polars as pl
 
+from quant_lab.data.file_index import build_lake_file_index
 from quant_lab.data.lake import write_market_bars, write_parquet_dataset
 from quant_lab.web import app as web_app
 from quant_lab.web import export_request, readers
+from quant_lab.web import perf as web_perf
 from quant_lab.web.pages import (
     alpha_gates,
     cost_model,
@@ -20,6 +22,7 @@ from quant_lab.web.pages import (
     overview,
     strategy_consumers,
     v5_telemetry,
+    web_performance,
 )
 from quant_lab.web.pages._common import localize_frame
 
@@ -1785,6 +1788,102 @@ def test_empty_lake_diagnostics_exposes_suggested_commands(tmp_path):
     assert "qlab export-daily" in commands
 
 
+def test_web_readers_use_lake_file_index_before_rglob(tmp_path, monkeypatch):
+    readers.clear_web_cache()
+    lake_root = _fixture_lake(tmp_path)
+    dataset_path = lake_root / "gold" / "cost_bucket_daily"
+    build_lake_file_index(lake_root, ["gold/cost_bucket_daily"])
+
+    def fail_rglob(_path):
+        raise AssertionError("web reader should use lake_file_index before rglob")
+
+    monkeypatch.setattr(readers, "_parquet_file_candidates_rglob", fail_rglob)
+
+    files, warning = readers._valid_parquet_files_with_warning(
+        dataset_path,
+        "cost_bucket_daily",
+    )
+
+    assert files
+    assert warning is None
+
+
+def test_dataset_snapshot_uses_snapshot_meta_without_scanning_parquet(tmp_path, monkeypatch):
+    readers.clear_web_cache()
+    lake_root = tmp_path / "lake"
+    dataset_path = lake_root / "gold" / "strategy_health_daily"
+    dataset_path.mkdir(parents=True)
+    (dataset_path / "_snapshot_meta.json").write_text(
+        json.dumps(
+            {
+                "row_count": 7,
+                "file_count": 3,
+                "latest_timestamp": "2026-05-10T12:00:00Z",
+                "timestamp_column": "created_at",
+                "generated_at": "2026-05-10T12:01:00Z",
+                "source_sha": "meta-sha",
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    def fail_scan(_files):
+        raise AssertionError("snapshot meta should avoid parquet scan")
+
+    monkeypatch.setattr(readers, "_scan_parquet_files", fail_scan)
+
+    snapshot = readers._dataset_snapshot(lake_root, "strategy_health_daily")
+
+    assert snapshot.rows == 7
+    assert snapshot.parquet_file_count == 3
+    assert snapshot.warning is None
+    assert snapshot.freshness["latest_timestamp"].startswith("2026-05-10T12:00:00")
+
+
+def test_web_recent_dataset_cache_avoids_second_scan(tmp_path, monkeypatch):
+    readers.clear_web_cache()
+    lake_root = _fixture_lake(tmp_path)
+
+    first, first_warning = readers.read_recent_dataset_with_warning(
+        lake_root,
+        "cost_bucket_daily",
+    )
+    assert first.height == 1
+    assert first_warning is None
+
+    def fail_scan(_files):
+        raise AssertionError("second read should use TTL cache")
+
+    monkeypatch.setattr(readers, "_scan_parquet_files", fail_scan)
+
+    second, _second_warning = readers.read_recent_dataset_with_warning(
+        lake_root,
+        "cost_bucket_daily",
+    )
+
+    assert second.height == 1
+
+
+def test_web_performance_page_renders_recent_events(tmp_path):
+    web_perf.clear_events()
+    web_perf.record_event(
+        "dataset_read",
+        dataset_name="cost_bucket_daily",
+        elapsed_ms=12.3,
+        cache_hit=True,
+        rows_rendered=1,
+    )
+    fake = FakeStreamlit()
+
+    web_performance.render(tmp_path / "lake", fake)
+
+    assert any("Web 性能" in str(value) for value in _call_values(fake, "title"))
+    assert ("cache hit", 1) in _call_values(fake, "metric")
+    frames = [frame for frame in _call_values(fake, "dataframe") if isinstance(frame, pl.DataFrame)]
+    assert frames
+    assert frames[-1].height == 1
+
+
 def test_overview_diagnostics_shows_latest_market_bar_ts(tmp_path):
     lake_root = _fixture_lake(tmp_path)
     fake = FakeStreamlit()
@@ -1818,6 +1917,48 @@ def test_expert_exports_page_downloads_listed_packs(tmp_path):
     assert downloads[0]["file_name"] == "quant_lab_expert_pack_2026-05-10.zip"
     assert downloads[0]["mime"] == "application/zip"
     assert downloads[0]["data"].startswith(b"PK")
+
+
+def test_expert_export_summary_prefers_export_index(tmp_path, monkeypatch):
+    readers.clear_web_cache()
+    exports_root = tmp_path / "exports"
+    exports_root.mkdir()
+    pack = exports_root / "quant_lab_expert_pack_2026-05-16.zip"
+    with zipfile.ZipFile(pack, "w") as archive:
+        archive.writestr("manifest.json", json.dumps({"marker": "zip"}))
+        archive.writestr("data_quality.json", "{}")
+        archive.writestr("expert_questions.md", "")
+    (exports_root / "export_index.json").write_text(
+        json.dumps(
+            {
+                "latest_pack": str(pack),
+                "packs": [
+                    {
+                        "path": str(pack),
+                        "name": pack.name,
+                        "size_bytes": pack.stat().st_size,
+                        "modified_at": "2026-05-16T00:00:00Z",
+                    }
+                ],
+                "manifest_summary": {"marker": "index"},
+                "data_quality_summary": {"status": "OK"},
+                "expert_questions": ["indexed question"],
+                "warnings": [],
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    def fail_zip(_pack, _member):
+        raise AssertionError("expert_export_summary should not read zip when index exists")
+
+    monkeypatch.setattr(readers, "_read_json_from_zip", fail_zip)
+
+    summary = readers.expert_export_summary(exports_root)
+
+    assert summary["latest_pack"] == str(pack)
+    assert summary["manifest_summary"]["marker"] == "index"
+    assert summary["expert_questions"] == ["indexed question"]
 
 
 def test_expert_exports_generate_today_button_invokes_export(tmp_path, monkeypatch):

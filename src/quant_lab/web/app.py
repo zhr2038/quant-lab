@@ -6,6 +6,7 @@ import subprocess
 import sys
 from collections.abc import Callable, Sequence
 from pathlib import Path
+from time import perf_counter
 from typing import Any
 
 from quant_lab.web.pages import (
@@ -18,6 +19,7 @@ from quant_lab.web.pages import (
     overview,
     strategy_consumers,
     v5_telemetry,
+    web_performance,
 )
 
 PageRenderer = Callable[[str | Path, Any | None], None]
@@ -31,11 +33,14 @@ PAGES: dict[str, PageRenderer] = {
     "📈 市场状态": market_regime.render,
     "🔌 OKX 采集器": okx_collectors.render,
     "🩺 数据健康": data_health.render,
+    "🧪 Web 性能": web_performance.render,
     "🔐 策略消费者": strategy_consumers.render,
 }
 
 
 def render_dashboard(lake_root: str | Path, st_module: Any | None = None) -> None:
+    from quant_lab.web import perf
+
     st = _streamlit(st_module)
     st.set_page_config(page_title="quant-lab", layout="wide")
     st.sidebar.title("quant-lab")
@@ -44,7 +49,13 @@ def render_dashboard(lake_root: str | Path, st_module: Any | None = None) -> Non
     selected_lake_root = st.sidebar.text_input("Lake 根目录", value=str(lake_root))
     st.sidebar.caption("只读：不下单、不撤单、不修改策略或交易所状态。")
     page_key = _resolve_page_key(selected_page)
+    start = perf_counter()
     PAGES[page_key](Path(selected_lake_root), st)
+    perf.record_event(
+        "page_render",
+        page_name=page_key,
+        elapsed_ms=(perf_counter() - start) * 1000,
+    )
 
 
 def _resolve_page_key(selected_page: str) -> str:

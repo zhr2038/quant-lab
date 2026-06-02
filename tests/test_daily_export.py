@@ -40,9 +40,11 @@ def test_export_daily_pack_writes_required_members(tmp_path):
     )
 
     pack_path = Path(result.zip_path)
+    export_index_path = tmp_path / "exports" / "export_index.json"
     validation = validate_expert_pack(pack_path)
 
     assert pack_path.exists()
+    assert export_index_path.is_file()
     assert validation.valid
     assert validation.warnings == []
     assert validation.export_date == "2026-05-11"
@@ -78,6 +80,7 @@ def test_export_daily_pack_writes_required_members(tmp_path):
         assert provenance["code_provenance"] in {"ok", "degraded"}
         assert "freshness_seconds" in provenance["datasets"][0]
         assert "freshness_status" in provenance["datasets"][0]
+
         assert "v5/v5_strategy_health.csv" in names
         assert "reports/v5_enforce_readiness.json" in names
         assert "reports/v5_enforce_readiness.csv" in names
@@ -101,6 +104,11 @@ def test_export_daily_pack_writes_required_members(tmp_path):
         assert "quant_lab_enforce_readiness:" in executive_summary
         assert "charts/market_close.png" in names
         assert archive.read("charts/market_close.png").startswith(b"\x89PNG")
+
+    export_index = json.loads(export_index_path.read_text(encoding="utf-8"))
+    assert export_index["latest_pack"] == str(pack_path)
+    assert export_index["manifest_summary"]["export_date"] == "2026-05-11"
+    assert export_index["packs"]
 
     for dataset in daily_export_module.SNAPSHOT_META_DATASETS:
         dataset_path = lake_root / daily_export_module.readers.DATASET_PATHS.get(

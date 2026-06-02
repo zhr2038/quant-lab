@@ -951,6 +951,49 @@ def test_export_frame_uses_lake_file_index_for_file_candidates(
     assert frame.height == 15
 
 
+def test_export_frame_skips_okx_public_ws_raw_when_health_rollup_exists(
+    tmp_path,
+    monkeypatch,
+):
+    lake_root = tmp_path / "lake"
+    raw_path = lake_root / "bronze" / "okx_public_ws"
+    raw_path.mkdir(parents=True)
+    pl.DataFrame(
+        [
+            {
+                "symbol": "BTC-USDT",
+                "channel": "trades",
+                "received_at": datetime(2026, 5, 10, tzinfo=UTC),
+            }
+        ]
+    ).write_parquet(raw_path / "raw.parquet")
+    write_parquet_dataset(
+        pl.DataFrame(
+            [
+                {
+                    "collector": "okx_public_ws",
+                    "status": "OK",
+                    "last_message_at": datetime(2026, 5, 10, tzinfo=UTC),
+                    "updated_at": datetime(2026, 5, 10, tzinfo=UTC),
+                }
+            ]
+        ),
+        lake_root / "bronze" / "collector_health" / "okx_public_ws",
+    )
+    daily_export_module._EXPORT_FILE_INDEX_CACHE.clear()
+
+    def fail_rglob(*args, **kwargs):
+        raise AssertionError("okx_public_ws raw export should not rglob when health exists")
+
+    monkeypatch.setattr(Path, "rglob", fail_rglob)
+
+    frame, row_count, warning = _load_export_frame(lake_root, "okx_public_ws")
+
+    assert frame.is_empty()
+    assert row_count == 0
+    assert warning == "okx_public_ws export frame skipped; using okx_public_ws_health rollup"
+
+
 def test_data_quality_registry_skips_heavy_raw_when_rollups_are_available(
     tmp_path,
     monkeypatch,

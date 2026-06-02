@@ -3396,19 +3396,14 @@ def _load_export_frame(
     dataset_name: str,
 ) -> tuple[pl.DataFrame, int, str | None]:
     dataset_path = readers.dataset_path_for(lake_root, dataset_name)
-    rollup_name = {
-        "trade_print": "trade_activity_1m",
-        "orderbook_snapshot": "orderbook_spread_1m",
-    }.get(dataset_name)
+    rollup_name = _raw_export_rollup_name(lake_root, dataset_name)
     if rollup_name:
-        rollup_path = readers.dataset_path_for(lake_root, rollup_name)
-        if rollup_path.exists():
-            row_count = _export_parquet_row_count(
-                _export_parquet_files(dataset_path),
-                dataset_path=dataset_path,
-            )
-            warning = f"{dataset_name} export frame skipped; using {rollup_name} rollup"
-            return pl.DataFrame(), row_count, warning
+        row_count = _raw_export_row_count(
+            dataset_path,
+            allow_metadata_scan=dataset_name != "okx_public_ws",
+        )
+        warning = f"{dataset_name} export frame skipped; using {rollup_name} rollup"
+        return pl.DataFrame(), row_count, warning
     if dataset_name not in HEAVY_EXPORT_DATASET_LIMITS and not _should_sample_export_dataset(
         dataset_path
     ):
@@ -3442,6 +3437,34 @@ def _load_export_frame(
         return frame, row_count, None
     except Exception as exc:
         return pl.DataFrame(), 0, f"{dataset_name} sampled read failed: {exc}"
+
+
+def _raw_export_rollup_name(lake_root: Path, dataset_name: str) -> str | None:
+    rollup_candidates = {
+        "trade_print": ("trade_activity_1m",),
+        "orderbook_snapshot": ("orderbook_spread_1m",),
+        "okx_public_ws": (
+            "okx_public_ws_health",
+            "trade_activity_1m",
+            "orderbook_spread_1m",
+        ),
+    }.get(dataset_name, ())
+    for rollup_name in rollup_candidates:
+        if readers.dataset_path_for(lake_root, rollup_name).exists():
+            return rollup_name
+    return None
+
+
+def _raw_export_row_count(dataset_path: Path, *, allow_metadata_scan: bool) -> int:
+    indexed_stats = _export_indexed_dataset_stats(dataset_path)
+    if indexed_stats is not None:
+        return indexed_stats[2]
+    if not allow_metadata_scan:
+        return 0
+    return _export_parquet_row_count(
+        _export_parquet_files(dataset_path),
+        dataset_path=dataset_path,
+    )
 
 
 def _should_sample_export_dataset(dataset_path: Path) -> bool:

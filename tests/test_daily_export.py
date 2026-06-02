@@ -108,6 +108,7 @@ def test_api_latency_summary_export_includes_cache_and_payload_fields(
     monkeypatch,
 ):
     lake = tmp_path / "lake"
+    monkeypatch.delenv("QUANT_LAB_API_TOKEN", raising=False)
     monkeypatch.setenv("QUANT_LAB_API_METRICS_FLUSH_ROWS", "1")
     monkeypatch.setenv("QUANT_LAB_API_METRICS_FLUSH_SECONDS", "3600")
     record_api_request(
@@ -141,6 +142,38 @@ def test_api_latency_summary_export_includes_cache_and_payload_fields(
     assert row["avg_source_signature_ms"] == 2.1
     assert row["response_cache_hit_rate"] == 1.0
     assert row["error_count"] == 0
+
+
+def test_api_latency_summary_triggers_live_metrics_flush_when_token_configured(
+    tmp_path,
+    monkeypatch,
+):
+    captured: dict[str, object] = {}
+
+    class _Response:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, exc_type, exc, tb):
+            return False
+
+        def read(self, *_args):
+            return b"{}"
+
+    def fake_urlopen(request, timeout):
+        captured["url"] = request.full_url
+        captured["authorization"] = request.headers.get("Authorization")
+        captured["timeout"] = timeout
+        return _Response()
+
+    monkeypatch.setenv("QUANT_LAB_API_TOKEN", "unit-test-token")
+    monkeypatch.setattr(daily_export_module.urllib.request, "urlopen", fake_urlopen)
+
+    daily_export_module._api_latency_summary_for_export(tmp_path / "lake")
+
+    assert captured["url"] == "http://127.0.0.1:8027/v1/ops/api-metrics"
+    assert captured["authorization"] == "Bearer unit-test-token"
+    assert captured["timeout"] == 1.5
 
 
 def test_snapshot_meta_written_for_api_dependency_datasets(tmp_path):

@@ -10,6 +10,7 @@ import socket
 import subprocess
 import sys
 import time
+import urllib.request
 import zipfile
 from collections import Counter
 from collections.abc import Iterable
@@ -6716,6 +6717,7 @@ def _paper_live_block_reasons(row: dict[str, Any]) -> list[str]:
 
 
 def _api_latency_summary_for_export(root: Path) -> pl.DataFrame:
+    _flush_api_metrics_service_before_export()
     summary = api_metrics_summary(root, since_minutes=24 * 60)
     latency = summary.get("latency_ms") if isinstance(summary.get("latency_ms"), dict) else {}
     rows: list[dict[str, Any]] = [
@@ -6818,6 +6820,36 @@ def _api_latency_summary_for_export(root: Path) -> pl.DataFrame:
     return pl.DataFrame(rows, infer_schema_length=None).select(
         CSV_SCHEMAS["reports/api_latency_summary.csv"]
     )
+
+
+def _flush_api_metrics_service_before_export() -> None:
+    enabled = str(os.environ.get("QUANT_LAB_API_METRICS_EXPORT_FLUSH_ENABLED", "1")).strip().lower()
+    if enabled not in {"1", "true", "yes", "on"}:
+        return
+    token = str(os.environ.get("QUANT_LAB_API_TOKEN") or "").strip()
+    if not token:
+        return
+    url = str(
+        os.environ.get(
+            "QUANT_LAB_API_METRICS_EXPORT_FLUSH_URL",
+            "http://127.0.0.1:8027/v1/ops/api-metrics",
+        )
+    ).strip()
+    if not url:
+        return
+    try:
+        timeout = float(os.environ.get("QUANT_LAB_API_METRICS_EXPORT_FLUSH_TIMEOUT_SECONDS", "1.5"))
+    except ValueError:
+        timeout = 1.5
+    request = urllib.request.Request(
+        url,
+        headers={"Authorization": f"Bearer {token}", "Accept": "application/json"},
+    )
+    try:
+        with urllib.request.urlopen(request, timeout=max(timeout, 0.1)) as response:
+            response.read(1024)
+    except Exception:
+        return
 
 
 def _api_latency_summary_md(root: Path) -> str:

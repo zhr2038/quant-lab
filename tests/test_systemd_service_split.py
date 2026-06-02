@@ -244,6 +244,7 @@ def test_daily_export_template_is_packaging_only():
     assert "export-daily" in unit
     assert "--no-refresh-risk-permission" in unit
     assert "--no-pre-export-v5-refresh" in unit
+    assert "EnvironmentFile=-/etc/quant-lab/quant_lab_api.env" in unit
 
 
 def test_web_export_relies_on_systemd_memory_limit_for_snapshot_packaging():

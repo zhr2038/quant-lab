@@ -1,6 +1,8 @@
 import time
 from datetime import UTC, datetime, timedelta
 
+import polars as pl
+
 import quant_lab.ops.metrics as metrics_module
 from quant_lab.ops.metrics import (
     api_metrics_summary,
@@ -136,6 +138,59 @@ def test_api_request_metrics_records_cache_and_payload_fields(tmp_path, monkeypa
     assert summary["source_signature_ms_total"] == 1.7
     assert summary["response_cache_hit_count"] == 1
     assert summary["by_error_type"] == {}
+
+
+def test_api_request_metrics_summary_unions_evolved_parquet_schema(tmp_path, monkeypatch):
+    lake = tmp_path / "lake"
+    monkeypatch.setenv("QUANT_LAB_API_METRICS_FLUSH_ROWS", "100")
+    monkeypatch.setenv("QUANT_LAB_API_METRICS_FLUSH_SECONDS", "3600")
+    dataset = lake / "bronze" / "api_request_metrics"
+    dataset.mkdir(parents=True)
+    request_ts = datetime(2026, 6, 2, tzinfo=UTC)
+    pl.DataFrame(
+        [
+            {
+                "day": "2026-06-02",
+                "request_ts": request_ts,
+                "method": "GET",
+                "path": "/v1/strategy-opportunity-advisory/v5-compact",
+                "status_code": 200,
+                "duration_ms": 10.0,
+                "client_host": "127.0.0.1",
+                "user_agent": "old-schema",
+            }
+        ]
+    ).write_parquet(dataset / "old_schema.parquet")
+    pl.DataFrame(
+        [
+            {
+                "day": "2026-06-02",
+                "request_ts": request_ts + timedelta(seconds=1),
+                "method": "GET",
+                "path": "/v1/strategy-opportunity-advisory/v5-compact",
+                "status_code": 200,
+                "duration_ms": 20.0,
+                "client_host": "127.0.0.1",
+                "user_agent": "new-schema",
+                "cache_hit": True,
+                "rows_returned": 201,
+                "response_bytes": 313521,
+                "source_signature_ms": 0.4,
+                "response_cache_hit": True,
+            }
+        ]
+    ).write_parquet(dataset / "new_schema.parquet")
+
+    summary = api_metrics_summary(lake, day="2026-06-02")
+    path_summary = summary["latency_by_path_ms"]["/v1/strategy-opportunity-advisory/v5-compact"]
+
+    assert summary["request_count"] == 2
+    assert summary["rows_returned_total"] == 201.0
+    assert summary["response_bytes_total"] == 313521.0
+    assert summary["source_signature_ms_total"] == 0.4
+    assert summary["response_cache_hit_count"] == 1
+    assert path_summary["rows_returned_total"] == 201.0
+    assert path_summary["response_bytes_total"] == 313521.0
 
 
 def test_api_request_metrics_summary_reports_slowest_paths(tmp_path, monkeypatch):

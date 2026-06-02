@@ -279,7 +279,7 @@ def api_metrics_summary(
 ) -> dict[str, Any]:
     _wait_api_request_metrics_flush(lake_root)
     flush_api_request_metrics(lake_root)
-    lazy = _lazy_dataset_or_none(Path(lake_root) / API_METRICS_DATASET)
+    lazy = _lazy_dataset_or_none(Path(lake_root) / API_METRICS_DATASET, schema_union=True)
     if lazy is None:
         return _empty_api_metrics_summary()
     schema_names = _lazy_schema_names(lazy)
@@ -463,7 +463,14 @@ def _empty_api_metrics_summary() -> dict[str, Any]:
     }
 
 
-def _lazy_dataset_or_none(path: Path) -> pl.LazyFrame | None:
+def _lazy_dataset_or_none(path: Path, *, schema_union: bool = False) -> pl.LazyFrame | None:
+    if schema_union:
+        try:
+            union = _read_parquet_dataset_with_schema_union(path)
+        except Exception:
+            union = pl.DataFrame()
+        if not union.is_empty():
+            return union.lazy()
     try:
         lazy = read_parquet_lazy(path)
         lazy.collect_schema()
@@ -476,6 +483,43 @@ def _lazy_dataset_or_none(path: Path) -> pl.LazyFrame | None:
         if fallback.is_empty():
             return None
         return fallback.lazy()
+
+
+def _read_parquet_dataset_with_schema_union(path: Path) -> pl.DataFrame:
+    files = _parquet_metric_files(path)
+    if not files:
+        return pl.DataFrame()
+    frames: list[pl.DataFrame] = []
+    for file_path in files:
+        try:
+            frame = pl.read_parquet(file_path)
+        except Exception:
+            continue
+        if not frame.is_empty():
+            frames.append(frame)
+    if not frames:
+        return pl.DataFrame()
+    return pl.concat(frames, how="diagonal_relaxed")
+
+
+def _parquet_metric_files(path: Path) -> list[Path]:
+    if path.is_file() and path.suffix == ".parquet":
+        return [path] if not _is_internal_metric_file(path) else []
+    if not path.exists():
+        return []
+    return sorted(
+        candidate
+        for candidate in path.rglob("*.parquet")
+        if not _is_internal_metric_file(candidate)
+    )
+
+
+def _is_internal_metric_file(path: Path) -> bool:
+    return (
+        any(part == "._tmp" or part.startswith("__") for part in path.parts)
+        or path.name.startswith(".")
+        or path.name.endswith(".tmp.parquet")
+    )
 
 
 def _lazy_schema_names(lazy: pl.LazyFrame) -> set[str]:

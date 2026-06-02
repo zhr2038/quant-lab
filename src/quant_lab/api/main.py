@@ -468,6 +468,7 @@ def create_app() -> FastAPI:
             latest_only=latest_only,
             fresh_only=fresh_only,
             fields="minimal",
+            compact_for_v5=True,
         )
 
     @app.get("/v1/risk/live-permission", response_model=RiskPermission)
@@ -1241,6 +1242,7 @@ def _strategy_opportunity_advisory_response(
     latest_only: bool = False,
     fresh_only: bool = False,
     fields: str | None = None,
+    compact_for_v5: bool = False,
 ) -> Response:
     snapshot, cache_hit, source_signature_ms = _strategy_opportunity_advisory_snapshot(lake_root)
     _STRATEGY_OPPORTUNITY_ADVISORY_RESPONSE_CACHE.clear_except_source_sha(
@@ -1253,6 +1255,7 @@ def _strategy_opportunity_advisory_response(
         latest_only=latest_only,
         fresh_only=fresh_only,
         fields=fields,
+        compact_for_v5=compact_for_v5,
     )
     cached_response = _STRATEGY_OPPORTUNITY_ADVISORY_RESPONSE_CACHE.get(response_key)
     if cached_response is not None:
@@ -1289,6 +1292,8 @@ def _strategy_opportunity_advisory_response(
         latest_only=latest_only,
         fresh_only=fresh_only,
     )
+    if compact_for_v5:
+        rows = _compact_strategy_opportunity_advisory_for_v5(rows)
     minimal = str(fields or "").strip().lower() in {"minimal", "compact", "v5"}
     serialize_started = time.perf_counter()
     payload = (
@@ -1390,6 +1395,7 @@ def _strategy_opportunity_advisory_response_cache_key(
     latest_only: bool,
     fresh_only: bool,
     fields: str | None,
+    compact_for_v5: bool = False,
 ) -> tuple[Any, ...]:
     return (
         source_sha,
@@ -1398,6 +1404,7 @@ def _strategy_opportunity_advisory_response_cache_key(
         bool(latest_only),
         bool(fresh_only),
         str(fields or "").strip().lower(),
+        bool(compact_for_v5),
     )
 
 
@@ -1500,6 +1507,46 @@ def _filter_strategy_opportunity_advisory_rows(
             row.symbol,
             row.horizon_hours or -1,
         ),
+    )
+
+
+def _compact_strategy_opportunity_advisory_for_v5(
+    rows: list[StrategyOpportunityAdvisoryRow],
+) -> list[StrategyOpportunityAdvisoryRow]:
+    risk_on_latest: dict[
+        tuple[str, str, str, int | None], StrategyOpportunityAdvisoryRow
+    ] = {}
+    selected: list[StrategyOpportunityAdvisoryRow] = []
+    for row in rows:
+        if _advisory_row_matches_family(row, {"risk_on_multi_buy"}):
+            key = (
+                row.strategy_candidate,
+                row.symbol,
+                row.source_module or "",
+                row.horizon_hours,
+            )
+            current = risk_on_latest.get(key)
+            if current is None or _v5_compact_row_sort_key(row) > _v5_compact_row_sort_key(current):
+                risk_on_latest[key] = row
+            continue
+        selected.append(row)
+    selected.extend(risk_on_latest.values())
+    return sorted(
+        selected,
+        key=lambda row: (
+            -_datetime_sort_value(row.generated_at),
+            row.strategy_candidate,
+            row.symbol,
+            row.horizon_hours or -1,
+        ),
+    )
+
+
+def _v5_compact_row_sort_key(row: StrategyOpportunityAdvisoryRow) -> tuple[float, float, str]:
+    return (
+        _datetime_sort_value(row.generated_at),
+        _datetime_sort_value(row.as_of_ts),
+        str(row.candidate_id or ""),
     )
 
 

@@ -1213,6 +1213,69 @@ def test_strategy_opportunity_advisory_aliases_and_latest_report_fallback(
     assert dashed.json()[0]["expires_at"]
 
 
+def test_v5_compact_collapses_risk_on_multi_buy_candidates(tmp_path, monkeypatch):
+    lake = tmp_path / "lake"
+    monkeypatch.setenv("QUANT_LAB_LAKE_ROOT", str(lake))
+    monkeypatch.delenv("QUANT_LAB_API_TOKEN", raising=False)
+    api_main._STRATEGY_OPPORTUNITY_ADVISORY_CACHE.clear()
+    api_main._STRATEGY_OPPORTUNITY_ADVISORY_RESPONSE_CACHE.clear()
+    as_of = datetime(2026, 5, 24, tzinfo=UTC)
+    rows = []
+    for top_k in (1, 2):
+        for candidate_id in ("20260524_01", "20260524_02"):
+            row = _api_advisory_row(
+                f"v5.risk_on_multi_buy_top{top_k}_shadow",
+                "MULTI",
+                as_of,
+            )
+            row.update(
+                {
+                    "strategy_id": f"MULTI_V5_RISK_ON_MULTI_BUY_TOP{top_k}_SHADOW",
+                    "source_module": "risk_on_multi_buy_shadow",
+                    "template_family": "risk_on_multi_buy_shadow",
+                    "candidate_id": candidate_id,
+                    "decision": "KEEP_SHADOW",
+                    "recommended_mode": "shadow",
+                }
+            )
+            rows.append(row)
+    alpha_row = _api_advisory_row(
+        "v5.af.expanded_relative_strength_top1_shadow",
+        "BNB-USDT",
+        as_of,
+    )
+    alpha_row.update(
+        {
+            "source_module": "alpha_factory",
+            "decision": "KEEP_SHADOW",
+            "recommended_mode": "shadow",
+        }
+    )
+    rows.append(alpha_row)
+    write_parquet_dataset(pl.DataFrame(rows), lake / "gold" / "strategy_opportunity_advisory")
+
+    client = TestClient(app)
+    full = client.get("/v1/strategy-opportunity-advisory", params={"families": "risk_on_multi_buy"})
+    compact = client.get(
+        "/v1/strategy-opportunity-advisory/v5-compact",
+        params={"families": "risk_on_multi_buy"},
+    )
+
+    assert full.status_code == 200
+    assert compact.status_code == 200
+    assert len(full.json()) == 4
+    compact_rows = compact.json()
+    assert len(compact_rows) == 2
+    assert {row["strategy_candidate"] for row in compact_rows} == {
+        "v5.risk_on_multi_buy_top1_shadow",
+        "v5.risk_on_multi_buy_top2_shadow",
+    }
+    assert {row["candidate_id"] for row in compact_rows} == {"20260524_02"}
+    assert int(compact.headers["x-quant-lab-response-bytes"]) < int(
+        full.headers["x-quant-lab-response-bytes"]
+    )
+
+
 def _api_advisory_row(
     strategy_candidate: str,
     symbol: str,

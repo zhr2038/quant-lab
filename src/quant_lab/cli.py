@@ -38,6 +38,7 @@ from quant_lab.ingest.okx_readonly_private import (
 from quant_lab.ingest.okx_ws_public import collect_okx_public_ws, collect_okx_public_ws_universe
 from quant_lab.ingest.v5_reports import inspect_v5_reports, publish_v5_reports_to_lake
 from quant_lab.jobs.compact_market_data import build_market_data_1m_rollups
+from quant_lab.jobs.small_file_maintenance import lake_small_file_maintenance
 from quant_lab.ops.data_quality import run_data_quality
 from quant_lab.ops.lake_health import (
     lake_dataset_quality_summary,
@@ -817,6 +818,68 @@ def build_market_data_rollups_command(
             lake_root,
             dry_run=not apply,
             lookback_hours=lookback_hours,
+        ),
+    )
+    typer.echo(json.dumps(result.to_dict(), indent=None if compact_output else 2, sort_keys=True))
+
+
+@app.command("lake-small-file-maintenance")
+def lake_small_file_maintenance_command(
+    lake_root: Annotated[
+        Path,
+        typer.Option(
+            "--lake-root",
+            file_okay=False,
+            dir_okay=True,
+            writable=True,
+            help="quant-lab lake root containing bronze/silver/gold datasets.",
+        ),
+    ],
+    min_files: Annotated[int, typer.Option("--min-files", min=1)] = 16,
+    max_avg_file_size_mb: Annotated[
+        float,
+        typer.Option("--max-avg-file-size-mb", min=0.0),
+    ] = 8.0,
+    max_groups: Annotated[int, typer.Option("--max-groups", min=0)] = 50,
+    target_rows_per_file: Annotated[
+        int,
+        typer.Option("--target-rows-per-file", min=1),
+    ] = 250_000,
+    max_source_files_per_batch: Annotated[
+        int,
+        typer.Option("--max-source-files-per-batch", min=1),
+    ] = 64,
+    max_source_batch_bytes: Annotated[
+        int,
+        typer.Option("--max-source-batch-bytes", min=0),
+    ] = 268_435_456,
+    dry_run: Annotated[
+        bool,
+        typer.Option(
+            "--dry-run/--apply",
+            help="Inspect and report candidate small-file groups without compacting.",
+        ),
+    ] = False,
+    compact_output: Annotated[
+        bool,
+        typer.Option(
+            "--compact-output/--full-output",
+            help="Emit a single-line summary suitable for systemd journals.",
+        ),
+    ] = False,
+) -> None:
+    result = run_with_job_metrics(
+        lake_root=lake_root,
+        job_name="lake-small-file-maintenance",
+        func=lambda: lake_small_file_maintenance(
+            lake_root,
+            min_files=min_files,
+            max_avg_file_size_mb=max_avg_file_size_mb,
+            max_groups=max_groups,
+            target_rows_per_file=target_rows_per_file,
+            max_source_files_per_batch=max_source_files_per_batch,
+            max_source_batch_bytes=max_source_batch_bytes or None,
+            dry_run=dry_run,
         ),
     )
     typer.echo(json.dumps(result.to_dict(), indent=None if compact_output else 2, sort_keys=True))

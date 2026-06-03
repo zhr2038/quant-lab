@@ -154,6 +154,7 @@ def test_scheduled_compaction_covers_hot_ws_datasets():
     assert "COMPACT_DIRECT_MAX_SOURCE_FILES" in script
     assert "COMPACT_DIRECT_MIN_SOURCE_FILES" in script
     assert "COMPACT_MAX_SOURCE_BATCH_BYTES" in script
+    assert "COMPACT_SMALL_FILE_MAX_BYTES" in script
     assert (
         'COMPACT_CONSOLIDATE_EXISTING_COMPACT_OUTPUTS="'
         '${COMPACT_CONSOLIDATE_EXISTING_COMPACT_OUTPUTS:-0}"'
@@ -170,10 +171,12 @@ def test_scheduled_compaction_covers_hot_ws_datasets():
     assert "COMPACT_RAW_OKX_WS=1" in unit
     assert "COMPACT_HOT_WS_PARTITION_REPAIR=0" in unit
     assert "COMPACT_DATASET_TIMEOUT_SECONDS=300" in unit
-    assert "COMPACT_DIRECT_MAX_SOURCE_FILES=4" in unit
-    assert "COMPACT_DIRECT_MIN_SOURCE_FILES=64" in unit
-    assert "COMPACT_MAX_SOURCE_BATCH_BYTES=67108864" in unit
+    assert "COMPACT_RUN_BUDGET_SECONDS=1800" in unit
+    assert "COMPACT_DIRECT_MAX_SOURCE_FILES=64" in unit
+    assert "COMPACT_DIRECT_MIN_SOURCE_FILES=16" in unit
+    assert "COMPACT_MAX_SOURCE_BATCH_BYTES=268435456" in unit
     assert "COMPACT_CONSOLIDATE_EXISTING_COMPACT_OUTPUTS=0" in unit
+    assert "MARKET_ROLLUP_LOOKBACK_HOURS=24" in unit
     assert "CPUQuota=40%" in unit
     assert "MemoryHigh=2G" in unit
     assert "MemoryMax=3G" in unit
@@ -184,6 +187,9 @@ def test_scheduled_compaction_covers_hot_ws_datasets():
     assert "-name '.*'" in script
     assert "! -name '*.tmp.parquet'" in script
     assert "START_DIRECT_COMPACT" in script
+    assert "file_count_before" in script
+    assert "file_count_after" in script
+    assert "small_file_count_before" in script
     assert '"${COMPACT_DIRECT_MAX_SOURCE_FILES}"' in script
     assert "WARN_DIRECT_COMPACT_FAILED" in script
     assert "SKIP_DIRECT_COMPACT" in script

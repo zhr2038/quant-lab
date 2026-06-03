@@ -381,20 +381,41 @@ def test_append_parquet_dataset_auto_compacts_direct_small_files(tmp_path, monke
     monkeypatch.setenv("QUANT_LAB_APPEND_AUTO_COMPACT_FILES", "3")
     monkeypatch.setenv("QUANT_LAB_APPEND_AUTO_COMPACT_TARGET_ROWS", "100")
 
+    results = []
     for index in range(5):
-        append_parquet_dataset(
-            pl.DataFrame([{"channel": "trades", "inst_id": "BTC-USDT", "value": index}]),
-            dataset,
-            target_rows_per_file=1,
+        results.append(
+            append_parquet_dataset(
+                pl.DataFrame([{"channel": "trades", "inst_id": "BTC-USDT", "value": index}]),
+                dataset,
+                target_rows_per_file=1,
+            )
         )
 
     files = list(dataset.glob("*.parquet"))
     read_back = read_parquet_dataset(dataset)
 
+    compacted = [result for result in results if result.auto_compact_triggered]
+    assert compacted
+    assert compacted[0].compact_source_file_count > compacted[0].compact_output_file_count
     assert len(files) <= 3
     assert read_back.height == 5
     assert sorted(read_back["value"].to_list()) == list(range(5))
     assert not invalid_parquet_files(dataset)
+
+
+def test_append_auto_compaction_respects_min_total_bytes(tmp_path, monkeypatch):
+    dataset = tmp_path / "lake" / "bronze" / "api_request_metrics"
+    monkeypatch.setenv("QUANT_LAB_APPEND_AUTO_COMPACT_FILES", "1")
+    monkeypatch.setenv("QUANT_LAB_APPEND_AUTO_COMPACT_TARGET_ROWS", "100")
+    monkeypatch.setenv("QUANT_LAB_APPEND_AUTO_COMPACT_MIN_TOTAL_BYTES", "100000000")
+
+    results = [
+        append_parquet_dataset(pl.DataFrame([{"value": index}]), dataset, target_rows_per_file=1)
+        for index in range(3)
+    ]
+
+    assert not any(result.auto_compact_triggered for result in results)
+    assert len(list(dataset.glob("*.parquet"))) == 3
 
 
 def test_append_auto_compaction_skips_existing_compact_outputs(tmp_path, monkeypatch):

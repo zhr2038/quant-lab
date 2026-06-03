@@ -1930,6 +1930,20 @@ def test_web_readers_use_lake_file_index_before_rglob(tmp_path, monkeypatch):
     assert warning is None
 
 
+def test_web_readers_surface_file_index_missing_fallback_warning(tmp_path):
+    readers.clear_web_cache()
+    lake_root = _fixture_lake(tmp_path)
+    dataset_path = lake_root / "gold" / "cost_bucket_daily"
+
+    files, warning = readers._valid_parquet_files_with_warning(
+        dataset_path,
+        "cost_bucket_daily",
+    )
+
+    assert files
+    assert readers.WEB_FILE_INDEX_FALLBACK_WARNING in str(warning)
+
+
 def test_dataset_snapshot_uses_snapshot_meta_without_scanning_parquet(tmp_path, monkeypatch):
     readers.clear_web_cache()
     lake_root = tmp_path / "lake"

@@ -3,15 +3,16 @@ set -euo pipefail
 
 QLAB_BIN="${QLAB_BIN:-/opt/quant-lab/.venv/bin/qlab}"
 LAKE_ROOT="${QUANT_LAB_LAKE_ROOT:-/var/lib/quant-lab/lake}"
-COMPACT_DATASET_TIMEOUT_SECONDS="${COMPACT_DATASET_TIMEOUT_SECONDS:-180}"
-COMPACT_RUN_BUDGET_SECONDS="${COMPACT_RUN_BUDGET_SECONDS:-1500}"
+COMPACT_DATASET_TIMEOUT_SECONDS="${COMPACT_DATASET_TIMEOUT_SECONDS:-300}"
+COMPACT_RUN_BUDGET_SECONDS="${COMPACT_RUN_BUDGET_SECONDS:-1800}"
 COMPACT_RAW_OKX_WS="${COMPACT_RAW_OKX_WS:-0}"
 COMPACT_HOT_WS_PARTITION_REPAIR="${COMPACT_HOT_WS_PARTITION_REPAIR:-0}"
-COMPACT_DIRECT_MAX_SOURCE_FILES="${COMPACT_DIRECT_MAX_SOURCE_FILES:-8}"
-COMPACT_DIRECT_MIN_SOURCE_FILES="${COMPACT_DIRECT_MIN_SOURCE_FILES:-64}"
-COMPACT_MAX_SOURCE_BATCH_BYTES="${COMPACT_MAX_SOURCE_BATCH_BYTES:-134217728}"
+COMPACT_DIRECT_MAX_SOURCE_FILES="${COMPACT_DIRECT_MAX_SOURCE_FILES:-64}"
+COMPACT_DIRECT_MIN_SOURCE_FILES="${COMPACT_DIRECT_MIN_SOURCE_FILES:-16}"
+COMPACT_MAX_SOURCE_BATCH_BYTES="${COMPACT_MAX_SOURCE_BATCH_BYTES:-268435456}"
 COMPACT_CONSOLIDATE_EXISTING_COMPACT_OUTPUTS="${COMPACT_CONSOLIDATE_EXISTING_COMPACT_OUTPUTS:-0}"
 MARKET_ROLLUP_LOOKBACK_HOURS="${MARKET_ROLLUP_LOOKBACK_HOURS:-24}"
+COMPACT_SMALL_FILE_MAX_BYTES="${COMPACT_SMALL_FILE_MAX_BYTES:-8388608}"
 COMPACT_STARTED_AT="$(date +%s)"
 
 V5_TELEMETRY_DATASETS=(
@@ -54,8 +55,13 @@ compact_dataset() {
   local target_rows="$2"
   local batch_files="$3"
   local status
+  local before_count
+  local after_count
+  local small_before
 
-  echo "START_COMPACT dataset=${dataset} timeout_seconds=${COMPACT_DATASET_TIMEOUT_SECONDS}"
+  before_count="$(parquet_file_count "${dataset}")"
+  small_before="$(small_parquet_file_count "${dataset}")"
+  echo "START_COMPACT dataset=${dataset} timeout_seconds=${COMPACT_DATASET_TIMEOUT_SECONDS} file_count_before=${before_count} small_file_count_before=${small_before}"
   set +e
   timeout --kill-after=30s "${COMPACT_DATASET_TIMEOUT_SECONDS}s" \
     "${QLAB_BIN}" compact-lake-dataset \
@@ -71,7 +77,8 @@ compact_dataset() {
     echo "WARN_COMPACT_FAILED dataset=${dataset} status=${status}"
     return 0
   fi
-  echo "FINISH_COMPACT dataset=${dataset}"
+  after_count="$(parquet_file_count "${dataset}")"
+  echo "FINISH_COMPACT dataset=${dataset} file_count_before=${before_count} file_count_after=${after_count} small_file_count_before=${small_before}"
 }
 
 compact_dataset_direct_only() {
@@ -81,12 +88,17 @@ compact_dataset_direct_only() {
   local include_existing="${4:-0}"
   local status
   local include_args=()
+  local before_count
+  local after_count
+  local small_before
 
   if [[ "${include_existing}" == "1" ]]; then
     include_args=(--include-existing-compact-files)
   fi
 
-  echo "START_DIRECT_COMPACT dataset=${dataset} timeout_seconds=${COMPACT_DATASET_TIMEOUT_SECONDS}"
+  before_count="$(direct_source_parquet_file_count "${dataset}")"
+  small_before="$(direct_small_source_parquet_file_count "${dataset}")"
+  echo "START_DIRECT_COMPACT dataset=${dataset} timeout_seconds=${COMPACT_DATASET_TIMEOUT_SECONDS} direct_source_files_before=${before_count} direct_small_source_files_before=${small_before}"
   set +e
   timeout --kill-after=30s "${COMPACT_DATASET_TIMEOUT_SECONDS}s" \
     "${QLAB_BIN}" compact-lake-dataset \
@@ -104,7 +116,8 @@ compact_dataset_direct_only() {
     echo "WARN_DIRECT_COMPACT_FAILED dataset=${dataset} status=${status}"
     return 0
   fi
-  echo "FINISH_DIRECT_COMPACT dataset=${dataset}"
+  after_count="$(direct_source_parquet_file_count "${dataset}")"
+  echo "FINISH_DIRECT_COMPACT dataset=${dataset} direct_source_files_before=${before_count} direct_source_files_after=${after_count} direct_small_source_files_before=${small_before}"
 }
 
 build_market_data_rollups() {
@@ -173,6 +186,26 @@ parquet_file_count() {
   visible_parquet_files "${dataset_path}" | wc -l
 }
 
+small_parquet_file_count() {
+  local dataset="$1"
+  local dataset_path="${LAKE_ROOT}/${dataset}"
+  if [[ ! -d "${dataset_path}" ]]; then
+    echo 0
+    return
+  fi
+  visible_parquet_files "${dataset_path}" \
+    | while IFS= read -r file_path; do
+        if [[ -f "${file_path}" ]]; then
+          local size
+          size="$(stat -c '%s' "${file_path}" 2>/dev/null || echo 0)"
+          if (( size > 0 && size < COMPACT_SMALL_FILE_MAX_BYTES )); then
+            printf '%s\n' "${file_path}"
+          fi
+        fi
+      done \
+    | wc -l
+}
+
 visible_parquet_files() {
   local root_path="$1"
   find "${root_path}" \
@@ -212,6 +245,19 @@ direct_source_parquet_file_count() {
   find "${dataset_path}" -maxdepth 1 \
     -type f -name '*.parquet' ! -name '.*' ! -name '*.tmp.parquet' \
     ! -name 'compact_*' ! -name 'data.parquet' | wc -l
+}
+
+direct_small_source_parquet_file_count() {
+  local dataset="$1"
+  local dataset_path="${LAKE_ROOT}/${dataset}"
+  if [[ ! -d "${dataset_path}" ]]; then
+    echo 0
+    return
+  fi
+  find "${dataset_path}" -maxdepth 1 \
+    -type f -name '*.parquet' ! -name '.*' ! -name '*.tmp.parquet' \
+    ! -name 'compact_*' ! -name 'data.parquet' \
+    -size -"${COMPACT_SMALL_FILE_MAX_BYTES}"c | wc -l
 }
 
 compact_direct_if_file_count_at_least() {

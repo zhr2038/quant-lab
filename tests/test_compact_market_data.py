@@ -8,6 +8,7 @@ import quant_lab.data.file_index as file_index_module
 import quant_lab.jobs.compact_market_data as compact_market_data_module
 from quant_lab.data.file_index import build_lake_file_index, old_files_for_dataset
 from quant_lab.data.lake import (
+    append_parquet_dataset,
     count_parquet_rows,
     read_parquet_dataset,
     write_parquet_dataset,
@@ -17,6 +18,10 @@ from quant_lab.jobs.compact_market_data import (
     build_orderbook_spread_1m_rollup,
     build_trade_activity_1m_rollup,
     compact_market_data,
+)
+from quant_lab.jobs.small_file_maintenance import (
+    lake_small_file_maintenance,
+    small_file_groups,
 )
 
 
@@ -286,6 +291,7 @@ def test_lake_file_index_reuses_unchanged_rows_and_scans_only_new_files(
     assert reused.height == 2
     assert "indexed_at" in reused.columns
     assert "index_version" in reused.columns
+    assert reused.get_column("reused_from_previous_index").to_list() == [True, True]
 
     third = source / "third.parquet"
     pl.DataFrame(
@@ -304,6 +310,48 @@ def test_lake_file_index_reuses_unchanged_rows_and_scans_only_new_files(
 
     assert updated.height == 3
     assert scanned == ["third.parquet"]
+    reused_flags = updated.sort("path").get_column("reused_from_previous_index").to_list()
+    assert reused_flags.count(True) == 2
+    assert reused_flags.count(False) == 1
+
+
+def test_small_file_maintenance_compacts_priority_partition_groups(tmp_path):
+    lake = tmp_path / "lake"
+    dataset = lake / "silver" / "v5_quant_lab_request"
+    for index in range(18):
+        append_parquet_dataset(
+            pl.DataFrame(
+                [
+                    {
+                        "event_key": f"req-{index}",
+                        "ts_utc": datetime(2026, 5, 31, 10, index % 60, tzinfo=UTC),
+                        "run_id": "20260531_10",
+                    }
+                ]
+            ),
+            dataset,
+            target_rows_per_file=1,
+        )
+    build_lake_file_index(lake, ["silver/v5_quant_lab_request"])
+
+    groups = small_file_groups(lake, min_files=16, max_avg_file_size_mb=8)
+    assert groups
+    assert groups[0].dataset == "silver/v5_quant_lab_request"
+
+    result = lake_small_file_maintenance(
+        lake,
+        min_files=16,
+        max_groups=5,
+        target_rows_per_file=250_000,
+        max_source_files_per_batch=64,
+        dry_run=False,
+    )
+
+    assert result.compacted_group_count == 1
+    assert result.source_file_count == 18
+    assert result.output_file_count == 1
+    assert count_parquet_rows(dataset) == 18
+    assert len(list(dataset.glob("*.parquet"))) == 1
 
 
 def test_rollup_records_warning_when_file_index_missing(tmp_path):

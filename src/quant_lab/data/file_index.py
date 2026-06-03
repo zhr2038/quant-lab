@@ -140,6 +140,7 @@ def _index_dataset(
                 "source_sha": f"{stat.st_mtime_ns}:{stat.st_size}",
                 "indexed_at": indexed_at,
                 "index_version": INDEX_VERSION,
+                "reused_from_previous_index": False,
             }
         )
     return rows
@@ -161,6 +162,7 @@ def _reuse_index_row(row: dict[str, Any], *, stat, indexed_at: str) -> dict[str,
     reused["source_sha"] = str(reused.get("source_sha") or f"{stat.st_mtime_ns}:{stat.st_size}")
     reused["indexed_at"] = str(reused.get("indexed_at") or indexed_at)
     reused["index_version"] = str(reused.get("index_version") or INDEX_VERSION)
+    reused["reused_from_previous_index"] = True
     return reused
 
 

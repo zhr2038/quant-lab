@@ -59,6 +59,9 @@ class AppendParquetResult:
     rows_written: int
     file_count: int
     partition_by: list[str]
+    auto_compact_triggered: bool = False
+    compact_source_file_count: int = 0
+    compact_output_file_count: int = 0
 
 
 @dataclass(frozen=True)
@@ -196,6 +199,8 @@ def _append_parquet_dataset_unlocked(
     chunks = _partitioned_chunks(frame, partition_columns)
     rows_written = 0
     file_count = 0
+    compact_source_file_count = 0
+    compact_output_file_count = 0
     max_rows = max(int(target_rows_per_file or frame.height), 1)
     touched_dirs: set[Path] = set()
     for partition_values, partition_frame in chunks:
@@ -222,8 +227,23 @@ def _append_parquet_dataset_unlocked(
             file_count += 1
     if auto_compact:
         for compact_dir in sorted(touched_dirs):
-            _auto_compact_append_dataset_unlocked(compact_dir, target_rows_per_file=max_rows)
-    return AppendParquetResult(str(path), rows_written, file_count, partition_columns)
+            result = _auto_compact_append_dataset_unlocked(
+                compact_dir,
+                target_rows_per_file=max_rows,
+            )
+            if result is None:
+                continue
+            compact_source_file_count += result.source_file_count
+            compact_output_file_count += result.output_file_count
+    return AppendParquetResult(
+        str(path),
+        rows_written,
+        file_count,
+        partition_columns,
+        auto_compact_triggered=compact_source_file_count > 0,
+        compact_source_file_count=compact_source_file_count,
+        compact_output_file_count=compact_output_file_count,
+    )
 
 
 def compact_parquet_dataset(
@@ -345,17 +365,31 @@ def _auto_compact_append_dataset_unlocked(
     *,
     target_rows_per_file: int,
 ) -> CompactParquetResult | None:
-    threshold = _int_env("QUANT_LAB_APPEND_AUTO_COMPACT_FILES", 256)
+    threshold = _int_env("QUANT_LAB_APPEND_AUTO_COMPACT_FILES", 64)
     if threshold <= 0:
         return None
     files = _direct_compaction_source_files(dataset_path)
-    if len(files) <= threshold:
+    file_count_before = len(files)
+    if file_count_before <= threshold:
+        return None
+    min_total_bytes = _int_env("QUANT_LAB_APPEND_AUTO_COMPACT_MIN_TOTAL_BYTES", 0)
+    total_source_bytes = _file_size_sum(files)
+    if min_total_bytes > 0 and total_source_bytes < min_total_bytes:
+        logger.debug(
+            "skip_append_auto_compact dataset_path=%s partition_dir=%s "
+            "file_count_before=%s total_source_bytes=%s min_total_bytes=%s",
+            dataset_path,
+            dataset_path,
+            file_count_before,
+            total_source_bytes,
+            min_total_bytes,
+        )
         return None
     max_source_files = _int_env(
         "QUANT_LAB_APPEND_AUTO_COMPACT_MAX_SOURCE_FILES",
         max(threshold, 512),
     )
-    return _compact_direct_parquet_files_unlocked(
+    result = _compact_direct_parquet_files_unlocked(
         dataset_path,
         files,
         target_rows_per_file=_int_env(
@@ -365,6 +399,21 @@ def _auto_compact_append_dataset_unlocked(
         max_source_files_per_batch=max_source_files,
         max_source_batch_bytes=None,
     )
+    file_count_after = len(_direct_compaction_source_files(dataset_path))
+    logger.info(
+        "append_auto_compact dataset_path=%s partition_dir=%s "
+        "file_count_before=%s file_count_after=%s "
+        "compact_source_file_count=%s compact_output_file_count=%s "
+        "total_source_bytes=%s",
+        dataset_path,
+        dataset_path,
+        file_count_before,
+        file_count_after,
+        result.source_file_count,
+        result.output_file_count,
+        total_source_bytes,
+    )
+    return result
 
 
 def _compact_direct_parquet_files_unlocked(
@@ -451,6 +500,16 @@ def _compact_direct_parquet_files_unlocked(
     except Exception:
         _remove_internal_path(staging)
         raise
+
+
+def _file_size_sum(files: Sequence[Path]) -> int:
+    total = 0
+    for file_path in files:
+        try:
+            total += file_path.stat().st_size
+        except OSError:
+            continue
+    return total
 
 
 def repair_parquet_partition_values(

@@ -1225,7 +1225,7 @@ def _parquet_file_candidates_with_warning(path: Path) -> tuple[list[Path], str |
             files_scanned=len(candidates),
             warning=WEB_FILE_INDEX_FALLBACK_WARNING,
         )
-    return candidates, None
+    return candidates, WEB_FILE_INDEX_FALLBACK_WARNING if path.exists() else None
 
 
 def _parquet_file_candidates(path: Path) -> list[Path]:

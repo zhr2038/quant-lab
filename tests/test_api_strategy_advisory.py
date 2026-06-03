@@ -1201,15 +1201,22 @@ def test_strategy_opportunity_advisory_aliases_and_latest_report_fallback(
 
     client = TestClient(app)
     dashed = client.get("/v1/strategy-opportunity-advisory")
+    underscored_redirect = client.get("/v1/strategy_opportunity_advisory", follow_redirects=False)
     underscored = client.get("/v1/strategy_opportunity_advisory")
     report_alias = client.get("/v1/reports/strategy-opportunity-advisory")
 
     assert dashed.status_code == 200
+    assert underscored_redirect.status_code == 308
+    assert underscored_redirect.headers["location"].endswith(
+        "/v1/strategy-opportunity-advisory/v5-compact"
+    )
     assert underscored.status_code == 200
     assert report_alias.status_code == 200
-    assert dashed.json() == underscored.json() == report_alias.json()
+    assert dashed.json() == report_alias.json()
     assert dashed.json()[0]["strategy_candidate"] == "v5.f4_volume_expansion_entry"
+    assert underscored.json()[0]["strategy_candidate"] == "v5.f4_volume_expansion_entry"
     assert dashed.json()[0]["contract_version"] == V5_QUANT_LAB_CONTRACT_VERSION
+    assert underscored.json()[0]["contract_version"] == V5_QUANT_LAB_CONTRACT_VERSION
     assert dashed.json()[0]["source_version"]
     assert dashed.json()[0]["would_enter"] is False
     assert dashed.json()[0]["would_block_if_enabled"] is False

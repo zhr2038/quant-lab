@@ -16,6 +16,7 @@ from quant_lab.export.daily import (
     _paper_strategy_proposals_for_export,
     _post_impulse_overextension_shadow_for_export,
     _strategy_opportunity_advisory_for_export,
+    _v5_quant_lab_consistency_dashboard_md,
     export_daily_pack,
 )
 from quant_lab.research.alpha_discovery import (
@@ -1112,9 +1113,92 @@ def test_post_impulse_overextension_shadow_flags_late_breakout_failure():
     failure_row = failure.to_dicts()[0]
     assert row["symbol"] == "BNB-USDT"
     assert row["late_failure_flag"] is True
-    assert "return_24h_ge_300bps" in row["overextension_reason"]
+    assert "return_24h_ge_200bps" in row["overextension_reason"]
+    assert row["why_not_triggered"] in (None, "")
     assert failure_row["diagnosis"] == "late_breakout_failure_after_overextension"
     assert failure_row["live_order_effect"] == "read_only_no_live_order"
+
+
+def test_post_impulse_overextension_shadow_records_not_triggered_reason():
+    ts = datetime(2026, 5, 31, 12, tzinfo=UTC)
+    candidates = pl.DataFrame(
+        [
+            {
+                "run_id": "r_strong_but_not_overextended",
+                "ts_utc": ts,
+                "symbol": "BNB-USDT",
+                "alpha6_side": "buy",
+                "alpha6_score": 0.8,
+                "f3_vol_adj_ret": 3.0,
+                "f4_volume_expansion": 0.2,
+                "cost_bps": 30.0,
+            }
+        ]
+    )
+    market = pl.DataFrame(
+        [
+            {"symbol": "BNB-USDT", "ts": ts - timedelta(hours=24), "close": 100.0},
+            {"symbol": "BNB-USDT", "ts": ts, "close": 101.0},
+            {"symbol": "BNB-USDT", "ts": ts + timedelta(hours=4), "close": 102.0},
+        ]
+    )
+
+    overextension = _post_impulse_overextension_shadow_for_export(
+        candidate_events=candidates,
+        market_bars=market,
+    )
+    failure = _late_breakout_failure_shadow_for_export(overextension)
+
+    row = overextension.to_dicts()[0]
+    assert row["response_action"] == "diagnostic_only"
+    assert row["overextension_reason"] in (None, "")
+    assert row["why_not_triggered"] == "return_24h_lt_200bps"
+    assert row["late_failure_flag"] is False
+    assert failure.is_empty()
+
+
+def test_consistency_dashboard_uses_bnb_paper_latest_view_not_raw_cumulative():
+    latest = pl.DataFrame(
+        [
+            {
+                "strategy_id": "BNB_F3_DOMINANT_ENTRY_PAPER_V1",
+                "paper_date": "2026-06-02",
+                "symbol": "BNB-USDT",
+                "entry_count": 89,
+                "bundle_ts": datetime(2026, 6, 2, 12, tzinfo=UTC),
+            }
+        ]
+    )
+    raw_cumulative = pl.DataFrame(
+        [
+            {
+                "strategy_id": "BNB_F3_DOMINANT_ENTRY_PAPER_V1",
+                "paper_date": "2026-06-01",
+                "symbol": "BNB-USDT",
+                "entry_count": 976,
+                "bundle_ts": datetime(2026, 6, 1, 12, tzinfo=UTC),
+            }
+        ]
+    )
+
+    dashboard = _v5_quant_lab_consistency_dashboard_md(
+        frames={
+            "v5_bnb_paper_strategy_daily_latest": latest,
+            "paper_strategy_daily": raw_cumulative,
+        },
+        final_score_alpha6_conflict=pl.DataFrame(),
+        bnb_strong_alpha6_bypass_shadow=pl.DataFrame(),
+        negative_expectancy_attribution=pl.DataFrame(),
+        bnb_paper_daily=latest,
+        risk_on_multi_buy_shadow=pl.DataFrame(),
+        opportunity_advisory=pl.DataFrame(),
+    )
+
+    assert "bnb_paper_v5_entry_count: 89" in dashboard
+    assert "bnb_paper_quant_lab_entry_count: 89" in dashboard
+    assert "bnb_paper_quant_lab_raw_entry_count: 976" in dashboard
+    assert "bnb_paper_entry_count_match: true" in dashboard
+    assert "v5_bundle_lag_detected: false" in dashboard
 
 
 def test_export_daily_pack_includes_final_score_alpha6_conflict(tmp_path):

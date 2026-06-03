@@ -19,7 +19,7 @@ from typing import Any
 
 import polars as pl
 from fastapi import FastAPI, HTTPException, Request, status
-from fastapi.responses import JSONResponse, Response
+from fastapi.responses import JSONResponse, RedirectResponse, Response
 from pydantic import BaseModel, ConfigDict, Field
 from starlette.middleware.gzip import GZipMiddleware
 
@@ -430,10 +430,6 @@ def create_app() -> FastAPI:
         response_model=list[StrategyOpportunityAdvisoryRow],
     )
     @app.get(
-        "/v1/strategy_opportunity_advisory",
-        response_model=list[StrategyOpportunityAdvisoryRow],
-    )
-    @app.get(
         "/v1/reports/strategy-opportunity-advisory",
         response_model=list[StrategyOpportunityAdvisoryRow],
     )
@@ -454,6 +450,13 @@ def create_app() -> FastAPI:
             fresh_only=fresh_only,
             fields=fields,
         )
+
+    @app.get("/v1/strategy_opportunity_advisory")
+    def strategy_opportunity_advisory_legacy(request: Request) -> RedirectResponse:
+        target = "/v1/strategy-opportunity-advisory/v5-compact"
+        if request.url.query:
+            target = f"{target}?{request.url.query}"
+        return RedirectResponse(url=target, status_code=308)
 
     @app.get("/v1/strategy-opportunity-advisory/v5-compact")
     def strategy_opportunity_advisory_v5_compact(

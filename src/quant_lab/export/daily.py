@@ -86,9 +86,6 @@ from quant_lab.risk.publish import (
 from quant_lab.strategy_telemetry.analyze import (
     _event_key as _v5_telemetry_event_key,
 )
-from quant_lab.strategy_telemetry.analyze import (
-    _latest_bnb_paper_strategy_daily,
-)
 from quant_lab.strategy_telemetry.bundle import compute_sha256
 from quant_lab.strategy_telemetry.sanitize import SECRET_PATTERNS, safe_json_dumps
 from quant_lab.symbols import normalize_symbol
@@ -1237,6 +1234,8 @@ CSV_SCHEMAS: dict[str, list[str]] = {
         "return_24h_bps",
         "return_48h_bps",
         "overextension_reason",
+        "why_not_triggered",
+        "missing_field_reason",
         "future_4h_net_bps",
         "future_8h_net_bps",
         "future_12h_net_bps",
@@ -7891,28 +7890,50 @@ def _post_impulse_overextension_shadow_for_export(
     rows: list[dict[str, Any]] = []
     for candidate in candidate_events.to_dicts():
         side = str(candidate.get("alpha6_side") or "").strip().lower()
-        if side != "buy":
+        if side and side != "buy":
             continue
         alpha6_score = _optional_float(candidate.get("alpha6_score"))
-        if alpha6_score is None or alpha6_score < 0.9:
-            continue
         f3 = _candidate_factor_value(candidate, "f3_vol_adj_ret", "f3", "f3_score")
         f4 = _candidate_factor_value(candidate, "f4_volume_expansion", "f4", "f4_score")
-        if not ((f3 is not None and f3 >= 10.0) or (f4 is not None and f4 >= 1.0)):
+        signal_reasons = []
+        if alpha6_score is not None and alpha6_score >= 0.75:
+            signal_reasons.append("alpha6_score_ge_0_75")
+        if f3 is not None and f3 >= 10.0:
+            signal_reasons.append("f3_ge_10")
+        if f4 is not None and f4 >= 1.0:
+            signal_reasons.append("f4_ge_1")
+        if not signal_reasons:
             continue
+        missing_reasons = []
+        if not side:
+            missing_reasons.append("alpha6_side_missing")
+        if alpha6_score is None:
+            missing_reasons.append("alpha6_score_missing")
+        if f3 is None:
+            missing_reasons.append("f3_missing")
+        if f4 is None:
+            missing_reasons.append("f4_missing")
         symbol = normalize_symbol(candidate.get("symbol"))
         ts = readers._coerce_timestamp(candidate.get("ts_utc") or candidate.get("ts"))
         if not symbol or symbol == "UNKNOWN" or ts is None:
             continue
         market_rows = market_by_symbol.get(symbol, [])
+        if not market_rows:
+            missing_reasons.append("market_bars_missing")
         ts_utc = ts.astimezone(UTC)
         entry_px = _candidate_entry_price(candidate, market_rows, ts_utc)
         return_24h = _historical_return_bps(market_rows, ts_utc, 24)
         return_48h = _historical_return_bps(market_rows, ts_utc, 48)
-        overextended_24h = return_24h is not None and return_24h >= 300.0
+        overextended_24h = return_24h is not None and return_24h >= 200.0
         overextended_48h = return_48h is not None and return_48h >= 500.0
-        if not (overextended_24h or overextended_48h):
-            continue
+        why_not_triggered = []
+        if return_24h is None:
+            why_not_triggered.append("return_24h_not_observable")
+            missing_reasons.append("return_24h_missing")
+        elif not overextended_24h:
+            why_not_triggered.append("return_24h_lt_200bps")
+        if return_48h is None:
+            missing_reasons.append("return_48h_missing")
         shadow_cost_bps = _candidate_shadow_cost_bps(candidate)
         future = {
             horizon: _future_net_bps_after_shadow_cost(
@@ -7927,9 +7948,10 @@ def _post_impulse_overextension_shadow_for_export(
         observed = [value for value in future.values() if value is not None]
         reasons = []
         if overextended_24h:
-            reasons.append("return_24h_ge_300bps")
+            reasons.append("return_24h_ge_200bps")
         if overextended_48h:
             reasons.append("return_48h_ge_500bps")
+        is_overextended = bool(reasons)
         rows.append(
             {
                 "run_id": str(candidate.get("run_id") or "").strip(),
@@ -7949,13 +7971,15 @@ def _post_impulse_overextension_shadow_for_export(
                 "return_24h_bps": return_24h,
                 "return_48h_bps": return_48h,
                 "overextension_reason": ";".join(reasons),
+                "why_not_triggered": ";".join(why_not_triggered if not is_overextended else []),
+                "missing_field_reason": ";".join(sorted(set(missing_reasons))),
                 "future_4h_net_bps": future[4],
                 "future_8h_net_bps": future[8],
                 "future_12h_net_bps": future[12],
                 "max_future_net_bps": max(observed) if observed else None,
                 "worst_future_net_bps": min(observed) if observed else None,
-                "late_failure_flag": bool(observed and min(observed) <= -50.0),
-                "response_action": "shadow_tracking",
+                "late_failure_flag": bool(is_overextended and observed and min(observed) <= -50.0),
+                "response_action": "shadow_tracking" if is_overextended else "diagnostic_only",
                 "live_order_effect": "read_only_no_live_order",
             }
         )
@@ -7974,6 +7998,8 @@ def _late_breakout_failure_shadow_for_export(overextension: pl.DataFrame) -> pl.
         return _empty_csv_schema_frame(path)
     rows: list[dict[str, Any]] = []
     for row in overextension.to_dicts():
+        if not str(row.get("overextension_reason") or "").strip():
+            continue
         future = {
             4: _optional_float(row.get("future_4h_net_bps")),
             8: _optional_float(row.get("future_8h_net_bps")),
@@ -8411,8 +8437,9 @@ def _v5_quant_lab_consistency_dashboard_md(
     quant_lab_bnb_paper_daily = _filter_bnb_paper_frame(
         frames.get("paper_strategy_daily", pl.DataFrame())
     )
-    quant_lab_bnb_paper_daily_latest = _latest_bnb_paper_strategy_daily(
-        quant_lab_bnb_paper_daily
+    quant_lab_bnb_paper_daily_latest = _prefer_frame(
+        frames.get("v5_bnb_paper_strategy_daily_latest", pl.DataFrame()),
+        bnb_paper_daily,
     )
     bnb_paper_quant_lab_raw_entry_count = _bnb_paper_today_entry_count(
         quant_lab_bnb_paper_daily

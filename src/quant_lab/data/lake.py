@@ -336,6 +336,7 @@ def compact_parquet_directory_files(
     max_source_files_per_batch: int = 5_000,
     max_source_batch_bytes: int | None = None,
     include_existing_compact_files: bool = False,
+    max_total_source_files: int | None = None,
 ) -> CompactParquetResult:
     """Compact only Parquet files directly inside a directory.
 
@@ -351,6 +352,8 @@ def compact_parquet_directory_files(
             path,
             include_existing_compact_files=include_existing_compact_files,
         )
+        if max_total_source_files is not None and max_total_source_files > 0:
+            files = files[:max_total_source_files]
         return _compact_direct_parquet_files_unlocked(
             path,
             files,

@@ -68,6 +68,7 @@ def lake_small_file_maintenance(
     max_groups: int = 50,
     target_rows_per_file: int = 250_000,
     max_source_files_per_batch: int = 64,
+    max_source_files_per_group: int | None = 64,
     max_source_batch_bytes: int | None = 268_435_456,
     priority_datasets: tuple[str, ...] = DEFAULT_PRIORITY_DATASETS,
     dry_run: bool = False,
@@ -109,6 +110,7 @@ def lake_small_file_maintenance(
                 max_source_files_per_batch=max_source_files_per_batch,
                 max_source_batch_bytes=max_source_batch_bytes,
                 include_existing_compact_files=group.include_existing_compact_files,
+                max_total_source_files=max_source_files_per_group,
             )
         except Exception as exc:
             entry["action"] = "compact_failed"

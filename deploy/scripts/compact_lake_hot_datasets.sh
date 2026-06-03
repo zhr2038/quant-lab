@@ -13,6 +13,10 @@ COMPACT_MAX_SOURCE_BATCH_BYTES="${COMPACT_MAX_SOURCE_BATCH_BYTES:-268435456}"
 COMPACT_CONSOLIDATE_EXISTING_COMPACT_OUTPUTS="${COMPACT_CONSOLIDATE_EXISTING_COMPACT_OUTPUTS:-0}"
 MARKET_ROLLUP_LOOKBACK_HOURS="${MARKET_ROLLUP_LOOKBACK_HOURS:-24}"
 COMPACT_SMALL_FILE_MAX_BYTES="${COMPACT_SMALL_FILE_MAX_BYTES:-8388608}"
+COMPACT_SMALL_FILE_MAINTENANCE="${COMPACT_SMALL_FILE_MAINTENANCE:-1}"
+COMPACT_SMALL_FILE_MAINTENANCE_TIMEOUT_SECONDS="${COMPACT_SMALL_FILE_MAINTENANCE_TIMEOUT_SECONDS:-300}"
+COMPACT_SMALL_FILE_MAINTENANCE_MAX_GROUPS="${COMPACT_SMALL_FILE_MAINTENANCE_MAX_GROUPS:-5}"
+COMPACT_SMALL_FILE_MAINTENANCE_MAX_SOURCE_FILES_PER_GROUP="${COMPACT_SMALL_FILE_MAINTENANCE_MAX_SOURCE_FILES_PER_GROUP:-64}"
 COMPACT_STARTED_AT="$(date +%s)"
 
 V5_TELEMETRY_DATASETS=(
@@ -138,6 +142,42 @@ build_market_data_rollups() {
     return 0
   fi
   echo "FINISH_MARKET_DATA_ROLLUPS"
+}
+
+run_small_file_maintenance() {
+  local status
+  local elapsed
+
+  if [[ "${COMPACT_SMALL_FILE_MAINTENANCE}" != "1" ]]; then
+    echo "SKIP_SMALL_FILE_MAINTENANCE opt_in=COMPACT_SMALL_FILE_MAINTENANCE"
+    return
+  fi
+  elapsed="$(( $(date +%s) - COMPACT_STARTED_AT ))"
+  if (( elapsed >= COMPACT_RUN_BUDGET_SECONDS )); then
+    echo "SKIP_SMALL_FILE_MAINTENANCE_BUDGET elapsed_seconds=${elapsed}"
+    return
+  fi
+
+  echo "START_SMALL_FILE_MAINTENANCE timeout_seconds=${COMPACT_SMALL_FILE_MAINTENANCE_TIMEOUT_SECONDS} max_groups=${COMPACT_SMALL_FILE_MAINTENANCE_MAX_GROUPS} max_source_files_per_group=${COMPACT_SMALL_FILE_MAINTENANCE_MAX_SOURCE_FILES_PER_GROUP}"
+  set +e
+  timeout --kill-after=30s "${COMPACT_SMALL_FILE_MAINTENANCE_TIMEOUT_SECONDS}s" \
+    "${QLAB_BIN}" lake-small-file-maintenance \
+    --lake-root "${LAKE_ROOT}" \
+    --min-files "${COMPACT_DIRECT_MIN_SOURCE_FILES}" \
+    --max-avg-file-size-mb "$(( COMPACT_SMALL_FILE_MAX_BYTES / 1024 / 1024 ))" \
+    --max-groups "${COMPACT_SMALL_FILE_MAINTENANCE_MAX_GROUPS}" \
+    --target-rows-per-file 250000 \
+    --max-source-files-per-batch "${COMPACT_DIRECT_MAX_SOURCE_FILES}" \
+    --max-source-files-per-group "${COMPACT_SMALL_FILE_MAINTENANCE_MAX_SOURCE_FILES_PER_GROUP}" \
+    --max-source-batch-bytes "${COMPACT_MAX_SOURCE_BATCH_BYTES}" \
+    --compact-output
+  status="$?"
+  set -e
+  if (( status != 0 )); then
+    echo "WARN_SMALL_FILE_MAINTENANCE_FAILED status=${status}"
+    return 0
+  fi
+  echo "FINISH_SMALL_FILE_MAINTENANCE"
 }
 
 repair_dataset_partitions() {
@@ -373,6 +413,8 @@ done
 for dataset in "${OPS_DATASETS[@]}"; do
   compact_if_file_count_at_least "${dataset}" 250000 100 20
 done
+
+run_small_file_maintenance
 
 build_market_data_rollups
 

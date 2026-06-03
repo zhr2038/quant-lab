@@ -391,6 +391,39 @@ def test_small_file_maintenance_can_consolidate_existing_compact_outputs(tmp_pat
     assert len(list(dataset.glob("*.parquet"))) == 1
 
 
+def test_small_file_maintenance_limits_source_files_per_group(tmp_path):
+    lake = tmp_path / "lake"
+    dataset = lake / "bronze" / "okx_public_ws"
+    dataset.mkdir(parents=True)
+    for index in range(20):
+        pl.DataFrame(
+            [
+                {
+                    "symbol": "BNB-USDT",
+                    "ts": datetime(2026, 5, 31, 10, index % 60, tzinfo=UTC),
+                    "payload": f"event-{index}",
+                }
+            ]
+        ).write_parquet(dataset / f"compact_existing_{index}.parquet")
+    build_lake_file_index(lake, ["bronze/okx_public_ws"])
+
+    result = lake_small_file_maintenance(
+        lake,
+        min_files=16,
+        max_groups=5,
+        target_rows_per_file=250_000,
+        max_source_files_per_batch=8,
+        max_source_files_per_group=8,
+        dry_run=False,
+    )
+
+    assert result.compacted_group_count == 1
+    assert result.source_file_count == 8
+    assert result.output_file_count == 1
+    assert count_parquet_rows(dataset) == 20
+    assert len(list(dataset.glob("*.parquet"))) == 13
+
+
 def test_rollup_records_warning_when_file_index_missing(tmp_path):
     lake = tmp_path / "lake"
     ts = datetime(2026, 5, 31, 10, 0, 15, tzinfo=UTC)

@@ -849,6 +849,17 @@ def lake_small_file_maintenance_command(
         int,
         typer.Option("--max-source-files-per-batch", min=1),
     ] = 64,
+    max_source_files_per_group: Annotated[
+        int,
+        typer.Option(
+            "--max-source-files-per-group",
+            min=0,
+            help=(
+                "Cap total files compacted from one partition per maintenance run. "
+                "Use 0 to compact the whole selected group."
+            ),
+        ),
+    ] = 64,
     max_source_batch_bytes: Annotated[
         int,
         typer.Option("--max-source-batch-bytes", min=0),
@@ -878,6 +889,7 @@ def lake_small_file_maintenance_command(
             max_groups=max_groups,
             target_rows_per_file=target_rows_per_file,
             max_source_files_per_batch=max_source_files_per_batch,
+            max_source_files_per_group=max_source_files_per_group or None,
             max_source_batch_bytes=max_source_batch_bytes or None,
             dry_run=dry_run,
         ),

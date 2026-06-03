@@ -27,9 +27,12 @@ class SmallFileGroup:
     dataset: str
     partition_dir: str
     file_count: int
+    direct_source_file_count: int
+    compact_file_count: int
     avg_file_size: float
     total_size: int
     priority_rank: int
+    include_existing_compact_files: bool
 
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)
@@ -105,6 +108,7 @@ def lake_small_file_maintenance(
                 target_rows_per_file=target_rows_per_file,
                 max_source_files_per_batch=max_source_files_per_batch,
                 max_source_batch_bytes=max_source_batch_bytes,
+                include_existing_compact_files=group.include_existing_compact_files,
             )
         except Exception as exc:
             entry["action"] = "compact_failed"
@@ -147,7 +151,8 @@ def small_file_groups(
         if dataset not in priority_rank:
             continue
         relative_path = str(row.get("path") or "")
-        if not _is_direct_compaction_candidate(relative_path):
+        file_kind = _compaction_file_kind(relative_path)
+        if file_kind is None:
             continue
         file_size = _int_value(row.get("file_size"))
         if file_size is None or file_size <= 0:
@@ -158,6 +163,8 @@ def small_file_groups(
                 "dataset": dataset,
                 "partition_dir": partition_dir,
                 "file_size": file_size,
+                "is_direct_source": file_kind == "direct",
+                "is_compact_output": file_kind == "compact",
                 "priority_rank": priority_rank[dataset],
             }
         )
@@ -169,12 +176,17 @@ def small_file_groups(
         .agg(
             [
                 pl.len().alias("file_count"),
+                pl.col("is_direct_source").sum().alias("direct_source_file_count"),
+                pl.col("is_compact_output").sum().alias("compact_file_count"),
                 pl.col("file_size").sum().alias("total_size"),
                 pl.col("file_size").mean().alias("avg_file_size"),
             ]
         )
         .filter(
-            (pl.col("file_count") >= max(int(min_files), 1))
+            (
+                (pl.col("direct_source_file_count") >= max(int(min_files), 1))
+                | (pl.col("compact_file_count") >= max(int(min_files), 1))
+            )
             & (pl.col("avg_file_size") < max_avg_bytes)
         )
         .sort(["priority_rank", "file_count", "total_size"], descending=[False, True, True])
@@ -184,9 +196,15 @@ def small_file_groups(
             dataset=str(row["dataset"]),
             partition_dir=str(row["partition_dir"]),
             file_count=int(row["file_count"]),
+            direct_source_file_count=int(row["direct_source_file_count"]),
+            compact_file_count=int(row["compact_file_count"]),
             avg_file_size=float(row["avg_file_size"]),
             total_size=int(row["total_size"]),
             priority_rank=int(row["priority_rank"]),
+            include_existing_compact_files=int(row["compact_file_count"]) >= max(
+                int(min_files),
+                1,
+            ),
         )
         for row in grouped.to_dicts()
     ]
@@ -201,11 +219,13 @@ def _read_file_index(root: Path) -> pl.DataFrame:
         return pl.DataFrame()
 
 
-def _is_direct_compaction_candidate(relative_path: str) -> bool:
+def _compaction_file_kind(relative_path: str) -> str | None:
     name = Path(relative_path).name
     if not name.endswith(".parquet"):
-        return False
-    return not (name.startswith(".") or name.startswith("compact_") or name == "data.parquet")
+        return None
+    if name.startswith(".") or name == "data.parquet":
+        return None
+    return "compact" if name.startswith("compact_") else "direct"
 
 
 def _compact_result_payload(result: CompactParquetResult) -> dict[str, Any]:

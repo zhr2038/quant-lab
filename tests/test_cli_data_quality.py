@@ -1,5 +1,6 @@
 import json
 from datetime import UTC, datetime
+from types import SimpleNamespace
 
 import polars as pl
 from typer.testing import CliRunner
@@ -50,6 +51,39 @@ def test_data_quality_command_outputs_full_json(tmp_path):
     assert payload["dataset_count"] == 1
     assert payload["checks"]
     assert any(check["rule"] == "cost_negative_bps" for check in payload["checks"])
+
+
+def test_export_daily_cli_does_not_refresh_risk_permission_by_default(monkeypatch, tmp_path):
+    captured = {}
+
+    def fake_run_with_job_metrics(*, lake_root, job_name, func):
+        captured["job_name"] = job_name
+        captured["lake_root"] = lake_root
+        return func()
+
+    def fake_export_daily_pack(**kwargs):
+        captured.update(kwargs)
+        return SimpleNamespace(model_dump_json=lambda indent=None: json.dumps({"ok": True}))
+
+    monkeypatch.setattr("quant_lab.cli.run_with_job_metrics", fake_run_with_job_metrics)
+    monkeypatch.setattr("quant_lab.cli.export_daily_pack", fake_export_daily_pack)
+
+    result = runner.invoke(
+        app,
+        [
+            "export-daily",
+            "--date",
+            "2026-06-03",
+            "--lake-root",
+            str(tmp_path / "lake"),
+            "--out-dir",
+            str(tmp_path / "exports"),
+        ],
+    )
+
+    assert result.exit_code == 0
+    assert captured["job_name"] == "export-daily"
+    assert captured["refresh_risk_permission"] is False
 
 
 def test_data_quality_command_dataset_filter_runs_only_requested_dataset(tmp_path):

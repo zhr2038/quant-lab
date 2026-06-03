@@ -1691,9 +1691,13 @@ def export_daily(
         bool,
         typer.Option(
             "--refresh-risk-permission/--no-refresh-risk-permission",
-            help="Run publish-risk-permission before creating the expert pack.",
+            help=(
+                "Run publish-risk-permission before creating the expert pack. "
+                "Disabled by default because risk permission publishing is a separate "
+                "resource-heavy job."
+            ),
         ),
-    ] = True,
+    ] = False,
     risk_strategy: Annotated[str, typer.Option("--risk-strategy")] = "v5",
     risk_version: Annotated[str, typer.Option("--risk-version")] = "5.0.0",
     pre_export_v5_refresh: Annotated[

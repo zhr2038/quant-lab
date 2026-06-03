@@ -160,6 +160,7 @@ def test_scheduled_compaction_covers_hot_ws_datasets():
     assert "WARN_SMALL_FILE_MAINTENANCE_FAILED" in script
     assert "lake-small-file-maintenance" in script
     assert "--max-source-files-per-group" in script
+    assert "COMPACT_SMALL_FILE_MAINTENANCE_TARGET_ROWS" in script
     assert (
         'COMPACT_CONSOLIDATE_EXISTING_COMPACT_OUTPUTS="'
         '${COMPACT_CONSOLIDATE_EXISTING_COMPACT_OUTPUTS:-0}"'
@@ -186,6 +187,7 @@ def test_scheduled_compaction_covers_hot_ws_datasets():
     assert "COMPACT_SMALL_FILE_MAINTENANCE_TIMEOUT_SECONDS=300" in unit
     assert "COMPACT_SMALL_FILE_MAINTENANCE_MAX_GROUPS=5" in unit
     assert "COMPACT_SMALL_FILE_MAINTENANCE_MAX_SOURCE_FILES_PER_GROUP=64" in unit
+    assert "COMPACT_SMALL_FILE_MAINTENANCE_TARGET_ROWS=2000000" in unit
     assert "CPUQuota=40%" in unit
     assert "MemoryHigh=2G" in unit
     assert "MemoryMax=3G" in unit

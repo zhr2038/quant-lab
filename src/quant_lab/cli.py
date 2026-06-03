@@ -844,7 +844,7 @@ def lake_small_file_maintenance_command(
     target_rows_per_file: Annotated[
         int,
         typer.Option("--target-rows-per-file", min=1),
-    ] = 250_000,
+    ] = 2_000_000,
     max_source_files_per_batch: Annotated[
         int,
         typer.Option("--max-source-files-per-batch", min=1),

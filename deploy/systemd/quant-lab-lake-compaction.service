@@ -24,6 +24,7 @@ Environment=COMPACT_SMALL_FILE_MAINTENANCE=1
 Environment=COMPACT_SMALL_FILE_MAINTENANCE_TIMEOUT_SECONDS=300
 Environment=COMPACT_SMALL_FILE_MAINTENANCE_MAX_GROUPS=5
 Environment=COMPACT_SMALL_FILE_MAINTENANCE_MAX_SOURCE_FILES_PER_GROUP=64
+Environment=COMPACT_SMALL_FILE_MAINTENANCE_TARGET_ROWS=2000000
 ExecStart=/usr/bin/flock -w 10 /var/lock/quant-lab-heavy.lock /bin/bash /opt/quant-lab/deploy/scripts/compact_lake_hot_datasets.sh
 Nice=15
 IOSchedulingClass=idle

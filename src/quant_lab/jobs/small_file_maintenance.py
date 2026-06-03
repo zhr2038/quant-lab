@@ -66,7 +66,7 @@ def lake_small_file_maintenance(
     min_files: int = 16,
     max_avg_file_size_mb: float = 8.0,
     max_groups: int = 50,
-    target_rows_per_file: int = 250_000,
+    target_rows_per_file: int = 2_000_000,
     max_source_files_per_batch: int = 64,
     max_source_files_per_group: int | None = 64,
     max_source_batch_bytes: int | None = 268_435_456,

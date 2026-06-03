@@ -102,6 +102,7 @@ def test_deploy_permission_repair_script_targets_deploy_user():
 def test_candidate_research_refresh_is_separate_from_alpha_evidence():
     alpha_unit = _unit("quant-lab-alpha-evidence.service")
     refresh_unit = _unit("quant-lab-v5-research-refresh.service")
+    regime_unit = _unit("quant-lab-v5-regime-router.service")
 
     assert "build-alpha-evidence" in alpha_unit
     assert "build-v5-candidate-labels" not in alpha_unit
@@ -121,10 +122,16 @@ def test_candidate_research_refresh_is_separate_from_alpha_evidence():
     assert "build-btc-probe-exit-policy-review" not in refresh_unit
     assert "build-bnb-swing-exit-policy-review" not in refresh_unit
     assert "build-entry-quality" in refresh_unit
-    assert "build-regime-router" in refresh_unit
+    assert "build-regime-router" not in refresh_unit
     assert "flock -E 75 -w 30" in refresh_unit
     assert "/usr/bin/timeout 20m" in refresh_unit
     assert "TimeoutStartSec=25min" in refresh_unit
+
+    assert "build-regime-router" in regime_unit
+    assert "/var/lock/quant-lab-v5-regime-router.lock" in regime_unit
+    assert "/usr/bin/timeout 5m" in regime_unit
+    assert "TimeoutStartSec=6min" in regime_unit
+    assert "MemoryMax=1G" in regime_unit
 
 
 def test_scheduled_compaction_covers_hot_ws_datasets():
@@ -214,9 +221,12 @@ def test_scheduled_compaction_covers_hot_ws_datasets():
 
 def test_candidate_research_refresh_runs_before_daily_export_window():
     refresh_timer = _unit("quant-lab-v5-research-refresh.timer")
+    regime_timer = _unit("quant-lab-v5-regime-router.timer")
     export_timer = _unit("quant-lab-daily-export.timer")
 
     assert "OnCalendar=*-*-* 00:05:00" in refresh_timer
+    assert "OnCalendar=*-*-* 00:12:00" in regime_timer
+    assert "OnUnitActiveSec=30min" in regime_timer
     assert "OnCalendar=*-*-* 00:20:00" in export_timer
 
 

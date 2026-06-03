@@ -120,6 +120,7 @@ DATASET_PATHS = {
     "v5_quant_lab_mode_daily": Path("gold") / "v5_quant_lab_mode_daily",
     "v5_quant_lab_enforcement_daily": Path("gold") / "v5_quant_lab_enforcement_daily",
     "v5_quant_lab_usage": Path("silver") / "v5_quant_lab_usage",
+    "v5_quant_lab_request": Path("silver") / "v5_quant_lab_request",
     "v5_quant_lab_compliance": Path("silver") / "v5_quant_lab_compliance",
     "v5_quant_lab_cost_usage": Path("silver") / "v5_quant_lab_cost_usage",
     "v5_quant_lab_fallback": Path("silver") / "v5_quant_lab_fallback",
@@ -236,6 +237,17 @@ RESEARCH_DIAGNOSTIC_DATASET_KEYS: dict[str, tuple[str, ...]] = {
 EVENT_DRIVEN_V5_DATASET_STATUSES = {
     "v5_trade_event": "event_driven_no_recent_trade",
     "v5_bnb_profit_lock_shadow": "event_driven_no_recent_bnb_profit_lock",
+    "v5_quant_lab_usage": "event_driven_no_recent_quant_lab_usage",
+    "v5_quant_lab_request": "event_driven_no_recent_quant_lab_request",
+    "v5_bnb_negative_expectancy_attribution": (
+        "event_driven_no_recent_bnb_negative_expectancy_attribution"
+    ),
+    "v5_negative_expectancy_attribution": (
+        "event_driven_no_recent_negative_expectancy_attribution"
+    ),
+    "v5_negative_expectancy_attribution_silver": (
+        "event_driven_no_recent_negative_expectancy_attribution"
+    ),
 }
 EVENT_DRIVEN_OK_STATUSES = set(EVENT_DRIVEN_V5_DATASET_STATUSES.values())
 DERIVED_ROLLUP_SOURCE_DATASETS = {
@@ -357,6 +369,7 @@ DATASET_TIMESTAMP_COLUMNS: dict[str, tuple[str, ...]] = {
     "okx_public_ws_health": ("last_message_at", "updated_at", "started_at"),
     "decision_audit": ("ingest_ts", "loaded_at"),
     "v5_quant_lab_usage": ("ingest_ts", "bundle_ts"),
+    "v5_quant_lab_request": ("ts_utc", "ts", "ingest_ts", "bundle_ts"),
     "v5_quant_lab_compliance": ("ingest_ts", "bundle_ts"),
     "v5_quant_lab_cost_usage": ("ingest_ts", "bundle_ts"),
     "v5_quant_lab_fallback": ("ingest_ts", "bundle_ts"),
@@ -364,6 +377,9 @@ DATASET_TIMESTAMP_COLUMNS: dict[str, tuple[str, ...]] = {
     "v5_paper_strategy_daily": ("created_at", "as_of_date", "ingest_ts", "bundle_ts"),
     "v5_paper_slippage_coverage": ("created_at", "as_of_date", "ingest_ts", "bundle_ts"),
     "v5_bnb_profit_lock_shadow": ("ingest_ts", "bundle_ts", "exit_ts", "entry_ts"),
+    "v5_bnb_negative_expectancy_attribution": ("ingest_ts", "bundle_ts", "exit_ts"),
+    "v5_negative_expectancy_attribution": ("ingest_ts", "bundle_ts", "exit_ts"),
+    "v5_negative_expectancy_attribution_silver": ("ingest_ts", "bundle_ts", "exit_ts"),
     "v5_candidate_event": ("ts_utc", "ingest_ts", "bundle_ts"),
     "v5_candidate_label": ("label_ts", "decision_ts", "ts_utc", "created_at"),
     "v5_candidate_quality_daily": ("created_at", "date"),

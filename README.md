@@ -282,6 +282,7 @@ flowchart TD
     V5Sync["v5-telemetry-sync.timer<br/>约每 10min，轻量 ingest"]
     V5Analysis["v5-daily-analysis.timer<br/>约每 30min，健康分析"]
     V5Research["v5-research-refresh.timer<br/>约每 2h，candidate/evidence/board"]
+    V5Regime["v5-regime-router.timer<br/>约每 30min，regime/router"]
     Cost["cost-calibration.timer<br/>约每 1h"]
     Feature["feature-publish.timer<br/>约每 15min"]
     Alpha["alpha-evidence.timer<br/>约每 15min"]
@@ -293,9 +294,12 @@ flowchart TD
     Rest --> Feature
     Private --> Cost
     V5Sync --> V5Analysis --> V5Research
+    V5Analysis --> V5Regime
+    V5Research --> V5Regime
     Cost --> Risk
     Feature --> Alpha --> Risk
     V5Research --> Risk
+    V5Regime --> Risk
     Risk --> Export
     Compact --> Export
 ```
@@ -404,7 +408,24 @@ flowchart LR
 - 使用 lookback / incremental 模式。
 - 历史 shadow/blocked outcomes 进入 strategy evidence，但会避免重复膨胀。
 
-### 7.7 Cost calibration
+### 7.7 V5 regime router
+
+服务：`quant-lab-v5-regime-router.timer`
+
+作用：
+
+- 独立刷新 `market_regime_daily`。
+- 独立刷新 `strategy_regime_matrix`。
+- 独立刷新 `regime_strategy_advisory`。
+
+当前思路：
+
+- 不放在 `v5-research-refresh` 的最后，避免 heavy research job 超时后
+  regime gold 表长期停留在旧日期。
+- 短 timeout、独立 lock、约每 30 分钟运行；如果 V5 research refresh 慢，
+  regime router 仍使用当前可用 lake 状态刷新。
+
+### 7.8 Cost calibration
 
 服务：`quant-lab-cost-calibration.timer`
 
@@ -420,7 +441,7 @@ flowchart LR
 3. `public_spread_proxy`
 4. `global_default`
 
-### 7.8 Feature publish
+### 7.9 Feature publish
 
 服务：`quant-lab-feature-publish.timer`
 
@@ -430,7 +451,7 @@ flowchart LR
 - 同时生成 coverage / anomaly。
 - 特征只使用当前和历史 closed bars。
 
-### 7.9 Alpha evidence
+### 7.10 Alpha evidence
 
 服务：`quant-lab-alpha-evidence.timer`
 
@@ -441,7 +462,7 @@ flowchart LR
 - 输出 alpha evidence。
 - 不生成交易指令。
 
-### 7.10 Risk permission
+### 7.11 Risk permission
 
 服务：`quant-lab-risk-permission.timer`
 
@@ -451,7 +472,7 @@ flowchart LR
 - TTL 生产建议 90 分钟。
 - API 如果发现 gold permission 过期，不会把过期记录伪装成 ACTIVE。
 
-### 7.11 Daily export
+### 7.12 Daily export
 
 服务：`quant-lab-daily-export.timer`
 

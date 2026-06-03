@@ -814,6 +814,128 @@ def test_data_health_treats_bnb_profit_lock_as_event_driven_when_telemetry_curre
     assert not any(row["dataset"] == "v5_bnb_profit_lock_shadow" for row in stale_rows)
 
 
+def test_data_health_treats_v5_usage_and_attribution_as_event_driven_when_current(
+    tmp_path,
+):
+    lake_root = tmp_path / "lake"
+    now = datetime.now(UTC)
+    old = now - timedelta(days=3)
+    write_parquet_dataset(
+        pl.DataFrame(
+            [
+                {
+                    "strategy": "v5",
+                    "date": now.date().isoformat(),
+                    "status": "OK",
+                    "latest_bundle_ts": now,
+                    "decision_audit_count_24h": 1,
+                }
+            ]
+        ),
+        lake_root / "gold" / "strategy_health_daily",
+    )
+    write_parquet_dataset(
+        pl.DataFrame(
+            [
+                {
+                    "strategy": "v5",
+                    "run_id": "20260603_01",
+                    "mode": "shadow",
+                    "ts_utc": old,
+                    "bundle_ts": old,
+                    "ingest_ts": old,
+                }
+            ]
+        ),
+        lake_root / "silver" / "v5_quant_lab_usage",
+    )
+    write_parquet_dataset(
+        pl.DataFrame(
+            [
+                {
+                    "event_key": "req-old",
+                    "run_id": "20260601_01",
+                    "endpoint": "/v1/strategy-opportunity-advisory/v5-compact",
+                    "status_code": 200,
+                    "ts_utc": old,
+                    "bundle_ts": old,
+                    "ingest_ts": old,
+                }
+            ]
+        ),
+        lake_root / "silver" / "v5_quant_lab_request",
+    )
+    write_parquet_dataset(
+        pl.DataFrame(
+            [
+                {
+                    "symbol": "BNB-USDT",
+                    "exit_ts": old,
+                    "bundle_ts": old,
+                    "ingest_ts": old,
+                    "attribution": "min_hold_violation",
+                }
+            ]
+        ),
+        lake_root / "silver" / "v5_bnb_negative_expectancy_attribution",
+    )
+    attribution = pl.DataFrame(
+        [
+            {
+                "symbol": "BNB-USDT",
+                "exit_ts": old,
+                "bundle_ts": old,
+                "ingest_ts": old,
+                "attribution": "min_hold_violation",
+            }
+        ]
+    )
+    write_parquet_dataset(
+        attribution,
+        lake_root / "silver" / "v5_negative_expectancy_attribution",
+    )
+    write_parquet_dataset(
+        attribution,
+        lake_root / "gold" / "v5_negative_expectancy_attribution",
+    )
+
+    stale_rows = readers.data_health_summary(lake_root)["stale_datasets"].to_dicts()
+    datasets = {row["dataset"] for row in stale_rows}
+
+    assert "v5_quant_lab_usage" not in datasets
+    assert "v5_quant_lab_request" not in datasets
+    assert "v5_bnb_negative_expectancy_attribution" not in datasets
+    assert "v5_negative_expectancy_attribution" not in datasets
+    assert "v5_negative_expectancy_attribution_silver" not in datasets
+
+
+def test_web_tracks_v5_quant_lab_request_freshness(tmp_path):
+    lake_root = tmp_path / "lake"
+    now = datetime.now(UTC)
+    write_parquet_dataset(
+        pl.DataFrame(
+            [
+                {
+                    "event_key": "req-1",
+                    "run_id": "20260603_01",
+                    "endpoint": "/v1/strategy-opportunity-advisory/v5-compact",
+                    "status_code": 200,
+                    "ts_utc": now,
+                    "bundle_ts": now,
+                    "ingest_ts": now,
+                }
+            ]
+        ),
+        lake_root / "silver" / "v5_quant_lab_request",
+    )
+
+    states = {state.name: state for state in readers.dataset_states(lake_root)}
+    snapshot = readers._dataset_snapshot(lake_root, "v5_quant_lab_request")
+
+    assert states["v5_quant_lab_request"].rows == 1
+    assert snapshot.freshness["freshness_status"] == "fresh"
+
+
 def test_data_health_hides_empty_legacy_expanded_shadow_when_automation_is_active(
     tmp_path,
 ):

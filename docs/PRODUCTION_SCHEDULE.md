@@ -54,6 +54,11 @@ split:
   It consumes recently ingested raw inputs and previously computed
   `gold/strategy_evidence_sample` state. It must not rescan all historical
   shadow/blocked outcome files on every run.
+- `quant-lab-v5-regime-router.service` runs `qlab build-regime-router`
+  separately from the heavier research refresh. Keep it independent so
+  `gold/market_regime_daily`, `gold/strategy_regime_matrix`, and
+  `gold/regime_strategy_advisory` do not go stale when alpha-factory or entry
+  quality refreshes consume the research-refresh time budget.
 - `qlab build-alpha-evidence` remains separate from candidate board refresh.
 
 Historical full rebuilds are manual maintenance actions only. Use `--mode full`
@@ -119,6 +124,7 @@ The repository includes these timer templates:
 - `deploy/systemd/quant-lab-v5-telemetry-sync.timer`
 - `deploy/systemd/quant-lab-v5-daily-analysis.timer`
 - `deploy/systemd/quant-lab-v5-research-refresh.timer`
+- `deploy/systemd/quant-lab-v5-regime-router.timer`
 - `deploy/systemd/quant-lab-alpha-evidence.timer`
 - `deploy/systemd/quant-lab-risk-permission.timer`
 - `deploy/systemd/quant-lab-daily-export.timer`
@@ -128,6 +134,7 @@ Suggested production order:
 - V5 telemetry sync: every 10 minutes, one newest bundle per run.
 - V5 telemetry analysis: every 30 minutes, using `--skip-candidate-gold`.
 - Candidate labels, strategy evidence, and alpha discovery board: every 2 hours.
+- Regime router: every 30 minutes, as an independent short job.
 - Alpha evidence and gate publishing: every 15 minutes.
 - Risk permission publish: every 10 minutes, after telemetry and gate refresh
   and no less frequently than every 30 minutes.

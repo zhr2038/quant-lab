@@ -106,6 +106,46 @@ def test_regime_router_blocks_pullback_v2_in_risk_off(tmp_path):
     assert "pullback_reversal_blocked_in_down_or_risk_off" in advisory["live_block_reasons"]
 
 
+def test_regime_router_uses_orderbook_spread_rollup_for_market_regime(tmp_path):
+    lake = tmp_path / "lake"
+    _write_market_bars(
+        lake,
+        {
+            "BTC-USDT": (100.0, 101.0),
+            "ETH-USDT": (100.0, 101.0),
+            "SOL-USDT": (100.0, 101.0),
+            "BNB-USDT": (100.0, 101.0),
+        },
+    )
+    write_parquet_dataset(
+        pl.DataFrame(
+            [
+                {
+                    "symbol": "BTC-USDT",
+                    "channel": "books5",
+                    "minute_ts": datetime(2026, 5, 22, 12, 0, tzinfo=UTC),
+                    "ts": datetime(2026, 5, 22, 12, 0, tzinfo=UTC),
+                    "spread_bps": 2.0,
+                },
+                {
+                    "symbol": "BNB-USDT",
+                    "channel": "books5",
+                    "minute_ts": datetime(2026, 5, 22, 12, 1, tzinfo=UTC),
+                    "ts": datetime(2026, 5, 22, 12, 1, tzinfo=UTC),
+                    "spread_bps": 4.0,
+                },
+            ]
+        ),
+        lake / "silver" / "orderbook_spread_1m",
+    )
+
+    build_and_publish_regime_router(lake, as_of_date="2026-05-22")
+
+    regime = read_parquet_dataset(lake / "gold" / "market_regime_daily").to_dicts()[0]
+    assert regime["avg_spread_bps"] == 3.0
+    assert regime["liquidity_thin"] is False
+
+
 def test_daily_export_contains_regime_reports_and_advisory_rows(tmp_path):
     lake = tmp_path / "lake"
     out = tmp_path / "exports"

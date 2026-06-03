@@ -1,0 +1,12 @@
+[Unit]
+Description=Run quant-lab V5 regime router refresh
+
+[Timer]
+OnCalendar=*-*-* 00:12:00
+OnActiveSec=15min
+OnUnitActiveSec=30min
+RandomizedDelaySec=2min
+Persistent=false
+
+[Install]
+WantedBy=timers.target

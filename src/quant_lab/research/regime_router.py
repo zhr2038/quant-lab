@@ -312,6 +312,9 @@ def _realized_vol_bps(rows_by_symbol: dict[str, list[dict[str, Any]]]) -> float 
 
 
 def _avg_spread_bps(lake_root: Path, *, as_of_date: date) -> float | None:
+    rollup_spread = _avg_spread_bps_from_rollup(lake_root, as_of_date=as_of_date)
+    if rollup_spread is not None:
+        return rollup_spread
     lazy, columns = _safe_lazy_frame(lake_root / "silver" / "orderbook_snapshot")
     if lazy is None or "symbol" not in columns:
         return None
@@ -337,10 +340,43 @@ def _avg_spread_bps(lake_root: Path, *, as_of_date: date) -> float | None:
         & (pl.col("_ts") < end)
         & pl.col("_spread_bps").is_not_null()
     )
-    values = _collect_lazy(frame.select("_spread_bps")).get_column("_spread_bps").to_list()
-    clean = [_float(value) for value in values]
-    clean_values = [value for value in clean if value is not None]
-    return sum(clean_values) / len(clean_values) if clean_values else None
+    mean_frame = _collect_lazy(
+        frame.select(pl.col("_spread_bps").mean().alias("avg_spread_bps"))
+    )
+    if mean_frame.is_empty():
+        return None
+    return _float(mean_frame.item(0, "avg_spread_bps"))
+
+
+def _avg_spread_bps_from_rollup(lake_root: Path, *, as_of_date: date) -> float | None:
+    lazy, columns = _safe_lazy_frame(lake_root / "silver" / "orderbook_spread_1m")
+    if lazy is None or "symbol" not in columns or "spread_bps" not in columns:
+        return None
+    end = datetime.combine(as_of_date + timedelta(days=1), datetime.min.time(), tzinfo=UTC)
+    start = end - timedelta(hours=24)
+    timestamp_expressions = [
+        _lazy_datetime(column) for column in ["ts", "minute_ts"] if column in columns
+    ]
+    if not timestamp_expressions:
+        return None
+    frame = lazy.with_columns(
+        [
+            pl.coalesce(timestamp_expressions).alias("_ts"),
+            _lazy_normalized_symbol("symbol").alias("_symbol"),
+            pl.col("spread_bps").cast(pl.Float64, strict=False).alias("_spread_bps"),
+        ]
+    ).filter(
+        (pl.col("_symbol").is_in(MAJOR_SYMBOLS))
+        & (pl.col("_ts") >= start)
+        & (pl.col("_ts") < end)
+        & pl.col("_spread_bps").is_not_null()
+    )
+    mean_frame = _collect_lazy(
+        frame.select(pl.col("_spread_bps").mean().alias("avg_spread_bps"))
+    )
+    if mean_frame.is_empty():
+        return None
+    return _float(mean_frame.item(0, "avg_spread_bps"))
 
 
 def _active_regimes(

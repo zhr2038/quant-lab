@@ -2,7 +2,7 @@
 Description=Run quant-lab storage retention pruning daily
 
 [Timer]
-OnCalendar=*-*-* 01:20:00
+OnCalendar=*-*-* 09:20:00
 RandomizedDelaySec=10min
 Persistent=false
 

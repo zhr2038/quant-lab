@@ -63,12 +63,14 @@ def test_oneshot_services_do_not_use_ignored_runtime_max_sec():
 
 def test_storage_retention_does_not_create_root_owned_lake_files():
     unit = _unit("quant-lab-storage-retention.service")
+    timer = _unit("quant-lab-storage-retention.timer")
 
     assert "User=quantlab" in unit
     assert "Group=quantlab" in unit
     assert "PermissionsStartOnly=true" in unit
     assert "prune-storage-retention --base-dir /var/lib/quant-lab" in unit
     assert "journalctl --vacuum-size=200M" in unit
+    assert "OnCalendar=*-*-* 09:20:00" in timer
 
 
 def test_lake_permission_repair_script_targets_service_user():

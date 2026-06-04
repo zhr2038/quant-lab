@@ -33,7 +33,7 @@ button{font:inherit;color:inherit}
   position:relative;z-index:2;width:1920px;height:1080px;padding:22px 28px 32px;
   transform-origin:center center;transform:scale(var(--screen-scale,1));
 }
-.header{height:62px;display:flex;align-items:flex-start;justify-content:space-between}
+.header{height:76px;display:flex;align-items:flex-start;justify-content:space-between}
 .title h1{font-size:36px;letter-spacing:.5px;margin:0 0 4px;display:flex;align-items:center;gap:12px}
 .title p,.sub{margin:6px 0 0;color:var(--muted);font-size:13px}
 .pills{display:flex;gap:14px;align-items:center}
@@ -49,7 +49,7 @@ button{font:inherit;color:inherit}
 .pill.critical{border-color:rgba(255,93,125,.85)}
 .pill.critical:before{background:var(--red);box-shadow:0 0 12px var(--red)}
 .layout{
-  display:grid;grid-template-columns:355px 545px 405px 506px;grid-template-rows:150px 420px 340px;gap:18px;height:958px;
+  display:grid;grid-template-columns:355px 545px 405px 506px;grid-template-rows:150px 420px 340px;gap:18px;height:946px;
 }
 .left{grid-row:1/4;display:grid;grid-template-rows:300px 330px 1fr;gap:18px}
 .card{
@@ -94,11 +94,11 @@ button{font:inherit;color:inherit}
 .kpi.info{border-color:rgba(167,125,255,.65)!important}
 .kpi.info svg{color:var(--purple)}
 .status-ring{height:300px}
-.ring-chart{position:absolute;left:52px;right:52px;top:76px;height:212px;display:flex;align-items:center;justify-content:center}
-.ring-chart:before{content:"";position:absolute;width:185px;height:185px;border-radius:50%;box-shadow:0 0 28px rgba(80,169,255,.35);animation:rotateGlow 8s ease-in-out infinite}
-.ring-chart span{position:absolute;bottom:38px;color:var(--muted);font-size:11px}
+.ring-chart{position:absolute;left:52px;right:52px;top:82px;height:186px;display:flex;align-items:center;justify-content:center}
+.ring-chart:before{content:"";position:absolute;width:166px;height:166px;border-radius:50%;box-shadow:0 0 28px rgba(80,169,255,.35);animation:rotateGlow 8s ease-in-out infinite}
+.ring-chart span{position:absolute;bottom:56px;color:var(--muted);font-size:11px}
 .health-pill{
-  position:absolute;left:58px;right:58px;bottom:26px;height:30px;border-radius:20px;border:1px solid rgba(255,196,87,.8);
+  position:absolute;left:58px;right:58px;bottom:22px;height:30px;border-radius:20px;border:1px solid rgba(255,196,87,.8);
   color:#ffe5a6;background:rgba(255,196,87,.12);display:flex;align-items:center;justify-content:center;font-size:12px;
 }
 .health-pill.ok{border-color:rgba(45,232,166,.7);background:rgba(45,232,166,.12);color:#aaf8dc}
@@ -205,3 +205,77 @@ button{font:inherit;color:inherit}
 @keyframes criticalBlink{50%{box-shadow:0 0 18px rgba(255,93,125,.75)}}
 @keyframes waveMove{to{transform:translateX(calc(var(--phase) + 32px))}}
 @media (prefers-reduced-motion:reduce){*,*:before,*:after{animation:none!important;transition:none!important}}
+
+@media (max-width: 720px){
+  html,body,#root{height:auto;min-height:100%}
+  body{overflow:auto;background:#04101d}
+  .viewport{
+    width:100%;height:auto;min-height:100dvh;display:block;overflow:visible;padding:0;
+  }
+  .app-shell{
+    width:100%;height:auto;min-height:100dvh;padding:16px 12px 24px;transform:none!important;
+  }
+  .header{
+    height:auto;min-height:0;display:grid;grid-template-columns:1fr;gap:12px;margin-bottom:14px;
+  }
+  .title h1{font-size:25px;line-height:1.1;gap:9px}
+  .title h1 svg{width:25px;height:25px}
+  .title p{font-size:12px;line-height:1.35;margin-top:8px}
+  .pills{
+    gap:8px;overflow-x:auto;padding-bottom:2px;scrollbar-width:none;
+  }
+  .pills::-webkit-scrollbar{display:none}
+  .pill{height:28px;padding:0 12px;font-size:11px;white-space:nowrap;flex:0 0 auto}
+  .layout{
+    display:grid;grid-template-columns:1fr;grid-auto-rows:auto;grid-template-rows:none;
+    height:auto;gap:14px;
+  }
+  .left{
+    grid-row:auto;display:grid;grid-template-rows:none;grid-auto-rows:auto;gap:14px;
+  }
+  .left,.kpis,.heatmap,.strategy-card,.v5,.cost,.market,.perf{
+    grid-column:auto!important;grid-row:auto!important;
+  }
+  .card{border-radius:18px;overflow:hidden}
+  .pad{padding:18px}
+  .section-title{font-size:20px}
+  .kpis{
+    display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:10px;padding:46px 14px 14px;
+  }
+  .kpis .section-title{left:16px;top:17px}
+  .kpi{min-height:86px;padding:12px}
+  .kpi strong{font-size:29px;max-width:100%;padding-right:22px}
+  .kpi.long-value strong{font-size:20px;line-height:1.1}
+  .status-ring{height:292px}
+  .ring-chart{left:34px;right:34px;top:78px;height:176px}
+  .ring-chart:before{width:156px;height:156px}
+  .ring-chart span{bottom:52px}
+  .health-pill{left:34px;right:34px;bottom:20px}
+  .matrix{
+    grid-template-columns:44px repeat(7,minmax(34px,1fr));gap:5px;overflow:visible;
+  }
+  .matrix .h{font-size:10px}
+  .symbol{font-size:11px}
+  .cell{height:26px;border-radius:7px}
+  .flow-metrics{grid-template-columns:repeat(2,1fr)}
+  .stage{height:72px}
+  .stage b{font-size:29px}
+  .v5-grid,.cost-body{grid-template-columns:1fr;gap:14px}
+  .cost-body>div:first-child{margin:auto}
+  .ticker{grid-template-columns:86px 62px 1fr 52px;font-size:11px;padding:0 9px}
+  .latency-text{position:static;margin-top:20px;font-size:32px}
+  .perm-grid{margin-top:20px}
+  .footnote{position:static;margin-top:14px;line-height:1.35}
+  .compact-map .sub{line-height:1.35}
+  .map-row{grid-template-columns:18px 58px 1fr;height:34px}
+  .loading-card{
+    position:relative;left:auto;right:auto;top:auto;bottom:auto;min-height:360px;font-size:17px;
+  }
+  .detail-drawer{
+    position:fixed;left:10px;right:10px;top:10px;bottom:10px;width:auto;height:auto;z-index:40;
+    padding:16px;overflow:auto;
+  }
+  .mini-table{overflow:auto}
+  .mini-table-row{min-width:680px}
+  .kv-grid{grid-template-columns:1fr}
+}

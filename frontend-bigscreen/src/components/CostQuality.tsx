@@ -16,7 +16,7 @@ export function CostQuality({ cost }: { cost: Record<string, unknown> }) {
     series: [
       {
         type: "pie",
-        radius: ["48%", "75%"],
+        radius: ["62%", "78%"],
         label: { color: "#eaf6ff" },
         data: rows
       }
@@ -25,8 +25,15 @@ export function CostQuality({ cost }: { cost: Record<string, unknown> }) {
       {
         type: "text",
         left: "center",
-        top: "43%",
-        style: { text: `${shortNumber(total)}\ncost rows`, fill: "#eaf6ff", fontSize: 30, fontWeight: 900, align: "center" }
+        top: "42%",
+        style: {
+          text: `${shortNumber(total)}\nrows`,
+          fill: "#eaf6ff",
+          fontSize: 22,
+          fontWeight: 900,
+          lineHeight: 25,
+          align: "center"
+        }
       }
     ]
   };

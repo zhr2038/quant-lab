@@ -1,0 +1,71 @@
+import ReactECharts from "echarts-for-react";
+import { Cpu, Radio } from "lucide-react";
+
+export function V5Telemetry({
+  v5,
+  consumers
+}: {
+  v5: Record<string, unknown>;
+  consumers: Record<string, unknown>;
+}) {
+  const option = {
+    backgroundColor: "transparent",
+    radar: {
+      radius: "68%",
+      splitNumber: 3,
+      axisName: { color: "#8aa4be" },
+      splitLine: { lineStyle: { color: "rgba(80,169,255,.22)" } },
+      splitArea: { areaStyle: { color: ["rgba(80,169,255,.04)", "rgba(80,169,255,.08)"] } },
+      axisLine: { lineStyle: { color: "rgba(80,169,255,.22)" } },
+      indicator: [
+        { name: "bundle", max: 1 },
+        { name: "reconcile", max: 1 },
+        { name: "ledger", max: 1 },
+        { name: "risk", max: 1 },
+        { name: "config", max: 1 },
+        { name: "position", max: 1 }
+      ]
+    },
+    series: [
+      {
+        type: "radar",
+        data: [
+          {
+            value: [
+              v5.latest_bundle_ts ? 0.96 : 0.25,
+              v5.reconcile_ok === false ? 0.15 : 1,
+              v5.ledger_ok === false ? 0.15 : 1,
+              Number(v5.high_issue_count ?? 0) > 0 ? 0.35 : 0.92,
+              Number(v5.config_not_consumed_count ?? 0) > 0 ? 0.55 : 0.96,
+              Number(v5.open_position_count ?? 0) > 0 ? 0.85 : 1
+            ],
+            areaStyle: { color: "rgba(80,169,255,.52)" },
+            lineStyle: { color: "#50A9FF" }
+          }
+        ]
+      }
+    ]
+  };
+  const permissions = (consumers.permissions ?? {}) as Record<string, unknown>;
+  const items = [
+    ["72h 运行", v5.run_count_72h],
+    ["24h 决策", v5.decision_audit_count_24h],
+    ["交易笔数", v5.trade_count_24h],
+    ["持仓", v5.open_position_count],
+    ["kill-switch", v5.kill_switch_enabled ? "ON" : "OFF"],
+    ["V5 权限", permissions.v5 ?? "UNKNOWN"]
+  ];
+  return (
+    <section className="card v5 pad">
+      <h2 className="section-title icon-title"><Cpu size={23} />V5 遥测与消费者</h2>
+      <p className="sub">bundle、账本、对账、风控权限、blocked opportunity 合并展示。</p>
+      <div className="v5-grid">
+        <ReactECharts option={option} style={{ height: 220, width: 220 }} />
+        <div className="metric-list">
+          {items.map(([key, value]) => <div className="mini" key={String(key)}><span>{String(key)}</span><strong>{String(value ?? "—")}</strong></div>)}
+        </div>
+      </div>
+      <div className="footnote"><Radio size={12} /> 最新 Bundle SHA · <code>{String(v5.latest_bundle_sha256_short ?? "not_observable")}</code></div>
+    </section>
+  );
+}

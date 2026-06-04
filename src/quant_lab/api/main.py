@@ -19,7 +19,8 @@ from typing import Any
 
 import polars as pl
 from fastapi import FastAPI, HTTPException, Request, status
-from fastapi.responses import JSONResponse, RedirectResponse, Response
+from fastapi.responses import FileResponse, JSONResponse, RedirectResponse, Response
+from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, ConfigDict, Field
 from starlette.middleware.gzip import GZipMiddleware
 
@@ -227,6 +228,7 @@ def create_app() -> FastAPI:
         openapi_url=None if disable_docs else "/openapi.json",
     )
     app.add_middleware(GZipMiddleware, minimum_size=1024)
+    _mount_bigscreen_static(app)
 
     @app.middleware("http")
     async def require_bearer_token_and_record_metrics(request: Request, call_next: Any) -> Any:
@@ -299,6 +301,32 @@ def create_app() -> FastAPI:
                 lake_root
             ),
         }
+
+    @app.get("/v1/web/bigscreen-snapshot")
+    def web_bigscreen_snapshot(response: Response) -> dict[str, Any]:
+        from quant_lab.web.bigscreen import bigscreen_snapshot
+
+        payload = bigscreen_snapshot(_lake_root())
+        response.headers["X-Quant-Lab-Bigscreen-Mode"] = "read-only"
+        response.headers["X-Quant-Lab-Response-Bytes"] = str(
+            len(json.dumps(payload, default=str).encode("utf-8"))
+        )
+        return payload
+
+    @app.get("/web-v2/snapshot")
+    def web_bigscreen_snapshot_for_static_page() -> dict[str, Any]:
+        from quant_lab.web.bigscreen import bigscreen_snapshot
+
+        return bigscreen_snapshot(_lake_root())
+
+    @app.get("/web-v2")
+    @app.get("/web-v2/")
+    def web_bigscreen_page() -> Response:
+        return _bigscreen_index_response()
+
+    @app.get("/web-v2/{_path:path}")
+    def web_bigscreen_spa_fallback(_path: str) -> Response:
+        return _bigscreen_index_response()
 
     @app.get("/v1/catalog/datasets", response_model=CatalogDatasetsResponse)
     def catalog_datasets() -> CatalogDatasetsResponse:
@@ -916,11 +944,39 @@ def _compute_live_permission_with_context(
     }
 
 
-app = create_app()
-
-
 def _lake_root() -> Path:
     return Path(os.environ.get("QUANT_LAB_LAKE_ROOT", "/var/lib/quant-lab/lake"))
+
+
+def _bigscreen_static_root() -> Path:
+    return Path(__file__).resolve().parents[1] / "web" / "bigscreen_static"
+
+
+def _mount_bigscreen_static(app: FastAPI) -> None:
+    static_root = _bigscreen_static_root()
+    assets_root = static_root / "assets"
+    if assets_root.is_dir():
+        app.mount(
+            "/web-v2/assets",
+            StaticFiles(directory=str(assets_root)),
+            name="quant-lab-bigscreen-assets",
+        )
+
+
+def _bigscreen_index_response() -> Response:
+    index_path = _bigscreen_static_root() / "index.html"
+    if index_path.is_file():
+        return FileResponse(index_path)
+    return JSONResponse(
+        status_code=503,
+        content={
+            "detail": "quant-lab bigscreen frontend is not built",
+            "expected_path": str(index_path),
+        },
+    )
+
+
+app = create_app()
 
 
 def _authorize_v1_request(request: Request) -> None:

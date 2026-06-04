@@ -1,0 +1,56 @@
+import ReactECharts from "echarts-for-react";
+import { CircleDollarSign } from "lucide-react";
+import { pct, shortNumber } from "../lib/api";
+
+export function CostQuality({ cost }: { cost: Record<string, unknown> }) {
+  const rows = [
+    { name: "真实", value: Number(cost.actual_rows ?? 0), color: "#2DE8A6" },
+    { name: "混合", value: Number(cost.mixed_rows ?? 0), color: "#50A9FF" },
+    { name: "代理", value: Number(cost.proxy_rows ?? 0), color: "#FFC457" },
+    { name: "全局默认", value: Number(cost.global_default_rows ?? 0), color: "#FF5D7D" }
+  ];
+  const total = rows.reduce((sum, row) => sum + row.value, 0);
+  const option = {
+    backgroundColor: "transparent",
+    color: rows.map((row) => row.color),
+    series: [
+      {
+        type: "pie",
+        radius: ["48%", "75%"],
+        label: { color: "#eaf6ff" },
+        data: rows
+      }
+    ],
+    graphic: [
+      {
+        type: "text",
+        left: "center",
+        top: "43%",
+        style: { text: `${shortNumber(total)}\ncost rows`, fill: "#eaf6ff", fontSize: 30, fontWeight: 900, align: "center" }
+      }
+    ]
+  };
+  return (
+    <section className="card cost pad">
+      <h2 className="section-title icon-title"><CircleDollarSign size={23} />成本质量</h2>
+      <p className="sub">actual / mixed / proxy / default 与 hard/soft fallback。</p>
+      <div className="cost-body">
+        <ReactECharts option={option} style={{ height: 190, width: 190 }} />
+        <div>
+          {rows.map((row) => <Bar key={row.name} label={`${row.name}成本`} value={row.value} total={Math.max(total, 1)} color={row.color} />)}
+        </div>
+      </div>
+      <div className="footnote yellowText">硬回退 {pct(cost.hard_fallback_ratio)} · 软回退 {pct(cost.soft_fallback_ratio)} · 仅代理成本需醒目标记</div>
+    </section>
+  );
+}
+
+function Bar({ label, value, total, color }: { label: string; value: number; total: number; color: string }) {
+  return (
+    <div className="barline">
+      <span>{label}</span>
+      <div className="bar"><span style={{ width: `${Math.min(100, (value / total) * 100)}%`, background: color }} /></div>
+      <b>{value}</b>
+    </div>
+  );
+}

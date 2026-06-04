@@ -11,6 +11,7 @@ from typing import Any
 
 from quant_lab.web.pages import (
     alpha_gates,
+    bigscreen_v2,
     cost_model,
     data_health,
     expert_exports,
@@ -25,6 +26,7 @@ from quant_lab.web.pages import (
 PageRenderer = Callable[[str | Path, Any | None], None]
 
 PAGES: dict[str, PageRenderer] = {
+    "🚀 V2 大屏": bigscreen_v2.render,
     "📌 概览": overview.render,
     "🧭 策略机会": alpha_gates.render,
     "📦 专家包导出": expert_exports.render,

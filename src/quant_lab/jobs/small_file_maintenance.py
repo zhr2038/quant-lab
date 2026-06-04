@@ -45,6 +45,8 @@ class SmallFileMaintenanceResult:
     started_at: datetime
     finished_at: datetime | None = None
     indexed_rows: int = 0
+    before_file_count: int = 0
+    after_file_count: int = 0
     candidate_group_count: int = 0
     processed_group_count: int = 0
     compacted_group_count: int = 0
@@ -83,6 +85,8 @@ def lake_small_file_maintenance(
     try:
         index_delta = build_lake_file_index(root, priority_datasets)
         result.indexed_rows = index_delta.height
+        result.before_file_count = _indexed_file_count(root, priority_datasets)
+        result.after_file_count = result.before_file_count
     except Exception as exc:
         result.warnings.append(f"build_lake_file_index_failed:{type(exc).__name__}:{exc}")
         result.finished_at = datetime.now(UTC)
@@ -129,6 +133,12 @@ def lake_small_file_maintenance(
         result.source_file_count += compact_result.source_file_count
         result.output_file_count += compact_result.output_file_count
 
+    if not dry_run:
+        try:
+            build_lake_file_index(root, priority_datasets)
+            result.after_file_count = _indexed_file_count(root, priority_datasets)
+        except Exception as exc:
+            result.warnings.append(f"refresh_lake_file_index_failed:{type(exc).__name__}:{exc}")
     result.finished_at = datetime.now(UTC)
     return result
 
@@ -219,6 +229,16 @@ def _read_file_index(root: Path) -> pl.DataFrame:
         return read_parquet_dataset(root / LAKE_FILE_INDEX)
     except Exception:
         return pl.DataFrame()
+
+
+def _indexed_file_count(root: Path, priority_datasets: tuple[str, ...]) -> int:
+    index = _read_file_index(root)
+    if index.is_empty() or not {"dataset", "path"}.issubset(set(index.columns)):
+        return 0
+    scoped = index.filter(pl.col("dataset").cast(pl.Utf8).is_in(list(priority_datasets)))
+    if scoped.is_empty():
+        return 0
+    return int(scoped.select(pl.col("path").n_unique().alias("count")).item(0, "count") or 0)
 
 
 def _compaction_file_kind(relative_path: str) -> str | None:

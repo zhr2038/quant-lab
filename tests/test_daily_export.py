@@ -84,8 +84,26 @@ def test_export_daily_pack_writes_required_members(tmp_path):
         assert "v5/v5_strategy_health.csv" in names
         assert "reports/v5_enforce_readiness.json" in names
         assert "reports/v5_enforce_readiness.csv" in names
+        assert "reports/system_acceptance_dashboard.csv" in names
+        assert "reports/system_acceptance_dashboard.md" in names
+        assert "reports/post_impulse_overextension_no_trigger_reasons.csv" in names
+        assert "reports/bottom_zone_reversal_no_trigger_reasons.csv" in names
         assert "diagnostics/export_timing.csv" in names
         assert "diagnostics/export_timing.json" in names
+        acceptance_rows = list(
+            csv.DictReader(
+                io.StringIO(
+                    archive.read("reports/system_acceptance_dashboard.csv").decode("utf-8")
+                )
+            )
+        )
+        acceptance_checks = {row["check_name"] for row in acceptance_rows}
+        assert "v5_bundle_sync_ok" in acceptance_checks
+        assert "web_rglob_fallback_zero" in acceptance_checks
+        assert "api_latency_p95_ok" in acceptance_checks
+        assert "System Acceptance Dashboard" in archive.read(
+            "reports/system_acceptance_dashboard.md"
+        ).decode("utf-8")
         export_timing = list(
             csv.DictReader(
                 io.StringIO(archive.read("diagnostics/export_timing.csv").decode("utf-8"))

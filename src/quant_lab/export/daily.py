@@ -34,6 +34,10 @@ from quant_lab.contracts.v5_quant_lab import (
     V5_TELEMETRY_DATASET_SCHEMA_VERSION,
 )
 from quant_lab.data.lake import read_parquet_dataset, write_parquet_dataset
+from quant_lab.features.fast_microstructure import (
+    FAST_MICROSTRUCTURE_FIELDS,
+    build_fast_microstructure_features,
+)
 from quant_lab.ops.api_metrics import api_metrics_summary
 from quant_lab.ops.data_quality import run_data_quality
 from quant_lab.reports.enforce_readiness import (
@@ -42,9 +46,12 @@ from quant_lab.reports.enforce_readiness import (
     build_enforce_readiness_report,
     enforce_readiness_members,
 )
-from quant_lab.features.fast_microstructure import (
-    FAST_MICROSTRUCTURE_FIELDS,
-    build_fast_microstructure_features,
+from quant_lab.reports.system_acceptance import (
+    NO_TRIGGER_REASON_FIELDS,
+    SYSTEM_ACCEPTANCE_FIELDS,
+    build_no_trigger_reasons,
+    build_system_acceptance_dashboard,
+    system_acceptance_dashboard_md,
 )
 from quant_lab.research.advisory_overrides import (
     portfolio_overridden_decision_mode,
@@ -396,13 +403,17 @@ REQUIRED_MEMBERS = [
     "reports/bnb_strong_alpha6_bypass_shadow.csv",
     "reports/bnb_strong_alpha6_bypass_summary.md",
     "reports/post_impulse_overextension_shadow.csv",
+    "reports/post_impulse_overextension_no_trigger_reasons.csv",
     "reports/late_breakout_failure_shadow.csv",
     "reports/late_breakout_failure_protect_shadow.csv",
     "reports/bottom_zone_reversal_shadow.csv",
+    "reports/bottom_zone_reversal_no_trigger_reasons.csv",
     "reports/bottom_zone_reversal_summary.md",
     "reports/fast_microstructure_features.csv",
     "reports/market_pressure_score.csv",
     "reports/market_pressure_summary.md",
+    "reports/system_acceptance_dashboard.csv",
+    "reports/system_acceptance_dashboard.md",
     "reports/backtest_label_summary.csv",
     "reports/backtest_label_summary.md",
     "reports/v5_decision_replay_trades.csv",
@@ -604,6 +615,9 @@ CSV_SCHEMAS: dict[str, list[str]] = {
         "dependency_meta_missing_rate",
         "error_count",
     ],
+    "reports/system_acceptance_dashboard.csv": SYSTEM_ACCEPTANCE_FIELDS,
+    "reports/post_impulse_overextension_no_trigger_reasons.csv": NO_TRIGGER_REASON_FIELDS,
+    "reports/bottom_zone_reversal_no_trigger_reasons.csv": NO_TRIGGER_REASON_FIELDS,
     "research/alpha_evidence.csv": [
         "alpha_id",
         "version",
@@ -3200,7 +3214,15 @@ def export_daily_pack(
     )
 
     members: dict[str, _MemberPayload] = {}
-    members.update(_dataset_members(snapshot.frames, root))
+    members.update(
+        _dataset_members(
+            snapshot.frames,
+            root,
+            data_quality=data_quality,
+            pre_export_v5=pre_export_v5,
+            row_counts=snapshot.row_counts,
+        )
+    )
     members.update(_chart_members(snapshot.frames))
     members.update(enforce_readiness_members(root))
     members["README.md"] = _readme(day, root, profile)
@@ -4008,7 +4030,14 @@ def _latest_paper_tracking_date(frames: list[pl.DataFrame]) -> date:
     return date.fromisoformat(max(values))
 
 
-def _dataset_members(frames: dict[str, pl.DataFrame], root: Path) -> dict[str, _MemberPayload]:
+def _dataset_members(
+    frames: dict[str, pl.DataFrame],
+    root: Path,
+    *,
+    data_quality: dict[str, Any] | None = None,
+    pre_export_v5: dict[str, Any] | None = None,
+    row_counts: dict[str, int] | None = None,
+) -> dict[str, _MemberPayload]:
     market = frames.get("market_bar", pl.DataFrame())
     features = frames.get("feature_value", pl.DataFrame())
     feature_coverage = frames.get("feature_coverage_daily", pl.DataFrame())
@@ -4277,6 +4306,51 @@ def _dataset_members(frames: dict[str, pl.DataFrame], root: Path) -> dict[str, _
         }
     )
     backtest_bundle = build_backtest_report_bundle(backtest_frames)
+    api_latency_summary = _api_latency_summary_for_export(root)
+    post_impulse_no_trigger_reasons = build_no_trigger_reasons(
+        report_name="post_impulse_overextension_shadow",
+        source_row_count=v5_candidate_events.height,
+        output_row_count=post_impulse_overextension_shadow.height,
+        missing_field_reason=(
+            "candidate_events_missing" if v5_candidate_events.is_empty() else "none"
+        ),
+        filtered_out_reason=(
+            "no_alpha6_ge_0_75_or_f3_ge_10_or_f4_ge_1_candidate"
+            if post_impulse_overextension_shadow.is_empty() and not v5_candidate_events.is_empty()
+            else "none"
+        ),
+        next_action="inspect v5_candidate_event alpha6/f3/f4 coverage and thresholds",
+    )
+    bottom_zone_no_trigger_reasons = build_no_trigger_reasons(
+        report_name="bottom_zone_reversal_shadow",
+        source_row_count=market.height,
+        output_row_count=bottom_zone_reversal_shadow.height,
+        missing_field_reason="market_bars_missing" if market.is_empty() else "none",
+        filtered_out_reason=(
+            "no_valid_market_bars_or_no_symbols"
+            if bottom_zone_reversal_shadow.is_empty() and not market.is_empty()
+            else "none"
+        ),
+        next_action="verify market_bar symbol/timestamp/close fields and rollups",
+    )
+    lake_file_count = _lake_file_index_count(root)
+    system_acceptance_dashboard = build_system_acceptance_dashboard(
+        frames=frames,
+        report_frames={
+            "strategy_opportunity_advisory": opportunity_advisory,
+            "bnb_strong_alpha6_bypass_shadow": bnb_strong_alpha6_bypass_shadow,
+            "final_score_alpha6_conflict": final_score_alpha6_conflict,
+            "paper_strategy_runs": paper_runs,
+            "backtest_label_summary": backtest_bundle.label_summary,
+            "research_promotion_decision": backtest_bundle.promotion_decision,
+            "v5_decision_replay_trades": backtest_bundle.replay_trades,
+        },
+        row_counts=row_counts or {},
+        pre_export_v5=pre_export_v5 or {},
+        data_quality_warnings=list((data_quality or {}).get("warnings", [])),
+        api_latency_summary=api_latency_summary,
+        lake_file_count=lake_file_count,
+    )
 
     return {
         "market/market_snapshot.csv": _csv_member(
@@ -4408,7 +4482,7 @@ def _dataset_members(frames: dict[str, pl.DataFrame], root: Path) -> dict[str, _
         ),
         "reports/api_latency_summary.csv": _csv_member(
             "reports/api_latency_summary.csv",
-            _api_latency_summary_for_export(root),
+            api_latency_summary,
         ),
         "reports/api_latency_summary.md": _api_latency_summary_md(root),
         "reports/v5_local_live_vs_quant_lab_shadow.csv": _csv_member(
@@ -4448,6 +4522,10 @@ def _dataset_members(frames: dict[str, pl.DataFrame], root: Path) -> dict[str, _
             "reports/post_impulse_overextension_shadow.csv",
             post_impulse_overextension_shadow,
         ),
+        "reports/post_impulse_overextension_no_trigger_reasons.csv": _csv_member(
+            "reports/post_impulse_overextension_no_trigger_reasons.csv",
+            post_impulse_no_trigger_reasons,
+        ),
         "reports/late_breakout_failure_shadow.csv": _csv_member(
             "reports/late_breakout_failure_shadow.csv",
             late_breakout_failure_shadow,
@@ -4459,6 +4537,10 @@ def _dataset_members(frames: dict[str, pl.DataFrame], root: Path) -> dict[str, _
         "reports/bottom_zone_reversal_shadow.csv": _csv_member(
             "reports/bottom_zone_reversal_shadow.csv",
             bottom_zone_reversal_shadow,
+        ),
+        "reports/bottom_zone_reversal_no_trigger_reasons.csv": _csv_member(
+            "reports/bottom_zone_reversal_no_trigger_reasons.csv",
+            bottom_zone_no_trigger_reasons,
         ),
         "reports/bottom_zone_reversal_summary.md": bottom_zone_reversal_summary_md(
             bottom_zone_reversal_shadow
@@ -4473,6 +4555,13 @@ def _dataset_members(frames: dict[str, pl.DataFrame], root: Path) -> dict[str, _
         ),
         "reports/market_pressure_summary.md": market_pressure_summary_md(
             market_pressure_score
+        ),
+        "reports/system_acceptance_dashboard.csv": _csv_member(
+            "reports/system_acceptance_dashboard.csv",
+            system_acceptance_dashboard,
+        ),
+        "reports/system_acceptance_dashboard.md": system_acceptance_dashboard_md(
+            system_acceptance_dashboard
         ),
         "reports/backtest_label_summary.csv": _csv_member(
             "reports/backtest_label_summary.csv",
@@ -7084,6 +7173,18 @@ def _paper_live_block_reasons(row: dict[str, Any]) -> list[str]:
         reasons.append("no_paper_days")
     reasons.append("no_live_slippage_coverage")
     return reasons
+
+
+def _lake_file_index_count(root: Path) -> int | None:
+    try:
+        frame = read_parquet_dataset(root / "bronze" / "lake_file_index")
+    except Exception:
+        return None
+    if frame.is_empty():
+        return None
+    if "path" in frame.columns:
+        return frame.select(pl.col("path").n_unique().alias("count")).item(0, "count")
+    return frame.height
 
 
 def _api_latency_summary_for_export(root: Path) -> pl.DataFrame:

@@ -348,6 +348,8 @@ def test_small_file_maintenance_compacts_priority_partition_groups(tmp_path):
     )
 
     assert result.compacted_group_count == 1
+    assert result.before_file_count == 18
+    assert result.after_file_count == 1
     assert result.source_file_count == 18
     assert result.output_file_count == 1
     assert count_parquet_rows(dataset) == 18

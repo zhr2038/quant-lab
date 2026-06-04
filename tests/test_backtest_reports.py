@@ -53,7 +53,7 @@ def test_label_backtest_summarizes_bnb_alpha6_conflict() -> None:
     summary = build_label_backtest_summary({"bnb_strong_alpha6_bypass_shadow": frame})
 
     h4 = summary.filter(
-        (pl.col("strategy_id") == "BNB_STRONG_ALPHA6_BYPASS_SHADOW_V1")
+        (pl.col("strategy_id") == "BNB_STRONG_ALPHA6_BYPASS_BACKTEST")
         & (pl.col("symbol") == "BNB-USDT")
         & (pl.col("horizon_hours") == 4)
     )
@@ -140,4 +140,36 @@ def test_backtest_bundle_outputs_bottom_zone_and_promotion() -> None:
     assert row["future_4h_net_bps"] == pytest.approx(390.0)
     assert row["live_order_effect"] == "read_only_no_live_order"
     assert "Read-only" in bundle.bottom_zone_summary_md
+    assert "BOTTOM_ZONE_PROBE_BACKTEST" in bundle.regime_breakdown["strategy_id"].to_list()
+    assert bundle.regime_breakdown["live_order_effect"].to_list()[0] == "read_only_no_live_order"
     assert bundle.promotion_decision.height >= 1 or bundle.label_summary.height == 0
+
+
+def test_backtest_label_summary_uses_stable_first_batch_backtest_ids() -> None:
+    summary = build_label_backtest_summary(
+        {
+            "final_score_vs_alpha6_conflict": pl.DataFrame(
+                [
+                    {
+                        "symbol": "BNB-USDT",
+                        "ts_utc": "2026-06-01T00:00:00Z",
+                        "future_4h_net_bps": 70.0,
+                    }
+                ]
+            ),
+            "risk_on_multi_buy_shadow": pl.DataFrame(
+                [
+                    {
+                        "symbol": "MULTI",
+                        "current_regime": "ALT_IMPULSE",
+                        "ts_utc": "2026-06-01T00:00:00Z",
+                        "future_4h_net_bps": 40.0,
+                    }
+                ]
+            ),
+        }
+    )
+
+    strategy_ids = set(summary["strategy_id"].to_list())
+    assert "FINAL_SCORE_ALPHA6_CONFLICT_BACKTEST" in strategy_ids
+    assert "RISK_ON_MULTI_BUY_BACKTEST" in strategy_ids

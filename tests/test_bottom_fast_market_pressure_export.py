@@ -123,6 +123,21 @@ def test_bottom_fast_microstructure_and_market_pressure_reports_export(tmp_path)
 
     assert bottom.filter(pl.col("symbol") == "BNB-USDT").height == 1
     assert "live_order_effect" in bottom.columns
+    for field in (
+        "support_zone_low",
+        "support_zone_high",
+        "distance_to_support_bps",
+        "orderbook_imbalance_1m",
+        "taker_buy_sell_imbalance_5m",
+        "cvd_5m",
+        "vwap_reclaim_15m",
+        "volatility_climax_score",
+        "bottom_zone_score",
+        "bounce_probability_4h",
+        "invalid_below_px",
+        "no_trigger_reasons",
+    ):
+        assert field in bottom.columns
     assert fast.filter(pl.col("symbol") == "BNB-USDT")["trade_count_60m"][0] == 180.0
     assert pressure["market_pressure_state"][0] in {
         "BOTTOM_PROBE_ALLOWED",
@@ -149,6 +164,9 @@ def test_bottom_fast_microstructure_and_market_pressure_reports_export(tmp_path)
         assert "reports/backtest_label_summary.csv" in names
         assert "reports/v5_decision_replay_summary.md" in names
         assert "reports/bottom_zone_backtest.csv" in names
+        assert "reports/backtest_regime_breakdown.csv" in names
         assert "reports/research_promotion_decision.csv" in names
         bottom_csv = archive.read("reports/bottom_zone_reversal_shadow.csv").decode()
+        assert "support_zone_low" in bottom_csv
+        assert "bottom_zone_score" in bottom_csv
         assert "read_only_no_live_order" in bottom_csv

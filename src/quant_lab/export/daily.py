@@ -408,6 +408,7 @@ REQUIRED_MEMBERS = [
     "reports/v5_decision_replay_trades.csv",
     "reports/v5_decision_replay_equity.csv",
     "reports/v5_decision_replay_summary.md",
+    "reports/backtest_regime_breakdown.csv",
     "reports/bottom_zone_backtest.csv",
     "reports/bottom_zone_backtest_summary.md",
     "reports/research_promotion_decision.csv",
@@ -4487,6 +4488,10 @@ def _dataset_members(frames: dict[str, pl.DataFrame], root: Path) -> dict[str, _
             backtest_bundle.replay_equity,
         ),
         "reports/v5_decision_replay_summary.md": backtest_bundle.replay_summary_md,
+        "reports/backtest_regime_breakdown.csv": _csv_member(
+            "reports/backtest_regime_breakdown.csv",
+            backtest_bundle.regime_breakdown,
+        ),
         "reports/bottom_zone_backtest.csv": _csv_member(
             "reports/bottom_zone_backtest.csv",
             backtest_bundle.bottom_zone_backtest,

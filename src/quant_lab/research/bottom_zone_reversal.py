@@ -18,8 +18,11 @@ BOTTOM_ZONE_FIELDS = [
     "close",
     "support_low_24h",
     "support_low_72h",
+    "support_zone_low",
+    "support_zone_high",
     "distance_to_24h_low_bps",
     "distance_to_72h_low_bps",
+    "distance_to_support_bps",
     "rebound_from_24h_low_bps",
     "return_4h_bps",
     "return_24h_bps",
@@ -27,12 +30,21 @@ BOTTOM_ZONE_FIELDS = [
     "vwap_24h",
     "close_vs_vwap_24h_bps",
     "avg_spread_bps_15m",
+    "orderbook_imbalance_1m",
+    "taker_buy_sell_imbalance_5m",
+    "cvd_5m",
+    "vwap_reclaim_15m",
+    "volatility_climax_score",
     "trade_count_15m",
     "trade_count_60m",
     "bounce_probability_score",
+    "bottom_zone_score",
+    "bounce_probability_4h",
+    "invalid_below_px",
     "bottom_zone_state",
     "would_probe_paper",
     "no_probe_reason",
+    "no_trigger_reasons",
     "response_action",
     "live_order_effect",
 ]
@@ -73,11 +85,23 @@ def build_bottom_zone_reversal_shadow(
         close_vs_vwap = (close / vwap_24h - 1.0) * 10000.0 if vwap_24h else None
         distance_24h = (close / low_24h - 1.0) * 10000.0 if low_24h and low_24h > 0 else None
         distance_72h = (close / low_72h - 1.0) * 10000.0 if low_72h and low_72h > 0 else None
+        support_zone_low = _support_zone_low(low_24h, low_72h)
+        support_zone_high = _support_zone_high(low_24h, low_72h, support_zone_low)
+        distance_to_support = (
+            (close / support_zone_low - 1.0) * 10000.0
+            if support_zone_low and support_zone_low > 0
+            else None
+        )
         spread_15m = _avg_value(
             spreads_by_symbol.get(symbol, []),
             ts,
             minutes=15,
             field="spread_bps",
+        )
+        orderbook_imbalance_1m = _orderbook_imbalance(
+            spreads_by_symbol.get(symbol, []),
+            ts,
+            minutes=1,
         )
         trade_15m = _sum_value(
             trades_by_symbol.get(symbol, []),
@@ -90,6 +114,16 @@ def build_bottom_zone_reversal_shadow(
             ts,
             minutes=60,
             field="trade_count",
+        )
+        taker_imbalance_5m, cvd_5m = _taker_imbalance_and_cvd(
+            trades_by_symbol.get(symbol, []),
+            ts,
+            minutes=5,
+        )
+        vwap_reclaim_15m = bool(close_vs_vwap is not None and close_vs_vwap > 0.0)
+        volatility_climax_score = _volatility_climax_score(
+            return_24h=return_24h,
+            trade_count_60m=trade_60m,
         )
         score = _bounce_probability_score(
             return_24h=return_24h,
@@ -114,8 +148,11 @@ def build_bottom_zone_reversal_shadow(
                 "close": close,
                 "support_low_24h": low_24h,
                 "support_low_72h": low_72h,
+                "support_zone_low": support_zone_low,
+                "support_zone_high": support_zone_high,
                 "distance_to_24h_low_bps": distance_24h,
                 "distance_to_72h_low_bps": distance_72h,
+                "distance_to_support_bps": distance_to_support,
                 "rebound_from_24h_low_bps": distance_24h,
                 "return_4h_bps": return_4h,
                 "return_24h_bps": return_24h,
@@ -123,12 +160,21 @@ def build_bottom_zone_reversal_shadow(
                 "vwap_24h": vwap_24h,
                 "close_vs_vwap_24h_bps": close_vs_vwap,
                 "avg_spread_bps_15m": spread_15m,
+                "orderbook_imbalance_1m": orderbook_imbalance_1m,
+                "taker_buy_sell_imbalance_5m": taker_imbalance_5m,
+                "cvd_5m": cvd_5m,
+                "vwap_reclaim_15m": vwap_reclaim_15m,
+                "volatility_climax_score": volatility_climax_score,
                 "trade_count_15m": trade_15m,
                 "trade_count_60m": trade_60m,
                 "bounce_probability_score": score,
+                "bottom_zone_score": score,
+                "bounce_probability_4h": score,
+                "invalid_below_px": round(support_zone_low * 0.995, 8) if support_zone_low else None,
                 "bottom_zone_state": state,
                 "would_probe_paper": would_probe,
                 "no_probe_reason": reason,
+                "no_trigger_reasons": reason,
                 "response_action": "paper_tracking" if would_probe else "shadow_tracking",
                 "live_order_effect": "read_only_no_live_order",
             }
@@ -262,6 +308,96 @@ def _sum_value(rows: list[dict[str, Any]], ts: datetime, *, minutes: int, field:
     values = [_float(row.get(field)) for row in _minute_window(rows, ts, minutes=minutes)]
     values = [value for value in values if value is not None]
     return sum(values) if values else None
+
+
+def _support_zone_low(*values: float | None) -> float | None:
+    observed = [value for value in values if value is not None and value > 0]
+    return min(observed) if observed else None
+
+
+def _support_zone_high(
+    low_24h: float | None,
+    low_72h: float | None,
+    support_zone_low: float | None,
+) -> float | None:
+    observed = [value for value in (low_24h, low_72h) if value is not None and value > 0]
+    if observed:
+        return max(observed)
+    return support_zone_low * 1.01 if support_zone_low else None
+
+
+def _latest_value(rows: list[dict[str, Any]], ts: datetime, *, minutes: int, fields: Iterable[str]) -> float | None:
+    for row in reversed(_minute_window(rows, ts, minutes=minutes)):
+        for field in fields:
+            value = _float(row.get(field))
+            if value is not None:
+                return value
+    return None
+
+
+def _orderbook_imbalance(rows: list[dict[str, Any]], ts: datetime, *, minutes: int) -> float | None:
+    explicit = _latest_value(
+        rows,
+        ts,
+        minutes=minutes,
+        fields=("orderbook_imbalance", "imbalance", "bid_ask_imbalance", "book_imbalance"),
+    )
+    if explicit is not None:
+        return explicit
+    window = _minute_window(rows, ts, minutes=minutes)
+    bid = sum(
+        value
+        for value in (
+            _float(row.get("bid_size") or row.get("bid_qty") or row.get("bid_volume"))
+            for row in window
+        )
+        if value is not None
+    )
+    ask = sum(
+        value
+        for value in (
+            _float(row.get("ask_size") or row.get("ask_qty") or row.get("ask_volume"))
+            for row in window
+        )
+        if value is not None
+    )
+    total = bid + ask
+    return (bid - ask) / total if total > 0 else None
+
+
+def _taker_imbalance_and_cvd(
+    rows: list[dict[str, Any]],
+    ts: datetime,
+    *,
+    minutes: int,
+) -> tuple[float | None, float | None]:
+    window = _minute_window(rows, ts, minutes=minutes)
+    buy = sum(
+        value
+        for value in (
+            _float(row.get("taker_buy_volume") or row.get("buy_volume") or row.get("buy_size"))
+            for row in window
+        )
+        if value is not None
+    )
+    sell = sum(
+        value
+        for value in (
+            _float(row.get("taker_sell_volume") or row.get("sell_volume") or row.get("sell_size"))
+            for row in window
+        )
+        if value is not None
+    )
+    total = buy + sell
+    if total <= 0:
+        return None, None
+    return (buy - sell) / total, buy - sell
+
+
+def _volatility_climax_score(*, return_24h: float | None, trade_count_60m: float | None) -> float:
+    move_score = min(abs(return_24h or 0.0) / 500.0, 1.0)
+    trade_score = min((trade_count_60m or 0.0) / 300.0, 1.0)
+    return round(max(move_score, trade_score), 4)
 
 
 def _latest_close(rows: list[dict[str, Any]], ts: datetime) -> float | None:

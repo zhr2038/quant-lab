@@ -242,6 +242,14 @@ def _expanded_hype_wld_samples(frames: dict[str, pl.DataFrame]) -> list[dict[str
 
 
 def _strategy_id(dataset_name: str, row: dict[str, Any]) -> str:
+    if dataset_name in {"final_score_vs_alpha6_conflict", "v5_final_score_vs_alpha6_conflict"}:
+        return "FINAL_SCORE_ALPHA6_CONFLICT_BACKTEST"
+    if dataset_name in {"bnb_strong_alpha6_bypass_shadow", "v5_bnb_strong_alpha6_bypass_shadow"}:
+        return "BNB_STRONG_ALPHA6_BYPASS_BACKTEST"
+    if dataset_name == "risk_on_multi_buy_shadow":
+        return "RISK_ON_MULTI_BUY_BACKTEST"
+    if dataset_name == "bottom_zone_reversal_shadow":
+        return "BOTTOM_ZONE_PROBE_BACKTEST"
     explicit = first_value(
         row,
         (
@@ -255,12 +263,6 @@ def _strategy_id(dataset_name: str, row: dict[str, Any]) -> str:
     )
     if explicit:
         return str(explicit)
-    if dataset_name in {"final_score_vs_alpha6_conflict", "v5_final_score_vs_alpha6_conflict"}:
-        return "FINAL_SCORE_VS_ALPHA6_CONFLICT_BACKTEST"
-    if dataset_name in {"bnb_strong_alpha6_bypass_shadow", "v5_bnb_strong_alpha6_bypass_shadow"}:
-        return "BNB_STRONG_ALPHA6_BYPASS_BACKTEST"
-    if dataset_name == "bottom_zone_reversal_shadow":
-        return "BOTTOM_ZONE_PROBE_BACKTEST"
     return dataset_name
 
 

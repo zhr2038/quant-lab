@@ -75,10 +75,25 @@ RESEARCH_PROMOTION_DECISION_FIELDS = [
     "live_order_effect",
 ]
 
+BACKTEST_REGIME_BREAKDOWN_FIELDS = [
+    "strategy_id",
+    "symbol",
+    "regime",
+    "horizon_hours",
+    "sample_count",
+    "complete_sample_count",
+    "avg_net_bps",
+    "p25_net_bps",
+    "win_rate",
+    "recommendation",
+    "live_order_effect",
+]
+
 BACKTEST_CSV_SCHEMAS = {
     "reports/backtest_label_summary.csv": BACKTEST_LABEL_SUMMARY_FIELDS,
     "reports/v5_decision_replay_trades.csv": V5_DECISION_REPLAY_TRADES_FIELDS,
     "reports/v5_decision_replay_equity.csv": V5_DECISION_REPLAY_EQUITY_FIELDS,
+    "reports/backtest_regime_breakdown.csv": BACKTEST_REGIME_BREAKDOWN_FIELDS,
     "reports/bottom_zone_backtest.csv": BOTTOM_ZONE_BACKTEST_FIELDS,
     "reports/research_promotion_decision.csv": RESEARCH_PROMOTION_DECISION_FIELDS,
 }
@@ -91,6 +106,7 @@ class BacktestReportBundle:
     replay_trades: pl.DataFrame
     replay_equity: pl.DataFrame
     replay_summary_md: str
+    regime_breakdown: pl.DataFrame
     bottom_zone_backtest: pl.DataFrame
     bottom_zone_summary_md: str
     promotion_decision: pl.DataFrame
@@ -115,11 +131,33 @@ def build_backtest_report_bundle(frames: dict[str, pl.DataFrame]) -> BacktestRep
         replay_trades=engine_result.replay_trades,
         replay_equity=engine_result.replay_equity,
         replay_summary_md=engine_result.replay_summary_md,
+        regime_breakdown=build_backtest_regime_breakdown(engine_result.label_summary),
         bottom_zone_backtest=bottom,
         bottom_zone_summary_md=bottom_zone_backtest_summary_md(bottom),
         promotion_decision=promotion,
         promotion_decision_md=research_promotion_decision_md(promotion),
     )
+
+
+def build_backtest_regime_breakdown(label_summary: pl.DataFrame) -> pl.DataFrame:
+    out: list[dict[str, Any]] = []
+    for row in rows(label_summary):
+        out.append(
+            {
+                "strategy_id": row.get("strategy_id"),
+                "symbol": row.get("symbol"),
+                "regime": row.get("regime"),
+                "horizon_hours": row.get("horizon_hours"),
+                "sample_count": row.get("sample_count"),
+                "complete_sample_count": row.get("complete_sample_count"),
+                "avg_net_bps": row.get("avg_net_bps"),
+                "p25_net_bps": row.get("p25_net_bps"),
+                "win_rate": row.get("win_rate"),
+                "recommendation": row.get("recommendation"),
+                "live_order_effect": "read_only_no_live_order",
+            }
+        )
+    return frame_with_schema(out, BACKTEST_REGIME_BREAKDOWN_FIELDS)
 
 
 def build_bottom_zone_backtest(

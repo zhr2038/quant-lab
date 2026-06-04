@@ -1931,17 +1931,22 @@ def test_web_readers_use_lake_file_index_before_rglob(tmp_path, monkeypatch):
     assert warning is None
 
 
-def test_web_readers_surface_file_index_missing_fallback_warning(tmp_path):
+def test_web_readers_require_file_index_without_rglob_fallback(tmp_path, monkeypatch):
     readers.clear_web_cache()
     lake_root = _fixture_lake(tmp_path)
     dataset_path = lake_root / "gold" / "cost_bucket_daily"
+
+    def fail_rglob(_path):
+        raise AssertionError("web reader should not rglob lake datasets when file_index is missing")
+
+    monkeypatch.setattr(readers, "_parquet_file_candidates_rglob", fail_rglob)
 
     files, warning = readers._valid_parquet_files_with_warning(
         dataset_path,
         "cost_bucket_daily",
     )
 
-    assert files
+    assert files == []
     assert readers.WEB_FILE_INDEX_FALLBACK_WARNING in str(warning)
 
 

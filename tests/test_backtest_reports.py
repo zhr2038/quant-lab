@@ -173,3 +173,48 @@ def test_backtest_label_summary_uses_stable_first_batch_backtest_ids() -> None:
     strategy_ids = set(summary["strategy_id"].to_list())
     assert "FINAL_SCORE_ALPHA6_CONFLICT_BACKTEST" in strategy_ids
     assert "RISK_ON_MULTI_BUY_BACKTEST" in strategy_ids
+
+
+def test_backtest_label_summary_covers_hype_wld_expanded_universe_ready_labels() -> None:
+    summary = build_label_backtest_summary(
+        {
+            "expanded_universe_candidate_maturity": pl.DataFrame(
+                [
+                    {
+                        "symbol": "HYPE-USDT",
+                        "expanded_universe_maturity_state": "PAPER_READY",
+                        "generated_at": "2026-06-01T00:00:00Z",
+                    },
+                    {
+                        "symbol": "WLD-USDT",
+                        "expanded_universe_maturity_state": "PAPER_READY",
+                        "generated_at": "2026-06-01T00:00:00Z",
+                    },
+                ]
+            ),
+            "expanded_universe_candidate_label": pl.DataFrame(
+                [
+                    {
+                        "symbol": "HYPE-USDT",
+                        "decision_ts": "2026-06-01T01:00:00Z",
+                        "future_4h_net_bps": 75.0,
+                    },
+                    {
+                        "symbol": "WLD-USDT",
+                        "decision_ts": "2026-06-01T01:00:00Z",
+                        "future_4h_net_bps": 55.0,
+                    },
+                ]
+            ),
+        }
+    )
+
+    strategy_ids = set(summary["strategy_id"].to_list())
+    assert "HYPE_EXPANDED_UNIVERSE_BACKTEST" in strategy_ids
+    assert "WLD_EXPANDED_UNIVERSE_BACKTEST" in strategy_ids
+    hype = summary.filter(
+        (pl.col("strategy_id") == "HYPE_EXPANDED_UNIVERSE_BACKTEST")
+        & (pl.col("horizon_hours") == 4)
+    ).to_dicts()[0]
+    assert hype["complete_sample_count"] == 1
+    assert hype["avg_net_bps"] == 75.0

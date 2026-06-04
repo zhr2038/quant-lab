@@ -519,10 +519,10 @@ Web reader 性能要求：
 
 - 优先使用 `bronze/lake_file_index`。
 - 有 `_snapshot_meta.json` 时优先读取 metadata。
-- fallback rglob 必须显式 warning：
+- lake 内数据集缺少 file index 时不再 fallback rglob；页面必须显式提示刷新索引：
 
 ```text
-web_file_index_missing_fallback_rglob
+web_file_index_missing_refresh_required
 ```
 
 数据集 freshness 页面应说明：
@@ -696,7 +696,7 @@ qlab export-daily \
 9. advisory generated_at/expires_at 是否一致；
 10. expert pack completion status 是否写出。
 
-如果 Web 显示 `web_file_index_missing_fallback_rglob`，应先刷新 file index，而不是继续让页面 rglob 全湖。
+如果 Web 显示 `web_file_index_missing_refresh_required`，应先刷新 file index；Web reader 默认不会再 rglob 扫全湖。
 
 如果 expert export 变慢，优先检查：
 

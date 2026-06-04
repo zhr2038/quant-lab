@@ -155,7 +155,7 @@ DATASET_PATHS = {
     "okx_private_readonly_bills": Path("bronze") / "okx_private_readonly" / "bills",
     "decision_audit": Path("silver") / "decision_audit",
 }
-WEB_FILE_INDEX_FALLBACK_WARNING = "web_file_index_missing_fallback_rglob"
+WEB_FILE_INDEX_FALLBACK_WARNING = "web_file_index_missing_refresh_required"
 WEB_SNAPSHOT_META_MISSING_WARNING = "web_snapshot_meta_missing"
 WEB_CACHE_DEFAULT_TTL_SECONDS = 30
 V5_PAPER_TELEMETRY_DATASETS = {
@@ -1207,6 +1207,9 @@ def _valid_parquet_files_with_warning(
 
 
 def _parquet_file_candidates_with_warning(path: Path) -> tuple[list[Path], str | None]:
+    if path.is_file() and path.suffix == ".parquet":
+        return ([] if _is_internal_lake_path(path) else [path]), None
+
     indexed = _indexed_files_for_web(path)
     if indexed is not None:
         perf.record_event(
@@ -1215,6 +1218,18 @@ def _parquet_file_candidates_with_warning(path: Path) -> tuple[list[Path], str |
             files_scanned=len(indexed),
         )
         return indexed, None
+
+    lake_root = _infer_lake_root_from_path(path)
+    if lake_root is not None:
+        if path.exists():
+            perf.record_event(
+                "web_file_index_lookup",
+                dataset_name=_dataset_name_from_path(path),
+                files_scanned=0,
+                warning=WEB_FILE_INDEX_FALLBACK_WARNING,
+            )
+            return [], WEB_FILE_INDEX_FALLBACK_WARNING
+        return [], None
 
     candidates = _parquet_file_candidates_rglob(path)
     if path.exists():

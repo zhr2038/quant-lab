@@ -25,6 +25,10 @@ import polars as pl
 from pydantic import BaseModel, ConfigDict, Field
 
 from quant_lab import __version__
+from quant_lab.backtest.reports import (
+    BACKTEST_CSV_SCHEMAS,
+    build_backtest_report_bundle,
+)
 from quant_lab.contracts.v5_quant_lab import (
     V5_QUANT_LAB_CONTRACT_VERSION,
     V5_TELEMETRY_DATASET_SCHEMA_VERSION,
@@ -399,6 +403,15 @@ REQUIRED_MEMBERS = [
     "reports/fast_microstructure_features.csv",
     "reports/market_pressure_score.csv",
     "reports/market_pressure_summary.md",
+    "reports/backtest_label_summary.csv",
+    "reports/backtest_label_summary.md",
+    "reports/v5_decision_replay_trades.csv",
+    "reports/v5_decision_replay_equity.csv",
+    "reports/v5_decision_replay_summary.md",
+    "reports/bottom_zone_backtest.csv",
+    "reports/bottom_zone_backtest_summary.md",
+    "reports/research_promotion_decision.csv",
+    "reports/research_promotion_decision.md",
     "reports/risk_on_multi_buy_shadow.csv",
     "reports/risk_on_multi_buy_summary.md",
     "reports/bnb_negative_expectancy_attribution.csv",
@@ -466,6 +479,7 @@ REQUIRED_MEMBERS = [
 ]
 
 CSV_SCHEMAS: dict[str, list[str]] = {
+    **BACKTEST_CSV_SCHEMAS,
     "costs/cost_bucket_daily.csv": [
         "day",
         "symbol",
@@ -4241,6 +4255,27 @@ def _dataset_members(frames: dict[str, pl.DataFrame], root: Path) -> dict[str, _
         market_bars=market,
         opportunity_advisory=opportunity_advisory,
     )
+    backtest_frames = dict(frames)
+    backtest_frames.update(
+        {
+            "market_bar": market,
+            "cost_bucket_daily": costs,
+            "strategy_opportunity_advisory": opportunity_advisory,
+            "risk_on_multi_buy_shadow": risk_on_multi_buy_shadow,
+            "final_score_vs_alpha6_conflict": final_score_alpha6_conflict,
+            "bnb_strong_alpha6_bypass_shadow": bnb_strong_alpha6_bypass_shadow,
+            "post_impulse_overextension_shadow": post_impulse_overextension_shadow,
+            "bottom_zone_reversal_shadow": bottom_zone_reversal_shadow,
+            "v5_candidate_event": v5_candidate_events,
+            "v5_candidate_label": v5_candidate_labels,
+            "v5_decision_audit": v5_decisions,
+            "expanded_universe_candidate_label": expanded_labels,
+            "expanded_universe_candidate_maturity": expanded_maturity,
+            "paper_strategy_daily": paper_daily,
+            "bnb_paper_strategy_daily": bnb_paper_daily,
+        }
+    )
+    backtest_bundle = build_backtest_report_bundle(backtest_frames)
 
     return {
         "market/market_snapshot.csv": _csv_member(
@@ -4438,6 +4473,30 @@ def _dataset_members(frames: dict[str, pl.DataFrame], root: Path) -> dict[str, _
         "reports/market_pressure_summary.md": market_pressure_summary_md(
             market_pressure_score
         ),
+        "reports/backtest_label_summary.csv": _csv_member(
+            "reports/backtest_label_summary.csv",
+            backtest_bundle.label_summary,
+        ),
+        "reports/backtest_label_summary.md": backtest_bundle.label_summary_md,
+        "reports/v5_decision_replay_trades.csv": _csv_member(
+            "reports/v5_decision_replay_trades.csv",
+            backtest_bundle.replay_trades,
+        ),
+        "reports/v5_decision_replay_equity.csv": _csv_member(
+            "reports/v5_decision_replay_equity.csv",
+            backtest_bundle.replay_equity,
+        ),
+        "reports/v5_decision_replay_summary.md": backtest_bundle.replay_summary_md,
+        "reports/bottom_zone_backtest.csv": _csv_member(
+            "reports/bottom_zone_backtest.csv",
+            backtest_bundle.bottom_zone_backtest,
+        ),
+        "reports/bottom_zone_backtest_summary.md": backtest_bundle.bottom_zone_summary_md,
+        "reports/research_promotion_decision.csv": _csv_member(
+            "reports/research_promotion_decision.csv",
+            backtest_bundle.promotion_decision,
+        ),
+        "reports/research_promotion_decision.md": backtest_bundle.promotion_decision_md,
         "reports/risk_on_multi_buy_shadow.csv": _csv_member(
             "reports/risk_on_multi_buy_shadow.csv",
             risk_on_multi_buy_shadow,

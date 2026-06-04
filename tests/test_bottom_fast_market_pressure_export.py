@@ -146,5 +146,9 @@ def test_bottom_fast_microstructure_and_market_pressure_reports_export(tmp_path)
         assert "reports/market_pressure_score.csv" in names
         assert "reports/market_pressure_summary.md" in names
         assert "reports/late_breakout_failure_protect_shadow.csv" in names
+        assert "reports/backtest_label_summary.csv" in names
+        assert "reports/v5_decision_replay_summary.md" in names
+        assert "reports/bottom_zone_backtest.csv" in names
+        assert "reports/research_promotion_decision.csv" in names
         bottom_csv = archive.read("reports/bottom_zone_reversal_shadow.csv").decode()
         assert "read_only_no_live_order" in bottom_csv

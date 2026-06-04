@@ -7,6 +7,7 @@ from types import SimpleNamespace
 
 import polars as pl
 
+from quant_lab.cli import _refresh_web_file_index
 from quant_lab.data.file_index import build_lake_file_index
 from quant_lab.data.lake import write_market_bars, write_parquet_dataset
 from quant_lab.web import app as web_app
@@ -1942,6 +1943,46 @@ def test_web_readers_surface_file_index_missing_fallback_warning(tmp_path):
 
     assert files
     assert readers.WEB_FILE_INDEX_FALLBACK_WARNING in str(warning)
+
+
+def test_refresh_web_file_index_covers_web_reader_datasets(tmp_path, monkeypatch):
+    readers.clear_web_cache()
+    lake_root = tmp_path / "lake"
+    cost_dataset = lake_root / "gold" / "cost_bucket_daily"
+    evidence_dataset = lake_root / "gold" / "strategy_evidence"
+    write_parquet_dataset(
+        pl.DataFrame({"ts": [datetime(2026, 6, 4, tzinfo=UTC)], "cost_bps": [12.0]}),
+        cost_dataset,
+    )
+    write_parquet_dataset(
+        pl.DataFrame({"ts": [datetime(2026, 6, 4, tzinfo=UTC)], "alpha_id": ["a"]}),
+        evidence_dataset,
+    )
+    monkeypatch.setattr(
+        readers,
+        "DATASET_PATHS",
+        {
+            "cost_bucket_daily": Path("gold") / "cost_bucket_daily",
+            "strategy_evidence": Path("gold") / "strategy_evidence",
+        },
+    )
+
+    result = _refresh_web_file_index(lake_root)
+
+    assert result["dataset_count"] == 2
+    assert result["indexed_rows"] == 2
+
+    def fail_rglob(_path):
+        raise AssertionError("web reader should use lake_file_index after refresh")
+
+    monkeypatch.setattr(readers, "_parquet_file_candidates_rglob", fail_rglob)
+    files, warning = readers._valid_parquet_files_with_warning(
+        cost_dataset,
+        "cost_bucket_daily",
+    )
+
+    assert len(files) == 1
+    assert warning is None
 
 
 def test_dataset_snapshot_uses_snapshot_meta_without_scanning_parquet(tmp_path, monkeypatch):

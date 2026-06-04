@@ -11,6 +11,7 @@ import typer
 from quant_lab.contracts.models import AlphaResearchSpec
 from quant_lab.costs.calibrate import calibrate_costs_for_day
 from quant_lab.costs.health import read_cost_health_daily
+from quant_lab.data.file_index import build_lake_file_index
 from quant_lab.data.lake import (
     compact_parquet_dataset,
     compact_parquet_directory_files,
@@ -588,8 +589,20 @@ def lake_health_command(
             help="Optional comma-separated dataset names to inspect.",
         ),
     ] = None,
+    refresh_web_index: Annotated[
+        bool,
+        typer.Option(
+            "--refresh-web-index/--no-refresh-web-index",
+            help="Refresh lake_file_index for datasets read by the Web dashboard.",
+        ),
+    ] = True,
 ) -> None:
+    web_index: dict[str, Any] | None = None
+    if refresh_web_index:
+        web_index = _refresh_web_file_index(lake_root)
     result = write_lake_file_health_daily(lake_root)
+    if web_index is not None:
+        result["web_file_index"] = web_index
     dataset_names = _parse_dataset_names(dataset)
     if include_quality:
         result["data_quality"] = lake_dataset_quality_summary(
@@ -601,6 +614,46 @@ def lake_health_command(
         typer.echo(json.dumps(_compact_lake_health_payload(result), sort_keys=True, default=str))
     else:
         typer.echo(json.dumps(result, indent=2, sort_keys=True, default=str))
+
+
+@app.command("refresh-web-file-index")
+def refresh_web_file_index_command(
+    lake_root: Annotated[
+        Path,
+        typer.Option(
+            "--lake-root",
+            file_okay=False,
+            dir_okay=True,
+            help="quant-lab lake root containing datasets read by the Web dashboard.",
+        ),
+    ],
+    compact_output: Annotated[
+        bool,
+        typer.Option(
+            "--compact-output/--full-output",
+            help="Emit a single-line summary suitable for systemd journals.",
+        ),
+    ] = False,
+) -> None:
+    result = _refresh_web_file_index(lake_root)
+    typer.echo(json.dumps(result, indent=None if compact_output else 2, sort_keys=True))
+
+
+def _refresh_web_file_index(lake_root: str | Path) -> dict[str, Any]:
+    root = Path(lake_root)
+    dataset_paths = _web_file_index_dataset_paths()
+    frame = build_lake_file_index(root, dataset_paths)
+    return {
+        "dataset_count": len(dataset_paths),
+        "indexed_rows": frame.height,
+        "lake_root": str(root),
+    }
+
+
+def _web_file_index_dataset_paths() -> list[str]:
+    from quant_lab.web.readers import DATASET_PATHS
+
+    return sorted({str(path).replace("\\", "/") for path in DATASET_PATHS.values()})
 
 
 @app.command("data-quality")

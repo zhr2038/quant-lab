@@ -38,6 +38,10 @@ from quant_lab.reports.enforce_readiness import (
     build_enforce_readiness_report,
     enforce_readiness_members,
 )
+from quant_lab.features.fast_microstructure import (
+    FAST_MICROSTRUCTURE_FIELDS,
+    build_fast_microstructure_features,
+)
 from quant_lab.research.advisory_overrides import (
     portfolio_overridden_decision_mode,
     portfolio_override_for_identifier_symbol,
@@ -52,7 +56,17 @@ from quant_lab.research.baselines import (
     alpha_role,
 )
 from quant_lab.research.bnb_swing_exit_policy import bnb_swing_exit_policy_summary_md
+from quant_lab.research.bottom_zone_reversal import (
+    BOTTOM_ZONE_FIELDS,
+    bottom_zone_reversal_summary_md,
+    build_bottom_zone_reversal_shadow,
+)
 from quant_lab.research.btc_probe_exit_policy import btc_probe_exit_policy_summary_md
+from quant_lab.research.market_pressure import (
+    MARKET_PRESSURE_FIELDS,
+    build_market_pressure_score,
+    market_pressure_summary_md,
+)
 from quant_lab.research.paper_tracking import (
     build_paper_slippage_coverage,
     build_paper_slippage_coverage_from_v5,
@@ -379,6 +393,12 @@ REQUIRED_MEMBERS = [
     "reports/bnb_strong_alpha6_bypass_summary.md",
     "reports/post_impulse_overextension_shadow.csv",
     "reports/late_breakout_failure_shadow.csv",
+    "reports/late_breakout_failure_protect_shadow.csv",
+    "reports/bottom_zone_reversal_shadow.csv",
+    "reports/bottom_zone_reversal_summary.md",
+    "reports/fast_microstructure_features.csv",
+    "reports/market_pressure_score.csv",
+    "reports/market_pressure_summary.md",
     "reports/risk_on_multi_buy_shadow.csv",
     "reports/risk_on_multi_buy_summary.md",
     "reports/bnb_negative_expectancy_attribution.csv",
@@ -1266,6 +1286,30 @@ CSV_SCHEMAS: dict[str, list[str]] = {
         "response_action",
         "live_order_effect",
     ],
+    "reports/late_breakout_failure_protect_shadow.csv": [
+        "run_id",
+        "ts_utc",
+        "symbol",
+        "alpha6_score",
+        "alpha6_side",
+        "f3_vol_adj_ret",
+        "f4_volume_expansion",
+        "f5_rsi_trend_confirm",
+        "entry_px",
+        "return_24h_bps",
+        "return_48h_bps",
+        "future_4h_net_bps",
+        "future_8h_net_bps",
+        "future_12h_net_bps",
+        "failure_horizon_hours",
+        "failure_net_bps",
+        "diagnosis",
+        "response_action",
+        "live_order_effect",
+    ],
+    "reports/bottom_zone_reversal_shadow.csv": BOTTOM_ZONE_FIELDS,
+    "reports/fast_microstructure_features.csv": FAST_MICROSTRUCTURE_FIELDS,
+    "reports/market_pressure_score.csv": MARKET_PRESSURE_FIELDS,
     "reports/risk_on_multi_buy_shadow.csv": [
         "generated_at",
         "schema_version",
@@ -4143,6 +4187,23 @@ def _dataset_members(frames: dict[str, pl.DataFrame], root: Path) -> dict[str, _
             frames.get("orderbook_snapshot", pl.DataFrame()),
         )
     )
+    fast_microstructure_features = build_fast_microstructure_features(
+        market_bars=market,
+        orderbook_spread_1m=books,
+        trade_activity_1m=trades,
+        generated_at=datetime.now(UTC),
+    )
+    bottom_zone_reversal_shadow = build_bottom_zone_reversal_shadow(
+        market_bars=market,
+        orderbook_spread_1m=books,
+        trade_activity_1m=trades,
+        generated_at=datetime.now(UTC),
+    )
+    market_pressure_score = build_market_pressure_score(
+        bottom_zone_reversal_shadow=bottom_zone_reversal_shadow,
+        fast_microstructure_features=fast_microstructure_features,
+        generated_at=datetime.now(UTC),
+    )
     v5_health = frames.get("strategy_health_daily", pl.DataFrame())
     v5_decisions = frames.get("v5_decision_audit", pl.DataFrame())
     v5_execution = frames.get("v5_execution_quality_daily", pl.DataFrame())
@@ -4354,6 +4415,28 @@ def _dataset_members(frames: dict[str, pl.DataFrame], root: Path) -> dict[str, _
         "reports/late_breakout_failure_shadow.csv": _csv_member(
             "reports/late_breakout_failure_shadow.csv",
             late_breakout_failure_shadow,
+        ),
+        "reports/late_breakout_failure_protect_shadow.csv": _csv_member(
+            "reports/late_breakout_failure_protect_shadow.csv",
+            late_breakout_failure_shadow,
+        ),
+        "reports/bottom_zone_reversal_shadow.csv": _csv_member(
+            "reports/bottom_zone_reversal_shadow.csv",
+            bottom_zone_reversal_shadow,
+        ),
+        "reports/bottom_zone_reversal_summary.md": bottom_zone_reversal_summary_md(
+            bottom_zone_reversal_shadow
+        ),
+        "reports/fast_microstructure_features.csv": _csv_member(
+            "reports/fast_microstructure_features.csv",
+            fast_microstructure_features,
+        ),
+        "reports/market_pressure_score.csv": _csv_member(
+            "reports/market_pressure_score.csv",
+            market_pressure_score,
+        ),
+        "reports/market_pressure_summary.md": market_pressure_summary_md(
+            market_pressure_score
         ),
         "reports/risk_on_multi_buy_shadow.csv": _csv_member(
             "reports/risk_on_multi_buy_shadow.csv",

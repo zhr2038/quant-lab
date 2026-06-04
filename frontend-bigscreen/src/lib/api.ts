@@ -29,18 +29,74 @@ export const SnapshotSchema = z.object({
 
 export type BigscreenSnapshot = z.infer<typeof SnapshotSchema>;
 
-export async function fetchBigscreenSnapshot(): Promise<BigscreenSnapshot> {
-  const base = import.meta.env.VITE_QUANT_LAB_API_BASE ?? "";
-  const path = import.meta.env.VITE_QUANT_LAB_SNAPSHOT_PATH ?? "/web-v2/snapshot";
+export const ExpertPackStatusSchema = z.object({
+  mode: z.string().default("read_only_export"),
+  live_order_effect: z.string().default("none"),
+  export_date: z.string(),
+  exports_root: z.string().optional(),
+  state: z.string(),
+  status: z.record(z.string(), z.unknown()).default({}),
+  latest_pack: z.string().nullable().optional(),
+  latest_pack_name: z.string().nullable().optional(),
+  latest_download_url: z.string().nullable().optional(),
+  latest_size_bytes: z.number().nullable().optional(),
+  latest_modified_at: z.string().nullable().optional(),
+  packs: z.array(z.record(z.string(), z.unknown())).default([]),
+  pack_count: z.number().default(0)
+});
+
+export type ExpertPackStatus = z.infer<typeof ExpertPackStatusSchema>;
+
+function apiBase(): string {
+  return import.meta.env.VITE_QUANT_LAB_API_BASE ?? "";
+}
+
+function tokenHeaders(): HeadersInit | undefined {
   const token = import.meta.env.VITE_QUANT_LAB_API_TOKEN;
+  return token ? { Authorization: `Bearer ${token}` } : undefined;
+}
+
+export async function fetchBigscreenSnapshot(): Promise<BigscreenSnapshot> {
+  const base = apiBase();
+  const path = import.meta.env.VITE_QUANT_LAB_SNAPSHOT_PATH ?? "/web-v2/snapshot";
   const res = await fetch(`${base}${path}`, {
-    headers: token ? { Authorization: `Bearer ${token}` } : undefined,
+    headers: tokenHeaders(),
     cache: "no-store"
   });
   if (!res.ok) {
     throw new Error(`bigscreen snapshot failed: ${res.status}`);
   }
   return SnapshotSchema.parse(await res.json());
+}
+
+export async function triggerExpertPackGenerate(): Promise<ExpertPackStatus> {
+  const res = await fetch(`${apiBase()}/web-v2/expert-pack/generate`, {
+    method: "POST",
+    headers: tokenHeaders(),
+    cache: "no-store"
+  });
+  if (!res.ok) {
+    throw new Error(`expert pack generate failed: ${res.status}`);
+  }
+  return ExpertPackStatusSchema.parse(await res.json());
+}
+
+export async function fetchExpertPackStatus(): Promise<ExpertPackStatus> {
+  const res = await fetch(`${apiBase()}/web-v2/expert-pack/status`, {
+    headers: tokenHeaders(),
+    cache: "no-store"
+  });
+  if (!res.ok) {
+    throw new Error(`expert pack status failed: ${res.status}`);
+  }
+  return ExpertPackStatusSchema.parse(await res.json());
+}
+
+export function expertPackDownloadUrl(nameOrUrl: unknown): string {
+  const text = stringValue(nameOrUrl, "");
+  if (!text) return "#";
+  if (text.startsWith("/web-v2/expert-pack/download/")) return `${apiBase()}${text}`;
+  return `${apiBase()}/web-v2/expert-pack/download/${encodeURIComponent(text)}`;
 }
 
 export function statusClass(value: unknown): "ok" | "warning" | "critical" | "info" {

@@ -319,6 +319,31 @@ def create_app() -> FastAPI:
 
         return bigscreen_snapshot(_lake_root())
 
+    @app.post("/web-v2/expert-pack/generate")
+    def web_v2_generate_expert_pack(response: Response) -> dict[str, Any]:
+        status_payload = _start_web_v2_expert_pack_job()
+        response.headers["X-Quant-Lab-Mode"] = "read-only-export"
+        return status_payload
+
+    @app.get("/web-v2/expert-pack/status")
+    def web_v2_expert_pack_status(
+        response: Response,
+        export_date: str | None = None,
+    ) -> dict[str, Any]:
+        status_payload = _web_v2_expert_pack_status(export_date=export_date)
+        response.headers["X-Quant-Lab-Mode"] = "read-only-export"
+        return status_payload
+
+    @app.get("/web-v2/expert-pack/download/{file_name}")
+    def web_v2_download_expert_pack(file_name: str) -> FileResponse:
+        exports_root = _web_v2_exports_root()
+        pack_path = _safe_web_v2_export_pack_path(exports_root, file_name)
+        return FileResponse(
+            pack_path,
+            media_type="application/zip",
+            filename=pack_path.name,
+        )
+
     @app.get("/web-v2")
     @app.get("/web-v2/")
     def web_bigscreen_page() -> Response:
@@ -974,6 +999,204 @@ def _bigscreen_index_response() -> Response:
             "expected_path": str(index_path),
         },
     )
+
+
+def _web_v2_exports_root() -> Path:
+    from quant_lab.web import readers
+
+    return readers.default_exports_root(_lake_root())
+
+
+def _web_v2_export_date(export_date: str | None = None) -> str:
+    if export_date:
+        return export_date
+    from quant_lab.time_display import beijing_today
+
+    return beijing_today().isoformat()
+
+
+def _start_web_v2_expert_pack_job() -> dict[str, Any]:
+    from quant_lab.web.pages.expert_exports import (
+        _start_export_job,
+        _web_background_export_enabled,
+        _web_on_demand_export_enabled,
+    )
+
+    export_date = _web_v2_export_date()
+    lake_root = _lake_root()
+    exports_root = _web_v2_exports_root()
+    if not _web_on_demand_export_enabled():
+        return _decorate_web_v2_expert_pack_status(
+            {
+                "state": "on_demand_disabled",
+                "export_date": export_date,
+                "message": "QUANT_LAB_WEB_ON_DEMAND_EXPORT is disabled",
+            },
+            export_date=export_date,
+            exports_root=exports_root,
+        )
+    if not _web_background_export_enabled():
+        return _decorate_web_v2_expert_pack_status(
+            {
+                "state": "background_disabled",
+                "export_date": export_date,
+                "message": "QUANT_LAB_WEB_EXPORT_BACKGROUND is disabled",
+            },
+            export_date=export_date,
+            exports_root=exports_root,
+        )
+    status_payload = _start_export_job(
+        export_date=export_date,
+        lake_root=lake_root,
+        exports_root=exports_root,
+    )
+    return _decorate_web_v2_expert_pack_status(
+        status_payload,
+        export_date=export_date,
+        exports_root=exports_root,
+    )
+
+
+def _web_v2_expert_pack_status(*, export_date: str | None = None) -> dict[str, Any]:
+    from quant_lab.web.pages.expert_exports import _poll_export_job
+
+    day = _web_v2_export_date(export_date)
+    exports_root = _web_v2_exports_root()
+    status_payload = _poll_export_job(exports_root, day)
+    return _decorate_web_v2_expert_pack_status(
+        status_payload,
+        export_date=day,
+        exports_root=exports_root,
+    )
+
+
+def _decorate_web_v2_expert_pack_status(
+    status_payload: dict[str, Any],
+    *,
+    export_date: str,
+    exports_root: Path,
+) -> dict[str, Any]:
+    from quant_lab.web import readers
+    from quant_lab.web.pages.expert_exports import _latest_pack_for_export_date
+
+    status = dict(status_payload)
+    latest_today_pack = _latest_pack_for_export_date(exports_root, export_date)
+    zip_path = _safe_existing_pack_from_status(exports_root, status.get("zip_path"))
+    latest_pack = zip_path or latest_today_pack
+    packs = _expert_pack_rows_with_downloads(readers.expert_export_summary(exports_root))
+    payload = {
+        "mode": "read_only_export",
+        "live_order_effect": "none",
+        "export_date": export_date,
+        "exports_root": str(exports_root),
+        "state": status.get("state") or ("succeeded" if latest_pack is not None else "missing"),
+        "status": status,
+        "latest_pack": str(latest_pack) if latest_pack is not None else None,
+        "latest_pack_name": latest_pack.name if latest_pack is not None else None,
+        "latest_download_url": (
+            _web_v2_export_download_url(latest_pack.name) if latest_pack is not None else None
+        ),
+        "packs": packs,
+        "pack_count": len(packs),
+    }
+    if latest_pack is not None:
+        try:
+            stat = latest_pack.stat()
+        except OSError:
+            stat = None
+        if stat is not None:
+            payload["latest_size_bytes"] = stat.st_size
+            payload["latest_modified_at"] = datetime.fromtimestamp(stat.st_mtime, UTC).isoformat()
+    return payload
+
+
+def _safe_existing_pack_from_status(exports_root: Path, value: Any) -> Path | None:
+    if not value:
+        return None
+    try:
+        path = Path(str(value)).resolve()
+        root = exports_root.resolve()
+    except OSError:
+        return None
+    try:
+        path.relative_to(root)
+    except ValueError:
+        return None
+    if path.is_file() and path.name.startswith("quant_lab_expert_pack_") and path.suffix == ".zip":
+        return path
+    return None
+
+
+def _expert_pack_rows_with_downloads(
+    summary: dict[str, Any],
+    *,
+    limit: int = 12,
+) -> list[dict[str, Any]]:
+    packs = summary.get("packs")
+    rows: list[dict[str, Any]] = []
+    if isinstance(packs, pl.DataFrame) and not packs.is_empty():
+        source_rows = packs.head(limit).to_dicts()
+    elif isinstance(packs, list):
+        source_rows = [row for row in packs[:limit] if isinstance(row, dict)]
+    else:
+        source_rows = []
+    for row in source_rows:
+        item = {str(key): _api_json_value(value) for key, value in row.items()}
+        name = str(item.get("name") or Path(str(item.get("path") or "")).name)
+        if _is_valid_export_pack_name(name):
+            item["name"] = name
+            item["download_url"] = _web_v2_export_download_url(name)
+        rows.append(item)
+    return rows
+
+
+def _safe_web_v2_export_pack_path(exports_root: Path, file_name: str) -> Path:
+    if not _is_valid_export_pack_name(file_name):
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="expert pack not found",
+        )
+    root = exports_root.resolve()
+    path = (root / file_name).resolve()
+    try:
+        path.relative_to(root)
+    except ValueError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="expert pack not found",
+        ) from exc
+    if not path.is_file():
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="expert pack not found",
+        )
+    return path
+
+
+def _is_valid_export_pack_name(file_name: str) -> bool:
+    if not file_name or "/" in file_name or "\\" in file_name:
+        return False
+    if file_name != Path(file_name).name:
+        return False
+    return file_name.startswith("quant_lab_expert_pack_") and file_name.endswith(".zip")
+
+
+def _web_v2_export_download_url(file_name: str) -> str:
+    return f"/web-v2/expert-pack/download/{file_name}"
+
+
+def _api_json_value(value: Any) -> Any:
+    if isinstance(value, datetime):
+        return value.astimezone(UTC).isoformat().replace("+00:00", "Z")
+    if isinstance(value, Path):
+        return str(value)
+    if isinstance(value, float) and value != value:
+        return None
+    if isinstance(value, dict):
+        return {str(key): _api_json_value(child) for key, child in value.items()}
+    if isinstance(value, list):
+        return [_api_json_value(child) for child in value]
+    return value
 
 
 app = create_app()

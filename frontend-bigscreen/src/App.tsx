@@ -1,4 +1,4 @@
-import { QueryClient, QueryClientProvider, useQuery } from "@tanstack/react-query";
+import { QueryClient, QueryClientProvider, useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { AnimatePresence, motion } from "framer-motion";
 import {
   Archive,
@@ -9,7 +9,9 @@ import {
   Gauge,
   LayoutDashboard,
   MonitorDot,
+  PackagePlus,
   RadioTower,
+  RefreshCw,
   ShieldCheck,
   Table2,
   X
@@ -24,7 +26,16 @@ import { MarketLiquidity } from "./components/MarketLiquidity";
 import { PerfConsumers } from "./components/PerfConsumers";
 import { StrategyFlow } from "./components/StrategyFlow";
 import { V5Telemetry } from "./components/V5Telemetry";
-import { fetchBigscreenSnapshot, safeRows, stringValue, type BigscreenSnapshot } from "./lib/api";
+import {
+  expertPackDownloadUrl,
+  fetchBigscreenSnapshot,
+  fetchExpertPackStatus,
+  safeRows,
+  shortNumber,
+  stringValue,
+  triggerExpertPackGenerate,
+  type BigscreenSnapshot
+} from "./lib/api";
 import "./styles.css";
 
 const queryClient = new QueryClient();
@@ -207,10 +218,10 @@ function drilldownContent(view: ViewKey, data: BigscreenSnapshot) {
   if (view === "exports") {
     return {
       title: "专家包",
-      subtitle: "最新导出、manifest、data_quality 和专家问题摘要。",
+      subtitle: "直接生成、轮询并下载今日专家包；该入口只写导出文件，不影响交易。",
       blocks: (
         <>
-          <MiniTable title="Export packs" rows={safeRows(data.exports.packs)} columns={["name", "size_bytes", "modified_at", "path"]} />
+          <ExpertPackControls exports={data.exports as Record<string, unknown>} />
           <KeyValueGrid data={data.exports.manifest_summary as Record<string, unknown>} />
           <MiniList title="Expert questions" rows={(data.exports.expert_questions as string[] | undefined) ?? []} />
         </>
@@ -228,6 +239,96 @@ function drilldownContent(view: ViewKey, data: BigscreenSnapshot) {
       </div>
     )
   };
+}
+
+function ExpertPackControls({ exports }: { exports: Record<string, unknown> }) {
+  const queryClient = useQueryClient();
+  const statusQuery = useQuery({
+    queryKey: ["expert-pack-status"],
+    queryFn: fetchExpertPackStatus,
+    refetchInterval: (query) => {
+      const state = String(query.state.data?.state ?? "").toLowerCase();
+      return ["running", "starting"].includes(state) ? 3000 : false;
+    },
+    retry: 1
+  });
+  const generateMutation = useMutation({
+    mutationFn: triggerExpertPackGenerate,
+    onSuccess: () => {
+      void queryClient.invalidateQueries({ queryKey: ["expert-pack-status"] });
+      void queryClient.invalidateQueries({ queryKey: ["bigscreen-snapshot"] });
+    }
+  });
+  const status = statusQuery.data;
+  const snapshotPacks = safeRows(exports.packs);
+  const packs = status?.packs?.length ? status.packs : snapshotPacks;
+  const latestName = stringValue(status?.latest_pack_name, "");
+  const latestUrl = status?.latest_download_url || exports.latest_download_url;
+  const state = String(status?.state ?? exports.job_state ?? "not_observable");
+  const statusBody = status?.status ?? {};
+  const isRunning = ["running", "starting"].includes(state.toLowerCase());
+  const lastError = stringValue(statusBody.error, "");
+
+  return (
+    <section className="export-console">
+      <div className="export-console-head">
+        <div>
+          <h3><Archive size={18} />今日专家包</h3>
+          <p>read-only export · live_order_effect: none · 生成后可直接下载 ZIP</p>
+        </div>
+        <div className="export-actions">
+          <button
+            className="ghost-action"
+            onClick={() => void statusQuery.refetch()}
+            disabled={statusQuery.isFetching}
+          >
+            <RefreshCw size={15} className={statusQuery.isFetching ? "spin" : ""} />刷新状态
+          </button>
+          <button
+            className="primary-action"
+            onClick={() => generateMutation.mutate()}
+            disabled={generateMutation.isPending || isRunning}
+          >
+            <PackagePlus size={16} />{isRunning ? "生成中" : "生成今日专家包"}
+          </button>
+        </div>
+      </div>
+      <div className={`export-status-line ${state.toLowerCase()}`}>
+        <span className="status-dot" />
+        <b>{state}</b>
+        <em>日期 {stringValue(status?.export_date, "today")}</em>
+        <em>包数 {status?.pack_count ?? packs.length}</em>
+        {status?.latest_size_bytes ? <em>最新 {shortNumber(status.latest_size_bytes)}B</em> : null}
+      </div>
+      {generateMutation.error || statusQuery.error || lastError ? (
+        <div className="export-error">
+          {lastError || String(generateMutation.error || statusQuery.error)}
+        </div>
+      ) : null}
+      {latestUrl ? (
+        <a className="download-latest" href={expertPackDownloadUrl(latestUrl)} download>
+          <DownloadCloud size={18} />下载最新专家包
+          <span>{stringValue(latestName || exports.latest_pack, "latest.zip")}</span>
+        </a>
+      ) : (
+        <div className="export-empty">未找到可下载专家包，点击“生成今日专家包”提交后台导出。</div>
+      )}
+      <div className="pack-list">
+        {packs.slice(0, 8).map((pack, index) => {
+          const name = stringValue(pack.name, stringValue(pack.path, `pack-${index}`));
+          const url = stringValue(pack.download_url, "");
+          return (
+            <div className="pack-row" key={`${name}-${index}`}>
+              <span>{name}</span>
+              <em>{shortNumber(pack.size_bytes)}B · {stringValue(pack.modified_at)}</em>
+              <a href={expertPackDownloadUrl(url || name)} download><DownloadCloud size={14} />下载</a>
+            </div>
+          );
+        })}
+        {!packs.length && <div className="export-empty">not_observable</div>}
+      </div>
+    </section>
+  );
 }
 
 function MiniTable({

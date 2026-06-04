@@ -691,6 +691,11 @@ def _consumer_payload(consumers: dict[str, Any]) -> dict[str, Any]:
 
 def _exports_payload(exports: dict[str, Any]) -> dict[str, Any]:
     packs = _frame_rows(exports.get("packs"), limit=5)
+    for row in packs:
+        name = str(row.get("name") or Path(str(row.get("path") or "")).name)
+        if _is_expert_pack_name(name):
+            row["name"] = name
+            row["download_url"] = f"/web-v2/expert-pack/download/{name}"
     manifest = (
         exports.get("manifest_summary")
         if isinstance(exports.get("manifest_summary"), dict)
@@ -706,8 +711,15 @@ def _exports_payload(exports: dict[str, Any]) -> dict[str, Any]:
         if isinstance(exports.get("expert_questions"), list)
         else []
     )
+    latest_pack = exports.get("latest_pack")
+    latest_name = Path(str(latest_pack)).name if latest_pack else ""
     return {
         "latest_pack": exports.get("latest_pack"),
+        "latest_download_url": (
+            f"/web-v2/expert-pack/download/{latest_name}"
+            if _is_expert_pack_name(latest_name)
+            else None
+        ),
         "pack_count": len(packs),
         "packs": packs,
         "manifest_summary": _json_value(manifest),
@@ -717,6 +729,10 @@ def _exports_payload(exports: dict[str, Any]) -> dict[str, Any]:
         "expert_questions": [_json_value(line) for line in questions[:8]],
         "job_state": manifest.get("status") or data_quality.get("status") or "not_observable",
     }
+
+
+def _is_expert_pack_name(value: str) -> bool:
+    return value.startswith("quant_lab_expert_pack_") and value.endswith(".zip")
 
 
 def _quality_warning_count(data_quality: dict[str, Any]) -> int:

@@ -724,10 +724,12 @@ def _exports_payload(exports: dict[str, Any]) -> dict[str, Any]:
         "packs": packs,
         "manifest_summary": _json_value(manifest),
         "data_quality_summary": _json_value(data_quality),
+        "manifest_status": manifest.get("status") or "not_observable",
+        "data_quality_status": data_quality.get("status") or "not_observable",
         "data_quality_warning_count": _quality_warning_count(data_quality),
         "expert_question_count": len(questions),
         "expert_questions": [_json_value(line) for line in questions[:8]],
-        "job_state": manifest.get("status") or data_quality.get("status") or "not_observable",
+        "job_state": "pack_available" if latest_pack else "missing",
     }
 
 

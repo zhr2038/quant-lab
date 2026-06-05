@@ -9,7 +9,7 @@ from fastapi.testclient import TestClient
 
 from quant_lab.api.main import create_app
 from quant_lab.data.lake import write_parquet_dataset
-from quant_lab.web.bigscreen import bigscreen_snapshot, clear_bigscreen_cache
+from quant_lab.web.bigscreen import _exports_payload, bigscreen_snapshot, clear_bigscreen_cache
 
 
 def test_bigscreen_snapshot_empty_lake_is_read_only_and_degraded(tmp_path):
@@ -152,3 +152,29 @@ def test_web_v2_expert_pack_status_and_download(monkeypatch, tmp_path):
 
     traversal_response = client.get("/web-v2/expert-pack/download/..%5Csecret.zip")
     assert traversal_response.status_code == 404
+
+
+def test_bigscreen_exports_payload_separates_job_state_from_data_quality():
+    pack_path = "/var/lib/quant-lab/exports/quant_lab_expert_pack_2026-06-05_120000.zip"
+
+    payload = _exports_payload(
+        {
+            "latest_pack": pack_path,
+            "packs": pl.DataFrame(
+                [
+                    {
+                        "path": pack_path,
+                        "name": "quant_lab_expert_pack_2026-06-05_120000.zip",
+                        "size_bytes": 123,
+                    }
+                ]
+            ),
+            "manifest_summary": {},
+            "data_quality_summary": {"status": "CRITICAL", "warning_count": 7},
+            "expert_questions": [],
+        }
+    )
+
+    assert payload["job_state"] == "pack_available"
+    assert payload["data_quality_status"] == "CRITICAL"
+    assert payload["data_quality_warning_count"] == 7

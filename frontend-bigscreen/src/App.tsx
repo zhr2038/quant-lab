@@ -195,7 +195,7 @@ function drilldownContent(view: ViewKey, data: BigscreenSnapshot) {
       subtitle: "市场状态、OKX 采集器、stale/missing datasets 与 file-index 状态。",
       blocks: (
         <>
-          <MiniTable title="Stale datasets" rows={safeRows(data.data_health.stale_datasets)} columns={["dataset", "freshness_status", "rows", "path", "latest_timestamp"]} />
+          <MiniTable title="Stale datasets" rows={safeRows(data.data_health.stale_datasets)} columns={["dataset", "freshness_status", "rows", "path", "latest_timestamp"]} emptyLabel="无过期或缺失数据集" />
           <MiniTable title="Collectors" rows={safeRows(data.collectors.collectors)} columns={["collector", "status", "success_count", "latest_success_ts", "lag"]} />
           <MiniTable title="Latest per symbol" rows={safeRows(data.data_health.latest_per_symbol)} columns={["symbol", "timeframe", "latest_ts", "rows"]} />
         </>
@@ -334,11 +334,13 @@ function ExpertPackControls({ exports }: { exports: Record<string, unknown> }) {
 function MiniTable({
   title,
   rows,
-  columns
+  columns,
+  emptyLabel = "not_observable"
 }: {
   title: string;
   rows: Record<string, unknown>[];
   columns: string[];
+  emptyLabel?: string;
 }) {
   return (
     <section className="mini-table-block">
@@ -352,7 +354,7 @@ function MiniTable({
             {columns.map((column) => <span key={column}>{stringValue(row[column])}</span>)}
           </div>
         ))}
-        {!rows.length && <div className="empty">not_observable</div>}
+        {!rows.length && <div className="empty">{emptyLabel}</div>}
       </div>
     </section>
   );

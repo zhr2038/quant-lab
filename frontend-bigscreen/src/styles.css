@@ -174,8 +174,9 @@ button{font:inherit;color:inherit}
 .loading-card{position:absolute;left:28px;right:28px;top:92px;bottom:32px;border:1px solid var(--line);border-radius:22px;background:rgba(9,27,50,.82);display:grid;place-items:center;font-size:24px}
 .detail-drawer{
   position:absolute;right:18px;top:168px;width:690px;height:740px;z-index:20;
-  border:1px solid rgba(45,232,166,.55);border-radius:22px;background:rgba(5,18,34,.96);
+  border:1px solid rgba(45,232,166,.55);border-radius:22px;background:linear-gradient(180deg,#06172a,#03111f);
   box-shadow:0 0 46px rgba(45,232,166,.18),inset 0 1px 0 rgba(255,255,255,.06);padding:22px;overflow:hidden;
+  isolation:isolate;
 }
 .drawer-head{display:flex;align-items:center;justify-content:space-between}
 .drawer-head h2{margin:0;font-size:25px}.drawer-head button{border:1px solid var(--line);background:rgba(7,29,53,.75);border-radius:11px;width:36px;height:36px;display:grid;place-items:center;cursor:pointer}
@@ -320,7 +321,7 @@ button{font:inherit;color:inherit}
   }
   .detail-drawer{
     position:fixed;left:10px;right:10px;top:10px;bottom:10px;width:auto;height:auto;z-index:40;
-    padding:16px;overflow:auto;
+    padding:16px;overflow:auto;background:linear-gradient(180deg,#06172a,#03111f);
   }
   .mini-table{overflow:auto}
   .mini-table-row{min-width:680px}

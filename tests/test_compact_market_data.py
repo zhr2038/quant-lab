@@ -31,8 +31,8 @@ def test_market_data_rollups_generate_1m_tables(tmp_path):
     write_parquet_dataset(
         pl.DataFrame(
             [
-                {"symbol": "BNB-USDT", "ts": ts, "size": 1.0},
-                {"symbol": "BNB-USDT", "ts": ts + timedelta(seconds=10), "size": 2.0},
+                {"symbol": "BNB-USDT", "ts": ts, "size": 1.0, "side": "buy"},
+                {"symbol": "BNB-USDT", "ts": ts + timedelta(seconds=10), "size": 2.0, "side": "sell"},
             ]
         ),
         lake / "silver/trade_print",
@@ -45,7 +45,7 @@ def test_market_data_rollups_generate_1m_tables(tmp_path):
                     "channel": "books5",
                     "ts": ts,
                     "asks_json": "[[\"101\", \"1\"]]",
-                    "bids_json": "[[\"100\", \"1\"]]",
+                    "bids_json": "[[\"100\", \"3\"]]",
                 }
             ]
         ),
@@ -57,7 +57,10 @@ def test_market_data_rollups_generate_1m_tables(tmp_path):
 
     assert trades["trade_count"][0] == 2
     assert trades["size_sum"][0] == 3.0
+    assert trades["taker_buy_size_sum"][0] == 1.0
+    assert trades["taker_sell_size_sum"][0] == 2.0
     assert spreads["spread_bps"][0] > 0
+    assert spreads["orderbook_imbalance"][0] == 0.5
 
 
 def test_market_data_rollups_are_written_idempotently(tmp_path):
@@ -66,8 +69,8 @@ def test_market_data_rollups_are_written_idempotently(tmp_path):
     write_parquet_dataset(
         pl.DataFrame(
             [
-                {"symbol": "BNB-USDT", "ts": ts, "size": 1.0},
-                {"symbol": "BNB-USDT", "ts": ts + timedelta(seconds=10), "size": 2.0},
+                {"symbol": "BNB-USDT", "ts": ts, "size": 1.0, "side": "buy"},
+                {"symbol": "BNB-USDT", "ts": ts + timedelta(seconds=10), "size": 2.0, "side": "sell"},
             ]
         ),
         lake / "silver/trade_print",
@@ -99,7 +102,10 @@ def test_market_data_rollups_are_written_idempotently(tmp_path):
     trade_row = read_parquet_dataset(lake / "silver/trade_activity_1m").to_dicts()[0]
     spread_row = read_parquet_dataset(lake / "silver/orderbook_spread_1m").to_dicts()[0]
     assert trade_row["trade_count"] == 2
+    assert trade_row["taker_buy_size_sum"] == 1.0
+    assert trade_row["taker_sell_size_sum"] == 2.0
     assert spread_row["spread_bps"] > 0
+    assert "orderbook_imbalance" in spread_row
 
 
 def test_market_data_rollups_parse_iso_string_timestamps(tmp_path):

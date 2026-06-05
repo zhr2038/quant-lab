@@ -19,7 +19,10 @@ FAST_MICROSTRUCTURE_FIELDS = [
     "latest_spread_bps",
     "avg_spread_bps_5m",
     "avg_spread_bps_15m",
+    "orderbook_imbalance_1m",
+    "orderbook_imbalance_5m",
     "spread_widening_bps",
+    "spread_bps_change_5m",
     "trade_count_5m",
     "trade_count_15m",
     "trade_count_60m",
@@ -29,6 +32,8 @@ FAST_MICROSTRUCTURE_FIELDS = [
     "activity_ratio_15m_to_60m",
     "taker_buy_size_sum_15m",
     "taker_sell_size_sum_15m",
+    "taker_buy_sell_imbalance_5m",
+    "cvd_5m",
     "cvd_size_15m",
     "vwap_1h",
     "close_vs_vwap_1h_bps",
@@ -75,6 +80,9 @@ def build_fast_microstructure_features(
         spread_15m = _avg_value(spread_rows, ts, minutes=15, field="spread_bps")
         spread_60m = _avg_value(spread_rows, ts, minutes=60, field="spread_bps")
         latest_spread = _latest_value(spread_rows, ts, field="spread_bps")
+        orderbook_imbalance_1m = _latest_value(spread_rows, ts, field="orderbook_imbalance")
+        orderbook_imbalance_5m = _avg_value(spread_rows, ts, minutes=5, field="orderbook_imbalance")
+        spread_5m_prior = _value_at_or_before(spread_rows, ts - timedelta(minutes=5), field="spread_bps")
         trade_5m = _sum_value(trade_rows, ts, minutes=5, field="trade_count")
         trade_15m = _sum_value(trade_rows, ts, minutes=15, field="trade_count")
         trade_60m = _sum_value(trade_rows, ts, minutes=60, field="trade_count")
@@ -93,6 +101,25 @@ def build_fast_microstructure_features(
             minutes=15,
             fields=("taker_sell_size_sum", "sell_size_sum"),
         )
+        taker_buy_5m = _sum_first_observed(
+            trade_rows,
+            ts,
+            minutes=5,
+            fields=("taker_buy_size_sum", "buy_size_sum", "taker_buy_volume", "buy_volume"),
+        )
+        taker_sell_5m = _sum_first_observed(
+            trade_rows,
+            ts,
+            minutes=5,
+            fields=("taker_sell_size_sum", "sell_size_sum", "taker_sell_volume", "sell_volume"),
+        )
+        cvd_5m = None
+        taker_imbalance_5m = None
+        if taker_buy_5m is not None and taker_sell_5m is not None:
+            cvd_5m = taker_buy_5m - taker_sell_5m
+            total_5m = taker_buy_5m + taker_sell_5m
+            if total_5m > 0:
+                taker_imbalance_5m = cvd_5m / total_5m
         cvd = None
         if taker_buy_15m is not None and taker_sell_15m is not None:
             cvd = taker_buy_15m - taker_sell_15m
@@ -106,6 +133,9 @@ def build_fast_microstructure_features(
         spread_widening = None
         if spread_15m is not None and spread_60m is not None:
             spread_widening = spread_15m - spread_60m
+        spread_bps_change_5m = None
+        if latest_spread is not None and spread_5m_prior is not None:
+            spread_bps_change_5m = latest_spread - spread_5m_prior
         close_vs_vwap = None
         if vwap_1h and close:
             close_vs_vwap = (close / vwap_1h - 1.0) * 10000.0
@@ -119,7 +149,10 @@ def build_fast_microstructure_features(
                 "latest_spread_bps": latest_spread,
                 "avg_spread_bps_5m": spread_5m,
                 "avg_spread_bps_15m": spread_15m,
+                "orderbook_imbalance_1m": orderbook_imbalance_1m,
+                "orderbook_imbalance_5m": orderbook_imbalance_5m,
                 "spread_widening_bps": spread_widening,
+                "spread_bps_change_5m": spread_bps_change_5m,
                 "trade_count_5m": trade_5m,
                 "trade_count_15m": trade_15m,
                 "trade_count_60m": trade_60m,
@@ -129,6 +162,8 @@ def build_fast_microstructure_features(
                 "activity_ratio_15m_to_60m": activity_ratio,
                 "taker_buy_size_sum_15m": taker_buy_15m,
                 "taker_sell_size_sum_15m": taker_sell_15m,
+                "taker_buy_sell_imbalance_5m": taker_imbalance_5m,
+                "cvd_5m": cvd_5m,
                 "cvd_size_15m": cvd,
                 "vwap_1h": vwap_1h,
                 "close_vs_vwap_1h_bps": close_vs_vwap,
@@ -213,6 +248,13 @@ def _avg_value(rows: list[dict[str, Any]], ts: datetime, *, minutes: int, field:
 
 
 def _latest_value(rows: list[dict[str, Any]], ts: datetime, *, field: str) -> float | None:
+    candidates = [row for row in rows if row.get("_ts") <= ts and _float(row.get(field)) is not None]
+    if not candidates:
+        return None
+    return _float(candidates[-1].get(field))
+
+
+def _value_at_or_before(rows: list[dict[str, Any]], ts: datetime, *, field: str) -> float | None:
     candidates = [row for row in rows if row.get("_ts") <= ts and _float(row.get(field)) is not None]
     if not candidates:
         return None

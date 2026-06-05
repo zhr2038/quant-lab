@@ -7404,6 +7404,7 @@ def _strategy_opportunity_advisory_for_export(
     risk_on_multi_buy_shadow: pl.DataFrame | None = None,
     alpha_factory_results: pl.DataFrame | None = None,
     alpha_factory_promotion_queue: pl.DataFrame | None = None,
+    expanded_universe_maturity: pl.DataFrame | None = None,
 ) -> pl.DataFrame:
     path = "reports/strategy_opportunity_advisory.csv"
     source = (
@@ -7593,6 +7594,13 @@ def _strategy_opportunity_advisory_for_export(
             risk_on_multi_buy_shadow if risk_on_multi_buy_shadow is not None else pl.DataFrame()
         )
     )
+    rows.extend(
+        _expanded_universe_paper_opportunity_rows(
+            expanded_universe_maturity if expanded_universe_maturity is not None else pl.DataFrame(),
+            git_commit=git_commit,
+            source_version=source_version,
+        )
+    )
     if not rows:
         return _empty_csv_schema_frame(path)
     rows = _apply_alpha_factory_promotion_overrides(rows, alpha_factory_promotions)
@@ -7637,7 +7645,87 @@ def _strategy_opportunity_advisory_from_frames(
         risk_on_multi_buy_shadow=frames.get("v5_risk_on_multi_buy_shadow", pl.DataFrame()),
         alpha_factory_results=frames.get("alpha_factory_result", pl.DataFrame()),
         alpha_factory_promotion_queue=frames.get("alpha_factory_promotion_queue", pl.DataFrame()),
+        expanded_universe_maturity=frames.get("expanded_universe_candidate_maturity", pl.DataFrame()),
     )
+
+
+def _expanded_universe_paper_opportunity_rows(
+    maturity: pl.DataFrame,
+    *,
+    git_commit: str,
+    source_version: str,
+) -> list[dict[str, Any]]:
+    if maturity.is_empty():
+        return []
+    rows: list[dict[str, Any]] = []
+    seen: set[str] = set()
+    for raw in maturity.to_dicts():
+        symbol = normalize_symbol(raw.get("symbol"))
+        if symbol not in {"HYPE-USDT", "WLD-USDT"} or symbol in seen:
+            continue
+        state = str(
+            raw.get("expanded_universe_maturity_state")
+            or raw.get("maturity_state")
+            or raw.get("decision")
+            or ""
+        ).upper()
+        if state != "PAPER_READY":
+            continue
+        seen.add(symbol)
+        base = symbol.split("-")[0]
+        generated_at = _advisory_generated_at(raw)
+        strategy_id = f"{base}_EXPANDED_UNIVERSE_PAPER_V1"
+        strategy_candidate = f"v5.expanded_universe_{base.lower()}_paper"
+        live_block_reasons = [
+            "expanded_universe_not_live_approved",
+            "quant_lab_live_command_not_allowed",
+            "v5_local_live_not_controlled_by_quant_lab",
+        ]
+        rows.append(
+            {
+                "as_of_ts": _advisory_as_of_ts(raw),
+                "generated_at": generated_at,
+                "expires_at": _advisory_expires_at(raw, generated_at),
+                "contract_version": V5_QUANT_LAB_CONTRACT_VERSION,
+                "schema_version": STRATEGY_OPPORTUNITY_ADVISORY_SCHEMA_VERSION,
+                "quant_lab_git_commit": git_commit,
+                "source_version": source_version,
+                "would_block_if_enabled": False,
+                "would_enter": True,
+                "no_sample_reason": None,
+                "strategy_id": strategy_id,
+                "symbol": symbol,
+                "v5_symbol": _v5_symbol(symbol),
+                "strategy_candidate": strategy_candidate,
+                "decision": "PAPER_READY",
+                "recommended_mode": "paper",
+                "horizon_hours": _optional_int(raw.get("horizon_hours")) or 24,
+                "sample_count": _optional_int(raw.get("sample_count")),
+                "complete_sample_count": _optional_int(raw.get("complete_sample_count")),
+                "avg_net_bps": _optional_float(raw.get("avg_net_bps")),
+                "p25_net_bps": _optional_float(raw.get("p25_net_bps")),
+                "win_rate": _optional_float(raw.get("win_rate")),
+                "cost_source_mix": raw.get("cost_source_mix") or raw.get("cost_source"),
+                "cost_quality": raw.get("cost_quality") or raw.get("cost_source_quality"),
+                "source_module": "expanded_universe",
+                "template_family": "expanded_universe_paper",
+                "candidate_id": raw.get("candidate_id") or strategy_id,
+                "promotion_state": "PAPER_READY",
+                "alpha_factory_score": None,
+                "universe_type": "expanded_paper",
+                "cost_quality_score": _optional_float(raw.get("cost_quality_score")),
+                "paper_ready_block_reasons": safe_json_dumps([]),
+                "advisory_intent": "paper_shadow",
+                "paper_days": _optional_int(raw.get("paper_days")) or 0,
+                "entry_day_count": _optional_int(raw.get("entry_day_count")) or 0,
+                "paper_pnl_observed_count": _optional_int(raw.get("paper_pnl_observed_count")) or 0,
+                "slippage_coverage": _optional_float(raw.get("slippage_coverage")),
+                "live_block_reasons": safe_json_dumps(live_block_reasons),
+                "max_paper_notional_usdt": _optional_float(raw.get("max_paper_notional_usdt")) or 100.0,
+                "max_live_notional_usdt": 0.0,
+            }
+        )
+    return rows
 
 
 def _entry_quality_opportunity_rows(entry_quality_advisory: pl.DataFrame) -> list[dict[str, Any]]:
@@ -10005,6 +10093,8 @@ def _is_alpha_factory_advisory_row(row: dict[str, Any]) -> bool:
     source_module = str(row.get("source_module") or "").strip().lower()
     if source_module == "regime_router":
         return False
+    if source_module == "expanded_universe":
+        return False
     template_family = str(row.get("template_family") or "").strip()
     return (
         candidate in ALPHA_FACTORY_CANDIDATES
@@ -10022,6 +10112,8 @@ def _is_alpha_factory_promotion_capped_row(row: dict[str, Any]) -> bool:
         candidate.split(":", 1)[1] if candidate.startswith("regime_router:") else candidate
     )
     source_module = str(row.get("source_module") or "").strip().lower()
+    if source_module == "expanded_universe":
+        return False
     template_family = str(row.get("template_family") or "").strip()
     return (
         candidate_key in ALPHA_FACTORY_CANDIDATES

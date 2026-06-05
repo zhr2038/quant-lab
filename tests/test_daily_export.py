@@ -315,6 +315,108 @@ def test_bnb_paper_summary_uses_latest_strategy_day_view():
     assert "- entry_count: 7" in summary
 
 
+def test_strategy_opportunity_advisory_adds_hype_wld_expanded_paper_rows():
+    generated_at = datetime(2026, 6, 4, 10, tzinfo=UTC)
+    frame = daily_export_module._strategy_opportunity_advisory_for_export(
+        alpha_discovery_board=pl.DataFrame(),
+        strategy_evidence=pl.DataFrame(),
+        paper_proposals=pl.DataFrame(),
+        risk_permissions=pl.DataFrame(),
+        cost_health=pl.DataFrame(),
+        paper_daily=pl.DataFrame(),
+        paper_slippage=pl.DataFrame(),
+        expanded_universe_maturity=pl.DataFrame(
+            [
+                {
+                    "symbol": "HYPE-USDT",
+                    "expanded_universe_maturity_state": "PAPER_READY",
+                    "generated_at": generated_at,
+                    "sample_count": 33,
+                    "complete_sample_count": 31,
+                    "avg_net_bps": 88.0,
+                    "max_paper_notional_usdt": 25.0,
+                },
+                {
+                    "symbol": "WLD-USDT",
+                    "maturity_state": "PAPER_READY",
+                    "generated_at": generated_at,
+                },
+            ]
+        ),
+    )
+
+    rows = {row["strategy_id"]: row for row in frame.to_dicts()}
+    hype = rows["HYPE_EXPANDED_UNIVERSE_PAPER_V1"]
+    wld = rows["WLD_EXPANDED_UNIVERSE_PAPER_V1"]
+    assert hype["strategy_candidate"] == "v5.expanded_universe_hype_paper"
+    assert hype["universe_type"] == "expanded_paper"
+    assert hype["recommended_mode"] == "paper"
+    assert hype["decision"] == "PAPER_READY"
+    assert hype["would_enter"] is True
+    assert hype["max_paper_notional_usdt"] == 25.0
+    assert hype["max_live_notional_usdt"] == 0.0
+    assert wld["strategy_candidate"] == "v5.expanded_universe_wld_paper"
+    assert wld["max_live_notional_usdt"] == 0.0
+
+
+def test_system_acceptance_requires_expanded_reader_runs_and_daily_rows():
+    generated_at = datetime(2026, 6, 4, 10, tzinfo=UTC)
+    advisory = pl.DataFrame(
+        [
+            {
+                "strategy_id": "HYPE_EXPANDED_UNIVERSE_PAPER_V1",
+                "strategy_candidate": "v5.expanded_universe_hype_paper",
+                "symbol": "HYPE-USDT",
+                "decision": "PAPER_READY",
+                "recommended_mode": "paper",
+                "universe_type": "expanded_paper",
+                "generated_at": generated_at,
+                "expires_at": generated_at + timedelta(hours=2),
+            }
+        ]
+    )
+    reader = pl.DataFrame([{"symbol": "HYPE-USDT", "strategy_id": "HYPE_EXPANDED_UNIVERSE_PAPER_V1"}])
+    runs = pl.DataFrame([{"symbol": "HYPE-USDT", "strategy_id": "HYPE_EXPANDED_UNIVERSE_PAPER_V1"}])
+
+    failed = daily_export_module.build_system_acceptance_dashboard(
+        frames={},
+        report_frames={
+            "strategy_opportunity_advisory": advisory,
+            "expanded_universe_advisory_reader": reader,
+            "expanded_universe_paper_runs": runs,
+        },
+        row_counts={},
+        pre_export_v5={},
+        data_quality_warnings=[],
+        api_latency_summary=pl.DataFrame(),
+        lake_file_count=0,
+        generated_at=generated_at,
+    )
+    failed_row = next(row for row in failed.to_dicts() if row["check_name"] == "expanded_universe_paper_v5_rows_ok")
+    assert failed_row["status"] == "FAIL"
+    assert "missing_daily=['HYPE-USDT']" in failed_row["observed_value"]
+
+    passed = daily_export_module.build_system_acceptance_dashboard(
+        frames={},
+        report_frames={
+            "strategy_opportunity_advisory": advisory,
+            "expanded_universe_advisory_reader": reader,
+            "expanded_universe_paper_runs": runs,
+            "expanded_universe_paper_daily": pl.DataFrame(
+                [{"symbol": "HYPE-USDT", "strategy_id": "HYPE_EXPANDED_UNIVERSE_PAPER_V1"}]
+            ),
+        },
+        row_counts={},
+        pre_export_v5={},
+        data_quality_warnings=[],
+        api_latency_summary=pl.DataFrame(),
+        lake_file_count=0,
+        generated_at=generated_at,
+    )
+    passed_row = next(row for row in passed.to_dicts() if row["check_name"] == "expanded_universe_paper_v5_rows_ok")
+    assert passed_row["status"] == "PASS"
+
+
 def test_market_export_uses_rollup_frames_without_raw_shape():
     trade_rollup = pl.DataFrame(
         [

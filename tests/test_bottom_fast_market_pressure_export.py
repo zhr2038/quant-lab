@@ -55,7 +55,8 @@ def test_bottom_fast_microstructure_and_market_pressure_reports_export(tmp_path)
                     "channel": "books5",
                     "minute_ts": latest - timedelta(minutes=minute),
                     "ts": latest - timedelta(minutes=minute),
-                    "spread_bps": 8.0,
+                    "spread_bps": 8.0 + (0.01 * minute),
+                    "orderbook_imbalance": 0.25,
                 }
                 for minute in range(60)
             ]
@@ -71,6 +72,8 @@ def test_bottom_fast_microstructure_and_market_pressure_reports_export(tmp_path)
                     "latest_trade_ts": latest - timedelta(minutes=minute),
                     "trade_count": 3,
                     "size_sum": 10.0,
+                    "taker_buy_size_sum": 7.0,
+                    "taker_sell_size_sum": 3.0,
                 }
                 for minute in range(60)
             ]
@@ -86,7 +89,8 @@ def test_bottom_fast_microstructure_and_market_pressure_reports_export(tmp_path)
                 "channel": "books5",
                 "minute_ts": latest - timedelta(minutes=minute),
                 "ts": latest - timedelta(minutes=minute),
-                "spread_bps": 8.0,
+                "spread_bps": 8.0 + (0.01 * minute),
+                "orderbook_imbalance": 0.25,
             }
             for minute in range(60)
         ]
@@ -99,6 +103,8 @@ def test_bottom_fast_microstructure_and_market_pressure_reports_export(tmp_path)
                 "latest_trade_ts": latest - timedelta(minutes=minute),
                 "trade_count": 3,
                 "size_sum": 10.0,
+                "taker_buy_size_sum": 7.0,
+                "taker_sell_size_sum": 3.0,
             }
             for minute in range(60)
         ]
@@ -139,6 +145,12 @@ def test_bottom_fast_microstructure_and_market_pressure_reports_export(tmp_path)
     ):
         assert field in bottom.columns
     assert fast.filter(pl.col("symbol") == "BNB-USDT")["trade_count_60m"][0] == 180.0
+    fast_row = fast.filter(pl.col("symbol") == "BNB-USDT").to_dicts()[0]
+    assert fast_row["orderbook_imbalance_1m"] == 0.25
+    assert fast_row["orderbook_imbalance_5m"] == 0.25
+    assert fast_row["taker_buy_sell_imbalance_5m"] > 0
+    assert fast_row["cvd_5m"] > 0
+    assert fast_row["spread_bps_change_5m"] < 0
     assert pressure["market_pressure_state"][0] in {
         "BOTTOM_PROBE_ALLOWED",
         "CAPITULATION_WATCH",

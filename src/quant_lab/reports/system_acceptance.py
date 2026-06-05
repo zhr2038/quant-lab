@@ -315,10 +315,35 @@ def _expanded_universe_v5_check(
     )
     advisory = report_frames.get("strategy_opportunity_advisory", pl.DataFrame())
     ready_symbols.update(_expanded_advisory_symbols(advisory))
-    v5_runs = _v5_paper_symbols(frames.get("v5_paper_strategy_run", pl.DataFrame()))
-    v5_runs.update(_v5_paper_symbols(report_frames.get("paper_strategy_runs", pl.DataFrame())))
+    v5_reader = _v5_paper_symbols(_first_frame(
+        frames,
+        report_frames,
+        (
+            "v5_expanded_universe_advisory_reader",
+            "expanded_universe_advisory_reader",
+        ),
+    ))
+    v5_runs = _v5_paper_symbols(_first_frame(
+        frames,
+        report_frames,
+        (
+            "v5_expanded_universe_paper_run",
+            "v5_expanded_universe_paper_runs",
+            "expanded_universe_paper_runs",
+            "v5_paper_strategy_run",
+            "paper_strategy_runs",
+        ),
+    ))
+    v5_daily = _v5_paper_symbols(_first_frame(
+        frames,
+        report_frames,
+        (
+            "v5_expanded_universe_paper_daily",
+            "expanded_universe_paper_daily",
+        ),
+    ))
     wanted = {symbol for symbol in ready_symbols if symbol in {"HYPE-USDT", "WLD-USDT"}}
-    observed = wanted & v5_runs
+    observed = wanted & v5_reader & v5_runs & v5_daily
     if not wanted:
         return _check(
             "expanded_universe_paper_v5_rows_ok",
@@ -331,15 +356,21 @@ def _expanded_universe_v5_check(
                 "strategy_opportunity_advisory"
             ),
         )
+    missing_reader = sorted(wanted - v5_reader)
+    missing_runs = sorted(wanted - v5_runs)
+    missing_daily = sorted(wanted - v5_daily)
     status = "PASS" if wanted <= observed else "FAIL"
-    missing = sorted(wanted - observed)
     return _check(
         "expanded_universe_paper_v5_rows_ok",
         status,
-        f"ready={sorted(wanted)};v5_paper={sorted(observed)};missing={missing}",
-        "all HYPE/WLD PAPER_READY rows appear in V5 paper_strategy_run telemetry",
+        (
+            f"ready={sorted(wanted)};reader={sorted(v5_reader & wanted)};"
+            f"runs={sorted(v5_runs & wanted)};daily={sorted(v5_daily & wanted)};"
+            f"missing_reader={missing_reader};missing_runs={missing_runs};missing_daily={missing_daily}"
+        ),
+        "all HYPE/WLD PAPER_READY rows appear in V5 expanded reader, runs, and daily telemetry",
         "V5",
-        "" if status == "PASS" else "fix V5 expanded_universe paper reader or telemetry sync",
+        "" if status == "PASS" else "fix V5 expanded_universe reader/runs/daily telemetry sync",
     )
 
 
@@ -436,6 +467,21 @@ def _v5_paper_symbols(frame: pl.DataFrame) -> set[str]:
         if symbol in {"HYPE-USDT", "WLD-USDT"} or strategy_id.startswith(("HYPE_", "WLD_")):
             symbols.add(symbol)
     return symbols
+
+
+def _first_frame(
+    frames: Mapping[str, pl.DataFrame],
+    report_frames: Mapping[str, pl.DataFrame],
+    names: tuple[str, ...],
+) -> pl.DataFrame:
+    for name in names:
+        frame = frames.get(name, pl.DataFrame())
+        if frame is not None and not frame.is_empty():
+            return frame
+        frame = report_frames.get(name, pl.DataFrame())
+        if frame is not None and not frame.is_empty():
+            return frame
+    return pl.DataFrame()
 
 
 def _alpha_factory_advisory_paper_count(frame: pl.DataFrame) -> int:

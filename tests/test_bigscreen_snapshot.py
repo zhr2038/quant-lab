@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import zipfile
+from datetime import UTC, datetime
 from pathlib import Path
 
 import polars as pl
@@ -56,6 +57,125 @@ def test_bigscreen_snapshot_redacts_secret_like_fields(tmp_path):
     assert rows
     assert rows[0]["api_key"] == "[REDACTED]"
     assert "should-not-leak" not in str(payload)
+
+
+def test_bigscreen_snapshot_exposes_factor_factory_results(tmp_path):
+    clear_bigscreen_cache()
+    lake = tmp_path / "lake"
+    created_at = datetime(2026, 6, 6, 13, 0, tzinfo=UTC)
+    write_parquet_dataset(
+        pl.DataFrame(
+            [
+                {
+                    "as_of_date": "2026-06-06",
+                    "factor_id": "factor.momentum_zscore",
+                    "factor_name": "Momentum zscore",
+                    "factor_family": "momentum",
+                    "factor_version": "v0.1",
+                    "timeframe": "1H",
+                    "best_horizon_bars": 24,
+                    "tested_horizon_count": 4,
+                    "best_score": 0.82,
+                    "avg_score": 0.41,
+                    "best_rank_ic_mean": 0.12,
+                    "best_rank_ic_tstat": 3.1,
+                    "best_long_short_mean_bps": 96.5,
+                    "candidate_state": "PAPER_READY",
+                    "recommended_action": "paper_review_only",
+                    "promotion_block_reasons_json": "[]",
+                    "manual_review_required": True,
+                    "created_at": created_at,
+                    "source": "factor_factory_v0.1",
+                },
+                {
+                    "as_of_date": "2026-06-06",
+                    "factor_id": "factor.noise",
+                    "factor_name": "Noise",
+                    "factor_family": "diagnostic",
+                    "factor_version": "v0.1",
+                    "timeframe": "1H",
+                    "best_horizon_bars": 8,
+                    "tested_horizon_count": 4,
+                    "best_score": -0.2,
+                    "avg_score": -0.3,
+                    "best_rank_ic_mean": -0.02,
+                    "best_rank_ic_tstat": -0.5,
+                    "best_long_short_mean_bps": -12.0,
+                    "candidate_state": "KILL",
+                    "recommended_action": "suppress",
+                    "promotion_block_reasons_json": '["negative_edge"]',
+                    "manual_review_required": False,
+                    "created_at": created_at,
+                    "source": "factor_factory_v0.1",
+                },
+            ]
+        ),
+        lake / "gold" / "factor_candidate",
+    )
+    write_parquet_dataset(
+        pl.DataFrame(
+            [
+                {
+                    "as_of_date": "2026-06-06",
+                    "factor_id": "factor.momentum_zscore",
+                    "factor_name": "Momentum zscore",
+                    "factor_family": "momentum",
+                    "factor_version": "v0.1",
+                    "timeframe": "1H",
+                    "horizon_bars": 24,
+                    "decision_delay_bars": 1,
+                    "sample_count": 240,
+                    "rank_ic_mean": 0.12,
+                    "rank_ic_tstat": 3.1,
+                    "long_short_mean_bps": 96.5,
+                    "win_rate": 0.63,
+                    "hit_rate": 0.61,
+                    "turnover": 0.2,
+                    "max_drawdown": 0.08,
+                    "edge_cost_ratio": 2.1,
+                    "cost_ratio": 0.3,
+                    "period_count": 240,
+                    "decision": "PAPER_READY",
+                    "score": 0.82,
+                    "reasons_json": "[]",
+                    "warnings_json": "[]",
+                    "start_ts": created_at,
+                    "end_ts": created_at,
+                    "created_at": created_at,
+                    "source": "factor_factory_v0.1",
+                }
+            ]
+        ),
+        lake / "gold" / "factor_evidence",
+    )
+    write_parquet_dataset(
+        pl.DataFrame(
+            [
+                {
+                    "as_of_date": "2026-06-06",
+                    "factor_id_left": "factor.momentum_zscore",
+                    "factor_id_right": "factor.momentum_slope",
+                    "factor_version": "v0.1",
+                    "timeframe": "1H",
+                    "sample_count": 240,
+                    "correlation": 0.94,
+                    "created_at": created_at,
+                    "source": "factor_factory_v0.1",
+                }
+            ]
+        ),
+        lake / "gold" / "factor_correlation_daily",
+    )
+
+    payload = bigscreen_snapshot(lake)
+    factor_factory = payload["strategy_flow"]["factor_factory"]
+
+    assert factor_factory["live_order_effect"] == "none_read_only_research"
+    assert factor_factory["candidate_count"] == 2
+    assert factor_factory["paper_ready_count"] == 1
+    assert factor_factory["paper_ready_candidates"][0]["factor_id"] == "factor.momentum_zscore"
+    assert factor_factory["evidence_by_horizon"][0]["horizon_bars"] == 24
+    assert factor_factory["high_correlation_pairs"][0]["correlation"] == 0.94
 
 
 def test_bigscreen_snapshot_endpoints_return_payload(monkeypatch, tmp_path):

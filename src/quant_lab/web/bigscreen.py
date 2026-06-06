@@ -112,6 +112,9 @@ def _safe_strategy_summary(root: Path) -> dict[str, Any]:
         ("alpha_factory_promotion_queue", "alpha_factory_promotion_queue"),
         ("risk_on_multi_buy_shadow", "risk_on_multi_buy_shadow"),
         ("research_portfolio_status", "research_portfolio_status"),
+        ("factor_candidate", "factor_candidate"),
+        ("factor_evidence", "factor_evidence"),
+        ("factor_correlation_daily", "factor_correlation_daily"),
     ]:
         frame, warning = _read_display_frame(root, dataset_name)
         if frame.is_empty() and dataset_name == "risk_on_multi_buy_shadow":
@@ -476,6 +479,7 @@ def _strategy_flow(strategy: dict[str, Any]) -> dict[str, Any]:
     advisory_rows = _frame_rows(strategy.get("strategy_opportunity_advisory"), limit=200)
     counts = _strategy_counts(strategy, advisory_rows)
     top = _top_strategy_candidates(advisory_rows)
+    factor_factory = _factor_factory_payload(strategy)
     return {
         "counts": counts,
         "top_candidates": top[:8],
@@ -483,8 +487,169 @@ def _strategy_flow(strategy: dict[str, Any]) -> dict[str, Any]:
         "research_portfolio": _frame_rows(strategy.get("research_portfolio_status"), limit=8),
         "alpha_factory": _frame_rows(strategy.get("alpha_factory_promotion_queue"), limit=8),
         "risk_on_multi_buy": _frame_rows(strategy.get("risk_on_multi_buy_shadow"), limit=6),
+        "factor_factory": factor_factory,
         "advisory_fresh": True,
     }
+
+
+def _factor_factory_payload(strategy: dict[str, Any]) -> dict[str, Any]:
+    candidates = _as_frame(strategy.get("factor_candidate"))
+    evidence = _as_frame(strategy.get("factor_evidence"))
+    correlations = _as_frame(strategy.get("factor_correlation_daily"))
+    candidate_rows = _factor_candidate_rows(candidates)
+    state_counts = _count_by_column(candidates, "candidate_state")
+    high_correlation_pairs = _high_correlation_rows(correlations)
+    evidence_by_horizon = _factor_evidence_by_horizon(evidence)
+    paper_ready_candidates = [
+        row
+        for row in candidate_rows
+        if str(row.get("candidate_state") or "").upper() == "PAPER_READY"
+    ]
+    warnings: list[str] = []
+    if candidates.is_empty():
+        warnings.append("factor_candidate_missing_or_empty")
+    if evidence.is_empty():
+        warnings.append("factor_evidence_missing_or_empty")
+    return {
+        "title": "Factor Factory",
+        "live_order_effect": "none_read_only_research",
+        "paper_ready_meaning": "paper review candidate only, not live eligibility",
+        "candidate_count": candidates.height,
+        "evidence_count": evidence.height,
+        "correlation_pair_count": correlations.height,
+        "paper_ready_count": state_counts.get("PAPER_READY", 0),
+        "high_correlation_pair_count": len(high_correlation_pairs),
+        "state_counts": state_counts,
+        "latest_candidate_created_at": _max_column_value(candidates, "created_at"),
+        "latest_evidence_created_at": _max_column_value(evidence, "created_at"),
+        "top_candidates": candidate_rows[:8],
+        "paper_ready_candidates": paper_ready_candidates[:8],
+        "evidence_by_horizon": evidence_by_horizon,
+        "high_correlation_pairs": high_correlation_pairs[:8],
+        "warnings": warnings,
+    }
+
+
+def _as_frame(value: Any) -> pl.DataFrame:
+    return value if isinstance(value, pl.DataFrame) else pl.DataFrame()
+
+
+def _factor_candidate_rows(frame: pl.DataFrame) -> list[dict[str, Any]]:
+    rows = _frame_rows(frame, limit=500)
+
+    def priority(row: dict[str, Any]) -> tuple[int, float, float, float]:
+        state = str(row.get("candidate_state") or "").upper()
+        state_priority = {
+            "PAPER_READY": 5,
+            "KEEP_SHADOW": 4,
+            "RESEARCH": 3,
+            "KILL": 1,
+        }.get(state, 2)
+        return (
+            state_priority,
+            _float(row.get("best_score")) or -999999.0,
+            _float(row.get("best_long_short_mean_bps")) or -999999.0,
+            _float(row.get("best_rank_ic_mean")) or -999999.0,
+        )
+
+    sorted_rows = sorted(rows, key=priority, reverse=True)
+    return [_factor_candidate_payload(row) for row in sorted_rows]
+
+
+def _factor_candidate_payload(row: dict[str, Any]) -> dict[str, Any]:
+    return {
+        "factor_id": row.get("factor_id"),
+        "factor_name": row.get("factor_name"),
+        "factor_family": row.get("factor_family"),
+        "factor_version": row.get("factor_version"),
+        "timeframe": row.get("timeframe"),
+        "candidate_state": row.get("candidate_state"),
+        "best_horizon_bars": _int(row.get("best_horizon_bars")),
+        "tested_horizon_count": _int(row.get("tested_horizon_count")),
+        "best_score": _float(row.get("best_score")),
+        "avg_score": _float(row.get("avg_score")),
+        "best_rank_ic_mean": _float(row.get("best_rank_ic_mean")),
+        "best_rank_ic_tstat": _float(row.get("best_rank_ic_tstat")),
+        "best_long_short_mean_bps": _float(row.get("best_long_short_mean_bps")),
+        "recommended_action": row.get("recommended_action"),
+        "manual_review_required": row.get("manual_review_required"),
+        "created_at": row.get("created_at"),
+        "source": row.get("source"),
+        "live_order_effect": "none_read_only_research",
+    }
+
+
+def _factor_evidence_by_horizon(frame: pl.DataFrame) -> list[dict[str, Any]]:
+    if frame.is_empty() or "horizon_bars" not in frame.columns:
+        return []
+    rows = _frame_rows(frame, limit=1000)
+    grouped: dict[int, list[dict[str, Any]]] = {}
+    for row in rows:
+        horizon = _int(row.get("horizon_bars"))
+        if horizon is None:
+            continue
+        grouped.setdefault(horizon, []).append(row)
+    output: list[dict[str, Any]] = []
+    for horizon, horizon_rows in sorted(grouped.items()):
+        scores = [_float(row.get("score")) for row in horizon_rows]
+        rank_ics = [_float(row.get("rank_ic_mean")) for row in horizon_rows]
+        spreads = [_float(row.get("long_short_mean_bps")) for row in horizon_rows]
+        output.append(
+            {
+                "horizon_bars": horizon,
+                "factor_count": len(horizon_rows),
+                "paper_ready_count": sum(
+                    1
+                    for row in horizon_rows
+                    if str(row.get("decision") or "").upper() == "PAPER_READY"
+                ),
+                "avg_score": _mean(scores),
+                "avg_rank_ic_mean": _mean(rank_ics),
+                "avg_long_short_mean_bps": _mean(spreads),
+            }
+        )
+    return output
+
+
+def _high_correlation_rows(frame: pl.DataFrame) -> list[dict[str, Any]]:
+    rows = _frame_rows(frame, limit=1000)
+    filtered = [
+        row
+        for row in rows
+        if (_float(row.get("correlation")) is not None)
+        and abs(_float(row.get("correlation")) or 0.0) >= 0.90
+    ]
+    filtered.sort(key=lambda row: abs(_float(row.get("correlation")) or 0.0), reverse=True)
+    return [
+        {
+            "factor_id_left": row.get("factor_id_left"),
+            "factor_id_right": row.get("factor_id_right"),
+            "correlation": _float(row.get("correlation")),
+            "sample_count": _int(row.get("sample_count")),
+            "timeframe": row.get("timeframe"),
+            "as_of_date": row.get("as_of_date"),
+        }
+        for row in filtered
+    ]
+
+
+def _mean(values: list[float | None]) -> float | None:
+    observed = [value for value in values if value is not None]
+    if not observed:
+        return None
+    return round(sum(observed) / len(observed), 6)
+
+
+def _max_column_value(frame: pl.DataFrame, column: str) -> Any:
+    if frame.is_empty() or column not in frame.columns:
+        return None
+    values = frame.get_column(column).drop_nulls()
+    if values.is_empty():
+        return None
+    try:
+        return _json_value(values.max())
+    except Exception:
+        return None
 
 
 def _strategy_counts(strategy: dict[str, Any], rows: list[dict[str, Any]]) -> dict[str, int]:

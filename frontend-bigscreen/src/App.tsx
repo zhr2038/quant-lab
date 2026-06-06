@@ -12,11 +12,12 @@ import {
   PackagePlus,
   RadioTower,
   RefreshCw,
+  Sparkles,
   ShieldCheck,
   Table2,
   X
 } from "lucide-react";
-import { useEffect, useMemo, useRef, useState } from "react";
+import { type CSSProperties, useEffect, useMemo, useRef, useState } from "react";
 import { ActionQueue } from "./components/ActionQueue";
 import { CostQuality } from "./components/CostQuality";
 import { DataMatrix } from "./components/DataMatrix";
@@ -177,11 +178,45 @@ function drilldownContent(view: ViewKey, data: BigscreenSnapshot) {
     const candidates = safeRows(data.strategy_flow.top_candidates);
     const alphaFactory = safeRows(data.strategy_flow.alpha_factory);
     const riskOn = safeRows(data.strategy_flow.risk_on_multi_buy);
+    const factorFactory = (data.strategy_flow.factor_factory ?? {}) as Record<string, unknown>;
+    const factorPaper = safeRows(factorFactory.paper_ready_candidates);
+    const factorTop = safeRows(factorFactory.top_candidates);
+    const factorRows = factorPaper.length ? factorPaper : factorTop;
     return {
       title: "策略驾驶舱",
-      subtitle: "聚合 advisory、Alpha Factory、risk-on multi-buy 和研究组合；全部为 read-only。",
+      subtitle: "聚合 advisory、Alpha Factory、Factor Factory、risk-on multi-buy 和研究组合；全部为 read-only。",
       blocks: (
         <>
+          <section className="factor-factory-drawer">
+            <div>
+              <h3><Sparkles size={17} /> Factor Factory</h3>
+              <p>自动发现与测试因子，只做研究展示；PAPER_READY 仅代表 paper review，不代表 live eligibility。</p>
+            </div>
+            <KeyValueGrid
+              data={{
+                live_order_effect: factorFactory.live_order_effect,
+                candidate_count: factorFactory.candidate_count,
+                paper_ready_count: factorFactory.paper_ready_count,
+                high_correlation_pair_count: factorFactory.high_correlation_pair_count,
+                latest_candidate_created_at: factorFactory.latest_candidate_created_at
+              }}
+            />
+          </section>
+          <MiniTable
+            title="Factor Factory candidates"
+            rows={factorRows}
+            columns={["factor_id", "factor_family", "candidate_state", "best_horizon_bars", "best_score", "best_rank_ic_mean", "best_long_short_mean_bps", "recommended_action"]}
+          />
+          <MiniTable
+            title="Factor evidence by horizon"
+            rows={safeRows(factorFactory.evidence_by_horizon)}
+            columns={["horizon_bars", "factor_count", "paper_ready_count", "avg_score", "avg_rank_ic_mean", "avg_long_short_mean_bps"]}
+          />
+          <MiniTable
+            title="High correlation factor pairs"
+            rows={safeRows(factorFactory.high_correlation_pairs)}
+            columns={["factor_id_left", "factor_id_right", "correlation", "sample_count", "timeframe"]}
+          />
           <MiniTable title="最可能上线候选" rows={safeRows(data.strategy_flow.top_live_candidates).concat(candidates).slice(0, 8)} columns={["strategy_candidate", "symbol", "recommended_mode", "decision", "avg_net_bps", "p25_net_bps"]} />
           <MiniTable title="Alpha Factory" rows={alphaFactory} columns={["strategy_candidate", "promotion_state", "recommended_mode", "alpha_factory_score", "horizon_hours"]} />
           <MiniTable title="Risk-on multi-buy shadow" rows={riskOn} columns={["selected_symbols", "would_buy_symbols", "top_k", "decision_ts"]} />
@@ -346,11 +381,11 @@ function MiniTable({
     <section className="mini-table-block">
       <h3>{title}</h3>
       <div className="mini-table">
-        <div className="mini-table-row head">
+        <div className="mini-table-row head" style={{ "--cols": columns.length } as CSSProperties}>
           {columns.map((column) => <span key={column}>{column}</span>)}
         </div>
         {rows.slice(0, 8).map((row, i) => (
-          <div className="mini-table-row" key={`${title}-${i}`}>
+          <div className="mini-table-row" key={`${title}-${i}`} style={{ "--cols": columns.length } as CSSProperties}>
             {columns.map((column) => <span key={column}>{stringValue(row[column])}</span>)}
           </div>
         ))}

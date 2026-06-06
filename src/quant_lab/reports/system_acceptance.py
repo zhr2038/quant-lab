@@ -407,6 +407,15 @@ def _expanded_universe_v5_check(
     )
     no_sample_reason_mix = _expanded_no_sample_reason_mix(wanted, runs_frame)
     status = "PASS" if wanted <= observed and not missing_no_sample_reason else "FAIL"
+    if status == "PASS":
+        next_action = ""
+    elif missing_reader or missing_daily:
+        next_action = (
+            "generate a fresh V5 follow-up bundle after PAPER_READY advisory and rerun "
+            "quant-lab V5 telemetry sync"
+        )
+    else:
+        next_action = "fix V5 expanded_universe reader/runs/daily telemetry sync"
     return _check(
         "expanded_universe_paper_v5_rows_ok",
         status,
@@ -422,7 +431,7 @@ def _expanded_universe_v5_check(
             "telemetry, and no-entry rows explain no_sample_reason"
         ),
         "V5",
-        "" if status == "PASS" else "fix V5 expanded_universe reader/runs/daily telemetry sync",
+        next_action,
     )
 
 

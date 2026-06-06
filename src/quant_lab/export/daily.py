@@ -4340,6 +4340,7 @@ def _dataset_members(
             "strategy_opportunity_advisory": opportunity_advisory,
             "bnb_strong_alpha6_bypass_shadow": bnb_strong_alpha6_bypass_shadow,
             "final_score_alpha6_conflict": final_score_alpha6_conflict,
+            "fast_microstructure_features": fast_microstructure_features,
             "paper_strategy_runs": paper_runs,
             "backtest_label_summary": backtest_bundle.label_summary,
             "research_promotion_decision": backtest_bundle.promotion_decision,

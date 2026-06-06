@@ -50,6 +50,30 @@ def test_bundle_validation_accepts_large_quant_lab_jsonl_gzip_paths(tmp_path):
     assert not any("unknown file path" in warning for warning in result.warnings)
 
 
+def test_bundle_validation_accepts_expanded_universe_summary_paths(tmp_path):
+    bundle = make_tar(
+        tmp_path / "v5_live_followup_bundle_20260606T082113Z.tar.gz",
+        {
+            "summaries/expanded_universe_advisory_reader.csv": (
+                "strategy_id,symbol\nWLD_EXPANDED_UNIVERSE_PAPER_V1,WLD-USDT\n"
+            ),
+            "summaries/expanded_universe_paper_runs.csv": (
+                "strategy_id,symbol\nWLD_EXPANDED_UNIVERSE_PAPER_V1,WLD-USDT\n"
+            ),
+            "summaries/expanded_universe_paper_daily.csv": (
+                "strategy_id,symbol\nWLD_EXPANDED_UNIVERSE_PAPER_V1,WLD-USDT\n"
+            ),
+        },
+    )
+
+    result = validate_v5_bundle(bundle, BundleLimits())
+
+    assert result.valid is True
+    assert "summaries/expanded_universe_advisory_reader.csv" in result.detected_files
+    assert "summaries/expanded_universe_paper_daily.csv" in result.detected_files
+    assert not any("unknown file path" in warning for warning in result.warnings)
+
+
 def test_bundle_validation_rejects_symlink(tmp_path):
     bundle = make_tar(
         tmp_path / "v5_live_followup_bundle_20260510T140249Z.tar.gz",

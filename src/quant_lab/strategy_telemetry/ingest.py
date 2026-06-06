@@ -77,6 +77,9 @@ SILVER_DATASETS = {
     "v5_paper_strategy_run": Path("silver/v5_paper_strategy_run"),
     "v5_paper_strategy_daily": Path("silver/v5_paper_strategy_daily"),
     "v5_paper_slippage_coverage": Path("silver/v5_paper_slippage_coverage"),
+    "v5_expanded_universe_advisory_reader": Path("silver/v5_expanded_universe_advisory_reader"),
+    "v5_expanded_universe_paper_runs": Path("silver/v5_expanded_universe_paper_runs"),
+    "v5_expanded_universe_paper_daily": Path("silver/v5_expanded_universe_paper_daily"),
     "v5_bnb_profit_lock_shadow": Path("silver/v5_bnb_profit_lock_shadow"),
     "v5_bnb_negative_expectancy_attribution": Path("silver/v5_bnb_negative_expectancy_attribution"),
     "v5_final_score_vs_alpha6_conflict": Path("silver/v5_final_score_vs_alpha6_conflict"),
@@ -595,6 +598,11 @@ def _append_file_rows(
         "summaries/paper_strategy_runs.csv": "v5_paper_strategy_run",
         "summaries/paper_strategy_daily.csv": "v5_paper_strategy_daily",
         "summaries/paper_slippage_coverage.csv": "v5_paper_slippage_coverage",
+        "summaries/expanded_universe_advisory_reader.csv": (
+            "v5_expanded_universe_advisory_reader"
+        ),
+        "summaries/expanded_universe_paper_runs.csv": "v5_expanded_universe_paper_runs",
+        "summaries/expanded_universe_paper_daily.csv": "v5_expanded_universe_paper_daily",
         "summaries/bnb_profit_lock_shadow.csv": "v5_bnb_profit_lock_shadow",
         "summaries/bnb_negative_expectancy_attribution.csv": (
             "v5_bnb_negative_expectancy_attribution"

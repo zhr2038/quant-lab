@@ -127,6 +127,12 @@ DATASET_PATHS = {
     "v5_paper_strategy_run": Path("silver") / "v5_paper_strategy_run",
     "v5_paper_strategy_daily": Path("silver") / "v5_paper_strategy_daily",
     "v5_paper_slippage_coverage": Path("silver") / "v5_paper_slippage_coverage",
+    "v5_expanded_universe_advisory_reader": Path("silver")
+    / "v5_expanded_universe_advisory_reader",
+    "v5_expanded_universe_paper_runs": Path("silver")
+    / "v5_expanded_universe_paper_runs",
+    "v5_expanded_universe_paper_daily": Path("silver")
+    / "v5_expanded_universe_paper_daily",
     "v5_bnb_profit_lock_shadow": Path("silver") / "v5_bnb_profit_lock_shadow",
     "v5_bnb_negative_expectancy_attribution": Path("silver")
     / "v5_bnb_negative_expectancy_attribution",
@@ -162,6 +168,9 @@ V5_PAPER_TELEMETRY_DATASETS = {
     "v5_paper_strategy_run",
     "v5_paper_strategy_daily",
     "v5_paper_slippage_coverage",
+    "v5_expanded_universe_advisory_reader",
+    "v5_expanded_universe_paper_runs",
+    "v5_expanded_universe_paper_daily",
 }
 OPTIONAL_EMPTY_DATASET_STATUSES = {
     "closed_research_snapshot",
@@ -377,6 +386,25 @@ DATASET_TIMESTAMP_COLUMNS: dict[str, tuple[str, ...]] = {
     "v5_paper_strategy_run": ("created_at", "as_of_date", "ingest_ts", "bundle_ts"),
     "v5_paper_strategy_daily": ("created_at", "as_of_date", "ingest_ts", "bundle_ts"),
     "v5_paper_slippage_coverage": ("created_at", "as_of_date", "ingest_ts", "bundle_ts"),
+    "v5_expanded_universe_advisory_reader": (
+        "generated_at",
+        "ts_utc",
+        "ingest_ts",
+        "bundle_ts",
+    ),
+    "v5_expanded_universe_paper_runs": (
+        "generated_at",
+        "ts_utc",
+        "ingest_ts",
+        "bundle_ts",
+    ),
+    "v5_expanded_universe_paper_daily": (
+        "generated_at",
+        "paper_date",
+        "as_of_date",
+        "ingest_ts",
+        "bundle_ts",
+    ),
     "v5_bnb_profit_lock_shadow": ("ingest_ts", "bundle_ts", "exit_ts", "entry_ts"),
     "v5_bnb_negative_expectancy_attribution": ("ingest_ts", "bundle_ts", "exit_ts"),
     "v5_negative_expectancy_attribution": ("ingest_ts", "bundle_ts", "exit_ts"),

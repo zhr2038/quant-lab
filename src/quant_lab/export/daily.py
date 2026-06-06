@@ -7596,7 +7596,11 @@ def _strategy_opportunity_advisory_for_export(
     )
     rows.extend(
         _expanded_universe_paper_opportunity_rows(
-            expanded_universe_maturity if expanded_universe_maturity is not None else pl.DataFrame(),
+            (
+                expanded_universe_maturity
+                if expanded_universe_maturity is not None
+                else pl.DataFrame()
+            ),
             git_commit=git_commit,
             source_version=source_version,
         )
@@ -7645,7 +7649,10 @@ def _strategy_opportunity_advisory_from_frames(
         risk_on_multi_buy_shadow=frames.get("v5_risk_on_multi_buy_shadow", pl.DataFrame()),
         alpha_factory_results=frames.get("alpha_factory_result", pl.DataFrame()),
         alpha_factory_promotion_queue=frames.get("alpha_factory_promotion_queue", pl.DataFrame()),
-        expanded_universe_maturity=frames.get("expanded_universe_candidate_maturity", pl.DataFrame()),
+        expanded_universe_maturity=frames.get(
+            "expanded_universe_candidate_maturity",
+            pl.DataFrame(),
+        ),
     )
 
 
@@ -7721,7 +7728,9 @@ def _expanded_universe_paper_opportunity_rows(
                 "paper_pnl_observed_count": _optional_int(raw.get("paper_pnl_observed_count")) or 0,
                 "slippage_coverage": _optional_float(raw.get("slippage_coverage")),
                 "live_block_reasons": safe_json_dumps(live_block_reasons),
-                "max_paper_notional_usdt": _optional_float(raw.get("max_paper_notional_usdt")) or 100.0,
+                "max_paper_notional_usdt": (
+                    _optional_float(raw.get("max_paper_notional_usdt")) or 100.0
+                ),
                 "max_live_notional_usdt": 0.0,
             }
         )
@@ -11411,6 +11420,8 @@ def _stale_rows(frames: dict[str, pl.DataFrame]) -> pl.DataFrame:
         if frame.is_empty():
             empty_status = readers._empty_dataset_status(name)  # type: ignore[attr-defined]
             if empty_status in readers.OPTIONAL_EMPTY_DATASET_STATUSES:
+                continue
+            if _empty_frame_covered_by_rollup(name, frames):
                 continue
             if (
                 name == "expanded_crypto_universe_shadow"

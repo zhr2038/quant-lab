@@ -2642,6 +2642,51 @@ def test_stale_dataset_check_ignores_closed_research_diagnostics():
     assert "btc_probe_exit_policy_review" not in datasets
 
 
+def test_stale_dataset_check_ignores_rollup_covered_heavy_raw_datasets():
+    now = datetime.now(UTC)
+    stale = daily_export_module._stale_rows(
+        {
+            "okx_public_ws": pl.DataFrame(),
+            "okx_public_ws_health": pl.DataFrame(
+                [{"last_message_at": now, "updated_at": now}]
+            ),
+            "orderbook_snapshot": pl.DataFrame(),
+            "orderbook_spread_1m": pl.DataFrame(
+                [{"ts": now, "symbol": "BTC-USDT", "spread_bps": 1.2}]
+            ),
+            "trade_print": pl.DataFrame(),
+            "trade_activity_1m": pl.DataFrame(
+                [{"latest_trade_ts": now, "symbol": "BTC-USDT", "trade_count": 10}]
+            ),
+        }
+    )
+
+    datasets = set(stale["dataset"].to_list()) if "dataset" in stale.columns else set()
+    assert "okx_public_ws" not in datasets
+    assert "orderbook_snapshot" not in datasets
+    assert "trade_print" not in datasets
+
+
+def test_stale_dataset_check_uses_risk_permission_dependency_meta_generated_at():
+    now = datetime.now(UTC)
+    stale = daily_export_module._stale_rows(
+        {
+            "risk_permission_api_dependency_meta": pl.DataFrame(
+                [
+                    {
+                        "strategy": "v5",
+                        "version": "5.0.0",
+                        "generated_at": now,
+                    }
+                ]
+            )
+        }
+    )
+
+    datasets = set(stale["dataset"].to_list()) if "dataset" in stale.columns else set()
+    assert "risk_permission_api_dependency_meta" not in datasets
+
+
 def test_load_snapshot_does_not_warn_for_optional_empty_entry_quality_outputs(tmp_path):
     snapshot = daily_export_module._load_snapshot(tmp_path / "empty-lake")
 

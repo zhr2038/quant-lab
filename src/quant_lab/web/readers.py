@@ -280,6 +280,7 @@ DATASET_TIMESTAMP_COLUMNS: dict[str, tuple[str, ...]] = {
     "cost_health_daily": ("created_at", "day"),
     "gate_decision": ("created_at",),
     "risk_permission": ("as_of_ts", "created_at"),
+    "risk_permission_api_dependency_meta": ("generated_at", "telemetry_latest_ts"),
     "api_request_metrics": ("request_ts",),
     "job_run_history": ("finished_at", "started_at"),
     "lake_file_health_daily": ("created_at", "day"),

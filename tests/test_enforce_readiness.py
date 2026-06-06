@@ -466,9 +466,21 @@ def test_actual_or_mixed_coverage_ignores_stale_mixed_when_fresh_proxy_exists(
         "SOL-USDT",
     ]
     assert report.metrics["stale_actual_or_mixed_cost_symbols"] == ["SOL-USDT"]
+    assert report.metrics["stale_actual_or_mixed_symbols_live"] == ["SOL-USDT"]
+    assert report.metrics["missing_actual_or_mixed_symbols_live"] == [
+        "ETH-USDT",
+        "SOL-USDT",
+    ]
     assert report.metrics["proxy_only_cost_symbols"] == ["ETH-USDT", "SOL-USDT"]
     assert report.metrics["proxy_only_symbols_live"] == ["ETH-USDT", "SOL-USDT"]
     assert report.metrics["proxy_only_symbols_expanded"] == []
+    live_detail = report.metrics["live_cost_source_detail"]
+    assert live_detail["ETH-USDT"]["latest_source"] == "public_spread_proxy"
+    assert live_detail["ETH-USDT"]["latest_actual_or_mixed_source"] == "missing"
+    assert live_detail["ETH-USDT"]["latest_actual_or_mixed_stale"] is True
+    assert live_detail["SOL-USDT"]["latest_source"] == "public_spread_proxy"
+    assert live_detail["SOL-USDT"]["latest_actual_or_mixed_source"] == "mixed_actual_proxy"
+    assert live_detail["SOL-USDT"]["latest_actual_or_mixed_stale"] is True
 
 
 def test_cost_coverage_splits_live_and_expanded_universes(tmp_path):
@@ -625,6 +637,12 @@ def test_soft_proxy_fallback_blocks_with_live_coverage_reason_not_generic_cost_f
     assert "cost_live_symbol_hit_rate" not in report.blocked_reasons
     assert "actual_or_mixed_cost_coverage_live_universe" in report.blocked_reasons
     assert report.metrics["proxy_only_symbols_live"] == [
+        "BNB-USDT",
+        "BTC-USDT",
+        "ETH-USDT",
+        "SOL-USDT",
+    ]
+    assert report.metrics["missing_actual_or_mixed_symbols_live"] == [
         "BNB-USDT",
         "BTC-USDT",
         "ETH-USDT",

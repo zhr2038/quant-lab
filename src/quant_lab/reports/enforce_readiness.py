@@ -451,6 +451,12 @@ def _cost_api_metrics(
     actual_or_mixed_expanded = actual_or_mixed & expanded_symbol_set
     proxy_only_live = proxy_only & live_symbol_set
     proxy_only_expanded = proxy_only & expanded_symbol_set
+    missing_actual_or_mixed_live = live_symbol_set - actual_or_mixed_live
+    stale_actual_or_mixed_live = stale_actual_or_mixed & live_symbol_set
+    live_cost_source_detail = _live_cost_source_detail(
+        cost_rows=cost_rows,
+        live_symbols=live_symbol_set,
+    )
     missing_live_cost_symbols = live_symbol_set - hit_symbols
     coverage_denominator = max(len(denominator_symbols), 1)
     return {
@@ -482,9 +488,12 @@ def _cost_api_metrics(
         "fresh_cost_symbol_count": len(fresh_cost_symbols),
         "fresh_cost_symbols": sorted(fresh_cost_symbols),
         "stale_actual_or_mixed_cost_symbols": sorted(stale_actual_or_mixed),
+        "stale_actual_or_mixed_symbols_live": sorted(stale_actual_or_mixed_live),
         "proxy_only_cost_symbols": sorted(proxy_only),
         "proxy_only_symbols_live": sorted(proxy_only_live),
         "proxy_only_symbols_expanded": sorted(proxy_only_expanded),
+        "missing_actual_or_mixed_symbols_live": sorted(missing_actual_or_mixed_live),
+        "live_cost_source_detail": live_cost_source_detail,
         "cost_estimate_examples": estimates,
         "cost_detail": (
             f"global_default={len(global_default)}; symbol_hits={len(symbol_hits)}; "
@@ -510,9 +519,71 @@ def _cost_api_metrics(
             f"actual_or_mixed_live={sorted(actual_or_mixed_live)}; "
             f"proxy_only_symbols_live={sorted(proxy_only_live)}; "
             f"missing_live_cost_symbols={sorted(missing_live_cost_symbols)}; "
+            f"missing_actual_or_mixed_symbols_live={sorted(missing_actual_or_mixed_live)}; "
+            f"stale_actual_or_mixed_symbols_live={sorted(stale_actual_or_mixed_live)}; "
             f"live_universe_source={live_universe_source}"
         ),
     }
+
+
+def _live_cost_source_detail(
+    *,
+    cost_rows: list[dict[str, Any]],
+    live_symbols: set[str],
+) -> dict[str, dict[str, Any]]:
+    detail: dict[str, dict[str, Any]] = {}
+    for symbol in sorted(live_symbols):
+        symbol_rows = [
+            row
+            for row in cost_rows
+            if normalize_symbol(row.get("symbol")) == symbol
+        ]
+        latest_row = _latest_cost_row(symbol_rows)
+        latest_actual_or_mixed_row = _latest_cost_row(
+            [
+                row
+                for row in symbol_rows
+                if _cost_source(row) in ACTUAL_OR_MIXED_COST_SOURCES
+            ]
+        )
+        latest_actual_or_mixed_ts = _cost_row_ts(latest_actual_or_mixed_row)
+        latest_actual_or_mixed_age_sec = (
+            (datetime.now(UTC) - latest_actual_or_mixed_ts).total_seconds()
+            if latest_actual_or_mixed_ts is not None
+            else None
+        )
+        detail[symbol] = {
+            "latest_source": _cost_source(latest_row) if latest_row else "missing",
+            "latest_created_at": _iso(_cost_row_ts(latest_row)),
+            "latest_sample_count": _int(latest_row.get("sample_count")) if latest_row else 0,
+            "latest_actual_or_mixed_source": (
+                _cost_source(latest_actual_or_mixed_row)
+                if latest_actual_or_mixed_row
+                else "missing"
+            ),
+            "latest_actual_or_mixed_created_at": _iso(latest_actual_or_mixed_ts),
+            "latest_actual_or_mixed_age_sec": latest_actual_or_mixed_age_sec,
+            "latest_actual_or_mixed_stale": (
+                _row_is_stale(latest_actual_or_mixed_row)
+                if latest_actual_or_mixed_row
+                else True
+            ),
+        }
+    return detail
+
+
+def _latest_cost_row(rows: list[dict[str, Any]]) -> dict[str, Any] | None:
+    if not rows:
+        return None
+    return max(rows, key=lambda row: _cost_row_ts(row) or datetime.min.replace(tzinfo=UTC))
+
+
+def _cost_row_ts(row: dict[str, Any] | None) -> datetime | None:
+    if not row:
+        return None
+    return _parse_dt(row.get("created_at")) or _parse_dt(row.get("as_of_ts")) or _parse_dt(
+        row.get("day")
+    )
 
 
 def _expanded_universe_symbols(

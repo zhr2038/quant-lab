@@ -1975,12 +1975,14 @@ def _dataset_snapshot_signature(path: Path) -> tuple[Any, ...]:
             meta_stat = meta.stat()
             root_stat = path.stat() if path.exists() else None
             payload = json.loads(meta.read_text(encoding="utf-8"))
+            parquet_signature = _parquet_file_signature(path)
             return (
                 "meta",
                 meta_stat.st_mtime_ns,
                 meta_stat.st_size,
                 root_stat.st_mtime_ns if root_stat is not None else None,
                 root_stat.st_size if root_stat is not None else None,
+                parquet_signature,
                 str(payload.get("source_sha") or ""),
                 str(payload.get("generated_at") or ""),
                 int(payload.get("row_count") or 0),

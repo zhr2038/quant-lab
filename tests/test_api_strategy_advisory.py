@@ -965,7 +965,7 @@ def test_strategy_opportunity_advisory_v5_compact_keeps_hype_wld_expanded_paper_
     assert rows["WLD_EXPANDED_UNIVERSE_PAPER_V1"]["cost_quality"] == "actual_or_mixed"
 
 
-def test_strategy_opportunity_advisory_uses_snapshot_meta_for_source_signature(
+def test_strategy_opportunity_advisory_uses_snapshot_meta_and_parquet_for_source_signature(
     tmp_path,
     monkeypatch,
 ):
@@ -992,15 +992,6 @@ def test_strategy_opportunity_advisory_uses_snapshot_meta_for_source_signature(
         ),
         encoding="utf-8",
     )
-    original_signature = api_main._parquet_file_signature
-
-    def fail_advisory_rglob_signature(path):
-        if str(path).replace("\\", "/").endswith("gold/strategy_opportunity_advisory"):
-            raise AssertionError("advisory source signature should use _snapshot_meta.json")
-        return original_signature(path)
-
-    monkeypatch.setattr(api_main, "_parquet_file_signature", fail_advisory_rglob_signature)
-
     response = TestClient(app).get("/v1/strategy-opportunity-advisory/v5-compact")
     api_main._STRATEGY_OPPORTUNITY_ADVISORY_CACHE.clear()
     api_main._STRATEGY_OPPORTUNITY_ADVISORY_RESPONSE_CACHE.clear()
@@ -1009,6 +1000,64 @@ def test_strategy_opportunity_advisory_uses_snapshot_meta_for_source_signature(
     assert response.headers["x-quant-lab-advisory-row-count"] == "1"
     assert float(response.headers["x-advisory-source-signature-ms"]) >= 0.0
     assert response.headers.get("x-quant-lab-signature-fallback") is None
+
+
+def test_strategy_opportunity_advisory_cache_invalidates_when_parquet_changes_but_meta_stale(
+    tmp_path,
+    monkeypatch,
+):
+    lake = tmp_path / "lake"
+    monkeypatch.setenv("QUANT_LAB_LAKE_ROOT", str(lake))
+    monkeypatch.delenv("QUANT_LAB_API_TOKEN", raising=False)
+    api_main._STRATEGY_OPPORTUNITY_ADVISORY_CACHE.clear()
+    api_main._STRATEGY_OPPORTUNITY_ADVISORY_RESPONSE_CACHE.clear()
+    as_of = datetime(2026, 5, 20, tzinfo=UTC)
+    dataset_path = lake / "gold" / "strategy_opportunity_advisory"
+    stale_meta = {
+        "dataset": "strategy_opportunity_advisory",
+        "generated_at": as_of.isoformat().replace("+00:00", "Z"),
+        "expires_at": (as_of + timedelta(hours=1)).isoformat().replace("+00:00", "Z"),
+        "row_count": 1,
+        "source_sha": "stale-meta-test",
+    }
+    write_parquet_dataset(
+        pl.DataFrame([_api_advisory_row("v5.f4_volume_expansion_entry", "SOL-USDT", as_of)]),
+        dataset_path,
+    )
+    (dataset_path / "_snapshot_meta.json").write_text(
+        json.dumps(stale_meta),
+        encoding="utf-8",
+    )
+    client = TestClient(app)
+
+    first = client.get("/v1/strategy-opportunity-advisory/v5-compact")
+    write_parquet_dataset(
+        pl.DataFrame(
+            [
+                _api_advisory_row(
+                    "v5.expanded_universe_wld_paper",
+                    "WLD-USDT",
+                    as_of + timedelta(hours=2),
+                )
+            ]
+        ),
+        dataset_path,
+    )
+    (dataset_path / "_snapshot_meta.json").write_text(
+        json.dumps(stale_meta),
+        encoding="utf-8",
+    )
+    second = client.get("/v1/strategy-opportunity-advisory/v5-compact")
+    api_main._STRATEGY_OPPORTUNITY_ADVISORY_CACHE.clear()
+    api_main._STRATEGY_OPPORTUNITY_ADVISORY_RESPONSE_CACHE.clear()
+
+    assert first.status_code == 200
+    assert second.status_code == 200
+    assert first.headers["x-advisory-cache-hit"] == "false"
+    assert second.headers["x-advisory-cache-hit"] == "false"
+    assert first.headers["x-advisory-source-sha"] != second.headers["x-advisory-source-sha"]
+    assert first.json()[0]["symbol"] == "SOL-USDT"
+    assert second.json()[0]["symbol"] == "WLD-USDT"
 
 
 def test_strategy_opportunity_advisory_marks_signature_fallback_when_meta_missing(

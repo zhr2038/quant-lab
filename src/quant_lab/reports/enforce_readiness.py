@@ -937,20 +937,70 @@ def _gate_metrics(root: Path) -> dict[str, Any]:
         return {
             "has_dead_gate": True,
             "gate_status_counts": {},
+            "global_gate_status_counts": {},
+            "not_global_gate_status_counts": {},
+            "not_global_gate_ignored_count": 0,
             "alpha_gate_latest_status": "missing",
             "detail": "gate_decision missing",
         }
     counts: dict[str, int] = {}
+    global_counts: dict[str, int] = {}
+    not_global_counts: dict[str, int] = {}
+    global_rows: list[dict[str, Any]] = []
     for row in rows:
         status = str(row.get("status") or "unknown")
         counts[status] = counts.get(status, 0) + 1
-    latest = max(rows, key=_row_sort_ts)
+        if _is_not_global_strategy_gate(row):
+            not_global_counts[status] = not_global_counts.get(status, 0) + 1
+        else:
+            global_counts[status] = global_counts.get(status, 0) + 1
+            global_rows.append(row)
+    if not global_rows:
+        return {
+            "has_dead_gate": True,
+            "gate_status_counts": counts,
+            "global_gate_status_counts": {},
+            "not_global_gate_status_counts": not_global_counts,
+            "not_global_gate_ignored_count": len(rows),
+            "alpha_gate_latest_status": "missing_global_gate",
+            "detail": (
+                f"global gate_decision missing; gate_status_counts={counts}; "
+                f"not_global_gate_status_counts={not_global_counts}"
+            ),
+        }
+    latest = max(global_rows, key=_row_sort_ts)
     return {
-        "has_dead_gate": "DEAD" in counts,
+        "has_dead_gate": "DEAD" in global_counts,
         "gate_status_counts": counts,
+        "global_gate_status_counts": global_counts,
+        "not_global_gate_status_counts": not_global_counts,
+        "not_global_gate_ignored_count": len(rows) - len(global_rows),
         "alpha_gate_latest_status": str(latest.get("status") or "unknown"),
-        "detail": f"gate_status_counts={counts}",
+        "detail": (
+            f"global_gate_status_counts={global_counts}; "
+            f"not_global_gate_status_counts={not_global_counts}; "
+            f"not_global_gate_ignored_count={len(rows) - len(global_rows)}"
+        ),
     }
+
+
+def _is_not_global_strategy_gate(row: dict[str, Any]) -> bool:
+    if _truthy(row.get("not_global_strategy_gate")):
+        return True
+    role = str(row.get("role") or "").strip().lower()
+    if role == "research_baseline":
+        return True
+    if _truthy(row.get("not_live_eligible")) and str(row.get("baseline_status") or "").strip():
+        return True
+    return False
+
+
+def _truthy(value: Any) -> bool:
+    if isinstance(value, bool):
+        return value
+    if value is None:
+        return False
+    return str(value).strip().lower() in {"1", "true", "yes", "y", "on"}
 
 
 def _check(

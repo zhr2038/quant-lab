@@ -129,6 +129,99 @@ def test_enforce_readiness_ready_when_all_checks_pass(tmp_path):
     assert report.shadow_only_recommended is False
 
 
+def test_enforce_readiness_ignores_research_baseline_dead_gate(tmp_path):
+    lake = tmp_path / "lake"
+    _write_common_ready_inputs(lake)
+    _write_cost_rows(lake, source="mixed_actual_proxy")
+    now = datetime.now(UTC)
+    write_parquet_dataset(
+        pl.DataFrame(
+            [
+                {
+                    "strategy": "v5",
+                    "alpha_id": "v5.core",
+                    "version": "v0.1",
+                    "gate_version": "gate.v0.1",
+                    "status": "PAPER_READY",
+                    "passed": False,
+                    "reasons": "[]",
+                    "metrics": "{}",
+                    "next_action": "paper",
+                    "created_at": now.isoformat(),
+                    "role": "strategy_alpha",
+                    "baseline_status": "",
+                    "not_live_eligible": False,
+                    "not_global_strategy_gate": False,
+                },
+                {
+                    "strategy": "v5",
+                    "alpha_id": "v5.core.momentum",
+                    "version": "v0.1",
+                    "gate_version": "gate.v0.1",
+                    "status": "DEAD",
+                    "passed": False,
+                    "reasons": '["weak_ic_tstat"]',
+                    "metrics": "{}",
+                    "next_action": "research_new_hypothesis",
+                    "created_at": now.isoformat(),
+                    "role": "research_baseline",
+                    "baseline_status": "DEAD",
+                    "not_live_eligible": True,
+                    "not_global_strategy_gate": True,
+                },
+            ]
+        ),
+        lake / "gold/gate_decision",
+    )
+
+    report = build_enforce_readiness_report(lake)
+
+    assert report.readiness_status == "READY"
+    assert "alpha_gate_status_not_dead" not in report.blocked_reasons
+    assert report.metrics["has_dead_gate"] is False
+    assert report.metrics["global_gate_status_counts"] == {"PAPER_READY": 1}
+    assert report.metrics["not_global_gate_status_counts"] == {"DEAD": 1}
+    assert report.metrics["not_global_gate_ignored_count"] == 1
+
+
+def test_enforce_readiness_blocks_global_dead_gate(tmp_path):
+    lake = tmp_path / "lake"
+    _write_common_ready_inputs(lake)
+    _write_cost_rows(lake, source="mixed_actual_proxy")
+    now = datetime.now(UTC)
+    write_parquet_dataset(
+        pl.DataFrame(
+            [
+                {
+                    "strategy": "v5",
+                    "alpha_id": "v5.core",
+                    "version": "v0.1",
+                    "gate_version": "gate.v0.1",
+                    "status": "DEAD",
+                    "passed": False,
+                    "reasons": '["failed_global_gate"]',
+                    "metrics": "{}",
+                    "next_action": "retire",
+                    "created_at": now.isoformat(),
+                    "role": "strategy_alpha",
+                    "baseline_status": "",
+                    "not_live_eligible": False,
+                    "not_global_strategy_gate": False,
+                }
+            ]
+        ),
+        lake / "gold/gate_decision",
+    )
+
+    report = build_enforce_readiness_report(lake)
+
+    assert report.readiness_status == "BLOCKED"
+    assert "alpha_gate_status_not_dead" in report.blocked_reasons
+    assert report.metrics["has_dead_gate"] is True
+    assert report.metrics["global_gate_status_counts"] == {"DEAD": 1}
+    assert report.metrics["not_global_gate_ignored_count"] == 0
+
+
 def test_enforce_readiness_dedupe_counts_only_v5_event_datasets(tmp_path):
     lake = tmp_path / "lake"
     _write_common_ready_inputs(

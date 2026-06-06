@@ -1,13 +1,13 @@
 from __future__ import annotations
 
 import math
+from collections.abc import Iterable
 from datetime import UTC, datetime, timedelta
-from typing import Any, Iterable
+from typing import Any
 
 import polars as pl
 
 from quant_lab.symbols import normalize_symbol
-
 
 FAST_MICROSTRUCTURE_SCHEMA_VERSION = "fast_microstructure_features.v0.1"
 FAST_MICROSTRUCTURE_FIELDS = [
@@ -65,25 +65,37 @@ def build_fast_microstructure_features(
     spread_frame = orderbook_spread_1m if orderbook_spread_1m is not None else pl.DataFrame()
     trade_frame = trade_activity_1m if trade_activity_1m is not None else pl.DataFrame()
     spreads_by_symbol = _rows_by_symbol(spread_frame, ts_fields=("minute_ts", "ts"))
-    trades_by_symbol = _rows_by_symbol(trade_frame, ts_fields=("minute_ts", "latest_trade_ts", "ts"))
+    trades_by_symbol = _rows_by_symbol(
+        trade_frame,
+        ts_fields=("minute_ts", "latest_trade_ts", "ts"),
+    )
+    microstructure_symbols = (
+        set(spreads_by_symbol).union(trades_by_symbol).intersection(bars_by_symbol)
+    )
+    symbols = sorted(microstructure_symbols or set(bars_by_symbol))
     rows: list[dict[str, Any]] = []
-    for symbol, bars in sorted(bars_by_symbol.items()):
+    for symbol in symbols:
+        bars = bars_by_symbol.get(symbol, [])
         latest = bars[-1] if bars else None
         if latest is None:
             continue
-        ts = _coerce_dt(latest.get("_ts"))
-        close = _float(latest.get("close"))
-        if ts is None or close is None:
-            continue
         spread_rows = spreads_by_symbol.get(symbol, [])
         trade_rows = trades_by_symbol.get(symbol, [])
+        ts = _feature_ts(latest, spread_rows, trade_rows)
+        close = _latest_close(bars, ts) if ts is not None else None
+        if ts is None or close is None:
+            continue
         spread_5m = _avg_value(spread_rows, ts, minutes=5, field="spread_bps")
         spread_15m = _avg_value(spread_rows, ts, minutes=15, field="spread_bps")
         spread_60m = _avg_value(spread_rows, ts, minutes=60, field="spread_bps")
         latest_spread = _latest_value(spread_rows, ts, field="spread_bps")
         orderbook_imbalance_1m = _latest_value(spread_rows, ts, field="orderbook_imbalance")
         orderbook_imbalance_5m = _avg_value(spread_rows, ts, minutes=5, field="orderbook_imbalance")
-        spread_5m_prior = _value_at_or_before(spread_rows, ts - timedelta(minutes=5), field="spread_bps")
+        spread_5m_prior = _value_at_or_before(
+            spread_rows,
+            ts - timedelta(minutes=5),
+            field="spread_bps",
+        )
         trade_5m = _sum_value(trade_rows, ts, minutes=5, field="trade_count")
         trade_15m = _sum_value(trade_rows, ts, minutes=15, field="trade_count")
         trade_60m = _sum_value(trade_rows, ts, minutes=60, field="trade_count")
@@ -188,7 +200,11 @@ def _empty_frame() -> pl.DataFrame:
     return pl.DataFrame(schema={field: pl.Utf8 for field in FAST_MICROSTRUCTURE_FIELDS})
 
 
-def _rows_by_symbol(frame: pl.DataFrame, *, ts_fields: Iterable[str]) -> dict[str, list[dict[str, Any]]]:
+def _rows_by_symbol(
+    frame: pl.DataFrame,
+    *,
+    ts_fields: Iterable[str],
+) -> dict[str, list[dict[str, Any]]]:
     if frame is None or frame.is_empty() or "symbol" not in frame.columns:
         return {}
     rows: dict[str, list[dict[str, Any]]] = {}
@@ -213,6 +229,19 @@ def _first_ts(row: dict[str, Any], fields: Iterable[str]) -> datetime | None:
         if value is not None:
             return value
     return None
+
+
+def _feature_ts(
+    latest_bar: dict[str, Any],
+    spread_rows: list[dict[str, Any]],
+    trade_rows: list[dict[str, Any]],
+) -> datetime | None:
+    candidates = [
+        _coerce_dt(row.get("_ts"))
+        for row in (spread_rows[-1:] + trade_rows[-1:] + [latest_bar])
+    ]
+    candidates = [value for value in candidates if value is not None]
+    return max(candidates) if candidates else None
 
 
 def _coerce_dt(value: Any) -> datetime | None:
@@ -244,27 +273,43 @@ def _window_rows(rows: list[dict[str, Any]], ts: datetime, *, minutes: int) -> l
     return [row for row in rows if start <= row.get("_ts") <= ts]
 
 
-def _avg_value(rows: list[dict[str, Any]], ts: datetime, *, minutes: int, field: str) -> float | None:
+def _avg_value(
+    rows: list[dict[str, Any]],
+    ts: datetime,
+    *,
+    minutes: int,
+    field: str,
+) -> float | None:
     values = [_float(row.get(field)) for row in _window_rows(rows, ts, minutes=minutes)]
     values = [value for value in values if value is not None]
     return sum(values) / len(values) if values else None
 
 
 def _latest_value(rows: list[dict[str, Any]], ts: datetime, *, field: str) -> float | None:
-    candidates = [row for row in rows if row.get("_ts") <= ts and _float(row.get(field)) is not None]
+    candidates = [
+        row for row in rows if row.get("_ts") <= ts and _float(row.get(field)) is not None
+    ]
     if not candidates:
         return None
     return _float(candidates[-1].get(field))
 
 
 def _value_at_or_before(rows: list[dict[str, Any]], ts: datetime, *, field: str) -> float | None:
-    candidates = [row for row in rows if row.get("_ts") <= ts and _float(row.get(field)) is not None]
+    candidates = [
+        row for row in rows if row.get("_ts") <= ts and _float(row.get(field)) is not None
+    ]
     if not candidates:
         return None
     return _float(candidates[-1].get(field))
 
 
-def _sum_value(rows: list[dict[str, Any]], ts: datetime, *, minutes: int, field: str) -> float | None:
+def _sum_value(
+    rows: list[dict[str, Any]],
+    ts: datetime,
+    *,
+    minutes: int,
+    field: str,
+) -> float | None:
     values = [_float(row.get(field)) for row in _window_rows(rows, ts, minutes=minutes)]
     values = [value for value in values if value is not None]
     return sum(values) if values else None
@@ -334,7 +379,11 @@ def _return_bps(rows: list[dict[str, Any]], ts: datetime, *, hours: int) -> floa
 
 
 def _latest_close(rows: list[dict[str, Any]], ts: datetime) -> float | None:
-    candidates = [row for row in rows if row.get("_ts") <= ts and _float(row.get("close")) is not None]
+    candidates = [
+        row
+        for row in rows
+        if row.get("_ts") <= ts and _float(row.get("close")) is not None
+    ]
     if not candidates:
         return None
     return _float(candidates[-1].get("close"))

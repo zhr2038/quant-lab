@@ -191,11 +191,11 @@ def make_v5_bundle_fixture(
     return make_tar(path, files)
 
 
-def make_tar(path: Path, files: dict[str, str], *, symlink: str | None = None) -> Path:
+def make_tar(path: Path, files: dict[str, str | bytes], *, symlink: str | None = None) -> Path:
     path.parent.mkdir(parents=True, exist_ok=True)
     with tarfile.open(path, "w:gz") as archive:
         for name, text in files.items():
-            data = text.encode("utf-8")
+            data = text if isinstance(text, bytes) else text.encode("utf-8")
             info = tarfile.TarInfo(name)
             info.size = len(data)
             info.mtime = int(datetime(2026, 5, 10, tzinfo=UTC).timestamp())

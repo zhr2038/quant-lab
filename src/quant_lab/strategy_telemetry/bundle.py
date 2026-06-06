@@ -27,6 +27,8 @@ KNOWN_FILE_PATTERNS = [
     re.compile(r"^raw/quant_lab/quant_lab_requests\.jsonl$"),
     re.compile(r"^raw/reports/quant_lab_usage\.jsonl$"),
     re.compile(r"^raw/reports/quant_lab_requests\.jsonl$"),
+    re.compile(r"^raw/large/reports/quant_lab_usage\.jsonl\.gz$"),
+    re.compile(r"^raw/large/reports/quant_lab_requests\.jsonl\.gz$"),
     re.compile(r"^reports/quant_lab_usage\.jsonl$"),
     re.compile(r"^reports/quant_lab_requests\.jsonl$"),
     re.compile(r"^summaries/quant_lab_compliance\.csv$"),

@@ -1,4 +1,5 @@
 import csv
+import gzip
 import json
 import zipfile
 from io import StringIO
@@ -504,6 +505,35 @@ def test_ingest_parses_quant_lab_usage_legacy_report_paths(tmp_path):
 
     assert result.silver_rows["v5_quant_lab_usage"] == 1
     assert result.silver_rows["v5_quant_lab_request"] == 1
+
+
+def test_ingest_parses_quant_lab_usage_from_large_gzip_paths(tmp_path):
+    bundle = make_tar(
+        tmp_path / "v5_live_followup_bundle_20260606T082013Z.tar.gz",
+        {
+            "raw/large/reports/quant_lab_usage.jsonl.gz": gzip.compress(
+                b'{"ts":"2026-06-06T08:20:13Z","mode":"shadow","endpoint":"/v1/risk/live-permission"}\n'
+            ),
+            "raw/large/reports/quant_lab_requests.jsonl.gz": gzip.compress(
+                b'{"ts":"2026-06-06T08:20:13Z","path":"/v1/strategy-opportunity-advisory","status_code":200,"success":true}\n'
+            ),
+        },
+    )
+    lake = tmp_path / "lake"
+
+    result = ingest_v5_bundle(bundle, lake, tmp_path / "restricted", tmp_path / "redacted")
+
+    assert result.silver_rows["v5_quant_lab_usage"] == 1
+    assert result.silver_rows["v5_quant_lab_request"] == 1
+    usage = read_parquet_dataset(lake / "silver/v5_quant_lab_usage").to_dicts()
+    requests = read_parquet_dataset(lake / "silver/v5_quant_lab_request").to_dicts()
+    assert usage[0]["source_path_inside_bundle"] == (
+        "raw/large/reports/quant_lab_usage.jsonl.gz"
+    )
+    assert requests[0]["source_path_inside_bundle"] == (
+        "raw/large/reports/quant_lab_requests.jsonl.gz"
+    )
+    assert requests[0]["event_type"] == "request"
 
 
 def test_ingest_quant_lab_fallback_ignores_successful_200_requests(tmp_path):

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import csv
+import gzip
 import hashlib
 import json
 import shutil
@@ -90,11 +91,13 @@ SILVER_DATASETS = {
 
 QUANT_LAB_USAGE_PATHS = {
     "raw/reports/quant_lab_usage.jsonl",
+    "raw/large/reports/quant_lab_usage.jsonl.gz",
     "raw/quant_lab/quant_lab_usage.jsonl",
     "reports/quant_lab_usage.jsonl",
 }
 QUANT_LAB_REQUEST_PATHS = {
     "raw/reports/quant_lab_requests.jsonl",
+    "raw/large/reports/quant_lab_requests.jsonl.gz",
     "raw/quant_lab/quant_lab_requests.jsonl",
     "reports/quant_lab_requests.jsonl",
 }
@@ -634,12 +637,19 @@ def _json_row(
 def _jsonl_rows(metadata: dict[str, Any], relative: str, file_path: Path) -> list[dict[str, Any]]:
     rows = []
     run_id = run_id_from_path(_logical_bundle_path(relative))
-    for index, line in enumerate(file_path.read_text(encoding="utf-8").splitlines()):
+    for index, line in enumerate(_read_text_file(file_path).splitlines()):
         if not line.strip():
             continue
         payload = redact_json_like(json.loads(line))
         rows.append(_json_row(metadata, relative, payload, run_id, index))
     return rows
+
+
+def _read_text_file(path: Path) -> str:
+    if path.suffix == ".gz":
+        with gzip.open(path, "rt", encoding="utf-8") as handle:
+            return handle.read()
+    return path.read_text(encoding="utf-8")
 
 
 def _csv_rows(metadata: dict[str, Any], relative: str, file_path: Path) -> list[dict[str, Any]]:

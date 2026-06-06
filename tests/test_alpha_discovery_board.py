@@ -88,6 +88,66 @@ def test_alpha_discovery_board_decisions_are_candidate_symbol_regime_horizon(tmp
     )
 
 
+def test_strategy_opportunity_export_emits_hype_wld_expanded_paper_rows():
+    generated_at = datetime(2026, 5, 26, 8, tzinfo=UTC)
+    maturity = pl.DataFrame(
+        [
+            {
+                "symbol": "HYPE-USDT",
+                "expanded_universe_maturity_state": "PAPER_READY",
+                "generated_at": generated_at,
+                "sample_count": 31,
+                "complete_sample_count": 24,
+                "avg_net_bps": 88.0,
+                "p25_net_bps": -18.0,
+                "win_rate": 0.64,
+                "max_paper_notional_usdt": 75.0,
+                "cost_source_mix": '{"public_spread_proxy":31}',
+                "cost_quality": "public_proxy",
+            },
+            {
+                "symbol": "WLD-USDT",
+                "maturity_state": "PAPER_READY",
+                "generated_at": generated_at,
+                "sample_count": 34,
+                "complete_sample_count": 27,
+                "avg_net_bps": 93.0,
+                "p25_net_bps": -14.0,
+                "win_rate": 0.67,
+                "max_paper_notional_usdt": 80.0,
+                "cost_source": "mixed_actual_proxy",
+                "cost_source_quality": "mixed",
+            },
+        ]
+    )
+
+    advisory = _strategy_opportunity_advisory_for_export(
+        alpha_discovery_board=pl.DataFrame(),
+        strategy_evidence=pl.DataFrame(),
+        paper_proposals=pl.DataFrame(),
+        risk_permissions=pl.DataFrame(),
+        cost_health=pl.DataFrame(),
+        paper_daily=pl.DataFrame(),
+        paper_slippage=pl.DataFrame(),
+        expanded_universe_maturity=maturity,
+    )
+
+    rows = {row["strategy_id"]: row for row in advisory.to_dicts()}
+    hype = rows["HYPE_EXPANDED_UNIVERSE_PAPER_V1"]
+    wld = rows["WLD_EXPANDED_UNIVERSE_PAPER_V1"]
+    assert hype["strategy_candidate"] == "v5.expanded_universe_hype_paper"
+    assert wld["strategy_candidate"] == "v5.expanded_universe_wld_paper"
+    assert hype["universe_type"] == "expanded_paper"
+    assert wld["universe_type"] == "expanded_paper"
+    assert hype["decision"] == "PAPER_READY"
+    assert wld["recommended_mode"] == "paper"
+    assert hype["max_live_notional_usdt"] == 0.0
+    assert wld["max_live_notional_usdt"] == 0.0
+    assert hype["max_paper_notional_usdt"] == 75.0
+    assert wld["max_paper_notional_usdt"] == 80.0
+    assert "expanded_universe_not_live_approved" in hype["live_block_reasons"]
+
+
 def test_alpha_discovery_board_normalization_dedupes_by_source_type_and_cost_rules():
     rows = [
         _board_row(

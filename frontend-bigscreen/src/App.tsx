@@ -4,6 +4,8 @@ import {
   Archive,
   BarChart3,
   Boxes,
+  ChevronLeft,
+  ChevronRight,
   Database,
   DownloadCloud,
   Gauge,
@@ -41,6 +43,21 @@ import "./styles.css";
 
 const queryClient = new QueryClient();
 type ViewKey = "strategy" | "data" | "v5" | "exports" | "raw";
+type PageKey = "overview" | "strategy" | "data" | "ops";
+
+const PAGES: Array<{ key: PageKey; label: string; description: string }> = [
+  { key: "overview", label: "总览", description: "健康 / KPI / 数据矩阵" },
+  { key: "strategy", label: "策略研究", description: "Factor Factory / V5 / 市场" },
+  { key: "data", label: "数据成本", description: "市场 / 成本 / API" },
+  { key: "ops", label: "运行导出", description: "服务 / 专家包 / 明细入口" }
+];
+const PAGE_KEYS = new Set<PageKey>(PAGES.map((item) => item.key));
+
+function pageFromHash(): PageKey {
+  if (typeof window === "undefined") return "overview";
+  const key = window.location.hash.replace("#", "").trim() as PageKey;
+  return PAGE_KEYS.has(key) ? key : "overview";
+}
 
 export default function App() {
   return (
@@ -52,6 +69,14 @@ export default function App() {
 
 function Bigscreen() {
   const [view, setView] = useState<ViewKey | null>(null);
+  const [page, setPageState] = useState<PageKey>(() => pageFromHash());
+  const setPage = (nextPage: PageKey) => {
+    setPageState(nextPage);
+    const nextHash = `#${nextPage}`;
+    if (window.location.hash !== nextHash) {
+      window.history.replaceState(null, "", nextHash);
+    }
+  };
   useEffect(() => {
     const fit = () => {
       const scale = Math.min(window.innerWidth / 1920, window.innerHeight / 1080);
@@ -61,6 +86,23 @@ function Bigscreen() {
     window.addEventListener("resize", fit);
     return () => window.removeEventListener("resize", fit);
   }, []);
+  useEffect(() => {
+    const onHashChange = () => setPageState(pageFromHash());
+    window.addEventListener("hashchange", onHashChange);
+    return () => window.removeEventListener("hashchange", onHashChange);
+  }, []);
+  useEffect(() => {
+    const onKey = (event: KeyboardEvent) => {
+      if (event.key !== "ArrowLeft" && event.key !== "ArrowRight") return;
+      const index = PAGES.findIndex((item) => item.key === page);
+      const nextIndex = event.key === "ArrowRight"
+        ? (index + 1) % PAGES.length
+        : (index + PAGES.length - 1) % PAGES.length;
+      setPage(PAGES[nextIndex].key);
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [page]);
   const query = useQuery({
     queryKey: ["bigscreen-snapshot"],
     queryFn: fetchBigscreenSnapshot,
@@ -91,7 +133,7 @@ function Bigscreen() {
               {query.isError ? "Snapshot 加载失败：检查 /web-v2/snapshot 或 API token" : "加载 bigscreen snapshot…"}
             </motion.section>
           ) : (
-            <Dashboard data={data} view={view} setView={setView} />
+            <Dashboard data={data} view={view} setView={setView} page={page} setPage={setPage} />
           )}
         </AnimatePresence>
       </main>
@@ -102,28 +144,90 @@ function Bigscreen() {
 function Dashboard({
   data,
   view,
-  setView
+  setView,
+  page,
+  setPage
 }: {
   data: BigscreenSnapshot;
   view: ViewKey | null;
   setView: (view: ViewKey | null) => void;
+  page: PageKey;
+  setPage: (page: PageKey) => void;
 }) {
   return (
-    <motion.div className="layout" initial={{ opacity: 0, y: 12 }} animate={{ opacity: 1, y: 0 }}>
-      <section className="left">
-        <HealthPanel score={data.health_score} status={data.status} warnings={data.warnings} />
-        <ActionQueue actions={data.actions} />
-        <FunctionMap setView={setView} />
-      </section>
-      <KpiGrid snapshot={data} />
-      <DataMatrix matrix={data.data_matrix} />
-      <StrategyFlow flow={data.strategy_flow} />
-      <V5Telemetry v5={data.v5} consumers={data.consumers} />
-      <CostQuality cost={data.cost} />
-      <MarketLiquidity market={data.market} />
-      <PerfConsumers perf={data.web_perf} consumers={data.consumers} />
+    <motion.div className="dashboard-shell" initial={{ opacity: 0, y: 12 }} animate={{ opacity: 1, y: 0 }}>
+      <PageControls page={page} setPage={setPage} />
+      <AnimatePresence mode="wait">
+        {page === "overview" && (
+          <motion.section className="page-grid page-overview" key="overview" initial={{ opacity: 0, x: 24 }} animate={{ opacity: 1, x: 0 }} exit={{ opacity: 0, x: -24 }}>
+            <KpiGrid snapshot={data} />
+            <div className="overview-side">
+              <HealthPanel score={data.health_score} status={data.status} warnings={data.warnings} />
+              <ActionQueue actions={data.actions} />
+            </div>
+            <DataMatrix matrix={data.data_matrix} />
+          </motion.section>
+        )}
+        {page === "strategy" && (
+          <motion.section className="page-grid page-strategy" key="strategy" initial={{ opacity: 0, x: 24 }} animate={{ opacity: 1, x: 0 }} exit={{ opacity: 0, x: -24 }}>
+            <StrategyFlow flow={data.strategy_flow} />
+            <V5Telemetry v5={data.v5} consumers={data.consumers} />
+            <MarketLiquidity market={data.market} />
+          </motion.section>
+        )}
+        {page === "data" && (
+          <motion.section className="page-grid page-data" key="data" initial={{ opacity: 0, x: 24 }} animate={{ opacity: 1, x: 0 }} exit={{ opacity: 0, x: -24 }}>
+            <DataMatrix matrix={data.data_matrix} />
+            <MarketLiquidity market={data.market} />
+            <CostQuality cost={data.cost} />
+            <PerfConsumers perf={data.web_perf} consumers={data.consumers} />
+          </motion.section>
+        )}
+        {page === "ops" && (
+          <motion.section className="page-grid page-ops" key="ops" initial={{ opacity: 0, x: 24 }} animate={{ opacity: 1, x: 0 }} exit={{ opacity: 0, x: -24 }}>
+            <PerfConsumers perf={data.web_perf} consumers={data.consumers} />
+            <V5Telemetry v5={data.v5} consumers={data.consumers} />
+            <section className="card pad ops-export-card">
+              <ExpertPackControls exports={data.exports as Record<string, unknown>} />
+            </section>
+            <FunctionMap setView={setView} />
+          </motion.section>
+        )}
+      </AnimatePresence>
       <Drilldown view={view} data={data} onClose={() => setView(null)} />
     </motion.div>
+  );
+}
+
+function PageControls({
+  page,
+  setPage
+}: {
+  page: PageKey;
+  setPage: (page: PageKey) => void;
+}) {
+  const index = PAGES.findIndex((item) => item.key === page);
+  const go = (offset: number) => {
+    const nextIndex = (index + offset + PAGES.length) % PAGES.length;
+    setPage(PAGES[nextIndex].key);
+  };
+  return (
+    <nav className="page-controls" aria-label="Web v2 dashboard pages">
+      <button className="page-arrow" onClick={() => go(-1)} aria-label="上一页"><ChevronLeft size={20} /></button>
+      <div className="page-tabs">
+        {PAGES.map((item) => (
+          <button
+            className={`page-tab ${item.key === page ? "active" : ""}`}
+            key={item.key}
+            onClick={() => setPage(item.key)}
+          >
+            <b>{item.label}</b>
+            <span>{item.description}</span>
+          </button>
+        ))}
+      </div>
+      <button className="page-arrow" onClick={() => go(1)} aria-label="下一页"><ChevronRight size={20} /></button>
+    </nav>
   );
 }
 

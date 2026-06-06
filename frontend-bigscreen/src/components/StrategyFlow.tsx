@@ -51,7 +51,7 @@ export function StrategyFlow({ flow }: { flow: Record<string, unknown> }) {
         <Metric label="Kill" value={counts.kill ?? 0} tone="red" />
       </div>
       <div className="flow-line"><i /></div>
-      <ReactECharts option={option} style={{ height: 110, marginTop: -8 }} />
+      <ReactECharts option={option} style={{ height: 150, marginTop: -8 }} />
       <div className="factor-factory-mini">
         <div className="candidate-title"><FlaskConical size={15} /> Factor Factory</div>
         <div className="factor-factory-stats">

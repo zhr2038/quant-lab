@@ -52,6 +52,51 @@ button{font:inherit;color:inherit}
   display:grid;grid-template-columns:355px 545px 405px 506px;grid-template-rows:150px 420px 340px;gap:18px;height:946px;
 }
 .left{grid-row:1/4;display:grid;grid-template-rows:300px 330px 1fr;gap:18px}
+.dashboard-shell{
+  height:946px;display:grid;grid-template-rows:62px minmax(0,1fr);gap:16px;position:relative;
+}
+.page-controls{
+  height:62px;border:1px solid rgba(80,169,255,.34);border-radius:20px;background:rgba(6,21,38,.68);
+  display:grid;grid-template-columns:46px 1fr 46px;gap:12px;align-items:center;padding:8px 12px;
+  box-shadow:inset 0 1px 0 rgba(255,255,255,.05),0 0 28px rgba(80,169,255,.08);
+}
+.page-tabs{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:10px;height:100%}
+.page-tab,.page-arrow{
+  border:1px solid rgba(80,169,255,.32);background:rgba(7,29,53,.66);color:var(--text);cursor:pointer;
+  box-shadow:inset 0 1px 0 rgba(255,255,255,.04);transition:transform .18s ease,border-color .18s ease,background .18s ease;
+}
+.page-arrow{height:42px;border-radius:14px;display:grid;place-items:center}
+.page-tab{height:46px;border-radius:15px;display:grid;grid-template-columns:84px 1fr;align-items:center;text-align:left;padding:0 14px;gap:10px}
+.page-tab b{font-size:17px;white-space:nowrap}
+.page-tab span{font-size:12px;color:var(--muted);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.page-tab.active{
+  border-color:rgba(45,232,166,.78);background:linear-gradient(135deg,rgba(45,232,166,.22),rgba(80,169,255,.14));
+  box-shadow:0 0 22px rgba(45,232,166,.18),inset 0 1px 0 rgba(255,255,255,.08);
+}
+.page-tab:hover,.page-arrow:hover{transform:translateY(-1px);border-color:rgba(45,232,166,.68)}
+.page-grid{min-height:0;height:100%;display:grid;gap:18px}
+.page-grid>.card,.page-grid .card{min-height:0}
+.page-grid .kpis,.page-grid .heatmap,.page-grid .strategy-card,.page-grid .v5,.page-grid .cost,.page-grid .market,.page-grid .perf{
+  grid-column:auto;grid-row:auto;
+}
+.page-overview{grid-template-columns:420px minmax(0,1fr);grid-template-rows:172px minmax(0,1fr)}
+.page-overview .kpis{grid-column:1/3;grid-row:1;grid-template-columns:repeat(8,minmax(0,1fr));padding:46px 22px 18px}
+.overview-side{grid-column:1;grid-row:2;display:grid;grid-template-rows:minmax(0,1fr) minmax(0,1fr);gap:18px;min-height:0}
+.page-overview .heatmap{grid-column:2;grid-row:2}
+.page-strategy{grid-template-columns:minmax(0,1.22fr) minmax(0,.78fr);grid-template-rows:minmax(0,1fr) minmax(0,1fr)}
+.page-strategy .strategy-card{grid-column:1;grid-row:1/3}
+.page-strategy .v5{grid-column:2;grid-row:1}
+.page-strategy .market{grid-column:2;grid-row:2}
+.page-data{grid-template-columns:minmax(0,1fr) minmax(0,1fr);grid-template-rows:minmax(0,1fr) minmax(0,1fr)}
+.page-data .heatmap{grid-column:1;grid-row:1}
+.page-data .market{grid-column:2;grid-row:1}
+.page-data .cost{grid-column:1;grid-row:2}
+.page-data .perf{grid-column:2;grid-row:2}
+.page-ops{grid-template-columns:minmax(0,1fr) minmax(0,1fr);grid-template-rows:minmax(0,1fr) minmax(0,1fr)}
+.page-ops .perf{grid-column:1;grid-row:1}
+.page-ops .v5{grid-column:2;grid-row:1}
+.page-ops .ops-export-card{grid-column:1;grid-row:2}
+.page-ops .compact-map{grid-column:2;grid-row:2}
 .card{
   background:linear-gradient(180deg,rgba(12,35,64,.86),rgba(7,24,43,.78));
   border:1px solid var(--line);border-radius:var(--radius);
@@ -171,6 +216,22 @@ button{font:inherit;color:inherit}
 }
 .factor-factory-drawer h3{margin:0;font-size:17px;display:flex;align-items:center;gap:8px}
 .factor-factory-drawer p{margin:6px 0 10px!important;font-size:11px;color:var(--muted)}
+.page-strategy .strategy-card{padding:28px}
+.page-strategy .strategy-card .sub{font-size:14px}
+.page-strategy .flow-metrics{gap:14px;margin-top:26px}
+.page-strategy .stage{height:98px}
+.page-strategy .stage b{font-size:42px}
+.page-strategy .factor-factory-mini{padding:16px;margin:2px 0 18px;border-radius:18px}
+.page-strategy .factor-factory-stats{gap:12px;margin:12px 0}
+.page-strategy .factor-factory-stats span{padding:9px 12px;border-radius:14px}
+.page-strategy .factor-factory-stats b{font-size:28px}
+.page-strategy .factor-factory-stats em{font-size:13px}
+.page-strategy .factor-chip{
+  min-height:42px;height:auto;grid-template-columns:20px minmax(0,1fr) 126px 92px;gap:10px;padding:0 14px;
+  font-size:14px;border-radius:18px;
+}
+.page-strategy .factor-chip strong{font-size:14px}
+.page-strategy .chip{height:34px;border-radius:17px;grid-template-columns:minmax(0,1fr) 104px 86px;font-size:13px}
 .v5{grid-column:4;grid-row:2}
 .v5-grid{display:grid;grid-template-columns:220px 1fr;gap:18px;margin-top:18px}
 .metric-list{display:grid;gap:10px}
@@ -182,7 +243,8 @@ button{font:inherit;color:inherit}
 .bar span{display:block;height:100%;border-radius:inherit;animation:grow 1.4s ease both}
 .barline{display:grid;grid-template-columns:76px 1fr 30px;gap:10px;align-items:center;margin:16px 0;font-size:12px;color:var(--muted)}
 .market{grid-column:3;grid-row:3}
-.ticker{height:31px;border-radius:10px;border:1px solid rgba(80,169,255,.32);display:grid;grid-template-columns:100px 70px 1fr 64px;gap:10px;align-items:center;margin-top:11px;padding:0 12px;background:rgba(7,29,53,.55);font-size:12px}
+.ticker{height:42px;border-radius:14px;border:1px solid rgba(80,169,255,.32);display:grid;grid-template-columns:132px 92px 1fr 76px;gap:12px;align-items:center;margin-top:14px;padding:0 16px;background:rgba(7,29,53,.55);font-size:14px}
+.ticker b{font-size:16px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
 .ticker .state{color:var(--green)}
 .ticker.yellow{border-color:rgba(255,196,87,.7)}.ticker.yellow .state{color:var(--yellow)}
 .ticker.red{border-color:rgba(255,93,125,.7)}.ticker.red .state{color:var(--red)}
@@ -304,12 +366,25 @@ button{font:inherit;color:inherit}
     display:grid;grid-template-columns:1fr;grid-auto-rows:auto;grid-template-rows:none;
     height:auto;gap:14px;
   }
+  .dashboard-shell{height:auto;display:grid;grid-template-rows:auto auto;gap:14px}
+  .page-controls{height:auto;grid-template-columns:38px minmax(0,1fr) 38px;gap:8px;padding:8px;border-radius:16px}
+  .page-arrow{height:40px;border-radius:12px}
+  .page-tabs{display:flex;gap:8px;overflow-x:auto;height:auto;scrollbar-width:none}
+  .page-tabs::-webkit-scrollbar{display:none}
+  .page-tab{flex:0 0 148px;height:48px;display:grid;grid-template-columns:1fr;gap:1px;padding:6px 10px}
+  .page-tab b{font-size:14px}
+  .page-tab span{font-size:10px}
+  .page-grid{
+    display:grid;grid-template-columns:1fr!important;grid-template-rows:none!important;grid-auto-rows:auto;
+    height:auto;gap:14px;
+  }
   .left{
     grid-row:auto;display:grid;grid-template-rows:none;grid-auto-rows:auto;gap:14px;
   }
-  .left,.kpis,.heatmap,.strategy-card,.v5,.cost,.market,.perf{
+  .left,.overview-side,.kpis,.heatmap,.strategy-card,.v5,.cost,.market,.perf,.ops-export-card,.compact-map{
     grid-column:auto!important;grid-row:auto!important;
   }
+  .overview-side{display:grid;grid-template-rows:none;grid-auto-rows:auto;gap:14px}
   .card{border-radius:18px;overflow:hidden}
   .pad{padding:18px}
   .section-title{font-size:20px}
@@ -331,15 +406,24 @@ button{font:inherit;color:inherit}
   .matrix .h{font-size:10px}
   .symbol{font-size:11px}
   .cell{height:26px;border-radius:7px}
+  .page-strategy .strategy-card{padding:18px}
   .flow-metrics{grid-template-columns:repeat(2,1fr)}
   .stage{height:72px}
   .stage b{font-size:29px}
+  .page-strategy .stage{height:78px}
+  .page-strategy .stage b{font-size:31px}
+  .page-strategy .factor-factory-mini{padding:12px;margin:8px 0 14px}
   .factor-chip{grid-template-columns:16px 1fr 72px;min-height:30px;height:auto}
+  .page-strategy .factor-chip{grid-template-columns:16px 1fr 86px;min-height:34px;font-size:12px;padding:0 10px}
   .factor-chip strong{display:none}
   .factor-factory-stats{grid-template-columns:1fr}
+  .page-strategy .factor-factory-stats b{font-size:22px}
+  .page-strategy .chip{height:32px;grid-template-columns:1fr 76px;font-size:11px}
+  .page-strategy .chip strong{display:none}
   .v5-grid,.cost-body{grid-template-columns:1fr;gap:14px}
   .cost-body>div:first-child{margin:auto}
-  .ticker{grid-template-columns:86px 62px 1fr 52px;font-size:11px;padding:0 9px}
+  .ticker{height:38px;grid-template-columns:94px 68px 1fr 54px;font-size:11px;padding:0 10px}
+  .ticker b{font-size:12px}
   .latency-text{position:static;margin-top:20px;font-size:32px}
   .perm-grid{margin-top:20px}
   .footnote{position:static;margin-top:14px;line-height:1.35}

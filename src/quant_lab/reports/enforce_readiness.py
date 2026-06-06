@@ -740,10 +740,10 @@ def _telemetry_metrics(
 
 
 def _v5_telemetry_event_dedupe_metrics(root: Path) -> dict[str, Any]:
-    rows: list[dict[str, Any]] = []
-    for dataset in (
-        root / "silver" / "v5_quant_lab_request",
-        root / "silver" / "v5_quant_lab_fallback",
+    rows: list[tuple[str, dict[str, Any]]] = []
+    for dataset_name, dataset in (
+        ("v5_quant_lab_request", root / "silver" / "v5_quant_lab_request"),
+        ("v5_quant_lab_fallback", root / "silver" / "v5_quant_lab_fallback"),
     ):
         try:
             lazy = read_parquet_lazy(dataset)
@@ -761,7 +761,7 @@ def _v5_telemetry_event_dedupe_metrics(root: Path) -> dict[str, Any]:
             ]
             if not selected:
                 continue
-            rows.extend(lazy.select(selected).collect().to_dicts())
+            rows.extend((dataset_name, row) for row in lazy.select(selected).collect().to_dicts())
         except Exception:
             continue
     raw_rows = len(rows)
@@ -776,14 +776,20 @@ def _v5_telemetry_event_dedupe_metrics(root: Path) -> dict[str, Any]:
             "conflicting_duplicate_event_key_count": 0,
         }
     by_key: dict[str, set[str]] = {}
-    for row in rows:
-        key = str(
-            row.get("event_id") or row.get("event_key") or row.get("request_id") or ""
-        ).strip()
+    for dataset_name, row in rows:
+        key = (
+            _observable_telemetry_key_part(row.get("event_id"))
+            or _observable_telemetry_key_part(row.get("event_key"))
+            or _observable_telemetry_key_part(row.get("request_id"))
+        )
         if not key:
             key = json.dumps(row, sort_keys=True, default=str)
-        payload_hash = str(row.get("payload_hash") or row.get("raw_payload_hash") or "").strip()
-        by_key.setdefault(key, set()).add(payload_hash)
+        namespaced_key = f"{dataset_name}:{key}"
+        payload_hash = (
+            _observable_telemetry_key_part(row.get("payload_hash"))
+            or _observable_telemetry_key_part(row.get("raw_payload_hash"))
+        )
+        by_key.setdefault(namespaced_key, set()).add(payload_hash)
     unique_rows = len(by_key)
     duplicate_rows = max(raw_rows - unique_rows, 0)
     conflicting_keys = sum(1 for hashes in by_key.values() if len({h for h in hashes if h}) > 1)
@@ -802,6 +808,28 @@ def _v5_telemetry_event_dedupe_metrics(root: Path) -> dict[str, Any]:
         "conflicting_duplicate_event_rows": conflicting_rows,
         "conflicting_duplicate_event_key_count": conflicting_keys,
     }
+
+
+_UNOBSERVABLE_TELEMETRY_KEY_VALUES = {
+    "",
+    "na",
+    "n/a",
+    "nan",
+    "none",
+    "null",
+    "not_available",
+    "not_observable",
+    "unknown",
+}
+
+
+def _observable_telemetry_key_part(value: Any) -> str:
+    if value is None:
+        return ""
+    text = str(value).strip()
+    if text.lower() in _UNOBSERVABLE_TELEMETRY_KEY_VALUES:
+        return ""
+    return text
 
 
 def _event_key_coverage(root: Path) -> float:
@@ -835,17 +863,16 @@ def _event_key_dataset_metrics(dataset_path: Path) -> dict[str, int]:
         lazy = read_parquet_lazy(dataset_path)
         schema = lazy.collect_schema()
         columns = set(schema.names())
-        keyed_expr = (
-            pl.col("event_key")
-            .cast(pl.Utf8)
-            .str.strip_chars()
-            .ne("")
-            .fill_null(False)
-            .sum()
-            .alias("keyed")
-            if "event_key" in columns
-            else pl.lit(0).alias("keyed")
-        )
+        if "event_key" in columns:
+            cleaned_key = pl.col("event_key").cast(pl.Utf8).str.strip_chars().str.to_lowercase()
+            keyed_expr = (
+                (~cleaned_key.is_in(sorted(_UNOBSERVABLE_TELEMETRY_KEY_VALUES)))
+                .fill_null(False)
+                .sum()
+                .alias("keyed")
+            )
+        else:
+            keyed_expr = pl.lit(0).alias("keyed")
         metrics = _collect_lazy(
             lazy.select(
                 pl.len().alias("total"),

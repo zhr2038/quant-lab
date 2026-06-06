@@ -237,6 +237,85 @@ def test_enforce_readiness_uses_lazy_telemetry_counts(tmp_path, monkeypatch):
     assert report.metrics["event_key_coverage"] == 1.0
 
 
+def test_enforce_readiness_dedupe_namespaces_request_and_fallback_events(tmp_path):
+    lake = tmp_path / "lake"
+    _write_common_ready_inputs(lake)
+    _write_cost_rows(lake, source="mixed_actual_proxy")
+    now = datetime.now(UTC)
+    shared_key = "shared-request-fallback-key"
+    write_parquet_dataset(
+        pl.DataFrame(
+            [
+                {
+                    "event_id": "not_observable",
+                    "event_key": shared_key,
+                    "request_id": "not_observable",
+                    "raw_payload_hash": "request-payload-hash",
+                    "ts_utc": now.isoformat(),
+                }
+            ]
+        ),
+        lake / "silver/v5_quant_lab_request",
+    )
+    write_parquet_dataset(
+        pl.DataFrame(
+            [
+                {
+                    "event_id": "not_observable",
+                    "event_key": shared_key,
+                    "request_id": "not_observable",
+                    "raw_payload_hash": "fallback-payload-hash",
+                    "ts_utc": now.isoformat(),
+                }
+            ]
+        ),
+        lake / "silver/v5_quant_lab_fallback",
+    )
+
+    report = build_enforce_readiness_report(lake)
+
+    assert report.readiness_status == "READY"
+    assert report.metrics["raw_imported_rows"] == 2
+    assert report.metrics["unique_event_rows"] == 2
+    assert report.metrics["duplicate_event_rows"] == 0
+    assert report.metrics["conflicting_duplicate_event_rows"] == 0
+    assert report.metrics["event_key_coverage"] == 1.0
+
+
+def test_enforce_readiness_blocks_same_dataset_conflicting_payloads(tmp_path):
+    lake = tmp_path / "lake"
+    _write_common_ready_inputs(lake)
+    _write_cost_rows(lake, source="mixed_actual_proxy")
+    now = datetime.now(UTC)
+    write_parquet_dataset(
+        pl.DataFrame(
+            [
+                {
+                    "event_key": "same-dataset-event-key",
+                    "raw_payload_hash": "payload-hash-a",
+                    "ts_utc": now.isoformat(),
+                },
+                {
+                    "event_key": "same-dataset-event-key",
+                    "raw_payload_hash": "payload-hash-b",
+                    "ts_utc": now.isoformat(),
+                },
+            ]
+        ),
+        lake / "silver/v5_quant_lab_request",
+    )
+
+    report = build_enforce_readiness_report(lake)
+
+    assert report.readiness_status == "BLOCKED"
+    assert "telemetry_dedupe_health" in report.blocked_reasons
+    assert report.metrics["raw_imported_rows"] == 2
+    assert report.metrics["unique_event_rows"] == 1
+    assert report.metrics["duplicate_event_rows"] == 1
+    assert report.metrics["conflicting_duplicate_event_rows"] == 1
+    assert report.metrics["dedupe_block_reason"] == "conflicting_duplicate_event_rows=1"
+
+
 def test_actual_or_mixed_coverage_ignores_stale_mixed_when_fresh_proxy_exists(
     tmp_path,
 ):

@@ -183,9 +183,7 @@ def build_system_acceptance_dashboard(
         lake_status = "PASS" if lake_file_count <= lake_threshold else "FAIL"
         lake_observed = str(lake_file_count)
         lake_action = (
-            ""
-            if lake_status == "PASS"
-            else "run lake-small-file-maintenance on priority datasets"
+            "" if lake_status == "PASS" else "run lake-small-file-maintenance on priority datasets"
         )
     checks.append(
         _check(
@@ -280,10 +278,7 @@ def system_acceptance_dashboard_md(frame: pl.DataFrame) -> str:
     for row in rows:
         lines.append(
             "| "
-            + " | ".join(
-                _md_cell(row.get(column))
-                for column in SYSTEM_ACCEPTANCE_FIELDS
-            )
+            + " | ".join(_md_cell(row.get(column)) for column in SYSTEM_ACCEPTANCE_FIELDS)
             + " |"
         )
     return "\n".join(lines) + "\n"
@@ -309,11 +304,17 @@ def _label_join_check(
     observable = sum(1 for row in rows if _row_has_future_label(row))
     pending = len(rows) - observable
     pending_ratio = pending / len(rows) if rows else 1.0
+    failure_reasons = _field_counts(rows, "label_join_failure_reason")
+    match_types = _field_counts(rows, "label_join_match_type")
     status = "PASS" if observable > 0 and pending_ratio < 0.95 else "FAIL"
     return _check(
         check_name,
         status,
-        f"observable_label_rows={observable};pending_rows={pending};rows={len(rows)};pending_ratio={pending_ratio:.6f}",
+        (
+            f"observable_label_rows={observable};pending_rows={pending};rows={len(rows)};"
+            f"pending_ratio={pending_ratio:.6f};label_join_failure_reasons={failure_reasons};"
+            f"label_join_match_types={match_types}"
+        ),
         "pending_ratio < 0.95 and at least one report row has a future label",
         owner,
         "" if status == "PASS" else next_action,
@@ -330,33 +331,39 @@ def _expanded_universe_v5_check(
     )
     advisory = report_frames.get("strategy_opportunity_advisory", pl.DataFrame())
     ready_symbols.update(_expanded_advisory_symbols(advisory))
-    v5_reader = _v5_paper_symbols(_first_frame(
-        frames,
-        report_frames,
-        (
-            "v5_expanded_universe_advisory_reader",
-            "expanded_universe_advisory_reader",
-        ),
-    ))
-    v5_runs = _v5_paper_symbols(_first_frame(
-        frames,
-        report_frames,
-        (
-            "v5_expanded_universe_paper_run",
-            "v5_expanded_universe_paper_runs",
-            "expanded_universe_paper_runs",
-            "v5_paper_strategy_run",
-            "paper_strategy_runs",
-        ),
-    ))
-    v5_daily = _v5_paper_symbols(_first_frame(
-        frames,
-        report_frames,
-        (
-            "v5_expanded_universe_paper_daily",
-            "expanded_universe_paper_daily",
-        ),
-    ))
+    v5_reader = _v5_paper_symbols(
+        _first_frame(
+            frames,
+            report_frames,
+            (
+                "v5_expanded_universe_advisory_reader",
+                "expanded_universe_advisory_reader",
+            ),
+        )
+    )
+    v5_runs = _v5_paper_symbols(
+        _first_frame(
+            frames,
+            report_frames,
+            (
+                "v5_expanded_universe_paper_run",
+                "v5_expanded_universe_paper_runs",
+                "expanded_universe_paper_runs",
+                "v5_paper_strategy_run",
+                "paper_strategy_runs",
+            ),
+        )
+    )
+    v5_daily = _v5_paper_symbols(
+        _first_frame(
+            frames,
+            report_frames,
+            (
+                "v5_expanded_universe_paper_daily",
+                "expanded_universe_paper_daily",
+            ),
+        )
+    )
     runs_frame = _first_frame(
         frames,
         report_frames,
@@ -398,6 +405,7 @@ def _expanded_universe_v5_check(
         for symbol in wanted & v5_runs
         if _expanded_entry_count_zero_without_reason(symbol, runs_frame, daily_frame)
     )
+    no_sample_reason_mix = _expanded_no_sample_reason_mix(wanted, runs_frame)
     status = "PASS" if wanted <= observed and not missing_no_sample_reason else "FAIL"
     return _check(
         "expanded_universe_paper_v5_rows_ok",
@@ -406,9 +414,13 @@ def _expanded_universe_v5_check(
             f"ready={sorted(wanted)};reader={sorted(v5_reader & wanted)};"
             f"runs={sorted(v5_runs & wanted)};daily={sorted(v5_daily & wanted)};"
             f"missing_reader={missing_reader};missing_runs={missing_runs};missing_daily={missing_daily};"
-            f"entry_count_zero_missing_no_sample_reason={missing_no_sample_reason}"
+            f"entry_count_zero_missing_no_sample_reason={missing_no_sample_reason};"
+            f"no_sample_reason_mix={no_sample_reason_mix}"
         ),
-        "all HYPE/WLD PAPER_READY rows appear in V5 expanded reader/runs/daily telemetry, and no-entry rows explain no_sample_reason",
+        (
+            "all HYPE/WLD PAPER_READY rows appear in V5 expanded reader/runs/daily "
+            "telemetry, and no-entry rows explain no_sample_reason"
+        ),
         "V5",
         "" if status == "PASS" else "fix V5 expanded_universe reader/runs/daily telemetry sync",
     )
@@ -489,11 +501,7 @@ def _expanded_advisory_symbols(frame: pl.DataFrame) -> set[str]:
         decision = str(row.get("decision") or "").upper()
         universe = str(row.get("universe_type") or "").lower()
         symbol = normalize_symbol(row.get("symbol"))
-        paper_ready = (
-            mode == "paper"
-            or decision == "PAPER_READY"
-            or universe == "expanded_paper"
-        )
+        paper_ready = mode == "paper" or decision == "PAPER_READY" or universe == "expanded_paper"
         if symbol in {"HYPE-USDT", "WLD-USDT"} and paper_ready:
             symbols.add(symbol)
     return symbols
@@ -515,12 +523,14 @@ def _expanded_entry_count_zero_without_reason(
     daily_frame: pl.DataFrame,
 ) -> bool:
     run_rows = [
-        row for row in _rows(runs_frame)
+        row
+        for row in _rows(runs_frame)
         if normalize_symbol(row.get("symbol")) == symbol
         or str(row.get("strategy_id") or "").startswith(symbol.split("-", 1)[0])
     ]
     daily_rows = [
-        row for row in _rows(daily_frame)
+        row
+        for row in _rows(daily_frame)
         if normalize_symbol(row.get("symbol")) == symbol
         or str(row.get("strategy_id") or "").startswith(symbol.split("-", 1)[0])
     ]
@@ -531,6 +541,17 @@ def _expanded_entry_count_zero_without_reason(
     if any_entry:
         return False
     return not any(str(row.get("no_sample_reason") or "").strip() for row in run_rows)
+
+
+def _expanded_no_sample_reason_mix(symbols: set[str], runs_frame: pl.DataFrame) -> dict[str, int]:
+    bases = {symbol.split("-", 1)[0] for symbol in symbols}
+    rows = [
+        row
+        for row in _rows(runs_frame)
+        if normalize_symbol(row.get("symbol")) in symbols
+        or str(row.get("strategy_id") or "").split("_", 1)[0] in bases
+    ]
+    return _field_counts(rows, "no_sample_reason")
 
 
 def _first_frame(
@@ -569,10 +590,7 @@ def _count_decision(frame: pl.DataFrame, decision: str) -> int:
     count = 0
     for row in frame.to_dicts():
         value = str(
-            row.get("decision")
-            or row.get("promotion_state")
-            or row.get("recommended_mode")
-            or ""
+            row.get("decision") or row.get("promotion_state") or row.get("recommended_mode") or ""
         ).upper()
         if value == wanted:
             count += 1
@@ -590,6 +608,16 @@ def _row_has_future_label(row: Mapping[str, Any]) -> bool:
         if _float(row.get(f"paper_pnl_bps_{horizon}h")) is not None:
             return True
     return False
+
+
+def _field_counts(rows: list[Mapping[str, Any]], field: str) -> dict[str, int]:
+    counts: dict[str, int] = {}
+    for row in rows:
+        value = str(row.get(field) or "").strip()
+        if not value:
+            value = "not_observable"
+        counts[value] = counts.get(value, 0) + 1
+    return dict(sorted(counts.items()))
 
 
 FAST_MICROSTRUCTURE_CORE_FIELDS = (

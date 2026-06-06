@@ -92,9 +92,7 @@ def test_export_daily_pack_writes_required_members(tmp_path):
         assert "diagnostics/export_timing.json" in names
         acceptance_rows = list(
             csv.DictReader(
-                io.StringIO(
-                    archive.read("reports/system_acceptance_dashboard.csv").decode("utf-8")
-                )
+                io.StringIO(archive.read("reports/system_acceptance_dashboard.csv").decode("utf-8"))
             )
         )
         acceptance_checks = {row["check_name"] for row in acceptance_rows}
@@ -375,7 +373,9 @@ def test_system_acceptance_requires_expanded_reader_runs_and_daily_rows():
             }
         ]
     )
-    reader = pl.DataFrame([{"symbol": "HYPE-USDT", "strategy_id": "HYPE_EXPANDED_UNIVERSE_PAPER_V1"}])
+    reader = pl.DataFrame(
+        [{"symbol": "HYPE-USDT", "strategy_id": "HYPE_EXPANDED_UNIVERSE_PAPER_V1"}]
+    )
     runs = pl.DataFrame([{"symbol": "HYPE-USDT", "strategy_id": "HYPE_EXPANDED_UNIVERSE_PAPER_V1"}])
 
     failed = daily_export_module.build_system_acceptance_dashboard(
@@ -392,7 +392,11 @@ def test_system_acceptance_requires_expanded_reader_runs_and_daily_rows():
         lake_file_count=0,
         generated_at=generated_at,
     )
-    failed_row = next(row for row in failed.to_dicts() if row["check_name"] == "expanded_universe_paper_v5_rows_ok")
+    failed_row = next(
+        row
+        for row in failed.to_dicts()
+        if row["check_name"] == "expanded_universe_paper_v5_rows_ok"
+    )
     assert failed_row["status"] == "FAIL"
     assert "missing_daily=['HYPE-USDT']" in failed_row["observed_value"]
 
@@ -403,7 +407,13 @@ def test_system_acceptance_requires_expanded_reader_runs_and_daily_rows():
             "expanded_universe_advisory_reader": reader,
             "expanded_universe_paper_runs": runs,
             "expanded_universe_paper_daily": pl.DataFrame(
-                [{"symbol": "HYPE-USDT", "strategy_id": "HYPE_EXPANDED_UNIVERSE_PAPER_V1", "entry_count": 1}]
+                [
+                    {
+                        "symbol": "HYPE-USDT",
+                        "strategy_id": "HYPE_EXPANDED_UNIVERSE_PAPER_V1",
+                        "entry_count": 1,
+                    }
+                ]
             ),
         },
         row_counts={},
@@ -413,7 +423,11 @@ def test_system_acceptance_requires_expanded_reader_runs_and_daily_rows():
         lake_file_count=0,
         generated_at=generated_at,
     )
-    passed_row = next(row for row in passed.to_dicts() if row["check_name"] == "expanded_universe_paper_v5_rows_ok")
+    passed_row = next(
+        row
+        for row in passed.to_dicts()
+        if row["check_name"] == "expanded_universe_paper_v5_rows_ok"
+    )
     assert passed_row["status"] == "PASS"
 
 
@@ -435,7 +449,13 @@ def test_system_acceptance_requires_no_sample_reason_when_expanded_entry_count_z
     )
     reader = pl.DataFrame([{"symbol": "WLD-USDT", "strategy_id": "WLD_EXPANDED_UNIVERSE_PAPER_V1"}])
     runs_without_reason = pl.DataFrame(
-        [{"symbol": "WLD-USDT", "strategy_id": "WLD_EXPANDED_UNIVERSE_PAPER_V1", "would_enter": False}]
+        [
+            {
+                "symbol": "WLD-USDT",
+                "strategy_id": "WLD_EXPANDED_UNIVERSE_PAPER_V1",
+                "would_enter": False,
+            }
+        ]
     )
     daily_zero = pl.DataFrame(
         [{"symbol": "WLD-USDT", "strategy_id": "WLD_EXPANDED_UNIVERSE_PAPER_V1", "entry_count": 0}]
@@ -456,9 +476,14 @@ def test_system_acceptance_requires_no_sample_reason_when_expanded_entry_count_z
         lake_file_count=0,
         generated_at=generated_at,
     )
-    failed_row = next(row for row in failed.to_dicts() if row["check_name"] == "expanded_universe_paper_v5_rows_ok")
+    failed_row = next(
+        row
+        for row in failed.to_dicts()
+        if row["check_name"] == "expanded_universe_paper_v5_rows_ok"
+    )
     assert failed_row["status"] == "FAIL"
     assert "entry_count_zero_missing_no_sample_reason=['WLD-USDT']" in failed_row["observed_value"]
+    assert "no_sample_reason_mix={'not_observable': 1}" in failed_row["observed_value"]
 
     runs_with_reason = pl.DataFrame(
         [
@@ -485,8 +510,13 @@ def test_system_acceptance_requires_no_sample_reason_when_expanded_entry_count_z
         lake_file_count=0,
         generated_at=generated_at,
     )
-    passed_row = next(row for row in passed.to_dicts() if row["check_name"] == "expanded_universe_paper_v5_rows_ok")
+    passed_row = next(
+        row
+        for row in passed.to_dicts()
+        if row["check_name"] == "expanded_universe_paper_v5_rows_ok"
+    )
     assert passed_row["status"] == "PASS"
+    assert "no_sample_reason_mix={'cost_source_global_default': 1}" in passed_row["observed_value"]
 
 
 def test_system_acceptance_label_join_uses_pending_ratio():
@@ -513,9 +543,12 @@ def test_system_acceptance_label_join_uses_pending_ratio():
         lake_file_count=0,
         generated_at=generated_at,
     )
-    failed_row = next(row for row in failed.to_dicts() if row["check_name"] == "bnb_bypass_label_join_ok")
+    failed_row = next(
+        row for row in failed.to_dicts() if row["check_name"] == "bnb_bypass_label_join_ok"
+    )
     assert failed_row["status"] == "FAIL"
     assert "pending_ratio=1.000000" in failed_row["observed_value"]
+    assert "label_join_failure_reasons={'not_observable': 2}" in failed_row["observed_value"]
 
     passed = daily_export_module.build_system_acceptance_dashboard(
         frames={},
@@ -527,9 +560,43 @@ def test_system_acceptance_label_join_uses_pending_ratio():
         lake_file_count=0,
         generated_at=generated_at,
     )
-    passed_row = next(row for row in passed.to_dicts() if row["check_name"] == "bnb_bypass_label_join_ok")
+    passed_row = next(
+        row for row in passed.to_dicts() if row["check_name"] == "bnb_bypass_label_join_ok"
+    )
     assert passed_row["status"] == "PASS"
     assert "pending_ratio=0.500000" in passed_row["observed_value"]
+
+    diagnostic_failure = pl.DataFrame(
+        [
+            {
+                "symbol": "BNB-USDT",
+                "future_4h_net_bps": None,
+                "label_join_failure_reason": "missing_run_id",
+            },
+            {
+                "symbol": "BNB-USDT",
+                "future_4h_net_bps": None,
+                "label_join_failure_reason": "nearest_label_too_far",
+            },
+        ]
+    )
+    diagnostic = daily_export_module.build_system_acceptance_dashboard(
+        frames={},
+        report_frames={"bnb_strong_alpha6_bypass_shadow": diagnostic_failure},
+        row_counts={},
+        pre_export_v5={},
+        data_quality_warnings=[],
+        api_latency_summary=pl.DataFrame(),
+        lake_file_count=0,
+        generated_at=generated_at,
+    )
+    diagnostic_row = next(
+        row for row in diagnostic.to_dicts() if row["check_name"] == "bnb_bypass_label_join_ok"
+    )
+    assert (
+        "label_join_failure_reasons={'missing_run_id': 1, 'nearest_label_too_far': 1}"
+        in diagnostic_row["observed_value"]
+    )
 
 
 def test_system_acceptance_fast_microstructure_core_observability():
@@ -557,7 +624,11 @@ def test_system_acceptance_fast_microstructure_core_observability():
         lake_file_count=0,
         generated_at=generated_at,
     )
-    row = next(row for row in dashboard.to_dicts() if row["check_name"] == "fast_microstructure_core_observability_ok")
+    row = next(
+        row
+        for row in dashboard.to_dicts()
+        if row["check_name"] == "fast_microstructure_core_observability_ok"
+    )
     assert row["status"] == "PASS"
     assert "not_observable_ratio=0.000000" in row["observed_value"]
 
@@ -889,7 +960,7 @@ def test_export_includes_missed_opportunity_and_risk_on_multi_buy_shadow(tmp_pat
                     "broad_market_positive_count": 1,
                     "btc_24h_return_bps": -300.0,
                     "created_at": entry_ts + timedelta(days=1),
-                }
+                },
             ]
         ),
         lake_root / "gold" / "market_regime_daily",
@@ -968,12 +1039,10 @@ def test_export_includes_missed_opportunity_and_risk_on_multi_buy_shadow(tmp_pat
     assert outcomes["BNB-USDT"] == "quant_lab_would_have_missed_profit"
     assert outcomes["SOL-USDT"] == "v5_missed_profit_opportunity"
     assert any(
-        row["strategy_candidate"] == "v5.risk_on_multi_buy_top1_shadow"
-        for row in risk_on_rows
+        row["strategy_candidate"] == "v5.risk_on_multi_buy_top1_shadow" for row in risk_on_rows
     )
     assert any(
-        row["strategy_candidate"] == "v5.risk_on_multi_buy_top2_shadow"
-        for row in risk_on_rows
+        row["strategy_candidate"] == "v5.risk_on_multi_buy_top2_shadow" for row in risk_on_rows
     )
     top2 = next(row for row in risk_on_rows if row["top_k"] == "2")
     assert json.loads(top2["selected_symbols"]) == ["BNB-USDT", "SOL-USDT"]
@@ -1071,9 +1140,10 @@ def test_member_row_count_counts_csv_without_materializing_rows() -> None:
     text = "a,b\n1,2\n3,4\n"
 
     assert _member_row_count("example.csv", text) == 2
-    assert _sha256_payload(text) == daily_export_module.hashlib.sha256(
-        text.encode("utf-8")
-    ).hexdigest()
+    assert (
+        _sha256_payload(text)
+        == daily_export_module.hashlib.sha256(text.encode("utf-8")).hexdigest()
+    )
 
 
 def test_export_frame_samples_large_unlisted_dataset_without_full_read(tmp_path, monkeypatch):
@@ -1547,20 +1617,14 @@ def test_export_marks_core_momentum_as_research_baseline_and_prioritizes_strateg
 
     with zipfile.ZipFile(result.zip_path) as archive:
         evidence = list(
-            csv.DictReader(
-                io.StringIO(archive.read("research/alpha_evidence.csv").decode("utf-8"))
-            )
+            csv.DictReader(io.StringIO(archive.read("research/alpha_evidence.csv").decode("utf-8")))
         )
         gates = list(
-            csv.DictReader(
-                io.StringIO(archive.read("research/gate_decisions.csv").decode("utf-8"))
-            )
+            csv.DictReader(io.StringIO(archive.read("research/gate_decisions.csv").decode("utf-8")))
         )
         dashboard = list(
             csv.DictReader(
-                io.StringIO(
-                    archive.read("reports/strategy_level_dashboard.csv").decode("utf-8")
-                )
+                io.StringIO(archive.read("reports/strategy_level_dashboard.csv").decode("utf-8"))
             )
         )
         executive_summary = archive.read("executive_summary.md").decode("utf-8")
@@ -1708,9 +1772,7 @@ def test_export_daily_limits_pre_export_v5_ingest_to_latest_pending(tmp_path, mo
     assert refresh["allow_stale_v5"] is True
     assert refresh["selected_bundle_count"] == 1
     assert refresh["processed_bundle_count"] == 1
-    assert refresh["selected_bundle_names"] == [
-        "v5_live_followup_bundle_20260517T060000Z.tar.gz"
-    ]
+    assert refresh["selected_bundle_names"] == ["v5_live_followup_bundle_20260517T060000Z.tar.gz"]
     assert manifest["authoritative_snapshot"] is False
     assert manifest["pending_uningested_bundle_count"] == 1
     assert manifest["candidate_event_latest_ts"].startswith("2026-05-17T06:00:00")
@@ -1773,9 +1835,7 @@ def test_export_daily_observes_v5_inbox_when_refresh_is_disabled(tmp_path):
     assert manifest["pre_export_v5_refresh"]["enabled"] is False
     assert manifest["authoritative_snapshot"] is False
     assert manifest["selected_v5_bundle_manifest_match"] is False
-    assert "pre_export_v5_refresh_disabled" in manifest[
-        "selected_v5_bundle_authoritative_reason"
-    ]
+    assert "pre_export_v5_refresh_disabled" in manifest["selected_v5_bundle_authoritative_reason"]
     assert manifest["stale_v5_bundle"] is True
     assert manifest["latest_v5_bundle_seen_at_export"].startswith("2026-05-17T10:00:00")
     assert "latest_candidate_event_ts" in manifest
@@ -1789,8 +1849,7 @@ def test_export_daily_fails_when_newer_v5_bundle_cannot_be_ingested(tmp_path):
         inbox / "v5_live_followup_bundle_20260517T090000Z.tar.gz",
         {
             "reports/candidate_snapshot.csv": (
-                "candidate_id,run_id,ts_utc,symbol\n"
-                "old,run_old,2026-05-17T09:00:00Z,BTC-USDT\n"
+                "candidate_id,run_id,ts_utc,symbol\nold,run_old,2026-05-17T09:00:00Z,BTC-USDT\n"
             )
         },
     )
@@ -2084,9 +2143,9 @@ def test_export_daily_non_authoritative_when_selected_bundle_sha_missing_from_ma
     assert manifest["stale_v5_bundle"] is False
     assert manifest["authoritative_snapshot"] is False
     assert manifest["selected_v5_bundle_manifest_match"] is False
-    assert "selected_v5_bundle_manifest_missing" in manifest[
-        "selected_v5_bundle_authoritative_reason"
-    ]
+    assert (
+        "selected_v5_bundle_manifest_missing" in manifest["selected_v5_bundle_authoritative_reason"]
+    )
 
 
 def test_authoritative_when_inbox_has_more_than_max_scan_but_all_old_bundles_ingested(
@@ -2232,9 +2291,7 @@ def test_export_daily_marks_possible_historical_gap_when_scan_window_is_incomple
     assert manifest["possible_historical_gap"] is True
     assert manifest["historical_gap_detected"] is True
     assert manifest["authoritative_snapshot"] is False
-    assert "historical_gap_detected" in manifest[
-        "selected_v5_bundle_authoritative_reason"
-    ]
+    assert "historical_gap_detected" in manifest["selected_v5_bundle_authoritative_reason"]
 
 
 def test_pending_uningested_count_blocks_authoritative_when_exceeds_max_pending(
@@ -2276,9 +2333,7 @@ def test_pending_uningested_count_blocks_authoritative_when_exceeds_max_pending(
     assert manifest["authoritative_snapshot"] is False
     assert manifest["pending_uningested_bundle_count"] > manifest["max_pending_bundles"]
     assert manifest["historical_gap_detected"] is True
-    assert "pending_uningested_bundle_count" in manifest[
-        "selected_v5_bundle_authoritative_reason"
-    ]
+    assert "pending_uningested_bundle_count" in manifest["selected_v5_bundle_authoritative_reason"]
 
     with pytest.raises(RuntimeError, match="pending_uningested_bundle_count"):
         export_daily_pack(
@@ -2737,9 +2792,7 @@ def test_export_alpha_evidence_missing_status_is_unknown(tmp_path):
 
     with zipfile.ZipFile(result.zip_path) as archive:
         rows = list(
-            csv.DictReader(
-                io.StringIO(archive.read("research/alpha_evidence.csv").decode("utf-8"))
-            )
+            csv.DictReader(io.StringIO(archive.read("research/alpha_evidence.csv").decode("utf-8")))
         )
 
     assert rows[0]["evidence_status"] == "unknown"
@@ -2783,8 +2836,7 @@ def test_export_warns_when_risk_permission_older_than_v5_telemetry(tmp_path):
     assert risk_quality["next_action"] == "run qlab publish-risk-permission after sync-v5-telemetry"
     assert any(
         warning.startswith(
-            "risk_permission_fresh_vs_v5_telemetry: "
-            "risk_permission_stale_vs_v5_telemetry"
+            "risk_permission_fresh_vs_v5_telemetry: risk_permission_stale_vs_v5_telemetry"
         )
         for warning in data_quality["warnings"]
     )
@@ -2943,8 +2995,7 @@ def test_export_warns_when_risk_permission_republish_fails(tmp_path, monkeypatch
     assert data_quality["risk_permission"]["permission_status"] == "EXPIRED_ALLOW"
     assert checks["risk_permission_pre_export_refresh"]["status"] == "WARN"
     assert (
-        "risk_permission_republish_failed"
-        in checks["risk_permission_pre_export_refresh"]["detail"]
+        "risk_permission_republish_failed" in checks["risk_permission_pre_export_refresh"]["detail"]
     )
     assert checks["risk_permission_not_expired_at_export"]["status"] == "FAIL"
     assert any(
@@ -2988,8 +3039,7 @@ def test_export_warns_on_risk_version_mismatch_with_v5_telemetry(tmp_path):
         data_quality = json.loads(archive.read("data_quality.json").decode("utf-8"))
 
     assert any(
-        "risk_permission_version_matches_v5" in warning
-        for warning in data_quality["warnings"]
+        "risk_permission_version_matches_v5" in warning for warning in data_quality["warnings"]
     )
 
 
@@ -3029,9 +3079,10 @@ def test_data_quality_separates_generic_and_v5_decision_audit(tmp_path):
 
     checks = {check["name"]: check for check in data_quality["checks"]}
     assert checks["generic_decision_audit_present"]["status"] == "PASS"
-    assert "legacy generic silver/decision_audit is optional for V5" in checks[
-        "generic_decision_audit_present"
-    ]["detail"]
+    assert (
+        "legacy generic silver/decision_audit is optional for V5"
+        in checks["generic_decision_audit_present"]["detail"]
+    )
     assert checks["v5_decision_audit_present"]["status"] == "PASS"
     assert checks["v5_decision_audit_count"]["detail"] == "v5_decision_audit_count=31"
     assert data_quality["decision_audit"]["generic_decision_audit_present"] is False
@@ -3042,10 +3093,7 @@ def test_data_quality_separates_generic_and_v5_decision_audit(tmp_path):
         and row["reason"] == "legacy_optional_non_v5_research_missing"
         for row in missing_rows
     )
-    assert (
-        data_quality["quant_lab_enforce_readiness"]["metrics"]["decision_audit_count"]
-        == 31
-    )
+    assert data_quality["quant_lab_enforce_readiness"]["metrics"]["decision_audit_count"] == 31
 
 
 def test_gate_evidence_quality_ignores_bootstrap_placeholder_gate():
@@ -3172,15 +3220,15 @@ def test_export_reports_private_fills_when_actual_cost_is_zero(tmp_path):
                     "fallback_ratio": 1.0,
                     "symbols_with_actual_cost": "[]",
                     "symbols_with_mixed_cost": "[]",
-                    "symbols_with_proxy_only": "[\"BNB-USDT\"]",
-                    "symbols_proxy_only": "[\"BNB-USDT\"]",
+                    "symbols_with_proxy_only": '["BNB-USDT"]',
+                    "symbols_proxy_only": '["BNB-USDT"]',
                     "symbols_missing_cost": "[]",
                     "actual_sample_count_by_symbol": "{}",
                     "data_quality_checks_json": (
-                        "{\"private_fills_present_but_actual_cost_zero\":false}"
+                        '{"private_fills_present_but_actual_cost_zero":false}'
                     ),
                     "min_sample_count": 30,
-                    "warnings_json": "[\"private_fills_present_but_actual_cost_zero\"]",
+                    "warnings_json": '["private_fills_present_but_actual_cost_zero"]',
                     "created_at": datetime.now(UTC),
                 }
             ]

@@ -199,6 +199,8 @@ class StrategyOpportunityAdvisoryRow(BaseModel):
     promotion_state: str | None = None
     alpha_factory_score: float | None = None
     universe_type: str | None = None
+    expanded_universe_maturity_state: str | None = None
+    cost_quality: str | None = None
     cost_quality_score: float | None = None
     paper_ready_block_reasons: list[str] = Field(default_factory=list)
     advisory_intent: str = "research_only"
@@ -1733,6 +1735,8 @@ def _strategy_opportunity_advisory_minimal_row(
         "promotion_state": row.promotion_state,
         "alpha_factory_score": row.alpha_factory_score,
         "universe_type": row.universe_type,
+        "expanded_universe_maturity_state": row.expanded_universe_maturity_state,
+        "cost_quality": row.cost_quality,
         "would_block_if_enabled": row.would_block_if_enabled,
         "would_enter": row.would_enter,
         "no_sample_reason": row.no_sample_reason,
@@ -2221,14 +2225,15 @@ def _advisory_dict_time(row: dict[str, Any]) -> datetime:
 
 
 def _is_alpha_factory_advisory_model(row: StrategyOpportunityAdvisoryRow) -> bool:
-    if (row.source_module or "").lower() == "regime_router":
+    source_module = (row.source_module or "").lower()
+    if source_module in {"regime_router", "expanded_universe"}:
         return False
     candidate = row.strategy_candidate
     return (
         candidate in ALPHA_FACTORY_CANDIDATES
         or candidate.startswith("v5.af.")
         or candidate.startswith("v5.expanded_relative_strength")
-        or (row.source_module or "").lower() == "alpha_factory"
+        or source_module == "alpha_factory"
         or bool(row.template_family)
         or row.alpha_factory_score is not None
     )
@@ -2241,11 +2246,14 @@ def _is_alpha_factory_promotion_capped_model(row: StrategyOpportunityAdvisoryRow
         if candidate.startswith("regime_router:")
         else candidate
     )
+    source_module = (row.source_module or "").lower()
+    if source_module == "expanded_universe":
+        return False
     return (
         candidate_key in ALPHA_FACTORY_CANDIDATES
         or candidate_key.startswith("v5.af.")
         or candidate_key.startswith("v5.expanded_relative_strength")
-        or (row.source_module or "").lower() == "alpha_factory"
+        or source_module == "alpha_factory"
         or bool(row.template_family)
         or row.alpha_factory_score is not None
     )
@@ -2580,6 +2588,12 @@ def _strategy_opportunity_advisory_row(
         promotion_state=_text_value(row.get("promotion_state")),
         alpha_factory_score=_optional_float(row.get("alpha_factory_score")),
         universe_type=_text_value(row.get("universe_type")),
+        expanded_universe_maturity_state=_text_value(
+            row.get("expanded_universe_maturity_state")
+            or row.get("maturity_state")
+            or row.get("decision")
+        ),
+        cost_quality=_text_value(row.get("cost_quality") or row.get("cost_source_quality")),
         cost_quality_score=_optional_float(row.get("cost_quality_score")),
         paper_ready_block_reasons=_advisory_reason_list(row.get("paper_ready_block_reasons")),
         advisory_intent=_text_value(row.get("advisory_intent"))

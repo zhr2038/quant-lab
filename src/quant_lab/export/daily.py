@@ -1130,6 +1130,7 @@ CSV_SCHEMAS: dict[str, list[str]] = {
         "promotion_state",
         "alpha_factory_score",
         "universe_type",
+        "expanded_universe_maturity_state",
         "cost_quality_score",
         "paper_ready_block_reasons",
         "advisory_intent",
@@ -7566,6 +7567,11 @@ def _strategy_opportunity_advisory_for_export(
                 "promotion_state": promotion_state,
                 "alpha_factory_score": alpha_factory_score,
                 "universe_type": row.get("universe_type"),
+                "expanded_universe_maturity_state": (
+                    row.get("expanded_universe_maturity_state")
+                    or row.get("maturity_state")
+                    or row.get("decision")
+                ),
                 "cost_quality_score": cost_quality_score,
                 "paper_ready_block_reasons": safe_json_dumps(paper_ready_block_reasons),
                 "advisory_intent": _export_advisory_intent(recommended_mode),
@@ -7721,6 +7727,7 @@ def _expanded_universe_paper_opportunity_rows(
                 "promotion_state": "PAPER_READY",
                 "alpha_factory_score": None,
                 "universe_type": "expanded_paper",
+                "expanded_universe_maturity_state": "PAPER_READY",
                 "cost_quality_score": _optional_float(raw.get("cost_quality_score")),
                 "paper_ready_block_reasons": safe_json_dumps([]),
                 "advisory_intent": "paper_shadow",
@@ -7803,6 +7810,7 @@ def _entry_quality_opportunity_rows(entry_quality_advisory: pl.DataFrame) -> lis
                 "promotion_state": None,
                 "alpha_factory_score": None,
                 "universe_type": None,
+                "expanded_universe_maturity_state": None,
                 "cost_quality_score": None,
                 "paper_ready_block_reasons": "[]",
                 "advisory_intent": _export_advisory_intent(mode),
@@ -7934,6 +7942,7 @@ def _regime_router_opportunity_row(
         "promotion_state": None,
         "alpha_factory_score": None,
         "universe_type": None,
+        "expanded_universe_maturity_state": None,
         "cost_quality_score": None,
         "paper_ready_block_reasons": "[]",
         "advisory_intent": _export_advisory_intent(recommended_mode),
@@ -8001,6 +8010,7 @@ def _risk_on_multi_buy_opportunity_rows(risk_on_shadow: pl.DataFrame) -> list[di
                 "promotion_state": "SHADOW",
                 "alpha_factory_score": None,
                 "universe_type": "v5_major_spot",
+                "expanded_universe_maturity_state": None,
                 "cost_quality_score": None,
                 "paper_ready_block_reasons": safe_json_dumps(live_block_reasons),
                 "advisory_intent": _export_advisory_intent("shadow"),

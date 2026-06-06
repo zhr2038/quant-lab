@@ -41,6 +41,8 @@ V5_ADVISORY_FIELDS = {
     "promotion_state",
     "alpha_factory_score",
     "universe_type",
+    "expanded_universe_maturity_state",
+    "cost_quality",
     "cost_quality_score",
     "paper_ready_block_reasons",
     "advisory_intent",
@@ -877,6 +879,90 @@ def test_strategy_opportunity_advisory_compact_filters_and_etag(tmp_path, monkey
     assert not_modified.status_code == 304
     assert not_modified.headers["etag"] == etag
     assert not_modified.headers["x-advisory-response-cache-hit"] == "true"
+
+
+def test_strategy_opportunity_advisory_v5_compact_keeps_hype_wld_expanded_paper_rows(
+    tmp_path,
+    monkeypatch,
+):
+    lake = tmp_path / "lake"
+    monkeypatch.setenv("QUANT_LAB_LAKE_ROOT", str(lake))
+    monkeypatch.delenv("QUANT_LAB_API_TOKEN", raising=False)
+    api_main._STRATEGY_OPPORTUNITY_ADVISORY_CACHE.clear()
+    api_main._STRATEGY_OPPORTUNITY_ADVISORY_RESPONSE_CACHE.clear()
+    generated = datetime.now(UTC)
+    write_parquet_dataset(
+        pl.DataFrame(
+            [
+                {
+                    "as_of_ts": generated,
+                    "generated_at": generated,
+                    "expires_at": generated + timedelta(hours=1),
+                    "strategy_id": "HYPE_EXPANDED_UNIVERSE_PAPER_V1",
+                    "strategy_candidate": "v5.expanded_universe_hype_paper",
+                    "source_module": "expanded_universe",
+                    "template_family": "expanded_universe_paper",
+                    "symbol": "HYPE-USDT",
+                    "decision": "PAPER_READY",
+                    "recommended_mode": "paper",
+                    "universe_type": "expanded_paper",
+                    "expanded_universe_maturity_state": "PAPER_READY",
+                    "horizon_hours": 24,
+                    "sample_count": 33,
+                    "complete_sample_count": 31,
+                    "cost_source_mix": '{"public_spread_proxy":33}',
+                    "cost_quality": "public_proxy",
+                    "max_paper_notional_usdt": 25.0,
+                    "max_live_notional_usdt": 0.0,
+                },
+                {
+                    "as_of_ts": generated,
+                    "generated_at": generated,
+                    "expires_at": generated + timedelta(hours=1),
+                    "strategy_id": "WLD_EXPANDED_UNIVERSE_PAPER_V1",
+                    "strategy_candidate": "v5.expanded_universe_wld_paper",
+                    "source_module": "expanded_universe",
+                    "template_family": "expanded_universe_paper",
+                    "symbol": "WLD-USDT",
+                    "decision": "PAPER_READY",
+                    "recommended_mode": "paper",
+                    "universe_type": "expanded_paper",
+                    "expanded_universe_maturity_state": "PAPER_READY",
+                    "horizon_hours": 24,
+                    "sample_count": 21,
+                    "complete_sample_count": 18,
+                    "cost_source_mix": '{"mixed_actual_proxy":18}',
+                    "cost_quality": "actual_or_mixed",
+                    "max_paper_notional_usdt": 20.0,
+                    "max_live_notional_usdt": 0.0,
+                },
+            ]
+        ),
+        lake / "gold" / "strategy_opportunity_advisory",
+    )
+    client = TestClient(app)
+
+    response = client.get(
+        "/v1/strategy-opportunity-advisory/v5-compact",
+        params={"families": "expanded", "fresh_only": "true"},
+    )
+    api_main._STRATEGY_OPPORTUNITY_ADVISORY_CACHE.clear()
+    api_main._STRATEGY_OPPORTUNITY_ADVISORY_RESPONSE_CACHE.clear()
+
+    assert response.status_code == 200
+    rows = {row["strategy_id"]: row for row in response.json()}
+    assert rows["HYPE_EXPANDED_UNIVERSE_PAPER_V1"]["symbol"] == "HYPE-USDT"
+    assert rows["HYPE_EXPANDED_UNIVERSE_PAPER_V1"]["universe_type"] == "expanded_paper"
+    assert (
+        rows["HYPE_EXPANDED_UNIVERSE_PAPER_V1"]["expanded_universe_maturity_state"]
+        == "PAPER_READY"
+    )
+    assert rows["HYPE_EXPANDED_UNIVERSE_PAPER_V1"]["decision"] == "PAPER_READY"
+    assert rows["HYPE_EXPANDED_UNIVERSE_PAPER_V1"]["recommended_mode"] == "paper"
+    assert rows["HYPE_EXPANDED_UNIVERSE_PAPER_V1"]["max_live_notional_usdt"] == 0.0
+    assert rows["HYPE_EXPANDED_UNIVERSE_PAPER_V1"]["max_paper_notional_usdt"] == 25.0
+    assert rows["WLD_EXPANDED_UNIVERSE_PAPER_V1"]["symbol"] == "WLD-USDT"
+    assert rows["WLD_EXPANDED_UNIVERSE_PAPER_V1"]["cost_quality"] == "actual_or_mixed"
 
 
 def test_strategy_opportunity_advisory_uses_snapshot_meta_for_source_signature(

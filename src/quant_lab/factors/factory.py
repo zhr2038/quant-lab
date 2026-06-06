@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import math
 import subprocess
+import tempfile
 from collections import Counter
 from datetime import UTC, date, datetime
 from pathlib import Path
@@ -11,7 +12,7 @@ import polars as pl
 from pydantic import BaseModel, ConfigDict, Field
 
 from quant_lab import __version__
-from quant_lab.data.lake import read_parquet_dataset, upsert_parquet_dataset
+from quant_lab.data.lake import read_parquet_dataset, upsert_parquet_dataset, write_parquet_dataset
 from quant_lab.factors.operators import numeric, safe_divide, winsorize_expr
 from quant_lab.factors.registry import FactorSpec, discover_factor_specs
 from quant_lab.research.evidence import DEFAULT_RESEARCH_COST_BPS
@@ -230,6 +231,21 @@ def build_and_publish_factor_factory(
     cost_quantile: str = "p75",
     dry_run: bool = False,
 ) -> FactorFactoryBuildResult:
+    if dry_run:
+        return _build_factor_factory_dry_run(
+            lake_root,
+            as_of_date=as_of_date,
+            feature_set=feature_set,
+            feature_version=feature_version,
+            factor_version=factor_version,
+            timeframe=timeframe,
+            horizon_bars=horizon_bars,
+            decision_delay_bars=decision_delay_bars,
+            max_factors=max_factors,
+            min_samples=min_samples,
+            top_quantile=top_quantile,
+            cost_quantile=cost_quantile,
+        )
     published = publish_factor_values(
         lake_root,
         feature_set=feature_set,
@@ -262,6 +278,51 @@ def build_and_publish_factor_factory(
         correlation_rows=evidence.correlation_rows,
         decision_counts=evidence.decision_counts,
         warnings=_dedupe([*published.warnings, *evidence.warnings]),
+    )
+
+
+def _build_factor_factory_dry_run(
+    lake_root: str | Path,
+    *,
+    as_of_date: str | date | None,
+    feature_set: str,
+    feature_version: str,
+    factor_version: str,
+    timeframe: str,
+    horizon_bars: tuple[int, ...],
+    decision_delay_bars: int,
+    max_factors: int,
+    min_samples: int,
+    top_quantile: float,
+    cost_quantile: str,
+) -> FactorFactoryBuildResult:
+    source_root = Path(lake_root)
+    with tempfile.TemporaryDirectory(prefix="quant_lab_factor_factory_") as tmp:
+        temp_root = Path(tmp) / "lake"
+        for relative in [FEATURE_VALUE_DATASET, MARKET_BAR_DATASET, COST_BUCKET_DAILY_DATASET]:
+            frame = read_parquet_dataset(source_root / relative)
+            if not frame.is_empty():
+                write_parquet_dataset(frame, temp_root / relative)
+        result = build_and_publish_factor_factory(
+            temp_root,
+            as_of_date=as_of_date,
+            feature_set=feature_set,
+            feature_version=feature_version,
+            factor_version=factor_version,
+            timeframe=timeframe,
+            horizon_bars=horizon_bars,
+            decision_delay_bars=decision_delay_bars,
+            max_factors=max_factors,
+            min_samples=min_samples,
+            top_quantile=top_quantile,
+            cost_quantile=cost_quantile,
+            dry_run=False,
+        )
+    return result.model_copy(
+        update={
+            "lake_root": str(source_root),
+            "warnings": _dedupe([*result.warnings, "dry_run_no_production_write"]),
+        }
     )
 
 

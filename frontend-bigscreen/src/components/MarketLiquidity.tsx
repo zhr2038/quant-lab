@@ -7,6 +7,13 @@ export function MarketLiquidity({ market }: { market: Record<string, unknown> })
     <section className="card market pad">
       <h2 className="section-title icon-title"><Waves size={23} />市场状态与流动性</h2>
       <p className="sub">波动状态 / spread bps / trade activity 由 market_regime_summary 汇总。</p>
+      {!rows.length && (
+        <div className="market-empty-state">
+          <Waves size={34} />
+          <b>等待市场 regime 数据</b>
+          <span>market_regime_summary 暂无可展示行；数据恢复后会自动填充流动性队列。</span>
+        </div>
+      )}
       {rows.slice(0, 6).map((row, i) => {
         const spread = Number(row.spread_bps ?? 0);
         const tone = spread >= 6 ? "red" : spread >= 3 ? "yellow" : "";

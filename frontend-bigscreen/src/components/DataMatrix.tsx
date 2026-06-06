@@ -1,6 +1,13 @@
 import { DatabaseZap } from "lucide-react";
 import { statusClass, statusText } from "../lib/api";
 
+type MatrixStatusCounts = {
+  ok: number;
+  warning: number;
+  critical: number;
+  unknown: number;
+};
+
 export function DataMatrix({
   matrix
 }: {
@@ -15,35 +22,66 @@ export function DataMatrix({
     evidence: "证据",
     advisory: "建议"
   };
+  const rows = matrix.rows.slice(0, 8);
+  const statusCounts = rows.reduce<MatrixStatusCounts>(
+    (counts, row) => {
+      matrix.columns.forEach((column) => {
+        const cell = row[column] as Record<string, unknown> | undefined;
+        const status = statusClass(cell?.status);
+        if (status === "critical") counts.critical += 1;
+        else if (status === "warning") counts.warning += 1;
+        else if (status === "ok") counts.ok += 1;
+        else counts.unknown += 1;
+      });
+      return counts;
+    },
+    { ok: 0, warning: 0, critical: 0, unknown: 0 }
+  );
   return (
     <section className="card heatmap pad">
       <h2 className="section-title icon-title"><DatabaseZap size={23} />数据 / 市场可信矩阵</h2>
       <p className="sub">按 symbol 汇总行情、WS、价差、成交、成本、证据、advisory；异常格会闪烁。</p>
-      <div className="matrix">
-        <div />
-        {matrix.columns.map((column) => <div className="h" key={column}>{labels[column] ?? column}</div>)}
-        {matrix.rows.slice(0, 8).flatMap((row) => {
-          const symbol = String(row.symbol ?? "—").replace("-USDT", "");
-          return [
-            <div className="symbol" key={`${symbol}-label`}>{symbol}</div>,
-            ...matrix.columns.map((column) => {
-              const cell = row[column] as Record<string, unknown> | undefined;
-              const status = statusClass(cell?.status);
-              return (
-                <span
-                  className={`cell ${status}`}
-                  key={`${symbol}-${column}`}
-                  title={`${symbol} ${labels[column] ?? column}: ${statusText(cell?.status)} · ${JSON.stringify(cell ?? {})}`}
-                />
-              );
-            })
-          ];
-        })}
+      <div className="matrix-grid-shell">
+        <div className="matrix">
+          <div />
+          {matrix.columns.map((column) => <div className="h" key={column}>{labels[column] ?? column}</div>)}
+          {rows.flatMap((row) => {
+            const symbol = String(row.symbol ?? "—").replace("-USDT", "");
+            return [
+              <div className="symbol" key={`${symbol}-label`}>{symbol}</div>,
+              ...matrix.columns.map((column) => {
+                const cell = row[column] as Record<string, unknown> | undefined;
+                const status = statusClass(cell?.status);
+                return (
+                  <span
+                    className={`cell ${status}`}
+                    key={`${symbol}-${column}`}
+                    title={`${symbol} ${labels[column] ?? column}: ${statusText(cell?.status)} · ${JSON.stringify(cell ?? {})}`}
+                  />
+                );
+              })
+            ];
+          })}
+          {!rows.length && (
+            <div className="matrix-empty-state">
+              暂无 symbol 矩阵数据 · 等待 market_bar / advisory / evidence 刷新
+            </div>
+          )}
+        </div>
+        <aside className="matrix-side-panel">
+          <div className="matrix-side-title">Freshness Timeline</div>
+          <svg className="sparkline matrix-spark" viewBox="0 0 480 96" aria-hidden="true">
+            <path d="M0 58 C42 16 84 24 126 62 S214 86 256 48 S336 10 386 34 S444 18 480 52" fill="none" stroke="#50a9ff" strokeWidth="3" />
+            <path d="M0 72 C58 46 104 48 154 70 S256 88 316 56 S412 44 480 66" fill="none" stroke="rgba(45,232,166,.72)" strokeWidth="2" />
+          </svg>
+          <div className="matrix-side-stats">
+            <span><b>{rows.length}</b><em>symbols</em></span>
+            <span><b>{statusCounts.ok}</b><em>ok</em></span>
+            <span><b>{statusCounts.warning}</b><em>warn</em></span>
+            <span><b>{statusCounts.critical}</b><em>critical</em></span>
+          </div>
+        </aside>
       </div>
-      <svg className="sparkline matrix-spark" viewBox="0 0 480 56" aria-hidden="true">
-        <path d="M0 34 C40 4 72 16 116 44 S196 60 240 32 S314 10 360 28 S430 6 480 38" fill="none" stroke="#50a9ff" strokeWidth="2" />
-        <text x="0" y="52" fill="#8aa4be" fontSize="11">Freshness Timeline</text>
-      </svg>
     </section>
   );
 }

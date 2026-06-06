@@ -483,6 +483,43 @@ def test_actual_or_mixed_coverage_ignores_stale_mixed_when_fresh_proxy_exists(
     assert live_detail["SOL-USDT"]["latest_actual_or_mixed_stale"] is True
 
 
+def test_live_cost_stale_detail_uses_latest_actual_or_mixed_row(tmp_path):
+    lake = tmp_path / "lake"
+    _write_common_ready_inputs(lake)
+    now = datetime.now(UTC)
+    stale = now - timedelta(days=7)
+    write_parquet_dataset(
+        pl.DataFrame(
+            [
+                _cost_row(
+                    symbol="BNB-USDT",
+                    source="mixed_actual_proxy",
+                    total=3.0,
+                    created_at=stale,
+                ),
+                _cost_row(
+                    symbol="BNB-USDT",
+                    source="actual_fills",
+                    total=2.0,
+                    created_at=now,
+                ),
+                _cost_row(symbol="BTC-USDT", source="mixed_actual_proxy", total=2.0),
+                _cost_row(symbol="ETH-USDT", source="mixed_actual_proxy", total=2.0),
+                _cost_row(symbol="SOL-USDT", source="mixed_actual_proxy", total=2.0),
+            ]
+        ),
+        lake / "gold/cost_bucket_daily",
+    )
+
+    report = build_enforce_readiness_report(lake)
+
+    assert report.readiness_status == "READY"
+    assert report.metrics["stale_actual_or_mixed_symbols_live"] == []
+    detail = report.metrics["live_cost_source_detail"]["BNB-USDT"]
+    assert detail["latest_actual_or_mixed_source"] == "actual_fills"
+    assert detail["latest_actual_or_mixed_stale"] is False
+
+
 def test_cost_coverage_splits_live_and_expanded_universes(tmp_path):
     lake = tmp_path / "lake"
     _write_common_ready_inputs(lake)

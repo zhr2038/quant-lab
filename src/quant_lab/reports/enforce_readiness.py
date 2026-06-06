@@ -452,11 +452,16 @@ def _cost_api_metrics(
     proxy_only_live = proxy_only & live_symbol_set
     proxy_only_expanded = proxy_only & expanded_symbol_set
     missing_actual_or_mixed_live = live_symbol_set - actual_or_mixed_live
-    stale_actual_or_mixed_live = stale_actual_or_mixed & live_symbol_set
     live_cost_source_detail = _live_cost_source_detail(
         cost_rows=cost_rows,
         live_symbols=live_symbol_set,
     )
+    stale_actual_or_mixed_live = {
+        symbol
+        for symbol, item in live_cost_source_detail.items()
+        if item.get("latest_actual_or_mixed_source") != "missing"
+        and item.get("latest_actual_or_mixed_stale") is True
+    }
     missing_live_cost_symbols = live_symbol_set - hit_symbols
     coverage_denominator = max(len(denominator_symbols), 1)
     return {

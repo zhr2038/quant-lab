@@ -123,3 +123,42 @@ def test_job_run_history_uses_duration_seconds_schema():
     assert job_run_history is not None
     assert "duration_seconds" in job_run_history.required_columns
     assert "duration_s" not in job_run_history.required_columns
+
+
+def test_v5_registry_matches_current_envelope_and_daily_schemas():
+    decision_audit = get_dataset_spec("v5_decision_audit")
+    usage = get_dataset_spec("v5_quant_lab_usage")
+    cost_usage = get_dataset_spec("v5_quant_lab_cost_usage")
+    trade_event = get_dataset_spec("v5_trade_event")
+    strategy_health = get_dataset_spec("strategy_health_daily")
+    strategy_evidence_quality = get_dataset_spec("strategy_evidence_quality")
+
+    assert decision_audit is not None
+    assert decision_audit.required_columns == (
+        "bundle_ts",
+        "ingest_ts",
+        "run_id",
+        "raw_payload_json",
+    )
+    assert decision_audit.timestamp_column == "ingest_ts"
+
+    assert usage is not None
+    assert usage.required_columns == ("bundle_ts", "ingest_ts", "raw_payload_json")
+    assert usage.timestamp_column == "ingest_ts"
+
+    assert cost_usage is not None
+    assert "freshness" not in cost_usage.quality_rules
+    assert trade_event is not None
+    assert "freshness" not in trade_event.quality_rules
+
+    assert strategy_health is not None
+    assert strategy_health.required_columns == ("date", "status", "latest_bundle_ts")
+    assert strategy_health.timestamp_column == "latest_bundle_ts"
+
+    assert strategy_evidence_quality is not None
+    assert strategy_evidence_quality.required_columns == (
+        "severity",
+        "warning_type",
+        "warning_count",
+        "created_at",
+    )

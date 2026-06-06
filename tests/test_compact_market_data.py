@@ -32,7 +32,12 @@ def test_market_data_rollups_generate_1m_tables(tmp_path):
         pl.DataFrame(
             [
                 {"symbol": "BNB-USDT", "ts": ts, "size": 1.0, "side": "buy"},
-                {"symbol": "BNB-USDT", "ts": ts + timedelta(seconds=10), "size": 2.0, "side": "sell"},
+                {
+                    "symbol": "BNB-USDT",
+                    "ts": ts + timedelta(seconds=10),
+                    "size": 2.0,
+                    "side": "sell",
+                },
             ]
         ),
         lake / "silver/trade_print",
@@ -44,8 +49,8 @@ def test_market_data_rollups_generate_1m_tables(tmp_path):
                     "symbol": "BNB-USDT",
                     "channel": "books5",
                     "ts": ts,
-                    "asks_json": "[[\"101\", \"1\"]]",
-                    "bids_json": "[[\"100\", \"3\"]]",
+                    "asks_json": '[["101", "1"]]',
+                    "bids_json": '[["100", "3"]]',
                 }
             ]
         ),
@@ -70,7 +75,12 @@ def test_market_data_rollups_are_written_idempotently(tmp_path):
         pl.DataFrame(
             [
                 {"symbol": "BNB-USDT", "ts": ts, "size": 1.0, "side": "buy"},
-                {"symbol": "BNB-USDT", "ts": ts + timedelta(seconds=10), "size": 2.0, "side": "sell"},
+                {
+                    "symbol": "BNB-USDT",
+                    "ts": ts + timedelta(seconds=10),
+                    "size": 2.0,
+                    "side": "sell",
+                },
             ]
         ),
         lake / "silver/trade_print",
@@ -82,8 +92,8 @@ def test_market_data_rollups_are_written_idempotently(tmp_path):
                     "symbol": "BNB-USDT",
                     "channel": "books5",
                     "ts": ts,
-                    "asks_json": "[[\"101\", \"1\"]]",
-                    "bids_json": "[[\"100\", \"1\"]]",
+                    "asks_json": '[["101", "1"]]',
+                    "bids_json": '[["100", "1"]]',
                 }
             ]
         ),
@@ -93,10 +103,14 @@ def test_market_data_rollups_are_written_idempotently(tmp_path):
     first = build_market_data_1m_rollups(lake, dry_run=False)
     second = build_market_data_1m_rollups(lake, dry_run=False)
 
-    assert first.rollup_rows == second.rollup_rows == {
-        "trade_activity_1m": 1,
-        "orderbook_spread_1m": 1,
-    }
+    assert (
+        first.rollup_rows
+        == second.rollup_rows
+        == {
+            "trade_activity_1m": 1,
+            "orderbook_spread_1m": 1,
+        }
+    )
     assert count_parquet_rows(lake / "silver/trade_activity_1m") == 1
     assert count_parquet_rows(lake / "silver/orderbook_spread_1m") == 1
     trade_row = read_parquet_dataset(lake / "silver/trade_activity_1m").to_dicts()[0]
@@ -131,8 +145,8 @@ def test_market_data_rollups_parse_iso_string_timestamps(tmp_path):
                     "symbol": "BNB-USDT",
                     "channel": "books5",
                     "ts": ts.isoformat().replace("+00:00", "Z"),
-                    "asks_json": "[[\"101\", \"1\"]]",
-                    "bids_json": "[[\"100\", \"1\"]]",
+                    "asks_json": '[["101", "1"]]',
+                    "bids_json": '[["100", "1"]]',
                 }
             ]
         ),
@@ -153,12 +167,8 @@ def test_market_data_rollup_lookback_skips_old_source_files(tmp_path):
     new_ts = datetime(2026, 5, 31, 10, 0, tzinfo=UTC)
     old_file = source / "old.parquet"
     new_file = source / "new.parquet"
-    pl.DataFrame([{"symbol": "BNB-USDT", "ts": old_ts, "size": 100.0}]).write_parquet(
-        old_file
-    )
-    pl.DataFrame([{"symbol": "BNB-USDT", "ts": new_ts, "size": 2.0}]).write_parquet(
-        new_file
-    )
+    pl.DataFrame([{"symbol": "BNB-USDT", "ts": old_ts, "size": 100.0}]).write_parquet(old_file)
+    pl.DataFrame([{"symbol": "BNB-USDT", "ts": new_ts, "size": 2.0}]).write_parquet(new_file)
     old_mtime = old_ts.timestamp()
     new_mtime = new_ts.timestamp()
     os.utime(old_file, (old_mtime, old_mtime))
@@ -187,8 +197,8 @@ def test_orderbook_spread_rollup_prefers_spread_bps_without_json_udf(tmp_path, m
                     "channel": "books5",
                     "ts": ts,
                     "spread_bps": 12.5,
-                    "asks_json": "[[\"999\", \"1\"]]",
-                    "bids_json": "[[\"1\", \"1\"]]",
+                    "asks_json": '[["999", "1"]]',
+                    "bids_json": '[["1", "3"]]',
                 }
             ]
         ),
@@ -204,6 +214,7 @@ def test_orderbook_spread_rollup_prefers_spread_bps_without_json_udf(tmp_path, m
 
     assert spreads.height == 1
     assert spreads["spread_bps"][0] == 12.5
+    assert spreads["orderbook_imbalance"][0] == 0.5
 
 
 def test_orderbook_spread_rollup_warns_on_legacy_json_udf_fallback(tmp_path):
@@ -216,8 +227,8 @@ def test_orderbook_spread_rollup_warns_on_legacy_json_udf_fallback(tmp_path):
                     "symbol": "BNB-USDT",
                     "channel": "books5",
                     "ts": ts,
-                    "asks_json": "[[\"101\", \"1\"]]",
-                    "bids_json": "[[\"100\", \"1\"]]",
+                    "asks_json": '[["101", "1"]]',
+                    "bids_json": '[["100", "1"]]',
                 }
             ]
         ),
@@ -238,9 +249,9 @@ def test_recent_file_selection_uses_index_max_ts_not_mtime(tmp_path):
     old_mtime_ts = datetime(2026, 5, 30, 10, 0, tzinfo=UTC)
     recent_data_ts = datetime(2026, 5, 31, 10, 0, tzinfo=UTC)
     file_path = source / "recent-data-old-mtime.parquet"
-    pl.DataFrame(
-        [{"symbol": "BNB-USDT", "ts": recent_data_ts, "size": 2.0}]
-    ).write_parquet(file_path)
+    pl.DataFrame([{"symbol": "BNB-USDT", "ts": recent_data_ts, "size": 2.0}]).write_parquet(
+        file_path
+    )
     old_mtime = old_mtime_ts.timestamp()
     os.utime(file_path, (old_mtime, old_mtime))
     build_lake_file_index(lake, ["silver/trade_print"])

@@ -148,10 +148,16 @@ def build_trade_activity_1m_rollup(
     )
     size_expr = size_value.sum().alias("size_sum")
     side_field = _first_existing(schema, ("side", "taker_side", "direction", "aggressor_side"))
-    buy_size_field = _first_existing(schema, ("taker_buy_size", "taker_buy_volume", "buy_size", "buy_volume"))
-    sell_size_field = _first_existing(schema, ("taker_sell_size", "taker_sell_volume", "sell_size", "sell_volume"))
+    buy_size_field = _first_existing(
+        schema, ("taker_buy_size", "taker_buy_volume", "buy_size", "buy_volume")
+    )
+    sell_size_field = _first_existing(
+        schema, ("taker_sell_size", "taker_sell_volume", "sell_size", "sell_volume")
+    )
     if buy_size_field is not None:
-        taker_buy_expr = pl.col(buy_size_field).cast(pl.Float64, strict=False).sum().alias("taker_buy_size_sum")
+        taker_buy_expr = (
+            pl.col(buy_size_field).cast(pl.Float64, strict=False).sum().alias("taker_buy_size_sum")
+        )
     elif side_field is not None and size_field is not None:
         side_text = pl.col(side_field).cast(pl.Utf8, strict=False).str.to_lowercase()
         taker_buy_expr = (
@@ -164,7 +170,12 @@ def build_trade_activity_1m_rollup(
     else:
         taker_buy_expr = pl.lit(None).cast(pl.Float64).alias("taker_buy_size_sum")
     if sell_size_field is not None:
-        taker_sell_expr = pl.col(sell_size_field).cast(pl.Float64, strict=False).sum().alias("taker_sell_size_sum")
+        taker_sell_expr = (
+            pl.col(sell_size_field)
+            .cast(pl.Float64, strict=False)
+            .sum()
+            .alias("taker_sell_size_sum")
+        )
     elif side_field is not None and size_field is not None:
         side_text = pl.col(side_field).cast(pl.Utf8, strict=False).str.to_lowercase()
         taker_sell_expr = (
@@ -216,12 +227,16 @@ def build_orderbook_spread_1m_rollup(
     channel_expr = pl.col("channel") if "channel" in schema else pl.lit("").alias("channel")
     bid_size_field = _first_existing(schema, ("bid_size", "bid_qty", "bid_volume"))
     ask_size_field = _first_existing(schema, ("ask_size", "ask_qty", "ask_volume"))
-    imbalance_field = _first_existing(schema, ("orderbook_imbalance", "imbalance", "bid_ask_imbalance", "book_imbalance"))
+    imbalance_field = _first_existing(
+        schema, ("orderbook_imbalance", "imbalance", "bid_ask_imbalance", "book_imbalance")
+    )
+    json_columns = ["asks_json", "bids_json"] if {"asks_json", "bids_json"}.issubset(schema) else []
     if "spread_bps" in schema:
         selected_columns = [
             "symbol",
             "ts",
             "spread_bps",
+            *json_columns,
             *([imbalance_field] if imbalance_field is not None else []),
             *([bid_size_field] if bid_size_field is not None else []),
             *([ask_size_field] if ask_size_field is not None else []),
@@ -253,7 +268,7 @@ def build_orderbook_spread_1m_rollup(
         imbalance_field=imbalance_field,
         bid_size_field=bid_size_field,
         ask_size_field=ask_size_field,
-        allow_json_fallback="spread_bps" not in schema,
+        allow_json_fallback={"asks_json", "bids_json"}.issubset(schema),
     )
     frame = (
         lazy.select(selected_columns)

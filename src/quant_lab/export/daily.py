@@ -4179,6 +4179,7 @@ def _dataset_members(
     regime_strategy_advisory = frames.get("regime_strategy_advisory", pl.DataFrame())
     missed_opportunity_audit = frames.get("v5_missed_opportunity_audit", pl.DataFrame())
     risk_on_multi_buy_shadow = frames.get("v5_risk_on_multi_buy_shadow", pl.DataFrame())
+    expanded_maturity = frames.get("expanded_universe_candidate_maturity", pl.DataFrame())
     bnb_missed_opportunity = _bnb_missed_opportunity_samples_for_export(
         candidate_events=frames.get("v5_candidate_event", pl.DataFrame()),
         market_bars=market,
@@ -4217,6 +4218,7 @@ def _dataset_members(
         risk_on_multi_buy_shadow=risk_on_multi_buy_shadow,
         alpha_factory_results=frames.get("alpha_factory_result", pl.DataFrame()),
         alpha_factory_promotion_queue=alpha_factory_promotion,
+        expanded_universe_maturity=expanded_maturity,
     )
     strategy_level_dashboard = _strategy_level_dashboard_for_export(opportunity_advisory)
     gates = _gate_decisions_for_export(frames.get("gate_decision", pl.DataFrame()))
@@ -4271,7 +4273,6 @@ def _dataset_members(
     expanded_events = frames.get("expanded_universe_candidate_event", pl.DataFrame())
     expanded_labels = frames.get("expanded_universe_candidate_label", pl.DataFrame())
     expanded_promotion = frames.get("expanded_universe_promotion_queue", pl.DataFrame())
-    expanded_maturity = frames.get("expanded_universe_candidate_maturity", pl.DataFrame())
     expanded_watchlist = frames.get("expanded_universe_watchlist", pl.DataFrame())
     expanded_universe = frames.get("expanded_crypto_universe_shadow", pl.DataFrame())
     symbol_quality = frames.get("symbol_quality_score", pl.DataFrame())

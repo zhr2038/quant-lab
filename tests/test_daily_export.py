@@ -138,6 +138,82 @@ def test_export_daily_pack_writes_required_members(tmp_path):
         assert meta.get("source_sha"), dataset
 
 
+def test_export_daily_pack_includes_expanded_universe_paper_advisory_from_maturity(
+    tmp_path,
+):
+    lake_root = _fixture_lake(tmp_path)
+    generated_at = datetime(2026, 5, 11, 8, tzinfo=UTC)
+    write_parquet_dataset(
+        pl.DataFrame(
+            [
+                {
+                    "as_of_date": "2026-05-11",
+                    "generated_at": generated_at,
+                    "symbol": "HYPE-USDT",
+                    "strategy_candidate": "Alpha6Factor",
+                    "universe_type": "expanded_paper",
+                    "maturity_state": "KEEP_SHADOW",
+                    "recommended_mode": "shadow",
+                    "sample_count": 62,
+                    "complete_sample_count": 61,
+                    "avg_net_bps": 54.4,
+                    "p25_net_bps": -350.5,
+                    "win_rate": 0.72,
+                    "cost_source_mix": '{"public_spread_proxy": 62}',
+                },
+                {
+                    "as_of_date": "2026-05-11",
+                    "generated_at": generated_at,
+                    "symbol": "WLD-USDT",
+                    "strategy_candidate": "Alpha6Factor",
+                    "universe_type": "expanded_paper",
+                    "maturity_state": "PAPER_READY",
+                    "recommended_mode": "paper",
+                    "sample_count": 62,
+                    "complete_sample_count": 61,
+                    "avg_net_bps": 230.5,
+                    "p25_net_bps": 456.4,
+                    "win_rate": 0.8,
+                    "max_paper_notional_usdt": 80.0,
+                    "cost_source_mix": '{"public_spread_proxy": 62}',
+                    "cost_quality": "public_proxy",
+                },
+            ]
+        ),
+        lake_root / "gold" / "expanded_universe_candidate_maturity",
+    )
+
+    result = export_daily_pack(
+        export_date="2026-05-11",
+        lake_root=lake_root,
+        out_dir=tmp_path / "exports",
+        profile="expert",
+        command_line=["qlab", "export-daily"],
+        pre_export_v5_refresh=False,
+    )
+
+    with zipfile.ZipFile(result.zip_path) as archive:
+        advisory = list(
+            csv.DictReader(
+                io.StringIO(
+                    archive.read("reports/strategy_opportunity_advisory.csv").decode("utf-8")
+                )
+            )
+        )
+
+    by_strategy_id = {row["strategy_id"]: row for row in advisory}
+    assert "HYPE_EXPANDED_UNIVERSE_PAPER_V1" not in by_strategy_id
+    wld = by_strategy_id["WLD_EXPANDED_UNIVERSE_PAPER_V1"]
+    assert wld["strategy_candidate"] == "v5.expanded_universe_wld_paper"
+    assert wld["symbol"] == "WLD-USDT"
+    assert wld["decision"] == "PAPER_READY"
+    assert wld["recommended_mode"] == "paper"
+    assert wld["universe_type"] == "expanded_paper"
+    assert wld["expanded_universe_maturity_state"] == "PAPER_READY"
+    assert wld["max_live_notional_usdt"] == "0.0"
+    assert wld["max_paper_notional_usdt"] == "80.0"
+
+
 def test_api_latency_summary_export_includes_cache_and_payload_fields(
     tmp_path,
     monkeypatch,

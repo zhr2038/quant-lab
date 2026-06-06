@@ -34,6 +34,7 @@ FAST_MICROSTRUCTURE_FIELDS = [
     "taker_sell_size_sum_15m",
     "taker_buy_sell_imbalance_5m",
     "cvd_5m",
+    "cvd_divergence",
     "cvd_size_15m",
     "vwap_1h",
     "close_vs_vwap_1h_bps",
@@ -139,6 +140,7 @@ def build_fast_microstructure_features(
         close_vs_vwap = None
         if vwap_1h and close:
             close_vs_vwap = (close / vwap_1h - 1.0) * 10000.0
+        cvd_divergence = _cvd_divergence(ret_1h, taker_imbalance_5m)
         rows.append(
             {
                 "generated_at": generated.isoformat().replace("+00:00", "Z"),
@@ -164,6 +166,7 @@ def build_fast_microstructure_features(
                 "taker_sell_size_sum_15m": taker_sell_15m,
                 "taker_buy_sell_imbalance_5m": taker_imbalance_5m,
                 "cvd_5m": cvd_5m,
+                "cvd_divergence": cvd_divergence,
                 "cvd_size_15m": cvd,
                 "vwap_1h": vwap_1h,
                 "close_vs_vwap_1h_bps": close_vs_vwap,
@@ -284,6 +287,18 @@ def _sum_first_observed(
                 seen = True
                 break
     return total if seen else None
+
+
+def _cvd_divergence(return_1h_bps: float | None, taker_imbalance_5m: float | None) -> float | None:
+    if return_1h_bps is None or taker_imbalance_5m is None:
+        return None
+    if abs(return_1h_bps) < 1e-9:
+        return 0.0
+    if return_1h_bps < 0.0 and taker_imbalance_5m > 0.0:
+        return taker_imbalance_5m
+    if return_1h_bps > 0.0 and taker_imbalance_5m < 0.0:
+        return taker_imbalance_5m
+    return 0.0
 
 
 def _bars_window(rows: list[dict[str, Any]], ts: datetime, *, hours: int) -> list[dict[str, Any]]:

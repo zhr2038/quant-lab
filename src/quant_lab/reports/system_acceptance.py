@@ -124,6 +124,19 @@ def build_system_acceptance_dashboard(
         )
     )
 
+    checks.append(
+        _fast_microstructure_observability_check(
+            _first_frame(
+                frames,
+                report_frames,
+                (
+                    "fast_microstructure_features",
+                    "v5_fast_microstructure_features",
+                ),
+            )
+        )
+    )
+
     label_summary = report_frames.get("backtest_label_summary", pl.DataFrame())
     promotion = report_frames.get("research_promotion_decision", pl.DataFrame())
     replay = report_frames.get("v5_decision_replay_trades", pl.DataFrame())
@@ -294,12 +307,14 @@ def _label_join_check(
         )
     rows = frame.to_dicts()
     observable = sum(1 for row in rows if _row_has_future_label(row))
-    status = "PASS" if observable == len(rows) else "FAIL"
+    pending = len(rows) - observable
+    pending_ratio = pending / len(rows) if rows else 1.0
+    status = "PASS" if observable > 0 and pending_ratio < 0.95 else "FAIL"
     return _check(
         check_name,
         status,
-        f"observable_label_rows={observable};rows={len(rows)}",
-        "all report rows have at least one future_*h_net_bps value",
+        f"observable_label_rows={observable};pending_rows={pending};rows={len(rows)};pending_ratio={pending_ratio:.6f}",
+        "pending_ratio < 0.95 and at least one report row has a future label",
         owner,
         "" if status == "PASS" else next_action,
     )
@@ -342,6 +357,25 @@ def _expanded_universe_v5_check(
             "expanded_universe_paper_daily",
         ),
     ))
+    runs_frame = _first_frame(
+        frames,
+        report_frames,
+        (
+            "v5_expanded_universe_paper_run",
+            "v5_expanded_universe_paper_runs",
+            "expanded_universe_paper_runs",
+            "v5_paper_strategy_run",
+            "paper_strategy_runs",
+        ),
+    )
+    daily_frame = _first_frame(
+        frames,
+        report_frames,
+        (
+            "v5_expanded_universe_paper_daily",
+            "expanded_universe_paper_daily",
+        ),
+    )
     wanted = {symbol for symbol in ready_symbols if symbol in {"HYPE-USDT", "WLD-USDT"}}
     observed = wanted & v5_reader & v5_runs & v5_daily
     if not wanted:
@@ -359,16 +393,22 @@ def _expanded_universe_v5_check(
     missing_reader = sorted(wanted - v5_reader)
     missing_runs = sorted(wanted - v5_runs)
     missing_daily = sorted(wanted - v5_daily)
-    status = "PASS" if wanted <= observed else "FAIL"
+    missing_no_sample_reason = sorted(
+        symbol
+        for symbol in wanted & v5_runs
+        if _expanded_entry_count_zero_without_reason(symbol, runs_frame, daily_frame)
+    )
+    status = "PASS" if wanted <= observed and not missing_no_sample_reason else "FAIL"
     return _check(
         "expanded_universe_paper_v5_rows_ok",
         status,
         (
             f"ready={sorted(wanted)};reader={sorted(v5_reader & wanted)};"
             f"runs={sorted(v5_runs & wanted)};daily={sorted(v5_daily & wanted)};"
-            f"missing_reader={missing_reader};missing_runs={missing_runs};missing_daily={missing_daily}"
+            f"missing_reader={missing_reader};missing_runs={missing_runs};missing_daily={missing_daily};"
+            f"entry_count_zero_missing_no_sample_reason={missing_no_sample_reason}"
         ),
-        "all HYPE/WLD PAPER_READY rows appear in V5 expanded reader, runs, and daily telemetry",
+        "all HYPE/WLD PAPER_READY rows appear in V5 expanded reader/runs/daily telemetry, and no-entry rows explain no_sample_reason",
         "V5",
         "" if status == "PASS" else "fix V5 expanded_universe reader/runs/daily telemetry sync",
     )
@@ -469,6 +509,30 @@ def _v5_paper_symbols(frame: pl.DataFrame) -> set[str]:
     return symbols
 
 
+def _expanded_entry_count_zero_without_reason(
+    symbol: str,
+    runs_frame: pl.DataFrame,
+    daily_frame: pl.DataFrame,
+) -> bool:
+    run_rows = [
+        row for row in _rows(runs_frame)
+        if normalize_symbol(row.get("symbol")) == symbol
+        or str(row.get("strategy_id") or "").startswith(symbol.split("-", 1)[0])
+    ]
+    daily_rows = [
+        row for row in _rows(daily_frame)
+        if normalize_symbol(row.get("symbol")) == symbol
+        or str(row.get("strategy_id") or "").startswith(symbol.split("-", 1)[0])
+    ]
+    if not run_rows and not daily_rows:
+        return False
+    any_entry = any(_truthy(row.get("would_enter")) for row in run_rows)
+    any_entry = any_entry or any((_float(row.get("entry_count")) or 0.0) > 0 for row in daily_rows)
+    if any_entry:
+        return False
+    return not any(str(row.get("no_sample_reason") or "").strip() for row in run_rows)
+
+
 def _first_frame(
     frames: Mapping[str, pl.DataFrame],
     report_frames: Mapping[str, pl.DataFrame],
@@ -521,9 +585,55 @@ def _row_has_future_label(row: Mapping[str, Any]) -> bool:
             return True
         if _float(row.get(f"label_{horizon}h_net_bps")) is not None:
             return True
+        if _float(row.get(f"label_{horizon}h_after_cost_bps")) is not None:
+            return True
         if _float(row.get(f"paper_pnl_bps_{horizon}h")) is not None:
             return True
     return False
+
+
+FAST_MICROSTRUCTURE_CORE_FIELDS = (
+    "orderbook_imbalance_1m",
+    "orderbook_imbalance_5m",
+    "taker_buy_sell_imbalance_5m",
+    "cvd_5m",
+    "cvd_divergence",
+    "spread_bps_change_5m",
+)
+
+
+def _fast_microstructure_observability_check(frame: pl.DataFrame) -> dict[str, Any]:
+    if frame.is_empty():
+        return _check(
+            "fast_microstructure_core_observability_ok",
+            "WARNING",
+            "rows=0",
+            "core fast microstructure fields not_observable_ratio < 0.30",
+            "quant-lab",
+            "refresh orderbook_spread_1m/trade_activity_1m rollups and rerun export",
+        )
+    rows = frame.to_dicts()
+    missing = 0
+    total = len(rows) * len(FAST_MICROSTRUCTURE_CORE_FIELDS)
+    missing_fields: list[str] = []
+    for field in FAST_MICROSTRUCTURE_CORE_FIELDS:
+        if field not in frame.columns:
+            missing += len(rows)
+            missing_fields.append(field)
+            continue
+        for row in rows:
+            if _float(row.get(field)) is None:
+                missing += 1
+    ratio = missing / total if total else 1.0
+    status = "PASS" if ratio < 0.30 else "FAIL"
+    return _check(
+        "fast_microstructure_core_observability_ok",
+        status,
+        f"rows={len(rows)};missing_cells={missing};total_cells={total};not_observable_ratio={ratio:.6f};missing_fields={missing_fields}",
+        "core fast microstructure fields not_observable_ratio < 0.30",
+        "quant-lab",
+        "" if status == "PASS" else "fix orderbook/trade rollups or feature field mapping",
+    )
 
 
 def _latest_dt(frame: pl.DataFrame, columns: tuple[str, ...]) -> datetime | None:

@@ -150,6 +150,7 @@ def test_bottom_fast_microstructure_and_market_pressure_reports_export(tmp_path)
     assert fast_row["orderbook_imbalance_5m"] == 0.25
     assert fast_row["taker_buy_sell_imbalance_5m"] > 0
     assert fast_row["cvd_5m"] > 0
+    assert fast_row["cvd_divergence"] is not None
     assert fast_row["spread_bps_change_5m"] < 0
     assert pressure["market_pressure_state"][0] in {
         "BOTTOM_PROBE_ALLOWED",

@@ -403,7 +403,7 @@ def test_system_acceptance_requires_expanded_reader_runs_and_daily_rows():
             "expanded_universe_advisory_reader": reader,
             "expanded_universe_paper_runs": runs,
             "expanded_universe_paper_daily": pl.DataFrame(
-                [{"symbol": "HYPE-USDT", "strategy_id": "HYPE_EXPANDED_UNIVERSE_PAPER_V1"}]
+                [{"symbol": "HYPE-USDT", "strategy_id": "HYPE_EXPANDED_UNIVERSE_PAPER_V1", "entry_count": 1}]
             ),
         },
         row_counts={},
@@ -415,6 +415,151 @@ def test_system_acceptance_requires_expanded_reader_runs_and_daily_rows():
     )
     passed_row = next(row for row in passed.to_dicts() if row["check_name"] == "expanded_universe_paper_v5_rows_ok")
     assert passed_row["status"] == "PASS"
+
+
+def test_system_acceptance_requires_no_sample_reason_when_expanded_entry_count_zero():
+    generated_at = datetime(2026, 6, 4, 10, tzinfo=UTC)
+    advisory = pl.DataFrame(
+        [
+            {
+                "strategy_id": "WLD_EXPANDED_UNIVERSE_PAPER_V1",
+                "strategy_candidate": "v5.expanded_universe_wld_paper",
+                "symbol": "WLD-USDT",
+                "decision": "PAPER_READY",
+                "recommended_mode": "paper",
+                "universe_type": "expanded_paper",
+                "generated_at": generated_at,
+                "expires_at": generated_at + timedelta(hours=2),
+            }
+        ]
+    )
+    reader = pl.DataFrame([{"symbol": "WLD-USDT", "strategy_id": "WLD_EXPANDED_UNIVERSE_PAPER_V1"}])
+    runs_without_reason = pl.DataFrame(
+        [{"symbol": "WLD-USDT", "strategy_id": "WLD_EXPANDED_UNIVERSE_PAPER_V1", "would_enter": False}]
+    )
+    daily_zero = pl.DataFrame(
+        [{"symbol": "WLD-USDT", "strategy_id": "WLD_EXPANDED_UNIVERSE_PAPER_V1", "entry_count": 0}]
+    )
+
+    failed = daily_export_module.build_system_acceptance_dashboard(
+        frames={},
+        report_frames={
+            "strategy_opportunity_advisory": advisory,
+            "expanded_universe_advisory_reader": reader,
+            "expanded_universe_paper_runs": runs_without_reason,
+            "expanded_universe_paper_daily": daily_zero,
+        },
+        row_counts={},
+        pre_export_v5={},
+        data_quality_warnings=[],
+        api_latency_summary=pl.DataFrame(),
+        lake_file_count=0,
+        generated_at=generated_at,
+    )
+    failed_row = next(row for row in failed.to_dicts() if row["check_name"] == "expanded_universe_paper_v5_rows_ok")
+    assert failed_row["status"] == "FAIL"
+    assert "entry_count_zero_missing_no_sample_reason=['WLD-USDT']" in failed_row["observed_value"]
+
+    runs_with_reason = pl.DataFrame(
+        [
+            {
+                "symbol": "WLD-USDT",
+                "strategy_id": "WLD_EXPANDED_UNIVERSE_PAPER_V1",
+                "would_enter": False,
+                "no_sample_reason": "cost_source_global_default",
+            }
+        ]
+    )
+    passed = daily_export_module.build_system_acceptance_dashboard(
+        frames={},
+        report_frames={
+            "strategy_opportunity_advisory": advisory,
+            "expanded_universe_advisory_reader": reader,
+            "expanded_universe_paper_runs": runs_with_reason,
+            "expanded_universe_paper_daily": daily_zero,
+        },
+        row_counts={},
+        pre_export_v5={},
+        data_quality_warnings=[],
+        api_latency_summary=pl.DataFrame(),
+        lake_file_count=0,
+        generated_at=generated_at,
+    )
+    passed_row = next(row for row in passed.to_dicts() if row["check_name"] == "expanded_universe_paper_v5_rows_ok")
+    assert passed_row["status"] == "PASS"
+
+
+def test_system_acceptance_label_join_uses_pending_ratio():
+    generated_at = datetime(2026, 6, 4, 10, tzinfo=UTC)
+    all_pending = pl.DataFrame(
+        [
+            {"symbol": "BNB-USDT", "future_4h_net_bps": None},
+            {"symbol": "BNB-USDT", "future_4h_net_bps": None},
+        ]
+    )
+    partial = pl.DataFrame(
+        [
+            {"symbol": "BNB-USDT", "future_4h_net_bps": 12.0},
+            {"symbol": "BNB-USDT", "future_4h_net_bps": None},
+        ]
+    )
+    failed = daily_export_module.build_system_acceptance_dashboard(
+        frames={},
+        report_frames={"bnb_strong_alpha6_bypass_shadow": all_pending},
+        row_counts={},
+        pre_export_v5={},
+        data_quality_warnings=[],
+        api_latency_summary=pl.DataFrame(),
+        lake_file_count=0,
+        generated_at=generated_at,
+    )
+    failed_row = next(row for row in failed.to_dicts() if row["check_name"] == "bnb_bypass_label_join_ok")
+    assert failed_row["status"] == "FAIL"
+    assert "pending_ratio=1.000000" in failed_row["observed_value"]
+
+    passed = daily_export_module.build_system_acceptance_dashboard(
+        frames={},
+        report_frames={"bnb_strong_alpha6_bypass_shadow": partial},
+        row_counts={},
+        pre_export_v5={},
+        data_quality_warnings=[],
+        api_latency_summary=pl.DataFrame(),
+        lake_file_count=0,
+        generated_at=generated_at,
+    )
+    passed_row = next(row for row in passed.to_dicts() if row["check_name"] == "bnb_bypass_label_join_ok")
+    assert passed_row["status"] == "PASS"
+    assert "pending_ratio=0.500000" in passed_row["observed_value"]
+
+
+def test_system_acceptance_fast_microstructure_core_observability():
+    generated_at = datetime(2026, 6, 4, 10, tzinfo=UTC)
+    fast = pl.DataFrame(
+        [
+            {
+                "symbol": "BNB-USDT",
+                "orderbook_imbalance_1m": 0.1,
+                "orderbook_imbalance_5m": 0.2,
+                "taker_buy_sell_imbalance_5m": 0.3,
+                "cvd_5m": 4.0,
+                "cvd_divergence": 0.0,
+                "spread_bps_change_5m": -0.5,
+            }
+        ]
+    )
+    dashboard = daily_export_module.build_system_acceptance_dashboard(
+        frames={},
+        report_frames={"fast_microstructure_features": fast},
+        row_counts={},
+        pre_export_v5={},
+        data_quality_warnings=[],
+        api_latency_summary=pl.DataFrame(),
+        lake_file_count=0,
+        generated_at=generated_at,
+    )
+    row = next(row for row in dashboard.to_dicts() if row["check_name"] == "fast_microstructure_core_observability_ok")
+    assert row["status"] == "PASS"
+    assert "not_observable_ratio=0.000000" in row["observed_value"]
 
 
 def test_market_export_uses_rollup_frames_without_raw_shape():

@@ -280,11 +280,15 @@ def build_bnb_swing_exit_policy_review(
     entries = [row for row in bnb_trades if _is_bnb_swing_entry(row)]
     exits = [row for row in bnb_trades if _is_bnb_exit(row)]
     rows: list[dict[str, Any]] = []
+    v5_shadow_cost_by_group: dict[str, float] = {}
     for shadow in _bnb_profit_lock_shadow_rows(shadow_frame):
         shadow_row = _review_row_from_profit_lock_shadow(shadow, ctx=ctx)
         if shadow_row is None:
             continue
         rows.append(shadow_row)
+        shadow_cost = _float_or_none(shadow_row.get("selected_roundtrip_cost_bps"))
+        if shadow_cost is not None:
+            v5_shadow_cost_by_group[_duplicate_group_key(shadow_row)] = max(shadow_cost, 0.0)
     for entry in entries:
         entry_ts = _parse_datetime(entry.get("ts_utc") or entry.get("ts"))
         entry_px = _float_or_none(entry.get("price") or entry.get("fill_px"))
@@ -299,7 +303,18 @@ def build_bnb_swing_exit_policy_review(
         actual_exit_px = (
             _float_or_none(exit_row.get("price") or exit_row.get("fill_px")) if exit_row else None
         )
-        cost_bps = _roundtrip_cost_bps(entry, exit_row, entry_px)
+        group_key = _duplicate_group_key(
+            {
+                "entry_ts": entry_ts,
+                "entry_px": entry_px,
+                "actual_exit_ts": actual_exit_ts,
+                "actual_exit_px": actual_exit_px,
+            }
+        )
+        cost_bps = v5_shadow_cost_by_group.get(
+            group_key,
+            _roundtrip_cost_bps(entry, exit_row, entry_px),
+        )
         actual_net = _actual_exit_net_bps(
             entry_px=entry_px,
             exit_px=actual_exit_px,
@@ -1017,6 +1032,11 @@ def _review_row_from_profit_lock_shadow(
         delta_vs_actual_bps=delta,
         exit_reason=exit_reason,
     )
+    selected_roundtrip_cost_bps = _float_or_none(
+        _field(row, "selected_roundtrip_cost_bps", "cost_bps")
+    )
+    if selected_roundtrip_cost_bps is None:
+        selected_roundtrip_cost_bps = DEFAULT_ROUNDTRIP_COST_BPS
     return _common(ctx) | {
         "as_of_date": ctx.as_of_date.isoformat(),
         "strategy_candidate": "v5.bnb_swing_exit_policy_review",
@@ -1051,10 +1071,7 @@ def _review_row_from_profit_lock_shadow(
         "best_exit_net_bps": best_value,
         "delta_vs_actual_bps": delta,
         "exit_reason": exit_reason,
-        "selected_roundtrip_cost_bps": _float_or_none(
-            _field(row, "selected_roundtrip_cost_bps", "cost_bps")
-        )
-        or DEFAULT_ROUNDTRIP_COST_BPS,
+        "selected_roundtrip_cost_bps": selected_roundtrip_cost_bps,
         "diagnosis": diagnosis,
         "status": "REVIEW",
         "review_row_source": "v5_profit_lock_shadow",

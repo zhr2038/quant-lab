@@ -364,6 +364,7 @@ def test_bnb_exit_policy_consistency_matches_fixed_and_delayed_definitions(tmp_p
                     "actual_exit_ts": exit_ts.isoformat(),
                     "actual_exit_px": "99",
                     "actual_exit_net_bps": "-100",
+                    "selected_roundtrip_cost_bps": "0",
                     "max_unrealized_bps": "300",
                     "fixed_hold_6h_from_entry_net_bps": "100",
                     "fixed_hold_12h_from_entry_net_bps": "200",
@@ -447,6 +448,102 @@ def test_bnb_exit_policy_consistency_matches_fixed_and_delayed_definitions(tmp_p
     assert consistency["quant_lab_fixed_hold_12h_from_entry_net_bps"] == pytest.approx(200)
     assert consistency["v5_delayed_exit_12h_from_actual_exit_net_bps"] == pytest.approx(500)
     assert consistency["quant_lab_delayed_exit_12h_from_actual_exit_net_bps"] == pytest.approx(500)
+
+
+def test_bnb_exit_policy_recompute_uses_v5_shadow_roundtrip_cost(tmp_path):
+    lake = tmp_path / "lake"
+    entry_ts = datetime(2026, 5, 28, 22, tzinfo=UTC)
+    exit_ts = entry_ts + timedelta(hours=5)
+    write_parquet_dataset(
+        pl.DataFrame(
+            [
+                {
+                    "entry_ts": entry_ts.isoformat(),
+                    "symbol": "BNB/USDT",
+                    "entry_px": "100",
+                    "actual_exit_ts": exit_ts.isoformat(),
+                    "actual_exit_px": "99",
+                    "actual_exit_net_bps": "-130",
+                    "selected_roundtrip_cost_bps": "30",
+                    "max_unrealized_bps": "300",
+                    "fixed_hold_6h_from_entry_net_bps": "70",
+                    "fixed_hold_12h_from_entry_net_bps": "170",
+                    "fixed_hold_24h_from_entry_net_bps": "270",
+                    "delayed_exit_6h_from_actual_exit_net_bps": "370",
+                    "delayed_exit_12h_from_actual_exit_net_bps": "470",
+                    "delayed_exit_24h_from_actual_exit_net_bps": "570",
+                    "best_shadow_exit_policy": "delayed_exit_24h_from_actual_exit",
+                    "exit_reason": "atr_trailing/exit_signal_priority",
+                    "source_entry_id": "bnb-cost-inheritance-entry",
+                }
+            ]
+        ),
+        lake / "silver" / "v5_bnb_profit_lock_shadow",
+    )
+    write_parquet_dataset(
+        pl.DataFrame(
+            [
+                {
+                    "run_id": "20260528_22",
+                    "ts_utc": entry_ts.isoformat(),
+                    "symbol": "BNB-USDT",
+                    "normalized_symbol": "BNB-USDT",
+                    "side": "buy",
+                    "action": "entry",
+                    "qty": "1",
+                    "price": "100",
+                    "notional_usdt": "100",
+                    "fee_usdt": "0.1",
+                    "strategy_id": "BNB_SWING_F3",
+                    "trade_id": "bnb-cost-inheritance-entry",
+                },
+                {
+                    "run_id": "20260529_03",
+                    "ts_utc": exit_ts.isoformat(),
+                    "symbol": "BNB-USDT",
+                    "normalized_symbol": "BNB-USDT",
+                    "side": "sell",
+                    "action": "exit",
+                    "qty": "1",
+                    "price": "99",
+                    "notional_usdt": "99",
+                    "fee_usdt": "0.1",
+                    "strategy_id": "BNB_SWING_F3",
+                    "exit_reason": "atr_trailing/exit_signal_priority",
+                    "trade_id": "bnb-cost-inheritance-exit",
+                },
+            ]
+        ),
+        lake / "silver" / "v5_trade_event",
+    )
+    bars = [
+        _bar(entry_ts, close=100.0, high=100.0, low=99.5),
+        _bar(entry_ts + timedelta(hours=6), close=101.0, high=101.2, low=100.8),
+        _bar(entry_ts + timedelta(hours=12), close=102.0, high=102.2, low=101.8),
+        _bar(entry_ts + timedelta(hours=24), close=103.0, high=103.2, low=102.8),
+        _bar(exit_ts, close=99.0, high=99.2, low=98.8),
+        _bar(exit_ts + timedelta(hours=6), close=104.0, high=104.2, low=103.8),
+        _bar(exit_ts + timedelta(hours=12), close=105.0, high=105.2, low=104.8),
+        _bar(exit_ts + timedelta(hours=24), close=106.0, high=106.2, low=105.8),
+    ]
+    write_parquet_dataset(pl.DataFrame(bars), lake / "silver" / "market_bar")
+
+    build_and_publish_bnb_swing_exit_policy_review(lake, as_of_date="2026-05-29")
+
+    review = read_parquet_dataset(lake / "gold" / "bnb_swing_exit_policy_review").to_dicts()[0]
+    assert review["v5_vs_quant_lab_consistency_status"] == "MATCH"
+    assert review["selected_roundtrip_cost_bps"] == pytest.approx(30)
+    assert review["fixed_hold_12h_from_entry_net_bps"] == pytest.approx(170)
+    assert review["delayed_exit_12h_from_actual_exit_net_bps"] == pytest.approx(470)
+    assert review["diff_fixed_hold_12h_from_entry_net_bps"] == pytest.approx(0)
+    assert review["diff_delayed_exit_12h_from_actual_exit_net_bps"] == pytest.approx(0)
+    consistency = read_parquet_dataset(
+        lake / "gold" / "bnb_exit_policy_v5_vs_quant_lab_consistency"
+    ).to_dicts()[0]
+    assert consistency["consistency_status"] == "MATCH"
+    assert consistency["mismatch_field_count"] == 0
+    assert consistency["quant_lab_fixed_hold_12h_from_entry_net_bps"] == pytest.approx(170)
+    assert consistency["quant_lab_delayed_exit_12h_from_actual_exit_net_bps"] == pytest.approx(470)
 
 
 def test_daily_export_contains_bnb_swing_exit_policy_review(tmp_path):

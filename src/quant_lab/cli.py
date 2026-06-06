@@ -19,6 +19,10 @@ from quant_lab.data.lake import (
 )
 from quant_lab.e2e import run_v5_contract_e2e
 from quant_lab.export.daily import export_daily_pack, validate_expert_pack
+from quant_lab.factors.factory import (
+    build_and_publish_factor_factory,
+    factor_factory_health,
+)
 from quant_lab.features.publish import feature_health
 from quant_lab.features.publish import publish_features as publish_feature_values
 from quant_lab.gates.defaults import conservative_example_gate_decision
@@ -1364,6 +1368,76 @@ def feature_health_command(
     date: Annotated[str | None, typer.Option("--date")] = None,
 ) -> None:
     result = feature_health(lake_root=lake_root, feature_set=feature_set, date=date)
+    typer.echo(result.model_dump_json(indent=2))
+
+
+@app.command("build-factor-factory")
+def build_factor_factory_command(
+    lake_root: Annotated[
+        Path,
+        typer.Option(
+            "--lake-root",
+            file_okay=False,
+            dir_okay=True,
+            writable=True,
+            help="quant-lab lake root containing feature_value and market_bar.",
+        ),
+    ],
+    as_of_date: Annotated[
+        str,
+        typer.Option("--date", help="UTC as-of day in YYYY-MM-DD format or auto."),
+    ] = "auto",
+    feature_set: Annotated[str, typer.Option("--feature-set")] = "core",
+    feature_version: Annotated[str, typer.Option("--feature-version")] = "v0.1",
+    factor_version: Annotated[str, typer.Option("--factor-version")] = "v0.1",
+    timeframe: Annotated[str, typer.Option("--timeframe")] = "1H",
+    horizon_bars: Annotated[
+        str,
+        typer.Option("--horizon-bars", help="Comma-separated forward horizons in bars."),
+    ] = "4,8,24,72",
+    decision_delay_bars: Annotated[int, typer.Option("--decision-delay-bars", min=1)] = 1,
+    max_factors: Annotated[int, typer.Option("--max-factors", min=1, max=1000)] = 200,
+    min_samples: Annotated[int, typer.Option("--min-samples", min=1)] = 100,
+    top_quantile: Annotated[float, typer.Option("--top-quantile", min=0.01, max=0.50)] = 0.2,
+    cost_quantile: Annotated[str, typer.Option("--cost-quantile")] = "p75",
+    dry_run: Annotated[bool, typer.Option("--dry-run/--apply")] = False,
+) -> None:
+    parsed_horizons = tuple(int(item.strip()) for item in horizon_bars.split(",") if item.strip())
+    result = run_with_job_metrics(
+        lake_root=lake_root,
+        job_name="build-factor-factory",
+        func=lambda: build_and_publish_factor_factory(
+            lake_root=lake_root,
+            as_of_date=as_of_date,
+            feature_set=feature_set,
+            feature_version=feature_version,
+            factor_version=factor_version,
+            timeframe=timeframe,
+            horizon_bars=parsed_horizons,
+            decision_delay_bars=decision_delay_bars,
+            max_factors=max_factors,
+            min_samples=min_samples,
+            top_quantile=top_quantile,
+            cost_quantile=cost_quantile,
+            dry_run=dry_run,
+        ),
+    )
+    typer.echo(result.model_dump_json(indent=2))
+
+
+@app.command("factor-factory-health")
+def factor_factory_health_command(
+    lake_root: Annotated[
+        Path,
+        typer.Option(
+            "--lake-root",
+            file_okay=False,
+            dir_okay=True,
+            help="quant-lab lake root containing factor factory gold datasets.",
+        ),
+    ],
+) -> None:
+    result = factor_factory_health(lake_root)
     typer.echo(result.model_dump_json(indent=2))
 
 

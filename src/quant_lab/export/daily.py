@@ -140,6 +140,10 @@ HEAVY_EXPORT_DATASET_LIMITS = {
     "api_request_metrics": 10_000,
     "okx_public_ws": 5_000,
     "feature_value": 10_000,
+    "factor_value": 20_000,
+    "factor_evidence": 20_000,
+    "factor_candidate": 10_000,
+    "factor_correlation_daily": 20_000,
     "job_run_history": 10_000,
     "strategy_evidence_sample": 10_000,
     "second_stage_alpha_factory_sample": 10_000,
@@ -178,6 +182,10 @@ HEAVY_EXPORT_RECENT_FILE_LIMITS = {
     "api_request_metrics": 50,
     "okx_public_ws": 50,
     "feature_value": 100,
+    "factor_value": 100,
+    "factor_evidence": 100,
+    "factor_candidate": 100,
+    "factor_correlation_daily": 100,
     "job_run_history": 50,
     "strategy_evidence_sample": 100,
     "second_stage_alpha_factory_sample": 100,
@@ -234,6 +242,11 @@ SECTION_DATASETS = {
     ],
     "research": [
         "alpha_evidence",
+        "factor_definition",
+        "factor_value",
+        "factor_evidence",
+        "factor_candidate",
+        "factor_correlation_daily",
         "alpha_discovery_board",
         "strategy_evidence",
         "strategy_evidence_sample",
@@ -386,6 +399,11 @@ REQUIRED_MEMBERS = [
     "reports/alpha_factory_results.csv",
     "reports/alpha_factory_promotion_queue.csv",
     "reports/alpha_factory_daily.md",
+    "reports/factor_definitions.csv",
+    "reports/factor_evidence.csv",
+    "reports/factor_candidates.csv",
+    "reports/factor_correlation_daily.csv",
+    "reports/factor_factory_summary.md",
     "reports/candidate_kill_list.csv",
     "reports/candidate_shadow_watchlist.csv",
     "reports/candidate_paper_ready.csv",
@@ -593,6 +611,89 @@ CSV_SCHEMAS: dict[str, list[str]] = {
         "severity",
         "example_ts",
         "created_at",
+    ],
+    "reports/factor_definitions.csv": [
+        "factor_id",
+        "factor_name",
+        "factor_family",
+        "factor_version",
+        "description",
+        "feature_set",
+        "feature_version",
+        "timeframe",
+        "input_features_json",
+        "template",
+        "params_json",
+        "direction",
+        "min_cross_section",
+        "clip_abs",
+        "enabled",
+        "tags_json",
+        "created_at",
+        "source",
+    ],
+    "reports/factor_evidence.csv": [
+        "as_of_date",
+        "factor_id",
+        "factor_name",
+        "factor_family",
+        "factor_version",
+        "timeframe",
+        "horizon_bars",
+        "decision_delay_bars",
+        "sample_count",
+        "valid_sample_count",
+        "coverage",
+        "ic_mean",
+        "ic_tstat",
+        "rank_ic_mean",
+        "rank_ic_tstat",
+        "long_only_mean_bps",
+        "long_short_mean_bps",
+        "win_rate",
+        "turnover",
+        "max_drawdown",
+        "edge_cost_ratio",
+        "decision",
+        "score",
+        "reasons_json",
+        "warnings_json",
+        "start_ts",
+        "end_ts",
+        "created_at",
+        "source",
+    ],
+    "reports/factor_candidates.csv": [
+        "as_of_date",
+        "factor_id",
+        "factor_name",
+        "factor_family",
+        "factor_version",
+        "timeframe",
+        "best_horizon_bars",
+        "tested_horizon_count",
+        "best_score",
+        "avg_score",
+        "best_rank_ic_mean",
+        "best_rank_ic_tstat",
+        "best_long_short_mean_bps",
+        "candidate_state",
+        "recommended_action",
+        "promotion_block_reasons_json",
+        "manual_review_required",
+        "created_at",
+        "source",
+    ],
+    "reports/factor_correlation_daily.csv": [
+        "as_of_date",
+        "factor_id_left",
+        "factor_id_right",
+        "factor_version",
+        "timeframe",
+        "sample_count",
+        "correlation",
+        "created_at",
+        "source",
     ],
     "market/orderbook_spread.csv": ["symbol", "channel", "ts", "spread_bps"],
     "market/trade_activity.csv": ["symbol", "trade_count", "size_sum", "latest_trade_ts"],
@@ -4043,6 +4144,10 @@ def _dataset_members(
     features = frames.get("feature_value", pl.DataFrame())
     feature_coverage = frames.get("feature_coverage_daily", pl.DataFrame())
     feature_anomalies = frames.get("feature_anomaly_daily", pl.DataFrame())
+    factor_definitions = frames.get("factor_definition", pl.DataFrame())
+    factor_evidence = frames.get("factor_evidence", pl.DataFrame())
+    factor_candidates = frames.get("factor_candidate", pl.DataFrame())
+    factor_correlations = frames.get("factor_correlation_daily", pl.DataFrame())
     costs = _normalize_symbol_frame(frames.get("cost_bucket_daily", pl.DataFrame()))
     cost_health = frames.get("cost_health_daily", pl.DataFrame())
     evidence = _alpha_evidence_for_export(frames.get("alpha_evidence", pl.DataFrame()))
@@ -4383,6 +4488,27 @@ def _dataset_members(
             feature_anomalies
             if not feature_anomalies.is_empty()
             else _feature_anomalies(features),
+        ),
+        "reports/factor_definitions.csv": _csv_member(
+            "reports/factor_definitions.csv",
+            factor_definitions,
+        ),
+        "reports/factor_evidence.csv": _csv_member(
+            "reports/factor_evidence.csv",
+            factor_evidence,
+        ),
+        "reports/factor_candidates.csv": _csv_member(
+            "reports/factor_candidates.csv",
+            factor_candidates,
+        ),
+        "reports/factor_correlation_daily.csv": _csv_member(
+            "reports/factor_correlation_daily.csv",
+            factor_correlations,
+        ),
+        "reports/factor_factory_summary.md": _factor_factory_summary_md(
+            factor_candidates,
+            factor_evidence,
+            factor_correlations,
         ),
         "costs/cost_bucket_daily.csv": _csv_member("costs/cost_bucket_daily.csv", costs),
         "costs/cost_health_daily.csv": _csv_member(
@@ -10615,6 +10741,96 @@ def _optional_bool(value: Any) -> bool | None:
     if text in {"false", "0", "no", "n"}:
         return False
     return None
+
+
+def _fmt_float(value: Any, *, digits: int = 2) -> str:
+    number = _optional_float(value)
+    if number is None:
+        return ""
+    return f"{number:.{digits}f}"
+
+
+def _factor_factory_summary_md(
+    candidates: pl.DataFrame,
+    evidence: pl.DataFrame,
+    correlations: pl.DataFrame,
+) -> str:
+    lines = [
+        "# Factor Factory Summary",
+        "",
+        "Factor Factory is read-only research telemetry. It publishes factor definitions, "
+        "values, evidence, candidates, and correlation diagnostics for manual review.",
+        "",
+        "- live_order_effect: none_read_only_research",
+        "- PAPER_READY meaning: paper review candidate only, not live eligibility",
+        "- decision_delay_bars: at least one closed bar before label evaluation",
+        "",
+    ]
+    if candidates.is_empty():
+        lines.extend(
+            [
+                "No factor candidates are available yet.",
+                "",
+                "Next action: run `qlab publish-features` and then "
+                "`qlab build-factor-factory --apply` after confirming feature coverage.",
+            ]
+        )
+        return "\n".join(lines) + "\n"
+
+    counts = _value_counts(candidates, "candidate_state")
+    paper_ready_count = counts.get("PAPER_READY", 0)
+    lines.extend(
+        [
+            f"Candidate state counts: {safe_json_dumps(counts)}",
+            f"PAPER_READY count: {paper_ready_count}",
+            "",
+            "| Factor | Family | State | Horizon | Score | Rank IC | Long-short bps | Action |",
+            "| --- | --- | --- | ---: | ---: | ---: | ---: | --- |",
+        ]
+    )
+    sort_columns = [
+        column
+        for column in ["candidate_state", "best_score", "factor_id"]
+        if column in candidates.columns
+    ]
+    ordered = candidates.sort(sort_columns, descending=[False, True, False][: len(sort_columns)])
+    for row in ordered.head(20).to_dicts():
+        lines.append(
+            "| {factor} | {family} | {state} | {horizon} | {score} | {rank_ic} | "
+            "{spread} | {action} |".format(
+                factor=row.get("factor_id", ""),
+                family=row.get("factor_family", ""),
+                state=row.get("candidate_state", ""),
+                horizon=row.get("best_horizon_bars", ""),
+                score=_fmt_float(row.get("best_score"), digits=3),
+                rank_ic=_fmt_float(row.get("best_rank_ic_mean"), digits=4),
+                spread=_fmt_float(row.get("best_long_short_mean_bps"), digits=2),
+                action=row.get("recommended_action", ""),
+            )
+        )
+    lines.append("")
+    if not evidence.is_empty():
+        decision_counts = _value_counts(evidence, "decision")
+        lines.extend(
+            [
+                f"Evidence decision counts by horizon: {safe_json_dumps(decision_counts)}",
+                "",
+            ]
+        )
+    high_corr_count = 0
+    if not correlations.is_empty() and "correlation" in correlations.columns:
+        high_corr_count = correlations.filter(
+            pl.col("correlation").cast(pl.Float64, strict=False).abs() >= 0.90
+        ).height
+    lines.extend(
+        [
+            f"High-correlation pair count (abs >= 0.90): {high_corr_count}",
+            "",
+            "Manual review should suppress redundant factors before any paper proposal is "
+            "promoted.",
+        ]
+    )
+    return "\n".join(lines) + "\n"
 
 
 def _strategy_evidence_summary_md(

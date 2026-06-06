@@ -160,6 +160,11 @@ silver/v5_quant_lab_request
 
 ```text
 gold/feature_value
+gold/factor_definition
+gold/factor_value
+gold/factor_evidence
+gold/factor_candidate
+gold/factor_correlation_daily
 gold/cost_bucket_daily
 gold/cost_health_daily
 gold/alpha_evidence
@@ -175,6 +180,41 @@ gold/v5_bnb_strong_alpha6_bypass_shadow
 gold/v5_negative_expectancy_attribution
 gold/v5_bnb_paper_strategy_daily_latest
 ```
+
+## 因子工厂
+
+Factor Factory 是 quant-lab 的只读自动因子发现与测试模块。它从
+`gold/feature_value` 读取已发布特征，生成版本化因子，使用至少 1 根
+closed bar 的 decision delay 构造 forward label，再输出 IC、Rank IC、
+after-cost quantile spread、候选状态和相关性诊断。
+
+输出数据：
+
+```text
+gold/factor_definition
+gold/factor_value
+gold/factor_evidence
+gold/factor_candidate
+gold/factor_correlation_daily
+```
+
+CLI：
+
+```bash
+qlab build-factor-factory \
+  --lake-root /var/lib/quant-lab/lake \
+  --date auto \
+  --horizon-bars 4,8,24,72 \
+  --decision-delay-bars 1 \
+  --apply
+
+qlab factor-factory-health \
+  --lake-root /var/lib/quant-lab/lake
+```
+
+`PAPER_READY` 只表示进入人工 paper review 队列，不代表 live eligibility。
+Factor Factory 不下单、不撤单、不修改 V5/V7 live 逻辑。详见
+[`docs/FACTOR_FACTORY.md`](docs/FACTOR_FACTORY.md)。
 
 ## API
 

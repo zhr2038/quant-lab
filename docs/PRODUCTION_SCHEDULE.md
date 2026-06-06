@@ -45,7 +45,7 @@ split:
 - Frequent `qlab analyze-v5-telemetry --skip-candidate-gold` refreshes V5 health
   gold tables without touching candidate labels, strategy evidence, or the
   alpha discovery board.
-- Lower-frequency `quant-lab-v5-research-refresh.service` runs incremental
+- Hourly `quant-lab-v5-research-refresh.service` runs incremental
   candidate research only:
   `qlab build-v5-candidate-labels --mode incremental --lookback-days 8`,
   `qlab build-strategy-evidence --mode incremental --lookback-days 8 --skip-historical-outcomes`,
@@ -133,7 +133,10 @@ Suggested production order:
 
 - V5 telemetry sync: every 10 minutes, one newest bundle per run.
 - V5 telemetry analysis: every 30 minutes, using `--skip-candidate-gold`.
-- Candidate labels, strategy evidence, and alpha discovery board: every 2 hours.
+- Candidate labels, strategy evidence, alpha factory, entry-quality summaries,
+  paper tracking, and alpha discovery board: every 1 hour. This cadence keeps
+  `strategy_opportunity_advisory` below V5's 90 minute freshness window without
+  making daily expert export rescan historical research state.
 - Regime router: every 30 minutes, as an independent short job.
 - Alpha evidence and gate publishing: every 15 minutes.
 - Risk permission publish: every 10 minutes, after telemetry and gate refresh

@@ -1,10 +1,10 @@
 [Unit]
-Description=Run quant-lab V5 candidate research refresh every 2 hours
+Description=Run quant-lab V5 candidate research refresh every hour
 
 [Timer]
 OnCalendar=*-*-* 00:05:00
-OnActiveSec=70min
-OnUnitActiveSec=2h
+OnActiveSec=10min
+OnUnitActiveSec=1h
 RandomizedDelaySec=5min
 Persistent=false
 

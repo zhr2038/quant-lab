@@ -244,6 +244,9 @@ def test_candidate_research_refresh_runs_before_daily_export_window():
     export_timer = _unit("quant-lab-daily-export.timer")
 
     assert "OnCalendar=*-*-* 00:05:00" in refresh_timer
+    assert "OnActiveSec=10min" in refresh_timer
+    assert "OnUnitActiveSec=1h" in refresh_timer
+    assert "OnUnitActiveSec=2h" not in refresh_timer
     assert "OnCalendar=*-*-* 00:12:00" in regime_timer
     assert "OnUnitActiveSec=30min" in regime_timer
     assert "OnCalendar=*-*-* 00:20:00" in export_timer

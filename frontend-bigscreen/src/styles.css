@@ -376,11 +376,12 @@ button{font:inherit;color:inherit}
   .header{
     height:auto;min-height:0;display:grid;grid-template-columns:1fr;gap:12px;margin-bottom:14px;
   }
-  .title h1{font-size:23px;line-height:1.08;gap:8px;letter-spacing:0}
+  .title{min-width:0}
+  .title h1{font-size:21px;line-height:1.1;gap:8px;letter-spacing:0;flex-wrap:wrap;max-width:100%}
   .title h1 svg{width:25px;height:25px}
   .title p{font-size:12px;line-height:1.35;margin-top:8px}
   .pills{
-    gap:8px;overflow-x:auto;padding-bottom:2px;scrollbar-width:none;
+    gap:8px;overflow:visible;flex-wrap:wrap;padding-bottom:2px;scrollbar-width:none;
   }
   .pills::-webkit-scrollbar{display:none}
   .pill{height:28px;padding:0 12px;font-size:11px;white-space:nowrap;flex:0 0 auto}
@@ -413,10 +414,33 @@ button{font:inherit;color:inherit}
   .kpis{
     display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:10px;padding:46px 14px 14px;
   }
+  .page-overview .kpis{
+    grid-template-columns:repeat(2,minmax(0,1fr));
+    gap:10px;
+    padding:48px 14px 14px;
+  }
   .kpis .section-title{left:16px;top:17px}
   .kpi{min-height:86px;padding:12px}
+  .page-overview .kpi{min-height:104px;padding:12px 12px 10px}
+  .page-overview .kpi svg{right:12px;top:12px}
+  .page-overview .kpi label{
+    max-width:calc(100% - 28px);font-size:12px;line-height:1.15;
+    white-space:nowrap;overflow:hidden;text-overflow:ellipsis;
+  }
   .kpi strong{font-size:29px;max-width:100%;padding-right:22px}
+  .page-overview .kpi strong{
+    font-size:28px;line-height:1.05;margin-top:8px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;
+    overflow-wrap:normal;max-width:100%;
+  }
   .kpi.long-value strong{font-size:20px;line-height:1.1}
+  .page-overview .kpi.long-value strong{
+    font-size:17px;line-height:1.15;display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;
+    overflow:hidden;
+  }
+  .page-overview .kpi span{
+    margin-top:6px;font-size:11px;line-height:1.2;display:-webkit-box;-webkit-line-clamp:2;
+    -webkit-box-orient:vertical;overflow:hidden;
+  }
   .status-ring{height:292px}
   .ring-chart{left:34px;right:34px;top:78px;height:176px}
   .ring-chart:before{width:156px;height:156px}
@@ -478,4 +502,15 @@ button{font:inherit;color:inherit}
   .download-latest span{grid-column:1/3;margin-left:0;max-width:100%}
   .pack-row{grid-template-columns:1fr;gap:6px}
   .pack-row a{width:100%}
+}
+
+@media (max-width: 420px){
+  .title h1{font-size:19px}
+  .title h1 svg{width:23px;height:23px}
+  .pill{font-size:10px;padding:0 10px}
+  .page-overview .kpis{grid-template-columns:repeat(2,minmax(0,1fr));gap:8px;padding-left:12px;padding-right:12px}
+  .page-overview .kpi{min-height:100px;padding:11px 11px 9px}
+  .page-overview .kpi strong{font-size:25px}
+  .page-overview .kpi.long-value strong{font-size:15px}
+  .page-overview .kpi span{font-size:10px}
 }

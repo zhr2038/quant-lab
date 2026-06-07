@@ -226,10 +226,14 @@ def _feature_ts(
     spread_rows: list[dict[str, Any]],
     trade_rows: list[dict[str, Any]],
 ) -> datetime | None:
-    candidates = [
+    microstructure_candidates = [
         _coerce_dt(row.get("_ts"))
-        for row in (spread_rows[-1:] + trade_rows[-1:] + [latest_bar])
+        for row in (spread_rows[-1:] + trade_rows[-1:])
     ]
+    microstructure_candidates = [value for value in microstructure_candidates if value is not None]
+    if microstructure_candidates:
+        return max(microstructure_candidates)
+    candidates = [_coerce_dt(latest_bar.get("_ts"))]
     candidates = [value for value in candidates if value is not None]
     return max(candidates) if candidates else None
 

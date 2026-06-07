@@ -235,6 +235,53 @@ def test_fast_microstructure_uses_latest_rollup_time_when_market_bar_lags():
     assert row["taker_buy_sell_imbalance_5m"] > 0
 
 
+def test_fast_microstructure_anchors_to_rollup_when_market_bar_is_newer():
+    market_ts = datetime(2026, 6, 6, 12, tzinfo=UTC)
+    rollup_ts = datetime(2026, 6, 6, 9, tzinfo=UTC)
+    market = pl.DataFrame(
+        _market_rows("BNB-USDT", market_ts - timedelta(hours=6), [100, 101, 102, 103, 104, 105, 106])
+    )
+    spreads = pl.DataFrame(
+        [
+            {
+                "symbol": "BNB-USDT",
+                "minute_ts": rollup_ts - timedelta(minutes=minute),
+                "ts": rollup_ts - timedelta(minutes=minute),
+                "spread_bps": 2.0,
+                "orderbook_imbalance": 0.3,
+            }
+            for minute in range(60)
+        ]
+    )
+    trades = pl.DataFrame(
+        [
+            {
+                "symbol": "BNB-USDT",
+                "minute_ts": rollup_ts - timedelta(minutes=minute),
+                "latest_trade_ts": rollup_ts - timedelta(minutes=minute),
+                "trade_count": 4,
+                "size_sum": 8.0,
+                "taker_buy_size_sum": 5.0,
+                "taker_sell_size_sum": 3.0,
+            }
+            for minute in range(60)
+        ]
+    )
+
+    fast = build_fast_microstructure_features(
+        market_bars=market,
+        orderbook_spread_1m=spreads,
+        trade_activity_1m=trades,
+        generated_at=market_ts,
+    )
+
+    row = fast.to_dicts()[0]
+    assert row["ts_utc"] == "2026-06-06T09:00:00Z"
+    assert row["avg_spread_bps_5m"] == 2.0
+    assert row["trade_count_5m"] == 24.0
+    assert row["taker_buy_sell_imbalance_5m"] > 0
+
+
 def test_fast_microstructure_infers_trade_side_from_price_vs_mid():
     market_ts = datetime(2026, 6, 6, 9, tzinfo=UTC)
     market = pl.DataFrame(

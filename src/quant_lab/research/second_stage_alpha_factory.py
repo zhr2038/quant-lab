@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import statistics
-from bisect import bisect_right
+from bisect import bisect_left, bisect_right
 from collections import defaultdict
 from datetime import UTC, date, datetime, time, timedelta
 from pathlib import Path
@@ -589,15 +589,21 @@ def _expanded_relative_strength_tables(
             for candidate, top_k in RELATIVE_STRENGTH_SELECTIONS:
                 for selected_rank, selection in enumerate(ranked, start=1):
                     symbol = selection["symbol"]
-                    current_index = _bar_index_at_or_before_times(
-                        bar_times_by_symbol.get(symbol, []),
-                        decision_ts,
-                    )
+                    current_index = _int(selection.get("current_index"))
                     if current_index is None:
                         continue
-                    current_bar = bars_by_symbol[symbol][current_index]
+                    bars = bars_by_symbol.get(symbol, [])
+                    bar_times = bar_times_by_symbol.get(symbol, [])
+                    if current_index < 0 or current_index >= len(bars):
+                        continue
+                    current_bar = bars[current_index]
                     for horizon in DEFAULT_HORIZONS:
-                        future_bar = _future_bar(bars_by_symbol[symbol], current_index, horizon)
+                        future_index = _future_bar_index_at_or_after(
+                            bar_times,
+                            current_index,
+                            horizon,
+                        )
+                        future_bar = bars[future_index] if future_index is not None else None
                         entry_close = _float(current_bar.get("close"))
                         label_close = _float(future_bar.get("close")) if future_bar else None
                         gross_bps = (
@@ -654,15 +660,15 @@ def _expanded_relative_strength_tables(
                                 label_close=label_close,
                                 gross_bps=gross_bps,
                                 net_bps=net_bps,
-                                mfe_bps=_path_mfe_bps(
-                                    bars_by_symbol[symbol],
+                                mfe_bps=_path_mfe_bps_between_indexes(
+                                    bars,
                                     current_index,
-                                    horizon,
+                                    future_index,
                                 ),
-                                mae_bps=_path_mae_bps(
-                                    bars_by_symbol[symbol],
+                                mae_bps=_path_mae_bps_between_indexes(
+                                    bars,
                                     current_index,
-                                    horizon,
+                                    future_index,
                                 ),
                                 win=net_bps is not None and net_bps > 0.0,
                                 label_status="complete" if label_ts is not None else "pending",
@@ -1504,6 +1510,8 @@ def _relative_strength_ranking(
                 "btc_corr": quality["btc_corr"],
                 "volume_24h_usdt": quality["volume_24h_usdt"],
                 "lookback_start_ts": _parse_dt(bars[lookback_index].get("ts")),
+                "current_index": current_index,
+                "lookback_index": lookback_index,
             }
         )
     rows.sort(
@@ -1549,6 +1557,56 @@ def _bar_index_at_or_before_times(
 ) -> int | None:
     index = bisect_right(times, ts) - 1
     return index if index >= 0 else None
+
+
+def _future_bar_index_at_or_after(
+    times: list[datetime],
+    index: int,
+    horizon_hours: int,
+) -> int | None:
+    if index < 0 or index >= len(times):
+        return None
+    target = times[index] + timedelta(hours=horizon_hours)
+    future_index = bisect_left(times, target, index + 1)
+    return future_index if future_index < len(times) else None
+
+
+def _path_mfe_bps_between_indexes(
+    bars: list[dict[str, Any]],
+    index: int,
+    future_index: int | None,
+) -> float | None:
+    entry = _float(bars[index].get("close")) if 0 <= index < len(bars) else None
+    if entry is None or entry <= 0 or future_index is None or future_index <= index:
+        return None
+    clean = [
+        value
+        for value in (
+            _float(row.get("high") or row.get("close"))
+            for row in bars[index + 1 : future_index + 1]
+        )
+        if value is not None
+    ]
+    return ((max(clean) / entry - 1.0) * 10_000.0) if clean else None
+
+
+def _path_mae_bps_between_indexes(
+    bars: list[dict[str, Any]],
+    index: int,
+    future_index: int | None,
+) -> float | None:
+    entry = _float(bars[index].get("close")) if 0 <= index < len(bars) else None
+    if entry is None or entry <= 0 or future_index is None or future_index <= index:
+        return None
+    clean = [
+        value
+        for value in (
+            _float(row.get("low") or row.get("close"))
+            for row in bars[index + 1 : future_index + 1]
+        )
+        if value is not None
+    ]
+    return ((min(clean) / entry - 1.0) * 10_000.0) if clean else None
 
 
 def _path_mfe_bps(

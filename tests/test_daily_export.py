@@ -2122,6 +2122,7 @@ def test_refresh_v5_derived_outputs_uses_incremental_research_builds(
     lake_root = tmp_path / "lake"
     export_day = datetime(2026, 5, 17, tzinfo=UTC).date()
 
+    monkeypatch.setenv("QUANT_LAB_EXPORT_DERIVED_REFRESH_IN_PROCESS", "1")
     warnings = daily_export_module._refresh_v5_derived_outputs(lake_root, export_day)
 
     assert warnings == []

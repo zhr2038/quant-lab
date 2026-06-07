@@ -5906,6 +5906,8 @@ EXPORT_V5_ALPHA_FACTORY_MAX_CANDIDATES = 200
 
 
 def _refresh_v5_derived_outputs(lake_root: Path, export_day: date) -> list[str]:
+    if not _flag_enabled("QUANT_LAB_EXPORT_DERIVED_REFRESH_IN_PROCESS", default=False):
+        return _refresh_v5_derived_outputs_subprocess(lake_root, export_day)
     warnings: list[str] = []
     steps = [
         (
@@ -6051,6 +6053,152 @@ def _refresh_v5_derived_outputs(lake_root: Path, export_day: date) -> list[str]:
                 f"{type(exc).__name__}:{_safe_warning_text(str(exc))}"
             )
     return warnings
+
+
+def _refresh_v5_derived_outputs_subprocess(lake_root: Path, export_day: date) -> list[str]:
+    warnings: list[str] = []
+    for name, body in _v5_derived_refresh_step_bodies():
+        stage = f"derived_refresh:{name}"
+        started_at = time.perf_counter()
+        _log_export_stage_event("start", stage)
+        try:
+            result = subprocess.run(
+                [sys.executable, "-c", _v5_derived_refresh_subprocess_code(body)],
+                cwd=str(Path(__file__).resolve().parents[3]),
+                env={
+                    **os.environ,
+                    "POLARS_MAX_THREADS": os.environ.get("POLARS_MAX_THREADS", "2"),
+                    "QUANT_LAB_DERIVED_REFRESH_LAKE_ROOT": str(lake_root),
+                    "QUANT_LAB_DERIVED_REFRESH_DATE": export_day.isoformat(),
+                    "QUANT_LAB_DERIVED_REFRESH_LOOKBACK_DAYS": str(
+                        EXPORT_V5_DERIVED_LOOKBACK_DAYS
+                    ),
+                    "QUANT_LAB_DERIVED_REFRESH_ALPHA_FACTORY_LOOKBACK_DAYS": str(
+                        EXPORT_V5_ALPHA_FACTORY_LOOKBACK_DAYS
+                    ),
+                    "QUANT_LAB_DERIVED_REFRESH_ALPHA_FACTORY_MAX_CANDIDATES": str(
+                        EXPORT_V5_ALPHA_FACTORY_MAX_CANDIDATES
+                    ),
+                },
+                capture_output=True,
+                text=True,
+                timeout=int(os.environ.get("QUANT_LAB_EXPORT_DERIVED_REFRESH_STEP_TIMEOUT_SEC", "900")),
+            )
+        except subprocess.TimeoutExpired as exc:
+            _log_export_stage_event(
+                "end",
+                stage,
+                elapsed_ms=round((time.perf_counter() - started_at) * 1000.0, 3),
+                max_rss_mb=_process_max_rss_mb(),
+            )
+            warnings.append(f"pre_export_v5_refresh_failed:{name}:TimeoutExpired:{exc.timeout}s")
+            continue
+        _log_export_stage_event(
+            "end",
+            stage,
+            elapsed_ms=round((time.perf_counter() - started_at) * 1000.0, 3),
+            max_rss_mb=_process_max_rss_mb(),
+        )
+        if result.returncode != 0:
+            detail = "\n".join(
+                part for part in [result.stderr.strip(), result.stdout.strip()] if part
+            )
+            warnings.append(
+                f"pre_export_v5_refresh_failed:{name}:"
+                f"exit_{result.returncode}:{_safe_warning_text(detail)}"
+            )
+    return warnings
+
+
+def _v5_derived_refresh_subprocess_code(body: str) -> str:
+    return (
+        "from __future__ import annotations\n"
+        "import os\n"
+        "from datetime import date\n"
+        "from pathlib import Path\n"
+        "lake_root = Path(os.environ['QUANT_LAB_DERIVED_REFRESH_LAKE_ROOT'])\n"
+        "export_day = date.fromisoformat(os.environ['QUANT_LAB_DERIVED_REFRESH_DATE'])\n"
+        "lookback_days = int(os.environ['QUANT_LAB_DERIVED_REFRESH_LOOKBACK_DAYS'])\n"
+        "alpha_factory_lookback_days = int(os.environ['QUANT_LAB_DERIVED_REFRESH_ALPHA_FACTORY_LOOKBACK_DAYS'])\n"
+        "alpha_factory_max_candidates = int(os.environ['QUANT_LAB_DERIVED_REFRESH_ALPHA_FACTORY_MAX_CANDIDATES'])\n"
+        f"{body}\n"
+    )
+
+
+def _v5_derived_refresh_step_bodies() -> list[tuple[str, str]]:
+    return [
+        (
+            "analyze_v5_telemetry",
+            "from quant_lab.strategy_telemetry.analyze import analyze_v5_telemetry\n"
+            "analyze_v5_telemetry(lake_root=lake_root, date=export_day.isoformat())",
+        ),
+        (
+            "build_candidate_labels",
+            "from quant_lab.research.candidate_labels import build_and_publish_candidate_labels\n"
+            "build_and_publish_candidate_labels(lake_root, as_of_date=export_day, mode='incremental', lookback_days=lookback_days)",
+        ),
+        (
+            "build_strategy_evidence",
+            "from quant_lab.research.strategy_evidence import build_and_publish_strategy_evidence\n"
+            "build_and_publish_strategy_evidence(lake_root, as_of_date=export_day.isoformat(), mode='incremental', lookback_days=lookback_days, include_historical_outcomes=False)",
+        ),
+        (
+            "build_expanded_universe_automation",
+            "from quant_lab.research.expanded_universe import build_and_publish_expanded_crypto_universe_shadow\n"
+            "build_and_publish_expanded_crypto_universe_shadow(lake_root, as_of_date=export_day.isoformat())",
+        ),
+        (
+            "build_alpha_discovery_board",
+            "from quant_lab.research.alpha_discovery import build_and_publish_alpha_discovery_board\n"
+            "build_and_publish_alpha_discovery_board(lake_root, as_of_date=export_day, include_legacy_outcome_counts=False)",
+        ),
+        (
+            "build_paper_strategy_tracking",
+            "from quant_lab.research.paper_tracking import build_and_publish_paper_strategy_tracking\n"
+            "build_and_publish_paper_strategy_tracking(lake_root, as_of_date=export_day)",
+        ),
+        (
+            "build_research_portfolio_status_before_diagnostics",
+            "from quant_lab.research.portfolio import build_and_publish_research_portfolio_status\n"
+            "build_and_publish_research_portfolio_status(lake_root, as_of_date=export_day)",
+        ),
+        (
+            "refresh_research_diagnostics",
+            "from quant_lab.research.diagnostics_refresh import refresh_research_diagnostics\n"
+            "refresh_research_diagnostics(lake_root, as_of_date=export_day)",
+        ),
+        (
+            "build_entry_quality",
+            "from quant_lab.research.entry_quality import build_and_publish_entry_quality\n"
+            "build_and_publish_entry_quality(lake_root, as_of_date=export_day)",
+        ),
+        (
+            "build_alpha_factory",
+            "from quant_lab.research.alpha_factory import build_and_publish_alpha_factory\n"
+            "build_and_publish_alpha_factory(lake_root, as_of_date=export_day, lookback_days=alpha_factory_lookback_days, max_candidates=alpha_factory_max_candidates)",
+        ),
+        (
+            "refresh_alpha_discovery_board_after_alpha_factory",
+            "from quant_lab.research.alpha_discovery import build_and_publish_alpha_discovery_board\n"
+            "build_and_publish_alpha_discovery_board(lake_root, as_of_date=export_day, include_legacy_outcome_counts=False)",
+        ),
+        (
+            "build_regime_router",
+            "from quant_lab.research.regime_router import build_and_publish_regime_router\n"
+            "build_and_publish_regime_router(lake_root, as_of_date=export_day)",
+        ),
+        (
+            "build_research_portfolio_status",
+            "from quant_lab.research.portfolio import build_and_publish_research_portfolio_status\n"
+            "build_and_publish_research_portfolio_status(lake_root, as_of_date=export_day)",
+        ),
+        (
+            "write_enforce_readiness_report",
+            "from quant_lab.web import readers\n"
+            "from quant_lab.reports.enforce_readiness import write_enforce_readiness_report\n"
+            "write_enforce_readiness_report(lake_root=lake_root, out_dir=readers.default_exports_root(lake_root), strategy='v5', version='5.0.0')",
+        ),
+    ]
 
 
 def _safe_warning_text(value: str, *, limit: int = 500) -> str:

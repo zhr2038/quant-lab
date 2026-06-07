@@ -271,8 +271,10 @@ function Drilldown({
         <h2>{content.title}</h2>
         <button onClick={onClose} aria-label="关闭二级页"><X size={20} /></button>
       </div>
-      <p>{content.subtitle}</p>
-      {content.blocks}
+      <div className="drawer-scroll">
+        <p>{content.subtitle}</p>
+        {content.blocks}
+      </div>
     </motion.aside>
   );
 }

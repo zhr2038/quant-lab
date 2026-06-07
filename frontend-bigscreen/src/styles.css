@@ -283,13 +283,22 @@ button{font:inherit;color:inherit}
 .yellowText{color:var(--yellow)!important}
 .loading-card{position:absolute;left:28px;right:28px;top:92px;bottom:32px;border:1px solid var(--line);border-radius:22px;background:rgba(9,27,50,.82);display:grid;place-items:center;font-size:24px}
 .detail-drawer{
-  position:absolute;right:18px;top:168px;width:690px;height:740px;z-index:20;
+  position:absolute;right:18px;top:168px;width:690px;height:min(740px,calc(100dvh - 208px));z-index:20;
   border:1px solid rgba(45,232,166,.55);border-radius:22px;background:linear-gradient(180deg,#06172a,#03111f);
   box-shadow:0 0 46px rgba(45,232,166,.18),inset 0 1px 0 rgba(255,255,255,.06);padding:22px;overflow:hidden;
-  isolation:isolate;
+  isolation:isolate;display:flex;flex-direction:column;min-height:0;
 }
-.drawer-head{display:flex;align-items:center;justify-content:space-between}
+.drawer-head{display:flex;align-items:center;justify-content:space-between;gap:18px;flex:0 0 auto}
 .drawer-head h2{margin:0;font-size:25px}.drawer-head button{border:1px solid var(--line);background:rgba(7,29,53,.75);border-radius:11px;width:36px;height:36px;display:grid;place-items:center;cursor:pointer}
+.drawer-scroll{
+  min-height:0;overflow:auto;padding-right:6px;margin-right:-6px;scrollbar-gutter:stable;
+  overscroll-behavior:contain;-webkit-overflow-scrolling:touch;
+}
+.drawer-scroll::-webkit-scrollbar,.pack-list::-webkit-scrollbar,.mini-table::-webkit-scrollbar{width:8px;height:8px}
+.drawer-scroll::-webkit-scrollbar-thumb,.pack-list::-webkit-scrollbar-thumb,.mini-table::-webkit-scrollbar-thumb{
+  background:rgba(80,169,255,.42);border-radius:99px;
+}
+.drawer-scroll::-webkit-scrollbar-track,.pack-list::-webkit-scrollbar-track,.mini-table::-webkit-scrollbar-track{background:rgba(5,20,38,.35);border-radius:99px}
 .detail-drawer p{color:var(--muted);margin:8px 0 16px}
 .mini-table-block{margin-top:16px}
 .mini-table-block h3{margin:0 0 8px;font-size:16px;color:#dff7ff}
@@ -490,8 +499,11 @@ button{font:inherit;color:inherit}
   }
   .detail-drawer{
     position:fixed;left:10px;right:10px;top:10px;bottom:10px;width:auto;height:auto;z-index:40;
-    padding:16px;overflow:auto;background:linear-gradient(180deg,#06172a,#03111f);
+    max-height:none;padding:16px;overflow:hidden;background:linear-gradient(180deg,#06172a,#03111f);
   }
+  .drawer-head h2{font-size:22px;line-height:1.15}
+  .drawer-head button{width:42px;height:42px;flex:0 0 auto}
+  .drawer-scroll{padding-right:4px;margin-right:-4px}
   .mini-table{overflow:auto}
   .mini-table-row{min-width:680px}
   .kv-grid{grid-template-columns:1fr}

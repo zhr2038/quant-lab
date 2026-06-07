@@ -5915,7 +5915,11 @@ def _refresh_v5_derived_outputs(lake_root: Path, export_day: date) -> list[str]:
             lambda: __import__(
                 "quant_lab.strategy_telemetry.analyze",
                 fromlist=["analyze_v5_telemetry"],
-            ).analyze_v5_telemetry(lake_root=lake_root, date=export_day.isoformat()),
+            ).analyze_v5_telemetry(
+                lake_root=lake_root,
+                date=export_day.isoformat(),
+                refresh_candidate_gold=False,
+            ),
         ),
         (
             "build_candidate_labels",
@@ -6141,7 +6145,7 @@ def _v5_derived_refresh_step_bodies() -> list[tuple[str, str]]:
         (
             "analyze_v5_telemetry",
             "from quant_lab.strategy_telemetry.analyze import analyze_v5_telemetry\n"
-            "analyze_v5_telemetry(lake_root=lake_root, date=export_day.isoformat())",
+            "analyze_v5_telemetry(lake_root=lake_root, date=export_day.isoformat(), refresh_candidate_gold=False)",
         ),
         (
             "build_candidate_labels",

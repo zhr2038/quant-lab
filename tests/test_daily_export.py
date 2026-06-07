@@ -2126,6 +2126,11 @@ def test_refresh_v5_derived_outputs_uses_incremental_research_builds(
     warnings = daily_export_module._refresh_v5_derived_outputs(lake_root, export_day)
 
     assert warnings == []
+    assert calls["telemetry"][0]["kwargs"] == {
+        "lake_root": lake_root,
+        "date": export_day.isoformat(),
+        "refresh_candidate_gold": False,
+    }
     assert calls["candidate_labels"][0]["kwargs"] == {
         "as_of_date": export_day,
         "mode": "incremental",

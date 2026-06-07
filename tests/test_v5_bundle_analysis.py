@@ -126,6 +126,57 @@ def test_v5_gold_mirror_appends_only_new_bundle_rows(tmp_path):
     assert sorted(gold["run_id"].to_list()) == ["run-current", "run-next", "run-old"]
 
 
+def test_v5_gold_mirror_repairs_equal_count_but_stale_gold(tmp_path):
+    lake = tmp_path / "lake"
+    silver = lake / "silver" / "v5_final_score_vs_alpha6_conflict"
+    gold_path = lake / "gold" / "v5_final_score_vs_alpha6_conflict"
+    write_parquet_dataset(
+        pl.DataFrame(
+            [
+                {
+                    "run_id": "run-old",
+                    "symbol": "BNB/USDT",
+                    "bundle_ts": datetime(2026, 5, 9, tzinfo=UTC),
+                },
+                {
+                    "run_id": "run-current",
+                    "symbol": "BNB/USDT",
+                    "bundle_ts": datetime(2026, 5, 10, tzinfo=UTC),
+                },
+            ]
+        ),
+        silver,
+    )
+    write_parquet_dataset(
+        pl.DataFrame(
+            [
+                {
+                    "run_id": "stale-a",
+                    "symbol": "BNB/USDT",
+                    "bundle_ts": datetime(2026, 5, 9, 1, tzinfo=UTC),
+                },
+                {
+                    "run_id": "stale-b",
+                    "symbol": "BNB/USDT",
+                    "bundle_ts": datetime(2026, 5, 9, 2, tzinfo=UTC),
+                },
+            ]
+        ),
+        gold_path,
+    )
+
+    analyze_module._mirror_v5_consistency_gold(
+        lake,
+        analysis_date="2026-05-10",
+        lookback_days=14,
+    )
+
+    gold = read_parquet_dataset(gold_path)
+    assert gold.height == 2
+    assert sorted(gold["run_id"].to_list()) == ["run-current", "run-old"]
+    assert "bundle_day" in gold.columns
+
+
 def test_analyze_flags_reconcile_failure(tmp_path):
     lake = tmp_path / "lake"
     _write_manifest(lake)

@@ -673,15 +673,24 @@ def _mirror_v5_consistency_gold(
     lookback_days: int,
 ) -> None:
     for silver_name, gold_name in GOLD_TELEMETRY_MIRRORS.items():
+        silver_path = lake_root / SILVER[silver_name]
+        gold_path = lake_root / GOLD_DATASETS[gold_name]
+        repaired = _repair_gold_mirror_if_needed(
+            silver_path,
+            gold_path,
+            analysis_date=analysis_date,
+        )
+        if repaired:
+            continue
         frame = _read_incremental_mirror_frame(
-            lake_root / SILVER[silver_name],
-            lake_root / GOLD_DATASETS[gold_name],
+            silver_path,
+            gold_path,
             analysis_date=analysis_date,
             lookback_days=lookback_days,
         )
         if frame.is_empty():
             continue
-        _append_gold_mirror_rows(frame, lake_root / GOLD_DATASETS[gold_name], analysis_date)
+        _append_gold_mirror_rows(frame, gold_path, analysis_date)
         if gold_name == "v5_bnb_paper_strategy_daily":
             previous_latest = _safe_read_dataset(
                 lake_root / GOLD_DATASETS["v5_bnb_paper_strategy_daily_latest"]
@@ -697,6 +706,49 @@ def _mirror_v5_consistency_gold(
                     latest,
                     lake_root / GOLD_DATASETS["v5_bnb_paper_strategy_daily_latest"],
                 )
+
+
+def _repair_gold_mirror_if_needed(
+    silver_path: Path,
+    gold_path: Path,
+    *,
+    analysis_date: str,
+) -> bool:
+    silver_rows = _dataset_row_count(silver_path)
+    if silver_rows <= 0:
+        return False
+    gold_rows = _dataset_row_count(gold_path)
+    silver_latest = _latest_dataset_time(silver_path)
+    gold_latest = _latest_dataset_time(gold_path)
+    inconsistent = gold_rows > silver_rows or (
+        gold_rows == silver_rows
+        and silver_latest is not None
+        and gold_latest is not None
+        and silver_latest != gold_latest
+    )
+    if not inconsistent:
+        return False
+    if silver_rows > _mirror_repair_max_rows():
+        return False
+    silver = _safe_read_dataset(silver_path)
+    if silver.is_empty():
+        return False
+    write_parquet_dataset(
+        _with_bundle_day(silver, analysis_date),
+        gold_path,
+        partition_by="bundle_day",
+    )
+    return True
+
+
+def _mirror_repair_max_rows() -> int:
+    raw = os.environ.get("QUANT_LAB_V5_MIRROR_REPAIR_MAX_ROWS")
+    if raw is None or not raw.strip():
+        return 200_000
+    try:
+        return max(int(raw), 0)
+    except ValueError:
+        return 200_000
 
 
 def _read_incremental_mirror_frame(
@@ -747,6 +799,13 @@ def _latest_dataset_time(path: Path) -> datetime | None:
     if not isinstance(value, datetime):
         return None
     return value.astimezone(UTC) if value.tzinfo else value.replace(tzinfo=UTC)
+
+
+def _dataset_row_count(path: Path) -> int:
+    try:
+        return int(read_parquet_lazy(path).select(pl.len().alias("rows")).collect().item())
+    except Exception:
+        return 0
 
 
 def _append_gold_mirror_rows(frame: pl.DataFrame, path: Path, analysis_date: str) -> None:

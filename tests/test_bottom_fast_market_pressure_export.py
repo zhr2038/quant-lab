@@ -4,6 +4,7 @@ import zipfile
 from datetime import UTC, datetime, timedelta
 
 import polars as pl
+import pytest
 
 from quant_lab.data.lake import write_parquet_dataset
 from quant_lab.export.daily import export_daily_pack
@@ -232,3 +233,53 @@ def test_fast_microstructure_uses_latest_rollup_time_when_market_bar_lags():
     assert row["orderbook_imbalance_1m"] == 0.3
     assert row["trade_count_60m"] == 240.0
     assert row["taker_buy_sell_imbalance_5m"] > 0
+
+
+def test_fast_microstructure_infers_trade_side_from_price_vs_mid():
+    market_ts = datetime(2026, 6, 6, 9, tzinfo=UTC)
+    market = pl.DataFrame(
+        _market_rows("BNB-USDT", market_ts - timedelta(hours=4), [100, 101, 102, 103, 104])
+    )
+    spreads = pl.DataFrame(
+        [
+            {
+                "symbol": "BNB-USDT",
+                "minute_ts": market_ts - timedelta(minutes=minute),
+                "ts": market_ts - timedelta(minutes=minute),
+                "bid": 103.90,
+                "ask": 104.10,
+                "mid": 104.0,
+                "bid_size": 12.0,
+                "ask_size": 8.0,
+            }
+            for minute in range(10)
+        ]
+    )
+    trades = pl.DataFrame(
+        [
+            {
+                "symbol": "BNB-USDT",
+                "minute_ts": market_ts - timedelta(minutes=minute),
+                "latest_trade_ts": market_ts - timedelta(minutes=minute),
+                "trade_count": 1,
+                "size_sum": 5.0,
+                "price": 104.08 if minute % 2 == 0 else 103.95,
+            }
+            for minute in range(10)
+        ]
+    )
+
+    fast = build_fast_microstructure_features(
+        market_bars=market,
+        orderbook_spread_1m=spreads,
+        trade_activity_1m=trades,
+        generated_at=market_ts,
+    )
+
+    row = fast.to_dicts()[0]
+    assert row["latest_spread_bps"] == pytest.approx((104.10 - 103.90) / 104.0 * 10000.0)
+    assert row["orderbook_imbalance_1m"] == pytest.approx((12.0 - 8.0) / 20.0)
+    assert row["side_inferred"] is True
+    assert row["taker_buy_size_sum_15m"] > 0
+    assert row["taker_sell_size_sum_15m"] > 0
+    assert row["taker_buy_sell_imbalance_5m"] is not None

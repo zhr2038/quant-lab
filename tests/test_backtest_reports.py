@@ -64,6 +64,79 @@ def test_label_backtest_summarizes_bnb_alpha6_conflict() -> None:
     assert h4["data_leakage_check"][0] == "pass_visible_at_decision_time"
 
 
+def test_label_backtest_dedupes_duplicate_bnb_bypass_bundle_rows() -> None:
+    frame = pl.DataFrame(
+        [
+            {
+                "run_id": "20260607_01",
+                "strategy_id": "BNB_STRONG_ALPHA6_BYPASS_SHADOW_V1",
+                "symbol": "BNB/USDT",
+                "ts_utc": "2026-06-07T01:00:00Z",
+                "generated_at": "2026-06-07T02:00:00Z",
+                "future_4h_net_bps": 100.0,
+            },
+            {
+                "run_id": "20260607_01",
+                "strategy_id": "BNB_STRONG_ALPHA6_BYPASS_SHADOW_V1",
+                "symbol": "BNB/USDT",
+                "ts_utc": "2026-06-07T01:00:00Z",
+                "generated_at": "2026-06-07T03:00:00Z",
+                "future_4h_net_bps": 120.0,
+            },
+        ]
+    )
+
+    summary = build_label_backtest_summary({"bnb_strong_alpha6_bypass_shadow": frame})
+
+    row = summary.filter(pl.col("strategy_id") == "BNB_STRONG_ALPHA6_BYPASS_BACKTEST").to_dicts()[0]
+    assert row["sample_count"] == 1
+    assert row["complete_sample_count"] == 1
+    assert row["avg_net_bps"] == 120.0
+    assert row["dedupe_before_rows"] == 2
+    assert row["dedupe_after_rows"] == 1
+    assert row["duplicate_rate"] == 0.5
+
+
+def test_label_backtest_dedupes_duplicate_final_score_conflict_rows() -> None:
+    frame = pl.DataFrame(
+        [
+            {
+                "run_id": "20260607_01",
+                "symbol": "BNB/USDT",
+                "ts_utc": "2026-06-07T01:00:00Z",
+                "generated_at": "2026-06-07T02:00:00Z",
+                "future_4h_net_bps": 40.0,
+            },
+            {
+                "run_id": "20260607_01",
+                "symbol": "BNB/USDT",
+                "ts_utc": "2026-06-07T01:00:00Z",
+                "generated_at": "2026-06-07T03:00:00Z",
+                "future_4h_net_bps": 80.0,
+            },
+            {
+                "run_id": "20260607_02",
+                "symbol": "BNB/USDT",
+                "ts_utc": "2026-06-07T02:00:00Z",
+                "generated_at": "2026-06-07T03:00:00Z",
+                "future_4h_net_bps": -20.0,
+            },
+        ]
+    )
+
+    summary = build_label_backtest_summary({"final_score_vs_alpha6_conflict": frame})
+
+    row = summary.filter(
+        pl.col("strategy_id") == "FINAL_SCORE_ALPHA6_CONFLICT_BACKTEST"
+    ).to_dicts()[0]
+    assert row["sample_count"] == 2
+    assert row["complete_sample_count"] == 2
+    assert row["avg_net_bps"] == 30.0
+    assert row["dedupe_before_rows"] == 3
+    assert row["dedupe_after_rows"] == 2
+    assert row["duplicate_rate"] == pytest.approx(1 / 3)
+
+
 def test_label_backtest_keeps_advisory_pending_horizon_rows() -> None:
     summary = build_label_backtest_summary(
         {
@@ -143,6 +216,59 @@ def test_backtest_bundle_outputs_bottom_zone_and_promotion() -> None:
     assert "BOTTOM_ZONE_PROBE_BACKTEST" in bundle.regime_breakdown["strategy_id"].to_list()
     assert bundle.regime_breakdown["live_order_effect"].to_list()[0] == "read_only_no_live_order"
     assert bundle.promotion_decision.height >= 1 or bundle.label_summary.height == 0
+
+
+def test_backtest_positive_paper_negative_is_quarantined() -> None:
+    labels = pl.DataFrame(
+        [
+            {
+                "run_id": "20260607_01",
+                "strategy_id": "BNB_STRONG_ALPHA6_BYPASS_SHADOW_V1",
+                "symbol": "BNB-USDT",
+                "ts_utc": "2026-06-07T01:00:00Z",
+                "future_4h_net_bps": 110.0,
+            }
+            for index in range(60)
+        ]
+    ).with_row_index("idx").with_columns(
+        (
+            pl.lit("20260607_")
+            + pl.col("idx").cast(pl.Utf8).str.zfill(2)
+        ).alias("run_id")
+    ).drop("idx")
+    bnb_paper = pl.DataFrame(
+        [
+            {
+                "paper_date": "2026-06-07",
+                "strategy_id": "BNB_RISK_ON_BUY_PAPER_V1",
+                "symbol": "BNB-USDT",
+                "entry_count": 25,
+                "paper_days_to_date": 14,
+                "avg_paper_pnl_bps_4h": -35.0,
+                "avg_paper_pnl_bps": -35.0,
+            }
+        ]
+    )
+
+    bundle = build_backtest_report_bundle(
+        {
+            "bnb_strong_alpha6_bypass_shadow": labels,
+            "bnb_paper_strategy_daily": bnb_paper,
+        }
+    )
+
+    consistency = bundle.backtest_vs_paper_consistency.filter(
+        pl.col("recommendation") == "QUARANTINE_BACKTEST_PAPER_CONFLICT"
+    )
+    assert consistency.height >= 1
+    promotion = bundle.promotion_decision.filter(
+        pl.col("strategy_id") == "BNB_STRONG_ALPHA6_BYPASS_BACKTEST"
+    )
+    assert "PAPER" not in set(promotion["recommended_stage"].to_list())
+    assert "QUARANTINE" in set(promotion["recommended_stage"].to_list())
+    assert "QUARANTINE_BACKTEST_PAPER_CONFLICT" in ";".join(
+        promotion["decision_reasons"].to_list()
+    )
 
 
 def test_backtest_label_summary_uses_stable_first_batch_backtest_ids() -> None:

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from collections import defaultdict
+from datetime import UTC, datetime
 from typing import Any
 
 import polars as pl
@@ -22,6 +23,9 @@ BACKTEST_LABEL_SUMMARY_FIELDS = [
     "symbol",
     "regime",
     "horizon_hours",
+    "dedupe_before_rows",
+    "dedupe_after_rows",
+    "duplicate_rate",
     "sample_count",
     "complete_sample_count",
     "avg_net_bps",
@@ -93,6 +97,9 @@ def build_label_backtest_summary(
                 "symbol": symbol,
                 "regime": regime,
                 "horizon_hours": horizon,
+                "dedupe_before_rows": _max_int(values, "_dedupe_before_rows"),
+                "dedupe_after_rows": _max_int(values, "_dedupe_after_rows"),
+                "duplicate_rate": _max_float(values, "_duplicate_rate"),
                 "sample_count": len(values),
                 "complete_sample_count": numeric["complete_sample_count"],
                 "avg_net_bps": numeric["avg_net_bps"],
@@ -151,7 +158,9 @@ def label_summary_md(summary: pl.DataFrame) -> str:
 
 def _samples_from_frame(dataset_name: str, frame: pl.DataFrame | None) -> list[dict[str, Any]]:
     output: list[dict[str, Any]] = []
-    for row in rows(frame):
+    input_rows = rows(frame)
+    deduped_rows, dedupe_meta = _dedupe_label_source_rows(dataset_name, input_rows)
+    for row in deduped_rows:
         strategy_id = _strategy_id(dataset_name, row)
         symbol = normalize_strategy_symbol(first_value(row, ("symbol", "would_buy_symbol")))
         if symbol == "UNKNOWN" and str(first_value(row, ("selected_symbols", "would_buy_symbols")) or "").strip():
@@ -195,9 +204,85 @@ def _samples_from_frame(dataset_name: str, frame: pl.DataFrame | None) -> list[d
                     "_decision_ts": decision_ts,
                     "cost_model": cost_model,
                     "data_leakage_check": _leakage_check(row, decision_ts),
+                    "_dedupe_before_rows": dedupe_meta["dedupe_before_rows"],
+                    "_dedupe_after_rows": dedupe_meta["dedupe_after_rows"],
+                    "_duplicate_rate": dedupe_meta["duplicate_rate"],
                 }
             )
     return output
+
+
+def _dedupe_label_source_rows(
+    dataset_name: str,
+    input_rows: list[dict[str, Any]],
+) -> tuple[list[dict[str, Any]], dict[str, Any]]:
+    if not input_rows:
+        return [], {
+            "dedupe_before_rows": 0,
+            "dedupe_after_rows": 0,
+            "duplicate_rate": 0.0,
+        }
+    keys = _dedupe_keys_for_dataset(dataset_name)
+    if not keys:
+        after_rows = len(input_rows)
+        return input_rows, {
+            "dedupe_before_rows": len(input_rows),
+            "dedupe_after_rows": after_rows,
+            "duplicate_rate": 0.0,
+        }
+    by_key: dict[tuple[str, ...], dict[str, Any]] = {}
+    for index, row in enumerate(input_rows):
+        key = _dedupe_key(row, keys, fallback_index=index)
+        current = by_key.get(key)
+        if current is None or _row_freshness_ts(row) >= _row_freshness_ts(current):
+            by_key[key] = row
+    deduped = list(by_key.values())
+    before_rows = len(input_rows)
+    after_rows = len(deduped)
+    duplicate_rate = (before_rows - after_rows) / before_rows if before_rows else 0.0
+    return deduped, {
+        "dedupe_before_rows": before_rows,
+        "dedupe_after_rows": after_rows,
+        "duplicate_rate": round(duplicate_rate, 6),
+    }
+
+
+def _dedupe_keys_for_dataset(dataset_name: str) -> tuple[str, ...]:
+    if dataset_name in {"final_score_vs_alpha6_conflict", "v5_final_score_vs_alpha6_conflict"}:
+        return ("run_id", "symbol", "ts_utc")
+    if dataset_name in {"bnb_strong_alpha6_bypass_shadow", "v5_bnb_strong_alpha6_bypass_shadow"}:
+        return ("run_id", "symbol", "ts_utc", "strategy_id")
+    return ()
+
+
+def _dedupe_key(
+    row: dict[str, Any],
+    keys: tuple[str, ...],
+    *,
+    fallback_index: int,
+) -> tuple[str, ...]:
+    values: list[str] = []
+    for key in keys:
+        if key == "symbol":
+            values.append(normalize_strategy_symbol(row.get("symbol")))
+        elif key == "strategy_id":
+            values.append(str(first_value(row, ("strategy_id", "strategy_candidate")) or ""))
+        elif key == "ts_utc":
+            values.append(
+                iso_utc(first_value(row, ("ts_utc", "decision_ts", "entry_ts", "as_of_ts", "generated_at")))
+            )
+        else:
+            values.append(str(row.get(key) or ""))
+    if all(not value for value in values):
+        values.append(f"row_index:{fallback_index}")
+    return tuple(values)
+
+
+def _row_freshness_ts(row: dict[str, Any]) -> datetime:
+    return (
+        coerce_dt(first_value(row, ("bundle_ts", "ingest_ts", "generated_at", "as_of_ts", "ts_utc")))
+        or datetime.min.replace(tzinfo=UTC)
+    )
 
 
 def _expanded_hype_wld_samples(frames: dict[str, pl.DataFrame]) -> list[dict[str, Any]]:
@@ -236,9 +321,23 @@ def _expanded_hype_wld_samples(frames: dict[str, pl.DataFrame]) -> list[dict[str
                     "_decision_ts": decision_ts,
                     "cost_model": str(first_value(row, ("cost_model", "cost_source")) or "conservative_p75"),
                     "data_leakage_check": "pass_maturity_state_visible_at_decision_time",
+                    "_dedupe_before_rows": 0,
+                    "_dedupe_after_rows": 0,
+                    "_duplicate_rate": 0.0,
                 }
             )
     return output
+
+
+def _max_int(values: list[dict[str, Any]], field: str) -> int:
+    observed = [int(float_or_none(row.get(field)) or 0) for row in values]
+    return max(observed) if observed else 0
+
+
+def _max_float(values: list[dict[str, Any]], field: str) -> float:
+    observed = [float_or_none(row.get(field)) for row in values]
+    observed = [value for value in observed if value is not None]
+    return round(max(observed), 6) if observed else 0.0
 
 
 def _strategy_id(dataset_name: str, row: dict[str, Any]) -> str:

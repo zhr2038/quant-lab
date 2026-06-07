@@ -75,6 +75,24 @@ RESEARCH_PROMOTION_DECISION_FIELDS = [
     "live_order_effect",
 ]
 
+BACKTEST_VS_PAPER_CONSISTENCY_FIELDS = [
+    "strategy_id",
+    "symbol",
+    "horizon_hours",
+    "backtest_sample_count",
+    "backtest_complete_sample_count",
+    "backtest_avg_net_bps",
+    "backtest_p25_net_bps",
+    "paper_strategy_id",
+    "paper_days",
+    "paper_entries",
+    "paper_avg_net_bps",
+    "consistency_status",
+    "recommendation",
+    "decision_reasons",
+    "live_order_effect",
+]
+
 BACKTEST_REGIME_BREAKDOWN_FIELDS = [
     "strategy_id",
     "symbol",
@@ -96,6 +114,7 @@ BACKTEST_CSV_SCHEMAS = {
     "reports/backtest_regime_breakdown.csv": BACKTEST_REGIME_BREAKDOWN_FIELDS,
     "reports/bottom_zone_backtest.csv": BOTTOM_ZONE_BACKTEST_FIELDS,
     "reports/research_promotion_decision.csv": RESEARCH_PROMOTION_DECISION_FIELDS,
+    "reports/backtest_vs_paper_consistency.csv": BACKTEST_VS_PAPER_CONSISTENCY_FIELDS,
 }
 
 
@@ -111,6 +130,8 @@ class BacktestReportBundle:
     bottom_zone_summary_md: str
     promotion_decision: pl.DataFrame
     promotion_decision_md: str
+    backtest_vs_paper_consistency: pl.DataFrame
+    backtest_vs_paper_consistency_md: str
 
 
 def build_backtest_report_bundle(frames: dict[str, pl.DataFrame]) -> BacktestReportBundle:
@@ -120,10 +141,16 @@ def build_backtest_report_bundle(frames: dict[str, pl.DataFrame]) -> BacktestRep
         market_bars=frames.get("market_bar", pl.DataFrame()),
         cost_bucket_daily=frames.get("cost_bucket_daily", pl.DataFrame()),
     )
+    consistency = build_backtest_vs_paper_consistency(
+        label_summary=engine_result.label_summary,
+        paper_daily=frames.get("paper_strategy_daily", pl.DataFrame()),
+        bnb_paper_daily=frames.get("bnb_paper_strategy_daily", pl.DataFrame()),
+    )
     promotion = build_research_promotion_decision(
         label_summary=engine_result.label_summary,
         paper_daily=frames.get("paper_strategy_daily", pl.DataFrame()),
         bnb_paper_daily=frames.get("bnb_paper_strategy_daily", pl.DataFrame()),
+        backtest_vs_paper_consistency=consistency,
     )
     return BacktestReportBundle(
         label_summary=engine_result.label_summary,
@@ -136,6 +163,8 @@ def build_backtest_report_bundle(frames: dict[str, pl.DataFrame]) -> BacktestRep
         bottom_zone_summary_md=bottom_zone_backtest_summary_md(bottom),
         promotion_decision=promotion,
         promotion_decision_md=research_promotion_decision_md(promotion),
+        backtest_vs_paper_consistency=consistency,
+        backtest_vs_paper_consistency_md=backtest_vs_paper_consistency_md(consistency),
     )
 
 
@@ -237,8 +266,10 @@ def build_research_promotion_decision(
     label_summary: pl.DataFrame,
     paper_daily: pl.DataFrame | None = None,
     bnb_paper_daily: pl.DataFrame | None = None,
+    backtest_vs_paper_consistency: pl.DataFrame | None = None,
 ) -> pl.DataFrame:
     paper_index = _paper_daily_index(paper_daily, bnb_paper_daily)
+    conflict_index = _paper_conflict_index(backtest_vs_paper_consistency)
     out: list[dict[str, Any]] = []
     for row in rows(label_summary):
         strategy_id = str(row.get("strategy_id") or "")
@@ -265,6 +296,14 @@ def build_research_promotion_decision(
             paper_avg=paper_avg,
             actual_or_mixed_cost_coverage=cost_ok,
         )
+        conflict_key = _promotion_conflict_key(row)
+        conflict = conflict_index.get(conflict_key)
+        if conflict:
+            stage = "QUARANTINE"
+            reasons = [
+                "QUARANTINE_BACKTEST_PAPER_CONFLICT",
+                *[reason for reason in reasons if reason != "paper_days_or_entries_insufficient"],
+            ]
         out.append(
             {
                 "strategy_id": strategy_id,
@@ -288,6 +327,86 @@ def build_research_promotion_decision(
             }
         )
     return frame_with_schema(out, RESEARCH_PROMOTION_DECISION_FIELDS)
+
+
+def build_backtest_vs_paper_consistency(
+    *,
+    label_summary: pl.DataFrame,
+    paper_daily: pl.DataFrame | None = None,
+    bnb_paper_daily: pl.DataFrame | None = None,
+) -> pl.DataFrame:
+    paper_by_strategy, paper_by_symbol = _paper_daily_lookup(paper_daily, bnb_paper_daily)
+    out: list[dict[str, Any]] = []
+    for row in rows(label_summary):
+        avg = float_or_none(row.get("avg_net_bps"))
+        if avg is None or avg <= 0:
+            continue
+        strategy_id = str(row.get("strategy_id") or "")
+        symbol = normalize_strategy_symbol(row.get("symbol"))
+        paper = paper_by_strategy.get(strategy_id)
+        if paper is None and _strategy_uses_symbol_paper_proxy(strategy_id, symbol):
+            paper = paper_by_symbol.get(symbol)
+        if paper is None:
+            continue
+        horizon = int(float_or_none(row.get("horizon_hours")) or 0)
+        paper_avg = _paper_avg_for_horizon(paper, horizon)
+        if paper_avg is None:
+            continue
+        conflict = paper_avg < 0
+        out.append(
+            {
+                "strategy_id": strategy_id,
+                "symbol": symbol,
+                "horizon_hours": horizon,
+                "backtest_sample_count": row.get("sample_count"),
+                "backtest_complete_sample_count": row.get("complete_sample_count"),
+                "backtest_avg_net_bps": avg,
+                "backtest_p25_net_bps": row.get("p25_net_bps"),
+                "paper_strategy_id": paper.get("strategy_id"),
+                "paper_days": paper.get("paper_days_to_date") or paper.get("paper_days"),
+                "paper_entries": paper.get("entry_count"),
+                "paper_avg_net_bps": paper_avg,
+                "consistency_status": (
+                    "backtest_positive_paper_negative"
+                    if conflict
+                    else "backtest_positive_paper_non_negative"
+                ),
+                "recommendation": (
+                    "QUARANTINE_BACKTEST_PAPER_CONFLICT"
+                    if conflict
+                    else "CONSISTENT_KEEP_RESEARCH_PIPELINE"
+                ),
+                "decision_reasons": (
+                    "backtest_positive_but_v5_paper_negative"
+                    if conflict
+                    else "backtest_positive_and_v5_paper_non_negative"
+                ),
+                "live_order_effect": "read_only_no_live_order",
+            }
+        )
+    return frame_with_schema(out, BACKTEST_VS_PAPER_CONSISTENCY_FIELDS)
+
+
+def backtest_vs_paper_consistency_md(frame: pl.DataFrame) -> str:
+    conflicts = frame.filter(pl.col("recommendation") == "QUARANTINE_BACKTEST_PAPER_CONFLICT") if not frame.is_empty() else pl.DataFrame()
+    lines = [
+        "# Backtest vs Paper Consistency",
+        "",
+        "Read-only consistency check between deduped backtest labels and V5 paper telemetry.",
+        "Rows with positive backtest but negative paper are quarantined from PAPER promotion.",
+        "",
+        f"- rows: {frame.height}",
+        f"- quarantine_conflict_rows: {conflicts.height}",
+        "- live_order_effect: read_only_no_live_order",
+    ]
+    for row in rows(conflicts)[:12]:
+        lines.append(
+            "- "
+            f"{row.get('strategy_id')} {row.get('symbol')} h={row.get('horizon_hours')} "
+            f"backtest_avg={row.get('backtest_avg_net_bps')} paper_avg={row.get('paper_avg_net_bps')} "
+            f"recommendation={row.get('recommendation')}"
+        )
+    return "\n".join(lines) + "\n"
 
 
 def research_promotion_decision_md(frame: pl.DataFrame) -> str:
@@ -315,6 +434,79 @@ def _paper_daily_index(*frames: pl.DataFrame | None) -> dict[str, dict[str, Any]
             strategy_id = str(row.get("strategy_id") or "").strip()
             if strategy_id:
                 out[strategy_id] = row
+    return out
+
+
+def _paper_daily_lookup(
+    *frames: pl.DataFrame | None,
+) -> tuple[dict[str, dict[str, Any]], dict[str, dict[str, Any]]]:
+    by_strategy: dict[str, dict[str, Any]] = {}
+    by_symbol: dict[str, dict[str, Any]] = {}
+    for frame in frames:
+        for row in rows(frame):
+            strategy_id = str(row.get("strategy_id") or "").strip()
+            symbol = normalize_strategy_symbol(row.get("symbol"))
+            if not strategy_id and symbol == "UNKNOWN":
+                continue
+            existing = by_strategy.get(strategy_id) if strategy_id else None
+            if strategy_id and (existing is None or _paper_row_sort_key(row) >= _paper_row_sort_key(existing)):
+                by_strategy[strategy_id] = row
+            if symbol != "UNKNOWN":
+                existing_symbol = by_symbol.get(symbol)
+                if existing_symbol is None or _paper_row_sort_key(row) >= _paper_row_sort_key(existing_symbol):
+                    by_symbol[symbol] = row
+    return by_strategy, by_symbol
+
+
+def _paper_row_sort_key(row: dict[str, Any]) -> tuple[str, float]:
+    return (
+        str(first_value(row, ("paper_date", "ts_utc", "generated_at")) or ""),
+        float_or_none(row.get("entry_count")) or 0.0,
+    )
+
+
+def _strategy_uses_symbol_paper_proxy(strategy_id: str, symbol: str) -> bool:
+    text = strategy_id.upper()
+    return symbol == "BNB-USDT" and (
+        "BNB_STRONG_ALPHA6_BYPASS" in text
+        or "FINAL_SCORE_ALPHA6_CONFLICT" in text
+    )
+
+
+def _paper_avg_for_horizon(row: dict[str, Any], horizon: int) -> float | None:
+    candidates = []
+    if horizon > 0:
+        candidates.append(f"avg_paper_pnl_bps_{horizon}h")
+    candidates.extend(
+        [
+            "avg_paper_pnl_bps",
+            "paper_avg_net_bps",
+            "avg_net_bps",
+        ]
+    )
+    return float_or_none(first_value(row, tuple(candidates)))
+
+
+def _promotion_conflict_key(row: dict[str, Any]) -> tuple[str, str, int]:
+    return (
+        str(row.get("strategy_id") or ""),
+        normalize_strategy_symbol(row.get("symbol")),
+        int(float_or_none(row.get("horizon_hours")) or 0),
+    )
+
+
+def _paper_conflict_index(frame: pl.DataFrame | None) -> dict[tuple[str, str, int], dict[str, Any]]:
+    out: dict[tuple[str, str, int], dict[str, Any]] = {}
+    for row in rows(frame):
+        if str(row.get("recommendation") or "") != "QUARANTINE_BACKTEST_PAPER_CONFLICT":
+            continue
+        out[
+            (
+                str(row.get("strategy_id") or ""),
+                normalize_strategy_symbol(row.get("symbol")),
+                int(float_or_none(row.get("horizon_hours")) or 0),
+            )
+        ] = row
     return out
 
 

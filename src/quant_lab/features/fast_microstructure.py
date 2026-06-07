@@ -35,6 +35,7 @@ FAST_MICROSTRUCTURE_FIELDS = [
     "taker_buy_sell_imbalance_5m",
     "cvd_5m",
     "cvd_divergence",
+    "side_inferred",
     "cvd_size_15m",
     "vwap_1h",
     "close_vs_vwap_1h_bps",
@@ -85,16 +86,15 @@ def build_fast_microstructure_features(
         close = _latest_close(bars, ts) if ts is not None else None
         if ts is None or close is None:
             continue
-        spread_5m = _avg_value(spread_rows, ts, minutes=5, field="spread_bps")
-        spread_15m = _avg_value(spread_rows, ts, minutes=15, field="spread_bps")
-        spread_60m = _avg_value(spread_rows, ts, minutes=60, field="spread_bps")
-        latest_spread = _latest_value(spread_rows, ts, field="spread_bps")
-        orderbook_imbalance_1m = _latest_value(spread_rows, ts, field="orderbook_imbalance")
-        orderbook_imbalance_5m = _avg_value(spread_rows, ts, minutes=5, field="orderbook_imbalance")
-        spread_5m_prior = _value_at_or_before(
+        spread_5m = _avg_spread_bps(spread_rows, ts, minutes=5)
+        spread_15m = _avg_spread_bps(spread_rows, ts, minutes=15)
+        spread_60m = _avg_spread_bps(spread_rows, ts, minutes=60)
+        latest_spread = _latest_spread_bps(spread_rows, ts)
+        orderbook_imbalance_1m = _latest_orderbook_imbalance(spread_rows, ts)
+        orderbook_imbalance_5m = _avg_orderbook_imbalance(spread_rows, ts, minutes=5)
+        spread_5m_prior = _spread_at_or_before(
             spread_rows,
             ts - timedelta(minutes=5),
-            field="spread_bps",
         )
         trade_5m = _sum_value(trade_rows, ts, minutes=5, field="trade_count")
         trade_15m = _sum_value(trade_rows, ts, minutes=15, field="trade_count")
@@ -102,30 +102,19 @@ def build_fast_microstructure_features(
         size_5m = _sum_value(trade_rows, ts, minutes=5, field="size_sum")
         size_15m = _sum_value(trade_rows, ts, minutes=15, field="size_sum")
         size_60m = _sum_value(trade_rows, ts, minutes=60, field="size_sum")
-        taker_buy_15m = _sum_first_observed(
+        taker_buy_15m, taker_sell_15m, side_inferred_15m = _buy_sell_sums(
             trade_rows,
+            spread_rows,
             ts,
             minutes=15,
-            fields=("taker_buy_size_sum", "buy_size_sum"),
         )
-        taker_sell_15m = _sum_first_observed(
+        taker_buy_5m, taker_sell_5m, side_inferred_5m = _buy_sell_sums(
             trade_rows,
-            ts,
-            minutes=15,
-            fields=("taker_sell_size_sum", "sell_size_sum"),
-        )
-        taker_buy_5m = _sum_first_observed(
-            trade_rows,
+            spread_rows,
             ts,
             minutes=5,
-            fields=("taker_buy_size_sum", "buy_size_sum", "taker_buy_volume", "buy_volume"),
         )
-        taker_sell_5m = _sum_first_observed(
-            trade_rows,
-            ts,
-            minutes=5,
-            fields=("taker_sell_size_sum", "sell_size_sum", "taker_sell_volume", "sell_volume"),
-        )
+        side_inferred = side_inferred_15m or side_inferred_5m
         cvd_5m = None
         taker_imbalance_5m = None
         if taker_buy_5m is not None and taker_sell_5m is not None:
@@ -179,6 +168,7 @@ def build_fast_microstructure_features(
                 "taker_buy_sell_imbalance_5m": taker_imbalance_5m,
                 "cvd_5m": cvd_5m,
                 "cvd_divergence": cvd_divergence,
+                "side_inferred": side_inferred,
                 "cvd_size_15m": cvd,
                 "vwap_1h": vwap_1h,
                 "close_vs_vwap_1h_bps": close_vs_vwap,
@@ -303,6 +293,76 @@ def _value_at_or_before(rows: list[dict[str, Any]], ts: datetime, *, field: str)
     return _float(candidates[-1].get(field))
 
 
+def _avg_spread_bps(rows: list[dict[str, Any]], ts: datetime, *, minutes: int) -> float | None:
+    values = [_spread_bps(row) for row in _window_rows(rows, ts, minutes=minutes)]
+    values = [value for value in values if value is not None]
+    return sum(values) / len(values) if values else None
+
+
+def _latest_spread_bps(rows: list[dict[str, Any]], ts: datetime) -> float | None:
+    candidates = [row for row in rows if row.get("_ts") <= ts and _spread_bps(row) is not None]
+    return _spread_bps(candidates[-1]) if candidates else None
+
+
+def _spread_at_or_before(rows: list[dict[str, Any]], ts: datetime) -> float | None:
+    candidates = [row for row in rows if row.get("_ts") <= ts and _spread_bps(row) is not None]
+    return _spread_bps(candidates[-1]) if candidates else None
+
+
+def _spread_bps(row: dict[str, Any]) -> float | None:
+    explicit = _first_float(
+        row,
+        (
+            "spread_bps",
+            "avg_spread_bps",
+            "latest_spread_bps",
+            "spread",
+        ),
+    )
+    if explicit is not None:
+        return explicit
+    bid = _first_float(row, ("bid", "best_bid", "bid_px", "bid_price"))
+    ask = _first_float(row, ("ask", "best_ask", "ask_px", "ask_price"))
+    if bid is None or ask is None or ask <= 0 or bid <= 0:
+        return None
+    mid = _mid_price(row)
+    if mid is None or mid <= 0:
+        mid = (bid + ask) / 2.0
+    return (ask - bid) / mid * 10000.0
+
+
+def _avg_orderbook_imbalance(
+    rows: list[dict[str, Any]],
+    ts: datetime,
+    *,
+    minutes: int,
+) -> float | None:
+    values = [_orderbook_imbalance(row) for row in _window_rows(rows, ts, minutes=minutes)]
+    values = [value for value in values if value is not None]
+    return sum(values) / len(values) if values else None
+
+
+def _latest_orderbook_imbalance(rows: list[dict[str, Any]], ts: datetime) -> float | None:
+    candidates = [
+        row for row in rows if row.get("_ts") <= ts and _orderbook_imbalance(row) is not None
+    ]
+    return _orderbook_imbalance(candidates[-1]) if candidates else None
+
+
+def _orderbook_imbalance(row: dict[str, Any]) -> float | None:
+    explicit = _first_float(row, ("orderbook_imbalance", "imbalance", "book_imbalance"))
+    if explicit is not None:
+        return explicit
+    bid_size = _first_float(row, ("bid_size", "best_bid_size", "bid_qty", "bid_sz"))
+    ask_size = _first_float(row, ("ask_size", "best_ask_size", "ask_qty", "ask_sz"))
+    if bid_size is None or ask_size is None:
+        return None
+    total = bid_size + ask_size
+    if total <= 0:
+        return None
+    return (bid_size - ask_size) / total
+
+
 def _sum_value(
     rows: list[dict[str, Any]],
     ts: datetime,
@@ -332,6 +392,102 @@ def _sum_first_observed(
                 seen = True
                 break
     return total if seen else None
+
+
+def _buy_sell_sums(
+    trade_rows: list[dict[str, Any]],
+    spread_rows: list[dict[str, Any]],
+    ts: datetime,
+    *,
+    minutes: int,
+) -> tuple[float | None, float | None, bool]:
+    window = _window_rows(trade_rows, ts, minutes=minutes)
+    buy = _sum_first_observed(
+        window,
+        ts,
+        minutes=minutes,
+        fields=("taker_buy_size_sum", "buy_size_sum", "taker_buy_volume", "buy_volume"),
+    )
+    sell = _sum_first_observed(
+        window,
+        ts,
+        minutes=minutes,
+        fields=("taker_sell_size_sum", "sell_size_sum", "taker_sell_volume", "sell_volume"),
+    )
+    if buy is not None or sell is not None:
+        return buy or 0.0, sell or 0.0, False
+
+    inferred_buy = 0.0
+    inferred_sell = 0.0
+    inferred = False
+    for row in window:
+        size = _trade_size(row)
+        if size is None or size <= 0:
+            continue
+        side = _trade_side(row)
+        if side == "buy":
+            inferred_buy += size
+            inferred = True
+            continue
+        if side == "sell":
+            inferred_sell += size
+            inferred = True
+            continue
+        price = _first_float(row, ("latest_trade_px", "trade_px", "price", "last_px", "close"))
+        mid = _mid_price(row) or _latest_mid_price(spread_rows, row.get("_ts") or ts)
+        if price is None or mid is None:
+            continue
+        if price >= mid:
+            inferred_buy += size
+        else:
+            inferred_sell += size
+        inferred = True
+    if not inferred:
+        return None, None, False
+    return inferred_buy, inferred_sell, True
+
+
+def _trade_side(row: dict[str, Any]) -> str | None:
+    raw = str(
+        row.get("taker_side")
+        or row.get("aggressor_side")
+        or row.get("side")
+        or row.get("direction")
+        or ""
+    ).lower()
+    if raw in {"b", "buy", "bid", "buyer", "taker_buy"} or "buy" in raw:
+        return "buy"
+    if raw in {"s", "sell", "ask", "seller", "taker_sell"} or "sell" in raw:
+        return "sell"
+    return None
+
+
+def _trade_size(row: dict[str, Any]) -> float | None:
+    return _first_float(row, ("size_sum", "size", "qty", "quantity", "amount", "volume"))
+
+
+def _mid_price(row: dict[str, Any]) -> float | None:
+    mid = _first_float(row, ("mid", "mid_px", "arrival_mid", "book_mid"))
+    if mid is not None:
+        return mid
+    bid = _first_float(row, ("bid", "best_bid", "bid_px", "bid_price"))
+    ask = _first_float(row, ("ask", "best_ask", "ask_px", "ask_price"))
+    if bid is not None and ask is not None and bid > 0 and ask > 0:
+        return (bid + ask) / 2.0
+    return None
+
+
+def _latest_mid_price(rows: list[dict[str, Any]], ts: datetime) -> float | None:
+    candidates = [row for row in rows if row.get("_ts") <= ts and _mid_price(row) is not None]
+    return _mid_price(candidates[-1]) if candidates else None
+
+
+def _first_float(row: dict[str, Any], fields: Iterable[str]) -> float | None:
+    for field in fields:
+        value = _float(row.get(field))
+        if value is not None:
+            return value
+    return None
 
 
 def _cvd_divergence(return_1h_bps: float | None, taker_imbalance_5m: float | None) -> float | None:

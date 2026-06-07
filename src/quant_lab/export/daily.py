@@ -411,6 +411,7 @@ REQUIRED_MEMBERS = [
     "reports/strategy_opportunity_advisory.csv",
     "reports/api_latency_summary.csv",
     "reports/api_latency_summary.md",
+    "reports/v5_bundle_sync_diagnostics.csv",
     "reports/v5_local_live_vs_quant_lab_shadow.csv",
     "reports/missed_opportunity_audit.csv",
     "reports/missed_opportunity_summary.md",
@@ -442,6 +443,8 @@ REQUIRED_MEMBERS = [
     "reports/bottom_zone_backtest_summary.md",
     "reports/research_promotion_decision.csv",
     "reports/research_promotion_decision.md",
+    "reports/backtest_vs_paper_consistency.csv",
+    "reports/backtest_vs_paper_consistency.md",
     "reports/risk_on_multi_buy_shadow.csv",
     "reports/risk_on_multi_buy_summary.md",
     "reports/bnb_negative_expectancy_attribution.csv",
@@ -715,6 +718,20 @@ CSV_SCHEMAS: dict[str, list[str]] = {
         "dependency_meta_missing_count",
         "dependency_meta_missing_rate",
         "error_count",
+    ],
+    "reports/v5_bundle_sync_diagnostics.csv": [
+        "generated_at",
+        "sync_attempted",
+        "sync_success",
+        "latest_local_bundle_ts",
+        "latest_remote_bundle_ts",
+        "latest_ingested_bundle_ts",
+        "stale_seconds",
+        "failure_reason",
+        "authoritative_snapshot",
+        "stale_v5_bundle",
+        "selected_v5_bundle_path",
+        "selected_v5_bundle_sha256",
     ],
     "reports/system_acceptance_dashboard.csv": SYSTEM_ACCEPTANCE_FIELDS,
     "reports/post_impulse_overextension_no_trigger_reasons.csv": NO_TRIGGER_REASON_FIELDS,
@@ -3218,6 +3235,7 @@ def export_daily_pack(
         else _observe_v5_before_export(root, config_path=v5_telemetry_config)
     )
     pre_export_v5["allow_stale_v5"] = allow_stale_v5
+    pre_export_v5["sync_attempted"] = bool(pre_export_v5_refresh)
     _record_export_stage(export_stage_timings, "pre_export_v5", stage_started)
     stage_started = _export_stage_start("pre_export_risk_permission")
     pre_export_v5_warnings = [str(warning) for warning in pre_export_v5.get("warnings", [])]
@@ -4614,6 +4632,14 @@ def _dataset_members(
             api_latency_summary,
         ),
         "reports/api_latency_summary.md": _api_latency_summary_md(root),
+        "reports/v5_bundle_sync_diagnostics.csv": _csv_member(
+            "reports/v5_bundle_sync_diagnostics.csv",
+            _v5_bundle_sync_diagnostics_frame(
+                frames=frames,
+                pre_export_v5=pre_export_v5 or {},
+                generated_at=datetime.now(UTC),
+            ),
+        ),
         "reports/v5_local_live_vs_quant_lab_shadow.csv": _csv_member(
             "reports/v5_local_live_vs_quant_lab_shadow.csv",
             local_live_vs_shadow,
@@ -4720,6 +4746,13 @@ def _dataset_members(
             backtest_bundle.promotion_decision,
         ),
         "reports/research_promotion_decision.md": backtest_bundle.promotion_decision_md,
+        "reports/backtest_vs_paper_consistency.csv": _csv_member(
+            "reports/backtest_vs_paper_consistency.csv",
+            backtest_bundle.backtest_vs_paper_consistency,
+        ),
+        "reports/backtest_vs_paper_consistency.md": (
+            backtest_bundle.backtest_vs_paper_consistency_md
+        ),
         "reports/risk_on_multi_buy_shadow.csv": _csv_member(
             "reports/risk_on_multi_buy_shadow.csv",
             risk_on_multi_buy_shadow,
@@ -5793,6 +5826,51 @@ def _v5_export_consistency(
         "selected_v5_bundle_authoritative_reason": authoritative_reason,
         "selected_v5_bundle_manifest_match": manifest_match,
     }
+
+
+def _v5_bundle_sync_diagnostics_frame(
+    *,
+    frames: dict[str, pl.DataFrame],
+    pre_export_v5: dict[str, Any],
+    generated_at: datetime,
+) -> pl.DataFrame:
+    path = "reports/v5_bundle_sync_diagnostics.csv"
+    latest_local = _latest_v5_bundle_ts(frames)
+    latest_remote = _parse_v5_context_ts(
+        pre_export_v5.get("latest_v5_bundle_seen_at_export")
+    )
+    latest_ingested = _parse_v5_context_ts(
+        pre_export_v5.get("selected_v5_bundle_ingested_at")
+    ) or latest_local
+    stale_seconds = None
+    if latest_remote is not None and latest_local is not None:
+        stale_seconds = max(0, int((latest_remote - latest_local).total_seconds()))
+    elif latest_remote is not None and latest_local is None:
+        stale_seconds = "not_observable_local_bundle_missing"
+    authoritative = bool(pre_export_v5.get("authoritative_snapshot"))
+    stale = bool(pre_export_v5.get("stale_v5_bundle"))
+    failure_reason = ""
+    if not authoritative or stale:
+        failure_reason = str(
+            pre_export_v5.get("warning_reason")
+            or pre_export_v5.get("selected_v5_bundle_authoritative_reason")
+            or ""
+        )
+    row = {
+        "generated_at": generated_at.astimezone(UTC).isoformat().replace("+00:00", "Z"),
+        "sync_attempted": bool(pre_export_v5.get("sync_attempted")),
+        "sync_success": bool(authoritative and not stale),
+        "latest_local_bundle_ts": _iso_or_none(latest_local),
+        "latest_remote_bundle_ts": _iso_or_none(latest_remote),
+        "latest_ingested_bundle_ts": _iso_or_none(latest_ingested),
+        "stale_seconds": stale_seconds,
+        "failure_reason": failure_reason,
+        "authoritative_snapshot": authoritative,
+        "stale_v5_bundle": stale,
+        "selected_v5_bundle_path": pre_export_v5.get("selected_v5_bundle_path"),
+        "selected_v5_bundle_sha256": pre_export_v5.get("selected_v5_bundle_sha256"),
+    }
+    return pl.DataFrame([row], infer_schema_length=None).select(CSV_SCHEMAS[path])
 
 
 def _v5_context_requires_authoritative_failure(pre_export_v5: dict[str, Any]) -> bool:

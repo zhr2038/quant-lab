@@ -12893,11 +12893,25 @@ def _csv_member(path: str, df: pl.DataFrame) -> str:
 
 def _csv_text(df: pl.DataFrame, fixed_columns: list[str] | None = None) -> str:
     safe = _csv_frame_with_schema(readers.redact_frame(df), fixed_columns)
-    columns = safe.columns if safe.columns else (fixed_columns or [])
+    if _can_use_native_csv_writer(safe):
+        return safe.write_csv()
+    return _python_csv_text(safe, fixed_columns=fixed_columns)
+
+
+def _can_use_native_csv_writer(df: pl.DataFrame) -> bool:
+    for dtype in df.dtypes:
+        base_type = dtype.base_type() if hasattr(dtype, "base_type") else dtype
+        if base_type in {pl.Object, pl.List, pl.Struct}:
+            return False
+    return True
+
+
+def _python_csv_text(df: pl.DataFrame, fixed_columns: list[str] | None = None) -> str:
+    columns = df.columns if df.columns else (fixed_columns or [])
     handle = io.StringIO()
     writer = csv.DictWriter(handle, fieldnames=columns, lineterminator="\n")
     writer.writeheader()
-    for row in _rows(safe):
+    for row in _rows(df):
         writer.writerow({column: _csv_value(row.get(column)) for column in columns})
     return handle.getvalue()
 

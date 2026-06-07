@@ -1222,6 +1222,49 @@ def test_member_row_count_counts_csv_without_materializing_rows() -> None:
     )
 
 
+def test_csv_text_uses_native_writer_for_scalar_frames(monkeypatch) -> None:
+    def fail_python_writer(*args, **kwargs):
+        raise AssertionError("primitive CSV frames should use the native writer")
+
+    monkeypatch.setattr(daily_export_module, "_python_csv_text", fail_python_writer)
+
+    text = daily_export_module._csv_text(
+        pl.DataFrame(
+            {
+                "symbol": ["BTC-USDT"],
+                "row_count": [2],
+                "observed": [True],
+            }
+        )
+    )
+
+    assert text == "symbol,row_count,observed\nBTC-USDT,2,true\n"
+
+
+def test_csv_text_redacts_sensitive_values_on_native_path() -> None:
+    text = daily_export_module._csv_text(
+        pl.DataFrame(
+            {
+                "api_key": ["SHOULD_NOT_LEAK"],
+                "normal": ["ok"],
+            }
+        )
+    )
+
+    rows = list(csv.DictReader(io.StringIO(text)))
+    assert rows == [{"api_key": "[REDACTED]", "normal": "ok"}]
+
+
+def test_csv_text_keeps_python_json_serialization_for_complex_values() -> None:
+    text = daily_export_module._csv_text(
+        pl.DataFrame({"symbol": ["BTC-USDT"], "values": [[1, 2]]})
+    )
+
+    rows = list(csv.DictReader(io.StringIO(text)))
+    assert rows[0]["symbol"] == "BTC-USDT"
+    assert json.loads(rows[0]["values"]) == [1, 2]
+
+
 def test_export_frame_samples_large_unlisted_dataset_without_full_read(tmp_path, monkeypatch):
     lake_root = tmp_path / "lake"
     dataset_path = lake_root / "gold" / "strategy_evidence"

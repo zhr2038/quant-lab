@@ -6079,6 +6079,10 @@ def _refresh_v5_derived_outputs_subprocess(lake_root: Path, export_day: date) ->
                     "QUANT_LAB_DERIVED_REFRESH_ALPHA_FACTORY_MAX_CANDIDATES": str(
                         EXPORT_V5_ALPHA_FACTORY_MAX_CANDIDATES
                     ),
+                    "QUANT_LAB_DERIVED_REFRESH_MEMORY_MB": os.environ.get(
+                        "QUANT_LAB_EXPORT_DERIVED_REFRESH_STEP_MEMORY_MB",
+                        "4096",
+                    ),
                 },
                 capture_output=True,
                 text=True,
@@ -6116,6 +6120,13 @@ def _v5_derived_refresh_subprocess_code(body: str) -> str:
         "import os\n"
         "from datetime import date\n"
         "from pathlib import Path\n"
+        "memory_mb = int(os.environ.get('QUANT_LAB_DERIVED_REFRESH_MEMORY_MB', '4096'))\n"
+        "try:\n"
+        "    import resource\n"
+        "    limit = memory_mb * 1024 * 1024\n"
+        "    resource.setrlimit(resource.RLIMIT_AS, (limit, limit))\n"
+        "except Exception:\n"
+        "    pass\n"
         "lake_root = Path(os.environ['QUANT_LAB_DERIVED_REFRESH_LAKE_ROOT'])\n"
         "export_day = date.fromisoformat(os.environ['QUANT_LAB_DERIVED_REFRESH_DATE'])\n"
         "lookback_days = int(os.environ['QUANT_LAB_DERIVED_REFRESH_LOOKBACK_DAYS'])\n"

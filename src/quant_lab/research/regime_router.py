@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import shutil
 from collections import Counter
 from datetime import UTC, date, datetime, timedelta
 from pathlib import Path
@@ -9,7 +10,12 @@ from typing import Any
 import polars as pl
 from pydantic import BaseModel, ConfigDict, Field
 
-from quant_lab.data.lake import read_parquet_dataset, read_parquet_lazy, write_parquet_dataset
+from quant_lab.data.lake import (
+    append_parquet_dataset,
+    read_parquet_dataset,
+    read_parquet_lazy,
+    write_parquet_dataset,
+)
 from quant_lab.strategy_telemetry.sanitize import safe_json_dumps
 from quant_lab.symbols import normalize_symbol
 
@@ -839,15 +845,53 @@ def _dedupe_matrix_rows(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
 
 
 def _replace_as_of_date(path: Path, new_frame: pl.DataFrame, as_of_date: date) -> int:
+    day = as_of_date.isoformat()
+    if _has_direct_parquet_files(path):
+        return _rewrite_legacy_as_of_dataset(path, new_frame, day)
+    _remove_as_of_partition(path, day)
+    if not new_frame.is_empty():
+        append_parquet_dataset(
+            new_frame,
+            path,
+            partition_by="as_of_date",
+            target_rows_per_file=100_000,
+            file_prefix="asof",
+        )
+    return _dataset_row_count(path)
+
+
+def _rewrite_legacy_as_of_dataset(path: Path, new_frame: pl.DataFrame, day: str) -> int:
     existing = read_parquet_dataset(path)
     if not existing.is_empty() and "as_of_date" in existing.columns:
-        existing = existing.filter(
-            pl.col("as_of_date").cast(pl.Utf8).str.slice(0, 10) != as_of_date.isoformat()
-        )
+        existing = existing.filter(pl.col("as_of_date").cast(pl.Utf8).str.slice(0, 10) != day)
     frames = [frame for frame in [existing, new_frame] if not frame.is_empty()]
     combined = pl.concat(frames, how="diagonal_relaxed") if frames else new_frame
-    write_parquet_dataset(combined, path)
+    if combined.is_empty():
+        write_parquet_dataset(combined, path)
+        return 0
+    write_parquet_dataset(combined, path, partition_by="as_of_date")
     return combined.height
+
+
+def _has_direct_parquet_files(path: Path) -> bool:
+    if not path.exists() or not path.is_dir():
+        return False
+    return any(
+        candidate.is_file() and candidate.suffix == ".parquet" for candidate in path.iterdir()
+    )
+
+
+def _remove_as_of_partition(path: Path, day: str) -> None:
+    partition = path / f"as_of_date={day}"
+    if partition.exists():
+        shutil.rmtree(partition)
+
+
+def _dataset_row_count(path: Path) -> int:
+    try:
+        return int(read_parquet_lazy(path).select(pl.len().alias("rows")).collect().item())
+    except Exception:
+        return 0
 
 
 def _parse_day(value: str | date | None) -> date:

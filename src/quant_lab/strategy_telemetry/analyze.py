@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import os
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any
@@ -9,6 +10,7 @@ from typing import Any
 import polars as pl
 
 from quant_lab.data.lake import (
+    append_parquet_dataset,
     read_parquet_dataset,
     read_parquet_lazy,
     upsert_parquet_dataset,
@@ -69,8 +71,17 @@ GOLD_TELEMETRY_MIRRORS = {
     "bnb_paper_strategy_daily": "v5_bnb_paper_strategy_daily",
 }
 
+ANALYSIS_TIME_COLUMNS = ("bundle_ts", "ingest_ts", "ts_utc", "ts", "created_at")
+DEFAULT_ANALYSIS_LOOKBACK_DAYS = 14
 
-def _read_analysis_dataset(dataset_path: Path, columns: list[str]) -> pl.DataFrame:
+
+def _read_analysis_dataset(
+    dataset_path: Path,
+    columns: list[str],
+    *,
+    analysis_date: str | None = None,
+    lookback_days: int | None = None,
+) -> pl.DataFrame:
     try:
         lazy = read_parquet_lazy(dataset_path)
         available = lazy.collect_schema().names()
@@ -79,10 +90,66 @@ def _read_analysis_dataset(dataset_path: Path, columns: list[str]) -> pl.DataFra
     selected = [column for column in columns if column in available]
     if not selected:
         return pl.DataFrame()
+    if analysis_date is not None and lookback_days is not None and lookback_days > 0:
+        lazy = _filter_analysis_window(
+            lazy,
+            set(available),
+            analysis_date=analysis_date,
+            lookback_days=lookback_days,
+        )
     try:
         return lazy.select(selected).collect()
     except Exception:
         return pl.DataFrame()
+
+
+def _analysis_lookback_days() -> int:
+    raw = os.environ.get("QUANT_LAB_V5_TELEMETRY_ANALYSIS_LOOKBACK_DAYS")
+    if raw is None or not raw.strip():
+        return DEFAULT_ANALYSIS_LOOKBACK_DAYS
+    try:
+        return max(int(raw), 1)
+    except ValueError:
+        return DEFAULT_ANALYSIS_LOOKBACK_DAYS
+
+
+def _filter_analysis_window(
+    lazy: pl.LazyFrame,
+    available: set[str],
+    *,
+    analysis_date: str,
+    lookback_days: int,
+) -> pl.LazyFrame:
+    time_expr = _coalesced_lazy_time(available)
+    if time_expr is None:
+        return lazy
+    try:
+        day = datetime.fromisoformat(str(analysis_date)[:10]).date()
+    except ValueError:
+        return lazy
+    start = datetime.combine(day, datetime.min.time(), tzinfo=UTC) - timedelta(
+        days=lookback_days
+    )
+    end = datetime.combine(day + timedelta(days=1), datetime.min.time(), tzinfo=UTC)
+    return lazy.with_columns(time_expr.alias("_analysis_ts")).filter(
+        (pl.col("_analysis_ts") >= start) & (pl.col("_analysis_ts") < end)
+    )
+
+
+def _coalesced_lazy_time(available: set[str]) -> pl.Expr | None:
+    expressions = [
+        _lazy_datetime(column) for column in ANALYSIS_TIME_COLUMNS if column in available
+    ]
+    if not expressions:
+        return None
+    return pl.coalesce(expressions)
+
+
+def _lazy_datetime(column: str) -> pl.Expr:
+    return pl.col(column).cast(pl.Utf8, strict=False).str.to_datetime(
+        time_zone="UTC",
+        strict=False,
+    )
 
 
 def analyze_v5_telemetry(
@@ -93,33 +160,48 @@ def analyze_v5_telemetry(
 ) -> V5TelemetryAnalysisResult:
     root = Path(lake_root)
     analysis_date = date or datetime.now(UTC).date().isoformat()
+    lookback_days = _analysis_lookback_days()
     manifest = _read_analysis_dataset(
         root / SILVER["manifest"],
         ["bundle_ts", "bundle_sha256", "bundle_name", "ingest_ts"],
+        analysis_date=analysis_date,
+        lookback_days=max(lookback_days, 30),
     )
     secret_scan = _read_analysis_dataset(
         root / SILVER["secret_scan"],
         ["high_severity_count", "bundle_ts", "ingest_ts"],
+        analysis_date=analysis_date,
+        lookback_days=lookback_days,
     )
     run_summary = _read_analysis_dataset(
         root / SILVER["run_summary"],
         ["raw_payload_json", "source_path_inside_bundle", "bundle_ts", "ingest_ts"],
+        analysis_date=analysis_date,
+        lookback_days=lookback_days,
     )
     decisions = _read_analysis_dataset(
         root / SILVER["decision_audit"],
         ["raw_payload_json", "source_path_inside_bundle", "bundle_ts", "ingest_ts"],
+        analysis_date=analysis_date,
+        lookback_days=lookback_days,
     )
     trades = _read_analysis_dataset(
         root / SILVER["trade_event"],
         ["bundle_ts", "ingest_ts", "source_path_inside_bundle"],
+        analysis_date=analysis_date,
+        lookback_days=lookback_days,
     )
     roundtrips = _read_analysis_dataset(
         root / SILVER["roundtrip"],
         ["bundle_ts", "ingest_ts", "source_path_inside_bundle"],
+        analysis_date=analysis_date,
+        lookback_days=lookback_days,
     )
     routers = _read_analysis_dataset(
         root / SILVER["router_decision"],
         ["reason", "router_reason", "decision_reason", "bundle_ts", "ingest_ts"],
+        analysis_date=analysis_date,
+        lookback_days=lookback_days,
     )
     positions = _read_analysis_dataset(
         root / SILVER["open_position"],
@@ -133,6 +215,8 @@ def analyze_v5_telemetry(
             "is_dust",
             "raw_payload_json",
         ],
+        analysis_date=analysis_date,
+        lookback_days=lookback_days,
     )
     states = _read_analysis_dataset(
         root / SILVER["state_snapshot"],
@@ -147,10 +231,14 @@ def analyze_v5_telemetry(
             "bundle_ts",
             "ingest_ts",
         ],
+        analysis_date=analysis_date,
+        lookback_days=lookback_days,
     )
     issues = _read_analysis_dataset(
         root / SILVER["issue"],
         ["severity", "issue_type", "type", "message", "raw_payload_json", "bundle_ts", "ingest_ts"],
+        analysis_date=analysis_date,
+        lookback_days=lookback_days,
     )
     config = _read_analysis_dataset(
         root / SILVER["config_audit"],
@@ -167,10 +255,14 @@ def analyze_v5_telemetry(
             "bundle_ts",
             "ingest_ts",
         ],
+        analysis_date=analysis_date,
+        lookback_days=lookback_days,
     )
     targets = _read_analysis_dataset(
         root / SILVER["high_score_target"],
         ["bundle_ts", "ingest_ts"],
+        analysis_date=analysis_date,
+        lookback_days=lookback_days,
     )
     outcomes = _read_analysis_dataset(
         root / SILVER["high_score_outcome"],
@@ -183,10 +275,14 @@ def analyze_v5_telemetry(
             "bundle_ts",
             "ingest_ts",
         ],
+        analysis_date=analysis_date,
+        lookback_days=lookback_days,
     )
     skipped = _read_analysis_dataset(
         root / SILVER["skipped"],
         ["matured", "is_matured", "maturity_reached", "bundle_ts", "ingest_ts"],
+        analysis_date=analysis_date,
+        lookback_days=lookback_days,
     )
     quant_lab_usage = _read_analysis_dataset(
         root / SILVER["quant_lab_usage"],
@@ -200,6 +296,8 @@ def analyze_v5_telemetry(
             "bundle_ts",
             "ingest_ts",
         ],
+        analysis_date=analysis_date,
+        lookback_days=lookback_days,
     )
     quant_lab_request = _read_analysis_dataset(
         root / SILVER["quant_lab_request"],
@@ -247,6 +345,8 @@ def analyze_v5_telemetry(
             "remote_permission_status",
             "risk_permission_status",
         ],
+        analysis_date=analysis_date,
+        lookback_days=lookback_days,
     )
     quant_lab_compliance = _read_analysis_dataset(
         root / SILVER["quant_lab_compliance"],
@@ -282,6 +382,8 @@ def analyze_v5_telemetry(
             "bundle_ts",
             "ingest_ts",
         ],
+        analysis_date=analysis_date,
+        lookback_days=lookback_days,
     )
     quant_lab_cost_usage = _read_analysis_dataset(
         root / SILVER["quant_lab_cost_usage"],
@@ -293,6 +395,8 @@ def analyze_v5_telemetry(
             "bundle_ts",
             "ingest_ts",
         ],
+        analysis_date=analysis_date,
+        lookback_days=lookback_days,
     )
     quant_lab_fallback = _read_analysis_dataset(
         root / SILVER["quant_lab_fallback"],
@@ -338,6 +442,8 @@ def analyze_v5_telemetry(
             "ok",
             "request_ok",
         ],
+        analysis_date=analysis_date,
+        lookback_days=lookback_days,
     )
     window_summary = _window_summary_payload(run_summary)
 
@@ -547,7 +653,11 @@ def analyze_v5_telemetry(
         fallback_count=fallback_count,
         quant_lab_summary=quant_lab_summary,
     )
-    _mirror_v5_consistency_gold(root)
+    _mirror_v5_consistency_gold(
+        root,
+        analysis_date=analysis_date,
+        lookback_days=lookback_days,
+    )
     if refresh_candidate_gold:
         _build_candidate_labels_safely(root, analysis_date)
         _build_alpha_discovery_board_safely(root, analysis_date)
@@ -556,22 +666,127 @@ def analyze_v5_telemetry(
     return result
 
 
-def _mirror_v5_consistency_gold(lake_root: Path) -> None:
+def _mirror_v5_consistency_gold(
+    lake_root: Path,
+    *,
+    analysis_date: str,
+    lookback_days: int,
+) -> None:
     for silver_name, gold_name in GOLD_TELEMETRY_MIRRORS.items():
-        try:
-            frame = read_parquet_dataset(lake_root / SILVER[silver_name])
-        except Exception:
-            continue
+        frame = _read_incremental_mirror_frame(
+            lake_root / SILVER[silver_name],
+            lake_root / GOLD_DATASETS[gold_name],
+            analysis_date=analysis_date,
+            lookback_days=lookback_days,
+        )
         if frame.is_empty():
             continue
-        write_parquet_dataset(frame, lake_root / GOLD_DATASETS[gold_name])
+        _append_gold_mirror_rows(frame, lake_root / GOLD_DATASETS[gold_name], analysis_date)
         if gold_name == "v5_bnb_paper_strategy_daily":
-            latest = _latest_bnb_paper_strategy_daily(frame)
+            previous_latest = _safe_read_dataset(
+                lake_root / GOLD_DATASETS["v5_bnb_paper_strategy_daily_latest"]
+            )
+            latest_input = (
+                pl.concat([previous_latest, frame], how="diagonal_relaxed")
+                if not previous_latest.is_empty()
+                else frame
+            )
+            latest = _latest_bnb_paper_strategy_daily(latest_input)
             if not latest.is_empty():
                 write_parquet_dataset(
                     latest,
                     lake_root / GOLD_DATASETS["v5_bnb_paper_strategy_daily_latest"],
                 )
+
+
+def _read_incremental_mirror_frame(
+    silver_path: Path,
+    gold_path: Path,
+    *,
+    analysis_date: str,
+    lookback_days: int,
+) -> pl.DataFrame:
+    try:
+        lazy = read_parquet_lazy(silver_path)
+        available = set(lazy.collect_schema().names())
+    except Exception:
+        return pl.DataFrame()
+    time_expr = _coalesced_lazy_time(available)
+    if time_expr is None:
+        return pl.DataFrame()
+    latest_gold_ts = _latest_dataset_time(gold_path)
+    working = lazy.with_columns(time_expr.alias("_mirror_ts"))
+    if latest_gold_ts is not None:
+        working = working.filter(pl.col("_mirror_ts") > latest_gold_ts)
+    else:
+        working = _filter_analysis_window(
+            working,
+            available | {"_mirror_ts"},
+            analysis_date=analysis_date,
+            lookback_days=max(lookback_days, 30),
+        )
+    try:
+        return working.drop("_mirror_ts").collect()
+    except Exception:
+        return pl.DataFrame()
+
+
+def _latest_dataset_time(path: Path) -> datetime | None:
+    try:
+        lazy = read_parquet_lazy(path)
+        available = set(lazy.collect_schema().names())
+    except Exception:
+        return None
+    time_expr = _coalesced_lazy_time(available)
+    if time_expr is None:
+        return None
+    try:
+        value = lazy.select(time_expr.max().alias("latest_ts")).collect().item()
+    except Exception:
+        return None
+    if not isinstance(value, datetime):
+        return None
+    return value.astimezone(UTC) if value.tzinfo else value.replace(tzinfo=UTC)
+
+
+def _append_gold_mirror_rows(frame: pl.DataFrame, path: Path, analysis_date: str) -> None:
+    partitioned = _with_bundle_day(frame, analysis_date)
+    append_parquet_dataset(
+        partitioned,
+        path,
+        partition_by="bundle_day",
+        target_rows_per_file=100_000,
+        file_prefix="mirror",
+    )
+
+
+def _with_bundle_day(frame: pl.DataFrame, analysis_date: str) -> pl.DataFrame:
+    if frame.is_empty() or "bundle_day" in frame.columns:
+        return frame
+    candidates = [
+        column for column in ["bundle_ts", "ingest_ts", "ts_utc", "ts"] if column in frame.columns
+    ]
+    if not candidates:
+        return frame.with_columns(pl.lit(str(analysis_date)[:10]).alias("bundle_day"))
+    expressions = [
+        pl.col(column)
+        .cast(pl.Utf8, strict=False)
+        .str.to_datetime(time_zone="UTC", strict=False)
+        for column in candidates
+    ]
+    return frame.with_columns(
+        pl.coalesce(expressions)
+        .dt.strftime("%Y-%m-%d")
+        .fill_null(str(analysis_date)[:10])
+        .alias("bundle_day")
+    )
+
+
+def _safe_read_dataset(path: Path) -> pl.DataFrame:
+    try:
+        return read_parquet_dataset(path)
+    except Exception:
+        return pl.DataFrame()
 
 
 def _latest_bnb_paper_strategy_daily(frame: pl.DataFrame) -> pl.DataFrame:

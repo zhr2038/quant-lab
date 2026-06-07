@@ -146,6 +146,53 @@ def test_regime_router_uses_orderbook_spread_rollup_for_market_regime(tmp_path):
     assert regime["liquidity_thin"] is False
 
 
+def test_regime_router_replaces_same_day_partition_without_duplicate_rows(tmp_path):
+    lake = tmp_path / "lake"
+    _write_market_bars(
+        lake,
+        {
+            "BTC-USDT": (100.0, 101.0),
+            "ETH-USDT": (100.0, 103.0),
+            "SOL-USDT": (100.0, 104.0),
+            "BNB-USDT": (100.0, 102.8),
+        },
+    )
+    write_parquet_dataset(
+        pl.DataFrame(
+            [
+                {
+                    "as_of_date": "2026-05-22",
+                    "strategy_candidate": "v5.alt_impulse_shadow",
+                    "candidate_name": "v5.alt_impulse_shadow",
+                    "symbol": "SOL-USDT",
+                    "regime_state": "impulse",
+                    "horizon_hours": 24,
+                    "sample_count": 16,
+                    "complete_sample_count": 16,
+                    "avg_net_bps": 88.0,
+                    "median_net_bps": 60.0,
+                    "p25_net_bps": -20.0,
+                    "win_rate": 0.70,
+                    "cost_source_mix": '{"mixed_actual_proxy":16}',
+                    "decision": "PAPER_READY",
+                    "decision_reasons": '["paper_ready_thresholds_met"]',
+                    "created_at": datetime(2026, 5, 22, tzinfo=UTC),
+                }
+            ]
+        ),
+        lake / "gold" / "strategy_evidence",
+    )
+
+    first = build_and_publish_regime_router(lake, as_of_date="2026-05-22")
+    second = build_and_publish_regime_router(lake, as_of_date="2026-05-22")
+
+    matrix = read_parquet_dataset(lake / "gold" / "strategy_regime_matrix")
+    assert first.strategy_regime_matrix_rows == second.strategy_regime_matrix_rows
+    assert matrix.height == second.strategy_regime_matrix_rows
+    assert (lake / "gold" / "strategy_regime_matrix" / "as_of_date=2026-05-22").exists()
+    assert not list((lake / "gold" / "strategy_regime_matrix").glob("*.parquet"))
+
+
 def test_daily_export_contains_regime_reports_and_advisory_rows(tmp_path):
     lake = tmp_path / "lake"
     out = tmp_path / "exports"

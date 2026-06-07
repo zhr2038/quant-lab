@@ -224,6 +224,27 @@ DEFAULT_EXPORT_FULL_READ_MAX_BYTES = 128 * 1024 * 1024
 DEFAULT_KEEP_EXPERT_PACKS = 5
 LAKE_FILE_INDEX_DATASET = Path("bronze") / "lake_file_index"
 _EXPORT_FILE_INDEX_CACHE: dict[Path, pl.DataFrame | None] = {}
+SECRET_SCAN_PREFILTER_TOKENS = (
+    "private key",
+    "private_key",
+    "private-key",
+    "ssh-rsa",
+    "ed25519",
+    "ok-access",
+    "api_key",
+    "api-key",
+    "apikey",
+    "apisecret",
+    "api_secret",
+    "api-secret",
+    "secret_key",
+    "secret-key",
+    "secretkey",
+    "passphrase",
+    "password",
+    "token",
+    "authorization",
+)
 HEAVY_REGISTRY_QUALITY_DATASETS = {
     "okx_public_ws",
     "trade_print",
@@ -12176,6 +12197,8 @@ def _secret_severity_counts(text: str) -> tuple[int, int]:
     high = 0
     medium = 0
     for line in _iter_text_lines(text):
+        if not _line_may_contain_secret(line):
+            continue
         for pattern, severity, _label in SECRET_PATTERNS:
             if not pattern.search(line):
                 continue
@@ -12184,6 +12207,11 @@ def _secret_severity_counts(text: str) -> tuple[int, int]:
             elif severity == "medium":
                 medium += 1
     return high, medium
+
+
+def _line_may_contain_secret(line: str) -> bool:
+    lowered = line.lower()
+    return any(token in lowered for token in SECRET_SCAN_PREFILTER_TOKENS)
 
 
 def _unsafe_zip_member_reasons(names: list[str]) -> list[str]:

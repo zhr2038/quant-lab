@@ -1265,6 +1265,33 @@ def test_csv_text_keeps_python_json_serialization_for_complex_values() -> None:
     assert json.loads(rows[0]["values"]) == [1, 2]
 
 
+def test_secret_scan_prefilter_skips_market_rows() -> None:
+    assert not daily_export_module._line_may_contain_secret(
+        "BTC-USDT,2026-06-07T00:00:00Z,634.2,640.0,620.0,638.5,1234"
+    )
+
+
+def test_secret_scan_prefilter_keeps_known_secret_patterns() -> None:
+    examples = [
+        "-----BEGIN OPENSSH PRIVATE KEY-----",
+        "ssh-rsa AAAAB3NzaC1yc2EAAAADAQABAAABAQCexample",
+        "ed25519 PRIVATE KEY",
+        "OK-ACCESS-KEY: live_secret",
+        "api_key=live_secret",
+        "apiSecret=live_secret",
+        "secret_key=live_secret",
+        "api_secret=live_secret",
+        "passphrase=live_secret",
+        "password=live_secret",
+        "token=live_secret",
+    ]
+
+    for example in examples:
+        assert daily_export_module._line_may_contain_secret(example)
+        high, medium = daily_export_module._secret_severity_counts(example)
+        assert high + medium > 0, example
+
+
 def test_export_frame_samples_large_unlisted_dataset_without_full_read(tmp_path, monkeypatch):
     lake_root = tmp_path / "lake"
     dataset_path = lake_root / "gold" / "strategy_evidence"

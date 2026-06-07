@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import statistics
+from bisect import bisect_right
 from collections import defaultdict
 from datetime import UTC, date, datetime, time, timedelta
 from pathlib import Path
@@ -562,6 +563,7 @@ def _expanded_relative_strength_tables(
     quality_context = _quality_context_by_symbol(quality)
     if not quality_context or not bars_by_symbol:
         return [], []
+    bar_times_by_symbol = _bar_times_by_symbol(bars_by_symbol)
     output: list[dict[str, Any]] = []
     decision_output: list[dict[str, Any]] = []
 
@@ -577,6 +579,7 @@ def _expanded_relative_strength_tables(
         for lookback_hours in RELATIVE_STRENGTH_LOOKBACK_HOURS:
             ranked = _relative_strength_ranking(
                 bars_by_symbol=bars_by_symbol,
+                bar_times_by_symbol=bar_times_by_symbol,
                 quality_context=quality_context,
                 decision_ts=decision_ts,
                 lookback_hours=lookback_hours,
@@ -586,8 +589,8 @@ def _expanded_relative_strength_tables(
             for candidate, top_k in RELATIVE_STRENGTH_SELECTIONS:
                 for selected_rank, selection in enumerate(ranked, start=1):
                     symbol = selection["symbol"]
-                    current_index = _bar_index_at_or_before(
-                        bars_by_symbol.get(symbol, []),
+                    current_index = _bar_index_at_or_before_times(
+                        bar_times_by_symbol.get(symbol, []),
                         decision_ts,
                     )
                     if current_index is None:
@@ -1337,6 +1340,15 @@ def _bars_by_symbol(frame: pl.DataFrame) -> dict[str, list[dict[str, Any]]]:
     return dict(by_symbol)
 
 
+def _bar_times_by_symbol(
+    bars_by_symbol: dict[str, list[dict[str, Any]]],
+) -> dict[str, list[datetime]]:
+    return {
+        symbol: [ts for row in rows if (ts := _parse_dt(row.get("ts"))) is not None]
+        for symbol, rows in bars_by_symbol.items()
+    }
+
+
 def _future_bar(
     rows: list[dict[str, Any]],
     index: int,
@@ -1459,6 +1471,7 @@ def _quality_context_by_symbol(frame: pl.DataFrame) -> dict[str, dict[str, float
 def _relative_strength_ranking(
     *,
     bars_by_symbol: dict[str, list[dict[str, Any]]],
+    bar_times_by_symbol: dict[str, list[datetime]],
     quality_context: dict[str, dict[str, float]],
     decision_ts: datetime,
     lookback_hours: int,
@@ -1468,11 +1481,12 @@ def _relative_strength_ranking(
         if not _passes_relative_strength_filter(quality):
             continue
         bars = bars_by_symbol.get(symbol, [])
-        current_index = _bar_index_at_or_before(bars, decision_ts)
+        bar_times = bar_times_by_symbol.get(symbol, [])
+        current_index = _bar_index_at_or_before_times(bar_times, decision_ts)
         if current_index is None:
             continue
-        lookback_index = _bar_index_at_or_before(
-            bars,
+        lookback_index = _bar_index_at_or_before_times(
+            bar_times,
             decision_ts - timedelta(hours=lookback_hours),
         )
         if lookback_index is None or lookback_index >= current_index:
@@ -1527,6 +1541,14 @@ def _bar_index_at_or_before(
         else:
             break
     return selected
+
+
+def _bar_index_at_or_before_times(
+    times: list[datetime],
+    ts: datetime,
+) -> int | None:
+    index = bisect_right(times, ts) - 1
+    return index if index >= 0 else None
 
 
 def _path_mfe_bps(

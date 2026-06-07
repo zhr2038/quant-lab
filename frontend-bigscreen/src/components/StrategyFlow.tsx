@@ -72,10 +72,14 @@ export function StrategyFlow({ flow }: { flow: Record<string, unknown> }) {
       <div className="candidate-list">
         <div className="candidate-title"><Rocket size={15} /> 最可能上线的研究候选</div>
         {topCandidates.slice(0, 4).map((candidate, i) => (
-          <div className="chip" key={`${candidate.strategy_candidate}-${i}`}>
-            <span>{stringValue(candidate.strategy_candidate ?? candidate.takeaway, "candidate")}</span>
+          <div className="chip" key={candidateKey(candidate, i)} title={candidateTitle(candidate)}>
+            <span className="candidate-main">
+              <b>{candidateIdentity(candidate)}</b>
+              <small>{stringValue(candidate.strategy_candidate ?? candidate.takeaway, "candidate")}</small>
+            </span>
             <em>{stringValue(candidate.recommended_mode ?? candidate.decision, "research")}</em>
             <strong>{bps(candidate.avg_net_bps)}</strong>
+            <span className="candidate-detail">{candidateDetail(candidate)}</span>
           </div>
         ))}
       </div>
@@ -90,4 +94,38 @@ function Metric({ label, value, tone }: { label: string; value: number; tone: st
       <b>{value}</b>
     </div>
   );
+}
+
+function candidateKey(candidate: Record<string, unknown>, index: number): string {
+  return [
+    candidate.strategy_candidate,
+    candidate.symbol,
+    candidate.horizon_hours,
+    candidate.source_module,
+    candidate.promotion_state,
+    index
+  ].map((value) => stringValue(value, "na")).join("|");
+}
+
+function candidateIdentity(candidate: Record<string, unknown>): string {
+  const symbol = stringValue(candidate.symbol, "MULTI");
+  const horizon = candidate.horizon_hours ? `${shortNumber(candidate.horizon_hours)}h` : "horizon ?";
+  return `${symbol} · ${horizon}`;
+}
+
+function candidateDetail(candidate: Record<string, unknown>): string {
+  const source = stringValue(candidate.source_module ?? candidate.promotion_state, "advisory");
+  const samples = candidate.complete_sample_count ? `n=${shortNumber(candidate.complete_sample_count)}` : "n=?";
+  const p25 = `p25 ${bps(candidate.p25_net_bps)}`;
+  return `${source} · ${samples} · ${p25}`;
+}
+
+function candidateTitle(candidate: Record<string, unknown>): string {
+  return [
+    candidateIdentity(candidate),
+    stringValue(candidate.strategy_candidate ?? candidate.takeaway, "candidate"),
+    `mode=${stringValue(candidate.recommended_mode ?? candidate.decision, "research")}`,
+    `avg=${bps(candidate.avg_net_bps)}`,
+    candidateDetail(candidate)
+  ].join(" | ");
 }

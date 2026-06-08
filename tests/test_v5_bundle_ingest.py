@@ -380,6 +380,58 @@ def test_ingest_v5_expanded_universe_summary_rows(tmp_path):
     assert daily["entry_count"].cast(str).to_list() == ["0"]
 
 
+def test_ingest_v5_empty_expanded_universe_summaries_refresh_datasets(tmp_path):
+    first = make_tar(
+        tmp_path / "v5_live_followup_bundle_20260514T083000Z.tar.gz",
+        {
+            "summaries/expanded_universe_advisory_reader.csv": (
+                "strategy_id,strategy_candidate,symbol,decision,recommended_mode,universe_type,generated_at\n"
+                "WLD_EXPANDED_UNIVERSE_PAPER_V1,v5.expanded_universe_wld_paper,WLD-USDT,PAPER_READY,paper,expanded_paper,2026-05-14T08:30:00Z\n"
+            ),
+            "summaries/expanded_universe_paper_runs.csv": (
+                "strategy_id,run_id,ts_utc,symbol,would_enter,no_sample_reason\n"
+                "WLD_EXPANDED_UNIVERSE_PAPER_V1,run_wld,2026-05-14T08:30:00Z,WLD-USDT,false,no_wld_candidate\n"
+            ),
+            "summaries/expanded_universe_paper_daily.csv": (
+                "strategy_id,paper_date,symbol,entry_count,no_sample_reason,generated_at\n"
+                "WLD_EXPANDED_UNIVERSE_PAPER_V1,2026-05-14,WLD-USDT,0,no_wld_candidate,2026-05-14T08:30:00Z\n"
+            ),
+        },
+    )
+    second = make_tar(
+        tmp_path / "v5_live_followup_bundle_20260514T084000Z.tar.gz",
+        {
+            "summaries/expanded_universe_advisory_reader.csv": (
+                "strategy_id,strategy_candidate,symbol,decision,recommended_mode,universe_type,generated_at\n"
+            ),
+            "summaries/expanded_universe_paper_runs.csv": (
+                "strategy_id,run_id,ts_utc,symbol,would_enter,no_sample_reason\n"
+            ),
+            "summaries/expanded_universe_paper_daily.csv": (
+                "strategy_id,paper_date,symbol,entry_count,no_sample_reason,generated_at\n"
+            ),
+        },
+    )
+    lake = tmp_path / "lake"
+
+    ingest_v5_bundle(first, lake, tmp_path / "restricted", tmp_path / "redacted")
+    result = ingest_v5_bundle(second, lake, tmp_path / "restricted", tmp_path / "redacted")
+
+    reader = read_parquet_dataset(lake / "silver/v5_expanded_universe_advisory_reader")
+    runs = read_parquet_dataset(lake / "silver/v5_expanded_universe_paper_runs")
+    daily = read_parquet_dataset(lake / "silver/v5_expanded_universe_paper_daily")
+
+    assert result.silver_rows["v5_expanded_universe_advisory_reader"] == 0
+    assert result.silver_rows["v5_expanded_universe_paper_runs"] == 0
+    assert result.silver_rows["v5_expanded_universe_paper_daily"] == 0
+    assert reader.height == 0
+    assert runs.height == 0
+    assert daily.height == 0
+    assert "strategy_id" in reader.columns
+    assert "no_sample_reason" in runs.columns
+    assert "entry_count" in daily.columns
+
+
 def test_ingest_v5_stable_rows_tolerates_late_mixed_schema_values(tmp_path):
     rows = [
         (

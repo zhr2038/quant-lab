@@ -106,6 +106,11 @@ QUANT_LAB_REQUEST_PATHS = {
 }
 EVENT_KEY_DATASETS = {"v5_quant_lab_request", "v5_quant_lab_fallback"}
 STABLE_ROW_KEY_DATASETS = set(SILVER_DATASETS) - EVENT_KEY_DATASETS - {"v5_candidate_event"}
+EMPTY_CSV_REFRESH_DATASETS = {
+    "v5_expanded_universe_advisory_reader",
+    "v5_expanded_universe_paper_runs",
+    "v5_expanded_universe_paper_daily",
+}
 PULLBACK_STABLE_ROW_KEY_DATASETS = {
     "v5_pullback_reversal_shadow",
     "v5_pullback_reversal_readiness",
@@ -415,6 +420,7 @@ def _write_silver(
     include_historical_outcomes: bool = True,
 ) -> tuple[dict[str, int], list[str]]:
     rows: dict[str, list[dict[str, Any]]] = {name: [] for name in SILVER_DATASETS}
+    empty_csv_headers: dict[str, tuple[str, list[str]]] = {}
     warnings: list[str] = []
     for file_path in sorted(path for path in redacted_files_dir.rglob("*") if path.is_file()):
         relative = file_path.relative_to(redacted_files_dir).as_posix()
@@ -423,7 +429,7 @@ def _write_silver(
             warnings.append(f"skipped_historical_outcome_file:{logical}")
             continue
         try:
-            _append_file_rows(rows, file_path, relative, metadata)
+            _append_file_rows(rows, file_path, relative, metadata, empty_csv_headers)
         except Exception as exc:
             warnings.append(f"failed to parse {relative}: {exc}")
             rows["v5_issue"].append(
@@ -439,6 +445,15 @@ def _write_silver(
     for name, dataset in SILVER_DATASETS.items():
         dataset_rows = rows[name]
         if not dataset_rows:
+            empty_csv = empty_csv_headers.get(name)
+            if empty_csv is not None:
+                relative, header = empty_csv
+                counts[name] = _write_empty_csv_refresh_dataset(
+                    lake_root / dataset,
+                    metadata,
+                    relative,
+                    header,
+                )
             continue
         dataset_path = lake_root / dataset
         if name in EVENT_KEY_DATASETS:
@@ -510,6 +525,7 @@ def _append_file_rows(
     file_path: Path,
     relative: str,
     metadata: dict[str, Any],
+    empty_csv_headers: dict[str, tuple[str, list[str]]] | None = None,
 ) -> None:
     logical = _logical_bundle_path(relative)
     run_id = run_id_from_path(logical)
@@ -627,7 +643,15 @@ def _append_file_rows(
     elif logical == "summaries/quant_lab_fallbacks.csv":
         rows["v5_quant_lab_fallback"].extend(_fallback_csv_rows(metadata, relative, file_path))
     elif logical in csv_mapping:
-        rows[csv_mapping[logical]].extend(_csv_rows(metadata, relative, file_path))
+        dataset_name = csv_mapping[logical]
+        parsed_rows = _csv_rows(metadata, relative, file_path)
+        if parsed_rows:
+            rows[dataset_name].extend(parsed_rows)
+            return
+        if dataset_name in EMPTY_CSV_REFRESH_DATASETS and empty_csv_headers is not None:
+            header = _csv_header(file_path)
+            if header:
+                empty_csv_headers[dataset_name] = (relative, header)
 
 
 def _json_row(
@@ -674,6 +698,11 @@ def _csv_rows(metadata: dict[str, Any], relative: str, file_path: Path) -> list[
                 | {"raw_payload_json": safe_json_dumps(safe_row)}
             )
     return rows
+
+
+def _csv_header(file_path: Path) -> list[str]:
+    with file_path.open("r", encoding="utf-8", newline="") as handle:
+        return list(csv.DictReader(handle).fieldnames or [])
 
 
 def _pullback_shadow_rows(
@@ -1805,6 +1834,36 @@ def _upsert_stable_rows(dataset_path: Path, rows: list[dict[str, Any]]) -> int:
             df = df.unique(subset=key_columns, keep="last", maintain_order=True)
     write_parquet_dataset(df, dataset_path)
     return df.height
+
+
+def _write_empty_csv_refresh_dataset(
+    dataset_path: Path,
+    metadata: dict[str, Any],
+    relative: str,
+    header: list[str],
+) -> int:
+    columns = [
+        "strategy",
+        "bundle_sha256",
+        "bundle_name",
+        "bundle_ts",
+        "ingest_ts",
+        "schema_version",
+        "source_path_inside_bundle",
+        "run_id",
+        "row_index",
+        *header,
+        "raw_payload_json",
+        "stable_row_key",
+    ]
+    columns = list(dict.fromkeys(str(column) for column in columns if str(column).strip()))
+    if not columns:
+        columns = list(_base_row(metadata, relative, run_id_from_path(relative), 0).keys())
+    write_parquet_dataset(
+        pl.DataFrame(schema={column: pl.Utf8 for column in columns}),
+        dataset_path,
+    )
+    return 0
 
 
 def _with_stable_row_key(row: dict[str, Any]) -> dict[str, Any]:

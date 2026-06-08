@@ -711,6 +711,56 @@ def test_dataset_snapshot_falls_back_when_file_index_misses_partitioned_files(tm
     assert "market_regime_daily" not in {row["dataset"] for row in stale_rows}
 
 
+def test_dataset_snapshot_merges_stale_file_index_with_new_partitioned_files(tmp_path):
+    lake_root = tmp_path / "lake"
+    dataset = lake_root / "gold" / "market_regime_daily"
+    old = datetime.now(UTC) - timedelta(days=2)
+    now = datetime.now(UTC)
+    old_partition = dataset / "as_of_date=2026-06-06"
+    old_partition.mkdir(parents=True)
+    old_file = old_partition / "part.parquet"
+    pl.DataFrame(
+        [
+            {
+                "as_of_date": "2026-06-06",
+                "current_regime": "SIDEWAYS",
+                "created_at": old,
+            }
+        ]
+    ).write_parquet(old_file)
+    old_mtime = old.timestamp()
+    os.utime(old_file, (old_mtime, old_mtime))
+    os.utime(old_partition, (old_mtime, old_mtime))
+    os.utime(dataset, (old_mtime, old_mtime))
+    build_lake_file_index(lake_root, ["gold/market_regime_daily"])
+
+    new_partition = dataset / "as_of_date=2026-06-08"
+    new_partition.mkdir(parents=True)
+    new_file = new_partition / "part.parquet"
+    pl.DataFrame(
+        [
+            {
+                "as_of_date": "2026-06-08",
+                "current_regime": "TREND_UP",
+                "created_at": now,
+            }
+        ]
+    ).write_parquet(new_file)
+    new_mtime = now.timestamp()
+    os.utime(new_file, (new_mtime, new_mtime))
+    os.utime(new_partition, (new_mtime, new_mtime))
+    os.utime(dataset, (new_mtime, new_mtime))
+
+    snapshot = readers._dataset_snapshot(lake_root, "market_regime_daily", now=now)
+    stale_rows = readers.data_health_summary(lake_root)["stale_datasets"].to_dicts()
+
+    assert snapshot.rows == 2
+    assert snapshot.warning is None
+    assert snapshot.freshness["freshness_status"] == "fresh"
+    assert snapshot.freshness["latest_timestamp"] == now.isoformat()
+    assert "market_regime_daily" not in {row["dataset"] for row in stale_rows}
+
+
 def test_data_health_marks_missing_market_rollups_as_pending_when_sources_exist(tmp_path):
     lake_root = tmp_path / "lake"
     now = datetime.now(UTC)
@@ -1973,19 +2023,19 @@ def test_web_readers_use_lake_file_index_before_rglob(tmp_path, monkeypatch):
     assert warning is None
 
 
-def test_web_readers_require_file_index_without_rglob_fallback(tmp_path, monkeypatch):
+def test_web_readers_do_not_rglob_heavy_datasets_when_file_index_missing(tmp_path, monkeypatch):
     readers.clear_web_cache()
     lake_root = _fixture_lake(tmp_path)
-    dataset_path = lake_root / "gold" / "cost_bucket_daily"
+    dataset_path = lake_root / "silver" / "trade_print"
 
     def fail_rglob(_path):
-        raise AssertionError("web reader should not rglob lake datasets when file_index is missing")
+        raise AssertionError("web reader should not rglob heavy lake datasets")
 
     monkeypatch.setattr(readers, "_parquet_file_candidates_rglob", fail_rglob)
 
     files, warning = readers._valid_parquet_files_with_warning(
         dataset_path,
-        "cost_bucket_daily",
+        "trade_print",
     )
 
     assert files == []

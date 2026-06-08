@@ -1253,6 +1253,8 @@ def _parquet_file_candidates_with_warning(path: Path) -> tuple[list[Path], str |
     if indexed is not None:
         if not indexed and path.exists():
             return _parquet_file_index_fallback_candidates(path)
+        if path.exists() and _web_file_index_appears_stale(path, indexed):
+            return _merge_indexed_with_fallback_candidates(path, indexed), None
         perf.record_event(
             "web_file_index_lookup",
             dataset_name=_dataset_name_from_path(path),
@@ -1297,6 +1299,80 @@ def _parquet_file_index_fallback_candidates(path: Path) -> tuple[list[Path], str
     if candidates:
         return candidates, None
     return [], WEB_FILE_INDEX_FALLBACK_WARNING
+
+
+def _merge_indexed_with_fallback_candidates(path: Path, indexed: list[Path]) -> list[Path]:
+    dataset_name = _dataset_name_from_path(path)
+    if dataset_name in WEB_HEAVY_METADATA_DATASETS:
+        return indexed
+    discovered = _parquet_file_candidates_rglob(path)
+    merged = sorted({*indexed, *discovered})
+    perf.record_event(
+        "web_file_index_fallback_rglob",
+        dataset_name=dataset_name,
+        files_scanned=len(discovered),
+        rglob_fallback=True,
+        warning=(
+            "stale_index_merge:"
+            f"indexed={len(indexed)};discovered={len(discovered)};merged={len(merged)}"
+        ),
+    )
+    return merged
+
+
+def _web_file_index_appears_stale(path: Path, indexed: list[Path]) -> bool:
+    if not indexed:
+        return False
+    dataset_name = _dataset_name_from_path(path)
+    if dataset_name in WEB_HEAVY_METADATA_DATASETS:
+        return False
+    latest_indexed_mtime = _latest_existing_file_mtime(indexed)
+    latest_path_hint_mtime = _path_mtime_hint(path)
+    if latest_indexed_mtime is None or latest_path_hint_mtime is None:
+        return False
+    return latest_path_hint_mtime > latest_indexed_mtime + 1e-6
+
+
+def _latest_existing_file_mtime(files: list[Path]) -> float | None:
+    latest: float | None = None
+    for file_path in files:
+        try:
+            if not file_path.exists() or not file_path.is_file():
+                continue
+            mtime = file_path.stat().st_mtime
+        except OSError:
+            continue
+        latest = mtime if latest is None else max(latest, mtime)
+    return latest
+
+
+def _path_mtime_hint(path: Path, *, max_depth: int = 2, max_entries: int = 512) -> float | None:
+    latest: float | None = None
+    seen = 0
+
+    def visit(candidate: Path, depth: int) -> None:
+        nonlocal latest, seen
+        if seen >= max_entries:
+            return
+        try:
+            if _is_internal_lake_path(candidate):
+                return
+            stat = candidate.stat()
+        except OSError:
+            return
+        latest = stat.st_mtime if latest is None else max(latest, stat.st_mtime)
+        seen += 1
+        if depth >= max_depth or not candidate.is_dir():
+            return
+        try:
+            children = sorted(candidate.iterdir())
+        except OSError:
+            return
+        for child in children:
+            visit(child, depth + 1)
+
+    visit(path, 0)
+    return latest
 
 
 def _parquet_file_candidates(path: Path) -> list[Path]:

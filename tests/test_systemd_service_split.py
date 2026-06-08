@@ -115,6 +115,8 @@ def test_candidate_research_refresh_is_separate_from_alpha_evidence():
     assert "--mode incremental --lookback-days 8" in refresh_unit
     assert "build-strategy-evidence" in refresh_unit
     assert "--skip-historical-outcomes" in refresh_unit
+    assert "build-factor-factory" in refresh_unit
+    assert "--horizon-bars 4,8,24,72" in refresh_unit
     assert "build-alpha-discovery-board" in refresh_unit
     assert "--skip-legacy-outcome-counts" in refresh_unit
     assert "build-paper-strategy-tracking" in refresh_unit
@@ -131,8 +133,9 @@ def test_candidate_research_refresh_is_separate_from_alpha_evidence():
 
     assert "build-regime-router" in regime_unit
     assert "/var/lock/quant-lab-v5-regime-router.lock" in regime_unit
-    assert "/usr/bin/timeout 5m" in regime_unit
-    assert "TimeoutStartSec=6min" in regime_unit
+    assert "/var/lock/quant-lab-v5-research.lock" in regime_unit
+    assert "/usr/bin/timeout 10m" in regime_unit
+    assert "TimeoutStartSec=12min" in regime_unit
     assert "MemoryMax=1G" in regime_unit
 
 
@@ -147,6 +150,7 @@ def test_scheduled_compaction_covers_hot_ws_datasets():
     assert "START_MARKET_DATA_ROLLUPS" in script
     assert "WARN_MARKET_DATA_ROLLUPS_FAILED" in script
     assert "MARKET_ROLLUP_LOOKBACK_HOURS" in script
+    assert "MARKET_ROLLUP_TIMEOUT_SECONDS" in script
     assert "--lookback-hours" in script
     assert "repair-lake-partitions" in script
     assert "START_REPAIR_PARTITIONS" in script
@@ -185,6 +189,7 @@ def test_scheduled_compaction_covers_hot_ws_datasets():
     assert "COMPACT_MAX_SOURCE_BATCH_BYTES=268435456" in unit
     assert "COMPACT_CONSOLIDATE_EXISTING_COMPACT_OUTPUTS=0" in unit
     assert "MARKET_ROLLUP_LOOKBACK_HOURS=24" in unit
+    assert "MARKET_ROLLUP_TIMEOUT_SECONDS=600" in unit
     assert "COMPACT_SMALL_FILE_MAINTENANCE=1" in unit
     assert "COMPACT_SMALL_FILE_MAINTENANCE_TIMEOUT_SECONDS=300" in unit
     assert "COMPACT_SMALL_FILE_MAINTENANCE_MAX_GROUPS=5" in unit

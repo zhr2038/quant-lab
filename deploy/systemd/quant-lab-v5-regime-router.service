@@ -10,10 +10,10 @@ Group=quantlab
 WorkingDirectory=/opt/quant-lab
 Environment=POLARS_MAX_THREADS=1
 Environment=MALLOC_ARENA_MAX=2
-TimeoutStartSec=6min
+TimeoutStartSec=12min
 MemoryHigh=768M
 MemoryMax=1G
 CPUQuota=40%
-ExecStart=/bin/bash -lc '/usr/bin/flock -E 75 -w 5 /var/lock/quant-lab-v5-regime-router.lock /usr/bin/timeout 5m /opt/quant-lab/.venv/bin/qlab build-regime-router --lake-root /var/lib/quant-lab/lake --date auto || { code="$?"; if [ "$${code}" = "75" ]; then echo "SKIP_V5_REGIME_ROUTER_LOCK_BUSY"; exit 0; fi; exit "$${code}"; }'
+ExecStart=/bin/bash -lc '/usr/bin/flock -E 75 -w 5 /var/lock/quant-lab-v5-regime-router.lock /usr/bin/flock -E 75 -w 120 /var/lock/quant-lab-v5-research.lock /usr/bin/timeout 10m /opt/quant-lab/.venv/bin/qlab build-regime-router --lake-root /var/lib/quant-lab/lake --date auto || { code="$?"; if [ "$${code}" = "75" ]; then echo "SKIP_V5_REGIME_ROUTER_LOCK_BUSY"; exit 0; fi; exit "$${code}"; }'
 NoNewPrivileges=true
 PrivateTmp=true

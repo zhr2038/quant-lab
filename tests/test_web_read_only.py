@@ -669,6 +669,48 @@ def test_data_health_stale_rows_include_takeaway_severity_and_action(tmp_path):
     assert "建议动作" in localized.columns
 
 
+def test_dataset_snapshot_falls_back_when_file_index_misses_partitioned_files(tmp_path):
+    lake_root = tmp_path / "lake"
+    now = datetime.now(UTC)
+    partition = lake_root / "gold" / "market_regime_daily" / "as_of_date=2026-06-08"
+    partition.mkdir(parents=True)
+    pl.DataFrame(
+        [
+            {
+                "as_of_date": "2026-06-08",
+                "current_regime": "SIDEWAYS",
+                "active_regimes_json": "[]",
+                "regime_confidence": 0.7,
+                "btc_24h_return_bps": 0.0,
+                "eth_24h_return_bps": 0.0,
+                "sol_24h_return_bps": 0.0,
+                "bnb_24h_return_bps": 0.0,
+                "broad_market_positive_count": 0,
+                "realized_vol_bps": 1.0,
+                "avg_spread_bps": 1.0,
+                "liquidity_thin": False,
+                "created_at": now,
+                "source": "test",
+                "schema_version": "test",
+            }
+        ]
+    ).write_parquet(partition / "part.parquet")
+    write_parquet_dataset(
+        pl.DataFrame(
+            [{"dataset": "gold/other_dataset", "path": "gold/other_dataset/data.parquet"}]
+        ),
+        lake_root / "bronze" / "lake_file_index",
+    )
+
+    snapshot = readers._dataset_snapshot(lake_root, "market_regime_daily", now=now)
+    stale_rows = readers.data_health_summary(lake_root)["stale_datasets"].to_dicts()
+
+    assert snapshot.rows == 1
+    assert snapshot.warning is None
+    assert snapshot.freshness["freshness_status"] == "fresh"
+    assert "market_regime_daily" not in {row["dataset"] for row in stale_rows}
+
+
 def test_data_health_marks_missing_market_rollups_as_pending_when_sources_exist(tmp_path):
     lake_root = tmp_path / "lake"
     now = datetime.now(UTC)

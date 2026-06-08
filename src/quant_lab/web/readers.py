@@ -1251,6 +1251,8 @@ def _parquet_file_candidates_with_warning(path: Path) -> tuple[list[Path], str |
 
     indexed = _indexed_files_for_web(path)
     if indexed is not None:
+        if not indexed and path.exists():
+            return _parquet_file_index_fallback_candidates(path)
         perf.record_event(
             "web_file_index_lookup",
             dataset_name=_dataset_name_from_path(path),
@@ -1261,13 +1263,7 @@ def _parquet_file_candidates_with_warning(path: Path) -> tuple[list[Path], str |
     lake_root = _infer_lake_root_from_path(path)
     if lake_root is not None:
         if path.exists():
-            perf.record_event(
-                "web_file_index_lookup",
-                dataset_name=_dataset_name_from_path(path),
-                files_scanned=0,
-                warning=WEB_FILE_INDEX_FALLBACK_WARNING,
-            )
-            return [], WEB_FILE_INDEX_FALLBACK_WARNING
+            return _parquet_file_index_fallback_candidates(path)
         return [], None
 
     candidates = _parquet_file_candidates_rglob(path)
@@ -1280,6 +1276,27 @@ def _parquet_file_candidates_with_warning(path: Path) -> tuple[list[Path], str |
             warning=WEB_FILE_INDEX_FALLBACK_WARNING,
         )
     return candidates, WEB_FILE_INDEX_FALLBACK_WARNING if path.exists() else None
+
+
+def _parquet_file_index_fallback_candidates(path: Path) -> tuple[list[Path], str | None]:
+    dataset_name = _dataset_name_from_path(path)
+    if dataset_name in WEB_HEAVY_METADATA_DATASETS:
+        perf.record_event(
+            "web_file_index_lookup",
+            dataset_name=dataset_name,
+            files_scanned=0,
+            warning=WEB_FILE_INDEX_FALLBACK_WARNING,
+        )
+        return [], WEB_FILE_INDEX_FALLBACK_WARNING
+    candidates = _parquet_file_candidates_rglob(path)
+    perf.record_event(
+        "web_file_index_fallback_rglob",
+        dataset_name=dataset_name,
+        files_scanned=len(candidates),
+    )
+    if candidates:
+        return candidates, None
+    return [], WEB_FILE_INDEX_FALLBACK_WARNING
 
 
 def _parquet_file_candidates(path: Path) -> list[Path]:
@@ -4946,9 +4963,25 @@ def _derived_rollup_status(
     if status not in {"missing", "unknown"}:
         return status
     source_snapshot = _dataset_snapshot(lake_root, source_dataset)
-    if source_snapshot.rows > 0 and not source_snapshot.warning:
+    if (source_snapshot.rows > 0 and not source_snapshot.warning) or _dataset_has_parquet_files(
+        dataset_path_for(lake_root, source_dataset)
+    ):
         return DERIVED_ROLLUP_PENDING_STATUS
     return status
+
+
+def _dataset_has_parquet_files(path: Path) -> bool:
+    if path.is_file():
+        return path.suffix == ".parquet" and not _is_internal_lake_path(path)
+    if not path.exists() or not path.is_dir():
+        return False
+    try:
+        return any(
+            candidate.is_file() and not _is_internal_lake_path(candidate)
+            for candidate in path.glob("*.parquet")
+        )
+    except OSError:
+        return False
 
 
 def _should_show_stale_dataset_row(snapshot: DatasetSnapshot, status: str) -> bool:

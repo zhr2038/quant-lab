@@ -12,6 +12,7 @@ COMPACT_DIRECT_MIN_SOURCE_FILES="${COMPACT_DIRECT_MIN_SOURCE_FILES:-16}"
 COMPACT_MAX_SOURCE_BATCH_BYTES="${COMPACT_MAX_SOURCE_BATCH_BYTES:-268435456}"
 COMPACT_CONSOLIDATE_EXISTING_COMPACT_OUTPUTS="${COMPACT_CONSOLIDATE_EXISTING_COMPACT_OUTPUTS:-0}"
 MARKET_ROLLUP_LOOKBACK_HOURS="${MARKET_ROLLUP_LOOKBACK_HOURS:-24}"
+MARKET_ROLLUP_TIMEOUT_SECONDS="${MARKET_ROLLUP_TIMEOUT_SECONDS:-600}"
 COMPACT_SMALL_FILE_MAX_BYTES="${COMPACT_SMALL_FILE_MAX_BYTES:-8388608}"
 COMPACT_SMALL_FILE_MAINTENANCE="${COMPACT_SMALL_FILE_MAINTENANCE:-1}"
 COMPACT_SMALL_FILE_MAINTENANCE_TIMEOUT_SECONDS="${COMPACT_SMALL_FILE_MAINTENANCE_TIMEOUT_SECONDS:-300}"
@@ -128,9 +129,9 @@ compact_dataset_direct_only() {
 build_market_data_rollups() {
   local status
 
-  echo "START_MARKET_DATA_ROLLUPS timeout_seconds=${COMPACT_DATASET_TIMEOUT_SECONDS}"
+  echo "START_MARKET_DATA_ROLLUPS timeout_seconds=${MARKET_ROLLUP_TIMEOUT_SECONDS}"
   set +e
-  timeout --kill-after=30s "${COMPACT_DATASET_TIMEOUT_SECONDS}s" \
+  timeout --kill-after=30s "${MARKET_ROLLUP_TIMEOUT_SECONDS}s" \
     "${QLAB_BIN}" build-market-data-rollups \
     --lake-root "${LAKE_ROOT}" \
     --lookback-hours "${MARKET_ROLLUP_LOOKBACK_HOURS}" \
@@ -396,6 +397,8 @@ cleanup_internal_compaction_dirs() {
     -print -delete
 }
 
+build_market_data_rollups
+
 if [[ "${COMPACT_RAW_OKX_WS}" == "1" ]]; then
   compact_hot_ws_dataset "bronze/okx_public_ws" 500000 100 64 20
 else
@@ -416,8 +419,6 @@ for dataset in "${OPS_DATASETS[@]}"; do
 done
 
 run_small_file_maintenance
-
-build_market_data_rollups
 
 cleanup_internal_compaction_dirs
 

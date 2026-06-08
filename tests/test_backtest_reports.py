@@ -6,7 +6,10 @@ import polars as pl
 import pytest
 
 from quant_lab.backtest.label_backtest import build_label_backtest_summary
-from quant_lab.backtest.reports import build_backtest_report_bundle
+from quant_lab.backtest.reports import (
+    build_backtest_report_bundle,
+    build_research_promotion_decision,
+)
 
 
 def _bars(symbol: str, start: datetime, closes: list[float]) -> pl.DataFrame:
@@ -268,6 +271,96 @@ def test_backtest_positive_paper_negative_is_quarantined() -> None:
     assert "QUARANTINE" in set(promotion["recommended_stage"].to_list())
     assert "QUARANTINE_BACKTEST_PAPER_CONFLICT" in ";".join(
         promotion["decision_reasons"].to_list()
+    )
+
+
+def test_duplicate_label_rate_blocks_paper_promotion() -> None:
+    labels = pl.DataFrame(
+        [
+            {
+                "run_id": "20260607_01",
+                "strategy_id": "BNB_STRONG_ALPHA6_BYPASS_SHADOW_V1",
+                "symbol": "BNB-USDT",
+                "ts_utc": "2026-06-07T01:00:00Z",
+                "generated_at": f"2026-06-07T01:{index:02d}:00Z",
+                "future_4h_net_bps": 120.0,
+            }
+            for index in range(10)
+        ]
+    )
+
+    bundle = build_backtest_report_bundle({"bnb_strong_alpha6_bypass_shadow": labels})
+
+    summary = bundle.label_summary.filter(
+        pl.col("strategy_id") == "BNB_STRONG_ALPHA6_BYPASS_BACKTEST"
+    ).to_dicts()[0]
+    assert summary["duplicate_rate"] == 0.9
+    assert summary["recommendation"] == "QUARANTINE_DUPLICATE_LABELS"
+    promotion = bundle.promotion_decision.filter(
+        pl.col("strategy_id") == "BNB_STRONG_ALPHA6_BYPASS_BACKTEST"
+    ).to_dicts()[0]
+    assert promotion["recommended_stage"] == "QUARANTINE"
+    assert "label_duplicate_rate_gt_5pct" in promotion["decision_reasons"]
+
+
+def test_research_promotion_applies_entry_kill_rules() -> None:
+    summary = pl.DataFrame(
+        [
+            {
+                "strategy_id": "BNB_RISK_ON_BUY_PAPER_V1",
+                "symbol": "BNB-USDT",
+                "regime": "ALL",
+                "horizon_hours": 24,
+                "dedupe_before_rows": 100,
+                "dedupe_after_rows": 100,
+                "duplicate_rate": 0.0,
+                "sample_count": 120,
+                "complete_sample_count": 120,
+                "avg_net_bps": 50.0,
+                "median_net_bps": 50.0,
+                "p25_net_bps": 10.0,
+                "p10_net_bps": -20.0,
+                "win_rate": 0.6,
+                "max_loss_bps": -80.0,
+                "cost_model": "mixed_actual_proxy",
+                "data_leakage_check": "pass_visible_at_decision_time",
+                "recommendation": "PAPER_CANDIDATE_REVIEW",
+            },
+            {
+                "strategy_id": "RISK_ON_MULTI_BUY_BACKTEST",
+                "symbol": "MULTI",
+                "regime": "ALT_IMPULSE",
+                "horizon_hours": 24,
+                "dedupe_before_rows": 120,
+                "dedupe_after_rows": 120,
+                "duplicate_rate": 0.0,
+                "sample_count": 120,
+                "complete_sample_count": 120,
+                "avg_net_bps": -20.0,
+                "median_net_bps": -20.0,
+                "p25_net_bps": -60.0,
+                "p10_net_bps": -100.0,
+                "win_rate": 0.4,
+                "max_loss_bps": -140.0,
+                "cost_model": "mixed_actual_proxy",
+                "data_leakage_check": "pass_visible_at_decision_time",
+                "recommendation": "KILL_OR_KEEP_RESEARCH",
+            },
+        ]
+    )
+
+    promotion = build_research_promotion_decision(label_summary=summary)
+
+    stages = {row["strategy_id"]: row for row in promotion.to_dicts()}
+    assert stages["BNB_RISK_ON_BUY_PAPER_V1"]["recommended_stage"] == "KILL_AS_ENTRY"
+    assert (
+        "forced_rule_bnb_risk_on_buy_kill_as_entry"
+        in stages["BNB_RISK_ON_BUY_PAPER_V1"]["decision_reasons"]
+    )
+    assert stages["RISK_ON_MULTI_BUY_BACKTEST"]["recommended_stage"] == "KILL_AS_LIVE_ENTRY"
+    assert (
+        "forced_rule_risk_on_multi_buy_negative"
+        in stages["RISK_ON_MULTI_BUY_BACKTEST"]["decision_reasons"]
     )
 
 

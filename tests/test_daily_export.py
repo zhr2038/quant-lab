@@ -1238,7 +1238,7 @@ def test_csv_text_uses_native_writer_for_scalar_frames(monkeypatch) -> None:
         )
     )
 
-    assert text == "symbol,row_count,observed\nBTC-USDT,2,true\n"
+    assert text == "symbol,row_count,observed\nBTC-USDT,2,True\n"
 
 
 def test_csv_text_redacts_sensitive_values_on_native_path() -> None:

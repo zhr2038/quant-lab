@@ -239,7 +239,11 @@ def test_fast_microstructure_anchors_to_rollup_when_market_bar_is_newer():
     market_ts = datetime(2026, 6, 6, 12, tzinfo=UTC)
     rollup_ts = datetime(2026, 6, 6, 9, tzinfo=UTC)
     market = pl.DataFrame(
-        _market_rows("BNB-USDT", market_ts - timedelta(hours=6), [100, 101, 102, 103, 104, 105, 106])
+        _market_rows(
+            "BNB-USDT",
+            market_ts - timedelta(hours=6),
+            [100, 101, 102, 103, 104, 105, 106],
+        )
     )
     spreads = pl.DataFrame(
         [
@@ -330,3 +334,82 @@ def test_fast_microstructure_infers_trade_side_from_price_vs_mid():
     assert row["taker_buy_size_sum_15m"] > 0
     assert row["taker_sell_size_sum_15m"] > 0
     assert row["taker_buy_sell_imbalance_5m"] is not None
+
+
+def test_fast_microstructure_keeps_target_symbols_when_rollups_are_sparse():
+    latest = datetime(2026, 6, 6, 9, tzinfo=UTC)
+    market = pl.DataFrame(
+        [
+            row
+            for symbol in (
+                "BTC-USDT",
+                "ETH-USDT",
+                "SOL-USDT",
+                "BNB-USDT",
+                "WLD-USDT",
+                "HYPE-USDT",
+                "XRP-USDT",
+                "ZEC-USDT",
+            )
+            for row in _market_rows(
+                symbol,
+                latest - timedelta(hours=4),
+                [100, 101, 102, 103, 104],
+            )
+        ]
+    )
+    spreads = pl.DataFrame(
+        [
+            {
+                "symbol": symbol,
+                "minute_ts": latest - timedelta(minutes=minute),
+                "ts": latest - timedelta(minutes=minute),
+                "spread_bps": 2.0,
+                "bid_size": 10.0 + minute,
+                "ask_size": 8.0,
+            }
+            for symbol in ("XRP-USDT", "ZEC-USDT")
+            for minute in range(60)
+        ]
+    )
+    trades = pl.DataFrame(
+        [
+            {
+                "symbol": symbol,
+                "minute_ts": latest - timedelta(minutes=minute),
+                "latest_trade_ts": latest - timedelta(minutes=minute),
+                "trade_count": 4,
+                "size_sum": 8.0,
+                "taker_buy_size_sum": 5.0,
+                "taker_sell_size_sum": 3.0,
+            }
+            for symbol in ("XRP-USDT", "ZEC-USDT")
+            for minute in range(60)
+        ]
+    )
+
+    fast = build_fast_microstructure_features(
+        market_bars=market,
+        orderbook_spread_1m=spreads,
+        trade_activity_1m=trades,
+        generated_at=latest,
+    )
+
+    assert set(fast["symbol"].to_list()) == {
+        "BTC-USDT",
+        "ETH-USDT",
+        "SOL-USDT",
+        "BNB-USDT",
+        "WLD-USDT",
+        "HYPE-USDT",
+        "XRP-USDT",
+        "ZEC-USDT",
+    }
+    assert "bid_depth_recovery" in fast.columns
+    assert "spread_normalization" in fast.columns
+    xrp = fast.filter(pl.col("symbol") == "XRP-USDT").to_dicts()[0]
+    assert xrp["taker_buy_sell_imbalance_5m"] > 0
+    assert xrp["spread_normalization"] == 0.0
+    btc = fast.filter(pl.col("symbol") == "BTC-USDT").to_dicts()[0]
+    assert btc["return_1h_bps"] is not None
+    assert btc["latest_spread_bps"] is None

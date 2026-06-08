@@ -10,6 +10,16 @@ import polars as pl
 from quant_lab.symbols import normalize_symbol
 
 FAST_MICROSTRUCTURE_SCHEMA_VERSION = "fast_microstructure_features.v0.1"
+FAST_MICROSTRUCTURE_TARGET_SYMBOLS = (
+    "BTC-USDT",
+    "ETH-USDT",
+    "SOL-USDT",
+    "BNB-USDT",
+    "WLD-USDT",
+    "HYPE-USDT",
+    "XRP-USDT",
+    "ZEC-USDT",
+)
 FAST_MICROSTRUCTURE_FIELDS = [
     "generated_at",
     "schema_version",
@@ -35,6 +45,8 @@ FAST_MICROSTRUCTURE_FIELDS = [
     "taker_buy_sell_imbalance_5m",
     "cvd_5m",
     "cvd_divergence",
+    "bid_depth_recovery",
+    "spread_normalization",
     "side_inferred",
     "cvd_size_15m",
     "vwap_1h",
@@ -73,7 +85,8 @@ def build_fast_microstructure_features(
     microstructure_symbols = (
         set(spreads_by_symbol).union(trades_by_symbol).intersection(bars_by_symbol)
     )
-    symbols = sorted(microstructure_symbols or set(bars_by_symbol))
+    target_symbols = set(FAST_MICROSTRUCTURE_TARGET_SYMBOLS).intersection(bars_by_symbol)
+    symbols = sorted(target_symbols.union(microstructure_symbols) or set(bars_by_symbol))
     rows: list[dict[str, Any]] = []
     for symbol in symbols:
         bars = bars_by_symbol.get(symbol, [])
@@ -138,6 +151,10 @@ def build_fast_microstructure_features(
         spread_bps_change_5m = None
         if latest_spread is not None and spread_5m_prior is not None:
             spread_bps_change_5m = latest_spread - spread_5m_prior
+        bid_depth_recovery = _bid_depth_recovery(spread_rows, ts)
+        spread_normalization = None
+        if latest_spread is not None and spread_15m is not None:
+            spread_normalization = spread_15m - latest_spread
         close_vs_vwap = None
         if vwap_1h and close:
             close_vs_vwap = (close / vwap_1h - 1.0) * 10000.0
@@ -168,6 +185,8 @@ def build_fast_microstructure_features(
                 "taker_buy_sell_imbalance_5m": taker_imbalance_5m,
                 "cvd_5m": cvd_5m,
                 "cvd_divergence": cvd_divergence,
+                "bid_depth_recovery": bid_depth_recovery,
+                "spread_normalization": spread_normalization,
                 "side_inferred": side_inferred,
                 "cvd_size_15m": cvd,
                 "vwap_1h": vwap_1h,
@@ -365,6 +384,44 @@ def _orderbook_imbalance(row: dict[str, Any]) -> float | None:
     if total <= 0:
         return None
     return (bid_size - ask_size) / total
+
+
+def _bid_depth_recovery(rows: list[dict[str, Any]], ts: datetime) -> float | None:
+    latest = _latest_bid_depth(rows, ts)
+    prior = _avg_bid_depth(rows, ts - timedelta(minutes=5), minutes=15)
+    if latest is None or prior is None or prior <= 0:
+        return None
+    return latest / prior - 1.0
+
+
+def _latest_bid_depth(rows: list[dict[str, Any]], ts: datetime) -> float | None:
+    candidates = [
+        _bid_depth(row)
+        for row in rows
+        if row.get("_ts") <= ts and _bid_depth(row) is not None
+    ]
+    return candidates[-1] if candidates else None
+
+
+def _avg_bid_depth(rows: list[dict[str, Any]], ts: datetime, *, minutes: int) -> float | None:
+    values = [_bid_depth(row) for row in _window_rows(rows, ts, minutes=minutes)]
+    values = [value for value in values if value is not None]
+    return sum(values) / len(values) if values else None
+
+
+def _bid_depth(row: dict[str, Any]) -> float | None:
+    return _first_float(
+        row,
+        (
+            "bid_depth",
+            "bid_depth_1pct",
+            "bid_depth_usdt",
+            "bid_size",
+            "best_bid_size",
+            "bid_qty",
+            "bid_sz",
+        ),
+    )
 
 
 def _sum_value(

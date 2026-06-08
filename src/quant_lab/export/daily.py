@@ -12921,6 +12921,7 @@ def _csv_member(path: str, df: pl.DataFrame) -> str:
 
 def _csv_text(df: pl.DataFrame, fixed_columns: list[str] | None = None) -> str:
     safe = _csv_frame_with_schema(readers.redact_frame(df), fixed_columns)
+    safe = _normalize_bool_columns_for_csv(safe)
     if _can_use_native_csv_writer(safe):
         return safe.write_csv()
     return _python_csv_text(safe, fixed_columns=fixed_columns)
@@ -12932,6 +12933,26 @@ def _can_use_native_csv_writer(df: pl.DataFrame) -> bool:
         if base_type in {pl.Object, pl.List, pl.Struct}:
             return False
     return True
+
+
+def _normalize_bool_columns_for_csv(df: pl.DataFrame) -> pl.DataFrame:
+    if df.is_empty() and not df.columns:
+        return df
+    expressions = []
+    for column, dtype in zip(df.columns, df.dtypes, strict=False):
+        base_type = dtype.base_type() if hasattr(dtype, "base_type") else dtype
+        if base_type == pl.Boolean:
+            expressions.append(
+                pl.when(pl.col(column).is_null())
+                .then(pl.lit(None, dtype=pl.Utf8))
+                .when(pl.col(column))
+                .then(pl.lit("True"))
+                .otherwise(pl.lit("False"))
+                .alias(column)
+            )
+    if not expressions:
+        return df
+    return df.with_columns(expressions)
 
 
 def _python_csv_text(df: pl.DataFrame, fixed_columns: list[str] | None = None) -> str:
@@ -12970,6 +12991,8 @@ def _csv_value(value: Any) -> Any:
         return value.astimezone(UTC).isoformat() if value.tzinfo else value.isoformat()
     if isinstance(value, date):
         return value.isoformat()
+    if isinstance(value, bool):
+        return "True" if value else "False"
     if isinstance(value, dict | list | tuple):
         return safe_json_dumps(value)
     return value

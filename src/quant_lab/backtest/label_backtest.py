@@ -117,6 +117,7 @@ def build_label_backtest_summary(
                     p25_net_bps=float_or_none(numeric["p25_net_bps"]),
                     win_rate=float_or_none(numeric["win_rate"]),
                     recent_7d_avg_net_bps=recent_7d,
+                    duplicate_rate=_max_float(values, "_duplicate_rate"),
                 ),
             }
         )
@@ -400,7 +401,10 @@ def _recommendation(
     p25_net_bps: float | None,
     win_rate: float | None,
     recent_7d_avg_net_bps: float | None,
+    duplicate_rate: float | None = None,
 ) -> str:
+    if duplicate_rate is not None and duplicate_rate > 0.05:
+        return "QUARANTINE_DUPLICATE_LABELS"
     if complete_sample_count <= 0:
         return "RESEARCH_ONLY_PENDING_LABELS"
     if sample_count >= 30 and (avg_net_bps or 0.0) > 0:

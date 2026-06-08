@@ -285,6 +285,7 @@ def build_research_promotion_decision(
             first_value(paper, ("avg_paper_pnl_bps", "avg_paper_pnl_bps_24h"))
         )
         cost_ok = _actual_or_mixed_cost(row, paper)
+        duplicate_rate = float_or_none(row.get("duplicate_rate")) or 0.0
         stage, reasons = _promotion_stage(
             sample_count=sample_count,
             complete=complete,
@@ -304,6 +305,21 @@ def build_research_promotion_decision(
                 "QUARANTINE_BACKTEST_PAPER_CONFLICT",
                 *[reason for reason in reasons if reason != "paper_days_or_entries_insufficient"],
             ]
+        if duplicate_rate > 0.05:
+            stage = "QUARANTINE"
+            reasons = [
+                "label_duplicate_rate_gt_5pct",
+                *[reason for reason in reasons if reason != "paper_days_or_entries_insufficient"],
+            ]
+        forced_stage = _forced_research_stage(
+            strategy_id=strategy_id,
+            symbol=normalize_strategy_symbol(row.get("symbol")),
+            sample_count=sample_count,
+            avg=avg,
+        )
+        if forced_stage is not None:
+            stage, forced_reason = forced_stage
+            reasons = [forced_reason, *reasons]
         out.append(
             {
                 "strategy_id": strategy_id,
@@ -508,6 +524,31 @@ def _paper_conflict_index(frame: pl.DataFrame | None) -> dict[tuple[str, str, in
             )
         ] = row
     return out
+
+
+def _forced_research_stage(
+    *,
+    strategy_id: str,
+    symbol: str,
+    sample_count: int,
+    avg: float | None,
+) -> tuple[str, str] | None:
+    text = strategy_id.upper()
+    if "BNB_RISK_ON_BUY" in text:
+        return "KILL_AS_ENTRY", "forced_rule_bnb_risk_on_buy_kill_as_entry"
+    if "BNB_F3_DOMINANT" in text or (
+        symbol == "BNB-USDT" and "F3_DOMINANT" in text
+    ):
+        return "KILL_AS_ENTRY", "forced_rule_bnb_f3_dominant_kill_as_entry"
+    if "RISK_ON_MULTI_BUY" in text and sample_count >= 100 and (avg is not None and avg < 0):
+        return "KILL_AS_LIVE_ENTRY", "forced_rule_risk_on_multi_buy_negative"
+    if "FUTURES_PROXY" in text or (
+        "FUTURES" in text and ("PROXY" in text or "HEDGE" in text or "DOWNTREND" in text)
+    ):
+        return "KILL_AS_PROXY", "forced_rule_futures_proxy_kill_as_proxy"
+    if ("SOL_PROTECT" in text or "OLD_PULLBACK" in text) and (avg is not None and avg < 0):
+        return "LOW_PRIORITY_OR_KILL", "forced_rule_long_term_negative_low_priority_or_kill"
+    return None
 
 
 def _actual_or_mixed_cost(row: dict[str, Any], paper: dict[str, Any]) -> bool:

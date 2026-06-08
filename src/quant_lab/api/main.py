@@ -351,6 +351,10 @@ def create_app() -> FastAPI:
     def web_bigscreen_page() -> Response:
         return _bigscreen_index_response()
 
+    @app.get("/web-v2/legacy")
+    def web_legacy_streamlit_page(request: Request) -> RedirectResponse:
+        return RedirectResponse(url=_legacy_streamlit_url(request), status_code=307)
+
     @app.get("/web-v2/{_path:path}")
     def web_bigscreen_spa_fallback(_path: str) -> Response:
         return _bigscreen_index_response()
@@ -1001,6 +1005,13 @@ def _bigscreen_index_response() -> Response:
             "expected_path": str(index_path),
         },
     )
+
+
+def _legacy_streamlit_url(request: Request) -> str:
+    port = os.environ.get("QUANT_LAB_LEGACY_WEB_PORT", "8501").strip() or "8501"
+    hostname = request.url.hostname or "qyun2.hrhome.top"
+    scheme = request.url.scheme or "http"
+    return f"{scheme}://{hostname}:{port}/"
 
 
 def _web_v2_exports_root() -> Path:

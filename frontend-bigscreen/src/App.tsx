@@ -79,12 +79,19 @@ function Bigscreen() {
   };
   useEffect(() => {
     const fit = () => {
-      const scale = Math.min(window.innerWidth / 1920, window.innerHeight / 1080);
+      const viewport = window.visualViewport;
+      const width = viewport?.width ?? window.innerWidth;
+      const height = viewport?.height ?? window.innerHeight;
+      const scale = Math.min(width / 1920, height / 1080);
       document.documentElement.style.setProperty("--screen-scale", String(scale));
     };
     fit();
     window.addEventListener("resize", fit);
-    return () => window.removeEventListener("resize", fit);
+    window.visualViewport?.addEventListener("resize", fit);
+    return () => {
+      window.removeEventListener("resize", fit);
+      window.visualViewport?.removeEventListener("resize", fit);
+    };
   }, []);
   useEffect(() => {
     const onHashChange = () => setPageState(pageFromHash());
@@ -114,29 +121,31 @@ function Bigscreen() {
   return (
     <div className="viewport">
       <AnimatedBackground />
-      <main className="app-shell">
-        <header className="header">
-          <div className="title">
-            <h1><MonitorDot size={34} />quant-lab CONTROL CENTER</h1>
-            <p>只读研究中台 · 大屏战情室 · 不下单 / 不撤单 / 不改状态</p>
-          </div>
-          <div className="pills">
-            <span className="pill green">READ ONLY</span>
-            <span className={`pill ${data?.status?.toLowerCase() ?? "yellow"}`}>{data?.status ?? "LOADING"}</span>
-            <span className="pill">REFRESH 30s · Asia/Shanghai</span>
-          </div>
-        </header>
+      <div className="app-frame">
+        <main className="app-shell">
+          <header className="header">
+            <div className="title">
+              <h1><MonitorDot size={34} />quant-lab CONTROL CENTER</h1>
+              <p>只读研究中台 · 大屏战情室 · 不下单 / 不撤单 / 不改状态</p>
+            </div>
+            <div className="pills">
+              <span className="pill green">READ ONLY</span>
+              <span className={`pill ${data?.status?.toLowerCase() ?? "yellow"}`}>{data?.status ?? "LOADING"}</span>
+              <span className="pill">REFRESH 30s · Asia/Shanghai</span>
+            </div>
+          </header>
 
-        <AnimatePresence mode="popLayout">
-          {!data ? (
-            <motion.section className="loading-card" initial={{ opacity: 0 }} animate={{ opacity: 1 }}>
-              {query.isError ? "Snapshot 加载失败：检查 /web-v2/snapshot 或 API token" : "加载 bigscreen snapshot…"}
-            </motion.section>
-          ) : (
-            <Dashboard data={data} view={view} setView={setView} page={page} setPage={setPage} />
-          )}
-        </AnimatePresence>
-      </main>
+          <AnimatePresence mode="popLayout">
+            {!data ? (
+              <motion.section className="loading-card" initial={{ opacity: 0 }} animate={{ opacity: 1 }}>
+                {query.isError ? "Snapshot 加载失败：检查 /web-v2/snapshot 或 API token" : "加载 bigscreen snapshot…"}
+              </motion.section>
+            ) : (
+              <Dashboard data={data} view={view} setView={setView} page={page} setPage={setPage} />
+            )}
+          </AnimatePresence>
+        </main>
+      </div>
     </div>
   );
 }
@@ -374,12 +383,19 @@ function drilldownContent(view: ViewKey, data: BigscreenSnapshot) {
     subtitle: "V2 不删除 Streamlit；原始长表仍由旧 Web 明细页承载。",
     blocks: (
       <div className="raw-links">
-        <a href="/" target="_blank" rel="noreferrer"><Archive size={16} />打开旧版 Streamlit 入口</a>
+        <a href={legacyWebUrl()} target="_blank" rel="noreferrer"><Archive size={16} />打开旧版 Streamlit 入口</a>
         <a href="/docs" target="_blank" rel="noreferrer"><RadioTower size={16} />打开 FastAPI Docs</a>
         <a href="/v1/web/bigscreen-snapshot" target="_blank" rel="noreferrer"><ShieldCheck size={16} />查看只读 snapshot JSON</a>
       </div>
     )
   };
+}
+
+function legacyWebUrl(): string {
+  if (typeof window === "undefined") return "/web-v2/legacy";
+  const protocol = window.location.protocol || "http:";
+  const hostname = window.location.hostname || "qyun2.hrhome.top";
+  return `${protocol}//${hostname}:8501/`;
 }
 
 function ExpertPackControls({ exports }: { exports: Record<string, unknown> }) {

@@ -204,6 +204,17 @@ def test_bigscreen_static_entry_is_served_if_built():
     assert "quant-lab CONTROL CENTER" in response.text
 
 
+def test_web_v2_legacy_redirects_to_streamlit_port(monkeypatch):
+    monkeypatch.delenv("QUANT_LAB_API_TOKEN", raising=False)
+    monkeypatch.setenv("QUANT_LAB_LEGACY_WEB_PORT", "8501")
+    client = TestClient(create_app(), base_url="http://qyun2.hrhome.top:8027")
+
+    response = client.get("/web-v2/legacy", follow_redirects=False)
+
+    assert response.status_code == 307
+    assert response.headers["location"] == "http://qyun2.hrhome.top:8501/"
+
+
 def test_web_v2_expert_pack_generate_submits_read_only_job(monkeypatch, tmp_path):
     clear_bigscreen_cache()
     lake = tmp_path / "lake"

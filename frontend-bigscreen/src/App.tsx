@@ -59,6 +59,21 @@ function pageFromHash(): PageKey {
   return PAGE_KEYS.has(key) ? key : "overview";
 }
 
+function formatPackTime(value: unknown): string {
+  const raw = stringValue(value, "");
+  if (!raw) return "—";
+  const parsed = new Date(raw);
+  if (Number.isNaN(parsed.getTime())) return raw;
+  const pad = (part: number) => String(part).padStart(2, "0");
+  const offsetMinutes = -parsed.getTimezoneOffset();
+  const sign = offsetMinutes >= 0 ? "+" : "-";
+  const absOffset = Math.abs(offsetMinutes);
+  const offset = `${sign}${pad(Math.floor(absOffset / 60))}${pad(absOffset % 60)}`;
+  return `${parsed.getFullYear()}-${pad(parsed.getMonth() + 1)}-${pad(parsed.getDate())} ${pad(
+    parsed.getHours()
+  )}:${pad(parsed.getMinutes())}:${pad(parsed.getSeconds())} ${offset}`;
+}
+
 export default function App() {
   return (
     <QueryClientProvider client={queryClient}>
@@ -474,11 +489,18 @@ function ExpertPackControls({ exports }: { exports: Record<string, unknown> }) {
         {packs.slice(0, 8).map((pack, index) => {
           const name = stringValue(pack.name, stringValue(pack.path, `pack-${index}`));
           const url = stringValue(pack.download_url, "");
+          const modifiedAt = formatPackTime(pack.modified_at);
+          const rawModifiedAt = stringValue(pack.modified_at);
           return (
-            <div className="pack-row" key={`${name}-${index}`}>
-              <span>{name}</span>
-              <em>{shortNumber(pack.size_bytes)}B · {stringValue(pack.modified_at)}</em>
-              <a href={expertPackDownloadUrl(url || name)} download><DownloadCloud size={14} />下载</a>
+            <div className="pack-row" key={`${name}-${index}`} title={`${name} | ${rawModifiedAt}`}>
+              <span className="pack-name">{name}</span>
+              <em className="pack-meta">
+                <span>{shortNumber(pack.size_bytes)}B</span>
+                <span>{modifiedAt}</span>
+              </em>
+              <a className="pack-download" href={expertPackDownloadUrl(url || name)} download>
+                <DownloadCloud size={14} />下载
+              </a>
             </div>
           );
         })}

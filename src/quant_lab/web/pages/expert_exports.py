@@ -361,6 +361,14 @@ def _poll_export_job(exports_root: Path, export_date: str) -> dict[str, Any]:
             "error": "export process exceeded web status timeout; use scheduled export service",
             "finished_at": datetime.now(UTC).isoformat(),
         }
+        recovered = _recover_failed_export_status_from_pack(
+            exports_root,
+            export_date,
+            status_path,
+            status,
+        )
+        if recovered is not None:
+            return recovered
         _write_export_job_status(status_path, status)
         return status
     pid = status.get("pid")
@@ -402,10 +410,15 @@ def _recover_failed_export_status_from_pack(
     except OSError:
         return None
     if started_at is not None:
-        if pack_mtime < started_at:
+        if pack_mtime < started_at and not _can_recover_from_existing_same_day_pack(status):
             return None
     elif finished_at is not None and pack_mtime <= finished_at:
         return None
+    recovery_reason = (
+        "latest_same_day_pack_available_after_web_trigger_failure"
+        if started_at is not None and pack_mtime < started_at
+        else "pack_created_after_export_job"
+    )
     recovered = {
         key: value
         for key, value in status.items()
@@ -414,12 +427,27 @@ def _recover_failed_export_status_from_pack(
         "state": "succeeded",
         "zip_path": str(pack_path),
         "recovered_from_failed_status": True,
-        "recovery_reason": "pack_created_after_export_job",
+        "recovery_reason": recovery_reason,
         "recovered_pack_mtime": pack_mtime.isoformat(),
         "finished_at": pack_mtime.isoformat(),
     }
     _write_export_job_status(status_path, recovered)
     return recovered
+
+
+def _can_recover_from_existing_same_day_pack(status: dict[str, Any]) -> bool:
+    error = str(status.get("error") or "").lower()
+    trigger = str(status.get("trigger") or "").lower()
+    if trigger == REQUEST_FILE_BACKGROUND_TRIGGER and (
+        "timeout" in error or "exceeded web status" in error
+    ):
+        return True
+    recoverable_errors = (
+        "export process exited before writing completion status",
+        "export process exceeded web status timeout",
+        "systemd worker did not write completion status",
+    )
+    return any(fragment in error for fragment in recoverable_errors)
 
 
 def _export_job_is_stale(status: dict[str, Any]) -> bool:

@@ -2765,6 +2765,70 @@ def test_expert_exports_failed_status_does_not_recover_old_pack(tmp_path):
     assert "zip_path" not in status
 
 
+def test_expert_exports_worker_trigger_failure_recovers_existing_same_day_pack(tmp_path):
+    exports_root = tmp_path / "exports"
+    exports_root.mkdir()
+    status_path = exports_root / ".quant_lab_web_export_2026-05-16.json"
+    status_path.write_text(
+        json.dumps(
+            {
+                "state": "failed",
+                "error": "export process exited before writing completion status",
+                "started_at": "2026-05-16T03:00:00+00:00",
+                "finished_at": "2026-05-16T03:01:00+00:00",
+            }
+        ),
+        encoding="utf-8",
+    )
+    pack_path = exports_root / "quant_lab_expert_pack_2026-05-16_20260516T100000+0800.zip"
+    pack_path.write_bytes(b"zip")
+    old_mtime = datetime(2026, 5, 16, 2, 0, tzinfo=UTC).timestamp()
+    os.utime(pack_path, (old_mtime, old_mtime))
+
+    status = expert_exports._poll_export_job(exports_root, "2026-05-16")
+
+    assert status["state"] == "succeeded"
+    assert status["zip_path"] == str(pack_path)
+    assert status["recovered_from_failed_status"] is True
+    assert (
+        status["recovery_reason"]
+        == "latest_same_day_pack_available_after_web_trigger_failure"
+    )
+    assert "error" not in status
+
+
+def test_expert_exports_stale_request_file_job_recovers_existing_pack(tmp_path, monkeypatch):
+    exports_root = tmp_path / "exports"
+    exports_root.mkdir()
+    status_path = exports_root / ".quant_lab_web_export_2026-05-16.json"
+    status_path.write_text(
+        json.dumps(
+            {
+                "state": "running",
+                "trigger": "request_file",
+                "started_at": "2026-05-16T03:00:00+00:00",
+            }
+        ),
+        encoding="utf-8",
+    )
+    pack_path = exports_root / "quant_lab_expert_pack_2026-05-16_20260516T100000+0800.zip"
+    pack_path.write_bytes(b"zip")
+    old_mtime = datetime(2026, 5, 16, 2, 0, tzinfo=UTC).timestamp()
+    os.utime(pack_path, (old_mtime, old_mtime))
+    monkeypatch.setenv("QUANT_LAB_WEB_EXPORT_STATUS_STALE_SECONDS", "1")
+
+    status = expert_exports._poll_export_job(exports_root, "2026-05-16")
+
+    assert status["state"] == "succeeded"
+    assert status["zip_path"] == str(pack_path)
+    assert status["recovered_from_failed_status"] is True
+    assert (
+        status["recovery_reason"]
+        == "latest_same_day_pack_available_after_web_trigger_failure"
+    )
+    assert "error" not in status
+
+
 def test_expert_exports_failed_status_recovers_pack_between_start_and_failure(tmp_path):
     exports_root = tmp_path / "exports"
     exports_root.mkdir()

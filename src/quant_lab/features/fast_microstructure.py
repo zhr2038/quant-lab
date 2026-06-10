@@ -56,6 +56,7 @@ FAST_MICROSTRUCTURE_FIELDS = [
     "realized_vol_4h_bps",
     "liquidity_quality",
     "pressure_bias",
+    "missing_reason",
     "response_action",
     "live_order_effect",
 ]
@@ -71,9 +72,6 @@ def build_fast_microstructure_features(
     """Build read-only fast microstructure diagnostics from preloaded export frames."""
 
     generated = (generated_at or datetime.now(UTC)).astimezone(UTC)
-    if market_bars.is_empty():
-        return _empty_frame()
-
     bars_by_symbol = _rows_by_symbol(market_bars, ts_fields=("ts", "minute_ts"))
     spread_frame = orderbook_spread_1m if orderbook_spread_1m is not None else pl.DataFrame()
     trade_frame = trade_activity_1m if trade_activity_1m is not None else pl.DataFrame()
@@ -82,29 +80,57 @@ def build_fast_microstructure_features(
         trade_frame,
         ts_fields=("minute_ts", "latest_trade_ts", "ts"),
     )
-    microstructure_symbols = (
-        set(spreads_by_symbol).union(trades_by_symbol).intersection(bars_by_symbol)
+    microstructure_symbols = set(spreads_by_symbol).union(trades_by_symbol).intersection(
+        bars_by_symbol
     )
-    target_symbols = set(FAST_MICROSTRUCTURE_TARGET_SYMBOLS).intersection(bars_by_symbol)
-    symbols = sorted(target_symbols.union(microstructure_symbols) or set(bars_by_symbol))
+    symbols = sorted(
+        set(FAST_MICROSTRUCTURE_TARGET_SYMBOLS).union(microstructure_symbols).union(bars_by_symbol)
+    )
     rows: list[dict[str, Any]] = []
     for symbol in symbols:
         bars = bars_by_symbol.get(symbol, [])
         latest = bars[-1] if bars else None
         if latest is None:
+            rows.append(
+                _diagnostic_row(
+                    generated=generated,
+                    symbol=symbol,
+                    ts=None,
+                    missing_reasons=["missing_market_bar"],
+                )
+            )
             continue
         spread_rows = spreads_by_symbol.get(symbol, [])
         trade_rows = trades_by_symbol.get(symbol, [])
         ts = _feature_ts(latest, spread_rows, trade_rows)
         close = _latest_close(bars, ts) if ts is not None else None
         if ts is None or close is None:
+            rows.append(
+                _diagnostic_row(
+                    generated=generated,
+                    symbol=symbol,
+                    ts=ts,
+                    missing_reasons=["missing_feature_ts_or_close"],
+                )
+            )
             continue
+        missing_reasons: list[str] = []
+        if not spread_rows:
+            missing_reasons.append("missing_orderbook_rollup")
+        if not trade_rows:
+            missing_reasons.append("missing_trade_rollup")
         spread_5m = _avg_spread_bps(spread_rows, ts, minutes=5)
         spread_15m = _avg_spread_bps(spread_rows, ts, minutes=15)
         spread_60m = _avg_spread_bps(spread_rows, ts, minutes=60)
         latest_spread = _latest_spread_bps(spread_rows, ts)
         orderbook_imbalance_1m = _latest_orderbook_imbalance(spread_rows, ts)
         orderbook_imbalance_5m = _avg_orderbook_imbalance(spread_rows, ts, minutes=5)
+        if spread_rows and (
+            latest_spread is None
+            or orderbook_imbalance_1m is None
+            or orderbook_imbalance_5m is None
+        ):
+            missing_reasons.append("missing_orderbook_core_fields")
         spread_5m_prior = _spread_at_or_before(
             spread_rows,
             ts - timedelta(minutes=5),
@@ -135,6 +161,8 @@ def build_fast_microstructure_features(
             total_5m = taker_buy_5m + taker_sell_5m
             if total_5m > 0:
                 taker_imbalance_5m = cvd_5m / total_5m
+        if trade_rows and (trade_5m is None or taker_imbalance_5m is None or cvd_5m is None):
+            missing_reasons.append("missing_trade_core_fields")
         cvd = None
         if taker_buy_15m is not None and taker_sell_15m is not None:
             cvd = taker_buy_15m - taker_sell_15m
@@ -196,6 +224,7 @@ def build_fast_microstructure_features(
                 "realized_vol_4h_bps": vol_4h,
                 "liquidity_quality": _liquidity_quality(spread_15m, trade_60m),
                 "pressure_bias": _pressure_bias(ret_1h, close_vs_vwap, cvd),
+                "missing_reason": ";".join(missing_reasons) if missing_reasons else "none",
                 "response_action": "diagnostic_only",
                 "live_order_effect": "read_only_no_live_order",
             }
@@ -207,6 +236,30 @@ def build_fast_microstructure_features(
 
 def _empty_frame() -> pl.DataFrame:
     return pl.DataFrame(schema={field: pl.Utf8 for field in FAST_MICROSTRUCTURE_FIELDS})
+
+
+def _diagnostic_row(
+    *,
+    generated: datetime,
+    symbol: str,
+    ts: datetime | None,
+    missing_reasons: list[str],
+) -> dict[str, Any]:
+    row: dict[str, Any] = {field: None for field in FAST_MICROSTRUCTURE_FIELDS}
+    row.update(
+        {
+            "generated_at": generated.isoformat().replace("+00:00", "Z"),
+            "schema_version": FAST_MICROSTRUCTURE_SCHEMA_VERSION,
+            "symbol": symbol,
+            "ts_utc": (ts or generated).isoformat().replace("+00:00", "Z"),
+            "liquidity_quality": "not_observable",
+            "pressure_bias": "not_observable",
+            "missing_reason": ";".join(missing_reasons) if missing_reasons else "none",
+            "response_action": "diagnostic_only",
+            "live_order_effect": "read_only_no_live_order",
+        }
+    )
+    return row
 
 
 def _rows_by_symbol(

@@ -486,6 +486,8 @@ def _strategy_uses_symbol_paper_proxy(strategy_id: str, symbol: str) -> bool:
     return symbol == "BNB-USDT" and (
         "BNB_STRONG_ALPHA6_BYPASS" in text
         or "FINAL_SCORE_ALPHA6_CONFLICT" in text
+        or "BNB_F3_DOMINANT" in text
+        or "BNB_RISK_ON_BUY" in text
     )
 
 

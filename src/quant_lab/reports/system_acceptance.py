@@ -212,14 +212,21 @@ def build_system_acceptance_dashboard(
     authoritative = _truthy(v5_context.get("authoritative_snapshot"))
     stale = _truthy(v5_context.get("stale_v5_bundle"))
     v5_ok = authoritative and not stale
+    v5_status = "PASS" if v5_ok else "WARNING"
+    if stale:
+        v5_next_action = "V5 bundle is stale; downgrade V5-derived conclusions and rerun telemetry sync"
+    elif not authoritative:
+        v5_next_action = "run quant-lab V5 telemetry sync and rerun export-daily"
+    else:
+        v5_next_action = ""
     checks.append(
         _check(
             "v5_bundle_sync_ok",
-            "PASS" if v5_ok else "FAIL",
+            v5_status,
             f"authoritative_snapshot={str(authoritative).lower()};stale_v5_bundle={str(stale).lower()}",
             "authoritative_snapshot=true and stale_v5_bundle=false",
             "quant-lab",
-            "" if v5_ok else "run quant-lab V5 telemetry sync and rerun export-daily",
+            v5_next_action,
         )
     )
 

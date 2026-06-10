@@ -407,9 +407,42 @@ def test_fast_microstructure_keeps_target_symbols_when_rollups_are_sparse():
     }
     assert "bid_depth_recovery" in fast.columns
     assert "spread_normalization" in fast.columns
+    assert "missing_reason" in fast.columns
     xrp = fast.filter(pl.col("symbol") == "XRP-USDT").to_dicts()[0]
     assert xrp["taker_buy_sell_imbalance_5m"] > 0
     assert xrp["spread_normalization"] == 0.0
+    assert xrp["missing_reason"] == "none"
     btc = fast.filter(pl.col("symbol") == "BTC-USDT").to_dicts()[0]
     assert btc["return_1h_bps"] is not None
     assert btc["latest_spread_bps"] is None
+    assert "missing_orderbook_rollup" in btc["missing_reason"]
+    assert "missing_trade_rollup" in btc["missing_reason"]
+
+
+def test_fast_microstructure_outputs_target_symbol_missing_reasons():
+    latest = datetime(2026, 6, 6, 9, tzinfo=UTC)
+    market = pl.DataFrame(
+        _market_rows("BTC-USDT", latest - timedelta(hours=4), [100, 101, 102, 103, 104])
+    )
+
+    fast = build_fast_microstructure_features(
+        market_bars=market,
+        orderbook_spread_1m=pl.DataFrame(),
+        trade_activity_1m=pl.DataFrame(),
+        generated_at=latest,
+    )
+
+    assert set(fast["symbol"].to_list()) == {
+        "BTC-USDT",
+        "ETH-USDT",
+        "SOL-USDT",
+        "BNB-USDT",
+        "WLD-USDT",
+        "HYPE-USDT",
+        "XRP-USDT",
+        "ZEC-USDT",
+    }
+    btc = fast.filter(pl.col("symbol") == "BTC-USDT").to_dicts()[0]
+    assert "missing_orderbook_rollup" in btc["missing_reason"]
+    zec = fast.filter(pl.col("symbol") == "ZEC-USDT").to_dicts()[0]
+    assert zec["missing_reason"] == "missing_market_bar"

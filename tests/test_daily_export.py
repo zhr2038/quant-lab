@@ -709,6 +709,26 @@ def test_system_acceptance_fast_microstructure_core_observability():
     assert "not_observable_ratio=0.000000" in row["observed_value"]
 
 
+def test_system_acceptance_downgrades_stale_v5_bundle_to_warning():
+    dashboard = daily_export_module.build_system_acceptance_dashboard(
+        frames={},
+        report_frames={},
+        row_counts={},
+        pre_export_v5={"authoritative_snapshot": False, "stale_v5_bundle": True},
+        data_quality_warnings=[],
+        api_latency_summary=pl.DataFrame(),
+        lake_file_count=0,
+        generated_at=datetime(2026, 6, 4, 10, tzinfo=UTC),
+    )
+    row = next(
+        row
+        for row in dashboard.to_dicts()
+        if row["check_name"] == "v5_bundle_sync_ok"
+    )
+    assert row["status"] == "WARNING"
+    assert "downgrade V5-derived conclusions" in row["next_action"]
+
+
 def test_market_export_uses_rollup_frames_without_raw_shape():
     trade_rollup = pl.DataFrame(
         [

@@ -8,6 +8,7 @@ import pytest
 from quant_lab.backtest.label_backtest import build_label_backtest_summary
 from quant_lab.backtest.reports import (
     build_backtest_report_bundle,
+    build_backtest_vs_paper_consistency,
     build_research_promotion_decision,
 )
 
@@ -272,6 +273,49 @@ def test_backtest_positive_paper_negative_is_quarantined() -> None:
     assert "QUARANTINE_BACKTEST_PAPER_CONFLICT" in ";".join(
         promotion["decision_reasons"].to_list()
     )
+
+
+def test_bnb_f3_backtest_positive_uses_bnb_paper_proxy_for_quarantine() -> None:
+    label_summary = pl.DataFrame(
+        [
+            {
+                "strategy_id": "BNB_F3_DOMINANT_ENTRY_PAPER_V1",
+                "symbol": "BNB-USDT",
+                "horizon_hours": 24,
+                "sample_count": 35,
+                "complete_sample_count": 35,
+                "avg_net_bps": 95.0,
+                "p25_net_bps": 40.0,
+                "win_rate": 0.74,
+            }
+        ]
+    )
+    bnb_paper = pl.DataFrame(
+        [
+            {
+                "paper_date": "2026-06-07",
+                "strategy_id": "BNB_RISK_ON_BUY_PAPER_V1",
+                "symbol": "BNB-USDT",
+                "entry_count": 18,
+                "paper_days_to_date": 7,
+                "avg_paper_pnl_bps_24h": -42.0,
+                "avg_paper_pnl_bps": -42.0,
+            }
+        ]
+    )
+
+    consistency = build_backtest_vs_paper_consistency(
+        label_summary=label_summary,
+        bnb_paper_daily=bnb_paper,
+    )
+    conflict = consistency.filter(
+        (pl.col("symbol") == "BNB-USDT")
+        & (pl.col("recommendation") == "QUARANTINE_BACKTEST_PAPER_CONFLICT")
+    )
+    assert conflict.height == 1
+    row = conflict.to_dicts()[0]
+    assert row["paper_strategy_id"] == "BNB_RISK_ON_BUY_PAPER_V1"
+    assert row["paper_avg_net_bps"] == -42.0
 
 
 def test_duplicate_label_rate_blocks_paper_promotion() -> None:

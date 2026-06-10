@@ -277,6 +277,14 @@ def build_research_portfolio_status(
         ),
     ]
     rows.extend(_known_kill_rows(evidence_rows, paper_rows, day=day, created_at=created_at))
+    rows.extend(
+        _research_direction_reset_rows(
+            evidence_rows,
+            paper_rows,
+            day=day,
+            created_at=created_at,
+        )
+    )
     rows.extend(_data_driven_rows(evidence_rows, paper_rows, day=day, created_at=created_at))
 
     rows = _dedupe_rows(rows)
@@ -429,6 +437,93 @@ def _known_kill_rows(
     ]
 
 
+def _research_direction_reset_rows(
+    evidence: list[dict[str, Any]],
+    paper: list[dict[str, Any]],
+    *,
+    day: date,
+    created_at: datetime,
+) -> list[dict[str, Any]]:
+    items = [
+        {
+            "research_id": "BNB_RISK_ON_BUY_PAPER_V1",
+            "module": "research_direction_reset",
+            "candidate": "v5.bnb_risk_on_buy",
+            "status": "KILL_AS_ENTRY",
+            "action": "KILL_AS_ENTRY",
+            "reason": "bnb_risk_on_buy_not_supported_as_entry_after_paper_and_backtest_review",
+            "symbol": "BNB-USDT",
+        },
+        {
+            "research_id": "BNB_F3_DOMINANT_ENTRY_PAPER_V1",
+            "module": "research_direction_reset",
+            "candidate": "v5.f3_dominant_entry",
+            "status": "KILL_AS_ENTRY",
+            "action": "KILL_AS_ENTRY",
+            "reason": (
+                "bnb_f3_dominant_entry_not_supported_as_entry_after_"
+                "negative_expectancy_review"
+            ),
+            "symbol": "BNB-USDT",
+        },
+        {
+            "research_id": "RISK_ON_MULTI_BUY_BACKTEST",
+            "module": "research_direction_reset",
+            "candidate": "v5.risk_on_multi_buy",
+            "status": "KILL_AS_LIVE_ENTRY",
+            "action": "KILL_AS_LIVE_ENTRY",
+            "reason": "risk_on_multi_buy_remains_shadow_only_not_live_entry",
+            "symbol": None,
+        },
+        {
+            "research_id": "FUTURES_PROXY_SPOT_INVERSE",
+            "module": "research_direction_reset",
+            "candidate": "v5.futures_proxy_spot_inverse",
+            "status": "KILL_AS_PROXY",
+            "action": "KILL_AS_PROXY",
+            "reason": "futures_proxy_spot_inverse_requires_real_futures_data_not_spot_proxy",
+            "symbol": None,
+        },
+        {
+            "research_id": "BNB_STRONG_ALPHA6_BYPASS_BACKTEST",
+            "module": "research_direction_reset",
+            "candidate": "BNB_STRONG_ALPHA6_BYPASS_BACKTEST",
+            "status": "QUARANTINE_BACKTEST_PAPER_CONFLICT",
+            "action": "QUARANTINE_BACKTEST_PAPER_CONFLICT",
+            "reason": "bnb_strong_alpha6_backtest_positive_but_bnb_paper_negative",
+            "symbol": "BNB-USDT",
+        },
+        {
+            "research_id": "FINAL_SCORE_ALPHA6_CONFLICT_BACKTEST",
+            "module": "research_direction_reset",
+            "candidate": "FINAL_SCORE_ALPHA6_CONFLICT_BACKTEST",
+            "status": "QUARANTINE_BACKTEST_PAPER_CONFLICT",
+            "action": "QUARANTINE_BACKTEST_PAPER_CONFLICT",
+            "reason": "final_score_alpha6_conflict_backtest_positive_but_paper_conflict_quarantine",
+            "symbol": None,
+        },
+    ]
+    rows: list[dict[str, Any]] = []
+    for item in items:
+        rows.append(
+            _candidate_row(
+                research_id=str(item["research_id"]),
+                module=str(item["module"]),
+                candidate=str(item["candidate"]),
+                status=str(item["status"]),
+                action=str(item["action"]),
+                reason=str(item["reason"]),
+                evidence=evidence,
+                paper=paper,
+                day=day,
+                created_at=created_at,
+                symbol=item["symbol"],
+                review_days=14,
+            )
+        )
+    return rows
+
+
 def _paper_portfolio_state(
     paper: list[dict[str, Any]],
     *,
@@ -524,6 +619,11 @@ def _data_driven_rows(
         "v5.multi_position_k2",
         "v5.multi_position_k3",
         "v5.portfolio_trend_following",
+        "v5.bnb_risk_on_buy",
+        "v5.risk_on_multi_buy",
+        "v5.futures_proxy_spot_inverse",
+        "BNB_STRONG_ALPHA6_BYPASS_BACKTEST",
+        "FINAL_SCORE_ALPHA6_CONFLICT_BACKTEST",
     }
     candidates = sorted(
         {

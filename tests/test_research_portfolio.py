@@ -52,6 +52,18 @@ def test_research_portfolio_status_prunes_and_preserves_paper_items(tmp_path):
     assert rows["v5.late_entry_chase_guard_shadow"]["status"] == "SHADOW"
     assert rows["v5.pullback_reversal_v1"]["status"] == "KILL"
     assert rows["v5.pullback_reversal_v1"]["action"] == "CLOSE_RESEARCH"
+    assert rows["BNB_RISK_ON_BUY_PAPER_V1"]["status"] == "KILL_AS_ENTRY"
+    assert rows["BNB_F3_DOMINANT_ENTRY_PAPER_V1"]["status"] == "KILL_AS_ENTRY"
+    assert rows["RISK_ON_MULTI_BUY_BACKTEST"]["status"] == "KILL_AS_LIVE_ENTRY"
+    assert rows["FUTURES_PROXY_SPOT_INVERSE"]["status"] == "KILL_AS_PROXY"
+    assert (
+        rows["BNB_STRONG_ALPHA6_BYPASS_BACKTEST"]["status"]
+        == "QUARANTINE_BACKTEST_PAPER_CONFLICT"
+    )
+    assert (
+        rows["FINAL_SCORE_ALPHA6_CONFLICT_BACKTEST"]["status"]
+        == "QUARANTINE_BACKTEST_PAPER_CONFLICT"
+    )
     assert rows["v5.multi_position_k2"]["killed_research_count"] >= 1
     assert rows["v5.multi_position_k2"]["freed_research_slots"] >= 1
 

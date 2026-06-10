@@ -312,6 +312,12 @@ function drilldownContent(view: ViewKey, data: BigscreenSnapshot) {
     const factorPaper = safeRows(factorFactory.paper_ready_candidates);
     const factorTop = safeRows(factorFactory.top_candidates);
     const factorRows = factorPaper.length ? factorPaper : factorTop;
+    const factorPaperQueue = safeRows(factorFactory.paper_review_queue);
+    const factorDedupe = safeRows(factorFactory.dedupe_decisions);
+    const factorLeaderboard = safeRows(factorFactory.family_leaderboard);
+    const compositeCandidates = safeRows(factorFactory.composite_candidates);
+    const regimeEffectiveness = safeRows(factorFactory.regime_effectiveness);
+    const bridgeCandidates = safeRows(factorFactory.strategy_bridge_candidates);
     return {
       title: "策略驾驶舱",
       subtitle: "聚合 advisory、Alpha Factory、Factor Factory、risk-on multi-buy 和研究组合；全部为 read-only。",
@@ -328,10 +334,44 @@ function drilldownContent(view: ViewKey, data: BigscreenSnapshot) {
                 candidate_count: factorFactory.candidate_count,
                 paper_ready_count: factorFactory.paper_ready_count,
                 high_correlation_pair_count: factorFactory.high_correlation_pair_count,
+                paper_review_queue_count: factorPaperQueue.length,
+                dedupe_decision_count: factorDedupe.length,
+                composite_candidate_count: compositeCandidates.length,
+                bridge_candidate_count: bridgeCandidates.length,
                 latest_candidate_created_at: factorFactory.latest_candidate_created_at
               }}
             />
           </section>
+          <MiniTable
+            title="Factor paper review queue"
+            rows={factorPaperQueue}
+            columns={["factor_id", "factor_family", "candidate_state", "best_horizon_bars", "best_rank_ic_mean", "best_rank_ic_tstat", "best_long_short_mean_bps", "sample_count", "recommendation"]}
+          />
+          <MiniTable
+            title="Factor dedupe decisions"
+            rows={factorDedupe}
+            columns={["factor_id", "correlation_cluster_id", "leader_factor_id", "dedupe_decision", "dedupe_reason", "cluster_size"]}
+          />
+          <MiniTable
+            title="Factor family leaderboard"
+            rows={factorLeaderboard}
+            columns={["factor_family", "leader_factor_id", "leader_candidate_state", "factor_count", "paper_ready_count", "leader_best_rank_ic_tstat", "leader_best_long_short_mean_bps"]}
+          />
+          <MiniTable
+            title="Composite factor candidates"
+            rows={compositeCandidates}
+            columns={["composite_factor_id", "factor_terms", "available_term_count", "max_terms", "interpretable_only", "missing_terms", "recommendation"]}
+          />
+          <MiniTable
+            title="Factor regime effectiveness"
+            rows={regimeEffectiveness}
+            columns={["factor_id", "regime", "horizon", "rank_ic", "long_short_bps", "win_rate", "sample_count", "recommendation"]}
+          />
+          <MiniTable
+            title="Strategy bridge candidates"
+            rows={bridgeCandidates}
+            columns={["factor_id", "factor_family", "bridge_candidate_id", "eligible_for_alpha_factory", "recommended_action", "blocking_reasons", "live_order_effect"]}
+          />
           <MiniTable
             title="Factor Factory candidates"
             rows={factorRows}

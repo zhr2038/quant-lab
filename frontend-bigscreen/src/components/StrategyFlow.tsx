@@ -8,9 +8,12 @@ export function StrategyFlow({ flow }: { flow: Record<string, unknown> }) {
     ? safeRows(flow.top_live_candidates)
     : safeRows(flow.top_candidates);
   const factorFactory = (flow.factor_factory ?? {}) as Record<string, unknown>;
-  const factorRows = safeRows(factorFactory.paper_ready_candidates).length
-    ? safeRows(factorFactory.paper_ready_candidates)
-    : safeRows(factorFactory.top_candidates);
+  const factorReviewQueue = safeRows(factorFactory.paper_review_queue);
+  const factorRows = factorReviewQueue.length
+    ? factorReviewQueue
+    : safeRows(factorFactory.paper_ready_candidates).length
+      ? safeRows(factorFactory.paper_ready_candidates)
+      : safeRows(factorFactory.top_candidates);
   const option = {
     backgroundColor: "transparent",
     animationDuration: 1200,
@@ -56,15 +59,15 @@ export function StrategyFlow({ flow }: { flow: Record<string, unknown> }) {
         <div className="candidate-title"><FlaskConical size={15} /> Factor Factory</div>
         <div className="factor-factory-stats">
           <span><b>{shortNumber(factorFactory.candidate_count)}</b><em>候选</em></span>
-          <span><b>{shortNumber(factorFactory.paper_ready_count)}</b><em>PAPER</em></span>
-          <span><b>{shortNumber(factorFactory.high_correlation_pair_count)}</b><em>高相关</em></span>
+          <span><b>{shortNumber(factorReviewQueue.length || factorFactory.paper_ready_count)}</b><em>队列</em></span>
+          <span><b>{shortNumber(safeRows(factorFactory.strategy_bridge_candidates).length)}</b><em>Bridge</em></span>
         </div>
         {factorRows.slice(0, 2).map((factor, i) => (
           <div className="factor-chip" key={`${factor.factor_id}-${i}`}>
             <Sparkles size={13} />
             <span>{stringValue(factor.factor_id ?? factor.factor_name, "factor")}</span>
-            <em>{stringValue(factor.candidate_state, "RESEARCH")}</em>
-            <strong>{bps(factor.best_long_short_mean_bps)}</strong>
+            <em>{stringValue(factor.state ?? factor.candidate_state, "RESEARCH")}</em>
+            <strong>{bps(factor.long_short_bps ?? factor.best_long_short_mean_bps)}</strong>
           </div>
         ))}
         {!factorRows.length && <div className="factor-empty">Factor Factory 暂无候选</div>}

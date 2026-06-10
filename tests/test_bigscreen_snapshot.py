@@ -176,6 +176,10 @@ def test_bigscreen_snapshot_exposes_factor_factory_results(tmp_path):
     assert factor_factory["paper_ready_candidates"][0]["factor_id"] == "factor.momentum_zscore"
     assert factor_factory["evidence_by_horizon"][0]["horizon_bars"] == 24
     assert factor_factory["high_correlation_pairs"][0]["correlation"] == 0.94
+    assert factor_factory["family_leaderboard"]
+    assert factor_factory["paper_review_queue"][0]["factor_id"] == "factor.momentum_zscore"
+    assert factor_factory["composite_candidates"]
+    assert "strategy_bridge_candidates" in factor_factory
 
 
 def test_bigscreen_snapshot_endpoints_return_payload(monkeypatch, tmp_path):

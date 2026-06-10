@@ -8,6 +8,7 @@ from typing import Any
 
 import polars as pl
 
+from quant_lab.factors.composite_factory import build_factor_factory_v2_reports
 from quant_lab.ops.api_metrics import api_metrics_summary
 from quant_lab.symbols import normalize_symbol
 from quant_lab.web import perf, readers
@@ -496,6 +497,11 @@ def _factor_factory_payload(strategy: dict[str, Any]) -> dict[str, Any]:
     candidates = _as_frame(strategy.get("factor_candidate"))
     evidence = _as_frame(strategy.get("factor_evidence"))
     correlations = _as_frame(strategy.get("factor_correlation_daily"))
+    v2_reports = build_factor_factory_v2_reports(
+        candidates=candidates,
+        evidence=evidence,
+        correlations=correlations,
+    )
     candidate_rows = _factor_candidate_rows(candidates)
     state_counts = _count_by_column(candidates, "candidate_state")
     high_correlation_pairs = _high_correlation_rows(correlations)
@@ -526,6 +532,15 @@ def _factor_factory_payload(strategy: dict[str, Any]) -> dict[str, Any]:
         "paper_ready_candidates": paper_ready_candidates[:8],
         "evidence_by_horizon": evidence_by_horizon,
         "high_correlation_pairs": high_correlation_pairs[:8],
+        "dedupe_decisions": _frame_rows(v2_reports["factor_dedupe_decision"], limit=8),
+        "family_leaderboard": _frame_rows(v2_reports["factor_family_leaderboard"], limit=8),
+        "paper_review_queue": _frame_rows(v2_reports["factor_paper_review_queue"], limit=8),
+        "composite_candidates": _frame_rows(v2_reports["composite_factor_candidates"], limit=8),
+        "regime_effectiveness": _frame_rows(v2_reports["factor_regime_effectiveness"], limit=8),
+        "strategy_bridge_candidates": _frame_rows(
+            v2_reports["factor_strategy_bridge_candidates"],
+            limit=8,
+        ),
         "warnings": warnings,
     }
 

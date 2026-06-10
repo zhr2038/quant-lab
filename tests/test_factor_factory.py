@@ -3,6 +3,7 @@ from datetime import UTC, datetime, timedelta
 import polars as pl
 
 from quant_lab.data.lake import read_parquet_dataset, write_market_bars, write_parquet_dataset
+from quant_lab.factors.composite_factory import build_factor_factory_v2_reports
 from quant_lab.factors.factory import build_and_publish_factor_factory, factor_factory_health
 from quant_lab.features.publish import publish_features
 
@@ -76,6 +77,109 @@ def test_factor_values_are_cross_sectionally_normalized(tmp_path):
     assert slice_df.height == 4
     assert slice_df.filter(pl.col("normalized_value").is_not_null()).height >= 3
     assert slice_df.filter(pl.col("rank_value").is_not_null()).height >= 3
+
+
+def test_factor_factory_v2_dedupes_and_builds_review_outputs():
+    candidates = pl.DataFrame(
+        [
+            {
+                "as_of_date": "2026-06-10",
+                "factor_id": "core.close_return_24",
+                "factor_family": "momentum",
+                "best_horizon_bars": 24,
+                "best_score": 12.0,
+                "best_rank_ic_mean": 0.05,
+                "best_rank_ic_tstat": 3.2,
+                "best_long_short_mean_bps": 18.0,
+                "candidate_state": "PAPER_READY",
+            },
+            {
+                "as_of_date": "2026-06-10",
+                "factor_id": "auto.single.close_return_24",
+                "factor_family": "momentum",
+                "best_horizon_bars": 24,
+                "best_score": 10.0,
+                "best_rank_ic_mean": 0.04,
+                "best_rank_ic_tstat": 2.4,
+                "best_long_short_mean_bps": 16.0,
+                "candidate_state": "PAPER_READY",
+            },
+            {
+                "as_of_date": "2026-06-10",
+                "factor_id": "core.volume_zscore_24",
+                "factor_family": "volume",
+                "best_horizon_bars": 8,
+                "best_score": 3.0,
+                "best_rank_ic_mean": 0.01,
+                "best_rank_ic_tstat": 0.7,
+                "best_long_short_mean_bps": 4.0,
+                "candidate_state": "KEEP_SHADOW",
+            },
+        ]
+    )
+    evidence = pl.DataFrame(
+        [
+            {
+                "as_of_date": "2026-06-10",
+                "factor_id": "core.close_return_24",
+                "horizon_bars": 24,
+                "valid_sample_count": 180,
+                "rank_ic_mean": 0.05,
+                "rank_ic_tstat": 3.2,
+                "long_short_mean_bps": 18.0,
+                "win_rate": 0.62,
+                "score": 12.0,
+                "regime_state": "TREND_UP",
+            },
+            {
+                "as_of_date": "2026-06-10",
+                "factor_id": "core.close_return_24",
+                "horizon_bars": 24,
+                "valid_sample_count": 90,
+                "rank_ic_mean": -0.01,
+                "rank_ic_tstat": -0.3,
+                "long_short_mean_bps": -2.0,
+                "win_rate": 0.48,
+                "score": -1.0,
+                "regime_state": "RISK_OFF",
+            },
+        ]
+    )
+    correlations = pl.DataFrame(
+        [
+            {
+                "as_of_date": "2026-06-10",
+                "factor_id_left": "core.close_return_24",
+                "factor_id_right": "auto.single.close_return_24",
+                "sample_count": 240,
+                "correlation": 0.94,
+            }
+        ]
+    )
+
+    reports = build_factor_factory_v2_reports(
+        candidates=candidates,
+        evidence=evidence,
+        correlations=correlations,
+    )
+
+    dedupe = reports["factor_dedupe_decision"].to_dicts()
+    dedupe_by_factor = {row["factor_id"]: row for row in dedupe}
+    assert dedupe_by_factor["core.close_return_24"]["dedupe_decision"] == "keep_leader"
+    assert (
+        dedupe_by_factor["auto.single.close_return_24"]["dedupe_decision"]
+        == "redundant_suppressed"
+    )
+    queue = reports["factor_paper_review_queue"].to_dicts()
+    assert any(row["recommendation"] == "FACTOR_PAPER_REVIEW" for row in queue)
+    assert any(row["recommendation"] == "HOLD_REVIEW_REDUNDANT" for row in queue)
+    assert reports["composite_factor_candidates"].height >= 1
+    assert reports["factor_regime_effectiveness"].height >= 1
+    assert reports["factor_strategy_bridge_candidates"].height >= 1
+    assert (
+        reports["factor_strategy_bridge_candidates"]["live_order_effect"][0]
+        == "none_read_only_research"
+    )
 
 
 def _write_bars(

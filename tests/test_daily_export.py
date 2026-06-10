@@ -88,6 +88,12 @@ def test_export_daily_pack_writes_required_members(tmp_path):
         assert "reports/system_acceptance_dashboard.md" in names
         assert "reports/post_impulse_overextension_no_trigger_reasons.csv" in names
         assert "reports/bottom_zone_reversal_no_trigger_reasons.csv" in names
+        assert "reports/factor_dedupe_decision.csv" in names
+        assert "reports/factor_family_leaderboard.csv" in names
+        assert "reports/factor_paper_review_queue.csv" in names
+        assert "reports/composite_factor_candidates.csv" in names
+        assert "reports/factor_regime_effectiveness.csv" in names
+        assert "reports/factor_strategy_bridge_candidates.csv" in names
         assert "diagnostics/export_timing.csv" in names
         assert "diagnostics/export_timing.json" in names
         acceptance_rows = list(

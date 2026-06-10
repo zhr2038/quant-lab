@@ -34,6 +34,15 @@ from quant_lab.contracts.v5_quant_lab import (
     V5_TELEMETRY_DATASET_SCHEMA_VERSION,
 )
 from quant_lab.data.lake import read_parquet_dataset, write_parquet_dataset
+from quant_lab.factors.composite_factory import (
+    COMPOSITE_FACTOR_CANDIDATE_FIELDS,
+    FACTOR_DEDUPE_DECISION_FIELDS,
+    FACTOR_FAMILY_LEADERBOARD_FIELDS,
+    FACTOR_PAPER_REVIEW_QUEUE_FIELDS,
+    FACTOR_REGIME_EFFECTIVENESS_FIELDS,
+    FACTOR_STRATEGY_BRIDGE_CANDIDATE_FIELDS,
+    build_factor_factory_v2_reports,
+)
 from quant_lab.features.fast_microstructure import (
     FAST_MICROSTRUCTURE_FIELDS,
     build_fast_microstructure_features,
@@ -424,6 +433,12 @@ REQUIRED_MEMBERS = [
     "reports/factor_evidence.csv",
     "reports/factor_candidates.csv",
     "reports/factor_correlation_daily.csv",
+    "reports/factor_dedupe_decision.csv",
+    "reports/factor_family_leaderboard.csv",
+    "reports/factor_paper_review_queue.csv",
+    "reports/composite_factor_candidates.csv",
+    "reports/factor_regime_effectiveness.csv",
+    "reports/factor_strategy_bridge_candidates.csv",
     "reports/factor_factory_summary.md",
     "reports/candidate_kill_list.csv",
     "reports/candidate_shadow_watchlist.csv",
@@ -719,6 +734,12 @@ CSV_SCHEMAS: dict[str, list[str]] = {
         "created_at",
         "source",
     ],
+    "reports/factor_dedupe_decision.csv": FACTOR_DEDUPE_DECISION_FIELDS,
+    "reports/factor_family_leaderboard.csv": FACTOR_FAMILY_LEADERBOARD_FIELDS,
+    "reports/factor_paper_review_queue.csv": FACTOR_PAPER_REVIEW_QUEUE_FIELDS,
+    "reports/composite_factor_candidates.csv": COMPOSITE_FACTOR_CANDIDATE_FIELDS,
+    "reports/factor_regime_effectiveness.csv": FACTOR_REGIME_EFFECTIVENESS_FIELDS,
+    "reports/factor_strategy_bridge_candidates.csv": FACTOR_STRATEGY_BRIDGE_CANDIDATE_FIELDS,
     "market/orderbook_spread.csv": ["symbol", "channel", "ts", "spread_bps"],
     "market/trade_activity.csv": ["symbol", "trade_count", "size_sum", "latest_trade_ts"],
     "reports/api_latency_summary.csv": [
@@ -4187,6 +4208,11 @@ def _dataset_members(
     factor_evidence = frames.get("factor_evidence", pl.DataFrame())
     factor_candidates = frames.get("factor_candidate", pl.DataFrame())
     factor_correlations = frames.get("factor_correlation_daily", pl.DataFrame())
+    factor_v2 = build_factor_factory_v2_reports(
+        candidates=factor_candidates,
+        evidence=factor_evidence,
+        correlations=factor_correlations,
+    )
     costs = _normalize_symbol_frame(frames.get("cost_bucket_daily", pl.DataFrame()))
     cost_health = frames.get("cost_health_daily", pl.DataFrame())
     evidence = _alpha_evidence_for_export(frames.get("alpha_evidence", pl.DataFrame()))
@@ -4543,6 +4569,30 @@ def _dataset_members(
         "reports/factor_correlation_daily.csv": _csv_member(
             "reports/factor_correlation_daily.csv",
             factor_correlations,
+        ),
+        "reports/factor_dedupe_decision.csv": _csv_member(
+            "reports/factor_dedupe_decision.csv",
+            factor_v2["factor_dedupe_decision"],
+        ),
+        "reports/factor_family_leaderboard.csv": _csv_member(
+            "reports/factor_family_leaderboard.csv",
+            factor_v2["factor_family_leaderboard"],
+        ),
+        "reports/factor_paper_review_queue.csv": _csv_member(
+            "reports/factor_paper_review_queue.csv",
+            factor_v2["factor_paper_review_queue"],
+        ),
+        "reports/composite_factor_candidates.csv": _csv_member(
+            "reports/composite_factor_candidates.csv",
+            factor_v2["composite_factor_candidates"],
+        ),
+        "reports/factor_regime_effectiveness.csv": _csv_member(
+            "reports/factor_regime_effectiveness.csv",
+            factor_v2["factor_regime_effectiveness"],
+        ),
+        "reports/factor_strategy_bridge_candidates.csv": _csv_member(
+            "reports/factor_strategy_bridge_candidates.csv",
+            factor_v2["factor_strategy_bridge_candidates"],
         ),
         "reports/factor_factory_summary.md": _factor_factory_summary_md(
             factor_candidates,
@@ -6111,7 +6161,12 @@ def _refresh_v5_derived_outputs_subprocess(lake_root: Path, export_day: date) ->
                 },
                 capture_output=True,
                 text=True,
-                timeout=int(os.environ.get("QUANT_LAB_EXPORT_DERIVED_REFRESH_STEP_TIMEOUT_SEC", "900")),
+                timeout=int(
+                    os.environ.get(
+                        "QUANT_LAB_EXPORT_DERIVED_REFRESH_STEP_TIMEOUT_SEC",
+                        "900",
+                    )
+                ),
             )
         except subprocess.TimeoutExpired as exc:
             _log_export_stage_event(
@@ -6155,8 +6210,12 @@ def _v5_derived_refresh_subprocess_code(body: str) -> str:
         "lake_root = Path(os.environ['QUANT_LAB_DERIVED_REFRESH_LAKE_ROOT'])\n"
         "export_day = date.fromisoformat(os.environ['QUANT_LAB_DERIVED_REFRESH_DATE'])\n"
         "lookback_days = int(os.environ['QUANT_LAB_DERIVED_REFRESH_LOOKBACK_DAYS'])\n"
-        "alpha_factory_lookback_days = int(os.environ['QUANT_LAB_DERIVED_REFRESH_ALPHA_FACTORY_LOOKBACK_DAYS'])\n"
-        "alpha_factory_max_candidates = int(os.environ['QUANT_LAB_DERIVED_REFRESH_ALPHA_FACTORY_MAX_CANDIDATES'])\n"
+        "alpha_factory_lookback_days = int("
+        "os.environ['QUANT_LAB_DERIVED_REFRESH_ALPHA_FACTORY_LOOKBACK_DAYS']"
+        ")\n"
+        "alpha_factory_max_candidates = int("
+        "os.environ['QUANT_LAB_DERIVED_REFRESH_ALPHA_FACTORY_MAX_CANDIDATES']"
+        ")\n"
         f"{body}\n"
     )
 
@@ -6166,31 +6225,56 @@ def _v5_derived_refresh_step_bodies() -> list[tuple[str, str]]:
         (
             "analyze_v5_telemetry",
             "from quant_lab.strategy_telemetry.analyze import analyze_v5_telemetry\n"
-            "analyze_v5_telemetry(lake_root=lake_root, date=export_day.isoformat(), refresh_candidate_gold=False)",
+            "analyze_v5_telemetry("
+            "lake_root=lake_root, "
+            "date=export_day.isoformat(), "
+            "refresh_candidate_gold=False"
+            ")",
         ),
         (
             "build_candidate_labels",
             "from quant_lab.research.candidate_labels import build_and_publish_candidate_labels\n"
-            "build_and_publish_candidate_labels(lake_root, as_of_date=export_day, mode='incremental', lookback_days=lookback_days)",
+            "build_and_publish_candidate_labels("
+            "lake_root, "
+            "as_of_date=export_day, "
+            "mode='incremental', "
+            "lookback_days=lookback_days"
+            ")",
         ),
         (
             "build_strategy_evidence",
             "from quant_lab.research.strategy_evidence import build_and_publish_strategy_evidence\n"
-            "build_and_publish_strategy_evidence(lake_root, as_of_date=export_day.isoformat(), mode='incremental', lookback_days=lookback_days, include_historical_outcomes=False)",
+            "build_and_publish_strategy_evidence("
+            "lake_root, "
+            "as_of_date=export_day.isoformat(), "
+            "mode='incremental', "
+            "lookback_days=lookback_days, "
+            "include_historical_outcomes=False"
+            ")",
         ),
         (
             "build_expanded_universe_automation",
-            "from quant_lab.research.expanded_universe import build_and_publish_expanded_crypto_universe_shadow\n"
-            "build_and_publish_expanded_crypto_universe_shadow(lake_root, as_of_date=export_day.isoformat())",
+            "from quant_lab.research.expanded_universe import "
+            "build_and_publish_expanded_crypto_universe_shadow\n"
+            "build_and_publish_expanded_crypto_universe_shadow("
+            "lake_root, "
+            "as_of_date=export_day.isoformat()"
+            ")",
         ),
         (
             "build_alpha_discovery_board",
-            "from quant_lab.research.alpha_discovery import build_and_publish_alpha_discovery_board\n"
-            "build_and_publish_alpha_discovery_board(lake_root, as_of_date=export_day, include_legacy_outcome_counts=False)",
+            "from quant_lab.research.alpha_discovery import "
+            "build_and_publish_alpha_discovery_board\n"
+            "build_and_publish_alpha_discovery_board("
+            "lake_root, "
+            "as_of_date=export_day, "
+            "include_legacy_outcome_counts=False"
+            ")",
         ),
         (
             "build_paper_strategy_tracking",
-            "from quant_lab.research.paper_tracking import build_and_publish_paper_strategy_tracking\n"
+            "from quant_lab.research.paper_tracking import "
+            "build_and_publish_paper_strategy_tracking\n"
             "build_and_publish_paper_strategy_tracking(lake_root, as_of_date=export_day)",
         ),
         (
@@ -6211,12 +6295,22 @@ def _v5_derived_refresh_step_bodies() -> list[tuple[str, str]]:
         (
             "build_alpha_factory",
             "from quant_lab.research.alpha_factory import build_and_publish_alpha_factory\n"
-            "build_and_publish_alpha_factory(lake_root, as_of_date=export_day, lookback_days=alpha_factory_lookback_days, max_candidates=alpha_factory_max_candidates)",
+            "build_and_publish_alpha_factory("
+            "lake_root, "
+            "as_of_date=export_day, "
+            "lookback_days=alpha_factory_lookback_days, "
+            "max_candidates=alpha_factory_max_candidates"
+            ")",
         ),
         (
             "refresh_alpha_discovery_board_after_alpha_factory",
-            "from quant_lab.research.alpha_discovery import build_and_publish_alpha_discovery_board\n"
-            "build_and_publish_alpha_discovery_board(lake_root, as_of_date=export_day, include_legacy_outcome_counts=False)",
+            "from quant_lab.research.alpha_discovery import "
+            "build_and_publish_alpha_discovery_board\n"
+            "build_and_publish_alpha_discovery_board("
+            "lake_root, "
+            "as_of_date=export_day, "
+            "include_legacy_outcome_counts=False"
+            ")",
         ),
         (
             "build_regime_router",
@@ -6232,7 +6326,12 @@ def _v5_derived_refresh_step_bodies() -> list[tuple[str, str]]:
             "write_enforce_readiness_report",
             "from quant_lab.web import readers\n"
             "from quant_lab.reports.enforce_readiness import write_enforce_readiness_report\n"
-            "write_enforce_readiness_report(lake_root=lake_root, out_dir=readers.default_exports_root(lake_root), strategy='v5', version='5.0.0')",
+            "write_enforce_readiness_report("
+            "lake_root=lake_root, "
+            "out_dir=readers.default_exports_root(lake_root), "
+            "strategy='v5', "
+            "version='5.0.0'"
+            ")",
         ),
     ]
 

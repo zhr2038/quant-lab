@@ -297,7 +297,7 @@ try:
         "export_date": export_date,
         "lake_root": str(lake_root),
         "exports_root": str(exports_root),
-        "zip_path": result.zip_path,
+        "zip_path": str(result.zip_path),
         "warnings": result.warnings,
         "pid": os.getpid(),
         "started_at": started_at,
@@ -658,7 +658,7 @@ def _export_daily_in_subprocess(
         "'--no-refresh-risk-permission','--pre-export-v5-refresh','--allow-stale-v5'],"
         "refresh_risk_permission=False, risk_strategy='v5', risk_version='5.0.0',"
         "pre_export_v5_refresh=True, allow_stale_v5=True);"
-        "print(json.dumps({'zip_path': result.zip_path, 'warnings': result.warnings}))"
+        "print(json.dumps({'zip_path': str(result.zip_path), 'warnings': result.warnings}))"
     )
     completed = subprocess.run(
         [sys.executable, "-c", script, str(lake_root), str(exports_root), export_date],

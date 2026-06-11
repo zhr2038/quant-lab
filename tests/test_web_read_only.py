@@ -2886,7 +2886,15 @@ def test_expert_exports_subprocess_mode_parses_generated_pack(tmp_path, monkeypa
     assert "refresh_risk_permission=False" in captured["command"][2]
     assert "pre_export_v5_refresh=True" in captured["command"][2]
     assert "allow_stale_v5=True" in captured["command"][2]
+    assert "str(result.zip_path)" in captured["command"][2]
     assert captured["kwargs"]["capture_output"] is True
+
+
+def test_expert_exports_background_script_serializes_zip_path_as_string():
+    script = expert_exports._export_job_script()
+
+    assert '"zip_path": str(result.zip_path)' in script
+    assert '"zip_path": result.zip_path' not in script
 
 
 def test_expert_exports_summary_uses_mtime_for_latest_pack(tmp_path):

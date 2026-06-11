@@ -4001,6 +4001,20 @@ def _collect_recent_heavy_files(
     *,
     limit: int,
 ) -> pl.DataFrame:
+    timestamp_columns = readers.DATASET_TIMESTAMP_COLUMNS.get(dataset_name, ())
+    if files and timestamp_columns:
+        try:
+            scan = _scan_parquet_paths(files)
+            columns = set(scan.collect_schema().names())
+            timestamp_column = next(
+                (column for column in timestamp_columns if column in columns),
+                None,
+            )
+            if timestamp_column is not None:
+                return scan.sort(timestamp_column).tail(limit).collect()
+        except Exception:
+            pass
+
     frames: list[pl.DataFrame] = []
     rows = 0
     for path in reversed(files):
@@ -4029,6 +4043,19 @@ def _collect_recent_heavy_files(
     if timestamp_column is None:
         return combined.tail(limit)
     return _tail_by_time(combined, timestamp_column, limit=limit)
+
+
+def _scan_parquet_paths(files: list[Path]) -> pl.LazyFrame:
+    paths = [str(path) for path in files]
+    try:
+        return pl.scan_parquet(
+            paths,
+            hive_partitioning=False,
+            missing_columns="insert",
+            extra_columns="ignore",
+        )
+    except TypeError:
+        return pl.scan_parquet(paths)
 
 
 def _snapshot_market_health(snapshot: _DatasetSnapshot) -> dict[str, Any]:

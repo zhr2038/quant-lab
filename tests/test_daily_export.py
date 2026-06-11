@@ -17,6 +17,7 @@ from quant_lab.data.lake import read_parquet_dataset, write_market_bars, write_p
 from quant_lab.export.daily import (
     CSV_SCHEMAS,
     REQUIRED_MEMBERS,
+    _collect_recent_heavy_files,
     _load_export_frame,
     _member_row_count,
     _recent_heavy_dataset_files,
@@ -27,6 +28,44 @@ from quant_lab.export.daily import (
 )
 from quant_lab.ops.metrics import record_api_request
 from tests.v5_bundle_fixture import make_tar
+
+
+def test_collect_recent_heavy_files_uses_timestamp_not_physical_tail(tmp_path):
+    dataset_path = tmp_path / "orderbook_spread_1m"
+    dataset_path.mkdir()
+    base = datetime(2026, 6, 11, 2, tzinfo=UTC)
+    rows: list[dict[str, object]] = []
+    for symbol in ("BNB-USDT", "BTC-USDT", "ZEC-USDT"):
+        for minute in range(4):
+            rows.append(
+                {
+                    "symbol": symbol,
+                    "minute_ts": base + timedelta(minutes=minute),
+                    "ts": base + timedelta(minutes=minute),
+                    "spread_bps": 1.0 + minute,
+                }
+            )
+    for minute in range(20):
+        rows.append(
+            {
+                "symbol": "ZEC-USDT",
+                "minute_ts": base - timedelta(hours=2, minutes=minute),
+                "ts": base - timedelta(hours=2, minutes=minute),
+                "spread_bps": 9.0,
+            }
+        )
+    data_path = dataset_path / "data.parquet"
+    pl.DataFrame(rows).write_parquet(data_path)
+
+    collected = _collect_recent_heavy_files(
+        [data_path],
+        "orderbook_spread_1m",
+        limit=9,
+    )
+
+    symbols = set(collected["symbol"].to_list())
+    assert {"BNB-USDT", "BTC-USDT"}.issubset(symbols)
+    assert collected["ts"].min() >= base + timedelta(minutes=1)
 
 
 def test_export_daily_pack_writes_required_members(tmp_path):

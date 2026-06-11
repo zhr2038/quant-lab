@@ -360,12 +360,12 @@ def build_backtest_vs_paper_consistency(
             continue
         strategy_id = str(row.get("strategy_id") or "")
         symbol = normalize_strategy_symbol(row.get("symbol"))
-        paper = paper_by_strategy.get(strategy_id)
+        horizon = int(float_or_none(row.get("horizon_hours")) or 0)
+        paper = _select_paper_row_for_horizon(paper_by_strategy.get(strategy_id, []), horizon)
         if paper is None and _strategy_uses_symbol_paper_proxy(strategy_id, symbol):
-            paper = paper_by_symbol.get(symbol)
+            paper = _select_paper_row_for_horizon(paper_by_symbol.get(symbol, []), horizon)
         if paper is None:
             continue
-        horizon = int(float_or_none(row.get("horizon_hours")) or 0)
         paper_avg = _paper_avg_for_horizon(paper, horizon)
         if paper_avg is None:
             continue
@@ -456,22 +456,22 @@ def _paper_daily_index(*frames: pl.DataFrame | None) -> dict[str, dict[str, Any]
 
 def _paper_daily_lookup(
     *frames: pl.DataFrame | None,
-) -> tuple[dict[str, dict[str, Any]], dict[str, dict[str, Any]]]:
-    by_strategy: dict[str, dict[str, Any]] = {}
-    by_symbol: dict[str, dict[str, Any]] = {}
+) -> tuple[dict[str, list[dict[str, Any]]], dict[str, list[dict[str, Any]]]]:
+    by_strategy: dict[str, list[dict[str, Any]]] = {}
+    by_symbol: dict[str, list[dict[str, Any]]] = {}
     for frame in frames:
         for row in rows(frame):
             strategy_id = str(row.get("strategy_id") or "").strip()
             symbol = normalize_strategy_symbol(row.get("symbol"))
             if not strategy_id and symbol == "UNKNOWN":
                 continue
-            existing = by_strategy.get(strategy_id) if strategy_id else None
-            if strategy_id and (existing is None or _paper_row_sort_key(row) >= _paper_row_sort_key(existing)):
-                by_strategy[strategy_id] = row
+            if strategy_id:
+                by_strategy.setdefault(strategy_id, []).append(row)
             if symbol != "UNKNOWN":
-                existing_symbol = by_symbol.get(symbol)
-                if existing_symbol is None or _paper_row_sort_key(row) >= _paper_row_sort_key(existing_symbol):
-                    by_symbol[symbol] = row
+                by_symbol.setdefault(symbol, []).append(row)
+    for bucket in (by_strategy, by_symbol):
+        for key, values in bucket.items():
+            bucket[key] = sorted(values, key=_paper_row_sort_key, reverse=True)
     return by_strategy, by_symbol
 
 
@@ -480,6 +480,18 @@ def _paper_row_sort_key(row: dict[str, Any]) -> tuple[str, float]:
         str(first_value(row, ("paper_date", "ts_utc", "generated_at")) or ""),
         float_or_none(row.get("entry_count")) or 0.0,
     )
+
+
+def _select_paper_row_for_horizon(
+    candidates: list[dict[str, Any]],
+    horizon: int,
+) -> dict[str, Any] | None:
+    if not candidates:
+        return None
+    for row in candidates:
+        if _paper_avg_for_horizon(row, horizon) is not None:
+            return row
+    return candidates[0]
 
 
 def _strategy_uses_symbol_paper_proxy(strategy_id: str, symbol: str) -> bool:

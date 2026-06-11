@@ -61,6 +61,7 @@ def bigscreen_snapshot(lake_root: str | Path) -> dict[str, Any]:
     status = _status_from_inputs(overview, data_health, cost, v5, warnings)
     overview["status"] = status
     health_score = _health_score(status, data_health, cost, v5, web_events, exports)
+    legacy_anomalies = _legacy_web_anomalies(data_health)
     payload = {
         "generated_at": _json_value(generated_at),
         "lake_root": str(root),
@@ -68,7 +69,9 @@ def bigscreen_snapshot(lake_root: str | Path) -> dict[str, Any]:
         "status": status,
         "health_score": health_score,
         "kpis": _kpis(generated_at, overview, collectors, cost, v5, web_events, api_metrics),
-        "actions": _build_actions(overview, data_health, cost, v5, web_events, exports)[:8],
+        "actions": _build_actions(
+            overview, data_health, cost, v5, web_events, exports, legacy_anomalies
+        )[:8],
         "data_matrix": _data_matrix(market, collectors, cost, strategy, data_health, overview),
         "strategy_flow": _strategy_flow(strategy),
         "v5": _v5_payload(v5),
@@ -76,6 +79,7 @@ def bigscreen_snapshot(lake_root: str | Path) -> dict[str, Any]:
         "market": _market_payload(market),
         "collectors": _collector_payload(collectors),
         "data_health": _data_health_payload(data_health),
+        "legacy_anomalies": legacy_anomalies,
         "web_perf": _web_perf_payload(web_events, api_metrics),
         "consumers": _consumer_payload(consumers),
         "exports": _exports_payload(exports),
@@ -845,6 +849,114 @@ def _data_health_payload(data_health: dict[str, Any]) -> dict[str, Any]:
     }
 
 
+def _legacy_web_anomalies(data_health: dict[str, Any]) -> dict[str, Any]:
+    stale_rows = _frame_rows(data_health.get("stale_datasets"), limit=12)
+    missing_rows = _frame_rows(data_health.get("missing_bars"), limit=8)
+    schema_violations = [
+        str(value)
+        for value in data_health.get("schema_violations", [])
+        if str(value).strip()
+    ]
+    warning_values = _warnings(data_health)[:8]
+    duplicate_count = _int(data_health.get("duplicate_bar_count")) or 0
+    unclosed_count = _int(data_health.get("unclosed_bar_count")) or 0
+    schema_count = _int(data_health.get("schema_violation_count")) or len(schema_violations)
+    missing_ratio = _float(data_health.get("missing_bar_ratio")) or 0.0
+    missing_count = sum(_int(row.get("missing_bars")) or 0 for row in missing_rows)
+    critical_count = 0
+    warning_count = 0
+    items: list[dict[str, Any]] = []
+
+    def add_item(
+        severity: str,
+        title: str,
+        summary: str,
+        source: str,
+        next_action: str,
+        rows: list[dict[str, Any]] | None = None,
+    ) -> None:
+        nonlocal critical_count, warning_count
+        normalized = severity.upper()
+        if normalized == "CRITICAL":
+            critical_count += 1
+        elif normalized == "WARNING":
+            warning_count += 1
+        items.append(
+            {
+                "severity": normalized,
+                "title": title,
+                "summary": summary,
+                "source": source,
+                "next_action": next_action,
+                "rows": rows or [],
+            }
+        )
+
+    if stale_rows:
+        top_severity = "WARNING"
+        for row in stale_rows:
+            if str(row.get("severity") or "").upper() == "CRITICAL":
+                top_severity = "CRITICAL"
+                break
+        add_item(
+            top_severity,
+            "旧页面：过期或缺失的数据集",
+            f"{len(stale_rows)} 个数据集需要关注；首页只展示前 {min(len(stale_rows), 12)} 条。",
+            "legacy_data_health.stale_datasets",
+            "检查对应采集 / refresh / telemetry sync 任务，避免下游页面看到旧结果。",
+            stale_rows,
+        )
+
+    if schema_count or unclosed_count or duplicate_count:
+        add_item(
+            "CRITICAL" if schema_count or unclosed_count else "WARNING",
+            "旧页面：行情结构异常",
+            f"schema={schema_count}，未闭合K线={unclosed_count}，重复bar={duplicate_count}。",
+            "legacy_data_health.market_bar",
+            "优先修复 market_bar 结构 / 未闭合 / 重复问题，再解释策略证据。",
+            [{"warning": value} for value in schema_violations[:8]],
+        )
+
+    if missing_rows or missing_ratio > 0:
+        add_item(
+            "WARNING",
+            "旧页面：K线缺口",
+            f"missing_bars={missing_count}，missing_ratio={missing_ratio:.4f}。",
+            "legacy_data_health.missing_bars",
+            "补齐对应 symbol/timeframe 的 market_bar，再刷新研究报告。",
+            missing_rows,
+        )
+
+    if warning_values and not items:
+        add_item(
+            "WARNING",
+            "旧页面：数据健康 warning",
+            warning_values[0],
+            "legacy_data_health.warnings",
+            "打开数据健康页查看 warning 明细。",
+            [{"warning": value} for value in warning_values],
+        )
+
+    return {
+        "live_order_effect": "none_read_only_display",
+        "source": "legacy_streamlit_data_health_overview",
+        "has_anomalies": bool(items),
+        "total_count": len(items),
+        "critical_count": critical_count,
+        "warning_count": warning_count,
+        "stale_dataset_count": len(stale_rows),
+        "schema_violation_count": schema_count,
+        "unclosed_bar_count": unclosed_count,
+        "duplicate_bar_count": duplicate_count,
+        "missing_bar_ratio": missing_ratio,
+        "missing_bar_row_count": len(missing_rows),
+        "missing_bar_count": missing_count,
+        "latest_market_bar_ts": _json_value(data_health.get("latest_market_bar_ts")),
+        "items": items,
+        "warnings": warning_values,
+    }
+
+
 def _web_perf_payload(events: list[dict[str, Any]], api_metrics: dict[str, Any]) -> dict[str, Any]:
     return {
         "cache_hit": sum(1 for row in events if row.get("cache_hit")),
@@ -933,6 +1045,7 @@ def _build_actions(
     v5: dict[str, Any],
     web_events: list[dict[str, Any]],
     exports: dict[str, Any],
+    legacy_anomalies: dict[str, Any] | None = None,
 ) -> list[dict[str, Any]]:
     actions: list[dict[str, Any]] = []
     if (_float(cost.get("hard_fallback_ratio")) or 0.0) > 0.25:
@@ -967,6 +1080,27 @@ def _build_actions(
                 "market_bar 有结构违规或未闭合 K 线",
                 "data_health_summary",
                 "先修复 market_bar，再解释策略证据",
+                "/data-ops",
+            )
+        )
+    legacy_items = (
+        legacy_anomalies.get("items")
+        if isinstance(legacy_anomalies, dict) and isinstance(legacy_anomalies.get("items"), list)
+        else []
+    )
+    for item in legacy_items[:2]:
+        if not isinstance(item, dict):
+            continue
+        source = str(item.get("source") or "")
+        if "market_bar" in source:
+            continue
+        actions.append(
+            _action(
+                str(item.get("severity") or "WARNING"),
+                str(item.get("title") or "旧页面异常"),
+                str(item.get("summary") or "旧 Streamlit 页面发现异常"),
+                source or "legacy_web",
+                str(item.get("next_action") or "打开旧数据健康页查看明细"),
                 "/data-ops",
             )
         )

@@ -25,6 +25,7 @@ import { CostQuality } from "./components/CostQuality";
 import { DataMatrix } from "./components/DataMatrix";
 import { HealthPanel } from "./components/HealthPanel";
 import { KpiGrid } from "./components/KpiGrid";
+import { LegacyAnomalyPanel } from "./components/LegacyAnomalyPanel";
 import { MarketLiquidity } from "./components/MarketLiquidity";
 import { PerfConsumers } from "./components/PerfConsumers";
 import { StrategyFlow } from "./components/StrategyFlow";
@@ -187,6 +188,7 @@ function Dashboard({
             <KpiGrid snapshot={data} />
             <div className="overview-side">
               <HealthPanel score={data.health_score} status={data.status} warnings={data.warnings} />
+              <LegacyAnomalyPanel anomalies={data.legacy_anomalies} />
               <ActionQueue actions={data.actions} />
             </div>
             <DataMatrix matrix={data.data_matrix} />

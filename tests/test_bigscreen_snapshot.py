@@ -182,6 +182,67 @@ def test_bigscreen_snapshot_exposes_factor_factory_results(tmp_path):
     assert "strategy_bridge_candidates" in factor_factory
 
 
+def test_bigscreen_snapshot_surfaces_legacy_web_anomalies(monkeypatch, tmp_path):
+    clear_bigscreen_cache()
+
+    def fake_data_health_summary(_lake_root):
+        return {
+            "latest_per_symbol": pl.DataFrame(),
+            "missing_bars": pl.DataFrame(
+                [
+                    {
+                        "symbol": "BTC-USDT",
+                        "timeframe": "1H",
+                        "missing_bars": 2,
+                    }
+                ]
+            ),
+            "duplicate_bar_count": 1,
+            "unclosed_bar_count": 1,
+            "schema_violations": ["market_bar missing close"],
+            "schema_violation_count": 1,
+            "stale_datasets": pl.DataFrame(
+                [
+                    {
+                        "dataset": "market_regime_daily",
+                        "status": "过期",
+                        "severity": "WARNING",
+                        "takeaway": "旧页面下游可能看到旧结果",
+                        "next_action": "刷新 research 任务",
+                    }
+                ]
+            ),
+            "latest_market_bar_ts": datetime(2026, 6, 10, 1, tzinfo=UTC),
+            "missing_bar_ratio": 0.02,
+            "warnings": ["legacy warning"],
+        }
+
+    monkeypatch.setattr(
+        "quant_lab.web.bigscreen.readers.data_health_summary",
+        fake_data_health_summary,
+    )
+
+    payload = bigscreen_snapshot(tmp_path / "lake")
+    legacy = payload["legacy_anomalies"]
+
+    assert legacy["live_order_effect"] == "none_read_only_display"
+    assert legacy["has_anomalies"] is True
+    assert legacy["stale_dataset_count"] == 1
+    assert legacy["schema_violation_count"] == 1
+    assert legacy["unclosed_bar_count"] == 1
+    assert legacy["duplicate_bar_count"] == 1
+    assert legacy["missing_bar_count"] == 2
+    assert {item["source"] for item in legacy["items"]} >= {
+        "legacy_data_health.stale_datasets",
+        "legacy_data_health.market_bar",
+        "legacy_data_health.missing_bars",
+    }
+    assert any(
+        action.get("source") == "legacy_data_health.stale_datasets"
+        for action in payload["actions"]
+    )
+
+
 def test_bigscreen_snapshot_endpoints_return_payload(monkeypatch, tmp_path):
     clear_bigscreen_cache()
     monkeypatch.setenv("QUANT_LAB_LAKE_ROOT", str(tmp_path / "lake"))

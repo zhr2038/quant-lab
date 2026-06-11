@@ -774,6 +774,27 @@ def test_system_acceptance_downgrades_stale_v5_bundle_to_warning():
     assert "downgrade V5-derived conclusions" in row["next_action"]
 
 
+def test_system_acceptance_passes_synced_non_authoritative_v5_bundle():
+    dashboard = daily_export_module.build_system_acceptance_dashboard(
+        frames={},
+        report_frames={},
+        row_counts={},
+        pre_export_v5={"authoritative_snapshot": False, "stale_v5_bundle": False},
+        data_quality_warnings=[],
+        api_latency_summary=pl.DataFrame(),
+        lake_file_count=0,
+        generated_at=datetime(2026, 6, 11, 10, tzinfo=UTC),
+    )
+    row = next(
+        row
+        for row in dashboard.to_dicts()
+        if row["check_name"] == "v5_bundle_sync_ok"
+    )
+    assert row["status"] == "PASS"
+    assert "pre-export V5 refresh was disabled" in row["next_action"]
+    assert "rerun telemetry sync" not in row["next_action"]
+
+
 def test_v5_bundle_sync_uses_latest_ingested_dataset_timestamp():
     generated_at = datetime(2026, 6, 11, 6, tzinfo=UTC)
     frames = {

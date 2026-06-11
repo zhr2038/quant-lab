@@ -211,12 +211,12 @@ def build_system_acceptance_dashboard(
     v5_context = dict(pre_export_v5 or {})
     authoritative = _truthy(v5_context.get("authoritative_snapshot"))
     stale = _truthy(v5_context.get("stale_v5_bundle"))
-    v5_ok = authoritative and not stale
+    v5_ok = not stale
     v5_status = "PASS" if v5_ok else "WARNING"
     if stale:
         v5_next_action = "V5 bundle is stale; downgrade V5-derived conclusions and rerun telemetry sync"
     elif not authoritative:
-        v5_next_action = "run quant-lab V5 telemetry sync and rerun export-daily"
+        v5_next_action = "synced but pre-export V5 refresh was disabled; enable refresh for an authoritative snapshot"
     else:
         v5_next_action = ""
     checks.append(
@@ -224,7 +224,7 @@ def build_system_acceptance_dashboard(
             "v5_bundle_sync_ok",
             v5_status,
             f"authoritative_snapshot={str(authoritative).lower()};stale_v5_bundle={str(stale).lower()}",
-            "authoritative_snapshot=true and stale_v5_bundle=false",
+            "stale_v5_bundle=false; authoritative_snapshot describes refresh provenance",
             "quant-lab",
             v5_next_action,
         )

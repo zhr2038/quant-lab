@@ -1327,7 +1327,7 @@ def _web_file_index_appears_stale(path: Path, indexed: list[Path]) -> bool:
     if dataset_name in WEB_HEAVY_METADATA_DATASETS:
         return False
     latest_indexed_mtime = _latest_existing_file_mtime(indexed)
-    latest_path_hint_mtime = _path_mtime_hint(path)
+    latest_path_hint_mtime = _path_parquet_mtime_hint(path)
     if latest_indexed_mtime is None or latest_path_hint_mtime is None:
         return False
     return latest_path_hint_mtime > latest_indexed_mtime + 1e-6
@@ -1346,7 +1346,12 @@ def _latest_existing_file_mtime(files: list[Path]) -> float | None:
     return latest
 
 
-def _path_mtime_hint(path: Path, *, max_depth: int = 2, max_entries: int = 512) -> float | None:
+def _path_parquet_mtime_hint(
+    path: Path,
+    *,
+    max_depth: int = 4,
+    max_entries: int = 512,
+) -> float | None:
     latest: float | None = None
     seen = 0
 
@@ -1360,8 +1365,9 @@ def _path_mtime_hint(path: Path, *, max_depth: int = 2, max_entries: int = 512) 
             stat = candidate.stat()
         except OSError:
             return
-        latest = stat.st_mtime if latest is None else max(latest, stat.st_mtime)
         seen += 1
+        if candidate.is_file() and candidate.suffix == ".parquet":
+            latest = stat.st_mtime if latest is None else max(latest, stat.st_mtime)
         if depth >= max_depth or not candidate.is_dir():
             return
         try:

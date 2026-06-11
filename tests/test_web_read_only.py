@@ -2023,6 +2023,40 @@ def test_web_readers_use_lake_file_index_before_rglob(tmp_path, monkeypatch):
     assert warning is None
 
 
+def test_web_file_index_stale_check_ignores_snapshot_meta_mtime(tmp_path, monkeypatch):
+    readers.clear_web_cache()
+    lake_root = tmp_path / "lake"
+    dataset_path = lake_root / "gold" / "strategy_opportunity_advisory"
+    write_parquet_dataset(
+        pl.DataFrame(
+            {
+                "generated_at": [datetime(2026, 6, 4, tzinfo=UTC)],
+                "strategy_candidate": ["v5.f3_dominant_entry"],
+            }
+        ),
+        dataset_path,
+    )
+    build_lake_file_index(lake_root, ["gold/strategy_opportunity_advisory"])
+
+    meta_path = dataset_path / "_snapshot_meta.json"
+    meta_path.write_text('{"row_count": 1}', encoding="utf-8")
+    future = datetime(2026, 6, 4, 1, tzinfo=UTC).timestamp()
+    os.utime(meta_path, (future, future))
+
+    def fail_rglob(_path):
+        raise AssertionError("snapshot metadata mtime should not make file index stale")
+
+    monkeypatch.setattr(readers, "_parquet_file_candidates_rglob", fail_rglob)
+
+    files, warning = readers._valid_parquet_files_with_warning(
+        dataset_path,
+        "strategy_opportunity_advisory",
+    )
+
+    assert len(files) == 1
+    assert warning is None
+
+
 def test_web_readers_do_not_rglob_heavy_datasets_when_file_index_missing(tmp_path, monkeypatch):
     readers.clear_web_cache()
     lake_root = _fixture_lake(tmp_path)

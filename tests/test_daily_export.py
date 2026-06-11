@@ -735,6 +735,82 @@ def test_system_acceptance_downgrades_stale_v5_bundle_to_warning():
     assert "downgrade V5-derived conclusions" in row["next_action"]
 
 
+def test_v5_bundle_sync_uses_latest_ingested_dataset_timestamp():
+    generated_at = datetime(2026, 6, 11, 6, tzinfo=UTC)
+    frames = {
+        "strategy_health_daily": pl.DataFrame(
+            [
+                {
+                    "date": "2026-06-11",
+                    "latest_bundle_ts": "2026-06-11T05:33:11Z",
+                }
+            ]
+        )
+    }
+    pre_export_v5 = {
+        "sync_attempted": True,
+        "sync_succeeded": True,
+        "latest_v5_bundle_seen_at_export": "2026-06-11T05:29:51Z",
+        "selected_v5_bundle_ingested_at": "2026-06-11T05:20:00Z",
+        "selected_v5_bundle_path": "/tmp/v5_latest.tar.gz",
+        "selected_v5_bundle_sha256": "abc123",
+        "selected_v5_bundle_manifest_match": True,
+        "authoritative_snapshot": True,
+        "stale_v5_bundle": True,
+    }
+
+    consistency = daily_export_module._v5_export_consistency(
+        frames,
+        pre_export_v5=pre_export_v5,
+        pre_export_v5_refresh=True,
+        allow_stale_v5=False,
+    )
+    diagnostics = daily_export_module._v5_bundle_sync_diagnostics_frame(
+        frames=frames,
+        pre_export_v5={**pre_export_v5, **consistency},
+        generated_at=generated_at,
+    )
+
+    row = diagnostics.to_dicts()[0]
+    assert consistency["stale_v5_bundle"] is False
+    assert consistency["why_stale"] == ""
+    assert row["latest_ingested_bundle_ts"] == "2026-06-11T05:33:11+00:00"
+    assert row["latest_remote_bundle_ts"] == "2026-06-11T05:29:51+00:00"
+    assert row["stale_seconds"] == 0
+    assert row["why_stale"] == ""
+    assert row["selected_v5_bundle_sha"] == "abc123"
+
+
+def test_v5_bundle_sync_flags_remote_newer_than_ingested():
+    frames = {
+        "strategy_health_daily": pl.DataFrame(
+            [
+                {
+                    "date": "2026-06-11",
+                    "latest_bundle_ts": "2026-06-11T05:10:00Z",
+                }
+            ]
+        )
+    }
+    pre_export_v5 = {
+        "latest_v5_bundle_seen_at_export": "2026-06-11T05:29:51Z",
+        "selected_v5_bundle_path": "/tmp/v5_old.tar.gz",
+        "selected_v5_bundle_sha256": "old",
+        "authoritative_snapshot": True,
+    }
+
+    consistency = daily_export_module._v5_export_consistency(
+        frames,
+        pre_export_v5=pre_export_v5,
+        pre_export_v5_refresh=True,
+        allow_stale_v5=False,
+    )
+
+    assert consistency["stale_v5_bundle"] is True
+    assert consistency["why_stale"] == "remote_newer_than_ingested"
+    assert "why_stale=remote_newer_than_ingested" in consistency["warning_reason"]
+
+
 def test_market_export_uses_rollup_frames_without_raw_shape():
     trade_rollup = pl.DataFrame(
         [

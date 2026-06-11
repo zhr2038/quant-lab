@@ -318,6 +318,45 @@ def test_bnb_f3_backtest_positive_uses_bnb_paper_proxy_for_quarantine() -> None:
     assert row["paper_avg_net_bps"] == -42.0
 
 
+def test_backtest_vs_paper_reads_horizon_json_for_bnb_conflict() -> None:
+    label_summary = pl.DataFrame(
+        [
+            {
+                "strategy_id": "FINAL_SCORE_ALPHA6_CONFLICT_BACKTEST",
+                "symbol": "BNB-USDT",
+                "horizon_hours": 24,
+                "sample_count": 40,
+                "complete_sample_count": 40,
+                "avg_net_bps": 120.0,
+                "p25_net_bps": 35.0,
+                "win_rate": 0.7,
+            }
+        ]
+    )
+    bnb_paper = pl.DataFrame(
+        [
+            {
+                "paper_date": "2026-06-11",
+                "strategy_id": "BNB_RISK_ON_BUY_PAPER_V1",
+                "symbol": "BNB-USDT",
+                "entry_count": 12,
+                "paper_days_to_date": 3,
+                "avg_paper_pnl_bps_by_horizon": '{"4h": -8.0, "24h": -55.5}',
+            }
+        ]
+    )
+
+    consistency = build_backtest_vs_paper_consistency(
+        label_summary=label_summary,
+        bnb_paper_daily=bnb_paper,
+    )
+
+    row = consistency.to_dicts()[0]
+    assert row["strategy_id"] == "FINAL_SCORE_ALPHA6_CONFLICT_BACKTEST"
+    assert row["paper_avg_net_bps"] == -55.5
+    assert row["recommendation"] == "QUARANTINE_BACKTEST_PAPER_CONFLICT"
+
+
 def test_duplicate_label_rate_blocks_paper_promotion() -> None:
     labels = pl.DataFrame(
         [

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 from dataclasses import dataclass
 from typing import Any
 
@@ -492,6 +493,12 @@ def _strategy_uses_symbol_paper_proxy(strategy_id: str, symbol: str) -> bool:
 
 
 def _paper_avg_for_horizon(row: dict[str, Any], horizon: int) -> float | None:
+    horizon_values = _json_dict(row.get("avg_paper_pnl_bps_by_horizon"))
+    if horizon > 0 and horizon_values:
+        for key in (f"{horizon}h", str(horizon), horizon):
+            value = float_or_none(horizon_values.get(key))
+            if value is not None:
+                return value
     candidates = []
     if horizon > 0:
         candidates.append(f"avg_paper_pnl_bps_{horizon}h")
@@ -503,6 +510,18 @@ def _paper_avg_for_horizon(row: dict[str, Any], horizon: int) -> float | None:
         ]
     )
     return float_or_none(first_value(row, tuple(candidates)))
+
+
+def _json_dict(value: Any) -> dict[Any, Any]:
+    if isinstance(value, dict):
+        return value
+    if value is None or value == "":
+        return {}
+    try:
+        parsed = json.loads(str(value))
+    except (TypeError, ValueError, json.JSONDecodeError):
+        return {}
+    return parsed if isinstance(parsed, dict) else {}
 
 
 def _promotion_conflict_key(row: dict[str, Any]) -> tuple[str, str, int]:

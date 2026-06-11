@@ -446,3 +446,50 @@ def test_fast_microstructure_outputs_target_symbol_missing_reasons():
     assert "missing_orderbook_rollup" in btc["missing_reason"]
     zec = fast.filter(pl.col("symbol") == "ZEC-USDT").to_dicts()[0]
     assert zec["missing_reason"] == "missing_market_bar"
+
+
+def test_fast_microstructure_keeps_core_rollup_fields_without_market_bar():
+    latest = datetime(2026, 6, 6, 9, tzinfo=UTC)
+    spreads = pl.DataFrame(
+        [
+            {
+                "symbol": "BNB-USDT",
+                "minute_ts": latest - timedelta(minutes=minute),
+                "ts": latest - timedelta(minutes=minute),
+                "spread_bps": 2.5,
+                "orderbook_imbalance": 0.25,
+            }
+            for minute in range(15)
+        ]
+    )
+    trades = pl.DataFrame(
+        [
+            {
+                "symbol": "BNB-USDT",
+                "minute_ts": latest - timedelta(minutes=minute),
+                "latest_trade_ts": latest - timedelta(minutes=minute),
+                "trade_count": 3,
+                "size_sum": 6.0,
+                "taker_buy_size_sum": 4.0,
+                "taker_sell_size_sum": 2.0,
+            }
+            for minute in range(15)
+        ]
+    )
+
+    fast = build_fast_microstructure_features(
+        market_bars=pl.DataFrame(),
+        orderbook_spread_1m=spreads,
+        trade_activity_1m=trades,
+        generated_at=latest,
+    )
+
+    bnb = fast.filter(pl.col("symbol") == "BNB-USDT").to_dicts()[0]
+    assert bnb["latest_spread_bps"] == 2.5
+    assert bnb["avg_spread_bps_5m"] == 2.5
+    assert bnb["orderbook_imbalance_1m"] == 0.25
+    assert bnb["orderbook_imbalance_5m"] == 0.25
+    assert bnb["taker_buy_sell_imbalance_5m"] > 0
+    assert bnb["cvd_5m"] > 0
+    assert bnb["spread_bps_change_5m"] == 0.0
+    assert "missing_market_bar" in bnb["missing_reason"]

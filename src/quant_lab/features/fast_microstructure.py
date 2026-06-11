@@ -80,17 +80,19 @@ def build_fast_microstructure_features(
         trade_frame,
         ts_fields=("minute_ts", "latest_trade_ts", "ts"),
     )
-    microstructure_symbols = set(spreads_by_symbol).union(trades_by_symbol).intersection(
-        bars_by_symbol
-    )
     symbols = sorted(
-        set(FAST_MICROSTRUCTURE_TARGET_SYMBOLS).union(microstructure_symbols).union(bars_by_symbol)
+        set(FAST_MICROSTRUCTURE_TARGET_SYMBOLS)
+        .union(bars_by_symbol)
+        .union(spreads_by_symbol)
+        .union(trades_by_symbol)
     )
     rows: list[dict[str, Any]] = []
     for symbol in symbols:
         bars = bars_by_symbol.get(symbol, [])
         latest = bars[-1] if bars else None
-        if latest is None:
+        spread_rows = spreads_by_symbol.get(symbol, [])
+        trade_rows = trades_by_symbol.get(symbol, [])
+        if latest is None and not spread_rows and not trade_rows:
             rows.append(
                 _diagnostic_row(
                     generated=generated,
@@ -100,11 +102,9 @@ def build_fast_microstructure_features(
                 )
             )
             continue
-        spread_rows = spreads_by_symbol.get(symbol, [])
-        trade_rows = trades_by_symbol.get(symbol, [])
         ts = _feature_ts(latest, spread_rows, trade_rows)
-        close = _latest_close(bars, ts) if ts is not None else None
-        if ts is None or close is None:
+        close = _latest_close(bars, ts) if ts is not None and bars else None
+        if ts is None:
             rows.append(
                 _diagnostic_row(
                     generated=generated,
@@ -115,6 +115,8 @@ def build_fast_microstructure_features(
             )
             continue
         missing_reasons: list[str] = []
+        if latest is None:
+            missing_reasons.append("missing_market_bar")
         if not spread_rows:
             missing_reasons.append("missing_orderbook_rollup")
         if not trade_rows:
@@ -294,7 +296,7 @@ def _first_ts(row: dict[str, Any], fields: Iterable[str]) -> datetime | None:
 
 
 def _feature_ts(
-    latest_bar: dict[str, Any],
+    latest_bar: dict[str, Any] | None,
     spread_rows: list[dict[str, Any]],
     trade_rows: list[dict[str, Any]],
 ) -> datetime | None:
@@ -305,7 +307,7 @@ def _feature_ts(
     microstructure_candidates = [value for value in microstructure_candidates if value is not None]
     if microstructure_candidates:
         return max(microstructure_candidates)
-    candidates = [_coerce_dt(latest_bar.get("_ts"))]
+    candidates = [_coerce_dt(latest_bar.get("_ts"))] if latest_bar is not None else []
     candidates = [value for value in candidates if value is not None]
     return max(candidates) if candidates else None
 

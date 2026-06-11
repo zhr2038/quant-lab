@@ -321,11 +321,14 @@ def _avg_spread_bps(lake_root: Path, *, as_of_date: date) -> float | None:
     rollup_spread = _avg_spread_bps_from_rollup(lake_root, as_of_date=as_of_date)
     if rollup_spread is not None:
         return rollup_spread
-    lazy, columns = _safe_lazy_frame(lake_root / "silver" / "orderbook_snapshot")
-    if lazy is None or "symbol" not in columns:
-        return None
     end = datetime.combine(as_of_date + timedelta(days=1), datetime.min.time(), tzinfo=UTC)
     start = end - timedelta(hours=24)
+    lazy, columns = _safe_recent_lazy_frame(
+        lake_root / "silver" / "orderbook_snapshot",
+        since=start,
+    )
+    if lazy is None or "symbol" not in columns:
+        return None
     timestamp_expressions = [
         _lazy_datetime(column) for column in ["ts", "ingest_ts"] if column in columns
     ]
@@ -767,6 +770,72 @@ def _safe_lazy_frame(path: Path) -> tuple[pl.LazyFrame | None, set[str]]:
     except Exception:
         return None, set()
     return lazy, columns
+
+
+def _safe_recent_lazy_frame(path: Path, *, since: datetime) -> tuple[pl.LazyFrame | None, set[str]]:
+    files = _recent_parquet_files(path, since=since)
+    if not files:
+        return None, set()
+    try:
+        try:
+            lazy = pl.scan_parquet(
+                [str(file_path) for file_path in files],
+                hive_partitioning=False,
+                missing_columns="insert",
+                extra_columns="ignore",
+            )
+        except TypeError:
+            lazy = pl.scan_parquet(
+                [str(file_path) for file_path in files],
+                hive_partitioning=False,
+            )
+        columns = set(lazy.collect_schema().names())
+    except Exception:
+        return None, set()
+    return lazy, columns
+
+
+def _recent_parquet_files(path: Path, *, since: datetime) -> list[Path]:
+    if not path.exists() or not path.is_dir():
+        return []
+    indexed_files = _recent_parquet_files_from_index(path, since=since)
+    mtime_files = _recent_parquet_files_by_mtime(path, since=since)
+    if indexed_files is None:
+        return mtime_files
+    merged: dict[str, Path] = {str(file_path): file_path for file_path in indexed_files}
+    for file_path in mtime_files:
+        merged.setdefault(str(file_path), file_path)
+    return sorted(merged.values())
+
+
+def _recent_parquet_files_from_index(path: Path, *, since: datetime) -> list[Path] | None:
+    try:
+        from quant_lab.data.file_index import recent_files_for_dataset
+
+        return recent_files_for_dataset(path, since=since)
+    except Exception:
+        return None
+
+
+def _recent_parquet_files_by_mtime(path: Path, *, since: datetime) -> list[Path]:
+    cutoff = since.timestamp()
+    files: list[Path] = []
+    for candidate in sorted(path.rglob("*.parquet")):
+        if not candidate.is_file() or _is_internal_file(candidate):
+            continue
+        try:
+            if candidate.stat().st_mtime < cutoff:
+                continue
+        except OSError:
+            continue
+        files.append(candidate)
+    return files
+
+
+def _is_internal_file(path: Path) -> bool:
+    if path.name.startswith(".") or path.name.endswith(".tmp.parquet"):
+        return True
+    return any(part.startswith("__") or part.startswith(".") for part in path.parts)
 
 
 def _collect_lazy(lazy: pl.LazyFrame) -> pl.DataFrame:

@@ -9,7 +9,7 @@ from typing import Any
 
 import polars as pl
 
-from quant_lab.data.file_index import build_lake_file_index, old_files_for_dataset
+from quant_lab.data.file_index import old_files_for_dataset
 from quant_lab.data.lake import read_parquet_lazy, upsert_parquet_dataset
 
 HF_DATASETS = {
@@ -96,11 +96,6 @@ def _build_and_write_rollups(
     result: MarketDataCompactionResult,
     since: datetime | None,
 ) -> None:
-    if since is not None:
-        build_lake_file_index(
-            root,
-            [HF_DATASETS["trade_print"], HF_DATASETS["orderbook_snapshot"]],
-        )
     trade_rollup = build_trade_activity_1m_rollup(root, since=since, warnings=result.warnings)
     orderbook_rollup = build_orderbook_spread_1m_rollup(
         root,
@@ -386,10 +381,29 @@ def _recent_parquet_files(
     if not path.exists() or not path.is_dir():
         return []
     indexed_files = _recent_parquet_files_from_index(path, since=since)
+    mtime_files = _recent_parquet_files_by_mtime(path, since=since)
     if indexed_files is not None:
-        return indexed_files
+        # The lake file index can lag behind a hot append stream.  Merge the
+        # indexed set with mtime-recent files so rollups stay fresh without
+        # rebuilding min/max timestamp metadata for every source parquet file.
+        merged: dict[str, Path] = {str(file_path): file_path for file_path in indexed_files}
+        missing_from_index = 0
+        for file_path in mtime_files:
+            key = str(file_path)
+            if key not in merged:
+                missing_from_index += 1
+                merged[key] = file_path
+        if missing_from_index and warnings is not None:
+            warnings.append(
+                f"file_index_stale_merged_recent_mtime_files:{path.as_posix()}:{missing_from_index}"
+            )
+        return sorted(merged.values())
     if warnings is not None:
         warnings.append(f"file_index_missing_fallback_rglob:{path.as_posix()}")
+    return mtime_files
+
+
+def _recent_parquet_files_by_mtime(path: Path, *, since: datetime) -> list[Path]:
     cutoff = since.timestamp()
     files: list[Path] = []
     for candidate in sorted(path.rglob("*.parquet")):

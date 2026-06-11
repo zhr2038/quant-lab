@@ -186,6 +186,46 @@ def test_market_data_rollup_lookback_skips_old_source_files(tmp_path):
     assert trade_row["size_sum"] == 2.0
 
 
+def test_market_data_rollup_merges_unindexed_recent_files_without_rebuilding_index(
+    tmp_path,
+    monkeypatch,
+):
+    lake = tmp_path / "lake"
+    source = lake / "silver/trade_print"
+    source.mkdir(parents=True)
+    indexed_ts = datetime(2026, 5, 31, 8, 0, tzinfo=UTC)
+    new_ts = datetime(2026, 5, 31, 10, 0, tzinfo=UTC)
+    indexed_file = source / "indexed.parquet"
+    new_file = source / "not-yet-indexed.parquet"
+    pl.DataFrame([{"symbol": "BNB-USDT", "ts": indexed_ts, "size": 1.0}]).write_parquet(
+        indexed_file
+    )
+    os.utime(indexed_file, (indexed_ts.timestamp(), indexed_ts.timestamp()))
+    build_lake_file_index(lake, ["silver/trade_print"])
+
+    def fail_full_file_time_scan(_file_path):
+        raise AssertionError("rollup should not rebuild the full source file index")
+
+    monkeypatch.setattr(file_index_module, "_file_time_bounds", fail_full_file_time_scan)
+    pl.DataFrame([{"symbol": "BNB-USDT", "ts": new_ts, "size": 7.0}]).write_parquet(new_file)
+    os.utime(new_file, (new_ts.timestamp(), new_ts.timestamp()))
+
+    result = build_market_data_1m_rollups(
+        lake,
+        dry_run=False,
+        now=new_ts + timedelta(hours=1),
+        lookback_hours=2,
+    )
+
+    assert result.rollup_rows["trade_activity_1m"] == 1
+    trade_row = read_parquet_dataset(lake / "silver/trade_activity_1m").to_dicts()[0]
+    assert trade_row["size_sum"] == 7.0
+    assert any(
+        item.startswith("file_index_stale_merged_recent_mtime_files:")
+        for item in result.warnings
+    )
+
+
 def test_orderbook_spread_rollup_prefers_spread_bps_without_json_udf(tmp_path, monkeypatch):
     lake = tmp_path / "lake"
     ts = datetime(2026, 5, 31, 10, 0, 15, tzinfo=UTC)

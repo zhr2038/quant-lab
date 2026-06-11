@@ -3,11 +3,14 @@ from __future__ import annotations
 import csv
 import io
 import json
+import os
 import zipfile
 from datetime import UTC, datetime, timedelta
 
 import polars as pl
 
+import quant_lab.research.regime_router as regime_router_module
+from quant_lab.data.file_index import build_lake_file_index
 from quant_lab.data.lake import read_parquet_dataset, write_parquet_dataset
 from quant_lab.export.daily import export_daily_pack
 from quant_lab.research.regime_router import build_and_publish_regime_router
@@ -144,6 +147,63 @@ def test_regime_router_uses_orderbook_spread_rollup_for_market_regime(tmp_path):
     regime = read_parquet_dataset(lake / "gold" / "market_regime_daily").to_dicts()[0]
     assert regime["avg_spread_bps"] == 3.0
     assert regime["liquidity_thin"] is False
+
+
+def test_regime_router_raw_orderbook_fallback_uses_recent_files(tmp_path, monkeypatch):
+    lake = tmp_path / "lake"
+    _write_market_bars(
+        lake,
+        {
+            "BTC-USDT": (100.0, 101.0),
+            "ETH-USDT": (100.0, 101.0),
+            "SOL-USDT": (100.0, 101.0),
+            "BNB-USDT": (100.0, 101.0),
+        },
+    )
+    orderbook = lake / "silver" / "orderbook_snapshot"
+    orderbook.mkdir(parents=True)
+    old_ts = datetime(2026, 5, 20, 12, 0, tzinfo=UTC)
+    new_ts = datetime(2026, 5, 22, 12, 0, tzinfo=UTC)
+    old_file = orderbook / "indexed-old.parquet"
+    new_file = orderbook / "recent-not-yet-indexed.parquet"
+    pl.DataFrame(
+        [
+            {
+                "symbol": "BTC-USDT",
+                "channel": "books5",
+                "ts": old_ts,
+                "spread_bps": 99.0,
+            }
+        ]
+    ).write_parquet(old_file)
+    build_lake_file_index(lake, ["silver/orderbook_snapshot"])
+    pl.DataFrame(
+        [
+            {
+                "symbol": "BTC-USDT",
+                "channel": "books5",
+                "ts": new_ts,
+                "spread_bps": 6.0,
+            }
+        ]
+    ).write_parquet(new_file)
+    os_time = new_ts.timestamp()
+    new_file.touch()
+
+    os.utime(new_file, (os_time, os_time))
+    original_safe_lazy_frame = regime_router_module._safe_lazy_frame
+
+    def fail_full_orderbook_scan(path):
+        if str(path).endswith("orderbook_snapshot"):
+            raise AssertionError("regime router should not full-scan orderbook_snapshot")
+        return original_safe_lazy_frame(path)
+
+    monkeypatch.setattr(regime_router_module, "_safe_lazy_frame", fail_full_orderbook_scan)
+
+    build_and_publish_regime_router(lake, as_of_date="2026-05-22")
+
+    regime = read_parquet_dataset(lake / "gold" / "market_regime_daily").to_dicts()[0]
+    assert regime["avg_spread_bps"] == 6.0
 
 
 def test_regime_router_replaces_same_day_partition_without_duplicate_rows(tmp_path):

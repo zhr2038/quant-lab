@@ -80,12 +80,7 @@ def build_fast_microstructure_features(
         trade_frame,
         ts_fields=("minute_ts", "latest_trade_ts", "ts"),
     )
-    symbols = sorted(
-        set(FAST_MICROSTRUCTURE_TARGET_SYMBOLS)
-        .union(bars_by_symbol)
-        .union(spreads_by_symbol)
-        .union(trades_by_symbol)
-    )
+    symbols = list(FAST_MICROSTRUCTURE_TARGET_SYMBOLS)
     rows: list[dict[str, Any]] = []
     for symbol in symbols:
         bars = bars_by_symbol.get(symbol, [])

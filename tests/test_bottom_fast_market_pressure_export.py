@@ -226,7 +226,7 @@ def test_fast_microstructure_uses_latest_rollup_time_when_market_bar_lags():
         generated_at=rollup_ts,
     )
 
-    row = fast.to_dicts()[0]
+    row = fast.filter(pl.col("symbol") == "BNB-USDT").to_dicts()[0]
     assert row["symbol"] == "BNB-USDT"
     assert row["ts_utc"] == "2026-06-06T09:00:00Z"
     assert row["latest_spread_bps"] == 2.0
@@ -279,7 +279,7 @@ def test_fast_microstructure_anchors_to_rollup_when_market_bar_is_newer():
         generated_at=market_ts,
     )
 
-    row = fast.to_dicts()[0]
+    row = fast.filter(pl.col("symbol") == "BNB-USDT").to_dicts()[0]
     assert row["ts_utc"] == "2026-06-06T09:00:00Z"
     assert row["avg_spread_bps_5m"] == 2.0
     assert row["trade_count_5m"] == 24.0
@@ -327,7 +327,7 @@ def test_fast_microstructure_infers_trade_side_from_price_vs_mid():
         generated_at=market_ts,
     )
 
-    row = fast.to_dicts()[0]
+    row = fast.filter(pl.col("symbol") == "BNB-USDT").to_dicts()[0]
     assert row["latest_spread_bps"] == pytest.approx((104.10 - 103.90) / 104.0 * 10000.0)
     assert row["orderbook_imbalance_1m"] == pytest.approx((12.0 - 8.0) / 20.0)
     assert row["side_inferred"] is True
@@ -478,12 +478,21 @@ def test_fast_microstructure_keeps_core_rollup_fields_without_market_bar():
     )
 
     fast = build_fast_microstructure_features(
-        market_bars=pl.DataFrame(),
+        market_bars=pl.DataFrame(
+            [
+                {
+                    "symbol": "RENDER-USDT",
+                    "ts": latest,
+                    "close": 2.0,
+                }
+            ]
+        ),
         orderbook_spread_1m=spreads,
         trade_activity_1m=trades,
         generated_at=latest,
     )
 
+    assert "RENDER-USDT" not in set(fast["symbol"].to_list())
     bnb = fast.filter(pl.col("symbol") == "BNB-USDT").to_dicts()[0]
     assert bnb["latest_spread_bps"] == 2.5
     assert bnb["avg_spread_bps_5m"] == 2.5

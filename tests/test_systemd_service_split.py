@@ -151,6 +151,10 @@ def test_scheduled_compaction_covers_hot_ws_datasets():
     assert "WARN_MARKET_DATA_ROLLUPS_FAILED" in script
     assert "MARKET_ROLLUP_LOOKBACK_HOURS" in script
     assert "MARKET_ROLLUP_TIMEOUT_SECONDS" in script
+    assert "MARKET_ROLLUP_POLARS_MAX_THREADS" in script
+    assert script.index('compact_hot_ws_dataset "silver/orderbook_snapshot"') < script.rindex(
+        "\nbuild_market_data_rollups"
+    )
     assert "--lookback-hours" in script
     assert "repair-lake-partitions" in script
     assert "START_REPAIR_PARTITIONS" in script

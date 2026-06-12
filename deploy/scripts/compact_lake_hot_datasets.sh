@@ -399,8 +399,6 @@ cleanup_internal_compaction_dirs() {
     -print -delete
 }
 
-build_market_data_rollups
-
 if [[ "${COMPACT_RAW_OKX_WS}" == "1" ]]; then
   compact_hot_ws_dataset "bronze/okx_public_ws" 500000 100 64 20
 else
@@ -411,6 +409,8 @@ compact_hot_ws_dataset "silver/trade_print" 500000 100 20 20
 # Order book snapshots are denser than raw websocket and trade-print files.
 # Compact only direct append files by default while the long-running collector is active.
 compact_hot_ws_dataset "silver/orderbook_snapshot" 500000 100 64 10
+
+build_market_data_rollups
 
 for dataset in "${V5_TELEMETRY_DATASETS[@]}"; do
   compact_if_file_count_at_least "${dataset}" 250000 100 10

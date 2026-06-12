@@ -204,8 +204,8 @@ def test_scheduled_compaction_covers_hot_ws_datasets():
     assert "IOSchedulingClass=best-effort" in unit
     assert "IOSchedulingPriority=7" in unit
     assert "CPUQuota=80%" in unit
-    assert "MemoryHigh=2G" in unit
-    assert "MemoryMax=3G" in unit
+    assert "MemoryHigh=3G" in unit
+    assert "MemoryMax=4G" in unit
     assert "--max-source-batch-bytes" in script
     assert "--direct-only" in script
     assert "visible_parquet_files" in script

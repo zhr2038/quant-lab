@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import gc
 import json
 import shutil
 from dataclasses import dataclass, field
@@ -98,11 +99,6 @@ def _build_and_write_rollups(
     since: datetime | None,
 ) -> None:
     trade_rollup = build_trade_activity_1m_rollup(root, since=since, warnings=result.warnings)
-    orderbook_rollup = build_orderbook_spread_1m_rollup(
-        root,
-        since=since,
-        warnings=result.warnings,
-    )
     if not dry_run:
         if not trade_rollup.is_empty():
             upsert_parquet_dataset(
@@ -110,13 +106,22 @@ def _build_and_write_rollups(
                 root / TRADE_ACTIVITY_ROLLUP,
                 key_columns=TRADE_ACTIVITY_ROLLUP_KEYS,
             )
+    result.rollup_rows["trade_activity_1m"] = trade_rollup.height
+    del trade_rollup
+    gc.collect()
+
+    orderbook_rollup = build_orderbook_spread_1m_rollup(
+        root,
+        since=since,
+        warnings=result.warnings,
+    )
+    if not dry_run:
         if not orderbook_rollup.is_empty():
             upsert_parquet_dataset(
                 orderbook_rollup,
                 root / ORDERBOOK_SPREAD_ROLLUP,
                 key_columns=ORDERBOOK_SPREAD_ROLLUP_KEYS,
             )
-    result.rollup_rows["trade_activity_1m"] = trade_rollup.height
     result.rollup_rows["orderbook_spread_1m"] = orderbook_rollup.height
 
 
@@ -200,7 +205,7 @@ def build_trade_activity_1m_rollup(
             ]
         )
         .sort(["symbol", "minute_ts"])
-        .collect()
+        .pipe(_collect_rollup)
     )
 
 
@@ -282,9 +287,19 @@ def build_orderbook_spread_1m_rollup(
             ]
         )
         .sort(["symbol", "channel", "minute_ts"])
-        .collect()
+        .pipe(_collect_rollup)
     )
     return frame
+
+
+def _collect_rollup(lazy: pl.LazyFrame) -> pl.DataFrame:
+    try:
+        return lazy.collect(engine="streaming")
+    except TypeError:
+        try:
+            return lazy.collect(streaming=True)
+        except TypeError:
+            return lazy.collect()
 
 
 def _first_existing(schema: set[str], names: tuple[str, ...]) -> str | None:

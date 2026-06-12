@@ -257,7 +257,7 @@ def test_orderbook_spread_rollup_prefers_spread_bps_without_json_udf(tmp_path, m
     assert spreads["orderbook_imbalance"][0] == 0.5
 
 
-def test_orderbook_spread_rollup_warns_on_legacy_json_udf_fallback(tmp_path):
+def test_orderbook_spread_rollup_uses_vectorized_json_fast_path(tmp_path, monkeypatch):
     lake = tmp_path / "lake"
     ts = datetime(2026, 5, 31, 10, 0, 15, tzinfo=UTC)
     write_parquet_dataset(
@@ -276,10 +276,18 @@ def test_orderbook_spread_rollup_warns_on_legacy_json_udf_fallback(tmp_path):
     )
     warnings: list[str] = []
 
+    def fail_json_udf(_row):
+        raise AssertionError("orderbook JSON rollup should use the vectorized fast path")
+
+    monkeypatch.setattr(compact_market_data_module, "_spread_bps", fail_json_udf)
+    monkeypatch.setattr(compact_market_data_module, "_book_imbalance", fail_json_udf)
+
     spreads = build_orderbook_spread_1m_rollup(lake, warnings=warnings)
 
     assert spreads.height == 1
-    assert "orderbook_rollup_python_udf_fallback" in warnings
+    assert spreads["spread_bps"][0] > 0
+    assert spreads["orderbook_imbalance"][0] == 0.0
+    assert "orderbook_rollup_python_udf_fallback" not in warnings
 
 
 def test_recent_file_selection_uses_index_max_ts_not_mtime(tmp_path):

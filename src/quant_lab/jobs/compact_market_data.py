@@ -21,6 +21,7 @@ ORDERBOOK_SPREAD_ROLLUP = Path("silver") / "orderbook_spread_1m"
 TRADE_ACTIVITY_ROLLUP = Path("silver") / "trade_activity_1m"
 ORDERBOOK_SPREAD_ROLLUP_KEYS = ["symbol", "channel", "minute_ts"]
 TRADE_ACTIVITY_ROLLUP_KEYS = ["symbol", "minute_ts"]
+TOP_BOOK_LEVEL_RE = r'^\s*\[\s*\[\s*"?([^",\]\s]+)"?\s*,\s*"?([^",\]\s]+)"?'
 
 
 @dataclass
@@ -239,8 +240,6 @@ def build_orderbook_spread_1m_rollup(
         ]
         spread_expr = pl.col("spread_bps").cast(pl.Float64, strict=False).alias("spread_bps")
     elif {"asks_json", "bids_json"}.issubset(schema):
-        if warnings is not None:
-            warnings.append("orderbook_rollup_python_udf_fallback")
         selected_columns = [
             "symbol",
             "ts",
@@ -251,11 +250,7 @@ def build_orderbook_spread_1m_rollup(
             *([ask_size_field] if ask_size_field is not None else []),
             *(["channel"] if "channel" in schema else []),
         ]
-        spread_expr = (
-            pl.struct(["asks_json", "bids_json"])
-            .map_elements(_spread_bps, return_dtype=pl.Float64)
-            .alias("spread_bps")
-        )
+        spread_expr = _spread_bps_expr("asks_json", "bids_json")
     else:
         return pl.DataFrame()
     imbalance_expr = _orderbook_imbalance_expr(
@@ -319,11 +314,7 @@ def _orderbook_imbalance_expr(
             .alias("orderbook_imbalance")
         )
     if allow_json_fallback and {"asks_json", "bids_json"}.issubset(schema):
-        return (
-            pl.struct(["asks_json", "bids_json"])
-            .map_elements(_book_imbalance, return_dtype=pl.Float64)
-            .alias("orderbook_imbalance")
-        )
+        return _book_imbalance_json_expr("asks_json", "bids_json")
     return pl.lit(None).cast(pl.Float64).alias("orderbook_imbalance")
 
 
@@ -347,6 +338,44 @@ def _timestamp_expr(column: str) -> pl.Expr:
             .cast(pl.Utf8, strict=False)
             .str.to_datetime(time_zone="UTC", strict=False),
         ]
+    )
+
+
+def _spread_bps_expr(asks_column: str, bids_column: str) -> pl.Expr:
+    ask = _top_book_number_expr(asks_column, 1)
+    bid = _top_book_number_expr(bids_column, 1)
+    mid = (ask + bid) / 2.0
+    return (
+        pl.when((ask.is_not_null()) & (bid.is_not_null()) & (ask > bid) & (mid > 0))
+        .then(((ask - bid) / mid) * 10_000.0)
+        .otherwise(None)
+        .alias("spread_bps")
+    )
+
+
+def _book_imbalance_json_expr(asks_column: str, bids_column: str) -> pl.Expr:
+    ask_size = _top_book_number_expr(asks_column, 2)
+    bid_size = _top_book_number_expr(bids_column, 2)
+    total = ask_size + bid_size
+    return (
+        pl.when(
+            (ask_size.is_not_null())
+            & (bid_size.is_not_null())
+            & (total.is_not_null())
+            & (total > 0)
+        )
+        .then((bid_size - ask_size) / total)
+        .otherwise(None)
+        .alias("orderbook_imbalance")
+    )
+
+
+def _top_book_number_expr(column: str, group_index: int) -> pl.Expr:
+    return (
+        pl.col(column)
+        .cast(pl.Utf8, strict=False)
+        .str.extract(TOP_BOOK_LEVEL_RE, group_index)
+        .cast(pl.Float64, strict=False)
     )
 
 

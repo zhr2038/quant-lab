@@ -226,6 +226,40 @@ def test_market_data_rollup_merges_unindexed_recent_files_without_rebuilding_ind
     )
 
 
+def test_market_data_rollup_drops_deleted_index_paths_after_direct_compaction(tmp_path):
+    lake = tmp_path / "lake"
+    source = lake / "silver/trade_print"
+    source.mkdir(parents=True)
+    old_ts = datetime(2026, 5, 31, 9, 0, tzinfo=UTC)
+    new_ts = datetime(2026, 5, 31, 10, 0, tzinfo=UTC)
+    old_file = source / "batch-old.parquet"
+    compact_file = source / "compact-new.parquet"
+    pl.DataFrame([{"symbol": "BNB-USDT", "ts": old_ts, "size": 1.0}]).write_parquet(
+        old_file
+    )
+    build_lake_file_index(lake, ["silver/trade_print"])
+    old_file.unlink()
+    pl.DataFrame([{"symbol": "BNB-USDT", "ts": new_ts, "size": 7.0}]).write_parquet(
+        compact_file
+    )
+    os.utime(compact_file, (new_ts.timestamp(), new_ts.timestamp()))
+
+    result = build_market_data_1m_rollups(
+        lake,
+        dry_run=False,
+        now=new_ts + timedelta(hours=1),
+        lookback_hours=2,
+    )
+
+    assert result.rollup_rows["trade_activity_1m"] == 1
+    trade_row = read_parquet_dataset(lake / "silver/trade_activity_1m").to_dicts()[0]
+    assert trade_row["size_sum"] == 7.0
+    assert any(
+        item.startswith("file_index_stale_dropped_missing_files:")
+        for item in result.warnings
+    )
+
+
 def test_orderbook_spread_rollup_prefers_spread_bps_without_json_udf(tmp_path, monkeypatch):
     lake = tmp_path / "lake"
     ts = datetime(2026, 5, 31, 10, 0, 15, tzinfo=UTC)

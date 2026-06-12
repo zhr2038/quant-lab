@@ -415,7 +415,17 @@ def _recent_parquet_files(
         # The lake file index can lag behind a hot append stream.  Merge the
         # indexed set with mtime-recent files so rollups stay fresh without
         # rebuilding min/max timestamp metadata for every source parquet file.
-        merged: dict[str, Path] = {str(file_path): file_path for file_path in indexed_files}
+        merged: dict[str, Path] = {}
+        missing_from_disk = 0
+        for file_path in indexed_files:
+            if file_path.is_file() and not _is_internal_file(file_path):
+                merged[str(file_path)] = file_path
+            else:
+                missing_from_disk += 1
+        if missing_from_disk and warnings is not None:
+            warnings.append(
+                f"file_index_stale_dropped_missing_files:{path.as_posix()}:{missing_from_disk}"
+            )
         missing_from_index = 0
         for file_path in mtime_files:
             key = str(file_path)

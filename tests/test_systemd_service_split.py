@@ -194,12 +194,16 @@ def test_scheduled_compaction_covers_hot_ws_datasets():
     assert "COMPACT_CONSOLIDATE_EXISTING_COMPACT_OUTPUTS=0" in unit
     assert "MARKET_ROLLUP_LOOKBACK_HOURS=24" in unit
     assert "MARKET_ROLLUP_TIMEOUT_SECONDS=600" in unit
+    assert "MARKET_ROLLUP_POLARS_MAX_THREADS=2" in unit
     assert "COMPACT_SMALL_FILE_MAINTENANCE=1" in unit
     assert "COMPACT_SMALL_FILE_MAINTENANCE_TIMEOUT_SECONDS=300" in unit
     assert "COMPACT_SMALL_FILE_MAINTENANCE_MAX_GROUPS=5" in unit
     assert "COMPACT_SMALL_FILE_MAINTENANCE_MAX_SOURCE_FILES_PER_GROUP=64" in unit
     assert "COMPACT_SMALL_FILE_MAINTENANCE_TARGET_ROWS=2000000" in unit
-    assert "CPUQuota=40%" in unit
+    assert "Nice=10" in unit
+    assert "IOSchedulingClass=best-effort" in unit
+    assert "IOSchedulingPriority=7" in unit
+    assert "CPUQuota=80%" in unit
     assert "MemoryHigh=2G" in unit
     assert "MemoryMax=3G" in unit
     assert "--max-source-batch-bytes" in script

@@ -139,6 +139,7 @@ def build_factor_factory_v2_reports(
     candidates: pl.DataFrame,
     evidence: pl.DataFrame,
     correlations: pl.DataFrame,
+    factor_forward_validation: pl.DataFrame | None = None,
 ) -> dict[str, pl.DataFrame]:
     dedupe = build_factor_dedupe_decision(candidates=candidates, correlations=correlations)
     leaderboard = build_factor_family_leaderboard(candidates=candidates, dedupe=dedupe)
@@ -149,7 +150,10 @@ def build_factor_factory_v2_reports(
     )
     composite = build_composite_factor_candidates(candidates=candidates)
     regime = build_factor_regime_effectiveness(candidates=candidates, evidence=evidence)
-    bridge = build_factor_strategy_bridge_candidates(paper_queue=paper_queue)
+    bridge = build_factor_strategy_bridge_candidates(
+        paper_queue=paper_queue,
+        factor_forward_validation=factor_forward_validation,
+    )
     return {
         "factor_dedupe_decision": dedupe,
         "factor_family_leaderboard": leaderboard,
@@ -431,7 +435,12 @@ def build_factor_regime_effectiveness(
     return _frame(out, FACTOR_REGIME_EFFECTIVENESS_FIELDS)
 
 
-def build_factor_strategy_bridge_candidates(*, paper_queue: pl.DataFrame) -> pl.DataFrame:
+def build_factor_strategy_bridge_candidates(
+    *,
+    paper_queue: pl.DataFrame,
+    factor_forward_validation: pl.DataFrame | None = None,
+) -> pl.DataFrame:
+    forward_pass_by_factor = _forward_validation_pass_by_factor(factor_forward_validation)
     out = []
     for row in _rows(paper_queue):
         reasons = []
@@ -445,8 +454,10 @@ def build_factor_strategy_bridge_candidates(*, paper_queue: pl.DataFrame) -> pl.
             reasons.append("cost_adjusted_long_short_not_positive")
         if (_int(row.get("sample_count")) or 0) < 100:
             reasons.append("sample_count_insufficient")
-        eligible = not reasons
         factor_id = str(row.get("factor_id") or "")
+        if not forward_pass_by_factor.get(factor_id, False):
+            reasons.append("forward_validation_not_passed")
+        eligible = not reasons
         out.append(
             {
                 "as_of_date": row.get("as_of_date"),
@@ -465,6 +476,21 @@ def build_factor_strategy_bridge_candidates(*, paper_queue: pl.DataFrame) -> pl.
             }
         )
     return _frame(out, FACTOR_STRATEGY_BRIDGE_CANDIDATE_FIELDS)
+
+
+def _forward_validation_pass_by_factor(frame: pl.DataFrame | None) -> dict[str, bool]:
+    out: dict[str, bool] = {}
+    for row in _rows(frame):
+        factor_id = str(row.get("factor_id") or "")
+        if not factor_id:
+            continue
+        passed = (
+            str(row.get("recommendation") or "") == "FORWARD_VALIDATION_PASS"
+            and (_float(row.get("regime_stability")) or 0.0) > 0
+            and (_float(row.get("cost_adjusted_score")) or 0.0) > 0
+        )
+        out[factor_id] = out.get(factor_id, False) or passed
+    return out
 
 
 def _candidate_rank_key(row: dict[str, Any]) -> tuple[int, float, float, float, str]:

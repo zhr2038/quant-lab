@@ -7,6 +7,7 @@ from typing import Any
 
 import polars as pl
 
+from quant_lab.backtest.cost_model import conservative_cost_for_symbol
 from quant_lab.symbols import normalize_symbol
 
 FAST_MICROSTRUCTURE_SCHEMA_VERSION = "fast_microstructure_features.v0.1"
@@ -58,6 +59,37 @@ FAST_MICROSTRUCTURE_FIELDS = [
     "pressure_bias",
     "missing_reason",
     "response_action",
+    "live_order_effect",
+]
+FAST_MICROSTRUCTURE_FORWARD_FEATURES = (
+    "orderbook_imbalance_1m",
+    "orderbook_imbalance_5m",
+    "taker_buy_sell_imbalance_5m",
+    "cvd_5m",
+    "cvd_divergence",
+    "spread_bps_change_5m",
+)
+FAST_MICROSTRUCTURE_FORWARD_HORIZONS = (1, 4, 8)
+FAST_MICROSTRUCTURE_FORWARD_REGIMES = (
+    "RISK_OFF",
+    "SIDEWAYS",
+    "RISK_ON_CONFIRMED",
+    "TREND_UP",
+)
+FAST_MICROSTRUCTURE_FORWARD_TEST_FIELDS = [
+    "generated_at",
+    "feature_name",
+    "symbol",
+    "regime",
+    "horizon_hours",
+    "sample_count",
+    "rank_ic",
+    "long_short_bps",
+    "p25_net_bps",
+    "hit_rate",
+    "recent_7d_score",
+    "recommendation",
+    "data_leakage_check",
     "live_order_effect",
 ]
 
@@ -229,6 +261,125 @@ def build_fast_microstructure_features(
     if not rows:
         return _empty_frame()
     return pl.DataFrame(rows, infer_schema_length=None).select(FAST_MICROSTRUCTURE_FIELDS)
+
+
+def build_fast_microstructure_forward_test(
+    *,
+    market_bars: pl.DataFrame,
+    orderbook_spread_1m: pl.DataFrame | None = None,
+    trade_activity_1m: pl.DataFrame | None = None,
+    market_regime: pl.DataFrame | None = None,
+    cost_bucket_daily: pl.DataFrame | None = None,
+    generated_at: datetime | None = None,
+) -> pl.DataFrame:
+    """Validate fast microstructure diagnostics against future net returns.
+
+    The returned frame is read-only research evidence. Future prices are used only
+    after each feature timestamp to build labels.
+    """
+
+    generated = (generated_at or datetime.now(UTC)).astimezone(UTC)
+    bars_by_symbol = _rows_by_symbol(market_bars, ts_fields=("ts", "minute_ts"))
+    spreads_by_symbol = _rows_by_symbol(
+        orderbook_spread_1m if orderbook_spread_1m is not None else pl.DataFrame(),
+        ts_fields=("minute_ts", "ts"),
+    )
+    trades_by_symbol = _rows_by_symbol(
+        trade_activity_1m if trade_activity_1m is not None else pl.DataFrame(),
+        ts_fields=("minute_ts", "latest_trade_ts", "ts"),
+    )
+    regime_rows = _regime_rows(market_regime)
+    samples: dict[tuple[str, str, str, int], list[dict[str, Any]]] = {}
+
+    for symbol in FAST_MICROSTRUCTURE_TARGET_SYMBOLS:
+        bars = bars_by_symbol.get(symbol, [])
+        if not bars:
+            continue
+        cost = conservative_cost_for_symbol(cost_bucket_daily, symbol=symbol)
+        spread_rows = spreads_by_symbol.get(symbol, [])
+        trade_rows = trades_by_symbol.get(symbol, [])
+        for bar in bars[-500:]:
+            ts = _coerce_dt(bar.get("_ts"))
+            close = _float(bar.get("close"))
+            if ts is None or close is None or close <= 0:
+                continue
+            feature_values = _microstructure_feature_values_at(
+                bars=bars,
+                spread_rows=spread_rows,
+                trade_rows=trade_rows,
+                ts=ts,
+            )
+            if not any(value is not None for value in feature_values.values()):
+                continue
+            regime = (
+                _canonical_forward_regime(
+                    _first_text(
+                        bar,
+                        (
+                            "regime",
+                            "regime_state",
+                            "market_regime",
+                            "current_regime",
+                            "risk_level",
+                        ),
+                    )
+                )
+                or _regime_for_ts(regime_rows, ts)
+                or _derived_regime(bars, ts)
+            )
+            for horizon in FAST_MICROSTRUCTURE_FORWARD_HORIZONS:
+                future_net = _future_net_bps(
+                    bars=bars,
+                    ts=ts,
+                    entry_px=close,
+                    horizon_hours=horizon,
+                    cost_bps=cost.cost_bps,
+                )
+                if future_net is None:
+                    continue
+                for feature_name, value in feature_values.items():
+                    if value is None:
+                        continue
+                    samples.setdefault((feature_name, symbol, regime, horizon), []).append(
+                        {"ts": ts, "value": value, "future_net_bps": future_net}
+                    )
+
+    out = [
+        _forward_summary_row(generated, key, values)
+        for key, values in sorted(samples.items())
+    ]
+    if not out:
+        return pl.DataFrame(
+            schema={field: pl.Utf8 for field in FAST_MICROSTRUCTURE_FORWARD_TEST_FIELDS}
+        )
+    return pl.DataFrame(out, infer_schema_length=None).select(
+        FAST_MICROSTRUCTURE_FORWARD_TEST_FIELDS
+    )
+
+
+def fast_microstructure_forward_summary_md(frame: pl.DataFrame) -> str:
+    rows = frame.to_dicts() if frame is not None and not frame.is_empty() else []
+    passed = [
+        row for row in rows if str(row.get("recommendation") or "") == "FORWARD_VALIDATION_PASS"
+    ]
+    lines = [
+        "# Fast Microstructure Forward Test",
+        "",
+        "Read-only validation of fast microstructure diagnostics against future net returns.",
+        "Future prices are used only after each feature timestamp for label construction.",
+        "",
+        f"- rows: {len(rows)}",
+        f"- pass_rows: {len(passed)}",
+        "- live_order_effect: read_only_no_live_order",
+    ]
+    for row in passed[:12]:
+        lines.append(
+            "- "
+            f"{row.get('feature_name')} {row.get('symbol')} {row.get('regime')} "
+            f"h={row.get('horizon_hours')} rank_ic={row.get('rank_ic')} "
+            f"long_short_bps={row.get('long_short_bps')}"
+        )
+    return "\n".join(lines) + "\n"
 
 
 def _empty_frame() -> pl.DataFrame:
@@ -702,3 +853,261 @@ def _pressure_bias(
     if bearish_votes > bullish_votes:
         return "sell_pressure"
     return "neutral"
+
+
+def _microstructure_feature_values_at(
+    *,
+    bars: list[dict[str, Any]],
+    spread_rows: list[dict[str, Any]],
+    trade_rows: list[dict[str, Any]],
+    ts: datetime,
+) -> dict[str, float | None]:
+    latest_spread = _latest_spread_bps(spread_rows, ts)
+    spread_5m_prior = _spread_at_or_before(spread_rows, ts - timedelta(minutes=5))
+    spread_bps_change_5m = None
+    if latest_spread is not None and spread_5m_prior is not None:
+        spread_bps_change_5m = latest_spread - spread_5m_prior
+    taker_buy_5m, taker_sell_5m, _side_inferred = _buy_sell_sums(
+        trade_rows,
+        spread_rows,
+        ts,
+        minutes=5,
+    )
+    cvd_5m = None
+    taker_imbalance_5m = None
+    if taker_buy_5m is not None and taker_sell_5m is not None:
+        cvd_5m = taker_buy_5m - taker_sell_5m
+        total = taker_buy_5m + taker_sell_5m
+        if total > 0:
+            taker_imbalance_5m = cvd_5m / total
+    return_1h = _return_bps(bars, ts, hours=1)
+    return {
+        "orderbook_imbalance_1m": _latest_orderbook_imbalance(spread_rows, ts),
+        "orderbook_imbalance_5m": _avg_orderbook_imbalance(spread_rows, ts, minutes=5),
+        "taker_buy_sell_imbalance_5m": taker_imbalance_5m,
+        "cvd_5m": cvd_5m,
+        "cvd_divergence": _cvd_divergence(return_1h, taker_imbalance_5m),
+        "spread_bps_change_5m": spread_bps_change_5m,
+    }
+
+
+def _future_net_bps(
+    *,
+    bars: list[dict[str, Any]],
+    ts: datetime,
+    entry_px: float,
+    horizon_hours: int,
+    cost_bps: float,
+) -> float | None:
+    future_px = _close_at_or_after(bars, ts + timedelta(hours=horizon_hours))
+    if future_px is None or future_px <= 0 or entry_px <= 0:
+        return None
+    return (future_px / entry_px - 1.0) * 10000.0 - cost_bps
+
+
+def _close_at_or_after(rows: list[dict[str, Any]], ts: datetime) -> float | None:
+    for row in rows:
+        row_ts = _coerce_dt(row.get("_ts"))
+        value = _float(row.get("close"))
+        if row_ts is not None and row_ts >= ts and value is not None:
+            return value
+    return None
+
+
+def _regime_rows(frame: pl.DataFrame | None) -> list[dict[str, Any]]:
+    if frame is None or frame.is_empty():
+        return []
+    out: list[dict[str, Any]] = []
+    for raw in frame.to_dicts():
+        ts = _first_ts(raw, ("as_of_ts", "created_at", "ts", "date", "as_of_date"))
+        if ts is None:
+            continue
+        regime = _canonical_forward_regime(
+            _first_text(raw, ("current_regime", "regime_state", "market_regime", "state"))
+        )
+        if regime is None:
+            continue
+        item = dict(raw)
+        item["_ts"] = ts
+        item["_regime"] = regime
+        out.append(item)
+    out.sort(key=lambda row: row["_ts"])
+    return out
+
+
+def _regime_for_ts(regime_rows: list[dict[str, Any]], ts: datetime) -> str | None:
+    candidates = [row for row in regime_rows if row["_ts"] <= ts]
+    if not candidates:
+        return None
+    return str(candidates[-1].get("_regime") or "") or None
+
+
+def _derived_regime(bars: list[dict[str, Any]], ts: datetime) -> str:
+    ret_4h = _return_bps(bars, ts, hours=4)
+    if ret_4h is None:
+        return "SIDEWAYS"
+    if ret_4h <= -80:
+        return "RISK_OFF"
+    if ret_4h >= 120:
+        return "RISK_ON_CONFIRMED"
+    if ret_4h >= 50:
+        return "TREND_UP"
+    return "SIDEWAYS"
+
+
+def _canonical_forward_regime(value: Any) -> str | None:
+    text = str(value or "").strip().upper()
+    if not text or text in {"UNKNOWN", "NONE", "NAN"}:
+        return None
+    if "RISK_ON_CONFIRMED" in text:
+        return "RISK_ON_CONFIRMED"
+    if "RISK_ON" in text or "IMPULSE" in text:
+        return "RISK_ON_CONFIRMED"
+    if "RISK_OFF" in text or "DOWN" in text:
+        return "RISK_OFF"
+    if "UP" in text or text in {"TREND", "TRENDING"}:
+        return "TREND_UP"
+    if "SIDE" in text or "CHOP" in text or "PROTECT" in text or "LOW_VOL" in text:
+        return "SIDEWAYS"
+    if text in FAST_MICROSTRUCTURE_FORWARD_REGIMES:
+        return text
+    return "SIDEWAYS"
+
+
+def _first_text(row: dict[str, Any], fields: Iterable[str]) -> str | None:
+    for field in fields:
+        value = row.get(field)
+        if value not in (None, "", "not_observable", "unknown", "UNKNOWN", "nan"):
+            return str(value)
+    return None
+
+
+def _forward_summary_row(
+    generated: datetime,
+    key: tuple[str, str, str, int],
+    samples: list[dict[str, Any]],
+) -> dict[str, Any]:
+    feature_name, symbol, regime, horizon = key
+    values = [_float(sample.get("value")) for sample in samples]
+    labels = [_float(sample.get("future_net_bps")) for sample in samples]
+    pairs = [
+        (sample["ts"], value, label)
+        for sample, value, label in zip(samples, values, labels, strict=False)
+        if value is not None and label is not None
+    ]
+    labels_only = [label for _ts, _value, label in pairs]
+    long_short, p25, hit_rate = _top_bottom_stats(pairs)
+    rank_ic = _rank_ic([value for _ts, value, _label in pairs], labels_only)
+    recent_score = _recent_score(pairs)
+    recommendation = _forward_recommendation(
+        sample_count=len(pairs),
+        rank_ic=rank_ic,
+        long_short_bps=long_short,
+        p25_net_bps=p25,
+        hit_rate=hit_rate,
+    )
+    return {
+        "generated_at": generated.isoformat().replace("+00:00", "Z"),
+        "feature_name": feature_name,
+        "symbol": symbol,
+        "regime": regime,
+        "horizon_hours": horizon,
+        "sample_count": len(pairs),
+        "rank_ic": _round(rank_ic),
+        "long_short_bps": _round(long_short),
+        "p25_net_bps": _round(p25),
+        "hit_rate": _round(hit_rate),
+        "recent_7d_score": _round(recent_score),
+        "recommendation": recommendation,
+        "data_leakage_check": "pass_future_prices_used_only_for_labels",
+        "live_order_effect": "read_only_no_live_order",
+    }
+
+
+def _top_bottom_stats(
+    pairs: list[tuple[datetime, float, float]],
+    *,
+    quantile: float = 0.2,
+) -> tuple[float | None, float | None, float | None]:
+    if not pairs:
+        return None, None, None
+    ordered = sorted(pairs, key=lambda item: item[1])
+    bucket_size = max(1, int(len(ordered) * quantile))
+    bottom = [label for _ts, _value, label in ordered[:bucket_size]]
+    top = [label for _ts, _value, label in ordered[-bucket_size:]]
+    long_short = _mean(top) - _mean(bottom) if top and bottom else None
+    p25 = _percentile(top, 0.25) if top else None
+    hit_rate = sum(1 for value in top if value > 0) / len(top) if top else None
+    return long_short, p25, hit_rate
+
+
+def _rank_ic(values: list[float], labels: list[float]) -> float | None:
+    if len(values) < 3 or len(values) != len(labels):
+        return None
+    return _pearson(_ranks(values), _ranks(labels))
+
+
+def _ranks(values: list[float]) -> list[float]:
+    ordered = sorted(enumerate(values), key=lambda item: item[1])
+    ranks = [0.0] * len(values)
+    for rank, (index, _value) in enumerate(ordered, start=1):
+        ranks[index] = float(rank)
+    return ranks
+
+
+def _pearson(left: list[float], right: list[float]) -> float | None:
+    if len(left) < 3 or len(left) != len(right):
+        return None
+    left_mean = _mean(left)
+    right_mean = _mean(right)
+    numerator = sum((a - left_mean) * (b - right_mean) for a, b in zip(left, right, strict=False))
+    left_var = sum((a - left_mean) ** 2 for a in left)
+    right_var = sum((b - right_mean) ** 2 for b in right)
+    denominator = (left_var * right_var) ** 0.5
+    if denominator <= 0:
+        return None
+    return numerator / denominator
+
+
+def _recent_score(pairs: list[tuple[datetime, float, float]]) -> float | None:
+    if not pairs:
+        return None
+    latest = max(ts for ts, _value, _label in pairs)
+    recent = [label for ts, _value, label in pairs if ts >= latest - timedelta(days=7)]
+    return _mean(recent) if recent else None
+
+
+def _forward_recommendation(
+    *,
+    sample_count: int,
+    rank_ic: float | None,
+    long_short_bps: float | None,
+    p25_net_bps: float | None,
+    hit_rate: float | None,
+) -> str:
+    if sample_count < 20:
+        return "NEEDS_MORE_FORWARD_SAMPLES"
+    if (
+        (rank_ic or 0.0) > 0.02
+        and (long_short_bps or 0.0) > 0
+        and (p25_net_bps is not None and p25_net_bps > -50)
+        and (hit_rate or 0.0) > 0.50
+    ):
+        return "FORWARD_VALIDATION_PASS"
+    return "FORWARD_VALIDATION_WEAK_OR_MIXED"
+
+
+def _mean(values: list[float]) -> float:
+    return sum(values) / len(values) if values else 0.0
+
+
+def _percentile(values: list[float], q: float) -> float | None:
+    if not values:
+        return None
+    ordered = sorted(values)
+    index = min(max(int(round((len(ordered) - 1) * q)), 0), len(ordered) - 1)
+    return ordered[index]
+
+
+def _round(value: float | None) -> float | None:
+    return round(value, 6) if value is not None else None

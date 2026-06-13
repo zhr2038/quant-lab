@@ -1,23 +1,26 @@
 from __future__ import annotations
 
 import json
+from collections import defaultdict
 from dataclasses import dataclass
+from datetime import timedelta
 from typing import Any
 
 import polars as pl
 
 from quant_lab.backtest.cost_model import conservative_cost_for_symbol
 from quant_lab.backtest.datasets import (
-    HORIZONS,
     boolish,
     coerce_dt,
     entry_price_from_row,
+    first_float,
     first_value,
     float_or_none,
     future_net_bps_from_market,
     iso_utc,
     market_rows_by_symbol,
     normalize_strategy_symbol,
+    price_at_or_after,
     rows,
 )
 from quant_lab.backtest.engine import BacktestEngine
@@ -108,6 +111,27 @@ BACKTEST_REGIME_BREAKDOWN_FIELDS = [
     "live_order_effect",
 ]
 
+FACTOR_FORWARD_VALIDATION_FIELDS = [
+    "as_of_date",
+    "factor_id",
+    "factor_family",
+    "candidate_state",
+    "symbol",
+    "regime",
+    "horizon_hours",
+    "sample_count",
+    "rank_ic",
+    "long_short_bps",
+    "p25_net_bps",
+    "hit_rate",
+    "recent_7d_score",
+    "regime_stability",
+    "cost_adjusted_score",
+    "recommendation",
+    "data_leakage_check",
+    "live_order_effect",
+]
+
 BACKTEST_CSV_SCHEMAS = {
     "reports/backtest_label_summary.csv": BACKTEST_LABEL_SUMMARY_FIELDS,
     "reports/v5_decision_replay_trades.csv": V5_DECISION_REPLAY_TRADES_FIELDS,
@@ -116,6 +140,7 @@ BACKTEST_CSV_SCHEMAS = {
     "reports/bottom_zone_backtest.csv": BOTTOM_ZONE_BACKTEST_FIELDS,
     "reports/research_promotion_decision.csv": RESEARCH_PROMOTION_DECISION_FIELDS,
     "reports/backtest_vs_paper_consistency.csv": BACKTEST_VS_PAPER_CONSISTENCY_FIELDS,
+    "reports/factor_forward_validation.csv": FACTOR_FORWARD_VALIDATION_FIELDS,
 }
 
 
@@ -190,6 +215,116 @@ def build_backtest_regime_breakdown(label_summary: pl.DataFrame) -> pl.DataFrame
     return frame_with_schema(out, BACKTEST_REGIME_BREAKDOWN_FIELDS)
 
 
+def build_factor_forward_validation(
+    *,
+    factor_candidates: pl.DataFrame | None,
+    factor_values: pl.DataFrame | None,
+    market_bars: pl.DataFrame | None,
+    market_regime: pl.DataFrame | None = None,
+    cost_bucket_daily: pl.DataFrame | None = None,
+    horizon_hours: tuple[int, ...] = (1, 4, 8),
+) -> pl.DataFrame:
+    candidate_rows = [
+        row
+        for row in rows(factor_candidates)
+        if str(row.get("candidate_state") or "") in {"PAPER_READY", "KEEP_SHADOW"}
+        and str(row.get("factor_id") or "").strip()
+    ]
+    candidate_by_factor = {str(row.get("factor_id")): row for row in candidate_rows}
+    if not candidate_by_factor:
+        return frame_with_schema([], FACTOR_FORWARD_VALIDATION_FIELDS)
+
+    bars_by_symbol = market_rows_by_symbol(market_bars)
+    regime_rows = _forward_regime_rows(market_regime)
+    samples: dict[tuple[str, str, str, int], list[dict[str, Any]]] = {}
+    for value_row in rows(factor_values):
+        factor_id = str(value_row.get("factor_id") or "")
+        candidate = candidate_by_factor.get(factor_id)
+        if candidate is None:
+            continue
+        if "is_valid" in value_row and not boolish(value_row.get("is_valid")):
+            continue
+        symbol = normalize_strategy_symbol(value_row.get("symbol"))
+        ts = coerce_dt(first_value(value_row, ("ts", "feature_ts", "created_at")))
+        factor_value = first_float(
+            value_row,
+            ("value", "normalized_value", "rank_value", "raw_value"),
+        )
+        if symbol == "UNKNOWN" or ts is None or factor_value is None:
+            continue
+        entry_px = price_at_or_after(bars_by_symbol, symbol, ts)
+        if entry_px is None or entry_px <= 0:
+            continue
+        cost = conservative_cost_for_symbol(cost_bucket_daily, symbol=symbol)
+        regime = (
+            _canonical_forward_regime(
+                first_value(
+                    value_row,
+                    ("regime", "regime_state", "market_regime", "current_regime"),
+                )
+            )
+            or _forward_regime_for_ts(regime_rows, ts)
+            or _derived_market_regime(bars_by_symbol.get(symbol, []), ts)
+        )
+        for horizon in sorted({int(item) for item in horizon_hours if int(item) > 0}):
+            future_net = future_net_bps_from_market(
+                bars_by_symbol=bars_by_symbol,
+                symbol=symbol,
+                ts=ts,
+                entry_px=entry_px,
+                horizon_hours=horizon,
+                cost_bps=cost.cost_bps,
+            )
+            if future_net is None:
+                continue
+            samples.setdefault((factor_id, symbol, regime, horizon), []).append(
+                {"ts": ts, "value": factor_value, "future_net_bps": future_net}
+            )
+
+    out: list[dict[str, Any]] = []
+    for key, sample_rows in sorted(samples.items()):
+        factor_id, symbol, regime, horizon = key
+        candidate = candidate_by_factor[factor_id]
+        out.append(
+            _factor_forward_summary_row(
+                candidate=candidate,
+                symbol=symbol,
+                regime=regime,
+                horizon=horizon,
+                samples=sample_rows,
+            )
+        )
+    out = _enrich_factor_forward_rows(out)
+    return frame_with_schema(out, FACTOR_FORWARD_VALIDATION_FIELDS)
+
+
+def factor_forward_validation_md(frame: pl.DataFrame) -> str:
+    row_list = rows(frame)
+    passed = [
+        row
+        for row in row_list
+        if str(row.get("recommendation") or "") == "FORWARD_VALIDATION_PASS"
+    ]
+    lines = [
+        "# Factor Forward Validation",
+        "",
+        "Read-only OOS/recent/regime validation for PAPER_READY and KEEP_SHADOW factors.",
+        "A factor bridge candidate remains blocked unless this report has a passing row.",
+        "",
+        f"- rows: {len(row_list)}",
+        f"- pass_rows: {len(passed)}",
+        "- live_order_effect: none_read_only_research",
+    ]
+    for row in passed[:12]:
+        lines.append(
+            "- "
+            f"{row.get('factor_id')} {row.get('symbol')} {row.get('regime')} "
+            f"h={row.get('horizon_hours')} rank_ic={row.get('rank_ic')} "
+            f"long_short_bps={row.get('long_short_bps')}"
+        )
+    return "\n".join(lines) + "\n"
+
+
 def build_bottom_zone_backtest(
     *,
     bottom_zone_reversal_shadow: pl.DataFrame | None,
@@ -226,17 +361,30 @@ def build_bottom_zone_backtest(
                 "would_enter": boolish(row.get("would_probe_paper")),
                 "support_zone": first_value(row, ("support_low_24h", "support_low_72h")),
                 "anchored_vwap": first_value(row, ("vwap_24h", "anchored_vwap")),
-                "orderbook_imbalance": first_value(row, ("orderbook_imbalance", "market_pressure_state")),
-                "taker_sell_exhaustion": first_value(row, ("taker_sell_exhaustion", "trade_count_60m")),
+                "orderbook_imbalance": first_value(
+                    row,
+                    ("orderbook_imbalance", "market_pressure_state"),
+                ),
+                "taker_sell_exhaustion": first_value(
+                    row,
+                    ("taker_sell_exhaustion", "trade_count_60m"),
+                ),
                 "volatility_climax": first_value(row, ("volatility_climax", "return_24h_bps")),
-                "spread_normalization": first_value(row, ("spread_normalization", "avg_spread_bps_15m")),
+                "spread_normalization": first_value(
+                    row,
+                    ("spread_normalization", "avg_spread_bps_15m"),
+                ),
                 "cost_bps": cost.cost_bps,
                 "cost_model": cost.cost_model,
                 "future_4h_net_bps": futures[4],
                 "future_8h_net_bps": futures[8],
                 "future_12h_net_bps": futures[12],
                 "future_24h_net_bps": futures[24],
-                "label_status": "partial_complete" if any(v is not None for v in futures.values()) else "pending",
+                "label_status": (
+                    "partial_complete"
+                    if any(v is not None for v in futures.values())
+                    else "pending"
+                ),
                 "data_leakage_check": "pass_future_prices_used_only_for_labels",
                 "live_order_effect": "read_only_no_live_order",
             }
@@ -405,7 +553,11 @@ def build_backtest_vs_paper_consistency(
 
 
 def backtest_vs_paper_consistency_md(frame: pl.DataFrame) -> str:
-    conflicts = frame.filter(pl.col("recommendation") == "QUARANTINE_BACKTEST_PAPER_CONFLICT") if not frame.is_empty() else pl.DataFrame()
+    conflicts = (
+        frame.filter(pl.col("recommendation") == "QUARANTINE_BACKTEST_PAPER_CONFLICT")
+        if not frame.is_empty()
+        else pl.DataFrame()
+    )
     lines = [
         "# Backtest vs Paper Consistency",
         "",
@@ -420,7 +572,8 @@ def backtest_vs_paper_consistency_md(frame: pl.DataFrame) -> str:
         lines.append(
             "- "
             f"{row.get('strategy_id')} {row.get('symbol')} h={row.get('horizon_hours')} "
-            f"backtest_avg={row.get('backtest_avg_net_bps')} paper_avg={row.get('paper_avg_net_bps')} "
+            f"backtest_avg={row.get('backtest_avg_net_bps')} "
+            f"paper_avg={row.get('paper_avg_net_bps')} "
             f"recommendation={row.get('recommendation')}"
         )
     return "\n".join(lines) + "\n"
@@ -638,6 +791,266 @@ def _promotion_stage(
         ]
     )
     return "PAPER", reasons
+
+
+def _factor_forward_summary_row(
+    *,
+    candidate: dict[str, Any],
+    symbol: str,
+    regime: str,
+    horizon: int,
+    samples: list[dict[str, Any]],
+) -> dict[str, Any]:
+    pairs = [
+        (sample["ts"], value, label)
+        for sample in samples
+        if (value := float_or_none(sample.get("value"))) is not None
+        and (label := float_or_none(sample.get("future_net_bps"))) is not None
+    ]
+    labels = [label for _ts, _value, label in pairs]
+    rank_ic = _forward_rank_ic([value for _ts, value, _label in pairs], labels)
+    long_short, p25, hit_rate = _forward_top_bottom_stats(pairs)
+    recent_score = _forward_recent_score(pairs)
+    return {
+        "as_of_date": candidate.get("as_of_date"),
+        "factor_id": candidate.get("factor_id"),
+        "factor_family": candidate.get("factor_family"),
+        "candidate_state": candidate.get("candidate_state"),
+        "symbol": symbol,
+        "regime": regime,
+        "horizon_hours": horizon,
+        "sample_count": len(pairs),
+        "rank_ic": _round_float(rank_ic),
+        "long_short_bps": _round_float(long_short),
+        "p25_net_bps": _round_float(p25),
+        "hit_rate": _round_float(hit_rate),
+        "recent_7d_score": _round_float(recent_score),
+        "regime_stability": None,
+        "cost_adjusted_score": _round_float(long_short),
+        "recommendation": None,
+        "data_leakage_check": "pass_future_prices_used_only_for_labels",
+        "live_order_effect": "none_read_only_research",
+    }
+
+
+def _enrich_factor_forward_rows(rows_in: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    stability_by_factor: dict[str, float | None] = {}
+    grouped: dict[str, list[dict[str, Any]]] = defaultdict(list)
+    for row in rows_in:
+        grouped[str(row.get("factor_id") or "")].append(row)
+    for factor_id, factor_rows in grouped.items():
+        scored = [
+            row
+            for row in factor_rows
+            if int(float_or_none(row.get("sample_count")) or 0) >= 30
+            and str(row.get("regime") or "")
+            in {"RISK_OFF", "SIDEWAYS", "RISK_ON_CONFIRMED", "TREND_UP"}
+        ]
+        if not factor_id or not scored:
+            stability_by_factor[factor_id] = None
+            continue
+        positive = sum(
+            1
+            for row in scored
+            if (float_or_none(row.get("rank_ic")) or 0.0) > 0
+            and (float_or_none(row.get("cost_adjusted_score")) or 0.0) > 0
+        )
+        negative = sum(
+            1
+            for row in scored
+            if (float_or_none(row.get("rank_ic")) or 0.0) < 0
+            or (float_or_none(row.get("cost_adjusted_score")) or 0.0) < 0
+        )
+        stability_by_factor[factor_id] = (positive - negative) / len(scored)
+    out: list[dict[str, Any]] = []
+    for row in rows_in:
+        enriched = dict(row)
+        stability = stability_by_factor.get(str(row.get("factor_id") or ""))
+        enriched["regime_stability"] = _round_float(stability)
+        enriched["recommendation"] = _factor_forward_recommendation(
+            sample_count=int(float_or_none(row.get("sample_count")) or 0),
+            rank_ic=float_or_none(row.get("rank_ic")),
+            long_short_bps=float_or_none(row.get("long_short_bps")),
+            p25_net_bps=float_or_none(row.get("p25_net_bps")),
+            hit_rate=float_or_none(row.get("hit_rate")),
+            regime_stability=stability,
+            cost_adjusted_score=float_or_none(row.get("cost_adjusted_score")),
+        )
+        out.append(enriched)
+    return out
+
+
+def _forward_regime_rows(frame: pl.DataFrame | None) -> list[dict[str, Any]]:
+    out: list[dict[str, Any]] = []
+    for row in rows(frame):
+        ts = coerce_dt(first_value(row, ("as_of_ts", "created_at", "ts", "date", "as_of_date")))
+        regime = _canonical_forward_regime(
+            first_value(row, ("current_regime", "regime_state", "market_regime", "state"))
+        )
+        if ts is None or regime is None:
+            continue
+        item = dict(row)
+        item["_ts"] = ts
+        item["_regime"] = regime
+        out.append(item)
+    out.sort(key=lambda item: item["_ts"])
+    return out
+
+
+def _forward_regime_for_ts(regime_rows: list[dict[str, Any]], ts: Any) -> str | None:
+    parsed = coerce_dt(ts)
+    if parsed is None:
+        return None
+    candidates = [row for row in regime_rows if row["_ts"] <= parsed]
+    return str(candidates[-1].get("_regime") or "") if candidates else None
+
+
+def _derived_market_regime(bars: list[dict[str, Any]], ts: Any) -> str:
+    parsed = coerce_dt(ts)
+    if parsed is None:
+        return "SIDEWAYS"
+    current = _bar_close_at_or_after(bars, parsed)
+    prior = _bar_close_at_or_after(bars, parsed - timedelta(hours=4))
+    if current is None or prior is None or prior <= 0:
+        return "SIDEWAYS"
+    ret_bps = (current / prior - 1.0) * 10000.0
+    if ret_bps <= -80:
+        return "RISK_OFF"
+    if ret_bps >= 120:
+        return "RISK_ON_CONFIRMED"
+    if ret_bps >= 50:
+        return "TREND_UP"
+    return "SIDEWAYS"
+
+
+def _bar_close_at_or_after(bars: list[dict[str, Any]], ts: Any) -> float | None:
+    parsed = coerce_dt(ts)
+    if parsed is None:
+        return None
+    for row in bars:
+        row_ts = coerce_dt(row.get("_ts") or row.get("ts") or row.get("ts_utc"))
+        value = float_or_none(row.get("close")) or float_or_none(row.get("_close"))
+        if row_ts is not None and row_ts >= parsed and value is not None:
+            return value
+    return None
+
+
+def _canonical_forward_regime(value: Any) -> str | None:
+    text = str(value or "").strip().upper()
+    if not text or text in {"UNKNOWN", "NONE", "NAN"}:
+        return None
+    if "RISK_ON_CONFIRMED" in text:
+        return "RISK_ON_CONFIRMED"
+    if "RISK_ON" in text or "IMPULSE" in text:
+        return "RISK_ON_CONFIRMED"
+    if "RISK_OFF" in text or "DOWN" in text:
+        return "RISK_OFF"
+    if "UP" in text or text in {"TREND", "TRENDING"}:
+        return "TREND_UP"
+    if "SIDE" in text or "CHOP" in text or "PROTECT" in text or "LOW_VOL" in text:
+        return "SIDEWAYS"
+    if text in {"RISK_OFF", "SIDEWAYS", "RISK_ON_CONFIRMED", "TREND_UP"}:
+        return text
+    return "SIDEWAYS"
+
+
+def _forward_top_bottom_stats(
+    pairs: list[tuple[Any, float, float]],
+    *,
+    quantile: float = 0.2,
+) -> tuple[float | None, float | None, float | None]:
+    if not pairs:
+        return None, None, None
+    ordered = sorted(pairs, key=lambda item: item[1])
+    bucket_size = max(1, int(len(ordered) * quantile))
+    bottom = [label for _ts, _value, label in ordered[:bucket_size]]
+    top = [label for _ts, _value, label in ordered[-bucket_size:]]
+    return (
+        (_forward_mean(top) - _forward_mean(bottom)) if top and bottom else None,
+        _forward_percentile(top, 0.25) if top else None,
+        (sum(1 for value in top if value > 0) / len(top)) if top else None,
+    )
+
+
+def _forward_rank_ic(values: list[float], labels: list[float]) -> float | None:
+    if len(values) < 3 or len(values) != len(labels):
+        return None
+    return _forward_pearson(_forward_ranks(values), _forward_ranks(labels))
+
+
+def _forward_ranks(values: list[float]) -> list[float]:
+    ranked = [0.0] * len(values)
+    for rank, (index, _value) in enumerate(
+        sorted(enumerate(values), key=lambda item: item[1]),
+        start=1,
+    ):
+        ranked[index] = float(rank)
+    return ranked
+
+
+def _forward_pearson(left: list[float], right: list[float]) -> float | None:
+    if len(left) < 3 or len(left) != len(right):
+        return None
+    left_mean = _forward_mean(left)
+    right_mean = _forward_mean(right)
+    numerator = sum((a - left_mean) * (b - right_mean) for a, b in zip(left, right, strict=False))
+    left_var = sum((a - left_mean) ** 2 for a in left)
+    right_var = sum((b - right_mean) ** 2 for b in right)
+    denominator = (left_var * right_var) ** 0.5
+    return numerator / denominator if denominator > 0 else None
+
+
+def _forward_recent_score(pairs: list[tuple[Any, float, float]]) -> float | None:
+    parsed_pairs: list[tuple[Any, float]] = []
+    for raw_ts, _value, label in pairs:
+        parsed = coerce_dt(raw_ts)
+        if parsed is not None:
+            parsed_pairs.append((parsed, label))
+    if not parsed_pairs:
+        return None
+    latest = max(ts for ts, _label in parsed_pairs)
+    recent = [label for ts, label in parsed_pairs if ts >= latest - timedelta(days=7)]
+    return _forward_mean(recent) if recent else None
+
+
+def _factor_forward_recommendation(
+    *,
+    sample_count: int,
+    rank_ic: float | None,
+    long_short_bps: float | None,
+    p25_net_bps: float | None,
+    hit_rate: float | None,
+    regime_stability: float | None,
+    cost_adjusted_score: float | None,
+) -> str:
+    if sample_count < 30:
+        return "NEEDS_MORE_FORWARD_SAMPLES"
+    if (
+        (rank_ic or 0.0) > 0.02
+        and (long_short_bps or 0.0) > 0
+        and (p25_net_bps is not None and p25_net_bps > -50)
+        and (hit_rate or 0.0) > 0.50
+        and (regime_stability or 0.0) > 0
+        and (cost_adjusted_score or 0.0) > 0
+    ):
+        return "FORWARD_VALIDATION_PASS"
+    return "FORWARD_VALIDATION_WEAK_OR_MIXED"
+
+
+def _forward_mean(values: list[float]) -> float:
+    return sum(values) / len(values) if values else 0.0
+
+
+def _forward_percentile(values: list[float], q: float) -> float | None:
+    if not values:
+        return None
+    ordered = sorted(values)
+    index = min(max(int(round((len(ordered) - 1) * q)), 0), len(ordered) - 1)
+    return ordered[index]
+
+
+def _round_float(value: float | None) -> float | None:
+    return round(value, 6) if value is not None else None
 
 
 def _current_stage(strategy_id: str) -> str:

@@ -132,7 +132,12 @@ def test_export_daily_pack_writes_required_members(tmp_path):
         assert "reports/factor_paper_review_queue.csv" in names
         assert "reports/composite_factor_candidates.csv" in names
         assert "reports/factor_regime_effectiveness.csv" in names
+        assert "reports/factor_forward_validation.csv" in names
+        assert "reports/factor_forward_validation.md" in names
         assert "reports/factor_strategy_bridge_candidates.csv" in names
+        assert "reports/live_universe_cost_coverage.csv" in names
+        assert "reports/fast_microstructure_forward_test.csv" in names
+        assert "reports/fast_microstructure_forward_summary.md" in names
         assert "diagnostics/export_timing.csv" in names
         assert "diagnostics/export_timing.json" in names
         acceptance_rows = list(
@@ -181,6 +186,243 @@ def test_export_daily_pack_writes_required_members(tmp_path):
         meta = json.loads(meta_path.read_text(encoding="utf-8"))
         assert meta["dataset"] == dataset
         assert meta.get("source_sha"), dataset
+
+
+def test_research_validation_v3_reports_export_forward_and_cost_coverage(tmp_path):
+    lake_root = tmp_path / "lake"
+    out_dir = tmp_path / "exports"
+    start = datetime(2026, 6, 1, tzinfo=UTC)
+    bars = []
+    factor_values = []
+    spreads = []
+    trades = []
+    for index in range(90):
+        ts = start + timedelta(hours=index)
+        close = 100.0 + 0.03 * index * index
+        bars.append(
+            {
+                "venue": "okx",
+                "symbol": "BTC-USDT",
+                "market_type": "SPOT",
+                "timeframe": "1H",
+                "ts": ts,
+                "open": close - 0.1,
+                "high": close + 1.0,
+                "low": close - 1.0,
+                "close": close,
+                "volume": 1000.0 + index,
+                "quote_volume": close * (1000.0 + index),
+                "source": "test",
+                "ingest_ts": ts + timedelta(minutes=1),
+                "is_closed": True,
+            }
+        )
+        factor_values.append(
+            {
+                "factor_id": "core.close_return_24",
+                "factor_name": "Close return 24",
+                "factor_family": "momentum",
+                "factor_version": "v0.1",
+                "symbol": "BTC-USDT",
+                "timeframe": "1H",
+                "ts": ts,
+                "raw_value": float(index),
+                "normalized_value": float(index),
+                "rank_value": float(index),
+                "value": float(index),
+                "is_valid": True,
+                "created_at": ts,
+                "source": "test",
+            }
+        )
+        spreads.append(
+            {
+                "symbol": "BTC-USDT",
+                "channel": "books5",
+                "minute_ts": ts,
+                "ts": ts,
+                "spread_bps": 2.0,
+                "orderbook_imbalance": min(0.9, index / 100.0),
+            }
+        )
+        trades.append(
+            {
+                "symbol": "BTC-USDT",
+                "minute_ts": ts,
+                "latest_trade_ts": ts,
+                "trade_count": 5,
+                "size_sum": 20.0,
+                "taker_buy_size_sum": 10.0 + index,
+                "taker_sell_size_sum": 10.0,
+            }
+        )
+
+    write_market_bars(lake_root, bars)
+    write_parquet_dataset(pl.DataFrame(factor_values), lake_root / "gold" / "factor_value")
+    write_parquet_dataset(
+        pl.DataFrame(
+            [
+                {
+                    "as_of_date": "2026-06-01",
+                    "factor_id": "core.close_return_24",
+                    "factor_name": "Close return 24",
+                    "factor_family": "momentum",
+                    "factor_version": "v0.1",
+                    "timeframe": "1H",
+                    "best_horizon_bars": 4,
+                    "tested_horizon_count": 3,
+                    "best_score": 10.0,
+                    "avg_score": 8.0,
+                    "best_rank_ic_mean": 0.2,
+                    "best_rank_ic_tstat": 3.0,
+                    "best_long_short_mean_bps": 25.0,
+                    "candidate_state": "PAPER_READY",
+                    "recommended_action": "PAPER_REVIEW",
+                    "created_at": start,
+                    "source": "test",
+                }
+            ]
+        ),
+        lake_root / "gold" / "factor_candidate",
+    )
+    write_parquet_dataset(
+        pl.DataFrame(
+            [
+                {
+                    "as_of_date": "2026-06-01",
+                    "factor_id": "core.close_return_24",
+                    "factor_family": "momentum",
+                    "horizon_bars": 4,
+                    "valid_sample_count": 120,
+                    "rank_ic_mean": 0.2,
+                    "rank_ic_tstat": 3.0,
+                    "long_short_mean_bps": 25.0,
+                    "win_rate": 0.65,
+                    "score": 10.0,
+                    "regime_state": "TREND_UP",
+                    "created_at": start,
+                }
+            ]
+        ),
+        lake_root / "gold" / "factor_evidence",
+    )
+    write_parquet_dataset(
+        pl.DataFrame(
+            [
+                {
+                    "as_of_date": "2026-06-01",
+                    "factor_id_left": "core.close_return_24",
+                    "factor_id_right": "core.close_return_24",
+                    "sample_count": 120,
+                    "correlation": 1.0,
+                }
+            ]
+        ),
+        lake_root / "gold" / "factor_correlation_daily",
+    )
+    write_parquet_dataset(
+        pl.DataFrame(
+            [{"as_of_date": "2026-06-01", "current_regime": "TREND_UP", "created_at": start}]
+        ),
+        lake_root / "gold" / "market_regime_daily",
+    )
+    cost_rows = [
+        {
+            "day": "2026-06-01",
+            "symbol": "BTC-USDT",
+            "regime": "normal",
+            "event_type": "fill",
+            "notional_bucket": "all",
+            "sample_count": 40,
+            "fee_bps_p75": 0.5,
+            "slippage_bps_p75": 0.2,
+            "spread_bps_p75": 0.3,
+            "total_cost_bps_p75": 1.0,
+            "fallback_level": "actual_okx_fills_and_bills",
+            "source": "actual_okx_fills_and_bills",
+            "actual_fill_count": 40,
+            "created_at": start,
+        }
+    ]
+    for symbol in ["BNB-USDT", "ETH-USDT", "SOL-USDT"]:
+        cost_rows.append(
+            {
+                "day": "2026-06-01",
+                "symbol": symbol,
+                "regime": "normal",
+                "event_type": "spread_proxy",
+                "notional_bucket": "all",
+                "sample_count": 60,
+                "fee_bps_p75": 0.0,
+                "slippage_bps_p75": 0.0,
+                "spread_bps_p75": 1.5,
+                "total_cost_bps_p75": 1.5,
+                "fallback_level": "PUBLIC_SPREAD_PROXY",
+                "source": "public_spread_proxy",
+                "proxy_sample_count": 60,
+                "created_at": start,
+            }
+        )
+    write_parquet_dataset(pl.DataFrame(cost_rows), lake_root / "gold" / "cost_bucket_daily")
+    write_parquet_dataset(pl.DataFrame(spreads), lake_root / "silver" / "orderbook_spread_1m")
+    write_parquet_dataset(pl.DataFrame(trades), lake_root / "silver" / "trade_activity_1m")
+
+    result = export_daily_pack(
+        export_date="2026-06-01",
+        lake_root=lake_root,
+        out_dir=out_dir,
+        profile="expert",
+        pre_export_v5_refresh=False,
+    )
+
+    with zipfile.ZipFile(result.zip_path) as archive:
+        factor_rows = list(
+            csv.DictReader(
+                io.StringIO(
+                    archive.read("reports/factor_forward_validation.csv").decode("utf-8")
+                )
+            )
+        )
+        bridge_rows = list(
+            csv.DictReader(
+                io.StringIO(
+                    archive.read("reports/factor_strategy_bridge_candidates.csv").decode("utf-8")
+                )
+            )
+        )
+        cost_coverage_rows = list(
+            csv.DictReader(
+                io.StringIO(
+                    archive.read("reports/live_universe_cost_coverage.csv").decode("utf-8")
+                )
+            )
+        )
+        fast_rows = list(
+            csv.DictReader(
+                io.StringIO(
+                    archive.read("reports/fast_microstructure_forward_test.csv").decode("utf-8")
+                )
+            )
+        )
+
+    assert any(
+        row["recommendation"] == "FORWARD_VALIDATION_PASS"
+        and float(row["regime_stability"]) > 0
+        and float(row["cost_adjusted_score"]) > 0
+        for row in factor_rows
+    )
+    assert any(row["eligible_for_alpha_factory"].lower() == "true" for row in bridge_rows)
+    assert any(
+        row["symbol"] == "BNB-USDT"
+        and row["effective_cost_source"] == "mixed_actual_proxy"
+        and float(row["actual_or_mixed_cost_coverage_live_universe"]) >= 0.5
+        for row in cost_coverage_rows
+    )
+    assert any(
+        row["feature_name"] == "orderbook_imbalance_1m"
+        and row["recommendation"] == "FORWARD_VALIDATION_PASS"
+        for row in fast_rows
+    )
 
 
 def test_export_daily_pack_includes_expanded_universe_paper_advisory_from_maturity(
@@ -2743,6 +2985,9 @@ def test_export_empty_csv_members_have_fixed_headers(tmp_path):
             "reports/candidate_kill_list.csv",
             "reports/candidate_shadow_watchlist.csv",
             "reports/candidate_paper_ready.csv",
+            "reports/factor_forward_validation.csv",
+            "reports/fast_microstructure_forward_test.csv",
+            "reports/live_universe_cost_coverage.csv",
             "v5/v5_candidate_events.csv",
             "v5/v5_candidate_labels.csv",
             "v5/v5_candidate_quality.csv",

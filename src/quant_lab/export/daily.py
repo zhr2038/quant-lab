@@ -27,11 +27,18 @@ from pydantic import BaseModel, ConfigDict, Field
 from quant_lab import __version__
 from quant_lab.backtest.reports import (
     BACKTEST_CSV_SCHEMAS,
+    FACTOR_FORWARD_VALIDATION_FIELDS,
     build_backtest_report_bundle,
+    build_factor_forward_validation,
+    factor_forward_validation_md,
 )
 from quant_lab.contracts.v5_quant_lab import (
     V5_QUANT_LAB_CONTRACT_VERSION,
     V5_TELEMETRY_DATASET_SCHEMA_VERSION,
+)
+from quant_lab.costs.model import (
+    LIVE_UNIVERSE_COST_COVERAGE_FIELDS,
+    build_live_universe_cost_coverage,
 )
 from quant_lab.data.lake import read_parquet_dataset, write_parquet_dataset
 from quant_lab.factors.composite_factory import (
@@ -45,7 +52,10 @@ from quant_lab.factors.composite_factory import (
 )
 from quant_lab.features.fast_microstructure import (
     FAST_MICROSTRUCTURE_FIELDS,
+    FAST_MICROSTRUCTURE_FORWARD_TEST_FIELDS,
     build_fast_microstructure_features,
+    build_fast_microstructure_forward_test,
+    fast_microstructure_forward_summary_md,
 )
 from quant_lab.ops.api_metrics import api_metrics_summary
 from quant_lab.ops.data_quality import run_data_quality
@@ -381,6 +391,7 @@ REQUIRED_MEMBERS = [
     "costs/cost_health_daily.csv",
     "costs/cost_estimate_examples.json",
     "costs/cost_fallbacks.csv",
+    "reports/live_universe_cost_coverage.csv",
     "research/alpha_evidence.csv",
     "research/strategy_evidence.csv",
     "research/alt_impulse_shadow_by_regime.csv",
@@ -438,6 +449,8 @@ REQUIRED_MEMBERS = [
     "reports/factor_paper_review_queue.csv",
     "reports/composite_factor_candidates.csv",
     "reports/factor_regime_effectiveness.csv",
+    "reports/factor_forward_validation.csv",
+    "reports/factor_forward_validation.md",
     "reports/factor_strategy_bridge_candidates.csv",
     "reports/factor_factory_summary.md",
     "reports/candidate_kill_list.csv",
@@ -465,6 +478,8 @@ REQUIRED_MEMBERS = [
     "reports/bottom_zone_reversal_no_trigger_reasons.csv",
     "reports/bottom_zone_reversal_summary.md",
     "reports/fast_microstructure_features.csv",
+    "reports/fast_microstructure_forward_test.csv",
+    "reports/fast_microstructure_forward_summary.md",
     "reports/market_pressure_score.csv",
     "reports/market_pressure_summary.md",
     "reports/system_acceptance_dashboard.csv",
@@ -739,7 +754,9 @@ CSV_SCHEMAS: dict[str, list[str]] = {
     "reports/factor_paper_review_queue.csv": FACTOR_PAPER_REVIEW_QUEUE_FIELDS,
     "reports/composite_factor_candidates.csv": COMPOSITE_FACTOR_CANDIDATE_FIELDS,
     "reports/factor_regime_effectiveness.csv": FACTOR_REGIME_EFFECTIVENESS_FIELDS,
+    "reports/factor_forward_validation.csv": FACTOR_FORWARD_VALIDATION_FIELDS,
     "reports/factor_strategy_bridge_candidates.csv": FACTOR_STRATEGY_BRIDGE_CANDIDATE_FIELDS,
+    "reports/live_universe_cost_coverage.csv": LIVE_UNIVERSE_COST_COVERAGE_FIELDS,
     "market/orderbook_spread.csv": ["symbol", "channel", "ts", "spread_bps"],
     "market/trade_activity.csv": ["symbol", "trade_count", "size_sum", "latest_trade_ts"],
     "reports/api_latency_summary.csv": [
@@ -1501,6 +1518,7 @@ CSV_SCHEMAS: dict[str, list[str]] = {
     ],
     "reports/bottom_zone_reversal_shadow.csv": BOTTOM_ZONE_FIELDS,
     "reports/fast_microstructure_features.csv": FAST_MICROSTRUCTURE_FIELDS,
+    "reports/fast_microstructure_forward_test.csv": FAST_MICROSTRUCTURE_FORWARD_TEST_FIELDS,
     "reports/market_pressure_score.csv": MARKET_PRESSURE_FIELDS,
     "reports/risk_on_multi_buy_shadow.csv": [
         "generated_at",
@@ -4234,15 +4252,26 @@ def _dataset_members(
     feature_coverage = frames.get("feature_coverage_daily", pl.DataFrame())
     feature_anomalies = frames.get("feature_anomaly_daily", pl.DataFrame())
     factor_definitions = frames.get("factor_definition", pl.DataFrame())
+    factor_values = frames.get("factor_value", pl.DataFrame())
     factor_evidence = frames.get("factor_evidence", pl.DataFrame())
     factor_candidates = frames.get("factor_candidate", pl.DataFrame())
     factor_correlations = frames.get("factor_correlation_daily", pl.DataFrame())
+    costs = _normalize_symbol_frame(frames.get("cost_bucket_daily", pl.DataFrame()))
+    market_regime = frames.get("market_regime_daily", pl.DataFrame())
+    factor_forward_validation = build_factor_forward_validation(
+        factor_candidates=factor_candidates,
+        factor_values=factor_values,
+        market_bars=market,
+        market_regime=market_regime,
+        cost_bucket_daily=costs,
+    )
     factor_v2 = build_factor_factory_v2_reports(
         candidates=factor_candidates,
         evidence=factor_evidence,
         correlations=factor_correlations,
+        factor_forward_validation=factor_forward_validation,
     )
-    costs = _normalize_symbol_frame(frames.get("cost_bucket_daily", pl.DataFrame()))
+    live_universe_cost_coverage = build_live_universe_cost_coverage(costs)
     cost_health = frames.get("cost_health_daily", pl.DataFrame())
     evidence = _alpha_evidence_for_export(frames.get("alpha_evidence", pl.DataFrame()))
     alpha_discovery_board = _alpha_discovery_board_for_export(
@@ -4373,7 +4402,6 @@ def _dataset_members(
         alpha_discovery_board,
         research_portfolio=research_portfolio,
     )
-    market_regime = frames.get("market_regime_daily", pl.DataFrame())
     strategy_regime_matrix = frames.get("strategy_regime_matrix", pl.DataFrame())
     regime_strategy_advisory = frames.get("regime_strategy_advisory", pl.DataFrame())
     missed_opportunity_audit = frames.get("v5_missed_opportunity_audit", pl.DataFrame())
@@ -4448,6 +4476,14 @@ def _dataset_members(
     market_pressure_score = build_market_pressure_score(
         bottom_zone_reversal_shadow=bottom_zone_reversal_shadow,
         fast_microstructure_features=fast_microstructure_features,
+        generated_at=datetime.now(UTC),
+    )
+    fast_microstructure_forward_test = build_fast_microstructure_forward_test(
+        market_bars=market,
+        orderbook_spread_1m=books,
+        trade_activity_1m=trades,
+        market_regime=market_regime,
+        cost_bucket_daily=costs,
         generated_at=datetime.now(UTC),
     )
     v5_health = frames.get("strategy_health_daily", pl.DataFrame())
@@ -4619,6 +4655,13 @@ def _dataset_members(
             "reports/factor_regime_effectiveness.csv",
             factor_v2["factor_regime_effectiveness"],
         ),
+        "reports/factor_forward_validation.csv": _csv_member(
+            "reports/factor_forward_validation.csv",
+            factor_forward_validation,
+        ),
+        "reports/factor_forward_validation.md": factor_forward_validation_md(
+            factor_forward_validation
+        ),
         "reports/factor_strategy_bridge_candidates.csv": _csv_member(
             "reports/factor_strategy_bridge_candidates.csv",
             factor_v2["factor_strategy_bridge_candidates"],
@@ -4634,6 +4677,10 @@ def _dataset_members(
         ),
         "costs/cost_estimate_examples.json": _json_text(_cost_examples(costs)),
         "costs/cost_fallbacks.csv": _csv_text(_cost_fallbacks(costs)),
+        "reports/live_universe_cost_coverage.csv": _csv_member(
+            "reports/live_universe_cost_coverage.csv",
+            live_universe_cost_coverage,
+        ),
         "research/alpha_evidence.csv": _csv_member("research/alpha_evidence.csv", evidence),
         "research/strategy_evidence.csv": _csv_member(
             "research/strategy_evidence.csv",
@@ -4803,6 +4850,13 @@ def _dataset_members(
         "reports/fast_microstructure_features.csv": _csv_member(
             "reports/fast_microstructure_features.csv",
             fast_microstructure_features,
+        ),
+        "reports/fast_microstructure_forward_test.csv": _csv_member(
+            "reports/fast_microstructure_forward_test.csv",
+            fast_microstructure_forward_test,
+        ),
+        "reports/fast_microstructure_forward_summary.md": fast_microstructure_forward_summary_md(
+            fast_microstructure_forward_test
         ),
         "reports/market_pressure_score.csv": _csv_member(
             "reports/market_pressure_score.csv",
@@ -5860,7 +5914,7 @@ def _v5_export_consistency(
     selected_ingested_at = _parse_v5_context_ts(
         pre_export_v5.get("selected_v5_bundle_ingested_at")
     )
-    latest_ingested = _max_dt(latest_local_ingested, selected_ingested_at)
+    latest_ingested = latest_local_ingested
     manifest_match = bool(pre_export_v5.get("selected_v5_bundle_manifest_match"))
     historical_gap_detected = bool(
         pre_export_v5.get("historical_gap_detected")
@@ -5871,7 +5925,10 @@ def _v5_export_consistency(
         pre_export_v5.get("pending_uningested_bundle_count") or 0
     )
     has_v5_bundle_context = _v5_context_requires_authoritative_failure(pre_export_v5)
-    stale, why_stale = _v5_bundle_stale_state(latest_remote=latest_seen, latest_ingested=latest_ingested)
+    stale, why_stale = _v5_bundle_stale_state(
+        latest_remote=latest_seen,
+        latest_ingested=latest_ingested,
+    )
     reason = ""
     if stale:
         reason = (

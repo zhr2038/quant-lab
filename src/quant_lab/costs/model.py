@@ -23,6 +23,121 @@ CONFIG_DELAY_COST_BPS = 0.0
 PUBLIC_PROXY_UNCERTAINTY_BUFFER_BPS = 2.0
 SMALL_SAMPLE_UNCERTAINTY_BUFFER_BPS = 3.0
 STALE_BUCKET_UNCERTAINTY_BUFFER_BPS = 5.0
+DEFAULT_LIVE_UNIVERSE_SYMBOLS = ("BNB-USDT", "BTC-USDT", "ETH-USDT", "SOL-USDT")
+LIVE_UNIVERSE_COST_COVERAGE_FIELDS = [
+    "generated_at",
+    "symbol",
+    "latest_source",
+    "latest_actual_or_mixed_source",
+    "effective_cost_source",
+    "actual_or_mixed_direct",
+    "mixed_proxy_eligible",
+    "actual_or_mixed_covered",
+    "sample_count",
+    "actual_fill_count",
+    "mixed_fill_count",
+    "proxy_sample_count",
+    "fee_bps_p75",
+    "spread_bps_p75",
+    "slippage_bps_p75",
+    "total_cost_bps_p75",
+    "latest_created_at",
+    "coverage_reason",
+    "actual_or_mixed_cost_coverage_live_universe",
+    "target_coverage",
+    "coverage_status",
+    "live_order_effect",
+]
+
+
+def build_live_universe_cost_coverage(
+    cost_bucket_daily: pl.DataFrame | None,
+    *,
+    live_symbols: Iterable[str] = DEFAULT_LIVE_UNIVERSE_SYMBOLS,
+    target_coverage: float = 0.50,
+    generated_at: datetime | None = None,
+) -> pl.DataFrame:
+    """Build a transparent actual/mixed coverage report for the live universe.
+
+    A public proxy row can count as mixed only when at least one live symbol has
+    direct actual/mixed cost evidence to anchor the fee/slippage side of the model.
+    """
+
+    generated = (generated_at or datetime.now(UTC)).astimezone(UTC)
+    symbols = sorted({normalize_symbol(symbol) for symbol in live_symbols if symbol})
+    cost_rows = _normalized_cost_rows(cost_bucket_daily)
+    rows_by_symbol: dict[str, list[dict[str, Any]]] = {
+        symbol: [row for row in cost_rows if _row_symbol(row) == symbol]
+        for symbol in symbols
+    }
+    direct_symbols = {
+        symbol
+        for symbol, symbol_rows in rows_by_symbol.items()
+        if _latest_actual_or_mixed_row(symbol_rows) is not None
+    }
+    has_live_actual_anchor = bool(direct_symbols)
+
+    output: list[dict[str, Any]] = []
+    covered_count = 0
+    for symbol in symbols:
+        symbol_rows = rows_by_symbol.get(symbol, [])
+        latest = _latest_cost_row_for_coverage(symbol_rows)
+        latest_actual = _latest_actual_or_mixed_row(symbol_rows)
+        latest_proxy = _latest_public_proxy_row(symbol_rows)
+        direct = latest_actual is not None
+        mixed_proxy_eligible = not direct and has_live_actual_anchor and latest_proxy is not None
+        covered = direct or mixed_proxy_eligible
+        covered_count += int(covered)
+        effective_source = (
+            _cost_source(latest_actual)
+            if latest_actual is not None
+            else ("mixed_actual_proxy" if mixed_proxy_eligible else _cost_source(latest))
+        )
+        source_row = latest_actual or latest_proxy or latest or {}
+        output.append(
+            {
+                "generated_at": generated.isoformat().replace("+00:00", "Z"),
+                "symbol": symbol,
+                "latest_source": _cost_source(latest) or "missing",
+                "latest_actual_or_mixed_source": _cost_source(latest_actual) or "missing",
+                "effective_cost_source": effective_source or "missing",
+                "actual_or_mixed_direct": direct,
+                "mixed_proxy_eligible": mixed_proxy_eligible,
+                "actual_or_mixed_covered": covered,
+                "sample_count": _int_value(source_row.get("sample_count")),
+                "actual_fill_count": _int_value(source_row.get("actual_fill_count")),
+                "mixed_fill_count": _int_value(source_row.get("mixed_fill_count")),
+                "proxy_sample_count": _int_value(source_row.get("proxy_sample_count")),
+                "fee_bps_p75": _float_value(source_row, "fee_bps_p75"),
+                "spread_bps_p75": _float_value(source_row, "spread_bps_p75"),
+                "slippage_bps_p75": _float_value(source_row, "slippage_bps_p75"),
+                "total_cost_bps_p75": _float_value(source_row, "total_cost_bps_p75"),
+                "latest_created_at": _coverage_ts(source_row),
+                "coverage_reason": _coverage_reason(
+                    direct=direct,
+                    mixed_proxy_eligible=mixed_proxy_eligible,
+                    has_live_actual_anchor=has_live_actual_anchor,
+                    latest_proxy=latest_proxy,
+                    latest=latest,
+                ),
+                "actual_or_mixed_cost_coverage_live_universe": None,
+                "target_coverage": target_coverage,
+                "coverage_status": "UNKNOWN",
+                "live_order_effect": "read_only_no_live_order",
+            }
+        )
+
+    denominator = max(len(symbols), 1)
+    coverage_rate = covered_count / denominator
+    status = "PASS" if coverage_rate >= target_coverage else "WARNING"
+    for row in output:
+        row["actual_or_mixed_cost_coverage_live_universe"] = coverage_rate
+        row["coverage_status"] = status
+    if not output:
+        return pl.DataFrame(schema={field: pl.Utf8 for field in LIVE_UNIVERSE_COST_COVERAGE_FIELDS})
+    return pl.DataFrame(output, infer_schema_length=None).select(
+        LIVE_UNIVERSE_COST_COVERAGE_FIELDS
+    )
 
 
 class CostBucket(BaseModel):
@@ -969,3 +1084,67 @@ def _row_explicit_as_of_ts(row: Mapping[str, Any]) -> datetime | None:
                 continue
             return parsed.astimezone(UTC)
     return None
+
+
+def _normalized_cost_rows(frame: pl.DataFrame | None) -> list[dict[str, Any]]:
+    if frame is None or frame.is_empty():
+        return []
+    return [_normalize_cost_row(row) for row in frame.to_dicts()]
+
+
+def _latest_cost_row_for_coverage(rows: list[dict[str, Any]]) -> dict[str, Any] | None:
+    if not rows:
+        return None
+    return sorted(rows, key=_coverage_sort_key)[-1]
+
+
+def _latest_actual_or_mixed_row(rows: list[dict[str, Any]]) -> dict[str, Any] | None:
+    candidates = [row for row in rows if _is_actual_or_mixed_source(_cost_source(row))]
+    return _latest_cost_row_for_coverage(candidates)
+
+
+def _latest_public_proxy_row(rows: list[dict[str, Any]]) -> dict[str, Any] | None:
+    candidates = [row for row in rows if _is_public_proxy_source(_cost_source(row))]
+    return _latest_cost_row_for_coverage(candidates)
+
+
+def _coverage_sort_key(row: Mapping[str, Any]) -> tuple[datetime, int]:
+    ts = _row_as_of_ts(row) or datetime.min.replace(tzinfo=UTC)
+    return ts, _int_value(row.get("sample_count"))
+
+
+def _cost_source(row: Mapping[str, Any] | None) -> str:
+    if row is None:
+        return ""
+    return str(row.get("source") or row.get("cost_source") or "").strip().lower()
+
+
+def _coverage_ts(row: Mapping[str, Any]) -> str:
+    ts = _row_as_of_ts(row)
+    return ts.isoformat().replace("+00:00", "Z") if ts is not None else ""
+
+
+def _coverage_reason(
+    *,
+    direct: bool,
+    mixed_proxy_eligible: bool,
+    has_live_actual_anchor: bool,
+    latest_proxy: Mapping[str, Any] | None,
+    latest: Mapping[str, Any] | None,
+) -> str:
+    if direct:
+        return "direct_actual_or_mixed_cost"
+    if mixed_proxy_eligible:
+        return "mixed_from_live_actual_anchor_plus_symbol_public_proxy"
+    if latest_proxy is not None and not has_live_actual_anchor:
+        return "public_proxy_only_no_live_actual_anchor"
+    if latest is not None:
+        return "cost_row_not_actual_or_mixed"
+    return "missing_cost_row"
+
+
+def _int_value(value: Any) -> int:
+    try:
+        return int(float(value or 0))
+    except (TypeError, ValueError):
+        return 0

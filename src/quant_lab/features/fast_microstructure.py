@@ -70,6 +70,7 @@ FAST_MICROSTRUCTURE_FORWARD_FEATURES = (
     "spread_bps_change_5m",
 )
 FAST_MICROSTRUCTURE_FORWARD_HORIZONS = (1, 4, 8)
+FAST_MICROSTRUCTURE_FORWARD_LOOKBACK_BARS = 2000
 FAST_MICROSTRUCTURE_FORWARD_REGIMES = (
     "RISK_OFF",
     "SIDEWAYS",
@@ -298,7 +299,8 @@ def build_fast_microstructure_forward_test(
         cost = conservative_cost_for_symbol(cost_bucket_daily, symbol=symbol)
         spread_rows = spreads_by_symbol.get(symbol, [])
         trade_rows = trades_by_symbol.get(symbol, [])
-        for bar in bars[-500:]:
+        lookback_bars = max(int(FAST_MICROSTRUCTURE_FORWARD_LOOKBACK_BARS), 1)
+        for bar in bars[-lookback_bars:]:
             ts = _coerce_dt(bar.get("_ts"))
             close = _float(bar.get("close"))
             if ts is None or close is None or close <= 0:
@@ -1085,7 +1087,7 @@ def _forward_recommendation(
     p25_net_bps: float | None,
     hit_rate: float | None,
 ) -> str:
-    if sample_count < 20:
+    if sample_count < 30:
         return "NEEDS_MORE_FORWARD_SAMPLES"
     if (
         (rank_ic or 0.0) > 0.02

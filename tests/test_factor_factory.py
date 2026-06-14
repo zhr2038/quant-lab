@@ -1,9 +1,13 @@
+import json
 from datetime import UTC, datetime, timedelta
 
 import polars as pl
 
 from quant_lab.data.lake import read_parquet_dataset, write_market_bars, write_parquet_dataset
-from quant_lab.factors.composite_factory import build_factor_factory_v2_reports
+from quant_lab.factors.composite_factory import (
+    build_factor_factory_v2_reports,
+    build_factor_strategy_bridge_candidates,
+)
 from quant_lab.factors.factory import build_and_publish_factor_factory, factor_factory_health
 from quant_lab.features.publish import publish_features
 
@@ -180,6 +184,53 @@ def test_factor_factory_v2_dedupes_and_builds_review_outputs():
         reports["factor_strategy_bridge_candidates"]["live_order_effect"][0]
         == "none_read_only_research"
     )
+
+
+def test_factor_bridge_routes_forward_pass_without_regime_stability_block():
+    paper_queue = pl.DataFrame(
+        [
+            {
+                "as_of_date": "2026-06-13",
+                "factor_id": "core.mean_reversion_vol_adjusted_4",
+                "factor_family": "mean_reversion",
+                "candidate_state": "PAPER_READY",
+                "best_horizon_bars": 4,
+                "best_rank_ic_mean": 0.04,
+                "best_rank_ic_tstat": 2.1,
+                "best_long_short_mean_bps": 12.5,
+                "sample_count": 168,
+                "oos_score": 1.4,
+                "regime_stability_score": None,
+                "correlation_cluster_id": "cluster_001",
+                "recommendation": "FACTOR_PAPER_REVIEW",
+                "live_order_effect": "none_read_only_research",
+            }
+        ]
+    )
+    forward_validation = pl.DataFrame(
+        [
+            {
+                "factor_id": "core.mean_reversion_vol_adjusted_4",
+                "symbol": "SOL-USDT",
+                "regime": "TREND_UP",
+                "horizon": "4h",
+                "recommendation": "FORWARD_VALIDATION_PASS",
+            }
+        ]
+    )
+
+    bridge = build_factor_strategy_bridge_candidates(
+        paper_queue=paper_queue,
+        factor_forward_validation=forward_validation,
+    )
+    row = bridge.to_dicts()[0]
+    reasons = json.loads(row["blocking_reasons"])
+
+    assert row["eligible_for_alpha_factory"] is False
+    assert row["recommended_action"] == "REVIEW_FOR_ALPHA_FACTORY_STRATEGY"
+    assert "forward_validation_not_passed" not in reasons
+    assert "regime_stability_not_positive_or_missing" not in reasons
+    assert row["live_order_effect"] == "none_read_only_research"
 
 
 def _write_bars(

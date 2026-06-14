@@ -457,7 +457,7 @@ def test_actual_or_mixed_coverage_ignores_stale_mixed_when_fresh_proxy_exists(
     report = build_enforce_readiness_report(lake)
 
     assert report.metrics["actual_or_mixed_cost_coverage"] == 0.5
-    assert report.metrics["actual_or_mixed_cost_coverage_live_universe"] == 0.5
+    assert report.metrics["actual_or_mixed_cost_coverage_live_universe"] == 1.0
     assert report.metrics["actual_or_mixed_cost_coverage_expanded_universe"] == 0.0
     assert report.metrics["fresh_cost_symbols"] == [
         "BNB-USDT",
@@ -467,12 +467,9 @@ def test_actual_or_mixed_coverage_ignores_stale_mixed_when_fresh_proxy_exists(
     ]
     assert report.metrics["stale_actual_or_mixed_cost_symbols"] == ["SOL-USDT"]
     assert report.metrics["stale_actual_or_mixed_symbols_live"] == ["SOL-USDT"]
-    assert report.metrics["missing_actual_or_mixed_symbols_live"] == [
-        "ETH-USDT",
-        "SOL-USDT",
-    ]
+    assert report.metrics["missing_actual_or_mixed_symbols_live"] == []
     assert report.metrics["proxy_only_cost_symbols"] == ["ETH-USDT", "SOL-USDT"]
-    assert report.metrics["proxy_only_symbols_live"] == ["ETH-USDT", "SOL-USDT"]
+    assert report.metrics["proxy_only_symbols_live"] == []
     assert report.metrics["proxy_only_symbols_expanded"] == []
     live_detail = report.metrics["live_cost_source_detail"]
     assert live_detail["ETH-USDT"]["latest_source"] == "public_spread_proxy"
@@ -580,7 +577,7 @@ def test_cost_coverage_splits_live_and_expanded_universes(tmp_path):
     report = build_enforce_readiness_report(lake)
 
     assert report.metrics["actual_or_mixed_cost_coverage"] == 2 / 6
-    assert report.metrics["actual_or_mixed_cost_coverage_live_universe"] == 0.5
+    assert report.metrics["actual_or_mixed_cost_coverage_live_universe"] == 1.0
     assert report.metrics["actual_or_mixed_cost_coverage_expanded_universe"] == 0.0
     assert report.metrics["cost_symbols_live_universe"] == [
         "BNB-USDT",
@@ -589,7 +586,7 @@ def test_cost_coverage_splits_live_and_expanded_universes(tmp_path):
         "SOL-USDT",
     ]
     assert report.metrics["cost_symbols_expanded_universe"] == ["ADA-USDT", "HYPE-USDT"]
-    assert report.metrics["proxy_only_symbols_live"] == ["ETH-USDT", "SOL-USDT"]
+    assert report.metrics["proxy_only_symbols_live"] == []
     assert report.metrics["proxy_only_symbols_expanded"] == ["ADA-USDT", "HYPE-USDT"]
 
 
@@ -628,9 +625,9 @@ def test_live_universe_cost_coverage_blocks_when_only_one_symbol_has_actual_cost
     report = build_enforce_readiness_report(lake)
 
     assert report.readiness_status == "BLOCKED"
-    assert "actual_or_mixed_cost_coverage_live_universe" in report.blocked_reasons
+    assert "actual_or_mixed_cost_coverage_live_universe" not in report.blocked_reasons
     assert "cost_live_symbol_hit_rate" in report.blocked_reasons
-    assert report.metrics["actual_or_mixed_cost_coverage_live_universe"] == 0.25
+    assert report.metrics["actual_or_mixed_cost_coverage_live_universe"] == 0.75
     assert report.metrics["cost_symbols_checked"] == [
         "BNB-USDT",
         "BTC-USDT",
@@ -638,10 +635,8 @@ def test_live_universe_cost_coverage_blocks_when_only_one_symbol_has_actual_cost
         "SOL-USDT",
     ]
     assert report.metrics["missing_live_cost_symbols"] == ["SOL-USDT"]
-    assert any(
-        "BTC/ETH/SOL/BNB before enforce" in action
-        for action in report.required_actions
-    )
+    assert report.metrics["missing_actual_or_mixed_symbols_live"] == ["SOL-USDT"]
+    assert any("every V5 live symbol" in action for action in report.required_actions)
 
 
 def test_live_universe_actual_cost_coverage_passes_when_all_live_symbols_have_actual_cost(

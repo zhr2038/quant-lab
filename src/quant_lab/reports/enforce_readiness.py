@@ -11,7 +11,11 @@ from pydantic import BaseModel, ConfigDict, Field
 
 from quant_lab.contracts.models import RiskPermission
 from quant_lab.contracts.v5_quant_lab import V5_QUANT_LAB_CONTRACT_VERSION
-from quant_lab.costs.model import _row_is_stale, estimate_cost_from_cost_bucket_daily_rows
+from quant_lab.costs.model import (
+    _row_is_stale,
+    estimate_cost_from_cost_bucket_daily_rows,
+    evaluate_live_universe_cost_coverage,
+)
 from quant_lab.data.lake import read_parquet_dataset, read_parquet_lazy
 from quant_lab.risk.publish import is_permission_status_enforceable
 from quant_lab.symbols import normalize_symbol
@@ -446,12 +450,16 @@ def _cost_api_metrics(
         and str(row.get("symbol") or "").upper() not in {"", "GLOBAL"}
     } - actual_or_mixed
     live_symbol_set = _normalized_symbol_set(live_symbols)
-    expanded_symbol_set = _normalized_symbol_set(expanded_symbols) - live_symbol_set
-    actual_or_mixed_live = actual_or_mixed & live_symbol_set
-    actual_or_mixed_expanded = actual_or_mixed & expanded_symbol_set
-    proxy_only_live = proxy_only & live_symbol_set
-    proxy_only_expanded = proxy_only & expanded_symbol_set
+    live_coverage = evaluate_live_universe_cost_coverage(
+        pl.DataFrame(cost_rows) if cost_rows else pl.DataFrame(),
+        live_symbols=sorted(live_symbol_set),
+    )
+    actual_or_mixed_live = set(live_coverage["covered_symbols"])
+    proxy_only_live = set(live_coverage["proxy_only_symbols"])
     missing_actual_or_mixed_live = live_symbol_set - actual_or_mixed_live
+    expanded_symbol_set = _normalized_symbol_set(expanded_symbols) - live_symbol_set
+    actual_or_mixed_expanded = actual_or_mixed & expanded_symbol_set
+    proxy_only_expanded = proxy_only & expanded_symbol_set
     live_cost_source_detail = _live_cost_source_detail(
         cost_rows=cost_rows,
         live_symbols=live_symbol_set,
@@ -479,10 +487,7 @@ def _cost_api_metrics(
         "actual_or_mixed_cost_symbol_count": len(actual_or_mixed),
         "actual_or_mixed_cost_coverage": len(actual_or_mixed) / coverage_denominator,
         "actual_or_mixed_cost_symbol_count_live_universe": len(actual_or_mixed_live),
-        "actual_or_mixed_cost_coverage_live_universe": _coverage_rate(
-            actual_or_mixed_live,
-            live_symbol_set,
-        ),
+        "actual_or_mixed_cost_coverage_live_universe": live_coverage["coverage_rate"],
         "actual_or_mixed_cost_symbol_count_expanded_universe": len(
             actual_or_mixed_expanded
         ),

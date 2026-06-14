@@ -8,7 +8,11 @@ import pytest
 
 from quant_lab.data.lake import write_parquet_dataset
 from quant_lab.export.daily import export_daily_pack
-from quant_lab.features.fast_microstructure import build_fast_microstructure_features
+from quant_lab.features.fast_microstructure import (
+    FAST_MICROSTRUCTURE_FORWARD_LOOKBACK_BARS,
+    _forward_recommendation,
+    build_fast_microstructure_features,
+)
 from quant_lab.research.bottom_zone_reversal import build_bottom_zone_reversal_shadow
 from quant_lab.research.market_pressure import build_market_pressure_score
 
@@ -36,6 +40,30 @@ def _market_rows(symbol: str, start: datetime, closes: list[float]) -> list[dict
             }
         )
     return rows
+
+
+def test_fast_microstructure_forward_defaults_and_sample_gate():
+    assert FAST_MICROSTRUCTURE_FORWARD_LOOKBACK_BARS == 2000
+    assert (
+        _forward_recommendation(
+            sample_count=29,
+            rank_ic=0.20,
+            long_short_bps=12.0,
+            p25_net_bps=1.0,
+            hit_rate=0.70,
+        )
+        == "NEEDS_MORE_FORWARD_SAMPLES"
+    )
+    assert (
+        _forward_recommendation(
+            sample_count=30,
+            rank_ic=0.20,
+            long_short_bps=12.0,
+            p25_net_bps=1.0,
+            hit_rate=0.70,
+        )
+        == "FORWARD_VALIDATION_PASS"
+    )
 
 
 def test_bottom_fast_microstructure_and_market_pressure_reports_export(tmp_path):

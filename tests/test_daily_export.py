@@ -404,6 +404,7 @@ def test_research_validation_v3_reports_export_forward_and_cost_coverage(tmp_pat
                 )
             )
         )
+        data_quality = json.loads(archive.read("data_quality.json").decode("utf-8"))
 
     assert any(
         row["recommendation"] == "FORWARD_VALIDATION_PASS"
@@ -411,13 +412,23 @@ def test_research_validation_v3_reports_export_forward_and_cost_coverage(tmp_pat
         and float(row["cost_adjusted_score"]) > 0
         for row in factor_rows
     )
-    assert any(row["eligible_for_alpha_factory"].lower() == "true" for row in bridge_rows)
-    assert any(
-        row["symbol"] == "BNB-USDT"
-        and row["effective_cost_source"] == "mixed_actual_proxy"
-        and float(row["actual_or_mixed_cost_coverage_live_universe"]) >= 0.5
-        for row in cost_coverage_rows
+    bridge_review_rows = [
+        row
+        for row in bridge_rows
+        if row["recommended_action"] == "REVIEW_FOR_ALPHA_FACTORY_STRATEGY"
+    ]
+    assert bridge_review_rows
+    assert not any(
+        "forward_validation_not_passed" in row["blocking_reasons"]
+        or "regime_stability_not_positive_or_missing" in row["blocking_reasons"]
+        for row in bridge_review_rows
     )
+    bnb_coverage = next(row for row in cost_coverage_rows if row["symbol"] == "BNB-USDT")
+    readiness_coverage = data_quality["quant_lab_enforce_readiness"]["metrics"][
+        "actual_or_mixed_cost_coverage_live_universe"
+    ]
+    assert bnb_coverage["effective_cost_source"] == "mixed_actual_proxy"
+    assert float(bnb_coverage["actual_or_mixed_cost_coverage_live_universe"]) == readiness_coverage
     assert any(
         row["feature_name"] == "orderbook_imbalance_1m"
         and row["recommendation"] == "FORWARD_VALIDATION_PASS"

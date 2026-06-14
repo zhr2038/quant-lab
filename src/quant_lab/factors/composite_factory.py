@@ -444,20 +444,34 @@ def build_factor_strategy_bridge_candidates(
     out = []
     for row in _rows(paper_queue):
         reasons = []
-        if str(row.get("recommendation") or "") != "FACTOR_PAPER_REVIEW":
+        factor_id = str(row.get("factor_id") or "")
+        forward_passed = forward_pass_by_factor.get(factor_id, False)
+        paper_review = str(row.get("recommendation") or "") == "FACTOR_PAPER_REVIEW"
+        if not paper_review:
             reasons.append("factor_redundant_or_not_paper_review")
         if (_float(row.get("oos_score")) or 0.0) <= 0:
             reasons.append("oos_not_positive_or_missing")
-        if (_float(row.get("regime_stability_score")) or 0.0) <= 0:
+        if not forward_passed and (_float(row.get("regime_stability_score")) or 0.0) <= 0:
             reasons.append("regime_stability_not_positive_or_missing")
         if (_float(row.get("best_long_short_mean_bps")) or 0.0) <= 0:
             reasons.append("cost_adjusted_long_short_not_positive")
         if (_int(row.get("sample_count")) or 0) < 100:
             reasons.append("sample_count_insufficient")
-        factor_id = str(row.get("factor_id") or "")
-        if not forward_pass_by_factor.get(factor_id, False):
+        if not forward_passed:
             reasons.append("forward_validation_not_passed")
+        review_after_forward_pass = paper_review and forward_passed
+        if review_after_forward_pass and not reasons:
+            reasons.append("alpha_factory_strategy_review_required")
         eligible = not reasons
+        recommended_action = (
+            "REVIEW_FOR_ALPHA_FACTORY_STRATEGY"
+            if review_after_forward_pass
+            else (
+                "CREATE_ALPHA_FACTORY_RESEARCH_CANDIDATE"
+                if eligible
+                else "DISPLAY_ONLY_FACTOR_REVIEW"
+            )
+        )
         out.append(
             {
                 "as_of_date": row.get("as_of_date"),
@@ -467,11 +481,7 @@ def build_factor_strategy_bridge_candidates(
                 "bridge_candidate_id": f"v5.factor_bridge.{factor_id}",
                 "eligible_for_alpha_factory": eligible,
                 "blocking_reasons": safe_json_dumps(reasons),
-                "recommended_action": (
-                    "CREATE_ALPHA_FACTORY_RESEARCH_CANDIDATE"
-                    if eligible
-                    else "DISPLAY_ONLY_FACTOR_REVIEW"
-                ),
+                "recommended_action": recommended_action,
                 "live_order_effect": FACTOR_FACTORY_V2_LIVE_ORDER_EFFECT,
             }
         )
@@ -484,11 +494,7 @@ def _forward_validation_pass_by_factor(frame: pl.DataFrame | None) -> dict[str, 
         factor_id = str(row.get("factor_id") or "")
         if not factor_id:
             continue
-        passed = (
-            str(row.get("recommendation") or "") == "FORWARD_VALIDATION_PASS"
-            and (_float(row.get("regime_stability")) or 0.0) > 0
-            and (_float(row.get("cost_adjusted_score")) or 0.0) > 0
-        )
+        passed = str(row.get("recommendation") or "") == "FORWARD_VALIDATION_PASS"
         out[factor_id] = out.get(factor_id, False) or passed
     return out
 

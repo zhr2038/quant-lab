@@ -32,6 +32,7 @@ LIVE_UNIVERSE_COST_COVERAGE_FIELDS = [
     "effective_cost_source",
     "actual_or_mixed_direct",
     "mixed_proxy_eligible",
+    "stale_actual_or_mixed",
     "actual_or_mixed_covered",
     "sample_count",
     "actual_fill_count",
@@ -50,14 +51,14 @@ LIVE_UNIVERSE_COST_COVERAGE_FIELDS = [
 ]
 
 
-def build_live_universe_cost_coverage(
+def evaluate_live_universe_cost_coverage(
     cost_bucket_daily: pl.DataFrame | None,
     *,
     live_symbols: Iterable[str] = DEFAULT_LIVE_UNIVERSE_SYMBOLS,
     target_coverage: float = 0.50,
     generated_at: datetime | None = None,
-) -> pl.DataFrame:
-    """Build a transparent actual/mixed coverage report for the live universe.
+) -> dict[str, Any]:
+    """Evaluate actual/mixed coverage for the live universe.
 
     A public proxy row can count as mixed only when at least one live symbol has
     direct actual/mixed cost evidence to anchor the fee/slippage side of the model.
@@ -85,6 +86,9 @@ def build_live_universe_cost_coverage(
         latest_actual = _latest_actual_or_mixed_row(symbol_rows)
         latest_proxy = _latest_public_proxy_row(symbol_rows)
         direct = latest_actual is not None
+        stale_actual_or_mixed = (
+            _row_is_stale(latest_actual) if latest_actual is not None else False
+        )
         mixed_proxy_eligible = not direct and has_live_actual_anchor and latest_proxy is not None
         covered = direct or mixed_proxy_eligible
         covered_count += int(covered)
@@ -103,8 +107,11 @@ def build_live_universe_cost_coverage(
                 "effective_cost_source": effective_source or "missing",
                 "actual_or_mixed_direct": direct,
                 "mixed_proxy_eligible": mixed_proxy_eligible,
+                "stale_actual_or_mixed": stale_actual_or_mixed,
+                "latest_actual_or_mixed_stale": stale_actual_or_mixed,
                 "actual_or_mixed_covered": covered,
                 "sample_count": _int_value(source_row.get("sample_count")),
+                "latest_sample_count": _int_value(source_row.get("sample_count")),
                 "actual_fill_count": _int_value(source_row.get("actual_fill_count")),
                 "mixed_fill_count": _int_value(source_row.get("mixed_fill_count")),
                 "proxy_sample_count": _int_value(source_row.get("proxy_sample_count")),
@@ -113,6 +120,7 @@ def build_live_universe_cost_coverage(
                 "slippage_bps_p75": _float_value(source_row, "slippage_bps_p75"),
                 "total_cost_bps_p75": _float_value(source_row, "total_cost_bps_p75"),
                 "latest_created_at": _coverage_ts(source_row),
+                "latest_actual_or_mixed_created_at": _coverage_ts(latest_actual or {}),
                 "coverage_reason": _coverage_reason(
                     direct=direct,
                     mixed_proxy_eligible=mixed_proxy_eligible,
@@ -133,6 +141,52 @@ def build_live_universe_cost_coverage(
     for row in output:
         row["actual_or_mixed_cost_coverage_live_universe"] = coverage_rate
         row["coverage_status"] = status
+    return {
+        "rows": output,
+        "coverage_rate": coverage_rate,
+        "target_coverage": target_coverage,
+        "coverage_status": status,
+        "covered_symbols": sorted(
+            str(row["symbol"]) for row in output if bool(row["actual_or_mixed_covered"])
+        ),
+        "direct_symbols": sorted(
+            str(row["symbol"]) for row in output if bool(row["actual_or_mixed_direct"])
+        ),
+        "mixed_proxy_symbols": sorted(
+            str(row["symbol"]) for row in output if bool(row["mixed_proxy_eligible"])
+        ),
+        "stale_actual_or_mixed_symbols": sorted(
+            str(row["symbol"]) for row in output if bool(row["stale_actual_or_mixed"])
+        ),
+        "missing_symbols": sorted(
+            str(row["symbol"]) for row in output if row["latest_source"] == "missing"
+        ),
+        "proxy_only_symbols": sorted(
+            str(row["symbol"])
+            for row in output
+            if row["latest_source"] in {"public_spread_proxy", "public_proxy"}
+            and not bool(row["actual_or_mixed_covered"])
+        ),
+        "detail_by_symbol": {str(row["symbol"]): row for row in output},
+    }
+
+
+def build_live_universe_cost_coverage(
+    cost_bucket_daily: pl.DataFrame | None,
+    *,
+    live_symbols: Iterable[str] = DEFAULT_LIVE_UNIVERSE_SYMBOLS,
+    target_coverage: float = 0.50,
+    generated_at: datetime | None = None,
+) -> pl.DataFrame:
+    """Build a transparent actual/mixed coverage report for the live universe."""
+
+    evaluation = evaluate_live_universe_cost_coverage(
+        cost_bucket_daily,
+        live_symbols=live_symbols,
+        target_coverage=target_coverage,
+        generated_at=generated_at,
+    )
+    output = list(evaluation["rows"])
     if not output:
         return pl.DataFrame(schema={field: pl.Utf8 for field in LIVE_UNIVERSE_COST_COVERAGE_FIELDS})
     return pl.DataFrame(output, infer_schema_length=None).select(

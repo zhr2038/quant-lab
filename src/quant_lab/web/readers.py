@@ -548,6 +548,7 @@ WEB_RECENT_FILE_SAMPLE_DATASETS = (
 )
 WEB_HEAVY_EXACT_ROW_COUNT_FILE_LIMIT = 64
 WEB_HEAVY_ROW_COUNT_SAMPLE_FILES = 32
+WEB_HEAVY_INDEX_FALLBACK_FILE_LIMIT = 512
 WEB_FULL_VALIDATION_FILE_LIMIT = 512
 WEB_RECENT_FILE_LIMITS = {
     "trade_print": 6,
@@ -1283,13 +1284,20 @@ def _parquet_file_candidates_with_warning(path: Path) -> tuple[list[Path], str |
 def _parquet_file_index_fallback_candidates(path: Path) -> tuple[list[Path], str | None]:
     dataset_name = _dataset_name_from_path(path)
     if dataset_name in WEB_HEAVY_METADATA_DATASETS:
-        perf.record_event(
-            "web_file_index_lookup",
-            dataset_name=dataset_name,
-            files_scanned=0,
-            warning=WEB_FILE_INDEX_FALLBACK_WARNING,
+        candidates, truncated = _bounded_parquet_file_candidates_rglob(
+            path,
+            max_files=WEB_HEAVY_INDEX_FALLBACK_FILE_LIMIT,
         )
-        return [], WEB_FILE_INDEX_FALLBACK_WARNING
+        perf.record_event(
+            "web_file_index_fallback_rglob",
+            dataset_name=dataset_name,
+            files_scanned=len(candidates),
+            rglob_fallback=True,
+            warning=WEB_FILE_INDEX_FALLBACK_WARNING if truncated or not candidates else None,
+        )
+        if candidates and not truncated:
+            return candidates, None
+        return candidates, WEB_FILE_INDEX_FALLBACK_WARNING
     candidates = _parquet_file_candidates_rglob(path)
     perf.record_event(
         "web_file_index_fallback_rglob",
@@ -1394,6 +1402,27 @@ def _parquet_file_candidates_rglob(path: Path) -> list[Path]:
     return sorted(
         candidate for candidate in path.rglob("*.parquet") if not _is_internal_lake_path(candidate)
     )
+
+
+def _bounded_parquet_file_candidates_rglob(
+    path: Path,
+    *,
+    max_files: int,
+) -> tuple[list[Path], bool]:
+    if path.is_file() and path.suffix == ".parquet":
+        return ([] if _is_internal_lake_path(path) else [path]), False
+    if not path.exists():
+        return [], False
+    candidates: list[Path] = []
+    truncated = False
+    for candidate in path.rglob("*.parquet"):
+        if _is_internal_lake_path(candidate):
+            continue
+        if len(candidates) >= max_files:
+            truncated = True
+            break
+        candidates.append(candidate)
+    return sorted(candidates), truncated
 
 
 def _indexed_files_for_web(path: Path) -> list[Path] | None:

@@ -2057,23 +2057,18 @@ def test_web_file_index_stale_check_ignores_snapshot_meta_mtime(tmp_path, monkey
     assert warning is None
 
 
-def test_web_readers_do_not_rglob_heavy_datasets_when_file_index_missing(tmp_path, monkeypatch):
+def test_web_readers_use_bounded_heavy_fallback_when_file_index_missing(tmp_path):
     readers.clear_web_cache()
     lake_root = _fixture_lake(tmp_path)
     dataset_path = lake_root / "silver" / "trade_print"
-
-    def fail_rglob(_path):
-        raise AssertionError("web reader should not rglob heavy lake datasets")
-
-    monkeypatch.setattr(readers, "_parquet_file_candidates_rglob", fail_rglob)
 
     files, warning = readers._valid_parquet_files_with_warning(
         dataset_path,
         "trade_print",
     )
 
-    assert files == []
-    assert readers.WEB_FILE_INDEX_FALLBACK_WARNING in str(warning)
+    assert files
+    assert warning is None
 
 
 def test_refresh_web_file_index_covers_web_reader_datasets(tmp_path, monkeypatch):

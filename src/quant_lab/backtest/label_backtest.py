@@ -164,7 +164,10 @@ def _samples_from_frame(dataset_name: str, frame: pl.DataFrame | None) -> list[d
     for row in deduped_rows:
         strategy_id = _strategy_id(dataset_name, row)
         symbol = normalize_strategy_symbol(first_value(row, ("symbol", "would_buy_symbol")))
-        if symbol == "UNKNOWN" and str(first_value(row, ("selected_symbols", "would_buy_symbols")) or "").strip():
+        selected_symbols = str(
+            first_value(row, ("selected_symbols", "would_buy_symbols")) or ""
+        ).strip()
+        if symbol == "UNKNOWN" and selected_symbols:
             symbol = "MULTI"
         regime = str(
             first_value(
@@ -182,11 +185,17 @@ def _samples_from_frame(dataset_name: str, frame: pl.DataFrame | None) -> list[d
         decision_ts = coerce_dt(
             first_value(row, ("decision_ts", "ts_utc", "entry_ts", "as_of_ts", "generated_at"))
         )
-        cost_model = str(first_value(row, ("cost_model", "cost_model_version", "cost_source")) or "")
+        cost_model = str(
+            first_value(row, ("cost_model", "cost_model_version", "cost_source")) or ""
+        )
         explicit_horizon = float_or_none(
             first_value(row, ("horizon_hours", "suggested_horizon_hours", "primary_horizon_hours"))
         )
-        horizons = (int(explicit_horizon),) if explicit_horizon and explicit_horizon > 0 else HORIZONS
+        horizons = (
+            (int(explicit_horizon),)
+            if explicit_horizon and explicit_horizon > 0
+            else HORIZONS
+        )
         for horizon in horizons:
             value = _horizon_value(row, horizon)
             if value is None and dataset_name == "bottom_zone_reversal_shadow":
@@ -270,7 +279,12 @@ def _dedupe_key(
             values.append(str(first_value(row, ("strategy_id", "strategy_candidate")) or ""))
         elif key == "ts_utc":
             values.append(
-                iso_utc(first_value(row, ("ts_utc", "decision_ts", "entry_ts", "as_of_ts", "generated_at")))
+                iso_utc(
+                    first_value(
+                        row,
+                        ("ts_utc", "decision_ts", "entry_ts", "as_of_ts", "generated_at"),
+                    )
+                )
             )
         else:
             values.append(str(row.get(key) or ""))
@@ -281,7 +295,9 @@ def _dedupe_key(
 
 def _row_freshness_ts(row: dict[str, Any]) -> datetime:
     return (
-        coerce_dt(first_value(row, ("bundle_ts", "ingest_ts", "generated_at", "as_of_ts", "ts_utc")))
+        coerce_dt(
+            first_value(row, ("bundle_ts", "ingest_ts", "generated_at", "as_of_ts", "ts_utc"))
+        )
         or datetime.min.replace(tzinfo=UTC)
     )
 
@@ -291,11 +307,19 @@ def _expanded_hype_wld_samples(frames: dict[str, pl.DataFrame]) -> list[dict[str
     maturity_rows = rows(frames.get("expanded_universe_candidate_maturity", pl.DataFrame()))
     ready_by_symbol: dict[str, list[Any]] = defaultdict(list)
     for row in maturity_rows:
-        state = str(first_value(row, ("expanded_universe_maturity_state", "maturity_state", "decision")) or "").upper()
+        state = str(
+            first_value(
+                row,
+                ("expanded_universe_maturity_state", "maturity_state", "decision"),
+            )
+            or ""
+        ).upper()
         if state != "PAPER_READY":
             continue
         symbol = normalize_strategy_symbol(row.get("symbol"))
-        ts = coerce_dt(first_value(row, ("as_of_ts", "generated_at", "paper_ready_ts", "decision_ts")))
+        ts = coerce_dt(
+            first_value(row, ("as_of_ts", "generated_at", "paper_ready_ts", "decision_ts"))
+        )
         ready_by_symbol[symbol].append(ts)
 
     output: list[dict[str, Any]] = []
@@ -320,7 +344,10 @@ def _expanded_hype_wld_samples(frames: dict[str, pl.DataFrame]) -> list[dict[str
                     "net_bps": _horizon_value(row, horizon),
                     "decision_ts": iso_utc(decision_ts),
                     "_decision_ts": decision_ts,
-                    "cost_model": str(first_value(row, ("cost_model", "cost_source")) or "conservative_p75"),
+                    "cost_model": str(
+                        first_value(row, ("cost_model", "cost_source"))
+                        or "conservative_p75"
+                    ),
                     "data_leakage_check": "pass_maturity_state_visible_at_decision_time",
                     "_dedupe_before_rows": 0,
                     "_dedupe_after_rows": 0,

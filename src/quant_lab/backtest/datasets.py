@@ -1,8 +1,9 @@
 from __future__ import annotations
 
 import math
+from collections.abc import Iterable
 from datetime import UTC, datetime, timedelta
-from typing import Any, Iterable
+from typing import Any
 
 import polars as pl
 

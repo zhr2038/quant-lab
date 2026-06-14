@@ -8,7 +8,6 @@ import polars as pl
 
 from quant_lab.symbols import normalize_symbol
 
-
 MARKET_PRESSURE_SCHEMA_VERSION = "market_pressure_score.v0.1"
 MAJOR_SYMBOLS = ["BTC-USDT", "ETH-USDT", "SOL-USDT", "BNB-USDT"]
 MARKET_PRESSURE_FIELDS = [
@@ -44,7 +43,11 @@ def build_market_pressure_score(
     if bottom_zone_reversal_shadow.is_empty():
         return _empty_frame()
     rows = bottom_zone_reversal_shadow.to_dicts()
-    fast_frame = fast_microstructure_features if fast_microstructure_features is not None else pl.DataFrame()
+    fast_frame = (
+        fast_microstructure_features
+        if fast_microstructure_features is not None
+        else pl.DataFrame()
+    )
     fast_rows = fast_frame.to_dicts()
     latest_ts = _latest_iso([*rows, *fast_rows]) or generated.isoformat().replace("+00:00", "Z")
     by_symbol = {normalize_symbol(row.get("symbol")): row for row in rows}
@@ -149,7 +152,11 @@ def _float(value: Any) -> float | None:
 
 
 def _latest_iso(rows: list[dict[str, Any]]) -> str | None:
-    values = [str(row.get("ts_utc") or "").strip() for row in rows if str(row.get("ts_utc") or "").strip()]
+    values = [
+        str(row.get("ts_utc") or "").strip()
+        for row in rows
+        if str(row.get("ts_utc") or "").strip()
+    ]
     return max(values) if values else None
 
 
@@ -177,7 +184,15 @@ def _pressure_score(
 ) -> float:
     score = 0.5
     if avg_return is not None:
-        score += 0.20 if avg_return > 80 else -0.25 if avg_return < -250 else -0.10 if avg_return < -120 else 0.0
+        score += (
+            0.20
+            if avg_return > 80
+            else -0.25
+            if avg_return < -250
+            else -0.10
+            if avg_return < -120
+            else 0.0
+        )
     score += 0.10 * min(max(broad_positive - 1, 0), 3)
     score += 0.12 * min(bottom_probe_allowed_count, 3)
     score += 0.05 * min(capitulation_watch_count, 3)

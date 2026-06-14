@@ -32,14 +32,19 @@ def conservative_cost_for_symbol(
         if value is None:
             continue
         values.append(value)
-        source = str(row.get("source") or row.get("cost_source") or row.get("fallback_level") or "").strip()
+        source = str(
+            row.get("source") or row.get("cost_source") or row.get("fallback_level") or ""
+        ).strip()
         if source:
             sources.add(source)
     if values:
         values.sort()
         index = min(max(int(round((len(values) - 1) * 0.75)), 0), len(values) - 1)
         source_text = "+".join(sorted(sources)) if sources else "cost_bucket_daily"
-        return BacktestCost(cost_bps=float(values[index]), cost_model=f"conservative_p75:{source_text}")
+        return BacktestCost(
+            cost_bps=float(values[index]),
+            cost_model=f"conservative_p75:{source_text}",
+        )
     return BacktestCost(cost_bps=float(default_bps), cost_model="conservative_default_30bps")
 
 

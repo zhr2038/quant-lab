@@ -1,13 +1,13 @@
 from __future__ import annotations
 
 import math
+from collections.abc import Iterable
 from datetime import UTC, datetime, timedelta
-from typing import Any, Iterable
+from typing import Any
 
 import polars as pl
 
 from quant_lab.symbols import normalize_symbol
-
 
 BOTTOM_ZONE_SCHEMA_VERSION = "bottom_zone_reversal_shadow.v0.1"
 BOTTOM_ZONE_FIELDS = [
@@ -66,7 +66,10 @@ def build_bottom_zone_reversal_shadow(
     spread_frame = orderbook_spread_1m if orderbook_spread_1m is not None else pl.DataFrame()
     trade_frame = trade_activity_1m if trade_activity_1m is not None else pl.DataFrame()
     spreads_by_symbol = _rows_by_symbol(spread_frame, ts_fields=("minute_ts", "ts"))
-    trades_by_symbol = _rows_by_symbol(trade_frame, ts_fields=("minute_ts", "latest_trade_ts", "ts"))
+    trades_by_symbol = _rows_by_symbol(
+        trade_frame,
+        ts_fields=("minute_ts", "latest_trade_ts", "ts"),
+    )
     rows: list[dict[str, Any]] = []
     for symbol, bars in sorted(bars_by_symbol.items()):
         latest = bars[-1] if bars else None
@@ -170,7 +173,9 @@ def build_bottom_zone_reversal_shadow(
                 "bounce_probability_score": score,
                 "bottom_zone_score": score,
                 "bounce_probability_4h": score,
-                "invalid_below_px": round(support_zone_low * 0.995, 8) if support_zone_low else None,
+                "invalid_below_px": (
+                    round(support_zone_low * 0.995, 8) if support_zone_low else None
+                ),
                 "bottom_zone_state": state,
                 "would_probe_paper": would_probe,
                 "no_probe_reason": reason,
@@ -229,7 +234,11 @@ def _empty_frame() -> pl.DataFrame:
     return pl.DataFrame(schema={field: pl.Utf8 for field in BOTTOM_ZONE_FIELDS})
 
 
-def _rows_by_symbol(frame: pl.DataFrame, *, ts_fields: Iterable[str]) -> dict[str, list[dict[str, Any]]]:
+def _rows_by_symbol(
+    frame: pl.DataFrame,
+    *,
+    ts_fields: Iterable[str],
+) -> dict[str, list[dict[str, Any]]]:
     if frame is None or frame.is_empty() or "symbol" not in frame.columns:
         return {}
     rows: dict[str, list[dict[str, Any]]] = {}
@@ -287,7 +296,12 @@ def _window_rows(rows: list[dict[str, Any]], ts: datetime, *, hours: int) -> lis
     return [row for row in rows if start <= row.get("_ts") <= ts]
 
 
-def _minute_window(rows: list[dict[str, Any]], ts: datetime, *, minutes: int) -> list[dict[str, Any]]:
+def _minute_window(
+    rows: list[dict[str, Any]],
+    ts: datetime,
+    *,
+    minutes: int,
+) -> list[dict[str, Any]]:
     start = ts - timedelta(minutes=minutes)
     return [row for row in rows if start <= row.get("_ts") <= ts]
 
@@ -298,13 +312,25 @@ def _min_value(rows: list[dict[str, Any]], ts: datetime, *, hours: int, field: s
     return min(values) if values else None
 
 
-def _avg_value(rows: list[dict[str, Any]], ts: datetime, *, minutes: int, field: str) -> float | None:
+def _avg_value(
+    rows: list[dict[str, Any]],
+    ts: datetime,
+    *,
+    minutes: int,
+    field: str,
+) -> float | None:
     values = [_float(row.get(field)) for row in _minute_window(rows, ts, minutes=minutes)]
     values = [value for value in values if value is not None]
     return sum(values) / len(values) if values else None
 
 
-def _sum_value(rows: list[dict[str, Any]], ts: datetime, *, minutes: int, field: str) -> float | None:
+def _sum_value(
+    rows: list[dict[str, Any]],
+    ts: datetime,
+    *,
+    minutes: int,
+    field: str,
+) -> float | None:
     values = [_float(row.get(field)) for row in _minute_window(rows, ts, minutes=minutes)]
     values = [value for value in values if value is not None]
     return sum(values) if values else None
@@ -326,7 +352,13 @@ def _support_zone_high(
     return support_zone_low * 1.01 if support_zone_low else None
 
 
-def _latest_value(rows: list[dict[str, Any]], ts: datetime, *, minutes: int, fields: Iterable[str]) -> float | None:
+def _latest_value(
+    rows: list[dict[str, Any]],
+    ts: datetime,
+    *,
+    minutes: int,
+    fields: Iterable[str],
+) -> float | None:
     for row in reversed(_minute_window(rows, ts, minutes=minutes)):
         for field in fields:
             value = _float(row.get(field))
@@ -401,7 +433,9 @@ def _volatility_climax_score(*, return_24h: float | None, trade_count_60m: float
 
 
 def _latest_close(rows: list[dict[str, Any]], ts: datetime) -> float | None:
-    candidates = [row for row in rows if row.get("_ts") <= ts and _float(row.get("close")) is not None]
+    candidates = [
+        row for row in rows if row.get("_ts") <= ts and _float(row.get("close")) is not None
+    ]
     if not candidates:
         return None
     return _float(candidates[-1].get("close"))
@@ -446,7 +480,13 @@ def _bounce_probability_score(
     if return_24h is not None:
         score += 0.30 if return_24h <= -300 else 0.15 if return_24h <= -150 else -0.10
     if distance_to_24h_low_bps is not None:
-        score += 0.25 if 20 <= distance_to_24h_low_bps <= 180 else -0.10 if distance_to_24h_low_bps > 350 else 0.05
+        score += (
+            0.25
+            if 20 <= distance_to_24h_low_bps <= 180
+            else -0.10
+            if distance_to_24h_low_bps > 350
+            else 0.05
+        )
     if return_4h is not None:
         score += 0.20 if return_4h > 30 else -0.15 if return_4h < -120 else 0.0
     if close_vs_vwap_24h_bps is not None:

@@ -214,9 +214,14 @@ def build_system_acceptance_dashboard(
     v5_ok = not stale
     v5_status = "PASS" if v5_ok else "WARNING"
     if stale:
-        v5_next_action = "V5 bundle is stale; downgrade V5-derived conclusions and rerun telemetry sync"
+        v5_next_action = (
+            "V5 bundle is stale; downgrade V5-derived conclusions and rerun telemetry sync"
+        )
     elif not authoritative:
-        v5_next_action = "synced but pre-export V5 refresh was disabled; enable refresh for an authoritative snapshot"
+        v5_next_action = (
+            "synced but pre-export V5 refresh was disabled; "
+            "enable refresh for an authoritative snapshot"
+        )
     else:
         v5_next_action = ""
     checks.append(

@@ -233,6 +233,41 @@ def test_factor_bridge_routes_forward_pass_without_regime_stability_block():
     assert row["live_order_effect"] == "none_read_only_research"
 
 
+def test_factor_bridge_adds_review_row_for_forward_pass_outside_paper_queue():
+    forward_validation = pl.DataFrame(
+        [
+            {
+                "as_of_date": "2026-06-14",
+                "factor_id": "core.mean_reversion_vol_adjusted_4",
+                "factor_family": "risk_adjusted_reversal",
+                "candidate_state": "KEEP_SHADOW",
+                "symbol": "SOL-USDT",
+                "regime": "TREND_UP",
+                "horizon_hours": 8,
+                "sample_count": 115,
+                "rank_ic": 0.296236,
+                "cost_adjusted_score": 114.120904,
+                "recommendation": "FORWARD_VALIDATION_PASS",
+                "live_order_effect": "none_read_only_research",
+            }
+        ]
+    )
+
+    bridge = build_factor_strategy_bridge_candidates(
+        paper_queue=pl.DataFrame(),
+        factor_forward_validation=forward_validation,
+    )
+    row = bridge.to_dicts()[0]
+    reasons = json.loads(row["blocking_reasons"])
+
+    assert row["factor_id"] == "core.mean_reversion_vol_adjusted_4"
+    assert row["eligible_for_alpha_factory"] is False
+    assert row["recommended_action"] == "REVIEW_FOR_ALPHA_FACTORY_STRATEGY"
+    assert "not_in_factor_paper_review_queue" in reasons
+    assert "forward_validation_not_passed" not in reasons
+    assert row["live_order_effect"] == "none_read_only_research"
+
+
 def _write_bars(
     lake,
     *,

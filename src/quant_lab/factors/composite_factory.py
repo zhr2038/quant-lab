@@ -441,10 +441,15 @@ def build_factor_strategy_bridge_candidates(
     factor_forward_validation: pl.DataFrame | None = None,
 ) -> pl.DataFrame:
     forward_pass_by_factor = _forward_validation_pass_by_factor(factor_forward_validation)
+    forward_pass_rows_by_factor = _forward_validation_pass_rows_by_factor(
+        factor_forward_validation
+    )
+    seen_factor_ids: set[str] = set()
     out = []
     for row in _rows(paper_queue):
         reasons = []
         factor_id = str(row.get("factor_id") or "")
+        seen_factor_ids.add(factor_id)
         forward_passed = forward_pass_by_factor.get(factor_id, False)
         paper_review = str(row.get("recommendation") or "") == "FACTOR_PAPER_REVIEW"
         if not paper_review:
@@ -485,18 +490,61 @@ def build_factor_strategy_bridge_candidates(
                 "live_order_effect": FACTOR_FACTORY_V2_LIVE_ORDER_EFFECT,
             }
         )
+    for factor_id, row in sorted(forward_pass_rows_by_factor.items()):
+        if factor_id in seen_factor_ids:
+            continue
+        out.append(
+            {
+                "as_of_date": row.get("as_of_date"),
+                "factor_id": factor_id,
+                "factor_family": row.get("factor_family"),
+                "correlation_cluster_id": row.get("correlation_cluster_id"),
+                "bridge_candidate_id": f"v5.factor_bridge.{factor_id}",
+                "eligible_for_alpha_factory": False,
+                "blocking_reasons": safe_json_dumps(
+                    [
+                        "not_in_factor_paper_review_queue",
+                        "alpha_factory_strategy_review_required",
+                    ]
+                ),
+                "recommended_action": "REVIEW_FOR_ALPHA_FACTORY_STRATEGY",
+                "live_order_effect": FACTOR_FACTORY_V2_LIVE_ORDER_EFFECT,
+            }
+        )
     return _frame(out, FACTOR_STRATEGY_BRIDGE_CANDIDATE_FIELDS)
 
 
 def _forward_validation_pass_by_factor(frame: pl.DataFrame | None) -> dict[str, bool]:
-    out: dict[str, bool] = {}
+    return {
+        factor_id: True
+        for factor_id in _forward_validation_pass_rows_by_factor(frame)
+    }
+
+
+def _forward_validation_pass_rows_by_factor(
+    frame: pl.DataFrame | None,
+) -> dict[str, dict[str, Any]]:
+    out: dict[str, dict[str, Any]] = {}
     for row in _rows(frame):
         factor_id = str(row.get("factor_id") or "")
         if not factor_id:
             continue
-        passed = str(row.get("recommendation") or "") == "FORWARD_VALIDATION_PASS"
-        out[factor_id] = out.get(factor_id, False) or passed
+        if str(row.get("recommendation") or "") != "FORWARD_VALIDATION_PASS":
+            continue
+        current = out.get(factor_id)
+        if current is None or _forward_validation_rank_key(row) > _forward_validation_rank_key(
+            current
+        ):
+            out[factor_id] = row
     return out
+
+
+def _forward_validation_rank_key(row: dict[str, Any]) -> tuple[float, int, float]:
+    return (
+        _float(row.get("cost_adjusted_score")) or 0.0,
+        _int(row.get("sample_count")) or 0,
+        _float(row.get("rank_ic")) or 0.0,
+    )
 
 
 def _candidate_rank_key(row: dict[str, Any]) -> tuple[int, float, float, float, str]:

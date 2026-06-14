@@ -146,9 +146,15 @@ def _coalesced_lazy_time(available: set[str]) -> pl.Expr | None:
 
 
 def _lazy_datetime(column: str) -> pl.Expr:
-    return pl.col(column).cast(pl.Utf8, strict=False).str.to_datetime(
-        time_zone="UTC",
-        strict=False,
+    return (
+        pl.col(column)
+        .cast(pl.Utf8, strict=False)
+        .str.strip_chars()
+        .replace("", None)
+        .str.to_datetime(
+            time_zone="UTC",
+            strict=False,
+        )
     )
 
 

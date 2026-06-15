@@ -289,6 +289,10 @@ def test_daily_export_template_is_packaging_only():
     assert "export-daily" in unit
     assert "--no-refresh-risk-permission" in unit
     assert "--no-pre-export-v5-refresh" in unit
+    assert "TimeoutStartSec=45min" in unit
+    assert "/var/lock/quant-lab-heavy.lock" in unit
+    assert "/var/lock/quant-lab-v5-telemetry-sync.lock" in unit
+    assert "SKIP_DAILY_EXPORT_LOCK_BUSY" in unit
     assert (
         "ExecStartPre=/opt/quant-lab/.venv/bin/qlab publish-risk-permission "
         "--lake-root /var/lib/quant-lab/lake --strategy v5 --version 5.0.0"

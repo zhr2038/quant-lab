@@ -527,6 +527,7 @@ def build_factor_strategy_bridge_candidates(
                 "live_order_effect": FACTOR_FACTORY_V2_LIVE_ORDER_EFFECT,
             }
         )
+    out.sort(key=_bridge_candidate_rank_key)
     return _frame(out, FACTOR_STRATEGY_BRIDGE_CANDIDATE_FIELDS)
 
 
@@ -635,6 +636,17 @@ def _join_unique(values: Any) -> str:
         if text and text not in out:
             out.append(text)
     return ",".join(out)
+
+
+def _bridge_candidate_rank_key(row: dict[str, Any]) -> tuple[int, int, str]:
+    action = str(row.get("recommended_action") or "")
+    action_rank = {
+        "REVIEW_FOR_ALPHA_FACTORY_STRATEGY": 0,
+        "CREATE_ALPHA_FACTORY_RESEARCH_CANDIDATE": 1,
+        "DISPLAY_ONLY_FACTOR_REVIEW": 2,
+    }.get(action, 3)
+    has_forward_context = 0 if str(row.get("symbol") or "").strip() else 1
+    return (action_rank, has_forward_context, str(row.get("factor_id") or ""))
 
 
 def _candidate_rank_key(row: dict[str, Any]) -> tuple[int, float, float, float, str]:

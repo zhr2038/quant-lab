@@ -326,6 +326,61 @@ def test_factor_bridge_aggregates_forward_pass_context_for_strategy_review():
     assert row["recommended_action"] == "REVIEW_FOR_ALPHA_FACTORY_STRATEGY"
 
 
+def test_factor_bridge_prioritizes_strategy_review_rows():
+    paper_queue = pl.DataFrame(
+        [
+            {
+                "as_of_date": "2026-06-15",
+                "factor_id": "core.display_only",
+                "factor_family": "momentum",
+                "candidate_state": "PAPER_READY",
+                "best_long_short_mean_bps": 12.0,
+                "sample_count": 150,
+                "oos_score": 1.0,
+                "regime_stability_score": 1.0,
+                "correlation_cluster_id": "cluster_001",
+                "recommendation": "FACTOR_PAPER_REVIEW",
+                "live_order_effect": "none_read_only_research",
+            },
+            {
+                "as_of_date": "2026-06-15",
+                "factor_id": "core.mean_reversion_vol_adjusted_4",
+                "factor_family": "risk_adjusted_reversal",
+                "candidate_state": "PAPER_READY",
+                "best_long_short_mean_bps": 12.0,
+                "sample_count": 150,
+                "oos_score": 1.0,
+                "regime_stability_score": 1.0,
+                "correlation_cluster_id": "cluster_002",
+                "recommendation": "FACTOR_PAPER_REVIEW",
+                "live_order_effect": "none_read_only_research",
+            },
+        ]
+    )
+    forward_validation = pl.DataFrame(
+        [
+            {
+                "factor_id": "core.mean_reversion_vol_adjusted_4",
+                "symbol": "SOL-USDT",
+                "regime": "TREND_UP",
+                "horizon_hours": 8,
+                "sample_count": 122,
+                "rank_ic": 0.27,
+                "cost_adjusted_score": 108.0,
+                "recommendation": "FORWARD_VALIDATION_PASS",
+            }
+        ]
+    )
+
+    bridge = build_factor_strategy_bridge_candidates(
+        paper_queue=paper_queue,
+        factor_forward_validation=forward_validation,
+    )
+
+    assert bridge["recommended_action"][0] == "REVIEW_FOR_ALPHA_FACTORY_STRATEGY"
+    assert bridge["factor_id"][0] == "core.mean_reversion_vol_adjusted_4"
+
+
 def _write_bars(
     lake,
     *,

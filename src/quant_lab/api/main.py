@@ -313,21 +313,25 @@ def create_app() -> FastAPI:
         }
 
     @app.get("/v1/web/bigscreen-snapshot")
-    def web_bigscreen_snapshot(response: Response) -> dict[str, Any]:
+    def web_bigscreen_snapshot() -> JSONResponse:
         from quant_lab.web.bigscreen import bigscreen_snapshot
 
         payload = bigscreen_snapshot(_lake_root())
-        response.headers["X-Quant-Lab-Bigscreen-Mode"] = "read-only"
-        response.headers["X-Quant-Lab-Response-Bytes"] = str(
-            len(json.dumps(payload, default=str).encode("utf-8"))
+        return _utf8_json_response(
+            payload,
+            headers={
+                "X-Quant-Lab-Bigscreen-Mode": "read-only",
+                "X-Quant-Lab-Response-Bytes": str(
+                    len(json.dumps(payload, default=str).encode("utf-8"))
+                ),
+            },
         )
-        return payload
 
     @app.get("/web-v2/snapshot")
-    def web_bigscreen_snapshot_for_static_page() -> dict[str, Any]:
+    def web_bigscreen_snapshot_for_static_page() -> JSONResponse:
         from quant_lab.web.bigscreen import bigscreen_snapshot
 
-        return bigscreen_snapshot(_lake_root())
+        return _utf8_json_response(bigscreen_snapshot(_lake_root()))
 
     @app.post("/web-v2/expert-pack/generate")
     def web_v2_generate_expert_pack(response: Response) -> dict[str, Any]:
@@ -985,6 +989,14 @@ def _compute_live_permission_with_context(
 
 def _lake_root() -> Path:
     return Path(os.environ.get("QUANT_LAB_LAKE_ROOT", "/var/lib/quant-lab/lake"))
+
+
+def _utf8_json_response(content: Any, *, headers: dict[str, str] | None = None) -> JSONResponse:
+    return JSONResponse(
+        content=content,
+        headers=headers,
+        media_type="application/json; charset=utf-8",
+    )
 
 
 def _bigscreen_static_root() -> Path:

@@ -284,6 +284,9 @@ def test_bigscreen_snapshot_endpoints_return_payload(monkeypatch, tmp_path):
 
     assert protected_response.status_code == 200
     assert web_response.status_code == 200
+    assert protected_response.headers["content-type"] == "application/json; charset=utf-8"
+    assert web_response.headers["content-type"] == "application/json; charset=utf-8"
+    assert protected_response.headers["x-quant-lab-bigscreen-mode"] == "read-only"
     assert protected_response.json()["mode"] == "read-only"
     assert web_response.json()["mode"] == "read-only"
 

@@ -68,6 +68,19 @@ def test_collect_recent_heavy_files_uses_timestamp_not_physical_tail(tmp_path):
     assert collected["ts"].min() >= base + timedelta(minutes=1)
 
 
+def test_microstructure_rollup_limits_cover_forward_validation_window():
+    min_rows_for_30_hourly_samples = 80_000
+
+    assert (
+        daily_export_module.HEAVY_EXPORT_DATASET_LIMITS["trade_activity_1m"]
+        >= min_rows_for_30_hourly_samples
+    )
+    assert (
+        daily_export_module.HEAVY_EXPORT_DATASET_LIMITS["orderbook_spread_1m"]
+        >= min_rows_for_30_hourly_samples
+    )
+
+
 def test_export_daily_pack_writes_required_members(tmp_path):
     lake_root = _fixture_lake(tmp_path)
     result = export_daily_pack(

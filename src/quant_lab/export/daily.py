@@ -172,8 +172,11 @@ HEAVY_EXPORT_DATASET_LIMITS = {
     "alpha_factory_promotion_queue": 10_000,
     "trade_print": 10_000,
     "orderbook_snapshot": 10_000,
-    "trade_activity_1m": 10_000,
-    "orderbook_spread_1m": 10_000,
+    # Fast microstructure forward validation needs more than a few hours of
+    # all-symbol 1m rollups; 100k rows keeps roughly 40-50h on the current
+    # production universe while staying well below full-dataset export size.
+    "trade_activity_1m": 100_000,
+    "orderbook_spread_1m": 100_000,
     "v5_decision_audit": 5_000,
     "v5_trade_event": 10_000,
     "v5_missed_opportunity_audit": 20_000,

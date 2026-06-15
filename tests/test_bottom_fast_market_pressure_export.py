@@ -10,6 +10,7 @@ from quant_lab.data.lake import write_parquet_dataset
 from quant_lab.export.daily import export_daily_pack
 from quant_lab.features.fast_microstructure import (
     FAST_MICROSTRUCTURE_FORWARD_LOOKBACK_BARS,
+    _forward_lookback_bars,
     _forward_recommendation,
     build_fast_microstructure_features,
 )
@@ -42,8 +43,16 @@ def _market_rows(symbol: str, start: datetime, closes: list[float]) -> list[dict
     return rows
 
 
-def test_fast_microstructure_forward_defaults_and_sample_gate():
+def test_fast_microstructure_forward_defaults_and_sample_gate(monkeypatch):
+    monkeypatch.delenv("FAST_MICROSTRUCTURE_FORWARD_LOOKBACK_BARS", raising=False)
+    monkeypatch.delenv("QUANT_LAB_FAST_MICROSTRUCTURE_FORWARD_LOOKBACK_BARS", raising=False)
     assert FAST_MICROSTRUCTURE_FORWARD_LOOKBACK_BARS == 2000
+    assert _forward_lookback_bars() == 2000
+    monkeypatch.setenv("FAST_MICROSTRUCTURE_FORWARD_LOOKBACK_BARS", "2400")
+    assert _forward_lookback_bars() == 2400
+    monkeypatch.setenv("FAST_MICROSTRUCTURE_FORWARD_LOOKBACK_BARS", "0")
+    with pytest.raises(ValueError, match="must be >= 1"):
+        _forward_lookback_bars()
     assert (
         _forward_recommendation(
             sample_count=29,

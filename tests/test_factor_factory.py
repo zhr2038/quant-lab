@@ -226,8 +226,9 @@ def test_factor_bridge_routes_forward_pass_without_regime_stability_block():
     row = bridge.to_dicts()[0]
     reasons = json.loads(row["blocking_reasons"])
 
-    assert row["eligible_for_alpha_factory"] is False
+    assert row["eligible_for_alpha_factory"] == "strategy_review_pending"
     assert row["recommended_action"] == "REVIEW_FOR_ALPHA_FACTORY_STRATEGY"
+    assert "alpha_factory_strategy_review_required" in reasons
     assert "forward_validation_not_passed" not in reasons
     assert "regime_stability_not_positive_or_missing" not in reasons
     assert row["live_order_effect"] == "none_read_only_research"
@@ -261,7 +262,7 @@ def test_factor_bridge_adds_review_row_for_forward_pass_outside_paper_queue():
     reasons = json.loads(row["blocking_reasons"])
 
     assert row["factor_id"] == "core.mean_reversion_vol_adjusted_4"
-    assert row["eligible_for_alpha_factory"] is False
+    assert row["eligible_for_alpha_factory"] == "strategy_review_pending"
     assert row["recommended_action"] == "REVIEW_FOR_ALPHA_FACTORY_STRATEGY"
     assert "not_in_factor_paper_review_queue" in reasons
     assert "forward_validation_not_passed" not in reasons

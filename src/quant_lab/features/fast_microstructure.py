@@ -1,8 +1,10 @@
 from __future__ import annotations
 
 import math
+import os
 from collections.abc import Iterable
 from datetime import UTC, datetime, timedelta
+from time import perf_counter
 from typing import Any
 
 import polars as pl
@@ -89,6 +91,8 @@ FAST_MICROSTRUCTURE_FORWARD_TEST_FIELDS = [
     "p25_net_bps",
     "hit_rate",
     "recent_7d_score",
+    "lookback_bars",
+    "build_elapsed_ms",
     "recommendation",
     "data_leakage_check",
     "live_order_effect",
@@ -279,7 +283,9 @@ def build_fast_microstructure_forward_test(
     after each feature timestamp to build labels.
     """
 
+    started = perf_counter()
     generated = (generated_at or datetime.now(UTC)).astimezone(UTC)
+    lookback_bars = _forward_lookback_bars()
     bars_by_symbol = _rows_by_symbol(market_bars, ts_fields=("ts", "minute_ts"))
     spreads_by_symbol = _rows_by_symbol(
         orderbook_spread_1m if orderbook_spread_1m is not None else pl.DataFrame(),
@@ -299,7 +305,6 @@ def build_fast_microstructure_forward_test(
         cost = conservative_cost_for_symbol(cost_bucket_daily, symbol=symbol)
         spread_rows = spreads_by_symbol.get(symbol, [])
         trade_rows = trades_by_symbol.get(symbol, [])
-        lookback_bars = max(int(FAST_MICROSTRUCTURE_FORWARD_LOOKBACK_BARS), 1)
         for bar in bars[-lookback_bars:]:
             ts = _coerce_dt(bar.get("_ts"))
             close = _float(bar.get("close"))
@@ -346,8 +351,15 @@ def build_fast_microstructure_forward_test(
                         {"ts": ts, "value": value, "future_net_bps": future_net}
                     )
 
+    elapsed_ms = round((perf_counter() - started) * 1000.0, 3)
     out = [
-        _forward_summary_row(generated, key, values)
+        _forward_summary_row(
+            generated,
+            key,
+            values,
+            lookback_bars=lookback_bars,
+            build_elapsed_ms=elapsed_ms,
+        )
         for key, values in sorted(samples.items())
     ]
     if not out:
@@ -988,6 +1000,9 @@ def _forward_summary_row(
     generated: datetime,
     key: tuple[str, str, str, int],
     samples: list[dict[str, Any]],
+    *,
+    lookback_bars: int,
+    build_elapsed_ms: float,
 ) -> dict[str, Any]:
     feature_name, symbol, regime, horizon = key
     values = [_float(sample.get("value")) for sample in samples]
@@ -1020,10 +1035,27 @@ def _forward_summary_row(
         "p25_net_bps": _round(p25),
         "hit_rate": _round(hit_rate),
         "recent_7d_score": _round(recent_score),
+        "lookback_bars": int(lookback_bars),
+        "build_elapsed_ms": float(build_elapsed_ms),
         "recommendation": recommendation,
         "data_leakage_check": "pass_future_prices_used_only_for_labels",
         "live_order_effect": "read_only_no_live_order",
     }
+
+
+def _forward_lookback_bars() -> int:
+    raw = (
+        os.environ.get("FAST_MICROSTRUCTURE_FORWARD_LOOKBACK_BARS")
+        or os.environ.get("QUANT_LAB_FAST_MICROSTRUCTURE_FORWARD_LOOKBACK_BARS")
+        or str(FAST_MICROSTRUCTURE_FORWARD_LOOKBACK_BARS)
+    )
+    try:
+        value = int(raw)
+    except ValueError as exc:
+        raise ValueError("FAST_MICROSTRUCTURE_FORWARD_LOOKBACK_BARS must be an integer") from exc
+    if value < 1:
+        raise ValueError("FAST_MICROSTRUCTURE_FORWARD_LOOKBACK_BARS must be >= 1")
+    return value
 
 
 def _top_bottom_stats(

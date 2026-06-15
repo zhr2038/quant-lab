@@ -467,7 +467,7 @@ def build_factor_strategy_bridge_candidates(
         review_after_forward_pass = paper_review and forward_passed
         if review_after_forward_pass and not reasons:
             reasons.append("alpha_factory_strategy_review_required")
-        eligible = not reasons
+        eligible: bool | str = not reasons
         recommended_action = (
             "REVIEW_FOR_ALPHA_FACTORY_STRATEGY"
             if review_after_forward_pass
@@ -477,6 +477,11 @@ def build_factor_strategy_bridge_candidates(
                 else "DISPLAY_ONLY_FACTOR_REVIEW"
             )
         )
+        if (
+            recommended_action == "REVIEW_FOR_ALPHA_FACTORY_STRATEGY"
+            and reasons == ["alpha_factory_strategy_review_required"]
+        ):
+            eligible = "strategy_review_pending"
         out.append(
             {
                 "as_of_date": row.get("as_of_date"),
@@ -500,7 +505,7 @@ def build_factor_strategy_bridge_candidates(
                 "factor_family": row.get("factor_family"),
                 "correlation_cluster_id": row.get("correlation_cluster_id"),
                 "bridge_candidate_id": f"v5.factor_bridge.{factor_id}",
-                "eligible_for_alpha_factory": False,
+                "eligible_for_alpha_factory": "strategy_review_pending",
                 "blocking_reasons": safe_json_dumps(
                     [
                         "not_in_factor_paper_review_queue",

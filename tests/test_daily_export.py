@@ -418,6 +418,10 @@ def test_research_validation_v3_reports_export_forward_and_cost_coverage(tmp_pat
         if row["recommended_action"] == "REVIEW_FOR_ALPHA_FACTORY_STRATEGY"
     ]
     assert bridge_review_rows
+    assert any(
+        row["eligible_for_alpha_factory"] == "strategy_review_pending"
+        for row in bridge_review_rows
+    )
     assert not any(
         "forward_validation_not_passed" in row["blocking_reasons"]
         or "regime_stability_not_positive_or_missing" in row["blocking_reasons"]
@@ -432,6 +436,8 @@ def test_research_validation_v3_reports_export_forward_and_cost_coverage(tmp_pat
     assert any(
         row["feature_name"] == "orderbook_imbalance_1m"
         and row["recommendation"] == "FORWARD_VALIDATION_PASS"
+        and row["lookback_bars"] == "2000"
+        and float(row["build_elapsed_ms"]) >= 0.0
         for row in fast_rows
     )
 
@@ -1064,6 +1070,7 @@ def test_v5_bundle_sync_uses_latest_ingested_dataset_timestamp():
         "sync_attempted": True,
         "sync_succeeded": True,
         "latest_v5_bundle_seen_at_export": "2026-06-11T05:29:51Z",
+        "selected_v5_bundle_built_at": "2026-06-11T05:29:51Z",
         "selected_v5_bundle_ingested_at": "2026-06-11T05:20:00Z",
         "selected_v5_bundle_path": "/tmp/v5_latest.tar.gz",
         "selected_v5_bundle_sha256": "abc123",
@@ -1089,9 +1096,55 @@ def test_v5_bundle_sync_uses_latest_ingested_dataset_timestamp():
     assert consistency["why_stale"] == ""
     assert row["latest_ingested_bundle_ts"] == "2026-06-11T05:33:11+00:00"
     assert row["latest_remote_bundle_ts"] == "2026-06-11T05:29:51+00:00"
+    assert row["latest_uploaded_bundle_ts"] == "2026-06-11T05:29:51+00:00"
+    assert row["selected_v5_bundle_ts"] == "2026-06-11T05:29:51+00:00"
     assert row["stale_seconds"] == 0
     assert row["why_stale"] == ""
     assert row["selected_v5_bundle_sha"] == "abc123"
+
+
+def test_v5_bundle_sync_uses_selected_manifest_ingest_for_uploaded_latest_bundle():
+    generated_at = datetime(2026, 6, 15, 13, tzinfo=UTC)
+    frames = {
+        "strategy_health_daily": pl.DataFrame(
+            [
+                {
+                    "date": "2026-06-15",
+                    "latest_bundle_ts": "2026-06-15T11:00:00Z",
+                }
+            ]
+        )
+    }
+    pre_export_v5 = {
+        "sync_attempted": True,
+        "sync_succeeded": True,
+        "latest_v5_bundle_seen_at_export": "2026-06-15T12:00:00Z",
+        "selected_v5_bundle_built_at": "2026-06-15T12:00:00Z",
+        "selected_v5_bundle_ingested_at": "2026-06-15T12:00:30Z",
+        "selected_v5_bundle_path": "/tmp/v5_latest.tar.gz",
+        "selected_v5_bundle_sha256": "latest-sha",
+        "selected_v5_bundle_manifest_match": True,
+    }
+
+    consistency = daily_export_module._v5_export_consistency(
+        frames,
+        pre_export_v5=pre_export_v5,
+        pre_export_v5_refresh=True,
+        allow_stale_v5=False,
+    )
+    diagnostics = daily_export_module._v5_bundle_sync_diagnostics_frame(
+        frames=frames,
+        pre_export_v5={**pre_export_v5, **consistency},
+        generated_at=generated_at,
+    )
+
+    row = diagnostics.to_dicts()[0]
+    assert consistency["stale_v5_bundle"] is False
+    assert consistency["authoritative_snapshot"] is True
+    assert row["latest_uploaded_bundle_ts"] == "2026-06-15T12:00:00+00:00"
+    assert row["selected_v5_bundle_ts"] == "2026-06-15T12:00:00+00:00"
+    assert row["latest_ingested_bundle_ts"] == "2026-06-15T12:00:30+00:00"
+    assert row["why_stale"] == ""
 
 
 def test_v5_bundle_sync_flags_remote_newer_than_ingested():

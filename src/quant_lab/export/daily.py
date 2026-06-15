@@ -784,8 +784,10 @@ CSV_SCHEMAS: dict[str, list[str]] = {
         "sync_success",
         "latest_local_bundle_ts",
         "latest_remote_bundle_ts",
+        "latest_uploaded_bundle_ts",
         "latest_ingested_bundle_ts",
         "selected_v5_bundle_path",
+        "selected_v5_bundle_ts",
         "selected_v5_bundle_sha",
         "selected_v5_bundle_sha256",
         "stale_seconds",
@@ -3317,10 +3319,11 @@ def export_daily_pack(
         pre_export_v5_refresh=pre_export_v5_refresh,
         allow_stale_v5=allow_stale_v5,
     )
+    derived_outputs_stale = _v5_derived_outputs_stale(snapshot.frames, pre_export_v5)
     if (
         pre_export_v5_refresh
         and not allow_stale_v5
-        and v5_consistency["stale_v5_bundle"]
+        and (v5_consistency["stale_v5_bundle"] or derived_outputs_stale)
     ):
         pre_export_v5["derived_refresh_retry_attempted"] = True
         retry_warnings = _refresh_v5_derived_outputs(root, day)
@@ -5914,7 +5917,7 @@ def _v5_export_consistency(
     selected_ingested_at = _parse_v5_context_ts(
         pre_export_v5.get("selected_v5_bundle_ingested_at")
     )
-    latest_ingested = latest_local_ingested
+    latest_ingested = _max_dt(latest_local_ingested, selected_ingested_at)
     manifest_match = bool(pre_export_v5.get("selected_v5_bundle_manifest_match"))
     historical_gap_detected = bool(
         pre_export_v5.get("historical_gap_detected")
@@ -5996,6 +5999,10 @@ def _v5_bundle_sync_diagnostics_frame(
     latest_remote = _parse_v5_context_ts(
         pre_export_v5.get("latest_v5_bundle_seen_at_export")
     )
+    selected_bundle_ts = _parse_v5_context_ts(
+        pre_export_v5.get("selected_v5_bundle_built_at")
+        or pre_export_v5.get("selected_v5_bundle_manifest_bundle_ts")
+    )
     selected_ingested = _parse_v5_context_ts(
         pre_export_v5.get("selected_v5_bundle_ingested_at")
     )
@@ -6024,8 +6031,10 @@ def _v5_bundle_sync_diagnostics_frame(
         "sync_success": bool(authoritative and not stale),
         "latest_local_bundle_ts": _iso_or_none(latest_local),
         "latest_remote_bundle_ts": _iso_or_none(latest_remote),
+        "latest_uploaded_bundle_ts": _iso_or_none(latest_remote),
         "latest_ingested_bundle_ts": _iso_or_none(latest_ingested),
         "selected_v5_bundle_path": pre_export_v5.get("selected_v5_bundle_path"),
+        "selected_v5_bundle_ts": _iso_or_none(selected_bundle_ts),
         "selected_v5_bundle_sha": selected_sha,
         "selected_v5_bundle_sha256": selected_sha,
         "stale_seconds": stale_seconds,
@@ -6054,6 +6063,19 @@ def _v5_bundle_stale_state(
 def _max_dt(*values: datetime | None) -> datetime | None:
     present = [value for value in values if value is not None]
     return max(present) if present else None
+
+
+def _v5_derived_outputs_stale(
+    frames: dict[str, pl.DataFrame],
+    pre_export_v5: dict[str, Any],
+) -> bool:
+    latest_seen = _parse_v5_context_ts(pre_export_v5.get("latest_v5_bundle_seen_at_export"))
+    latest_local_ingested = _latest_v5_bundle_ts(frames)
+    stale, _why = _v5_bundle_stale_state(
+        latest_remote=latest_seen,
+        latest_ingested=latest_local_ingested,
+    )
+    return stale
 
 
 def _v5_context_requires_authoritative_failure(pre_export_v5: dict[str, Any]) -> bool:

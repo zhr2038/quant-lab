@@ -62,9 +62,26 @@ def test_bearer_token_required_when_configured(monkeypatch):
     assert correct.status_code == 200
 
 
-def test_health_requires_token_when_api_token_is_configured(monkeypatch):
+def test_local_health_allows_unauth_when_api_token_is_configured(monkeypatch):
     monkeypatch.setenv("QUANT_LAB_API_TOKEN", "test-token")
-    client = TestClient(app)
+    monkeypatch.delenv("QUANT_LAB_HEALTH_ALLOW_LOCAL_UNAUTH", raising=False)
+    client = TestClient(app, client=("127.0.0.1", 50000))
+
+    missing = client.get("/v1/health")
+    deep = client.get("/v1/health/deep")
+    catalog = client.get("/v1/catalog/datasets")
+    correct = client.get("/v1/health", headers={"Authorization": "Bearer test-token"})
+
+    assert missing.status_code == 200
+    assert deep.status_code == 200
+    assert catalog.status_code == 401
+    assert correct.status_code == 200
+
+
+def test_health_requires_token_when_local_unauth_disabled(monkeypatch):
+    monkeypatch.setenv("QUANT_LAB_API_TOKEN", "test-token")
+    monkeypatch.setenv("QUANT_LAB_HEALTH_ALLOW_LOCAL_UNAUTH", "false")
+    client = TestClient(app, client=("127.0.0.1", 50000))
 
     missing = client.get("/v1/health")
     correct = client.get("/v1/health", headers={"Authorization": "Bearer test-token"})

@@ -293,15 +293,22 @@ def create_app() -> FastAPI:
     @app.get("/v1/health/deep")
     def health_deep() -> dict[str, Any]:
         lake_root = _lake_root()
+        data_health = _lake_data_health(lake_root)
+        cost_health = _lake_cost_health(lake_root)
+        dependency_meta_health = _risk_permission_dependency_meta_health(lake_root)
+        health_status, warnings = _deep_health_status(
+            data_health=data_health,
+            cost_health=cost_health,
+            risk_permission_dependency_meta=dependency_meta_health,
+        )
         return {
-            "status": "ok",
+            "status": health_status,
             "service": "quant-lab",
             "mode": "read-only",
-            "data_health": _lake_data_health(lake_root),
-            "cost_health": _lake_cost_health(lake_root),
-            "risk_permission_dependency_meta": _risk_permission_dependency_meta_health(
-                lake_root
-            ),
+            "data_health": data_health,
+            "cost_health": cost_health,
+            "risk_permission_dependency_meta": dependency_meta_health,
+            "warnings": warnings,
         }
 
     @app.get("/v1/web/bigscreen-snapshot")
@@ -1257,6 +1264,8 @@ def _authorize_v1_request(request: Request) -> None:
     token = os.environ.get("QUANT_LAB_API_TOKEN")
     if not token:
         return
+    if _local_health_check_without_token_allowed(request):
+        return
     provided = _bearer_token(request.headers.get("authorization", ""))
     if provided is None or not hmac.compare_digest(provided, token):
         raise HTTPException(
@@ -1271,6 +1280,19 @@ def _bearer_token(authorization: str) -> str | None:
     if not authorization.startswith(prefix):
         return None
     return authorization[len(prefix) :]
+
+
+def _local_health_check_without_token_allowed(request: Request) -> bool:
+    if request.url.path not in {"/v1/health", "/v1/health/deep"}:
+        return False
+    if not _bool_env("QUANT_LAB_HEALTH_ALLOW_LOCAL_UNAUTH", default=True):
+        return False
+    return _request_is_localhost(request)
+
+
+def _request_is_localhost(request: Request) -> bool:
+    host = request.client.host if request.client else ""
+    return host in {"127.0.0.1", "::1", "localhost"} or host.startswith("::ffff:127.")
 
 
 def _client_ip_allowed(request: Request) -> bool:
@@ -3294,6 +3316,39 @@ def _lake_cost_health(lake_root: Path) -> dict[str, Any]:
     if latest_day and _is_day_stale(latest_day, max_age_days=3):
         health.update({"status": "stale", "stale": True})
     return health
+
+
+def _deep_health_status(
+    *,
+    data_health: dict[str, Any],
+    cost_health: dict[str, Any],
+    risk_permission_dependency_meta: dict[str, Any],
+) -> tuple[str, list[str]]:
+    warnings: list[str] = []
+    critical = False
+    for name, payload in (
+        ("data_health", data_health),
+        ("cost_health", cost_health),
+        ("risk_permission_dependency_meta", risk_permission_dependency_meta),
+    ):
+        status_value = str(payload.get("status") or "").strip().lower()
+        is_missing = status_value == "missing" or bool(payload.get("missing"))
+        is_critical = status_value == "critical" or bool(payload.get("is_critical"))
+        if is_critical or (name in {"data_health", "cost_health"} and is_missing):
+            critical = True
+            warnings.append(f"{name}_{status_value or 'critical'}")
+            continue
+        if (
+            status_value in {"warning", "stale"}
+            or bool(payload.get("stale"))
+            or bool(payload.get("high_fallback"))
+        ):
+            warnings.append(f"{name}_{status_value or 'warning'}")
+    if critical:
+        return "critical", _dedupe(warnings)
+    if warnings:
+        return "warning", _dedupe(warnings)
+    return "ok", []
 
 
 def _lake_data_health(lake_root: Path) -> dict[str, Any]:

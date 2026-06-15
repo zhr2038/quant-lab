@@ -3249,11 +3249,24 @@ def _lake_cost_health(lake_root: Path) -> dict[str, Any]:
     health = read_cost_health_daily(lake_root)
     if health.get("rows"):
         status = str(health.get("status") or "").lower()
+        actual_rows = _optional_int(health.get("actual_rows")) or 0
+        fallback_ratio = _optional_float(health.get("fallback_ratio")) or 0.0
         return {
             "status": status,
-            "missing": status == "critical" and int(health.get("actual_rows") or 0) == 0,
-            "high_fallback": float(health.get("fallback_ratio") or 0.0) > 0.5,
-            "fallback_ratio": float(health.get("fallback_ratio") or 0.0),
+            "missing": status == "critical" and actual_rows == 0,
+            "high_fallback": fallback_ratio > 0.5,
+            "fallback_ratio": fallback_ratio,
+            "hard_fallback_ratio": _optional_float(health.get("hard_fallback_ratio")) or 0.0,
+            "soft_fallback_ratio": _optional_float(health.get("soft_fallback_ratio")) or 0.0,
+            "actual_rows": actual_rows,
+            "mixed_rows": _optional_int(health.get("mixed_rows")) or 0,
+            "proxy_rows": _optional_int(health.get("proxy_rows")) or 0,
+            "global_default_rows": _optional_int(health.get("global_default_rows")) or 0,
+            "proxy_only_count": _optional_int(health.get("proxy_only_count")) or 0,
+            "warnings": health.get("warnings") if isinstance(health.get("warnings"), list) else [],
+            "symbols_missing_cost": health.get("symbols_missing_cost")
+            if isinstance(health.get("symbols_missing_cost"), list)
+            else [],
             "cost_model_version": str(health.get("cost_model_version") or "cost_health_daily"),
         }
     lazy, columns = _safe_parquet_lazy(lake_root / "gold" / "cost_bucket_daily")

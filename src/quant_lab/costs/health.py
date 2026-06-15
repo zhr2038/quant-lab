@@ -218,7 +218,6 @@ def build_cost_health_daily(
     if (
         all_global
         or (hard_fallback_ratio > 0.25 and not actual_or_mixed_rows)
-        or (missing and not actual_or_mixed_rows)
         or data_quality_checks.get("private_fills_present_but_actual_cost_zero") is False
         or data_quality_checks.get("trades_present_but_not_in_cost_model") is False
         or data_quality_checks.get("lifecycle_present_but_not_in_actual_cost") is False

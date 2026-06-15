@@ -250,6 +250,38 @@ def test_cost_health_proxy_only_is_warning():
     assert "all_rows_public_spread_proxy" in json.loads(row.warnings_json)
 
 
+def test_cost_health_proxy_only_missing_research_symbols_is_warning():
+    row = build_cost_health_daily(
+        pl.DataFrame(
+            [
+                {
+                    "day": "2026-05-10",
+                    "symbol": "BTC-USDT",
+                    "source": "public_spread_proxy",
+                    "sample_count": 12,
+                    "fallback_level": "PUBLIC_SPREAD_PROXY",
+                },
+                {
+                    "day": "2026-05-10",
+                    "symbol": "ETH-USDT",
+                    "source": "public_spread_proxy",
+                    "sample_count": 12,
+                    "fallback_level": "PUBLIC_SPREAD_PROXY",
+                },
+            ]
+        ),
+        day="2026-05-10",
+        min_sample_count=30,
+        expected_symbols=["BTC-USDT", "ETH-USDT", "ALLO-USDT"],
+    )
+
+    assert row.status == "WARNING"
+    assert row.symbols_missing_cost == ["ALLO-USDT"]
+    warnings = json.loads(row.warnings_json)
+    assert "all_rows_public_spread_proxy" in warnings
+    assert "symbols_missing_cost" in warnings
+
+
 def test_cost_health_global_default_is_critical():
     row = build_cost_health_daily(
         pl.DataFrame(

@@ -36,7 +36,15 @@ ALT_IMPULSE_REGIME_SHADOW_MIN_WIN_RATE = 0.50
 HORIZON_HOURS = (4, 8, 12, 24, 48, 72, 120)
 DEFAULT_INCREMENTAL_LOOKBACK_DAYS = 8
 LIVE_READY_COST_SOURCES = {"mixed_actual_proxy", "actual_fills"}
-LIVE_BLOCKING_COST_SOURCES = {"global_default", "cost_not_requested_no_order"}
+COST_FALLBACK_NOT_LIVE_SAFE = "fallback_not_live_safe"
+COST_DEGRADED_MODEL = "degraded_cost_model"
+LIVE_BLOCKING_COST_SOURCES = {
+    "global_default",
+    "cost_not_requested_no_order",
+    COST_FALLBACK_NOT_LIVE_SAFE,
+    COST_DEGRADED_MODEL,
+}
+SAFE_COST_FALLBACK_TOKENS = {"", "none", "actual_okx_fills_and_bills"}
 STRATEGY_EVIDENCE_SAMPLE_KEY_COLUMNS = [
     "strategy",
     "source_type",
@@ -904,7 +912,11 @@ def _sample_from_candidate_label(
         "label_status": str(label.get("label_status") or ""),
         "label_reason": str(label.get("label_reason") or ""),
         "cost_bps": _finite_float(label.get("cost_bps")),
-        "cost_source": str(label.get("cost_source") or "MISSING"),
+        "cost_source": _cost_source_with_live_safety_markers(
+            str(label.get("cost_source") or event.get("cost_source") or "MISSING"),
+            row={**event, **label},
+            payload={**_payload(event), **_payload(label)},
+        ),
         "block_reason": str(label.get("block_reason") or event.get("block_reason") or ""),
         "final_decision": str(label.get("final_decision") or event.get("final_decision") or ""),
         "final_score": _finite_float(label.get("final_score") or event.get("final_score")),
@@ -1266,19 +1278,20 @@ def _summary_cost_source_mix(
     prepared: pl.DataFrame,
     group_columns: list[str],
 ) -> dict[tuple[str, str, str, int], dict[str, int]]:
-    grouped = prepared.group_by([*group_columns, "_summary_cost_source"]).agg(
-        pl.col("_sample_weight").sum().alias("_cost_source_count")
-    )
     mixes: dict[tuple[str, str, str, int], dict[str, int]] = {}
-    for row in grouped.to_dicts():
+    selected = prepared.select([*group_columns, "_summary_cost_source", "_sample_weight"])
+    for row in selected.to_dicts():
         key = (
             str(row.get("_summary_candidate") or "UNKNOWN"),
             str(row.get("_summary_symbol") or "UNKNOWN"),
             str(row.get("_summary_regime") or "UNKNOWN"),
             int(row.get("_summary_horizon") or 0),
         )
-        source = str(row.get("_summary_cost_source") or "MISSING")
-        mixes.setdefault(key, {})[source] = int(row.get("_cost_source_count") or 0)
+        weight = max(int(_finite_float(row.get("_sample_weight")) or 1), 1)
+        sources = _cost_source_mix_sources(row.get("_summary_cost_source")) or {"missing"}
+        mix = mixes.setdefault(key, {})
+        for source in sources:
+            mix[source] = mix.get(source, 0) + weight
     return mixes
 
 
@@ -1500,7 +1513,14 @@ def _cost_source_mix_sources(cost_source_mix: Any) -> set[str]:
         try:
             parsed = json.loads(cost_source_mix)
         except json.JSONDecodeError:
-            return {_normalize_cost_source(cost_source_mix)}
+            return {
+                source
+                for source in (
+                    _normalize_cost_source(part)
+                    for part in re.split(r"[;,+|]", cost_source_mix)
+                )
+                if source
+            }
         return _cost_source_mix_sources(parsed)
     return {_normalize_cost_source(cost_source_mix)}
 
@@ -1512,9 +1532,59 @@ def _normalize_cost_source(source: Any) -> str:
 def _cost_source_mix(rows: list[dict[str, Any]]) -> dict[str, int]:
     counts: dict[str, int] = {}
     for row in rows:
-        key = str(row.get("cost_source") or "MISSING")
-        counts[key] = counts.get(key, 0) + _sample_weight(row)
+        weight = _sample_weight(row)
+        for key in _cost_source_mix_sources(row.get("cost_source")) or {"missing"}:
+            counts[key] = counts.get(key, 0) + weight
     return counts
+
+
+def _cost_source_with_live_safety_markers(
+    source: Any,
+    *,
+    row: dict[str, Any],
+    payload: dict[str, Any] | None = None,
+) -> str:
+    source_text = str(source or "MISSING").strip() or "MISSING"
+    payload = payload or {}
+    tokens = list(_cost_source_mix_sources(source_text) or {_normalize_cost_source(source_text)})
+    fallback_level = _first_text(row, payload, ["fallback_level", "cost_fallback_level"])
+    fallback_reason = _first_text(row, payload, ["fallback_reason", "cost_fallback_reason"])
+    degraded_reason = _first_text(row, payload, ["degraded_reason", "cost_degraded_reason"])
+    degraded_cost_model = _first_bool(
+        row,
+        payload,
+        ["degraded_cost_model", "cost_degraded_model"],
+    )
+    if _cost_fallback_not_live_safe(fallback_level, fallback_reason):
+        tokens.append(COST_FALLBACK_NOT_LIVE_SAFE)
+    if degraded_cost_model is True or _cost_degraded_reason_not_none(degraded_reason):
+        tokens.append(COST_DEGRADED_MODEL)
+    deduped = list(dict.fromkeys(token for token in tokens if token))
+    if not deduped:
+        return "MISSING"
+    if len(deduped) == 1:
+        return source_text
+    return ";".join(deduped)
+
+
+def _cost_fallback_not_live_safe(fallback_level: Any, fallback_reason: Any) -> bool:
+    level = _normalize_cost_fallback_token(fallback_level)
+    reason = _normalize_cost_fallback_token(fallback_reason)
+    return level not in SAFE_COST_FALLBACK_TOKENS or reason not in {"", "none"}
+
+
+def _cost_degraded_reason_not_none(value: Any) -> bool:
+    return _normalize_cost_fallback_token(value) not in {
+        "",
+        "none",
+        "null",
+        "unknown",
+        "n/a",
+    }
+
+
+def _normalize_cost_fallback_token(value: Any) -> str:
+    return str(value or "").strip().lower()
 
 
 def _sample_weight(row: dict[str, Any]) -> int:
@@ -1965,7 +2035,11 @@ class _CostContext:
         if row_cost_bps is not None:
             return {
                 "cost_bps": max(row_cost_bps, 0.0),
-                "cost_source": row_cost_source or "telemetry_row",
+                "cost_source": _cost_source_with_live_safety_markers(
+                    row_cost_source or "telemetry_row",
+                    row=row,
+                    payload=payload,
+                ),
             }
 
         usage = _latest_cost_row(self.usage_rows.get(symbol, []), ts_utc)
@@ -2000,8 +2074,12 @@ def _cost_usage_rows(frame: pl.DataFrame) -> dict[str, list[dict[str, Any]]]:
             {
                 "ts_utc": ts or datetime.min.replace(tzinfo=UTC),
                 "cost_bps": max(cost_bps, 0.0),
-                "cost_source": _first_text(row, payload, ["cost_source", "source"])
-                or "v5_quant_lab_cost_usage",
+                "cost_source": _cost_source_with_live_safety_markers(
+                    _first_text(row, payload, ["cost_source", "source"])
+                    or "v5_quant_lab_cost_usage",
+                    row=row,
+                    payload=payload,
+                ),
             }
         )
     for symbol_rows in rows.values():
@@ -2024,7 +2102,10 @@ def _cost_bucket_rows(frame: pl.DataFrame) -> dict[str, dict[str, Any]]:
             continue
         rows[symbol] = {
             "cost_bps": max(cost_bps, 0.0),
-            "cost_source": str(row.get("cost_source") or row.get("source") or "cost_bucket_daily"),
+            "cost_source": _cost_source_with_live_safety_markers(
+                str(row.get("cost_source") or row.get("source") or "cost_bucket_daily"),
+                row=row,
+            ),
         }
     return rows
 

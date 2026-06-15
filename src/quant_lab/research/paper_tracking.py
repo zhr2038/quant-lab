@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import re
 from dataclasses import dataclass
 from datetime import UTC, date, datetime
 from pathlib import Path
@@ -29,6 +30,15 @@ V5_PAPER_TRACKING_SOURCE = "v5.paper_strategy_telemetry"
 V5_PAPER_TRACKING_STATUS = "active"
 PAPER_TRACKING_SCHEMA_VERSION = "paper_strategy_tracking.v1"
 DEFAULT_REQUIRED_ENTRY_DAYS_FOR_LIVE = 3
+COST_FALLBACK_NOT_LIVE_SAFE = "fallback_not_live_safe"
+COST_DEGRADED_MODEL = "degraded_cost_model"
+LIVE_BLOCKING_COST_SOURCES = {
+    "global_default",
+    "cost_not_requested_no_order",
+    COST_FALLBACK_NOT_LIVE_SAFE,
+    COST_DEGRADED_MODEL,
+}
+SAFE_COST_FALLBACK_TOKENS = {"", "none", "actual_okx_fills_and_bills"}
 PAPER_PNL_HORIZON_HOURS = (4, 8, 12, 24, 48, 72)
 SOL_F4_PAPER_PROPOSAL_ID = "SOL_F4_VOLUME_EXPANSION_PAPER_V1"
 SOL_F4_STRATEGY_CANDIDATE = "v5.f4_volume_expansion_entry"
@@ -2122,8 +2132,16 @@ def _v5_run_report_row(
         "estimated_fill_px": _optional_float(
             _field(row, payload, "estimated_fill_px", "estimated_fill_price", "paper_fill_px")
         ),
-        "cost_source": _field(row, payload, "cost_source"),
-        "cost_source_mix": _field(row, payload, "cost_source_mix"),
+        "cost_source": _cost_source_with_live_safety_markers(
+            _field(row, payload, "cost_source"),
+            row=row,
+            payload=payload,
+        ),
+        "cost_source_mix": _cost_source_with_live_safety_markers(
+            _field(row, payload, "cost_source_mix"),
+            row=row,
+            payload=payload,
+        ),
         "paper_pnl_bps": paper_pnl_bps,
         "paper_pnl_usdt": paper_pnl_usdt,
         "label_status": _field(row, payload, "label_status"),
@@ -2280,8 +2298,16 @@ def _v5_run_row(
         "avg_net_bps": _optional_float(_field(row, payload, "avg_net_bps")),
         "p25_net_bps": _optional_float(_field(row, payload, "p25_net_bps")),
         "win_rate": _optional_float(_field(row, payload, "win_rate")),
-        "cost_source": _field(row, payload, "cost_source"),
-        "cost_source_mix": _field(row, payload, "cost_source_mix"),
+        "cost_source": _cost_source_with_live_safety_markers(
+            _field(row, payload, "cost_source"),
+            row=row,
+            payload=payload,
+        ),
+        "cost_source_mix": _cost_source_with_live_safety_markers(
+            _field(row, payload, "cost_source_mix"),
+            row=row,
+            payload=payload,
+        ),
         "live_block_reason": _jsonish_text(_field(row, payload, "live_block_reason")),
         "required_paper_days": int(
             _optional_float(_field(row, payload, "required_paper_days")) or 14
@@ -2367,7 +2393,11 @@ def _v5_daily_row(row: dict[str, Any], created_at: str) -> dict[str, Any]:
     spread_observation_coverage = (
         _optional_float(_field(row, payload, "spread_observation_coverage")) or 0.0
     )
-    cost_source_mix = _field(row, payload, "cost_source_mix")
+    cost_source_mix = _cost_source_with_live_safety_markers(
+        _field(row, payload, "cost_source_mix"),
+        row=row,
+        payload=payload,
+    )
     block_reasons = _paper_live_block_reasons(
         heartbeat_day_count=heartbeat_days,
         entry_day_count=entry_day_count,
@@ -2513,7 +2543,11 @@ def _v5_slippage_row(row: dict[str, Any], created_at: str) -> dict[str, Any]:
     spread_observation_coverage = _optional_float(
         _field(row, payload, "spread_observation_coverage", "spread_coverage")
     )
-    cost_source_mix = _field(row, payload, "cost_source_mix")
+    cost_source_mix = _cost_source_with_live_safety_markers(
+        _field(row, payload, "cost_source_mix"),
+        row=row,
+        payload=payload,
+    )
     return {
         "as_of_date": _as_of_date(row, payload),
         "proposal_id": proposal_id,
@@ -3029,6 +3063,7 @@ def _paper_live_block_reasons(
     cost_sources = _cost_source_mix_sources(cost_source_mix)
     has_actual_or_mixed = bool(cost_sources & {"actual_fills", "mixed_actual_proxy"})
     has_global_default = "global_default" in cost_sources
+    has_live_blocking_cost = bool(cost_sources & LIVE_BLOCKING_COST_SOURCES)
     if heartbeat_day_count > 0 and entry_day_count == 0:
         reasons.add("paper_active_but_no_entries_yet")
     if entry_day_count < required_entry_day_count:
@@ -3043,6 +3078,8 @@ def _paper_live_block_reasons(
         reasons.add("no_live_slippage_coverage")
     if has_global_default:
         reasons.add("cost_source_global_default")
+    if has_live_blocking_cost:
+        reasons.add("cost_source_not_trusted")
     if not has_actual_or_mixed:
         reasons.add("cost_source_not_actual_or_mixed")
     return sorted(reasons)
@@ -3058,6 +3095,8 @@ def _live_block_reasons(row: dict[str, Any]) -> list[str]:
     }
     if not _cost_source_mix_has_actual_or_mixed(row.get("cost_source_mix")):
         reasons.add("cost_source_not_actual_or_mixed")
+    if _cost_source_mix_has_live_blocking(row.get("cost_source_mix")):
+        reasons.add("cost_source_not_trusted")
     return sorted(reasons)
 
 
@@ -3079,16 +3118,48 @@ def _cost_source_mix_has_actual_or_mixed(value: Any) -> bool:
     return bool(_cost_source_mix_sources(value) & {"actual_fills", "mixed_actual_proxy"})
 
 
+def _cost_source_mix_has_live_blocking(value: Any) -> bool:
+    return bool(_cost_source_mix_sources(value) & LIVE_BLOCKING_COST_SOURCES)
+
+
 def _cost_source_mix_counts(rows: list[dict[str, Any]]) -> dict[str, int]:
     counts: dict[str, int] = {}
     for row in rows:
-        sources = _cost_source_mix_sources(row.get("cost_source_mix")) or {
-            str(row.get("cost_source") or "MISSING").strip().lower()
-        }
+        sources = set(_cost_source_mix_sources(row.get("cost_source_mix")))
+        source_tokens = set(_cost_source_mix_sources(row.get("cost_source")))
+        if not sources:
+            sources = source_tokens or {"missing"}
+        elif source_tokens and sources & LIVE_BLOCKING_COST_SOURCES:
+            sources.update(source_tokens)
+        sources.update(_cost_live_safety_markers(row))
         for source in sources:
             if source:
                 counts[source] = counts.get(source, 0) + 1
     return counts
+
+
+def _cost_source_with_live_safety_markers(
+    value: Any,
+    *,
+    row: dict[str, Any],
+    payload: dict[str, Any] | None = None,
+) -> str:
+    payload = payload or {}
+    original = str(
+        value
+        or row.get("cost_source")
+        or payload.get("cost_source")
+        or row.get("source")
+        or payload.get("source")
+        or ""
+    ).strip()
+    tokens = list(_cost_source_mix_sources(original))
+    markers = _cost_live_safety_markers(row, payload)
+    if not markers:
+        return original
+    tokens.extend(sorted(markers))
+    deduped = list(dict.fromkeys(token for token in tokens if token))
+    return ";".join(deduped)
 
 
 def _missing_cost_source_count(rows: list[dict[str, Any]]) -> int:
@@ -3127,8 +3198,61 @@ def _cost_source_mix_sources(value: Any) -> set[str]:
     try:
         parsed = json.loads(text)
     except json.JSONDecodeError:
-        return {text.lower()}
+        return {
+            source
+            for source in (
+                str(part or "").strip().lower()
+                for part in re.split(r"[;,+|]", text)
+            )
+            if source
+        }
     return _cost_source_mix_sources(parsed)
+
+
+def _cost_live_safety_markers(
+    row: dict[str, Any],
+    payload: dict[str, Any] | None = None,
+) -> set[str]:
+    data = {**(payload or {}), **row}
+    markers: set[str] = set()
+    fallback_level = data.get("fallback_level") or data.get("cost_fallback_level")
+    fallback_reason = data.get("fallback_reason") or data.get("cost_fallback_reason")
+    degraded_reason = data.get("degraded_reason") or data.get("cost_degraded_reason")
+    degraded_cost_model = data.get("degraded_cost_model") or data.get("cost_degraded_model")
+    if _cost_fallback_not_live_safe(fallback_level, fallback_reason):
+        markers.add(COST_FALLBACK_NOT_LIVE_SAFE)
+    if _truthy_cost_flag(degraded_cost_model) or _cost_degraded_reason_not_none(
+        degraded_reason
+    ):
+        markers.add(COST_DEGRADED_MODEL)
+    return markers
+
+
+def _cost_fallback_not_live_safe(fallback_level: Any, fallback_reason: Any) -> bool:
+    level = _normalize_cost_fallback_token(fallback_level)
+    reason = _normalize_cost_fallback_token(fallback_reason)
+    return level not in SAFE_COST_FALLBACK_TOKENS or reason not in {"", "none"}
+
+
+def _truthy_cost_flag(value: Any) -> bool:
+    if isinstance(value, bool):
+        return value
+    text = str(value or "").strip().lower()
+    return text in {"1", "true", "yes", "on"}
+
+
+def _cost_degraded_reason_not_none(value: Any) -> bool:
+    return _normalize_cost_fallback_token(value) not in {
+        "",
+        "none",
+        "null",
+        "unknown",
+        "n/a",
+    }
+
+
+def _normalize_cost_fallback_token(value: Any) -> str:
+    return str(value or "").strip().lower()
 
 
 def _json_list(value: Any) -> list[str]:

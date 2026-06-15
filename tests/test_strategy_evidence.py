@@ -156,6 +156,26 @@ def test_strategy_evidence_ladder_requires_actual_or_mixed_for_live_small_ready(
     assert reasons == ["live_small_ready_thresholds_met"]
 
 
+def test_strategy_evidence_ladder_blocks_live_small_ready_on_cost_fallback_marker():
+    decision, reasons = strategy_evidence_decision_ladder(
+        sample_count=72,
+        complete_sample_count=72,
+        avg_net_bps=25.0,
+        p25_net_bps=1.0,
+        win_rate=0.72,
+        paper_days=20,
+        entry_day_count=3,
+        paper_pnl_observed_count=14,
+        paper_pnl_day_count=14,
+        arrival_mid_coverage=0.9,
+        paper_slippage_coverage=0.9,
+        cost_source_mix={"mixed_actual_proxy": 72, "fallback_not_live_safe": 72},
+    )
+
+    assert decision == "PAPER_READY"
+    assert "cost_source_not_trusted" in reasons
+
+
 def test_strategy_evidence_ladder_requires_paper_cost_quality_for_live_small_ready():
     decision, reasons = strategy_evidence_decision_ladder(
         sample_count=72,
@@ -175,6 +195,69 @@ def test_strategy_evidence_ladder_requires_paper_cost_quality_for_live_small_rea
     assert decision == "PAPER_READY"
     assert "insufficient_entry_days" in reasons
     assert "insufficient_arrival_mid_coverage" in reasons
+
+
+def test_strategy_evidence_summary_parses_cost_fallback_marker():
+    ts = datetime(2026, 5, 10, tzinfo=UTC)
+    samples = normalize_strategy_evidence_samples(
+        pl.DataFrame(
+            [
+                {
+                    "strategy": "v5",
+                    "evidence_version": "strategy-evidence-v0.1",
+                    "as_of_date": "2026-05-10",
+                    "candidate_id": "fallback-cost",
+                    "run_id": "run-fallback-cost",
+                    "ts_utc": ts,
+                    "symbol": "SOL-USDT",
+                    "strategy_candidate": "v5.f4_volume_expansion_entry",
+                    "candidate_name": "v5.f4_volume_expansion_entry",
+                    "source_type": "candidate_event_label",
+                    "sample_count": 72,
+                    "complete_sample_count": 72,
+                    "regime_state": "trend",
+                    "horizon_hours": 24,
+                    "net_bps_after_cost": 25.0,
+                    "win": True,
+                    "label_status": "complete",
+                    "cost_bps": 4.0,
+                    "cost_source": "mixed_actual_proxy;fallback_not_live_safe",
+                    "source_event_key": "fallback-cost",
+                    "created_at": ts,
+                    "source": "test",
+                }
+            ]
+        )
+    )
+
+    rows = strategy_evidence_module.summarize_strategy_evidence(
+        samples,
+        as_of_date=ts.date(),
+    )
+    row = rows[0]
+    cost_mix = json.loads(row["cost_source_mix"])
+
+    assert cost_mix["mixed_actual_proxy"] == 72
+    assert cost_mix["fallback_not_live_safe"] == 72
+    assert row["decision"] == "PAPER_READY"
+    assert "cost_source_not_trusted" in json.loads(row["decision_reasons"])
+
+
+def test_cost_context_marks_unsafe_fallback_cost_source(tmp_path):
+    ctx = strategy_evidence_module._CostContext(tmp_path / "lake")
+
+    cost = ctx.for_sample(
+        symbol="SOL-USDT",
+        ts_utc=datetime(2026, 5, 10, tzinfo=UTC),
+        row={
+            "cost_bps": 4.0,
+            "cost_source": "mixed_actual_proxy",
+            "fallback_level": "SAMPLE_TOO_SMALL;SPREAD_PROXY",
+        },
+        payload={},
+    )
+
+    assert cost["cost_source"] == "mixed_actual_proxy;fallback_not_live_safe"
 
 
 def test_alt_impulse_ladder_is_regime_shadow_only():

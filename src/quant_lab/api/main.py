@@ -44,6 +44,7 @@ from quant_lab.costs.model import (
     CostBucket,
     estimate_cost_bps,
     estimate_cost_from_cost_bucket_table_rows,
+    evaluate_live_universe_cost_coverage,
 )
 from quant_lab.data.lake import (
     read_market_bars,
@@ -3251,6 +3252,12 @@ def _lake_cost_health(lake_root: Path) -> dict[str, Any]:
         status = str(health.get("status") or "").lower()
         actual_rows = _optional_int(health.get("actual_rows")) or 0
         fallback_ratio = _optional_float(health.get("fallback_ratio")) or 0.0
+        live_coverage = _lake_live_universe_cost_coverage(lake_root)
+        warnings = list(health.get("warnings") if isinstance(health.get("warnings"), list) else [])
+        if live_coverage.get("coverage_status") == "WARNING":
+            status = "warning" if status == "ok" else status
+            warnings.append("live_universe_cost_coverage_warning")
+        warnings = list(dict.fromkeys(warnings))
         return {
             "status": status,
             "missing": status == "critical" and actual_rows == 0,
@@ -3263,11 +3270,12 @@ def _lake_cost_health(lake_root: Path) -> dict[str, Any]:
             "proxy_rows": _optional_int(health.get("proxy_rows")) or 0,
             "global_default_rows": _optional_int(health.get("global_default_rows")) or 0,
             "proxy_only_count": _optional_int(health.get("proxy_only_count")) or 0,
-            "warnings": health.get("warnings") if isinstance(health.get("warnings"), list) else [],
+            "warnings": warnings,
             "symbols_missing_cost": health.get("symbols_missing_cost")
             if isinstance(health.get("symbols_missing_cost"), list)
             else [],
             "cost_model_version": str(health.get("cost_model_version") or "cost_health_daily"),
+            "live_universe_cost_coverage": live_coverage,
         }
     lazy, columns = _safe_parquet_lazy(lake_root / "gold" / "cost_bucket_daily")
     if lazy is None:
@@ -3329,6 +3337,52 @@ def _lake_cost_health(lake_root: Path) -> dict[str, Any]:
     if latest_day and _is_day_stale(latest_day, max_age_days=3):
         health.update({"status": "stale", "stale": True})
     return health
+
+
+def _lake_live_universe_cost_coverage(lake_root: Path) -> dict[str, Any]:
+    lazy, _columns = _safe_parquet_lazy(lake_root / "gold" / "cost_bucket_daily")
+    if lazy is None:
+        return {
+            "status": "not_observable",
+            "coverage_status": "NOT_OBSERVABLE",
+            "coverage_rate": None,
+            "target_coverage": None,
+            "reason": "cost_bucket_daily_missing",
+        }
+    frame = _collect_lazy_or_empty(lazy)
+    if frame.is_empty():
+        return {
+            "status": "not_observable",
+            "coverage_status": "NOT_OBSERVABLE",
+            "coverage_rate": None,
+            "target_coverage": None,
+            "reason": "cost_bucket_daily_empty",
+        }
+    try:
+        evaluation = evaluate_live_universe_cost_coverage(frame)
+    except Exception as exc:
+        return {
+            "status": "not_observable",
+            "coverage_status": "NOT_OBSERVABLE",
+            "coverage_rate": None,
+            "target_coverage": None,
+            "reason": "live_universe_cost_coverage_unavailable",
+            "error_type": type(exc).__name__,
+        }
+    coverage_status = str(evaluation.get("coverage_status") or "UNKNOWN")
+    return {
+        "status": "ok" if coverage_status == "PASS" else "warning",
+        "coverage_status": coverage_status,
+        "coverage_rate": evaluation.get("coverage_rate"),
+        "target_coverage": evaluation.get("target_coverage"),
+        "covered_symbols": evaluation.get("covered_symbols", []),
+        "direct_symbols": evaluation.get("direct_symbols", []),
+        "mixed_proxy_symbols": evaluation.get("mixed_proxy_symbols", []),
+        "stale_actual_or_mixed_symbols": evaluation.get("stale_actual_or_mixed_symbols", []),
+        "missing_symbols": evaluation.get("missing_symbols", []),
+        "proxy_only_symbols": evaluation.get("proxy_only_symbols", []),
+        "detail_by_symbol": evaluation.get("detail_by_symbol", {}),
+    }
 
 
 def _deep_health_status(

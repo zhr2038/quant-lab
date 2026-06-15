@@ -1,8 +1,13 @@
+from datetime import UTC, datetime, timedelta
+
+import polars as pl
+
 from quant_lab.costs.model import (
     DEFAULT_FALLBACK_COST_BPS,
     CostBucket,
     estimate_cost_bps,
     estimate_cost_from_cost_bucket_daily_rows,
+    evaluate_live_universe_cost_coverage,
 )
 
 
@@ -36,6 +41,58 @@ def test_cost_model_fallback_is_explicit_when_no_bucket_matches():
     assert estimate.cost_bps == DEFAULT_FALLBACK_COST_BPS
     assert estimate.bucket_id is None
     assert estimate.fallback_level == "DEFAULT_FALLBACK"
+
+
+def test_live_universe_cost_coverage_downgrades_stale_direct_to_mixed_proxy():
+    now = datetime(2026, 6, 15, tzinfo=UTC)
+    stale = now - timedelta(days=7)
+
+    evaluation = evaluate_live_universe_cost_coverage(
+        pl.DataFrame(
+            [
+                _coverage_cost_row("BTC-USDT", "actual_fills", now),
+                _coverage_cost_row("SOL-USDT", "mixed_actual_proxy", stale),
+                _coverage_cost_row("SOL-USDT", "public_spread_proxy", now),
+            ]
+        ),
+        live_symbols=["BTC-USDT", "SOL-USDT"],
+        generated_at=now,
+    )
+
+    sol = evaluation["detail_by_symbol"]["SOL-USDT"]
+    assert sol["stale_actual_or_mixed"] is True
+    assert sol["actual_or_mixed_direct"] is False
+    assert sol["mixed_proxy_eligible"] is True
+    assert sol["actual_or_mixed_covered"] is True
+    assert sol["coverage_reason"] == "mixed_from_live_actual_anchor_plus_symbol_public_proxy"
+    assert evaluation["direct_symbols"] == ["BTC-USDT"]
+    assert evaluation["mixed_proxy_symbols"] == ["SOL-USDT"]
+    assert evaluation["coverage_rate"] == 1.0
+
+
+def test_live_universe_cost_coverage_rejects_stale_direct_without_fresh_anchor():
+    now = datetime(2026, 6, 15, tzinfo=UTC)
+    stale = now - timedelta(days=7)
+
+    evaluation = evaluate_live_universe_cost_coverage(
+        pl.DataFrame(
+            [
+                _coverage_cost_row("BTC-USDT", "actual_fills", stale),
+                _coverage_cost_row("BTC-USDT", "public_spread_proxy", now),
+            ]
+        ),
+        live_symbols=["BTC-USDT"],
+        generated_at=now,
+    )
+
+    btc = evaluation["detail_by_symbol"]["BTC-USDT"]
+    assert btc["stale_actual_or_mixed"] is True
+    assert btc["actual_or_mixed_direct"] is False
+    assert btc["mixed_proxy_eligible"] is False
+    assert btc["actual_or_mixed_covered"] is False
+    assert btc["coverage_reason"] == "stale_actual_or_mixed_no_fresh_live_anchor"
+    assert evaluation["direct_symbols"] == []
+    assert evaluation["coverage_rate"] == 0.0
 
 
 def test_cost_model_can_fallback_to_symbol_bucket():
@@ -421,3 +478,24 @@ def test_cost_bucket_daily_estimate_prefers_cross_regime_mixed_actual_over_publi
     assert estimate.source == "mixed_actual_proxy"
     assert estimate.matched_regime == "realized"
     assert estimate.total_cost_bps == 2.5
+
+
+def _coverage_cost_row(symbol: str, source: str, created_at: datetime) -> dict[str, object]:
+    return {
+        "day": created_at.date().isoformat(),
+        "symbol": symbol,
+        "regime": "realized" if source != "public_spread_proxy" else "public_proxy",
+        "event_type": "actual_fill" if source != "public_spread_proxy" else "spread_proxy",
+        "notional_bucket": "all",
+        "sample_count": 4 if source != "public_spread_proxy" else 100,
+        "fee_bps_p75": 10.0 if source != "public_spread_proxy" else 0.0,
+        "spread_bps_p75": 1.0,
+        "slippage_bps_p75": 0.5 if source != "public_spread_proxy" else 0.0,
+        "total_cost_bps_p75": 11.5 if source != "public_spread_proxy" else 1.0,
+        "source": source,
+        "cost_source": source,
+        "actual_fill_count": 4 if source == "actual_fills" else 0,
+        "mixed_fill_count": 4 if source == "mixed_actual_proxy" else 0,
+        "proxy_sample_count": 100 if source == "public_spread_proxy" else 0,
+        "created_at": created_at.isoformat(),
+    }

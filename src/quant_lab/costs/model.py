@@ -74,7 +74,7 @@ def evaluate_live_universe_cost_coverage(
     direct_symbols = {
         symbol
         for symbol, symbol_rows in rows_by_symbol.items()
-        if _latest_actual_or_mixed_row(symbol_rows) is not None
+        if _latest_fresh_actual_or_mixed_row(symbol_rows) is not None
     }
     has_live_actual_anchor = bool(direct_symbols)
 
@@ -84,8 +84,9 @@ def evaluate_live_universe_cost_coverage(
         symbol_rows = rows_by_symbol.get(symbol, [])
         latest = _latest_cost_row_for_coverage(symbol_rows)
         latest_actual = _latest_actual_or_mixed_row(symbol_rows)
+        fresh_actual = _latest_fresh_actual_or_mixed_row(symbol_rows)
         latest_proxy = _latest_public_proxy_row(symbol_rows)
-        direct = latest_actual is not None
+        direct = fresh_actual is not None
         stale_actual_or_mixed = (
             _row_is_stale(latest_actual) if latest_actual is not None else False
         )
@@ -93,11 +94,11 @@ def evaluate_live_universe_cost_coverage(
         covered = direct or mixed_proxy_eligible
         covered_count += int(covered)
         effective_source = (
-            _cost_source(latest_actual)
-            if latest_actual is not None
+            _cost_source(fresh_actual)
+            if fresh_actual is not None
             else ("mixed_actual_proxy" if mixed_proxy_eligible else _cost_source(latest))
         )
-        source_row = latest_actual or latest_proxy or latest or {}
+        source_row = fresh_actual or latest_proxy or latest_actual or latest or {}
         output.append(
             {
                 "generated_at": generated.isoformat().replace("+00:00", "Z"),
@@ -125,6 +126,8 @@ def evaluate_live_universe_cost_coverage(
                     direct=direct,
                     mixed_proxy_eligible=mixed_proxy_eligible,
                     has_live_actual_anchor=has_live_actual_anchor,
+                    latest_actual=latest_actual,
+                    stale_actual_or_mixed=stale_actual_or_mixed,
                     latest_proxy=latest_proxy,
                     latest=latest,
                 ),
@@ -1157,6 +1160,15 @@ def _latest_actual_or_mixed_row(rows: list[dict[str, Any]]) -> dict[str, Any] | 
     return _latest_cost_row_for_coverage(candidates)
 
 
+def _latest_fresh_actual_or_mixed_row(rows: list[dict[str, Any]]) -> dict[str, Any] | None:
+    candidates = [
+        row
+        for row in rows
+        if _is_actual_or_mixed_source(_cost_source(row)) and not _row_is_stale(row)
+    ]
+    return _latest_cost_row_for_coverage(candidates)
+
+
 def _latest_public_proxy_row(rows: list[dict[str, Any]]) -> dict[str, Any] | None:
     candidates = [row for row in rows if _is_public_proxy_source(_cost_source(row))]
     return _latest_cost_row_for_coverage(candidates)
@@ -1183,6 +1195,8 @@ def _coverage_reason(
     direct: bool,
     mixed_proxy_eligible: bool,
     has_live_actual_anchor: bool,
+    latest_actual: Mapping[str, Any] | None,
+    stale_actual_or_mixed: bool,
     latest_proxy: Mapping[str, Any] | None,
     latest: Mapping[str, Any] | None,
 ) -> str:
@@ -1190,6 +1204,10 @@ def _coverage_reason(
         return "direct_actual_or_mixed_cost"
     if mixed_proxy_eligible:
         return "mixed_from_live_actual_anchor_plus_symbol_public_proxy"
+    if latest_actual is not None and stale_actual_or_mixed:
+        if latest_proxy is not None:
+            return "stale_actual_or_mixed_no_fresh_live_anchor"
+        return "stale_actual_or_mixed_no_fresh_proxy"
     if latest_proxy is not None and not has_live_actual_anchor:
         return "public_proxy_only_no_live_actual_anchor"
     if latest is not None:

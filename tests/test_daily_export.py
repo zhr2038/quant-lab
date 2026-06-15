@@ -339,6 +339,7 @@ def test_research_validation_v3_reports_export_forward_and_cost_coverage(tmp_pat
         ),
         lake_root / "gold" / "market_regime_daily",
     )
+    fresh_cost_ts = datetime.now(UTC)
     cost_rows = [
         {
             "day": "2026-06-01",
@@ -354,7 +355,7 @@ def test_research_validation_v3_reports_export_forward_and_cost_coverage(tmp_pat
             "fallback_level": "actual_okx_fills_and_bills",
             "source": "actual_okx_fills_and_bills",
             "actual_fill_count": 40,
-            "created_at": start,
+            "created_at": fresh_cost_ts,
         }
     ]
     for symbol in ["BNB-USDT", "ETH-USDT", "SOL-USDT"]:
@@ -373,9 +374,27 @@ def test_research_validation_v3_reports_export_forward_and_cost_coverage(tmp_pat
                 "fallback_level": "PUBLIC_SPREAD_PROXY",
                 "source": "public_spread_proxy",
                 "proxy_sample_count": 60,
-                "created_at": start,
+                "created_at": fresh_cost_ts,
             }
         )
+    cost_rows.append(
+        {
+            "day": "2026-05-20",
+            "symbol": "SOL-USDT",
+            "regime": "normal",
+            "event_type": "fill_proxy",
+            "notional_bucket": "all",
+            "sample_count": 4,
+            "fee_bps_p75": 10.0,
+            "slippage_bps_p75": 1.0,
+            "spread_bps_p75": 1.0,
+            "total_cost_bps_p75": 12.0,
+            "fallback_level": "SPREAD_PROXY",
+            "source": "mixed_actual_proxy",
+            "mixed_fill_count": 4,
+            "created_at": fresh_cost_ts - timedelta(days=7),
+        }
+    )
     write_parquet_dataset(pl.DataFrame(cost_rows), lake_root / "gold" / "cost_bucket_daily")
     write_parquet_dataset(pl.DataFrame(spreads), lake_root / "silver" / "orderbook_spread_1m")
     write_parquet_dataset(pl.DataFrame(trades), lake_root / "silver" / "trade_activity_1m")
@@ -449,6 +468,14 @@ def test_research_validation_v3_reports_export_forward_and_cost_coverage(tmp_pat
     ]
     assert bnb_coverage["effective_cost_source"] == "mixed_actual_proxy"
     assert float(bnb_coverage["actual_or_mixed_cost_coverage_live_universe"]) == readiness_coverage
+    sol_coverage = next(row for row in cost_coverage_rows if row["symbol"] == "SOL-USDT")
+    assert sol_coverage["stale_actual_or_mixed"].lower() == "true"
+    assert sol_coverage["actual_or_mixed_direct"].lower() == "false"
+    assert sol_coverage["mixed_proxy_eligible"].lower() == "true"
+    assert (
+        sol_coverage["coverage_reason"]
+        == "mixed_from_live_actual_anchor_plus_symbol_public_proxy"
+    )
     assert any(
         row["feature_name"] == "orderbook_imbalance_1m"
         and row["recommendation"] == "FORWARD_VALIDATION_PASS"

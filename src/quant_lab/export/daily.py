@@ -5972,7 +5972,12 @@ def _v5_export_consistency(
         if authoritative
         else ";".join(authoritative_blockers)
     )
-    if not reason and authoritative_blockers and has_v5_bundle_context:
+    if (
+        not reason
+        and authoritative_blockers
+        and has_v5_bundle_context
+        and pre_export_v5_refresh
+    ):
         reason = (
             "non_authoritative_v5_snapshot:"
             f"reason={authoritative_reason};"
@@ -6021,7 +6026,7 @@ def _v5_bundle_sync_diagnostics_frame(
         stale_seconds = "not_observable_ingested_bundle_missing"
     authoritative = bool(pre_export_v5.get("authoritative_snapshot"))
     failure_reason = ""
-    if not authoritative or stale:
+    if stale or (bool(pre_export_v5.get("sync_attempted")) and not authoritative):
         failure_reason = str(
             pre_export_v5.get("warning_reason")
             or pre_export_v5.get("selected_v5_bundle_authoritative_reason")

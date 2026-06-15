@@ -1190,6 +1190,52 @@ def test_v5_bundle_sync_uses_selected_manifest_ingest_for_uploaded_latest_bundle
     assert row["why_stale"] == ""
 
 
+def test_v5_bundle_sync_keeps_refresh_disabled_provenance_out_of_failures():
+    generated_at = datetime(2026, 6, 15, 13, tzinfo=UTC)
+    frames = {
+        "strategy_health_daily": pl.DataFrame(
+            [
+                {
+                    "date": "2026-06-15",
+                    "latest_bundle_ts": "2026-06-15T12:00:30Z",
+                }
+            ]
+        )
+    }
+    pre_export_v5 = {
+        "sync_attempted": False,
+        "latest_v5_bundle_seen_at_export": "2026-06-15T12:00:00Z",
+        "selected_v5_bundle_built_at": "2026-06-15T12:00:00Z",
+        "selected_v5_bundle_ingested_at": "2026-06-15T12:00:30Z",
+        "selected_v5_bundle_path": "/tmp/v5_latest.tar.gz",
+        "selected_v5_bundle_sha256": "latest-sha",
+        "selected_v5_bundle_manifest_match": True,
+    }
+
+    consistency = daily_export_module._v5_export_consistency(
+        frames,
+        pre_export_v5=pre_export_v5,
+        pre_export_v5_refresh=False,
+        allow_stale_v5=False,
+    )
+    diagnostics = daily_export_module._v5_bundle_sync_diagnostics_frame(
+        frames=frames,
+        pre_export_v5={**pre_export_v5, **consistency},
+        generated_at=generated_at,
+    )
+
+    row = diagnostics.to_dicts()[0]
+    assert consistency["authoritative_snapshot"] is False
+    assert consistency["stale_v5_bundle"] is False
+    assert consistency["warning_reason"] == ""
+    assert (
+        "pre_export_v5_refresh_disabled"
+        in consistency["selected_v5_bundle_authoritative_reason"]
+    )
+    assert row["why_stale"] == ""
+    assert row["failure_reason"] == ""
+
+
 def test_v5_bundle_sync_flags_remote_newer_than_ingested():
     frames = {
         "strategy_health_daily": pl.DataFrame(

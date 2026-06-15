@@ -17,4 +17,5 @@ EnvironmentFile=-/etc/quant-lab/quant_lab_api.env
 MemoryHigh=2G
 MemoryMax=3G
 CPUQuota=80%
+ExecStartPre=/opt/quant-lab/.venv/bin/qlab publish-risk-permission --lake-root /var/lib/quant-lab/lake --strategy v5 --version 5.0.0
 ExecStart=/bin/bash -lc '/usr/bin/timeout 20m /opt/quant-lab/.venv/bin/qlab export-daily --date "$(date +%%F)" --lake-root /var/lib/quant-lab/lake --out-dir /var/lib/quant-lab/exports --no-refresh-risk-permission --no-pre-export-v5-refresh'

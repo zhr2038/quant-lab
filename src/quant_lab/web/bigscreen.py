@@ -133,6 +133,10 @@ def _safe_strategy_summary(root: Path) -> dict[str, Any]:
     frames["factor_strategy_bridge_candidates"] = _latest_factor_strategy_bridge_candidates(
         root
     )
+    frames["fast_microstructure_forward_test"] = _latest_export_report_frame(
+        root,
+        "reports/fast_microstructure_forward_test.csv",
+    )
 
     advisory = frames.get("strategy_opportunity_advisory", pl.DataFrame())
     discovery = frames.get("alpha_discovery_board", pl.DataFrame())
@@ -155,7 +159,7 @@ def _read_display_frame(root: Path, dataset_name: str) -> tuple[pl.DataFrame, st
         return pl.DataFrame(), f"{dataset_name} 大屏抽样读取失败：{exc}"
 
 
-def _latest_factor_strategy_bridge_candidates(root: Path) -> pl.DataFrame:
+def _latest_export_report_frame(root: Path, member_name: str) -> pl.DataFrame:
     exports_root = readers.default_exports_root(root)
     if not exports_root.exists():
         return pl.DataFrame()
@@ -167,12 +171,19 @@ def _latest_factor_strategy_bridge_candidates(root: Path) -> pl.DataFrame:
     for pack_path in packs[:5]:
         try:
             with zipfile.ZipFile(pack_path) as archive:
-                with archive.open("reports/factor_strategy_bridge_candidates.csv") as handle:
+                with archive.open(member_name) as handle:
                     rows = list(DictReader(TextIOWrapper(handle, encoding="utf-8")))
             return pl.DataFrame(rows) if rows else pl.DataFrame()
         except Exception:
             continue
     return pl.DataFrame()
+
+
+def _latest_factor_strategy_bridge_candidates(root: Path) -> pl.DataFrame:
+    return _latest_export_report_frame(
+        root,
+        "reports/factor_strategy_bridge_candidates.csv",
+    )
 
 
 def _count_by_column(frame: pl.DataFrame, column: str) -> dict[str, int]:
@@ -525,6 +536,9 @@ def _strategy_flow(strategy: dict[str, Any]) -> dict[str, Any]:
         "alpha_factory": _frame_rows(strategy.get("alpha_factory_promotion_queue"), limit=8),
         "risk_on_multi_buy": _frame_rows(strategy.get("risk_on_multi_buy_shadow"), limit=6),
         "factor_factory": factor_factory,
+        "fast_microstructure_forward": _fast_microstructure_forward_payload(
+            strategy.get("fast_microstructure_forward_test")
+        ),
         "advisory_fresh": True,
     }
 
@@ -581,6 +595,41 @@ def _factor_factory_payload(strategy: dict[str, Any]) -> dict[str, Any]:
             limit=8,
         ),
         "warnings": warnings,
+    }
+
+
+def _fast_microstructure_forward_payload(value: Any) -> dict[str, Any]:
+    frame = _as_frame(value)
+    rows = _frame_rows(frame, limit=1000)
+    counts: dict[str, int] = {}
+    for row in rows:
+        recommendation = str(row.get("recommendation") or "UNKNOWN")
+        counts[recommendation] = counts.get(recommendation, 0) + 1
+    pass_rows = [
+        row
+        for row in rows
+        if str(row.get("recommendation") or "") == "FORWARD_VALIDATION_PASS"
+    ]
+
+    def pass_rank(row: dict[str, Any]) -> tuple[float, float, float]:
+        return (
+            _float(row.get("sample_count")) or 0.0,
+            _float(row.get("long_short_bps")) or -999999.0,
+            _float(row.get("rank_ic")) or -999999.0,
+        )
+
+    top_passes = sorted(pass_rows, key=pass_rank, reverse=True)
+    return {
+        "title": "Fast Microstructure Forward Test",
+        "live_order_effect": "read_only_no_live_order",
+        "row_count": len(rows),
+        "pass_count": counts.get("FORWARD_VALIDATION_PASS", 0),
+        "weak_or_mixed_count": counts.get("FORWARD_VALIDATION_WEAK_OR_MIXED", 0),
+        "needs_more_samples_count": counts.get("NEEDS_MORE_FORWARD_SAMPLES", 0),
+        "recommendation_counts": counts,
+        "latest_generated_at": _max_column_value(frame, "generated_at"),
+        "lookback_bars": _max_column_value(frame, "lookback_bars"),
+        "top_passes": top_passes[:8],
     }
 
 

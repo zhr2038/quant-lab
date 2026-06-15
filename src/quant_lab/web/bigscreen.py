@@ -397,6 +397,9 @@ def _data_matrix(
     trade_by_symbol = _rows_by_symbol(_frame_rows(market.get("trade_activity"), limit=80))
     regime_by_symbol = _rows_by_symbol(_frame_rows(market.get("regimes"), limit=80))
     cost_by_symbol = _rows_by_symbol(_frame_rows(cost.get("costs"), limit=80))
+    live_cost_by_symbol = _rows_by_symbol(
+        _frame_rows(cost.get("live_universe_cost_coverage"), limit=80)
+    )
     advisory_by_symbol = _latest_by_symbol(
         _frame_rows(strategy.get("strategy_opportunity_advisory"), limit=80)
     )
@@ -410,6 +413,7 @@ def _data_matrix(
         trade = trade_by_symbol.get(symbol, {})
         regime = regime_by_symbol.get(symbol, {})
         cost_row = cost_by_symbol.get(symbol, {})
+        live_cost_row = live_cost_by_symbol.get(symbol, {})
         advisory = advisory_by_symbol.get(symbol, {})
         evidence = evidence_by_symbol.get(symbol, {})
         rows.append(
@@ -437,8 +441,10 @@ def _data_matrix(
                     "trade_count": _int(trade.get("trade_count")),
                 },
                 "cost": {
-                    "status": _cost_status(cost_row, cost),
-                    "source": cost_row.get("cost_source") or cost_row.get("source"),
+                    "status": _cost_status(cost_row, cost, live_cost_row),
+                    "source": _matrix_cost_source(cost_row, live_cost_row),
+                    "coverage_status": live_cost_row.get("coverage_status"),
+                    "coverage_reason": live_cost_row.get("coverage_reason"),
                 },
                 "evidence": {
                     "status": "OK"
@@ -814,6 +820,9 @@ def _cost_payload(cost: dict[str, Any]) -> dict[str, Any]:
     payload = {key: _json_value(cost.get(key)) for key in keys}
     payload["cost_rows"] = _frame_rows(cost.get("costs"), limit=12)
     payload["cost_health"] = _frame_rows(cost.get("cost_health"), limit=5)
+    payload["live_universe_cost_coverage"] = _frame_rows(
+        cost.get("live_universe_cost_coverage"), limit=12
+    )
     return payload
 
 
@@ -1199,7 +1208,21 @@ def _action(
     }
 
 
-def _cost_status(row: dict[str, Any], cost: dict[str, Any]) -> str:
+def _cost_status(
+    row: dict[str, Any],
+    cost: dict[str, Any],
+    live_row: dict[str, Any] | None = None,
+) -> str:
+    if live_row:
+        source = str(live_row.get("effective_cost_source") or "").lower()
+        covered = _truthy(live_row.get("actual_or_mixed_covered"))
+        coverage_status = str(live_row.get("coverage_status") or "").upper()
+        if "global" in source:
+            return "CRITICAL"
+        if covered and ("actual" in source or "mixed" in source):
+            return "OK"
+        if coverage_status in {"WARNING", "FAIL", "CRITICAL"} or source == "missing":
+            return "WARNING"
     source = str(row.get("cost_source") or row.get("source") or "").lower()
     fallback = str(row.get("fallback_level") or "").lower()
     if "global" in source or "global" in fallback:
@@ -1209,6 +1232,20 @@ def _cost_status(row: dict[str, Any], cost: dict[str, Any]) -> str:
     if row or (_float(cost.get("soft_fallback_ratio")) or 0.0) > 0.0:
         return "WARNING"
     return "INFO"
+
+
+def _matrix_cost_source(row: dict[str, Any], live_row: dict[str, Any]) -> Any:
+    live_source = str(live_row.get("effective_cost_source") or "").strip()
+    if live_source and live_source.lower() != "missing":
+        return live_source
+    return row.get("cost_source") or row.get("source")
+
+
+def _truthy(value: Any) -> bool:
+    if isinstance(value, bool):
+        return value
+    text = str(value or "").strip().lower()
+    return text in {"1", "true", "yes", "y"}
 
 
 def _spread_status(value: Any) -> str:

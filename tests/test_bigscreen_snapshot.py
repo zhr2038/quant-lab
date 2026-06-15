@@ -33,6 +33,85 @@ def test_bigscreen_snapshot_empty_lake_is_read_only_and_degraded(tmp_path):
     ]
 
 
+def test_bigscreen_data_matrix_prefers_live_universe_cost_coverage(tmp_path):
+    clear_bigscreen_cache()
+    lake = tmp_path / "lake"
+    created_at = datetime.now(UTC)
+    day = created_at.date().isoformat()
+    common = {
+        "regime": "all",
+        "notional_bucket": "all",
+        "fee_bps_p75": 4.0,
+        "spread_bps_p75": 2.0,
+        "slippage_bps_p75": 3.0,
+        "total_cost_bps_p75": 9.0,
+        "created_at": created_at,
+        "day": day,
+    }
+    rows = [
+        {
+            **common,
+            "symbol": "BTC-USDT",
+            "source": "actual_okx_fills_and_bills",
+            "cost_source": "actual_okx_fills_and_bills",
+            "sample_count": 40,
+            "actual_fill_count": 40,
+            "mixed_fill_count": 0,
+            "proxy_sample_count": 0,
+            "fallback_level": "NONE",
+        },
+        *[
+            {
+                **common,
+                "symbol": symbol,
+                "source": "public_spread_proxy",
+                "cost_source": "public_spread_proxy",
+                "sample_count": 100,
+                "actual_fill_count": 0,
+                "mixed_fill_count": 0,
+                "proxy_sample_count": 100,
+                "fallback_level": "PUBLIC_SPREAD_PROXY",
+            }
+            for symbol in ["BNB-USDT", "ETH-USDT", "SOL-USDT"]
+        ],
+    ]
+    write_parquet_dataset(pl.DataFrame(rows), lake / "gold" / "cost_bucket_daily")
+    write_parquet_dataset(
+        pl.DataFrame(
+            [
+                {
+                    "day": day,
+                    "status": "warning",
+                    "actual_rows": 0,
+                    "mixed_rows": 0,
+                    "proxy_rows": 33,
+                    "global_default_rows": 0,
+                    "hard_fallback_ratio": 0.0,
+                    "soft_fallback_ratio": 1.0,
+                    "proxy_only_count": 33,
+                    "created_at": created_at,
+                    "warnings_json": '["cost_soft_fallback"]',
+                }
+            ]
+        ),
+        lake / "gold" / "cost_health_daily",
+    )
+
+    payload = bigscreen_snapshot(lake)
+    matrix = {row["symbol"]: row for row in payload["data_matrix"]["rows"]}
+
+    assert matrix["BTC-USDT"]["cost"]["status"] == "OK"
+    assert matrix["BTC-USDT"]["cost"]["source"] == "actual_okx_fills_and_bills"
+    for symbol in ["BNB-USDT", "ETH-USDT", "SOL-USDT"]:
+        assert matrix[symbol]["cost"]["status"] == "OK"
+        assert matrix[symbol]["cost"]["source"] == "mixed_actual_proxy"
+        assert matrix[symbol]["cost"]["coverage_status"] == "PASS"
+    coverage = {row["symbol"]: row for row in payload["cost"]["live_universe_cost_coverage"]}
+    assert coverage["SOL-USDT"]["effective_cost_source"] == "mixed_actual_proxy"
+    assert payload["cost"]["soft_fallback_ratio"] == 1.0
+    assert any(action["title"] == "成本软回退偏高" for action in payload["actions"])
+
+
 def test_bigscreen_snapshot_redacts_secret_like_fields(tmp_path):
     clear_bigscreen_cache()
     lake = tmp_path / "lake"

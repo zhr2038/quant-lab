@@ -11,6 +11,10 @@ from typing import Any
 
 import polars as pl
 
+from quant_lab.costs.model import (
+    LIVE_UNIVERSE_COST_COVERAGE_FIELDS,
+    evaluate_live_universe_cost_coverage,
+)
 from quant_lab.data.lake import invalid_parquet_files, read_parquet_dataset
 from quant_lab.research.portfolio import research_portfolio_closed_keys
 from quant_lab.symbols import normalize_symbol
@@ -2504,11 +2508,17 @@ def cost_model_summary(lake_root: str | Path) -> dict[str, Any]:
     )
     costs = _normalize_symbol_frame(costs)
     health, health_warning = read_dataset_with_warning(lake_root, "cost_health_daily")
-    warnings = [warning for warning in [costs_warning, health_warning] if warning]
+    live_coverage, live_coverage_warning = _live_universe_cost_coverage_table(costs)
+    warnings = [
+        warning
+        for warning in [costs_warning, health_warning, live_coverage_warning]
+        if warning
+    ]
     if costs.is_empty():
         return {
             "costs": pl.DataFrame(),
             "cost_health": redact_frame(_cost_health_table(health)).head(DISPLAY_LIMIT),
+            "live_universe_cost_coverage": live_coverage,
             "actual_rows": 0,
             "mixed_rows": 0,
             "proxy_rows": 0,
@@ -2533,6 +2543,7 @@ def cost_model_summary(lake_root: str | Path) -> dict[str, Any]:
     return {
         "costs": redact_frame(_cost_bucket_table(costs)).head(DISPLAY_LIMIT),
         "cost_health": redact_frame(_cost_health_table(health)).head(DISPLAY_LIMIT),
+        "live_universe_cost_coverage": live_coverage,
         "actual_rows": int(latest_health.get("actual_rows") or 0),
         "mixed_rows": int(latest_health.get("mixed_rows") or 0),
         "proxy_rows": int(latest_health.get("proxy_rows") or 0),
@@ -2550,6 +2561,21 @@ def cost_model_summary(lake_root: str | Path) -> dict[str, Any]:
         ),
         "warnings": warnings,
     }
+
+
+def _live_universe_cost_coverage_table(costs: pl.DataFrame) -> tuple[pl.DataFrame, str | None]:
+    empty = pl.DataFrame(schema={field: pl.Utf8 for field in LIVE_UNIVERSE_COST_COVERAGE_FIELDS})
+    if costs.is_empty():
+        return empty, None
+    try:
+        rows = evaluate_live_universe_cost_coverage(costs).get("rows", [])
+    except Exception as exc:
+        return empty, f"live_universe_cost_coverage 计算失败：{exc}"
+    if not rows:
+        return empty, None
+    return redact_frame(pl.DataFrame(rows, infer_schema_length=None)).select(
+        LIVE_UNIVERSE_COST_COVERAGE_FIELDS
+    ), None
 
 
 def _cost_health_table(frame: pl.DataFrame) -> pl.DataFrame:

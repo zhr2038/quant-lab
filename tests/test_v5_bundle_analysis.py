@@ -897,6 +897,10 @@ def test_analyze_request_health_ignores_historical_fallback_reseen_in_current_bu
     assert result.unique_actual_fallback_count == 0
     assert result.fallback_rate == 0.0
     assert result.degraded_reason == "none"
+    assert result.raw_imported_rows == 1
+    assert result.unique_event_rows == 1
+    assert result.duplicate_event_rows == 0
+    assert result.duplicate_rate == 0.0
     assert not any("actual fallback" in warning for warning in result.warnings)
     assert health["actual_fallback_count"][0] == 0
     assert health["degraded_reason"][0] == "none"

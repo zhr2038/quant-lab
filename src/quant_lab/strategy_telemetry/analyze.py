@@ -1461,17 +1461,22 @@ def _quant_lab_request_health(
     actual_fallback_count = len(request_fallback_keys | fallback_keys)
     total_requests = success_count + error_count
     fallback_rate = actual_fallback_count / total_requests if total_requests else 0.0
-    raw_imported_rows = _raw_event_row_count(requests) + _raw_event_row_count(fallback)
-    unique_event_keys = set(all_request_rows) | set(all_fallback_rows)
+    raw_imported_rows = _raw_event_row_count_from_rows(
+        request_rows
+    ) + _raw_event_row_count_from_rows(fallback_rows)
+    unique_event_keys = {
+        _event_key(row)
+        for row in [*request_rows, *fallback_rows]
+    }
     unique_event_rows = len(unique_event_keys)
     duplicate_event_rows = max(raw_imported_rows - unique_event_rows, 0)
     duplicate_rate = duplicate_event_rows / raw_imported_rows if raw_imported_rows else 0.0
     duplicate_breakdown = _duplicate_event_breakdown(
-        [*all_request_rows.values(), *all_fallback_rows.values()],
+        [*request_rows, *fallback_rows],
         duplicate_event_rows=duplicate_event_rows,
     )
     first_seen, last_seen = _event_seen_range(
-        list(all_request_rows.values()) + list(all_fallback_rows.values())
+        [*request_rows, *fallback_rows]
     )
     if actual_fallback_count:
         degraded_reason = "actual_fallback_present"
@@ -1916,8 +1921,12 @@ def _normalize_event_time(value: Any) -> str:
 def _raw_event_row_count(df: pl.DataFrame) -> int:
     if df.is_empty():
         return 0
+    return _raw_event_row_count_from_rows(df.to_dicts())
+
+
+def _raw_event_row_count_from_rows(rows: Iterable[dict[str, Any]]) -> int:
     total = 0
-    for row in df.to_dicts():
+    for row in rows:
         total += _row_current_source_count(row)
     return total
 

@@ -7,6 +7,7 @@ from pathlib import Path
 
 import polars as pl
 
+import quant_lab.research.strategy_evidence as strategy_evidence_module
 from quant_lab.data.lake import read_parquet_dataset, write_market_bars, write_parquet_dataset
 from quant_lab.export.daily import export_daily_pack
 from quant_lab.research.alpha_discovery import build_and_publish_alpha_discovery_board
@@ -14,6 +15,7 @@ from quant_lab.research.portfolio import is_closed_research_candidate
 from quant_lab.research.strategy_evidence import (
     build_and_publish_strategy_evidence,
     normalize_strategy_evidence_decisions,
+    normalize_strategy_evidence_samples,
     strategy_evidence_decision_ladder,
 )
 
@@ -39,6 +41,41 @@ def test_strategy_evidence_ladder_requires_complete_sample_floor():
     )
     assert decision == "RESEARCH_ONLY"
     assert "insufficient_total_samples" in reasons
+
+
+def test_strategy_evidence_sample_normalization_uses_columnar_path_when_source_type_complete(
+    monkeypatch,
+):
+    def fail_payload(row):
+        raise AssertionError("complete source_type samples should not parse raw payload row-by-row")
+
+    monkeypatch.setattr(strategy_evidence_module, "_payload", fail_payload)
+
+    samples = pl.DataFrame(
+        [
+            {
+                "strategy": "v5",
+                "evidence_version": "test",
+                "as_of_date": "2026-06-15",
+                "candidate_id": "sample-1",
+                "symbol": "SOL-USDT",
+                "strategy_candidate": "sol_protect_exception",
+                "candidate_name": "",
+                "source_type": "second_stage_expanded_relative_strength",
+                "horizon_hours": 8,
+                "sample_count": 1,
+                "complete_sample_count": 1,
+            }
+        ]
+    )
+
+    normalized = normalize_strategy_evidence_samples(samples)
+    row = normalized.to_dicts()[0]
+
+    assert normalized.columns == list(strategy_evidence_module.SAMPLE_SCHEMA)
+    assert row["strategy_candidate"] == "v5.sol_protect_exception"
+    assert row["candidate_name"] == "v5.sol_protect_exception"
+    assert row["source_type"] == "second_stage_expanded_relative_strength"
 
 
 def test_strategy_evidence_ladder_kills_only_after_complete_sample_floor():

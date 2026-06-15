@@ -759,6 +759,8 @@ def normalize_strategy_evidence_decisions(evidence: pl.DataFrame) -> pl.DataFram
 def normalize_strategy_evidence_samples(samples: pl.DataFrame) -> pl.DataFrame:
     if samples.is_empty():
         return pl.DataFrame(schema=SAMPLE_SCHEMA)
+    if _samples_have_complete_source_type(samples):
+        return _normalize_strategy_evidence_samples_columnar(samples)
     rows: list[dict[str, Any]] = []
     for row in samples.to_dicts():
         payload = _payload(row)
@@ -777,6 +779,62 @@ def normalize_strategy_evidence_samples(samples: pl.DataFrame) -> pl.DataFrame:
             )
         rows.append({column: row.get(column) for column in SAMPLE_SCHEMA})
     return pl.DataFrame(rows, schema=SAMPLE_SCHEMA, orient="row")
+
+
+def _samples_have_complete_source_type(samples: pl.DataFrame) -> bool:
+    if "source_type" not in samples.columns:
+        return False
+    try:
+        has_blank = samples.select(
+            pl.col("source_type")
+            .cast(pl.Utf8, strict=False)
+            .fill_null("")
+            .str.strip_chars()
+            .eq("")
+            .any()
+        ).item()
+    except Exception:
+        return False
+    return not bool(has_blank)
+
+
+def _normalize_strategy_evidence_samples_columnar(samples: pl.DataFrame) -> pl.DataFrame:
+    frame = samples
+    for column, dtype in SAMPLE_SCHEMA.items():
+        if column not in frame.columns:
+            frame = frame.with_columns(pl.lit(None, dtype=dtype).alias(column))
+
+    strategy_candidate = pl.col("strategy_candidate").cast(pl.Utf8, strict=False)
+    candidate_name = pl.col("candidate_name").cast(pl.Utf8, strict=False)
+    candidate_source = (
+        pl.when(strategy_candidate.fill_null("").str.strip_chars().ne(""))
+        .then(strategy_candidate)
+        .otherwise(candidate_name)
+    )
+    frame = frame.with_columns(
+        candidate_source.map_elements(
+            lambda value: _canonical_candidate_name(
+                value,
+                dataset_name="strategy_evidence_sample",
+            ),
+            return_dtype=pl.Utf8,
+        ).alias("_normalized_strategy_candidate")
+    ).with_columns(
+        pl.when(pl.col("_normalized_strategy_candidate").fill_null("").ne(""))
+        .then(pl.col("_normalized_strategy_candidate"))
+        .otherwise(strategy_candidate)
+        .alias("strategy_candidate"),
+        pl.when(pl.col("_normalized_strategy_candidate").fill_null("").ne(""))
+        .then(pl.col("_normalized_strategy_candidate"))
+        .otherwise(candidate_name)
+        .alias("candidate_name"),
+    )
+    return frame.select(
+        [
+            pl.col(column).cast(dtype, strict=False).alias(column)
+            for column, dtype in SAMPLE_SCHEMA.items()
+        ]
+    )
 
 
 def _drop_unknown_symbol_rows(frame: pl.DataFrame) -> pl.DataFrame:

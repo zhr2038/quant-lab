@@ -81,6 +81,57 @@ def test_microstructure_rollup_limits_cover_forward_validation_window():
     )
 
 
+def test_v5_candidate_feature_completeness_by_strategy_breaks_down_gaps():
+    frame = pl.DataFrame(
+        [
+            {
+                "strategy_candidate": "f3_dominant_entry",
+                "symbol": "BNB-USDT",
+                "final_score": "0.9",
+                "f1_mom_5d": "0.1",
+                "f2_mom_20d": "0.2",
+                "f3_vol_adj_ret": "1.8",
+                "f4_volume_expansion": "0.4",
+                "f5_rsi_trend_confirm": "0.5",
+                "alpha6_score": "0.7",
+                "alpha6_side": "buy",
+                "ml_score": "0.9",
+                "mean_reversion_score": "null",
+                "expected_edge_bps": "80",
+                "required_edge_bps": "45",
+                "cost_source": "public_spread_proxy",
+            },
+            {
+                "strategy_candidate": "portfolio_trend_following",
+                "symbol": "BTC-USDT",
+                "final_score": "0.4",
+                "f1_mom_5d": "null",
+                "f2_mom_20d": "null",
+                "f3_vol_adj_ret": "null",
+                "f4_volume_expansion": "null",
+                "f5_rsi_trend_confirm": "null",
+                "alpha6_score": "null",
+                "alpha6_side": "null",
+                "ml_score": "0.4",
+                "mean_reversion_score": "null",
+                "expected_edge_bps": "10",
+                "required_edge_bps": "45",
+                "cost_source": "public_spread_proxy",
+            },
+        ]
+    )
+
+    report = daily_export_module._v5_candidate_feature_completeness_by_strategy(frame)
+    rows = {row["strategy_candidate"]: row for row in report.to_dicts()}
+
+    assert rows["f3_dominant_entry"]["core_signal_completeness"] == 1.0
+    assert rows["f3_dominant_entry"]["edge_context_completeness"] == 1.0
+    assert rows["portfolio_trend_following"]["core_signal_completeness"] == 0.125
+    assert rows["portfolio_trend_following"]["edge_context_completeness"] == 1.0
+    assert "f1_mom_5d" in rows["portfolio_trend_following"]["missing_core_fields"]
+    assert rows["portfolio_trend_following"]["live_order_effect"] == "read_only_no_live_order"
+
+
 def test_export_daily_pack_writes_required_members(tmp_path):
     lake_root = _fixture_lake(tmp_path)
     result = export_daily_pack(
@@ -149,6 +200,7 @@ def test_export_daily_pack_writes_required_members(tmp_path):
         assert "reports/factor_forward_validation.md" in names
         assert "reports/factor_strategy_bridge_candidates.csv" in names
         assert "reports/live_universe_cost_coverage.csv" in names
+        assert "reports/v5_candidate_feature_completeness_by_strategy.csv" in names
         assert "reports/fast_microstructure_forward_test.csv" in names
         assert "reports/fast_microstructure_forward_summary.md" in names
         assert "diagnostics/export_timing.csv" in names

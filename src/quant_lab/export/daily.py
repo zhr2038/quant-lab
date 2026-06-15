@@ -152,6 +152,25 @@ SNAPSHOT_META_DATASETS = {
 }
 STRATEGY_OPPORTUNITY_ADVISORY_TTL_SECONDS = 3 * 60 * 60
 UNOBSERVABLE_TEXT_VALUES = {"", "none", "null", "nan", "not_observable", "unknown"}
+V5_CANDIDATE_CORE_SIGNAL_FIELDS = (
+    "final_score",
+    "f1_mom_5d",
+    "f2_mom_20d",
+    "f3_vol_adj_ret",
+    "f4_volume_expansion",
+    "f5_rsi_trend_confirm",
+    "alpha6_score",
+    "alpha6_side",
+)
+V5_CANDIDATE_EDGE_CONTEXT_FIELDS = (
+    "expected_edge_bps",
+    "required_edge_bps",
+    "cost_source",
+)
+V5_CANDIDATE_OPTIONAL_SIGNAL_FIELDS = (
+    "ml_score",
+    "mean_reversion_score",
+)
 
 SECTIONS = ["market", "features", "costs", "research", "risk", "anomalies", "v5", "charts"]
 HEAVY_EXPORT_DATASET_LIMITS = {
@@ -2843,6 +2862,19 @@ CSV_SCHEMAS: dict[str, list[str]] = {
         "created_at",
         "source",
     ],
+    "reports/v5_candidate_feature_completeness_by_strategy.csv": [
+        "strategy_candidate",
+        "row_count",
+        "core_signal_completeness",
+        "edge_context_completeness",
+        "optional_signal_completeness",
+        "field_completeness_json",
+        "missing_core_fields",
+        "missing_edge_context_fields",
+        "missing_optional_fields",
+        "sample_symbols",
+        "live_order_effect",
+    ],
     "v5/v5_candidate_outcome_summary.csv": [
         "strategy",
         "date",
@@ -5207,6 +5239,10 @@ def _dataset_members(
             "v5/v5_candidate_quality.csv",
             v5_candidate_quality,
         ),
+        "reports/v5_candidate_feature_completeness_by_strategy.csv": _csv_member(
+            "reports/v5_candidate_feature_completeness_by_strategy.csv",
+            _v5_candidate_feature_completeness_by_strategy(v5_candidate_events),
+        ),
         "v5/v5_candidate_outcome_summary.csv": _csv_member(
             "v5/v5_candidate_outcome_summary.csv",
             v5_candidate_outcomes,
@@ -5232,6 +5268,85 @@ def _v5_event_seen_time(row: dict[str, Any]) -> datetime:
         if value is not None:
             return value
     return datetime.min.replace(tzinfo=UTC)
+
+
+def _v5_candidate_feature_completeness_by_strategy(frame: pl.DataFrame) -> pl.DataFrame:
+    path = "reports/v5_candidate_feature_completeness_by_strategy.csv"
+    if frame.is_empty():
+        return _empty_csv_schema_frame(path)
+    grouped: dict[str, list[dict[str, Any]]] = {}
+    for row in frame.to_dicts():
+        strategy = str(row.get("strategy_candidate") or "UNKNOWN").strip() or "UNKNOWN"
+        grouped.setdefault(strategy, []).append(row)
+
+    def field_completeness(
+        group_rows: list[dict[str, Any]],
+        fields: tuple[str, ...],
+    ) -> dict[str, float]:
+        if not group_rows:
+            return {field: 0.0 for field in fields}
+        return {
+            field: sum(
+                1 for row in group_rows if _candidate_feature_observed(row.get(field))
+            )
+            / len(group_rows)
+            for field in fields
+        }
+
+    def mean(values: Iterable[float]) -> float:
+        material = list(values)
+        return float(sum(material) / len(material)) if material else 0.0
+
+    output: list[dict[str, Any]] = []
+    for strategy, group_rows in sorted(
+        grouped.items(), key=lambda item: (-len(item[1]), item[0])
+    ):
+        core = field_completeness(group_rows, V5_CANDIDATE_CORE_SIGNAL_FIELDS)
+        edge = field_completeness(group_rows, V5_CANDIDATE_EDGE_CONTEXT_FIELDS)
+        optional = field_completeness(group_rows, V5_CANDIDATE_OPTIONAL_SIGNAL_FIELDS)
+        all_fields = {**core, **edge, **optional}
+        sample_symbols = sorted(
+            {
+                normalize_symbol(str(row.get("symbol") or ""))
+                for row in group_rows
+                if str(row.get("symbol") or "").strip()
+            }
+        )
+        output.append(
+            {
+                "strategy_candidate": strategy,
+                "row_count": len(group_rows),
+                "core_signal_completeness": round(mean(core.values()), 6),
+                "edge_context_completeness": round(mean(edge.values()), 6),
+                "optional_signal_completeness": round(mean(optional.values()), 6),
+                "field_completeness_json": safe_json_dumps(
+                    {
+                        field: round(value, 6)
+                        for field, value in sorted(all_fields.items())
+                    }
+                ),
+                "missing_core_fields": ",".join(
+                    field for field, value in core.items() if value < 0.8
+                ),
+                "missing_edge_context_fields": ",".join(
+                    field for field, value in edge.items() if value < 0.8
+                ),
+                "missing_optional_fields": ",".join(
+                    field for field, value in optional.items() if value < 0.8
+                ),
+                "sample_symbols": ",".join(sample_symbols[:12]),
+                "live_order_effect": "read_only_no_live_order",
+            }
+        )
+    return pl.DataFrame(output, infer_schema_length=None).select(CSV_SCHEMAS[path])
+
+
+def _candidate_feature_observed(value: Any) -> bool:
+    if value is None:
+        return False
+    if isinstance(value, float) and math.isnan(value):
+        return False
+    return str(value).strip().lower() not in UNOBSERVABLE_TEXT_VALUES
 
 
 def _chart_members(frames: dict[str, pl.DataFrame]) -> dict[str, _MemberPayload]:

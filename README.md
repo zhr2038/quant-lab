@@ -718,7 +718,8 @@ qlab export-daily \
   --lake-root /var/lib/quant-lab/lake \
   --out-dir /var/lib/quant-lab/exports \
   --no-refresh-risk-permission \
-  --no-pre-export-v5-refresh
+  --pre-export-v5-refresh \
+  --allow-stale-v5
 ```
 
 ## 数据质量与排障

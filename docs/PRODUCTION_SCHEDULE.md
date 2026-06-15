@@ -141,7 +141,10 @@ Suggested production order:
 - Alpha evidence and gate publishing: every 15 minutes.
 - Risk permission publish: every 10 minutes, after telemetry and gate refresh
   and no less frequently than every 30 minutes.
-- Daily expert export: after telemetry and risk permission have had time to run.
+- Daily expert export: after telemetry and risk permission have had time to run;
+  the export should still run `--pre-export-v5-refresh --allow-stale-v5` so the
+  latest pack records current V5 snapshot provenance instead of a non-authoritative
+  packaging-only snapshot.
 
 `qlab build-strategy-evidence` remains available for offline legacy telemetry
 research, but production readiness and daily exports should use

@@ -306,12 +306,14 @@ def test_entry_quality_history_refresh_is_scheduled_separately():
     assert "Persistent=true" in timer
 
 
-def test_daily_export_template_is_packaging_only():
+def test_daily_export_template_refreshes_v5_before_packaging():
     unit = _unit("quant-lab-daily-export.service")
 
     assert "export-daily" in unit
     assert "--no-refresh-risk-permission" in unit
-    assert "--no-pre-export-v5-refresh" in unit
+    assert "--pre-export-v5-refresh" in unit
+    assert "--allow-stale-v5" in unit
+    assert "--no-pre-export-v5-refresh" not in unit
     assert "TimeoutStartSec=45min" in unit
     assert "/var/lock/quant-lab-heavy.lock" in unit
     assert "/var/lock/quant-lab-v5-telemetry-sync.lock" in unit

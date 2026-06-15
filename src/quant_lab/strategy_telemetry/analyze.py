@@ -3,6 +3,7 @@ from __future__ import annotations
 import hashlib
 import json
 import os
+from collections.abc import Iterable
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any
@@ -193,7 +194,7 @@ def analyze_v5_telemetry(
     )
     trades = _read_analysis_dataset(
         root / SILVER["trade_event"],
-        ["bundle_ts", "ingest_ts", "source_path_inside_bundle"],
+        ["bundle_ts", "ingest_ts", "ts_utc", "ts", "created_at", "source_path_inside_bundle"],
         analysis_date=analysis_date,
         lookback_days=lookback_days,
     )
@@ -301,6 +302,9 @@ def analyze_v5_telemetry(
             "apply_cost_gate",
             "bundle_ts",
             "ingest_ts",
+            "ts_utc",
+            "ts",
+            "created_at",
         ],
         analysis_date=analysis_date,
         lookback_days=lookback_days,
@@ -388,6 +392,9 @@ def analyze_v5_telemetry(
             "apply_cost_gate",
             "bundle_ts",
             "ingest_ts",
+            "ts_utc",
+            "ts",
+            "created_at",
         ],
         analysis_date=analysis_date,
         lookback_days=lookback_days,
@@ -517,6 +524,7 @@ def analyze_v5_telemetry(
         quant_lab_fallback,
         decisions,
         trades,
+        analysis_date=analysis_date,
     )
     gate_violations = (
         list(quant_lab_summary["actual_violations"])
@@ -1355,6 +1363,8 @@ def _quant_lab_mode_summary(
     fallback: pl.DataFrame,
     decisions: pl.DataFrame,
     trades: pl.DataFrame,
+    *,
+    analysis_date: str | None = None,
 ) -> dict[str, Any]:
     has_data = any(
         not frame.is_empty() for frame in [usage, requests, compliance, cost_usage, fallback]
@@ -1372,15 +1382,21 @@ def _quant_lab_mode_summary(
     )
     actual: list[str] = []
     hypothetical: list[str] = []
-    request_health = _quant_lab_request_health(requests, fallback)
-    if not compliance.is_empty():
+    request_health = _quant_lab_request_health(
+        requests,
+        fallback,
+        analysis_date=analysis_date,
+    )
+    compliance_health = _analysis_day_frame(compliance, analysis_date)
+    trades_health = _analysis_day_frame(trades, analysis_date)
+    if not compliance_health.is_empty():
         actual, hypothetical = _compliance_violation_messages(
-            compliance,
+            compliance_health,
             mode=mode,
             enforced=enforced,
         )
     elif (
-        not trades.is_empty()
+        not trades_health.is_empty()
         and mode not in {None, "local_only", "cost_only"}
         and _mode_allows_actual_permission_check(mode)
     ):
@@ -1407,13 +1423,27 @@ def _quant_lab_mode_summary(
     }
 
 
-def _quant_lab_request_health(requests: pl.DataFrame, fallback: pl.DataFrame) -> dict[str, Any]:
+def _analysis_day_frame(frame: pl.DataFrame, analysis_date: str | None) -> pl.DataFrame:
+    if frame.is_empty():
+        return frame
+    rows = _analysis_day_event_rows(frame.to_dicts(), analysis_date)
+    return pl.DataFrame(rows) if rows else frame.head(0)
+
+
+def _quant_lab_request_health(
+    requests: pl.DataFrame,
+    fallback: pl.DataFrame,
+    *,
+    analysis_date: str | None = None,
+) -> dict[str, Any]:
     success_count = 0
     error_count = 0
     request_fallback_keys: set[str] = set()
-    request_rows = _unique_event_rows(requests)
-    fallback_rows = _unique_event_rows(fallback)
-    for row in request_rows.values():
+    all_request_rows = _unique_event_rows(requests)
+    all_fallback_rows = _unique_event_rows(fallback)
+    request_rows = _analysis_day_event_rows(all_request_rows.values(), analysis_date)
+    fallback_rows = _analysis_day_event_rows(all_fallback_rows.values(), analysis_date)
+    for row in request_rows:
         payload = _payload(row)
         status = _request_status(row, payload)
         if status == "success":
@@ -1425,23 +1455,23 @@ def _quant_lab_request_health(requests: pl.DataFrame, fallback: pl.DataFrame) ->
             error_count += 1
     fallback_keys = {
         _event_key(row)
-        for row in fallback_rows.values()
+        for row in fallback_rows
         if _fallback_table_row_is_actual(row, _payload(row))
     }
     actual_fallback_count = len(request_fallback_keys | fallback_keys)
     total_requests = success_count + error_count
     fallback_rate = actual_fallback_count / total_requests if total_requests else 0.0
     raw_imported_rows = _raw_event_row_count(requests) + _raw_event_row_count(fallback)
-    unique_event_keys = set(request_rows) | set(fallback_rows)
+    unique_event_keys = set(all_request_rows) | set(all_fallback_rows)
     unique_event_rows = len(unique_event_keys)
     duplicate_event_rows = max(raw_imported_rows - unique_event_rows, 0)
     duplicate_rate = duplicate_event_rows / raw_imported_rows if raw_imported_rows else 0.0
     duplicate_breakdown = _duplicate_event_breakdown(
-        [*request_rows.values(), *fallback_rows.values()],
+        [*all_request_rows.values(), *all_fallback_rows.values()],
         duplicate_event_rows=duplicate_event_rows,
     )
     first_seen, last_seen = _event_seen_range(
-        list(request_rows.values()) + list(fallback_rows.values())
+        list(all_request_rows.values()) + list(all_fallback_rows.values())
     )
     if actual_fallback_count:
         degraded_reason = "actual_fallback_present"
@@ -1450,7 +1480,7 @@ def _quant_lab_request_health(requests: pl.DataFrame, fallback: pl.DataFrame) ->
     else:
         degraded_reason = "none"
     latest_permission_status, stale_permission_consecutive_count = (
-        _permission_status_consecutive_health(request_rows.values())
+        _permission_status_consecutive_health(request_rows)
     )
     return {
         "unique_request_count": total_requests,
@@ -1480,6 +1510,25 @@ def _quant_lab_request_health(requests: pl.DataFrame, fallback: pl.DataFrame) ->
         "latest_permission_status": latest_permission_status,
         "stale_permission_consecutive_count": stale_permission_consecutive_count,
     }
+
+
+def _analysis_day_event_rows(
+    rows: Iterable[dict[str, Any]],
+    analysis_date: str | None,
+) -> list[dict[str, Any]]:
+    if analysis_date is None:
+        return list(rows)
+    try:
+        day = datetime.fromisoformat(str(analysis_date)[:10]).date()
+    except ValueError:
+        return list(rows)
+    start = datetime.combine(day, datetime.min.time(), tzinfo=UTC)
+    end = start + timedelta(days=1)
+    return [
+        row
+        for row in rows
+        if start <= _request_event_time(row) < end
+    ]
 
 
 def _duplicate_event_breakdown(
@@ -1609,8 +1658,8 @@ def _request_event_time(row: dict[str, Any]) -> datetime:
         "timestamp",
         "request_ts",
         "created_at",
-        "ingest_ts",
         "bundle_ts",
+        "ingest_ts",
     ]:
         value = _first_value(row, payload, [field])
         parsed = _parse_seen_time(value)

@@ -450,6 +450,78 @@ def test_quant_lab_shadow_mode_marks_hypothetical_not_actual_violation(tmp_path)
     assert enforcement["hypothetical_violation_count"][0] == 1
 
 
+def test_quant_lab_hypothetical_violation_uses_analysis_day_event_time(tmp_path):
+    lake = tmp_path / "lake"
+    current_bundle_ts = datetime(2026, 6, 15, 22, 14, 30, tzinfo=UTC)
+    _write_manifest(lake, bundle_ts=current_bundle_ts)
+    usage_row = {
+        **_event_row("current-usage", bundle_ts=current_bundle_ts),
+        "source_path_inside_bundle": "raw/quant_lab/quant_lab_usage.jsonl",
+        "mode": "shadow",
+        "permission_gate_enforced": False,
+        "raw_payload_json": __import__("json").dumps(
+            {"mode": "shadow", "permission_gate_enforced": False}
+        ),
+    }
+    historical_compliance = {
+        **_event_row("old-risk-increasing-compliance", bundle_ts=current_bundle_ts),
+        "source_path_inside_bundle": "summaries/quant_lab_compliance.csv",
+        "ts_utc": "2026-06-07T06:00:41.984639Z",
+        "mode": "shadow",
+        "permission_gate_enforced": False,
+        "raw_permission_decision": "ABORT",
+        "effective_permission_decision": "ALLOW",
+        "side": "buy",
+        "intent": "OPEN_LONG",
+        "raw_payload_json": __import__("json").dumps(
+            {
+                "ts": "2026-06-07T06:00:41.984639Z",
+                "mode": "shadow",
+                "permission_gate_enforced": False,
+                "raw_permission_decision": "ABORT",
+                "effective_permission_decision": "ALLOW",
+                "side": "buy",
+                "intent": "OPEN_LONG",
+            }
+        ),
+    }
+    current_compliance = {
+        **_event_row("current-compliance", bundle_ts=current_bundle_ts),
+        "source_path_inside_bundle": "summaries/quant_lab_compliance.csv",
+        "ts_utc": "2026-06-15T22:00:40.215239Z",
+        "mode": "shadow",
+        "permission_gate_enforced": False,
+        "raw_permission_decision": "ABORT",
+        "effective_permission_decision": "ALLOW",
+        "side": "not_observable",
+        "intent": "not_observable",
+        "raw_payload_json": __import__("json").dumps(
+            {
+                "ts": "2026-06-15T22:00:40.215239Z",
+                "mode": "shadow",
+                "permission_gate_enforced": False,
+                "raw_permission_decision": "ABORT",
+                "effective_permission_decision": "ALLOW",
+                "side": "not_observable",
+                "intent": "not_observable",
+            }
+        ),
+    }
+    write_parquet_dataset(pl.DataFrame([usage_row]), lake / "silver/v5_quant_lab_usage")
+    write_parquet_dataset(
+        pl.DataFrame([historical_compliance, current_compliance]),
+        lake / "silver/v5_quant_lab_compliance",
+    )
+
+    result = analyze_v5_telemetry(lake, date="2026-06-15")
+    enforcement = read_parquet_dataset(lake / "gold/v5_quant_lab_enforcement_daily")
+
+    assert result.quant_lab_mode == "shadow"
+    assert result.quant_lab_hypothetical_violation_count == 0
+    assert not any("hypothetical permission" in warning for warning in result.warnings)
+    assert enforcement["hypothetical_violation_count"][0] == 0
+
+
 def test_quant_lab_enforce_mode_marks_sell_only_buy_actual_violation(tmp_path):
     lake = tmp_path / "lake"
     _write_manifest(lake)
@@ -744,6 +816,90 @@ def test_analyze_deduplicates_request_and_summary_fallback_events(tmp_path):
     assert result.unique_event_rows == 1
     assert result.duplicate_event_rows == 1
     assert health["actual_fallback_count"][0] == 1
+
+
+def test_analyze_request_health_ignores_historical_fallback_reseen_in_current_bundle(tmp_path):
+    lake = tmp_path / "lake"
+    current_bundle_ts = datetime(2026, 6, 15, 22, 14, 30, tzinfo=UTC)
+    _write_manifest(lake, bundle_ts=current_bundle_ts)
+    old_request_row = {
+        **_event_row("old-request-timeout", bundle_ts=current_bundle_ts),
+        "source_path_inside_bundle": "raw/reports/quant_lab_requests.jsonl",
+        "run_id": "20260615_22",
+        "ts_utc": "2026-06-07T06:00:41.984639Z",
+        "endpoint_path": "/v1/risk/live-permission",
+        "event_type": "request",
+        "status_code": "not_observable",
+        "success": "false",
+        "fallback_used": True,
+        "error_type": "QuantLabTimeout",
+        "first_seen_bundle_ts": datetime(2026, 6, 7, 6, 15, 1, tzinfo=UTC),
+        "last_seen_bundle_ts": current_bundle_ts,
+        "raw_payload_json": (
+            '{"event_type":"request","run_id":"20260615_22",'
+            '"ts":"2026-06-07T06:00:41.984639Z",'
+            '"endpoint_path":"/v1/risk/live-permission",'
+            '"status_code":null,"success":false,"fallback_used":true,'
+            '"error_type":"QuantLabTimeout"}'
+        ),
+    }
+    old_fallback_row = {
+        **_event_row("old-summary-timeout", bundle_ts=current_bundle_ts),
+        "source_path_inside_bundle": "summaries/quant_lab_fallbacks.csv",
+        "run_id": "20260615_22",
+        "ts_utc": "2026-06-07T06:00:41.984639Z",
+        "endpoint_path": "/v1/risk/live-permission",
+        "event_type": "fallback",
+        "status_code": "not_observable",
+        "success": "false",
+        "fallback_used": True,
+        "error_type": "QuantLabTimeout",
+        "diagnosis": "fallback_request",
+        "first_seen_bundle_ts": datetime(2026, 6, 7, 6, 15, 1, tzinfo=UTC),
+        "last_seen_bundle_ts": current_bundle_ts,
+        "raw_payload_json": (
+            '{"event_type":"fallback","run_id":"20260615_22",'
+            '"ts":"2026-06-07T06:00:41.984639Z",'
+            '"endpoint_path":"/v1/risk/live-permission",'
+            '"status_code":null,"success":false,"fallback_used":true,'
+            '"error_type":"QuantLabTimeout"}'
+        ),
+    }
+    current_request_row = {
+        **_event_row("current-health-ok", bundle_ts=current_bundle_ts),
+        "source_path_inside_bundle": "raw/reports/quant_lab_requests.jsonl",
+        "event_id": "current-health-ok",
+        "ts_utc": "2026-06-15T22:00:40.544525Z",
+        "endpoint_path": "/v1/health",
+        "event_type": "request",
+        "status_code": 200,
+        "success": True,
+        "fallback_used": False,
+        "raw_payload_json": (
+            '{"event_type":"request","event_id":"current-health-ok",'
+            '"ts":"2026-06-15T22:00:40.544525Z",'
+            '"endpoint_path":"/v1/health","status_code":200,'
+            '"success":true,"fallback_used":false}'
+        ),
+    }
+    write_parquet_dataset(
+        pl.DataFrame([old_request_row, current_request_row]),
+        lake / "silver/v5_quant_lab_request",
+    )
+    write_parquet_dataset(pl.DataFrame([old_fallback_row]), lake / "silver/v5_quant_lab_fallback")
+
+    result = analyze_v5_telemetry(lake, date="2026-06-15")
+    health = read_parquet_dataset(lake / "gold/strategy_health_daily")
+
+    assert result.request_success_count == 1
+    assert result.request_error_count == 0
+    assert result.actual_fallback_count == 0
+    assert result.unique_actual_fallback_count == 0
+    assert result.fallback_rate == 0.0
+    assert result.degraded_reason == "none"
+    assert not any("actual fallback" in warning for warning in result.warnings)
+    assert health["actual_fallback_count"][0] == 0
+    assert health["degraded_reason"][0] == "none"
 
 
 def test_analyze_uses_current_bundle_count_for_historical_source_count(tmp_path):

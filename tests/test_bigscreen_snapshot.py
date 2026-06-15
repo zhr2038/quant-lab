@@ -8,6 +8,7 @@ from pathlib import Path
 import polars as pl
 from fastapi.testclient import TestClient
 
+import quant_lab.web.bigscreen as bigscreen_module
 from quant_lab.api.main import create_app
 from quant_lab.data.lake import write_parquet_dataset
 from quant_lab.web.bigscreen import _exports_payload, bigscreen_snapshot, clear_bigscreen_cache
@@ -549,3 +550,107 @@ def test_bigscreen_exports_payload_separates_job_state_from_data_quality():
     assert payload["job_state"] == "pack_available"
     assert payload["data_quality_status"] == "CRITICAL"
     assert payload["data_quality_warning_count"] == 7
+
+
+def test_bigscreen_snapshot_promotes_export_data_quality_warning(tmp_path, monkeypatch):
+    clear_bigscreen_cache()
+    lake = tmp_path / "lake"
+    lake.mkdir()
+    exports = tmp_path / "exports"
+    exports.mkdir()
+    pack_path = exports / "quant_lab_expert_pack_2026-06-05_120000.zip"
+    (exports / "export_index.json").write_text(
+        json.dumps(
+            {
+                "latest_pack": str(pack_path),
+                "packs": [
+                    {
+                        "path": str(pack_path),
+                        "name": pack_path.name,
+                        "size_bytes": 123,
+                        "modified_at": "2026-06-05T12:00:00Z",
+                    }
+                ],
+                "manifest_summary": {"export_date": "2026-06-05"},
+                "data_quality_summary": {
+                    "status": "WARN",
+                    "warning_count": 2,
+                    "warnings": ["cost_soft_fallback_ratio: high", "okx_ws_universe_incomplete"],
+                    "failures": [],
+                },
+                "expert_questions": [],
+                "warnings": [],
+            }
+        ),
+        encoding="utf-8",
+    )
+    now = datetime(2026, 6, 5, 12, tzinfo=UTC)
+    monkeypatch.setattr(
+        bigscreen_module.readers,
+        "data_health_summary",
+        lambda _root: {
+            "schema_violation_count": 0,
+            "unclosed_bar_count": 0,
+            "latest_market_bar_ts": now,
+            "warnings": [],
+        },
+    )
+    monkeypatch.setattr(
+        bigscreen_module.readers,
+        "cost_model_summary",
+        lambda _root: {"hard_fallback_ratio": 0.0, "soft_fallback_ratio": 0.0, "warnings": []},
+    )
+    monkeypatch.setattr(
+        bigscreen_module,
+        "_safe_strategy_summary",
+        lambda _root: {
+            "strategy_opportunity_advisory": pl.DataFrame(),
+            "alpha_discovery_board": pl.DataFrame(),
+            "factor_strategy_bridge_candidates": pl.DataFrame(),
+            "fast_microstructure_forward_test": pl.DataFrame(),
+            "strategy_counts": {},
+            "discovery_counts": {},
+            "warnings": [],
+        },
+    )
+    monkeypatch.setattr(
+        bigscreen_module.readers,
+        "market_regime_summary",
+        lambda _root: {"warnings": []},
+    )
+    monkeypatch.setattr(
+        bigscreen_module.readers,
+        "okx_collector_summary",
+        lambda _root: {"warnings": []},
+    )
+    monkeypatch.setattr(
+        bigscreen_module.readers,
+        "v5_telemetry_summary",
+        lambda _root: {
+            "latest": {
+                "latest_bundle_ts": now,
+                "kill_switch_enabled": False,
+                "reconcile_ok": True,
+                "ledger_ok": True,
+            },
+            "warnings": [],
+        },
+    )
+    monkeypatch.setattr(
+        bigscreen_module.readers,
+        "strategy_consumer_summary",
+        lambda _root: {"permissions": {}, "warnings": []},
+    )
+    monkeypatch.setattr(bigscreen_module.perf, "recent_events", lambda limit=50: [])
+    monkeypatch.setattr(bigscreen_module, "_safe_api_metrics", lambda _root: {})
+
+    payload = bigscreen_snapshot(lake)
+
+    assert payload["exports"]["data_quality_status"] == "WARN"
+    assert payload["status"] == "WARNING"
+    assert payload["health_score"] < 100
+    assert any("expert_pack_data_quality_warning:" in item for item in payload["warnings"])
+    assert any(
+        action["source"] == "expert_export_summary" and action["severity"] == "WARNING"
+        for action in payload["actions"]
+    )

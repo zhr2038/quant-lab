@@ -59,9 +59,10 @@ def bigscreen_snapshot(lake_root: str | Path) -> dict[str, Any]:
             *_warnings(v5),
             *_warnings(consumers),
             *_warnings(exports),
+            *_export_quality_warnings(exports),
         ]
     )
-    status = _status_from_inputs(overview, data_health, cost, v5, warnings)
+    status = _status_from_inputs(overview, data_health, cost, v5, warnings, exports)
     overview["status"] = status
     health_score = _health_score(status, data_health, cost, v5, web_events, exports)
     legacy_anomalies = _legacy_web_anomalies(data_health)
@@ -260,12 +261,67 @@ def _warnings(summary: dict[str, Any]) -> list[str]:
     return [str(value) for value in values if str(value).strip()]
 
 
+def _export_data_quality(exports: dict[str, Any]) -> dict[str, Any]:
+    value = exports.get("data_quality_summary")
+    return value if isinstance(value, dict) else {}
+
+
+def _export_quality_level(exports: dict[str, Any]) -> str:
+    data_quality = _export_data_quality(exports)
+    status = str(data_quality.get("status") or "").upper()
+    if status in {"CRITICAL", "FAIL", "FAILED", "ERROR"}:
+        return "CRITICAL"
+    if status in {"WARN", "WARNING"}:
+        return "WARNING"
+    if _quality_warning_count(data_quality) > 0:
+        return "WARNING"
+    return "OK"
+
+
+def _quality_failure_count(data_quality: dict[str, Any]) -> int:
+    failures = data_quality.get("failures")
+    return len(failures) if isinstance(failures, list) else 0
+
+
+def _export_quality_warnings(exports: dict[str, Any]) -> list[str]:
+    data_quality = _export_data_quality(exports)
+    level = _export_quality_level(exports)
+    if level not in {"WARNING", "CRITICAL"}:
+        return []
+    status = str(data_quality.get("status") or level)
+    warning_count = _quality_warning_count(data_quality)
+    failure_count = _quality_failure_count(data_quality)
+    label = "critical" if level == "CRITICAL" else "warning"
+    out = [
+        (
+            f"expert_pack_data_quality_{label}: status={status}; "
+            f"warnings={warning_count}; failures={failure_count}"
+        )
+    ]
+    warnings = data_quality.get("warnings")
+    if isinstance(warnings, list):
+        out.extend(
+            f"expert_pack_warning: {warning}"
+            for warning in warnings[:5]
+            if str(warning).strip()
+        )
+    failures = data_quality.get("failures")
+    if isinstance(failures, list):
+        out.extend(
+            f"expert_pack_failure: {failure}"
+            for failure in failures[:5]
+            if str(failure).strip()
+        )
+    return out
+
+
 def _status_from_inputs(
     overview: dict[str, Any],
     data_health: dict[str, Any],
     cost: dict[str, Any],
     v5: dict[str, Any],
     warnings: list[str],
+    exports: dict[str, Any],
 ) -> str:
     if _int(data_health.get("schema_violation_count")) or _int(
         data_health.get("unclosed_bar_count")
@@ -278,11 +334,14 @@ def _status_from_inputs(
         return "CRITICAL"
     if latest.get("reconcile_ok") is False or latest.get("ledger_ok") is False:
         return "CRITICAL"
+    export_quality_level = _export_quality_level(exports)
+    if export_quality_level == "CRITICAL":
+        return "CRITICAL"
     overview_status = str(overview.get("status") or "").upper()
-    if warnings or overview_status == "WARNING":
-        return "WARNING"
     if overview_status == "CRITICAL":
         return "CRITICAL"
+    if warnings or overview_status == "WARNING":
+        return "WARNING"
     return "OK"
 
 
@@ -314,6 +373,11 @@ def _health_score(
     if sum(1 for row in web_events if row.get("rglob_fallback")):
         score -= 5
     if not exports.get("latest_pack"):
+        score -= 5
+    export_quality_level = _export_quality_level(exports)
+    if export_quality_level == "CRITICAL":
+        score -= 15
+    elif export_quality_level == "WARNING":
         score -= 5
     return max(0, min(100, score))
 
@@ -1212,6 +1276,24 @@ def _build_actions(
                 "web_perf",
                 "刷新 lake_file_index，避免页面和导出变慢",
                 "/data-ops",
+            )
+        )
+    export_quality_level = _export_quality_level(exports)
+    if exports.get("latest_pack") and export_quality_level in {"WARNING", "CRITICAL"}:
+        data_quality = _export_data_quality(exports)
+        actions.append(
+            _action(
+                export_quality_level,
+                "专家包质量需复核",
+                (
+                    "最新 expert pack "
+                    f"data_quality={data_quality.get('status') or export_quality_level}; "
+                    f"warnings={_quality_warning_count(data_quality)}; "
+                    f"failures={_quality_failure_count(data_quality)}"
+                ),
+                "expert_export_summary",
+                "打开专家包导出页复核 data_quality 与缺失/陈旧数据明细",
+                "/exports",
             )
         )
     if not exports.get("latest_pack"):

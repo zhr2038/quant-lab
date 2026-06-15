@@ -3298,6 +3298,48 @@ def test_data_quality_critical_failures_are_not_downgraded_to_warn(tmp_path):
     assert checks["market_bar_present"]["severity"] == "critical"
 
 
+def test_data_quality_marks_warn_enforce_readiness_as_warning(tmp_path, monkeypatch):
+    class FakeEnforceReadiness(SimpleNamespace):
+        def model_dump(self, *, mode: str = "json") -> dict[str, object]:
+            _ = mode
+            return dict(self.__dict__)
+
+    lake_root = _fixture_lake(tmp_path)
+    monkeypatch.setattr(
+        daily_export_module,
+        "build_enforce_readiness_report",
+        lambda _lake_root: FakeEnforceReadiness(
+            readiness_status="WARN",
+            blocked_reasons=[],
+            warning_reasons=["actual_or_mixed_cost_coverage"],
+            checks=[],
+            metrics={},
+            shadow_only_recommended=True,
+        ),
+    )
+
+    result = export_daily_pack(
+        export_date="2026-05-12",
+        lake_root=lake_root,
+        out_dir=tmp_path / "exports",
+        profile="expert",
+        command_line=["qlab", "export-daily"],
+    )
+
+    with zipfile.ZipFile(result.zip_path) as archive:
+        data_quality = json.loads(archive.read("data_quality.json").decode("utf-8"))
+
+    checks = {check["name"]: check for check in data_quality["checks"]}
+    readiness_check = checks["quant_lab_enforce_readiness"]
+    assert readiness_check["status"] == "WARN"
+    assert readiness_check["severity"] == "warning"
+    assert data_quality["quant_lab_enforce_readiness"]["readiness_status"] == "WARN"
+    assert any("quant_lab_enforce_readiness:" in warning for warning in data_quality["warnings"])
+    assert not any(
+        "quant_lab_enforce_readiness:" in failure for failure in data_quality.get("failures", [])
+    )
+
+
 def test_cost_fallback_ratio_is_not_pass_when_cost_bucket_daily_is_empty(tmp_path):
     result = export_daily_pack(
         export_date="2026-05-11",

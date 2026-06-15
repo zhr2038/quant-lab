@@ -7181,6 +7181,13 @@ def _data_quality_payload(
         )
     )
     enforce_readiness = build_enforce_readiness_report(lake_root)
+    readiness_check_status = (
+        "PASS"
+        if enforce_readiness.readiness_status == "READY"
+        else "FAIL"
+        if enforce_readiness.readiness_status == "BLOCKED"
+        else "WARN"
+    )
     checks.append(
         _check(
             "quant_lab_enforce_readiness",
@@ -7190,7 +7197,8 @@ def _data_quality_payload(
                 f"blocked={enforce_readiness.blocked_reasons}; "
                 f"warnings={enforce_readiness.warning_reasons}"
             ),
-            severity="critical" if enforce_readiness.readiness_status == "BLOCKED" else "warning",
+            severity="critical" if readiness_check_status == "FAIL" else "warning",
+            status=readiness_check_status,
         )
     )
 

@@ -2691,6 +2691,61 @@ def test_refresh_v5_derived_outputs_uses_incremental_research_builds(
     }
 
 
+def test_refresh_v5_derived_outputs_subprocess_uses_web_memory_limit_default(
+    tmp_path,
+    monkeypatch,
+):
+    captured: dict[str, object] = {}
+
+    monkeypatch.delenv("QUANT_LAB_EXPORT_DERIVED_REFRESH_STEP_MEMORY_MB", raising=False)
+    monkeypatch.setenv("QUANT_LAB_WEB_EXPORT_MEMORY_LIMIT_MB", "0")
+    monkeypatch.setattr(
+        daily_export_module,
+        "_v5_derived_refresh_step_bodies",
+        lambda: [("noop", "print('noop')")],
+    )
+
+    def fake_run(args, **kwargs):
+        captured["env"] = kwargs["env"]
+        return daily_export_module.subprocess.CompletedProcess(args, 0, "", "")
+
+    monkeypatch.setattr(daily_export_module.subprocess, "run", fake_run)
+
+    warnings = daily_export_module._refresh_v5_derived_outputs_subprocess(
+        tmp_path / "lake",
+        datetime(2026, 6, 15, tzinfo=UTC).date(),
+    )
+
+    assert warnings == []
+    assert captured["env"]["QUANT_LAB_DERIVED_REFRESH_MEMORY_MB"] == "0"
+
+
+def test_v5_derived_refresh_subprocess_code_rejects_negative_memory_limit(tmp_path):
+    env = {
+        **os.environ,
+        "QUANT_LAB_DERIVED_REFRESH_LAKE_ROOT": str(tmp_path / "lake"),
+        "QUANT_LAB_DERIVED_REFRESH_DATE": "2026-06-15",
+        "QUANT_LAB_DERIVED_REFRESH_LOOKBACK_DAYS": "8",
+        "QUANT_LAB_DERIVED_REFRESH_ALPHA_FACTORY_LOOKBACK_DAYS": "30",
+        "QUANT_LAB_DERIVED_REFRESH_ALPHA_FACTORY_MAX_CANDIDATES": "200",
+        "QUANT_LAB_DERIVED_REFRESH_MEMORY_MB": "-1",
+    }
+
+    result = daily_export_module.subprocess.run(
+        [
+            os.sys.executable,
+            "-c",
+            daily_export_module._v5_derived_refresh_subprocess_code("print('unreachable')"),
+        ],
+        env=env,
+        capture_output=True,
+        text=True,
+    )
+
+    assert result.returncode != 0
+    assert "QUANT_LAB_DERIVED_REFRESH_MEMORY_MB must be >= 0" in result.stderr
+
+
 def test_export_daily_non_authoritative_when_selected_bundle_sha_missing_from_manifest(
     tmp_path,
     monkeypatch,

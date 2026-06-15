@@ -832,20 +832,65 @@ def test_quant_lab_exact_duplicate_reingest_keeps_single_canonical_event(tmp_pat
     assert health["conflicting_duplicate_event_rows"][0] == 0
 
 
-def test_quant_lab_conflicting_duplicate_keeps_same_event_key_and_blocks_dedupe_health(
+def test_quant_lab_latency_only_duplicate_keeps_same_event_key_without_conflict(
     tmp_path,
 ):
     first_request = (
         '{"event_type":"request","strategy_id":"v5","run_id":"run_same",'
         '"ts":"2026-05-14T23:01:00Z","path":"/v1/costs/estimate",'
         '"request_id":"request-a","status_code":200,"success":true,'
-        '"fallback_used":false,"latency_ms":10}\n'
+        '"fallback_used":false,"latency_ms":10,'
+        '"response_summary":{"decision":"ALLOW","latency_ms":10}}\n'
+    )
+    latency_only_change = (
+        '{"event_type":"request","strategy_id":"v5","run_id":"run_same",'
+        '"ts":"2026-05-14T23:01:00Z","path":"/v1/costs/estimate",'
+        '"request_id":"request-a","status_code":200,"success":true,'
+        '"fallback_used":false,"latency_ms":25,'
+        '"response_summary":{"decision":"ALLOW","latency_ms":25}}\n'
+    )
+    first = make_tar(
+        tmp_path / "v5_live_followup_bundle_20260514T230100Z.tar.gz",
+        {"raw/reports/quant_lab_requests.jsonl": first_request},
+    )
+    second = make_tar(
+        tmp_path / "v5_live_followup_bundle_20260514T231000Z.tar.gz",
+        {"raw/reports/quant_lab_requests.jsonl": latency_only_change},
+    )
+    lake = tmp_path / "lake"
+
+    ingest_v5_bundle(first, lake, tmp_path / "restricted", tmp_path / "redacted")
+    ingest_v5_bundle(second, lake, tmp_path / "restricted", tmp_path / "redacted")
+
+    requests = read_parquet_dataset(lake / "silver/v5_quant_lab_request")
+    health = read_parquet_dataset(lake / "gold/strategy_health_daily")
+
+    assert requests.height == 1
+    row = requests.to_dicts()[0]
+    assert int(row["source_count"]) == 2
+    assert int(row["payload_hash_count"]) == 1
+    assert row["conflicting_duplicate"] is False
+    assert health["unique_event_rows"][0] == 1
+    assert health["exact_duplicate_event_rows"][0] == 1
+    assert health["conflicting_duplicate_event_rows"][0] == 0
+
+
+def test_quant_lab_semantic_duplicate_keeps_same_event_key_and_blocks_dedupe_health(
+    tmp_path,
+):
+    first_request = (
+        '{"event_type":"request","strategy_id":"v5","run_id":"run_same",'
+        '"ts":"2026-05-14T23:01:00Z","path":"/v1/costs/estimate",'
+        '"request_id":"request-a","status_code":200,"success":true,'
+        '"fallback_used":false,"latency_ms":10,'
+        '"response_summary":{"decision":"ALLOW","reason":"healthy"}}\n'
     )
     changed_payload_same_identity = (
         '{"event_type":"request","strategy_id":"v5","run_id":"run_same",'
         '"ts":"2026-05-14T23:01:00Z","path":"/v1/costs/estimate",'
         '"request_id":"request-a","status_code":200,"success":true,'
-        '"fallback_used":false,"latency_ms":25}\n'
+        '"fallback_used":false,"latency_ms":25,'
+        '"response_summary":{"decision":"ABORT","reason":"risk_blocked"}}\n'
     )
     first = make_tar(
         tmp_path / "v5_live_followup_bundle_20260514T230100Z.tar.gz",
@@ -874,7 +919,7 @@ def test_quant_lab_conflicting_duplicate_keeps_same_event_key_and_blocks_dedupe_
     assert health["duplicate_explanation"][0] == "conflicting_duplicate_payloads_present"
 
 
-def test_raw_payload_hash_variation_does_not_change_event_key():
+def test_latency_variation_does_not_change_event_key_or_conflict_hash():
     first_payload = {
         "event_type": "request",
         "strategy_id": "v5",
@@ -901,7 +946,7 @@ def test_raw_payload_hash_variation_does_not_change_event_key():
         default_event_type="request",
     )
 
-    assert first_fields["raw_payload_hash"] != second_fields["raw_payload_hash"]
+    assert first_fields["raw_payload_hash"] == second_fields["raw_payload_hash"]
     assert _event_key_from_fields(first_fields) == _event_key_from_fields(second_fields)
 
 

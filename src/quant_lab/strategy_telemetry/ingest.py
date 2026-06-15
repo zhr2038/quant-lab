@@ -1456,6 +1456,31 @@ _EVENT_PAYLOAD_IDENTITY_ALIASES = {
     "event_key_fields_json",
 }
 
+_EVENT_PAYLOAD_VOLATILE_FIELDS = {
+    "latency_ms",
+    "elapsed_ms",
+    "duration_ms",
+    "request_duration_ms",
+    "response_time_ms",
+    "roundtrip_ms",
+    "timing_ms",
+    "duration_seconds",
+    "elapsed_seconds",
+    "sampled_at",
+    "sampled_at_utc",
+    "cache_hit",
+    "response_cache_hit",
+}
+
+
+def _payload_conflict_key_is_ignored(key: Any) -> bool:
+    rendered = str(key)
+    return (
+        rendered in EVENT_KEY_METADATA_FIELDS
+        or rendered in _EVENT_PAYLOAD_IDENTITY_ALIASES
+        or rendered in _EVENT_PAYLOAD_VOLATILE_FIELDS
+    )
+
 
 def _event_payload_conflict_hash(row: dict[str, Any], payload: dict[str, Any]) -> str:
     source: Any = payload if payload else row
@@ -1463,8 +1488,7 @@ def _event_payload_conflict_hash(row: dict[str, Any], payload: dict[str, Any]) -
         source = {
             key: _normalize_payload_conflict_value(value)
             for key, value in source.items()
-            if key not in EVENT_KEY_METADATA_FIELDS
-            and key not in _EVENT_PAYLOAD_IDENTITY_ALIASES
+            if not _payload_conflict_key_is_ignored(key)
             and not _payload_conflict_value_is_empty(value)
         }
     rendered = json.dumps(source, ensure_ascii=False, sort_keys=True, default=str)
@@ -1491,7 +1515,8 @@ def _normalize_payload_conflict_value(value: Any) -> Any:
         return {
             key: _normalize_payload_conflict_value(item)
             for key, item in value.items()
-            if not _payload_conflict_value_is_empty(item)
+            if not _payload_conflict_key_is_ignored(key)
+            and not _payload_conflict_value_is_empty(item)
         }
     return value
 

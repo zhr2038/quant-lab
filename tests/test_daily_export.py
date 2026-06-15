@@ -104,6 +104,7 @@ def test_v5_candidate_feature_completeness_by_strategy_breaks_down_gaps():
             {
                 "strategy_candidate": "portfolio_trend_following",
                 "symbol": "BTC-USDT",
+                "eligible_before_filters": "true",
                 "final_score": "0.4",
                 "f1_mom_5d": "null",
                 "f2_mom_20d": "null",
@@ -118,6 +119,25 @@ def test_v5_candidate_feature_completeness_by_strategy_breaks_down_gaps():
                 "required_edge_bps": "45",
                 "cost_source": "public_spread_proxy",
             },
+            {
+                "strategy_candidate": "portfolio_trend_following",
+                "symbol": "ETH-USDT",
+                "eligible_before_filters": "false",
+                "final_decision": "no_order",
+                "final_score": "null",
+                "f1_mom_5d": "null",
+                "f2_mom_20d": "null",
+                "f3_vol_adj_ret": "null",
+                "f4_volume_expansion": "null",
+                "f5_rsi_trend_confirm": "null",
+                "alpha6_score": "null",
+                "alpha6_side": "null",
+                "ml_score": "null",
+                "mean_reversion_score": "null",
+                "expected_edge_bps": "0",
+                "required_edge_bps": "45",
+                "cost_source": "local_estimate",
+            },
         ]
     )
 
@@ -126,6 +146,9 @@ def test_v5_candidate_feature_completeness_by_strategy_breaks_down_gaps():
 
     assert rows["f3_dominant_entry"]["core_signal_completeness"] == 1.0
     assert rows["f3_dominant_entry"]["edge_context_completeness"] == 1.0
+    assert rows["portfolio_trend_following"]["row_count"] == 2
+    assert rows["portfolio_trend_following"]["feature_denominator_row_count"] == 1
+    assert rows["portfolio_trend_following"]["no_signal_context_row_count"] == 1
     assert rows["portfolio_trend_following"]["core_signal_completeness"] == 0.125
     assert rows["portfolio_trend_following"]["edge_context_completeness"] == 1.0
     assert "f1_mom_5d" in rows["portfolio_trend_following"]["missing_core_fields"]

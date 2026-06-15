@@ -224,7 +224,8 @@ def build_candidate_quality(
         event_run_ids,
     )
     missing_runs = sorted(summary_runs_in_candidate_window - event_run_ids)
-    feature_by_field = _feature_completeness_by_field(event_rows)
+    feature_rows, no_signal_context_rows = _candidate_feature_denominator_rows(event_rows)
+    feature_by_field = _feature_completeness_by_field(feature_rows)
     feature_completeness = (
         statistics.fmean(feature_by_field.values()) if feature_by_field else 0.0
     )
@@ -284,6 +285,8 @@ def build_candidate_quality(
                     }
                 ),
                 "run_symbol_min_rows": run_symbol_min_rows,
+                "feature_denominator_rows": len(feature_rows),
+                "no_signal_context_rows": no_signal_context_rows,
                 "feature_completeness": feature_completeness,
                 "feature_completeness_by_field_json": safe_json_dumps(feature_by_field),
                 "expected_label_rows": expected_labels,
@@ -649,6 +652,39 @@ def _feature_completeness_by_field(rows: list[dict[str, Any]]) -> dict[str, floa
                 complete += 1
         result[field] = complete / len(rows)
     return result
+
+
+def _candidate_feature_denominator_rows(
+    rows: list[dict[str, Any]],
+) -> tuple[list[dict[str, Any]], int]:
+    if not rows:
+        return [], 0
+    candidate_rows = [row for row in rows if _candidate_row_needs_feature_coverage(row)]
+    if candidate_rows:
+        return candidate_rows, len(rows) - len(candidate_rows)
+    return rows, 0
+
+
+def _candidate_row_needs_feature_coverage(row: dict[str, Any]) -> bool:
+    payload = _payload(row)
+    eligible = _clean_text(_first_value(row, payload, ["eligible_before_filters"])).lower()
+    if eligible in {"true", "1", "yes", "y"}:
+        return True
+    if eligible in {"false", "0", "no", "n"}:
+        if _clean_text(_first_value(row, payload, ["block_reason"])):
+            return True
+        decision = _clean_text(_first_value(row, payload, ["final_decision"])).lower()
+        return decision not in {"", "no_order"}
+    if _clean_text(_first_value(row, payload, ["block_reason"])):
+        return True
+    decision = _clean_text(_first_value(row, payload, ["final_decision"])).lower()
+    if decision and decision != "no_order":
+        return True
+    for field in ["target_weight_raw", "target_weight_after_risk", "current_weight"]:
+        value = _finite_float(_first_value(row, payload, [field]))
+        if value is not None and abs(value) > 0.0:
+            return True
+    return bool(_clean_text(_first_value(row, payload, ["final_score", "rank"])))
 
 
 def _symbol(row: dict[str, Any], payload: dict[str, Any]) -> str:

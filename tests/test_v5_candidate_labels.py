@@ -154,6 +154,56 @@ def test_candidate_quality_ignores_pending_future_labels_and_pre_snapshot_runs()
     assert "runs_without_candidate_event" not in row["warnings_json"]
 
 
+def test_candidate_quality_excludes_no_signal_context_from_feature_completeness():
+    created_at = datetime(2026, 5, 20, tzinfo=UTC)
+    complete_event = _candidate_event("complete", created_at) | {
+        "eligible_before_filters": "true",
+        "final_score": 0.8,
+        "rank": 1,
+        "f1_mom_5d": 0.1,
+        "f2_mom_20d": 0.2,
+        "f3_vol_adj_ret": 0.3,
+        "f4_volume_expansion": 0.4,
+        "f5_rsi_trend_confirm": 0.5,
+        "alpha6_score": 0.6,
+        "ml_score": 0.7,
+        "mean_reversion_score": 0.0,
+        "expected_edge_bps": 50.0,
+        "required_edge_bps": 35.0,
+    }
+    no_signal_context = _candidate_event("no_signal", created_at) | {
+        "eligible_before_filters": "false",
+        "final_decision": "no_order",
+        "block_reason": "",
+        "final_score": None,
+        "f1_mom_5d": None,
+        "f2_mom_20d": None,
+        "f3_vol_adj_ret": None,
+        "f4_volume_expansion": None,
+        "f5_rsi_trend_confirm": None,
+        "alpha6_score": None,
+        "ml_score": None,
+        "mean_reversion_score": None,
+        "expected_edge_bps": 0.0,
+        "required_edge_bps": 35.0,
+    }
+
+    quality = build_candidate_quality(
+        pl.DataFrame([complete_event, no_signal_context]),
+        pl.DataFrame(),
+        pl.DataFrame(),
+        as_of_date=created_at.date(),
+        created_at=created_at,
+    )
+    row = quality.to_dicts()[0]
+
+    assert row["candidate_event_rows"] == 2
+    assert row["feature_denominator_rows"] == 1
+    assert row["no_signal_context_rows"] == 1
+    assert row["feature_completeness"] == pytest.approx(1.0)
+    assert "candidate_feature_completeness_below_80pct" not in row["warnings_json"]
+
+
 def _candidate_event(candidate_id: str, ts: datetime) -> dict[str, object]:
     return {
         "strategy": "v5",

@@ -2842,6 +2842,8 @@ CSV_SCHEMAS: dict[str, list[str]] = {
         "schema_version",
         "status",
         "candidate_event_rows",
+        "feature_denominator_rows",
+        "no_signal_context_rows",
         "run_count",
         "runs_with_candidate_event",
         "runs_without_candidate_event",
@@ -2865,6 +2867,8 @@ CSV_SCHEMAS: dict[str, list[str]] = {
     "reports/v5_candidate_feature_completeness_by_strategy.csv": [
         "strategy_candidate",
         "row_count",
+        "feature_denominator_row_count",
+        "no_signal_context_row_count",
         "core_signal_completeness",
         "edge_context_completeness",
         "optional_signal_completeness",
@@ -5301,9 +5305,12 @@ def _v5_candidate_feature_completeness_by_strategy(frame: pl.DataFrame) -> pl.Da
     for strategy, group_rows in sorted(
         grouped.items(), key=lambda item: (-len(item[1]), item[0])
     ):
-        core = field_completeness(group_rows, V5_CANDIDATE_CORE_SIGNAL_FIELDS)
-        edge = field_completeness(group_rows, V5_CANDIDATE_EDGE_CONTEXT_FIELDS)
-        optional = field_completeness(group_rows, V5_CANDIDATE_OPTIONAL_SIGNAL_FIELDS)
+        denominator_rows, no_signal_context_count = (
+            _v5_candidate_feature_denominator_rows(group_rows)
+        )
+        core = field_completeness(denominator_rows, V5_CANDIDATE_CORE_SIGNAL_FIELDS)
+        edge = field_completeness(denominator_rows, V5_CANDIDATE_EDGE_CONTEXT_FIELDS)
+        optional = field_completeness(denominator_rows, V5_CANDIDATE_OPTIONAL_SIGNAL_FIELDS)
         all_fields = {**core, **edge, **optional}
         sample_symbols = sorted(
             {
@@ -5316,6 +5323,8 @@ def _v5_candidate_feature_completeness_by_strategy(frame: pl.DataFrame) -> pl.Da
             {
                 "strategy_candidate": strategy,
                 "row_count": len(group_rows),
+                "feature_denominator_row_count": len(denominator_rows),
+                "no_signal_context_row_count": no_signal_context_count,
                 "core_signal_completeness": round(mean(core.values()), 6),
                 "edge_context_completeness": round(mean(edge.values()), 6),
                 "optional_signal_completeness": round(mean(optional.values()), 6),
@@ -5339,6 +5348,39 @@ def _v5_candidate_feature_completeness_by_strategy(frame: pl.DataFrame) -> pl.Da
             }
         )
     return pl.DataFrame(output, infer_schema_length=None).select(CSV_SCHEMAS[path])
+
+
+def _v5_candidate_feature_denominator_rows(
+    rows: list[dict[str, Any]],
+) -> tuple[list[dict[str, Any]], int]:
+    if not rows:
+        return [], 0
+    candidate_rows = [row for row in rows if _v5_candidate_row_needs_feature_coverage(row)]
+    if candidate_rows:
+        return candidate_rows, len(rows) - len(candidate_rows)
+    return rows, 0
+
+
+def _v5_candidate_row_needs_feature_coverage(row: dict[str, Any]) -> bool:
+    eligible = str(row.get("eligible_before_filters") or "").strip().lower()
+    if eligible in {"true", "1", "yes", "y"}:
+        return True
+    block_reason = str(row.get("block_reason") or "").strip()
+    if block_reason:
+        return True
+    decision = str(row.get("final_decision") or "").strip().lower()
+    if decision and decision != "no_order":
+        return True
+    if eligible in {"false", "0", "no", "n"}:
+        return False
+    for field in ("target_weight_raw", "target_weight_after_risk", "current_weight"):
+        value = _float_or_none(row.get(field))
+        if value is not None and abs(value) > 0.0:
+            return True
+    return any(
+        _candidate_feature_observed(row.get(field))
+        for field in ("final_score", "rank")
+    )
 
 
 def _candidate_feature_observed(value: Any) -> bool:

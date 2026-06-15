@@ -13,6 +13,6 @@ TimeoutStartSec=20min
 MemoryHigh=2G
 MemoryMax=3G
 CPUQuota=50%
-ExecStart=/usr/bin/flock -w 30 /var/lock/quant-lab-entry-quality-history.lock /bin/bash -lc 'END_DATE="$(date -u +%%F)"; START_DATE="$(date -u -d "$${END_DATE} -29 days" +%%F)"; /opt/quant-lab/.venv/bin/qlab build-entry-quality-history --lake-root /var/lib/quant-lab/lake --start-date "$${START_DATE}" --end-date "$${END_DATE}" --mode recent_30d --cost-mode conservative'
+ExecStart=/bin/bash -lc 'set -euo pipefail; /usr/bin/flock -E 75 -w 30 /var/lock/quant-lab-entry-quality-history.lock /bin/bash -lc '"'"'END_DATE="$(date -u +%%F)"; START_DATE="$(date -u -d "$${END_DATE} -29 days" +%%F)"; /opt/quant-lab/.venv/bin/qlab build-entry-quality-history --lake-root /var/lib/quant-lab/lake --start-date "$${START_DATE}" --end-date "$${END_DATE}" --mode recent_30d --cost-mode conservative'"'"' || { code="$?"; if [ "$${code}" = "75" ]; then echo "SKIP_ENTRY_QUALITY_HISTORY_LOCK_BUSY"; exit 0; fi; exit "$${code}"; }'
 NoNewPrivileges=true
 PrivateTmp=true

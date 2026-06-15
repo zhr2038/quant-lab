@@ -61,6 +61,29 @@ def test_oneshot_services_do_not_use_ignored_runtime_max_sec():
         assert "RuntimeMaxSec=" not in unit, unit_path.name
 
 
+def test_scheduled_lock_contention_is_reported_as_successful_skip():
+    expected_skip_markers = {
+        "quant-lab-cost-calibration.service": "SKIP_COST_CALIBRATION_LOCK_BUSY",
+        "quant-lab-daily-export.service": "SKIP_DAILY_EXPORT_LOCK_BUSY",
+        "quant-lab-entry-quality-history.service": "SKIP_ENTRY_QUALITY_HISTORY_LOCK_BUSY",
+        "quant-lab-lake-compaction.service": "SKIP_LAKE_COMPACTION_LOCK_BUSY",
+        "quant-lab-storage-retention.service": "SKIP_STORAGE_RETENTION_LOCK_BUSY",
+        "quant-lab-v5-daily-analysis.service": "SKIP_V5_DAILY_ANALYSIS_LOCK_BUSY",
+        "quant-lab-v5-regime-router.service": "SKIP_V5_REGIME_ROUTER_LOCK_BUSY",
+        "quant-lab-v5-research-refresh.service": "SKIP_V5_RESEARCH_REFRESH_LOCK_BUSY",
+        "quant-lab-v5-telemetry-sync.service": "SKIP_V5_TELEMETRY_SYNC_LOCK_BUSY",
+    }
+
+    for unit_name, marker in expected_skip_markers.items():
+        unit = _unit(unit_name)
+
+        assert "flock -E 75" in unit, unit_name
+        assert marker in unit, unit_name
+        assert 'if [ "$${code}" = "75" ]' in unit, unit_name
+        assert "exit 0" in unit, unit_name
+        assert 'exit "$${code}"' in unit, unit_name
+
+
 def test_storage_retention_does_not_create_root_owned_lake_files():
     unit = _unit("quant-lab-storage-retention.service")
     timer = _unit("quant-lab-storage-retention.timer")

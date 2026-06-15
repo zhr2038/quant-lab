@@ -14,4 +14,4 @@ TimeoutStartSec=16min
 MemoryHigh=3G
 MemoryMax=4G
 CPUQuota=60%
-ExecStart=/usr/bin/flock -w 10 /var/lock/quant-lab-heavy.lock /usr/bin/timeout 15m /bin/bash -lc '/opt/quant-lab/.venv/bin/qlab calibrate-costs --lake-root /var/lib/quant-lab/lake --day "$(date -u +%%F)" --min-sample-count 30'
+ExecStart=/bin/bash -lc 'set -euo pipefail; /usr/bin/flock -E 75 -w 10 /var/lock/quant-lab-heavy.lock /usr/bin/timeout 15m /opt/quant-lab/.venv/bin/qlab calibrate-costs --lake-root /var/lib/quant-lab/lake --day "$(date -u +%%F)" --min-sample-count 30 || { code="$?"; if [ "$${code}" = "75" ]; then echo "SKIP_COST_CALIBRATION_LOCK_BUSY"; exit 0; fi; exit "$${code}"; }'

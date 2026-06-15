@@ -27,7 +27,7 @@ Environment=COMPACT_SMALL_FILE_MAINTENANCE_TIMEOUT_SECONDS=300
 Environment=COMPACT_SMALL_FILE_MAINTENANCE_MAX_GROUPS=5
 Environment=COMPACT_SMALL_FILE_MAINTENANCE_MAX_SOURCE_FILES_PER_GROUP=64
 Environment=COMPACT_SMALL_FILE_MAINTENANCE_TARGET_ROWS=2000000
-ExecStart=/usr/bin/flock -w 10 /var/lock/quant-lab-heavy.lock /bin/bash /opt/quant-lab/deploy/scripts/compact_lake_hot_datasets.sh
+ExecStart=/bin/bash -lc 'set -euo pipefail; /usr/bin/flock -E 75 -w 10 /var/lock/quant-lab-heavy.lock /bin/bash /opt/quant-lab/deploy/scripts/compact_lake_hot_datasets.sh || { code="$?"; if [ "$${code}" = "75" ]; then echo "SKIP_LAKE_COMPACTION_LOCK_BUSY"; exit 0; fi; exit "$${code}"; }'
 Nice=10
 IOSchedulingClass=best-effort
 IOSchedulingPriority=7

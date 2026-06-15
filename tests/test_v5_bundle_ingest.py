@@ -792,8 +792,9 @@ def test_ingest_event_key_prefers_trading_event_id(tmp_path):
     assert fallbacks.height == 1
     assert requests["event_id"][0] == "ql-timeout-1"
     assert int(requests["source_count"][0]) == 2
+    assert int(requests["last_seen_source_count"][0]) == 1
     assert health["unique_actual_fallback_count"][0] == 1
-    assert health["duplicate_event_count"][0] == 3
+    assert health["duplicate_event_count"][0] == 1
 
 
 def test_quant_lab_exact_duplicate_reingest_keeps_single_canonical_event(tmp_path):
@@ -825,10 +826,12 @@ def test_quant_lab_exact_duplicate_reingest_keeps_single_canonical_event(tmp_pat
     assert requests.height == 1
     row = requests.to_dicts()[0]
     assert int(row["source_count"]) == 2
+    assert int(row["last_seen_source_count"]) == 1
     assert int(row["payload_hash_count"]) == 1
     assert row["conflicting_duplicate"] is False
     assert health["unique_event_rows"][0] == 1
-    assert health["exact_duplicate_event_rows"][0] == 1
+    assert health["duplicate_event_rows"][0] == 0
+    assert health["exact_duplicate_event_rows"][0] == 0
     assert health["conflicting_duplicate_event_rows"][0] == 0
 
 
@@ -868,14 +871,16 @@ def test_quant_lab_latency_only_duplicate_keeps_same_event_key_without_conflict(
     assert requests.height == 1
     row = requests.to_dicts()[0]
     assert int(row["source_count"]) == 2
+    assert int(row["last_seen_source_count"]) == 1
     assert int(row["payload_hash_count"]) == 1
     assert row["conflicting_duplicate"] is False
     assert health["unique_event_rows"][0] == 1
-    assert health["exact_duplicate_event_rows"][0] == 1
+    assert health["duplicate_event_rows"][0] == 0
+    assert health["exact_duplicate_event_rows"][0] == 0
     assert health["conflicting_duplicate_event_rows"][0] == 0
 
 
-def test_quant_lab_semantic_duplicate_keeps_same_event_key_and_blocks_dedupe_health(
+def test_quant_lab_semantic_duplicate_keeps_cumulative_conflict_without_current_duplicate(
     tmp_path,
 ):
     first_request = (
@@ -911,12 +916,14 @@ def test_quant_lab_semantic_duplicate_keeps_same_event_key_and_blocks_dedupe_hea
     assert requests.height == 1
     row = requests.to_dicts()[0]
     assert int(row["source_count"]) == 2
+    assert int(row["last_seen_source_count"]) == 1
     assert int(row["payload_hash_count"]) == 2
     assert row["conflicting_duplicate"] is True
     assert health["unique_event_rows"][0] == 1
-    assert health["conflicting_duplicate_event_rows"][0] == 1
-    assert health["conflicting_duplicate_event_key_count"][0] == 1
-    assert health["duplicate_explanation"][0] == "conflicting_duplicate_payloads_present"
+    assert health["duplicate_event_rows"][0] == 0
+    assert health["conflicting_duplicate_event_rows"][0] == 0
+    assert health["conflicting_duplicate_event_key_count"][0] == 0
+    assert health["duplicate_explanation"][0] == "none"
 
 
 def test_latency_variation_does_not_change_event_key_or_conflict_hash():
@@ -989,6 +996,8 @@ def test_ingest_overlapping_bundles_deduplicate_quant_lab_timeout(tmp_path):
     assert requests.height == 1
     assert fallbacks.height == 1
     assert int(fallbacks["source_count"][0]) == 4
+    assert int(requests["last_seen_source_count"][0]) == 1
+    assert int(fallbacks["last_seen_source_count"][0]) == 2
     assert health["request_success_count"][0] == 0
     assert health["request_error_count"][0] == 1
     assert health["actual_fallback_count"][0] == 1
@@ -996,11 +1005,11 @@ def test_ingest_overlapping_bundles_deduplicate_quant_lab_timeout(tmp_path):
     assert health["unique_error_count"][0] == 1
     assert health["unique_actual_fallback_count"][0] == 1
     assert health["fallback_rate"][0] == 1.0
-    assert health["raw_imported_rows"][0] == 6
+    assert health["raw_imported_rows"][0] == 3
     assert health["unique_event_rows"][0] == 1
-    assert health["duplicate_event_count"][0] == 5
-    assert health["duplicate_event_rows"][0] == 5
-    assert health["exact_duplicate_event_rows"][0] == 5
+    assert health["duplicate_event_count"][0] == 2
+    assert health["duplicate_event_rows"][0] == 2
+    assert health["exact_duplicate_event_rows"][0] == 2
     assert health["conflicting_duplicate_event_rows"][0] == 0
     assert (
         health["duplicate_explanation"][0]

@@ -317,6 +317,7 @@ def analyze_v5_telemetry(
             "strategy_id",
             "run_id",
             "source_count",
+            "last_seen_source_count",
             "payload_hash_count",
             "payload_hashes_json",
             "conflicting_duplicate",
@@ -416,6 +417,7 @@ def analyze_v5_telemetry(
             "strategy_id",
             "run_id",
             "source_count",
+            "last_seen_source_count",
             "payload_hash_count",
             "payload_hashes_json",
             "conflicting_duplicate",
@@ -1488,9 +1490,13 @@ def _duplicate_event_breakdown(
     conflicting_rows = 0
     conflicting_keys = 0
     for row in rows:
-        if _boolish(row.get("conflicting_duplicate")) or _payload_hash_count(row) > 1:
+        current_source_count = _row_current_source_count(row)
+        if (
+            current_source_count > 1
+            and (_boolish(row.get("conflicting_duplicate")) or _payload_hash_count(row) > 1)
+        ):
             conflicting_keys += 1
-            conflicting_rows += max(_row_source_count(row) - 1, 0)
+            conflicting_rows += max(current_source_count - 1, 0)
     exact_rows = max(duplicate_event_rows - conflicting_rows, 0)
     explanation = (
         "conflicting_duplicate_payloads_present"
@@ -1749,6 +1755,7 @@ _ANALYSIS_EVENT_PAYLOAD_IDENTITY_ALIASES = {
     "schema_version",
     "row_index",
     "source_count",
+    "last_seen_source_count",
     "first_seen_bundle_ts",
     "last_seen_bundle_ts",
     "ts_utc",
@@ -1862,8 +1869,23 @@ def _raw_event_row_count(df: pl.DataFrame) -> int:
         return 0
     total = 0
     for row in df.to_dicts():
-        total += _row_source_count(row)
+        total += _row_current_source_count(row)
     return total
+
+
+def _row_current_source_count(row: dict[str, Any]) -> int:
+    value = row.get("last_seen_source_count")
+    try:
+        parsed = int(float(value))
+    except (TypeError, ValueError):
+        parsed = 0
+    if parsed > 0:
+        return parsed
+    first_seen = _parse_seen_time(row.get("first_seen_bundle_ts") or row.get("bundle_ts"))
+    last_seen = _parse_seen_time(row.get("last_seen_bundle_ts") or row.get("bundle_ts"))
+    if first_seen is not None and last_seen is not None and first_seen != last_seen:
+        return 1
+    return _row_source_count(row)
 
 
 def _row_source_count(row: dict[str, Any]) -> int:

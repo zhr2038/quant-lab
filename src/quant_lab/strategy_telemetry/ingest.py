@@ -133,6 +133,7 @@ EVENT_KEY_METADATA_FIELDS = {
     "source_path_inside_bundle",
     "row_index",
     "source_count",
+    "last_seen_source_count",
     "first_seen_bundle_ts",
     "last_seen_bundle_ts",
 }
@@ -2019,6 +2020,7 @@ def _merge_event_row(
     if current is None:
         seeded = dict(row)
         seeded["source_count"] = _source_count(row)
+        seeded["last_seen_source_count"] = seeded["source_count"]
         seeded["first_seen_bundle_ts"] = _first_seen_bundle_ts(row)
         seeded["last_seen_bundle_ts"] = _last_seen_bundle_ts(row)
         hashes = _payload_hash_set(seeded)
@@ -2033,10 +2035,19 @@ def _merge_event_row(
     row_seen = _last_seen_bundle_ts(row)
     first_seen = _min_seen_ts(_first_seen_bundle_ts(current), _first_seen_bundle_ts(row))
     last_seen = _max_seen_ts(current_seen, row_seen)
+    current_seen_sort = _seen_sort_value(current_seen)
+    row_seen_sort = _seen_sort_value(row_seen)
+    if row_seen_sort > current_seen_sort:
+        last_seen_source_count = row_count
+    elif row_seen_sort == current_seen_sort:
+        last_seen_source_count = _last_seen_source_count(current) + row_count
+    else:
+        last_seen_source_count = _last_seen_source_count(current)
 
-    latest = row if _seen_sort_value(row_seen) >= _seen_sort_value(last_seen) else current
+    latest = row if row_seen_sort >= _seen_sort_value(last_seen) else current
     merged = dict(latest)
     merged["source_count"] = current_count + row_count
+    merged["last_seen_source_count"] = last_seen_source_count
     merged["first_seen_bundle_ts"] = first_seen
     merged["last_seen_bundle_ts"] = last_seen
     hashes = _payload_hash_set(current) | _payload_hash_set(row)
@@ -2072,6 +2083,21 @@ def _source_count(row: dict[str, Any]) -> int:
     except (TypeError, ValueError):
         return 1
     return max(parsed, 1)
+
+
+def _last_seen_source_count(row: dict[str, Any]) -> int:
+    value = row.get("last_seen_source_count")
+    try:
+        parsed = int(float(value))
+    except (TypeError, ValueError):
+        parsed = 0
+    if parsed > 0:
+        return parsed
+    first_seen = _seen_sort_value(_first_seen_bundle_ts(row))
+    last_seen = _seen_sort_value(_last_seen_bundle_ts(row))
+    if first_seen == last_seen:
+        return _source_count(row)
+    return 1
 
 
 def _seen_bundle_ts(row: dict[str, Any]) -> Any:

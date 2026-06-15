@@ -746,6 +746,43 @@ def test_analyze_deduplicates_request_and_summary_fallback_events(tmp_path):
     assert health["actual_fallback_count"][0] == 1
 
 
+def test_analyze_uses_current_bundle_count_for_historical_source_count(tmp_path):
+    lake = tmp_path / "lake"
+    _write_manifest(lake)
+    row = {
+        **_event_row("historical-overlap"),
+        "source_path_inside_bundle": "raw/reports/quant_lab_requests.jsonl",
+        "event_id": "historical-overlap",
+        "event_key": "historical-overlap-key",
+        "source_count": 1_000_000,
+        "first_seen_bundle_ts": datetime(2026, 5, 1, tzinfo=UTC),
+        "last_seen_bundle_ts": datetime(2026, 5, 10, 14, 2, 49, tzinfo=UTC),
+        "ts_utc": "2026-05-10T14:00:00Z",
+        "endpoint_path": "/v1/health",
+        "event_type": "request",
+        "status_code": 200,
+        "success": True,
+        "fallback_used": False,
+        "payload_hash_count": 4,
+        "conflicting_duplicate": True,
+        "raw_payload_json": (
+            '{"event_type":"request","ts":"2026-05-10T14:00:00Z",'
+            '"endpoint_path":"/v1/health","status_code":200,'
+            '"success":true,"fallback_used":false}'
+        ),
+    }
+    write_parquet_dataset(pl.DataFrame([row]), lake / "silver/v5_quant_lab_request")
+
+    result = analyze_v5_telemetry(lake, date="2026-05-10")
+    health = read_parquet_dataset(lake / "gold/strategy_health_daily")
+
+    assert result.raw_imported_rows == 1
+    assert result.unique_event_rows == 1
+    assert result.duplicate_event_rows == 0
+    assert result.conflicting_duplicate_event_rows == 0
+    assert health["raw_imported_rows"][0] == 1
+
+
 def _run_summary_row(source_path, payload):
     return {
         "strategy": "v5",

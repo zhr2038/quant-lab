@@ -90,6 +90,12 @@ FACTOR_STRATEGY_BRIDGE_CANDIDATE_FIELDS = [
     "factor_id",
     "factor_family",
     "correlation_cluster_id",
+    "symbol",
+    "regime",
+    "horizon",
+    "horizon_hours",
+    "forward_sample_count",
+    "forward_cost_adjusted_score",
     "bridge_candidate_id",
     "eligible_for_alpha_factory",
     "blocking_reasons",
@@ -444,6 +450,9 @@ def build_factor_strategy_bridge_candidates(
     forward_pass_rows_by_factor = _forward_validation_pass_rows_by_factor(
         factor_forward_validation
     )
+    forward_context_by_factor = _forward_validation_pass_context_by_factor(
+        factor_forward_validation
+    )
     seen_factor_ids: set[str] = set()
     out = []
     for row in _rows(paper_queue):
@@ -488,6 +497,7 @@ def build_factor_strategy_bridge_candidates(
                 "factor_id": factor_id,
                 "factor_family": row.get("factor_family"),
                 "correlation_cluster_id": row.get("correlation_cluster_id"),
+                **_bridge_forward_context(forward_context_by_factor.get(factor_id, {})),
                 "bridge_candidate_id": f"v5.factor_bridge.{factor_id}",
                 "eligible_for_alpha_factory": eligible,
                 "blocking_reasons": safe_json_dumps(reasons),
@@ -504,6 +514,7 @@ def build_factor_strategy_bridge_candidates(
                 "factor_id": factor_id,
                 "factor_family": row.get("factor_family"),
                 "correlation_cluster_id": row.get("correlation_cluster_id"),
+                **_bridge_forward_context(forward_context_by_factor.get(factor_id, {})),
                 "bridge_candidate_id": f"v5.factor_bridge.{factor_id}",
                 "eligible_for_alpha_factory": "strategy_review_pending",
                 "blocking_reasons": safe_json_dumps(
@@ -517,6 +528,32 @@ def build_factor_strategy_bridge_candidates(
             }
         )
     return _frame(out, FACTOR_STRATEGY_BRIDGE_CANDIDATE_FIELDS)
+
+
+def _forward_validation_pass_context_by_factor(
+    frame: pl.DataFrame | None,
+) -> dict[str, dict[str, Any]]:
+    grouped: dict[str, list[dict[str, Any]]] = defaultdict(list)
+    for row in _rows(frame):
+        factor_id = str(row.get("factor_id") or "")
+        if not factor_id:
+            continue
+        if str(row.get("recommendation") or "") != "FORWARD_VALIDATION_PASS":
+            continue
+        grouped[factor_id].append(row)
+    return {factor_id: _forward_validation_context(rows) for factor_id, rows in grouped.items()}
+
+
+def _bridge_forward_context(context: dict[str, Any]) -> dict[str, Any]:
+    return {
+        "symbol": "",
+        "regime": "",
+        "horizon": "",
+        "horizon_hours": "",
+        "forward_sample_count": None,
+        "forward_cost_adjusted_score": None,
+        **context,
+    }
 
 
 def _forward_validation_pass_by_factor(frame: pl.DataFrame | None) -> dict[str, bool]:
@@ -550,6 +587,54 @@ def _forward_validation_rank_key(row: dict[str, Any]) -> tuple[float, int, float
         _int(row.get("sample_count")) or 0,
         _float(row.get("rank_ic")) or 0.0,
     )
+
+
+def _forward_validation_context(rows: list[dict[str, Any]]) -> dict[str, Any]:
+    best = max(rows, key=_forward_validation_rank_key)
+    horizon_hours = sorted(
+        {
+            hour
+            for row in rows
+            if (hour := _horizon_hour_value(row)) is not None
+        }
+    )
+    return {
+        "symbol": _join_unique(row.get("symbol") for row in rows),
+        "regime": _join_unique(row.get("regime") or row.get("regime_state") for row in rows),
+        "horizon": _format_horizon_label(horizon_hours)
+        or _join_unique(row.get("horizon") for row in rows),
+        "horizon_hours": ",".join(str(hour) for hour in horizon_hours),
+        "forward_sample_count": best.get("sample_count"),
+        "forward_cost_adjusted_score": best.get("cost_adjusted_score"),
+    }
+
+
+def _horizon_hour_value(row: dict[str, Any]) -> int | None:
+    direct = _int(row.get("horizon_hours"))
+    if direct is not None:
+        return direct
+    text = str(row.get("horizon") or "").strip().lower()
+    digits = "".join(character for character in text if character.isdigit())
+    return int(digits) if digits else None
+
+
+def _format_horizon_label(hours: list[int]) -> str:
+    if not hours:
+        return ""
+    if len(hours) == 1:
+        return f"{hours[0]}h"
+    if len(hours) == 2:
+        return f"{hours[0]}h-{hours[1]}h"
+    return ",".join(f"{hour}h" for hour in hours)
+
+
+def _join_unique(values: Any) -> str:
+    out: list[str] = []
+    for value in values:
+        text = str(value or "").strip()
+        if text and text not in out:
+            out.append(text)
+    return ",".join(out)
 
 
 def _candidate_rank_key(row: dict[str, Any]) -> tuple[int, float, float, float, str]:

@@ -418,6 +418,9 @@ def test_research_validation_v3_reports_export_forward_and_cost_coverage(tmp_pat
         if row["recommended_action"] == "REVIEW_FOR_ALPHA_FACTORY_STRATEGY"
     ]
     assert bridge_review_rows
+    assert {"symbol", "regime", "horizon", "horizon_hours"}.issubset(
+        bridge_review_rows[0]
+    )
     assert any(
         row["eligible_for_alpha_factory"] == "strategy_review_pending"
         for row in bridge_review_rows

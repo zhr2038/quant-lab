@@ -228,6 +228,9 @@ def test_factor_bridge_routes_forward_pass_without_regime_stability_block():
 
     assert row["eligible_for_alpha_factory"] == "strategy_review_pending"
     assert row["recommended_action"] == "REVIEW_FOR_ALPHA_FACTORY_STRATEGY"
+    assert row["symbol"] == "SOL-USDT"
+    assert row["regime"] == "TREND_UP"
+    assert row["horizon"] == "4h"
     assert "alpha_factory_strategy_review_required" in reasons
     assert "forward_validation_not_passed" not in reasons
     assert "regime_stability_not_positive_or_missing" not in reasons
@@ -262,11 +265,65 @@ def test_factor_bridge_adds_review_row_for_forward_pass_outside_paper_queue():
     reasons = json.loads(row["blocking_reasons"])
 
     assert row["factor_id"] == "core.mean_reversion_vol_adjusted_4"
+    assert row["symbol"] == "SOL-USDT"
+    assert row["regime"] == "TREND_UP"
+    assert row["horizon"] == "8h"
+    assert row["horizon_hours"] == "8"
     assert row["eligible_for_alpha_factory"] == "strategy_review_pending"
     assert row["recommended_action"] == "REVIEW_FOR_ALPHA_FACTORY_STRATEGY"
     assert "not_in_factor_paper_review_queue" in reasons
     assert "forward_validation_not_passed" not in reasons
     assert row["live_order_effect"] == "none_read_only_research"
+
+
+def test_factor_bridge_aggregates_forward_pass_context_for_strategy_review():
+    forward_validation = pl.DataFrame(
+        [
+            {
+                "as_of_date": "2026-06-15",
+                "factor_id": "core.mean_reversion_vol_adjusted_4",
+                "factor_family": "risk_adjusted_reversal",
+                "candidate_state": "PAPER_READY",
+                "symbol": "SOL-USDT",
+                "regime": "TREND_UP",
+                "horizon_hours": 4,
+                "sample_count": 126,
+                "rank_ic": 0.10079,
+                "cost_adjusted_score": 15.358829,
+                "recommendation": "FORWARD_VALIDATION_PASS",
+                "live_order_effect": "none_read_only_research",
+            },
+            {
+                "as_of_date": "2026-06-15",
+                "factor_id": "core.mean_reversion_vol_adjusted_4",
+                "factor_family": "risk_adjusted_reversal",
+                "candidate_state": "PAPER_READY",
+                "symbol": "SOL-USDT",
+                "regime": "TREND_UP",
+                "horizon_hours": 8,
+                "sample_count": 122,
+                "rank_ic": 0.276514,
+                "cost_adjusted_score": 108.972432,
+                "recommendation": "FORWARD_VALIDATION_PASS",
+                "live_order_effect": "none_read_only_research",
+            },
+        ]
+    )
+
+    bridge = build_factor_strategy_bridge_candidates(
+        paper_queue=pl.DataFrame(),
+        factor_forward_validation=forward_validation,
+    )
+    row = bridge.to_dicts()[0]
+
+    assert row["factor_id"] == "core.mean_reversion_vol_adjusted_4"
+    assert row["symbol"] == "SOL-USDT"
+    assert row["regime"] == "TREND_UP"
+    assert row["horizon"] == "4h-8h"
+    assert row["horizon_hours"] == "4,8"
+    assert row["forward_sample_count"] == 122
+    assert row["forward_cost_adjusted_score"] == 108.972432
+    assert row["recommended_action"] == "REVIEW_FOR_ALPHA_FACTORY_STRATEGY"
 
 
 def _write_bars(

@@ -372,7 +372,7 @@ function drilldownContent(view: ViewKey, data: BigscreenSnapshot) {
           <MiniTable
             title="Strategy bridge candidates"
             rows={bridgeCandidates}
-            columns={["factor_id", "factor_family", "bridge_candidate_id", "eligible_for_alpha_factory", "recommended_action", "blocking_reasons", "live_order_effect"]}
+            columns={["factor_id", "symbol", "regime", "horizon", "bridge_candidate_id", "eligible_for_alpha_factory", "recommended_action", "blocking_reasons", "live_order_effect"]}
           />
           <MiniTable
             title="Factor Factory candidates"

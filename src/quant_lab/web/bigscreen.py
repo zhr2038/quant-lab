@@ -2,13 +2,15 @@ from __future__ import annotations
 
 import math
 import time
+import zipfile
+from csv import DictReader
 from datetime import UTC, datetime
+from io import TextIOWrapper
 from pathlib import Path
 from typing import Any
 
 import polars as pl
 
-from quant_lab.backtest.reports import build_factor_forward_validation
 from quant_lab.factors.composite_factory import build_factor_factory_v2_reports
 from quant_lab.ops.api_metrics import api_metrics_summary
 from quant_lab.symbols import normalize_symbol
@@ -121,10 +123,6 @@ def _safe_strategy_summary(root: Path) -> dict[str, Any]:
         ("factor_candidate", "factor_candidate"),
         ("factor_evidence", "factor_evidence"),
         ("factor_correlation_daily", "factor_correlation_daily"),
-        ("factor_value", "factor_value"),
-        ("market_bar", "market_bar"),
-        ("market_regime_daily", "market_regime_daily"),
-        ("cost_bucket_daily", "cost_bucket_daily"),
     ]:
         frame, warning = _read_display_frame(root, dataset_name)
         if frame.is_empty() and dataset_name == "risk_on_multi_buy_shadow":
@@ -132,6 +130,9 @@ def _safe_strategy_summary(root: Path) -> dict[str, Any]:
         frames[output_key] = frame
         if warning:
             warnings.append(warning)
+    frames["factor_strategy_bridge_candidates"] = _latest_factor_strategy_bridge_candidates(
+        root
+    )
 
     advisory = frames.get("strategy_opportunity_advisory", pl.DataFrame())
     discovery = frames.get("alpha_discovery_board", pl.DataFrame())
@@ -152,6 +153,26 @@ def _read_display_frame(root: Path, dataset_name: str) -> tuple[pl.DataFrame, st
         return frame if isinstance(frame, pl.DataFrame) else pl.DataFrame(), warning
     except Exception as exc:
         return pl.DataFrame(), f"{dataset_name} 大屏抽样读取失败：{exc}"
+
+
+def _latest_factor_strategy_bridge_candidates(root: Path) -> pl.DataFrame:
+    exports_root = readers.default_exports_root(root)
+    if not exports_root.exists():
+        return pl.DataFrame()
+    packs = sorted(
+        exports_root.glob("quant_lab_expert_pack_*.zip"),
+        key=lambda path: path.stat().st_mtime,
+        reverse=True,
+    )
+    for pack_path in packs[:5]:
+        try:
+            with zipfile.ZipFile(pack_path) as archive:
+                with archive.open("reports/factor_strategy_bridge_candidates.csv") as handle:
+                    rows = list(DictReader(TextIOWrapper(handle, encoding="utf-8")))
+            return pl.DataFrame(rows) if rows else pl.DataFrame()
+        except Exception:
+            continue
+    return pl.DataFrame()
 
 
 def _count_by_column(frame: pl.DataFrame, column: str) -> dict[str, int]:
@@ -506,19 +527,14 @@ def _factor_factory_payload(strategy: dict[str, Any]) -> dict[str, Any]:
     candidates = _as_frame(strategy.get("factor_candidate"))
     evidence = _as_frame(strategy.get("factor_evidence"))
     correlations = _as_frame(strategy.get("factor_correlation_daily"))
-    factor_forward_validation = build_factor_forward_validation(
-        factor_candidates=candidates,
-        factor_values=_as_frame(strategy.get("factor_value")),
-        market_bars=_as_frame(strategy.get("market_bar")),
-        market_regime=_as_frame(strategy.get("market_regime_daily")),
-        cost_bucket_daily=_as_frame(strategy.get("cost_bucket_daily")),
-    )
     v2_reports = build_factor_factory_v2_reports(
         candidates=candidates,
         evidence=evidence,
         correlations=correlations,
-        factor_forward_validation=factor_forward_validation,
     )
+    bridge_candidates = _as_frame(strategy.get("factor_strategy_bridge_candidates"))
+    if bridge_candidates.is_empty():
+        bridge_candidates = v2_reports["factor_strategy_bridge_candidates"]
     candidate_rows = _factor_candidate_rows(candidates)
     state_counts = _count_by_column(candidates, "candidate_state")
     high_correlation_pairs = _high_correlation_rows(correlations)
@@ -555,7 +571,7 @@ def _factor_factory_payload(strategy: dict[str, Any]) -> dict[str, Any]:
         "composite_candidates": _frame_rows(v2_reports["composite_factor_candidates"], limit=8),
         "regime_effectiveness": _frame_rows(v2_reports["factor_regime_effectiveness"], limit=8),
         "strategy_bridge_candidates": _frame_rows(
-            v2_reports["factor_strategy_bridge_candidates"],
+            bridge_candidates,
             limit=8,
         ),
         "warnings": warnings,

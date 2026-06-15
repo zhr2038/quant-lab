@@ -8,6 +8,7 @@ from pathlib import Path
 import polars as pl
 from fastapi.testclient import TestClient
 
+import quant_lab.web.bigscreen as bigscreen_module
 from quant_lab.api.main import create_app
 from quant_lab.data.lake import write_parquet_dataset
 from quant_lab.web.bigscreen import _exports_payload, bigscreen_snapshot, clear_bigscreen_cache
@@ -59,10 +60,50 @@ def test_bigscreen_snapshot_redacts_secret_like_fields(tmp_path):
     assert "should-not-leak" not in str(payload)
 
 
-def test_bigscreen_snapshot_exposes_factor_factory_results(tmp_path):
+def test_bigscreen_snapshot_exposes_factor_factory_results(monkeypatch, tmp_path):
     clear_bigscreen_cache()
     lake = tmp_path / "lake"
     created_at = datetime(2026, 6, 6, 13, 0, tzinfo=UTC)
+
+    def fake_factor_forward_validation(**_kwargs):
+        return pl.DataFrame(
+            [
+                {
+                    "as_of_date": "2026-06-06",
+                    "factor_id": "factor.momentum_zscore",
+                    "factor_family": "momentum",
+                    "candidate_state": "PAPER_READY",
+                    "symbol": "SOL-USDT",
+                    "regime": "TREND_UP",
+                    "horizon_hours": 4,
+                    "sample_count": 126,
+                    "rank_ic": 0.10,
+                    "cost_adjusted_score": 15.3,
+                    "recommendation": "FORWARD_VALIDATION_PASS",
+                    "live_order_effect": "none_read_only_research",
+                },
+                {
+                    "as_of_date": "2026-06-06",
+                    "factor_id": "factor.momentum_zscore",
+                    "factor_family": "momentum",
+                    "candidate_state": "PAPER_READY",
+                    "symbol": "SOL-USDT",
+                    "regime": "TREND_UP",
+                    "horizon_hours": 8,
+                    "sample_count": 122,
+                    "rank_ic": 0.27,
+                    "cost_adjusted_score": 108.0,
+                    "recommendation": "FORWARD_VALIDATION_PASS",
+                    "live_order_effect": "none_read_only_research",
+                },
+            ]
+        )
+
+    monkeypatch.setattr(
+        bigscreen_module,
+        "build_factor_forward_validation",
+        fake_factor_forward_validation,
+    )
     write_parquet_dataset(
         pl.DataFrame(
             [
@@ -180,6 +221,11 @@ def test_bigscreen_snapshot_exposes_factor_factory_results(tmp_path):
     assert factor_factory["paper_review_queue"][0]["factor_id"] == "factor.momentum_zscore"
     assert factor_factory["composite_candidates"]
     assert "strategy_bridge_candidates" in factor_factory
+    bridge = factor_factory["strategy_bridge_candidates"][0]
+    assert bridge["factor_id"] == "factor.momentum_zscore"
+    assert bridge["symbol"] == "SOL-USDT"
+    assert bridge["regime"] == "TREND_UP"
+    assert bridge["horizon"] == "4h-8h"
 
 
 def test_bigscreen_snapshot_surfaces_legacy_web_anomalies(monkeypatch, tmp_path):

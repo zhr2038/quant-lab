@@ -8,6 +8,7 @@ from typing import Any
 
 import polars as pl
 
+from quant_lab.backtest.reports import build_factor_forward_validation
 from quant_lab.factors.composite_factory import build_factor_factory_v2_reports
 from quant_lab.ops.api_metrics import api_metrics_summary
 from quant_lab.symbols import normalize_symbol
@@ -120,6 +121,10 @@ def _safe_strategy_summary(root: Path) -> dict[str, Any]:
         ("factor_candidate", "factor_candidate"),
         ("factor_evidence", "factor_evidence"),
         ("factor_correlation_daily", "factor_correlation_daily"),
+        ("factor_value", "factor_value"),
+        ("market_bar", "market_bar"),
+        ("market_regime_daily", "market_regime_daily"),
+        ("cost_bucket_daily", "cost_bucket_daily"),
     ]:
         frame, warning = _read_display_frame(root, dataset_name)
         if frame.is_empty() and dataset_name == "risk_on_multi_buy_shadow":
@@ -501,10 +506,18 @@ def _factor_factory_payload(strategy: dict[str, Any]) -> dict[str, Any]:
     candidates = _as_frame(strategy.get("factor_candidate"))
     evidence = _as_frame(strategy.get("factor_evidence"))
     correlations = _as_frame(strategy.get("factor_correlation_daily"))
+    factor_forward_validation = build_factor_forward_validation(
+        factor_candidates=candidates,
+        factor_values=_as_frame(strategy.get("factor_value")),
+        market_bars=_as_frame(strategy.get("market_bar")),
+        market_regime=_as_frame(strategy.get("market_regime_daily")),
+        cost_bucket_daily=_as_frame(strategy.get("cost_bucket_daily")),
+    )
     v2_reports = build_factor_factory_v2_reports(
         candidates=candidates,
         evidence=evidence,
         correlations=correlations,
+        factor_forward_validation=factor_forward_validation,
     )
     candidate_rows = _factor_candidate_rows(candidates)
     state_counts = _count_by_column(candidates, "candidate_state")

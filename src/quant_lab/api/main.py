@@ -1093,19 +1093,38 @@ def _decorate_web_v2_expert_pack_status(
     from quant_lab.web.pages.expert_exports import _latest_pack_for_export_date
 
     status = dict(status_payload)
-    latest_today_pack = _latest_pack_for_export_date(exports_root, export_date)
+    requested_date_pack = _latest_pack_for_export_date(exports_root, export_date)
     zip_path = _safe_existing_pack_from_status(exports_root, status.get("zip_path"))
-    latest_pack = zip_path or latest_today_pack
     packs = _expert_pack_rows_with_downloads(readers.expert_export_summary(exports_root))
+    latest_available_pack = _pack_path_from_row(packs[0]) if packs else None
+    latest_pack = zip_path or requested_date_pack or latest_available_pack
+    state = status.get("state")
+    if not state:
+        state = (
+            "succeeded"
+            if requested_date_pack is not None
+            else ("missing_requested_date" if latest_available_pack is not None else "missing")
+        )
     payload = {
         "mode": "read_only_export",
         "live_order_effect": "none",
         "export_date": export_date,
         "exports_root": str(exports_root),
-        "state": status.get("state") or ("succeeded" if latest_pack is not None else "missing"),
+        "state": state,
         "status": status,
+        "requested_date_pack": (
+            str(requested_date_pack) if requested_date_pack is not None else None
+        ),
+        "requested_date_pack_name": (
+            requested_date_pack.name if requested_date_pack is not None else None
+        ),
         "latest_pack": str(latest_pack) if latest_pack is not None else None,
         "latest_pack_name": latest_pack.name if latest_pack is not None else None,
+        "latest_pack_is_requested_date": (
+            latest_pack is not None
+            and requested_date_pack is not None
+            and latest_pack.resolve() == requested_date_pack.resolve()
+        ),
         "latest_download_url": (
             _web_v2_export_download_url(latest_pack.name) if latest_pack is not None else None
         ),
@@ -1121,6 +1140,18 @@ def _decorate_web_v2_expert_pack_status(
             payload["latest_size_bytes"] = stat.st_size
             payload["latest_modified_at"] = datetime.fromtimestamp(stat.st_mtime, UTC).isoformat()
     return payload
+
+
+def _pack_path_from_row(row: dict[str, Any]) -> Path | None:
+    name = str(row.get("name") or Path(str(row.get("path") or "")).name)
+    if not _is_valid_export_pack_name(name):
+        return None
+    path_text = row.get("path")
+    if path_text:
+        path = Path(str(path_text))
+        if path.is_file():
+            return path
+    return None
 
 
 def _safe_existing_pack_from_status(exports_root: Path, value: Any) -> Path | None:

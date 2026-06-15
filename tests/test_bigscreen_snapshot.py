@@ -380,6 +380,34 @@ def test_web_v2_expert_pack_status_and_download(monkeypatch, tmp_path):
     assert traversal_response.status_code == 404
 
 
+def test_web_v2_expert_pack_status_keeps_latest_available_when_requested_date_missing(
+    monkeypatch,
+    tmp_path,
+):
+    clear_bigscreen_cache()
+    lake = tmp_path / "lake"
+    exports = tmp_path / "exports"
+    pack = exports / "quant_lab_expert_pack_2026-06-05_120000.zip"
+    exports.mkdir(parents=True)
+    with zipfile.ZipFile(pack, "w") as archive:
+        archive.writestr("manifest.json", json.dumps({"status": "OK"}))
+
+    monkeypatch.setenv("QUANT_LAB_LAKE_ROOT", str(lake))
+    monkeypatch.delenv("QUANT_LAB_API_TOKEN", raising=False)
+
+    status_response = TestClient(create_app()).get(
+        "/web-v2/expert-pack/status?export_date=2026-06-06"
+    )
+    payload = status_response.json()
+
+    assert status_response.status_code == 200
+    assert payload["state"] == "missing_requested_date"
+    assert payload["requested_date_pack"] is None
+    assert payload["latest_pack_name"] == pack.name
+    assert payload["latest_pack_is_requested_date"] is False
+    assert payload["latest_download_url"] == f"/web-v2/expert-pack/download/{pack.name}"
+
+
 def test_bigscreen_exports_payload_separates_job_state_from_data_quality():
     pack_path = "/var/lib/quant-lab/exports/quant_lab_expert_pack_2026-06-05_120000.zip"
 

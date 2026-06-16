@@ -4237,9 +4237,40 @@ def test_export_reports_private_fills_when_actual_cost_is_zero(tmp_path):
     )
     checks = {check["name"]: check for check in data_quality["checks"]}
     assert checks["actual_cost_symbol_coverage"]["status"] == "WARN"
-    assert "actual_or_mixed_symbols=0/" in checks["actual_cost_symbol_coverage"]["detail"]
+    assert "latest_actual_or_mixed_symbols=0/" in checks["actual_cost_symbol_coverage"]["detail"]
+    assert "historical_actual_or_mixed_symbols=" in checks["actual_cost_symbol_coverage"]["detail"]
     assert "private_fills=1" in checks["actual_cost_symbol_coverage"]["detail"]
-    assert "source=computed_from_export_snapshot" in checks["actual_cost_symbol_coverage"]["detail"]
+    assert (
+        "source=computed_from_latest_cost_health+cost_bucket_daily_snapshot"
+        in checks["actual_cost_symbol_coverage"]["detail"]
+    )
+
+
+def test_actual_cost_symbol_coverage_splits_latest_and_historical_context():
+    passed, detail = daily_export_module._actual_cost_symbol_coverage_check(
+        costs=pl.DataFrame(
+            [
+                {"symbol": "BTC-USDT", "source": "actual_fills"},
+                {"symbol": "ETH-USDT", "source": "public_spread_proxy"},
+            ]
+        ),
+        latest_cost_health={
+            "symbols_with_actual_cost": "[]",
+            "symbols_with_mixed_cost": "[]",
+            "symbols_with_proxy_only": '["BTC-USDT","ETH-USDT"]',
+            "symbols_missing_cost": "[]",
+        },
+        health_checks={"actual_cost_symbol_coverage": "n/a"},
+        actual_or_mixed_rows=0,
+        fills=pl.DataFrame([{"symbol": "BTC-USDT"}]),
+        v5_trades=pl.DataFrame(),
+    )
+
+    assert passed is False
+    assert "latest_actual_or_mixed_symbols=0/2" in detail
+    assert "latest_actual_or_mixed_rows=0" in detail
+    assert "historical_actual_or_mixed_symbols=1/2" in detail
+    assert "historical_actual_or_mixed_rows=1" in detail
 
 
 def test_export_market_tables_keep_symbol_universe_visible(tmp_path):

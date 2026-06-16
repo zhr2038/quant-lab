@@ -7541,25 +7541,28 @@ def _actual_cost_symbol_coverage_check(
     fills: pl.DataFrame,
     v5_trades: pl.DataFrame,
 ) -> tuple[bool, str]:
-    actual_or_mixed_symbols = set(
+    latest_actual_or_mixed_symbols = set(
         _json_listish(latest_cost_health.get("symbols_with_actual_cost"))
     ) | set(_json_listish(latest_cost_health.get("symbols_with_mixed_cost")))
-    expected_symbols = set(actual_or_mixed_symbols)
+    latest_expected_symbols = set(latest_actual_or_mixed_symbols)
     for column in [
         "symbols_with_proxy_only",
         "symbols_proxy_only",
         "symbols_missing_cost",
     ]:
-        expected_symbols.update(_json_listish(latest_cost_health.get(column)))
+        latest_expected_symbols.update(_json_listish(latest_cost_health.get(column)))
 
+    historical_actual_or_mixed_symbols: set[str] = set()
+    historical_expected_symbols: set[str] = set()
+    historical_actual_or_mixed_rows = 0
     if not costs.is_empty() and "symbol" in costs.columns:
         source_columns = [column for column in ["source", "cost_source"] if column in costs.columns]
         columns = ["symbol", *source_columns]
         for row in costs.select(columns).to_dicts():
-            symbol = str(row.get("symbol") or "").strip()
+            symbol = normalize_symbol(row.get("symbol"))
             if not symbol or symbol == "GLOBAL":
                 continue
-            expected_symbols.add(symbol)
+            historical_expected_symbols.add(symbol)
             sources = {
                 str(row.get(column) or "").strip().lower()
                 for column in source_columns
@@ -7571,27 +7574,45 @@ def _actual_cost_symbol_coverage_check(
                     "mixed_actual_proxy",
                 }
             ):
-                actual_or_mixed_symbols.add(symbol)
+                historical_actual_or_mixed_symbols.add(symbol)
+                historical_actual_or_mixed_rows += 1
 
     health_detail = str(health_checks.get("actual_cost_symbol_coverage") or "").strip()
     if health_detail and health_detail.lower() != "n/a":
-        coverage = health_detail
-        source = "cost_health_daily"
+        latest_coverage = health_detail
+        latest_source = "cost_health_daily"
     else:
-        denominator = max(len(expected_symbols), len(actual_or_mixed_symbols))
-        coverage = (
-            f"{len(actual_or_mixed_symbols)}/{denominator}" if denominator > 0 else "n/a"
+        latest_denominator = max(
+            len(latest_expected_symbols),
+            len(latest_actual_or_mixed_symbols),
         )
-        source = "computed_from_export_snapshot"
+        latest_coverage = (
+            f"{len(latest_actual_or_mixed_symbols)}/{latest_denominator}"
+            if latest_denominator > 0
+            else "n/a"
+        )
+        latest_source = "computed_from_latest_cost_health"
+
+    historical_denominator = max(
+        len(historical_expected_symbols),
+        len(historical_actual_or_mixed_symbols),
+    )
+    historical_coverage = (
+        f"{len(historical_actual_or_mixed_symbols)}/{historical_denominator}"
+        if historical_denominator > 0
+        else "n/a"
+    )
 
     fill_like_rows = fills.height + v5_trades.height
     passed = actual_or_mixed_rows > 0 or fill_like_rows == 0
     detail = (
-        f"actual_or_mixed_symbols={coverage}; "
-        f"actual_or_mixed_rows={actual_or_mixed_rows}; "
+        f"latest_actual_or_mixed_symbols={latest_coverage}; "
+        f"latest_actual_or_mixed_rows={actual_or_mixed_rows}; "
+        f"historical_actual_or_mixed_symbols={historical_coverage}; "
+        f"historical_actual_or_mixed_rows={historical_actual_or_mixed_rows}; "
         f"private_fills={fills.height}; "
         f"v5_trades={v5_trades.height}; "
-        f"source={source}"
+        f"source={latest_source}+cost_bucket_daily_snapshot"
     )
     return passed, detail
 

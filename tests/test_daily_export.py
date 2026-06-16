@@ -3,7 +3,7 @@ import io
 import json
 import os
 import zipfile
-from datetime import UTC, datetime, timedelta
+from datetime import UTC, date, datetime, timedelta
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -4457,10 +4457,11 @@ def test_export_reports_private_fills_when_actual_cost_is_zero(tmp_path):
     assert "latest_health_check_passed=false" in checks[
         "private_fills_present_but_actual_cost_zero"
     ]["detail"]
-    assert checks["actual_cost_symbol_coverage"]["status"] == "WARN"
+    assert checks["actual_cost_symbol_coverage"]["status"] == "PASS"
     assert "latest_actual_or_mixed_symbols=0/" in checks["actual_cost_symbol_coverage"]["detail"]
     assert "historical_actual_or_mixed_symbols=" in checks["actual_cost_symbol_coverage"]["detail"]
-    assert "private_fills=1" in checks["actual_cost_symbol_coverage"]["detail"]
+    assert "relevant_private_fills=0" in checks["actual_cost_symbol_coverage"]["detail"]
+    assert "private_fills_total=1" in checks["actual_cost_symbol_coverage"]["detail"]
     assert (
         "source=computed_from_latest_cost_health+cost_bucket_daily_snapshot"
         in checks["actual_cost_symbol_coverage"]["detail"]
@@ -4475,7 +4476,22 @@ def test_export_flags_raw_private_fills_even_when_latest_health_check_is_ok(tmp_
                 {
                     "endpoint": "/api/v5/trade/fills-history",
                     "ingest_ts": datetime.now(UTC),
-                    "raw_json": '{"data":[]}',
+                    "raw_json": json.dumps(
+                        {
+                            "instType": "SPOT",
+                            "instId": "BNB-USDT",
+                            "tradeId": "fill-1",
+                            "ordId": "order-1",
+                            "side": "buy",
+                            "fillPx": "300",
+                            "fillSz": "1",
+                            "fee": "-0.3",
+                            "feeCcy": "USDT",
+                            "execType": "T",
+                            "ts": "1778544000000",
+                        },
+                        sort_keys=True,
+                    ),
                 }
             ]
         ),
@@ -4527,6 +4543,7 @@ def test_export_flags_raw_private_fills_even_when_latest_health_check_is_ok(tmp_
     private_fill_check = checks["private_fills_present_but_actual_cost_zero"]
     assert private_fill_check["status"] == "WARN"
     assert "private_fills=1" in private_fill_check["detail"]
+    assert "relevant_private_fills=1" in private_fill_check["detail"]
     assert "latest_health_check_passed=true" in private_fill_check["detail"]
     assert "export_raw_rows_without_latest_actual_or_mixed=true" in private_fill_check["detail"]
     assert any(
@@ -4535,8 +4552,88 @@ def test_export_flags_raw_private_fills_even_when_latest_health_check_is_ok(tmp_
     )
 
 
+def test_export_does_not_flag_historical_raw_private_fills_for_latest_day(tmp_path):
+    lake_root = _fixture_lake(tmp_path)
+    write_parquet_dataset(
+        pl.DataFrame(
+            [
+                {
+                    "endpoint": "/api/v5/trade/fills-history",
+                    "ingest_ts": datetime(2026, 6, 16, tzinfo=UTC),
+                    "raw_json": json.dumps(
+                        {
+                            "instType": "SPOT",
+                            "instId": "BNB-USDT",
+                            "tradeId": "old-fill",
+                            "ordId": "old-order",
+                            "side": "buy",
+                            "fillPx": "300",
+                            "fillSz": "1",
+                            "fee": "-0.3",
+                            "feeCcy": "USDT",
+                            "execType": "T",
+                            "ts": "1778371200000",
+                        },
+                        sort_keys=True,
+                    ),
+                }
+            ]
+        ),
+        lake_root / "bronze" / "okx_private_readonly" / "fills_history",
+    )
+    write_parquet_dataset(
+        pl.DataFrame(
+            [
+                {
+                    "day": "2026-06-16",
+                    "status": "WARNING",
+                    "cost_model_version": "costs-v1",
+                    "actual_rows": 0,
+                    "mixed_rows": 0,
+                    "proxy_rows": 1,
+                    "global_default_rows": 0,
+                    "fallback_ratio": 1.0,
+                    "symbols_with_actual_cost": "[]",
+                    "symbols_with_mixed_cost": "[]",
+                    "symbols_with_proxy_only": '["BNB-USDT"]',
+                    "symbols_proxy_only": '["BNB-USDT"]',
+                    "symbols_missing_cost": "[]",
+                    "actual_sample_count_by_symbol": "{}",
+                    "data_quality_checks_json": (
+                        '{"private_fills_present_but_actual_cost_zero":true}'
+                    ),
+                    "min_sample_count": 30,
+                    "warnings_json": "[]",
+                    "created_at": datetime.now(UTC),
+                }
+            ]
+        ),
+        lake_root / "gold" / "cost_health_daily",
+    )
+
+    result = export_daily_pack(
+        export_date="2026-06-16",
+        lake_root=lake_root,
+        out_dir=tmp_path / "exports",
+        profile="expert",
+        command_line=["qlab", "export-daily"],
+        pre_export_v5_refresh=False,
+    )
+
+    with zipfile.ZipFile(result.zip_path) as archive:
+        data_quality = json.loads(archive.read("data_quality.json").decode("utf-8"))
+
+    checks = {check["name"]: check for check in data_quality["checks"]}
+    private_fill_check = checks["private_fills_present_but_actual_cost_zero"]
+    assert private_fill_check["status"] == "PASS"
+    assert "private_fills=1" in private_fill_check["detail"]
+    assert "relevant_private_fills=0" in private_fill_check["detail"]
+    assert "export_raw_rows_without_latest_actual_or_mixed=false" in private_fill_check["detail"]
+
+
 def test_actual_cost_symbol_coverage_splits_latest_and_historical_context():
     passed, detail = daily_export_module._actual_cost_symbol_coverage_check(
+        export_day=date(2026, 5, 12),
         costs=pl.DataFrame(
             [
                 {"symbol": "BTC-USDT", "source": "actual_fills"},
@@ -4551,7 +4648,7 @@ def test_actual_cost_symbol_coverage_splits_latest_and_historical_context():
         },
         health_checks={"actual_cost_symbol_coverage": "n/a"},
         actual_or_mixed_rows=0,
-        fills=pl.DataFrame([{"symbol": "BTC-USDT"}]),
+        fills=pl.DataFrame([{"symbol": "BTC-USDT", "ts": "1778544000000"}]),
         v5_trades=pl.DataFrame(),
     )
 
@@ -4560,6 +4657,8 @@ def test_actual_cost_symbol_coverage_splits_latest_and_historical_context():
     assert "latest_actual_or_mixed_rows=0" in detail
     assert "historical_actual_or_mixed_symbols=1/2" in detail
     assert "historical_actual_or_mixed_rows=1" in detail
+    assert "relevant_private_fills=1" in detail
+    assert "private_fills_total=1" in detail
 
 
 def test_live_universe_stale_actual_or_mixed_detail_lists_uncovered_symbols():

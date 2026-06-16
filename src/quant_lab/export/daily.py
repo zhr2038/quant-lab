@@ -36,6 +36,7 @@ from quant_lab.contracts.v5_quant_lab import (
     V5_QUANT_LAB_CONTRACT_VERSION,
     V5_TELEMETRY_DATASET_SCHEMA_VERSION,
 )
+from quant_lab.costs.calibrate import PRIVATE_COST_LOOKBACK_DAYS
 from quant_lab.costs.model import (
     LIVE_UNIVERSE_COST_COVERAGE_FIELDS,
     build_live_universe_cost_coverage,
@@ -7240,6 +7241,7 @@ def _data_quality_payload(
     actual_or_mixed_rows = actual_rows + mixed_rows
     actual_cost_symbol_coverage_passed, actual_cost_symbol_coverage_detail = (
         _actual_cost_symbol_coverage_check(
+            export_day=day,
             costs=costs,
             latest_cost_health=latest_cost_health,
             health_checks=health_checks,
@@ -7248,11 +7250,18 @@ def _data_quality_payload(
             v5_trades=v5_trades,
         )
     )
+    relevant_private_fills = _relevant_private_fill_rows(fills, export_day=day)
+    relevant_v5_trades = _relevant_frame_rows(
+        v5_trades,
+        export_day=day,
+        timestamp_columns=("ts_utc", "ts", "timestamp", "time", "created_at"),
+    )
     private_fills_cost_passed, private_fills_cost_detail = _raw_fill_like_cost_check(
         health_checks=health_checks,
         health_check_name="private_fills_present_but_actual_cost_zero",
         raw_row_label="private_fills",
         raw_row_count=fills.height,
+        relevant_row_count=relevant_private_fills,
         actual_rows=actual_rows,
         mixed_rows=mixed_rows,
     )
@@ -7261,6 +7270,7 @@ def _data_quality_payload(
         health_check_name="trades_present_but_not_in_cost_model",
         raw_row_label="v5_trades",
         raw_row_count=v5_trades.height,
+        relevant_row_count=relevant_v5_trades,
         actual_rows=actual_rows,
         mixed_rows=mixed_rows,
     )
@@ -7600,6 +7610,7 @@ def _all_cost_rows_public_proxy(costs: pl.DataFrame) -> bool:
 
 def _actual_cost_symbol_coverage_check(
     *,
+    export_day: date,
     costs: pl.DataFrame,
     latest_cost_health: dict[str, Any],
     health_checks: dict[str, Any],
@@ -7669,15 +7680,23 @@ def _actual_cost_symbol_coverage_check(
         else "n/a"
     )
 
-    fill_like_rows = fills.height + v5_trades.height
+    relevant_private_fills = _relevant_private_fill_rows(fills, export_day=export_day)
+    relevant_v5_trades = _relevant_frame_rows(
+        v5_trades,
+        export_day=export_day,
+        timestamp_columns=("ts_utc", "ts", "timestamp", "time", "created_at"),
+    )
+    fill_like_rows = relevant_private_fills + relevant_v5_trades
     passed = actual_or_mixed_rows > 0 or fill_like_rows == 0
     detail = (
         f"latest_actual_or_mixed_symbols={latest_coverage}; "
         f"latest_actual_or_mixed_rows={actual_or_mixed_rows}; "
         f"historical_actual_or_mixed_symbols={historical_coverage}; "
         f"historical_actual_or_mixed_rows={historical_actual_or_mixed_rows}; "
-        f"private_fills={fills.height}; "
-        f"v5_trades={v5_trades.height}; "
+        f"relevant_private_fills={relevant_private_fills}; "
+        f"private_fills_total={fills.height}; "
+        f"relevant_v5_trades={relevant_v5_trades}; "
+        f"v5_trades_total={v5_trades.height}; "
         f"source={latest_source}+cost_bucket_daily_snapshot"
     )
     return passed, detail
@@ -7689,15 +7708,19 @@ def _raw_fill_like_cost_check(
     health_check_name: str,
     raw_row_label: str,
     raw_row_count: int,
+    relevant_row_count: int,
     actual_rows: int,
     mixed_rows: int,
 ) -> tuple[bool, str]:
     latest_health_passed = health_checks.get(health_check_name, True) is not False
     actual_or_mixed_rows = actual_rows + mixed_rows
-    export_raw_without_latest_actual_or_mixed = raw_row_count > 0 and actual_or_mixed_rows == 0
+    export_raw_without_latest_actual_or_mixed = (
+        relevant_row_count > 0 and actual_or_mixed_rows == 0
+    )
     passed = latest_health_passed and not export_raw_without_latest_actual_or_mixed
     detail = (
         f"{raw_row_label}={raw_row_count}; "
+        f"relevant_{raw_row_label}={relevant_row_count}; "
         f"actual_rows={actual_rows}; "
         f"mixed_rows={mixed_rows}; "
         f"latest_health_check_passed={str(latest_health_passed).lower()}; "
@@ -7705,6 +7728,92 @@ def _raw_fill_like_cost_check(
         f"{str(export_raw_without_latest_actual_or_mixed).lower()}"
     )
     return passed, detail
+
+
+def _relevant_private_fill_rows(fills: pl.DataFrame, *, export_day: date) -> int:
+    if fills.is_empty():
+        return 0
+    count = 0
+    for row in fills.to_dicts():
+        timestamp = _first_timestamp_value(row, ("ts", "fillTime"))
+        if timestamp is None and row.get("raw_json") is not None:
+            timestamp = _raw_json_timestamp(row.get("raw_json"), ("ts", "fillTime"))
+        if timestamp is not None and _timestamp_in_export_window(timestamp, export_day=export_day):
+            count += 1
+    return count
+
+
+def _relevant_frame_rows(
+    frame: pl.DataFrame,
+    *,
+    export_day: date,
+    timestamp_columns: tuple[str, ...],
+) -> int:
+    if frame.is_empty():
+        return 0
+    count = 0
+    for row in frame.to_dicts():
+        timestamp = _first_timestamp_value(row, timestamp_columns)
+        if timestamp is not None and _timestamp_in_export_window(timestamp, export_day=export_day):
+            count += 1
+    return count
+
+
+def _raw_json_timestamp(raw_json: Any, fields: tuple[str, ...]) -> datetime | None:
+    try:
+        loaded = json.loads(str(raw_json))
+    except (TypeError, json.JSONDecodeError):
+        return None
+    if isinstance(loaded, dict):
+        timestamp = _first_timestamp_value(loaded, fields)
+        if timestamp is not None:
+            return timestamp
+        data = loaded.get("data")
+        if isinstance(data, list):
+            for item in data:
+                if isinstance(item, dict):
+                    timestamp = _first_timestamp_value(item, fields)
+                    if timestamp is not None:
+                        return timestamp
+    return None
+
+
+def _first_timestamp_value(row: dict[str, Any], fields: tuple[str, ...]) -> datetime | None:
+    for field in fields:
+        value = row.get(field)
+        timestamp = _parse_cost_event_timestamp(value)
+        if timestamp is not None:
+            return timestamp
+    return None
+
+
+def _parse_cost_event_timestamp(value: Any) -> datetime | None:
+    if value is None:
+        return None
+    if isinstance(value, datetime):
+        return value.astimezone(UTC) if value.tzinfo else value.replace(tzinfo=UTC)
+    text = str(value).strip()
+    if not text:
+        return None
+    if text.isdigit():
+        try:
+            numeric = int(text)
+        except ValueError:
+            return None
+        if numeric > 10_000_000_000:
+            return datetime.fromtimestamp(numeric / 1000.0, tz=UTC)
+        return datetime.fromtimestamp(numeric, tz=UTC)
+    try:
+        parsed = datetime.fromisoformat(text.replace("Z", "+00:00"))
+    except ValueError:
+        return None
+    return parsed.astimezone(UTC) if parsed.tzinfo else parsed.replace(tzinfo=UTC)
+
+
+def _timestamp_in_export_window(timestamp: datetime, *, export_day: date) -> bool:
+    end = datetime.combine(export_day + timedelta(days=1), datetime.min.time(), tzinfo=UTC)
+    start = end - timedelta(days=PRIVATE_COST_LOOKBACK_DAYS)
+    return start <= timestamp.astimezone(UTC) < end
 
 
 def _live_universe_stale_actual_or_mixed_check(costs: pl.DataFrame) -> tuple[bool, str]:

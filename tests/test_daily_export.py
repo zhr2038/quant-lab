@@ -30,6 +30,16 @@ from quant_lab.ops.metrics import record_api_request
 from tests.v5_bundle_fixture import make_tar
 
 
+@pytest.fixture(autouse=True)
+def _isolate_default_v5_telemetry_config(monkeypatch, tmp_path):
+    monkeypatch.delenv("QUANT_LAB_EXPORT_V5_MAX_PENDING_BUNDLES", raising=False)
+    monkeypatch.delenv("QUANT_LAB_EXPORT_V5_MAX_SCAN_BUNDLES", raising=False)
+    inbox = tmp_path / "isolated_v5_inbox"
+    inbox.mkdir(parents=True, exist_ok=True)
+    config = _v5_telemetry_config(tmp_path, inbox, tmp_path / "isolated_v5_lake")
+    monkeypatch.setenv("QUANT_LAB_V5_TELEMETRY_CONFIG", str(config))
+
+
 def test_collect_recent_heavy_files_uses_timestamp_not_physical_tail(tmp_path):
     dataset_path = tmp_path / "orderbook_spread_1m"
     dataset_path.mkdir()

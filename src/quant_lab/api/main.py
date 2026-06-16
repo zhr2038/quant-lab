@@ -287,6 +287,12 @@ def create_app() -> FastAPI:
             _cost_bucket_snapshot(_lake_root())
         except Exception:
             pass
+        try:
+            from quant_lab.web.bigscreen import bigscreen_snapshot
+
+            bigscreen_snapshot(_lake_root())
+        except Exception:
+            pass
 
     @app.get("/v1/health", response_model=HealthResponse)
     def health() -> HealthResponse:
@@ -1016,6 +1022,12 @@ def _bigscreen_snapshot_response(
             ),
             "X-Quant-Lab-Bigscreen-Cache-TTL-Seconds": _header_float_text(
                 cache_meta.get("cache_ttl_seconds")
+            ),
+            "X-Quant-Lab-Bigscreen-Cache-Stale": (
+                "true" if cache_meta.get("cache_stale") else "false"
+            ),
+            "X-Quant-Lab-Bigscreen-Stale-Grace-Seconds": _header_float_text(
+                cache_meta.get("cache_stale_grace_seconds")
             ),
             "X-Quant-Lab-Api-Cache-Hit": "true" if cache_hit else "false",
             "X-Quant-Lab-Response-Cache-Hit": "true" if cache_hit else "false",

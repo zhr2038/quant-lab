@@ -12,7 +12,12 @@ import quant_lab.api.main as api_main
 import quant_lab.web.bigscreen as bigscreen_module
 from quant_lab.api.main import create_app
 from quant_lab.data.lake import write_parquet_dataset
-from quant_lab.web.bigscreen import _exports_payload, bigscreen_snapshot, clear_bigscreen_cache
+from quant_lab.web.bigscreen import (
+    _exports_payload,
+    bigscreen_snapshot,
+    bigscreen_snapshot_with_meta,
+    clear_bigscreen_cache,
+)
 
 
 def test_bigscreen_snapshot_empty_lake_is_read_only_and_degraded(tmp_path):
@@ -38,6 +43,8 @@ def test_bigscreen_snapshot_empty_lake_is_read_only_and_degraded(tmp_path):
 def test_bigscreen_snapshot_cache_covers_frontend_refresh_interval(monkeypatch, tmp_path):
     clear_bigscreen_cache()
     monkeypatch.delenv("QUANT_LAB_BIGSCREEN_CACHE_TTL_SECONDS", raising=False)
+    monkeypatch.delenv("QUANT_LAB_BIGSCREEN_STALE_GRACE_SECONDS", raising=False)
+    monkeypatch.setenv("QUANT_LAB_BIGSCREEN_ASYNC_REFRESH", "0")
     now = 1000.0
     monkeypatch.setattr(bigscreen_module.time, "monotonic", lambda: now)
 
@@ -46,9 +53,12 @@ def test_bigscreen_snapshot_cache_covers_frontend_refresh_interval(monkeypatch, 
     second = bigscreen_snapshot(tmp_path / "lake")
     now = 1036.0
     third = bigscreen_snapshot(tmp_path / "lake")
+    now = 1217.0
+    fourth = bigscreen_snapshot(tmp_path / "lake")
 
     assert second is first
-    assert third is not first
+    assert third is first
+    assert fourth is not first
 
 
 def test_bigscreen_data_matrix_prefers_live_universe_cost_coverage(tmp_path):
@@ -436,6 +446,43 @@ def test_bigscreen_snapshot_endpoints_return_payload(monkeypatch, tmp_path):
     assert int(web_response.headers["x-quant-lab-response-bytes"]) == len(web_response.content)
     assert protected_response.json()["mode"] == "read-only"
     assert web_response.json()["mode"] == "read-only"
+
+
+def test_bigscreen_snapshot_serves_stale_cache_while_refresh_is_deferred(
+    monkeypatch,
+    tmp_path,
+):
+    clear_bigscreen_cache()
+    monkeypatch.setenv("QUANT_LAB_BIGSCREEN_CACHE_TTL_SECONDS", "0")
+    monkeypatch.setenv("QUANT_LAB_BIGSCREEN_STALE_GRACE_SECONDS", "60")
+    monkeypatch.setenv("QUANT_LAB_BIGSCREEN_ASYNC_REFRESH", "0")
+    calls: list[Path] = []
+
+    def fake_build(root: Path) -> dict[str, object]:
+        calls.append(root)
+        return {
+            "mode": "read-only",
+            "status": "OK",
+            "build_count": len(calls),
+        }
+
+    monkeypatch.setattr(bigscreen_module, "_build_bigscreen_snapshot_payload", fake_build)
+
+    lake = tmp_path / "lake"
+    first_payload, first_meta = bigscreen_snapshot_with_meta(lake)
+    cache_key = str(lake.resolve())
+    with bigscreen_module._SNAPSHOT_CACHE_LOCK:
+        created_at, payload = bigscreen_module._SNAPSHOT_CACHE[cache_key]
+        bigscreen_module._SNAPSHOT_CACHE[cache_key] = (created_at - 1.0, payload)
+    stale_payload, stale_meta = bigscreen_snapshot_with_meta(lake)
+
+    assert first_payload["build_count"] == 1
+    assert first_meta["cache_hit"] is False
+    assert stale_payload["build_count"] == 1
+    assert stale_meta["cache_hit"] is True
+    assert stale_meta["cache_stale"] is True
+    assert stale_meta["cache_refresh_scheduled"] is False
+    assert len(calls) == 1
 
 
 def test_bigscreen_static_entry_is_served_if_built():

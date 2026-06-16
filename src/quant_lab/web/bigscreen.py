@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import math
 import os
+import threading
 import time
 import zipfile
 from csv import DictReader
@@ -18,7 +19,10 @@ from quant_lab.symbols import normalize_symbol
 from quant_lab.web import perf, readers
 
 SNAPSHOT_CACHE_TTL_SECONDS = 35.0
+SNAPSHOT_CACHE_STALE_GRACE_SECONDS = 180.0
 _SNAPSHOT_CACHE: dict[str, tuple[float, dict[str, Any]]] = {}
+_SNAPSHOT_CACHE_LOCK = threading.RLock()
+_SNAPSHOT_REFRESHING: set[str] = set()
 
 
 def bigscreen_snapshot(lake_root: str | Path) -> dict[str, Any]:
@@ -30,9 +34,11 @@ def bigscreen_snapshot_with_meta(lake_root: str | Path) -> tuple[dict[str, Any],
     start = time.perf_counter()
     root = Path(lake_root)
     cache_key = str(root.resolve())
-    cached = _SNAPSHOT_CACHE.get(cache_key)
     now = time.monotonic()
     ttl_seconds = _snapshot_cache_ttl_seconds()
+    stale_grace_seconds = _snapshot_cache_stale_grace_seconds()
+    with _SNAPSHOT_CACHE_LOCK:
+        cached = _SNAPSHOT_CACHE.get(cache_key)
     if cached is not None:
         age_seconds = max(0.0, now - cached[0])
         if age_seconds <= ttl_seconds:
@@ -45,8 +51,43 @@ def bigscreen_snapshot_with_meta(lake_root: str | Path) -> tuple[dict[str, Any],
                 "cache_hit": True,
                 "cache_age_seconds": age_seconds,
                 "cache_ttl_seconds": ttl_seconds,
+                "cache_stale": False,
+                "cache_stale_grace_seconds": stale_grace_seconds,
+            }
+        if age_seconds <= ttl_seconds + stale_grace_seconds:
+            refresh_scheduled = _schedule_snapshot_refresh(cache_key, root)
+            perf.record_event(
+                "bigscreen_snapshot",
+                elapsed_ms=(time.perf_counter() - start) * 1000,
+                cache_hit=True,
+            )
+            return cached[1], {
+                "cache_hit": True,
+                "cache_age_seconds": age_seconds,
+                "cache_ttl_seconds": ttl_seconds,
+                "cache_stale": True,
+                "cache_stale_grace_seconds": stale_grace_seconds,
+                "cache_refresh_scheduled": refresh_scheduled,
             }
 
+    payload = _build_bigscreen_snapshot_payload(root)
+    with _SNAPSHOT_CACHE_LOCK:
+        _SNAPSHOT_CACHE[cache_key] = (time.monotonic(), payload)
+    perf.record_event(
+        "bigscreen_snapshot",
+        elapsed_ms=(time.perf_counter() - start) * 1000,
+        cache_miss=True,
+    )
+    return payload, {
+        "cache_hit": False,
+        "cache_age_seconds": 0.0,
+        "cache_ttl_seconds": ttl_seconds,
+        "cache_stale": False,
+        "cache_stale_grace_seconds": stale_grace_seconds,
+    }
+
+
+def _build_bigscreen_snapshot_payload(root: Path) -> dict[str, Any]:
     generated_at = datetime.now(UTC)
     data_health = _safe_summary("data_health_summary", readers.data_health_summary, root)
     cost = _safe_summary("cost_model_summary", readers.cost_model_summary, root)
@@ -108,21 +149,52 @@ def bigscreen_snapshot_with_meta(lake_root: str | Path) -> tuple[dict[str, Any],
         "exports": _exports_payload(exports),
         "warnings": warnings[:30],
     }
-    _SNAPSHOT_CACHE[cache_key] = (now, payload)
-    perf.record_event(
-        "bigscreen_snapshot",
-        elapsed_ms=(time.perf_counter() - start) * 1000,
-        cache_miss=True,
+    return payload
+
+
+def _schedule_snapshot_refresh(cache_key: str, root: Path) -> bool:
+    if not _snapshot_async_refresh_enabled():
+        return False
+    with _SNAPSHOT_CACHE_LOCK:
+        if cache_key in _SNAPSHOT_REFRESHING:
+            return False
+        _SNAPSHOT_REFRESHING.add(cache_key)
+    thread = threading.Thread(
+        target=_refresh_snapshot_cache,
+        args=(cache_key, root),
+        name="quant-lab-bigscreen-cache-refresh",
+        daemon=True,
     )
-    return payload, {
-        "cache_hit": False,
-        "cache_age_seconds": 0.0,
-        "cache_ttl_seconds": ttl_seconds,
-    }
+    thread.start()
+    return True
+
+
+def _refresh_snapshot_cache(cache_key: str, root: Path) -> None:
+    start = time.perf_counter()
+    try:
+        payload = _build_bigscreen_snapshot_payload(root)
+        with _SNAPSHOT_CACHE_LOCK:
+            _SNAPSHOT_CACHE[cache_key] = (time.monotonic(), payload)
+        perf.record_event(
+            "bigscreen_snapshot_refresh",
+            elapsed_ms=(time.perf_counter() - start) * 1000,
+            cache_miss=True,
+        )
+    except Exception as exc:
+        perf.record_event(
+            "bigscreen_snapshot_refresh",
+            elapsed_ms=(time.perf_counter() - start) * 1000,
+            warning=f"{type(exc).__name__}: {exc}",
+        )
+    finally:
+        with _SNAPSHOT_CACHE_LOCK:
+            _SNAPSHOT_REFRESHING.discard(cache_key)
 
 
 def clear_bigscreen_cache() -> None:
-    _SNAPSHOT_CACHE.clear()
+    with _SNAPSHOT_CACHE_LOCK:
+        _SNAPSHOT_CACHE.clear()
+        _SNAPSHOT_REFRESHING.clear()
 
 
 def _snapshot_cache_ttl_seconds() -> float:
@@ -132,6 +204,20 @@ def _snapshot_cache_ttl_seconds() -> float:
     except ValueError:
         return SNAPSHOT_CACHE_TTL_SECONDS
     return max(0.0, value)
+
+
+def _snapshot_cache_stale_grace_seconds() -> float:
+    raw = os.environ.get("QUANT_LAB_BIGSCREEN_STALE_GRACE_SECONDS", "")
+    try:
+        value = float(raw) if raw else SNAPSHOT_CACHE_STALE_GRACE_SECONDS
+    except ValueError:
+        return SNAPSHOT_CACHE_STALE_GRACE_SECONDS
+    return max(0.0, value)
+
+
+def _snapshot_async_refresh_enabled() -> bool:
+    raw = os.environ.get("QUANT_LAB_BIGSCREEN_ASYNC_REFRESH", "1").strip().lower()
+    return raw not in {"0", "false", "no", "off"}
 
 
 def _safe_summary(name: str, fn: Any, *args: Any) -> dict[str, Any]:

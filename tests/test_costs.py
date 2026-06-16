@@ -70,6 +70,28 @@ def test_live_universe_cost_coverage_downgrades_stale_direct_to_mixed_proxy():
     assert evaluation["coverage_rate"] == 1.0
 
 
+def test_live_universe_cost_coverage_uses_generated_at_for_stale_window():
+    generated_at = datetime(2026, 6, 15, tzinfo=UTC)
+    fresh_at_generation = generated_at - timedelta(hours=35)
+
+    evaluation = evaluate_live_universe_cost_coverage(
+        pl.DataFrame(
+            [
+                _coverage_cost_row("BTC-USDT", "actual_fills", fresh_at_generation),
+            ]
+        ),
+        live_symbols=["BTC-USDT"],
+        generated_at=generated_at,
+    )
+
+    btc = evaluation["detail_by_symbol"]["BTC-USDT"]
+    assert btc["stale_actual_or_mixed"] is False
+    assert btc["actual_or_mixed_direct"] is True
+    assert btc["actual_or_mixed_covered"] is True
+    assert evaluation["direct_symbols"] == ["BTC-USDT"]
+    assert evaluation["coverage_rate"] == 1.0
+
+
 def test_live_universe_cost_coverage_rejects_stale_direct_without_fresh_anchor():
     now = datetime(2026, 6, 15, tzinfo=UTC)
     stale = now - timedelta(days=7)

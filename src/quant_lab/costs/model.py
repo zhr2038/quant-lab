@@ -74,7 +74,7 @@ def evaluate_live_universe_cost_coverage(
     direct_symbols = {
         symbol
         for symbol, symbol_rows in rows_by_symbol.items()
-        if _latest_fresh_actual_or_mixed_row(symbol_rows) is not None
+        if _latest_fresh_actual_or_mixed_row(symbol_rows, reference_time=generated) is not None
     }
     has_live_actual_anchor = bool(direct_symbols)
 
@@ -84,11 +84,16 @@ def evaluate_live_universe_cost_coverage(
         symbol_rows = rows_by_symbol.get(symbol, [])
         latest = _latest_cost_row_for_coverage(symbol_rows)
         latest_actual = _latest_actual_or_mixed_row(symbol_rows)
-        fresh_actual = _latest_fresh_actual_or_mixed_row(symbol_rows)
+        fresh_actual = _latest_fresh_actual_or_mixed_row(
+            symbol_rows,
+            reference_time=generated,
+        )
         latest_proxy = _latest_public_proxy_row(symbol_rows)
         direct = fresh_actual is not None
         stale_actual_or_mixed = (
-            _row_is_stale(latest_actual) if latest_actual is not None else False
+            _row_is_stale(latest_actual, reference_time=generated)
+            if latest_actual is not None
+            else False
         )
         mixed_proxy_eligible = not direct and has_live_actual_anchor and latest_proxy is not None
         covered = direct or mixed_proxy_eligible
@@ -1121,11 +1126,16 @@ def _row_as_of_ts(row: Mapping[str, Any]) -> datetime | None:
     return None
 
 
-def _row_is_stale(row: Mapping[str, Any]) -> bool:
+def _row_is_stale(
+    row: Mapping[str, Any],
+    *,
+    reference_time: datetime | None = None,
+) -> bool:
     as_of_ts = _row_explicit_as_of_ts(row)
     if as_of_ts is None:
         return False
-    age_seconds = (datetime.now(UTC) - as_of_ts.astimezone(UTC)).total_seconds()
+    reference = (reference_time or datetime.now(UTC)).astimezone(UTC)
+    age_seconds = (reference - as_of_ts.astimezone(UTC)).total_seconds()
     return age_seconds > COST_BUCKET_STALE_SECONDS
 
 
@@ -1160,11 +1170,16 @@ def _latest_actual_or_mixed_row(rows: list[dict[str, Any]]) -> dict[str, Any] | 
     return _latest_cost_row_for_coverage(candidates)
 
 
-def _latest_fresh_actual_or_mixed_row(rows: list[dict[str, Any]]) -> dict[str, Any] | None:
+def _latest_fresh_actual_or_mixed_row(
+    rows: list[dict[str, Any]],
+    *,
+    reference_time: datetime | None = None,
+) -> dict[str, Any] | None:
     candidates = [
         row
         for row in rows
-        if _is_actual_or_mixed_source(_cost_source(row)) and not _row_is_stale(row)
+        if _is_actual_or_mixed_source(_cost_source(row))
+        and not _row_is_stale(row, reference_time=reference_time)
     ]
     return _latest_cost_row_for_coverage(candidates)
 

@@ -172,6 +172,7 @@ def test_export_daily_pack_writes_required_members(tmp_path):
         out_dir=tmp_path / "exports",
         profile="expert",
         command_line=["qlab", "export-daily"],
+        pre_export_v5_refresh=False,
     )
 
     pack_path = Path(result.zip_path)
@@ -3358,6 +3359,7 @@ def test_data_quality_marks_warn_enforce_readiness_as_warning(tmp_path, monkeypa
         out_dir=tmp_path / "exports",
         profile="expert",
         command_line=["qlab", "export-daily"],
+        pre_export_v5_refresh=False,
     )
 
     with zipfile.ZipFile(result.zip_path) as archive:

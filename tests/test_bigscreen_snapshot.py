@@ -35,6 +35,22 @@ def test_bigscreen_snapshot_empty_lake_is_read_only_and_degraded(tmp_path):
     ]
 
 
+def test_bigscreen_snapshot_cache_covers_frontend_refresh_interval(monkeypatch, tmp_path):
+    clear_bigscreen_cache()
+    monkeypatch.delenv("QUANT_LAB_BIGSCREEN_CACHE_TTL_SECONDS", raising=False)
+    now = 1000.0
+    monkeypatch.setattr(bigscreen_module.time, "monotonic", lambda: now)
+
+    first = bigscreen_snapshot(tmp_path / "lake")
+    now = 1034.0
+    second = bigscreen_snapshot(tmp_path / "lake")
+    now = 1036.0
+    third = bigscreen_snapshot(tmp_path / "lake")
+
+    assert second is first
+    assert third is not first
+
+
 def test_bigscreen_data_matrix_prefers_live_universe_cost_coverage(tmp_path):
     clear_bigscreen_cache()
     lake = tmp_path / "lake"

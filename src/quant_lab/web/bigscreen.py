@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import math
+import os
 import time
 import zipfile
 from csv import DictReader
@@ -16,7 +17,7 @@ from quant_lab.ops.api_metrics import api_metrics_summary
 from quant_lab.symbols import normalize_symbol
 from quant_lab.web import perf, readers
 
-SNAPSHOT_CACHE_TTL_SECONDS = 20.0
+SNAPSHOT_CACHE_TTL_SECONDS = 35.0
 _SNAPSHOT_CACHE: dict[str, tuple[float, dict[str, Any]]] = {}
 
 
@@ -25,7 +26,7 @@ def bigscreen_snapshot(lake_root: str | Path) -> dict[str, Any]:
     cache_key = str(root.resolve())
     cached = _SNAPSHOT_CACHE.get(cache_key)
     now = time.monotonic()
-    if cached is not None and now - cached[0] <= SNAPSHOT_CACHE_TTL_SECONDS:
+    if cached is not None and now - cached[0] <= _snapshot_cache_ttl_seconds():
         return cached[1]
 
     generated_at = datetime.now(UTC)
@@ -95,6 +96,15 @@ def bigscreen_snapshot(lake_root: str | Path) -> dict[str, Any]:
 
 def clear_bigscreen_cache() -> None:
     _SNAPSHOT_CACHE.clear()
+
+
+def _snapshot_cache_ttl_seconds() -> float:
+    raw = os.environ.get("QUANT_LAB_BIGSCREEN_CACHE_TTL_SECONDS", "")
+    try:
+        value = float(raw) if raw else SNAPSHOT_CACHE_TTL_SECONDS
+    except ValueError:
+        return SNAPSHOT_CACHE_TTL_SECONDS
+    return max(0.0, value)
 
 
 def _safe_summary(name: str, fn: Any, *args: Any) -> dict[str, Any]:

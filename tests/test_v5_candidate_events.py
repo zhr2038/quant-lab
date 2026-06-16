@@ -65,6 +65,7 @@ def test_ingest_candidate_snapshot_writes_silver_events_and_gold_labels(tmp_path
     assert labels.filter(labels["horizon_hours"] == 4)["net_bps_after_cost"][0] > 0
     assert quality["candidate_event_rows"][0] == 1
     assert quality["feature_completeness"][0] == 1.0
+    assert quality["required_feature_completeness"][0] == 1.0
     assert quality["label_completeness"][0] == 1.0
     assert quality["cost_source_coverage"][0] == 1.0
     assert events["cost_source"][0] == "public_spread_proxy"

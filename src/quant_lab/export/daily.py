@@ -2890,6 +2890,8 @@ CSV_SCHEMAS: dict[str, list[str]] = {
         "run_symbol_min_rows",
         "feature_completeness",
         "feature_completeness_by_field_json",
+        "required_feature_completeness",
+        "required_feature_completeness_by_field_json",
         "expected_label_rows",
         "label_rows",
         "complete_label_rows",
@@ -6986,8 +6988,13 @@ def _data_quality_payload(
     checks.append(
         _check(
             "v5_candidate_feature_completeness",
-            float(latest_candidate_quality.get("feature_completeness") or 0.0) >= 0.8,
-            f"feature_completeness={latest_candidate_quality.get('feature_completeness', 'n/a')}",
+            _v5_candidate_required_feature_completeness(latest_candidate_quality) >= 0.8,
+            (
+                "required_feature_completeness="
+                f"{latest_candidate_quality.get('required_feature_completeness', 'n/a')}; "
+                f"legacy_feature_completeness="
+                f"{latest_candidate_quality.get('feature_completeness', 'n/a')}"
+            ),
             warning_only=True,
         )
     )
@@ -11931,6 +11938,16 @@ def _latest_candidate_quality(frame: pl.DataFrame) -> dict[str, Any]:
     if "date" in frame.columns:
         return frame.sort("date").tail(1).to_dicts()[0]
     return frame.tail(1).to_dicts()[0]
+
+
+def _v5_candidate_required_feature_completeness(row: dict[str, Any]) -> float:
+    value = row.get("required_feature_completeness")
+    if value in {None, ""}:
+        value = row.get("feature_completeness")
+    try:
+        return float(value or 0.0)
+    except (TypeError, ValueError):
+        return 0.0
 
 
 def _frame_values(frame: pl.DataFrame, column: str) -> set[str]:

@@ -201,7 +201,57 @@ def test_candidate_quality_excludes_no_signal_context_from_feature_completeness(
     assert row["feature_denominator_rows"] == 1
     assert row["no_signal_context_rows"] == 1
     assert row["feature_completeness"] == pytest.approx(1.0)
+    assert row["required_feature_completeness"] == pytest.approx(1.0)
     assert "candidate_feature_completeness_below_80pct" not in row["warnings_json"]
+
+
+def test_candidate_quality_warns_only_when_required_features_are_missing():
+    created_at = datetime(2026, 5, 20, tzinfo=UTC)
+    score_only_complete = _candidate_event("score_only_complete", created_at) | {
+        "eligible_before_filters": "true",
+        "final_score": 0.8,
+        "f1_mom_5d": None,
+        "f2_mom_20d": None,
+        "f3_vol_adj_ret": None,
+        "f4_volume_expansion": None,
+        "f5_rsi_trend_confirm": None,
+        "alpha6_score": None,
+        "ml_score": 0.8,
+        "mean_reversion_score": None,
+        "expected_edge_bps": 50.0,
+        "required_edge_bps": 35.0,
+    }
+    missing_required = _candidate_event("missing_required", created_at) | {
+        "eligible_before_filters": "true",
+        "final_score": None,
+        "expected_edge_bps": None,
+        "required_edge_bps": None,
+    }
+
+    score_only_quality = build_candidate_quality(
+        pl.DataFrame([score_only_complete]),
+        pl.DataFrame(),
+        pl.DataFrame(),
+        as_of_date=created_at.date(),
+        created_at=created_at,
+    ).to_dicts()[0]
+    missing_required_quality = build_candidate_quality(
+        pl.DataFrame([missing_required]),
+        pl.DataFrame(),
+        pl.DataFrame(),
+        as_of_date=created_at.date(),
+        created_at=created_at,
+    ).to_dicts()[0]
+
+    assert score_only_quality["feature_completeness"] < 0.8
+    assert score_only_quality["required_feature_completeness"] == pytest.approx(1.0)
+    assert "candidate_required_feature_completeness_below_80pct" not in score_only_quality[
+        "warnings_json"
+    ]
+    assert missing_required_quality["required_feature_completeness"] == pytest.approx(0.0)
+    assert "candidate_required_feature_completeness_below_80pct" in missing_required_quality[
+        "warnings_json"
+    ]
 
 
 def _candidate_event(candidate_id: str, ts: datetime) -> dict[str, object]:

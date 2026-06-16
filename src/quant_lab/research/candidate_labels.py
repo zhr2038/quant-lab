@@ -44,6 +44,11 @@ CANDIDATE_FEATURE_FIELDS = (
     "expected_edge_bps",
     "required_edge_bps",
 )
+CANDIDATE_REQUIRED_FEATURE_FIELDS = (
+    "final_score",
+    "expected_edge_bps",
+    "required_edge_bps",
+)
 
 LABEL_SCHEMA = {
     "strategy": pl.Utf8,
@@ -229,6 +234,15 @@ def build_candidate_quality(
     feature_completeness = (
         statistics.fmean(feature_by_field.values()) if feature_by_field else 0.0
     )
+    required_feature_by_field = _feature_completeness_by_field(
+        feature_rows,
+        fields=CANDIDATE_REQUIRED_FEATURE_FIELDS,
+    )
+    required_feature_completeness = (
+        statistics.fmean(required_feature_by_field.values())
+        if required_feature_by_field
+        else 0.0
+    )
     expected_labels = len(event_rows) * len(HORIZON_HOURS)
     complete_labels = sum(1 for row in label_rows if row.get("label_status") == "complete")
     future_pending_labels = sum(
@@ -257,8 +271,8 @@ def build_candidate_quality(
         warnings.append("v5_candidate_event_empty")
     if missing_runs:
         warnings.append("runs_without_candidate_event")
-    if feature_completeness < 0.8 and event_rows:
-        warnings.append("candidate_feature_completeness_below_80pct")
+    if required_feature_completeness < 0.8 and event_rows:
+        warnings.append("candidate_required_feature_completeness_below_80pct")
     if label_completeness < 0.8 and event_rows:
         warnings.append("candidate_label_completeness_below_80pct")
     if cost_source_coverage < 0.8 and event_rows:
@@ -289,6 +303,10 @@ def build_candidate_quality(
                 "no_signal_context_rows": no_signal_context_rows,
                 "feature_completeness": feature_completeness,
                 "feature_completeness_by_field_json": safe_json_dumps(feature_by_field),
+                "required_feature_completeness": required_feature_completeness,
+                "required_feature_completeness_by_field_json": safe_json_dumps(
+                    required_feature_by_field
+                ),
                 "expected_label_rows": expected_labels,
                 "label_rows": len(label_rows),
                 "eligible_label_rows": eligible_labels,
@@ -640,11 +658,15 @@ def _run_id_sort_key(run_id: str) -> tuple[int, str, str]:
     return (1, text, "")
 
 
-def _feature_completeness_by_field(rows: list[dict[str, Any]]) -> dict[str, float]:
+def _feature_completeness_by_field(
+    rows: list[dict[str, Any]],
+    *,
+    fields: tuple[str, ...] = CANDIDATE_FEATURE_FIELDS,
+) -> dict[str, float]:
     if not rows:
-        return {field: 0.0 for field in CANDIDATE_FEATURE_FIELDS}
+        return {field: 0.0 for field in fields}
     result: dict[str, float] = {}
-    for field in CANDIDATE_FEATURE_FIELDS:
+    for field in fields:
         complete = 0
         for row in rows:
             payload = _payload(row)

@@ -155,6 +155,15 @@ def test_v5_candidate_feature_completeness_by_strategy_breaks_down_gaps():
     assert rows["portfolio_trend_following"]["live_order_effect"] == "read_only_no_live_order"
 
 
+def test_v5_candidate_required_feature_completeness_prefers_new_metric():
+    assert daily_export_module._v5_candidate_required_feature_completeness(
+        {"feature_completeness": 0.2, "required_feature_completeness": 0.95}
+    ) == pytest.approx(0.95)
+    assert daily_export_module._v5_candidate_required_feature_completeness(
+        {"feature_completeness": 0.75}
+    ) == pytest.approx(0.75)
+
+
 def test_export_daily_pack_writes_required_members(tmp_path):
     lake_root = _fixture_lake(tmp_path)
     result = export_daily_pack(

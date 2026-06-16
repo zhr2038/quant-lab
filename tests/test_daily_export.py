@@ -560,6 +560,13 @@ def test_research_validation_v3_reports_export_forward_and_cost_coverage(tmp_pat
                 )
             )
         )
+        advisory_rows = list(
+            csv.DictReader(
+                io.StringIO(
+                    archive.read("reports/strategy_opportunity_advisory.csv").decode("utf-8")
+                )
+            )
+        )
         data_quality = json.loads(archive.read("data_quality.json").decode("utf-8"))
 
     assert any(
@@ -581,11 +588,39 @@ def test_research_validation_v3_reports_export_forward_and_cost_coverage(tmp_pat
         row["eligible_for_alpha_factory"] == "strategy_review_pending"
         for row in bridge_review_rows
     )
+    bridge_review_candidate_ids = {
+        row["bridge_candidate_id"] for row in bridge_review_rows if row["bridge_candidate_id"]
+    }
+    bridge_advisory_rows = [
+        row
+        for row in advisory_rows
+        if row["strategy_candidate"] in bridge_review_candidate_ids
+    ]
+    assert bridge_advisory_rows
+    assert bridge_review_candidate_ids.issubset(
+        {row["strategy_candidate"] for row in bridge_advisory_rows}
+    )
+    assert any(
+        row["strategy_candidate"].startswith("v5.fast_microstructure_bridge.")
+        for row in bridge_advisory_rows
+    )
+    assert all(row["decision"] == "KEEP_SHADOW" for row in bridge_advisory_rows)
+    assert all(row["recommended_mode"] == "shadow" for row in bridge_advisory_rows)
+    assert all(row["max_live_notional_usdt"] == "0.0" for row in bridge_advisory_rows)
+    assert all(
+        row["live_order_effect"] == "read_only_no_live_order"
+        for row in bridge_advisory_rows
+    )
     assert not any(
         "forward_validation_not_passed" in row["blocking_reasons"]
         or "regime_stability_not_positive_or_missing" in row["blocking_reasons"]
         for row in bridge_review_rows
     )
+    lake_bridge = read_parquet_dataset(lake_root / "gold" / "factor_strategy_bridge_candidates")
+    lake_advisory = read_parquet_dataset(lake_root / "gold" / "strategy_opportunity_advisory")
+    assert lake_bridge.height == len(bridge_rows)
+    lake_advisory_candidates = set(lake_advisory["strategy_candidate"].to_list())
+    assert bridge_review_candidate_ids.issubset(lake_advisory_candidates)
     bnb_coverage = next(row for row in cost_coverage_rows if row["symbol"] == "BNB-USDT")
     readiness_coverage = data_quality["quant_lab_enforce_readiness"]["metrics"][
         "actual_or_mixed_cost_coverage_live_universe"
@@ -957,6 +992,95 @@ def test_strategy_opportunity_advisory_adds_bottom_zone_probe_paper_row():
     assert row["max_paper_notional_usdt"] > 0
     assert row["max_live_notional_usdt"] == 0.0
     assert row["live_order_effect"] == "read_only_no_live_order"
+
+
+def test_strategy_opportunity_advisory_adds_bridge_review_shadow_rows():
+    generated_at = datetime(2026, 6, 16, 10, tzinfo=UTC)
+    frame = daily_export_module._strategy_opportunity_advisory_for_export(
+        alpha_discovery_board=pl.DataFrame(),
+        strategy_evidence=pl.DataFrame(),
+        paper_proposals=pl.DataFrame(),
+        risk_permissions=pl.DataFrame(),
+        cost_health=pl.DataFrame(),
+        paper_daily=pl.DataFrame(),
+        paper_slippage=pl.DataFrame(),
+        factor_strategy_bridge_candidates=pl.DataFrame(
+            [
+                {
+                    "as_of_date": "2026-06-16",
+                    "generated_at": generated_at,
+                    "factor_id": "core.mean_reversion_vol_adjusted_4",
+                    "factor_family": "core",
+                    "symbol": "BNB-USDT",
+                    "regime": "SIDEWAYS",
+                    "horizon": "4h",
+                    "horizon_hours": 4,
+                    "forward_sample_count": 44,
+                    "forward_cost_adjusted_score": 18.5,
+                    "bridge_candidate_id": (
+                        "v5.factor_bridge.core.mean_reversion_vol_adjusted_4"
+                    ),
+                    "eligible_for_alpha_factory": "strategy_review_pending",
+                    "blocking_reasons": (
+                        '["needs_strategy_formulation","needs_paper_tracking"]'
+                    ),
+                    "recommended_action": "REVIEW_FOR_ALPHA_FACTORY_STRATEGY",
+                    "live_order_effect": "read_only_no_live_order",
+                },
+                {
+                    "as_of_date": "2026-06-16",
+                    "generated_at": generated_at,
+                    "factor_id": "fast_microstructure.orderbook_imbalance_1m",
+                    "factor_family": "fast_microstructure",
+                    "symbol": "SOL-USDT",
+                    "regime": "RISK_ON",
+                    "horizon": "4h",
+                    "horizon_hours": 4,
+                    "forward_sample_count": 58,
+                    "forward_cost_adjusted_score": 24.0,
+                    "bridge_candidate_id": (
+                        "v5.fast_microstructure_bridge.orderbook_imbalance_1m."
+                        "sol_usdt.risk_on.4h"
+                    ),
+                    "eligible_for_alpha_factory": "strategy_review_pending",
+                    "blocking_reasons": (
+                        '["needs_strategy_formulation","needs_paper_tracking"]'
+                    ),
+                    "recommended_action": "REVIEW_FOR_ALPHA_FACTORY_STRATEGY",
+                    "live_order_effect": "read_only_no_live_order",
+                },
+                {
+                    "as_of_date": "2026-06-16",
+                    "generated_at": generated_at,
+                    "symbol": "BTC-USDT",
+                    "bridge_candidate_id": "v5.factor_bridge.display_only",
+                    "eligible_for_alpha_factory": "false",
+                    "blocking_reasons": '["forward_validation_not_passed"]',
+                    "recommended_action": "DISPLAY_ONLY_FACTOR_REVIEW",
+                    "live_order_effect": "read_only_no_live_order",
+                },
+            ]
+        ),
+    )
+
+    rows = {row["strategy_candidate"]: row for row in frame.to_dicts()}
+    factor = rows["v5.factor_bridge.core.mean_reversion_vol_adjusted_4"]
+    fast = rows[
+        "v5.fast_microstructure_bridge.orderbook_imbalance_1m.sol_usdt.risk_on.4h"
+    ]
+
+    assert set(rows) == {
+        "v5.factor_bridge.core.mean_reversion_vol_adjusted_4",
+        "v5.fast_microstructure_bridge.orderbook_imbalance_1m.sol_usdt.risk_on.4h",
+    }
+    assert factor["decision"] == "KEEP_SHADOW"
+    assert factor["recommended_mode"] == "shadow"
+    assert factor["would_enter"] is False
+    assert factor["max_paper_notional_usdt"] == 0.0
+    assert factor["max_live_notional_usdt"] == 0.0
+    assert "needs_paper_tracking" in factor["live_block_reasons"]
+    assert fast["template_family"] == "fast_microstructure_bridge"
+    assert fast["live_order_effect"] == "read_only_no_live_order"
 
 
 def test_system_acceptance_requires_expanded_reader_runs_and_daily_rows():

@@ -143,6 +143,7 @@ STRATEGY_OPPORTUNITY_ADVISORY_SCHEMA_VERSION = "strategy_opportunity_advisory.v0
 SNAPSHOT_META_DATASETS = {
     "cost_bucket_daily",
     "cost_health_daily",
+    "factor_strategy_bridge_candidates",
     "gate_decision",
     "strategy_health_daily",
     "strategy_opportunity_advisory",
@@ -3508,6 +3509,7 @@ def export_daily_pack(
             data_quality=data_quality,
             pre_export_v5=pre_export_v5,
             row_counts=snapshot.row_counts,
+            publish_warnings=warnings,
         )
     )
     members.update(_chart_members(snapshot.frames))
@@ -4353,6 +4355,7 @@ def _dataset_members(
     data_quality: dict[str, Any] | None = None,
     pre_export_v5: dict[str, Any] | None = None,
     row_counts: dict[str, int] | None = None,
+    publish_warnings: list[str] | None = None,
 ) -> dict[str, _MemberPayload]:
     market = frames.get("market_bar", pl.DataFrame())
     features = frames.get("feature_value", pl.DataFrame())
@@ -4574,6 +4577,7 @@ def _dataset_members(
         factor_forward_validation=factor_forward_validation,
         fast_microstructure_forward_test=fast_microstructure_forward_test,
     )
+    factor_strategy_bridge_candidates = factor_v2["factor_strategy_bridge_candidates"]
     opportunity_advisory = _strategy_opportunity_advisory_for_export(
         alpha_discovery_board=alpha_discovery_board,
         strategy_evidence=strategy_evidence,
@@ -4590,7 +4594,25 @@ def _dataset_members(
         alpha_factory_promotion_queue=alpha_factory_promotion,
         expanded_universe_maturity=expanded_maturity,
         bottom_zone_reversal_shadow=bottom_zone_reversal_shadow,
+        factor_strategy_bridge_candidates=factor_strategy_bridge_candidates,
     )
+    if row_counts is not None and publish_warnings is not None:
+        _publish_export_frame(
+            root,
+            frames=frames,
+            row_counts=row_counts,
+            warnings=publish_warnings,
+            dataset_name="factor_strategy_bridge_candidates",
+            frame=factor_strategy_bridge_candidates,
+        )
+        _publish_export_frame(
+            root,
+            frames=frames,
+            row_counts=row_counts,
+            warnings=publish_warnings,
+            dataset_name="strategy_opportunity_advisory",
+            frame=opportunity_advisory,
+        )
     strategy_level_dashboard = _strategy_level_dashboard_for_export(opportunity_advisory)
     gates = _gate_decisions_for_export(frames.get("gate_decision", pl.DataFrame()))
     market_pressure_score = build_market_pressure_score(
@@ -4780,7 +4802,7 @@ def _dataset_members(
         ),
         "reports/factor_strategy_bridge_candidates.csv": _csv_member(
             "reports/factor_strategy_bridge_candidates.csv",
-            factor_v2["factor_strategy_bridge_candidates"],
+            factor_strategy_bridge_candidates,
         ),
         "reports/factor_factory_summary.md": _factor_factory_summary_md(
             factor_candidates,
@@ -8419,6 +8441,7 @@ def _strategy_opportunity_advisory_for_export(
     alpha_factory_promotion_queue: pl.DataFrame | None = None,
     expanded_universe_maturity: pl.DataFrame | None = None,
     bottom_zone_reversal_shadow: pl.DataFrame | None = None,
+    factor_strategy_bridge_candidates: pl.DataFrame | None = None,
 ) -> pl.DataFrame:
     path = "reports/strategy_opportunity_advisory.csv"
     source = (
@@ -8635,6 +8658,17 @@ def _strategy_opportunity_advisory_for_export(
             source_version=source_version,
         )
     )
+    rows.extend(
+        _factor_strategy_bridge_review_opportunity_rows(
+            (
+                factor_strategy_bridge_candidates
+                if factor_strategy_bridge_candidates is not None
+                else pl.DataFrame()
+            ),
+            git_commit=git_commit,
+            source_version=source_version,
+        )
+    )
     if not rows:
         return _empty_csv_schema_frame(path)
     for row in rows:
@@ -8686,6 +8720,10 @@ def _strategy_opportunity_advisory_from_frames(
             pl.DataFrame(),
         ),
         bottom_zone_reversal_shadow=frames.get("bottom_zone_reversal_shadow", pl.DataFrame()),
+        factor_strategy_bridge_candidates=frames.get(
+            "factor_strategy_bridge_candidates",
+            pl.DataFrame(),
+        ),
     )
 
 
@@ -8840,6 +8878,94 @@ def _bottom_zone_probe_paper_opportunity_rows(
                 "slippage_coverage": None,
                 "live_block_reasons": safe_json_dumps(live_block_reasons),
                 "max_paper_notional_usdt": 5.0,
+                "max_live_notional_usdt": 0.0,
+                "live_order_effect": "read_only_no_live_order",
+            }
+        )
+    return rows
+
+
+def _factor_strategy_bridge_review_opportunity_rows(
+    bridge_candidates: pl.DataFrame,
+    *,
+    git_commit: str,
+    source_version: str,
+) -> list[dict[str, Any]]:
+    if bridge_candidates.is_empty():
+        return []
+    rows: list[dict[str, Any]] = []
+    for raw in bridge_candidates.to_dicts():
+        action = str(raw.get("recommended_action") or "").strip().upper()
+        eligible = str(raw.get("eligible_for_alpha_factory") or "").strip().lower()
+        candidate_id = str(raw.get("bridge_candidate_id") or "").strip()
+        if action != "REVIEW_FOR_ALPHA_FACTORY_STRATEGY":
+            continue
+        if eligible != "strategy_review_pending":
+            continue
+        if not candidate_id.startswith(
+            ("v5.factor_bridge.", "v5.fast_microstructure_bridge.")
+        ):
+            continue
+        symbol = normalize_symbol(raw.get("symbol")) or "ALL"
+        generated_at = _advisory_generated_at(raw)
+        horizon_hours = _optional_int(raw.get("horizon_hours"))
+        blocking_reasons = sorted(
+            {
+                *_json_listish(raw.get("blocking_reasons")),
+                "strategy_review_pending",
+                "shadow_review_only",
+                "not_live_validated",
+                "quant_lab_live_command_not_allowed",
+                "v5_local_live_not_controlled_by_quant_lab",
+            }
+        )
+        is_fast_bridge = candidate_id.startswith("v5.fast_microstructure_bridge.")
+        rows.append(
+            {
+                "as_of_ts": _advisory_as_of_ts(raw),
+                "generated_at": generated_at,
+                "expires_at": _advisory_expires_at(raw, generated_at),
+                "contract_version": V5_QUANT_LAB_CONTRACT_VERSION,
+                "schema_version": STRATEGY_OPPORTUNITY_ADVISORY_SCHEMA_VERSION,
+                "quant_lab_git_commit": git_commit,
+                "source_version": source_version,
+                "would_block_if_enabled": False,
+                "would_enter": False,
+                "no_sample_reason": "strategy_review_pending_shadow_only",
+                "strategy_id": _advisory_strategy_id(candidate_id, symbol),
+                "symbol": symbol,
+                "v5_symbol": _v5_symbol(symbol),
+                "strategy_candidate": candidate_id,
+                "decision": "KEEP_SHADOW",
+                "recommended_mode": "shadow",
+                "horizon_hours": horizon_hours,
+                "sample_count": _optional_int(raw.get("forward_sample_count")),
+                "complete_sample_count": _optional_int(raw.get("forward_sample_count")),
+                "avg_net_bps": _optional_float(raw.get("forward_cost_adjusted_score")),
+                "p25_net_bps": None,
+                "win_rate": None,
+                "cost_source_mix": "forward_validation_cost_adjusted",
+                "cost_quality": "strategy_review_pending_cost_validation",
+                "source_module": "factor_strategy_bridge",
+                "template_family": (
+                    "fast_microstructure_bridge"
+                    if is_fast_bridge
+                    else "factor_strategy_bridge"
+                ),
+                "candidate_id": candidate_id,
+                "promotion_state": "STRATEGY_REVIEW_PENDING",
+                "alpha_factory_score": None,
+                "universe_type": "v5_live_universe",
+                "expanded_universe_maturity_state": None,
+                "cost_quality_score": None,
+                "paper_ready_block_reasons": safe_json_dumps(blocking_reasons),
+                "advisory_intent": _export_advisory_intent("shadow"),
+                "paper_days": 0,
+                "entry_day_count": 0,
+                "paper_pnl_observed_count": 0,
+                "slippage_coverage": None,
+                "live_block_reasons": safe_json_dumps(blocking_reasons),
+                "max_paper_notional_usdt": 0.0,
                 "max_live_notional_usdt": 0.0,
                 "live_order_effect": "read_only_no_live_order",
             }

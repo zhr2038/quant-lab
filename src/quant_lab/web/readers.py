@@ -31,6 +31,7 @@ DATASET_PATHS = {
     "factor_evidence": Path("gold") / "factor_evidence",
     "factor_candidate": Path("gold") / "factor_candidate",
     "factor_correlation_daily": Path("gold") / "factor_correlation_daily",
+    "factor_strategy_bridge_candidates": Path("gold") / "factor_strategy_bridge_candidates",
     "cost_bucket_daily": Path("gold") / "cost_bucket_daily",
     "cost_health_daily": Path("gold") / "cost_health_daily",
     "alpha_evidence": Path("gold") / "alpha_evidence",

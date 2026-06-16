@@ -256,7 +256,7 @@ def test_alpha_factory_builds_factor_bridge_strategy_review_candidate(tmp_path):
     reasons = json.loads(queued["reasons"])
 
     assert candidate["template_name"] == "factor_strategy_bridge"
-    assert candidate["source_dataset"] == "reports/factor_strategy_bridge_candidates"
+    assert candidate["source_dataset"] == "reports/factor_strategy_bridge_candidates.csv"
     assert candidate["candidate_state"] == "RESEARCH"
     assert candidate["max_live_notional_usdt"] == 0.0
     assert params["factor_id"] == "core.mean_reversion_vol_adjusted_4"
@@ -267,6 +267,71 @@ def test_alpha_factory_builds_factor_bridge_strategy_review_candidate(tmp_path):
     assert queued["max_live_notional_usdt"] == 0.0
     assert queued["manual_live_approval_required"] is True
     assert "alpha_factory_live_disabled" in reasons
+
+
+def test_alpha_factory_reads_factor_bridge_from_latest_expert_pack(tmp_path):
+    lake = tmp_path / "lake"
+    exports = tmp_path / "exports"
+    exports.mkdir(parents=True)
+    pack_path = exports / "quant_lab_expert_pack_2026-05-24_20260524T010000+0000.zip"
+    bridge_candidate = "v5.factor_bridge.core.mean_reversion_vol_adjusted_4"
+    buffer = io.StringIO()
+    writer = csv.DictWriter(
+        buffer,
+        fieldnames=[
+            "as_of_date",
+            "factor_id",
+            "factor_family",
+            "correlation_cluster_id",
+            "symbol",
+            "regime",
+            "horizon",
+            "horizon_hours",
+            "forward_sample_count",
+            "forward_cost_adjusted_score",
+            "bridge_candidate_id",
+            "eligible_for_alpha_factory",
+            "blocking_reasons",
+            "recommended_action",
+            "live_order_effect",
+        ],
+    )
+    writer.writeheader()
+    writer.writerow(
+        {
+            "as_of_date": "2026-05-24",
+            "factor_id": "core.mean_reversion_vol_adjusted_4",
+            "factor_family": "risk_adjusted_reversal",
+            "correlation_cluster_id": "cluster_011",
+            "symbol": "SOL-USDT",
+            "regime": "TREND_UP",
+            "horizon": "8h",
+            "horizon_hours": "8",
+            "forward_sample_count": "132",
+            "forward_cost_adjusted_score": "41.027543",
+            "bridge_candidate_id": bridge_candidate,
+            "eligible_for_alpha_factory": "strategy_review_pending",
+            "blocking_reasons": '["alpha_factory_strategy_review_required"]',
+            "recommended_action": "REVIEW_FOR_ALPHA_FACTORY_STRATEGY",
+            "live_order_effect": "none_read_only_research",
+        }
+    )
+    with zipfile.ZipFile(pack_path, "w") as archive:
+        archive.writestr("reports/factor_strategy_bridge_candidates.csv", buffer.getvalue())
+
+    build_and_publish_alpha_factory(
+        lake,
+        as_of_date="2026-05-24",
+        lookback_days=30,
+        max_candidates=200,
+    )
+
+    candidates = read_parquet_dataset(lake / "gold" / "alpha_factory_candidate")
+    rows = candidates.filter(pl.col("strategy_candidate") == bridge_candidate).to_dicts()
+
+    assert rows
+    assert rows[0]["template_name"] == "factor_strategy_bridge"
+    assert rows[0]["source_dataset"] == "reports/factor_strategy_bridge_candidates.csv"
 
 
 def test_alpha_factory_reads_template_registry_enabled_flags(tmp_path):

@@ -1,6 +1,9 @@
 from __future__ import annotations
 
+import csv
+import io
 import json
+import zipfile
 from datetime import UTC, date, datetime, timedelta
 from pathlib import Path
 from typing import Any
@@ -44,6 +47,7 @@ FACTOR_VALUE_DATASET = Path("gold") / "factor_value"
 MARKET_BAR_DATASET = Path("silver") / "market_bar"
 MARKET_REGIME_DATASET = Path("gold") / "market_regime_daily"
 COST_BUCKET_DAILY_DATASET = Path("gold") / "cost_bucket_daily"
+FACTOR_BRIDGE_REPORT_MEMBER = "reports/factor_strategy_bridge_candidates.csv"
 
 ALPHA_FACTORY_CANDIDATES = frozenset([*SECOND_STAGE_CANDIDATES, "v5.alt_impulse_shadow"])
 
@@ -1289,6 +1293,10 @@ def _alpha_factory_source_summary(root: Path, day: date) -> pl.DataFrame:
 
 
 def _factor_bridge_source_summary(root: Path, day: date) -> pl.DataFrame:
+    from_latest_pack = _latest_factor_bridge_report_summary(root, day)
+    if not from_latest_pack.is_empty():
+        return from_latest_pack
+
     factor_candidates = read_parquet_dataset(root / FACTOR_CANDIDATE_DATASET)
     factor_values = read_parquet_dataset(root / FACTOR_VALUE_DATASET)
     market_bars = read_parquet_dataset(root / MARKET_BAR_DATASET)
@@ -1305,8 +1313,73 @@ def _factor_bridge_source_summary(root: Path, day: date) -> pl.DataFrame:
         paper_queue=pl.DataFrame(),
         factor_forward_validation=factor_forward,
     )
+    return _factor_bridge_rows_to_source_summary(
+        bridge.to_dicts() if not bridge.is_empty() else [],
+        day,
+        source_dataset=FACTOR_BRIDGE_REPORT_MEMBER,
+    )
+
+
+def _latest_factor_bridge_report_summary(root: Path, day: date) -> pl.DataFrame:
+    exports_root = _default_exports_root(root)
+    if not exports_root.exists():
+        return pl.DataFrame()
+    packs = sorted(
+        [
+            path
+            for path in exports_root.glob(f"quant_lab_expert_pack_{day.isoformat()}_*.zip")
+            if path.is_file()
+        ],
+        key=lambda path: path.stat().st_mtime,
+        reverse=True,
+    )
+    packs.extend(
+        sorted(
+            [
+                path
+                for path in exports_root.glob("quant_lab_expert_pack_*.zip")
+                if path.is_file() and path not in packs
+            ],
+            key=lambda path: path.stat().st_mtime,
+            reverse=True,
+        )
+    )
+    for pack in packs[:5]:
+        try:
+            with zipfile.ZipFile(pack) as archive:
+                if FACTOR_BRIDGE_REPORT_MEMBER not in archive.namelist():
+                    continue
+                rows = list(
+                    csv.DictReader(
+                        io.StringIO(
+                            archive.read(FACTOR_BRIDGE_REPORT_MEMBER).decode("utf-8")
+                        )
+                    )
+                )
+        except (OSError, zipfile.BadZipFile, KeyError, UnicodeDecodeError):
+            continue
+        summary = _factor_bridge_rows_to_source_summary(
+            rows,
+            day,
+            source_dataset=FACTOR_BRIDGE_REPORT_MEMBER,
+        )
+        if not summary.is_empty():
+            return summary
+    return pl.DataFrame()
+
+
+def _default_exports_root(root: Path) -> Path:
+    return root.parent / "exports" if root.name == "lake" else root / "exports"
+
+
+def _factor_bridge_rows_to_source_summary(
+    bridge_rows: list[dict[str, Any]],
+    day: date,
+    *,
+    source_dataset: str,
+) -> pl.DataFrame:
     rows: list[dict[str, Any]] = []
-    for row in bridge.to_dicts() if not bridge.is_empty() else []:
+    for row in bridge_rows:
         if str(row.get("recommended_action") or "") != "REVIEW_FOR_ALPHA_FACTORY_STRATEGY":
             continue
         if str(row.get("eligible_for_alpha_factory") or "") != "strategy_review_pending":
@@ -1356,7 +1429,7 @@ def _factor_bridge_source_summary(root: Path, day: date) -> pl.DataFrame:
                 "blocking_reasons": row.get("blocking_reasons"),
                 "created_at": datetime.now(UTC),
                 "source": SOURCE_NAME,
-                "source_dataset": "reports/factor_strategy_bridge_candidates",
+                "source_dataset": source_dataset,
             }
         )
     return pl.DataFrame(rows, infer_schema_length=None) if rows else pl.DataFrame()

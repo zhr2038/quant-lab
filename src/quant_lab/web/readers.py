@@ -1441,22 +1441,49 @@ def _indexed_files_for_web(path: Path) -> list[Path] | None:
         relative_dataset = str(path.relative_to(lake_root)).replace("\\", "/")
     except ValueError:
         return None
-    try:
-        index = read_parquet_dataset(lake_root / "bronze" / "lake_file_index")
-    except Exception:
+    paths_by_dataset = _web_file_index_paths_by_dataset(lake_root)
+    if not paths_by_dataset:
         return None
-    required = {"dataset", "path"}
-    if index.is_empty() or not required.issubset(set(index.columns)):
+    files = paths_by_dataset.get(relative_dataset)
+    if not files:
         return None
-    scoped = index.filter(pl.col("dataset").cast(pl.Utf8) == relative_dataset)
-    if scoped.is_empty():
-        return None
-    files = [lake_root / item for item in scoped.get_column("path").cast(pl.Utf8).to_list()]
     return sorted(
         file_path
         for file_path in files
         if file_path.is_file() and not _is_internal_lake_path(file_path)
     )
+
+
+def _web_file_index_paths_by_dataset(lake_root: Path) -> dict[str, list[Path]]:
+    cache_key = (
+        "web_file_index_paths_by_dataset",
+        str(lake_root.resolve()),
+        _lake_file_index_signature(lake_root),
+    )
+    cached = _web_cache_get(cache_key, event="web_file_index_paths_by_dataset")
+    if cached is not None:
+        return cached
+    try:
+        index = read_parquet_dataset(lake_root / "bronze" / "lake_file_index")
+    except Exception:
+        return _web_cache_set(cache_key, {})
+    required = {"dataset", "path"}
+    if index.is_empty() or not required.issubset(set(index.columns)):
+        return _web_cache_set(cache_key, {})
+    normalized = index.select(
+        [
+            pl.col("dataset").cast(pl.Utf8, strict=False).alias("dataset"),
+            pl.col("path").cast(pl.Utf8, strict=False).alias("path"),
+        ]
+    ).drop_nulls()
+    paths_by_dataset: dict[str, list[Path]] = {}
+    for row in normalized.iter_rows(named=True):
+        dataset = str(row.get("dataset") or "")
+        relative_path = str(row.get("path") or "")
+        if not dataset or not relative_path:
+            continue
+        paths_by_dataset.setdefault(dataset, []).append(lake_root / relative_path)
+    return _web_cache_set(cache_key, paths_by_dataset)
 
 
 def _infer_lake_root_from_path(path: Path) -> Path | None:

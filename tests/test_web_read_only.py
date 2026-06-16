@@ -2077,6 +2077,55 @@ def test_web_readers_use_lake_file_index_before_rglob(tmp_path, monkeypatch):
     assert warning is None
 
 
+def test_web_readers_cache_shared_lake_file_index(tmp_path, monkeypatch):
+    readers.clear_web_cache()
+    lake_root = tmp_path / "lake"
+    cost_dataset = lake_root / "gold" / "cost_bucket_daily"
+    evidence_dataset = lake_root / "gold" / "strategy_evidence"
+    write_parquet_dataset(
+        pl.DataFrame({"ts": [datetime(2026, 6, 4, tzinfo=UTC)], "cost_bps": [12.0]}),
+        cost_dataset,
+    )
+    write_parquet_dataset(
+        pl.DataFrame({"ts": [datetime(2026, 6, 4, tzinfo=UTC)], "alpha_id": ["a"]}),
+        evidence_dataset,
+    )
+    build_lake_file_index(
+        lake_root,
+        ["gold/cost_bucket_daily", "gold/strategy_evidence"],
+    )
+
+    original = readers.read_parquet_dataset
+    index_reads: list[Path] = []
+
+    def counted_read(path):
+        path_obj = Path(path)
+        if path_obj.name == "lake_file_index" and path_obj.parent.name == "bronze":
+            index_reads.append(path_obj)
+        return original(path)
+
+    def fail_rglob(_path):
+        raise AssertionError("web reader should use cached lake_file_index before rglob")
+
+    monkeypatch.setattr(readers, "read_parquet_dataset", counted_read)
+    monkeypatch.setattr(readers, "_parquet_file_candidates_rglob", fail_rglob)
+
+    cost_files, cost_warning = readers._valid_parquet_files_with_warning(
+        cost_dataset,
+        "cost_bucket_daily",
+    )
+    evidence_files, evidence_warning = readers._valid_parquet_files_with_warning(
+        evidence_dataset,
+        "strategy_evidence",
+    )
+
+    assert len(cost_files) == 1
+    assert len(evidence_files) == 1
+    assert cost_warning is None
+    assert evidence_warning is None
+    assert len(index_reads) == 1
+
+
 def test_web_file_index_stale_check_ignores_snapshot_meta_mtime(tmp_path, monkeypatch):
     readers.clear_web_cache()
     lake_root = tmp_path / "lake"

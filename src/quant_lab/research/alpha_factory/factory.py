@@ -3,6 +3,7 @@ from __future__ import annotations
 import csv
 import io
 import json
+import os
 import zipfile
 from datetime import UTC, date, datetime, timedelta
 from pathlib import Path
@@ -12,7 +13,7 @@ import polars as pl
 from pydantic import BaseModel, ConfigDict, Field
 
 from quant_lab.backtest.reports import build_factor_forward_validation
-from quant_lab.data.lake import read_parquet_dataset, write_parquet_dataset
+from quant_lab.data.lake import count_parquet_rows, read_parquet_dataset, write_parquet_dataset
 from quant_lab.factors.composite_factory import build_factor_strategy_bridge_candidates
 from quant_lab.research.second_stage_alpha_factory import (
     SECOND_STAGE_CANDIDATES,
@@ -34,6 +35,8 @@ MAX_DAILY_CANDIDATES = 200
 FACTOR_BRIDGE_TEMPLATE_FAMILY = "factor_strategy_bridge"
 FACTOR_BRIDGE_CANDIDATE_PREFIX = "v5.factor_bridge."
 FACTOR_BRIDGE_TEMPLATE_PATTERN = f"{FACTOR_BRIDGE_CANDIDATE_PREFIX}*"
+FACTOR_BRIDGE_RECOMPUTE_MAX_FACTOR_VALUE_ROWS = 250_000
+FACTOR_BRIDGE_RECOMPUTE_MAX_MARKET_BAR_ROWS = 500_000
 
 ALPHA_FACTORY_TEMPLATE_REGISTRY_DATASET = (
     Path("gold") / "alpha_factory_template_registry"
@@ -1293,6 +1296,17 @@ def _alpha_factory_source_summary(root: Path, day: date) -> pl.DataFrame:
 
 
 def _factor_bridge_source_summary(root: Path, day: date) -> pl.DataFrame:
+    input_mtime = _factor_bridge_input_latest_mtime(root)
+    from_latest_pack = _latest_factor_bridge_report_summary(
+        root,
+        day,
+        min_pack_mtime=input_mtime,
+    )
+    if not from_latest_pack.is_empty():
+        return from_latest_pack
+    if not _factor_bridge_lake_recompute_allowed(root):
+        return pl.DataFrame()
+
     factor_candidates = read_parquet_dataset(root / FACTOR_CANDIDATE_DATASET)
     factor_values = read_parquet_dataset(root / FACTOR_VALUE_DATASET)
     market_bars = read_parquet_dataset(root / MARKET_BAR_DATASET)
@@ -1320,10 +1334,17 @@ def _factor_bridge_source_summary(root: Path, day: date) -> pl.DataFrame:
         if not current.is_empty():
             return current
 
-    return _latest_factor_bridge_report_summary(root, day)
+    if input_mtime is None:
+        return _latest_factor_bridge_report_summary(root, day)
+    return pl.DataFrame()
 
 
-def _latest_factor_bridge_report_summary(root: Path, day: date) -> pl.DataFrame:
+def _latest_factor_bridge_report_summary(
+    root: Path,
+    day: date,
+    *,
+    min_pack_mtime: datetime | None = None,
+) -> pl.DataFrame:
     exports_root = _default_exports_root(root)
     if not exports_root.exists():
         return pl.DataFrame()
@@ -1348,6 +1369,13 @@ def _latest_factor_bridge_report_summary(root: Path, day: date) -> pl.DataFrame:
         )
     )
     for pack in packs[:5]:
+        pack_mtime = _path_mtime(pack)
+        if (
+            min_pack_mtime is not None
+            and pack_mtime is not None
+            and pack_mtime + timedelta(seconds=1) < min_pack_mtime
+        ):
+            continue
         try:
             with zipfile.ZipFile(pack) as archive:
                 if FACTOR_BRIDGE_REPORT_MEMBER not in archive.namelist():
@@ -1369,6 +1397,69 @@ def _latest_factor_bridge_report_summary(root: Path, day: date) -> pl.DataFrame:
         if not summary.is_empty():
             return summary
     return pl.DataFrame()
+
+
+def _factor_bridge_lake_recompute_allowed(root: Path) -> bool:
+    factor_limit = _int_env(
+        "QUANT_LAB_ALPHA_FACTORY_FACTOR_BRIDGE_RECOMPUTE_MAX_FACTOR_VALUE_ROWS",
+        FACTOR_BRIDGE_RECOMPUTE_MAX_FACTOR_VALUE_ROWS,
+    )
+    market_limit = _int_env(
+        "QUANT_LAB_ALPHA_FACTORY_FACTOR_BRIDGE_RECOMPUTE_MAX_MARKET_BAR_ROWS",
+        FACTOR_BRIDGE_RECOMPUTE_MAX_MARKET_BAR_ROWS,
+    )
+    if factor_limit <= 0 or market_limit <= 0:
+        return False
+    try:
+        return (
+            count_parquet_rows(root / FACTOR_VALUE_DATASET) <= factor_limit
+            and count_parquet_rows(root / MARKET_BAR_DATASET) <= market_limit
+        )
+    except Exception:
+        return False
+
+
+def _factor_bridge_input_latest_mtime(root: Path) -> datetime | None:
+    return _max_dt(
+        *[
+            _dataset_latest_mtime(root / dataset)
+            for dataset in (
+                FACTOR_CANDIDATE_DATASET,
+                FACTOR_VALUE_DATASET,
+                MARKET_BAR_DATASET,
+                MARKET_REGIME_DATASET,
+                COST_BUCKET_DAILY_DATASET,
+            )
+        ]
+    )
+
+
+def _dataset_latest_mtime(path: Path) -> datetime | None:
+    mtimes = [_path_mtime(item) for item in path.rglob("*.parquet")] if path.exists() else []
+    present = [item for item in mtimes if item is not None]
+    return max(present) if present else None
+
+
+def _path_mtime(path: Path) -> datetime | None:
+    try:
+        return datetime.fromtimestamp(path.stat().st_mtime, tz=UTC)
+    except OSError:
+        return None
+
+
+def _max_dt(*values: datetime | None) -> datetime | None:
+    present = [value for value in values if value is not None]
+    return max(present) if present else None
+
+
+def _int_env(name: str, default: int) -> int:
+    raw = os.environ.get(name)
+    if raw is None:
+        return default
+    try:
+        return int(raw)
+    except ValueError:
+        return default
 
 
 def _default_exports_root(root: Path) -> Path:

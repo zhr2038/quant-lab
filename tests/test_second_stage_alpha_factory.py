@@ -3,12 +3,14 @@ from __future__ import annotations
 import csv
 import io
 import json
+import os
 import zipfile
 from datetime import UTC, datetime, timedelta
 
 import polars as pl
 import pytest
 
+import quant_lab.research.alpha_factory.factory as alpha_factory_module
 from quant_lab.data.lake import read_parquet_dataset, write_parquet_dataset
 from quant_lab.export.daily import export_daily_pack
 from quant_lab.research.alpha_discovery import build_and_publish_alpha_discovery_board
@@ -336,7 +338,6 @@ def test_alpha_factory_reads_factor_bridge_from_latest_expert_pack(tmp_path):
 
 def test_alpha_factory_prefers_current_factor_bridge_over_stale_expert_pack(tmp_path):
     lake = tmp_path / "lake"
-    _write_factor_bridge_inputs(lake)
     exports = tmp_path / "exports"
     exports.mkdir(parents=True)
     stale_candidate = "v5.factor_bridge.core.stale_from_previous_pack"
@@ -384,6 +385,9 @@ def test_alpha_factory_prefers_current_factor_bridge_over_stale_expert_pack(tmp_
     pack_path = exports / "quant_lab_expert_pack_2026-05-24_20260524T010000+0000.zip"
     with zipfile.ZipFile(pack_path, "w") as archive:
         archive.writestr("reports/factor_strategy_bridge_candidates.csv", buffer.getvalue())
+    old_ts = datetime(2026, 5, 23, tzinfo=UTC).timestamp()
+    os.utime(pack_path, (old_ts, old_ts))
+    _write_factor_bridge_inputs(lake)
 
     build_and_publish_alpha_factory(
         lake,
@@ -396,6 +400,73 @@ def test_alpha_factory_prefers_current_factor_bridge_over_stale_expert_pack(tmp_
     strategy_candidates = set(candidates["strategy_candidate"].to_list())
     assert "v5.factor_bridge.core.mean_reversion_vol_adjusted_4" in strategy_candidates
     assert stale_candidate not in strategy_candidates
+
+
+def test_alpha_factory_skips_stale_factor_bridge_pack_without_large_recompute(
+    tmp_path,
+    monkeypatch,
+):
+    lake = tmp_path / "lake"
+    exports = tmp_path / "exports"
+    exports.mkdir(parents=True)
+    pack_path = exports / "quant_lab_expert_pack_2026-05-24_20260524T010000+0000.zip"
+    buffer = io.StringIO()
+    writer = csv.DictWriter(
+        buffer,
+        fieldnames=[
+            "as_of_date",
+            "factor_id",
+            "factor_family",
+            "correlation_cluster_id",
+            "symbol",
+            "regime",
+            "horizon",
+            "horizon_hours",
+            "forward_sample_count",
+            "forward_cost_adjusted_score",
+            "bridge_candidate_id",
+            "eligible_for_alpha_factory",
+            "blocking_reasons",
+            "recommended_action",
+            "live_order_effect",
+        ],
+    )
+    writer.writeheader()
+    writer.writerow(
+        {
+            "as_of_date": "2026-05-24",
+            "factor_id": "core.stale_from_previous_pack",
+            "factor_family": "stale",
+            "correlation_cluster_id": "cluster_999",
+            "symbol": "SOL-USDT",
+            "regime": "TREND_UP",
+            "horizon": "8h",
+            "horizon_hours": "8",
+            "forward_sample_count": "132",
+            "forward_cost_adjusted_score": "41.027543",
+            "bridge_candidate_id": "v5.factor_bridge.core.stale_from_previous_pack",
+            "eligible_for_alpha_factory": "strategy_review_pending",
+            "blocking_reasons": '["alpha_factory_strategy_review_required"]',
+            "recommended_action": "REVIEW_FOR_ALPHA_FACTORY_STRATEGY",
+            "live_order_effect": "none_read_only_research",
+        }
+    )
+    with zipfile.ZipFile(pack_path, "w") as archive:
+        archive.writestr("reports/factor_strategy_bridge_candidates.csv", buffer.getvalue())
+    old_ts = datetime(2026, 5, 23, tzinfo=UTC).timestamp()
+    os.utime(pack_path, (old_ts, old_ts))
+    _write_factor_bridge_inputs(lake)
+
+    monkeypatch.setattr(alpha_factory_module, "count_parquet_rows", lambda _path: 1_000_000_000)
+
+    def fail_recompute(**_kwargs):
+        raise AssertionError("large lake factor bridge recompute should be skipped")
+
+    monkeypatch.setattr(alpha_factory_module, "build_factor_forward_validation", fail_recompute)
+
+    summary = alpha_factory_module._factor_bridge_source_summary(lake, datetime(2026, 5, 24).date())
+
+    assert summary.is_empty()
 
 
 def test_alpha_factory_reads_template_registry_enabled_flags(tmp_path):

@@ -435,7 +435,7 @@ def build_fast_microstructure_strategy_candidates(
 ) -> pl.DataFrame:
     rows: list[dict[str, Any]] = []
     for row in _frame_rows(fast_microstructure_forward_test):
-        if str(row.get("recommendation") or "") != "FORWARD_VALIDATION_PASS":
+        if not _is_specific_regime_forward_pass(row):
             continue
         feature_name = str(row.get("feature_name") or "").strip()
         symbol = normalize_symbol(row.get("symbol")) or ""
@@ -480,6 +480,13 @@ def build_fast_microstructure_strategy_candidates(
     return pl.DataFrame(rows, infer_schema_length=None).select(
         FAST_MICROSTRUCTURE_STRATEGY_CANDIDATE_FIELDS
     )
+
+
+def _is_specific_regime_forward_pass(row: dict[str, Any]) -> bool:
+    if str(row.get("recommendation") or "") != "FORWARD_VALIDATION_PASS":
+        return False
+    regime = str(row.get("regime") or "").strip().upper()
+    return bool(regime) and regime != FAST_MICROSTRUCTURE_FORWARD_AGGREGATE_REGIME
 
 
 def _frame_rows(frame: pl.DataFrame | None) -> list[dict[str, Any]]:

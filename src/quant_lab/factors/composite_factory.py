@@ -9,6 +9,7 @@ from quant_lab.strategy_telemetry.sanitize import safe_json_dumps
 
 CORRELATION_CLUSTER_THRESHOLD = 0.90
 FACTOR_FACTORY_V2_LIVE_ORDER_EFFECT = "none_read_only_research"
+FAST_MICROSTRUCTURE_FORWARD_AGGREGATE_REGIME = "ALL_REGIMES"
 STRATEGY_REVIEW_BLOCKING_REASONS = [
     "needs_strategy_formulation",
     "needs_paper_tracking",
@@ -539,7 +540,7 @@ def _fast_microstructure_strategy_bridge_rows(
 ) -> list[dict[str, Any]]:
     out: list[dict[str, Any]] = []
     for row in _rows(frame):
-        if str(row.get("recommendation") or "") != "FORWARD_VALIDATION_PASS":
+        if not _is_specific_fast_microstructure_forward_pass(row):
             continue
         feature_name = str(row.get("feature_name") or "").strip()
         symbol = str(row.get("symbol") or "").strip()
@@ -573,6 +574,13 @@ def _fast_microstructure_strategy_bridge_rows(
             }
         )
     return out
+
+
+def _is_specific_fast_microstructure_forward_pass(row: dict[str, Any]) -> bool:
+    if str(row.get("recommendation") or "") != "FORWARD_VALIDATION_PASS":
+        return False
+    regime = str(row.get("regime") or "").strip().upper()
+    return bool(regime) and regime != FAST_MICROSTRUCTURE_FORWARD_AGGREGATE_REGIME
 
 
 def _fast_microstructure_as_of_date(row: dict[str, Any]) -> Any:

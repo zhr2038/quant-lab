@@ -39,6 +39,7 @@ from quant_lab.contracts.v5_quant_lab import (
 from quant_lab.costs.model import (
     LIVE_UNIVERSE_COST_COVERAGE_FIELDS,
     build_live_universe_cost_coverage,
+    evaluate_live_universe_cost_coverage,
 )
 from quant_lab.data.lake import read_parquet_dataset, write_parquet_dataset
 from quant_lab.factors.composite_factory import (
@@ -7257,6 +7258,13 @@ def _data_quality_payload(
     )
     checks.append(
         _check(
+            "live_universe_stale_actual_or_mixed_cost",
+            *_live_universe_stale_actual_or_mixed_check(costs),
+            warning_only=True,
+        )
+    )
+    checks.append(
+        _check(
             "okx_ws_universe_complete",
             *_okx_ws_universe_completeness(snapshot.frames),
             warning_only=True,
@@ -7615,6 +7623,24 @@ def _actual_cost_symbol_coverage_check(
         f"source={latest_source}+cost_bucket_daily_snapshot"
     )
     return passed, detail
+
+
+def _live_universe_stale_actual_or_mixed_check(costs: pl.DataFrame) -> tuple[bool, str]:
+    evaluation = evaluate_live_universe_cost_coverage(costs)
+    stale_symbols = [
+        str(symbol)
+        for symbol in evaluation.get("stale_actual_or_mixed_symbols", [])
+        if str(symbol).strip()
+    ]
+    coverage_rate = _float_or_none(evaluation.get("coverage_rate"))
+    coverage_text = "n/a" if coverage_rate is None else f"{coverage_rate:.2%}"
+    detail = (
+        f"stale_actual_or_mixed_symbols={sorted(stale_symbols)}; "
+        f"coverage_status={evaluation.get('coverage_status', 'UNKNOWN')}; "
+        f"coverage_rate={coverage_text}; "
+        "live_order_effect=read_only_no_live_order"
+    )
+    return not stale_symbols, detail
 
 
 def _alpha_evidence_for_export(evidence: pl.DataFrame) -> pl.DataFrame:

@@ -575,6 +575,11 @@ def test_research_validation_v3_reports_export_forward_and_cost_coverage(tmp_pat
         sol_coverage["coverage_reason"]
         == "mixed_from_live_actual_anchor_plus_symbol_public_proxy"
     )
+    checks = {check["name"]: check for check in data_quality["checks"]}
+    stale_live_cost = checks["live_universe_stale_actual_or_mixed_cost"]
+    assert stale_live_cost["status"] == "WARN"
+    assert "stale_actual_or_mixed_symbols=['SOL-USDT']" in stale_live_cost["detail"]
+    assert "coverage_status=PASS" in stale_live_cost["detail"]
     assert any(
         row["feature_name"] == "orderbook_imbalance_1m"
         and row["recommendation"] == "FORWARD_VALIDATION_PASS"

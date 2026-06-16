@@ -469,6 +469,72 @@ def test_alpha_factory_skips_stale_factor_bridge_pack_without_large_recompute(
     assert summary.is_empty()
 
 
+def test_alpha_factory_uses_pack_manifest_time_not_touched_zip_mtime(
+    tmp_path,
+    monkeypatch,
+):
+    lake = tmp_path / "lake"
+    exports = tmp_path / "exports"
+    exports.mkdir(parents=True)
+    pack_path = exports / "quant_lab_expert_pack_2026-05-24_20260524T010000+0000.zip"
+    stale_candidate = "v5.factor_bridge.core.touched_stale_pack"
+    buffer = io.StringIO()
+    writer = csv.DictWriter(
+        buffer,
+        fieldnames=[
+            "as_of_date",
+            "factor_id",
+            "factor_family",
+            "correlation_cluster_id",
+            "symbol",
+            "regime",
+            "horizon",
+            "horizon_hours",
+            "forward_sample_count",
+            "forward_cost_adjusted_score",
+            "bridge_candidate_id",
+            "eligible_for_alpha_factory",
+            "blocking_reasons",
+            "recommended_action",
+            "live_order_effect",
+        ],
+    )
+    writer.writeheader()
+    writer.writerow(
+        {
+            "as_of_date": "2026-05-24",
+            "factor_id": "core.touched_stale_pack",
+            "factor_family": "stale",
+            "correlation_cluster_id": "cluster_999",
+            "symbol": "SOL-USDT",
+            "regime": "TREND_UP",
+            "horizon": "8h",
+            "horizon_hours": "8",
+            "forward_sample_count": "132",
+            "forward_cost_adjusted_score": "41.027543",
+            "bridge_candidate_id": stale_candidate,
+            "eligible_for_alpha_factory": "strategy_review_pending",
+            "blocking_reasons": '["alpha_factory_strategy_review_required"]',
+            "recommended_action": "REVIEW_FOR_ALPHA_FACTORY_STRATEGY",
+            "live_order_effect": "none_read_only_research",
+        }
+    )
+    with zipfile.ZipFile(pack_path, "w") as archive:
+        archive.writestr(
+            "manifest.json",
+            json.dumps({"generated_at": "2026-05-23T00:00:00+00:00"}),
+        )
+        archive.writestr("reports/factor_strategy_bridge_candidates.csv", buffer.getvalue())
+    touched_ts = datetime(2026, 5, 25, tzinfo=UTC).timestamp()
+    os.utime(pack_path, (touched_ts, touched_ts))
+    _write_factor_bridge_inputs(lake)
+    monkeypatch.setattr(alpha_factory_module, "count_parquet_rows", lambda _path: 1_000_000_000)
+
+    summary = alpha_factory_module._factor_bridge_source_summary(lake, datetime(2026, 5, 24).date())
+
+    assert summary.is_empty()
+
+
 def test_alpha_factory_reads_template_registry_enabled_flags(tmp_path):
     lake = tmp_path / "lake"
     _write_market(lake)

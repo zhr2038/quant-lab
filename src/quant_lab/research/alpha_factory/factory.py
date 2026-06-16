@@ -1369,7 +1369,7 @@ def _latest_factor_bridge_report_summary(
         )
     )
     for pack in packs[:5]:
-        pack_mtime = _path_mtime(pack)
+        pack_mtime = _expert_pack_content_time(pack) or _path_mtime(pack)
         if (
             min_pack_mtime is not None
             and pack_mtime is not None
@@ -1397,6 +1397,26 @@ def _latest_factor_bridge_report_summary(
         if not summary.is_empty():
             return summary
     return pl.DataFrame()
+
+
+def _expert_pack_content_time(path: Path) -> datetime | None:
+    try:
+        with zipfile.ZipFile(path) as archive:
+            if "manifest.json" not in archive.namelist():
+                return None
+            manifest = json.loads(archive.read("manifest.json").decode("utf-8"))
+    except (OSError, zipfile.BadZipFile, KeyError, UnicodeDecodeError, json.JSONDecodeError):
+        return None
+    for field in (
+        "export_finished_at",
+        "export_generated_at",
+        "generated_at",
+        "created_at",
+    ):
+        parsed = _parse_dt(manifest.get(field))
+        if parsed is not None:
+            return parsed
+    return None
 
 
 def _factor_bridge_lake_recompute_allowed(root: Path) -> bool:

@@ -7248,6 +7248,22 @@ def _data_quality_payload(
             v5_trades=v5_trades,
         )
     )
+    private_fills_cost_passed, private_fills_cost_detail = _raw_fill_like_cost_check(
+        health_checks=health_checks,
+        health_check_name="private_fills_present_but_actual_cost_zero",
+        raw_row_label="private_fills",
+        raw_row_count=fills.height,
+        actual_rows=actual_rows,
+        mixed_rows=mixed_rows,
+    )
+    v5_trades_cost_passed, v5_trades_cost_detail = _raw_fill_like_cost_check(
+        health_checks=health_checks,
+        health_check_name="trades_present_but_not_in_cost_model",
+        raw_row_label="v5_trades",
+        raw_row_count=v5_trades.height,
+        actual_rows=actual_rows,
+        mixed_rows=mixed_rows,
+    )
     checks.append(
         _check(
             "okx_private_actual_cost_available",
@@ -7259,16 +7275,16 @@ def _data_quality_payload(
     checks.append(
         _check(
             "private_fills_present_but_actual_cost_zero",
-            health_checks.get("private_fills_present_but_actual_cost_zero", True) is not False,
-            f"private_fills={fills.height}; actual_rows={actual_rows}; mixed_rows={mixed_rows}",
+            private_fills_cost_passed,
+            private_fills_cost_detail,
             warning_only=True,
         )
     )
     checks.append(
         _check(
             "trades_present_but_not_in_cost_model",
-            health_checks.get("trades_present_but_not_in_cost_model", True) is not False,
-            f"v5_trades={v5_trades.height}; actual_rows={actual_rows}; mixed_rows={mixed_rows}",
+            v5_trades_cost_passed,
+            v5_trades_cost_detail,
             warning_only=True,
         )
     )
@@ -7663,6 +7679,30 @@ def _actual_cost_symbol_coverage_check(
         f"private_fills={fills.height}; "
         f"v5_trades={v5_trades.height}; "
         f"source={latest_source}+cost_bucket_daily_snapshot"
+    )
+    return passed, detail
+
+
+def _raw_fill_like_cost_check(
+    *,
+    health_checks: dict[str, Any],
+    health_check_name: str,
+    raw_row_label: str,
+    raw_row_count: int,
+    actual_rows: int,
+    mixed_rows: int,
+) -> tuple[bool, str]:
+    latest_health_passed = health_checks.get(health_check_name, True) is not False
+    actual_or_mixed_rows = actual_rows + mixed_rows
+    export_raw_without_latest_actual_or_mixed = raw_row_count > 0 and actual_or_mixed_rows == 0
+    passed = latest_health_passed and not export_raw_without_latest_actual_or_mixed
+    detail = (
+        f"{raw_row_label}={raw_row_count}; "
+        f"actual_rows={actual_rows}; "
+        f"mixed_rows={mixed_rows}; "
+        f"latest_health_check_passed={str(latest_health_passed).lower()}; "
+        "export_raw_rows_without_latest_actual_or_mixed="
+        f"{str(export_raw_without_latest_actual_or_mixed).lower()}"
     )
     return passed, detail
 

@@ -4453,6 +4453,10 @@ def test_export_reports_private_fills_when_actual_cost_is_zero(tmp_path):
         for warning in data_quality["warnings"]
     )
     checks = {check["name"]: check for check in data_quality["checks"]}
+    assert checks["private_fills_present_but_actual_cost_zero"]["status"] == "WARN"
+    assert "latest_health_check_passed=false" in checks[
+        "private_fills_present_but_actual_cost_zero"
+    ]["detail"]
     assert checks["actual_cost_symbol_coverage"]["status"] == "WARN"
     assert "latest_actual_or_mixed_symbols=0/" in checks["actual_cost_symbol_coverage"]["detail"]
     assert "historical_actual_or_mixed_symbols=" in checks["actual_cost_symbol_coverage"]["detail"]
@@ -4460,6 +4464,74 @@ def test_export_reports_private_fills_when_actual_cost_is_zero(tmp_path):
     assert (
         "source=computed_from_latest_cost_health+cost_bucket_daily_snapshot"
         in checks["actual_cost_symbol_coverage"]["detail"]
+    )
+
+
+def test_export_flags_raw_private_fills_even_when_latest_health_check_is_ok(tmp_path):
+    lake_root = _fixture_lake(tmp_path)
+    write_parquet_dataset(
+        pl.DataFrame(
+            [
+                {
+                    "endpoint": "/api/v5/trade/fills-history",
+                    "ingest_ts": datetime.now(UTC),
+                    "raw_json": '{"data":[]}',
+                }
+            ]
+        ),
+        lake_root / "bronze" / "okx_private_readonly" / "fills_history",
+    )
+    write_parquet_dataset(
+        pl.DataFrame(
+            [
+                {
+                    "day": "2026-05-12",
+                    "status": "WARNING",
+                    "cost_model_version": "costs-v1",
+                    "actual_rows": 0,
+                    "mixed_rows": 0,
+                    "proxy_rows": 1,
+                    "global_default_rows": 0,
+                    "fallback_ratio": 1.0,
+                    "symbols_with_actual_cost": "[]",
+                    "symbols_with_mixed_cost": "[]",
+                    "symbols_with_proxy_only": '["BNB-USDT"]',
+                    "symbols_proxy_only": '["BNB-USDT"]',
+                    "symbols_missing_cost": "[]",
+                    "actual_sample_count_by_symbol": "{}",
+                    "data_quality_checks_json": (
+                        '{"private_fills_present_but_actual_cost_zero":true}'
+                    ),
+                    "min_sample_count": 30,
+                    "warnings_json": "[]",
+                    "created_at": datetime.now(UTC),
+                }
+            ]
+        ),
+        lake_root / "gold" / "cost_health_daily",
+    )
+
+    result = export_daily_pack(
+        export_date="2026-05-12",
+        lake_root=lake_root,
+        out_dir=tmp_path / "exports",
+        profile="expert",
+        command_line=["qlab", "export-daily"],
+        pre_export_v5_refresh=False,
+    )
+
+    with zipfile.ZipFile(result.zip_path) as archive:
+        data_quality = json.loads(archive.read("data_quality.json").decode("utf-8"))
+
+    checks = {check["name"]: check for check in data_quality["checks"]}
+    private_fill_check = checks["private_fills_present_but_actual_cost_zero"]
+    assert private_fill_check["status"] == "WARN"
+    assert "private_fills=1" in private_fill_check["detail"]
+    assert "latest_health_check_passed=true" in private_fill_check["detail"]
+    assert "export_raw_rows_without_latest_actual_or_mixed=true" in private_fill_check["detail"]
+    assert any(
+        warning.startswith("private_fills_present_but_actual_cost_zero")
+        for warning in data_quality["warnings"]
     )
 
 

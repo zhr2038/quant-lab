@@ -591,6 +591,79 @@ def test_strategy_opportunity_advisory_portfolio_shadow_caps_alpha_factory_paper
     assert payload["max_live_notional_usdt"] == 0.0
 
 
+def test_strategy_opportunity_advisory_preserves_bottom_zone_paper_under_portfolio_shadow(
+    tmp_path,
+    monkeypatch,
+):
+    lake = tmp_path / "lake"
+    monkeypatch.setenv("QUANT_LAB_LAKE_ROOT", str(lake))
+    monkeypatch.delenv("QUANT_LAB_API_TOKEN", raising=False)
+    api_main._STRATEGY_OPPORTUNITY_ADVISORY_CACHE.clear()
+    api_main._STRATEGY_OPPORTUNITY_ADVISORY_RESPONSE_CACHE.clear()
+    generated = datetime.now(UTC)
+    as_of_date = generated.date().isoformat()
+    write_parquet_dataset(
+        pl.DataFrame(
+            [
+                {
+                    "as_of_ts": generated,
+                    "generated_at": generated,
+                    "expires_at": generated + timedelta(hours=1),
+                    "strategy_id": "BOTTOM_ZONE_PROBE_PAPER_V1",
+                    "strategy_candidate": "v5.bottom_zone_probe_paper",
+                    "source_module": "bottom_zone_reversal",
+                    "template_family": "bottom_zone_probe_paper",
+                    "symbol": "BTC-USDT",
+                    "decision": "PAPER_READY",
+                    "recommended_mode": "paper",
+                    "horizon_hours": 8,
+                    "sample_count": 1,
+                    "complete_sample_count": 1,
+                    "live_block_reasons": '["bottom_zone_probe_paper_only_no_live"]',
+                    "max_paper_notional_usdt": 5.0,
+                    "max_live_notional_usdt": 999.0,
+                    "live_order_effect": "read_only_no_live_order",
+                }
+            ]
+        ),
+        lake / "gold" / "strategy_opportunity_advisory",
+    )
+    write_parquet_dataset(
+        pl.DataFrame(
+            [
+                _portfolio_status_row(
+                    research_id="BOTTOM_ZONE_PROBE_PAPER_V1",
+                    strategy_candidate="v5.bottom_zone_probe_paper",
+                    status="SHADOW",
+                    as_of_date=as_of_date,
+                )
+            ]
+        ),
+        lake / "gold" / "research_portfolio_status",
+    )
+    client = TestClient(app)
+
+    full = client.get("/v1/strategy-opportunity-advisory")
+    compact = client.get(
+        "/v1/strategy-opportunity-advisory/v5-compact",
+        params={"fresh_only": "true"},
+    )
+    api_main._STRATEGY_OPPORTUNITY_ADVISORY_CACHE.clear()
+    api_main._STRATEGY_OPPORTUNITY_ADVISORY_RESPONSE_CACHE.clear()
+
+    assert full.status_code == 200
+    assert compact.status_code == 200
+    for payload in (full.json()[0], compact.json()[0]):
+        assert payload["strategy_id"] == "BOTTOM_ZONE_PROBE_PAPER_V1"
+        assert payload["strategy_candidate"] == "v5.bottom_zone_probe_paper"
+        assert payload["decision"] == "PAPER_READY"
+        assert payload["recommended_mode"] == "paper"
+        assert payload["max_paper_notional_usdt"] == 5.0
+        assert payload["max_live_notional_usdt"] == 0.0
+        assert payload["live_order_effect"] == "read_only_no_live_order"
+        assert "research_portfolio_shadow" not in payload["live_block_reasons"]
+
+
 def test_strategy_opportunity_advisory_portfolio_overlay_preserves_extension_fields(
     tmp_path,
     monkeypatch,

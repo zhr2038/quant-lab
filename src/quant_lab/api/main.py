@@ -82,6 +82,11 @@ from quant_lab.symbols import normalize_symbol
 STRATEGY_OPPORTUNITY_ADVISORY_SCHEMA_VERSION = "strategy_opportunity_advisory.v0.1"
 STRATEGY_OPPORTUNITY_ADVISORY_TTL_SECONDS = 3 * 60 * 60
 STRATEGY_OPPORTUNITY_ADVISORY_MAX_API_ROWS = 50_000
+BOTTOM_ZONE_PROBE_STRATEGY_ID = "BOTTOM_ZONE_PROBE_PAPER_V1"
+BOTTOM_ZONE_PROBE_CANDIDATES = {
+    "v5.bottom_zone_probe_paper",
+    "bottom_zone_probe_paper",
+}
 UNOBSERVABLE_TEXT_VALUES = {"", "none", "null", "nan", "not_observable", "unknown"}
 _STRATEGY_OPPORTUNITY_ADVISORY_CACHE: StrategyOpportunityAdvisoryCache[
     "StrategyOpportunityAdvisoryRow"
@@ -2364,6 +2369,8 @@ def _advisory_dict_time(row: dict[str, Any]) -> datetime:
 
 
 def _is_alpha_factory_advisory_model(row: StrategyOpportunityAdvisoryRow) -> bool:
+    if _is_bottom_zone_probe_paper_advisory(row):
+        return False
     source_module = (row.source_module or "").lower()
     if source_module in {"regime_router", "expanded_universe"}:
         return False
@@ -2379,6 +2386,8 @@ def _is_alpha_factory_advisory_model(row: StrategyOpportunityAdvisoryRow) -> boo
 
 
 def _is_alpha_factory_promotion_capped_model(row: StrategyOpportunityAdvisoryRow) -> bool:
+    if _is_bottom_zone_probe_paper_advisory(row):
+        return False
     candidate = row.strategy_candidate
     candidate_key = (
         candidate.split(":", 1)[1]
@@ -2550,6 +2559,9 @@ def _apply_research_portfolio_overrides_to_advisory_rows(
         return [row.model_copy(update={"max_live_notional_usdt": 0.0}) for row in rows]
     output: list[StrategyOpportunityAdvisoryRow] = []
     for row in rows:
+        if _is_bottom_zone_probe_paper_advisory(row):
+            output.append(row.model_copy(update={"max_live_notional_usdt": 0.0}))
+            continue
         override = portfolio_override_for_row(row.model_dump(mode="python"), overrides)
         decision, mode, reasons = portfolio_overridden_decision_mode(
             decision=row.decision,
@@ -2588,6 +2600,18 @@ def _apply_research_portfolio_overrides_to_advisory_rows(
             )
         )
     return output
+
+
+def _is_bottom_zone_probe_paper_advisory(row: StrategyOpportunityAdvisoryRow) -> bool:
+    identifiers = {
+        str(row.strategy_id or "").strip().lower(),
+        str(row.strategy_candidate or "").strip().lower(),
+        str(row.template_family or "").strip().lower(),
+    }
+    return bool(
+        BOTTOM_ZONE_PROBE_STRATEGY_ID.lower() in identifiers
+        or identifiers.intersection(BOTTOM_ZONE_PROBE_CANDIDATES)
+    )
 
 
 def _api_advisory_max_paper_notional(recommended_mode: str) -> float:

@@ -3407,6 +3407,10 @@ def test_data_quality_critical_failures_are_not_downgraded_to_warn(tmp_path):
     checks = {check["name"]: check for check in data_quality["checks"]}
     assert checks["market_bar_present"]["status"] == "FAIL"
     assert checks["market_bar_present"]["severity"] == "critical"
+    assert any(
+        failure.startswith("market_bar_present:")
+        for failure in data_quality.get("failures", [])
+    )
 
 
 def test_data_quality_marks_warn_enforce_readiness_as_warning(tmp_path, monkeypatch):
@@ -4455,6 +4459,30 @@ def test_validate_expert_pack_rejects_possible_secret(tmp_path):
 
     assert result.rejected
     assert any("possible secrets" in reason for reason in result.reasons)
+
+
+def test_validate_expert_pack_warns_on_critical_data_quality(tmp_path):
+    pack_path = tmp_path / "quant_lab_expert_pack_2026-05-11.zip"
+    with zipfile.ZipFile(pack_path, "w") as archive:
+        for member in REQUIRED_MEMBERS:
+            if member == "data_quality.json":
+                archive.writestr(
+                    member,
+                    json.dumps(
+                        {
+                            "status": "CRITICAL",
+                            "warnings": [],
+                            "failures": ["market_bar_present: rows=0"],
+                            "checks": [],
+                        }
+                    ),
+                )
+            else:
+                archive.writestr(member, _member_payload(member))
+
+    result = validate_expert_pack(pack_path)
+
+    assert "data_quality status is CRITICAL" in result.warnings
 
 
 def _fixture_lake(tmp_path) -> Path:

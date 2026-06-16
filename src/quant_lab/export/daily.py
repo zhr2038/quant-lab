@@ -3709,8 +3709,10 @@ def validate_expert_pack(path: str | Path) -> ExpertPackValidationResult:
                 manifest_files = manifest.get("files", [])
                 if isinstance(manifest_files, list) and len(manifest_files) != file_count:
                     warnings.append("manifest file count does not match zip file count")
-            if isinstance(data_quality, dict) and data_quality.get("status") == "FAIL":
-                warnings.append("data_quality status is FAIL")
+            if isinstance(data_quality, dict):
+                quality_status = str(data_quality.get("status") or "").upper()
+                if quality_status in {"CRITICAL", "FAIL"}:
+                    warnings.append(f"data_quality status is {quality_status}")
             reasons.extend(_zip_secret_reasons(archive, names))
     except zipfile.BadZipFile as exc:
         reasons.append(f"invalid zip: {exc}")
@@ -7323,6 +7325,7 @@ def _data_quality_payload(
             warnings.append(f"{check['name']}: {check['detail']}")
 
     status = _overall_quality_status(checks)
+    failures = _data_quality_failure_lines(checks)
 
     return {
         "status": status,
@@ -7331,6 +7334,7 @@ def _data_quality_payload(
         "display_timezone": DISPLAY_TIMEZONE,
         "generated_at_beijing": beijing_iso(generated_at),
         "checks": checks,
+        "failures": failures,
         "warnings": sorted(set(warnings)),
         "risk_permission": risk_quality,
         "decision_audit": decision_audit_quality,
@@ -14053,6 +14057,15 @@ def _overall_quality_status(checks: list[dict[str, Any]]) -> str:
     if any(check["status"] in {"FAIL", "WARN", "N/A"} for check in checks):
         return "WARN"
     return "PASS"
+
+
+def _data_quality_failure_lines(checks: list[dict[str, Any]]) -> list[str]:
+    failures: list[str] = []
+    for check in checks:
+        if check.get("status") != "FAIL":
+            continue
+        failures.append(f"{check.get('name')}: {check.get('detail')}")
+    return sorted(set(failures))
 
 
 def _stale_severity(stale: pl.DataFrame) -> str:

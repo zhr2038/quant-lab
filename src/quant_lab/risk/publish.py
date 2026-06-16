@@ -359,13 +359,25 @@ def _dependency_source_sha(
 ) -> str:
     import hashlib
 
+    permission_payload = permission.model_dump(mode="json")
+    permission_payload.update(
+        {
+            "strategy": strategy,
+            "version": version,
+            "telemetry_latest_ts": telemetry_latest_ts.isoformat()
+            if telemetry_latest_ts is not None
+            else "",
+        }
+    )
     digest = hashlib.sha256()
-    digest.update(str(strategy).encode("utf-8"))
-    digest.update(str(version).encode("utf-8"))
-    digest.update(str(permission.as_of_ts or permission.created_at).encode("utf-8"))
-    digest.update(str(permission.expires_at or "").encode("utf-8"))
-    digest.update(str(telemetry_latest_ts or "").encode("utf-8"))
-    digest.update("|".join(permission.reasons).encode("utf-8"))
+    digest.update(
+        json.dumps(
+            permission_payload,
+            sort_keys=True,
+            separators=(",", ":"),
+            default=str,
+        ).encode("utf-8")
+    )
     return digest.hexdigest()
 
 

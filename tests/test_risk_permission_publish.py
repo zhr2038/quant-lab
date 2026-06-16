@@ -3,9 +3,15 @@ from datetime import UTC, datetime, timedelta
 
 import polars as pl
 
-from quant_lab.contracts.models import GateDecision, GateStatus
+from quant_lab.contracts.models import (
+    GateDecision,
+    GateStatus,
+    RiskAction,
+    RiskPermission,
+    RiskPermissionStatus,
+)
 from quant_lab.data.lake import read_parquet_dataset, write_market_bars, write_parquet_dataset
-from quant_lab.risk.publish import publish_risk_permission
+from quant_lab.risk.publish import _dependency_source_sha, publish_risk_permission
 
 
 def test_publish_risk_permission_sell_only_when_cost_missing(tmp_path):
@@ -107,6 +113,59 @@ def test_publish_risk_permission_writes_idempotently(tmp_path):
     assert meta["dataset"] == "risk_permission_api_dependency_meta"
     assert meta["row_count"] == 1
     assert meta["source_sha"]
+
+
+def test_risk_permission_dependency_source_sha_covers_permission_fields():
+    now = datetime.now(UTC).replace(microsecond=0)
+    base = RiskPermission(
+        strategy="v5",
+        version="5.0.0",
+        permission=RiskAction.ALLOW,
+        allowed_modes=["paper"],
+        allowed_live_modes=[],
+        live_block_reasons=["quant_lab_live_command_not_allowed"],
+        max_gross_exposure=0.0,
+        max_single_weight=0.0,
+        cost_model_version="costs-test",
+        gate_version="default-v0.1",
+        reasons=["same_reason"],
+        created_at=now,
+        as_of_ts=now,
+        expires_at=now + timedelta(hours=1),
+        telemetry_latest_ts=now,
+        permission_status=RiskPermissionStatus.ACTIVE_ALLOW,
+        enforceable=True,
+        contract_version="risk_permission.v0.2",
+    )
+
+    base_sha = _dependency_source_sha(
+        strategy="v5",
+        version="5.0.0",
+        permission=base,
+        telemetry_latest_ts=now,
+    )
+    abort_sha = _dependency_source_sha(
+        strategy="v5",
+        version="5.0.0",
+        permission=base.model_copy(update={"permission": RiskAction.ABORT}),
+        telemetry_latest_ts=now,
+    )
+    live_mode_sha = _dependency_source_sha(
+        strategy="v5",
+        version="5.0.0",
+        permission=base.model_copy(update={"allowed_live_modes": ["live_canary"]}),
+        telemetry_latest_ts=now,
+    )
+    live_reason_sha = _dependency_source_sha(
+        strategy="v5",
+        version="5.0.0",
+        permission=base.model_copy(
+            update={"live_block_reasons": ["different_live_block_reason"]}
+        ),
+        telemetry_latest_ts=now,
+    )
+
+    assert len({base_sha, abort_sha, live_mode_sha, live_reason_sha}) == 4
 
 
 def test_publish_risk_permission_marks_active_when_telemetry_within_threshold(tmp_path):

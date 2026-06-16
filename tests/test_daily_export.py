@@ -4282,6 +4282,7 @@ def test_export_market_tables_keep_symbol_universe_visible(tmp_path):
         out_dir=tmp_path / "exports",
         profile="expert",
         command_line=["qlab", "export-daily"],
+        pre_export_v5_refresh=False,
     )
 
     with zipfile.ZipFile(result.zip_path) as archive:
@@ -4295,7 +4296,59 @@ def test_export_market_tables_keep_symbol_universe_visible(tmp_path):
 
     assert {row["symbol"] for row in trade_rows} >= {"BTC-USDT", "SOL-USDT"}
     assert {row["symbol"] for row in spread_rows} >= {"BTC-USDT", "SOL-USDT"}
-    assert "okx_ws_universe_complete: okx_ws_universe_incomplete" in data_quality["warnings"]
+    checks = {check["name"]: check for check in data_quality["checks"]}
+    assert checks["okx_ws_universe_complete"]["status"] == "WARN"
+    assert "missing=['BNB-USDT', 'ETH-USDT']" in checks["okx_ws_universe_complete"]["detail"]
+
+
+def test_okx_ws_universe_accepts_rollup_sources(tmp_path):
+    lake_root = _fixture_lake(tmp_path)
+    now = datetime.now(UTC)
+    symbols = ["BTC-USDT", "ETH-USDT", "SOL-USDT", "BNB-USDT"]
+    write_parquet_dataset(
+        pl.DataFrame(
+            [
+                {
+                    "symbol": symbol,
+                    "latest_trade_ts": now,
+                    "trade_count": 10,
+                    "size_sum": 1.0,
+                }
+                for symbol in symbols
+            ]
+        ),
+        lake_root / "silver" / "trade_activity_1m",
+    )
+    write_parquet_dataset(
+        pl.DataFrame(
+            [
+                {
+                    "symbol": symbol,
+                    "ts": now,
+                    "spread_bps": 1.0,
+                }
+                for symbol in symbols
+            ]
+        ),
+        lake_root / "silver" / "orderbook_spread_1m",
+    )
+
+    result = export_daily_pack(
+        export_date="2026-05-12",
+        lake_root=lake_root,
+        out_dir=tmp_path / "exports",
+        profile="expert",
+        command_line=["qlab", "export-daily"],
+        pre_export_v5_refresh=False,
+    )
+
+    with zipfile.ZipFile(result.zip_path) as archive:
+        data_quality = json.loads(archive.read("data_quality.json").decode("utf-8"))
+
+    checks = {check["name"]: check for check in data_quality["checks"]}
+    assert checks["okx_ws_universe_complete"]["status"] == "PASS"
+    assert "missing=[]" in checks["okx_ws_universe_complete"]["detail"]
+    assert "trade_activity_1m:4" in checks["okx_ws_universe_complete"]["detail"]
 
 
 def test_validate_expert_pack_rejects_possible_secret(tmp_path):

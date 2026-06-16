@@ -7258,8 +7258,7 @@ def _data_quality_payload(
     checks.append(
         _check(
             "okx_ws_universe_complete",
-            _okx_ws_universe_complete(snapshot.frames),
-            "okx_ws_universe_incomplete",
+            *_okx_ws_universe_completeness(snapshot.frames),
             warning_only=True,
         )
     )
@@ -12115,11 +12114,29 @@ def _row_or_payload_value(row: dict[str, Any], payload: dict[str, Any], field: s
 
 
 def _okx_ws_universe_complete(frames: dict[str, pl.DataFrame]) -> bool:
+    return _okx_ws_universe_completeness(frames)[0]
+
+
+def _okx_ws_universe_completeness(frames: dict[str, pl.DataFrame]) -> tuple[bool, str]:
     expected = {"BTC-USDT", "ETH-USDT", "SOL-USDT", "BNB-USDT"}
-    observed = _symbols(frames.get("trade_print", pl.DataFrame())) | _symbols(
-        frames.get("orderbook_snapshot", pl.DataFrame())
+    observed_by_source = {
+        "trade_print": _symbols(frames.get("trade_print", pl.DataFrame())),
+        "orderbook_snapshot": _symbols(frames.get("orderbook_snapshot", pl.DataFrame())),
+        "trade_activity_1m": _symbols(frames.get("trade_activity_1m", pl.DataFrame())),
+        "orderbook_spread_1m": _symbols(frames.get("orderbook_spread_1m", pl.DataFrame())),
+    }
+    observed = set().union(*observed_by_source.values())
+    missing = sorted(expected.difference(observed))
+    detail = (
+        f"expected={len(expected)}; "
+        f"observed={len(expected.intersection(observed))}; "
+        f"missing={missing}; "
+        "sources="
+        + ",".join(
+            f"{name}:{len(symbols)}" for name, symbols in observed_by_source.items()
+        )
     )
-    return expected.issubset(observed)
+    return not missing, detail
 
 
 def _symbols(frame: pl.DataFrame) -> set[str]:

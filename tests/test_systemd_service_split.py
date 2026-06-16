@@ -318,6 +318,7 @@ def test_daily_export_template_refreshes_v5_before_packaging():
     assert "/var/lock/quant-lab-heavy.lock" in unit
     assert "/var/lock/quant-lab-v5-telemetry-sync.lock" in unit
     assert "SKIP_DAILY_EXPORT_LOCK_BUSY" in unit
+    assert "ExecStartPre=/usr/bin/systemctl start quant-lab-v5-telemetry-sync.service" in unit
     assert (
         "ExecStartPre=/opt/quant-lab/.venv/bin/qlab publish-risk-permission "
         "--lake-root /var/lib/quant-lab/lake --strategy v5 --version 5.0.0"
@@ -339,6 +340,11 @@ def test_web_export_request_worker_is_scheduled_outside_dashboard_cgroup():
 
     assert "run-web-export-request" in service
     assert "--request-path /var/lib/quant-lab/exports/.quant_lab_web_export_request.json" in service
+    assert "PermissionsStartOnly=true" in service
+    assert (
+        "ExecStartPre=/usr/bin/systemctl start quant-lab-v5-telemetry-sync.service"
+        in service
+    )
     assert "QUANT_LAB_EXPORT_V5_MAX_PENDING_BUNDLES=1" in service
     assert "QUANT_LAB_EXPORT_V5_MAX_SCAN_BUNDLES=30" in service
     assert "MemoryMax=6G" in service

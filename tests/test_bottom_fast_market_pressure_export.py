@@ -15,6 +15,7 @@ from quant_lab.features.fast_microstructure import (
     build_fast_microstructure_features,
     build_fast_microstructure_forward_test,
     build_fast_microstructure_strategy_candidates,
+    fast_microstructure_forward_summary_md,
 )
 from quant_lab.research.bottom_zone_reversal import build_bottom_zone_reversal_shadow
 from quant_lab.research.market_pressure import build_market_pressure_score
@@ -219,6 +220,37 @@ def test_fast_microstructure_strategy_candidates_only_use_forward_pass_rows():
     assert rows[0]["data_leakage_check"] == "future_price_used_only_as_label"
     assert rows[0]["live_order_effect"] == "read_only_no_live_order"
     assert "sol_usdt" in rows[0]["candidate_strategy_id"]
+
+
+def test_fast_microstructure_summary_explains_aggregate_only_passes():
+    forward = pl.DataFrame(
+        [
+            {
+                "generated_at": "2026-06-16T00:00:00Z",
+                "feature_name": "orderbook_imbalance_5m",
+                "symbol": "SOL-USDT",
+                "regime": "ALL_REGIMES",
+                "horizon_hours": 8,
+                "sample_count": 120,
+                "rank_ic": 0.25,
+                "long_short_bps": 44.0,
+                "p25_net_bps": -10.0,
+                "hit_rate": 0.61,
+                "recent_7d_score": 0.5,
+                "lookback_bars": 2000,
+                "recommendation": "FORWARD_VALIDATION_PASS",
+                "data_leakage_check": "future_price_used_only_as_label",
+                "live_order_effect": "read_only_no_live_order",
+            }
+        ]
+    )
+
+    summary = fast_microstructure_forward_summary_md(forward)
+
+    assert "- pass_rows: 1" in summary
+    assert "- aggregate_pass_rows: 1" in summary
+    assert "- strategy_candidate_eligible_pass_rows: 0" in summary
+    assert "aggregate ALL_REGIMES passes stay validation-only" in summary
 
 
 def test_bottom_fast_microstructure_and_market_pressure_reports_export(tmp_path):

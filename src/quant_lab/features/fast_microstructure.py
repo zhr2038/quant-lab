@@ -410,6 +410,8 @@ def fast_microstructure_forward_summary_md(frame: pl.DataFrame) -> str:
     passed = [
         row for row in rows if str(row.get("recommendation") or "") == "FORWARD_VALIDATION_PASS"
     ]
+    specific_passed = [row for row in passed if _is_specific_regime_forward_pass(row)]
+    aggregate_passed = [row for row in passed if not _is_specific_regime_forward_pass(row)]
     lines = [
         "# Fast Microstructure Forward Test",
         "",
@@ -418,8 +420,15 @@ def fast_microstructure_forward_summary_md(frame: pl.DataFrame) -> str:
         "",
         f"- rows: {len(rows)}",
         f"- pass_rows: {len(passed)}",
+        f"- aggregate_pass_rows: {len(aggregate_passed)}",
+        f"- strategy_candidate_eligible_pass_rows: {len(specific_passed)}",
         "- live_order_effect: read_only_no_live_order",
     ]
+    if passed and not specific_passed:
+        lines.append(
+            "- strategy_candidate_note: aggregate ALL_REGIMES passes stay validation-only; "
+            "specific-regime passes are required before SHADOW_REVIEW candidates are emitted."
+        )
     for row in passed[:12]:
         lines.append(
             "- "

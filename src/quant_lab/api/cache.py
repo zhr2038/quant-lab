@@ -32,6 +32,7 @@ class StrategyOpportunityAdvisoryResponse:
     latest_generated_at: str
     serialize_ms: float
     created_at: datetime
+    valid_until: datetime | None = None
 
 
 @dataclass(frozen=True)
@@ -117,9 +118,20 @@ class StrategyOpportunityAdvisoryResponseCache:
         with self._lock:
             self._responses.clear()
 
-    def get(self, key: tuple[Any, ...]) -> StrategyOpportunityAdvisoryResponse | None:
+    def get(
+        self,
+        key: tuple[Any, ...],
+        *,
+        now: datetime | None = None,
+    ) -> StrategyOpportunityAdvisoryResponse | None:
         with self._lock:
-            return self._responses.get(key)
+            cached = self._responses.get(key)
+            if cached is None:
+                return None
+            if cached.valid_until is not None and (now or datetime.now(UTC)) >= cached.valid_until:
+                self._responses.pop(key, None)
+                return None
+            return cached
 
     def clear_except_source_sha(self, source_sha: str) -> None:
         with self._lock:
@@ -142,6 +154,7 @@ class StrategyOpportunityAdvisoryResponseCache:
         row_count: int,
         latest_generated_at: str,
         serialize_ms: float,
+        valid_until: datetime | None = None,
     ) -> StrategyOpportunityAdvisoryResponse:
         response = StrategyOpportunityAdvisoryResponse(
             key=key,
@@ -151,6 +164,7 @@ class StrategyOpportunityAdvisoryResponseCache:
             latest_generated_at=latest_generated_at,
             serialize_ms=serialize_ms,
             created_at=datetime.now(UTC),
+            valid_until=valid_until,
         )
         with self._lock:
             self._responses[key] = response

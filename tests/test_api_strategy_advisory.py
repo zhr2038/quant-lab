@@ -862,7 +862,7 @@ def test_strategy_opportunity_advisory_compact_filters_and_etag(tmp_path, monkey
     assert response.status_code == 200
     assert response.headers["x-quant-lab-api-cache-hit"] == "false"
     assert response.headers["x-advisory-response-cache-hit"] == "false"
-    assert int(response.headers["x-quant-lab-advisory-response-cache-size"]) == 0
+    assert int(response.headers["x-quant-lab-advisory-response-cache-size"]) == 1
     assert int(response.headers["x-quant-lab-response-bytes"]) > 0
     metrics = api_metrics_summary(lake)
     by_path = metrics["latency_by_path_ms"]["/v1/strategy-opportunity-advisory/v5-compact"]
@@ -878,7 +878,7 @@ def test_strategy_opportunity_advisory_compact_filters_and_etag(tmp_path, monkey
     assert response.headers["x-quant-lab-advisory-source-sha"]
     assert not_modified.status_code == 304
     assert not_modified.headers["etag"] == etag
-    assert not_modified.headers["x-advisory-response-cache-hit"] == "false"
+    assert not_modified.headers["x-advisory-response-cache-hit"] == "true"
 
 
 def test_strategy_opportunity_advisory_fresh_only_cache_does_not_outlive_expiry(
@@ -931,6 +931,10 @@ def test_strategy_opportunity_advisory_fresh_only_cache_does_not_outlive_expiry(
         "/v1/strategy-opportunity-advisory/v5-compact",
         params={"fresh_only": "true"},
     )
+    cached_before_expiry = client.get(
+        "/v1/strategy-opportunity-advisory/v5-compact",
+        params={"fresh_only": "true"},
+    )
     FrozenDateTime.current = base + timedelta(
         seconds=api_main.STRATEGY_OPPORTUNITY_ADVISORY_TTL_SECONDS + 60
     )
@@ -944,6 +948,9 @@ def test_strategy_opportunity_advisory_fresh_only_cache_does_not_outlive_expiry(
     assert before_expiry.status_code == 200
     assert len(before_expiry.json()) == 1
     assert before_expiry.headers["x-advisory-response-cache-hit"] == "false"
+    assert cached_before_expiry.status_code == 200
+    assert cached_before_expiry.json() == before_expiry.json()
+    assert cached_before_expiry.headers["x-advisory-response-cache-hit"] == "true"
     assert after_expiry.status_code == 200
     assert after_expiry.json() == []
     assert after_expiry.headers["x-advisory-response-cache-hit"] == "false"

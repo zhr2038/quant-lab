@@ -8,6 +8,7 @@ from pathlib import Path
 import polars as pl
 from fastapi.testclient import TestClient
 
+import quant_lab.api.main as api_main
 import quant_lab.web.bigscreen as bigscreen_module
 from quant_lab.api.main import create_app
 from quant_lab.data.lake import write_parquet_dataset
@@ -392,6 +393,7 @@ def test_bigscreen_snapshot_endpoints_return_payload(monkeypatch, tmp_path):
     clear_bigscreen_cache()
     monkeypatch.setenv("QUANT_LAB_LAKE_ROOT", str(tmp_path / "lake"))
     monkeypatch.delenv("QUANT_LAB_API_TOKEN", raising=False)
+    monkeypatch.setattr(api_main, "json", object())
     client = TestClient(create_app())
 
     protected_response = client.get("/v1/web/bigscreen-snapshot")
@@ -402,6 +404,9 @@ def test_bigscreen_snapshot_endpoints_return_payload(monkeypatch, tmp_path):
     assert protected_response.headers["content-type"] == "application/json; charset=utf-8"
     assert web_response.headers["content-type"] == "application/json; charset=utf-8"
     assert protected_response.headers["x-quant-lab-bigscreen-mode"] == "read-only"
+    assert int(protected_response.headers["x-quant-lab-response-bytes"]) == len(
+        protected_response.content
+    )
     assert protected_response.json()["mode"] == "read-only"
     assert web_response.json()["mode"] == "read-only"
 

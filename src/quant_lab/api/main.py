@@ -318,15 +318,14 @@ def create_app() -> FastAPI:
         from quant_lab.web.bigscreen import bigscreen_snapshot
 
         payload = bigscreen_snapshot(_lake_root())
-        return _utf8_json_response(
+        response = _utf8_json_response(
             payload,
             headers={
                 "X-Quant-Lab-Bigscreen-Mode": "read-only",
-                "X-Quant-Lab-Response-Bytes": str(
-                    len(json.dumps(payload, default=str).encode("utf-8"))
-                ),
             },
         )
+        response.headers["X-Quant-Lab-Response-Bytes"] = str(len(response.body or b""))
+        return response
 
     @app.get("/web-v2/snapshot")
     def web_bigscreen_snapshot_for_static_page() -> JSONResponse:
@@ -1619,6 +1618,7 @@ def _strategy_opportunity_advisory_response(
     fields: str | None = None,
     compact_for_v5: bool = False,
 ) -> Response:
+    request_now = datetime.now(UTC)
     snapshot, cache_hit, source_signature_ms = _strategy_opportunity_advisory_snapshot(lake_root)
     _STRATEGY_OPPORTUNITY_ADVISORY_RESPONSE_CACHE.clear_except_source_sha(
         snapshot.source_sha
@@ -1632,11 +1632,9 @@ def _strategy_opportunity_advisory_response(
         fields=fields,
         compact_for_v5=compact_for_v5,
     )
-    response_cache_enabled = not fresh_only
-    cached_response = (
-        _STRATEGY_OPPORTUNITY_ADVISORY_RESPONSE_CACHE.get(response_key)
-        if response_cache_enabled
-        else None
+    cached_response = _STRATEGY_OPPORTUNITY_ADVISORY_RESPONSE_CACHE.get(
+        response_key,
+        now=request_now,
     )
     if cached_response is not None:
         headers = _strategy_opportunity_advisory_response_headers(
@@ -1671,6 +1669,7 @@ def _strategy_opportunity_advisory_response(
         families=families,
         latest_only=latest_only,
         fresh_only=fresh_only,
+        now=request_now,
     )
     if compact_for_v5:
         rows = _compact_strategy_opportunity_advisory_for_v5(rows)
@@ -1684,15 +1683,15 @@ def _strategy_opportunity_advisory_response(
     serialize_ms = round((time.perf_counter() - serialize_started) * 1000.0, 3)
     etag = _advisory_etag(snapshot.source_sha, payload)
     latest_generated_text = _latest_advisory_generated_text(rows)
-    if response_cache_enabled:
-        _STRATEGY_OPPORTUNITY_ADVISORY_RESPONSE_CACHE.set(
-            response_key,
-            payload=payload,
-            etag=etag,
-            row_count=len(rows),
-            latest_generated_at=latest_generated_text,
-            serialize_ms=serialize_ms,
-        )
+    _STRATEGY_OPPORTUNITY_ADVISORY_RESPONSE_CACHE.set(
+        response_key,
+        payload=payload,
+        etag=etag,
+        row_count=len(rows),
+        latest_generated_at=latest_generated_text,
+        serialize_ms=serialize_ms,
+        valid_until=_fresh_only_response_valid_until(rows) if fresh_only else None,
+    )
     headers = _strategy_opportunity_advisory_response_headers(
         lake_root,
         row_count=len(rows),
@@ -1851,6 +1850,7 @@ def _filter_strategy_opportunity_advisory_rows(
     families: list[str] | None,
     latest_only: bool,
     fresh_only: bool,
+    now: datetime | None = None,
 ) -> list[StrategyOpportunityAdvisoryRow]:
     selected = rows
     if symbols:
@@ -1868,8 +1868,8 @@ def _filter_strategy_opportunity_advisory_rows(
             row for row in selected if _advisory_row_matches_family(row, wanted_families)
         ]
     if fresh_only:
-        now = datetime.now(UTC)
-        selected = [row for row in selected if row.expires_at >= now]
+        reference = now or datetime.now(UTC)
+        selected = [row for row in selected if row.expires_at >= reference]
     if latest_only:
         latest: dict[tuple[str, str, str, str], StrategyOpportunityAdvisoryRow] = {}
         for row in selected:
@@ -1892,6 +1892,13 @@ def _filter_strategy_opportunity_advisory_rows(
             row.horizon_hours or -1,
         ),
     )
+
+
+def _fresh_only_response_valid_until(
+    rows: list[StrategyOpportunityAdvisoryRow],
+) -> datetime | None:
+    expires_values = [row.expires_at for row in rows if row.expires_at is not None]
+    return min(expires_values) if expires_values else None
 
 
 def _compact_strategy_opportunity_advisory_for_v5(

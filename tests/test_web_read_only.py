@@ -181,6 +181,27 @@ def test_data_health_stale_datasets_use_metadata_instead_of_full_raw_reads(
     assert "stale_datasets" in summary
 
 
+def test_stale_dataset_rows_reuses_cached_snapshot_table(tmp_path, monkeypatch):
+    readers.clear_web_cache()
+    lake_root = _fixture_lake(tmp_path)
+    original = readers._dataset_snapshot
+    calls: list[str] = []
+
+    def counted_snapshot(lake_root_arg, dataset_name, **kwargs):
+        calls.append(str(dataset_name))
+        return original(lake_root_arg, dataset_name, **kwargs)
+
+    monkeypatch.setattr(readers, "_dataset_snapshot", counted_snapshot)
+
+    first = readers._stale_dataset_rows(lake_root)
+    first_call_count = len(calls)
+    second = readers._stale_dataset_rows(lake_root)
+
+    assert first_call_count > 0
+    assert len(calls) == first_call_count
+    assert first.to_dicts() == second.to_dicts()
+
+
 def test_data_health_summary_uses_lazy_market_bar_aggregates(tmp_path, monkeypatch):
     lake_root = _fixture_lake(tmp_path)
     original = readers.read_dataset_with_warning
@@ -199,6 +220,39 @@ def test_data_health_summary_uses_lazy_market_bar_aggregates(tmp_path, monkeypat
     assert summary["unclosed_bar_count"] == 0
     assert summary["latest_per_symbol"].height == 1
     assert summary["missing_bar_ratio"] == 0.0
+
+
+def test_data_health_summary_reuses_cached_market_bar_lazy_health(tmp_path, monkeypatch):
+    readers.clear_web_cache()
+    lake_root = _fixture_lake(tmp_path)
+    original = readers._scan_parquet_files
+    scan_calls: list[tuple[str, ...]] = []
+
+    def counted_scan(files):
+        file_tuple = tuple(str(path) for path in files)
+        scan_calls.append(file_tuple)
+        return original(files)
+
+    monkeypatch.setattr(readers, "_scan_parquet_files", counted_scan)
+
+    first = readers.data_health_summary(lake_root)
+    first_scan_count = len(
+        [
+            call
+            for call in scan_calls
+            if any("market_bar" in path for path in call)
+        ]
+    )
+    second = readers.data_health_summary(lake_root)
+
+    market_calls = [
+        call
+        for call in scan_calls
+        if any("market_bar" in path for path in call)
+    ]
+    assert first["latest_market_bar_ts"] == second["latest_market_bar_ts"]
+    assert first_scan_count > 0
+    assert len(market_calls) == first_scan_count
 
 
 def test_dashboard_overview_uses_lazy_market_bar_aggregates(tmp_path, monkeypatch):

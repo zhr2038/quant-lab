@@ -2195,11 +2195,24 @@ def data_health_summary(lake_root: str | Path) -> dict[str, Any]:
 
 
 def _market_bar_lazy_health(lake_root: str | Path) -> dict[str, Any]:
-    snapshot = _dataset_snapshot(lake_root, "market_bar")
     path = dataset_path_for(lake_root, "market_bar")
+    cache_key = (
+        "market_bar_lazy_health",
+        str(Path(lake_root).resolve()),
+        _web_dataset_source_signature(path),
+    )
+    cached = _web_cache_get(
+        cache_key,
+        event="market_bar_lazy_health",
+        dataset_name="market_bar",
+    )
+    if cached is not None:
+        return cached
+
+    snapshot = _dataset_snapshot(lake_root, "market_bar")
     files = _valid_parquet_files(path, invalid_files=invalid_parquet_files(path))
     if not files:
-        return {
+        return _web_cache_set(cache_key, {
             "row_count": 0,
             "warning": snapshot.warning,
             "latest_per_symbol": pl.DataFrame(),
@@ -2208,12 +2221,12 @@ def _market_bar_lazy_health(lake_root: str | Path) -> dict[str, Any]:
             "unclosed_bar_count": 0,
             "schema_violations": ["market_bar 数据集缺失或为空"],
             "latest_market_bar_ts": None,
-        }
+        })
     try:
         lazy = _scan_parquet_files(files)
         schema = lazy.collect_schema()
     except Exception as exc:
-        return {
+        return _web_cache_set(cache_key, {
             "row_count": 0,
             "warning": f"market_bar 元数据读取失败：{exc}",
             "latest_per_symbol": pl.DataFrame(),
@@ -2222,10 +2235,10 @@ def _market_bar_lazy_health(lake_root: str | Path) -> dict[str, Any]:
             "unclosed_bar_count": 0,
             "schema_violations": ["market_bar 数据集读取失败"],
             "latest_market_bar_ts": None,
-        }
+        })
 
     latest_ts = _coerce_timestamp(snapshot.freshness.get("latest_timestamp"))
-    return {
+    return _web_cache_set(cache_key, {
         "row_count": snapshot.rows,
         "warning": snapshot.warning,
         "latest_per_symbol": _latest_market_bars_lazy(lazy, schema),
@@ -2234,7 +2247,7 @@ def _market_bar_lazy_health(lake_root: str | Path) -> dict[str, Any]:
         "unclosed_bar_count": _unclosed_market_bar_count_lazy(lazy, schema),
         "schema_violations": _market_bar_schema_violations_lazy(lazy, schema),
         "latest_market_bar_ts": latest_ts,
-    }
+    })
 
 
 def okx_collector_summary(lake_root: str | Path) -> dict[str, Any]:
@@ -4896,6 +4909,16 @@ def _top_feature_anomalies(anomalies: pl.DataFrame) -> pl.DataFrame:
 
 
 def _stale_dataset_rows(lake_root: str | Path) -> pl.DataFrame:
+    root = Path(lake_root)
+    cache_key = (
+        "stale_dataset_rows",
+        str(root.resolve()),
+        _lake_file_index_signature(root),
+    )
+    cached = _web_cache_get(cache_key, event="stale_dataset_rows")
+    if cached is not None:
+        return cached
+
     rows = []
     v5_telemetry_is_current = _v5_telemetry_is_current(lake_root)
     expanded_universe_automation_is_active = _expanded_universe_automation_is_active(lake_root)
@@ -4942,8 +4965,11 @@ def _stale_dataset_rows(lake_root: str | Path) -> pl.DataFrame:
                 }
             )
     if not rows:
-        return pl.DataFrame(schema=STALE_DATASET_SCHEMA)
-    return pl.DataFrame(rows, schema=STALE_DATASET_SCHEMA, orient="row")
+        return _web_cache_set(cache_key, pl.DataFrame(schema=STALE_DATASET_SCHEMA))
+    return _web_cache_set(
+        cache_key,
+        pl.DataFrame(rows, schema=STALE_DATASET_SCHEMA, orient="row"),
+    )
 
 
 def _closed_research_keys(lake_root: str | Path) -> set[str]:

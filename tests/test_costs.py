@@ -61,6 +61,8 @@ def test_live_universe_cost_coverage_downgrades_stale_direct_to_mixed_proxy():
 
     sol = evaluation["detail_by_symbol"]["SOL-USDT"]
     assert sol["stale_actual_or_mixed"] is True
+    assert sol["latest_actual_or_mixed_created_at"] == stale.isoformat().replace("+00:00", "Z")
+    assert sol["latest_actual_or_mixed_age_sec"] == 7 * 24 * 60 * 60
     assert sol["actual_or_mixed_direct"] is False
     assert sol["mixed_proxy_eligible"] is True
     assert sol["actual_or_mixed_covered"] is True

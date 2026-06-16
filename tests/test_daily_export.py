@@ -4490,6 +4490,46 @@ def test_actual_cost_symbol_coverage_splits_latest_and_historical_context():
     assert "historical_actual_or_mixed_rows=1" in detail
 
 
+def test_live_universe_stale_actual_or_mixed_detail_lists_uncovered_symbols():
+    now = datetime.now(UTC)
+    passed, detail = daily_export_module._live_universe_stale_actual_or_mixed_check(
+        pl.DataFrame(
+            [
+                {
+                    "day": now.date().isoformat(),
+                    "symbol": "BTC-USDT",
+                    "source": "actual_fills",
+                    "sample_count": 4,
+                    "created_at": now - timedelta(days=3),
+                },
+                {
+                    "day": now.date().isoformat(),
+                    "symbol": "BTC-USDT",
+                    "source": "public_spread_proxy",
+                    "sample_count": 5000,
+                    "created_at": now,
+                },
+                {
+                    "day": now.date().isoformat(),
+                    "symbol": "ETH-USDT",
+                    "source": "public_spread_proxy",
+                    "sample_count": 5000,
+                    "created_at": now,
+                },
+            ]
+        )
+    )
+
+    assert passed is False
+    assert "stale_actual_or_mixed_symbols=['BTC-USDT']" in detail
+    assert (
+        "uncovered_actual_or_mixed_symbols=['BNB-USDT', 'BTC-USDT', "
+        "'ETH-USDT', 'SOL-USDT']"
+    ) in detail
+    assert "proxy_only_symbols=['BTC-USDT', 'ETH-USDT']" in detail
+    assert "coverage_status=WARNING" in detail
+
+
 def test_export_market_tables_keep_symbol_universe_visible(tmp_path):
     lake_root = _fixture_lake(tmp_path)
     now = datetime.now(UTC)

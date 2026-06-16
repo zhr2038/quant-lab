@@ -43,6 +43,8 @@ LIVE_UNIVERSE_COST_COVERAGE_FIELDS = [
     "slippage_bps_p75",
     "total_cost_bps_p75",
     "latest_created_at",
+    "latest_actual_or_mixed_created_at",
+    "latest_actual_or_mixed_age_sec",
     "coverage_reason",
     "actual_or_mixed_cost_coverage_live_universe",
     "target_coverage",
@@ -127,6 +129,10 @@ def evaluate_live_universe_cost_coverage(
                 "total_cost_bps_p75": _float_value(source_row, "total_cost_bps_p75"),
                 "latest_created_at": _coverage_ts(source_row),
                 "latest_actual_or_mixed_created_at": _coverage_ts(latest_actual or {}),
+                "latest_actual_or_mixed_age_sec": _coverage_age_sec(
+                    latest_actual or {},
+                    reference_time=generated,
+                ),
                 "coverage_reason": _coverage_reason(
                     direct=direct,
                     mixed_proxy_eligible=mixed_proxy_eligible,
@@ -1203,6 +1209,17 @@ def _cost_source(row: Mapping[str, Any] | None) -> str:
 def _coverage_ts(row: Mapping[str, Any]) -> str:
     ts = _row_as_of_ts(row)
     return ts.isoformat().replace("+00:00", "Z") if ts is not None else ""
+
+
+def _coverage_age_sec(
+    row: Mapping[str, Any],
+    *,
+    reference_time: datetime,
+) -> float | None:
+    ts = _row_as_of_ts(row)
+    if ts is None:
+        return None
+    return max((reference_time - ts.astimezone(UTC)).total_seconds(), 0.0)
 
 
 def _coverage_reason(

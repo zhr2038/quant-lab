@@ -7674,10 +7674,23 @@ def _live_universe_stale_actual_or_mixed_check(costs: pl.DataFrame) -> tuple[boo
         for symbol in evaluation.get("stale_actual_or_mixed_symbols", [])
         if str(symbol).strip()
     ]
+    uncovered_symbols = [
+        str(row.get("symbol"))
+        for row in evaluation.get("rows", [])
+        if str(row.get("symbol") or "").strip()
+        and not bool(row.get("actual_or_mixed_covered"))
+    ]
+    proxy_only_symbols = [
+        str(symbol)
+        for symbol in evaluation.get("proxy_only_symbols", [])
+        if str(symbol).strip()
+    ]
     coverage_rate = _float_or_none(evaluation.get("coverage_rate"))
     coverage_text = "n/a" if coverage_rate is None else f"{coverage_rate:.2%}"
     detail = (
         f"stale_actual_or_mixed_symbols={sorted(stale_symbols)}; "
+        f"uncovered_actual_or_mixed_symbols={sorted(uncovered_symbols)}; "
+        f"proxy_only_symbols={sorted(proxy_only_symbols)}; "
         f"coverage_status={evaluation.get('coverage_status', 'UNKNOWN')}; "
         f"coverage_rate={coverage_text}; "
         "live_order_effect=read_only_no_live_order"

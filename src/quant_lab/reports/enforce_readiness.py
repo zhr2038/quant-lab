@@ -145,12 +145,12 @@ def build_enforce_readiness_report(
             detail=cost_metrics["live_cost_detail"],
         ),
         _check(
-            "actual_or_mixed_cost_coverage",
-            cost_metrics["actual_or_mixed_cost_coverage"]
+            "actual_or_mixed_cost_coverage_research_universe",
+            cost_metrics["actual_or_mixed_cost_coverage_research_universe"]
             >= limits.actual_or_mixed_cost_coverage_min,
-            value=cost_metrics["actual_or_mixed_cost_coverage"],
+            value=cost_metrics["actual_or_mixed_cost_coverage_research_universe"],
             threshold=f">= {limits.actual_or_mixed_cost_coverage_min}",
-            detail=cost_metrics["coverage_detail"],
+            detail=cost_metrics["research_coverage_detail"],
             warn_only=True,
         ),
         _check(
@@ -472,6 +472,17 @@ def _cost_api_metrics(
     }
     missing_live_cost_symbols = live_symbol_set - hit_symbols
     coverage_denominator = max(len(denominator_symbols), 1)
+    research_actual_or_mixed_coverage = len(actual_or_mixed) / coverage_denominator
+    research_coverage_detail = (
+        f"research_universe_actual_or_mixed_symbols={sorted(actual_or_mixed)}; "
+        f"actual_or_mixed_live={sorted(actual_or_mixed_live)}; "
+        f"actual_or_mixed_expanded={sorted(actual_or_mixed_expanded)}; "
+        f"fresh_cost_symbols={sorted(fresh_cost_symbols)}; "
+        f"proxy_only_symbols={sorted(proxy_only)}; "
+        f"proxy_only_symbols_live={sorted(proxy_only_live)}; "
+        f"proxy_only_symbols_expanded={sorted(proxy_only_expanded)}; "
+        f"stale_actual_or_mixed_symbols={sorted(stale_actual_or_mixed)}"
+    )
     return {
         "cost_symbols_checked": symbols,
         "cost_symbols_live_universe": sorted(live_symbol_set),
@@ -485,7 +496,11 @@ def _cost_api_metrics(
         "cost_live_symbol_hit_rate": _coverage_rate(hit_symbols & live_symbol_set, live_symbol_set),
         "missing_live_cost_symbols": sorted(missing_live_cost_symbols),
         "actual_or_mixed_cost_symbol_count": len(actual_or_mixed),
-        "actual_or_mixed_cost_coverage": len(actual_or_mixed) / coverage_denominator,
+        "actual_or_mixed_cost_coverage": research_actual_or_mixed_coverage,
+        "actual_or_mixed_cost_symbol_count_research_universe": len(actual_or_mixed),
+        "actual_or_mixed_cost_coverage_research_universe": (
+            research_actual_or_mixed_coverage
+        ),
         "actual_or_mixed_cost_symbol_count_live_universe": len(actual_or_mixed_live),
         "actual_or_mixed_cost_coverage_live_universe": live_coverage["coverage_rate"],
         "actual_or_mixed_cost_symbol_count_expanded_universe": len(
@@ -515,16 +530,8 @@ def _cost_api_metrics(
             f"missing_live_cost_symbols={sorted(missing_live_cost_symbols)}; "
             f"live_universe_source={live_universe_source}"
         ),
-        "coverage_detail": (
-            f"actual_or_mixed_symbols={sorted(actual_or_mixed)}; "
-            f"actual_or_mixed_live={sorted(actual_or_mixed_live)}; "
-            f"actual_or_mixed_expanded={sorted(actual_or_mixed_expanded)}; "
-            f"fresh_cost_symbols={sorted(fresh_cost_symbols)}; "
-            f"proxy_only_symbols={sorted(proxy_only)}; "
-            f"proxy_only_symbols_live={sorted(proxy_only_live)}; "
-            f"proxy_only_symbols_expanded={sorted(proxy_only_expanded)}; "
-            f"stale_actual_or_mixed_symbols={sorted(stale_actual_or_mixed)}"
-        ),
+        "coverage_detail": research_coverage_detail,
+        "research_coverage_detail": research_coverage_detail,
         "live_coverage_detail": (
             f"actual_or_mixed_live={sorted(actual_or_mixed_live)}; "
             f"proxy_only_symbols_live={sorted(proxy_only_live)}; "
@@ -1118,6 +1125,9 @@ def _required_actions(blocked: list[str], warnings: list[str]) -> list[str]:
         "actual_or_mixed_cost_coverage": (
             "improve actual/mixed cost coverage for research and expanded symbols"
         ),
+        "actual_or_mixed_cost_coverage_research_universe": (
+            "improve actual/mixed cost coverage for research and expanded symbols"
+        ),
         "actual_or_mixed_cost_coverage_live_universe": (
             "enable OKX read-only fills/bills or V5 order lifecycle cost backfill "
             "for BTC/ETH/SOL/BNB before enforce"
@@ -1157,6 +1167,7 @@ def _csv_text(report: EnforceReadinessReport) -> str:
         "missing_live_cost_symbols",
         "live_universe_source",
         "actual_or_mixed_cost_coverage",
+        "actual_or_mixed_cost_coverage_research_universe",
         "actual_or_mixed_cost_coverage_live_universe",
         "actual_or_mixed_cost_coverage_expanded_universe",
         "proxy_only_symbols_live",
@@ -1188,6 +1199,10 @@ def _csv_text(report: EnforceReadinessReport) -> str:
         "actual_or_mixed_cost_coverage": report.metrics.get(
             "actual_or_mixed_cost_coverage",
             0.0,
+        ),
+        "actual_or_mixed_cost_coverage_research_universe": report.metrics.get(
+            "actual_or_mixed_cost_coverage_research_universe",
+            report.metrics.get("actual_or_mixed_cost_coverage", 0.0),
         ),
         "actual_or_mixed_cost_coverage_live_universe": report.metrics.get(
             "actual_or_mixed_cost_coverage_live_universe",

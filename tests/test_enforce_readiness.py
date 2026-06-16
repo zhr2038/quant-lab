@@ -457,6 +457,7 @@ def test_actual_or_mixed_coverage_ignores_stale_mixed_when_fresh_proxy_exists(
     report = build_enforce_readiness_report(lake)
 
     assert report.metrics["actual_or_mixed_cost_coverage"] == 0.5
+    assert report.metrics["actual_or_mixed_cost_coverage_research_universe"] == 0.5
     assert report.metrics["actual_or_mixed_cost_coverage_live_universe"] == 1.0
     assert report.metrics["actual_or_mixed_cost_coverage_expanded_universe"] == 0.0
     assert report.metrics["fresh_cost_symbols"] == [
@@ -576,7 +577,14 @@ def test_cost_coverage_splits_live_and_expanded_universes(tmp_path):
 
     report = build_enforce_readiness_report(lake)
 
+    assert report.readiness_status == "WARN"
+    assert report.warning_reasons == [
+        "actual_or_mixed_cost_coverage_research_universe"
+    ]
+    assert "actual_or_mixed_cost_coverage" not in report.warning_reasons
+    assert "actual_or_mixed_cost_coverage_live_universe" not in report.blocked_reasons
     assert report.metrics["actual_or_mixed_cost_coverage"] == 2 / 6
+    assert report.metrics["actual_or_mixed_cost_coverage_research_universe"] == 2 / 6
     assert report.metrics["actual_or_mixed_cost_coverage_live_universe"] == 1.0
     assert report.metrics["actual_or_mixed_cost_coverage_expanded_universe"] == 0.0
     assert report.metrics["cost_symbols_live_universe"] == [
@@ -695,6 +703,8 @@ def test_write_enforce_readiness_report_outputs_json_and_csv(tmp_path):
     assert payload["readiness_status"] == "READY"
     csv_text = (out / "v5_enforce_readiness.csv").read_text()
     assert "readiness_status" in csv_text
+    assert "actual_or_mixed_cost_coverage" in csv_text
+    assert "actual_or_mixed_cost_coverage_research_universe" in csv_text
     assert "actual_or_mixed_cost_coverage_live_universe" in csv_text
     assert "actual_or_mixed_cost_coverage_expanded_universe" in csv_text
     assert "proxy_only_symbols_expanded" in csv_text

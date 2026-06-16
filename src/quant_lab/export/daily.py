@@ -6964,6 +6964,9 @@ def _data_quality_payload(
         )
     )
     latest_candidate_quality = _latest_candidate_quality(candidate_quality)
+    candidate_required_feature_completeness = (
+        _v5_candidate_required_feature_completeness(latest_candidate_quality)
+    )
     checks.append(
         _check(
             "v5_candidate_event_present",
@@ -6988,10 +6991,10 @@ def _data_quality_payload(
     checks.append(
         _check(
             "v5_candidate_feature_completeness",
-            _v5_candidate_required_feature_completeness(latest_candidate_quality) >= 0.8,
+            candidate_required_feature_completeness >= 0.8,
             (
                 "required_feature_completeness="
-                f"{latest_candidate_quality.get('required_feature_completeness', 'n/a')}; "
+                f"{candidate_required_feature_completeness}; "
                 f"legacy_feature_completeness="
                 f"{latest_candidate_quality.get('feature_completeness', 'n/a')}"
             ),

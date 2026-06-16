@@ -119,6 +119,7 @@ def test_strategy_opportunity_advisory_contract_requires_v5_metadata():
         "would_block_if_enabled",
         "would_enter",
         "no_sample_reason",
+        "live_order_effect",
     } <= set(schema["required"])
 
 

@@ -9,6 +9,11 @@ from quant_lab.strategy_telemetry.sanitize import safe_json_dumps
 
 CORRELATION_CLUSTER_THRESHOLD = 0.90
 FACTOR_FACTORY_V2_LIVE_ORDER_EFFECT = "none_read_only_research"
+STRATEGY_REVIEW_BLOCKING_REASONS = [
+    "needs_strategy_formulation",
+    "needs_paper_tracking",
+    "needs_cost_validation",
+]
 
 FACTOR_DEDUPE_DECISION_FIELDS = [
     "as_of_date",
@@ -146,6 +151,7 @@ def build_factor_factory_v2_reports(
     evidence: pl.DataFrame,
     correlations: pl.DataFrame,
     factor_forward_validation: pl.DataFrame | None = None,
+    fast_microstructure_forward_test: pl.DataFrame | None = None,
 ) -> dict[str, pl.DataFrame]:
     dedupe = build_factor_dedupe_decision(candidates=candidates, correlations=correlations)
     leaderboard = build_factor_family_leaderboard(candidates=candidates, dedupe=dedupe)
@@ -159,6 +165,7 @@ def build_factor_factory_v2_reports(
     bridge = build_factor_strategy_bridge_candidates(
         paper_queue=paper_queue,
         factor_forward_validation=factor_forward_validation,
+        fast_microstructure_forward_test=fast_microstructure_forward_test,
     )
     return {
         "factor_dedupe_decision": dedupe,
@@ -445,6 +452,7 @@ def build_factor_strategy_bridge_candidates(
     *,
     paper_queue: pl.DataFrame,
     factor_forward_validation: pl.DataFrame | None = None,
+    fast_microstructure_forward_test: pl.DataFrame | None = None,
 ) -> pl.DataFrame:
     forward_pass_by_factor = _forward_validation_pass_by_factor(factor_forward_validation)
     forward_pass_rows_by_factor = _forward_validation_pass_rows_by_factor(
@@ -473,9 +481,9 @@ def build_factor_strategy_bridge_candidates(
             reasons.append("sample_count_insufficient")
         if not forward_passed:
             reasons.append("forward_validation_not_passed")
-        review_after_forward_pass = paper_review and forward_passed
-        if review_after_forward_pass and not reasons:
-            reasons.append("alpha_factory_strategy_review_required")
+        review_after_forward_pass = forward_passed
+        if review_after_forward_pass:
+            reasons = sorted({*reasons, *STRATEGY_REVIEW_BLOCKING_REASONS})
         eligible: bool | str = not reasons
         recommended_action = (
             "REVIEW_FOR_ALPHA_FACTORY_STRATEGY"
@@ -486,10 +494,7 @@ def build_factor_strategy_bridge_candidates(
                 else "DISPLAY_ONLY_FACTOR_REVIEW"
             )
         )
-        if (
-            recommended_action == "REVIEW_FOR_ALPHA_FACTORY_STRATEGY"
-            and reasons == ["alpha_factory_strategy_review_required"]
-        ):
+        if recommended_action == "REVIEW_FOR_ALPHA_FACTORY_STRATEGY":
             eligible = "strategy_review_pending"
         out.append(
             {
@@ -518,17 +523,89 @@ def build_factor_strategy_bridge_candidates(
                 "bridge_candidate_id": f"v5.factor_bridge.{factor_id}",
                 "eligible_for_alpha_factory": "strategy_review_pending",
                 "blocking_reasons": safe_json_dumps(
-                    [
-                        "not_in_factor_paper_review_queue",
-                        "alpha_factory_strategy_review_required",
-                    ]
+                    sorted({"not_in_factor_paper_review_queue", *STRATEGY_REVIEW_BLOCKING_REASONS})
                 ),
                 "recommended_action": "REVIEW_FOR_ALPHA_FACTORY_STRATEGY",
                 "live_order_effect": FACTOR_FACTORY_V2_LIVE_ORDER_EFFECT,
             }
         )
+    out.extend(_fast_microstructure_strategy_bridge_rows(fast_microstructure_forward_test))
     out.sort(key=_bridge_candidate_rank_key)
     return _frame(out, FACTOR_STRATEGY_BRIDGE_CANDIDATE_FIELDS)
+
+
+def _fast_microstructure_strategy_bridge_rows(
+    frame: pl.DataFrame | None,
+) -> list[dict[str, Any]]:
+    out: list[dict[str, Any]] = []
+    for row in _rows(frame):
+        if str(row.get("recommendation") or "") != "FORWARD_VALIDATION_PASS":
+            continue
+        feature_name = str(row.get("feature_name") or "").strip()
+        symbol = str(row.get("symbol") or "").strip()
+        regime = str(row.get("regime") or "").strip()
+        horizon_hours = _int(row.get("horizon_hours"))
+        if not feature_name or not symbol or not regime or horizon_hours is None:
+            continue
+        factor_id = f"fast_microstructure.{feature_name}"
+        out.append(
+            {
+                "as_of_date": _fast_microstructure_as_of_date(row),
+                "factor_id": factor_id,
+                "factor_family": "fast_microstructure",
+                "correlation_cluster_id": "fast_microstructure",
+                "symbol": symbol,
+                "regime": regime,
+                "horizon": f"{horizon_hours}h",
+                "horizon_hours": str(horizon_hours),
+                "forward_sample_count": row.get("sample_count"),
+                "forward_cost_adjusted_score": row.get("long_short_bps"),
+                "bridge_candidate_id": _fast_microstructure_bridge_candidate_id(
+                    feature_name=feature_name,
+                    symbol=symbol,
+                    regime=regime,
+                    horizon_hours=horizon_hours,
+                ),
+                "eligible_for_alpha_factory": "strategy_review_pending",
+                "blocking_reasons": safe_json_dumps(STRATEGY_REVIEW_BLOCKING_REASONS),
+                "recommended_action": "REVIEW_FOR_ALPHA_FACTORY_STRATEGY",
+                "live_order_effect": FACTOR_FACTORY_V2_LIVE_ORDER_EFFECT,
+            }
+        )
+    return out
+
+
+def _fast_microstructure_as_of_date(row: dict[str, Any]) -> Any:
+    direct = row.get("as_of_date")
+    if direct:
+        return direct
+    generated = str(row.get("generated_at") or "").strip()
+    return generated[:10] if generated else None
+
+
+def _fast_microstructure_bridge_candidate_id(
+    *,
+    feature_name: str,
+    symbol: str,
+    regime: str,
+    horizon_hours: int,
+) -> str:
+    return ".".join(
+        [
+            "v5",
+            "fast_microstructure_bridge",
+            _slug(feature_name),
+            _slug(symbol),
+            _slug(regime),
+            f"{horizon_hours}h",
+        ]
+    )
+
+
+def _slug(value: Any) -> str:
+    text = str(value or "").strip().lower().replace("-", "_")
+    out = [character if character.isalnum() else "_" for character in text]
+    return "_".join(part for part in "".join(out).split("_") if part) or "unknown"
 
 
 def _forward_validation_pass_context_by_factor(

@@ -208,6 +208,7 @@ class StrategyOpportunityAdvisoryRow(BaseModel):
     live_block_reasons: list[str] = Field(default_factory=list)
     max_paper_notional_usdt: float | None = None
     max_live_notional_usdt: float = 0.0
+    live_order_effect: str = "read_only_no_live_order"
 
 
 KNOWN_DATASETS = dataset_names()
@@ -1834,6 +1835,7 @@ def _strategy_opportunity_advisory_minimal_row(
         "live_block_reasons": row.live_block_reasons,
         "max_paper_notional_usdt": row.max_paper_notional_usdt,
         "max_live_notional_usdt": row.max_live_notional_usdt,
+        "live_order_effect": row.live_order_effect,
         "sample_count": row.sample_count,
         "complete_sample_count": row.complete_sample_count,
         "avg_net_bps": row.avg_net_bps,
@@ -2694,6 +2696,8 @@ def _strategy_opportunity_advisory_row(
         live_block_reasons=_advisory_reason_list(row.get("live_block_reasons")),
         max_paper_notional_usdt=_optional_float(row.get("max_paper_notional_usdt")),
         max_live_notional_usdt=max_live_notional,
+        live_order_effect=_text_value(row.get("live_order_effect"))
+        or "read_only_no_live_order",
     )
 
 

@@ -231,7 +231,9 @@ def test_factor_bridge_routes_forward_pass_without_regime_stability_block():
     assert row["symbol"] == "SOL-USDT"
     assert row["regime"] == "TREND_UP"
     assert row["horizon"] == "4h"
-    assert "alpha_factory_strategy_review_required" in reasons
+    assert "needs_strategy_formulation" in reasons
+    assert "needs_paper_tracking" in reasons
+    assert "needs_cost_validation" in reasons
     assert "forward_validation_not_passed" not in reasons
     assert "regime_stability_not_positive_or_missing" not in reasons
     assert row["live_order_effect"] == "none_read_only_research"
@@ -272,6 +274,9 @@ def test_factor_bridge_adds_review_row_for_forward_pass_outside_paper_queue():
     assert row["eligible_for_alpha_factory"] == "strategy_review_pending"
     assert row["recommended_action"] == "REVIEW_FOR_ALPHA_FACTORY_STRATEGY"
     assert "not_in_factor_paper_review_queue" in reasons
+    assert "needs_strategy_formulation" in reasons
+    assert "needs_paper_tracking" in reasons
+    assert "needs_cost_validation" in reasons
     assert "forward_validation_not_passed" not in reasons
     assert row["live_order_effect"] == "none_read_only_research"
 
@@ -324,6 +329,47 @@ def test_factor_bridge_aggregates_forward_pass_context_for_strategy_review():
     assert row["forward_sample_count"] == 122
     assert row["forward_cost_adjusted_score"] == 108.972432
     assert row["recommended_action"] == "REVIEW_FOR_ALPHA_FACTORY_STRATEGY"
+
+
+def test_factor_bridge_adds_fast_microstructure_pass_features_to_strategy_review():
+    fast_forward = pl.DataFrame(
+        [
+            {
+                "generated_at": "2026-06-16T00:00:00Z",
+                "feature_name": "orderbook_imbalance_1m",
+                "symbol": "BNB-USDT",
+                "regime": "ALL_REGIMES",
+                "horizon_hours": 8,
+                "sample_count": 144,
+                "rank_ic": 0.21,
+                "long_short_bps": 32.5,
+                "p25_net_bps": -12.0,
+                "hit_rate": 0.58,
+                "recommendation": "FORWARD_VALIDATION_PASS",
+                "live_order_effect": "read_only_no_live_order",
+            }
+        ]
+    )
+
+    bridge = build_factor_strategy_bridge_candidates(
+        paper_queue=pl.DataFrame(),
+        factor_forward_validation=pl.DataFrame(),
+        fast_microstructure_forward_test=fast_forward,
+    )
+    row = bridge.to_dicts()[0]
+    reasons = json.loads(row["blocking_reasons"])
+
+    assert row["factor_id"] == "fast_microstructure.orderbook_imbalance_1m"
+    assert row["factor_family"] == "fast_microstructure"
+    assert row["symbol"] == "BNB-USDT"
+    assert row["horizon"] == "8h"
+    assert row["eligible_for_alpha_factory"] == "strategy_review_pending"
+    assert row["recommended_action"] == "REVIEW_FOR_ALPHA_FACTORY_STRATEGY"
+    assert reasons == [
+        "needs_strategy_formulation",
+        "needs_paper_tracking",
+        "needs_cost_validation",
+    ]
 
 
 def test_factor_bridge_prioritizes_strategy_review_rows():

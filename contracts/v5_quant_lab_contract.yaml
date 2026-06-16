@@ -344,6 +344,7 @@ schemas:
       - live_block_reasons
       - max_paper_notional_usdt
       - max_live_notional_usdt
+      - live_order_effect
     nullable:
       - quant_lab_git_commit
       - no_sample_reason

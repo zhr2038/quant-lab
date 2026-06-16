@@ -14,6 +14,7 @@ from quant_lab.features.fast_microstructure import (
     _forward_recommendation,
     build_fast_microstructure_features,
     build_fast_microstructure_forward_test,
+    build_fast_microstructure_strategy_candidates,
 )
 from quant_lab.research.bottom_zone_reversal import build_bottom_zone_reversal_shadow
 from quant_lab.research.market_pressure import build_market_pressure_score
@@ -145,6 +146,50 @@ def test_fast_microstructure_forward_adds_all_regimes_sample_pool():
     assert trend_8h["sample_count"] == 27
     assert trend_8h["recommendation"] == "NEEDS_MORE_FORWARD_SAMPLES"
     assert aggregate_8h["live_order_effect"] == "read_only_no_live_order"
+
+
+def test_fast_microstructure_strategy_candidates_only_use_forward_pass_rows():
+    forward = pl.DataFrame(
+        [
+            {
+                "generated_at": "2026-06-16T00:00:00Z",
+                "feature_name": "orderbook_imbalance_1m",
+                "symbol": "SOL-USDT",
+                "regime": "ALL_REGIMES",
+                "horizon_hours": 8,
+                "sample_count": 120,
+                "rank_ic": 0.25,
+                "long_short_bps": 44.0,
+                "p25_net_bps": -10.0,
+                "hit_rate": 0.61,
+                "recommendation": "FORWARD_VALIDATION_PASS",
+                "live_order_effect": "read_only_no_live_order",
+            },
+            {
+                "generated_at": "2026-06-16T00:00:00Z",
+                "feature_name": "cvd_5m",
+                "symbol": "SOL-USDT",
+                "regime": "ALL_REGIMES",
+                "horizon_hours": 8,
+                "sample_count": 20,
+                "rank_ic": 0.01,
+                "long_short_bps": 4.0,
+                "p25_net_bps": -80.0,
+                "hit_rate": 0.48,
+                "recommendation": "NEEDS_MORE_FORWARD_SAMPLES",
+                "live_order_effect": "read_only_no_live_order",
+            },
+        ]
+    )
+
+    candidates = build_fast_microstructure_strategy_candidates(forward)
+    rows = candidates.to_dicts()
+
+    assert len(rows) == 1
+    assert rows[0]["feature_name"] == "orderbook_imbalance_1m"
+    assert rows[0]["recommended_stage"] == "SHADOW_REVIEW"
+    assert rows[0]["live_order_effect"] == "read_only_no_live_order"
+    assert "sol_usdt" in rows[0]["candidate_strategy_id"]
 
 
 def test_bottom_fast_microstructure_and_market_pressure_reports_export(tmp_path):

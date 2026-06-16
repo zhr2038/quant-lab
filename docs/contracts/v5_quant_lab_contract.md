@@ -60,6 +60,7 @@ Each advisory row must explicitly expose V5-consumable intent fields:
 - `would_block_if_enabled`
 - `would_enter`
 - `no_sample_reason`
+- `live_order_effect`, which must remain `read_only_no_live_order` for advisory-only rows
 
 These fields are advisory metadata only. quant-lab is not the V5 live
 commander: `risk_permission=ABORT` means quant-lab's research/advisory layer

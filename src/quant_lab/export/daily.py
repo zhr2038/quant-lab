@@ -54,8 +54,10 @@ from quant_lab.factors.composite_factory import (
 from quant_lab.features.fast_microstructure import (
     FAST_MICROSTRUCTURE_FIELDS,
     FAST_MICROSTRUCTURE_FORWARD_TEST_FIELDS,
+    FAST_MICROSTRUCTURE_STRATEGY_CANDIDATE_FIELDS,
     build_fast_microstructure_features,
     build_fast_microstructure_forward_test,
+    build_fast_microstructure_strategy_candidates,
     fast_microstructure_forward_summary_md,
 )
 from quant_lab.ops.api_metrics import api_metrics_summary
@@ -506,6 +508,7 @@ REQUIRED_MEMBERS = [
     "reports/bottom_zone_reversal_summary.md",
     "reports/fast_microstructure_features.csv",
     "reports/fast_microstructure_forward_test.csv",
+    "reports/fast_microstructure_strategy_candidates.csv",
     "reports/fast_microstructure_forward_summary.md",
     "reports/market_pressure_score.csv",
     "reports/market_pressure_summary.md",
@@ -1349,6 +1352,7 @@ CSV_SCHEMAS: dict[str, list[str]] = {
         "live_block_reasons",
         "max_paper_notional_usdt",
         "max_live_notional_usdt",
+        "live_order_effect",
     ],
     "reports/v5_local_live_vs_quant_lab_shadow.csv": [
         "generated_at",
@@ -1548,6 +1552,9 @@ CSV_SCHEMAS: dict[str, list[str]] = {
     "reports/bottom_zone_reversal_shadow.csv": BOTTOM_ZONE_FIELDS,
     "reports/fast_microstructure_features.csv": FAST_MICROSTRUCTURE_FIELDS,
     "reports/fast_microstructure_forward_test.csv": FAST_MICROSTRUCTURE_FORWARD_TEST_FIELDS,
+    "reports/fast_microstructure_strategy_candidates.csv": (
+        FAST_MICROSTRUCTURE_STRATEGY_CANDIDATE_FIELDS
+    ),
     "reports/market_pressure_score.csv": MARKET_PRESSURE_FIELDS,
     "reports/risk_on_multi_buy_shadow.csv": [
         "generated_at",
@@ -4363,12 +4370,6 @@ def _dataset_members(
         market_regime=market_regime,
         cost_bucket_daily=costs,
     )
-    factor_v2 = build_factor_factory_v2_reports(
-        candidates=factor_candidates,
-        evidence=factor_evidence,
-        correlations=factor_correlations,
-        factor_forward_validation=factor_forward_validation,
-    )
     live_universe_cost_coverage = build_live_universe_cost_coverage(costs)
     cost_health = frames.get("cost_health_daily", pl.DataFrame())
     evidence = _alpha_evidence_for_export(frames.get("alpha_evidence", pl.DataFrame()))
@@ -4529,24 +4530,6 @@ def _dataset_members(
     late_breakout_failure_shadow = _late_breakout_failure_shadow_for_export(
         post_impulse_overextension_shadow
     )
-    opportunity_advisory = _strategy_opportunity_advisory_for_export(
-        alpha_discovery_board=alpha_discovery_board,
-        strategy_evidence=strategy_evidence,
-        paper_proposals=paper_proposals,
-        risk_permissions=risk,
-        cost_health=cost_health,
-        paper_daily=paper_daily,
-        paper_slippage=paper_slippage,
-        research_portfolio=research_portfolio,
-        entry_quality_advisory=entry_quality_advisory,
-        regime_strategy_advisory=regime_strategy_advisory,
-        risk_on_multi_buy_shadow=risk_on_multi_buy_shadow,
-        alpha_factory_results=frames.get("alpha_factory_result", pl.DataFrame()),
-        alpha_factory_promotion_queue=alpha_factory_promotion,
-        expanded_universe_maturity=expanded_maturity,
-    )
-    strategy_level_dashboard = _strategy_level_dashboard_for_export(opportunity_advisory)
-    gates = _gate_decisions_for_export(frames.get("gate_decision", pl.DataFrame()))
     trades = _normalize_symbol_frame(
         _prefer_frame(
             frames.get("trade_activity_1m", pl.DataFrame()),
@@ -4571,17 +4554,46 @@ def _dataset_members(
         trade_activity_1m=trades,
         generated_at=datetime.now(UTC),
     )
-    market_pressure_score = build_market_pressure_score(
-        bottom_zone_reversal_shadow=bottom_zone_reversal_shadow,
-        fast_microstructure_features=fast_microstructure_features,
-        generated_at=datetime.now(UTC),
-    )
     fast_microstructure_forward_test = build_fast_microstructure_forward_test(
         market_bars=market,
         orderbook_spread_1m=books,
         trade_activity_1m=trades,
         market_regime=market_regime,
         cost_bucket_daily=costs,
+        generated_at=datetime.now(UTC),
+    )
+    fast_microstructure_strategy_candidates = build_fast_microstructure_strategy_candidates(
+        fast_microstructure_forward_test
+    )
+    factor_v2 = build_factor_factory_v2_reports(
+        candidates=factor_candidates,
+        evidence=factor_evidence,
+        correlations=factor_correlations,
+        factor_forward_validation=factor_forward_validation,
+        fast_microstructure_forward_test=fast_microstructure_forward_test,
+    )
+    opportunity_advisory = _strategy_opportunity_advisory_for_export(
+        alpha_discovery_board=alpha_discovery_board,
+        strategy_evidence=strategy_evidence,
+        paper_proposals=paper_proposals,
+        risk_permissions=risk,
+        cost_health=cost_health,
+        paper_daily=paper_daily,
+        paper_slippage=paper_slippage,
+        research_portfolio=research_portfolio,
+        entry_quality_advisory=entry_quality_advisory,
+        regime_strategy_advisory=regime_strategy_advisory,
+        risk_on_multi_buy_shadow=risk_on_multi_buy_shadow,
+        alpha_factory_results=frames.get("alpha_factory_result", pl.DataFrame()),
+        alpha_factory_promotion_queue=alpha_factory_promotion,
+        expanded_universe_maturity=expanded_maturity,
+        bottom_zone_reversal_shadow=bottom_zone_reversal_shadow,
+    )
+    strategy_level_dashboard = _strategy_level_dashboard_for_export(opportunity_advisory)
+    gates = _gate_decisions_for_export(frames.get("gate_decision", pl.DataFrame()))
+    market_pressure_score = build_market_pressure_score(
+        bottom_zone_reversal_shadow=bottom_zone_reversal_shadow,
+        fast_microstructure_features=fast_microstructure_features,
         generated_at=datetime.now(UTC),
     )
     v5_health = frames.get("strategy_health_daily", pl.DataFrame())
@@ -4956,6 +4968,10 @@ def _dataset_members(
         "reports/fast_microstructure_forward_test.csv": _csv_member(
             "reports/fast_microstructure_forward_test.csv",
             fast_microstructure_forward_test,
+        ),
+        "reports/fast_microstructure_strategy_candidates.csv": _csv_member(
+            "reports/fast_microstructure_strategy_candidates.csv",
+            fast_microstructure_strategy_candidates,
         ),
         "reports/fast_microstructure_forward_summary.md": fast_microstructure_forward_summary_md(
             fast_microstructure_forward_test
@@ -8398,6 +8414,7 @@ def _strategy_opportunity_advisory_for_export(
     alpha_factory_results: pl.DataFrame | None = None,
     alpha_factory_promotion_queue: pl.DataFrame | None = None,
     expanded_universe_maturity: pl.DataFrame | None = None,
+    bottom_zone_reversal_shadow: pl.DataFrame | None = None,
 ) -> pl.DataFrame:
     path = "reports/strategy_opportunity_advisory.csv"
     source = (
@@ -8603,8 +8620,21 @@ def _strategy_opportunity_advisory_for_export(
             source_version=source_version,
         )
     )
+    rows.extend(
+        _bottom_zone_probe_paper_opportunity_rows(
+            (
+                bottom_zone_reversal_shadow
+                if bottom_zone_reversal_shadow is not None
+                else pl.DataFrame()
+            ),
+            git_commit=git_commit,
+            source_version=source_version,
+        )
+    )
     if not rows:
         return _empty_csv_schema_frame(path)
+    for row in rows:
+        row.setdefault("live_order_effect", "read_only_no_live_order")
     rows = _apply_alpha_factory_promotion_overrides(rows, alpha_factory_promotions)
     rows = _apply_research_portfolio_overrides(rows, portfolio_overrides)
     rows = _dedupe_strategy_opportunity_rows_by_logical_key(rows)
@@ -8651,6 +8681,7 @@ def _strategy_opportunity_advisory_from_frames(
             "expanded_universe_candidate_maturity",
             pl.DataFrame(),
         ),
+        bottom_zone_reversal_shadow=frames.get("bottom_zone_reversal_shadow", pl.DataFrame()),
     )
 
 
@@ -8731,6 +8762,82 @@ def _expanded_universe_paper_opportunity_rows(
                     _optional_float(raw.get("max_paper_notional_usdt")) or 100.0
                 ),
                 "max_live_notional_usdt": 0.0,
+            }
+        )
+    return rows
+
+
+def _bottom_zone_probe_paper_opportunity_rows(
+    bottom_zone_reversal_shadow: pl.DataFrame,
+    *,
+    git_commit: str,
+    source_version: str,
+) -> list[dict[str, Any]]:
+    if bottom_zone_reversal_shadow.is_empty():
+        return []
+    rows: list[dict[str, Any]] = []
+    seen: set[str] = set()
+    for raw in bottom_zone_reversal_shadow.to_dicts():
+        state = str(raw.get("bottom_zone_state") or "").strip().upper()
+        if state != "BOTTOM_PROBE_ALLOWED":
+            continue
+        if _optional_bool(raw.get("would_probe_paper")) is False:
+            continue
+        symbol = normalize_symbol(raw.get("symbol"))
+        if not symbol or symbol in seen:
+            continue
+        seen.add(symbol)
+        generated_at = _advisory_generated_at(raw)
+        live_block_reasons = [
+            "bottom_zone_probe_paper_only_no_live",
+            "bottom_zone_reversal_research_only",
+            "quant_lab_live_command_not_allowed",
+            "v5_local_live_not_controlled_by_quant_lab",
+        ]
+        rows.append(
+            {
+                "as_of_ts": _advisory_as_of_ts(raw),
+                "generated_at": generated_at,
+                "expires_at": _advisory_expires_at(raw, generated_at),
+                "contract_version": V5_QUANT_LAB_CONTRACT_VERSION,
+                "schema_version": STRATEGY_OPPORTUNITY_ADVISORY_SCHEMA_VERSION,
+                "quant_lab_git_commit": git_commit,
+                "source_version": source_version,
+                "would_block_if_enabled": False,
+                "would_enter": True,
+                "no_sample_reason": None,
+                "strategy_id": "BOTTOM_ZONE_PROBE_PAPER_V1",
+                "symbol": symbol,
+                "v5_symbol": _v5_symbol(symbol),
+                "strategy_candidate": "v5.bottom_zone_probe_paper",
+                "decision": "PAPER_READY",
+                "recommended_mode": "paper",
+                "horizon_hours": 24,
+                "sample_count": None,
+                "complete_sample_count": None,
+                "avg_net_bps": _optional_float(raw.get("bounce_probability_4h")),
+                "p25_net_bps": None,
+                "win_rate": None,
+                "cost_source_mix": "public_microstructure_proxy",
+                "cost_quality": "bottom_zone_public_proxy",
+                "source_module": "bottom_zone_reversal",
+                "template_family": "bottom_zone_probe_paper",
+                "candidate_id": f"BOTTOM_ZONE_PROBE_PAPER_V1:{symbol}",
+                "promotion_state": "PAPER_REVIEW",
+                "alpha_factory_score": _optional_float(raw.get("bottom_zone_score")),
+                "universe_type": "v5_live_universe",
+                "expanded_universe_maturity_state": "PAPER_READY",
+                "cost_quality_score": None,
+                "paper_ready_block_reasons": safe_json_dumps([]),
+                "advisory_intent": "paper_shadow",
+                "paper_days": 0,
+                "entry_day_count": 0,
+                "paper_pnl_observed_count": 0,
+                "slippage_coverage": None,
+                "live_block_reasons": safe_json_dumps(live_block_reasons),
+                "max_paper_notional_usdt": 5.0,
+                "max_live_notional_usdt": 0.0,
+                "live_order_effect": "read_only_no_live_order",
             }
         )
     return rows
@@ -11106,6 +11213,8 @@ def _is_alpha_factory_advisory_row(row: dict[str, Any]) -> bool:
         return False
     if source_module == "expanded_universe":
         return False
+    if source_module == "bottom_zone_reversal":
+        return False
     template_family = str(row.get("template_family") or "").strip()
     return (
         candidate in ALPHA_FACTORY_CANDIDATES
@@ -11124,6 +11233,8 @@ def _is_alpha_factory_promotion_capped_row(row: dict[str, Any]) -> bool:
     )
     source_module = str(row.get("source_module") or "").strip().lower()
     if source_module == "expanded_universe":
+        return False
+    if source_module == "bottom_zone_reversal":
         return False
     template_family = str(row.get("template_family") or "").strip()
     return (

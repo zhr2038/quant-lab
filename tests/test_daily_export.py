@@ -249,6 +249,7 @@ def test_export_daily_pack_writes_required_members(tmp_path):
         assert "reports/live_universe_cost_coverage.csv" in names
         assert "reports/v5_candidate_feature_completeness_by_strategy.csv" in names
         assert "reports/fast_microstructure_forward_test.csv" in names
+        assert "reports/fast_microstructure_strategy_candidates.csv" in names
         assert "reports/fast_microstructure_forward_summary.md" in names
         assert "diagnostics/export_timing.csv" in names
         assert "diagnostics/export_timing.json" in names
@@ -535,6 +536,15 @@ def test_research_validation_v3_reports_export_forward_and_cost_coverage(tmp_pat
                 )
             )
         )
+        fast_candidate_rows = list(
+            csv.DictReader(
+                io.StringIO(
+                    archive.read("reports/fast_microstructure_strategy_candidates.csv").decode(
+                        "utf-8"
+                    )
+                )
+            )
+        )
         data_quality = json.loads(archive.read("data_quality.json").decode("utf-8"))
 
     assert any(
@@ -586,6 +596,12 @@ def test_research_validation_v3_reports_export_forward_and_cost_coverage(tmp_pat
         and row["lookback_bars"] == "2000"
         and float(row["build_elapsed_ms"]) >= 0.0
         for row in fast_rows
+    )
+    assert any(
+        row["feature_name"] == "orderbook_imbalance_1m"
+        and row["recommended_stage"] == "SHADOW_REVIEW"
+        and row["live_order_effect"] == "read_only_no_live_order"
+        for row in fast_candidate_rows
     )
 
 
@@ -880,8 +896,48 @@ def test_strategy_opportunity_advisory_adds_hype_wld_expanded_paper_rows():
     assert hype["would_enter"] is True
     assert hype["max_paper_notional_usdt"] == 25.0
     assert hype["max_live_notional_usdt"] == 0.0
+    assert hype["live_order_effect"] == "read_only_no_live_order"
     assert wld["strategy_candidate"] == "v5.expanded_universe_wld_paper"
     assert wld["max_live_notional_usdt"] == 0.0
+
+
+def test_strategy_opportunity_advisory_adds_bottom_zone_probe_paper_row():
+    generated_at = datetime(2026, 6, 16, 10, tzinfo=UTC)
+    frame = daily_export_module._strategy_opportunity_advisory_for_export(
+        alpha_discovery_board=pl.DataFrame(),
+        strategy_evidence=pl.DataFrame(),
+        paper_proposals=pl.DataFrame(),
+        risk_permissions=pl.DataFrame(),
+        cost_health=pl.DataFrame(),
+        paper_daily=pl.DataFrame(),
+        paper_slippage=pl.DataFrame(),
+        bottom_zone_reversal_shadow=pl.DataFrame(
+            [
+                {
+                    "generated_at": generated_at,
+                    "symbol": "BNB-USDT",
+                    "ts_utc": generated_at,
+                    "bottom_zone_state": "BOTTOM_PROBE_ALLOWED",
+                    "would_probe_paper": True,
+                    "bottom_zone_score": 0.78,
+                    "bounce_probability_4h": 0.78,
+                    "live_order_effect": "read_only_no_live_order",
+                }
+            ]
+        ),
+    )
+
+    row = frame.to_dicts()[0]
+
+    assert row["strategy_id"] == "BOTTOM_ZONE_PROBE_PAPER_V1"
+    assert row["strategy_candidate"] == "v5.bottom_zone_probe_paper"
+    assert row["symbol"] == "BNB-USDT"
+    assert row["decision"] == "PAPER_READY"
+    assert row["recommended_mode"] == "paper"
+    assert row["would_enter"] is True
+    assert row["max_paper_notional_usdt"] > 0
+    assert row["max_live_notional_usdt"] == 0.0
+    assert row["live_order_effect"] == "read_only_no_live_order"
 
 
 def test_system_acceptance_requires_expanded_reader_runs_and_daily_rows():
@@ -3323,6 +3379,7 @@ def test_export_empty_csv_members_have_fixed_headers(tmp_path):
             "reports/candidate_paper_ready.csv",
             "reports/factor_forward_validation.csv",
             "reports/fast_microstructure_forward_test.csv",
+            "reports/fast_microstructure_strategy_candidates.csv",
             "reports/live_universe_cost_coverage.csv",
             "v5/v5_candidate_events.csv",
             "v5/v5_btc_probe_entry_quality_audit.csv",

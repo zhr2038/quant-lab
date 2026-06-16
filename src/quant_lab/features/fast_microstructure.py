@@ -98,6 +98,19 @@ FAST_MICROSTRUCTURE_FORWARD_TEST_FIELDS = [
     "data_leakage_check",
     "live_order_effect",
 ]
+FAST_MICROSTRUCTURE_STRATEGY_CANDIDATE_FIELDS = [
+    "feature_name",
+    "symbol",
+    "regime",
+    "horizon_hours",
+    "rank_ic",
+    "long_short_bps",
+    "p25_net_bps",
+    "hit_rate",
+    "candidate_strategy_id",
+    "recommended_stage",
+    "live_order_effect",
+]
 
 
 def build_fast_microstructure_features(
@@ -405,6 +418,89 @@ def fast_microstructure_forward_summary_md(frame: pl.DataFrame) -> str:
     return "\n".join(lines) + "\n"
 
 
+def build_fast_microstructure_strategy_candidates(
+    fast_microstructure_forward_test: pl.DataFrame | None,
+) -> pl.DataFrame:
+    rows: list[dict[str, Any]] = []
+    for row in _frame_rows(fast_microstructure_forward_test):
+        if str(row.get("recommendation") or "") != "FORWARD_VALIDATION_PASS":
+            continue
+        feature_name = str(row.get("feature_name") or "").strip()
+        symbol = normalize_symbol(row.get("symbol")) or ""
+        regime = str(row.get("regime") or "").strip()
+        horizon_hours = _int(row.get("horizon_hours"))
+        if not feature_name or not symbol or not regime or horizon_hours is None:
+            continue
+        rows.append(
+            {
+                "feature_name": feature_name,
+                "symbol": symbol,
+                "regime": regime,
+                "horizon_hours": horizon_hours,
+                "rank_ic": _round(_float(row.get("rank_ic"))),
+                "long_short_bps": _round(_float(row.get("long_short_bps"))),
+                "p25_net_bps": _round(_float(row.get("p25_net_bps"))),
+                "hit_rate": _round(_float(row.get("hit_rate"))),
+                "candidate_strategy_id": _fast_strategy_candidate_id(
+                    feature_name=feature_name,
+                    symbol=symbol,
+                    regime=regime,
+                    horizon_hours=horizon_hours,
+                ),
+                "recommended_stage": "SHADOW_REVIEW",
+                "live_order_effect": "read_only_no_live_order",
+            }
+        )
+    if not rows:
+        return pl.DataFrame(
+            schema={field: pl.Utf8 for field in FAST_MICROSTRUCTURE_STRATEGY_CANDIDATE_FIELDS}
+        )
+    rows.sort(key=_fast_strategy_candidate_rank_key)
+    return pl.DataFrame(rows, infer_schema_length=None).select(
+        FAST_MICROSTRUCTURE_STRATEGY_CANDIDATE_FIELDS
+    )
+
+
+def _frame_rows(frame: pl.DataFrame | None) -> list[dict[str, Any]]:
+    if frame is None or frame.is_empty():
+        return []
+    return frame.to_dicts()
+
+
+def _fast_strategy_candidate_id(
+    *,
+    feature_name: str,
+    symbol: str,
+    regime: str,
+    horizon_hours: int,
+) -> str:
+    return ".".join(
+        [
+            "v5",
+            "fast_microstructure",
+            _slug(feature_name),
+            _slug(symbol),
+            _slug(regime),
+            f"{horizon_hours}h",
+        ]
+    )
+
+
+def _slug(value: Any) -> str:
+    text = str(value or "").strip().lower().replace("-", "_")
+    out = [character if character.isalnum() else "_" for character in text]
+    return "_".join(part for part in "".join(out).split("_") if part) or "unknown"
+
+
+def _fast_strategy_candidate_rank_key(row: dict[str, Any]) -> tuple[str, str, int, str]:
+    return (
+        str(row.get("symbol") or ""),
+        str(row.get("regime") or ""),
+        _int(row.get("horizon_hours")) or 0,
+        str(row.get("feature_name") or ""),
+    )
+
+
 def _empty_frame() -> pl.DataFrame:
     return pl.DataFrame(schema={field: pl.Utf8 for field in FAST_MICROSTRUCTURE_FIELDS})
 
@@ -503,6 +599,11 @@ def _float(value: Any) -> float | None:
     if not math.isfinite(number):
         return None
     return number
+
+
+def _int(value: Any) -> int | None:
+    number = _float(value)
+    return int(number) if number is not None else None
 
 
 def _window_rows(rows: list[dict[str, Any]], ts: datetime, *, minutes: int) -> list[dict[str, Any]]:

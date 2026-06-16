@@ -149,7 +149,7 @@ def test_fast_microstructure_forward_adds_all_regimes_sample_pool():
     assert aggregate_8h["live_order_effect"] == "read_only_no_live_order"
 
 
-def test_fast_microstructure_strategy_candidates_only_use_forward_pass_rows():
+def test_fast_microstructure_strategy_candidates_label_aggregate_passes_validation_only():
     forward = pl.DataFrame(
         [
             {
@@ -209,17 +209,24 @@ def test_fast_microstructure_strategy_candidates_only_use_forward_pass_rows():
     candidates = build_fast_microstructure_strategy_candidates(forward)
     rows = candidates.to_dicts()
 
-    assert len(rows) == 1
-    assert rows[0]["feature_name"] == "orderbook_imbalance_1m"
-    assert rows[0]["generated_at"] == "2026-06-16T00:00:00Z"
-    assert rows[0]["forward_sample_count"] == 120
-    assert rows[0]["recent_7d_score"] == 0.5
-    assert rows[0]["lookback_bars"] == 2000
-    assert rows[0]["recommended_stage"] == "SHADOW_REVIEW"
-    assert "needs_paper_tracking" in rows[0]["review_blocking_reasons"]
-    assert rows[0]["data_leakage_check"] == "future_price_used_only_as_label"
-    assert rows[0]["live_order_effect"] == "read_only_no_live_order"
-    assert "sol_usdt" in rows[0]["candidate_strategy_id"]
+    assert len(rows) == 2
+    by_regime = {row["regime"]: row for row in rows}
+    specific = by_regime["SIDEWAYS"]
+    aggregate = by_regime["ALL_REGIMES"]
+    assert specific["feature_name"] == "orderbook_imbalance_1m"
+    assert specific["generated_at"] == "2026-06-16T00:00:00Z"
+    assert specific["forward_sample_count"] == 120
+    assert specific["recent_7d_score"] == 0.5
+    assert specific["lookback_bars"] == 2000
+    assert specific["recommended_stage"] == "SHADOW_REVIEW"
+    assert "needs_paper_tracking" in specific["review_blocking_reasons"]
+    assert specific["data_leakage_check"] == "future_price_used_only_as_label"
+    assert specific["live_order_effect"] == "read_only_no_live_order"
+    assert "sol_usdt" in specific["candidate_strategy_id"]
+    assert aggregate["feature_name"] == "orderbook_imbalance_5m"
+    assert aggregate["recommended_stage"] == "VALIDATION_ONLY"
+    assert "needs_specific_regime_validation" in aggregate["review_blocking_reasons"]
+    assert aggregate["live_order_effect"] == "read_only_no_live_order"
 
 
 def test_fast_microstructure_summary_explains_aggregate_only_passes():

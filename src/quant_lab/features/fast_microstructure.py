@@ -123,6 +123,10 @@ FAST_MICROSTRUCTURE_STRATEGY_REVIEW_BLOCKING_REASONS = (
     "needs_paper_tracking",
     "needs_cost_validation",
 )
+FAST_MICROSTRUCTURE_AGGREGATE_REVIEW_BLOCKING_REASONS = (
+    *FAST_MICROSTRUCTURE_STRATEGY_REVIEW_BLOCKING_REASONS,
+    "needs_specific_regime_validation",
+)
 
 
 def build_fast_microstructure_features(
@@ -444,7 +448,7 @@ def build_fast_microstructure_strategy_candidates(
 ) -> pl.DataFrame:
     rows: list[dict[str, Any]] = []
     for row in _frame_rows(fast_microstructure_forward_test):
-        if not _is_specific_regime_forward_pass(row):
+        if str(row.get("recommendation") or "") != "FORWARD_VALIDATION_PASS":
             continue
         feature_name = str(row.get("feature_name") or "").strip()
         symbol = normalize_symbol(row.get("symbol")) or ""
@@ -452,6 +456,12 @@ def build_fast_microstructure_strategy_candidates(
         horizon_hours = _int(row.get("horizon_hours"))
         if not feature_name or not symbol or not regime or horizon_hours is None:
             continue
+        aggregate_only = regime.upper() == FAST_MICROSTRUCTURE_FORWARD_AGGREGATE_REGIME
+        blocking_reasons = (
+            FAST_MICROSTRUCTURE_AGGREGATE_REVIEW_BLOCKING_REASONS
+            if aggregate_only
+            else FAST_MICROSTRUCTURE_STRATEGY_REVIEW_BLOCKING_REASONS
+        )
         rows.append(
             {
                 "generated_at": row.get("generated_at"),
@@ -472,9 +482,9 @@ def build_fast_microstructure_strategy_candidates(
                     regime=regime,
                     horizon_hours=horizon_hours,
                 ),
-                "recommended_stage": "SHADOW_REVIEW",
+                "recommended_stage": "VALIDATION_ONLY" if aggregate_only else "SHADOW_REVIEW",
                 "review_blocking_reasons": json.dumps(
-                    list(FAST_MICROSTRUCTURE_STRATEGY_REVIEW_BLOCKING_REASONS),
+                    list(blocking_reasons),
                     separators=(",", ":"),
                 ),
                 "data_leakage_check": row.get("data_leakage_check") or "",

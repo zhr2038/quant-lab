@@ -1293,31 +1293,34 @@ def _alpha_factory_source_summary(root: Path, day: date) -> pl.DataFrame:
 
 
 def _factor_bridge_source_summary(root: Path, day: date) -> pl.DataFrame:
-    from_latest_pack = _latest_factor_bridge_report_summary(root, day)
-    if not from_latest_pack.is_empty():
-        return from_latest_pack
-
     factor_candidates = read_parquet_dataset(root / FACTOR_CANDIDATE_DATASET)
     factor_values = read_parquet_dataset(root / FACTOR_VALUE_DATASET)
     market_bars = read_parquet_dataset(root / MARKET_BAR_DATASET)
-    if factor_candidates.is_empty() or factor_values.is_empty() or market_bars.is_empty():
-        return pl.DataFrame()
-    factor_forward = build_factor_forward_validation(
-        factor_candidates=factor_candidates,
-        factor_values=factor_values,
-        market_bars=market_bars,
-        market_regime=read_parquet_dataset(root / MARKET_REGIME_DATASET),
-        cost_bucket_daily=read_parquet_dataset(root / COST_BUCKET_DAILY_DATASET),
-    )
-    bridge = build_factor_strategy_bridge_candidates(
-        paper_queue=pl.DataFrame(),
-        factor_forward_validation=factor_forward,
-    )
-    return _factor_bridge_rows_to_source_summary(
-        bridge.to_dicts() if not bridge.is_empty() else [],
-        day,
-        source_dataset=FACTOR_BRIDGE_REPORT_MEMBER,
-    )
+    if (
+        not factor_candidates.is_empty()
+        and not factor_values.is_empty()
+        and not market_bars.is_empty()
+    ):
+        factor_forward = build_factor_forward_validation(
+            factor_candidates=factor_candidates,
+            factor_values=factor_values,
+            market_bars=market_bars,
+            market_regime=read_parquet_dataset(root / MARKET_REGIME_DATASET),
+            cost_bucket_daily=read_parquet_dataset(root / COST_BUCKET_DAILY_DATASET),
+        )
+        bridge = build_factor_strategy_bridge_candidates(
+            paper_queue=pl.DataFrame(),
+            factor_forward_validation=factor_forward,
+        )
+        current = _factor_bridge_rows_to_source_summary(
+            bridge.to_dicts() if not bridge.is_empty() else [],
+            day,
+            source_dataset=FACTOR_BRIDGE_REPORT_MEMBER,
+        )
+        if not current.is_empty():
+            return current
+
+    return _latest_factor_bridge_report_summary(root, day)
 
 
 def _latest_factor_bridge_report_summary(root: Path, day: date) -> pl.DataFrame:

@@ -38,6 +38,7 @@ from quant_lab.contracts.v5_quant_lab import (
 )
 from quant_lab.costs.calibrate import PRIVATE_COST_LOOKBACK_DAYS
 from quant_lab.costs.model import (
+    DEFAULT_LIVE_UNIVERSE_SYMBOLS,
     LIVE_UNIVERSE_COST_COVERAGE_FIELDS,
     build_live_universe_cost_coverage,
     evaluate_live_universe_cost_coverage,
@@ -9043,7 +9044,7 @@ def _bottom_zone_probe_paper_opportunity_rows(
                 "candidate_id": f"BOTTOM_ZONE_PROBE_PAPER_V1:{symbol}",
                 "promotion_state": "PAPER_REVIEW",
                 "alpha_factory_score": _optional_float(raw.get("bottom_zone_score")),
-                "universe_type": "v5_live_universe",
+                "universe_type": _v5_universe_type(symbol),
                 "expanded_universe_maturity_state": "PAPER_READY",
                 "cost_quality_score": None,
                 "paper_ready_block_reasons": safe_json_dumps([]),
@@ -9059,6 +9060,11 @@ def _bottom_zone_probe_paper_opportunity_rows(
             }
         )
     return rows
+
+
+def _v5_universe_type(symbol: str) -> str:
+    live_symbols = {normalize_symbol(item) for item in DEFAULT_LIVE_UNIVERSE_SYMBOLS}
+    return "v5_live_universe" if normalize_symbol(symbol) in live_symbols else "expanded_paper"
 
 
 def _factor_strategy_bridge_review_opportunity_rows(

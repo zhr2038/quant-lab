@@ -1007,22 +1007,39 @@ def test_strategy_opportunity_advisory_adds_bottom_zone_probe_paper_row():
                     "bottom_zone_score": 0.78,
                     "bounce_probability_4h": 0.78,
                     "live_order_effect": "read_only_no_live_order",
-                }
+                },
+                {
+                    "generated_at": generated_at,
+                    "symbol": "TON-USDT",
+                    "ts_utc": generated_at,
+                    "bottom_zone_state": "BOTTOM_PROBE_ALLOWED",
+                    "would_probe_paper": True,
+                    "bottom_zone_score": 0.81,
+                    "bounce_probability_4h": 0.81,
+                    "live_order_effect": "read_only_no_live_order",
+                },
             ]
         ),
     )
 
-    row = frame.to_dicts()[0]
+    rows = {row["symbol"]: row for row in frame.to_dicts()}
+    row = rows["BNB-USDT"]
+    expanded = rows["TON-USDT"]
 
     assert row["strategy_id"] == "BOTTOM_ZONE_PROBE_PAPER_V1"
     assert row["strategy_candidate"] == "v5.bottom_zone_probe_paper"
     assert row["symbol"] == "BNB-USDT"
+    assert row["universe_type"] == "v5_live_universe"
     assert row["decision"] == "PAPER_READY"
     assert row["recommended_mode"] == "paper"
     assert row["would_enter"] is True
     assert row["max_paper_notional_usdt"] > 0
     assert row["max_live_notional_usdt"] == 0.0
     assert row["live_order_effect"] == "read_only_no_live_order"
+    assert expanded["universe_type"] == "expanded_paper"
+    assert expanded["recommended_mode"] == "paper"
+    assert expanded["max_live_notional_usdt"] == 0.0
+    assert expanded["live_order_effect"] == "read_only_no_live_order"
 
 
 def test_strategy_opportunity_advisory_adds_bridge_review_shadow_rows():

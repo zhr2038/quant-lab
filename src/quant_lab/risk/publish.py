@@ -26,6 +26,11 @@ MARKET_BAR_DATASET = Path("silver") / "market_bar"
 V5_GATE_COMPLIANCE_DATASET = Path("gold") / "v5_gate_compliance_daily"
 STRATEGY_HEALTH_DAILY_DATASET = Path("gold") / "strategy_health_daily"
 DEFAULT_TELEMETRY_STALE_THRESHOLD_SECONDS = 90 * 60
+ACTIVE_PERMISSION_STATUSES = {
+    RiskPermissionStatus.ACTIVE_ALLOW.value,
+    RiskPermissionStatus.ACTIVE_SELL_ONLY.value,
+    RiskPermissionStatus.ACTIVE_ABORT.value,
+}
 
 RISK_PERMISSION_SCHEMA = {
     "schema_version": pl.Utf8,
@@ -106,15 +111,12 @@ def publish_risk_permission(
         cost_health=cost_health,
         data_health=data_health,
     )
-    permission = apply_risk_advisory_context(
-        permission,
-        build_risk_advisory_context(
-            root,
-            gate_decisions=gate_decisions,
-            data_health=data_health,
-            cost_health=cost_health,
-            telemetry_reasons=telemetry_reasons,
-        ),
+    advisory_context = build_risk_advisory_context(
+        root,
+        gate_decisions=gate_decisions,
+        data_health=data_health,
+        cost_health=cost_health,
+        telemetry_reasons=telemetry_reasons,
     )
     permission = annotate_risk_permission(
         permission,
@@ -122,6 +124,7 @@ def publish_risk_permission(
         as_of_ts=datetime.now(UTC),
         threshold_seconds=DEFAULT_TELEMETRY_STALE_THRESHOLD_SECONDS,
     )
+    permission = apply_risk_advisory_context(permission, advisory_context)
     frame = pl.DataFrame(
         [risk_permission_row(permission)],
         schema=RISK_PERMISSION_SCHEMA,
@@ -599,7 +602,8 @@ def permission_status(
 
 
 def is_permission_status_enforceable(status: str | RiskPermissionStatus | None) -> bool:
-    return str(status or "").startswith("ACTIVE_")
+    value = status.value if hasattr(status, "value") else str(status or "")
+    return value in ACTIVE_PERMISSION_STATUSES
 
 
 def risk_permission_row(permission: RiskPermission) -> dict[str, Any]:

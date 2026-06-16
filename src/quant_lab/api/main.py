@@ -940,14 +940,15 @@ def _compute_live_permission_with_context(
             cost_health=cost_health,
             telemetry_reasons=telemetry_reasons,
         )
+        permission = annotate_risk_permission(
+            permission,
+            telemetry_latest_ts=telemetry_latest_ts,
+            as_of_ts=datetime.now(UTC),
+            threshold_seconds=DEFAULT_TELEMETRY_STALE_THRESHOLD_SECONDS,
+        )
         permission = apply_risk_advisory_context(permission, advisory_context)
         return {
-            "permission": annotate_risk_permission(
-                permission,
-                telemetry_latest_ts=telemetry_latest_ts,
-                as_of_ts=datetime.now(UTC),
-                threshold_seconds=DEFAULT_TELEMETRY_STALE_THRESHOLD_SECONDS,
-            ),
+            "permission": permission,
             "advisory_context": advisory_context,
             "data_health": data_health,
             "cost_health": cost_health,
@@ -970,14 +971,15 @@ def _compute_live_permission_with_context(
         cost_health=cost_health,
         telemetry_reasons=telemetry_reasons,
     )
+    permission = annotate_risk_permission(
+        permission,
+        telemetry_latest_ts=telemetry_latest_ts,
+        as_of_ts=datetime.now(UTC),
+        threshold_seconds=DEFAULT_TELEMETRY_STALE_THRESHOLD_SECONDS,
+    )
     permission = apply_risk_advisory_context(permission, advisory_context)
     return {
-        "permission": annotate_risk_permission(
-            permission,
-            telemetry_latest_ts=telemetry_latest_ts,
-            as_of_ts=datetime.now(UTC),
-            threshold_seconds=DEFAULT_TELEMETRY_STALE_THRESHOLD_SECONDS,
-        ),
+        "permission": permission,
         "advisory_context": advisory_context,
         "data_health": data_health,
         "cost_health": cost_health,

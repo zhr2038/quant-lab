@@ -6,7 +6,12 @@ from typing import Any
 
 import polars as pl
 
-from quant_lab.contracts.models import GateDecision, RiskAction, RiskPermission
+from quant_lab.contracts.models import (
+    GateDecision,
+    RiskAction,
+    RiskPermission,
+    RiskPermissionStatus,
+)
 from quant_lab.data.lake import read_parquet_lazy
 from quant_lab.research.baselines import CORE_MOMENTUM_ALPHA_ID, is_research_baseline_alpha
 
@@ -16,6 +21,11 @@ SHADOW_DECISIONS = {"KEEP_SHADOW", "REGIME_SHADOW"}
 PAPER_DECISIONS = {"PAPER_READY", "LIVE_SMALL_READY"}
 LIVE_DECISIONS = {"LIVE_SMALL_READY"}
 LEGACY_NON_LIVE_ALLOWED_MODES = {"paper", "shadow", "sell_only"}
+_ACTIVE_PERMISSION_STATUSES = {
+    RiskPermissionStatus.ACTIVE_ALLOW.value,
+    RiskPermissionStatus.ACTIVE_SELL_ONLY.value,
+    RiskPermissionStatus.ACTIVE_ABORT.value,
+}
 
 
 def build_risk_advisory_context(
@@ -149,14 +159,12 @@ def _safe_legacy_allowed_modes(
 def _permission_is_active(permission: RiskPermission) -> bool:
     if permission.enforceable is False:
         return False
-    if permission.permission_status is None:
-        return True
     value = (
         permission.permission_status.value
         if hasattr(permission.permission_status, "value")
         else str(permission.permission_status)
     )
-    return value.startswith("ACTIVE_")
+    return value in _ACTIVE_PERMISSION_STATUSES
 
 
 def _strategy_opportunity_context(root: Path) -> dict[str, Any]:

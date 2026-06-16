@@ -568,6 +568,7 @@ def test_research_validation_v3_reports_export_forward_and_cost_coverage(tmp_pat
             )
         )
         data_quality = json.loads(archive.read("data_quality.json").decode("utf-8"))
+        questions = archive.read("expert_questions.md").decode("utf-8")
 
     assert any(
         row["recommendation"] == "FORWARD_VALIDATION_PASS"
@@ -644,6 +645,8 @@ def test_research_validation_v3_reports_export_forward_and_cost_coverage(tmp_pat
     assert stale_live_cost["status"] == "WARN"
     assert "stale_actual_or_mixed_symbols=['SOL-USDT']" in stale_live_cost["detail"]
     assert "coverage_status=PASS" in stale_live_cost["detail"]
+    assert "stale_actual_or_mixed=SOL-USDT" in questions
+    assert "不要把 public_spread_proxy 当 actual/mixed" in questions
     assert any(
         row["feature_name"] == "orderbook_imbalance_1m"
         and row["recommendation"] == "FORWARD_VALIDATION_PASS"
@@ -4064,7 +4067,9 @@ def test_expert_questions_include_proxy_feature_usage_and_config_gaps(tmp_path):
     with zipfile.ZipFile(result.zip_path) as archive:
         questions = archive.read("expert_questions.md").decode("utf-8")
 
-    assert "成本模型仍是 public spread proxy" in questions
+    assert "live universe actual/mixed 成本覆盖仅 0.00%" in questions
+    assert "未覆盖=BNB-USDT, BTC-USDT, ETH-USDT, SOL-USDT" in questions
+    assert "不要把 public_spread_proxy 当 actual/mixed" in questions
     assert "为什么 feature_value 为空？" in questions
     assert "V5 是否已接入 quant-lab API？当前 v5_quant_lab_usage 为空。" in questions
     assert "config_not_consumed_count 是否真实为 2" in questions

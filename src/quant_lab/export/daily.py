@@ -7541,6 +7541,8 @@ def _question_lines(snapshot: _DatasetSnapshot, data_quality: dict[str, Any]) ->
         questions.append("是否启用 OKX read-only fills/bills？")
     if snapshot.row_counts.get("cost_bucket_daily", 0) == 0:
         questions.append("为什么 cost_bucket_daily 为空？")
+    elif cost_coverage_question := _live_cost_coverage_question(costs, data_quality):
+        questions.append(cost_coverage_question)
     elif _cost_model_is_proxy_or_fallback(costs):
         questions.append("成本模型仍是 public spread proxy，何时启用真实 fills/bills？")
     if snapshot.row_counts.get("feature_value", 0) == 0:
@@ -7588,6 +7590,67 @@ def _question_lines(snapshot: _DatasetSnapshot, data_quality: dict[str, Any]) ->
             ]
         )
     return [f"{index}. {question}" for index, question in enumerate(questions[:10], start=1)]
+
+
+def _live_cost_coverage_question(costs: pl.DataFrame, data_quality: dict[str, Any]) -> str | None:
+    if costs.is_empty():
+        return None
+
+    evaluation = evaluate_live_universe_cost_coverage(costs)
+    coverage_rate = _float_or_none(evaluation.get("coverage_rate"))
+    target_coverage = _float_or_none(evaluation.get("target_coverage"))
+    coverage_status = str(evaluation.get("coverage_status") or "UNKNOWN").upper()
+    stale_symbols = _question_symbol_list(
+        evaluation.get("stale_actual_or_mixed_symbols", [])
+    )
+    uncovered_symbols = _question_symbol_list(
+        row.get("symbol")
+        for row in evaluation.get("rows", [])
+        if str(row.get("symbol") or "").strip()
+        and not bool(row.get("actual_or_mixed_covered"))
+    )
+    proxy_only_symbols = _question_symbol_list(evaluation.get("proxy_only_symbols", []))
+    direct_symbols = _question_symbol_list(evaluation.get("direct_symbols", []))
+    readiness = data_quality.get("quant_lab_enforce_readiness", {})
+    blocked_reasons = set(_json_listish(readiness.get("blocked_reasons")))
+    coverage_blocked = "actual_or_mixed_cost_coverage_live_universe" in blocked_reasons
+    should_ask = (
+        coverage_status != "PASS"
+        or bool(stale_symbols)
+        or bool(uncovered_symbols)
+        or bool(proxy_only_symbols)
+        or coverage_blocked
+    )
+    if not should_ask:
+        return None
+
+    coverage_text = _rate_text(coverage_rate)
+    target_text = _rate_text(target_coverage)
+    return (
+        "live universe actual/mixed 成本覆盖仅 "
+        f"{coverage_text}（目标 {target_text}）；"
+        f"未覆盖={_question_symbols_text(uncovered_symbols)}；"
+        f"stale_actual_or_mixed={_question_symbols_text(stale_symbols)}；"
+        f"direct_actual_or_mixed={_question_symbols_text(direct_symbols)}。"
+        "是否刷新 OKX read-only fills/bills 或等待新成交后再评估？"
+        "不要把 public_spread_proxy 当 actual/mixed。"
+    )
+
+
+def _question_symbol_list(values: Iterable[Any]) -> list[str]:
+    return sorted({str(value).strip() for value in values if str(value).strip()})
+
+
+def _question_symbols_text(symbols: list[str], *, limit: int = 6) -> str:
+    if not symbols:
+        return "none"
+    shown = symbols[:limit]
+    suffix = f", +{len(symbols) - limit} more" if len(symbols) > limit else ""
+    return ", ".join(shown) + suffix
+
+
+def _rate_text(value: float | None) -> str:
+    return "n/a" if value is None else f"{value:.2%}"
 
 
 def _cost_model_is_proxy_or_fallback(costs: pl.DataFrame) -> bool:

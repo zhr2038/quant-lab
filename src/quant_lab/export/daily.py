@@ -7197,6 +7197,16 @@ def _data_quality_payload(
     actual_rows = int(latest_cost_health.get("actual_rows") or 0)
     mixed_rows = int(latest_cost_health.get("mixed_rows") or 0)
     actual_or_mixed_rows = actual_rows + mixed_rows
+    actual_cost_symbol_coverage_passed, actual_cost_symbol_coverage_detail = (
+        _actual_cost_symbol_coverage_check(
+            costs=costs,
+            latest_cost_health=latest_cost_health,
+            health_checks=health_checks,
+            actual_or_mixed_rows=actual_or_mixed_rows,
+            fills=fills,
+            v5_trades=v5_trades,
+        )
+    )
     checks.append(
         _check(
             "okx_private_actual_cost_available",
@@ -7240,8 +7250,8 @@ def _data_quality_payload(
     checks.append(
         _check(
             "actual_cost_symbol_coverage",
-            actual_or_mixed_rows > 0 or (fills.height == 0 and v5_trades.height == 0),
-            str(health_checks.get("actual_cost_symbol_coverage", "n/a")),
+            actual_cost_symbol_coverage_passed,
+            actual_cost_symbol_coverage_detail,
             warning_only=True,
         )
     )
@@ -7521,6 +7531,70 @@ def _all_cost_rows_public_proxy(costs: pl.DataFrame) -> bool:
     if costs.is_empty() or "source" not in costs.columns:
         return False
     return costs.filter(pl.col("source") == "public_spread_proxy").height == costs.height
+
+
+def _actual_cost_symbol_coverage_check(
+    *,
+    costs: pl.DataFrame,
+    latest_cost_health: dict[str, Any],
+    health_checks: dict[str, Any],
+    actual_or_mixed_rows: int,
+    fills: pl.DataFrame,
+    v5_trades: pl.DataFrame,
+) -> tuple[bool, str]:
+    actual_or_mixed_symbols = set(
+        _json_listish(latest_cost_health.get("symbols_with_actual_cost"))
+    ) | set(_json_listish(latest_cost_health.get("symbols_with_mixed_cost")))
+    expected_symbols = set(actual_or_mixed_symbols)
+    for column in [
+        "symbols_with_proxy_only",
+        "symbols_proxy_only",
+        "symbols_missing_cost",
+    ]:
+        expected_symbols.update(_json_listish(latest_cost_health.get(column)))
+
+    if not costs.is_empty() and "symbol" in costs.columns:
+        source_columns = [column for column in ["source", "cost_source"] if column in costs.columns]
+        columns = ["symbol", *source_columns]
+        for row in costs.select(columns).to_dicts():
+            symbol = str(row.get("symbol") or "").strip()
+            if not symbol or symbol == "GLOBAL":
+                continue
+            expected_symbols.add(symbol)
+            sources = {
+                str(row.get(column) or "").strip().lower()
+                for column in source_columns
+            }
+            if sources.intersection(
+                {
+                    "actual_okx_fills_and_bills",
+                    "actual_fills",
+                    "mixed_actual_proxy",
+                }
+            ):
+                actual_or_mixed_symbols.add(symbol)
+
+    health_detail = str(health_checks.get("actual_cost_symbol_coverage") or "").strip()
+    if health_detail and health_detail.lower() != "n/a":
+        coverage = health_detail
+        source = "cost_health_daily"
+    else:
+        denominator = max(len(expected_symbols), len(actual_or_mixed_symbols))
+        coverage = (
+            f"{len(actual_or_mixed_symbols)}/{denominator}" if denominator > 0 else "n/a"
+        )
+        source = "computed_from_export_snapshot"
+
+    fill_like_rows = fills.height + v5_trades.height
+    passed = actual_or_mixed_rows > 0 or fill_like_rows == 0
+    detail = (
+        f"actual_or_mixed_symbols={coverage}; "
+        f"actual_or_mixed_rows={actual_or_mixed_rows}; "
+        f"private_fills={fills.height}; "
+        f"v5_trades={v5_trades.height}; "
+        f"source={source}"
+    )
+    return passed, detail
 
 
 def _alpha_evidence_for_export(evidence: pl.DataFrame) -> pl.DataFrame:

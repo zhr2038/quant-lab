@@ -4225,6 +4225,7 @@ def test_export_reports_private_fills_when_actual_cost_is_zero(tmp_path):
         out_dir=tmp_path / "exports",
         profile="expert",
         command_line=["qlab", "export-daily"],
+        pre_export_v5_refresh=False,
     )
 
     with zipfile.ZipFile(result.zip_path) as archive:
@@ -4234,6 +4235,11 @@ def test_export_reports_private_fills_when_actual_cost_is_zero(tmp_path):
         warning.startswith("private_fills_present_but_actual_cost_zero")
         for warning in data_quality["warnings"]
     )
+    checks = {check["name"]: check for check in data_quality["checks"]}
+    assert checks["actual_cost_symbol_coverage"]["status"] == "WARN"
+    assert "actual_or_mixed_symbols=0/" in checks["actual_cost_symbol_coverage"]["detail"]
+    assert "private_fills=1" in checks["actual_cost_symbol_coverage"]["detail"]
+    assert "source=computed_from_export_snapshot" in checks["actual_cost_symbol_coverage"]["detail"]
 
 
 def test_export_market_tables_keep_symbol_universe_visible(tmp_path):

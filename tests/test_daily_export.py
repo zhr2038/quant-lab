@@ -162,6 +162,19 @@ def test_v5_candidate_required_feature_completeness_prefers_new_metric():
     assert daily_export_module._v5_candidate_required_feature_completeness(
         {"feature_completeness": 0.75}
     ) == pytest.approx(0.75)
+    assert daily_export_module._v5_candidate_required_feature_completeness(
+        {
+            "feature_completeness": 0.2,
+            "feature_completeness_by_field_json": json.dumps(
+                {
+                    "final_score": 0.9,
+                    "expected_edge_bps": 1.0,
+                    "required_edge_bps": 1.0,
+                    "mean_reversion_score": 0.0,
+                }
+            ),
+        }
+    ) == pytest.approx((0.9 + 1.0 + 1.0) / 3)
 
 
 def test_export_daily_pack_writes_required_members(tmp_path):

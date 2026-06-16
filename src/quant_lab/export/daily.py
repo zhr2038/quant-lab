@@ -11942,8 +11942,24 @@ def _latest_candidate_quality(frame: pl.DataFrame) -> dict[str, Any]:
 
 def _v5_candidate_required_feature_completeness(row: dict[str, Any]) -> float:
     value = row.get("required_feature_completeness")
-    if value in {None, ""}:
-        value = row.get("feature_completeness")
+    if value not in {None, ""}:
+        try:
+            return float(value or 0.0)
+        except (TypeError, ValueError):
+            return 0.0
+    by_field = _json_payload(row.get("required_feature_completeness_by_field_json"))
+    if not by_field:
+        by_field = _json_payload(row.get("feature_completeness_by_field_json"))
+    required_values = []
+    for field in ("final_score", "expected_edge_bps", "required_edge_bps"):
+        try:
+            required_values.append(float(by_field[field]))
+        except (KeyError, TypeError, ValueError):
+            required_values = []
+            break
+    if required_values:
+        return float(sum(required_values) / len(required_values))
+    value = row.get("feature_completeness")
     try:
         return float(value or 0.0)
     except (TypeError, ValueError):

@@ -8388,6 +8388,25 @@ def _api_latency_summary_for_export(root: Path) -> pl.DataFrame:
     _flush_api_metrics_service_before_export()
     summary = api_metrics_summary(root, since_minutes=24 * 60)
     latency = summary.get("latency_ms") if isinstance(summary.get("latency_ms"), dict) else {}
+    by_path = (
+        summary.get("latency_by_path_ms")
+        if isinstance(summary.get("latency_by_path_ms"), dict)
+        else {}
+    )
+    overall_error_count = sum(
+        _api_latency_error_count(metrics)
+        for metrics in by_path.values()
+        if isinstance(metrics, dict)
+    )
+    if overall_error_count <= 0:
+        overall_error_count = sum(
+            int(value or 0)
+            for value in (
+                summary.get("by_error_type")
+                if isinstance(summary.get("by_error_type"), dict)
+                else {}
+            ).values()
+        )
     rows: list[dict[str, Any]] = [
         {
             "endpoint": "__all__",
@@ -8432,21 +8451,9 @@ def _api_latency_summary_for_export(root: Path) -> pl.DataFrame:
                 summary.get("dependency_meta_missing_count"),
                 summary.get("request_count"),
             ),
-            "error_count": sum(
-                int(value or 0)
-                for value in (
-                    summary.get("by_error_type")
-                    if isinstance(summary.get("by_error_type"), dict)
-                    else {}
-                ).values()
-            ),
+            "error_count": overall_error_count,
         }
     ]
-    by_path = (
-        summary.get("latency_by_path_ms")
-        if isinstance(summary.get("latency_by_path_ms"), dict)
-        else {}
-    )
     for endpoint, metrics in sorted(by_path.items()):
         if not isinstance(metrics, dict):
             continue
@@ -8491,17 +8498,24 @@ def _api_latency_summary_for_export(root: Path) -> pl.DataFrame:
                     metrics.get("dependency_meta_missing_count"),
                     metrics.get("count"),
                 ),
-                "error_count": int(
-                    metrics.get("error_count")
-                    or metrics.get("server_error_count")
-                    or 0
-                )
-                + int(metrics.get("client_error_count") or 0),
+                "error_count": _api_latency_error_count(metrics),
             }
         )
     return pl.DataFrame(rows, infer_schema_length=None).select(
         CSV_SCHEMAS["reports/api_latency_summary.csv"]
     )
+
+
+def _api_latency_error_count(metrics: dict[str, Any]) -> int:
+    status_error_count = int(metrics.get("server_error_count") or 0) + int(
+        metrics.get("client_error_count") or 0
+    )
+    if "error_count" not in metrics or metrics.get("error_count") is None:
+        return status_error_count
+    try:
+        return max(int(float(metrics.get("error_count") or 0)), status_error_count)
+    except Exception:
+        return status_error_count
 
 
 def _flush_api_metrics_service_before_export() -> None:

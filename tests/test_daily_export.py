@@ -785,6 +785,33 @@ def test_api_latency_summary_export_includes_cache_and_payload_fields(
     assert row["error_count"] == 0
 
 
+def test_api_latency_summary_error_count_does_not_double_count_status_error(
+    tmp_path,
+    monkeypatch,
+):
+    lake = tmp_path / "lake"
+    monkeypatch.delenv("QUANT_LAB_API_TOKEN", raising=False)
+    monkeypatch.setenv("QUANT_LAB_API_METRICS_FLUSH_ROWS", "1")
+    monkeypatch.setenv("QUANT_LAB_API_METRICS_FLUSH_SECONDS", "3600")
+    for status_code, error_type in ((200, None), (401, "HTTPException")):
+        record_api_request(
+            lake_root=lake,
+            method="GET",
+            path="/v1/strategy-opportunity-advisory",
+            status_code=status_code,
+            duration_seconds=0.123,
+            error_type=error_type,
+        )
+
+    frame = daily_export_module._api_latency_summary_for_export(lake)
+    rows = {row["endpoint"]: row for row in frame.to_dicts()}
+
+    assert rows["__all__"]["count"] == 2
+    assert rows["__all__"]["error_count"] == 1
+    assert rows["/v1/strategy-opportunity-advisory"]["count"] == 2
+    assert rows["/v1/strategy-opportunity-advisory"]["error_count"] == 1
+
+
 def test_api_latency_summary_triggers_live_metrics_flush_when_token_configured(
     tmp_path,
     monkeypatch,

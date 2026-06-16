@@ -684,12 +684,25 @@ def _latency_by_path_lazy(
             .sum()
             .alias("dependency_meta_missing_count")
         )
+    status = (
+        pl.col("status_code").cast(pl.Int64, strict=False)
+        if "status_code" in schema_names
+        else None
+    )
+    error_exprs: list[pl.Expr] = []
     if "error_type" in schema_names:
+        error_type = pl.col("error_type").cast(pl.Utf8, strict=False)
+        error_exprs.append(error_type.is_not_null() & (error_type.str.strip_chars() != ""))
+    if status is not None:
+        error_exprs.append(status >= 400)
+    if error_exprs:
+        error_expr = error_exprs[0]
+        for extra_error_expr in error_exprs[1:]:
+            error_expr = error_expr | extra_error_expr
         aggregations.append(
-            pl.col("error_type").is_not_null().cast(pl.Int64).sum().alias("error_count")
+            error_expr.fill_null(False).cast(pl.Int64).sum().alias("error_count")
         )
     if "status_code" in schema_names:
-        status = pl.col("status_code").cast(pl.Int64, strict=False)
         aggregations.append((status >= 500).sum().alias("server_error_count"))
         aggregations.append(((status >= 400) & (status < 500)).sum().alias("client_error_count"))
     grouped = lazy.group_by("path").agg(aggregations).sort("path").collect()

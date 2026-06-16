@@ -3038,9 +3038,10 @@ def _normalize_published_risk_permission(
         telemetry_latest_ts=latest_telemetry,
         threshold_seconds=DEFAULT_TELEMETRY_STALE_THRESHOLD_SECONDS,
     )
+    published_not_enforceable = permission.enforceable is False
     status_value = permission_status(
         permission.permission.value,
-        stale=stale_vs_telemetry,
+        stale=stale_vs_telemetry or published_not_enforceable,
         expired=expired,
     )
     reasons = list(permission.reasons)
@@ -3048,6 +3049,8 @@ def _normalize_published_risk_permission(
         reasons.append("permission_expired")
     if stale_vs_telemetry and "risk_permission_stale_vs_v5_telemetry" not in reasons:
         reasons.append("risk_permission_stale_vs_v5_telemetry")
+    if published_not_enforceable and "published_permission_not_enforceable" not in reasons:
+        reasons.append("published_permission_not_enforceable")
     return permission.model_copy(
         update={
             "as_of_ts": as_of,
@@ -3055,7 +3058,11 @@ def _normalize_published_risk_permission(
             "telemetry_latest_ts": latest_telemetry,
             "permission_freshness_sec": _telemetry_freshness_seconds(as_of, latest_telemetry),
             "permission_status": status_value,
-            "enforceable": is_permission_status_enforceable(status_value) and not expired,
+            "enforceable": (
+                is_permission_status_enforceable(status_value)
+                and not expired
+                and not published_not_enforceable
+            ),
             "risk_reason_codes": reasons,
             "reasons": reasons,
             "reason": reasons[0] if reasons else None,
@@ -3066,7 +3073,7 @@ def _normalize_published_risk_permission(
 def _published_permission_is_active(permission: RiskPermission) -> bool:
     return is_permission_status_enforceable(
         permission.permission_status
-    ) and not _permission_expired(permission)
+    ) and permission.enforceable is True and not _permission_expired(permission)
 
 
 def _permission_expired(permission: RiskPermission) -> bool:

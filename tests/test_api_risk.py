@@ -740,6 +740,56 @@ def test_live_permission_api_reads_published_risk_permission(tmp_path, monkeypat
     assert detail_payload["gate_summary"]["status_counts"] == {"LIVE_READY": 1}
 
 
+def test_live_permission_api_preserves_published_not_enforceable(tmp_path, monkeypatch):
+    lake = tmp_path / "lake"
+    monkeypatch.setenv("QUANT_LAB_LAKE_ROOT", str(lake))
+    monkeypatch.setenv("QUANT_LAB_RISK_PERMISSION_TTL_SECONDS", "3600")
+    _write_gate(lake, GateStatus.LIVE_READY)
+    _write_cost_bucket(lake)
+    _write_fresh_market_bar(lake)
+    as_of_ts = datetime.now(UTC)
+    _write_risk_permissions(
+        lake,
+        [
+            _risk_row(
+                strategy="v5",
+                version="5.0.0",
+                permission="ALLOW",
+                reasons='["manual_not_enforceable"]',
+                as_of_ts=as_of_ts,
+                expires_at=as_of_ts + timedelta(hours=1),
+                source_bundle_ts=as_of_ts,
+                permission_status="ACTIVE_ALLOW",
+                enforceable=False,
+            )
+            | {
+                "allowed_modes": '["paper","live_canary"]',
+                "max_gross_exposure": 0.25,
+                "max_single_weight": 0.05,
+            }
+        ],
+    )
+
+    payload = _get_permission("v5", version="5.0.0")
+    detail = (
+        TestClient(app)
+        .get(
+            "/v1/risk/live-permission-detail",
+            params={"strategy": "v5", "version": "5.0.0"},
+        )
+        .json()
+    )
+
+    assert payload["permission"] == "ALLOW"
+    assert payload["permission_status"] == "STALE_ALLOW"
+    assert payload["enforceable"] is False
+    assert payload["allowed_modes"] == []
+    assert payload["allowed_live_modes"] == []
+    assert "published_permission_not_enforceable" in payload["risk_reason_codes"]
+    assert detail["published_permission_stale"] is True
+    assert detail["permission_source"] == "published_stale"
+
+
 def test_live_permission_api_recomputes_stale_published_allow(tmp_path, monkeypatch):
     lake = tmp_path / "lake"
     monkeypatch.setenv("QUANT_LAB_LAKE_ROOT", str(lake))
@@ -1244,8 +1294,9 @@ def _risk_row(
     permission_status: str,
     expires_at: datetime | None = None,
     source_bundle_ts: datetime | None = None,
+    enforceable: bool | None = None,
 ) -> dict:
-    return {
+    row = {
         "strategy": strategy,
         "version": version,
         "permission": permission,
@@ -1264,3 +1315,6 @@ def _risk_row(
         "source": "test",
         "fallback_level": "NONE",
     }
+    if enforceable is not None:
+        row["enforceable"] = enforceable
+    return row

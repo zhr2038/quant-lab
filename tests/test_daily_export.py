@@ -588,6 +588,10 @@ def test_research_validation_v3_reports_export_forward_and_cost_coverage(tmp_pat
         row["eligible_for_alpha_factory"] == "strategy_review_pending"
         for row in bridge_review_rows
     )
+    assert not any(
+        "factor_strategy_bridge_candidates dataset is missing_or_empty" in warning
+        for warning in data_quality["warnings"]
+    )
     bridge_review_candidate_ids = {
         row["bridge_candidate_id"] for row in bridge_review_rows if row["bridge_candidate_id"]
     }
@@ -3837,6 +3841,10 @@ def test_stale_dataset_check_uses_risk_permission_dependency_meta_generated_at()
 def test_load_snapshot_does_not_warn_for_optional_empty_entry_quality_outputs(tmp_path):
     snapshot = daily_export_module._load_snapshot(tmp_path / "empty-lake")
 
+    assert not any(
+        warning.startswith("factor_strategy_bridge_candidates dataset is ")
+        for warning in snapshot.warnings
+    )
     assert not any(
         warning.startswith("v5_pullback_reversal_shadow dataset is ")
         for warning in snapshot.warnings

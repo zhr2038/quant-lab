@@ -186,6 +186,7 @@ V5_PAPER_TELEMETRY_DATASETS = {
 }
 OPTIONAL_EMPTY_DATASET_STATUSES = {
     "closed_research_snapshot",
+    "export_derived_optional",
     "expanded_universe_automation_active",
     "legacy_optional",
     "waiting_for_v5_paper_telemetry",
@@ -5135,6 +5136,8 @@ def _empty_dataset_status(dataset_name: str) -> str:
         return "研究证据尚未生成"
     if dataset_name == "feature_value":
         return "特征尚未发布"
+    if dataset_name == "factor_strategy_bridge_candidates":
+        return "export_derived_optional"
     if dataset_name == "decision_audit":
         return "legacy_optional"
     if dataset_name in V5_PAPER_TELEMETRY_DATASETS:

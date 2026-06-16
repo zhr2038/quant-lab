@@ -743,7 +743,7 @@ def _cached_live_permission_valid(evaluation: dict[str, Any]) -> bool:
         return False
     expires_at = permission.expires_at
     if expires_at is None:
-        return True
+        return False
     return expires_at >= datetime.now(UTC)
 
 

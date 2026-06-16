@@ -206,6 +206,7 @@ HEAVY_EXPORT_DATASET_LIMITS = {
     "v5_quant_lab_cost_usage": 5_000,
     "v5_quant_lab_fallback": 5_000,
     "v5_candidate_event": 20_000,
+    "v5_btc_probe_entry_quality_audit": 20_000,
     "v5_candidate_label": 20_000,
     "v5_missed_low_audit": 20_000,
     "v5_late_entry_chase_shadow": 20_000,
@@ -246,6 +247,7 @@ HEAVY_EXPORT_RECENT_FILE_LIMITS = {
     "v5_quant_lab_cost_usage": 100,
     "v5_quant_lab_fallback": 100,
     "v5_candidate_event": 100,
+    "v5_btc_probe_entry_quality_audit": 100,
     "v5_candidate_label": 100,
     "v5_missed_low_audit": 100,
     "v5_late_entry_chase_shadow": 100,
@@ -387,6 +389,7 @@ SECTION_DATASETS = {
         "v5_quant_lab_cost_usage",
         "v5_quant_lab_fallback",
         "v5_candidate_event",
+        "v5_btc_probe_entry_quality_audit",
         "v5_candidate_label",
         "v5_candidate_quality_daily",
         "v5_candidate_outcome_summary",
@@ -444,6 +447,7 @@ REQUIRED_MEMBERS = [
     "v5/v5_quant_lab_cost_usage.csv",
     "v5/v5_quant_lab_fallbacks.csv",
     "v5/v5_candidate_events.csv",
+    "v5/v5_btc_probe_entry_quality_audit.csv",
     "v5/v5_candidate_labels.csv",
     "v5/v5_candidate_quality.csv",
     "v5/v5_candidate_outcome_summary.csv",
@@ -2800,6 +2804,39 @@ CSV_SCHEMAS: dict[str, list[str]] = {
         "strategy_candidate",
         "raw_payload_json",
     ],
+    "v5/v5_btc_probe_entry_quality_audit.csv": [
+        "strategy",
+        "bundle_sha256",
+        "bundle_name",
+        "bundle_ts",
+        "ingest_ts",
+        "schema_version",
+        "source_path_inside_bundle",
+        "row_index",
+        "run_id",
+        "entry_ts",
+        "entry_px",
+        "final_score",
+        "expected_edge_bps",
+        "required_edge_bps",
+        "btc_trend_score",
+        "trend_buy_count",
+        "alpha6_score",
+        "alpha6_side",
+        "bypassed_negative_expectancy_reason",
+        "selected_symbol",
+        "normalized_symbol",
+        "selection_mode",
+        "negative_expectancy_state",
+        "same_symbol_reentry_bypass",
+        "price_distance_from_recent_low_bps",
+        "price_distance_from_recent_high_bps",
+        "anti_chase_flag",
+        "entry_quality_status",
+        "live_order_effect",
+        "raw_payload_json",
+        "stable_row_key",
+    ],
     "v5/v5_candidate_labels.csv": [
         "strategy",
         "candidate_label_schema_version",
@@ -4542,6 +4579,10 @@ def _dataset_members(
     v5_cost_usage = frames.get("v5_quant_lab_cost_usage", pl.DataFrame())
     v5_fallbacks = _dedupe_v5_event_frame(frames.get("v5_quant_lab_fallback", pl.DataFrame()))
     v5_candidate_events = frames.get("v5_candidate_event", pl.DataFrame())
+    v5_btc_probe_entry_quality_audit = frames.get(
+        "v5_btc_probe_entry_quality_audit",
+        pl.DataFrame(),
+    )
     v5_candidate_labels = frames.get("v5_candidate_label", pl.DataFrame())
     v5_candidate_quality = frames.get("v5_candidate_quality_daily", pl.DataFrame())
     v5_candidate_outcomes = frames.get("v5_candidate_outcome_summary", pl.DataFrame())
@@ -5234,6 +5275,10 @@ def _dataset_members(
         "v5/v5_candidate_events.csv": _csv_member(
             "v5/v5_candidate_events.csv",
             _tail_by_time(v5_candidate_events, "ts_utc", limit=50_000),
+        ),
+        "v5/v5_btc_probe_entry_quality_audit.csv": _csv_member(
+            "v5/v5_btc_probe_entry_quality_audit.csv",
+            _tail_by_time(v5_btc_probe_entry_quality_audit, "ingest_ts", limit=50_000),
         ),
         "v5/v5_candidate_labels.csv": _csv_member(
             "v5/v5_candidate_labels.csv",

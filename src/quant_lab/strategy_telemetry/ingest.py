@@ -67,6 +67,7 @@ SILVER_DATASETS = {
     "v5_skipped_candidate_outcome": Path("silver/v5_skipped_candidate_outcome"),
     "v5_shadow_outcome": Path("silver/v5_shadow_outcome"),
     "v5_probe_diagnostic": Path("silver/v5_probe_diagnostic"),
+    "v5_btc_probe_entry_quality_audit": Path("silver/v5_btc_probe_entry_quality_audit"),
     "v5_quant_lab_usage": Path("silver/v5_quant_lab_usage"),
     "v5_quant_lab_request": Path("silver/v5_quant_lab_request"),
     "v5_quant_lab_compliance": Path("silver/v5_quant_lab_compliance"),
@@ -565,6 +566,11 @@ def _append_file_rows(
     if logical.endswith("/candidate_snapshot.csv") or logical == "candidate_snapshot.csv":
         rows["v5_candidate_event"].extend(_candidate_event_rows(metadata, relative, file_path))
         return
+    if logical == "summaries/btc_probe_entry_quality_audit.csv":
+        rows["v5_btc_probe_entry_quality_audit"].extend(
+            _btc_probe_entry_quality_audit_rows(metadata, relative, file_path)
+        )
+        return
     if logical in {
         "reports/pullback_reversal_shadow_outcomes.csv",
         "summaries/pullback_reversal_shadow_outcomes.csv",
@@ -704,6 +710,35 @@ def _csv_rows(metadata: dict[str, Any], relative: str, file_path: Path) -> list[
 def _csv_header(file_path: Path) -> list[str]:
     with file_path.open("r", encoding="utf-8", newline="") as handle:
         return list(csv.DictReader(handle).fieldnames or [])
+
+
+def _btc_probe_entry_quality_audit_rows(
+    metadata: dict[str, Any],
+    relative: str,
+    file_path: Path,
+) -> list[dict[str, Any]]:
+    rows: list[dict[str, Any]] = []
+    for row in _csv_rows(metadata, relative, file_path):
+        payload = _loads_payload(row.get("raw_payload_json"))
+        symbol_value = _clean_text(
+            _first_value(row, payload, ["selected_symbol", "symbol", "normalized_symbol"])
+        )
+        normalized_symbol = normalize_symbol(symbol_value) if symbol_value else ""
+        live_order_effect = "none_read_only_v5_bundle_audit"
+        enriched_payload = {
+            **payload,
+            "normalized_symbol": normalized_symbol,
+            "live_order_effect": live_order_effect,
+        }
+        rows.append(
+            row
+            | {
+                "normalized_symbol": normalized_symbol,
+                "live_order_effect": live_order_effect,
+                "raw_payload_json": safe_json_dumps(enriched_payload),
+            }
+        )
+    return rows
 
 
 def _pullback_shadow_rows(

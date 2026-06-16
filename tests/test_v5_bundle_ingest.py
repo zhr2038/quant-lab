@@ -546,6 +546,7 @@ def test_ingest_parses_quant_lab_usage_files(tmp_path):
     assert result.silver_rows["v5_bnb_paper_strategy_runs"] == 1
     assert result.silver_rows["v5_bnb_paper_strategy_daily"] == 1
     assert result.silver_rows["v5_negative_expectancy_consistency"] == 1
+    assert result.silver_rows["v5_btc_probe_entry_quality_audit"] == 1
     assert read_parquet_dataset(lake / "silver/v5_quant_lab_usage").height == 1
     assert read_parquet_dataset(lake / "silver/v5_quant_lab_compliance").height == 1
     bnb_shadow = read_parquet_dataset(lake / "silver/v5_bnb_profit_lock_shadow").to_dicts()
@@ -568,6 +569,13 @@ def test_ingest_parses_quant_lab_usage_files(tmp_path):
     negexp = read_parquet_dataset(lake / "silver/v5_negative_expectancy_consistency").to_dicts()
     assert negexp[0]["symbol"] == "BNB-USDT"
     assert negexp[0]["min_hold_violation_cycles"] == "1"
+    btc_probe = read_parquet_dataset(
+        lake / "silver/v5_btc_probe_entry_quality_audit"
+    ).to_dicts()
+    assert btc_probe[0]["normalized_symbol"] == "BTC-USDT"
+    assert btc_probe[0]["same_symbol_reentry_bypass"] == "probe_stop_loss_reentry_after_loss"
+    assert btc_probe[0]["anti_chase_flag"] == "false"
+    assert btc_probe[0]["live_order_effect"] == "none_read_only_v5_bundle_audit"
     paper_rows = read_parquet_dataset(lake / "silver/v5_paper_strategy_run").to_dicts()
     assert paper_rows[0]["proposal_id"] == "SOL_F4_VOLUME_EXPANSION_PAPER_V1"
     assert paper_rows[0]["recommended_mode"] == "paper"

@@ -208,6 +208,7 @@ def test_export_daily_pack_writes_required_members(tmp_path):
         assert "freshness_status" in provenance["datasets"][0]
 
         assert "v5/v5_strategy_health.csv" in names
+        assert "v5/v5_btc_probe_entry_quality_audit.csv" in names
         assert "reports/v5_enforce_readiness.json" in names
         assert "reports/v5_enforce_readiness.csv" in names
         assert "reports/system_acceptance_dashboard.csv" in names
@@ -2444,6 +2445,17 @@ def test_export_daily_ingests_pending_v5_inbox_before_snapshot(tmp_path):
                 "0.66,0.11,18,5,3.5,quant_lab,true,KEEP_SHADOW,risk_gate,"
                 "v5.f3_dominant_entry\n"
             ),
+            "summaries/btc_probe_entry_quality_audit.csv": (
+                "run_id,entry_ts,entry_px,final_score,expected_edge_bps,required_edge_bps,"
+                "btc_trend_score,trend_buy_count,alpha6_score,alpha6_side,"
+                "bypassed_negative_expectancy_reason,selected_symbol,selection_mode,"
+                "negative_expectancy_state,same_symbol_reentry_bypass,"
+                "price_distance_from_recent_low_bps,price_distance_from_recent_high_bps,"
+                "anti_chase_flag,entry_quality_status\n"
+                "run_001,2026-05-17T06:00:00Z,65000,0.91,18,5,0.8,3,0.74,long,"
+                "none,BTC/USDT,market_impulse_probe,ok,"
+                "probe_stop_loss_reentry_after_loss,42,180,true,accepted\n"
+            ),
         },
     )
     config = _v5_telemetry_config(tmp_path, inbox, lake_root)
@@ -2460,6 +2472,13 @@ def test_export_daily_ingests_pending_v5_inbox_before_snapshot(tmp_path):
     with zipfile.ZipFile(result.zip_path) as archive:
         manifest = json.loads(archive.read("manifest.json").decode("utf-8"))
         data_quality = json.loads(archive.read("data_quality.json").decode("utf-8"))
+        btc_probe_rows = list(
+            csv.DictReader(
+                io.StringIO(
+                    archive.read("v5/v5_btc_probe_entry_quality_audit.csv").decode("utf-8")
+                )
+            )
+        )
 
     assert manifest["pre_export_v5_refresh"]["processed_bundle_count"] == 1
     assert manifest["authoritative_snapshot"] is True
@@ -2476,6 +2495,7 @@ def test_export_daily_ingests_pending_v5_inbox_before_snapshot(tmp_path):
     assert manifest["selected_v5_bundle_built_at"].startswith("2026-05-17T06:00:00")
     assert manifest["selected_v5_bundle_ingested_at"]
     assert manifest["selected_v5_bundle_event_counts"]["v5_candidate_event"] >= 1
+    assert manifest["selected_v5_bundle_event_counts"]["v5_btc_probe_entry_quality_audit"] == 1
     assert manifest["latest_v5_bundle_seen_at_export"].startswith("2026-05-17T06:00:00")
     assert manifest["latest_v5_bundle_ingested_at_export"].startswith("2026-05-17T06:00:00")
     assert manifest["candidate_event_rows"] >= 1
@@ -2487,6 +2507,10 @@ def test_export_daily_ingests_pending_v5_inbox_before_snapshot(tmp_path):
         "build_strategy_evidence" in str(warning)
         for warning in manifest["pre_export_v5_refresh"]["warnings"]
     )
+    assert btc_probe_rows[0]["same_symbol_reentry_bypass"] == "probe_stop_loss_reentry_after_loss"
+    assert btc_probe_rows[0]["anti_chase_flag"] == "true"
+    assert btc_probe_rows[0]["normalized_symbol"] == "BTC-USDT"
+    assert btc_probe_rows[0]["live_order_effect"] == "none_read_only_v5_bundle_audit"
 
 
 def test_export_daily_limits_pre_export_v5_ingest_to_latest_pending(tmp_path, monkeypatch):
@@ -3272,6 +3296,7 @@ def test_export_empty_csv_members_have_fixed_headers(tmp_path):
             "reports/fast_microstructure_forward_test.csv",
             "reports/live_universe_cost_coverage.csv",
             "v5/v5_candidate_events.csv",
+            "v5/v5_btc_probe_entry_quality_audit.csv",
             "v5/v5_candidate_labels.csv",
             "v5/v5_candidate_quality.csv",
             "v5/v5_candidate_outcome_summary.csv",

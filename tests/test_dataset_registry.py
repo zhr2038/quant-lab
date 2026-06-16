@@ -47,6 +47,7 @@ def test_dataset_registry_covers_v5_and_research_governance_datasets():
         "order_event",
         "v5_decision_audit",
         "v5_trade_event",
+        "v5_btc_probe_entry_quality_audit",
         "v5_quant_lab_request",
         "v5_quant_lab_cost_usage",
         "v5_quant_lab_fallback",
@@ -150,6 +151,17 @@ def test_v5_registry_matches_current_envelope_and_daily_schemas():
     assert "freshness" not in cost_usage.quality_rules
     assert trade_event is not None
     assert "freshness" not in trade_event.quality_rules
+    btc_probe = get_dataset_spec("v5_btc_probe_entry_quality_audit")
+    assert btc_probe is not None
+    assert btc_probe.required_columns == (
+        "bundle_ts",
+        "ingest_ts",
+        "source_path_inside_bundle",
+        "same_symbol_reentry_bypass",
+        "anti_chase_flag",
+        "raw_payload_json",
+    )
+    assert btc_probe.timestamp_column == "ingest_ts"
 
     assert strategy_health is not None
     assert strategy_health.required_columns == ("date", "status", "latest_bundle_ts")

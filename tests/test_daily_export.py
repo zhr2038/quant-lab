@@ -3444,7 +3444,9 @@ def test_soft_cost_fallbacks_do_not_create_hard_failure(tmp_path):
     assert checks["cost_hard_fallback_ratio"]["status"] == "PASS"
     assert "ratio=0.00%" in checks["cost_hard_fallback_ratio"]["detail"]
     assert checks["cost_soft_fallback_ratio"]["status"] == "WARN"
-    assert checks["cost_fallback_ratio"]["status"] == "WARN"
+    assert checks["cost_fallback_ratio"]["status"] == "PASS"
+    assert "diagnostic legacy metric" in checks["cost_fallback_ratio"]["detail"]
+    assert "hard_fallback_ratio=0.00%" in checks["cost_fallback_ratio"]["detail"]
 
 
 def test_dataset_freshness_uses_dataset_specific_timestamps(tmp_path):

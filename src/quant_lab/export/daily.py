@@ -6858,11 +6858,13 @@ def _data_quality_payload(
         checks.append(
             _check(
                 "cost_fallback_ratio",
-                fallback_stats["fallback_ratio"] <= 0.25,
+                True,
                 (
-                    f"fallback_rows={fallback_rows.height}; "
-                    f"ratio={fallback_stats['fallback_ratio']:.2%}; "
-                    "legacy metric includes soft/proxy fallbacks"
+                    f"legacy_fallback_rows={fallback_rows.height}; "
+                    f"legacy_ratio={fallback_stats['fallback_ratio']:.2%}; "
+                    f"hard_fallback_ratio={fallback_stats['hard_fallback_ratio']:.2%}; "
+                    f"soft_fallback_ratio={fallback_stats['soft_fallback_ratio']:.2%}; "
+                    "diagnostic legacy metric; hard/soft fallback checks carry status"
                 ),
                 warning_only=True,
             )

@@ -208,6 +208,8 @@ def build_system_acceptance_dashboard(
         )
     )
 
+    checks.append(_enforce_readiness_check(data_quality_warnings))
+
     v5_context = dict(pre_export_v5 or {})
     authoritative = _truthy(v5_context.get("authoritative_snapshot"))
     stale = _truthy(v5_context.get("stale_v5_bundle"))
@@ -236,6 +238,53 @@ def build_system_acceptance_dashboard(
     )
 
     return _frame(checks, SYSTEM_ACCEPTANCE_FIELDS)
+
+
+def _enforce_readiness_check(
+    data_quality_warnings: list[str] | tuple[str, ...],
+) -> dict[str, Any]:
+    matches = [
+        str(item)
+        for item in data_quality_warnings
+        if "quant_lab_enforce_readiness" in str(item).lower()
+    ]
+    if not matches:
+        return _check(
+            "enforce_readiness_ok",
+            "PASS",
+            "no enforce readiness warning",
+            "readiness_status=READY or no blocking readiness warning",
+            "quant-lab",
+            "",
+        )
+    observed = "; ".join(matches)
+    text = observed.lower()
+    if "readiness_status=blocked" in text:
+        return _check(
+            "enforce_readiness_ok",
+            "FAIL",
+            observed,
+            "readiness_status must not be BLOCKED",
+            "quant-lab",
+            "keep advisory shadow-only and restore blocked readiness inputs before promotion",
+        )
+    if "readiness_status=warn" in text:
+        return _check(
+            "enforce_readiness_ok",
+            "WARNING",
+            observed,
+            "readiness_status should be READY",
+            "quant-lab",
+            "review enforce readiness warnings before any promotion",
+        )
+    return _check(
+        "enforce_readiness_ok",
+        "WARNING",
+        observed,
+        "readiness_status must be observable",
+        "quant-lab",
+        "inspect reports/v5_enforce_readiness.json and data_quality.json",
+    )
 
 
 def build_no_trigger_reasons(

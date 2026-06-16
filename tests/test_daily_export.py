@@ -1431,6 +1431,54 @@ def test_system_acceptance_passes_synced_non_authoritative_v5_bundle():
     assert "rerun telemetry sync" not in row["next_action"]
 
 
+def test_system_acceptance_surfaces_blocked_enforce_readiness():
+    dashboard = daily_export_module.build_system_acceptance_dashboard(
+        frames={},
+        report_frames={},
+        row_counts={},
+        pre_export_v5={},
+        data_quality_warnings=[
+            "quant_lab_enforce_readiness: readiness_status=BLOCKED; "
+            "blocked=['actual_or_mixed_cost_coverage_live_universe']"
+        ],
+        api_latency_summary=pl.DataFrame(),
+        lake_file_count=0,
+        generated_at=datetime(2026, 6, 11, 10, tzinfo=UTC),
+    )
+    row = next(
+        row
+        for row in dashboard.to_dicts()
+        if row["check_name"] == "enforce_readiness_ok"
+    )
+
+    assert row["status"] == "FAIL"
+    assert "readiness_status=BLOCKED" in row["observed_value"]
+    assert "restore blocked readiness inputs" in row["next_action"]
+
+
+def test_system_acceptance_surfaces_warn_enforce_readiness():
+    dashboard = daily_export_module.build_system_acceptance_dashboard(
+        frames={},
+        report_frames={},
+        row_counts={},
+        pre_export_v5={},
+        data_quality_warnings=[
+            "quant_lab_enforce_readiness: readiness_status=WARN; warnings=['cost']"
+        ],
+        api_latency_summary=pl.DataFrame(),
+        lake_file_count=0,
+        generated_at=datetime(2026, 6, 11, 10, tzinfo=UTC),
+    )
+    row = next(
+        row
+        for row in dashboard.to_dicts()
+        if row["check_name"] == "enforce_readiness_ok"
+    )
+
+    assert row["status"] == "WARNING"
+    assert "readiness_status=WARN" in row["observed_value"]
+
+
 def test_v5_bundle_sync_uses_latest_ingested_dataset_timestamp():
     generated_at = datetime(2026, 6, 11, 6, tzinfo=UTC)
     frames = {

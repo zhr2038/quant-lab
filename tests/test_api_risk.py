@@ -1071,6 +1071,49 @@ def test_live_permission_api_downgrades_expired_active_permission(
     assert "no_fresh_published_permission" in payload["risk_reason_codes"]
 
 
+def test_live_permission_api_rejects_published_permission_without_expiry(
+    tmp_path,
+    monkeypatch,
+):
+    lake = tmp_path / "lake"
+    monkeypatch.setenv("QUANT_LAB_LAKE_ROOT", str(lake))
+    _write_gate(lake, GateStatus.LIVE_READY)
+    _write_cost_bucket(lake)
+    _write_fresh_market_bar(lake)
+    as_of = datetime.now(UTC)
+    _write_risk_permissions(
+        lake,
+        [
+            _risk_row(
+                strategy="v5",
+                version="5.0.0",
+                permission="ALLOW",
+                reasons='["missing_expiry_allow"]',
+                as_of_ts=as_of,
+                expires_at=None,
+                source_bundle_ts=as_of,
+                permission_status="ACTIVE_ALLOW",
+                enforceable=True,
+            )
+            | {
+                "allowed_modes": '["paper","live_canary"]',
+                "allowed_live_modes": '["live_canary"]',
+                "max_gross_exposure": 0.25,
+                "max_single_weight": 0.05,
+            }
+        ],
+    )
+
+    payload = _get_permission("v5", version="5.0.0")
+
+    assert payload["permission"] == "ALLOW"
+    assert payload["permission_status"] == "NO_FRESH_PERMISSION"
+    assert payload["enforceable"] is False
+    assert payload["allowed_modes"] == []
+    assert payload["allowed_live_modes"] == []
+    assert "published_permission_missing_expiry" in payload["risk_reason_codes"]
+
+
 def test_live_permission_api_no_fresh_permission_has_empty_allowed_modes(
     tmp_path,
     monkeypatch,

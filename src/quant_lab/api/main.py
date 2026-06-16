@@ -639,11 +639,17 @@ def _live_permission_evaluation(
         permission = selection["active"]
     elif selection["active"] is None and selection["stale"] is not None:
         stale_permission = selection["stale"]
-        if _permission_expired(stale_permission):
-            source = "no_fresh_expired_published_permission"
+        missing_expiry = _permission_missing_required_expiry(stale_permission)
+        if _permission_expired(stale_permission) or missing_expiry:
+            source = (
+                "no_fresh_incomplete_published_permission"
+                if missing_expiry
+                else "no_fresh_expired_published_permission"
+            )
             permission = _force_no_fresh_permission(
                 recomputed,
                 telemetry_latest_ts=telemetry_latest_ts,
+                extra_reasons=["published_permission_missing_expiry"] if missing_expiry else [],
             )
         else:
             source = "published_stale"
@@ -3030,7 +3036,8 @@ def _normalize_published_risk_permission(
         ]
     )
     expires_at = _ensure_utc(permission.expires_at)
-    if expires_at is None and as_of is not None:
+    missing_required_expiry = expires_at is None and permission.enforceable is True
+    if expires_at is None and as_of is not None and not missing_required_expiry:
         expires_at = as_of + timedelta(seconds=max(_risk_permission_ttl_seconds(), 0))
     expired = expires_at is not None and expires_at < datetime.now(UTC)
     stale_vs_telemetry = risk_permission_stale_vs_telemetry(
@@ -3039,12 +3046,18 @@ def _normalize_published_risk_permission(
         threshold_seconds=DEFAULT_TELEMETRY_STALE_THRESHOLD_SECONDS,
     )
     published_not_enforceable = permission.enforceable is False
-    status_value = permission_status(
-        permission.permission.value,
-        stale=stale_vs_telemetry or published_not_enforceable,
-        expired=expired,
+    status_value = (
+        RiskPermissionStatus.NO_FRESH_PERMISSION
+        if missing_required_expiry
+        else permission_status(
+            permission.permission.value,
+            stale=stale_vs_telemetry or published_not_enforceable,
+            expired=expired,
+        )
     )
     reasons = list(permission.reasons)
+    if missing_required_expiry and "published_permission_missing_expiry" not in reasons:
+        reasons.append("published_permission_missing_expiry")
     if expired and "permission_expired" not in reasons:
         reasons.append("permission_expired")
     if stale_vs_telemetry and "risk_permission_stale_vs_v5_telemetry" not in reasons:
@@ -3061,6 +3074,7 @@ def _normalize_published_risk_permission(
             "enforceable": (
                 is_permission_status_enforceable(status_value)
                 and not expired
+                and not missing_required_expiry
                 and not published_not_enforceable
             ),
             "risk_reason_codes": reasons,
@@ -3078,6 +3092,12 @@ def _published_permission_is_active(permission: RiskPermission) -> bool:
 
 def _permission_expired(permission: RiskPermission) -> bool:
     return permission.expires_at is not None and permission.expires_at < datetime.now(UTC)
+
+
+def _permission_missing_required_expiry(permission: RiskPermission) -> bool:
+    return permission.expires_at is None and "published_permission_missing_expiry" in set(
+        permission.risk_reason_codes or permission.reasons
+    )
 
 
 def _force_non_enforceable_permission(
@@ -3115,10 +3135,13 @@ def _force_no_fresh_permission(
     permission: RiskPermission,
     *,
     telemetry_latest_ts: datetime | None,
+    extra_reasons: list[str] | None = None,
 ) -> RiskPermission:
     reasons = list(permission.reasons)
     reason = "no_fresh_published_permission"
-    risk_reason_codes = _dedupe([*permission.risk_reason_codes, *reasons, reason])
+    risk_reason_codes = _dedupe(
+        [*permission.risk_reason_codes, *reasons, *(extra_reasons or []), reason]
+    )
     return permission.model_copy(
         update={
             "allowed_modes": [],

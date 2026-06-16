@@ -13,6 +13,7 @@ from quant_lab.features.fast_microstructure import (
     _forward_lookback_bars,
     _forward_recommendation,
     build_fast_microstructure_features,
+    build_fast_microstructure_forward_test,
 )
 from quant_lab.research.bottom_zone_reversal import build_bottom_zone_reversal_shadow
 from quant_lab.research.market_pressure import build_market_pressure_score
@@ -73,6 +74,77 @@ def test_fast_microstructure_forward_defaults_and_sample_gate(monkeypatch):
         )
         == "FORWARD_VALIDATION_PASS"
     )
+
+
+def test_fast_microstructure_forward_adds_all_regimes_sample_pool():
+    start = datetime(2026, 6, 1, tzinfo=UTC)
+    market_rows = []
+    spread_rows = []
+    trade_rows = []
+    for index in range(70):
+        ts = start + timedelta(hours=index)
+        close = 100.0 + 0.02 * (index**2)
+        market_rows.append(
+            {
+                "venue": "okx",
+                "symbol": "SOL-USDT",
+                "market_type": "spot",
+                "timeframe": "1h",
+                "ts": ts,
+                "open": close - 0.1,
+                "high": close + 0.2,
+                "low": close - 0.2,
+                "close": close,
+                "volume": 1000.0 + index,
+                "quote_volume": close * (1000.0 + index),
+                "source": "test",
+                "ingest_ts": ts + timedelta(minutes=1),
+                "is_closed": True,
+                "regime": "SIDEWAYS" if index < 35 else "TREND_UP",
+            }
+        )
+        spread_rows.append(
+            {
+                "symbol": "SOL-USDT",
+                "minute_ts": ts,
+                "ts": ts,
+                "spread_bps": 1.0,
+                "orderbook_imbalance": float(index),
+            }
+        )
+        trade_rows.append(
+            {
+                "symbol": "SOL-USDT",
+                "minute_ts": ts,
+                "latest_trade_ts": ts,
+                "trade_count": 10 + index,
+                "size_sum": 100.0 + index,
+                "taker_buy_size_sum": 60.0 + index,
+                "taker_sell_size_sum": 40.0,
+            }
+        )
+
+    forward = build_fast_microstructure_forward_test(
+        market_bars=pl.DataFrame(market_rows),
+        orderbook_spread_1m=pl.DataFrame(spread_rows),
+        trade_activity_1m=pl.DataFrame(trade_rows),
+        generated_at=start + timedelta(hours=70),
+    )
+    rows = {
+        (row["regime"], row["horizon_hours"]): row
+        for row in forward.filter(
+            (pl.col("symbol") == "SOL-USDT")
+            & (pl.col("feature_name") == "orderbook_imbalance_1m")
+        ).to_dicts()
+    }
+
+    aggregate_8h = rows[("ALL_REGIMES", 8)]
+    trend_8h = rows[("TREND_UP", 8)]
+    assert aggregate_8h["sample_count"] == 62
+    assert aggregate_8h["recommendation"] == "FORWARD_VALIDATION_PASS"
+    assert trend_8h["sample_count"] == 27
+    assert trend_8h["recommendation"] == "NEEDS_MORE_FORWARD_SAMPLES"
+    assert aggregate_8h["live_order_effect"] == "read_only_no_live_order"
 
 
 def test_bottom_fast_microstructure_and_market_pressure_reports_export(tmp_path):

@@ -73,6 +73,7 @@ FAST_MICROSTRUCTURE_FORWARD_FEATURES = (
 )
 FAST_MICROSTRUCTURE_FORWARD_HORIZONS = (1, 4, 8)
 FAST_MICROSTRUCTURE_FORWARD_LOOKBACK_BARS = 2000
+FAST_MICROSTRUCTURE_FORWARD_AGGREGATE_REGIME = "ALL_REGIMES"
 FAST_MICROSTRUCTURE_FORWARD_REGIMES = (
     "RISK_OFF",
     "SIDEWAYS",
@@ -347,9 +348,17 @@ def build_fast_microstructure_forward_test(
                 for feature_name, value in feature_values.items():
                     if value is None:
                         continue
-                    samples.setdefault((feature_name, symbol, regime, horizon), []).append(
-                        {"ts": ts, "value": value, "future_net_bps": future_net}
-                    )
+                    sample = {"ts": ts, "value": value, "future_net_bps": future_net}
+                    samples.setdefault((feature_name, symbol, regime, horizon), []).append(sample)
+                    samples.setdefault(
+                        (
+                            feature_name,
+                            symbol,
+                            FAST_MICROSTRUCTURE_FORWARD_AGGREGATE_REGIME,
+                            horizon,
+                        ),
+                        [],
+                    ).append(sample)
 
     elapsed_ms = round((perf_counter() - started) * 1000.0, 3)
     out = [

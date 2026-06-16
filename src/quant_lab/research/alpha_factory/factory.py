@@ -34,7 +34,19 @@ SCHEMA_VERSION = "alpha_factory.v0.1"
 MAX_DAILY_CANDIDATES = 200
 FACTOR_BRIDGE_TEMPLATE_FAMILY = "factor_strategy_bridge"
 FACTOR_BRIDGE_CANDIDATE_PREFIX = "v5.factor_bridge."
+FAST_MICROSTRUCTURE_BRIDGE_CANDIDATE_PREFIX = "v5.fast_microstructure_bridge."
+FACTOR_BRIDGE_CANDIDATE_PREFIXES = (
+    FACTOR_BRIDGE_CANDIDATE_PREFIX,
+    FAST_MICROSTRUCTURE_BRIDGE_CANDIDATE_PREFIX,
+)
 FACTOR_BRIDGE_TEMPLATE_PATTERN = f"{FACTOR_BRIDGE_CANDIDATE_PREFIX}*"
+FAST_MICROSTRUCTURE_BRIDGE_TEMPLATE_PATTERN = (
+    f"{FAST_MICROSTRUCTURE_BRIDGE_CANDIDATE_PREFIX}*"
+)
+FACTOR_BRIDGE_TEMPLATE_PATTERNS = (
+    FACTOR_BRIDGE_TEMPLATE_PATTERN,
+    FAST_MICROSTRUCTURE_BRIDGE_TEMPLATE_PATTERN,
+)
 FACTOR_BRIDGE_RECOMPUTE_MAX_FACTOR_VALUE_ROWS = 50_000
 FACTOR_BRIDGE_RECOMPUTE_MAX_MARKET_BAR_ROWS = 500_000
 
@@ -216,7 +228,7 @@ DEFAULT_TEMPLATE_REGISTRY: tuple[dict[str, Any], ...] = (
             "review_mode": ["strategy_review_only"],
             "dry_run_first": [True],
         },
-        "candidate_patterns": [FACTOR_BRIDGE_TEMPLATE_PATTERN],
+        "candidate_patterns": list(FACTOR_BRIDGE_TEMPLATE_PATTERNS),
     },
 )
 
@@ -729,7 +741,8 @@ def template_registry_lookup(registry: pl.DataFrame) -> dict[str, dict[str, Any]
         for candidate in patterns:
             lookup[candidate] = payload
         if family == FACTOR_BRIDGE_TEMPLATE_FAMILY:
-            lookup[FACTOR_BRIDGE_TEMPLATE_PATTERN] = payload
+            for pattern in FACTOR_BRIDGE_TEMPLATE_PATTERNS:
+                lookup[pattern] = payload
     return lookup
 
 
@@ -1209,7 +1222,7 @@ def _template_for_candidate(
 
 def _fallback_template_family(candidate: Any) -> str:
     text = str(candidate or "")
-    if text.startswith(FACTOR_BRIDGE_CANDIDATE_PREFIX):
+    if _is_factor_bridge_candidate(text):
         return FACTOR_BRIDGE_TEMPLATE_FAMILY
     if text.startswith("v5.expanded_relative_strength"):
         return "expanded_relative_strength"
@@ -1243,9 +1256,7 @@ def _candidate_enabled_for_registry(
     if not text:
         return False
     if not registry_lookup:
-        return text in ALPHA_FACTORY_CANDIDATES or text.startswith(
-            FACTOR_BRIDGE_CANDIDATE_PREFIX
-        )
+        return text in ALPHA_FACTORY_CANDIDATES or _is_factor_bridge_candidate(text)
     return _registry_payload_for_candidate(text, registry_lookup) is not None
 
 
@@ -1258,16 +1269,29 @@ def _registry_payload_for_candidate(
     text = str(candidate or "")
     if text in registry_lookup:
         return registry_lookup[text]
-    if text.startswith(FACTOR_BRIDGE_CANDIDATE_PREFIX):
+    if _is_factor_bridge_candidate(text):
+        for prefix, pattern in zip(
+            FACTOR_BRIDGE_CANDIDATE_PREFIXES,
+            FACTOR_BRIDGE_TEMPLATE_PATTERNS,
+            strict=True,
+        ):
+            if text.startswith(prefix) and pattern in registry_lookup:
+                return registry_lookup[pattern]
         return registry_lookup.get(FACTOR_BRIDGE_TEMPLATE_PATTERN)
     return None
 
 
+def _is_factor_bridge_candidate(candidate: Any) -> bool:
+    text = str(candidate or "")
+    return text.startswith(FACTOR_BRIDGE_CANDIDATE_PREFIXES)
+
+
 def _alpha_factory_managed_candidate_expr(candidate: pl.Expr) -> pl.Expr:
     candidate_text = candidate.cast(pl.Utf8, strict=False).fill_null("")
-    return candidate_text.is_in(sorted(ALPHA_FACTORY_CANDIDATES)) | candidate_text.str.starts_with(
-        FACTOR_BRIDGE_CANDIDATE_PREFIX
-    )
+    bridge_expr = candidate_text.str.starts_with(FACTOR_BRIDGE_CANDIDATE_PREFIX)
+    for prefix in FACTOR_BRIDGE_CANDIDATE_PREFIXES[1:]:
+        bridge_expr = bridge_expr | candidate_text.str.starts_with(prefix)
+    return candidate_text.is_in(sorted(ALPHA_FACTORY_CANDIDATES)) | bridge_expr
 
 
 def _alpha_factory_source_summary(root: Path, day: date) -> pl.DataFrame:
@@ -1502,9 +1526,19 @@ def _factor_bridge_rows_to_source_summary(
         if sample_count <= 0:
             continue
         candidate = str(row.get("bridge_candidate_id") or "")
-        if not candidate.startswith(FACTOR_BRIDGE_CANDIDATE_PREFIX):
+        if not _is_factor_bridge_candidate(candidate):
             continue
         symbol = normalize_symbol(_first_csv_value(row.get("symbol"))) or "UNKNOWN"
+        source_label = (
+            "fast_microstructure_forward_validation_read_only"
+            if candidate.startswith(FAST_MICROSTRUCTURE_BRIDGE_CANDIDATE_PREFIX)
+            else "factor_forward_validation_read_only"
+        )
+        pass_reason = (
+            "fast_microstructure_forward_validation_pass"
+            if candidate.startswith(FAST_MICROSTRUCTURE_BRIDGE_CANDIDATE_PREFIX)
+            else "factor_forward_validation_pass"
+        )
         rows.append(
             {
                 "as_of_date": day.isoformat(),
@@ -1520,13 +1554,11 @@ def _factor_bridge_rows_to_source_summary(
                 "median_net_bps": None,
                 "p25_net_bps": None,
                 "win_rate": None,
-                "cost_source_mix": safe_json_dumps(
-                    {"factor_forward_validation_read_only": sample_count}
-                ),
+                "cost_source_mix": safe_json_dumps({source_label: sample_count}),
                 "decision": "RESEARCH_ONLY",
                 "decision_reasons": safe_json_dumps(
                     [
-                        "factor_forward_validation_pass",
+                        pass_reason,
                         "alpha_factory_strategy_review_required",
                         "strategy_review_only_no_live_order",
                     ]
@@ -1612,7 +1644,7 @@ def _parameter_payload(
         "batch_scan": True,
         "paper_only_by_default": True,
     }
-    if candidate.startswith(FACTOR_BRIDGE_CANDIDATE_PREFIX):
+    if _is_factor_bridge_candidate(candidate):
         payload.update(
             {
                 "factor_id": str(row.get("factor_id") or ""),

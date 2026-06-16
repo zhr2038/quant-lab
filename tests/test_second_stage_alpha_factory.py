@@ -336,6 +336,90 @@ def test_alpha_factory_reads_factor_bridge_from_latest_expert_pack(tmp_path):
     assert rows[0]["source_dataset"] == "reports/factor_strategy_bridge_candidates.csv"
 
 
+def test_alpha_factory_reads_fast_microstructure_bridge_from_latest_expert_pack(tmp_path):
+    lake = tmp_path / "lake"
+    exports = tmp_path / "exports"
+    exports.mkdir(parents=True)
+    pack_path = exports / "quant_lab_expert_pack_2026-05-24_20260524T010000+0000.zip"
+    bridge_candidate = (
+        "v5.fast_microstructure_bridge.orderbook_imbalance_1m.bnb_usdt.sideways.8h"
+    )
+    buffer = io.StringIO()
+    writer = csv.DictWriter(
+        buffer,
+        fieldnames=[
+            "as_of_date",
+            "factor_id",
+            "factor_family",
+            "correlation_cluster_id",
+            "symbol",
+            "regime",
+            "horizon",
+            "horizon_hours",
+            "forward_sample_count",
+            "forward_cost_adjusted_score",
+            "bridge_candidate_id",
+            "eligible_for_alpha_factory",
+            "blocking_reasons",
+            "recommended_action",
+            "live_order_effect",
+        ],
+    )
+    writer.writeheader()
+    writer.writerow(
+        {
+            "as_of_date": "2026-05-24",
+            "factor_id": "fast_microstructure.orderbook_imbalance_1m",
+            "factor_family": "fast_microstructure",
+            "correlation_cluster_id": "fast_microstructure",
+            "symbol": "BNB-USDT",
+            "regime": "SIDEWAYS",
+            "horizon": "8h",
+            "horizon_hours": "8",
+            "forward_sample_count": "144",
+            "forward_cost_adjusted_score": "32.5",
+            "bridge_candidate_id": bridge_candidate,
+            "eligible_for_alpha_factory": "strategy_review_pending",
+            "blocking_reasons": (
+                '["needs_strategy_formulation","needs_paper_tracking",'
+                '"needs_cost_validation"]'
+            ),
+            "recommended_action": "REVIEW_FOR_ALPHA_FACTORY_STRATEGY",
+            "live_order_effect": "none_read_only_research",
+        }
+    )
+    with zipfile.ZipFile(pack_path, "w") as archive:
+        archive.writestr("reports/factor_strategy_bridge_candidates.csv", buffer.getvalue())
+
+    build_and_publish_alpha_factory(
+        lake,
+        as_of_date="2026-05-24",
+        lookback_days=30,
+        max_candidates=200,
+    )
+
+    candidates = read_parquet_dataset(lake / "gold" / "alpha_factory_candidate")
+    results = read_parquet_dataset(lake / "gold" / "alpha_factory_result")
+    promotion = read_parquet_dataset(lake / "gold" / "alpha_factory_promotion_queue")
+    candidate_rows = candidates.filter(pl.col("strategy_candidate") == bridge_candidate).to_dicts()
+    result_rows = results.filter(pl.col("strategy_candidate") == bridge_candidate).to_dicts()
+    promotion_rows = promotion.filter(pl.col("strategy_candidate") == bridge_candidate).to_dicts()
+
+    assert candidate_rows
+    assert result_rows
+    assert promotion_rows
+    params = json.loads(candidate_rows[0]["parameter_json"])
+    assert candidate_rows[0]["template_name"] == "factor_strategy_bridge"
+    assert candidate_rows[0]["source_dataset"] == "reports/factor_strategy_bridge_candidates.csv"
+    assert candidate_rows[0]["max_live_notional_usdt"] == 0.0
+    assert params["factor_id"] == "fast_microstructure.orderbook_imbalance_1m"
+    assert params["factor_family"] == "fast_microstructure"
+    assert params["forward_sample_count"] == 144
+    assert params["strategy_review_only"] is True
+    assert result_rows[0]["decision"] == "RESEARCH"
+    assert promotion_rows[0]["max_live_notional_usdt"] == 0.0
+
+
 def test_alpha_factory_prefers_current_factor_bridge_over_stale_expert_pack(tmp_path):
     lake = tmp_path / "lake"
     exports = tmp_path / "exports"

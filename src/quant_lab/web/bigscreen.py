@@ -22,12 +22,30 @@ _SNAPSHOT_CACHE: dict[str, tuple[float, dict[str, Any]]] = {}
 
 
 def bigscreen_snapshot(lake_root: str | Path) -> dict[str, Any]:
+    payload, _meta = bigscreen_snapshot_with_meta(lake_root)
+    return payload
+
+
+def bigscreen_snapshot_with_meta(lake_root: str | Path) -> tuple[dict[str, Any], dict[str, Any]]:
+    start = time.perf_counter()
     root = Path(lake_root)
     cache_key = str(root.resolve())
     cached = _SNAPSHOT_CACHE.get(cache_key)
     now = time.monotonic()
-    if cached is not None and now - cached[0] <= _snapshot_cache_ttl_seconds():
-        return cached[1]
+    ttl_seconds = _snapshot_cache_ttl_seconds()
+    if cached is not None:
+        age_seconds = max(0.0, now - cached[0])
+        if age_seconds <= ttl_seconds:
+            perf.record_event(
+                "bigscreen_snapshot",
+                elapsed_ms=(time.perf_counter() - start) * 1000,
+                cache_hit=True,
+            )
+            return cached[1], {
+                "cache_hit": True,
+                "cache_age_seconds": age_seconds,
+                "cache_ttl_seconds": ttl_seconds,
+            }
 
     generated_at = datetime.now(UTC)
     data_health = _safe_summary("data_health_summary", readers.data_health_summary, root)
@@ -91,7 +109,16 @@ def bigscreen_snapshot(lake_root: str | Path) -> dict[str, Any]:
         "warnings": warnings[:30],
     }
     _SNAPSHOT_CACHE[cache_key] = (now, payload)
-    return payload
+    perf.record_event(
+        "bigscreen_snapshot",
+        elapsed_ms=(time.perf_counter() - start) * 1000,
+        cache_miss=True,
+    )
+    return payload, {
+        "cache_hit": False,
+        "cache_age_seconds": 0.0,
+        "cache_ttl_seconds": ttl_seconds,
+    }
 
 
 def clear_bigscreen_cache() -> None:

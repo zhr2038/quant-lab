@@ -315,23 +315,17 @@ def create_app() -> FastAPI:
 
     @app.get("/v1/web/bigscreen-snapshot")
     def web_bigscreen_snapshot() -> JSONResponse:
-        from quant_lab.web.bigscreen import bigscreen_snapshot
+        from quant_lab.web.bigscreen import bigscreen_snapshot_with_meta
 
-        payload = bigscreen_snapshot(_lake_root())
-        response = _utf8_json_response(
-            payload,
-            headers={
-                "X-Quant-Lab-Bigscreen-Mode": "read-only",
-            },
-        )
-        response.headers["X-Quant-Lab-Response-Bytes"] = str(len(response.body or b""))
-        return response
+        payload, cache_meta = bigscreen_snapshot_with_meta(_lake_root())
+        return _bigscreen_snapshot_response(payload, cache_meta)
 
     @app.get("/web-v2/snapshot")
     def web_bigscreen_snapshot_for_static_page() -> JSONResponse:
-        from quant_lab.web.bigscreen import bigscreen_snapshot
+        from quant_lab.web.bigscreen import bigscreen_snapshot_with_meta
 
-        return _utf8_json_response(bigscreen_snapshot(_lake_root()))
+        payload, cache_meta = bigscreen_snapshot_with_meta(_lake_root())
+        return _bigscreen_snapshot_response(payload, cache_meta)
 
     @app.post("/web-v2/expert-pack/generate")
     def web_v2_generate_expert_pack(response: Response) -> dict[str, Any]:
@@ -1005,6 +999,37 @@ def _utf8_json_response(content: Any, *, headers: dict[str, str] | None = None) 
         headers=headers,
         media_type="application/json; charset=utf-8",
     )
+
+
+def _bigscreen_snapshot_response(
+    payload: dict[str, Any],
+    cache_meta: dict[str, Any],
+) -> JSONResponse:
+    cache_hit = bool(cache_meta.get("cache_hit"))
+    response = _utf8_json_response(
+        payload,
+        headers={
+            "X-Quant-Lab-Bigscreen-Mode": "read-only",
+            "X-Quant-Lab-Bigscreen-Cache-Hit": "true" if cache_hit else "false",
+            "X-Quant-Lab-Bigscreen-Cache-Age-Seconds": _header_float_text(
+                cache_meta.get("cache_age_seconds")
+            ),
+            "X-Quant-Lab-Bigscreen-Cache-TTL-Seconds": _header_float_text(
+                cache_meta.get("cache_ttl_seconds")
+            ),
+            "X-Quant-Lab-Api-Cache-Hit": "true" if cache_hit else "false",
+            "X-Quant-Lab-Response-Cache-Hit": "true" if cache_hit else "false",
+        },
+    )
+    response.headers["X-Quant-Lab-Response-Bytes"] = str(len(response.body or b""))
+    return response
+
+
+def _header_float_text(value: Any) -> str:
+    try:
+        return f"{float(value):.3f}"
+    except (TypeError, ValueError):
+        return "0.000"
 
 
 def _bigscreen_static_root() -> Path:

@@ -414,15 +414,26 @@ def test_bigscreen_snapshot_endpoints_return_payload(monkeypatch, tmp_path):
 
     protected_response = client.get("/v1/web/bigscreen-snapshot")
     web_response = client.get("/web-v2/snapshot")
+    protected_cached_response = client.get("/v1/web/bigscreen-snapshot")
 
     assert protected_response.status_code == 200
     assert web_response.status_code == 200
+    assert protected_cached_response.status_code == 200
     assert protected_response.headers["content-type"] == "application/json; charset=utf-8"
     assert web_response.headers["content-type"] == "application/json; charset=utf-8"
     assert protected_response.headers["x-quant-lab-bigscreen-mode"] == "read-only"
+    assert web_response.headers["x-quant-lab-bigscreen-mode"] == "read-only"
+    assert protected_response.headers["x-quant-lab-bigscreen-cache-hit"] == "false"
+    assert web_response.headers["x-quant-lab-bigscreen-cache-hit"] == "true"
+    assert protected_cached_response.headers["x-quant-lab-bigscreen-cache-hit"] == "true"
+    assert protected_cached_response.headers["x-quant-lab-api-cache-hit"] == "true"
+    assert protected_cached_response.headers["x-quant-lab-response-cache-hit"] == "true"
+    assert float(web_response.headers["x-quant-lab-bigscreen-cache-age-seconds"]) >= 0.0
+    assert float(web_response.headers["x-quant-lab-bigscreen-cache-ttl-seconds"]) >= 0.0
     assert int(protected_response.headers["x-quant-lab-response-bytes"]) == len(
         protected_response.content
     )
+    assert int(web_response.headers["x-quant-lab-response-bytes"]) == len(web_response.content)
     assert protected_response.json()["mode"] == "read-only"
     assert web_response.json()["mode"] == "read-only"
 

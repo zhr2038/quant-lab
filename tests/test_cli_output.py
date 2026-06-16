@@ -5,6 +5,7 @@ from quant_lab.cli import (
     _compact_ops_summary_payload,
     _compact_v5_sync_payload,
     _compact_v5_telemetry_payload,
+    _v5_sync_has_operational_pull_failure,
 )
 from quant_lab.strategy_telemetry.models import V5TelemetryAnalysisResult
 
@@ -79,6 +80,28 @@ def test_compact_v5_sync_payload_omits_nested_bundle_details():
     assert "pull" not in payload
     assert "inbox" not in payload
     assert "analysis" not in payload
+
+
+def test_v5_sync_marks_real_pull_warning_as_operational_failure():
+    payload = {
+        "pull": {
+            "dry_run": False,
+            "warnings": ["remote bundle list exited with code 255"],
+        }
+    }
+
+    assert _v5_sync_has_operational_pull_failure(payload) is True
+
+
+def test_v5_sync_does_not_fail_dry_run_pull_warning():
+    payload = {
+        "pull": {
+            "dry_run": True,
+            "warnings": ["dry_run: rsync was not executed"],
+        }
+    }
+
+    assert _v5_sync_has_operational_pull_failure(payload) is False
 
 
 def test_compact_lake_health_payload_omits_full_rows():

@@ -2228,6 +2228,8 @@ def sync_v5_telemetry_command(
     )
     output = _compact_v5_sync_payload(payload) if compact_output else payload
     typer.echo(json.dumps(output, indent=None if compact_output else 2, sort_keys=True))
+    if _v5_sync_has_operational_pull_failure(payload):
+        raise typer.Exit(2)
 
 
 def _compact_v5_sync_payload(payload: dict[str, object]) -> dict[str, object]:
@@ -2275,6 +2277,14 @@ def _compact_v5_sync_payload(payload: dict[str, object]) -> dict[str, object]:
             analysis.get("latest_bundle_ts") if isinstance(analysis, dict) else None
         ),
     }
+
+
+def _v5_sync_has_operational_pull_failure(payload: dict[str, object]) -> bool:
+    pull = payload.get("pull") if isinstance(payload.get("pull"), dict) else {}
+    if not isinstance(pull, dict) or bool(pull.get("dry_run")):
+        return False
+    warnings = pull.get("warnings")
+    return bool(warnings) if isinstance(warnings, list) else False
 
 
 def _v5_sync_warning_is_expected_limit_notice(value: object) -> bool:

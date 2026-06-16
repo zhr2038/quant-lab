@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import csv
 import io
+import json
 import zipfile
 from datetime import UTC, datetime, timedelta
 
@@ -197,7 +198,7 @@ def test_alpha_factory_outputs_candidates_results_and_queue_without_live(tmp_pat
     assert result.candidate_rows <= 200
     assert result.result_rows == result.candidate_rows
     assert result.promotion_rows == result.candidate_rows
-    assert result.template_registry_rows == 5
+    assert result.template_registry_rows == 6
     assert "LIVE_SMALL_READY" not in result.decision_counts
 
     registry = read_parquet_dataset(lake / "gold" / "alpha_factory_template_registry")
@@ -206,7 +207,7 @@ def test_alpha_factory_outputs_candidates_results_and_queue_without_live(tmp_pat
     promotion = read_parquet_dataset(lake / "gold" / "alpha_factory_promotion_queue")
     strategy_evidence = read_parquet_dataset(lake / "gold" / "strategy_evidence")
 
-    assert registry.height == 5
+    assert registry.height == 6
     assert set(registry["safety_mode"].to_list()) == {"paper_shadow_only"}
     assert "expanded_relative_strength_v1" in set(registry["template_id"].to_list())
     expanded_space = registry.filter(
@@ -222,6 +223,50 @@ def test_alpha_factory_outputs_candidates_results_and_queue_without_live(tmp_pat
     assert "LIVE_SMALL_READY" not in set(results["decision"].drop_nulls().to_list())
     assert "LIVE_SMALL_READY" not in set(promotion["promotion_state"].drop_nulls().to_list())
     assert "v5.alt_impulse_shadow" in set(strategy_evidence["strategy_candidate"].to_list())
+
+
+def test_alpha_factory_builds_factor_bridge_strategy_review_candidate(tmp_path):
+    lake = tmp_path / "lake"
+    _write_factor_bridge_inputs(lake)
+
+    result = build_and_publish_alpha_factory(
+        lake,
+        as_of_date="2026-05-24",
+        lookback_days=30,
+        max_candidates=200,
+    )
+
+    bridge_candidate = "v5.factor_bridge.core.mean_reversion_vol_adjusted_4"
+    candidates = read_parquet_dataset(lake / "gold" / "alpha_factory_candidate")
+    results = read_parquet_dataset(lake / "gold" / "alpha_factory_result")
+    promotion = read_parquet_dataset(lake / "gold" / "alpha_factory_promotion_queue")
+
+    candidate_rows = candidates.filter(pl.col("strategy_candidate") == bridge_candidate)
+    result_rows = results.filter(pl.col("strategy_candidate") == bridge_candidate)
+    promotion_rows = promotion.filter(pl.col("strategy_candidate") == bridge_candidate)
+
+    assert result.candidate_rows >= 1
+    assert not candidate_rows.is_empty()
+    assert not result_rows.is_empty()
+    assert not promotion_rows.is_empty()
+    candidate = candidate_rows.to_dicts()[0]
+    output = result_rows.to_dicts()[0]
+    queued = promotion_rows.to_dicts()[0]
+    params = json.loads(candidate["parameter_json"])
+    reasons = json.loads(queued["reasons"])
+
+    assert candidate["template_name"] == "factor_strategy_bridge"
+    assert candidate["source_dataset"] == "reports/factor_strategy_bridge_candidates"
+    assert candidate["candidate_state"] == "RESEARCH"
+    assert candidate["max_live_notional_usdt"] == 0.0
+    assert params["factor_id"] == "core.mean_reversion_vol_adjusted_4"
+    assert params["forward_sample_count"] >= 30
+    assert params["strategy_review_only"] is True
+    assert output["template_name"] == "factor_strategy_bridge"
+    assert output["decision"] == "RESEARCH"
+    assert queued["max_live_notional_usdt"] == 0.0
+    assert queued["manual_live_approval_required"] is True
+    assert "alpha_factory_live_disabled" in reasons
 
 
 def test_alpha_factory_reads_template_registry_enabled_flags(tmp_path):
@@ -779,6 +824,108 @@ def _write_alt_impulse_evidence(lake) -> None:
             ]
         ),
         lake / "gold" / "strategy_evidence",
+    )
+
+
+def _write_factor_bridge_inputs(lake) -> None:
+    start = datetime(2026, 5, 20, tzinfo=UTC)
+    market_rows = []
+    factor_rows = []
+    for hour in range(80):
+        ts = start + timedelta(hours=hour)
+        close = 100.0 + 0.02 * (hour**2)
+        market_rows.append(
+            {
+                "venue": "okx",
+                "symbol": "SOL-USDT",
+                "market_type": "SPOT",
+                "timeframe": "1H",
+                "ts": ts,
+                "open": close - 0.1,
+                "high": close + 0.5,
+                "low": close - 0.5,
+                "close": close,
+                "volume": 1000.0 + hour,
+                "quote_volume": close * (1000.0 + hour),
+                "source": "test",
+                "ingest_ts": ts,
+                "is_closed": True,
+            }
+        )
+        if hour < 70:
+            factor_rows.append(
+                {
+                    "factor_id": "core.mean_reversion_vol_adjusted_4",
+                    "factor_name": "Mean reversion vol adjusted 4h",
+                    "factor_family": "risk_adjusted_reversal",
+                    "factor_version": "v0.1",
+                    "symbol": "SOL-USDT",
+                    "timeframe": "1H",
+                    "ts": ts,
+                    "value": float(hour),
+                    "normalized_value": float(hour),
+                    "rank_value": float(hour),
+                    "raw_value": float(hour),
+                    "is_valid": True,
+                    "created_at": datetime(2026, 5, 24, tzinfo=UTC),
+                    "source": "test",
+                }
+            )
+    write_parquet_dataset(pl.DataFrame(market_rows), lake / "silver" / "market_bar")
+    write_parquet_dataset(pl.DataFrame(factor_rows), lake / "gold" / "factor_value")
+    write_parquet_dataset(
+        pl.DataFrame(
+            [
+                {
+                    "as_of_date": "2026-05-24",
+                    "factor_id": "core.mean_reversion_vol_adjusted_4",
+                    "factor_name": "Mean reversion vol adjusted 4h",
+                    "factor_family": "risk_adjusted_reversal",
+                    "factor_version": "v0.1",
+                    "timeframe": "1H",
+                    "best_horizon_bars": 4,
+                    "tested_horizon_count": 3,
+                    "best_score": 1.2,
+                    "avg_score": 1.0,
+                    "best_rank_ic_mean": 0.08,
+                    "best_rank_ic_tstat": 2.2,
+                    "best_long_short_mean_bps": 18.0,
+                    "candidate_state": "PAPER_READY",
+                    "recommended_action": "FACTOR_PAPER_REVIEW",
+                    "promotion_block_reasons_json": "[]",
+                    "manual_review_required": True,
+                    "created_at": datetime(2026, 5, 24, tzinfo=UTC),
+                    "source": "test",
+                }
+            ]
+        ),
+        lake / "gold" / "factor_candidate",
+    )
+    write_parquet_dataset(
+        pl.DataFrame(
+            [
+                {
+                    "day": "2026-05-24",
+                    "symbol": "SOL-USDT",
+                    "source": "public_spread_proxy",
+                    "total_cost_bps_p75": 1.0,
+                    "created_at": datetime(2026, 5, 24, tzinfo=UTC),
+                }
+            ]
+        ),
+        lake / "gold" / "cost_bucket_daily",
+    )
+    write_parquet_dataset(
+        pl.DataFrame(
+            [
+                {
+                    "as_of_date": "2026-05-24",
+                    "current_regime": "TREND_UP",
+                    "created_at": datetime(2026, 5, 24, tzinfo=UTC),
+                }
+            ]
+        ),
+        lake / "gold" / "market_regime_daily",
     )
 
 

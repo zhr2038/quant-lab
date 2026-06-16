@@ -8,7 +8,9 @@ from typing import Any
 import polars as pl
 from pydantic import BaseModel, ConfigDict, Field
 
+from quant_lab.backtest.reports import build_factor_forward_validation
 from quant_lab.data.lake import read_parquet_dataset, write_parquet_dataset
+from quant_lab.factors.composite_factory import build_factor_strategy_bridge_candidates
 from quant_lab.research.second_stage_alpha_factory import (
     SECOND_STAGE_CANDIDATES,
     SECOND_STAGE_SAMPLE_DATASET,
@@ -26,6 +28,9 @@ from quant_lab.symbols import normalize_symbol
 SOURCE_NAME = "research.alpha_factory.v0.1"
 SCHEMA_VERSION = "alpha_factory.v0.1"
 MAX_DAILY_CANDIDATES = 200
+FACTOR_BRIDGE_TEMPLATE_FAMILY = "factor_strategy_bridge"
+FACTOR_BRIDGE_CANDIDATE_PREFIX = "v5.factor_bridge."
+FACTOR_BRIDGE_TEMPLATE_PATTERN = f"{FACTOR_BRIDGE_CANDIDATE_PREFIX}*"
 
 ALPHA_FACTORY_TEMPLATE_REGISTRY_DATASET = (
     Path("gold") / "alpha_factory_template_registry"
@@ -34,6 +39,11 @@ ALPHA_FACTORY_CANDIDATE_DATASET = Path("gold") / "alpha_factory_candidate"
 ALPHA_FACTORY_RESULT_DATASET = Path("gold") / "alpha_factory_result"
 ALPHA_FACTORY_PROMOTION_QUEUE_DATASET = Path("gold") / "alpha_factory_promotion_queue"
 STRATEGY_EVIDENCE_DATASET = Path("gold") / "strategy_evidence"
+FACTOR_CANDIDATE_DATASET = Path("gold") / "factor_candidate"
+FACTOR_VALUE_DATASET = Path("gold") / "factor_value"
+MARKET_BAR_DATASET = Path("silver") / "market_bar"
+MARKET_REGIME_DATASET = Path("gold") / "market_regime_daily"
+COST_BUCKET_DAILY_DATASET = Path("gold") / "cost_bucket_daily"
 
 ALPHA_FACTORY_CANDIDATES = frozenset([*SECOND_STAGE_CANDIDATES, "v5.alt_impulse_shadow"])
 
@@ -182,6 +192,24 @@ DEFAULT_TEMPLATE_REGISTRY: tuple[dict[str, Any], ...] = (
             "min_alpha6_score": [0.4, 0.6],
         },
         "candidate_patterns": ["v5.alt_impulse_shadow"],
+    },
+    {
+        "template_id": "factor_strategy_bridge_v1",
+        "template_family": FACTOR_BRIDGE_TEMPLATE_FAMILY,
+        "enabled": True,
+        "description": (
+            "Route Factor Factory forward-validation pass rows into Alpha Factory "
+            "strategy-review candidates."
+        ),
+        "universe_scope": "factor_factory_forward_validation_pass",
+        "allowed_regimes": ["RISK_ON_CONFIRMED", "TREND_UP", "SIDEWAYS", "RISK_OFF"],
+        "max_candidates_per_day": 60,
+        "parameter_space": {
+            "bridge_source": ["factor_strategy_bridge_candidates"],
+            "review_mode": ["strategy_review_only"],
+            "dry_run_first": [True],
+        },
+        "candidate_patterns": [FACTOR_BRIDGE_TEMPLATE_PATTERN],
     },
 )
 
@@ -693,6 +721,8 @@ def template_registry_lookup(registry: pl.DataFrame) -> dict[str, dict[str, Any]
         }
         for candidate in patterns:
             lookup[candidate] = payload
+        if family == FACTOR_BRIDGE_TEMPLATE_FAMILY:
+            lookup[FACTOR_BRIDGE_TEMPLATE_PATTERN] = payload
     return lookup
 
 
@@ -712,9 +742,7 @@ def _publish_alpha_factory_results_to_strategy_evidence(
         retained = retained.filter(
             ~(
                 (pl.col("as_of_date").cast(pl.Utf8) == day.isoformat())
-                & pl.col("strategy_candidate")
-                .cast(pl.Utf8)
-                .is_in(sorted(ALPHA_FACTORY_CANDIDATES))
+                & _alpha_factory_managed_candidate_expr(pl.col("strategy_candidate"))
             )
         )
     combined = pl.concat([retained, summary], how="diagonal_relaxed")
@@ -773,16 +801,14 @@ def _ranked_summary_rows(
 ) -> list[dict[str, Any]]:
     if summary.is_empty():
         return []
-    enabled_candidates = (
-        set(registry_lookup)
-        if registry_lookup
-        else set(ALPHA_FACTORY_CANDIDATES)
-    )
     rows = [
         row
         for row in summary.to_dicts()
         if str(row.get("as_of_date") or "")[:10] == as_of_date.isoformat()
-        and str(row.get("strategy_candidate") or "") in enabled_candidates
+        and _candidate_enabled_for_registry(
+            row.get("strategy_candidate"),
+            registry_lookup,
+        )
     ]
     rows.sort(
         key=lambda row: (
@@ -1170,12 +1196,14 @@ def _template_for_candidate(
     candidate: Any,
     registry_lookup: dict[str, dict[str, Any]],
 ) -> str:
-    template = registry_lookup.get(str(candidate or ""), {})
+    template = _registry_payload_for_candidate(candidate, registry_lookup) or {}
     return str(template.get("template_family") or _fallback_template_family(candidate))
 
 
 def _fallback_template_family(candidate: Any) -> str:
     text = str(candidate or "")
+    if text.startswith(FACTOR_BRIDGE_CANDIDATE_PREFIX):
+        return FACTOR_BRIDGE_TEMPLATE_FAMILY
     if text.startswith("v5.expanded_relative_strength"):
         return "expanded_relative_strength"
     if text in {
@@ -1200,6 +1228,41 @@ def _is_futures_proxy_candidate(candidate: Any) -> bool:
     }
 
 
+def _candidate_enabled_for_registry(
+    candidate: Any,
+    registry_lookup: dict[str, dict[str, Any]] | None,
+) -> bool:
+    text = str(candidate or "")
+    if not text:
+        return False
+    if not registry_lookup:
+        return text in ALPHA_FACTORY_CANDIDATES or text.startswith(
+            FACTOR_BRIDGE_CANDIDATE_PREFIX
+        )
+    return _registry_payload_for_candidate(text, registry_lookup) is not None
+
+
+def _registry_payload_for_candidate(
+    candidate: Any,
+    registry_lookup: dict[str, dict[str, Any]] | None,
+) -> dict[str, Any] | None:
+    if not registry_lookup:
+        return None
+    text = str(candidate or "")
+    if text in registry_lookup:
+        return registry_lookup[text]
+    if text.startswith(FACTOR_BRIDGE_CANDIDATE_PREFIX):
+        return registry_lookup.get(FACTOR_BRIDGE_TEMPLATE_PATTERN)
+    return None
+
+
+def _alpha_factory_managed_candidate_expr(candidate: pl.Expr) -> pl.Expr:
+    candidate_text = candidate.cast(pl.Utf8, strict=False).fill_null("")
+    return candidate_text.is_in(sorted(ALPHA_FACTORY_CANDIDATES)) | candidate_text.str.starts_with(
+        FACTOR_BRIDGE_CANDIDATE_PREFIX
+    )
+
+
 def _alpha_factory_source_summary(root: Path, day: date) -> pl.DataFrame:
     second_stage = read_parquet_dataset(root / SECOND_STAGE_SUMMARY_DATASET)
     second_stage = _with_source_dataset(
@@ -1214,10 +1277,89 @@ def _alpha_factory_source_summary(root: Path, day: date) -> pl.DataFrame:
             & (pl.col("as_of_date").cast(pl.Utf8).str.slice(0, 10) == day.isoformat())
         )
         alt_impulse = _with_source_dataset(alt_impulse, "gold/strategy_evidence")
-    frames = [frame for frame in [second_stage, alt_impulse] if not frame.is_empty()]
+    factor_bridge = _factor_bridge_source_summary(root, day)
+    frames = [
+        frame
+        for frame in [second_stage, alt_impulse, factor_bridge]
+        if not frame.is_empty()
+    ]
     if not frames:
         return pl.DataFrame()
     return pl.concat(frames, how="diagonal_relaxed")
+
+
+def _factor_bridge_source_summary(root: Path, day: date) -> pl.DataFrame:
+    factor_candidates = read_parquet_dataset(root / FACTOR_CANDIDATE_DATASET)
+    factor_values = read_parquet_dataset(root / FACTOR_VALUE_DATASET)
+    market_bars = read_parquet_dataset(root / MARKET_BAR_DATASET)
+    if factor_candidates.is_empty() or factor_values.is_empty() or market_bars.is_empty():
+        return pl.DataFrame()
+    factor_forward = build_factor_forward_validation(
+        factor_candidates=factor_candidates,
+        factor_values=factor_values,
+        market_bars=market_bars,
+        market_regime=read_parquet_dataset(root / MARKET_REGIME_DATASET),
+        cost_bucket_daily=read_parquet_dataset(root / COST_BUCKET_DAILY_DATASET),
+    )
+    bridge = build_factor_strategy_bridge_candidates(
+        paper_queue=pl.DataFrame(),
+        factor_forward_validation=factor_forward,
+    )
+    rows: list[dict[str, Any]] = []
+    for row in bridge.to_dicts() if not bridge.is_empty() else []:
+        if str(row.get("recommended_action") or "") != "REVIEW_FOR_ALPHA_FACTORY_STRATEGY":
+            continue
+        if str(row.get("eligible_for_alpha_factory") or "") != "strategy_review_pending":
+            continue
+        sample_count = _int(row.get("forward_sample_count")) or 0
+        if sample_count <= 0:
+            continue
+        candidate = str(row.get("bridge_candidate_id") or "")
+        if not candidate.startswith(FACTOR_BRIDGE_CANDIDATE_PREFIX):
+            continue
+        symbol = normalize_symbol(_first_csv_value(row.get("symbol"))) or "UNKNOWN"
+        rows.append(
+            {
+                "as_of_date": day.isoformat(),
+                "source_as_of_date": str(row.get("as_of_date") or ""),
+                "strategy_candidate": candidate,
+                "candidate_name": candidate,
+                "symbol": symbol,
+                "regime_state": _first_csv_value(row.get("regime")) or "UNKNOWN",
+                "horizon_hours": _first_int_csv_value(row.get("horizon_hours")) or 0,
+                "sample_count": sample_count,
+                "complete_sample_count": sample_count,
+                "avg_net_bps": None,
+                "median_net_bps": None,
+                "p25_net_bps": None,
+                "win_rate": None,
+                "cost_source_mix": safe_json_dumps(
+                    {"factor_forward_validation_read_only": sample_count}
+                ),
+                "decision": "RESEARCH_ONLY",
+                "decision_reasons": safe_json_dumps(
+                    [
+                        "factor_forward_validation_pass",
+                        "alpha_factory_strategy_review_required",
+                        "strategy_review_only_no_live_order",
+                    ]
+                ),
+                "start_ts": None,
+                "end_ts": None,
+                "factor_id": row.get("factor_id"),
+                "factor_family": row.get("factor_family"),
+                "bridge_candidate_id": candidate,
+                "forward_regime": row.get("regime"),
+                "forward_horizon_hours": row.get("horizon_hours"),
+                "forward_sample_count": sample_count,
+                "forward_cost_adjusted_score": _float(row.get("forward_cost_adjusted_score")),
+                "blocking_reasons": row.get("blocking_reasons"),
+                "created_at": datetime.now(UTC),
+                "source": SOURCE_NAME,
+                "source_dataset": "reports/factor_strategy_bridge_candidates",
+            }
+        )
+    return pl.DataFrame(rows, infer_schema_length=None) if rows else pl.DataFrame()
 
 
 def _alpha_factory_source_samples(root: Path, day: date) -> pl.DataFrame:
@@ -1271,8 +1413,9 @@ def _parameter_payload(
     template: str,
     registry_lookup: dict[str, dict[str, Any]],
 ) -> dict[str, Any]:
-    config = registry_lookup.get(str(row.get("strategy_candidate") or ""), {})
-    return {
+    candidate = str(row.get("strategy_candidate") or "")
+    config = _registry_payload_for_candidate(candidate, registry_lookup) or {}
+    payload = {
         "template": template,
         "template_id": str(config.get("template_id") or ""),
         "parameter_space": config.get("parameter_space") or {},
@@ -1282,6 +1425,24 @@ def _parameter_payload(
         "batch_scan": True,
         "paper_only_by_default": True,
     }
+    if candidate.startswith(FACTOR_BRIDGE_CANDIDATE_PREFIX):
+        payload.update(
+            {
+                "factor_id": str(row.get("factor_id") or ""),
+                "factor_family": str(row.get("factor_family") or ""),
+                "bridge_candidate_id": str(row.get("bridge_candidate_id") or candidate),
+                "source_as_of_date": str(row.get("source_as_of_date") or ""),
+                "forward_regime": str(row.get("forward_regime") or ""),
+                "forward_horizon_hours": str(row.get("forward_horizon_hours") or ""),
+                "forward_sample_count": _int(row.get("forward_sample_count")) or 0,
+                "forward_cost_adjusted_score": _float(
+                    row.get("forward_cost_adjusted_score")
+                ),
+                "blocking_reasons": _json_list(row.get("blocking_reasons")),
+                "strategy_review_only": True,
+            }
+        )
+    return payload
 
 
 def _recommended_mode(decision: str) -> str:
@@ -1396,6 +1557,19 @@ def _json_dict(value: Any) -> dict[str, Any]:
     except Exception:
         return {}
     return parsed if isinstance(parsed, dict) else {}
+
+
+def _first_csv_value(value: Any) -> str:
+    for item in str(value or "").split(","):
+        text = item.strip()
+        if text:
+            return text
+    return ""
+
+
+def _first_int_csv_value(value: Any) -> int | None:
+    text = _first_csv_value(value)
+    return _int(text) if text else None
 
 
 def _dedupe_text(values: list[str]) -> list[str]:

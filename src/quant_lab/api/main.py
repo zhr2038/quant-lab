@@ -1631,7 +1631,12 @@ def _strategy_opportunity_advisory_response(
         fields=fields,
         compact_for_v5=compact_for_v5,
     )
-    cached_response = _STRATEGY_OPPORTUNITY_ADVISORY_RESPONSE_CACHE.get(response_key)
+    response_cache_enabled = not fresh_only
+    cached_response = (
+        _STRATEGY_OPPORTUNITY_ADVISORY_RESPONSE_CACHE.get(response_key)
+        if response_cache_enabled
+        else None
+    )
     if cached_response is not None:
         headers = _strategy_opportunity_advisory_response_headers(
             lake_root,
@@ -1678,14 +1683,15 @@ def _strategy_opportunity_advisory_response(
     serialize_ms = round((time.perf_counter() - serialize_started) * 1000.0, 3)
     etag = _advisory_etag(snapshot.source_sha, payload)
     latest_generated_text = _latest_advisory_generated_text(rows)
-    _STRATEGY_OPPORTUNITY_ADVISORY_RESPONSE_CACHE.set(
-        response_key,
-        payload=payload,
-        etag=etag,
-        row_count=len(rows),
-        latest_generated_at=latest_generated_text,
-        serialize_ms=serialize_ms,
-    )
+    if response_cache_enabled:
+        _STRATEGY_OPPORTUNITY_ADVISORY_RESPONSE_CACHE.set(
+            response_key,
+            payload=payload,
+            etag=etag,
+            row_count=len(rows),
+            latest_generated_at=latest_generated_text,
+            serialize_ms=serialize_ms,
+        )
     headers = _strategy_opportunity_advisory_response_headers(
         lake_root,
         row_count=len(rows),

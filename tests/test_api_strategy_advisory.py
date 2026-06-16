@@ -862,7 +862,7 @@ def test_strategy_opportunity_advisory_compact_filters_and_etag(tmp_path, monkey
     assert response.status_code == 200
     assert response.headers["x-quant-lab-api-cache-hit"] == "false"
     assert response.headers["x-advisory-response-cache-hit"] == "false"
-    assert int(response.headers["x-quant-lab-advisory-response-cache-size"]) >= 1
+    assert int(response.headers["x-quant-lab-advisory-response-cache-size"]) == 0
     assert int(response.headers["x-quant-lab-response-bytes"]) > 0
     metrics = api_metrics_summary(lake)
     by_path = metrics["latency_by_path_ms"]["/v1/strategy-opportunity-advisory/v5-compact"]
@@ -878,7 +878,75 @@ def test_strategy_opportunity_advisory_compact_filters_and_etag(tmp_path, monkey
     assert response.headers["x-quant-lab-advisory-source-sha"]
     assert not_modified.status_code == 304
     assert not_modified.headers["etag"] == etag
-    assert not_modified.headers["x-advisory-response-cache-hit"] == "true"
+    assert not_modified.headers["x-advisory-response-cache-hit"] == "false"
+
+
+def test_strategy_opportunity_advisory_fresh_only_cache_does_not_outlive_expiry(
+    tmp_path,
+    monkeypatch,
+):
+    lake = tmp_path / "lake"
+    monkeypatch.setenv("QUANT_LAB_LAKE_ROOT", str(lake))
+    monkeypatch.delenv("QUANT_LAB_API_TOKEN", raising=False)
+    api_main._STRATEGY_OPPORTUNITY_ADVISORY_CACHE.clear()
+    api_main._STRATEGY_OPPORTUNITY_ADVISORY_RESPONSE_CACHE.clear()
+
+    base = datetime(2026, 5, 20, tzinfo=UTC)
+
+    class FrozenDateTime(datetime):
+        current = base
+
+        @classmethod
+        def now(cls, tz=None):
+            value = cls.current
+            if tz is None:
+                return value.replace(tzinfo=None)
+            return value.astimezone(tz)
+
+    monkeypatch.setattr(api_main, "datetime", FrozenDateTime)
+    write_parquet_dataset(
+        pl.DataFrame(
+            [
+                {
+                    "as_of_ts": base,
+                    "generated_at": base,
+                    "expires_at": base + timedelta(minutes=1),
+                    "strategy_id": "SOL_F4_VOLUME_EXPANSION_PAPER_V1",
+                    "strategy_candidate": "v5.f4_volume_expansion_entry",
+                    "source_module": "paper_tracking",
+                    "symbol": "SOL-USDT",
+                    "decision": "PAPER_READY",
+                    "recommended_mode": "paper",
+                    "horizon_hours": 24,
+                    "sample_count": 80,
+                    "max_live_notional_usdt": 0.0,
+                }
+            ]
+        ),
+        lake / "gold" / "strategy_opportunity_advisory",
+    )
+    client = TestClient(app)
+
+    before_expiry = client.get(
+        "/v1/strategy-opportunity-advisory/v5-compact",
+        params={"fresh_only": "true"},
+    )
+    FrozenDateTime.current = base + timedelta(
+        seconds=api_main.STRATEGY_OPPORTUNITY_ADVISORY_TTL_SECONDS + 60
+    )
+    after_expiry = client.get(
+        "/v1/strategy-opportunity-advisory/v5-compact",
+        params={"fresh_only": "true"},
+    )
+    api_main._STRATEGY_OPPORTUNITY_ADVISORY_CACHE.clear()
+    api_main._STRATEGY_OPPORTUNITY_ADVISORY_RESPONSE_CACHE.clear()
+
+    assert before_expiry.status_code == 200
+    assert len(before_expiry.json()) == 1
+    assert before_expiry.headers["x-advisory-response-cache-hit"] == "false"
+    assert after_expiry.status_code == 200
+    assert after_expiry.json() == []
+    assert after_expiry.headers["x-advisory-response-cache-hit"] == "false"
 
 
 def test_strategy_opportunity_advisory_v5_compact_keeps_hype_wld_expanded_paper_rows(

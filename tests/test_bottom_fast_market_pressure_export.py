@@ -162,7 +162,10 @@ def test_fast_microstructure_strategy_candidates_only_use_forward_pass_rows():
                 "long_short_bps": 44.0,
                 "p25_net_bps": -10.0,
                 "hit_rate": 0.61,
+                "recent_7d_score": 0.5,
+                "lookback_bars": 2000,
                 "recommendation": "FORWARD_VALIDATION_PASS",
+                "data_leakage_check": "future_price_used_only_as_label",
                 "live_order_effect": "read_only_no_live_order",
             },
             {
@@ -176,7 +179,10 @@ def test_fast_microstructure_strategy_candidates_only_use_forward_pass_rows():
                 "long_short_bps": 4.0,
                 "p25_net_bps": -80.0,
                 "hit_rate": 0.48,
+                "recent_7d_score": 0.1,
+                "lookback_bars": 2000,
                 "recommendation": "NEEDS_MORE_FORWARD_SAMPLES",
+                "data_leakage_check": "future_price_used_only_as_label",
                 "live_order_effect": "read_only_no_live_order",
             },
         ]
@@ -187,7 +193,13 @@ def test_fast_microstructure_strategy_candidates_only_use_forward_pass_rows():
 
     assert len(rows) == 1
     assert rows[0]["feature_name"] == "orderbook_imbalance_1m"
+    assert rows[0]["generated_at"] == "2026-06-16T00:00:00Z"
+    assert rows[0]["forward_sample_count"] == 120
+    assert rows[0]["recent_7d_score"] == 0.5
+    assert rows[0]["lookback_bars"] == 2000
     assert rows[0]["recommended_stage"] == "SHADOW_REVIEW"
+    assert "needs_paper_tracking" in rows[0]["review_blocking_reasons"]
+    assert rows[0]["data_leakage_check"] == "future_price_used_only_as_label"
     assert rows[0]["live_order_effect"] == "read_only_no_live_order"
     assert "sol_usdt" in rows[0]["candidate_strategy_id"]
 

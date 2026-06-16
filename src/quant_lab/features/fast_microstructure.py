@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import math
 import os
 from collections.abc import Iterable
@@ -99,18 +100,29 @@ FAST_MICROSTRUCTURE_FORWARD_TEST_FIELDS = [
     "live_order_effect",
 ]
 FAST_MICROSTRUCTURE_STRATEGY_CANDIDATE_FIELDS = [
+    "generated_at",
     "feature_name",
     "symbol",
     "regime",
     "horizon_hours",
+    "forward_sample_count",
     "rank_ic",
     "long_short_bps",
     "p25_net_bps",
     "hit_rate",
+    "recent_7d_score",
+    "lookback_bars",
     "candidate_strategy_id",
     "recommended_stage",
+    "review_blocking_reasons",
+    "data_leakage_check",
     "live_order_effect",
 ]
+FAST_MICROSTRUCTURE_STRATEGY_REVIEW_BLOCKING_REASONS = (
+    "needs_strategy_formulation",
+    "needs_paper_tracking",
+    "needs_cost_validation",
+)
 
 
 def build_fast_microstructure_features(
@@ -433,14 +445,18 @@ def build_fast_microstructure_strategy_candidates(
             continue
         rows.append(
             {
+                "generated_at": row.get("generated_at"),
                 "feature_name": feature_name,
                 "symbol": symbol,
                 "regime": regime,
                 "horizon_hours": horizon_hours,
+                "forward_sample_count": _int(row.get("sample_count")),
                 "rank_ic": _round(_float(row.get("rank_ic"))),
                 "long_short_bps": _round(_float(row.get("long_short_bps"))),
                 "p25_net_bps": _round(_float(row.get("p25_net_bps"))),
                 "hit_rate": _round(_float(row.get("hit_rate"))),
+                "recent_7d_score": _round(_float(row.get("recent_7d_score"))),
+                "lookback_bars": _int(row.get("lookback_bars")),
                 "candidate_strategy_id": _fast_strategy_candidate_id(
                     feature_name=feature_name,
                     symbol=symbol,
@@ -448,6 +464,11 @@ def build_fast_microstructure_strategy_candidates(
                     horizon_hours=horizon_hours,
                 ),
                 "recommended_stage": "SHADOW_REVIEW",
+                "review_blocking_reasons": json.dumps(
+                    list(FAST_MICROSTRUCTURE_STRATEGY_REVIEW_BLOCKING_REASONS),
+                    separators=(",", ":"),
+                ),
+                "data_leakage_check": row.get("data_leakage_check") or "",
                 "live_order_effect": "read_only_no_live_order",
             }
         )

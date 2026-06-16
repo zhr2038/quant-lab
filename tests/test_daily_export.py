@@ -600,6 +600,10 @@ def test_research_validation_v3_reports_export_forward_and_cost_coverage(tmp_pat
     assert any(
         row["feature_name"] == "orderbook_imbalance_1m"
         and row["recommended_stage"] == "SHADOW_REVIEW"
+        and int(row["forward_sample_count"]) >= 30
+        and row["lookback_bars"] == "2000"
+        and "needs_paper_tracking" in row["review_blocking_reasons"]
+        and row["data_leakage_check"] == "pass_future_prices_used_only_for_labels"
         and row["live_order_effect"] == "read_only_no_live_order"
         for row in fast_candidate_rows
     )

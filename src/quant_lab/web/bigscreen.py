@@ -19,7 +19,7 @@ from quant_lab.symbols import normalize_symbol
 from quant_lab.web import perf, readers
 
 SNAPSHOT_CACHE_TTL_SECONDS = 35.0
-SNAPSHOT_CACHE_STALE_GRACE_SECONDS = 180.0
+SNAPSHOT_CACHE_STALE_GRACE_SECONDS = 1800.0
 _SNAPSHOT_CACHE: dict[str, tuple[float, dict[str, Any]]] = {}
 _SNAPSHOT_CACHE_LOCK = threading.RLock()
 _SNAPSHOT_REFRESHING: set[str] = set()

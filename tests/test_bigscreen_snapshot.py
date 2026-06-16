@@ -55,10 +55,13 @@ def test_bigscreen_snapshot_cache_covers_frontend_refresh_interval(monkeypatch, 
     third = bigscreen_snapshot(tmp_path / "lake")
     now = 1217.0
     fourth = bigscreen_snapshot(tmp_path / "lake")
+    now = 2837.0
+    fifth = bigscreen_snapshot(tmp_path / "lake")
 
     assert second is first
     assert third is first
-    assert fourth is not first
+    assert fourth is first
+    assert fifth is not first
 
 
 def test_bigscreen_data_matrix_prefers_live_universe_cost_coverage(tmp_path):

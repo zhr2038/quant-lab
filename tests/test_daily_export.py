@@ -3299,6 +3299,7 @@ def test_export_empty_csv_members_have_fixed_headers(tmp_path):
         out_dir=tmp_path / "exports",
         profile="expert",
         command_line=["qlab", "export-daily"],
+        pre_export_v5_refresh=False,
     )
 
     with zipfile.ZipFile(result.zip_path) as archive:
@@ -3396,6 +3397,7 @@ def test_cost_fallback_ratio_is_not_pass_when_cost_bucket_daily_is_empty(tmp_pat
         out_dir=tmp_path / "exports",
         profile="expert",
         command_line=["qlab", "export-daily"],
+        pre_export_v5_refresh=False,
     )
 
     with zipfile.ZipFile(result.zip_path) as archive:
@@ -3435,6 +3437,7 @@ def test_soft_cost_fallbacks_do_not_create_hard_failure(tmp_path):
         out_dir=tmp_path / "exports",
         profile="expert",
         command_line=["qlab", "export-daily"],
+        pre_export_v5_refresh=False,
     )
 
     with zipfile.ZipFile(result.zip_path) as archive:

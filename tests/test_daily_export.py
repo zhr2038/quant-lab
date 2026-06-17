@@ -3995,6 +3995,47 @@ def test_stale_dataset_check_uses_risk_permission_dependency_meta_generated_at()
     assert "risk_permission_api_dependency_meta" not in datasets
 
 
+def test_stale_dataset_check_uses_factor_bridge_as_of_date():
+    now = datetime.now(UTC)
+    stale = daily_export_module._stale_rows(
+        {
+            "factor_strategy_bridge_candidates": pl.DataFrame(
+                [
+                    {
+                        "as_of_date": now.date().isoformat(),
+                        "factor_id": "core.volume_zscore_24",
+                        "bridge_candidate_id": "v5.factor_bridge.core.volume_zscore_24",
+                    }
+                ]
+            )
+        }
+    )
+
+    datasets = set(stale["dataset"].to_list()) if "dataset" in stale.columns else set()
+    assert "factor_strategy_bridge_candidates" not in datasets
+
+
+def test_data_quality_failures_exclude_warning_severity_failures():
+    failures = daily_export_module._data_quality_failure_lines(
+        [
+            {
+                "name": "stale_dataset_check",
+                "status": "FAIL",
+                "severity": "warning",
+                "detail": "stale_or_missing=1",
+            },
+            {
+                "name": "market_bar_present",
+                "status": "FAIL",
+                "severity": "critical",
+                "detail": "rows=0",
+            },
+        ]
+    )
+
+    assert failures == ["market_bar_present: rows=0"]
+
+
 def test_load_snapshot_does_not_warn_for_optional_empty_entry_quality_outputs(tmp_path):
     snapshot = daily_export_module._load_snapshot(tmp_path / "empty-lake")
 

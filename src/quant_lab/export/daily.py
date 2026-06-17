@@ -14481,6 +14481,8 @@ def _data_quality_failure_lines(checks: list[dict[str, Any]]) -> list[str]:
     for check in checks:
         if check.get("status") != "FAIL":
             continue
+        if check.get("severity") != "critical":
+            continue
         failures.append(f"{check.get('name')}: {check.get('detail')}")
     return sorted(set(failures))
 

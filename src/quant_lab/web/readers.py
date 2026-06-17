@@ -333,6 +333,7 @@ DATASET_TIMESTAMP_COLUMNS: dict[str, tuple[str, ...]] = {
     "factor_evidence": ("created_at", "end_ts", "as_of_date"),
     "factor_candidate": ("created_at", "as_of_date"),
     "factor_correlation_daily": ("created_at", "as_of_date"),
+    "factor_strategy_bridge_candidates": ("as_of_date",),
     "alpha_evidence": ("created_at", "end_ts"),
     "alpha_discovery_board": ("created_at", "end_ts", "start_ts", "as_of_date"),
     "strategy_evidence": ("created_at", "end_ts", "as_of_date"),

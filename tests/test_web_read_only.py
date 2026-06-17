@@ -1083,6 +1083,88 @@ def test_web_tracks_v5_quant_lab_request_freshness(tmp_path):
     assert snapshot.freshness["freshness_status"] == "fresh"
 
 
+def test_data_health_treats_v5_cost_usage_and_fallback_as_event_driven_when_current(
+    tmp_path,
+):
+    lake_root = tmp_path / "lake"
+    now = datetime.now(UTC)
+    old = now - timedelta(days=3)
+    write_parquet_dataset(
+        pl.DataFrame(
+            [
+                {
+                    "strategy": "v5",
+                    "date": now.date().isoformat(),
+                    "status": "OK",
+                    "latest_bundle_ts": now,
+                }
+            ]
+        ),
+        lake_root / "gold" / "strategy_health_daily",
+    )
+    for dataset in ("v5_quant_lab_cost_usage", "v5_quant_lab_fallback"):
+        write_parquet_dataset(
+            pl.DataFrame(
+                [
+                    {
+                        "strategy": "v5",
+                        "bundle_ts": old,
+                        "ingest_ts": old,
+                        "ts_utc": old.isoformat(),
+                    }
+                ]
+            ),
+            lake_root / "silver" / dataset,
+        )
+
+    stale_rows = readers.data_health_summary(lake_root)["stale_datasets"].to_dicts()
+    datasets = {row["dataset"] for row in stale_rows}
+
+    assert "v5_quant_lab_cost_usage" not in datasets
+    assert "v5_quant_lab_fallback" not in datasets
+
+
+def test_data_health_treats_okx_bills_as_event_driven_when_backfill_current(
+    tmp_path,
+):
+    lake_root = tmp_path / "lake"
+    now = datetime.now(UTC)
+    old = now - timedelta(days=3)
+    write_parquet_dataset(
+        pl.DataFrame(
+            [
+                {
+                    "endpoint": "/api/v5/account/bills",
+                    "ingest_ts": old,
+                    "raw_json": "{}",
+                }
+            ]
+        ),
+        lake_root / "bronze" / "okx_private_readonly" / "bills",
+    )
+    write_parquet_dataset(
+        pl.DataFrame(
+            [
+                {
+                    "day": now.date().isoformat(),
+                    "job_name": "okx-backfill-readonly",
+                    "status": "succeeded",
+                    "started_at": now - timedelta(seconds=5),
+                    "finished_at": now,
+                    "duration_seconds": 5.0,
+                    "error_type": None,
+                    "error_message": None,
+                }
+            ]
+        ),
+        lake_root / "gold" / "job_run_history",
+    )
+
+    stale_rows = readers.data_health_summary(lake_root)["stale_datasets"].to_dicts()
+
+    assert "okx_private_readonly_bills" not in {row["dataset"] for row in stale_rows}
+
+
 def test_data_health_hides_empty_legacy_expanded_shadow_when_automation_is_active(
     tmp_path,
 ):

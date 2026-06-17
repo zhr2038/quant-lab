@@ -392,6 +392,8 @@ def _export_data_quality(exports: dict[str, Any]) -> dict[str, Any]:
 def _export_quality_level(exports: dict[str, Any]) -> str:
     data_quality = _export_data_quality(exports)
     status = str(data_quality.get("status") or "").upper()
+    if _export_quality_is_live_readiness_blocked_only(data_quality):
+        return "WARNING"
     if status in {"CRITICAL", "FAIL", "FAILED", "ERROR"}:
         return "CRITICAL"
     if status in {"WARN", "WARNING"}:
@@ -399,6 +401,28 @@ def _export_quality_level(exports: dict[str, Any]) -> str:
     if _quality_warning_count(data_quality) > 0:
         return "WARNING"
     return "OK"
+
+
+def _export_quality_is_live_readiness_blocked_only(data_quality: dict[str, Any]) -> bool:
+    if str(data_quality.get("status") or "").upper() not in {"CRITICAL", "FAIL"}:
+        return False
+    failures = [
+        str(value).strip()
+        for value in data_quality.get("failures", [])
+        if str(value).strip()
+    ]
+    if not failures:
+        return False
+    return all(_is_read_only_live_readiness_failure(value) for value in failures)
+
+
+def _is_read_only_live_readiness_failure(value: str) -> bool:
+    text = value.lower()
+    return (
+        "quant_lab_enforce_readiness" in text
+        and "readiness_status=blocked" in text
+        and "actual_or_mixed_cost_coverage_live_universe" in text
+    )
 
 
 def _quality_failure_count(data_quality: dict[str, Any]) -> int:

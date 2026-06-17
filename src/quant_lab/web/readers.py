@@ -262,6 +262,8 @@ EVENT_DRIVEN_V5_DATASET_STATUSES = {
     "v5_bnb_profit_lock_shadow": "event_driven_no_recent_bnb_profit_lock",
     "v5_quant_lab_usage": "event_driven_no_recent_quant_lab_usage",
     "v5_quant_lab_request": "event_driven_no_recent_quant_lab_request",
+    "v5_quant_lab_cost_usage": "event_driven_no_recent_quant_lab_cost_usage",
+    "v5_quant_lab_fallback": "event_driven_no_recent_quant_lab_fallback",
     "v5_bnb_negative_expectancy_attribution": (
         "event_driven_no_recent_bnb_negative_expectancy_attribution"
     ),
@@ -272,7 +274,13 @@ EVENT_DRIVEN_V5_DATASET_STATUSES = {
         "event_driven_no_recent_negative_expectancy_attribution"
     ),
 }
-EVENT_DRIVEN_OK_STATUSES = set(EVENT_DRIVEN_V5_DATASET_STATUSES.values())
+EVENT_DRIVEN_OKX_READONLY_DATASET_STATUSES = {
+    "okx_private_readonly_fills": "event_driven_no_recent_okx_readonly_fills",
+    "okx_private_readonly_bills": "event_driven_no_recent_okx_readonly_bills",
+}
+EVENT_DRIVEN_OK_STATUSES = set(EVENT_DRIVEN_V5_DATASET_STATUSES.values()) | set(
+    EVENT_DRIVEN_OKX_READONLY_DATASET_STATUSES.values()
+)
 DERIVED_ROLLUP_SOURCE_DATASETS = {
     "trade_activity_1m": "trade_print",
     "orderbook_spread_1m": "orderbook_snapshot",
@@ -4950,6 +4958,7 @@ def _stale_dataset_rows(lake_root: str | Path) -> pl.DataFrame:
 
     rows = []
     v5_telemetry_is_current = _v5_telemetry_is_current(lake_root)
+    okx_readonly_private_is_current = _okx_readonly_private_is_current(lake_root)
     expanded_universe_automation_is_active = _expanded_universe_automation_is_active(lake_root)
     closed_research_keys = _closed_research_keys(lake_root)
     for name in sorted(DATASET_PATHS):
@@ -4973,6 +4982,12 @@ def _stale_dataset_rows(lake_root: str | Path) -> pl.DataFrame:
             and v5_telemetry_is_current
         ):
             status = EVENT_DRIVEN_V5_DATASET_STATUSES[name]
+        if (
+            name in EVENT_DRIVEN_OKX_READONLY_DATASET_STATUSES
+            and status == "stale"
+            and okx_readonly_private_is_current
+        ):
+            status = EVENT_DRIVEN_OKX_READONLY_DATASET_STATUSES[name]
         if name in HISTORICAL_RESEARCH_DATASETS and status == "stale":
             status = "historical_research_snapshot"
         status = _derived_rollup_status(lake_root, name, snapshot, status)
@@ -5195,6 +5210,49 @@ def _should_show_stale_dataset_row(snapshot: DatasetSnapshot, status: str) -> bo
 def _v5_telemetry_is_current(lake_root: str | Path) -> bool:
     snapshot = _dataset_snapshot(lake_root, "strategy_health_daily")
     return str(snapshot.freshness.get("freshness_status") or "") in {"fresh", "delayed"}
+
+
+def _okx_readonly_private_is_current(lake_root: str | Path) -> bool:
+    for job_name in ("okx-backfill-readonly", "okx-fetch-bills"):
+        if _recent_successful_job(lake_root, job_name):
+            return True
+    for dataset_name in ("okx_private_readonly_fills", "okx_private_readonly_bills"):
+        snapshot = _dataset_snapshot(lake_root, dataset_name)
+        if (
+            snapshot.rows > 0
+            and not snapshot.warning
+            and str(snapshot.freshness.get("freshness_status") or "") in {"fresh", "delayed"}
+        ):
+            return True
+    return False
+
+
+def _recent_successful_job(
+    lake_root: str | Path,
+    job_name: str,
+    *,
+    max_age_seconds: int = 24 * 60 * 60,
+) -> bool:
+    try:
+        frame = read_parquet_dataset(dataset_path_for(lake_root, "job_run_history"))
+    except Exception:
+        return False
+    if frame.is_empty() or not {"job_name", "status", "finished_at"}.issubset(frame.columns):
+        return False
+    try:
+        filtered = frame.filter(
+            (pl.col("job_name").cast(pl.Utf8) == job_name)
+            & (pl.col("status").cast(pl.Utf8).str.to_lowercase() == "succeeded")
+        )
+    except Exception:
+        return False
+    if filtered.is_empty():
+        return False
+    latest, _column = latest_dataset_timestamp("job_run_history", filtered)
+    if latest is None:
+        return False
+    age_seconds = max(int((datetime.now(UTC) - latest).total_seconds()), 0)
+    return age_seconds <= max_age_seconds
 
 
 def _canonical_dataset_name(dataset_name: str) -> str:

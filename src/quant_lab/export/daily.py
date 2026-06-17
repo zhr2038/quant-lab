@@ -57,12 +57,14 @@ from quant_lab.features.fast_microstructure import (
     FAST_MICROSTRUCTURE_FIELDS,
     FAST_MICROSTRUCTURE_FORWARD_TEST_FIELDS,
     FAST_MICROSTRUCTURE_STRATEGY_CANDIDATE_FIELDS,
+    FAST_MICROSTRUCTURE_STRATEGY_REVIEW_FIELDS,
     build_fast_microstructure_features,
     build_fast_microstructure_forward_test,
     build_fast_microstructure_strategy_candidates,
+    build_fast_microstructure_strategy_review,
     fast_microstructure_forward_summary_md,
 )
-from quant_lab.ops.api_metrics import api_metrics_summary
+from quant_lab.ops.api_metrics import api_error_summary, api_metrics_summary
 from quant_lab.ops.data_quality import run_data_quality
 from quant_lab.reports.enforce_readiness import (
     ENFORCE_READINESS_CSV,
@@ -493,6 +495,7 @@ REQUIRED_MEMBERS = [
     "reports/strategy_opportunity_advisory.csv",
     "reports/api_latency_summary.csv",
     "reports/api_latency_summary.md",
+    "reports/api_error_summary.csv",
     "reports/v5_bundle_sync_diagnostics.csv",
     "reports/v5_local_live_vs_quant_lab_shadow.csv",
     "reports/missed_opportunity_audit.csv",
@@ -510,9 +513,11 @@ REQUIRED_MEMBERS = [
     "reports/bottom_zone_reversal_shadow.csv",
     "reports/bottom_zone_reversal_no_trigger_reasons.csv",
     "reports/bottom_zone_reversal_summary.md",
+    "reports/bottom_zone_probe_paper_readiness.csv",
     "reports/fast_microstructure_features.csv",
     "reports/fast_microstructure_forward_test.csv",
     "reports/fast_microstructure_strategy_candidates.csv",
+    "reports/fast_microstructure_strategy_review.csv",
     "reports/fast_microstructure_forward_summary.md",
     "reports/market_pressure_score.csv",
     "reports/market_pressure_summary.md",
@@ -811,6 +816,13 @@ CSV_SCHEMAS: dict[str, list[str]] = {
         "dependency_meta_missing_count",
         "dependency_meta_missing_rate",
         "error_count",
+    ],
+    "reports/api_error_summary.csv": [
+        "endpoint",
+        "status_code",
+        "error_count",
+        "latest_error_ts",
+        "error_rate",
     ],
     "reports/v5_bundle_sync_diagnostics.csv": [
         "generated_at",
@@ -1554,10 +1566,32 @@ CSV_SCHEMAS: dict[str, list[str]] = {
         "live_order_effect",
     ],
     "reports/bottom_zone_reversal_shadow.csv": BOTTOM_ZONE_FIELDS,
+    "reports/bottom_zone_probe_paper_readiness.csv": [
+        "generated_at",
+        "as_of_date",
+        "strategy_id",
+        "strategy_candidate",
+        "symbol",
+        "paper_days",
+        "paper_entries",
+        "avg_pnl_bps",
+        "p25_pnl_bps",
+        "required_paper_days",
+        "required_paper_entries",
+        "required_avg_pnl_bps",
+        "required_p25_pnl_bps",
+        "readiness_status",
+        "blocking_reasons",
+        "recommended_stage",
+        "live_order_effect",
+    ],
     "reports/fast_microstructure_features.csv": FAST_MICROSTRUCTURE_FIELDS,
     "reports/fast_microstructure_forward_test.csv": FAST_MICROSTRUCTURE_FORWARD_TEST_FIELDS,
     "reports/fast_microstructure_strategy_candidates.csv": (
         FAST_MICROSTRUCTURE_STRATEGY_CANDIDATE_FIELDS
+    ),
+    "reports/fast_microstructure_strategy_review.csv": (
+        FAST_MICROSTRUCTURE_STRATEGY_REVIEW_FIELDS
     ),
     "reports/market_pressure_score.csv": MARKET_PRESSURE_FIELDS,
     "reports/risk_on_multi_buy_shadow.csv": [
@@ -4573,6 +4607,9 @@ def _dataset_members(
     fast_microstructure_strategy_candidates = build_fast_microstructure_strategy_candidates(
         fast_microstructure_forward_test
     )
+    fast_microstructure_strategy_review = build_fast_microstructure_strategy_review(
+        fast_microstructure_strategy_candidates
+    )
     factor_v2 = build_factor_factory_v2_reports(
         candidates=factor_candidates,
         evidence=factor_evidence,
@@ -4621,6 +4658,11 @@ def _dataset_members(
     market_pressure_score = build_market_pressure_score(
         bottom_zone_reversal_shadow=bottom_zone_reversal_shadow,
         fast_microstructure_features=fast_microstructure_features,
+        generated_at=datetime.now(UTC),
+    )
+    bottom_zone_probe_paper_readiness = _bottom_zone_probe_paper_readiness_for_export(
+        paper_runs=paper_runs,
+        paper_daily=paper_daily,
         generated_at=datetime.now(UTC),
     )
     v5_health = frames.get("strategy_health_daily", pl.DataFrame())
@@ -4685,6 +4727,7 @@ def _dataset_members(
     )
     backtest_bundle = build_backtest_report_bundle(backtest_frames)
     api_latency_summary = _api_latency_summary_for_export(root)
+    api_errors = _api_error_summary_for_export(root)
     post_impulse_no_trigger_reasons = build_no_trigger_reasons(
         report_name="post_impulse_overextension_shadow",
         source_row_count=v5_candidate_events.height,
@@ -4920,6 +4963,10 @@ def _dataset_members(
             api_latency_summary,
         ),
         "reports/api_latency_summary.md": _api_latency_summary_md(root),
+        "reports/api_error_summary.csv": _csv_member(
+            "reports/api_error_summary.csv",
+            api_errors,
+        ),
         "reports/v5_bundle_sync_diagnostics.csv": _csv_member(
             "reports/v5_bundle_sync_diagnostics.csv",
             _v5_bundle_sync_diagnostics_frame(
@@ -4988,6 +5035,10 @@ def _dataset_members(
         "reports/bottom_zone_reversal_summary.md": bottom_zone_reversal_summary_md(
             bottom_zone_reversal_shadow
         ),
+        "reports/bottom_zone_probe_paper_readiness.csv": _csv_member(
+            "reports/bottom_zone_probe_paper_readiness.csv",
+            bottom_zone_probe_paper_readiness,
+        ),
         "reports/fast_microstructure_features.csv": _csv_member(
             "reports/fast_microstructure_features.csv",
             fast_microstructure_features,
@@ -4999,6 +5050,10 @@ def _dataset_members(
         "reports/fast_microstructure_strategy_candidates.csv": _csv_member(
             "reports/fast_microstructure_strategy_candidates.csv",
             fast_microstructure_strategy_candidates,
+        ),
+        "reports/fast_microstructure_strategy_review.csv": _csv_member(
+            "reports/fast_microstructure_strategy_review.csv",
+            fast_microstructure_strategy_review,
         ),
         "reports/fast_microstructure_forward_summary.md": fast_microstructure_forward_summary_md(
             fast_microstructure_forward_test
@@ -8583,6 +8638,14 @@ def _api_latency_error_count(metrics: dict[str, Any]) -> int:
         return status_error_count
 
 
+def _api_error_summary_for_export(root: Path) -> pl.DataFrame:
+    path = "reports/api_error_summary.csv"
+    rows = api_error_summary(root, since_minutes=24 * 60)
+    if not rows:
+        return _empty_csv_schema_frame(path)
+    return pl.DataFrame(rows, infer_schema_length=None).select(CSV_SCHEMAS[path])
+
+
 def _flush_api_metrics_service_before_export() -> None:
     enabled = str(os.environ.get("QUANT_LAB_API_METRICS_EXPORT_FLUSH_ENABLED", "1")).strip().lower()
     if enabled not in {"1", "true", "yes", "on"}:
@@ -9124,6 +9187,172 @@ def _bottom_zone_probe_paper_opportunity_rows(
             }
         )
     return rows
+
+
+def _bottom_zone_probe_paper_readiness_for_export(
+    *,
+    paper_runs: pl.DataFrame,
+    paper_daily: pl.DataFrame,
+    generated_at: datetime,
+) -> pl.DataFrame:
+    path = "reports/bottom_zone_probe_paper_readiness.csv"
+    latest_daily = _latest_bottom_zone_paper_daily_rows(paper_daily)
+    if not latest_daily:
+        return _empty_csv_schema_frame(path)
+    run_pnls = _bottom_zone_paper_pnls_by_key(paper_runs)
+    rows: list[dict[str, Any]] = []
+    for key, daily in sorted(latest_daily.items()):
+        strategy_id, strategy_candidate, symbol = key
+        values = run_pnls.get(key, [])
+        paper_days = _optional_int(
+            daily.get("paper_days")
+            or daily.get("paper_days_to_date")
+            or daily.get("paper_pnl_day_count")
+        ) or 0
+        paper_entries = _optional_int(
+            daily.get("would_enter_count")
+            or daily.get("cumulative_would_enter_count")
+            or daily.get("entry_count")
+            or daily.get("daily_would_enter_count")
+        ) or 0
+        avg_pnl = _optional_float(daily.get("avg_paper_pnl_bps"))
+        if avg_pnl is None:
+            avg_pnl = _float_mean(values)
+        p25_pnl = _float_quantile(values, 0.25)
+        reasons = _bottom_zone_paper_readiness_reasons(
+            paper_days=paper_days,
+            paper_entries=paper_entries,
+            avg_pnl=avg_pnl,
+            p25_pnl=p25_pnl,
+        )
+        rows.append(
+            {
+                "generated_at": generated_at.isoformat().replace("+00:00", "Z"),
+                "as_of_date": str(daily.get("as_of_date") or daily.get("paper_date") or ""),
+                "strategy_id": strategy_id,
+                "strategy_candidate": strategy_candidate,
+                "symbol": symbol,
+                "paper_days": paper_days,
+                "paper_entries": paper_entries,
+                "avg_pnl_bps": _round_float(avg_pnl),
+                "p25_pnl_bps": _round_float(p25_pnl),
+                "required_paper_days": 14,
+                "required_paper_entries": 20,
+                "required_avg_pnl_bps": 0.0,
+                "required_p25_pnl_bps": -50.0,
+                "readiness_status": "READY_FOR_REVIEW" if not reasons else "BLOCKED",
+                "blocking_reasons": safe_json_dumps(reasons),
+                "recommended_stage": "PAPER_REVIEW" if not reasons else "KEEP_PAPER_SHADOW",
+                "live_order_effect": "read_only_no_live_order",
+            }
+        )
+    return pl.DataFrame(rows, infer_schema_length=None).select(CSV_SCHEMAS[path])
+
+
+def _latest_bottom_zone_paper_daily_rows(
+    paper_daily: pl.DataFrame,
+) -> dict[tuple[str, str, str], dict[str, Any]]:
+    rows: dict[tuple[str, str, str], dict[str, Any]] = {}
+    if paper_daily.is_empty():
+        return rows
+    for row in paper_daily.to_dicts():
+        if not _is_bottom_zone_paper_row(row):
+            continue
+        symbol = normalize_symbol(row.get("symbol")) or "UNKNOWN"
+        if symbol == "UNKNOWN":
+            continue
+        strategy_id = str(row.get("strategy_id") or "BOTTOM_ZONE_PROBE_PAPER_V1").strip()
+        strategy_candidate = str(
+            row.get("strategy_candidate") or "v5.bottom_zone_probe_paper"
+        ).strip()
+        key = (strategy_id, strategy_candidate, symbol)
+        current = rows.get(key)
+        if current is None or _paper_daily_row_time(row) >= _paper_daily_row_time(current):
+            rows[key] = row
+    return rows
+
+
+def _bottom_zone_paper_pnls_by_key(
+    paper_runs: pl.DataFrame,
+) -> dict[tuple[str, str, str], list[float]]:
+    values: dict[tuple[str, str, str], list[float]] = {}
+    if paper_runs.is_empty():
+        return values
+    for row in paper_runs.to_dicts():
+        if not _is_bottom_zone_paper_row(row):
+            continue
+        symbol = normalize_symbol(row.get("symbol")) or "UNKNOWN"
+        if symbol == "UNKNOWN":
+            continue
+        strategy_id = str(row.get("strategy_id") or "BOTTOM_ZONE_PROBE_PAPER_V1").strip()
+        strategy_candidate = str(
+            row.get("strategy_candidate")
+            or row.get("source_strategy_candidate")
+            or "v5.bottom_zone_probe_paper"
+        ).strip()
+        key = (strategy_id, strategy_candidate, symbol)
+        row_values = _paper_run_pnl_values(row)
+        if row_values:
+            values.setdefault(key, []).extend(row_values)
+    return values
+
+
+def _paper_run_pnl_values(row: dict[str, Any]) -> list[float]:
+    primary = _optional_float(row.get("paper_pnl_bps"))
+    if primary is not None:
+        return [primary]
+    values: list[float] = []
+    for key, value in row.items():
+        if not str(key).startswith("paper_pnl_bps_"):
+            continue
+        parsed = _optional_float(value)
+        if parsed is not None:
+            values.append(parsed)
+    return values
+
+
+def _bottom_zone_paper_readiness_reasons(
+    *,
+    paper_days: int,
+    paper_entries: int,
+    avg_pnl: float | None,
+    p25_pnl: float | None,
+) -> list[str]:
+    reasons: list[str] = []
+    if paper_days < 14:
+        reasons.append("paper_days_lt_14")
+    if paper_entries < 20:
+        reasons.append("paper_entries_lt_20")
+    if avg_pnl is None or avg_pnl <= 0:
+        reasons.append("avg_pnl_not_positive")
+    if p25_pnl is None or p25_pnl <= -50:
+        reasons.append("p25_not_above_minus_50")
+    return reasons
+
+
+def _is_bottom_zone_paper_row(row: dict[str, Any]) -> bool:
+    text = " ".join(
+        str(row.get(field) or "").lower()
+        for field in (
+            "strategy_id",
+            "strategy_candidate",
+            "source_strategy_candidate",
+            "experiment_name",
+        )
+    )
+    return "bottom_zone_probe_paper" in text or "bottom_zone_reversal" in text
+
+
+def _paper_daily_row_time(row: dict[str, Any]) -> datetime:
+    for field in ("as_of_date", "paper_date", "created_at"):
+        value = readers._coerce_timestamp(row.get(field))  # type: ignore[attr-defined]
+        if value is not None:
+            return value
+    return datetime.min.replace(tzinfo=UTC)
+
+
+def _round_float(value: float | None) -> float | str:
+    return "" if value is None else round(float(value), 6)
 
 
 def _v5_universe_type(symbol: str) -> str:

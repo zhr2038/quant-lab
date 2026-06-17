@@ -43,7 +43,7 @@ def test_cost_model_fallback_is_explicit_when_no_bucket_matches():
     assert estimate.fallback_level == "DEFAULT_FALLBACK"
 
 
-def test_live_universe_cost_coverage_downgrades_stale_direct_to_mixed_proxy():
+def test_live_universe_cost_coverage_rejects_stale_direct_even_with_proxy():
     now = datetime(2026, 6, 15, tzinfo=UTC)
     stale = now - timedelta(days=7)
 
@@ -64,12 +64,12 @@ def test_live_universe_cost_coverage_downgrades_stale_direct_to_mixed_proxy():
     assert sol["latest_actual_or_mixed_created_at"] == stale.isoformat().replace("+00:00", "Z")
     assert sol["latest_actual_or_mixed_age_sec"] == 7 * 24 * 60 * 60
     assert sol["actual_or_mixed_direct"] is False
-    assert sol["mixed_proxy_eligible"] is True
-    assert sol["actual_or_mixed_covered"] is True
-    assert sol["coverage_reason"] == "mixed_from_live_actual_anchor_plus_symbol_public_proxy"
+    assert sol["mixed_proxy_eligible"] is False
+    assert sol["actual_or_mixed_covered"] is False
+    assert sol["coverage_reason"] == "stale_actual_or_mixed_no_fresh_live_anchor"
     assert evaluation["direct_symbols"] == ["BTC-USDT"]
-    assert evaluation["mixed_proxy_symbols"] == ["SOL-USDT"]
-    assert evaluation["coverage_rate"] == 1.0
+    assert evaluation["mixed_proxy_symbols"] == []
+    assert evaluation["coverage_rate"] == 0.5
 
 
 def test_live_universe_cost_coverage_uses_generated_at_for_stale_window():

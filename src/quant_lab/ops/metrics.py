@@ -366,6 +366,106 @@ def api_metrics_summary(
     }
 
 
+def api_error_summary(
+    lake_root: str | Path,
+    *,
+    day: str | None = None,
+    since_minutes: int | None = None,
+) -> list[dict[str, Any]]:
+    _wait_api_request_metrics_flush(lake_root)
+    flush_api_request_metrics(lake_root)
+    lazy = _lazy_dataset_or_none(Path(lake_root) / API_METRICS_DATASET, schema_union=True)
+    if lazy is None:
+        return []
+    schema_names = _lazy_schema_names(lazy)
+    day = _normalize_summary_day(day)
+    scoped = lazy.filter(pl.col("day") == day) if day and "day" in schema_names else lazy
+    scoped = _filter_since_minutes(
+        scoped,
+        schema_names=schema_names,
+        timestamp_column="request_ts",
+        since_minutes=since_minutes,
+    )
+    if _lazy_count(scoped) == 0:
+        return []
+
+    endpoint_expr = (
+        pl.col("path").cast(pl.Utf8, strict=False).fill_null("__unknown__")
+        if "path" in schema_names
+        else pl.lit("__unknown__")
+    )
+    status_expr = (
+        pl.col("status_code").cast(pl.Int64, strict=False).fill_null(0)
+        if "status_code" in schema_names
+        else pl.lit(0)
+    )
+    if "error_type" in schema_names:
+        error_type = (
+            pl.col("error_type").cast(pl.Utf8, strict=False).fill_null("").str.strip_chars()
+        )
+    else:
+        error_type = pl.lit("")
+    if "request_ts" in schema_names:
+        request_ts = (
+            pl.col("request_ts")
+            .cast(pl.Utf8, strict=False)
+            .str.to_datetime(time_zone="UTC", strict=False)
+        )
+    else:
+        request_ts = pl.lit(None)
+
+    scoped = scoped.with_columns(
+        [
+            endpoint_expr.alias("_endpoint"),
+            status_expr.alias("_status_code"),
+            ((status_expr >= 400) | (error_type != "")).fill_null(False).alias("_is_error"),
+            request_ts.alias("_request_ts"),
+        ]
+    )
+    endpoint_counts = scoped.group_by("_endpoint").len(name="_endpoint_request_count")
+    errors = scoped.filter(pl.col("_is_error"))
+    if _lazy_count(errors) == 0:
+        return []
+
+    grouped = (
+        errors.group_by(["_endpoint", "_status_code"])
+        .agg(
+            [
+                pl.len().alias("error_count"),
+                pl.col("_request_ts").max().alias("latest_error_ts"),
+            ]
+        )
+        .join(endpoint_counts, on="_endpoint", how="left")
+        .with_columns(
+            (
+                pl.col("error_count").cast(pl.Float64)
+                / pl.col("_endpoint_request_count").cast(pl.Float64)
+            )
+            .round(6)
+            .fill_nan(0.0)
+            .fill_null(0.0)
+            .alias("error_rate")
+        )
+        .sort(
+            ["error_count", "latest_error_ts", "_endpoint", "_status_code"],
+            descending=[True, True, False, False],
+        )
+        .collect()
+    )
+    rows: list[dict[str, Any]] = []
+    for row in grouped.to_dicts():
+        rows.append(
+            {
+                "endpoint": str(row.get("_endpoint") or "__unknown__"),
+                "status_code": int(row.get("_status_code") or 0),
+                "error_count": int(row.get("error_count") or 0),
+                "latest_error_ts": _format_metric_ts(row.get("latest_error_ts")),
+                "error_rate": _float_or_none(row.get("error_rate")) or 0.0,
+            }
+        )
+    return rows
+
+
 def job_run_summary(
     lake_root: str | Path,
     *,
@@ -761,6 +861,16 @@ def _float_or_none(value: Any) -> float | None:
         return round(float(value), 3)
     except (TypeError, ValueError):
         return None
+
+
+def _format_metric_ts(value: Any) -> str:
+    if value is None:
+        return ""
+    if isinstance(value, datetime):
+        normalized = value.astimezone(UTC) if value.tzinfo else value.replace(tzinfo=UTC)
+        return normalized.isoformat().replace("+00:00", "Z")
+    text = str(value).strip()
+    return text.replace("+00:00", "Z")
 
 
 def _safe_user_agent(value: str | None) -> str | None:

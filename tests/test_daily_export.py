@@ -265,7 +265,10 @@ def test_export_daily_pack_writes_required_members(tmp_path):
         assert "reports/v5_candidate_feature_completeness_by_strategy.csv" in names
         assert "reports/fast_microstructure_forward_test.csv" in names
         assert "reports/fast_microstructure_strategy_candidates.csv" in names
+        assert "reports/fast_microstructure_strategy_review.csv" in names
         assert "reports/fast_microstructure_forward_summary.md" in names
+        assert "reports/bottom_zone_probe_paper_readiness.csv" in names
+        assert "reports/api_error_summary.csv" in names
         assert "diagnostics/export_timing.csv" in names
         assert "diagnostics/export_timing.json" in names
         acceptance_rows = list(
@@ -560,6 +563,15 @@ def test_research_validation_v3_reports_export_forward_and_cost_coverage(tmp_pat
                 )
             )
         )
+        fast_review_rows = list(
+            csv.DictReader(
+                io.StringIO(
+                    archive.read("reports/fast_microstructure_strategy_review.csv").decode(
+                        "utf-8"
+                    )
+                )
+            )
+        )
         advisory_rows = list(
             csv.DictReader(
                 io.StringIO(
@@ -630,21 +642,19 @@ def test_research_validation_v3_reports_export_forward_and_cost_coverage(tmp_pat
     readiness_coverage = data_quality["quant_lab_enforce_readiness"]["metrics"][
         "actual_or_mixed_cost_coverage_live_universe"
     ]
-    assert bnb_coverage["effective_cost_source"] == "mixed_actual_proxy"
+    assert bnb_coverage["effective_cost_source"] == "public_spread_proxy"
     assert float(bnb_coverage["actual_or_mixed_cost_coverage_live_universe"]) == readiness_coverage
+    assert readiness_coverage == 0.25
     sol_coverage = next(row for row in cost_coverage_rows if row["symbol"] == "SOL-USDT")
     assert sol_coverage["stale_actual_or_mixed"].lower() == "true"
     assert sol_coverage["actual_or_mixed_direct"].lower() == "false"
-    assert sol_coverage["mixed_proxy_eligible"].lower() == "true"
-    assert (
-        sol_coverage["coverage_reason"]
-        == "mixed_from_live_actual_anchor_plus_symbol_public_proxy"
-    )
+    assert sol_coverage["mixed_proxy_eligible"].lower() == "false"
+    assert sol_coverage["coverage_reason"] == "stale_actual_or_mixed_no_fresh_live_anchor"
     checks = {check["name"]: check for check in data_quality["checks"]}
     stale_live_cost = checks["live_universe_stale_actual_or_mixed_cost"]
     assert stale_live_cost["status"] == "WARN"
     assert "stale_actual_or_mixed_symbols=['SOL-USDT']" in stale_live_cost["detail"]
-    assert "coverage_status=PASS" in stale_live_cost["detail"]
+    assert "coverage_status=WARNING" in stale_live_cost["detail"]
     assert "stale_actual_or_mixed=SOL-USDT" in questions
     assert "不要把 public_spread_proxy 当 actual/mixed" in questions
     assert any(
@@ -663,6 +673,15 @@ def test_research_validation_v3_reports_export_forward_and_cost_coverage(tmp_pat
         and row["data_leakage_check"] == "pass_future_prices_used_only_for_labels"
         and row["live_order_effect"] == "read_only_no_live_order"
         for row in fast_candidate_rows
+    )
+    assert any(
+        row["symbol"] == "BTC-USDT"
+        and row["recommended_stage"] == "SHADOW_REVIEW"
+        and row["strategy_candidate_id"].startswith("v5.fast_microstructure.")
+        and row["response_action"] == "shadow_review"
+        and row["max_live_notional_usdt"] == "0.0"
+        and row["live_order_effect"] == "read_only_no_live_order"
+        for row in fast_review_rows
     )
 
 
@@ -1043,6 +1062,84 @@ def test_strategy_opportunity_advisory_adds_bottom_zone_probe_paper_row():
     assert expanded["recommended_mode"] == "paper"
     assert expanded["max_live_notional_usdt"] == 0.0
     assert expanded["live_order_effect"] == "read_only_no_live_order"
+
+
+def test_bottom_zone_probe_paper_readiness_applies_paper_thresholds():
+    generated_at = datetime(2026, 6, 17, 10, tzinfo=UTC)
+    frame = daily_export_module._bottom_zone_probe_paper_readiness_for_export(
+        paper_daily=pl.DataFrame(
+            [
+                {
+                    "paper_date": "2026-06-16",
+                    "strategy_id": "BOTTOM_ZONE_PROBE_PAPER_V1",
+                    "strategy_candidate": "v5.bottom_zone_probe_paper",
+                    "symbol": "BNB-USDT",
+                    "paper_days_to_date": 14,
+                    "entry_count": 20,
+                    "avg_paper_pnl_bps": 32.5,
+                },
+                {
+                    "paper_date": "2026-06-16",
+                    "strategy_id": "BOTTOM_ZONE_PROBE_PAPER_V1",
+                    "strategy_candidate": "v5.bottom_zone_probe_paper",
+                    "symbol": "IP-USDT",
+                    "paper_days_to_date": 7,
+                    "entry_count": 6,
+                    "avg_paper_pnl_bps": -4.0,
+                },
+            ]
+        ),
+        paper_runs=pl.DataFrame(
+            [
+                {
+                    "strategy_id": "BOTTOM_ZONE_PROBE_PAPER_V1",
+                    "strategy_candidate": "v5.bottom_zone_probe_paper",
+                    "symbol": "BNB-USDT",
+                    "paper_pnl_bps": 10.0,
+                },
+                {
+                    "strategy_id": "BOTTOM_ZONE_PROBE_PAPER_V1",
+                    "strategy_candidate": "v5.bottom_zone_probe_paper",
+                    "symbol": "BNB-USDT",
+                    "paper_pnl_bps": 30.0,
+                },
+                {
+                    "strategy_id": "BOTTOM_ZONE_PROBE_PAPER_V1",
+                    "strategy_candidate": "v5.bottom_zone_probe_paper",
+                    "symbol": "BNB-USDT",
+                    "paper_pnl_bps": 50.0,
+                },
+                {
+                    "strategy_id": "BOTTOM_ZONE_PROBE_PAPER_V1",
+                    "strategy_candidate": "v5.bottom_zone_probe_paper",
+                    "symbol": "IP-USDT",
+                    "paper_pnl_bps": -70.0,
+                },
+                {
+                    "strategy_id": "BOTTOM_ZONE_PROBE_PAPER_V1",
+                    "strategy_candidate": "v5.bottom_zone_probe_paper",
+                    "symbol": "IP-USDT",
+                    "paper_pnl_bps": -30.0,
+                },
+            ]
+        ),
+        generated_at=generated_at,
+    )
+
+    rows = {row["symbol"]: row for row in frame.to_dicts()}
+    assert rows["BNB-USDT"]["readiness_status"] == "READY_FOR_REVIEW"
+    assert rows["BNB-USDT"]["recommended_stage"] == "PAPER_REVIEW"
+    assert rows["BNB-USDT"]["blocking_reasons"] == "[]"
+    assert rows["BNB-USDT"]["live_order_effect"] == "read_only_no_live_order"
+    ip_reasons = json.loads(rows["IP-USDT"]["blocking_reasons"])
+    assert rows["IP-USDT"]["readiness_status"] == "BLOCKED"
+    assert rows["IP-USDT"]["recommended_stage"] == "KEEP_PAPER_SHADOW"
+    assert ip_reasons == [
+        "paper_days_lt_14",
+        "paper_entries_lt_20",
+        "avg_pnl_not_positive",
+        "p25_not_above_minus_50",
+    ]
 
 
 def test_strategy_opportunity_advisory_adds_bridge_review_shadow_rows():
@@ -3622,7 +3719,10 @@ def test_export_empty_csv_members_have_fixed_headers(tmp_path):
             "reports/factor_forward_validation.csv",
             "reports/fast_microstructure_forward_test.csv",
             "reports/fast_microstructure_strategy_candidates.csv",
+            "reports/fast_microstructure_strategy_review.csv",
             "reports/live_universe_cost_coverage.csv",
+            "reports/bottom_zone_probe_paper_readiness.csv",
+            "reports/api_error_summary.csv",
             "v5/v5_candidate_events.csv",
             "v5/v5_btc_probe_entry_quality_audit.csv",
             "v5/v5_candidate_labels.csv",

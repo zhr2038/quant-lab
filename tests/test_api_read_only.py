@@ -2,6 +2,7 @@ from fastapi.routing import APIRoute
 from fastapi.testclient import TestClient
 
 from quant_lab.api.main import app, create_app
+from quant_lab.ops.api_metrics import api_error_summary
 
 
 def test_api_has_no_non_get_strategy_routes():
@@ -121,3 +122,23 @@ def test_api_metrics_records_request_counts(monkeypatch, tmp_path):
     assert payload["request_count"] >= 1
     assert payload["by_path"]["/v1/health"] == 1
     assert payload["latency_ms"]["max"] is not None
+
+
+def test_api_error_summary_groups_endpoint_status(monkeypatch, tmp_path):
+    lake = tmp_path / "lake"
+    monkeypatch.setenv("QUANT_LAB_LAKE_ROOT", str(lake))
+    monkeypatch.setenv("QUANT_LAB_API_METRICS_FLUSH_ROWS", "1")
+    monkeypatch.delenv("QUANT_LAB_API_TOKEN", raising=False)
+    client = TestClient(create_app())
+
+    assert client.get("/v1/not-found-for-metrics").status_code == 404
+
+    rows = api_error_summary(lake, since_minutes=24 * 60)
+
+    row = next(
+        item for item in rows if item["endpoint"] == "/v1/not-found-for-metrics"
+    )
+    assert row["status_code"] == 404
+    assert row["error_count"] == 1
+    assert row["latest_error_ts"]
+    assert row["error_rate"] == 1.0

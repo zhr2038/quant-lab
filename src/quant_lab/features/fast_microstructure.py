@@ -118,6 +118,33 @@ FAST_MICROSTRUCTURE_STRATEGY_CANDIDATE_FIELDS = [
     "data_leakage_check",
     "live_order_effect",
 ]
+FAST_MICROSTRUCTURE_STRATEGY_REVIEW_SYMBOLS = (
+    "HYPE-USDT",
+    "WLD-USDT",
+    "BNB-USDT",
+    "BTC-USDT",
+)
+FAST_MICROSTRUCTURE_STRATEGY_REVIEW_FIELDS = [
+    "generated_at",
+    "strategy_candidate_id",
+    "feature_name",
+    "symbol",
+    "regime",
+    "horizon_hours",
+    "forward_sample_count",
+    "rank_ic",
+    "long_short_bps",
+    "p25_net_bps",
+    "hit_rate",
+    "recent_7d_score",
+    "lookback_bars",
+    "recommended_stage",
+    "review_blocking_reasons",
+    "data_leakage_check",
+    "response_action",
+    "max_live_notional_usdt",
+    "live_order_effect",
+]
 FAST_MICROSTRUCTURE_STRATEGY_REVIEW_BLOCKING_REASONS = (
     "needs_strategy_formulation",
     "needs_paper_tracking",
@@ -501,6 +528,62 @@ def build_fast_microstructure_strategy_candidates(
     )
 
 
+def build_fast_microstructure_strategy_review(
+    fast_microstructure_strategy_candidates: pl.DataFrame | None,
+    *,
+    review_symbols: Iterable[str] = FAST_MICROSTRUCTURE_STRATEGY_REVIEW_SYMBOLS,
+) -> pl.DataFrame:
+    review_symbol_set = {normalize_symbol(symbol) for symbol in review_symbols}
+    rows: list[dict[str, Any]] = []
+    for row in _frame_rows(fast_microstructure_strategy_candidates):
+        symbol = normalize_symbol(row.get("symbol")) or ""
+        if symbol not in review_symbol_set:
+            continue
+        if str(row.get("recommended_stage") or "").strip().upper() != "SHADOW_REVIEW":
+            continue
+        strategy_candidate_id = str(
+            row.get("strategy_candidate_id") or row.get("candidate_strategy_id") or ""
+        ).strip()
+        if not strategy_candidate_id:
+            strategy_candidate_id = _fast_strategy_candidate_id(
+                feature_name=str(row.get("feature_name") or ""),
+                symbol=symbol,
+                regime=str(row.get("regime") or ""),
+                horizon_hours=_int(row.get("horizon_hours")) or 0,
+            )
+        rows.append(
+            {
+                "generated_at": row.get("generated_at"),
+                "strategy_candidate_id": strategy_candidate_id,
+                "feature_name": row.get("feature_name"),
+                "symbol": symbol,
+                "regime": row.get("regime"),
+                "horizon_hours": _int(row.get("horizon_hours")),
+                "forward_sample_count": _int(row.get("forward_sample_count")),
+                "rank_ic": _round(_float(row.get("rank_ic"))),
+                "long_short_bps": _round(_float(row.get("long_short_bps"))),
+                "p25_net_bps": _round(_float(row.get("p25_net_bps"))),
+                "hit_rate": _round(_float(row.get("hit_rate"))),
+                "recent_7d_score": _round(_float(row.get("recent_7d_score"))),
+                "lookback_bars": _int(row.get("lookback_bars")),
+                "recommended_stage": "SHADOW_REVIEW",
+                "review_blocking_reasons": row.get("review_blocking_reasons"),
+                "data_leakage_check": row.get("data_leakage_check") or "",
+                "response_action": "shadow_review",
+                "max_live_notional_usdt": 0.0,
+                "live_order_effect": "read_only_no_live_order",
+            }
+        )
+    if not rows:
+        return pl.DataFrame(
+            schema={field: pl.Utf8 for field in FAST_MICROSTRUCTURE_STRATEGY_REVIEW_FIELDS}
+        )
+    rows.sort(key=_fast_strategy_review_rank_key)
+    return pl.DataFrame(rows, infer_schema_length=None).select(
+        FAST_MICROSTRUCTURE_STRATEGY_REVIEW_FIELDS
+    )
+
+
 def _is_specific_regime_forward_pass(row: dict[str, Any]) -> bool:
     if str(row.get("recommendation") or "") != "FORWARD_VALIDATION_PASS":
         return False
@@ -545,6 +628,15 @@ def _fast_strategy_candidate_rank_key(row: dict[str, Any]) -> tuple[str, str, in
         str(row.get("regime") or ""),
         _int(row.get("horizon_hours")) or 0,
         str(row.get("feature_name") or ""),
+    )
+
+
+def _fast_strategy_review_rank_key(row: dict[str, Any]) -> tuple[str, str, int, str]:
+    return (
+        str(row.get("symbol") or ""),
+        str(row.get("regime") or ""),
+        _int(row.get("horizon_hours")) or 0,
+        str(row.get("strategy_candidate_id") or ""),
     )
 
 

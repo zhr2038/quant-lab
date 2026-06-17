@@ -97,8 +97,8 @@ def evaluate_live_universe_cost_coverage(
             if latest_actual is not None
             else False
         )
-        mixed_proxy_eligible = not direct and has_live_actual_anchor and latest_proxy is not None
-        covered = direct or mixed_proxy_eligible
+        mixed_proxy_eligible = False
+        covered = direct
         covered_count += int(covered)
         effective_source = (
             _cost_source(fresh_actual)
@@ -1240,8 +1240,10 @@ def _coverage_reason(
         if latest_proxy is not None:
             return "stale_actual_or_mixed_no_fresh_live_anchor"
         return "stale_actual_or_mixed_no_fresh_proxy"
-    if latest_proxy is not None and not has_live_actual_anchor:
-        return "public_proxy_only_no_live_actual_anchor"
+    if latest_proxy is not None:
+        if not has_live_actual_anchor:
+            return "public_proxy_only_no_live_actual_anchor"
+        return "public_proxy_only_no_symbol_actual_anchor"
     if latest is not None:
         return "cost_row_not_actual_or_mixed"
     return "missing_cost_row"

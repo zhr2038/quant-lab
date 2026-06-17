@@ -15,6 +15,7 @@ from quant_lab.features.fast_microstructure import (
     build_fast_microstructure_features,
     build_fast_microstructure_forward_test,
     build_fast_microstructure_strategy_candidates,
+    build_fast_microstructure_strategy_review,
     fast_microstructure_forward_summary_md,
 )
 from quant_lab.research.bottom_zone_reversal import build_bottom_zone_reversal_shadow
@@ -227,6 +228,61 @@ def test_fast_microstructure_strategy_candidates_label_aggregate_passes_validati
     assert aggregate["recommended_stage"] == "VALIDATION_ONLY"
     assert "needs_specific_regime_validation" in aggregate["review_blocking_reasons"]
     assert aggregate["live_order_effect"] == "read_only_no_live_order"
+
+
+def test_fast_microstructure_strategy_review_keeps_strong_shadow_symbols_only():
+    candidates = pl.DataFrame(
+        [
+            {
+                "generated_at": "2026-06-16T00:00:00Z",
+                "feature_name": "cvd_5m",
+                "symbol": "HYPE-USDT",
+                "regime": "TREND_UP",
+                "horizon_hours": 8,
+                "forward_sample_count": 120,
+                "rank_ic": 0.25,
+                "long_short_bps": 44.0,
+                "p25_net_bps": -10.0,
+                "hit_rate": 0.61,
+                "recent_7d_score": 0.5,
+                "lookback_bars": 2000,
+                "candidate_strategy_id": "v5.fast_microstructure.cvd_5m.hype_usdt.trend_up.8h",
+                "recommended_stage": "SHADOW_REVIEW",
+                "review_blocking_reasons": '["needs_paper_tracking"]',
+                "data_leakage_check": "future_price_used_only_as_label",
+                "live_order_effect": "read_only_no_live_order",
+            },
+            {
+                "generated_at": "2026-06-16T00:00:00Z",
+                "feature_name": "cvd_5m",
+                "symbol": "SOL-USDT",
+                "regime": "TREND_UP",
+                "horizon_hours": 8,
+                "forward_sample_count": 120,
+                "rank_ic": 0.25,
+                "long_short_bps": 44.0,
+                "p25_net_bps": -10.0,
+                "hit_rate": 0.61,
+                "recent_7d_score": 0.5,
+                "lookback_bars": 2000,
+                "candidate_strategy_id": "v5.fast_microstructure.cvd_5m.sol_usdt.trend_up.8h",
+                "recommended_stage": "SHADOW_REVIEW",
+                "review_blocking_reasons": '["needs_paper_tracking"]',
+                "data_leakage_check": "future_price_used_only_as_label",
+                "live_order_effect": "read_only_no_live_order",
+            },
+        ]
+    )
+
+    review = build_fast_microstructure_strategy_review(candidates)
+    rows = review.to_dicts()
+
+    assert len(rows) == 1
+    assert rows[0]["symbol"] == "HYPE-USDT"
+    assert rows[0]["strategy_candidate_id"] == "v5.fast_microstructure.cvd_5m.hype_usdt.trend_up.8h"
+    assert rows[0]["response_action"] == "shadow_review"
+    assert rows[0]["max_live_notional_usdt"] == 0.0
+    assert rows[0]["live_order_effect"] == "read_only_no_live_order"
 
 
 def test_fast_microstructure_summary_explains_aggregate_only_passes():

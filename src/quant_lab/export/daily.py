@@ -300,6 +300,7 @@ HEAVY_REGISTRY_QUALITY_DATASETS = {
     "orderbook_snapshot",
 }
 EVENT_DRIVEN_V5_DATASETS = readers.EVENT_DRIVEN_V5_DATASET_STATUSES
+EVENT_DRIVEN_OKX_READONLY_DATASETS = readers.EVENT_DRIVEN_OKX_READONLY_DATASET_STATUSES
 EVENT_DRIVEN_OK_STATUSES = readers.EVENT_DRIVEN_OK_STATUSES
 SECTION_DATASETS = {
     "market": ["market_bar", "trade_print", "orderbook_snapshot", "okx_public_ws"],
@@ -13030,6 +13031,7 @@ def _empty_frame_covered_by_rollup(
 def _stale_rows(frames: dict[str, pl.DataFrame]) -> pl.DataFrame:
     rows = []
     v5_telemetry_is_current = _v5_telemetry_is_current_from_frames(frames)
+    okx_readonly_private_is_current = _okx_readonly_private_is_current_from_frames(frames)
     expanded_universe_automation_is_active = _expanded_universe_automation_is_active_from_frames(
         frames
     )
@@ -13054,6 +13056,12 @@ def _stale_rows(frames: dict[str, pl.DataFrame]) -> pl.DataFrame:
             status = "closed_research_snapshot"
         if name in EVENT_DRIVEN_V5_DATASETS and status == "stale" and v5_telemetry_is_current:
             status = EVENT_DRIVEN_V5_DATASETS[name]
+        if (
+            name in EVENT_DRIVEN_OKX_READONLY_DATASETS
+            and status == "stale"
+            and okx_readonly_private_is_current
+        ):
+            status = EVENT_DRIVEN_OKX_READONLY_DATASETS[name]
         if name in readers.HISTORICAL_RESEARCH_DATASETS and status == "stale":
             status = "historical_research_snapshot"
         if status in {"missing", "unknown", "stale"} and status not in EVENT_DRIVEN_OK_STATUSES:
@@ -13103,6 +13111,44 @@ def _v5_telemetry_is_current_from_frames(frames: dict[str, pl.DataFrame]) -> boo
         return False
     freshness = _dataset_freshness_payload("strategy_health_daily", health)
     return str(freshness.get("freshness_status") or "") in {"fresh", "delayed"}
+
+
+def _okx_readonly_private_is_current_from_frames(frames: dict[str, pl.DataFrame]) -> bool:
+    job_history = frames.get("job_run_history", pl.DataFrame())
+    if _recent_successful_job_from_frame(job_history, "okx-backfill-readonly"):
+        return True
+    if _recent_successful_job_from_frame(job_history, "okx-fetch-bills"):
+        return True
+    for dataset_name in ("okx_private_readonly_fills", "okx_private_readonly_bills"):
+        frame = frames.get(dataset_name, pl.DataFrame())
+        if frame.is_empty():
+            continue
+        freshness = _dataset_freshness_payload(dataset_name, frame)
+        if str(freshness.get("freshness_status") or "") in {"fresh", "delayed"}:
+            return True
+    return False
+
+
+def _recent_successful_job_from_frame(
+    frame: pl.DataFrame,
+    job_name: str,
+    *,
+    max_age_seconds: int = 24 * 60 * 60,
+) -> bool:
+    if frame.is_empty() or not {"job_name", "status", "finished_at"}.issubset(frame.columns):
+        return False
+    try:
+        filtered = frame.filter(
+            (pl.col("job_name").cast(pl.Utf8) == job_name)
+            & (pl.col("status").cast(pl.Utf8).str.to_lowercase() == "succeeded")
+        )
+    except Exception:
+        return False
+    latest = _timestamp_value("job_run_history", filtered, "max")
+    if latest is None:
+        return False
+    age_seconds = max(int((datetime.now(UTC) - latest).total_seconds()), 0)
+    return age_seconds <= max_age_seconds
 
 
 def _schema_violation_rows(market: pl.DataFrame) -> pl.DataFrame:

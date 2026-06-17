@@ -3856,6 +3856,68 @@ def test_stale_dataset_check_ignores_optional_entry_quality_history_and_generate
     assert "v5_pullback_reversal_shadow" not in datasets
 
 
+def test_stale_dataset_check_ignores_event_driven_v5_cost_usage_when_current():
+    now = datetime.now(UTC)
+    old = now - timedelta(days=3)
+    stale = daily_export_module._stale_rows(
+        {
+            "strategy_health_daily": pl.DataFrame(
+                [
+                    {
+                        "strategy": "v5",
+                        "date": now.date().isoformat(),
+                        "status": "OK",
+                        "latest_bundle_ts": now,
+                    }
+                ]
+            ),
+            "v5_quant_lab_cost_usage": pl.DataFrame(
+                [{"strategy": "v5", "bundle_ts": old, "ingest_ts": old}]
+            ),
+            "v5_quant_lab_fallback": pl.DataFrame(
+                [{"strategy": "v5", "bundle_ts": old, "ingest_ts": old}]
+            ),
+        }
+    )
+
+    datasets = set(stale["dataset"].to_list()) if "dataset" in stale.columns else set()
+    assert "v5_quant_lab_cost_usage" not in datasets
+    assert "v5_quant_lab_fallback" not in datasets
+
+
+def test_stale_dataset_check_ignores_okx_bills_when_readonly_backfill_current():
+    now = datetime.now(UTC)
+    old = now - timedelta(days=3)
+    stale = daily_export_module._stale_rows(
+        {
+            "okx_private_readonly_bills": pl.DataFrame(
+                [
+                    {
+                        "endpoint": "/api/v5/account/bills",
+                        "ingest_ts": old,
+                        "raw_json": "{}",
+                    }
+                ]
+            ),
+            "job_run_history": pl.DataFrame(
+                [
+                    {
+                        "day": now.date().isoformat(),
+                        "job_name": "okx-backfill-readonly",
+                        "status": "succeeded",
+                        "started_at": now - timedelta(seconds=5),
+                        "finished_at": now,
+                        "duration_seconds": 5.0,
+                    }
+                ]
+            ),
+        }
+    )
+
+    datasets = set(stale["dataset"].to_list()) if "dataset" in stale.columns else set()
+    assert "okx_private_readonly_bills" not in datasets
+
+
 def test_stale_dataset_check_ignores_closed_research_diagnostics():
     now = datetime.now(UTC)
     old = now - timedelta(days=3)

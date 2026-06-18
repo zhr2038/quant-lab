@@ -39,8 +39,10 @@ from quant_lab.contracts.v5_quant_lab import (
 )
 from quant_lab.costs.calibrate import PRIVATE_COST_LOOKBACK_DAYS
 from quant_lab.costs.model import (
+    COST_BOOTSTRAP_READINESS_FIELDS,
     DEFAULT_LIVE_UNIVERSE_SYMBOLS,
     LIVE_UNIVERSE_COST_COVERAGE_FIELDS,
+    build_cost_bootstrap_readiness,
     build_live_universe_cost_coverage,
     evaluate_live_universe_cost_coverage,
 )
@@ -426,6 +428,7 @@ REQUIRED_MEMBERS = [
     "costs/cost_health_daily.csv",
     "costs/cost_estimate_examples.json",
     "costs/cost_fallbacks.csv",
+    "reports/cost_bootstrap_readiness.csv",
     "reports/live_universe_cost_coverage.csv",
     "research/alpha_evidence.csv",
     "research/strategy_evidence.csv",
@@ -800,6 +803,7 @@ CSV_SCHEMAS: dict[str, list[str]] = {
     "reports/factor_forward_validation.csv": FACTOR_FORWARD_VALIDATION_FIELDS,
     "reports/factor_strategy_bridge_candidates.csv": FACTOR_STRATEGY_BRIDGE_CANDIDATE_FIELDS,
     "reports/live_universe_cost_coverage.csv": LIVE_UNIVERSE_COST_COVERAGE_FIELDS,
+    "reports/cost_bootstrap_readiness.csv": COST_BOOTSTRAP_READINESS_FIELDS,
     "market/orderbook_spread.csv": ["symbol", "channel", "ts", "spread_bps"],
     "market/trade_activity.csv": ["symbol", "trade_count", "size_sum", "latest_trade_ts"],
     "reports/api_latency_summary.csv": [
@@ -3411,6 +3415,46 @@ def _publish_risk_permission_dependency_meta_snapshot(
     )
 
 
+def _publish_cost_bootstrap_readiness_snapshot(
+    root: Path,
+    snapshot: _DatasetSnapshot,
+    *,
+    generated_at: datetime,
+) -> _DatasetSnapshot:
+    frames = dict(snapshot.frames)
+    readiness = build_cost_bootstrap_readiness(
+        _normalize_symbol_frame(frames.get("cost_bucket_daily", pl.DataFrame())),
+        v5_order_lifecycle=_read_optional_lake_frame(root / "silver" / "v5_order_lifecycle"),
+        okx_private_readonly_fills=frames.get("okx_private_readonly_fills", pl.DataFrame()),
+        okx_private_readonly_bills=frames.get("okx_private_readonly_bills", pl.DataFrame()),
+        live_symbols=DEFAULT_LIVE_UNIVERSE_SYMBOLS,
+        generated_at=generated_at,
+    )
+    row_counts = dict(snapshot.row_counts)
+    warnings = list(snapshot.warnings)
+    _publish_export_frame(
+        root,
+        frames=frames,
+        row_counts=row_counts,
+        warnings=warnings,
+        dataset_name="cost_bootstrap_readiness",
+        frame=readiness,
+    )
+    return _DatasetSnapshot(
+        frames=frames,
+        row_counts=row_counts,
+        warnings=warnings,
+        transient_frames=snapshot.transient_frames,
+    )
+
+
+def _read_optional_lake_frame(path: Path) -> pl.DataFrame:
+    try:
+        return read_parquet_dataset(path)
+    except Exception:
+        return pl.DataFrame()
+
+
 def _publish_export_frame(
     root: Path,
     *,
@@ -3771,6 +3815,13 @@ def export_daily_pack(
     stage_started = _export_stage_start("publish_risk_dependency_meta")
     snapshot = _publish_risk_permission_dependency_meta_snapshot(root, snapshot)
     _record_export_stage(export_stage_timings, "publish_risk_dependency_meta", stage_started)
+    stage_started = _export_stage_start("publish_cost_bootstrap_readiness")
+    snapshot = _publish_cost_bootstrap_readiness_snapshot(
+        root,
+        snapshot,
+        generated_at=generated_at,
+    )
+    _record_export_stage(export_stage_timings, "publish_cost_bootstrap_readiness", stage_started)
     stage_started = _export_stage_start("write_source_snapshot_metas")
     meta_warnings = _write_source_snapshot_metas(root, snapshot.frames)
     if meta_warnings:
@@ -4674,6 +4725,15 @@ def _dataset_members(
         cost_bucket_daily=costs,
     )
     live_universe_cost_coverage = build_live_universe_cost_coverage(costs)
+    cost_bootstrap_readiness = _prefer_frame(
+        frames.get("cost_bootstrap_readiness", pl.DataFrame()),
+        build_cost_bootstrap_readiness(
+            costs,
+            v5_order_lifecycle=_read_optional_lake_frame(root / "silver" / "v5_order_lifecycle"),
+            okx_private_readonly_fills=frames.get("okx_private_readonly_fills", pl.DataFrame()),
+            okx_private_readonly_bills=frames.get("okx_private_readonly_bills", pl.DataFrame()),
+        ),
+    )
     cost_health = frames.get("cost_health_daily", pl.DataFrame())
     evidence = _alpha_evidence_for_export(frames.get("alpha_evidence", pl.DataFrame()))
     alpha_discovery_board = _alpha_discovery_board_for_export(
@@ -5139,6 +5199,10 @@ def _dataset_members(
         ),
         "costs/cost_estimate_examples.json": _json_text(_cost_examples(costs)),
         "costs/cost_fallbacks.csv": _csv_text(_cost_fallbacks(costs)),
+        "reports/cost_bootstrap_readiness.csv": _csv_member(
+            "reports/cost_bootstrap_readiness.csv",
+            cost_bootstrap_readiness,
+        ),
         "reports/live_universe_cost_coverage.csv": _csv_member(
             "reports/live_universe_cost_coverage.csv",
             live_universe_cost_coverage,
@@ -7963,6 +8027,10 @@ def _question_lines(snapshot: _DatasetSnapshot, data_quality: dict[str, Any]) ->
         questions.append(cost_coverage_question)
     elif _cost_model_is_proxy_or_fallback(costs):
         questions.append("成本模型仍是 public spread proxy，何时启用真实 fills/bills？")
+    if bootstrap_question := _cost_bootstrap_readiness_question(
+        snapshot.frames.get("cost_bootstrap_readiness", pl.DataFrame())
+    ):
+        questions.append(bootstrap_question)
     if snapshot.row_counts.get("feature_value", 0) == 0:
         questions.append("为什么 feature_value 为空？")
     if snapshot.row_counts.get("gate_decision", 0) == 0:
@@ -8008,6 +8076,32 @@ def _question_lines(snapshot: _DatasetSnapshot, data_quality: dict[str, Any]) ->
             ]
         )
     return [f"{index}. {question}" for index, question in enumerate(questions[:10], start=1)]
+
+
+def _cost_bootstrap_readiness_question(readiness: pl.DataFrame) -> str:
+    if readiness.is_empty() or "actual_or_mixed_trusted_covered" not in readiness.columns:
+        return ""
+    rows = readiness.to_dicts()
+    trusted = [
+        row
+        for row in rows
+        if str(row.get("actual_or_mixed_trusted_covered") or "").lower() == "true"
+        or row.get("actual_or_mixed_trusted_covered") is True
+    ]
+    if trusted:
+        return ""
+    states = sorted(
+        {
+            str(row.get("bootstrap_state") or "UNKNOWN")
+            for row in rows
+            if str(row.get("bootstrap_state") or "").strip()
+        }
+    )
+    return (
+        "cost_bootstrap_readiness 仍无 trusted coverage；"
+        "下一步是 backfill、bill 匹配还是 cost_probe dry-run？states="
+        + ",".join(states[:6])
+    )
 
 
 def _live_cost_coverage_question(costs: pl.DataFrame, data_quality: dict[str, Any]) -> str | None:

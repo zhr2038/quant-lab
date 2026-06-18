@@ -5,6 +5,7 @@ import polars as pl
 from quant_lab.costs.model import (
     DEFAULT_FALLBACK_COST_BPS,
     CostBucket,
+    build_cost_bootstrap_readiness,
     estimate_cost_bps,
     estimate_cost_from_cost_bucket_daily_rows,
     evaluate_live_universe_cost_coverage,
@@ -126,6 +127,47 @@ def test_live_universe_cost_coverage_rejects_stale_direct_without_fresh_anchor()
     assert btc["coverage_reason"] == "stale_actual_or_mixed_no_fresh_live_anchor"
     assert evaluation["direct_symbols"] == []
     assert evaluation["coverage_rate"] == 0.0
+
+
+def test_cost_bootstrap_readiness_keeps_proxy_and_probe_out_of_trusted_live():
+    now = datetime(2026, 6, 15, tzinfo=UTC)
+
+    readiness = build_cost_bootstrap_readiness(
+        pl.DataFrame([_coverage_cost_row("SOL-USDT", "public_spread_proxy", now)]),
+        v5_order_lifecycle=pl.DataFrame(
+            [
+                {
+                    "symbol": "BTC-USDT",
+                    "order_state": "FILLED",
+                    "fill_count": 1,
+                    "avg_fill_px": 70000.0,
+                    "filled_qty": 0.0001,
+                    "notional_usdt": 7.0,
+                    "fee_bps": 1.0,
+                    "arrival_slippage_bps": 0.5,
+                    "arrival_spread_bps": 0.2,
+                    "execution_purpose": "cost_probe",
+                    "eligible_for_cost_model": True,
+                    "eligible_for_alpha_pnl": False,
+                    "last_fill_ts": now.isoformat().replace("+00:00", "Z"),
+                }
+            ]
+        ),
+        live_symbols=["BTC-USDT", "SOL-USDT"],
+        generated_at=now,
+    )
+
+    rows = {row["symbol"]: row for row in readiness.to_dicts()}
+    assert rows["SOL-USDT"]["bootstrap_state"] == "PUBLIC_PROXY_ONLY"
+    assert rows["SOL-USDT"]["actual_or_mixed_bootstrap_covered"] is False
+    assert rows["SOL-USDT"]["trusted_for_live"] is False
+    assert rows["BTC-USDT"]["bootstrap_state"] == "BOOTSTRAP_PROBE_AVAILABLE"
+    assert rows["BTC-USDT"]["actual_or_mixed_bootstrap_covered"] is True
+    assert rows["BTC-USDT"]["actual_or_mixed_trusted_covered"] is False
+    assert rows["BTC-USDT"]["trusted_for_live"] is False
+    assert rows["BTC-USDT"]["live_order_effect"] == "read_only_no_live_order"
+    assert rows["BTC-USDT"]["actual_or_mixed_bootstrap_coverage_live_universe"] == 0.5
+    assert rows["BTC-USDT"]["actual_or_mixed_trusted_coverage_live_universe"] == 0.0
 
 
 def test_cost_model_can_fallback_to_symbol_bucket():

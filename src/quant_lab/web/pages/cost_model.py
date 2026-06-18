@@ -31,6 +31,12 @@ def render(lake_root: str | Path, st_module: Any | None = None) -> None:
     )
     st.subheader("先看：成本健康结论")
     show_frame(st, summary["cost_health"], "暂无 cost_health_daily 数据。")
+    st.subheader("成本冷启动 readiness")
+    show_frame(
+        st,
+        summary["cost_bootstrap_readiness"],
+        "暂无 cost_bootstrap_readiness 数据。",
+    )
     st.subheader("各标的成本桶")
     st.caption(
         "每行重点看：成本来源、样本数、P75/往返 all-in 成本、以及 canary/scale 可信等级。"

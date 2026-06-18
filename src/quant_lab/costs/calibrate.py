@@ -1,6 +1,6 @@
 import json
 import os
-from collections.abc import Sequence
+from collections.abc import Mapping, Sequence
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any
@@ -557,6 +557,13 @@ def _v5_order_lifecycle_fill_samples(v5_order_lifecycle: pl.DataFrame) -> list[d
             continue
         if not _is_filled_lifecycle_row(row):
             continue
+        execution_purpose = _cost_sample_origin(row)
+        if execution_purpose == "cost_probe" and not _truthy(row.get("eligible_for_cost_model")):
+            continue
+        if execution_purpose != "cost_probe" and _explicit_false(
+            row.get("eligible_for_cost_model")
+        ):
+            continue
         avg_fill_px = _first_float(row, ["avg_fill_px", "fill_px", "avg_px"])
         filled_qty = _first_float(row, ["filled_qty", "fill_qty", "fill_sz", "qty"])
         notional = _first_float(row, ["notional_usdt", "filled_notional_usdt", "notional"])
@@ -596,6 +603,9 @@ def _v5_order_lifecycle_fill_samples(v5_order_lifecycle: pl.DataFrame) -> list[d
             {
                 "symbol": symbol,
                 "source_kind": "v5_order_lifecycle",
+                "sample_origin": execution_purpose,
+                "eligible_for_cost_model": True,
+                "eligible_for_alpha_pnl": _truthy(row.get("eligible_for_alpha_pnl"), default=True),
                 "notional": abs(notional),
                 "notional_bucket": _notional_bucket(abs(notional)),
                 "trade_id": str(
@@ -627,6 +637,35 @@ def _v5_order_lifecycle_fill_samples(v5_order_lifecycle: pl.DataFrame) -> list[d
             }
         )
     return samples
+
+
+def _cost_sample_origin(row: Mapping[str, Any]) -> str:
+    for key in (
+        "cost_sample_origin",
+        "execution_purpose",
+        "strategy_candidate",
+        "live_order_effect",
+    ):
+        value = str(row.get(key) or "").strip().lower()
+        if "cost_probe" in value:
+            return "cost_probe"
+    return "strategy_live"
+
+
+def _truthy(value: Any, *, default: bool = False) -> bool:
+    if value is None or value == "":
+        return default
+    if isinstance(value, bool):
+        return value
+    return str(value).strip().lower() in {"1", "true", "yes", "y", "on"}
+
+
+def _explicit_false(value: Any) -> bool:
+    if value is None or value == "":
+        return False
+    if isinstance(value, bool):
+        return not value
+    return str(value).strip().lower() in {"0", "false", "no", "n", "off"}
 
 
 def _is_filled_lifecycle_row(row: dict[str, Any]) -> bool:

@@ -56,6 +56,40 @@ LIVE_UNIVERSE_COST_COVERAGE_FIELDS = [
     "coverage_status",
     "live_order_effect",
 ]
+COST_BOOTSTRAP_READINESS_FIELDS = [
+    "generated_at",
+    "symbol",
+    "bootstrap_state",
+    "cost_evidence_tier",
+    "cost_trust_level",
+    "actual_fill_count",
+    "mixed_fill_count",
+    "cost_probe_fill_count",
+    "strategy_live_fill_count",
+    "private_fill_count",
+    "bill_matched_count",
+    "fee_available",
+    "slippage_available",
+    "spread_available",
+    "sample_count",
+    "trusted_sample_count",
+    "latest_fill_ts",
+    "latest_bill_ts",
+    "latest_cost_source",
+    "roundtrip_cost_p50_bps",
+    "roundtrip_cost_p75_bps",
+    "roundtrip_cost_p90_bps",
+    "trusted_for_paper",
+    "trusted_for_live",
+    "actual_or_mixed_bootstrap_covered",
+    "actual_or_mixed_trusted_covered",
+    "actual_or_mixed_bootstrap_coverage_live_universe",
+    "actual_or_mixed_trusted_coverage_live_universe",
+    "target_trusted_coverage",
+    "coverage_status",
+    "live_order_effect",
+    "next_action",
+]
 
 
 def evaluate_live_universe_cost_coverage(
@@ -234,6 +268,207 @@ def build_live_universe_cost_coverage(
         return pl.DataFrame(schema={field: pl.Utf8 for field in LIVE_UNIVERSE_COST_COVERAGE_FIELDS})
     return pl.DataFrame(output, infer_schema_length=None).select(
         LIVE_UNIVERSE_COST_COVERAGE_FIELDS
+    )
+
+
+def build_cost_bootstrap_readiness(
+    cost_bucket_daily: pl.DataFrame | None,
+    *,
+    v5_order_lifecycle: pl.DataFrame | None = None,
+    okx_private_readonly_fills: pl.DataFrame | None = None,
+    okx_private_readonly_bills: pl.DataFrame | None = None,
+    live_symbols: Iterable[str] = DEFAULT_LIVE_UNIVERSE_SYMBOLS,
+    target_trusted_coverage: float = 0.50,
+    min_trusted_sample_count: int = MIN_TRUSTED_COST_SAMPLE_COUNT,
+    generated_at: datetime | None = None,
+) -> pl.DataFrame:
+    """Explain cost bootstrap state without weakening live coverage gates."""
+
+    generated = (generated_at or datetime.now(UTC)).astimezone(UTC)
+    symbols = sorted({normalize_symbol(symbol) for symbol in live_symbols if symbol})
+    cost_rows = _normalized_cost_rows(cost_bucket_daily)
+    rows_by_symbol: dict[str, list[dict[str, Any]]] = {
+        symbol: [row for row in cost_rows if _row_symbol(row) == symbol]
+        for symbol in symbols
+    }
+    lifecycle_by_symbol = _rows_by_symbol(v5_order_lifecycle)
+    private_fills_by_symbol = _rows_by_symbol(okx_private_readonly_fills)
+    bills_by_symbol = _rows_by_symbol(okx_private_readonly_bills)
+
+    output: list[dict[str, Any]] = []
+    bootstrap_covered = 0
+    trusted_covered = 0
+    for symbol in symbols:
+        symbol_rows = rows_by_symbol.get(symbol, [])
+        latest = _latest_cost_row_for_coverage(symbol_rows)
+        latest_actual = _latest_actual_or_mixed_row(symbol_rows)
+        fresh_actual = _latest_fresh_actual_or_mixed_row(
+            symbol_rows,
+            reference_time=generated,
+        )
+        latest_proxy = _latest_public_proxy_row(symbol_rows)
+        source_row = fresh_actual or latest_actual or latest_proxy or latest or {}
+        lifecycle_rows = lifecycle_by_symbol.get(symbol, [])
+        filled_lifecycle = [row for row in lifecycle_rows if _lifecycle_row_filled(row)]
+        cost_probe_rows = [row for row in filled_lifecycle if _lifecycle_row_is_cost_probe(row)]
+        strategy_live_rows = [
+            row for row in filled_lifecycle if not _lifecycle_row_is_cost_probe(row)
+        ]
+        private_fill_rows = private_fills_by_symbol.get(symbol, [])
+        bill_rows = bills_by_symbol.get(symbol, [])
+
+        actual_fill_count = max(
+            _int_value(source_row.get("actual_fill_count")),
+            len(strategy_live_rows),
+            len(private_fill_rows),
+        )
+        mixed_fill_count = _int_value(source_row.get("mixed_fill_count"))
+        cost_probe_fill_count = len(cost_probe_rows)
+        private_fill_count = len(private_fill_rows)
+        bill_matched_count = len(bill_rows)
+        sample_count = max(
+            _int_value(source_row.get("sample_count")),
+            actual_fill_count + mixed_fill_count + cost_probe_fill_count,
+        )
+        fee_available = (
+            _positive_cost_value(source_row, "fee_bps_p75")
+            or _any_positive(filled_lifecycle, "fee_bps", "fee_usdt", "fee")
+            or bool(bill_rows)
+        )
+        slippage_available = (
+            _positive_cost_value(source_row, "slippage_bps_p75")
+            or _any_positive(
+                filled_lifecycle,
+                "arrival_slippage_bps",
+                "delay_cost_bps",
+                "slippage_bps",
+            )
+            or _any_row_has_all(filled_lifecycle, "arrival_mid", "avg_fill_px")
+        )
+        spread_available = (
+            _positive_cost_value(source_row, "spread_bps_p75")
+            or _any_positive(
+                filled_lifecycle,
+                "arrival_spread_bps",
+                "spread_bps",
+                "spread_bps_at_decision",
+            )
+            or _any_row_has_all(filled_lifecycle, "arrival_bid", "arrival_ask")
+        )
+        direct_fresh = fresh_actual is not None
+        stale_actual = latest_actual is not None and _row_is_stale(
+            latest_actual,
+            reference_time=generated,
+        )
+        bootstrap_ready = direct_fresh or cost_probe_fill_count > 0 or private_fill_count > 0
+        trusted_sample_count = (
+            sample_count
+            if direct_fresh
+            and sample_count >= min_trusted_sample_count
+            and fee_available
+            and slippage_available
+            and spread_available
+            else 0
+        )
+        trusted_live = trusted_sample_count >= min_trusted_sample_count
+        paper_ready = (
+            bootstrap_ready
+            or (_is_public_proxy_source(_cost_source(latest_proxy)) if latest_proxy else False)
+            or (
+                bool(latest)
+                and _cost_source(latest) not in {"", "global_default"}
+                and not _row_is_stale(latest, reference_time=generated)
+            )
+        )
+        bootstrap_covered += int(bootstrap_ready)
+        trusted_covered += int(trusted_live)
+        state = _cost_bootstrap_state(
+            latest=latest,
+            latest_actual=latest_actual,
+            latest_proxy=latest_proxy,
+            stale_actual=stale_actual,
+            trusted_live=trusted_live,
+            actual_fill_count=actual_fill_count,
+            mixed_fill_count=mixed_fill_count,
+            cost_probe_fill_count=cost_probe_fill_count,
+            sample_count=sample_count,
+            min_trusted_sample_count=min_trusted_sample_count,
+        )
+        output.append(
+            {
+                "generated_at": generated.isoformat().replace("+00:00", "Z"),
+                "symbol": symbol,
+                "bootstrap_state": state,
+                "cost_evidence_tier": _cost_bootstrap_evidence_tier(state),
+                "cost_trust_level": _cost_bootstrap_trust_level(
+                    state,
+                    trusted_for_live=trusted_live,
+                    trusted_for_paper=paper_ready,
+                ),
+                "actual_fill_count": actual_fill_count,
+                "mixed_fill_count": mixed_fill_count,
+                "cost_probe_fill_count": cost_probe_fill_count,
+                "strategy_live_fill_count": len(strategy_live_rows),
+                "private_fill_count": private_fill_count,
+                "bill_matched_count": bill_matched_count,
+                "fee_available": fee_available,
+                "slippage_available": slippage_available,
+                "spread_available": spread_available,
+                "sample_count": sample_count,
+                "trusted_sample_count": trusted_sample_count,
+                "latest_fill_ts": _latest_row_ts(
+                    [*filled_lifecycle, *private_fill_rows],
+                    "last_fill_ts",
+                    "fill_ts",
+                    "ts_utc",
+                    "ts",
+                    "timestamp",
+                    "trade_ts",
+                    "ingest_ts",
+                ),
+                "latest_bill_ts": _latest_row_ts(
+                    bill_rows,
+                    "ts_utc",
+                    "ts",
+                    "timestamp",
+                    "bill_ts",
+                    "ingest_ts",
+                ),
+                "latest_cost_source": _cost_source(latest) or "missing",
+                "roundtrip_cost_p50_bps": _roundtrip_cost_value(source_row, "p50"),
+                "roundtrip_cost_p75_bps": _roundtrip_cost_value(source_row, "p75"),
+                "roundtrip_cost_p90_bps": _roundtrip_cost_value(source_row, "p90"),
+                "trusted_for_paper": paper_ready,
+                "trusted_for_live": trusted_live,
+                "actual_or_mixed_bootstrap_covered": bootstrap_ready,
+                "actual_or_mixed_trusted_covered": trusted_live,
+                "actual_or_mixed_bootstrap_coverage_live_universe": None,
+                "actual_or_mixed_trusted_coverage_live_universe": None,
+                "target_trusted_coverage": target_trusted_coverage,
+                "coverage_status": "UNKNOWN",
+                "live_order_effect": "read_only_no_live_order",
+                "next_action": _cost_bootstrap_next_action(
+                    state,
+                    fee_available=fee_available,
+                    slippage_available=slippage_available,
+                    spread_available=spread_available,
+                    bill_matched_count=bill_matched_count,
+                ),
+            }
+        )
+
+    denominator = max(len(symbols), 1)
+    bootstrap_rate = bootstrap_covered / denominator
+    trusted_rate = trusted_covered / denominator
+    status = "PASS" if trusted_rate >= target_trusted_coverage else "WARNING"
+    for row in output:
+        row["actual_or_mixed_bootstrap_coverage_live_universe"] = bootstrap_rate
+        row["actual_or_mixed_trusted_coverage_live_universe"] = trusted_rate
+        row["coverage_status"] = status
+    if not output:
+        return pl.DataFrame(schema={field: pl.Utf8 for field in COST_BOOTSTRAP_READINESS_FIELDS})
+    return pl.DataFrame(output, infer_schema_length=None).select(
+        COST_BOOTSTRAP_READINESS_FIELDS
     )
 
 
@@ -1319,3 +1554,217 @@ def _int_value(value: Any) -> int:
         return int(float(value or 0))
     except (TypeError, ValueError):
         return 0
+
+
+def _rows_by_symbol(frame: pl.DataFrame | None) -> dict[str, list[dict[str, Any]]]:
+    grouped: dict[str, list[dict[str, Any]]] = {}
+    if frame is None or frame.is_empty():
+        return grouped
+    for row in frame.to_dicts():
+        symbol = _symbol_from_any_row(row)
+        if not symbol:
+            continue
+        grouped.setdefault(symbol, []).append(dict(row))
+    return grouped
+
+
+def _symbol_from_any_row(row: Mapping[str, Any]) -> str:
+    for key in ("normalized_symbol", "symbol", "inst_id", "instId", "instrument_id"):
+        value = row.get(key)
+        if value is None or str(value).strip() == "":
+            continue
+        try:
+            return normalize_symbol(value)
+        except Exception:
+            continue
+    return ""
+
+
+def _lifecycle_row_filled(row: Mapping[str, Any]) -> bool:
+    if _int_value(row.get("fill_count")) > 0:
+        return True
+    for key in ("filled_qty", "acc_fill_sz", "fill_sz", "qty"):
+        if _positive_value(row.get(key)):
+            return True
+    state = str(row.get("order_state") or row.get("state") or "").strip().lower()
+    return state in {"filled", "fully_filled", "partially_filled", "partial_fill"}
+
+
+def _lifecycle_row_is_cost_probe(row: Mapping[str, Any]) -> bool:
+    values = [
+        row.get("execution_purpose"),
+        row.get("cost_sample_origin"),
+        row.get("strategy_candidate"),
+        row.get("live_order_effect"),
+    ]
+    return any("cost_probe" in str(value or "").strip().lower() for value in values)
+
+
+def _positive_cost_value(row: Mapping[str, Any], key: str) -> bool:
+    return _positive_value(row.get(key))
+
+
+def _positive_value(value: Any) -> bool:
+    try:
+        return abs(float(value)) > 0
+    except (TypeError, ValueError):
+        return False
+
+
+def _any_positive(rows: Iterable[Mapping[str, Any]], *keys: str) -> bool:
+    return any(_positive_value(row.get(key)) for row in rows for key in keys)
+
+
+def _any_row_has_all(rows: Iterable[Mapping[str, Any]], *keys: str) -> bool:
+    for row in rows:
+        if all(row.get(key) not in {None, "", "null", "None"} for key in keys):
+            return True
+    return False
+
+
+def _latest_row_ts(rows: Iterable[Mapping[str, Any]], *keys: str) -> str:
+    latest: datetime | None = None
+    for row in rows:
+        parsed = _row_ts(row, *keys)
+        if parsed is None:
+            continue
+        if latest is None or parsed > latest:
+            latest = parsed
+    return latest.isoformat().replace("+00:00", "Z") if latest is not None else ""
+
+
+def _row_ts(row: Mapping[str, Any], *keys: str) -> datetime | None:
+    for key in keys:
+        value = row.get(key)
+        if isinstance(value, datetime):
+            return value.astimezone(UTC) if value.tzinfo else value.replace(tzinfo=UTC)
+        if value in {None, "", "null", "None"}:
+            continue
+        try:
+            parsed = datetime.fromisoformat(str(value).replace("Z", "+00:00"))
+        except ValueError:
+            continue
+        return parsed.astimezone(UTC) if parsed.tzinfo else parsed.replace(tzinfo=UTC)
+    return None
+
+
+def _roundtrip_cost_value(row: Mapping[str, Any], quantile: str) -> float:
+    if not row:
+        return 0.0
+    explicit = _float_value(row, f"roundtrip_cost_{quantile}_bps")
+    if explicit > 0:
+        return explicit
+    total = _float_value(row, f"total_cost_bps_{quantile}")
+    return total * 2.0 if total > 0 else 0.0
+
+
+def _cost_bootstrap_state(
+    *,
+    latest: Mapping[str, Any] | None,
+    latest_actual: Mapping[str, Any] | None,
+    latest_proxy: Mapping[str, Any] | None,
+    stale_actual: bool,
+    trusted_live: bool,
+    actual_fill_count: int,
+    mixed_fill_count: int,
+    cost_probe_fill_count: int,
+    sample_count: int,
+    min_trusted_sample_count: int,
+) -> str:
+    if stale_actual:
+        return "STALE"
+    if trusted_live:
+        return "ACTUAL_FILLS_TRUSTED"
+    if latest_actual is not None or actual_fill_count > 0:
+        if mixed_fill_count > 0 or _cost_source(latest_actual) == "mixed_actual_proxy":
+            return "MIXED_ACTUAL_PROXY_AVAILABLE"
+        if sample_count < min_trusted_sample_count:
+            return "ACTUAL_FILLS_SMALL_SAMPLE"
+        return "ACTUAL_FILLS_SMALL_SAMPLE"
+    if cost_probe_fill_count > 0:
+        return "BOOTSTRAP_PROBE_AVAILABLE"
+    if latest_proxy is not None:
+        return "PUBLIC_PROXY_ONLY"
+    if latest is not None and _cost_source(latest) not in {"", "global_default"}:
+        return "ACTUAL_FILLS_SMALL_SAMPLE"
+    return "NO_COST_DATA"
+
+
+def _cost_bootstrap_evidence_tier(state: str) -> str:
+    return {
+        "NO_COST_DATA": "global_default",
+        "PUBLIC_PROXY_ONLY": "public_spread_proxy",
+        "BOOTSTRAP_PROBE_AVAILABLE": "bootstrap_cost_probe",
+        "MIXED_ACTUAL_PROXY_AVAILABLE": "mixed_actual_proxy",
+        "ACTUAL_FILLS_SMALL_SAMPLE": "actual_fills_small_sample",
+        "ACTUAL_FILLS_TRUSTED": "actual_fills_trusted",
+        "STALE": "stale_actual_or_mixed",
+        "BROKEN_RECONCILE": "broken_reconcile",
+    }.get(state, "unknown")
+
+
+def _cost_bootstrap_trust_level(
+    state: str,
+    *,
+    trusted_for_live: bool,
+    trusted_for_paper: bool,
+) -> str:
+    if trusted_for_live:
+        return "live_small_review_candidate"
+    if trusted_for_paper:
+        return "paper_or_shadow_only"
+    if state == "PUBLIC_PROXY_ONLY":
+        return "diagnostic_only"
+    return "not_trusted"
+
+
+def _cost_bootstrap_next_action(
+    state: str,
+    *,
+    fee_available: bool,
+    slippage_available: bool,
+    spread_available: bool,
+    bill_matched_count: int,
+) -> str:
+    if state == "NO_COST_DATA":
+        return "run okx read-only backfill; if still empty, review V5 cost_probe dry-run plan"
+    if state == "PUBLIC_PROXY_ONLY":
+        return "collect actual/mixed fee and slippage samples; public proxy is diagnostic only"
+    if state == "BOOTSTRAP_PROBE_AVAILABLE":
+        missing = _missing_components(
+            fee_available=fee_available,
+            slippage_available=slippage_available,
+            spread_available=spread_available,
+            bill_matched_count=bill_matched_count,
+        )
+        return f"bootstrap sample present; resolve {missing} before trusted live review"
+    if state == "MIXED_ACTUAL_PROXY_AVAILABLE":
+        return "continue read-only backfill and increase samples before live-small review"
+    if state == "ACTUAL_FILLS_SMALL_SAMPLE":
+        return "increase actual/mixed sample count before trusted coverage"
+    if state == "ACTUAL_FILLS_TRUSTED":
+        return "eligible for manual live-small cost review; strategy evidence still required"
+    if state == "STALE":
+        return "refresh actual/mixed cost anchors; stale rows do not count as live coverage"
+    if state == "BROKEN_RECONCILE":
+        return "fix lifecycle/fill/bill reconciliation before using samples"
+    return "inspect cost bucket source and lifecycle evidence"
+
+
+def _missing_components(
+    *,
+    fee_available: bool,
+    slippage_available: bool,
+    spread_available: bool,
+    bill_matched_count: int,
+) -> str:
+    missing: list[str] = []
+    if not fee_available:
+        missing.append("fee")
+    if not slippage_available:
+        missing.append("slippage")
+    if not spread_available:
+        missing.append("spread")
+    if bill_matched_count <= 0:
+        missing.append("bill_match")
+    return ",".join(missing) if missing else "sample_count"

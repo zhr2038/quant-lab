@@ -12,6 +12,7 @@ from typing import Any
 import polars as pl
 
 from quant_lab.costs.model import (
+    COST_BOOTSTRAP_READINESS_FIELDS,
     LIVE_UNIVERSE_COST_COVERAGE_FIELDS,
     evaluate_live_universe_cost_coverage,
 )
@@ -34,6 +35,7 @@ DATASET_PATHS = {
     "factor_strategy_bridge_candidates": Path("gold") / "factor_strategy_bridge_candidates",
     "cost_bucket_daily": Path("gold") / "cost_bucket_daily",
     "cost_health_daily": Path("gold") / "cost_health_daily",
+    "cost_bootstrap_readiness": Path("gold") / "cost_bootstrap_readiness",
     "alpha_evidence": Path("gold") / "alpha_evidence",
     "alpha_discovery_board": Path("gold") / "alpha_discovery_board",
     "strategy_evidence": Path("gold") / "strategy_evidence",
@@ -309,6 +311,7 @@ DATASET_TIMESTAMP_COLUMNS: dict[str, tuple[str, ...]] = {
     "orderbook_spread_1m": ("ts", "minute_ts"),
     "cost_bucket_daily": ("created_at", "day"),
     "cost_health_daily": ("created_at", "day"),
+    "cost_bootstrap_readiness": ("generated_at",),
     "gate_decision": ("created_at",),
     "risk_permission": ("as_of_ts", "created_at"),
     "risk_permission_api_dependency_meta": ("generated_at", "telemetry_latest_ts"),
@@ -2563,16 +2566,23 @@ def cost_model_summary(lake_root: str | Path) -> dict[str, Any]:
     )
     costs = _normalize_symbol_frame(costs)
     health, health_warning = read_dataset_with_warning(lake_root, "cost_health_daily")
+    bootstrap, bootstrap_warning = read_dataset_with_warning(
+        lake_root,
+        "cost_bootstrap_readiness",
+    )
     live_coverage, live_coverage_warning = _live_universe_cost_coverage_table(costs)
     warnings = [
         warning
-        for warning in [costs_warning, health_warning, live_coverage_warning]
+        for warning in [costs_warning, health_warning, bootstrap_warning, live_coverage_warning]
         if warning
     ]
     if costs.is_empty():
         return {
             "costs": pl.DataFrame(),
             "cost_health": redact_frame(_cost_health_table(health)).head(DISPLAY_LIMIT),
+            "cost_bootstrap_readiness": redact_frame(
+                _cost_bootstrap_readiness_table(bootstrap)
+            ).head(DISPLAY_LIMIT),
             "live_universe_cost_coverage": live_coverage,
             "actual_rows": 0,
             "mixed_rows": 0,
@@ -2598,6 +2608,9 @@ def cost_model_summary(lake_root: str | Path) -> dict[str, Any]:
     return {
         "costs": redact_frame(_cost_bucket_table(costs)).head(DISPLAY_LIMIT),
         "cost_health": redact_frame(_cost_health_table(health)).head(DISPLAY_LIMIT),
+        "cost_bootstrap_readiness": redact_frame(
+            _cost_bootstrap_readiness_table(bootstrap)
+        ).head(DISPLAY_LIMIT),
         "live_universe_cost_coverage": live_coverage,
         "actual_rows": int(latest_health.get("actual_rows") or 0),
         "mixed_rows": int(latest_health.get("mixed_rows") or 0),
@@ -2631,6 +2644,16 @@ def _live_universe_cost_coverage_table(costs: pl.DataFrame) -> tuple[pl.DataFram
     return redact_frame(pl.DataFrame(rows, infer_schema_length=None)).select(
         LIVE_UNIVERSE_COST_COVERAGE_FIELDS
     ), None
+
+
+def _cost_bootstrap_readiness_table(frame: pl.DataFrame) -> pl.DataFrame:
+    if frame.is_empty():
+        return pl.DataFrame(schema={field: pl.Utf8 for field in COST_BOOTSTRAP_READINESS_FIELDS})
+    normalized = frame
+    for column in COST_BOOTSTRAP_READINESS_FIELDS:
+        if column not in normalized.columns:
+            normalized = normalized.with_columns(pl.lit(None).alias(column))
+    return normalized.select(COST_BOOTSTRAP_READINESS_FIELDS)
 
 
 def _cost_health_table(frame: pl.DataFrame) -> pl.DataFrame:
@@ -5153,6 +5176,8 @@ def _empty_dataset_status(dataset_name: str) -> str:
     if dataset_name == "feature_value":
         return "特征尚未发布"
     if dataset_name == "factor_strategy_bridge_candidates":
+        return "export_derived_optional"
+    if dataset_name == "cost_bootstrap_readiness":
         return "export_derived_optional"
     if dataset_name == "decision_audit":
         return "legacy_optional"

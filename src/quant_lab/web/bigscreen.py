@@ -1150,6 +1150,9 @@ def _cost_payload(cost: dict[str, Any]) -> dict[str, Any]:
     payload = {key: _json_value(cost.get(key)) for key in keys}
     payload["cost_rows"] = _frame_rows(cost.get("costs"), limit=12)
     payload["cost_health"] = _frame_rows(cost.get("cost_health"), limit=5)
+    payload["cost_bootstrap_readiness"] = _frame_rows(
+        cost.get("cost_bootstrap_readiness"), limit=12
+    )
     payload["live_universe_cost_coverage"] = _frame_rows(
         cost.get("live_universe_cost_coverage"), limit=12
     )

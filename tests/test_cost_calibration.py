@@ -3,7 +3,11 @@ from pathlib import Path
 
 import polars as pl
 
-from quant_lab.costs.calibrate import _read_day_dataset, calibrate_costs_for_day
+from quant_lab.costs.calibrate import (
+    _read_day_dataset,
+    _v5_order_lifecycle_fill_samples,
+    calibrate_costs_for_day,
+)
 from quant_lab.costs.model import cost_bucket_daily_to_cost_buckets, estimate_cost_bps
 from quant_lab.data.lake import read_parquet_dataset, write_parquet_dataset
 from quant_lab.ingest.okx_readonly_private import (
@@ -331,6 +335,49 @@ def test_v5_order_lifecycle_generates_actual_fills_bucket(tmp_path):
     assert checks["lifecycle_present_but_not_in_actual_cost"] is True
     assert checks["filled_order_missing_lifecycle_cost"] is True
     assert checks["fill_count_zero_for_filled_order"] is True
+
+
+def test_cost_probe_lifecycle_requires_explicit_cost_model_eligibility():
+    rows = pl.DataFrame(
+        [
+            {
+                "symbol": "BTC-USDT",
+                "order_state": "FILLED",
+                "fill_count": 1,
+                "avg_fill_px": "70000",
+                "filled_qty": "0.0001",
+                "notional_usdt": "7",
+                "fee_bps": "1.0",
+                "arrival_slippage_bps": "0.5",
+                "arrival_spread_bps": "0.2",
+                "execution_purpose": "cost_probe",
+                "eligible_for_alpha_pnl": "false",
+                "last_fill_ts": "2026-05-15T01:00:04Z",
+            },
+            {
+                "symbol": "ETH-USDT",
+                "order_state": "FILLED",
+                "fill_count": 1,
+                "avg_fill_px": "3500",
+                "filled_qty": "0.002",
+                "notional_usdt": "7",
+                "fee_bps": "1.0",
+                "arrival_slippage_bps": "0.5",
+                "arrival_spread_bps": "0.2",
+                "execution_purpose": "cost_probe",
+                "eligible_for_cost_model": "true",
+                "eligible_for_alpha_pnl": "false",
+                "last_fill_ts": "2026-05-15T01:00:05Z",
+            },
+        ]
+    )
+
+    samples = _v5_order_lifecycle_fill_samples(rows)
+
+    assert [sample["symbol"] for sample in samples] == ["ETH-USDT"]
+    assert samples[0]["sample_origin"] == "cost_probe"
+    assert samples[0]["eligible_for_cost_model"] is True
+    assert samples[0]["eligible_for_alpha_pnl"] is False
 
 
 def test_v5_order_lifecycle_stays_actual_when_trade_csv_also_exists(tmp_path):

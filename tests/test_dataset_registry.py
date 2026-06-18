@@ -36,6 +36,7 @@ def test_dataset_registry_exposes_paths_for_api_and_lake_health():
     assert "market_bar" in dataset_names()
     assert paths["market_bar"] == Path("silver") / "market_bar"
     assert paths["cost_bucket_daily"] == Path("gold") / "cost_bucket_daily"
+    assert paths["cost_bootstrap_readiness"] == Path("gold") / "cost_bootstrap_readiness"
     assert paths["v5_candidate_event"] == Path("silver") / "v5_candidate_event"
 
 

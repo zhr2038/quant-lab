@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from collections import defaultdict
+from datetime import UTC, datetime
 from typing import Any
 
 import polars as pl
@@ -93,6 +94,7 @@ FACTOR_REGIME_EFFECTIVENESS_FIELDS = [
 
 FACTOR_STRATEGY_BRIDGE_CANDIDATE_FIELDS = [
     "as_of_date",
+    "generated_at",
     "factor_id",
     "factor_family",
     "correlation_cluster_id",
@@ -454,7 +456,9 @@ def build_factor_strategy_bridge_candidates(
     paper_queue: pl.DataFrame,
     factor_forward_validation: pl.DataFrame | None = None,
     fast_microstructure_forward_test: pl.DataFrame | None = None,
+    generated_at: datetime | str | None = None,
 ) -> pl.DataFrame:
+    generated_at_value = _bridge_generated_at(generated_at)
     forward_pass_by_factor = _forward_validation_pass_by_factor(factor_forward_validation)
     forward_pass_rows_by_factor = _forward_validation_pass_rows_by_factor(
         factor_forward_validation
@@ -500,6 +504,7 @@ def build_factor_strategy_bridge_candidates(
         out.append(
             {
                 "as_of_date": row.get("as_of_date"),
+                "generated_at": generated_at_value,
                 "factor_id": factor_id,
                 "factor_family": row.get("factor_family"),
                 "correlation_cluster_id": row.get("correlation_cluster_id"),
@@ -517,6 +522,7 @@ def build_factor_strategy_bridge_candidates(
         out.append(
             {
                 "as_of_date": row.get("as_of_date"),
+                "generated_at": generated_at_value,
                 "factor_id": factor_id,
                 "factor_family": row.get("factor_family"),
                 "correlation_cluster_id": row.get("correlation_cluster_id"),
@@ -530,13 +536,20 @@ def build_factor_strategy_bridge_candidates(
                 "live_order_effect": FACTOR_FACTORY_V2_LIVE_ORDER_EFFECT,
             }
         )
-    out.extend(_fast_microstructure_strategy_bridge_rows(fast_microstructure_forward_test))
+    out.extend(
+        _fast_microstructure_strategy_bridge_rows(
+            fast_microstructure_forward_test,
+            generated_at=generated_at_value,
+        )
+    )
     out.sort(key=_bridge_candidate_rank_key)
     return _frame(out, FACTOR_STRATEGY_BRIDGE_CANDIDATE_FIELDS)
 
 
 def _fast_microstructure_strategy_bridge_rows(
     frame: pl.DataFrame | None,
+    *,
+    generated_at: str,
 ) -> list[dict[str, Any]]:
     out: list[dict[str, Any]] = []
     for row in _rows(frame):
@@ -552,6 +565,7 @@ def _fast_microstructure_strategy_bridge_rows(
         out.append(
             {
                 "as_of_date": _fast_microstructure_as_of_date(row),
+                "generated_at": generated_at,
                 "factor_id": factor_id,
                 "factor_family": "fast_microstructure",
                 "correlation_cluster_id": "fast_microstructure",
@@ -589,6 +603,25 @@ def _fast_microstructure_as_of_date(row: dict[str, Any]) -> Any:
         return direct
     generated = str(row.get("generated_at") or "").strip()
     return generated[:10] if generated else None
+
+
+def _bridge_generated_at(value: datetime | str | None) -> str:
+    if value is None:
+        return datetime.now(UTC).isoformat()
+    if isinstance(value, datetime):
+        if value.tzinfo is None:
+            return value.replace(tzinfo=UTC).isoformat()
+        return value.astimezone(UTC).isoformat()
+    text = str(value).strip()
+    if not text:
+        return datetime.now(UTC).isoformat()
+    try:
+        parsed = datetime.fromisoformat(text.replace("Z", "+00:00"))
+    except ValueError:
+        return text
+    if parsed.tzinfo is None:
+        return parsed.replace(tzinfo=UTC).isoformat()
+    return parsed.astimezone(UTC).isoformat()
 
 
 def _fast_microstructure_bridge_candidate_id(

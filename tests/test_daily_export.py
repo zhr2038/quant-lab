@@ -4095,14 +4095,15 @@ def test_stale_dataset_check_uses_risk_permission_dependency_meta_generated_at()
     assert "risk_permission_api_dependency_meta" not in datasets
 
 
-def test_stale_dataset_check_uses_factor_bridge_as_of_date():
+def test_stale_dataset_check_uses_factor_bridge_generated_at():
     now = datetime.now(UTC)
     stale = daily_export_module._stale_rows(
         {
             "factor_strategy_bridge_candidates": pl.DataFrame(
                 [
                     {
-                        "as_of_date": now.date().isoformat(),
+                        "as_of_date": (now - timedelta(days=3)).date().isoformat(),
+                        "generated_at": now,
                         "factor_id": "core.volume_zscore_24",
                         "bridge_candidate_id": "v5.factor_bridge.core.volume_zscore_24",
                     }

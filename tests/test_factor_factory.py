@@ -187,6 +187,7 @@ def test_factor_factory_v2_dedupes_and_builds_review_outputs():
 
 
 def test_factor_bridge_routes_forward_pass_without_regime_stability_block():
+    generated_at = datetime(2026, 6, 16, 1, 2, 3, tzinfo=UTC)
     paper_queue = pl.DataFrame(
         [
             {
@@ -222,6 +223,7 @@ def test_factor_bridge_routes_forward_pass_without_regime_stability_block():
     bridge = build_factor_strategy_bridge_candidates(
         paper_queue=paper_queue,
         factor_forward_validation=forward_validation,
+        generated_at=generated_at,
     )
     row = bridge.to_dicts()[0]
     reasons = json.loads(row["blocking_reasons"])
@@ -229,6 +231,7 @@ def test_factor_bridge_routes_forward_pass_without_regime_stability_block():
     assert row["eligible_for_alpha_factory"] == "strategy_review_pending"
     assert row["recommended_action"] == "REVIEW_FOR_ALPHA_FACTORY_STRATEGY"
     assert row["symbol"] == "SOL-USDT"
+    assert row["generated_at"] == generated_at.isoformat()
     assert row["regime"] == "TREND_UP"
     assert row["horizon"] == "4h"
     assert "needs_strategy_formulation" in reasons
@@ -369,12 +372,15 @@ def test_factor_bridge_adds_fast_microstructure_pass_features_to_strategy_review
         paper_queue=pl.DataFrame(),
         factor_forward_validation=pl.DataFrame(),
         fast_microstructure_forward_test=fast_forward,
+        generated_at="2026-06-16T01:02:03Z",
     )
     row = bridge.to_dicts()[0]
     reasons = json.loads(row["blocking_reasons"])
 
     assert bridge.height == 1
     assert row["factor_id"] == "fast_microstructure.orderbook_imbalance_1m"
+    assert row["as_of_date"] == "2026-06-16"
+    assert row["generated_at"] == "2026-06-16T01:02:03+00:00"
     assert row["factor_family"] == "fast_microstructure"
     assert row["symbol"] == "BNB-USDT"
     assert row["regime"] == "SIDEWAYS"

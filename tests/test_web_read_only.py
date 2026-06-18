@@ -723,6 +723,49 @@ def test_data_health_stale_rows_include_takeaway_severity_and_action(tmp_path):
     assert "建议动作" in localized.columns
 
 
+def test_data_health_uses_generated_at_for_factor_strategy_bridge_freshness(tmp_path):
+    lake_root = tmp_path / "lake"
+    now = datetime.now(UTC)
+    write_parquet_dataset(
+        pl.DataFrame(
+            [
+                {
+                    "as_of_date": (now - timedelta(days=3)).date().isoformat(),
+                    "generated_at": now.isoformat(),
+                    "factor_id": "core.close_return_24",
+                    "factor_family": "momentum",
+                    "correlation_cluster_id": "cluster_001",
+                    "symbol": "SOL-USDT",
+                    "regime": "TREND_UP",
+                    "horizon": "8h",
+                    "horizon_hours": "8",
+                    "forward_sample_count": 120,
+                    "forward_cost_adjusted_score": 12.5,
+                    "bridge_candidate_id": "v5.factor_bridge.core.close_return_24",
+                    "eligible_for_alpha_factory": "strategy_review_pending",
+                    "blocking_reasons": "[]",
+                    "recommended_action": "REVIEW_FOR_ALPHA_FACTORY_STRATEGY",
+                    "live_order_effect": "none_read_only_research",
+                }
+            ]
+        ),
+        lake_root / "gold" / "factor_strategy_bridge_candidates",
+    )
+
+    snapshot = readers._dataset_snapshot(
+        lake_root,
+        "factor_strategy_bridge_candidates",
+        now=now,
+    )
+    stale_rows = readers.data_health_summary(lake_root)["stale_datasets"].to_dicts()
+
+    assert snapshot.freshness["timestamp_column"] == "generated_at"
+    assert snapshot.freshness["freshness_status"] == "fresh"
+    assert "factor_strategy_bridge_candidates" not in {
+        row["dataset"] for row in stale_rows
+    }
+
+
 def test_dataset_snapshot_falls_back_when_file_index_misses_partitioned_files(tmp_path):
     lake_root = tmp_path / "lake"
     now = datetime.now(UTC)

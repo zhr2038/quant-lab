@@ -179,11 +179,10 @@ function Dashboard({
   page: PageKey;
   setPage: (page: PageKey) => void;
 }) {
-  return (
-    <motion.div className="dashboard-shell" initial={{ opacity: 0, y: 12 }} animate={{ opacity: 1, y: 0 }}>
-      <PageControls page={page} setPage={setPage} />
-      <AnimatePresence mode="wait" initial={false}>
-        {page === "overview" && (
+  const pageContent = (() => {
+    switch (page) {
+      case "overview":
+        return (
           <motion.section className="page-grid page-overview" key="overview" initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }}>
             <KpiGrid snapshot={data} />
             <div className="overview-side">
@@ -193,23 +192,26 @@ function Dashboard({
             </div>
             <DataMatrix matrix={data.data_matrix} />
           </motion.section>
-        )}
-        {page === "strategy" && (
+        );
+      case "strategy":
+        return (
           <motion.section className="page-grid page-strategy" key="strategy" initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }}>
             <StrategyFlow flow={data.strategy_flow} />
             <V5Telemetry v5={data.v5} consumers={data.consumers} />
             <MarketLiquidity market={data.market} />
           </motion.section>
-        )}
-        {page === "data" && (
+        );
+      case "data":
+        return (
           <motion.section className="page-grid page-data" key="data" initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }}>
             <DataMatrix matrix={data.data_matrix} />
             <MarketLiquidity market={data.market} />
             <CostQuality cost={data.cost} />
             <PerfConsumers perf={data.web_perf} consumers={data.consumers} />
           </motion.section>
-        )}
-        {page === "ops" && (
+        );
+      case "ops":
+        return (
           <motion.section className="page-grid page-ops" key="ops" initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }}>
             <PerfConsumers perf={data.web_perf} consumers={data.consumers} />
             <V5Telemetry v5={data.v5} consumers={data.consumers} />
@@ -218,7 +220,15 @@ function Dashboard({
             </section>
             <FunctionMap setView={setView} />
           </motion.section>
-        )}
+        );
+    }
+  })();
+
+  return (
+    <motion.div className="dashboard-shell" initial={{ opacity: 0, y: 12 }} animate={{ opacity: 1, y: 0 }}>
+      <PageControls page={page} setPage={setPage} />
+      <AnimatePresence mode="wait" initial={false}>
+        {pageContent}
       </AnimatePresence>
       <Drilldown view={view} data={data} onClose={() => setView(null)} />
     </motion.div>

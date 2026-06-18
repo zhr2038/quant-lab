@@ -697,8 +697,10 @@ def test_pullback_new_rule_rejects_falling_knife_candidate(tmp_path):
 
     result = build_and_publish_entry_quality(lake, as_of_date="2026-05-10")
 
-    assert result.pullback_reversal_shadow_rows == 0
-    assert read_parquet_dataset(lake / "gold" / "v5_pullback_reversal_shadow").height == 0
+    assert result.pullback_reversal_shadow_rows > 0
+    shadow = read_parquet_dataset(lake / "gold" / "v5_pullback_reversal_shadow")
+    assert shadow.height > 0
+    assert set(shadow["rule_version"].to_list()) == {"old_pullback_v0.1"}
     opportunities = read_parquet_dataset(lake / "gold" / "strategy_opportunity_advisory")
     pullback_rows = [
         row

@@ -567,10 +567,12 @@ def build_fast_microstructure_strategy_review(
     fast_microstructure_strategy_candidates: pl.DataFrame | None,
     *,
     review_symbols: Iterable[str] = FAST_MICROSTRUCTURE_STRATEGY_REVIEW_SYMBOLS,
+    generated_at: datetime | str | None = None,
 ) -> pl.DataFrame:
     review_symbol_set = {normalize_symbol(symbol) for symbol in review_symbols}
+    candidate_rows = _frame_rows(fast_microstructure_strategy_candidates)
     rows: list[dict[str, Any]] = []
-    for row in _frame_rows(fast_microstructure_strategy_candidates):
+    for row in candidate_rows:
         symbol = normalize_symbol(row.get("symbol")) or ""
         if symbol not in review_symbol_set:
             continue
@@ -620,9 +622,46 @@ def build_fast_microstructure_strategy_review(
             }
         )
     if not rows:
+        diagnostic_generated_at = _fast_review_generated_at(candidate_rows, generated_at)
+        if diagnostic_generated_at is None:
+            return pl.DataFrame(
+                schema={field: pl.Utf8 for field in FAST_MICROSTRUCTURE_STRATEGY_REVIEW_FIELDS}
+            )
         return pl.DataFrame(
-            schema={field: pl.Utf8 for field in FAST_MICROSTRUCTURE_STRATEGY_REVIEW_FIELDS}
-        )
+            [
+                {
+                    "generated_at": diagnostic_generated_at,
+                    "strategy_candidate_id": "v5.fast_microstructure.no_shadow_review",
+                    "feature_name": "diagnostic_no_shadow_review",
+                    "symbol": "ALL",
+                    "regime": "ALL_REGIMES",
+                    "horizon_hours": None,
+                    "forward_sample_count": len(candidate_rows),
+                    "effective_sample_count": None,
+                    "rank_ic": None,
+                    "long_short_bps": None,
+                    "p25_net_bps": None,
+                    "hit_rate": None,
+                    "recent_7d_score": None,
+                    "walk_forward_oos_score": None,
+                    "oos_validation_pass": False,
+                    "block_bootstrap_ci_low_bps": None,
+                    "block_bootstrap_ci_high_bps": None,
+                    "purge_embargo_hours": None,
+                    "lookback_bars": None,
+                    "recommended_stage": "NO_SHADOW_REVIEW",
+                    "review_blocking_reasons": json.dumps(
+                        ["no_shadow_review_candidates"],
+                        separators=(",", ":"),
+                    ),
+                    "data_leakage_check": "",
+                    "response_action": "diagnostic_only",
+                    "max_live_notional_usdt": 0.0,
+                    "live_order_effect": "read_only_no_live_order",
+                }
+            ],
+            infer_schema_length=None,
+        ).select(FAST_MICROSTRUCTURE_STRATEGY_REVIEW_FIELDS)
     rows.sort(key=_fast_strategy_review_rank_key)
     return pl.DataFrame(rows, infer_schema_length=None).select(
         FAST_MICROSTRUCTURE_STRATEGY_REVIEW_FIELDS
@@ -640,6 +679,16 @@ def _frame_rows(frame: pl.DataFrame | None) -> list[dict[str, Any]]:
     if frame is None or frame.is_empty():
         return []
     return frame.to_dicts()
+
+
+def _fast_review_generated_at(
+    candidate_rows: list[dict[str, Any]],
+    fallback: datetime | str | None,
+) -> Any:
+    values = [row.get("generated_at") for row in candidate_rows if row.get("generated_at")]
+    if values:
+        return max(values, key=lambda value: str(value))
+    return fallback
 
 
 def _fast_strategy_candidate_id(

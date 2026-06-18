@@ -675,7 +675,10 @@ def test_research_validation_v3_reports_export_forward_and_cost_coverage(tmp_pat
         for row in fast_rows
     )
     assert not fast_candidate_rows
-    assert not fast_review_rows
+    assert len(fast_review_rows) == 1
+    assert fast_review_rows[0]["recommended_stage"] == "NO_SHADOW_REVIEW"
+    assert fast_review_rows[0]["response_action"] == "diagnostic_only"
+    assert fast_review_rows[0]["live_order_effect"] == "read_only_no_live_order"
 
 
 def test_export_daily_pack_includes_expanded_universe_paper_advisory_from_maturity(
@@ -3977,6 +3980,9 @@ def test_export_empty_csv_members_have_fixed_headers(tmp_path):
             "v5/v5_candidate_labels.csv",
             "v5/v5_candidate_quality.csv",
             "v5/v5_candidate_outcome_summary.csv",
+            "v5/v5_expanded_universe_advisory_reader.csv",
+            "v5/v5_expanded_universe_paper_runs.csv",
+            "v5/v5_expanded_universe_paper_daily.csv",
         ]:
             first_line = archive.read(member).decode("utf-8").splitlines()[0]
             assert first_line == ",".join(CSV_SCHEMAS[member])
@@ -4047,7 +4053,7 @@ def test_data_quality_marks_warn_enforce_readiness_as_warning(tmp_path, monkeypa
     )
 
 
-def test_data_quality_marks_read_only_live_cost_block_as_warning(tmp_path, monkeypatch):
+def test_data_quality_marks_read_only_live_cost_block_as_pass_diagnostic(tmp_path, monkeypatch):
     class FakeEnforceReadiness(SimpleNamespace):
         def model_dump(self, *, mode: str = "json") -> dict[str, object]:
             _ = mode
@@ -4106,9 +4112,13 @@ def test_data_quality_marks_read_only_live_cost_block_as_warning(tmp_path, monke
 
     checks = {check["name"]: check for check in data_quality["checks"]}
     readiness_check = checks["quant_lab_enforce_readiness"]
-    assert readiness_check["status"] == "WARN"
+    assert readiness_check["status"] == "PASS"
     assert readiness_check["severity"] == "warning"
     assert "live_order_effect=read_only_no_live_order" in readiness_check["detail"]
+    assert not any(
+        "quant_lab_enforce_readiness:" in warning
+        for warning in data_quality.get("warnings", [])
+    )
     assert not any(
         "quant_lab_enforce_readiness:" in failure for failure in data_quality.get("failures", [])
     )

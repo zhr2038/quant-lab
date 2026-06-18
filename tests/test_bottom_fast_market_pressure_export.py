@@ -319,6 +319,23 @@ def test_fast_microstructure_strategy_review_keeps_strong_shadow_symbols_only():
     assert rows[0]["live_order_effect"] == "read_only_no_live_order"
 
 
+def test_fast_microstructure_strategy_review_emits_diagnostic_when_empty():
+    generated_at = "2026-06-16T00:00:00Z"
+    review = build_fast_microstructure_strategy_review(
+        pl.DataFrame(),
+        generated_at=generated_at,
+    )
+    rows = review.to_dicts()
+
+    assert len(rows) == 1
+    assert rows[0]["generated_at"] == generated_at
+    assert rows[0]["strategy_candidate_id"] == "v5.fast_microstructure.no_shadow_review"
+    assert rows[0]["recommended_stage"] == "NO_SHADOW_REVIEW"
+    assert rows[0]["response_action"] == "diagnostic_only"
+    assert rows[0]["max_live_notional_usdt"] == 0.0
+    assert rows[0]["live_order_effect"] == "read_only_no_live_order"
+
+
 def test_fast_microstructure_summary_explains_aggregate_only_passes():
     forward = pl.DataFrame(
         [

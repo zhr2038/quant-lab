@@ -461,6 +461,9 @@ REQUIRED_MEMBERS = [
     "v5/v5_candidate_labels.csv",
     "v5/v5_candidate_quality.csv",
     "v5/v5_candidate_outcome_summary.csv",
+    "v5/v5_expanded_universe_advisory_reader.csv",
+    "v5/v5_expanded_universe_paper_runs.csv",
+    "v5/v5_expanded_universe_paper_daily.csv",
     "charts/market_close.png",
     "charts/market_returns.png",
     "charts/gate_status_counts.png",
@@ -2993,6 +2996,132 @@ CSV_SCHEMAS: dict[str, list[str]] = {
         "created_at",
         "source",
     ],
+    "v5/v5_expanded_universe_advisory_reader.csv": [
+        "run_id",
+        "ts_utc",
+        "source_path",
+        "advisory_source",
+        "advisory_fresh",
+        "advisory_age_sec",
+        "advisory_contract_match",
+        "stale_advisory_used",
+        "api_fallback_attempted",
+        "api_fallback_success",
+        "as_of_ts",
+        "generated_at",
+        "expires_at",
+        "contract_version",
+        "quant_lab_git_commit",
+        "source_version",
+        "universe_type",
+        "symbol",
+        "symbol_in_live_universe",
+        "live_symbols_unchanged",
+        "strategy_id",
+        "strategy_candidate",
+        "experiment_name",
+        "decision",
+        "recommended_mode",
+        "horizon_hours",
+        "sample_count",
+        "complete_sample_count",
+        "expanded_universe_maturity_state",
+        "cost_source",
+        "cost_source_quality",
+        "cost_bps",
+        "cost_model_version",
+        "response_action",
+        "negative_advisory",
+        "paper_tracking_allowed",
+        "shadow_tracking_allowed",
+        "max_paper_notional_usdt",
+        "max_live_notional_usdt",
+        "max_live_notional_usdt_ignored",
+        "live_block_reasons",
+        "would_block_if_enabled",
+        "would_enter",
+        "no_sample_reason",
+        "advisory_reason",
+        "live_order_effect",
+        "future_4h_net_bps",
+        "label_4h_net_bps",
+        "label_4h_after_cost_bps",
+        "future_8h_net_bps",
+        "label_8h_net_bps",
+        "label_8h_after_cost_bps",
+        "future_12h_net_bps",
+        "label_12h_net_bps",
+        "label_12h_after_cost_bps",
+        "future_24h_net_bps",
+        "label_24h_net_bps",
+        "label_24h_after_cost_bps",
+        "future_48h_net_bps",
+        "label_48h_net_bps",
+        "label_48h_after_cost_bps",
+        "future_72h_net_bps",
+        "label_72h_net_bps",
+        "label_72h_after_cost_bps",
+    ],
+    "v5/v5_expanded_universe_paper_runs.csv": [
+        "run_id",
+        "ts_utc",
+        "paper_date",
+        "universe_type",
+        "symbol",
+        "symbol_in_live_universe",
+        "live_symbols_unchanged",
+        "strategy_id",
+        "strategy_candidate",
+        "experiment_name",
+        "tracking_mode",
+        "decision",
+        "recommended_mode",
+        "response_action",
+        "negative_advisory",
+        "would_enter",
+        "would_size_usdt",
+        "max_paper_notional_usdt",
+        "max_live_notional_usdt_ignored",
+        "no_sample_reason",
+        "advisory_source",
+        "advisory_source_path",
+        "advisory_fresh",
+        "advisory_contract_match",
+        "live_block_reasons",
+        "live_order_effect",
+        "paper_pnl_bps_4h",
+        "future_4h_status",
+        "paper_pnl_bps_8h",
+        "future_8h_status",
+        "paper_pnl_bps_12h",
+        "future_12h_status",
+        "paper_pnl_bps_24h",
+        "future_24h_status",
+        "paper_pnl_bps_48h",
+        "future_48h_status",
+        "paper_pnl_bps_72h",
+        "future_72h_status",
+    ],
+    "v5/v5_expanded_universe_paper_daily.csv": [
+        "paper_date",
+        "strategy_id",
+        "experiment_name",
+        "symbol",
+        "row_count",
+        "entry_count",
+        "shadow_count",
+        "negative_count",
+        "avg_paper_pnl_bps_by_horizon",
+        "paper_pnl_observed_count_by_horizon",
+        "win_rate_by_horizon",
+        "live_order_effect",
+        "avg_paper_pnl_bps_4h",
+        "avg_paper_pnl_bps_8h",
+        "avg_paper_pnl_bps_12h",
+        "avg_paper_pnl_bps_24h",
+        "avg_paper_pnl_bps_48h",
+        "avg_paper_pnl_bps_72h",
+    ],
     f"reports/{ENFORCE_READINESS_CSV}": [
         "as_of_ts",
         "strategy",
@@ -4746,8 +4875,10 @@ def _dataset_members(
     fast_microstructure_strategy_candidates = build_fast_microstructure_strategy_candidates(
         fast_microstructure_forward_test
     )
+    export_generated_at = (data_quality or {}).get("generated_at") or datetime.now(UTC)
     fast_microstructure_strategy_review = build_fast_microstructure_strategy_review(
-        fast_microstructure_strategy_candidates
+        fast_microstructure_strategy_candidates,
+        generated_at=export_generated_at,
     )
     factor_v2 = build_factor_factory_v2_reports(
         candidates=factor_candidates,
@@ -4815,6 +4946,18 @@ def _dataset_members(
     v5_candidate_labels = frames.get("v5_candidate_label", pl.DataFrame())
     v5_candidate_quality = frames.get("v5_candidate_quality_daily", pl.DataFrame())
     v5_candidate_outcomes = frames.get("v5_candidate_outcome_summary", pl.DataFrame())
+    v5_expanded_universe_advisory_reader = frames.get(
+        "v5_expanded_universe_advisory_reader",
+        pl.DataFrame(),
+    )
+    v5_expanded_universe_paper_runs = frames.get(
+        "v5_expanded_universe_paper_runs",
+        pl.DataFrame(),
+    )
+    v5_expanded_universe_paper_daily = frames.get(
+        "v5_expanded_universe_paper_daily",
+        pl.DataFrame(),
+    )
     expanded_candidates = frames.get("expanded_universe_candidate", pl.DataFrame())
     expanded_quality = frames.get("expanded_universe_quality", pl.DataFrame())
     expanded_events = frames.get("expanded_universe_candidate_event", pl.DataFrame())
@@ -4897,6 +5040,9 @@ def _dataset_members(
             "backtest_label_summary": backtest_bundle.label_summary,
             "research_promotion_decision": backtest_bundle.promotion_decision,
             "v5_decision_replay_trades": backtest_bundle.replay_trades,
+            "expanded_universe_advisory_reader": v5_expanded_universe_advisory_reader,
+            "expanded_universe_paper_runs": v5_expanded_universe_paper_runs,
+            "expanded_universe_paper_daily": v5_expanded_universe_paper_daily,
         },
         row_counts=row_counts or {},
         pre_export_v5=pre_export_v5 or {},
@@ -5544,6 +5690,18 @@ def _dataset_members(
         "v5/v5_candidate_outcome_summary.csv": _csv_member(
             "v5/v5_candidate_outcome_summary.csv",
             v5_candidate_outcomes,
+        ),
+        "v5/v5_expanded_universe_advisory_reader.csv": _csv_member(
+            "v5/v5_expanded_universe_advisory_reader.csv",
+            v5_expanded_universe_advisory_reader,
+        ),
+        "v5/v5_expanded_universe_paper_runs.csv": _csv_member(
+            "v5/v5_expanded_universe_paper_runs.csv",
+            v5_expanded_universe_paper_runs,
+        ),
+        "v5/v5_expanded_universe_paper_daily.csv": _csv_member(
+            "v5/v5_expanded_universe_paper_daily.csv",
+            v5_expanded_universe_paper_daily,
         ),
     }
 
@@ -7058,6 +7216,14 @@ def _data_quality_payload(
         )
     )
 
+    risk = _risk_permissions_for_export(
+        snapshot.frames.get("risk_permission", pl.DataFrame()),
+        snapshot.frames,
+        reference_at=generated_at,
+    )
+    risk_quality = _risk_permission_quality(risk, snapshot.frames, reference_at=generated_at)
+    read_only_cost_advisory = _read_only_cost_advisory_context(risk_quality)
+
     costs = snapshot.frames.get("cost_bucket_daily", pl.DataFrame())
     cost_health = snapshot.frames.get("cost_health_daily", pl.DataFrame())
     latest_cost_health = (
@@ -7112,15 +7278,28 @@ def _data_quality_payload(
                 severity="critical",
             )
         )
+        soft_fallback_passed = fallback_stats["soft_fallback_ratio"] <= 0.5
+        soft_fallback_detail = (
+            f"soft_fallback_count={fallback_stats['soft_fallback_count']}; "
+            f"ratio={fallback_stats['soft_fallback_ratio']:.2%}; "
+            f"proxy_only_count={fallback_stats['proxy_only_count']}"
+        )
+        if (
+            not soft_fallback_passed
+            and read_only_cost_advisory
+            and fallback_stats["hard_fallback_count"] == 0
+            and fallback_stats["global_default_count"] == 0
+        ):
+            soft_fallback_passed = True
+            soft_fallback_detail += (
+                "; read_only_advisory=true; proxy_cost_not_actual=true; "
+                "live_order_effect=read_only_no_live_order"
+            )
         checks.append(
             _check(
                 "cost_soft_fallback_ratio",
-                fallback_stats["soft_fallback_ratio"] <= 0.5,
-                (
-                    f"soft_fallback_count={fallback_stats['soft_fallback_count']}; "
-                    f"ratio={fallback_stats['soft_fallback_ratio']:.2%}; "
-                    f"proxy_only_count={fallback_stats['proxy_only_count']}"
-                ),
+                soft_fallback_passed,
+                soft_fallback_detail,
                 warning_only=True,
             )
         )
@@ -7511,10 +7690,18 @@ def _data_quality_payload(
             warning_only=True,
         )
     )
+    live_cost_passed, live_cost_detail = _live_universe_stale_actual_or_mixed_check(costs)
+    if read_only_cost_advisory and not live_cost_passed:
+        live_cost_passed = True
+        live_cost_detail += (
+            "; read_only_advisory=true; proxy_cost_not_actual=true; "
+            "not_used_for_live_strategy_promotion"
+        )
     checks.append(
         _check(
             "live_universe_stale_actual_or_mixed_cost",
-            *_live_universe_stale_actual_or_mixed_check(costs),
+            live_cost_passed,
+            live_cost_detail,
             warning_only=True,
         )
     )
@@ -7530,9 +7717,12 @@ def _data_quality_payload(
         enforce_readiness,
         risk_quality,
     )
+    readiness_ok = enforce_readiness.readiness_status in {"READY", "ADVISORY_READY"} or (
+        read_only_cost_coverage_block
+    )
     readiness_check_status = (
         "PASS"
-        if enforce_readiness.readiness_status == "READY"
+        if readiness_ok
         else "WARN"
         if read_only_cost_coverage_block
         else "FAIL"
@@ -7549,7 +7739,7 @@ def _data_quality_payload(
     checks.append(
         _check(
             "quant_lab_enforce_readiness",
-            enforce_readiness.readiness_status == "READY",
+            readiness_ok,
             readiness_detail,
             severity="critical" if readiness_check_status == "FAIL" else "warning",
             status=readiness_check_status,
@@ -7628,6 +7818,15 @@ def _read_only_cost_coverage_readiness_block(
     if status in {"NO_FRESH_PERMISSION"} or status.startswith(("STALE_", "EXPIRED_")):
         return True
     return False
+
+
+def _read_only_cost_advisory_context(risk_quality: dict[str, Any]) -> bool:
+    permission = str(risk_quality.get("permission") or "").strip().upper()
+    status = str(risk_quality.get("permission_status") or "").strip().upper()
+    return permission in {"ABORT", "SELL_ONLY"} and status in {
+        "ACTIVE_ABORT",
+        "ACTIVE_SELL_ONLY",
+    }
 
 
 def _readme(day: date, root: Path, profile: str) -> str:

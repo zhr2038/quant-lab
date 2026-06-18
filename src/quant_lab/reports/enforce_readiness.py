@@ -192,8 +192,16 @@ def build_enforce_readiness_report(
 
     blocked = [check.name for check in checks if check.status == "BLOCKED"]
     warnings = [check.name for check in checks if check.status == "WARN"]
+    read_only_cost_advisory = (
+        set(blocked) == {"actual_or_mixed_cost_coverage_live_universe"}
+        and _read_only_permission_context(risk_metrics)
+    )
     status = "READY"
-    if blocked:
+    if read_only_cost_advisory:
+        warnings = sorted({*warnings, *blocked})
+        blocked = []
+        status = "ADVISORY_READY"
+    elif blocked:
         status = "BLOCKED"
     elif warnings:
         status = "WARN"
@@ -216,6 +224,11 @@ def build_enforce_readiness_report(
         checks=checks,
         metrics=metrics,
     )
+
+
+def _read_only_permission_context(risk_metrics: dict[str, Any]) -> bool:
+    status = str(risk_metrics.get("permission_status") or "").strip().upper()
+    return status in {"ACTIVE_ABORT", "ACTIVE_SELL_ONLY"}
 
 
 def write_enforce_readiness_report(

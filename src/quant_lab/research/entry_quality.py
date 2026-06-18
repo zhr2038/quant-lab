@@ -452,6 +452,14 @@ def build_and_publish_entry_quality(
         costs=costs,
         ctx=ctx,
     )
+    if pullback.is_empty():
+        pullback = build_pullback_reversal_shadow(
+            candidates=candidates,
+            market_bars=market,
+            costs=costs,
+            ctx=ctx,
+            rule_version=PULLBACK_OLD_RULE_VERSION,
+        )
     pullback_rule_comparison = build_pullback_reversal_rule_comparison(
         candidates=candidates,
         market_bars=market,

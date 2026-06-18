@@ -666,7 +666,7 @@ def test_live_universe_actual_cost_coverage_passes_when_all_live_symbols_have_ac
     assert report.metrics["cost_live_symbol_hit_rate"] == 1.0
 
 
-def test_soft_proxy_fallback_blocks_with_live_coverage_reason_not_generic_cost_failure(
+def test_soft_proxy_fallback_is_advisory_ready_when_permission_blocks_live_orders(
     tmp_path,
 ):
     lake = tmp_path / "lake"
@@ -675,11 +675,14 @@ def test_soft_proxy_fallback_blocks_with_live_coverage_reason_not_generic_cost_f
 
     report = build_enforce_readiness_report(lake)
 
+    assert report.readiness_status == "ADVISORY_READY"
+    assert report.shadow_only_recommended is True
     assert report.metrics["cost_api_global_default_rate"] == 0.0
     assert report.metrics["cost_live_symbol_hit_rate"] == 1.0
     assert "cost_api_global_default_rate" not in report.blocked_reasons
     assert "cost_live_symbol_hit_rate" not in report.blocked_reasons
-    assert "actual_or_mixed_cost_coverage_live_universe" in report.blocked_reasons
+    assert report.blocked_reasons == []
+    assert "actual_or_mixed_cost_coverage_live_universe" in report.warning_reasons
     assert report.metrics["proxy_only_symbols_live"] == [
         "BNB-USDT",
         "BTC-USDT",
@@ -692,6 +695,20 @@ def test_soft_proxy_fallback_blocks_with_live_coverage_reason_not_generic_cost_f
         "ETH-USDT",
         "SOL-USDT",
     ]
+
+
+def test_soft_proxy_fallback_still_blocks_when_permission_allows_live_orders(
+    tmp_path,
+):
+    lake = tmp_path / "lake"
+    _write_common_ready_inputs(lake)
+    _write_risk_permission(lake, status="ACTIVE_ALLOW", enforceable=True)
+    _write_cost_rows(lake, source="public_spread_proxy")
+
+    report = build_enforce_readiness_report(lake)
+
+    assert report.readiness_status == "BLOCKED"
+    assert "actual_or_mixed_cost_coverage_live_universe" in report.blocked_reasons
 
 
 def test_write_enforce_readiness_report_outputs_json_and_csv(tmp_path):

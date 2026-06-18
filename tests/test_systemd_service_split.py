@@ -44,6 +44,12 @@ def test_api_service_uses_async_metrics_flush():
     assert "QUANT_LAB_API_METRICS_FLUSH_SECONDS=300" in unit
 
 
+def test_daily_export_uses_recent_api_metrics_window():
+    unit = _unit("quant-lab-daily-export.service")
+
+    assert "QUANT_LAB_API_METRICS_EXPORT_WINDOW_MINUTES=30" in unit
+
+
 def test_all_quant_lab_jobs_run_as_service_user_except_root_only_helpers():
     for unit_path in SYSTEMD.glob("*.service"):
         unit = unit_path.read_text(encoding="utf-8")

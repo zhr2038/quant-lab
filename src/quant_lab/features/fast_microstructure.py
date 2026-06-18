@@ -1426,13 +1426,26 @@ def _embargo_tail_pairs(
     *,
     horizon_hours: int,
 ) -> list[tuple[datetime, float, float]]:
+    """Return closed-label samples separated by at least one forecast horizon."""
+
     if not pairs:
         return []
     ordered = sorted(pairs, key=lambda item: item[0])
     if horizon_hours <= 0:
         return ordered
     cutoff = ordered[-1][0] - timedelta(hours=horizon_hours)
-    return [item for item in ordered if item[0] <= cutoff]
+    min_gap = timedelta(hours=horizon_hours)
+    selected: list[tuple[datetime, float, float]] = []
+    latest_selected_ts: datetime | None = None
+    for item in ordered:
+        ts = item[0]
+        if ts > cutoff:
+            continue
+        if latest_selected_ts is not None and ts < latest_selected_ts + min_gap:
+            continue
+        selected.append(item)
+        latest_selected_ts = ts
+    return selected
 
 
 def _walk_forward_oos_validation(

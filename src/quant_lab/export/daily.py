@@ -15,6 +15,7 @@ import zipfile
 from collections import Counter
 from collections.abc import Iterable, Mapping
 from dataclasses import dataclass
+from dataclasses import field as dataclass_field
 from datetime import UTC, date, datetime, timedelta
 from pathlib import Path, PurePosixPath
 from typing import Any
@@ -3070,6 +3071,7 @@ class _DatasetSnapshot:
     frames: dict[str, pl.DataFrame]
     row_counts: dict[str, int]
     warnings: list[str]
+    transient_frames: dict[str, pl.DataFrame] = dataclass_field(default_factory=dict)
 
 
 def _publish_strategy_opportunity_advisory_snapshot(
@@ -3108,6 +3110,11 @@ def _publish_strategy_opportunity_advisory_snapshot(
         frames=frames,
         row_counts=row_counts,
         warnings=warnings,
+        transient_frames={
+            **snapshot.transient_frames,
+            "bottom_zone_reversal_shadow": derived["bottom_zone_reversal_shadow"],
+            "fast_microstructure_forward_test": derived["fast_microstructure_forward_test"],
+        },
     )
 
 
@@ -3267,7 +3274,12 @@ def _publish_risk_permission_dependency_meta_snapshot(
         dataset_name="risk_permission_api_dependency_meta",
         frame=frame,
     )
-    return _DatasetSnapshot(frames=frames, row_counts=row_counts, warnings=warnings)
+    return _DatasetSnapshot(
+        frames=frames,
+        row_counts=row_counts,
+        warnings=warnings,
+        transient_frames=snapshot.transient_frames,
+    )
 
 
 def _publish_export_frame(
@@ -3637,6 +3649,7 @@ def export_daily_pack(
             frames=snapshot.frames,
             row_counts=snapshot.row_counts,
             warnings=[*snapshot.warnings, *meta_warnings],
+            transient_frames=snapshot.transient_frames,
         )
     _record_export_stage(export_stage_timings, "write_source_snapshot_metas", stage_started)
     stage_started = _export_stage_start("data_quality_payload")
@@ -3656,10 +3669,11 @@ def export_daily_pack(
         set([*snapshot.warnings, *pre_export_v5_warnings, *data_quality["warnings"]])
     )
 
+    member_frames = {**snapshot.frames, **snapshot.transient_frames}
     members: dict[str, _MemberPayload] = {}
     members.update(
         _dataset_members(
-            snapshot.frames,
+            member_frames,
             root,
             data_quality=data_quality,
             pre_export_v5=pre_export_v5,
@@ -3667,7 +3681,7 @@ def export_daily_pack(
             publish_warnings=warnings,
         )
     )
-    members.update(_chart_members(snapshot.frames))
+    members.update(_chart_members(member_frames))
     members.update(enforce_readiness_members(root))
     members["README.md"] = _readme(day, root, profile)
     members["data_quality.json"] = _json_text(data_quality)
@@ -8676,7 +8690,7 @@ def _lake_file_index_growth_24h_count(root: Path) -> int | None:
 
 def _api_latency_summary_for_export(root: Path) -> pl.DataFrame:
     _flush_api_metrics_service_before_export()
-    summary = api_metrics_summary(root, since_minutes=24 * 60)
+    summary = api_metrics_summary(root, since_minutes=_api_metrics_export_window_minutes())
     latency = summary.get("latency_ms") if isinstance(summary.get("latency_ms"), dict) else {}
     by_path = (
         summary.get("latency_by_path_ms")
@@ -8810,6 +8824,17 @@ def _api_latency_summary_for_export(root: Path) -> pl.DataFrame:
     )
 
 
+def _api_metrics_export_window_minutes() -> int:
+    raw = str(os.environ.get("QUANT_LAB_API_METRICS_EXPORT_WINDOW_MINUTES", "")).strip()
+    if not raw:
+        return 24 * 60
+    try:
+        value = int(raw)
+    except ValueError:
+        return 24 * 60
+    return value if value > 0 else 24 * 60
+
+
 def _api_latency_error_count(metrics: dict[str, Any]) -> int:
     status_error_count = int(metrics.get("server_error_count") or 0) + int(
         metrics.get("client_error_count") or 0
@@ -8851,7 +8876,12 @@ def _flush_api_metrics_service_before_export() -> None:
         timeout = 1.5
     request = urllib.request.Request(
         url,
-        headers={"Authorization": f"Bearer {token}", "Accept": "application/json"},
+        headers={
+            "Authorization": f"Bearer {token}",
+            "Accept": "application/json",
+            "User-Agent": "quant-lab-daily-export/1.0",
+            "X-Quant-Lab-Client-Id": "quant-lab.daily_export",
+        },
     )
     try:
         with urllib.request.urlopen(request, timeout=max(timeout, 0.1)) as response:
@@ -8867,8 +8897,12 @@ def _api_latency_summary_md(root: Path) -> str:
     lines = [
         "# API Latency Summary",
         "",
-        "Recent read-only API latency. `/v1/health` is intentionally light; "
-        "lake freshness checks belong to `/v1/health/deep`.",
+        (
+            "Recent read-only API latency over the last "
+            f"{_api_metrics_export_window_minutes()} minutes. "
+            "`/v1/health` is intentionally light; lake freshness checks belong to "
+            "`/v1/health/deep`."
+        ),
         "",
         "| endpoint | count | p50 ms | p95 ms | max ms | cache hit | "
         "response cache hit | avg source signature ms | dependency meta missing |",

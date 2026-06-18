@@ -843,6 +843,43 @@ def test_api_latency_summary_error_count_does_not_double_count_status_error(
     assert rows["/v1/strategy-opportunity-advisory"]["error_p95_ms"] == 200.0
 
 
+def test_api_latency_summary_export_window_is_configurable(
+    tmp_path,
+    monkeypatch,
+):
+    lake = tmp_path / "lake"
+    now = datetime.now(UTC)
+    monkeypatch.delenv("QUANT_LAB_API_TOKEN", raising=False)
+    monkeypatch.setenv("QUANT_LAB_API_METRICS_FLUSH_ROWS", "1")
+    monkeypatch.setenv("QUANT_LAB_API_METRICS_FLUSH_SECONDS", "3600")
+    monkeypatch.setenv("QUANT_LAB_API_METRICS_EXPORT_WINDOW_MINUTES", "30")
+    record_api_request(
+        lake_root=lake,
+        method="GET",
+        path="/v1/strategy-opportunity-advisory",
+        status_code=401,
+        duration_seconds=0.001,
+        auth_result="missing_bearer_token",
+        request_ts=now - timedelta(hours=2),
+    )
+    record_api_request(
+        lake_root=lake,
+        method="GET",
+        path="/v1/strategy-opportunity-advisory",
+        status_code=200,
+        duration_seconds=0.050,
+        auth_result="token_ok",
+        request_ts=now,
+    )
+
+    frame = daily_export_module._api_latency_summary_for_export(lake)
+    rows = {row["endpoint"]: row for row in frame.to_dicts()}
+
+    assert rows["__all__"]["count"] == 1
+    assert rows["__all__"]["auth_error_count"] == 0
+    assert rows["__all__"]["auth_error_rate"] == 0.0
+
+
 def test_api_latency_summary_triggers_live_metrics_flush_when_token_configured(
     tmp_path,
     monkeypatch,
@@ -862,6 +899,7 @@ def test_api_latency_summary_triggers_live_metrics_flush_when_token_configured(
     def fake_urlopen(request, timeout):
         captured["url"] = request.full_url
         captured["authorization"] = request.headers.get("Authorization")
+        captured["headers"] = dict(request.header_items())
         captured["timeout"] = timeout
         return _Response()
 
@@ -872,6 +910,9 @@ def test_api_latency_summary_triggers_live_metrics_flush_when_token_configured(
 
     assert captured["url"] == "http://127.0.0.1:8027/v1/ops/api-metrics"
     assert captured["authorization"] == "Bearer unit-test-token"
+    headers = {str(key).lower(): value for key, value in dict(captured["headers"]).items()}
+    assert headers["x-quant-lab-client-id"] == "quant-lab.daily_export"
+    assert headers["user-agent"] == "quant-lab-daily-export/1.0"
     assert captured["timeout"] == 1.5
 
 
@@ -1099,10 +1140,16 @@ def test_export_daily_pack_publishes_bottom_zone_canonical_gold_and_api(
         ],
         infer_schema_length=None,
     )
+    bottom_zone_calls = []
+
+    def fake_bottom_zone_reversal_shadow(**_):
+        bottom_zone_calls.append(True)
+        return bottom_zone
+
     monkeypatch.setattr(
         daily_export_module,
         "build_bottom_zone_reversal_shadow",
-        lambda **_: bottom_zone,
+        fake_bottom_zone_reversal_shadow,
     )
 
     result = export_daily_pack(
@@ -1137,6 +1184,7 @@ def test_export_daily_pack_publishes_bottom_zone_canonical_gold_and_api(
     assert zip_bottom
     assert zip_bottom[0]["max_live_notional_usdt"] == "0.0"
     assert zip_bottom[0]["live_order_effect"] == "read_only_no_live_order"
+    assert len(bottom_zone_calls) == 1
     acceptance = {row["check_name"]: row for row in acceptance_rows}
     assert acceptance["bottom_zone_paper_v5_rows_ok"]["status"] == "PASS"
     assert "TON-USDT" in acceptance["bottom_zone_paper_v5_rows_ok"]["observed_value"]

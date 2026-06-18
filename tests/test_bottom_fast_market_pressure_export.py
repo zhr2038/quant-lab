@@ -10,6 +10,7 @@ from quant_lab.data.lake import write_parquet_dataset
 from quant_lab.export.daily import export_daily_pack
 from quant_lab.features.fast_microstructure import (
     FAST_MICROSTRUCTURE_FORWARD_LOOKBACK_BARS,
+    _embargo_tail_pairs,
     _forward_lookback_bars,
     _forward_recommendation,
     build_fast_microstructure_features,
@@ -84,9 +85,9 @@ def test_fast_microstructure_forward_adds_all_regimes_sample_pool():
     market_rows = []
     spread_rows = []
     trade_rows = []
-    for index in range(70):
+    for index in range(320):
         ts = start + timedelta(hours=index)
-        close = 100.0 + 0.02 * (index**2)
+        close = 100.0 * (1.00002 ** (index * index))
         market_rows.append(
             {
                 "venue": "okx",
@@ -103,7 +104,7 @@ def test_fast_microstructure_forward_adds_all_regimes_sample_pool():
                 "source": "test",
                 "ingest_ts": ts + timedelta(minutes=1),
                 "is_closed": True,
-                "regime": "SIDEWAYS" if index < 35 else "TREND_UP",
+                "regime": "SIDEWAYS" if index < 160 else "TREND_UP",
             }
         )
         spread_rows.append(
@@ -131,7 +132,7 @@ def test_fast_microstructure_forward_adds_all_regimes_sample_pool():
         market_bars=pl.DataFrame(market_rows),
         orderbook_spread_1m=pl.DataFrame(spread_rows),
         trade_activity_1m=pl.DataFrame(trade_rows),
-        generated_at=start + timedelta(hours=70),
+        generated_at=start + timedelta(hours=320),
     )
     rows = {
         (row["regime"], row["horizon_hours"]): row
@@ -143,14 +144,29 @@ def test_fast_microstructure_forward_adds_all_regimes_sample_pool():
 
     aggregate_8h = rows[("ALL_REGIMES", 8)]
     trend_8h = rows[("TREND_UP", 8)]
-    assert aggregate_8h["sample_count"] == 62
+    assert aggregate_8h["sample_count"] == 312
     assert aggregate_8h["effective_sample_count"] >= 30
     assert aggregate_8h["recommendation"] == "AGGREGATE_VALIDATION_ONLY"
     assert aggregate_8h["purge_embargo_hours"] == 8
     assert aggregate_8h["oos_validation_pass"] is True
-    assert trend_8h["sample_count"] == 27
-    assert trend_8h["recommendation"] == "NEEDS_MORE_FORWARD_SAMPLES"
+    assert trend_8h["sample_count"] == 152
+    assert trend_8h["effective_sample_count"] < 30
+    assert trend_8h["recommendation"] == "NEEDS_MORE_EFFECTIVE_FORWARD_SAMPLES"
     assert aggregate_8h["live_order_effect"] == "read_only_no_live_order"
+
+
+def test_fast_microstructure_effective_samples_are_spaced_by_horizon():
+    start = datetime(2026, 6, 1, tzinfo=UTC)
+    pairs = [(start + timedelta(hours=index), float(index), float(index)) for index in range(20)]
+
+    effective = _embargo_tail_pairs(pairs, horizon_hours=4)
+
+    assert [item[0] for item in effective] == [
+        start,
+        start + timedelta(hours=4),
+        start + timedelta(hours=8),
+        start + timedelta(hours=12),
+    ]
 
 
 def test_fast_microstructure_strategy_candidates_label_aggregate_passes_validation_only():

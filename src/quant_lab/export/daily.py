@@ -7394,22 +7394,31 @@ def _data_quality_payload(
         )
     )
     enforce_readiness = build_enforce_readiness_report(lake_root)
+    read_only_cost_coverage_block = _read_only_cost_coverage_readiness_block(
+        enforce_readiness,
+        risk_quality,
+    )
     readiness_check_status = (
         "PASS"
         if enforce_readiness.readiness_status == "READY"
+        else "WARN"
+        if read_only_cost_coverage_block
         else "FAIL"
         if enforce_readiness.readiness_status == "BLOCKED"
         else "WARN"
     )
+    readiness_detail = (
+        f"readiness_status={enforce_readiness.readiness_status}; "
+        f"blocked={enforce_readiness.blocked_reasons}; "
+        f"warnings={enforce_readiness.warning_reasons}"
+    )
+    if read_only_cost_coverage_block:
+        readiness_detail += "; live_order_effect=read_only_no_live_order"
     checks.append(
         _check(
             "quant_lab_enforce_readiness",
             enforce_readiness.readiness_status == "READY",
-            (
-                f"readiness_status={enforce_readiness.readiness_status}; "
-                f"blocked={enforce_readiness.blocked_reasons}; "
-                f"warnings={enforce_readiness.warning_reasons}"
-            ),
+            readiness_detail,
             severity="critical" if readiness_check_status == "FAIL" else "warning",
             status=readiness_check_status,
         )
@@ -7465,6 +7474,28 @@ def _check(
     if severity is None:
         severity = "warning" if status in {"WARN", "N/A"} or warning_only else "critical"
     return {"name": name, "status": status, "severity": severity, "detail": detail}
+
+
+def _read_only_cost_coverage_readiness_block(
+    enforce_readiness: Any,
+    risk_quality: dict[str, Any],
+) -> bool:
+    if getattr(enforce_readiness, "readiness_status", "") != "BLOCKED":
+        return False
+    blocked = {
+        str(reason).strip()
+        for reason in getattr(enforce_readiness, "blocked_reasons", [])
+        if str(reason).strip()
+    }
+    if blocked != {"actual_or_mixed_cost_coverage_live_universe"}:
+        return False
+    permission = str(risk_quality.get("permission") or "").strip().upper()
+    status = str(risk_quality.get("permission_status") or "").strip().upper()
+    if permission in {"ABORT", "SELL_ONLY"}:
+        return True
+    if status in {"NO_FRESH_PERMISSION"} or status.startswith(("STALE_", "EXPIRED_")):
+        return True
+    return False
 
 
 def _readme(day: date, root: Path, profile: str) -> str:

@@ -3798,6 +3798,120 @@ def test_data_quality_marks_warn_enforce_readiness_as_warning(tmp_path, monkeypa
     )
 
 
+def test_data_quality_marks_read_only_live_cost_block_as_warning(tmp_path, monkeypatch):
+    class FakeEnforceReadiness(SimpleNamespace):
+        def model_dump(self, *, mode: str = "json") -> dict[str, object]:
+            _ = mode
+            return dict(self.__dict__)
+
+    lake_root = _fixture_lake(tmp_path)
+    now = datetime.now(UTC)
+    write_parquet_dataset(
+        pl.DataFrame(
+            [
+                {
+                    "strategy": "v5",
+                    "version": "v1",
+                    "permission": "ABORT",
+                    "allowed_modes": [],
+                    "allowed_live_modes": [],
+                    "max_gross_exposure": 0.0,
+                    "max_single_weight": 0.0,
+                    "cost_model_version": "costs-v1",
+                    "gate_version": "default-v0.1",
+                    "reasons": ["fixture_abort"],
+                    "created_at": now,
+                    "as_of_ts": now,
+                    "expires_at": now + timedelta(minutes=30),
+                    "permission_status": "ACTIVE_ABORT",
+                    "enforceable": True,
+                }
+            ]
+        ),
+        lake_root / "gold" / "risk_permission",
+    )
+    monkeypatch.setattr(
+        daily_export_module,
+        "build_enforce_readiness_report",
+        lambda _lake_root: FakeEnforceReadiness(
+            readiness_status="BLOCKED",
+            blocked_reasons=["actual_or_mixed_cost_coverage_live_universe"],
+            warning_reasons=["actual_or_mixed_cost_coverage_research_universe"],
+            checks=[],
+            metrics={},
+            shadow_only_recommended=True,
+        ),
+    )
+
+    result = export_daily_pack(
+        export_date="2026-05-12",
+        lake_root=lake_root,
+        out_dir=tmp_path / "exports",
+        profile="expert",
+        command_line=["qlab", "export-daily"],
+        pre_export_v5_refresh=False,
+    )
+
+    with zipfile.ZipFile(result.zip_path) as archive:
+        data_quality = json.loads(archive.read("data_quality.json").decode("utf-8"))
+
+    checks = {check["name"]: check for check in data_quality["checks"]}
+    readiness_check = checks["quant_lab_enforce_readiness"]
+    assert readiness_check["status"] == "WARN"
+    assert readiness_check["severity"] == "warning"
+    assert "live_order_effect=read_only_no_live_order" in readiness_check["detail"]
+    assert not any(
+        "quant_lab_enforce_readiness:" in failure for failure in data_quality.get("failures", [])
+    )
+
+
+def test_data_quality_keeps_live_allow_cost_block_critical(tmp_path, monkeypatch):
+    class FakeEnforceReadiness(SimpleNamespace):
+        def model_dump(self, *, mode: str = "json") -> dict[str, object]:
+            _ = mode
+            return dict(self.__dict__)
+
+    lake_root = _fixture_lake(tmp_path)
+    now = datetime.now(UTC)
+    _write_risk_permission_for_export(
+        lake_root,
+        as_of=now,
+        expires_at=now + timedelta(minutes=30),
+    )
+    monkeypatch.setattr(
+        daily_export_module,
+        "build_enforce_readiness_report",
+        lambda _lake_root: FakeEnforceReadiness(
+            readiness_status="BLOCKED",
+            blocked_reasons=["actual_or_mixed_cost_coverage_live_universe"],
+            warning_reasons=[],
+            checks=[],
+            metrics={},
+            shadow_only_recommended=True,
+        ),
+    )
+
+    result = export_daily_pack(
+        export_date="2026-05-12",
+        lake_root=lake_root,
+        out_dir=tmp_path / "exports",
+        profile="expert",
+        command_line=["qlab", "export-daily"],
+        pre_export_v5_refresh=False,
+    )
+
+    with zipfile.ZipFile(result.zip_path) as archive:
+        data_quality = json.loads(archive.read("data_quality.json").decode("utf-8"))
+
+    checks = {check["name"]: check for check in data_quality["checks"]}
+    readiness_check = checks["quant_lab_enforce_readiness"]
+    assert readiness_check["status"] == "FAIL"
+    assert readiness_check["severity"] == "critical"
+    assert any(
+        "quant_lab_enforce_readiness:" in failure for failure in data_quality.get("failures", [])
+    )
+
+
 def test_cost_fallback_ratio_is_not_pass_when_cost_bucket_daily_is_empty(tmp_path):
     result = export_daily_pack(
         export_date="2026-05-11",

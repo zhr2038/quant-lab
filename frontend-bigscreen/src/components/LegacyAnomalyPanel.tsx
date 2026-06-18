@@ -14,6 +14,10 @@ export function LegacyAnomalyPanel({ anomalies }: { anomalies: Record<string, un
   const hasAnomalies = Boolean(anomalies.has_anomalies) || total > 0;
   const Icon = critical > 0 ? Siren : hasAnomalies ? AlertTriangle : CheckCircle2;
   const severity = critical > 0 ? "critical" : hasAnomalies ? "warning" : "ok";
+  const title = hasAnomalies ? "旧页面异常" : "旧页面同步正常";
+  const subtitle = hasAnomalies
+    ? "Streamlit 数据健康 / overview 异常同步到新首页"
+    : "Streamlit 数据健康 / overview 当前口径一致";
 
   return (
     <section className={`card pad legacy-anomalies ${severity}`}>
@@ -21,9 +25,9 @@ export function LegacyAnomalyPanel({ anomalies }: { anomalies: Record<string, un
         <div>
           <h2 className="section-title icon-title">
             <DatabaseZap size={22} />
-            旧页面异常
+            {title}
           </h2>
-          <p className="sub">Streamlit 数据健康 / overview 异常同步到新首页</p>
+          <p className="sub">{subtitle}</p>
         </div>
         <div className={`legacy-anomaly-badge ${severity}`}>
           <Icon size={16} aria-hidden="true" />

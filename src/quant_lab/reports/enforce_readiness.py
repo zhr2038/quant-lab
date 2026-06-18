@@ -447,13 +447,13 @@ def _cost_api_metrics(
     actual_or_mixed = {
         normalize_symbol(row.get("symbol"))
         for row in fresh_cost_rows
-        if _cost_source(row) in ACTUAL_OR_MIXED_COST_SOURCES
+        if _is_live_cost_coverage_row(row)
         and str(row.get("symbol") or "").upper() not in {"", "GLOBAL"}
     }
     stale_actual_or_mixed = {
         normalize_symbol(row.get("symbol"))
         for row in stale_cost_rows
-        if _cost_source(row) in ACTUAL_OR_MIXED_COST_SOURCES
+        if _is_live_cost_coverage_row(row)
         and str(row.get("symbol") or "").upper() not in {"", "GLOBAL"}
     }
     proxy_only = {
@@ -573,7 +573,7 @@ def _live_cost_source_detail(
             [
                 row
                 for row in symbol_rows
-                if _cost_source(row) in ACTUAL_OR_MIXED_COST_SOURCES
+                if _is_live_cost_coverage_row(row)
             ]
         )
         latest_actual_or_mixed_ts = _cost_row_ts(latest_actual_or_mixed_row)
@@ -606,6 +606,25 @@ def _latest_cost_row(rows: list[dict[str, Any]]) -> dict[str, Any] | None:
     if not rows:
         return None
     return max(rows, key=lambda row: _cost_row_ts(row) or datetime.min.replace(tzinfo=UTC))
+
+
+def _is_live_cost_coverage_row(row: dict[str, Any]) -> bool:
+    if _cost_source(row) not in ACTUAL_OR_MIXED_COST_SOURCES:
+        return False
+    eligible = _bool_or_none(row.get("eligible_for_live_cost_coverage"))
+    if eligible is False:
+        return False
+    origin_mix = str(row.get("sample_origin_mix") or "").strip().lower()
+    if origin_mix == "cost_probe_only":
+        return False
+    cost_probe_count = _int(row.get("cost_probe_fill_count"))
+    live_count = max(
+        _int(row.get("strategy_live_fill_count")),
+        _int(row.get("private_fill_count")),
+        _int(row.get("actual_fill_count")),
+        _int(row.get("mixed_fill_count")),
+    )
+    return not (cost_probe_count > 0 and live_count <= 0)
 
 
 def _cost_row_ts(row: dict[str, Any] | None) -> datetime | None:
@@ -1102,6 +1121,21 @@ def _truthy(value: Any) -> bool:
     if value is None:
         return False
     return str(value).strip().lower() in {"1", "true", "yes", "y", "on"}
+
+
+def _bool_or_none(value: Any) -> bool | None:
+    if value is None or value == "":
+        return None
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, (int, float)):
+        return bool(value)
+    text = str(value).strip().lower()
+    if text in {"1", "true", "yes", "y", "on"}:
+        return True
+    if text in {"0", "false", "no", "n", "off"}:
+        return False
+    return None
 
 
 def _check(

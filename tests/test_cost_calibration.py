@@ -380,6 +380,66 @@ def test_cost_probe_lifecycle_requires_explicit_cost_model_eligibility():
     assert samples[0]["eligible_for_alpha_pnl"] is False
 
 
+def test_cost_probe_lifecycle_calibrates_as_bootstrap_not_actual(tmp_path):
+    lake_root = tmp_path / "lake"
+    write_parquet_dataset(
+        pl.DataFrame(
+            [
+                {
+                    "strategy": "v5",
+                    "source_path_inside_bundle": (
+                        "raw/recent_runs/run_lifecycle/order_lifecycle.csv"
+                    ),
+                    "run_id": "run_lifecycle",
+                    "ts_utc": "2026-05-15T01:00:04Z",
+                    "symbol": "BTC-USDT",
+                    "normalized_symbol": "BTC-USDT",
+                    "side": "buy",
+                    "intent": "OPEN_LONG",
+                    "order_state": "FILLED",
+                    "avg_fill_px": "70000",
+                    "filled_qty": "0.0001",
+                    "notional_usdt": "7",
+                    "fee_bps": "1.0",
+                    "arrival_slippage_bps": "0.5",
+                    "arrival_spread_bps": "0.2",
+                    "execution_purpose": "cost_probe",
+                    "eligible_for_cost_model": "true",
+                    "eligible_for_alpha_pnl": "false",
+                    "fill_count": "1",
+                    "exchange_order_id": "probe-order-1",
+                    "trade_ids": "probe-trade-1",
+                    "last_fill_ts": "2026-05-15T01:00:04Z",
+                }
+            ]
+        ),
+        lake_root / "silver" / "v5_order_lifecycle",
+    )
+
+    result = calibrate_costs_for_day(lake_root, "2026-05-15", min_sample_count=1)
+
+    assert result.sources == ["bootstrap_cost_probe"]
+    rows = read_parquet_dataset(lake_root / "gold" / "cost_bucket_daily").to_dicts()
+    all_row = [
+        row for row in rows if row["symbol"] == "BTC-USDT" and row["notional_bucket"] == "all"
+    ][0]
+    assert all_row["source"] == "bootstrap_cost_probe"
+    assert all_row["actual_fill_count"] == 0
+    assert all_row["mixed_fill_count"] == 0
+    assert all_row["cost_probe_fill_count"] == 1
+    assert all_row["strategy_live_fill_count"] == 0
+    assert all_row["private_fill_count"] == 0
+    assert all_row["sample_origin_mix"] == "cost_probe_only"
+    assert all_row["eligible_for_live_cost_coverage"] is False
+    assert "COST_PROBE_ONLY" in all_row["fallback_level"]
+    health = read_parquet_dataset(lake_root / "gold" / "cost_health_daily").to_dicts()[0]
+    checks = json.loads(health["data_quality_checks_json"])
+    assert health["actual_rows"] == 0
+    assert health["mixed_rows"] == 0
+    assert health["status"] == "WARNING"
+    assert checks["lifecycle_present_but_not_in_actual_cost"] is True
+
+
 def test_v5_order_lifecycle_stays_actual_when_trade_csv_also_exists(tmp_path):
     lake_root = tmp_path / "lake"
     write_parquet_dataset(

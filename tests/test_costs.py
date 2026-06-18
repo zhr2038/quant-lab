@@ -170,6 +170,46 @@ def test_cost_bootstrap_readiness_keeps_proxy_and_probe_out_of_trusted_live():
     assert rows["BTC-USDT"]["actual_or_mixed_trusted_coverage_live_universe"] == 0.0
 
 
+def test_cost_probe_only_bucket_does_not_count_as_live_universe_cost_coverage():
+    now = datetime(2026, 6, 15, tzinfo=UTC)
+
+    evaluation = evaluate_live_universe_cost_coverage(
+        pl.DataFrame([_coverage_cost_row("BTC-USDT", "bootstrap_cost_probe", now)]),
+        live_symbols=["BTC-USDT"],
+        generated_at=now,
+    )
+
+    btc = evaluation["detail_by_symbol"]["BTC-USDT"]
+    assert btc["latest_source"] == "bootstrap_cost_probe"
+    assert btc["cost_evidence_tier"] == "bootstrap_cost_probe_not_counted"
+    assert btc["actual_or_mixed_direct"] is False
+    assert btc["actual_or_mixed_covered"] is False
+    assert btc["eligible_for_live_cost_coverage"] is False
+    assert btc["coverage_reason"] == "bootstrap_cost_probe_not_live_coverage"
+    assert evaluation["direct_symbols"] == []
+    assert evaluation["coverage_rate"] == 0.0
+
+
+def test_cost_probe_only_bucket_counts_as_bootstrap_not_trusted_live():
+    now = datetime(2026, 6, 15, tzinfo=UTC)
+
+    readiness = build_cost_bootstrap_readiness(
+        pl.DataFrame([_coverage_cost_row("BTC-USDT", "bootstrap_cost_probe", now)]),
+        live_symbols=["BTC-USDT"],
+        generated_at=now,
+    )
+
+    btc = readiness.to_dicts()[0]
+    assert btc["bootstrap_state"] == "BOOTSTRAP_PROBE_AVAILABLE"
+    assert btc["cost_evidence_tier"] == "bootstrap_cost_probe"
+    assert btc["cost_probe_fill_count"] == 4
+    assert btc["actual_or_mixed_bootstrap_covered"] is True
+    assert btc["actual_or_mixed_trusted_covered"] is False
+    assert btc["trusted_for_live"] is False
+    assert btc["actual_or_mixed_bootstrap_coverage_live_universe"] == 1.0
+    assert btc["actual_or_mixed_trusted_coverage_live_universe"] == 0.0
+
+
 def test_cost_model_can_fallback_to_symbol_bucket():
     estimate = estimate_cost_bps(
         "BTCUSDT",
@@ -556,6 +596,7 @@ def test_cost_bucket_daily_estimate_prefers_cross_regime_mixed_actual_over_publi
 
 
 def _coverage_cost_row(symbol: str, source: str, created_at: datetime) -> dict[str, object]:
+    is_bootstrap_probe = source == "bootstrap_cost_probe"
     return {
         "day": created_at.date().isoformat(),
         "symbol": symbol,
@@ -572,5 +613,18 @@ def _coverage_cost_row(symbol: str, source: str, created_at: datetime) -> dict[s
         "actual_fill_count": 4 if source == "actual_fills" else 0,
         "mixed_fill_count": 4 if source == "mixed_actual_proxy" else 0,
         "proxy_sample_count": 100 if source == "public_spread_proxy" else 0,
+        "cost_probe_fill_count": 4 if is_bootstrap_probe else 0,
+        "strategy_live_fill_count": 0,
+        "private_fill_count": 0,
+        "sample_origin_mix": (
+            "cost_probe_only"
+            if is_bootstrap_probe
+            else "public_proxy"
+            if source == "public_spread_proxy"
+            else "strategy_live"
+        ),
+        "eligible_for_live_cost_coverage": (
+            source in {"actual_fills", "mixed_actual_proxy", "actual_okx_fills_fee_missing"}
+        ),
         "created_at": created_at.isoformat(),
     }

@@ -72,6 +72,11 @@ COST_BUCKET_DAILY_SCHEMA = {
     "actual_fill_count": pl.Int64,
     "mixed_fill_count": pl.Int64,
     "proxy_sample_count": pl.Int64,
+    "cost_probe_fill_count": pl.Int64,
+    "strategy_live_fill_count": pl.Int64,
+    "private_fill_count": pl.Int64,
+    "sample_origin_mix": pl.Utf8,
+    "eligible_for_live_cost_coverage": pl.Boolean,
     "cost_model_version": pl.Utf8,
     "created_at": pl.Utf8,
 }
@@ -300,6 +305,20 @@ def _actual_fill_row(
     min_sample_count: int,
 ) -> CostBucketDaily:
     samples = _preferred_cost_samples(samples)
+    cost_probe_fill_count = sum(1 for sample in samples if _sample_origin(sample) == "cost_probe")
+    strategy_live_fill_count = sum(
+        1 for sample in samples if _sample_origin(sample) == "strategy_live"
+    )
+    private_fill_count = sum(
+        1 for sample in samples if _sample_origin(sample) == "private_readonly"
+    )
+    live_fill_count = strategy_live_fill_count + private_fill_count
+    probe_only = cost_probe_fill_count > 0 and live_fill_count == 0
+    sample_origin_mix = _sample_origin_mix(
+        cost_probe_fill_count=cost_probe_fill_count,
+        strategy_live_fill_count=strategy_live_fill_count,
+        private_fill_count=private_fill_count,
+    )
     fee_samples = [sample["fee_bps"] for sample in samples if sample["fee_bps"] is not None]
     slippage_samples = [
         sample["slippage_bps"] for sample in samples if sample["slippage_bps"] is not None
@@ -320,8 +339,14 @@ def _actual_fill_row(
         samples=samples,
         fee_missing=fee_missing,
         slippage_unknown=slippage_unknown,
+        probe_only=probe_only,
+        cost_probe_fill_count=cost_probe_fill_count,
     )
     fallback_parts = []
+    if probe_only:
+        fallback_parts.append("COST_PROBE_ONLY")
+    elif cost_probe_fill_count:
+        fallback_parts.append("COST_PROBE_INCLUDED")
     if not bills_present:
         fallback_parts.append("BILLS_MISSING")
     if fee_missing:
@@ -365,9 +390,17 @@ def _actual_fill_row(
         fallback_level=";".join(fallback_parts) if fallback_parts else "NONE",
         source=source,
         cost_source=source,
-        actual_fill_count=len(samples) if source == "actual_fills" else 0,
-        mixed_fill_count=len(samples) if source != "actual_fills" else 0,
+        actual_fill_count=live_fill_count if source == "actual_fills" else 0,
+        mixed_fill_count=live_fill_count if source == "mixed_actual_proxy" else 0,
         proxy_sample_count=len(spread_values),
+        cost_probe_fill_count=cost_probe_fill_count,
+        strategy_live_fill_count=strategy_live_fill_count,
+        private_fill_count=private_fill_count,
+        sample_origin_mix=sample_origin_mix,
+        eligible_for_live_cost_coverage=(
+            not probe_only
+            and source in {"actual_fills", "mixed_actual_proxy", "actual_okx_fills_fee_missing"}
+        ),
     )
 
 
@@ -404,6 +437,11 @@ def _public_spread_proxy_rows(
                 actual_fill_count=0,
                 mixed_fill_count=0,
                 proxy_sample_count=len(samples),
+                cost_probe_fill_count=0,
+                strategy_live_fill_count=0,
+                private_fill_count=0,
+                sample_origin_mix="public_proxy",
+                eligible_for_live_cost_coverage=False,
             )
         )
     return rows
@@ -432,6 +470,11 @@ def _global_default_row(day: str, symbol: str) -> CostBucketDaily:
         fallback_level="GLOBAL_DEFAULT",
         source="global_default",
         cost_source="global_default",
+        cost_probe_fill_count=0,
+        strategy_live_fill_count=0,
+        private_fill_count=0,
+        sample_origin_mix="global_default",
+        eligible_for_live_cost_coverage=False,
     )
 
 
@@ -464,6 +507,7 @@ def _fill_samples(
             {
                 "symbol": symbol,
                 "source_kind": "okx_readonly_private",
+                "sample_origin": "private_readonly",
                 "notional": notional,
                 "notional_bucket": _notional_bucket(notional),
                 "trade_id": str(row.get("trade_id") or ""),
@@ -526,6 +570,7 @@ def _v5_trade_fill_samples(v5_trade_events: pl.DataFrame) -> list[dict[str, Any]
             {
                 "symbol": symbol,
                 "source_kind": "v5_trades_csv",
+                "sample_origin": "strategy_live",
                 "notional": abs(notional),
                 "notional_bucket": _notional_bucket(abs(notional)),
                 "trade_id": str(row.get("trade_id") or row.get("tradeId") or ""),
@@ -1411,7 +1456,13 @@ def _actual_fill_source(
     samples: list[dict[str, Any]],
     fee_missing: bool,
     slippage_unknown: bool,
+    probe_only: bool,
+    cost_probe_fill_count: int,
 ) -> str:
+    if probe_only:
+        return "bootstrap_cost_probe"
+    if cost_probe_fill_count > 0:
+        return "mixed_actual_proxy"
     source_kinds = {str(sample.get("source_kind") or "") for sample in samples}
     if fee_missing:
         return "actual_okx_fills_fee_missing"
@@ -1431,3 +1482,37 @@ def _preferred_cost_samples(samples: list[dict[str, Any]]) -> list[dict[str, Any
         if str(sample.get("source_kind") or "") == "v5_order_lifecycle"
     ]
     return lifecycle_samples or samples
+
+
+def _sample_origin(sample: Mapping[str, Any]) -> str:
+    explicit = str(sample.get("sample_origin") or "").strip().lower()
+    if explicit == "cost_probe":
+        return "cost_probe"
+    if explicit in {"private_readonly", "private", "okx_readonly_private"}:
+        return "private_readonly"
+    if explicit:
+        return "strategy_live"
+    source_kind = str(sample.get("source_kind") or "").strip().lower()
+    if source_kind == "okx_readonly_private":
+        return "private_readonly"
+    return "strategy_live"
+
+
+def _sample_origin_mix(
+    *,
+    cost_probe_fill_count: int,
+    strategy_live_fill_count: int,
+    private_fill_count: int,
+) -> str:
+    parts: list[str] = []
+    if cost_probe_fill_count:
+        parts.append("cost_probe")
+    if strategy_live_fill_count:
+        parts.append("strategy_live")
+    if private_fill_count:
+        parts.append("private_readonly")
+    if not parts:
+        return "unknown"
+    if parts == ["cost_probe"]:
+        return "cost_probe_only"
+    return "+".join(parts)

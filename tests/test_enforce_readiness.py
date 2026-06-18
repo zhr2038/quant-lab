@@ -697,6 +697,25 @@ def test_soft_proxy_fallback_is_advisory_ready_when_permission_blocks_live_order
     ]
 
 
+def test_cost_probe_only_does_not_make_enforce_readiness_ready(tmp_path):
+    lake = tmp_path / "lake"
+    _write_common_ready_inputs(lake)
+    _write_cost_rows(lake, source="bootstrap_cost_probe")
+
+    report = build_enforce_readiness_report(lake)
+
+    assert report.readiness_status == "ADVISORY_READY"
+    assert "actual_or_mixed_cost_coverage_live_universe" in report.warning_reasons
+    assert report.metrics["actual_or_mixed_cost_coverage_live_universe"] == 0.0
+    assert report.metrics["actual_or_mixed_cost_symbol_count_live_universe"] == 0
+    assert report.metrics["missing_actual_or_mixed_symbols_live"] == [
+        "BNB-USDT",
+        "BTC-USDT",
+        "ETH-USDT",
+        "SOL-USDT",
+    ]
+
+
 def test_soft_proxy_fallback_still_blocks_when_permission_allows_live_orders(
     tmp_path,
 ):
@@ -871,6 +890,7 @@ def _cost_row(
     created_at: datetime | None = None,
 ) -> dict:
     now = created_at or datetime.now(UTC)
+    is_bootstrap_probe = source == "bootstrap_cost_probe"
     return {
         "day": now.date().isoformat(),
         "symbol": symbol,
@@ -896,6 +916,14 @@ def _cost_row(
         "actual_fill_count": 4 if source in {"actual_fills", "mixed_actual_proxy"} else 0,
         "mixed_fill_count": 4 if source == "mixed_actual_proxy" else 0,
         "proxy_sample_count": 0,
+        "cost_probe_fill_count": 4 if is_bootstrap_probe else 0,
+        "strategy_live_fill_count": 0,
+        "private_fill_count": 0,
+        "sample_origin_mix": "cost_probe_only" if is_bootstrap_probe else "strategy_live",
+        "eligible_for_live_cost_coverage": (
+            not is_bootstrap_probe
+            and source in {"actual_fills", "mixed_actual_proxy", "actual_okx_fills_fee_missing"}
+        ),
         "cost_model_version": "cost_bucket_daily:test",
         "created_at": now.isoformat(),
     }

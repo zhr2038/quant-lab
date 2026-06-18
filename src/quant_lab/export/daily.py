@@ -635,6 +635,11 @@ CSV_SCHEMAS: dict[str, list[str]] = {
         "actual_fill_count",
         "mixed_fill_count",
         "proxy_sample_count",
+        "cost_probe_fill_count",
+        "strategy_live_fill_count",
+        "private_fill_count",
+        "sample_origin_mix",
+        "eligible_for_live_cost_coverage",
     ],
     "costs/cost_health_daily.csv": [
         "day",
@@ -8037,15 +8042,6 @@ def _question_lines(snapshot: _DatasetSnapshot, data_quality: dict[str, Any]) ->
         questions.append("为什么 gate_decision / alpha_evidence 为空？")
     elif snapshot.row_counts.get("alpha_evidence", 0) == 0:
         questions.append("alpha_evidence 研究证据尚未生成：何时运行 walk-forward/evidence 任务？")
-    if (
-        snapshot.row_counts.get("strategy_evidence", 0) == 0
-        and snapshot.row_counts.get("alpha_discovery_board", 0) == 0
-    ):
-        questions.append("Why is strategy_evidence empty for V5 candidate discovery?")
-    if snapshot.row_counts.get("v5_candidate_event", 0) == 0:
-        questions.append("Why is reports/candidate_snapshot.csv missing from V5 bundles?")
-    if snapshot.row_counts.get("v5_candidate_label", 0) == 0:
-        questions.append("Why are v5_candidate_label forward labels empty?")
     if snapshot.row_counts.get("risk_permission", 0) == 0:
         questions.append("为什么 risk_permission 为空？")
     if snapshot.row_counts.get("strategy_health_daily", 0) == 0:
@@ -8062,6 +8058,15 @@ def _question_lines(snapshot: _DatasetSnapshot, data_quality: dict[str, Any]) ->
     )
     if config_question:
         questions.append(config_question)
+    if (
+        snapshot.row_counts.get("strategy_evidence", 0) == 0
+        and snapshot.row_counts.get("alpha_discovery_board", 0) == 0
+    ):
+        questions.append("Why is strategy_evidence empty for V5 candidate discovery?")
+    if snapshot.row_counts.get("v5_candidate_event", 0) == 0:
+        questions.append("Why is reports/candidate_snapshot.csv missing from V5 bundles?")
+    if snapshot.row_counts.get("v5_candidate_label", 0) == 0:
+        questions.append("Why are v5_candidate_label forward labels empty?")
     if snapshot.row_counts.get("alpha_discovery_board", 0) == 0:
         questions.append("Why is alpha_discovery_board empty for V5 candidate decisions?")
     warnings = data_quality.get("warnings", [])

@@ -13,6 +13,7 @@ ACTUAL_SOURCE = "actual_okx_fills_and_bills"
 ACTUAL_FILLS_SOURCE = "actual_fills"
 MIXED_ACTUAL_PROXY_SOURCE = "mixed_actual_proxy"
 FEE_ONLY_SOURCE = "actual_okx_fills_fee_missing"
+BOOTSTRAP_COST_PROBE_SOURCE = "bootstrap_cost_probe"
 PROXY_SOURCE = "public_spread_proxy"
 DEFAULT_SOURCE = "global_default"
 ACTUAL_SOURCES = {ACTUAL_SOURCE, ACTUAL_FILLS_SOURCE}
@@ -137,6 +138,7 @@ def build_cost_health_daily(
                     actual_symbols=set(),
                     mixed_symbols=set(),
                     expected_symbols=expected,
+                    bootstrap_rows_count=0,
                 )
             ),
             min_sample_count=min_sample_count,
@@ -151,6 +153,9 @@ def build_cost_health_daily(
     rows = cost_rows.to_dicts()
     actual_rows = [row for row in rows if str(row.get("source")) in ACTUAL_SOURCES]
     mixed_rows = [row for row in rows if str(row.get("source")) == MIXED_ACTUAL_PROXY_SOURCE]
+    bootstrap_rows = [
+        row for row in rows if str(row.get("source")) == BOOTSTRAP_COST_PROBE_SOURCE
+    ]
     actual_or_mixed_rows = [*actual_rows, *mixed_rows]
     trusted_actual_rows = [
         row
@@ -175,7 +180,10 @@ def build_cost_health_daily(
     mixed_symbols = {str(row.get("symbol")) for row in mixed_rows}
     proxy_symbols = {str(row.get("symbol")) for row in proxy_rows}
     global_symbols = {str(row.get("symbol")) for row in global_rows}
-    known_symbols = actual_symbols | mixed_symbols | proxy_symbols | global_symbols
+    bootstrap_symbols = {str(row.get("symbol")) for row in bootstrap_rows}
+    known_symbols = (
+        actual_symbols | mixed_symbols | proxy_symbols | global_symbols | bootstrap_symbols
+    )
     missing = expected.difference(known_symbols)
     proxy_only = proxy_symbols.difference(actual_symbols | mixed_symbols)
     data_quality_checks = _data_quality_checks(
@@ -186,6 +194,7 @@ def build_cost_health_daily(
         v5_lifecycle_zero_fill_count=v5_lifecycle_zero_fill_count,
         v5_lifecycle_missing_cost_count=v5_lifecycle_missing_cost_count,
         actual_rows_count=len(actual_rows),
+        bootstrap_rows_count=len(bootstrap_rows),
         actual_or_mixed_rows=len(actual_or_mixed_rows),
         fee_bps_missing_count=fee_bps_missing_count,
         actual_symbols=actual_symbols,
@@ -413,7 +422,7 @@ def _truthy(value: Any) -> bool:
 def _is_fallback_row(row: dict[str, Any]) -> bool:
     source = str(row.get("source") or "")
     fallback = str(row.get("fallback_level") or "")
-    if source in {PROXY_SOURCE, DEFAULT_SOURCE, FEE_ONLY_SOURCE}:
+    if source in {PROXY_SOURCE, DEFAULT_SOURCE, FEE_ONLY_SOURCE, BOOTSTRAP_COST_PROBE_SOURCE}:
         return True
     return fallback not in {"", "NONE"}
 
@@ -473,6 +482,7 @@ def _data_quality_checks(
     v5_lifecycle_zero_fill_count: int,
     v5_lifecycle_missing_cost_count: int,
     actual_rows_count: int,
+    bootstrap_rows_count: int,
     actual_or_mixed_rows: int,
     fee_bps_missing_count: int,
     actual_symbols: set[str],
@@ -492,7 +502,9 @@ def _data_quality_checks(
             v5_trade_rows > 0 and actual_or_mixed_rows == 0
         ),
         "lifecycle_present_but_not_in_actual_cost": not (
-            v5_order_lifecycle_rows > 0 and actual_rows_count == 0
+            v5_order_lifecycle_rows > 0
+            and actual_rows_count == 0
+            and bootstrap_rows_count == 0
         ),
         "filled_order_missing_lifecycle_cost": v5_lifecycle_missing_cost_count == 0,
         "fill_count_zero_for_filled_order": v5_lifecycle_zero_fill_count == 0,

@@ -2831,6 +2831,11 @@ def _cost_bucket_table(frame: pl.DataFrame) -> pl.DataFrame:
         "actual_fill_count",
         "mixed_fill_count",
         "proxy_sample_count",
+        "cost_probe_fill_count",
+        "strategy_live_fill_count",
+        "private_fill_count",
+        "sample_origin_mix",
+        "eligible_for_live_cost_coverage",
         "fee_bps_p75",
         "spread_bps_p75",
         "slippage_bps_p75",
@@ -2867,6 +2872,8 @@ def _cost_bucket_table(frame: pl.DataFrame) -> pl.DataFrame:
             "source",
             "cost_source",
             "sample_count",
+            "sample_origin_mix",
+            "eligible_for_live_cost_coverage",
             "fallback_level",
             "fallback_reason",
             "day",
@@ -2886,6 +2893,11 @@ def _with_cost_bucket_focus(table: pl.DataFrame) -> pl.DataFrame:
             "actual_fill_count",
             "mixed_fill_count",
             "proxy_sample_count",
+            "cost_probe_fill_count",
+            "strategy_live_fill_count",
+            "private_fill_count",
+            "sample_origin_mix",
+            "eligible_for_live_cost_coverage",
             "fee_bps_p75",
             "spread_bps_p75",
             "slippage_bps_p75",
@@ -2924,6 +2936,8 @@ def _cost_bucket_takeaway(row: dict[str, Any]) -> str:
         return f"硬回退：{symbol} 使用全局默认成本，不能作为 paper/live 晋级证据"
     if "public_spread_proxy" in source:
         return f"代理成本：{symbol} 只有盘口价差代理，适合观察但不是完整交易成本"
+    if "bootstrap_cost_probe" in source:
+        return f"探针样本：{symbol} 仅可用于 bootstrap，不能作为 live actual/mixed 覆盖"
     if "mixed" in source:
         if trust == "CANARY":
             return f"混合成本：{symbol} 可作为 canary 级参考，放大前还要补真实滑点"

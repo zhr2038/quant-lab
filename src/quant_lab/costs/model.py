@@ -43,6 +43,11 @@ LIVE_UNIVERSE_COST_COVERAGE_FIELDS = [
     "actual_fill_count",
     "mixed_fill_count",
     "proxy_sample_count",
+    "cost_probe_fill_count",
+    "strategy_live_fill_count",
+    "private_fill_count",
+    "sample_origin_mix",
+    "eligible_for_live_cost_coverage",
     "fee_bps_p75",
     "spread_bps_p75",
     "slippage_bps_p75",
@@ -168,6 +173,7 @@ def evaluate_live_universe_cost_coverage(
                 "cost_evidence_tier": _cost_evidence_tier(
                     direct=direct,
                     has_live_actual_anchor=has_live_actual_anchor,
+                    latest=latest,
                     latest_actual=latest_actual,
                     latest_proxy=latest_proxy,
                     stale_actual_or_mixed=stale_actual_or_mixed,
@@ -186,6 +192,13 @@ def evaluate_live_universe_cost_coverage(
                 "actual_fill_count": _int_value(source_row.get("actual_fill_count")),
                 "mixed_fill_count": _int_value(source_row.get("mixed_fill_count")),
                 "proxy_sample_count": _int_value(source_row.get("proxy_sample_count")),
+                "cost_probe_fill_count": _int_value(source_row.get("cost_probe_fill_count")),
+                "strategy_live_fill_count": _int_value(
+                    source_row.get("strategy_live_fill_count")
+                ),
+                "private_fill_count": _int_value(source_row.get("private_fill_count")),
+                "sample_origin_mix": _sample_origin_mix_value(source_row),
+                "eligible_for_live_cost_coverage": _row_live_cost_eligible(source_row),
                 "fee_bps_p75": _float_value(source_row, "fee_bps_p75"),
                 "spread_bps_p75": _float_value(source_row, "spread_bps_p75"),
                 "slippage_bps_p75": _float_value(source_row, "slippage_bps_p75"),
@@ -317,14 +330,24 @@ def build_cost_bootstrap_readiness(
         private_fill_rows = private_fills_by_symbol.get(symbol, [])
         bill_rows = bills_by_symbol.get(symbol, [])
 
-        actual_fill_count = max(
-            _int_value(source_row.get("actual_fill_count")),
+        strategy_live_fill_count = max(
+            _int_value(source_row.get("strategy_live_fill_count")),
             len(strategy_live_rows),
+        )
+        private_fill_count = max(
+            _int_value(source_row.get("private_fill_count")),
             len(private_fill_rows),
         )
+        actual_fill_count = max(
+            _int_value(source_row.get("actual_fill_count")),
+            strategy_live_fill_count,
+            private_fill_count,
+        )
         mixed_fill_count = _int_value(source_row.get("mixed_fill_count"))
-        cost_probe_fill_count = len(cost_probe_rows)
-        private_fill_count = len(private_fill_rows)
+        cost_probe_fill_count = max(
+            _int_value(source_row.get("cost_probe_fill_count")),
+            len(cost_probe_rows),
+        )
         bill_matched_count = len(bill_rows)
         sample_count = max(
             _int_value(source_row.get("sample_count")),
@@ -408,7 +431,7 @@ def build_cost_bootstrap_readiness(
                 "actual_fill_count": actual_fill_count,
                 "mixed_fill_count": mixed_fill_count,
                 "cost_probe_fill_count": cost_probe_fill_count,
-                "strategy_live_fill_count": len(strategy_live_rows),
+                "strategy_live_fill_count": strategy_live_fill_count,
                 "private_fill_count": private_fill_count,
                 "bill_matched_count": bill_matched_count,
                 "fee_available": fee_available,
@@ -530,6 +553,11 @@ class CostBucketDaily(BaseModel):
     actual_fill_count: int = Field(default=0, ge=0)
     mixed_fill_count: int = Field(default=0, ge=0)
     proxy_sample_count: int = Field(default=0, ge=0)
+    cost_probe_fill_count: int = Field(default=0, ge=0)
+    strategy_live_fill_count: int = Field(default=0, ge=0)
+    private_fill_count: int = Field(default=0, ge=0)
+    sample_origin_mix: str = Field(default="unknown", min_length=1)
+    eligible_for_live_cost_coverage: bool = True
     cost_model_version: str = Field(default="cost_bucket_daily.v0.1", min_length=1)
     created_at: datetime = Field(default_factory=lambda: datetime.now(UTC))
 
@@ -1082,24 +1110,28 @@ def _rank_cost_bucket_rows(
             tier, fallback = 2, "REGIME_FALLBACK"
         elif row_symbol == symbol and _is_actual_or_mixed_source(source):
             tier, fallback = 3, "REGIME_FALLBACK"
-        elif row_symbol == symbol and _is_public_proxy_source(source) and notional_match:
+        elif row_symbol == symbol and _is_bootstrap_cost_probe_source(source) and notional_match:
             tier, fallback = 4, "REGIME_FALLBACK"
-        elif row_symbol == symbol and _is_public_proxy_source(source):
+        elif row_symbol == symbol and _is_bootstrap_cost_probe_source(source):
             tier, fallback = 5, "REGIME_FALLBACK"
-        elif row_symbol == symbol and _is_global_regime(row_regime) and notional_match:
+        elif row_symbol == symbol and _is_public_proxy_source(source) and notional_match:
             tier, fallback = 6, "REGIME_FALLBACK"
-        elif row_symbol == symbol and notional_match:
+        elif row_symbol == symbol and _is_public_proxy_source(source):
             tier, fallback = 7, "REGIME_FALLBACK"
+        elif row_symbol == symbol and _is_global_regime(row_regime) and notional_match:
+            tier, fallback = 8, "REGIME_FALLBACK"
+        elif row_symbol == symbol and notional_match:
+            tier, fallback = 9, "REGIME_FALLBACK"
         elif row_symbol == symbol:
-            tier, fallback = 8, "REGIME_AND_NOTIONAL_BUCKET_FALLBACK"
+            tier, fallback = 10, "REGIME_AND_NOTIONAL_BUCKET_FALLBACK"
         elif (
             _is_global_symbol(row_symbol)
             and normalized_row_regime == requested_regime
             and notional_match
         ):
-            tier, fallback = 9, "SYMBOL_FALLBACK"
+            tier, fallback = 11, "SYMBOL_FALLBACK"
         elif _is_global_symbol(row_symbol) and _is_global_regime(row_regime):
-            tier, fallback = 10, "GLOBAL_BUCKET_FALLBACK"
+            tier, fallback = 12, "GLOBAL_BUCKET_FALLBACK"
         else:
             continue
         ranked.append((tier, fallback, row))
@@ -1225,11 +1257,13 @@ def _source_priority(source: str) -> int:
         return 0
     if normalized == "actual_okx_fills_fee_missing":
         return 1
-    if normalized in {"public_spread_proxy", "public_proxy"}:
+    if normalized == "bootstrap_cost_probe":
         return 2
-    if normalized == "global_default":
+    if normalized in {"public_spread_proxy", "public_proxy"}:
         return 3
-    return 4
+    if normalized == "global_default":
+        return 4
+    return 5
 
 
 def _is_actual_or_mixed_source(source: str) -> bool:
@@ -1243,6 +1277,10 @@ def _is_actual_or_mixed_source(source: str) -> bool:
 
 def _is_public_proxy_source(source: str) -> bool:
     return source.lower() in {"public_spread_proxy", "public_proxy"}
+
+
+def _is_bootstrap_cost_probe_source(source: str) -> bool:
+    return source.lower() == "bootstrap_cost_probe"
 
 
 def _estimate_degraded(
@@ -1350,6 +1388,8 @@ def _cost_quality(*, source: str, sample_count: int, stale: bool) -> str:
         return "stale"
     if source == "global_default":
         return "global_default"
+    if source == "bootstrap_cost_probe":
+        return "bootstrap_cost_probe"
     if source in {"public_spread_proxy", "public_proxy"}:
         return "public_proxy_only"
     if sample_count < MIN_TRUSTED_COST_SAMPLE_COUNT:
@@ -1436,7 +1476,12 @@ def _latest_cost_row_for_coverage(rows: list[dict[str, Any]]) -> dict[str, Any] 
 
 
 def _latest_actual_or_mixed_row(rows: list[dict[str, Any]]) -> dict[str, Any] | None:
-    candidates = [row for row in rows if _is_actual_or_mixed_source(_cost_source(row))]
+    candidates = [
+        row
+        for row in rows
+        if _is_actual_or_mixed_source(_cost_source(row))
+        and _row_live_cost_eligible(row)
+    ]
     return _latest_cost_row_for_coverage(candidates)
 
 
@@ -1449,6 +1494,7 @@ def _latest_fresh_actual_or_mixed_row(
         row
         for row in rows
         if _is_actual_or_mixed_source(_cost_source(row))
+        and _row_live_cost_eligible(row)
         and not _row_is_stale(row, reference_time=reference_time)
     ]
     return _latest_cost_row_for_coverage(candidates)
@@ -1468,6 +1514,34 @@ def _cost_source(row: Mapping[str, Any] | None) -> str:
     if row is None:
         return ""
     return str(row.get("source") or row.get("cost_source") or "").strip().lower()
+
+
+def _sample_origin_mix_value(row: Mapping[str, Any] | None) -> str:
+    if row is None:
+        return ""
+    return str(row.get("sample_origin_mix") or row.get("cost_sample_origin_mix") or "").strip()
+
+
+def _row_live_cost_eligible(row: Mapping[str, Any] | None) -> bool:
+    if row is None:
+        return False
+    source = _cost_source(row)
+    if not _is_actual_or_mixed_source(source):
+        return False
+    explicit = _bool_or_none(row.get("eligible_for_live_cost_coverage"))
+    if explicit is False:
+        return False
+    origin_mix = _sample_origin_mix_value(row).lower()
+    if origin_mix == "cost_probe_only":
+        return False
+    cost_probe_count = _int_value(row.get("cost_probe_fill_count"))
+    live_count = max(
+        _int_value(row.get("strategy_live_fill_count")),
+        _int_value(row.get("private_fill_count")),
+        _int_value(row.get("actual_fill_count")),
+        _int_value(row.get("mixed_fill_count")),
+    )
+    return not (cost_probe_count > 0 and live_count <= 0)
 
 
 def _coverage_ts(row: Mapping[str, Any]) -> str:
@@ -1503,6 +1577,7 @@ def _cost_evidence_tier(
     *,
     direct: bool,
     has_live_actual_anchor: bool,
+    latest: Mapping[str, Any] | None,
     latest_actual: Mapping[str, Any] | None,
     latest_proxy: Mapping[str, Any] | None,
     stale_actual_or_mixed: bool,
@@ -1517,6 +1592,8 @@ def _cost_evidence_tier(
         return "stale_direct_not_counted"
     if latest_actual is not None:
         return "actual_or_mixed_not_fresh"
+    if latest is not None and _cost_source(latest) == "bootstrap_cost_probe":
+        return "bootstrap_cost_probe_not_counted"
     return "missing"
 
 
@@ -1540,6 +1617,8 @@ def _coverage_reason(
         if latest_proxy is not None:
             return "stale_actual_or_mixed_no_fresh_live_anchor"
         return "stale_actual_or_mixed_no_fresh_proxy"
+    if latest is not None and _cost_source(latest) == "bootstrap_cost_probe":
+        return "bootstrap_cost_probe_not_live_coverage"
     if latest_proxy is not None:
         if not has_live_actual_anchor:
             return "public_proxy_only_no_live_actual_anchor"
@@ -1554,6 +1633,21 @@ def _int_value(value: Any) -> int:
         return int(float(value or 0))
     except (TypeError, ValueError):
         return 0
+
+
+def _bool_or_none(value: Any) -> bool | None:
+    if value is None or value == "":
+        return None
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, (int, float)):
+        return bool(value)
+    text = str(value).strip().lower()
+    if text in {"1", "true", "yes", "y", "on"}:
+        return True
+    if text in {"0", "false", "no", "n", "off"}:
+        return False
+    return None
 
 
 def _rows_by_symbol(frame: pl.DataFrame | None) -> dict[str, list[dict[str, Any]]]:

@@ -4,7 +4,9 @@ import json
 import zipfile
 from io import StringIO
 
-from quant_lab.data.lake import read_parquet_dataset
+import polars as pl
+
+from quant_lab.data.lake import read_parquet_dataset, write_parquet_dataset
 from quant_lab.export.daily import export_daily_pack
 from quant_lab.strategy_telemetry.ingest import (
     _event_key_fields,
@@ -372,6 +374,60 @@ def test_ingest_v5_expanded_universe_summary_rows(tmp_path):
     runs = read_parquet_dataset(lake / "silver/v5_expanded_universe_paper_runs")
     daily = read_parquet_dataset(lake / "silver/v5_expanded_universe_paper_daily")
 
+    assert reader.height == 1
+    assert runs.height == 1
+    assert daily.height == 1
+    assert reader["symbol"].to_list() == ["WLD-USDT"]
+    assert runs["no_sample_reason"].to_list() == ["no_wld_candidate"]
+    assert daily["entry_count"].cast(str).to_list() == ["0"]
+
+
+def test_ingest_rehydrates_empty_expanded_universe_tables_for_already_ingested_bundle(tmp_path):
+    bundle = make_tar(
+        tmp_path / "v5_live_followup_bundle_20260514T083000Z.tar.gz",
+        {
+            "summaries/expanded_universe_advisory_reader.csv": (
+                "strategy_id,strategy_candidate,symbol,decision,recommended_mode,universe_type,generated_at\n"
+                "WLD_EXPANDED_UNIVERSE_PAPER_V1,v5.expanded_universe_wld_paper,WLD-USDT,PAPER_READY,paper,expanded_paper,2026-05-14T08:30:00Z\n"
+            ),
+            "summaries/expanded_universe_paper_runs.csv": (
+                "strategy_id,run_id,ts_utc,symbol,would_enter,no_sample_reason\n"
+                "WLD_EXPANDED_UNIVERSE_PAPER_V1,run_wld,2026-05-14T08:30:00Z,WLD-USDT,false,no_wld_candidate\n"
+            ),
+            "summaries/expanded_universe_paper_daily.csv": (
+                "strategy_id,paper_date,symbol,entry_count,no_sample_reason,generated_at\n"
+                "WLD_EXPANDED_UNIVERSE_PAPER_V1,2026-05-14,WLD-USDT,0,no_wld_candidate,2026-05-14T08:30:00Z\n"
+            ),
+        },
+    )
+    lake = tmp_path / "lake"
+
+    first = ingest_v5_bundle(bundle, lake, tmp_path / "restricted", tmp_path / "redacted")
+    assert first.skipped is False
+    for name in (
+        "v5_expanded_universe_advisory_reader",
+        "v5_expanded_universe_paper_runs",
+        "v5_expanded_universe_paper_daily",
+    ):
+        write_parquet_dataset(
+            pl.DataFrame(schema={"strategy": pl.Utf8}),
+            lake / f"silver/{name}",
+        )
+
+    result = ingest_v5_bundle(bundle, lake, tmp_path / "restricted", tmp_path / "redacted")
+
+    reader = read_parquet_dataset(lake / "silver/v5_expanded_universe_advisory_reader")
+    runs = read_parquet_dataset(lake / "silver/v5_expanded_universe_paper_runs")
+    daily = read_parquet_dataset(lake / "silver/v5_expanded_universe_paper_daily")
+
+    assert result.skipped is True
+    assert result.silver_rows["v5_expanded_universe_advisory_reader"] == 1
+    assert result.silver_rows["v5_expanded_universe_paper_runs"] == 1
+    assert result.silver_rows["v5_expanded_universe_paper_daily"] == 1
+    assert any(
+        warning.startswith("rehydrated_empty_csv_refresh_datasets:")
+        for warning in result.warnings
+    )
     assert reader.height == 1
     assert runs.height == 1
     assert daily.height == 1

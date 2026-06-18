@@ -196,7 +196,22 @@ def ingest_v5_bundle(
     )
 
     if _already_ingested(lake_root, bundle_sha256):
+        rehydrated_rows, rehydrate_warnings = _rehydrate_empty_csv_refresh_datasets(
+            bundle_path=bundle_path,
+            lake_root=lake_root,
+            strategy=strategy,
+            bundle_sha256=bundle_sha256,
+            bundle_name=Path(bundle_path).name,
+            bundle_ts=inspection.bundle_ts,
+            limits=effective_limits,
+        )
         secret_scan = scan_for_secrets("")
+        warnings = ["bundle sha256 already ingested", *rehydrate_warnings]
+        if rehydrated_rows:
+            warnings.append(
+                "rehydrated_empty_csv_refresh_datasets:"
+                + ",".join(sorted(rehydrated_rows))
+            )
         return V5BundleIngestResult(
             strategy=strategy,
             bundle_path=str(bundle_path),
@@ -208,7 +223,8 @@ def ingest_v5_bundle(
             secret_scan=secret_scan,
             restricted_archive_path=str(restricted_root),
             redacted_archive_path=str(redacted_root),
-            warnings=["bundle sha256 already ingested"],
+            silver_rows=rehydrated_rows,
+            warnings=warnings,
         )
 
     ingest_ts = utc_now()
@@ -473,6 +489,73 @@ def _write_silver(
                 dataset_path,
                 dataset_rows,
                 ["strategy", "bundle_sha256", "source_path_inside_bundle", "row_index"],
+            )
+    return counts, warnings
+
+
+def _rehydrate_empty_csv_refresh_datasets(
+    *,
+    bundle_path: Path,
+    lake_root: Path,
+    strategy: str,
+    bundle_sha256: str,
+    bundle_name: str,
+    bundle_ts: datetime | None,
+    limits: BundleLimits,
+) -> tuple[dict[str, int], list[str]]:
+    target_names = [
+        name
+        for name in sorted(EMPTY_CSV_REFRESH_DATASETS)
+        if read_parquet_dataset(lake_root / SILVER_DATASETS[name]).is_empty()
+    ]
+    if not target_names:
+        return {}, []
+
+    ingest_ts = utc_now()
+    metadata = _metadata(
+        strategy=strategy,
+        bundle_sha256=bundle_sha256,
+        bundle_name=bundle_name,
+        bundle_ts=bundle_ts,
+        ingest_ts=ingest_ts,
+    )
+    rows: dict[str, list[dict[str, Any]]] = {name: [] for name in SILVER_DATASETS}
+    empty_csv_headers: dict[str, tuple[str, list[str]]] = {}
+    warnings: list[str] = []
+    target_paths = {
+        "summaries/expanded_universe_advisory_reader.csv",
+        "summaries/expanded_universe_paper_runs.csv",
+        "summaries/expanded_universe_paper_daily.csv",
+    }
+
+    with tempfile.TemporaryDirectory(prefix="quant_lab_v5_rehydrate_") as temp_name:
+        extracted_dir = Path(temp_name) / "extracted"
+        extract_result = safe_extract_v5_bundle(bundle_path, extracted_dir, limits)
+        warnings.extend(extract_result.warnings)
+        for file_path in sorted(path for path in extracted_dir.rglob("*") if path.is_file()):
+            relative = file_path.relative_to(extracted_dir).as_posix()
+            logical = _logical_bundle_path(relative)
+            if logical not in target_paths:
+                continue
+            try:
+                _append_file_rows(rows, file_path, relative, metadata, empty_csv_headers)
+            except Exception as exc:
+                warnings.append(f"failed to rehydrate {relative}: {exc}")
+
+    counts: dict[str, int] = {}
+    for name in target_names:
+        dataset_path = lake_root / SILVER_DATASETS[name]
+        if rows[name]:
+            counts[name] = _upsert_stable_rows(dataset_path, rows[name])
+            continue
+        empty_csv = empty_csv_headers.get(name)
+        if empty_csv is not None:
+            relative, header = empty_csv
+            counts[name] = _write_empty_csv_refresh_dataset(
+                dataset_path,
+                metadata,
+                relative,
+                header,
             )
     return counts, warnings
 

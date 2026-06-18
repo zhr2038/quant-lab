@@ -695,6 +695,43 @@ def test_compact_parquet_directory_files_skips_existing_compact_outputs(tmp_path
     assert sorted(read_back["value"].to_list()) == [0, 1, 2, 100]
 
 
+def test_compact_parquet_directory_files_preserves_schema_evolution_columns(tmp_path):
+    dataset = tmp_path / "lake" / "bronze" / "api_request_metrics"
+    dataset.mkdir(parents=True)
+    pl.DataFrame(
+        [
+            {
+                "day": "2026-06-18",
+                "path": "/v1/health",
+                "status_code": 200,
+                "user_agent": "old-client",
+            }
+        ]
+    ).write_parquet(dataset / "old-schema.parquet")
+    pl.DataFrame(
+        [
+            {
+                "day": "2026-06-18",
+                "path": "/v1/health/deep",
+                "status_code": 401,
+                "user_agent": "new-client",
+                "client_id": "v5.dashboard_proxy",
+                "auth_result": "missing_bearer_token",
+            }
+        ]
+    ).write_parquet(dataset / "new-schema.parquet")
+
+    result = compact_parquet_directory_files(dataset, target_rows_per_file=10)
+    read_back = read_parquet_dataset(dataset)
+
+    assert result.source_file_count == 2
+    assert {"client_id", "auth_result"} <= set(read_back.columns)
+    by_path = {row["path"]: row for row in read_back.to_dicts()}
+    assert by_path["/v1/health"]["client_id"] is None
+    assert by_path["/v1/health/deep"]["client_id"] == "v5.dashboard_proxy"
+    assert by_path["/v1/health/deep"]["auth_result"] == "missing_bearer_token"
+
+
 def test_compact_parquet_directory_files_noops_when_only_compact_outputs_exist(tmp_path):
     dataset = tmp_path / "lake" / "silver" / "trade_print"
     dataset.mkdir(parents=True)

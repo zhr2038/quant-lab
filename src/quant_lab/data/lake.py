@@ -282,7 +282,7 @@ def compact_parquet_dataset(
                 max_source_files_per_batch=max_source_files_per_batch,
                 max_source_batch_bytes=batch_bytes,
             ):
-                frame = _read_parquet_files(batch_files)
+                frame = _read_parquet_files(batch_files, schema_union=True)
                 if frame.is_empty():
                     continue
                 result = _append_parquet_dataset_unlocked(
@@ -450,7 +450,7 @@ def _compact_direct_parquet_files_unlocked(
             max_source_files_per_batch=max_source_files_per_batch,
             max_source_batch_bytes=batch_bytes,
         ):
-            frame = _read_parquet_files(batch_files)
+            frame = _read_parquet_files(batch_files, schema_union=True)
             if frame.is_empty():
                 continue
             result = _append_parquet_dataset_unlocked(
@@ -914,9 +914,13 @@ def _is_internal_lake_file(path: Path) -> bool:
     )
 
 
-def _read_parquet_files(files: Sequence[Path]) -> pl.DataFrame:
+def _read_parquet_files(
+    files: Sequence[Path],
+    *,
+    schema_union: bool = False,
+) -> pl.DataFrame:
     try:
-        return _scan_parquet_files(files).collect()
+        return _scan_parquet_files(files, schema_union=schema_union).collect()
     except pl.exceptions.SchemaError:
         frames = [pl.read_parquet(path) for path in files]
         return pl.concat(frames, how="diagonal_relaxed") if frames else pl.DataFrame()
@@ -929,16 +933,35 @@ def _read_parquet_files(files: Sequence[Path]) -> pl.DataFrame:
         return pl.read_parquet([str(path) for path in files])
 
 
-def _scan_parquet_files(files: Sequence[Path]) -> pl.LazyFrame:
+def _scan_parquet_files(
+    files: Sequence[Path],
+    *,
+    schema_union: bool = False,
+) -> pl.LazyFrame:
+    paths = [str(path) for path in files]
     try:
+        schema = _parquet_schema_union(files) if schema_union else {}
         return pl.scan_parquet(
-            [str(path) for path in files],
+            paths,
             hive_partitioning=False,
+            schema=schema or None,
             missing_columns="insert",
             extra_columns="ignore",
         )
     except TypeError:
-        return pl.scan_parquet([str(path) for path in files])
+        return pl.scan_parquet(paths)
+
+
+def _parquet_schema_union(files: Sequence[Path]) -> dict[str, pl.DataType]:
+    schema: dict[str, pl.DataType] = {}
+    for path in files:
+        try:
+            file_schema = pl.read_parquet_schema(path)
+        except Exception:
+            continue
+        for name, dtype in file_schema.items():
+            schema.setdefault(str(name), dtype)
+    return schema
 
 
 def _is_parquet_schema_compat_error(exc: Exception) -> bool:

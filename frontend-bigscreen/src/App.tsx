@@ -227,9 +227,7 @@ function Dashboard({
   return (
     <motion.div className="dashboard-shell" initial={{ opacity: 0, y: 12 }} animate={{ opacity: 1, y: 0 }}>
       <PageControls page={page} setPage={setPage} />
-      <AnimatePresence mode="wait" initial={false}>
-        {pageContent}
-      </AnimatePresence>
+      {pageContent}
       <Drilldown view={view} data={data} onClose={() => setView(null)} />
     </motion.div>
   );

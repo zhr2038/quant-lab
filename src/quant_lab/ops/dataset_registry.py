@@ -584,6 +584,34 @@ def core_dataset_specs() -> dict[str, DatasetSpec]:
             quality_rules=("schema_required_columns",),
         ),
         DatasetSpec(
+            dataset_id="v5_cost_probe_p3_preflight",
+            layer="silver",
+            relative_path=Path("silver") / "v5_cost_probe_p3_preflight",
+            owner="v5-telemetry",
+            description=(
+                "Read-only V5 cost probe P3 preflight evidence; records manual "
+                "authorization readiness without approving or submitting live orders."
+            ),
+            producer="qlab ingest-v5-bundle",
+            consumers=("web", "expert-export", "cost-readiness"),
+            required=False,
+            min_rows=0,
+            required_columns=(
+                "bundle_ts",
+                "ingest_ts",
+                "source_path_inside_bundle",
+                "state",
+                "ready_to_request_manual_live_probe",
+                "approved_live_order_execution",
+                "live_order_effect",
+                "raw_payload_json",
+            ),
+            timestamp_column="ingest_ts",
+            utc_timestamp_columns=("bundle_ts", "ingest_ts", "generated_at_utc"),
+            freshness_seconds=None,
+            quality_rules=("schema_required_columns",),
+        ),
+        DatasetSpec(
             dataset_id="v5_quant_lab_request",
             layer="silver",
             relative_path=Path("silver") / "v5_quant_lab_request",

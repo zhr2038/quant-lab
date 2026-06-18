@@ -75,6 +75,7 @@ SILVER_DATASETS = {
     "v5_quant_lab_fallback": Path("silver/v5_quant_lab_fallback"),
     "v5_candidate_event": Path("silver/v5_candidate_event"),
     "v5_order_lifecycle": Path("silver/v5_order_lifecycle"),
+    "v5_cost_probe_p3_preflight": Path("silver/v5_cost_probe_p3_preflight"),
     "v5_paper_strategy_run": Path("silver/v5_paper_strategy_run"),
     "v5_paper_strategy_daily": Path("silver/v5_paper_strategy_daily"),
     "v5_paper_slippage_coverage": Path("silver/v5_paper_slippage_coverage"),
@@ -670,6 +671,15 @@ def _append_file_rows(
             _pullback_readiness_rows(metadata, relative, _read_json(file_path))
         )
         return
+    if logical in {
+        "reports/cost_probe_p3_preflight.json",
+        "summaries/cost_probe_p3_preflight.json",
+        "raw/reports/cost_probe_p3_preflight.json",
+    }:
+        rows["v5_cost_probe_p3_preflight"].extend(
+            _cost_probe_p3_preflight_rows(metadata, relative, _read_json(file_path))
+        )
+        return
     if logical.startswith("raw/state/") and logical.endswith(".json"):
         state_type = Path(logical).stem
         payload = _read_json(file_path)
@@ -898,6 +908,59 @@ def _pullback_readiness_rows(
             }
         )
     return rows
+
+
+def _cost_probe_p3_preflight_rows(
+    metadata: dict[str, Any],
+    relative: str,
+    payload: dict[str, Any],
+) -> list[dict[str, Any]]:
+    row = _json_row(metadata, relative, payload, None) | {
+        "event_type": "cost_probe_p3_preflight",
+        "schema_version": _clean_text(payload.get("schema_version"))
+        or "v5.cost_probe_p3_preflight.v1",
+        "generated_at_utc": _normalize_event_time(payload.get("generated_at")),
+        "state": _clean_text(payload.get("state")) or "UNKNOWN",
+        "ready_to_request_manual_live_probe": _payload_bool(
+            payload,
+            "ready_to_request_manual_live_probe",
+        ),
+        "manual_authorization_required": _payload_bool(
+            payload,
+            "manual_authorization_required",
+        ),
+        "approved_live_order_execution": _payload_bool(
+            payload,
+            "approved_live_order_execution",
+        ),
+        "live_enabled": _payload_bool(payload, "live_enabled"),
+        "dry_run": _payload_bool(payload, "dry_run"),
+        "no_order_submitted": _payload_bool(payload, "no_order_submitted", default=True),
+        "live_order_effect": _clean_text(payload.get("live_order_effect"))
+        or "none_preflight_only_no_order",
+        "manual_probe_symbol": _clean_text(payload.get("manual_probe_symbol")),
+        "manual_allowed_symbols_json": safe_json_dumps(
+            payload.get("manual_allowed_symbols") or []
+        ),
+        "manual_max_notional_usdt": _clean_text(payload.get("manual_max_notional_usdt")),
+        "manual_required_exit_policy": _clean_text(payload.get("manual_required_exit_policy")),
+        "manual_max_open_seconds": _clean_text(payload.get("manual_max_open_seconds")),
+        "planned_symbols_json": safe_json_dumps(payload.get("planned_symbols") or []),
+        "blockers_json": safe_json_dumps(payload.get("blockers") or []),
+        "runtime_blockers_json": safe_json_dumps(payload.get("runtime_blockers") or []),
+        "guard_failures_json": safe_json_dumps(payload.get("guard_failures") or []),
+        "dry_run_plan_state": _clean_text(payload.get("dry_run_plan_state")),
+        "next_action": _clean_text(payload.get("next_action")),
+        "post_probe_required_evidence_json": safe_json_dumps(
+            payload.get("post_probe_required_evidence") or []
+        ),
+    }
+    return [row]
+
+
+def _payload_bool(payload: dict[str, Any], key: str, *, default: bool = False) -> bool:
+    parsed = _parse_bool(payload.get(key))
+    return default if parsed is None else parsed
 
 
 def _v5_trade_rows(

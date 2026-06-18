@@ -47,6 +47,10 @@ export function V5Telemetry({
     ]
   };
   const permissions = (consumers.permissions ?? {}) as Record<string, unknown>;
+  const p3 = (v5.cost_probe_p3_preflight ?? {}) as Record<string, unknown>;
+  const p3State = String(p3.state ?? "not_observable");
+  const p3Ready = p3.ready_to_request_manual_live_probe === true ? "可申请" : "未就绪";
+  const p3Approved = p3.approved_live_order_execution === true ? "已批准" : "未批准";
   const items = [
     ["72h 运行", v5.run_count_72h],
     ["24h 决策", v5.decision_audit_count_24h],
@@ -64,6 +68,11 @@ export function V5Telemetry({
         <div className="metric-list">
           {items.map(([key, value]) => <div className="mini" key={String(key)}><span>{String(key)}</span><strong>{String(value ?? "—")}</strong></div>)}
         </div>
+      </div>
+      <div className="v5-p3-strip">
+        <span>P3 {p3State}</span>
+        <span>人工授权 {p3Ready}</span>
+        <span>实盘 {p3Approved}</span>
       </div>
       <div className="footnote"><Radio size={12} /> 最新 Bundle SHA · <code>{String(v5.latest_bundle_sha256_short ?? "not_observable")}</code></div>
     </section>

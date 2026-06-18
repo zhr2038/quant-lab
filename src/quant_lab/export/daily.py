@@ -216,6 +216,7 @@ HEAVY_EXPORT_DATASET_LIMITS = {
     "v5_quant_lab_compliance": 5_000,
     "v5_quant_lab_cost_usage": 5_000,
     "v5_quant_lab_fallback": 5_000,
+    "v5_cost_probe_p3_preflight": 5_000,
     "v5_candidate_event": 20_000,
     "v5_btc_probe_entry_quality_audit": 20_000,
     "v5_candidate_label": 20_000,
@@ -257,6 +258,7 @@ HEAVY_EXPORT_RECENT_FILE_LIMITS = {
     "v5_quant_lab_compliance": 100,
     "v5_quant_lab_cost_usage": 100,
     "v5_quant_lab_fallback": 100,
+    "v5_cost_probe_p3_preflight": 100,
     "v5_candidate_event": 100,
     "v5_btc_probe_entry_quality_audit": 100,
     "v5_candidate_label": 100,
@@ -400,6 +402,7 @@ SECTION_DATASETS = {
         "v5_quant_lab_compliance",
         "v5_quant_lab_cost_usage",
         "v5_quant_lab_fallback",
+        "v5_cost_probe_p3_preflight",
         "v5_candidate_event",
         "v5_btc_probe_entry_quality_audit",
         "v5_candidate_label",
@@ -459,6 +462,7 @@ REQUIRED_MEMBERS = [
     "v5/v5_quant_lab_compliance.csv",
     "v5/v5_quant_lab_cost_usage.csv",
     "v5/v5_quant_lab_fallbacks.csv",
+    "v5/v5_cost_probe_p3_preflight.csv",
     "v5/v5_candidate_events.csv",
     "v5/v5_btc_probe_entry_quality_audit.csv",
     "v5/v5_candidate_labels.csv",
@@ -2822,6 +2826,40 @@ CSV_SCHEMAS: dict[str, list[str]] = {
         "count",
         "raw_payload_json",
     ],
+    "v5/v5_cost_probe_p3_preflight.csv": [
+        "strategy",
+        "bundle_sha256",
+        "bundle_name",
+        "bundle_ts",
+        "ingest_ts",
+        "schema_version",
+        "source_path_inside_bundle",
+        "row_index",
+        "event_type",
+        "generated_at_utc",
+        "state",
+        "ready_to_request_manual_live_probe",
+        "manual_authorization_required",
+        "approved_live_order_execution",
+        "live_enabled",
+        "dry_run",
+        "no_order_submitted",
+        "live_order_effect",
+        "manual_probe_symbol",
+        "manual_allowed_symbols_json",
+        "manual_max_notional_usdt",
+        "manual_required_exit_policy",
+        "manual_max_open_seconds",
+        "planned_symbols_json",
+        "blockers_json",
+        "runtime_blockers_json",
+        "guard_failures_json",
+        "dry_run_plan_state",
+        "next_action",
+        "post_probe_required_evidence_json",
+        "raw_payload_json",
+        "stable_row_key",
+    ],
     "v5/v5_candidate_events.csv": [
         "strategy",
         "bundle_sha256",
@@ -5003,6 +5041,7 @@ def _dataset_members(
     v5_compliance = frames.get("v5_quant_lab_compliance", pl.DataFrame())
     v5_cost_usage = frames.get("v5_quant_lab_cost_usage", pl.DataFrame())
     v5_fallbacks = _dedupe_v5_event_frame(frames.get("v5_quant_lab_fallback", pl.DataFrame()))
+    v5_cost_probe_p3_preflight = frames.get("v5_cost_probe_p3_preflight", pl.DataFrame())
     v5_candidate_events = frames.get("v5_candidate_event", pl.DataFrame())
     v5_btc_probe_entry_quality_audit = frames.get(
         "v5_btc_probe_entry_quality_audit",
@@ -5735,6 +5774,10 @@ def _dataset_members(
         ),
         "v5/v5_quant_lab_fallbacks.csv": _csv_member(
             "v5/v5_quant_lab_fallbacks.csv", v5_fallbacks
+        ),
+        "v5/v5_cost_probe_p3_preflight.csv": _csv_member(
+            "v5/v5_cost_probe_p3_preflight.csv",
+            _tail_by_time(v5_cost_probe_p3_preflight, "generated_at_utc", limit=10_000),
         ),
         "v5/v5_candidate_events.csv": _csv_member(
             "v5/v5_candidate_events.csv",

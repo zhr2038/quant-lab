@@ -53,6 +53,7 @@ def test_dataset_registry_covers_v5_and_research_governance_datasets():
         "v5_quant_lab_cost_usage",
         "v5_quant_lab_fallback",
         "v5_quant_lab_compliance",
+        "v5_cost_probe_p3_preflight",
         "v5_candidate_label",
         "v5_shadow_outcome",
         "v5_paper_strategy_run",
@@ -163,6 +164,12 @@ def test_v5_registry_matches_current_envelope_and_daily_schemas():
         "raw_payload_json",
     )
     assert btc_probe.timestamp_column == "ingest_ts"
+
+    p3_preflight = get_dataset_spec("v5_cost_probe_p3_preflight")
+    assert p3_preflight is not None
+    assert "approved_live_order_execution" in p3_preflight.required_columns
+    assert "live_order_effect" in p3_preflight.required_columns
+    assert p3_preflight.timestamp_column == "ingest_ts"
 
     assert strategy_health is not None
     assert strategy_health.required_columns == ("date", "status", "latest_bundle_ts")

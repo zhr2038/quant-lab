@@ -170,6 +170,50 @@ def test_bigscreen_snapshot_redacts_secret_like_fields(tmp_path):
     assert "should-not-leak" not in str(payload)
 
 
+def test_bigscreen_snapshot_exposes_cost_probe_p3_preflight(tmp_path):
+    clear_bigscreen_cache()
+    lake = tmp_path / "lake"
+    write_parquet_dataset(
+        pl.DataFrame(
+            [
+                {
+                    "date": "2026-06-18",
+                    "status": "OK",
+                    "latest_bundle_ts": "2026-06-18T14:54:31Z",
+                    "latest_bundle_sha256": "abc123",
+                }
+            ]
+        ),
+        lake / "gold" / "strategy_health_daily",
+    )
+    write_parquet_dataset(
+        pl.DataFrame(
+            [
+                {
+                    "strategy": "v5",
+                    "bundle_ts": "2026-06-18T14:54:31Z",
+                    "ingest_ts": "2026-06-18T14:55:00Z",
+                    "generated_at_utc": "2026-06-18T14:54:31Z",
+                    "source_path_inside_bundle": "summaries/cost_probe_p3_preflight.json",
+                    "state": "NOT_READY",
+                    "ready_to_request_manual_live_probe": False,
+                    "approved_live_order_execution": False,
+                    "live_order_effect": "none_preflight_only_no_order",
+                    "raw_payload_json": "{}",
+                }
+            ]
+        ),
+        lake / "silver" / "v5_cost_probe_p3_preflight",
+    )
+
+    payload = bigscreen_snapshot(lake)
+
+    p3 = payload["v5"]["cost_probe_p3_preflight"]
+    assert p3["state"] == "NOT_READY"
+    assert p3["approved_live_order_execution"] is False
+    assert p3["live_order_effect"] == "none_preflight_only_no_order"
+
+
 def test_bigscreen_snapshot_exposes_factor_factory_results(tmp_path):
     clear_bigscreen_cache()
     lake = tmp_path / "lake"

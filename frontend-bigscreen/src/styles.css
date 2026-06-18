@@ -304,6 +304,12 @@ button{font:inherit;color:inherit}
 .metric-list{display:grid;gap:10px}
 .mini{height:31px;border-radius:9px;border:1px solid rgba(80,169,255,.35);display:flex;align-items:center;justify-content:space-between;padding:0 13px;background:rgba(7,29,53,.55);font-size:12px}
 .mini strong{font-size:18px;color:var(--green)}
+.v5-p3-strip{display:grid;grid-template-columns:1fr 1fr 1fr;gap:8px;margin-top:10px}
+.v5-p3-strip span{
+  min-width:0;height:28px;border-radius:9px;border:1px solid rgba(255,196,87,.38);
+  display:flex;align-items:center;justify-content:center;padding:0 8px;background:rgba(255,196,87,.07);
+  color:#ffd891;font-size:11px;font-weight:800;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;
+}
 .cost{grid-column:2;grid-row:3}
 .cost-body{display:grid;grid-template-columns:190px 1fr;gap:22px;margin-top:22px}
 .bar{height:10px;border-radius:10px;background:rgba(70,86,112,.65);overflow:hidden}
@@ -653,6 +659,7 @@ button{font:inherit;color:inherit}
   .page-strategy .candidate-main small{font-size:10px}
   .page-strategy .candidate-detail{font-size:9px;grid-column:1}
   .v5-grid,.cost-body{grid-template-columns:1fr;gap:14px}
+  .v5-p3-strip{grid-template-columns:1fr}
   .cost-body>div:first-child{margin:auto}
   .ticker{height:38px;grid-template-columns:94px 68px 1fr 54px;font-size:11px;padding:0 10px}
   .ticker b{font-size:12px}

@@ -138,6 +138,7 @@ DATASET_PATHS = {
     "v5_quant_lab_compliance": Path("silver") / "v5_quant_lab_compliance",
     "v5_quant_lab_cost_usage": Path("silver") / "v5_quant_lab_cost_usage",
     "v5_quant_lab_fallback": Path("silver") / "v5_quant_lab_fallback",
+    "v5_cost_probe_p3_preflight": Path("silver") / "v5_cost_probe_p3_preflight",
     "v5_paper_strategy_run": Path("silver") / "v5_paper_strategy_run",
     "v5_paper_strategy_daily": Path("silver") / "v5_paper_strategy_daily",
     "v5_paper_slippage_coverage": Path("silver") / "v5_paper_slippage_coverage",
@@ -194,6 +195,7 @@ OPTIONAL_EMPTY_DATASET_STATUSES = {
     "waiting_for_v5_paper_telemetry",
     "entry_quality_optional",
     "historical_research_snapshot",
+    "event_driven_no_recent_cost_probe_p3_preflight",
 }
 ENTRY_QUALITY_DATASETS = {
     "v5_missed_low_audit",
@@ -266,6 +268,7 @@ EVENT_DRIVEN_V5_DATASET_STATUSES = {
     "v5_quant_lab_request": "event_driven_no_recent_quant_lab_request",
     "v5_quant_lab_cost_usage": "event_driven_no_recent_quant_lab_cost_usage",
     "v5_quant_lab_fallback": "event_driven_no_recent_quant_lab_fallback",
+    "v5_cost_probe_p3_preflight": "event_driven_no_recent_cost_probe_p3_preflight",
     "v5_bnb_negative_expectancy_attribution": (
         "event_driven_no_recent_bnb_negative_expectancy_attribution"
     ),
@@ -414,6 +417,7 @@ DATASET_TIMESTAMP_COLUMNS: dict[str, tuple[str, ...]] = {
     "v5_quant_lab_compliance": ("ingest_ts", "bundle_ts"),
     "v5_quant_lab_cost_usage": ("ingest_ts", "bundle_ts"),
     "v5_quant_lab_fallback": ("ingest_ts", "bundle_ts"),
+    "v5_cost_probe_p3_preflight": ("generated_at_utc", "ingest_ts", "bundle_ts"),
     "v5_paper_strategy_run": ("created_at", "as_of_date", "ingest_ts", "bundle_ts"),
     "v5_paper_strategy_daily": ("created_at", "as_of_date", "ingest_ts", "bundle_ts"),
     "v5_paper_slippage_coverage": ("created_at", "as_of_date", "ingest_ts", "bundle_ts"),
@@ -4322,30 +4326,56 @@ def v5_telemetry_summary(lake_root: str | Path) -> dict[str, Any]:
         lake_root,
         "v5_quant_lab_enforcement_daily",
     )
+    p3_preflight, p3_preflight_warning = read_dataset_with_warning(
+        lake_root,
+        "v5_cost_probe_p3_preflight",
+    )
     warnings = [
         warning
-        for warning in [health_warning, gate_warning, mode_warning, enforcement_warning]
+        for warning in [
+            health_warning,
+            gate_warning,
+            mode_warning,
+            enforcement_warning,
+            p3_preflight_warning,
+        ]
         if warning
     ]
+    p3_latest = _latest_v5_cost_probe_p3_preflight(p3_preflight)
     if health.is_empty():
         return {
-            "latest": {},
+            "latest": {"cost_probe_p3_preflight": p3_latest} if p3_latest else {},
             "health_rows": pl.DataFrame(),
             "gate_compliance_rows": gate,
             "quant_lab_mode_rows": mode,
             "quant_lab_enforcement_rows": enforcement,
+            "cost_probe_p3_preflight_rows": p3_preflight.head(DISPLAY_LIMIT),
             "warnings": [*warnings, "strategy_health_daily 数据集缺失或为空"],
         }
     sort_column = "date" if "date" in health.columns else health.columns[0]
     latest = health.sort(sort_column).tail(1).to_dicts()[0]
+    if p3_latest:
+        latest = dict(latest)
+        latest["cost_probe_p3_preflight"] = p3_latest
     return {
         "latest": latest,
         "health_rows": health.sort(sort_column, descending=True).head(DISPLAY_LIMIT),
         "gate_compliance_rows": gate.head(DISPLAY_LIMIT),
         "quant_lab_mode_rows": mode.head(DISPLAY_LIMIT),
         "quant_lab_enforcement_rows": enforcement.head(DISPLAY_LIMIT),
+        "cost_probe_p3_preflight_rows": p3_preflight.head(DISPLAY_LIMIT),
         "warnings": warnings,
     }
+
+
+def _latest_v5_cost_probe_p3_preflight(frame: pl.DataFrame) -> dict[str, Any] | None:
+    if frame.is_empty():
+        return None
+    sort_column = "generated_at_utc" if "generated_at_utc" in frame.columns else "ingest_ts"
+    if sort_column not in frame.columns:
+        sort_column = frame.columns[0]
+    row = frame.sort(sort_column).tail(1).to_dicts()[0]
+    return redact_frame(pl.DataFrame([row])).to_dicts()[0]
 
 
 def expert_export_summary(exports_root: str | Path) -> dict[str, Any]:
@@ -5166,6 +5196,7 @@ def _dataset_display_name(dataset_name: str) -> str:
         "v5_gate_compliance_daily": "V5 门控合规",
         "v5_candidate_event": "V5 候选事件",
         "v5_candidate_label": "V5 候选标签",
+        "v5_cost_probe_p3_preflight": "V5 成本探针 P3 预检",
         "strategy_opportunity_advisory": "策略机会建议",
         "research_portfolio_status": "研究组合裁剪",
         "strategy_evidence": "策略证据",
@@ -5193,6 +5224,8 @@ def _empty_dataset_status(dataset_name: str) -> str:
         return "export_derived_optional"
     if dataset_name == "cost_bootstrap_readiness":
         return "export_derived_optional"
+    if dataset_name == "v5_cost_probe_p3_preflight":
+        return "event_driven_no_recent_cost_probe_p3_preflight"
     if dataset_name == "decision_audit":
         return "legacy_optional"
     if dataset_name in V5_PAPER_TELEMETRY_DATASETS:

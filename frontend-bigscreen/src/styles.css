@@ -431,7 +431,7 @@ button{font:inherit;color:inherit}
 
 @media (max-width: 1500px), (max-height: 860px){
   html,body,#root{height:auto;min-height:100%}
-  body{overflow:auto;background:#04101d}
+  body{overflow-y:auto;overflow-x:hidden;background:#04101d}
   .viewport{
     width:100%;height:auto;min-height:100vh;min-height:100svh;display:block;overflow:visible;padding:0;
   }
@@ -453,7 +453,7 @@ button{font:inherit;color:inherit}
   .dashboard-shell{height:auto;display:grid;grid-template-rows:auto auto;gap:16px}
   .page-controls{height:auto;min-height:58px}
   .page-grid{
-    height:auto;display:grid;grid-auto-rows:auto;gap:18px;
+    width:100%;min-width:0;max-width:100%;height:auto;display:grid;grid-auto-rows:auto;gap:18px;
   }
   .page-overview{
     grid-template-columns:minmax(380px,.72fr) minmax(0,1.55fr);

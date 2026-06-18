@@ -1,3 +1,5 @@
+import hashlib
+import json
 import logging
 import os
 import shutil
@@ -94,6 +96,55 @@ def write_parquet_dataset(
     path = Path(dataset_path)
     with _dataset_lock(path):
         return _write_parquet_dataset_unlocked(df, path, partition_by=partition_by)
+
+
+def write_snapshot_meta(
+    dataset_path: str | Path,
+    *,
+    dataset_name: str,
+    frame: pl.DataFrame,
+    schema_version: str | None = None,
+    generated_at: str | datetime | None = None,
+    expires_at: str | datetime | None = None,
+) -> Path:
+    """Write an atomic dataset snapshot sidecar for small API dependency tables."""
+
+    path = Path(dataset_path)
+    path.mkdir(parents=True, exist_ok=True)
+    generated_at_text = _snapshot_text(
+        generated_at
+    ) or _frame_latest_snapshot_text(
+        frame,
+        ("generated_at", "created_at", "as_of_ts", "as_of_date", "date", "day"),
+    )
+    expires_at_text = _snapshot_text(expires_at) or _frame_latest_snapshot_text(
+        frame,
+        ("expires_at",),
+    )
+    payload = {
+        "dataset": str(dataset_name),
+        "generated_at": generated_at_text,
+        "expires_at": expires_at_text,
+        "row_count": int(frame.height),
+        "source_sha": _snapshot_source_sha(
+            str(dataset_name),
+            frame,
+            generated_at=generated_at_text,
+            expires_at=expires_at_text,
+        ),
+        "file_count": sum(1 for candidate in path.rglob("*.parquet") if candidate.is_file()),
+        "schema_version": schema_version or _frame_first_snapshot_text(frame, "schema_version")
+        or str(dataset_name),
+        "created_at": datetime.now(UTC).isoformat().replace("+00:00", "Z"),
+    }
+    tmp_path = path / "._snapshot_meta.tmp"
+    meta_path = path / "_snapshot_meta.json"
+    tmp_path.write_text(
+        json.dumps(payload, sort_keys=True, separators=(",", ":"), default=_snapshot_json),
+        encoding="utf-8",
+    )
+    os.replace(_replaceable_path(tmp_path), _replaceable_path(meta_path))
+    return meta_path
 
 
 def _write_parquet_dataset_unlocked(
@@ -1107,6 +1158,79 @@ def _sort_dataframe(df: pl.DataFrame) -> pl.DataFrame:
         return df.sort(sort_columns)
     except Exception:
         return df
+
+
+def _frame_latest_snapshot_text(frame: pl.DataFrame, columns: Sequence[str]) -> str:
+    if frame.is_empty():
+        return ""
+    for column in columns:
+        if column not in frame.columns:
+            continue
+        values = [
+            _snapshot_text(value)
+            for value in frame.get_column(column).drop_nulls().to_list()
+        ]
+        values = [value for value in values if value]
+        if values:
+            return max(values)
+    return ""
+
+
+def _frame_first_snapshot_text(frame: pl.DataFrame, column: str) -> str:
+    if frame.is_empty() or column not in frame.columns:
+        return ""
+    for value in frame.get_column(column).drop_nulls().to_list():
+        text = _snapshot_text(value)
+        if text:
+            return text
+    return ""
+
+
+def _snapshot_source_sha(
+    dataset_name: str,
+    frame: pl.DataFrame,
+    *,
+    generated_at: str,
+    expires_at: str,
+) -> str:
+    digest = hashlib.sha256()
+    digest.update(dataset_name.encode("utf-8"))
+    digest.update(b"\0")
+    digest.update(generated_at.encode("utf-8"))
+    digest.update(b"\0")
+    digest.update(expires_at.encode("utf-8"))
+    digest.update(b"\0")
+    columns = sorted(str(column) for column in frame.columns)
+    digest.update(json.dumps(columns, separators=(",", ":")).encode("utf-8"))
+    if frame.is_empty():
+        return digest.hexdigest()
+    sorted_frame = _sort_dataframe(frame)
+    rows = sorted_frame.select(columns).to_dicts() if columns else []
+    digest.update(
+        json.dumps(
+            rows,
+            sort_keys=True,
+            separators=(",", ":"),
+            default=_snapshot_json,
+        ).encode("utf-8")
+    )
+    return digest.hexdigest()
+
+
+def _snapshot_text(value: Any) -> str:
+    if value is None:
+        return ""
+    if isinstance(value, datetime):
+        timestamp = value if value.tzinfo is not None else value.replace(tzinfo=UTC)
+        return timestamp.astimezone(UTC).isoformat().replace("+00:00", "Z")
+    text = str(value).strip()
+    return "" if text.lower() in {"none", "null", "nan", "nat"} else text
+
+
+def _snapshot_json(value: Any) -> str:
+    if isinstance(value, datetime):
+        return _snapshot_text(value)
+    return str(value)
 
 
 def _partition_columns(partition_by: str | Sequence[str] | None) -> list[str]:

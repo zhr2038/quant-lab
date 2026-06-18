@@ -1,5 +1,6 @@
 import csv
 import io
+import json
 import zipfile
 
 import polars as pl
@@ -82,6 +83,14 @@ def test_research_portfolio_requires_paper_daily_before_paper_status(tmp_path):
     assert sol["status"] == "PAPER_SETUP_PENDING"
     assert sol["action"] == "SETUP_PAPER_TRACKING"
     assert "paper_setup_pending_no_daily_row" in sol["reason"]
+    meta = json.loads(
+        (lake / "gold" / "research_portfolio_status" / "_snapshot_meta.json").read_text(
+            encoding="utf-8"
+        )
+    )
+    assert meta["dataset"] == "research_portfolio_status"
+    assert meta["row_count"] == len(rows)
+    assert meta["source_sha"]
 
 
 def test_research_portfolio_requires_actual_entry_or_observed_pnl_for_paper(tmp_path):

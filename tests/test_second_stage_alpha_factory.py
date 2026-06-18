@@ -225,6 +225,22 @@ def test_alpha_factory_outputs_candidates_results_and_queue_without_live(tmp_pat
     assert "LIVE_SMALL_READY" not in set(results["decision"].drop_nulls().to_list())
     assert "LIVE_SMALL_READY" not in set(promotion["promotion_state"].drop_nulls().to_list())
     assert "v5.alt_impulse_shadow" in set(strategy_evidence["strategy_candidate"].to_list())
+    result_meta = json.loads(
+        (lake / "gold" / "alpha_factory_result" / "_snapshot_meta.json").read_text(
+            encoding="utf-8"
+        )
+    )
+    promotion_meta = json.loads(
+        (
+            lake / "gold" / "alpha_factory_promotion_queue" / "_snapshot_meta.json"
+        ).read_text(encoding="utf-8")
+    )
+    assert result_meta["dataset"] == "alpha_factory_result"
+    assert result_meta["row_count"] == results.height
+    assert result_meta["source_sha"]
+    assert promotion_meta["dataset"] == "alpha_factory_promotion_queue"
+    assert promotion_meta["row_count"] == promotion.height
+    assert promotion_meta["source_sha"]
 
 
 def test_alpha_factory_builds_factor_bridge_strategy_review_candidate(tmp_path):

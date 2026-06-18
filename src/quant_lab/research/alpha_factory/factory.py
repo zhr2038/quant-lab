@@ -13,7 +13,12 @@ import polars as pl
 from pydantic import BaseModel, ConfigDict, Field
 
 from quant_lab.backtest.reports import build_factor_forward_validation
-from quant_lab.data.lake import count_parquet_rows, read_parquet_dataset, write_parquet_dataset
+from quant_lab.data.lake import (
+    count_parquet_rows,
+    read_parquet_dataset,
+    write_parquet_dataset,
+    write_snapshot_meta,
+)
 from quant_lab.factors.composite_factory import build_factor_strategy_bridge_candidates
 from quant_lab.research.second_stage_alpha_factory import (
     SECOND_STAGE_CANDIDATES,
@@ -344,7 +349,19 @@ def build_and_publish_alpha_factory(
 
     write_parquet_dataset(candidates, root / ALPHA_FACTORY_CANDIDATE_DATASET)
     write_parquet_dataset(results, root / ALPHA_FACTORY_RESULT_DATASET)
+    write_snapshot_meta(
+        root / ALPHA_FACTORY_RESULT_DATASET,
+        dataset_name="alpha_factory_result",
+        frame=results,
+        schema_version="alpha_factory_result",
+    )
     write_parquet_dataset(promotion, root / ALPHA_FACTORY_PROMOTION_QUEUE_DATASET)
+    write_snapshot_meta(
+        root / ALPHA_FACTORY_PROMOTION_QUEUE_DATASET,
+        dataset_name="alpha_factory_promotion_queue",
+        frame=promotion,
+        schema_version="alpha_factory_promotion_queue",
+    )
     evidence_rows = _publish_alpha_factory_results_to_strategy_evidence(root, results, day)
 
     return AlphaFactoryBuildResult(

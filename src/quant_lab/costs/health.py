@@ -6,7 +6,7 @@ from typing import Any
 import polars as pl
 from pydantic import BaseModel, ConfigDict, Field
 
-from quant_lab.data.lake import read_parquet_dataset, upsert_parquet_dataset
+from quant_lab.data.lake import read_parquet_dataset, upsert_parquet_dataset, write_snapshot_meta
 
 COST_HEALTH_DAILY_DATASET = Path("gold") / "cost_health_daily"
 ACTUAL_SOURCE = "actual_okx_fills_and_bills"
@@ -308,11 +308,19 @@ def summarize_cost_api_usage(cost_usage: pl.DataFrame) -> dict[str, int]:
 
 def publish_cost_health_daily(lake_root: str | Path, row: CostHealthDaily) -> int:
     frame = cost_health_daily_frame([row])
-    return upsert_parquet_dataset(
+    dataset_path = Path(lake_root) / COST_HEALTH_DAILY_DATASET
+    rows_written = upsert_parquet_dataset(
         frame,
-        Path(lake_root) / COST_HEALTH_DAILY_DATASET,
+        dataset_path,
         key_columns=["day", "cost_model_version"],
     )
+    write_snapshot_meta(
+        dataset_path,
+        dataset_name="cost_health_daily",
+        frame=read_parquet_dataset(dataset_path),
+        schema_version="cost_health_daily",
+    )
+    return rows_written
 
 
 def read_cost_health_daily(lake_root: str | Path, day: str | None = None) -> dict[str, Any]:

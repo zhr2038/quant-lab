@@ -9,7 +9,7 @@ from typing import Any
 import polars as pl
 from pydantic import BaseModel, ConfigDict, Field
 
-from quant_lab.data.lake import read_parquet_dataset, write_parquet_dataset
+from quant_lab.data.lake import read_parquet_dataset, write_parquet_dataset, write_snapshot_meta
 from quant_lab.strategy_telemetry.sanitize import safe_json_dumps
 
 RESEARCH_PORTFOLIO_STATUS_DATASET = Path("gold") / "research_portfolio_status"
@@ -101,6 +101,12 @@ def build_and_publish_research_portfolio_status(
     )
     combined = dedupe_research_portfolio_status(combined)
     write_parquet_dataset(combined, dataset_path)
+    write_snapshot_meta(
+        dataset_path,
+        dataset_name="research_portfolio_status",
+        frame=combined,
+        schema_version=SCHEMA_VERSION,
+    )
     rows_written = combined.height
     return ResearchPortfolioBuildResult(
         as_of_date=day.isoformat(),

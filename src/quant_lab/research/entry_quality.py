@@ -20,6 +20,7 @@ from quant_lab.data.lake import (
     read_parquet_dataset,
     upsert_parquet_dataset,
     write_parquet_dataset,
+    write_snapshot_meta,
 )
 from quant_lab.strategy_telemetry.sanitize import safe_json_dumps
 from quant_lab.symbols import normalize_symbol
@@ -2318,6 +2319,12 @@ def _publish_entry_quality_strategy_opportunities(
     else:
         combined = pl.DataFrame(schema=STRATEGY_OPPORTUNITY_ADVISORY_SCHEMA)
     write_parquet_dataset(combined, dataset_path)
+    write_snapshot_meta(
+        dataset_path,
+        dataset_name="strategy_opportunity_advisory",
+        frame=combined,
+        schema_version=STRATEGY_OPPORTUNITY_ADVISORY_SCHEMA_VERSION,
+    )
     return combined.height
 
 

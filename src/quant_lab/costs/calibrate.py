@@ -14,7 +14,12 @@ from quant_lab.costs.health import (
     summarize_cost_api_usage,
 )
 from quant_lab.costs.model import DEFAULT_FALLBACK_COST_BPS, CostBucketDaily
-from quant_lab.data.lake import read_parquet_dataset, read_parquet_lazy, write_parquet_dataset
+from quant_lab.data.lake import (
+    read_parquet_dataset,
+    read_parquet_lazy,
+    write_parquet_dataset,
+    write_snapshot_meta,
+)
 from quant_lab.ingest.okx_readonly_private import (
     BRONZE_BILLS_DATASET,
     BRONZE_FILLS_DATASET,
@@ -236,6 +241,12 @@ def publish_cost_bucket_daily(lake_root: str | Path, rows: Sequence[CostBucketDa
             maintain_order=True,
         )
     write_parquet_dataset(combined, dataset_path)
+    write_snapshot_meta(
+        dataset_path,
+        dataset_name="cost_bucket_daily",
+        frame=combined,
+        schema_version="cost_bucket_daily",
+    )
     return combined.height
 
 

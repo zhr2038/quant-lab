@@ -439,6 +439,14 @@ def test_entry_quality_publishes_strategy_opportunity_advisory_for_api(
     assert missed["max_live_notional_usdt"] == 0.0
     assert "shadow_only" in missed["live_block_reasons"]
     assert "not_live_validated" in missed["live_block_reasons"]
+    meta = json.loads(
+        (lake / "gold" / "strategy_opportunity_advisory" / "_snapshot_meta.json").read_text(
+            encoding="utf-8"
+        )
+    )
+    assert meta["dataset"] == "strategy_opportunity_advisory"
+    assert meta["row_count"] == len(gold_rows)
+    assert meta["source_sha"]
 
     response = TestClient(app).get("/v1/strategy-opportunity-advisory")
     assert response.status_code == 200

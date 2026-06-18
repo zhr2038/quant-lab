@@ -42,6 +42,22 @@ def test_actual_fills_and_bills_generate_actual_cost_bucket(tmp_path):
     assert health["actual_rows"] == 0
     assert health["mixed_rows"] == 2
     assert "BTC-USDT" in json.loads(health["symbols_with_mixed_cost"])
+    cost_meta = json.loads(
+        (lake_root / "gold" / "cost_bucket_daily" / "_snapshot_meta.json").read_text(
+            encoding="utf-8"
+        )
+    )
+    health_meta = json.loads(
+        (lake_root / "gold" / "cost_health_daily" / "_snapshot_meta.json").read_text(
+            encoding="utf-8"
+        )
+    )
+    assert cost_meta["dataset"] == "cost_bucket_daily"
+    assert cost_meta["row_count"] == 2
+    assert cost_meta["source_sha"]
+    assert health_meta["dataset"] == "cost_health_daily"
+    assert health_meta["row_count"] == 1
+    assert health_meta["source_sha"]
 
 
 def test_missing_bills_fallback_is_explicit(tmp_path):

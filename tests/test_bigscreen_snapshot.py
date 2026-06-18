@@ -64,7 +64,7 @@ def test_bigscreen_snapshot_cache_covers_frontend_refresh_interval(monkeypatch, 
     assert fifth is not first
 
 
-def test_bigscreen_data_matrix_prefers_live_universe_cost_coverage(tmp_path):
+def test_bigscreen_data_matrix_shows_proxy_only_live_cost_diagnostics(tmp_path):
     clear_bigscreen_cache()
     lake = tmp_path / "lake"
     created_at = datetime.now(UTC)
@@ -134,13 +134,14 @@ def test_bigscreen_data_matrix_prefers_live_universe_cost_coverage(tmp_path):
     assert matrix["BTC-USDT"]["cost"]["status"] == "OK"
     assert matrix["BTC-USDT"]["cost"]["source"] == "actual_okx_fills_and_bills"
     for symbol in ["BNB-USDT", "ETH-USDT", "SOL-USDT"]:
-        assert matrix[symbol]["cost"]["status"] == "OK"
-        assert matrix[symbol]["cost"]["source"] == "mixed_actual_proxy"
-        assert matrix[symbol]["cost"]["coverage_status"] == "PASS"
+        assert matrix[symbol]["cost"]["status"] == "WARNING"
+        assert matrix[symbol]["cost"]["source"] == "public_spread_proxy"
+        assert matrix[symbol]["cost"]["coverage_status"] == "WARNING"
     coverage = {row["symbol"]: row for row in payload["cost"]["live_universe_cost_coverage"]}
-    assert coverage["SOL-USDT"]["effective_cost_source"] == "mixed_actual_proxy"
+    assert coverage["SOL-USDT"]["effective_cost_source"] == "public_spread_proxy"
+    assert coverage["SOL-USDT"]["actual_or_mixed_covered"] is False
     assert payload["cost"]["soft_fallback_ratio"] == 1.0
-    assert any(action["title"] == "成本软回退偏高" for action in payload["actions"])
+    assert not any(action["title"] == "成本软回退偏高" for action in payload["actions"])
 
 
 def test_bigscreen_snapshot_redacts_secret_like_fields(tmp_path):

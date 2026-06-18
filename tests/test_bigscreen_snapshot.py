@@ -773,6 +773,49 @@ def test_bigscreen_actions_skip_read_only_cost_coverage_advisory():
     assert not any(action["source"] == "cost_model_summary" for action in actions)
 
 
+def test_bigscreen_actions_skip_read_only_export_cost_advisory():
+    actions = bigscreen_module._build_actions(
+        overview={},
+        data_health={},
+        cost={
+            "hard_fallback_ratio": 0.0,
+            "soft_fallback_ratio": 1.0,
+            "live_universe_cost_coverage": [
+                {
+                    "symbol": "BTC-USDT",
+                    "coverage_status": "WARNING",
+                    "live_order_effect": "read_only_no_live_order",
+                }
+            ],
+        },
+        v5={"latest": {"kill_switch_enabled": False, "reconcile_ok": True}},
+        web_events=[],
+        exports={
+            "latest_pack": "/tmp/quant_lab_expert_pack_2026-06-18_120000.zip",
+            "data_quality_summary": {
+                "status": "WARN",
+                "warning_count": 3,
+                "warnings": [
+                    "cost_soft_fallback_ratio: soft_fallback_count=32; ratio=100.00%; "
+                    "proxy_only_count=32",
+                    "live_universe_stale_actual_or_mixed_cost: "
+                    "stale_actual_or_mixed_symbols=['BTC-USDT']; "
+                    "coverage_status=WARNING; coverage_rate=0.00%; "
+                    "live_order_effect=read_only_no_live_order",
+                    "quant_lab_enforce_readiness: readiness_status=BLOCKED; "
+                    "blocked=['actual_or_mixed_cost_coverage_live_universe']; "
+                    "warnings=['actual_or_mixed_cost_coverage_research_universe']; "
+                    "live_order_effect=read_only_no_live_order",
+                ],
+                "failures": [],
+            },
+        },
+        legacy_anomalies={"items": []},
+    )
+
+    assert not any(action["source"] == "expert_export_summary" for action in actions)
+
+
 def test_bigscreen_snapshot_keeps_live_readiness_block_out_of_system_critical(
     tmp_path,
     monkeypatch,

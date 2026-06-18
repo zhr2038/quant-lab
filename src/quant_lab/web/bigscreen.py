@@ -430,7 +430,44 @@ def _export_quality_requires_action(exports: dict[str, Any]) -> bool:
     if level not in {"WARNING", "CRITICAL"}:
         return False
     data_quality = _export_data_quality(exports)
-    return not _export_quality_is_live_readiness_blocked_only(data_quality)
+    return not (
+        _export_quality_is_live_readiness_blocked_only(data_quality)
+        or _export_quality_is_read_only_cost_advisory(data_quality)
+    )
+
+
+def _export_quality_is_read_only_cost_advisory(data_quality: dict[str, Any]) -> bool:
+    if str(data_quality.get("status") or "").upper() not in {"WARN", "WARNING"}:
+        return False
+    if _quality_failure_count(data_quality):
+        return False
+    warnings = [
+        str(value).strip()
+        for value in data_quality.get("warnings", [])
+        if str(value).strip()
+    ]
+    if not warnings:
+        return False
+    has_read_only_live_context = any(
+        "live_order_effect=read_only_no_live_order" in warning.lower()
+        for warning in warnings
+    )
+    return has_read_only_live_context and all(
+        _is_read_only_cost_quality_warning(warning) for warning in warnings
+    )
+
+
+def _is_read_only_cost_quality_warning(value: str) -> bool:
+    text = value.lower()
+    if text.startswith("cost_soft_fallback_ratio:"):
+        return True
+    if text.startswith("live_universe_stale_actual_or_mixed_cost:"):
+        return "live_order_effect=read_only_no_live_order" in text
+    return (
+        text.startswith("quant_lab_enforce_readiness:")
+        and _is_read_only_live_readiness_failure(value)
+        and "live_order_effect=read_only_no_live_order" in text
+    )
 
 
 def _cost_soft_fallback_requires_action(cost: dict[str, Any]) -> bool:

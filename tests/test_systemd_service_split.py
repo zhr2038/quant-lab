@@ -84,6 +84,16 @@ def test_scheduled_lock_contention_is_reported_as_successful_skip():
         assert 'exit "$${code}"' in unit, unit_name
 
 
+def test_cost_calibration_starts_readonly_private_backfill_when_configured():
+    unit = _unit("quant-lab-cost-calibration.service")
+
+    assert "PermissionsStartOnly=true" in unit
+    assert "ExecStartPre=/bin/bash -lc" in unit
+    assert "[ -f /etc/quant-lab/okx_readonly.env ]" in unit
+    assert "/usr/bin/systemctl start quant-lab-okx-readonly-backfill.service" in unit
+    assert "SKIP_OKX_READONLY_BACKFILL_ENV_MISSING" in unit
+
+
 def test_storage_retention_does_not_create_root_owned_lake_files():
     unit = _unit("quant-lab-storage-retention.service")
     timer = _unit("quant-lab-storage-retention.timer")

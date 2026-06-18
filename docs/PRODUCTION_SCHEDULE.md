@@ -103,6 +103,15 @@ leave V5 reading expired permission for hours. If the API sees only expired
 published rows, `/v1/risk/live-permission` returns `NO_FRESH_PERMISSION` instead
 of repeatedly returning `EXPIRED_*`.
 
+Cost calibration has the same dependency caveat: `After=quant-lab-okx-readonly-backfill.service`
+does not start the read-only private backfill when independent timers drift.
+The `quant-lab-cost-calibration.service` template therefore starts
+`quant-lab-okx-readonly-backfill.service` in `ExecStartPre` when
+`/etc/quant-lab/okx_readonly.env` exists. When that optional environment file is
+absent, the service prints `SKIP_OKX_READONLY_BACKFILL_ENV_MISSING` and continues
+with public proxy calibration instead of silently pretending actual/mixed cost
+coverage is available.
+
 ## Strategy Version
 
 Use one stable pair across V5 and quant-lab:

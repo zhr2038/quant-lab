@@ -499,14 +499,14 @@ button{font:inherit;color:inherit}
   .legacy-anomaly-empty{
     min-height:58px;height:auto;padding:12px 14px;font-size:13px;line-height:1.35;
   }
-  .action-queue{overflow:visible}
+  .action-queue{overflow:visible;padding:18px 20px}
   .queue-item{
-    height:auto;min-height:66px;margin-top:12px;padding:13px 14px 13px 44px;border-radius:14px;
+    height:auto;min-height:54px;margin-top:10px;padding:10px 14px 10px 40px;border-radius:14px;
   }
-  .queue-item svg{left:15px;top:19px}
-  .queue-item b{font-size:16px;line-height:1.25}
+  .queue-item svg{left:14px;top:16px}
+  .queue-item b{font-size:15px;line-height:1.2}
   .queue-item span{
-    margin-top:5px;font-size:13px;line-height:1.35;white-space:normal;overflow:hidden;text-overflow:clip;
+    margin-top:4px;font-size:12px;line-height:1.3;white-space:normal;overflow:hidden;text-overflow:clip;
     display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;
   }
   .matrix-grid-shell{grid-template-columns:minmax(520px,1fr) minmax(230px,.38fr)}
@@ -525,6 +525,8 @@ button{font:inherit;color:inherit}
   }
   .page-overview .kpis{grid-template-columns:repeat(2,minmax(0,1fr))}
   .page-overview .heatmap{min-height:560px}
+  .overview-side{grid-template-columns:repeat(2,minmax(0,1fr));align-items:start}
+  .action-queue{grid-column:1/-1}
   .matrix-grid-shell{grid-template-columns:1fr}
 }
 
@@ -575,7 +577,13 @@ button{font:inherit;color:inherit}
   .left,.overview-side,.kpis,.heatmap,.strategy-card,.v5,.cost,.market,.perf,.ops-export-card,.compact-map{
     grid-column:auto!important;grid-row:auto!important;
   }
-  .overview-side{display:grid;grid-template-rows:none;grid-auto-rows:auto;gap:14px}
+  .overview-side{display:grid;grid-template-columns:1fr;grid-template-rows:none;grid-auto-rows:auto;gap:14px}
+  .action-queue{order:-1;padding:16px}
+  .action-queue .section-title{font-size:19px}
+  .queue-item{min-height:52px;margin-top:9px;padding:9px 12px 9px 38px}
+  .queue-item svg{left:13px;top:16px}
+  .queue-item b{font-size:14px;line-height:1.2}
+  .queue-item span{font-size:12px;line-height:1.3;margin-top:3px}
   .card{border-radius:18px;overflow:hidden}
   .pad{padding:18px}
   .section-title{font-size:20px}

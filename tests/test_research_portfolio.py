@@ -68,6 +68,97 @@ def test_research_portfolio_status_prunes_and_preserves_paper_items(tmp_path):
     assert rows["v5.multi_position_k2"]["freed_research_slots"] >= 1
 
 
+def test_research_portfolio_requires_paper_daily_before_paper_status(tmp_path):
+    lake = tmp_path / "lake"
+    _write_strategy_evidence(lake)
+
+    build_and_publish_research_portfolio_status(lake, as_of_date="2026-05-20")
+
+    rows = {
+        row["research_id"]: row
+        for row in read_parquet_dataset(lake / "gold" / "research_portfolio_status").to_dicts()
+    }
+    sol = rows["SOL_F4_VOLUME_EXPANSION_PAPER_V1"]
+    assert sol["status"] == "PAPER_SETUP_PENDING"
+    assert sol["action"] == "SETUP_PAPER_TRACKING"
+    assert "paper_setup_pending_no_daily_row" in sol["reason"]
+
+
+def test_research_portfolio_requires_actual_entry_or_observed_pnl_for_paper(tmp_path):
+    lake = tmp_path / "lake"
+    _write_strategy_evidence(lake)
+    write_parquet_dataset(
+        pl.DataFrame(
+            [
+                {
+                    "proposal_id": "SOL_F4_VOLUME_EXPANSION_PAPER_V1",
+                    "strategy_candidate": "v5.f4_volume_expansion_entry",
+                    "symbol": "SOL-USDT",
+                    "latest_board_decision": "PAPER_READY",
+                    "paper_days": 21,
+                    "entry_count": 0,
+                    "entry_day_count": 0,
+                    "paper_pnl_observed_count": 0,
+                    "paper_pnl_day_count": 0,
+                    "created_at": "2026-05-20T00:00:00Z",
+                }
+            ]
+        ),
+        lake / "gold" / "paper_strategy_daily",
+    )
+
+    build_and_publish_research_portfolio_status(lake, as_of_date="2026-05-20")
+
+    rows = {
+        row["research_id"]: row
+        for row in read_parquet_dataset(lake / "gold" / "research_portfolio_status").to_dicts()
+    }
+    sol = rows["SOL_F4_VOLUME_EXPANSION_PAPER_V1"]
+    assert sol["status"] == "PAPER_NO_ACTUAL_ENTRIES"
+    assert sol["action"] == "WAIT_FOR_ACTUAL_PAPER_ENTRIES"
+    assert "paper_no_actual_entries_or_observed_pnl" in sol["reason"]
+
+
+def test_research_portfolio_downgrades_paper_when_p25_is_below_threshold(tmp_path):
+    lake = tmp_path / "lake"
+    _write_strategy_evidence(lake)
+    evidence = read_parquet_dataset(lake / "gold" / "strategy_evidence").with_columns(
+        pl.when(pl.col("strategy_candidate") == "v5.f4_volume_expansion_entry")
+        .then(pl.lit(-80.0))
+        .otherwise(pl.col("p25_net_bps"))
+        .alias("p25_net_bps")
+    )
+    write_parquet_dataset(evidence, lake / "gold" / "strategy_evidence")
+    write_parquet_dataset(
+        pl.DataFrame(
+            [
+                {
+                    "proposal_id": "SOL_F4_VOLUME_EXPANSION_PAPER_V1",
+                    "strategy_candidate": "v5.f4_volume_expansion_entry",
+                    "symbol": "SOL-USDT",
+                    "latest_board_decision": "PAPER_READY",
+                    "paper_days": 21,
+                    "entry_count": 3,
+                    "paper_pnl_observed_count": 3,
+                    "created_at": "2026-05-20T00:00:00Z",
+                }
+            ]
+        ),
+        lake / "gold" / "paper_strategy_daily",
+    )
+
+    build_and_publish_research_portfolio_status(lake, as_of_date="2026-05-20")
+
+    rows = {
+        row["research_id"]: row
+        for row in read_parquet_dataset(lake / "gold" / "research_portfolio_status").to_dicts()
+    }
+    sol = rows["SOL_F4_VOLUME_EXPANSION_PAPER_V1"]
+    assert sol["status"] == "DOWNGRADED_FROM_PAPER"
+    assert sol["action"] == "CONTINUE_SHADOW_OR_REVIEW"
+    assert sol["reason"] == "p25_net_bps_below_paper_threshold_keep_shadow_no_live"
+
+
 def test_research_portfolio_downgrades_eth_f3_when_48h_paper_is_negative(tmp_path):
     lake = tmp_path / "lake"
     _write_strategy_evidence(lake)
@@ -261,7 +352,7 @@ def test_daily_export_contains_research_portfolio_status(tmp_path):
     assert by_id["v5.multi_position_k2"]["status"] == "KILL"
     assert by_id["v5.multi_position_k1"]["status"] == "KILL"
     assert by_id["v5.portfolio_trend_following"]["status"] == "KILL"
-    assert by_id["SOL_F4_VOLUME_EXPANSION_PAPER_V1"]["status"] == "PAPER"
+    assert by_id["SOL_F4_VOLUME_EXPANSION_PAPER_V1"]["status"] == "PAPER_SETUP_PENDING"
     assert "freed_research_slots" in rows[0]
     assert "active_research_count" in rows[0]
 
@@ -272,6 +363,7 @@ def test_daily_export_contains_research_portfolio_status(tmp_path):
     assert "## closed_research" in summary
     assert "## active_paper" in summary
     assert "## active_shadow" in summary
+    assert "## paper_setup_pending" in summary
     assert "v5.multi_position_k2" in summary
     assert "v5.portfolio_trend_following" in summary
     assert "avg_net_bps" in summary

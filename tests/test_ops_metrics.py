@@ -142,6 +142,45 @@ def test_api_request_metrics_records_cache_and_payload_fields(tmp_path, monkeypa
     assert summary["by_error_type"] == {}
 
 
+def test_api_request_metrics_records_auth_context_and_split_latency(tmp_path, monkeypatch):
+    lake = tmp_path / "lake"
+    monkeypatch.setenv("QUANT_LAB_API_METRICS_FLUSH_ROWS", "1")
+    monkeypatch.setenv("QUANT_LAB_API_METRICS_FLUSH_SECONDS", "3600")
+
+    record_api_request(
+        lake_root=lake,
+        method="GET",
+        path="/v1/strategy-opportunity-advisory",
+        status_code=200,
+        duration_seconds=0.050,
+        client_id="v5-bundle-reader",
+        user_agent="v5 exporter/1.0",
+        auth_result="token_ok",
+    )
+    record_api_request(
+        lake_root=lake,
+        method="GET",
+        path="/v1/strategy-opportunity-advisory",
+        status_code=401,
+        duration_seconds=0.200,
+        client_id="missing-token-probe",
+        user_agent="curl/8",
+        auth_result="missing_bearer_token",
+        error_type="HTTPException",
+    )
+
+    summary = api_metrics_summary(lake)
+    path_summary = summary["latency_by_path_ms"]["/v1/strategy-opportunity-advisory"]
+
+    assert summary["by_auth_result"] == {"missing_bearer_token": 1, "token_ok": 1}
+    assert summary["auth_error_count"] == 1
+    assert summary["latency_ms"]["success_p95"] == 50.0
+    assert summary["latency_ms"]["error_p95"] == 200.0
+    assert path_summary["success_p95"] == 50.0
+    assert path_summary["error_p95"] == 200.0
+    assert path_summary["auth_error_count"] == 1.0
+
+
 def test_api_request_metrics_summary_unions_evolved_parquet_schema(tmp_path, monkeypatch):
     lake = tmp_path / "lake"
     monkeypatch.setenv("QUANT_LAB_API_METRICS_FLUSH_ROWS", "100")

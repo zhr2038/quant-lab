@@ -144,7 +144,10 @@ def test_fast_microstructure_forward_adds_all_regimes_sample_pool():
     aggregate_8h = rows[("ALL_REGIMES", 8)]
     trend_8h = rows[("TREND_UP", 8)]
     assert aggregate_8h["sample_count"] == 62
-    assert aggregate_8h["recommendation"] == "FORWARD_VALIDATION_PASS"
+    assert aggregate_8h["effective_sample_count"] >= 30
+    assert aggregate_8h["recommendation"] == "AGGREGATE_VALIDATION_ONLY"
+    assert aggregate_8h["purge_embargo_hours"] == 8
+    assert aggregate_8h["oos_validation_pass"] is True
     assert trend_8h["sample_count"] == 27
     assert trend_8h["recommendation"] == "NEEDS_MORE_FORWARD_SAMPLES"
     assert aggregate_8h["live_order_effect"] == "read_only_no_live_order"
@@ -160,11 +163,17 @@ def test_fast_microstructure_strategy_candidates_label_aggregate_passes_validati
                 "regime": "SIDEWAYS",
                 "horizon_hours": 8,
                 "sample_count": 120,
+                "effective_sample_count": 112,
                 "rank_ic": 0.25,
                 "long_short_bps": 44.0,
                 "p25_net_bps": -10.0,
                 "hit_rate": 0.61,
                 "recent_7d_score": 0.5,
+                "walk_forward_oos_score": 11.0,
+                "oos_validation_pass": True,
+                "block_bootstrap_ci_low_bps": 3.0,
+                "block_bootstrap_ci_high_bps": 60.0,
+                "purge_embargo_hours": 8,
                 "lookback_bars": 2000,
                 "recommendation": "FORWARD_VALIDATION_PASS",
                 "data_leakage_check": "future_price_used_only_as_label",
@@ -177,13 +186,19 @@ def test_fast_microstructure_strategy_candidates_label_aggregate_passes_validati
                 "regime": "ALL_REGIMES",
                 "horizon_hours": 8,
                 "sample_count": 120,
+                "effective_sample_count": 112,
                 "rank_ic": 0.25,
                 "long_short_bps": 44.0,
                 "p25_net_bps": -10.0,
                 "hit_rate": 0.61,
                 "recent_7d_score": 0.5,
+                "walk_forward_oos_score": 11.0,
+                "oos_validation_pass": True,
+                "block_bootstrap_ci_low_bps": 3.0,
+                "block_bootstrap_ci_high_bps": 60.0,
+                "purge_embargo_hours": 8,
                 "lookback_bars": 2000,
-                "recommendation": "FORWARD_VALIDATION_PASS",
+                "recommendation": "AGGREGATE_VALIDATION_ONLY",
                 "data_leakage_check": "future_price_used_only_as_label",
                 "live_order_effect": "read_only_no_live_order",
             },
@@ -217,7 +232,10 @@ def test_fast_microstructure_strategy_candidates_label_aggregate_passes_validati
     assert specific["feature_name"] == "orderbook_imbalance_1m"
     assert specific["generated_at"] == "2026-06-16T00:00:00Z"
     assert specific["forward_sample_count"] == 120
+    assert specific["effective_sample_count"] == 112
     assert specific["recent_7d_score"] == 0.5
+    assert specific["oos_validation_pass"] is True
+    assert specific["purge_embargo_hours"] == 8
     assert specific["lookback_bars"] == 2000
     assert specific["recommended_stage"] == "SHADOW_REVIEW"
     assert "needs_paper_tracking" in specific["review_blocking_reasons"]
@@ -295,13 +313,19 @@ def test_fast_microstructure_summary_explains_aggregate_only_passes():
                 "regime": "ALL_REGIMES",
                 "horizon_hours": 8,
                 "sample_count": 120,
+                "effective_sample_count": 112,
                 "rank_ic": 0.25,
                 "long_short_bps": 44.0,
                 "p25_net_bps": -10.0,
                 "hit_rate": 0.61,
                 "recent_7d_score": 0.5,
+                "walk_forward_oos_score": 11.0,
+                "oos_validation_pass": True,
+                "block_bootstrap_ci_low_bps": 3.0,
+                "block_bootstrap_ci_high_bps": 60.0,
+                "purge_embargo_hours": 8,
                 "lookback_bars": 2000,
-                "recommendation": "FORWARD_VALIDATION_PASS",
+                "recommendation": "AGGREGATE_VALIDATION_ONLY",
                 "data_leakage_check": "future_price_used_only_as_label",
                 "live_order_effect": "read_only_no_live_order",
             }

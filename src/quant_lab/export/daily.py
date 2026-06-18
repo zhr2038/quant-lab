@@ -13,7 +13,7 @@ import time
 import urllib.request
 import zipfile
 from collections import Counter
-from collections.abc import Iterable
+from collections.abc import Iterable, Mapping
 from dataclasses import dataclass
 from datetime import UTC, date, datetime, timedelta
 from pathlib import Path, PurePosixPath
@@ -804,6 +804,8 @@ CSV_SCHEMAS: dict[str, list[str]] = {
         "p50_ms",
         "p90_ms",
         "p95_ms",
+        "success_p95_ms",
+        "error_p95_ms",
         "p99_ms",
         "max_ms",
         "cache_hit_rate",
@@ -816,10 +818,15 @@ CSV_SCHEMAS: dict[str, list[str]] = {
         "dependency_meta_missing_count",
         "dependency_meta_missing_rate",
         "error_count",
+        "auth_error_count",
+        "auth_error_rate",
     ],
     "reports/api_error_summary.csv": [
         "endpoint",
         "status_code",
+        "auth_result",
+        "client_id",
+        "user_agent",
         "error_count",
         "latest_error_ts",
         "error_rate",
@@ -3068,13 +3075,27 @@ class _DatasetSnapshot:
 def _publish_strategy_opportunity_advisory_snapshot(
     root: Path,
     snapshot: _DatasetSnapshot,
+    *,
+    generated_at: datetime,
 ) -> _DatasetSnapshot:
-    opportunity = _strategy_opportunity_advisory_from_frames(snapshot.frames)
-    if opportunity.is_empty():
-        return snapshot
+    derived = _canonical_strategy_opportunity_frames(
+        snapshot.frames,
+        generated_at=generated_at,
+    )
+    opportunity = derived["strategy_opportunity_advisory"]
     frames = dict(snapshot.frames)
+    frames["factor_strategy_bridge_candidates"] = derived["factor_strategy_bridge_candidates"]
+    frames["strategy_opportunity_advisory"] = opportunity
     row_counts = dict(snapshot.row_counts)
     warnings = list(snapshot.warnings)
+    _publish_export_frame(
+        root,
+        frames=frames,
+        row_counts=row_counts,
+        warnings=warnings,
+        dataset_name="factor_strategy_bridge_candidates",
+        frame=derived["factor_strategy_bridge_candidates"],
+    )
     _publish_export_frame(
         root,
         frames=frames,
@@ -3088,6 +3109,99 @@ def _publish_strategy_opportunity_advisory_snapshot(
         row_counts=row_counts,
         warnings=warnings,
     )
+
+
+def _canonical_strategy_opportunity_frames(
+    frames: Mapping[str, pl.DataFrame],
+    *,
+    generated_at: datetime,
+) -> dict[str, pl.DataFrame]:
+    market = frames.get("market_bar", pl.DataFrame())
+    costs = _normalize_symbol_frame(frames.get("cost_bucket_daily", pl.DataFrame()))
+    market_regime = frames.get("market_regime_daily", pl.DataFrame())
+    factor_forward_validation = build_factor_forward_validation(
+        factor_candidates=frames.get("factor_candidate", pl.DataFrame()),
+        factor_values=frames.get("factor_value", pl.DataFrame()),
+        market_bars=market,
+        market_regime=market_regime,
+        cost_bucket_daily=costs,
+    )
+    trades = _normalize_symbol_frame(
+        _prefer_frame(
+            frames.get("trade_activity_1m", pl.DataFrame()),
+            frames.get("trade_print", pl.DataFrame()),
+        )
+    )
+    books = _normalize_symbol_frame(
+        _prefer_frame(
+            frames.get("orderbook_spread_1m", pl.DataFrame()),
+            frames.get("orderbook_snapshot", pl.DataFrame()),
+        )
+    )
+    bottom_zone_reversal_shadow = build_bottom_zone_reversal_shadow(
+        market_bars=market,
+        orderbook_spread_1m=books,
+        trade_activity_1m=trades,
+        generated_at=generated_at,
+    )
+    fast_microstructure_forward_test = build_fast_microstructure_forward_test(
+        market_bars=market,
+        orderbook_spread_1m=books,
+        trade_activity_1m=trades,
+        market_regime=market_regime,
+        cost_bucket_daily=costs,
+        generated_at=generated_at,
+    )
+    factor_v2 = build_factor_factory_v2_reports(
+        candidates=frames.get("factor_candidate", pl.DataFrame()),
+        evidence=frames.get("factor_evidence", pl.DataFrame()),
+        correlations=frames.get("factor_correlation_daily", pl.DataFrame()),
+        factor_forward_validation=factor_forward_validation,
+        fast_microstructure_forward_test=fast_microstructure_forward_test,
+    )
+    alpha_discovery_board = _alpha_discovery_board_for_export(
+        frames.get("alpha_discovery_board", pl.DataFrame())
+    )
+    strategy_evidence = _strategy_evidence_for_export(
+        frames.get("strategy_evidence", pl.DataFrame())
+    )
+    risk = _risk_permissions_for_export(frames.get("risk_permission", pl.DataFrame()), frames)
+    _, paper_daily, paper_slippage = _paper_tracking_frames_for_export(dict(frames))
+    research_portfolio = dedupe_research_portfolio_status(
+        frames.get("research_portfolio_status", pl.DataFrame())
+    )
+    paper_proposals = _paper_strategy_proposals_for_export(
+        alpha_discovery_board,
+        research_portfolio=research_portfolio,
+    )
+    factor_strategy_bridge_candidates = factor_v2["factor_strategy_bridge_candidates"]
+    opportunity_advisory = _strategy_opportunity_advisory_for_export(
+        alpha_discovery_board=alpha_discovery_board,
+        strategy_evidence=strategy_evidence,
+        paper_proposals=paper_proposals,
+        risk_permissions=risk,
+        cost_health=frames.get("cost_health_daily", pl.DataFrame()),
+        paper_daily=paper_daily,
+        paper_slippage=paper_slippage,
+        research_portfolio=research_portfolio,
+        entry_quality_advisory=frames.get("v5_entry_quality_advisory", pl.DataFrame()),
+        regime_strategy_advisory=frames.get("regime_strategy_advisory", pl.DataFrame()),
+        risk_on_multi_buy_shadow=frames.get("v5_risk_on_multi_buy_shadow", pl.DataFrame()),
+        alpha_factory_results=frames.get("alpha_factory_result", pl.DataFrame()),
+        alpha_factory_promotion_queue=frames.get("alpha_factory_promotion_queue", pl.DataFrame()),
+        expanded_universe_maturity=frames.get(
+            "expanded_universe_candidate_maturity",
+            pl.DataFrame(),
+        ),
+        bottom_zone_reversal_shadow=bottom_zone_reversal_shadow,
+        factor_strategy_bridge_candidates=factor_strategy_bridge_candidates,
+    )
+    return {
+        "bottom_zone_reversal_shadow": bottom_zone_reversal_shadow,
+        "fast_microstructure_forward_test": fast_microstructure_forward_test,
+        "factor_strategy_bridge_candidates": factor_strategy_bridge_candidates,
+        "strategy_opportunity_advisory": opportunity_advisory,
+    }
 
 
 def _publish_risk_permission_dependency_meta_snapshot(
@@ -3503,7 +3617,11 @@ def export_daily_pack(
     snapshot = _publish_missed_opportunity_snapshot(root, snapshot)
     _record_export_stage(export_stage_timings, "publish_missed_opportunity", stage_started)
     stage_started = _export_stage_start("publish_strategy_opportunity_advisory")
-    snapshot = _publish_strategy_opportunity_advisory_snapshot(root, snapshot)
+    snapshot = _publish_strategy_opportunity_advisory_snapshot(
+        root,
+        snapshot,
+        generated_at=generated_at,
+    )
     _record_export_stage(
         export_stage_timings,
         "publish_strategy_opportunity_advisory",
@@ -4590,20 +4708,27 @@ def _dataset_members(
         trade_activity_1m=trades,
         generated_at=datetime.now(UTC),
     )
-    bottom_zone_reversal_shadow = build_bottom_zone_reversal_shadow(
-        market_bars=market,
-        orderbook_spread_1m=books,
-        trade_activity_1m=trades,
-        generated_at=datetime.now(UTC),
+    bottom_zone_reversal_shadow = frames.get("bottom_zone_reversal_shadow", pl.DataFrame())
+    if bottom_zone_reversal_shadow.is_empty():
+        bottom_zone_reversal_shadow = build_bottom_zone_reversal_shadow(
+            market_bars=market,
+            orderbook_spread_1m=books,
+            trade_activity_1m=trades,
+            generated_at=datetime.now(UTC),
+        )
+    fast_microstructure_forward_test = frames.get(
+        "fast_microstructure_forward_test",
+        pl.DataFrame(),
     )
-    fast_microstructure_forward_test = build_fast_microstructure_forward_test(
-        market_bars=market,
-        orderbook_spread_1m=books,
-        trade_activity_1m=trades,
-        market_regime=market_regime,
-        cost_bucket_daily=costs,
-        generated_at=datetime.now(UTC),
-    )
+    if fast_microstructure_forward_test.is_empty():
+        fast_microstructure_forward_test = build_fast_microstructure_forward_test(
+            market_bars=market,
+            orderbook_spread_1m=books,
+            trade_activity_1m=trades,
+            market_regime=market_regime,
+            cost_bucket_daily=costs,
+            generated_at=datetime.now(UTC),
+        )
     fast_microstructure_strategy_candidates = build_fast_microstructure_strategy_candidates(
         fast_microstructure_forward_test
     )
@@ -4617,41 +4742,31 @@ def _dataset_members(
         factor_forward_validation=factor_forward_validation,
         fast_microstructure_forward_test=fast_microstructure_forward_test,
     )
-    factor_strategy_bridge_candidates = factor_v2["factor_strategy_bridge_candidates"]
-    opportunity_advisory = _strategy_opportunity_advisory_for_export(
-        alpha_discovery_board=alpha_discovery_board,
-        strategy_evidence=strategy_evidence,
-        paper_proposals=paper_proposals,
-        risk_permissions=risk,
-        cost_health=cost_health,
-        paper_daily=paper_daily,
-        paper_slippage=paper_slippage,
-        research_portfolio=research_portfolio,
-        entry_quality_advisory=entry_quality_advisory,
-        regime_strategy_advisory=regime_strategy_advisory,
-        risk_on_multi_buy_shadow=risk_on_multi_buy_shadow,
-        alpha_factory_results=frames.get("alpha_factory_result", pl.DataFrame()),
-        alpha_factory_promotion_queue=alpha_factory_promotion,
-        expanded_universe_maturity=expanded_maturity,
-        bottom_zone_reversal_shadow=bottom_zone_reversal_shadow,
-        factor_strategy_bridge_candidates=factor_strategy_bridge_candidates,
+    factor_strategy_bridge_candidates = frames.get(
+        "factor_strategy_bridge_candidates",
+        pl.DataFrame(),
     )
-    if row_counts is not None and publish_warnings is not None:
-        _publish_export_frame(
-            root,
-            frames=frames,
-            row_counts=row_counts,
-            warnings=publish_warnings,
-            dataset_name="factor_strategy_bridge_candidates",
-            frame=factor_strategy_bridge_candidates,
-        )
-        _publish_export_frame(
-            root,
-            frames=frames,
-            row_counts=row_counts,
-            warnings=publish_warnings,
-            dataset_name="strategy_opportunity_advisory",
-            frame=opportunity_advisory,
+    if factor_strategy_bridge_candidates.is_empty():
+        factor_strategy_bridge_candidates = factor_v2["factor_strategy_bridge_candidates"]
+    opportunity_advisory = frames.get("strategy_opportunity_advisory", pl.DataFrame())
+    if opportunity_advisory.is_empty():
+        opportunity_advisory = _strategy_opportunity_advisory_for_export(
+            alpha_discovery_board=alpha_discovery_board,
+            strategy_evidence=strategy_evidence,
+            paper_proposals=paper_proposals,
+            risk_permissions=risk,
+            cost_health=cost_health,
+            paper_daily=paper_daily,
+            paper_slippage=paper_slippage,
+            research_portfolio=research_portfolio,
+            entry_quality_advisory=entry_quality_advisory,
+            regime_strategy_advisory=regime_strategy_advisory,
+            risk_on_multi_buy_shadow=risk_on_multi_buy_shadow,
+            alpha_factory_results=frames.get("alpha_factory_result", pl.DataFrame()),
+            alpha_factory_promotion_queue=alpha_factory_promotion,
+            expanded_universe_maturity=expanded_maturity,
+            bottom_zone_reversal_shadow=bottom_zone_reversal_shadow,
+            factor_strategy_bridge_candidates=factor_strategy_bridge_candidates,
         )
     strategy_level_dashboard = _strategy_level_dashboard_for_export(opportunity_advisory)
     gates = _gate_decisions_for_export(frames.get("gate_decision", pl.DataFrame()))
@@ -4755,6 +4870,7 @@ def _dataset_members(
         next_action="verify market_bar symbol/timestamp/close fields and rollups",
     )
     lake_file_count = _lake_file_index_count(root)
+    lake_file_growth_24h_count = _lake_file_index_growth_24h_count(root)
     system_acceptance_dashboard = build_system_acceptance_dashboard(
         frames=frames,
         report_frames={
@@ -4762,6 +4878,7 @@ def _dataset_members(
             "bnb_strong_alpha6_bypass_shadow": bnb_strong_alpha6_bypass_shadow,
             "final_score_alpha6_conflict": final_score_alpha6_conflict,
             "fast_microstructure_features": fast_microstructure_features,
+            "bottom_zone_reversal_shadow": bottom_zone_reversal_shadow,
             "paper_strategy_runs": paper_runs,
             "backtest_label_summary": backtest_bundle.label_summary,
             "research_promotion_decision": backtest_bundle.promotion_decision,
@@ -4772,6 +4889,7 @@ def _dataset_members(
         data_quality_warnings=list((data_quality or {}).get("warnings", [])),
         api_latency_summary=api_latency_summary,
         lake_file_count=lake_file_count,
+        lake_file_growth_24h_count=lake_file_growth_24h_count,
     )
 
     return {
@@ -8535,6 +8653,27 @@ def _lake_file_index_count(root: Path) -> int | None:
     return frame.height
 
 
+def _lake_file_index_growth_24h_count(root: Path) -> int | None:
+    try:
+        frame = read_parquet_dataset(root / "bronze" / "lake_file_index")
+    except Exception:
+        return None
+    if frame.is_empty() or "mtime_ns" not in frame.columns:
+        return None
+    cutoff_ns = int((datetime.now(UTC) - timedelta(hours=24)).timestamp() * 1_000_000_000)
+    try:
+        return (
+            frame.select(
+                (pl.col("mtime_ns").cast(pl.Int64, strict=False) >= cutoff_ns)
+                .sum()
+                .alias("count")
+            )
+            .item(0, "count")
+        )
+    except Exception:
+        return None
+
+
 def _api_latency_summary_for_export(root: Path) -> pl.DataFrame:
     _flush_api_metrics_service_before_export()
     summary = api_metrics_summary(root, since_minutes=24 * 60)
@@ -8565,6 +8704,8 @@ def _api_latency_summary_for_export(root: Path) -> pl.DataFrame:
             "p50_ms": _float_or_blank(latency.get("p50")),
             "p90_ms": _float_or_blank(latency.get("p90")),
             "p95_ms": _float_or_blank(latency.get("p95")),
+            "success_p95_ms": _float_or_blank(latency.get("success_p95")),
+            "error_p95_ms": _float_or_blank(latency.get("error_p95")),
             "p99_ms": _float_or_blank(latency.get("p99")),
             "max_ms": _float_or_blank(latency.get("max")),
             "cache_hit_rate": _safe_rate(
@@ -8603,6 +8744,11 @@ def _api_latency_summary_for_export(root: Path) -> pl.DataFrame:
                 summary.get("request_count"),
             ),
             "error_count": overall_error_count,
+            "auth_error_count": int(summary.get("auth_error_count") or 0),
+            "auth_error_rate": _safe_rate(
+                summary.get("auth_error_count"),
+                summary.get("request_count"),
+            ),
         }
     ]
     for endpoint, metrics in sorted(by_path.items()):
@@ -8615,6 +8761,8 @@ def _api_latency_summary_for_export(root: Path) -> pl.DataFrame:
                 "p50_ms": _float_or_blank(metrics.get("p50")),
                 "p90_ms": _float_or_blank(metrics.get("p90")),
                 "p95_ms": _float_or_blank(metrics.get("p95")),
+                "success_p95_ms": _float_or_blank(metrics.get("success_p95")),
+                "error_p95_ms": _float_or_blank(metrics.get("error_p95")),
                 "p99_ms": _float_or_blank(metrics.get("p99")),
                 "max_ms": _float_or_blank(metrics.get("max")),
                 "cache_hit_rate": _safe_rate(metrics.get("cache_hit_count"), metrics.get("count")),
@@ -8650,6 +8798,11 @@ def _api_latency_summary_for_export(root: Path) -> pl.DataFrame:
                     metrics.get("count"),
                 ),
                 "error_count": _api_latency_error_count(metrics),
+                "auth_error_count": int(metrics.get("auth_error_count") or 0),
+                "auth_error_rate": _safe_rate(
+                    metrics.get("auth_error_count"),
+                    metrics.get("count"),
+                ),
             }
         )
     return pl.DataFrame(rows, infer_schema_length=None).select(

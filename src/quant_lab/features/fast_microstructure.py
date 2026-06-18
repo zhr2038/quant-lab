@@ -88,11 +88,17 @@ FAST_MICROSTRUCTURE_FORWARD_TEST_FIELDS = [
     "regime",
     "horizon_hours",
     "sample_count",
+    "effective_sample_count",
     "rank_ic",
     "long_short_bps",
     "p25_net_bps",
     "hit_rate",
     "recent_7d_score",
+    "walk_forward_oos_score",
+    "oos_validation_pass",
+    "block_bootstrap_ci_low_bps",
+    "block_bootstrap_ci_high_bps",
+    "purge_embargo_hours",
     "lookback_bars",
     "build_elapsed_ms",
     "recommendation",
@@ -106,11 +112,17 @@ FAST_MICROSTRUCTURE_STRATEGY_CANDIDATE_FIELDS = [
     "regime",
     "horizon_hours",
     "forward_sample_count",
+    "effective_sample_count",
     "rank_ic",
     "long_short_bps",
     "p25_net_bps",
     "hit_rate",
     "recent_7d_score",
+    "walk_forward_oos_score",
+    "oos_validation_pass",
+    "block_bootstrap_ci_low_bps",
+    "block_bootstrap_ci_high_bps",
+    "purge_embargo_hours",
     "lookback_bars",
     "candidate_strategy_id",
     "recommended_stage",
@@ -132,11 +144,17 @@ FAST_MICROSTRUCTURE_STRATEGY_REVIEW_FIELDS = [
     "regime",
     "horizon_hours",
     "forward_sample_count",
+    "effective_sample_count",
     "rank_ic",
     "long_short_bps",
     "p25_net_bps",
     "hit_rate",
     "recent_7d_score",
+    "walk_forward_oos_score",
+    "oos_validation_pass",
+    "block_bootstrap_ci_low_bps",
+    "block_bootstrap_ci_high_bps",
+    "purge_embargo_hours",
     "lookback_bars",
     "recommended_stage",
     "review_blocking_reasons",
@@ -439,7 +457,10 @@ def build_fast_microstructure_forward_test(
 def fast_microstructure_forward_summary_md(frame: pl.DataFrame) -> str:
     rows = frame.to_dicts() if frame is not None and not frame.is_empty() else []
     passed = [
-        row for row in rows if str(row.get("recommendation") or "") == "FORWARD_VALIDATION_PASS"
+        row
+        for row in rows
+        if str(row.get("recommendation") or "")
+        in {"FORWARD_VALIDATION_PASS", "AGGREGATE_VALIDATION_ONLY"}
     ]
     specific_passed = [row for row in passed if _is_specific_regime_forward_pass(row)]
     aggregate_passed = [row for row in passed if not _is_specific_regime_forward_pass(row)]
@@ -475,7 +496,8 @@ def build_fast_microstructure_strategy_candidates(
 ) -> pl.DataFrame:
     rows: list[dict[str, Any]] = []
     for row in _frame_rows(fast_microstructure_forward_test):
-        if str(row.get("recommendation") or "") != "FORWARD_VALIDATION_PASS":
+        recommendation = str(row.get("recommendation") or "")
+        if recommendation not in {"FORWARD_VALIDATION_PASS", "AGGREGATE_VALIDATION_ONLY"}:
             continue
         feature_name = str(row.get("feature_name") or "").strip()
         symbol = normalize_symbol(row.get("symbol")) or ""
@@ -483,7 +505,10 @@ def build_fast_microstructure_strategy_candidates(
         horizon_hours = _int(row.get("horizon_hours"))
         if not feature_name or not symbol or not regime or horizon_hours is None:
             continue
-        aggregate_only = regime.upper() == FAST_MICROSTRUCTURE_FORWARD_AGGREGATE_REGIME
+        aggregate_only = (
+            regime.upper() == FAST_MICROSTRUCTURE_FORWARD_AGGREGATE_REGIME
+            or recommendation == "AGGREGATE_VALIDATION_ONLY"
+        )
         blocking_reasons = (
             FAST_MICROSTRUCTURE_AGGREGATE_REVIEW_BLOCKING_REASONS
             if aggregate_only
@@ -497,11 +522,21 @@ def build_fast_microstructure_strategy_candidates(
                 "regime": regime,
                 "horizon_hours": horizon_hours,
                 "forward_sample_count": _int(row.get("sample_count")),
+                "effective_sample_count": _int(row.get("effective_sample_count")),
                 "rank_ic": _round(_float(row.get("rank_ic"))),
                 "long_short_bps": _round(_float(row.get("long_short_bps"))),
                 "p25_net_bps": _round(_float(row.get("p25_net_bps"))),
                 "hit_rate": _round(_float(row.get("hit_rate"))),
                 "recent_7d_score": _round(_float(row.get("recent_7d_score"))),
+                "walk_forward_oos_score": _round(_float(row.get("walk_forward_oos_score"))),
+                "oos_validation_pass": bool(_truthy(row.get("oos_validation_pass"))),
+                "block_bootstrap_ci_low_bps": _round(
+                    _float(row.get("block_bootstrap_ci_low_bps"))
+                ),
+                "block_bootstrap_ci_high_bps": _round(
+                    _float(row.get("block_bootstrap_ci_high_bps"))
+                ),
+                "purge_embargo_hours": _int(row.get("purge_embargo_hours")),
                 "lookback_bars": _int(row.get("lookback_bars")),
                 "candidate_strategy_id": _fast_strategy_candidate_id(
                     feature_name=feature_name,
@@ -560,11 +595,21 @@ def build_fast_microstructure_strategy_review(
                 "regime": row.get("regime"),
                 "horizon_hours": _int(row.get("horizon_hours")),
                 "forward_sample_count": _int(row.get("forward_sample_count")),
+                "effective_sample_count": _int(row.get("effective_sample_count")),
                 "rank_ic": _round(_float(row.get("rank_ic"))),
                 "long_short_bps": _round(_float(row.get("long_short_bps"))),
                 "p25_net_bps": _round(_float(row.get("p25_net_bps"))),
                 "hit_rate": _round(_float(row.get("hit_rate"))),
                 "recent_7d_score": _round(_float(row.get("recent_7d_score"))),
+                "walk_forward_oos_score": _round(_float(row.get("walk_forward_oos_score"))),
+                "oos_validation_pass": bool(_truthy(row.get("oos_validation_pass"))),
+                "block_bootstrap_ci_low_bps": _round(
+                    _float(row.get("block_bootstrap_ci_low_bps"))
+                ),
+                "block_bootstrap_ci_high_bps": _round(
+                    _float(row.get("block_bootstrap_ci_high_bps"))
+                ),
+                "purge_embargo_hours": _int(row.get("purge_embargo_hours")),
                 "lookback_bars": _int(row.get("lookback_bars")),
                 "recommended_stage": "SHADOW_REVIEW",
                 "review_blocking_reasons": row.get("review_blocking_reasons"),
@@ -1265,12 +1310,22 @@ def _forward_summary_row(
     long_short, p25, hit_rate = _top_bottom_stats(pairs)
     rank_ic = _rank_ic([value for _ts, value, _label in pairs], labels_only)
     recent_score = _recent_score(pairs)
+    effective_pairs = _embargo_tail_pairs(pairs, horizon_hours=horizon)
+    effective_sample_count = len(effective_pairs)
+    oos_score, oos_validation_pass = _walk_forward_oos_validation(effective_pairs)
+    ci_low, ci_high = _block_bootstrap_ci(effective_pairs)
     recommendation = _forward_recommendation(
         sample_count=len(pairs),
+        effective_sample_count=effective_sample_count,
         rank_ic=rank_ic,
         long_short_bps=long_short,
         p25_net_bps=p25,
         hit_rate=hit_rate,
+        recent_7d_score=recent_score,
+        oos_validation_pass=oos_validation_pass,
+        aggregate_validation=(
+            regime.upper() == FAST_MICROSTRUCTURE_FORWARD_AGGREGATE_REGIME
+        ),
     )
     return {
         "generated_at": generated.isoformat().replace("+00:00", "Z"),
@@ -1279,15 +1334,21 @@ def _forward_summary_row(
         "regime": regime,
         "horizon_hours": horizon,
         "sample_count": len(pairs),
+        "effective_sample_count": effective_sample_count,
         "rank_ic": _round(rank_ic),
         "long_short_bps": _round(long_short),
         "p25_net_bps": _round(p25),
         "hit_rate": _round(hit_rate),
         "recent_7d_score": _round(recent_score),
+        "walk_forward_oos_score": _round(oos_score),
+        "oos_validation_pass": bool(oos_validation_pass),
+        "block_bootstrap_ci_low_bps": _round(ci_low),
+        "block_bootstrap_ci_high_bps": _round(ci_high),
+        "purge_embargo_hours": int(horizon),
         "lookback_bars": int(lookback_bars),
         "build_elapsed_ms": float(build_elapsed_ms),
         "recommendation": recommendation,
-        "data_leakage_check": "pass_future_prices_used_only_for_labels",
+        "data_leakage_check": "pass_future_prices_used_only_for_labels;purge_embargo_by_horizon",
         "live_order_effect": "read_only_no_live_order",
     }
 
@@ -1360,28 +1421,111 @@ def _recent_score(pairs: list[tuple[datetime, float, float]]) -> float | None:
     return _mean(recent) if recent else None
 
 
+def _embargo_tail_pairs(
+    pairs: list[tuple[datetime, float, float]],
+    *,
+    horizon_hours: int,
+) -> list[tuple[datetime, float, float]]:
+    if not pairs:
+        return []
+    ordered = sorted(pairs, key=lambda item: item[0])
+    if horizon_hours <= 0:
+        return ordered
+    cutoff = ordered[-1][0] - timedelta(hours=horizon_hours)
+    return [item for item in ordered if item[0] <= cutoff]
+
+
+def _walk_forward_oos_validation(
+    pairs: list[tuple[datetime, float, float]],
+) -> tuple[float | None, bool]:
+    if len(pairs) < 30:
+        return None, False
+    ordered = sorted(pairs, key=lambda item: item[0])
+    split = max(1, int(len(ordered) * 0.7))
+    oos = ordered[split:]
+    if len(oos) < 10:
+        return None, False
+    oos_long_short, oos_p25, oos_hit_rate = _top_bottom_stats(oos)
+    oos_rank_ic = _rank_ic(
+        [value for _ts, value, _label in oos],
+        [label for _ts, _value, label in oos],
+    )
+    oos_score = oos_long_short
+    passed = (
+        (oos_rank_ic or 0.0) > 0.0
+        and (oos_long_short or 0.0) > 0.0
+        and (oos_p25 is not None and oos_p25 > -50)
+        and (oos_hit_rate or 0.0) > 0.50
+    )
+    return oos_score, passed
+
+
+def _block_bootstrap_ci(
+    pairs: list[tuple[datetime, float, float]],
+) -> tuple[float | None, float | None]:
+    if not pairs:
+        return None, None
+    blocks: dict[datetime.date, list[tuple[datetime, float, float]]] = {}
+    for item in pairs:
+        blocks.setdefault(item[0].date(), []).append(item)
+    block_stats = [
+        stat
+        for stat in (_top_bottom_stats(block)[0] for block in blocks.values() if len(block) >= 5)
+        if stat is not None
+    ]
+    if len(block_stats) >= 3:
+        return _percentile(block_stats, 0.05), _percentile(block_stats, 0.95)
+    long_short, _p25, _hit_rate = _top_bottom_stats(pairs)
+    if long_short is None:
+        return None, None
+    labels = [label for _ts, _value, label in pairs]
+    if len(labels) < 2:
+        return long_short, long_short
+    spread = (_stddev(labels) / math.sqrt(len(labels))) * 1.96
+    return long_short - spread, long_short + spread
+
+
 def _forward_recommendation(
     *,
     sample_count: int,
+    effective_sample_count: int | None = None,
     rank_ic: float | None,
     long_short_bps: float | None,
     p25_net_bps: float | None,
     hit_rate: float | None,
+    recent_7d_score: float | None = 1.0,
+    oos_validation_pass: bool = True,
+    aggregate_validation: bool = False,
 ) -> str:
     if sample_count < 30:
         return "NEEDS_MORE_FORWARD_SAMPLES"
+    if effective_sample_count is not None and effective_sample_count < 30:
+        return "NEEDS_MORE_EFFECTIVE_FORWARD_SAMPLES"
     if (
         (rank_ic or 0.0) > 0.02
         and (long_short_bps or 0.0) > 0
         and (p25_net_bps is not None and p25_net_bps > -50)
         and (hit_rate or 0.0) > 0.50
     ):
+        if (recent_7d_score or 0.0) <= 0.0:
+            return "RECENT_7D_WEAK_OR_NEGATIVE"
+        if not oos_validation_pass:
+            return "OOS_VALIDATION_WEAK_OR_MIXED"
+        if aggregate_validation:
+            return "AGGREGATE_VALIDATION_ONLY"
         return "FORWARD_VALIDATION_PASS"
     return "FORWARD_VALIDATION_WEAK_OR_MIXED"
 
 
 def _mean(values: list[float]) -> float:
     return sum(values) / len(values) if values else 0.0
+
+
+def _stddev(values: list[float]) -> float:
+    if len(values) < 2:
+        return 0.0
+    avg = _mean(values)
+    return math.sqrt(sum((value - avg) ** 2 for value in values) / (len(values) - 1))
 
 
 def _percentile(values: list[float], q: float) -> float | None:
@@ -1394,3 +1538,7 @@ def _percentile(values: list[float], q: float) -> float | None:
 
 def _round(value: float | None) -> float | None:
     return round(value, 6) if value is not None else None
+
+
+def _truthy(value: Any) -> bool:
+    return str(value).strip().lower() in {"1", "true", "yes", "y", "on", "pass", "passed"}

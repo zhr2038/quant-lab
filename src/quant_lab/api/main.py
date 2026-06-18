@@ -172,6 +172,8 @@ class ApiMetricsResponse(BaseModel):
     response_cache_hit_count: int = 0
     dependency_meta_missing_count: int = 0
     by_error_type: dict[str, int] = Field(default_factory=dict)
+    by_auth_result: dict[str, int] = Field(default_factory=dict)
+    auth_error_count: int = 0
 
 
 class StrategyOpportunityAdvisoryRow(BaseModel):
@@ -1320,22 +1322,41 @@ def _authorize_v1_request(request: Request) -> None:
     if not request.url.path.startswith("/v1/"):
         return
     if not _client_ip_allowed(request):
+        _set_auth_result(request, "client_ip_denied")
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
             detail="quant-lab API client IP is not allowed",
         )
     token = os.environ.get("QUANT_LAB_API_TOKEN")
     if not token:
+        _set_auth_result(request, "auth_not_configured")
         return
     if _local_health_check_without_token_allowed(request):
+        _set_auth_result(request, "local_health_bypass")
         return
     provided = _bearer_token(request.headers.get("authorization", ""))
-    if provided is None or not hmac.compare_digest(provided, token):
+    if provided is None:
+        _set_auth_result(request, "missing_bearer_token")
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="quant-lab API bearer token required",
             headers={"WWW-Authenticate": "Bearer"},
         )
+    if not hmac.compare_digest(provided, token):
+        _set_auth_result(request, "invalid_bearer_token")
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="quant-lab API bearer token required",
+            headers={"WWW-Authenticate": "Bearer"},
+        )
+    _set_auth_result(request, "token_ok")
+
+
+def _set_auth_result(request: Request, value: str) -> None:
+    try:
+        request.state.quant_lab_auth_result = value
+    except Exception:
+        return
 
 
 def _bearer_token(authorization: str) -> str | None:
@@ -1393,7 +1414,11 @@ def _record_api_request_metric(
             status_code=status_code,
             duration_seconds=duration_seconds,
             client_host=request.client.host if request.client else None,
+            client_id=_request_client_id(request),
             user_agent=request.headers.get("user-agent"),
+            auth_result=str(
+                getattr(request.state, "quant_lab_auth_result", "") or "not_observable"
+            ),
             cache_hit=_truthy(_header_lookup(headers, "x-quant-lab-api-cache-hit"))
             or _truthy(_header_lookup(headers, "x-advisory-cache-hit")),
             rows_returned=_int_or_none(_header_lookup(headers, "x-quant-lab-advisory-row-count"))
@@ -1416,6 +1441,14 @@ def _record_api_request_metric(
         )
     except Exception:
         return
+
+
+def _request_client_id(request: Request) -> str | None:
+    for header in ("x-quant-lab-client-id", "x-client-id"):
+        value = request.headers.get(header)
+        if value:
+            return value
+    return None
 
 
 def _header_lookup(headers: Any, name: str) -> str:

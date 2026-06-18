@@ -143,7 +143,7 @@ def test_lake_cost_health_exposes_fallback_breakdown(tmp_path):
     assert "soft_fallback_ratio_gt_0.5" in payload["warnings"]
     coverage = payload["live_universe_cost_coverage"]
     assert coverage["coverage_status"] == "PASS"
-    assert coverage["coverage_rate"] == pytest.approx(1.0)
+    assert coverage["coverage_rate"] == pytest.approx(0.5)
     assert coverage["direct_symbols"] == ["BNB-USDT", "BTC-USDT"]
     assert coverage["mixed_proxy_symbols"] == ["ETH-USDT", "SOL-USDT"]
 

@@ -9,8 +9,11 @@ from types import SimpleNamespace
 
 import polars as pl
 import pytest
+from fastapi.testclient import TestClient
 
+import quant_lab.api.main as api_main
 import quant_lab.export.daily as daily_export_module
+from quant_lab.api.main import app
 from quant_lab.contracts.v5_quant_lab import V5_QUANT_LAB_CONTRACT_VERSION
 from quant_lab.data.file_index import build_lake_file_index
 from quant_lab.data.lake import read_parquet_dataset, write_market_bars, write_parquet_dataset
@@ -617,7 +620,7 @@ def test_research_validation_v3_reports_export_forward_and_cost_coverage(tmp_pat
     assert bridge_review_candidate_ids.issubset(
         {row["strategy_candidate"] for row in bridge_advisory_rows}
     )
-    assert any(
+    assert not any(
         row["strategy_candidate"].startswith("v5.fast_microstructure_bridge.")
         for row in bridge_advisory_rows
     )
@@ -648,8 +651,12 @@ def test_research_validation_v3_reports_export_forward_and_cost_coverage(tmp_pat
     sol_coverage = next(row for row in cost_coverage_rows if row["symbol"] == "SOL-USDT")
     assert sol_coverage["stale_actual_or_mixed"].lower() == "true"
     assert sol_coverage["actual_or_mixed_direct"].lower() == "false"
-    assert sol_coverage["mixed_proxy_eligible"].lower() == "false"
-    assert sol_coverage["coverage_reason"] == "stale_actual_or_mixed_no_fresh_live_anchor"
+    assert sol_coverage["anchored_mixed_proxy_candidate"].lower() == "true"
+    assert sol_coverage["mixed_proxy_eligible"].lower() == "true"
+    assert (
+        sol_coverage["coverage_reason"]
+        == "stale_actual_or_mixed_with_anchored_proxy_not_counted"
+    )
     checks = {check["name"]: check for check in data_quality["checks"]}
     stale_live_cost = checks["live_universe_stale_actual_or_mixed_cost"]
     assert stale_live_cost["status"] == "WARN"
@@ -659,30 +666,16 @@ def test_research_validation_v3_reports_export_forward_and_cost_coverage(tmp_pat
     assert "不要把 public_spread_proxy 当 actual/mixed" in questions
     assert any(
         row["feature_name"] == "orderbook_imbalance_1m"
-        and row["recommendation"] == "FORWARD_VALIDATION_PASS"
+        and row["recommendation"] == "OOS_VALIDATION_WEAK_OR_MIXED"
         and row["lookback_bars"] == "2000"
+        and int(row["effective_sample_count"]) > 0
+        and row["purge_embargo_hours"] in {"1", "4", "8"}
+        and row["oos_validation_pass"].lower() == "false"
         and float(row["build_elapsed_ms"]) >= 0.0
         for row in fast_rows
     )
-    assert any(
-        row["feature_name"] == "orderbook_imbalance_1m"
-        and row["recommended_stage"] == "SHADOW_REVIEW"
-        and int(row["forward_sample_count"]) >= 30
-        and row["lookback_bars"] == "2000"
-        and "needs_paper_tracking" in row["review_blocking_reasons"]
-        and row["data_leakage_check"] == "pass_future_prices_used_only_for_labels"
-        and row["live_order_effect"] == "read_only_no_live_order"
-        for row in fast_candidate_rows
-    )
-    assert any(
-        row["symbol"] == "BTC-USDT"
-        and row["recommended_stage"] == "SHADOW_REVIEW"
-        and row["strategy_candidate_id"].startswith("v5.fast_microstructure.")
-        and row["response_action"] == "shadow_review"
-        and row["max_live_notional_usdt"] == "0.0"
-        and row["live_order_effect"] == "read_only_no_live_order"
-        for row in fast_review_rows
-    )
+    assert not fast_candidate_rows
+    assert not fast_review_rows
 
 
 def test_export_daily_pack_includes_expanded_universe_paper_advisory_from_maturity(
@@ -790,11 +783,17 @@ def test_api_latency_summary_export_includes_cache_and_payload_fields(
     row = rows["/v1/strategy-opportunity-advisory"]
 
     assert "cache_hit_rate" in CSV_SCHEMAS["reports/api_latency_summary.csv"]
+    assert "success_p95_ms" in CSV_SCHEMAS["reports/api_latency_summary.csv"]
+    assert "error_p95_ms" in CSV_SCHEMAS["reports/api_latency_summary.csv"]
     assert "avg_source_signature_ms" in CSV_SCHEMAS["reports/api_latency_summary.csv"]
     assert "response_cache_hit_rate" in CSV_SCHEMAS["reports/api_latency_summary.csv"]
     assert "dependency_meta_missing_count" in CSV_SCHEMAS["reports/api_latency_summary.csv"]
     assert "dependency_meta_missing_rate" in CSV_SCHEMAS["reports/api_latency_summary.csv"]
+    assert "auth_error_count" in CSV_SCHEMAS["reports/api_latency_summary.csv"]
+    assert "auth_error_rate" in CSV_SCHEMAS["reports/api_latency_summary.csv"]
     assert row["count"] == 1
+    assert row["success_p95_ms"] == 123.0
+    assert row["error_p95_ms"] == ""
     assert row["cache_hit_rate"] == 1.0
     assert row["avg_rows_returned"] == 233.0
     assert row["avg_response_bytes"] == 12345.0
@@ -815,14 +814,18 @@ def test_api_latency_summary_error_count_does_not_double_count_status_error(
     monkeypatch.delenv("QUANT_LAB_API_TOKEN", raising=False)
     monkeypatch.setenv("QUANT_LAB_API_METRICS_FLUSH_ROWS", "1")
     monkeypatch.setenv("QUANT_LAB_API_METRICS_FLUSH_SECONDS", "3600")
-    for status_code, error_type in ((200, None), (401, "HTTPException")):
+    for status_code, error_type, duration, auth_result in (
+        (200, None, 0.050, "token_ok"),
+        (401, "HTTPException", 0.200, "missing_bearer_token"),
+    ):
         record_api_request(
             lake_root=lake,
             method="GET",
             path="/v1/strategy-opportunity-advisory",
             status_code=status_code,
-            duration_seconds=0.123,
+            duration_seconds=duration,
             error_type=error_type,
+            auth_result=auth_result,
         )
 
     frame = daily_export_module._api_latency_summary_for_export(lake)
@@ -830,8 +833,14 @@ def test_api_latency_summary_error_count_does_not_double_count_status_error(
 
     assert rows["__all__"]["count"] == 2
     assert rows["__all__"]["error_count"] == 1
+    assert rows["__all__"]["success_p95_ms"] == 50.0
+    assert rows["__all__"]["error_p95_ms"] == 200.0
+    assert rows["__all__"]["auth_error_count"] == 1
+    assert rows["__all__"]["auth_error_rate"] == 0.5
     assert rows["/v1/strategy-opportunity-advisory"]["count"] == 2
     assert rows["/v1/strategy-opportunity-advisory"]["error_count"] == 1
+    assert rows["/v1/strategy-opportunity-advisory"]["success_p95_ms"] == 50.0
+    assert rows["/v1/strategy-opportunity-advisory"]["error_p95_ms"] == 200.0
 
 
 def test_api_latency_summary_triggers_live_metrics_flush_when_token_configured(
@@ -1062,6 +1071,109 @@ def test_strategy_opportunity_advisory_adds_bottom_zone_probe_paper_row():
     assert expanded["recommended_mode"] == "paper"
     assert expanded["max_live_notional_usdt"] == 0.0
     assert expanded["live_order_effect"] == "read_only_no_live_order"
+
+
+def test_export_daily_pack_publishes_bottom_zone_canonical_gold_and_api(
+    tmp_path,
+    monkeypatch,
+):
+    lake_root = _fixture_lake(tmp_path)
+    monkeypatch.setenv("QUANT_LAB_LAKE_ROOT", str(lake_root))
+    api_main._STRATEGY_OPPORTUNITY_ADVISORY_CACHE.clear()
+    api_main._STRATEGY_OPPORTUNITY_ADVISORY_RESPONSE_CACHE.clear()
+    generated_at = datetime(2026, 6, 18, 8, tzinfo=UTC)
+    bottom_zone = pl.DataFrame(
+        [
+            {
+                "generated_at": generated_at.isoformat().replace("+00:00", "Z"),
+                "schema_version": "bottom_zone_reversal_shadow.v0.1",
+                "symbol": "TON-USDT",
+                "ts_utc": generated_at.isoformat().replace("+00:00", "Z"),
+                "bottom_zone_state": "BOTTOM_PROBE_ALLOWED",
+                "would_probe_paper": True,
+                "bottom_zone_score": 0.82,
+                "bounce_probability_score": 0.82,
+                "bounce_probability_4h": 0.82,
+                "live_order_effect": "read_only_no_live_order",
+            }
+        ],
+        infer_schema_length=None,
+    )
+    monkeypatch.setattr(
+        daily_export_module,
+        "build_bottom_zone_reversal_shadow",
+        lambda **_: bottom_zone,
+    )
+
+    result = export_daily_pack(
+        export_date="2026-06-18",
+        lake_root=lake_root,
+        out_dir=tmp_path / "exports",
+        profile="expert",
+        command_line=["qlab", "export-daily"],
+        pre_export_v5_refresh=False,
+    )
+
+    with zipfile.ZipFile(result.zip_path) as archive:
+        advisory_rows = list(
+            csv.DictReader(
+                io.StringIO(
+                    archive.read("reports/strategy_opportunity_advisory.csv").decode("utf-8")
+                )
+            )
+        )
+        acceptance_rows = list(
+            csv.DictReader(
+                io.StringIO(archive.read("reports/system_acceptance_dashboard.csv").decode("utf-8"))
+            )
+        )
+
+    zip_bottom = [
+        row
+        for row in advisory_rows
+        if row["strategy_candidate"] == "v5.bottom_zone_probe_paper"
+        and row["symbol"] == "TON-USDT"
+    ]
+    assert zip_bottom
+    assert zip_bottom[0]["max_live_notional_usdt"] == "0.0"
+    assert zip_bottom[0]["live_order_effect"] == "read_only_no_live_order"
+    acceptance = {row["check_name"]: row for row in acceptance_rows}
+    assert acceptance["bottom_zone_paper_v5_rows_ok"]["status"] == "PASS"
+    assert "TON-USDT" in acceptance["bottom_zone_paper_v5_rows_ok"]["observed_value"]
+
+    lake_advisory = read_parquet_dataset(lake_root / "gold" / "strategy_opportunity_advisory")
+    lake_bottom = lake_advisory.filter(
+        (pl.col("strategy_candidate") == "v5.bottom_zone_probe_paper")
+        & (pl.col("symbol") == "TON-USDT")
+    )
+    assert lake_bottom.height == 1
+    meta = json.loads(
+        (lake_root / "gold" / "strategy_opportunity_advisory" / "_snapshot_meta.json").read_text(
+            encoding="utf-8"
+        )
+    )
+    assert meta["row_count"] == lake_advisory.height
+    assert meta["source_sha"]
+
+    client = TestClient(app)
+    full = client.get("/v1/strategy-opportunity-advisory")
+    compact = client.get("/v1/strategy-opportunity-advisory/v5-compact")
+    api_main._STRATEGY_OPPORTUNITY_ADVISORY_CACHE.clear()
+    api_main._STRATEGY_OPPORTUNITY_ADVISORY_RESPONSE_CACHE.clear()
+
+    assert full.status_code == 200
+    assert compact.status_code == 200
+    for payload in (full.json(), compact.json()):
+        row = next(
+            item
+            for item in payload
+            if item["strategy_candidate"] == "v5.bottom_zone_probe_paper"
+            and item["symbol"] == "TON-USDT"
+        )
+        assert row["decision"] == "PAPER_READY"
+        assert row["recommended_mode"] == "paper"
+        assert row["max_live_notional_usdt"] == 0.0
+        assert row["live_order_effect"] == "read_only_no_live_order"
 
 
 def test_bottom_zone_probe_paper_readiness_applies_paper_thresholds():
@@ -1505,6 +1617,95 @@ def test_system_acceptance_fast_microstructure_core_observability():
     )
     assert row["status"] == "PASS"
     assert "not_observable_ratio=0.000000" in row["observed_value"]
+
+
+def test_system_acceptance_requires_api_auth_error_rate_below_one_percent():
+    dashboard = daily_export_module.build_system_acceptance_dashboard(
+        frames={},
+        report_frames={},
+        row_counts={},
+        pre_export_v5={},
+        data_quality_warnings=[],
+        api_latency_summary=pl.DataFrame(
+            [
+                {
+                    "endpoint": "__all__",
+                    "count": 200,
+                    "p95_ms": 12.0,
+                    "auth_error_count": 1,
+                    "auth_error_rate": 0.005,
+                }
+            ]
+        ),
+        lake_file_count=0,
+        generated_at=datetime(2026, 6, 11, 10, tzinfo=UTC),
+    )
+    row = next(
+        row
+        for row in dashboard.to_dicts()
+        if row["check_name"] == "api_auth_error_rate_ok"
+    )
+    assert row["status"] == "PASS"
+    assert "auth_error_rate=0.005000" in row["observed_value"]
+
+    failed = daily_export_module.build_system_acceptance_dashboard(
+        frames={},
+        report_frames={},
+        row_counts={},
+        pre_export_v5={},
+        data_quality_warnings=[],
+        api_latency_summary=pl.DataFrame(
+            [
+                {
+                    "endpoint": "__all__",
+                    "count": 100,
+                    "p95_ms": 12.0,
+                    "auth_error_count": 1,
+                    "auth_error_rate": 0.01,
+                }
+            ]
+        ),
+        lake_file_count=0,
+        generated_at=datetime(2026, 6, 11, 10, tzinfo=UTC),
+    )
+    failed_row = next(
+        row
+        for row in failed.to_dicts()
+        if row["check_name"] == "api_auth_error_rate_ok"
+    )
+    assert failed_row["status"] == "FAIL"
+
+
+def test_system_acceptance_lake_file_count_and_growth_thresholds():
+    warning = daily_export_module.build_system_acceptance_dashboard(
+        frames={},
+        report_frames={},
+        row_counts={},
+        pre_export_v5={},
+        data_quality_warnings=[],
+        api_latency_summary=pl.DataFrame(),
+        lake_file_count=6_000,
+        lake_file_growth_24h_count=251,
+        generated_at=datetime(2026, 6, 11, 10, tzinfo=UTC),
+    )
+    checks = {row["check_name"]: row for row in warning.to_dicts()}
+    assert checks["lake_parquet_file_count_under_threshold"]["status"] == "WARNING"
+    assert checks["lake_parquet_file_growth_24h_ok"]["status"] == "WARNING"
+
+    failed = daily_export_module.build_system_acceptance_dashboard(
+        frames={},
+        report_frames={},
+        row_counts={},
+        pre_export_v5={},
+        data_quality_warnings=[],
+        api_latency_summary=pl.DataFrame(),
+        lake_file_count=7_501,
+        lake_file_growth_24h_count=250,
+        generated_at=datetime(2026, 6, 11, 10, tzinfo=UTC),
+    )
+    failed_checks = {row["check_name"]: row for row in failed.to_dicts()}
+    assert failed_checks["lake_parquet_file_count_under_threshold"]["status"] == "FAIL"
+    assert failed_checks["lake_parquet_file_growth_24h_ok"]["status"] == "PASS"
 
 
 def test_system_acceptance_downgrades_stale_v5_bundle_to_warning():

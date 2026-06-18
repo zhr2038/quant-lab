@@ -64,11 +64,16 @@ def test_live_universe_cost_coverage_rejects_stale_direct_even_with_proxy():
     assert sol["latest_actual_or_mixed_created_at"] == stale.isoformat().replace("+00:00", "Z")
     assert sol["latest_actual_or_mixed_age_sec"] == 7 * 24 * 60 * 60
     assert sol["actual_or_mixed_direct"] is False
-    assert sol["mixed_proxy_eligible"] is False
+    assert sol["anchored_mixed_proxy_candidate"] is True
+    assert sol["mixed_proxy_eligible"] is True
     assert sol["actual_or_mixed_covered"] is False
-    assert sol["coverage_reason"] == "stale_actual_or_mixed_no_fresh_live_anchor"
+    assert sol["cost_evidence_tier"] == "anchored_proxy_candidate_not_counted"
+    assert sol["fee_fresh"] is False
+    assert sol["spread_fresh"] is True
+    assert sol["slippage_fresh"] is False
+    assert sol["coverage_reason"] == "stale_actual_or_mixed_with_anchored_proxy_not_counted"
     assert evaluation["direct_symbols"] == ["BTC-USDT"]
-    assert evaluation["mixed_proxy_symbols"] == []
+    assert evaluation["mixed_proxy_symbols"] == ["SOL-USDT"]
     assert evaluation["coverage_rate"] == 0.5
 
 
@@ -90,6 +95,9 @@ def test_live_universe_cost_coverage_uses_generated_at_for_stale_window():
     assert btc["stale_actual_or_mixed"] is False
     assert btc["actual_or_mixed_direct"] is True
     assert btc["actual_or_mixed_covered"] is True
+    assert btc["cost_evidence_tier"] == "strict_direct_actual_or_mixed"
+    assert btc["fee_fresh"] is True
+    assert btc["slippage_fresh"] is True
     assert evaluation["direct_symbols"] == ["BTC-USDT"]
     assert evaluation["coverage_rate"] == 1.0
 
@@ -112,6 +120,7 @@ def test_live_universe_cost_coverage_rejects_stale_direct_without_fresh_anchor()
     btc = evaluation["detail_by_symbol"]["BTC-USDT"]
     assert btc["stale_actual_or_mixed"] is True
     assert btc["actual_or_mixed_direct"] is False
+    assert btc["anchored_mixed_proxy_candidate"] is False
     assert btc["mixed_proxy_eligible"] is False
     assert btc["actual_or_mixed_covered"] is False
     assert btc["coverage_reason"] == "stale_actual_or_mixed_no_fresh_live_anchor"

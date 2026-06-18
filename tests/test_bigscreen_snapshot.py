@@ -205,22 +205,26 @@ def test_bigscreen_snapshot_exposes_factor_factory_results(tmp_path):
                 [
                     (
                         "generated_at,feature_name,symbol,regime,horizon_hours,"
-                        "sample_count,rank_ic,long_short_bps,p25_net_bps,hit_rate,"
-                        "recent_7d_score,lookback_bars,build_elapsed_ms,recommendation,"
+                        "sample_count,effective_sample_count,rank_ic,long_short_bps,"
+                        "p25_net_bps,hit_rate,recent_7d_score,walk_forward_oos_score,"
+                        "oos_validation_pass,block_bootstrap_ci_low_bps,"
+                        "block_bootstrap_ci_high_bps,purge_embargo_hours,lookback_bars,"
+                        "build_elapsed_ms,recommendation,"
                         "data_leakage_check,live_order_effect"
                     ),
                     (
                         "2026-06-06T13:00:00Z,orderbook_imbalance_1m,SOL-USDT,"
-                        "TREND_UP,8,64,0.21,58.5,2.1,0.64,42.0,2000,12.4,"
+                        "TREND_UP,8,64,56,0.21,58.5,2.1,0.64,42.0,18.0,"
+                        "true,4.0,72.0,8,2000,12.4,"
                         "FORWARD_VALIDATION_PASS,"
-                        "pass_future_prices_used_only_for_labels,"
+                        "pass_future_prices_used_only_for_labels;purge_embargo_by_horizon,"
                         "read_only_no_live_order"
                     ),
                     (
                         "2026-06-06T13:00:00Z,cvd_5m,BTC-USDT,SIDEWAYS,4,12,"
-                        "0.02,4.5,-8.0,0.51,3.0,2000,12.4,"
+                        "8,0.02,4.5,-8.0,0.51,3.0,,false,,,4,2000,12.4,"
                         "NEEDS_MORE_FORWARD_SAMPLES,"
-                        "pass_future_prices_used_only_for_labels,"
+                        "pass_future_prices_used_only_for_labels;purge_embargo_by_horizon,"
                         "read_only_no_live_order"
                     ),
                 ]

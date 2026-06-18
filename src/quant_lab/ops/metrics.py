@@ -61,7 +61,9 @@ def record_api_request(
     status_code: int,
     duration_seconds: float,
     client_host: str | None = None,
+    client_id: str | None = None,
     user_agent: str | None = None,
+    auth_result: str | None = None,
     request_ts: datetime | None = None,
     cache_hit: bool | None = None,
     rows_returned: int | None = None,
@@ -82,7 +84,9 @@ def record_api_request(
         "status_code": int(status_code),
         "duration_ms": round(float(duration_seconds) * 1000.0, 3),
         "client_host": client_host,
+        "client_id": _safe_metric_label(client_id, max_length=120),
         "user_agent": _safe_user_agent(user_agent),
+        "auth_result": _safe_metric_label(auth_result, max_length=80),
         "cache_hit": bool(cache_hit) if cache_hit is not None else None,
         "rows_returned": int(rows_returned) if rows_returned is not None else None,
         "response_bytes": int(response_bytes) if response_bytes is not None else None,
@@ -302,24 +306,34 @@ def api_metrics_summary(
     latency_by_path = {}
     slow_paths = []
     if "duration_ms" in schema_names:
+        error_expr = _metric_error_expr(schema_names)
+        aggregations = [
+            pl.col("duration_ms").cast(pl.Float64, strict=False).median().alias("p50"),
+            pl.col("duration_ms")
+            .cast(pl.Float64, strict=False)
+            .quantile(0.90)
+            .alias("p90"),
+            pl.col("duration_ms")
+            .cast(pl.Float64, strict=False)
+            .quantile(0.95)
+            .alias("p95"),
+            pl.col("duration_ms")
+            .cast(pl.Float64, strict=False)
+            .quantile(0.99)
+            .alias("p99"),
+            pl.col("duration_ms").cast(pl.Float64, strict=False).max().alias("max"),
+        ]
+        if error_expr is not None:
+            duration = pl.col("duration_ms").cast(pl.Float64, strict=False)
+            aggregations.extend(
+                [
+                    duration.filter(~error_expr).quantile(0.95).alias("success_p95"),
+                    duration.filter(error_expr).quantile(0.95).alias("error_p95"),
+                ]
+            )
         metrics = (
             scoped.select(
-                [
-                    pl.col("duration_ms").cast(pl.Float64, strict=False).median().alias("p50"),
-                    pl.col("duration_ms")
-                    .cast(pl.Float64, strict=False)
-                    .quantile(0.90)
-                    .alias("p90"),
-                    pl.col("duration_ms")
-                    .cast(pl.Float64, strict=False)
-                    .quantile(0.95)
-                    .alias("p95"),
-                    pl.col("duration_ms")
-                    .cast(pl.Float64, strict=False)
-                    .quantile(0.99)
-                    .alias("p99"),
-                    pl.col("duration_ms").cast(pl.Float64, strict=False).max().alias("max"),
-                ]
+                aggregations
             )
             .collect()
             .to_dicts()[0]
@@ -363,6 +377,12 @@ def api_metrics_summary(
             schema_names=schema_names,
         ),
         "by_error_type": _count_by_non_empty_lazy(scoped, "error_type", schema_names=schema_names),
+        "by_auth_result": _count_by_non_empty_lazy(
+            scoped,
+            "auth_result",
+            schema_names=schema_names,
+        ),
+        "auth_error_count": _auth_error_count_lazy(scoped, schema_names=schema_names),
     }
 
 
@@ -413,6 +433,21 @@ def api_error_summary(
         )
     else:
         request_ts = pl.lit(None)
+    auth_result_expr = (
+        pl.col("auth_result").cast(pl.Utf8, strict=False).fill_null("").str.strip_chars()
+        if "auth_result" in schema_names
+        else pl.lit("")
+    )
+    client_id_expr = (
+        pl.col("client_id").cast(pl.Utf8, strict=False).fill_null("").str.strip_chars()
+        if "client_id" in schema_names
+        else pl.lit("")
+    )
+    user_agent_expr = (
+        pl.col("user_agent").cast(pl.Utf8, strict=False).fill_null("").str.strip_chars()
+        if "user_agent" in schema_names
+        else pl.lit("")
+    )
 
     scoped = scoped.with_columns(
         [
@@ -420,6 +455,9 @@ def api_error_summary(
             status_expr.alias("_status_code"),
             ((status_expr >= 400) | (error_type != "")).fill_null(False).alias("_is_error"),
             request_ts.alias("_request_ts"),
+            auth_result_expr.alias("_auth_result"),
+            client_id_expr.alias("_client_id"),
+            user_agent_expr.alias("_user_agent"),
         ]
     )
     endpoint_counts = scoped.group_by("_endpoint").len(name="_endpoint_request_count")
@@ -428,7 +466,15 @@ def api_error_summary(
         return []
 
     grouped = (
-        errors.group_by(["_endpoint", "_status_code"])
+        errors.group_by(
+            [
+                "_endpoint",
+                "_status_code",
+                "_auth_result",
+                "_client_id",
+                "_user_agent",
+            ]
+        )
         .agg(
             [
                 pl.len().alias("error_count"),
@@ -458,6 +504,9 @@ def api_error_summary(
             {
                 "endpoint": str(row.get("_endpoint") or "__unknown__"),
                 "status_code": int(row.get("_status_code") or 0),
+                "auth_result": str(row.get("_auth_result") or "__unknown__"),
+                "client_id": str(row.get("_client_id") or "__unknown__"),
+                "user_agent": str(row.get("_user_agent") or "__unknown__"),
                 "error_count": int(row.get("error_count") or 0),
                 "latest_error_ts": _format_metric_ts(row.get("latest_error_ts")),
                 "error_rate": _float_or_none(row.get("error_rate")) or 0.0,
@@ -570,6 +619,8 @@ def _empty_api_metrics_summary() -> dict[str, Any]:
         "response_cache_hit_count": 0,
         "dependency_meta_missing_count": 0,
         "by_error_type": {},
+        "by_auth_result": {},
+        "auth_error_count": 0,
     }
 
 
@@ -731,6 +782,14 @@ def _latency_by_path_lazy(
         duration.quantile(0.99).alias("p99"),
         duration.max().alias("max"),
     ]
+    error_expr = _metric_error_expr(schema_names)
+    if error_expr is not None:
+        aggregations.extend(
+            [
+                duration.filter(~error_expr).quantile(0.95).alias("success_p95"),
+                duration.filter(error_expr).quantile(0.95).alias("error_p95"),
+            ]
+        )
     if "cache_hit" in schema_names:
         aggregations.append(
             pl.col("cache_hit")
@@ -802,6 +861,11 @@ def _latency_by_path_lazy(
         aggregations.append(
             error_expr.fill_null(False).cast(pl.Int64).sum().alias("error_count")
         )
+    auth_error_expr = _auth_error_expr(schema_names)
+    if auth_error_expr is not None:
+        aggregations.append(
+            auth_error_expr.fill_null(False).cast(pl.Int64).sum().alias("auth_error_count")
+        )
     if "status_code" in schema_names:
         aggregations.append((status >= 500).sum().alias("server_error_count"))
         aggregations.append(((status >= 400) & (status < 500)).sum().alias("client_error_count"))
@@ -816,6 +880,10 @@ def _latency_by_path_lazy(
             "p99": _float_or_none(row.get("p99")),
             "max": _float_or_none(row.get("max")),
         }
+        if "success_p95" in row:
+            metrics["success_p95"] = _float_or_none(row.get("success_p95"))
+        if "error_p95" in row:
+            metrics["error_p95"] = _float_or_none(row.get("error_p95"))
         for metric in (
             "cache_hit_count",
             "rows_returned_total",
@@ -826,6 +894,7 @@ def _latency_by_path_lazy(
             "response_cache_hit_count",
             "dependency_meta_missing_count",
             "error_count",
+            "auth_error_count",
         ):
             if metric in row:
                 metrics[metric] = _float_or_none(row.get(metric)) or 0
@@ -856,6 +925,68 @@ def _slow_paths(
     )[:limit]
 
 
+def _metric_error_expr(schema_names: set[str]) -> pl.Expr | None:
+    expressions: list[pl.Expr] = []
+    if "error_type" in schema_names:
+        error_type = pl.col("error_type").cast(pl.Utf8, strict=False)
+        expressions.append(error_type.is_not_null() & (error_type.str.strip_chars() != ""))
+    if "status_code" in schema_names:
+        expressions.append(pl.col("status_code").cast(pl.Int64, strict=False) >= 400)
+    if not expressions:
+        return None
+    combined = expressions[0]
+    for expression in expressions[1:]:
+        combined = combined | expression
+    return combined.fill_null(False)
+
+
+def _auth_error_expr(schema_names: set[str]) -> pl.Expr | None:
+    expressions: list[pl.Expr] = []
+    if "status_code" in schema_names:
+        expressions.append(pl.col("status_code").cast(pl.Int64, strict=False).is_in([401, 403]))
+    if "auth_result" in schema_names:
+        expressions.append(
+            pl.col("auth_result")
+            .cast(pl.Utf8, strict=False)
+            .fill_null("")
+            .str.strip_chars()
+            .is_in(
+                [
+                    "missing_bearer_token",
+                    "invalid_bearer_token",
+                    "client_ip_denied",
+                ]
+            )
+        )
+    if not expressions:
+        return None
+    combined = expressions[0]
+    for expression in expressions[1:]:
+        combined = combined | expression
+    return combined.fill_null(False)
+
+
+def _auth_error_count_lazy(
+    lazy: pl.LazyFrame,
+    *,
+    schema_names: set[str],
+) -> int:
+    auth_error_expr = _auth_error_expr(schema_names)
+    if auth_error_expr is None:
+        return 0
+    try:
+        return int(
+            lazy.select(
+                auth_error_expr.cast(pl.Int64).sum().alias("auth_error_count")
+            )
+            .collect()
+            .item(0, "auth_error_count")
+            or 0
+        )
+    except Exception:
+        return 0
+
+
 def _float_or_none(value: Any) -> float | None:
     try:
         return round(float(value), 3)
@@ -877,6 +1008,15 @@ def _safe_user_agent(value: str | None) -> str | None:
     if not value:
         return None
     return value[:200]
+
+
+def _safe_metric_label(value: str | None, *, max_length: int) -> str | None:
+    if not value:
+        return None
+    normalized = " ".join(str(value).strip().split())
+    if not normalized:
+        return None
+    return normalized[:max_length]
 
 
 def _api_metrics_flush_rows() -> int:

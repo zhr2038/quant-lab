@@ -354,6 +354,13 @@ def research_portfolio_summary_md(
             current.filter((pl.col("status") == "SHADOW") | (pl.col("action") == "REGIME_SHADOW")),
             False,
         ),
+        (
+            "paper_setup_pending",
+            current.filter(
+                pl.col("status").is_in(["PAPER_SETUP_PENDING", "PAPER_NO_ACTUAL_ENTRIES"])
+            ),
+            True,
+        ),
         ("active_diagnostic", current.filter(pl.col("action") == "ACTIVE_DIAGNOSTIC"), False),
         ("baseline_only", current.filter(pl.col("status") == "BASELINE_ONLY"), False),
     ]
@@ -544,8 +551,18 @@ def _paper_portfolio_state(
         )
     ]
     if not rows:
-        return ("PAPER", "CONTINUE_PAPER", default_reason)
+        return (
+            "PAPER_SETUP_PENDING",
+            "SETUP_PAPER_TRACKING",
+            f"{default_reason};paper_setup_pending_no_daily_row",
+        )
     latest = max(rows, key=_paper_portfolio_row_key)
+    if not any(_paper_row_has_actual_entry_or_pnl(row) for row in rows):
+        return (
+            "PAPER_NO_ACTUAL_ENTRIES",
+            "WAIT_FOR_ACTUAL_PAPER_ENTRIES",
+            f"{default_reason};paper_no_actual_entries_or_observed_pnl",
+        )
     decision = str(latest.get("latest_board_decision") or "").strip().upper()
     reasons = " ".join(
         [
@@ -563,6 +580,39 @@ def _paper_portfolio_state(
     ):
         return ("DOWNGRADED_FROM_PAPER", "CONTINUE_SHADOW_OR_REVIEW", negative_reason)
     return ("PAPER", "CONTINUE_PAPER", default_reason)
+
+
+def _paper_row_has_actual_entry_or_pnl(row: dict[str, Any]) -> bool:
+    count_fields = [
+        "entry_count",
+        "entry_day_count",
+        "daily_v5_entry_count",
+        "cumulative_v5_entry_count",
+        "paper_pnl_observed_count",
+        "daily_paper_pnl_observed_count",
+        "cumulative_paper_pnl_observed_count",
+        "paper_pnl_day_count",
+    ]
+    if any(_int(row.get(field)) > 0 for field in count_fields):
+        return True
+    pnl_fields = [
+        "paper_pnl",
+        "paper_pnl_usdt",
+        "paper_pnl_bps",
+        "avg_paper_pnl_bps",
+        "paper_pnl_bps_4h",
+        "paper_pnl_bps_8h",
+        "paper_pnl_bps_12h",
+        "paper_pnl_bps_24h",
+        "paper_pnl_bps_48h",
+    ]
+    if any(_float(row.get(field)) is not None for field in pnl_fields):
+        return True
+    avg_by_horizon = _json_dict(row.get("avg_paper_pnl_bps_by_horizon"))
+    if any(_float(value) is not None for value in avg_by_horizon.values()):
+        return True
+    observed_by_horizon = _json_dict(row.get("paper_pnl_observed_count_by_horizon"))
+    return any(_int(value) > 0 for value in observed_by_horizon.values())
 
 
 def _paper_alias_keys(proposal_id: str, candidate: str) -> tuple[set[str], set[str]]:
@@ -671,6 +721,11 @@ def _candidate_row(
     review_days: int = 1,
 ) -> dict[str, Any]:
     metrics = _metrics_for(evidence, [candidate], symbol=symbol)
+    p25_net_bps = _float(metrics.get("p25_net_bps"))
+    if status == "PAPER" and p25_net_bps is not None and p25_net_bps <= -50.0:
+        status = "DOWNGRADED_FROM_PAPER"
+        action = "CONTINUE_SHADOW_OR_REVIEW"
+        reason = "p25_net_bps_below_paper_threshold_keep_shadow_no_live"
     return _status_row(
         research_id=research_id,
         module=module,
@@ -901,7 +956,15 @@ def _summary_counts(rows: list[dict[str, Any]]) -> dict[str, int]:
     active_count = sum(
         1
         for row in rows
-        if row["status"] in {"ACTIVE", "SHADOW", "PAPER", "DOWNGRADED_FROM_PAPER"}
+        if row["status"]
+        in {
+            "ACTIVE",
+            "SHADOW",
+            "PAPER",
+            "PAPER_SETUP_PENDING",
+            "PAPER_NO_ACTUAL_ENTRIES",
+            "DOWNGRADED_FROM_PAPER",
+        }
     )
     killed_count = sum(1 for row in rows if row["status"] == "KILL")
     freed_slots = sum(1 for row in rows if row["status"] in {"KILL", "PAUSED"})

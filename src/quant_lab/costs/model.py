@@ -30,9 +30,14 @@ LIVE_UNIVERSE_COST_COVERAGE_FIELDS = [
     "latest_source",
     "latest_actual_or_mixed_source",
     "effective_cost_source",
+    "cost_evidence_tier",
+    "anchored_mixed_proxy_candidate",
     "actual_or_mixed_direct",
     "mixed_proxy_eligible",
     "stale_actual_or_mixed",
+    "fee_fresh",
+    "spread_fresh",
+    "slippage_fresh",
     "actual_or_mixed_covered",
     "sample_count",
     "actual_fill_count",
@@ -97,13 +102,26 @@ def evaluate_live_universe_cost_coverage(
             if latest_actual is not None
             else False
         )
-        mixed_proxy_eligible = False
+        anchored_mixed_proxy_candidate = (
+            not direct and latest_proxy is not None and has_live_actual_anchor
+        )
         covered = direct
         covered_count += int(covered)
+        fee_fresh = _component_fresh(fresh_actual, "fee_bps_p75", reference_time=generated)
+        slippage_fresh = _component_fresh(
+            fresh_actual,
+            "slippage_bps_p75",
+            reference_time=generated,
+        )
+        spread_fresh = _component_fresh(
+            latest_proxy or fresh_actual,
+            "spread_bps_p75",
+            reference_time=generated,
+        )
         effective_source = (
             _cost_source(fresh_actual)
             if fresh_actual is not None
-            else ("mixed_actual_proxy" if mixed_proxy_eligible else _cost_source(latest))
+            else _cost_source(latest)
         )
         source_row = fresh_actual or latest_proxy or latest_actual or latest or {}
         output.append(
@@ -113,10 +131,21 @@ def evaluate_live_universe_cost_coverage(
                 "latest_source": _cost_source(latest) or "missing",
                 "latest_actual_or_mixed_source": _cost_source(latest_actual) or "missing",
                 "effective_cost_source": effective_source or "missing",
+                "cost_evidence_tier": _cost_evidence_tier(
+                    direct=direct,
+                    has_live_actual_anchor=has_live_actual_anchor,
+                    latest_actual=latest_actual,
+                    latest_proxy=latest_proxy,
+                    stale_actual_or_mixed=stale_actual_or_mixed,
+                ),
+                "anchored_mixed_proxy_candidate": anchored_mixed_proxy_candidate,
                 "actual_or_mixed_direct": direct,
-                "mixed_proxy_eligible": mixed_proxy_eligible,
+                "mixed_proxy_eligible": anchored_mixed_proxy_candidate,
                 "stale_actual_or_mixed": stale_actual_or_mixed,
                 "latest_actual_or_mixed_stale": stale_actual_or_mixed,
+                "fee_fresh": fee_fresh,
+                "spread_fresh": spread_fresh,
+                "slippage_fresh": slippage_fresh,
                 "actual_or_mixed_covered": covered,
                 "sample_count": _int_value(source_row.get("sample_count")),
                 "latest_sample_count": _int_value(source_row.get("sample_count")),
@@ -135,7 +164,7 @@ def evaluate_live_universe_cost_coverage(
                 ),
                 "coverage_reason": _coverage_reason(
                     direct=direct,
-                    mixed_proxy_eligible=mixed_proxy_eligible,
+                    anchored_mixed_proxy_candidate=anchored_mixed_proxy_candidate,
                     has_live_actual_anchor=has_live_actual_anchor,
                     latest_actual=latest_actual,
                     stale_actual_or_mixed=stale_actual_or_mixed,
@@ -1222,10 +1251,44 @@ def _coverage_age_sec(
     return max((reference_time - ts.astimezone(UTC)).total_seconds(), 0.0)
 
 
+def _component_fresh(
+    row: Mapping[str, Any] | None,
+    column: str,
+    *,
+    reference_time: datetime,
+) -> bool:
+    if row is None or not row:
+        return False
+    if _row_is_stale(row, reference_time=reference_time):
+        return False
+    return _float_value(row, column) is not None
+
+
+def _cost_evidence_tier(
+    *,
+    direct: bool,
+    has_live_actual_anchor: bool,
+    latest_actual: Mapping[str, Any] | None,
+    latest_proxy: Mapping[str, Any] | None,
+    stale_actual_or_mixed: bool,
+) -> str:
+    if direct:
+        return "strict_direct_actual_or_mixed"
+    if latest_proxy is not None and has_live_actual_anchor:
+        return "anchored_proxy_candidate_not_counted"
+    if latest_proxy is not None:
+        return "proxy_only_not_counted"
+    if latest_actual is not None and stale_actual_or_mixed:
+        return "stale_direct_not_counted"
+    if latest_actual is not None:
+        return "actual_or_mixed_not_fresh"
+    return "missing"
+
+
 def _coverage_reason(
     *,
     direct: bool,
-    mixed_proxy_eligible: bool,
+    anchored_mixed_proxy_candidate: bool,
     has_live_actual_anchor: bool,
     latest_actual: Mapping[str, Any] | None,
     stale_actual_or_mixed: bool,
@@ -1234,8 +1297,10 @@ def _coverage_reason(
 ) -> str:
     if direct:
         return "direct_actual_or_mixed_cost"
-    if mixed_proxy_eligible:
-        return "mixed_from_live_actual_anchor_plus_symbol_public_proxy"
+    if anchored_mixed_proxy_candidate:
+        if latest_actual is not None and stale_actual_or_mixed:
+            return "stale_actual_or_mixed_with_anchored_proxy_not_counted"
+        return "anchored_proxy_candidate_not_counted"
     if latest_actual is not None and stale_actual_or_mixed:
         if latest_proxy is not None:
             return "stale_actual_or_mixed_no_fresh_live_anchor"

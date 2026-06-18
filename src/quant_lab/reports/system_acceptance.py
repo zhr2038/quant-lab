@@ -39,6 +39,7 @@ def build_system_acceptance_dashboard(
     data_quality_warnings: list[str] | tuple[str, ...],
     api_latency_summary: pl.DataFrame,
     lake_file_count: int | None,
+    lake_file_growth_24h_count: int | None = None,
     generated_at: datetime | None = None,
 ) -> pl.DataFrame:
     generated = (generated_at or datetime.now(UTC)).astimezone(UTC)
@@ -82,6 +83,12 @@ def build_system_acceptance_dashboard(
             "rows>0 and latest generated_at/expires_at fresh",
             "quant-lab",
             advisory_action,
+        )
+    )
+    checks.append(
+        _bottom_zone_paper_v5_rows_check(
+            advisory,
+            report_frames.get("bottom_zone_reversal_shadow", pl.DataFrame()),
         )
     )
 
@@ -174,13 +181,19 @@ def build_system_acceptance_dashboard(
         )
     )
 
-    lake_threshold = _int_env("QUANT_LAB_ACCEPTANCE_LAKE_FILE_THRESHOLD", 10_000)
+    lake_warn_threshold = _int_env("QUANT_LAB_ACCEPTANCE_LAKE_FILE_WARN_THRESHOLD", 5_000)
+    lake_fail_threshold = _int_env("QUANT_LAB_ACCEPTANCE_LAKE_FILE_FAIL_THRESHOLD", 7_500)
     if lake_file_count is None:
         lake_status = "WARNING"
         lake_observed = "not_observable"
         lake_action = "build bronze/lake_file_index before judging lake file-count health"
     else:
-        lake_status = "PASS" if lake_file_count <= lake_threshold else "FAIL"
+        if lake_file_count > lake_fail_threshold:
+            lake_status = "FAIL"
+        elif lake_file_count > lake_warn_threshold:
+            lake_status = "WARNING"
+        else:
+            lake_status = "PASS"
         lake_observed = str(lake_file_count)
         lake_action = (
             "" if lake_status == "PASS" else "run lake-small-file-maintenance on priority datasets"
@@ -190,9 +203,32 @@ def build_system_acceptance_dashboard(
             "lake_parquet_file_count_under_threshold",
             lake_status,
             lake_observed,
-            f"<= {lake_threshold}",
+            f"warn <= {lake_warn_threshold}; fail <= {lake_fail_threshold}",
             "quant-lab",
             lake_action,
+        )
+    )
+    lake_growth_threshold = _int_env("QUANT_LAB_ACCEPTANCE_LAKE_FILE_GROWTH_24H_WARN", 250)
+    if lake_file_growth_24h_count is None:
+        growth_status = "WARNING"
+        growth_observed = "not_observable"
+        growth_action = "refresh bronze/lake_file_index before judging 24h file growth"
+    else:
+        growth_status = "PASS" if lake_file_growth_24h_count <= lake_growth_threshold else "WARNING"
+        growth_observed = str(lake_file_growth_24h_count)
+        growth_action = (
+            ""
+            if growth_status == "PASS"
+            else "run compaction before small-file growth becomes a dashboard/API risk"
+        )
+    checks.append(
+        _check(
+            "lake_parquet_file_growth_24h_ok",
+            growth_status,
+            growth_observed,
+            f"<= {lake_growth_threshold}",
+            "quant-lab",
+            growth_action,
         )
     )
 
@@ -207,6 +243,7 @@ def build_system_acceptance_dashboard(
             api_action,
         )
     )
+    checks.append(_api_auth_error_rate_check(api_latency_summary))
 
     checks.append(_enforce_readiness_check(data_quality_warnings))
 
@@ -550,6 +587,42 @@ def _api_latency_check(frame: pl.DataFrame) -> tuple[str, str, str, str]:
     )
 
 
+def _api_auth_error_rate_check(frame: pl.DataFrame) -> dict[str, Any]:
+    threshold = float(os.environ.get("QUANT_LAB_ACCEPTANCE_API_AUTH_ERROR_RATE", "0.01"))
+    if frame.is_empty():
+        return _check(
+            "api_auth_error_rate_ok",
+            "WARNING",
+            "rows=0",
+            f"auth_error_rate < {threshold:g}",
+            "quant-lab",
+            "collect API auth metrics",
+        )
+    rows = frame.to_dicts()
+    overall = next((row for row in rows if str(row.get("endpoint")) == "__all__"), rows[0])
+    request_count = _float(overall.get("count")) or 0.0
+    auth_error_rate = _float(overall.get("auth_error_rate"))
+    auth_error_count = _float(overall.get("auth_error_count")) or 0.0
+    if request_count <= 0 or auth_error_rate is None:
+        return _check(
+            "api_auth_error_rate_ok",
+            "WARNING",
+            f"request_count={request_count:g};auth_error_rate=not_observable",
+            f"auth_error_rate < {threshold:g}",
+            "quant-lab",
+            "collect API auth metrics",
+        )
+    status = "PASS" if auth_error_rate < threshold else "FAIL"
+    return _check(
+        "api_auth_error_rate_ok",
+        status,
+        f"auth_error_count={auth_error_count:g};request_count={request_count:g};auth_error_rate={auth_error_rate:.6f}",
+        f"auth_error_rate < {threshold:g}",
+        "quant-lab",
+        "" if status == "PASS" else "fix unauthorized API callers or token rollout",
+    )
+
+
 def _expanded_ready_symbols(frame: pl.DataFrame) -> set[str]:
     symbols: set[str] = set()
     for row in _rows(frame):
@@ -731,6 +804,58 @@ def _fast_microstructure_observability_check(frame: pl.DataFrame) -> dict[str, A
         "core fast microstructure fields not_observable_ratio < 0.30",
         "quant-lab",
         "" if status == "PASS" else "fix orderbook/trade rollups or feature field mapping",
+    )
+
+
+def _bottom_zone_paper_v5_rows_check(
+    advisory: pl.DataFrame,
+    bottom_zone_reversal_shadow: pl.DataFrame,
+) -> dict[str, Any]:
+    source_symbols = sorted(
+        {
+            normalize_symbol(row.get("symbol"))
+            for row in _rows(bottom_zone_reversal_shadow)
+            if str(row.get("bottom_zone_state") or "").upper() == "BOTTOM_PROBE_ALLOWED"
+            and _truthy(row.get("would_probe_paper"))
+            and normalize_symbol(row.get("symbol")) not in {"", "UNKNOWN"}
+        }
+    )
+    advisory_rows = [
+        row
+        for row in _rows(advisory)
+        if str(row.get("strategy_candidate") or "") == "v5.bottom_zone_probe_paper"
+    ]
+    valid_symbols = sorted(
+        {
+            normalize_symbol(row.get("symbol"))
+            for row in advisory_rows
+            if str(row.get("live_order_effect") or "") == "read_only_no_live_order"
+            and (_float(row.get("max_live_notional_usdt")) or 0.0) == 0.0
+            and str(row.get("decision") or "").upper() == "PAPER_READY"
+            and str(row.get("recommended_mode") or "").lower() == "paper"
+            and normalize_symbol(row.get("symbol")) not in {"", "UNKNOWN"}
+        }
+    )
+    missing = [symbol for symbol in source_symbols if symbol not in valid_symbols]
+    status = "PASS" if not missing else "FAIL"
+    return _check(
+        "bottom_zone_paper_v5_rows_ok",
+        status,
+        (
+            f"source_probe_symbols={source_symbols};"
+            f"valid_advisory_symbols={valid_symbols};missing={missing};"
+            f"advisory_rows={len(advisory_rows)}"
+        ),
+        (
+            "every BOTTOM_PROBE_ALLOWED would_probe_paper symbol has a "
+            "read-only/no-live v5.bottom_zone_probe_paper PAPER_READY row"
+        ),
+        "quant-lab/V5",
+        (
+            ""
+            if status == "PASS"
+            else "publish final strategy_opportunity_advisory to gold before API/V5 export"
+        ),
     )
 
 

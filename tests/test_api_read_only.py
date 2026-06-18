@@ -2,7 +2,7 @@ from fastapi.routing import APIRoute
 from fastapi.testclient import TestClient
 
 from quant_lab.api.main import app, create_app
-from quant_lab.ops.api_metrics import api_error_summary
+from quant_lab.ops.api_metrics import api_error_summary, api_metrics_summary
 
 
 def test_api_has_no_non_get_strategy_routes():
@@ -124,6 +124,33 @@ def test_api_metrics_records_request_counts(monkeypatch, tmp_path):
     assert payload["latency_ms"]["max"] is not None
 
 
+def test_api_metrics_records_auth_result_and_client_context(monkeypatch, tmp_path):
+    lake = tmp_path / "lake"
+    monkeypatch.setenv("QUANT_LAB_LAKE_ROOT", str(lake))
+    monkeypatch.setenv("QUANT_LAB_API_TOKEN", "unit-token")
+    monkeypatch.setenv("QUANT_LAB_API_METRICS_FLUSH_ROWS", "1")
+    client = TestClient(create_app())
+
+    response = client.get(
+        "/v1/catalog/datasets",
+        headers={
+            "x-quant-lab-client-id": "v5-reader",
+            "user-agent": "pytest-agent",
+        },
+    )
+
+    assert response.status_code == 401
+    summary = api_metrics_summary(lake, since_minutes=24 * 60)
+    errors = api_error_summary(lake, since_minutes=24 * 60)
+    assert summary["by_auth_result"]["missing_bearer_token"] == 1
+    assert summary["auth_error_count"] == 1
+    row = next(item for item in errors if item["endpoint"] == "/v1/catalog/datasets")
+    assert row["status_code"] == 401
+    assert row["auth_result"] == "missing_bearer_token"
+    assert row["client_id"] == "v5-reader"
+    assert row["user_agent"] == "pytest-agent"
+
+
 def test_api_error_summary_groups_endpoint_status(monkeypatch, tmp_path):
     lake = tmp_path / "lake"
     monkeypatch.setenv("QUANT_LAB_LAKE_ROOT", str(lake))
@@ -139,6 +166,8 @@ def test_api_error_summary_groups_endpoint_status(monkeypatch, tmp_path):
         item for item in rows if item["endpoint"] == "/v1/not-found-for-metrics"
     )
     assert row["status_code"] == 404
+    assert row["auth_result"] == "auth_not_configured"
+    assert row["client_id"] == "__unknown__"
     assert row["error_count"] == 1
     assert row["latest_error_ts"]
     assert row["error_rate"] == 1.0

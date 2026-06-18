@@ -1,6 +1,6 @@
 {
   "contract_version": "v5.quant_lab.telemetry.v2",
-  "schema_version": "v5.cost_estimate.response.v0.2",
+  "schema_version": "v5.cost_estimate.response.v0.3",
   "symbol": "BNB-USDT",
   "normalized_symbol": "BNB-USDT",
   "regime": "Trending",
@@ -46,6 +46,8 @@
   "cost_source": "public_spread_proxy",
   "sample_count": 1440,
   "sample_size": 1440,
+  "live_cost_sample_count": 0,
+  "trusted_live_sample_count": 0,
   "cost_model_version": "cost_bucket_daily:2026-05-14",
   "bucket_id": "2026-05-14:BNB-USDT:public_proxy:spread:all",
   "as_of_ts": "2026-05-14T07:10:00Z"

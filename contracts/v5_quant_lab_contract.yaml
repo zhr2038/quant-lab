@@ -72,7 +72,7 @@ schemas:
     enums:
       quantile: [p50, p75, p90]
   cost_estimate_response:
-    schema_version: v5.cost_estimate.response.v0.2
+    schema_version: v5.cost_estimate.response.v0.3
     required:
       - contract_version
       - schema_version
@@ -94,6 +94,8 @@ schemas:
       - cost_bps
       - sample_count
       - sample_size
+      - live_cost_sample_count
+      - trusted_live_sample_count
       - fallback_level
       - fallback_reason
       - degraded_reason

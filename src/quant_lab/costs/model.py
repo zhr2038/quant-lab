@@ -46,6 +46,7 @@ LIVE_UNIVERSE_COST_COVERAGE_FIELDS = [
     "cost_probe_fill_count",
     "strategy_live_fill_count",
     "private_fill_count",
+    "live_cost_sample_count",
     "sample_origin_mix",
     "eligible_for_live_cost_coverage",
     "fee_bps_p75",
@@ -77,6 +78,7 @@ COST_BOOTSTRAP_READINESS_FIELDS = [
     "slippage_available",
     "spread_available",
     "sample_count",
+    "live_cost_sample_count",
     "trusted_sample_count",
     "latest_fill_ts",
     "latest_bill_ts",
@@ -197,6 +199,7 @@ def evaluate_live_universe_cost_coverage(
                     source_row.get("strategy_live_fill_count")
                 ),
                 "private_fill_count": _int_value(source_row.get("private_fill_count")),
+                "live_cost_sample_count": _live_cost_sample_count(source_row),
                 "sample_origin_mix": _sample_origin_mix_value(source_row),
                 "eligible_for_live_cost_coverage": _row_live_cost_eligible(source_row),
                 "fee_bps_p75": _float_value(source_row, "fee_bps_p75"),
@@ -348,10 +351,15 @@ def build_cost_bootstrap_readiness(
             _int_value(source_row.get("cost_probe_fill_count")),
             len(cost_probe_rows),
         )
+        live_cost_sample_count = _live_cost_sample_count(
+            source_row,
+            strategy_live_fill_count=strategy_live_fill_count,
+            private_fill_count=private_fill_count,
+        )
         bill_matched_count = len(bill_rows)
         sample_count = max(
             _int_value(source_row.get("sample_count")),
-            actual_fill_count + mixed_fill_count + cost_probe_fill_count,
+            live_cost_sample_count + cost_probe_fill_count,
         )
         fee_available = (
             _positive_cost_value(source_row, "fee_bps_p75")
@@ -385,9 +393,8 @@ def build_cost_bootstrap_readiness(
         )
         bootstrap_ready = direct_fresh or cost_probe_fill_count > 0 or private_fill_count > 0
         trusted_sample_count = (
-            sample_count
+            live_cost_sample_count
             if direct_fresh
-            and sample_count >= min_trusted_sample_count
             and fee_available
             and slippage_available
             and spread_available
@@ -438,6 +445,7 @@ def build_cost_bootstrap_readiness(
                 "slippage_available": slippage_available,
                 "spread_available": spread_available,
                 "sample_count": sample_count,
+                "live_cost_sample_count": live_cost_sample_count,
                 "trusted_sample_count": trusted_sample_count,
                 "latest_fill_ts": _latest_row_ts(
                     [*filled_lifecycle, *private_fill_rows],
@@ -945,6 +953,7 @@ def estimate_cost_from_cost_bucket_daily_rows(
         observed_slippage_bps=observed_slippage_bps,
         observed_spread_bps=observed_spread_bps,
         sample_count=sample_count,
+        live_cost_sample_count=_live_cost_sample_count(row),
         stale=stale,
     )
     return CostEstimate(
@@ -961,6 +970,8 @@ def estimate_cost_from_cost_bucket_daily_rows(
         fallback_level=fallback_level,
         source=source,
         sample_count=sample_count,
+        live_cost_sample_count=components["live_cost_sample_count"],
+        trusted_live_sample_count=components["trusted_live_sample_count"],
         cost_model_version=str(
             row.get("cost_model_version") or f"cost_bucket_daily:{row.get('day', 'unknown')}"
         ),
@@ -1306,11 +1317,14 @@ def _all_in_cost_components(
     observed_slippage_bps: float,
     observed_spread_bps: float,
     sample_count: int,
+    live_cost_sample_count: int,
     stale: bool,
 ) -> dict[str, Any]:
     normalized_source = source.lower()
     normalized_fallback = fallback_level.upper()
     actual_or_mixed = _is_actual_or_mixed_source(normalized_source)
+    trusted_live_sample_count = live_cost_sample_count if actual_or_mixed else 0
+    quality_sample_count = live_cost_sample_count if actual_or_mixed else sample_count
     fee_is_actual = actual_or_mixed and observed_fee_bps > 0
     slippage_is_actual = (
         actual_or_mixed
@@ -1325,7 +1339,7 @@ def _all_in_cost_components(
     uncertainty_buffer = 0.0
     if _is_public_proxy_source(normalized_source):
         uncertainty_buffer += PUBLIC_PROXY_UNCERTAINTY_BUFFER_BPS
-    if sample_count < MIN_TRUSTED_COST_SAMPLE_COUNT:
+    if quality_sample_count < MIN_TRUSTED_COST_SAMPLE_COUNT:
         uncertainty_buffer += SMALL_SAMPLE_UNCERTAINTY_BUFFER_BPS
     if stale:
         uncertainty_buffer += STALE_BUCKET_UNCERTAINTY_BUFFER_BPS
@@ -1345,16 +1359,18 @@ def _all_in_cost_components(
         "uncertainty_buffer_bps": uncertainty_buffer,
         "one_way_all_in_cost_bps": one_way,
         "roundtrip_all_in_cost_bps": one_way * 2.0,
+        "live_cost_sample_count": live_cost_sample_count,
+        "trusted_live_sample_count": trusted_live_sample_count,
         "cost_quality": _cost_quality(
             source=normalized_source,
-            sample_count=sample_count,
+            sample_count=quality_sample_count,
             stale=stale,
         ),
         "cost_trusted_for_paper": normalized_source != "global_default" and not stale,
         "cost_trusted_for_live": (
             normalized_source
             in {"actual_fills", "actual_okx_fills_and_bills", "mixed_actual_proxy"}
-            and sample_count >= MIN_TRUSTED_COST_SAMPLE_COUNT
+            and live_cost_sample_count >= MIN_TRUSTED_COST_SAMPLE_COUNT
             and not stale
         ),
     }
@@ -1520,6 +1536,45 @@ def _sample_origin_mix_value(row: Mapping[str, Any] | None) -> str:
     if row is None:
         return ""
     return str(row.get("sample_origin_mix") or row.get("cost_sample_origin_mix") or "").strip()
+
+
+def _live_cost_sample_count(
+    row: Mapping[str, Any] | None,
+    *,
+    strategy_live_fill_count: int | None = None,
+    private_fill_count: int | None = None,
+) -> int:
+    if row is None:
+        return max((strategy_live_fill_count or 0) + (private_fill_count or 0), 0)
+
+    source = _cost_source(row)
+    strategy_count = (
+        max(strategy_live_fill_count, 0)
+        if strategy_live_fill_count is not None
+        else _int_value(row.get("strategy_live_fill_count"))
+    )
+    private_count = (
+        max(private_fill_count, 0)
+        if private_fill_count is not None
+        else _int_value(row.get("private_fill_count"))
+    )
+    live_origin_count = strategy_count + private_count
+    actual_or_mixed_count = _int_value(row.get("actual_fill_count")) + _int_value(
+        row.get("mixed_fill_count")
+    )
+    live_count = max(live_origin_count, actual_or_mixed_count)
+    if live_count > 0:
+        return live_count
+
+    if not _is_actual_or_mixed_source(source):
+        return 0
+    if _bool_or_none(row.get("eligible_for_live_cost_coverage")) is False:
+        return 0
+    if _sample_origin_mix_value(row).lower() == "cost_probe_only":
+        return 0
+    if _int_value(row.get("cost_probe_fill_count")) > 0:
+        return 0
+    return _int_value(row.get("sample_count"))
 
 
 def _row_live_cost_eligible(row: Mapping[str, Any] | None) -> bool:

@@ -1,6 +1,6 @@
 {
   "contract_version": "v5.quant_lab.telemetry.v2",
-  "schema_version": "v5.cost_estimate.response.v0.2",
+  "schema_version": "v5.cost_estimate.response.v0.3",
   "symbol": "UNKNOWN-USDT",
   "normalized_symbol": "UNKNOWN-USDT",
   "regime": "Trending",
@@ -47,6 +47,8 @@
   "cost_source": "global_default",
   "sample_count": 0,
   "sample_size": 0,
+  "live_cost_sample_count": 0,
+  "trusted_live_sample_count": 0,
   "cost_model_version": "global_default_v0",
   "bucket_id": null,
   "as_of_ts": "2026-05-14T07:10:00Z"

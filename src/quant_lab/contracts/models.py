@@ -163,6 +163,8 @@ class CostEstimate(ContractModel):
     degraded_reason: str | None = None
     degraded_cost_model: bool = False
     sample_size: int | None = Field(default=None, ge=0)
+    live_cost_sample_count: int = Field(default=0, ge=0)
+    trusted_live_sample_count: int = Field(default=0, ge=0)
     as_of_ts: datetime | None = None
     fee_source: str = "unknown"
     spread_source: str = "unknown"
@@ -219,6 +221,14 @@ class CostEstimate(ContractModel):
                 _cost_estimate_trusted_for_paper(normalized),
             )
             normalized.setdefault("degraded_cost_model", _cost_estimate_is_degraded(normalized))
+            normalized.setdefault(
+                "live_cost_sample_count",
+                _cost_estimate_live_sample_count(normalized),
+            )
+            normalized.setdefault(
+                "trusted_live_sample_count",
+                normalized["live_cost_sample_count"],
+            )
             live_trust = _cost_estimate_live_trust(normalized)
             normalized["cost_trusted_for_live_canary"] = live_trust[
                 "cost_trusted_for_live_canary"
@@ -275,12 +285,24 @@ def _cost_estimate_one_way_all_in(data: dict[str, Any]) -> float:
 
 def _cost_estimate_quality(data: dict[str, Any]) -> str:
     source = str(data.get("cost_source") or data.get("source") or "").lower()
-    sample_count = int(float(data.get("sample_count") or data.get("sample_size") or 0))
+    sample_count = _cost_estimate_sample_count(data)
+    live_sample_count = _cost_estimate_live_sample_count(data)
+    quality_sample_count = (
+        live_sample_count
+        if source
+        in {
+            "actual_fills",
+            "actual_okx_fills_and_bills",
+            "mixed_actual_proxy",
+            "actual_okx_fills_fee_missing",
+        }
+        else sample_count
+    )
     if source == "global_default":
         return "global_default"
     if source in {"public_spread_proxy", "public_proxy"}:
         return "public_proxy_only"
-    if sample_count < 30:
+    if quality_sample_count < 30:
         return "small_sample"
     if source in {"mixed_actual_proxy", "actual_okx_fills_fee_missing"}:
         return "mixed_actual_proxy"
@@ -303,7 +325,7 @@ def _cost_estimate_trusted_for_live(data: dict[str, Any]) -> bool:
 
 def _cost_estimate_live_trust(data: dict[str, Any]) -> dict[str, Any]:
     source = str(data.get("cost_source") or data.get("source") or "").lower()
-    sample_count = _cost_estimate_sample_count(data)
+    live_sample_count = _cost_estimate_live_sample_count(data)
     fallback_level = str(data.get("fallback_level") or "")
     fallback_reason = str(data.get("fallback_reason") or "")
     fallback_text = f"{fallback_level};{fallback_reason}".upper()
@@ -314,7 +336,7 @@ def _cost_estimate_live_trust(data: dict[str, Any]) -> dict[str, Any]:
     reasons: list[str] = []
     if stale:
         reasons.append("stale_cost_bucket")
-    if sample_count < 30:
+    if live_sample_count < 30:
         reasons.append("sample_count_lt_30")
     if source in {"public_spread_proxy", "public_proxy"}:
         reasons.append("source_public_proxy_only")
@@ -339,13 +361,13 @@ def _cost_estimate_live_trust(data: dict[str, Any]) -> dict[str, Any]:
 
     canary = (
         source in {"actual_fills", "actual_okx_fills_and_bills", "mixed_actual_proxy"}
-        and sample_count >= 30
+        and live_sample_count >= 30
         and not stale
         and degraded_reason not in {"global_default_cost", "cost_bucket_stale"}
     )
     scale = (
         source in {"actual_fills", "actual_okx_fills_and_bills"}
-        and sample_count >= 100
+        and live_sample_count >= 100
         and not stale
         and _cost_estimate_safe_for_scale(fallback_level, fallback_reason)
         and not degraded_cost_model
@@ -377,8 +399,44 @@ def _cost_estimate_live_trust(data: dict[str, Any]) -> dict[str, Any]:
 
 
 def _cost_estimate_sample_count(data: dict[str, Any]) -> int:
+    return _cost_estimate_int(data.get("sample_count") or data.get("sample_size"))
+
+
+def _cost_estimate_live_sample_count(data: dict[str, Any]) -> int:
+    for field in ("live_cost_sample_count", "trusted_live_sample_count"):
+        if field in data and data.get(field) not in {None, ""}:
+            return _cost_estimate_int(data.get(field))
+
+    strategy_count = _cost_estimate_int(data.get("strategy_live_fill_count"))
+    private_count = _cost_estimate_int(data.get("private_fill_count"))
+    actual_mixed_count = _cost_estimate_int(data.get("actual_fill_count")) + _cost_estimate_int(
+        data.get("mixed_fill_count")
+    )
+    live_count = max(strategy_count + private_count, actual_mixed_count)
+    if live_count > 0:
+        return live_count
+
+    source = str(data.get("cost_source") or data.get("source") or "").lower()
+    if source not in {
+        "actual_fills",
+        "actual_okx_fills_and_bills",
+        "mixed_actual_proxy",
+        "actual_okx_fills_fee_missing",
+    }:
+        return 0
+    eligible = str(data.get("eligible_for_live_cost_coverage") or "").strip().lower()
+    if eligible in {"0", "false", "no"}:
+        return 0
+    if str(data.get("sample_origin_mix") or "").strip().lower() == "cost_probe_only":
+        return 0
+    if _cost_estimate_int(data.get("cost_probe_fill_count")) > 0:
+        return 0
+    return _cost_estimate_sample_count(data)
+
+
+def _cost_estimate_int(value: Any) -> int:
     try:
-        return int(float(data.get("sample_count") or data.get("sample_size") or 0))
+        return max(int(float(value or 0)), 0)
     except (TypeError, ValueError):
         return 0
 

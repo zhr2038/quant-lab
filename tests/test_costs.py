@@ -194,7 +194,15 @@ def test_cost_probe_only_bucket_counts_as_bootstrap_not_trusted_live():
     now = datetime(2026, 6, 15, tzinfo=UTC)
 
     readiness = build_cost_bootstrap_readiness(
-        pl.DataFrame([_coverage_cost_row("BTC-USDT", "bootstrap_cost_probe", now)]),
+        pl.DataFrame(
+            [
+                {
+                    **_coverage_cost_row("BTC-USDT", "bootstrap_cost_probe", now),
+                    "sample_count": 30,
+                    "cost_probe_fill_count": 30,
+                }
+            ]
+        ),
         live_symbols=["BTC-USDT"],
         generated_at=now,
     )
@@ -202,12 +210,143 @@ def test_cost_probe_only_bucket_counts_as_bootstrap_not_trusted_live():
     btc = readiness.to_dicts()[0]
     assert btc["bootstrap_state"] == "BOOTSTRAP_PROBE_AVAILABLE"
     assert btc["cost_evidence_tier"] == "bootstrap_cost_probe"
-    assert btc["cost_probe_fill_count"] == 4
+    assert btc["sample_count"] == 30
+    assert btc["cost_probe_fill_count"] == 30
+    assert btc["live_cost_sample_count"] == 0
+    assert btc["trusted_sample_count"] == 0
     assert btc["actual_or_mixed_bootstrap_covered"] is True
     assert btc["actual_or_mixed_trusted_covered"] is False
     assert btc["trusted_for_live"] is False
     assert btc["actual_or_mixed_bootstrap_coverage_live_universe"] == 1.0
     assert btc["actual_or_mixed_trusted_coverage_live_universe"] == 0.0
+
+
+def test_cost_probe_mixed_samples_do_not_satisfy_trusted_live():
+    now = datetime(2026, 6, 15, tzinfo=UTC)
+    row = {
+        **_coverage_cost_row("BTC-USDT", "mixed_actual_proxy", now),
+        "sample_count": 30,
+        "actual_fill_count": 0,
+        "mixed_fill_count": 1,
+        "cost_probe_fill_count": 29,
+        "strategy_live_fill_count": 1,
+        "private_fill_count": 0,
+        "sample_origin_mix": "cost_probe+strategy_live",
+        "eligible_for_live_cost_coverage": True,
+    }
+
+    readiness = build_cost_bootstrap_readiness(
+        pl.DataFrame([row]),
+        live_symbols=["BTC-USDT"],
+        min_trusted_sample_count=30,
+        generated_at=now,
+    )
+
+    btc = readiness.to_dicts()[0]
+    assert btc["bootstrap_state"] == "MIXED_ACTUAL_PROXY_AVAILABLE"
+    assert btc["sample_count"] == 30
+    assert btc["cost_probe_fill_count"] == 29
+    assert btc["live_cost_sample_count"] == 1
+    assert btc["trusted_sample_count"] == 1
+    assert btc["actual_or_mixed_bootstrap_covered"] is True
+    assert btc["actual_or_mixed_trusted_covered"] is False
+    assert btc["trusted_for_live"] is False
+    assert btc["actual_or_mixed_bootstrap_coverage_live_universe"] == 1.0
+    assert btc["actual_or_mixed_trusted_coverage_live_universe"] == 0.0
+
+
+def test_thirty_live_samples_without_cost_probe_satisfy_trusted_live():
+    now = datetime(2026, 6, 15, tzinfo=UTC)
+    row = {
+        **_coverage_cost_row("BTC-USDT", "actual_fills", now),
+        "sample_count": 30,
+        "actual_fill_count": 30,
+        "mixed_fill_count": 0,
+        "cost_probe_fill_count": 0,
+        "strategy_live_fill_count": 30,
+        "private_fill_count": 0,
+        "sample_origin_mix": "strategy_live",
+        "eligible_for_live_cost_coverage": True,
+    }
+
+    readiness = build_cost_bootstrap_readiness(
+        pl.DataFrame([row]),
+        live_symbols=["BTC-USDT"],
+        min_trusted_sample_count=30,
+        generated_at=now,
+    )
+
+    btc = readiness.to_dicts()[0]
+    assert btc["bootstrap_state"] == "ACTUAL_FILLS_TRUSTED"
+    assert btc["sample_count"] == 30
+    assert btc["live_cost_sample_count"] == 30
+    assert btc["trusted_sample_count"] == 30
+    assert btc["actual_or_mixed_trusted_covered"] is True
+    assert btc["trusted_for_live"] is True
+    assert btc["actual_or_mixed_trusted_coverage_live_universe"] == 1.0
+
+
+def test_cost_estimate_live_trust_uses_live_samples_not_probe_samples():
+    row = {
+        **_estimate_cost_row(
+            source="mixed_actual_proxy",
+            sample_count=30,
+            fallback_level="COST_PROBE_INCLUDED",
+        ),
+        "actual_fill_count": 0,
+        "mixed_fill_count": 1,
+        "cost_probe_fill_count": 29,
+        "strategy_live_fill_count": 1,
+        "private_fill_count": 0,
+        "sample_origin_mix": "cost_probe+strategy_live",
+        "eligible_for_live_cost_coverage": True,
+    }
+
+    estimate = estimate_cost_from_cost_bucket_daily_rows(
+        symbol="BTC-USDT",
+        regime="normal",
+        notional_usdt=5_000,
+        quantile="p75",
+        rows=[row],
+    )
+
+    assert estimate.sample_count == 30
+    assert estimate.live_cost_sample_count == 1
+    assert estimate.trusted_live_sample_count == 1
+    assert estimate.cost_quality == "small_sample"
+    assert estimate.cost_trusted_for_live is False
+    assert estimate.cost_trusted_for_live_canary is False
+    assert "sample_count_lt_30" in estimate.cost_trust_block_reasons
+
+
+def test_cost_estimate_live_trust_accepts_thirty_live_samples_without_probe():
+    estimate = estimate_cost_from_cost_bucket_daily_rows(
+        symbol="BTC-USDT",
+        regime="normal",
+        notional_usdt=5_000,
+        quantile="p75",
+        rows=[
+            {
+                **_estimate_cost_row(
+                    source="actual_fills",
+                    sample_count=30,
+                    fallback_level="NONE",
+                ),
+                "actual_fill_count": 30,
+                "mixed_fill_count": 0,
+                "cost_probe_fill_count": 0,
+                "strategy_live_fill_count": 30,
+                "private_fill_count": 0,
+                "sample_origin_mix": "strategy_live",
+                "eligible_for_live_cost_coverage": True,
+            }
+        ],
+    )
+
+    assert estimate.live_cost_sample_count == 30
+    assert estimate.trusted_live_sample_count == 30
+    assert estimate.cost_trusted_for_live is True
+    assert estimate.cost_trusted_for_live_canary is True
 
 
 def test_cost_model_can_fallback_to_symbol_bucket():
@@ -627,4 +766,37 @@ def _coverage_cost_row(symbol: str, source: str, created_at: datetime) -> dict[s
             source in {"actual_fills", "mixed_actual_proxy", "actual_okx_fills_fee_missing"}
         ),
         "created_at": created_at.isoformat(),
+    }
+
+
+def _estimate_cost_row(
+    *,
+    source: str,
+    sample_count: int,
+    fallback_level: str,
+) -> dict[str, object]:
+    return {
+        "day": "2026-05-10",
+        "symbol": "BTC-USDT",
+        "regime": "normal",
+        "event_type": "actual_fill",
+        "notional_bucket": "1k-10k",
+        "sample_count": sample_count,
+        "fee_bps_p50": 1.0,
+        "fee_bps_p75": 1.5,
+        "fee_bps_p90": 2.0,
+        "slippage_bps_p50": 2.0,
+        "slippage_bps_p75": 3.0,
+        "slippage_bps_p90": 4.0,
+        "spread_bps_p50": 0.5,
+        "spread_bps_p75": 0.75,
+        "spread_bps_p90": 1.0,
+        "total_cost_bps_p50": 3.5,
+        "total_cost_bps_p75": 5.25,
+        "total_cost_bps_p90": 7.0,
+        "fallback_level": fallback_level,
+        "source": source,
+        "cost_source": source,
+        "cost_model_version": "costs-2026-05-10",
+        "created_at": datetime.now(UTC).isoformat(),
     }

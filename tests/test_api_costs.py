@@ -63,6 +63,8 @@ def test_cost_estimate_api_reads_cost_bucket_daily_from_lake(tmp_path, monkeypat
     assert payload["cost_source"] == "actual_okx_fills_and_bills"
     assert payload["sample_size"] == 42
     assert payload["sample_count"] == 42
+    assert payload["live_cost_sample_count"] == 42
+    assert payload["trusted_live_sample_count"] == 42
     assert payload["cost_model_version"] == "costs-2026-05-10"
 
 
@@ -578,6 +580,50 @@ def test_cost_estimate_trust_actual_fills_sample_30_is_canary_not_scale(tmp_path
     assert payload["cost_trust_level"] == "CANARY"
     assert payload["cost_trusted_for_live_canary"] is True
     assert payload["cost_trusted_for_live_scale"] is False
+
+
+def test_cost_estimate_api_live_trust_uses_live_samples_not_probe_total(
+    tmp_path,
+    monkeypatch,
+):
+    lake = tmp_path / "lake"
+    monkeypatch.setenv("QUANT_LAB_LAKE_ROOT", str(lake))
+    write_parquet_dataset(
+        pl.DataFrame(
+            [
+                _cost_row(
+                    symbol="BTC-USDT",
+                    sample_count=30,
+                    source="mixed_actual_proxy",
+                    fallback_level="COST_PROBE_INCLUDED",
+                    actual_fill_count=0,
+                    mixed_fill_count=1,
+                    cost_probe_fill_count=29,
+                    strategy_live_fill_count=1,
+                    private_fill_count=0,
+                    sample_origin_mix="cost_probe+strategy_live",
+                    eligible_for_live_cost_coverage=True,
+                    created_at=datetime.now(UTC).isoformat(),
+                )
+            ]
+        ),
+        lake / "gold/cost_bucket_daily",
+    )
+
+    response = TestClient(app).get(
+        "/v1/costs/estimate",
+        params={"symbol": "BTC-USDT", "regime": "normal", "notional_usdt": 5_000},
+    )
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["sample_count"] == 30
+    assert payload["live_cost_sample_count"] == 1
+    assert payload["trusted_live_sample_count"] == 1
+    assert payload["cost_quality"] == "small_sample"
+    assert payload["cost_trusted_for_live"] is False
+    assert payload["cost_trusted_for_live_canary"] is False
+    assert "sample_count_lt_30" in payload["cost_trust_block_reasons"]
 
 
 def test_cost_estimate_trust_regime_fallback_is_not_scale_ready(tmp_path, monkeypatch):

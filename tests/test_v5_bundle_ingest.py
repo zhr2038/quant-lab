@@ -436,6 +436,34 @@ def test_ingest_rehydrates_empty_expanded_universe_tables_for_already_ingested_b
     assert daily["entry_count"].cast(str).to_list() == ["0"]
 
 
+def test_ingest_rehydrates_cost_probe_p3_preflight_for_already_ingested_bundle(tmp_path):
+    bundle = make_v5_bundle_fixture(
+        tmp_path / "v5_live_followup_bundle_20260514T083000Z.tar.gz"
+    )
+    lake = tmp_path / "lake"
+
+    first = ingest_v5_bundle(bundle, lake, tmp_path / "restricted", tmp_path / "redacted")
+    assert first.skipped is False
+    write_parquet_dataset(
+        pl.DataFrame(schema={"strategy": pl.Utf8}),
+        lake / "silver/v5_cost_probe_p3_preflight",
+    )
+
+    result = ingest_v5_bundle(bundle, lake, tmp_path / "restricted", tmp_path / "redacted")
+
+    p3_preflight = read_parquet_dataset(lake / "silver/v5_cost_probe_p3_preflight")
+    row = p3_preflight.to_dicts()[0]
+    assert result.skipped is True
+    assert result.silver_rows["v5_cost_probe_p3_preflight"] == 1
+    assert row["state"] == "NOT_READY"
+    assert row["approved_live_order_execution"] is False
+    assert row["live_order_effect"] == "none_preflight_only_no_order"
+    assert any(
+        warning.startswith("rehydrated_empty_csv_refresh_datasets:")
+        for warning in result.warnings
+    )
+
+
 def test_ingest_v5_empty_expanded_universe_summaries_refresh_datasets(tmp_path):
     first = make_tar(
         tmp_path / "v5_live_followup_bundle_20260514T083000Z.tar.gz",

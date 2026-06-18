@@ -113,6 +113,10 @@ EMPTY_CSV_REFRESH_DATASETS = {
     "v5_expanded_universe_paper_runs",
     "v5_expanded_universe_paper_daily",
 }
+REHYDRATE_IF_EMPTY_DATASETS = {
+    *EMPTY_CSV_REFRESH_DATASETS,
+    "v5_cost_probe_p3_preflight",
+}
 PULLBACK_STABLE_ROW_KEY_DATASETS = {
     "v5_pullback_reversal_shadow",
     "v5_pullback_reversal_readiness",
@@ -506,7 +510,7 @@ def _rehydrate_empty_csv_refresh_datasets(
 ) -> tuple[dict[str, int], list[str]]:
     target_names = [
         name
-        for name in sorted(EMPTY_CSV_REFRESH_DATASETS)
+        for name in sorted(REHYDRATE_IF_EMPTY_DATASETS)
         if read_parquet_dataset(lake_root / SILVER_DATASETS[name]).is_empty()
     ]
     if not target_names:
@@ -527,6 +531,9 @@ def _rehydrate_empty_csv_refresh_datasets(
         "summaries/expanded_universe_advisory_reader.csv",
         "summaries/expanded_universe_paper_runs.csv",
         "summaries/expanded_universe_paper_daily.csv",
+        "reports/cost_probe_p3_preflight.json",
+        "summaries/cost_probe_p3_preflight.json",
+        "raw/reports/cost_probe_p3_preflight.json",
     }
 
     with tempfile.TemporaryDirectory(prefix="quant_lab_v5_rehydrate_") as temp_name:
@@ -548,6 +555,8 @@ def _rehydrate_empty_csv_refresh_datasets(
         dataset_path = lake_root / SILVER_DATASETS[name]
         if rows[name]:
             counts[name] = _upsert_stable_rows(dataset_path, rows[name])
+            continue
+        if name not in EMPTY_CSV_REFRESH_DATASETS:
             continue
         empty_csv = empty_csv_headers.get(name)
         if empty_csv is not None:

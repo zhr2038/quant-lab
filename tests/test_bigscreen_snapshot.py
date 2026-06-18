@@ -738,6 +738,40 @@ def test_bigscreen_snapshot_promotes_export_data_quality_warning(tmp_path, monke
     )
 
 
+def test_bigscreen_actions_skip_read_only_cost_coverage_advisory():
+    actions = bigscreen_module._build_actions(
+        overview={},
+        data_health={},
+        cost={
+            "hard_fallback_ratio": 0.0,
+            "soft_fallback_ratio": 1.0,
+            "live_universe_cost_coverage": [
+                {
+                    "symbol": "BTC-USDT",
+                    "coverage_status": "WARNING",
+                    "coverage_reason": "stale_actual_or_mixed_no_fresh_live_anchor",
+                    "live_order_effect": "read_only_no_live_order",
+                },
+                {
+                    "symbol": "ETH-USDT",
+                    "coverage_status": "WARNING",
+                    "coverage_reason": "public_proxy_only_no_live_actual_anchor",
+                    "live_order_effect": "read_only_no_live_order",
+                },
+            ],
+        },
+        v5={"latest": {"kill_switch_enabled": False, "reconcile_ok": True}},
+        web_events=[],
+        exports={
+            "latest_pack": "/tmp/quant_lab_expert_pack_2026-06-18_120000.zip",
+            "data_quality_summary": {"status": "PASS", "warnings": [], "failures": []},
+        },
+        legacy_anomalies={"items": []},
+    )
+
+    assert not any(action["source"] == "cost_model_summary" for action in actions)
+
+
 def test_bigscreen_snapshot_keeps_live_readiness_block_out_of_system_critical(
     tmp_path,
     monkeypatch,
@@ -848,7 +882,7 @@ def test_bigscreen_snapshot_keeps_live_readiness_block_out_of_system_critical(
     assert payload["health_score"] >= 80
     assert any("expert_pack_data_quality_warning:" in item for item in payload["warnings"])
     assert not any("expert_pack_data_quality_critical:" in item for item in payload["warnings"])
-    assert any(
-        action["source"] == "expert_export_summary" and action["severity"] == "WARNING"
+    assert not any(
+        action["source"] == "expert_export_summary"
         for action in payload["actions"]
     )

@@ -425,6 +425,39 @@ def _is_read_only_live_readiness_failure(value: str) -> bool:
     )
 
 
+def _export_quality_requires_action(exports: dict[str, Any]) -> bool:
+    level = _export_quality_level(exports)
+    if level not in {"WARNING", "CRITICAL"}:
+        return False
+    data_quality = _export_data_quality(exports)
+    return not _export_quality_is_live_readiness_blocked_only(data_quality)
+
+
+def _cost_soft_fallback_requires_action(cost: dict[str, Any]) -> bool:
+    if (_float(cost.get("soft_fallback_ratio")) or 0.0) <= 0.8:
+        return False
+    return not _cost_soft_fallback_is_read_only_advisory(cost)
+
+
+def _cost_soft_fallback_is_read_only_advisory(cost: dict[str, Any]) -> bool:
+    if (_float(cost.get("hard_fallback_ratio")) or 0.0) > 0.25:
+        return False
+    coverage_rows = _frame_rows(cost.get("live_universe_cost_coverage"), limit=100)
+    if not coverage_rows:
+        return False
+    warned_rows = [
+        row
+        for row in coverage_rows
+        if str(row.get("coverage_status") or "").upper() in {"WARNING", "WARN"}
+    ]
+    if not warned_rows:
+        return False
+    return all(
+        str(row.get("live_order_effect") or "").strip().lower() == "read_only_no_live_order"
+        for row in warned_rows
+    )
+
+
 def _quality_failure_count(data_quality: dict[str, Any]) -> int:
     failures = data_quality.get("failures")
     return len(failures) if isinstance(failures, list) else 0
@@ -1357,7 +1390,7 @@ def _build_actions(
                 "/cost",
             )
         )
-    if (_float(cost.get("soft_fallback_ratio")) or 0.0) > 0.8:
+    if _cost_soft_fallback_requires_action(cost):
         actions.append(
             _action(
                 "WARNING",
@@ -1426,7 +1459,7 @@ def _build_actions(
             )
         )
     export_quality_level = _export_quality_level(exports)
-    if exports.get("latest_pack") and export_quality_level in {"WARNING", "CRITICAL"}:
+    if exports.get("latest_pack") and _export_quality_requires_action(exports):
         data_quality = _export_data_quality(exports)
         actions.append(
             _action(

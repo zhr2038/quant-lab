@@ -4732,7 +4732,7 @@ def test_export_warns_when_risk_permission_older_than_v5_telemetry(tmp_path):
 def test_export_prefers_v5_bundle_manifest_over_health_day_boundary(tmp_path):
     lake_root = _fixture_lake(tmp_path)
     manifest_ts = datetime.now(UTC) - timedelta(minutes=5)
-    _write_risk_permission_for_export(
+    _write_current_and_bootstrap_risk_permissions_for_export(
         lake_root,
         as_of=manifest_ts,
         expires_at=datetime.now(UTC) + timedelta(minutes=20),
@@ -5705,6 +5705,58 @@ def _write_risk_permission_for_export(
                     "enforceable": True,
                 }
             ]
+        ),
+        lake_root / "gold" / "risk_permission",
+    )
+
+
+def _write_current_and_bootstrap_risk_permissions_for_export(
+    lake_root: Path,
+    *,
+    as_of: datetime,
+    expires_at: datetime,
+) -> None:
+    write_parquet_dataset(
+        pl.DataFrame(
+            [
+                {
+                    "strategy": "v5",
+                    "version": "5.0.0",
+                    "permission": "ALLOW",
+                    "allowed_modes": ["paper"],
+                    "allowed_live_modes": [],
+                    "max_gross_exposure": 0.0,
+                    "max_single_weight": 0.0,
+                    "cost_model_version": "costs-v1",
+                    "gate_version": "default-v0.1",
+                    "reasons": ["fixture"],
+                    "created_at": as_of,
+                    "as_of_ts": as_of,
+                    "expires_at": expires_at,
+                    "permission_status": "ACTIVE_ALLOW",
+                    "enforceable": True,
+                },
+                {
+                    "strategy": "v5",
+                    "version": "bootstrap",
+                    "permission": "SELL_ONLY",
+                    "allowed_modes": ["sell_only"],
+                    "allowed_live_modes": [],
+                    "max_gross_exposure": 0.0,
+                    "max_single_weight": 0.0,
+                    "cost_model_version": "costs-bootstrap",
+                    "gate_version": "bootstrap.quarantine.v1",
+                    "reasons": ["required_alpha_gate_quarantine"],
+                    "created_at": datetime(2026, 5, 11, tzinfo=UTC),
+                    "as_of_ts": None,
+                    "expires_at": None,
+                    "permission_status": None,
+                    "enforceable": None,
+                    "source": "bootstrap_gold_health",
+                    "fallback_level": "BOOTSTRAP_CONSERVATIVE",
+                },
+            ],
+            infer_schema_length=None,
         ),
         lake_root / "gold" / "risk_permission",
     )

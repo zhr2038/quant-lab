@@ -13299,7 +13299,7 @@ def _risk_permissions_for_export(
     checked_at = reference_at or datetime.now(UTC)
     telemetry_latest_ts = telemetry_latest_ts or _latest_v5_bundle_ts(frames)
     rows: list[dict[str, Any]] = []
-    for row in risk.to_dicts():
+    for row in _current_risk_permission_rows(risk.to_dicts()):
         permission = str(row.get("permission") or "ABORT").strip().upper()
         as_of_ts = _risk_row_timestamp(row, ["as_of_ts", "created_at"])
         row_telemetry_ts = _risk_row_timestamp(row, ["telemetry_latest_ts", "source_bundle_ts"])
@@ -13330,6 +13330,32 @@ def _risk_permissions_for_export(
             }
         )
     return pl.DataFrame(rows) if rows else risk
+
+
+def _current_risk_permission_rows(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    formal_strategies = {
+        str(row.get("strategy") or "").strip()
+        for row in rows
+        if not _is_bootstrap_risk_permission(row)
+    }
+    if not formal_strategies:
+        return rows
+    return [
+        row
+        for row in rows
+        if not (
+            _is_bootstrap_risk_permission(row)
+            and str(row.get("strategy") or "").strip() in formal_strategies
+        )
+    ]
+
+
+def _is_bootstrap_risk_permission(row: dict[str, Any]) -> bool:
+    text = " ".join(
+        str(row.get(column) or "").strip().lower()
+        for column in ["version", "gate_version", "source", "fallback_level"]
+    )
+    return "bootstrap" in text
 
 
 def _risk_permission_export_status(

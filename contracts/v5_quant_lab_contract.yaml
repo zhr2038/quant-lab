@@ -25,19 +25,20 @@ common_enums:
   permission_status:
     - ACTIVE_ALLOW
     - ACTIVE_SELL_ONLY
-      - ACTIVE_ABORT
-      - STALE_ALLOW
-      - STALE_SELL_ONLY
-      - STALE_ABORT
-      - EXPIRED_ALLOW
-      - EXPIRED_SELL_ONLY
-      - EXPIRED_ABORT
-      - NO_FRESH_PERMISSION
+    - ACTIVE_ABORT
+    - STALE_ALLOW
+    - STALE_SELL_ONLY
+    - STALE_ABORT
+    - EXPIRED_ALLOW
+    - EXPIRED_SELL_ONLY
+    - EXPIRED_ABORT
+    - NO_FRESH_PERMISSION
   cost_source:
     - actual_fills
     - mixed_actual_proxy
     - actual_okx_fills_and_bills
     - actual_okx_fills_fee_missing
+    - bootstrap_cost_probe
     - public_spread_proxy
     - global_default
   fallback_reason:
@@ -130,6 +131,7 @@ schemas:
         - mixed_actual_proxy
         - actual_okx_fills_and_bills
         - actual_okx_fills_fee_missing
+        - bootstrap_cost_probe
         - public_spread_proxy
         - global_default
       source:
@@ -137,11 +139,13 @@ schemas:
         - mixed_actual_proxy
         - actual_okx_fills_and_bills
         - actual_okx_fills_fee_missing
+        - bootstrap_cost_probe
         - public_spread_proxy
         - global_default
       cost_quality:
         - actual
         - mixed_actual_proxy
+        - bootstrap_cost_probe
         - public_proxy_only
         - global_default
         - small_sample

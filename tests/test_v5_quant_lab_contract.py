@@ -72,6 +72,80 @@ def test_cost_contract_fixtures_validate_required_fields_enums_and_timestamps():
         _validate_payload(contract, schema_name, payload)
 
 
+def test_common_permission_status_enum_is_flat_and_complete():
+    contract = _load_contract()
+
+    assert contract["common_enums"]["permission_status"] == [
+        "ACTIVE_ALLOW",
+        "ACTIVE_SELL_ONLY",
+        "ACTIVE_ABORT",
+        "STALE_ALLOW",
+        "STALE_SELL_ONLY",
+        "STALE_ABORT",
+        "EXPIRED_ALLOW",
+        "EXPIRED_SELL_ONLY",
+        "EXPIRED_ABORT",
+        "NO_FRESH_PERMISSION",
+    ]
+
+
+def test_bootstrap_cost_probe_cost_contract_is_paper_only():
+    contract = _load_contract()
+
+    estimate = CostEstimate(
+        symbol="BTC/USDT",
+        regime="normal",
+        notional_usdt=5_000.0,
+        quantile="p75",
+        fallback_level="COST_PROBE_INCLUDED",
+        fallback_reason="NONE",
+        source="bootstrap_cost_probe",
+        cost_source="bootstrap_cost_probe",
+        sample_count=2,
+        total_cost_bps=4.2,
+        cost_bps=4.2,
+        fee_bps=1.0,
+        spread_bps=1.0,
+        slippage_bps=2.0,
+        slippage_source="cost_probe_roundtrip",
+        as_of_ts=datetime(2026, 6, 19, tzinfo=UTC),
+    )
+    payload = estimate.model_dump(mode="json")
+
+    assert payload["cost_quality"] == "bootstrap_cost_probe"
+    assert payload["cost_trust_level"] == "PAPER_ONLY"
+    assert payload["cost_trusted_for_live_canary"] is False
+    assert "fallback_not_live_safe" in payload["cost_trust_block_reasons"]
+    _validate_payload(contract, "cost_estimate_response", payload)
+
+
+def test_live_canary_requires_actual_slippage_evidence():
+    estimate = CostEstimate(
+        symbol="BTC/USDT",
+        regime="normal",
+        notional_usdt=5_000.0,
+        quantile="p75",
+        fallback_level="NONE",
+        fallback_reason="NONE",
+        source="actual_okx_fills_and_bills",
+        cost_source="actual_okx_fills_and_bills",
+        sample_count=30,
+        live_cost_sample_count=30,
+        total_cost_bps=4.2,
+        cost_bps=4.2,
+        fee_bps=1.0,
+        spread_bps=1.0,
+        slippage_bps=2.0,
+        slippage_source="unknown",
+        as_of_ts=datetime(2026, 6, 19, tzinfo=UTC),
+    )
+
+    assert estimate.cost_trusted_for_live is False
+    assert estimate.cost_trusted_for_live_canary is False
+    assert estimate.cost_trust_level == "PAPER_ONLY"
+    assert "slippage_not_actual" in estimate.cost_trust_block_reasons
+
+
 def test_risk_permission_contract_fixtures_validate_required_fields_enums_and_timestamps():
     contract = _load_contract()
     for fixture in [

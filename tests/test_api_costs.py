@@ -500,7 +500,7 @@ def test_cost_estimate_trust_allows_fresh_mixed_actual_proxy_canary(tmp_path, mo
                     symbol="BTC-USDT",
                     sample_count=30,
                     source="mixed_actual_proxy",
-                    fallback_level="SLIPPAGE_UNKNOWN",
+                    fallback_level="NONE",
                     created_at=datetime.now(UTC).isoformat(),
                 )
             ]
@@ -653,7 +653,9 @@ def test_cost_estimate_trust_regime_fallback_is_not_scale_ready(tmp_path, monkey
     assert response.status_code == 200
     payload = response.json()
     assert payload["fallback_level"] == "REGIME_FALLBACK"
-    assert payload["cost_trust_level"] in {"CANARY", "PAPER_ONLY"}
+    assert payload["cost_trust_level"] == "PAPER_ONLY"
+    assert payload["cost_trusted_for_live"] is False
+    assert payload["cost_trusted_for_live_canary"] is False
     assert payload["cost_trusted_for_live_scale"] is False
     assert "fallback_not_live_safe" in payload["cost_trust_block_reasons"]
 

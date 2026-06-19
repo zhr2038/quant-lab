@@ -298,6 +298,8 @@ def _cost_estimate_quality(data: dict[str, Any]) -> str:
         }
         else sample_count
     )
+    if source == "bootstrap_cost_probe":
+        return "bootstrap_cost_probe"
     if source == "global_default":
         return "global_default"
     if source in {"public_spread_proxy", "public_proxy"}:
@@ -363,7 +365,7 @@ def _cost_estimate_live_trust(data: dict[str, Any]) -> dict[str, Any]:
         source in {"actual_fills", "actual_okx_fills_and_bills", "mixed_actual_proxy"}
         and live_sample_count >= 30
         and not stale
-        and degraded_reason not in {"global_default_cost", "cost_bucket_stale"}
+        and not reasons
     )
     scale = (
         source in {"actual_fills", "actual_okx_fills_and_bills"}

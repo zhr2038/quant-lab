@@ -12,7 +12,7 @@ TimeoutStartSec=45min
 Environment=POLARS_MAX_THREADS=1
 Environment=MALLOC_ARENA_MAX=2
 Environment=QUANT_LAB_EXPORT_V5_MAX_PENDING_BUNDLES=1
-Environment=QUANT_LAB_EXPORT_V5_MAX_SCAN_BUNDLES=30
+Environment=QUANT_LAB_EXPORT_V5_MAX_SCAN_BUNDLES=1000
 Environment=QUANT_LAB_API_METRICS_EXPORT_WINDOW_MINUTES=30
 EnvironmentFile=-/etc/quant-lab/quant_lab_api.env
 MemoryHigh=2G

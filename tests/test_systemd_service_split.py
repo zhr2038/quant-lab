@@ -48,6 +48,8 @@ def test_daily_export_uses_recent_api_metrics_window():
     unit = _unit("quant-lab-daily-export.service")
 
     assert "QUANT_LAB_API_METRICS_EXPORT_WINDOW_MINUTES=30" in unit
+    assert "QUANT_LAB_EXPORT_V5_MAX_PENDING_BUNDLES=1" in unit
+    assert "QUANT_LAB_EXPORT_V5_MAX_SCAN_BUNDLES=1000" in unit
 
 
 def test_all_quant_lab_jobs_run_as_service_user_except_root_only_helpers():
@@ -362,7 +364,7 @@ def test_web_export_request_worker_is_scheduled_outside_dashboard_cgroup():
         in service
     )
     assert "QUANT_LAB_EXPORT_V5_MAX_PENDING_BUNDLES=1" in service
-    assert "QUANT_LAB_EXPORT_V5_MAX_SCAN_BUNDLES=30" in service
+    assert "QUANT_LAB_EXPORT_V5_MAX_SCAN_BUNDLES=1000" in service
     assert "MemoryMax=6G" in service
     request_path = "/var/lib/quant-lab/exports/.quant_lab_web_export_request.json"
     assert f"PathExists={request_path}" in path

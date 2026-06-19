@@ -328,7 +328,7 @@ def test_daily_export_template_refreshes_v5_before_packaging():
     assert "export-daily" in unit
     assert "--no-refresh-risk-permission" in unit
     assert "--pre-export-v5-refresh" in unit
-    assert "--allow-stale-v5" in unit
+    assert "--allow-stale-v5" not in unit
     assert "--no-pre-export-v5-refresh" not in unit
     assert "TimeoutStartSec=45min" in unit
     assert "/var/lock/quant-lab-heavy.lock" in unit

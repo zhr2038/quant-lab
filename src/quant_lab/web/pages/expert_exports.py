@@ -283,13 +283,12 @@ try:
             str(exports_root),
             "--no-refresh-risk-permission",
             "--pre-export-v5-refresh",
-            "--allow-stale-v5",
         ],
         refresh_risk_permission=False,
         risk_strategy="v5",
         risk_version="5.0.0",
         pre_export_v5_refresh=True,
-        allow_stale_v5=True,
+        allow_stale_v5=False,
     )
     write_status({
         "state": "succeeded",
@@ -630,13 +629,12 @@ def _export_daily_from_web(
             str(exports_root),
             "--no-refresh-risk-permission",
             "--pre-export-v5-refresh",
-            "--allow-stale-v5",
         ],
         refresh_risk_permission=False,
         risk_strategy="v5",
         risk_version="5.0.0",
         pre_export_v5_refresh=True,
-        allow_stale_v5=True,
+        allow_stale_v5=False,
     )
     return Path(result.zip_path), list(result.warnings)
 
@@ -655,9 +653,9 @@ def _export_daily_in_subprocess(
         "result=export_daily_pack("
         "export_date=day, lake_root=lake, out_dir=out, profile='expert',"
         "command_line=['qlab','export-daily','--date',day,'--lake-root',str(lake),'--out-dir',str(out),"
-        "'--no-refresh-risk-permission','--pre-export-v5-refresh','--allow-stale-v5'],"
+        "'--no-refresh-risk-permission','--pre-export-v5-refresh'],"
         "refresh_risk_permission=False, risk_strategy='v5', risk_version='5.0.0',"
-        "pre_export_v5_refresh=True, allow_stale_v5=True);"
+        "pre_export_v5_refresh=True, allow_stale_v5=False);"
         "print(json.dumps({'zip_path': str(result.zip_path), 'warnings': result.warnings}))"
     )
     completed = subprocess.run(

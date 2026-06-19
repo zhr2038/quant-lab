@@ -2581,10 +2581,10 @@ def test_expert_exports_generate_today_button_invokes_export(tmp_path, monkeypat
     assert captured["profile"] == "expert"
     assert captured["refresh_risk_permission"] is False
     assert captured["pre_export_v5_refresh"] is True
-    assert captured["allow_stale_v5"] is True
+    assert captured["allow_stale_v5"] is False
     assert "--no-refresh-risk-permission" in captured["command_line"]
     assert "--pre-export-v5-refresh" in captured["command_line"]
-    assert "--allow-stale-v5" in captured["command_line"]
+    assert "--allow-stale-v5" not in captured["command_line"]
     assert any("已生成专家包" in str(value) for value in _call_values(fake, "success"))
     downloads = _call_values(fake, "download_button")
     assert any(item["file_name"] == "quant_lab_expert_pack_test.zip" for item in downloads)
@@ -2625,7 +2625,7 @@ def test_expert_exports_generate_today_button_starts_background_job(tmp_path, mo
     assert captured["command"][1] == "-c"
     assert "refresh_risk_permission=False" in captured["command"][2]
     assert "pre_export_v5_refresh=True" in captured["command"][2]
-    assert "allow_stale_v5=True" in captured["command"][2]
+    assert "allow_stale_v5=False" in captured["command"][2]
     assert captured["kwargs"]["env"]["POLARS_MAX_THREADS"] == "1"
     assert captured["kwargs"]["env"]["MALLOC_ARENA_MAX"] == "2"
     assert fake.rerun_count == 1
@@ -2705,9 +2705,9 @@ def test_web_export_request_worker_writes_completion_status(tmp_path, monkeypatc
     assert stored["zip_path"].endswith("quant_lab_expert_pack_2026-05-16_worker.zip")
     assert stored["warnings"] == ["sample_warning"]
     assert captured["pre_export_v5_refresh"] is True
-    assert captured["allow_stale_v5"] is True
+    assert captured["allow_stale_v5"] is False
     assert "--pre-export-v5-refresh" in captured["command_line"]
-    assert "--allow-stale-v5" in captured["command_line"]
+    assert "--allow-stale-v5" not in captured["command_line"]
     assert not request_path.exists()
 
 
@@ -2769,7 +2769,7 @@ def test_expert_exports_generate_today_uses_beijing_date_and_creates_export_dir(
     assert captured["export_date"] == "2026-05-16"
     assert captured["refresh_risk_permission"] is False
     assert captured["pre_export_v5_refresh"] is True
-    assert captured["allow_stale_v5"] is True
+    assert captured["allow_stale_v5"] is False
 
 
 def test_expert_exports_generated_pack_is_listed_first(tmp_path):
@@ -3204,7 +3204,7 @@ def test_expert_exports_subprocess_mode_parses_generated_pack(tmp_path, monkeypa
     assert captured["command"][1] == "-c"
     assert "refresh_risk_permission=False" in captured["command"][2]
     assert "pre_export_v5_refresh=True" in captured["command"][2]
-    assert "allow_stale_v5=True" in captured["command"][2]
+    assert "allow_stale_v5=False" in captured["command"][2]
     assert "str(result.zip_path)" in captured["command"][2]
     assert captured["kwargs"]["capture_output"] is True
 

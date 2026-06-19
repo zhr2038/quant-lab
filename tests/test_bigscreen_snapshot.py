@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import os
 import zipfile
 from datetime import UTC, datetime
 from pathlib import Path
@@ -627,6 +628,51 @@ def test_web_v2_expert_pack_status_and_download(monkeypatch, tmp_path):
 
     traversal_response = client.get("/web-v2/expert-pack/download/..%5Csecret.zip")
     assert traversal_response.status_code == 404
+
+
+def test_web_v2_expert_pack_status_prefers_latest_requested_pack_over_stale_status(
+    monkeypatch,
+    tmp_path,
+):
+    clear_bigscreen_cache()
+    lake = tmp_path / "lake"
+    exports = tmp_path / "exports"
+    exports.mkdir(parents=True)
+    old_pack = exports / "quant_lab_expert_pack_2026-06-19_20260619T095826451309+0800.zip"
+    new_pack = exports / "quant_lab_expert_pack_2026-06-19_20260619T155027688187+0800.zip"
+    for pack in (old_pack, new_pack):
+        with zipfile.ZipFile(pack, "w") as archive:
+            archive.writestr("manifest.json", json.dumps({"status": "OK"}))
+            archive.writestr("data_quality.json", json.dumps({"status": "OK"}))
+            archive.writestr("expert_questions.md", "下一步看什么？\n")
+    old_time = datetime(2026, 6, 19, 2, tzinfo=UTC).timestamp()
+    new_time = datetime(2026, 6, 19, 7, tzinfo=UTC).timestamp()
+    os.utime(old_pack, (old_time, old_time))
+    os.utime(new_pack, (new_time, new_time))
+    (exports / ".quant_lab_web_export_2026-06-19.json").write_text(
+        json.dumps(
+            {
+                "state": "succeeded",
+                "zip_path": str(old_pack),
+                "finished_at": "2026-06-19T02:03:31+00:00",
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    monkeypatch.setenv("QUANT_LAB_LAKE_ROOT", str(lake))
+    monkeypatch.delenv("QUANT_LAB_API_TOKEN", raising=False)
+    response = TestClient(create_app()).get(
+        "/web-v2/expert-pack/status?export_date=2026-06-19"
+    )
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["status"]["zip_path"] == str(old_pack)
+    assert payload["requested_date_pack_name"] == new_pack.name
+    assert payload["latest_pack_name"] == new_pack.name
+    assert payload["latest_download_url"] == f"/web-v2/expert-pack/download/{new_pack.name}"
+    assert payload["packs"][0]["name"] == new_pack.name
 
 
 def test_web_v2_expert_pack_status_keeps_latest_available_when_requested_date_missing(

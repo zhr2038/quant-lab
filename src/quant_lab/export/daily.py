@@ -3424,7 +3424,12 @@ def _canonical_strategy_opportunity_frames(
     strategy_evidence = _strategy_evidence_for_export(
         frames.get("strategy_evidence", pl.DataFrame())
     )
-    risk = _risk_permissions_for_export(frames.get("risk_permission", pl.DataFrame()), frames)
+    telemetry_latest_ts = _latest_v5_bundle_ts(dict(frames))
+    risk = _risk_permissions_for_export(
+        frames.get("risk_permission", pl.DataFrame()),
+        frames,
+        telemetry_latest_ts=telemetry_latest_ts,
+    )
     _, paper_daily, paper_slippage = _paper_tracking_frames_for_export(dict(frames))
     research_portfolio = dedupe_research_portfolio_status(
         frames.get("research_portfolio_status", pl.DataFrame())
@@ -4881,7 +4886,12 @@ def _dataset_members(
     research_portfolio = dedupe_research_portfolio_status(
         frames.get("research_portfolio_status", pl.DataFrame())
     )
-    risk = _risk_permissions_for_export(frames.get("risk_permission", pl.DataFrame()), frames)
+    telemetry_latest_ts = _latest_v5_bundle_ts(frames)
+    risk = _risk_permissions_for_export(
+        frames.get("risk_permission", pl.DataFrame()),
+        frames,
+        telemetry_latest_ts=telemetry_latest_ts,
+    )
     paper_runs, paper_daily, paper_slippage = _paper_tracking_frames_for_export(frames)
     bnb_paper_runs = _prefer_frame(
         frames.get("v5_bnb_paper_strategy_runs", pl.DataFrame()),
@@ -7421,8 +7431,14 @@ def _data_quality_payload(
         snapshot.frames.get("risk_permission", pl.DataFrame()),
         snapshot.frames,
         reference_at=generated_at,
+        telemetry_latest_ts=latest_v5_bundle_ts,
     )
-    risk_quality = _risk_permission_quality(risk, snapshot.frames, reference_at=generated_at)
+    risk_quality = _risk_permission_quality(
+        risk,
+        snapshot.frames,
+        reference_at=generated_at,
+        telemetry_latest_ts=latest_v5_bundle_ts,
+    )
     read_only_cost_advisory = _read_only_cost_advisory_context(risk_quality)
 
     costs = snapshot.frames.get("cost_bucket_daily", pl.DataFrame())
@@ -7739,6 +7755,7 @@ def _data_quality_payload(
         snapshot.frames.get("risk_permission", pl.DataFrame()),
         snapshot.frames,
         reference_at=generated_at,
+        telemetry_latest_ts=latest_v5_bundle_ts,
     )
     checks.append(
         _check(
@@ -7766,7 +7783,12 @@ def _data_quality_payload(
             warning_only=True,
         )
     )
-    risk_quality = _risk_permission_quality(risk, snapshot.frames, reference_at=generated_at)
+    risk_quality = _risk_permission_quality(
+        risk,
+        snapshot.frames,
+        reference_at=generated_at,
+        telemetry_latest_ts=latest_v5_bundle_ts,
+    )
     risk_is_stale_vs_v5 = str(risk_quality["permission_status"]).startswith("STALE_")
     risk_expired_at_export = bool(risk_quality.get("permission_expired_at_export"))
     checks.append(
@@ -9644,7 +9666,12 @@ def _strategy_opportunity_advisory_from_frames(
     strategy_evidence = _strategy_evidence_for_export(
         frames.get("strategy_evidence", pl.DataFrame())
     )
-    risk = _risk_permissions_for_export(frames.get("risk_permission", pl.DataFrame()), frames)
+    telemetry_latest_ts = _latest_v5_bundle_ts(frames)
+    risk = _risk_permissions_for_export(
+        frames.get("risk_permission", pl.DataFrame()),
+        frames,
+        telemetry_latest_ts=telemetry_latest_ts,
+    )
     _, paper_daily, paper_slippage = _paper_tracking_frames_for_export(frames)
     research_portfolio = dedupe_research_portfolio_status(
         frames.get("research_portfolio_status", pl.DataFrame())
@@ -13119,6 +13146,12 @@ def _latest_v5_mode(frames: dict[str, pl.DataFrame]) -> str | None:
 
 
 def _latest_v5_bundle_ts(frames: dict[str, pl.DataFrame]) -> datetime | None:
+    manifest_ts = _latest_dataset_timestamp(
+        "v5_bundle_manifest",
+        frames.get("v5_bundle_manifest", pl.DataFrame()),
+    )
+    if manifest_ts is not None:
+        return manifest_ts
     timestamps = [
         _latest_dataset_timestamp(name, frames.get(name, pl.DataFrame()))
         for name in [
@@ -13169,9 +13202,10 @@ def _risk_permission_quality(
     frames: dict[str, pl.DataFrame],
     *,
     reference_at: datetime | None = None,
+    telemetry_latest_ts: datetime | None = None,
 ) -> dict[str, Any]:
     checked_at = reference_at or datetime.now(UTC)
-    telemetry_latest_ts = _latest_v5_bundle_ts(frames)
+    telemetry_latest_ts = telemetry_latest_ts or _latest_v5_bundle_ts(frames)
     if risk.is_empty():
         return {
             "permission_status": "NO_FRESH_PERMISSION",
@@ -13258,11 +13292,12 @@ def _risk_permissions_for_export(
     frames: dict[str, pl.DataFrame],
     *,
     reference_at: datetime | None = None,
+    telemetry_latest_ts: datetime | None = None,
 ) -> pl.DataFrame:
     if risk.is_empty():
         return risk
     checked_at = reference_at or datetime.now(UTC)
-    telemetry_latest_ts = _latest_v5_bundle_ts(frames)
+    telemetry_latest_ts = telemetry_latest_ts or _latest_v5_bundle_ts(frames)
     rows: list[dict[str, Any]] = []
     for row in risk.to_dicts():
         permission = str(row.get("permission") or "ABORT").strip().upper()
@@ -13301,12 +13336,19 @@ def _risk_permission_export_status(
     frames: dict[str, pl.DataFrame],
     generated_at: datetime,
 ) -> dict[str, Any]:
+    telemetry_latest_ts = _latest_v5_bundle_ts(frames)
     risk = _risk_permissions_for_export(
         frames.get("risk_permission", pl.DataFrame()),
         frames,
         reference_at=generated_at,
+        telemetry_latest_ts=telemetry_latest_ts,
     )
-    quality = _risk_permission_quality(risk, frames, reference_at=generated_at)
+    quality = _risk_permission_quality(
+        risk,
+        frames,
+        reference_at=generated_at,
+        telemetry_latest_ts=telemetry_latest_ts,
+    )
     return {
         "risk_permission_generated_at": quality.get("risk_permission_generated_at"),
         "risk_permission_expires_at": quality.get("risk_permission_expires_at"),

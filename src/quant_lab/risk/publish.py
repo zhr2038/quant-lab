@@ -25,6 +25,7 @@ COST_HEALTH_DAILY_DATASET = Path("gold") / "cost_health_daily"
 MARKET_BAR_DATASET = Path("silver") / "market_bar"
 V5_GATE_COMPLIANCE_DATASET = Path("gold") / "v5_gate_compliance_daily"
 STRATEGY_HEALTH_DAILY_DATASET = Path("gold") / "strategy_health_daily"
+V5_BUNDLE_MANIFEST_DATASET = Path("bronze") / "strategy_telemetry" / "v5" / "bundle_manifest"
 DEFAULT_TELEMETRY_STALE_THRESHOLD_SECONDS = 90 * 60
 ACTIVE_PERMISSION_STATUSES = {
     RiskPermissionStatus.ACTIVE_ALLOW.value,
@@ -506,6 +507,9 @@ def strategy_telemetry_reasons(root: Path, strategy: str) -> list[str]:
 def latest_strategy_telemetry_ts(root: Path, strategy: str) -> datetime | None:
     if strategy != "v5":
         return None
+    manifest_ts = _latest_v5_bundle_manifest_ts(root, strategy)
+    if manifest_ts is not None:
+        return manifest_ts
     lazy, columns = _safe_parquet_lazy(root / STRATEGY_HEALTH_DAILY_DATASET)
     if lazy is None:
         return None
@@ -528,6 +532,18 @@ def latest_strategy_telemetry_ts(root: Path, strategy: str) -> datetime | None:
     ]
     clean = [value for value in parsed if value is not None]
     return max(clean) if clean else None
+
+
+def _latest_v5_bundle_manifest_ts(root: Path, strategy: str) -> datetime | None:
+    lazy, columns = _safe_parquet_lazy(root / V5_BUNDLE_MANIFEST_DATASET)
+    if lazy is None or "bundle_ts" not in columns:
+        return None
+    scoped = lazy.filter(pl.col("strategy") == strategy) if "strategy" in columns else lazy
+    try:
+        frame = scoped.select(_lazy_utc_datetime("bundle_ts").max().alias("bundle_ts")).collect()
+    except Exception:
+        return None
+    return _coerce_timestamp(frame.item(0, "bundle_ts")) if frame.height else None
 
 
 def annotate_risk_permission(

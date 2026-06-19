@@ -121,6 +121,10 @@ DATASET_PATHS = {
     "gate_decision": Path("gold") / "gate_decision",
     "risk_permission": Path("gold") / "risk_permission",
     "risk_permission_api_dependency_meta": Path("gold") / "risk_permission_api_dependency_meta",
+    "v5_bundle_manifest": Path("bronze")
+    / "strategy_telemetry"
+    / "v5"
+    / "bundle_manifest",
     "api_request_metrics": Path("bronze") / "api_request_metrics",
     "job_run_history": Path("gold") / "job_run_history",
     "lake_file_health_daily": Path("gold") / "lake_file_health_daily",
@@ -195,6 +199,7 @@ OPTIONAL_EMPTY_DATASET_STATUSES = {
     "expanded_universe_automation_active",
     "legacy_optional",
     "waiting_for_v5_paper_telemetry",
+    "waiting_for_v5_bundle_manifest",
     "entry_quality_optional",
     "historical_research_snapshot",
     "event_driven_no_recent_cost_probe_p3_preflight",
@@ -328,6 +333,7 @@ DATASET_TIMESTAMP_COLUMNS: dict[str, tuple[str, ...]] = {
     "job_run_history": ("finished_at", "started_at"),
     "lake_file_health_daily": ("created_at", "day"),
     "strategy_health_daily": ("latest_bundle_ts", "date"),
+    "v5_bundle_manifest": ("bundle_ts", "ingest_ts", "created_at"),
     "v5_execution_quality_daily": ("latest_bundle_ts", "date"),
     "v5_gate_compliance_daily": ("latest_bundle_ts", "date"),
     "v5_missed_opportunity_daily": ("latest_bundle_ts", "date"),
@@ -4542,6 +4548,13 @@ def default_exports_root(lake_root: str | Path) -> Path:
 
 
 def _latest_v5_bundle_ts(lake_root: str | Path) -> datetime | None:
+    manifest_latest = _latest_dataset_timestamp_by_path(
+        dataset_path_for(lake_root, "v5_bundle_manifest"),
+        "v5_bundle_manifest",
+        timestamp_columns=DATASET_TIMESTAMP_COLUMNS["v5_bundle_manifest"],
+    )
+    if manifest_latest is not None:
+        return manifest_latest
     latest = _latest_dataset_timestamp_by_path(
         dataset_path_for(lake_root, "strategy_health_daily"),
         "strategy_health_daily",
@@ -5281,6 +5294,8 @@ def _empty_dataset_status(dataset_name: str) -> str:
         return "event_driven_no_recent_cost_probe_roundtrip_event"
     if dataset_name == "decision_audit":
         return "legacy_optional"
+    if dataset_name == "v5_bundle_manifest":
+        return "waiting_for_v5_bundle_manifest"
     if dataset_name in V5_PAPER_TELEMETRY_DATASETS:
         return "waiting_for_v5_paper_telemetry"
     if dataset_name in ENTRY_QUALITY_DATASETS:

@@ -4729,6 +4729,56 @@ def test_export_warns_when_risk_permission_older_than_v5_telemetry(tmp_path):
     assert risk_flags[0]["enforceable"].lower() == "false"
 
 
+def test_export_prefers_v5_bundle_manifest_over_health_day_boundary(tmp_path):
+    lake_root = _fixture_lake(tmp_path)
+    manifest_ts = datetime.now(UTC) - timedelta(minutes=5)
+    _write_risk_permission_for_export(
+        lake_root,
+        as_of=manifest_ts,
+        expires_at=datetime.now(UTC) + timedelta(minutes=20),
+    )
+    _write_v5_bundle_manifest_for_export(lake_root, manifest_ts)
+    write_parquet_dataset(
+        pl.DataFrame(
+            [
+                {
+                    "strategy": "v5",
+                    "date": manifest_ts.date().isoformat(),
+                    "status": "OK",
+                    "latest_bundle_ts": datetime.now(UTC) + timedelta(hours=24),
+                }
+            ]
+        ),
+        lake_root / "gold" / "strategy_health_daily",
+    )
+
+    result = export_daily_pack(
+        export_date=manifest_ts.date().isoformat(),
+        lake_root=lake_root,
+        out_dir=tmp_path / "exports",
+        profile="expert",
+        command_line=["qlab", "export-daily"],
+    )
+
+    with zipfile.ZipFile(result.zip_path) as archive:
+        data_quality = json.loads(archive.read("data_quality.json").decode("utf-8"))
+        risk_flags = list(
+            csv.DictReader(io.StringIO(archive.read("risk/risk_flags.csv").decode("utf-8")))
+        )
+
+    risk_quality = data_quality["risk_permission"]
+    assert risk_quality["permission_status"] == "ACTIVE_ALLOW"
+    assert risk_quality["enforceable"] is True
+    assert risk_quality["telemetry_latest_ts"].startswith(manifest_ts.isoformat()[:16])
+    assert not any(
+        warning.startswith(
+            "risk_permission_fresh_vs_v5_telemetry: risk_permission_stale_vs_v5_telemetry"
+        )
+        for warning in data_quality["warnings"]
+    )
+    assert risk_flags == []
+
+
 def test_export_manifest_records_fresh_risk_permission_not_expired(tmp_path):
     lake_root = _fixture_lake(tmp_path)
     now = datetime.now(UTC)
@@ -5657,6 +5707,24 @@ def _write_risk_permission_for_export(
             ]
         ),
         lake_root / "gold" / "risk_permission",
+    )
+
+
+def _write_v5_bundle_manifest_for_export(lake_root: Path, bundle_ts: datetime) -> None:
+    write_parquet_dataset(
+        pl.DataFrame(
+            [
+                {
+                    "strategy": "v5",
+                    "bundle_sha256": "sha-fixture",
+                    "bundle_name": "v5_live_followup_bundle_fixture.tar.gz",
+                    "bundle_ts": bundle_ts,
+                    "ingest_ts": datetime.now(UTC),
+                    "schema_version": "test",
+                }
+            ]
+        ),
+        lake_root / "bronze" / "strategy_telemetry" / "v5" / "bundle_manifest",
     )
 
 

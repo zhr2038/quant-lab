@@ -185,6 +185,23 @@ def test_publish_risk_permission_marks_active_when_telemetry_within_threshold(tm
     assert permission["contract_version"] == "risk_permission.v0.2"
 
 
+def test_publish_risk_permission_prefers_bundle_manifest_over_health_day_boundary(tmp_path):
+    lake = tmp_path / "lake"
+    _write_gate(lake, GateStatus.QUARANTINE)
+    _write_fresh_market_bar(lake)
+    _write_actual_cost(lake)
+    manifest_ts = datetime.now(UTC) - timedelta(minutes=5)
+    _write_v5_bundle_manifest(lake, manifest_ts)
+    _write_strategy_health(lake, datetime.now(UTC) + timedelta(hours=24))
+
+    publish_risk_permission(lake, strategy="v5", version="5.0.0")
+
+    permission = read_parquet_dataset(lake / "gold" / "risk_permission").to_dicts()[0]
+    assert permission["permission"] == "SELL_ONLY"
+    assert permission["permission_status"] == "ACTIVE_SELL_ONLY"
+    assert permission["telemetry_latest_ts"].startswith(manifest_ts.isoformat()[:16])
+
+
 def test_publish_risk_permission_refreshes_expired_periodic_row(tmp_path):
     lake = tmp_path / "lake"
     _write_gate(lake, GateStatus.DEAD)
@@ -368,4 +385,22 @@ def _write_strategy_health(lake, latest_bundle_ts: datetime) -> None:
             ]
         ),
         lake / "gold" / "strategy_health_daily",
+    )
+
+
+def _write_v5_bundle_manifest(lake, bundle_ts: datetime) -> None:
+    write_parquet_dataset(
+        pl.DataFrame(
+            [
+                {
+                    "strategy": "v5",
+                    "bundle_sha256": "sha-fixture",
+                    "bundle_name": "v5_live_followup_bundle_fixture.tar.gz",
+                    "bundle_ts": bundle_ts,
+                    "ingest_ts": datetime.now(UTC),
+                    "schema_version": "test",
+                }
+            ]
+        ),
+        lake / "bronze" / "strategy_telemetry" / "v5" / "bundle_manifest",
     )

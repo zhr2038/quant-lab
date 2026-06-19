@@ -552,6 +552,7 @@ class CostBucketDaily(BaseModel):
     spread_bps_p50: float = Field(ge=0)
     spread_bps_p75: float = Field(ge=0)
     spread_bps_p90: float = Field(ge=0)
+    spread_source: str = Field(default="unavailable", min_length=1)
     total_cost_bps_p50: float = Field(ge=0)
     total_cost_bps_p75: float = Field(ge=0)
     total_cost_bps_p90: float = Field(ge=0)
@@ -949,6 +950,7 @@ def estimate_cost_from_cost_bucket_daily_rows(
     components = _all_in_cost_components(
         source=source,
         fallback_level=fallback_level,
+        spread_source=str(row.get("spread_source") or ""),
         observed_fee_bps=observed_fee_bps,
         observed_slippage_bps=observed_slippage_bps,
         observed_spread_bps=observed_spread_bps,
@@ -1313,6 +1315,7 @@ def _all_in_cost_components(
     *,
     source: str,
     fallback_level: str,
+    spread_source: str,
     observed_fee_bps: float,
     observed_slippage_bps: float,
     observed_spread_bps: float,
@@ -1349,7 +1352,12 @@ def _all_in_cost_components(
         "fee_bps": fee_bps,
         "fee_source": "actual_fills_bills" if fee_is_actual else "config_fee_bps",
         "spread_bps": spread_bps,
-        "spread_source": "fresh_orderbook_p75" if spread_bps > 0 and not stale else "unavailable",
+        "spread_source": _normalized_spread_source(
+            spread_source,
+            spread_bps=spread_bps,
+            stale=stale,
+            source=normalized_source,
+        ),
         "slippage_bps": slippage_bps,
         "slippage_source": (
             "v5_order_lifecycle_arrival_mid" if slippage_is_actual else "config_slippage_bps"
@@ -1374,6 +1382,38 @@ def _all_in_cost_components(
             and not stale
         ),
     }
+
+
+def _normalized_spread_source(
+    value: str,
+    *,
+    spread_bps: float,
+    stale: bool,
+    source: str,
+) -> str:
+    if stale or spread_bps <= 0:
+        return "unavailable"
+    normalized = str(value or "").strip().lower()
+    if normalized in {
+        "actual_arrival_book",
+        "actual_order_lifecycle_arrival_book",
+        "v5_order_lifecycle_arrival_book",
+        "spread_at_decision",
+    }:
+        return "actual_arrival_book"
+    if normalized in {
+        "fresh_public_orderbook_p75",
+        "fresh_orderbook_p75",
+        "public_orderbook_p75",
+        "public_spread_proxy",
+        "spread_proxy",
+    }:
+        return "fresh_public_orderbook_p75"
+    if normalized == "unavailable":
+        return "unavailable"
+    if _is_public_proxy_source(source):
+        return "fresh_public_orderbook_p75"
+    return "fresh_public_orderbook_p75"
 
 
 def _global_default_components() -> dict[str, Any]:

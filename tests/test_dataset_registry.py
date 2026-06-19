@@ -54,6 +54,8 @@ def test_dataset_registry_covers_v5_and_research_governance_datasets():
         "v5_quant_lab_fallback",
         "v5_quant_lab_compliance",
         "v5_cost_probe_p3_preflight",
+        "v5_cost_probe_order_event",
+        "v5_cost_probe_roundtrip_event",
         "v5_candidate_label",
         "v5_shadow_outcome",
         "v5_paper_strategy_run",
@@ -170,6 +172,18 @@ def test_v5_registry_matches_current_envelope_and_daily_schemas():
     assert "approved_live_order_execution" in p3_preflight.required_columns
     assert "live_order_effect" in p3_preflight.required_columns
     assert p3_preflight.timestamp_column == "ingest_ts"
+
+    order_events = get_dataset_spec("v5_cost_probe_order_event")
+    assert order_events is not None
+    assert order_events.primary_key == ("event_key",)
+    assert "order_key" in order_events.required_columns
+    assert order_events.timestamp_column == "event_ts"
+
+    roundtrip_events = get_dataset_spec("v5_cost_probe_roundtrip_event")
+    assert roundtrip_events is not None
+    assert roundtrip_events.primary_key == ("event_key",)
+    assert "roundtrip_key" in roundtrip_events.required_columns
+    assert roundtrip_events.timestamp_column == "event_ts"
 
     assert strategy_health is not None
     assert strategy_health.required_columns == ("date", "status", "latest_bundle_ts")

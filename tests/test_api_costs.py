@@ -47,7 +47,7 @@ def test_cost_estimate_api_reads_cost_bucket_daily_from_lake(tmp_path, monkeypat
     assert payload["slippage_bps"] == 3.0
     assert payload["slippage_source"] == "v5_order_lifecycle_arrival_mid"
     assert payload["spread_bps"] == 0.75
-    assert payload["spread_source"] == "fresh_orderbook_p75"
+    assert payload["spread_source"] == "fresh_public_orderbook_p75"
     assert payload["total_cost_bps"] == 5.25
     assert payload["one_way_all_in_cost_bps"] == 5.25
     assert payload["roundtrip_all_in_cost_bps"] == 10.5
@@ -338,7 +338,7 @@ def test_cost_estimate_api_uses_same_symbol_public_proxy_for_trending_regime(
     assert payload["slippage_bps"] == 2.0
     assert payload["slippage_source"] == "config_slippage_bps"
     assert payload["spread_bps"] == 1.4969
-    assert payload["spread_source"] == "fresh_orderbook_p75"
+    assert payload["spread_source"] == "fresh_public_orderbook_p75"
     assert payload["uncertainty_buffer_bps"] == 2.0
     assert payload["one_way_all_in_cost_bps"] == 15.4969
     assert payload["roundtrip_all_in_cost_bps"] == 30.9938

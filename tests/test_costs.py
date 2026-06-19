@@ -422,7 +422,7 @@ def test_cost_bucket_daily_estimate_uses_requested_quantile():
     assert estimate.sample_size == 42
     assert estimate.cost_model_version == "costs-2026-05-10"
     assert estimate.fee_source == "actual_fills_bills"
-    assert estimate.spread_source == "fresh_orderbook_p75"
+    assert estimate.spread_source == "fresh_public_orderbook_p75"
     assert estimate.slippage_source == "v5_order_lifecycle_arrival_mid"
     assert estimate.uncertainty_buffer_bps == 0.0
     assert estimate.one_way_all_in_cost_bps == 7.0
@@ -500,7 +500,7 @@ def test_cost_bucket_daily_estimate_preserves_proxy_fallback_on_exact_match():
     assert estimate.fee_source == "config_fee_bps"
     assert estimate.slippage_bps == 2.0
     assert estimate.slippage_source == "config_slippage_bps"
-    assert estimate.spread_source == "fresh_orderbook_p75"
+    assert estimate.spread_source == "fresh_public_orderbook_p75"
     assert estimate.uncertainty_buffer_bps == 5.0
     assert estimate.one_way_all_in_cost_bps == 19.0
     assert estimate.roundtrip_all_in_cost_bps == 38.0

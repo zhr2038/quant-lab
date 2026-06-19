@@ -1126,6 +1126,68 @@ def test_web_tracks_v5_quant_lab_request_freshness(tmp_path):
     assert snapshot.freshness["freshness_status"] == "fresh"
 
 
+def test_web_exposes_cost_probe_event_streams(tmp_path):
+    lake_root = tmp_path / "lake"
+    now = datetime.now(UTC)
+    write_parquet_dataset(
+        pl.DataFrame(
+            [
+                {
+                    "strategy": "v5",
+                    "date": now.date().isoformat(),
+                    "status": "OK",
+                    "latest_bundle_ts": now,
+                }
+            ]
+        ),
+        lake_root / "gold" / "strategy_health_daily",
+    )
+    write_parquet_dataset(
+        pl.DataFrame(
+            [
+                {
+                    "event_key": "order-event-key",
+                    "event_id": "probe-entry-1|order:entry:filled|2026-05-14T08:30:02Z",
+                    "event_type": "order:entry:filled",
+                    "event_ts": "2026-05-14T08:30:02Z",
+                    "order_key": "probe-entry-1",
+                    "symbol": "BTC-USDT",
+                    "live_order_effect": "live_cost_probe_order",
+                    "ingest_ts": now,
+                    "bundle_ts": now,
+                }
+            ]
+        ),
+        lake_root / "silver" / "v5_cost_probe_order_event",
+    )
+    write_parquet_dataset(
+        pl.DataFrame(
+            [
+                {
+                    "event_key": "roundtrip-event-key",
+                    "event_id": "probe-roundtrip-1|roundtrip:closed|2026-05-14T08:30:20Z",
+                    "event_type": "roundtrip:closed",
+                    "event_ts": "2026-05-14T08:30:20Z",
+                    "roundtrip_key": "probe-roundtrip-1",
+                    "symbol": "BTC-USDT",
+                    "live_order_effect": "live_cost_probe_roundtrip",
+                    "ingest_ts": now,
+                    "bundle_ts": now,
+                }
+            ]
+        ),
+        lake_root / "silver" / "v5_cost_probe_roundtrip_event",
+    )
+
+    states = {state.name: state for state in readers.dataset_states(lake_root)}
+    summary = readers.v5_telemetry_summary(lake_root)
+
+    assert states["v5_cost_probe_order_event"].rows == 1
+    assert states["v5_cost_probe_roundtrip_event"].rows == 1
+    assert summary["latest"]["cost_probe_order_event"]["event_type"] == "order:entry:filled"
+    assert summary["latest"]["cost_probe_roundtrip_event"]["event_type"] == "roundtrip:closed"
+
+
 def test_data_health_treats_v5_cost_usage_and_fallback_as_event_driven_when_current(
     tmp_path,
 ):

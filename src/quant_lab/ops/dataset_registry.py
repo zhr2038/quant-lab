@@ -612,6 +612,62 @@ def core_dataset_specs() -> dict[str, DatasetSpec]:
             quality_rules=("schema_required_columns",),
         ),
         DatasetSpec(
+            dataset_id="v5_cost_probe_order_event",
+            layer="silver",
+            relative_path=Path("silver") / "v5_cost_probe_order_event",
+            owner="v5-telemetry",
+            description=(
+                "Append-only V5 cost probe order event stream; one row per "
+                "order status event, keyed by order identity, event type, and event time."
+            ),
+            producer="qlab ingest-v5-bundle",
+            consumers=("web", "expert-export", "cost-readiness"),
+            required=False,
+            min_rows=0,
+            primary_key=("event_key",),
+            required_columns=(
+                "event_key",
+                "event_id",
+                "event_type",
+                "event_ts",
+                "order_key",
+                "live_order_effect",
+                "raw_payload_json",
+            ),
+            timestamp_column="event_ts",
+            utc_timestamp_columns=("bundle_ts", "ingest_ts", "event_ts"),
+            freshness_seconds=None,
+            quality_rules=("schema_required_columns", "primary_key_unique"),
+        ),
+        DatasetSpec(
+            dataset_id="v5_cost_probe_roundtrip_event",
+            layer="silver",
+            relative_path=Path("silver") / "v5_cost_probe_roundtrip_event",
+            owner="v5-telemetry",
+            description=(
+                "Append-only V5 cost probe roundtrip event stream; records the "
+                "entry/exit lifecycle and flat-verification evidence."
+            ),
+            producer="qlab ingest-v5-bundle",
+            consumers=("web", "expert-export", "cost-readiness"),
+            required=False,
+            min_rows=0,
+            primary_key=("event_key",),
+            required_columns=(
+                "event_key",
+                "event_id",
+                "event_type",
+                "event_ts",
+                "roundtrip_key",
+                "live_order_effect",
+                "raw_payload_json",
+            ),
+            timestamp_column="event_ts",
+            utc_timestamp_columns=("bundle_ts", "ingest_ts", "event_ts"),
+            freshness_seconds=None,
+            quality_rules=("schema_required_columns", "primary_key_unique"),
+        ),
+        DatasetSpec(
             dataset_id="v5_quant_lab_request",
             layer="silver",
             relative_path=Path("silver") / "v5_quant_lab_request",

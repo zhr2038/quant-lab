@@ -8,7 +8,11 @@ from quant_lab.costs.calibrate import (
     _v5_order_lifecycle_fill_samples,
     calibrate_costs_for_day,
 )
-from quant_lab.costs.model import cost_bucket_daily_to_cost_buckets, estimate_cost_bps
+from quant_lab.costs.model import (
+    cost_bucket_daily_to_cost_buckets,
+    estimate_cost_bps,
+    estimate_cost_from_cost_bucket_daily_rows,
+)
 from quant_lab.data.lake import read_parquet_dataset, write_parquet_dataset
 from quant_lab.ingest.okx_readonly_private import (
     BRONZE_BILLS_DATASET,
@@ -40,7 +44,8 @@ def test_actual_fills_and_bills_generate_actual_cost_bucket(tmp_path):
     assert row["spread_bps_p50"] == 200.0
     assert row["slippage_bps_p50"] == 0.0
     assert row["total_cost_bps_p50"] == 205.0
-    assert row["fallback_level"] == "SLIPPAGE_UNKNOWN;SPREAD_PROXY"
+    assert row["fallback_level"] == "SLIPPAGE_UNKNOWN"
+    assert row["spread_source"] == "fresh_public_orderbook_p75"
     assert row["source"] == "mixed_actual_proxy"
     health = read_parquet_dataset(lake_root / "gold" / "cost_health_daily").to_dicts()[0]
     assert health["actual_rows"] == 0
@@ -106,6 +111,7 @@ def test_without_fills_uses_public_spread_proxy_only(tmp_path):
     assert row["spread_bps_p50"] == 200.0
     assert row["total_cost_bps_p50"] == 200.0
     assert row["fallback_level"] == "FEE_MISSING;SLIPPAGE_UNKNOWN;PUBLIC_SPREAD_PROXY"
+    assert row["spread_source"] == "fresh_public_orderbook_p75"
     assert "actual" not in row["source"]
 
 
@@ -270,7 +276,8 @@ def test_v5_trade_events_generate_actual_fill_bucket_before_spread_proxy(tmp_pat
     assert all_row["event_type"] == "actual_fill"
     assert all_row["sample_count"] == 2
     assert all_row["fee_bps_p50"] > 0
-    assert "SPREAD_PROXY" in all_row["fallback_level"]
+    assert "SPREAD_PROXY" not in all_row["fallback_level"]
+    assert all_row["spread_source"] == "fresh_public_orderbook_p75"
     assert "SLIPPAGE_UNKNOWN" in all_row["fallback_level"]
 
     health = read_parquet_dataset(lake_root / "gold" / "cost_health_daily").to_dicts()[0]
@@ -327,6 +334,7 @@ def test_v5_order_lifecycle_generates_actual_fills_bucket(tmp_path):
     assert all_row["fee_bps_p50"] > 0
     assert all_row["slippage_bps_p50"] > 0
     assert all_row["spread_bps_p50"] > 0
+    assert all_row["spread_source"] == "actual_arrival_book"
     assert "SAMPLE_TOO_SMALL" in all_row["fallback_level"]
     health = read_parquet_dataset(lake_root / "gold" / "cost_health_daily").to_dicts()[0]
     checks = json.loads(health["data_quality_checks_json"])
@@ -335,6 +343,62 @@ def test_v5_order_lifecycle_generates_actual_fills_bucket(tmp_path):
     assert checks["lifecycle_present_but_not_in_actual_cost"] is True
     assert checks["filled_order_missing_lifecycle_cost"] is True
     assert checks["fill_count_zero_for_filled_order"] is True
+
+
+def test_actual_lifecycle_cost_calibration_reaches_canary_with_arrival_spread(tmp_path):
+    lake_root = tmp_path / "lake"
+    _write_lifecycle_cost_samples(lake_root, day="2026-05-15", sample_count=30)
+    _write_bills_for_day(lake_root, "2026-05-15")
+
+    calibrate_costs_for_day(lake_root, "2026-05-15", min_sample_count=30)
+
+    rows = read_parquet_dataset(lake_root / "gold" / "cost_bucket_daily").to_dicts()
+    row = _cost_bucket_row(rows, symbol="BTC-USDT", notional_bucket="all")
+    assert row["source"] == "actual_fills"
+    assert row["fallback_level"] == "NONE"
+    assert row["spread_source"] == "actual_arrival_book"
+    assert row["sample_count"] == 30
+
+    estimate = estimate_cost_from_cost_bucket_daily_rows(
+        symbol="BTC-USDT",
+        regime="realized",
+        notional_usdt=120.0,
+        quantile="p75",
+        rows=rows,
+    )
+
+    assert estimate.cost_trust_level == "CANARY"
+    assert estimate.cost_trusted_for_live_canary is True
+    assert estimate.cost_trusted_for_live_scale is False
+    assert estimate.spread_source == "actual_arrival_book"
+
+
+def test_actual_lifecycle_cost_calibration_reaches_scale_ready_with_complete_samples(tmp_path):
+    lake_root = tmp_path / "lake"
+    _write_lifecycle_cost_samples(lake_root, day="2026-05-15", sample_count=100)
+    _write_bills_for_day(lake_root, "2026-05-15")
+
+    calibrate_costs_for_day(lake_root, "2026-05-15", min_sample_count=30)
+
+    rows = read_parquet_dataset(lake_root / "gold" / "cost_bucket_daily").to_dicts()
+    row = _cost_bucket_row(rows, symbol="BTC-USDT", notional_bucket="all")
+    assert row["source"] == "actual_fills"
+    assert row["fallback_level"] == "NONE"
+    assert row["spread_source"] == "actual_arrival_book"
+    assert row["sample_count"] == 100
+
+    estimate = estimate_cost_from_cost_bucket_daily_rows(
+        symbol="BTC-USDT",
+        regime="realized",
+        notional_usdt=120.0,
+        quantile="p75",
+        rows=rows,
+    )
+
+    assert estimate.cost_trust_level == "SCALE_READY"
+    assert estimate.cost_trusted_for_live_canary is True
+    assert estimate.cost_trusted_for_live_scale is True
+    assert estimate.spread_source == "actual_arrival_book"
 
 
 def test_cost_probe_lifecycle_requires_explicit_cost_model_eligibility():
@@ -508,6 +572,7 @@ def test_v5_order_lifecycle_stays_actual_when_trade_csv_also_exists(tmp_path):
     assert all_row["mixed_fill_count"] == 0
     assert all_row["fee_bps_p50"] > 0
     assert all_row["slippage_bps_p50"] == 0.0
+    assert all_row["spread_source"] == "actual_arrival_book"
 
     health = read_parquet_dataset(lake_root / "gold" / "cost_health_daily").to_dicts()[0]
     checks = json.loads(health["data_quality_checks_json"])
@@ -585,6 +650,7 @@ def test_v5_order_lifecycle_fill_ts_rows_enter_btc_actual_cost_bucket(tmp_path):
     assert all_row["fee_bps_p50"] > 0
     assert all_row["slippage_bps_p50"] > 0
     assert all_row["spread_bps_p50"] == 2.25
+    assert all_row["spread_source"] == "actual_arrival_book"
     health = read_parquet_dataset(lake_root / "gold" / "cost_health_daily").to_dicts()[0]
     checks = json.loads(health["data_quality_checks_json"])
     assert health["actual_rows"] == len(rows)
@@ -812,6 +878,73 @@ def test_calibrated_output_can_feed_cost_estimate(tmp_path):
     assert estimate.cost_bps == 205.0
     assert estimate.fallback_level == "NONE"
     assert estimate.bucket_id == "2026-05-10:BTC-USDT:realized:actual_fill:0-1k"
+
+
+def _cost_bucket_row(rows: list[dict], *, symbol: str, notional_bucket: str) -> dict:
+    return [
+        row
+        for row in rows
+        if row["symbol"] == symbol and row["notional_bucket"] == notional_bucket
+    ][0]
+
+
+def _write_lifecycle_cost_samples(lake_root: Path, *, day: str, sample_count: int) -> None:
+    rows = []
+    for index in range(sample_count):
+        second = index % 60
+        rows.append(
+            {
+                "strategy": "v5",
+                "source_path_inside_bundle": "raw/recent_runs/run_lifecycle/order_lifecycle.csv",
+                "run_id": "run_lifecycle",
+                "ts_utc": f"{day}T01:00:{second:02d}Z",
+                "symbol": "BTC-USDT",
+                "normalized_symbol": "BTC-USDT",
+                "side": "buy" if index % 2 == 0 else "sell",
+                "intent": "OPEN_LONG" if index % 2 == 0 else "CLOSE_LONG",
+                "order_state": "FILLED",
+                "arrival_mid": "60000",
+                "arrival_bid": "59994",
+                "arrival_ask": "60006",
+                "arrival_slippage_bps": "1.5",
+                "delay_cost_bps": "0",
+                "avg_fill_px": "60009" if index % 2 == 0 else "59991",
+                "filled_qty": "0.002",
+                "fee_bps": "1.0",
+                "fee_usdt": "0.012",
+                "notional_usdt": "120",
+                "fill_count": "1",
+                "execution_purpose": "strategy_live",
+                "exchange_order_id": f"okx-{index}",
+                "trade_ids": f"trade-{index}",
+                "last_fill_ts": f"{day}T01:00:{second:02d}Z",
+            }
+        )
+    write_parquet_dataset(
+        pl.DataFrame(rows),
+        lake_root / "silver" / "v5_order_lifecycle",
+    )
+
+
+def _write_bills_for_day(lake_root: Path, day: str) -> None:
+    write_parquet_dataset(
+        pl.DataFrame(
+            [
+                {
+                    "venue": "okx",
+                    "bill_id": f"bill-{day}",
+                    "ccy": "USDT",
+                    "amount": -0.012,
+                    "balance": 999.9,
+                    "bill_type": "2",
+                    "sub_type": "1",
+                    "ts": f"{day}T01:00:00Z",
+                    "source": "okx_readonly_private",
+                }
+            ]
+        ),
+        lake_root / "silver" / "account_bill",
+    )
 
 
 def _write_fills(lake_root: Path) -> None:

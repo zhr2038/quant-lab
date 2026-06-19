@@ -63,6 +63,7 @@ COST_BUCKET_DAILY_SCHEMA = {
     "spread_bps_p50": pl.Float64,
     "spread_bps_p75": pl.Float64,
     "spread_bps_p90": pl.Float64,
+    "spread_source": pl.Utf8,
     "total_cost_bps_p50": pl.Float64,
     "total_cost_bps_p75": pl.Float64,
     "total_cost_bps_p90": pl.Float64,
@@ -332,6 +333,12 @@ def _actual_fill_row(
     ]
     spread_values = [*public_spreads, *sample_spreads]
     spread_fallback = not spread_values
+    if sample_spreads:
+        spread_source = "actual_arrival_book"
+    elif public_spreads:
+        spread_source = "fresh_public_orderbook_p75"
+    else:
+        spread_source = "unavailable"
     sample_too_small = len(samples) < min_sample_count
     slippage_unknown = len(slippage_samples) != len(samples)
 
@@ -357,10 +364,6 @@ def _actual_fill_row(
         fallback_parts.append("SLIPPAGE_UNKNOWN")
     if spread_fallback:
         fallback_parts.append("SPREAD_MISSING")
-    elif sample_spreads and not public_spreads:
-        fallback_parts.append("SPREAD_AT_DECISION")
-    else:
-        fallback_parts.append("SPREAD_PROXY")
     if _uses_private_fill_lookback(samples, day):
         fallback_parts.append("PRIVATE_FILL_LOOKBACK")
 
@@ -384,6 +387,7 @@ def _actual_fill_row(
         spread_bps_p50=spread_p50,
         spread_bps_p75=spread_p75,
         spread_bps_p90=spread_p90,
+        spread_source=spread_source,
         total_cost_bps_p50=fee_p50 + slippage_p50 + spread_p50,
         total_cost_bps_p75=fee_p75 + slippage_p75 + spread_p75,
         total_cost_bps_p90=fee_p90 + slippage_p90 + spread_p90,
@@ -428,6 +432,7 @@ def _public_spread_proxy_rows(
                 spread_bps_p50=spread_p50,
                 spread_bps_p75=spread_p75,
                 spread_bps_p90=spread_p90,
+                spread_source="fresh_public_orderbook_p75",
                 total_cost_bps_p50=spread_p50,
                 total_cost_bps_p75=spread_p75,
                 total_cost_bps_p90=spread_p90,
@@ -464,6 +469,7 @@ def _global_default_row(day: str, symbol: str) -> CostBucketDaily:
         spread_bps_p50=0.0,
         spread_bps_p75=0.0,
         spread_bps_p90=0.0,
+        spread_source="unavailable",
         total_cost_bps_p50=DEFAULT_FALLBACK_COST_BPS,
         total_cost_bps_p75=DEFAULT_FALLBACK_COST_BPS,
         total_cost_bps_p90=DEFAULT_FALLBACK_COST_BPS,

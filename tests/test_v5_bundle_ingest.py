@@ -464,6 +464,141 @@ def test_ingest_rehydrates_cost_probe_p3_preflight_for_already_ingested_bundle(t
     )
 
 
+def test_ingest_exports_cost_probe_order_and_roundtrip_events(tmp_path):
+    order_events = "\n".join(
+        [
+            json.dumps(
+                {
+                    "event_ts": "2026-05-14T08:30:00Z",
+                    "order_key": "probe-entry-1",
+                    "symbol": "BTC/USDT",
+                    "leg": "entry",
+                    "side": "buy",
+                    "intent": "entry",
+                    "order_status": "submitted",
+                    "client_order_id": "probe-entry-1",
+                    "exchange_order_id": "okx-entry-1",
+                    "live_enabled": True,
+                    "dry_run": False,
+                    "no_order_submitted": False,
+                    "notional_usdt": "5.0",
+                    "live_order_effect": "live_cost_probe_order",
+                },
+                sort_keys=True,
+            ),
+            json.dumps(
+                {
+                    "event_ts": "2026-05-14T08:30:02Z",
+                    "order_key": "probe-entry-1",
+                    "symbol": "BTC/USDT",
+                    "leg": "entry",
+                    "side": "buy",
+                    "intent": "entry",
+                    "order_status": "filled",
+                    "client_order_id": "probe-entry-1",
+                    "exchange_order_id": "okx-entry-1",
+                    "filled_qty": "0.00007",
+                    "avg_px": "65000",
+                    "fee_usdt": "0.005",
+                    "live_enabled": True,
+                    "dry_run": False,
+                    "no_order_submitted": False,
+                    "live_order_effect": "live_cost_probe_order",
+                },
+                sort_keys=True,
+            ),
+        ]
+    ) + "\n"
+    roundtrip_events = (
+        json.dumps(
+            {
+                "event_ts": "2026-05-14T08:30:20Z",
+                "symbol": "BTC/USDT",
+                "roundtrip_status": "closed",
+                "roundtrip_id": "probe-roundtrip-1",
+                "entry_order_id": "okx-entry-1",
+                "exit_order_id": "okx-exit-1",
+                "entry_order_status": "filled",
+                "exit_order_status": "filled",
+                "opened_at": "2026-05-14T08:30:00Z",
+                "closed_at": "2026-05-14T08:30:20Z",
+                "fees_usdt": "0.01",
+                "net_pnl_usdt": "-0.02",
+                "live_enabled": True,
+                "dry_run": False,
+                "no_order_submitted": False,
+                "live_order_effect": "live_cost_probe_roundtrip",
+            },
+            sort_keys=True,
+        )
+        + "\n"
+    )
+    bundle = make_tar(
+        tmp_path / "v5_live_followup_bundle_20260514T083000Z.tar.gz",
+        {
+            "summaries/cost_probe_order_events.jsonl": order_events,
+            "summaries/cost_probe_roundtrip_events.jsonl": roundtrip_events,
+        },
+    )
+    lake = tmp_path / "lake"
+
+    result = ingest_v5_bundle(
+        bundle,
+        lake,
+        tmp_path / "restricted",
+        tmp_path / "redacted",
+        run_analysis=False,
+        refresh_candidate_gold=False,
+    )
+
+    order_rows = read_parquet_dataset(lake / "silver/v5_cost_probe_order_event").to_dicts()
+    roundtrip_rows = read_parquet_dataset(
+        lake / "silver/v5_cost_probe_roundtrip_event"
+    ).to_dicts()
+    assert result.silver_rows["v5_cost_probe_order_event"] == 2
+    assert result.silver_rows["v5_cost_probe_roundtrip_event"] == 1
+    assert {row["order_status"] for row in order_rows} == {"submitted", "filled"}
+    assert {row["event_id"] for row in order_rows} == {
+        "probe-entry-1|order:entry:submitted|2026-05-14T08:30:00Z",
+        "probe-entry-1|order:entry:filled|2026-05-14T08:30:02Z",
+    }
+    assert order_rows[0]["normalized_symbol"] == "BTC-USDT"
+    assert roundtrip_rows[0]["roundtrip_key"] == "probe-roundtrip-1"
+    assert roundtrip_rows[0]["event_id"] == (
+        "probe-roundtrip-1|roundtrip:closed|2026-05-14T08:30:20Z"
+    )
+
+    export = export_daily_pack(
+        export_date="2026-05-14",
+        lake_root=lake,
+        out_dir=tmp_path / "exports",
+        command_line=["qlab", "export-daily", "--no-pre-export-v5-refresh"],
+        pre_export_v5_refresh=False,
+    )
+    with zipfile.ZipFile(export.zip_path) as archive:
+        order_csv = list(
+            csv.DictReader(
+                StringIO(archive.read("v5/v5_cost_probe_order_events.csv").decode("utf-8"))
+            )
+        )
+        roundtrip_csv = list(
+            csv.DictReader(
+                StringIO(
+                    archive.read("v5/v5_cost_probe_roundtrip_events.csv").decode("utf-8")
+                )
+            )
+        )
+        manifest = json.loads(archive.read("manifest.json"))
+
+    assert len(order_csv) == 2
+    assert len(roundtrip_csv) == 1
+    assert order_csv[-1]["event_type"] == "order:entry:filled"
+    assert roundtrip_csv[0]["live_order_effect"] == "live_cost_probe_roundtrip"
+    files = {item["path"]: item for item in manifest["files"]}
+    assert files["v5/v5_cost_probe_order_events.csv"]["rows"] == 2
+    assert files["v5/v5_cost_probe_roundtrip_events.csv"]["rows"] == 1
+
+
 def test_ingest_v5_empty_expanded_universe_summaries_refresh_datasets(tmp_path):
     first = make_tar(
         tmp_path / "v5_live_followup_bundle_20260514T083000Z.tar.gz",

@@ -76,6 +76,8 @@ SILVER_DATASETS = {
     "v5_candidate_event": Path("silver/v5_candidate_event"),
     "v5_order_lifecycle": Path("silver/v5_order_lifecycle"),
     "v5_cost_probe_p3_preflight": Path("silver/v5_cost_probe_p3_preflight"),
+    "v5_cost_probe_order_event": Path("silver/v5_cost_probe_order_event"),
+    "v5_cost_probe_roundtrip_event": Path("silver/v5_cost_probe_roundtrip_event"),
     "v5_paper_strategy_run": Path("silver/v5_paper_strategy_run"),
     "v5_paper_strategy_daily": Path("silver/v5_paper_strategy_daily"),
     "v5_paper_slippage_coverage": Path("silver/v5_paper_slippage_coverage"),
@@ -106,7 +108,26 @@ QUANT_LAB_REQUEST_PATHS = {
     "raw/quant_lab/quant_lab_requests.jsonl",
     "reports/quant_lab_requests.jsonl",
 }
-EVENT_KEY_DATASETS = {"v5_quant_lab_request", "v5_quant_lab_fallback"}
+COST_PROBE_ORDER_EVENT_PATHS = {
+    "cost_probe_order_events.jsonl",
+    "reports/cost_probe_order_events.jsonl",
+    "summaries/cost_probe_order_events.jsonl",
+    "raw/reports/cost_probe_order_events.jsonl",
+    "raw/large/reports/cost_probe_order_events.jsonl.gz",
+}
+COST_PROBE_ROUNDTRIP_EVENT_PATHS = {
+    "cost_probe_roundtrip_events.jsonl",
+    "reports/cost_probe_roundtrip_events.jsonl",
+    "summaries/cost_probe_roundtrip_events.jsonl",
+    "raw/reports/cost_probe_roundtrip_events.jsonl",
+    "raw/large/reports/cost_probe_roundtrip_events.jsonl.gz",
+}
+EVENT_KEY_DATASETS = {
+    "v5_quant_lab_request",
+    "v5_quant_lab_fallback",
+    "v5_cost_probe_order_event",
+    "v5_cost_probe_roundtrip_event",
+}
 STABLE_ROW_KEY_DATASETS = set(SILVER_DATASETS) - EVENT_KEY_DATASETS - {"v5_candidate_event"}
 EMPTY_CSV_REFRESH_DATASETS = {
     "v5_expanded_universe_advisory_reader",
@@ -689,6 +710,16 @@ def _append_file_rows(
             _cost_probe_p3_preflight_rows(metadata, relative, _read_json(file_path))
         )
         return
+    if logical in COST_PROBE_ORDER_EVENT_PATHS:
+        rows["v5_cost_probe_order_event"].extend(
+            _cost_probe_order_event_rows(metadata, relative, file_path)
+        )
+        return
+    if logical in COST_PROBE_ROUNDTRIP_EVENT_PATHS:
+        rows["v5_cost_probe_roundtrip_event"].extend(
+            _cost_probe_roundtrip_event_rows(metadata, relative, file_path)
+        )
+        return
     if logical.startswith("raw/state/") and logical.endswith(".json"):
         state_type = Path(logical).stem
         payload = _read_json(file_path)
@@ -965,6 +996,266 @@ def _cost_probe_p3_preflight_rows(
         ),
     }
     return [row]
+
+
+def _cost_probe_order_event_rows(
+    metadata: dict[str, Any],
+    relative: str,
+    file_path: Path,
+) -> list[dict[str, Any]]:
+    rows: list[dict[str, Any]] = []
+    for index, payload in _cost_probe_jsonl_payloads(
+        metadata,
+        relative,
+        file_path,
+        error_event_type="order_event_jsonl_parse_error",
+    ):
+        row = _base_row(metadata, relative, run_id_from_path(_logical_bundle_path(relative)), index)
+        symbol_value = _clean_text(
+            _first_payload_value(payload, ["symbol", "normalized_symbol", "inst_id", "instId"])
+        )
+        normalized_symbol = normalize_symbol(symbol_value) if symbol_value else ""
+        leg = _clean_text(_first_payload_value(payload, ["leg", "intent", "action"])).lower()
+        status = _clean_text(
+            _first_payload_value(payload, ["order_status", "status", "state"])
+        ).lower()
+        event_type = _clean_text(payload.get("event_type")) or ":".join(
+            part for part in ("order", leg, status) if part
+        )
+        if not event_type:
+            event_type = "order:unknown"
+        event_ts = _normalize_event_time(
+            _first_payload_value(
+                payload,
+                ["event_ts", "filled_at", "submitted_at", "created_at", "ts", "timestamp"],
+            )
+            or metadata.get("ingest_ts")
+        )
+        order_key = _cost_probe_order_key(payload, fallback=f"{relative}:{index}")
+        event_id = _clean_text(payload.get("event_id")) or _cost_probe_event_id(
+            stable_key=order_key,
+            event_type=event_type,
+            event_ts=event_ts,
+        )
+        no_order_submitted = _parse_bool(payload.get("no_order_submitted"))
+        live_order_effect = _clean_text(payload.get("live_order_effect")) or (
+            "none_cost_probe_event_only"
+            if no_order_submitted is True
+            else "live_cost_probe_order"
+        )
+        enriched_payload = {
+            **payload,
+            "event_id": event_id,
+            "event_type": event_type,
+            "event_ts": event_ts,
+            "order_key": order_key,
+            "normalized_symbol": normalized_symbol,
+            "live_order_effect": live_order_effect,
+        }
+        rows.append(
+            row
+            | {
+                "event_id": event_id,
+                "event_type": event_type,
+                "event_ts": event_ts,
+                "schema_version": _clean_text(payload.get("schema_version"))
+                or "v5.cost_probe_order_event.v1",
+                "symbol": normalized_symbol or symbol_value,
+                "normalized_symbol": normalized_symbol,
+                "leg": leg,
+                "side": _clean_text(_first_payload_value(payload, ["side", "order_side"])).lower(),
+                "intent": _clean_text(
+                    _first_payload_value(payload, ["intent", "action", "router_intent"])
+                ).lower(),
+                "order_status": status,
+                "order_key": order_key,
+                "order_id": _clean_text(_first_payload_value(payload, ["order_id", "ordId"])),
+                "client_order_id": _clean_text(
+                    _first_payload_value(payload, ["client_order_id", "clOrdId", "cl_ord_id"])
+                ),
+                "exchange_order_id": _clean_text(
+                    _first_payload_value(payload, ["exchange_order_id", "ordId", "order_id"])
+                ),
+                "submitted_at": _normalize_event_time(payload.get("submitted_at")),
+                "filled_at": _normalize_event_time(payload.get("filled_at")),
+                "dry_run": _parse_bool(payload.get("dry_run")),
+                "live_enabled": _parse_bool(payload.get("live_enabled")),
+                "no_order_submitted": no_order_submitted,
+                "notional_usdt": _clean_text(payload.get("notional_usdt")),
+                "filled_qty": _clean_text(
+                    _first_payload_value(payload, ["filled_qty", "fill_qty", "fillSz"])
+                ),
+                "avg_px": _clean_text(_first_payload_value(payload, ["avg_px", "avgPx"])),
+                "fee_usdt": _clean_text(payload.get("fee_usdt")),
+                "live_order_effect": live_order_effect,
+                "raw_payload_json": safe_json_dumps(enriched_payload),
+            }
+        )
+    return rows
+
+
+def _cost_probe_roundtrip_event_rows(
+    metadata: dict[str, Any],
+    relative: str,
+    file_path: Path,
+) -> list[dict[str, Any]]:
+    rows: list[dict[str, Any]] = []
+    for index, payload in _cost_probe_jsonl_payloads(
+        metadata,
+        relative,
+        file_path,
+        error_event_type="roundtrip_event_jsonl_parse_error",
+    ):
+        row = _base_row(metadata, relative, run_id_from_path(_logical_bundle_path(relative)), index)
+        symbol_value = _clean_text(
+            _first_payload_value(payload, ["symbol", "normalized_symbol", "inst_id", "instId"])
+        )
+        normalized_symbol = normalize_symbol(symbol_value) if symbol_value else ""
+        status = _clean_text(
+            _first_payload_value(payload, ["roundtrip_status", "status", "state"])
+        ).lower()
+        event_type = _clean_text(payload.get("event_type")) or (
+            f"roundtrip:{status}" if status else "roundtrip:unknown"
+        )
+        event_ts = _normalize_event_time(
+            _first_payload_value(
+                payload,
+                ["event_ts", "closed_at", "opened_at", "generated_at", "ts", "timestamp"],
+            )
+            or metadata.get("ingest_ts")
+        )
+        roundtrip_key = _cost_probe_roundtrip_key(payload, fallback=f"{relative}:{index}")
+        event_id = _clean_text(payload.get("event_id")) or _cost_probe_event_id(
+            stable_key=roundtrip_key,
+            event_type=event_type,
+            event_ts=event_ts,
+        )
+        no_order_submitted = _parse_bool(payload.get("no_order_submitted"))
+        live_order_effect = _clean_text(payload.get("live_order_effect")) or (
+            "none_cost_probe_event_only"
+            if no_order_submitted is True
+            else "live_cost_probe_roundtrip"
+        )
+        enriched_payload = {
+            **payload,
+            "event_id": event_id,
+            "event_type": event_type,
+            "event_ts": event_ts,
+            "roundtrip_key": roundtrip_key,
+            "normalized_symbol": normalized_symbol,
+            "live_order_effect": live_order_effect,
+        }
+        rows.append(
+            row
+            | {
+                "event_id": event_id,
+                "event_type": event_type,
+                "event_ts": event_ts,
+                "schema_version": _clean_text(payload.get("schema_version"))
+                or "v5.cost_probe_roundtrip_event.v1",
+                "symbol": normalized_symbol or symbol_value,
+                "normalized_symbol": normalized_symbol,
+                "roundtrip_key": roundtrip_key,
+                "roundtrip_id": _clean_text(payload.get("roundtrip_id")),
+                "roundtrip_status": status,
+                "entry_order_id": _clean_text(payload.get("entry_order_id")),
+                "exit_order_id": _clean_text(payload.get("exit_order_id")),
+                "entry_order_status": _clean_text(payload.get("entry_order_status")).lower(),
+                "exit_order_status": _clean_text(payload.get("exit_order_status")).lower(),
+                "opened_at": _normalize_event_time(payload.get("opened_at")),
+                "closed_at": _normalize_event_time(payload.get("closed_at")),
+                "dry_run": _parse_bool(payload.get("dry_run")),
+                "live_enabled": _parse_bool(payload.get("live_enabled")),
+                "no_order_submitted": no_order_submitted,
+                "gross_pnl_usdt": _clean_text(payload.get("gross_pnl_usdt")),
+                "fees_usdt": _clean_text(
+                    _first_payload_value(payload, ["fees_usdt", "fee_usdt"])
+                ),
+                "net_pnl_usdt": _clean_text(payload.get("net_pnl_usdt")),
+                "live_order_effect": live_order_effect,
+                "raw_payload_json": safe_json_dumps(enriched_payload),
+            }
+        )
+    return rows
+
+
+def _cost_probe_jsonl_payloads(
+    metadata: dict[str, Any],
+    relative: str,
+    file_path: Path,
+    *,
+    error_event_type: str,
+) -> list[tuple[int, dict[str, Any]]]:
+    output: list[tuple[int, dict[str, Any]]] = []
+    for index, line in enumerate(_read_text_file(file_path).splitlines()):
+        if not line.strip():
+            continue
+        try:
+            payload = redact_json_like(json.loads(line))
+        except json.JSONDecodeError as exc:
+            digest = hashlib.sha256(line.encode("utf-8")).hexdigest()
+            event_ts = _normalize_event_time(metadata.get("ingest_ts"))
+            payload = {
+                "event_id": _cost_probe_event_id(
+                    stable_key=f"{relative}:{index}:{digest[:12]}",
+                    event_type=error_event_type,
+                    event_ts=event_ts,
+                ),
+                "event_type": error_event_type,
+                "event_ts": event_ts,
+                "jsonl_parse_error": str(exc),
+                "jsonl_line_index": index,
+                "jsonl_line_sha256": digest,
+                "live_order_effect": "none_parse_error_no_order",
+            }
+        if not isinstance(payload, dict):
+            payload = {"value": payload}
+        output.append((index, payload))
+    return output
+
+
+def _first_payload_value(payload: dict[str, Any], keys: list[str]) -> Any:
+    for key in keys:
+        value = payload.get(key)
+        if not _empty_value(value):
+            return value
+        raw = payload.get("raw")
+        if isinstance(raw, dict):
+            value = raw.get(key)
+            if not _empty_value(value):
+                return value
+    return None
+
+
+def _cost_probe_order_key(payload: dict[str, Any], *, fallback: str) -> str:
+    for key in (
+        "order_key",
+        "client_order_id",
+        "clOrdId",
+        "cl_ord_id",
+        "exchange_order_id",
+        "ordId",
+        "order_id",
+    ):
+        value = _clean_text(_first_payload_value(payload, [key]))
+        if value:
+            return value
+    return fallback
+
+
+def _cost_probe_roundtrip_key(payload: dict[str, Any], *, fallback: str) -> str:
+    explicit = _clean_text(payload.get("roundtrip_key") or payload.get("roundtrip_id"))
+    if explicit:
+        return explicit
+    entry = _clean_text(payload.get("entry_order_id"))
+    exit_order = _clean_text(payload.get("exit_order_id"))
+    if entry or exit_order:
+        return "|".join(part for part in (entry, exit_order) if part)
+    return fallback
+
+
+def _cost_probe_event_id(*, stable_key: str, event_type: str, event_ts: str) -> str:
+    return "|".join([stable_key, event_type, event_ts])
 
 
 def _payload_bool(payload: dict[str, Any], key: str, *, default: bool = False) -> bool:

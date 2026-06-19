@@ -14,7 +14,7 @@
   "slippage_bps": 2.0,
   "slippage_source": "config_slippage_bps",
   "spread_bps": 1.4969,
-  "spread_source": "fresh_orderbook_p75",
+  "spread_source": "fresh_public_orderbook_p75",
   "delay_cost_bps": 0.0,
   "delay_cost_source": "config_delay_bps",
   "uncertainty_buffer_bps": 2.0,

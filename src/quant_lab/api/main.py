@@ -1169,7 +1169,6 @@ def _decorate_web_v2_expert_pack_status(
     zip_path = _safe_existing_pack_from_status(exports_root, status.get("zip_path"))
     packs = _expert_pack_rows_with_downloads(readers.expert_export_summary(exports_root))
     latest_available_pack = _pack_path_from_row(packs[0]) if packs else None
-    latest_pack = requested_date_pack or latest_available_pack or zip_path
     state = status.get("state")
     if not state:
         state = (
@@ -1177,6 +1176,8 @@ def _decorate_web_v2_expert_pack_status(
             if requested_date_pack is not None
             else ("missing_requested_date" if latest_available_pack is not None else "missing")
         )
+    is_running = str(state).lower() in {"starting", "running"}
+    latest_pack = None if is_running else requested_date_pack or latest_available_pack or zip_path
     payload = {
         "mode": "read_only_export",
         "live_order_effect": "none",
@@ -1190,6 +1191,8 @@ def _decorate_web_v2_expert_pack_status(
         "requested_date_pack_name": (
             requested_date_pack.name if requested_date_pack is not None else None
         ),
+        "previous_pack": str(requested_date_pack) if is_running and requested_date_pack else None,
+        "previous_pack_name": requested_date_pack.name if is_running and requested_date_pack else None,
         "latest_pack": str(latest_pack) if latest_pack is not None else None,
         "latest_pack_name": latest_pack.name if latest_pack is not None else None,
         "latest_pack_is_requested_date": (

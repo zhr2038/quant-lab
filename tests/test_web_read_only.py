@@ -674,6 +674,34 @@ def test_data_health_hides_pending_v5_paper_telemetry(tmp_path):
     assert "v5_paper_slippage_coverage" not in datasets
 
 
+def test_data_health_hides_stale_entry_quality_dataset_without_freshness_sla(tmp_path):
+    lake_root = tmp_path / "lake"
+    old = datetime.now(UTC) - timedelta(days=3)
+    write_parquet_dataset(
+        pl.DataFrame(
+            [
+                {
+                    "bundle_ts": old,
+                    "ingest_ts": old,
+                    "source_path_inside_bundle": "summaries/btc_probe_entry_quality_audit.csv",
+                    "same_symbol_reentry_bypass": False,
+                    "anti_chase_flag": False,
+                    "raw_payload_json": "{}",
+                }
+            ]
+        ),
+        lake_root / "silver" / "v5_btc_probe_entry_quality_audit",
+    )
+
+    snapshot = readers._dataset_snapshot(lake_root, "v5_btc_probe_entry_quality_audit")
+    stale_rows = readers.data_health_summary(lake_root)["stale_datasets"].to_dicts()
+
+    assert snapshot.freshness["freshness_status"] == "stale"
+    assert "v5_btc_probe_entry_quality_audit" not in {
+        row["dataset"] for row in stale_rows
+    }
+
+
 def test_stale_dataset_rows_keep_schema_when_empty(tmp_path, monkeypatch):
     monkeypatch.setattr(readers, "DATASET_PATHS", {})
 

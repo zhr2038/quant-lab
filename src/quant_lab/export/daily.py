@@ -14013,6 +14013,7 @@ def _stale_rows(frames: dict[str, pl.DataFrame]) -> pl.DataFrame:
             status = EVENT_DRIVEN_OKX_READONLY_DATASETS[name]
         if name in readers.HISTORICAL_RESEARCH_DATASETS and status == "stale":
             status = "historical_research_snapshot"
+        status = readers._optional_stale_status_from_registry(name, status)  # type: ignore[attr-defined]
         if status in {"missing", "unknown", "stale"} and status not in EVENT_DRIVEN_OK_STATUSES:
             rows.append(
                 {

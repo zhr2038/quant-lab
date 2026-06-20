@@ -4328,6 +4328,20 @@ def test_stale_dataset_check_ignores_optional_entry_quality_history_and_generate
                     }
                 ]
             ),
+            "v5_btc_probe_entry_quality_audit": pl.DataFrame(
+                [
+                    {
+                        "bundle_ts": old,
+                        "ingest_ts": old,
+                        "source_path_inside_bundle": (
+                            "summaries/btc_probe_entry_quality_audit.csv"
+                        ),
+                        "same_symbol_reentry_bypass": False,
+                        "anti_chase_flag": False,
+                        "raw_payload_json": "{}",
+                    }
+                ]
+            ),
             "v5_pullback_reversal_shadow": pl.DataFrame(),
         }
     )
@@ -4335,6 +4349,7 @@ def test_stale_dataset_check_ignores_optional_entry_quality_history_and_generate
     datasets = set(stale["dataset"].to_list()) if "dataset" in stale.columns else set()
     assert "risk_on_multi_buy_shadow" not in datasets
     assert "v5_entry_quality_history_anti_leakage_check" not in datasets
+    assert "v5_btc_probe_entry_quality_audit" not in datasets
     assert "v5_pullback_reversal_shadow" not in datasets
 
 

@@ -17,6 +17,7 @@ from quant_lab.costs.model import (
     evaluate_live_universe_cost_coverage,
 )
 from quant_lab.data.lake import invalid_parquet_files, read_parquet_dataset
+from quant_lab.ops.dataset_registry import get_dataset_spec
 from quant_lab.research.portfolio import research_portfolio_closed_keys
 from quant_lab.symbols import normalize_symbol
 from quant_lab.web import perf
@@ -5118,6 +5119,7 @@ def _stale_dataset_rows(lake_root: str | Path) -> pl.DataFrame:
             status = EVENT_DRIVEN_OKX_READONLY_DATASET_STATUSES[name]
         if name in HISTORICAL_RESEARCH_DATASETS and status == "stale":
             status = "historical_research_snapshot"
+        status = _optional_stale_status_from_registry(name, status)
         status = _derived_rollup_status(lake_root, name, snapshot, status)
         if _should_show_stale_dataset_row(snapshot, status):
             status_text = str(status)
@@ -5301,6 +5303,17 @@ def _empty_dataset_status(dataset_name: str) -> str:
     if dataset_name in ENTRY_QUALITY_DATASETS:
         return "entry_quality_optional"
     return "missing"
+
+
+def _optional_stale_status_from_registry(dataset_name: str, status: str) -> str:
+    if status != "stale" or dataset_name not in ENTRY_QUALITY_DATASETS:
+        return status
+    spec = get_dataset_spec(dataset_name)
+    if spec is None:
+        return status
+    if spec.freshness_seconds is None and "freshness" not in spec.quality_rules:
+        return "entry_quality_optional"
+    return status
 
 
 def _derived_rollup_status(

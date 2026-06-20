@@ -6213,6 +6213,7 @@ def _manifest_payload(
                 "latest_v5_bundle_seen_at_export"
             ),
             "latest_v5_bundle_ingested_at_export": _iso_or_none(latest_ingested_bundle_ts),
+            "selected_v5_bundle_sha256": v5_context.get("selected_v5_bundle_sha256"),
             "selected_v5_bundle_manifest_match": bool(
                 v5_context.get("selected_v5_bundle_manifest_match")
             ),

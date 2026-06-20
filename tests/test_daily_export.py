@@ -3177,6 +3177,10 @@ def test_export_daily_ingests_pending_v5_inbox_before_snapshot(tmp_path):
         manifest["v5_export_consistency"]["selected_v5_bundle_manifest_bundle_sha256"]
         == manifest["selected_v5_bundle_sha256"]
     )
+    assert (
+        manifest["v5_export_consistency"]["selected_v5_bundle_sha256"]
+        == manifest["selected_v5_bundle_sha256"]
+    )
     assert provenance["selected_v5_bundle_sha256"] == manifest["selected_v5_bundle_sha256"]
     assert (
         provenance["selected_v5_bundle_manifest_bundle_sha256"]

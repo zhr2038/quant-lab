@@ -2656,6 +2656,8 @@ def test_expert_exports_generate_today_writes_request_file_for_systemd_worker(
     assert status["state"] == "running"
     assert status["trigger"] == "request_file"
     assert status["systemd_unit"] == "quant-lab-web-export-request.service"
+    assert status["request_id"]
+    assert request["request_id"] == status["request_id"]
     assert request["export_date"] == "2026-05-16"
     assert request["lake_root"] == str(lake_root)
     assert request["exports_root"] == str(exports_root)
@@ -2681,6 +2683,7 @@ def test_web_export_request_worker_writes_completion_status(tmp_path, monkeypatc
                 "lake_root": str(lake_root),
                 "exports_root": str(exports_root),
                 "status_path": str(status_path),
+                "request_id": "request-20260516",
                 "requested_at": "2026-05-16T01:00:00+00:00",
             }
         ),
@@ -2702,6 +2705,9 @@ def test_web_export_request_worker_writes_completion_status(tmp_path, monkeypatc
     assert status["state"] == "succeeded"
     assert stored["state"] == "succeeded"
     assert stored["trigger"] == "request_file"
+    assert stored["request_id"] == "request-20260516"
+    assert isinstance(stored["pid"], int)
+    assert stored["worker_pid"] == stored["pid"]
     assert stored["zip_path"].endswith("quant_lab_expert_pack_2026-05-16_worker.zip")
     assert stored["warnings"] == ["sample_warning"]
     assert captured["pre_export_v5_refresh"] is True
@@ -3004,11 +3010,14 @@ def test_expert_exports_running_request_file_job_stays_running_without_pid(
     exports_root = tmp_path / "exports"
     exports_root.mkdir()
     status_path = exports_root / ".quant_lab_web_export_2026-05-16.json"
+    request_path = exports_root / ".quant_lab_web_export_request.json"
+    request_path.write_text("{}", encoding="utf-8")
     status_path.write_text(
         json.dumps(
             {
                 "state": "running",
                 "trigger": "request_file",
+                "request_path": str(request_path),
                 "started_at": datetime.now(UTC).isoformat(),
             }
         ),
@@ -3020,6 +3029,36 @@ def test_expert_exports_running_request_file_job_stays_running_without_pid(
 
     assert status["state"] == "running"
     assert "error" not in status
+
+
+def test_expert_exports_request_file_job_fails_when_worker_never_picks_it_up(
+    tmp_path, monkeypatch
+):
+    exports_root = tmp_path / "exports"
+    exports_root.mkdir()
+    status_path = exports_root / ".quant_lab_web_export_2026-05-16.json"
+    request_path = exports_root / ".quant_lab_web_export_request.json"
+    request_path.write_text("{}", encoding="utf-8")
+    old_time = datetime(2026, 5, 16, 1, 0, tzinfo=UTC).timestamp()
+    os.utime(request_path, (old_time, old_time))
+    status_path.write_text(
+        json.dumps(
+            {
+                "state": "running",
+                "trigger": "request_file",
+                "request_path": str(request_path),
+                "started_at": "2026-05-16T01:00:00+00:00",
+            }
+        ),
+        encoding="utf-8",
+    )
+    monkeypatch.setenv("QUANT_LAB_WEB_EXPORT_STATUS_STALE_SECONDS", "999999999")
+    monkeypatch.setenv("QUANT_LAB_WEB_EXPORT_REQUEST_PICKUP_STALE_SECONDS", "1")
+
+    status = expert_exports._poll_export_job(exports_root, "2026-05-16")
+
+    assert status["state"] == "failed"
+    assert "did not pick up web export request" in status["error"]
 
 
 def test_expert_exports_linux_zombie_pid_is_not_running(monkeypatch):
@@ -3084,7 +3123,9 @@ def test_expert_exports_failed_status_does_not_recover_old_pack(tmp_path):
     assert "zip_path" not in status
 
 
-def test_expert_exports_worker_trigger_failure_recovers_existing_same_day_pack(tmp_path):
+def test_expert_exports_worker_trigger_failure_does_not_recover_old_same_day_pack(
+    tmp_path,
+):
     exports_root = tmp_path / "exports"
     exports_root.mkdir()
     status_path = exports_root / ".quant_lab_web_export_2026-05-16.json"
@@ -3106,19 +3147,15 @@ def test_expert_exports_worker_trigger_failure_recovers_existing_same_day_pack(t
 
     status = expert_exports._poll_export_job(exports_root, "2026-05-16")
 
-    assert status["state"] == "succeeded"
-    assert status["zip_path"] == str(pack_path)
-    assert status["recovered_from_failed_status"] is True
-    assert (
-        status["recovery_reason"]
-        == "latest_same_day_pack_available_after_web_trigger_failure"
-    )
-    assert status["started_at"] == datetime.fromtimestamp(old_mtime, UTC).isoformat()
-    assert status["finished_at"] == datetime.fromtimestamp(old_mtime, UTC).isoformat()
-    assert "error" not in status
+    assert status["state"] == "failed"
+    assert status["error"] == "export process exited before writing completion status"
+    assert "zip_path" not in status
+    assert "recovered_from_failed_status" not in status
 
 
-def test_expert_exports_stale_request_file_job_recovers_existing_pack(tmp_path, monkeypatch):
+def test_expert_exports_stale_request_file_job_does_not_recover_old_pack(
+    tmp_path, monkeypatch
+):
     exports_root = tmp_path / "exports"
     exports_root.mkdir()
     status_path = exports_root / ".quant_lab_web_export_2026-05-16.json"
@@ -3140,14 +3177,10 @@ def test_expert_exports_stale_request_file_job_recovers_existing_pack(tmp_path, 
 
     status = expert_exports._poll_export_job(exports_root, "2026-05-16")
 
-    assert status["state"] == "succeeded"
-    assert status["zip_path"] == str(pack_path)
-    assert status["recovered_from_failed_status"] is True
-    assert (
-        status["recovery_reason"]
-        == "latest_same_day_pack_available_after_web_trigger_failure"
-    )
-    assert "error" not in status
+    assert status["state"] == "failed"
+    assert "exceeded web status timeout" in status["error"]
+    assert "zip_path" not in status
+    assert "recovered_from_failed_status" not in status
 
 
 def test_expert_exports_failed_status_recovers_pack_between_start_and_failure(tmp_path):

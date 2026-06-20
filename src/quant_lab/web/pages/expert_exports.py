@@ -9,6 +9,7 @@ from datetime import UTC, datetime
 from functools import lru_cache
 from pathlib import Path
 from typing import Any
+from uuid import uuid4
 
 import polars as pl
 
@@ -21,6 +22,7 @@ WEB_EXPORT_MODE = "authoritative_snapshot"
 DEFAULT_DOWNLOAD_PACK_LIMIT = 5
 DEFAULT_DOWNLOAD_MAX_BYTES = 128 * 1024 * 1024
 DEFAULT_EXPORT_STATUS_STALE_SECONDS = 30 * 60
+DEFAULT_REQUEST_FILE_PICKUP_STALE_SECONDS = 90
 DEFAULT_WEB_EXPORT_MEMORY_LIMIT_MB = 0
 REQUEST_FILE_BACKGROUND_TRIGGER = "request_file"
 
@@ -150,6 +152,7 @@ def _start_export_job(
         "state": "starting",
         "mode": WEB_EXPORT_MODE,
         "export_date": export_date,
+        "request_id": uuid4().hex,
         "started_at": datetime.now(UTC).isoformat(),
         "status_path": str(status_path),
         "log_path": str(log_path),
@@ -203,6 +206,7 @@ def _start_export_request_file(
 ) -> dict[str, Any]:
     request_path = _export_job_request_path(exports_root)
     request = {
+        "request_id": status.get("request_id"),
         "export_date": export_date,
         "lake_root": str(lake_root),
         "exports_root": str(exports_root),
@@ -371,10 +375,19 @@ def _poll_export_job(exports_root: Path, export_date: str) -> dict[str, Any]:
             return recovered
         _write_export_job_status(status_path, status)
         return status
-    pid = status.get("pid")
+    pid = status.get("worker_pid")
+    if not isinstance(pid, int):
+        pid = status.get("pid")
     if isinstance(pid, int) and _pid_is_running(pid):
         return status
     if status.get("trigger") == REQUEST_FILE_BACKGROUND_TRIGGER:
+        status = _poll_request_file_export_job(
+            exports_root=exports_root,
+            export_date=export_date,
+            status_path=status_path,
+            status=status,
+            pid=pid if isinstance(pid, int) else None,
+        )
         return status
     status = {
         **status,
@@ -394,6 +407,71 @@ def _poll_export_job(exports_root: Path, export_date: str) -> dict[str, Any]:
     return status
 
 
+def _poll_request_file_export_job(
+    *,
+    exports_root: Path,
+    export_date: str,
+    status_path: Path,
+    status: dict[str, Any],
+    pid: int | None,
+) -> dict[str, Any]:
+    if pid is not None:
+        failed = {
+            **status,
+            "state": "failed",
+            "error": "systemd worker exited before writing completion status",
+            "finished_at": datetime.now(UTC).isoformat(),
+        }
+        recovered = _recover_failed_export_status_from_pack(
+            exports_root,
+            export_date,
+            status_path,
+            failed,
+        )
+        if recovered is not None:
+            return recovered
+        _write_export_job_status(status_path, failed)
+        return failed
+
+    request_path = _request_path_from_status(status, exports_root)
+    if request_path is not None and request_path.exists():
+        request_age_seconds = _file_age_seconds(request_path)
+        pickup_timeout_seconds = _positive_int_env(
+            "QUANT_LAB_WEB_EXPORT_REQUEST_PICKUP_STALE_SECONDS",
+            DEFAULT_REQUEST_FILE_PICKUP_STALE_SECONDS,
+        )
+        if request_age_seconds is None or request_age_seconds <= pickup_timeout_seconds:
+            return status
+        failed = {
+            **status,
+            "state": "failed",
+            "error": (
+                "systemd worker did not pick up web export request within "
+                f"{pickup_timeout_seconds} seconds"
+            ),
+            "finished_at": datetime.now(UTC).isoformat(),
+        }
+        _write_export_job_status(status_path, failed)
+        return failed
+
+    failed = {
+        **status,
+        "state": "failed",
+        "error": "systemd worker did not write completion status",
+        "finished_at": datetime.now(UTC).isoformat(),
+    }
+    recovered = _recover_failed_export_status_from_pack(
+        exports_root,
+        export_date,
+        status_path,
+        failed,
+    )
+    if recovered is not None:
+        return recovered
+    _write_export_job_status(status_path, failed)
+    return failed
+
+
 def _recover_failed_export_status_from_pack(
     exports_root: Path,
     export_date: str,
@@ -410,20 +488,12 @@ def _recover_failed_export_status_from_pack(
     except OSError:
         return None
     if started_at is not None:
-        if pack_mtime < started_at and not _can_recover_from_existing_same_day_pack(status):
+        if pack_mtime < started_at:
             return None
     elif finished_at is not None and pack_mtime <= finished_at:
         return None
-    recovery_reason = (
-        "latest_same_day_pack_available_after_web_trigger_failure"
-        if started_at is not None and pack_mtime < started_at
-        else "pack_created_after_export_job"
-    )
-    recovered_started_at = (
-        pack_mtime
-        if started_at is None or pack_mtime < started_at
-        else started_at
-    )
+    recovery_reason = "pack_created_after_export_job"
+    recovered_started_at = pack_mtime if started_at is None else started_at
     recovered = {
         key: value
         for key, value in status.items()
@@ -461,21 +531,6 @@ def _normalize_completed_export_status_times(
     return normalized
 
 
-def _can_recover_from_existing_same_day_pack(status: dict[str, Any]) -> bool:
-    error = str(status.get("error") or "").lower()
-    trigger = str(status.get("trigger") or "").lower()
-    if trigger == REQUEST_FILE_BACKGROUND_TRIGGER and (
-        "timeout" in error or "exceeded web status" in error
-    ):
-        return True
-    recoverable_errors = (
-        "export process exited before writing completion status",
-        "export process exceeded web status timeout",
-        "systemd worker did not write completion status",
-    )
-    return any(fragment in error for fragment in recoverable_errors)
-
-
 def _export_job_is_stale(status: dict[str, Any]) -> bool:
     started_at = status.get("started_at")
     if not started_at:
@@ -489,6 +544,24 @@ def _export_job_is_stale(status: dict[str, Any]) -> bool:
     )
     age_seconds = (datetime.now(UTC) - started.astimezone(UTC)).total_seconds()
     return age_seconds > timeout_seconds
+
+
+def _request_path_from_status(status: dict[str, Any], exports_root: Path) -> Path | None:
+    path_text = status.get("request_path")
+    if not path_text:
+        return _export_job_request_path(exports_root)
+    try:
+        return Path(str(path_text))
+    except OSError:
+        return None
+
+
+def _file_age_seconds(path: Path) -> float | None:
+    try:
+        mtime = datetime.fromtimestamp(path.stat().st_mtime, UTC)
+    except OSError:
+        return None
+    return (datetime.now(UTC) - mtime).total_seconds()
 
 
 def _parse_status_datetime(value: Any) -> datetime | None:

@@ -690,11 +690,14 @@ def test_web_v2_expert_pack_status_hides_previous_pack_while_running(
         archive.writestr("expert_questions.md", "下一步看什么？\n")
     previous_time = datetime(2026, 6, 19, 16, tzinfo=UTC).timestamp()
     os.utime(previous_pack, (previous_time, previous_time))
+    request_path = exports / ".quant_lab_web_export_request.json"
+    request_path.write_text("{}", encoding="utf-8")
     (exports / ".quant_lab_web_export_2026-06-20.json").write_text(
         json.dumps(
             {
                 "state": "running",
                 "trigger": "request_file",
+                "request_path": str(request_path),
                 "systemd_unit": "quant-lab-web-export-request.service",
                 "started_at": datetime.now(UTC).isoformat(),
             }

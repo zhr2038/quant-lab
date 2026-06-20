@@ -1192,7 +1192,9 @@ def _decorate_web_v2_expert_pack_status(
             requested_date_pack.name if requested_date_pack is not None else None
         ),
         "previous_pack": str(requested_date_pack) if is_running and requested_date_pack else None,
-        "previous_pack_name": requested_date_pack.name if is_running and requested_date_pack else None,
+        "previous_pack_name": (
+            requested_date_pack.name if is_running and requested_date_pack else None
+        ),
         "latest_pack": str(latest_pack) if latest_pack is not None else None,
         "latest_pack_name": latest_pack.name if latest_pack is not None else None,
         "latest_pack_is_requested_date": (

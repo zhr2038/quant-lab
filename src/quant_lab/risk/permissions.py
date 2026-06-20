@@ -8,6 +8,7 @@ DEFAULT_LIVE_ALLOWED_MODES = ["paper"]
 PAPER_ONLY_ALLOWED_MODES = ["paper"]
 SELL_ONLY_ALLOWED_MODES = ["sell_only"]
 NON_LIVE_ALLOWED_MODES = {"paper", "shadow", "sell_only"}
+NO_REQUIRED_GATE_DECISION_GATE_VERSION = "risk_permission.no_required_gate_decisions.v0.1"
 
 
 def evaluate_live_permission(
@@ -200,7 +201,7 @@ def _health_value(
 
 def _gate_version(gate_decisions: Sequence[GateDecision]) -> str:
     versions = sorted({decision.gate_version for decision in gate_decisions})
-    return "+".join(versions) if versions else "unknown"
+    return "+".join(versions) if versions else NO_REQUIRED_GATE_DECISION_GATE_VERSION
 
 
 def _created_at(gate_decisions: Sequence[GateDecision]) -> datetime:

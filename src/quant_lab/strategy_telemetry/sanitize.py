@@ -222,7 +222,7 @@ def _redacted_relative(relative: Path) -> Path:
 
 def _sensitive_key(key: str) -> bool:
     normalized = key.replace("-", "_").lower()
-    return any(item.replace("-", "_").lower() in normalized for item in SENSITIVE_KEYS)
+    return normalized in {item.replace("-", "_").lower() for item in SENSITIVE_KEYS}
 
 
 def _path_if_existing(path_or_text: str | Path) -> Path | None:

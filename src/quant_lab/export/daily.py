@@ -6898,7 +6898,7 @@ def _v5_derived_outputs_stale(
     pre_export_v5: dict[str, Any],
 ) -> bool:
     latest_seen = _parse_v5_context_ts(pre_export_v5.get("latest_v5_bundle_seen_at_export"))
-    latest_local_ingested = _latest_v5_bundle_ts(frames)
+    latest_local_ingested = _latest_v5_derived_output_ts(frames)
     stale, _why = _v5_bundle_stale_state(
         latest_remote=latest_seen,
         latest_ingested=latest_local_ingested,
@@ -13152,6 +13152,10 @@ def _latest_v5_bundle_ts(frames: dict[str, pl.DataFrame]) -> datetime | None:
     )
     if manifest_ts is not None:
         return manifest_ts
+    return _latest_v5_derived_output_ts(frames)
+
+
+def _latest_v5_derived_output_ts(frames: dict[str, pl.DataFrame]) -> datetime | None:
     timestamps = [
         _latest_dataset_timestamp(name, frames.get(name, pl.DataFrame()))
         for name in [

@@ -24,6 +24,7 @@ def test_live_permission_api_aborts_without_gate_decision(tmp_path, monkeypatch)
 
     assert payload["permission"] == "ABORT"
     assert payload["reasons"] == ["no_required_gate_decisions"]
+    assert payload["gate_version"] == "risk_permission.no_required_gate_decisions.v0.1"
 
 
 def test_live_permission_api_reuses_server_cache_for_same_context(tmp_path, monkeypatch):

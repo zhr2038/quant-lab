@@ -798,9 +798,29 @@ def test_ingest_parses_quant_lab_usage_files(tmp_path):
     assert btc_probe[0]["live_order_effect"] == "none_read_only_v5_bundle_audit"
     p3_preflight = read_parquet_dataset(lake / "silver/v5_cost_probe_p3_preflight").to_dicts()
     assert p3_preflight[0]["state"] == "NOT_READY"
+    assert p3_preflight[0]["manual_authorization_required"] is True
     assert p3_preflight[0]["approved_live_order_execution"] is False
     assert p3_preflight[0]["live_order_effect"] == "none_preflight_only_no_order"
+    assert '"manual_authorization_required": true' in p3_preflight[0]["raw_payload_json"]
+    redacted_manual_auth = '"manual_authorization_required": "<REDACTED>"'
+    assert redacted_manual_auth not in p3_preflight[0]["raw_payload_json"]
     assert "dry_run_plan_not_ready" in p3_preflight[0]["blockers_json"]
+    export = export_daily_pack(
+        export_date="2026-05-10",
+        lake_root=lake,
+        out_dir=tmp_path / "exports",
+        command_line=["qlab", "export-daily", "--no-pre-export-v5-refresh"],
+        pre_export_v5_refresh=False,
+    )
+    with zipfile.ZipFile(export.zip_path) as archive:
+        exported_p3 = list(
+            csv.DictReader(
+                StringIO(archive.read("v5/v5_cost_probe_p3_preflight.csv").decode("utf-8"))
+            )
+        )
+    assert exported_p3[0]["manual_authorization_required"].lower() == "true"
+    assert '"manual_authorization_required": true' in exported_p3[0]["raw_payload_json"]
+    assert redacted_manual_auth not in exported_p3[0]["raw_payload_json"]
     paper_rows = read_parquet_dataset(lake / "silver/v5_paper_strategy_run").to_dicts()
     assert paper_rows[0]["proposal_id"] == "SOL_F4_VOLUME_EXPANSION_PAPER_V1"
     assert paper_rows[0]["recommended_mode"] == "paper"

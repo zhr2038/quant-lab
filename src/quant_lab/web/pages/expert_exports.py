@@ -418,6 +418,11 @@ def _recover_failed_export_status_from_pack(
         if started_at is not None and pack_mtime < started_at
         else "pack_created_after_export_job"
     )
+    recovered_started_at = (
+        pack_mtime
+        if started_at is None or pack_mtime < started_at
+        else started_at
+    )
     recovered = {
         key: value
         for key, value in status.items()
@@ -428,6 +433,7 @@ def _recover_failed_export_status_from_pack(
         "recovered_from_failed_status": True,
         "recovery_reason": recovery_reason,
         "recovered_pack_mtime": pack_mtime.isoformat(),
+        "started_at": recovered_started_at.isoformat(),
         "finished_at": pack_mtime.isoformat(),
     }
     _write_export_job_status(status_path, recovered)

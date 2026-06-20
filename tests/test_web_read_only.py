@@ -3113,6 +3113,8 @@ def test_expert_exports_worker_trigger_failure_recovers_existing_same_day_pack(t
         status["recovery_reason"]
         == "latest_same_day_pack_available_after_web_trigger_failure"
     )
+    assert status["started_at"] == datetime.fromtimestamp(old_mtime, UTC).isoformat()
+    assert status["finished_at"] == datetime.fromtimestamp(old_mtime, UTC).isoformat()
     assert "error" not in status
 
 

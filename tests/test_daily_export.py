@@ -3155,6 +3155,7 @@ def test_export_daily_ingests_pending_v5_inbox_before_snapshot(tmp_path):
 
     with zipfile.ZipFile(result.zip_path) as archive:
         manifest = json.loads(archive.read("manifest.json").decode("utf-8"))
+        provenance = json.loads(archive.read("provenance.json").decode("utf-8"))
         data_quality = json.loads(archive.read("data_quality.json").decode("utf-8"))
         btc_probe_rows = list(
             csv.DictReader(
@@ -3168,6 +3169,19 @@ def test_export_daily_ingests_pending_v5_inbox_before_snapshot(tmp_path):
     assert manifest["authoritative_snapshot"] is True
     assert manifest["stale_v5_bundle"] is False
     assert manifest["selected_v5_bundle_sha256"]
+    assert (
+        manifest["selected_v5_bundle_manifest_bundle_sha256"]
+        == manifest["selected_v5_bundle_sha256"]
+    )
+    assert (
+        manifest["v5_export_consistency"]["selected_v5_bundle_manifest_bundle_sha256"]
+        == manifest["selected_v5_bundle_sha256"]
+    )
+    assert provenance["selected_v5_bundle_sha256"] == manifest["selected_v5_bundle_sha256"]
+    assert (
+        provenance["selected_v5_bundle_manifest_bundle_sha256"]
+        == manifest["selected_v5_bundle_sha256"]
+    )
     assert manifest["selected_v5_bundle_manifest_match"] is True
     assert (
         manifest["selected_v5_bundle_authoritative_reason"]

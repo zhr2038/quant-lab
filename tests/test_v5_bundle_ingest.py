@@ -557,6 +557,25 @@ def test_ingest_exports_cost_probe_order_and_roundtrip_events(tmp_path):
                 "closed_at": "2026-05-14T08:30:20Z",
                 "fees_usdt": "0.01",
                 "net_pnl_usdt": "-0.02",
+                "authorization_id": "auth-1",
+                "execution_completed": True,
+                "flat_verified": True,
+                "exchange_flat_verified": True,
+                "local_flat_verified": True,
+                "reconcile_ok": True,
+                "cost_evidence_complete": True,
+                "eligible_for_cost_model": True,
+                "eligible_for_live_cost_coverage": False,
+                "sample_origin": "cost_probe",
+                "source": "bootstrap_cost_probe",
+                "entry_filled_qty": "0.00007",
+                "exit_filled_qty": "0.00007",
+                "entry_fee_usdt": "0.005",
+                "exit_fee_usdt": "0.005",
+                "roundtrip_cost_bps": "20.0",
+                "fee_conversion_warnings": "",
+                "bill_match_status": "bill_not_observed",
+                "fee_match_status": "fill_fee_observed",
                 "live_enabled": True,
                 "dry_run": False,
                 "no_order_submitted": False,
@@ -627,6 +646,24 @@ def test_ingest_exports_cost_probe_order_and_roundtrip_events(tmp_path):
     assert len(roundtrip_csv) == 1
     assert order_csv[-1]["event_type"] == "order:entry:filled"
     assert roundtrip_csv[0]["live_order_effect"] == "live_cost_probe_roundtrip"
+    assert roundtrip_csv[0]["authorization_id"] == "auth-1"
+    assert roundtrip_csv[0]["execution_completed"] == "True"
+    assert roundtrip_csv[0]["flat_verified"] == "True"
+    assert roundtrip_csv[0]["exchange_flat_verified"] == "True"
+    assert roundtrip_csv[0]["local_flat_verified"] == "True"
+    assert roundtrip_csv[0]["reconcile_ok"] == "True"
+    assert roundtrip_csv[0]["cost_evidence_complete"] == "True"
+    assert roundtrip_csv[0]["eligible_for_cost_model"] == "True"
+    assert roundtrip_csv[0]["eligible_for_live_cost_coverage"] == "False"
+    assert roundtrip_csv[0]["sample_origin"] == "cost_probe"
+    assert roundtrip_csv[0]["source"] == "bootstrap_cost_probe"
+    assert roundtrip_csv[0]["entry_filled_qty"] == "0.00007"
+    assert roundtrip_csv[0]["exit_filled_qty"] == "0.00007"
+    assert roundtrip_csv[0]["entry_fee_usdt"] == "0.005"
+    assert roundtrip_csv[0]["exit_fee_usdt"] == "0.005"
+    assert roundtrip_csv[0]["roundtrip_cost_bps"] == "20.0"
+    assert roundtrip_csv[0]["bill_match_status"] == "bill_not_observed"
+    assert roundtrip_csv[0]["fee_match_status"] == "fill_fee_observed"
     files = {item["path"]: item for item in manifest["files"]}
     assert files["v5/v5_cost_probe_order_events.csv"]["rows"] == 2
     assert files["v5/v5_cost_probe_roundtrip_events.csv"]["rows"] == 1

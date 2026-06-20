@@ -2952,6 +2952,25 @@ CSV_SCHEMAS: dict[str, list[str]] = {
         "gross_pnl_usdt",
         "fees_usdt",
         "net_pnl_usdt",
+        "authorization_id",
+        "execution_completed",
+        "flat_verified",
+        "exchange_flat_verified",
+        "local_flat_verified",
+        "reconcile_ok",
+        "cost_evidence_complete",
+        "eligible_for_cost_model",
+        "eligible_for_live_cost_coverage",
+        "sample_origin",
+        "source",
+        "entry_filled_qty",
+        "exit_filled_qty",
+        "entry_fee_usdt",
+        "exit_fee_usdt",
+        "roundtrip_cost_bps",
+        "fee_conversion_warnings",
+        "bill_match_status",
+        "fee_match_status",
         "live_order_effect",
         "raw_payload_json",
     ],
@@ -4018,6 +4037,7 @@ def export_daily_pack(
             profile=profile,
             snapshot=snapshot,
             command_line=command_line or sys.argv,
+            pre_export_v5=pre_export_v5,
         )
     )
     _record_export_stage(export_stage_timings, "build_members", stage_started)
@@ -6177,6 +6197,10 @@ def _manifest_payload(
         "selected_v5_bundle_manifest_bundle_name": v5_context.get(
             "selected_v5_bundle_manifest_bundle_name"
         ),
+        "selected_v5_bundle_manifest_bundle_sha256": v5_context.get(
+            "selected_v5_bundle_manifest_bundle_sha256"
+        )
+        or v5_context.get("selected_v5_bundle_sha256"),
         "selected_v5_bundle_event_counts": v5_context.get(
             "selected_v5_bundle_event_counts",
             {},
@@ -6192,6 +6216,10 @@ def _manifest_payload(
             "selected_v5_bundle_manifest_match": bool(
                 v5_context.get("selected_v5_bundle_manifest_match")
             ),
+            "selected_v5_bundle_manifest_bundle_sha256": v5_context.get(
+                "selected_v5_bundle_manifest_bundle_sha256"
+            )
+            or v5_context.get("selected_v5_bundle_sha256"),
             "selected_v5_bundle_authoritative_reason": v5_context.get(
                 "selected_v5_bundle_authoritative_reason"
             ),
@@ -6317,6 +6345,7 @@ def _refresh_v5_before_export(
         "selected_v5_bundle_manifest_ingest_ts": None,
         "selected_v5_bundle_manifest_bundle_ts": None,
         "selected_v5_bundle_manifest_bundle_name": None,
+        "selected_v5_bundle_manifest_bundle_sha256": None,
         "selected_v5_bundle_event_counts": {},
         "scanned_bundle_count": 0,
         "audit_bundle_count": 0,
@@ -6471,6 +6500,7 @@ def _observe_v5_before_export(
         "selected_v5_bundle_manifest_ingest_ts": None,
         "selected_v5_bundle_manifest_bundle_ts": None,
         "selected_v5_bundle_manifest_bundle_name": None,
+        "selected_v5_bundle_manifest_bundle_sha256": None,
         "selected_v5_bundle_event_counts": {},
         "scanned_bundle_count": 0,
         "audit_bundle_count": 0,
@@ -6686,6 +6716,9 @@ def _apply_selected_bundle_manifest_context(
         _parse_v5_context_ts(manifest_row.get("bundle_ts"))
     )
     context["selected_v5_bundle_manifest_bundle_name"] = manifest_row.get("bundle_name")
+    context["selected_v5_bundle_manifest_bundle_sha256"] = (
+        manifest_row.get("bundle_sha256") or context.get("selected_v5_bundle_sha256")
+    )
     context["selected_v5_bundle_manifest_match"] = True
 
 
@@ -7339,8 +7372,10 @@ def _provenance_payload(
     profile: str,
     snapshot: _DatasetSnapshot,
     command_line: list[str],
+    pre_export_v5: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     git = _git_info()
+    v5_context = pre_export_v5 or {}
     return {
         "export_date": day.isoformat(),
         "generated_at": generated_at.isoformat(),
@@ -7359,6 +7394,14 @@ def _provenance_payload(
         "python_version": sys.version,
         "export_command": " ".join(command_line),
         "lake_root": str(root),
+        "selected_v5_bundle_sha256": v5_context.get("selected_v5_bundle_sha256"),
+        "selected_v5_bundle_manifest_bundle_sha256": v5_context.get(
+            "selected_v5_bundle_manifest_bundle_sha256"
+        )
+        or v5_context.get("selected_v5_bundle_sha256"),
+        "selected_v5_bundle_manifest_bundle_name": v5_context.get(
+            "selected_v5_bundle_manifest_bundle_name"
+        ),
         "datasets": [
             {
                 "name": name,

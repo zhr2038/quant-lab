@@ -1226,6 +1226,35 @@ def _cost_probe_roundtrip_event_rows(
                     _first_payload_value(payload, ["fees_usdt", "fee_usdt"])
                 ),
                 "net_pnl_usdt": _clean_text(payload.get("net_pnl_usdt")),
+                "authorization_id": _clean_text(payload.get("authorization_id")),
+                "execution_completed": _parse_bool(payload.get("execution_completed")),
+                "flat_verified": _parse_bool(payload.get("flat_verified")),
+                "exchange_flat_verified": _parse_bool(
+                    payload.get("exchange_flat_verified")
+                ),
+                "local_flat_verified": _parse_bool(payload.get("local_flat_verified")),
+                "reconcile_ok": _parse_bool(payload.get("reconcile_ok")),
+                "cost_evidence_complete": _parse_bool(
+                    payload.get("cost_evidence_complete")
+                ),
+                "eligible_for_cost_model": _parse_bool(
+                    payload.get("eligible_for_cost_model")
+                ),
+                "eligible_for_live_cost_coverage": _parse_bool(
+                    payload.get("eligible_for_live_cost_coverage")
+                ),
+                "sample_origin": _clean_text(payload.get("sample_origin")),
+                "source": _clean_text(payload.get("source")),
+                "entry_filled_qty": _clean_text(payload.get("entry_filled_qty")),
+                "exit_filled_qty": _clean_text(payload.get("exit_filled_qty")),
+                "entry_fee_usdt": _clean_text(payload.get("entry_fee_usdt")),
+                "exit_fee_usdt": _clean_text(payload.get("exit_fee_usdt")),
+                "roundtrip_cost_bps": _clean_text(payload.get("roundtrip_cost_bps")),
+                "fee_conversion_warnings": _clean_text(
+                    payload.get("fee_conversion_warnings")
+                ),
+                "bill_match_status": _clean_text(payload.get("bill_match_status")),
+                "fee_match_status": _clean_text(payload.get("fee_match_status")),
                 "live_order_effect": live_order_effect,
                 "raw_payload_json": safe_json_dumps(enriched_payload),
             }

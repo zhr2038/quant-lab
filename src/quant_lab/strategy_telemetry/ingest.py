@@ -529,11 +529,14 @@ def _rehydrate_empty_csv_refresh_datasets(
     bundle_ts: datetime | None,
     limits: BundleLimits,
 ) -> tuple[dict[str, int], list[str]]:
-    target_names = [
-        name
-        for name in sorted(REHYDRATE_IF_EMPTY_DATASETS)
-        if read_parquet_dataset(lake_root / SILVER_DATASETS[name]).is_empty()
-    ]
+    target_names: list[str] = []
+    for name in sorted(REHYDRATE_IF_EMPTY_DATASETS):
+        existing = read_parquet_dataset(lake_root / SILVER_DATASETS[name])
+        if existing.is_empty() or (
+            name == "v5_cost_probe_p3_preflight"
+            and _cost_probe_p3_preflight_needs_rehydrate(existing)
+        ):
+            target_names.append(name)
     if not target_names:
         return {}, []
 
@@ -575,7 +578,11 @@ def _rehydrate_empty_csv_refresh_datasets(
     for name in target_names:
         dataset_path = lake_root / SILVER_DATASETS[name]
         if rows[name]:
-            counts[name] = _upsert_stable_rows(dataset_path, rows[name])
+            counts[name] = (
+                _replace_cost_probe_p3_preflight_rows(dataset_path, rows[name])
+                if name == "v5_cost_probe_p3_preflight"
+                else _upsert_stable_rows(dataset_path, rows[name])
+            )
             continue
         if name not in EMPTY_CSV_REFRESH_DATASETS:
             continue
@@ -589,6 +596,53 @@ def _rehydrate_empty_csv_refresh_datasets(
                 header,
             )
     return counts, warnings
+
+
+def _cost_probe_p3_preflight_needs_rehydrate(frame: pl.DataFrame) -> bool:
+    if frame.is_empty() or "raw_payload_json" not in frame.columns:
+        return frame.is_empty()
+    redacted = '"manual_authorization_required":"<REDACTED>"'
+    spaced_redacted = '"manual_authorization_required": "<REDACTED>"'
+    for value in frame.get_column("raw_payload_json").drop_nulls().to_list():
+        payload = str(value)
+        if redacted in payload or spaced_redacted in payload:
+            return True
+    return False
+
+
+def _replace_cost_probe_p3_preflight_rows(
+    dataset_path: Path,
+    rows: list[dict[str, Any]],
+) -> int:
+    if not rows:
+        return read_parquet_dataset(dataset_path).height
+    replacement_keys = {
+        (
+            str(row.get("bundle_sha256") or ""),
+            _logical_bundle_path(str(row.get("source_path_inside_bundle") or "")),
+        )
+        for row in rows
+    }
+    existing = read_parquet_dataset(dataset_path)
+    kept = []
+    if not existing.is_empty():
+        for row in existing.to_dicts():
+            key = (
+                str(row.get("bundle_sha256") or ""),
+                _logical_bundle_path(str(row.get("source_path_inside_bundle") or "")),
+            )
+            if key not in replacement_keys:
+                kept.append(row)
+    keyed_rows = [_with_stable_row_key(row) for row in [*kept, *rows]]
+    df = _dataframe_from_rows(keyed_rows)
+    if not df.is_empty():
+        df = df.unique(
+            subset=["strategy", "source_path_inside_bundle", "stable_row_key"],
+            keep="last",
+            maintain_order=True,
+        )
+    write_parquet_dataset(df, dataset_path)
+    return df.height
 
 
 def _is_historical_outcome_path(logical: str) -> bool:

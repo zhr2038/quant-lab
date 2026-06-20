@@ -464,6 +464,39 @@ def test_ingest_rehydrates_cost_probe_p3_preflight_for_already_ingested_bundle(t
     )
 
 
+def test_ingest_replaces_redacted_cost_probe_p3_preflight_for_already_ingested_bundle(
+    tmp_path,
+):
+    bundle = make_v5_bundle_fixture(
+        tmp_path / "v5_live_followup_bundle_20260514T083000Z.tar.gz"
+    )
+    lake = tmp_path / "lake"
+
+    first = ingest_v5_bundle(bundle, lake, tmp_path / "restricted", tmp_path / "redacted")
+    assert first.skipped is False
+    dataset_path = lake / "silver/v5_cost_probe_p3_preflight"
+    damaged_rows = read_parquet_dataset(dataset_path).to_dicts()
+    assert damaged_rows
+    for row in damaged_rows:
+        row["manual_authorization_required"] = False
+        row["raw_payload_json"] = (
+            '{"manual_authorization_required":"<REDACTED>",'
+            '"approved_live_order_execution":false}'
+        )
+    write_parquet_dataset(pl.DataFrame(damaged_rows, infer_schema_length=None), dataset_path)
+
+    result = ingest_v5_bundle(bundle, lake, tmp_path / "restricted", tmp_path / "redacted")
+
+    rows = read_parquet_dataset(dataset_path).to_dicts()
+    assert result.skipped is True
+    assert result.silver_rows["v5_cost_probe_p3_preflight"] == len(damaged_rows)
+    assert [row["manual_authorization_required"] for row in rows] == [True]
+    assert all("<REDACTED>" not in row["raw_payload_json"] for row in rows)
+    assert all(
+        '"manual_authorization_required": true' in row["raw_payload_json"] for row in rows
+    )
+
+
 def test_ingest_exports_cost_probe_order_and_roundtrip_events(tmp_path):
     order_events = "\n".join(
         [

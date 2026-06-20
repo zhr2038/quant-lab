@@ -516,6 +516,7 @@ def test_daily_export_includes_alpha_discovery_reports(tmp_path):
         assert "reports/candidate_kill_list.csv" in names
         assert "reports/candidate_shadow_watchlist.csv" in names
         assert "reports/candidate_paper_ready.csv" in names
+        assert "reports/historical_label_threshold_ready.csv" in names
         assert "research/strategy_evidence.csv" in names
         assert "research/alt_impulse_shadow_by_regime.csv" in names
         assert "research/alt_impulse_shadow_by_symbol_regime_horizon.csv" in names
@@ -544,9 +545,28 @@ def test_daily_export_includes_alpha_discovery_reports(tmp_path):
                 )
             )
         )
+        formal_paper_ready = list(
+            csv.DictReader(
+                io.StringIO(archive.read("reports/candidate_paper_ready.csv").decode("utf-8"))
+            )
+        )
+        historical_threshold_ready = list(
+            csv.DictReader(
+                io.StringIO(
+                    archive.read("reports/historical_label_threshold_ready.csv").decode("utf-8")
+                )
+            )
+        )
 
     board_by_candidate = {row["candidate_name"]: row for row in board}
     assert board_by_candidate["v5.sol_protect_exception"]["decision"] == "PAPER_READY"
+    assert any(
+        row["candidate_name"] == "v5.sol_protect_exception"
+        for row in historical_threshold_ready
+    )
+    assert not any(
+        row["candidate_name"] == "v5.sol_protect_exception" for row in formal_paper_ready
+    )
     assert len(evidence_rows) > 0
     assert len(board) > 0
     assert any(row["strategy_candidate"] == "v5.sol_protect_exception" for row in sample_rows)

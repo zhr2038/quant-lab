@@ -510,6 +510,7 @@ REQUIRED_MEMBERS = [
     "reports/candidate_kill_list.csv",
     "reports/candidate_shadow_watchlist.csv",
     "reports/candidate_paper_ready.csv",
+    "reports/historical_label_threshold_ready.csv",
     "reports/paper_strategy_proposals.csv",
     "reports/strategy_opportunity_advisory.csv",
     "reports/api_latency_summary.csv",
@@ -1322,6 +1323,24 @@ CSV_SCHEMAS: dict[str, list[str]] = {
         "decision_reasons",
     ],
     "reports/candidate_paper_ready.csv": [
+        "strategy_candidate",
+        "candidate_name",
+        "symbol",
+        "regime_state",
+        "horizon_hours",
+        "as_of_date",
+        "sample_count",
+        "complete_sample_count",
+        "avg_net_bps",
+        "median_net_bps",
+        "p25_net_bps",
+        "win_rate",
+        "paper_days",
+        "cost_source_mix",
+        "decision",
+        "decision_reasons",
+    ],
+    "reports/historical_label_threshold_ready.csv": [
         "strategy_candidate",
         "candidate_name",
         "symbol",
@@ -5425,7 +5444,11 @@ def _dataset_members(
         ),
         "reports/candidate_paper_ready.csv": _csv_member(
             "reports/candidate_paper_ready.csv",
-            _candidate_decision_rows(alpha_discovery_board, "PAPER_READY"),
+            _formal_candidate_paper_ready_rows(alpha_discovery_board),
+        ),
+        "reports/historical_label_threshold_ready.csv": _csv_member(
+            "reports/historical_label_threshold_ready.csv",
+            _candidate_decision_rows(alpha_discovery_board, "HISTORICAL_LABEL_THRESHOLD_READY"),
         ),
         "reports/paper_strategy_proposals.csv": _csv_member(
             "reports/paper_strategy_proposals.csv",
@@ -8942,16 +8965,18 @@ def _candidate_decision_rows(board: pl.DataFrame, decision: str) -> pl.DataFrame
         "KILL": "reports/candidate_kill_list.csv",
         "KEEP_SHADOW": "reports/candidate_shadow_watchlist.csv",
         "PAPER_READY": "reports/candidate_paper_ready.csv",
+        "HISTORICAL_LABEL_THRESHOLD_READY": "reports/historical_label_threshold_ready.csv",
     }
     path = paths.get(decision, "reports/candidate_shadow_watchlist.csv")
     if board.is_empty():
         return _empty_csv_schema_frame(path)
     if "decision" not in board.columns:
         return _empty_csv_schema_frame(path)
+    source_decision = "PAPER_READY" if decision == "HISTORICAL_LABEL_THRESHOLD_READY" else decision
     if decision == "KEEP_SHADOW":
         selected = board.filter(pl.col("decision").is_in(["KEEP_SHADOW", "REGIME_SHADOW"]))
     else:
-        selected = board.filter(pl.col("decision") == decision)
+        selected = board.filter(pl.col("decision") == source_decision)
     if selected.is_empty():
         return _empty_csv_schema_frame(path)
     for column in CSV_SCHEMAS[path]:
@@ -8964,6 +8989,57 @@ def _candidate_decision_rows(board: pl.DataFrame, decision: str) -> pl.DataFrame
     ]
     selected = selected.sort(sort_columns) if sort_columns else selected
     return selected.select(CSV_SCHEMAS[path])
+
+
+def _formal_candidate_paper_ready_rows(board: pl.DataFrame) -> pl.DataFrame:
+    path = "reports/candidate_paper_ready.csv"
+    if board.is_empty() or "decision" not in board.columns:
+        return _empty_csv_schema_frame(path)
+    selected = board.filter(pl.col("decision") == "PAPER_READY")
+    if selected.is_empty():
+        return _empty_csv_schema_frame(path)
+
+    rows = [
+        row
+        for row in selected.to_dicts()
+        if _has_formal_paper_ready_evidence(row)
+    ]
+    if not rows:
+        return _empty_csv_schema_frame(path)
+
+    output = pl.DataFrame(rows, infer_schema_length=None)
+    for column in CSV_SCHEMAS[path]:
+        if column not in output.columns:
+            output = output.with_columns(pl.lit(None, dtype=pl.Utf8).alias(column))
+    sort_columns = [
+        column
+        for column in ["strategy_candidate", "symbol", "horizon_hours"]
+        if column in output.columns
+    ]
+    output = output.sort(sort_columns) if sort_columns else output
+    return output.select(CSV_SCHEMAS[path])
+
+
+def _has_formal_paper_ready_evidence(row: dict[str, Any]) -> bool:
+    if (_optional_int(row.get("paper_days")) or 0) < 14:
+        return False
+    if (_optional_int(row.get("paper_pnl_observed_count")) or 0) <= 0:
+        return False
+    arrival_mid_coverage = _optional_float(row.get("arrival_mid_coverage"))
+    if arrival_mid_coverage is None or arrival_mid_coverage < 0.8:
+        return False
+    if not _cost_source_mix_has_actual_or_mixed(row.get("cost_source_mix")):
+        return False
+    cost_sources = {source.lower() for source in _cost_source_mix_items(row.get("cost_source_mix"))}
+    blocked_sources = {
+        "fallback_not_live_safe",
+        "public_spread_proxy",
+        "public_microstructure_proxy",
+        "global_default",
+        "local_estimate",
+        "conservative_shadow_cost",
+    }
+    return not bool(cost_sources & blocked_sources)
 
 
 PAPER_PROPOSAL_IDS = {
@@ -13017,7 +13093,10 @@ def _factor_factory_summary_md(
         "values, evidence, candidates, and correlation diagnostics for manual review.",
         "",
         "- live_order_effect: none_read_only_research",
-        "- PAPER_READY meaning: paper review candidate only, not live eligibility",
+        "- historical_label_threshold_ready: historical label threshold only, "
+        "not formal paper-ready",
+        "- candidate_paper_ready: requires paper PnL, arrival-mid coverage, "
+        "and actual/mixed cost evidence",
         "- decision_delay_bars: at least one closed bar before label evaluation",
         "",
     ]

@@ -3977,6 +3977,7 @@ def test_export_empty_csv_members_have_fixed_headers(tmp_path):
             "reports/candidate_kill_list.csv",
             "reports/candidate_shadow_watchlist.csv",
             "reports/candidate_paper_ready.csv",
+            "reports/historical_label_threshold_ready.csv",
             "reports/factor_forward_validation.csv",
             "reports/fast_microstructure_forward_test.csv",
             "reports/fast_microstructure_strategy_candidates.csv",

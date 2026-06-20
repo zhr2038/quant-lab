@@ -49,3 +49,13 @@ def test_json_redaction_keeps_manual_authorization_required_flag():
     assert redacted["authorization"] == REDACTION
     assert redacted["manual_authorization_required"] is True
     assert redacted["authorization_signature_sha256"] == "not-a-secret"
+
+
+def test_secret_scan_empty_text_does_not_scan_working_directory(tmp_path, monkeypatch):
+    (tmp_path / "secret.txt").write_text("api_key: SHOULD_NOT_LEAK\n", encoding="utf-8")
+    monkeypatch.chdir(tmp_path)
+
+    scan = scan_for_secrets("")
+
+    assert scan.high_severity_count == 0
+    assert scan.findings == []

@@ -229,6 +229,8 @@ def _path_if_existing(path_or_text: str | Path) -> Path | None:
     if isinstance(path_or_text, Path):
         return path_or_text if path_or_text.exists() else None
     text = str(path_or_text)
+    if not text.strip():
+        return None
     if "\n" in text or "\r" in text or len(text) > 240:
         return None
     try:

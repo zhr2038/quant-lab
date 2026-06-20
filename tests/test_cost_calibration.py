@@ -504,6 +504,51 @@ def test_cost_probe_lifecycle_calibrates_as_bootstrap_not_actual(tmp_path):
     assert checks["lifecycle_present_but_not_in_actual_cost"] is True
 
 
+def test_cost_probe_event_bridge_calibrates_bootstrap_not_actual(tmp_path):
+    lake_root = tmp_path / "lake"
+    _write_cost_probe_events(lake_root, eligible=True)
+    _write_cost_probe_private_fills(lake_root)
+    _write_cost_probe_bills(lake_root)
+
+    result = calibrate_costs_for_day(lake_root, "2026-05-15", min_sample_count=1)
+
+    assert result.sources == ["bootstrap_cost_probe"]
+    rows = read_parquet_dataset(lake_root / "gold" / "cost_bucket_daily").to_dicts()
+    all_row = [
+        row for row in rows if row["symbol"] == "BTC-USDT" and row["notional_bucket"] == "all"
+    ][0]
+    assert all_row["source"] == "bootstrap_cost_probe"
+    assert all_row["sample_count"] == 2
+    assert all_row["actual_fill_count"] == 0
+    assert all_row["mixed_fill_count"] == 0
+    assert all_row["private_fill_count"] == 0
+    assert all_row["strategy_live_fill_count"] == 0
+    assert all_row["cost_probe_fill_count"] == 2
+    assert all_row["sample_origin_mix"] == "cost_probe_only"
+    assert all_row["eligible_for_live_cost_coverage"] is False
+    assert all_row["fee_bps_p50"] > 0
+    assert all_row["slippage_bps_p50"] > 0
+    assert all_row["spread_bps_p50"] > 0
+
+
+def test_ineligible_cost_probe_private_fills_do_not_become_trusted_live(tmp_path):
+    lake_root = tmp_path / "lake"
+    _write_cost_probe_events(lake_root, eligible=False)
+    _write_cost_probe_private_fills(lake_root)
+    _write_cost_probe_bills(lake_root)
+    _write_orderbooks_for_day(lake_root, symbol="BTC-USDT", day="2026-05-15")
+
+    result = calibrate_costs_for_day(lake_root, "2026-05-15", min_sample_count=1)
+
+    assert result.sources == ["public_spread_proxy"]
+    rows = read_parquet_dataset(lake_root / "gold" / "cost_bucket_daily").to_dicts()
+    assert {row["source"] for row in rows} == {"public_spread_proxy"}
+    assert all(row["actual_fill_count"] == 0 for row in rows)
+    assert all(row["private_fill_count"] == 0 for row in rows)
+    assert all(row["cost_probe_fill_count"] == 0 for row in rows)
+    assert all(row["eligible_for_live_cost_coverage"] is False for row in rows)
+
+
 def test_v5_order_lifecycle_stays_actual_when_trade_csv_also_exists(tmp_path):
     lake_root = tmp_path / "lake"
     write_parquet_dataset(
@@ -941,6 +986,227 @@ def _write_bills_for_day(lake_root: Path, day: str) -> None:
                     "ts": f"{day}T01:00:00Z",
                     "source": "okx_readonly_private",
                 }
+            ]
+        ),
+        lake_root / "silver" / "account_bill",
+    )
+
+
+def _write_cost_probe_events(lake_root: Path, *, eligible: bool) -> None:
+    flat = {
+        "flat_verified": eligible,
+        "exchange_flat_verified": eligible,
+        "local_flat_verified": eligible,
+        "reconcile_ok": eligible,
+    }
+    order_rows = [
+        _cost_probe_order_event_row(
+            event_ts="2026-05-15T01:00:01Z",
+            leg="entry",
+            status="filled",
+            side="buy",
+            order_id="okx-entry-1",
+            client_order_id="cp-auth-1E",
+            trade_id="probe-trade-entry",
+            avg_px="70010",
+            filled_qty="0.0001",
+            fee="-0.007001",
+            fee_ccy="USDT",
+        ),
+        _cost_probe_order_event_row(
+            event_ts="2026-05-15T01:00:08Z",
+            leg="exit",
+            status="filled",
+            side="sell",
+            order_id="okx-exit-1",
+            client_order_id="cp-auth-1X",
+            trade_id="probe-trade-exit",
+            avg_px="69990",
+            filled_qty="0.0001",
+            fee="-0.006999",
+            fee_ccy="USDT",
+        ),
+    ]
+    write_parquet_dataset(
+        pl.DataFrame(order_rows),
+        lake_root / "silver" / "v5_cost_probe_order_event",
+    )
+    roundtrip_payload = {
+        "event_type": "roundtrip:closed",
+        "event_ts": "2026-05-15T01:00:10Z",
+        "symbol": "BTC/USDT",
+        "roundtrip_id": "okx-entry-1:okx-exit-1",
+        "roundtrip_status": "closed",
+        "completed": True,
+        "execution_completed": True,
+        "cost_evidence_complete": eligible,
+        "eligible_for_cost_model": eligible,
+        "entry_order_id": "okx-entry-1",
+        "exit_order_id": "okx-exit-1",
+        "authorization_id": "auth-1",
+        "no_order_submitted": False,
+        "live_order_effect": "live_cost_probe_roundtrip",
+        "flat_verification": flat,
+        **flat,
+    }
+    write_parquet_dataset(
+        pl.DataFrame(
+            [
+                {
+                    "event_ts": "2026-05-15T01:00:10Z",
+                    "event_type": "roundtrip:closed",
+                    "symbol": "BTC-USDT",
+                    "normalized_symbol": "BTC-USDT",
+                    "roundtrip_key": "okx-entry-1:okx-exit-1",
+                    "roundtrip_id": "okx-entry-1:okx-exit-1",
+                    "roundtrip_status": "closed",
+                    "entry_order_id": "okx-entry-1",
+                    "exit_order_id": "okx-exit-1",
+                    "authorization_id": "auth-1",
+                    "live_order_effect": "live_cost_probe_roundtrip",
+                    "raw_payload_json": json.dumps(roundtrip_payload),
+                }
+            ]
+        ),
+        lake_root / "silver" / "v5_cost_probe_roundtrip_event",
+    )
+
+
+def _cost_probe_order_event_row(
+    *,
+    event_ts: str,
+    leg: str,
+    status: str,
+    side: str,
+    order_id: str,
+    client_order_id: str,
+    trade_id: str,
+    avg_px: str,
+    filled_qty: str,
+    fee: str,
+    fee_ccy: str,
+) -> dict[str, str]:
+    payload = {
+        "event_type": f"order:{leg}:{status}",
+        "event_ts": event_ts,
+        "symbol": "BTC/USDT",
+        "leg": leg,
+        "side": side,
+        "order_status": status,
+        "client_order_id": client_order_id,
+        "exchange_order_id": order_id,
+        "authorization_id": "auth-1",
+        "filled_qty": filled_qty,
+        "avg_px": avg_px,
+        "fee": fee,
+        "fee_ccy": fee_ccy,
+        "fee_usdt": str(abs(float(fee))),
+        "arrival_bid_px": "69995",
+        "arrival_ask_px": "70005",
+        "arrival_mid_px": "70000",
+        "raw": {
+            "ordId": order_id,
+            "clOrdId": client_order_id,
+            "trade_ids": trade_id,
+            "_fills": [
+                {
+                    "ordId": order_id,
+                    "tradeId": trade_id,
+                    "fillSz": filled_qty,
+                    "fillPx": avg_px,
+                    "fee": fee,
+                    "feeCcy": fee_ccy,
+                }
+            ],
+        },
+    }
+    return {
+        "event_ts": event_ts,
+        "event_type": f"order:{leg}:{status}",
+        "symbol": "BTC-USDT",
+        "normalized_symbol": "BTC-USDT",
+        "leg": leg,
+        "side": side,
+        "order_status": status,
+        "order_key": client_order_id,
+        "order_id": order_id,
+        "exchange_order_id": order_id,
+        "client_order_id": client_order_id,
+        "authorization_id": "auth-1",
+        "filled_qty": filled_qty,
+        "avg_px": avg_px,
+        "fee_usdt": str(abs(float(fee))),
+        "live_order_effect": "live_cost_probe_order",
+        "raw_payload_json": json.dumps(payload),
+    }
+
+
+def _write_cost_probe_private_fills(lake_root: Path) -> None:
+    write_parquet_dataset(
+        pl.DataFrame(
+            [
+                {
+                    "venue": "okx",
+                    "inst_type": "SPOT",
+                    "inst_id": "BTC-USDT",
+                    "trade_id": "probe-trade-entry",
+                    "order_id": "okx-entry-1",
+                    "side": "buy",
+                    "fill_price": 70010.0,
+                    "fill_size": 0.0001,
+                    "fee": -0.007001,
+                    "fee_currency": "USDT",
+                    "liquidity": "T",
+                    "ts": "2026-05-15T01:00:01Z",
+                    "source": "okx_readonly_private",
+                },
+                {
+                    "venue": "okx",
+                    "inst_type": "SPOT",
+                    "inst_id": "BTC-USDT",
+                    "trade_id": "probe-trade-exit",
+                    "order_id": "okx-exit-1",
+                    "side": "sell",
+                    "fill_price": 69990.0,
+                    "fill_size": 0.0001,
+                    "fee": -0.006999,
+                    "fee_currency": "USDT",
+                    "liquidity": "T",
+                    "ts": "2026-05-15T01:00:08Z",
+                    "source": "okx_readonly_private",
+                },
+            ]
+        ),
+        lake_root / "silver" / "fill_event",
+    )
+
+
+def _write_cost_probe_bills(lake_root: Path) -> None:
+    write_parquet_dataset(
+        pl.DataFrame(
+            [
+                {
+                    "venue": "okx",
+                    "bill_id": "probe-bill-entry",
+                    "ccy": "USDT",
+                    "amount": -0.007001,
+                    "balance": 999.9,
+                    "bill_type": "2",
+                    "sub_type": "1",
+                    "ts": "2026-05-15T01:00:02Z",
+                    "source": "okx_readonly_private",
+                },
+                {
+                    "venue": "okx",
+                    "bill_id": "probe-bill-exit",
+                    "ccy": "USDT",
+                    "amount": -0.006999,
+                    "balance": 999.8,
+                    "bill_type": "2",
+                    "sub_type": "1",
+                    "ts": "2026-05-15T01:00:09Z",
+                    "source": "okx_readonly_private",
+                },
             ]
         ),
         lake_root / "silver" / "account_bill",

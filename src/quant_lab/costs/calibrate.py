@@ -35,6 +35,8 @@ TRADE_PRINT_DATASET = Path("silver") / "trade_print"
 V5_TRADE_EVENT_DATASET = Path("silver") / "v5_trade_event"
 V5_QUANT_LAB_COST_USAGE_DATASET = Path("silver") / "v5_quant_lab_cost_usage"
 V5_ORDER_LIFECYCLE_DATASET = Path("silver") / "v5_order_lifecycle"
+V5_COST_PROBE_ORDER_EVENT_DATASET = Path("silver") / "v5_cost_probe_order_event"
+V5_COST_PROBE_ROUNDTRIP_EVENT_DATASET = Path("silver") / "v5_cost_probe_roundtrip_event"
 MARKET_BAR_DATASET = Path("silver") / "market_bar"
 COST_BUCKET_DAILY_DATASET = Path("gold") / "cost_bucket_daily"
 COST_HEALTH_DAILY_DATASET = Path("gold") / "cost_health_daily"
@@ -107,6 +109,8 @@ def calibrate_costs_for_day(
     account_bills = _private_account_bills_for_day(root, day)
     v5_trade_events = _v5_trade_events_for_day(root, day)
     v5_order_lifecycle = _v5_order_lifecycle_for_day(root, day)
+    v5_cost_probe_order_events = _v5_cost_probe_order_events_for_day(root, day)
+    v5_cost_probe_roundtrip_events = _v5_cost_probe_roundtrip_events_for_day(root, day)
     v5_cost_usage = _v5_cost_usage_for_day(root, day)
     rows = build_cost_bucket_daily_rows(
         fill_events=fill_events,
@@ -133,6 +137,8 @@ def calibrate_costs_for_day(
         ),
         v5_trade_events=v5_trade_events,
         v5_order_lifecycle=v5_order_lifecycle,
+        v5_cost_probe_order_events=v5_cost_probe_order_events,
+        v5_cost_probe_roundtrip_events=v5_cost_probe_roundtrip_events,
         market_bars=market_bars,
         day=day,
         min_sample_count=min_sample_count,
@@ -148,6 +154,10 @@ def calibrate_costs_for_day(
             | _symbols_from_fill_events(fill_events)
             | _symbols_from_v5_trade_events(v5_trade_events)
             | _symbols_from_v5_order_lifecycle(v5_order_lifecycle)
+            | _symbols_from_cost_probe_events(
+                v5_cost_probe_order_events,
+                v5_cost_probe_roundtrip_events,
+            )
         ),
         private_fill_rows=fill_events.height,
         private_bill_rows=account_bills.height,
@@ -185,14 +195,40 @@ def build_cost_bucket_daily_rows(
     order_events: pl.DataFrame | None = None,
     v5_trade_events: pl.DataFrame | None = None,
     v5_order_lifecycle: pl.DataFrame | None = None,
+    v5_cost_probe_order_events: pl.DataFrame | None = None,
+    v5_cost_probe_roundtrip_events: pl.DataFrame | None = None,
     min_sample_count: int = DEFAULT_MIN_SAMPLE_COUNT,
 ) -> list[CostBucketDaily]:
     spread_samples = _spread_samples_by_symbol(orderbook_snapshots)
     reference_prices = _reference_prices_by_order(
         order_events if order_events is not None else pl.DataFrame()
     )
+    cost_probe_order_frame = (
+        v5_cost_probe_order_events
+        if v5_cost_probe_order_events is not None
+        else pl.DataFrame()
+    )
+    cost_probe_roundtrip_frame = (
+        v5_cost_probe_roundtrip_events
+        if v5_cost_probe_roundtrip_events is not None
+        else pl.DataFrame()
+    )
+    cost_probe_private_order_ids, cost_probe_private_trade_ids = _cost_probe_private_fill_keys(
+        cost_probe_order_frame,
+        cost_probe_roundtrip_frame,
+    )
     fill_samples = [
-        *_fill_samples(fill_events, reference_prices),
+        *_fill_samples(
+            fill_events,
+            reference_prices,
+            excluded_order_ids=cost_probe_private_order_ids,
+            excluded_trade_ids=cost_probe_private_trade_ids,
+        ),
+        *_v5_cost_probe_event_fill_samples(
+            cost_probe_order_frame,
+            cost_probe_roundtrip_frame,
+            fill_events,
+        ),
         *_v5_order_lifecycle_fill_samples(
             v5_order_lifecycle if v5_order_lifecycle is not None else pl.DataFrame()
         ),
@@ -487,9 +523,20 @@ def _global_default_row(day: str, symbol: str) -> CostBucketDaily:
 def _fill_samples(
     fill_events: pl.DataFrame,
     reference_prices: dict[str, float] | None = None,
+    *,
+    excluded_order_ids: set[str] | None = None,
+    excluded_trade_ids: set[str] | None = None,
 ) -> list[dict[str, Any]]:
     samples: list[dict[str, Any]] = []
+    excluded_order_ids = excluded_order_ids or set()
+    excluded_trade_ids = excluded_trade_ids or set()
     for row in fill_events.to_dicts():
+        order_id = str(row.get("order_id") or "").strip()
+        trade_id = str(row.get("trade_id") or row.get("tradeId") or "").strip()
+        if (order_id and order_id in excluded_order_ids) or (
+            trade_id and trade_id in excluded_trade_ids
+        ):
+            continue
         price = _optional_float(row.get("fill_price"))
         size = _optional_float(row.get("fill_size"))
         if price is None or size is None:
@@ -535,6 +582,514 @@ def _fill_samples(
             }
         )
     return samples
+
+
+def _v5_cost_probe_event_fill_samples(
+    order_events: pl.DataFrame,
+    roundtrip_events: pl.DataFrame,
+    private_fill_events: pl.DataFrame,
+) -> list[dict[str, Any]]:
+    if roundtrip_events.is_empty():
+        return []
+    order_rows = order_events.to_dicts() if not order_events.is_empty() else []
+    private_by_order, private_by_trade = _private_fill_rows_by_probe_key(private_fill_events)
+    samples: list[dict[str, Any]] = []
+    seen_private_keys: set[tuple[str, str, str]] = set()
+    for roundtrip_row in roundtrip_events.to_dicts():
+        roundtrip_payload = _raw_payload_dict(roundtrip_row)
+        if not _eligible_cost_probe_roundtrip(roundtrip_row, roundtrip_payload):
+            continue
+        symbol = _cost_probe_symbol(roundtrip_row, roundtrip_payload)
+        if not symbol:
+            continue
+        for leg in ("entry", "exit"):
+            order_row = _latest_matching_cost_probe_order(
+                order_rows,
+                roundtrip_row=roundtrip_row,
+                roundtrip_payload=roundtrip_payload,
+                leg=leg,
+            )
+            if order_row is not None:
+                order_payload = _raw_payload_dict(order_row)
+                private_matches = _matching_private_fill_rows(
+                    order_row,
+                    order_payload,
+                    private_by_order=private_by_order,
+                    private_by_trade=private_by_trade,
+                )
+                if private_matches:
+                    for private_row in private_matches:
+                        key = (
+                            str(private_row.get("order_id") or ""),
+                            str(private_row.get("trade_id") or ""),
+                            str(private_row.get("ts") or ""),
+                        )
+                        if key in seen_private_keys:
+                            continue
+                        seen_private_keys.add(key)
+                        sample = _cost_probe_sample_from_private_fill(
+                            private_row,
+                            order_row=order_row,
+                            order_payload=order_payload,
+                            symbol=symbol,
+                        )
+                        if sample is not None:
+                            samples.append(sample)
+                    continue
+                sample = _cost_probe_sample_from_order_event(
+                    order_row,
+                    order_payload=order_payload,
+                    symbol=symbol,
+                    leg=leg,
+                )
+                if sample is not None:
+                    samples.append(sample)
+                continue
+            sample = _cost_probe_sample_from_roundtrip_state(
+                roundtrip_payload,
+                symbol=symbol,
+                leg=leg,
+            )
+            if sample is not None:
+                samples.append(sample)
+    return samples
+
+
+def _cost_probe_private_fill_keys(
+    order_events: pl.DataFrame,
+    roundtrip_events: pl.DataFrame,
+) -> tuple[set[str], set[str]]:
+    order_ids: set[str] = set()
+    trade_ids: set[str] = set()
+    for row in order_events.to_dicts() if not order_events.is_empty() else []:
+        payload = _raw_payload_dict(row)
+        order_ids.update(_cost_probe_order_identifiers(row, payload))
+        trade_ids.update(_cost_probe_trade_identifiers(row, payload))
+    for row in roundtrip_events.to_dicts() if not roundtrip_events.is_empty() else []:
+        payload = _raw_payload_dict(row)
+        for key in ("entry_order_id", "exit_order_id", "order_id", "exchange_order_id"):
+            value = str(_first_probe_value(row, payload, [key]) or "").strip()
+            if value:
+                order_ids.add(value)
+        trade_ids.update(_cost_probe_trade_identifiers(row, payload))
+        for state_key in ("entry_state", "exit_state"):
+            state = payload.get(state_key)
+            if isinstance(state, dict):
+                order_ids.update(_cost_probe_order_identifiers(state, state))
+                trade_ids.update(_cost_probe_trade_identifiers(state, state))
+    return order_ids, trade_ids
+
+
+def _eligible_cost_probe_roundtrip(
+    row: Mapping[str, Any],
+    payload: Mapping[str, Any],
+) -> bool:
+    status = str(
+        _first_probe_value(row, payload, ["roundtrip_status", "status", "state"]) or ""
+    ).strip().lower()
+    if status != "closed":
+        return False
+    if _probe_bool(row, payload, ["no_order_submitted"]) is True:
+        return False
+    required = {
+        "execution_completed": ["execution_completed", "completed"],
+        "flat_verified": ["flat_verified"],
+        "exchange_flat_verified": ["exchange_flat_verified"],
+        "local_flat_verified": ["local_flat_verified"],
+        "reconcile_ok": ["reconcile_ok"],
+        "cost_evidence_complete": ["cost_evidence_complete"],
+        "eligible_for_cost_model": ["eligible_for_cost_model"],
+    }
+    return all(_probe_bool(row, payload, keys) is True for keys in required.values())
+
+
+def _latest_matching_cost_probe_order(
+    order_rows: Sequence[dict[str, Any]],
+    *,
+    roundtrip_row: Mapping[str, Any],
+    roundtrip_payload: Mapping[str, Any],
+    leg: str,
+) -> dict[str, Any] | None:
+    matches: list[dict[str, Any]] = []
+    leg_order_ids = _roundtrip_leg_order_ids(roundtrip_row, roundtrip_payload, leg=leg)
+    roundtrip_authorization = str(
+        _first_probe_value(roundtrip_row, roundtrip_payload, ["authorization_id"]) or ""
+    ).strip()
+    for order_row in order_rows:
+        order_payload = _raw_payload_dict(order_row)
+        if not _cost_probe_order_is_filled(order_row, order_payload):
+            continue
+        order_leg = str(_first_probe_value(order_row, order_payload, ["leg"]) or "").lower()
+        if leg == "entry" and order_leg not in {"entry", "buy", "open", "open_long"}:
+            continue
+        if leg == "exit" and order_leg not in {"exit", "sell", "close", "close_long"}:
+            continue
+        order_ids = _cost_probe_order_identifiers(order_row, order_payload)
+        if leg_order_ids and order_ids.intersection(leg_order_ids):
+            matches.append(order_row)
+            continue
+        order_authorization = str(
+            _first_probe_value(order_row, order_payload, ["authorization_id"]) or ""
+        ).strip()
+        if roundtrip_authorization and order_authorization == roundtrip_authorization:
+            matches.append(order_row)
+    if not matches:
+        return None
+    return sorted(matches, key=lambda item: str(item.get("event_ts") or ""))[-1]
+
+
+def _roundtrip_leg_order_ids(
+    row: Mapping[str, Any],
+    payload: Mapping[str, Any],
+    *,
+    leg: str,
+) -> set[str]:
+    ids: set[str] = set()
+    key = "entry_order_id" if leg == "entry" else "exit_order_id"
+    value = str(_first_probe_value(row, payload, [key]) or "").strip()
+    if value:
+        ids.add(value)
+    roundtrip_id = str(_first_probe_value(row, payload, ["roundtrip_id"]) or "").strip()
+    if ":" in roundtrip_id:
+        entry_id, exit_id = roundtrip_id.split(":", 1)
+        ids.add(entry_id if leg == "entry" else exit_id)
+    return {item for item in ids if item}
+
+
+def _cost_probe_order_is_filled(row: Mapping[str, Any], payload: Mapping[str, Any]) -> bool:
+    status = str(
+        _first_probe_value(row, payload, ["order_status", "status", "state"]) or ""
+    ).strip().lower()
+    qty = _first_probe_float(row, payload, ["filled_qty", "fill_qty", "fillSz", "accFillSz"])
+    price = _first_probe_float(row, payload, ["avg_px", "avgPx", "fill_px", "fillPx"])
+    return (
+        status in {"filled", "partially_filled", "partial_fill", "partially-filled"}
+        and qty is not None
+        and qty > 0
+        and price is not None
+        and price > 0
+    )
+
+
+def _cost_probe_sample_from_private_fill(
+    private_row: Mapping[str, Any],
+    *,
+    order_row: Mapping[str, Any],
+    order_payload: Mapping[str, Any],
+    symbol: str,
+) -> dict[str, Any] | None:
+    price = _optional_float(private_row.get("fill_price"))
+    qty = _optional_float(private_row.get("fill_size"))
+    if price is None or price <= 0 or qty is None or qty <= 0:
+        return None
+    notional = abs(price * qty)
+    fee = _optional_float(private_row.get("fee"))
+    fee_ccy = str(private_row.get("fee_currency") or "")
+    fee_abs_usdt = _fee_abs_usdt(
+        fee=fee,
+        fee_currency=fee_ccy,
+        symbol=symbol,
+        fill_price=price,
+    )
+    side = str(private_row.get("side") or _probe_side_from_leg(order_row, order_payload)).lower()
+    arrival_mid = _first_probe_float(
+        order_row,
+        order_payload,
+        ["arrival_mid_px", "arrival_mid", "mid_px_at_decision"],
+    )
+    return {
+        "symbol": symbol,
+        "source_kind": "v5_cost_probe_event_bridge",
+        "sample_origin": "cost_probe",
+        "eligible_for_cost_model": True,
+        "eligible_for_alpha_pnl": False,
+        "eligible_for_live_cost_coverage": False,
+        "notional": notional,
+        "notional_bucket": _notional_bucket(notional),
+        "trade_id": str(private_row.get("trade_id") or ""),
+        "order_id": str(private_row.get("order_id") or ""),
+        "side": side,
+        "action": str(_first_probe_value(order_row, order_payload, ["intent", "action"]) or ""),
+        "fill_px": price,
+        "fill_qty": qty,
+        "fee": fee,
+        "fee_ccy": fee_ccy,
+        "fee_usdt": fee_abs_usdt,
+        "ts": private_row.get("ts") or order_row.get("event_ts"),
+        "fee_bps": fee_abs_usdt / notional * 10_000 if fee_abs_usdt is not None else None,
+        "slippage_bps": _slippage_bps(
+            fill_price=price,
+            reference_price=arrival_mid,
+            side=side,
+        ),
+        "spread_bps": _cost_probe_spread_bps(order_row, order_payload),
+    }
+
+
+def _cost_probe_sample_from_order_event(
+    row: Mapping[str, Any],
+    *,
+    order_payload: Mapping[str, Any],
+    symbol: str,
+    leg: str,
+) -> dict[str, Any] | None:
+    price = _first_probe_float(row, order_payload, ["avg_px", "avgPx", "fill_px", "fillPx"])
+    qty = _first_probe_float(row, order_payload, ["filled_qty", "fill_qty", "fillSz", "accFillSz"])
+    notional = _first_probe_float(row, order_payload, ["notional_usdt", "notional"])
+    if notional is None and price is not None and qty is not None:
+        notional = abs(price * qty)
+    if price is None or qty is None or notional is None or notional <= 0:
+        return None
+    fee_usdt = _first_probe_float(row, order_payload, ["fee_usdt", "fee_abs_usdt"])
+    fee = _first_probe_float(row, order_payload, ["fee", "commission", "fee_abs"])
+    fee_ccy = str(
+        _first_probe_value(row, order_payload, ["fee_ccy", "feeCcy", "fee_currency"])
+        or ""
+    )
+    fee_abs_usdt = abs(fee_usdt) if fee_usdt is not None else _fee_abs_usdt(
+        fee=fee,
+        fee_currency=fee_ccy,
+        symbol=symbol,
+        fill_price=price,
+    )
+    side = _probe_side_from_leg(row, order_payload) or ("buy" if leg == "entry" else "sell")
+    arrival_mid = _first_probe_float(
+        row,
+        order_payload,
+        ["arrival_mid_px", "arrival_mid", "mid_px_at_decision"],
+    )
+    return {
+        "symbol": symbol,
+        "source_kind": "v5_cost_probe_event_bridge",
+        "sample_origin": "cost_probe",
+        "eligible_for_cost_model": True,
+        "eligible_for_alpha_pnl": False,
+        "eligible_for_live_cost_coverage": False,
+        "notional": abs(notional),
+        "notional_bucket": _notional_bucket(abs(notional)),
+        "trade_id": ";".join(sorted(_cost_probe_trade_identifiers(row, order_payload))),
+        "order_id": next(iter(sorted(_cost_probe_order_identifiers(row, order_payload))), ""),
+        "side": side,
+        "action": str(_first_probe_value(row, order_payload, ["intent", "action"]) or ""),
+        "fill_px": price,
+        "fill_qty": qty,
+        "fee": fee,
+        "fee_ccy": fee_ccy,
+        "fee_usdt": fee_abs_usdt,
+        "ts": row.get("event_ts"),
+        "fee_bps": fee_abs_usdt / abs(notional) * 10_000 if fee_abs_usdt is not None else None,
+        "slippage_bps": _slippage_bps(
+            fill_price=price,
+            reference_price=arrival_mid,
+            side=side,
+        ),
+        "spread_bps": _cost_probe_spread_bps(row, order_payload),
+    }
+
+
+def _cost_probe_sample_from_roundtrip_state(
+    payload: Mapping[str, Any],
+    *,
+    symbol: str,
+    leg: str,
+) -> dict[str, Any] | None:
+    state = payload.get(f"{leg}_state")
+    if not isinstance(state, dict):
+        return None
+    row = {
+        "event_ts": payload.get("event_ts"),
+        "leg": leg,
+        "arrival_mid_px": payload.get("arrival_mid_px"),
+        "arrival_bid_px": payload.get("arrival_bid_px"),
+        "arrival_ask_px": payload.get("arrival_ask_px"),
+    }
+    return _cost_probe_sample_from_order_event(
+        row | state,
+        order_payload=state,
+        symbol=symbol,
+        leg=leg,
+    )
+
+
+def _private_fill_rows_by_probe_key(
+    fill_events: pl.DataFrame,
+) -> tuple[dict[str, list[dict[str, Any]]], dict[str, list[dict[str, Any]]]]:
+    by_order: dict[str, list[dict[str, Any]]] = {}
+    by_trade: dict[str, list[dict[str, Any]]] = {}
+    if fill_events.is_empty():
+        return by_order, by_trade
+    for row in fill_events.to_dicts():
+        order_id = str(row.get("order_id") or "").strip()
+        trade_id = str(row.get("trade_id") or "").strip()
+        if order_id:
+            by_order.setdefault(order_id, []).append(row)
+        if trade_id:
+            by_trade.setdefault(trade_id, []).append(row)
+    return by_order, by_trade
+
+
+def _matching_private_fill_rows(
+    order_row: Mapping[str, Any],
+    order_payload: Mapping[str, Any],
+    *,
+    private_by_order: dict[str, list[dict[str, Any]]],
+    private_by_trade: dict[str, list[dict[str, Any]]],
+) -> list[dict[str, Any]]:
+    matches: list[dict[str, Any]] = []
+    for order_id in _cost_probe_order_identifiers(order_row, order_payload):
+        matches.extend(private_by_order.get(order_id, []))
+    for trade_id in _cost_probe_trade_identifiers(order_row, order_payload):
+        matches.extend(private_by_trade.get(trade_id, []))
+    deduped: dict[tuple[str, str, str], dict[str, Any]] = {}
+    for row in matches:
+        key = (
+            str(row.get("order_id") or ""),
+            str(row.get("trade_id") or ""),
+            str(row.get("ts") or ""),
+        )
+        deduped[key] = row
+    return list(deduped.values())
+
+
+def _cost_probe_order_identifiers(
+    row: Mapping[str, Any],
+    payload: Mapping[str, Any],
+) -> set[str]:
+    ids: set[str] = set()
+    for key in (
+        "order_id",
+        "ordId",
+        "exchange_order_id",
+        "client_order_id",
+        "clOrdId",
+        "cl_ord_id",
+        "order_key",
+    ):
+        value = str(_first_probe_value(row, payload, [key]) or "").strip()
+        if value:
+            ids.add(value)
+    for fill in _probe_fill_items(payload):
+        for key in ("ordId", "order_id", "orderId"):
+            value = str(fill.get(key) or "").strip()
+            if value:
+                ids.add(value)
+    return ids
+
+
+def _cost_probe_trade_identifiers(
+    row: Mapping[str, Any],
+    payload: Mapping[str, Any],
+) -> set[str]:
+    ids: set[str] = set()
+    for key in ("trade_id", "tradeId", "trade_ids"):
+        value = str(_first_probe_value(row, payload, [key]) or "").strip()
+        if value:
+            ids.update(part.strip() for part in value.replace(",", ";").split(";") if part.strip())
+    for fill in _probe_fill_items(payload):
+        for key in ("tradeId", "trade_id", "tradeId"):
+            value = str(fill.get(key) or "").strip()
+            if value:
+                ids.add(value)
+    return ids
+
+
+def _probe_fill_items(payload: Mapping[str, Any]) -> list[Mapping[str, Any]]:
+    items: list[Mapping[str, Any]] = []
+    for source in (payload, payload.get("raw") if isinstance(payload.get("raw"), dict) else {}):
+        fills = source.get("_fills") if isinstance(source, dict) else None
+        if isinstance(fills, list):
+            items.extend(item for item in fills if isinstance(item, dict))
+    return items
+
+
+def _raw_payload_dict(row: Mapping[str, Any]) -> dict[str, Any]:
+    raw = row.get("raw_payload_json")
+    if isinstance(raw, str) and raw.strip():
+        try:
+            payload = json.loads(raw)
+        except json.JSONDecodeError:
+            payload = {}
+        if isinstance(payload, dict):
+            return payload
+    return {}
+
+
+def _first_probe_value(
+    row: Mapping[str, Any],
+    payload: Mapping[str, Any],
+    keys: Sequence[str],
+) -> Any:
+    sources: list[Mapping[str, Any]] = [row, payload]
+    for nested in ("raw", "flat_verification"):
+        value = payload.get(nested)
+        if isinstance(value, dict):
+            sources.append(value)
+    for source in sources:
+        for key in keys:
+            value = source.get(key)
+            if value is not None and str(value).strip() != "":
+                return value
+    return None
+
+
+def _first_probe_float(
+    row: Mapping[str, Any],
+    payload: Mapping[str, Any],
+    keys: Sequence[str],
+) -> float | None:
+    return _optional_float(_first_probe_value(row, payload, keys))
+
+
+def _probe_bool(
+    row: Mapping[str, Any],
+    payload: Mapping[str, Any],
+    keys: Sequence[str],
+) -> bool | None:
+    value = _first_probe_value(row, payload, keys)
+    if value is None or value == "":
+        return None
+    if isinstance(value, bool):
+        return value
+    rendered = str(value).strip().lower()
+    if rendered in {"1", "true", "yes", "y", "on"}:
+        return True
+    if rendered in {"0", "false", "no", "n", "off"}:
+        return False
+    return None
+
+
+def _cost_probe_symbol(row: Mapping[str, Any], payload: Mapping[str, Any]) -> str:
+    for key in ("normalized_symbol", "symbol", "inst_id", "instId", "instrument", "pair"):
+        value = _first_probe_value(row, payload, [key])
+        if value:
+            return normalize_symbol(value)
+    return ""
+
+
+def _probe_side_from_leg(row: Mapping[str, Any], payload: Mapping[str, Any]) -> str:
+    side = str(_first_probe_value(row, payload, ["side", "order_side"]) or "").lower()
+    if side:
+        return side
+    leg = str(_first_probe_value(row, payload, ["leg", "intent", "action"]) or "").lower()
+    if leg in {"entry", "buy", "open", "open_long"}:
+        return "buy"
+    if leg in {"exit", "sell", "close", "close_long"}:
+        return "sell"
+    return ""
+
+
+def _cost_probe_spread_bps(row: Mapping[str, Any], payload: Mapping[str, Any]) -> float | None:
+    explicit = _first_probe_float(row, payload, ["spread_bps", "arrival_spread_bps"])
+    if explicit is not None:
+        return abs(explicit)
+    bid = _first_probe_float(row, payload, ["arrival_bid_px", "arrival_bid", "bid_px"])
+    ask = _first_probe_float(row, payload, ["arrival_ask_px", "arrival_ask", "ask_px"])
+    mid = _first_probe_float(row, payload, ["arrival_mid_px", "arrival_mid", "mid_px_at_decision"])
+    if mid is None and bid is not None and ask is not None:
+        mid = (bid + ask) / 2.0
+    if bid is None or ask is None or mid is None or mid <= 0:
+        return None
+    return abs(ask - bid) / mid * 10_000.0
 
 
 def _v5_trade_fill_samples(v5_trade_events: pl.DataFrame) -> list[dict[str, Any]]:
@@ -1031,6 +1586,22 @@ def _symbols_from_v5_order_lifecycle(v5_order_lifecycle: pl.DataFrame) -> set[st
     return symbols
 
 
+def _symbols_from_cost_probe_events(
+    order_events: pl.DataFrame,
+    roundtrip_events: pl.DataFrame,
+) -> set[str]:
+    symbols: set[str] = set()
+    for frame in (order_events, roundtrip_events):
+        if frame.is_empty():
+            continue
+        for row in frame.to_dicts():
+            payload = _raw_payload_dict(row)
+            symbol = _cost_probe_symbol(row, payload)
+            if symbol:
+                symbols.add(symbol)
+    return symbols
+
+
 def _private_fill_events_for_day(root: Path, day: str) -> pl.DataFrame:
     silver = read_parquet_dataset(root / FILL_EVENT_DATASET)
     bronze = _bronze_private_fills_frame(read_parquet_dataset(root / BRONZE_FILLS_DATASET))
@@ -1083,6 +1654,24 @@ def _v5_order_lifecycle_for_day(root: Path, day: str) -> pl.DataFrame:
             "bundle_ts",
             "ingest_ts",
         ),
+    )
+
+
+def _v5_cost_probe_order_events_for_day(root: Path, day: str) -> pl.DataFrame:
+    return _filter_recent_window(
+        read_parquet_dataset(root / V5_COST_PROBE_ORDER_EVENT_DATASET),
+        day=day,
+        lookback_days=PRIVATE_COST_LOOKBACK_DAYS,
+        timestamp_columns=("event_ts", "bundle_ts", "ingest_ts"),
+    )
+
+
+def _v5_cost_probe_roundtrip_events_for_day(root: Path, day: str) -> pl.DataFrame:
+    return _filter_recent_window(
+        read_parquet_dataset(root / V5_COST_PROBE_ROUNDTRIP_EVENT_DATASET),
+        day=day,
+        lookback_days=PRIVATE_COST_LOOKBACK_DAYS,
+        timestamp_columns=("event_ts", "bundle_ts", "ingest_ts"),
     )
 
 
@@ -1482,11 +2071,23 @@ def _actual_fill_source(
 
 
 def _preferred_cost_samples(samples: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    cost_probe_event_samples = [
+        sample
+        for sample in samples
+        if str(sample.get("source_kind") or "") == "v5_cost_probe_event_bridge"
+    ]
     lifecycle_samples = [
         sample
         for sample in samples
         if str(sample.get("source_kind") or "") == "v5_order_lifecycle"
     ]
+    lifecycle_strategy_samples = [
+        sample for sample in lifecycle_samples if _sample_origin(sample) != "cost_probe"
+    ]
+    if cost_probe_event_samples and lifecycle_strategy_samples:
+        return [*lifecycle_strategy_samples, *cost_probe_event_samples]
+    if cost_probe_event_samples:
+        return cost_probe_event_samples
     return lifecycle_samples or samples
 
 

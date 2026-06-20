@@ -343,6 +343,7 @@ def _poll_export_job(exports_root: Path, export_date: str) -> dict[str, Any]:
         )
         if recovered is not None:
             return recovered
+    status = _normalize_completed_export_status_times(status_path, status)
     if status.get("state") != "running":
         return status
     recovered = _recover_failed_export_status_from_pack(
@@ -438,6 +439,26 @@ def _recover_failed_export_status_from_pack(
     }
     _write_export_job_status(status_path, recovered)
     return recovered
+
+
+def _normalize_completed_export_status_times(
+    status_path: Path,
+    status: dict[str, Any],
+) -> dict[str, Any]:
+    if status.get("state") != "succeeded":
+        return status
+    started_at = _parse_status_datetime(status.get("started_at"))
+    finished_at = _parse_status_datetime(status.get("finished_at"))
+    if started_at is None or finished_at is None or started_at <= finished_at:
+        return status
+    normalized = {
+        **status,
+        "started_at": finished_at.isoformat(),
+        "timestamp_normalized": True,
+        "timestamp_normalization_reason": "started_at_after_finished_at",
+    }
+    _write_export_job_status(status_path, normalized)
+    return normalized
 
 
 def _can_recover_from_existing_same_day_pack(status: dict[str, Any]) -> bool:

@@ -3178,6 +3178,36 @@ def test_expert_exports_failed_status_recovers_pack_between_start_and_failure(tm
     assert "error" not in status
 
 
+def test_expert_exports_succeeded_recovered_status_normalizes_inverted_times(tmp_path):
+    exports_root = tmp_path / "exports"
+    exports_root.mkdir()
+    status_path = exports_root / ".quant_lab_web_export_2026-05-16.json"
+    status_path.write_text(
+        json.dumps(
+            {
+                "state": "succeeded",
+                "zip_path": str(
+                    exports_root
+                    / "quant_lab_expert_pack_2026-05-16_20260516T100000+0800.zip"
+                ),
+                "started_at": "2026-05-16T04:00:00+00:00",
+                "finished_at": "2026-05-16T02:00:00+00:00",
+                "recovered_from_failed_status": True,
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    status = expert_exports._poll_export_job(exports_root, "2026-05-16")
+
+    assert status["state"] == "succeeded"
+    assert status["started_at"] == "2026-05-16T02:00:00+00:00"
+    assert status["finished_at"] == "2026-05-16T02:00:00+00:00"
+    assert status["timestamp_normalized"] is True
+    stored = json.loads(status_path.read_text(encoding="utf-8"))
+    assert stored["started_at"] == "2026-05-16T02:00:00+00:00"
+
+
 def test_expert_exports_subprocess_mode_parses_generated_pack(tmp_path, monkeypatch):
     pack_path = tmp_path / "exports" / "quant_lab_expert_pack_subprocess.zip"
     captured = {}

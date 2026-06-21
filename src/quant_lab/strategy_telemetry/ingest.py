@@ -148,9 +148,10 @@ REHYDRATE_IF_EMPTY_DATASETS = {
     "v5_cost_probe_p3_preflight",
     "v5_cost_probe_live_execution_status",
 }
-PULLBACK_STABLE_ROW_KEY_DATASETS = {
+SOURCE_AGNOSTIC_STABLE_ROW_KEY_DATASETS = {
     "v5_pullback_reversal_shadow",
     "v5_pullback_reversal_readiness",
+    "v5_cost_probe_live_execution_status",
 }
 HISTORICAL_OUTCOME_PATH_PREFIXES = (
     "summaries/high_score_blocked_outcomes",
@@ -2502,7 +2503,7 @@ def _upsert_stable_rows(dataset_path: Path, rows: list[dict[str, Any]]) -> int:
     if not df.is_empty():
         candidate_keys = (
             ["strategy", "stable_row_key"]
-            if dataset_path.name in PULLBACK_STABLE_ROW_KEY_DATASETS
+            if dataset_path.name in SOURCE_AGNOSTIC_STABLE_ROW_KEY_DATASETS
             else ["strategy", "source_path_inside_bundle", "stable_row_key"]
         )
         key_columns = [

@@ -5220,9 +5220,11 @@ def _dataset_members(
     v5_cost_usage = frames.get("v5_quant_lab_cost_usage", pl.DataFrame())
     v5_fallbacks = _dedupe_v5_event_frame(frames.get("v5_quant_lab_fallback", pl.DataFrame()))
     v5_cost_probe_p3_preflight = frames.get("v5_cost_probe_p3_preflight", pl.DataFrame())
-    v5_cost_probe_live_execution_status = frames.get(
-        "v5_cost_probe_live_execution_status",
-        pl.DataFrame(),
+    v5_cost_probe_live_execution_status = _dedupe_stable_row_key_frame(
+        frames.get(
+            "v5_cost_probe_live_execution_status",
+            pl.DataFrame(),
+        )
     )
     v5_cost_probe_order_events = frames.get("v5_cost_probe_order_event", pl.DataFrame())
     v5_cost_probe_roundtrip_events = frames.get(
@@ -6037,6 +6039,20 @@ def _dedupe_v5_event_frame(frame: pl.DataFrame) -> pl.DataFrame:
     return pl.DataFrame(list(rows_by_key.values()))
 
 
+def _dedupe_stable_row_key_frame(frame: pl.DataFrame) -> pl.DataFrame:
+    if frame.is_empty() or "stable_row_key" not in frame.columns:
+        return frame
+    rows_by_key: dict[str, dict[str, Any]] = {}
+    for row in frame.to_dicts():
+        key = str(row.get("stable_row_key") or "").strip()
+        if not key:
+            key = safe_json_dumps(row)
+        current = rows_by_key.get(key)
+        if current is None or _v5_event_seen_time(row) >= _v5_event_seen_time(current):
+            rows_by_key[key] = row
+    return pl.DataFrame(list(rows_by_key.values()))
+
+
 def _v5_event_seen_time(row: dict[str, Any]) -> datetime:
     for field in ["last_seen_bundle_ts", "bundle_ts", "ingest_ts"]:
         value = readers._coerce_timestamp(row.get(field))  # type: ignore[attr-defined]
@@ -6789,19 +6805,19 @@ def _apply_selected_bundle_manifest_context(
 
 
 def _export_v5_max_pending_bundles() -> int:
-    raw_value = os.environ.get("QUANT_LAB_EXPORT_V5_MAX_PENDING_BUNDLES", "5")
+    raw_value = os.environ.get("QUANT_LAB_EXPORT_V5_MAX_PENDING_BUNDLES", "1")
     try:
         return max(1, int(raw_value))
     except ValueError:
-        return 5
+        return 1
 
 
 def _export_v5_max_scan_bundles(max_pending: int) -> int:
-    raw_value = os.environ.get("QUANT_LAB_EXPORT_V5_MAX_SCAN_BUNDLES", "20")
+    raw_value = os.environ.get("QUANT_LAB_EXPORT_V5_MAX_SCAN_BUNDLES", "1000")
     try:
         return max(max_pending, int(raw_value))
     except ValueError:
-        return max(max_pending, 20)
+        return max(max_pending, 1000)
 
 
 def _ingested_bundle_manifest_keys(lake_root: Path) -> tuple[set[str], set[str]]:

@@ -632,6 +632,7 @@ def test_ingest_exports_cost_probe_order_and_roundtrip_events(tmp_path):
         tmp_path / "v5_live_followup_bundle_20260514T083000Z.tar.gz",
         {
             "summaries/cost_probe_live_execution_status.json": live_execution_status,
+            "raw/reports/cost_probe_live_execution_status.json": live_execution_status,
             "summaries/cost_probe_order_events.jsonl": order_events,
             "summaries/cost_probe_roundtrip_events.jsonl": roundtrip_events,
         },
@@ -667,6 +668,14 @@ def test_ingest_exports_cost_probe_order_and_roundtrip_events(tmp_path):
     assert live_status_rows[0]["authorization_fresh"] is True
     assert live_status_rows[0]["authorization_consumed"] is True
     assert live_status_rows[0]["recovery_required"] is False
+    historical_duplicate = {
+        **live_status_rows[0],
+        "source_path_inside_bundle": "raw/reports/cost_probe_live_execution_status.json",
+    }
+    write_parquet_dataset(
+        pl.DataFrame([*live_status_rows, historical_duplicate]),
+        lake / "silver/v5_cost_probe_live_execution_status",
+    )
     assert roundtrip_rows[0]["roundtrip_key"] == "probe-roundtrip-1"
     assert roundtrip_rows[0]["event_id"] == (
         "probe-roundtrip-1|roundtrip:closed|2026-05-14T08:30:20Z"

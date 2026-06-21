@@ -81,6 +81,16 @@ def test_collect_recent_heavy_files_uses_timestamp_not_physical_tail(tmp_path):
     assert collected["ts"].min() >= base + timedelta(minutes=1)
 
 
+def test_export_v5_authoritative_scan_defaults_match_production_systemd(monkeypatch):
+    monkeypatch.delenv("QUANT_LAB_EXPORT_V5_MAX_PENDING_BUNDLES", raising=False)
+    monkeypatch.delenv("QUANT_LAB_EXPORT_V5_MAX_SCAN_BUNDLES", raising=False)
+
+    max_pending = daily_export_module._export_v5_max_pending_bundles()
+
+    assert max_pending == 1
+    assert daily_export_module._export_v5_max_scan_bundles(max_pending) == 1000
+
+
 def test_microstructure_rollup_limits_cover_forward_validation_window():
     min_rows_for_30_hourly_samples = 80_000
 

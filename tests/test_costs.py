@@ -232,6 +232,26 @@ def test_bootstrap_readiness_prefers_fresh_probe_over_stale_actual_row():
 
     readiness = build_cost_bootstrap_readiness(
         pl.DataFrame([stale_actual, bootstrap_probe]),
+        v5_order_lifecycle=pl.DataFrame(
+            [
+                {
+                    "symbol": "BTC-USDT",
+                    "order_state": "FILLED",
+                    "fill_count": 1,
+                    "avg_fill_px": 70000.0,
+                    "filled_qty": 0.0001,
+                    "notional_usdt": 7.0,
+                    "fee_bps": 1.0,
+                    "arrival_slippage_bps": 0.5,
+                    "arrival_spread_bps": 0.2,
+                    "execution_purpose": "strategy_live",
+                    "last_fill_ts": (now - timedelta(days=10)).isoformat().replace(
+                        "+00:00",
+                        "Z",
+                    ),
+                }
+            ]
+        ),
         live_symbols=["BNB-USDT", "BTC-USDT", "ETH-USDT", "SOL-USDT"],
         generated_at=now,
     )
@@ -242,6 +262,7 @@ def test_bootstrap_readiness_prefers_fresh_probe_over_stale_actual_row():
     assert btc["latest_cost_source"] == "bootstrap_cost_probe"
     assert btc["cost_probe_fill_count"] == 2
     assert btc["actual_fill_count"] == 0
+    assert btc["strategy_live_fill_count"] == 0
     assert btc["actual_or_mixed_bootstrap_covered"] is True
     assert btc["trusted_for_live"] is False
     assert btc["actual_or_mixed_bootstrap_coverage_live_universe"] == 0.25

@@ -353,9 +353,16 @@ def build_cost_bootstrap_readiness(
         )
         lifecycle_rows = lifecycle_by_symbol.get(symbol, [])
         filled_lifecycle = [row for row in lifecycle_rows if _lifecycle_row_filled(row)]
-        cost_probe_rows = [row for row in filled_lifecycle if _lifecycle_row_is_cost_probe(row)]
+        fresh_filled_lifecycle = [
+            row
+            for row in filled_lifecycle
+            if _event_row_is_fresh(row, reference_time=generated)
+        ]
+        cost_probe_rows = [
+            row for row in fresh_filled_lifecycle if _lifecycle_row_is_cost_probe(row)
+        ]
         strategy_live_rows = [
-            row for row in filled_lifecycle if not _lifecycle_row_is_cost_probe(row)
+            row for row in fresh_filled_lifecycle if not _lifecycle_row_is_cost_probe(row)
         ]
         private_fill_rows = private_fills_by_symbol.get(symbol, [])
         cost_probe_private_fill_count = min(
@@ -1546,6 +1553,29 @@ def _row_is_stale(
     reference = (reference_time or datetime.now(UTC)).astimezone(UTC)
     age_seconds = (reference - as_of_ts.astimezone(UTC)).total_seconds()
     return age_seconds > COST_BUCKET_STALE_SECONDS
+
+
+def _event_row_is_fresh(
+    row: Mapping[str, Any],
+    *,
+    reference_time: datetime,
+) -> bool:
+    timestamp = _row_ts(
+        row,
+        "last_fill_ts",
+        "fill_ts",
+        "ts_utc",
+        "ts",
+        "timestamp",
+        "trade_ts",
+        "submit_ts",
+        "decision_ts",
+        "ingest_ts",
+    )
+    if timestamp is None:
+        return True
+    age_seconds = (reference_time - timestamp.astimezone(UTC)).total_seconds()
+    return age_seconds <= COST_BUCKET_STALE_SECONDS
 
 
 def _row_explicit_as_of_ts(row: Mapping[str, Any]) -> datetime | None:

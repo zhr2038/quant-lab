@@ -8,6 +8,7 @@ from typing import Any
 
 DEFAULT_BASE_DIR = Path("/var/lib/quant-lab")
 DEFAULT_KEEP_REDACTED_ARCHIVE_DAYS = 3
+DEFAULT_KEEP_RESTRICTED_ARCHIVE_DAYS = 7
 DEFAULT_KEEP_INBOX_DAYS = 2
 DEFAULT_KEEP_EXPORT_PACKS = 5
 
@@ -23,6 +24,7 @@ class RetentionPruneResult:
     warnings: list[str] = field(default_factory=list)
     removed_bytes: int = 0
     redacted_archive_removed_days: int = 0
+    restricted_archive_removed_days: int = 0
     inbox_removed_files: int = 0
     export_removed_files: int = 0
     maintenance_removed_dirs: int = 0
@@ -46,6 +48,7 @@ class RetentionPruneResult:
             "warnings": self.warnings,
             "removed_bytes": self.removed_bytes,
             "redacted_archive_removed_days": self.redacted_archive_removed_days,
+            "restricted_archive_removed_days": self.restricted_archive_removed_days,
             "inbox_removed_files": self.inbox_removed_files,
             "export_removed_files": self.export_removed_files,
             "maintenance_removed_dirs": self.maintenance_removed_dirs,
@@ -56,12 +59,13 @@ def prune_quant_lab_storage(
     base_dir: str | Path = DEFAULT_BASE_DIR,
     *,
     keep_redacted_archive_days: int = DEFAULT_KEEP_REDACTED_ARCHIVE_DAYS,
+    keep_restricted_archive_days: int = DEFAULT_KEEP_RESTRICTED_ARCHIVE_DAYS,
     keep_inbox_days: int = DEFAULT_KEEP_INBOX_DAYS,
     keep_export_packs: int = DEFAULT_KEEP_EXPORT_PACKS,
     dry_run: bool = True,
     now: datetime | None = None,
 ) -> RetentionPruneResult:
-    """Prune regenerable quant-lab storage while preserving lake and restricted raw audit."""
+    """Prune regenerable quant-lab storage while preserving lake and bounded raw audit."""
     current = _utc_now(now)
     root = Path(base_dir)
     result = RetentionPruneResult(
@@ -77,6 +81,13 @@ def prune_quant_lab_storage(
     _prune_redacted_archive_days(
         root,
         keep_days=keep_redacted_archive_days,
+        dry_run=dry_run,
+        now=current,
+        result=result,
+    )
+    _prune_restricted_archive_days(
+        root,
+        keep_days=keep_restricted_archive_days,
         dry_run=dry_run,
         now=current,
         result=result,
@@ -110,16 +121,62 @@ def _prune_redacted_archive_days(
     if keep_days < 1:
         result.warnings.append("keep_redacted_archive_days_must_be_positive")
         return
-    archive_root = root / "archive" / "v5" / "bundles"
+    for archive_root in (root / "archive" / "v5" / "bundles", root / "archive" / "v5"):
+        result.redacted_archive_removed_days += _prune_archive_day_dirs(
+            archive_root,
+            root,
+            keep_days=keep_days,
+            dry_run=dry_run,
+            now=now,
+            result=result,
+        )
+
+
+def _prune_restricted_archive_days(
+    root: Path,
+    *,
+    keep_days: int,
+    dry_run: bool,
+    now: datetime,
+    result: RetentionPruneResult,
+) -> None:
+    if keep_days < 1:
+        result.warnings.append("keep_restricted_archive_days_must_be_positive")
+        return
+    for archive_root in (
+        root / "archive_restricted" / "v5" / "bundles",
+        root / "archive_restricted" / "v5",
+    ):
+        result.restricted_archive_removed_days += _prune_archive_day_dirs(
+            archive_root,
+            root,
+            keep_days=keep_days,
+            dry_run=dry_run,
+            now=now,
+            result=result,
+        )
+
+
+def _prune_archive_day_dirs(
+    archive_root: Path,
+    root: Path,
+    *,
+    keep_days: int,
+    dry_run: bool,
+    now: datetime,
+    result: RetentionPruneResult,
+) -> int:
+    removed = 0
     cutoff = now.date() - timedelta(days=keep_days - 1)
     for day_dir in _safe_children(archive_root, result):
         parsed = _parse_day_dir(day_dir)
         if parsed is None:
-            result.skipped_paths.append(str(day_dir))
+            if day_dir.name != "bundles":
+                result.skipped_paths.append(str(day_dir))
             continue
-        if parsed < cutoff:
-            if _remove_path(day_dir, root, dry_run=dry_run, result=result):
-                result.redacted_archive_removed_days += 1
+        if parsed < cutoff and _remove_path(day_dir, root, dry_run=dry_run, result=result):
+            removed += 1
+    return removed
 
 
 def _prune_inbox_bundles(

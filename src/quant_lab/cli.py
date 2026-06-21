@@ -1248,6 +1248,10 @@ def prune_storage_retention_command(
         int,
         typer.Option("--keep-redacted-archive-days", min=1),
     ] = 3,
+    keep_restricted_archive_days: Annotated[
+        int,
+        typer.Option("--keep-restricted-archive-days", min=1),
+    ] = 7,
     keep_inbox_days: Annotated[int, typer.Option("--keep-inbox-days", min=1)] = 2,
     keep_export_packs: Annotated[int, typer.Option("--keep-export-packs", min=1)] = 5,
     dry_run: Annotated[
@@ -1265,6 +1269,7 @@ def prune_storage_retention_command(
     result = prune_quant_lab_storage(
         base_dir=base_dir,
         keep_redacted_archive_days=keep_redacted_archive_days,
+        keep_restricted_archive_days=keep_restricted_archive_days,
         keep_inbox_days=keep_inbox_days,
         keep_export_packs=keep_export_packs,
         dry_run=dry_run,

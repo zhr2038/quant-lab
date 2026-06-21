@@ -114,6 +114,7 @@ def test_storage_retention_does_not_create_root_owned_lake_files():
     assert "Group=quantlab" in unit
     assert "PermissionsStartOnly=true" in unit
     assert "prune-storage-retention --base-dir /var/lib/quant-lab" in unit
+    assert "--keep-restricted-archive-days 7" in unit
     assert "journalctl --vacuum-size=200M" in unit
     assert "OnCalendar=*-*-* 09:20:00" in timer
 

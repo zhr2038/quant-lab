@@ -500,6 +500,36 @@ def test_ingest_replaces_redacted_cost_probe_p3_preflight_for_already_ingested_b
     )
 
 
+def test_ingest_rehydrates_cost_probe_p3_preflight_schema_upgrade(
+    tmp_path,
+):
+    bundle = make_v5_bundle_fixture(
+        tmp_path / "v5_live_followup_bundle_20260514T083000Z.tar.gz"
+    )
+    lake = tmp_path / "lake"
+
+    first = ingest_v5_bundle(bundle, lake, tmp_path / "restricted", tmp_path / "redacted")
+    assert first.skipped is False
+    dataset_path = lake / "silver/v5_cost_probe_p3_preflight"
+    old_rows = read_parquet_dataset(dataset_path).drop(
+        [
+            "offline_plan_state",
+            "online_exchange_preflight_state",
+            "effective_preflight_state",
+        ]
+    )
+    write_parquet_dataset(old_rows, dataset_path)
+
+    result = ingest_v5_bundle(bundle, lake, tmp_path / "restricted", tmp_path / "redacted")
+
+    rows = read_parquet_dataset(dataset_path).to_dicts()
+    assert result.skipped is True
+    assert result.silver_rows["v5_cost_probe_p3_preflight"] == 1
+    assert rows[0]["offline_plan_state"] == "NO_PLAN_ROWS"
+    assert rows[0]["online_exchange_preflight_state"] == "NOT_READY"
+    assert rows[0]["effective_preflight_state"] == "NOT_READY"
+
+
 def test_ingest_exports_cost_probe_order_and_roundtrip_events(tmp_path):
     order_events = "\n".join(
         [

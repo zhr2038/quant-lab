@@ -615,11 +615,23 @@ def _rehydrate_empty_csv_refresh_datasets(
 def _cost_probe_p3_preflight_needs_rehydrate(frame: pl.DataFrame) -> bool:
     if frame.is_empty() or "raw_payload_json" not in frame.columns:
         return frame.is_empty()
+    effective_columns = (
+        "offline_plan_state",
+        "online_exchange_preflight_state",
+        "effective_preflight_state",
+    )
+    if any(column not in frame.columns for column in effective_columns):
+        return True
     redacted = '"manual_authorization_required":"<REDACTED>"'
     spaced_redacted = '"manual_authorization_required": "<REDACTED>"'
-    for value in frame.get_column("raw_payload_json").drop_nulls().to_list():
+    for row in frame.to_dicts():
+        value = row.get("raw_payload_json")
         payload = str(value)
         if redacted in payload or spaced_redacted in payload:
+            return True
+        if "effective_preflight_state" in payload and any(
+            not str(row.get(column) or "").strip() for column in effective_columns
+        ):
             return True
     return False
 

@@ -456,6 +456,9 @@ def test_ingest_rehydrates_cost_probe_p3_preflight_for_already_ingested_bundle(t
     assert result.skipped is True
     assert result.silver_rows["v5_cost_probe_p3_preflight"] == 1
     assert row["state"] == "NOT_READY"
+    assert row["offline_plan_state"] == "NO_PLAN_ROWS"
+    assert row["online_exchange_preflight_state"] == "NOT_READY"
+    assert row["effective_preflight_state"] == "NOT_READY"
     assert row["approved_live_order_execution"] is False
     assert row["live_order_effect"] == "none_preflight_only_no_order"
     assert any(
@@ -944,6 +947,9 @@ def test_ingest_parses_quant_lab_usage_files(tmp_path):
     assert btc_probe[0]["live_order_effect"] == "none_read_only_v5_bundle_audit"
     p3_preflight = read_parquet_dataset(lake / "silver/v5_cost_probe_p3_preflight").to_dicts()
     assert p3_preflight[0]["state"] == "NOT_READY"
+    assert p3_preflight[0]["offline_plan_state"] == "NO_PLAN_ROWS"
+    assert p3_preflight[0]["online_exchange_preflight_state"] == "NOT_READY"
+    assert p3_preflight[0]["effective_preflight_state"] == "NOT_READY"
     assert p3_preflight[0]["manual_authorization_required"] is True
     assert p3_preflight[0]["approved_live_order_execution"] is False
     assert p3_preflight[0]["live_order_effect"] == "none_preflight_only_no_order"
@@ -965,6 +971,10 @@ def test_ingest_parses_quant_lab_usage_files(tmp_path):
             )
         )
     assert exported_p3[0]["manual_authorization_required"].lower() == "true"
+    assert exported_p3[0]["offline_plan_state"] == "NO_PLAN_ROWS"
+    assert exported_p3[0]["online_exchange_preflight_state"] == "NOT_READY"
+    assert exported_p3[0]["effective_preflight_state"] == "NOT_READY"
+    assert "SOL/USDT" in exported_p3[0]["manual_allowed_symbols_json"]
     assert '"manual_authorization_required": true' in exported_p3[0]["raw_payload_json"]
     assert redacted_manual_auth not in exported_p3[0]["raw_payload_json"]
     paper_rows = read_parquet_dataset(lake / "silver/v5_paper_strategy_run").to_dicts()

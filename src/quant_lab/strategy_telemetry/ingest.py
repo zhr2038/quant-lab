@@ -1034,6 +1034,16 @@ def _cost_probe_p3_preflight_rows(
         or "v5.cost_probe_p3_preflight.v1",
         "generated_at_utc": _normalize_event_time(payload.get("generated_at")),
         "state": _clean_text(payload.get("state")) or "UNKNOWN",
+        "offline_plan_state": _clean_text(payload.get("offline_plan_state")),
+        "offline_plan_blocked_reasons_json": safe_json_dumps(
+            payload.get("offline_plan_blocked_reasons") or []
+        ),
+        "online_exchange_preflight_state": _clean_text(
+            payload.get("online_exchange_preflight_state")
+        ),
+        "effective_preflight_state": _clean_text(
+            payload.get("effective_preflight_state") or payload.get("state")
+        ),
         "ready_to_request_manual_live_probe": _payload_bool(
             payload,
             "ready_to_request_manual_live_probe",

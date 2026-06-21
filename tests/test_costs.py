@@ -221,6 +221,33 @@ def test_cost_probe_only_bucket_counts_as_bootstrap_not_trusted_live():
     assert btc["actual_or_mixed_trusted_coverage_live_universe"] == 0.0
 
 
+def test_bootstrap_readiness_prefers_fresh_probe_over_stale_actual_row():
+    now = datetime(2026, 6, 21, 13, 30, tzinfo=UTC)
+    stale_actual = _coverage_cost_row("BTC-USDT", "mixed_actual_proxy", now - timedelta(days=3))
+    bootstrap_probe = {
+        **_coverage_cost_row("BTC-USDT", "bootstrap_cost_probe", now - timedelta(minutes=15)),
+        "sample_count": 2,
+        "cost_probe_fill_count": 2,
+    }
+
+    readiness = build_cost_bootstrap_readiness(
+        pl.DataFrame([stale_actual, bootstrap_probe]),
+        live_symbols=["BNB-USDT", "BTC-USDT", "ETH-USDT", "SOL-USDT"],
+        generated_at=now,
+    )
+
+    rows = {row["symbol"]: row for row in readiness.to_dicts()}
+    btc = rows["BTC-USDT"]
+    assert btc["bootstrap_state"] == "BOOTSTRAP_PROBE_AVAILABLE"
+    assert btc["latest_cost_source"] == "bootstrap_cost_probe"
+    assert btc["cost_probe_fill_count"] == 2
+    assert btc["actual_fill_count"] == 0
+    assert btc["actual_or_mixed_bootstrap_covered"] is True
+    assert btc["trusted_for_live"] is False
+    assert btc["actual_or_mixed_bootstrap_coverage_live_universe"] == 0.25
+    assert btc["actual_or_mixed_trusted_coverage_live_universe"] == 0.0
+
+
 def test_cost_probe_mixed_samples_do_not_satisfy_trusted_live():
     now = datetime(2026, 6, 15, tzinfo=UTC)
     row = {

@@ -8,6 +8,10 @@ import polars as pl
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 from quant_lab.contracts.models import CostEstimate, FillEvent
+from quant_lab.costs.probe import (
+    cost_probe_private_fill_count_by_symbol,
+    cost_probe_terminal_fill_count_by_symbol,
+)
 from quant_lab.data.lake import read_parquet_dataset, read_parquet_lazy
 from quant_lab.symbols import normalize_optional_symbol, normalize_symbol
 
@@ -291,6 +295,8 @@ def build_cost_bootstrap_readiness(
     cost_bucket_daily: pl.DataFrame | None,
     *,
     v5_order_lifecycle: pl.DataFrame | None = None,
+    v5_cost_probe_order_events: pl.DataFrame | None = None,
+    v5_cost_probe_roundtrip_events: pl.DataFrame | None = None,
     okx_private_readonly_fills: pl.DataFrame | None = None,
     okx_private_readonly_bills: pl.DataFrame | None = None,
     live_symbols: Iterable[str] = DEFAULT_LIVE_UNIVERSE_SYMBOLS,
@@ -309,6 +315,15 @@ def build_cost_bootstrap_readiness(
     }
     lifecycle_by_symbol = _rows_by_symbol(v5_order_lifecycle)
     private_fills_by_symbol = _rows_by_symbol(okx_private_readonly_fills)
+    cost_probe_private_fills_by_symbol = cost_probe_private_fill_count_by_symbol(
+        okx_private_readonly_fills,
+        v5_cost_probe_order_events,
+        v5_cost_probe_roundtrip_events,
+    )
+    cost_probe_event_fills_by_symbol = cost_probe_terminal_fill_count_by_symbol(
+        v5_cost_probe_order_events,
+        v5_cost_probe_roundtrip_events,
+    )
     bills_by_symbol = _rows_by_symbol(okx_private_readonly_bills)
 
     output: list[dict[str, Any]] = []
@@ -318,12 +333,24 @@ def build_cost_bootstrap_readiness(
         symbol_rows = rows_by_symbol.get(symbol, [])
         latest = _latest_cost_row_for_coverage(symbol_rows)
         latest_actual = _latest_actual_or_mixed_row(symbol_rows)
+        latest_bootstrap = _latest_bootstrap_cost_probe_row(symbol_rows)
         fresh_actual = _latest_fresh_actual_or_mixed_row(
             symbol_rows,
             reference_time=generated,
         )
         latest_proxy = _latest_public_proxy_row(symbol_rows)
-        source_row = fresh_actual or latest_actual or latest_proxy or latest or {}
+        fresh_bootstrap = latest_bootstrap is not None and not _row_is_stale(
+            latest_bootstrap,
+            reference_time=generated,
+        )
+        source_row = (
+            fresh_actual
+            or (latest_bootstrap if fresh_bootstrap else None)
+            or latest_actual
+            or latest_proxy
+            or latest
+            or {}
+        )
         lifecycle_rows = lifecycle_by_symbol.get(symbol, [])
         filled_lifecycle = [row for row in lifecycle_rows if _lifecycle_row_filled(row)]
         cost_probe_rows = [row for row in filled_lifecycle if _lifecycle_row_is_cost_probe(row)]
@@ -331,6 +358,14 @@ def build_cost_bootstrap_readiness(
             row for row in filled_lifecycle if not _lifecycle_row_is_cost_probe(row)
         ]
         private_fill_rows = private_fills_by_symbol.get(symbol, [])
+        cost_probe_private_fill_count = min(
+            len(private_fill_rows),
+            cost_probe_private_fills_by_symbol.get(symbol, 0),
+        )
+        non_probe_private_fill_count = max(
+            len(private_fill_rows) - cost_probe_private_fill_count,
+            0,
+        )
         bill_rows = bills_by_symbol.get(symbol, [])
 
         strategy_live_fill_count = max(
@@ -339,7 +374,7 @@ def build_cost_bootstrap_readiness(
         )
         private_fill_count = max(
             _int_value(source_row.get("private_fill_count")),
-            len(private_fill_rows),
+            non_probe_private_fill_count,
         )
         actual_fill_count = max(
             _int_value(source_row.get("actual_fill_count")),
@@ -349,7 +384,10 @@ def build_cost_bootstrap_readiness(
         mixed_fill_count = _int_value(source_row.get("mixed_fill_count"))
         cost_probe_fill_count = max(
             _int_value(source_row.get("cost_probe_fill_count")),
+            _int_value(latest_bootstrap.get("cost_probe_fill_count") if latest_bootstrap else 0),
             len(cost_probe_rows),
+            cost_probe_event_fills_by_symbol.get(symbol, 0),
+            cost_probe_private_fill_count,
         )
         live_cost_sample_count = _live_cost_sample_count(
             source_row,
@@ -391,7 +429,12 @@ def build_cost_bootstrap_readiness(
             latest_actual,
             reference_time=generated,
         )
-        bootstrap_ready = direct_fresh or cost_probe_fill_count > 0 or private_fill_count > 0
+        cost_probe_bootstrap_ready = (
+            (fresh_bootstrap and cost_probe_fill_count >= 2)
+            or cost_probe_event_fills_by_symbol.get(symbol, 0) >= 2
+            or (latest_bootstrap is None and len(cost_probe_rows) > 0)
+        )
+        bootstrap_ready = direct_fresh or cost_probe_bootstrap_ready or private_fill_count > 0
         trusted_sample_count = (
             live_cost_sample_count
             if direct_fresh
@@ -465,7 +508,7 @@ def build_cost_bootstrap_readiness(
                     "bill_ts",
                     "ingest_ts",
                 ),
-                "latest_cost_source": _cost_source(latest) or "missing",
+                "latest_cost_source": _cost_source(source_row) or _cost_source(latest) or "missing",
                 "roundtrip_cost_p50_bps": _roundtrip_cost_value(source_row, "p50"),
                 "roundtrip_cost_p75_bps": _roundtrip_cost_value(source_row, "p75"),
                 "roundtrip_cost_p90_bps": _roundtrip_cost_value(source_row, "p90"),
@@ -1541,6 +1584,11 @@ def _latest_actual_or_mixed_row(rows: list[dict[str, Any]]) -> dict[str, Any] | 
     return _latest_cost_row_for_coverage(candidates)
 
 
+def _latest_bootstrap_cost_probe_row(rows: list[dict[str, Any]]) -> dict[str, Any] | None:
+    candidates = [row for row in rows if _cost_source(row) == "bootstrap_cost_probe"]
+    return _latest_cost_row_for_coverage(candidates)
+
+
 def _latest_fresh_actual_or_mixed_row(
     rows: list[dict[str, Any]],
     *,
@@ -1860,16 +1908,18 @@ def _cost_bootstrap_state(
     sample_count: int,
     min_trusted_sample_count: int,
 ) -> str:
-    if stale_actual:
-        return "STALE"
     if trusted_live:
         return "ACTUAL_FILLS_TRUSTED"
-    if latest_actual is not None or actual_fill_count > 0:
+    if (latest_actual is not None and not stale_actual) or actual_fill_count > 0:
         if mixed_fill_count > 0 or _cost_source(latest_actual) == "mixed_actual_proxy":
             return "MIXED_ACTUAL_PROXY_AVAILABLE"
         if sample_count < min_trusted_sample_count:
             return "ACTUAL_FILLS_SMALL_SAMPLE"
         return "ACTUAL_FILLS_SMALL_SAMPLE"
+    if cost_probe_fill_count >= 2:
+        return "BOOTSTRAP_PROBE_AVAILABLE"
+    if stale_actual:
+        return "STALE"
     if cost_probe_fill_count > 0:
         return "BOOTSTRAP_PROBE_AVAILABLE"
     if latest_proxy is not None:

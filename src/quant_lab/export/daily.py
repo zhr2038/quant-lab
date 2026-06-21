@@ -46,6 +46,11 @@ from quant_lab.costs.model import (
     build_live_universe_cost_coverage,
     evaluate_live_universe_cost_coverage,
 )
+from quant_lab.costs.probe import (
+    canonical_cost_probe_roundtrip_events,
+    cost_probe_private_fill_keys,
+    private_fill_matches_cost_probe,
+)
 from quant_lab.data.lake import read_parquet_dataset, write_parquet_dataset
 from quant_lab.factors.composite_factory import (
     COMPOSITE_FACTOR_CANDIDATE_FIELDS,
@@ -474,6 +479,7 @@ REQUIRED_MEMBERS = [
     "v5/v5_cost_probe_live_execution_status.csv",
     "v5/v5_cost_probe_order_events.csv",
     "v5/v5_cost_probe_roundtrip_events.csv",
+    "v5/v5_cost_probe_roundtrip_canonical.csv",
     "v5/v5_candidate_events.csv",
     "v5/v5_btc_probe_entry_quality_audit.csv",
     "v5/v5_candidate_labels.csv",
@@ -3372,6 +3378,14 @@ CSV_SCHEMAS: dict[str, list[str]] = {
         "contract_version",
     ],
 }
+CSV_SCHEMAS["v5/v5_cost_probe_roundtrip_canonical.csv"] = [
+    *CSV_SCHEMAS["v5/v5_cost_probe_roundtrip_events.csv"],
+    "revision",
+    "supersedes_event_id",
+    "terminal",
+    "canonical",
+    "canonical_priority",
+]
 CSV_SCHEMAS["reports/bnb_paper_strategy_runs.csv"] = CSV_SCHEMAS[
     "reports/paper_strategy_runs.csv"
 ]
@@ -3648,6 +3662,11 @@ def _publish_cost_bootstrap_readiness_snapshot(
     readiness = build_cost_bootstrap_readiness(
         _normalize_symbol_frame(frames.get("cost_bucket_daily", pl.DataFrame())),
         v5_order_lifecycle=_read_optional_lake_frame(root / "silver" / "v5_order_lifecycle"),
+        v5_cost_probe_order_events=frames.get("v5_cost_probe_order_event", pl.DataFrame()),
+        v5_cost_probe_roundtrip_events=frames.get(
+            "v5_cost_probe_roundtrip_event",
+            pl.DataFrame(),
+        ),
         okx_private_readonly_fills=frames.get("okx_private_readonly_fills", pl.DataFrame()),
         okx_private_readonly_bills=frames.get("okx_private_readonly_bills", pl.DataFrame()),
         live_symbols=DEFAULT_LIVE_UNIVERSE_SYMBOLS,
@@ -4954,6 +4973,11 @@ def _dataset_members(
         build_cost_bootstrap_readiness(
             costs,
             v5_order_lifecycle=_read_optional_lake_frame(root / "silver" / "v5_order_lifecycle"),
+            v5_cost_probe_order_events=frames.get("v5_cost_probe_order_event", pl.DataFrame()),
+            v5_cost_probe_roundtrip_events=frames.get(
+                "v5_cost_probe_roundtrip_event",
+                pl.DataFrame(),
+            ),
             okx_private_readonly_fills=frames.get("okx_private_readonly_fills", pl.DataFrame()),
             okx_private_readonly_bills=frames.get("okx_private_readonly_bills", pl.DataFrame()),
         ),
@@ -5245,6 +5269,9 @@ def _dataset_members(
     v5_cost_probe_roundtrip_events = frames.get(
         "v5_cost_probe_roundtrip_event",
         pl.DataFrame(),
+    )
+    v5_cost_probe_roundtrip_canonical = canonical_cost_probe_roundtrip_events(
+        v5_cost_probe_roundtrip_events
     )
     v5_candidate_events = frames.get("v5_candidate_event", pl.DataFrame())
     v5_btc_probe_entry_quality_audit = frames.get(
@@ -6002,6 +6029,10 @@ def _dataset_members(
         "v5/v5_cost_probe_roundtrip_events.csv": _csv_member(
             "v5/v5_cost_probe_roundtrip_events.csv",
             _tail_by_time(v5_cost_probe_roundtrip_events, "event_ts", limit=50_000),
+        ),
+        "v5/v5_cost_probe_roundtrip_canonical.csv": _csv_member(
+            "v5/v5_cost_probe_roundtrip_canonical.csv",
+            _tail_by_time(v5_cost_probe_roundtrip_canonical, "event_ts", limit=50_000),
         ),
         "v5/v5_candidate_events.csv": _csv_member(
             "v5/v5_candidate_events.csv",
@@ -7988,6 +8019,20 @@ def _data_quality_payload(
     fills = snapshot.frames.get("okx_private_readonly_fills", pl.DataFrame())
     bills = snapshot.frames.get("okx_private_readonly_bills", pl.DataFrame())
     v5_trades = snapshot.frames.get("v5_trade_event", pl.DataFrame())
+    v5_cost_probe_order_events = snapshot.frames.get(
+        "v5_cost_probe_order_event",
+        pl.DataFrame(),
+    )
+    v5_cost_probe_roundtrip_events = snapshot.frames.get(
+        "v5_cost_probe_roundtrip_event",
+        pl.DataFrame(),
+    )
+    private_fill_probe_context = _private_fill_cost_probe_context(
+        fills,
+        order_events=v5_cost_probe_order_events,
+        roundtrip_events=v5_cost_probe_roundtrip_events,
+        export_day=day,
+    )
     proxy_only = _all_cost_rows_public_proxy(costs)
     health_checks = _jsonish_dict(latest_cost_health.get("data_quality_checks_json"))
     actual_rows = int(latest_cost_health.get("actual_rows") or 0)
@@ -8002,6 +8047,9 @@ def _data_quality_payload(
             actual_or_mixed_rows=actual_or_mixed_rows,
             fills=fills,
             v5_trades=v5_trades,
+            cost_probe_private_fill_count=private_fill_probe_context[
+                "cost_probe_private_fill_count"
+            ],
         )
     )
     relevant_private_fills = _relevant_private_fill_rows(fills, export_day=day)
@@ -8016,6 +8064,12 @@ def _data_quality_payload(
         raw_row_label="private_fills",
         raw_row_count=fills.height,
         relevant_row_count=relevant_private_fills,
+        excluded_relevant_row_count=private_fill_probe_context[
+            "cost_probe_private_fill_count"
+        ],
+        exclusion_detail=_private_fill_cost_probe_context_detail(
+            private_fill_probe_context
+        ),
         actual_rows=actual_rows,
         mixed_rows=mixed_rows,
     )
@@ -8044,6 +8098,16 @@ def _data_quality_payload(
             warning_only=True,
         )
     )
+    if private_fill_probe_context["cost_probe_private_fill_count"] > 0:
+        checks.append(
+            _check(
+                "cost_probe_private_fills_excluded_from_live_coverage",
+                True,
+                _private_fill_cost_probe_context_detail(private_fill_probe_context),
+                status="INFO",
+                severity="info",
+            )
+        )
     checks.append(
         _check(
             "trades_present_but_not_in_cost_model",
@@ -8143,7 +8207,7 @@ def _data_quality_payload(
     )
 
     for check in checks:
-        if check["status"] != "PASS":
+        if check["status"] not in {"PASS", "INFO"}:
             warnings.append(f"{check['name']}: {check['detail']}")
 
     status = _overall_quality_status(checks)
@@ -8515,6 +8579,7 @@ def _actual_cost_symbol_coverage_check(
     actual_or_mixed_rows: int,
     fills: pl.DataFrame,
     v5_trades: pl.DataFrame,
+    cost_probe_private_fill_count: int = 0,
 ) -> tuple[bool, str]:
     latest_actual_or_mixed_symbols = set(
         _json_listish(latest_cost_health.get("symbols_with_actual_cost"))
@@ -8584,7 +8649,8 @@ def _actual_cost_symbol_coverage_check(
         export_day=export_day,
         timestamp_columns=("ts_utc", "ts", "timestamp", "time", "created_at"),
     )
-    fill_like_rows = relevant_private_fills + relevant_v5_trades
+    non_probe_private_fills = max(relevant_private_fills - cost_probe_private_fill_count, 0)
+    fill_like_rows = non_probe_private_fills + relevant_v5_trades
     passed = actual_or_mixed_rows > 0 or fill_like_rows == 0
     detail = (
         f"latest_actual_or_mixed_symbols={latest_coverage}; "
@@ -8592,12 +8658,62 @@ def _actual_cost_symbol_coverage_check(
         f"historical_actual_or_mixed_symbols={historical_coverage}; "
         f"historical_actual_or_mixed_rows={historical_actual_or_mixed_rows}; "
         f"relevant_private_fills={relevant_private_fills}; "
+        f"cost_probe_private_fill_count={cost_probe_private_fill_count}; "
+        f"non_probe_private_fills={non_probe_private_fills}; "
         f"private_fills_total={fills.height}; "
         f"relevant_v5_trades={relevant_v5_trades}; "
         f"v5_trades_total={v5_trades.height}; "
         f"source={latest_source}+cost_bucket_daily_snapshot"
     )
     return passed, detail
+
+
+def _private_fill_cost_probe_context(
+    fills: pl.DataFrame,
+    *,
+    order_events: pl.DataFrame,
+    roundtrip_events: pl.DataFrame,
+    export_day: date,
+) -> dict[str, int]:
+    order_ids, trade_ids = cost_probe_private_fill_keys(order_events, roundtrip_events)
+    relevant_private_fills = 0
+    cost_probe_private_fill_count = 0
+    if not fills.is_empty():
+        for row in fills.to_dicts():
+            timestamp = _first_timestamp_value(row, ("ts", "fillTime"))
+            if timestamp is None and row.get("raw_json") is not None:
+                timestamp = _raw_json_timestamp(row.get("raw_json"), ("ts", "fillTime"))
+            if timestamp is None or not _timestamp_in_export_window(
+                timestamp,
+                export_day=export_day,
+            ):
+                continue
+            relevant_private_fills += 1
+            if private_fill_matches_cost_probe(
+                row,
+                order_ids=order_ids,
+                trade_ids=trade_ids,
+            ):
+                cost_probe_private_fill_count += 1
+    unclassified_private_fill_count = max(
+        relevant_private_fills - cost_probe_private_fill_count,
+        0,
+    )
+    return {
+        "relevant_private_fills": relevant_private_fills,
+        "strategy_private_fill_count": 0,
+        "cost_probe_private_fill_count": cost_probe_private_fill_count,
+        "unclassified_private_fill_count": unclassified_private_fill_count,
+    }
+
+
+def _private_fill_cost_probe_context_detail(context: Mapping[str, Any]) -> str:
+    return (
+        f"strategy_private_fill_count={context.get('strategy_private_fill_count', 0)}; "
+        f"cost_probe_private_fill_count={context.get('cost_probe_private_fill_count', 0)}; "
+        f"unclassified_private_fill_count={context.get('unclassified_private_fill_count', 0)}; "
+        "cost_probe_private_fills_excluded_from_live_coverage=true"
+    )
 
 
 def _raw_fill_like_cost_check(
@@ -8607,24 +8723,39 @@ def _raw_fill_like_cost_check(
     raw_row_label: str,
     raw_row_count: int,
     relevant_row_count: int,
+    excluded_relevant_row_count: int = 0,
+    exclusion_detail: str = "",
     actual_rows: int,
     mixed_rows: int,
 ) -> tuple[bool, str]:
     latest_health_passed = health_checks.get(health_check_name, True) is not False
     actual_or_mixed_rows = actual_rows + mixed_rows
+    effective_relevant_row_count = max(relevant_row_count - excluded_relevant_row_count, 0)
     export_raw_without_latest_actual_or_mixed = (
-        relevant_row_count > 0 and actual_or_mixed_rows == 0
+        effective_relevant_row_count > 0 and actual_or_mixed_rows == 0
     )
-    passed = latest_health_passed and not export_raw_without_latest_actual_or_mixed
+    classification_overrides_latest_health = (
+        excluded_relevant_row_count > 0 and effective_relevant_row_count == 0
+    )
+    passed = (
+        (latest_health_passed or classification_overrides_latest_health)
+        and not export_raw_without_latest_actual_or_mixed
+    )
     detail = (
         f"{raw_row_label}={raw_row_count}; "
         f"relevant_{raw_row_label}={relevant_row_count}; "
+        f"excluded_relevant_{raw_row_label}={excluded_relevant_row_count}; "
+        f"effective_relevant_{raw_row_label}={effective_relevant_row_count}; "
         f"actual_rows={actual_rows}; "
         f"mixed_rows={mixed_rows}; "
         f"latest_health_check_passed={str(latest_health_passed).lower()}; "
+        "classification_overrides_latest_health="
+        f"{str(classification_overrides_latest_health).lower()}; "
         "export_raw_rows_without_latest_actual_or_mixed="
         f"{str(export_raw_without_latest_actual_or_mixed).lower()}"
     )
+    if exclusion_detail:
+        detail += f"; {exclusion_detail}"
     return passed, detail
 
 

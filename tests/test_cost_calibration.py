@@ -549,6 +549,31 @@ def test_ineligible_cost_probe_private_fills_do_not_become_trusted_live(tmp_path
     assert all(row["eligible_for_live_cost_coverage"] is False for row in rows)
 
 
+def test_cost_probe_roundtrip_canonical_prevents_duplicate_probe_samples(tmp_path):
+    lake_root = tmp_path / "lake"
+    _write_cost_probe_events(lake_root, eligible=True)
+    roundtrip_path = lake_root / "silver" / "v5_cost_probe_roundtrip_event"
+    roundtrip_rows = read_parquet_dataset(roundtrip_path).to_dicts()
+    duplicate_closed = dict(roundtrip_rows[0])
+    duplicate_closed["event_ts"] = "2026-05-15T01:00:12Z"
+    payload = json.loads(str(duplicate_closed["raw_payload_json"]))
+    payload["event_ts"] = "2026-05-15T01:00:12Z"
+    duplicate_closed["raw_payload_json"] = json.dumps(payload)
+    write_parquet_dataset(pl.DataFrame([*roundtrip_rows, duplicate_closed]), roundtrip_path)
+
+    result = calibrate_costs_for_day(lake_root, "2026-05-15", min_sample_count=1)
+
+    assert result.sources == ["bootstrap_cost_probe"]
+    rows = read_parquet_dataset(lake_root / "gold" / "cost_bucket_daily").to_dicts()
+    all_row = [
+        row for row in rows if row["symbol"] == "BTC-USDT" and row["notional_bucket"] == "all"
+    ][0]
+    assert all_row["source"] == "bootstrap_cost_probe"
+    assert all_row["sample_count"] == 2
+    assert all_row["cost_probe_fill_count"] == 2
+    assert all_row["eligible_for_live_cost_coverage"] is False
+
+
 def test_v5_order_lifecycle_stays_actual_when_trade_csv_also_exists(tmp_path):
     lake_root = tmp_path / "lake"
     write_parquet_dataset(

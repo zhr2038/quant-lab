@@ -5329,6 +5329,215 @@ def test_export_flags_raw_private_fills_even_when_latest_health_check_is_ok(tmp_
     )
 
 
+def test_export_treats_cost_probe_private_fills_as_info_not_actual_warning(tmp_path):
+    lake_root = _fixture_lake(tmp_path)
+    write_parquet_dataset(
+        pl.DataFrame(
+            [
+                {
+                    "endpoint": "/api/v5/trade/fills-history",
+                    "ingest_ts": datetime.now(UTC),
+                    "raw_json": json.dumps(
+                        {
+                            "instType": "SPOT",
+                            "instId": "BTC-USDT",
+                            "tradeId": "probe-trade-entry",
+                            "ordId": "okx-entry-1",
+                            "side": "buy",
+                            "fillPx": "70010",
+                            "fillSz": "0.0001",
+                            "fee": "-0.007001",
+                            "feeCcy": "USDT",
+                            "execType": "T",
+                            "ts": "1778544000000",
+                        },
+                        sort_keys=True,
+                    ),
+                },
+                {
+                    "endpoint": "/api/v5/trade/fills-history",
+                    "ingest_ts": datetime.now(UTC),
+                    "raw_json": json.dumps(
+                        {
+                            "instType": "SPOT",
+                            "instId": "BTC-USDT",
+                            "tradeId": "probe-trade-exit",
+                            "ordId": "okx-exit-1",
+                            "side": "sell",
+                            "fillPx": "69990",
+                            "fillSz": "0.0001",
+                            "fee": "-0.006999",
+                            "feeCcy": "USDT",
+                            "execType": "T",
+                            "ts": "1778544000000",
+                        },
+                        sort_keys=True,
+                    ),
+                },
+            ]
+        ),
+        lake_root / "bronze" / "okx_private_readonly" / "fills_history",
+    )
+    write_parquet_dataset(
+        pl.DataFrame(
+            [
+                {
+                    "event_ts": "2026-05-12T00:00:01Z",
+                    "event_type": "order:entry:filled",
+                    "symbol": "BTC-USDT",
+                    "normalized_symbol": "BTC-USDT",
+                    "leg": "entry",
+                    "order_status": "filled",
+                    "order_id": "okx-entry-1",
+                    "exchange_order_id": "okx-entry-1",
+                    "client_order_id": "cp-auth-1E",
+                    "raw_payload_json": json.dumps(
+                        {
+                            "event_ts": "2026-05-12T00:00:01Z",
+                            "symbol": "BTC/USDT",
+                            "leg": "entry",
+                            "order_status": "filled",
+                            "exchange_order_id": "okx-entry-1",
+                            "trade_ids": "probe-trade-entry",
+                            "authorization_id": "auth-1",
+                            "filled_qty": "0.0001",
+                            "avg_px": "70010",
+                        }
+                    ),
+                },
+                {
+                    "event_ts": "2026-05-12T00:00:08Z",
+                    "event_type": "order:exit:filled",
+                    "symbol": "BTC-USDT",
+                    "normalized_symbol": "BTC-USDT",
+                    "leg": "exit",
+                    "order_status": "filled",
+                    "order_id": "okx-exit-1",
+                    "exchange_order_id": "okx-exit-1",
+                    "client_order_id": "cp-auth-1X",
+                    "raw_payload_json": json.dumps(
+                        {
+                            "event_ts": "2026-05-12T00:00:08Z",
+                            "symbol": "BTC/USDT",
+                            "leg": "exit",
+                            "order_status": "filled",
+                            "exchange_order_id": "okx-exit-1",
+                            "trade_ids": "probe-trade-exit",
+                            "authorization_id": "auth-1",
+                            "filled_qty": "0.0001",
+                            "avg_px": "69990",
+                        }
+                    ),
+                },
+            ]
+        ),
+        lake_root / "silver" / "v5_cost_probe_order_event",
+    )
+    write_parquet_dataset(
+        pl.DataFrame(
+            [
+                {
+                    "event_ts": "2026-05-12T00:00:10Z",
+                    "event_type": "roundtrip:closed",
+                    "symbol": "BTC-USDT",
+                    "normalized_symbol": "BTC-USDT",
+                    "roundtrip_key": "okx-entry-1:okx-exit-1",
+                    "roundtrip_id": "okx-entry-1:okx-exit-1",
+                    "roundtrip_status": "closed",
+                    "entry_order_id": "okx-entry-1",
+                    "exit_order_id": "okx-exit-1",
+                    "authorization_id": "auth-1",
+                    "execution_completed": True,
+                    "flat_verified": True,
+                    "exchange_flat_verified": True,
+                    "local_flat_verified": True,
+                    "reconcile_ok": True,
+                    "cost_evidence_complete": True,
+                    "eligible_for_cost_model": True,
+                    "eligible_for_live_cost_coverage": False,
+                    "source": "bootstrap_cost_probe",
+                    "raw_payload_json": json.dumps(
+                        {
+                            "event_ts": "2026-05-12T00:00:10Z",
+                            "symbol": "BTC/USDT",
+                            "roundtrip_status": "closed",
+                            "roundtrip_id": "okx-entry-1:okx-exit-1",
+                            "entry_order_id": "okx-entry-1",
+                            "exit_order_id": "okx-exit-1",
+                            "authorization_id": "auth-1",
+                            "execution_completed": True,
+                            "flat_verified": True,
+                            "exchange_flat_verified": True,
+                            "local_flat_verified": True,
+                            "reconcile_ok": True,
+                            "cost_evidence_complete": True,
+                            "eligible_for_cost_model": True,
+                            "eligible_for_live_cost_coverage": False,
+                            "source": "bootstrap_cost_probe",
+                        }
+                    ),
+                }
+            ]
+        ),
+        lake_root / "silver" / "v5_cost_probe_roundtrip_event",
+    )
+    write_parquet_dataset(
+        pl.DataFrame(
+            [
+                {
+                    "day": "2026-05-12",
+                    "status": "WARNING",
+                    "cost_model_version": "costs-v1",
+                    "actual_rows": 0,
+                    "mixed_rows": 0,
+                    "proxy_rows": 1,
+                    "global_default_rows": 0,
+                    "fallback_ratio": 1.0,
+                    "symbols_with_actual_cost": "[]",
+                    "symbols_with_mixed_cost": "[]",
+                    "symbols_with_proxy_only": '["BTC-USDT"]',
+                    "symbols_proxy_only": '["BTC-USDT"]',
+                    "symbols_missing_cost": "[]",
+                    "actual_sample_count_by_symbol": "{}",
+                    "data_quality_checks_json": (
+                        '{"private_fills_present_but_actual_cost_zero":false}'
+                    ),
+                    "min_sample_count": 30,
+                    "warnings_json": '["private_fills_present_but_actual_cost_zero"]',
+                    "created_at": datetime.now(UTC),
+                }
+            ]
+        ),
+        lake_root / "gold" / "cost_health_daily",
+    )
+
+    result = export_daily_pack(
+        export_date="2026-05-12",
+        lake_root=lake_root,
+        out_dir=tmp_path / "exports",
+        profile="expert",
+        command_line=["qlab", "export-daily"],
+        pre_export_v5_refresh=False,
+    )
+
+    with zipfile.ZipFile(result.zip_path) as archive:
+        data_quality = json.loads(archive.read("data_quality.json").decode("utf-8"))
+
+    checks = {check["name"]: check for check in data_quality["checks"]}
+    private_fill_check = checks["private_fills_present_but_actual_cost_zero"]
+    assert private_fill_check["status"] == "PASS"
+    assert "cost_probe_private_fill_count=2" in private_fill_check["detail"]
+    assert "effective_relevant_private_fills=0" in private_fill_check["detail"]
+    assert "classification_overrides_latest_health=true" in private_fill_check["detail"]
+    assert (
+        checks["cost_probe_private_fills_excluded_from_live_coverage"]["status"] == "INFO"
+    )
+    assert not any(
+        warning.startswith("private_fills_present_but_actual_cost_zero")
+        for warning in data_quality["warnings"]
+    )
+
+
 def test_export_does_not_flag_historical_raw_private_fills_for_latest_day(tmp_path):
     lake_root = _fixture_lake(tmp_path)
     write_parquet_dataset(

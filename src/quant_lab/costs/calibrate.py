@@ -14,6 +14,7 @@ from quant_lab.costs.health import (
     summarize_cost_api_usage,
 )
 from quant_lab.costs.model import DEFAULT_FALLBACK_COST_BPS, CostBucketDaily
+from quant_lab.costs.probe import canonical_cost_probe_roundtrip_events
 from quant_lab.data.lake import (
     read_parquet_dataset,
     read_parquet_lazy,
@@ -212,6 +213,9 @@ def build_cost_bucket_daily_rows(
         v5_cost_probe_roundtrip_events
         if v5_cost_probe_roundtrip_events is not None
         else pl.DataFrame()
+    )
+    cost_probe_roundtrip_frame = canonical_cost_probe_roundtrip_events(
+        cost_probe_roundtrip_frame
     )
     cost_probe_private_order_ids, cost_probe_private_trade_ids = _cost_probe_private_fill_keys(
         cost_probe_order_frame,

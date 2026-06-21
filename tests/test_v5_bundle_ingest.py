@@ -734,6 +734,15 @@ def test_ingest_exports_cost_probe_order_and_roundtrip_events(tmp_path):
                 )
             )
         )
+        roundtrip_canonical_csv = list(
+            csv.DictReader(
+                StringIO(
+                    archive.read(
+                        "v5/v5_cost_probe_roundtrip_canonical.csv"
+                    ).decode("utf-8")
+                )
+            )
+        )
         live_status_csv = list(
             csv.DictReader(
                 StringIO(
@@ -747,6 +756,7 @@ def test_ingest_exports_cost_probe_order_and_roundtrip_events(tmp_path):
 
     assert len(order_csv) == 2
     assert len(roundtrip_csv) == 1
+    assert len(roundtrip_canonical_csv) == 1
     assert len(live_status_csv) == 1
     assert live_status_csv[0]["status"] == "CLOSED_FLAT"
     assert live_status_csv[0]["authorization_fresh"] == "True"
@@ -776,10 +786,14 @@ def test_ingest_exports_cost_probe_order_and_roundtrip_events(tmp_path):
     assert roundtrip_csv[0]["roundtrip_cost_bps"] == "20.0"
     assert roundtrip_csv[0]["bill_match_status"] == "bill_not_observed"
     assert roundtrip_csv[0]["fee_match_status"] == "fill_fee_observed"
+    assert roundtrip_canonical_csv[0]["canonical"] == "True"
+    assert roundtrip_canonical_csv[0]["terminal"] == "True"
+    assert roundtrip_canonical_csv[0]["revision"] == "1"
     files = {item["path"]: item for item in manifest["files"]}
     assert files["v5/v5_cost_probe_live_execution_status.csv"]["rows"] == 1
     assert files["v5/v5_cost_probe_order_events.csv"]["rows"] == 2
     assert files["v5/v5_cost_probe_roundtrip_events.csv"]["rows"] == 1
+    assert files["v5/v5_cost_probe_roundtrip_canonical.csv"]["rows"] == 1
 
 
 def test_ingest_v5_empty_expanded_universe_summaries_refresh_datasets(tmp_path):

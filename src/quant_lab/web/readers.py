@@ -144,6 +144,8 @@ DATASET_PATHS = {
     "v5_quant_lab_cost_usage": Path("silver") / "v5_quant_lab_cost_usage",
     "v5_quant_lab_fallback": Path("silver") / "v5_quant_lab_fallback",
     "v5_cost_probe_p3_preflight": Path("silver") / "v5_cost_probe_p3_preflight",
+    "v5_cost_probe_live_execution_status": Path("silver")
+    / "v5_cost_probe_live_execution_status",
     "v5_cost_probe_order_event": Path("silver") / "v5_cost_probe_order_event",
     "v5_cost_probe_roundtrip_event": Path("silver") / "v5_cost_probe_roundtrip_event",
     "v5_paper_strategy_run": Path("silver") / "v5_paper_strategy_run",
@@ -279,6 +281,9 @@ EVENT_DRIVEN_V5_DATASET_STATUSES = {
     "v5_quant_lab_cost_usage": "event_driven_no_recent_quant_lab_cost_usage",
     "v5_quant_lab_fallback": "event_driven_no_recent_quant_lab_fallback",
     "v5_cost_probe_p3_preflight": "event_driven_no_recent_cost_probe_p3_preflight",
+    "v5_cost_probe_live_execution_status": (
+        "event_driven_no_recent_cost_probe_live_execution_status"
+    ),
     "v5_cost_probe_order_event": "event_driven_no_recent_cost_probe_order_event",
     "v5_cost_probe_roundtrip_event": "event_driven_no_recent_cost_probe_roundtrip_event",
     "v5_bnb_negative_expectancy_attribution": (
@@ -431,6 +436,11 @@ DATASET_TIMESTAMP_COLUMNS: dict[str, tuple[str, ...]] = {
     "v5_quant_lab_cost_usage": ("ingest_ts", "bundle_ts"),
     "v5_quant_lab_fallback": ("ingest_ts", "bundle_ts"),
     "v5_cost_probe_p3_preflight": ("generated_at_utc", "ingest_ts", "bundle_ts"),
+    "v5_cost_probe_live_execution_status": (
+        "generated_at_utc",
+        "ingest_ts",
+        "bundle_ts",
+    ),
     "v5_cost_probe_order_event": ("event_ts", "ingest_ts", "bundle_ts"),
     "v5_cost_probe_roundtrip_event": ("event_ts", "ingest_ts", "bundle_ts"),
     "v5_paper_strategy_run": ("created_at", "as_of_date", "ingest_ts", "bundle_ts"),
@@ -4345,6 +4355,10 @@ def v5_telemetry_summary(lake_root: str | Path) -> dict[str, Any]:
         lake_root,
         "v5_cost_probe_p3_preflight",
     )
+    live_execution_status, live_execution_status_warning = read_dataset_with_warning(
+        lake_root,
+        "v5_cost_probe_live_execution_status",
+    )
     probe_order_events, probe_order_events_warning = read_dataset_with_warning(
         lake_root,
         "v5_cost_probe_order_event",
@@ -4361,18 +4375,24 @@ def v5_telemetry_summary(lake_root: str | Path) -> dict[str, Any]:
             mode_warning,
             enforcement_warning,
             p3_preflight_warning,
+            live_execution_status_warning,
             probe_order_events_warning,
             probe_roundtrip_events_warning,
         ]
         if warning
     ]
     p3_latest = _latest_v5_cost_probe_p3_preflight(p3_preflight)
+    latest_live_execution_status = _latest_v5_cost_probe_live_execution_status(
+        live_execution_status
+    )
     latest_order_event = _latest_v5_event_frame(probe_order_events)
     latest_roundtrip_event = _latest_v5_event_frame(probe_roundtrip_events)
     if health.is_empty():
         latest = {}
         if p3_latest:
             latest["cost_probe_p3_preflight"] = p3_latest
+        if latest_live_execution_status:
+            latest["cost_probe_live_execution_status"] = latest_live_execution_status
         if latest_order_event:
             latest["cost_probe_order_event"] = latest_order_event
         if latest_roundtrip_event:
@@ -4384,6 +4404,9 @@ def v5_telemetry_summary(lake_root: str | Path) -> dict[str, Any]:
             "quant_lab_mode_rows": mode,
             "quant_lab_enforcement_rows": enforcement,
             "cost_probe_p3_preflight_rows": p3_preflight.head(DISPLAY_LIMIT),
+            "cost_probe_live_execution_status_rows": live_execution_status.head(
+                DISPLAY_LIMIT
+            ),
             "cost_probe_order_event_rows": probe_order_events.head(DISPLAY_LIMIT),
             "cost_probe_roundtrip_event_rows": probe_roundtrip_events.head(DISPLAY_LIMIT),
             "warnings": [*warnings, "strategy_health_daily 数据集缺失或为空"],
@@ -4393,6 +4416,9 @@ def v5_telemetry_summary(lake_root: str | Path) -> dict[str, Any]:
     if p3_latest:
         latest = dict(latest)
         latest["cost_probe_p3_preflight"] = p3_latest
+    if latest_live_execution_status:
+        latest = dict(latest)
+        latest["cost_probe_live_execution_status"] = latest_live_execution_status
     if latest_order_event:
         latest = dict(latest)
         latest["cost_probe_order_event"] = latest_order_event
@@ -4406,6 +4432,9 @@ def v5_telemetry_summary(lake_root: str | Path) -> dict[str, Any]:
         "quant_lab_mode_rows": mode.head(DISPLAY_LIMIT),
         "quant_lab_enforcement_rows": enforcement.head(DISPLAY_LIMIT),
         "cost_probe_p3_preflight_rows": p3_preflight.head(DISPLAY_LIMIT),
+        "cost_probe_live_execution_status_rows": live_execution_status.head(
+            DISPLAY_LIMIT
+        ),
         "cost_probe_order_event_rows": probe_order_events.head(DISPLAY_LIMIT),
         "cost_probe_roundtrip_event_rows": probe_roundtrip_events.head(DISPLAY_LIMIT),
         "warnings": warnings,
@@ -4413,6 +4442,18 @@ def v5_telemetry_summary(lake_root: str | Path) -> dict[str, Any]:
 
 
 def _latest_v5_cost_probe_p3_preflight(frame: pl.DataFrame) -> dict[str, Any] | None:
+    if frame.is_empty():
+        return None
+    sort_column = "generated_at_utc" if "generated_at_utc" in frame.columns else "ingest_ts"
+    if sort_column not in frame.columns:
+        sort_column = frame.columns[0]
+    row = frame.sort(sort_column).tail(1).to_dicts()[0]
+    return redact_frame(pl.DataFrame([row])).to_dicts()[0]
+
+
+def _latest_v5_cost_probe_live_execution_status(
+    frame: pl.DataFrame,
+) -> dict[str, Any] | None:
     if frame.is_empty():
         return None
     sort_column = "generated_at_utc" if "generated_at_utc" in frame.columns else "ingest_ts"
@@ -5259,6 +5300,7 @@ def _dataset_display_name(dataset_name: str) -> str:
         "v5_candidate_event": "V5 候选事件",
         "v5_candidate_label": "V5 候选标签",
         "v5_cost_probe_p3_preflight": "V5 成本探针 P3 预检",
+        "v5_cost_probe_live_execution_status": "V5 成本探针执行状态",
         "v5_cost_probe_order_event": "V5 成本探针订单事件",
         "v5_cost_probe_roundtrip_event": "V5 成本探针回合事件",
         "strategy_opportunity_advisory": "策略机会建议",
@@ -5290,6 +5332,8 @@ def _empty_dataset_status(dataset_name: str) -> str:
         return "export_derived_optional"
     if dataset_name == "v5_cost_probe_p3_preflight":
         return "event_driven_no_recent_cost_probe_p3_preflight"
+    if dataset_name == "v5_cost_probe_live_execution_status":
+        return "event_driven_no_recent_cost_probe_live_execution_status"
     if dataset_name == "v5_cost_probe_order_event":
         return "event_driven_no_recent_cost_probe_order_event"
     if dataset_name == "v5_cost_probe_roundtrip_event":

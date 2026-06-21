@@ -76,6 +76,9 @@ SILVER_DATASETS = {
     "v5_candidate_event": Path("silver/v5_candidate_event"),
     "v5_order_lifecycle": Path("silver/v5_order_lifecycle"),
     "v5_cost_probe_p3_preflight": Path("silver/v5_cost_probe_p3_preflight"),
+    "v5_cost_probe_live_execution_status": Path(
+        "silver/v5_cost_probe_live_execution_status"
+    ),
     "v5_cost_probe_order_event": Path("silver/v5_cost_probe_order_event"),
     "v5_cost_probe_roundtrip_event": Path("silver/v5_cost_probe_roundtrip_event"),
     "v5_paper_strategy_run": Path("silver/v5_paper_strategy_run"),
@@ -122,6 +125,12 @@ COST_PROBE_ROUNDTRIP_EVENT_PATHS = {
     "raw/reports/cost_probe_roundtrip_events.jsonl",
     "raw/large/reports/cost_probe_roundtrip_events.jsonl.gz",
 }
+COST_PROBE_LIVE_EXECUTION_STATUS_PATHS = {
+    "cost_probe_live_execution_status.json",
+    "reports/cost_probe_live_execution_status.json",
+    "summaries/cost_probe_live_execution_status.json",
+    "raw/reports/cost_probe_live_execution_status.json",
+}
 EVENT_KEY_DATASETS = {
     "v5_quant_lab_request",
     "v5_quant_lab_fallback",
@@ -137,6 +146,7 @@ EMPTY_CSV_REFRESH_DATASETS = {
 REHYDRATE_IF_EMPTY_DATASETS = {
     *EMPTY_CSV_REFRESH_DATASETS,
     "v5_cost_probe_p3_preflight",
+    "v5_cost_probe_live_execution_status",
 }
 PULLBACK_STABLE_ROW_KEY_DATASETS = {
     "v5_pullback_reversal_shadow",
@@ -555,9 +565,12 @@ def _rehydrate_empty_csv_refresh_datasets(
         "summaries/expanded_universe_advisory_reader.csv",
         "summaries/expanded_universe_paper_runs.csv",
         "summaries/expanded_universe_paper_daily.csv",
-        "reports/cost_probe_p3_preflight.json",
-        "summaries/cost_probe_p3_preflight.json",
-        "raw/reports/cost_probe_p3_preflight.json",
+    "reports/cost_probe_p3_preflight.json",
+    "summaries/cost_probe_p3_preflight.json",
+    "raw/reports/cost_probe_p3_preflight.json",
+    "reports/cost_probe_live_execution_status.json",
+    "summaries/cost_probe_live_execution_status.json",
+    "raw/reports/cost_probe_live_execution_status.json",
     }
 
     with tempfile.TemporaryDirectory(prefix="quant_lab_v5_rehydrate_") as temp_name:
@@ -762,6 +775,11 @@ def _append_file_rows(
     }:
         rows["v5_cost_probe_p3_preflight"].extend(
             _cost_probe_p3_preflight_rows(metadata, relative, _read_json(file_path))
+        )
+        return
+    if logical in COST_PROBE_LIVE_EXECUTION_STATUS_PATHS:
+        rows["v5_cost_probe_live_execution_status"].extend(
+            _cost_probe_live_execution_status_rows(metadata, relative, _read_json(file_path))
         )
         return
     if logical in COST_PROBE_ORDER_EVENT_PATHS:
@@ -1048,6 +1066,78 @@ def _cost_probe_p3_preflight_rows(
         "post_probe_required_evidence_json": safe_json_dumps(
             payload.get("post_probe_required_evidence") or []
         ),
+    }
+    return [row]
+
+
+def _cost_probe_live_execution_status_rows(
+    metadata: dict[str, Any],
+    relative: str,
+    payload: dict[str, Any],
+) -> list[dict[str, Any]]:
+    safe_payload = redact_json_like(dict(payload))
+    row = _json_row(metadata, relative, safe_payload, None) | {
+        "event_type": "cost_probe_live_execution_status",
+        "schema_version": _clean_text(safe_payload.get("schema_version"))
+        or "v5.cost_probe_live_execution_status.v1",
+        "generated_at_utc": _normalize_event_time(safe_payload.get("generated_at")),
+        "status": _clean_text(safe_payload.get("status")) or "UNKNOWN",
+        "source_state": _clean_text(safe_payload.get("source_state")),
+        "manual_probe_symbol": _clean_text(safe_payload.get("manual_probe_symbol")),
+        "authorization_id": _clean_text(safe_payload.get("authorization_id")),
+        "authorization_issued_at": _normalize_event_time(
+            safe_payload.get("authorization_issued_at")
+        ),
+        "authorization_expires_at": _normalize_event_time(
+            safe_payload.get("authorization_expires_at")
+        ),
+        "authorization_consumed_at": _normalize_event_time(
+            safe_payload.get("authorization_consumed_at")
+        ),
+        "authorization_age_sec": safe_payload.get("authorization_age_sec"),
+        "authorization_fresh": _payload_bool(safe_payload, "authorization_fresh"),
+        "authorization_validated": _payload_bool(
+            safe_payload,
+            "authorization_validated",
+        ),
+        "authorization_consumed": _payload_bool(
+            safe_payload,
+            "authorization_consumed",
+        ),
+        "approved_live_order_execution": _payload_bool(
+            safe_payload,
+            "approved_live_order_execution",
+        ),
+        "live_order_effect": _clean_text(safe_payload.get("live_order_effect")),
+        "no_order_submitted": _payload_bool(safe_payload, "no_order_submitted"),
+        "recovery_required": _payload_bool(safe_payload, "recovery_required"),
+        "recovery_only": _payload_bool(safe_payload, "recovery_only"),
+        "entry_submit_intent": _payload_bool(safe_payload, "entry_submit_intent"),
+        "entry_client_order_id": _clean_text(safe_payload.get("entry_client_order_id")),
+        "entry_order_id": _clean_text(safe_payload.get("entry_order_id")),
+        "entry_submitted": _payload_bool(safe_payload, "entry_submitted"),
+        "entry_filled": _payload_bool(safe_payload, "entry_filled"),
+        "entry_filled_qty": _clean_text(safe_payload.get("entry_filled_qty")),
+        "exit_submit_intent": _payload_bool(safe_payload, "exit_submit_intent"),
+        "exit_client_order_id": _clean_text(safe_payload.get("exit_client_order_id")),
+        "exit_order_id": _clean_text(safe_payload.get("exit_order_id")),
+        "exit_submitted": _payload_bool(safe_payload, "exit_submitted"),
+        "exit_filled": _payload_bool(safe_payload, "exit_filled"),
+        "exit_filled_qty": _clean_text(safe_payload.get("exit_filled_qty")),
+        "execution_completed": _payload_bool(safe_payload, "execution_completed"),
+        "flat_verified": _payload_bool(safe_payload, "flat_verified"),
+        "exchange_flat_verified": _payload_bool(
+            safe_payload,
+            "exchange_flat_verified",
+        ),
+        "local_flat_verified": _payload_bool(safe_payload, "local_flat_verified"),
+        "reconcile_ok": _payload_bool(safe_payload, "reconcile_ok"),
+        "instrument_state": _clean_text(safe_payload.get("instrument_state")),
+        "quote_balance_sufficient": _payload_bool(
+            safe_payload,
+            "quote_balance_sufficient",
+        ),
+        "blockers_json": safe_json_dumps(safe_payload.get("blockers") or []),
     }
     return [row]
 

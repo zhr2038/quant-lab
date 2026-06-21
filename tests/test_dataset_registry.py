@@ -54,6 +54,7 @@ def test_dataset_registry_covers_v5_and_research_governance_datasets():
         "v5_quant_lab_fallback",
         "v5_quant_lab_compliance",
         "v5_cost_probe_p3_preflight",
+        "v5_cost_probe_live_execution_status",
         "v5_cost_probe_order_event",
         "v5_cost_probe_roundtrip_event",
         "v5_candidate_label",
@@ -172,6 +173,12 @@ def test_v5_registry_matches_current_envelope_and_daily_schemas():
     assert "approved_live_order_execution" in p3_preflight.required_columns
     assert "live_order_effect" in p3_preflight.required_columns
     assert p3_preflight.timestamp_column == "ingest_ts"
+
+    live_status = get_dataset_spec("v5_cost_probe_live_execution_status")
+    assert live_status is not None
+    assert "authorization_fresh" in live_status.required_columns
+    assert "recovery_required" in live_status.required_columns
+    assert live_status.timestamp_column == "generated_at_utc"
 
     order_events = get_dataset_spec("v5_cost_probe_order_event")
     assert order_events is not None

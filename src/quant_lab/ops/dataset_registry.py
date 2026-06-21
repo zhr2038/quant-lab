@@ -612,6 +612,43 @@ def core_dataset_specs() -> dict[str, DatasetSpec]:
             quality_rules=("schema_required_columns",),
         ),
         DatasetSpec(
+            dataset_id="v5_cost_probe_live_execution_status",
+            layer="silver",
+            relative_path=Path("silver") / "v5_cost_probe_live_execution_status",
+            owner="v5-telemetry",
+            description=(
+                "Read-only V5 live cost probe execution status; records staged "
+                "authorization, order intent, recovery, and flat-verification state."
+            ),
+            producer="qlab ingest-v5-bundle",
+            consumers=("web", "expert-export", "cost-readiness"),
+            required=False,
+            min_rows=0,
+            required_columns=(
+                "bundle_ts",
+                "ingest_ts",
+                "source_path_inside_bundle",
+                "generated_at_utc",
+                "status",
+                "authorization_fresh",
+                "authorization_validated",
+                "authorization_consumed",
+                "recovery_required",
+                "raw_payload_json",
+            ),
+            timestamp_column="generated_at_utc",
+            utc_timestamp_columns=(
+                "bundle_ts",
+                "ingest_ts",
+                "generated_at_utc",
+                "authorization_issued_at",
+                "authorization_expires_at",
+                "authorization_consumed_at",
+            ),
+            freshness_seconds=None,
+            quality_rules=("schema_required_columns",),
+        ),
+        DatasetSpec(
             dataset_id="v5_cost_probe_order_event",
             layer="silver",
             relative_path=Path("silver") / "v5_cost_probe_order_event",

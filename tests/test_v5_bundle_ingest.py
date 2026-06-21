@@ -585,9 +585,53 @@ def test_ingest_exports_cost_probe_order_and_roundtrip_events(tmp_path):
         )
         + "\n"
     )
+    live_execution_status = json.dumps(
+        {
+            "schema_version": "v5.cost_probe_live_execution_status.v1",
+            "generated_at": "2026-05-14T08:30:21Z",
+            "status": "CLOSED_FLAT",
+            "source_state": "COMPLETED",
+            "manual_probe_symbol": "BTC/USDT",
+            "authorization_id": "auth-1",
+            "authorization_issued_at": "2026-05-14T08:29:00Z",
+            "authorization_expires_at": "2026-05-14T08:34:00Z",
+            "authorization_consumed_at": "2026-05-14T08:30:00Z",
+            "authorization_age_sec": 81,
+            "authorization_fresh": True,
+            "authorization_validated": True,
+            "authorization_consumed": True,
+            "approved_live_order_execution": False,
+            "live_order_effect": "live_cost_probe_roundtrip",
+            "no_order_submitted": False,
+            "recovery_required": False,
+            "recovery_only": False,
+            "entry_submit_intent": True,
+            "entry_client_order_id": "probe-entry-1",
+            "entry_order_id": "okx-entry-1",
+            "entry_submitted": True,
+            "entry_filled": True,
+            "entry_filled_qty": "0.00007",
+            "exit_submit_intent": True,
+            "exit_client_order_id": "probe-exit-1",
+            "exit_order_id": "okx-exit-1",
+            "exit_submitted": True,
+            "exit_filled": True,
+            "exit_filled_qty": "0.00007",
+            "execution_completed": True,
+            "flat_verified": True,
+            "exchange_flat_verified": True,
+            "local_flat_verified": True,
+            "reconcile_ok": True,
+            "instrument_state": "live",
+            "quote_balance_sufficient": True,
+            "blockers": [],
+        },
+        sort_keys=True,
+    )
     bundle = make_tar(
         tmp_path / "v5_live_followup_bundle_20260514T083000Z.tar.gz",
         {
+            "summaries/cost_probe_live_execution_status.json": live_execution_status,
             "summaries/cost_probe_order_events.jsonl": order_events,
             "summaries/cost_probe_roundtrip_events.jsonl": roundtrip_events,
         },
@@ -607,6 +651,10 @@ def test_ingest_exports_cost_probe_order_and_roundtrip_events(tmp_path):
     roundtrip_rows = read_parquet_dataset(
         lake / "silver/v5_cost_probe_roundtrip_event"
     ).to_dicts()
+    live_status_rows = read_parquet_dataset(
+        lake / "silver/v5_cost_probe_live_execution_status"
+    ).to_dicts()
+    assert result.silver_rows["v5_cost_probe_live_execution_status"] == 1
     assert result.silver_rows["v5_cost_probe_order_event"] == 2
     assert result.silver_rows["v5_cost_probe_roundtrip_event"] == 1
     assert {row["order_status"] for row in order_rows} == {"submitted", "filled"}
@@ -615,6 +663,10 @@ def test_ingest_exports_cost_probe_order_and_roundtrip_events(tmp_path):
         "probe-entry-1|order:entry:filled|2026-05-14T08:30:02Z",
     }
     assert order_rows[0]["normalized_symbol"] == "BTC-USDT"
+    assert live_status_rows[0]["status"] == "CLOSED_FLAT"
+    assert live_status_rows[0]["authorization_fresh"] is True
+    assert live_status_rows[0]["authorization_consumed"] is True
+    assert live_status_rows[0]["recovery_required"] is False
     assert roundtrip_rows[0]["roundtrip_key"] == "probe-roundtrip-1"
     assert roundtrip_rows[0]["event_id"] == (
         "probe-roundtrip-1|roundtrip:closed|2026-05-14T08:30:20Z"
@@ -640,10 +692,24 @@ def test_ingest_exports_cost_probe_order_and_roundtrip_events(tmp_path):
                 )
             )
         )
+        live_status_csv = list(
+            csv.DictReader(
+                StringIO(
+                    archive.read(
+                        "v5/v5_cost_probe_live_execution_status.csv"
+                    ).decode("utf-8")
+                )
+            )
+        )
         manifest = json.loads(archive.read("manifest.json"))
 
     assert len(order_csv) == 2
     assert len(roundtrip_csv) == 1
+    assert len(live_status_csv) == 1
+    assert live_status_csv[0]["status"] == "CLOSED_FLAT"
+    assert live_status_csv[0]["authorization_fresh"] == "True"
+    assert live_status_csv[0]["authorization_consumed"] == "True"
+    assert live_status_csv[0]["recovery_required"] == "False"
     assert order_csv[-1]["event_type"] == "order:entry:filled"
     assert roundtrip_csv[0]["live_order_effect"] == "live_cost_probe_roundtrip"
     assert roundtrip_csv[0]["authorization_id"] == "auth-1"
@@ -665,6 +731,7 @@ def test_ingest_exports_cost_probe_order_and_roundtrip_events(tmp_path):
     assert roundtrip_csv[0]["bill_match_status"] == "bill_not_observed"
     assert roundtrip_csv[0]["fee_match_status"] == "fill_fee_observed"
     files = {item["path"]: item for item in manifest["files"]}
+    assert files["v5/v5_cost_probe_live_execution_status.csv"]["rows"] == 1
     assert files["v5/v5_cost_probe_order_events.csv"]["rows"] == 2
     assert files["v5/v5_cost_probe_roundtrip_events.csv"]["rows"] == 1
 

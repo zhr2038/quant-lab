@@ -4359,6 +4359,10 @@ def v5_telemetry_summary(lake_root: str | Path) -> dict[str, Any]:
         lake_root,
         "v5_cost_probe_live_execution_status",
     )
+    live_execution_status = _with_cost_probe_authorization_read_freshness(
+        live_execution_status,
+        reference_at=datetime.now(UTC),
+    )
     probe_order_events, probe_order_events_warning = read_dataset_with_warning(
         lake_root,
         "v5_cost_probe_order_event",
@@ -4461,6 +4465,46 @@ def _latest_v5_cost_probe_live_execution_status(
         sort_column = frame.columns[0]
     row = frame.sort(sort_column).tail(1).to_dicts()[0]
     return redact_frame(pl.DataFrame([row])).to_dicts()[0]
+
+
+def _with_cost_probe_authorization_read_freshness(
+    frame: pl.DataFrame,
+    *,
+    reference_at: datetime,
+) -> pl.DataFrame:
+    if frame.is_empty() and not frame.columns:
+        return frame
+    reference = reference_at.astimezone(UTC)
+    rows: list[dict[str, Any]] = []
+    for row in frame.to_dicts():
+        normalized = dict(row)
+        issued_at = _parse_datetime(row.get("authorization_issued_at"))
+        expires_at = _parse_datetime(row.get("authorization_expires_at"))
+        if issued_at is None or expires_at is None:
+            normalized.update(
+                {
+                    "authorization_fresh_at_read": None,
+                    "authorization_age_sec_at_read": None,
+                    "authorization_seconds_to_expiry_at_read": None,
+                    "authorization_expired_at_read": None,
+                }
+            )
+        else:
+            normalized.update(
+                {
+                    "authorization_fresh_at_read": issued_at <= reference <= expires_at,
+                    "authorization_age_sec_at_read": max(
+                        int((reference - issued_at).total_seconds()),
+                        0,
+                    ),
+                    "authorization_seconds_to_expiry_at_read": int(
+                        (expires_at - reference).total_seconds()
+                    ),
+                    "authorization_expired_at_read": reference > expires_at,
+                }
+            )
+        rows.append(normalized)
+    return pl.DataFrame(rows, infer_schema_length=None)
 
 
 def _latest_v5_event_frame(frame: pl.DataFrame) -> dict[str, Any] | None:

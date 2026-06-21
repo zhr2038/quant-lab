@@ -750,6 +750,10 @@ def test_ingest_exports_cost_probe_order_and_roundtrip_events(tmp_path):
     assert len(live_status_csv) == 1
     assert live_status_csv[0]["status"] == "CLOSED_FLAT"
     assert live_status_csv[0]["authorization_fresh"] == "True"
+    assert live_status_csv[0]["authorization_fresh_at_export"] == "False"
+    assert int(live_status_csv[0]["authorization_age_sec_at_export"]) > 81
+    assert int(live_status_csv[0]["authorization_seconds_to_expiry"]) < 0
+    assert live_status_csv[0]["authorization_expired_at_export"] == "True"
     assert live_status_csv[0]["authorization_consumed"] == "True"
     assert live_status_csv[0]["recovery_required"] == "False"
     assert order_csv[-1]["event_type"] == "order:entry:filled"

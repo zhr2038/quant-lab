@@ -1206,6 +1206,29 @@ def test_web_exposes_cost_probe_event_streams(tmp_path):
         ),
         lake_root / "silver" / "v5_cost_probe_roundtrip_event",
     )
+    write_parquet_dataset(
+        pl.DataFrame(
+            [
+                {
+                    "event_type": "cost_probe_live_execution_status",
+                    "generated_at_utc": now,
+                    "status": "AUTH_VALIDATED",
+                    "manual_probe_symbol": "BTC/USDT",
+                    "authorization_issued_at": now - timedelta(minutes=10),
+                    "authorization_expires_at": now - timedelta(minutes=5),
+                    "authorization_age_sec": 0,
+                    "authorization_fresh": True,
+                    "authorization_validated": True,
+                    "authorization_consumed": False,
+                    "recovery_required": False,
+                    "ingest_ts": now,
+                    "bundle_ts": now,
+                    "raw_payload_json": "{}",
+                }
+            ]
+        ),
+        lake_root / "silver" / "v5_cost_probe_live_execution_status",
+    )
 
     states = {state.name: state for state in readers.dataset_states(lake_root)}
     summary = readers.v5_telemetry_summary(lake_root)
@@ -1214,6 +1237,11 @@ def test_web_exposes_cost_probe_event_streams(tmp_path):
     assert states["v5_cost_probe_roundtrip_event"].rows == 1
     assert summary["latest"]["cost_probe_order_event"]["event_type"] == "order:entry:filled"
     assert summary["latest"]["cost_probe_roundtrip_event"]["event_type"] == "roundtrip:closed"
+    live_status = summary["latest"]["cost_probe_live_execution_status"]
+    assert live_status["authorization_fresh"] is True
+    assert live_status["authorization_fresh_at_read"] is False
+    assert live_status["authorization_expired_at_read"] is True
+    assert live_status["authorization_seconds_to_expiry_at_read"] < 0
 
 
 def test_data_health_treats_v5_cost_usage_and_fallback_as_event_driven_when_current(

@@ -2914,6 +2914,10 @@ CSV_SCHEMAS: dict[str, list[str]] = {
         "authorization_consumed_at",
         "authorization_age_sec",
         "authorization_fresh",
+        "authorization_fresh_at_export",
+        "authorization_age_sec_at_export",
+        "authorization_seconds_to_expiry",
+        "authorization_expired_at_export",
         "authorization_validated",
         "authorization_consumed",
         "approved_live_order_execution",
@@ -5161,6 +5165,7 @@ def _dataset_members(
         fast_microstructure_forward_test
     )
     export_generated_at = (data_quality or {}).get("generated_at") or datetime.now(UTC)
+    export_reference_at = _parse_export_ts(export_generated_at) or datetime.now(UTC)
     fast_microstructure_strategy_review = build_fast_microstructure_strategy_review(
         fast_microstructure_strategy_candidates,
         generated_at=export_generated_at,
@@ -5228,6 +5233,12 @@ def _dataset_members(
         frames.get(
             "v5_cost_probe_live_execution_status",
             pl.DataFrame(),
+        )
+    )
+    v5_cost_probe_live_execution_status = (
+        _with_cost_probe_authorization_export_freshness(
+            v5_cost_probe_live_execution_status,
+            reference_at=export_reference_at,
         )
     )
     v5_cost_probe_order_events = frames.get("v5_cost_probe_order_event", pl.DataFrame())
@@ -14708,6 +14719,46 @@ def _parse_export_ts(value: Any) -> datetime | None:
         return datetime.fromisoformat(str(value).replace("Z", "+00:00")).astimezone(UTC)
     except ValueError:
         return None
+
+
+def _with_cost_probe_authorization_export_freshness(
+    frame: pl.DataFrame,
+    *,
+    reference_at: datetime,
+) -> pl.DataFrame:
+    if frame.is_empty() and not frame.columns:
+        return frame
+    reference = reference_at.astimezone(UTC)
+    rows: list[dict[str, Any]] = []
+    for row in frame.to_dicts():
+        normalized = dict(row)
+        issued_at = _parse_export_ts(row.get("authorization_issued_at"))
+        expires_at = _parse_export_ts(row.get("authorization_expires_at"))
+        if issued_at is None or expires_at is None:
+            normalized.update(
+                {
+                    "authorization_fresh_at_export": None,
+                    "authorization_age_sec_at_export": None,
+                    "authorization_seconds_to_expiry": None,
+                    "authorization_expired_at_export": None,
+                }
+            )
+        else:
+            normalized.update(
+                {
+                    "authorization_fresh_at_export": issued_at <= reference <= expires_at,
+                    "authorization_age_sec_at_export": max(
+                        int((reference - issued_at).total_seconds()),
+                        0,
+                    ),
+                    "authorization_seconds_to_expiry": int(
+                        (expires_at - reference).total_seconds()
+                    ),
+                    "authorization_expired_at_export": reference > expires_at,
+                }
+            )
+        rows.append(normalized)
+    return pl.DataFrame(rows, infer_schema_length=None)
 
 
 def _pullback_v2_by_symbol_for_export(pullback: pl.DataFrame) -> pl.DataFrame:

@@ -1023,6 +1023,9 @@ def test_ingest_parses_quant_lab_usage_files(tmp_path):
     assert exported_p3[0]["online_exchange_preflight_state"] == "NOT_READY"
     assert exported_p3[0]["effective_preflight_state"] == "NOT_READY"
     assert "SOL/USDT" in exported_p3[0]["manual_allowed_symbols_json"]
+    assert "latest_terminal_roundtrip_id" in exported_p3[0]
+    assert "latest_terminal_roundtrip_ts" in exported_p3[0]
+    assert "next_probe_allowed_at" in exported_p3[0]
     assert '"manual_authorization_required": true' in exported_p3[0]["raw_payload_json"]
     assert redacted_manual_auth not in exported_p3[0]["raw_payload_json"]
     paper_rows = read_parquet_dataset(lake / "silver/v5_paper_strategy_run").to_dicts()

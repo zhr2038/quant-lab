@@ -252,6 +252,24 @@ def test_bootstrap_readiness_prefers_fresh_probe_over_stale_actual_row():
                 }
             ]
         ),
+        v5_cost_probe_roundtrip_events=pl.DataFrame(
+            [
+                {
+                    "symbol": "BTC-USDT",
+                    "roundtrip_status": "closed",
+                    "event_ts": (now - timedelta(minutes=10)).isoformat().replace(
+                        "+00:00",
+                        "Z",
+                    ),
+                    "entry_filled_qty": "0.0001",
+                    "exit_filled_qty": "0.000099",
+                    "execution_completed": True,
+                    "bill_match_status": "bill_not_observed",
+                    "fee_match_status": "fill_fee_observed",
+                    "fee_match_diff_usdt": "",
+                }
+            ]
+        ),
         live_symbols=["BNB-USDT", "BTC-USDT", "ETH-USDT", "SOL-USDT"],
         generated_at=now,
     )
@@ -263,6 +281,15 @@ def test_bootstrap_readiness_prefers_fresh_probe_over_stale_actual_row():
     assert btc["cost_probe_fill_count"] == 2
     assert btc["actual_fill_count"] == 0
     assert btc["strategy_live_fill_count"] == 0
+    assert btc["latest_probe_ts"] == (now - timedelta(minutes=10)).isoformat().replace(
+        "+00:00",
+        "Z",
+    )
+    assert btc["latest_probe_fill_ts"] == btc["latest_probe_ts"]
+    assert btc["fill_match_status"] == "entry_exit_fill_observed"
+    assert btc["bill_match_status"] == "bill_not_observed"
+    assert btc["fee_match_status"] == "fill_fee_observed"
+    assert btc["matched_bill_count"] == 0
     assert btc["actual_or_mixed_bootstrap_covered"] is True
     assert btc["trusted_for_live"] is False
     assert btc["actual_or_mixed_bootstrap_coverage_live_universe"] == 0.25

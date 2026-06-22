@@ -1085,6 +1085,13 @@ def _cost_probe_p3_preflight_rows(
         "runtime_blockers_json": safe_json_dumps(payload.get("runtime_blockers") or []),
         "guard_failures_json": safe_json_dumps(payload.get("guard_failures") or []),
         "dry_run_plan_state": _clean_text(payload.get("dry_run_plan_state")),
+        "latest_terminal_roundtrip_id": _clean_text(
+            payload.get("latest_terminal_roundtrip_id")
+        ),
+        "latest_terminal_roundtrip_ts": _normalize_event_time(
+            payload.get("latest_terminal_roundtrip_ts")
+        ),
+        "next_probe_allowed_at": _normalize_event_time(payload.get("next_probe_allowed_at")),
         "next_action": _clean_text(payload.get("next_action")),
         "post_probe_required_evidence_json": safe_json_dumps(
             payload.get("post_probe_required_evidence") or []

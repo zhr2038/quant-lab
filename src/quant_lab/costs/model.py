@@ -78,6 +78,7 @@ COST_BOOTSTRAP_READINESS_FIELDS = [
     "strategy_live_fill_count",
     "private_fill_count",
     "bill_matched_count",
+    "matched_bill_count",
     "fee_available",
     "slippage_available",
     "spread_available",
@@ -85,7 +86,13 @@ COST_BOOTSTRAP_READINESS_FIELDS = [
     "live_cost_sample_count",
     "trusted_sample_count",
     "latest_fill_ts",
+    "latest_probe_ts",
+    "latest_probe_fill_ts",
     "latest_bill_ts",
+    "fill_match_status",
+    "bill_match_status",
+    "fee_match_status",
+    "fee_match_diff_usdt",
     "latest_cost_source",
     "roundtrip_cost_p50_bps",
     "roundtrip_cost_p75_bps",
@@ -324,6 +331,7 @@ def build_cost_bootstrap_readiness(
         v5_cost_probe_order_events,
         v5_cost_probe_roundtrip_events,
     )
+    cost_probe_roundtrips_by_symbol = _rows_by_symbol(v5_cost_probe_roundtrip_events)
     bills_by_symbol = _rows_by_symbol(okx_private_readonly_bills)
 
     output: list[dict[str, Any]] = []
@@ -374,6 +382,8 @@ def build_cost_bootstrap_readiness(
             0,
         )
         bill_rows = bills_by_symbol.get(symbol, [])
+        probe_roundtrip_rows = cost_probe_roundtrips_by_symbol.get(symbol, [])
+        latest_probe_roundtrip = _latest_probe_roundtrip_row(probe_roundtrip_rows)
 
         strategy_live_fill_count = max(
             _int_value(source_row.get("strategy_live_fill_count")),
@@ -491,6 +501,7 @@ def build_cost_bootstrap_readiness(
                 "strategy_live_fill_count": strategy_live_fill_count,
                 "private_fill_count": private_fill_count,
                 "bill_matched_count": bill_matched_count,
+                "matched_bill_count": bill_matched_count,
                 "fee_available": fee_available,
                 "slippage_available": slippage_available,
                 "spread_available": spread_available,
@@ -507,6 +518,22 @@ def build_cost_bootstrap_readiness(
                     "trade_ts",
                     "ingest_ts",
                 ),
+                "latest_probe_ts": _latest_row_ts(
+                    probe_roundtrip_rows,
+                    "event_ts",
+                    "closed_at",
+                    "generated_at",
+                    "ingest_ts",
+                ),
+                "latest_probe_fill_ts": _latest_row_ts(
+                    [*probe_roundtrip_rows, *cost_probe_rows],
+                    "closed_at",
+                    "event_ts",
+                    "last_fill_ts",
+                    "fill_ts",
+                    "ts_utc",
+                    "ingest_ts",
+                ),
                 "latest_bill_ts": _latest_row_ts(
                     bill_rows,
                     "ts_utc",
@@ -515,6 +542,16 @@ def build_cost_bootstrap_readiness(
                     "bill_ts",
                     "ingest_ts",
                 ),
+                "fill_match_status": _probe_fill_match_status(
+                    cost_probe_fill_count,
+                    latest_probe_roundtrip,
+                ),
+                "bill_match_status": _probe_bill_match_status(
+                    latest_probe_roundtrip,
+                    bill_matched_count,
+                ),
+                "fee_match_status": _probe_fee_match_status(latest_probe_roundtrip),
+                "fee_match_diff_usdt": _probe_fee_match_diff_usdt(latest_probe_roundtrip),
                 "latest_cost_source": _cost_source(source_row) or _cost_source(latest) or "missing",
                 "roundtrip_cost_p50_bps": _roundtrip_cost_value(source_row, "p50"),
                 "roundtrip_cost_p75_bps": _roundtrip_cost_value(source_row, "p75"),
@@ -1898,6 +1935,65 @@ def _latest_row_ts(rows: Iterable[Mapping[str, Any]], *keys: str) -> str:
         if latest is None or parsed > latest:
             latest = parsed
     return latest.isoformat().replace("+00:00", "Z") if latest is not None else ""
+
+
+def _latest_probe_roundtrip_row(rows: Iterable[Mapping[str, Any]]) -> Mapping[str, Any] | None:
+    latest: Mapping[str, Any] | None = None
+    latest_ts: datetime | None = None
+    for row in rows:
+        status = str(row.get("roundtrip_status") or row.get("status") or "").strip().lower()
+        if status not in {"closed", "closed_flat", "completed"}:
+            continue
+        parsed = _row_ts(row, "event_ts", "closed_at", "generated_at", "ingest_ts")
+        if latest is None or (
+            parsed is not None and (latest_ts is None or parsed > latest_ts)
+        ):
+            latest = row
+            latest_ts = parsed
+    return latest
+
+
+def _probe_fill_match_status(
+    cost_probe_fill_count: int,
+    latest_probe_roundtrip: Mapping[str, Any] | None,
+) -> str:
+    if latest_probe_roundtrip is not None:
+        entry_filled = _positive_value(latest_probe_roundtrip.get("entry_filled_qty"))
+        exit_filled = _positive_value(latest_probe_roundtrip.get("exit_filled_qty"))
+        if entry_filled and exit_filled:
+            return "entry_exit_fill_observed"
+        if _bool_or_none(latest_probe_roundtrip.get("execution_completed")) is True:
+            return "terminal_roundtrip_fill_incomplete"
+    if cost_probe_fill_count >= 2:
+        return "terminal_event_fills_observed"
+    if cost_probe_fill_count > 0:
+        return "partial_fill_observed"
+    return "not_observed"
+
+
+def _probe_bill_match_status(
+    latest_probe_roundtrip: Mapping[str, Any] | None,
+    bill_matched_count: int,
+) -> str:
+    if latest_probe_roundtrip is not None:
+        value = str(latest_probe_roundtrip.get("bill_match_status") or "").strip()
+        if value:
+            return value
+    return "bill_observed" if bill_matched_count > 0 else "bill_not_observed"
+
+
+def _probe_fee_match_status(latest_probe_roundtrip: Mapping[str, Any] | None) -> str:
+    if latest_probe_roundtrip is not None:
+        value = str(latest_probe_roundtrip.get("fee_match_status") or "").strip()
+        if value:
+            return value
+    return "fee_match_not_observed"
+
+
+def _probe_fee_match_diff_usdt(latest_probe_roundtrip: Mapping[str, Any] | None) -> Any:
+    if latest_probe_roundtrip is None:
+        return ""
+    return latest_probe_roundtrip.get("fee_match_diff_usdt") or ""
 
 
 def _row_ts(row: Mapping[str, Any], *keys: str) -> datetime | None:

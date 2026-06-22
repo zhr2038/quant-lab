@@ -267,15 +267,36 @@ def _safe_strategy_summary(root: Path) -> dict[str, Any]:
 
     advisory = frames.get("strategy_opportunity_advisory", pl.DataFrame())
     discovery = frames.get("alpha_discovery_board", pl.DataFrame())
+    full_advisory, full_advisory_warning = _read_strategy_advisory_for_counts(root)
+    advisory_for_counts = full_advisory if not full_advisory.is_empty() else advisory
+    if full_advisory_warning and not full_advisory.is_empty():
+        warnings.append(f"strategy_opportunity_advisory 全量统计警告：{full_advisory_warning}")
+    elif full_advisory_warning and not advisory.is_empty():
+        warnings.append(
+            "strategy_opportunity_advisory 全量统计不可用，策略流统计退回展示样本："
+            f"{full_advisory_warning}"
+        )
     if advisory.is_empty():
         warnings.append("strategy_opportunity_advisory 数据集缺失或为空")
     return {
         **frames,
         "counts": {},
-        "strategy_counts": _count_by_column(advisory, "decision"),
+        "strategy_flow_counts": _strategy_flow_counts_from_frame(advisory_for_counts),
+        "strategy_counts": _count_by_column(advisory_for_counts, "decision"),
         "discovery_counts": _count_by_column(discovery, "decision"),
         "warnings": warnings,
     }
+
+
+def _read_strategy_advisory_for_counts(root: Path) -> tuple[pl.DataFrame, str | None]:
+    try:
+        frame, warning = readers.read_dataset_with_warning(
+            root,
+            "strategy_opportunity_advisory",
+        )
+    except Exception as exc:
+        return pl.DataFrame(), f"strategy_opportunity_advisory 全量统计读取失败：{exc}"
+    return frame if isinstance(frame, pl.DataFrame) else pl.DataFrame(), warning
 
 
 def _read_display_frame(root: Path, dataset_name: str) -> tuple[pl.DataFrame, str | None]:
@@ -1061,30 +1082,58 @@ def _max_column_value(frame: pl.DataFrame, column: str) -> Any:
 
 
 def _strategy_counts(strategy: dict[str, Any], rows: list[dict[str, Any]]) -> dict[str, int]:
+    flow_counts = strategy.get("strategy_flow_counts")
+    if isinstance(flow_counts, dict) and any(flow_counts.values()):
+        return _normalized_strategy_flow_counts(flow_counts)
     if rows:
-        counts = {"research": 0, "shadow": 0, "paper": 0, "kill": 0}
-        for row in rows:
-            decision = str(row.get("decision") or "").upper()
-            mode = str(row.get("recommended_mode") or "").lower()
-            if decision == "KILL":
-                counts["kill"] += 1
-            elif mode == "paper" or decision == "PAPER_READY":
-                counts["paper"] += 1
-            elif mode == "shadow" or "SHADOW" in decision:
-                counts["shadow"] += 1
-            else:
-                counts["research"] += 1
-        return counts
+        return _strategy_flow_counts_from_rows(rows)
     raw = strategy.get("strategy_counts") or strategy.get("alpha_discovery_counts") or {}
     if isinstance(raw, dict):
         return {
-            "research": _int(raw.get("RESEARCH_ONLY") or raw.get("research")) or 0,
-            "shadow": _int(raw.get("KEEP_SHADOW") or raw.get("REGIME_SHADOW") or raw.get("shadow"))
-            or 0,
-            "paper": _int(raw.get("PAPER_READY") or raw.get("paper")) or 0,
-            "kill": _int(raw.get("KILL") or raw.get("kill")) or 0,
+            "research": _strategy_count_sum(raw, "RESEARCH_ONLY", "research"),
+            "shadow": _strategy_count_sum(raw, "KEEP_SHADOW", "REGIME_SHADOW", "shadow"),
+            "paper": _strategy_count_sum(raw, "PAPER_READY", "paper"),
+            "kill": _strategy_count_sum(raw, "KILL", "kill"),
         }
     return {"research": 0, "shadow": 0, "paper": 0, "kill": 0}
+
+
+def _strategy_flow_counts_from_frame(frame: pl.DataFrame) -> dict[str, int]:
+    if frame.is_empty():
+        return {}
+    columns = [column for column in ["decision", "recommended_mode"] if column in frame.columns]
+    if not columns:
+        return {}
+    return _strategy_flow_counts_from_rows(frame.select(columns).to_dicts())
+
+
+def _strategy_flow_counts_from_rows(rows: list[dict[str, Any]]) -> dict[str, int]:
+    counts = {"research": 0, "shadow": 0, "paper": 0, "kill": 0}
+    for row in rows:
+        decision = str(row.get("decision") or "").upper()
+        mode = str(row.get("recommended_mode") or "").lower()
+        if decision == "KILL":
+            counts["kill"] += 1
+        elif mode == "paper" or decision == "PAPER_READY":
+            counts["paper"] += 1
+        elif mode == "shadow" or "SHADOW" in decision:
+            counts["shadow"] += 1
+        else:
+            counts["research"] += 1
+    return counts
+
+
+def _normalized_strategy_flow_counts(raw: dict[str, Any]) -> dict[str, int]:
+    return {
+        "research": _int(raw.get("research")) or 0,
+        "shadow": _int(raw.get("shadow")) or 0,
+        "paper": _int(raw.get("paper")) or 0,
+        "kill": _int(raw.get("kill")) or 0,
+    }
+
+
+def _strategy_count_sum(raw: dict[str, Any], *keys: str) -> int:
+    return sum((_int(raw.get(key)) or 0) for key in keys)
 
 
 def _top_strategy_candidates(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:

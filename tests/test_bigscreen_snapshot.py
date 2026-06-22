@@ -3,7 +3,7 @@ from __future__ import annotations
 import json
 import os
 import zipfile
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
 import polars as pl
@@ -63,6 +63,54 @@ def test_bigscreen_snapshot_cache_covers_frontend_refresh_interval(monkeypatch, 
     assert third is first
     assert fourth is first
     assert fifth is not first
+
+
+def test_bigscreen_strategy_flow_counts_use_full_advisory_not_display_sample(tmp_path):
+    clear_bigscreen_cache()
+    lake = tmp_path / "lake"
+    created_at = datetime(2026, 6, 6, 13, 0, tzinfo=UTC)
+    rows = []
+    for index in range(532):
+        if index < 520:
+            decision = "KILL"
+            mode = "none"
+        elif index < 525:
+            decision = "PAPER_READY"
+            mode = "paper"
+        elif index < 529:
+            decision = "KEEP_SHADOW"
+            mode = "shadow"
+        else:
+            decision = "RESEARCH_ONLY"
+            mode = "research"
+        row_ts = created_at + timedelta(seconds=index)
+        rows.append(
+            {
+                "decision": decision,
+                "recommended_mode": mode,
+                "strategy_candidate": f"candidate_{index:03d}",
+                "symbol": "BTC-USDT",
+                "horizon_hours": 24,
+                "avg_net_bps": float(index),
+                "p25_net_bps": float(index) - 5.0,
+                "complete_sample_count": 50 + index,
+                "created_at": row_ts,
+                "as_of_ts": row_ts,
+            }
+        )
+    write_parquet_dataset(
+        pl.DataFrame(rows),
+        lake / "gold" / "strategy_opportunity_advisory",
+    )
+
+    payload = bigscreen_snapshot(lake)
+
+    assert payload["strategy_flow"]["counts"] == {
+        "research": 3,
+        "shadow": 4,
+        "paper": 5,
+        "kill": 520,
+    }
 
 
 def test_bigscreen_data_matrix_shows_proxy_only_live_cost_diagnostics(tmp_path):

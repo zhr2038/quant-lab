@@ -196,6 +196,7 @@ V5_PAPER_TELEMETRY_DATASETS = {
     "v5_expanded_universe_paper_runs",
     "v5_expanded_universe_paper_daily",
 }
+DERIVED_LATEST_SOURCE_CURRENT_STATUS = "derived_latest_source_current"
 OPTIONAL_EMPTY_DATASET_STATUSES = {
     "closed_research_snapshot",
     "export_derived_optional",
@@ -205,6 +206,7 @@ OPTIONAL_EMPTY_DATASET_STATUSES = {
     "waiting_for_v5_bundle_manifest",
     "entry_quality_optional",
     "historical_research_snapshot",
+    DERIVED_LATEST_SOURCE_CURRENT_STATUS,
     "event_driven_no_recent_cost_probe_p3_preflight",
     "event_driven_no_recent_cost_probe_order_event",
     "event_driven_no_recent_cost_probe_roundtrip_event",
@@ -306,6 +308,9 @@ EVENT_DRIVEN_OK_STATUSES = set(EVENT_DRIVEN_V5_DATASET_STATUSES.values()) | set(
 DERIVED_ROLLUP_SOURCE_DATASETS = {
     "trade_activity_1m": "trade_print",
     "orderbook_spread_1m": "orderbook_snapshot",
+}
+DERIVED_LATEST_SOURCE_DATASETS = {
+    "v5_bnb_paper_strategy_daily_latest": "v5_bnb_paper_strategy_daily",
 }
 DERIVED_ROLLUP_PENDING_STATUS = "derived_rollup_pending"
 STALE_DATASET_SCHEMA: dict[str, Any] = {
@@ -5206,6 +5211,7 @@ def _stale_dataset_rows(lake_root: str | Path) -> pl.DataFrame:
             status = "historical_research_snapshot"
         status = _optional_stale_status_from_registry(name, status)
         status = _derived_rollup_status(lake_root, name, snapshot, status)
+        status = _derived_latest_status(lake_root, name, snapshot, status)
         if _should_show_stale_dataset_row(snapshot, status):
             status_text = str(status)
             rows.append(
@@ -5422,6 +5428,26 @@ def _derived_rollup_status(
         dataset_path_for(lake_root, source_dataset)
     ):
         return DERIVED_ROLLUP_PENDING_STATUS
+    return status
+
+
+def _derived_latest_status(
+    lake_root: str | Path,
+    dataset_name: str,
+    snapshot: DatasetSnapshot,
+    status: str,
+) -> str:
+    source_dataset = DERIVED_LATEST_SOURCE_DATASETS.get(dataset_name)
+    if not source_dataset or status != "stale" or snapshot.warning:
+        return status
+    source_snapshot = _dataset_snapshot(lake_root, source_dataset)
+    source_status = str(source_snapshot.freshness.get("freshness_status") or "")
+    if (
+        source_snapshot.rows > 0
+        and not source_snapshot.warning
+        and source_status in {"fresh", "delayed"}
+    ):
+        return DERIVED_LATEST_SOURCE_CURRENT_STATUS
     return status
 
 

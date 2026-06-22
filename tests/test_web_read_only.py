@@ -702,6 +702,73 @@ def test_data_health_hides_stale_entry_quality_dataset_without_freshness_sla(tmp
     }
 
 
+def test_data_health_hides_stale_bnb_latest_when_source_daily_is_current(tmp_path):
+    lake_root = tmp_path / "lake"
+    now = datetime.now(UTC)
+    old = now - timedelta(days=3)
+    write_parquet_dataset(
+        pl.DataFrame(
+            [
+                {
+                    "strategy_id": "BNB_PAPER",
+                    "paper_date": old.date().isoformat(),
+                    "ingest_ts": old,
+                    "bundle_ts": old,
+                    "entry_count": 1,
+                }
+            ]
+        ),
+        lake_root / "gold" / "v5_bnb_paper_strategy_daily_latest",
+    )
+    write_parquet_dataset(
+        pl.DataFrame(
+            [
+                {
+                    "strategy_id": "BNB_PAPER",
+                    "paper_date": now.date().isoformat(),
+                    "ingest_ts": now,
+                    "bundle_ts": now,
+                    "entry_count": 2,
+                }
+            ]
+        ),
+        lake_root / "gold" / "v5_bnb_paper_strategy_daily",
+    )
+
+    snapshot = readers._dataset_snapshot(lake_root, "v5_bnb_paper_strategy_daily_latest")
+    stale_rows = readers.data_health_summary(lake_root)["stale_datasets"].to_dicts()
+
+    assert snapshot.freshness["freshness_status"] == "stale"
+    assert "v5_bnb_paper_strategy_daily_latest" not in {
+        row["dataset"] for row in stale_rows
+    }
+
+
+def test_data_health_keeps_stale_bnb_latest_when_source_daily_is_stale(tmp_path):
+    lake_root = tmp_path / "lake"
+    old = datetime.now(UTC) - timedelta(days=3)
+    daily_row = {
+        "strategy_id": "BNB_PAPER",
+        "paper_date": old.date().isoformat(),
+        "ingest_ts": old,
+        "bundle_ts": old,
+        "entry_count": 1,
+    }
+    write_parquet_dataset(
+        pl.DataFrame([daily_row]),
+        lake_root / "gold" / "v5_bnb_paper_strategy_daily_latest",
+    )
+    write_parquet_dataset(
+        pl.DataFrame([daily_row]),
+        lake_root / "gold" / "v5_bnb_paper_strategy_daily",
+    )
+
+    stale_rows = readers.data_health_summary(lake_root)["stale_datasets"].to_dicts()
+    by_dataset = {row["dataset"]: row for row in stale_rows}
+
+    assert by_dataset["v5_bnb_paper_strategy_daily_latest"]["status"] == "stale"
+
+
 def test_stale_dataset_rows_keep_schema_when_empty(tmp_path, monkeypatch):
     monkeypatch.setattr(readers, "DATASET_PATHS", {})
 

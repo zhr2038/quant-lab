@@ -1,3 +1,4 @@
+import json
 from datetime import UTC, datetime
 
 import polars as pl
@@ -50,6 +51,17 @@ def test_health_deep_runs_dataset_checks(monkeypatch, tmp_path):
 
     assert response.status_code == 200
     assert response.json()["status"] == "ok"
+    assert response.json()["overall_status"] == "ok"
+    assert response.json()["service_health"] == {
+        "status": "OK",
+        "mode": "read-only",
+        "transport": "OK",
+    }
+    assert response.json()["data_quality"] == {"status": "OK", "warnings": [], "warning_count": 0}
+    assert response.json()["live_entry_readiness"]["status"] == "UNKNOWN"
+    assert response.json()["live_entry_readiness"]["veto_status"] == "VETO_READY"
+    assert response.json()["live_entry_readiness"]["entry_status"] == "BLOCKED"
+    assert response.json()["live_entry_readiness"]["scale_status"] == "BLOCKED"
     assert response.json()["data_health"] == {"status": "ok"}
     assert response.json()["cost_health"] == {"status": "ok"}
     assert response.json()["warnings"] == []
@@ -74,7 +86,14 @@ def test_health_deep_status_reflects_nested_warning(monkeypatch, tmp_path):
     response = TestClient(app).get("/v1/health/deep")
 
     assert response.status_code == 200
-    assert response.json()["status"] == "warning"
+    assert response.json()["status"] == "ok"
+    assert response.json()["overall_status"] == "warning"
+    assert response.json()["service_health"]["status"] == "OK"
+    assert response.json()["data_quality"] == {
+        "status": "WARN",
+        "warnings": ["cost_health_warning"],
+        "warning_count": 1,
+    }
     assert response.json()["warnings"] == ["cost_health_warning"]
 
 
@@ -200,11 +219,54 @@ def test_health_deep_status_reflects_nested_critical(monkeypatch, tmp_path):
     response = TestClient(app).get("/v1/health/deep")
 
     assert response.status_code == 200
-    assert response.json()["status"] == "critical"
+    assert response.json()["status"] == "ok"
+    assert response.json()["overall_status"] == "critical"
+    assert response.json()["service_health"]["status"] == "OK"
+    assert response.json()["data_quality"] == {
+        "status": "CRITICAL",
+        "warnings": ["data_health_critical", "risk_permission_dependency_meta_warning"],
+        "warning_count": 2,
+    }
     assert response.json()["warnings"] == [
         "data_health_critical",
         "risk_permission_dependency_meta_warning",
     ]
+
+
+def test_health_deep_reports_live_entry_readiness_split(monkeypatch, tmp_path):
+    lake = tmp_path / "lake"
+    reports = lake / "reports"
+    reports.mkdir(parents=True)
+    (reports / "v5_enforce_readiness.json").write_text(
+        json.dumps(
+            {
+                "readiness_status": "ADVISORY_READY",
+                "blocked_reasons": ["live_cost_coverage_low"],
+                "warning_reasons": ["fallback_rate_high"],
+            }
+        ),
+        encoding="utf-8",
+    )
+    monkeypatch.setenv("QUANT_LAB_LAKE_ROOT", str(lake))
+    monkeypatch.delenv("QUANT_LAB_API_TOKEN", raising=False)
+    monkeypatch.setattr(api_main, "_lake_data_health", lambda *_args: {"status": "ok"})
+    monkeypatch.setattr(api_main, "_lake_cost_health", lambda *_args: {"status": "ok"})
+    monkeypatch.setattr(
+        api_main,
+        "_risk_permission_dependency_meta_health",
+        lambda *_args: {"status": "ok", "warning": ""},
+    )
+
+    response = TestClient(app).get("/v1/health/deep")
+
+    assert response.status_code == 200
+    readiness = response.json()["live_entry_readiness"]
+    assert readiness["status"] == "ADVISORY_READY"
+    assert readiness["veto_status"] == "VETO_READY"
+    assert readiness["entry_status"] == "BLOCKED"
+    assert readiness["scale_status"] == "BLOCKED"
+    assert readiness["blocked_reasons"] == ["live_cost_coverage_low"]
+    assert readiness["warning_reasons"] == ["fallback_rate_high"]
 
 
 def _cost_bucket_row(symbol: str, source: str, day: str) -> dict[str, object]:

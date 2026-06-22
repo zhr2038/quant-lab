@@ -311,15 +311,24 @@ def create_app() -> FastAPI:
         data_health = _lake_data_health(lake_root)
         cost_health = _lake_cost_health(lake_root)
         dependency_meta_health = _risk_permission_dependency_meta_health(lake_root)
-        health_status, warnings = _deep_health_status(
+        overall_status, warnings = _deep_health_status(
             data_health=data_health,
             cost_health=cost_health,
             risk_permission_dependency_meta=dependency_meta_health,
         )
+        live_entry_readiness = _live_entry_readiness_health(lake_root)
         return {
-            "status": health_status,
+            "status": "ok",
+            "overall_status": overall_status,
             "service": "quant-lab",
             "mode": "read-only",
+            "service_health": {
+                "status": "OK",
+                "mode": "read-only",
+                "transport": "OK",
+            },
+            "data_quality": _deep_data_quality_status(overall_status, warnings),
+            "live_entry_readiness": live_entry_readiness,
             "data_health": data_health,
             "cost_health": cost_health,
             "risk_permission_dependency_meta": dependency_meta_health,
@@ -3576,6 +3585,52 @@ def _deep_health_status(
     if warnings:
         return "warning", _dedupe(warnings)
     return "ok", []
+
+
+def _deep_data_quality_status(overall_status: str, warnings: list[str]) -> dict[str, Any]:
+    status = str(overall_status or "ok").strip().upper()
+    if status == "OK":
+        normalized = "OK"
+    elif status == "WARNING":
+        normalized = "WARN"
+    else:
+        normalized = status
+    return {
+        "status": normalized,
+        "warnings": list(warnings),
+        "warning_count": len(warnings),
+    }
+
+
+def _live_entry_readiness_health(lake_root: Path) -> dict[str, Any]:
+    payload = _read_json_file(lake_root / "reports" / "v5_enforce_readiness.json")
+    status = str(payload.get("readiness_status") or "UNKNOWN").strip().upper()
+    if status == "READY":
+        entry_status = "ENTRY_READY"
+        scale_status = "SCALE_READY"
+    elif status in {"ADVISORY_READY", "WARN"}:
+        entry_status = "BLOCKED"
+        scale_status = "BLOCKED"
+    else:
+        entry_status = "BLOCKED"
+        scale_status = "BLOCKED"
+    return {
+        "status": status,
+        "veto_status": "VETO_READY",
+        "entry_status": entry_status,
+        "scale_status": scale_status,
+        "blocked_reasons": list(payload.get("blocked_reasons") or []),
+        "warning_reasons": list(payload.get("warning_reasons") or []),
+        "source": "reports/v5_enforce_readiness.json" if payload else "missing",
+    }
+
+
+def _read_json_file(path: Path) -> dict[str, Any]:
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+    except Exception:
+        return {}
+    return payload if isinstance(payload, dict) else {}
 
 
 def _lake_data_health(lake_root: Path) -> dict[str, Any]:

@@ -4,9 +4,9 @@ import { bps, safeRows, shortNumber, stringValue } from "../lib/api";
 
 export function StrategyFlow({ flow }: { flow: Record<string, unknown> }) {
   const counts = (flow.counts ?? {}) as Record<string, number>;
-  const topCandidates = safeRows(flow.top_live_candidates).length
+  const topCandidates = dedupeCandidates(safeRows(flow.top_live_candidates).length
     ? safeRows(flow.top_live_candidates)
-    : safeRows(flow.top_candidates);
+    : safeRows(flow.top_candidates));
   const factorFactory = (flow.factor_factory ?? {}) as Record<string, unknown>;
   const factorReviewQueue = safeRows(factorFactory.paper_review_queue);
   const factorRows = factorReviewQueue.length
@@ -59,8 +59,8 @@ export function StrategyFlow({ flow }: { flow: Record<string, unknown> }) {
         <div className="candidate-title"><FlaskConical size={15} /> Factor Factory</div>
         <div className="factor-factory-stats">
           <span><b>{shortNumber(factorFactory.candidate_count)}</b><em>候选</em></span>
-          <span><b>{shortNumber(factorReviewQueue.length || factorFactory.paper_ready_count)}</b><em>队列</em></span>
-          <span><b>{shortNumber(safeRows(factorFactory.strategy_bridge_candidates).length)}</b><em>Bridge</em></span>
+          <span><b>{shortNumber(factorFactory.paper_review_queue_count ?? factorFactory.paper_ready_count)}</b><em>Paper候选</em></span>
+          <span><b>{shortNumber(factorFactory.strategy_bridge_candidate_count ?? safeRows(factorFactory.strategy_bridge_candidates).length)}</b><em>Bridge</em></span>
         </div>
         {factorRows.slice(0, 2).map((factor, i) => (
           <div className="factor-chip" key={`${factor.factor_id}-${i}`}>
@@ -73,14 +73,14 @@ export function StrategyFlow({ flow }: { flow: Record<string, unknown> }) {
         {!factorRows.length && <div className="factor-empty">Factor Factory 暂无候选</div>}
       </div>
       <div className="candidate-list">
-        <div className="candidate-title"><Rocket size={15} /> 最可能上线的研究候选</div>
+        <div className="candidate-title"><Rocket size={15} /> 策略候选（只读）</div>
         {topCandidates.slice(0, 4).map((candidate, i) => (
           <div className="chip" key={candidateKey(candidate, i)} title={candidateTitle(candidate)}>
             <span className="candidate-main">
               <b>{candidateIdentity(candidate)}</b>
               <small>{stringValue(candidate.strategy_candidate ?? candidate.takeaway, "candidate")}</small>
             </span>
-            <em>{stringValue(candidate.recommended_mode ?? candidate.decision, "research")}</em>
+            <em>{modeLabel(candidate)}</em>
             <strong>{bps(candidate.avg_net_bps)}</strong>
             <span className="candidate-detail">{candidateDetail(candidate)}</span>
           </div>
@@ -88,6 +88,20 @@ export function StrategyFlow({ flow }: { flow: Record<string, unknown> }) {
       </div>
     </section>
   );
+}
+
+function dedupeCandidates(rows: Record<string, unknown>[]): Record<string, unknown>[] {
+  const seen = new Set<string>();
+  return rows.filter((candidate) => {
+    const key = [
+      stringValue(candidate.symbol, ""),
+      stringValue(candidate.horizon_hours, ""),
+      stringValue(candidate.recommended_mode ?? candidate.decision, "")
+    ].join("|");
+    if (seen.has(key)) return false;
+    seen.add(key);
+    return true;
+  });
 }
 
 function Metric({ label, value, tone }: { label: string; value: number; tone: string }) {
@@ -123,11 +137,21 @@ function candidateDetail(candidate: Record<string, unknown>): string {
   return `${source} · ${samples} · ${p25}`;
 }
 
+function modeLabel(candidate: Record<string, unknown>): string {
+  const mode = stringValue(candidate.recommended_mode, "").toLowerCase();
+  const decision = stringValue(candidate.decision, "").toUpperCase();
+  if (mode === "paper" || decision === "PAPER_READY") return "PAPER";
+  if (mode === "shadow" || decision.includes("SHADOW")) return "SHADOW";
+  if (mode === "research" || decision === "RESEARCH_ONLY") return "RESEARCH";
+  if (mode === "none" || decision === "KILL") return "RESEARCH-ONLY";
+  return stringValue(candidate.recommended_mode ?? candidate.decision, "RESEARCH");
+}
+
 function candidateTitle(candidate: Record<string, unknown>): string {
   return [
     candidateIdentity(candidate),
     stringValue(candidate.strategy_candidate ?? candidate.takeaway, "candidate"),
-    `mode=${stringValue(candidate.recommended_mode ?? candidate.decision, "research")}`,
+    `mode=${modeLabel(candidate)}`,
     `avg=${bps(candidate.avg_net_bps)}`,
     candidateDetail(candidate)
   ].join(" | ");

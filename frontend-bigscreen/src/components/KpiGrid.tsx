@@ -4,9 +4,10 @@ import { delay, ms, pct, shortNumber, type BigscreenSnapshot } from "../lib/api"
 
 export function KpiGrid({ snapshot }: { snapshot: BigscreenSnapshot }) {
   const k = snapshot.kpis;
+  const v5Permission = permissionDisplay(k.v5_permission);
   const cards = [
     { label: "中台状态", value: String(k.platform_status ?? snapshot.status), sub: "风控边界", icon: ShieldCheck, tone: snapshot.status },
-    { label: "V5 权限", value: String(k.v5_permission ?? "UNKNOWN"), sub: "只读 advisory", icon: WalletCards, tone: k.v5_permission },
+    { label: "V5 权限", value: v5Permission.value, sub: v5Permission.sub, icon: WalletCards, tone: v5Permission.tone },
     { label: "行情延迟", value: delay(k.market_delay_seconds), sub: "market_bar", icon: Timer, tone: Number(k.market_delay_seconds) > 1800 ? "WARNING" : "OK" },
     { label: "V5 Bundle", value: delay(k.v5_bundle_delay_seconds), sub: "latest bundle", icon: Activity, tone: Number(k.v5_bundle_delay_seconds) > 3600 ? "WARNING" : "OK" },
     { label: "硬回退", value: pct(k.cost_hard_fallback_ratio, 1), sub: "global default", icon: Zap, tone: Number(k.cost_hard_fallback_ratio) > 0.25 ? "CRITICAL" : "OK" },
@@ -38,6 +39,21 @@ export function KpiGrid({ snapshot }: { snapshot: BigscreenSnapshot }) {
       })}
     </section>
   );
+}
+
+function permissionDisplay(value: unknown): { value: string; sub: string; tone: string } {
+  const text = String(value ?? "UNKNOWN").toUpperCase();
+  if (text === "ACTIVE_ABORT") {
+    return { value: "只读 ABORT", sub: "advisory 未强制", tone: "WARNING" };
+  }
+  if (text === "ACTIVE_SELL_ONLY") {
+    return { value: "只读 SELL", sub: "advisory 未强制", tone: "WARNING" };
+  }
+  return {
+    value: text.replace(/_/g, " "),
+    sub: "只读 advisory",
+    tone: text
+  };
 }
 
 function toneClass(value: unknown): string {

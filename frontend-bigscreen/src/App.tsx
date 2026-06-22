@@ -315,7 +315,12 @@ function Drilldown({
 
 function drilldownContent(view: ViewKey, data: BigscreenSnapshot) {
   if (view === "strategy") {
-    const candidates = safeRows(data.strategy_flow.top_candidates);
+    const candidates = dedupeRowsByKeys(safeRows(data.strategy_flow.top_candidates), [
+      "symbol",
+      "horizon_hours",
+      "recommended_mode",
+      "decision"
+    ]);
     const alphaFactory = safeRows(data.strategy_flow.alpha_factory);
     const riskOn = safeRows(data.strategy_flow.risk_on_multi_buy);
     const factorFactory = (data.strategy_flow.factor_factory ?? {}) as Record<string, unknown>;
@@ -397,7 +402,7 @@ function drilldownContent(view: ViewKey, data: BigscreenSnapshot) {
             rows={safeRows(factorFactory.high_correlation_pairs)}
             columns={["factor_id_left", "factor_id_right", "correlation", "sample_count", "timeframe"]}
           />
-          <MiniTable title="最可能上线候选" rows={safeRows(data.strategy_flow.top_live_candidates).concat(candidates).slice(0, 8)} columns={["strategy_candidate", "symbol", "recommended_mode", "decision", "avg_net_bps", "p25_net_bps"]} />
+          <MiniTable title="策略候选（只读）" rows={dedupeRowsByKeys(safeRows(data.strategy_flow.top_live_candidates).concat(candidates), ["symbol", "horizon_hours", "recommended_mode", "decision"]).slice(0, 8)} columns={["strategy_candidate", "symbol", "recommended_mode", "decision", "avg_net_bps", "p25_net_bps"]} />
           <MiniTable title="Alpha Factory" rows={alphaFactory} columns={["strategy_candidate", "promotion_state", "recommended_mode", "alpha_factory_score", "horizon_hours"]} />
           <MiniTable title="Risk-on multi-buy shadow" rows={riskOn} columns={["selected_symbols", "would_buy_symbols", "top_k", "decision_ts"]} />
         </>
@@ -486,6 +491,11 @@ function ExpertPackControls({ exports }: { exports: Record<string, unknown> }) {
   const packs = status?.packs?.length ? status.packs : snapshotPacks;
   const latestName = stringValue(status?.latest_pack_name, "");
   const latestUrl = status?.latest_download_url || exports.latest_download_url;
+  const latestFileName = fileNameFromPath(latestName || exports.latest_pack || latestUrl);
+  const visiblePacks = packs.filter((pack) => {
+    const name = stringValue(pack.name, stringValue(pack.path, ""));
+    return !latestFileName || fileNameFromPath(name) !== latestFileName;
+  });
   const state = String(status?.state ?? exports.job_state ?? "not_observable");
   const statusBody = status?.status ?? {};
   const isRunning = ["running", "starting"].includes(state.toLowerCase());
@@ -536,7 +546,7 @@ function ExpertPackControls({ exports }: { exports: Record<string, unknown> }) {
         <div className="export-empty">未找到可下载专家包，点击“生成今日专家包”提交后台导出。</div>
       )}
       <div className="pack-list">
-        {packs.slice(0, 8).map((pack, index) => {
+        {visiblePacks.slice(0, 8).map((pack, index) => {
           const name = stringValue(pack.name, stringValue(pack.path, `pack-${index}`));
           const url = stringValue(pack.download_url, "");
           const modifiedAt = formatPackTime(pack.modified_at);
@@ -554,10 +564,27 @@ function ExpertPackControls({ exports }: { exports: Record<string, unknown> }) {
             </div>
           );
         })}
-        {!packs.length && <div className="export-empty">not_observable</div>}
+        {!visiblePacks.length && <div className="export-empty">{packs.length ? "最新包已在上方显示" : "not_observable"}</div>}
       </div>
     </section>
   );
+}
+
+function dedupeRowsByKeys(rows: Record<string, unknown>[], keys: string[]): Record<string, unknown>[] {
+  const seen = new Set<string>();
+  return rows.filter((row) => {
+    const key = keys.map((name) => stringValue(row[name], "")).join("|");
+    if (seen.has(key)) return false;
+    seen.add(key);
+    return true;
+  });
+}
+
+function fileNameFromPath(value: unknown): string {
+  const text = stringValue(value, "");
+  if (!text) return "";
+  const clean = text.split("?")[0].replace(/\\/g, "/");
+  return clean.split("/").filter(Boolean).pop() ?? "";
 }
 
 function MiniTable({

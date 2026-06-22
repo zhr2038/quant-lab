@@ -71,18 +71,18 @@ def test_bigscreen_strategy_flow_counts_use_full_advisory_not_display_sample(tmp
     created_at = datetime(2026, 6, 6, 13, 0, tzinfo=UTC)
     rows = []
     for index in range(532):
-        if index < 520:
-            decision = "KILL"
-            mode = "none"
-        elif index < 525:
+        if index < 5:
             decision = "PAPER_READY"
             mode = "paper"
-        elif index < 529:
+        elif index < 9:
             decision = "KEEP_SHADOW"
             mode = "shadow"
-        else:
+        elif index < 12:
             decision = "RESEARCH_ONLY"
             mode = "research"
+        else:
+            decision = "KILL"
+            mode = "none"
         row_ts = created_at + timedelta(seconds=index)
         rows.append(
             {
@@ -111,6 +111,9 @@ def test_bigscreen_strategy_flow_counts_use_full_advisory_not_display_sample(tmp
         "paper": 5,
         "kill": 520,
     }
+    assert payload["strategy_flow"]["top_live_candidates"]
+    assert payload["strategy_flow"]["top_live_candidates"][0]["recommended_mode"] == "paper"
+    assert payload["strategy_flow"]["top_candidates"][0]["decision"] == "PAPER_READY"
 
 
 def test_bigscreen_data_matrix_shows_proxy_only_live_cost_diagnostics(tmp_path):
@@ -433,6 +436,8 @@ def test_bigscreen_snapshot_exposes_factor_factory_results(tmp_path):
     assert factor_factory["live_order_effect"] == "none_read_only_research"
     assert factor_factory["candidate_count"] == 2
     assert factor_factory["paper_ready_count"] == 1
+    assert factor_factory["paper_review_queue_count"] == 1
+    assert factor_factory["strategy_bridge_candidate_count"] == 1
     assert factor_factory["paper_ready_candidates"][0]["factor_id"] == "factor.momentum_zscore"
     assert factor_factory["evidence_by_horizon"][0]["horizon_bars"] == 24
     assert factor_factory["high_correlation_pairs"][0]["correlation"] == 0.94

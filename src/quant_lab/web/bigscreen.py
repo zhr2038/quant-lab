@@ -281,6 +281,7 @@ def _safe_strategy_summary(root: Path) -> dict[str, Any]:
     return {
         **frames,
         "counts": {},
+        "strategy_opportunity_advisory_rank": advisory_for_counts,
         "strategy_flow_counts": _strategy_flow_counts_from_frame(advisory_for_counts),
         "strategy_counts": _count_by_column(advisory_for_counts, "decision"),
         "discovery_counts": _count_by_column(discovery, "decision"),
@@ -851,8 +852,12 @@ def _latest_by_symbol(rows: list[dict[str, Any]]) -> dict[str, dict[str, Any]]:
 
 def _strategy_flow(strategy: dict[str, Any]) -> dict[str, Any]:
     advisory_rows = _frame_rows(strategy.get("strategy_opportunity_advisory"), limit=200)
+    rank_source = strategy.get("strategy_opportunity_advisory_rank")
+    if not isinstance(rank_source, pl.DataFrame) or rank_source.is_empty():
+        rank_source = strategy.get("strategy_opportunity_advisory")
+    ranking_rows = _frame_rows(rank_source, limit=50_000)
     counts = _strategy_counts(strategy, advisory_rows)
-    top = _top_strategy_candidates(advisory_rows)
+    top = _top_strategy_candidates(ranking_rows or advisory_rows)
     factor_factory = _factor_factory_payload(strategy)
     return {
         "counts": counts,
@@ -903,6 +908,8 @@ def _factor_factory_payload(strategy: dict[str, Any]) -> dict[str, Any]:
         "evidence_count": evidence.height,
         "correlation_pair_count": correlations.height,
         "paper_ready_count": state_counts.get("PAPER_READY", 0),
+        "paper_review_queue_count": v2_reports["factor_paper_review_queue"].height,
+        "strategy_bridge_candidate_count": bridge_candidates.height,
         "high_correlation_pair_count": len(high_correlation_pairs),
         "state_counts": state_counts,
         "latest_candidate_created_at": _max_column_value(candidates, "created_at"),
@@ -1156,8 +1163,22 @@ def _top_strategy_candidates(rows: list[dict[str, Any]]) -> list[dict[str, Any]]
             _int(row.get("complete_sample_count")) or 0,
         )
 
-    sorted_rows = sorted(rows, key=priority, reverse=True)
+    sorted_rows = _dedupe_strategy_candidate_rows(sorted(rows, key=priority, reverse=True))
     return [_strategy_candidate_payload(row) for row in sorted_rows]
+
+
+def _dedupe_strategy_candidate_rows(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    deduped: list[dict[str, Any]] = []
+    seen: set[tuple[str, int | None]] = set()
+    for row in rows:
+        symbol = _normalize_display_symbol(row.get("symbol")) or str(row.get("symbol") or "")
+        key = (symbol, _int(row.get("horizon_hours")))
+        if symbol and key in seen:
+            continue
+        if symbol:
+            seen.add(key)
+        deduped.append(row)
+    return deduped
 
 
 def _strategy_candidate_payload(row: dict[str, Any]) -> dict[str, Any]:

@@ -452,7 +452,11 @@ def _export_quality_is_read_only_cost_advisory(data_quality: dict[str, Any]) -> 
         "live_order_effect=read_only_no_live_order" in warning.lower()
         for warning in warnings
     )
-    return has_read_only_live_context and all(
+    has_entry_or_scale_context = any(
+        "live_order_effect=entry_or_scale_block_only" in warning.lower()
+        for warning in warnings
+    )
+    return (has_read_only_live_context or has_entry_or_scale_context) and all(
         _is_read_only_cost_quality_warning(warning) for warning in warnings
     )
 
@@ -463,9 +467,12 @@ def _is_read_only_cost_quality_warning(value: str) -> bool:
         return True
     if text.startswith("live_universe_stale_actual_or_mixed_cost:"):
         return "live_order_effect=read_only_no_live_order" in text
+    if not text.startswith("quant_lab_enforce_readiness:"):
+        return False
+    if "live_order_effect=entry_or_scale_block_only" in text:
+        return True
     return (
-        text.startswith("quant_lab_enforce_readiness:")
-        and _is_read_only_live_readiness_failure(value)
+        _is_read_only_live_readiness_failure(value)
         and "live_order_effect=read_only_no_live_order" in text
     )
 

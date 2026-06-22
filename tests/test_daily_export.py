@@ -4209,6 +4209,58 @@ def test_data_quality_keeps_live_allow_cost_block_critical(tmp_path, monkeypatch
     )
 
 
+def test_data_quality_marks_veto_ready_entry_block_as_warning(tmp_path, monkeypatch):
+    class FakeEnforceReadiness(SimpleNamespace):
+        def model_dump(self, *, mode: str = "json") -> dict[str, object]:
+            _ = mode
+            return dict(self.__dict__)
+
+    lake_root = _fixture_lake(tmp_path)
+    monkeypatch.setattr(
+        daily_export_module,
+        "build_enforce_readiness_report",
+        lambda _lake_root: FakeEnforceReadiness(
+            readiness_status="BLOCKED",
+            veto_status="VETO_READY",
+            entry_status="BLOCKED",
+            scale_status="BLOCKED",
+            blocked_reasons=[
+                "actual_or_mixed_cost_coverage_live_universe",
+                "fallback_rate",
+            ],
+            warning_reasons=[],
+            checks=[],
+            metrics={},
+            shadow_only_recommended=True,
+        ),
+    )
+
+    result = export_daily_pack(
+        export_date="2026-05-12",
+        lake_root=lake_root,
+        out_dir=tmp_path / "exports",
+        profile="expert",
+        command_line=["qlab", "export-daily"],
+        pre_export_v5_refresh=False,
+    )
+
+    with zipfile.ZipFile(result.zip_path) as archive:
+        data_quality = json.loads(archive.read("data_quality.json").decode("utf-8"))
+
+    checks = {check["name"]: check for check in data_quality["checks"]}
+    readiness_check = checks["quant_lab_enforce_readiness"]
+    assert readiness_check["status"] == "WARN"
+    assert readiness_check["severity"] == "warning"
+    assert "veto_status=VETO_READY" in readiness_check["detail"]
+    assert "live_order_effect=entry_or_scale_block_only" in readiness_check["detail"]
+    assert any(
+        "quant_lab_enforce_readiness:" in warning for warning in data_quality.get("warnings", [])
+    )
+    assert not any(
+        "quant_lab_enforce_readiness:" in failure for failure in data_quality.get("failures", [])
+    )
+
+
 def test_cost_fallback_ratio_is_not_pass_when_cost_bucket_daily_is_empty(tmp_path):
     result = export_daily_pack(
         export_date="2026-05-11",

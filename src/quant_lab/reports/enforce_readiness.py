@@ -31,6 +31,24 @@ ACTUAL_OR_MIXED_COST_SOURCES = {
     "mixed_actual_proxy",
 }
 PUBLIC_PROXY_COST_SOURCES = {"public_spread_proxy", "public_proxy"}
+ENTRY_READINESS_REASONS = {
+    "cost_api_global_default_rate",
+    "cost_live_symbol_hit_rate",
+    "actual_or_mixed_cost_coverage_live_universe",
+    "fallback_rate",
+    "alpha_gate_status_not_dead",
+}
+SCALE_READINESS_REASONS = {
+    "cost_api_global_default_rate",
+    "cost_symbol_hit_rate",
+    "cost_live_symbol_hit_rate",
+    "actual_or_mixed_cost_coverage",
+    "actual_or_mixed_cost_coverage_research_universe",
+    "actual_or_mixed_cost_coverage_live_universe",
+    "actual_or_mixed_cost_coverage_expanded_universe",
+    "fallback_rate",
+    "alpha_gate_status_not_dead",
+}
 
 
 class EnforceReadinessThresholds(BaseModel):
@@ -61,9 +79,15 @@ class EnforceReadinessReport(BaseModel):
     strategy: str = "v5"
     version: str = "5.0.0"
     readiness_status: str
+    veto_status: str = "VETO_READY"
+    entry_status: str = "ENTRY_READY"
+    scale_status: str = "SCALE_READY"
     shadow_only_recommended: bool
     blocked_reasons: list[str]
     warning_reasons: list[str]
+    veto_blocked_reasons: list[str] = Field(default_factory=list)
+    entry_blocked_reasons: list[str] = Field(default_factory=list)
+    scale_blocked_reasons: list[str] = Field(default_factory=list)
     required_actions: list[str]
     as_of_ts: datetime
     contract_version: str = V5_QUANT_LAB_CONTRACT_VERSION
@@ -212,18 +236,41 @@ def build_enforce_readiness_report(
         **telemetry_metrics,
         **gate_metrics,
     }
+    split = _readiness_split(blocked, warnings)
     return EnforceReadinessReport(
         strategy=strategy,
         version=version,
         readiness_status=status,
+        veto_status=split["veto_status"],
+        entry_status=split["entry_status"],
+        scale_status=split["scale_status"],
         shadow_only_recommended=status != "READY",
         blocked_reasons=blocked,
         warning_reasons=warnings,
+        veto_blocked_reasons=split["veto_blocked_reasons"],
+        entry_blocked_reasons=split["entry_blocked_reasons"],
+        scale_blocked_reasons=split["scale_blocked_reasons"],
         required_actions=_required_actions(blocked, warnings),
         as_of_ts=now,
         checks=checks,
         metrics=metrics,
     )
+
+
+def _readiness_split(blocked: list[str], warnings: list[str]) -> dict[str, Any]:
+    blocked_set = {str(reason).strip() for reason in blocked if str(reason).strip()}
+    warning_set = {str(reason).strip() for reason in warnings if str(reason).strip()}
+    entry_blocked = sorted(blocked_set & ENTRY_READINESS_REASONS)
+    scale_blocked = sorted((blocked_set | warning_set) & SCALE_READINESS_REASONS)
+    veto_blocked = sorted(blocked_set - ENTRY_READINESS_REASONS)
+    return {
+        "veto_status": "VETO_BLOCKED" if veto_blocked else "VETO_READY",
+        "entry_status": "BLOCKED" if entry_blocked else "ENTRY_READY",
+        "scale_status": "BLOCKED" if scale_blocked else "SCALE_READY",
+        "veto_blocked_reasons": veto_blocked,
+        "entry_blocked_reasons": entry_blocked,
+        "scale_blocked_reasons": scale_blocked,
+    }
 
 
 def _read_only_permission_context(risk_metrics: dict[str, Any]) -> bool:
@@ -1202,6 +1249,9 @@ def _csv_text(report: EnforceReadinessReport) -> str:
         "strategy",
         "version",
         "readiness_status",
+        "veto_status",
+        "entry_status",
+        "scale_status",
         "shadow_only_recommended",
         "raw_imported_rows",
         "unique_event_rows",
@@ -1221,6 +1271,9 @@ def _csv_text(report: EnforceReadinessReport) -> str:
         "proxy_only_symbols_expanded",
         "blocked_reasons",
         "warning_reasons",
+        "veto_blocked_reasons",
+        "entry_blocked_reasons",
+        "scale_blocked_reasons",
         "required_actions",
         "contract_version",
     ]
@@ -1229,6 +1282,9 @@ def _csv_text(report: EnforceReadinessReport) -> str:
         "strategy": report.strategy,
         "version": report.version,
         "readiness_status": report.readiness_status,
+        "veto_status": report.veto_status,
+        "entry_status": report.entry_status,
+        "scale_status": report.scale_status,
         "shadow_only_recommended": str(report.shadow_only_recommended).lower(),
         "raw_imported_rows": report.metrics.get("raw_imported_rows", 0),
         "unique_event_rows": report.metrics.get("unique_event_rows", 0),
@@ -1269,6 +1325,9 @@ def _csv_text(report: EnforceReadinessReport) -> str:
         ),
         "blocked_reasons": json.dumps(report.blocked_reasons, sort_keys=True),
         "warning_reasons": json.dumps(report.warning_reasons, sort_keys=True),
+        "veto_blocked_reasons": json.dumps(report.veto_blocked_reasons, sort_keys=True),
+        "entry_blocked_reasons": json.dumps(report.entry_blocked_reasons, sort_keys=True),
+        "scale_blocked_reasons": json.dumps(report.scale_blocked_reasons, sort_keys=True),
         "required_actions": json.dumps(report.required_actions, sort_keys=True),
         "contract_version": report.contract_version,
     }

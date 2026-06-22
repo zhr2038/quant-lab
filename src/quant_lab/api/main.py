@@ -3605,7 +3605,12 @@ def _deep_data_quality_status(overall_status: str, warnings: list[str]) -> dict[
 def _live_entry_readiness_health(lake_root: Path) -> dict[str, Any]:
     payload = _read_json_file(lake_root / "reports" / "v5_enforce_readiness.json")
     status = str(payload.get("readiness_status") or "UNKNOWN").strip().upper()
-    if status == "READY":
+    veto_status = str(payload.get("veto_status") or "VETO_READY").strip().upper()
+    entry_status = str(payload.get("entry_status") or "").strip().upper()
+    scale_status = str(payload.get("scale_status") or "").strip().upper()
+    if entry_status and scale_status:
+        pass
+    elif status == "READY":
         entry_status = "ENTRY_READY"
         scale_status = "SCALE_READY"
     elif status in {"ADVISORY_READY", "WARN"}:
@@ -3616,11 +3621,14 @@ def _live_entry_readiness_health(lake_root: Path) -> dict[str, Any]:
         scale_status = "BLOCKED"
     return {
         "status": status,
-        "veto_status": "VETO_READY",
+        "veto_status": veto_status,
         "entry_status": entry_status,
         "scale_status": scale_status,
         "blocked_reasons": list(payload.get("blocked_reasons") or []),
         "warning_reasons": list(payload.get("warning_reasons") or []),
+        "veto_blocked_reasons": list(payload.get("veto_blocked_reasons") or []),
+        "entry_blocked_reasons": list(payload.get("entry_blocked_reasons") or []),
+        "scale_blocked_reasons": list(payload.get("scale_blocked_reasons") or []),
         "source": "reports/v5_enforce_readiness.json" if payload else "missing",
     }
 

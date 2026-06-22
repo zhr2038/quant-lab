@@ -957,6 +957,33 @@ def test_bigscreen_actions_skip_read_only_export_cost_advisory():
     assert not any(action["source"] == "expert_export_summary" for action in actions)
 
 
+def test_bigscreen_actions_skip_entry_or_scale_readiness_advisory():
+    actions = bigscreen_module._build_actions(
+        overview={},
+        data_health={},
+        cost={},
+        v5={"latest": {"kill_switch_enabled": False, "reconcile_ok": True}},
+        web_events=[],
+        exports={
+            "latest_pack": "/tmp/quant_lab_expert_pack_2026-06-22_120000.zip",
+            "data_quality_summary": {
+                "status": "WARN",
+                "warning_count": 1,
+                "warnings": [
+                    "quant_lab_enforce_readiness: readiness_status=BLOCKED; "
+                    "veto_status=VETO_READY; entry_status=BLOCKED; scale_status=BLOCKED; "
+                    "blocked=['actual_or_mixed_cost_coverage_live_universe', 'fallback_rate']; "
+                    "warnings=[]; live_order_effect=entry_or_scale_block_only"
+                ],
+                "failures": [],
+            },
+        },
+        legacy_anomalies={"items": []},
+    )
+
+    assert not any(action["source"] == "expert_export_summary" for action in actions)
+
+
 def test_bigscreen_snapshot_keeps_live_readiness_block_out_of_system_critical(
     tmp_path,
     monkeypatch,

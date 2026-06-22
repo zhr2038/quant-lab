@@ -8167,12 +8167,18 @@ def _data_quality_payload(
         enforce_readiness,
         risk_quality,
     )
-    readiness_ok = enforce_readiness.readiness_status in {"READY", "ADVISORY_READY"} or (
+    readiness_veto_ready = (
+        str(getattr(enforce_readiness, "veto_status", "") or "").upper() == "VETO_READY"
+    )
+    readiness_contract_ok = enforce_readiness.readiness_status in {"READY", "ADVISORY_READY"} or (
         read_only_cost_coverage_block
     )
+    readiness_ok = readiness_contract_ok or readiness_veto_ready
     readiness_check_status = (
         "PASS"
-        if readiness_ok
+        if readiness_contract_ok
+        else "WARN"
+        if readiness_veto_ready
         else "WARN"
         if read_only_cost_coverage_block
         else "FAIL"
@@ -8181,11 +8187,16 @@ def _data_quality_payload(
     )
     readiness_detail = (
         f"readiness_status={enforce_readiness.readiness_status}; "
+        f"veto_status={getattr(enforce_readiness, 'veto_status', 'UNKNOWN')}; "
+        f"entry_status={getattr(enforce_readiness, 'entry_status', 'UNKNOWN')}; "
+        f"scale_status={getattr(enforce_readiness, 'scale_status', 'UNKNOWN')}; "
         f"blocked={enforce_readiness.blocked_reasons}; "
         f"warnings={enforce_readiness.warning_reasons}"
     )
     if read_only_cost_coverage_block:
         readiness_detail += "; live_order_effect=read_only_no_live_order"
+    elif readiness_veto_ready and enforce_readiness.readiness_status == "BLOCKED":
+        readiness_detail += "; live_order_effect=entry_or_scale_block_only"
     checks.append(
         _check(
             "quant_lab_enforce_readiness",

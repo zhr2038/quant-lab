@@ -633,6 +633,15 @@ def test_live_universe_cost_coverage_blocks_when_only_one_symbol_has_actual_cost
     report = build_enforce_readiness_report(lake)
 
     assert report.readiness_status == "BLOCKED"
+    assert report.veto_status == "VETO_READY"
+    assert report.entry_status == "BLOCKED"
+    assert report.scale_status == "BLOCKED"
+    assert report.veto_blocked_reasons == []
+    assert report.entry_blocked_reasons == [
+        "actual_or_mixed_cost_coverage_live_universe",
+        "cost_api_global_default_rate",
+        "cost_live_symbol_hit_rate",
+    ]
     assert "actual_or_mixed_cost_coverage_live_universe" in report.blocked_reasons
     assert "cost_live_symbol_hit_rate" in report.blocked_reasons
     assert report.metrics["actual_or_mixed_cost_coverage_live_universe"] == 0.25
@@ -727,6 +736,9 @@ def test_soft_proxy_fallback_still_blocks_when_permission_allows_live_orders(
     report = build_enforce_readiness_report(lake)
 
     assert report.readiness_status == "BLOCKED"
+    assert report.veto_status == "VETO_READY"
+    assert report.entry_status == "BLOCKED"
+    assert report.scale_status == "BLOCKED"
     assert "actual_or_mixed_cost_coverage_live_universe" in report.blocked_reasons
 
 
@@ -739,10 +751,17 @@ def test_write_enforce_readiness_report_outputs_json_and_csv(tmp_path):
     report = write_enforce_readiness_report(lake, out_dir=out)
 
     assert report.readiness_status == "READY"
+    assert report.veto_status == "VETO_READY"
+    assert report.entry_status == "ENTRY_READY"
+    assert report.scale_status == "SCALE_READY"
     payload = json.loads((out / "v5_enforce_readiness.json").read_text())
     assert payload["readiness_status"] == "READY"
+    assert payload["veto_status"] == "VETO_READY"
+    assert payload["entry_status"] == "ENTRY_READY"
+    assert payload["scale_status"] == "SCALE_READY"
     csv_text = (out / "v5_enforce_readiness.csv").read_text()
     assert "readiness_status" in csv_text
+    assert "veto_status" in csv_text
     assert "actual_or_mixed_cost_coverage" in csv_text
     assert "actual_or_mixed_cost_coverage_research_universe" in csv_text
     assert "actual_or_mixed_cost_coverage_live_universe" in csv_text

@@ -109,7 +109,7 @@ def _build_bigscreen_snapshot_payload(root: Path) -> dict[str, Any]:
     api_metrics = _safe_api_metrics(root)
     overview = _overview_from_summaries(data_health, v5, consumers)
 
-    warnings = _dedupe(
+    raw_warnings = _dedupe(
         [
             *_warnings(data_health),
             *_warnings(cost),
@@ -122,6 +122,8 @@ def _build_bigscreen_snapshot_payload(root: Path) -> dict[str, Any]:
             *_export_quality_warnings(exports),
         ]
     )
+    warnings = _system_warnings(raw_warnings, exports)
+    advisories = [warning for warning in raw_warnings if warning not in warnings]
     status = _status_from_inputs(overview, data_health, cost, v5, warnings, exports)
     overview["status"] = status
     health_score = _health_score(status, data_health, cost, v5, web_events, exports)
@@ -148,6 +150,7 @@ def _build_bigscreen_snapshot_payload(root: Path) -> dict[str, Any]:
         "consumers": _consumer_payload(consumers),
         "exports": _exports_payload(exports),
         "warnings": warnings[:30],
+        "advisories": advisories[:30],
     }
     return payload
 
@@ -382,6 +385,20 @@ def _warnings(summary: dict[str, Any]) -> list[str]:
     if not isinstance(values, list):
         return []
     return [str(value) for value in values if str(value).strip()]
+
+
+def _system_warnings(warnings: list[str], exports: dict[str, Any]) -> list[str]:
+    data_quality = _export_data_quality(exports)
+    if not _export_quality_is_read_only_cost_advisory(data_quality):
+        return warnings
+    return [
+        warning for warning in warnings if not _is_export_quality_advisory_notice(warning)
+    ]
+
+
+def _is_export_quality_advisory_notice(value: str) -> bool:
+    text = str(value).strip().lower()
+    return text.startswith(("expert_pack_data_quality_warning:", "expert_pack_warning:"))
 
 
 def _export_data_quality(exports: dict[str, Any]) -> dict[str, Any]:

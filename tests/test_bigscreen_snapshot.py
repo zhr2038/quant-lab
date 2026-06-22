@@ -984,6 +984,28 @@ def test_bigscreen_actions_skip_entry_or_scale_readiness_advisory():
     assert not any(action["source"] == "expert_export_summary" for action in actions)
 
 
+def test_bigscreen_system_warnings_skip_entry_or_scale_readiness_advisory():
+    exports = {
+        "data_quality_summary": {
+            "status": "WARN",
+            "warning_count": 1,
+            "warnings": [
+                "quant_lab_enforce_readiness: readiness_status=BLOCKED; "
+                "veto_status=VETO_READY; entry_status=BLOCKED; scale_status=BLOCKED; "
+                "blocked=['actual_or_mixed_cost_coverage_live_universe', 'fallback_rate']; "
+                "warnings=[]; live_order_effect=entry_or_scale_block_only"
+            ],
+            "failures": [],
+        }
+    }
+    raw_warnings = bigscreen_module._export_quality_warnings(exports)
+    raw_warnings.append("okx_collector_stale")
+
+    system_warnings = bigscreen_module._system_warnings(raw_warnings, exports)
+
+    assert system_warnings == ["okx_collector_stale"]
+
+
 def test_bigscreen_snapshot_keeps_live_readiness_block_out_of_system_critical(
     tmp_path,
     monkeypatch,

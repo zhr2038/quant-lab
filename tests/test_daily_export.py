@@ -4463,6 +4463,24 @@ def test_stale_dataset_check_ignores_event_driven_v5_cost_usage_when_current():
     assert "v5_quant_lab_fallback" not in datasets
 
 
+def test_stale_dataset_check_ignores_stale_bnb_latest_when_source_daily_is_current():
+    now = datetime.now(UTC)
+    old = now - timedelta(days=1)
+    stale = daily_export_module._stale_rows(
+        {
+            "v5_bnb_paper_strategy_daily": pl.DataFrame(
+                [{"symbol": "BNB-USDT", "generated_at": now, "score": 0.61}]
+            ),
+            "v5_bnb_paper_strategy_daily_latest": pl.DataFrame(
+                [{"symbol": "BNB-USDT", "ingest_ts": old, "score": 0.58}]
+            ),
+        }
+    )
+
+    datasets = set(stale["dataset"].to_list()) if "dataset" in stale.columns else set()
+    assert "v5_bnb_paper_strategy_daily_latest" not in datasets
+
+
 def test_stale_dataset_check_ignores_okx_bills_when_readonly_backfill_current():
     now = datetime.now(UTC)
     old = now - timedelta(days=3)

@@ -319,6 +319,10 @@ HEAVY_REGISTRY_QUALITY_DATASETS = {
 EVENT_DRIVEN_V5_DATASETS = readers.EVENT_DRIVEN_V5_DATASET_STATUSES
 EVENT_DRIVEN_OKX_READONLY_DATASETS = readers.EVENT_DRIVEN_OKX_READONLY_DATASET_STATUSES
 EVENT_DRIVEN_OK_STATUSES = readers.EVENT_DRIVEN_OK_STATUSES
+DERIVED_LATEST_SOURCE_DATASETS = {
+    "v5_bnb_paper_strategy_daily_latest": "v5_bnb_paper_strategy_daily",
+}
+DERIVED_LATEST_SOURCE_CURRENT_STATUS = "derived_latest_source_current"
 SECTION_DATASETS = {
     "market": ["market_bar", "trade_print", "orderbook_snapshot", "okx_public_ws"],
     "features": ["feature_value", "feature_coverage_daily", "feature_anomaly_daily"],
@@ -14338,6 +14342,24 @@ def _empty_frame_covered_by_rollup(
     return any(not frames.get(name, pl.DataFrame()).is_empty() for name in rollup_candidates)
 
 
+def _derived_latest_status_from_frames(
+    dataset_name: str,
+    status: str,
+    frames: dict[str, pl.DataFrame],
+) -> str:
+    source_dataset = DERIVED_LATEST_SOURCE_DATASETS.get(dataset_name)
+    if not source_dataset or status != "stale":
+        return status
+    source_frame = frames.get(source_dataset, pl.DataFrame())
+    if source_frame.is_empty():
+        return status
+    source_freshness = _dataset_freshness_payload(source_dataset, source_frame)
+    source_status = str(source_freshness.get("freshness_status") or "")
+    if source_status in {"fresh", "delayed"}:
+        return DERIVED_LATEST_SOURCE_CURRENT_STATUS
+    return status
+
+
 def _stale_rows(frames: dict[str, pl.DataFrame]) -> pl.DataFrame:
     rows = []
     v5_telemetry_is_current = _v5_telemetry_is_current_from_frames(frames)
@@ -14374,6 +14396,7 @@ def _stale_rows(frames: dict[str, pl.DataFrame]) -> pl.DataFrame:
             status = EVENT_DRIVEN_OKX_READONLY_DATASETS[name]
         if name in readers.HISTORICAL_RESEARCH_DATASETS and status == "stale":
             status = "historical_research_snapshot"
+        status = _derived_latest_status_from_frames(name, status, frames)
         status = readers._optional_stale_status_from_registry(name, status)  # type: ignore[attr-defined]
         if status in {"missing", "unknown", "stale"} and status not in EVENT_DRIVEN_OK_STATUSES:
             rows.append(

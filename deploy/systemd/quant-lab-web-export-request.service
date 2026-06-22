@@ -16,7 +16,7 @@ Environment=OPENBLAS_NUM_THREADS=1
 Environment=MKL_NUM_THREADS=1
 Environment=NUMEXPR_NUM_THREADS=1
 Environment=MALLOC_ARENA_MAX=2
-Environment=QUANT_LAB_EXPORT_V5_MAX_PENDING_BUNDLES=1
+Environment=QUANT_LAB_EXPORT_V5_MAX_PENDING_BUNDLES=12
 Environment=QUANT_LAB_EXPORT_V5_MAX_SCAN_BUNDLES=1000
 EnvironmentFile=-/etc/quant-lab/quant_lab_api.env
 MemoryHigh=5G

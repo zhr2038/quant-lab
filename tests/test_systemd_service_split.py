@@ -52,7 +52,7 @@ def test_daily_export_uses_recent_api_metrics_window():
     unit = _unit("quant-lab-daily-export.service")
 
     assert "QUANT_LAB_API_METRICS_EXPORT_WINDOW_MINUTES=30" in unit
-    assert "QUANT_LAB_EXPORT_V5_MAX_PENDING_BUNDLES=1" in unit
+    assert "QUANT_LAB_EXPORT_V5_MAX_PENDING_BUNDLES=12" in unit
     assert "QUANT_LAB_EXPORT_V5_MAX_SCAN_BUNDLES=1000" in unit
 
 
@@ -368,7 +368,7 @@ def test_web_export_request_worker_is_scheduled_outside_dashboard_cgroup():
         "ExecStartPre=/usr/bin/systemctl start quant-lab-v5-telemetry-sync.service"
         in service
     )
-    assert "QUANT_LAB_EXPORT_V5_MAX_PENDING_BUNDLES=1" in service
+    assert "QUANT_LAB_EXPORT_V5_MAX_PENDING_BUNDLES=12" in service
     assert "QUANT_LAB_EXPORT_V5_MAX_SCAN_BUNDLES=1000" in service
     assert "MemoryMax=6G" in service
     request_path = "/var/lib/quant-lab/exports/.quant_lab_web_export_request.json"

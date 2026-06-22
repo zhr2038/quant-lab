@@ -1,6 +1,6 @@
 import { motion } from "framer-motion";
 import { Activity, Gauge, RadioTower, ShieldCheck, Timer, WalletCards, Waves, Zap } from "lucide-react";
-import { delay, ms, pct, shortNumber, type BigscreenSnapshot } from "../lib/api";
+import { delay, ms, pct, permissionDisplay, shortNumber, type BigscreenSnapshot } from "../lib/api";
 
 export function KpiGrid({ snapshot }: { snapshot: BigscreenSnapshot }) {
   const k = snapshot.kpis;
@@ -39,21 +39,6 @@ export function KpiGrid({ snapshot }: { snapshot: BigscreenSnapshot }) {
       })}
     </section>
   );
-}
-
-function permissionDisplay(value: unknown): { value: string; sub: string; tone: string } {
-  const text = String(value ?? "UNKNOWN").toUpperCase();
-  if (text === "ACTIVE_ABORT") {
-    return { value: "只读 ABORT", sub: "advisory 未强制", tone: "WARNING" };
-  }
-  if (text === "ACTIVE_SELL_ONLY") {
-    return { value: "只读 SELL", sub: "advisory 未强制", tone: "WARNING" };
-  }
-  return {
-    value: text.replace(/_/g, " "),
-    sub: "只读 advisory",
-    tone: text
-  };
 }
 
 function toneClass(value: unknown): string {

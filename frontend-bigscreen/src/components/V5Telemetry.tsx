@@ -1,5 +1,6 @@
 import ReactECharts from "echarts-for-react";
 import { Cpu, Radio } from "lucide-react";
+import { permissionDisplay } from "../lib/api";
 
 export function V5Telemetry({
   v5,
@@ -51,13 +52,14 @@ export function V5Telemetry({
   const p3State = String(p3.state ?? "not_observable");
   const p3Ready = p3.ready_to_request_manual_live_probe === true ? "可申请" : "未就绪";
   const p3Approved = p3.approved_live_order_execution === true ? "已批准" : "未批准";
+  const v5Permission = permissionDisplay(permissions.v5);
   const items = [
     ["72h 运行", v5.run_count_72h],
     ["24h 决策", v5.decision_audit_count_24h],
     ["交易笔数", v5.trade_count_24h],
     ["持仓", v5.open_position_count],
     ["kill-switch", v5.kill_switch_enabled ? "ON" : "OFF"],
-    ["V5 权限", permissions.v5 ?? "UNKNOWN"]
+    ["V5 权限", v5Permission.value]
   ];
   return (
     <section className="card v5 pad">

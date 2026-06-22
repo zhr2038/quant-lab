@@ -1,6 +1,6 @@
 import ReactECharts from "echarts-for-react";
 import { Gauge, ShieldCheck } from "lucide-react";
-import { ms, safeRows } from "../lib/api";
+import { ms, permissionDisplay, safeRows } from "../lib/api";
 
 export function PerfConsumers({
   perf,
@@ -30,6 +30,7 @@ export function PerfConsumers({
     ]
   };
   const permissions = (consumers.permissions ?? {}) as Record<string, unknown>;
+  const v5Permission = permissionDisplay(permissions.v5);
   return (
     <section className="card perf pad">
       <h2 className="section-title icon-title"><Gauge size={23} />Web 性能 / 策略消费者</h2>
@@ -37,7 +38,7 @@ export function PerfConsumers({
       <ReactECharts option={option} style={{ height: 105, marginTop: 20 }} />
       <div className="latency-text">{ms(perf.api_p50_ms)} / {ms(perf.api_p95_ms)}</div>
       <div className="perm-grid">
-        <div className="perm"><span><ShieldCheck size={14} />V5</span><strong>{String(permissions.v5 ?? "UNKNOWN")}</strong></div>
+        <div className="perm"><span><ShieldCheck size={14} />V5</span><strong>{v5Permission.value}</strong></div>
         <div className="perm"><span>V7</span><strong>{String(permissions.v7 ?? "UNKNOWN")}</strong></div>
         <div className="perm"><span>fallback</span><strong>{String(consumers.fallback_rows ?? 0)} rows</strong></div>
         <div className="perm"><span>rglob</span><strong>{String(perf.rglob_fallback ?? 0)}</strong></div>

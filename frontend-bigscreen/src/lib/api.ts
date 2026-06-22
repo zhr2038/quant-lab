@@ -117,6 +117,21 @@ export function statusText(value: unknown): string {
   return String(value);
 }
 
+export function permissionDisplay(value: unknown): { value: string; sub: string; tone: string } {
+  const text = String(value ?? "UNKNOWN").toUpperCase();
+  if (text === "ACTIVE_ABORT") {
+    return { value: "只读 ABORT", sub: "advisory 未强制", tone: "WARNING" };
+  }
+  if (text === "ACTIVE_SELL_ONLY") {
+    return { value: "只读 SELL", sub: "advisory 未强制", tone: "WARNING" };
+  }
+  return {
+    value: text.replace(/_/g, " "),
+    sub: "只读 advisory",
+    tone: text
+  };
+}
+
 export function pct(value: unknown, digits = 2): string {
   if (value === null || value === undefined || value === "") return "—";
   const n = typeof value === "number" ? value : Number(value);

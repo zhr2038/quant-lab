@@ -47,6 +47,7 @@ from quant_lab.costs.model import (
     evaluate_live_universe_cost_coverage,
 )
 from quant_lab.costs.probe import (
+    canonical_cost_probe_live_execution_status,
     canonical_cost_probe_roundtrip_events,
     cost_probe_private_fill_keys,
     private_fill_matches_cost_probe,
@@ -481,6 +482,7 @@ REQUIRED_MEMBERS = [
     "v5/v5_quant_lab_fallbacks.csv",
     "v5/v5_cost_probe_p3_preflight.csv",
     "v5/v5_cost_probe_live_execution_status.csv",
+    "v5/v5_cost_probe_live_execution_status_canonical.csv",
     "v5/v5_cost_probe_order_events.csv",
     "v5/v5_cost_probe_roundtrip_events.csv",
     "v5/v5_cost_probe_roundtrip_canonical.csv",
@@ -2961,6 +2963,64 @@ CSV_SCHEMAS: dict[str, list[str]] = {
         "raw_payload_json",
         "stable_row_key",
     ],
+    "v5/v5_cost_probe_live_execution_status_canonical.csv": [
+        "strategy",
+        "bundle_sha256",
+        "bundle_name",
+        "bundle_ts",
+        "ingest_ts",
+        "schema_version",
+        "source_path_inside_bundle",
+        "row_index",
+        "event_type",
+        "generated_at_utc",
+        "status",
+        "source_state",
+        "manual_probe_symbol",
+        "authorization_id",
+        "authorization_issued_at",
+        "authorization_expires_at",
+        "authorization_consumed_at",
+        "authorization_age_sec",
+        "authorization_fresh",
+        "authorization_fresh_at_export",
+        "authorization_age_sec_at_export",
+        "authorization_seconds_to_expiry",
+        "authorization_expired_at_export",
+        "authorization_validated",
+        "authorization_consumed",
+        "approved_live_order_execution",
+        "live_order_effect",
+        "no_order_submitted",
+        "recovery_required",
+        "recovery_only",
+        "entry_submit_intent",
+        "entry_client_order_id",
+        "entry_order_id",
+        "entry_submitted",
+        "entry_filled",
+        "entry_filled_qty",
+        "exit_submit_intent",
+        "exit_client_order_id",
+        "exit_order_id",
+        "exit_submitted",
+        "exit_filled",
+        "exit_filled_qty",
+        "execution_completed",
+        "flat_verified",
+        "exchange_flat_verified",
+        "local_flat_verified",
+        "reconcile_ok",
+        "instrument_state",
+        "quote_balance_sufficient",
+        "blockers_json",
+        "canonical",
+        "canonical_priority",
+        "revision",
+        "supersedes_stable_row_key",
+        "raw_payload_json",
+        "stable_row_key",
+    ],
     "v5/v5_cost_probe_order_events.csv": [
         "strategy",
         "bundle_sha256",
@@ -4245,26 +4305,55 @@ def _write_export_index(
             key=lambda path: (path.stat().st_mtime, path.name),
             reverse=True,
         )
+        authoritative_pack = _latest_authoritative_export_pack(packs)
+        index_latest_pack = authoritative_pack or latest_pack
+        if index_latest_pack == latest_pack:
+            index_manifest = manifest
+            index_data_quality = data_quality
+            index_expert_questions = expert_questions
+        else:
+            index_manifest = _json_member_from_zip(index_latest_pack, "manifest.json")
+            index_data_quality = _json_member_from_zip(index_latest_pack, "data_quality.json")
+            index_expert_questions = _text_member_from_zip(
+                index_latest_pack,
+                "expert_questions.md",
+            )
         pack_rows = []
         for path in packs:
             stat = path.stat()
+            pack_manifest = manifest if path == latest_pack else _json_member_from_zip(
+                path,
+                "manifest.json",
+            )
             pack_rows.append(
                 {
                     "path": str(path),
                     "name": path.name,
                     "size_bytes": stat.st_size,
                     "modified_at": datetime.fromtimestamp(stat.st_mtime, tz=UTC).isoformat(),
+                    "authoritative_snapshot": bool(
+                        pack_manifest.get("authoritative_snapshot")
+                    ),
+                    "selected_v5_bundle_manifest_bundle_name": pack_manifest.get(
+                        "selected_v5_bundle_manifest_bundle_name"
+                    ),
+                    "selected_v5_bundle_authoritative_reason": pack_manifest.get(
+                        "selected_v5_bundle_authoritative_reason"
+                    ),
                 }
             )
         payload = {
             "schema_version": "quant_lab_export_index.v1",
             "generated_at": datetime.now(UTC).isoformat(),
-            "latest_pack": str(latest_pack),
+            "latest_pack": str(index_latest_pack),
+            "latest_pack_authoritative_snapshot": bool(
+                index_manifest.get("authoritative_snapshot")
+            ),
             "packs": pack_rows,
-            "manifest_summary": manifest,
-            "data_quality_summary": data_quality,
+            "manifest_summary": index_manifest,
+            "data_quality_summary": index_data_quality,
             "expert_questions": [
-                line for line in expert_questions.splitlines() if line.strip()
+                line for line in index_expert_questions.splitlines() if line.strip()
             ][:20],
             "warnings": [],
         }
@@ -4278,6 +4367,31 @@ def _write_export_index(
     except OSError as exc:
         return f"export_index_write_failed:{exc}"
     return None
+
+
+def _latest_authoritative_export_pack(packs: list[Path]) -> Path | None:
+    for path in packs:
+        manifest = _json_member_from_zip(path, "manifest.json")
+        if bool(manifest.get("authoritative_snapshot")):
+            return path
+    return None
+
+
+def _json_member_from_zip(path: Path, member: str) -> dict[str, Any]:
+    try:
+        with zipfile.ZipFile(path) as archive:
+            payload = json.loads(archive.read(member).decode("utf-8"))
+    except Exception:
+        return {}
+    return payload if isinstance(payload, dict) else {}
+
+
+def _text_member_from_zip(path: Path, member: str) -> str:
+    try:
+        with zipfile.ZipFile(path) as archive:
+            return archive.read(member).decode("utf-8")
+    except Exception:
+        return ""
 
 
 def validate_expert_pack(path: str | Path) -> ExpertPackValidationResult:
@@ -5272,6 +5386,9 @@ def _dataset_members(
             reference_at=export_reference_at,
         )
     )
+    v5_cost_probe_live_execution_status_canonical = canonical_cost_probe_live_execution_status(
+        v5_cost_probe_live_execution_status
+    )
     v5_cost_probe_order_events = frames.get("v5_cost_probe_order_event", pl.DataFrame())
     v5_cost_probe_roundtrip_events = frames.get(
         "v5_cost_probe_roundtrip_event",
@@ -6025,6 +6142,14 @@ def _dataset_members(
             "v5/v5_cost_probe_live_execution_status.csv",
             _tail_by_time(
                 v5_cost_probe_live_execution_status,
+                "generated_at_utc",
+                limit=10_000,
+            ),
+        ),
+        "v5/v5_cost_probe_live_execution_status_canonical.csv": _csv_member(
+            "v5/v5_cost_probe_live_execution_status_canonical.csv",
+            _tail_by_time(
+                v5_cost_probe_live_execution_status_canonical,
                 "generated_at_utc",
                 limit=10_000,
             ),

@@ -3405,6 +3405,7 @@ def test_expert_exports_background_script_serializes_zip_path_as_string():
 
 
 def test_expert_exports_summary_uses_mtime_for_latest_pack(tmp_path):
+    readers.clear_web_cache()
     exports_root = tmp_path / "exports"
     exports_root.mkdir()
     old_pack = exports_root / "quant_lab_expert_pack_2026-05-15_999999.zip"
@@ -3425,6 +3426,50 @@ def test_expert_exports_summary_uses_mtime_for_latest_pack(tmp_path):
 
     assert summary["latest_pack"] == str(new_pack)
     assert summary["manifest_summary"]["marker"] == "new"
+
+
+def test_expert_exports_summary_prefers_authoritative_pack_over_newer_debug_pack(tmp_path):
+    readers.clear_web_cache()
+    exports_root = tmp_path / "exports"
+    exports_root.mkdir()
+    authoritative_pack = exports_root / "quant_lab_expert_pack_2026-05-15_100000.zip"
+    debug_pack = exports_root / "quant_lab_expert_pack_2026-05-15_110000.zip"
+    with zipfile.ZipFile(authoritative_pack, "w") as archive:
+        archive.writestr(
+            "manifest.json",
+            json.dumps({"marker": "authoritative", "authoritative_snapshot": True}),
+        )
+        archive.writestr("data_quality.json", "{}")
+        archive.writestr("expert_questions.md", "")
+    with zipfile.ZipFile(debug_pack, "w") as archive:
+        archive.writestr(
+            "manifest.json",
+            json.dumps(
+                {
+                    "marker": "debug",
+                    "authoritative_snapshot": False,
+                    "selected_v5_bundle_authoritative_reason": (
+                        "pre_export_v5_refresh_disabled"
+                    ),
+                }
+            ),
+        )
+        archive.writestr("data_quality.json", "{}")
+        archive.writestr("expert_questions.md", "")
+    old_time = datetime(2026, 5, 15, 1, tzinfo=UTC).timestamp()
+    new_time = datetime(2026, 5, 15, 2, tzinfo=UTC).timestamp()
+    os.utime(authoritative_pack, (old_time, old_time))
+    os.utime(debug_pack, (new_time, new_time))
+
+    summary = readers.expert_export_summary(exports_root)
+    latest_for_date = expert_exports._latest_pack_for_export_date(
+        exports_root,
+        "2026-05-15",
+    )
+
+    assert summary["latest_pack"] == str(authoritative_pack)
+    assert summary["manifest_summary"]["marker"] == "authoritative"
+    assert latest_for_date == authoritative_pack
 
 
 def _call_values(fake: "FakeStreamlit", name: str) -> list[object]:

@@ -4548,7 +4548,7 @@ def expert_export_summary(exports_root: str | Path) -> dict[str, Any]:
             "warnings": [f"未在目录下找到专家包：{root}"],
         })
 
-    latest = packs[0]
+    latest = _latest_authoritative_expert_pack(packs) or packs[0]
     manifest = _read_json_from_zip(latest, "manifest.json")
     data_quality = _read_json_from_zip(latest, "data_quality.json")
     questions = _read_text_from_zip(latest, "expert_questions.md").splitlines()
@@ -4558,6 +4558,7 @@ def expert_export_summary(exports_root: str | Path) -> dict[str, Any]:
             "name": path.name,
             "size_bytes": path.stat().st_size,
             "modified_at": datetime.fromtimestamp(path.stat().st_mtime, tz=UTC),
+            "authoritative_snapshot": _expert_pack_authoritative_snapshot(path),
         }
         for path in packs
     ]
@@ -4584,13 +4585,18 @@ def _expert_export_summary_from_index(root: Path) -> dict[str, Any] | None:
         return None
     if not isinstance(payload, dict):
         return None
+    manifest_summary = payload.get("manifest_summary") or {}
+    if isinstance(manifest_summary, dict) and manifest_summary.get(
+        "authoritative_snapshot"
+    ) is False:
+        return None
     pack_rows = payload.get("packs")
     if not isinstance(pack_rows, list):
         pack_rows = []
     return {
         "latest_pack": payload.get("latest_pack"),
         "packs": pl.DataFrame(pack_rows) if pack_rows else pl.DataFrame(),
-        "manifest_summary": payload.get("manifest_summary") or {},
+        "manifest_summary": manifest_summary,
         "data_quality_summary": payload.get("data_quality_summary") or {},
         "expert_questions": payload.get("expert_questions") or [],
         "warnings": payload.get("warnings") or [],
@@ -4602,7 +4608,12 @@ def _expert_export_source_signature(root: Path) -> tuple[Any, ...]:
     if index_path.is_file():
         try:
             stat = index_path.stat()
-            return ("export_index", stat.st_mtime_ns, stat.st_size)
+            return (
+                "export_index",
+                stat.st_mtime_ns,
+                stat.st_size,
+                _latest_expert_pack_signature(root),
+            )
         except OSError:
             return ("export_index", "unreadable")
     latest = _latest_expert_pack_signature(root)
@@ -4629,6 +4640,18 @@ def _expert_pack_paths(root: Path) -> list[Path]:
         key=lambda path: (path.stat().st_mtime, path.name),
         reverse=True,
     )
+
+
+def _latest_authoritative_expert_pack(packs: list[Path]) -> Path | None:
+    for path in packs:
+        if _expert_pack_authoritative_snapshot(path):
+            return path
+    return None
+
+
+def _expert_pack_authoritative_snapshot(path: Path) -> bool:
+    manifest = _read_json_from_zip(path, "manifest.json")
+    return bool(manifest.get("authoritative_snapshot"))
 
 
 def default_exports_root(lake_root: str | Path) -> Path:

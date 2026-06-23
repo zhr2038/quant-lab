@@ -48,6 +48,40 @@ def canonical_cost_probe_roundtrip_events(roundtrip_events: pl.DataFrame | None)
     return pl.DataFrame(canonical_rows, infer_schema_length=None)
 
 
+def canonical_cost_probe_live_execution_status(
+    live_execution_status: pl.DataFrame | None,
+) -> pl.DataFrame:
+    """Return one operator-facing status row per cost-probe authorization."""
+
+    if live_execution_status is None or live_execution_status.is_empty():
+        return pl.DataFrame()
+
+    grouped: dict[tuple[str, str], list[dict[str, Any]]] = {}
+    for row in live_execution_status.to_dicts():
+        payload = _payload_dict(row)
+        key = _live_status_group_key(row, payload)
+        grouped.setdefault(key, []).append(row)
+
+    canonical_rows: list[dict[str, Any]] = []
+    for rows in grouped.values():
+        ordered = sorted(rows, key=_live_status_sort_key)
+        selected = dict(ordered[-1])
+        selected_payload = _payload_dict(selected)
+        superseded = [
+            str(_first_value(row, _payload_dict(row), ["stable_row_key"]) or "").strip()
+            for row in ordered[:-1]
+        ]
+        selected["revision"] = len(ordered)
+        selected["supersedes_stable_row_key"] = ";".join(item for item in superseded if item)
+        selected["canonical"] = True
+        selected["canonical_priority"] = _live_status_priority(selected, selected_payload)
+        canonical_rows.append(selected)
+
+    if not canonical_rows:
+        return pl.DataFrame()
+    return pl.DataFrame(canonical_rows, infer_schema_length=None)
+
+
 def cost_probe_terminal_fill_count_by_symbol(
     order_events: pl.DataFrame | None,
     roundtrip_events: pl.DataFrame | None,
@@ -259,6 +293,71 @@ def _roundtrip_group_key(
     if not any((roundtrip_id, authorization_id, entry_order_id, exit_order_id)):
         roundtrip_id = str(_first_value(row, payload, ["event_id"]) or id(row)).strip()
     return roundtrip_id, authorization_id, entry_order_id, exit_order_id
+
+
+def _live_status_group_key(
+    row: Mapping[str, Any],
+    payload: Mapping[str, Any],
+) -> tuple[str, str]:
+    authorization_id = str(_first_value(row, payload, ["authorization_id"]) or "").strip()
+    symbol_value = str(_first_value(row, payload, ["manual_probe_symbol", "symbol"]) or "").strip()
+    symbol = normalize_symbol(symbol_value) if symbol_value else ""
+    if not authorization_id:
+        authorization_id = str(_first_value(row, payload, ["stable_row_key"]) or "").strip()
+    if not authorization_id:
+        authorization_id = str(_first_value(row, payload, ["bundle_sha256"]) or id(row)).strip()
+    return authorization_id, symbol
+
+
+def _live_status_sort_key(row: Mapping[str, Any]) -> tuple[int, datetime, str]:
+    payload = _payload_dict(row)
+    timestamp = _first_timestamp(
+        row,
+        payload,
+        (
+            "generated_at_utc",
+            "generated_at",
+            "event_ts",
+            "authorization_consumed_at",
+            "bundle_ts",
+            "ingest_ts",
+            "ts",
+            "timestamp",
+        ),
+    )
+    return (
+        _live_status_priority(row, payload),
+        timestamp or datetime.min.replace(tzinfo=UTC),
+        str(_first_value(row, payload, ["stable_row_key", "event_id"]) or ""),
+    )
+
+
+def _live_status_priority(row: Mapping[str, Any], payload: Mapping[str, Any]) -> int:
+    status = str(_first_value(row, payload, ["status", "state"]) or "").strip().upper()
+    source_state = str(_first_value(row, payload, ["source_state"]) or "").strip().upper()
+    combined = f"{status} {source_state}"
+    if (
+        "CLOSED_FLAT" in combined
+        or (
+            _probe_bool(row, payload, ["execution_completed"]) is True
+            and _probe_bool(row, payload, ["flat_verified"]) is True
+            and _probe_bool(row, payload, ["reconcile_ok"]) is True
+        )
+    ):
+        return 100
+    if "INCOMPLETE_KILL_SWITCH" in combined or (
+        "INCOMPLETE" in combined and "KILL" in combined
+    ):
+        return 90
+    if "RECOVERY_REQUIRED" in combined or _probe_bool(row, payload, ["recovery_required"]):
+        return 80
+    if "AUTH_CONSUMED" in combined or _probe_bool(row, payload, ["authorization_consumed"]):
+        return 70
+    if "AUTH_VALIDATED" in combined or _probe_bool(row, payload, ["authorization_validated"]):
+        return 60
+    if "PREFLIGHT_READY" in combined or "READY_FOR_MANUAL_AUTHORIZATION" in combined:
+        return 50
+    return 10
 
 
 def _canonical_sort_key(row: Mapping[str, Any]) -> tuple[int, datetime, str]:

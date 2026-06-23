@@ -697,7 +697,17 @@ def _latest_pack_for_export_date(exports_root: Path, export_date: str) -> Path |
     if not packs:
         return None
     packs.sort(key=lambda path: path.stat().st_mtime_ns, reverse=True)
-    return packs[0]
+    authoritative = [path for path in packs if _expert_pack_authoritative_snapshot(path)]
+    return authoritative[0] if authoritative else packs[0]
+
+
+def _expert_pack_authoritative_snapshot(path: Path) -> bool:
+    try:
+        with zipfile.ZipFile(path) as archive:
+            manifest = json.loads(archive.read("manifest.json").decode("utf-8"))
+    except Exception:
+        return False
+    return isinstance(manifest, dict) and bool(manifest.get("authoritative_snapshot"))
 
 
 def _export_daily_from_web(

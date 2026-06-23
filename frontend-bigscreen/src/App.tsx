@@ -75,6 +75,15 @@ function formatPackTime(value: unknown): string {
   )}:${pad(parsed.getMinutes())}:${pad(parsed.getSeconds())} ${offset}`;
 }
 
+function formatExpertPackStamp(fileName: string): string {
+  const match = fileName.match(
+    /^quant_lab_expert_pack_(\d{4}-\d{2}-\d{2})_(\d{8})T(\d{2})(\d{2})(\d{2})(?:\d{1,6})?([+-]\d{4}|Z)?\.zip$/
+  );
+  if (!match) return "";
+  const [, exportDate, , hour, minute, second, zone = ""] = match;
+  return `${exportDate} ${hour}:${minute}:${second}${zone ? ` ${zone}` : ""}`;
+}
+
 export default function App() {
   return (
     <QueryClientProvider client={queryClient}>
@@ -492,6 +501,18 @@ function ExpertPackControls({ exports }: { exports: Record<string, unknown> }) {
   const latestName = stringValue(status?.latest_pack_name, "");
   const latestUrl = status?.latest_download_url || exports.latest_download_url;
   const latestFileName = fileNameFromPath(latestName || exports.latest_pack || latestUrl);
+  const latestPack = packs.find((pack) => {
+    const name = stringValue(pack.name, stringValue(pack.path, ""));
+    return latestFileName && fileNameFromPath(name) === latestFileName;
+  });
+  const latestDisplayName = latestFileName || stringValue(latestName || exports.latest_pack, "latest.zip");
+  const latestGeneratedAt = formatExpertPackStamp(latestDisplayName);
+  const latestModifiedAt = formatPackTime(latestPack?.modified_at);
+  const latestMeta = [
+    latestGeneratedAt ? `生成 ${latestGeneratedAt}` : "",
+    latestPack?.modified_at ? `mtime ${latestModifiedAt}` : "",
+    status?.latest_size_bytes || latestPack?.size_bytes ? `${shortNumber(status?.latest_size_bytes || latestPack?.size_bytes)}B` : ""
+  ].filter(Boolean);
   const visiblePacks = packs.filter((pack) => {
     const name = stringValue(pack.name, stringValue(pack.path, ""));
     return !latestFileName || fileNameFromPath(name) !== latestFileName;
@@ -538,9 +559,11 @@ function ExpertPackControls({ exports }: { exports: Record<string, unknown> }) {
         </div>
       ) : null}
       {latestUrl ? (
-        <a className="download-latest" href={expertPackDownloadUrl(latestUrl)} download>
-          <DownloadCloud size={18} />下载最新专家包
-          <span>{stringValue(latestName || exports.latest_pack, "latest.zip")}</span>
+        <a className="download-latest" href={expertPackDownloadUrl(latestUrl)} download title={latestDisplayName}>
+          <DownloadCloud size={18} />
+          <span className="download-latest-label">下载最新专家包</span>
+          <span className="download-latest-name">{latestDisplayName}</span>
+          {latestMeta.length ? <span className="download-latest-meta">{latestMeta.join(" · ")}</span> : null}
         </a>
       ) : (
         <div className="export-empty">未找到可下载专家包，点击“生成今日专家包”提交后台导出。</div>

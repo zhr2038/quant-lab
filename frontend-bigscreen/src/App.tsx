@@ -12,7 +12,6 @@ import {
   LayoutDashboard,
   MonitorDot,
   PackagePlus,
-  RadioTower,
   RefreshCw,
   Sparkles,
   ShieldCheck,
@@ -461,8 +460,7 @@ function drilldownContent(view: ViewKey, data: BigscreenSnapshot) {
     blocks: (
       <div className="raw-links">
         <a href={legacyWebUrl()} target="_blank" rel="noreferrer"><Archive size={16} />打开旧版 Streamlit 入口</a>
-        <a href="/docs" target="_blank" rel="noreferrer"><RadioTower size={16} />打开 FastAPI Docs</a>
-        <a href="/v1/web/bigscreen-snapshot" target="_blank" rel="noreferrer"><ShieldCheck size={16} />查看只读 snapshot JSON</a>
+        <a href="/web-v2/snapshot" target="_blank" rel="noreferrer"><ShieldCheck size={16} />查看只读 snapshot JSON</a>
       </div>
     )
   };

@@ -645,6 +645,9 @@ def test_web_v2_mounts_v5_telemetry_card_on_one_primary_page():
     assert "<PerfConsumers " not in data_page
     assert "<V5Telemetry " in ops_page
     assert "<PerfConsumers " in ops_page
+    assert 'href="/docs"' not in app_source
+    assert 'href="/v1/web/bigscreen-snapshot"' not in app_source
+    assert 'href="/web-v2/snapshot"' in app_source
 
 
 def test_web_v2_legacy_redirects_to_streamlit_port(monkeypatch):

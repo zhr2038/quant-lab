@@ -196,6 +196,35 @@ def test_bigscreen_data_matrix_shows_proxy_only_live_cost_diagnostics(tmp_path):
     assert not any(action["title"] == "成本软回退偏高" for action in payload["actions"])
 
 
+def test_bigscreen_cost_payload_exposes_bootstrap_probe_rows(tmp_path):
+    clear_bigscreen_cache()
+    lake = tmp_path / "lake"
+    created_at = datetime.now(UTC).isoformat()
+    write_parquet_dataset(
+        pl.DataFrame(
+            [
+                {
+                    "symbol": "SOL-USDT",
+                    "regime": "realized",
+                    "notional_bucket": "all",
+                    "source": "bootstrap_cost_probe",
+                    "cost_source": "bootstrap_cost_probe",
+                    "sample_count": 2,
+                    "total_cost_bps_p75": 12.0,
+                    "created_at": created_at,
+                    "day": "2026-06-23",
+                }
+            ]
+        ),
+        lake / "gold" / "cost_bucket_daily",
+    )
+
+    payload = bigscreen_snapshot(lake)
+
+    assert payload["cost"]["bootstrap_probe_rows"] == 1
+    assert payload["cost"]["actual_rows"] == 0
+
+
 def test_bigscreen_snapshot_redacts_secret_like_fields(tmp_path):
     clear_bigscreen_cache()
     lake = tmp_path / "lake"
@@ -606,12 +635,16 @@ def test_web_v2_mounts_v5_telemetry_card_on_one_primary_page():
     app_source = Path("frontend-bigscreen/src/App.tsx").read_text(encoding="utf-8")
 
     assert app_source.count("<V5Telemetry ") == 1
+    assert app_source.count("<PerfConsumers ") == 1
 
     strategy_page = app_source.split('case "strategy":', 1)[1].split('case "data":', 1)[0]
+    data_page = app_source.split('case "data":', 1)[1].split('case "ops":', 1)[0]
     ops_page = app_source.split('case "ops":', 1)[1].split("    }\n  })();", 1)[0]
 
     assert "<V5Telemetry " not in strategy_page
+    assert "<PerfConsumers " not in data_page
     assert "<V5Telemetry " in ops_page
+    assert "<PerfConsumers " in ops_page
 
 
 def test_web_v2_legacy_redirects_to_streamlit_port(monkeypatch):

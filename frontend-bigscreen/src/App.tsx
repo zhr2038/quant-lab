@@ -49,8 +49,8 @@ type PageKey = "overview" | "strategy" | "data" | "ops";
 const PAGES: Array<{ key: PageKey; label: string; description: string }> = [
   { key: "overview", label: "总览", description: "健康 / KPI / 数据矩阵" },
   { key: "strategy", label: "策略研究", description: "Factor Factory / 策略候选 / 市场" },
-  { key: "data", label: "数据成本", description: "市场 / 成本 / API" },
-  { key: "ops", label: "运行导出", description: "服务 / 专家包 / 明细入口" }
+  { key: "data", label: "数据成本", description: "市场 / 成本 / 数据矩阵" },
+  { key: "ops", label: "运行导出", description: "服务 / API / V5 / 专家包" }
 ];
 const PAGE_KEYS = new Set<PageKey>(PAGES.map((item) => item.key));
 
@@ -215,7 +215,6 @@ function Dashboard({
             <DataMatrix matrix={data.data_matrix} />
             <MarketLiquidity market={data.market} />
             <CostQuality cost={data.cost} />
-            <PerfConsumers perf={data.web_perf} consumers={data.consumers} />
           </motion.section>
         );
       case "ops":
@@ -506,9 +505,10 @@ function ExpertPackControls({ exports }: { exports: Record<string, unknown> }) {
   });
   const latestDisplayName = latestFileName || stringValue(latestName || exports.latest_pack, "latest.zip");
   const latestGeneratedAt = formatExpertPackStamp(latestDisplayName);
+  const latestPrimaryText = latestGeneratedAt ? `专家包 ${latestGeneratedAt}` : latestDisplayName;
   const latestModifiedAt = formatPackTime(latestPack?.modified_at);
   const latestMeta = [
-    latestGeneratedAt ? `生成 ${latestGeneratedAt}` : "",
+    latestGeneratedAt ? latestDisplayName : "",
     latestPack?.modified_at ? `mtime ${latestModifiedAt}` : "",
     status?.latest_size_bytes || latestPack?.size_bytes ? `${shortNumber(status?.latest_size_bytes || latestPack?.size_bytes)}B` : ""
   ].filter(Boolean);
@@ -561,7 +561,7 @@ function ExpertPackControls({ exports }: { exports: Record<string, unknown> }) {
         <a className="download-latest" href={expertPackDownloadUrl(latestUrl)} download title={latestDisplayName}>
           <DownloadCloud size={18} />
           <span className="download-latest-label">下载最新专家包</span>
-          <span className="download-latest-name">{latestDisplayName}</span>
+          <span className="download-latest-name">{latestPrimaryText}</span>
           {latestMeta.length ? <span className="download-latest-meta">{latestMeta.join(" · ")}</span> : null}
         </a>
       ) : (

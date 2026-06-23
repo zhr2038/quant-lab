@@ -1229,6 +1229,7 @@ def _cost_payload(cost: dict[str, Any]) -> dict[str, Any]:
     keys = [
         "actual_rows",
         "mixed_rows",
+        "bootstrap_probe_rows",
         "proxy_rows",
         "global_default_rows",
         "hard_fallback_count",

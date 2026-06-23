@@ -2620,6 +2620,7 @@ def cost_model_summary(lake_root: str | Path) -> dict[str, Any]:
             "live_universe_cost_coverage": live_coverage,
             "actual_rows": 0,
             "mixed_rows": 0,
+            "bootstrap_probe_rows": 0,
             "proxy_rows": 0,
             "global_default_rows": 0,
             "fallback_ratio": None,
@@ -2638,6 +2639,13 @@ def cost_model_summary(lake_root: str | Path) -> dict[str, Any]:
         fallback_ratio = fallback_rows / costs.height
 
     latest_health = health.sort("day").tail(1).to_dicts()[0] if not health.is_empty() else {}
+    bootstrap_probe_rows = (
+        costs.filter(
+            pl.col("source").cast(pl.String, strict=False) == "bootstrap_cost_probe"
+        ).height
+        if "source" in costs.columns
+        else 0
+    )
     fallback_ratio = latest_health.get("fallback_ratio", fallback_ratio)
     return {
         "costs": redact_frame(_cost_bucket_table(costs)).head(DISPLAY_LIMIT),
@@ -2648,6 +2656,7 @@ def cost_model_summary(lake_root: str | Path) -> dict[str, Any]:
         "live_universe_cost_coverage": live_coverage,
         "actual_rows": int(latest_health.get("actual_rows") or 0),
         "mixed_rows": int(latest_health.get("mixed_rows") or 0),
+        "bootstrap_probe_rows": int(bootstrap_probe_rows),
         "proxy_rows": int(latest_health.get("proxy_rows") or 0),
         "global_default_rows": int(latest_health.get("global_default_rows") or 0),
         "hard_fallback_count": int(latest_health.get("hard_fallback_count") or 0),

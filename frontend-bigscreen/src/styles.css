@@ -98,7 +98,7 @@ button{font:inherit;color:inherit}
 .page-data{grid-template-columns:minmax(0,1fr) minmax(0,1fr);grid-template-rows:440px minmax(0,1fr)}
 .page-data .heatmap{grid-column:1;grid-row:1}
 .page-data .market{grid-column:2;grid-row:1}
-.page-data .cost{grid-column:1;grid-row:2}
+.page-data .cost{grid-column:1/3;grid-row:2}
 .page-data .perf{grid-column:2;grid-row:2}
 .page-ops{grid-template-columns:minmax(0,1fr) minmax(0,1fr) 390px;grid-template-rows:390px minmax(0,1fr)}
 .page-ops .perf{grid-column:1;grid-row:1}
@@ -407,8 +407,8 @@ button{font:inherit;color:inherit}
 }
 .download-latest svg{grid-area:icon}
 .download-latest-label{grid-area:label;font-size:13px}
-.download-latest-name{grid-area:name;min-width:0;font-family:var(--mono);font-size:12px;line-height:1.25;color:#dffef3;font-weight:700;overflow-wrap:anywhere}
-.download-latest-meta{grid-area:meta;min-width:0;font-size:11px;line-height:1.2;color:var(--muted);font-weight:600;overflow-wrap:anywhere}
+.download-latest-name{grid-area:name;min-width:0;font-family:var(--mono);font-size:13px;line-height:1.3;color:#dffef3;font-weight:800;white-space:normal;overflow-wrap:anywhere}
+.download-latest-meta{grid-area:meta;min-width:0;font-size:11px;line-height:1.25;color:var(--muted);font-weight:600;white-space:normal;overflow-wrap:anywhere}
 .pack-list{display:grid;gap:8px;margin-top:12px;min-height:0;overflow:auto;padding-right:2px}
 .pack-row{
   min-height:42px;border-radius:12px;border:1px solid rgba(80,169,255,.2);background:rgba(6,24,44,.64);

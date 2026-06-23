@@ -260,6 +260,15 @@ def test_daily_export_uses_alpha_discovery_board_lists(tmp_path):
                 io.StringIO(archive.read("reports/candidate_paper_ready.csv").decode("utf-8"))
             )
         )
+        historical = list(
+            csv.DictReader(
+                io.StringIO(
+                    archive.read("reports/historical_label_threshold_ready.csv").decode(
+                        "utf-8"
+                    )
+                )
+            )
+        )
         proposals = list(
             csv.DictReader(
                 io.StringIO(
@@ -286,7 +295,8 @@ def test_daily_export_uses_alpha_discovery_board_lists(tmp_path):
     assert by_regime == []
     assert by_symbol_regime == []
     assert any(row["strategy_candidate"] == "v5.f3_dominant_entry" for row in watch)
-    assert any(row["strategy_candidate"] == "v5.swing_f4_f5_alpha6" for row in paper)
+    assert paper == []
+    assert any(row["strategy_candidate"] == "v5.swing_f4_f5_alpha6" for row in historical)
     proposal_ids = {row["proposal_id"] for row in proposals}
     assert "SOL_PROTECT_ALPHA6_LOW_EXCEPTION_PAPER_V1" in proposal_ids
     assert "SOL_F4_VOLUME_EXPANSION_PAPER_V1" in proposal_ids

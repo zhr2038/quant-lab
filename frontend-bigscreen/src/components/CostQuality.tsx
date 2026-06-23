@@ -6,6 +6,7 @@ export function CostQuality({ cost }: { cost: Record<string, unknown> }) {
   const rows = [
     { name: "真实", value: Number(cost.actual_rows ?? 0), color: "#2DE8A6" },
     { name: "混合", value: Number(cost.mixed_rows ?? 0), color: "#50A9FF" },
+    { name: "探针", value: Number(cost.bootstrap_probe_rows ?? 0), color: "#A77DFF" },
     { name: "代理", value: Number(cost.proxy_rows ?? 0), color: "#FFC457" },
     { name: "全局默认", value: Number(cost.global_default_rows ?? 0), color: "#FF5D7D" }
   ];
@@ -40,14 +41,14 @@ export function CostQuality({ cost }: { cost: Record<string, unknown> }) {
   return (
     <section className="card cost pad">
       <h2 className="section-title icon-title"><CircleDollarSign size={23} />成本质量</h2>
-      <p className="sub">actual / mixed / proxy / default 与 hard/soft fallback。</p>
+      <p className="sub">actual / mixed / bootstrap probe / proxy / default 与 hard/soft fallback。</p>
       <div className="cost-body">
         <ReactECharts option={option} style={{ height: 190, width: 190 }} />
         <div>
           {rows.map((row) => <Bar key={row.name} label={`${row.name}成本`} value={row.value} total={Math.max(total, 1)} color={row.color} />)}
         </div>
       </div>
-      <div className="footnote yellowText">硬回退 {pct(cost.hard_fallback_ratio)} · 软回退 {pct(cost.soft_fallback_ratio)} · 仅代理成本需醒目标记</div>
+      <div className="footnote yellowText">硬回退 {pct(cost.hard_fallback_ratio)} · 软回退 {pct(cost.soft_fallback_ratio)} · 探针只作 bootstrap，不作 live 覆盖</div>
     </section>
   );
 }

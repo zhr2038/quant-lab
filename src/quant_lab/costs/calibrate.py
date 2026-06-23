@@ -598,7 +598,7 @@ def _v5_cost_probe_event_fill_samples(
     order_rows = order_events.to_dicts() if not order_events.is_empty() else []
     private_by_order, private_by_trade = _private_fill_rows_by_probe_key(private_fill_events)
     samples: list[dict[str, Any]] = []
-    seen_private_keys: set[tuple[str, str, str]] = set()
+    seen_fill_keys: set[tuple[str, str, str]] = set()
     for roundtrip_row in roundtrip_events.to_dicts():
         roundtrip_payload = _raw_payload_dict(roundtrip_row)
         if not _eligible_cost_probe_roundtrip(roundtrip_row, roundtrip_payload):
@@ -628,9 +628,9 @@ def _v5_cost_probe_event_fill_samples(
                             str(private_row.get("trade_id") or ""),
                             str(private_row.get("ts") or ""),
                         )
-                        if key in seen_private_keys:
+                        if key in seen_fill_keys:
                             continue
-                        seen_private_keys.add(key)
+                        seen_fill_keys.add(key)
                         sample = _cost_probe_sample_from_private_fill(
                             private_row,
                             order_row=order_row,

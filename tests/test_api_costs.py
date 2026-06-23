@@ -490,6 +490,96 @@ def test_cost_estimate_trust_blocks_stale_mixed_actual_proxy(tmp_path, monkeypat
     assert "stale_cost_bucket" in payload["cost_trust_block_reasons"]
 
 
+def test_cost_estimate_prefers_fresh_bootstrap_probe_over_stale_mixed_actual(
+    tmp_path,
+    monkeypatch,
+):
+    lake = tmp_path / "lake"
+    monkeypatch.setenv("QUANT_LAB_LAKE_ROOT", str(lake))
+    write_parquet_dataset(
+        pl.DataFrame(
+            [
+                _cost_row(
+                    symbol="SOL-USDT",
+                    regime="realized",
+                    notional_bucket="all",
+                    sample_count=2,
+                    live_cost_sample_count=2,
+                    trusted_live_sample_count=2,
+                    source="mixed_actual_proxy",
+                    cost_source="mixed_actual_proxy",
+                    fallback_level=(
+                        "SAMPLE_TOO_SMALL;SLIPPAGE_UNKNOWN;"
+                        "SPREAD_PROXY;PRIVATE_FILL_LOOKBACK"
+                    ),
+                    total_cost_bps_p75=11.69242291475061,
+                    created_at="2026-05-16T18:27:53.220798Z",
+                ),
+                _cost_row(
+                    symbol="SOL-USDT",
+                    regime="realized",
+                    event_type="actual_fill",
+                    notional_bucket="all",
+                    sample_count=2,
+                    live_cost_sample_count=0,
+                    trusted_live_sample_count=0,
+                    cost_probe_fill_count=2,
+                    strategy_live_fill_count=0,
+                    private_fill_count=0,
+                    sample_origin_mix="cost_probe_only",
+                    eligible_for_live_cost_coverage=False,
+                    source="bootstrap_cost_probe",
+                    cost_source="bootstrap_cost_probe",
+                    fallback_level="COST_PROBE_ONLY;SAMPLE_TOO_SMALL",
+                    fee_bps_p75=10.0,
+                    spread_bps_p75=1.3907238717739943,
+                    slippage_bps_p75=0.6971070059262616,
+                    total_cost_bps_p75=12.087830877700256,
+                    created_at=datetime.now(UTC).isoformat(),
+                ),
+            ]
+        ),
+        lake / "gold/cost_bucket_daily",
+    )
+
+    client = TestClient(app)
+    normal = client.get(
+        "/v1/costs/estimate",
+        params={
+            "symbol": "SOL-USDT",
+            "regime": "normal",
+            "notional_usdt": 4.9887,
+            "quantile": "p75",
+        },
+    )
+    realized = client.get(
+        "/v1/costs/estimate",
+        params={
+            "symbol": "SOL-USDT",
+            "regime": "realized",
+            "notional_usdt": 4.9887,
+            "quantile": "p75",
+        },
+    )
+
+    assert normal.status_code == 200
+    assert realized.status_code == 200
+    normal_payload = normal.json()
+    realized_payload = realized.json()
+    assert normal_payload["source"] == "bootstrap_cost_probe"
+    assert normal_payload["matched_regime"] == "realized"
+    assert normal_payload["fallback_level"] == (
+        "REGIME_FALLBACK;COST_PROBE_ONLY;SAMPLE_TOO_SMALL"
+    )
+    assert normal_payload["cost_quality"] == "bootstrap_cost_probe"
+    assert normal_payload["cost_trusted_for_paper"] is True
+    assert normal_payload["cost_trusted_for_live"] is False
+    assert normal_payload["live_cost_sample_count"] == 0
+    assert normal_payload["total_cost_bps_p75"] == 12.087830877700256
+    assert realized_payload["source"] == "bootstrap_cost_probe"
+    assert realized_payload["fallback_level"] == "COST_PROBE_ONLY;SAMPLE_TOO_SMALL"
+
+
 def test_cost_estimate_trust_allows_fresh_mixed_actual_proxy_canary(tmp_path, monkeypatch):
     lake = tmp_path / "lake"
     monkeypatch.setenv("QUANT_LAB_LAKE_ROOT", str(lake))

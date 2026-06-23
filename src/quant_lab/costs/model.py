@@ -1193,6 +1193,12 @@ def _rank_cost_bucket_rows(
 ) -> list[tuple[dict[str, Any], str]]:
     ranked: list[tuple[int, str, dict[str, Any]]] = []
     requested_regime = regime.lower()
+    fresh_bootstrap_available = any(
+        _row_symbol(candidate) == symbol
+        and _is_bootstrap_cost_probe_source(str(candidate.get("source") or ""))
+        and not _row_is_stale(candidate)
+        for candidate in rows
+    )
     for row in rows:
         row_symbol = _row_symbol(row)
         row_regime = str(row.get("regime") or "")
@@ -1234,6 +1240,12 @@ def _rank_cost_bucket_rows(
             tier, fallback = 12, "GLOBAL_BUCKET_FALLBACK"
         else:
             continue
+        if (
+            fresh_bootstrap_available
+            and _is_actual_or_mixed_source(source)
+            and _row_is_stale(row)
+        ):
+            tier += 6
         ranked.append((tier, fallback, row))
 
     return [

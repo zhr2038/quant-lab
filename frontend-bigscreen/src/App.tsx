@@ -48,7 +48,7 @@ type PageKey = "overview" | "strategy" | "data" | "ops";
 
 const PAGES: Array<{ key: PageKey; label: string; description: string }> = [
   { key: "overview", label: "总览", description: "健康 / KPI / 数据矩阵" },
-  { key: "strategy", label: "策略研究", description: "Factor Factory / V5 / 市场" },
+  { key: "strategy", label: "策略研究", description: "Factor Factory / 策略候选 / 市场" },
   { key: "data", label: "数据成本", description: "市场 / 成本 / API" },
   { key: "ops", label: "运行导出", description: "服务 / 专家包 / 明细入口" }
 ];
@@ -206,7 +206,6 @@ function Dashboard({
         return (
           <motion.section className="page-grid page-strategy" key="strategy" initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }}>
             <StrategyFlow flow={data.strategy_flow} />
-            <V5Telemetry v5={data.v5} consumers={data.consumers} />
             <MarketLiquidity market={data.market} />
           </motion.section>
         );

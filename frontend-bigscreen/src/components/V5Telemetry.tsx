@@ -12,9 +12,11 @@ export function V5Telemetry({
   const option = {
     backgroundColor: "transparent",
     radar: {
-      radius: "68%",
+      center: ["50%", "52%"],
+      radius: "48%",
       splitNumber: 3,
-      axisName: { color: "#8aa4be" },
+      axisNameGap: 8,
+      axisName: { color: "#8aa4be", fontSize: 11, lineHeight: 13, overflow: "break", width: 68 },
       splitLine: { lineStyle: { color: "rgba(80,169,255,.22)" } },
       splitArea: { areaStyle: { color: ["rgba(80,169,255,.04)", "rgba(80,169,255,.08)"] } },
       axisLine: { lineStyle: { color: "rgba(80,169,255,.22)" } },
@@ -66,7 +68,9 @@ export function V5Telemetry({
       <h2 className="section-title icon-title"><Cpu size={23} />V5 遥测与消费者</h2>
       <p className="sub">bundle、账本、对账、风控权限、blocked opportunity 合并展示。</p>
       <div className="v5-grid">
-        <ReactECharts option={option} style={{ height: 220, width: 220 }} />
+        <div className="v5-radar" aria-label="V5 telemetry radar">
+          <ReactECharts option={option} style={{ height: "100%", width: "100%" }} />
+        </div>
         <div className="metric-list">
           {items.map(([key, value]) => <div className="mini" key={String(key)}><span>{String(key)}</span><strong>{String(value ?? "—")}</strong></div>)}
         </div>

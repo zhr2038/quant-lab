@@ -602,6 +602,18 @@ def test_bigscreen_static_entry_is_served_if_built():
     assert "quant-lab CONTROL CENTER" in response.text
 
 
+def test_web_v2_mounts_v5_telemetry_card_on_one_primary_page():
+    app_source = Path("frontend-bigscreen/src/App.tsx").read_text(encoding="utf-8")
+
+    assert app_source.count("<V5Telemetry ") == 1
+
+    strategy_page = app_source.split('case "strategy":', 1)[1].split('case "data":', 1)[0]
+    ops_page = app_source.split('case "ops":', 1)[1].split("    }\n  })();", 1)[0]
+
+    assert "<V5Telemetry " not in strategy_page
+    assert "<V5Telemetry " in ops_page
+
+
 def test_web_v2_legacy_redirects_to_streamlit_port(monkeypatch):
     monkeypatch.delenv("QUANT_LAB_API_TOKEN", raising=False)
     monkeypatch.setenv("QUANT_LAB_LEGACY_WEB_PORT", "8501")

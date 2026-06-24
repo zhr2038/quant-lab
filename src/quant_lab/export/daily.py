@@ -3751,7 +3751,11 @@ def _publish_cost_bootstrap_readiness_snapshot(
         generated_at=generated_at,
     )
     row_counts = dict(snapshot.row_counts)
-    warnings = list(snapshot.warnings)
+    warnings = [
+        warning
+        for warning in snapshot.warnings
+        if not warning.startswith("cost_probe_fill_bill_match dataset is ")
+    ]
     _publish_export_frame(
         root,
         frames=frames,

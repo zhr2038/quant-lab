@@ -118,6 +118,66 @@ def test_cost_probe_fill_bill_match_reports_missing_bills():
     assert row["bill_match_status"] == "BILL_NOT_OBSERVED"
 
 
+def test_bootstrap_readiness_consumes_cost_probe_fill_bill_match_pass():
+    now = datetime(2026, 6, 24, 9, 0, tzinfo=UTC)
+
+    readiness = build_cost_bootstrap_readiness(
+        pl.DataFrame(
+            [
+                {
+                    **_coverage_cost_row("ETH-USDT", "bootstrap_cost_probe", now),
+                    "sample_count": 2,
+                    "cost_probe_fill_count": 2,
+                }
+            ]
+        ),
+        v5_cost_probe_order_events=_probe_order_events(),
+        v5_cost_probe_roundtrip_events=_probe_roundtrip_events(),
+        okx_private_readonly_fills=_probe_private_fills(),
+        okx_private_readonly_bills=pl.DataFrame(
+            [
+                {
+                    "bill_id": "bill-entry",
+                    "inst_id": "ETH-USDT",
+                    "ccy": "ETH",
+                    "fee": -0.000002,
+                    "px": 2500.0,
+                    "ts": "2026-06-24T08:00:02Z",
+                },
+                {
+                    "bill_id": "bill-entry-principal",
+                    "inst_id": "ETH-USDT",
+                    "ccy": "USDT",
+                    "fee": 0.0,
+                    "amount": -5.0,
+                    "px": 2500.0,
+                    "ts": "2026-06-24T08:00:02Z",
+                },
+                {
+                    "bill_id": "bill-exit",
+                    "inst_id": "ETH-USDT",
+                    "ccy": "USDT",
+                    "fee": -0.004,
+                    "ts": "2026-06-24T08:00:10Z",
+                },
+            ]
+        ),
+        live_symbols=["ETH-USDT"],
+        generated_at=now,
+    )
+
+    eth = readiness.to_dicts()[0]
+    assert eth["bootstrap_state"] == "BOOTSTRAP_PROBE_AVAILABLE"
+    assert eth["bill_match_status"] == "PASS"
+    assert eth["bill_matched_count"] == 2
+    assert eth["fee_match_status"] == "fill_bill_fee_match"
+    assert eth["fee_match_diff_usdt"] == "0"
+    assert eth["trusted_for_live"] is False
+    assert eth["actual_or_mixed_trusted_coverage_live_universe"] == 0.0
+    assert "BOOTSTRAP_COMPLETE_BILL_MATCHED" in eth["next_action"]
+    assert "resolve bill_match" not in eth["next_action"]
+
+
 def _probe_order_events() -> pl.DataFrame:
     return pl.DataFrame(
         [

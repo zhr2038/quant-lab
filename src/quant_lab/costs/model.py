@@ -9,6 +9,7 @@ from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 from quant_lab.contracts.models import CostEstimate, FillEvent
 from quant_lab.costs.probe import (
+    build_cost_probe_fill_bill_match,
     cost_probe_private_fill_count_by_symbol,
     cost_probe_terminal_fill_count_by_symbol,
 )
@@ -331,6 +332,15 @@ def build_cost_bootstrap_readiness(
         v5_cost_probe_order_events,
         v5_cost_probe_roundtrip_events,
     )
+    cost_probe_fill_bill_match_by_symbol = _rows_by_symbol(
+        build_cost_probe_fill_bill_match(
+            v5_cost_probe_order_events,
+            v5_cost_probe_roundtrip_events,
+            okx_private_readonly_fills,
+            okx_private_readonly_bills,
+            generated_at=generated,
+        )
+    )
     cost_probe_roundtrips_by_symbol = _rows_by_symbol(v5_cost_probe_roundtrip_events)
     bills_by_symbol = _rows_by_symbol(okx_private_readonly_bills)
 
@@ -384,6 +394,8 @@ def build_cost_bootstrap_readiness(
         bill_rows = bills_by_symbol.get(symbol, [])
         probe_roundtrip_rows = cost_probe_roundtrips_by_symbol.get(symbol, [])
         latest_probe_roundtrip = _latest_probe_roundtrip_row(probe_roundtrip_rows)
+        fill_bill_match_rows = cost_probe_fill_bill_match_by_symbol.get(symbol, [])
+        latest_fill_bill_match = _latest_probe_fill_bill_match_row(fill_bill_match_rows)
 
         strategy_live_fill_count = max(
             _int_value(source_row.get("strategy_live_fill_count")),
@@ -411,7 +423,11 @@ def build_cost_bootstrap_readiness(
             strategy_live_fill_count=strategy_live_fill_count,
             private_fill_count=private_fill_count,
         )
-        bill_matched_count = len(bill_rows)
+        bill_matched_count = (
+            _probe_fill_bill_matched_count(fill_bill_match_rows)
+            if fill_bill_match_rows
+            else len(bill_rows)
+        )
         sample_count = max(
             _int_value(source_row.get("sample_count")),
             live_cost_sample_count + cost_probe_fill_count,
@@ -535,11 +551,12 @@ def build_cost_bootstrap_readiness(
                     "ingest_ts",
                 ),
                 "latest_bill_ts": _latest_row_ts(
-                    bill_rows,
+                    [*bill_rows, *fill_bill_match_rows],
                     "ts_utc",
                     "ts",
                     "timestamp",
                     "bill_ts",
+                    "generated_at",
                     "ingest_ts",
                 ),
                 "fill_match_status": _probe_fill_match_status(
@@ -549,9 +566,16 @@ def build_cost_bootstrap_readiness(
                 "bill_match_status": _probe_bill_match_status(
                     latest_probe_roundtrip,
                     bill_matched_count,
+                    latest_fill_bill_match,
                 ),
-                "fee_match_status": _probe_fee_match_status(latest_probe_roundtrip),
-                "fee_match_diff_usdt": _probe_fee_match_diff_usdt(latest_probe_roundtrip),
+                "fee_match_status": _probe_fee_match_status(
+                    latest_probe_roundtrip,
+                    latest_fill_bill_match,
+                ),
+                "fee_match_diff_usdt": _probe_fee_match_diff_usdt(
+                    latest_probe_roundtrip,
+                    latest_fill_bill_match,
+                ),
                 "latest_cost_source": _cost_source(source_row) or _cost_source(latest) or "missing",
                 "roundtrip_cost_p50_bps": _roundtrip_cost_value(source_row, "p50"),
                 "roundtrip_cost_p75_bps": _roundtrip_cost_value(source_row, "p75"),
@@ -1965,6 +1989,37 @@ def _latest_probe_roundtrip_row(rows: Iterable[Mapping[str, Any]]) -> Mapping[st
     return latest
 
 
+def _latest_probe_fill_bill_match_row(
+    rows: Iterable[Mapping[str, Any]],
+) -> Mapping[str, Any] | None:
+    latest: Mapping[str, Any] | None = None
+    latest_ts: datetime | None = None
+    for row in rows:
+        parsed = _row_ts(row, "generated_at", "event_ts", "ts_utc", "ts", "ingest_ts")
+        if latest is None or (
+            parsed is not None and (latest_ts is None or parsed > latest_ts)
+        ):
+            latest = row
+            latest_ts = parsed
+    return latest
+
+
+def _probe_fill_bill_matched_count(rows: Iterable[Mapping[str, Any]]) -> int:
+    bill_ids: set[str] = set()
+    pass_rows = 0
+    for row in rows:
+        if str(row.get("bill_match_status") or "").strip().upper() == "PASS":
+            pass_rows += 1
+        for key in ("entry_bill_id", "exit_bill_id"):
+            for bill_id in str(row.get(key) or "").replace(",", ";").split(";"):
+                bill_id = bill_id.strip()
+                if bill_id:
+                    bill_ids.add(bill_id)
+    if bill_ids:
+        return len(bill_ids)
+    return pass_rows * 2
+
+
 def _probe_fill_match_status(
     cost_probe_fill_count: int,
     latest_probe_roundtrip: Mapping[str, Any] | None,
@@ -1986,7 +2041,12 @@ def _probe_fill_match_status(
 def _probe_bill_match_status(
     latest_probe_roundtrip: Mapping[str, Any] | None,
     bill_matched_count: int,
+    latest_fill_bill_match: Mapping[str, Any] | None = None,
 ) -> str:
+    if latest_fill_bill_match is not None:
+        value = str(latest_fill_bill_match.get("bill_match_status") or "").strip()
+        if value:
+            return value
     if latest_probe_roundtrip is not None:
         value = str(latest_probe_roundtrip.get("bill_match_status") or "").strip()
         if value:
@@ -1994,7 +2054,16 @@ def _probe_bill_match_status(
     return "bill_observed" if bill_matched_count > 0 else "bill_not_observed"
 
 
-def _probe_fee_match_status(latest_probe_roundtrip: Mapping[str, Any] | None) -> str:
+def _probe_fee_match_status(
+    latest_probe_roundtrip: Mapping[str, Any] | None,
+    latest_fill_bill_match: Mapping[str, Any] | None = None,
+) -> str:
+    if latest_fill_bill_match is not None:
+        value = str(latest_fill_bill_match.get("bill_match_status") or "").strip().upper()
+        if value == "PASS":
+            return "fill_bill_fee_match"
+        if value and value != "BILL_NOT_OBSERVED":
+            return value.lower()
     if latest_probe_roundtrip is not None:
         value = str(latest_probe_roundtrip.get("fee_match_status") or "").strip()
         if value:
@@ -2002,7 +2071,14 @@ def _probe_fee_match_status(latest_probe_roundtrip: Mapping[str, Any] | None) ->
     return "fee_match_not_observed"
 
 
-def _probe_fee_match_diff_usdt(latest_probe_roundtrip: Mapping[str, Any] | None) -> Any:
+def _probe_fee_match_diff_usdt(
+    latest_probe_roundtrip: Mapping[str, Any] | None,
+    latest_fill_bill_match: Mapping[str, Any] | None = None,
+) -> Any:
+    if latest_fill_bill_match is not None:
+        value = latest_fill_bill_match.get("fee_diff_usdt")
+        if value not in {None, ""}:
+            return value
     if latest_probe_roundtrip is None:
         return ""
     return latest_probe_roundtrip.get("fee_match_diff_usdt") or ""
@@ -2114,6 +2190,11 @@ def _cost_bootstrap_next_action(
             spread_available=spread_available,
             bill_matched_count=bill_matched_count,
         )
+        if not missing:
+            return (
+                "BOOTSTRAP_COMPLETE_BILL_MATCHED; keep live coverage disabled "
+                "until trusted live samples and strategy evidence are present"
+            )
         return f"bootstrap sample present; resolve {missing} before trusted live review"
     if state == "MIXED_ACTUAL_PROXY_AVAILABLE":
         return "continue read-only backfill and increase samples before live-small review"
@@ -2144,4 +2225,4 @@ def _missing_components(
         missing.append("spread")
     if bill_matched_count <= 0:
         missing.append("bill_match")
-    return ",".join(missing) if missing else "sample_count"
+    return ",".join(missing)

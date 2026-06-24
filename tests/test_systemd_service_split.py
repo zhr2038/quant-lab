@@ -32,6 +32,11 @@ def test_v5_health_analysis_stays_lightweight():
     assert "--max-scan-bundles 1" in sync_unit
     assert "--skip-analysis-after-sync" in sync_unit
     assert "--compact-output" in sync_unit
+    assert "/var/lock/quant-lab-heavy.lock" in sync_unit
+    assert "/usr/bin/timeout 20m" in sync_unit
+    assert "TimeoutStartSec=22min" in sync_unit
+    assert "MemoryHigh=5G" in sync_unit
+    assert "MemoryMax=6G" in sync_unit
     assert "QUANT_LAB_V5_SYNC_REMOTE_MAX_FILES=1" in sync_unit
     assert "QUANT_LAB_V5_SYNC_MAX_SCAN_BUNDLES=1" in sync_unit
 
@@ -54,6 +59,9 @@ def test_daily_export_uses_recent_api_metrics_window():
     assert "QUANT_LAB_API_METRICS_EXPORT_WINDOW_MINUTES=30" in unit
     assert "QUANT_LAB_EXPORT_V5_MAX_PENDING_BUNDLES=12" in unit
     assert "QUANT_LAB_EXPORT_V5_MAX_SCAN_BUNDLES=1000" in unit
+    assert "MemoryHigh=5G" in unit
+    assert "MemoryMax=6G" in unit
+    assert "/usr/bin/timeout 30m" in unit
 
 
 def test_all_quant_lab_jobs_run_as_service_user_except_root_only_helpers():

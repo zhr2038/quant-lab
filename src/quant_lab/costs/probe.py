@@ -690,6 +690,8 @@ def _matching_bill_rows(
         inferred_match = any(_bill_matches_fill_fee_and_time(bill, fill) for fill in fill_rows)
         if not (direct_match or inferred_match):
             continue
+        if _fee_from_bill(bill) is None:
+            continue
         key = (
             str(_first_value(bill, bill_payload, ["bill_id", "billId"]) or ""),
             str(_first_value(bill, bill_payload, ["ts", "event_ts", "timestamp"]) or ""),
@@ -723,24 +725,38 @@ def _fee_from_fill(row: Mapping[str, Any]) -> float | None:
     fee_ccy = str(_first_value(row, payload, ["fee_currency", "fee_ccy", "feeCcy"]) or "").upper()
     if fee is not None and (fee_ccy in {"", "USDT", "USD"}):
         return abs(fee)
+    symbol = cost_probe_symbol(row, payload)
+    price = _first_float(row, payload, ["fill_price", "fillPx", "fill_px", "avg_px", "px"])
+    if fee is not None and price is not None and fee_ccy == _base_ccy(symbol):
+        return abs(fee) * abs(price)
     return None
 
 
 def _fee_from_bill(row: Mapping[str, Any]) -> float | None:
     payload = _payload_dict(row)
-    value = _first_float(
-        row,
-        payload,
-        ["fee_usdt", "fee_abs_usdt", "amount", "balChg", "amt", "fee"],
-    )
-    if value is None:
+    fee_usdt = _first_float(row, payload, ["fee_usdt", "fee_abs_usdt"])
+    if fee_usdt is not None:
+        return abs(fee_usdt)
+    fee = _first_float(row, payload, ["fee"])
+    if fee is None:
         return None
-    ccy = str(
-        _first_value(row, payload, ["ccy", "fee_currency", "fee_ccy", "feeCcy"]) or ""
+    fee_ccy = str(
+        _first_value(row, payload, ["fee_currency", "fee_ccy", "feeCcy", "ccy"]) or ""
     ).upper()
-    if ccy and ccy not in {"USDT", "USD"}:
-        return None
-    return abs(value)
+    if fee_ccy in {"", "USDT", "USD"}:
+        return abs(fee)
+    symbol = cost_probe_symbol(row, payload)
+    price = _first_float(row, payload, ["fill_price", "fillPx", "fill_px", "avg_px", "px"])
+    if price is not None and fee_ccy == _base_ccy(symbol):
+        return abs(fee) * abs(price)
+    return None
+
+
+def _base_ccy(symbol: str) -> str:
+    normalized = normalize_symbol(symbol) if symbol else ""
+    if "-" not in normalized:
+        return normalized
+    return normalized.split("-", 1)[0]
 
 
 def _row_timestamp(row: Mapping[str, Any]) -> datetime | None:

@@ -55,14 +55,26 @@ def test_cost_probe_fill_bill_match_infers_okx_account_bills():
             [
                 {
                     "bill_id": "bill-entry",
+                    "inst_id": "ETH-USDT",
+                    "ccy": "ETH",
+                    "fee": -0.000002,
+                    "px": 2500.0,
+                    "ts": "2026-06-24T08:00:02Z",
+                },
+                {
+                    "bill_id": "bill-entry-principal",
+                    "inst_id": "ETH-USDT",
                     "ccy": "USDT",
-                    "amount": -0.005,
+                    "fee": 0.0,
+                    "amount": -5.0,
+                    "px": 2500.0,
                     "ts": "2026-06-24T08:00:02Z",
                 },
                 {
                     "bill_id": "bill-exit",
+                    "inst_id": "ETH-USDT",
                     "ccy": "USDT",
-                    "amount": -0.004,
+                    "fee": -0.004,
                     "ts": "2026-06-24T08:00:10Z",
                 },
             ]

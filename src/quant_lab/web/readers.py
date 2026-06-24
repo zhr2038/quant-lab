@@ -174,6 +174,7 @@ DATASET_PATHS = {
     "v5_candidate_label": Path("gold") / "v5_candidate_label",
     "v5_candidate_quality_daily": Path("gold") / "v5_candidate_quality_daily",
     "v5_candidate_outcome_summary": Path("gold") / "v5_candidate_outcome_summary",
+    "cost_probe_fill_bill_match": Path("gold") / "cost_probe_fill_bill_match",
     "v5_decision_audit": Path("silver") / "v5_decision_audit",
     "v5_trade_event": Path("silver") / "v5_trade_event",
     "trade_print": Path("silver") / "trade_print",

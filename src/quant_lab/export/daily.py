@@ -47,6 +47,8 @@ from quant_lab.costs.model import (
     evaluate_live_universe_cost_coverage,
 )
 from quant_lab.costs.probe import (
+    COST_PROBE_FILL_BILL_MATCH_FIELDS,
+    build_cost_probe_fill_bill_match,
     canonical_cost_probe_live_execution_status,
     canonical_cost_probe_roundtrip_events,
     cost_probe_private_fill_keys,
@@ -450,6 +452,7 @@ REQUIRED_MEMBERS = [
     "costs/cost_estimate_examples.json",
     "costs/cost_fallbacks.csv",
     "reports/cost_bootstrap_readiness.csv",
+    "reports/cost_probe_fill_bill_match.csv",
     "reports/live_universe_cost_coverage.csv",
     "research/alpha_evidence.csv",
     "research/strategy_evidence.csv",
@@ -837,6 +840,7 @@ CSV_SCHEMAS: dict[str, list[str]] = {
     "reports/factor_strategy_bridge_candidates.csv": FACTOR_STRATEGY_BRIDGE_CANDIDATE_FIELDS,
     "reports/live_universe_cost_coverage.csv": LIVE_UNIVERSE_COST_COVERAGE_FIELDS,
     "reports/cost_bootstrap_readiness.csv": COST_BOOTSTRAP_READINESS_FIELDS,
+    "reports/cost_probe_fill_bill_match.csv": COST_PROBE_FILL_BILL_MATCH_FIELDS,
     "market/orderbook_spread.csv": ["symbol", "channel", "ts", "spread_bps"],
     "market/trade_activity.csv": ["symbol", "trade_count", "size_sum", "latest_trade_ts"],
     "reports/api_latency_summary.csv": [
@@ -3739,6 +3743,13 @@ def _publish_cost_bootstrap_readiness_snapshot(
         live_symbols=DEFAULT_LIVE_UNIVERSE_SYMBOLS,
         generated_at=generated_at,
     )
+    fill_bill_match = build_cost_probe_fill_bill_match(
+        frames.get("v5_cost_probe_order_event", pl.DataFrame()),
+        frames.get("v5_cost_probe_roundtrip_event", pl.DataFrame()),
+        frames.get("okx_private_readonly_fills", pl.DataFrame()),
+        frames.get("okx_private_readonly_bills", pl.DataFrame()),
+        generated_at=generated_at,
+    )
     row_counts = dict(snapshot.row_counts)
     warnings = list(snapshot.warnings)
     _publish_export_frame(
@@ -3748,6 +3759,14 @@ def _publish_cost_bootstrap_readiness_snapshot(
         warnings=warnings,
         dataset_name="cost_bootstrap_readiness",
         frame=readiness,
+    )
+    _publish_export_frame(
+        root,
+        frames=frames,
+        row_counts=row_counts,
+        warnings=warnings,
+        dataset_name="cost_probe_fill_bill_match",
+        frame=fill_bill_match,
     )
     return _DatasetSnapshot(
         frames=frames,
@@ -5103,6 +5122,15 @@ def _dataset_members(
             okx_private_readonly_bills=frames.get("okx_private_readonly_bills", pl.DataFrame()),
         ),
     )
+    cost_probe_fill_bill_match = _prefer_frame(
+        frames.get("cost_probe_fill_bill_match", pl.DataFrame()),
+        build_cost_probe_fill_bill_match(
+            frames.get("v5_cost_probe_order_event", pl.DataFrame()),
+            frames.get("v5_cost_probe_roundtrip_event", pl.DataFrame()),
+            frames.get("okx_private_readonly_fills", pl.DataFrame()),
+            frames.get("okx_private_readonly_bills", pl.DataFrame()),
+        ),
+    )
     cost_health = frames.get("cost_health_daily", pl.DataFrame())
     evidence = _alpha_evidence_for_export(frames.get("alpha_evidence", pl.DataFrame()))
     alpha_discovery_board = _alpha_discovery_board_for_export(
@@ -5601,6 +5629,10 @@ def _dataset_members(
         "reports/cost_bootstrap_readiness.csv": _csv_member(
             "reports/cost_bootstrap_readiness.csv",
             cost_bootstrap_readiness,
+        ),
+        "reports/cost_probe_fill_bill_match.csv": _csv_member(
+            "reports/cost_probe_fill_bill_match.csv",
+            cost_probe_fill_bill_match,
         ),
         "reports/live_universe_cost_coverage.csv": _csv_member(
             "reports/live_universe_cost_coverage.csv",

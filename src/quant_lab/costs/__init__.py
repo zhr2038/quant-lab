@@ -22,6 +22,10 @@ from quant_lab.costs.model import (
     estimate_cost_bps,
     estimate_cost_from_lake,
 )
+from quant_lab.costs.probe import (
+    COST_PROBE_FILL_BILL_MATCH_FIELDS,
+    build_cost_probe_fill_bill_match,
+)
 
 __all__ = [
     "CostBucket",
@@ -29,9 +33,11 @@ __all__ = [
     "CostCalibrationResult",
     "CostHealthDaily",
     "COST_BOOTSTRAP_READINESS_FIELDS",
+    "COST_PROBE_FILL_BILL_MATCH_FIELDS",
     "build_cost_bootstrap_readiness",
     "build_cost_bucket_daily_inputs",
     "build_cost_bucket_daily_rows",
+    "build_cost_probe_fill_bill_match",
     "build_cost_health_daily",
     "calibrate_costs_for_day",
     "cost_bucket_daily_to_cost_buckets",

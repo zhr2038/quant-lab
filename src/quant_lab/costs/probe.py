@@ -1,13 +1,32 @@
 from __future__ import annotations
 
 import json
-from collections.abc import Mapping, Sequence
+from collections.abc import Iterable, Mapping, Sequence
 from datetime import UTC, datetime
 from typing import Any
 
 import polars as pl
 
 from quant_lab.symbols import normalize_symbol
+
+COST_PROBE_FILL_BILL_MATCH_FIELDS = [
+    "generated_at",
+    "symbol",
+    "authorization_id",
+    "roundtrip_id",
+    "entry_order_id",
+    "exit_order_id",
+    "entry_trade_id",
+    "exit_trade_id",
+    "entry_bill_id",
+    "exit_bill_id",
+    "entry_fee_from_fill",
+    "entry_fee_from_bill",
+    "exit_fee_from_fill",
+    "exit_fee_from_bill",
+    "fee_diff_usdt",
+    "bill_match_status",
+]
 
 
 def canonical_cost_probe_roundtrip_events(roundtrip_events: pl.DataFrame | None) -> pl.DataFrame:
@@ -166,6 +185,96 @@ def cost_probe_private_fill_count_by_symbol(
         if symbol:
             counts[symbol] = counts.get(symbol, 0) + 1
     return counts
+
+
+def build_cost_probe_fill_bill_match(
+    order_events: pl.DataFrame | None,
+    roundtrip_events: pl.DataFrame | None,
+    private_fills: pl.DataFrame | None,
+    private_bills: pl.DataFrame | None,
+    *,
+    generated_at: datetime | None = None,
+) -> pl.DataFrame:
+    generated = (generated_at or datetime.now(UTC)).astimezone(UTC)
+    generated_text = generated.isoformat().replace("+00:00", "Z")
+    canonical_roundtrips = canonical_cost_probe_roundtrip_events(roundtrip_events)
+    if canonical_roundtrips.is_empty():
+        return _empty_fill_bill_match_frame()
+
+    order_rows = (
+        order_events.to_dicts()
+        if order_events is not None and not order_events.is_empty()
+        else []
+    )
+    fill_rows = (
+        private_fills.to_dicts()
+        if private_fills is not None and not private_fills.is_empty()
+        else []
+    )
+    bill_rows = (
+        private_bills.to_dicts()
+        if private_bills is not None and not private_bills.is_empty()
+        else []
+    )
+    rows: list[dict[str, Any]] = []
+
+    for roundtrip in canonical_roundtrips.to_dicts():
+        payload = _payload_dict(roundtrip)
+        if not eligible_cost_probe_roundtrip(roundtrip, payload):
+            continue
+        symbol = cost_probe_symbol(roundtrip, payload)
+        entry = _cost_probe_leg_bill_match(
+            leg="entry",
+            roundtrip=roundtrip,
+            payload=payload,
+            order_rows=order_rows,
+            fill_rows=fill_rows,
+            bill_rows=bill_rows,
+            symbol=symbol,
+        )
+        exit_ = _cost_probe_leg_bill_match(
+            leg="exit",
+            roundtrip=roundtrip,
+            payload=payload,
+            order_rows=order_rows,
+            fill_rows=fill_rows,
+            bill_rows=bill_rows,
+            symbol=symbol,
+        )
+        fee_diff = _fee_diff(
+            entry["fee_from_fill"],
+            entry["fee_from_bill"],
+            exit_["fee_from_fill"],
+            exit_["fee_from_bill"],
+        )
+        authorization_id = str(_first_value(roundtrip, payload, ["authorization_id"]) or "")
+        roundtrip_id = str(
+            _first_value(roundtrip, payload, ["roundtrip_id", "roundtrip_key"]) or ""
+        )
+        rows.append(
+            {
+                "generated_at": generated_text,
+                "symbol": symbol,
+                "authorization_id": authorization_id,
+                "roundtrip_id": roundtrip_id,
+                "entry_order_id": ";".join(sorted(entry["order_ids"])),
+                "exit_order_id": ";".join(sorted(exit_["order_ids"])),
+                "entry_trade_id": ";".join(sorted(entry["trade_ids"])),
+                "exit_trade_id": ";".join(sorted(exit_["trade_ids"])),
+                "entry_bill_id": ";".join(sorted(entry["bill_ids"])),
+                "exit_bill_id": ";".join(sorted(exit_["bill_ids"])),
+                "entry_fee_from_fill": _format_number(entry["fee_from_fill"]),
+                "entry_fee_from_bill": _format_number(entry["fee_from_bill"]),
+                "exit_fee_from_fill": _format_number(exit_["fee_from_fill"]),
+                "exit_fee_from_bill": _format_number(exit_["fee_from_bill"]),
+                "fee_diff_usdt": _format_number(fee_diff),
+                "bill_match_status": _bill_match_status(entry, exit_, fee_diff),
+            }
+        )
+
+    if not rows:
+        return _empty_fill_bill_match_frame()
+    return pl.DataFrame(rows, infer_schema_length=None).select(COST_PROBE_FILL_BILL_MATCH_FIELDS)
 
 
 def private_fill_matches_cost_probe(
@@ -468,6 +577,233 @@ def _roundtrip_leg_has_fill(
     if isinstance(state, dict):
         return cost_probe_order_is_filled(state, state)
     return False
+
+
+def _empty_fill_bill_match_frame() -> pl.DataFrame:
+    return pl.DataFrame(schema={field: pl.Utf8 for field in COST_PROBE_FILL_BILL_MATCH_FIELDS})
+
+
+def _cost_probe_leg_bill_match(
+    *,
+    leg: str,
+    roundtrip: Mapping[str, Any],
+    payload: Mapping[str, Any],
+    order_rows: Sequence[dict[str, Any]],
+    fill_rows: Sequence[dict[str, Any]],
+    bill_rows: Sequence[dict[str, Any]],
+    symbol: str,
+) -> dict[str, Any]:
+    order_ids = _roundtrip_leg_order_ids(roundtrip, payload, leg=leg)
+    trade_ids = _roundtrip_leg_trade_ids(roundtrip, payload, leg=leg)
+    private_matches = _matching_private_fills_for_leg(
+        fill_rows,
+        symbol=symbol,
+        order_ids=order_ids,
+        trade_ids=trade_ids,
+    )
+    if not private_matches:
+        matched_order = _latest_matching_order(order_rows, roundtrip, payload, leg=leg)
+        if matched_order is not None:
+            matched_payload = _payload_dict(matched_order)
+            order_ids.update(cost_probe_order_identifiers(matched_order, matched_payload))
+            trade_ids.update(cost_probe_trade_identifiers(matched_order, matched_payload))
+            private_matches = [matched_order]
+
+    for fill in private_matches:
+        fill_payload = _payload_dict(fill)
+        order_ids.update(cost_probe_order_identifiers(fill, fill_payload))
+        trade_ids.update(cost_probe_trade_identifiers(fill, fill_payload))
+
+    bill_matches = _matching_bill_rows(
+        bill_rows,
+        fill_rows=private_matches,
+        order_ids=order_ids,
+        trade_ids=trade_ids,
+    )
+    return {
+        "order_ids": {item for item in order_ids if item},
+        "trade_ids": {item for item in trade_ids if item},
+        "bill_ids": _bill_ids(bill_matches),
+        "fee_from_fill": _sum_optional(_fee_from_fill(row) for row in private_matches),
+        "fee_from_bill": _sum_optional(_fee_from_bill(row) for row in bill_matches),
+    }
+
+
+def _roundtrip_leg_trade_ids(
+    row: Mapping[str, Any],
+    payload: Mapping[str, Any],
+    *,
+    leg: str,
+) -> set[str]:
+    ids: set[str] = set()
+    for key in (f"{leg}_trade_id", f"{leg}_trade_ids"):
+        value = str(_first_value(row, payload, [key]) or "").strip()
+        if value:
+            ids.update(part.strip() for part in value.replace(",", ";").split(";") if part.strip())
+    state = payload.get(f"{leg}_state")
+    if isinstance(state, dict):
+        ids.update(cost_probe_trade_identifiers(state, state))
+    return ids
+
+
+def _matching_private_fills_for_leg(
+    rows: Sequence[dict[str, Any]],
+    *,
+    symbol: str,
+    order_ids: set[str],
+    trade_ids: set[str],
+) -> list[dict[str, Any]]:
+    matches: dict[tuple[str, str, str], dict[str, Any]] = {}
+    for row in rows:
+        payload = _payload_dict(row)
+        row_symbol_value = cost_probe_symbol(row, payload)
+        if symbol and row_symbol_value and row_symbol_value != symbol:
+            continue
+        row_order_ids = cost_probe_order_identifiers(row, payload)
+        row_trade_ids = cost_probe_trade_identifiers(row, payload)
+        if not (row_order_ids.intersection(order_ids) or row_trade_ids.intersection(trade_ids)):
+            continue
+        key = (
+            ";".join(sorted(row_order_ids)),
+            ";".join(sorted(row_trade_ids)),
+            str(_first_value(row, payload, ["ts", "event_ts", "timestamp"]) or ""),
+        )
+        matches[key] = row
+    return list(matches.values())
+
+
+def _matching_bill_rows(
+    rows: Sequence[dict[str, Any]],
+    *,
+    fill_rows: Sequence[dict[str, Any]],
+    order_ids: set[str],
+    trade_ids: set[str],
+) -> list[dict[str, Any]]:
+    matches: dict[tuple[str, str, str], dict[str, Any]] = {}
+    for bill in rows:
+        bill_payload = _payload_dict(bill)
+        bill_order_ids = cost_probe_order_identifiers(bill, bill_payload)
+        bill_trade_ids = cost_probe_trade_identifiers(bill, bill_payload)
+        direct_match = bool(
+            bill_order_ids.intersection(order_ids) or bill_trade_ids.intersection(trade_ids)
+        )
+        inferred_match = any(_bill_matches_fill_fee_and_time(bill, fill) for fill in fill_rows)
+        if not (direct_match or inferred_match):
+            continue
+        key = (
+            str(_first_value(bill, bill_payload, ["bill_id", "billId"]) or ""),
+            str(_first_value(bill, bill_payload, ["ts", "event_ts", "timestamp"]) or ""),
+            str(_first_value(bill, bill_payload, ["amount", "balChg", "fee", "fee_usdt"]) or ""),
+        )
+        matches[key] = bill
+    return list(matches.values())
+
+
+def _bill_matches_fill_fee_and_time(bill: Mapping[str, Any], fill: Mapping[str, Any]) -> bool:
+    bill_fee = _fee_from_bill(bill)
+    fill_fee = _fee_from_fill(fill)
+    if bill_fee is None or fill_fee is None:
+        return False
+    tolerance = max(0.000001, abs(fill_fee) * 0.02)
+    if abs(bill_fee - fill_fee) > tolerance:
+        return False
+    bill_ts = _row_timestamp(bill)
+    fill_ts = _row_timestamp(fill)
+    if bill_ts is None or fill_ts is None:
+        return False
+    return abs((bill_ts - fill_ts).total_seconds()) <= 15 * 60
+
+
+def _fee_from_fill(row: Mapping[str, Any]) -> float | None:
+    payload = _payload_dict(row)
+    fee_usdt = _first_float(row, payload, ["fee_usdt", "fee_abs_usdt"])
+    if fee_usdt is not None:
+        return abs(fee_usdt)
+    fee = _first_float(row, payload, ["fee", "commission", "fee_abs"])
+    fee_ccy = str(_first_value(row, payload, ["fee_currency", "fee_ccy", "feeCcy"]) or "").upper()
+    if fee is not None and (fee_ccy in {"", "USDT", "USD"}):
+        return abs(fee)
+    return None
+
+
+def _fee_from_bill(row: Mapping[str, Any]) -> float | None:
+    payload = _payload_dict(row)
+    value = _first_float(
+        row,
+        payload,
+        ["fee_usdt", "fee_abs_usdt", "amount", "balChg", "amt", "fee"],
+    )
+    if value is None:
+        return None
+    ccy = str(
+        _first_value(row, payload, ["ccy", "fee_currency", "fee_ccy", "feeCcy"]) or ""
+    ).upper()
+    if ccy and ccy not in {"USDT", "USD"}:
+        return None
+    return abs(value)
+
+
+def _row_timestamp(row: Mapping[str, Any]) -> datetime | None:
+    payload = _payload_dict(row)
+    return _first_timestamp(row, payload, ("ts", "event_ts", "timestamp", "created_at"))
+
+
+def _bill_ids(rows: Sequence[dict[str, Any]]) -> set[str]:
+    ids: set[str] = set()
+    for row in rows:
+        payload = _payload_dict(row)
+        value = str(_first_value(row, payload, ["bill_id", "billId"]) or "").strip()
+        if value:
+            ids.add(value)
+    return ids
+
+
+def _sum_optional(values: Iterable[float | None]) -> float | None:
+    observed = [value for value in values if value is not None]
+    if not observed:
+        return None
+    return sum(observed)
+
+
+def _fee_diff(
+    entry_fill: float | None,
+    entry_bill: float | None,
+    exit_fill: float | None,
+    exit_bill: float | None,
+) -> float | None:
+    if any(value is None for value in (entry_fill, entry_bill, exit_fill, exit_bill)):
+        return None
+    return abs((entry_bill or 0.0) + (exit_bill or 0.0) - (entry_fill or 0.0) - (exit_fill or 0.0))
+
+
+def _bill_match_status(
+    entry: Mapping[str, Any],
+    exit_: Mapping[str, Any],
+    fee_diff: float | None,
+) -> str:
+    entry_has_fill = entry.get("fee_from_fill") is not None
+    exit_has_fill = exit_.get("fee_from_fill") is not None
+    entry_has_bill = entry.get("fee_from_bill") is not None
+    exit_has_bill = exit_.get("fee_from_bill") is not None
+    if not entry_has_fill and not exit_has_fill:
+        return "NO_COST_PROBE_FILLS"
+    if not entry_has_bill and not exit_has_bill:
+        return "BILL_NOT_OBSERVED"
+    if entry_has_bill != entry_has_fill or exit_has_bill != exit_has_fill:
+        return "PARTIAL"
+    fill_fee_total = (entry.get("fee_from_fill") or 0.0) + (exit_.get("fee_from_fill") or 0.0)
+    tolerance = max(0.000001, fill_fee_total * 0.02)
+    if fee_diff is not None and fee_diff <= tolerance:
+        return "PASS"
+    return "FEE_MISMATCH"
+
+
+def _format_number(value: float | None) -> str:
+    if value is None:
+        return ""
+    if abs(value) < 1e-12:
+        return "0"
+    return f"{value:.12g}"
 
 
 def _payload_dict(row: Mapping[str, Any]) -> dict[str, Any]:

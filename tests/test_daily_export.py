@@ -275,6 +275,7 @@ def test_export_daily_pack_writes_required_members(tmp_path):
         assert "reports/factor_forward_validation.md" in names
         assert "reports/factor_strategy_bridge_candidates.csv" in names
         assert "reports/cost_bootstrap_readiness.csv" in names
+        assert "reports/cost_probe_fill_bill_match.csv" in names
         assert "reports/live_universe_cost_coverage.csv" in names
         assert "reports/v5_candidate_feature_completeness_by_strategy.csv" in names
         assert "reports/fast_microstructure_forward_test.csv" in names
@@ -300,6 +301,12 @@ def test_export_daily_pack_writes_required_members(tmp_path):
         assert readiness_rows
         assert "bootstrap_state" in readiness_rows[0]
         assert "actual_or_mixed_bootstrap_coverage_live_universe" in readiness_rows[0]
+        fill_bill_header = (
+            archive.read("reports/cost_probe_fill_bill_match.csv")
+            .decode("utf-8")
+            .splitlines()[0]
+        )
+        assert "bill_match_status" in fill_bill_header
         assert "web_rglob_fallback_zero" in acceptance_checks
         assert "api_latency_p95_ok" in acceptance_checks
         assert "System Acceptance Dashboard" in archive.read(

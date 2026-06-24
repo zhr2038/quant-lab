@@ -10,6 +10,7 @@ from quant_lab.costs.model import (
     estimate_cost_from_cost_bucket_daily_rows,
     evaluate_live_universe_cost_coverage,
 )
+from quant_lab.costs.probe import build_cost_probe_fill_bill_match
 
 
 def test_cost_model_uses_exact_matching_bucket():
@@ -42,6 +43,148 @@ def test_cost_model_fallback_is_explicit_when_no_bucket_matches():
     assert estimate.cost_bps == DEFAULT_FALLBACK_COST_BPS
     assert estimate.bucket_id is None
     assert estimate.fallback_level == "DEFAULT_FALLBACK"
+
+
+def test_cost_probe_fill_bill_match_infers_okx_account_bills():
+    generated_at = datetime(2026, 6, 24, 9, 0, tzinfo=UTC)
+    match = build_cost_probe_fill_bill_match(
+        _probe_order_events(),
+        _probe_roundtrip_events(),
+        _probe_private_fills(),
+        pl.DataFrame(
+            [
+                {
+                    "bill_id": "bill-entry",
+                    "ccy": "USDT",
+                    "amount": -0.005,
+                    "ts": "2026-06-24T08:00:02Z",
+                },
+                {
+                    "bill_id": "bill-exit",
+                    "ccy": "USDT",
+                    "amount": -0.004,
+                    "ts": "2026-06-24T08:00:10Z",
+                },
+            ]
+        ),
+        generated_at=generated_at,
+    )
+
+    row = match.to_dicts()[0]
+    assert row["generated_at"] == "2026-06-24T09:00:00Z"
+    assert row["symbol"] == "ETH-USDT"
+    assert row["authorization_id"] == "auth-eth-1"
+    assert row["roundtrip_id"] == "rt-eth-1"
+    assert row["entry_order_id"] == "entry-order-1"
+    assert row["exit_order_id"] == "exit-order-1"
+    assert row["entry_trade_id"] == "entry-trade-1"
+    assert row["exit_trade_id"] == "exit-trade-1"
+    assert row["entry_bill_id"] == "bill-entry"
+    assert row["exit_bill_id"] == "bill-exit"
+    assert row["entry_fee_from_fill"] == "0.005"
+    assert row["entry_fee_from_bill"] == "0.005"
+    assert row["exit_fee_from_fill"] == "0.004"
+    assert row["exit_fee_from_bill"] == "0.004"
+    assert row["fee_diff_usdt"] == "0"
+    assert row["bill_match_status"] == "PASS"
+
+
+def test_cost_probe_fill_bill_match_reports_missing_bills():
+    match = build_cost_probe_fill_bill_match(
+        _probe_order_events(),
+        _probe_roundtrip_events(),
+        _probe_private_fills(),
+        pl.DataFrame(),
+        generated_at=datetime(2026, 6, 24, 9, 0, tzinfo=UTC),
+    )
+
+    row = match.to_dicts()[0]
+    assert row["entry_fee_from_fill"] == "0.005"
+    assert row["exit_fee_from_fill"] == "0.004"
+    assert row["entry_bill_id"] == ""
+    assert row["exit_bill_id"] == ""
+    assert row["bill_match_status"] == "BILL_NOT_OBSERVED"
+
+
+def _probe_order_events() -> pl.DataFrame:
+    return pl.DataFrame(
+        [
+            {
+                "event_ts": "2026-06-24T08:00:01Z",
+                "symbol": "ETH-USDT",
+                "leg": "entry",
+                "order_status": "filled",
+                "order_id": "entry-order-1",
+                "exchange_order_id": "entry-order-1",
+                "trade_id": "entry-trade-1",
+                "filled_qty": "0.003",
+                "avg_px": "2500",
+                "fee_usdt": "0.005",
+            },
+            {
+                "event_ts": "2026-06-24T08:00:09Z",
+                "symbol": "ETH-USDT",
+                "leg": "exit",
+                "order_status": "filled",
+                "order_id": "exit-order-1",
+                "exchange_order_id": "exit-order-1",
+                "trade_id": "exit-trade-1",
+                "filled_qty": "0.003",
+                "avg_px": "2499",
+                "fee_usdt": "0.004",
+            },
+        ]
+    )
+
+
+def _probe_roundtrip_events() -> pl.DataFrame:
+    return pl.DataFrame(
+        [
+            {
+                "event_ts": "2026-06-24T08:00:12Z",
+                "symbol": "ETH-USDT",
+                "roundtrip_id": "rt-eth-1",
+                "roundtrip_status": "closed",
+                "authorization_id": "auth-eth-1",
+                "entry_order_id": "entry-order-1",
+                "exit_order_id": "exit-order-1",
+                "execution_completed": True,
+                "completed": True,
+                "flat_verified": True,
+                "exchange_flat_verified": True,
+                "local_flat_verified": True,
+                "reconcile_ok": True,
+                "cost_evidence_complete": True,
+                "eligible_for_cost_model": True,
+                "no_order_submitted": False,
+            }
+        ]
+    )
+
+
+def _probe_private_fills() -> pl.DataFrame:
+    return pl.DataFrame(
+        [
+            {
+                "inst_id": "ETH-USDT",
+                "order_id": "entry-order-1",
+                "trade_id": "entry-trade-1",
+                "side": "buy",
+                "fee": -0.005,
+                "fee_currency": "USDT",
+                "ts": "2026-06-24T08:00:01Z",
+            },
+            {
+                "inst_id": "ETH-USDT",
+                "order_id": "exit-order-1",
+                "trade_id": "exit-trade-1",
+                "side": "sell",
+                "fee": -0.004,
+                "fee_currency": "USDT",
+                "ts": "2026-06-24T08:00:09Z",
+            },
+        ]
+    )
 
 
 def test_live_universe_cost_coverage_rejects_stale_direct_even_with_proxy():

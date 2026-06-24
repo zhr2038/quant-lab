@@ -861,6 +861,43 @@ def test_data_health_uses_generated_at_for_factor_strategy_bridge_freshness(tmp_
     }
 
 
+def test_data_health_uses_generated_at_for_cost_probe_fill_bill_match(tmp_path):
+    lake_root = tmp_path / "lake"
+    now = datetime.now(UTC)
+    write_parquet_dataset(
+        pl.DataFrame(
+            [
+                {
+                    "generated_at": now.isoformat(),
+                    "symbol": "SOL-USDT",
+                    "authorization_id": "auth-sol",
+                    "roundtrip_id": "entry:exit",
+                    "entry_order_id": "entry",
+                    "exit_order_id": "exit",
+                    "entry_trade_id": "entry-trade",
+                    "exit_trade_id": "exit-trade",
+                    "entry_bill_id": "entry-bill",
+                    "exit_bill_id": "exit-bill",
+                    "entry_fee_from_fill": "0.004",
+                    "entry_fee_from_bill": "0.004",
+                    "exit_fee_from_fill": "0.004",
+                    "exit_fee_from_bill": "0.004",
+                    "fee_diff_usdt": "0",
+                    "bill_match_status": "PASS",
+                }
+            ]
+        ),
+        lake_root / "gold" / "cost_probe_fill_bill_match",
+    )
+
+    snapshot = readers._dataset_snapshot(lake_root, "cost_probe_fill_bill_match", now=now)
+    stale_rows = readers.data_health_summary(lake_root)["stale_datasets"].to_dicts()
+
+    assert snapshot.freshness["timestamp_column"] == "generated_at"
+    assert snapshot.freshness["freshness_status"] == "fresh"
+    assert "cost_probe_fill_bill_match" not in {row["dataset"] for row in stale_rows}
+
+
 def test_dataset_snapshot_falls_back_when_file_index_misses_partitioned_files(tmp_path):
     lake_root = tmp_path / "lake"
     now = datetime.now(UTC)

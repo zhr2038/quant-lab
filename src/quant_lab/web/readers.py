@@ -338,6 +338,7 @@ DATASET_TIMESTAMP_COLUMNS: dict[str, tuple[str, ...]] = {
     "cost_bucket_daily": ("created_at", "day"),
     "cost_health_daily": ("created_at", "day"),
     "cost_bootstrap_readiness": ("generated_at",),
+    "cost_probe_fill_bill_match": ("generated_at",),
     "gate_decision": ("created_at",),
     "risk_permission": ("as_of_ts", "created_at"),
     "risk_permission_api_dependency_meta": ("generated_at", "telemetry_latest_ts"),

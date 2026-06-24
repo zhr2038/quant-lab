@@ -118,6 +118,51 @@ def test_cost_probe_fill_bill_match_reports_missing_bills():
     assert row["bill_match_status"] == "BILL_NOT_OBSERVED"
 
 
+def test_cost_probe_fill_bill_match_reconstructs_okx_spot_ledger_amounts():
+    match = build_cost_probe_fill_bill_match(
+        _probe_order_events(),
+        _probe_roundtrip_events(),
+        _probe_private_fills(),
+        pl.DataFrame(
+            [
+                {
+                    "bill_id": "bill-entry-base",
+                    "ccy": "ETH",
+                    "amount": 0.002998,
+                    "ts": "2026-06-24T08:00:01Z",
+                },
+                {
+                    "bill_id": "bill-entry-quote",
+                    "ccy": "USDT",
+                    "amount": -7.5,
+                    "ts": "2026-06-24T08:00:01Z",
+                },
+                {
+                    "bill_id": "bill-exit-base",
+                    "ccy": "ETH",
+                    "amount": -0.003,
+                    "ts": "2026-06-24T08:00:09Z",
+                },
+                {
+                    "bill_id": "bill-exit-quote",
+                    "ccy": "USDT",
+                    "amount": 7.493,
+                    "ts": "2026-06-24T08:00:09Z",
+                },
+            ]
+        ),
+        generated_at=datetime(2026, 6, 24, 9, 0, tzinfo=UTC),
+    )
+
+    row = match.to_dicts()[0]
+    assert set(row["entry_bill_id"].split(";")) == {"bill-entry-base", "bill-entry-quote"}
+    assert set(row["exit_bill_id"].split(";")) == {"bill-exit-base", "bill-exit-quote"}
+    assert row["entry_fee_from_bill"] == "0.005"
+    assert row["exit_fee_from_bill"] == "0.004"
+    assert row["fee_diff_usdt"] == "0"
+    assert row["bill_match_status"] == "PASS"
+
+
 def test_bootstrap_readiness_consumes_cost_probe_fill_bill_match_pass():
     now = datetime(2026, 6, 24, 9, 0, tzinfo=UTC)
 
@@ -242,6 +287,8 @@ def _probe_private_fills() -> pl.DataFrame:
                 "order_id": "entry-order-1",
                 "trade_id": "entry-trade-1",
                 "side": "buy",
+                "fill_price": 2500.0,
+                "fill_size": 0.003,
                 "fee": -0.005,
                 "fee_currency": "USDT",
                 "ts": "2026-06-24T08:00:01Z",
@@ -251,6 +298,8 @@ def _probe_private_fills() -> pl.DataFrame:
                 "order_id": "exit-order-1",
                 "trade_id": "exit-trade-1",
                 "side": "sell",
+                "fill_price": 2499.0,
+                "fill_size": 0.003,
                 "fee": -0.004,
                 "fee_currency": "USDT",
                 "ts": "2026-06-24T08:00:09Z",

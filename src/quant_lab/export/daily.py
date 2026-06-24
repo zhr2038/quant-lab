@@ -5126,14 +5126,11 @@ def _dataset_members(
             okx_private_readonly_bills=frames.get("okx_private_readonly_bills", pl.DataFrame()),
         ),
     )
-    cost_probe_fill_bill_match = _prefer_frame(
-        frames.get("cost_probe_fill_bill_match", pl.DataFrame()),
-        build_cost_probe_fill_bill_match(
-            frames.get("v5_cost_probe_order_event", pl.DataFrame()),
-            frames.get("v5_cost_probe_roundtrip_event", pl.DataFrame()),
-            frames.get("okx_private_readonly_fills", pl.DataFrame()),
-            frames.get("okx_private_readonly_bills", pl.DataFrame()),
-        ),
+    cost_probe_fill_bill_match = build_cost_probe_fill_bill_match(
+        frames.get("v5_cost_probe_order_event", pl.DataFrame()),
+        frames.get("v5_cost_probe_roundtrip_event", pl.DataFrame()),
+        frames.get("okx_private_readonly_fills", pl.DataFrame()),
+        frames.get("okx_private_readonly_bills", pl.DataFrame()),
     )
     cost_health = frames.get("cost_health_daily", pl.DataFrame())
     evidence = _alpha_evidence_for_export(frames.get("alpha_evidence", pl.DataFrame()))

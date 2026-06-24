@@ -620,12 +620,21 @@ def _cost_probe_leg_bill_match(
         order_ids=order_ids,
         trade_ids=trade_ids,
     )
+    fee_from_bill = _sum_optional(_fee_from_bill(row) for row in bill_matches)
+    if fee_from_bill is None:
+        ledger_match = _matching_ledger_bill_rows(
+            bill_rows,
+            fill_rows=private_matches,
+            symbol=symbol,
+        )
+        bill_matches = ledger_match["rows"]
+        fee_from_bill = ledger_match["fee_from_bill"]
     return {
         "order_ids": {item for item in order_ids if item},
         "trade_ids": {item for item in trade_ids if item},
         "bill_ids": _bill_ids(bill_matches),
         "fee_from_fill": _sum_optional(_fee_from_fill(row) for row in private_matches),
-        "fee_from_bill": _sum_optional(_fee_from_bill(row) for row in bill_matches),
+        "fee_from_bill": fee_from_bill,
     }
 
 
@@ -701,6 +710,45 @@ def _matching_bill_rows(
     return list(matches.values())
 
 
+def _matching_ledger_bill_rows(
+    rows: Sequence[dict[str, Any]],
+    *,
+    fill_rows: Sequence[dict[str, Any]],
+    symbol: str,
+) -> dict[str, Any]:
+    matches: dict[tuple[str, str, str], dict[str, Any]] = {}
+    fee_total = 0.0
+    matched_fee = False
+    for fill in fill_rows:
+        fill_fee = _fee_from_fill(fill)
+        if fill_fee is None:
+            continue
+        candidates: list[tuple[float, dict[str, Any], float]] = []
+        for bill in rows:
+            fee = _ledger_fee_from_bill_and_fill(bill, fill, symbol=symbol)
+            if fee is None:
+                continue
+            tolerance = max(0.000001, fill_fee * 0.02)
+            if abs(fee - fill_fee) > tolerance:
+                continue
+            time_diff = _row_time_diff_seconds(bill, fill)
+            if time_diff is None or time_diff > 15 * 60:
+                continue
+            candidates.append((time_diff, bill, fee))
+        if not candidates:
+            continue
+        candidates.sort(key=lambda item: item[0])
+        _, fee_bill, fee = candidates[0]
+        matched_fee = True
+        fee_total += fee
+        for bill in [fee_bill, *_paired_ledger_bill_rows(rows, fill, symbol=symbol)]:
+            matches[_bill_row_key(bill)] = bill
+    return {
+        "rows": list(matches.values()),
+        "fee_from_bill": fee_total if matched_fee else None,
+    }
+
+
 def _bill_matches_fill_fee_and_time(bill: Mapping[str, Any], fill: Mapping[str, Any]) -> bool:
     bill_fee = _fee_from_bill(bill)
     fill_fee = _fee_from_fill(fill)
@@ -714,6 +762,96 @@ def _bill_matches_fill_fee_and_time(bill: Mapping[str, Any], fill: Mapping[str, 
     if bill_ts is None or fill_ts is None:
         return False
     return abs((bill_ts - fill_ts).total_seconds()) <= 15 * 60
+
+
+def _ledger_fee_from_bill_and_fill(
+    bill: Mapping[str, Any],
+    fill: Mapping[str, Any],
+    *,
+    symbol: str,
+) -> float | None:
+    payload = _payload_dict(bill)
+    amount = _first_float(bill, payload, ["amount", "balChg"])
+    if amount is None:
+        return None
+    price, qty, side, notional = _fill_price_qty_side_notional(fill)
+    if price is None or qty is None or notional is None or notional <= 0:
+        return None
+    ccy = str(_first_value(bill, payload, ["ccy", "fee_currency", "fee_ccy"]) or "").upper()
+    base = _base_ccy(symbol)
+    quote = _quote_ccy(symbol)
+    if ccy == base:
+        if side == "buy" and amount > 0 and amount <= qty:
+            return max((qty - amount) * price, 0.0)
+        if side == "sell" and amount < 0 and abs(amount) >= qty:
+            return max((abs(amount) - qty) * price, 0.0)
+    if ccy in {quote, "USDT", "USD"}:
+        if side == "sell" and amount > 0 and amount <= notional:
+            return max(notional - amount, 0.0)
+        if side == "buy" and amount < 0 and abs(amount) >= notional:
+            return max(abs(amount) - notional, 0.0)
+    return None
+
+
+def _paired_ledger_bill_rows(
+    rows: Sequence[dict[str, Any]],
+    fill: Mapping[str, Any],
+    *,
+    symbol: str,
+) -> list[dict[str, Any]]:
+    _, _, side, _ = _fill_price_qty_side_notional(fill)
+    base = _base_ccy(symbol)
+    quote = _quote_ccy(symbol)
+    paired: list[dict[str, Any]] = []
+    for bill in rows:
+        time_diff = _row_time_diff_seconds(bill, fill)
+        if time_diff is None or time_diff > 5:
+            continue
+        payload = _payload_dict(bill)
+        amount = _first_float(bill, payload, ["amount", "balChg"])
+        ccy = str(_first_value(bill, payload, ["ccy", "fee_currency", "fee_ccy"]) or "").upper()
+        if amount is None or ccy not in {base, quote, "USDT", "USD"}:
+            continue
+        if side == "buy" and ((ccy == base and amount > 0) or (ccy != base and amount < 0)):
+            paired.append(bill)
+        elif side == "sell" and ((ccy == base and amount < 0) or (ccy != base and amount > 0)):
+            paired.append(bill)
+    return paired
+
+
+def _fill_price_qty_side_notional(
+    fill: Mapping[str, Any],
+) -> tuple[float | None, float | None, str, float | None]:
+    payload = _payload_dict(fill)
+    price = _first_float(fill, payload, ["fill_price", "fillPx", "fill_px", "avg_px", "px"])
+    qty = _first_float(fill, payload, ["fill_size", "fillSz", "fill_qty", "filled_qty", "sz"])
+    side = str(_first_value(fill, payload, ["side", "leg"]) or "").strip().lower()
+    if side == "entry":
+        side = "buy"
+    elif side == "exit":
+        side = "sell"
+    notional = price * qty if price is not None and qty is not None else None
+    return price, qty, side, abs(notional) if notional is not None else None
+
+
+def _row_time_diff_seconds(
+    left: Mapping[str, Any],
+    right: Mapping[str, Any],
+) -> float | None:
+    left_ts = _row_timestamp(left)
+    right_ts = _row_timestamp(right)
+    if left_ts is None or right_ts is None:
+        return None
+    return abs((left_ts - right_ts).total_seconds())
+
+
+def _bill_row_key(row: Mapping[str, Any]) -> tuple[str, str, str]:
+    payload = _payload_dict(row)
+    return (
+        str(_first_value(row, payload, ["bill_id", "billId"]) or ""),
+        str(_first_value(row, payload, ["ts", "event_ts", "timestamp"]) or ""),
+        str(_first_value(row, payload, ["amount", "balChg", "fee", "fee_usdt"]) or ""),
+    )
 
 
 def _fee_from_fill(row: Mapping[str, Any]) -> float | None:
@@ -757,6 +895,13 @@ def _base_ccy(symbol: str) -> str:
     if "-" not in normalized:
         return normalized
     return normalized.split("-", 1)[0]
+
+
+def _quote_ccy(symbol: str) -> str:
+    normalized = normalize_symbol(symbol) if symbol else ""
+    if "-" not in normalized:
+        return ""
+    return normalized.split("-", 1)[1]
 
 
 def _row_timestamp(row: Mapping[str, Any]) -> datetime | None:

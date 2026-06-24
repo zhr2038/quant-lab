@@ -20,6 +20,7 @@ COMPACT_SMALL_FILE_MAINTENANCE_TIMEOUT_SECONDS="${COMPACT_SMALL_FILE_MAINTENANCE
 COMPACT_SMALL_FILE_MAINTENANCE_MAX_GROUPS="${COMPACT_SMALL_FILE_MAINTENANCE_MAX_GROUPS:-5}"
 COMPACT_SMALL_FILE_MAINTENANCE_MAX_SOURCE_FILES_PER_GROUP="${COMPACT_SMALL_FILE_MAINTENANCE_MAX_SOURCE_FILES_PER_GROUP:-64}"
 COMPACT_SMALL_FILE_MAINTENANCE_TARGET_ROWS="${COMPACT_SMALL_FILE_MAINTENANCE_TARGET_ROWS:-2000000}"
+COMPACT_SMALL_FILE_MAINTENANCE_DATASETS="${COMPACT_SMALL_FILE_MAINTENANCE_DATASETS:-}"
 COMPACT_STARTED_AT="$(date +%s)"
 
 V5_TELEMETRY_DATASETS=(
@@ -151,6 +152,9 @@ build_market_data_rollups() {
 run_small_file_maintenance() {
   local status
   local elapsed
+  local dataset
+  local maintenance_datasets=()
+  local dataset_args=()
 
   if [[ "${COMPACT_SMALL_FILE_MAINTENANCE}" != "1" ]]; then
     echo "SKIP_SMALL_FILE_MAINTENANCE opt_in=COMPACT_SMALL_FILE_MAINTENANCE"
@@ -160,6 +164,16 @@ run_small_file_maintenance() {
   if (( elapsed >= COMPACT_RUN_BUDGET_SECONDS )); then
     echo "SKIP_SMALL_FILE_MAINTENANCE_BUDGET elapsed_seconds=${elapsed}"
     return
+  fi
+
+  if [[ -n "${COMPACT_SMALL_FILE_MAINTENANCE_DATASETS}" ]]; then
+    IFS=',' read -r -a maintenance_datasets <<< "${COMPACT_SMALL_FILE_MAINTENANCE_DATASETS}"
+    for dataset in "${maintenance_datasets[@]}"; do
+      dataset="$(printf '%s' "${dataset}" | xargs)"
+      if [[ -n "${dataset}" ]]; then
+        dataset_args+=(--priority-dataset "${dataset}")
+      fi
+    done
   fi
 
   echo "START_SMALL_FILE_MAINTENANCE timeout_seconds=${COMPACT_SMALL_FILE_MAINTENANCE_TIMEOUT_SECONDS} max_groups=${COMPACT_SMALL_FILE_MAINTENANCE_MAX_GROUPS} max_source_files_per_group=${COMPACT_SMALL_FILE_MAINTENANCE_MAX_SOURCE_FILES_PER_GROUP} target_rows=${COMPACT_SMALL_FILE_MAINTENANCE_TARGET_ROWS}"
@@ -174,6 +188,7 @@ run_small_file_maintenance() {
     --max-source-files-per-batch "${COMPACT_DIRECT_MAX_SOURCE_FILES}" \
     --max-source-files-per-group "${COMPACT_SMALL_FILE_MAINTENANCE_MAX_SOURCE_FILES_PER_GROUP}" \
     --max-source-batch-bytes "${COMPACT_MAX_SOURCE_BATCH_BYTES}" \
+    "${dataset_args[@]}" \
     --compact-output
   status="$?"
   set -e

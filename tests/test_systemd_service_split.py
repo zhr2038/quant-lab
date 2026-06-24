@@ -224,7 +224,9 @@ def test_scheduled_compaction_covers_hot_ws_datasets():
     assert "WARN_SMALL_FILE_MAINTENANCE_FAILED" in script
     assert "lake-small-file-maintenance" in script
     assert "--max-source-files-per-group" in script
+    assert "--priority-dataset" in script
     assert "COMPACT_SMALL_FILE_MAINTENANCE_TARGET_ROWS" in script
+    assert "COMPACT_SMALL_FILE_MAINTENANCE_DATASETS" in script
     assert (
         'COMPACT_CONSOLIDATE_EXISTING_COMPACT_OUTPUTS="'
         '${COMPACT_CONSOLIDATE_EXISTING_COMPACT_OUTPUTS:-0}"'
@@ -244,16 +246,17 @@ def test_scheduled_compaction_covers_hot_ws_datasets():
     assert "COMPACT_RUN_BUDGET_SECONDS=1800" in unit
     assert "COMPACT_DIRECT_MAX_SOURCE_FILES=64" in unit
     assert "COMPACT_DIRECT_MIN_SOURCE_FILES=16" in unit
-    assert "COMPACT_MAX_SOURCE_BATCH_BYTES=268435456" in unit
+    assert "COMPACT_MAX_SOURCE_BATCH_BYTES=134217728" in unit
     assert "COMPACT_CONSOLIDATE_EXISTING_COMPACT_OUTPUTS=0" in unit
     assert "MARKET_ROLLUP_LOOKBACK_HOURS=24" in unit
     assert "MARKET_ROLLUP_TIMEOUT_SECONDS=600" in unit
     assert "MARKET_ROLLUP_POLARS_MAX_THREADS=2" in unit
     assert "COMPACT_SMALL_FILE_MAINTENANCE=1" in unit
     assert "COMPACT_SMALL_FILE_MAINTENANCE_TIMEOUT_SECONDS=300" in unit
-    assert "COMPACT_SMALL_FILE_MAINTENANCE_MAX_GROUPS=5" in unit
-    assert "COMPACT_SMALL_FILE_MAINTENANCE_MAX_SOURCE_FILES_PER_GROUP=64" in unit
-    assert "COMPACT_SMALL_FILE_MAINTENANCE_TARGET_ROWS=2000000" in unit
+    assert "COMPACT_SMALL_FILE_MAINTENANCE_MAX_GROUPS=2" in unit
+    assert "COMPACT_SMALL_FILE_MAINTENANCE_MAX_SOURCE_FILES_PER_GROUP=32" in unit
+    assert "COMPACT_SMALL_FILE_MAINTENANCE_TARGET_ROWS=500000" in unit
+    assert "COMPACT_SMALL_FILE_MAINTENANCE_DATASETS=silver/v5_quant_lab_request" in unit
     assert "Nice=10" in unit
     assert "IOSchedulingClass=best-effort" in unit
     assert "IOSchedulingPriority=7" in unit

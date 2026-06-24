@@ -43,7 +43,10 @@ from quant_lab.ingest.okx_readonly_private import (
 from quant_lab.ingest.okx_ws_public import collect_okx_public_ws, collect_okx_public_ws_universe
 from quant_lab.ingest.v5_reports import inspect_v5_reports, publish_v5_reports_to_lake
 from quant_lab.jobs.compact_market_data import build_market_data_1m_rollups
-from quant_lab.jobs.small_file_maintenance import lake_small_file_maintenance
+from quant_lab.jobs.small_file_maintenance import (
+    DEFAULT_PRIORITY_DATASETS,
+    lake_small_file_maintenance,
+)
 from quant_lab.ops.data_quality import run_data_quality
 from quant_lab.ops.lake_health import (
     lake_dataset_quality_summary,
@@ -921,6 +924,16 @@ def lake_small_file_maintenance_command(
         int,
         typer.Option("--max-source-batch-bytes", min=0),
     ] = 268_435_456,
+    priority_datasets: Annotated[
+        list[str] | None,
+        typer.Option(
+            "--priority-dataset",
+            help=(
+                "Dataset to consider during this maintenance pass. Repeat the option for "
+                "multiple datasets. Defaults to the built-in priority list."
+            ),
+        ),
+    ] = None,
     dry_run: Annotated[
         bool,
         typer.Option(
@@ -948,6 +961,7 @@ def lake_small_file_maintenance_command(
             max_source_files_per_batch=max_source_files_per_batch,
             max_source_files_per_group=max_source_files_per_group or None,
             max_source_batch_bytes=max_source_batch_bytes or None,
+            priority_datasets=tuple(priority_datasets or DEFAULT_PRIORITY_DATASETS),
             dry_run=dry_run,
         ),
     )

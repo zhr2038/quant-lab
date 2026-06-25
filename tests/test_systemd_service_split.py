@@ -380,6 +380,9 @@ def test_web_export_relies_on_systemd_memory_limit_for_snapshot_packaging():
     assert "QUANT_LAB_WEB_EXPORT_MEMORY_LIMIT_MB=0" in unit
     assert "QUANT_LAB_WEB_EXPORT_BACKGROUND_TRIGGER=request_file" in unit
     assert "MemoryMax=5G" in unit
+    assert "KillSignal=SIGINT" in unit
+    assert "KillMode=mixed" in unit
+    assert "TimeoutStopSec=20s" in unit
 
 
 def test_web_export_request_worker_is_scheduled_outside_dashboard_cgroup():

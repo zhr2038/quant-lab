@@ -196,6 +196,33 @@ def test_cost_health_flags_private_fills_without_actual_cost():
     assert "private_fills_present_but_actual_cost_zero" in json.loads(row.warnings_json)
 
 
+def test_cost_health_keeps_cost_probe_private_fills_advisory():
+    row = build_cost_health_daily(
+        pl.DataFrame(
+            [
+                {
+                    "day": "2026-06-25",
+                    "symbol": "BNB-USDT",
+                    "source": "bootstrap_cost_probe",
+                    "sample_count": 2,
+                    "fallback_level": "COST_PROBE_ONLY;SAMPLE_TOO_SMALL",
+                    "cost_model_version": "costs-v1",
+                }
+            ]
+        ),
+        day="2026-06-25",
+        min_sample_count=30,
+        expected_symbols=["BNB-USDT"],
+        private_fill_rows=2,
+    )
+
+    checks = json.loads(row.data_quality_checks_json)
+    warnings = json.loads(row.warnings_json)
+    assert row.status == "WARNING"
+    assert checks["private_fills_present_but_actual_cost_zero"] is True
+    assert "private_fills_present_but_actual_cost_zero" not in warnings
+
+
 def test_cost_health_flags_v5_trades_without_actual_cost():
     row = build_cost_health_daily(
         pl.DataFrame(
@@ -222,6 +249,33 @@ def test_cost_health_flags_v5_trades_without_actual_cost():
     assert "trades_present_but_not_in_cost_model" in warnings
     assert checks["trades_present_but_not_in_cost_model"] is False
     assert checks["fee_missing_rate"] == "0/2"
+
+
+def test_cost_health_keeps_cost_probe_v5_trades_advisory():
+    row = build_cost_health_daily(
+        pl.DataFrame(
+            [
+                {
+                    "day": "2026-06-25",
+                    "symbol": "BNB-USDT",
+                    "source": "bootstrap_cost_probe",
+                    "sample_count": 2,
+                    "fallback_level": "COST_PROBE_ONLY;SAMPLE_TOO_SMALL",
+                    "cost_model_version": "costs-v1",
+                }
+            ]
+        ),
+        day="2026-06-25",
+        min_sample_count=30,
+        expected_symbols=["BNB-USDT"],
+        v5_trade_rows=2,
+    )
+
+    checks = json.loads(row.data_quality_checks_json)
+    warnings = json.loads(row.warnings_json)
+    assert row.status == "WARNING"
+    assert checks["trades_present_but_not_in_cost_model"] is True
+    assert "trades_present_but_not_in_cost_model" not in warnings
 
 
 def test_cost_health_proxy_only_is_warning():

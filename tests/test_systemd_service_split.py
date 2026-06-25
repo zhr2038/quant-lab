@@ -33,8 +33,9 @@ def test_v5_health_analysis_stays_lightweight():
     assert "--skip-analysis-after-sync" in sync_unit
     assert "--compact-output" in sync_unit
     assert "/var/lock/quant-lab-heavy.lock" in sync_unit
+    assert "flock -E 75 -w 300" in sync_unit
     assert "/usr/bin/timeout 20m" in sync_unit
-    assert "TimeoutStartSec=22min" in sync_unit
+    assert "TimeoutStartSec=35min" in sync_unit
     assert "MemoryHigh=5G" in sync_unit
     assert "MemoryMax=6G" in sync_unit
     assert "QUANT_LAB_V5_SYNC_REMOTE_MAX_FILES=1" in sync_unit
@@ -62,6 +63,8 @@ def test_daily_export_uses_recent_api_metrics_window():
     assert "MemoryHigh=5G" in unit
     assert "MemoryMax=6G" in unit
     assert "/usr/bin/timeout 30m" in unit
+    assert "TimeoutStartSec=75min" in unit
+    assert "ExecStartPre=/usr/bin/systemctl start quant-lab-cost-calibration.service" in unit
 
 
 def test_all_quant_lab_jobs_run_as_service_user_except_root_only_helpers():
@@ -112,6 +115,8 @@ def test_cost_calibration_starts_readonly_private_backfill_when_configured():
     assert "[ -f /etc/quant-lab/okx_readonly.env ]" in unit
     assert "/usr/bin/systemctl start quant-lab-okx-readonly-backfill.service" in unit
     assert "SKIP_OKX_READONLY_BACKFILL_ENV_MISSING" in unit
+    assert "flock -E 75 -w 600" in unit
+    assert "TimeoutStartSec=30min" in unit
 
 
 def test_storage_retention_does_not_create_root_owned_lake_files():
@@ -348,16 +353,25 @@ def test_daily_export_template_refreshes_v5_before_packaging():
     assert "--pre-export-v5-refresh" in unit
     assert "--allow-stale-v5" not in unit
     assert "--no-pre-export-v5-refresh" not in unit
-    assert "TimeoutStartSec=45min" in unit
+    assert "TimeoutStartSec=75min" in unit
     assert "/var/lock/quant-lab-heavy.lock" in unit
     assert "/var/lock/quant-lab-v5-telemetry-sync.lock" in unit
     assert "SKIP_DAILY_EXPORT_LOCK_BUSY" in unit
     assert "ExecStartPre=/usr/bin/systemctl start quant-lab-v5-telemetry-sync.service" in unit
+    assert "ExecStartPre=/usr/bin/systemctl start quant-lab-cost-calibration.service" in unit
     assert (
         "ExecStartPre=/opt/quant-lab/.venv/bin/qlab publish-risk-permission "
         "--lake-root /var/lib/quant-lab/lake --strategy v5 --version 5.0.0"
     ) in unit
     assert "EnvironmentFile=-/etc/quant-lab/quant_lab_api.env" in unit
+
+
+def test_web_export_request_refreshes_costs_before_packaging():
+    unit = _unit("quant-lab-web-export-request.service")
+
+    assert "TimeoutStartSec=65min" in unit
+    assert "ExecStartPre=/usr/bin/systemctl start quant-lab-v5-telemetry-sync.service" in unit
+    assert "ExecStartPre=/usr/bin/systemctl start quant-lab-cost-calibration.service" in unit
 
 
 def test_web_export_relies_on_systemd_memory_limit_for_snapshot_packaging():
@@ -395,10 +409,12 @@ def test_okx_ws_service_uses_unpartitioned_bounded_batches():
     assert "QUANT_LAB_WS_APPEND_TARGET_ROWS=500000" in unit
     assert "QUANT_LAB_WS_APPEND_PARTITIONED=0" in unit
     assert "QUANT_LAB_APPEND_AUTO_COMPACT_FILES=0" in unit
+    assert "/usr/bin/timeout 2h" in unit
     assert "--flush-interval-seconds 60" in unit
     assert "--flush-max-messages 10000" in unit
     assert "Restart=always" in unit
-    assert "RuntimeMaxSec=2h" in unit
+    assert "SuccessExitStatus=124 130 143" in unit
+    assert "RuntimeMaxSec=2h" not in unit
     for symbol in [
         "BTC-USDT",
         "ETH-USDT",

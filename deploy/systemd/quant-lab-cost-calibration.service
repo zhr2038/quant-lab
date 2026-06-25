@@ -11,9 +11,9 @@ PermissionsStartOnly=true
 Environment=POLARS_MAX_THREADS=1
 Environment=MALLOC_ARENA_MAX=2
 Environment=QUANT_LAB_COST_MAX_PUBLIC_DAY_FILES=1000
-TimeoutStartSec=16min
+TimeoutStartSec=30min
 MemoryHigh=3G
 MemoryMax=4G
 CPUQuota=60%
 ExecStartPre=/bin/bash -lc 'set -euo pipefail; if [ -f /etc/quant-lab/okx_readonly.env ]; then /usr/bin/systemctl start quant-lab-okx-readonly-backfill.service; else echo "SKIP_OKX_READONLY_BACKFILL_ENV_MISSING"; fi'
-ExecStart=/bin/bash -lc 'set -euo pipefail; /usr/bin/flock -E 75 -w 10 /var/lock/quant-lab-heavy.lock /usr/bin/timeout 15m /opt/quant-lab/.venv/bin/qlab calibrate-costs --lake-root /var/lib/quant-lab/lake --day "$(date -u +%%F)" --min-sample-count 30 || { code="$?"; if [ "$${code}" = "75" ]; then echo "SKIP_COST_CALIBRATION_LOCK_BUSY"; exit 0; fi; exit "$${code}"; }'
+ExecStart=/bin/bash -lc 'set -euo pipefail; /usr/bin/flock -E 75 -w 600 /var/lock/quant-lab-heavy.lock /usr/bin/timeout 15m /opt/quant-lab/.venv/bin/qlab calibrate-costs --lake-root /var/lib/quant-lab/lake --day "$(date -u +%%F)" --min-sample-count 30 || { code="$?"; if [ "$${code}" = "75" ]; then echo "SKIP_COST_CALIBRATION_LOCK_BUSY"; exit 0; fi; exit "$${code}"; }'

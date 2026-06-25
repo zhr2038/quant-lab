@@ -496,10 +496,14 @@ def _data_quality_checks(
     )
     return {
         "private_fills_present_but_actual_cost_zero": not (
-            private_fill_rows > 0 and actual_or_mixed_rows == 0
+            private_fill_rows > 0
+            and actual_or_mixed_rows == 0
+            and bootstrap_rows_count == 0
         ),
         "trades_present_but_not_in_cost_model": not (
-            v5_trade_rows > 0 and actual_or_mixed_rows == 0
+            v5_trade_rows > 0
+            and actual_or_mixed_rows == 0
+            and bootstrap_rows_count == 0
         ),
         "lifecycle_present_but_not_in_actual_cost": not (
             v5_order_lifecycle_rows > 0

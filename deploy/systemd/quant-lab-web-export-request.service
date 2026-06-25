@@ -9,7 +9,7 @@ User=quantlab
 Group=quantlab
 WorkingDirectory=/opt/quant-lab
 PermissionsStartOnly=true
-TimeoutStartSec=35min
+TimeoutStartSec=65min
 Environment=POLARS_MAX_THREADS=1
 Environment=OMP_NUM_THREADS=1
 Environment=OPENBLAS_NUM_THREADS=1
@@ -23,4 +23,5 @@ MemoryHigh=5G
 MemoryMax=6G
 CPUQuota=80%
 ExecStartPre=/usr/bin/systemctl start quant-lab-v5-telemetry-sync.service
+ExecStartPre=/usr/bin/systemctl start quant-lab-cost-calibration.service
 ExecStart=/bin/bash -lc '/usr/bin/timeout 25m /opt/quant-lab/.venv/bin/qlab run-web-export-request --request-path /var/lib/quant-lab/exports/.quant_lab_web_export_request.json'

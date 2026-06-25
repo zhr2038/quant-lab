@@ -4604,14 +4604,91 @@ def _expert_export_summary_from_index(root: Path) -> dict[str, Any] | None:
     pack_rows = payload.get("packs")
     if not isinstance(pack_rows, list):
         pack_rows = []
+    normalized_pack_rows = _existing_expert_index_pack_rows(root, pack_rows)
+    if not normalized_pack_rows and _expert_pack_paths(root):
+        return None
+    latest_pack = _existing_expert_index_pack_path(root, payload.get("latest_pack"))
+    if latest_pack is None and normalized_pack_rows:
+        # The index is stale enough that its manifest/data-quality summary may
+        # no longer describe the latest real pack; fall back to the zip scan.
+        return None
     return {
-        "latest_pack": payload.get("latest_pack"),
-        "packs": pl.DataFrame(pack_rows) if pack_rows else pl.DataFrame(),
+        "latest_pack": str(latest_pack) if latest_pack is not None else None,
+        "packs": (
+            pl.DataFrame(normalized_pack_rows)
+            if normalized_pack_rows
+            else pl.DataFrame()
+        ),
         "manifest_summary": manifest_summary,
         "data_quality_summary": payload.get("data_quality_summary") or {},
         "expert_questions": payload.get("expert_questions") or [],
         "warnings": payload.get("warnings") or [],
     }
+
+
+def _existing_expert_index_pack_rows(
+    root: Path,
+    pack_rows: list[Any],
+) -> list[dict[str, Any]]:
+    rows: list[dict[str, Any]] = []
+    seen: set[Path] = set()
+    for raw_row in pack_rows:
+        if not isinstance(raw_row, dict):
+            continue
+        path = _existing_expert_index_pack_path(
+            root,
+            raw_row.get("path"),
+            raw_row.get("name"),
+        )
+        if path is None or path in seen:
+            continue
+        seen.add(path)
+        try:
+            stat = path.stat()
+        except OSError:
+            continue
+        row = dict(raw_row)
+        row["path"] = str(path)
+        row["name"] = path.name
+        row["size_bytes"] = stat.st_size
+        row["modified_at"] = datetime.fromtimestamp(stat.st_mtime, tz=UTC).isoformat()
+        rows.append(row)
+    rows.sort(
+        key=lambda row: (
+            str(row.get("modified_at") or ""),
+            str(row.get("name") or ""),
+        ),
+        reverse=True,
+    )
+    return rows
+
+
+def _existing_expert_index_pack_path(
+    root: Path,
+    value: Any,
+    name: Any | None = None,
+) -> Path | None:
+    candidates: list[Path] = []
+    if value:
+        candidates.append(Path(str(value)))
+    if name:
+        candidates.append(root / str(name))
+    for candidate in candidates:
+        pack_name = candidate.name
+        if not (
+            pack_name.startswith("quant_lab_expert_pack_")
+            and pack_name.endswith(".zip")
+        ):
+            continue
+        path = candidate if candidate.is_absolute() else root / candidate
+        try:
+            resolved = path.resolve()
+            resolved.relative_to(root.resolve())
+        except (OSError, ValueError):
+            continue
+        if resolved.is_file():
+            return resolved
+    return None
 
 
 def _expert_export_source_signature(root: Path) -> tuple[Any, ...]:
@@ -4635,12 +4712,15 @@ def _latest_expert_pack_signature(root: Path) -> tuple[Any, ...]:
     packs = _expert_pack_paths(root)
     if not packs:
         return ("missing",)
-    latest = packs[0]
-    try:
-        stat = latest.stat()
-    except OSError:
-        return (latest.name, "unreadable")
-    return (latest.name, stat.st_mtime_ns, stat.st_size)
+    signatures: list[tuple[str, Any, Any]] = []
+    for path in packs[:24]:
+        try:
+            stat = path.stat()
+        except OSError:
+            signatures.append((path.name, "unreadable", "unreadable"))
+            continue
+        signatures.append((path.name, stat.st_mtime_ns, stat.st_size))
+    return ("packs", len(packs), tuple(signatures))
 
 
 def _expert_pack_paths(root: Path) -> list[Path]:

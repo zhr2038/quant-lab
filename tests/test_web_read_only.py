@@ -2831,6 +2831,75 @@ def test_expert_export_summary_prefers_export_index(tmp_path, monkeypatch):
     assert summary["expert_questions"] == ["indexed question"]
 
 
+def test_expert_export_summary_filters_missing_index_pack_rows(tmp_path):
+    readers.clear_web_cache()
+    exports_root = tmp_path / "exports"
+    exports_root.mkdir()
+    pack = exports_root / "quant_lab_expert_pack_2026-05-16_120000.zip"
+    missing = exports_root / "quant_lab_expert_pack_2026-05-16_110000.zip"
+    with zipfile.ZipFile(pack, "w") as archive:
+        archive.writestr("manifest.json", json.dumps({"marker": "zip"}))
+        archive.writestr("data_quality.json", "{}")
+        archive.writestr("expert_questions.md", "")
+    (exports_root / "export_index.json").write_text(
+        json.dumps(
+            {
+                "latest_pack": str(pack),
+                "packs": [
+                    {
+                        "path": str(pack),
+                        "name": pack.name,
+                        "size_bytes": pack.stat().st_size,
+                        "modified_at": "2026-05-16T12:00:00Z",
+                    },
+                    {
+                        "path": str(missing),
+                        "name": missing.name,
+                        "size_bytes": 1,
+                        "modified_at": "2026-05-16T11:00:00Z",
+                    },
+                ],
+                "manifest_summary": {"marker": "index"},
+                "data_quality_summary": {"status": "OK"},
+                "expert_questions": [],
+                "warnings": [],
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    summary = readers.expert_export_summary(exports_root)
+    packs = summary["packs"].to_dicts()
+
+    assert summary["latest_pack"] == str(pack.resolve())
+    assert [row["name"] for row in packs] == [pack.name]
+    assert packs[0]["path"] == str(pack.resolve())
+
+
+def test_expert_export_summary_cache_updates_when_old_pack_deleted(tmp_path):
+    readers.clear_web_cache()
+    exports_root = tmp_path / "exports"
+    exports_root.mkdir()
+    latest = exports_root / "quant_lab_expert_pack_2026-05-16_120000.zip"
+    old = exports_root / "quant_lab_expert_pack_2026-05-16_110000.zip"
+    for pack in (latest, old):
+        with zipfile.ZipFile(pack, "w") as archive:
+            archive.writestr("manifest.json", json.dumps({"marker": pack.name}))
+            archive.writestr("data_quality.json", "{}")
+            archive.writestr("expert_questions.md", "")
+    latest_time = datetime(2026, 5, 16, 12, tzinfo=UTC).timestamp()
+    old_time = datetime(2026, 5, 16, 11, tzinfo=UTC).timestamp()
+    os.utime(latest, (latest_time, latest_time))
+    os.utime(old, (old_time, old_time))
+
+    first = readers.expert_export_summary(exports_root)
+    old.unlink()
+    second = readers.expert_export_summary(exports_root)
+
+    assert [row["name"] for row in first["packs"].to_dicts()] == [latest.name, old.name]
+    assert [row["name"] for row in second["packs"].to_dicts()] == [latest.name]
+
+
 def test_expert_exports_generate_today_button_invokes_export(tmp_path, monkeypatch):
     lake_root = _fixture_lake(tmp_path)
     fake = FakeStreamlit(button_values={"生成今日专家包": True})

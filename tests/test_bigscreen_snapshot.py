@@ -800,6 +800,55 @@ def test_web_v2_expert_pack_status_and_download(monkeypatch, tmp_path):
     assert traversal_response.status_code == 404
 
 
+def test_web_v2_expert_pack_status_filters_deleted_index_pack(monkeypatch, tmp_path):
+    clear_bigscreen_cache()
+    lake = tmp_path / "lake"
+    exports = tmp_path / "exports"
+    pack = exports / "quant_lab_expert_pack_2026-06-05_120000.zip"
+    deleted_pack = exports / "quant_lab_expert_pack_2026-06-05_110000.zip"
+    exports.mkdir(parents=True)
+    with zipfile.ZipFile(pack, "w") as archive:
+        archive.writestr("manifest.json", json.dumps({"status": "OK"}))
+        archive.writestr("data_quality.json", json.dumps({"status": "OK"}))
+        archive.writestr("expert_questions.md", "下一步看什么？\n")
+    (exports / "export_index.json").write_text(
+        json.dumps(
+            {
+                "latest_pack": str(pack),
+                "packs": [
+                    {
+                        "path": str(pack),
+                        "name": pack.name,
+                        "size_bytes": pack.stat().st_size,
+                        "modified_at": "2026-06-05T12:00:00Z",
+                    },
+                    {
+                        "path": str(deleted_pack),
+                        "name": deleted_pack.name,
+                        "size_bytes": 1,
+                        "modified_at": "2026-06-05T11:00:00Z",
+                    },
+                ],
+                "manifest_summary": {"status": "OK"},
+                "data_quality_summary": {"status": "OK"},
+                "expert_questions": [],
+                "warnings": [],
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    monkeypatch.setenv("QUANT_LAB_LAKE_ROOT", str(lake))
+    monkeypatch.delenv("QUANT_LAB_API_TOKEN", raising=False)
+    payload = TestClient(create_app()).get(
+        "/web-v2/expert-pack/status?export_date=2026-06-05"
+    ).json()
+
+    assert payload["latest_pack_name"] == pack.name
+    assert payload["pack_count"] == 1
+    assert [row["name"] for row in payload["packs"]] == [pack.name]
+
+
 def test_web_v2_expert_pack_status_prefers_latest_requested_pack_over_stale_status(
     monkeypatch,
     tmp_path,
@@ -1186,6 +1235,10 @@ def test_bigscreen_snapshot_keeps_live_readiness_block_out_of_system_critical(
     exports = tmp_path / "exports"
     exports.mkdir()
     pack_path = exports / "quant_lab_expert_pack_2026-06-17_120000.zip"
+    with zipfile.ZipFile(pack_path, "w") as archive:
+        archive.writestr("manifest.json", json.dumps({"export_date": "2026-06-17"}))
+        archive.writestr("data_quality.json", json.dumps({"status": "CRITICAL"}))
+        archive.writestr("expert_questions.md", "")
     (exports / "export_index.json").write_text(
         json.dumps(
             {

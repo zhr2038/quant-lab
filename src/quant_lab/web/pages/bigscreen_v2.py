@@ -11,7 +11,15 @@ def render(_lake_root: str | Path, st_module: Any | None = None) -> None:
     st.title("quant-lab Web V2 大屏")
     st.caption("只读研究战情室；不下单、不撤单、不修改交易端或交易所状态。")
     st.link_button("打开 V2 大屏", url)
-    st.components.v1.iframe(url, height=920, scrolling=False)
+    show_iframe(st, url, height=920, scrolling=False)
+
+
+def show_iframe(st: Any, url: str, *, height: int, scrolling: bool) -> None:
+    iframe = getattr(st, "iframe", None)
+    if callable(iframe):
+        iframe(url, height=height, scrolling=scrolling)
+        return
+    st.components.v1.iframe(url, height=height, scrolling=scrolling)
 
 
 def _streamlit(st_module: Any | None = None) -> Any:

@@ -15,6 +15,7 @@ from quant_lab.web import export_request, readers
 from quant_lab.web import perf as web_perf
 from quant_lab.web.pages import (
     alpha_gates,
+    bigscreen_v2,
     cost_model,
     data_health,
     expert_exports,
@@ -25,7 +26,7 @@ from quant_lab.web.pages import (
     v5_telemetry,
     web_performance,
 )
-from quant_lab.web.pages._common import localize_frame
+from quant_lab.web.pages._common import localize_frame, show_frame
 
 FORBIDDEN_WEB_TERMS = [
     "place_order",
@@ -78,6 +79,84 @@ def test_secret_like_values_are_redacted():
     assert redacted["api_key"][0] == "[REDACTED]"
     assert redacted["passphrase"][0] == "[REDACTED]"
     assert redacted["normal"][0] == "[REDACTED]"
+
+
+def test_show_frame_prefers_streamlit_width_stretch():
+    class ModernStreamlit:
+        def __init__(self) -> None:
+            self.calls: list[dict[str, object]] = []
+
+        def dataframe(self, value, **kwargs) -> None:
+            self.calls.append(kwargs)
+
+    fake = ModernStreamlit()
+
+    show_frame(fake, pl.DataFrame({"symbol": ["BTC-USDT"]}), "empty")
+
+    assert fake.calls == [{"width": "stretch", "hide_index": True}]
+
+
+def test_show_frame_falls_back_for_older_streamlit_dataframe_api():
+    class LegacyStreamlit:
+        def __init__(self) -> None:
+            self.calls: list[dict[str, object]] = []
+
+        def dataframe(self, value, **kwargs) -> None:
+            if "width" in kwargs:
+                raise TypeError("width is not supported")
+            self.calls.append(kwargs)
+
+    fake = LegacyStreamlit()
+
+    show_frame(fake, pl.DataFrame({"symbol": ["BTC-USDT"]}), "empty")
+
+    assert fake.calls == [{"use_container_width": True, "hide_index": True}]
+
+
+def test_bigscreen_v2_prefers_streamlit_iframe_api():
+    class ModernStreamlit:
+        def __init__(self) -> None:
+            self.calls: list[tuple[str, object]] = []
+
+        def iframe(self, url, **kwargs) -> None:
+            self.calls.append(("iframe", {"url": url, **kwargs}))
+
+    fake = ModernStreamlit()
+
+    bigscreen_v2.show_iframe(fake, "http://example.test/web-v2", height=920, scrolling=False)
+
+    assert fake.calls == [
+        (
+            "iframe",
+            {"url": "http://example.test/web-v2", "height": 920, "scrolling": False},
+        )
+    ]
+
+
+def test_bigscreen_v2_falls_back_for_older_streamlit_iframe_api():
+    class LegacyComponents:
+        def __init__(self, calls: list[tuple[str, object]]) -> None:
+            self.v1 = self
+            self._calls = calls
+
+        def iframe(self, url, **kwargs) -> None:
+            self._calls.append(("components_iframe", {"url": url, **kwargs}))
+
+    class LegacyStreamlit:
+        def __init__(self) -> None:
+            self.calls: list[tuple[str, object]] = []
+            self.components = LegacyComponents(self.calls)
+
+    fake = LegacyStreamlit()
+
+    bigscreen_v2.show_iframe(fake, "http://example.test/web-v2", height=920, scrolling=False)
+
+    assert fake.calls == [
+        (
+            "components_iframe",
+            {"url": "http://example.test/web-v2", "height": 920, "scrolling": False},
+        )
+    ]
 
 
 def test_dashboard_readers_load_fixture_lake(tmp_path):

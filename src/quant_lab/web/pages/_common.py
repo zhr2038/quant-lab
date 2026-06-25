@@ -599,9 +599,12 @@ def show_frame(st: Any, df: pl.DataFrame, empty_message: str) -> None:
         return
     localized = localize_frame(df)
     try:
-        st.dataframe(localized, use_container_width=True, hide_index=True)
+        st.dataframe(localized, width="stretch", hide_index=True)
     except TypeError:
-        st.dataframe(localized)
+        try:
+            st.dataframe(localized, use_container_width=True, hide_index=True)
+        except TypeError:
+            st.dataframe(localized)
 
 
 def lake_caption(st: Any, lake_root: str | Path) -> None:

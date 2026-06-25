@@ -21,6 +21,7 @@ from quant_lab.web import perf, readers
 SNAPSHOT_CACHE_TTL_SECONDS = 35.0
 SNAPSHOT_CACHE_STALE_GRACE_SECONDS = 1800.0
 _SNAPSHOT_CACHE: dict[str, tuple[float, dict[str, Any]]] = {}
+_SNAPSHOT_CACHE_SOURCE_SIGNATURES: dict[str, tuple[Any, ...]] = {}
 _SNAPSHOT_CACHE_LOCK = threading.RLock()
 _SNAPSHOT_REFRESHING: set[str] = set()
 
@@ -34,11 +35,15 @@ def bigscreen_snapshot_with_meta(lake_root: str | Path) -> tuple[dict[str, Any],
     start = time.perf_counter()
     root = Path(lake_root)
     cache_key = str(root.resolve())
+    source_signature = _snapshot_source_signature(root)
     now = time.monotonic()
     ttl_seconds = _snapshot_cache_ttl_seconds()
     stale_grace_seconds = _snapshot_cache_stale_grace_seconds()
     with _SNAPSHOT_CACHE_LOCK:
         cached = _SNAPSHOT_CACHE.get(cache_key)
+        cached_source_signature = _SNAPSHOT_CACHE_SOURCE_SIGNATURES.get(cache_key)
+    if cached_source_signature != source_signature:
+        cached = None
     if cached is not None:
         age_seconds = max(0.0, now - cached[0])
         if age_seconds <= ttl_seconds:
@@ -73,6 +78,7 @@ def bigscreen_snapshot_with_meta(lake_root: str | Path) -> tuple[dict[str, Any],
     payload = _build_bigscreen_snapshot_payload(root)
     with _SNAPSHOT_CACHE_LOCK:
         _SNAPSHOT_CACHE[cache_key] = (time.monotonic(), payload)
+        _SNAPSHOT_CACHE_SOURCE_SIGNATURES[cache_key] = source_signature
     perf.record_event(
         "bigscreen_snapshot",
         elapsed_ms=(time.perf_counter() - start) * 1000,
@@ -180,9 +186,11 @@ def _schedule_snapshot_refresh(cache_key: str, root: Path) -> bool:
 def _refresh_snapshot_cache(cache_key: str, root: Path) -> None:
     start = time.perf_counter()
     try:
+        source_signature = _snapshot_source_signature(root)
         payload = _build_bigscreen_snapshot_payload(root)
         with _SNAPSHOT_CACHE_LOCK:
             _SNAPSHOT_CACHE[cache_key] = (time.monotonic(), payload)
+            _SNAPSHOT_CACHE_SOURCE_SIGNATURES[cache_key] = source_signature
         perf.record_event(
             "bigscreen_snapshot_refresh",
             elapsed_ms=(time.perf_counter() - start) * 1000,
@@ -202,7 +210,70 @@ def _refresh_snapshot_cache(cache_key: str, root: Path) -> None:
 def clear_bigscreen_cache() -> None:
     with _SNAPSHOT_CACHE_LOCK:
         _SNAPSHOT_CACHE.clear()
+        _SNAPSHOT_CACHE_SOURCE_SIGNATURES.clear()
         _SNAPSHOT_REFRESHING.clear()
+
+
+def _snapshot_source_signature(root: Path) -> tuple[Any, ...]:
+    exports_root = readers.default_exports_root(root)
+    return (
+        _path_signature(exports_root / "export_index.json"),
+        _expert_pack_collection_signature(exports_root),
+        _path_signature(root / "reports" / "v5_enforce_readiness.json"),
+        _directory_signature(root / "bronze" / "v5_bundle_manifest"),
+        _directory_signature(root / "gold" / "strategy_health_daily"),
+    )
+
+
+def _path_signature(path: Path) -> tuple[Any, ...]:
+    try:
+        stat = path.stat()
+    except OSError:
+        return (str(path), "missing")
+    return (str(path), stat.st_mtime_ns, stat.st_size)
+
+
+def _directory_signature(path: Path, *, limit: int = 24) -> tuple[Any, ...]:
+    try:
+        stat = path.stat()
+        children = sorted(path.iterdir(), key=lambda child: child.name)[:limit]
+    except OSError:
+        return (str(path), "missing")
+    child_signatures: list[tuple[str, Any, Any]] = []
+    for child in children:
+        try:
+            child_stat = child.stat()
+        except OSError:
+            child_signatures.append((child.name, "unreadable", "unreadable"))
+            continue
+        child_signatures.append((child.name, child_stat.st_mtime_ns, child_stat.st_size))
+    return (
+        str(path),
+        stat.st_mtime_ns,
+        stat.st_size,
+        len(children),
+        tuple(child_signatures),
+    )
+
+
+def _expert_pack_collection_signature(root: Path, *, limit: int = 24) -> tuple[Any, ...]:
+    try:
+        packs = sorted(
+            root.glob("quant_lab_expert_pack_*.zip"),
+            key=lambda path: (path.stat().st_mtime, path.name),
+            reverse=True,
+        )
+    except OSError:
+        return (str(root), "unreadable")
+    signatures: list[tuple[str, Any, Any]] = []
+    for path in packs[:limit]:
+        try:
+            stat = path.stat()
+        except OSError:
+            signatures.append((path.name, "unreadable", "unreadable"))
+            continue
+        signatures.append((path.name, stat.st_mtime_ns, stat.st_size))
+    return (str(root), len(packs), tuple(signatures))
 
 
 def _snapshot_cache_ttl_seconds() -> float:

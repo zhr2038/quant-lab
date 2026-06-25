@@ -2,11 +2,12 @@ from __future__ import annotations
 
 import argparse
 import os
+import signal
 import subprocess
 import sys
 from collections.abc import Callable, Sequence
 from pathlib import Path
-from time import perf_counter
+from time import perf_counter, sleep
 from typing import Any
 
 from quant_lab.web.pages import (
@@ -95,7 +96,45 @@ def main(argv: Sequence[str] | None = None) -> int:
         "--lake-root",
         str(args.lake_root),
     ]
-    return subprocess.run(command, env=env, check=False).returncode
+    return _run_streamlit_process(command, env=env)
+
+
+def _run_streamlit_process(command: Sequence[str], *, env: dict[str, str]) -> int:
+    process = subprocess.Popen(command, env=env)
+    received_signal: int | None = None
+    stop_started_at: float | None = None
+    stop_timeout_seconds = 10.0
+
+    def request_stop(signum: int, _frame: Any) -> None:
+        nonlocal received_signal, stop_started_at
+        received_signal = signum
+        if stop_started_at is None:
+            stop_started_at = perf_counter()
+            try:
+                process.terminate()
+            except ProcessLookupError:
+                return
+
+    previous_handlers: dict[int, Any] = {}
+    for signum in (signal.SIGTERM, signal.SIGINT):
+        previous_handlers[signum] = signal.signal(signum, request_stop)
+    try:
+        while True:
+            return_code = process.poll()
+            if return_code is not None:
+                return 0 if received_signal is not None else int(return_code)
+            if (
+                stop_started_at is not None
+                and perf_counter() - stop_started_at >= stop_timeout_seconds
+            ):
+                try:
+                    process.kill()
+                except ProcessLookupError:
+                    pass
+            sleep(0.2)
+    finally:
+        for signum, handler in previous_handlers.items():
+            signal.signal(signum, handler)
 
 
 def _parse_launcher_args(argv: Sequence[str] | None) -> argparse.Namespace:

@@ -2370,16 +2370,12 @@ def test_alpha_gates_does_not_warn_for_empty_legacy_strategy_evidence_when_board
 def test_web_launcher_hides_streamlit_file_navigation(monkeypatch, tmp_path):
     captured = {}
 
-    class Result:
-        returncode = 0
-
-    def fake_run(command, env, check):
+    def fake_run_streamlit_process(command, *, env):
         captured["command"] = command
         captured["env"] = env
-        captured["check"] = check
-        return Result()
+        return 0
 
-    monkeypatch.setattr(web_app.subprocess, "run", fake_run)
+    monkeypatch.setattr(web_app, "_run_streamlit_process", fake_run_streamlit_process)
 
     result = web_app.main(
         [
@@ -2395,9 +2391,51 @@ def test_web_launcher_hides_streamlit_file_navigation(monkeypatch, tmp_path):
     command = captured["command"]
     option_index = command.index("--client.showSidebarNavigation")
     assert result == 0
-    assert captured["check"] is False
     assert command[option_index + 1] == "false"
     assert option_index < command.index("--")
+
+
+def test_web_launcher_stops_streamlit_child_on_signal(monkeypatch):
+    signal_handlers = {}
+
+    class FakeProcess:
+        def __init__(self) -> None:
+            self.terminated = False
+            self.killed = False
+            self.poll_count = 0
+
+        def poll(self):
+            self.poll_count += 1
+            if self.poll_count == 1:
+                signal_handlers[web_app.signal.SIGTERM](web_app.signal.SIGTERM, None)
+                return None
+            return -web_app.signal.SIGTERM
+
+        def terminate(self) -> None:
+            self.terminated = True
+
+        def kill(self) -> None:
+            self.killed = True
+
+    fake_process = FakeProcess()
+
+    def fake_popen(command, env):
+        return fake_process
+
+    def fake_signal(signum, handler):
+        previous = signal_handlers.get(signum)
+        signal_handlers[signum] = handler
+        return previous
+
+    monkeypatch.setattr(web_app.subprocess, "Popen", fake_popen)
+    monkeypatch.setattr(web_app.signal, "signal", fake_signal)
+    monkeypatch.setattr(web_app, "sleep", lambda _seconds: None)
+
+    result = web_app._run_streamlit_process(["streamlit"], env={})
+
+    assert result == 0
+    assert fake_process.terminated is True
+    assert fake_process.killed is False
 
 
 def test_dashboard_uses_flat_page_radio_not_dropdown(tmp_path):

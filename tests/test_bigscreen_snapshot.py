@@ -295,6 +295,75 @@ def test_bigscreen_snapshot_exposes_cost_probe_p3_preflight(tmp_path):
     assert p3["live_order_effect"] == "none_preflight_only_no_order"
 
 
+def test_bigscreen_snapshot_uses_latest_v5_bundle_with_same_day_rows(tmp_path):
+    clear_bigscreen_cache()
+    lake = tmp_path / "lake"
+    reports = lake / "reports"
+    reports.mkdir(parents=True)
+    (reports / "v5_enforce_readiness.json").write_text(
+        json.dumps(
+            {
+                "generated_at": "2026-06-25T04:00:00Z",
+                "readiness_status": "ADVISORY_READY",
+                "veto_status": "VETO_READY",
+                "entry_status": "ENTRY_BLOCKED",
+                "scale_status": "SCALE_BLOCKED",
+                "blocked_reasons": [],
+                "warning_reasons": [
+                    "actual_or_mixed_cost_coverage_live_universe",
+                ],
+                "entry_blocked_reasons": [
+                    "actual_or_mixed_cost_coverage_live_universe",
+                ],
+                "scale_blocked_reasons": [
+                    "actual_or_mixed_cost_coverage_live_universe",
+                ],
+            }
+        ),
+        encoding="utf-8",
+    )
+    write_parquet_dataset(
+        pl.DataFrame(
+            [
+                {
+                    "bundle_ts": "2026-06-25T03:27:25Z",
+                    "ingest_ts": "2026-06-25T03:28:00Z",
+                    "bundle_name": "old.tar.gz",
+                }
+            ]
+        ),
+        lake / "bronze" / "strategy_telemetry" / "v5" / "bundle_manifest",
+    )
+    write_parquet_dataset(
+        pl.DataFrame(
+            [
+                {
+                    "date": "2026-06-25",
+                    "status": "OK",
+                    "latest_bundle_ts": "2026-06-25T03:27:25Z",
+                    "latest_bundle_sha256": "old-sha",
+                },
+                {
+                    "date": "2026-06-25",
+                    "status": "OK",
+                    "latest_bundle_ts": "2026-06-25T03:56:10Z",
+                    "latest_bundle_sha256": "new-sha",
+                },
+            ]
+        ),
+        lake / "gold" / "strategy_health_daily",
+    )
+
+    payload = bigscreen_snapshot(lake)
+
+    assert payload["kpis"]["latest_v5_bundle_ts"] == "2026-06-25T03:56:10Z"
+    assert payload["v5"]["latest_bundle_sha256"] == "new-sha"
+    readiness = payload["v5"]["current_enforce_readiness"]
+    assert readiness["veto_status"] == "VETO_READY"
+    assert readiness["entry_status"] == "ENTRY_BLOCKED"
+    assert readiness["scale_status"] == "SCALE_BLOCKED"
+
+
 def test_bigscreen_snapshot_exposes_factor_factory_results(tmp_path):
     clear_bigscreen_cache()
     lake = tmp_path / "lake"

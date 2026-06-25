@@ -4431,8 +4431,8 @@ def v5_telemetry_summary(lake_root: str | Path) -> dict[str, Any]:
             "cost_probe_roundtrip_event_rows": probe_roundtrip_events.head(DISPLAY_LIMIT),
             "warnings": [*warnings, "strategy_health_daily 数据集缺失或为空"],
         }
-    sort_column = "date" if "date" in health.columns else health.columns[0]
-    latest = health.sort(sort_column).tail(1).to_dicts()[0]
+    health = _sort_v5_freshness_frame(health)
+    latest = health.tail(1).to_dicts()[0]
     if p3_latest:
         latest = dict(latest)
         latest["cost_probe_p3_preflight"] = p3_latest
@@ -4447,7 +4447,7 @@ def v5_telemetry_summary(lake_root: str | Path) -> dict[str, Any]:
         latest["cost_probe_roundtrip_event"] = latest_roundtrip_event
     return {
         "latest": latest,
-        "health_rows": health.sort(sort_column, descending=True).head(DISPLAY_LIMIT),
+        "health_rows": health.reverse().head(DISPLAY_LIMIT),
         "gate_compliance_rows": gate.head(DISPLAY_LIMIT),
         "quant_lab_mode_rows": mode.head(DISPLAY_LIMIT),
         "quant_lab_enforcement_rows": enforcement.head(DISPLAY_LIMIT),
@@ -4673,25 +4673,60 @@ def default_exports_root(lake_root: str | Path) -> Path:
 
 
 def _latest_v5_bundle_ts(lake_root: str | Path) -> datetime | None:
-    manifest_latest = _latest_dataset_timestamp_by_path(
-        dataset_path_for(lake_root, "v5_bundle_manifest"),
-        "v5_bundle_manifest",
-        timestamp_columns=DATASET_TIMESTAMP_COLUMNS["v5_bundle_manifest"],
-    )
-    if manifest_latest is not None:
-        return manifest_latest
-    latest = _latest_dataset_timestamp_by_path(
-        dataset_path_for(lake_root, "strategy_health_daily"),
-        "strategy_health_daily",
-        timestamp_columns=("latest_bundle_ts", "created_at", "date"),
-    )
-    if latest is not None:
-        return latest
-    return _latest_dataset_timestamp_by_path(
-        Path(lake_root) / "bronze/strategy_telemetry/v5/bundle_manifest",
-        "bronze/strategy_telemetry/v5/bundle_manifest",
-        timestamp_columns=("bundle_ts", "ingest_ts", "created_at"),
-    )
+    candidates = [
+        _latest_dataset_timestamp_by_path(
+            dataset_path_for(lake_root, "v5_bundle_manifest"),
+            "v5_bundle_manifest",
+            timestamp_columns=DATASET_TIMESTAMP_COLUMNS["v5_bundle_manifest"],
+        ),
+        _latest_dataset_timestamp_by_path(
+            dataset_path_for(lake_root, "strategy_health_daily"),
+            "strategy_health_daily",
+            timestamp_columns=("latest_bundle_ts", "created_at", "date"),
+        ),
+        _latest_dataset_timestamp_by_path(
+            Path(lake_root) / "bronze/strategy_telemetry/v5/bundle_manifest",
+            "bronze/strategy_telemetry/v5/bundle_manifest",
+            timestamp_columns=("bundle_ts", "ingest_ts", "created_at"),
+        ),
+    ]
+    return max((value for value in candidates if value is not None), default=None)
+
+
+def _sort_v5_freshness_frame(frame: pl.DataFrame) -> pl.DataFrame:
+    sort_columns = [
+        column
+        for column in ("latest_bundle_ts", "created_at", "date")
+        if column in frame.columns
+    ]
+    if not sort_columns:
+        sort_columns = [frame.columns[0]]
+    return frame.sort(sort_columns)
+
+
+def latest_v5_bundle_ts_for_web(lake_root: str | Path) -> datetime | None:
+    return _latest_v5_bundle_ts(lake_root)
+
+
+def current_enforce_readiness_summary(lake_root: str | Path) -> dict[str, Any]:
+    path = Path(lake_root) / "reports" / "v5_enforce_readiness.json"
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return {}
+    if not isinstance(payload, dict):
+        return {}
+    return {
+        "generated_at": payload.get("generated_at"),
+        "readiness_status": payload.get("readiness_status"),
+        "veto_status": payload.get("veto_status"),
+        "entry_status": payload.get("entry_status"),
+        "scale_status": payload.get("scale_status"),
+        "blocked_reasons": payload.get("blocked_reasons") or [],
+        "warning_reasons": payload.get("warning_reasons") or [],
+        "entry_blocked_reasons": payload.get("entry_blocked_reasons") or [],
+        "scale_blocked_reasons": payload.get("scale_blocked_reasons") or [],
+    }
 
 
 def _latest_dataset_timestamp_by_path(

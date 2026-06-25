@@ -95,6 +95,11 @@ def _build_bigscreen_snapshot_payload(root: Path) -> dict[str, Any]:
     market = _safe_summary("market_regime_summary", readers.market_regime_summary, root)
     collectors = _safe_summary("okx_collector_summary", readers.okx_collector_summary, root)
     v5 = _safe_summary("v5_telemetry_summary", readers.v5_telemetry_summary, root)
+    current_readiness = _safe_summary(
+        "current_enforce_readiness_summary",
+        readers.current_enforce_readiness_summary,
+        root,
+    )
     consumers = _safe_summary(
         "strategy_consumer_summary",
         readers.strategy_consumer_summary,
@@ -140,7 +145,7 @@ def _build_bigscreen_snapshot_payload(root: Path) -> dict[str, Any]:
         )[:8],
         "data_matrix": _data_matrix(market, collectors, cost, strategy, data_health, overview),
         "strategy_flow": _strategy_flow(strategy),
-        "v5": _v5_payload(v5),
+        "v5": _v5_payload(v5, current_readiness),
         "cost": _cost_payload(cost),
         "market": _market_payload(market),
         "collectors": _collector_payload(collectors),
@@ -1210,9 +1215,11 @@ def _top_live_candidates(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
     ]
 
 
-def _v5_payload(v5: dict[str, Any]) -> dict[str, Any]:
+def _v5_payload(v5: dict[str, Any], current_readiness: dict[str, Any] | None = None) -> dict[str, Any]:
     latest = v5.get("latest") if isinstance(v5.get("latest"), dict) else {}
     payload = {str(key): _json_value(value) for key, value in latest.items()}
+    if current_readiness:
+        payload["current_enforce_readiness"] = _json_value(current_readiness)
     if "latest_bundle_sha256" in payload and "latest_bundle_sha256_short" not in payload:
         payload["latest_bundle_sha256_short"] = _short_hash(payload["latest_bundle_sha256"])
     return payload

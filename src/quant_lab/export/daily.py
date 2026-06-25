@@ -4055,6 +4055,8 @@ def export_daily_pack(
     pre_export_v5_refresh: bool = True,
     v5_telemetry_config: str | Path | None = None,
     allow_stale_v5: bool = False,
+    expected_v5_bundle_sha256: str | None = None,
+    acceptance_set_id: str | None = None,
 ) -> DailyExportResult:
     day = _parse_date(export_date)
     root = Path(lake_root)
@@ -4071,6 +4073,10 @@ def export_daily_pack(
     )
     pre_export_v5["allow_stale_v5"] = allow_stale_v5
     pre_export_v5["sync_attempted"] = bool(pre_export_v5_refresh)
+    if expected_v5_bundle_sha256:
+        pre_export_v5["expected_v5_bundle_sha256"] = str(expected_v5_bundle_sha256).strip()
+    if acceptance_set_id:
+        pre_export_v5["acceptance_set_id"] = str(acceptance_set_id).strip()
     _record_export_stage(export_stage_timings, "pre_export_v5", stage_started)
     stage_started = _export_stage_start("pre_export_risk_permission")
     pre_export_v5_warnings = [str(warning) for warning in pre_export_v5.get("warnings", [])]
@@ -6470,6 +6476,9 @@ def _manifest_payload(
         "authoritative_snapshot": authoritative_snapshot,
         "stale_v5_bundle": stale_v5_bundle,
         "allow_stale_v5": allow_stale_v5,
+        "acceptance_set_id": v5_context.get("acceptance_set_id"),
+        "expected_v5_bundle_sha256": v5_context.get("expected_v5_bundle_sha256"),
+        "expected_v5_bundle_matched": v5_context.get("expected_v5_bundle_matched"),
         "selected_v5_bundle_path": v5_context.get("selected_v5_bundle_path"),
         "selected_v5_bundle_sha256": v5_context.get("selected_v5_bundle_sha256"),
         "selected_v5_bundle_built_at": v5_context.get("selected_v5_bundle_built_at"),
@@ -6506,6 +6515,9 @@ def _manifest_payload(
             ),
             "latest_v5_bundle_ingested_at_export": _iso_or_none(latest_ingested_bundle_ts),
             "selected_v5_bundle_sha256": v5_context.get("selected_v5_bundle_sha256"),
+            "acceptance_set_id": v5_context.get("acceptance_set_id"),
+            "expected_v5_bundle_sha256": v5_context.get("expected_v5_bundle_sha256"),
+            "expected_v5_bundle_matched": v5_context.get("expected_v5_bundle_matched"),
             "selected_v5_bundle_manifest_match": bool(
                 v5_context.get("selected_v5_bundle_manifest_match")
             ),
@@ -7086,6 +7098,7 @@ def _v5_export_consistency(
     latest_seen = _parse_v5_context_ts(pre_export_v5.get("latest_v5_bundle_seen_at_export"))
     latest_local_ingested = _latest_v5_bundle_ts(frames)
     selected_sha = str(pre_export_v5.get("selected_v5_bundle_sha256") or "").strip()
+    expected_sha = str(pre_export_v5.get("expected_v5_bundle_sha256") or "").strip()
     selected_ingested_at = _parse_v5_context_ts(
         pre_export_v5.get("selected_v5_bundle_ingested_at")
     )
@@ -7121,6 +7134,11 @@ def _v5_export_consistency(
         authoritative_blockers.append("stale_v5_bundle")
     if not selected_sha:
         authoritative_blockers.append("selected_v5_bundle_sha256_missing")
+    if expected_sha and selected_sha and expected_sha.lower() != selected_sha.lower():
+        authoritative_blockers.append(
+            "expected_v5_bundle_sha256_mismatch:"
+            f"expected={expected_sha};selected={selected_sha}"
+        )
     if selected_ingested_at is None:
         authoritative_blockers.append("selected_v5_bundle_ingested_at_missing")
     if not manifest_match:
@@ -7162,6 +7180,13 @@ def _v5_export_consistency(
         "warning_reason": reason,
         "selected_v5_bundle_authoritative_reason": authoritative_reason,
         "selected_v5_bundle_manifest_match": manifest_match,
+        "expected_v5_bundle_sha256": expected_sha or None,
+        "expected_v5_bundle_matched": bool(
+            expected_sha and selected_sha and expected_sha.lower() == selected_sha.lower()
+        )
+        if expected_sha
+        else None,
+        "acceptance_set_id": pre_export_v5.get("acceptance_set_id"),
     }
 
 
@@ -7687,6 +7712,9 @@ def _provenance_payload(
         "python_version": sys.version,
         "export_command": " ".join(command_line),
         "lake_root": str(root),
+        "acceptance_set_id": v5_context.get("acceptance_set_id"),
+        "expected_v5_bundle_sha256": v5_context.get("expected_v5_bundle_sha256"),
+        "expected_v5_bundle_matched": v5_context.get("expected_v5_bundle_matched"),
         "selected_v5_bundle_sha256": v5_context.get("selected_v5_bundle_sha256"),
         "selected_v5_bundle_manifest_bundle_sha256": v5_context.get(
             "selected_v5_bundle_manifest_bundle_sha256"

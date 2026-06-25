@@ -1967,6 +1967,43 @@ def test_v5_bundle_sync_uses_selected_manifest_ingest_for_uploaded_latest_bundle
     assert row["why_stale"] == ""
 
 
+def test_v5_export_consistency_rejects_expected_bundle_sha_mismatch():
+    frames = {
+        "strategy_health_daily": pl.DataFrame(
+            [
+                {
+                    "date": "2026-06-15",
+                    "latest_bundle_ts": "2026-06-15T12:00:30Z",
+                }
+            ]
+        )
+    }
+    pre_export_v5 = {
+        "sync_attempted": True,
+        "latest_v5_bundle_seen_at_export": "2026-06-15T12:00:00Z",
+        "selected_v5_bundle_built_at": "2026-06-15T12:00:00Z",
+        "selected_v5_bundle_ingested_at": "2026-06-15T12:00:30Z",
+        "selected_v5_bundle_path": "/tmp/v5_latest.tar.gz",
+        "selected_v5_bundle_sha256": "selected-sha",
+        "selected_v5_bundle_manifest_match": True,
+        "expected_v5_bundle_sha256": "expected-sha",
+        "acceptance_set_id": "acceptance-20260615",
+    }
+
+    consistency = daily_export_module._v5_export_consistency(
+        frames,
+        pre_export_v5=pre_export_v5,
+        pre_export_v5_refresh=True,
+        allow_stale_v5=False,
+    )
+
+    assert consistency["authoritative_snapshot"] is False
+    assert consistency["expected_v5_bundle_matched"] is False
+    assert consistency["expected_v5_bundle_sha256"] == "expected-sha"
+    assert consistency["acceptance_set_id"] == "acceptance-20260615"
+    assert "expected_v5_bundle_sha256_mismatch" in consistency["selected_v5_bundle_authoritative_reason"]
+
+
 def test_v5_bundle_sync_keeps_refresh_disabled_provenance_out_of_failures():
     generated_at = datetime(2026, 6, 15, 13, tzinfo=UTC)
     frames = {
@@ -4229,8 +4266,8 @@ def test_data_quality_marks_veto_ready_entry_block_as_warning(tmp_path, monkeypa
         lambda _lake_root: FakeEnforceReadiness(
             readiness_status="BLOCKED",
             veto_status="VETO_READY",
-            entry_status="BLOCKED",
-            scale_status="BLOCKED",
+            entry_status="ENTRY_BLOCKED",
+            scale_status="SCALE_BLOCKED",
             blocked_reasons=[
                 "actual_or_mixed_cost_coverage_live_universe",
                 "fallback_rate",

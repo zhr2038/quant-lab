@@ -1072,7 +1072,7 @@ def test_bigscreen_actions_skip_entry_or_scale_readiness_advisory():
                 "warning_count": 1,
                 "warnings": [
                     "quant_lab_enforce_readiness: readiness_status=BLOCKED; "
-                    "veto_status=VETO_READY; entry_status=BLOCKED; scale_status=BLOCKED; "
+                    "veto_status=VETO_READY; entry_status=ENTRY_BLOCKED; scale_status=SCALE_BLOCKED; "
                     "blocked=['actual_or_mixed_cost_coverage_live_universe', 'fallback_rate']; "
                     "warnings=[]; live_order_effect=entry_or_scale_block_only"
                 ],
@@ -1092,7 +1092,7 @@ def test_bigscreen_system_warnings_skip_entry_or_scale_readiness_advisory():
             "warning_count": 1,
             "warnings": [
                 "quant_lab_enforce_readiness: readiness_status=BLOCKED; "
-                "veto_status=VETO_READY; entry_status=BLOCKED; scale_status=BLOCKED; "
+                "veto_status=VETO_READY; entry_status=ENTRY_BLOCKED; scale_status=SCALE_BLOCKED; "
                 "blocked=['actual_or_mixed_cost_coverage_live_universe', 'fallback_rate']; "
                 "warnings=[]; live_order_effect=entry_or_scale_block_only"
             ],

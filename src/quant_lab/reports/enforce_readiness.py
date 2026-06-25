@@ -260,13 +260,13 @@ def build_enforce_readiness_report(
 def _readiness_split(blocked: list[str], warnings: list[str]) -> dict[str, Any]:
     blocked_set = {str(reason).strip() for reason in blocked if str(reason).strip()}
     warning_set = {str(reason).strip() for reason in warnings if str(reason).strip()}
-    entry_blocked = sorted(blocked_set & ENTRY_READINESS_REASONS)
+    entry_blocked = sorted((blocked_set | warning_set) & ENTRY_READINESS_REASONS)
     scale_blocked = sorted((blocked_set | warning_set) & SCALE_READINESS_REASONS)
     veto_blocked = sorted(blocked_set - ENTRY_READINESS_REASONS)
     return {
         "veto_status": "VETO_BLOCKED" if veto_blocked else "VETO_READY",
-        "entry_status": "BLOCKED" if entry_blocked else "ENTRY_READY",
-        "scale_status": "BLOCKED" if scale_blocked else "SCALE_READY",
+        "entry_status": "ENTRY_BLOCKED" if entry_blocked else "ENTRY_READY",
+        "scale_status": "SCALE_BLOCKED" if scale_blocked else "SCALE_READY",
         "veto_blocked_reasons": veto_blocked,
         "entry_blocked_reasons": entry_blocked,
         "scale_blocked_reasons": scale_blocked,

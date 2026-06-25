@@ -1942,6 +1942,20 @@ def export_daily(
             ),
         ),
     ] = False,
+    expected_v5_bundle_sha256: Annotated[
+        str | None,
+        typer.Option(
+            "--expected-v5-bundle-sha256",
+            help="Expected V5 bundle SHA-256 for this acceptance/export set.",
+        ),
+    ] = None,
+    acceptance_set_id: Annotated[
+        str | None,
+        typer.Option(
+            "--acceptance-set-id",
+            help="Optional acceptance set identifier written to manifest/provenance.",
+        ),
+    ] = None,
 ) -> None:
     result = run_with_job_metrics(
         lake_root=lake_root,
@@ -1958,6 +1972,8 @@ def export_daily(
             pre_export_v5_refresh=pre_export_v5_refresh,
             v5_telemetry_config=v5_telemetry_config,
             allow_stale_v5=allow_stale_v5,
+            expected_v5_bundle_sha256=expected_v5_bundle_sha256,
+            acceptance_set_id=acceptance_set_id,
         ),
     )
     typer.echo(result.model_dump_json(indent=2))

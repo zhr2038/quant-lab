@@ -634,8 +634,8 @@ def test_live_universe_cost_coverage_blocks_when_only_one_symbol_has_actual_cost
 
     assert report.readiness_status == "BLOCKED"
     assert report.veto_status == "VETO_READY"
-    assert report.entry_status == "BLOCKED"
-    assert report.scale_status == "BLOCKED"
+    assert report.entry_status == "ENTRY_BLOCKED"
+    assert report.scale_status == "SCALE_BLOCKED"
     assert report.veto_blocked_reasons == []
     assert report.entry_blocked_reasons == [
         "actual_or_mixed_cost_coverage_live_universe",
@@ -714,6 +714,9 @@ def test_cost_probe_only_does_not_make_enforce_readiness_ready(tmp_path):
     report = build_enforce_readiness_report(lake)
 
     assert report.readiness_status == "ADVISORY_READY"
+    assert report.veto_status == "VETO_READY"
+    assert report.entry_status == "ENTRY_BLOCKED"
+    assert report.scale_status == "SCALE_BLOCKED"
     assert "actual_or_mixed_cost_coverage_live_universe" in report.warning_reasons
     assert report.metrics["actual_or_mixed_cost_coverage_live_universe"] == 0.0
     assert report.metrics["actual_or_mixed_cost_symbol_count_live_universe"] == 0
@@ -737,8 +740,8 @@ def test_soft_proxy_fallback_still_blocks_when_permission_allows_live_orders(
 
     assert report.readiness_status == "BLOCKED"
     assert report.veto_status == "VETO_READY"
-    assert report.entry_status == "BLOCKED"
-    assert report.scale_status == "BLOCKED"
+    assert report.entry_status == "ENTRY_BLOCKED"
+    assert report.scale_status == "SCALE_BLOCKED"
     assert "actual_or_mixed_cost_coverage_live_universe" in report.blocked_reasons
 
 

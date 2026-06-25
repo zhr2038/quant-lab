@@ -3614,11 +3614,11 @@ def _live_entry_readiness_health(lake_root: Path) -> dict[str, Any]:
         entry_status = "ENTRY_READY"
         scale_status = "SCALE_READY"
     elif status in {"ADVISORY_READY", "WARN"}:
-        entry_status = "BLOCKED"
-        scale_status = "BLOCKED"
+        entry_status = "ENTRY_BLOCKED"
+        scale_status = "SCALE_BLOCKED"
     else:
-        entry_status = "BLOCKED"
-        scale_status = "BLOCKED"
+        entry_status = "ENTRY_BLOCKED"
+        scale_status = "SCALE_BLOCKED"
     return {
         "status": status,
         "veto_status": veto_status,

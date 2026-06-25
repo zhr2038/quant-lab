@@ -60,8 +60,8 @@ def test_health_deep_runs_dataset_checks(monkeypatch, tmp_path):
     assert response.json()["data_quality"] == {"status": "OK", "warnings": [], "warning_count": 0}
     assert response.json()["live_entry_readiness"]["status"] == "UNKNOWN"
     assert response.json()["live_entry_readiness"]["veto_status"] == "VETO_READY"
-    assert response.json()["live_entry_readiness"]["entry_status"] == "BLOCKED"
-    assert response.json()["live_entry_readiness"]["scale_status"] == "BLOCKED"
+    assert response.json()["live_entry_readiness"]["entry_status"] == "ENTRY_BLOCKED"
+    assert response.json()["live_entry_readiness"]["scale_status"] == "SCALE_BLOCKED"
     assert response.json()["data_health"] == {"status": "ok"}
     assert response.json()["cost_health"] == {"status": "ok"}
     assert response.json()["warnings"] == []
@@ -263,8 +263,8 @@ def test_health_deep_reports_live_entry_readiness_split(monkeypatch, tmp_path):
     readiness = response.json()["live_entry_readiness"]
     assert readiness["status"] == "ADVISORY_READY"
     assert readiness["veto_status"] == "VETO_READY"
-    assert readiness["entry_status"] == "BLOCKED"
-    assert readiness["scale_status"] == "BLOCKED"
+    assert readiness["entry_status"] == "ENTRY_BLOCKED"
+    assert readiness["scale_status"] == "SCALE_BLOCKED"
     assert readiness["blocked_reasons"] == ["live_cost_coverage_low"]
     assert readiness["warning_reasons"] == ["fallback_rate_high"]
 

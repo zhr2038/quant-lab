@@ -35,18 +35,36 @@ Versioned factor metadata:
 - `input_features_json`
 - `template`
 - `params_json`
+- `expression_json`
+- `expression_hash`
+- `status`
+- `lookback_bars`
+- `availability_lag_bars`
+- `warmup_bars`
+- `required_bars`
+- `causal`
+- `normalization`
+- `owner`
 - `enabled`
 
 ### `gold/factor_value`
 
 Computed factor values:
 
+- `ts` remains the historical event key for backward compatibility.
+- `event_time` is the closed bar timestamp described by the factor value.
+- `available_time` is when the factor value may be consumed by a strategy.
 - `raw_value`
 - `normalized_value`
 - `rank_value`
 - `value`
+- `factor_status`
+- `expression_hash`
+- `data_version`
+- `calculated_at`
 - `is_valid`
 - `invalid_reason`
+- `quality_flags_json`
 
 Values are computed only from existing `gold/feature_value` rows. Cross-sectional
 normalization is grouped by `factor_id + factor_version + timeframe + ts`.
@@ -115,6 +133,8 @@ qlab factor-factory-health \
 
 - Factors consume only previously published `feature_value`.
 - `feature_value` itself is computed from closed `market_bar`.
+- Every factor definition is fail-fast causal: `causal=false` is rejected.
+- Every factor value separates `event_time` from `available_time`.
 - Forward labels use `decision_delay_bars >= 1`.
 - Validation joins factor timestamp to label `feature_ts`.
 - `decision_ts` must be after `feature_ts`.

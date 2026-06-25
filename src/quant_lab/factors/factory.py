@@ -4,7 +4,7 @@ import math
 import subprocess
 import tempfile
 from collections import Counter
-from datetime import UTC, date, datetime
+from datetime import UTC, date, datetime, timedelta
 from pathlib import Path
 from typing import Any
 
@@ -45,6 +45,16 @@ FACTOR_DEFINITION_SCHEMA: dict[str, Any] = {
     "input_features_json": pl.Utf8,
     "template": pl.Utf8,
     "params_json": pl.Utf8,
+    "expression_json": pl.Utf8,
+    "expression_hash": pl.Utf8,
+    "status": pl.Utf8,
+    "lookback_bars": pl.Int64,
+    "availability_lag_bars": pl.Int64,
+    "warmup_bars": pl.Int64,
+    "required_bars": pl.Int64,
+    "causal": pl.Boolean,
+    "normalization": pl.Utf8,
+    "owner": pl.Utf8,
     "direction": pl.Int64,
     "min_cross_section": pl.Int64,
     "clip_abs": pl.Float64,
@@ -62,18 +72,25 @@ FACTOR_VALUE_SCHEMA: dict[str, Any] = {
     "symbol": pl.Utf8,
     "timeframe": pl.Utf8,
     "ts": pl.Datetime(time_zone="UTC"),
+    "event_time": pl.Datetime(time_zone="UTC"),
+    "available_time": pl.Datetime(time_zone="UTC"),
     "raw_value": pl.Float64,
     "normalized_value": pl.Float64,
     "rank_value": pl.Float64,
     "value": pl.Float64,
+    "factor_status": pl.Utf8,
+    "expression_hash": pl.Utf8,
     "input_features_json": pl.Utf8,
     "input_dataset_version": pl.Utf8,
+    "data_version": pl.Utf8,
     "input_hash": pl.Utf8,
     "code_version": pl.Utf8,
+    "calculated_at": pl.Datetime(time_zone="UTC"),
     "created_at": pl.Datetime(time_zone="UTC"),
     "source": pl.Utf8,
     "is_valid": pl.Boolean,
     "invalid_reason": pl.Utf8,
+    "quality_flags_json": pl.Utf8,
 }
 
 FACTOR_EVIDENCE_SCHEMA: dict[str, Any] = {
@@ -718,11 +735,16 @@ def _build_factor_value_frame(
     code_version = _code_version()
     frames: list[pl.DataFrame] = []
     for spec in specs:
+        if not spec.causal:
+            raise ValueError(f"factor {spec.factor_id} is marked non-causal")
         if not set(spec.input_features).issubset(set(wide.columns)):
             continue
         raw = _factor_raw_expr(spec)
         if spec.clip_abs is not None:
             raw = winsorize_expr(raw, lower=-spec.clip_abs, upper=spec.clip_abs)
+        availability_offset = timedelta(
+            seconds=_timeframe_seconds(spec.timeframe) * spec.availability_lag_bars
+        )
         frame = wide.select(
             [
                 pl.lit(spec.factor_id).alias("factor_id"),
@@ -732,11 +754,17 @@ def _build_factor_value_frame(
                 pl.col("symbol"),
                 pl.col("timeframe"),
                 pl.col("ts"),
+                pl.col("ts").alias("event_time"),
+                (pl.col("ts") + pl.lit(availability_offset)).alias("available_time"),
                 raw.cast(pl.Float64, strict=False).alias("raw_value"),
+                pl.lit(spec.status.value).alias("factor_status"),
+                pl.lit(spec.expression_hash).alias("expression_hash"),
                 pl.lit(safe_json_dumps(list(spec.input_features))).alias("input_features_json"),
                 pl.lit(input_dataset_version).alias("input_dataset_version"),
+                pl.lit(input_dataset_version).alias("data_version"),
                 pl.lit(input_hash).alias("input_hash"),
                 pl.lit(code_version).alias("code_version"),
+                pl.lit(created_at).alias("calculated_at"),
                 pl.lit(created_at).alias("created_at"),
                 pl.lit(SOURCE_NAME).alias("source"),
                 pl.lit(spec.direction).alias("_direction"),
@@ -787,6 +815,11 @@ def _build_factor_value_frame(
         .then(pl.col("normalized_value") * pl.col("_direction"))
         .otherwise(None)
         .alias("value")
+    ).with_columns(
+        pl.when(pl.col("is_valid"))
+        .then(pl.lit("[]"))
+        .otherwise(pl.format('["{}"]', pl.col("invalid_reason").fill_null("invalid_factor_value")))
+        .alias("quality_flags_json")
     )
     return normalized.select(list(FACTOR_VALUE_SCHEMA)).sort(
         ["factor_id", "symbol", "timeframe", "ts"]
@@ -839,6 +872,26 @@ def _factor_raw_expr(spec: FactorSpec) -> pl.Expr:
             numeric(str(params["liquidity_feature"])),
         )
     raise ValueError(f"unsupported factor template: {spec.template}")
+
+
+def _timeframe_seconds(timeframe: str) -> int:
+    text = str(timeframe or "").strip()
+    if len(text) < 2:
+        raise ValueError(f"unsupported timeframe: {timeframe!r}")
+    amount_text, unit = text[:-1], text[-1].lower()
+    if not amount_text.isdigit():
+        raise ValueError(f"unsupported timeframe: {timeframe!r}")
+    amount = int(amount_text)
+    multipliers = {
+        "s": 1,
+        "m": 60,
+        "h": 60 * 60,
+        "d": 24 * 60 * 60,
+        "w": 7 * 24 * 60 * 60,
+    }
+    if amount <= 0 or unit not in multipliers:
+        raise ValueError(f"unsupported timeframe: {timeframe!r}")
+    return amount * multipliers[unit]
 
 
 def _attach_symbol_costs(

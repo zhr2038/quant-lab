@@ -2,6 +2,8 @@ import json
 from datetime import UTC, datetime, timedelta
 
 import polars as pl
+import pytest
+from pydantic import ValidationError
 
 from quant_lab.data.lake import read_parquet_dataset, write_market_bars, write_parquet_dataset
 from quant_lab.factors.composite_factory import (
@@ -9,6 +11,7 @@ from quant_lab.factors.composite_factory import (
     build_factor_strategy_bridge_candidates,
 )
 from quant_lab.factors.factory import build_and_publish_factor_factory, factor_factory_health
+from quant_lab.factors.registry import FactorSpec
 from quant_lab.features.publish import publish_features
 
 
@@ -47,6 +50,41 @@ def test_factor_factory_builds_definitions_values_evidence_and_candidates(tmp_pa
     assert correlations.height >= 0
     assert "rank_ic_mean" in evidence.columns
     assert "candidate_state" in candidates.columns
+    assert {
+        "expression_json",
+        "expression_hash",
+        "status",
+        "lookback_bars",
+        "availability_lag_bars",
+        "required_bars",
+        "causal",
+    }.issubset(set(definitions.columns))
+    assert {
+        "event_time",
+        "available_time",
+        "calculated_at",
+        "data_version",
+        "factor_status",
+        "expression_hash",
+        "quality_flags_json",
+    }.issubset(set(values.columns))
+
+    definition = definitions.filter(pl.col("factor_id") == "core.close_return_24").to_dicts()[0]
+    assert definition["status"] == "candidate"
+    assert definition["causal"] is True
+    assert definition["lookback_bars"] == 24
+    assert definition["availability_lag_bars"] == 1
+    assert definition["required_bars"] == 25
+    assert len(definition["expression_hash"]) == 64
+
+    value = values.filter(pl.col("factor_id") == "core.close_return_24").sort("ts").to_dicts()[0]
+    assert value["event_time"] == value["ts"]
+    assert value["available_time"] - value["event_time"] == timedelta(hours=1)
+    assert value["calculated_at"] == value["created_at"]
+    assert value["data_version"] == value["input_dataset_version"]
+    assert value["factor_status"] == "candidate"
+    assert value["expression_hash"] == definition["expression_hash"]
+    assert json.loads(value["quality_flags_json"]) in ([], ["invalid_or_insufficient_input"])
 
 
 def test_factor_factory_health_reports_missing_datasets(tmp_path):
@@ -58,6 +96,50 @@ def test_factor_factory_health_reports_missing_datasets(tmp_path):
     assert health.candidate_rows == 0
     assert health.live_order_effect == "none_read_only_research"
     assert "factor_definition_missing_or_empty" in health.warnings
+
+
+def test_factor_spec_hash_is_deterministic_and_changes_with_expression():
+    base = dict(
+        factor_id="test.factor",
+        factor_name="factor",
+        factor_family="test",
+        factor_version="v1",
+        description="Test factor.",
+        input_features=("close_return_24",),
+        template="feature",
+        params={"feature": "close_return_24"},
+        lookback_bars=24,
+    )
+
+    first = FactorSpec(**base)
+    second = FactorSpec(**base)
+    changed = FactorSpec(
+        **{
+            **base,
+            "params": {"feature": "close_return_4"},
+            "input_features": ("close_return_4",),
+            "lookback_bars": 4,
+        }
+    )
+
+    assert len(first.expression_hash) == 64
+    assert first.expression_hash == second.expression_hash
+    assert first.expression_hash != changed.expression_hash
+
+
+def test_factor_spec_rejects_non_causal_definitions():
+    with pytest.raises(ValidationError, match="factor specs must be causal"):
+        FactorSpec(
+            factor_id="test.leaky",
+            factor_name="leaky",
+            factor_family="test",
+            factor_version="v1",
+            description="Rejected non-causal factor.",
+            input_features=("close_return_1",),
+            template="feature",
+            params={"feature": "close_return_1"},
+            causal=False,
+        )
 
 
 def test_factor_values_are_cross_sectionally_normalized(tmp_path):

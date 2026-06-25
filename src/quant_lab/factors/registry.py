@@ -1,11 +1,13 @@
 from __future__ import annotations
 
+import hashlib
 import json
 from collections.abc import Iterable
 from datetime import datetime
+from enum import StrEnum
 from typing import Any, Literal
 
-from pydantic import BaseModel, ConfigDict, Field, field_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 FactorTemplate = Literal[
     "feature",
@@ -18,6 +20,14 @@ FactorTemplate = Literal[
     "range_location",
     "liquidity_adjusted",
 ]
+
+
+class FactorStatus(StrEnum):
+    CANDIDATE = "candidate"
+    VALIDATED = "validated"
+    SHADOW = "shadow"
+    PRODUCTION = "production"
+    RETIRED = "retired"
 
 
 class FactorSpec(BaseModel):
@@ -37,17 +47,44 @@ class FactorSpec(BaseModel):
     template: FactorTemplate
     params: dict[str, Any] = Field(default_factory=dict)
 
+    lookback_bars: int = Field(default=1, ge=1)
+    availability_lag_bars: int = Field(default=1, ge=0)
+    warmup_bars: int = Field(default=0, ge=0)
+    causal: bool = True
+    normalization: str | None = "cross_sectional_zscore"
+    status: FactorStatus = FactorStatus.CANDIDATE
+    owner: str = Field(default="quant", min_length=1)
+    expression_hash: str = Field(default="", min_length=1)
+
     enabled: bool = True
     direction: int = Field(default=1)
     min_cross_section: int = Field(default=3, ge=1)
     clip_abs: float | None = Field(default=10.0, gt=0)
     tags: tuple[str, ...] = ()
 
+    @model_validator(mode="before")
+    @classmethod
+    def populate_expression_hash(cls, data: Any) -> Any:
+        if not isinstance(data, dict):
+            return data
+        if data.get("expression_hash"):
+            return data
+        updated = dict(data)
+        updated["expression_hash"] = _expression_hash(updated)
+        return updated
+
     @field_validator("direction")
     @classmethod
     def direction_is_valid(cls, value: int) -> int:
         if value not in {-1, 1}:
             raise ValueError("direction must be either -1 or 1")
+        return value
+
+    @field_validator("causal")
+    @classmethod
+    def factor_must_be_causal(cls, value: bool) -> bool:
+        if value is not True:
+            raise ValueError("factor specs must be causal")
         return value
 
     @field_validator("input_features")
@@ -57,6 +94,18 @@ class FactorSpec(BaseModel):
         if not cleaned:
             raise ValueError("input_features must not be empty")
         return cleaned
+
+    @property
+    def required_bars(self) -> int:
+        return self.lookback_bars + self.warmup_bars + self.availability_lag_bars
+
+    @property
+    def expression(self) -> dict[str, Any]:
+        return {
+            "template": self.template,
+            "input_features": list(self.input_features),
+            "params": self.params,
+        }
 
     def definition_row(self, *, created_at: datetime, source: str) -> dict[str, Any]:
         return {
@@ -71,6 +120,16 @@ class FactorSpec(BaseModel):
             "input_features_json": json.dumps(list(self.input_features), sort_keys=True),
             "template": self.template,
             "params_json": json.dumps(self.params, sort_keys=True),
+            "expression_json": json.dumps(self.expression, sort_keys=True),
+            "expression_hash": self.expression_hash,
+            "status": self.status.value,
+            "lookback_bars": self.lookback_bars,
+            "availability_lag_bars": self.availability_lag_bars,
+            "warmup_bars": self.warmup_bars,
+            "required_bars": self.required_bars,
+            "causal": self.causal,
+            "normalization": self.normalization,
+            "owner": self.owner,
             "direction": self.direction,
             "min_cross_section": self.min_cross_section,
             "clip_abs": self.clip_abs,
@@ -99,6 +158,7 @@ def default_factor_registry(
         params: dict[str, Any],
         direction: int = 1,
         tags: tuple[str, ...] = (),
+        lookback_bars: int | None = None,
     ) -> FactorSpec:
         return FactorSpec(
             factor_id=factor_id,
@@ -112,6 +172,7 @@ def default_factor_registry(
             input_features=input_features,
             template=template,
             params=params,
+            lookback_bars=lookback_bars or _infer_lookback_bars(input_features),
             direction=direction,
             tags=tags,
         )
@@ -289,6 +350,7 @@ def discover_factor_specs(
                 input_features=(feature_name,),
                 template="feature",
                 params={"feature": feature_name},
+                lookback_bars=_infer_lookback_bars((feature_name,)),
                 tags=("auto", "single"),
             )
         )
@@ -297,3 +359,31 @@ def discover_factor_specs(
             return specs[:max_factors]
 
     return specs[:max_factors]
+
+
+def _expression_hash(values: dict[str, Any]) -> str:
+    payload = {
+        "template": values.get("template"),
+        "input_features": list(values.get("input_features") or ()),
+        "params": values.get("params") or {},
+        "direction": values.get("direction", 1),
+        "clip_abs": values.get("clip_abs", 10.0),
+        "lookback_bars": values.get("lookback_bars", 1),
+        "availability_lag_bars": values.get("availability_lag_bars", 1),
+        "warmup_bars": values.get("warmup_bars", 0),
+        "causal": values.get("causal", True),
+        "normalization": values.get("normalization", "cross_sectional_zscore"),
+    }
+    encoded = json.dumps(payload, sort_keys=True, separators=(",", ":"), default=str)
+    return hashlib.sha256(encoded.encode("utf-8")).hexdigest()
+
+
+def _infer_lookback_bars(input_features: Iterable[str]) -> int:
+    lookbacks = [1]
+    for feature in input_features:
+        tokens = str(feature).replace("-", "_").split("_")
+        for token in reversed(tokens):
+            if token.isdigit():
+                lookbacks.append(max(1, int(token)))
+                break
+    return max(lookbacks)

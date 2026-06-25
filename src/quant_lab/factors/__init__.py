@@ -10,7 +10,12 @@ from quant_lab.factors.factory import (
     publish_factor_definitions,
     publish_factor_values,
 )
-from quant_lab.factors.registry import FactorSpec, default_factor_registry, discover_factor_specs
+from quant_lab.factors.registry import (
+    FactorSpec,
+    FactorStatus,
+    default_factor_registry,
+    discover_factor_specs,
+)
 
 __all__ = [
     "FactorEvidenceBuildResult",
@@ -18,6 +23,7 @@ __all__ = [
     "FactorHealthResult",
     "FactorPublishResult",
     "FactorSpec",
+    "FactorStatus",
     "build_and_publish_factor_candidates",
     "build_and_publish_factor_factory",
     "default_factor_registry",

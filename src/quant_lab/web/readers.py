@@ -450,27 +450,27 @@ DATASET_TIMESTAMP_COLUMNS: dict[str, tuple[str, ...]] = {
     ),
     "v5_cost_probe_order_event": ("event_ts", "ingest_ts", "bundle_ts"),
     "v5_cost_probe_roundtrip_event": ("event_ts", "ingest_ts", "bundle_ts"),
-    "v5_paper_strategy_run": ("created_at", "as_of_date", "ingest_ts", "bundle_ts"),
-    "v5_paper_strategy_daily": ("created_at", "as_of_date", "ingest_ts", "bundle_ts"),
-    "v5_paper_slippage_coverage": ("created_at", "as_of_date", "ingest_ts", "bundle_ts"),
+    "v5_paper_strategy_run": ("created_at", "ingest_ts", "bundle_ts", "as_of_date"),
+    "v5_paper_strategy_daily": ("created_at", "ingest_ts", "bundle_ts", "as_of_date"),
+    "v5_paper_slippage_coverage": ("created_at", "ingest_ts", "bundle_ts", "as_of_date"),
     "v5_expanded_universe_advisory_reader": (
         "generated_at",
-        "ts_utc",
         "ingest_ts",
         "bundle_ts",
+        "ts_utc",
     ),
     "v5_expanded_universe_paper_runs": (
         "generated_at",
-        "ts_utc",
         "ingest_ts",
         "bundle_ts",
+        "ts_utc",
     ),
     "v5_expanded_universe_paper_daily": (
         "generated_at",
-        "paper_date",
-        "as_of_date",
         "ingest_ts",
         "bundle_ts",
+        "paper_date",
+        "as_of_date",
     ),
     "v5_bnb_profit_lock_shadow": ("ingest_ts", "bundle_ts", "exit_ts", "entry_ts"),
     "v5_bnb_negative_expectancy_attribution": ("ingest_ts", "bundle_ts", "exit_ts"),
@@ -5350,6 +5350,12 @@ def _stale_dataset_rows(lake_root: str | Path) -> pl.DataFrame:
             and v5_telemetry_is_current
         ):
             status = EVENT_DRIVEN_V5_DATASET_STATUSES[name]
+        if (
+            name in V5_PAPER_TELEMETRY_DATASETS
+            and status == "stale"
+            and v5_telemetry_is_current
+        ):
+            status = "waiting_for_v5_paper_telemetry"
         if (
             name in EVENT_DRIVEN_OKX_READONLY_DATASET_STATUSES
             and status == "stale"

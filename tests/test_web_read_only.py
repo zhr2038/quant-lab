@@ -753,6 +753,75 @@ def test_data_health_hides_pending_v5_paper_telemetry(tmp_path):
     assert "v5_paper_slippage_coverage" not in datasets
 
 
+def test_data_health_uses_ingest_time_for_v5_expanded_paper_daily(tmp_path):
+    lake_root = tmp_path / "lake"
+    now = datetime.now(UTC)
+    old_business_date = now - timedelta(days=2)
+    write_parquet_dataset(
+        pl.DataFrame(
+            [
+                {
+                    "strategy_id": "EXPANDED_PAPER",
+                    "paper_date": old_business_date.date().isoformat(),
+                    "symbol": "WLD-USDT",
+                    "entry_count": 0,
+                    "ingest_ts": now,
+                    "bundle_ts": now,
+                }
+            ]
+        ),
+        lake_root / "silver" / "v5_expanded_universe_paper_daily",
+    )
+
+    snapshot = readers._dataset_snapshot(lake_root, "v5_expanded_universe_paper_daily")
+    stale_rows = readers.data_health_summary(lake_root)["stale_datasets"].to_dicts()
+
+    assert snapshot.freshness["timestamp_column"] == "ingest_ts"
+    assert snapshot.freshness["freshness_status"] == "fresh"
+    assert "v5_expanded_universe_paper_daily" not in {
+        row["dataset"] for row in stale_rows
+    }
+
+
+def test_data_health_hides_stale_v5_paper_telemetry_when_v5_sync_current(tmp_path):
+    lake_root = tmp_path / "lake"
+    now = datetime.now(UTC)
+    old = now - timedelta(days=3)
+    write_parquet_dataset(
+        pl.DataFrame(
+            [
+                {
+                    "strategy_id": "EXPANDED_PAPER",
+                    "paper_date": old.date().isoformat(),
+                    "symbol": "WLD-USDT",
+                    "entry_count": 0,
+                }
+            ]
+        ),
+        lake_root / "silver" / "v5_expanded_universe_paper_daily",
+    )
+    write_parquet_dataset(
+        pl.DataFrame(
+            [
+                {
+                    "date": now.date().isoformat(),
+                    "status": "OK",
+                    "latest_bundle_ts": now,
+                }
+            ]
+        ),
+        lake_root / "gold" / "strategy_health_daily",
+    )
+
+    snapshot = readers._dataset_snapshot(lake_root, "v5_expanded_universe_paper_daily")
+    stale_rows = readers.data_health_summary(lake_root)["stale_datasets"].to_dicts()
+
+    assert snapshot.freshness["freshness_status"] == "stale"
+    assert "v5_expanded_universe_paper_daily" not in {
+        row["dataset"] for row in stale_rows
+    }
+
+
 def test_data_health_hides_stale_entry_quality_dataset_without_freshness_sla(tmp_path):
     lake_root = tmp_path / "lake"
     old = datetime.now(UTC) - timedelta(days=3)

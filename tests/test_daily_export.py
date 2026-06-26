@@ -2001,7 +2001,10 @@ def test_v5_export_consistency_rejects_expected_bundle_sha_mismatch():
     assert consistency["expected_v5_bundle_matched"] is False
     assert consistency["expected_v5_bundle_sha256"] == "expected-sha"
     assert consistency["acceptance_set_id"] == "acceptance-20260615"
-    assert "expected_v5_bundle_sha256_mismatch" in consistency["selected_v5_bundle_authoritative_reason"]
+    assert (
+        "expected_v5_bundle_sha256_mismatch"
+        in consistency["selected_v5_bundle_authoritative_reason"]
+    )
 
 
 def test_v5_bundle_sync_keeps_refresh_disabled_provenance_out_of_failures():

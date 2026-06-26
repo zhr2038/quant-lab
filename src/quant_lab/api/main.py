@@ -342,6 +342,10 @@ def create_app() -> FastAPI:
         payload, cache_meta = bigscreen_snapshot_with_meta(_lake_root())
         return _bigscreen_snapshot_response(payload, cache_meta)
 
+    @app.get("/favicon.ico", include_in_schema=False)
+    def favicon() -> Response:
+        return Response(status_code=204)
+
     @app.get("/web-v2/snapshot")
     def web_bigscreen_snapshot_for_static_page() -> JSONResponse:
         from quant_lab.web.bigscreen import bigscreen_snapshot_with_meta

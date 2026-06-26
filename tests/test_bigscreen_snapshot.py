@@ -735,6 +735,12 @@ def test_bigscreen_static_entry_is_served_if_built():
     assert "quant-lab CONTROL CENTER" in response.text
 
 
+def test_favicon_request_does_not_404():
+    response = TestClient(create_app()).get("/favicon.ico")
+
+    assert response.status_code == 204
+
+
 def test_web_v2_mounts_v5_telemetry_card_on_one_primary_page():
     app_source = Path("frontend-bigscreen/src/App.tsx").read_text(encoding="utf-8")
 
@@ -1225,7 +1231,8 @@ def test_bigscreen_actions_skip_entry_or_scale_readiness_advisory():
                 "warning_count": 1,
                 "warnings": [
                     "quant_lab_enforce_readiness: readiness_status=BLOCKED; "
-                    "veto_status=VETO_READY; entry_status=ENTRY_BLOCKED; scale_status=SCALE_BLOCKED; "
+                    "veto_status=VETO_READY; entry_status=ENTRY_BLOCKED; "
+                    "scale_status=SCALE_BLOCKED; "
                     "blocked=['actual_or_mixed_cost_coverage_live_universe', 'fallback_rate']; "
                     "warnings=[]; live_order_effect=entry_or_scale_block_only"
                 ],

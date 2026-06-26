@@ -1996,6 +1996,12 @@ def test_v5_export_consistency_rejects_expected_bundle_sha_mismatch():
         pre_export_v5_refresh=True,
         allow_stale_v5=False,
     )
+    diagnostics = daily_export_module._v5_bundle_sync_diagnostics_frame(
+        frames=frames,
+        pre_export_v5={**pre_export_v5, **consistency},
+        generated_at=datetime(2026, 6, 15, 13, tzinfo=UTC),
+    )
+    row = diagnostics.to_dicts()[0]
 
     assert consistency["authoritative_snapshot"] is False
     assert consistency["expected_v5_bundle_matched"] is False
@@ -2005,6 +2011,8 @@ def test_v5_export_consistency_rejects_expected_bundle_sha_mismatch():
         "expected_v5_bundle_sha256_mismatch"
         in consistency["selected_v5_bundle_authoritative_reason"]
     )
+    assert row["expected_v5_bundle_sha256"] == "expected-sha"
+    assert row["expected_v5_bundle_matched"] is False
 
 
 def test_v5_bundle_sync_keeps_refresh_disabled_provenance_out_of_failures():

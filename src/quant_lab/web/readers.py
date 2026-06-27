@@ -2409,6 +2409,8 @@ def _market_bar_lazy_health(lake_root: str | Path) -> dict[str, Any]:
     latest_ts = _coerce_timestamp(snapshot.freshness.get("latest_timestamp"))
     latest_close_ts = _coerce_timestamp(snapshot.freshness.get("latest_close_timestamp"))
     timeframe = str(snapshot.freshness.get("timeframe") or DEFAULT_MARKET_BAR_TIMEFRAME)
+    if latest_close_ts is None:
+        latest_close_ts = market_bar_close_ts(latest_ts, timeframe)
     return _web_cache_set(cache_key, {
         "row_count": snapshot.rows,
         "warning": snapshot.warning,

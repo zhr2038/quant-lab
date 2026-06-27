@@ -12,7 +12,7 @@ from fastapi.testclient import TestClient
 import quant_lab.api.main as api_main
 import quant_lab.web.bigscreen as bigscreen_module
 from quant_lab.api.main import create_app
-from quant_lab.data.lake import write_parquet_dataset
+from quant_lab.data.lake import write_market_bars, write_parquet_dataset
 from quant_lab.web.bigscreen import (
     _exports_payload,
     bigscreen_snapshot,
@@ -39,6 +39,39 @@ def test_bigscreen_snapshot_empty_lake_is_read_only_and_degraded(tmp_path):
         "evidence",
         "advisory",
     ]
+
+
+def test_bigscreen_snapshot_kpis_include_market_bar_close_time(tmp_path):
+    lake = tmp_path / "lake"
+    opened_at = datetime.now(UTC) - timedelta(hours=1, minutes=5)
+    write_market_bars(
+        lake,
+        [
+            {
+                "venue": "okx",
+                "symbol": "BTC-USDT",
+                "market_type": "SPOT",
+                "timeframe": "1H",
+                "ts": opened_at,
+                "open": 100.0,
+                "high": 101.0,
+                "low": 99.0,
+                "close": 100.5,
+                "volume": 1.0,
+                "quote_volume": 100.5,
+                "source": "test",
+                "ingest_ts": datetime.now(UTC),
+            }
+        ],
+    )
+    clear_bigscreen_cache()
+
+    payload = bigscreen_snapshot(lake)
+
+    assert payload["kpis"]["latest_market_bar_ts"]
+    assert payload["kpis"]["latest_market_bar_close_ts"]
+    assert payload["data_health"]["latest_market_bar_close_ts"]
+    assert payload["kpis"]["market_delay_seconds"] < 10 * 60
 
 
 def test_bigscreen_snapshot_cache_covers_frontend_refresh_interval(monkeypatch, tmp_path):

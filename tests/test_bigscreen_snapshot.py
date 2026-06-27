@@ -93,9 +93,9 @@ def test_bigscreen_snapshot_cache_covers_frontend_refresh_interval(monkeypatch, 
     fifth = bigscreen_snapshot(tmp_path / "lake")
 
     assert second is first
-    assert third is first
-    assert fourth is first
-    assert fifth is not first
+    assert third is not first
+    assert fourth is not third
+    assert fifth is not fourth
 
 
 def test_bigscreen_strategy_flow_counts_use_full_advisory_not_display_sample(tmp_path):
@@ -668,6 +668,10 @@ def test_bigscreen_snapshot_endpoints_return_payload(monkeypatch, tmp_path):
     assert protected_cached_response.status_code == 200
     assert protected_response.headers["content-type"] == "application/json; charset=utf-8"
     assert web_response.headers["content-type"] == "application/json; charset=utf-8"
+    assert protected_response.headers["cache-control"] == "no-store, max-age=0"
+    assert web_response.headers["cache-control"] == "no-store, max-age=0"
+    assert protected_response.headers["pragma"] == "no-cache"
+    assert web_response.headers["pragma"] == "no-cache"
     assert protected_response.headers["x-quant-lab-bigscreen-mode"] == "read-only"
     assert web_response.headers["x-quant-lab-bigscreen-mode"] == "read-only"
     assert protected_response.headers["x-quant-lab-bigscreen-cache-hit"] == "false"
@@ -863,6 +867,9 @@ def test_web_v2_mounts_v5_telemetry_card_on_one_primary_page():
     assert 'href="/docs"' not in app_source
     assert 'href="/v1/web/bigscreen-snapshot"' not in app_source
     assert 'href="/web-v2/snapshot"' in app_source
+    assert "snapshotPacks" not in app_source
+    assert "exports.latest_download_url" not in app_source
+    assert "exports.job_state" not in app_source
 
 
 def test_web_v2_legacy_redirects_to_streamlit_port(monkeypatch):
@@ -907,6 +914,8 @@ def test_web_v2_expert_pack_generate_submits_read_only_job(monkeypatch, tmp_path
     response = TestClient(create_app()).post("/web-v2/expert-pack/generate")
 
     assert response.status_code == 200
+    assert response.headers["cache-control"] == "no-store, max-age=0"
+    assert response.headers["pragma"] == "no-cache"
     payload = response.json()
     assert payload["mode"] == "read_only_export"
     assert payload["live_order_effect"] == "none"
@@ -933,6 +942,8 @@ def test_web_v2_expert_pack_status_and_download(monkeypatch, tmp_path):
 
     status_response = client.get("/web-v2/expert-pack/status?export_date=2026-06-05")
     assert status_response.status_code == 200
+    assert status_response.headers["cache-control"] == "no-store, max-age=0"
+    assert status_response.headers["pragma"] == "no-cache"
     status_payload = status_response.json()
     assert status_payload["latest_pack_name"] == pack.name
     assert status_payload["latest_download_url"] == f"/web-v2/expert-pack/download/{pack.name}"

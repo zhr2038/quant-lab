@@ -24,7 +24,7 @@ from quant_lab.symbols import normalize_symbol
 from quant_lab.web import perf, readers
 
 SNAPSHOT_CACHE_TTL_SECONDS = 35.0
-SNAPSHOT_CACHE_STALE_GRACE_SECONDS = 1800.0
+SNAPSHOT_CACHE_STALE_GRACE_SECONDS = 0.0
 MARKET_BAR_WARNING_DELAY_SECONDS = 2 * 60 * 60
 MARKET_BAR_CRITICAL_DELAY_SECONDS = 3 * 60 * 60
 _SNAPSHOT_CACHE: dict[str, tuple[float, dict[str, Any]]] = {}

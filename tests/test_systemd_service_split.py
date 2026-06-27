@@ -53,6 +53,13 @@ def test_api_service_uses_async_metrics_flush():
     assert "QUANT_LAB_WEB_EXPORT_BACKGROUND=true" in unit
     assert "QUANT_LAB_WEB_EXPORT_BACKGROUND_TRIGGER=request_file" in unit
     assert "QUANT_LAB_WEB_EXPORT_STATUS_STALE_SECONDS=1800" in unit
+    assert "QUANT_LAB_BIGSCREEN_STALE_GRACE_SECONDS=0" in unit
+
+
+def test_web_service_disables_bigscreen_stale_grace_by_default():
+    unit = _unit("quant-lab-web.service")
+
+    assert "QUANT_LAB_BIGSCREEN_STALE_GRACE_SECONDS=0" in unit
 
 
 def test_okx_rest_backfill_runs_every_15_minutes_to_reduce_stale_market_bar_window():

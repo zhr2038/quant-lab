@@ -365,6 +365,7 @@ def create_app() -> FastAPI:
     @app.post("/web-v2/expert-pack/generate")
     def web_v2_generate_expert_pack(response: Response) -> dict[str, Any]:
         status_payload = _start_web_v2_expert_pack_job()
+        _mark_no_store(response)
         response.headers["X-Quant-Lab-Mode"] = "read-only-export"
         return status_payload
 
@@ -374,6 +375,7 @@ def create_app() -> FastAPI:
         export_date: str | None = None,
     ) -> dict[str, Any]:
         status_payload = _web_v2_expert_pack_status(export_date=export_date)
+        _mark_no_store(response)
         response.headers["X-Quant-Lab-Mode"] = "read-only-export"
         return status_payload
 
@@ -1044,6 +1046,8 @@ def _bigscreen_snapshot_response(
     response = _utf8_json_response(
         payload,
         headers={
+            "Cache-Control": "no-store, max-age=0",
+            "Pragma": "no-cache",
             "X-Quant-Lab-Bigscreen-Mode": "read-only",
             "X-Quant-Lab-Bigscreen-Cache-Hit": "true" if cache_hit else "false",
             "X-Quant-Lab-Bigscreen-Cache-Age-Seconds": _header_float_text(
@@ -1064,6 +1068,11 @@ def _bigscreen_snapshot_response(
     )
     response.headers["X-Quant-Lab-Response-Bytes"] = str(len(response.body or b""))
     return response
+
+
+def _mark_no_store(response: Response) -> None:
+    response.headers["Cache-Control"] = "no-store, max-age=0"
+    response.headers["Pragma"] = "no-cache"
 
 
 def _header_float_text(value: Any) -> str:

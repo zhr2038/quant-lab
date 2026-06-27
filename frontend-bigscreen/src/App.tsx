@@ -492,16 +492,15 @@ function ExpertPackControls({ exports }: { exports: Record<string, unknown> }) {
     }
   });
   const status = statusQuery.data;
-  const snapshotPacks = safeRows(exports.packs);
-  const packs = status?.packs?.length ? status.packs : snapshotPacks;
+  const packs = status?.packs ?? [];
   const latestName = stringValue(status?.latest_pack_name, "");
-  const latestUrl = status?.latest_download_url || exports.latest_download_url;
-  const latestFileName = fileNameFromPath(latestName || exports.latest_pack || latestUrl);
+  const latestUrl = status?.latest_download_url ?? "";
+  const latestFileName = fileNameFromPath(latestName || latestUrl);
   const latestPack = packs.find((pack) => {
     const name = stringValue(pack.name, stringValue(pack.path, ""));
     return latestFileName && fileNameFromPath(name) === latestFileName;
   });
-  const latestDisplayName = latestFileName || stringValue(latestName || exports.latest_pack, "latest.zip");
+  const latestDisplayName = latestFileName || stringValue(latestName, "latest.zip");
   const latestGeneratedAt = formatExpertPackStamp(latestDisplayName);
   const latestPrimaryText = latestGeneratedAt ? `专家包 ${latestGeneratedAt}` : latestDisplayName;
   const latestModifiedAt = formatPackTime(latestPack?.modified_at);
@@ -514,7 +513,7 @@ function ExpertPackControls({ exports }: { exports: Record<string, unknown> }) {
     const name = stringValue(pack.name, stringValue(pack.path, ""));
     return !latestFileName || fileNameFromPath(name) !== latestFileName;
   });
-  const state = String(status?.state ?? exports.job_state ?? "not_observable");
+  const state = String(status?.state ?? (statusQuery.isLoading ? "loading" : "not_observable"));
   const statusBody = status?.status ?? {};
   const isRunning = ["running", "starting"].includes(state.toLowerCase());
   const lastError = stringValue(statusBody.error, "");

@@ -870,6 +870,8 @@ def test_web_v2_mounts_v5_telemetry_card_on_one_primary_page():
     assert "snapshotPacks" not in app_source
     assert "exports.latest_download_url" not in app_source
     assert "exports.job_state" not in app_source
+    assert "历史包" in app_source
+    assert "包数 {status?.pack_count" not in app_source
 
 
 def test_web_v2_legacy_redirects_to_streamlit_port(monkeypatch):
@@ -945,8 +947,10 @@ def test_web_v2_expert_pack_status_and_download(monkeypatch, tmp_path):
     assert status_response.headers["cache-control"] == "no-store, max-age=0"
     assert status_response.headers["pragma"] == "no-cache"
     status_payload = status_response.json()
-    assert status_payload["latest_pack_name"] == pack.name
-    assert status_payload["latest_download_url"] == f"/web-v2/expert-pack/download/{pack.name}"
+    assert status_payload["state"] == "manual_missing"
+    assert status_payload["available_pack_name"] == pack.name
+    assert status_payload["latest_pack_name"] is None
+    assert status_payload["latest_download_url"] is None
     assert status_payload["packs"][0]["download_url"] == f"/web-v2/expert-pack/download/{pack.name}"
 
     download_response = client.get(f"/web-v2/expert-pack/download/{pack.name}")
@@ -1001,7 +1005,8 @@ def test_web_v2_expert_pack_status_filters_deleted_index_pack(monkeypatch, tmp_p
         "/web-v2/expert-pack/status?export_date=2026-06-05"
     ).json()
 
-    assert payload["latest_pack_name"] == pack.name
+    assert payload["available_pack_name"] == pack.name
+    assert payload["latest_pack_name"] is None
     assert payload["pack_count"] == 1
     assert [row["name"] for row in payload["packs"]] == [pack.name]
 
@@ -1046,8 +1051,11 @@ def test_web_v2_expert_pack_status_prefers_latest_requested_pack_over_stale_stat
     payload = response.json()
     assert payload["status"]["zip_path"] == str(old_pack)
     assert payload["requested_date_pack_name"] == new_pack.name
-    assert payload["latest_pack_name"] == new_pack.name
-    assert payload["latest_download_url"] == f"/web-v2/expert-pack/download/{new_pack.name}"
+    assert payload["available_pack_name"] == new_pack.name
+    assert payload["latest_pack_name"] == old_pack.name
+    assert payload["latest_pack_is_requested_date"] is True
+    assert payload["latest_pack_source"] == "manual_web_request"
+    assert payload["latest_download_url"] == f"/web-v2/expert-pack/download/{old_pack.name}"
     assert payload["packs"][0]["name"] == new_pack.name
 
 
@@ -1121,9 +1129,10 @@ def test_web_v2_expert_pack_status_keeps_latest_available_when_requested_date_mi
     assert status_response.status_code == 200
     assert payload["state"] == "missing_requested_date"
     assert payload["requested_date_pack"] is None
-    assert payload["latest_pack_name"] == pack.name
+    assert payload["available_pack_name"] == pack.name
+    assert payload["latest_pack_name"] is None
     assert payload["latest_pack_is_requested_date"] is False
-    assert payload["latest_download_url"] == f"/web-v2/expert-pack/download/{pack.name}"
+    assert payload["latest_download_url"] is None
 
 
 def test_bigscreen_exports_payload_separates_job_state_from_data_quality():

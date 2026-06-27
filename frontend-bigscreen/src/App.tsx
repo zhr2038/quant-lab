@@ -546,7 +546,7 @@ function ExpertPackControls({ exports }: { exports: Record<string, unknown> }) {
         <span className="status-dot" />
         <b>{state}</b>
         <em>日期 {stringValue(status?.export_date, "today")}</em>
-        <em>包数 {status?.pack_count ?? packs.length}</em>
+        <em>历史包 {status?.pack_count ?? packs.length}</em>
         {status?.latest_size_bytes ? <em>最新 {shortNumber(status.latest_size_bytes)}B</em> : null}
       </div>
       {generateMutation.error || statusQuery.error || lastError ? (

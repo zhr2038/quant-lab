@@ -1203,12 +1203,15 @@ def _decorate_web_v2_expert_pack_status(
     state = status.get("state")
     if not state:
         state = (
-            "succeeded"
+            "manual_missing"
             if requested_date_pack is not None
             else ("missing_requested_date" if latest_available_pack is not None else "missing")
         )
     is_running = str(state).lower() in {"starting", "running"}
-    latest_pack = None if is_running else requested_date_pack or latest_available_pack or zip_path
+    manual_latest_pack = (
+        zip_path if (not is_running and str(state).lower() == "succeeded") else None
+    )
+    available_pack = requested_date_pack or latest_available_pack
     payload = {
         "mode": "read_only_export",
         "live_order_effect": "none",
@@ -1226,22 +1229,28 @@ def _decorate_web_v2_expert_pack_status(
         "previous_pack_name": (
             requested_date_pack.name if is_running and requested_date_pack else None
         ),
-        "latest_pack": str(latest_pack) if latest_pack is not None else None,
-        "latest_pack_name": latest_pack.name if latest_pack is not None else None,
-        "latest_pack_is_requested_date": (
-            latest_pack is not None
-            and requested_date_pack is not None
-            and latest_pack.resolve() == requested_date_pack.resolve()
+        "available_pack": str(available_pack) if available_pack is not None else None,
+        "available_pack_name": available_pack.name if available_pack is not None else None,
+        "latest_pack": str(manual_latest_pack) if manual_latest_pack is not None else None,
+        "latest_pack_name": (
+            manual_latest_pack.name if manual_latest_pack is not None else None
         ),
+        "latest_pack_is_requested_date": (
+            manual_latest_pack is not None
+            and _pack_name_matches_export_date(manual_latest_pack.name, export_date)
+        ),
+        "latest_pack_source": "manual_web_request" if manual_latest_pack is not None else None,
         "latest_download_url": (
-            _web_v2_export_download_url(latest_pack.name) if latest_pack is not None else None
+            _web_v2_export_download_url(manual_latest_pack.name)
+            if manual_latest_pack is not None
+            else None
         ),
         "packs": packs,
         "pack_count": len(packs),
     }
-    if latest_pack is not None:
+    if manual_latest_pack is not None:
         try:
-            stat = latest_pack.stat()
+            stat = manual_latest_pack.stat()
         except OSError:
             stat = None
         if stat is not None:
@@ -1331,6 +1340,12 @@ def _is_valid_export_pack_name(file_name: str) -> bool:
     if file_name != Path(file_name).name:
         return False
     return file_name.startswith("quant_lab_expert_pack_") and file_name.endswith(".zip")
+
+
+def _pack_name_matches_export_date(file_name: str, export_date: str) -> bool:
+    return file_name == f"quant_lab_expert_pack_{export_date}.zip" or file_name.startswith(
+        f"quant_lab_expert_pack_{export_date}_"
+    )
 
 
 def _web_v2_export_download_url(file_name: str) -> str:

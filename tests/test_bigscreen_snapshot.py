@@ -3,7 +3,7 @@ from __future__ import annotations
 import json
 import os
 import zipfile
-from datetime import UTC, datetime, timedelta
+from datetime import UTC, date, datetime, timedelta
 from pathlib import Path
 
 import polars as pl
@@ -1161,13 +1161,23 @@ def test_bigscreen_exports_payload_separates_job_state_from_data_quality():
     assert payload["data_quality_warning_count"] == 7
 
 
-def test_bigscreen_snapshot_promotes_export_data_quality_warning(tmp_path, monkeypatch):
+def test_bigscreen_snapshot_treats_history_export_as_available_not_current(
+    tmp_path,
+    monkeypatch,
+):
     clear_bigscreen_cache()
     lake = tmp_path / "lake"
     lake.mkdir()
     exports = tmp_path / "exports"
     exports.mkdir()
     pack_path = exports / "quant_lab_expert_pack_2026-06-05_120000.zip"
+    with zipfile.ZipFile(pack_path, "w") as archive:
+        archive.writestr("manifest.json", json.dumps({"export_date": "2026-06-05"}))
+        archive.writestr(
+            "data_quality.json",
+            json.dumps({"status": "CRITICAL", "warning_count": 3}),
+        )
+        archive.writestr("expert_questions.md", "历史包问题\n")
     (exports / "export_index.json").write_text(
         json.dumps(
             {
@@ -1181,18 +1191,89 @@ def test_bigscreen_snapshot_promotes_export_data_quality_warning(tmp_path, monke
                     }
                 ],
                 "manifest_summary": {"export_date": "2026-06-05"},
-                "data_quality_summary": {
-                    "status": "WARN",
-                    "warning_count": 2,
-                    "warnings": ["cost_soft_fallback_ratio: high", "okx_ws_universe_incomplete"],
-                    "failures": [],
-                },
+                "data_quality_summary": {"status": "CRITICAL", "warning_count": 3},
+                "expert_questions": ["历史包问题"],
+                "warnings": [],
+            }
+        ),
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(bigscreen_module, "beijing_today", lambda now=None: date(2026, 6, 5))
+
+    history = bigscreen_module.readers.expert_export_summary(exports)
+    summary = bigscreen_module._web_v2_export_summary_from_history(
+        lake,
+        history,
+        datetime(2026, 6, 5, 13, tzinfo=UTC),
+    )
+    payload = _exports_payload(summary)
+    actions = bigscreen_module._build_actions(
+        overview={},
+        data_health={},
+        cost={},
+        v5={"latest": {"kill_switch_enabled": False, "reconcile_ok": True}},
+        web_events=[],
+        exports=summary,
+        legacy_anomalies={"items": []},
+    )
+
+    assert summary["latest_pack"] is None
+    assert summary["available_pack"] == str(pack_path.resolve())
+    assert summary["data_quality_summary"] == {}
+    assert payload["latest_download_url"] is None
+    assert payload["available_pack_name"] == pack_path.name
+    assert payload["job_state"] == "manual_missing"
+    assert not any(action["source"] == "expert_export_summary" for action in actions)
+
+
+def test_bigscreen_snapshot_promotes_export_data_quality_warning(tmp_path, monkeypatch):
+    clear_bigscreen_cache()
+    lake = tmp_path / "lake"
+    lake.mkdir()
+    exports = tmp_path / "exports"
+    exports.mkdir()
+    pack_path = exports / "quant_lab_expert_pack_2026-06-05_120000.zip"
+    data_quality = {
+        "status": "WARN",
+        "warning_count": 2,
+        "warnings": ["cost_soft_fallback_ratio: high", "okx_ws_universe_incomplete"],
+        "failures": [],
+    }
+    with zipfile.ZipFile(pack_path, "w") as archive:
+        archive.writestr("manifest.json", json.dumps({"export_date": "2026-06-05"}))
+        archive.writestr("data_quality.json", json.dumps(data_quality))
+        archive.writestr("expert_questions.md", "")
+    (exports / "export_index.json").write_text(
+        json.dumps(
+            {
+                "latest_pack": str(pack_path),
+                "packs": [
+                    {
+                        "path": str(pack_path),
+                        "name": pack_path.name,
+                        "size_bytes": 123,
+                        "modified_at": "2026-06-05T12:00:00Z",
+                    }
+                ],
+                "manifest_summary": {"export_date": "2026-06-05"},
+                "data_quality_summary": data_quality,
                 "expert_questions": [],
                 "warnings": [],
             }
         ),
         encoding="utf-8",
     )
+    (exports / ".quant_lab_web_export_2026-06-05.json").write_text(
+        json.dumps(
+            {
+                "state": "succeeded",
+                "zip_path": str(pack_path),
+                "finished_at": "2026-06-05T12:00:00Z",
+            }
+        ),
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(bigscreen_module, "beijing_today", lambda now=None: date(2026, 6, 5))
     now = datetime.now(UTC)
     monkeypatch.setattr(
         bigscreen_module.readers,
@@ -1475,9 +1556,23 @@ def test_bigscreen_snapshot_keeps_live_readiness_block_out_of_system_critical(
     exports = tmp_path / "exports"
     exports.mkdir()
     pack_path = exports / "quant_lab_expert_pack_2026-06-17_120000.zip"
+    data_quality = {
+        "status": "CRITICAL",
+        "warning_count": 2,
+        "warnings": [
+            "cost_soft_fallback_ratio: soft_fallback_count=32",
+            "quant_lab_enforce_readiness: readiness_status=BLOCKED; "
+            "blocked=['actual_or_mixed_cost_coverage_live_universe']",
+        ],
+        "failures": [
+            "quant_lab_enforce_readiness: readiness_status=BLOCKED; "
+            "blocked=['actual_or_mixed_cost_coverage_live_universe']; "
+            "warnings=['actual_or_mixed_cost_coverage_research_universe']"
+        ],
+    }
     with zipfile.ZipFile(pack_path, "w") as archive:
         archive.writestr("manifest.json", json.dumps({"export_date": "2026-06-17"}))
-        archive.writestr("data_quality.json", json.dumps({"status": "CRITICAL"}))
+        archive.writestr("data_quality.json", json.dumps(data_quality))
         archive.writestr("expert_questions.md", "")
     (exports / "export_index.json").write_text(
         json.dumps(
@@ -1492,26 +1587,24 @@ def test_bigscreen_snapshot_keeps_live_readiness_block_out_of_system_critical(
                     }
                 ],
                 "manifest_summary": {"export_date": "2026-06-17"},
-                "data_quality_summary": {
-                    "status": "CRITICAL",
-                    "warning_count": 2,
-                    "warnings": [
-                        "cost_soft_fallback_ratio: soft_fallback_count=32",
-                        "quant_lab_enforce_readiness: readiness_status=BLOCKED; "
-                        "blocked=['actual_or_mixed_cost_coverage_live_universe']",
-                    ],
-                    "failures": [
-                        "quant_lab_enforce_readiness: readiness_status=BLOCKED; "
-                        "blocked=['actual_or_mixed_cost_coverage_live_universe']; "
-                        "warnings=['actual_or_mixed_cost_coverage_research_universe']"
-                    ],
-                },
+                "data_quality_summary": data_quality,
                 "expert_questions": [],
                 "warnings": [],
             }
         ),
         encoding="utf-8",
     )
+    (exports / ".quant_lab_web_export_2026-06-17.json").write_text(
+        json.dumps(
+            {
+                "state": "succeeded",
+                "zip_path": str(pack_path),
+                "finished_at": "2026-06-17T12:00:00Z",
+            }
+        ),
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(bigscreen_module, "beijing_today", lambda now=None: date(2026, 6, 17))
     now = datetime.now(UTC)
     monkeypatch.setattr(
         bigscreen_module.readers,

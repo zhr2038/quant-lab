@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import math
 import os
 import threading
@@ -21,6 +22,7 @@ from quant_lab.data.market_bar_time import (
 from quant_lab.factors.composite_factory import build_factor_factory_v2_reports
 from quant_lab.ops.api_metrics import api_metrics_summary
 from quant_lab.symbols import normalize_symbol
+from quant_lab.time_display import beijing_today
 from quant_lab.web import perf, readers
 
 SNAPSHOT_CACHE_TTL_SECONDS = 35.0
@@ -118,11 +120,12 @@ def _build_bigscreen_snapshot_payload(root: Path) -> dict[str, Any]:
         readers.strategy_consumer_summary,
         root,
     )
-    exports = _safe_summary(
+    export_history = _safe_summary(
         "expert_export_summary",
         readers.expert_export_summary,
         readers.default_exports_root(root),
     )
+    exports = _web_v2_export_summary_from_history(root, export_history, generated_at)
     web_events = perf.recent_events(limit=50)
     api_metrics = _safe_api_metrics(root)
     overview = _overview_from_summaries(data_health, v5, consumers)
@@ -448,6 +451,99 @@ def _latest_export_report_frame(root: Path, member_name: str) -> pl.DataFrame:
         except Exception:
             continue
     return pl.DataFrame()
+
+
+def _web_v2_export_summary_from_history(
+    root: Path,
+    history: dict[str, Any],
+    generated_at: datetime,
+) -> dict[str, Any]:
+    exports_root = readers.default_exports_root(root)
+    export_date = beijing_today(generated_at).isoformat()
+    packs = _frame_rows(history.get("packs"), limit=12)
+    available_pack = _first_existing_pack_path(exports_root, packs) or _safe_export_pack_path(
+        exports_root,
+        history.get("latest_pack"),
+    )
+    status = _read_web_export_status(exports_root, export_date)
+    state = str(status.get("state") or ("manual_missing" if available_pack else "missing"))
+    manual_pack = (
+        _safe_export_pack_path(exports_root, status.get("zip_path"))
+        if state.lower() == "succeeded"
+        else None
+    )
+    latest_pack = manual_pack
+    if latest_pack is not None:
+        manifest = readers._read_json_from_zip(latest_pack, "manifest.json")
+        data_quality = readers._read_json_from_zip(latest_pack, "data_quality.json")
+        questions = readers._read_text_from_zip(latest_pack, "expert_questions.md").splitlines()
+        latest_source = "manual_web_request"
+    else:
+        manifest = {}
+        data_quality = {}
+        questions = []
+        latest_source = None
+
+    return {
+        **history,
+        "latest_pack": str(latest_pack) if latest_pack is not None else None,
+        "latest_pack_source": latest_source,
+        "available_pack": str(available_pack) if available_pack is not None else None,
+        "available_pack_name": available_pack.name if available_pack is not None else None,
+        "manual_state": state,
+        "manual_status": status,
+        "export_date": export_date,
+        "manifest_summary": manifest,
+        "data_quality_summary": data_quality,
+        "expert_questions": [line for line in questions if str(line).strip()][:20],
+        "warnings": _manual_export_warnings(status),
+    }
+
+
+def _read_web_export_status(exports_root: Path, export_date: str) -> dict[str, Any]:
+    path = exports_root / f".quant_lab_web_export_{export_date}.json"
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return {}
+    return payload if isinstance(payload, dict) else {}
+
+
+def _first_existing_pack_path(exports_root: Path, rows: list[dict[str, Any]]) -> Path | None:
+    for row in rows:
+        path = _safe_export_pack_path(exports_root, row.get("path"))
+        if path is not None:
+            return path
+        name = row.get("name")
+        if name:
+            path = _safe_export_pack_path(exports_root, exports_root / str(name))
+            if path is not None:
+                return path
+    return None
+
+
+def _safe_export_pack_path(exports_root: Path, raw_value: Any) -> Path | None:
+    if not raw_value:
+        return None
+    try:
+        path = Path(str(raw_value))
+        if not path.is_absolute():
+            path = exports_root / path
+        resolved = path.resolve()
+        resolved.relative_to(exports_root.resolve())
+    except (OSError, ValueError):
+        return None
+    if resolved.is_file() and _is_expert_pack_name(resolved.name):
+        return resolved
+    return None
+
+
+def _manual_export_warnings(status: dict[str, Any]) -> list[str]:
+    state = str(status.get("state") or "").lower()
+    if state != "failed":
+        return []
+    error = str(status.get("error") or "unknown").strip()
+    return [f"expert_pack_manual_export_failed: {error}"]
 
 
 def _latest_factor_strategy_bridge_candidates(root: Path) -> pl.DataFrame:
@@ -780,7 +876,7 @@ def _health_score(
         score -= 15
     if sum(1 for row in web_events if row.get("rglob_fallback")):
         score -= 5
-    if not exports.get("latest_pack"):
+    if str(exports.get("manual_state") or "").lower() == "failed":
         score -= 5
     market_issue = _market_bar_freshness_issue(data_health, datetime.now(UTC))
     if market_issue is not None:
@@ -1688,11 +1784,25 @@ def _exports_payload(exports: dict[str, Any]) -> dict[str, Any]:
     )
     latest_pack = exports.get("latest_pack")
     latest_name = Path(str(latest_pack)).name if latest_pack else ""
+    available_pack = exports.get("available_pack")
+    available_name = Path(str(available_pack)).name if available_pack else ""
+    manual_state = str(exports.get("manual_state") or "").strip()
     return {
         "latest_pack": exports.get("latest_pack"),
+        "latest_pack_name": latest_name if _is_expert_pack_name(latest_name) else None,
+        "latest_pack_source": exports.get("latest_pack_source"),
         "latest_download_url": (
             f"/web-v2/expert-pack/download/{latest_name}"
             if _is_expert_pack_name(latest_name)
+            else None
+        ),
+        "available_pack": available_pack,
+        "available_pack_name": (
+            available_name if _is_expert_pack_name(available_name) else None
+        ),
+        "available_download_url": (
+            f"/web-v2/expert-pack/download/{available_name}"
+            if _is_expert_pack_name(available_name)
             else None
         ),
         "pack_count": len(packs),
@@ -1704,7 +1814,10 @@ def _exports_payload(exports: dict[str, Any]) -> dict[str, Any]:
         "data_quality_warning_count": _quality_warning_count(data_quality),
         "expert_question_count": len(questions),
         "expert_questions": [_json_value(line) for line in questions[:8]],
-        "job_state": "pack_available" if latest_pack else "missing",
+        "manual_state": manual_state or None,
+        "manual_status": _json_value(exports.get("manual_status") or {}),
+        "export_date": exports.get("export_date"),
+        "job_state": "pack_available" if latest_pack else (manual_state or "manual_missing"),
     }
 
 
@@ -1844,14 +1957,14 @@ def _build_actions(
                 "/exports",
             )
         )
-    if not exports.get("latest_pack"):
+    if str(exports.get("manual_state") or "").lower() == "failed":
         actions.append(
             _action(
                 "WARNING",
-                "专家包缺失",
-                "未找到最新 expert pack",
+                "专家包生成失败",
+                "手动 expert pack 导出任务失败",
                 "expert_export_summary",
-                "进入专家包页面生成或检查导出任务",
+                "进入专家包导出页查看失败原因并重新生成",
                 "/exports",
             )
         )

@@ -761,6 +761,48 @@ def test_bigscreen_snapshot_cache_invalidates_when_export_index_changes(
     assert len(calls) == 2
 
 
+def test_bigscreen_snapshot_cache_invalidates_when_manual_export_status_changes(
+    monkeypatch,
+    tmp_path,
+):
+    clear_bigscreen_cache()
+    monkeypatch.setenv("QUANT_LAB_BIGSCREEN_CACHE_TTL_SECONDS", "300")
+    monkeypatch.setattr(bigscreen_module, "beijing_today", lambda now=None: date(2026, 6, 28))
+    calls: list[Path] = []
+
+    def fake_build(root: Path) -> dict[str, object]:
+        calls.append(root)
+        return {
+            "mode": "read-only",
+            "status": "OK",
+            "build_count": len(calls),
+        }
+
+    monkeypatch.setattr(bigscreen_module, "_build_bigscreen_snapshot_payload", fake_build)
+    lake = tmp_path / "lake"
+    exports = tmp_path / "exports"
+    exports.mkdir()
+
+    first_payload, first_meta = bigscreen_snapshot_with_meta(lake)
+    (exports / ".quant_lab_web_export_2026-06-28.json").write_text(
+        json.dumps(
+            {
+                "state": "running",
+                "trigger": "manual_web_request",
+                "started_at": "2026-06-27T21:00:00Z",
+            }
+        ),
+        encoding="utf-8",
+    )
+    second_payload, second_meta = bigscreen_snapshot_with_meta(lake)
+
+    assert first_payload["build_count"] == 1
+    assert first_meta["cache_hit"] is False
+    assert second_payload["build_count"] == 2
+    assert second_meta["cache_hit"] is False
+    assert len(calls) == 2
+
+
 def test_bigscreen_snapshot_cache_invalidates_when_market_bar_health_changes(
     monkeypatch,
     tmp_path,

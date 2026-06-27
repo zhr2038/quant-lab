@@ -234,6 +234,7 @@ def clear_bigscreen_cache() -> None:
 
 def _snapshot_source_signature(root: Path) -> tuple[Any, ...]:
     exports_root = readers.default_exports_root(root)
+    export_date = beijing_today(datetime.now(UTC)).isoformat()
     return (
         _directory_signature(root / "silver" / "market_bar_health"),
         _directory_signature(root / "silver" / "market_bar"),
@@ -241,6 +242,7 @@ def _snapshot_source_signature(root: Path) -> tuple[Any, ...]:
         _directory_signature(root / "silver" / "trade_print"),
         _directory_signature(root / "gold" / "cost_bucket_daily"),
         _directory_signature(root / "gold" / "cost_bootstrap_readiness"),
+        _path_signature(exports_root / f".quant_lab_web_export_{export_date}.json"),
         _path_signature(exports_root / "export_index.json"),
         _expert_pack_collection_signature(exports_root),
         _path_signature(root / "reports" / "v5_enforce_readiness.json"),

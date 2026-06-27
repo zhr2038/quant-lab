@@ -1286,7 +1286,10 @@ def _top_live_candidates(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
     ]
 
 
-def _v5_payload(v5: dict[str, Any], current_readiness: dict[str, Any] | None = None) -> dict[str, Any]:
+def _v5_payload(
+    v5: dict[str, Any],
+    current_readiness: dict[str, Any] | None = None,
+) -> dict[str, Any]:
     latest = v5.get("latest") if isinstance(v5.get("latest"), dict) else {}
     payload = {str(key): _json_value(value) for key, value in latest.items()}
     if current_readiness:

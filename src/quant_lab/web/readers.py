@@ -17,6 +17,10 @@ from quant_lab.costs.model import (
     evaluate_live_universe_cost_coverage,
 )
 from quant_lab.data.lake import invalid_parquet_files, read_parquet_dataset
+from quant_lab.data.market_bar_time import (
+    DEFAULT_MARKET_BAR_TIMEFRAME,
+    market_bar_close_ts,
+)
 from quant_lab.ops.dataset_registry import get_dataset_spec
 from quant_lab.research.portfolio import research_portfolio_closed_keys
 from quant_lab.symbols import normalize_symbol
@@ -884,7 +888,21 @@ def dataset_freshness_payload(
             "latest_timestamp": None,
         }
     reference_time = now.astimezone(UTC) if now else datetime.now(UTC)
-    seconds = max(int((reference_time - latest).total_seconds()), 0)
+    freshness_reference = latest
+    extras: dict[str, Any] = {}
+    if dataset_name == "market_bar":
+        timeframe = _latest_market_bar_timeframe(df, latest) or DEFAULT_MARKET_BAR_TIMEFRAME
+        close_ts = market_bar_close_ts(latest, timeframe)
+        if close_ts is not None:
+            freshness_reference = close_ts
+            extras.update(
+                {
+                    "latest_close_timestamp": close_ts.isoformat(),
+                    "timeframe": timeframe,
+                    "freshness_reference": "bar_close",
+                }
+            )
+    seconds = max(int((reference_time - freshness_reference).total_seconds()), 0)
     if seconds <= 6 * 60 * 60:
         status = "fresh"
     elif seconds <= 24 * 60 * 60:
@@ -896,6 +914,7 @@ def dataset_freshness_payload(
         "freshness_status": status,
         "timestamp_column": column,
         "latest_timestamp": latest.isoformat(),
+        **extras,
     }
 
 
@@ -916,6 +935,39 @@ def latest_dataset_timestamp(
         if parsed:
             return max(parsed), column
     return None, seen_timestamp_column
+
+
+def _latest_market_bar_timeframe(df: pl.DataFrame, latest_ts: datetime | None) -> str | None:
+    if (
+        latest_ts is None
+        or df.is_empty()
+        or "timeframe" not in df.columns
+        or "ts" not in df.columns
+    ):
+        return None
+    try:
+        normalized = df
+        if normalized.schema.get("ts") == pl.String:
+            normalized = normalized.with_columns(
+                pl.col("ts").str.to_datetime(time_zone="UTC", strict=False)
+            )
+        else:
+            normalized = normalized.with_columns(
+                pl.col("ts").cast(pl.Datetime(time_zone="UTC")).alias("ts")
+            )
+        latest_utc = (
+            latest_ts.astimezone(UTC)
+            if latest_ts.tzinfo
+            else latest_ts.replace(tzinfo=UTC)
+        )
+        row = normalized.filter(pl.col("ts") == latest_utc).tail(1)
+        if row.is_empty():
+            row = normalized.sort("ts").tail(1)
+        value = row.item(0, "timeframe")
+    except Exception:
+        return None
+    text = str(value or "").strip()
+    return text or None
 
 
 def _read_parquet_dataset_with_warning(
@@ -1249,6 +1301,8 @@ def _freshness_payload(
     *,
     is_empty: bool,
     now: datetime | None = None,
+    latest_close: datetime | None = None,
+    timeframe: str | None = None,
 ) -> dict[str, Any]:
     if is_empty:
         return {
@@ -1265,19 +1319,26 @@ def _freshness_payload(
             "latest_timestamp": None,
         }
     reference_time = now.astimezone(UTC) if now else datetime.now(UTC)
-    seconds = max(int((reference_time - latest).total_seconds()), 0)
+    freshness_reference = latest_close or latest
+    seconds = max(int((reference_time - freshness_reference).total_seconds()), 0)
     if seconds <= 6 * 60 * 60:
         status = "fresh"
     elif seconds <= 24 * 60 * 60:
         status = "delayed"
     else:
         status = "stale"
-    return {
+    payload = {
         "freshness_seconds": seconds,
         "freshness_status": status,
         "timestamp_column": column,
         "latest_timestamp": latest.isoformat(),
     }
+    if latest_close is not None:
+        payload["latest_close_timestamp"] = latest_close.isoformat()
+        payload["freshness_reference"] = "bar_close"
+    if timeframe:
+        payload["timeframe"] = timeframe
+    return payload
 
 
 def _valid_parquet_files(path: Path, *, invalid_files: list[Path] | None = None) -> list[Path]:
@@ -1574,12 +1635,29 @@ def _dataset_snapshot_from_meta(
         or meta.get("latest_ts")
         or meta.get("generated_at")
     )
+    dataset_name = _dataset_name_from_path(path)
+    timeframe = None
+    latest_close = None
+    if dataset_name == "market_bar":
+        timeframe = str(meta.get("latest_timeframe") or DEFAULT_MARKET_BAR_TIMEFRAME)
+        latest_close = _coerce_timestamp(
+            meta.get("latest_close_timestamp") or meta.get("latest_close_ts")
+        )
+        if latest_close is None and latest is not None:
+            latest_close = market_bar_close_ts(latest, timeframe)
     column = str(meta.get("timestamp_column") or "snapshot_meta")
     return DatasetSnapshot(
         rows=rows,
         exists=path.exists(),
         parquet_file_count=file_count,
-        freshness=_freshness_payload(latest, column, is_empty=rows == 0, now=now),
+        freshness=_freshness_payload(
+            latest,
+            column,
+            is_empty=rows == 0,
+            now=now,
+            latest_close=latest_close,
+            timeframe=timeframe,
+        ),
         warning=None,
     )
 
@@ -2081,6 +2159,8 @@ def _overview_market_health(lake_root: str | Path) -> dict[str, Any]:
     if market_health["row_count"] == 0:
         return {
             "latest_market_bar_ts": None,
+            "latest_market_bar_close_ts": None,
+            "market_bar_timeframe": DEFAULT_MARKET_BAR_TIMEFRAME,
             "missing_bar_ratio": 0.0,
             "schema_violation_count": 1,
             "unclosed_bar_count": 0,
@@ -2091,6 +2171,8 @@ def _overview_market_health(lake_root: str | Path) -> dict[str, Any]:
     missing_bars = market_health["missing_bars"]
     return {
         "latest_market_bar_ts": market_health["latest_market_bar_ts"],
+        "latest_market_bar_close_ts": market_health.get("latest_market_bar_close_ts"),
+        "market_bar_timeframe": market_health.get("market_bar_timeframe"),
         "missing_bar_ratio": _missing_ratio(missing_bars, market_health["row_count"]),
         "schema_violation_count": len(schema_violations),
         "unclosed_bar_count": unclosed_count,
@@ -2239,6 +2321,8 @@ def data_health_summary(lake_root: str | Path) -> dict[str, Any]:
             "schema_violation_count": 1,
             "stale_datasets": _stale_dataset_rows(lake_root),
             "latest_market_bar_ts": None,
+            "latest_market_bar_close_ts": None,
+            "market_bar_timeframe": DEFAULT_MARKET_BAR_TIMEFRAME,
             "missing_bar_ratio": 0.0,
             "warnings": [*warnings, "market_bar 数据集缺失或为空"],
         }
@@ -2250,6 +2334,8 @@ def data_health_summary(lake_root: str | Path) -> dict[str, Any]:
     missing_bars = market_health["missing_bars"]
     missing_ratio = _missing_ratio(missing_bars, market_health["row_count"])
     latest_ts = market_health["latest_market_bar_ts"]
+    latest_close_ts = market_health.get("latest_market_bar_close_ts")
+    timeframe = market_health.get("market_bar_timeframe")
 
     if duplicate_count:
         warnings.append(f"market_bar 主键重复：{duplicate_count}")
@@ -2266,6 +2352,8 @@ def data_health_summary(lake_root: str | Path) -> dict[str, Any]:
         "schema_violation_count": len(schema_violations),
         "stale_datasets": _stale_dataset_rows(lake_root),
         "latest_market_bar_ts": latest_ts,
+        "latest_market_bar_close_ts": latest_close_ts,
+        "market_bar_timeframe": timeframe,
         "missing_bar_ratio": missing_ratio,
         "warnings": warnings,
     }
@@ -2298,6 +2386,8 @@ def _market_bar_lazy_health(lake_root: str | Path) -> dict[str, Any]:
             "unclosed_bar_count": 0,
             "schema_violations": ["market_bar 数据集缺失或为空"],
             "latest_market_bar_ts": None,
+            "latest_market_bar_close_ts": None,
+            "market_bar_timeframe": DEFAULT_MARKET_BAR_TIMEFRAME,
         })
     try:
         lazy = _scan_parquet_files(files)
@@ -2312,9 +2402,13 @@ def _market_bar_lazy_health(lake_root: str | Path) -> dict[str, Any]:
             "unclosed_bar_count": 0,
             "schema_violations": ["market_bar 数据集读取失败"],
             "latest_market_bar_ts": None,
+            "latest_market_bar_close_ts": None,
+            "market_bar_timeframe": DEFAULT_MARKET_BAR_TIMEFRAME,
         })
 
     latest_ts = _coerce_timestamp(snapshot.freshness.get("latest_timestamp"))
+    latest_close_ts = _coerce_timestamp(snapshot.freshness.get("latest_close_timestamp"))
+    timeframe = str(snapshot.freshness.get("timeframe") or DEFAULT_MARKET_BAR_TIMEFRAME)
     return _web_cache_set(cache_key, {
         "row_count": snapshot.rows,
         "warning": snapshot.warning,
@@ -2324,6 +2418,8 @@ def _market_bar_lazy_health(lake_root: str | Path) -> dict[str, Any]:
         "unclosed_bar_count": _unclosed_market_bar_count_lazy(lazy, schema),
         "schema_violations": _market_bar_schema_violations_lazy(lazy, schema),
         "latest_market_bar_ts": latest_ts,
+        "latest_market_bar_close_ts": latest_close_ts,
+        "market_bar_timeframe": timeframe,
     })
 
 

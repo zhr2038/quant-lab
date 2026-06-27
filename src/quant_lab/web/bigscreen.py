@@ -13,6 +13,11 @@ from typing import Any
 
 import polars as pl
 
+from quant_lab.data.market_bar_time import (
+    DEFAULT_MARKET_BAR_TIMEFRAME,
+    market_bar_close_ts,
+    market_bar_freshness_seconds,
+)
 from quant_lab.factors.composite_factory import build_factor_factory_v2_reports
 from quant_lab.ops.api_metrics import api_metrics_summary
 from quant_lab.symbols import normalize_symbol
@@ -469,6 +474,8 @@ def _overview_from_summaries(
         "v5_permission": permissions.get("v5", "UNKNOWN"),
         "v7_permission": permissions.get("v7", "UNKNOWN"),
         "latest_market_bar_ts": data_health.get("latest_market_bar_ts"),
+        "latest_market_bar_close_ts": data_health.get("latest_market_bar_close_ts"),
+        "market_bar_timeframe": data_health.get("market_bar_timeframe"),
         "latest_v5_bundle_ts": latest.get("latest_bundle_ts"),
         "diagnostics": {
             "latest_v5_bundle_ts": latest.get("latest_bundle_ts"),
@@ -533,6 +540,7 @@ def _system_warnings(
             label = "critical" if issue["severity"] == "CRITICAL" else "warning"
             out.append(
                 f"market_bar_freshness_{label}: latest={issue['latest_ts']}; "
+                f"latest_close={issue.get('latest_close_ts')}; "
                 f"delay_seconds={issue['age_seconds']}; "
                 f"threshold_seconds={issue['threshold_seconds']}"
             )
@@ -794,8 +802,9 @@ def _kpis(
         "v5_permission": overview.get("v5_permission", "UNKNOWN"),
         "v7_permission": overview.get("v7_permission", "UNKNOWN"),
         "latest_market_bar_ts": _json_value(overview.get("latest_market_bar_ts")),
+        "latest_market_bar_close_ts": _json_value(overview.get("latest_market_bar_close_ts")),
         "latest_v5_bundle_ts": _json_value(latest_bundle_ts),
-        "market_delay_seconds": _age_seconds(generated_at, overview.get("latest_market_bar_ts")),
+        "market_delay_seconds": _market_bar_delay_seconds(overview, generated_at),
         "v5_bundle_delay_seconds": _age_seconds(generated_at, latest_bundle_ts),
         "cost_hard_fallback_ratio": _float(cost.get("hard_fallback_ratio")),
         "cost_soft_fallback_ratio": _float(cost.get("soft_fallback_ratio")),
@@ -823,6 +832,25 @@ def _age_seconds(now: datetime, value: Any) -> int | None:
     return max(0, int((now - ts).total_seconds()))
 
 
+def _market_bar_reference_ts(payload: dict[str, Any]) -> datetime | None:
+    close_ts = _parse_dt(payload.get("latest_market_bar_close_ts"))
+    if close_ts is not None:
+        return close_ts
+    latest_ts = payload.get("latest_market_bar_ts")
+    timeframe = str(payload.get("market_bar_timeframe") or DEFAULT_MARKET_BAR_TIMEFRAME)
+    return market_bar_close_ts(latest_ts, timeframe)
+
+
+def _market_bar_delay_seconds(payload: dict[str, Any], now: datetime) -> int | None:
+    age_seconds = market_bar_freshness_seconds(
+        payload.get("latest_market_bar_ts"),
+        latest_close_ts=payload.get("latest_market_bar_close_ts"),
+        timeframe=str(payload.get("market_bar_timeframe") or DEFAULT_MARKET_BAR_TIMEFRAME),
+        now=now,
+    )
+    return age_seconds
+
+
 def _parse_dt(value: Any) -> datetime | None:
     if isinstance(value, datetime):
         return value.astimezone(UTC)
@@ -839,9 +867,10 @@ def _market_bar_freshness_issue(
     now: datetime,
 ) -> dict[str, Any] | None:
     latest_ts = data_health.get("latest_market_bar_ts")
-    age_seconds = _age_seconds(now, latest_ts)
+    age_seconds = _market_bar_delay_seconds(data_health, now)
     if age_seconds is None:
         return None
+    reference_ts = _market_bar_reference_ts(data_health)
     critical_threshold = _market_bar_critical_delay_seconds()
     warning_threshold = _market_bar_warning_delay_seconds()
     if age_seconds >= critical_threshold:
@@ -849,6 +878,7 @@ def _market_bar_freshness_issue(
             "severity": "CRITICAL",
             "age_seconds": age_seconds,
             "latest_ts": _json_value(latest_ts),
+            "latest_close_ts": _json_value(reference_ts),
             "threshold_seconds": critical_threshold,
         }
     if age_seconds >= warning_threshold:
@@ -856,6 +886,7 @@ def _market_bar_freshness_issue(
             "severity": "WARNING",
             "age_seconds": age_seconds,
             "latest_ts": _json_value(latest_ts),
+            "latest_close_ts": _json_value(reference_ts),
             "threshold_seconds": warning_threshold,
         }
     return None
@@ -912,6 +943,7 @@ def _data_matrix(
     evidence_by_symbol = _latest_by_symbol(_frame_rows(strategy.get("strategy_evidence"), limit=80))
 
     market_status = _market_bar_status(data_health, datetime.now(UTC))
+    market_delay_seconds = _market_bar_delay_seconds(data_health, datetime.now(UTC))
     ws_status = _status_label(collectors.get("okx_public_ws_status"))
     rows: list[dict[str, Any]] = []
     for symbol in symbols[:16]:
@@ -927,11 +959,11 @@ def _data_matrix(
                 "symbol": symbol,
                 "market_bar": {
                     "status": market_status,
-                    "freshness_seconds": _age_seconds(
-                        datetime.now(UTC),
-                        data_health.get("latest_market_bar_ts"),
-                    ),
+                    "freshness_seconds": market_delay_seconds,
                     "latest_ts": _json_value(data_health.get("latest_market_bar_ts")),
+                    "latest_close_ts": _json_value(
+                        _market_bar_reference_ts(data_health)
+                    ),
                     "regime": regime.get("volatility_regime") or regime.get("regime"),
                 },
                 "ws": {
@@ -1482,10 +1514,10 @@ def _data_health_payload(data_health: dict[str, Any]) -> dict[str, Any]:
         "schema_violation_count": _int(data_health.get("schema_violation_count")) or 0,
         "missing_bar_ratio": _float(data_health.get("missing_bar_ratio")) or 0.0,
         "latest_market_bar_ts": _json_value(data_health.get("latest_market_bar_ts")),
-        "market_bar_delay_seconds": _age_seconds(
-            datetime.now(UTC),
-            data_health.get("latest_market_bar_ts"),
-        ),
+        "latest_market_bar_close_ts": _json_value(_market_bar_reference_ts(data_health)),
+        "market_bar_timeframe": data_health.get("market_bar_timeframe")
+        or DEFAULT_MARKET_BAR_TIMEFRAME,
+        "market_bar_delay_seconds": _market_bar_delay_seconds(data_health, datetime.now(UTC)),
         "market_bar_freshness_status": _market_bar_status(data_health, datetime.now(UTC)),
         "stale_dataset_count": len(_frame_rows(data_health.get("stale_datasets"), limit=1000)),
         "stale_datasets": _frame_rows(data_health.get("stale_datasets"), limit=8),
@@ -1596,6 +1628,7 @@ def _legacy_web_anomalies(data_health: dict[str, Any]) -> dict[str, Any]:
         "missing_bar_row_count": len(missing_rows),
         "missing_bar_count": missing_count,
         "latest_market_bar_ts": _json_value(data_health.get("latest_market_bar_ts")),
+        "latest_market_bar_close_ts": _json_value(_market_bar_reference_ts(data_health)),
         "items": items,
         "warnings": warning_values,
     }
@@ -1735,6 +1768,7 @@ def _build_actions(
                 "行情 K 线延迟",
                 (
                     f"market_bar 最新 {market_issue['latest_ts']}，"
+                    f"close {market_issue.get('latest_close_ts')}，"
                     f"延迟 {market_issue['age_seconds']} 秒"
                 ),
                 "data_health_summary",

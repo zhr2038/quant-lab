@@ -51,6 +51,12 @@ from quant_lab.data.lake import (
     read_parquet_dataset,  # noqa: F401 - kept as a monkeypatch guard for no-eager-read tests.
     read_parquet_lazy,
 )
+from quant_lab.data.market_bar_time import (
+    DEFAULT_MARKET_BAR_TIMEFRAME,
+    ensure_utc_datetime,
+    market_bar_close_ts,
+    market_bar_freshness_seconds,
+)
 from quant_lab.gates.defaults import conservative_example_gate_decision
 from quant_lab.ops.api_metrics import api_metrics_summary, record_api_request
 from quant_lab.ops.dataset_registry import dataset_names, get_dataset_spec
@@ -3649,9 +3655,13 @@ def _read_json_file(path: Path) -> dict[str, Any]:
 
 
 def _lake_data_health(lake_root: Path) -> dict[str, Any]:
-    latest_from_health = _latest_market_bar_health_ts(lake_root)
+    latest_from_health = _latest_market_bar_health(lake_root)
     if latest_from_health is not None:
-        return _market_bar_data_health_from_latest(latest_from_health)
+        return _market_bar_data_health_from_latest(
+            latest_from_health["latest_ts"],
+            timeframe=latest_from_health.get("timeframe"),
+            latest_close_ts=latest_from_health.get("latest_close_ts"),
+        )
 
     lazy, columns = _safe_parquet_lazy(lake_root / "silver" / "market_bar")
     if lazy is None or "ts" not in columns:
@@ -3660,35 +3670,79 @@ def _lake_data_health(lake_root: Path) -> dict[str, Any]:
             "is_critical": True,
             "reasons": ["market_bar_missing"],
         }
-    latest_frame = _collect_lazy_or_empty(
-        lazy.select(_lazy_utc_datetime("ts").max().alias("latest_ts"))
+    scoped = lazy.with_columns(_lazy_utc_datetime("ts").alias("latest_ts")).sort(
+        "latest_ts",
+        descending=True,
+        nulls_last=True,
     )
+    select_exprs: list[pl.Expr] = [pl.col("latest_ts")]
+    if "timeframe" in columns:
+        select_exprs.append(pl.col("timeframe").cast(pl.Utf8, strict=False).alias("timeframe"))
+    else:
+        select_exprs.append(pl.lit(DEFAULT_MARKET_BAR_TIMEFRAME).alias("timeframe"))
+    latest_frame = _collect_lazy_or_empty(scoped.select(select_exprs).limit(1))
     latest_ts = latest_frame.item(0, "latest_ts") if not latest_frame.is_empty() else None
+    timeframe = (
+        str(latest_frame.item(0, "timeframe") or DEFAULT_MARKET_BAR_TIMEFRAME)
+        if not latest_frame.is_empty()
+        else DEFAULT_MARKET_BAR_TIMEFRAME
+    )
     if not isinstance(latest_ts, datetime):
         return {
             "status": "critical",
             "is_critical": True,
             "reasons": ["market_bar_invalid_timestamp"],
         }
-    return _market_bar_data_health_from_latest(latest_ts)
+    return _market_bar_data_health_from_latest(latest_ts, timeframe=timeframe)
 
 
-def _latest_market_bar_health_ts(lake_root: Path) -> datetime | None:
+def _latest_market_bar_health(lake_root: Path) -> dict[str, Any] | None:
     lazy, columns = _safe_parquet_lazy(lake_root / "silver" / "market_bar_health")
     if lazy is None or "latest_ts" not in columns:
         return None
-    latest_frame = _collect_lazy_or_empty(
-        lazy.select(_lazy_utc_datetime("latest_ts").max().alias("latest_ts"))
+    scoped = lazy.with_columns(_lazy_utc_datetime("latest_ts").alias("latest_ts")).sort(
+        "latest_ts",
+        descending=True,
+        nulls_last=True,
     )
+    select_exprs: list[pl.Expr] = [pl.col("latest_ts")]
+    if "latest_timeframe" in columns:
+        select_exprs.append(
+            pl.col("latest_timeframe").cast(pl.Utf8, strict=False).alias("timeframe")
+        )
+    else:
+        select_exprs.append(pl.lit(DEFAULT_MARKET_BAR_TIMEFRAME).alias("timeframe"))
+    if "latest_close_ts" in columns:
+        select_exprs.append(_lazy_utc_datetime("latest_close_ts").alias("latest_close_ts"))
+    else:
+        select_exprs.append(pl.lit(None).alias("latest_close_ts"))
+    latest_frame = _collect_lazy_or_empty(scoped.select(select_exprs).limit(1))
     latest_ts = latest_frame.item(0, "latest_ts") if not latest_frame.is_empty() else None
     if not isinstance(latest_ts, datetime):
         return None
-    return latest_ts.astimezone(UTC)
+    timeframe = str(latest_frame.item(0, "timeframe") or DEFAULT_MARKET_BAR_TIMEFRAME)
+    latest_close_ts = ensure_utc_datetime(latest_frame.item(0, "latest_close_ts"))
+    return {
+        "latest_ts": latest_ts.astimezone(UTC),
+        "timeframe": timeframe,
+        "latest_close_ts": latest_close_ts,
+    }
 
 
-def _market_bar_data_health_from_latest(latest_ts: datetime) -> dict[str, Any]:
+def _market_bar_data_health_from_latest(
+    latest_ts: datetime,
+    *,
+    timeframe: str | None = None,
+    latest_close_ts: datetime | None = None,
+) -> dict[str, Any]:
     latest_utc = latest_ts.astimezone(UTC) if latest_ts.tzinfo else latest_ts.replace(tzinfo=UTC)
-    age_seconds = max(0, int((datetime.now(UTC) - latest_utc).total_seconds()))
+    close_utc = latest_close_ts or market_bar_close_ts(latest_utc, timeframe)
+    age_seconds = market_bar_freshness_seconds(
+        latest_utc,
+        latest_close_ts=close_utc,
+        timeframe=timeframe,
+    )
+    age_seconds = age_seconds if age_seconds is not None else 0
     critical_threshold = _market_bar_critical_delay_seconds()
     warning_threshold = _market_bar_warning_delay_seconds()
     if age_seconds >= critical_threshold:
@@ -3697,6 +3751,8 @@ def _market_bar_data_health_from_latest(latest_ts: datetime) -> dict[str, Any]:
             "is_critical": True,
             "reasons": ["market_bar_stale"],
             "latest_market_bar_ts": latest_utc.isoformat(),
+            "latest_market_bar_close_ts": close_utc.isoformat() if close_utc else None,
+            "market_bar_timeframe": timeframe or DEFAULT_MARKET_BAR_TIMEFRAME,
             "freshness_seconds": age_seconds,
             "stale_threshold_seconds": critical_threshold,
         }
@@ -3706,6 +3762,8 @@ def _market_bar_data_health_from_latest(latest_ts: datetime) -> dict[str, Any]:
             "is_critical": False,
             "reasons": ["market_bar_delayed"],
             "latest_market_bar_ts": latest_utc.isoformat(),
+            "latest_market_bar_close_ts": close_utc.isoformat() if close_utc else None,
+            "market_bar_timeframe": timeframe or DEFAULT_MARKET_BAR_TIMEFRAME,
             "freshness_seconds": age_seconds,
             "warning_threshold_seconds": warning_threshold,
             "stale_threshold_seconds": critical_threshold,
@@ -3716,6 +3774,8 @@ def _market_bar_data_health_from_latest(latest_ts: datetime) -> dict[str, Any]:
     return {
         "status": "ok",
         "latest_market_bar_ts": latest_utc.isoformat(),
+        "latest_market_bar_close_ts": close_utc.isoformat() if close_utc else None,
+        "market_bar_timeframe": timeframe or DEFAULT_MARKET_BAR_TIMEFRAME,
         "freshness_seconds": age_seconds,
         "warning_threshold_seconds": warning_threshold,
         "stale_threshold_seconds": critical_threshold,

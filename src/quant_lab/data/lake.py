@@ -20,6 +20,10 @@ import polars as pl
 from pydantic import BaseModel, ConfigDict, Field
 
 from quant_lab.contracts.models import MarketBar, require_utc
+from quant_lab.data.market_bar_time import (
+    DEFAULT_MARKET_BAR_TIMEFRAME,
+    market_bar_close_ts,
+)
 from quant_lab.symbols import normalize_symbol
 
 MARKET_BAR_DATASET = Path("silver") / "market_bar"
@@ -767,7 +771,18 @@ def _write_market_bar_health(lake_root: Path, new_df: pl.DataFrame, *, row_count
     path = lake_root / MARKET_BAR_HEALTH_DATASET
     existing = read_parquet_dataset(path)
     existing_latest = _frame_latest_datetime(existing, "latest_ts")
+    new_timeframe = _frame_latest_value(new_df, "timeframe", sort_column="ts")
+    existing_timeframe = _frame_latest_value(existing, "latest_timeframe", sort_column="latest_ts")
     latest = max([value for value in [existing_latest, new_latest] if value is not None])
+    if existing_latest is not None and existing_latest >= new_latest:
+        timeframe = existing_timeframe or DEFAULT_MARKET_BAR_TIMEFRAME
+        latest_close = _frame_latest_datetime(existing, "latest_close_ts") or market_bar_close_ts(
+            latest,
+            timeframe,
+        )
+    else:
+        timeframe = new_timeframe or DEFAULT_MARKET_BAR_TIMEFRAME
+        latest_close = market_bar_close_ts(latest, timeframe)
     write_parquet_dataset(
         pl.DataFrame(
             [
@@ -775,6 +790,8 @@ def _write_market_bar_health(lake_root: Path, new_df: pl.DataFrame, *, row_count
                     "dataset": "market_bar",
                     "row_count": row_count,
                     "latest_ts": latest,
+                    "latest_timeframe": timeframe,
+                    "latest_close_ts": latest_close,
                     "updated_at": datetime.now(UTC),
                 }
             ]
@@ -799,6 +816,25 @@ def _frame_latest_datetime(frame: pl.DataFrame, column: str) -> datetime | None:
     if not isinstance(value, datetime):
         return None
     return value.astimezone(UTC) if value.tzinfo else value.replace(tzinfo=UTC)
+
+
+def _frame_latest_value(
+    frame: pl.DataFrame,
+    column: str,
+    *,
+    sort_column: str,
+) -> str | None:
+    if frame.is_empty() or column not in frame.columns:
+        return None
+    try:
+        scoped = frame
+        if sort_column in scoped.columns:
+            scoped = scoped.sort(sort_column)
+        value = scoped.tail(1).item(0, column)
+    except Exception:
+        return None
+    text = str(value or "").strip()
+    return text or None
 
 
 def read_market_bars(

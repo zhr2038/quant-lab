@@ -61,13 +61,30 @@ def test_publish_risk_permission_data_health_warns_before_market_bar_stale(tmp_p
     lake = tmp_path / "lake"
     monkeypatch.delenv("QUANT_LAB_MARKET_BAR_WARNING_DELAY_SECONDS", raising=False)
     monkeypatch.delenv("QUANT_LAB_MARKET_BAR_CRITICAL_DELAY_SECONDS", raising=False)
-    _write_market_bar(lake, datetime.now(UTC) - timedelta(hours=2, minutes=5))
+    _write_market_bar(lake, datetime.now(UTC) - timedelta(hours=3, minutes=5))
 
     health = lake_data_health(lake)
 
     assert health["status"] == "warning"
     assert health["is_critical"] is False
     assert health["reasons"] == ["market_bar_delayed"]
+    assert health["latest_market_bar_close_ts"]
+
+
+def test_publish_risk_permission_data_health_uses_market_bar_close_time(
+    tmp_path,
+    monkeypatch,
+):
+    lake = tmp_path / "lake"
+    monkeypatch.delenv("QUANT_LAB_MARKET_BAR_WARNING_DELAY_SECONDS", raising=False)
+    monkeypatch.delenv("QUANT_LAB_MARKET_BAR_CRITICAL_DELAY_SECONDS", raising=False)
+    _write_market_bar(lake, datetime.now(UTC) - timedelta(hours=2, minutes=5))
+
+    health = lake_data_health(lake)
+
+    assert health["status"] == "ok"
+    assert health["freshness_seconds"] < 2 * 60 * 60
+    assert health["latest_market_bar_close_ts"]
 
 
 def test_publish_risk_permission_data_health_critical_after_market_bar_stale(
@@ -77,7 +94,7 @@ def test_publish_risk_permission_data_health_critical_after_market_bar_stale(
     lake = tmp_path / "lake"
     monkeypatch.delenv("QUANT_LAB_MARKET_BAR_WARNING_DELAY_SECONDS", raising=False)
     monkeypatch.delenv("QUANT_LAB_MARKET_BAR_CRITICAL_DELAY_SECONDS", raising=False)
-    _write_market_bar(lake, datetime.now(UTC) - timedelta(hours=3, minutes=5))
+    _write_market_bar(lake, datetime.now(UTC) - timedelta(hours=4, minutes=5))
 
     health = lake_data_health(lake)
 

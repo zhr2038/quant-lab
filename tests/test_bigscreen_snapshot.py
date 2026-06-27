@@ -1220,7 +1220,7 @@ def test_bigscreen_actions_skip_read_only_export_cost_advisory():
 def test_bigscreen_market_bar_delay_warning_before_registry_stale_threshold(monkeypatch):
     now = datetime(2026, 6, 27, 14, 30, tzinfo=UTC)
     data_health = {
-        "latest_market_bar_ts": now - timedelta(hours=2, minutes=5),
+        "latest_market_bar_ts": now - timedelta(hours=3, minutes=5),
         "schema_violation_count": 0,
         "unclosed_bar_count": 0,
     }
@@ -1242,12 +1242,31 @@ def test_bigscreen_market_bar_delay_warning_before_registry_stale_threshold(monk
     assert status == "WARNING"
     assert bigscreen_module._market_bar_status(data_health, now) == "WARNING"
     assert any("market_bar_freshness_warning:" in warning for warning in warnings)
+    assert any("latest_close=" in warning for warning in warnings)
+
+
+def test_bigscreen_market_bar_delay_uses_bar_close_time(monkeypatch):
+    now = datetime(2026, 6, 27, 14, 30, tzinfo=UTC)
+    data_health = {
+        "latest_market_bar_ts": now - timedelta(hours=2, minutes=5),
+        "schema_violation_count": 0,
+        "unclosed_bar_count": 0,
+    }
+
+    monkeypatch.delenv("QUANT_LAB_MARKET_BAR_WARNING_DELAY_SECONDS", raising=False)
+    monkeypatch.delenv("QUANT_LAB_MARKET_BAR_CRITICAL_DELAY_SECONDS", raising=False)
+
+    warnings = bigscreen_module._system_warnings([], {}, data_health, now)
+
+    assert bigscreen_module._market_bar_status(data_health, now) == "OK"
+    assert warnings == []
+    assert bigscreen_module._market_bar_delay_seconds(data_health, now) < 2 * 60 * 60
 
 
 def test_bigscreen_market_bar_delay_critical_after_registry_stale_threshold(monkeypatch):
     now = datetime(2026, 6, 27, 14, 30, tzinfo=UTC)
     data_health = {
-        "latest_market_bar_ts": now - timedelta(hours=3, minutes=5),
+        "latest_market_bar_ts": now - timedelta(hours=4, minutes=5),
         "schema_violation_count": 0,
         "unclosed_bar_count": 0,
     }

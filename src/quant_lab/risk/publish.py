@@ -10,6 +10,11 @@ from pydantic import BaseModel, ConfigDict, Field
 from quant_lab.contracts.models import GateDecision, RiskPermission, RiskPermissionStatus
 from quant_lab.contracts.v5_quant_lab import RISK_PERMISSION_CONTRACT_VERSION
 from quant_lab.data.lake import read_parquet_dataset, read_parquet_lazy, upsert_parquet_dataset
+from quant_lab.data.market_bar_time import (
+    DEFAULT_MARKET_BAR_TIMEFRAME,
+    market_bar_close_ts,
+    market_bar_freshness_seconds,
+)
 from quant_lab.ops.dataset_registry import get_dataset_spec
 from quant_lab.risk.advisory import (
     apply_risk_advisory_context,
@@ -466,11 +471,17 @@ def lake_cost_health(root: Path) -> dict[str, Any]:
 
 def lake_data_health(root: Path) -> dict[str, Any]:
     market_bars = read_parquet_dataset(root / MARKET_BAR_DATASET)
-    latest_ts = _latest_market_bar_ts(market_bars)
+    latest_ts, timeframe = _latest_market_bar_metadata(market_bars)
     if latest_ts is None:
         return {"status": "critical", "is_critical": True, "reasons": ["market_bar_missing"]}
     latest_utc = latest_ts.astimezone(UTC) if latest_ts.tzinfo else latest_ts.replace(tzinfo=UTC)
-    age_seconds = max(0, int((datetime.now(UTC) - latest_utc).total_seconds()))
+    close_utc = market_bar_close_ts(latest_utc, timeframe)
+    age_seconds = market_bar_freshness_seconds(
+        latest_utc,
+        latest_close_ts=close_utc,
+        timeframe=timeframe,
+    )
+    age_seconds = age_seconds if age_seconds is not None else 0
     critical_threshold = _market_bar_critical_delay_seconds()
     warning_threshold = _market_bar_warning_delay_seconds()
     if age_seconds >= critical_threshold:
@@ -479,6 +490,8 @@ def lake_data_health(root: Path) -> dict[str, Any]:
             "is_critical": True,
             "reasons": ["market_bar_stale"],
             "latest_market_bar_ts": latest_utc.isoformat(),
+            "latest_market_bar_close_ts": close_utc.isoformat() if close_utc else None,
+            "market_bar_timeframe": timeframe or DEFAULT_MARKET_BAR_TIMEFRAME,
             "freshness_seconds": age_seconds,
             "stale_threshold_seconds": critical_threshold,
         }
@@ -488,6 +501,8 @@ def lake_data_health(root: Path) -> dict[str, Any]:
             "is_critical": False,
             "reasons": ["market_bar_delayed"],
             "latest_market_bar_ts": latest_utc.isoformat(),
+            "latest_market_bar_close_ts": close_utc.isoformat() if close_utc else None,
+            "market_bar_timeframe": timeframe or DEFAULT_MARKET_BAR_TIMEFRAME,
             "freshness_seconds": age_seconds,
             "warning_threshold_seconds": warning_threshold,
             "stale_threshold_seconds": critical_threshold,
@@ -498,6 +513,8 @@ def lake_data_health(root: Path) -> dict[str, Any]:
     return {
         "status": "ok",
         "latest_market_bar_ts": latest_utc.isoformat(),
+        "latest_market_bar_close_ts": close_utc.isoformat() if close_utc else None,
+        "market_bar_timeframe": timeframe or DEFAULT_MARKET_BAR_TIMEFRAME,
         "freshness_seconds": age_seconds,
         "warning_threshold_seconds": warning_threshold,
         "stale_threshold_seconds": critical_threshold,
@@ -811,9 +828,9 @@ def _ensure_utc(value: datetime | None) -> datetime | None:
     return value.astimezone(UTC)
 
 
-def _latest_market_bar_ts(df: pl.DataFrame) -> datetime | None:
+def _latest_market_bar_metadata(df: pl.DataFrame) -> tuple[datetime | None, str]:
     if df.is_empty() or "ts" not in df.columns:
-        return None
+        return None, DEFAULT_MARKET_BAR_TIMEFRAME
     normalized = df
     try:
         if normalized.schema.get("ts") == pl.String:
@@ -825,9 +842,15 @@ def _latest_market_bar_ts(df: pl.DataFrame) -> datetime | None:
                 pl.col("ts").cast(pl.Datetime(time_zone="UTC")).alias("ts")
             )
     except Exception:
-        return None
-    latest = normalized.select(pl.col("ts").max()).item()
-    return latest.astimezone(UTC) if isinstance(latest, datetime) else None
+        return None, DEFAULT_MARKET_BAR_TIMEFRAME
+    try:
+        latest_row = normalized.sort("ts").tail(1).to_dicts()[0]
+    except Exception:
+        return None, DEFAULT_MARKET_BAR_TIMEFRAME
+    latest = latest_row.get("ts")
+    latest_utc = latest.astimezone(UTC) if isinstance(latest, datetime) else None
+    timeframe = str(latest_row.get("timeframe") or DEFAULT_MARKET_BAR_TIMEFRAME)
+    return latest_utc, timeframe
 
 
 def _fallback_ratio(df: pl.DataFrame) -> float:

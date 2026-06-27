@@ -301,6 +301,41 @@ def test_lake_data_health_uses_lazy_scan_not_full_market_bar_read(tmp_path, monk
     assert health["latest_market_bar_ts"]
 
 
+def test_lake_data_health_warns_before_market_bar_registry_stale_threshold(tmp_path, monkeypatch):
+    from quant_lab.api.main import _lake_data_health
+
+    lake = tmp_path / "lake"
+    monkeypatch.delenv("QUANT_LAB_MARKET_BAR_WARNING_DELAY_SECONDS", raising=False)
+    monkeypatch.delenv("QUANT_LAB_MARKET_BAR_CRITICAL_DELAY_SECONDS", raising=False)
+    _write_market_bar(lake, datetime.now(UTC) - timedelta(hours=2, minutes=5))
+
+    health = _lake_data_health(lake)
+
+    assert health["status"] == "warning"
+    assert health["is_critical"] is False
+    assert health["reasons"] == ["market_bar_delayed"]
+    assert health["freshness_seconds"] >= 2 * 60 * 60
+
+
+def test_lake_data_health_is_critical_after_market_bar_registry_stale_threshold(
+    tmp_path,
+    monkeypatch,
+):
+    from quant_lab.api.main import _lake_data_health
+
+    lake = tmp_path / "lake"
+    monkeypatch.delenv("QUANT_LAB_MARKET_BAR_WARNING_DELAY_SECONDS", raising=False)
+    monkeypatch.delenv("QUANT_LAB_MARKET_BAR_CRITICAL_DELAY_SECONDS", raising=False)
+    _write_market_bar(lake, datetime.now(UTC) - timedelta(hours=3, minutes=5))
+
+    health = _lake_data_health(lake)
+
+    assert health["status"] == "critical"
+    assert health["is_critical"] is True
+    assert health["reasons"] == ["market_bar_stale"]
+    assert health["freshness_seconds"] >= 3 * 60 * 60
+
+
 def test_lake_data_health_prefers_market_bar_health_metadata(tmp_path, monkeypatch):
     from quant_lab.api.main import _lake_data_health
     from quant_lab.api.main import read_parquet_lazy as real_read_parquet_lazy

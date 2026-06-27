@@ -53,7 +53,7 @@ from quant_lab.data.lake import (
 )
 from quant_lab.gates.defaults import conservative_example_gate_decision
 from quant_lab.ops.api_metrics import api_metrics_summary, record_api_request
-from quant_lab.ops.dataset_registry import dataset_names
+from quant_lab.ops.dataset_registry import dataset_names, get_dataset_spec
 from quant_lab.research.advisory_overrides import (
     portfolio_overridden_decision_mode,
     portfolio_override_for_row,
@@ -78,6 +78,9 @@ from quant_lab.risk.publish import (
     risk_permission_stale_vs_telemetry,
 )
 from quant_lab.symbols import normalize_symbol
+
+MARKET_BAR_WARNING_DELAY_SECONDS = 2 * 60 * 60
+MARKET_BAR_CRITICAL_DELAY_SECONDS = 3 * 60 * 60
 
 STRATEGY_OPPORTUNITY_ADVISORY_SCHEMA_VERSION = "strategy_opportunity_advisory.v0.1"
 STRATEGY_OPPORTUNITY_ADVISORY_TTL_SECONDS = 3 * 60 * 60
@@ -3685,20 +3688,68 @@ def _latest_market_bar_health_ts(lake_root: Path) -> datetime | None:
 
 def _market_bar_data_health_from_latest(latest_ts: datetime) -> dict[str, Any]:
     latest_utc = latest_ts.astimezone(UTC) if latest_ts.tzinfo else latest_ts.replace(tzinfo=UTC)
-    if latest_utc < datetime.now(UTC) - timedelta(hours=24):
+    age_seconds = max(0, int((datetime.now(UTC) - latest_utc).total_seconds()))
+    critical_threshold = _market_bar_critical_delay_seconds()
+    warning_threshold = _market_bar_warning_delay_seconds()
+    if age_seconds >= critical_threshold:
         return {
             "status": "critical",
             "is_critical": True,
             "reasons": ["market_bar_stale"],
             "latest_market_bar_ts": latest_utc.isoformat(),
+            "freshness_seconds": age_seconds,
+            "stale_threshold_seconds": critical_threshold,
+        }
+    if age_seconds >= warning_threshold:
+        return {
+            "status": "warning",
+            "is_critical": False,
+            "reasons": ["market_bar_delayed"],
+            "latest_market_bar_ts": latest_utc.isoformat(),
+            "freshness_seconds": age_seconds,
+            "warning_threshold_seconds": warning_threshold,
+            "stale_threshold_seconds": critical_threshold,
+            "allowed_modes": ["paper"],
+            "max_gross_exposure": 0.25,
+            "max_single_weight": 0.05,
         }
     return {
         "status": "ok",
         "latest_market_bar_ts": latest_utc.isoformat(),
+        "freshness_seconds": age_seconds,
+        "warning_threshold_seconds": warning_threshold,
+        "stale_threshold_seconds": critical_threshold,
         "allowed_modes": ["paper"],
         "max_gross_exposure": 0.25,
         "max_single_weight": 0.05,
     }
+
+
+def _market_bar_warning_delay_seconds() -> int:
+    return _seconds_env(
+        "QUANT_LAB_MARKET_BAR_WARNING_DELAY_SECONDS",
+        MARKET_BAR_WARNING_DELAY_SECONDS,
+    )
+
+
+def _market_bar_critical_delay_seconds() -> int:
+    spec = get_dataset_spec("market_bar")
+    default = (
+        spec.freshness_seconds
+        if spec and spec.freshness_seconds
+        else MARKET_BAR_CRITICAL_DELAY_SECONDS
+    )
+    configured = _seconds_env("QUANT_LAB_MARKET_BAR_CRITICAL_DELAY_SECONDS", int(default))
+    return max(_market_bar_warning_delay_seconds(), configured)
+
+
+def _seconds_env(name: str, default: int) -> int:
+    raw = os.environ.get(name, "")
+    try:
+        value = int(float(raw)) if raw else default
+    except ValueError:
+        return default
+    return max(0, value)
 
 
 def _strategy_telemetry_reasons(lake_root: Path, strategy: str) -> list[str]:

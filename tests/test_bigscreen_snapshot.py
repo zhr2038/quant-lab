@@ -1068,7 +1068,7 @@ def test_bigscreen_snapshot_promotes_export_data_quality_warning(tmp_path, monke
         ),
         encoding="utf-8",
     )
-    now = datetime(2026, 6, 5, 12, tzinfo=UTC)
+    now = datetime.now(UTC)
     monkeypatch.setattr(
         bigscreen_module.readers,
         "data_health_summary",
@@ -1217,6 +1217,60 @@ def test_bigscreen_actions_skip_read_only_export_cost_advisory():
     assert not any(action["source"] == "expert_export_summary" for action in actions)
 
 
+def test_bigscreen_market_bar_delay_warning_before_registry_stale_threshold(monkeypatch):
+    now = datetime(2026, 6, 27, 14, 30, tzinfo=UTC)
+    data_health = {
+        "latest_market_bar_ts": now - timedelta(hours=2, minutes=5),
+        "schema_violation_count": 0,
+        "unclosed_bar_count": 0,
+    }
+
+    monkeypatch.delenv("QUANT_LAB_MARKET_BAR_WARNING_DELAY_SECONDS", raising=False)
+    monkeypatch.delenv("QUANT_LAB_MARKET_BAR_CRITICAL_DELAY_SECONDS", raising=False)
+
+    warnings = bigscreen_module._system_warnings([], {}, data_health, now)
+    status = bigscreen_module._status_from_inputs(
+        {"status": "OK"},
+        data_health,
+        {},
+        {"latest": {}},
+        warnings,
+        {},
+        generated_at=now,
+    )
+
+    assert status == "WARNING"
+    assert bigscreen_module._market_bar_status(data_health, now) == "WARNING"
+    assert any("market_bar_freshness_warning:" in warning for warning in warnings)
+
+
+def test_bigscreen_market_bar_delay_critical_after_registry_stale_threshold(monkeypatch):
+    now = datetime(2026, 6, 27, 14, 30, tzinfo=UTC)
+    data_health = {
+        "latest_market_bar_ts": now - timedelta(hours=3, minutes=5),
+        "schema_violation_count": 0,
+        "unclosed_bar_count": 0,
+    }
+
+    monkeypatch.delenv("QUANT_LAB_MARKET_BAR_WARNING_DELAY_SECONDS", raising=False)
+    monkeypatch.delenv("QUANT_LAB_MARKET_BAR_CRITICAL_DELAY_SECONDS", raising=False)
+
+    warnings = bigscreen_module._system_warnings([], {}, data_health, now)
+    status = bigscreen_module._status_from_inputs(
+        {"status": "OK"},
+        data_health,
+        {},
+        {"latest": {}},
+        warnings,
+        {},
+        generated_at=now,
+    )
+
+    assert status == "CRITICAL"
+    assert bigscreen_module._market_bar_status(data_health, now) == "CRITICAL"
+    assert any("market_bar_freshness_critical:" in warning for warning in warnings)
+
+
 def test_bigscreen_actions_skip_entry_or_scale_readiness_advisory():
     actions = bigscreen_module._build_actions(
         overview={},
@@ -1314,7 +1368,7 @@ def test_bigscreen_snapshot_keeps_live_readiness_block_out_of_system_critical(
         ),
         encoding="utf-8",
     )
-    now = datetime(2026, 6, 17, 12, tzinfo=UTC)
+    now = datetime.now(UTC)
     monkeypatch.setattr(
         bigscreen_module.readers,
         "data_health_summary",

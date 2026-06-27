@@ -55,6 +55,15 @@ def test_api_service_uses_async_metrics_flush():
     assert "QUANT_LAB_WEB_EXPORT_STATUS_STALE_SECONDS=1800" in unit
 
 
+def test_okx_rest_backfill_runs_every_15_minutes_to_reduce_stale_market_bar_window():
+    timer = _unit("quant-lab-okx-rest-backfill.timer")
+
+    assert "every 15 minutes" in timer
+    assert "OnActiveSec=15min" in timer
+    assert "OnUnitActiveSec=15min" in timer
+    assert "OnUnitActiveSec=1h" not in timer
+
+
 def test_daily_export_uses_recent_api_metrics_window():
     unit = _unit("quant-lab-daily-export.service")
 

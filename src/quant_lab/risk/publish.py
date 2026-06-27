@@ -1,4 +1,5 @@
 import json
+import os
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any
@@ -9,6 +10,7 @@ from pydantic import BaseModel, ConfigDict, Field
 from quant_lab.contracts.models import GateDecision, RiskPermission, RiskPermissionStatus
 from quant_lab.contracts.v5_quant_lab import RISK_PERMISSION_CONTRACT_VERSION
 from quant_lab.data.lake import read_parquet_dataset, read_parquet_lazy, upsert_parquet_dataset
+from quant_lab.ops.dataset_registry import get_dataset_spec
 from quant_lab.risk.advisory import (
     apply_risk_advisory_context,
     build_risk_advisory_context,
@@ -27,6 +29,8 @@ V5_GATE_COMPLIANCE_DATASET = Path("gold") / "v5_gate_compliance_daily"
 STRATEGY_HEALTH_DAILY_DATASET = Path("gold") / "strategy_health_daily"
 V5_BUNDLE_MANIFEST_DATASET = Path("bronze") / "strategy_telemetry" / "v5" / "bundle_manifest"
 DEFAULT_TELEMETRY_STALE_THRESHOLD_SECONDS = 90 * 60
+MARKET_BAR_WARNING_DELAY_SECONDS = 2 * 60 * 60
+MARKET_BAR_CRITICAL_DELAY_SECONDS = 3 * 60 * 60
 ACTIVE_PERMISSION_STATUSES = {
     RiskPermissionStatus.ACTIVE_ALLOW.value,
     RiskPermissionStatus.ACTIVE_SELL_ONLY.value,
@@ -465,20 +469,69 @@ def lake_data_health(root: Path) -> dict[str, Any]:
     latest_ts = _latest_market_bar_ts(market_bars)
     if latest_ts is None:
         return {"status": "critical", "is_critical": True, "reasons": ["market_bar_missing"]}
-    if latest_ts < datetime.now(UTC) - timedelta(hours=24):
+    latest_utc = latest_ts.astimezone(UTC) if latest_ts.tzinfo else latest_ts.replace(tzinfo=UTC)
+    age_seconds = max(0, int((datetime.now(UTC) - latest_utc).total_seconds()))
+    critical_threshold = _market_bar_critical_delay_seconds()
+    warning_threshold = _market_bar_warning_delay_seconds()
+    if age_seconds >= critical_threshold:
         return {
             "status": "critical",
             "is_critical": True,
             "reasons": ["market_bar_stale"],
-            "latest_market_bar_ts": latest_ts.isoformat(),
+            "latest_market_bar_ts": latest_utc.isoformat(),
+            "freshness_seconds": age_seconds,
+            "stale_threshold_seconds": critical_threshold,
+        }
+    if age_seconds >= warning_threshold:
+        return {
+            "status": "warning",
+            "is_critical": False,
+            "reasons": ["market_bar_delayed"],
+            "latest_market_bar_ts": latest_utc.isoformat(),
+            "freshness_seconds": age_seconds,
+            "warning_threshold_seconds": warning_threshold,
+            "stale_threshold_seconds": critical_threshold,
+            "allowed_modes": ["paper"],
+            "max_gross_exposure": 0.25,
+            "max_single_weight": 0.05,
         }
     return {
         "status": "ok",
-        "latest_market_bar_ts": latest_ts.isoformat(),
+        "latest_market_bar_ts": latest_utc.isoformat(),
+        "freshness_seconds": age_seconds,
+        "warning_threshold_seconds": warning_threshold,
+        "stale_threshold_seconds": critical_threshold,
         "allowed_modes": ["paper"],
         "max_gross_exposure": 0.25,
         "max_single_weight": 0.05,
     }
+
+
+def _market_bar_warning_delay_seconds() -> int:
+    return _seconds_env(
+        "QUANT_LAB_MARKET_BAR_WARNING_DELAY_SECONDS",
+        MARKET_BAR_WARNING_DELAY_SECONDS,
+    )
+
+
+def _market_bar_critical_delay_seconds() -> int:
+    spec = get_dataset_spec("market_bar")
+    default = (
+        spec.freshness_seconds
+        if spec and spec.freshness_seconds
+        else MARKET_BAR_CRITICAL_DELAY_SECONDS
+    )
+    configured = _seconds_env("QUANT_LAB_MARKET_BAR_CRITICAL_DELAY_SECONDS", int(default))
+    return max(_market_bar_warning_delay_seconds(), configured)
+
+
+def _seconds_env(name: str, default: int) -> int:
+    raw = os.environ.get(name, "")
+    try:
+        value = int(float(raw)) if raw else default
+    except ValueError:
+        return default
+    return max(0, value)
 
 
 def strategy_telemetry_reasons(root: Path, strategy: str) -> list[str]:

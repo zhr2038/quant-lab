@@ -11,7 +11,7 @@ from quant_lab.contracts.models import (
     RiskPermissionStatus,
 )
 from quant_lab.data.lake import read_parquet_dataset, write_market_bars, write_parquet_dataset
-from quant_lab.risk.publish import _dependency_source_sha, publish_risk_permission
+from quant_lab.risk.publish import _dependency_source_sha, lake_data_health, publish_risk_permission
 
 
 def test_publish_risk_permission_sell_only_when_cost_missing(tmp_path):
@@ -55,6 +55,35 @@ def test_publish_risk_permission_allows_live_ready_with_healthy_inputs(tmp_path)
     assert permission["max_single_weight"] == 0
     assert "quant_lab_live_command_not_allowed" in permission["live_block_reasons"]
     assert "v5_local_live_not_controlled_by_quant_lab" in permission["live_block_reasons"]
+
+
+def test_publish_risk_permission_data_health_warns_before_market_bar_stale(tmp_path, monkeypatch):
+    lake = tmp_path / "lake"
+    monkeypatch.delenv("QUANT_LAB_MARKET_BAR_WARNING_DELAY_SECONDS", raising=False)
+    monkeypatch.delenv("QUANT_LAB_MARKET_BAR_CRITICAL_DELAY_SECONDS", raising=False)
+    _write_market_bar(lake, datetime.now(UTC) - timedelta(hours=2, minutes=5))
+
+    health = lake_data_health(lake)
+
+    assert health["status"] == "warning"
+    assert health["is_critical"] is False
+    assert health["reasons"] == ["market_bar_delayed"]
+
+
+def test_publish_risk_permission_data_health_critical_after_market_bar_stale(
+    tmp_path,
+    monkeypatch,
+):
+    lake = tmp_path / "lake"
+    monkeypatch.delenv("QUANT_LAB_MARKET_BAR_WARNING_DELAY_SECONDS", raising=False)
+    monkeypatch.delenv("QUANT_LAB_MARKET_BAR_CRITICAL_DELAY_SECONDS", raising=False)
+    _write_market_bar(lake, datetime.now(UTC) - timedelta(hours=3, minutes=5))
+
+    health = lake_data_health(lake)
+
+    assert health["status"] == "critical"
+    assert health["is_critical"] is True
+    assert health["reasons"] == ["market_bar_stale"]
 
 
 def test_publish_risk_permission_ignores_bootstrap_gate_when_research_gate_exists(tmp_path):
@@ -315,7 +344,10 @@ def _append_bootstrap_gate(lake) -> None:
 
 
 def _write_fresh_market_bar(lake) -> None:
-    ts = datetime.now(UTC) - timedelta(minutes=5)
+    _write_market_bar(lake, datetime.now(UTC) - timedelta(minutes=5))
+
+
+def _write_market_bar(lake, ts: datetime) -> None:
     write_market_bars(
         lake,
         [

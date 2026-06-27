@@ -20,6 +20,8 @@ from quant_lab.web import perf, readers
 
 SNAPSHOT_CACHE_TTL_SECONDS = 35.0
 SNAPSHOT_CACHE_STALE_GRACE_SECONDS = 1800.0
+MARKET_BAR_WARNING_DELAY_SECONDS = 2 * 60 * 60
+MARKET_BAR_CRITICAL_DELAY_SECONDS = 3 * 60 * 60
 _SNAPSHOT_CACHE: dict[str, tuple[float, dict[str, Any]]] = {}
 _SNAPSHOT_CACHE_SOURCE_SIGNATURES: dict[str, tuple[Any, ...]] = {}
 _SNAPSHOT_CACHE_LOCK = threading.RLock()
@@ -133,9 +135,17 @@ def _build_bigscreen_snapshot_payload(root: Path) -> dict[str, Any]:
             *_export_quality_warnings(exports),
         ]
     )
-    warnings = _system_warnings(raw_warnings, exports)
+    warnings = _system_warnings(raw_warnings, exports, data_health, generated_at)
     advisories = [warning for warning in raw_warnings if warning not in warnings]
-    status = _status_from_inputs(overview, data_health, cost, v5, warnings, exports)
+    status = _status_from_inputs(
+        overview,
+        data_health,
+        cost,
+        v5,
+        warnings,
+        exports,
+        generated_at=generated_at,
+    )
     overview["status"] = status
     health_score = _health_score(status, data_health, cost, v5, web_events, exports)
     legacy_anomalies = _legacy_web_anomalies(data_health)
@@ -297,6 +307,31 @@ def _snapshot_cache_stale_grace_seconds() -> float:
 def _snapshot_async_refresh_enabled() -> bool:
     raw = os.environ.get("QUANT_LAB_BIGSCREEN_ASYNC_REFRESH", "1").strip().lower()
     return raw not in {"0", "false", "no", "off"}
+
+
+def _market_bar_warning_delay_seconds() -> int:
+    return _seconds_env(
+        "QUANT_LAB_MARKET_BAR_WARNING_DELAY_SECONDS",
+        MARKET_BAR_WARNING_DELAY_SECONDS,
+    )
+
+
+def _market_bar_critical_delay_seconds() -> int:
+    warning = _market_bar_warning_delay_seconds()
+    configured = _seconds_env(
+        "QUANT_LAB_MARKET_BAR_CRITICAL_DELAY_SECONDS",
+        MARKET_BAR_CRITICAL_DELAY_SECONDS,
+    )
+    return max(warning, configured)
+
+
+def _seconds_env(name: str, default: int) -> int:
+    raw = os.environ.get(name, "")
+    try:
+        value = int(float(raw)) if raw else default
+    except ValueError:
+        return default
+    return max(0, value)
 
 
 def _safe_summary(name: str, fn: Any, *args: Any) -> dict[str, Any]:
@@ -485,12 +520,27 @@ def _warnings(summary: dict[str, Any]) -> list[str]:
     return [str(value) for value in values if str(value).strip()]
 
 
-def _system_warnings(warnings: list[str], exports: dict[str, Any]) -> list[str]:
+def _system_warnings(
+    warnings: list[str],
+    exports: dict[str, Any],
+    data_health: dict[str, Any] | None = None,
+    generated_at: datetime | None = None,
+) -> list[str]:
+    out = list(warnings)
+    if data_health is not None:
+        issue = _market_bar_freshness_issue(data_health, generated_at or datetime.now(UTC))
+        if issue is not None:
+            label = "critical" if issue["severity"] == "CRITICAL" else "warning"
+            out.append(
+                f"market_bar_freshness_{label}: latest={issue['latest_ts']}; "
+                f"delay_seconds={issue['age_seconds']}; "
+                f"threshold_seconds={issue['threshold_seconds']}"
+            )
     data_quality = _export_data_quality(exports)
     if not _export_quality_is_read_only_cost_advisory(data_quality):
-        return warnings
+        return out
     return [
-        warning for warning in warnings if not _is_export_quality_advisory_notice(warning)
+        warning for warning in out if not _is_export_quality_advisory_notice(warning)
     ]
 
 
@@ -661,6 +711,8 @@ def _status_from_inputs(
     v5: dict[str, Any],
     warnings: list[str],
     exports: dict[str, Any],
+    *,
+    generated_at: datetime | None = None,
 ) -> str:
     if _int(data_health.get("schema_violation_count")) or _int(
         data_health.get("unclosed_bar_count")
@@ -675,6 +727,9 @@ def _status_from_inputs(
         return "CRITICAL"
     export_quality_level = _export_quality_level(exports)
     if export_quality_level == "CRITICAL":
+        return "CRITICAL"
+    market_issue = _market_bar_freshness_issue(data_health, generated_at or datetime.now(UTC))
+    if market_issue is not None and market_issue["severity"] == "CRITICAL":
         return "CRITICAL"
     overview_status = str(overview.get("status") or "").upper()
     if overview_status == "CRITICAL":
@@ -713,6 +768,9 @@ def _health_score(
         score -= 5
     if not exports.get("latest_pack"):
         score -= 5
+    market_issue = _market_bar_freshness_issue(data_health, datetime.now(UTC))
+    if market_issue is not None:
+        score -= 15 if market_issue["severity"] == "CRITICAL" else 5
     export_quality_level = _export_quality_level(exports)
     if export_quality_level == "CRITICAL":
         score -= 15
@@ -776,6 +834,40 @@ def _parse_dt(value: Any) -> datetime | None:
         return None
 
 
+def _market_bar_freshness_issue(
+    data_health: dict[str, Any],
+    now: datetime,
+) -> dict[str, Any] | None:
+    latest_ts = data_health.get("latest_market_bar_ts")
+    age_seconds = _age_seconds(now, latest_ts)
+    if age_seconds is None:
+        return None
+    critical_threshold = _market_bar_critical_delay_seconds()
+    warning_threshold = _market_bar_warning_delay_seconds()
+    if age_seconds >= critical_threshold:
+        return {
+            "severity": "CRITICAL",
+            "age_seconds": age_seconds,
+            "latest_ts": _json_value(latest_ts),
+            "threshold_seconds": critical_threshold,
+        }
+    if age_seconds >= warning_threshold:
+        return {
+            "severity": "WARNING",
+            "age_seconds": age_seconds,
+            "latest_ts": _json_value(latest_ts),
+            "threshold_seconds": warning_threshold,
+        }
+    return None
+
+
+def _market_bar_status(data_health: dict[str, Any], now: datetime) -> str:
+    if not data_health.get("latest_market_bar_ts"):
+        return "WARNING"
+    issue = _market_bar_freshness_issue(data_health, now)
+    return str(issue["severity"]) if issue is not None else "OK"
+
+
 def _web_latency(events: list[dict[str, Any]], key: str) -> float | None:
     values = sorted(
         _float(row.get("elapsed_ms"))
@@ -819,7 +911,7 @@ def _data_matrix(
     )
     evidence_by_symbol = _latest_by_symbol(_frame_rows(strategy.get("strategy_evidence"), limit=80))
 
-    market_status = "OK" if overview.get("latest_market_bar_ts") else "WARNING"
+    market_status = _market_bar_status(data_health, datetime.now(UTC))
     ws_status = _status_label(collectors.get("okx_public_ws_status"))
     rows: list[dict[str, Any]] = []
     for symbol in symbols[:16]:
@@ -1390,6 +1482,11 @@ def _data_health_payload(data_health: dict[str, Any]) -> dict[str, Any]:
         "schema_violation_count": _int(data_health.get("schema_violation_count")) or 0,
         "missing_bar_ratio": _float(data_health.get("missing_bar_ratio")) or 0.0,
         "latest_market_bar_ts": _json_value(data_health.get("latest_market_bar_ts")),
+        "market_bar_delay_seconds": _age_seconds(
+            datetime.now(UTC),
+            data_health.get("latest_market_bar_ts"),
+        ),
+        "market_bar_freshness_status": _market_bar_status(data_health, datetime.now(UTC)),
         "stale_dataset_count": len(_frame_rows(data_health.get("stale_datasets"), limit=1000)),
         "stale_datasets": _frame_rows(data_health.get("stale_datasets"), limit=8),
         "latest_per_symbol": _frame_rows(data_health.get("latest_per_symbol"), limit=8),
@@ -1627,6 +1724,21 @@ def _build_actions(
                 "market_bar 有结构违规或未闭合 K 线",
                 "data_health_summary",
                 "先修复 market_bar，再解释策略证据",
+                "/data-ops",
+            )
+        )
+    market_issue = _market_bar_freshness_issue(data_health, datetime.now(UTC))
+    if market_issue is not None:
+        actions.append(
+            _action(
+                str(market_issue["severity"]),
+                "行情 K 线延迟",
+                (
+                    f"market_bar 最新 {market_issue['latest_ts']}，"
+                    f"延迟 {market_issue['age_seconds']} 秒"
+                ),
+                "data_health_summary",
+                "检查 OKX REST backfill timer 与 feature publish 是否及时刷新",
                 "/data-ops",
             )
         )

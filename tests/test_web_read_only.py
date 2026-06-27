@@ -2779,6 +2779,67 @@ def test_dataset_snapshot_uses_snapshot_meta_without_scanning_parquet(tmp_path, 
     assert snapshot.freshness["latest_timestamp"].startswith("2026-05-10T12:00:00")
 
 
+def test_web_dataset_source_signature_tracks_snapshot_meta_field_changes(tmp_path):
+    readers.clear_web_cache()
+    dataset_path = tmp_path / "lake" / "gold" / "strategy_health_daily"
+    dataset_path.mkdir(parents=True)
+    meta_path = dataset_path / "_snapshot_meta.json"
+    meta_path.write_text(
+        json.dumps(
+            {
+                "source_sha": "same-source",
+                "row_count": 1,
+                "file_count": 1,
+                "latest_timestamp": "2026-05-10T12:00:00Z",
+                "created_at": "2026-05-10T12:00:01Z",
+            }
+        ),
+        encoding="utf-8",
+    )
+    first = readers._web_dataset_source_signature(dataset_path)
+    meta_path.write_text(
+        json.dumps(
+            {
+                "source_sha": "same-source",
+                "row_count": 2,
+                "file_count": 1,
+                "latest_timestamp": "2026-05-10T13:00:00Z",
+                "created_at": "2026-05-10T13:00:01Z",
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    second = readers._web_dataset_source_signature(dataset_path)
+
+    assert first != second
+
+
+def test_web_dataset_source_signature_tracks_snapshot_meta_dataset_dir_changes(tmp_path):
+    readers.clear_web_cache()
+    dataset_path = tmp_path / "lake" / "gold" / "strategy_health_daily"
+    dataset_path.mkdir(parents=True)
+    meta_path = dataset_path / "_snapshot_meta.json"
+    meta_path.write_text(
+        json.dumps(
+            {
+                "source_sha": "same-source",
+                "row_count": 1,
+                "file_count": 1,
+                "latest_timestamp": "2026-05-10T12:00:00Z",
+            }
+        ),
+        encoding="utf-8",
+    )
+    os.utime(dataset_path, (1_780_000_000, 1_780_000_000))
+    first = readers._web_dataset_source_signature(dataset_path)
+    os.utime(dataset_path, (1_780_000_100, 1_780_000_100))
+
+    second = readers._web_dataset_source_signature(dataset_path)
+
+    assert first != second
+
+
 def test_web_recent_dataset_cache_avoids_second_scan(tmp_path, monkeypatch):
     readers.clear_web_cache()
     lake_root = _fixture_lake(tmp_path)

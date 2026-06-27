@@ -1676,12 +1676,39 @@ def _snapshot_meta_for_dataset(path: Path) -> dict[str, Any] | None:
 def _web_dataset_source_signature(path: Path) -> tuple[Any, ...]:
     meta = _snapshot_meta_for_dataset(path)
     if meta:
+        meta_path = path / "_snapshot_meta.json"
+        try:
+            meta_stat = meta_path.stat()
+        except OSError:
+            meta_stat = None
+        try:
+            root_stat = path.stat()
+        except OSError:
+            root_stat = None
+        meta_fields = (
+            "source_sha",
+            "generated_at",
+            "expires_at",
+            "row_count",
+            "rows",
+            "file_count",
+            "parquet_file_count",
+            "latest_timestamp",
+            "max_timestamp",
+            "latest_ts",
+            "latest_close_timestamp",
+            "latest_close_ts",
+            "timestamp_column",
+            "schema_version",
+            "created_at",
+        )
         return (
             "snapshot_meta",
-            meta.get("source_sha")
-            or meta.get("generated_at")
-            or meta.get("row_count")
-            or meta.get("file_count"),
+            meta_stat.st_mtime_ns if meta_stat is not None else None,
+            meta_stat.st_size if meta_stat is not None else None,
+            root_stat.st_mtime_ns if root_stat is not None else None,
+            root_stat.st_size if root_stat is not None else None,
+            tuple((field, str(meta.get(field) or "")) for field in meta_fields),
         )
     indexed = _indexed_files_for_web(path)
     if indexed is not None:

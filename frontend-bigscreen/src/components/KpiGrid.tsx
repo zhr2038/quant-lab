@@ -9,7 +9,7 @@ export function KpiGrid({ snapshot }: { snapshot: BigscreenSnapshot }) {
     { label: "中台状态", value: String(k.platform_status ?? snapshot.status), sub: "风控边界", icon: ShieldCheck, tone: snapshot.status },
     { label: "V5 权限", value: v5Permission.value, sub: v5Permission.sub, icon: WalletCards, tone: v5Permission.tone },
     { label: "行情延迟", value: delay(k.market_delay_seconds), sub: "market_bar", icon: Timer, tone: Number(k.market_delay_seconds) > 1800 ? "WARNING" : "OK" },
-    { label: "V5 Bundle", value: delay(k.v5_bundle_delay_seconds), sub: "latest bundle", icon: Activity, tone: Number(k.v5_bundle_delay_seconds) > 3600 ? "WARNING" : "OK" },
+    { label: "V5 遥测", value: delay(k.v5_bundle_delay_seconds), sub: "同步新鲜度", icon: Activity, tone: Number(k.v5_bundle_delay_seconds) > 3600 ? "WARNING" : "OK" },
     { label: "硬回退", value: pct(k.cost_hard_fallback_ratio, 1), sub: "global default", icon: Zap, tone: Number(k.cost_hard_fallback_ratio) > 0.25 ? "CRITICAL" : "OK" },
     { label: "软回退", value: pct(k.cost_soft_fallback_ratio, 1), sub: "public proxy", icon: Waves, tone: Number(k.cost_soft_fallback_ratio) > 0.8 ? "WARNING" : "OK" },
     { label: "WS 消息", value: shortNumber(k.ws_message_count), sub: "books / trades", icon: RadioTower, tone: "INFO" },

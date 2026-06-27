@@ -27,7 +27,7 @@ def render(lake_root: str | Path, st_module: Any | None = None) -> None:
     st.metric("中台状态", display_value(snapshot["status"]))
     st.metric("V5 风险权限", display_value(snapshot["v5_permission"]))
     st.metric("最新行情 K 线", display_unknown(snapshot["latest_market_bar_ts"]))
-    st.metric("最新 V5 数据包", display_unknown(diagnostics.get("latest_v5_bundle_ts")))
+    st.metric("最新 V5 遥测", display_unknown(diagnostics.get("latest_v5_bundle_ts")))
     hard_fallback_ratio = snapshot.get("cost_hard_fallback_ratio")
     soft_fallback_ratio = snapshot.get("cost_soft_fallback_ratio")
     st.metric(

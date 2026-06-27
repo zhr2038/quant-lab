@@ -431,7 +431,7 @@ function drilldownContent(view: ViewKey, data: BigscreenSnapshot) {
   if (view === "v5") {
     return {
       title: "V5 / 消费者",
-      subtitle: "V5 bundle、risk_permission、fallback audit 和 API/Web 性能。",
+      subtitle: "V5 遥测、risk_permission、fallback audit 和 API/Web 性能。",
       blocks: (
         <>
           <KeyValueGrid data={data.v5} />

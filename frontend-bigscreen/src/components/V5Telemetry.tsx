@@ -21,7 +21,7 @@ export function V5Telemetry({
       splitArea: { areaStyle: { color: ["rgba(80,169,255,.04)", "rgba(80,169,255,.08)"] } },
       axisLine: { lineStyle: { color: "rgba(80,169,255,.22)" } },
       indicator: [
-        { name: "bundle", max: 1 },
+        { name: "遥测批次", max: 1 },
         { name: "reconcile", max: 1 },
         { name: "ledger", max: 1 },
         { name: "risk", max: 1 },
@@ -66,7 +66,7 @@ export function V5Telemetry({
   return (
     <section className="card v5 pad">
       <h2 className="section-title icon-title"><Cpu size={23} />V5 遥测与消费者</h2>
-      <p className="sub">bundle、账本、对账、风控权限、blocked opportunity 合并展示。</p>
+      <p className="sub">遥测批次、账本、对账、风控权限、blocked opportunity 合并展示。</p>
       <div className="v5-grid">
         <div className="v5-radar" aria-label="V5 telemetry radar">
           <ReactECharts option={option} style={{ height: "100%", width: "100%" }} />
@@ -80,7 +80,7 @@ export function V5Telemetry({
         <span>人工授权 {p3Ready}</span>
         <span>实盘 {p3Approved}</span>
       </div>
-      <div className="footnote"><Radio size={12} /> 最新 Bundle SHA · <code>{String(v5.latest_bundle_sha256_short ?? "not_observable")}</code></div>
+      <div className="footnote"><Radio size={12} /> 最新遥测 SHA · <code>{String(v5.latest_bundle_sha256_short ?? "not_observable")}</code></div>
     </section>
   );
 }

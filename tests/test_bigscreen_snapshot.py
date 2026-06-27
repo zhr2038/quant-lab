@@ -757,6 +757,78 @@ def test_bigscreen_snapshot_cache_invalidates_when_export_index_changes(
     assert len(calls) == 2
 
 
+def test_bigscreen_snapshot_cache_invalidates_when_market_bar_health_changes(
+    monkeypatch,
+    tmp_path,
+):
+    clear_bigscreen_cache()
+    monkeypatch.setenv("QUANT_LAB_BIGSCREEN_CACHE_TTL_SECONDS", "300")
+    calls: list[Path] = []
+
+    def fake_build(root: Path) -> dict[str, object]:
+        calls.append(root)
+        return {
+            "mode": "read-only",
+            "status": "OK",
+            "build_count": len(calls),
+        }
+
+    monkeypatch.setattr(bigscreen_module, "_build_bigscreen_snapshot_payload", fake_build)
+    lake = tmp_path / "lake"
+    first_ts = datetime(2026, 6, 27, 14, tzinfo=UTC)
+    second_ts = first_ts + timedelta(hours=1)
+
+    write_market_bars(
+        lake,
+        [
+            {
+                "venue": "okx",
+                "symbol": "BTC-USDT",
+                "market_type": "SPOT",
+                "timeframe": "1H",
+                "ts": first_ts,
+                "open": 100.0,
+                "high": 101.0,
+                "low": 99.0,
+                "close": 100.5,
+                "volume": 1.0,
+                "quote_volume": 100.5,
+                "source": "test",
+                "ingest_ts": first_ts + timedelta(hours=1, minutes=1),
+            }
+        ],
+    )
+
+    first_payload, first_meta = bigscreen_snapshot_with_meta(lake)
+    write_market_bars(
+        lake,
+        [
+            {
+                "venue": "okx",
+                "symbol": "BTC-USDT",
+                "market_type": "SPOT",
+                "timeframe": "1H",
+                "ts": second_ts,
+                "open": 101.0,
+                "high": 102.0,
+                "low": 100.0,
+                "close": 101.5,
+                "volume": 2.0,
+                "quote_volume": 203.0,
+                "source": "test",
+                "ingest_ts": second_ts + timedelta(hours=1, minutes=1),
+            }
+        ],
+    )
+    second_payload, second_meta = bigscreen_snapshot_with_meta(lake)
+
+    assert first_payload["build_count"] == 1
+    assert first_meta["cache_hit"] is False
+    assert second_payload["build_count"] == 2
+    assert second_meta["cache_hit"] is False
+    assert len(calls) == 2
+
+
 def test_bigscreen_static_entry_is_served_if_built():
     static_index = Path("src/quant_lab/web/bigscreen_static/index.html")
     if not static_index.is_file():

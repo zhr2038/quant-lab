@@ -1053,7 +1053,7 @@ def test_web_v2_expert_pack_status_filters_deleted_index_pack(monkeypatch, tmp_p
     assert [row["name"] for row in payload["packs"]] == [pack.name]
 
 
-def test_web_v2_expert_pack_status_prefers_latest_requested_pack_over_stale_status(
+def test_web_v2_expert_pack_status_prefers_latest_requested_pack_over_stale_manual_status(
     monkeypatch,
     tmp_path,
 ):
@@ -1094,10 +1094,15 @@ def test_web_v2_expert_pack_status_prefers_latest_requested_pack_over_stale_stat
     assert payload["status"]["zip_path"] == str(old_pack)
     assert payload["requested_date_pack_name"] == new_pack.name
     assert payload["available_pack_name"] == new_pack.name
-    assert payload["latest_pack_name"] == old_pack.name
+    assert payload["manual_latest_pack_name"] == old_pack.name
+    assert payload["latest_pack_name"] == new_pack.name
     assert payload["latest_pack_is_requested_date"] is True
-    assert payload["latest_pack_source"] == "manual_web_request"
-    assert payload["latest_download_url"] == f"/web-v2/expert-pack/download/{old_pack.name}"
+    assert payload["latest_pack_source"] == "requested_date_pack"
+    assert payload["latest_download_url"] == f"/web-v2/expert-pack/download/{new_pack.name}"
+    assert (
+        payload["manual_latest_download_url"]
+        == f"/web-v2/expert-pack/download/{old_pack.name}"
+    )
     assert payload["packs"][0]["name"] == new_pack.name
 
 
@@ -1240,7 +1245,7 @@ def test_bigscreen_snapshot_treats_history_export_as_available_not_current(
         ),
         encoding="utf-8",
     )
-    monkeypatch.setattr(bigscreen_module, "beijing_today", lambda now=None: date(2026, 6, 5))
+    monkeypatch.setattr(bigscreen_module, "beijing_today", lambda now=None: date(2026, 6, 6))
 
     history = bigscreen_module.readers.expert_export_summary(exports)
     summary = bigscreen_module._web_v2_export_summary_from_history(
@@ -1266,6 +1271,82 @@ def test_bigscreen_snapshot_treats_history_export_as_available_not_current(
     assert payload["available_pack_name"] == pack_path.name
     assert payload["job_state"] == "manual_missing"
     assert not any(action["source"] == "expert_export_summary" for action in actions)
+
+
+def test_bigscreen_snapshot_uses_latest_current_date_pack_over_stale_manual_status(
+    tmp_path,
+    monkeypatch,
+):
+    clear_bigscreen_cache()
+    lake = tmp_path / "lake"
+    lake.mkdir()
+    exports = tmp_path / "exports"
+    exports.mkdir()
+    old_pack = exports / "quant_lab_expert_pack_2026-06-19_20260619T095826451309+0800.zip"
+    new_pack = exports / "quant_lab_expert_pack_2026-06-19_20260619T155027688187+0800.zip"
+    for pack in (old_pack, new_pack):
+        with zipfile.ZipFile(pack, "w") as archive:
+            archive.writestr(
+                "manifest.json",
+                json.dumps({"export_date": "2026-06-19", "authoritative_snapshot": True}),
+            )
+            archive.writestr("data_quality.json", json.dumps({"status": "OK"}))
+            archive.writestr("expert_questions.md", "最新问题\n")
+    old_time = datetime(2026, 6, 19, 2, tzinfo=UTC).timestamp()
+    new_time = datetime(2026, 6, 19, 7, tzinfo=UTC).timestamp()
+    os.utime(old_pack, (old_time, old_time))
+    os.utime(new_pack, (new_time, new_time))
+    (exports / ".quant_lab_web_export_2026-06-19.json").write_text(
+        json.dumps(
+            {
+                "state": "succeeded",
+                "zip_path": str(old_pack),
+                "finished_at": "2026-06-19T02:03:31+00:00",
+            }
+        ),
+        encoding="utf-8",
+    )
+    (exports / "export_index.json").write_text(
+        json.dumps(
+            {
+                "latest_pack": str(new_pack),
+                "packs": [
+                    {
+                        "path": str(new_pack),
+                        "name": new_pack.name,
+                        "size_bytes": 456,
+                        "modified_at": "2026-06-19T07:00:00Z",
+                    },
+                    {
+                        "path": str(old_pack),
+                        "name": old_pack.name,
+                        "size_bytes": 123,
+                        "modified_at": "2026-06-19T02:00:00Z",
+                    },
+                ],
+                "manifest_summary": {"export_date": "2026-06-19"},
+                "data_quality_summary": {"status": "OK"},
+                "expert_questions": ["最新问题"],
+                "warnings": [],
+            }
+        ),
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(bigscreen_module, "beijing_today", lambda now=None: date(2026, 6, 19))
+
+    history = bigscreen_module.readers.expert_export_summary(exports)
+    summary = bigscreen_module._web_v2_export_summary_from_history(
+        lake,
+        history,
+        datetime(2026, 6, 19, 9, tzinfo=UTC),
+    )
+    payload = _exports_payload(summary)
+
+    assert summary["manual_latest_pack_name"] == old_pack.name
+    assert Path(summary["latest_pack"]).name == new_pack.name
+    assert summary["latest_pack_source"] == "requested_date_pack"
+    assert payload["latest_pack_name"] == new_pack.name
+    assert payload["latest_download_url"] == f"/web-v2/expert-pack/download/{new_pack.name}"
 
 
 def test_bigscreen_snapshot_promotes_export_data_quality_warning(tmp_path, monkeypatch):

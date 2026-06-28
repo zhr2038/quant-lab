@@ -469,27 +469,47 @@ def _web_v2_export_summary_from_history(
     )
     status = _read_web_export_status(exports_root, export_date)
     state = str(status.get("state") or ("manual_missing" if available_pack else "missing"))
+    state_lower = state.lower()
     manual_pack = (
         _safe_export_pack_path(exports_root, status.get("zip_path"))
-        if state.lower() == "succeeded"
+        if state_lower == "succeeded"
         else None
     )
-    latest_pack = manual_pack
+    latest_pack = None
+    latest_source = None
+    if state_lower not in {"starting", "running"} and manual_pack is not None:
+        if available_pack is not None and _pack_name_matches_export_date(
+            available_pack.name,
+            export_date,
+        ):
+            latest_pack = available_pack
+            latest_source = (
+                "manual_web_request"
+                if _same_export_pack_path(manual_pack, available_pack)
+                else "requested_date_pack"
+            )
+        elif manual_pack is not None and _pack_name_matches_export_date(
+            manual_pack.name,
+            export_date,
+        ):
+            latest_pack = manual_pack
+            latest_source = "manual_web_request"
+
     if latest_pack is not None:
         manifest = readers._read_json_from_zip(latest_pack, "manifest.json")
         data_quality = readers._read_json_from_zip(latest_pack, "data_quality.json")
         questions = readers._read_text_from_zip(latest_pack, "expert_questions.md").splitlines()
-        latest_source = "manual_web_request"
     else:
         manifest = {}
         data_quality = {}
         questions = []
-        latest_source = None
 
     return {
         **history,
         "latest_pack": str(latest_pack) if latest_pack is not None else None,
         "latest_pack_source": latest_source,
+        "manual_latest_pack": str(manual_pack) if manual_pack is not None else None,
+        "manual_latest_pack_name": manual_pack.name if manual_pack is not None else None,
         "available_pack": str(available_pack) if available_pack is not None else None,
         "available_pack_name": available_pack.name if available_pack is not None else None,
         "manual_state": state,
@@ -538,6 +558,21 @@ def _safe_export_pack_path(exports_root: Path, raw_value: Any) -> Path | None:
     if resolved.is_file() and _is_expert_pack_name(resolved.name):
         return resolved
     return None
+
+
+def _same_export_pack_path(left: Path | None, right: Path | None) -> bool:
+    if left is None or right is None:
+        return False
+    try:
+        return left.resolve() == right.resolve()
+    except OSError:
+        return left == right
+
+
+def _pack_name_matches_export_date(file_name: str, export_date: str) -> bool:
+    return file_name == f"quant_lab_expert_pack_{export_date}.zip" or file_name.startswith(
+        f"quant_lab_expert_pack_{export_date}_"
+    )
 
 
 def _manual_export_warnings(status: dict[str, Any]) -> list[str]:

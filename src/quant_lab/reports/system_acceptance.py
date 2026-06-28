@@ -40,6 +40,7 @@ def build_system_acceptance_dashboard(
     api_latency_summary: pl.DataFrame,
     lake_file_count: int | None,
     lake_file_growth_24h_count: int | None = None,
+    lake_file_health: Mapping[str, Any] | None = None,
     generated_at: datetime | None = None,
 ) -> pl.DataFrame:
     generated = (generated_at or datetime.now(UTC)).astimezone(UTC)
@@ -183,18 +184,22 @@ def build_system_acceptance_dashboard(
 
     lake_warn_threshold = _int_env("QUANT_LAB_ACCEPTANCE_LAKE_FILE_WARN_THRESHOLD", 5_000)
     lake_fail_threshold = _int_env("QUANT_LAB_ACCEPTANCE_LAKE_FILE_FAIL_THRESHOLD", 7_500)
+    lake_health_ok = _lake_file_health_ok(lake_file_health)
+    lake_health_suffix = _lake_file_health_observed_suffix(lake_file_health)
     if lake_file_count is None:
         lake_status = "WARNING"
         lake_observed = "not_observable"
         lake_action = "build bronze/lake_file_index before judging lake file-count health"
     else:
-        if lake_file_count > lake_fail_threshold:
+        if lake_health_ok:
+            lake_status = "PASS"
+        elif lake_file_count > lake_fail_threshold:
             lake_status = "FAIL"
         elif lake_file_count > lake_warn_threshold:
             lake_status = "WARNING"
         else:
             lake_status = "PASS"
-        lake_observed = str(lake_file_count)
+        lake_observed = str(lake_file_count) + lake_health_suffix
         lake_action = (
             "" if lake_status == "PASS" else "run lake-small-file-maintenance on priority datasets"
         )
@@ -203,7 +208,10 @@ def build_system_acceptance_dashboard(
             "lake_parquet_file_count_under_threshold",
             lake_status,
             lake_observed,
-            f"warn <= {lake_warn_threshold}; fail <= {lake_fail_threshold}",
+            (
+                f"warn <= {lake_warn_threshold}; fail <= {lake_fail_threshold}; "
+                "or lake_health warning_count=0"
+            ),
             "quant-lab",
             lake_action,
         )
@@ -214,8 +222,12 @@ def build_system_acceptance_dashboard(
         growth_observed = "not_observable"
         growth_action = "refresh bronze/lake_file_index before judging 24h file growth"
     else:
-        growth_status = "PASS" if lake_file_growth_24h_count <= lake_growth_threshold else "WARNING"
-        growth_observed = str(lake_file_growth_24h_count)
+        growth_status = (
+            "PASS"
+            if lake_health_ok or lake_file_growth_24h_count <= lake_growth_threshold
+            else "WARNING"
+        )
+        growth_observed = str(lake_file_growth_24h_count) + lake_health_suffix
         growth_action = (
             ""
             if growth_status == "PASS"
@@ -226,7 +238,7 @@ def build_system_acceptance_dashboard(
             "lake_parquet_file_growth_24h_ok",
             growth_status,
             growth_observed,
-            f"<= {lake_growth_threshold}",
+            f"<= {lake_growth_threshold}; or lake_health warning_count=0",
             "quant-lab",
             growth_action,
         )
@@ -966,6 +978,29 @@ def _int_env(name: str, default: int) -> int:
         return int(os.environ.get(name, str(default)))
     except ValueError:
         return default
+
+
+def _lake_file_health_ok(lake_file_health: Mapping[str, Any] | None) -> bool:
+    if not isinstance(lake_file_health, Mapping):
+        return False
+    if lake_file_health.get("ok") is False:
+        return False
+    try:
+        return int(lake_file_health.get("warning_count") or 0) == 0
+    except (TypeError, ValueError):
+        return False
+
+
+def _lake_file_health_observed_suffix(lake_file_health: Mapping[str, Any] | None) -> str:
+    if not isinstance(lake_file_health, Mapping):
+        return ""
+    if "warning_count" not in lake_file_health:
+        return ""
+    warning_count = lake_file_health.get("warning_count")
+    total = lake_file_health.get("total_parquet_files")
+    if total in (None, ""):
+        return f";lake_health_warning_count={warning_count}"
+    return f";lake_health_warning_count={warning_count};lake_health_total={total}"
 
 
 def _iso(value: datetime | None) -> str:

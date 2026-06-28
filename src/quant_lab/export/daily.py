@@ -81,6 +81,7 @@ from quant_lab.features.fast_microstructure import (
 )
 from quant_lab.ops.api_metrics import api_error_summary, api_metrics_summary
 from quant_lab.ops.data_quality import run_data_quality
+from quant_lab.ops.lake_health import lake_file_health_summary
 from quant_lab.reports.enforce_readiness import (
     ENFORCE_READINESS_CSV,
     ENFORCE_READINESS_JSON,
@@ -5631,6 +5632,8 @@ def _dataset_members(
             "lake_file_index_refresh_failed:"
             + str(lake_file_index_refresh.get("error") or "unknown")
         )
+    lake_file_health = _lake_file_health_for_export(root)
+    pre_export_v5["lake_file_health"] = lake_file_health
     lake_file_count = _lake_file_index_count(root)
     lake_file_growth_24h_count = _lake_file_index_growth_24h_count(root)
     system_acceptance_dashboard = build_system_acceptance_dashboard(
@@ -5655,6 +5658,7 @@ def _dataset_members(
         api_latency_summary=api_latency_summary,
         lake_file_count=lake_file_count,
         lake_file_growth_24h_count=lake_file_growth_24h_count,
+        lake_file_health=lake_file_health,
     )
 
     return {
@@ -6953,6 +6957,7 @@ def _manifest_payload(
         "embedded_v5_bundle_reason": v5_context.get("embedded_v5_bundle_reason"),
         "github_ci_status": v5_context.get("github_ci_status"),
         "lake_file_index_refresh": v5_context.get("lake_file_index_refresh"),
+        "lake_file_health": v5_context.get("lake_file_health"),
         "v5_export_consistency": {
             "authoritative_snapshot": authoritative_snapshot,
             "stale_v5_bundle": stale_v5_bundle,
@@ -7020,6 +7025,7 @@ def _manifest_payload(
             ),
             "github_ci_status": v5_context.get("github_ci_status"),
             "lake_file_index_refresh": v5_context.get("lake_file_index_refresh"),
+            "lake_file_health": v5_context.get("lake_file_health"),
         },
         "scanned_bundle_count": v5_context.get("scanned_bundle_count", 0),
         "audit_bundle_count": v5_context.get("audit_bundle_count", 0),
@@ -8234,6 +8240,7 @@ def _provenance_payload(
         ),
         "github_ci_status": v5_context.get("github_ci_status"),
         "lake_file_index_refresh": v5_context.get("lake_file_index_refresh"),
+        "lake_file_health": v5_context.get("lake_file_health"),
         "datasets": [
             {
                 "name": name,
@@ -10229,6 +10236,49 @@ def _refresh_lake_file_index_for_export(root: Path) -> dict[str, Any]:
         "started_at": started_at.isoformat(),
         "finished_at": datetime.now(UTC).isoformat(),
         "error": "",
+    }
+
+
+def _lake_file_health_for_export(root: Path) -> dict[str, Any]:
+    try:
+        summary = lake_file_health_summary(root)
+    except Exception as exc:
+        return {
+            "ok": False,
+            "error": _safe_warning_text(f"{type(exc).__name__}:{exc}"),
+        }
+    rows = list(summary.get("rows") or [])
+    top_rows = sorted(
+        rows,
+        key=lambda row: int(row.get("parquet_file_count") or 0),
+        reverse=True,
+    )[:10]
+    warning_rows = [
+        row
+        for row in rows
+        if str(row.get("status") or "").upper() not in {"", "OK", "PASS"}
+    ][:10]
+    return {
+        "ok": True,
+        "dataset_count": int(summary.get("dataset_count") or 0),
+        "total_parquet_files": int(summary.get("total_parquet_files") or 0),
+        "warning_count": int(summary.get("warning_count") or 0),
+        "top_file_count_datasets": [
+            _lake_file_health_row_for_manifest(row) for row in top_rows
+        ],
+        "warnings": [_lake_file_health_row_for_manifest(row) for row in warning_rows],
+    }
+
+
+def _lake_file_health_row_for_manifest(row: Mapping[str, Any]) -> dict[str, Any]:
+    return {
+        "dataset": str(row.get("dataset") or ""),
+        "parquet_file_count": int(row.get("parquet_file_count") or 0),
+        "partition_dir_count": int(row.get("partition_dir_count") or 0),
+        "small_file_count": int(row.get("small_file_count") or 0),
+        "small_file_ratio": float(row.get("small_file_ratio") or 0.0),
+        "status": str(row.get("status") or ""),
+        "warning": row.get("warning"),
     }
 
 

@@ -252,9 +252,12 @@ def test_export_daily_pack_writes_required_members(tmp_path):
         assert manifest["export_command"] == "qlab export-daily"
         assert manifest["contract_version"] == V5_QUANT_LAB_CONTRACT_VERSION
         assert manifest["lake_file_index_refresh"]["ok"] is True
+        assert manifest["lake_file_health"]["ok"] is True
+        assert "warning_count" in manifest["lake_file_health"]
         assert provenance["contract_version"] == V5_QUANT_LAB_CONTRACT_VERSION
         assert provenance["display_timezone"] == "Asia/Shanghai"
         assert provenance["generated_at_beijing"].endswith("+08:00")
+        assert provenance["lake_file_health"]["ok"] is True
         assert "dataset_freshness" in manifest
         assert provenance["git_commit"]
         assert "git_dirty" in provenance
@@ -1987,6 +1990,31 @@ def test_system_acceptance_lake_file_count_and_growth_thresholds():
     failed_checks = {row["check_name"]: row for row in failed.to_dicts()}
     assert failed_checks["lake_parquet_file_count_under_threshold"]["status"] == "FAIL"
     assert failed_checks["lake_parquet_file_growth_24h_ok"]["status"] == "PASS"
+
+
+def test_system_acceptance_uses_lake_file_health_before_count_warning():
+    dashboard = daily_export_module.build_system_acceptance_dashboard(
+        frames={},
+        report_frames={},
+        row_counts={},
+        pre_export_v5={},
+        data_quality_warnings=[],
+        api_latency_summary=pl.DataFrame(),
+        lake_file_count=6_000,
+        lake_file_growth_24h_count=500,
+        lake_file_health={
+            "ok": True,
+            "warning_count": 0,
+            "total_parquet_files": 6_000,
+        },
+        generated_at=datetime(2026, 6, 11, 10, tzinfo=UTC),
+    )
+    checks = {row["check_name"]: row for row in dashboard.to_dicts()}
+    assert checks["lake_parquet_file_count_under_threshold"]["status"] == "PASS"
+    assert checks["lake_parquet_file_growth_24h_ok"]["status"] == "PASS"
+    assert "lake_health_warning_count=0" in checks[
+        "lake_parquet_file_count_under_threshold"
+    ]["observed_value"]
 
 
 def test_system_acceptance_downgrades_stale_v5_bundle_to_warning():

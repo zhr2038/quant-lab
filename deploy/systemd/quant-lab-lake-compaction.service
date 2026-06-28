@@ -24,11 +24,11 @@ Environment=MARKET_ROLLUP_TIMEOUT_SECONDS=600
 Environment=MARKET_ROLLUP_POLARS_MAX_THREADS=2
 Environment=COMPACT_SMALL_FILE_MAINTENANCE=1
 Environment=COMPACT_SMALL_FILE_MAINTENANCE_TIMEOUT_SECONDS=300
-Environment=COMPACT_SMALL_FILE_MAINTENANCE_MAX_GROUPS=2
-Environment=COMPACT_SMALL_FILE_MAINTENANCE_MAX_SOURCE_FILES_PER_GROUP=32
+Environment=COMPACT_SMALL_FILE_MAINTENANCE_MAX_GROUPS=6
+Environment=COMPACT_SMALL_FILE_MAINTENANCE_MAX_SOURCE_FILES_PER_GROUP=64
 Environment=COMPACT_SMALL_FILE_MAINTENANCE_TARGET_ROWS=500000
 Environment=COMPACT_SMALL_FILE_MAINTENANCE_DATASETS=silver/v5_quant_lab_request,silver/v5_candidate_event,silver/v5_decision_audit,bronze/api_request_metrics
-ExecStart=/bin/bash -lc 'set -euo pipefail; /usr/bin/flock -E 75 -w 10 /var/lock/quant-lab-heavy.lock /bin/bash /opt/quant-lab/deploy/scripts/compact_lake_hot_datasets.sh || { code="$?"; if [ "$${code}" = "75" ]; then echo "SKIP_LAKE_COMPACTION_LOCK_BUSY"; exit 0; fi; exit "$${code}"; }'
+ExecStart=/bin/bash -lc 'set -euo pipefail; /usr/bin/flock -E 75 -w 600 /var/lock/quant-lab-heavy.lock /bin/bash /opt/quant-lab/deploy/scripts/compact_lake_hot_datasets.sh || { code="$?"; if [ "$${code}" = "75" ]; then echo "SKIP_LAKE_COMPACTION_LOCK_BUSY"; exit 0; fi; exit "$${code}"; }'
 Nice=10
 IOSchedulingClass=best-effort
 IOSchedulingPriority=7

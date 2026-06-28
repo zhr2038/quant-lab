@@ -12,6 +12,7 @@ import sys
 import tarfile
 import tempfile
 import time
+import urllib.parse
 import urllib.request
 import zipfile
 from collections import Counter
@@ -560,6 +561,7 @@ REQUIRED_MEMBERS = [
     "reports/api_latency_summary.csv",
     "reports/api_latency_summary.md",
     "reports/api_error_summary.csv",
+    "reports/github_ci_status.csv",
     "reports/v5_bundle_sync_diagnostics.csv",
     "reports/v5_local_live_vs_quant_lab_shadow.csv",
     "reports/missed_opportunity_audit.csv",
@@ -912,6 +914,23 @@ CSV_SCHEMAS: dict[str, list[str]] = {
         "error_count",
         "latest_error_ts",
         "error_rate",
+    ],
+    "reports/github_ci_status.csv": [
+        "component",
+        "repo",
+        "commit_sha",
+        "workflow_name",
+        "workflow_run_id",
+        "workflow_status",
+        "workflow_conclusion",
+        "event",
+        "head_sha",
+        "created_at",
+        "updated_at",
+        "html_url",
+        "observed_at",
+        "source",
+        "error",
     ],
     "reports/v5_bundle_sync_diagnostics.csv": [
         "generated_at",
@@ -4185,8 +4204,13 @@ def export_daily_pack(
         )
     if v5_consistency["warning_reason"]:
         pre_export_v5.setdefault("warnings", []).append(v5_consistency["warning_reason"])
-    pre_export_v5_warnings = [str(warning) for warning in pre_export_v5.get("warnings", [])]
     _record_export_stage(export_stage_timings, "v5_consistency", stage_started)
+    stage_started = _export_stage_start("github_ci_status")
+    github_ci_status = _github_ci_status_for_export(pre_export_v5)
+    pre_export_v5["github_ci_status_rows"] = github_ci_status.to_dicts()
+    pre_export_v5["github_ci_status"] = _github_ci_status_summary(github_ci_status)
+    _record_export_stage(export_stage_timings, "github_ci_status", stage_started)
+    pre_export_v5_warnings = [str(warning) for warning in pre_export_v5.get("warnings", [])]
     stage_started = _export_stage_start("publish_research_portfolio_status")
     snapshot = _publish_research_portfolio_status_snapshot(root, snapshot, day)
     _record_export_stage(export_stage_timings, "publish_research_portfolio_status", stage_started)
@@ -4256,6 +4280,10 @@ def export_daily_pack(
     members.update(_chart_members(member_frames))
     members.update(enforce_readiness_members(root))
     _attach_selected_v5_bundle(members, pre_export_v5)
+    members["reports/github_ci_status.csv"] = _csv_member(
+        "reports/github_ci_status.csv",
+        _github_ci_status_frame_from_context(pre_export_v5),
+    )
     _promote_embedded_v5_summary_report(
         members,
         pre_export_v5,
@@ -6915,6 +6943,7 @@ def _manifest_payload(
             "embedded_v5_bundle_validation_status"
         ),
         "embedded_v5_bundle_reason": v5_context.get("embedded_v5_bundle_reason"),
+        "github_ci_status": v5_context.get("github_ci_status"),
         "v5_export_consistency": {
             "authoritative_snapshot": authoritative_snapshot,
             "stale_v5_bundle": stale_v5_bundle,
@@ -6980,6 +7009,7 @@ def _manifest_payload(
             "embedded_v5_bundle_validation_status": v5_context.get(
                 "embedded_v5_bundle_validation_status"
             ),
+            "github_ci_status": v5_context.get("github_ci_status"),
         },
         "scanned_bundle_count": v5_context.get("scanned_bundle_count", 0),
         "audit_bundle_count": v5_context.get("audit_bundle_count", 0),
@@ -8192,6 +8222,7 @@ def _provenance_payload(
         "embedded_v5_bundle_validation_status": v5_context.get(
             "embedded_v5_bundle_validation_status"
         ),
+        "github_ci_status": v5_context.get("github_ci_status"),
         "datasets": [
             {
                 "name": name,
@@ -10158,6 +10189,253 @@ def _lake_file_index_growth_24h_count(root: Path) -> int | None:
         )
     except Exception:
         return None
+
+
+def _github_ci_status_for_export(v5_context: Mapping[str, Any]) -> pl.DataFrame:
+    path = "reports/github_ci_status.csv"
+    observed_at = datetime.now(UTC).isoformat()
+    quant_lab_commit = _git_commit_full()
+    v5_commit = _selected_v5_bundle_git_commit(v5_context)
+    rows: list[dict[str, Any]] = []
+    targets = [
+        (
+            "quant-lab",
+            os.environ.get("QUANT_LAB_GITHUB_REPO", "zhr2038/quant-lab"),
+            quant_lab_commit,
+        ),
+        (
+            "v5",
+            os.environ.get("V5_GITHUB_REPO", "zhr2038/V5-prod"),
+            v5_commit,
+        ),
+    ]
+    enabled = _flag_enabled("QUANT_LAB_EXPORT_GITHUB_CI_STATUS", default=False)
+    if not enabled:
+        for component, repo, commit_sha in targets:
+            rows.append(
+                _github_ci_status_row(
+                    component=component,
+                    repo=repo,
+                    commit_sha=commit_sha,
+                    observed_at=observed_at,
+                    workflow_status="not_checked",
+                    workflow_conclusion="disabled",
+                    source="env_disabled",
+                    error="set QUANT_LAB_EXPORT_GITHUB_CI_STATUS=1 to query GitHub Actions",
+                )
+            )
+        return pl.DataFrame(rows, infer_schema_length=None).select(CSV_SCHEMAS[path])
+
+    timeout = float(os.environ.get("QUANT_LAB_EXPORT_GITHUB_CI_TIMEOUT_SECONDS", "8"))
+    for component, repo, commit_sha in targets:
+        if not commit_sha:
+            rows.append(
+                _github_ci_status_row(
+                    component=component,
+                    repo=repo,
+                    commit_sha=commit_sha,
+                    observed_at=observed_at,
+                    workflow_status="not_observable",
+                    workflow_conclusion="missing_commit",
+                    source="local",
+                    error="commit_sha_missing",
+                )
+            )
+            continue
+        try:
+            run = _github_actions_latest_run(repo=repo, commit_sha=commit_sha, timeout=timeout)
+        except Exception as exc:  # pragma: no cover - exercised by production network state.
+            rows.append(
+                _github_ci_status_row(
+                    component=component,
+                    repo=repo,
+                    commit_sha=commit_sha,
+                    observed_at=observed_at,
+                    workflow_status="not_observable",
+                    workflow_conclusion="query_error",
+                    source="github_actions_api",
+                    error=_safe_warning_text(f"{type(exc).__name__}:{exc}"),
+                )
+            )
+            continue
+        if not run:
+            rows.append(
+                _github_ci_status_row(
+                    component=component,
+                    repo=repo,
+                    commit_sha=commit_sha,
+                    observed_at=observed_at,
+                    workflow_status="not_observable",
+                    workflow_conclusion="no_run",
+                    source="github_actions_api",
+                    error="no workflow run found for commit",
+                )
+            )
+            continue
+        rows.append(
+            _github_ci_status_row(
+                component=component,
+                repo=repo,
+                commit_sha=commit_sha,
+                observed_at=observed_at,
+                workflow_name=run.get("name"),
+                workflow_run_id=run.get("id"),
+                workflow_status=run.get("status"),
+                workflow_conclusion=run.get("conclusion"),
+                event=run.get("event"),
+                head_sha=run.get("head_sha"),
+                created_at=run.get("created_at"),
+                updated_at=run.get("updated_at"),
+                html_url=run.get("html_url"),
+                source="github_actions_api",
+                error="",
+            )
+        )
+    return pl.DataFrame(rows, infer_schema_length=None).select(CSV_SCHEMAS[path])
+
+
+def _github_ci_status_frame_from_context(v5_context: Mapping[str, Any]) -> pl.DataFrame:
+    rows = v5_context.get("github_ci_status_rows")
+    if isinstance(rows, list):
+        return pl.DataFrame(rows, infer_schema_length=None).select(
+            CSV_SCHEMAS["reports/github_ci_status.csv"]
+        )
+    return _github_ci_status_for_export(v5_context)
+
+
+def _github_ci_status_summary(frame: pl.DataFrame) -> dict[str, Any]:
+    rows = frame.to_dicts() if not frame.is_empty() else []
+    required = {"quant-lab", "v5"}
+    present = {str(row.get("component") or "") for row in rows}
+    missing = sorted(required - present)
+    failures = [
+        row
+        for row in rows
+        if str(row.get("workflow_conclusion") or "").lower() not in {"success"}
+    ]
+    overall = "PASS" if rows and not missing and not failures else "WARNING"
+    known_bad = {
+        "failure",
+        "cancelled",
+        "timed_out",
+        "startup_failure",
+        "action_required",
+    }
+    if any(str(row.get("workflow_conclusion") or "").lower() in known_bad for row in rows):
+        overall = "FAIL"
+    return {
+        "overall_status": overall,
+        "checked_components": sorted(present),
+        "missing_components": missing,
+        "failure_count": len(failures),
+        "components": {
+            str(row.get("component") or ""): {
+                "repo": row.get("repo"),
+                "commit_sha": row.get("commit_sha"),
+                "workflow_status": row.get("workflow_status"),
+                "workflow_conclusion": row.get("workflow_conclusion"),
+                "workflow_run_id": row.get("workflow_run_id"),
+                "html_url": row.get("html_url"),
+                "error": row.get("error"),
+            }
+            for row in rows
+        },
+    }
+
+
+def _github_ci_status_row(
+    *,
+    component: str,
+    repo: str | None,
+    commit_sha: str | None,
+    observed_at: str,
+    workflow_name: Any = None,
+    workflow_run_id: Any = None,
+    workflow_status: Any = None,
+    workflow_conclusion: Any = None,
+    event: Any = None,
+    head_sha: Any = None,
+    created_at: Any = None,
+    updated_at: Any = None,
+    html_url: Any = None,
+    source: str,
+    error: str,
+) -> dict[str, Any]:
+    return {
+        "component": component,
+        "repo": repo,
+        "commit_sha": commit_sha,
+        "workflow_name": workflow_name,
+        "workflow_run_id": workflow_run_id,
+        "workflow_status": workflow_status,
+        "workflow_conclusion": workflow_conclusion,
+        "event": event,
+        "head_sha": head_sha,
+        "created_at": created_at,
+        "updated_at": updated_at,
+        "html_url": html_url,
+        "observed_at": observed_at,
+        "source": source,
+        "error": error,
+    }
+
+
+def _github_actions_latest_run(
+    *,
+    repo: str | None,
+    commit_sha: str,
+    timeout: float,
+) -> dict[str, Any] | None:
+    repo_text = str(repo or "").strip()
+    if "/" not in repo_text:
+        raise ValueError("github_repo_must_be_owner_slash_repo")
+    owner, name = repo_text.split("/", 1)
+    url = (
+        "https://api.github.com/repos/"
+        f"{urllib.parse.quote(owner)}/{urllib.parse.quote(name)}"
+        f"/actions/runs?head_sha={urllib.parse.quote(commit_sha)}&per_page=10"
+    )
+    headers = {
+        "Accept": "application/vnd.github+json",
+        "User-Agent": "quant-lab-expert-export/1.0",
+    }
+    token = os.environ.get("QUANT_LAB_GITHUB_TOKEN") or os.environ.get("GITHUB_TOKEN")
+    if token:
+        headers["Authorization"] = f"Bearer {token}"
+    request = urllib.request.Request(url, headers=headers)
+    with urllib.request.urlopen(request, timeout=timeout) as response:  # noqa: S310
+        payload = json.loads(response.read().decode("utf-8"))
+    runs = payload.get("workflow_runs")
+    if not isinstance(runs, list):
+        return None
+    for run in runs:
+        if isinstance(run, dict) and str(run.get("head_sha") or "").lower() == commit_sha.lower():
+            return run
+    return runs[0] if runs and isinstance(runs[0], dict) else None
+
+
+def _selected_v5_bundle_git_commit(v5_context: Mapping[str, Any]) -> str | None:
+    selected_path_raw = str(v5_context.get("selected_v5_bundle_path") or "").strip()
+    if not selected_path_raw:
+        return None
+    selected_path = Path(selected_path_raw)
+    if not selected_path.is_file():
+        return None
+    try:
+        with tarfile.open(selected_path, "r:gz") as archive:
+            for member in archive.getmembers():
+                parts = PurePosixPath(member.name).parts
+                if len(parts) != 2 or parts[-1] != "manifest.json" or not member.isfile():
+                    continue
+                extracted = archive.extractfile(member)
+                if extracted is None:
+                    continue
+                payload = json.loads(extracted.read().decode("utf-8"))
+                value = payload.get("git_commit")
+                return str(value).strip() if value else None
+    except (OSError, tarfile.TarError, json.JSONDecodeError, UnicodeDecodeError):
+        return None
+    return None
 
 
 def _api_latency_summary_for_export(root: Path) -> pl.DataFrame:
@@ -16648,6 +16926,11 @@ def _git_info() -> dict[str, Any]:
 
 def _git_commit() -> str | None:
     return _git_info()["git_commit"]
+
+
+def _git_commit_full() -> str | None:
+    root = Path(__file__).resolve().parents[3]
+    return _git_command(["rev-parse", "HEAD"], root)
 
 
 def _source_version(component: str, git_commit: str | None) -> str:

@@ -38,6 +38,9 @@ from tests.v5_bundle_fixture import make_tar
 def _isolate_default_v5_telemetry_config(monkeypatch, tmp_path):
     monkeypatch.delenv("QUANT_LAB_EXPORT_V5_MAX_PENDING_BUNDLES", raising=False)
     monkeypatch.delenv("QUANT_LAB_EXPORT_V5_MAX_SCAN_BUNDLES", raising=False)
+    monkeypatch.delenv("QUANT_LAB_EXPORT_GITHUB_CI_STATUS", raising=False)
+    monkeypatch.delenv("QUANT_LAB_GITHUB_REPO", raising=False)
+    monkeypatch.delenv("V5_GITHUB_REPO", raising=False)
     inbox = tmp_path / "isolated_v5_inbox"
     inbox.mkdir(parents=True, exist_ok=True)
     config = _v5_telemetry_config(tmp_path, inbox, tmp_path / "isolated_v5_lake")
@@ -265,6 +268,7 @@ def test_export_daily_pack_writes_required_members(tmp_path):
         assert "reports/v5_enforce_readiness.csv" in names
         assert "reports/system_acceptance_dashboard.csv" in names
         assert "reports/system_acceptance_dashboard.md" in names
+        assert "reports/github_ci_status.csv" in names
         assert "reports/post_impulse_overextension_no_trigger_reasons.csv" in names
         assert "reports/bottom_zone_reversal_no_trigger_reasons.csv" in names
         assert "reports/factor_dedupe_decision.csv" in names
@@ -294,6 +298,7 @@ def test_export_daily_pack_writes_required_members(tmp_path):
         )
         acceptance_checks = {row["check_name"] for row in acceptance_rows}
         assert "v5_bundle_sync_ok" in acceptance_checks
+        assert "github_ci_status_ok" in acceptance_checks
         readiness_rows = list(
             csv.DictReader(
                 io.StringIO(archive.read("reports/cost_bootstrap_readiness.csv").decode("utf-8"))
@@ -310,6 +315,10 @@ def test_export_daily_pack_writes_required_members(tmp_path):
         assert "bill_match_status" in fill_bill_header
         assert "web_rglob_fallback_zero" in acceptance_checks
         assert "api_latency_p95_ok" in acceptance_checks
+        github_ci_header = (
+            archive.read("reports/github_ci_status.csv").decode("utf-8").splitlines()[0]
+        )
+        assert github_ci_header == ",".join(CSV_SCHEMAS["reports/github_ci_status.csv"])
         assert "System Acceptance Dashboard" in archive.read(
             "reports/system_acceptance_dashboard.md"
         ).decode("utf-8")
@@ -1828,6 +1837,123 @@ def test_system_acceptance_uses_production_v5_auth_scope_when_available():
     )
     assert row["status"] == "PASS"
     assert "scope=production_v5" in row["observed_value"]
+
+
+def test_system_acceptance_surfaces_github_ci_status():
+    success = daily_export_module.build_system_acceptance_dashboard(
+        frames={},
+        report_frames={},
+        row_counts={},
+        pre_export_v5={
+            "github_ci_status": {
+                "overall_status": "PASS",
+                "components": {
+                    "quant-lab": {
+                        "commit_sha": "a" * 40,
+                        "workflow_conclusion": "success",
+                    },
+                    "v5": {
+                        "commit_sha": "b" * 40,
+                        "workflow_conclusion": "success",
+                    },
+                },
+            }
+        },
+        data_quality_warnings=[],
+        api_latency_summary=pl.DataFrame(),
+        lake_file_count=0,
+        generated_at=datetime(2026, 6, 11, 10, tzinfo=UTC),
+    )
+    row = next(
+        item for item in success.to_dicts() if item["check_name"] == "github_ci_status_ok"
+    )
+    assert row["status"] == "PASS"
+    assert "quant-lab:aaaaaaaaaaaa:success" in row["observed_value"]
+
+    failed = daily_export_module.build_system_acceptance_dashboard(
+        frames={},
+        report_frames={},
+        row_counts={},
+        pre_export_v5={
+            "github_ci_status": {
+                "overall_status": "FAIL",
+                "components": {
+                    "quant-lab": {
+                        "commit_sha": "a" * 40,
+                        "workflow_conclusion": "failure",
+                    },
+                    "v5": {
+                        "commit_sha": "b" * 40,
+                        "workflow_conclusion": "success",
+                    },
+                },
+            }
+        },
+        data_quality_warnings=[],
+        api_latency_summary=pl.DataFrame(),
+        lake_file_count=0,
+        generated_at=datetime(2026, 6, 11, 10, tzinfo=UTC),
+    )
+    failed_row = next(
+        item for item in failed.to_dicts() if item["check_name"] == "github_ci_status_ok"
+    )
+    assert failed_row["status"] == "FAIL"
+    assert "fix failing GitHub Actions" in failed_row["next_action"]
+
+
+def test_export_daily_pack_includes_github_ci_status_when_enabled(tmp_path, monkeypatch):
+    lake_root = _fixture_lake(tmp_path)
+    monkeypatch.setenv("QUANT_LAB_EXPORT_GITHUB_CI_STATUS", "1")
+    monkeypatch.setattr(daily_export_module, "_git_commit_full", lambda: "a" * 40)
+    monkeypatch.setattr(
+        daily_export_module,
+        "_selected_v5_bundle_git_commit",
+        lambda _context: "b" * 40,
+    )
+
+    def fake_latest_run(*, repo, commit_sha, timeout):
+        return {
+            "id": 123 if repo.endswith("quant-lab") else 456,
+            "name": "CI",
+            "status": "completed",
+            "conclusion": "success",
+            "event": "push",
+            "head_sha": commit_sha,
+            "created_at": "2026-06-28T14:18:25Z",
+            "updated_at": "2026-06-28T14:20:25Z",
+            "html_url": f"https://github.com/{repo}/actions/runs/123",
+        }
+
+    monkeypatch.setattr(daily_export_module, "_github_actions_latest_run", fake_latest_run)
+
+    result = export_daily_pack(
+        export_date="2026-05-11",
+        lake_root=lake_root,
+        out_dir=tmp_path / "exports",
+        profile="expert",
+        command_line=["qlab", "export-daily"],
+        pre_export_v5_refresh=False,
+    )
+
+    with zipfile.ZipFile(result.zip_path) as archive:
+        rows = list(
+            csv.DictReader(
+                io.StringIO(archive.read("reports/github_ci_status.csv").decode("utf-8"))
+            )
+        )
+        assert {row["component"] for row in rows} == {"quant-lab", "v5"}
+        assert {row["workflow_conclusion"] for row in rows} == {"success"}
+        manifest = json.loads(archive.read("manifest.json").decode("utf-8"))
+        assert manifest["github_ci_status"]["overall_status"] == "PASS"
+        acceptance = {
+            row["check_name"]: row
+            for row in csv.DictReader(
+                io.StringIO(
+                    archive.read("reports/system_acceptance_dashboard.csv").decode("utf-8")
+                )
+            )
+        }
+        assert acceptance["github_ci_status_ok"]["status"] == "PASS"
 
 
 def test_system_acceptance_lake_file_count_and_growth_thresholds():
@@ -4218,6 +4344,7 @@ def test_export_empty_csv_members_have_fixed_headers(tmp_path):
             "reports/live_universe_cost_coverage.csv",
             "reports/bottom_zone_probe_paper_readiness.csv",
             "reports/api_error_summary.csv",
+            "reports/github_ci_status.csv",
             "v5/v5_candidate_events.csv",
             "v5/v5_btc_probe_entry_quality_audit.csv",
             "v5/v5_candidate_labels.csv",

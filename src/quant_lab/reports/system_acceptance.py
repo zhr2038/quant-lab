@@ -244,6 +244,7 @@ def build_system_acceptance_dashboard(
         )
     )
     checks.append(_api_auth_error_rate_check(api_latency_summary))
+    checks.append(_github_ci_status_check(dict(pre_export_v5 or {})))
 
     checks.append(_enforce_readiness_check(data_quality_warnings))
 
@@ -636,6 +637,56 @@ def _api_auth_error_rate_check(frame: pl.DataFrame) -> dict[str, Any]:
         f"auth_error_rate < {threshold:g}",
         "quant-lab",
         "" if status == "PASS" else "fix unauthorized API callers or token rollout",
+    )
+
+
+def _github_ci_status_check(v5_context: Mapping[str, Any]) -> dict[str, Any]:
+    summary = v5_context.get("github_ci_status")
+    rows = v5_context.get("github_ci_status_rows")
+    if not isinstance(summary, Mapping):
+        return _check(
+            "github_ci_status_ok",
+            "WARNING",
+            "github_ci_status=not_observable",
+            "quant-lab and V5 current commits must have GitHub Actions success",
+            "quant-lab/V5",
+            "write GitHub CI status into the expert pack before veto/enforce promotion",
+        )
+    status = str(summary.get("overall_status") or "WARNING").upper()
+    if status not in {"PASS", "WARNING", "FAIL"}:
+        status = "WARNING"
+    components = summary.get("components")
+    component_parts: list[str] = []
+    if isinstance(components, Mapping):
+        for name in sorted(str(key) for key in components.keys()):
+            item = components.get(name)
+            if not isinstance(item, Mapping):
+                continue
+            conclusion = item.get("workflow_conclusion")
+            commit = str(item.get("commit_sha") or "")
+            short_commit = commit[:12] if commit else "missing"
+            component_parts.append(f"{name}:{short_commit}:{conclusion}")
+    if not component_parts and isinstance(rows, list):
+        for row in rows:
+            if not isinstance(row, Mapping):
+                continue
+            name = str(row.get("component") or "")
+            commit = str(row.get("commit_sha") or "")
+            conclusion = row.get("workflow_conclusion")
+            component_parts.append(f"{name}:{commit[:12] if commit else 'missing'}:{conclusion}")
+    observed = ";".join(component_parts) if component_parts else "github_ci_status=empty"
+    next_action = ""
+    if status == "FAIL":
+        next_action = "fix failing GitHub Actions before any enforce/live promotion"
+    elif status == "WARNING":
+        next_action = "collect current commit GitHub Actions success evidence"
+    return _check(
+        "github_ci_status_ok",
+        status,
+        observed,
+        "quant-lab and V5 current commits must have GitHub Actions success",
+        "quant-lab/V5",
+        next_action,
     )
 
 

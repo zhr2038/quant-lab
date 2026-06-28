@@ -277,8 +277,8 @@ def test_scheduled_compaction_covers_hot_ws_datasets():
     assert "MARKET_ROLLUP_POLARS_MAX_THREADS=2" in unit
     assert "COMPACT_SMALL_FILE_MAINTENANCE=1" in unit
     assert "COMPACT_SMALL_FILE_MAINTENANCE_TIMEOUT_SECONDS=300" in unit
-    assert "COMPACT_SMALL_FILE_MAINTENANCE_MAX_GROUPS=2" in unit
-    assert "COMPACT_SMALL_FILE_MAINTENANCE_MAX_SOURCE_FILES_PER_GROUP=32" in unit
+    assert "COMPACT_SMALL_FILE_MAINTENANCE_MAX_GROUPS=6" in unit
+    assert "COMPACT_SMALL_FILE_MAINTENANCE_MAX_SOURCE_FILES_PER_GROUP=64" in unit
     assert "COMPACT_SMALL_FILE_MAINTENANCE_TARGET_ROWS=500000" in unit
     assert "COMPACT_SMALL_FILE_MAINTENANCE_DATASETS=silver/v5_quant_lab_request" in unit
     assert "Nice=10" in unit
@@ -287,6 +287,7 @@ def test_scheduled_compaction_covers_hot_ws_datasets():
     assert "CPUQuota=80%" in unit
     assert "MemoryHigh=3G" in unit
     assert "MemoryMax=4G" in unit
+    assert "flock -E 75 -w 600 /var/lock/quant-lab-heavy.lock" in unit
     assert "--max-source-batch-bytes" in script
     assert "--direct-only" in script
     assert "visible_parquet_files" in script
@@ -391,6 +392,7 @@ def test_web_export_request_refreshes_costs_before_packaging():
     assert "TimeoutStartSec=65min" in unit
     assert "ExecStartPre=/usr/bin/systemctl start quant-lab-v5-telemetry-sync.service" in unit
     assert "ExecStartPre=/usr/bin/systemctl start quant-lab-cost-calibration.service" in unit
+    assert "QUANT_LAB_EXPORT_GITHUB_CI_STATUS=1" in unit
 
 
 def test_web_export_relies_on_systemd_memory_limit_for_snapshot_packaging():
@@ -418,6 +420,9 @@ def test_web_export_request_worker_is_scheduled_outside_dashboard_cgroup():
     assert "QUANT_LAB_EXPORT_V5_MAX_PENDING_BUNDLES=12" in service
     assert "QUANT_LAB_EXPORT_V5_MAX_SCAN_BUNDLES=1000" in service
     assert "QUANT_LAB_API_METRICS_PRODUCTION_CLIENT_HOSTS=43.156.105.125" in service
+    assert "QUANT_LAB_EXPORT_GITHUB_CI_STATUS=1" in service
+    assert "QUANT_LAB_GITHUB_REPO=zhr2038/quant-lab" in service
+    assert "V5_GITHUB_REPO=zhr2038/V5-prod" in service
     assert "MemoryMax=6G" in service
     request_path = "/var/lib/quant-lab/exports/.quant_lab_web_export_request.json"
     assert f"PathExists={request_path}" in path

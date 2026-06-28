@@ -79,8 +79,10 @@ function formatExpertPackStamp(fileName: string): string {
     /^quant_lab_expert_pack_(\d{4}-\d{2}-\d{2})_(\d{8})T(\d{2})(\d{2})(\d{2})(?:\d{1,6})?([+-]\d{4}|Z)?\.zip$/
   );
   if (!match) return "";
-  const [, exportDate, , hour, minute, second, zone = ""] = match;
-  return `${exportDate} ${hour}:${minute}:${second}${zone ? ` ${zone}` : ""}`;
+  const [, exportDate, generatedDay, hour, minute, second, zone = ""] = match;
+  const generatedDate = `${generatedDay.slice(0, 4)}-${generatedDay.slice(4, 6)}-${generatedDay.slice(6, 8)}`;
+  const generatedTime = `${generatedDate} ${hour}:${minute}:${second}${zone ? ` ${zone}` : ""}`;
+  return `生成 ${generatedTime} · 数据日期 ${exportDate}`;
 }
 
 export default function App() {
@@ -502,7 +504,7 @@ function ExpertPackControls({ exports }: { exports: Record<string, unknown> }) {
   });
   const latestDisplayName = latestFileName || stringValue(latestName, "latest.zip");
   const latestGeneratedAt = formatExpertPackStamp(latestDisplayName);
-  const latestPrimaryText = latestGeneratedAt ? `专家包 ${latestGeneratedAt}` : latestDisplayName;
+  const latestPrimaryText = latestGeneratedAt || latestDisplayName;
   const latestModifiedAt = formatPackTime(latestPack?.modified_at);
   const latestMeta = [
     latestGeneratedAt ? latestDisplayName : "",

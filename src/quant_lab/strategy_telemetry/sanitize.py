@@ -15,6 +15,9 @@ from quant_lab.strategy_telemetry.models import (
 
 REDACTION = "<REDACTED>"
 SAFE_REDACTED_VALUES = {"<redacted>", "redacted", "null", "none", "false", "true", "0"}
+SAFE_REDACTED_VALUE_NEGATIVE_LOOKAHEAD = (
+    r"(?!(?:<REDACTED>|REDACTED|null|none|false|true|0)(?=$|[\s,}\"'}\]]))"
+)
 
 SENSITIVE_KEYS = {
     "api_key",
@@ -40,7 +43,8 @@ SECRET_PATTERNS = [
     (
         re.compile(
             r"(api[_-]?key|apiSecret)\s*[:=]\s*['\"]?"
-            r"(?!(?:<REDACTED>|REDACTED|null|none|false|true|0)\b)[^'\"\s,}]+",
+            + SAFE_REDACTED_VALUE_NEGATIVE_LOOKAHEAD
+            + r"[^'\"\s,}]+",
             re.IGNORECASE,
         ),
         "high",
@@ -49,7 +53,8 @@ SECRET_PATTERNS = [
     (
         re.compile(
             r"(secret[_-]?key|api_secret)\s*[:=]\s*['\"]?"
-            r"(?!(?:<REDACTED>|REDACTED|null|none|false|true|0)\b)[^'\"\s,}]+",
+            + SAFE_REDACTED_VALUE_NEGATIVE_LOOKAHEAD
+            + r"[^'\"\s,}]+",
             re.IGNORECASE,
         ),
         "high",
@@ -58,7 +63,8 @@ SECRET_PATTERNS = [
     (
         re.compile(
             r"(passphrase|password|token)\s*[:=]\s*['\"]?"
-            r"(?!(?:<REDACTED>|REDACTED|null|none|false|true|0)\b)[^'\"\s,}]+",
+            + SAFE_REDACTED_VALUE_NEGATIVE_LOOKAHEAD
+            + r"[^'\"\s,}]+",
             re.IGNORECASE,
         ),
         "high",

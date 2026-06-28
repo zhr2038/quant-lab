@@ -2,6 +2,7 @@ import csv
 import io
 import json
 import os
+import tarfile
 import zipfile
 from datetime import UTC, date, datetime, timedelta
 from pathlib import Path
@@ -3174,7 +3175,7 @@ def test_export_marks_core_momentum_as_research_baseline_and_prioritizes_strateg
 def test_export_daily_ingests_pending_v5_inbox_before_snapshot(tmp_path):
     lake_root = _fixture_lake(tmp_path)
     inbox = tmp_path / "inbox"
-    make_tar(
+    bundle = make_tar(
         inbox / "v5_live_followup_bundle_20260517T060000Z.tar.gz",
         {
             "summaries/window_summary.json": (
@@ -3219,9 +3220,17 @@ def test_export_daily_ingests_pending_v5_inbox_before_snapshot(tmp_path):
     )
 
     with zipfile.ZipFile(result.zip_path) as archive:
+        names = set(archive.namelist())
         manifest = json.loads(archive.read("manifest.json").decode("utf-8"))
         provenance = json.loads(archive.read("provenance.json").decode("utf-8"))
         data_quality = json.loads(archive.read("data_quality.json").decode("utf-8"))
+        embedded_member = manifest["embedded_v5_bundle_member_path"]
+        embedded_manifest = json.loads(
+            archive.read(manifest["embedded_v5_bundle_manifest_path"]).decode("utf-8")
+        )
+        embedded_payload = archive.read(embedded_member)
+        with tarfile.open(fileobj=io.BytesIO(embedded_payload), mode="r:gz") as v5_archive:
+            embedded_v5_names = set(v5_archive.getnames())
         btc_probe_rows = list(
             csv.DictReader(
                 io.StringIO(
@@ -3263,6 +3272,50 @@ def test_export_daily_ingests_pending_v5_inbox_before_snapshot(tmp_path):
     assert manifest["selected_v5_bundle_ingested_at"]
     assert manifest["selected_v5_bundle_event_counts"]["v5_candidate_event"] >= 1
     assert manifest["selected_v5_bundle_event_counts"]["v5_btc_probe_entry_quality_audit"] == 1
+    assert manifest["embedded_v5_bundle_present"] is True
+    assert manifest["embedded_v5_bundle_member_path"] == (
+        "v5/followup_bundle/v5_live_followup_bundle_20260517T060000Z.redacted.tar.gz"
+    )
+    assert manifest["embedded_v5_bundle_manifest_path"] == (
+        "v5/followup_bundle/attachment_manifest.json"
+    )
+    assert manifest["embedded_v5_bundle_member_path"] in names
+    assert manifest["embedded_v5_bundle_manifest_path"] in names
+    assert manifest["embedded_v5_bundle_original_name"] == bundle.name
+    assert manifest["embedded_v5_bundle_redacted"] is True
+    assert manifest["embedded_v5_bundle_redacted_source"] == "redacted_archive"
+    assert manifest["embedded_v5_bundle_source_sha256"] == daily_export_module.compute_sha256(
+        bundle
+    )
+    assert manifest["embedded_v5_bundle_sha256"] == _sha256_payload(embedded_payload)
+    assert manifest["embedded_v5_bundle_matches_selected"] is True
+    assert manifest["v5_export_consistency"]["embedded_v5_bundle_present"] is True
+    assert (
+        manifest["v5_export_consistency"]["embedded_v5_bundle_source_sha256"]
+        == manifest["selected_v5_bundle_sha256"]
+    )
+    assert manifest["v5_export_consistency"]["embedded_v5_bundle_redacted"] is True
+    assert provenance["embedded_v5_bundle_present"] is True
+    assert (
+        provenance["embedded_v5_bundle_member_path"]
+        == manifest["embedded_v5_bundle_member_path"]
+    )
+    assert provenance["embedded_v5_bundle_sha256"] == manifest["embedded_v5_bundle_sha256"]
+    assert provenance["embedded_v5_bundle_source_sha256"] == manifest["selected_v5_bundle_sha256"]
+    assert provenance["embedded_v5_bundle_redacted"] is True
+    assert provenance["embedded_v5_bundle_redacted_source"] == "redacted_archive"
+    assert embedded_manifest["member_path"] == manifest["embedded_v5_bundle_member_path"]
+    assert embedded_manifest["sha256"] == manifest["embedded_v5_bundle_sha256"]
+    assert embedded_manifest["source_sha256"] == manifest["selected_v5_bundle_sha256"]
+    assert embedded_manifest["redacted"] is True
+    assert "reports/candidate_snapshot.csv" in embedded_v5_names
+    assert "summaries/btc_probe_entry_quality_audit.csv" in embedded_v5_names
+    assert next(
+        item
+        for item in manifest["files"]
+        if item["path"] == manifest["embedded_v5_bundle_member_path"]
+    )["sha256"] == manifest["embedded_v5_bundle_sha256"]
+    assert validate_expert_pack(result.zip_path).valid is True
     assert manifest["latest_v5_bundle_seen_at_export"].startswith("2026-05-17T06:00:00")
     assert manifest["latest_v5_bundle_ingested_at_export"].startswith("2026-05-17T06:00:00")
     assert manifest["candidate_event_rows"] >= 1

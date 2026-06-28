@@ -9,6 +9,8 @@ import os
 import socket
 import subprocess
 import sys
+import tarfile
+import tempfile
 import time
 import urllib.request
 import zipfile
@@ -148,8 +150,17 @@ from quant_lab.risk.publish import (
 from quant_lab.strategy_telemetry.analyze import (
     _event_key as _v5_telemetry_event_key,
 )
-from quant_lab.strategy_telemetry.bundle import compute_sha256
-from quant_lab.strategy_telemetry.sanitize import SECRET_PATTERNS, safe_json_dumps
+from quant_lab.strategy_telemetry.bundle import (
+    compute_sha256,
+    safe_extract_v5_bundle,
+    validate_v5_bundle,
+)
+from quant_lab.strategy_telemetry.models import BundleLimits
+from quant_lab.strategy_telemetry.sanitize import (
+    SECRET_PATTERNS,
+    redact_extracted_bundle,
+    safe_json_dumps,
+)
 from quant_lab.symbols import normalize_symbol
 from quant_lab.time_display import BEIJING_TZ, DISPLAY_TIMEZONE, beijing_iso
 from quant_lab.web import readers
@@ -291,6 +302,20 @@ DEFAULT_EXPORT_RECENT_FILE_LIMIT = 100
 DEFAULT_EXPORT_FULL_READ_MAX_FILES = 80
 DEFAULT_EXPORT_FULL_READ_MAX_BYTES = 128 * 1024 * 1024
 DEFAULT_KEEP_EXPERT_PACKS = 5
+EMBEDDED_V5_BUNDLE_DIR = "v5/followup_bundle"
+EMBEDDED_V5_BUNDLE_MANIFEST = f"{EMBEDDED_V5_BUNDLE_DIR}/attachment_manifest.json"
+V5_FOLLOWUP_BUNDLE_PREFIX = "v5_live_followup_bundle_"
+V5_BUNDLE_SECRET_SCAN_TEXT_SUFFIXES = {
+    ".csv",
+    ".json",
+    ".jsonl",
+    ".log",
+    ".md",
+    ".txt",
+    ".yaml",
+    ".yml",
+}
+V5_BUNDLE_SECRET_SCAN_MAX_MEMBER_BYTES = 8 * 1024 * 1024
 LAKE_FILE_INDEX_DATASET = Path("bronze") / "lake_file_index"
 _EXPORT_FILE_INDEX_CACHE: dict[Path, pl.DataFrame | None] = {}
 SECRET_SCAN_PREFILTER_TOKENS = (
@@ -4213,6 +4238,7 @@ def export_daily_pack(
     )
     members.update(_chart_members(member_frames))
     members.update(enforce_readiness_members(root))
+    _attach_selected_v5_bundle(members, pre_export_v5)
     members["README.md"] = _readme(day, root, profile)
     members["data_quality.json"] = _json_text(data_quality)
     members["executive_summary.md"] = _executive_summary(day, snapshot, data_quality)
@@ -4465,6 +4491,20 @@ def validate_expert_pack(path: str | Path) -> ExpertPackValidationResult:
                 manifest_files = manifest.get("files", [])
                 if isinstance(manifest_files, list) and len(manifest_files) != file_count:
                     warnings.append("manifest file count does not match zip file count")
+                embedded_path = manifest.get("embedded_v5_bundle_member_path")
+                embedded_present = bool(manifest.get("embedded_v5_bundle_present"))
+                if embedded_present:
+                    if not embedded_path or str(embedded_path) not in names:
+                        reasons.append("embedded V5 bundle is missing from zip")
+                    else:
+                        expected_sha = str(
+                            manifest.get("embedded_v5_bundle_sha256") or ""
+                        ).strip()
+                        actual_sha = hashlib.sha256(
+                            archive.read(str(embedded_path))
+                        ).hexdigest()
+                        if expected_sha and actual_sha.lower() != expected_sha.lower():
+                            reasons.append("embedded V5 bundle sha256 mismatch")
             if isinstance(data_quality, dict):
                 quality_status = str(data_quality.get("status") or "").upper()
                 if quality_status in {"CRITICAL", "FAIL"}:
@@ -6432,6 +6472,231 @@ def _chart_members(frames: dict[str, pl.DataFrame]) -> dict[str, _MemberPayload]
     }
 
 
+def _attach_selected_v5_bundle(
+    members: dict[str, _MemberPayload],
+    v5_context: dict[str, Any],
+) -> None:
+    selected_path_raw = str(v5_context.get("selected_v5_bundle_path") or "").strip()
+    if not selected_path_raw:
+        v5_context.update(
+            {
+                "embedded_v5_bundle_present": False,
+                "embedded_v5_bundle_member_path": None,
+                "embedded_v5_bundle_name": None,
+                "embedded_v5_bundle_sha256": None,
+                "embedded_v5_bundle_size_bytes": 0,
+                "embedded_v5_bundle_matches_selected": False,
+                "embedded_v5_bundle_validation_status": "not_attached",
+                "embedded_v5_bundle_reason": "selected_v5_bundle_path_missing",
+            }
+        )
+        return
+
+    selected_path = Path(selected_path_raw)
+    bundle_name = selected_path.name
+    if not _is_expected_v5_followup_bundle_name(bundle_name):
+        raise RuntimeError(f"selected_v5_bundle_attachment_invalid_name:{bundle_name}")
+    if not selected_path.is_file():
+        raise RuntimeError(f"selected_v5_bundle_attachment_missing:{selected_path}")
+
+    validation = validate_v5_bundle(selected_path, BundleLimits())
+    if validation.rejected or not validation.sha256:
+        reason = ";".join(validation.reasons) or "missing_sha256"
+        raise RuntimeError(f"selected_v5_bundle_attachment_invalid:{reason}")
+
+    actual_sha = validation.sha256.lower()
+    selected_sha = str(v5_context.get("selected_v5_bundle_sha256") or "").strip().lower()
+    manifest_sha = str(
+        v5_context.get("selected_v5_bundle_manifest_bundle_sha256") or ""
+    ).strip().lower()
+    if selected_sha and actual_sha != selected_sha:
+        raise RuntimeError(
+            "selected_v5_bundle_attachment_sha_mismatch:"
+            f"selected={selected_sha};actual={actual_sha}"
+        )
+    if manifest_sha and actual_sha != manifest_sha:
+        raise RuntimeError(
+            "selected_v5_bundle_attachment_manifest_sha_mismatch:"
+            f"manifest={manifest_sha};actual={actual_sha}"
+        )
+
+    redacted_files_dir = _selected_v5_redacted_files_dir(
+        v5_context,
+        selected_path=selected_path,
+        selected_sha256=validation.sha256,
+    )
+    redacted_source = "redacted_archive"
+    redacted_source_dir = str(redacted_files_dir) if redacted_files_dir is not None else None
+    if redacted_files_dir is None:
+        payload, redacted_source = _transient_redacted_v5_bundle_bytes(selected_path)
+    else:
+        secret_reasons = _v5_redacted_files_secret_reasons(redacted_files_dir)
+        if secret_reasons:
+            raise ValueError(
+                "selected redacted V5 bundle contains possible secrets: "
+                + "; ".join(secret_reasons)
+            )
+        payload = _tar_gz_bytes_from_directory(redacted_files_dir)
+
+    embedded_name = _redacted_v5_bundle_name(bundle_name)
+    member_path = f"{EMBEDDED_V5_BUNDLE_DIR}/{embedded_name}"
+    embedded_sha = hashlib.sha256(payload).hexdigest()
+    metadata = {
+        "schema_version": "quant_lab_embedded_v5_bundle.v1",
+        "present": True,
+        "member_path": member_path,
+        "bundle_name": embedded_name,
+        "original_bundle_name": bundle_name,
+        "source_path": str(selected_path),
+        "source_sha256": validation.sha256,
+        "sha256": embedded_sha,
+        "redacted": True,
+        "redacted_source": redacted_source,
+        "redacted_source_dir": redacted_source_dir,
+        "size_bytes": len(payload),
+        "selected_v5_bundle_sha256": v5_context.get("selected_v5_bundle_sha256"),
+        "selected_v5_bundle_manifest_bundle_sha256": v5_context.get(
+            "selected_v5_bundle_manifest_bundle_sha256"
+        ),
+        "selected_v5_bundle_built_at": v5_context.get("selected_v5_bundle_built_at"),
+        "selected_v5_bundle_ingested_at": v5_context.get("selected_v5_bundle_ingested_at"),
+        "selected_v5_bundle_manifest_match": bool(
+            v5_context.get("selected_v5_bundle_manifest_match")
+        ),
+        "validation_status": "valid",
+        "validation_file_count": validation.file_count,
+        "validation_total_uncompressed_size_bytes": validation.total_uncompressed_size_bytes,
+        "validation_detected_files": validation.detected_files,
+        "matches_selected": not selected_sha or actual_sha == selected_sha,
+        "matches_manifest": not manifest_sha or actual_sha == manifest_sha,
+    }
+    members[member_path] = payload
+    members[EMBEDDED_V5_BUNDLE_MANIFEST] = _json_text(metadata)
+    v5_context.update(
+        {
+            "embedded_v5_bundle_present": True,
+            "embedded_v5_bundle_member_path": member_path,
+            "embedded_v5_bundle_manifest_path": EMBEDDED_V5_BUNDLE_MANIFEST,
+            "embedded_v5_bundle_name": embedded_name,
+            "embedded_v5_bundle_original_name": bundle_name,
+            "embedded_v5_bundle_sha256": embedded_sha,
+            "embedded_v5_bundle_source_sha256": validation.sha256,
+            "embedded_v5_bundle_redacted": True,
+            "embedded_v5_bundle_redacted_source": redacted_source,
+            "embedded_v5_bundle_redacted_source_dir": redacted_source_dir,
+            "embedded_v5_bundle_size_bytes": metadata["size_bytes"],
+            "embedded_v5_bundle_matches_selected": metadata["matches_selected"],
+            "embedded_v5_bundle_matches_manifest": metadata["matches_manifest"],
+            "embedded_v5_bundle_validation_status": "valid",
+            "embedded_v5_bundle_file_count": validation.file_count,
+            "embedded_v5_bundle_detected_files": validation.detected_files,
+            "embedded_v5_bundle_reason": "attached_selected_v5_bundle",
+        }
+    )
+
+
+def _is_expected_v5_followup_bundle_name(name: str) -> bool:
+    return name.startswith(V5_FOLLOWUP_BUNDLE_PREFIX) and (
+        name.endswith(".tar.gz") or name.endswith(".tgz")
+    )
+
+
+def _selected_v5_redacted_files_dir(
+    v5_context: dict[str, Any],
+    *,
+    selected_path: Path,
+    selected_sha256: str,
+) -> Path | None:
+    redacted_archive_root = str(v5_context.get("redacted_archive_dir") or "").strip()
+    if not redacted_archive_root:
+        return None
+    bundle_ts = (
+        _parse_v5_context_ts(v5_context.get("selected_v5_bundle_built_at"))
+        or _parse_v5_context_ts(v5_context.get("selected_v5_bundle_manifest_bundle_ts"))
+        or _bundle_ts_for_path(selected_path)
+    )
+    if bundle_ts is None:
+        return None
+    candidate = (
+        Path(redacted_archive_root)
+        / bundle_ts.date().isoformat()
+        / selected_sha256
+        / "redacted_files"
+    )
+    return candidate if candidate.is_dir() else None
+
+
+def _redacted_v5_bundle_name(bundle_name: str) -> str:
+    if bundle_name.endswith(".tar.gz"):
+        return bundle_name.removesuffix(".tar.gz") + ".redacted.tar.gz"
+    if bundle_name.endswith(".tgz"):
+        return bundle_name.removesuffix(".tgz") + ".redacted.tgz"
+    return bundle_name + ".redacted.tar.gz"
+
+
+def _v5_redacted_files_secret_reasons(path: Path) -> list[str]:
+    reasons: list[str] = []
+    for member in sorted(item for item in path.rglob("*") if item.is_file()):
+        relative = member.relative_to(path).as_posix()
+        if not _is_v5_bundle_text_member(relative):
+            continue
+        try:
+            size = member.stat().st_size
+        except OSError as exc:
+            reasons.append(f"{relative} stat failed: {exc}")
+            continue
+        if size > V5_BUNDLE_SECRET_SCAN_MAX_MEMBER_BYTES:
+            reasons.append(f"{relative} exceeds embedded secret scan limit")
+            continue
+        try:
+            text = member.read_text(encoding="utf-8")
+        except UnicodeDecodeError:
+            continue
+        except OSError as exc:
+            reasons.append(f"{relative} read failed: {exc}")
+            continue
+        high, medium = _secret_severity_counts(text)
+        if high or medium:
+            reasons.append(f"{relative}: {high} high, {medium} medium")
+    return reasons
+
+
+def _transient_redacted_v5_bundle_bytes(path: Path) -> tuple[bytes, str]:
+    limits = BundleLimits()
+    with tempfile.TemporaryDirectory(prefix="quant_lab_embed_v5_") as temp_name:
+        temp_root = Path(temp_name)
+        extracted_dir = temp_root / "extracted"
+        redacted_dir = temp_root / "redacted"
+        safe_extract_v5_bundle(path, extracted_dir, limits)
+        redact_extracted_bundle(extracted_dir, redacted_dir)
+        secret_reasons = _v5_redacted_files_secret_reasons(redacted_dir)
+        if secret_reasons:
+            raise ValueError(
+                "transient redacted V5 bundle contains possible secrets: "
+                + "; ".join(secret_reasons)
+            )
+        return _tar_gz_bytes_from_directory(redacted_dir), "transient_redaction"
+
+
+def _is_v5_bundle_text_member(name: str) -> bool:
+    return PurePosixPath(name).suffix.lower() in V5_BUNDLE_SECRET_SCAN_TEXT_SUFFIXES
+
+
+def _tar_gz_bytes_from_directory(source_dir: Path) -> bytes:
+    buffer = io.BytesIO()
+    with tarfile.open(fileobj=buffer, mode="w:gz") as archive:
+        for path in sorted(item for item in source_dir.rglob("*") if item.is_file()):
+            arcname = path.relative_to(source_dir).as_posix()
+            info = archive.gettarinfo(str(path), arcname=arcname)
+            info.uid = 0
+            info.gid = 0
+            info.uname = ""
+            info.gname = ""
+            with path.open("rb") as handle:
+                archive.addfile(info, handle)
+    return buffer.getvalue()
+
+
 def _manifest_payload(
     *,
     day: date,
@@ -6518,6 +6783,41 @@ def _manifest_payload(
             "selected_v5_bundle_event_counts",
             {},
         ),
+        "embedded_v5_bundle_present": bool(
+            v5_context.get("embedded_v5_bundle_present")
+        ),
+        "embedded_v5_bundle_member_path": v5_context.get(
+            "embedded_v5_bundle_member_path"
+        ),
+        "embedded_v5_bundle_manifest_path": v5_context.get(
+            "embedded_v5_bundle_manifest_path"
+        ),
+        "embedded_v5_bundle_name": v5_context.get("embedded_v5_bundle_name"),
+        "embedded_v5_bundle_original_name": v5_context.get(
+            "embedded_v5_bundle_original_name"
+        ),
+        "embedded_v5_bundle_sha256": v5_context.get("embedded_v5_bundle_sha256"),
+        "embedded_v5_bundle_source_sha256": v5_context.get(
+            "embedded_v5_bundle_source_sha256"
+        ),
+        "embedded_v5_bundle_redacted": bool(v5_context.get("embedded_v5_bundle_redacted")),
+        "embedded_v5_bundle_redacted_source": v5_context.get(
+            "embedded_v5_bundle_redacted_source"
+        ),
+        "embedded_v5_bundle_size_bytes": v5_context.get(
+            "embedded_v5_bundle_size_bytes",
+            0,
+        ),
+        "embedded_v5_bundle_matches_selected": bool(
+            v5_context.get("embedded_v5_bundle_matches_selected")
+        ),
+        "embedded_v5_bundle_matches_manifest": bool(
+            v5_context.get("embedded_v5_bundle_matches_manifest")
+        ),
+        "embedded_v5_bundle_validation_status": v5_context.get(
+            "embedded_v5_bundle_validation_status"
+        ),
+        "embedded_v5_bundle_reason": v5_context.get("embedded_v5_bundle_reason"),
         "v5_export_consistency": {
             "authoritative_snapshot": authoritative_snapshot,
             "stale_v5_bundle": stale_v5_bundle,
@@ -6561,6 +6861,28 @@ def _manifest_payload(
             "possible_historical_gap": bool(v5_context.get("possible_historical_gap")),
             "max_scan_bundles": v5_context.get("max_scan_bundles"),
             "max_pending_bundles": v5_context.get("max_pending_bundles"),
+            "embedded_v5_bundle_present": bool(
+                v5_context.get("embedded_v5_bundle_present")
+            ),
+            "embedded_v5_bundle_member_path": v5_context.get(
+                "embedded_v5_bundle_member_path"
+            ),
+            "embedded_v5_bundle_sha256": v5_context.get("embedded_v5_bundle_sha256"),
+            "embedded_v5_bundle_source_sha256": v5_context.get(
+                "embedded_v5_bundle_source_sha256"
+            ),
+            "embedded_v5_bundle_redacted": bool(
+                v5_context.get("embedded_v5_bundle_redacted")
+            ),
+            "embedded_v5_bundle_redacted_source": v5_context.get(
+                "embedded_v5_bundle_redacted_source"
+            ),
+            "embedded_v5_bundle_matches_selected": bool(
+                v5_context.get("embedded_v5_bundle_matches_selected")
+            ),
+            "embedded_v5_bundle_validation_status": v5_context.get(
+                "embedded_v5_bundle_validation_status"
+            ),
         },
         "scanned_bundle_count": v5_context.get("scanned_bundle_count", 0),
         "audit_bundle_count": v5_context.get("audit_bundle_count", 0),
@@ -6654,6 +6976,8 @@ def _refresh_v5_before_export(
         "skipped_bundle_count": 0,
         "latest_v5_bundle_seen_at_export": None,
         "local_inbox_dir": None,
+        "restricted_archive_dir": None,
+        "redacted_archive_dir": None,
         "selected_v5_bundle_path": None,
         "selected_v5_bundle_sha256": None,
         "selected_v5_bundle_built_at": None,
@@ -6695,6 +7019,8 @@ def _refresh_v5_before_export(
 
     inbox_dir = Path(cfg["local_inbox_dir"])
     context["local_inbox_dir"] = str(inbox_dir)
+    context["restricted_archive_dir"] = str(Path(cfg["restricted_archive_dir"]))
+    context["redacted_archive_dir"] = str(Path(cfg["redacted_archive_dir"]))
     latest_seen_path = _latest_v5_bundle_path_in_inbox(inbox_dir)
     latest_seen = _bundle_ts_for_path(latest_seen_path) if latest_seen_path is not None else None
     context["latest_v5_bundle_seen_at_export"] = _iso_or_none(latest_seen)
@@ -6809,6 +7135,8 @@ def _observe_v5_before_export(
         "skipped_bundle_count": 0,
         "latest_v5_bundle_seen_at_export": None,
         "local_inbox_dir": None,
+        "restricted_archive_dir": None,
+        "redacted_archive_dir": None,
         "selected_v5_bundle_path": None,
         "selected_v5_bundle_sha256": None,
         "selected_v5_bundle_built_at": None,
@@ -6848,6 +7176,8 @@ def _observe_v5_before_export(
         return context
     inbox_dir = Path(cfg["local_inbox_dir"])
     context["local_inbox_dir"] = str(inbox_dir)
+    context["restricted_archive_dir"] = str(Path(cfg["restricted_archive_dir"]))
+    context["redacted_archive_dir"] = str(Path(cfg["redacted_archive_dir"]))
     latest_seen_path = _latest_v5_bundle_path_in_inbox(inbox_dir)
     latest_seen = _bundle_ts_for_path(latest_seen_path) if latest_seen_path is not None else None
     context["latest_v5_bundle_seen_at_export"] = _iso_or_none(latest_seen)
@@ -7736,6 +8066,34 @@ def _provenance_payload(
         or v5_context.get("selected_v5_bundle_sha256"),
         "selected_v5_bundle_manifest_bundle_name": v5_context.get(
             "selected_v5_bundle_manifest_bundle_name"
+        ),
+        "embedded_v5_bundle_present": bool(
+            v5_context.get("embedded_v5_bundle_present")
+        ),
+        "embedded_v5_bundle_member_path": v5_context.get(
+            "embedded_v5_bundle_member_path"
+        ),
+        "embedded_v5_bundle_name": v5_context.get("embedded_v5_bundle_name"),
+        "embedded_v5_bundle_original_name": v5_context.get(
+            "embedded_v5_bundle_original_name"
+        ),
+        "embedded_v5_bundle_sha256": v5_context.get("embedded_v5_bundle_sha256"),
+        "embedded_v5_bundle_source_sha256": v5_context.get(
+            "embedded_v5_bundle_source_sha256"
+        ),
+        "embedded_v5_bundle_redacted": bool(v5_context.get("embedded_v5_bundle_redacted")),
+        "embedded_v5_bundle_redacted_source": v5_context.get(
+            "embedded_v5_bundle_redacted_source"
+        ),
+        "embedded_v5_bundle_size_bytes": v5_context.get(
+            "embedded_v5_bundle_size_bytes",
+            0,
+        ),
+        "embedded_v5_bundle_matches_selected": bool(
+            v5_context.get("embedded_v5_bundle_matches_selected")
+        ),
+        "embedded_v5_bundle_validation_status": v5_context.get(
+            "embedded_v5_bundle_validation_status"
         ),
         "datasets": [
             {

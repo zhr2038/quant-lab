@@ -30,6 +30,10 @@ def test_secret_scan_allows_already_redacted_values():
         "api_key: <REDACTED>\n"
         "api_secret: <REDACTED>\n"
         "passphrase: <REDACTED>\n"
+        "api_key: <REDACTED>}\n"
+        "api_secret: <REDACTED>}\n"
+        "passphrase: <REDACTED>}\n"
+        "allow_insecure_http_with_token: <REDACTED>\n"
     )
 
     assert scan.high_severity_count == 0

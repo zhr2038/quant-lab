@@ -1839,12 +1839,20 @@ def _exports_payload(exports: dict[str, Any]) -> dict[str, Any]:
     available_name = Path(str(available_pack)).name if available_pack else ""
     manual_state = str(exports.get("manual_state") or "").strip()
     v5_bundle_name, v5_bundle_ts = _latest_export_pack_v5_bundle_metadata(exports)
+    v5_attachment = _latest_export_pack_v5_attachment_metadata(exports)
     return {
         "latest_pack": exports.get("latest_pack"),
         "latest_pack_name": latest_name if _is_expert_pack_name(latest_name) else None,
         "latest_pack_source": exports.get("latest_pack_source"),
         "latest_pack_v5_bundle_name": v5_bundle_name,
         "latest_pack_v5_bundle_ts": _json_value(v5_bundle_ts),
+        "latest_pack_v5_bundle_sha256": v5_attachment.get("selected_sha"),
+        "latest_pack_embedded_v5_bundle_present": v5_attachment.get("embedded_present"),
+        "latest_pack_embedded_v5_bundle_member_path": v5_attachment.get("embedded_member"),
+        "latest_pack_embedded_v5_bundle_sha256": v5_attachment.get("embedded_sha"),
+        "latest_pack_embedded_v5_bundle_matches_selected": v5_attachment.get(
+            "embedded_matches_selected"
+        ),
         "latest_download_url": (
             f"/web-v2/expert-pack/download/{latest_name}"
             if _is_expert_pack_name(latest_name)
@@ -1903,6 +1911,66 @@ def _latest_export_pack_v5_bundle_metadata(
     if not bundle_name_text:
         return None, None
     return bundle_name_text, _parse_v5_bundle_name_ts(bundle_name_text)
+
+
+def _latest_export_pack_v5_attachment_metadata(exports: dict[str, Any]) -> dict[str, Any]:
+    row = _latest_export_pack_row(exports) or {}
+    manifest = exports.get("manifest_summary")
+    if not isinstance(manifest, dict):
+        manifest = {}
+    selected_sha = _first_present(
+        row.get("selected_v5_bundle_sha256"),
+        row.get("selected_v5_bundle_manifest_bundle_sha256"),
+        row.get("embedded_v5_bundle_source_sha256"),
+        manifest.get("selected_v5_bundle_sha256"),
+        manifest.get("selected_v5_bundle_manifest_bundle_sha256"),
+        manifest.get("embedded_v5_bundle_source_sha256"),
+    )
+    embedded_present = _first_present(
+        row.get("embedded_v5_bundle_present"),
+        manifest.get("embedded_v5_bundle_present"),
+    )
+    embedded_member = _first_present(
+        row.get("embedded_v5_bundle_member_path"),
+        manifest.get("embedded_v5_bundle_member_path"),
+    )
+    embedded_sha = _first_present(
+        row.get("embedded_v5_bundle_sha256"),
+        manifest.get("embedded_v5_bundle_sha256"),
+    )
+    embedded_matches = _first_present(
+        row.get("embedded_v5_bundle_matches_selected"),
+        manifest.get("embedded_v5_bundle_matches_selected"),
+    )
+    return {
+        "selected_sha": str(selected_sha).strip() if selected_sha not in (None, "") else None,
+        "embedded_present": _bool_or_none(embedded_present),
+        "embedded_member": (
+            str(embedded_member).strip() if embedded_member not in (None, "") else None
+        ),
+        "embedded_sha": str(embedded_sha).strip() if embedded_sha not in (None, "") else None,
+        "embedded_matches_selected": _bool_or_none(embedded_matches),
+    }
+
+
+def _first_present(*values: Any) -> Any:
+    for value in values:
+        if value not in (None, ""):
+            return value
+    return None
+
+
+def _bool_or_none(value: Any) -> bool | None:
+    if value in (None, ""):
+        return None
+    if isinstance(value, bool):
+        return value
+    text = str(value).strip().lower()
+    if text in {"1", "true", "yes", "y", "on", "pass", "passed"}:
+        return True
+    if text in {"0", "false", "no", "n", "off", "fail", "failed"}:
+        return False
+    return bool(value)
 
 
 def _latest_export_pack_row(exports: dict[str, Any]) -> dict[str, Any] | None:

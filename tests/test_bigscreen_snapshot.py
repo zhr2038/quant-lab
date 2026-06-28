@@ -1348,6 +1348,14 @@ def test_bigscreen_snapshot_uses_latest_current_date_pack_over_stale_manual_stat
                         "selected_v5_bundle_manifest_bundle_name": (
                             "v5_live_followup_bundle_20260619T070000Z.tar.gz"
                         ),
+                        "selected_v5_bundle_sha256": "selected-sha",
+                        "embedded_v5_bundle_present": True,
+                        "embedded_v5_bundle_member_path": (
+                            "v5/followup_bundle/"
+                            "v5_live_followup_bundle_20260619T070000Z.redacted.tar.gz"
+                        ),
+                        "embedded_v5_bundle_sha256": "embedded-sha",
+                        "embedded_v5_bundle_matches_selected": True,
                         "size_bytes": 456,
                         "modified_at": "2026-06-19T07:00:00Z",
                     },
@@ -1385,6 +1393,14 @@ def test_bigscreen_snapshot_uses_latest_current_date_pack_over_stale_manual_stat
         == "v5_live_followup_bundle_20260619T070000Z.tar.gz"
     )
     assert payload["latest_pack_v5_bundle_ts"] == "2026-06-19T07:00:00Z"
+    assert payload["latest_pack_v5_bundle_sha256"] == "selected-sha"
+    assert payload["latest_pack_embedded_v5_bundle_present"] is True
+    assert (
+        payload["latest_pack_embedded_v5_bundle_member_path"]
+        == "v5/followup_bundle/v5_live_followup_bundle_20260619T070000Z.redacted.tar.gz"
+    )
+    assert payload["latest_pack_embedded_v5_bundle_sha256"] == "embedded-sha"
+    assert payload["latest_pack_embedded_v5_bundle_matches_selected"] is True
     assert payload["latest_download_url"] == f"/web-v2/expert-pack/download/{new_pack.name}"
 
 

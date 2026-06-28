@@ -265,7 +265,7 @@ def test_scheduled_compaction_covers_hot_ws_datasets():
     assert "COMPACT_HOT_WS_PARTITION_REPAIR" in script
     assert "SKIP_COMPACT_RAW_OKX_WS" in script
     assert "COMPACT_RAW_OKX_WS=1" in unit
-    assert "COMPACT_HOT_WS_PARTITION_REPAIR=0" in unit
+    assert "COMPACT_HOT_WS_PARTITION_REPAIR=1" in unit
     assert "COMPACT_DATASET_TIMEOUT_SECONDS=300" in unit
     assert "COMPACT_RUN_BUDGET_SECONDS=1800" in unit
     assert "COMPACT_DIRECT_MAX_SOURCE_FILES=64" in unit

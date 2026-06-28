@@ -417,6 +417,9 @@ def test_web_export_request_worker_is_scheduled_outside_dashboard_cgroup():
         "ExecStartPre=/usr/bin/systemctl start quant-lab-v5-telemetry-sync.service"
         in service
     )
+    assert "flock -E 75 -w 600 /var/lock/quant-lab-heavy.lock" in service
+    assert "flock -E 75 -w 600 /var/lock/quant-lab-v5-telemetry-sync.lock" in service
+    assert "SKIP_WEB_EXPORT_LOCK_BUSY" in service
     assert "QUANT_LAB_EXPORT_V5_MAX_PENDING_BUNDLES=12" in service
     assert "QUANT_LAB_EXPORT_V5_MAX_SCAN_BUNDLES=1000" in service
     assert "QUANT_LAB_API_METRICS_PRODUCTION_CLIENT_HOSTS=43.156.105.125" in service

@@ -57,6 +57,7 @@ from quant_lab.costs.probe import (
     cost_probe_private_fill_keys,
     private_fill_matches_cost_probe,
 )
+from quant_lab.data.file_index import build_lake_file_index
 from quant_lab.data.lake import read_parquet_dataset, write_parquet_dataset
 from quant_lab.factors.composite_factory import (
     COMPOSITE_FACTOR_CANDIDATE_FIELDS,
@@ -5623,6 +5624,13 @@ def _dataset_members(
         ),
         next_action="verify market_bar symbol/timestamp/close fields and rollups",
     )
+    lake_file_index_refresh = _refresh_lake_file_index_for_export(root)
+    pre_export_v5["lake_file_index_refresh"] = lake_file_index_refresh
+    if not lake_file_index_refresh.get("ok"):
+        pre_export_v5.setdefault("warnings", []).append(
+            "lake_file_index_refresh_failed:"
+            + str(lake_file_index_refresh.get("error") or "unknown")
+        )
     lake_file_count = _lake_file_index_count(root)
     lake_file_growth_24h_count = _lake_file_index_growth_24h_count(root)
     system_acceptance_dashboard = build_system_acceptance_dashboard(
@@ -6944,6 +6952,7 @@ def _manifest_payload(
         ),
         "embedded_v5_bundle_reason": v5_context.get("embedded_v5_bundle_reason"),
         "github_ci_status": v5_context.get("github_ci_status"),
+        "lake_file_index_refresh": v5_context.get("lake_file_index_refresh"),
         "v5_export_consistency": {
             "authoritative_snapshot": authoritative_snapshot,
             "stale_v5_bundle": stale_v5_bundle,
@@ -7010,6 +7019,7 @@ def _manifest_payload(
                 "embedded_v5_bundle_validation_status"
             ),
             "github_ci_status": v5_context.get("github_ci_status"),
+            "lake_file_index_refresh": v5_context.get("lake_file_index_refresh"),
         },
         "scanned_bundle_count": v5_context.get("scanned_bundle_count", 0),
         "audit_bundle_count": v5_context.get("audit_bundle_count", 0),
@@ -8223,6 +8233,7 @@ def _provenance_payload(
             "embedded_v5_bundle_validation_status"
         ),
         "github_ci_status": v5_context.get("github_ci_status"),
+        "lake_file_index_refresh": v5_context.get("lake_file_index_refresh"),
         "datasets": [
             {
                 "name": name,
@@ -10189,6 +10200,36 @@ def _lake_file_index_growth_24h_count(root: Path) -> int | None:
         )
     except Exception:
         return None
+
+
+def _refresh_lake_file_index_for_export(root: Path) -> dict[str, Any]:
+    dataset_paths = sorted(
+        {
+            str(path).replace("\\", "/")
+            for path in readers.DATASET_PATHS.values()
+            if str(path).strip()
+        }
+    )
+    started_at = datetime.now(UTC)
+    try:
+        frame = build_lake_file_index(root, dataset_paths)
+    except Exception as exc:
+        return {
+            "ok": False,
+            "dataset_count": len(dataset_paths),
+            "indexed_rows": 0,
+            "started_at": started_at.isoformat(),
+            "finished_at": datetime.now(UTC).isoformat(),
+            "error": _safe_warning_text(f"{type(exc).__name__}:{exc}"),
+        }
+    return {
+        "ok": True,
+        "dataset_count": len(dataset_paths),
+        "indexed_rows": frame.height,
+        "started_at": started_at.isoformat(),
+        "finished_at": datetime.now(UTC).isoformat(),
+        "error": "",
+    }
 
 
 def _github_ci_status_for_export(v5_context: Mapping[str, Any]) -> pl.DataFrame:

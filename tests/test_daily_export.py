@@ -251,6 +251,7 @@ def test_export_daily_pack_writes_required_members(tmp_path):
         assert manifest["python_version"]
         assert manifest["export_command"] == "qlab export-daily"
         assert manifest["contract_version"] == V5_QUANT_LAB_CONTRACT_VERSION
+        assert manifest["lake_file_index_refresh"]["ok"] is True
         assert provenance["contract_version"] == V5_QUANT_LAB_CONTRACT_VERSION
         assert provenance["display_timezone"] == "Asia/Shanghai"
         assert provenance["generated_at_beijing"].endswith("+08:00")

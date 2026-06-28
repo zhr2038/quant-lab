@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import subprocess
 import sys
 import zipfile
@@ -688,17 +689,28 @@ def _latest_pack_for_export_date(exports_root: Path, export_date: str) -> Path |
         return None
     packs = [
         path
-        for path in exports_root.glob(f"quant_lab_expert_pack_{export_date}_*.zip")
+        for path in exports_root.glob("quant_lab_expert_pack_*.zip")
         if path.is_file()
+        and _pack_name_matches_export_date(path.name, export_date)
     ]
-    legacy_path = exports_root / f"quant_lab_expert_pack_{export_date}.zip"
-    if legacy_path.is_file():
-        packs.append(legacy_path)
     if not packs:
         return None
     packs.sort(key=lambda path: path.stat().st_mtime_ns, reverse=True)
     authoritative = [path for path in packs if _expert_pack_authoritative_snapshot(path)]
     return authoritative[0] if authoritative else packs[0]
+
+
+def _pack_name_matches_export_date(file_name: str, export_date: str) -> bool:
+    if file_name == f"quant_lab_expert_pack_{export_date}.zip" or file_name.startswith(
+        f"quant_lab_expert_pack_{export_date}_"
+    ):
+        return True
+    target_day = str(export_date or "").replace("-", "")
+    match = re.match(
+        r"^quant_lab_expert_pack_\d{4}-\d{2}-\d{2}_(\d{8})T\d{6}",
+        str(file_name or ""),
+    )
+    return bool(target_day and match and match.group(1) == target_day)
 
 
 def _expert_pack_authoritative_snapshot(path: Path) -> bool:

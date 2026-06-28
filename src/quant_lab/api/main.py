@@ -9,6 +9,7 @@ import hmac
 import io
 import json
 import os
+import re
 import subprocess
 import time
 import zipfile
@@ -1445,9 +1446,16 @@ def _is_valid_export_pack_name(file_name: str) -> bool:
 
 
 def _pack_name_matches_export_date(file_name: str, export_date: str) -> bool:
-    return file_name == f"quant_lab_expert_pack_{export_date}.zip" or file_name.startswith(
+    if file_name == f"quant_lab_expert_pack_{export_date}.zip" or file_name.startswith(
         f"quant_lab_expert_pack_{export_date}_"
+    ):
+        return True
+    target_day = str(export_date or "").replace("-", "")
+    match = re.match(
+        r"^quant_lab_expert_pack_\d{4}-\d{2}-\d{2}_(\d{8})T\d{6}",
+        str(file_name or ""),
     )
+    return bool(target_day and match and match.group(1) == target_day)
 
 
 def _web_v2_export_download_url(file_name: str) -> str:

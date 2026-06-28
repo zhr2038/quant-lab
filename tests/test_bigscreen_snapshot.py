@@ -1137,6 +1137,68 @@ def test_web_v2_expert_pack_status_prefers_latest_requested_pack_over_stale_manu
     assert payload["packs"][0]["name"] == new_pack.name
 
 
+def test_web_v2_expert_pack_status_matches_generated_day_across_utc_boundary(
+    monkeypatch,
+    tmp_path,
+):
+    clear_bigscreen_cache()
+    lake = tmp_path / "lake"
+    exports = tmp_path / "exports"
+    exports.mkdir(parents=True)
+    old_pack = exports / "quant_lab_expert_pack_2026-06-29_20260629T020417240299+0800.zip"
+    new_pack = exports / "quant_lab_expert_pack_2026-06-28_20260629T043920405583+0800.zip"
+    for pack, bundle_name in (
+        (old_pack, "v5_live_followup_bundle_20260628T175351Z.tar.gz"),
+        (new_pack, "v5_live_followup_bundle_20260628T203500Z.tar.gz"),
+    ):
+        with zipfile.ZipFile(pack, "w") as archive:
+            archive.writestr(
+                "manifest.json",
+                json.dumps(
+                    {
+                        "authoritative_snapshot": True,
+                        "selected_v5_bundle_manifest_bundle_name": bundle_name,
+                        "selected_v5_bundle_sha256": f"sha-{pack.stem}",
+                        "embedded_v5_bundle_present": True,
+                        "embedded_v5_bundle_matches_selected": True,
+                    }
+                ),
+            )
+            archive.writestr("data_quality.json", json.dumps({"status": "OK"}))
+            archive.writestr("expert_questions.md", "下一步看什么？\n")
+    old_time = datetime(2026, 6, 28, 18, tzinfo=UTC).timestamp()
+    new_time = datetime(2026, 6, 28, 20, 39, tzinfo=UTC).timestamp()
+    os.utime(old_pack, (old_time, old_time))
+    os.utime(new_pack, (new_time, new_time))
+    (exports / ".quant_lab_web_export_2026-06-29.json").write_text(
+        json.dumps(
+            {
+                "state": "succeeded",
+                "zip_path": str(old_pack),
+                "finished_at": "2026-06-28T18:04:17+00:00",
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    monkeypatch.setenv("QUANT_LAB_LAKE_ROOT", str(lake))
+    monkeypatch.delenv("QUANT_LAB_API_TOKEN", raising=False)
+    response = TestClient(create_app()).get(
+        "/web-v2/expert-pack/status?export_date=2026-06-29"
+    )
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["manual_latest_pack_name"] == old_pack.name
+    assert payload["requested_date_pack_name"] == new_pack.name
+    assert payload["latest_pack_name"] == new_pack.name
+    assert payload["latest_pack_source"] == "requested_date_pack"
+    assert (
+        payload["latest_pack_v5_bundle_name"]
+        == "v5_live_followup_bundle_20260628T203500Z.tar.gz"
+    )
+
+
 def test_web_v2_expert_pack_status_hides_previous_pack_while_running(
     monkeypatch,
     tmp_path,
@@ -1402,6 +1464,67 @@ def test_bigscreen_snapshot_uses_latest_current_date_pack_over_stale_manual_stat
     assert payload["latest_pack_embedded_v5_bundle_sha256"] == "embedded-sha"
     assert payload["latest_pack_embedded_v5_bundle_matches_selected"] is True
     assert payload["latest_download_url"] == f"/web-v2/expert-pack/download/{new_pack.name}"
+
+
+def test_bigscreen_snapshot_matches_generated_day_across_utc_boundary(
+    tmp_path,
+    monkeypatch,
+):
+    clear_bigscreen_cache()
+    lake = tmp_path / "lake"
+    lake.mkdir()
+    exports = tmp_path / "exports"
+    exports.mkdir()
+    old_pack = exports / "quant_lab_expert_pack_2026-06-29_20260629T020417240299+0800.zip"
+    new_pack = exports / "quant_lab_expert_pack_2026-06-28_20260629T043920405583+0800.zip"
+    for pack, bundle_name in (
+        (old_pack, "v5_live_followup_bundle_20260628T175351Z.tar.gz"),
+        (new_pack, "v5_live_followup_bundle_20260628T203500Z.tar.gz"),
+    ):
+        with zipfile.ZipFile(pack, "w") as archive:
+            archive.writestr(
+                "manifest.json",
+                json.dumps(
+                    {
+                        "authoritative_snapshot": True,
+                        "selected_v5_bundle_manifest_bundle_name": bundle_name,
+                    }
+                ),
+            )
+            archive.writestr("data_quality.json", json.dumps({"status": "OK"}))
+            archive.writestr("expert_questions.md", "最新问题\n")
+    old_time = datetime(2026, 6, 28, 18, tzinfo=UTC).timestamp()
+    new_time = datetime(2026, 6, 28, 20, 39, tzinfo=UTC).timestamp()
+    os.utime(old_pack, (old_time, old_time))
+    os.utime(new_pack, (new_time, new_time))
+    (exports / ".quant_lab_web_export_2026-06-29.json").write_text(
+        json.dumps(
+            {
+                "state": "succeeded",
+                "zip_path": str(old_pack),
+                "finished_at": "2026-06-28T18:04:17+00:00",
+            }
+        ),
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(bigscreen_module, "beijing_today", lambda now=None: date(2026, 6, 29))
+
+    history = bigscreen_module.readers.expert_export_summary(exports)
+    summary = bigscreen_module._web_v2_export_summary_from_history(
+        lake,
+        history,
+        datetime(2026, 6, 28, 20, 55, tzinfo=UTC),
+    )
+    payload = _exports_payload(summary)
+
+    assert summary["manual_latest_pack_name"] == old_pack.name
+    assert Path(summary["latest_pack"]).name == new_pack.name
+    assert summary["latest_pack_source"] == "requested_date_pack"
+    assert payload["latest_pack_name"] == new_pack.name
+    assert (
+        payload["latest_pack_v5_bundle_name"]
+        == "v5_live_followup_bundle_20260628T203500Z.tar.gz"
+    )
 
 
 def test_bigscreen_action_warns_when_expert_pack_v5_bundle_lags_current_v5():

@@ -1314,6 +1314,9 @@ def test_bigscreen_snapshot_uses_latest_current_date_pack_over_stale_manual_stat
                     {
                         "path": str(new_pack),
                         "name": new_pack.name,
+                        "selected_v5_bundle_manifest_bundle_name": (
+                            "v5_live_followup_bundle_20260619T070000Z.tar.gz"
+                        ),
                         "size_bytes": 456,
                         "modified_at": "2026-06-19T07:00:00Z",
                     },
@@ -1346,7 +1349,77 @@ def test_bigscreen_snapshot_uses_latest_current_date_pack_over_stale_manual_stat
     assert Path(summary["latest_pack"]).name == new_pack.name
     assert summary["latest_pack_source"] == "requested_date_pack"
     assert payload["latest_pack_name"] == new_pack.name
+    assert (
+        payload["latest_pack_v5_bundle_name"]
+        == "v5_live_followup_bundle_20260619T070000Z.tar.gz"
+    )
+    assert payload["latest_pack_v5_bundle_ts"] == "2026-06-19T07:00:00Z"
     assert payload["latest_download_url"] == f"/web-v2/expert-pack/download/{new_pack.name}"
+
+
+def test_bigscreen_action_warns_when_expert_pack_v5_bundle_lags_current_v5():
+    pack_path = "/var/lib/quant-lab/exports/quant_lab_expert_pack_2026-06-28_120000.zip"
+    actions = bigscreen_module._build_actions(
+        overview={},
+        data_health={},
+        cost={},
+        v5={"latest": {"latest_bundle_ts": "2026-06-28T13:22:51Z"}},
+        web_events=[],
+        exports={
+            "latest_pack": pack_path,
+            "latest_pack_source": "requested_date_pack",
+            "packs": pl.DataFrame(
+                [
+                    {
+                        "path": pack_path,
+                        "name": Path(pack_path).name,
+                        "selected_v5_bundle_manifest_bundle_name": (
+                            "v5_live_followup_bundle_20260628T120533Z.tar.gz"
+                        ),
+                    }
+                ]
+            ),
+            "data_quality_summary": {"status": "OK", "warning_count": 0},
+        },
+    )
+
+    action = next(
+        item for item in actions if item["source"] == "expert_export_summary.v5_bundle_lag"
+    )
+    assert action["severity"] == "WARNING"
+    assert action["title"] == "专家包落后 V5 遥测"
+    assert "2026-06-28T13:22:51Z" in action["summary"]
+    assert action["drilldown"] == "/exports"
+
+
+def test_bigscreen_action_does_not_warn_for_current_expert_pack_v5_bundle():
+    pack_path = "/var/lib/quant-lab/exports/quant_lab_expert_pack_2026-06-28_120000.zip"
+    actions = bigscreen_module._build_actions(
+        overview={},
+        data_health={},
+        cost={},
+        v5={"latest": {"latest_bundle_ts": "2026-06-28T13:22:51Z"}},
+        web_events=[],
+        exports={
+            "latest_pack": pack_path,
+            "packs": pl.DataFrame(
+                [
+                    {
+                        "path": pack_path,
+                        "name": Path(pack_path).name,
+                        "selected_v5_bundle_manifest_bundle_name": (
+                            "v5_live_followup_bundle_20260628T131155Z.tar.gz"
+                        ),
+                    }
+                ]
+            ),
+            "data_quality_summary": {"status": "OK", "warning_count": 0},
+        },
+    )
+
+    assert not any(
+        item["source"] == "expert_export_summary.v5_bundle_lag" for item in actions
+    )
 
 
 def test_bigscreen_snapshot_promotes_export_data_quality_warning(tmp_path, monkeypatch):

@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import math
 import os
+import re
 import threading
 import time
 import zipfile
@@ -29,6 +30,8 @@ SNAPSHOT_CACHE_TTL_SECONDS = 35.0
 SNAPSHOT_CACHE_STALE_GRACE_SECONDS = 0.0
 MARKET_BAR_WARNING_DELAY_SECONDS = 2 * 60 * 60
 MARKET_BAR_CRITICAL_DELAY_SECONDS = 3 * 60 * 60
+EXPERT_PACK_V5_LAG_WARNING_SECONDS = 15 * 60
+V5_BUNDLE_NAME_RE = re.compile(r"v5_live_followup_bundle_(\d{8}T\d{6})Z\.tar\.gz")
 _SNAPSHOT_CACHE: dict[str, tuple[float, dict[str, Any]]] = {}
 _SNAPSHOT_CACHE_SOURCE_SIGNATURES: dict[str, tuple[Any, ...]] = {}
 _SNAPSHOT_CACHE_LOCK = threading.RLock()
@@ -1001,6 +1004,17 @@ def _parse_dt(value: Any) -> datetime | None:
         return None
 
 
+def _parse_v5_bundle_name_ts(value: Any) -> datetime | None:
+    text = str(value or "")
+    match = V5_BUNDLE_NAME_RE.search(text)
+    if not match:
+        return None
+    try:
+        return datetime.strptime(match.group(1), "%Y%m%dT%H%M%S").replace(tzinfo=UTC)
+    except ValueError:
+        return None
+
+
 def _market_bar_freshness_issue(
     data_health: dict[str, Any],
     now: datetime,
@@ -1824,10 +1838,13 @@ def _exports_payload(exports: dict[str, Any]) -> dict[str, Any]:
     available_pack = exports.get("available_pack")
     available_name = Path(str(available_pack)).name if available_pack else ""
     manual_state = str(exports.get("manual_state") or "").strip()
+    v5_bundle_name, v5_bundle_ts = _latest_export_pack_v5_bundle_metadata(exports)
     return {
         "latest_pack": exports.get("latest_pack"),
         "latest_pack_name": latest_name if _is_expert_pack_name(latest_name) else None,
         "latest_pack_source": exports.get("latest_pack_source"),
+        "latest_pack_v5_bundle_name": v5_bundle_name,
+        "latest_pack_v5_bundle_ts": _json_value(v5_bundle_ts),
         "latest_download_url": (
             f"/web-v2/expert-pack/download/{latest_name}"
             if _is_expert_pack_name(latest_name)
@@ -1860,6 +1877,45 @@ def _exports_payload(exports: dict[str, Any]) -> dict[str, Any]:
 
 def _is_expert_pack_name(value: str) -> bool:
     return value.startswith("quant_lab_expert_pack_") and value.endswith(".zip")
+
+
+def _latest_export_pack_v5_bundle_metadata(
+    exports: dict[str, Any],
+) -> tuple[str | None, datetime | None]:
+    row = _latest_export_pack_row(exports)
+    if row is None:
+        return None, None
+    bundle_name = (
+        row.get("selected_v5_bundle_manifest_bundle_name")
+        or row.get("selected_v5_bundle_name")
+        or row.get("v5_bundle_name")
+        or row.get("selected_v5_bundle")
+    )
+    if not bundle_name:
+        manifest = exports.get("manifest_summary")
+        if isinstance(manifest, dict):
+            bundle_name = (
+                manifest.get("selected_v5_bundle_manifest_bundle_name")
+                or manifest.get("selected_v5_bundle_name")
+                or manifest.get("selected_v5_bundle")
+            )
+    bundle_name_text = str(bundle_name or "").strip()
+    if not bundle_name_text:
+        return None, None
+    return bundle_name_text, _parse_v5_bundle_name_ts(bundle_name_text)
+
+
+def _latest_export_pack_row(exports: dict[str, Any]) -> dict[str, Any] | None:
+    rows = _frame_rows(exports.get("packs"), limit=24)
+    if not rows:
+        return None
+    latest_name = Path(str(exports.get("latest_pack") or "")).name
+    if latest_name:
+        for row in rows:
+            row_name = str(row.get("name") or Path(str(row.get("path") or "")).name)
+            if row_name == latest_name:
+                return row
+    return rows[0]
 
 
 def _quality_warning_count(data_quality: dict[str, Any]) -> int:
@@ -2005,6 +2061,22 @@ def _build_actions(
                 "/exports",
             )
         )
+    expert_lag = _expert_pack_v5_lag_issue(exports, v5)
+    if expert_lag is not None:
+        actions.append(
+            _action(
+                "WARNING",
+                "专家包落后 V5 遥测",
+                (
+                    f"专家包内嵌 {expert_lag['pack_bundle_name']}；"
+                    f"当前 V5 最新 {expert_lag['latest_v5_bundle_ts']}；"
+                    f"落后约 {expert_lag['lag_minutes']} 分钟。"
+                ),
+                "expert_export_summary.v5_bundle_lag",
+                "点击生成今日专家包，重新内嵌最新 V5 follow-up bundle 后再下载复验。",
+                "/exports",
+            )
+        )
     if not actions:
         actions.append(
             _action(
@@ -2034,6 +2106,28 @@ def _action(
         "source": source,
         "next_action": next_action,
         "drilldown": drilldown,
+    }
+
+
+def _expert_pack_v5_lag_issue(
+    exports: dict[str, Any],
+    v5: dict[str, Any],
+) -> dict[str, Any] | None:
+    if not exports.get("latest_pack"):
+        return None
+    pack_bundle_name, pack_bundle_ts = _latest_export_pack_v5_bundle_metadata(exports)
+    latest_v5_ts = _parse_dt(_latest_v5_bundle_ts({}, v5))
+    if pack_bundle_ts is None or latest_v5_ts is None:
+        return None
+    lag_seconds = int((latest_v5_ts - pack_bundle_ts).total_seconds())
+    if lag_seconds <= EXPERT_PACK_V5_LAG_WARNING_SECONDS:
+        return None
+    return {
+        "pack_bundle_name": pack_bundle_name or "not_observable",
+        "pack_bundle_ts": _json_value(pack_bundle_ts),
+        "latest_v5_bundle_ts": _json_value(latest_v5_ts),
+        "lag_seconds": lag_seconds,
+        "lag_minutes": max(1, round(lag_seconds / 60)),
     }
 
 

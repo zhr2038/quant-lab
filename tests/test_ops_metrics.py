@@ -181,6 +181,43 @@ def test_api_request_metrics_records_auth_context_and_split_latency(tmp_path, mo
     assert path_summary["auth_error_count"] == 1.0
 
 
+def test_api_request_metrics_summary_can_scope_to_production_client(tmp_path, monkeypatch):
+    lake = tmp_path / "lake"
+    monkeypatch.setenv("QUANT_LAB_API_METRICS_FLUSH_ROWS", "1")
+    monkeypatch.setenv("QUANT_LAB_API_METRICS_FLUSH_SECONDS", "3600")
+
+    record_api_request(
+        lake_root=lake,
+        method="GET",
+        path="/v1/strategy-opportunity-advisory/v5-compact",
+        status_code=401,
+        duration_seconds=0.2,
+        client_host="113.226.176.217",
+        client_id="v5.quant_lab_client",
+        auth_result="missing_bearer_token",
+    )
+    record_api_request(
+        lake_root=lake,
+        method="GET",
+        path="/v1/strategy-opportunity-advisory/v5-compact",
+        status_code=200,
+        duration_seconds=0.05,
+        client_host="43.156.105.125",
+        client_id="v5.quant_lab_client",
+        auth_result="token_ok",
+    )
+
+    summary = api_metrics_summary(
+        lake,
+        client_hosts=["43.156.105.125"],
+        client_ids=["v5.quant_lab_client"],
+    )
+
+    assert summary["request_count"] == 1
+    assert summary["auth_error_count"] == 0
+    assert summary["by_status_code"] == {"200": 1}
+
+
 def test_api_request_metrics_summary_unions_evolved_parquet_schema(tmp_path, monkeypatch):
     lake = tmp_path / "lake"
     monkeypatch.setenv("QUANT_LAB_API_METRICS_FLUSH_ROWS", "100")

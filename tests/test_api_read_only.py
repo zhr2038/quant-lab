@@ -148,6 +148,7 @@ def test_api_metrics_records_auth_result_and_client_context(monkeypatch, tmp_pat
     assert row["status_code"] == 401
     assert row["auth_result"] == "missing_bearer_token"
     assert row["client_id"] == "v5-reader"
+    assert row["client_host"] in {"testclient", "127.0.0.1", "__unknown__"}
     assert row["user_agent"] == "pytest-agent"
 
 

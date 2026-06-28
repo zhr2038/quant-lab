@@ -555,6 +555,7 @@ REQUIRED_MEMBERS = [
     "reports/candidate_paper_ready.csv",
     "reports/historical_label_threshold_ready.csv",
     "reports/paper_strategy_proposals.csv",
+    "reports/paper_strategy_proposal_ack.csv",
     "reports/strategy_opportunity_advisory.csv",
     "reports/api_latency_summary.csv",
     "reports/api_latency_summary.md",
@@ -906,6 +907,7 @@ CSV_SCHEMAS: dict[str, list[str]] = {
         "status_code",
         "auth_result",
         "client_id",
+        "client_host",
         "user_agent",
         "error_count",
         "latest_error_ts",
@@ -1432,6 +1434,18 @@ CSV_SCHEMAS: dict[str, list[str]] = {
         "required_slippage_coverage",
         "as_of_date",
         "created_at",
+    ],
+    "reports/paper_strategy_proposal_ack.csv": [
+        "proposal_id",
+        "paper_tracker_id",
+        "accepted",
+        "recommended_mode",
+        "symbol",
+        "strategy_candidate",
+        "suggested_horizon",
+        "proposal_source",
+        "reject_reason",
+        "live_order_effect",
     ],
     "reports/strategy_opportunity_advisory.csv": [
         "as_of_ts",
@@ -4242,6 +4256,12 @@ def export_daily_pack(
     members.update(_chart_members(member_frames))
     members.update(enforce_readiness_members(root))
     _attach_selected_v5_bundle(members, pre_export_v5)
+    _promote_embedded_v5_summary_report(
+        members,
+        pre_export_v5,
+        summary_member="summaries/paper_strategy_proposal_ack.csv",
+        dest_member="reports/paper_strategy_proposal_ack.csv",
+    )
     members["README.md"] = _readme(day, root, profile)
     members["data_quality.json"] = _json_text(data_quality)
     members["executive_summary.md"] = _executive_summary(day, snapshot, data_quality)
@@ -6596,6 +6616,72 @@ def _attach_selected_v5_bundle(
             "embedded_v5_bundle_reason": "attached_selected_v5_bundle",
         }
     )
+
+
+def _promote_embedded_v5_summary_report(
+    members: dict[str, _MemberPayload],
+    v5_context: dict[str, Any],
+    *,
+    summary_member: str,
+    dest_member: str,
+) -> None:
+    schema = CSV_SCHEMAS.get(dest_member)
+    if not schema:
+        return
+    empty = _csv_member(dest_member, _empty_csv_schema_frame(dest_member))
+    embedded_member = str(v5_context.get("embedded_v5_bundle_member_path") or "").strip()
+    payload = members.get(embedded_member)
+    if not isinstance(payload, bytes):
+        members[dest_member] = empty
+        v5_context.setdefault("warnings", []).append(
+            f"embedded_v5_summary_missing:{summary_member}:embedded_bundle_not_available"
+        )
+        return
+    candidates = {
+        summary_member.strip("/"),
+        f"reports/{summary_member.strip('/')}",
+        Path(summary_member).name,
+    }
+    try:
+        with tarfile.open(fileobj=io.BytesIO(payload), mode="r:gz") as archive:
+            selected = None
+            for member in archive.getmembers():
+                normalized = member.name.replace("\\", "/").lstrip("./")
+                if member.isfile() and normalized in candidates:
+                    selected = member
+                    break
+            if selected is None:
+                members[dest_member] = empty
+                v5_context.setdefault("warnings", []).append(
+                    f"embedded_v5_summary_missing:{summary_member}:member_not_found"
+                )
+                return
+            handle = archive.extractfile(selected)
+            if handle is None:
+                members[dest_member] = empty
+                v5_context.setdefault("warnings", []).append(
+                    f"embedded_v5_summary_missing:{summary_member}:member_unreadable"
+                )
+                return
+            text = handle.read().decode("utf-8-sig", "replace")
+    except Exception as exc:
+        members[dest_member] = empty
+        v5_context.setdefault("warnings", []).append(
+            f"embedded_v5_summary_missing:{summary_member}:{type(exc).__name__}"
+        )
+        return
+    try:
+        rows = list(csv.DictReader(io.StringIO(text)))
+    except Exception:
+        rows = []
+    if not rows:
+        members[dest_member] = empty
+        return
+    frame = pl.DataFrame(rows, infer_schema_length=None)
+    for column in schema:
+        if column not in frame.columns:
+            frame = frame.with_columns(pl.lit("").alias(column))
+    members[dest_member] = _csv_member(dest_member, frame.select(schema))
 
 
 def _is_expected_v5_followup_bundle_name(name: str) -> bool:
@@ -10076,81 +10162,17 @@ def _lake_file_index_growth_24h_count(root: Path) -> int | None:
 
 def _api_latency_summary_for_export(root: Path) -> pl.DataFrame:
     _flush_api_metrics_service_before_export()
-    summary = api_metrics_summary(root, since_minutes=_api_metrics_export_window_minutes())
-    latency = summary.get("latency_ms") if isinstance(summary.get("latency_ms"), dict) else {}
+    window_minutes = _api_metrics_export_window_minutes()
+    summary = api_metrics_summary(root, since_minutes=window_minutes)
+    rows: list[dict[str, Any]] = [_api_latency_summary_row("__all__", summary)]
+    production_summary = _production_v5_api_metrics_summary(root, since_minutes=window_minutes)
+    if production_summary is not None:
+        rows.append(_api_latency_summary_row("__production_v5__", production_summary))
     by_path = (
         summary.get("latency_by_path_ms")
         if isinstance(summary.get("latency_by_path_ms"), dict)
         else {}
     )
-    overall_error_count = sum(
-        _api_latency_error_count(metrics)
-        for metrics in by_path.values()
-        if isinstance(metrics, dict)
-    )
-    if overall_error_count <= 0:
-        overall_error_count = sum(
-            int(value or 0)
-            for value in (
-                summary.get("by_error_type")
-                if isinstance(summary.get("by_error_type"), dict)
-                else {}
-            ).values()
-        )
-    rows: list[dict[str, Any]] = [
-        {
-            "endpoint": "__all__",
-            "count": int(summary.get("request_count") or 0),
-            "p50_ms": _float_or_blank(latency.get("p50")),
-            "p90_ms": _float_or_blank(latency.get("p90")),
-            "p95_ms": _float_or_blank(latency.get("p95")),
-            "success_p95_ms": _float_or_blank(latency.get("success_p95")),
-            "error_p95_ms": _float_or_blank(latency.get("error_p95")),
-            "p99_ms": _float_or_blank(latency.get("p99")),
-            "max_ms": _float_or_blank(latency.get("max")),
-            "cache_hit_rate": _safe_rate(
-                summary.get("cache_hit_count"),
-                summary.get("request_count"),
-            ),
-            "avg_rows_returned": _safe_avg(
-                summary.get("rows_returned_total"),
-                summary.get("request_count"),
-            ),
-            "avg_response_bytes": _safe_avg(
-                summary.get("response_bytes_total"),
-                summary.get("request_count"),
-            ),
-            "avg_lake_scan_ms": _safe_avg(
-                summary.get("lake_scan_ms_total"),
-                summary.get("request_count"),
-            ),
-            "avg_serialize_ms": _safe_avg(
-                summary.get("serialize_ms_total"),
-                summary.get("request_count"),
-            ),
-            "avg_source_signature_ms": _safe_avg(
-                summary.get("source_signature_ms_total"),
-                summary.get("request_count"),
-            ),
-            "response_cache_hit_rate": _safe_rate(
-                summary.get("response_cache_hit_count"),
-                summary.get("request_count"),
-            ),
-            "dependency_meta_missing_count": int(
-                summary.get("dependency_meta_missing_count") or 0
-            ),
-            "dependency_meta_missing_rate": _safe_rate(
-                summary.get("dependency_meta_missing_count"),
-                summary.get("request_count"),
-            ),
-            "error_count": overall_error_count,
-            "auth_error_count": int(summary.get("auth_error_count") or 0),
-            "auth_error_rate": _safe_rate(
-                summary.get("auth_error_count"),
-                summary.get("request_count"),
-            ),
-        }
-    ]
     for endpoint, metrics in sorted(by_path.items()):
         if not isinstance(metrics, dict):
             continue
@@ -10208,6 +10230,89 @@ def _api_latency_summary_for_export(root: Path) -> pl.DataFrame:
     return pl.DataFrame(rows, infer_schema_length=None).select(
         CSV_SCHEMAS["reports/api_latency_summary.csv"]
     )
+
+
+def _api_latency_summary_row(endpoint: str, summary: dict[str, Any]) -> dict[str, Any]:
+    latency = summary.get("latency_ms") if isinstance(summary.get("latency_ms"), dict) else {}
+    by_path = (
+        summary.get("latency_by_path_ms")
+        if isinstance(summary.get("latency_by_path_ms"), dict)
+        else {}
+    )
+    overall_error_count = sum(
+        _api_latency_error_count(metrics)
+        for metrics in by_path.values()
+        if isinstance(metrics, dict)
+    )
+    if overall_error_count <= 0:
+        overall_error_count = sum(
+            int(value or 0)
+            for value in (
+                summary.get("by_error_type")
+                if isinstance(summary.get("by_error_type"), dict)
+                else {}
+            ).values()
+        )
+    request_count = int(summary.get("request_count") or 0)
+    return {
+        "endpoint": endpoint,
+        "count": request_count,
+        "p50_ms": _float_or_blank(latency.get("p50")),
+        "p90_ms": _float_or_blank(latency.get("p90")),
+        "p95_ms": _float_or_blank(latency.get("p95")),
+        "success_p95_ms": _float_or_blank(latency.get("success_p95")),
+        "error_p95_ms": _float_or_blank(latency.get("error_p95")),
+        "p99_ms": _float_or_blank(latency.get("p99")),
+        "max_ms": _float_or_blank(latency.get("max")),
+        "cache_hit_rate": _safe_rate(summary.get("cache_hit_count"), request_count),
+        "avg_rows_returned": _safe_avg(summary.get("rows_returned_total"), request_count),
+        "avg_response_bytes": _safe_avg(summary.get("response_bytes_total"), request_count),
+        "avg_lake_scan_ms": _safe_avg(summary.get("lake_scan_ms_total"), request_count),
+        "avg_serialize_ms": _safe_avg(summary.get("serialize_ms_total"), request_count),
+        "avg_source_signature_ms": _safe_avg(
+            summary.get("source_signature_ms_total"), request_count
+        ),
+        "response_cache_hit_rate": _safe_rate(
+            summary.get("response_cache_hit_count"), request_count
+        ),
+        "dependency_meta_missing_count": int(
+            summary.get("dependency_meta_missing_count") or 0
+        ),
+        "dependency_meta_missing_rate": _safe_rate(
+            summary.get("dependency_meta_missing_count"), request_count
+        ),
+        "error_count": overall_error_count,
+        "auth_error_count": int(summary.get("auth_error_count") or 0),
+        "auth_error_rate": _safe_rate(summary.get("auth_error_count"), request_count),
+    }
+
+
+def _production_v5_api_metrics_summary(
+    root: Path,
+    *,
+    since_minutes: int,
+) -> dict[str, Any] | None:
+    hosts = _csv_env_values("QUANT_LAB_API_METRICS_PRODUCTION_CLIENT_HOSTS")
+    if not hosts:
+        return None
+    client_ids = _csv_env_values("QUANT_LAB_API_METRICS_PRODUCTION_CLIENT_IDS") or [
+        "v5.quant_lab_client",
+        "v5.dashboard_proxy",
+    ]
+    return api_metrics_summary(
+        root,
+        since_minutes=since_minutes,
+        client_hosts=hosts,
+        client_ids=client_ids,
+    )
+
+
+def _csv_env_values(name: str) -> list[str]:
+    return [
+        item.strip()
+        for item in str(os.environ.get(name) or "").split(",")
+        if item.strip()
+    ]
 
 
 def _api_metrics_export_window_minutes() -> int:

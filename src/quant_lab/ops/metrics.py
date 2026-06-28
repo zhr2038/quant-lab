@@ -5,7 +5,7 @@ import json
 import os
 import threading
 import time
-from collections.abc import Callable
+from collections.abc import Callable, Iterable
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
@@ -284,6 +284,8 @@ def api_metrics_summary(
     *,
     day: str | None = None,
     since_minutes: int | None = None,
+    client_hosts: Iterable[str] | None = None,
+    client_ids: Iterable[str] | None = None,
 ) -> dict[str, Any]:
     _wait_api_request_metrics_flush(lake_root)
     flush_api_request_metrics(lake_root)
@@ -298,6 +300,12 @@ def api_metrics_summary(
         schema_names=schema_names,
         timestamp_column="request_ts",
         since_minutes=since_minutes,
+    )
+    scoped = _filter_api_metric_client_scope(
+        scoped,
+        schema_names=schema_names,
+        client_hosts=client_hosts,
+        client_ids=client_ids,
     )
     request_count = _lazy_count(scoped)
     if request_count == 0:
@@ -443,6 +451,11 @@ def api_error_summary(
         if "client_id" in schema_names
         else pl.lit("")
     )
+    client_host_expr = (
+        pl.col("client_host").cast(pl.Utf8, strict=False).fill_null("").str.strip_chars()
+        if "client_host" in schema_names
+        else pl.lit("")
+    )
     user_agent_expr = (
         pl.col("user_agent").cast(pl.Utf8, strict=False).fill_null("").str.strip_chars()
         if "user_agent" in schema_names
@@ -457,6 +470,7 @@ def api_error_summary(
             request_ts.alias("_request_ts"),
             auth_result_expr.alias("_auth_result"),
             client_id_expr.alias("_client_id"),
+            client_host_expr.alias("_client_host"),
             user_agent_expr.alias("_user_agent"),
         ]
     )
@@ -472,6 +486,7 @@ def api_error_summary(
                 "_status_code",
                 "_auth_result",
                 "_client_id",
+                "_client_host",
                 "_user_agent",
             ]
         )
@@ -506,6 +521,7 @@ def api_error_summary(
                 "status_code": int(row.get("_status_code") or 0),
                 "auth_result": str(row.get("_auth_result") or "__unknown__"),
                 "client_id": str(row.get("_client_id") or "__unknown__"),
+                "client_host": str(row.get("_client_host") or "__unknown__"),
                 "user_agent": str(row.get("_user_agent") or "__unknown__"),
                 "error_count": int(row.get("error_count") or 0),
                 "latest_error_ts": _format_metric_ts(row.get("latest_error_ts")),
@@ -513,6 +529,46 @@ def api_error_summary(
             }
         )
     return rows
+
+
+def _filter_api_metric_client_scope(
+    lazy: pl.LazyFrame,
+    *,
+    schema_names: set[str],
+    client_hosts: Iterable[str] | None = None,
+    client_ids: Iterable[str] | None = None,
+) -> pl.LazyFrame:
+    hosts = sorted({str(item).strip() for item in (client_hosts or []) if str(item).strip()})
+    ids = sorted({str(item).strip() for item in (client_ids or []) if str(item).strip()})
+    filters: list[pl.Expr] = []
+    if hosts:
+        if "client_host" not in schema_names:
+            filters.append(pl.lit(False))
+        else:
+            filters.append(
+                pl.col("client_host")
+                .cast(pl.Utf8, strict=False)
+                .fill_null("")
+                .str.strip_chars()
+                .is_in(hosts)
+            )
+    if ids:
+        if "client_id" not in schema_names:
+            filters.append(pl.lit(False))
+        else:
+            filters.append(
+                pl.col("client_id")
+                .cast(pl.Utf8, strict=False)
+                .fill_null("")
+                .str.strip_chars()
+                .is_in(ids)
+            )
+    if not filters:
+        return lazy
+    combined = filters[0]
+    for item in filters[1:]:
+        combined = combined & item
+    return lazy.filter(combined.fill_null(False))
 
 
 def job_run_summary(

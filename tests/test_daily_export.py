@@ -836,6 +836,45 @@ def test_api_latency_summary_export_includes_cache_and_payload_fields(
     assert row["error_count"] == 0
 
 
+def test_api_latency_summary_exports_production_v5_auth_scope(
+    tmp_path,
+    monkeypatch,
+):
+    lake = tmp_path / "lake"
+    monkeypatch.delenv("QUANT_LAB_API_TOKEN", raising=False)
+    monkeypatch.setenv("QUANT_LAB_API_METRICS_FLUSH_ROWS", "1")
+    monkeypatch.setenv("QUANT_LAB_API_METRICS_FLUSH_SECONDS", "3600")
+    monkeypatch.setenv("QUANT_LAB_API_METRICS_PRODUCTION_CLIENT_HOSTS", "43.156.105.125")
+    record_api_request(
+        lake_root=lake,
+        method="GET",
+        path="/v1/strategy-opportunity-advisory/v5-compact",
+        status_code=401,
+        duration_seconds=0.2,
+        client_host="113.226.176.217",
+        client_id="v5.quant_lab_client",
+        auth_result="missing_bearer_token",
+    )
+    record_api_request(
+        lake_root=lake,
+        method="GET",
+        path="/v1/strategy-opportunity-advisory/v5-compact",
+        status_code=200,
+        duration_seconds=0.05,
+        client_host="43.156.105.125",
+        client_id="v5.quant_lab_client",
+        auth_result="token_ok",
+    )
+
+    frame = daily_export_module._api_latency_summary_for_export(lake)
+    rows = {row["endpoint"]: row for row in frame.to_dicts()}
+
+    assert rows["__all__"]["auth_error_count"] == 1
+    assert rows["__production_v5__"]["count"] == 1
+    assert rows["__production_v5__"]["auth_error_count"] == 0
+    assert rows["__production_v5__"]["auth_error_rate"] == 0.0
+
+
 def test_api_latency_summary_error_count_does_not_double_count_status_error(
     tmp_path,
     monkeypatch,
@@ -1752,6 +1791,43 @@ def test_system_acceptance_requires_api_auth_error_rate_below_one_percent():
         if row["check_name"] == "api_auth_error_rate_ok"
     )
     assert failed_row["status"] == "FAIL"
+
+
+def test_system_acceptance_uses_production_v5_auth_scope_when_available():
+    dashboard = daily_export_module.build_system_acceptance_dashboard(
+        frames={},
+        report_frames={},
+        row_counts={},
+        pre_export_v5={},
+        data_quality_warnings=[],
+        api_latency_summary=pl.DataFrame(
+            [
+                {
+                    "endpoint": "__all__",
+                    "count": 100,
+                    "p95_ms": 12.0,
+                    "auth_error_count": 10,
+                    "auth_error_rate": 0.10,
+                },
+                {
+                    "endpoint": "__production_v5__",
+                    "count": 20,
+                    "p95_ms": 12.0,
+                    "auth_error_count": 0,
+                    "auth_error_rate": 0.0,
+                },
+            ]
+        ),
+        lake_file_count=0,
+        generated_at=datetime(2026, 6, 11, 10, tzinfo=UTC),
+    )
+    row = next(
+        item
+        for item in dashboard.to_dicts()
+        if item["check_name"] == "api_auth_error_rate_ok"
+    )
+    assert row["status"] == "PASS"
+    assert "scope=production_v5" in row["observed_value"]
 
 
 def test_system_acceptance_lake_file_count_and_growth_thresholds():
@@ -3206,6 +3282,15 @@ def test_export_daily_ingests_pending_v5_inbox_before_snapshot(tmp_path):
                 "none,BTC/USDT,market_impulse_probe,ok,"
                 "probe_stop_loss_reentry_after_loss,42,180,true,accepted\n"
             ),
+            "summaries/paper_strategy_proposal_ack.csv": (
+                "proposal_id,paper_tracker_id,accepted,recommended_mode,symbol,"
+                "strategy_candidate,suggested_horizon,proposal_source,reject_reason,"
+                "live_order_effect\n"
+                "BNB_USDT_F3_DOMINANT_ENTRY_PAPER_V1,"
+                "BNB_F3_DOMINANT_ENTRY_PAPER_V1,true,paper,BNB-USDT,"
+                "v5.f3_dominant_entry,24h,api:/v1/strategy-opportunity-advisory,"
+                ",paper_only_no_live_order\n"
+            ),
         },
     )
     config = _v5_telemetry_config(tmp_path, inbox, lake_root)
@@ -3235,6 +3320,13 @@ def test_export_daily_ingests_pending_v5_inbox_before_snapshot(tmp_path):
             csv.DictReader(
                 io.StringIO(
                     archive.read("v5/v5_btc_probe_entry_quality_audit.csv").decode("utf-8")
+                )
+            )
+        )
+        proposal_ack_rows = list(
+            csv.DictReader(
+                io.StringIO(
+                    archive.read("reports/paper_strategy_proposal_ack.csv").decode("utf-8")
                 )
             )
         )
@@ -3310,6 +3402,11 @@ def test_export_daily_ingests_pending_v5_inbox_before_snapshot(tmp_path):
     assert embedded_manifest["redacted"] is True
     assert "reports/candidate_snapshot.csv" in embedded_v5_names
     assert "summaries/btc_probe_entry_quality_audit.csv" in embedded_v5_names
+    assert "summaries/paper_strategy_proposal_ack.csv" in embedded_v5_names
+    assert "reports/paper_strategy_proposal_ack.csv" in names
+    assert proposal_ack_rows[0]["proposal_id"] == "BNB_USDT_F3_DOMINANT_ENTRY_PAPER_V1"
+    assert proposal_ack_rows[0]["paper_tracker_id"] == "BNB_F3_DOMINANT_ENTRY_PAPER_V1"
+    assert proposal_ack_rows[0]["live_order_effect"] == "paper_only_no_live_order"
     assert next(
         item
         for item in manifest["files"]

@@ -599,7 +599,20 @@ def _api_auth_error_rate_check(frame: pl.DataFrame) -> dict[str, Any]:
             "collect API auth metrics",
         )
     rows = frame.to_dicts()
-    overall = next((row for row in rows if str(row.get("endpoint")) == "__all__"), rows[0])
+    production = next(
+        (
+            row
+            for row in rows
+            if str(row.get("endpoint")) == "__production_v5__"
+            and (_float(row.get("count")) or 0.0) > 0
+        ),
+        None,
+    )
+    overall = production or next(
+        (row for row in rows if str(row.get("endpoint")) == "__all__"),
+        rows[0],
+    )
+    scope = "production_v5" if production is not None else "all"
     request_count = _float(overall.get("count")) or 0.0
     auth_error_rate = _float(overall.get("auth_error_rate"))
     auth_error_count = _float(overall.get("auth_error_count")) or 0.0
@@ -607,7 +620,7 @@ def _api_auth_error_rate_check(frame: pl.DataFrame) -> dict[str, Any]:
         return _check(
             "api_auth_error_rate_ok",
             "WARNING",
-            f"request_count={request_count:g};auth_error_rate=not_observable",
+            f"scope={scope};request_count={request_count:g};auth_error_rate=not_observable",
             f"auth_error_rate < {threshold:g}",
             "quant-lab",
             "collect API auth metrics",
@@ -616,7 +629,10 @@ def _api_auth_error_rate_check(frame: pl.DataFrame) -> dict[str, Any]:
     return _check(
         "api_auth_error_rate_ok",
         status,
-        f"auth_error_count={auth_error_count:g};request_count={request_count:g};auth_error_rate={auth_error_rate:.6f}",
+        (
+            f"scope={scope};auth_error_count={auth_error_count:g};"
+            f"request_count={request_count:g};auth_error_rate={auth_error_rate:.6f}"
+        ),
         f"auth_error_rate < {threshold:g}",
         "quant-lab",
         "" if status == "PASS" else "fix unauthorized API callers or token rollout",

@@ -1743,7 +1743,9 @@ def test_market_regime_summary_hides_symbols_lagging_current_market_window(tmp_p
 
     assert {row["symbol"] for row in regimes} == {"BTC-USDT", "ETH-USDT"}
     assert all(row["latest_ts"] == start + timedelta(hours=5) for row in regimes)
-    assert any("market_regime_current_filter:" in warning for warning in summary["warnings"])
+    assert summary["hidden_stale_regime_rows"] == 1
+    assert summary["market_regime_latest_ts"] == start + timedelta(hours=5)
+    assert not summary["warnings"]
 
 
 def test_recent_heavy_dataset_read_uses_latest_file_window(tmp_path, monkeypatch):

@@ -2582,17 +2582,6 @@ def market_regime_summary(lake_root: str | Path) -> dict[str, Any]:
         if not current_regimes.is_empty():
             regimes = current_regimes
     regimes = regimes.sort(["latest_ts", "symbol", "timeframe"], descending=[True, False, False])
-    if stale_regime_count > 0:
-        latest_text = (
-            global_latest_ts.isoformat()
-            if isinstance(global_latest_ts, datetime)
-            else global_latest_ts
-        )
-        warnings.append(
-            "market_regime_current_filter: "
-            f"hidden_stale_symbol_rows={stale_regime_count}; "
-            f"latest_ts={latest_text}"
-        )
 
     warnings.extend(
         _market_universe_warnings(
@@ -2608,6 +2597,8 @@ def market_regime_summary(lake_root: str | Path) -> dict[str, Any]:
         "spread_bps": spread_bps,
         "trade_activity": trade_activity,
         "abnormal_symbols": regimes.filter(pl.col("mean_abs_return") > 0.03),
+        "hidden_stale_regime_rows": stale_regime_count,
+        "market_regime_latest_ts": global_latest_ts,
         "warnings": warnings,
     }
 

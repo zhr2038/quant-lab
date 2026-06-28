@@ -4466,6 +4466,19 @@ def test_dataset_freshness_uses_dataset_specific_timestamps(tmp_path):
         pl.DataFrame([{"payload": "legacy-without-time"}]),
         lake_root / "silver" / "decision_audit",
     )
+    write_parquet_dataset(
+        pl.DataFrame(
+            [
+                {
+                    "symbol": "BTC-USDT",
+                    "candidate_id": "future_label_should_not_drive_freshness",
+                    "label_ts": created_at + timedelta(days=2),
+                    "generated_at": created_at - timedelta(minutes=15),
+                }
+            ]
+        ),
+        lake_root / "gold" / "expanded_universe_candidate_label",
+    )
 
     result = export_daily_pack(
         export_date="2026-05-11",
@@ -4487,6 +4500,8 @@ def test_dataset_freshness_uses_dataset_specific_timestamps(tmp_path):
     assert freshness["okx_public_ws"]["freshness_status"] != "missing"
     assert freshness["okx_public_ws"]["timestamp_column"] == "received_at"
     assert freshness["decision_audit"]["freshness_status"] == "unknown"
+    assert freshness["expanded_universe_candidate_label"]["freshness_status"] == "fresh"
+    assert freshness["expanded_universe_candidate_label"]["timestamp_column"] == "generated_at"
     assert all(
         dataset["freshness_status"] != "missing"
         for dataset in provenance["datasets"]
@@ -4540,6 +4555,33 @@ def test_stale_dataset_check_ignores_optional_entry_quality_history_and_generate
     assert "v5_entry_quality_history_anti_leakage_check" not in datasets
     assert "v5_btc_probe_entry_quality_audit" not in datasets
     assert "v5_pullback_reversal_shadow" not in datasets
+
+
+def test_stale_dataset_check_reports_future_timestamps():
+    now = datetime.now(UTC)
+    stale = daily_export_module._stale_rows(
+        {
+            "cost_bucket_daily": pl.DataFrame(
+                [
+                    {
+                        "symbol": "BTC-USDT",
+                        "created_at": now + timedelta(hours=2),
+                    }
+                ]
+            )
+        }
+    )
+
+    rows = stale.to_dicts()
+    assert rows == [
+        {
+            "dataset": "cost_bucket_daily",
+            "status": "future",
+            "row_count": 1,
+            "timestamp_column": "created_at",
+            "latest_timestamp": (now + timedelta(hours=2)).isoformat(),
+        }
+    ]
 
 
 def test_stale_dataset_check_ignores_event_driven_v5_cost_usage_when_current():

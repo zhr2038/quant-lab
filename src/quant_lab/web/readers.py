@@ -392,7 +392,7 @@ DATASET_TIMESTAMP_COLUMNS: dict[str, tuple[str, ...]] = {
     "expanded_universe_candidate": ("generated_at", "as_of_date"),
     "expanded_universe_quality": ("generated_at", "as_of_date"),
     "expanded_universe_candidate_event": ("ts_utc", "generated_at"),
-    "expanded_universe_candidate_label": ("label_ts", "generated_at"),
+    "expanded_universe_candidate_label": ("generated_at", "label_ts"),
     "expanded_universe_promotion_queue": ("generated_at", "as_of_date"),
     "expanded_universe_candidate_maturity": ("generated_at", "as_of_date"),
     "expanded_universe_watchlist": ("generated_at", "as_of_date"),
@@ -482,7 +482,7 @@ DATASET_TIMESTAMP_COLUMNS: dict[str, tuple[str, ...]] = {
     "v5_negative_expectancy_attribution_silver": ("ingest_ts", "bundle_ts", "exit_ts"),
     "v5_btc_probe_entry_quality_audit": ("ingest_ts", "bundle_ts", "ts_utc", "created_at"),
     "v5_candidate_event": ("ts_utc", "ingest_ts", "bundle_ts"),
-    "v5_candidate_label": ("label_ts", "decision_ts", "ts_utc", "created_at"),
+    "v5_candidate_label": ("created_at", "decision_ts", "ts_utc", "label_ts"),
     "v5_candidate_quality_daily": ("created_at", "date"),
     "v5_candidate_outcome_summary": ("created_at", "date"),
     "v5_decision_audit": ("ingest_ts", "bundle_ts"),
@@ -902,8 +902,13 @@ def dataset_freshness_payload(
                     "freshness_reference": "bar_close",
                 }
             )
-    seconds = max(int((reference_time - freshness_reference).total_seconds()), 0)
-    if seconds <= 6 * 60 * 60:
+    seconds = int((reference_time - freshness_reference).total_seconds())
+    if seconds < -5 * 60:
+        status = "future"
+        extras["future_seconds"] = abs(seconds)
+        extras["freshness_warning"] = "timestamp_after_export_reference"
+    elif seconds <= 6 * 60 * 60:
+        seconds = max(seconds, 0)
         status = "fresh"
     elif seconds <= 24 * 60 * 60:
         status = "delayed"

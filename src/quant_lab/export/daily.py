@@ -14967,7 +14967,10 @@ def _stale_rows(frames: dict[str, pl.DataFrame]) -> pl.DataFrame:
             status = "historical_research_snapshot"
         status = _derived_latest_status_from_frames(name, status, frames)
         status = readers._optional_stale_status_from_registry(name, status)  # type: ignore[attr-defined]
-        if status in {"missing", "unknown", "stale"} and status not in EVENT_DRIVEN_OK_STATUSES:
+        if (
+            status in {"missing", "unknown", "stale", "future"}
+            and status not in EVENT_DRIVEN_OK_STATUSES
+        ):
             rows.append(
                 {
                     "dataset": name,

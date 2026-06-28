@@ -2158,6 +2158,42 @@ def test_dataset_freshness_unknown_when_populated_table_has_no_timestamp():
     assert payload["freshness_status"] != "missing"
 
 
+def test_dataset_freshness_flags_future_timestamps():
+    now = datetime(2026, 6, 28, 3, tzinfo=UTC)
+
+    payload = readers.dataset_freshness_payload(
+        "custom_future_dataset",
+        pl.DataFrame([{"ts": now + timedelta(hours=2)}]),
+        now=now,
+    )
+
+    assert payload["freshness_status"] == "future"
+    assert payload["freshness_seconds"] < 0
+    assert payload["future_seconds"] > 0
+    assert payload["freshness_warning"] == "timestamp_after_export_reference"
+
+
+def test_candidate_label_freshness_prefers_generated_at_over_future_label_ts():
+    now = datetime(2026, 6, 28, 3, tzinfo=UTC)
+
+    payload = readers.dataset_freshness_payload(
+        "expanded_universe_candidate_label",
+        pl.DataFrame(
+            [
+                {
+                    "label_ts": now + timedelta(days=2),
+                    "generated_at": now - timedelta(minutes=15),
+                }
+            ]
+        ),
+        now=now,
+    )
+
+    assert payload["freshness_status"] == "fresh"
+    assert payload["timestamp_column"] == "generated_at"
+    assert payload["latest_timestamp"] == (now - timedelta(minutes=15)).isoformat()
+
+
 def test_key_pages_render_fixture_lake_without_network_or_mutation(tmp_path):
     lake_root = _fixture_lake(tmp_path)
     fake = FakeStreamlit()

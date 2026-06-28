@@ -1724,6 +1724,28 @@ def test_market_regime_summary_uses_lazy_aggregation_for_heavy_streams(tmp_path,
     assert not summary["trade_activity"].is_empty()
 
 
+def test_market_regime_summary_hides_symbols_lagging_current_market_window(tmp_path):
+    lake_root = tmp_path / "lake"
+    start = datetime(2026, 5, 10, tzinfo=UTC)
+    rows = []
+    for ts, symbol, close in [
+        (start, "AAVE-USDT", 80.0),
+        (start + timedelta(hours=5), "BTC-USDT", 100.0),
+        (start + timedelta(hours=5), "ETH-USDT", 200.0),
+    ]:
+        row = _bar(ts, close=close)
+        row["symbol"] = symbol
+        rows.append(row)
+    write_market_bars(lake_root, rows)
+
+    summary = readers.market_regime_summary(lake_root)
+    regimes = summary["regimes"].to_dicts()
+
+    assert {row["symbol"] for row in regimes} == {"BTC-USDT", "ETH-USDT"}
+    assert all(row["latest_ts"] == start + timedelta(hours=5) for row in regimes)
+    assert any("market_regime_current_filter:" in warning for warning in summary["warnings"])
+
+
 def test_recent_heavy_dataset_read_uses_latest_file_window(tmp_path, monkeypatch):
     lake_root = tmp_path / "lake"
     dataset_path = lake_root / "silver" / "trade_print"

@@ -553,6 +553,7 @@ BOOTSTRAP_GOLD_HEALTH_COMMAND = (
 )
 BOOTSTRAP_PLACEHOLDER_WARNING = "bootstrap 保守占位数据，不是 live-ready 证据"
 DISPLAY_LIMIT = 500
+MARKET_REGIME_CURRENT_LAG_HOURS = 2
 WEB_HEAVY_DATASET_LIMITS = {
     "market_bar": 20_000,
     "trade_print": 20_000,
@@ -2571,8 +2572,27 @@ def market_regime_summary(lake_root: str | Path) -> dict[str, Any]:
             .otherwise(pl.lit("低波动"))
             .alias("volatility_regime")
         )
-        .sort(["symbol", "timeframe"])
     )
+    global_latest_ts = regimes.select(pl.col("latest_ts").max()).item()
+    stale_regime_count = 0
+    if isinstance(global_latest_ts, datetime):
+        current_cutoff = global_latest_ts - timedelta(hours=MARKET_REGIME_CURRENT_LAG_HOURS)
+        current_regimes = regimes.filter(pl.col("latest_ts") >= current_cutoff)
+        stale_regime_count = regimes.height - current_regimes.height
+        if not current_regimes.is_empty():
+            regimes = current_regimes
+    regimes = regimes.sort(["latest_ts", "symbol", "timeframe"], descending=[True, False, False])
+    if stale_regime_count > 0:
+        latest_text = (
+            global_latest_ts.isoformat()
+            if isinstance(global_latest_ts, datetime)
+            else global_latest_ts
+        )
+        warnings.append(
+            "market_regime_current_filter: "
+            f"hidden_stale_symbol_rows={stale_regime_count}; "
+            f"latest_ts={latest_text}"
+        )
 
     warnings.extend(
         _market_universe_warnings(

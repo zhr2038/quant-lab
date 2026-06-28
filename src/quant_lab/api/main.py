@@ -1283,7 +1283,73 @@ def _decorate_web_v2_expert_pack_status(
         if stat is not None:
             payload["latest_size_bytes"] = stat.st_size
             payload["latest_modified_at"] = datetime.fromtimestamp(stat.st_mtime, UTC).isoformat()
+        payload.update(_expert_pack_v5_attachment_status(latest_pack))
     return payload
+
+
+def _expert_pack_v5_attachment_status(pack_path: Path) -> dict[str, Any]:
+    manifest = _read_expert_pack_manifest(pack_path)
+    bundle_name = str(
+        manifest.get("selected_v5_bundle_manifest_bundle_name")
+        or manifest.get("selected_v5_bundle_name")
+        or manifest.get("selected_v5_bundle")
+        or manifest.get("embedded_v5_bundle_original_name")
+        or ""
+    ).strip()
+    bundle_ts = (
+        manifest.get("selected_v5_bundle_manifest_bundle_ts")
+        or manifest.get("selected_v5_bundle_built_at")
+        or _v5_bundle_ts_from_name(bundle_name)
+    )
+    selected_sha = str(
+        manifest.get("selected_v5_bundle_sha256")
+        or manifest.get("selected_v5_bundle_manifest_bundle_sha256")
+        or manifest.get("embedded_v5_bundle_source_sha256")
+        or ""
+    ).strip()
+    embedded_present = bool(manifest.get("embedded_v5_bundle_present"))
+    embedded_member = manifest.get("embedded_v5_bundle_member_path")
+    embedded_sha = manifest.get("embedded_v5_bundle_sha256")
+    embedded_matches_selected = manifest.get("embedded_v5_bundle_matches_selected")
+    return {
+        "latest_pack_v5_bundle_name": bundle_name or None,
+        "latest_pack_v5_bundle_ts": _api_json_value(bundle_ts),
+        "latest_pack_v5_bundle_sha256": selected_sha or None,
+        "latest_pack_embedded_v5_bundle_present": embedded_present,
+        "latest_pack_embedded_v5_bundle_member_path": (
+            str(embedded_member) if embedded_member else None
+        ),
+        "latest_pack_embedded_v5_bundle_sha256": (
+            str(embedded_sha).strip() if embedded_sha else None
+        ),
+        "latest_pack_embedded_v5_bundle_matches_selected": (
+            bool(embedded_matches_selected)
+            if embedded_matches_selected is not None
+            else None
+        ),
+    }
+
+
+def _read_expert_pack_manifest(pack_path: Path) -> dict[str, Any]:
+    try:
+        with zipfile.ZipFile(pack_path) as archive:
+            payload = json.loads(archive.read("manifest.json").decode("utf-8"))
+    except (OSError, KeyError, json.JSONDecodeError, zipfile.BadZipFile):
+        return {}
+    return payload if isinstance(payload, dict) else {}
+
+
+def _v5_bundle_ts_from_name(bundle_name: str) -> str | None:
+    prefix = "v5_live_followup_bundle_"
+    suffix = ".tar.gz"
+    if not bundle_name.startswith(prefix) or not bundle_name.endswith(suffix):
+        return None
+    stamp = bundle_name[len(prefix) : -len(suffix)]
+    try:
+        parsed = datetime.strptime(stamp, "%Y%m%dT%H%M%SZ").replace(tzinfo=UTC)
+    except ValueError:
+        return None
+    return parsed.isoformat().replace("+00:00", "Z")
 
 
 def _pack_path_from_row(row: dict[str, Any]) -> Path | None:

@@ -1064,8 +1064,26 @@ def test_web_v2_expert_pack_status_prefers_latest_requested_pack_over_stale_manu
     old_pack = exports / "quant_lab_expert_pack_2026-06-19_20260619T095826451309+0800.zip"
     new_pack = exports / "quant_lab_expert_pack_2026-06-19_20260619T155027688187+0800.zip"
     for pack in (old_pack, new_pack):
+        manifest = {"status": "OK"}
+        if pack == new_pack:
+            manifest.update(
+                {
+                    "selected_v5_bundle_manifest_bundle_name": (
+                        "v5_live_followup_bundle_20260619T070000Z.tar.gz"
+                    ),
+                    "selected_v5_bundle_manifest_bundle_ts": "2026-06-19T07:00:00Z",
+                    "selected_v5_bundle_sha256": "selected-sha",
+                    "embedded_v5_bundle_present": True,
+                    "embedded_v5_bundle_member_path": (
+                        "v5/followup_bundle/"
+                        "v5_live_followup_bundle_20260619T070000Z.redacted.tar.gz"
+                    ),
+                    "embedded_v5_bundle_sha256": "embedded-sha",
+                    "embedded_v5_bundle_matches_selected": True,
+                }
+            )
         with zipfile.ZipFile(pack, "w") as archive:
-            archive.writestr("manifest.json", json.dumps({"status": "OK"}))
+            archive.writestr("manifest.json", json.dumps(manifest))
             archive.writestr("data_quality.json", json.dumps({"status": "OK"}))
             archive.writestr("expert_questions.md", "下一步看什么？\n")
     old_time = datetime(2026, 6, 19, 2, tzinfo=UTC).timestamp()
@@ -1098,6 +1116,19 @@ def test_web_v2_expert_pack_status_prefers_latest_requested_pack_over_stale_manu
     assert payload["latest_pack_name"] == new_pack.name
     assert payload["latest_pack_is_requested_date"] is True
     assert payload["latest_pack_source"] == "requested_date_pack"
+    assert (
+        payload["latest_pack_v5_bundle_name"]
+        == "v5_live_followup_bundle_20260619T070000Z.tar.gz"
+    )
+    assert payload["latest_pack_v5_bundle_ts"] == "2026-06-19T07:00:00Z"
+    assert payload["latest_pack_v5_bundle_sha256"] == "selected-sha"
+    assert payload["latest_pack_embedded_v5_bundle_present"] is True
+    assert (
+        payload["latest_pack_embedded_v5_bundle_member_path"]
+        == "v5/followup_bundle/v5_live_followup_bundle_20260619T070000Z.redacted.tar.gz"
+    )
+    assert payload["latest_pack_embedded_v5_bundle_sha256"] == "embedded-sha"
+    assert payload["latest_pack_embedded_v5_bundle_matches_selected"] is True
     assert payload["latest_download_url"] == f"/web-v2/expert-pack/download/{new_pack.name}"
     assert (
         payload["manual_latest_download_url"]

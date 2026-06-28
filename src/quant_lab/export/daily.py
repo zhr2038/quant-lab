@@ -6641,24 +6641,32 @@ def _v5_redacted_files_secret_reasons(path: Path) -> list[str]:
         if not _is_v5_bundle_text_member(relative):
             continue
         try:
-            size = member.stat().st_size
-        except OSError as exc:
-            reasons.append(f"{relative} stat failed: {exc}")
-            continue
-        if size > V5_BUNDLE_SECRET_SCAN_MAX_MEMBER_BYTES:
-            reasons.append(f"{relative} exceeds embedded secret scan limit")
-            continue
-        try:
-            text = member.read_text(encoding="utf-8")
+            high, medium = _secret_severity_counts_in_file(member)
         except UnicodeDecodeError:
             continue
         except OSError as exc:
             reasons.append(f"{relative} read failed: {exc}")
             continue
-        high, medium = _secret_severity_counts(text)
         if high or medium:
             reasons.append(f"{relative}: {high} high, {medium} medium")
     return reasons
+
+
+def _secret_severity_counts_in_file(path: Path) -> tuple[int, int]:
+    high = 0
+    medium = 0
+    with path.open("r", encoding="utf-8") as handle:
+        for line in handle:
+            if not _line_may_contain_secret(line):
+                continue
+            for pattern, severity, _label in SECRET_PATTERNS:
+                if not pattern.search(line):
+                    continue
+                if severity == "high":
+                    high += 1
+                elif severity == "medium":
+                    medium += 1
+    return high, medium
 
 
 def _transient_redacted_v5_bundle_bytes(path: Path) -> tuple[bytes, str]:

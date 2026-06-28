@@ -2104,6 +2104,7 @@ CSV_SCHEMAS: dict[str, list[str]] = {
         "as_of_date",
         "strategy_id",
         "proposal_id",
+        "paper_tracker_id",
         "strategy_candidate",
         "run_id",
         "ts_utc",
@@ -2162,6 +2163,7 @@ CSV_SCHEMAS: dict[str, list[str]] = {
     "reports/paper_strategy_daily.csv": [
         "as_of_date",
         "proposal_id",
+        "paper_tracker_id",
         "strategy_candidate",
         "symbol",
         "recommended_mode",
@@ -2212,6 +2214,7 @@ CSV_SCHEMAS: dict[str, list[str]] = {
     "reports/paper_slippage_coverage.csv": [
         "as_of_date",
         "proposal_id",
+        "paper_tracker_id",
         "strategy_candidate",
         "symbol",
         "paper_days",

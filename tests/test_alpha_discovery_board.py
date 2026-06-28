@@ -933,6 +933,72 @@ def test_bnb_paper_synthetic_tracks_alpha6_buy_no_order():
     assert reports_by_proposal["BNB_RISK_ON_BUY_PAPER_V1"]["symbol"] == "BNB-USDT"
 
 
+def test_v5_current_paper_proposals_preserve_tracker_mapping():
+    rows = pl.DataFrame(
+        [
+            {
+                "as_of_date": "2026-06-28",
+                "strategy_id": "BNB_F3_DOMINANT_ENTRY_PAPER_V1",
+                "proposal_id": "BNB_USDT_F3_DOMINANT_ENTRY_PAPER_V1",
+                "paper_tracker_id": "BNB_F3_DOMINANT_ENTRY_PAPER_V1",
+                "strategy_candidate": "v5.f3_dominant_entry",
+                "symbol": "BNB-USDT",
+                "would_enter": "false",
+                "paper_days": "1",
+                "entry_count": "0",
+                "raw_payload_json": "{}",
+            },
+            {
+                "as_of_date": "2026-06-28",
+                "strategy_id": "SOL_USDT_F3_DOMINANT_ENTRY_PAPER_V1",
+                "proposal_id": "SOL_USDT_F3_DOMINANT_ENTRY_PAPER_V1",
+                "paper_tracker_id": "SOL_USDT_F3_DOMINANT_ENTRY_PAPER_V1",
+                "strategy_candidate": "v5.f3_dominant_entry",
+                "symbol": "SOL-USDT",
+                "would_enter": "false",
+                "paper_days": "1",
+                "entry_count": "0",
+                "raw_payload_json": "{}",
+            },
+            {
+                "as_of_date": "2026-06-28",
+                "strategy_id": "ETH_USDT_F4_VOLUME_EXPANSION_ENTRY_PAPER_V1",
+                "proposal_id": "ETH_USDT_F4_VOLUME_EXPANSION_ENTRY_PAPER_V1",
+                "paper_tracker_id": "ETH_USDT_F4_VOLUME_EXPANSION_ENTRY_PAPER_V1",
+                "strategy_candidate": "v5.f4_volume_expansion_entry",
+                "symbol": "ETH-USDT",
+                "would_enter": "false",
+                "paper_days": "1",
+                "entry_count": "0",
+                "raw_payload_json": "{}",
+            },
+        ]
+    )
+
+    runs = build_paper_strategy_runs_from_v5(rows).to_dicts()
+    reports = build_paper_strategy_runs_report_from_v5(rows).to_dicts()
+    daily = build_paper_strategy_daily_from_v5(rows).to_dicts()
+
+    run_by_proposal = {row["proposal_id"]: row for row in runs}
+    report_by_proposal = {row["proposal_id"]: row for row in reports}
+    daily_by_proposal = {row["proposal_id"]: row for row in daily}
+    assert run_by_proposal["BNB_USDT_F3_DOMINANT_ENTRY_PAPER_V1"]["paper_tracker_id"] == (
+        "BNB_F3_DOMINANT_ENTRY_PAPER_V1"
+    )
+    assert report_by_proposal["BNB_USDT_F3_DOMINANT_ENTRY_PAPER_V1"]["strategy_id"] == (
+        "BNB_F3_DOMINANT_ENTRY_PAPER_V1"
+    )
+    assert daily_by_proposal["BNB_USDT_F3_DOMINANT_ENTRY_PAPER_V1"]["paper_tracker_id"] == (
+        "BNB_F3_DOMINANT_ENTRY_PAPER_V1"
+    )
+    assert run_by_proposal["SOL_USDT_F3_DOMINANT_ENTRY_PAPER_V1"]["paper_tracker_id"] == (
+        "SOL_USDT_F3_DOMINANT_ENTRY_PAPER_V1"
+    )
+    assert run_by_proposal["ETH_USDT_F4_VOLUME_EXPANSION_ENTRY_PAPER_V1"]["paper_tracker_id"] == (
+        "ETH_USDT_F4_VOLUME_EXPANSION_ENTRY_PAPER_V1"
+    )
+
+
 def test_bnb_paper_synthetic_blocks_when_edge_not_verified():
     candidate_events = pl.DataFrame(
         [

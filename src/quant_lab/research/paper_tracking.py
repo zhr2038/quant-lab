@@ -43,15 +43,23 @@ PAPER_PNL_HORIZON_HOURS = (4, 8, 12, 24, 48, 72)
 SOL_F4_PAPER_PROPOSAL_ID = "SOL_F4_VOLUME_EXPANSION_PAPER_V1"
 SOL_F4_STRATEGY_CANDIDATE = "v5.f4_volume_expansion_entry"
 SOL_F4_SYMBOL = "SOL-USDT"
+SOL_F3_PAPER_PROPOSAL_ID = "SOL_USDT_F3_DOMINANT_ENTRY_PAPER_V1"
+SOL_F3_STRATEGY_CANDIDATE = "v5.f3_dominant_entry"
+SOL_F3_SYMBOL = "SOL-USDT"
 ETH_F3_PAPER_PROPOSAL_ID = "ETH_USDT_F3_DOMINANT_ENTRY_PAPER_V1"
 ETH_F3_STRATEGY_CANDIDATE = "v5.f3_dominant_entry"
 ETH_F3_SYMBOL = "ETH-USDT"
 ETH_F3_PRIMARY_REVIEW_HORIZON = "48h"
 ETH_F3_MIN_PRIMARY_COMPLETE_COUNT = 30
 ETH_F3_DISABLED_NO_SAMPLE_REASON = "downngraded_from_paper_no_new_entry"
+ETH_F4_VOLUME_EXPANSION_PAPER_PROPOSAL_ID = "ETH_USDT_F4_VOLUME_EXPANSION_ENTRY_PAPER_V1"
+ETH_F4_VOLUME_EXPANSION_STRATEGY_CANDIDATE = "v5.f4_volume_expansion_entry"
+ETH_F4_VOLUME_EXPANSION_SYMBOL = "ETH-USDT"
 BNB_F3_PAPER_PROPOSAL_ID = "BNB_F3_DOMINANT_ENTRY_PAPER_V1"
+BNB_F3_CURRENT_PROPOSAL_ID = "BNB_USDT_F3_DOMINANT_ENTRY_PAPER_V1"
 BNB_RISK_ON_BUY_PAPER_PROPOSAL_ID = "BNB_RISK_ON_BUY_PAPER_V1"
 BNB_F3_STRATEGY_CANDIDATE = "v5.bnb_f3_dominant_entry"
+BNB_F3_GENERIC_STRATEGY_CANDIDATE = "v5.f3_dominant_entry"
 BNB_RISK_ON_BUY_STRATEGY_CANDIDATE = "v5.bnb_risk_on_buy"
 BNB_SYMBOL = "BNB-USDT"
 BNB_ALLOWED_PAPER_REGIMES = {"ALT_IMPULSE", "TREND_UP", "TRENDING"}
@@ -65,6 +73,7 @@ PAPER_RUN_REPORT_SCHEMA = {
     "as_of_date": pl.Utf8,
     "strategy_id": pl.Utf8,
     "proposal_id": pl.Utf8,
+    "paper_tracker_id": pl.Utf8,
     "strategy_candidate": pl.Utf8,
     "run_id": pl.Utf8,
     "ts_utc": pl.Utf8,
@@ -110,6 +119,7 @@ PAPER_RUN_REPORT_SCHEMA = {
 PAPER_RUN_SCHEMA = {
     "as_of_date": pl.Utf8,
     "proposal_id": pl.Utf8,
+    "paper_tracker_id": pl.Utf8,
     "strategy_candidate": pl.Utf8,
     "symbol": pl.Utf8,
     "recommended_mode": pl.Utf8,
@@ -163,6 +173,7 @@ PAPER_RUN_SCHEMA = {
 PAPER_DAILY_SCHEMA = {
     "as_of_date": pl.Utf8,
     "proposal_id": pl.Utf8,
+    "paper_tracker_id": pl.Utf8,
     "strategy_candidate": pl.Utf8,
     "symbol": pl.Utf8,
     "recommended_mode": pl.Utf8,
@@ -214,6 +225,7 @@ PAPER_DAILY_SCHEMA = {
 PAPER_SLIPPAGE_SCHEMA = {
     "as_of_date": pl.Utf8,
     "proposal_id": pl.Utf8,
+    "paper_tracker_id": pl.Utf8,
     "strategy_candidate": pl.Utf8,
     "symbol": pl.Utf8,
     "paper_days": pl.Int64,
@@ -239,6 +251,7 @@ class PaperStrategyConfig:
     proposal_id: str
     strategy_candidate: str
     symbol: str
+    paper_tracker_id: str = ""
     paper_size_usdt: float = 100.0
     required_paper_days: int = 14
     required_entry_day_count: int = DEFAULT_REQUIRED_ENTRY_DAYS_FOR_LIVE
@@ -257,9 +270,25 @@ PAPER_STRATEGIES = [
         symbol=SOL_F4_SYMBOL,
     ),
     PaperStrategyConfig(
+        proposal_id=SOL_F3_PAPER_PROPOSAL_ID,
+        strategy_candidate=SOL_F3_STRATEGY_CANDIDATE,
+        symbol=SOL_F3_SYMBOL,
+    ),
+    PaperStrategyConfig(
         proposal_id=ETH_F3_PAPER_PROPOSAL_ID,
         strategy_candidate=ETH_F3_STRATEGY_CANDIDATE,
         symbol=ETH_F3_SYMBOL,
+    ),
+    PaperStrategyConfig(
+        proposal_id=ETH_F4_VOLUME_EXPANSION_PAPER_PROPOSAL_ID,
+        strategy_candidate=ETH_F4_VOLUME_EXPANSION_STRATEGY_CANDIDATE,
+        symbol=ETH_F4_VOLUME_EXPANSION_SYMBOL,
+    ),
+    PaperStrategyConfig(
+        proposal_id=BNB_F3_CURRENT_PROPOSAL_ID,
+        strategy_candidate=BNB_F3_GENERIC_STRATEGY_CANDIDATE,
+        symbol=BNB_SYMBOL,
+        paper_tracker_id=BNB_F3_PAPER_PROPOSAL_ID,
     ),
     PaperStrategyConfig(
         proposal_id=BNB_F3_PAPER_PROPOSAL_ID,
@@ -1714,10 +1743,10 @@ def _bnb_existing_candidate_keys(
     keys: set[tuple[str, str, str, str, str]] = set()
     for row in rows:
         proposal_id = str(row.get("proposal_id") or row.get("strategy_id") or "")
-        if proposal_id not in {
-            BNB_F3_PAPER_PROPOSAL_ID,
-            BNB_RISK_ON_BUY_PAPER_PROPOSAL_ID,
-        }:
+        if not (
+            _is_bnb_f3_tracking_row(proposal_id)
+            or proposal_id == BNB_RISK_ON_BUY_PAPER_PROPOSAL_ID
+        ):
             continue
         if normalize_symbol(row.get("symbol")) != BNB_SYMBOL:
             continue
@@ -1772,6 +1801,7 @@ def _bnb_candidate_event_as_paper_row(
         "as_of_date": _as_of_date(candidate, payload),
         "proposal_id": proposal_id,
         "strategy_id": proposal_id,
+        "paper_tracker_id": _paper_tracker_id_for(proposal_id, strategy_candidate, BNB_SYMBOL),
         "strategy_candidate": strategy_candidate,
         "source_strategy_candidate": source_candidate,
         "source_candidate_symbol": BNB_SYMBOL,
@@ -1808,7 +1838,7 @@ def _bnb_paper_trigger_reason(
 ) -> str:
     if normalize_symbol(_field(row, payload, "symbol", "normalized_symbol")) != BNB_SYMBOL:
         return ""
-    if proposal_id == BNB_F3_PAPER_PROPOSAL_ID:
+    if _is_bnb_f3_tracking_row(proposal_id):
         source_candidate = str(
             _field(row, payload, "source_strategy_candidate", "strategy_candidate") or ""
         ).strip()
@@ -1842,7 +1872,7 @@ def _bnb_paper_no_sample_reason(
 ) -> str:
     if normalize_symbol(_field(row, payload, "symbol", "normalized_symbol")) != BNB_SYMBOL:
         return "symbol_mismatch"
-    if proposal_id == BNB_F3_PAPER_PROPOSAL_ID:
+    if _is_bnb_f3_tracking_row(proposal_id):
         source_candidate = str(
             _field(row, payload, "source_strategy_candidate", "strategy_candidate") or ""
         ).strip()
@@ -1863,6 +1893,10 @@ def _bnb_paper_no_sample_reason(
     if _bnb_regime(row, payload) not in BNB_ALLOWED_PAPER_REGIMES:
         return "regime_not_allowed"
     return ""
+
+
+def _is_bnb_f3_tracking_row(proposal_id: str) -> bool:
+    return proposal_id in {BNB_F3_PAPER_PROPOSAL_ID, BNB_F3_CURRENT_PROPOSAL_ID}
 
 
 def _bnb_regime(row: dict[str, Any], payload: dict[str, Any]) -> str:
@@ -2059,8 +2093,13 @@ def _v5_run_report_row(
         "source_strategy_candidate",
     )
     symbol = _field(row, payload, "symbol", "normalized_symbol")
-    strategy_id = _field(row, payload, "strategy_id", "proposal_id")
-    proposal_id = strategy_id or _proposal_id_for(candidate, symbol)
+    strategy_id = _field(row, payload, "strategy_id")
+    proposal_id = _field(row, payload, "proposal_id") or _proposal_id_for(candidate, symbol)
+    paper_tracker_id = (
+        _field(row, payload, "paper_tracker_id")
+        or strategy_id
+        or _paper_tracker_id_for(proposal_id, candidate, symbol)
+    )
     raw_would_enter = _optional_bool(_field(row, payload, "would_enter", "enter")) is True
     enter_policy = _paper_entry_policy(
         row=row,
@@ -2083,8 +2122,9 @@ def _v5_run_report_row(
     source_candidate = _source_candidate_metadata(row, payload, str(symbol or ""))
     return {
         "as_of_date": _as_of_date(row, payload),
-        "strategy_id": strategy_id or proposal_id,
+        "strategy_id": strategy_id or paper_tracker_id or proposal_id,
         "proposal_id": proposal_id,
+        "paper_tracker_id": paper_tracker_id,
         "strategy_candidate": candidate,
         "run_id": _field(row, payload, "run_id"),
         "ts_utc": _field(row, payload, "ts_utc", "ts", "timestamp", "created_at"),
@@ -2177,6 +2217,10 @@ def _v5_run_row(
         candidate,
         symbol,
     )
+    paper_tracker_id = (
+        _field(row, payload, "paper_tracker_id", "strategy_id")
+        or _paper_tracker_id_for(proposal_id, candidate, symbol)
+    )
     would_exit = _optional_bool(_field(row, payload, "would_exit", "exit")) is True
     raw_would_enter = _optional_bool(_field(row, payload, "would_enter", "enter")) is True
     enter_policy = _paper_entry_policy(
@@ -2213,6 +2257,7 @@ def _v5_run_row(
     return {
         "as_of_date": _as_of_date(row, payload),
         "proposal_id": proposal_id,
+        "paper_tracker_id": paper_tracker_id,
         "strategy_candidate": candidate,
         "symbol": symbol,
         "recommended_mode": _field(row, payload, "recommended_mode", default="paper"),
@@ -2330,6 +2375,10 @@ def _v5_daily_row(row: dict[str, Any], created_at: str) -> dict[str, Any]:
         candidate,
         symbol,
     )
+    paper_tracker_id = (
+        _field(row, payload, "paper_tracker_id", "strategy_id")
+        or _paper_tracker_id_for(proposal_id, candidate, symbol)
+    )
     raw_paper_days = int(
         _optional_float(_field(row, payload, "paper_days", "paper_days_to_date")) or 0
     )
@@ -2413,6 +2462,7 @@ def _v5_daily_row(row: dict[str, Any], created_at: str) -> dict[str, Any]:
     row_out = {
         "as_of_date": _as_of_date(row, payload),
         "proposal_id": proposal_id,
+        "paper_tracker_id": paper_tracker_id,
         "strategy_candidate": candidate,
         "symbol": symbol,
         "recommended_mode": _field(row, payload, "recommended_mode", default="paper"),
@@ -2533,6 +2583,10 @@ def _v5_slippage_row(row: dict[str, Any], created_at: str) -> dict[str, Any]:
         candidate,
         symbol,
     )
+    paper_tracker_id = (
+        _field(row, payload, "paper_tracker_id", "strategy_id")
+        or _paper_tracker_id_for(proposal_id, candidate, symbol)
+    )
     paper_days = int(_optional_float(_field(row, payload, "paper_days")) or 0)
     coverage = _optional_float(
         _field(row, payload, "paper_slippage_coverage", "slippage_coverage")
@@ -2551,6 +2605,7 @@ def _v5_slippage_row(row: dict[str, Any], created_at: str) -> dict[str, Any]:
     return {
         "as_of_date": _as_of_date(row, payload),
         "proposal_id": proposal_id,
+        "paper_tracker_id": paper_tracker_id,
         "strategy_candidate": candidate,
         "symbol": symbol,
         "paper_days": paper_days,
@@ -2636,6 +2691,15 @@ def _config_for(
         strategy_candidate=str(strategy_candidate or ""),
         symbol=str(symbol or ""),
     )
+
+
+def _paper_tracker_id_for(
+    proposal_id: Any,
+    strategy_candidate: Any,
+    symbol: Any,
+) -> str:
+    cfg = _config_for(proposal_id, strategy_candidate, symbol)
+    return cfg.paper_tracker_id or cfg.proposal_id or str(proposal_id or "")
 
 
 def _proposal_id_for(strategy_candidate: Any, symbol: Any) -> str:
@@ -2726,6 +2790,18 @@ def _paper_daily_key_aliases(row: dict[str, Any]) -> list[tuple[str, str, str]]:
     proposal_id, candidate, symbol = _paper_daily_key(row)
     proposals = {proposal_id}
     candidates = {candidate}
+    if proposal_id == BNB_F3_CURRENT_PROPOSAL_ID:
+        proposals.add(BNB_F3_PAPER_PROPOSAL_ID)
+        candidates.add(BNB_F3_STRATEGY_CANDIDATE)
+    if proposal_id == BNB_F3_PAPER_PROPOSAL_ID:
+        proposals.add(BNB_F3_CURRENT_PROPOSAL_ID)
+        candidates.add(BNB_F3_GENERIC_STRATEGY_CANDIDATE)
+    if proposal_id == SOL_F3_PAPER_PROPOSAL_ID:
+        candidates.add(SOL_F3_STRATEGY_CANDIDATE)
+        candidates.add("v5.sol_f3_dominant_entry")
+    if proposal_id == ETH_F4_VOLUME_EXPANSION_PAPER_PROPOSAL_ID:
+        candidates.add(ETH_F4_VOLUME_EXPANSION_STRATEGY_CANDIDATE)
+        candidates.add("v5.eth_f4_volume_expansion_entry")
     if proposal_id == "ETH_USDT_F3_DOMINANT_ENTRY_PAPER_V1":
         proposals.add("ETH_F3_DOMINANT_ENTRY_PAPER_V1")
     if proposal_id == "ETH_F3_DOMINANT_ENTRY_PAPER_V1":

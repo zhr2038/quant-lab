@@ -3066,6 +3066,52 @@ def test_expert_export_summary_filters_missing_index_pack_rows(tmp_path):
     assert packs[0]["path"] == str(pack.resolve())
 
 
+def test_expert_export_summary_ignores_index_when_newer_pack_is_unindexed(tmp_path):
+    readers.clear_web_cache()
+    exports_root = tmp_path / "exports"
+    exports_root.mkdir()
+    old_pack = exports_root / "quant_lab_expert_pack_2026-06-29_20260629T020417.zip"
+    new_pack = exports_root / "quant_lab_expert_pack_2026-06-28_20260629T043920.zip"
+    for pack, marker in [(old_pack, "old"), (new_pack, "new")]:
+        with zipfile.ZipFile(pack, "w") as archive:
+            archive.writestr(
+                "manifest.json",
+                json.dumps({"marker": marker, "authoritative_snapshot": True}),
+            )
+            archive.writestr("data_quality.json", "{}")
+            archive.writestr("expert_questions.md", "")
+    old_time = datetime(2026, 6, 28, 18, tzinfo=UTC).timestamp()
+    new_time = datetime(2026, 6, 28, 20, 39, tzinfo=UTC).timestamp()
+    os.utime(old_pack, (old_time, old_time))
+    os.utime(new_pack, (new_time, new_time))
+    (exports_root / "export_index.json").write_text(
+        json.dumps(
+            {
+                "latest_pack": str(old_pack),
+                "packs": [
+                    {
+                        "path": str(old_pack),
+                        "name": old_pack.name,
+                        "size_bytes": old_pack.stat().st_size,
+                        "modified_at": "2026-06-28T18:00:00Z",
+                        "authoritative_snapshot": True,
+                    }
+                ],
+                "manifest_summary": {"marker": "index-old"},
+                "data_quality_summary": {"status": "OK"},
+                "expert_questions": [],
+                "warnings": [],
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    summary = readers.expert_export_summary(exports_root)
+
+    assert summary["latest_pack"] == str(new_pack)
+    assert summary["manifest_summary"]["marker"] == "new"
+
+
 def test_expert_export_summary_cache_updates_when_old_pack_deleted(tmp_path):
     readers.clear_web_cache()
     exports_root = tmp_path / "exports"

@@ -4753,6 +4753,24 @@ def _expert_export_summary_from_index(root: Path) -> dict[str, Any] | None:
         # The index is stale enough that its manifest/data-quality summary may
         # no longer describe the latest real pack; fall back to the zip scan.
         return None
+    filesystem_packs = _expert_pack_paths(root)
+    if filesystem_packs and normalized_pack_rows:
+        indexed_paths = {
+            Path(str(row.get("path"))).resolve()
+            for row in normalized_pack_rows
+            if row.get("path")
+        }
+        newest_filesystem_pack = filesystem_packs[0].resolve()
+        if newest_filesystem_pack not in indexed_paths:
+            # A newly generated pack can appear before export_index.json is
+            # refreshed.  The index summaries then describe an older pack, so
+            # scan the zips and let the mtime/authoritative rules choose.
+            return None
+        indexed_latest = _latest_authoritative_index_pack(
+            normalized_pack_rows
+        ) or Path(str(normalized_pack_rows[0]["path"])).resolve()
+        if latest_pack is not None and latest_pack.resolve() != indexed_latest:
+            return None
     return {
         "latest_pack": str(latest_pack) if latest_pack is not None else None,
         "packs": (
@@ -4802,6 +4820,16 @@ def _existing_expert_index_pack_rows(
         reverse=True,
     )
     return rows
+
+
+def _latest_authoritative_index_pack(rows: list[dict[str, Any]]) -> Path | None:
+    for row in rows:
+        value = row.get("authoritative_snapshot")
+        if value is True or str(value).strip().lower() in {"true", "1", "yes"}:
+            path = row.get("path")
+            if path:
+                return Path(str(path)).resolve()
+    return None
 
 
 def _existing_expert_index_pack_path(

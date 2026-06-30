@@ -13,6 +13,7 @@ from pydantic import BaseModel, ConfigDict, Field
 
 from quant_lab.data.lake import read_parquet_dataset, write_parquet_dataset, write_snapshot_meta
 from quant_lab.opportunity_cost.ledger import (
+    DECISION_REGRET_SCHEMA_VERSION,
     OPPORTUNITY_COST_BY_BUCKET_SCHEMA_VERSION,
     OPPORTUNITY_COST_DAILY_SCHEMA_VERSION,
     OPPORTUNITY_COST_EVENT_SCHEMA_VERSION,
@@ -30,7 +31,7 @@ from quant_lab.trade_learning.samples import (
 )
 
 TRADE_LEVEL_SCHEMA_VERSION = "trade_level_judgment.v0.1"
-TRADE_OPPORTUNITY_EVENT_SCHEMA_VERSION = "trade_opportunity_event.v0.1"
+TRADE_OPPORTUNITY_EVENT_SCHEMA_VERSION = "trade_opportunity_event.v0.2"
 FALSE_BLOCK_AUDIT_SCHEMA_VERSION = "quant_lab_false_block_audit.v0.1"
 
 TRADE_OPPORTUNITY_EVENT_DATASET = Path("gold") / "trade_opportunity_event"
@@ -43,6 +44,7 @@ V5_TRADE_OUTCOME_ATTRIBUTION_DATASET = Path("gold") / "v5_trade_outcome_attribut
 OPPORTUNITY_COST_EVENT_DATASET = Path("gold") / "quant_lab_opportunity_cost_event"
 OPPORTUNITY_COST_DAILY_DATASET = Path("gold") / "quant_lab_opportunity_cost_daily"
 OPPORTUNITY_COST_BY_BUCKET_DATASET = Path("gold") / "opportunity_cost_by_bucket"
+DECISION_REGRET_DATASET = Path("gold") / "quant_lab_decision_regret"
 
 V5_CANDIDATE_EVENT_DATASET = Path("silver") / "v5_candidate_event"
 V5_TRADE_EVENT_DATASET = Path("silver") / "v5_trade_event"
@@ -70,6 +72,7 @@ TRADE_OPPORTUNITY_EVENT_SCHEMA = {
     "cost_bps": pl.Float64,
     "selected_cost_bps": pl.Float64,
     "actual_all_in_cost_bps": pl.Float64,
+    "cost_source": pl.Utf8,
     "cost_gate_verified": pl.Boolean,
     "would_block_by_cost": pl.Boolean,
     "risk_level": pl.Utf8,
@@ -188,6 +191,7 @@ class TradeLevelBuildResult(BaseModel):
     opportunity_cost_event_rows: int = Field(ge=0)
     opportunity_cost_daily_rows: int = Field(ge=0)
     opportunity_cost_by_bucket_rows: int = Field(ge=0)
+    decision_regret_rows: int = Field(ge=0)
     warnings: list[str] = Field(default_factory=list)
 
 
@@ -219,6 +223,7 @@ def build_and_publish_trade_level_judgment(
         ("quant_lab_opportunity_cost_event", OPPORTUNITY_COST_EVENT_DATASET),
         ("quant_lab_opportunity_cost_daily", OPPORTUNITY_COST_DAILY_DATASET),
         ("opportunity_cost_by_bucket", OPPORTUNITY_COST_BY_BUCKET_DATASET),
+        ("quant_lab_decision_regret", DECISION_REGRET_DATASET),
     ]:
         frame = frames[dataset_name]
         dataset_path = root / relative_path
@@ -245,6 +250,7 @@ def build_and_publish_trade_level_judgment(
         opportunity_cost_event_rows=frames["quant_lab_opportunity_cost_event"].height,
         opportunity_cost_daily_rows=frames["quant_lab_opportunity_cost_daily"].height,
         opportunity_cost_by_bucket_rows=frames["opportunity_cost_by_bucket"].height,
+        decision_regret_rows=frames["quant_lab_decision_regret"].height,
         warnings=warnings,
     )
 
@@ -494,6 +500,9 @@ def _candidate_event_row(
         "cost_bps": selected_cost,
         "selected_cost_bps": selected_cost,
         "actual_all_in_cost_bps": actual_cost,
+        "cost_source": _text(
+            _first(raw, payload, "cost_source", "selected_cost_source", "actual_cost_source")
+        ),
         "cost_gate_verified": _bool(_first(raw, payload, "cost_gate_verified")),
         "would_block_by_cost": _bool(_first(raw, payload, "would_block_by_cost")),
         "risk_level": _text(_first(raw, payload, "risk_level", "risk_state")),
@@ -775,6 +784,7 @@ def _schema_version_for_dataset(dataset_name: str) -> str:
         "quant_lab_opportunity_cost_event": OPPORTUNITY_COST_EVENT_SCHEMA_VERSION,
         "quant_lab_opportunity_cost_daily": OPPORTUNITY_COST_DAILY_SCHEMA_VERSION,
         "opportunity_cost_by_bucket": OPPORTUNITY_COST_BY_BUCKET_SCHEMA_VERSION,
+        "quant_lab_decision_regret": DECISION_REGRET_SCHEMA_VERSION,
     }.get(dataset_name, dataset_name)
 
 

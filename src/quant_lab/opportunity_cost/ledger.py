@@ -7,9 +7,10 @@ from typing import Any
 
 import polars as pl
 
-OPPORTUNITY_COST_EVENT_SCHEMA_VERSION = "quant_lab_opportunity_cost_event.v0.1"
+OPPORTUNITY_COST_EVENT_SCHEMA_VERSION = "quant_lab_opportunity_cost_event.v0.2"
 OPPORTUNITY_COST_DAILY_SCHEMA_VERSION = "quant_lab_opportunity_cost_daily.v0.1"
-OPPORTUNITY_COST_BY_BUCKET_SCHEMA_VERSION = "opportunity_cost_by_bucket.v0.1"
+OPPORTUNITY_COST_BY_BUCKET_SCHEMA_VERSION = "opportunity_cost_by_bucket.v0.2"
+DECISION_REGRET_SCHEMA_VERSION = "quant_lab_decision_regret.v0.1"
 
 OPPORTUNITY_COST_EVENT_SCHEMA = {
     "schema_version": pl.Utf8,
@@ -19,6 +20,7 @@ OPPORTUNITY_COST_EVENT_SCHEMA = {
     "day": pl.Date,
     "symbol": pl.Utf8,
     "strategy_candidate": pl.Utf8,
+    "cost_source": pl.Utf8,
     "v5_would_open": pl.Boolean,
     "quant_lab_decision": pl.Utf8,
     "quant_lab_would_block": pl.Boolean,
@@ -84,6 +86,7 @@ OPPORTUNITY_COST_BY_BUCKET_SCHEMA = {
     "rank_bucket": pl.Utf8,
     "alpha6_bucket": pl.Utf8,
     "expected_edge_ratio_bucket": pl.Utf8,
+    "cost_source": pl.Utf8,
     "cost_gate_bucket": pl.Utf8,
     "sample_count": pl.Int64,
     "false_block_count": pl.Int64,
@@ -96,6 +99,28 @@ OPPORTUNITY_COST_BY_BUCKET_SCHEMA = {
     "high_confidence_false_block_count": pl.Int64,
     "opportunity_exception_candidate": pl.Boolean,
     "recommended_trade_level_decision": pl.Utf8,
+    "created_at": pl.Datetime(time_zone="UTC"),
+    "source": pl.Utf8,
+}
+
+DECISION_REGRET_SCHEMA = {
+    "schema_version": pl.Utf8,
+    "event_id": pl.Utf8,
+    "sample_id": pl.Utf8,
+    "decision_ts": pl.Datetime(time_zone="UTC"),
+    "day": pl.Date,
+    "symbol": pl.Utf8,
+    "strategy_candidate": pl.Utf8,
+    "v5_would_open": pl.Boolean,
+    "quant_lab_decision": pl.Utf8,
+    "actual_action": pl.Utf8,
+    "actual_submitted": pl.Boolean,
+    "after_cost_bps": pl.Float64,
+    "label_horizon_hours": pl.Int64,
+    "best_hindsight_action": pl.Utf8,
+    "regret_bps": pl.Float64,
+    "regret_type": pl.Utf8,
+    "benefit_bps": pl.Float64,
     "created_at": pl.Datetime(time_zone="UTC"),
     "source": pl.Utf8,
 }
@@ -117,10 +142,12 @@ def build_opportunity_cost_frames(
     )
     daily = build_opportunity_cost_daily(event_frame, created_at=created)
     buckets = build_opportunity_cost_by_bucket(event_frame, created_at=created)
+    regret = build_decision_regret(event_frame, created_at=created)
     return {
         "quant_lab_opportunity_cost_event": event_frame,
         "quant_lab_opportunity_cost_daily": daily,
         "opportunity_cost_by_bucket": buckets,
+        "quant_lab_decision_regret": regret,
     }
 
 
@@ -167,6 +194,7 @@ def build_opportunity_cost_events(
                 "day": decision_ts.date() if decision_ts else None,
                 "symbol": _text(event.get("symbol")),
                 "strategy_candidate": _text(event.get("strategy_candidate")),
+                "cost_source": _text(event.get("cost_source")) or "unknown",
                 "v5_would_open": v5_would_open,
                 "quant_lab_decision": quant_lab_decision,
                 "quant_lab_would_block": quant_lab_would_block,
@@ -250,6 +278,42 @@ def build_opportunity_cost_by_bucket(
     return _frame(rows, OPPORTUNITY_COST_BY_BUCKET_SCHEMA)
 
 
+def build_decision_regret(
+    event_frame: pl.DataFrame,
+    *,
+    created_at: datetime | None = None,
+) -> pl.DataFrame:
+    created = created_at or datetime.now(UTC)
+    if event_frame.is_empty():
+        return pl.DataFrame(schema=DECISION_REGRET_SCHEMA)
+    rows = []
+    for row in event_frame.to_dicts():
+        rows.append(
+            {
+                "schema_version": DECISION_REGRET_SCHEMA_VERSION,
+                "event_id": _text(row.get("event_id")),
+                "sample_id": _text(row.get("sample_id") or row.get("event_id")),
+                "decision_ts": _timestamp(row.get("decision_ts")),
+                "day": row.get("day"),
+                "symbol": _text(row.get("symbol")),
+                "strategy_candidate": _text(row.get("strategy_candidate")),
+                "v5_would_open": _bool(row.get("v5_would_open")) is True,
+                "quant_lab_decision": _text(row.get("quant_lab_decision")),
+                "actual_action": _text(row.get("actual_action")),
+                "actual_submitted": _bool(row.get("actual_submitted")) is True,
+                "after_cost_bps": _float(row.get("after_cost_bps")),
+                "label_horizon_hours": _int(row.get("label_horizon_hours")),
+                "best_hindsight_action": _text(row.get("best_hindsight_action")),
+                "regret_bps": _float(row.get("regret_bps")) or 0.0,
+                "regret_type": _text(row.get("regret_type")),
+                "benefit_bps": _float(row.get("benefit_bps")) or 0.0,
+                "created_at": created,
+                "source": "quant_lab.opportunity_cost.regret",
+            }
+        )
+    return _frame(rows, DECISION_REGRET_SCHEMA)
+
+
 def _daily_row(day: date, rows: list[dict[str, Any]], created: datetime) -> dict[str, Any]:
     v5_open_rows = [row for row in rows if row.get("v5_would_open")]
     blocked = [row for row in v5_open_rows if row.get("quant_lab_would_block")]
@@ -319,7 +383,8 @@ def _bucket_row(bucket_key: str, rows: list[dict[str, Any]], created: datetime) 
         "rank_bucket": _part(parts, 4),
         "alpha6_bucket": _part(parts, 5),
         "expected_edge_ratio_bucket": _part(parts, 6),
-        "cost_gate_bucket": _part(parts, 7),
+        "cost_source": _part(parts, 7),
+        "cost_gate_bucket": _part(parts, 8),
         "sample_count": len(v5_open_rows),
         "false_block_count": len(false_blocks),
         "loss_saved_count": len(loss_saved),
@@ -345,6 +410,7 @@ def _bucket_fields(event: dict[str, Any]) -> dict[str, str]:
         _rank_bucket(event),
         _alpha_bucket(event),
         _edge_ratio_bucket(event),
+        _text(event.get("cost_source")) or "unknown_cost_source",
         "cost_gate_verified" if _bool(event.get("cost_gate_verified")) else "cost_gate_unverified",
     ]
     return {"bucket_key": "|".join(parts)}

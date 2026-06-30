@@ -234,6 +234,7 @@ def test_sol_live_success_becomes_learning_sample_not_live_allow():
     opportunity = frames["quant_lab_opportunity_cost_event"].row(0, named=True)
     opportunity_daily = frames["quant_lab_opportunity_cost_daily"].row(0, named=True)
     opportunity_bucket = frames["opportunity_cost_by_bucket"].row(0, named=True)
+    decision_regret = frames["quant_lab_decision_regret"].row(0, named=True)
 
     assert judgment["v5_high_confidence_opportunity"] is True
     assert judgment["trade_level_decision"] == "MICRO_CANARY_REVIEW"
@@ -250,6 +251,7 @@ def test_sol_live_success_becomes_learning_sample_not_live_allow():
     assert attribution["cost_underestimated"] is True
     assert attribution["profit_lock_contribution"] is True
     assert opportunity["regret_type"] == "false_block"
+    assert opportunity["cost_source"] == "unknown"
     assert opportunity["missed_profit_bps"] == 161.0
     assert opportunity["regret_bps"] == 161.0
     assert opportunity_daily["false_block_count"] == 1
@@ -259,7 +261,11 @@ def test_sol_live_success_becomes_learning_sample_not_live_allow():
     assert opportunity_daily["veto_net_value_bps"] == -161.0
     assert opportunity_daily["opportunity_cost_status"] == "VETO_VALUE_NEGATIVE_REVIEW_EXCEPTIONS"
     assert opportunity_bucket["false_block_count"] == 1
+    assert opportunity_bucket["cost_source"] == "unknown_cost_source"
     assert opportunity_bucket["missed_profit_bps_sum"] == 161.0
+    assert decision_regret["regret_type"] == "false_block"
+    assert decision_regret["best_hindsight_action"] == "ALLOW"
+    assert decision_regret["regret_bps"] == 161.0
 
 
 def test_learning_sample_schema_does_not_infer_nullable_float_as_null():

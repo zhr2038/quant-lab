@@ -149,6 +149,58 @@ def test_bigscreen_strategy_flow_counts_use_full_advisory_not_display_sample(tmp
     assert payload["strategy_flow"]["top_candidates"][0]["decision"] == "PAPER_READY"
 
 
+def test_bigscreen_strategy_flow_exposes_opportunity_cost_summary(tmp_path):
+    clear_bigscreen_cache()
+    lake = tmp_path / "lake"
+    created_at = datetime(2026, 6, 29, 10, tzinfo=UTC)
+    write_parquet_dataset(
+        pl.DataFrame(
+            [
+                {
+                    "day": date(2026, 6, 29),
+                    "false_block_count": 1,
+                    "loss_saved_count": 0,
+                    "high_confidence_false_block_count": 1,
+                    "veto_net_value_bps": -161.0,
+                    "opportunity_cost_status": "VETO_VALUE_NEGATIVE_REVIEW_EXCEPTIONS",
+                    "created_at": created_at,
+                }
+            ]
+        ),
+        lake / "gold" / "quant_lab_opportunity_cost_daily",
+    )
+    write_parquet_dataset(
+        pl.DataFrame(
+            [
+                {
+                    "bucket_key": "SOL-USDT|v5.local_alpha6|normal|normal|rank_1",
+                    "symbol": "SOL-USDT",
+                    "rank_bucket": "rank_1",
+                    "alpha6_bucket": "alpha_ge_0_95",
+                    "cost_source": "bootstrap_cost_probe",
+                    "false_block_count": 1,
+                    "loss_saved_count": 0,
+                    "veto_net_value_bps": -161.0,
+                    "opportunity_exception_candidate": True,
+                    "recommended_trade_level_decision": "MICRO_CANARY_REVIEW",
+                    "created_at": created_at,
+                }
+            ]
+        ),
+        lake / "gold" / "opportunity_cost_by_bucket",
+    )
+
+    payload = bigscreen_snapshot(lake)
+    opportunity_cost = payload["strategy_flow"]["opportunity_cost"]
+
+    assert opportunity_cost["veto_net_value_bps"] == -161.0
+    assert opportunity_cost["false_block_count"] == 1
+    assert opportunity_cost["loss_saved_count"] == 0
+    assert opportunity_cost["top_buckets"][0]["recommended_trade_level_decision"] == (
+        "MICRO_CANARY_REVIEW"
+    )
+
+
 def test_bigscreen_data_matrix_shows_proxy_only_live_cost_diagnostics(tmp_path):
     clear_bigscreen_cache()
     lake = tmp_path / "lake"

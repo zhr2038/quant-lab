@@ -93,6 +93,11 @@ def render(lake_root: str | Path, st_module: Any | None = None) -> None:
         summary["quant_lab_opportunity_cost_event"],
         "暂无逐笔机会成本账本。",
     )
+    show_frame(
+        st,
+        summary["quant_lab_decision_regret"],
+        "暂无逐笔 decision regret。",
+    )
 
     st.subheader("Alpha Factory 与自动候选")
     st.caption(

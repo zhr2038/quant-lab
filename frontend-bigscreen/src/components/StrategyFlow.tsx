@@ -1,5 +1,5 @@
 import ReactECharts from "echarts-for-react";
-import { FlaskConical, GitBranch, Rocket, Sparkles } from "lucide-react";
+import { FlaskConical, GitBranch, Rocket, Scale, Sparkles } from "lucide-react";
 import { bps, safeRows, shortNumber, stringValue } from "../lib/api";
 
 export function StrategyFlow({ flow }: { flow: Record<string, unknown> }) {
@@ -8,6 +8,8 @@ export function StrategyFlow({ flow }: { flow: Record<string, unknown> }) {
     ? safeRows(flow.top_live_candidates)
     : safeRows(flow.top_candidates));
   const factorFactory = (flow.factor_factory ?? {}) as Record<string, unknown>;
+  const opportunityCost = (flow.opportunity_cost ?? {}) as Record<string, unknown>;
+  const opportunityBuckets = safeRows(opportunityCost.top_buckets);
   const factorReviewQueue = safeRows(factorFactory.paper_review_queue);
   const factorRows = factorReviewQueue.length
     ? factorReviewQueue
@@ -55,6 +57,22 @@ export function StrategyFlow({ flow }: { flow: Record<string, unknown> }) {
       </div>
       <div className="flow-line"><i /></div>
       <ReactECharts option={option} style={{ height: 112, marginTop: -8 }} />
+      <div className="opportunity-cost-mini">
+        <div className="candidate-title"><Scale size={15} /> 机会成本 / 拦截价值</div>
+        <div className="opportunity-cost-stats">
+          <span><b>{bps(opportunityCost.veto_net_value_bps)}</b><em>拦截净值</em></span>
+          <span><b>{shortNumber(opportunityCost.false_block_count)}</b><em>误杀</em></span>
+          <span><b>{shortNumber(opportunityCost.loss_saved_count)}</b><em>保护</em></span>
+        </div>
+        {opportunityBuckets.slice(0, 1).map((bucket, i) => (
+          <div className="opportunity-bucket" key={`${bucket.bucket_key}-${i}`} title={bucketTitle(bucket)}>
+            <span>{bucketIdentity(bucket)}</span>
+            <em>{stringValue(bucket.recommended_trade_level_decision, "REVIEW")}</em>
+            <strong>{bps(bucket.veto_net_value_bps)}</strong>
+          </div>
+        ))}
+        {!opportunityBuckets.length && <div className="factor-empty">暂无拦截价值样本</div>}
+      </div>
       <div className="factor-factory-mini">
         <div className="candidate-title"><FlaskConical size={15} /> Factor Factory</div>
         <div className="factor-factory-stats">
@@ -88,6 +106,22 @@ export function StrategyFlow({ flow }: { flow: Record<string, unknown> }) {
       </div>
     </section>
   );
+}
+
+function bucketIdentity(bucket: Record<string, unknown>): string {
+  const symbol = stringValue(bucket.symbol, "UNKNOWN");
+  const rank = stringValue(bucket.rank_bucket, "rank?");
+  const alpha = stringValue(bucket.alpha6_bucket, "alpha?");
+  return `${symbol} · ${rank} · ${alpha}`;
+}
+
+function bucketTitle(bucket: Record<string, unknown>): string {
+  return [
+    stringValue(bucket.bucket_key, "bucket"),
+    `false_block=${shortNumber(bucket.false_block_count)}`,
+    `loss_saved=${shortNumber(bucket.loss_saved_count)}`,
+    `veto_net=${bps(bucket.veto_net_value_bps)}`
+  ].join(" | ");
 }
 
 function dedupeCandidates(rows: Record<string, unknown>[]): Record<string, unknown>[] {

@@ -58,6 +58,7 @@ DATASET_PATHS = {
     "quant_lab_opportunity_cost_event": Path("gold") / "quant_lab_opportunity_cost_event",
     "quant_lab_opportunity_cost_daily": Path("gold") / "quant_lab_opportunity_cost_daily",
     "opportunity_cost_by_bucket": Path("gold") / "opportunity_cost_by_bucket",
+    "quant_lab_decision_regret": Path("gold") / "quant_lab_decision_regret",
     "v5_missed_opportunity_audit": Path("gold") / "v5_missed_opportunity_audit",
     "v5_risk_on_multi_buy_shadow": Path("gold") / "v5_risk_on_multi_buy_shadow",
     "risk_on_multi_buy_shadow": Path("gold") / "risk_on_multi_buy_shadow",
@@ -387,6 +388,7 @@ DATASET_TIMESTAMP_COLUMNS: dict[str, tuple[str, ...]] = {
     "quant_lab_opportunity_cost_event": ("decision_ts", "created_at"),
     "quant_lab_opportunity_cost_daily": ("day", "created_at"),
     "opportunity_cost_by_bucket": ("created_at",),
+    "quant_lab_decision_regret": ("decision_ts", "created_at"),
     "v5_missed_opportunity_audit": ("ts_utc", "generated_at"),
     "v5_risk_on_multi_buy_shadow": ("generated_at", "decision_ts"),
     "risk_on_multi_buy_shadow": ("generated_at", "decision_ts"),
@@ -588,6 +590,7 @@ WEB_RESEARCH_SAMPLE_DATASETS = {
     "quant_lab_opportunity_cost_event",
     "quant_lab_opportunity_cost_daily",
     "opportunity_cost_by_bucket",
+    "quant_lab_decision_regret",
     "expanded_relative_strength_decision_sample",
     "expanded_universe_candidate_event",
     "expanded_universe_candidate_label",
@@ -629,6 +632,7 @@ WEB_RECENT_LOOKBACK_HOURS = {
     "quant_lab_opportunity_cost_event": 24 * 14,
     "quant_lab_opportunity_cost_daily": 24 * 14,
     "opportunity_cost_by_bucket": 24 * 14,
+    "quant_lab_decision_regret": 24 * 14,
     "expanded_relative_strength_decision_sample": 24 * 14,
     "expanded_universe_candidate_event": 24 * 14,
     "expanded_universe_candidate_label": 24 * 14,
@@ -672,6 +676,7 @@ WEB_RECENT_FILE_LIMITS = {
     "quant_lab_opportunity_cost_event": 384,
     "quant_lab_opportunity_cost_daily": 384,
     "opportunity_cost_by_bucket": 384,
+    "quant_lab_decision_regret": 384,
     "expanded_relative_strength_decision_sample": 384,
     "expanded_universe_candidate_event": 384,
     "expanded_universe_candidate_label": 384,
@@ -3321,6 +3326,10 @@ def alpha_gate_summary(lake_root: str | Path) -> dict[str, Any]:
             "opportunity_cost_by_bucket",
         )
     )
+    decision_regret, decision_regret_warning = _read_web_display_dataset_with_warning(
+        lake_root,
+        "quant_lab_decision_regret",
+    )
     alpha_factory_results, alpha_factory_results_warning = read_dataset_with_warning(
         lake_root,
         "alpha_factory_result",
@@ -3406,6 +3415,7 @@ def alpha_gate_summary(lake_root: str | Path) -> dict[str, Any]:
             opportunity_cost_events_warning,
             opportunity_cost_daily_warning,
             opportunity_cost_by_bucket_warning,
+            decision_regret_warning,
             alpha_factory_results_warning,
             alpha_factory_promotion_warning,
             missed_opportunity_warning,
@@ -3499,6 +3509,7 @@ def alpha_gate_summary(lake_root: str | Path) -> dict[str, Any]:
         "opportunity_cost_by_bucket": redact_frame(opportunity_cost_by_bucket).head(
             DISPLAY_LIMIT
         ),
+        "quant_lab_decision_regret": redact_frame(decision_regret).head(DISPLAY_LIMIT),
         "alpha_factory_result": redact_frame(
             _alpha_factory_result_table(alpha_factory_results)
         ).head(DISPLAY_LIMIT),
@@ -5900,6 +5911,7 @@ def _empty_dataset_status(dataset_name: str) -> str:
         "quant_lab_opportunity_cost_event",
         "quant_lab_opportunity_cost_daily",
         "opportunity_cost_by_bucket",
+        "quant_lab_decision_regret",
     }:
         return "trade_level_optional"
     return "missing"

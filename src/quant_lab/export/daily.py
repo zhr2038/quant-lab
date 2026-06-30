@@ -80,6 +80,7 @@ from quant_lab.features.fast_microstructure import (
     fast_microstructure_forward_summary_md,
 )
 from quant_lab.opportunity_cost.ledger import (
+    DECISION_REGRET_SCHEMA,
     OPPORTUNITY_COST_BY_BUCKET_SCHEMA,
     OPPORTUNITY_COST_DAILY_SCHEMA,
     OPPORTUNITY_COST_EVENT_SCHEMA,
@@ -206,6 +207,7 @@ SNAPSHOT_META_DATASETS = {
     "quant_lab_opportunity_cost_event",
     "quant_lab_opportunity_cost_daily",
     "opportunity_cost_by_bucket",
+    "quant_lab_decision_regret",
     "risk_permission",
     "risk_permission_api_dependency_meta",
     "research_portfolio_status",
@@ -283,6 +285,7 @@ HEAVY_EXPORT_DATASET_LIMITS = {
     "quant_lab_opportunity_cost_event": 20_000,
     "quant_lab_opportunity_cost_daily": 5_000,
     "opportunity_cost_by_bucket": 20_000,
+    "quant_lab_decision_regret": 20_000,
     "v5_btc_probe_entry_quality_audit": 20_000,
     "v5_candidate_label": 20_000,
     "v5_missed_low_audit": 20_000,
@@ -337,6 +340,7 @@ HEAVY_EXPORT_RECENT_FILE_LIMITS = {
     "quant_lab_opportunity_cost_event": 100,
     "quant_lab_opportunity_cost_daily": 100,
     "opportunity_cost_by_bucket": 100,
+    "quant_lab_decision_regret": 100,
     "v5_btc_probe_entry_quality_audit": 100,
     "v5_candidate_label": 100,
     "v5_missed_low_audit": 100,
@@ -431,6 +435,7 @@ SECTION_DATASETS = {
         "trade_level_similarity_outcome",
         "trade_level_judgment",
         "quant_lab_false_block_audit",
+        "quant_lab_decision_regret",
         "second_stage_alpha_factory_sample",
         "second_stage_alpha_factory_summary",
         "expanded_relative_strength_decision_sample",
@@ -617,6 +622,8 @@ REQUIRED_MEMBERS = [
     "reports/paper_strategy_proposals.csv",
     "reports/paper_strategy_proposal_ack.csv",
     "reports/strategy_opportunity_advisory.csv",
+    "reports/v5_opportunity_event.csv",
+    "reports/v5_opportunity_label.csv",
     "reports/trade_opportunity_event.csv",
     "reports/trade_opportunity_label.csv",
     "reports/trade_level_similarity_outcome.csv",
@@ -627,6 +634,7 @@ REQUIRED_MEMBERS = [
     "reports/quant_lab_opportunity_cost_event.csv",
     "reports/quant_lab_opportunity_cost_daily.csv",
     "reports/opportunity_cost_by_bucket.csv",
+    "reports/quant_lab_decision_regret.csv",
     "reports/api_latency_summary.csv",
     "reports/api_latency_summary.md",
     "reports/api_error_summary.csv",
@@ -1581,6 +1589,8 @@ CSV_SCHEMAS: dict[str, list[str]] = {
         "max_live_notional_usdt",
         "live_order_effect",
     ],
+    "reports/v5_opportunity_event.csv": list(TRADE_OPPORTUNITY_EVENT_SCHEMA),
+    "reports/v5_opportunity_label.csv": list(TRADE_OPPORTUNITY_LABEL_SCHEMA),
     "reports/trade_opportunity_event.csv": list(TRADE_OPPORTUNITY_EVENT_SCHEMA),
     "reports/trade_opportunity_label.csv": list(TRADE_OPPORTUNITY_LABEL_SCHEMA),
     "reports/trade_level_similarity_outcome.csv": list(TRADE_LEVEL_SIMILARITY_SCHEMA),
@@ -1591,6 +1601,7 @@ CSV_SCHEMAS: dict[str, list[str]] = {
     "reports/quant_lab_opportunity_cost_event.csv": list(OPPORTUNITY_COST_EVENT_SCHEMA),
     "reports/quant_lab_opportunity_cost_daily.csv": list(OPPORTUNITY_COST_DAILY_SCHEMA),
     "reports/opportunity_cost_by_bucket.csv": list(OPPORTUNITY_COST_BY_BUCKET_SCHEMA),
+    "reports/quant_lab_decision_regret.csv": list(DECISION_REGRET_SCHEMA),
     "reports/v5_local_live_vs_quant_lab_shadow.csv": [
         "generated_at",
         "schema_version",
@@ -3735,6 +3746,7 @@ def _publish_trade_level_snapshot(
         and not warning.startswith("quant_lab_opportunity_cost_event dataset is ")
         and not warning.startswith("quant_lab_opportunity_cost_daily dataset is ")
         and not warning.startswith("opportunity_cost_by_bucket dataset is ")
+        and not warning.startswith("quant_lab_decision_regret dataset is ")
     ]
     for dataset_name, frame in derived.items():
         _publish_export_frame(
@@ -5674,6 +5686,7 @@ def _dataset_members(
     opportunity_cost_events = frames.get("quant_lab_opportunity_cost_event", pl.DataFrame())
     opportunity_cost_daily = frames.get("quant_lab_opportunity_cost_daily", pl.DataFrame())
     opportunity_cost_by_bucket = frames.get("opportunity_cost_by_bucket", pl.DataFrame())
+    decision_regret = frames.get("quant_lab_decision_regret", pl.DataFrame())
     v5_candidate_quality = frames.get("v5_candidate_quality_daily", pl.DataFrame())
     v5_candidate_outcomes = frames.get("v5_candidate_outcome_summary", pl.DataFrame())
     v5_expanded_universe_advisory_reader = frames.get(
@@ -5987,6 +6000,14 @@ def _dataset_members(
             "reports/strategy_opportunity_advisory.csv",
             opportunity_advisory,
         ),
+        "reports/v5_opportunity_event.csv": _csv_member(
+            "reports/v5_opportunity_event.csv",
+            _tail_by_time(trade_opportunity_events, "decision_ts", limit=50_000),
+        ),
+        "reports/v5_opportunity_label.csv": _csv_member(
+            "reports/v5_opportunity_label.csv",
+            _tail_by_time(trade_opportunity_labels, "decision_ts", limit=50_000),
+        ),
         "reports/trade_opportunity_event.csv": _csv_member(
             "reports/trade_opportunity_event.csv",
             _tail_by_time(trade_opportunity_events, "decision_ts", limit=50_000),
@@ -6026,6 +6047,10 @@ def _dataset_members(
         "reports/opportunity_cost_by_bucket.csv": _csv_member(
             "reports/opportunity_cost_by_bucket.csv",
             opportunity_cost_by_bucket,
+        ),
+        "reports/quant_lab_decision_regret.csv": _csv_member(
+            "reports/quant_lab_decision_regret.csv",
+            _tail_by_time(decision_regret, "decision_ts", limit=50_000),
         ),
         "reports/api_latency_summary.csv": _csv_member(
             "reports/api_latency_summary.csv",

@@ -251,6 +251,10 @@ def _snapshot_source_signature(root: Path) -> tuple[Any, ...]:
         _path_signature(root / "reports" / "v5_enforce_readiness.json"),
         _directory_signature(root / "bronze" / "v5_bundle_manifest"),
         _directory_signature(root / "gold" / "strategy_health_daily"),
+        _directory_signature(root / "gold" / "quant_lab_opportunity_cost_event"),
+        _directory_signature(root / "gold" / "quant_lab_opportunity_cost_daily"),
+        _directory_signature(root / "gold" / "opportunity_cost_by_bucket"),
+        _directory_signature(root / "gold" / "quant_lab_decision_regret"),
     )
 
 
@@ -377,6 +381,9 @@ def _safe_strategy_summary(root: Path) -> dict[str, Any]:
         ("alpha_factory_promotion_queue", "alpha_factory_promotion_queue"),
         ("risk_on_multi_buy_shadow", "risk_on_multi_buy_shadow"),
         ("research_portfolio_status", "research_portfolio_status"),
+        ("quant_lab_opportunity_cost_daily", "quant_lab_opportunity_cost_daily"),
+        ("opportunity_cost_by_bucket", "opportunity_cost_by_bucket"),
+        ("quant_lab_decision_regret", "quant_lab_decision_regret"),
         ("factor_candidate", "factor_candidate"),
         ("factor_evidence", "factor_evidence"),
         ("factor_correlation_daily", "factor_correlation_daily"),
@@ -1219,6 +1226,7 @@ def _strategy_flow(strategy: dict[str, Any]) -> dict[str, Any]:
     counts = _strategy_counts(strategy, advisory_rows)
     top = _top_strategy_candidates(ranking_rows or advisory_rows)
     factor_factory = _factor_factory_payload(strategy)
+    opportunity_cost = _opportunity_cost_payload(strategy)
     return {
         "counts": counts,
         "top_candidates": top[:8],
@@ -1227,10 +1235,39 @@ def _strategy_flow(strategy: dict[str, Any]) -> dict[str, Any]:
         "alpha_factory": _frame_rows(strategy.get("alpha_factory_promotion_queue"), limit=8),
         "risk_on_multi_buy": _frame_rows(strategy.get("risk_on_multi_buy_shadow"), limit=6),
         "factor_factory": factor_factory,
+        "opportunity_cost": opportunity_cost,
         "fast_microstructure_forward": _fast_microstructure_forward_payload(
             strategy.get("fast_microstructure_forward_test")
         ),
         "advisory_fresh": True,
+    }
+
+
+def _opportunity_cost_payload(strategy: dict[str, Any]) -> dict[str, Any]:
+    daily = _as_frame(strategy.get("quant_lab_opportunity_cost_daily"))
+    buckets = _as_frame(strategy.get("opportunity_cost_by_bucket"))
+    regrets = _as_frame(strategy.get("quant_lab_decision_regret"))
+    daily_rows = _frame_rows(daily, limit=200)
+    daily_rows.sort(key=lambda row: str(row.get("day") or ""), reverse=True)
+    latest = daily_rows[0] if daily_rows else {}
+    bucket_rows = _frame_rows(buckets, limit=200)
+    bucket_rows.sort(
+        key=lambda row: (
+            bool(row.get("opportunity_exception_candidate")) is not True,
+            _float(row.get("veto_net_value_bps")) or 0.0,
+        )
+    )
+    return {
+        "latest_day": latest.get("day"),
+        "veto_net_value_bps": _float(latest.get("veto_net_value_bps")),
+        "false_block_count": _int(latest.get("false_block_count")) or 0,
+        "loss_saved_count": _int(latest.get("loss_saved_count")) or 0,
+        "high_confidence_false_block_count": (
+            _int(latest.get("high_confidence_false_block_count")) or 0
+        ),
+        "status": latest.get("opportunity_cost_status") or "NO_DATA",
+        "top_buckets": bucket_rows[:4],
+        "recent_regrets": _frame_rows(regrets, limit=4),
     }
 
 

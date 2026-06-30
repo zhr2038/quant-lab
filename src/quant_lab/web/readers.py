@@ -48,16 +48,19 @@ DATASET_PATHS = {
     "strategy_evidence_quality": Path("gold") / "strategy_evidence_quality",
     "research_portfolio_status": Path("gold") / "research_portfolio_status",
     "strategy_opportunity_advisory": Path("gold") / "strategy_opportunity_advisory",
+    "trade_opportunity_event": Path("gold") / "trade_opportunity_event",
+    "trade_opportunity_label": Path("gold") / "trade_opportunity_label",
+    "trade_level_similarity_outcome": Path("gold") / "trade_level_similarity_outcome",
+    "trade_level_judgment": Path("gold") / "trade_level_judgment",
+    "quant_lab_false_block_audit": Path("gold") / "quant_lab_false_block_audit",
     "v5_missed_opportunity_audit": Path("gold") / "v5_missed_opportunity_audit",
     "v5_risk_on_multi_buy_shadow": Path("gold") / "v5_risk_on_multi_buy_shadow",
     "risk_on_multi_buy_shadow": Path("gold") / "risk_on_multi_buy_shadow",
     "alpha_factory_candidate": Path("gold") / "alpha_factory_candidate",
     "alpha_factory_result": Path("gold") / "alpha_factory_result",
     "alpha_factory_promotion_queue": Path("gold") / "alpha_factory_promotion_queue",
-    "second_stage_alpha_factory_sample": Path("gold")
-    / "second_stage_alpha_factory_sample",
-    "second_stage_alpha_factory_summary": Path("gold")
-    / "second_stage_alpha_factory_summary",
+    "second_stage_alpha_factory_sample": Path("gold") / "second_stage_alpha_factory_sample",
+    "second_stage_alpha_factory_summary": Path("gold") / "second_stage_alpha_factory_summary",
     "expanded_relative_strength_decision_sample": Path("gold")
     / "expanded_relative_strength_decision_sample",
     "alpha_factory_template_registry": Path("gold") / "alpha_factory_template_registry",
@@ -78,17 +81,16 @@ DATASET_PATHS = {
     "expanded_crypto_recommendations": Path("gold") / "expanded_crypto_recommendations",
     "paper_strategy_runs": Path("gold") / "paper_strategy_runs",
     "paper_strategy_daily": Path("gold") / "paper_strategy_daily",
+    "paper_strategy_registry": Path("gold") / "paper_strategy_registry",
+    "paper_strategy_promotion_gate": Path("gold") / "paper_strategy_promotion_gate",
     "paper_slippage_coverage": Path("gold") / "paper_slippage_coverage",
     "v5_final_score_vs_alpha6_conflict": Path("gold") / "v5_final_score_vs_alpha6_conflict",
-    "v5_bnb_strong_alpha6_bypass_shadow": Path("gold")
-    / "v5_bnb_strong_alpha6_bypass_shadow",
+    "v5_bnb_strong_alpha6_bypass_shadow": Path("gold") / "v5_bnb_strong_alpha6_bypass_shadow",
     "v5_negative_expectancy_attribution": Path("gold") / "v5_negative_expectancy_attribution",
     "v5_bnb_paper_strategy_runs": Path("gold") / "v5_bnb_paper_strategy_runs",
     "v5_bnb_paper_strategy_daily": Path("gold") / "v5_bnb_paper_strategy_daily",
-    "v5_bnb_paper_strategy_daily_latest": Path("gold")
-    / "v5_bnb_paper_strategy_daily_latest",
-    "sol_protect_paper_loss_attribution": Path("gold")
-    / "sol_protect_paper_loss_attribution",
+    "v5_bnb_paper_strategy_daily_latest": Path("gold") / "v5_bnb_paper_strategy_daily_latest",
+    "sol_protect_paper_loss_attribution": Path("gold") / "sol_protect_paper_loss_attribution",
     "sol_protect_paper_loss_summary": Path("gold") / "sol_protect_paper_loss_summary",
     "v5_missed_low_audit": Path("gold") / "v5_missed_low_audit",
     "v5_missed_low_by_symbol": Path("gold") / "v5_missed_low_by_symbol",
@@ -101,8 +103,7 @@ DATASET_PATHS = {
     "v5_pullback_reversal_shadow": Path("gold") / "v5_pullback_reversal_shadow",
     "v5_pullback_reversal_readiness": Path("gold") / "v5_pullback_reversal_readiness",
     "v5_pullback_reversal_rule_comparison": Path("gold") / "v5_pullback_reversal_rule_comparison",
-    "v5_btc_probe_entry_quality_audit": Path("silver")
-    / "v5_btc_probe_entry_quality_audit",
+    "v5_btc_probe_entry_quality_audit": Path("silver") / "v5_btc_probe_entry_quality_audit",
     "btc_probe_exit_policy_review": Path("gold") / "btc_probe_exit_policy_review",
     "btc_probe_exit_policy_summary": Path("gold") / "btc_probe_exit_policy_summary",
     "bnb_swing_exit_policy_review": Path("gold") / "bnb_swing_exit_policy_review",
@@ -126,10 +127,7 @@ DATASET_PATHS = {
     "gate_decision": Path("gold") / "gate_decision",
     "risk_permission": Path("gold") / "risk_permission",
     "risk_permission_api_dependency_meta": Path("gold") / "risk_permission_api_dependency_meta",
-    "v5_bundle_manifest": Path("bronze")
-    / "strategy_telemetry"
-    / "v5"
-    / "bundle_manifest",
+    "v5_bundle_manifest": Path("bronze") / "strategy_telemetry" / "v5" / "bundle_manifest",
     "api_request_metrics": Path("bronze") / "api_request_metrics",
     "job_run_history": Path("gold") / "job_run_history",
     "lake_file_health_daily": Path("gold") / "lake_file_health_daily",
@@ -148,19 +146,16 @@ DATASET_PATHS = {
     "v5_quant_lab_cost_usage": Path("silver") / "v5_quant_lab_cost_usage",
     "v5_quant_lab_fallback": Path("silver") / "v5_quant_lab_fallback",
     "v5_cost_probe_p3_preflight": Path("silver") / "v5_cost_probe_p3_preflight",
-    "v5_cost_probe_live_execution_status": Path("silver")
-    / "v5_cost_probe_live_execution_status",
+    "v5_cost_probe_live_execution_status": Path("silver") / "v5_cost_probe_live_execution_status",
     "v5_cost_probe_order_event": Path("silver") / "v5_cost_probe_order_event",
     "v5_cost_probe_roundtrip_event": Path("silver") / "v5_cost_probe_roundtrip_event",
     "v5_paper_strategy_run": Path("silver") / "v5_paper_strategy_run",
+    "v5_paper_strategy_proposal_ack": Path("silver") / "v5_paper_strategy_proposal_ack",
     "v5_paper_strategy_daily": Path("silver") / "v5_paper_strategy_daily",
     "v5_paper_slippage_coverage": Path("silver") / "v5_paper_slippage_coverage",
-    "v5_expanded_universe_advisory_reader": Path("silver")
-    / "v5_expanded_universe_advisory_reader",
-    "v5_expanded_universe_paper_runs": Path("silver")
-    / "v5_expanded_universe_paper_runs",
-    "v5_expanded_universe_paper_daily": Path("silver")
-    / "v5_expanded_universe_paper_daily",
+    "v5_expanded_universe_advisory_reader": Path("silver") / "v5_expanded_universe_advisory_reader",
+    "v5_expanded_universe_paper_runs": Path("silver") / "v5_expanded_universe_paper_runs",
+    "v5_expanded_universe_paper_daily": Path("silver") / "v5_expanded_universe_paper_daily",
     "v5_bnb_profit_lock_shadow": Path("silver") / "v5_bnb_profit_lock_shadow",
     "v5_bnb_negative_expectancy_attribution": Path("silver")
     / "v5_bnb_negative_expectancy_attribution",
@@ -172,8 +167,7 @@ DATASET_PATHS = {
     / "v5_negative_expectancy_attribution",
     "v5_bnb_paper_strategy_runs_silver": Path("silver") / "v5_bnb_paper_strategy_runs",
     "v5_bnb_paper_strategy_daily_silver": Path("silver") / "v5_bnb_paper_strategy_daily",
-    "v5_negative_expectancy_consistency": Path("silver")
-    / "v5_negative_expectancy_consistency",
+    "v5_negative_expectancy_consistency": Path("silver") / "v5_negative_expectancy_consistency",
     "v5_candidate_event": Path("silver") / "v5_candidate_event",
     "v5_candidate_label": Path("gold") / "v5_candidate_label",
     "v5_candidate_quality_daily": Path("gold") / "v5_candidate_quality_daily",
@@ -210,6 +204,7 @@ OPTIONAL_EMPTY_DATASET_STATUSES = {
     "waiting_for_v5_paper_telemetry",
     "waiting_for_v5_bundle_manifest",
     "entry_quality_optional",
+    "trade_level_optional",
     "historical_research_snapshot",
     DERIVED_LATEST_SOURCE_CURRENT_STATUS,
     "event_driven_no_recent_cost_probe_p3_preflight",
@@ -376,6 +371,11 @@ DATASET_TIMESTAMP_COLUMNS: dict[str, tuple[str, ...]] = {
     "strategy_evidence_quality": ("created_at", "as_of_date"),
     "research_portfolio_status": ("created_at", "last_review_date"),
     "strategy_opportunity_advisory": ("as_of_ts", "created_at"),
+    "trade_opportunity_event": ("decision_ts", "created_at"),
+    "trade_opportunity_label": ("decision_ts", "created_at"),
+    "trade_level_similarity_outcome": ("decision_ts", "created_at"),
+    "trade_level_judgment": ("decision_ts", "created_at"),
+    "quant_lab_false_block_audit": ("decision_ts", "created_at"),
     "v5_missed_opportunity_audit": ("ts_utc", "generated_at"),
     "v5_risk_on_multi_buy_shadow": ("generated_at", "decision_ts"),
     "risk_on_multi_buy_shadow": ("generated_at", "decision_ts"),
@@ -402,6 +402,8 @@ DATASET_TIMESTAMP_COLUMNS: dict[str, tuple[str, ...]] = {
     "expanded_crypto_recommendations": ("generated_at", "as_of_date"),
     "paper_strategy_runs": ("created_at", "as_of_date"),
     "paper_strategy_daily": ("created_at", "as_of_date"),
+    "paper_strategy_registry": ("created_at", "accepted_at", "paper_start_at"),
+    "paper_strategy_promotion_gate": ("created_at",),
     "paper_slippage_coverage": ("created_at", "as_of_date"),
     "sol_protect_paper_loss_attribution": (
         "generated_at_utc",
@@ -455,6 +457,7 @@ DATASET_TIMESTAMP_COLUMNS: dict[str, tuple[str, ...]] = {
     "v5_cost_probe_order_event": ("event_ts", "ingest_ts", "bundle_ts"),
     "v5_cost_probe_roundtrip_event": ("event_ts", "ingest_ts", "bundle_ts"),
     "v5_paper_strategy_run": ("created_at", "ingest_ts", "bundle_ts", "as_of_date"),
+    "v5_paper_strategy_proposal_ack": ("created_at", "ingest_ts", "bundle_ts"),
     "v5_paper_strategy_daily": ("created_at", "ingest_ts", "bundle_ts", "as_of_date"),
     "v5_paper_slippage_coverage": ("created_at", "ingest_ts", "bundle_ts", "as_of_date"),
     "v5_expanded_universe_advisory_reader": (
@@ -564,6 +567,11 @@ WEB_RESEARCH_SAMPLE_DATASETS = {
     "strategy_evidence_sample",
     "v5_candidate_event",
     "v5_candidate_label",
+    "trade_opportunity_event",
+    "trade_opportunity_label",
+    "trade_level_similarity_outcome",
+    "trade_level_judgment",
+    "quant_lab_false_block_audit",
     "expanded_relative_strength_decision_sample",
     "expanded_universe_candidate_event",
     "expanded_universe_candidate_label",
@@ -595,6 +603,11 @@ WEB_RECENT_LOOKBACK_HOURS = {
     "strategy_evidence_sample": 24 * 14,
     "v5_candidate_event": 24 * 14,
     "v5_candidate_label": 24 * 14,
+    "trade_opportunity_event": 24 * 14,
+    "trade_opportunity_label": 24 * 14,
+    "trade_level_similarity_outcome": 24 * 14,
+    "trade_level_judgment": 24 * 14,
+    "quant_lab_false_block_audit": 24 * 14,
     "expanded_relative_strength_decision_sample": 24 * 14,
     "expanded_universe_candidate_event": 24 * 14,
     "expanded_universe_candidate_label": 24 * 14,
@@ -628,6 +641,11 @@ WEB_RECENT_FILE_LIMITS = {
     "strategy_evidence_sample": 384,
     "v5_candidate_event": 384,
     "v5_candidate_label": 384,
+    "trade_opportunity_event": 384,
+    "trade_opportunity_label": 384,
+    "trade_level_similarity_outcome": 384,
+    "trade_level_judgment": 384,
+    "quant_lab_false_block_audit": 384,
     "expanded_relative_strength_decision_sample": 384,
     "expanded_universe_candidate_event": 384,
     "expanded_universe_candidate_label": 384,
@@ -962,9 +980,7 @@ def _latest_market_bar_timeframe(df: pl.DataFrame, latest_ts: datetime | None) -
                 pl.col("ts").cast(pl.Datetime(time_zone="UTC")).alias("ts")
             )
         latest_utc = (
-            latest_ts.astimezone(UTC)
-            if latest_ts.tzinfo
-            else latest_ts.replace(tzinfo=UTC)
+            latest_ts.astimezone(UTC) if latest_ts.tzinfo else latest_ts.replace(tzinfo=UTC)
         )
         row = normalized.filter(pl.col("ts") == latest_utc).tail(1)
         if row.is_empty():
@@ -2410,52 +2426,61 @@ def _market_bar_lazy_health(lake_root: str | Path) -> dict[str, Any]:
     snapshot = _dataset_snapshot(lake_root, "market_bar")
     files = _valid_parquet_files(path, invalid_files=invalid_parquet_files(path))
     if not files:
-        return _web_cache_set(cache_key, {
-            "row_count": 0,
-            "warning": snapshot.warning,
-            "latest_per_symbol": pl.DataFrame(),
-            "missing_bars": pl.DataFrame(),
-            "duplicate_bar_count": 0,
-            "unclosed_bar_count": 0,
-            "schema_violations": ["market_bar 数据集缺失或为空"],
-            "latest_market_bar_ts": None,
-            "latest_market_bar_close_ts": None,
-            "market_bar_timeframe": DEFAULT_MARKET_BAR_TIMEFRAME,
-        })
+        return _web_cache_set(
+            cache_key,
+            {
+                "row_count": 0,
+                "warning": snapshot.warning,
+                "latest_per_symbol": pl.DataFrame(),
+                "missing_bars": pl.DataFrame(),
+                "duplicate_bar_count": 0,
+                "unclosed_bar_count": 0,
+                "schema_violations": ["market_bar 数据集缺失或为空"],
+                "latest_market_bar_ts": None,
+                "latest_market_bar_close_ts": None,
+                "market_bar_timeframe": DEFAULT_MARKET_BAR_TIMEFRAME,
+            },
+        )
     try:
         lazy = _scan_parquet_files(files)
         schema = lazy.collect_schema()
     except Exception as exc:
-        return _web_cache_set(cache_key, {
-            "row_count": 0,
-            "warning": f"market_bar 元数据读取失败：{exc}",
-            "latest_per_symbol": pl.DataFrame(),
-            "missing_bars": pl.DataFrame(),
-            "duplicate_bar_count": 0,
-            "unclosed_bar_count": 0,
-            "schema_violations": ["market_bar 数据集读取失败"],
-            "latest_market_bar_ts": None,
-            "latest_market_bar_close_ts": None,
-            "market_bar_timeframe": DEFAULT_MARKET_BAR_TIMEFRAME,
-        })
+        return _web_cache_set(
+            cache_key,
+            {
+                "row_count": 0,
+                "warning": f"market_bar 元数据读取失败：{exc}",
+                "latest_per_symbol": pl.DataFrame(),
+                "missing_bars": pl.DataFrame(),
+                "duplicate_bar_count": 0,
+                "unclosed_bar_count": 0,
+                "schema_violations": ["market_bar 数据集读取失败"],
+                "latest_market_bar_ts": None,
+                "latest_market_bar_close_ts": None,
+                "market_bar_timeframe": DEFAULT_MARKET_BAR_TIMEFRAME,
+            },
+        )
 
     latest_ts = _coerce_timestamp(snapshot.freshness.get("latest_timestamp"))
     latest_close_ts = _coerce_timestamp(snapshot.freshness.get("latest_close_timestamp"))
     timeframe = str(snapshot.freshness.get("timeframe") or DEFAULT_MARKET_BAR_TIMEFRAME)
     if latest_close_ts is None:
         latest_close_ts = market_bar_close_ts(latest_ts, timeframe)
-    return _web_cache_set(cache_key, {
-        "row_count": snapshot.rows,
-        "warning": snapshot.warning,
-        "latest_per_symbol": _latest_market_bars_lazy(lazy, schema),
-        "missing_bars": _missing_bar_table_lazy(lazy, schema),
-        "duplicate_bar_count": _duplicate_market_bar_count_lazy(lazy, schema),
-        "unclosed_bar_count": _unclosed_market_bar_count_lazy(lazy, schema),
-        "schema_violations": _market_bar_schema_violations_lazy(lazy, schema),
-        "latest_market_bar_ts": latest_ts,
-        "latest_market_bar_close_ts": latest_close_ts,
-        "market_bar_timeframe": timeframe,
-    })
+    return _web_cache_set(
+        cache_key,
+        {
+            "row_count": snapshot.rows,
+            "warning": snapshot.warning,
+            "latest_per_symbol": _latest_market_bars_lazy(lazy, schema),
+            "missing_bars": _missing_bar_table_lazy(lazy, schema),
+            "duplicate_bar_count": _duplicate_market_bar_count_lazy(lazy, schema),
+            "unclosed_bar_count": _unclosed_market_bar_count_lazy(lazy, schema),
+            "schema_violations": _market_bar_schema_violations_lazy(lazy, schema),
+            "latest_market_bar_ts": latest_ts,
+            "latest_market_bar_close_ts": latest_close_ts,
+            "market_bar_timeframe": timeframe,
+        },
+    )
 
 
 def okx_collector_summary(lake_root: str | Path) -> dict[str, Any]:
@@ -2793,9 +2818,9 @@ def cost_model_summary(lake_root: str | Path) -> dict[str, Any]:
     return {
         "costs": redact_frame(_cost_bucket_table(costs)).head(DISPLAY_LIMIT),
         "cost_health": redact_frame(_cost_health_table(health)).head(DISPLAY_LIMIT),
-        "cost_bootstrap_readiness": redact_frame(
-            _cost_bootstrap_readiness_table(bootstrap)
-        ).head(DISPLAY_LIMIT),
+        "cost_bootstrap_readiness": redact_frame(_cost_bootstrap_readiness_table(bootstrap)).head(
+            DISPLAY_LIMIT
+        ),
         "live_universe_cost_coverage": live_coverage,
         "actual_rows": int(latest_health.get("actual_rows") or 0),
         "mixed_rows": int(latest_health.get("mixed_rows") or 0),
@@ -3224,6 +3249,26 @@ def alpha_gate_summary(lake_root: str | Path) -> dict[str, Any]:
         lake_root,
         "strategy_opportunity_advisory",
     )
+    trade_opportunities, trade_opportunities_warning = _read_web_display_dataset_with_warning(
+        lake_root,
+        "trade_opportunity_event",
+    )
+    trade_labels, trade_labels_warning = _read_web_display_dataset_with_warning(
+        lake_root,
+        "trade_opportunity_label",
+    )
+    trade_similarity, trade_similarity_warning = _read_web_display_dataset_with_warning(
+        lake_root,
+        "trade_level_similarity_outcome",
+    )
+    trade_judgments, trade_judgments_warning = _read_web_display_dataset_with_warning(
+        lake_root,
+        "trade_level_judgment",
+    )
+    false_block_audit, false_block_warning = _read_web_display_dataset_with_warning(
+        lake_root,
+        "quant_lab_false_block_audit",
+    )
     alpha_factory_results, alpha_factory_results_warning = read_dataset_with_warning(
         lake_root,
         "alpha_factory_result",
@@ -3299,6 +3344,11 @@ def alpha_gate_summary(lake_root: str | Path) -> dict[str, Any]:
             candidate_quality_warning,
             candidate_outcomes_warning,
             strategy_opportunities_warning,
+            trade_opportunities_warning,
+            trade_labels_warning,
+            trade_similarity_warning,
+            trade_judgments_warning,
+            false_block_warning,
             alpha_factory_results_warning,
             alpha_factory_promotion_warning,
             missed_opportunity_warning,
@@ -3328,6 +3378,8 @@ def alpha_gate_summary(lake_root: str | Path) -> dict[str, Any]:
         warnings.append("v5_candidate_event 候选快照尚未入湖")
     if candidate_labels.is_empty():
         warnings.append("v5_candidate_label 前向标签尚未生成")
+    if trade_judgments.is_empty():
+        warnings.append("trade_level_judgment 逐笔判断尚未生成")
     counts: dict[str, int] = {}
     if "status" in gates.columns:
         counts = {
@@ -3370,6 +3422,15 @@ def alpha_gate_summary(lake_root: str | Path) -> dict[str, Any]:
         "strategy_opportunity_advisory": redact_frame(
             _strategy_opportunity_table(strategy_opportunities)
         ).head(DISPLAY_LIMIT),
+        "trade_opportunity_event": redact_frame(_trade_opportunity_table(trade_opportunities)).head(
+            DISPLAY_LIMIT
+        ),
+        "trade_opportunity_label": redact_frame(trade_labels).head(DISPLAY_LIMIT),
+        "trade_level_similarity_outcome": redact_frame(trade_similarity).head(DISPLAY_LIMIT),
+        "trade_level_judgment": redact_frame(_trade_level_judgment_table(trade_judgments)).head(
+            DISPLAY_LIMIT
+        ),
+        "quant_lab_false_block_audit": redact_frame(false_block_audit).head(DISPLAY_LIMIT),
         "alpha_factory_result": redact_frame(
             _alpha_factory_result_table(alpha_factory_results)
         ).head(DISPLAY_LIMIT),
@@ -3379,9 +3440,9 @@ def alpha_gate_summary(lake_root: str | Path) -> dict[str, Any]:
         "missed_opportunity_audit": redact_frame(
             _missed_opportunity_table(missed_opportunity)
         ).head(DISPLAY_LIMIT),
-        "risk_on_multi_buy_shadow": redact_frame(
-            _risk_on_multi_buy_table(risk_on_multi_buy)
-        ).head(DISPLAY_LIMIT),
+        "risk_on_multi_buy_shadow": redact_frame(_risk_on_multi_buy_table(risk_on_multi_buy)).head(
+            DISPLAY_LIMIT
+        ),
         "expanded_universe_candidate": redact_frame(
             _expanded_candidate_table(expanded_candidates)
         ).head(DISPLAY_LIMIT),
@@ -3395,9 +3456,7 @@ def alpha_gate_summary(lake_root: str | Path) -> dict[str, Any]:
         "expanded_universe_promotion_queue": redact_frame(
             _expanded_promotion_table(expanded_promotion)
         ).head(DISPLAY_LIMIT),
-        "expanded_universe_candidate_maturity": redact_frame(expanded_maturity).head(
-            DISPLAY_LIMIT
-        ),
+        "expanded_universe_candidate_maturity": redact_frame(expanded_maturity).head(DISPLAY_LIMIT),
         "expanded_universe_watchlist": redact_frame(
             _expanded_watchlist_table(expanded_watchlist)
         ).head(DISPLAY_LIMIT),
@@ -3663,9 +3722,7 @@ def _risk_on_multi_buy_table(frame: pl.DataFrame) -> pl.DataFrame:
     table = _select_existing_columns(frame, columns)
     table = _with_risk_on_multi_buy_focus(table)
     sort_columns = [
-        column
-        for column in ["ts_utc", "top_k", "would_buy_symbol"]
-        if column in table.columns
+        column for column in ["ts_utc", "top_k", "would_buy_symbol"] if column in table.columns
     ]
     table = table.sort(sort_columns, descending=True) if sort_columns else table
     return _select_existing_columns(
@@ -4387,6 +4444,56 @@ def _candidate_event_table(candidate_events: pl.DataFrame) -> pl.DataFrame:
     return table.sort(sort_columns) if sort_columns else table
 
 
+def _trade_opportunity_table(frame: pl.DataFrame) -> pl.DataFrame:
+    if frame.is_empty():
+        return frame
+    columns = [
+        "decision_ts",
+        "symbol",
+        "side",
+        "intent",
+        "strategy_candidate",
+        "rank",
+        "alpha6_score",
+        "expected_edge_bps",
+        "required_edge_bps",
+        "edge_required_ratio",
+        "cost_gate_verified",
+        "would_block_by_cost",
+        "quant_lab_permission",
+        "quant_lab_permission_status",
+        "v5_would_open",
+        "actual_submitted",
+        "event_id",
+    ]
+    table = _select_existing_columns(frame, columns)
+    sort_columns = [column for column in ["decision_ts", "symbol"] if column in table.columns]
+    return table.sort(sort_columns, descending=[True, False]) if sort_columns else table
+
+
+def _trade_level_judgment_table(frame: pl.DataFrame) -> pl.DataFrame:
+    if frame.is_empty():
+        return frame
+    columns = [
+        "decision_ts",
+        "symbol",
+        "trade_level_decision",
+        "hard_safety_veto",
+        "risk_permission_veto",
+        "strategy_advisory_veto",
+        "v5_high_confidence_opportunity",
+        "similar_sample_count",
+        "similar_median_after_cost_bps",
+        "similar_p25_after_cost_bps",
+        "max_single_order_usdt",
+        "reason",
+        "event_id",
+    ]
+    table = _select_existing_columns(frame, columns)
+    sort_columns = [column for column in ["decision_ts", "symbol"] if column in table.columns]
+    return table.sort(sort_columns, descending=[True, False]) if sort_columns else table
+
+
 def _candidate_label_table(candidate_labels: pl.DataFrame) -> pl.DataFrame:
     if candidate_labels.is_empty():
         return candidate_labels
@@ -4565,9 +4672,7 @@ def v5_telemetry_summary(lake_root: str | Path) -> dict[str, Any]:
             "quant_lab_mode_rows": mode,
             "quant_lab_enforcement_rows": enforcement,
             "cost_probe_p3_preflight_rows": p3_preflight.head(DISPLAY_LIMIT),
-            "cost_probe_live_execution_status_rows": live_execution_status.head(
-                DISPLAY_LIMIT
-            ),
+            "cost_probe_live_execution_status_rows": live_execution_status.head(DISPLAY_LIMIT),
             "cost_probe_order_event_rows": probe_order_events.head(DISPLAY_LIMIT),
             "cost_probe_roundtrip_event_rows": probe_roundtrip_events.head(DISPLAY_LIMIT),
             "warnings": [*warnings, "strategy_health_daily 数据集缺失或为空"],
@@ -4593,9 +4698,7 @@ def v5_telemetry_summary(lake_root: str | Path) -> dict[str, Any]:
         "quant_lab_mode_rows": mode.head(DISPLAY_LIMIT),
         "quant_lab_enforcement_rows": enforcement.head(DISPLAY_LIMIT),
         "cost_probe_p3_preflight_rows": p3_preflight.head(DISPLAY_LIMIT),
-        "cost_probe_live_execution_status_rows": live_execution_status.head(
-            DISPLAY_LIMIT
-        ),
+        "cost_probe_live_execution_status_rows": live_execution_status.head(DISPLAY_LIMIT),
         "cost_probe_order_event_rows": probe_order_events.head(DISPLAY_LIMIT),
         "cost_probe_roundtrip_event_rows": probe_roundtrip_events.head(DISPLAY_LIMIT),
         "warnings": warnings,
@@ -4691,14 +4794,17 @@ def expert_export_summary(exports_root: str | Path) -> dict[str, Any]:
 
     packs = _expert_pack_paths(root)
     if not packs:
-        return _web_cache_set(cache_key, {
-            "latest_pack": None,
-            "packs": pl.DataFrame(),
-            "manifest_summary": {},
-            "data_quality_summary": {},
-            "expert_questions": [],
-            "warnings": [f"未在目录下找到专家包：{root}"],
-        })
+        return _web_cache_set(
+            cache_key,
+            {
+                "latest_pack": None,
+                "packs": pl.DataFrame(),
+                "manifest_summary": {},
+                "data_quality_summary": {},
+                "expert_questions": [],
+                "warnings": [f"未在目录下找到专家包：{root}"],
+            },
+        )
 
     latest = _latest_authoritative_expert_pack(packs) or packs[0]
     manifest = _read_json_from_zip(latest, "manifest.json")
@@ -4714,14 +4820,17 @@ def expert_export_summary(exports_root: str | Path) -> dict[str, Any]:
         }
         for path in packs
     ]
-    return _web_cache_set(cache_key, {
-        "latest_pack": str(latest),
-        "packs": pl.DataFrame(pack_rows),
-        "manifest_summary": manifest,
-        "data_quality_summary": data_quality,
-        "expert_questions": [line for line in questions if line.strip()][:20],
-        "warnings": [WEB_EXPORT_INDEX_MISSING_WARNING],
-    })
+    return _web_cache_set(
+        cache_key,
+        {
+            "latest_pack": str(latest),
+            "packs": pl.DataFrame(pack_rows),
+            "manifest_summary": manifest,
+            "data_quality_summary": data_quality,
+            "expert_questions": [line for line in questions if line.strip()][:20],
+            "warnings": [WEB_EXPORT_INDEX_MISSING_WARNING],
+        },
+    )
 
 
 WEB_EXPORT_INDEX_MISSING_WARNING = "web_export_index_missing_scan_zip_fallback"
@@ -4738,9 +4847,10 @@ def _expert_export_summary_from_index(root: Path) -> dict[str, Any] | None:
     if not isinstance(payload, dict):
         return None
     manifest_summary = payload.get("manifest_summary") or {}
-    if isinstance(manifest_summary, dict) and manifest_summary.get(
-        "authoritative_snapshot"
-    ) is False:
+    if (
+        isinstance(manifest_summary, dict)
+        and manifest_summary.get("authoritative_snapshot") is False
+    ):
         return None
     pack_rows = payload.get("packs")
     if not isinstance(pack_rows, list):
@@ -4756,9 +4866,7 @@ def _expert_export_summary_from_index(root: Path) -> dict[str, Any] | None:
     filesystem_packs = _expert_pack_paths(root)
     if filesystem_packs and normalized_pack_rows:
         indexed_paths = {
-            Path(str(row.get("path"))).resolve()
-            for row in normalized_pack_rows
-            if row.get("path")
+            Path(str(row.get("path"))).resolve() for row in normalized_pack_rows if row.get("path")
         }
         newest_filesystem_pack = filesystem_packs[0].resolve()
         if newest_filesystem_pack not in indexed_paths:
@@ -4766,18 +4874,15 @@ def _expert_export_summary_from_index(root: Path) -> dict[str, Any] | None:
             # refreshed.  The index summaries then describe an older pack, so
             # scan the zips and let the mtime/authoritative rules choose.
             return None
-        indexed_latest = _latest_authoritative_index_pack(
-            normalized_pack_rows
-        ) or Path(str(normalized_pack_rows[0]["path"])).resolve()
+        indexed_latest = (
+            _latest_authoritative_index_pack(normalized_pack_rows)
+            or Path(str(normalized_pack_rows[0]["path"])).resolve()
+        )
         if latest_pack is not None and latest_pack.resolve() != indexed_latest:
             return None
     return {
         "latest_pack": str(latest_pack) if latest_pack is not None else None,
-        "packs": (
-            pl.DataFrame(normalized_pack_rows)
-            if normalized_pack_rows
-            else pl.DataFrame()
-        ),
+        "packs": (pl.DataFrame(normalized_pack_rows) if normalized_pack_rows else pl.DataFrame()),
         "manifest_summary": manifest_summary,
         "data_quality_summary": payload.get("data_quality_summary") or {},
         "expert_questions": payload.get("expert_questions") or [],
@@ -4844,10 +4949,7 @@ def _existing_expert_index_pack_path(
         candidates.append(root / str(name))
     for candidate in candidates:
         pack_name = candidate.name
-        if not (
-            pack_name.startswith("quant_lab_expert_pack_")
-            and pack_name.endswith(".zip")
-        ):
+        if not (pack_name.startswith("quant_lab_expert_pack_") and pack_name.endswith(".zip")):
             continue
         path = candidate if candidate.is_absolute() else root / candidate
         try:
@@ -4944,9 +5046,7 @@ def _latest_v5_bundle_ts(lake_root: str | Path) -> datetime | None:
 
 def _sort_v5_freshness_frame(frame: pl.DataFrame) -> pl.DataFrame:
     sort_columns = [
-        column
-        for column in ("latest_bundle_ts", "created_at", "date")
-        if column in frame.columns
+        column for column in ("latest_bundle_ts", "created_at", "date") if column in frame.columns
     ]
     if not sort_columns:
         sort_columns = [frame.columns[0]]
@@ -5519,11 +5619,7 @@ def _stale_dataset_rows(lake_root: str | Path) -> pl.DataFrame:
             and v5_telemetry_is_current
         ):
             status = EVENT_DRIVEN_V5_DATASET_STATUSES[name]
-        if (
-            name in V5_PAPER_TELEMETRY_DATASETS
-            and status == "stale"
-            and v5_telemetry_is_current
-        ):
+        if name in V5_PAPER_TELEMETRY_DATASETS and status == "stale" and v5_telemetry_is_current:
             status = "waiting_for_v5_paper_telemetry"
         if (
             name in EVENT_DRIVEN_OKX_READONLY_DATASET_STATUSES
@@ -5683,6 +5779,9 @@ def _dataset_display_name(dataset_name: str) -> str:
         "strategy_evidence_sample": "策略证据样本",
         "paper_strategy_runs": "纸面策略运行",
         "paper_strategy_daily": "纸面策略日汇总",
+        "paper_strategy_registry": "纸面策略注册表",
+        "paper_strategy_promotion_gate": "纸面策略晋级闸门",
+        "v5_paper_strategy_proposal_ack": "V5 纸面策略 ACK",
         "paper_slippage_coverage": "纸面滑点覆盖",
         "trade_print": "OKX 成交流",
         "orderbook_snapshot": "OKX 订单簿",
@@ -5720,6 +5819,14 @@ def _empty_dataset_status(dataset_name: str) -> str:
         return "waiting_for_v5_paper_telemetry"
     if dataset_name in ENTRY_QUALITY_DATASETS:
         return "entry_quality_optional"
+    if dataset_name in {
+        "trade_opportunity_event",
+        "trade_opportunity_label",
+        "trade_level_similarity_outcome",
+        "trade_level_judgment",
+        "quant_lab_false_block_audit",
+    }:
+        return "trade_level_optional"
     return "missing"
 
 

@@ -74,6 +74,7 @@ from quant_lab.research.entry_quality import (
 from quant_lab.research.expanded_universe import (
     build_and_publish_expanded_crypto_universe_shadow,
 )
+from quant_lab.research.paper_promotion import build_and_publish_paper_strategy_pipeline
 from quant_lab.research.paper_tracking import build_and_publish_paper_strategy_tracking
 from quant_lab.research.portfolio import build_and_publish_research_portfolio_status
 from quant_lab.research.publish import (
@@ -98,6 +99,7 @@ from quant_lab.strategy_telemetry.ingest import ingest_v5_inbox as ingest_v5_inb
 from quant_lab.strategy_telemetry.models import BundleLimits
 from quant_lab.strategy_telemetry.remote_pull import RemoteBundlePuller
 from quant_lab.strategy_telemetry.sanitize import scan_for_secrets
+from quant_lab.trade_level.judgment import build_and_publish_trade_level_judgment
 from quant_lab.web.export_request import run_web_export_request
 
 app = typer.Typer(help="quant-lab read-only research utilities.")
@@ -762,8 +764,7 @@ def compact_lake_dataset_command(
         typer.Option(
             "--dataset",
             help=(
-                "Dataset name: okx_public_ws, trade_print, orderbook_snapshot, "
-                "or a relative path."
+                "Dataset name: okx_public_ws, trade_print, orderbook_snapshot, or a relative path."
             ),
         ),
     ],
@@ -985,8 +986,7 @@ def repair_lake_partitions_command(
         typer.Option(
             "--dataset",
             help=(
-                "Dataset name: okx_public_ws, trade_print, orderbook_snapshot, "
-                "or a relative path."
+                "Dataset name: okx_public_ws, trade_print, orderbook_snapshot, or a relative path."
             ),
         ),
     ],
@@ -1115,9 +1115,7 @@ def _compact_ops_summary_payload(payload: dict[str, Any]) -> dict[str, Any]:
     api_metrics = payload.get("api_metrics") if isinstance(payload.get("api_metrics"), dict) else {}
     job_runs = payload.get("job_runs") if isinstance(payload.get("job_runs"), dict) else {}
     lake_health = (
-        payload.get("lake_file_health")
-        if isinstance(payload.get("lake_file_health"), dict)
-        else {}
+        payload.get("lake_file_health") if isinstance(payload.get("lake_file_health"), dict) else {}
     )
     return {
         "api_metrics": _compact_api_metrics_payload(api_metrics),
@@ -1177,10 +1175,7 @@ def _parse_dataset_names(dataset: str | None) -> list[str] | None:
 def _compact_api_metrics_payload(api_metrics: dict[str, Any]) -> dict[str, Any]:
     by_path = api_metrics.get("by_path") if isinstance(api_metrics.get("by_path"), dict) else {}
     top_paths = sorted(
-        (
-            {"path": str(path), "count": int(count or 0)}
-            for path, count in by_path.items()
-        ),
+        ({"path": str(path), "count": int(count or 0)} for path, count in by_path.items()),
         key=lambda row: row["count"],
         reverse=True,
     )[:10]
@@ -1198,9 +1193,7 @@ def _compact_job_run_payload(job_runs: dict[str, Any]) -> dict[str, Any]:
     jobs = job_runs.get("jobs")
     job_rows = jobs if isinstance(jobs, list) else []
     historical_failed_jobs = [
-        row
-        for row in job_rows
-        if isinstance(row, dict) and int(row.get("failure_count") or 0) > 0
+        row for row in job_rows if isinstance(row, dict) and int(row.get("failure_count") or 0) > 0
     ]
     current_failed_jobs = [
         row
@@ -1716,6 +1709,44 @@ def build_entry_quality_command(
     typer.echo(result.model_dump_json(indent=2))
 
 
+@app.command("build-trade-level-judgment")
+def build_trade_level_judgment_command(
+    lake_root: Annotated[Path, typer.Option("--lake-root", file_okay=False, dir_okay=True)],
+    as_of_date: Annotated[
+        str,
+        typer.Option("--date", help="UTC as-of day in YYYY-MM-DD format or auto."),
+    ] = "auto",
+) -> None:
+    result = run_with_job_metrics(
+        lake_root=lake_root,
+        job_name="build-trade-level-judgment",
+        func=lambda: build_and_publish_trade_level_judgment(
+            lake_root=lake_root,
+            as_of_date=as_of_date,
+        ),
+    )
+    typer.echo(result.model_dump_json(indent=2))
+
+
+@app.command("build-paper-strategy-pipeline")
+def build_paper_strategy_pipeline_command(
+    lake_root: Annotated[Path, typer.Option("--lake-root", file_okay=False, dir_okay=True)],
+    as_of_date: Annotated[
+        str,
+        typer.Option("--date", help="UTC as-of day in YYYY-MM-DD format or auto."),
+    ] = "auto",
+) -> None:
+    result = run_with_job_metrics(
+        lake_root=lake_root,
+        job_name="build-paper-strategy-pipeline",
+        func=lambda: build_and_publish_paper_strategy_pipeline(
+            lake_root=lake_root,
+            as_of_date=as_of_date,
+        ),
+    )
+    typer.echo(result.model_dump_json(indent=2))
+
+
 @app.command("build-entry-quality-history")
 def build_entry_quality_history_command(
     lake_root: Annotated[Path, typer.Option("--lake-root", file_okay=False, dir_okay=True)],
@@ -1936,10 +1967,7 @@ def export_daily(
         bool,
         typer.Option(
             "--allow-stale-v5/--no-allow-stale-v5",
-            help=(
-                "Allow a non-authoritative expert pack when V5 bundle consistency "
-                "checks fail."
-            ),
+            help=("Allow a non-authoritative expert pack when V5 bundle consistency checks fail."),
         ),
     ] = False,
     expected_v5_bundle_sha256: Annotated[
@@ -2286,9 +2314,7 @@ def _compact_v5_sync_payload(payload: dict[str, object]) -> dict[str, object]:
     if isinstance(inbox_warnings, list):
         warnings.extend(inbox_warnings[:5])
     operational_warnings = [
-        warning
-        for warning in warnings
-        if not _v5_sync_warning_is_expected_limit_notice(warning)
+        warning for warning in warnings if not _v5_sync_warning_is_expected_limit_notice(warning)
     ]
     return {
         "analysis_after_sync": payload.get("analysis_after_sync"),

@@ -23,10 +23,13 @@ from quant_lab.risk.advisory import (
     required_gate_decisions,
 )
 from quant_lab.risk.permissions import evaluate_live_permission
+from quant_lab.trade_level.judgment import trade_level_risk_summary
 
 GATE_DECISION_DATASET = Path("gold") / "gate_decision"
 RISK_PERMISSION_DATASET = Path("gold") / "risk_permission"
 RISK_PERMISSION_API_DEPENDENCY_META_DATASET = Path("gold") / "risk_permission_api_dependency_meta"
+TRADE_LEVEL_JUDGMENT_DATASET = Path("gold") / "trade_level_judgment"
+FALSE_BLOCK_AUDIT_DATASET = Path("gold") / "quant_lab_false_block_audit"
 COST_BUCKET_DAILY_DATASET = Path("gold") / "cost_bucket_daily"
 COST_HEALTH_DAILY_DATASET = Path("gold") / "cost_health_daily"
 MARKET_BAR_DATASET = Path("silver") / "market_bar"
@@ -78,6 +81,9 @@ RISK_PERMISSION_SCHEMA = {
     "allowed_advisory_modes": pl.Utf8,
     "allowed_live_modes": pl.Utf8,
     "live_block_reasons": pl.Utf8,
+    "trade_level_decision_summary": pl.Utf8,
+    "micro_canary_review_count": pl.Int64,
+    "false_block_rate": pl.Float64,
     "source": pl.Utf8,
     "fallback_level": pl.Utf8,
 }
@@ -135,8 +141,10 @@ def publish_risk_permission(
         threshold_seconds=DEFAULT_TELEMETRY_STALE_THRESHOLD_SECONDS,
     )
     permission = apply_risk_advisory_context(permission, advisory_context)
+    row = risk_permission_row(permission)
+    row.update(_trade_level_summary_for_risk_permission(root))
     frame = pl.DataFrame(
-        [risk_permission_row(permission)],
+        [row],
         schema=RISK_PERMISSION_SCHEMA,
         orient="row",
     )
@@ -715,7 +723,22 @@ def risk_permission_row(permission: RiskPermission) -> dict[str, Any]:
         "allowed_advisory_modes": _json(permission.allowed_advisory_modes),
         "allowed_live_modes": _json(permission.allowed_live_modes),
         "live_block_reasons": _json(permission.live_block_reasons),
+        "trade_level_decision_summary": "{}",
+        "micro_canary_review_count": 0,
+        "false_block_rate": 0.0,
     }
+
+
+def _trade_level_summary_for_risk_permission(root: Path) -> dict[str, Any]:
+    try:
+        judgments = read_parquet_dataset(root / TRADE_LEVEL_JUDGMENT_DATASET)
+    except Exception:
+        judgments = pl.DataFrame()
+    try:
+        false_block_audit = read_parquet_dataset(root / FALSE_BLOCK_AUDIT_DATASET)
+    except Exception:
+        false_block_audit = pl.DataFrame()
+    return trade_level_risk_summary(judgments, false_block_audit)
 
 
 def parse_risk_permission_row(row: dict[str, Any]) -> RiskPermission | None:
@@ -723,6 +746,9 @@ def parse_risk_permission_row(row: dict[str, Any]) -> RiskPermission | None:
     cleaned.pop("source", None)
     cleaned.pop("fallback_level", None)
     cleaned.pop("permission_source", None)
+    cleaned.pop("trade_level_decision_summary", None)
+    cleaned.pop("micro_canary_review_count", None)
+    cleaned.pop("false_block_rate", None)
     if isinstance(cleaned.get("allowed_modes"), str):
         cleaned["allowed_modes"] = _json_list(cleaned["allowed_modes"])
     if isinstance(cleaned.get("reasons"), str):

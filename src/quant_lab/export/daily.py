@@ -120,6 +120,11 @@ from quant_lab.research.market_pressure import (
     build_market_pressure_score,
     market_pressure_summary_md,
 )
+from quant_lab.research.paper_promotion import (
+    PAPER_STRATEGY_PROMOTION_GATE_SCHEMA,
+    PAPER_STRATEGY_REGISTRY_SCHEMA,
+    build_paper_strategy_pipeline_frames,
+)
 from quant_lab.research.paper_tracking import (
     build_paper_slippage_coverage,
     build_paper_slippage_coverage_from_v5,
@@ -166,6 +171,14 @@ from quant_lab.strategy_telemetry.sanitize import (
 )
 from quant_lab.symbols import normalize_symbol
 from quant_lab.time_display import BEIJING_TZ, DISPLAY_TIMEZONE, beijing_iso
+from quant_lab.trade_level.judgment import (
+    FALSE_BLOCK_AUDIT_SCHEMA,
+    TRADE_LEVEL_JUDGMENT_SCHEMA,
+    TRADE_OPPORTUNITY_EVENT_SCHEMA,
+    build_trade_level_frames_from_sources,
+)
+from quant_lab.trade_level.labels import TRADE_OPPORTUNITY_LABEL_SCHEMA
+from quant_lab.trade_level.similarity import TRADE_LEVEL_SIMILARITY_SCHEMA
 from quant_lab.web import readers
 
 STRATEGY_OPPORTUNITY_ADVISORY_SCHEMA_VERSION = "strategy_opportunity_advisory.v0.1"
@@ -176,6 +189,11 @@ SNAPSHOT_META_DATASETS = {
     "gate_decision",
     "strategy_health_daily",
     "strategy_opportunity_advisory",
+    "trade_opportunity_event",
+    "trade_opportunity_label",
+    "trade_level_similarity_outcome",
+    "trade_level_judgment",
+    "quant_lab_false_block_audit",
     "risk_permission",
     "risk_permission_api_dependency_meta",
     "research_portfolio_status",
@@ -243,6 +261,11 @@ HEAVY_EXPORT_DATASET_LIMITS = {
     "v5_cost_probe_order_event": 10_000,
     "v5_cost_probe_roundtrip_event": 10_000,
     "v5_candidate_event": 20_000,
+    "trade_opportunity_event": 20_000,
+    "trade_opportunity_label": 20_000,
+    "trade_level_similarity_outcome": 20_000,
+    "trade_level_judgment": 20_000,
+    "quant_lab_false_block_audit": 20_000,
     "v5_btc_probe_entry_quality_audit": 20_000,
     "v5_candidate_label": 20_000,
     "v5_missed_low_audit": 20_000,
@@ -287,6 +310,11 @@ HEAVY_EXPORT_RECENT_FILE_LIMITS = {
     "v5_cost_probe_order_event": 100,
     "v5_cost_probe_roundtrip_event": 100,
     "v5_candidate_event": 100,
+    "trade_opportunity_event": 100,
+    "trade_opportunity_label": 100,
+    "trade_level_similarity_outcome": 100,
+    "trade_level_judgment": 100,
+    "quant_lab_false_block_audit": 100,
     "v5_btc_probe_entry_quality_audit": 100,
     "v5_candidate_label": 100,
     "v5_missed_low_audit": 100,
@@ -376,6 +404,11 @@ SECTION_DATASETS = {
         "strategy_evidence_quality",
         "research_portfolio_status",
         "strategy_opportunity_advisory",
+        "trade_opportunity_event",
+        "trade_opportunity_label",
+        "trade_level_similarity_outcome",
+        "trade_level_judgment",
+        "quant_lab_false_block_audit",
         "second_stage_alpha_factory_sample",
         "second_stage_alpha_factory_summary",
         "expanded_relative_strength_decision_sample",
@@ -402,6 +435,8 @@ SECTION_DATASETS = {
         "expanded_crypto_recommendations",
         "paper_strategy_runs",
         "paper_strategy_daily",
+        "paper_strategy_registry",
+        "paper_strategy_promotion_gate",
         "paper_slippage_coverage",
         "sol_protect_paper_loss_attribution",
         "sol_protect_paper_loss_summary",
@@ -560,6 +595,11 @@ REQUIRED_MEMBERS = [
     "reports/paper_strategy_proposals.csv",
     "reports/paper_strategy_proposal_ack.csv",
     "reports/strategy_opportunity_advisory.csv",
+    "reports/trade_opportunity_event.csv",
+    "reports/trade_opportunity_label.csv",
+    "reports/trade_level_similarity_outcome.csv",
+    "reports/trade_level_judgment.csv",
+    "reports/quant_lab_false_block_audit.csv",
     "reports/api_latency_summary.csv",
     "reports/api_latency_summary.md",
     "reports/api_error_summary.csv",
@@ -628,6 +668,8 @@ REQUIRED_MEMBERS = [
     "reports/strategy_level_dashboard.csv",
     "reports/paper_strategy_runs.csv",
     "reports/paper_strategy_daily.csv",
+    "reports/paper_strategy_registry.csv",
+    "reports/paper_strategy_promotion_gate.csv",
     "reports/paper_strategy_summary.md",
     "reports/bnb_paper_strategy_runs.csv",
     "reports/bnb_paper_strategy_daily.csv",
@@ -1512,6 +1554,11 @@ CSV_SCHEMAS: dict[str, list[str]] = {
         "max_live_notional_usdt",
         "live_order_effect",
     ],
+    "reports/trade_opportunity_event.csv": list(TRADE_OPPORTUNITY_EVENT_SCHEMA),
+    "reports/trade_opportunity_label.csv": list(TRADE_OPPORTUNITY_LABEL_SCHEMA),
+    "reports/trade_level_similarity_outcome.csv": list(TRADE_LEVEL_SIMILARITY_SCHEMA),
+    "reports/trade_level_judgment.csv": list(TRADE_LEVEL_JUDGMENT_SCHEMA),
+    "reports/quant_lab_false_block_audit.csv": list(FALSE_BLOCK_AUDIT_SCHEMA),
     "reports/v5_local_live_vs_quant_lab_shadow.csv": [
         "generated_at",
         "schema_version",
@@ -1732,9 +1779,7 @@ CSV_SCHEMAS: dict[str, list[str]] = {
     "reports/fast_microstructure_strategy_candidates.csv": (
         FAST_MICROSTRUCTURE_STRATEGY_CANDIDATE_FIELDS
     ),
-    "reports/fast_microstructure_strategy_review.csv": (
-        FAST_MICROSTRUCTURE_STRATEGY_REVIEW_FIELDS
-    ),
+    "reports/fast_microstructure_strategy_review.csv": (FAST_MICROSTRUCTURE_STRATEGY_REVIEW_FIELDS),
     "reports/market_pressure_score.csv": MARKET_PRESSURE_FIELDS,
     "reports/risk_on_multi_buy_shadow.csv": [
         "generated_at",
@@ -2246,6 +2291,8 @@ CSV_SCHEMAS: dict[str, list[str]] = {
         "source",
         "schema_version",
     ],
+    "reports/paper_strategy_registry.csv": list(PAPER_STRATEGY_REGISTRY_SCHEMA),
+    "reports/paper_strategy_promotion_gate.csv": list(PAPER_STRATEGY_PROMOTION_GATE_SCHEMA),
     "reports/paper_slippage_coverage.csv": [
         "as_of_date",
         "proposal_id",
@@ -3532,9 +3579,7 @@ CSV_SCHEMAS["v5/v5_cost_probe_roundtrip_canonical.csv"] = [
     "canonical",
     "canonical_priority",
 ]
-CSV_SCHEMAS["reports/bnb_paper_strategy_runs.csv"] = CSV_SCHEMAS[
-    "reports/paper_strategy_runs.csv"
-]
+CSV_SCHEMAS["reports/bnb_paper_strategy_runs.csv"] = CSV_SCHEMAS["reports/paper_strategy_runs.csv"]
 CSV_SCHEMAS["reports/bnb_paper_strategy_daily.csv"] = list(
     dict.fromkeys(
         [
@@ -3626,6 +3671,48 @@ def _publish_strategy_opportunity_advisory_snapshot(
             "bottom_zone_reversal_shadow": derived["bottom_zone_reversal_shadow"],
             "fast_microstructure_forward_test": derived["fast_microstructure_forward_test"],
         },
+    )
+
+
+def _publish_trade_level_snapshot(
+    root: Path,
+    snapshot: _DatasetSnapshot,
+    *,
+    generated_at: datetime,
+) -> _DatasetSnapshot:
+    frames = dict(snapshot.frames)
+    derived = build_trade_level_frames_from_sources(
+        candidate_events=frames.get("v5_candidate_event", pl.DataFrame()),
+        candidate_labels=frames.get("v5_candidate_label", pl.DataFrame()),
+        risk_permissions=frames.get("risk_permission", pl.DataFrame()),
+        v5_trades=frames.get("v5_trade_event", pl.DataFrame()),
+        order_lifecycles=_read_optional_lake_frame(root / "silver" / "v5_order_lifecycle"),
+        created_at=generated_at,
+    )
+    row_counts = dict(snapshot.row_counts)
+    warnings = [
+        warning
+        for warning in snapshot.warnings
+        if not warning.startswith("trade_opportunity_event dataset is ")
+        and not warning.startswith("trade_opportunity_label dataset is ")
+        and not warning.startswith("trade_level_similarity_outcome dataset is ")
+        and not warning.startswith("trade_level_judgment dataset is ")
+        and not warning.startswith("quant_lab_false_block_audit dataset is ")
+    ]
+    for dataset_name, frame in derived.items():
+        _publish_export_frame(
+            root,
+            frames=frames,
+            row_counts=row_counts,
+            warnings=warnings,
+            dataset_name=dataset_name,
+            frame=frame,
+        )
+    return _DatasetSnapshot(
+        frames=frames,
+        row_counts=row_counts,
+        warnings=warnings,
+        transient_frames=snapshot.transient_frames,
     )
 
 
@@ -3888,8 +3975,7 @@ def _publish_export_frame(
     except Exception as exc:
         frames[dataset_name] = frame
         warnings.append(
-            f"{dataset_name} publish skipped: "
-            f"{type(exc).__name__}:{_safe_warning_text(str(exc))}"
+            f"{dataset_name} publish skipped: {type(exc).__name__}:{_safe_warning_text(str(exc))}"
         )
     row_counts[dataset_name] = frame.height
 
@@ -4181,8 +4267,7 @@ def export_daily_pack(
         retry_warnings = _refresh_v5_derived_outputs(root, day)
         if retry_warnings:
             pre_export_v5.setdefault("warnings", []).extend(
-                f"pre_export_v5_derived_refresh_retry:{warning}"
-                for warning in retry_warnings
+                f"pre_export_v5_derived_refresh_retry:{warning}" for warning in retry_warnings
             )
         snapshot = _load_snapshot(root)
         v5_consistency = _v5_export_consistency(
@@ -4230,6 +4315,13 @@ def export_daily_pack(
         "publish_strategy_opportunity_advisory",
         stage_started,
     )
+    stage_started = _export_stage_start("publish_trade_level_judgment")
+    snapshot = _publish_trade_level_snapshot(
+        root,
+        snapshot,
+        generated_at=generated_at,
+    )
+    _record_export_stage(export_stage_timings, "publish_trade_level_judgment", stage_started)
     stage_started = _export_stage_start("publish_risk_dependency_meta")
     snapshot = _publish_risk_permission_dependency_meta_snapshot(root, snapshot)
     _record_export_stage(export_stage_timings, "publish_risk_dependency_meta", stage_started)
@@ -4263,9 +4355,7 @@ def export_daily_pack(
     )
     _record_export_stage(export_stage_timings, "data_quality_payload", stage_started)
     stage_started = _export_stage_start("build_members")
-    warnings = sorted(
-        set([*snapshot.warnings, *pre_export_v5_warnings, *data_quality["warnings"]])
-    )
+    warnings = sorted(set([*snapshot.warnings, *pre_export_v5_warnings, *data_quality["warnings"]]))
 
     member_frames = {**snapshot.frames, **snapshot.transient_frames}
     members: dict[str, _MemberPayload] = {}
@@ -4441,9 +4531,13 @@ def _write_export_index(
         pack_rows = []
         for path in packs:
             stat = path.stat()
-            pack_manifest = manifest if path == latest_pack else _json_member_from_zip(
-                path,
-                "manifest.json",
+            pack_manifest = (
+                manifest
+                if path == latest_pack
+                else _json_member_from_zip(
+                    path,
+                    "manifest.json",
+                )
             )
             pack_rows.append(
                 {
@@ -4451,9 +4545,7 @@ def _write_export_index(
                     "name": path.name,
                     "size_bytes": stat.st_size,
                     "modified_at": datetime.fromtimestamp(stat.st_mtime, tz=UTC).isoformat(),
-                    "authoritative_snapshot": bool(
-                        pack_manifest.get("authoritative_snapshot")
-                    ),
+                    "authoritative_snapshot": bool(pack_manifest.get("authoritative_snapshot")),
                     "selected_v5_bundle_manifest_bundle_name": pack_manifest.get(
                         "selected_v5_bundle_manifest_bundle_name"
                     ),
@@ -4550,12 +4642,8 @@ def validate_expert_pack(path: str | Path) -> ExpertPackValidationResult:
                     if not embedded_path or str(embedded_path) not in names:
                         reasons.append("embedded V5 bundle is missing from zip")
                     else:
-                        expected_sha = str(
-                            manifest.get("embedded_v5_bundle_sha256") or ""
-                        ).strip()
-                        actual_sha = hashlib.sha256(
-                            archive.read(str(embedded_path))
-                        ).hexdigest()
+                        expected_sha = str(manifest.get("embedded_v5_bundle_sha256") or "").strip()
+                        actual_sha = hashlib.sha256(archive.read(str(embedded_path))).hexdigest()
                         if expected_sha and actual_sha.lower() != expected_sha.lower():
                             reasons.append("embedded V5 bundle sha256 mismatch")
             if isinstance(data_quality, dict):
@@ -4701,8 +4789,7 @@ def _should_sample_export_dataset(dataset_path: Path) -> bool:
     if indexed_stats is not None:
         file_count, total_size, _row_count = indexed_stats
         return (
-            file_count > _export_full_read_max_files()
-            or total_size > _export_full_read_max_bytes()
+            file_count > _export_full_read_max_files() or total_size > _export_full_read_max_bytes()
         )
     files = _export_parquet_files(dataset_path)
     if len(files) > _export_full_read_max_files():
@@ -4789,8 +4876,7 @@ def _export_parquet_row_count_from_file_index(
     if scoped.is_empty():
         return None
     rows_by_path = {
-        str(row.get("path") or ""): row
-        for row in scoped.select(sorted(required)).to_dicts()
+        str(row.get("path") or ""): row for row in scoped.select(sorted(required)).to_dicts()
     }
     total = 0
     for file_path in files:
@@ -4867,11 +4953,7 @@ def _export_indexed_parquet_files(dataset_path: Path) -> list[Path] | None:
     if indexed is None:
         return None
     lake_root, scoped = indexed
-    rows = (
-        scoped.select(["path", "mtime_ns"])
-        .sort(["mtime_ns", "path"])
-        .to_dicts()
-    )
+    rows = scoped.select(["path", "mtime_ns"]).sort(["mtime_ns", "path"]).to_dicts()
     files = []
     for row in rows:
         rel = str(row.get("path") or "")
@@ -5123,10 +5205,7 @@ def _filter_bnb_paper_frame(frame: pl.DataFrame) -> pl.DataFrame:
         predicate = expr if predicate is None else predicate | expr
     if "symbol" in frame.columns:
         symbol_expr = (
-            pl.col("symbol")
-            .cast(pl.Utf8, strict=False)
-            .str.to_uppercase()
-            .str.replace("-", "/")
+            pl.col("symbol").cast(pl.Utf8, strict=False).str.to_uppercase().str.replace("-", "/")
             == "BNB/USDT"
         )
         predicate = predicate & symbol_expr if predicate is not None else symbol_expr
@@ -5172,9 +5251,7 @@ def _orderbook_spread_export_table(frame: pl.DataFrame) -> pl.DataFrame:
             ]
             if group_columns:
                 return (
-                    working.sort(sort_columns)
-                    .group_by(group_columns, maintain_order=True)
-                    .tail(1)
+                    working.sort(sort_columns).group_by(group_columns, maintain_order=True).tail(1)
                 )
         return working
     return readers.orderbook_spread_table(frame)
@@ -5277,6 +5354,8 @@ def _dataset_members(
         frames,
         telemetry_latest_ts=telemetry_latest_ts,
     )
+    export_generated_at = (data_quality or {}).get("generated_at") or datetime.now(UTC)
+    export_reference_at = _parse_export_ts(export_generated_at) or datetime.now(UTC)
     paper_runs, paper_daily, paper_slippage = _paper_tracking_frames_for_export(frames)
     bnb_paper_runs = _prefer_frame(
         frames.get("v5_bnb_paper_strategy_runs", pl.DataFrame()),
@@ -5378,6 +5457,15 @@ def _dataset_members(
         alpha_discovery_board,
         research_portfolio=research_portfolio,
     )
+    paper_pipeline = build_paper_strategy_pipeline_frames(
+        proposals=paper_proposals,
+        proposal_ack=frames.get("v5_paper_strategy_proposal_ack", pl.DataFrame()),
+        runs=paper_runs,
+        daily=paper_daily,
+        created_at=export_reference_at,
+    )
+    paper_strategy_registry = paper_pipeline["paper_strategy_registry"]
+    paper_strategy_promotion_gate = paper_pipeline["paper_strategy_promotion_gate"]
     strategy_regime_matrix = frames.get("strategy_regime_matrix", pl.DataFrame())
     regime_strategy_advisory = frames.get("regime_strategy_advisory", pl.DataFrame())
     missed_opportunity_audit = frames.get("v5_missed_opportunity_audit", pl.DataFrame())
@@ -5449,8 +5537,6 @@ def _dataset_members(
     fast_microstructure_strategy_candidates = build_fast_microstructure_strategy_candidates(
         fast_microstructure_forward_test
     )
-    export_generated_at = (data_quality or {}).get("generated_at") or datetime.now(UTC)
-    export_reference_at = _parse_export_ts(export_generated_at) or datetime.now(UTC)
     fast_microstructure_strategy_review = build_fast_microstructure_strategy_review(
         fast_microstructure_strategy_candidates,
         generated_at=export_generated_at,
@@ -5520,11 +5606,9 @@ def _dataset_members(
             pl.DataFrame(),
         )
     )
-    v5_cost_probe_live_execution_status = (
-        _with_cost_probe_authorization_export_freshness(
-            v5_cost_probe_live_execution_status,
-            reference_at=export_reference_at,
-        )
+    v5_cost_probe_live_execution_status = _with_cost_probe_authorization_export_freshness(
+        v5_cost_probe_live_execution_status,
+        reference_at=export_reference_at,
     )
     v5_cost_probe_live_execution_status_canonical = canonical_cost_probe_live_execution_status(
         v5_cost_probe_live_execution_status
@@ -5543,6 +5627,11 @@ def _dataset_members(
         pl.DataFrame(),
     )
     v5_candidate_labels = frames.get("v5_candidate_label", pl.DataFrame())
+    trade_opportunity_events = frames.get("trade_opportunity_event", pl.DataFrame())
+    trade_opportunity_labels = frames.get("trade_opportunity_label", pl.DataFrame())
+    trade_level_similarity = frames.get("trade_level_similarity_outcome", pl.DataFrame())
+    trade_level_judgments = frames.get("trade_level_judgment", pl.DataFrame())
+    false_block_audit = frames.get("quant_lab_false_block_audit", pl.DataFrame())
     v5_candidate_quality = frames.get("v5_candidate_quality_daily", pl.DataFrame())
     v5_candidate_outcomes = frames.get("v5_candidate_outcome_summary", pl.DataFrame())
     v5_expanded_universe_advisory_reader = frames.get(
@@ -5686,9 +5775,7 @@ def _dataset_members(
         ),
         "features/feature_anomalies.csv": _csv_member(
             "features/feature_anomalies.csv",
-            feature_anomalies
-            if not feature_anomalies.is_empty()
-            else _feature_anomalies(features),
+            feature_anomalies if not feature_anomalies.is_empty() else _feature_anomalies(features),
         ),
         "reports/factor_definitions.csv": _csv_member(
             "reports/factor_definitions.csv",
@@ -5743,9 +5830,7 @@ def _dataset_members(
             factor_correlations,
         ),
         "costs/cost_bucket_daily.csv": _csv_member("costs/cost_bucket_daily.csv", costs),
-        "costs/cost_health_daily.csv": _csv_member(
-            "costs/cost_health_daily.csv", cost_health
-        ),
+        "costs/cost_health_daily.csv": _csv_member("costs/cost_health_daily.csv", cost_health),
         "costs/cost_estimate_examples.json": _json_text(_cost_examples(costs)),
         "costs/cost_fallbacks.csv": _csv_text(_cost_fallbacks(costs)),
         "reports/cost_bootstrap_readiness.csv": _csv_member(
@@ -5843,7 +5928,10 @@ def _dataset_members(
         ),
         "reports/candidate_paper_ready.csv": _csv_member(
             "reports/candidate_paper_ready.csv",
-            _formal_candidate_paper_ready_rows(alpha_discovery_board),
+            _formal_candidate_paper_ready_rows(
+                alpha_discovery_board,
+                paper_strategy_promotion_gate=paper_strategy_promotion_gate,
+            ),
         ),
         "reports/historical_label_threshold_ready.csv": _csv_member(
             "reports/historical_label_threshold_ready.csv",
@@ -5856,6 +5944,26 @@ def _dataset_members(
         "reports/strategy_opportunity_advisory.csv": _csv_member(
             "reports/strategy_opportunity_advisory.csv",
             opportunity_advisory,
+        ),
+        "reports/trade_opportunity_event.csv": _csv_member(
+            "reports/trade_opportunity_event.csv",
+            _tail_by_time(trade_opportunity_events, "decision_ts", limit=50_000),
+        ),
+        "reports/trade_opportunity_label.csv": _csv_member(
+            "reports/trade_opportunity_label.csv",
+            _tail_by_time(trade_opportunity_labels, "decision_ts", limit=50_000),
+        ),
+        "reports/trade_level_similarity_outcome.csv": _csv_member(
+            "reports/trade_level_similarity_outcome.csv",
+            _tail_by_time(trade_level_similarity, "decision_ts", limit=50_000),
+        ),
+        "reports/trade_level_judgment.csv": _csv_member(
+            "reports/trade_level_judgment.csv",
+            _tail_by_time(trade_level_judgments, "decision_ts", limit=50_000),
+        ),
+        "reports/quant_lab_false_block_audit.csv": _csv_member(
+            "reports/quant_lab_false_block_audit.csv",
+            _tail_by_time(false_block_audit, "decision_ts", limit=50_000),
         ),
         "reports/api_latency_summary.csv": _csv_member(
             "reports/api_latency_summary.csv",
@@ -5961,9 +6069,7 @@ def _dataset_members(
             "reports/market_pressure_score.csv",
             market_pressure_score,
         ),
-        "reports/market_pressure_summary.md": market_pressure_summary_md(
-            market_pressure_score
-        ),
+        "reports/market_pressure_summary.md": market_pressure_summary_md(market_pressure_score),
         "reports/system_acceptance_dashboard.csv": _csv_member(
             "reports/system_acceptance_dashboard.csv",
             system_acceptance_dashboard,
@@ -6097,6 +6203,14 @@ def _dataset_members(
         "reports/paper_strategy_daily.csv": _csv_member(
             "reports/paper_strategy_daily.csv",
             paper_daily,
+        ),
+        "reports/paper_strategy_registry.csv": _csv_member(
+            "reports/paper_strategy_registry.csv",
+            paper_strategy_registry,
+        ),
+        "reports/paper_strategy_promotion_gate.csv": _csv_member(
+            "reports/paper_strategy_promotion_gate.csv",
+            paper_strategy_promotion_gate,
         ),
         "reports/bnb_paper_strategy_runs.csv": _csv_member(
             "reports/bnb_paper_strategy_runs.csv",
@@ -6285,9 +6399,7 @@ def _dataset_members(
         "v5/v5_quant_lab_cost_usage.csv": _csv_member(
             "v5/v5_quant_lab_cost_usage.csv", v5_cost_usage
         ),
-        "v5/v5_quant_lab_fallbacks.csv": _csv_member(
-            "v5/v5_quant_lab_fallbacks.csv", v5_fallbacks
-        ),
+        "v5/v5_quant_lab_fallbacks.csv": _csv_member("v5/v5_quant_lab_fallbacks.csv", v5_fallbacks),
         "v5/v5_cost_probe_p3_preflight.csv": _csv_member(
             "v5/v5_cost_probe_p3_preflight.csv",
             _tail_by_time(v5_cost_probe_p3_preflight, "generated_at_utc", limit=10_000),
@@ -6409,9 +6521,7 @@ def _v5_candidate_feature_completeness_by_strategy(frame: pl.DataFrame) -> pl.Da
         if not group_rows:
             return {field: 0.0 for field in fields}
         return {
-            field: sum(
-                1 for row in group_rows if _candidate_feature_observed(row.get(field))
-            )
+            field: sum(1 for row in group_rows if _candidate_feature_observed(row.get(field)))
             / len(group_rows)
             for field in fields
         }
@@ -6421,11 +6531,9 @@ def _v5_candidate_feature_completeness_by_strategy(frame: pl.DataFrame) -> pl.Da
         return float(sum(material) / len(material)) if material else 0.0
 
     output: list[dict[str, Any]] = []
-    for strategy, group_rows in sorted(
-        grouped.items(), key=lambda item: (-len(item[1]), item[0])
-    ):
-        denominator_rows, no_signal_context_count = (
-            _v5_candidate_feature_denominator_rows(group_rows)
+    for strategy, group_rows in sorted(grouped.items(), key=lambda item: (-len(item[1]), item[0])):
+        denominator_rows, no_signal_context_count = _v5_candidate_feature_denominator_rows(
+            group_rows
         )
         core = field_completeness(denominator_rows, V5_CANDIDATE_CORE_SIGNAL_FIELDS)
         edge = field_completeness(denominator_rows, V5_CANDIDATE_EDGE_CONTEXT_FIELDS)
@@ -6448,10 +6556,7 @@ def _v5_candidate_feature_completeness_by_strategy(frame: pl.DataFrame) -> pl.Da
                 "edge_context_completeness": round(mean(edge.values()), 6),
                 "optional_signal_completeness": round(mean(optional.values()), 6),
                 "field_completeness_json": safe_json_dumps(
-                    {
-                        field: round(value, 6)
-                        for field, value in sorted(all_fields.items())
-                    }
+                    {field: round(value, 6) for field, value in sorted(all_fields.items())}
                 ),
                 "missing_core_fields": ",".join(
                     field for field, value in core.items() if value < 0.8
@@ -6496,10 +6601,7 @@ def _v5_candidate_row_needs_feature_coverage(row: dict[str, Any]) -> bool:
         value = _float_or_none(row.get(field))
         if value is not None and abs(value) > 0.0:
             return True
-    return any(
-        _candidate_feature_observed(row.get(field))
-        for field in ("final_score", "rank")
-    )
+    return any(_candidate_feature_observed(row.get(field)) for field in ("final_score", "rank"))
 
 
 def _candidate_feature_observed(value: Any) -> bool:
@@ -6569,9 +6671,9 @@ def _attach_selected_v5_bundle(
 
     actual_sha = validation.sha256.lower()
     selected_sha = str(v5_context.get("selected_v5_bundle_sha256") or "").strip().lower()
-    manifest_sha = str(
-        v5_context.get("selected_v5_bundle_manifest_bundle_sha256") or ""
-    ).strip().lower()
+    manifest_sha = (
+        str(v5_context.get("selected_v5_bundle_manifest_bundle_sha256") or "").strip().lower()
+    )
     if selected_sha and actual_sha != selected_sha:
         raise RuntimeError(
             "selected_v5_bundle_attachment_sha_mismatch:"
@@ -6876,16 +6978,12 @@ def _manifest_payload(
         "export_finished_at_beijing": beijing_iso(export_finished_at),
         "risk_permission_generated_at": risk_export_status.get("risk_permission_generated_at"),
         "risk_permission_expires_at": risk_export_status.get("risk_permission_expires_at"),
-        "permission_expired_at_export": risk_export_status.get(
-            "permission_expired_at_export"
-        ),
+        "permission_expired_at_export": risk_export_status.get("permission_expired_at_export"),
         "profile": profile,
         "quant_lab_version": __version__,
         "contract_version": V5_QUANT_LAB_CONTRACT_VERSION,
         "schema_version": V5_TELEMETRY_DATASET_SCHEMA_VERSION,
-        "latest_v5_bundle_seen_at_export": v5_context.get(
-            "latest_v5_bundle_seen_at_export"
-        ),
+        "latest_v5_bundle_seen_at_export": v5_context.get("latest_v5_bundle_seen_at_export"),
         "latest_v5_bundle_ingested_at_export": _iso_or_none(latest_ingested_bundle_ts),
         "authoritative_snapshot": authoritative_snapshot,
         "stale_v5_bundle": stale_v5_bundle,
@@ -6920,27 +7018,15 @@ def _manifest_payload(
             "selected_v5_bundle_event_counts",
             {},
         ),
-        "embedded_v5_bundle_present": bool(
-            v5_context.get("embedded_v5_bundle_present")
-        ),
-        "embedded_v5_bundle_member_path": v5_context.get(
-            "embedded_v5_bundle_member_path"
-        ),
-        "embedded_v5_bundle_manifest_path": v5_context.get(
-            "embedded_v5_bundle_manifest_path"
-        ),
+        "embedded_v5_bundle_present": bool(v5_context.get("embedded_v5_bundle_present")),
+        "embedded_v5_bundle_member_path": v5_context.get("embedded_v5_bundle_member_path"),
+        "embedded_v5_bundle_manifest_path": v5_context.get("embedded_v5_bundle_manifest_path"),
         "embedded_v5_bundle_name": v5_context.get("embedded_v5_bundle_name"),
-        "embedded_v5_bundle_original_name": v5_context.get(
-            "embedded_v5_bundle_original_name"
-        ),
+        "embedded_v5_bundle_original_name": v5_context.get("embedded_v5_bundle_original_name"),
         "embedded_v5_bundle_sha256": v5_context.get("embedded_v5_bundle_sha256"),
-        "embedded_v5_bundle_source_sha256": v5_context.get(
-            "embedded_v5_bundle_source_sha256"
-        ),
+        "embedded_v5_bundle_source_sha256": v5_context.get("embedded_v5_bundle_source_sha256"),
         "embedded_v5_bundle_redacted": bool(v5_context.get("embedded_v5_bundle_redacted")),
-        "embedded_v5_bundle_redacted_source": v5_context.get(
-            "embedded_v5_bundle_redacted_source"
-        ),
+        "embedded_v5_bundle_redacted_source": v5_context.get("embedded_v5_bundle_redacted_source"),
         "embedded_v5_bundle_size_bytes": v5_context.get(
             "embedded_v5_bundle_size_bytes",
             0,
@@ -6962,9 +7048,7 @@ def _manifest_payload(
             "authoritative_snapshot": authoritative_snapshot,
             "stale_v5_bundle": stale_v5_bundle,
             "warning_reason": v5_context.get("warning_reason"),
-            "latest_v5_bundle_seen_at_export": v5_context.get(
-                "latest_v5_bundle_seen_at_export"
-            ),
+            "latest_v5_bundle_seen_at_export": v5_context.get("latest_v5_bundle_seen_at_export"),
             "latest_v5_bundle_ingested_at_export": _iso_or_none(latest_ingested_bundle_ts),
             "selected_v5_bundle_sha256": v5_context.get("selected_v5_bundle_sha256"),
             "acceptance_set_id": v5_context.get("acceptance_set_id"),
@@ -6994,26 +7078,16 @@ def _manifest_payload(
             ),
             "unreadable_bundle_count": v5_context.get("unreadable_bundle_count", 0),
             "unreadable_bundle_names": v5_context.get("unreadable_bundle_names", []),
-            "historical_gap_detected": bool(
-                v5_context.get("historical_gap_detected")
-            ),
+            "historical_gap_detected": bool(v5_context.get("historical_gap_detected")),
             "historical_gap_reason": v5_context.get("historical_gap_reason"),
             "possible_historical_gap": bool(v5_context.get("possible_historical_gap")),
             "max_scan_bundles": v5_context.get("max_scan_bundles"),
             "max_pending_bundles": v5_context.get("max_pending_bundles"),
-            "embedded_v5_bundle_present": bool(
-                v5_context.get("embedded_v5_bundle_present")
-            ),
-            "embedded_v5_bundle_member_path": v5_context.get(
-                "embedded_v5_bundle_member_path"
-            ),
+            "embedded_v5_bundle_present": bool(v5_context.get("embedded_v5_bundle_present")),
+            "embedded_v5_bundle_member_path": v5_context.get("embedded_v5_bundle_member_path"),
             "embedded_v5_bundle_sha256": v5_context.get("embedded_v5_bundle_sha256"),
-            "embedded_v5_bundle_source_sha256": v5_context.get(
-                "embedded_v5_bundle_source_sha256"
-            ),
-            "embedded_v5_bundle_redacted": bool(
-                v5_context.get("embedded_v5_bundle_redacted")
-            ),
+            "embedded_v5_bundle_source_sha256": v5_context.get("embedded_v5_bundle_source_sha256"),
+            "embedded_v5_bundle_redacted": bool(v5_context.get("embedded_v5_bundle_redacted")),
             "embedded_v5_bundle_redacted_source": v5_context.get(
                 "embedded_v5_bundle_redacted_source"
             ),
@@ -7155,8 +7229,7 @@ def _refresh_v5_before_export(
         cfg = _load_export_v5_config(lake_root, config_path=config_path)
     except Exception as exc:  # pragma: no cover - production config errors vary.
         context["warnings"] = [
-            "v5_pre_export_config_failed: "
-            f"{type(exc).__name__}: {_safe_warning_text(str(exc))}"
+            f"v5_pre_export_config_failed: {type(exc).__name__}: {_safe_warning_text(str(exc))}"
         ]
         return context
 
@@ -7499,16 +7572,14 @@ def _apply_selected_bundle_manifest_context(
     context["selected_v5_bundle_ingested_at"] = _iso_or_none(
         _parse_v5_context_ts(manifest_row.get("ingest_ts"))
     )
-    context["selected_v5_bundle_manifest_ingest_ts"] = context[
-        "selected_v5_bundle_ingested_at"
-    ]
+    context["selected_v5_bundle_manifest_ingest_ts"] = context["selected_v5_bundle_ingested_at"]
     context["selected_v5_bundle_manifest_bundle_ts"] = _iso_or_none(
         _parse_v5_context_ts(manifest_row.get("bundle_ts"))
     )
     context["selected_v5_bundle_manifest_bundle_name"] = manifest_row.get("bundle_name")
-    context["selected_v5_bundle_manifest_bundle_sha256"] = (
-        manifest_row.get("bundle_sha256") or context.get("selected_v5_bundle_sha256")
-    )
+    context["selected_v5_bundle_manifest_bundle_sha256"] = manifest_row.get(
+        "bundle_sha256"
+    ) or context.get("selected_v5_bundle_sha256")
     context["selected_v5_bundle_manifest_match"] = True
 
 
@@ -7568,8 +7639,9 @@ def _bundle_manifest_row_by_sha(lake_root: Path, sha256: str | None) -> dict[str
         return None
     return max(
         rows,
-        key=lambda row: _parse_v5_context_ts(row.get("ingest_ts"))
-        or datetime.min.replace(tzinfo=UTC),
+        key=lambda row: (
+            _parse_v5_context_ts(row.get("ingest_ts")) or datetime.min.replace(tzinfo=UTC)
+        ),
     )
 
 
@@ -7584,19 +7656,14 @@ def _v5_export_consistency(
     latest_local_ingested = _latest_v5_bundle_ts(frames)
     selected_sha = str(pre_export_v5.get("selected_v5_bundle_sha256") or "").strip()
     expected_sha = str(pre_export_v5.get("expected_v5_bundle_sha256") or "").strip()
-    selected_ingested_at = _parse_v5_context_ts(
-        pre_export_v5.get("selected_v5_bundle_ingested_at")
-    )
+    selected_ingested_at = _parse_v5_context_ts(pre_export_v5.get("selected_v5_bundle_ingested_at"))
     latest_ingested = _max_dt(latest_local_ingested, selected_ingested_at)
     manifest_match = bool(pre_export_v5.get("selected_v5_bundle_manifest_match"))
     historical_gap_detected = bool(
-        pre_export_v5.get("historical_gap_detected")
-        or pre_export_v5.get("possible_historical_gap")
+        pre_export_v5.get("historical_gap_detected") or pre_export_v5.get("possible_historical_gap")
     )
     historical_gap_reason = str(pre_export_v5.get("historical_gap_reason") or "").strip()
-    pending_uningested_bundle_count = int(
-        pre_export_v5.get("pending_uningested_bundle_count") or 0
-    )
+    pending_uningested_bundle_count = int(pre_export_v5.get("pending_uningested_bundle_count") or 0)
     has_v5_bundle_context = _v5_context_requires_authoritative_failure(pre_export_v5)
     stale, why_stale = _v5_bundle_stale_state(
         latest_remote=latest_seen,
@@ -7621,8 +7688,7 @@ def _v5_export_consistency(
         authoritative_blockers.append("selected_v5_bundle_sha256_missing")
     if expected_sha and selected_sha and expected_sha.lower() != selected_sha.lower():
         authoritative_blockers.append(
-            "expected_v5_bundle_sha256_mismatch:"
-            f"expected={expected_sha};selected={selected_sha}"
+            f"expected_v5_bundle_sha256_mismatch:expected={expected_sha};selected={selected_sha}"
         )
     if selected_ingested_at is None:
         authoritative_blockers.append("selected_v5_bundle_ingested_at_missing")
@@ -7644,12 +7710,7 @@ def _v5_export_consistency(
         if authoritative
         else ";".join(authoritative_blockers)
     )
-    if (
-        not reason
-        and authoritative_blockers
-        and has_v5_bundle_context
-        and pre_export_v5_refresh
-    ):
+    if not reason and authoritative_blockers and has_v5_bundle_context and pre_export_v5_refresh:
         reason = (
             "non_authoritative_v5_snapshot:"
             f"reason={authoritative_reason};"
@@ -7683,16 +7744,12 @@ def _v5_bundle_sync_diagnostics_frame(
 ) -> pl.DataFrame:
     path = "reports/v5_bundle_sync_diagnostics.csv"
     latest_local = _latest_v5_bundle_ts(frames)
-    latest_remote = _parse_v5_context_ts(
-        pre_export_v5.get("latest_v5_bundle_seen_at_export")
-    )
+    latest_remote = _parse_v5_context_ts(pre_export_v5.get("latest_v5_bundle_seen_at_export"))
     selected_bundle_ts = _parse_v5_context_ts(
         pre_export_v5.get("selected_v5_bundle_built_at")
         or pre_export_v5.get("selected_v5_bundle_manifest_bundle_ts")
     )
-    selected_ingested = _parse_v5_context_ts(
-        pre_export_v5.get("selected_v5_bundle_ingested_at")
-    )
+    selected_ingested = _parse_v5_context_ts(pre_export_v5.get("selected_v5_bundle_ingested_at"))
     latest_ingested = _max_dt(latest_local, selected_ingested)
     stale, why_stale = _v5_bundle_stale_state(
         latest_remote=latest_remote,
@@ -7841,6 +7898,13 @@ def _refresh_v5_derived_outputs(lake_root: Path, export_day: date) -> list[str]:
             ),
         ),
         (
+            "build_trade_level_judgment",
+            lambda: __import__(
+                "quant_lab.trade_level.judgment",
+                fromlist=["build_and_publish_trade_level_judgment"],
+            ).build_and_publish_trade_level_judgment(lake_root, as_of_date=export_day),
+        ),
+        (
             "build_expanded_universe_automation",
             lambda: __import__(
                 "quant_lab.research.expanded_universe",
@@ -7867,6 +7931,13 @@ def _refresh_v5_derived_outputs(lake_root: Path, export_day: date) -> list[str]:
                 "quant_lab.research.paper_tracking",
                 fromlist=["build_and_publish_paper_strategy_tracking"],
             ).build_and_publish_paper_strategy_tracking(lake_root, as_of_date=export_day),
+        ),
+        (
+            "build_paper_strategy_pipeline",
+            lambda: __import__(
+                "quant_lab.research.paper_promotion",
+                fromlist=["build_and_publish_paper_strategy_pipeline"],
+            ).build_and_publish_paper_strategy_pipeline(lake_root, as_of_date=export_day),
         ),
         (
             "build_research_portfolio_status_before_diagnostics",
@@ -7968,9 +8039,7 @@ def _refresh_v5_derived_outputs_subprocess(lake_root: Path, export_day: date) ->
                     "POLARS_MAX_THREADS": os.environ.get("POLARS_MAX_THREADS", "2"),
                     "QUANT_LAB_DERIVED_REFRESH_LAKE_ROOT": str(lake_root),
                     "QUANT_LAB_DERIVED_REFRESH_DATE": export_day.isoformat(),
-                    "QUANT_LAB_DERIVED_REFRESH_LOOKBACK_DAYS": str(
-                        EXPORT_V5_DERIVED_LOOKBACK_DAYS
-                    ),
+                    "QUANT_LAB_DERIVED_REFRESH_LOOKBACK_DAYS": str(EXPORT_V5_DERIVED_LOOKBACK_DAYS),
                     "QUANT_LAB_DERIVED_REFRESH_ALPHA_FACTORY_LOOKBACK_DAYS": str(
                         EXPORT_V5_ALPHA_FACTORY_LOOKBACK_DAYS
                     ),
@@ -8079,6 +8148,12 @@ def _v5_derived_refresh_step_bodies() -> list[tuple[str, str]]:
             ")",
         ),
         (
+            "build_trade_level_judgment",
+            "from quant_lab.trade_level.judgment import "
+            "build_and_publish_trade_level_judgment\n"
+            "build_and_publish_trade_level_judgment(lake_root, as_of_date=export_day)",
+        ),
+        (
             "build_expanded_universe_automation",
             "from quant_lab.research.expanded_universe import "
             "build_and_publish_expanded_crypto_universe_shadow\n"
@@ -8102,6 +8177,12 @@ def _v5_derived_refresh_step_bodies() -> list[tuple[str, str]]:
             "from quant_lab.research.paper_tracking import "
             "build_and_publish_paper_strategy_tracking\n"
             "build_and_publish_paper_strategy_tracking(lake_root, as_of_date=export_day)",
+        ),
+        (
+            "build_paper_strategy_pipeline",
+            "from quant_lab.research.paper_promotion import "
+            "build_and_publish_paper_strategy_pipeline\n"
+            "build_and_publish_paper_strategy_pipeline(lake_root, as_of_date=export_day)",
         ),
         (
             "build_research_portfolio_status_before_diagnostics",
@@ -8210,24 +8291,14 @@ def _provenance_payload(
         "selected_v5_bundle_manifest_bundle_name": v5_context.get(
             "selected_v5_bundle_manifest_bundle_name"
         ),
-        "embedded_v5_bundle_present": bool(
-            v5_context.get("embedded_v5_bundle_present")
-        ),
-        "embedded_v5_bundle_member_path": v5_context.get(
-            "embedded_v5_bundle_member_path"
-        ),
+        "embedded_v5_bundle_present": bool(v5_context.get("embedded_v5_bundle_present")),
+        "embedded_v5_bundle_member_path": v5_context.get("embedded_v5_bundle_member_path"),
         "embedded_v5_bundle_name": v5_context.get("embedded_v5_bundle_name"),
-        "embedded_v5_bundle_original_name": v5_context.get(
-            "embedded_v5_bundle_original_name"
-        ),
+        "embedded_v5_bundle_original_name": v5_context.get("embedded_v5_bundle_original_name"),
         "embedded_v5_bundle_sha256": v5_context.get("embedded_v5_bundle_sha256"),
-        "embedded_v5_bundle_source_sha256": v5_context.get(
-            "embedded_v5_bundle_source_sha256"
-        ),
+        "embedded_v5_bundle_source_sha256": v5_context.get("embedded_v5_bundle_source_sha256"),
         "embedded_v5_bundle_redacted": bool(v5_context.get("embedded_v5_bundle_redacted")),
-        "embedded_v5_bundle_redacted_source": v5_context.get(
-            "embedded_v5_bundle_redacted_source"
-        ),
+        "embedded_v5_bundle_redacted_source": v5_context.get("embedded_v5_bundle_redacted_source"),
         "embedded_v5_bundle_size_bytes": v5_context.get(
             "embedded_v5_bundle_size_bytes",
             0,
@@ -8459,9 +8530,7 @@ def _data_quality_payload(
                 "legacy_optional_when_alpha_discovery_board_present"
             ),
             severity=(
-                "critical"
-                if research_enabled and alpha_discovery_board.height == 0
-                else "warning"
+                "critical" if research_enabled and alpha_discovery_board.height == 0 else "warning"
             ),
         )
     )
@@ -8498,8 +8567,8 @@ def _data_quality_payload(
         )
     )
     latest_candidate_quality = _latest_candidate_quality(candidate_quality)
-    candidate_required_feature_completeness = (
-        _v5_candidate_required_feature_completeness(latest_candidate_quality)
+    candidate_required_feature_completeness = _v5_candidate_required_feature_completeness(
+        latest_candidate_quality
     )
     checks.append(
         _check(
@@ -8548,10 +8617,7 @@ def _data_quality_payload(
         _check(
             "v5_candidate_cost_source_coverage",
             float(latest_candidate_quality.get("cost_source_coverage") or 0.0) >= 0.8,
-            (
-                "cost_source_coverage="
-                f"{latest_candidate_quality.get('cost_source_coverage', 'n/a')}"
-            ),
+            (f"cost_source_coverage={latest_candidate_quality.get('cost_source_coverage', 'n/a')}"),
             warning_only=True,
         )
     )
@@ -8775,12 +8841,8 @@ def _data_quality_payload(
         raw_row_label="private_fills",
         raw_row_count=fills.height,
         relevant_row_count=relevant_private_fills,
-        excluded_relevant_row_count=private_fill_probe_context[
-            "cost_probe_private_fill_count"
-        ],
-        exclusion_detail=_private_fill_cost_probe_context_detail(
-            private_fill_probe_context
-        ),
+        excluded_relevant_row_count=private_fill_probe_context["cost_probe_private_fill_count"],
+        exclusion_detail=_private_fill_cost_probe_context_detail(private_fill_probe_context),
         actual_rows=actual_rows,
         mixed_rows=mixed_rows,
     )
@@ -9087,8 +9149,7 @@ def _executive_summary(
         f"Paper tracking stages: {safe_json_dumps(paper_tracking_counts)}",
         f"Paper tracking status counts: {safe_json_dumps(paper_status_counts)}",
         f"V5 candidate_event rows: {snapshot.row_counts.get('v5_candidate_event', 0)}",
-        "V5 candidate label completeness: "
-        f"{candidate_quality.get('label_completeness', 'n/a')}",
+        f"V5 candidate label completeness: {candidate_quality.get('label_completeness', 'n/a')}",
         "V5 candidate cost source coverage: "
         f"{candidate_quality.get('cost_source_coverage', 'n/a')}",
         f"Risk permission counts: {safe_json_dumps(permission_counts)}",
@@ -9207,8 +9268,7 @@ def _cost_bootstrap_readiness_question(readiness: pl.DataFrame) -> str:
     )
     return (
         "cost_bootstrap_readiness 仍无 trusted coverage；"
-        "下一步是 backfill、bill 匹配还是 cost_probe dry-run？states="
-        + ",".join(states[:6])
+        "下一步是 backfill、bill 匹配还是 cost_probe dry-run？states=" + ",".join(states[:6])
     )
 
 
@@ -9220,14 +9280,11 @@ def _live_cost_coverage_question(costs: pl.DataFrame, data_quality: dict[str, An
     coverage_rate = _float_or_none(evaluation.get("coverage_rate"))
     target_coverage = _float_or_none(evaluation.get("target_coverage"))
     coverage_status = str(evaluation.get("coverage_status") or "UNKNOWN").upper()
-    stale_symbols = _question_symbol_list(
-        evaluation.get("stale_actual_or_mixed_symbols", [])
-    )
+    stale_symbols = _question_symbol_list(evaluation.get("stale_actual_or_mixed_symbols", []))
     uncovered_symbols = _question_symbol_list(
         row.get("symbol")
         for row in evaluation.get("rows", [])
-        if str(row.get("symbol") or "").strip()
-        and not bool(row.get("actual_or_mixed_covered"))
+        if str(row.get("symbol") or "").strip() and not bool(row.get("actual_or_mixed_covered"))
     )
     proxy_only_symbols = _question_symbol_list(evaluation.get("proxy_only_symbols", []))
     direct_symbols = _question_symbol_list(evaluation.get("direct_symbols", []))
@@ -9325,10 +9382,7 @@ def _actual_cost_symbol_coverage_check(
             if not symbol or symbol == "GLOBAL":
                 continue
             historical_expected_symbols.add(symbol)
-            sources = {
-                str(row.get(column) or "").strip().lower()
-                for column in source_columns
-            }
+            sources = {str(row.get(column) or "").strip().lower() for column in source_columns}
             if sources.intersection(
                 {
                     "actual_okx_fills_and_bills",
@@ -9460,9 +9514,8 @@ def _raw_fill_like_cost_check(
         excluded_relevant_row_count > 0 and effective_relevant_row_count == 0
     )
     passed = (
-        (latest_health_passed or classification_overrides_latest_health)
-        and not export_raw_without_latest_actual_or_mixed
-    )
+        latest_health_passed or classification_overrides_latest_health
+    ) and not export_raw_without_latest_actual_or_mixed
     detail = (
         f"{raw_row_label}={raw_row_count}; "
         f"relevant_{raw_row_label}={relevant_row_count}; "
@@ -9577,13 +9630,10 @@ def _live_universe_stale_actual_or_mixed_check(costs: pl.DataFrame) -> tuple[boo
     uncovered_symbols = [
         str(row.get("symbol"))
         for row in evaluation.get("rows", [])
-        if str(row.get("symbol") or "").strip()
-        and not bool(row.get("actual_or_mixed_covered"))
+        if str(row.get("symbol") or "").strip() and not bool(row.get("actual_or_mixed_covered"))
     ]
     proxy_only_symbols = [
-        str(symbol)
-        for symbol in evaluation.get("proxy_only_symbols", [])
-        if str(symbol).strip()
+        str(symbol) for symbol in evaluation.get("proxy_only_symbols", []) if str(symbol).strip()
     ]
     coverage_rate = _float_or_none(evaluation.get("coverage_rate"))
     coverage_text = "n/a" if coverage_rate is None else f"{coverage_rate:.2%}"
@@ -9622,11 +9672,7 @@ def _alpha_evidence_for_export(evidence: pl.DataFrame) -> pl.DataFrame:
     else:
         normalized = normalized.with_columns(
             pl.when(pl.col("role").is_null() | (pl.col("role") == ""))
-            .then(
-                pl.col("alpha_id")
-                .cast(pl.Utf8)
-                .map_elements(alpha_role, return_dtype=pl.Utf8)
-            )
+            .then(pl.col("alpha_id").cast(pl.Utf8).map_elements(alpha_role, return_dtype=pl.Utf8))
             .otherwise(pl.col("role").cast(pl.Utf8))
             .alias("role")
         )
@@ -9661,11 +9707,7 @@ def _gate_decisions_for_export(gates: pl.DataFrame) -> pl.DataFrame:
     else:
         normalized = normalized.with_columns(
             pl.when(pl.col("role").is_null() | (pl.col("role") == ""))
-            .then(
-                pl.col("alpha_id")
-                .cast(pl.Utf8)
-                .map_elements(alpha_role, return_dtype=pl.Utf8)
-            )
+            .then(pl.col("alpha_id").cast(pl.Utf8).map_elements(alpha_role, return_dtype=pl.Utf8))
             .otherwise(pl.col("role").cast(pl.Utf8))
             .alias("role")
         )
@@ -9984,7 +10026,11 @@ def _candidate_decision_rows(board: pl.DataFrame, decision: str) -> pl.DataFrame
     return selected.select(CSV_SCHEMAS[path])
 
 
-def _formal_candidate_paper_ready_rows(board: pl.DataFrame) -> pl.DataFrame:
+def _formal_candidate_paper_ready_rows(
+    board: pl.DataFrame,
+    *,
+    paper_strategy_promotion_gate: pl.DataFrame | None = None,
+) -> pl.DataFrame:
     path = "reports/candidate_paper_ready.csv"
     if board.is_empty() or "decision" not in board.columns:
         return _empty_csv_schema_frame(path)
@@ -9992,11 +10038,22 @@ def _formal_candidate_paper_ready_rows(board: pl.DataFrame) -> pl.DataFrame:
     if selected.is_empty():
         return _empty_csv_schema_frame(path)
 
-    rows = [
-        row
-        for row in selected.to_dicts()
-        if _has_formal_paper_ready_evidence(row)
-    ]
+    gate_by_proposal = _paper_ready_gate_by_proposal(paper_strategy_promotion_gate)
+    rows = []
+    for row in selected.to_dicts():
+        gate = gate_by_proposal.get(_paper_proposal_id(row), {})
+        if gate and _optional_bool(gate.get("paper_ready")) is True:
+            updated = dict(row)
+            updated["paper_days"] = _optional_int(gate.get("paper_days"))
+            if gate.get("cost_source"):
+                updated["cost_source_mix"] = gate.get("cost_source")
+            ready_reason = "paper_strategy_pipeline_ready"
+            decision_reasons = set(_jsonish_list(updated.get("decision_reasons")))
+            decision_reasons.add(ready_reason)
+            updated["decision_reasons"] = safe_json_dumps(sorted(decision_reasons))
+            rows.append(updated)
+        elif _has_formal_paper_ready_evidence(row):
+            rows.append(row)
     if not rows:
         return _empty_csv_schema_frame(path)
 
@@ -10011,6 +10068,32 @@ def _formal_candidate_paper_ready_rows(board: pl.DataFrame) -> pl.DataFrame:
     ]
     output = output.sort(sort_columns) if sort_columns else output
     return output.select(CSV_SCHEMAS[path])
+
+
+def _paper_ready_gate_by_proposal(frame: pl.DataFrame | None) -> dict[str, dict[str, Any]]:
+    if frame is None or frame.is_empty() or "proposal_id" not in frame.columns:
+        return {}
+    rows = {}
+    for row in frame.to_dicts():
+        proposal_id = str(row.get("proposal_id") or "").strip()
+        if proposal_id:
+            rows[proposal_id] = row
+    return rows
+
+
+def _jsonish_list(value: Any) -> list[str]:
+    if value in (None, ""):
+        return []
+    if isinstance(value, list):
+        return [str(item) for item in value if str(item)]
+    text = str(value).strip()
+    try:
+        parsed = json.loads(text)
+    except json.JSONDecodeError:
+        return [part.strip() for part in text.replace(";", ",").split(",") if part.strip()]
+    if isinstance(parsed, list):
+        return [str(item) for item in parsed if str(item)]
+    return [str(parsed)] if parsed else []
 
 
 def _has_formal_paper_ready_evidence(row: dict[str, Any]) -> bool:
@@ -10065,9 +10148,7 @@ def _paper_strategy_proposals_for_export(
     ]
     if latest_as_of_date is not None:
         rows = [
-            row
-            for row in rows
-            if str(row.get("as_of_date") or "").strip() == latest_as_of_date
+            row for row in rows if str(row.get("as_of_date") or "").strip() == latest_as_of_date
         ]
     if not rows:
         return _empty_csv_schema_frame(path)
@@ -10197,14 +10278,9 @@ def _lake_file_index_growth_24h_count(root: Path) -> int | None:
         return None
     cutoff_ns = int((datetime.now(UTC) - timedelta(hours=24)).timestamp() * 1_000_000_000)
     try:
-        return (
-            frame.select(
-                (pl.col("mtime_ns").cast(pl.Int64, strict=False) >= cutoff_ns)
-                .sum()
-                .alias("count")
-            )
-            .item(0, "count")
-        )
+        return frame.select(
+            (pl.col("mtime_ns").cast(pl.Int64, strict=False) >= cutoff_ns).sum().alias("count")
+        ).item(0, "count")
     except Exception:
         return None
 
@@ -10254,18 +10330,14 @@ def _lake_file_health_for_export(root: Path) -> dict[str, Any]:
         reverse=True,
     )[:10]
     warning_rows = [
-        row
-        for row in rows
-        if str(row.get("status") or "").upper() not in {"", "OK", "PASS"}
+        row for row in rows if str(row.get("status") or "").upper() not in {"", "OK", "PASS"}
     ][:10]
     return {
         "ok": True,
         "dataset_count": int(summary.get("dataset_count") or 0),
         "total_parquet_files": int(summary.get("total_parquet_files") or 0),
         "warning_count": int(summary.get("warning_count") or 0),
-        "top_file_count_datasets": [
-            _lake_file_health_row_for_manifest(row) for row in top_rows
-        ],
+        "top_file_count_datasets": [_lake_file_health_row_for_manifest(row) for row in top_rows],
         "warnings": [_lake_file_health_row_for_manifest(row) for row in warning_rows],
     }
 
@@ -10400,9 +10472,7 @@ def _github_ci_status_summary(frame: pl.DataFrame) -> dict[str, Any]:
     present = {str(row.get("component") or "") for row in rows}
     missing = sorted(required - present)
     failures = [
-        row
-        for row in rows
-        if str(row.get("workflow_conclusion") or "").lower() not in {"success"}
+        row for row in rows if str(row.get("workflow_conclusion") or "").lower() not in {"success"}
     ]
     overall = "PASS" if rows and not missing and not failures else "WARNING"
     known_bad = {
@@ -10644,9 +10714,7 @@ def _api_latency_summary_row(endpoint: str, summary: dict[str, Any]) -> dict[str
         "response_cache_hit_rate": _safe_rate(
             summary.get("response_cache_hit_count"), request_count
         ),
-        "dependency_meta_missing_count": int(
-            summary.get("dependency_meta_missing_count") or 0
-        ),
+        "dependency_meta_missing_count": int(summary.get("dependency_meta_missing_count") or 0),
         "dependency_meta_missing_rate": _safe_rate(
             summary.get("dependency_meta_missing_count"), request_count
         ),
@@ -10677,11 +10745,7 @@ def _production_v5_api_metrics_summary(
 
 
 def _csv_env_values(name: str) -> list[str]:
-    return [
-        item.strip()
-        for item in str(os.environ.get(name) or "").split(",")
-        if item.strip()
-    ]
+    return [item.strip() for item in str(os.environ.get(name) or "").split(",") if item.strip()]
 
 
 def _api_metrics_export_window_minutes() -> int:
@@ -10917,9 +10981,7 @@ def _strategy_opportunity_advisory_for_export(
         source_module = row.get("source_module") or alpha_factory_meta.get("source_module")
         template_family = row.get("template_family") or alpha_factory_meta.get("template_family")
         candidate_id = row.get("candidate_id") or alpha_factory_meta.get("candidate_id")
-        promotion_state = row.get("promotion_state") or alpha_factory_meta.get(
-            "promotion_state"
-        )
+        promotion_state = row.get("promotion_state") or alpha_factory_meta.get("promotion_state")
         alpha_factory_score = _optional_float(row.get("alpha_factory_score"))
         if alpha_factory_score is None:
             alpha_factory_score = _optional_float(alpha_factory_meta.get("alpha_factory_score"))
@@ -10939,13 +11001,11 @@ def _strategy_opportunity_advisory_for_export(
                 "expires_at": _advisory_expires_at(row, generated_at),
                 "contract_version": V5_QUANT_LAB_CONTRACT_VERSION,
                 "schema_version": str(
-                    row.get("schema_version")
-                    or STRATEGY_OPPORTUNITY_ADVISORY_SCHEMA_VERSION
+                    row.get("schema_version") or STRATEGY_OPPORTUNITY_ADVISORY_SCHEMA_VERSION
                 ),
                 "quant_lab_git_commit": _observable_text(row.get("quant_lab_git_commit"))
                 or git_commit,
-                "source_version": _observable_text(row.get("source_version"))
-                or source_version,
+                "source_version": _observable_text(row.get("source_version")) or source_version,
                 "would_block_if_enabled": _advisory_would_block_if_enabled(
                     decision=decision,
                     recommended_mode=recommended_mode,
@@ -11008,9 +11068,7 @@ def _strategy_opportunity_advisory_for_export(
     )
     rows.extend(
         _regime_router_opportunity_rows(
-            regime_strategy_advisory
-            if regime_strategy_advisory is not None
-            else pl.DataFrame()
+            regime_strategy_advisory if regime_strategy_advisory is not None else pl.DataFrame()
         )
     )
     rows.extend(
@@ -11287,17 +11345,23 @@ def _bottom_zone_probe_paper_readiness_for_export(
     for key, daily in sorted(latest_daily.items()):
         strategy_id, strategy_candidate, symbol = key
         values = run_pnls.get(key, [])
-        paper_days = _optional_int(
-            daily.get("paper_days")
-            or daily.get("paper_days_to_date")
-            or daily.get("paper_pnl_day_count")
-        ) or 0
-        paper_entries = _optional_int(
-            daily.get("would_enter_count")
-            or daily.get("cumulative_would_enter_count")
-            or daily.get("entry_count")
-            or daily.get("daily_would_enter_count")
-        ) or 0
+        paper_days = (
+            _optional_int(
+                daily.get("paper_days")
+                or daily.get("paper_days_to_date")
+                or daily.get("paper_pnl_day_count")
+            )
+            or 0
+        )
+        paper_entries = (
+            _optional_int(
+                daily.get("would_enter_count")
+                or daily.get("cumulative_would_enter_count")
+                or daily.get("entry_count")
+                or daily.get("daily_would_enter_count")
+            )
+            or 0
+        )
         avg_pnl = _optional_float(daily.get("avg_paper_pnl_bps"))
         if avg_pnl is None:
             avg_pnl = _float_mean(values)
@@ -11460,9 +11524,7 @@ def _factor_strategy_bridge_review_opportunity_rows(
             continue
         if eligible != "strategy_review_pending":
             continue
-        if not candidate_id.startswith(
-            ("v5.factor_bridge.", "v5.fast_microstructure_bridge.")
-        ):
+        if not candidate_id.startswith(("v5.factor_bridge.", "v5.fast_microstructure_bridge.")):
             continue
         symbol = normalize_symbol(raw.get("symbol")) or "ALL"
         generated_at = _advisory_generated_at(raw)
@@ -11506,9 +11568,7 @@ def _factor_strategy_bridge_review_opportunity_rows(
                 "cost_quality": "strategy_review_pending_cost_validation",
                 "source_module": "factor_strategy_bridge",
                 "template_family": (
-                    "fast_microstructure_bridge"
-                    if is_fast_bridge
-                    else "factor_strategy_bridge"
+                    "fast_microstructure_bridge" if is_fast_bridge else "factor_strategy_bridge"
                 ),
                 "candidate_id": candidate_id,
                 "promotion_state": "STRATEGY_REVIEW_PENDING",
@@ -11559,17 +11619,12 @@ def _entry_quality_opportunity_rows(entry_quality_advisory: pl.DataFrame) -> lis
                 "expires_at": _advisory_expires_at(row, generated_at),
                 "contract_version": V5_QUANT_LAB_CONTRACT_VERSION,
                 "schema_version": str(
-                    row.get("schema_version")
-                    or STRATEGY_OPPORTUNITY_ADVISORY_SCHEMA_VERSION
+                    row.get("schema_version") or STRATEGY_OPPORTUNITY_ADVISORY_SCHEMA_VERSION
                 ),
                 "quant_lab_git_commit": _observable_text(row.get("quant_lab_git_commit"))
                 or git_commit,
-                "source_version": _observable_text(row.get("source_version"))
-                or source_version,
-                "would_block_if_enabled": _optional_bool(
-                    row.get("would_block_if_enabled")
-                )
-                is True,
+                "source_version": _observable_text(row.get("source_version")) or source_version,
+                "would_block_if_enabled": _optional_bool(row.get("would_block_if_enabled")) is True,
                 "would_enter": _optional_bool(row.get("would_enter")) is True,
                 "no_sample_reason": str(row.get("no_sample_reason") or "").strip()
                 or _entry_quality_export_no_sample_reason(row, mode),
@@ -12426,7 +12481,8 @@ def _final_score_vs_alpha6_conflict_summary_md(conflicts: pl.DataFrame) -> str:
     negative_expectancy_block_count = sum(
         1
         for row in rows
-        if "negative_expectancy" in " ".join(
+        if "negative_expectancy"
+        in " ".join(
             [
                 str(row.get("block_reason") or ""),
                 str(row.get("no_signal_reason") or ""),
@@ -12523,9 +12579,7 @@ def _v5_quant_lab_consistency_dashboard_md(
 ) -> str:
     live_state_ok = _live_state_consistency_ok(frames)
     conflict_rows = (
-        final_score_alpha6_conflict.to_dicts()
-        if not final_score_alpha6_conflict.is_empty()
-        else []
+        final_score_alpha6_conflict.to_dicts() if not final_score_alpha6_conflict.is_empty() else []
     )
     bnb_conflicts = [
         row for row in conflict_rows if normalize_symbol(row.get("symbol")) == "BNB-USDT"
@@ -12583,12 +12637,8 @@ def _v5_quant_lab_consistency_dashboard_md(
         frames.get("v5_bnb_paper_strategy_daily_latest", pl.DataFrame()),
         bnb_paper_daily,
     )
-    bnb_paper_quant_lab_raw_entry_count = _bnb_paper_today_entry_count(
-        quant_lab_bnb_paper_daily
-    )
-    bnb_paper_quant_lab_entry_count = _bnb_paper_today_entry_count(
-        quant_lab_bnb_paper_daily_latest
-    )
+    bnb_paper_quant_lab_raw_entry_count = _bnb_paper_today_entry_count(quant_lab_bnb_paper_daily)
+    bnb_paper_quant_lab_entry_count = _bnb_paper_today_entry_count(quant_lab_bnb_paper_daily_latest)
     if bnb_paper_quant_lab_entry_count == 0 and bnb_paper_v5_entry_count > 0:
         bnb_paper_quant_lab_entry_count = bnb_paper_v5_entry_count
     source_mismatch_count = _alpha_factory_source_mismatch_count(
@@ -12640,8 +12690,7 @@ def _live_state_consistency_ok(frames: dict[str, pl.DataFrame]) -> bool:
     texts: list[str] = []
     for row in issues.to_dicts():
         texts.extend(
-            str(row.get(field) or "").lower()
-            for field in ("issue_type", "type", "code", "message")
+            str(row.get(field) or "").lower() for field in ("issue_type", "type", "code", "message")
         )
     blocked_markers = (
         "lifecycle_close_filled_but_position_open",
@@ -12656,8 +12705,7 @@ def _bnb_paper_today_entry_count(frame: pl.DataFrame) -> int:
         return 0
     if "entry_count" in frame.columns:
         return sum(
-            int(_optional_float(value) or 0)
-            for value in frame.get_column("entry_count").to_list()
+            int(_optional_float(value) or 0) for value in frame.get_column("entry_count").to_list()
         )
     if "would_enter_count" in frame.columns:
         return sum(
@@ -12676,8 +12724,7 @@ def _bnb_paper_strategy_summary_md(frame: pl.DataFrame) -> str:
         {
             strategy
             for strategy in (
-                str(row.get("strategy_id") or row.get("proposal_id") or "").strip()
-                for row in rows
+                str(row.get("strategy_id") or row.get("proposal_id") or "").strip() for row in rows
             )
             if strategy
         }
@@ -12976,16 +13023,12 @@ def _risk_on_multi_buy_shadow_for_export(
                         "market_regime_daily_state": selected_market_regime_context.get(
                             "current_regime"
                         ),
-                        "v5_candidate_regime_state": selected_row.get(
-                            "_v5_candidate_regime_state"
-                        ),
+                        "v5_candidate_regime_state": selected_row.get("_v5_candidate_regime_state"),
                         "trigger_reason": trigger["trigger_reason"],
                         "broad_market_positive_count": selected_regime_context.get(
                             "broad_market_positive_count"
                         ),
-                        "btc_24h_return_bps": selected_regime_context.get(
-                            "btc_24h_return_bps"
-                        ),
+                        "btc_24h_return_bps": selected_regime_context.get("btc_24h_return_bps"),
                         "strategy_candidate": strategy_candidate,
                         "top_k": top_k,
                         "selected_symbols": safe_json_dumps(selected_symbols),
@@ -12994,12 +13037,8 @@ def _risk_on_multi_buy_shadow_for_export(
                         "would_buy": bool(metric["symbol"]),
                         "would_size_usdt": 1000.0,
                         "final_score": _optional_float(selected_row.get("final_score")),
-                        "expected_edge_bps": _optional_float(
-                            selected_row.get("expected_edge_bps")
-                        ),
-                        "required_edge_bps": _optional_float(
-                            selected_row.get("required_edge_bps")
-                        ),
+                        "expected_edge_bps": _optional_float(selected_row.get("expected_edge_bps")),
+                        "required_edge_bps": _optional_float(selected_row.get("required_edge_bps")),
                         "entry_px": metric["entry_px"],
                         "future_4h_net_bps": metric["future_4h_net_bps"],
                         "future_8h_net_bps": metric["future_8h_net_bps"],
@@ -13007,7 +13046,8 @@ def _risk_on_multi_buy_shadow_for_export(
                         "avg_portfolio_net_bps": pnl_by_horizon[24],
                         "actual_v5_bought_symbols": safe_json_dumps(actual_symbols),
                         "vs_actual_v5_net_bps": (
-                            None if actual_net is None or pnl_by_horizon[24] is None
+                            None
+                            if actual_net is None or pnl_by_horizon[24] is None
                             else pnl_by_horizon[24] - actual_net
                         ),
                         "missed_symbols": safe_json_dumps(missed_symbols),
@@ -13088,10 +13128,7 @@ def _bnb_missed_opportunity_summary_md(samples: pl.DataFrame) -> str:
         ]
     )
     for horizon in (4, 8, 12, 24):
-        values = [
-            _optional_float(row.get(f"future_{horizon}h_net_bps"))
-            for row in rows
-        ]
+        values = [_optional_float(row.get(f"future_{horizon}h_net_bps")) for row in rows]
         observed = [value for value in values if value is not None]
         if not observed:
             lines.append(f"- avg_future_{horizon}h_net_bps: pending")
@@ -13357,8 +13394,7 @@ def _market_regime_row_date(row: dict[str, Any]) -> str | None:
 def _market_regime_context_from_row(row: dict[str, Any]) -> dict[str, Any]:
     return {
         "current_regime": _risk_on_regime_name(row.get("current_regime") or "UNKNOWN"),
-        "broad_market_positive_count": _optional_int(row.get("broad_market_positive_count"))
-        or 0,
+        "broad_market_positive_count": _optional_int(row.get("broad_market_positive_count")) or 0,
         "btc_24h_return_bps": _optional_float(row.get("btc_24h_return_bps")),
     }
 
@@ -13509,9 +13545,7 @@ def _risk_on_trigger_context(
         and btc_return > 0
     )
     v5_regime = _risk_on_candidate_v5_regime(candidate)
-    intraday_trigger = (
-        v5_regime in RISK_ON_MULTI_BUY_REGIMES and candidate_buy_count >= 2
-    )
+    intraday_trigger = v5_regime in RISK_ON_MULTI_BUY_REGIMES and candidate_buy_count >= 2
     if market_trigger:
         return {
             "triggered": True,
@@ -13787,9 +13821,7 @@ def _alpha_factory_promotion_overrides_by_candidate_symbol(
     latest_as_of_date = _latest_as_of_date(rows)
     if latest_as_of_date:
         rows = [
-            row
-            for row in rows
-            if str(row.get("as_of_date") or "").strip() == latest_as_of_date
+            row for row in rows if str(row.get("as_of_date") or "").strip() == latest_as_of_date
         ]
     for row in rows:
         candidate = str(row.get("strategy_candidate") or "").strip()
@@ -13813,9 +13845,7 @@ def _alpha_factory_result_metadata_by_candidate_symbol(
     latest_as_of_date = _latest_as_of_date(rows)
     if latest_as_of_date:
         rows = [
-            row
-            for row in rows
-            if str(row.get("as_of_date") or "").strip() == latest_as_of_date
+            row for row in rows if str(row.get("as_of_date") or "").strip() == latest_as_of_date
         ]
     for row in rows:
         candidate = str(row.get("strategy_candidate") or "").strip()
@@ -13938,11 +13968,11 @@ def _is_alpha_factory_promotion_capped_row(row: dict[str, Any]) -> bool:
 def _alpha_factory_promotion_decision_mode(
     promotion: dict[str, Any],
 ) -> tuple[str, str, list[str]]:
-    state = str(
-        promotion.get("promotion_state")
-        or promotion.get("decision")
-        or "RESEARCH"
-    ).strip().upper()
+    state = (
+        str(promotion.get("promotion_state") or promotion.get("decision") or "RESEARCH")
+        .strip()
+        .upper()
+    )
     decision = "RESEARCH_ONLY" if state == "RESEARCH" else state
     mode = str(promotion.get("recommended_mode") or "").strip().lower()
     if not mode:
@@ -13979,11 +14009,11 @@ def _apply_alpha_factory_promotion_overrides(
             promotion_state = row.get("promotion_state") or "KEEP_SHADOW"
         else:
             decision, mode, reasons = _alpha_factory_promotion_decision_mode(promotion)
-            promotion_state = str(
-                promotion.get("promotion_state")
-                or promotion.get("decision")
-                or decision
-            ).strip().upper()
+            promotion_state = (
+                str(promotion.get("promotion_state") or promotion.get("decision") or decision)
+                .strip()
+                .upper()
+            )
         live_reasons = sorted({*_json_listish(row.get("live_block_reasons")), *reasons})
         paper_ready_reasons = sorted(
             {
@@ -13998,8 +14028,7 @@ def _apply_alpha_factory_promotion_overrides(
             "source_module": row.get("source_module") or "alpha_factory",
             "template_family": row.get("template_family")
             or _alpha_factory_template_family(promotion or {}),
-            "candidate_id": row.get("candidate_id")
-            or (promotion or {}).get("candidate_id"),
+            "candidate_id": row.get("candidate_id") or (promotion or {}).get("candidate_id"),
             "promotion_state": promotion_state,
             "live_block_reasons": safe_json_dumps(live_reasons),
             "paper_ready_block_reasons": safe_json_dumps(paper_ready_reasons),
@@ -14011,9 +14040,7 @@ def _apply_alpha_factory_promotion_overrides(
             ),
         }
         if mode in {"research", "shadow"} and not str(row.get("no_sample_reason") or "").strip():
-            updated["no_sample_reason"] = (
-                "shadow_only" if mode == "shadow" else "research_only"
-            )
+            updated["no_sample_reason"] = "shadow_only" if mode == "shadow" else "research_only"
         output.append(updated)
     return output
 
@@ -14695,9 +14722,7 @@ def _risk_permission_quality(
         "threshold_seconds": DEFAULT_TELEMETRY_STALE_THRESHOLD_SECONDS,
         "degraded_reason": "stale_vs_v5_telemetry" if stale else "none",
         "next_action": (
-            "run qlab publish-risk-permission after sync-v5-telemetry"
-            if stale
-            else "none"
+            "run qlab publish-risk-permission after sync-v5-telemetry" if stale else "none"
         ),
     }
 
@@ -14825,12 +14850,9 @@ def _can_skip_heavy_registry_quality(
     if dataset_name == "orderbook_snapshot":
         return row_counts.get("orderbook_spread_1m", 0) > 0
     if dataset_name == "okx_public_ws":
-        return (
-            row_counts.get("okx_public_ws_health", 0) > 0
-            and (
-                row_counts.get("trade_activity_1m", 0) > 0
-                or row_counts.get("orderbook_spread_1m", 0) > 0
-            )
+        return row_counts.get("okx_public_ws_health", 0) > 0 and (
+            row_counts.get("trade_activity_1m", 0) > 0
+            or row_counts.get("orderbook_spread_1m", 0) > 0
         )
     return False
 
@@ -14942,9 +14964,7 @@ def _frame_values(frame: pl.DataFrame, column: str) -> set[str]:
     if frame.is_empty() or column not in frame.columns:
         return set()
     return {
-        str(value).strip()
-        for value in frame[column].drop_nulls().to_list()
-        if str(value).strip()
+        str(value).strip() for value in frame[column].drop_nulls().to_list() if str(value).strip()
     }
 
 
@@ -15026,9 +15046,7 @@ def _okx_ws_universe_completeness(frames: dict[str, pl.DataFrame]) -> tuple[bool
         f"observed={len(expected.intersection(observed))}; "
         f"missing={missing}; "
         "sources="
-        + ",".join(
-            f"{name}:{len(symbols)}" for name, symbols in observed_by_source.items()
-        )
+        + ",".join(f"{name}:{len(symbols)}" for name, symbols in observed_by_source.items())
     )
     return not missing, detail
 
@@ -15149,7 +15167,11 @@ def _feature_anomalies(features: pl.DataFrame) -> pl.DataFrame:
     return (
         rows.with_columns(
             [
-                pl.col("ts").cast(pl.Datetime(time_zone="UTC")).dt.date().cast(pl.Utf8).alias("day"),
+                pl.col("ts")
+                .cast(pl.Datetime(time_zone="UTC"))
+                .dt.date()
+                .cast(pl.Utf8)
+                .alias("day"),
                 pl.lit("null_value").alias("anomaly_type"),
                 pl.lit(1).alias("anomaly_count"),
                 pl.lit("warning").alias("severity"),
@@ -15222,8 +15244,7 @@ def _cost_fallback_stats(costs: pl.DataFrame, latest_cost_health: dict[str, Any]
         global_default_count = sum(
             1
             for row in rows
-            if str(row.get("source") or row.get("cost_source") or "").lower()
-            == "global_default"
+            if str(row.get("source") or row.get("cost_source") or "").lower() == "global_default"
         )
         hard_ratio = hard_count / row_count
         soft_ratio = soft_count / row_count
@@ -15344,9 +15365,7 @@ def _missing_dataset_rows(frames: dict[str, pl.DataFrame]) -> pl.DataFrame:
         if frame.is_empty() and not _empty_frame_covered_by_rollup(name, frames)
     ]
     return (
-        pl.DataFrame(rows)
-        if rows
-        else pl.DataFrame(schema={"dataset": pl.Utf8, "reason": pl.Utf8})
+        pl.DataFrame(rows) if rows else pl.DataFrame(schema={"dataset": pl.Utf8, "reason": pl.Utf8})
     )
 
 
@@ -15425,10 +15444,7 @@ def _stale_rows(frames: dict[str, pl.DataFrame]) -> pl.DataFrame:
                 continue
             if _empty_frame_covered_by_rollup(name, frames):
                 continue
-            if (
-                name == "expanded_crypto_universe_shadow"
-                and expanded_universe_automation_is_active
-            ):
+            if name == "expanded_crypto_universe_shadow" and expanded_universe_automation_is_active:
                 continue
         if readers._dataset_belongs_to_closed_research(name, closed_research_keys):  # type: ignore[attr-defined]
             status = "closed_research_snapshot"
@@ -15565,23 +15581,13 @@ def _non_bootstrap_gate_rows(gates: pl.DataFrame) -> pl.DataFrame:
         if column not in filtered.columns:
             continue
         filtered = filtered.filter(
-            ~pl.col(column)
-            .fill_null("")
-            .cast(pl.Utf8)
-            .str.to_lowercase()
-            .str.contains("bootstrap")
+            ~pl.col(column).fill_null("").cast(pl.Utf8).str.to_lowercase().str.contains("bootstrap")
         )
     if "alpha_id" in filtered.columns and "version" in filtered.columns:
         filtered = filtered.filter(
             ~(
                 pl.col("alpha_id").fill_null("").cast(pl.Utf8).str.ends_with(".core")
-                & (
-                    pl.col("version")
-                    .fill_null("")
-                    .cast(pl.Utf8)
-                    .str.to_lowercase()
-                    == "bootstrap"
-                )
+                & (pl.col("version").fill_null("").cast(pl.Utf8).str.to_lowercase() == "bootstrap")
             )
         )
     return filtered
@@ -15699,9 +15705,12 @@ def _risk_has_versions(risk: pl.DataFrame) -> bool:
     if risk.is_empty():
         return False
     required = {"gate_version", "cost_model_version"}
-    return required.issubset(risk.columns) and risk.filter(
-        pl.any_horizontal([pl.col(column).is_null() for column in sorted(required)])
-    ).is_empty()
+    return (
+        required.issubset(risk.columns)
+        and risk.filter(
+            pl.any_horizontal([pl.col(column).is_null() for column in sorted(required)])
+        ).is_empty()
+    )
 
 
 def _missing_sections(row_counts: dict[str, int]) -> list[str]:
@@ -15727,10 +15736,7 @@ def _fail_on_secrets(members: dict[str, _MemberPayload]) -> None:
             continue
         high, medium = _secret_severity_counts(text)
         if high or medium:
-            findings.append(
-                f"{member}: {high} high, "
-                f"{medium} medium"
-            )
+            findings.append(f"{member}: {high} high, {medium} medium")
     if findings:
         rendered = "; ".join(findings)
         raise ValueError(f"expert pack contains possible secrets: {rendered}")
@@ -15747,10 +15753,7 @@ def _zip_secret_reasons(archive: zipfile.ZipFile, names: list[str]) -> list[str]
             continue
         high, medium = _secret_severity_counts(text)
         if high or medium:
-            reasons.append(
-                f"{name} contains possible secrets: "
-                f"{high} high, {medium} medium"
-            )
+            reasons.append(f"{name} contains possible secrets: {high} high, {medium} medium")
     return reasons
 
 
@@ -15856,9 +15859,7 @@ def _pullback_shadow_aggregate_for_export(
         else:
             group = [row for row in rows if _optional_int(row.get("horizon_hours")) == key]
         complete = [
-            row
-            for row in group
-            if str(row.get("label_status") or "").strip().lower() == "complete"
+            row for row in group if str(row.get("label_status") or "").strip().lower() == "complete"
         ]
         net_values = [
             value
@@ -15878,9 +15879,7 @@ def _pullback_shadow_aggregate_for_export(
         first = group[0]
         avg_net = _float_mean(net_values)
         win_rate = (
-            sum(1 for value in net_values if value > 0.0) / len(net_values)
-            if net_values
-            else None
+            sum(1 for value in net_values if value > 0.0) / len(net_values) if net_values else None
         )
         decision = "RESEARCH_ONLY"
         reasons = ["v5_bundle_pullback_import"]
@@ -15995,9 +15994,7 @@ def _pullback_v2_by_symbol_for_export(pullback: pl.DataFrame) -> pl.DataFrame:
     for symbol in symbols:
         group = [row for row in rows if str(row.get("symbol") or "") == symbol]
         complete = [
-            row
-            for row in group
-            if str(row.get("label_status") or "").strip().lower() == "complete"
+            row for row in group if str(row.get("label_status") or "").strip().lower() == "complete"
         ]
         net_values = [
             value
@@ -16011,9 +16008,7 @@ def _pullback_v2_by_symbol_for_export(pullback: pl.DataFrame) -> pl.DataFrame:
         ]
         avg_net = _float_mean(net_values)
         win_rate = (
-            sum(1 for value in net_values if value > 0.0) / len(net_values)
-            if net_values
-            else None
+            sum(1 for value in net_values if value > 0.0) / len(net_values) if net_values else None
         )
         p25 = _float_quantile(net_values, 0.25)
         avg_mae = _float_mean(mae_values)
@@ -16182,9 +16177,7 @@ def _expanded_universe_promotion_summary_md(
     lines.extend(["", "## Promotion states"])
     promotion_counts = _value_counts(promotion_queue, "promotion_state")
     if promotion_counts:
-        lines.extend(
-            f"- {state}: {count}" for state, count in sorted(promotion_counts.items())
-        )
+        lines.extend(f"- {state}: {count}" for state, count in sorted(promotion_counts.items()))
     else:
         lines.append("- no promotion rows")
     lines.extend(
@@ -16217,11 +16210,7 @@ def _expanded_replacement_rows(frame: pl.DataFrame) -> pl.DataFrame:
     if "replacement_target_candidate" not in frame.columns:
         return _empty_csv_schema_frame(path)
     filtered = frame.filter(
-        pl.col("replacement_target_candidate")
-        .fill_null("")
-        .cast(pl.Utf8)
-        .str.len_chars()
-        > 0
+        pl.col("replacement_target_candidate").fill_null("").cast(pl.Utf8).str.len_chars() > 0
     )
     return filtered if not filtered.is_empty() else _empty_csv_schema_frame(path)
 
@@ -16341,19 +16330,13 @@ def _late_entry_symbol_advisory(
             "ready_for_live_guard": False,
             "hard_guard_allowed": False,
             "false_positive_rate": (
-                _float_or_none(best_observed.get("false_positive_rate"))
-                if best_observed
-                else None
+                _float_or_none(best_observed.get("false_positive_rate")) if best_observed else None
             ),
             "block_loss_count": (
-                int(best_observed.get("would_block_loss_count") or 0)
-                if best_observed
-                else 0
+                int(best_observed.get("would_block_loss_count") or 0) if best_observed else 0
             ),
             "block_profit_count": (
-                int(best_observed.get("would_block_profit_count") or 0)
-                if best_observed
-                else 0
+                int(best_observed.get("would_block_profit_count") or 0) if best_observed else 0
             ),
             "advisory": "research_only_no_shadow_threshold",
             "reason": "no_symbol_threshold_with_acceptable_false_positive_rate",
@@ -16890,9 +16873,7 @@ def _timestamp_value(dataset_name: str, df: pl.DataFrame, op: str) -> datetime |
 
 
 def _overall_quality_status(checks: list[dict[str, Any]]) -> str:
-    if any(
-        check["status"] == "FAIL" and check.get("severity") == "critical" for check in checks
-    ):
+    if any(check["status"] == "FAIL" and check.get("severity") == "critical" for check in checks):
         return "CRITICAL"
     if any(check["status"] in {"FAIL", "WARN", "N/A"} for check in checks):
         return "WARN"

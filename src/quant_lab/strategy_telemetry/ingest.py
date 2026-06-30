@@ -82,6 +82,7 @@ SILVER_DATASETS = {
     "v5_cost_probe_order_event": Path("silver/v5_cost_probe_order_event"),
     "v5_cost_probe_roundtrip_event": Path("silver/v5_cost_probe_roundtrip_event"),
     "v5_paper_strategy_run": Path("silver/v5_paper_strategy_run"),
+    "v5_paper_strategy_proposal_ack": Path("silver/v5_paper_strategy_proposal_ack"),
     "v5_paper_strategy_daily": Path("silver/v5_paper_strategy_daily"),
     "v5_paper_slippage_coverage": Path("silver/v5_paper_slippage_coverage"),
     "v5_expanded_universe_advisory_reader": Path("silver/v5_expanded_universe_advisory_reader"),
@@ -837,6 +838,7 @@ def _append_file_rows(
         "summaries/quant_lab_compliance.csv": "v5_quant_lab_compliance",
         "summaries/quant_lab_cost_usage.csv": "v5_quant_lab_cost_usage",
         "summaries/paper_strategy_runs.csv": "v5_paper_strategy_run",
+        "summaries/paper_strategy_proposal_ack.csv": "v5_paper_strategy_proposal_ack",
         "summaries/paper_strategy_daily.csv": "v5_paper_strategy_daily",
         "summaries/paper_slippage_coverage.csv": "v5_paper_slippage_coverage",
         "summaries/expanded_universe_advisory_reader.csv": (

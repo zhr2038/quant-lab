@@ -29,8 +29,7 @@ def render(lake_root: str | Path, st_module: Any | None = None) -> None:
 
     st.subheader("今日先看：研究组合裁剪")
     st.caption(
-        "这里是最终研究资源管理视图。"
-        "“关闭研究”表示该方向不再进入重点日报或晋级队列，不是交易平仓。"
+        "这里是最终研究资源管理视图。“关闭研究”表示该方向不再进入重点日报或晋级队列，不是交易平仓。"
     )
     show_frame(
         st,
@@ -47,6 +46,22 @@ def render(lake_root: str | Path, st_module: Any | None = None) -> None:
         st,
         summary["strategy_opportunity_advisory"],
         "\u6682\u65e0\u7b56\u7565\u673a\u4f1a\u5efa\u8bae\u6570\u636e\u3002",
+    )
+
+    st.subheader("逐笔 trade-level 判断")
+    st.caption(
+        "V5 先提出候选交易，中台只读分层为 HARD_BLOCK / PAPER / MICRO_CANARY_REVIEW。"
+        "这里不下单，只用于逐笔审计和人工复核。"
+    )
+    show_frame(
+        st,
+        summary["trade_level_judgment"],
+        "暂无 trade-level 逐笔判断。建议运行 qlab build-trade-level-judgment。",
+    )
+    show_frame(
+        st,
+        summary["quant_lab_false_block_audit"],
+        "暂无中台误杀审计。",
     )
 
     st.subheader("Alpha Factory 与自动候选")

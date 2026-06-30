@@ -188,7 +188,7 @@ def _cost_bucket(row: dict[str, Any]) -> str:
 def _similarity_frame(rows: list[dict[str, Any]]) -> pl.DataFrame:
     if not rows:
         return pl.DataFrame(schema=TRADE_LEVEL_SIMILARITY_SCHEMA)
-    return pl.DataFrame(rows, orient="row").select(
+    return pl.DataFrame(rows, schema=TRADE_LEVEL_SIMILARITY_SCHEMA, orient="row").select(
         [
             pl.col(name).cast(dtype, strict=False).alias(name)
             for name, dtype in TRADE_LEVEL_SIMILARITY_SCHEMA.items()

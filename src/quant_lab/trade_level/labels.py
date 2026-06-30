@@ -154,7 +154,7 @@ def _label_keys(row: dict[str, Any]) -> list[tuple[str, str, str, str]]:
 def _label_frame(rows: list[dict[str, Any]]) -> pl.DataFrame:
     if not rows:
         return pl.DataFrame(schema=TRADE_OPPORTUNITY_LABEL_SCHEMA)
-    return pl.DataFrame(rows, orient="row").select(
+    return pl.DataFrame(rows, schema=TRADE_OPPORTUNITY_LABEL_SCHEMA, orient="row").select(
         [
             pl.col(name).cast(dtype, strict=False).alias(name)
             for name, dtype in TRADE_OPPORTUNITY_LABEL_SCHEMA.items()

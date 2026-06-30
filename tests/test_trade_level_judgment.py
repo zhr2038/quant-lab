@@ -67,7 +67,23 @@ def test_sol_high_confidence_abort_becomes_micro_canary_review():
 def test_hard_safety_reason_always_hard_blocks():
     frames = build_trade_level_frames_from_sources(
         candidate_events=pl.DataFrame([_sol_candidate(candidate_id="sol-hard")]),
-        candidate_labels=pl.DataFrame(),
+        candidate_labels=pl.DataFrame(
+            [
+                {
+                    "candidate_id": "sol-cand-119",
+                    "run_id": "run-sol-119",
+                    "symbol": "SOL-USDT",
+                    "strategy_candidate": "v5.local_alpha6",
+                    "horizon_hours": 24,
+                    "net_bps_after_cost": -11.692423,
+                    "mfe_bps": 5.0,
+                    "mae_bps": -20.0,
+                    "win": False,
+                    "label_status": "complete",
+                    "label_reason": "ok",
+                }
+            ]
+        ),
         risk_permissions=pl.DataFrame(
             [
                 {
@@ -254,7 +270,23 @@ def test_learning_sample_schema_does_not_infer_nullable_float_as_null():
         candidates.append(row)
     frames = build_trade_level_frames_from_sources(
         candidate_events=pl.DataFrame(candidates),
-        candidate_labels=pl.DataFrame(),
+        candidate_labels=pl.DataFrame(
+            [
+                {
+                    "candidate_id": "sol-cand-119",
+                    "run_id": "run-sol-119",
+                    "symbol": "SOL-USDT",
+                    "strategy_candidate": "v5.local_alpha6",
+                    "horizon_hours": 24,
+                    "net_bps_after_cost": -11.692423,
+                    "mfe_bps": 5.0,
+                    "mae_bps": -20.0,
+                    "win": False,
+                    "label_status": "complete",
+                    "label_reason": "ok",
+                }
+            ]
+        ),
         risk_permissions=pl.DataFrame(
             [
                 {
@@ -286,6 +318,9 @@ def test_learning_sample_schema_does_not_infer_nullable_float_as_null():
 
     assert samples.height == 120
     assert samples["actual_fill_px"].drop_nulls().to_list() == [77383.7]
+    assert frames["trade_opportunity_label"]["label_24h_after_cost_bps"].drop_nulls().to_list() == [
+        -11.692423
+    ]
 
 
 def _sol_candidate(candidate_id: str = "sol-cand-1") -> dict[str, object]:

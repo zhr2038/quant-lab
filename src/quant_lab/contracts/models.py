@@ -70,7 +70,10 @@ class MarketBar(ContractModel):
     @field_validator("venue")
     @classmethod
     def normalize_venue(cls, value: str) -> str:
-        return value.strip().lower()
+        normalized = value.strip().lower()
+        if not normalized:
+            raise ValueError("venue must not be blank")
+        return normalized
 
     @field_validator("symbol")
     @classmethod

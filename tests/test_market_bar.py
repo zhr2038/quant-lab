@@ -48,6 +48,14 @@ def test_quote_volume_is_optional():
     assert records[0].quote_volume is None
 
 
+def test_venue_is_normalized_and_blank_rejected():
+    records = validate_market_bars([bar(venue=" OKX ")])
+
+    assert records[0].venue == "okx"
+    with pytest.raises(ValueError, match="venue must not be blank"):
+        validate_market_bars([bar(venue="   ")])
+
+
 def test_invalid_high_low_fails():
     with pytest.raises(ValueError, match="high"):
         validate_market_bars([bar(high=89.0, low=90.0)])

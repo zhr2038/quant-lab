@@ -12,8 +12,22 @@ import polars as pl
 from pydantic import BaseModel, ConfigDict, Field
 
 from quant_lab.data.lake import read_parquet_dataset, write_parquet_dataset, write_snapshot_meta
+from quant_lab.opportunity_cost.ledger import (
+    OPPORTUNITY_COST_BY_BUCKET_SCHEMA_VERSION,
+    OPPORTUNITY_COST_DAILY_SCHEMA_VERSION,
+    OPPORTUNITY_COST_EVENT_SCHEMA_VERSION,
+    build_opportunity_cost_frames,
+)
 from quant_lab.strategy_telemetry.sanitize import safe_json_dumps
 from quant_lab.symbols import normalize_symbol
+from quant_lab.trade_learning.attribution import (
+    V5_TRADE_OUTCOME_ATTRIBUTION_SCHEMA_VERSION,
+    build_v5_trade_outcome_attribution,
+)
+from quant_lab.trade_learning.samples import (
+    V5_TRADE_LEARNING_SAMPLE_SCHEMA_VERSION,
+    build_v5_trade_learning_samples,
+)
 
 TRADE_LEVEL_SCHEMA_VERSION = "trade_level_judgment.v0.1"
 TRADE_OPPORTUNITY_EVENT_SCHEMA_VERSION = "trade_opportunity_event.v0.1"
@@ -24,6 +38,11 @@ TRADE_OPPORTUNITY_LABEL_DATASET = Path("gold") / "trade_opportunity_label"
 TRADE_LEVEL_SIMILARITY_DATASET = Path("gold") / "trade_level_similarity_outcome"
 TRADE_LEVEL_JUDGMENT_DATASET = Path("gold") / "trade_level_judgment"
 FALSE_BLOCK_AUDIT_DATASET = Path("gold") / "quant_lab_false_block_audit"
+V5_TRADE_LEARNING_SAMPLE_DATASET = Path("gold") / "v5_trade_learning_sample"
+V5_TRADE_OUTCOME_ATTRIBUTION_DATASET = Path("gold") / "v5_trade_outcome_attribution"
+OPPORTUNITY_COST_EVENT_DATASET = Path("gold") / "quant_lab_opportunity_cost_event"
+OPPORTUNITY_COST_DAILY_DATASET = Path("gold") / "quant_lab_opportunity_cost_daily"
+OPPORTUNITY_COST_BY_BUCKET_DATASET = Path("gold") / "opportunity_cost_by_bucket"
 
 V5_CANDIDATE_EVENT_DATASET = Path("silver") / "v5_candidate_event"
 V5_TRADE_EVENT_DATASET = Path("silver") / "v5_trade_event"
@@ -98,6 +117,7 @@ TRADE_LEVEL_JUDGMENT_SCHEMA = {
 
 FALSE_BLOCK_AUDIT_SCHEMA = {
     "schema_version": pl.Utf8,
+    "sample_id": pl.Utf8,
     "event_id": pl.Utf8,
     "decision_ts": pl.Datetime(time_zone="UTC"),
     "symbol": pl.Utf8,
@@ -163,6 +183,11 @@ class TradeLevelBuildResult(BaseModel):
     trade_level_similarity_rows: int = Field(ge=0)
     trade_level_judgment_rows: int = Field(ge=0)
     false_block_audit_rows: int = Field(ge=0)
+    v5_trade_learning_sample_rows: int = Field(ge=0)
+    v5_trade_outcome_attribution_rows: int = Field(ge=0)
+    opportunity_cost_event_rows: int = Field(ge=0)
+    opportunity_cost_daily_rows: int = Field(ge=0)
+    opportunity_cost_by_bucket_rows: int = Field(ge=0)
     warnings: list[str] = Field(default_factory=list)
 
 
@@ -189,6 +214,11 @@ def build_and_publish_trade_level_judgment(
         ("trade_level_similarity_outcome", TRADE_LEVEL_SIMILARITY_DATASET),
         ("trade_level_judgment", TRADE_LEVEL_JUDGMENT_DATASET),
         ("quant_lab_false_block_audit", FALSE_BLOCK_AUDIT_DATASET),
+        ("v5_trade_learning_sample", V5_TRADE_LEARNING_SAMPLE_DATASET),
+        ("v5_trade_outcome_attribution", V5_TRADE_OUTCOME_ATTRIBUTION_DATASET),
+        ("quant_lab_opportunity_cost_event", OPPORTUNITY_COST_EVENT_DATASET),
+        ("quant_lab_opportunity_cost_daily", OPPORTUNITY_COST_DAILY_DATASET),
+        ("opportunity_cost_by_bucket", OPPORTUNITY_COST_BY_BUCKET_DATASET),
     ]:
         frame = frames[dataset_name]
         dataset_path = root / relative_path
@@ -210,6 +240,11 @@ def build_and_publish_trade_level_judgment(
         trade_level_similarity_rows=frames["trade_level_similarity_outcome"].height,
         trade_level_judgment_rows=frames["trade_level_judgment"].height,
         false_block_audit_rows=frames["quant_lab_false_block_audit"].height,
+        v5_trade_learning_sample_rows=frames["v5_trade_learning_sample"].height,
+        v5_trade_outcome_attribution_rows=frames["v5_trade_outcome_attribution"].height,
+        opportunity_cost_event_rows=frames["quant_lab_opportunity_cost_event"].height,
+        opportunity_cost_daily_rows=frames["quant_lab_opportunity_cost_daily"].height,
+        opportunity_cost_by_bucket_rows=frames["opportunity_cost_by_bucket"].height,
         warnings=warnings,
     )
 
@@ -251,12 +286,30 @@ def build_trade_level_frames_from_sources(
         judgments,
         created_at=generated_at,
     )
+    samples = build_v5_trade_learning_samples(
+        events,
+        labels,
+        judgments,
+        v5_trades=v5_trades,
+        order_lifecycles=order_lifecycles if order_lifecycles is not None else pl.DataFrame(),
+        created_at=generated_at,
+    )
+    attribution = build_v5_trade_outcome_attribution(samples, created_at=generated_at)
+    opportunity_cost = build_opportunity_cost_frames(
+        events,
+        labels,
+        judgments,
+        created_at=generated_at,
+    )
     return {
         "trade_opportunity_event": events,
         "trade_opportunity_label": labels,
         "trade_level_similarity_outcome": similarity,
         "trade_level_judgment": judgments,
         "quant_lab_false_block_audit": audit,
+        "v5_trade_learning_sample": samples,
+        "v5_trade_outcome_attribution": attribution,
+        **opportunity_cost,
     }
 
 
@@ -329,6 +382,7 @@ def build_false_block_audit(
         rows.append(
             {
                 "schema_version": FALSE_BLOCK_AUDIT_SCHEMA_VERSION,
+                "sample_id": event_id,
                 "event_id": event_id,
                 "decision_ts": _timestamp(event.get("decision_ts")),
                 "symbol": _text(event.get("symbol")),
@@ -571,14 +625,6 @@ def _v5_high_confidence(
         reasons.append("would_block_by_cost")
     if _float(event.get("arrival_mid")) is None:
         reasons.append("arrival_mid_missing")
-    selected = _float(event.get("selected_cost_bps"))
-    actual = _float(event.get("actual_all_in_cost_bps"))
-    if (
-        actual is not None
-        and selected is not None
-        and actual > max(selected + 10.0, selected * 1.5)
-    ):
-        reasons.append("actual_cost_significantly_above_selected_cost")
     if (
         _bool(event.get("unmanaged_position")) is True
         or _bool(event.get("unmanaged_exposure")) is True
@@ -724,6 +770,11 @@ def _schema_version_for_dataset(dataset_name: str) -> str:
         "trade_level_similarity_outcome": "trade_level_similarity_outcome.v0.1",
         "trade_level_judgment": TRADE_LEVEL_SCHEMA_VERSION,
         "quant_lab_false_block_audit": FALSE_BLOCK_AUDIT_SCHEMA_VERSION,
+        "v5_trade_learning_sample": V5_TRADE_LEARNING_SAMPLE_SCHEMA_VERSION,
+        "v5_trade_outcome_attribution": V5_TRADE_OUTCOME_ATTRIBUTION_SCHEMA_VERSION,
+        "quant_lab_opportunity_cost_event": OPPORTUNITY_COST_EVENT_SCHEMA_VERSION,
+        "quant_lab_opportunity_cost_daily": OPPORTUNITY_COST_DAILY_SCHEMA_VERSION,
+        "opportunity_cost_by_bucket": OPPORTUNITY_COST_BY_BUCKET_SCHEMA_VERSION,
     }.get(dataset_name, dataset_name)
 
 
@@ -764,7 +815,7 @@ def _first(row: dict[str, Any], payload: dict[str, Any], *fields: str) -> Any:
 def _frame(rows: list[dict[str, Any]], schema: dict[str, pl.DataType]) -> pl.DataFrame:
     if not rows:
         return pl.DataFrame(schema=schema)
-    return pl.DataFrame(rows, orient="row").select(
+    return pl.DataFrame(rows, schema=schema, orient="row").select(
         [pl.col(name).cast(dtype, strict=False).alias(name) for name, dtype in schema.items()]
     )
 

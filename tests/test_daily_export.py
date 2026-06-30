@@ -292,6 +292,11 @@ def test_export_daily_pack_writes_required_members(tmp_path):
         assert "reports/fast_microstructure_strategy_review.csv" in names
         assert "reports/fast_microstructure_forward_summary.md" in names
         assert "reports/bottom_zone_probe_paper_readiness.csv" in names
+        assert "reports/v5_trade_learning_sample.csv" in names
+        assert "reports/v5_trade_outcome_attribution.csv" in names
+        assert "reports/quant_lab_opportunity_cost_event.csv" in names
+        assert "reports/quant_lab_opportunity_cost_daily.csv" in names
+        assert "reports/opportunity_cost_by_bucket.csv" in names
         assert "reports/api_error_summary.csv" in names
         assert "diagnostics/export_timing.csv" in names
         assert "diagnostics/export_timing.json" in names
@@ -317,6 +322,30 @@ def test_export_daily_pack_writes_required_members(tmp_path):
             .splitlines()[0]
         )
         assert "bill_match_status" in fill_bill_header
+        learning_header = (
+            archive.read("reports/v5_trade_learning_sample.csv")
+            .decode("utf-8")
+            .splitlines()[0]
+        )
+        attribution_header = (
+            archive.read("reports/v5_trade_outcome_attribution.csv")
+            .decode("utf-8")
+            .splitlines()[0]
+        )
+        opportunity_daily_header = (
+            archive.read("reports/quant_lab_opportunity_cost_daily.csv")
+            .decode("utf-8")
+            .splitlines()[0]
+        )
+        opportunity_bucket_header = (
+            archive.read("reports/opportunity_cost_by_bucket.csv")
+            .decode("utf-8")
+            .splitlines()[0]
+        )
+        assert "quant_lab_false_block_candidate" in learning_header
+        assert "execution_quality" in attribution_header
+        assert "veto_net_value_bps" in opportunity_daily_header
+        assert "opportunity_exception_candidate" in opportunity_bucket_header
         assert "web_rglob_fallback_zero" in acceptance_checks
         assert "api_latency_p95_ok" in acceptance_checks
         github_ci_header = (

@@ -63,6 +63,36 @@ def render(lake_root: str | Path, st_module: Any | None = None) -> None:
         summary["quant_lab_false_block_audit"],
         "暂无中台误杀审计。",
     )
+    show_frame(
+        st,
+        summary["v5_trade_learning_sample"],
+        "暂无 V5 成功/失败学习样本。",
+    )
+    show_frame(
+        st,
+        summary["v5_trade_outcome_attribution"],
+        "暂无 V5 交易结果归因。",
+    )
+    st.subheader("机会成本 / 拦截价值")
+    st.caption(
+        "用反事实 after-cost 标签衡量中台拦截 V5 机会的净价值。"
+        "负值表示误杀机会偏多，只能推动 MICRO_CANARY_REVIEW，不自动放行。"
+    )
+    show_frame(
+        st,
+        summary["quant_lab_opportunity_cost_daily"],
+        "暂无机会成本日报。",
+    )
+    show_frame(
+        st,
+        summary["opportunity_cost_by_bucket"],
+        "暂无机会成本分桶统计。",
+    )
+    show_frame(
+        st,
+        summary["quant_lab_opportunity_cost_event"],
+        "暂无逐笔机会成本账本。",
+    )
 
     st.subheader("Alpha Factory 与自动候选")
     st.caption(

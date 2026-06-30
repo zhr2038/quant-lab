@@ -79,6 +79,11 @@ from quant_lab.features.fast_microstructure import (
     build_fast_microstructure_strategy_review,
     fast_microstructure_forward_summary_md,
 )
+from quant_lab.opportunity_cost.ledger import (
+    OPPORTUNITY_COST_BY_BUCKET_SCHEMA,
+    OPPORTUNITY_COST_DAILY_SCHEMA,
+    OPPORTUNITY_COST_EVENT_SCHEMA,
+)
 from quant_lab.ops.api_metrics import api_error_summary, api_metrics_summary
 from quant_lab.ops.data_quality import run_data_quality
 from quant_lab.ops.lake_health import lake_file_health_summary
@@ -171,6 +176,8 @@ from quant_lab.strategy_telemetry.sanitize import (
 )
 from quant_lab.symbols import normalize_symbol
 from quant_lab.time_display import BEIJING_TZ, DISPLAY_TIMEZONE, beijing_iso
+from quant_lab.trade_learning.attribution import V5_TRADE_OUTCOME_ATTRIBUTION_SCHEMA
+from quant_lab.trade_learning.samples import V5_TRADE_LEARNING_SAMPLE_SCHEMA
 from quant_lab.trade_level.judgment import (
     FALSE_BLOCK_AUDIT_SCHEMA,
     TRADE_LEVEL_JUDGMENT_SCHEMA,
@@ -194,6 +201,11 @@ SNAPSHOT_META_DATASETS = {
     "trade_level_similarity_outcome",
     "trade_level_judgment",
     "quant_lab_false_block_audit",
+    "v5_trade_learning_sample",
+    "v5_trade_outcome_attribution",
+    "quant_lab_opportunity_cost_event",
+    "quant_lab_opportunity_cost_daily",
+    "opportunity_cost_by_bucket",
     "risk_permission",
     "risk_permission_api_dependency_meta",
     "research_portfolio_status",
@@ -266,6 +278,11 @@ HEAVY_EXPORT_DATASET_LIMITS = {
     "trade_level_similarity_outcome": 20_000,
     "trade_level_judgment": 20_000,
     "quant_lab_false_block_audit": 20_000,
+    "v5_trade_learning_sample": 20_000,
+    "v5_trade_outcome_attribution": 20_000,
+    "quant_lab_opportunity_cost_event": 20_000,
+    "quant_lab_opportunity_cost_daily": 5_000,
+    "opportunity_cost_by_bucket": 20_000,
     "v5_btc_probe_entry_quality_audit": 20_000,
     "v5_candidate_label": 20_000,
     "v5_missed_low_audit": 20_000,
@@ -315,6 +332,11 @@ HEAVY_EXPORT_RECENT_FILE_LIMITS = {
     "trade_level_similarity_outcome": 100,
     "trade_level_judgment": 100,
     "quant_lab_false_block_audit": 100,
+    "v5_trade_learning_sample": 100,
+    "v5_trade_outcome_attribution": 100,
+    "quant_lab_opportunity_cost_event": 100,
+    "quant_lab_opportunity_cost_daily": 100,
+    "opportunity_cost_by_bucket": 100,
     "v5_btc_probe_entry_quality_audit": 100,
     "v5_candidate_label": 100,
     "v5_missed_low_audit": 100,
@@ -600,6 +622,11 @@ REQUIRED_MEMBERS = [
     "reports/trade_level_similarity_outcome.csv",
     "reports/trade_level_judgment.csv",
     "reports/quant_lab_false_block_audit.csv",
+    "reports/v5_trade_learning_sample.csv",
+    "reports/v5_trade_outcome_attribution.csv",
+    "reports/quant_lab_opportunity_cost_event.csv",
+    "reports/quant_lab_opportunity_cost_daily.csv",
+    "reports/opportunity_cost_by_bucket.csv",
     "reports/api_latency_summary.csv",
     "reports/api_latency_summary.md",
     "reports/api_error_summary.csv",
@@ -1559,6 +1586,11 @@ CSV_SCHEMAS: dict[str, list[str]] = {
     "reports/trade_level_similarity_outcome.csv": list(TRADE_LEVEL_SIMILARITY_SCHEMA),
     "reports/trade_level_judgment.csv": list(TRADE_LEVEL_JUDGMENT_SCHEMA),
     "reports/quant_lab_false_block_audit.csv": list(FALSE_BLOCK_AUDIT_SCHEMA),
+    "reports/v5_trade_learning_sample.csv": list(V5_TRADE_LEARNING_SAMPLE_SCHEMA),
+    "reports/v5_trade_outcome_attribution.csv": list(V5_TRADE_OUTCOME_ATTRIBUTION_SCHEMA),
+    "reports/quant_lab_opportunity_cost_event.csv": list(OPPORTUNITY_COST_EVENT_SCHEMA),
+    "reports/quant_lab_opportunity_cost_daily.csv": list(OPPORTUNITY_COST_DAILY_SCHEMA),
+    "reports/opportunity_cost_by_bucket.csv": list(OPPORTUNITY_COST_BY_BUCKET_SCHEMA),
     "reports/v5_local_live_vs_quant_lab_shadow.csv": [
         "generated_at",
         "schema_version",
@@ -3698,6 +3730,11 @@ def _publish_trade_level_snapshot(
         and not warning.startswith("trade_level_similarity_outcome dataset is ")
         and not warning.startswith("trade_level_judgment dataset is ")
         and not warning.startswith("quant_lab_false_block_audit dataset is ")
+        and not warning.startswith("v5_trade_learning_sample dataset is ")
+        and not warning.startswith("v5_trade_outcome_attribution dataset is ")
+        and not warning.startswith("quant_lab_opportunity_cost_event dataset is ")
+        and not warning.startswith("quant_lab_opportunity_cost_daily dataset is ")
+        and not warning.startswith("opportunity_cost_by_bucket dataset is ")
     ]
     for dataset_name, frame in derived.items():
         _publish_export_frame(
@@ -5632,6 +5669,11 @@ def _dataset_members(
     trade_level_similarity = frames.get("trade_level_similarity_outcome", pl.DataFrame())
     trade_level_judgments = frames.get("trade_level_judgment", pl.DataFrame())
     false_block_audit = frames.get("quant_lab_false_block_audit", pl.DataFrame())
+    v5_trade_learning_samples = frames.get("v5_trade_learning_sample", pl.DataFrame())
+    v5_trade_outcome_attribution = frames.get("v5_trade_outcome_attribution", pl.DataFrame())
+    opportunity_cost_events = frames.get("quant_lab_opportunity_cost_event", pl.DataFrame())
+    opportunity_cost_daily = frames.get("quant_lab_opportunity_cost_daily", pl.DataFrame())
+    opportunity_cost_by_bucket = frames.get("opportunity_cost_by_bucket", pl.DataFrame())
     v5_candidate_quality = frames.get("v5_candidate_quality_daily", pl.DataFrame())
     v5_candidate_outcomes = frames.get("v5_candidate_outcome_summary", pl.DataFrame())
     v5_expanded_universe_advisory_reader = frames.get(
@@ -5964,6 +6006,26 @@ def _dataset_members(
         "reports/quant_lab_false_block_audit.csv": _csv_member(
             "reports/quant_lab_false_block_audit.csv",
             _tail_by_time(false_block_audit, "decision_ts", limit=50_000),
+        ),
+        "reports/v5_trade_learning_sample.csv": _csv_member(
+            "reports/v5_trade_learning_sample.csv",
+            _tail_by_time(v5_trade_learning_samples, "decision_ts", limit=50_000),
+        ),
+        "reports/v5_trade_outcome_attribution.csv": _csv_member(
+            "reports/v5_trade_outcome_attribution.csv",
+            _tail_by_time(v5_trade_outcome_attribution, "decision_ts", limit=50_000),
+        ),
+        "reports/quant_lab_opportunity_cost_event.csv": _csv_member(
+            "reports/quant_lab_opportunity_cost_event.csv",
+            _tail_by_time(opportunity_cost_events, "decision_ts", limit=50_000),
+        ),
+        "reports/quant_lab_opportunity_cost_daily.csv": _csv_member(
+            "reports/quant_lab_opportunity_cost_daily.csv",
+            _tail_by_time(opportunity_cost_daily, "day", limit=5_000),
+        ),
+        "reports/opportunity_cost_by_bucket.csv": _csv_member(
+            "reports/opportunity_cost_by_bucket.csv",
+            opportunity_cost_by_bucket,
         ),
         "reports/api_latency_summary.csv": _csv_member(
             "reports/api_latency_summary.csv",

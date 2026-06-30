@@ -53,6 +53,11 @@ DATASET_PATHS = {
     "trade_level_similarity_outcome": Path("gold") / "trade_level_similarity_outcome",
     "trade_level_judgment": Path("gold") / "trade_level_judgment",
     "quant_lab_false_block_audit": Path("gold") / "quant_lab_false_block_audit",
+    "v5_trade_learning_sample": Path("gold") / "v5_trade_learning_sample",
+    "v5_trade_outcome_attribution": Path("gold") / "v5_trade_outcome_attribution",
+    "quant_lab_opportunity_cost_event": Path("gold") / "quant_lab_opportunity_cost_event",
+    "quant_lab_opportunity_cost_daily": Path("gold") / "quant_lab_opportunity_cost_daily",
+    "opportunity_cost_by_bucket": Path("gold") / "opportunity_cost_by_bucket",
     "v5_missed_opportunity_audit": Path("gold") / "v5_missed_opportunity_audit",
     "v5_risk_on_multi_buy_shadow": Path("gold") / "v5_risk_on_multi_buy_shadow",
     "risk_on_multi_buy_shadow": Path("gold") / "risk_on_multi_buy_shadow",
@@ -376,6 +381,11 @@ DATASET_TIMESTAMP_COLUMNS: dict[str, tuple[str, ...]] = {
     "trade_level_similarity_outcome": ("decision_ts", "created_at"),
     "trade_level_judgment": ("decision_ts", "created_at"),
     "quant_lab_false_block_audit": ("decision_ts", "created_at"),
+    "v5_trade_learning_sample": ("decision_ts", "created_at"),
+    "v5_trade_outcome_attribution": ("decision_ts", "created_at"),
+    "quant_lab_opportunity_cost_event": ("decision_ts", "created_at"),
+    "quant_lab_opportunity_cost_daily": ("day", "created_at"),
+    "opportunity_cost_by_bucket": ("created_at",),
     "v5_missed_opportunity_audit": ("ts_utc", "generated_at"),
     "v5_risk_on_multi_buy_shadow": ("generated_at", "decision_ts"),
     "risk_on_multi_buy_shadow": ("generated_at", "decision_ts"),
@@ -572,6 +582,11 @@ WEB_RESEARCH_SAMPLE_DATASETS = {
     "trade_level_similarity_outcome",
     "trade_level_judgment",
     "quant_lab_false_block_audit",
+    "v5_trade_learning_sample",
+    "v5_trade_outcome_attribution",
+    "quant_lab_opportunity_cost_event",
+    "quant_lab_opportunity_cost_daily",
+    "opportunity_cost_by_bucket",
     "expanded_relative_strength_decision_sample",
     "expanded_universe_candidate_event",
     "expanded_universe_candidate_label",
@@ -608,6 +623,11 @@ WEB_RECENT_LOOKBACK_HOURS = {
     "trade_level_similarity_outcome": 24 * 14,
     "trade_level_judgment": 24 * 14,
     "quant_lab_false_block_audit": 24 * 14,
+    "v5_trade_learning_sample": 24 * 14,
+    "v5_trade_outcome_attribution": 24 * 14,
+    "quant_lab_opportunity_cost_event": 24 * 14,
+    "quant_lab_opportunity_cost_daily": 24 * 14,
+    "opportunity_cost_by_bucket": 24 * 14,
     "expanded_relative_strength_decision_sample": 24 * 14,
     "expanded_universe_candidate_event": 24 * 14,
     "expanded_universe_candidate_label": 24 * 14,
@@ -646,6 +666,11 @@ WEB_RECENT_FILE_LIMITS = {
     "trade_level_similarity_outcome": 384,
     "trade_level_judgment": 384,
     "quant_lab_false_block_audit": 384,
+    "v5_trade_learning_sample": 384,
+    "v5_trade_outcome_attribution": 384,
+    "quant_lab_opportunity_cost_event": 384,
+    "quant_lab_opportunity_cost_daily": 384,
+    "opportunity_cost_by_bucket": 384,
     "expanded_relative_strength_decision_sample": 384,
     "expanded_universe_candidate_event": 384,
     "expanded_universe_candidate_label": 384,
@@ -3269,6 +3294,32 @@ def alpha_gate_summary(lake_root: str | Path) -> dict[str, Any]:
         lake_root,
         "quant_lab_false_block_audit",
     )
+    v5_trade_learning, v5_trade_learning_warning = _read_web_display_dataset_with_warning(
+        lake_root,
+        "v5_trade_learning_sample",
+    )
+    v5_trade_attribution, v5_trade_attribution_warning = _read_web_display_dataset_with_warning(
+        lake_root,
+        "v5_trade_outcome_attribution",
+    )
+    opportunity_cost_events, opportunity_cost_events_warning = (
+        _read_web_display_dataset_with_warning(
+            lake_root,
+            "quant_lab_opportunity_cost_event",
+        )
+    )
+    opportunity_cost_daily, opportunity_cost_daily_warning = (
+        _read_web_display_dataset_with_warning(
+            lake_root,
+            "quant_lab_opportunity_cost_daily",
+        )
+    )
+    opportunity_cost_by_bucket, opportunity_cost_by_bucket_warning = (
+        _read_web_display_dataset_with_warning(
+            lake_root,
+            "opportunity_cost_by_bucket",
+        )
+    )
     alpha_factory_results, alpha_factory_results_warning = read_dataset_with_warning(
         lake_root,
         "alpha_factory_result",
@@ -3349,6 +3400,11 @@ def alpha_gate_summary(lake_root: str | Path) -> dict[str, Any]:
             trade_similarity_warning,
             trade_judgments_warning,
             false_block_warning,
+            v5_trade_learning_warning,
+            v5_trade_attribution_warning,
+            opportunity_cost_events_warning,
+            opportunity_cost_daily_warning,
+            opportunity_cost_by_bucket_warning,
             alpha_factory_results_warning,
             alpha_factory_promotion_warning,
             missed_opportunity_warning,
@@ -3431,6 +3487,17 @@ def alpha_gate_summary(lake_root: str | Path) -> dict[str, Any]:
             DISPLAY_LIMIT
         ),
         "quant_lab_false_block_audit": redact_frame(false_block_audit).head(DISPLAY_LIMIT),
+        "v5_trade_learning_sample": redact_frame(v5_trade_learning).head(DISPLAY_LIMIT),
+        "v5_trade_outcome_attribution": redact_frame(v5_trade_attribution).head(DISPLAY_LIMIT),
+        "quant_lab_opportunity_cost_event": redact_frame(opportunity_cost_events).head(
+            DISPLAY_LIMIT
+        ),
+        "quant_lab_opportunity_cost_daily": redact_frame(opportunity_cost_daily).head(
+            DISPLAY_LIMIT
+        ),
+        "opportunity_cost_by_bucket": redact_frame(opportunity_cost_by_bucket).head(
+            DISPLAY_LIMIT
+        ),
         "alpha_factory_result": redact_frame(
             _alpha_factory_result_table(alpha_factory_results)
         ).head(DISPLAY_LIMIT),
@@ -4468,7 +4535,8 @@ def _trade_opportunity_table(frame: pl.DataFrame) -> pl.DataFrame:
     ]
     table = _select_existing_columns(frame, columns)
     sort_columns = [column for column in ["decision_ts", "symbol"] if column in table.columns]
-    return table.sort(sort_columns, descending=[True, False]) if sort_columns else table
+    descending = [column == "decision_ts" for column in sort_columns]
+    return table.sort(sort_columns, descending=descending) if sort_columns else table
 
 
 def _trade_level_judgment_table(frame: pl.DataFrame) -> pl.DataFrame:
@@ -4491,7 +4559,8 @@ def _trade_level_judgment_table(frame: pl.DataFrame) -> pl.DataFrame:
     ]
     table = _select_existing_columns(frame, columns)
     sort_columns = [column for column in ["decision_ts", "symbol"] if column in table.columns]
-    return table.sort(sort_columns, descending=[True, False]) if sort_columns else table
+    descending = [column == "decision_ts" for column in sort_columns]
+    return table.sort(sort_columns, descending=descending) if sort_columns else table
 
 
 def _candidate_label_table(candidate_labels: pl.DataFrame) -> pl.DataFrame:
@@ -5825,6 +5894,11 @@ def _empty_dataset_status(dataset_name: str) -> str:
         "trade_level_similarity_outcome",
         "trade_level_judgment",
         "quant_lab_false_block_audit",
+        "v5_trade_learning_sample",
+        "v5_trade_outcome_attribution",
+        "quant_lab_opportunity_cost_event",
+        "quant_lab_opportunity_cost_daily",
+        "opportunity_cost_by_bucket",
     }:
         return "trade_level_optional"
     return "missing"

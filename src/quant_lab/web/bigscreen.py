@@ -2136,22 +2136,6 @@ def _build_actions(
                 "/exports",
             )
         )
-    expert_lag = _expert_pack_v5_lag_issue(exports, v5)
-    if expert_lag is not None:
-        actions.append(
-            _action(
-                "WARNING",
-                "专家包落后 V5 遥测",
-                (
-                    f"专家包内嵌 {expert_lag['pack_bundle_name']}；"
-                    f"当前 V5 最新 {expert_lag['latest_v5_bundle_ts']}；"
-                    f"落后约 {expert_lag['lag_minutes']} 分钟。"
-                ),
-                "expert_export_summary.v5_bundle_lag",
-                "点击生成今日专家包，重新内嵌最新 V5 follow-up bundle 后再下载复验。",
-                "/exports",
-            )
-        )
     if not actions:
         actions.append(
             _action(

@@ -808,6 +808,9 @@ def _permission_from_row(row: dict[str, Any]) -> RiskPermission:
     cleaned.pop("source", None)
     cleaned.pop("fallback_level", None)
     cleaned.pop("permission_source", None)
+    cleaned.pop("trade_level_decision_summary", None)
+    cleaned.pop("micro_canary_review_count", None)
+    cleaned.pop("false_block_rate", None)
     for field in ["reasons", "risk_reason_codes", "allowed_modes"]:
         value = cleaned.get(field)
         if isinstance(value, str):

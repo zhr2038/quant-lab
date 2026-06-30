@@ -772,6 +772,27 @@ def test_write_enforce_readiness_report_outputs_json_and_csv(tmp_path):
     assert "proxy_only_symbols_expanded" in csv_text
 
 
+def test_enforce_readiness_ignores_trade_level_risk_permission_summary_fields(tmp_path):
+    lake = tmp_path / "lake"
+    _write_common_ready_inputs(lake)
+    _write_risk_permission(
+        lake,
+        status="ACTIVE_ABORT",
+        enforceable=True,
+        extra={
+            "trade_level_decision_summary": '{"PAPER_ONLY": 4372}',
+            "micro_canary_review_count": 0,
+            "false_block_rate": 0.058097,
+        },
+    )
+    _write_cost_rows(lake, source="mixed_actual_proxy")
+
+    report = build_enforce_readiness_report(lake)
+
+    assert report.readiness_status == "READY"
+    assert report.metrics["permission_status"] == "ACTIVE_ABORT"
+
+
 def _write_common_ready_inputs(
     lake,
     *,
@@ -858,40 +879,45 @@ def _write_common_ready_inputs(
     )
 
 
-def _write_risk_permission(lake, *, status: str, enforceable: bool) -> None:
+def _write_risk_permission(
+    lake,
+    *,
+    status: str,
+    enforceable: bool,
+    extra: dict[str, object] | None = None,
+) -> None:
     now = datetime.now(UTC)
+    row = {
+        "strategy": "v5",
+        "version": "5.0.0",
+        "permission": "ABORT",
+        "allowed_modes": "[]",
+        "max_gross_exposure": 0.0,
+        "max_single_weight": 0.0,
+        "max_gross_exposure_usdt": 0.0,
+        "max_single_order_usdt": 0.0,
+        "cost_model_version": "cost.v0",
+        "gate_version": "gate.v0",
+        "reasons": '["test"]',
+        "reason": "test",
+        "risk_reason_codes": '["test"]',
+        "created_at": now.isoformat(),
+        "as_of_ts": now.isoformat(),
+        "source_bundle_ts": now.isoformat(),
+        "telemetry_latest_ts": now.isoformat(),
+        "expires_at": (now + timedelta(hours=1)).isoformat()
+        if status.startswith("ACTIVE_")
+        else (now - timedelta(hours=1)).isoformat(),
+        "permission_status": status,
+        "enforceable": enforceable,
+        "contract_version": "risk_permission.v0.2",
+        "source": "research.risk_permission.v0.1",
+        "fallback_level": "NONE",
+    }
+    if extra:
+        row.update(extra)
     write_parquet_dataset(
-        pl.DataFrame(
-            [
-                {
-                    "strategy": "v5",
-                    "version": "5.0.0",
-                    "permission": "ABORT",
-                    "allowed_modes": "[]",
-                    "max_gross_exposure": 0.0,
-                    "max_single_weight": 0.0,
-                    "max_gross_exposure_usdt": 0.0,
-                    "max_single_order_usdt": 0.0,
-                    "cost_model_version": "cost.v0",
-                    "gate_version": "gate.v0",
-                    "reasons": '["test"]',
-                    "reason": "test",
-                    "risk_reason_codes": '["test"]',
-                    "created_at": now.isoformat(),
-                    "as_of_ts": now.isoformat(),
-                    "source_bundle_ts": now.isoformat(),
-                    "telemetry_latest_ts": now.isoformat(),
-                    "expires_at": (now + timedelta(hours=1)).isoformat()
-                    if status.startswith("ACTIVE_")
-                    else (now - timedelta(hours=1)).isoformat(),
-                    "permission_status": status,
-                    "enforceable": enforceable,
-                    "contract_version": "risk_permission.v0.2",
-                    "source": "research.risk_permission.v0.1",
-                    "fallback_level": "NONE",
-                }
-            ]
-        ),
+        pl.DataFrame([row]),
         lake / "gold/risk_permission",
     )
 

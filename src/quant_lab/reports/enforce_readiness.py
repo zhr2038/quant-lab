@@ -17,7 +17,7 @@ from quant_lab.costs.model import (
     evaluate_live_universe_cost_coverage,
 )
 from quant_lab.data.lake import read_parquet_dataset, read_parquet_lazy
-from quant_lab.risk.publish import is_permission_status_enforceable
+from quant_lab.risk.publish import is_permission_status_enforceable, parse_risk_permission_row
 from quant_lab.symbols import normalize_symbol
 
 DEFAULT_COST_SYMBOLS = ["BNB-USDT", "BTC-USDT", "ETH-USDT", "SOL-USDT"]
@@ -804,22 +804,10 @@ def _risk_metrics(
 
 
 def _permission_from_row(row: dict[str, Any]) -> RiskPermission:
-    cleaned = dict(row)
-    cleaned.pop("source", None)
-    cleaned.pop("fallback_level", None)
-    cleaned.pop("permission_source", None)
-    cleaned.pop("trade_level_decision_summary", None)
-    cleaned.pop("micro_canary_review_count", None)
-    cleaned.pop("false_block_rate", None)
-    for field in ["reasons", "risk_reason_codes", "allowed_modes"]:
-        value = cleaned.get(field)
-        if isinstance(value, str):
-            try:
-                parsed = json.loads(value)
-                cleaned[field] = parsed if isinstance(parsed, list) else [str(parsed)]
-            except json.JSONDecodeError:
-                cleaned[field] = [value] if value else []
-    return RiskPermission.model_validate(cleaned)
+    permission = parse_risk_permission_row(row)
+    if permission is None:
+        raise ValueError("invalid risk_permission row")
+    return permission
 
 
 def _telemetry_metrics(

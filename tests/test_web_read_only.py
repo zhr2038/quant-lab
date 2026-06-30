@@ -749,6 +749,7 @@ def test_data_health_hides_pending_v5_paper_telemetry(tmp_path):
     datasets = {row["dataset"] for row in stale_rows}
 
     assert "v5_paper_strategy_run" not in datasets
+    assert "v5_paper_strategy_proposal_ack" not in datasets
     assert "v5_paper_strategy_daily" not in datasets
     assert "v5_paper_slippage_coverage" not in datasets
 

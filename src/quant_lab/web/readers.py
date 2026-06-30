@@ -194,6 +194,7 @@ WEB_SNAPSHOT_META_MISSING_WARNING = "web_snapshot_meta_missing"
 WEB_CACHE_DEFAULT_TTL_SECONDS = 30
 V5_PAPER_TELEMETRY_DATASETS = {
     "v5_paper_strategy_run",
+    "v5_paper_strategy_proposal_ack",
     "v5_paper_strategy_daily",
     "v5_paper_slippage_coverage",
     "v5_expanded_universe_advisory_reader",

@@ -529,10 +529,20 @@ function ExpertPackControls({ exports }: { exports: Record<string, unknown> }) {
   const state = String(status?.state ?? (statusQuery.isLoading ? "loading" : "not_observable"));
   const statusBody = status?.status ?? {};
   const isRunning = ["running", "starting"].includes(state.toLowerCase());
+  const cooldownRemaining = Math.max(
+    0,
+    Math.ceil(numberValue(status?.regenerate_cooldown_remaining_seconds))
+  );
+  const isCoolingDown = cooldownRemaining > 0;
   const displayState = !isRunning && displayUrl && state.toLowerCase() === "manual_missing"
     ? "PACK_AVAILABLE"
     : state;
   const lastError = stringValue(statusBody.error, "");
+  const generateLabel = isRunning
+    ? "生成中"
+    : isCoolingDown
+      ? `刚生成 ${cooldownRemaining}s`
+      : "生成今日专家包";
 
   return (
     <section className="export-console">
@@ -552,9 +562,9 @@ function ExpertPackControls({ exports }: { exports: Record<string, unknown> }) {
           <button
             className="primary-action"
             onClick={() => generateMutation.mutate()}
-            disabled={generateMutation.isPending || isRunning}
+            disabled={generateMutation.isPending || isRunning || isCoolingDown}
           >
-            <PackagePlus size={16} />{isRunning ? "生成中" : "生成今日专家包"}
+            <PackagePlus size={16} />{generateLabel}
           </button>
         </div>
       </div>
@@ -566,6 +576,7 @@ function ExpertPackControls({ exports }: { exports: Record<string, unknown> }) {
         {status?.latest_size_bytes || displayPack?.size_bytes ? (
           <em>包大小 {shortNumber(status?.latest_size_bytes || displayPack?.size_bytes)}B</em>
         ) : null}
+        {isCoolingDown ? <em>可重新生成 {cooldownRemaining}s</em> : null}
       </div>
       {generateMutation.error || statusQuery.error || lastError ? (
         <div className="export-error">
@@ -622,6 +633,12 @@ function fileNameFromPath(value: unknown): string {
   if (!text) return "";
   const clean = text.split("?")[0].replace(/\\/g, "/");
   return clean.split("/").filter(Boolean).pop() ?? "";
+}
+
+function numberValue(value: unknown): number {
+  if (value === null || value === undefined || value === "") return 0;
+  const parsed = typeof value === "number" ? value : Number(value);
+  return Number.isFinite(parsed) ? parsed : 0;
 }
 
 function MiniTable({

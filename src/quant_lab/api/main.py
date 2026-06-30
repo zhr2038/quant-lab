@@ -1194,7 +1194,10 @@ def _decorate_web_v2_expert_pack_status(
     exports_root: Path,
 ) -> dict[str, Any]:
     from quant_lab.web import readers
-    from quant_lab.web.pages.expert_exports import _latest_pack_for_export_date
+    from quant_lab.web.pages.expert_exports import (
+        _export_regenerate_cooldown_payload,
+        _latest_pack_for_export_date,
+    )
 
     status = dict(status_payload)
     requested_date_pack = _latest_pack_for_export_date(exports_root, export_date)
@@ -1292,6 +1295,13 @@ def _decorate_web_v2_expert_pack_status(
             payload["latest_size_bytes"] = stat.st_size
             payload["latest_modified_at"] = datetime.fromtimestamp(stat.st_mtime, UTC).isoformat()
         payload.update(_expert_pack_v5_attachment_status(latest_pack))
+    payload.update(
+        _export_regenerate_cooldown_payload(
+            effective_status,
+            exports_root=exports_root,
+            export_date=export_date,
+        )
+    )
     return payload
 
 

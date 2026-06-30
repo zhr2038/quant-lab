@@ -6,7 +6,7 @@ import re
 import subprocess
 import sys
 import zipfile
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from functools import lru_cache
 from pathlib import Path
 from typing import Any
@@ -24,6 +24,7 @@ DEFAULT_DOWNLOAD_PACK_LIMIT = 5
 DEFAULT_DOWNLOAD_MAX_BYTES = 128 * 1024 * 1024
 DEFAULT_EXPORT_STATUS_STALE_SECONDS = 30 * 60
 DEFAULT_REQUEST_FILE_PICKUP_STALE_SECONDS = 90
+DEFAULT_EXPORT_REGENERATE_COOLDOWN_SECONDS = 3 * 60
 DEFAULT_WEB_EXPORT_MEMORY_LIMIT_MB = 0
 REQUEST_FILE_BACKGROUND_TRIGGER = "request_file"
 
@@ -145,8 +146,16 @@ def _start_export_job(
 ) -> dict[str, Any]:
     exports_root.mkdir(parents=True, exist_ok=True)
     running = _poll_export_job(exports_root, export_date)
-    if running.get("state") == "running":
+    running_state = str(running.get("state") or "").lower()
+    if running_state in {"starting", "running"} and not _export_job_is_stale(running):
         return running
+    recent_success = _recent_success_export_status(
+        running,
+        exports_root=exports_root,
+        export_date=export_date,
+    )
+    if recent_success is not None:
+        return recent_success
     status_path = _export_job_status_path(exports_root, export_date)
     log_path = _export_job_log_path(exports_root, export_date)
     status = {
@@ -227,6 +236,104 @@ def _start_export_request_file(
     }
     _write_export_job_status(status_path, status)
     return status
+
+
+def _recent_success_export_status(
+    status: dict[str, Any],
+    *,
+    exports_root: Path,
+    export_date: str,
+) -> dict[str, Any] | None:
+    cooldown = _export_regenerate_cooldown_payload(
+        status,
+        exports_root=exports_root,
+        export_date=export_date,
+    )
+    if int(cooldown.get("regenerate_cooldown_remaining_seconds") or 0) <= 0:
+        return None
+    return {
+        **status,
+        **cooldown,
+        "state": "succeeded",
+        "regenerate_skipped": True,
+        "message": "recent expert pack generation reused; wait for cooldown before regenerating",
+    }
+
+
+def _export_regenerate_cooldown_payload(
+    status: dict[str, Any],
+    *,
+    exports_root: Path,
+    export_date: str,
+) -> dict[str, Any]:
+    cooldown_seconds = _web_export_regenerate_cooldown_seconds()
+    base = {
+        "regenerate_cooldown_seconds": cooldown_seconds,
+        "regenerate_cooldown_remaining_seconds": 0,
+        "regenerate_available_at": None,
+        "regenerate_reuse_pack": None,
+        "regenerate_reuse_pack_name": None,
+    }
+    if cooldown_seconds <= 0 or str(status.get("state") or "").lower() != "succeeded":
+        return base
+    pack_path = _pack_path_for_regenerate_cooldown(
+        status,
+        exports_root=exports_root,
+        export_date=export_date,
+    )
+    if pack_path is None:
+        return base
+    completed_at = _completed_at_for_regenerate_cooldown(status, pack_path)
+    if completed_at is None:
+        return base
+    age_seconds = (datetime.now(UTC) - completed_at).total_seconds()
+    remaining = int(max(0, cooldown_seconds - age_seconds) + 0.999)
+    if remaining <= 0:
+        return base
+    available_at = completed_at + timedelta(seconds=cooldown_seconds)
+    return {
+        **base,
+        "regenerate_cooldown_remaining_seconds": remaining,
+        "regenerate_available_at": available_at.isoformat(),
+        "regenerate_reuse_pack": str(pack_path),
+        "regenerate_reuse_pack_name": pack_path.name,
+    }
+
+
+def _pack_path_for_regenerate_cooldown(
+    status: dict[str, Any],
+    *,
+    exports_root: Path,
+    export_date: str,
+) -> Path | None:
+    root = exports_root.resolve()
+    zip_path = status.get("zip_path")
+    if zip_path:
+        try:
+            candidate = Path(str(zip_path)).resolve()
+            candidate.relative_to(root)
+        except (OSError, ValueError):
+            candidate = None
+        if (
+            candidate is not None
+            and candidate.is_file()
+            and _pack_name_matches_export_date(candidate.name, export_date)
+        ):
+            return candidate
+    return _latest_pack_for_export_date(exports_root, export_date)
+
+
+def _completed_at_for_regenerate_cooldown(
+    status: dict[str, Any],
+    pack_path: Path,
+) -> datetime | None:
+    completed_at = _parse_status_datetime(status.get("finished_at"))
+    if completed_at is not None:
+        return completed_at
+    try:
+        return datetime.fromtimestamp(pack_path.stat().st_mtime, UTC)
+    except OSError:
+        return None
 
 
 def _export_job_script() -> str:
@@ -894,6 +1001,19 @@ def _download_pack_limit() -> int:
 def _download_max_bytes() -> int:
     value = _positive_int_env("QUANT_LAB_WEB_DOWNLOAD_MAX_MB", 128)
     return value * 1024 * 1024
+
+
+def _web_export_regenerate_cooldown_seconds() -> int:
+    try:
+        value = int(
+            os.environ.get(
+                "QUANT_LAB_WEB_EXPORT_REGENERATE_COOLDOWN_SECONDS",
+                str(DEFAULT_EXPORT_REGENERATE_COOLDOWN_SECONDS),
+            )
+        )
+    except ValueError:
+        return DEFAULT_EXPORT_REGENERATE_COOLDOWN_SECONDS
+    return max(0, value)
 
 
 def _positive_int_env(name: str, default: int) -> int:

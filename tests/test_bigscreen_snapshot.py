@@ -1056,6 +1056,42 @@ def test_web_v2_expert_pack_status_and_download(monkeypatch, tmp_path):
     assert traversal_response.status_code == 404
 
 
+def test_web_v2_expert_pack_status_exposes_regenerate_cooldown(monkeypatch, tmp_path):
+    clear_bigscreen_cache()
+    lake = tmp_path / "lake"
+    exports = tmp_path / "exports"
+    pack = exports / "quant_lab_expert_pack_2026-06-05_120000.zip"
+    exports.mkdir(parents=True)
+    with zipfile.ZipFile(pack, "w") as archive:
+        archive.writestr("manifest.json", json.dumps({"authoritative_snapshot": True}))
+        archive.writestr("data_quality.json", json.dumps({"status": "OK"}))
+        archive.writestr("expert_questions.md", "下一步看什么？\n")
+    (exports / ".quant_lab_web_export_2026-06-05.json").write_text(
+        json.dumps(
+            {
+                "state": "succeeded",
+                "zip_path": str(pack),
+                "finished_at": datetime.now(UTC).isoformat(),
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    monkeypatch.setenv("QUANT_LAB_LAKE_ROOT", str(lake))
+    monkeypatch.setenv("QUANT_LAB_WEB_EXPORT_REGENERATE_COOLDOWN_SECONDS", "180")
+    monkeypatch.delenv("QUANT_LAB_API_TOKEN", raising=False)
+    response = TestClient(create_app()).get(
+        "/web-v2/expert-pack/status?export_date=2026-06-05"
+    )
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["latest_pack_name"] == pack.name
+    assert payload["regenerate_cooldown_seconds"] == 180
+    assert payload["regenerate_cooldown_remaining_seconds"] > 0
+    assert payload["regenerate_reuse_pack_name"] == pack.name
+
+
 def test_web_v2_expert_pack_status_filters_deleted_index_pack(monkeypatch, tmp_path):
     clear_bigscreen_cache()
     lake = tmp_path / "lake"

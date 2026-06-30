@@ -3252,6 +3252,47 @@ def test_expert_exports_generate_today_writes_request_file_for_systemd_worker(
     )
 
 
+def test_expert_exports_generate_today_reuses_recent_success(tmp_path, monkeypatch):
+    lake_root = _fixture_lake(tmp_path)
+    exports_root = tmp_path / "exports"
+    exports_root.mkdir(exist_ok=True)
+    export_date = "2026-05-16"
+    pack_path = exports_root / "quant_lab_expert_pack_2026-05-16_recent.zip"
+    pack_path.write_bytes(b"PK")
+    status_path = exports_root / ".quant_lab_web_export_2026-05-16.json"
+    status_path.write_text(
+        json.dumps(
+            {
+                "state": "succeeded",
+                "export_date": export_date,
+                "request_id": "first-request",
+                "zip_path": str(pack_path),
+                "finished_at": datetime.now(UTC).isoformat(),
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    def fail_popen(*args, **kwargs):  # pragma: no cover - only used if dedupe breaks
+        raise AssertionError("recent successful export should be reused")
+
+    monkeypatch.setenv("QUANT_LAB_WEB_EXPORT_REGENERATE_COOLDOWN_SECONDS", "180")
+    monkeypatch.setattr(expert_exports.subprocess, "Popen", fail_popen)
+
+    status = expert_exports._start_export_job(
+        export_date=export_date,
+        lake_root=lake_root,
+        exports_root=exports_root,
+    )
+
+    assert status["state"] == "succeeded"
+    assert status["zip_path"] == str(pack_path)
+    assert status["regenerate_skipped"] is True
+    assert status["regenerate_cooldown_remaining_seconds"] > 0
+    assert status["regenerate_reuse_pack_name"] == pack_path.name
+    assert not (exports_root / ".quant_lab_web_export_request.json").exists()
+
+
 def test_web_export_request_worker_writes_completion_status(tmp_path, monkeypatch):
     exports_root = tmp_path / "exports"
     lake_root = tmp_path / "lake"

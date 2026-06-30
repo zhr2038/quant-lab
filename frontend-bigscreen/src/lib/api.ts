@@ -48,6 +48,10 @@ export const ExpertPackStatusSchema = z.object({
   latest_download_url: z.string().nullable().optional(),
   latest_size_bytes: z.number().nullable().optional(),
   latest_modified_at: z.string().nullable().optional(),
+  regenerate_cooldown_seconds: z.number().nullable().optional(),
+  regenerate_cooldown_remaining_seconds: z.number().nullable().optional(),
+  regenerate_available_at: z.string().nullable().optional(),
+  regenerate_reuse_pack_name: z.string().nullable().optional(),
   packs: z.array(z.record(z.string(), z.unknown())).default([]),
   pack_count: z.number().default(0)
 });

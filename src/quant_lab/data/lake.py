@@ -849,6 +849,7 @@ def read_market_bars(
     end_utc = require_utc(end)
     if end_utc < start_utc:
         raise ValueError("end must be greater than or equal to start")
+    normalized_venue = _normalize_market_venue(venue)
 
     files = _parquet_files(Path(lake_root) / MARKET_BAR_DATASET)
     if not files:
@@ -864,7 +865,7 @@ def read_market_bars(
         normalized = _normalize_market_bar_frame(df)
         filtered = (
             normalized.filter(
-                (pl.col("venue") == venue)
+                (pl.col("venue").cast(pl.Utf8).str.to_lowercase() == normalized_venue)
                 & (pl.col("symbol") == normalize_symbol(symbol))
                 & (pl.col("timeframe") == timeframe)
                 & (pl.col("ts") >= start_utc)
@@ -878,7 +879,7 @@ def read_market_bars(
     filtered = (
         _normalize_market_bar_lazy_frame(lazy, schema)
         .filter(
-            (pl.col("venue") == venue)
+            (pl.col("venue").cast(pl.Utf8).str.to_lowercase() == normalized_venue)
             & (pl.col("symbol") == normalize_symbol(symbol))
             & (pl.col("timeframe") == timeframe)
             & (pl.col("ts") >= start_utc)
@@ -888,6 +889,10 @@ def read_market_bars(
         .select(list(MARKET_BAR_SCHEMA))
     )
     return validate_market_bars(filtered.collect().to_dicts())
+
+
+def _normalize_market_venue(value: str) -> str:
+    return str(value or "").strip().lower()
 
 
 def read_parquet_lazy(path: str | Path) -> pl.LazyFrame:

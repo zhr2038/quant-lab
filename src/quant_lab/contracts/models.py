@@ -67,6 +67,11 @@ class MarketBar(ContractModel):
     ingest_ts: datetime
     is_closed: bool = True
 
+    @field_validator("venue")
+    @classmethod
+    def normalize_venue(cls, value: str) -> str:
+        return value.strip().lower()
+
     @field_validator("symbol")
     @classmethod
     def normalize_market_symbol(cls, value: str) -> str:

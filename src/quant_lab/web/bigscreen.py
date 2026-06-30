@@ -8,7 +8,7 @@ import threading
 import time
 import zipfile
 from csv import DictReader
-from datetime import UTC, datetime
+from datetime import UTC, date, datetime
 from io import TextIOWrapper
 from pathlib import Path
 from typing import Any
@@ -654,6 +654,8 @@ def _json_row(row: dict[str, Any]) -> dict[str, Any]:
 def _json_value(value: Any) -> Any:
     if isinstance(value, datetime):
         return value.astimezone(UTC).isoformat().replace("+00:00", "Z")
+    if isinstance(value, date):
+        return value.isoformat()
     if isinstance(value, Path):
         return str(value)
     if isinstance(value, float) and (math.isnan(value) or math.isinf(value)):

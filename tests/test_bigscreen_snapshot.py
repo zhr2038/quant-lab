@@ -199,6 +199,7 @@ def test_bigscreen_strategy_flow_exposes_opportunity_cost_summary(tmp_path):
     assert opportunity_cost["top_buckets"][0]["recommended_trade_level_decision"] == (
         "MICRO_CANARY_REVIEW"
     )
+    json.dumps(payload)
 
 
 def test_bigscreen_data_matrix_shows_proxy_only_live_cost_diagnostics(tmp_path):

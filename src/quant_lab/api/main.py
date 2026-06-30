@@ -1229,13 +1229,20 @@ def _decorate_web_v2_expert_pack_status(
         ):
             latest_pack = manual_latest_pack
             latest_pack_source = "manual_web_request"
+    manual_status = dict(status)
+    effective_status = dict(status)
+    if not is_running and latest_pack is not None:
+        effective_status["zip_path"] = str(latest_pack)
+        effective_status["zip_name"] = latest_pack.name
+        effective_status["latest_pack_source"] = latest_pack_source
     payload = {
         "mode": "read_only_export",
         "live_order_effect": "none",
         "export_date": export_date,
         "exports_root": str(exports_root),
         "state": state,
-        "status": status,
+        "status": effective_status,
+        "manual_status": manual_status,
         "requested_date_pack": (
             str(requested_date_pack) if requested_date_pack is not None else None
         ),

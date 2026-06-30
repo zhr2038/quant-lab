@@ -1109,7 +1109,10 @@ def test_web_v2_expert_pack_status_prefers_latest_requested_pack_over_stale_manu
 
     assert response.status_code == 200
     payload = response.json()
-    assert payload["status"]["zip_path"] == str(old_pack)
+    assert payload["status"]["zip_path"] == str(new_pack)
+    assert payload["status"]["zip_name"] == new_pack.name
+    assert payload["status"]["latest_pack_source"] == "requested_date_pack"
+    assert payload["manual_status"]["zip_path"] == str(old_pack)
     assert payload["requested_date_pack_name"] == new_pack.name
     assert payload["available_pack_name"] == new_pack.name
     assert payload["manual_latest_pack_name"] == old_pack.name

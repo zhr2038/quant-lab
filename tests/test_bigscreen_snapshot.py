@@ -187,16 +187,16 @@ def test_bigscreen_matrix_attention_promotes_global_status_and_action():
         "columns": ["spread", "trade", "cost"],
         "rows": [
             {
-                "symbol": "ADA-USDT",
-                "spread": {"status": "CRITICAL", "spread_bps": 8.0},
-                "trade": {"status": "OK"},
-                "cost": {"status": "WARNING"},
-            },
-            {
                 "symbol": "BTC-USDT",
                 "spread": {"status": "OK", "spread_bps": 1.0},
                 "trade": {"status": "WARNING"},
                 "cost": {"status": "OK"},
+            },
+            {
+                "symbol": "ADA-USDT",
+                "spread": {"status": "CRITICAL", "spread_bps": 8.0},
+                "trade": {"status": "OK"},
+                "cost": {"status": "WARNING"},
             },
         ],
     }

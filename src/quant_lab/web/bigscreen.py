@@ -1216,7 +1216,8 @@ def _data_matrix_issue_summary(data_matrix: dict[str, Any]) -> dict[str, Any]:
 
     critical = 0
     warning = 0
-    top: list[str] = []
+    critical_top: list[str] = []
+    warning_top: list[str] = []
     for row in rows:
         if not isinstance(row, dict):
             continue
@@ -1228,13 +1229,13 @@ def _data_matrix_issue_summary(data_matrix: dict[str, Any]) -> dict[str, Any]:
             status = str(cell.get("status") or "").upper()
             if status == "CRITICAL":
                 critical += 1
-                if len(top) < 3:
-                    top.append(f"{symbol}.{column}")
+                if len(critical_top) < 3:
+                    critical_top.append(f"{symbol}.{column}")
             elif status == "WARNING":
                 warning += 1
-                if critical == 0 and len(top) < 3:
-                    top.append(f"{symbol}.{column}")
-    return {"critical": critical, "warning": warning, "top": top}
+                if len(warning_top) < 3:
+                    warning_top.append(f"{symbol}.{column}")
+    return {"critical": critical, "warning": warning, "top": critical_top or warning_top}
 
 
 def _data_matrix_warnings(data_matrix: dict[str, Any]) -> list[str]:

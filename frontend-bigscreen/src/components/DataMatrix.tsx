@@ -135,42 +135,40 @@ export function DataMatrix({
           </div>
         </aside>
       </div>
-      {variant === "overview" && (
-        <div className="matrix-bottom-panel">
-          <div className="matrix-issue-panel">
-            <div className="matrix-mini-title">需关注格子</div>
-            <div className="matrix-issue-list">
-              {issueCells.map((item) => (
-                <div className={`matrix-issue-row ${item.status}`} key={`${item.symbol}-${item.column}-issue`}>
-                  <strong>{item.symbol}</strong>
-                  <span>{item.label}</span>
-                  <em>{summarizeCell(item.cell)}</em>
-                </div>
-              ))}
-              {!issueCells.length && (
-                <div className="matrix-issue-empty">当前矩阵没有 critical / warning 格子。</div>
-              )}
-            </div>
-          </div>
-          <div className="matrix-coverage-panel">
-            <div className="matrix-mini-title">覆盖概览</div>
-            <div className="matrix-coverage-list">
-              {coverageRows.map((item) => (
-                <div className="matrix-status-bar" key={item.key}>
-                  <span>{item.label}</span>
-                  <div className="matrix-status-track">
-                    <i
-                      className={`matrix-status-fill ${item.tone}`}
-                      style={{ width: `${Math.max(3, Math.round((item.value / statusTotal) * 100))}%` }}
-                    />
-                  </div>
-                  <b>{item.value}</b>
-                </div>
-              ))}
-            </div>
+      <div className="matrix-bottom-panel">
+        <div className="matrix-issue-panel">
+          <div className="matrix-mini-title">需关注格子</div>
+          <div className="matrix-issue-list">
+            {issueCells.map((item) => (
+              <div className={`matrix-issue-row ${item.status}`} key={`${item.symbol}-${item.column}-issue`}>
+                <strong>{item.symbol}</strong>
+                <span>{item.label}</span>
+                <em>{summarizeCell(item.cell)}</em>
+              </div>
+            ))}
+            {!issueCells.length && (
+              <div className="matrix-issue-empty">当前矩阵没有 critical / warning 格子。</div>
+            )}
           </div>
         </div>
-      )}
+        <div className="matrix-coverage-panel">
+          <div className="matrix-mini-title">覆盖概览</div>
+          <div className="matrix-coverage-list">
+            {coverageRows.map((item) => (
+              <div className="matrix-status-bar" key={item.key}>
+                <span>{item.label}</span>
+                <div className="matrix-status-track">
+                  <i
+                    className={`matrix-status-fill ${item.tone}`}
+                    style={{ width: `${Math.max(3, Math.round((item.value / statusTotal) * 100))}%` }}
+                  />
+                </div>
+                <b>{item.value}</b>
+              </div>
+            ))}
+          </div>
+        </div>
+      </div>
     </section>
   );
 }

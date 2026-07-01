@@ -21,7 +21,7 @@ export function KpiGrid({ snapshot }: { snapshot: BigscreenSnapshot }) {
       {cards.map((card, i) => {
         const Icon = card.icon;
         const displayValue = card.value.replace(/_/g, " ");
-        const isLongValue = displayValue.length > 8;
+        const isLongValue = displayValue.length >= 8 || card.label === "V5 权限";
         return (
           <motion.div
             className={`kpi ${toneClass(card.tone)}${isLongValue ? " long-value" : ""}`}

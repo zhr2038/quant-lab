@@ -264,6 +264,14 @@ button{font:inherit;color:inherit}
 }
 .opportunity-cost-stats b{font-size:16px;color:#ffe2a4;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
 .opportunity-cost-stats em{font-size:10px;color:var(--muted);font-style:normal;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.opportunity-cost-note{
+  min-height:25px;border-radius:12px;border:1px solid rgba(255,196,87,.26);
+  display:grid;grid-template-columns:92px minmax(0,1fr) minmax(0,1.4fr);align-items:center;gap:8px;
+  padding:5px 9px;margin:-1px 0 7px;background:rgba(255,196,87,.06);font-size:10px;color:var(--muted);
+}
+.opportunity-cost-note span,.opportunity-cost-note em,.opportunity-cost-note strong{white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.opportunity-cost-note em{font-style:normal;color:#ffe2a4;text-transform:uppercase}
+.opportunity-cost-note strong{font-weight:700;text-align:right;color:#b7d6ff}
 .opportunity-bucket{
   height:26px;border-radius:12px;border:1px solid rgba(255,196,87,.34);display:grid;grid-template-columns:minmax(0,1fr) 92px 72px;
   align-items:center;gap:7px;padding:0 9px;background:rgba(255,196,87,.07);font-size:11px;
@@ -307,6 +315,7 @@ button{font:inherit;color:inherit}
 .page-strategy .opportunity-cost-stats span{padding:6px 10px;border-radius:14px}
 .page-strategy .opportunity-cost-stats b{font-size:22px}
 .page-strategy .opportunity-cost-stats em{font-size:13px}
+.page-strategy .opportunity-cost-note{min-height:32px;font-size:12px;grid-template-columns:112px minmax(0,1fr) minmax(0,1.5fr);padding:6px 10px}
 .page-strategy .opportunity-bucket{min-height:34px;height:auto;font-size:12px;padding:6px 10px}
 .page-strategy .factor-factory-mini{padding:12px 14px;margin:0 0 12px;border-radius:18px}
 .page-strategy .factor-factory-stats{gap:10px;margin:8px 0}
@@ -686,6 +695,8 @@ button{font:inherit;color:inherit}
   .opportunity-cost-stats span{padding:7px 8px}
   .page-strategy .opportunity-cost-stats b{font-size:20px}
   .page-strategy .opportunity-cost-stats em{font-size:10px}
+  .page-strategy .opportunity-cost-note,.opportunity-cost-note{grid-template-columns:1fr;gap:2px;font-size:10px;min-height:0}
+  .opportunity-cost-note strong{text-align:left}
   .opportunity-bucket{grid-template-columns:1fr 74px;min-height:30px;height:auto}
   .opportunity-bucket strong{display:none}
   .page-strategy .factor-factory-mini{padding:12px;margin:8px 0 14px}

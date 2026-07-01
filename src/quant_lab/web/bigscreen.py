@@ -1268,6 +1268,7 @@ def _opportunity_cost_payload(strategy: dict[str, Any]) -> dict[str, Any]:
     daily_rows = _frame_rows(daily, limit=200)
     daily_rows.sort(key=lambda row: str(row.get("day") or ""), reverse=True)
     latest = daily_rows[0] if daily_rows else {}
+    recent_7d = daily_rows[:7]
     bucket_rows = _frame_rows(buckets, limit=200)
     bucket_rows.sort(
         key=lambda row: (
@@ -1278,15 +1279,39 @@ def _opportunity_cost_payload(strategy: dict[str, Any]) -> dict[str, Any]:
     return {
         "latest_day": latest.get("day"),
         "veto_net_value_bps": _float(latest.get("veto_net_value_bps")),
+        "missed_profit_bps": _float(latest.get("false_block_profit_bps_sum")) or 0.0,
+        "loss_saved_bps": _float(latest.get("loss_saved_bps_sum")) or 0.0,
+        "veto_net_value_bps_7d": _sum_rows(recent_7d, "veto_net_value_bps"),
+        "missed_profit_bps_7d": _sum_rows(recent_7d, "false_block_profit_bps_sum"),
+        "loss_saved_bps_7d": _sum_rows(recent_7d, "loss_saved_bps_sum"),
         "false_block_count": _int(latest.get("false_block_count")) or 0,
         "loss_saved_count": _int(latest.get("loss_saved_count")) or 0,
+        "false_block_count_7d": _sum_int_rows(recent_7d, "false_block_count"),
+        "loss_saved_count_7d": _sum_int_rows(recent_7d, "loss_saved_count"),
         "high_confidence_false_block_count": (
             _int(latest.get("high_confidence_false_block_count")) or 0
+        ),
+        "high_confidence_loss_saved_count": (
+            _int(latest.get("high_confidence_loss_saved_count")) or 0
+        ),
+        "high_confidence_false_block_count_7d": _sum_int_rows(
+            recent_7d, "high_confidence_false_block_count"
+        ),
+        "high_confidence_loss_saved_count_7d": _sum_int_rows(
+            recent_7d, "high_confidence_loss_saved_count"
         ),
         "status": latest.get("opportunity_cost_status") or "NO_DATA",
         "top_buckets": bucket_rows[:4],
         "recent_regrets": _frame_rows(regrets, limit=4),
     }
+
+
+def _sum_rows(rows: list[dict[str, Any]], field: str) -> float:
+    return float(sum(_float(row.get(field)) or 0.0 for row in rows))
+
+
+def _sum_int_rows(rows: list[dict[str, Any]], field: str) -> int:
+    return int(sum(_int(row.get(field)) or 0 for row in rows))
 
 
 def _factor_factory_payload(strategy: dict[str, Any]) -> dict[str, Any]:

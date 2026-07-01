@@ -157,10 +157,25 @@ def test_bigscreen_strategy_flow_exposes_opportunity_cost_summary(tmp_path):
         pl.DataFrame(
             [
                 {
+                    "day": date(2026, 6, 28),
+                    "false_block_count": 2,
+                    "loss_saved_count": 1,
+                    "false_block_profit_bps_sum": 90.0,
+                    "loss_saved_bps_sum": 30.0,
+                    "high_confidence_false_block_count": 1,
+                    "high_confidence_loss_saved_count": 1,
+                    "veto_net_value_bps": -60.0,
+                    "opportunity_cost_status": "VETO_VALUE_NEGATIVE_REVIEW_EXCEPTIONS",
+                    "created_at": created_at,
+                },
+                {
                     "day": date(2026, 6, 29),
                     "false_block_count": 1,
                     "loss_saved_count": 0,
+                    "false_block_profit_bps_sum": 161.0,
+                    "loss_saved_bps_sum": 0.0,
                     "high_confidence_false_block_count": 1,
+                    "high_confidence_loss_saved_count": 0,
                     "veto_net_value_bps": -161.0,
                     "opportunity_cost_status": "VETO_VALUE_NEGATIVE_REVIEW_EXCEPTIONS",
                     "created_at": created_at,
@@ -194,8 +209,17 @@ def test_bigscreen_strategy_flow_exposes_opportunity_cost_summary(tmp_path):
     opportunity_cost = payload["strategy_flow"]["opportunity_cost"]
 
     assert opportunity_cost["veto_net_value_bps"] == -161.0
+    assert opportunity_cost["missed_profit_bps"] == 161.0
+    assert opportunity_cost["loss_saved_bps"] == 0.0
+    assert opportunity_cost["veto_net_value_bps_7d"] == -221.0
+    assert opportunity_cost["missed_profit_bps_7d"] == 251.0
+    assert opportunity_cost["loss_saved_bps_7d"] == 30.0
     assert opportunity_cost["false_block_count"] == 1
     assert opportunity_cost["loss_saved_count"] == 0
+    assert opportunity_cost["false_block_count_7d"] == 3
+    assert opportunity_cost["loss_saved_count_7d"] == 1
+    assert opportunity_cost["high_confidence_false_block_count_7d"] == 2
+    assert opportunity_cost["high_confidence_loss_saved_count_7d"] == 1
     assert opportunity_cost["top_buckets"][0]["recommended_trade_level_decision"] == (
         "MICRO_CANARY_REVIEW"
     )

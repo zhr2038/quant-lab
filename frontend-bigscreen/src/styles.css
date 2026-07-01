@@ -499,9 +499,10 @@ button{font:inherit;color:inherit}
 .page-data .market-full .market-summary-line{min-height:30px;padding:6px 8px;font-size:10px;grid-template-columns:58px minmax(0,1fr)}
 .page-data .cost{padding:18px 20px}
 .page-data .cost .sub{font-size:11px}
-.page-data .cost-body{grid-template-columns:168px minmax(0,1fr);gap:16px;margin-top:10px;align-items:center}
-.page-data .barline{grid-template-columns:68px 1fr 26px;gap:8px;margin:10px 0;font-size:10px}
-.page-data .footnote{left:20px;right:20px;bottom:10px;font-size:10px}
+.page-data .cost-body{grid-template-columns:148px minmax(0,1fr);gap:14px;margin-top:6px;align-items:center}
+.page-data .cost-body>div:first-child{width:148px!important;height:148px!important}
+.page-data .barline{grid-template-columns:68px 1fr 26px;gap:8px;margin:7px 0;font-size:10px}
+.page-data .footnote{left:20px;right:20px;bottom:8px;font-size:10px}
 .perf{grid-column:4;grid-row:3}
 .latency-text{position:absolute;left:24px;top:138px;font-size:38px;font-weight:900}
 .perm-grid{display:grid;grid-template-columns:1fr 1fr;gap:12px;margin-top:44px}

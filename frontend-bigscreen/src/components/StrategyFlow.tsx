@@ -12,11 +12,12 @@ export function StrategyFlow({ flow }: { flow: Record<string, unknown> }) {
   const opportunityCost = (flow.opportunity_cost ?? {}) as Record<string, unknown>;
   const opportunityBuckets = safeRows(opportunityCost.top_buckets);
   const factorReviewQueue = safeRows(factorFactory.paper_review_queue);
-  const factorRows = factorReviewQueue.length
-    ? factorReviewQueue
-    : safeRows(factorFactory.paper_ready_candidates).length
-      ? safeRows(factorFactory.paper_ready_candidates)
-      : safeRows(factorFactory.top_candidates);
+  const factorRows = dedupeFactorRows([
+    ...safeRows(factorFactory.paper_ready_candidates),
+    ...factorReviewQueue,
+    ...safeRows(factorFactory.top_candidates),
+    ...safeRows(factorFactory.strategy_bridge_candidates)
+  ]);
   const option = {
     backgroundColor: "transparent",
     animationDuration: 1200,
@@ -78,7 +79,7 @@ export function StrategyFlow({ flow }: { flow: Record<string, unknown> }) {
               保护 {shortNumber(opportunityCost.high_confidence_loss_saved_count_7d)}
             </strong>
           </div>
-          {opportunityBuckets.slice(0, 1).map((bucket, i) => (
+          {opportunityBuckets.slice(0, 3).map((bucket, i) => (
             <div className="opportunity-bucket" key={`${bucket.bucket_key}-${i}`} title={bucketTitle(bucket)}>
               <span>{bucketIdentity(bucket)}</span>
               <em>{stringValue(bucket.recommended_trade_level_decision, "REVIEW")}</em>
@@ -95,7 +96,7 @@ export function StrategyFlow({ flow }: { flow: Record<string, unknown> }) {
             <span><b>{shortNumber(factorFactory.strategy_bridge_candidate_count ?? safeRows(factorFactory.strategy_bridge_candidates).length)}</b><em>Bridge</em></span>
           </div>
           <div className="factor-chip-grid">
-            {factorRows.slice(0, 6).map((factor, i) => (
+            {factorRows.slice(0, 12).map((factor, i) => (
               <div className="factor-chip" key={`${factor.factor_id}-${i}`}>
                 <Sparkles size={13} />
                 <span>{stringValue(factor.factor_id ?? factor.factor_name, "factor")}</span>
@@ -109,7 +110,7 @@ export function StrategyFlow({ flow }: { flow: Record<string, unknown> }) {
         <div className="candidate-list">
           <div className="candidate-title"><Rocket size={15} /> 策略候选（只读）</div>
           <div className="candidate-list-body">
-            {topCandidates.slice(0, 8).map((candidate, i) => (
+            {topCandidates.slice(0, 10).map((candidate, i) => (
               <div className="chip" key={candidateKey(candidate, i)} title={candidateTitle(candidate)}>
                 <span className="candidate-main">
                   <b>{candidateIdentity(candidate)}</b>
@@ -150,6 +151,20 @@ function dedupeCandidates(rows: Record<string, unknown>[]): Record<string, unkno
       stringValue(candidate.symbol, ""),
       stringValue(candidate.horizon_hours, ""),
       stringValue(candidate.recommended_mode ?? candidate.decision, "")
+    ].join("|");
+    if (seen.has(key)) return false;
+    seen.add(key);
+    return true;
+  });
+}
+
+function dedupeFactorRows(rows: Record<string, unknown>[]): Record<string, unknown>[] {
+  const seen = new Set<string>();
+  return rows.filter((factor) => {
+    const key = [
+      stringValue(factor.factor_id ?? factor.factor_name, ""),
+      stringValue(factor.best_horizon_bars ?? factor.horizon ?? factor.horizon_bars, ""),
+      stringValue(factor.candidate_state ?? factor.state ?? factor.recommended_action, "")
     ].join("|");
     if (seen.has(key)) return false;
     seen.add(key);

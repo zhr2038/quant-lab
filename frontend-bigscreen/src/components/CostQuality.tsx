@@ -43,7 +43,7 @@ export function CostQuality({ cost }: { cost: Record<string, unknown> }) {
       <h2 className="section-title icon-title"><CircleDollarSign size={23} />成本质量</h2>
       <p className="sub">actual / mixed / bootstrap probe / proxy / default 与 hard/soft fallback。</p>
       <div className="cost-body">
-        <ReactECharts option={option} style={{ height: 190, width: 190 }} />
+        <ReactECharts option={option} style={{ height: 168, width: 168 }} />
         <div>
           {rows.map((row) => <Bar key={row.name} label={`${row.name}成本`} value={row.value} total={Math.max(total, 1)} color={row.color} />)}
         </div>

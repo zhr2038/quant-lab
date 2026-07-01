@@ -95,10 +95,10 @@ button{font:inherit;color:inherit}
 .page-strategy{grid-template-columns:minmax(0,1fr) minmax(420px,.38fr);grid-template-rows:minmax(0,1fr);align-items:stretch}
 .page-strategy .strategy-card{grid-column:1;grid-row:1}
 .page-strategy .market{grid-column:2;grid-row:1;align-self:stretch}
-.page-data{grid-template-columns:minmax(0,1fr) minmax(0,1fr);grid-template-rows:minmax(440px,auto) minmax(0,1fr)}
-.page-data .heatmap{grid-column:1;grid-row:1}
+.page-data{grid-template-columns:minmax(0,1.08fr) minmax(430px,.92fr);grid-template-rows:minmax(0,1fr) minmax(238px,.42fr)}
+.page-data .heatmap{grid-column:1;grid-row:1/3}
 .page-data .market{grid-column:2;grid-row:1}
-.page-data .cost{grid-column:1/3;grid-row:2}
+.page-data .cost{grid-column:2;grid-row:2}
 .page-data .perf{grid-column:2;grid-row:2}
 .page-ops{grid-template-columns:minmax(0,1fr) minmax(0,1fr) 390px;grid-template-rows:390px minmax(0,1fr)}
 .page-ops .perf{grid-column:1;grid-row:1}
@@ -343,7 +343,7 @@ button{font:inherit;color:inherit}
 .factor-chip strong{text-align:right;color:#b7d6ff}
 .factor-empty{border:1px dashed rgba(80,169,255,.24);border-radius:10px;padding:7px 9px;color:var(--muted);font-size:11px}
 .strategy-research-grid{
-  display:grid;grid-template-columns:minmax(300px,.38fr) minmax(0,.62fr);
+  display:grid;grid-template-columns:minmax(300px,.34fr) minmax(0,.66fr);
   grid-template-areas:"opportunity factor" "opportunity candidates";
   gap:12px;margin-top:4px;align-items:start;
 }
@@ -380,7 +380,7 @@ button{font:inherit;color:inherit}
 .page-strategy .factor-chip-grid{grid-template-columns:repeat(2,minmax(0,1fr));gap:8px}
 .page-strategy .factor-chip strong{font-size:14px}
 .page-strategy .chip{min-height:46px;border-radius:18px;grid-template-columns:minmax(0,1fr) 104px 92px;font-size:13px;padding:6px 14px}
-.page-strategy .candidate-list-body{grid-template-columns:repeat(2,minmax(0,1fr));gap:8px}
+.page-strategy .candidate-list-body{grid-template-columns:repeat(auto-fit,minmax(260px,1fr));gap:8px}
 .page-strategy .candidate-main b{font-size:15px}
 .page-strategy .candidate-main small{font-size:12px}
 .page-strategy .candidate-detail{font-size:11px}
@@ -449,6 +449,59 @@ button{font:inherit;color:inherit}
   align-items:stretch;gap:10px;padding:13px;
 }
 .market-full .market-summary-grid{grid-template-columns:repeat(2,minmax(0,1fr))}
+.page-strategy .market-body{
+  grid-template-columns:1fr;grid-template-rows:minmax(0,1fr) auto;gap:10px;margin-top:14px;
+}
+.page-strategy .market-list{grid-template-columns:1fr;overflow:hidden}
+.page-strategy .ticker{
+  height:31px;grid-template-columns:82px 54px minmax(42px,1fr) 48px;gap:8px;padding:0 10px;
+  border-radius:11px;font-size:10px;
+}
+.page-strategy .ticker b{font-size:11px}
+.page-strategy .market-summary-panel{
+  grid-template-rows:auto auto;gap:7px;padding:10px;border-radius:13px;align-self:auto;
+}
+.page-strategy .market-summary-grid{grid-template-columns:repeat(4,minmax(0,1fr));gap:6px}
+.page-strategy .market-summary-grid span{padding:6px 5px}
+.page-strategy .market-summary-grid b{font-size:14px}
+.page-strategy .market-summary-grid em{font-size:9px}
+.page-strategy .market-summary-line{display:none}
+.page-data .heatmap{
+  display:grid;grid-template-rows:auto auto auto minmax(0,1fr);align-content:stretch;
+}
+.page-data .matrix-grid-shell{margin-top:14px;grid-template-columns:minmax(0,1fr) minmax(210px,.32fr);gap:14px}
+.page-data .matrix{grid-template-columns:48px repeat(7,minmax(42px,1fr));gap:6px}
+.page-data .cell{height:25px;border-radius:8px}
+.page-data .symbol,.page-data .matrix .h{font-size:10px}
+.page-data .matrix-side-panel{grid-template-rows:20px minmax(80px,1fr) auto;gap:8px;padding:12px}
+.page-data .matrix-side-stats{gap:6px}
+.page-data .matrix-side-stats span{padding:7px 6px}
+.page-data .matrix-side-stats b{font-size:17px}
+.page-data .matrix-bottom-panel{margin-top:12px;gap:12px}
+.page-data .matrix-issue-panel,.page-data .matrix-coverage-panel{padding-top:10px;gap:8px}
+.page-data .matrix-issue-list{grid-auto-rows:minmax(34px,auto);gap:6px}
+.page-data .matrix-issue-row{grid-template-columns:50px 48px minmax(0,1fr);gap:8px;padding:6px 8px;border-radius:10px}
+.page-data .matrix-issue-row strong,.page-data .matrix-issue-row span,.page-data .matrix-issue-row em{font-size:10px}
+.page-data .matrix-coverage-list{gap:8px}
+.page-data .market-full .market-body{
+  margin-top:12px;grid-template-columns:minmax(0,1fr) minmax(210px,.28fr);gap:10px;
+}
+.page-data .market-full .market-list{grid-template-columns:repeat(auto-fit,minmax(230px,1fr));gap:7px}
+.page-data .market-full .ticker{
+  height:31px;grid-template-columns:92px 60px minmax(44px,1fr) 52px;gap:8px;padding:0 10px;
+  border-radius:11px;font-size:10px;
+}
+.page-data .market-full .ticker b{font-size:11px}
+.page-data .market-full .market-summary-panel{padding:10px;gap:8px;border-radius:13px}
+.page-data .market-full .market-summary-grid{gap:6px}
+.page-data .market-full .market-summary-grid span{padding:7px 6px}
+.page-data .market-full .market-summary-grid b{font-size:15px}
+.page-data .market-full .market-summary-line{min-height:30px;padding:6px 8px;font-size:10px;grid-template-columns:58px minmax(0,1fr)}
+.page-data .cost{padding:18px 20px}
+.page-data .cost .sub{font-size:11px}
+.page-data .cost-body{grid-template-columns:168px minmax(0,1fr);gap:16px;margin-top:10px;align-items:center}
+.page-data .barline{grid-template-columns:68px 1fr 26px;gap:8px;margin:10px 0;font-size:10px}
+.page-data .footnote{left:20px;right:20px;bottom:10px;font-size:10px}
 .perf{grid-column:4;grid-row:3}
 .latency-text{position:absolute;left:24px;top:138px;font-size:38px;font-weight:900}
 .perm-grid{display:grid;grid-template-columns:1fr 1fr;gap:12px;margin-top:44px}

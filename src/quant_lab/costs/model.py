@@ -155,7 +155,9 @@ def evaluate_live_universe_cost_coverage(
             if latest_actual is not None
             else False
         )
-        latest_is_bootstrap_probe = latest is not None and _cost_source(latest) == "bootstrap_cost_probe"
+        latest_is_bootstrap_probe = (
+            latest is not None and _cost_source(latest) == "bootstrap_cost_probe"
+        )
         anchored_mixed_proxy_candidate = (
             not direct
             and not latest_is_bootstrap_probe

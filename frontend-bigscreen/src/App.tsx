@@ -517,6 +517,15 @@ function ExpertPackControls({ exports }: { exports: Record<string, unknown> }) {
   const displayGeneratedAt = formatExpertPackStamp(displayFileName);
   const displayPrimaryText = displayGeneratedAt || displayFileName || "latest.zip";
   const displayModifiedAt = formatPackTime(displayPack?.modified_at);
+  const requestedDate = stringValue(status?.export_date, "");
+  const requestedPackPrefix = requestedDate ? `quant_lab_expert_pack_${requestedDate}_` : "";
+  const displayPackMatchesRequestedDate = Boolean(
+    displayFileName && requestedPackPrefix && displayFileName.startsWith(requestedPackPrefix)
+  );
+  const previousPackOnly = Boolean(displayUrl && requestedDate && !displayPackMatchesRequestedDate);
+  const downloadLatestLabel = displayPackMatchesRequestedDate
+    ? "下载今日专家包"
+    : "下载上一份专家包";
   const latestMeta = [
     displayGeneratedAt ? displayFileName : "",
     displayPack?.modified_at ? `mtime ${displayModifiedAt}` : "",
@@ -541,9 +550,12 @@ function ExpertPackControls({ exports }: { exports: Record<string, unknown> }) {
   const currentCommit = stringValue(status?.current_quant_lab_git_commit, "");
   const codeLagStatus = stringValue(status?.latest_pack_code_lag_status, "");
   const codeLagWarning = codeLagStatus.toUpperCase() === "WARNING";
-  const displayState = !isRunning && displayUrl && state.toLowerCase() === "manual_missing"
+  const rawState = state.toLowerCase();
+  const displayState = !isRunning && displayUrl && rawState === "manual_missing"
     ? "PACK_AVAILABLE"
-    : state;
+    : !isRunning && previousPackOnly && rawState === "missing_requested_date"
+      ? "PREVIOUS_PACK_AVAILABLE"
+      : state;
   const lastError = stringValue(statusBody.error, "");
   const generateLabel = isRunning
     ? "生成中"
@@ -590,6 +602,11 @@ function ExpertPackControls({ exports }: { exports: Record<string, unknown> }) {
           {lastError || String(generateMutation.error || statusQuery.error)}
         </div>
       ) : null}
+      {previousPackOnly ? (
+        <div className="export-warning">
+          今日 {requestedDate} 专家包尚未生成；当前下载入口是上一份可用专家包。
+        </div>
+      ) : null}
       {v5LagWarning ? (
         <div className="export-warning">
           当前可下载包内 V5 证据落后最新遥测 {Math.round(v5LagMinutes)} 分钟；需要最新证据时请手动重新生成。
@@ -603,7 +620,7 @@ function ExpertPackControls({ exports }: { exports: Record<string, unknown> }) {
       {displayUrl ? (
         <a className="download-latest" href={expertPackDownloadUrl(displayUrl)} download title={displayFileName}>
           <DownloadCloud size={18} />
-          <span className="download-latest-label">下载今日专家包</span>
+          <span className="download-latest-label">{downloadLatestLabel}</span>
           <span className="download-latest-name">{displayPrimaryText}</span>
           {latestMeta.length ? <span className="download-latest-meta">{latestMeta.join(" · ")}</span> : null}
         </a>

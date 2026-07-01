@@ -534,6 +534,9 @@ function ExpertPackControls({ exports }: { exports: Record<string, unknown> }) {
     Math.ceil(numberValue(status?.regenerate_cooldown_remaining_seconds))
   );
   const isCoolingDown = cooldownRemaining > 0;
+  const v5LagStatus = stringValue(exports?.latest_pack_v5_lag_status, "");
+  const v5LagMinutes = numberValue(exports?.latest_pack_v5_lag_minutes);
+  const v5LagWarning = v5LagStatus.toUpperCase() === "WARNING" && v5LagMinutes > 0;
   const displayState = !isRunning && displayUrl && state.toLowerCase() === "manual_missing"
     ? "PACK_AVAILABLE"
     : state;
@@ -581,6 +584,11 @@ function ExpertPackControls({ exports }: { exports: Record<string, unknown> }) {
       {generateMutation.error || statusQuery.error || lastError ? (
         <div className="export-error">
           {lastError || String(generateMutation.error || statusQuery.error)}
+        </div>
+      ) : null}
+      {v5LagWarning ? (
+        <div className="export-warning">
+          当前可下载包内 V5 证据落后最新遥测 {Math.round(v5LagMinutes)} 分钟；需要最新证据时请手动重新生成。
         </div>
       ) : null}
       {displayUrl ? (

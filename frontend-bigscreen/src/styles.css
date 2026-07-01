@@ -456,9 +456,10 @@ button{font:inherit;color:inherit}
   height:28px;border-radius:9px;border:1px solid rgba(45,232,166,.45);background:rgba(45,232,166,.1);
   color:#baffea;text-decoration:none;display:flex;align-items:center;justify-content:center;gap:5px;
 }
-.export-empty,.export-error{border-radius:12px;margin-top:12px;padding:11px 12px;font-size:12px}
+.export-empty,.export-error,.export-warning{border-radius:12px;margin-top:12px;padding:11px 12px;font-size:12px}
 .export-empty{border:1px dashed rgba(80,169,255,.3);color:var(--muted);background:rgba(7,29,53,.42)}
 .export-error{border:1px solid rgba(255,93,125,.55);color:#ffd7df;background:rgba(255,93,125,.12)}
+.export-warning{border:1px solid rgba(255,196,87,.55);color:#ffe7ae;background:rgba(255,196,87,.11);line-height:1.35}
 .spin{animation:spin 1s linear infinite}
 @keyframes sweep{to{transform:translateX(120%)}}
 @keyframes pulse{50%{transform:scale(1.35);opacity:.72}}

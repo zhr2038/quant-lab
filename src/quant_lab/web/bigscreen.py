@@ -160,6 +160,20 @@ def _build_bigscreen_snapshot_payload(root: Path) -> dict[str, Any]:
     overview["status"] = status
     health_score = _health_score(status, data_health, cost, v5, web_events, exports)
     legacy_anomalies = _legacy_web_anomalies(data_health)
+    v5_payload = _v5_payload(v5, current_readiness)
+    exports_payload = _exports_payload(exports)
+    export_v5_lag = _expert_pack_v5_lag_issue(exports, v5)
+    if export_v5_lag is not None:
+        exports_payload.update(
+            {
+                "latest_pack_v5_lag_status": "WARNING",
+                "latest_pack_v5_lag_seconds": export_v5_lag["lag_seconds"],
+                "latest_pack_v5_lag_minutes": export_v5_lag["lag_minutes"],
+                "latest_live_v5_bundle_ts": export_v5_lag["latest_v5_bundle_ts"],
+                "latest_pack_v5_lag_pack_bundle_ts": export_v5_lag["pack_bundle_ts"],
+            }
+        )
+
     payload = {
         "generated_at": _json_value(generated_at),
         "lake_root": str(root),
@@ -172,7 +186,7 @@ def _build_bigscreen_snapshot_payload(root: Path) -> dict[str, Any]:
         )[:8],
         "data_matrix": _data_matrix(market, collectors, cost, strategy, data_health, overview),
         "strategy_flow": _strategy_flow(strategy),
-        "v5": _v5_payload(v5, current_readiness),
+        "v5": v5_payload,
         "cost": _cost_payload(cost),
         "market": _market_payload(market),
         "collectors": _collector_payload(collectors),
@@ -180,7 +194,7 @@ def _build_bigscreen_snapshot_payload(root: Path) -> dict[str, Any]:
         "legacy_anomalies": legacy_anomalies,
         "web_perf": _web_perf_payload(web_events, api_metrics),
         "consumers": _consumer_payload(consumers),
-        "exports": _exports_payload(exports),
+        "exports": exports_payload,
         "warnings": warnings[:30],
         "advisories": advisories[:30],
     }
@@ -2187,6 +2201,21 @@ def _build_actions(
                 "/data-ops",
             )
         )
+    expert_pack_lag = _expert_pack_v5_lag_issue(exports, v5)
+    if expert_pack_lag is not None:
+        actions.append(
+            _action(
+                "WARNING",
+                "专家包内 V5 证据已落后",
+                (
+                    f"当前可下载包嵌入 {expert_pack_lag['pack_bundle_name']}，"
+                    f"落后最新 V5 {expert_pack_lag['lag_minutes']} 分钟"
+                ),
+                "expert_export_summary.v5_bundle_lag",
+                "需要最新证据时，手动点击“生成今日专家包”重新导出",
+                "/exports",
+            )
+        )
     export_quality_level = _export_quality_level(exports)
     if exports.get("latest_pack") and _export_quality_requires_action(exports):
         data_quality = _export_data_quality(exports)
@@ -2252,7 +2281,11 @@ def _expert_pack_v5_lag_issue(
     exports: dict[str, Any],
     v5: dict[str, Any],
 ) -> dict[str, Any] | None:
-    if not exports.get("latest_pack"):
+    if not (
+        exports.get("latest_pack")
+        or exports.get("display_pack")
+        or exports.get("available_pack")
+    ):
         return None
     pack_bundle_name, pack_bundle_ts = _latest_export_pack_v5_bundle_metadata(exports)
     latest_v5_ts = _parse_dt(_latest_v5_bundle_ts({}, v5))

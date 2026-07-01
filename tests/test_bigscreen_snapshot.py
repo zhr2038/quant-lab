@@ -1771,7 +1771,7 @@ def test_bigscreen_snapshot_matches_generated_day_across_utc_boundary(
     )
 
 
-def test_bigscreen_action_keeps_v5_bundle_lag_out_of_home_queue():
+def test_bigscreen_action_warns_when_expert_pack_v5_bundle_lags_current_v5():
     pack_path = "/var/lib/quant-lab/exports/quant_lab_expert_pack_2026-06-28_120000.zip"
     exports = {
         "latest_pack": pack_path,
@@ -1803,8 +1803,10 @@ def test_bigscreen_action_keeps_v5_bundle_lag_out_of_home_queue():
 
     assert issue is not None
     assert issue["latest_v5_bundle_ts"] == "2026-06-28T14:22:51Z"
-    assert not any(
-        item["source"] == "expert_export_summary.v5_bundle_lag" for item in actions
+    assert any(
+        item["source"] == "expert_export_summary.v5_bundle_lag"
+        and item["severity"] == "WARNING"
+        for item in actions
     )
 
 
@@ -1836,6 +1838,79 @@ def test_bigscreen_action_does_not_warn_for_recent_v5_followup_after_manual_pack
 
     assert not any(
         item["source"] == "expert_export_summary.v5_bundle_lag" for item in actions
+    )
+
+
+def test_bigscreen_snapshot_marks_available_pack_v5_bundle_lag(tmp_path, monkeypatch):
+    clear_bigscreen_cache()
+    lake = tmp_path / "lake"
+    lake.mkdir()
+    exports = tmp_path / "exports"
+    exports.mkdir()
+    pack_path = exports / "quant_lab_expert_pack_2026-06-05_120000.zip"
+    with zipfile.ZipFile(pack_path, "w") as archive:
+        archive.writestr(
+            "manifest.json",
+            json.dumps(
+                {
+                    "authoritative_snapshot": True,
+                    "selected_v5_bundle_manifest_bundle_name": (
+                        "v5_live_followup_bundle_20260605T040000Z.tar.gz"
+                    ),
+                    "embedded_v5_bundle_present": True,
+                    "embedded_v5_bundle_matches_selected": True,
+                }
+            ),
+        )
+        archive.writestr("data_quality.json", json.dumps({"status": "OK"}))
+        archive.writestr("expert_questions.md", "")
+    (exports / "export_index.json").write_text(
+        json.dumps(
+            {
+                "latest_pack": str(pack_path),
+                "packs": [
+                    {
+                        "path": str(pack_path),
+                        "name": pack_path.name,
+                        "selected_v5_bundle_manifest_bundle_name": (
+                            "v5_live_followup_bundle_20260605T040000Z.tar.gz"
+                        ),
+                        "size_bytes": 123,
+                        "modified_at": "2026-06-05T12:00:00Z",
+                    }
+                ],
+                "manifest_summary": {"export_date": "2026-06-05"},
+                "data_quality_summary": {"status": "OK"},
+                "expert_questions": [],
+                "warnings": [],
+            }
+        ),
+        encoding="utf-8",
+    )
+    write_parquet_dataset(
+        pl.DataFrame(
+            [
+                {
+                    "date": "2026-06-05",
+                    "strategy": "v5",
+                    "latest_bundle_ts": datetime(2026, 6, 5, 6, 10, tzinfo=UTC),
+                }
+            ]
+        ),
+        lake / "gold" / "strategy_health_daily",
+    )
+    monkeypatch.setattr(bigscreen_module.readers, "default_exports_root", lambda root: exports)
+    monkeypatch.setattr(bigscreen_module, "beijing_today", lambda now=None: date(2026, 6, 5))
+
+    payload = bigscreen_snapshot(lake)
+
+    assert payload["exports"]["available_pack_name"] == pack_path.name
+    assert payload["exports"]["latest_pack_name"] is None
+    assert payload["exports"]["latest_pack_v5_lag_status"] == "WARNING"
+    assert payload["exports"]["latest_pack_v5_lag_minutes"] == 130
+    assert any(
+        item["source"] == "expert_export_summary.v5_bundle_lag"
+        for item in payload["actions"]
     )
 
 

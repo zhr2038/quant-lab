@@ -454,6 +454,7 @@ def create_app() -> FastAPI:
         quantile: str = "p75",
         notional_bucket: str | None = None,
     ) -> CostEstimate:
+        normalized_quantile = _normalize_cost_quantile_param(quantile)
         (
             estimate,
             request_cache_hit,
@@ -465,7 +466,7 @@ def create_app() -> FastAPI:
             symbol=symbol,
             regime=regime,
             notional_usdt=notional_usdt,
-            quantile=quantile,
+            quantile=normalized_quantile,
             notional_bucket=notional_bucket,
         )
         response.headers["X-Cost-Cache-Hit"] = "true" if request_cache_hit else "false"
@@ -829,6 +830,38 @@ def _cost_estimate_cached(
     compute_ms = round((time.perf_counter() - started) * 1000.0, 3)
     _COST_ESTIMATE_CACHE.set(key, estimate)
     return estimate, False, bucket_cache_hit, compute_ms, lake_scan_ms
+
+
+def _normalize_cost_quantile_param(value: str) -> str:
+    text = str(value or "p75").strip().lower()
+    aliases = {
+        "p50": "p50",
+        "50": "p50",
+        "50%": "p50",
+        "0.5": "p50",
+        "0.50": "p50",
+        ".5": "p50",
+        ".50": "p50",
+        "p75": "p75",
+        "75": "p75",
+        "75%": "p75",
+        "0.75": "p75",
+        ".75": "p75",
+        "p90": "p90",
+        "90": "p90",
+        "90%": "p90",
+        "0.9": "p90",
+        "0.90": "p90",
+        ".9": "p90",
+        ".90": "p90",
+    }
+    try:
+        return aliases[text]
+    except KeyError as exc:
+        raise HTTPException(
+            status_code=422,
+            detail="quantile must be one of p50, p75, p90, 0.5, 0.75, or 0.9",
+        ) from exc
 
 
 def _cost_estimate_cache_key(

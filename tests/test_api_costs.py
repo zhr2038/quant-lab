@@ -750,6 +750,54 @@ def test_cost_estimate_trust_regime_fallback_is_not_scale_ready(tmp_path, monkey
     assert "fallback_not_live_safe" in payload["cost_trust_block_reasons"]
 
 
+def test_cost_estimate_api_accepts_numeric_quantile_alias(tmp_path, monkeypatch):
+    lake = tmp_path / "lake"
+    monkeypatch.setenv("QUANT_LAB_LAKE_ROOT", str(lake))
+    write_parquet_dataset(
+        pl.DataFrame([_cost_row(notional_bucket="1k-10k")]),
+        lake / "gold/cost_bucket_daily",
+    )
+
+    response = TestClient(app).get(
+        "/v1/costs/estimate",
+        params={
+            "symbol": "BTC-USDT",
+            "regime": "normal",
+            "notional_usdt": 5_000,
+            "quantile": "0.75",
+            "notional_bucket": "1k-10k",
+        },
+    )
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["quantile"] == "p75"
+    assert payload["requested_quantile"] == "p75"
+    assert payload["total_cost_bps"] == 5.25
+
+
+def test_cost_estimate_api_rejects_unknown_quantile(tmp_path, monkeypatch):
+    lake = tmp_path / "lake"
+    monkeypatch.setenv("QUANT_LAB_LAKE_ROOT", str(lake))
+    write_parquet_dataset(
+        pl.DataFrame([_cost_row()]),
+        lake / "gold/cost_bucket_daily",
+    )
+
+    response = TestClient(app).get(
+        "/v1/costs/estimate",
+        params={
+            "symbol": "BTC-USDT",
+            "regime": "normal",
+            "notional_usdt": 5_000,
+            "quantile": "0.8",
+        },
+    )
+
+    assert response.status_code == 422
+    assert "quantile must be one of" in response.json()["detail"]
+
+
 def _cost_row(**overrides):
     row = {
         "day": "2026-05-10",

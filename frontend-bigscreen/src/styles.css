@@ -389,7 +389,7 @@ button{font:inherit;color:inherit}
 }
 .page-strategy .factor-chip-grid{grid-template-columns:repeat(auto-fit,minmax(250px,1fr));gap:6px;overflow:auto;scrollbar-gutter:stable}
 .page-strategy .factor-chip strong{font-size:12px}
-.page-strategy .chip{min-width:0;min-height:40px;border-radius:15px;grid-template-columns:minmax(0,1fr) minmax(66px,.22fr) 70px;font-size:12px;padding:5px 10px}
+.page-strategy .chip{min-width:0;min-height:40px;border-radius:15px;grid-template-columns:minmax(0,1fr) minmax(48px,.16fr) minmax(56px,.18fr);gap:2px 6px;font-size:12px;padding:5px 9px}
 .page-strategy .candidate-list{display:grid;grid-template-rows:auto minmax(0,1fr);min-height:0}
 .page-strategy .candidate-list-body{grid-template-columns:repeat(auto-fit,minmax(270px,1fr));gap:7px;overflow:auto;scrollbar-gutter:stable}
 .page-strategy .candidate-main b{font-size:15px}

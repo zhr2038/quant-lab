@@ -11,16 +11,16 @@ export function MarketLiquidity({ market, matrix, density = "compact" }: MarketL
   const rows = mergeMarketRows(safeRows(market.regimes), safeRows(matrix?.rows));
   const visibleRows = rows.slice(0, density === "full" ? 24 : 16);
   const spreadValues = rows
-    .map((row) => Number(row.spread_bps))
-    .filter((value) => Number.isFinite(value));
+    .map((row) => finiteNumber(row.spread_bps))
+    .filter((value): value is number => value !== undefined);
   const avgSpread = spreadValues.length
     ? spreadValues.reduce((total, value) => total + value, 0) / spreadValues.length
     : undefined;
   const maxSpreadRow = rows.reduce<Record<string, unknown> | undefined>((best, row) => {
-    const spread = Number(row.spread_bps);
-    if (!Number.isFinite(spread)) return best;
+    const spread = finiteNumber(row.spread_bps);
+    if (spread === undefined) return best;
     if (!best) return row;
-    const bestSpread = Number(best.spread_bps);
+    const bestSpread = finiteNumber(best.spread_bps) ?? Number.NEGATIVE_INFINITY;
     return spread > bestSpread ? row : best;
   }, undefined);
   const missingSpreadCount = rows.length - spreadValues.length;
@@ -41,8 +41,8 @@ export function MarketLiquidity({ market, matrix, density = "compact" }: MarketL
         <div className="market-body">
           <div className="market-list">
             {visibleRows.map((row, i) => {
-              const spread = Number(row.spread_bps ?? 0);
-              const tone = spread >= 6 ? "red" : spread >= 3 ? "yellow" : "";
+              const spread = finiteNumber(row.spread_bps);
+              const tone = spread !== undefined && spread >= 6 ? "red" : spread !== undefined && spread >= 3 ? "yellow" : "";
               return (
                 <div className={`ticker ${tone}`} key={`${row.symbol}-${i}`}>
                   <b>{String(row.symbol ?? "—")}</b>
@@ -84,25 +84,48 @@ function mergeMarketRows(
   regimeRows: Record<string, unknown>[],
   matrixRows: Record<string, unknown>[]
 ): Record<string, unknown>[] {
-  const rows: Record<string, unknown>[] = [];
-  const seen = new Set<string>();
-  const addRow = (row: Record<string, unknown>) => {
+  const bySymbol = new Map<string, Record<string, unknown>>();
+  const order: string[] = [];
+  const upsertRow = (row: Record<string, unknown>) => {
     const symbol = stringValue(row.symbol, "").trim();
     if (!symbol.endsWith("-USDT")) return;
-    if (!symbol || seen.has(symbol)) return;
-    seen.add(symbol);
-    rows.push(row);
+    if (!symbol) return;
+    const existing = bySymbol.get(symbol);
+    if (!existing) {
+      bySymbol.set(symbol, row);
+      order.push(symbol);
+      return;
+    }
+    bySymbol.set(symbol, mergeDefined(existing, row));
   };
-  regimeRows.forEach(addRow);
+  regimeRows.forEach(upsertRow);
   matrixRows.forEach((row) => {
     const marketBar = (row.market_bar ?? {}) as Record<string, unknown>;
     const spread = (row.spread ?? {}) as Record<string, unknown>;
-    addRow({
+    upsertRow({
       symbol: row.symbol,
       volatility_regime: marketBar.regime,
       regime: marketBar.regime,
       spread_bps: spread.spread_bps
     });
   });
-  return rows;
+  return order.map((symbol) => bySymbol.get(symbol)).filter((row): row is Record<string, unknown> => !!row);
+}
+
+function finiteNumber(value: unknown): number | undefined {
+  if (value === null || value === undefined || value === "") return undefined;
+  const numeric = Number(value);
+  return Number.isFinite(numeric) ? numeric : undefined;
+}
+
+function mergeDefined(
+  base: Record<string, unknown>,
+  next: Record<string, unknown>
+): Record<string, unknown> {
+  const merged = { ...base };
+  Object.entries(next).forEach(([key, value]) => {
+    if (value === null || value === undefined || value === "") return;
+    merged[key] = value;
+  });
+  return merged;
 }

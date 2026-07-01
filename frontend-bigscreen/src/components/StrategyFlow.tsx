@@ -94,29 +94,33 @@ export function StrategyFlow({ flow }: { flow: Record<string, unknown> }) {
             <span><b>{shortNumber(factorFactory.paper_review_queue_count ?? factorFactory.paper_ready_count)}</b><em>Paper候选</em></span>
             <span><b>{shortNumber(factorFactory.strategy_bridge_candidate_count ?? safeRows(factorFactory.strategy_bridge_candidates).length)}</b><em>Bridge</em></span>
           </div>
-          {factorRows.slice(0, 6).map((factor, i) => (
-            <div className="factor-chip" key={`${factor.factor_id}-${i}`}>
-              <Sparkles size={13} />
-              <span>{stringValue(factor.factor_id ?? factor.factor_name, "factor")}</span>
-              <em>{stringValue(factor.state ?? factor.candidate_state, "RESEARCH")}</em>
-              <strong>{bps(factor.long_short_bps ?? factor.best_long_short_mean_bps)}</strong>
-            </div>
-          ))}
+          <div className="factor-chip-grid">
+            {factorRows.slice(0, 6).map((factor, i) => (
+              <div className="factor-chip" key={`${factor.factor_id}-${i}`}>
+                <Sparkles size={13} />
+                <span>{stringValue(factor.factor_id ?? factor.factor_name, "factor")}</span>
+                <em>{stringValue(factor.state ?? factor.candidate_state, "RESEARCH")}</em>
+                <strong>{bps(factor.long_short_bps ?? factor.best_long_short_mean_bps)}</strong>
+              </div>
+            ))}
+          </div>
           {!factorRows.length && <div className="factor-empty">Factor Factory 暂无候选</div>}
         </div>
         <div className="candidate-list">
           <div className="candidate-title"><Rocket size={15} /> 策略候选（只读）</div>
-          {topCandidates.slice(0, 8).map((candidate, i) => (
-            <div className="chip" key={candidateKey(candidate, i)} title={candidateTitle(candidate)}>
-              <span className="candidate-main">
-                <b>{candidateIdentity(candidate)}</b>
-                <small>{stringValue(candidate.strategy_candidate ?? candidate.takeaway, "candidate")}</small>
-              </span>
-              <em>{modeLabel(candidate)}</em>
-              <strong>{bps(candidate.avg_net_bps)}</strong>
-              <span className="candidate-detail">{candidateDetail(candidate)}</span>
-            </div>
-          ))}
+          <div className="candidate-list-body">
+            {topCandidates.slice(0, 8).map((candidate, i) => (
+              <div className="chip" key={candidateKey(candidate, i)} title={candidateTitle(candidate)}>
+                <span className="candidate-main">
+                  <b>{candidateIdentity(candidate)}</b>
+                  <small>{stringValue(candidate.strategy_candidate ?? candidate.takeaway, "candidate")}</small>
+                </span>
+                <em>{modeLabel(candidate)}</em>
+                <strong>{bps(candidate.avg_net_bps)}</strong>
+                <span className="candidate-detail">{candidateDetail(candidate)}</span>
+              </div>
+            ))}
+          </div>
         </div>
       </div>
     </section>

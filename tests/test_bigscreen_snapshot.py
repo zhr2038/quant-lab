@@ -30,6 +30,7 @@ def test_bigscreen_snapshot_empty_lake_is_read_only_and_degraded(tmp_path):
     assert 0 <= payload["health_score"] <= 100
     assert isinstance(payload["actions"], list)
     assert len(payload["actions"]) <= 8
+    assert "v7_permission" not in payload["kpis"]
     assert payload["data_matrix"]["columns"] == [
         "market_bar",
         "ws",

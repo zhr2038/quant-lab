@@ -1907,10 +1907,9 @@ def dashboard_overview(lake_root: str | Path) -> dict[str, Any]:
     if market_health["schema_violation_count"] > 0 or market_health["unclosed_bar_count"] > 0:
         status = "CRITICAL"
 
-    return {
+    overview = {
         "status": status,
         "v5_permission": consumers["permissions"].get("v5", "UNKNOWN"),
-        "v7_permission": consumers["permissions"].get("v7", "UNKNOWN"),
         "okx_public_rest_status": "OK" if market_health["latest_market_bar_ts"] else "WARNING",
         "okx_public_ws_status": ws_status,
         "okx_readonly_status": readonly_private_status(lake_root),
@@ -1928,6 +1927,9 @@ def dashboard_overview(lake_root: str | Path) -> dict[str, Any]:
         "diagnostics": diagnostics,
         "warnings": warnings,
     }
+    if "v7" in consumers["permissions"]:
+        overview["v7_permission"] = consumers["permissions"]["v7"]
+    return overview
 
 
 def _select_existing_columns(frame: pl.DataFrame, columns: list[str]) -> pl.DataFrame:

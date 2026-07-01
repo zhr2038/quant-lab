@@ -181,6 +181,19 @@ def test_dashboard_readers_load_fixture_lake(tmp_path):
     assert experts["latest_pack"].endswith("quant_lab_expert_pack_2026-05-10.zip")
 
 
+def test_dashboard_overview_omits_absent_v7_permission(tmp_path):
+    lake_root = _fixture_lake(tmp_path)
+    write_parquet_dataset(
+        pl.DataFrame([_permission_row("v5", "ALLOW", ["paper"])]),
+        lake_root / "gold" / "risk_permission",
+    )
+
+    overview_summary = readers.dashboard_overview(lake_root)
+
+    assert overview_summary["v5_permission"] == "ALLOW"
+    assert "v7_permission" not in overview_summary
+
+
 def test_web_diagnostics_use_dataset_freshness_not_missing_for_populated_tables(tmp_path):
     lake_root = _fixture_lake(tmp_path)
 

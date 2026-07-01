@@ -655,10 +655,9 @@ def _overview_from_summaries(
     permissions = (
         consumers.get("permissions") if isinstance(consumers.get("permissions"), dict) else {}
     )
-    return {
+    overview = {
         "status": "UNKNOWN",
         "v5_permission": permissions.get("v5", "UNKNOWN"),
-        "v7_permission": permissions.get("v7", "UNKNOWN"),
         "latest_market_bar_ts": data_health.get("latest_market_bar_ts"),
         "latest_market_bar_close_ts": data_health.get("latest_market_bar_close_ts"),
         "market_bar_timeframe": data_health.get("market_bar_timeframe"),
@@ -667,6 +666,9 @@ def _overview_from_summaries(
             "latest_v5_bundle_ts": latest.get("latest_bundle_ts"),
         },
     }
+    if "v7" in permissions:
+        overview["v7_permission"] = permissions["v7"]
+    return overview
 
 
 def _frame_rows(frame: Any, limit: int = 20) -> list[dict[str, Any]]:
@@ -985,10 +987,9 @@ def _kpis(
     api_metrics: dict[str, Any],
 ) -> dict[str, Any]:
     latest_bundle_ts = _latest_v5_bundle_ts(overview, v5)
-    return {
+    kpis = {
         "platform_status": overview.get("status", "UNKNOWN"),
         "v5_permission": overview.get("v5_permission", "UNKNOWN"),
-        "v7_permission": overview.get("v7_permission", "UNKNOWN"),
         "latest_market_bar_ts": _json_value(overview.get("latest_market_bar_ts")),
         "latest_market_bar_close_ts": _json_value(overview.get("latest_market_bar_close_ts")),
         "latest_v5_bundle_ts": _json_value(latest_bundle_ts),
@@ -1002,6 +1003,9 @@ def _kpis(
         "api_p50_ms": _metric_latency(api_metrics, "p50") or _web_latency(web_events, "p50"),
         "api_p95_ms": _metric_latency(api_metrics, "p95") or _web_latency(web_events, "p95"),
     }
+    if "v7_permission" in overview:
+        kpis["v7_permission"] = overview["v7_permission"]
+    return kpis
 
 
 def _latest_v5_bundle_ts(overview: dict[str, Any], v5: dict[str, Any]) -> Any:

@@ -182,6 +182,51 @@ def test_bigscreen_data_matrix_treats_kill_advisory_as_neutral(tmp_path):
     assert rows["BTC-USDT"]["advisory"]["status"] == "INFO"
 
 
+def test_bigscreen_matrix_attention_promotes_global_status_and_action():
+    data_matrix = {
+        "columns": ["spread", "trade", "cost"],
+        "rows": [
+            {
+                "symbol": "ADA-USDT",
+                "spread": {"status": "CRITICAL", "spread_bps": 8.0},
+                "trade": {"status": "OK"},
+                "cost": {"status": "WARNING"},
+            },
+            {
+                "symbol": "BTC-USDT",
+                "spread": {"status": "OK", "spread_bps": 1.0},
+                "trade": {"status": "WARNING"},
+                "cost": {"status": "OK"},
+            },
+        ],
+    }
+
+    warnings = bigscreen_module._data_matrix_warnings(data_matrix)
+    status = bigscreen_module._status_from_inputs(
+        overview={},
+        data_health={},
+        cost={"hard_fallback_ratio": 0.0},
+        v5={"latest": {"kill_switch_enabled": False, "reconcile_ok": True, "ledger_ok": True}},
+        warnings=warnings,
+        exports={},
+        generated_at=datetime(2026, 7, 1, tzinfo=UTC),
+    )
+    actions = bigscreen_module._build_actions(
+        overview={},
+        data_health={},
+        cost={"hard_fallback_ratio": 0.0, "soft_fallback_ratio": 0.0},
+        v5={"latest": {"kill_switch_enabled": False, "reconcile_ok": True, "ledger_ok": True}},
+        web_events=[],
+        exports={},
+        data_matrix=data_matrix,
+    )
+
+    assert warnings == ["data_matrix_attention: critical=1; warning=2; top=ADA-USDT.spread"]
+    assert status == "WARNING"
+    assert actions[0]["source"] == "data_matrix"
+    assert actions[0]["severity"] == "WARNING"
+
+
 def test_bigscreen_strategy_flow_exposes_opportunity_cost_summary(tmp_path):
     clear_bigscreen_cache()
     lake = tmp_path / "lake"

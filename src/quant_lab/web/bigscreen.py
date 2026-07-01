@@ -132,6 +132,7 @@ def _build_bigscreen_snapshot_payload(root: Path) -> dict[str, Any]:
     web_events = perf.recent_events(limit=50)
     api_metrics = _safe_api_metrics(root)
     overview = _overview_from_summaries(data_health, v5, consumers)
+    data_matrix = _data_matrix(market, collectors, cost, strategy, data_health, overview)
 
     raw_warnings = _dedupe(
         [
@@ -144,6 +145,7 @@ def _build_bigscreen_snapshot_payload(root: Path) -> dict[str, Any]:
             *_warnings(consumers),
             *_warnings(exports),
             *_export_quality_warnings(exports),
+            *_data_matrix_warnings(data_matrix),
         ]
     )
     warnings = _system_warnings(raw_warnings, exports, data_health, generated_at)
@@ -182,9 +184,9 @@ def _build_bigscreen_snapshot_payload(root: Path) -> dict[str, Any]:
         "health_score": health_score,
         "kpis": _kpis(generated_at, overview, collectors, cost, v5, web_events, api_metrics),
         "actions": _build_actions(
-            overview, data_health, cost, v5, web_events, exports, legacy_anomalies
+            overview, data_health, cost, v5, web_events, exports, legacy_anomalies, data_matrix
         )[:8],
-        "data_matrix": _data_matrix(market, collectors, cost, strategy, data_health, overview),
+        "data_matrix": data_matrix,
         "strategy_flow": _strategy_flow(strategy),
         "v5": v5_payload,
         "cost": _cost_payload(cost),
@@ -1206,6 +1208,45 @@ def _data_matrix(
     }
 
 
+def _data_matrix_issue_summary(data_matrix: dict[str, Any]) -> dict[str, Any]:
+    columns = data_matrix.get("columns")
+    rows = data_matrix.get("rows")
+    if not isinstance(columns, list) or not isinstance(rows, list):
+        return {"critical": 0, "warning": 0, "top": []}
+
+    critical = 0
+    warning = 0
+    top: list[str] = []
+    for row in rows:
+        if not isinstance(row, dict):
+            continue
+        symbol = str(row.get("symbol") or "").strip() or "unknown"
+        for column in columns:
+            cell = row.get(column)
+            if not isinstance(cell, dict):
+                continue
+            status = str(cell.get("status") or "").upper()
+            if status == "CRITICAL":
+                critical += 1
+                if len(top) < 3:
+                    top.append(f"{symbol}.{column}")
+            elif status == "WARNING":
+                warning += 1
+                if critical == 0 and len(top) < 3:
+                    top.append(f"{symbol}.{column}")
+    return {"critical": critical, "warning": warning, "top": top}
+
+
+def _data_matrix_warnings(data_matrix: dict[str, Any]) -> list[str]:
+    summary = _data_matrix_issue_summary(data_matrix)
+    critical = int(summary.get("critical") or 0)
+    warning = int(summary.get("warning") or 0)
+    if critical <= 0 and warning <= 0:
+        return []
+    top = ",".join(str(value) for value in summary.get("top", []) if str(value).strip())
+    return [f"data_matrix_attention: critical={critical}; warning={warning}; top={top}"]
+
+
 def _matrix_symbols(
     market: dict[str, Any],
     cost: dict[str, Any],
@@ -2108,8 +2149,25 @@ def _build_actions(
     web_events: list[dict[str, Any]],
     exports: dict[str, Any],
     legacy_anomalies: dict[str, Any] | None = None,
+    data_matrix: dict[str, Any] | None = None,
 ) -> list[dict[str, Any]]:
     actions: list[dict[str, Any]] = []
+    if data_matrix is not None:
+        matrix_issue = _data_matrix_issue_summary(data_matrix)
+        critical = int(matrix_issue.get("critical") or 0)
+        warning = int(matrix_issue.get("warning") or 0)
+        if critical or warning:
+            top = ", ".join(str(value) for value in matrix_issue.get("top", []))
+            actions.append(
+                _action(
+                    "WARNING",
+                    "数据矩阵存在注意项",
+                    f"{critical} 个严重单元 / {warning} 个注意单元；重点查看 {top or '矩阵明细'}",
+                    "data_matrix",
+                    "打开数据成本页复核 spread、trade、cost、advisory 的逐币状态",
+                    "/data",
+                )
+            )
     if (_float(cost.get("hard_fallback_ratio")) or 0.0) > 0.25:
         actions.append(
             _action(

@@ -334,17 +334,18 @@ button{font:inherit;color:inherit}
 .factor-chip-grid,.candidate-list-body{display:grid;gap:6px;min-height:0}
 .factor-chip-grid .factor-chip,.candidate-list-body .chip{margin-top:0}
 .factor-chip{
+  min-width:0;
   height:24px;border-radius:12px;border:1px solid rgba(45,232,166,.36);display:grid;grid-template-columns:16px 1fr 82px 68px;
   align-items:center;gap:6px;padding:0 9px;margin-top:6px;background:rgba(45,232,166,.07);font-size:11px;
 }
 .factor-chip svg{color:var(--green);filter:drop-shadow(0 0 7px rgba(45,232,166,.55))}
 .factor-chip span{white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
 .factor-chip em{font-style:normal;color:var(--green);text-transform:uppercase;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
-.factor-chip strong{text-align:right;color:#b7d6ff}
+.factor-chip strong{min-width:0;text-align:right;color:#b7d6ff;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
 .factor-empty{border:1px dashed rgba(80,169,255,.24);border-radius:10px;padding:7px 9px;color:var(--muted);font-size:11px}
 .strategy-research-grid{
-  display:grid;grid-template-columns:minmax(250px,.26fr) minmax(360px,.39fr) minmax(320px,.35fr);
-  grid-template-areas:"opportunity factor candidates";
+  display:grid;grid-template-columns:minmax(260px,.30fr) minmax(0,.70fr);grid-template-rows:auto minmax(0,1fr);
+  grid-template-areas:"opportunity factor" "opportunity candidates";
   gap:12px;margin-top:2px;align-items:stretch;min-height:0;
 }
 .strategy-research-grid .opportunity-cost-mini{grid-area:opportunity;margin:0}
@@ -374,14 +375,14 @@ button{font:inherit;color:inherit}
 .page-strategy .factor-factory-stats b{font-size:24px}
 .page-strategy .factor-factory-stats em{font-size:13px}
 .page-strategy .factor-chip{
-  min-height:30px;height:auto;grid-template-columns:18px minmax(0,1fr) 94px 72px;gap:7px;padding:0 9px;
+  min-height:30px;height:auto;grid-template-columns:18px minmax(0,1fr) minmax(78px,.28fr) 68px;gap:7px;padding:0 9px;
   font-size:12px;border-radius:14px;
 }
-.page-strategy .factor-chip-grid{grid-template-columns:repeat(auto-fit,minmax(170px,1fr));gap:6px;overflow:auto;scrollbar-gutter:stable}
+.page-strategy .factor-chip-grid{grid-template-columns:repeat(auto-fit,minmax(250px,1fr));gap:6px;overflow:auto;scrollbar-gutter:stable}
 .page-strategy .factor-chip strong{font-size:12px}
-.page-strategy .chip{min-height:40px;border-radius:15px;grid-template-columns:minmax(0,1fr) 82px 76px;font-size:12px;padding:5px 10px}
+.page-strategy .chip{min-width:0;min-height:40px;border-radius:15px;grid-template-columns:minmax(0,1fr) minmax(66px,.22fr) 70px;font-size:12px;padding:5px 10px}
 .page-strategy .candidate-list{display:grid;grid-template-rows:auto minmax(0,1fr);min-height:0}
-.page-strategy .candidate-list-body{grid-template-columns:repeat(auto-fit,minmax(220px,1fr));gap:7px;overflow:auto;scrollbar-gutter:stable}
+.page-strategy .candidate-list-body{grid-template-columns:repeat(auto-fit,minmax(270px,1fr));gap:7px;overflow:auto;scrollbar-gutter:stable}
 .page-strategy .candidate-main b{font-size:15px}
 .page-strategy .candidate-main small{font-size:12px}
 .page-strategy .candidate-detail{font-size:10px}
@@ -708,7 +709,7 @@ button{font:inherit;color:inherit}
   .overview-matrix-card{grid-template-rows:auto auto auto minmax(220px,1fr)}
   .matrix{grid-template-columns:52px repeat(7,minmax(44px,1fr))}
   .strategy-research-grid{
-    grid-template-columns:minmax(0,.92fr) minmax(0,1.08fr);
+    grid-template-columns:minmax(260px,.32fr) minmax(0,.68fr);
     grid-template-areas:"opportunity factor" "opportunity candidates";
   }
   .market-list{grid-template-columns:repeat(auto-fit,minmax(300px,1fr))}

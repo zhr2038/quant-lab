@@ -231,6 +231,47 @@ button{font:inherit;color:inherit}
 .matrix-side-stats span{border:1px solid rgba(80,169,255,.22);border-radius:11px;background:rgba(7,29,53,.58);padding:8px 7px;min-width:0}
 .matrix-side-stats b{display:block;font-size:19px;color:#eaf6ff;line-height:1}
 .matrix-side-stats em{display:block;margin-top:5px;color:var(--muted);font-size:10px;font-style:normal;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.overview-matrix-card{
+  display:grid;grid-template-rows:auto auto auto minmax(190px,1fr);align-content:stretch;
+}
+.matrix-bottom-panel{
+  margin-top:18px;display:grid;grid-template-columns:minmax(0,1.36fr) minmax(260px,.64fr);gap:14px;
+  min-height:0;align-self:stretch;
+}
+.matrix-issue-panel,.matrix-coverage-panel{
+  min-width:0;min-height:0;border-top:1px solid rgba(80,169,255,.18);
+  padding-top:12px;display:grid;grid-template-rows:auto minmax(0,1fr);gap:10px;
+}
+.matrix-mini-title{color:#cfe5f8;font-size:12px;font-weight:900;letter-spacing:.02em}
+.matrix-issue-list{display:grid;grid-auto-rows:minmax(42px,auto);gap:8px;align-content:start;min-height:0;overflow:hidden}
+.matrix-issue-row{
+  min-width:0;border:1px solid rgba(80,169,255,.24);border-radius:12px;background:rgba(5,28,52,.46);
+  display:grid;grid-template-columns:58px 54px minmax(0,1fr);gap:10px;align-items:center;padding:8px 10px;
+}
+.matrix-issue-row.warning{border-color:rgba(255,196,87,.6);background:rgba(255,196,87,.08)}
+.matrix-issue-row.critical{border-color:rgba(255,93,125,.72);background:rgba(255,93,125,.08)}
+.matrix-issue-row strong,.matrix-issue-row span,.matrix-issue-row em{
+  min-width:0;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;
+}
+.matrix-issue-row strong{font-size:13px;color:#eaf6ff}
+.matrix-issue-row span{font-size:11px;color:#b4c8dd}
+.matrix-issue-row em{font-size:11px;font-style:normal;color:#d9e8f5}
+.matrix-issue-empty{
+  border:1px solid rgba(45,232,166,.28);border-radius:12px;background:rgba(45,232,166,.08);
+  min-height:48px;display:flex;align-items:center;padding:0 12px;color:#b8f7df;font-size:12px;
+}
+.matrix-coverage-list{display:grid;gap:11px;align-content:start;min-height:0;overflow:hidden}
+.matrix-status-bar{
+  display:grid;grid-template-columns:48px minmax(0,1fr) 34px;gap:10px;align-items:center;
+  color:var(--muted);font-size:11px;
+}
+.matrix-status-bar b{font-size:14px;color:#eaf6ff;text-align:right}
+.matrix-status-track{height:8px;border-radius:999px;background:rgba(80,169,255,.13);overflow:hidden}
+.matrix-status-fill{display:block;height:100%;border-radius:inherit;background:var(--blue)}
+.matrix-status-fill.ok{background:var(--green)}
+.matrix-status-fill.warning{background:var(--yellow)}
+.matrix-status-fill.critical{background:var(--red)}
+.matrix-status-fill.info{background:var(--blue)}
 .strategy-card{grid-column:3;grid-row:2}
 .flow-metrics{display:grid;grid-template-columns:repeat(4,1fr);gap:10px;margin-top:22px}
 .stage{height:82px;border-radius:18px;display:flex;align-items:center;justify-content:center;flex-direction:column;position:relative;overflow:hidden}
@@ -562,6 +603,7 @@ button{font:inherit;color:inherit}
     display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;
   }
   .matrix-grid-shell{grid-template-columns:minmax(520px,1fr) minmax(230px,.38fr)}
+  .overview-matrix-card{grid-template-rows:auto auto auto minmax(220px,1fr)}
   .matrix{grid-template-columns:52px repeat(7,minmax(44px,1fr))}
 }
 
@@ -580,6 +622,8 @@ button{font:inherit;color:inherit}
   .overview-side{grid-template-columns:repeat(2,minmax(0,1fr));align-items:start}
   .action-queue{grid-column:1/-1}
   .matrix-grid-shell{grid-template-columns:1fr}
+  .overview-matrix-card{grid-template-rows:auto auto auto auto}
+  .matrix-bottom-panel{grid-template-columns:1fr;min-height:0}
 }
 
 @media (max-width: 720px){
@@ -685,6 +729,13 @@ button{font:inherit;color:inherit}
   .matrix-side-stats b{font-size:16px}
   .matrix-side-stats em{font-size:9px}
   .matrix-empty-state{min-height:86px;padding:10px;font-size:11px}
+  .matrix-bottom-panel{grid-template-columns:1fr;gap:12px;margin-top:14px}
+  .matrix-issue-panel,.matrix-coverage-panel{padding-top:10px;gap:8px}
+  .matrix-issue-list{grid-auto-rows:minmax(40px,auto)}
+  .matrix-issue-row{grid-template-columns:44px 44px minmax(0,1fr);gap:8px;padding:7px 9px}
+  .matrix-issue-row strong{font-size:12px}
+  .matrix-issue-row span,.matrix-issue-row em{font-size:10px}
+  .matrix-status-bar{grid-template-columns:42px minmax(0,1fr) 28px;gap:8px}
   .page-strategy .strategy-card{padding:18px}
   .flow-metrics{grid-template-columns:repeat(2,1fr)}
   .stage{height:72px}

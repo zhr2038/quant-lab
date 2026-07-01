@@ -9,9 +9,11 @@ type MatrixStatusCounts = {
 };
 
 export function DataMatrix({
-  matrix
+  matrix,
+  variant = "default"
 }: {
   matrix: { columns: string[]; rows: Record<string, unknown>[] };
+  variant?: "default" | "overview";
 }) {
   const labels: Record<string, string> = {
     market_bar: "行情",
@@ -23,6 +25,20 @@ export function DataMatrix({
     advisory: "建议"
   };
   const rows = matrix.rows.slice(0, 8);
+  const matrixCells = rows.flatMap((row) => {
+    const symbol = String(row.symbol ?? "—").replace("-USDT", "");
+    return matrix.columns.map((column) => {
+      const cell = row[column] as Record<string, unknown> | undefined;
+      const status = statusClass(cell?.status);
+      return {
+        symbol,
+        column,
+        label: labels[column] ?? column,
+        cell,
+        status
+      };
+    });
+  });
   const statusCounts = rows.reduce<MatrixStatusCounts>(
     (counts, row) => {
       matrix.columns.forEach((column) => {
@@ -37,8 +53,42 @@ export function DataMatrix({
     },
     { ok: 0, warning: 0, critical: 0, unknown: 0 }
   );
+  const statusTotal = Math.max(
+    1,
+    statusCounts.ok + statusCounts.warning + statusCounts.critical + statusCounts.unknown
+  );
+  const issueCells = matrixCells
+    .filter((item) => item.status === "critical" || item.status === "warning")
+    .sort((a, b) => {
+      const rank = { critical: 0, warning: 1, ok: 2, info: 3 };
+      return rank[a.status] - rank[b.status];
+    })
+    .slice(0, 6);
+  const summarizeCell = (cell: Record<string, unknown> | undefined) => {
+    const keys = [
+      "reason",
+      "freshness_reason",
+      "coverage_reason",
+      "message",
+      "state",
+      "source",
+      "latest_ts",
+      "updated_at"
+    ];
+    const detail = keys
+      .map((key) => cell?.[key])
+      .find((value) => value !== undefined && value !== null && String(value).trim());
+    const text = String(detail ?? statusText(cell?.status));
+    return text.length > 78 ? `${text.slice(0, 75)}...` : text;
+  };
+  const coverageRows = [
+    { key: "ok", label: "OK", value: statusCounts.ok, tone: "ok" },
+    { key: "warning", label: "注意", value: statusCounts.warning, tone: "warning" },
+    { key: "critical", label: "异常", value: statusCounts.critical, tone: "critical" },
+    { key: "unknown", label: "未知", value: statusCounts.unknown, tone: "info" }
+  ];
   return (
-    <section className="card heatmap pad">
+    <section className={`card heatmap pad${variant === "overview" ? " overview-matrix-card" : ""}`}>
       <h2 className="section-title icon-title"><DatabaseZap size={23} />数据 / 市场可信矩阵</h2>
       <p className="sub">按 symbol 汇总行情、WS、价差、成交、成本、证据、advisory；异常格会闪烁。</p>
       <div className="matrix-grid-shell">
@@ -82,6 +132,42 @@ export function DataMatrix({
           </div>
         </aside>
       </div>
+      {variant === "overview" && (
+        <div className="matrix-bottom-panel">
+          <div className="matrix-issue-panel">
+            <div className="matrix-mini-title">需关注格子</div>
+            <div className="matrix-issue-list">
+              {issueCells.map((item) => (
+                <div className={`matrix-issue-row ${item.status}`} key={`${item.symbol}-${item.column}-issue`}>
+                  <strong>{item.symbol}</strong>
+                  <span>{item.label}</span>
+                  <em>{summarizeCell(item.cell)}</em>
+                </div>
+              ))}
+              {!issueCells.length && (
+                <div className="matrix-issue-empty">当前矩阵没有 critical / warning 格子。</div>
+              )}
+            </div>
+          </div>
+          <div className="matrix-coverage-panel">
+            <div className="matrix-mini-title">覆盖概览</div>
+            <div className="matrix-coverage-list">
+              {coverageRows.map((item) => (
+                <div className="matrix-status-bar" key={item.key}>
+                  <span>{item.label}</span>
+                  <div className="matrix-status-track">
+                    <i
+                      className={`matrix-status-fill ${item.tone}`}
+                      style={{ width: `${Math.max(3, Math.round((item.value / statusTotal) * 100))}%` }}
+                    />
+                  </div>
+                  <b>{item.value}</b>
+                </div>
+              ))}
+            </div>
+          </div>
+        </div>
+      )}
     </section>
   );
 }

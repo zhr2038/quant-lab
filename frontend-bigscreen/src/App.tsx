@@ -200,7 +200,7 @@ function Dashboard({
               <LegacyAnomalyPanel anomalies={data.legacy_anomalies} />
               <ActionQueue actions={data.actions} />
             </div>
-            <DataMatrix matrix={data.data_matrix} />
+            <DataMatrix matrix={data.data_matrix} variant="overview" />
           </motion.section>
         );
       case "strategy":

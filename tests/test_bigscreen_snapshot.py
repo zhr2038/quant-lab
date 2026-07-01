@@ -1180,6 +1180,7 @@ def test_web_v2_expert_pack_status_exposes_available_pack_v5_attachment(
                         "v5_live_followup_bundle_20260605T040000Z.tar.gz"
                     ),
                     "selected_v5_bundle_sha256": "selected-sha",
+                    "git_commit": "abc1234",
                     "embedded_v5_bundle_present": True,
                     "embedded_v5_bundle_member_path": "v5/followup_bundle/bundle.tar.gz",
                     "embedded_v5_bundle_sha256": "embedded-sha",
@@ -1192,6 +1193,7 @@ def test_web_v2_expert_pack_status_exposes_available_pack_v5_attachment(
 
     monkeypatch.setenv("QUANT_LAB_LAKE_ROOT", str(lake))
     monkeypatch.delenv("QUANT_LAB_API_TOKEN", raising=False)
+    monkeypatch.setattr(api_main, "_git_commit", lambda: "abc123456789")
     payload = TestClient(create_app()).get(
         "/web-v2/expert-pack/status?export_date=2026-06-05"
     ).json()
@@ -1210,6 +1212,10 @@ def test_web_v2_expert_pack_status_exposes_available_pack_v5_attachment(
     )
     assert payload["latest_pack_embedded_v5_bundle_sha256"] == "embedded-sha"
     assert payload["latest_pack_embedded_v5_bundle_matches_selected"] is True
+    assert payload["latest_pack_quant_lab_git_commit"] == "abc1234"
+    assert payload["current_quant_lab_git_commit"] == "abc123456789"
+    assert payload["latest_pack_matches_current_quant_lab_commit"] is True
+    assert payload["latest_pack_code_lag_status"] == "OK"
 
 
 def test_web_v2_expert_pack_status_exposes_regenerate_cooldown(monkeypatch, tmp_path):
@@ -1318,6 +1324,7 @@ def test_web_v2_expert_pack_status_prefers_latest_requested_pack_over_stale_manu
                     ),
                     "selected_v5_bundle_manifest_bundle_ts": "2026-06-19T07:00:00Z",
                     "selected_v5_bundle_sha256": "selected-sha",
+                    "git_commit": "old-sha",
                     "embedded_v5_bundle_present": True,
                     "embedded_v5_bundle_member_path": (
                         "v5/followup_bundle/"
@@ -1348,6 +1355,7 @@ def test_web_v2_expert_pack_status_prefers_latest_requested_pack_over_stale_manu
 
     monkeypatch.setenv("QUANT_LAB_LAKE_ROOT", str(lake))
     monkeypatch.delenv("QUANT_LAB_API_TOKEN", raising=False)
+    monkeypatch.setattr(api_main, "_git_commit", lambda: "new-sha")
     response = TestClient(create_app()).get(
         "/web-v2/expert-pack/status?export_date=2026-06-19"
     )
@@ -1381,6 +1389,10 @@ def test_web_v2_expert_pack_status_prefers_latest_requested_pack_over_stale_manu
     )
     assert payload["latest_pack_embedded_v5_bundle_sha256"] == "embedded-sha"
     assert payload["latest_pack_embedded_v5_bundle_matches_selected"] is True
+    assert payload["latest_pack_quant_lab_git_commit"] == "old-sha"
+    assert payload["current_quant_lab_git_commit"] == "new-sha"
+    assert payload["latest_pack_matches_current_quant_lab_commit"] is False
+    assert payload["latest_pack_code_lag_status"] == "WARNING"
     assert payload["latest_download_url"] == f"/web-v2/expert-pack/download/{new_pack.name}"
     assert (
         payload["manual_latest_download_url"]

@@ -537,6 +537,10 @@ function ExpertPackControls({ exports }: { exports: Record<string, unknown> }) {
   const v5LagStatus = stringValue(exports?.latest_pack_v5_lag_status, "");
   const v5LagMinutes = numberValue(exports?.latest_pack_v5_lag_minutes);
   const v5LagWarning = v5LagStatus.toUpperCase() === "WARNING" && v5LagMinutes > 0;
+  const packCommit = stringValue(status?.latest_pack_quant_lab_git_commit, "");
+  const currentCommit = stringValue(status?.current_quant_lab_git_commit, "");
+  const codeLagStatus = stringValue(status?.latest_pack_code_lag_status, "");
+  const codeLagWarning = codeLagStatus.toUpperCase() === "WARNING";
   const displayState = !isRunning && displayUrl && state.toLowerCase() === "manual_missing"
     ? "PACK_AVAILABLE"
     : state;
@@ -589,6 +593,11 @@ function ExpertPackControls({ exports }: { exports: Record<string, unknown> }) {
       {v5LagWarning ? (
         <div className="export-warning">
           当前可下载包内 V5 证据落后最新遥测 {Math.round(v5LagMinutes)} 分钟；需要最新证据时请手动重新生成。
+        </div>
+      ) : null}
+      {codeLagWarning ? (
+        <div className="export-warning">
+          当前可下载包由旧 quant-lab 代码生成（包 {shortCommit(packCommit)} · 当前 {shortCommit(currentCommit)}）；需要最新代码证据时请手动重新生成。
         </div>
       ) : null}
       {displayUrl ? (
@@ -647,6 +656,11 @@ function numberValue(value: unknown): number {
   if (value === null || value === undefined || value === "") return 0;
   const parsed = typeof value === "number" ? value : Number(value);
   return Number.isFinite(parsed) ? parsed : 0;
+}
+
+function shortCommit(value: unknown): string {
+  const text = stringValue(value, "").trim();
+  return text ? text.slice(0, 7) : "unknown";
 }
 
 function MiniTable({

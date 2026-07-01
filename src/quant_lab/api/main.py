@@ -1346,6 +1346,9 @@ def _parse_api_datetime(value: Any) -> datetime | None:
 
 def _expert_pack_v5_attachment_status(pack_path: Path) -> dict[str, Any]:
     manifest = _read_expert_pack_manifest(pack_path)
+    pack_git_commit = str(manifest.get("git_commit") or "").strip()
+    current_git_commit = str(_git_commit() or "").strip()
+    pack_matches_current = _git_commits_match(pack_git_commit, current_git_commit)
     bundle_name = str(
         manifest.get("selected_v5_bundle_manifest_bundle_name")
         or manifest.get("selected_v5_bundle_name")
@@ -1369,6 +1372,10 @@ def _expert_pack_v5_attachment_status(pack_path: Path) -> dict[str, Any]:
     embedded_sha = manifest.get("embedded_v5_bundle_sha256")
     embedded_matches_selected = manifest.get("embedded_v5_bundle_matches_selected")
     return {
+        "latest_pack_quant_lab_git_commit": pack_git_commit or None,
+        "current_quant_lab_git_commit": current_git_commit or None,
+        "latest_pack_matches_current_quant_lab_commit": pack_matches_current,
+        "latest_pack_code_lag_status": _pack_code_lag_status(pack_matches_current),
         "latest_pack_v5_bundle_name": bundle_name or None,
         "latest_pack_v5_bundle_ts": _api_json_value(bundle_ts),
         "latest_pack_v5_bundle_sha256": selected_sha or None,
@@ -1385,6 +1392,22 @@ def _expert_pack_v5_attachment_status(pack_path: Path) -> dict[str, Any]:
             else None
         ),
     }
+
+
+def _git_commits_match(pack_commit: str, current_commit: str) -> bool | None:
+    pack = str(pack_commit or "").strip()
+    current = str(current_commit or "").strip()
+    if not pack or not current:
+        return None
+    return pack.startswith(current) or current.startswith(pack)
+
+
+def _pack_code_lag_status(matches_current: bool | None) -> str:
+    if matches_current is True:
+        return "OK"
+    if matches_current is False:
+        return "WARNING"
+    return "UNKNOWN"
 
 
 def _read_expert_pack_manifest(pack_path: Path) -> dict[str, Any]:

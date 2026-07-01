@@ -1357,7 +1357,11 @@ def test_web_v2_expert_pack_status_prefers_latest_requested_pack_over_stale_manu
     assert payload["status"]["zip_path"] == str(new_pack)
     assert payload["status"]["zip_name"] == new_pack.name
     assert payload["status"]["latest_pack_source"] == "requested_date_pack"
+    assert payload["status"]["finished_at"] == "2026-06-19T07:00:00+00:00"
+    assert payload["status"]["latest_pack_mtime"] == "2026-06-19T07:00:00+00:00"
+    assert payload["status"]["status_time_source"] == "latest_pack_mtime"
     assert payload["manual_status"]["zip_path"] == str(old_pack)
+    assert payload["manual_status"]["finished_at"] == "2026-06-19T02:03:31+00:00"
     assert payload["requested_date_pack_name"] == new_pack.name
     assert payload["available_pack_name"] == new_pack.name
     assert payload["manual_latest_pack_name"] == old_pack.name

@@ -1238,6 +1238,8 @@ def _decorate_web_v2_expert_pack_status(
         effective_status["zip_path"] = str(latest_pack)
         effective_status["zip_name"] = latest_pack.name
         effective_status["latest_pack_source"] = latest_pack_source
+        if latest_pack_source != "manual_web_request":
+            _sync_web_v2_effective_status_to_pack(effective_status, latest_pack)
     payload = {
         "mode": "read_only_export",
         "live_order_effect": "none",
@@ -1313,6 +1315,33 @@ def _decorate_web_v2_expert_pack_status(
         )
     )
     return payload
+
+
+def _sync_web_v2_effective_status_to_pack(status: dict[str, Any], pack_path: Path) -> None:
+    try:
+        stat = pack_path.stat()
+    except OSError:
+        return
+    pack_mtime = datetime.fromtimestamp(stat.st_mtime, UTC).isoformat()
+    status["finished_at"] = pack_mtime
+    status["latest_pack_mtime"] = pack_mtime
+    status["status_time_source"] = "latest_pack_mtime"
+    started_at = _parse_api_datetime(status.get("started_at"))
+    finished_at = _parse_api_datetime(pack_mtime)
+    if started_at is None or (finished_at is not None and started_at > finished_at):
+        status["started_at"] = pack_mtime
+
+
+def _parse_api_datetime(value: Any) -> datetime | None:
+    if isinstance(value, datetime):
+        return value.astimezone(UTC) if value.tzinfo else value.replace(tzinfo=UTC)
+    if value in (None, ""):
+        return None
+    try:
+        parsed = datetime.fromisoformat(str(value).replace("Z", "+00:00"))
+    except ValueError:
+        return None
+    return parsed.astimezone(UTC) if parsed.tzinfo else parsed.replace(tzinfo=UTC)
 
 
 def _expert_pack_v5_attachment_status(pack_path: Path) -> dict[str, Any]:

@@ -74,9 +74,10 @@ export function DataMatrix({
       "coverage_reason",
       "message",
       "state",
-      "source",
+      "latest_close_ts",
       "latest_ts",
-      "updated_at"
+      "updated_at",
+      "source"
     ];
     const detail = keys
       .map((key) => cell?.[key])

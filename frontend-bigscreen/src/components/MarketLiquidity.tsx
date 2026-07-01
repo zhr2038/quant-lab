@@ -9,7 +9,7 @@ type MarketLiquidityProps = {
 
 export function MarketLiquidity({ market, matrix, density = "compact" }: MarketLiquidityProps) {
   const rows = mergeMarketRows(safeRows(market.regimes), safeRows(matrix?.rows));
-  const visibleRows = rows.slice(0, density === "full" ? 18 : 10);
+  const visibleRows = rows.slice(0, density === "full" ? 24 : 16);
   const spreadValues = rows
     .map((row) => Number(row.spread_bps))
     .filter((value) => Number.isFinite(value));

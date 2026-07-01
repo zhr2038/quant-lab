@@ -400,6 +400,7 @@ button{font:inherit;color:inherit}
 .market{grid-column:3;grid-row:3}
 .market-body{margin-top:18px;display:grid;grid-template-columns:minmax(0,1fr) minmax(190px,.36fr);gap:14px;align-items:stretch;min-height:0}
 .market-list{display:grid;gap:10px;align-content:start;min-width:0}
+.market-compact .market-list{grid-template-columns:repeat(auto-fit,minmax(320px,1fr))}
 .ticker{height:39px;border-radius:14px;border:1px solid rgba(80,169,255,.32);display:grid;grid-template-columns:132px 92px 1fr 76px;gap:12px;align-items:center;margin-top:10px;padding:0 16px;background:rgba(7,29,53,.55);font-size:14px}
 .market-list .ticker{margin-top:0}
 .market-full .market-list{gap:8px}
@@ -647,6 +648,7 @@ button{font:inherit;color:inherit}
     grid-template-columns:minmax(0,.92fr) minmax(0,1.08fr);
     grid-template-areas:"opportunity factor" "opportunity candidates";
   }
+  .market-list{grid-template-columns:repeat(auto-fit,minmax(300px,1fr))}
 }
 
 @media (max-width: 1100px){
@@ -671,6 +673,7 @@ button{font:inherit;color:inherit}
     grid-template-areas:"opportunity" "factor" "candidates";
   }
   .market-body{grid-template-columns:1fr}
+  .market-list{grid-template-columns:repeat(auto-fit,minmax(280px,1fr))}
 }
 
 @media (max-width: 720px){
@@ -807,6 +810,7 @@ button{font:inherit;color:inherit}
   .page-strategy .factor-factory-stats b{font-size:22px}
   .strategy-research-grid{grid-template-columns:1fr;grid-template-areas:"opportunity" "factor" "candidates";gap:12px}
   .market-body{grid-template-columns:1fr;gap:12px}
+  .market-list{grid-template-columns:1fr}
   .market-summary-panel{grid-template-columns:1fr;grid-template-rows:auto auto auto auto;padding:11px}
   .market-summary-grid{grid-template-columns:repeat(2,minmax(0,1fr))}
   .page-strategy .factor-factory-stats em{font-size:10px}

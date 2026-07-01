@@ -182,6 +182,40 @@ def test_bigscreen_data_matrix_treats_kill_advisory_as_neutral(tmp_path):
     assert rows["BTC-USDT"]["advisory"]["status"] == "INFO"
 
 
+def test_bigscreen_data_matrix_symbols_exclude_aggregate_rows():
+    symbols = bigscreen_module._matrix_symbols(
+        market={
+            "regimes": pl.DataFrame(
+                [
+                    {"symbol": "ALL"},
+                    {"symbol": "ALT-BASKET-BTC"},
+                    {"symbol": "BTC-USDT"},
+                    {"symbol": "ETH/USDT"},
+                ]
+            )
+        },
+        cost={
+            "costs": pl.DataFrame(
+                [
+                    {"symbol": "SOL-USDT"},
+                    {"symbol": "ALL"},
+                ]
+            )
+        },
+        strategy={
+            "strategy_opportunity_advisory": pl.DataFrame(
+                [
+                    {"symbol": "BNB-USDT"},
+                    {"symbol": "ALT-BASKET-BTC"},
+                ]
+            ),
+            "alpha_discovery_board": pl.DataFrame([{"symbol": "ADA-USDT"}]),
+        },
+    )
+
+    assert symbols == ["BTC-USDT", "ETH-USDT", "SOL-USDT", "BNB-USDT", "ADA-USDT"]
+
+
 def test_bigscreen_matrix_attention_promotes_global_status_and_action():
     data_matrix = {
         "columns": ["spread", "trade", "cost"],

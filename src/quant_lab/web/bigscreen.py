@@ -1312,7 +1312,7 @@ def _matrix_symbols(
     ]:
         for row in rows:
             symbol = _normalize_display_symbol(row.get("symbol"))
-            if symbol and symbol not in symbols:
+            if _is_usdt_market_symbol(symbol) and symbol not in symbols:
                 symbols.append(symbol)
     preferred = ["BTC-USDT", "ETH-USDT", "SOL-USDT", "BNB-USDT"]
     return [symbol for symbol in preferred if symbol in symbols] + [
@@ -1330,6 +1330,12 @@ def _normalize_display_symbol(value: Any) -> str | None:
         return normalize_symbol(text)
     except Exception:
         return text.replace("/", "-").upper()
+
+
+def _is_usdt_market_symbol(symbol: str | None) -> bool:
+    if not symbol:
+        return False
+    return symbol.endswith("-USDT")
 
 
 def _rows_by_symbol(rows: list[dict[str, Any]]) -> dict[str, dict[str, Any]]:

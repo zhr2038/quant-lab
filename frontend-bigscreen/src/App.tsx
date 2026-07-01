@@ -438,7 +438,21 @@ function drilldownContent(view: ViewKey, data: BigscreenSnapshot) {
         <>
           <KeyValueGrid data={data.v5} />
           <MiniTable title="Risk permission rows" rows={safeRows(data.consumers.permission_rows)} columns={["strategy", "permission", "permission_status", "as_of_ts", "source"]} />
-          <MiniTable title="API slow paths" rows={safeRows(data.web_perf.slow_paths)} columns={["path", "count", "p95", "max", "server_error_count"]} />
+          <MiniTable
+            title="API slow paths"
+            rows={safeRows(data.web_perf.slow_paths)}
+            columns={[
+              "path",
+              "count",
+              "success_p95",
+              "p95",
+              "max",
+              "error_count",
+              "auth_error_count",
+              "client_error_count",
+              "server_error_count"
+            ]}
+          />
         </>
       )
     };

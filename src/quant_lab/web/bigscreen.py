@@ -1355,19 +1355,25 @@ def _data_matrix_action_text(summary: dict[str, Any]) -> tuple[str, str, str]:
             "打开数据成本页复核 market_bar latest_ts / latest_close_ts，"
             "确认扩展币池是否需要补采。",
         )
+    if spread_critical and market_warning:
+        return (
+            "价差偏高且逐币行情需复核",
+            f"{spread_critical} 个严重价差 + {market_warning} 个逐币行情注意项 / "
+            f"{warning} 个注意单元；重点查看 {top_text}",
+            "先按实时盘口成本风险处理；同时复核逐币 market_bar latest_ts / "
+            "latest_close_ts，确认扩展币池是否需要补采。",
+        )
     if spread_critical:
         return (
             "市场价差偏高",
             f"{spread_critical} 个严重价差 / {warning} 个注意单元；重点查看 {top_text}",
-            "这是实时盘口成本风险，不是数据过期；"
-            "打开数据成本页复核 spread、cost、advisory 的逐币状态",
+            "这是实时盘口成本风险；打开数据成本页复核 spread、cost、advisory 的逐币状态",
         )
     if spread_warning and not critical:
         return (
             "市场价差需关注",
             f"{spread_warning} 个价差注意项 / {warning} 个注意单元；重点查看 {top_text}",
-            "这是实时盘口成本风险，不是数据过期；"
-            "打开数据成本页复核 spread、cost、advisory 的逐币状态",
+            "这是实时盘口成本风险；打开数据成本页复核 spread、cost、advisory 的逐币状态",
         )
     return (
         "数据矩阵存在注意项",

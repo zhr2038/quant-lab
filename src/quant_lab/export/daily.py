@@ -9353,9 +9353,44 @@ def _cost_bootstrap_readiness_question(readiness: pl.DataFrame) -> str:
             if str(row.get("bootstrap_state") or "").strip()
         }
     )
+    bill_matched = sum(
+        1
+        for row in rows
+        if str(row.get("bill_match_status") or "").strip().upper() == "PASS"
+        or (_safe_int(row.get("bill_matched_count")) or 0) > 0
+        or (_safe_int(row.get("matched_bill_count")) or 0) > 0
+    )
+    bootstrap_ready = sum(
+        1
+        for row in rows
+        if str(row.get("actual_or_mixed_bootstrap_covered") or "").lower() == "true"
+        or row.get("actual_or_mixed_bootstrap_covered") is True
+        or str(row.get("bootstrap_state") or "").strip().upper()
+        in {"BOOTSTRAP_PROBE_AVAILABLE", "ACTUAL_FILLS_SMALL_SAMPLE", "ACTUAL_FILLS_TRUSTED"}
+    )
+    next_actions = sorted(
+        {
+            str(row.get("next_action") or "").strip()
+            for row in rows
+            if str(row.get("next_action") or "").strip()
+        }
+    )
+    bill_detail = (
+        f"bill_match 已通过 {bill_matched}/{len(rows)}"
+        if bill_matched >= len(rows)
+        else f"bill_match 仅通过 {bill_matched}/{len(rows)}，仍需补齐账单匹配"
+    )
+    bootstrap_detail = f"bootstrap coverage {bootstrap_ready}/{len(rows)}"
+    action_detail = ""
+    if next_actions:
+        action_detail = "；next_action=" + " | ".join(next_actions[:4])
     return (
         "cost_bootstrap_readiness 仍无 trusted coverage；"
-        "下一步是 backfill、bill 匹配还是 cost_probe dry-run？states=" + ",".join(states[:6])
+        f"{bill_detail}；{bootstrap_detail}；"
+        "不要重复已完成的成本探针，下一步按 next_action 增加真实/混合 live 样本与策略证据。"
+        "states="
+        + ",".join(states[:6])
+        + action_detail
     )
 
 

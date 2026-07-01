@@ -6135,6 +6135,43 @@ def test_export_does_not_flag_historical_raw_private_fills_for_latest_day(tmp_pa
     assert "export_raw_rows_without_latest_actual_or_mixed=false" in private_fill_check["detail"]
 
 
+def test_cost_bootstrap_readiness_question_uses_bill_match_status():
+    readiness = pl.DataFrame(
+        [
+            {
+                "symbol": "BTC-USDT",
+                "bootstrap_state": "ACTUAL_FILLS_SMALL_SAMPLE",
+                "actual_or_mixed_bootstrap_covered": True,
+                "actual_or_mixed_trusted_covered": False,
+                "bill_match_status": "PASS",
+                "bill_matched_count": 4,
+                "next_action": "increase actual/mixed sample count before trusted coverage",
+            },
+            {
+                "symbol": "ETH-USDT",
+                "bootstrap_state": "BOOTSTRAP_PROBE_AVAILABLE",
+                "actual_or_mixed_bootstrap_covered": True,
+                "actual_or_mixed_trusted_covered": False,
+                "bill_match_status": "PASS",
+                "bill_matched_count": 4,
+                "next_action": (
+                    "BOOTSTRAP_COMPLETE_BILL_MATCHED; keep live coverage disabled "
+                    "until trusted live samples and strategy evidence are present"
+                ),
+            },
+        ]
+    )
+
+    question = daily_export_module._cost_bootstrap_readiness_question(readiness)
+
+    assert "仍无 trusted coverage" in question
+    assert "bill_match 已通过 2/2" in question
+    assert "bootstrap coverage 2/2" in question
+    assert "下一步是 backfill、bill 匹配还是 cost_probe dry-run" not in question
+    assert "不要重复已完成的成本探针" in question
+    assert "increase actual/mixed sample count" in question
+
+
 def test_actual_cost_symbol_coverage_splits_latest_and_historical_context():
     passed, detail = daily_export_module._actual_cost_symbol_coverage_check(
         export_day=date(2026, 5, 12),

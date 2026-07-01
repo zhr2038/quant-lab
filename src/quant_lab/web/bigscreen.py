@@ -2268,7 +2268,9 @@ def _latest_export_pack_row(exports: dict[str, Any]) -> dict[str, Any] | None:
     rows = _frame_rows(exports.get("packs"), limit=24)
     if not rows:
         return None
-    latest_name = Path(str(exports.get("latest_pack") or "")).name
+    latest_name = Path(
+        str(exports.get("latest_pack") or exports.get("display_pack") or "")
+    ).name
     if latest_name:
         for row in rows:
             row_name = str(row.get("name") or Path(str(row.get("path") or "")).name)
@@ -2488,11 +2490,8 @@ def _expert_pack_v5_lag_issue(
     exports: dict[str, Any],
     v5: dict[str, Any],
 ) -> dict[str, Any] | None:
-    if not (
-        exports.get("latest_pack")
-        or exports.get("display_pack")
-        or exports.get("available_pack")
-    ):
+    current_pack = exports.get("latest_pack") or exports.get("display_pack")
+    if not current_pack:
         return None
     pack_bundle_name, pack_bundle_ts = _latest_export_pack_v5_bundle_metadata(exports)
     latest_v5_ts = _parse_dt(_latest_v5_bundle_ts({}, v5))

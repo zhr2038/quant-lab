@@ -3,6 +3,7 @@ from __future__ import annotations
 from datetime import UTC, datetime, timedelta
 
 import polars as pl
+import pytest
 
 from quant_lab.opportunity_cost.ledger import build_opportunity_cost_frames
 from quant_lab.trade_level.judgment import (
@@ -363,32 +364,41 @@ def test_live_sample_prefers_actual_roundtrip_over_negative_fixed_horizon_label(
                     "side": "buy",
                     "action": "entry_filled",
                     "price": "73.84",
-                    "qty": "0.2135",
+                    "qty": "0.213705",
+                    "notional_usdt": "15.7799772",
+                    "fee_usdt": "0.0157799772",
                 },
                 {
-                    "run_id": "run-sol",
+                    "run_id": "run-sol-exit",
                     "symbol": "SOL-USDT",
                     "ts_utc": datetime(2026, 6, 29, 18, 1, tzinfo=UTC),
                     "side": "sell",
                     "action": "exit_filled",
                     "price": "75.18",
-                    "qty": "0.2135",
-                    "raw_payload_json": (
-                        '{"exit_reason":"protect_profit_lock_trailing",'
-                        '"net_bps":161.0,"net_pnl_usdt":0.25}'
-                    ),
+                    "qty": "0.213491",
+                    "notional_usdt": "16.05025338",
+                    "fee_usdt": "0.01605025338",
                 },
             ]
         ),
         order_lifecycles=pl.DataFrame(
             [
                 {
-                    "run_id": "run-sol",
+                    "run_id": "run-sol-exit",
                     "symbol": "SOL-USDT",
                     "ts_utc": datetime(2026, 6, 29, 18, 1, tzinfo=UTC),
+                    "side": "sell",
+                    "intent": "CLOSE_LONG",
+                    "avg_fill_px": "75.18",
+                    "filled_qty": "0.213491",
+                    "notional_usdt": "16.05025338",
+                    "fee_usdt": "0.01605025338",
+                    "exit_reason": "protect_profit_lock_trailing",
                     "raw_payload_json": (
                         '{"exit_reason":"protect_profit_lock_trailing",'
-                        '"realized_total_cost_bps":20.0}'
+                        '"realized_total_cost_bps":24.6,'
+                        '"first_fill_ts":"2026-06-29T18:01:00Z",'
+                        '"last_fill_ts":"2026-06-29T18:01:00Z"}'
                     ),
                 }
             ]
@@ -399,20 +409,24 @@ def test_live_sample_prefers_actual_roundtrip_over_negative_fixed_horizon_label(
     sample = frames["v5_trade_learning_sample"].row(0, named=True)
     audit = frames["quant_lab_false_block_audit"].row(0, named=True)
     opportunity = frames["quant_lab_opportunity_cost_event"].row(0, named=True)
+    expected_pnl = 16.05025338 - 15.7799772 - 0.0157799772 - 0.01605025338
+    expected_bps = expected_pnl / 15.7799772 * 10_000.0
 
     assert sample["sample_type"] == "LIVE_SUCCESS"
     assert sample["outcome_label"] == "PROFITABLE"
     assert sample["actual_outcome_label"] == "PROFITABLE"
-    assert sample["actual_roundtrip_net_bps"] == 161.0
+    assert sample["actual_exit_reason"] == "protect_profit_lock_trailing"
+    assert sample["actual_roundtrip_net_bps"] == pytest.approx(expected_bps)
+    assert sample["actual_roundtrip_net_pnl_usdt"] == pytest.approx(expected_pnl)
     assert sample["actual_hold_minutes"] == 300.15
     assert sample["fixed_horizon_net_bps"] == -137.2
     assert sample["fixed_horizon_outcome_label"] == "UNPROFITABLE"
     assert sample["label_24h_after_cost_bps"] == -137.2
     assert sample["hold_minutes"] == 300.15
-    assert sample["net_bps"] == 161.0
-    assert audit["actual_or_counterfactual_after_cost_bps"] == 161.0
+    assert sample["net_bps"] == pytest.approx(expected_bps)
+    assert audit["actual_or_counterfactual_after_cost_bps"] == pytest.approx(expected_bps)
     assert audit["false_block"] is True
-    assert opportunity["after_cost_bps"] == 161.0
+    assert opportunity["after_cost_bps"] == pytest.approx(expected_bps)
     assert opportunity["regret_type"] == "false_block"
 
 

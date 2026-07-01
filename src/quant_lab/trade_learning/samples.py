@@ -80,9 +80,13 @@ def build_v5_trade_learning_samples(
     judgments_by_event = {
         str(row.get("event_id") or ""): row for row in judgments.to_dicts()
     }
-    fill_lookup = _fill_lookup(v5_trades if v5_trades is not None else pl.DataFrame())
+    lifecycle_frame = order_lifecycles if order_lifecycles is not None else pl.DataFrame()
+    fill_lookup = _fill_lookup(
+        v5_trades if v5_trades is not None else pl.DataFrame(),
+        lifecycle_frame,
+    )
     lifecycle_lookup = _lifecycle_lookup(
-        order_lifecycles if order_lifecycles is not None else pl.DataFrame()
+        lifecycle_frame,
     )
     rows: list[dict[str, Any]] = []
     for event in events.to_dicts():
@@ -204,9 +208,15 @@ def build_v5_trade_learning_samples(
     return _frame(rows, V5_TRADE_LEARNING_SAMPLE_SCHEMA)
 
 
-def _fill_lookup(frame: pl.DataFrame) -> dict[tuple[str, str], dict[str, Any]]:
+def _fill_lookup(
+    frame: pl.DataFrame,
+    lifecycles: pl.DataFrame | None = None,
+) -> dict[tuple[str, str], dict[str, Any]]:
     lookup: dict[tuple[str, str], dict[str, Any]] = {}
-    if frame.is_empty():
+    lifecycle_exits = _lifecycle_exit_lookup(
+        lifecycles if lifecycles is not None else pl.DataFrame()
+    )
+    if frame.is_empty() and not lifecycle_exits:
         return lookup
     grouped: dict[tuple[str, str], list[dict[str, Any]]] = {}
     for row in frame.to_dicts():
@@ -215,75 +225,185 @@ def _fill_lookup(frame: pl.DataFrame) -> dict[tuple[str, str], dict[str, Any]]:
             continue
         grouped.setdefault(key, []).append(row)
     for key, rows in grouped.items():
-        ordered = sorted(
-            rows,
-            key=lambda row: _timestamp(row.get("ts_utc")) or datetime.min.replace(tzinfo=UTC),
-        )
-        entry = next(
-            (
-                row
-                for row in ordered
-                if _text(row.get("side")).lower() == "buy"
-                or "entry" in _text(row.get("action")).lower()
-            ),
-            ordered[0],
-        )
-        exit_row = next(
-            (
-                row
-                for row in reversed(ordered)
-                if _text(row.get("side")).lower() == "sell"
-                or "exit" in _text(row.get("action")).lower()
-            ),
-            {},
-        )
-        entry_payload = _payload(entry)
-        exit_payload = _payload(exit_row)
+        lookup[key] = _merge_exit_details(_run_fill_summary(rows), lifecycle_exits.get(key, {}))
+    for key, exit_details in lifecycle_exits.items():
+        lookup.setdefault(key, _merge_exit_details({}, exit_details))
+    _pair_cross_run_exits(lookup)
+    return lookup
+
+
+def _run_fill_summary(rows: list[dict[str, Any]]) -> dict[str, Any]:
+    ordered = sorted(rows, key=lambda row: _row_ts(row) or datetime.min.replace(tzinfo=UTC))
+    entry_rows = [row for row in ordered if _is_entry_row(row)]
+    exit_rows = [row for row in ordered if _is_exit_row(row)]
+    entry = entry_rows[0] if entry_rows else {}
+    exit_row = exit_rows[-1] if exit_rows else {}
+    exit_payload = _payload(exit_row)
+    return {
+        "entry_ts": _min_ts(entry_rows),
+        "exit_ts": _max_ts(exit_rows),
+        "entry_side": _text(entry.get("side") or _payload(entry).get("side")),
+        "entry_price": _weighted_price(entry_rows),
+        "exit_price": _weighted_price(exit_rows),
+        "entry_qty": _sum_rows(entry_rows, "qty", "filled_qty"),
+        "exit_qty": _sum_rows(exit_rows, "qty", "filled_qty"),
+        "entry_notional_usdt": _sum_notional(entry_rows),
+        "exit_notional_usdt": _sum_notional(exit_rows),
+        "entry_fee_usdt": _sum_fee_usdt(entry_rows),
+        "exit_fee_usdt": _sum_fee_usdt(exit_rows),
+        "exit_reason": _payload_text(exit_row, "exit_reason", "reason", "source_reason"),
+        "actual_roundtrip_net_bps": _first_float(
+            exit_row.get("actual_roundtrip_net_bps"),
+            exit_row.get("roundtrip_net_bps"),
+            exit_row.get("realized_net_bps"),
+            exit_row.get("net_bps"),
+            exit_payload.get("actual_roundtrip_net_bps"),
+            exit_payload.get("roundtrip_net_bps"),
+            exit_payload.get("realized_net_bps"),
+            exit_payload.get("net_bps"),
+        ),
+        "realized_total_cost_bps": _first_float(
+            exit_row.get("realized_total_cost_bps"),
+            exit_row.get("total_realized_cost_bps"),
+            exit_payload.get("realized_total_cost_bps"),
+            exit_payload.get("total_realized_cost_bps"),
+        ),
+        "net_pnl_usdt": _first_float(
+            exit_row.get("net_pnl_usdt"),
+            exit_row.get("pnl_usdt"),
+            exit_row.get("realized_pnl_usdt"),
+            exit_payload.get("net_pnl_usdt"),
+            exit_payload.get("pnl_usdt"),
+            exit_payload.get("realized_pnl_usdt"),
+        ),
+    }
+
+
+def _lifecycle_exit_lookup(frame: pl.DataFrame) -> dict[tuple[str, str], dict[str, Any]]:
+    lookup: dict[tuple[str, str], dict[str, Any]] = {}
+    if frame.is_empty():
+        return lookup
+    grouped: dict[tuple[str, str], list[dict[str, Any]]] = {}
+    for row in frame.to_dicts():
+        if not _is_exit_row(row):
+            continue
+        key = (_text(row.get("run_id")), _text(row.get("symbol") or row.get("normalized_symbol")))
+        if not all(key):
+            continue
+        grouped.setdefault(key, []).append(row)
+    for key, rows in grouped.items():
+        ordered = sorted(rows, key=lambda row: _row_ts(row) or datetime.min.replace(tzinfo=UTC))
+        latest = ordered[-1]
+        payload = _payload(latest)
         lookup[key] = {
-            "entry_ts": _timestamp(
-                entry.get("ts_utc")
-                or entry.get("ts")
-                or entry.get("timestamp")
-                or entry_payload.get("ts_utc")
-                or entry_payload.get("ts")
-            ),
             "exit_ts": _timestamp(
-                exit_row.get("ts_utc")
-                or exit_row.get("ts")
-                or exit_row.get("timestamp")
-                or exit_payload.get("ts_utc")
-                or exit_payload.get("ts")
+                latest.get("last_fill_ts")
+                or latest.get("first_fill_ts")
+                or latest.get("ts_utc")
+                or payload.get("last_fill_ts")
+                or payload.get("first_fill_ts")
+                or payload.get("ts_utc")
             ),
-            "entry_side": _text(entry.get("side") or entry_payload.get("side")),
-            "entry_price": _float(entry.get("price") or entry.get("fill_price")),
-            "exit_price": _float(exit_row.get("price") or exit_row.get("fill_price")),
-            "exit_reason": _payload_text(exit_row, "exit_reason", "reason"),
-            "actual_roundtrip_net_bps": _first_float(
-                exit_row.get("actual_roundtrip_net_bps"),
-                exit_row.get("roundtrip_net_bps"),
-                exit_row.get("realized_net_bps"),
-                exit_row.get("net_bps"),
-                exit_payload.get("actual_roundtrip_net_bps"),
-                exit_payload.get("roundtrip_net_bps"),
-                exit_payload.get("realized_net_bps"),
-                exit_payload.get("net_bps"),
+            "exit_price": _weighted_price(ordered),
+            "exit_qty": _sum_rows(ordered, "qty", "filled_qty"),
+            "exit_notional_usdt": _sum_notional(ordered),
+            "exit_fee_usdt": _sum_fee_usdt(ordered),
+            "exit_reason": _text(
+                latest.get("exit_reason")
+                or latest.get("source_reason")
+                or payload.get("exit_reason")
+                or payload.get("source_reason")
+                or payload.get("reason")
             ),
             "realized_total_cost_bps": _first_float(
-                exit_row.get("realized_total_cost_bps"),
-                exit_row.get("total_realized_cost_bps"),
-                exit_payload.get("realized_total_cost_bps"),
-                exit_payload.get("total_realized_cost_bps"),
-            ),
-            "net_pnl_usdt": _first_float(
-                exit_row.get("net_pnl_usdt"),
-                exit_row.get("pnl_usdt"),
-                exit_row.get("realized_pnl_usdt"),
-                exit_payload.get("net_pnl_usdt"),
-                exit_payload.get("pnl_usdt"),
-                exit_payload.get("realized_pnl_usdt"),
+                latest.get("realized_total_cost_bps"),
+                latest.get("total_realized_cost_bps"),
+                payload.get("realized_total_cost_bps"),
+                payload.get("total_realized_cost_bps"),
             ),
         }
     return lookup
+
+
+def _merge_exit_details(base: dict[str, Any], exit_details: dict[str, Any]) -> dict[str, Any]:
+    merged = dict(base)
+    for field in [
+        "exit_ts",
+        "exit_price",
+        "exit_qty",
+        "exit_notional_usdt",
+        "exit_fee_usdt",
+        "exit_reason",
+        "realized_total_cost_bps",
+        "actual_roundtrip_net_bps",
+        "net_pnl_usdt",
+    ]:
+        if merged.get(field) in (None, "") and exit_details.get(field) not in (None, ""):
+            merged[field] = exit_details.get(field)
+    return merged
+
+
+def _pair_cross_run_exits(lookup: dict[tuple[str, str], dict[str, Any]]) -> None:
+    exit_candidates_by_symbol: dict[str, list[tuple[tuple[str, str], dict[str, Any]]]] = {}
+    for key, row in lookup.items():
+        if _timestamp(row.get("exit_ts")) is None or _float(row.get("exit_price")) is None:
+            continue
+        exit_candidates_by_symbol.setdefault(key[1], []).append((key, row))
+    used: set[tuple[str, str]] = set()
+    for key, row in sorted(
+        lookup.items(),
+        key=lambda item: _timestamp(item[1].get("entry_ts")) or datetime.max.replace(tzinfo=UTC),
+    ):
+        if _timestamp(row.get("entry_ts")) is None or _float(row.get("entry_price")) is None:
+            continue
+        if _timestamp(row.get("exit_ts")) is not None and _float(row.get("exit_price")) is not None:
+            continue
+        candidate = _matching_exit_candidate(
+            row,
+            exit_candidates_by_symbol.get(key[1], []),
+            used,
+        )
+        if candidate is None:
+            continue
+        exit_key, exit_row = candidate
+        used.add(exit_key)
+        lookup[key] = _merge_exit_details(row, exit_row)
+
+
+def _matching_exit_candidate(
+    entry: dict[str, Any],
+    candidates: list[tuple[tuple[str, str], dict[str, Any]]],
+    used: set[tuple[str, str]],
+) -> tuple[tuple[str, str], dict[str, Any]] | None:
+    entry_ts = _timestamp(entry.get("entry_ts"))
+    if entry_ts is None:
+        return None
+    viable = []
+    for key, candidate in candidates:
+        if key in used:
+            continue
+        exit_ts = _timestamp(candidate.get("exit_ts"))
+        if exit_ts is None or exit_ts <= entry_ts:
+            continue
+        if not _similar_size(entry, candidate):
+            continue
+        viable.append((exit_ts, key, candidate))
+    if not viable:
+        return None
+    _, key, candidate = min(viable, key=lambda item: item[0])
+    return key, candidate
+
+
+def _similar_size(entry: dict[str, Any], exit_row: dict[str, Any]) -> bool:
+    entry_qty = _float(entry.get("entry_qty"))
+    exit_qty = _float(exit_row.get("exit_qty"))
+    if entry_qty not in (None, 0.0) and exit_qty is not None:
+        return abs(entry_qty - exit_qty) / entry_qty <= 0.05
+    entry_notional = _float(entry.get("entry_notional_usdt"))
+    exit_notional = _float(exit_row.get("exit_notional_usdt"))
+    if entry_notional not in (None, 0.0) and exit_notional is not None:
+        return abs(entry_notional - exit_notional) / entry_notional <= 0.15
+    return True
 
 
 def _lifecycle_lookup(frame: pl.DataFrame) -> dict[tuple[str, str], dict[str, Any]]:
@@ -299,6 +419,7 @@ def _lifecycle_lookup(frame: pl.DataFrame) -> dict[tuple[str, str], dict[str, An
             continue
         payload = _payload(row)
         existing = lookup.get(key, {})
+        is_exit = _is_exit_row(row)
         lookup[key] = {
             **existing,
             "realized_total_cost_bps": _first_float(
@@ -309,43 +430,177 @@ def _lifecycle_lookup(frame: pl.DataFrame) -> dict[tuple[str, str], dict[str, An
                 existing.get("realized_total_cost_bps"),
             ),
             "actual_roundtrip_net_bps": _first_float(
-                row.get("actual_roundtrip_net_bps"),
-                row.get("roundtrip_net_bps"),
-                row.get("realized_net_bps"),
-                row.get("net_bps"),
-                payload.get("actual_roundtrip_net_bps"),
-                payload.get("roundtrip_net_bps"),
-                payload.get("realized_net_bps"),
-                payload.get("net_bps"),
+                row.get("actual_roundtrip_net_bps") if is_exit else None,
+                row.get("roundtrip_net_bps") if is_exit else None,
+                row.get("realized_net_bps") if is_exit else None,
+                row.get("net_bps") if is_exit else None,
+                payload.get("actual_roundtrip_net_bps") if is_exit else None,
+                payload.get("roundtrip_net_bps") if is_exit else None,
+                payload.get("realized_net_bps") if is_exit else None,
+                payload.get("net_bps") if is_exit else None,
                 existing.get("actual_roundtrip_net_bps"),
             ),
             "actual_roundtrip_net_pnl_usdt": _first_float(
-                row.get("actual_roundtrip_net_pnl_usdt"),
-                row.get("net_pnl_usdt"),
-                row.get("pnl_usdt"),
-                row.get("realized_pnl_usdt"),
-                payload.get("actual_roundtrip_net_pnl_usdt"),
-                payload.get("net_pnl_usdt"),
-                payload.get("pnl_usdt"),
-                payload.get("realized_pnl_usdt"),
+                row.get("actual_roundtrip_net_pnl_usdt") if is_exit else None,
+                row.get("net_pnl_usdt") if is_exit else None,
+                row.get("pnl_usdt") if is_exit else None,
+                row.get("realized_pnl_usdt") if is_exit else None,
+                payload.get("actual_roundtrip_net_pnl_usdt") if is_exit else None,
+                payload.get("net_pnl_usdt") if is_exit else None,
+                payload.get("pnl_usdt") if is_exit else None,
+                payload.get("realized_pnl_usdt") if is_exit else None,
                 existing.get("actual_roundtrip_net_pnl_usdt"),
             ),
             "exit_ts": _timestamp(
-                row.get("exit_ts")
-                or row.get("ts_utc")
-                or row.get("ts")
-                or payload.get("exit_ts")
-                or payload.get("ts_utc")
+                (row.get("exit_ts") if is_exit else None)
+                or (row.get("ts_utc") if is_exit else None)
+                or (row.get("ts") if is_exit else None)
+                or (payload.get("exit_ts") if is_exit else None)
+                or (payload.get("ts_utc") if is_exit else None)
                 or existing.get("exit_ts")
             ),
             "exit_reason": _text(
-                row.get("exit_reason")
-                or payload.get("exit_reason")
-                or payload.get("reason")
+                (row.get("exit_reason") if is_exit else None)
+                or (payload.get("exit_reason") if is_exit else None)
+                or (payload.get("reason") if is_exit else None)
                 or existing.get("exit_reason")
             ),
         }
     return lookup
+
+
+def _is_entry_row(row: dict[str, Any]) -> bool:
+    payload = _payload(row)
+    side = _text(row.get("side") or payload.get("side")).lower()
+    action = _text(
+        row.get("action")
+        or row.get("intent")
+        or row.get("event_type")
+        or payload.get("intent")
+    ).lower()
+    return side == "buy" or any(token in action for token in ("entry", "open_long", "open"))
+
+
+def _is_exit_row(row: dict[str, Any]) -> bool:
+    payload = _payload(row)
+    side = _text(row.get("side") or payload.get("side")).lower()
+    action = _text(
+        row.get("action")
+        or row.get("intent")
+        or row.get("event_type")
+        or payload.get("intent")
+        or payload.get("action")
+    ).lower()
+    exit_reason = _text(row.get("exit_reason") or payload.get("exit_reason"))
+    return (
+        side == "sell"
+        or any(token in action for token in ("exit", "close", "sell"))
+        or bool(exit_reason)
+    )
+
+
+def _row_ts(row: dict[str, Any]) -> datetime | None:
+    payload = _payload(row)
+    return _timestamp(
+        row.get("ts_utc")
+        or row.get("ts")
+        or row.get("timestamp")
+        or row.get("last_fill_ts")
+        or row.get("first_fill_ts")
+        or payload.get("ts_utc")
+        or payload.get("ts")
+        or payload.get("last_fill_ts")
+        or payload.get("first_fill_ts")
+    )
+
+
+def _min_ts(rows: list[dict[str, Any]]) -> datetime | None:
+    values = [_row_ts(row) for row in rows]
+    values = [value for value in values if value is not None]
+    return min(values) if values else None
+
+
+def _max_ts(rows: list[dict[str, Any]]) -> datetime | None:
+    values = [_row_ts(row) for row in rows]
+    values = [value for value in values if value is not None]
+    return max(values) if values else None
+
+
+def _weighted_price(rows: list[dict[str, Any]]) -> float | None:
+    weighted = 0.0
+    qty_sum = 0.0
+    prices: list[float] = []
+    for row in rows:
+        price = _row_price(row)
+        if price is None:
+            continue
+        qty = _first_float(row.get("qty"), row.get("filled_qty"), _payload(row).get("filled_qty"))
+        prices.append(price)
+        if qty is not None and qty > 0.0:
+            weighted += price * qty
+            qty_sum += qty
+    if qty_sum > 0.0:
+        return weighted / qty_sum
+    return prices[-1] if prices else None
+
+
+def _row_price(row: dict[str, Any]) -> float | None:
+    payload = _payload(row)
+    return _first_float(
+        row.get("price"),
+        row.get("fill_price"),
+        row.get("fill_px"),
+        row.get("avg_fill_px"),
+        payload.get("price"),
+        payload.get("fill_price"),
+        payload.get("fill_px"),
+        payload.get("avg_fill_px"),
+    )
+
+
+def _sum_rows(rows: list[dict[str, Any]], *fields: str) -> float | None:
+    total = 0.0
+    found = False
+    for row in rows:
+        payload = _payload(row)
+        row_values = [row.get(field) for field in fields]
+        payload_values = [payload.get(field) for field in fields]
+        value = _first_float(*row_values, *payload_values)
+        if value is None:
+            continue
+        total += value
+        found = True
+    return total if found else None
+
+
+def _sum_notional(rows: list[dict[str, Any]]) -> float | None:
+    total = 0.0
+    found = False
+    for row in rows:
+        payload = _payload(row)
+        value = _first_float(row.get("notional_usdt"), payload.get("notional_usdt"))
+        if value is None:
+            qty = _first_float(row.get("qty"), row.get("filled_qty"), payload.get("filled_qty"))
+            price = _row_price(row)
+            value = qty * price if qty is not None and price is not None else None
+        if value is None:
+            continue
+        total += value
+        found = True
+    return total if found else None
+
+
+def _sum_fee_usdt(rows: list[dict[str, Any]]) -> float | None:
+    total = 0.0
+    found = False
+    for row in rows:
+        payload = _payload(row)
+        value = _first_float(row.get("fee_usdt"), payload.get("fee_usdt"))
+        if value is None:
+            continue
+        total += abs(value)
+        found = True
+    return total if found else None
 
 
 def _actual_roundtrip_outcome(
@@ -364,10 +619,19 @@ def _actual_roundtrip_outcome(
         lifecycle.get("actual_roundtrip_net_bps"),
         fill.get("actual_roundtrip_net_bps"),
     )
+    net_pnl = _first_float(
+        lifecycle.get("actual_roundtrip_net_pnl_usdt"),
+        fill.get("net_pnl_usdt"),
+        _roundtrip_net_pnl_usdt(fill),
+    )
     if net_bps is None:
-        gross_bps = _gross_roundtrip_bps(fill)
-        if gross_bps is not None:
-            net_bps = gross_bps - (cost_bps or 0.0)
+        entry_notional = _float(fill.get("entry_notional_usdt"))
+        if net_pnl is not None and entry_notional not in (None, 0.0):
+            net_bps = (net_pnl / entry_notional) * 10_000.0
+        else:
+            gross_bps = _gross_roundtrip_bps(fill)
+            if gross_bps is not None:
+                net_bps = gross_bps - (cost_bps or 0.0)
     hold_minutes = None
     if entry_ts is not None and exit_ts is not None:
         hold_minutes = max(0.0, (exit_ts - entry_ts).total_seconds() / 60.0)
@@ -376,11 +640,21 @@ def _actual_roundtrip_outcome(
         "actual_exit_reason": _text(lifecycle.get("exit_reason") or fill.get("exit_reason")),
         "actual_hold_minutes": hold_minutes,
         "actual_roundtrip_net_bps": net_bps,
-        "actual_roundtrip_net_pnl_usdt": _first_float(
-            lifecycle.get("actual_roundtrip_net_pnl_usdt"),
-            fill.get("net_pnl_usdt"),
-        ),
+        "actual_roundtrip_net_pnl_usdt": net_pnl,
     }
+
+
+def _roundtrip_net_pnl_usdt(fill: dict[str, Any]) -> float | None:
+    entry_notional = _float(fill.get("entry_notional_usdt"))
+    exit_notional = _float(fill.get("exit_notional_usdt"))
+    if entry_notional is None or exit_notional is None:
+        return None
+    entry_fee = _float(fill.get("entry_fee_usdt")) or 0.0
+    exit_fee = _float(fill.get("exit_fee_usdt")) or 0.0
+    entry_side = _text(fill.get("entry_side")).lower()
+    if entry_side == "sell":
+        return entry_notional - exit_notional - entry_fee - exit_fee
+    return exit_notional - entry_notional - entry_fee - exit_fee
 
 
 def _gross_roundtrip_bps(fill: dict[str, Any]) -> float | None:

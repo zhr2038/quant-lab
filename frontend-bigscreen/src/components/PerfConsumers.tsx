@@ -1,6 +1,6 @@
 import ReactECharts from "echarts-for-react";
 import { Gauge, ShieldCheck } from "lucide-react";
-import { ms, permissionDisplay, safeRows } from "../lib/api";
+import { ms, permissionDisplay, safeRows, shortNumber, stringValue } from "../lib/api";
 
 export function PerfConsumers({
   perf,
@@ -31,6 +31,12 @@ export function PerfConsumers({
   };
   const permissions = (consumers.permissions ?? {}) as Record<string, unknown>;
   const v5Permission = permissionDisplay(permissions.v5);
+  const permissionRows = safeRows(consumers.permission_rows);
+  const latestPermission = permissionRows.find((row) => stringValue(row.permission_status, "")) ?? permissionRows[0] ?? {};
+  const tradeLevelSummary = tradeLevelDisplay(
+    latestPermission.trade_level_decision_summary,
+    latestPermission.micro_canary_review_count
+  );
   return (
     <section className="card perf pad">
       <h2 className="section-title icon-title"><Gauge size={23} />Web 性能 / 策略消费者</h2>
@@ -39,10 +45,39 @@ export function PerfConsumers({
       <div className="latency-text">{ms(perf.api_p50_ms)} / {ms(perf.api_p95_ms)}</div>
       <div className="perm-grid">
         <div className="perm"><span><ShieldCheck size={14} />V5</span><strong>{v5Permission.value}</strong></div>
-        <div className="perm"><span>V7</span><strong>{String(permissions.v7 ?? "UNKNOWN")}</strong></div>
+        <div className="perm" title={tradeLevelSummary.title}><span>逐笔</span><strong>{tradeLevelSummary.value}</strong></div>
         <div className="perm"><span>fallback</span><strong>{String(consumers.fallback_rows ?? 0)} rows</strong></div>
         <div className="perm"><span>rglob</span><strong>{String(perf.rglob_fallback ?? 0)}</strong></div>
       </div>
     </section>
   );
+}
+
+function tradeLevelDisplay(
+  summaryValue: unknown,
+  microCanaryReviewCount: unknown
+): { value: string; title: string } {
+  const reviewCount = Number(microCanaryReviewCount ?? 0);
+  const raw = stringValue(summaryValue, "");
+  const fallback = {
+    value: reviewCount > 0 ? `review ${shortNumber(reviewCount)}` : "no rows",
+    title: raw || "trade_level_decision_summary not observable"
+  };
+  if (!raw) return fallback;
+  try {
+    const parsed = JSON.parse(raw) as Record<string, unknown>;
+    const entries = Object.entries(parsed)
+      .filter(([, value]) => Number.isFinite(Number(value)))
+      .sort((left, right) => Number(right[1]) - Number(left[1]));
+    const top = entries[0];
+    if (!top) return fallback;
+    const [decision, count] = top;
+    const prefix = reviewCount > 0 ? `review ${shortNumber(reviewCount)}` : decision.replace(/_/g, " ");
+    return {
+      value: `${prefix} ${shortNumber(count)}`,
+      title: raw
+    };
+  } catch {
+    return fallback;
+  }
 }

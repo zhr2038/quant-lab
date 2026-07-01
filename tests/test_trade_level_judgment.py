@@ -4,6 +4,7 @@ from datetime import UTC, datetime, timedelta
 
 import polars as pl
 
+from quant_lab.opportunity_cost.ledger import build_opportunity_cost_frames
 from quant_lab.trade_level.judgment import (
     build_trade_level_frames_from_sources,
     build_trade_level_judgments,
@@ -327,6 +328,60 @@ def test_learning_sample_schema_does_not_infer_nullable_float_as_null():
     assert frames["trade_opportunity_label"]["label_24h_after_cost_bps"].drop_nulls().to_list() == [
         -11.692423
     ]
+
+
+def test_opportunity_cost_ignores_non_open_candidates_for_allow_outcomes():
+    created = datetime(2026, 6, 29, 10, tzinfo=UTC)
+    frames = build_opportunity_cost_frames(
+        events=pl.DataFrame(
+            [
+                {
+                    "event_id": "hold-candidate",
+                    "decision_ts": datetime(2026, 6, 29, 8, 5, tzinfo=UTC),
+                    "symbol": "SOL-USDT",
+                    "strategy_candidate": "v5.local_alpha6",
+                    "rank": 1,
+                    "alpha6_score": 0.984,
+                    "edge_required_ratio": 4.0,
+                    "cost_gate_verified": True,
+                    "cost_source": "bootstrap_cost_probe",
+                    "v5_would_open": False,
+                    "actual_submitted": False,
+                }
+            ]
+        ),
+        labels=pl.DataFrame(
+            [
+                {
+                    "event_id": "hold-candidate",
+                    "label_24h_after_cost_bps": -45.0,
+                }
+            ]
+        ),
+        judgments=pl.DataFrame(
+            [
+                {
+                    "event_id": "hold-candidate",
+                    "trade_level_decision": "MICRO_CANARY_ALLOW",
+                    "v5_high_confidence_opportunity": True,
+                }
+            ]
+        ),
+        created_at=created,
+    )
+
+    event = frames["quant_lab_opportunity_cost_event"].row(0, named=True)
+    daily = frames["quant_lab_opportunity_cost_daily"].row(0, named=True)
+    regret = frames["quant_lab_decision_regret"].row(0, named=True)
+
+    assert event["v5_would_open"] is False
+    assert event["false_allow"] is False
+    assert event["correct_allow"] is False
+    assert event["regret_type"] == "not_v5_open"
+    assert daily["total_v5_would_open_count"] == 0
+    assert daily["quant_lab_would_allow_count"] == 0
+    assert daily["false_allow_count"] == 0
+    assert regret["regret_type"] == "not_v5_open"
 
 
 def _sol_candidate(candidate_id: str = "sol-cand-1") -> dict[str, object]:

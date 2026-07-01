@@ -180,8 +180,8 @@ def build_opportunity_cost_events(
         quant_lab_would_allow = not quant_lab_would_block
         false_block = v5_would_open and quant_lab_would_block and _positive(after_cost)
         loss_saved = v5_would_open and quant_lab_would_block and _negative(after_cost)
-        false_allow = quant_lab_would_allow and _negative(after_cost)
-        correct_allow = quant_lab_would_allow and _positive(after_cost)
+        false_allow = v5_would_open and quant_lab_would_allow and _negative(after_cost)
+        correct_allow = v5_would_open and quant_lab_would_allow and _positive(after_cost)
         high_confidence = _bool(judgment.get("v5_high_confidence_opportunity")) is True
         decision_ts = _timestamp(event.get("decision_ts"))
         bucket = _bucket_fields(event)

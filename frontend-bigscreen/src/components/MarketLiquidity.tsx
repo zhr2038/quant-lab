@@ -1,9 +1,14 @@
 import { Waves } from "lucide-react";
 import { bps, safeRows, stringValue } from "../lib/api";
 
-export function MarketLiquidity({ market }: { market: Record<string, unknown> }) {
+type MarketLiquidityProps = {
+  market: Record<string, unknown>;
+  density?: "compact" | "full";
+};
+
+export function MarketLiquidity({ market, density = "compact" }: MarketLiquidityProps) {
   const rows = safeRows(market.regimes);
-  const visibleRows = rows.slice(0, 6);
+  const visibleRows = rows.slice(0, density === "full" ? 10 : 8);
   const spreadValues = rows
     .map((row) => Number(row.spread_bps))
     .filter((value) => Number.isFinite(value));
@@ -21,7 +26,7 @@ export function MarketLiquidity({ market }: { market: Record<string, unknown> })
   const lowVolCount = rows.filter((row) => stringValue(row.volatility_regime ?? row.regime, "").includes("低")).length;
   const normalCount = rows.filter((row) => stringValue(row.volatility_regime ?? row.regime, "").includes("正常")).length;
   return (
-    <section className="card market pad">
+    <section className={`card market pad market-${density}`}>
       <h2 className="section-title icon-title"><Waves size={23} />市场状态与流动性</h2>
       <p className="sub">波动状态 / spread bps / trade activity 由 market_regime_summary 汇总。</p>
       {!rows.length && (

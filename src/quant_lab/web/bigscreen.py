@@ -2271,12 +2271,13 @@ def _latest_export_pack_row(exports: dict[str, Any]) -> dict[str, Any] | None:
     latest_name = Path(
         str(exports.get("latest_pack") or exports.get("display_pack") or "")
     ).name
-    if latest_name:
-        for row in rows:
-            row_name = str(row.get("name") or Path(str(row.get("path") or "")).name)
-            if row_name == latest_name:
-                return row
-    return rows[0]
+    if not latest_name:
+        return None
+    for row in rows:
+        row_name = str(row.get("name") or Path(str(row.get("path") or "")).name)
+        if row_name == latest_name:
+            return row
+    return None
 
 
 def _quality_warning_count(data_quality: dict[str, Any]) -> int:

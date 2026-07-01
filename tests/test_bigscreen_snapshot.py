@@ -191,6 +191,7 @@ def test_bigscreen_data_matrix_symbols_exclude_aggregate_rows():
                     {"symbol": "ALT-BASKET-BTC"},
                     {"symbol": "BTC-USDT"},
                     {"symbol": "ETH/USDT"},
+                    {"symbol": "BCH-USDT"},
                 ]
             )
         },
@@ -214,6 +215,32 @@ def test_bigscreen_data_matrix_symbols_exclude_aggregate_rows():
     )
 
     assert symbols == ["BTC-USDT", "ETH-USDT", "SOL-USDT", "BNB-USDT", "ADA-USDT"]
+
+
+def test_bigscreen_data_matrix_excludes_market_only_non_ws_symbols():
+    symbols = bigscreen_module._matrix_symbols(
+        market={"regimes": pl.DataFrame([{"symbol": "BCH-USDT"}, {"symbol": "ADA-USDT"}])},
+        cost={"costs": pl.DataFrame()},
+        strategy={
+            "strategy_opportunity_advisory": pl.DataFrame(),
+            "alpha_discovery_board": pl.DataFrame(),
+        },
+    )
+
+    assert symbols == ["ADA-USDT"]
+
+
+def test_bigscreen_data_matrix_keeps_non_ws_symbol_when_strategy_references_it():
+    symbols = bigscreen_module._matrix_symbols(
+        market={"regimes": pl.DataFrame([{"symbol": "BCH-USDT"}])},
+        cost={"costs": pl.DataFrame()},
+        strategy={
+            "strategy_opportunity_advisory": pl.DataFrame([{"symbol": "BCH-USDT"}]),
+            "alpha_discovery_board": pl.DataFrame(),
+        },
+    )
+
+    assert symbols == ["BCH-USDT"]
 
 
 def test_bigscreen_data_matrix_uses_per_symbol_market_bar_freshness():

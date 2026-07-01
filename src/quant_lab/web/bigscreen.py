@@ -1382,8 +1382,18 @@ def _matrix_symbols(
     strategy: dict[str, Any],
 ) -> list[str]:
     symbols: list[str] = []
+    ws_observable_symbols = set(readers.OKX_WS_UNIVERSE_SYMBOLS)
+
+    for row in _frame_rows(market.get("regimes"), limit=80):
+        symbol = _normalize_display_symbol(row.get("symbol"))
+        if (
+            _is_usdt_market_symbol(symbol)
+            and symbol in ws_observable_symbols
+            and symbol not in symbols
+        ):
+            symbols.append(symbol)
+
     for rows in [
-        _frame_rows(market.get("regimes"), limit=80),
         _frame_rows(cost.get("costs"), limit=80),
         _frame_rows(strategy.get("strategy_opportunity_advisory"), limit=80),
         _frame_rows(strategy.get("alpha_discovery_board"), limit=80),

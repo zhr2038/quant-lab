@@ -92,9 +92,9 @@ button{font:inherit;color:inherit}
 .page-overview .kpis{grid-column:1/3;grid-row:1;grid-template-columns:repeat(8,minmax(0,1fr));padding:46px 22px 18px}
 .overview-side{grid-column:1;grid-row:2;display:grid;grid-template-rows:280px 226px minmax(174px,1fr);gap:18px;min-height:0}
 .page-overview .heatmap{grid-column:2;grid-row:2}
-.page-strategy{grid-template-columns:minmax(0,1.26fr) minmax(390px,.74fr);grid-template-rows:minmax(0,1fr)}
+.page-strategy{grid-template-columns:minmax(0,1.26fr) minmax(390px,.74fr);grid-template-rows:minmax(0,1fr);align-items:start}
 .page-strategy .strategy-card{grid-column:1;grid-row:1}
-.page-strategy .market{grid-column:2;grid-row:1}
+.page-strategy .market{grid-column:2;grid-row:1;align-self:start}
 .page-data{grid-template-columns:minmax(0,1fr) minmax(0,1fr);grid-template-rows:440px minmax(0,1fr)}
 .page-data .heatmap{grid-column:1;grid-row:1}
 .page-data .market{grid-column:2;grid-row:1}
@@ -340,6 +340,14 @@ button{font:inherit;color:inherit}
 .factor-chip em{font-style:normal;color:var(--green);text-transform:uppercase;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
 .factor-chip strong{text-align:right;color:#b7d6ff}
 .factor-empty{border:1px dashed rgba(80,169,255,.24);border-radius:10px;padding:7px 9px;color:var(--muted);font-size:11px}
+.strategy-research-grid{
+  display:grid;grid-template-columns:minmax(0,.92fr) minmax(0,1.08fr);
+  grid-template-areas:"opportunity factor" "opportunity candidates";
+  gap:12px;margin-top:4px;align-items:start;
+}
+.strategy-research-grid .opportunity-cost-mini{grid-area:opportunity;margin:0}
+.strategy-research-grid .factor-factory-mini{grid-area:factor;margin:0}
+.strategy-research-grid .candidate-list{grid-area:candidates;margin:0}
 .factor-factory-drawer{
   border:1px solid rgba(45,232,166,.42);border-radius:16px;background:linear-gradient(180deg,rgba(8,34,58,.82),rgba(5,20,38,.86));
   padding:14px;margin:8px 0 16px;box-shadow:inset 0 1px 0 rgba(255,255,255,.06),0 0 26px rgba(45,232,166,.08);
@@ -351,14 +359,14 @@ button{font:inherit;color:inherit}
 .page-strategy .flow-metrics{gap:14px;margin-top:20px}
 .page-strategy .stage{height:84px}
 .page-strategy .stage b{font-size:36px}
-.page-strategy .opportunity-cost-mini{padding:12px 14px;margin:0 0 12px;border-radius:18px}
+.page-strategy .opportunity-cost-mini{padding:12px 14px;margin:0;border-radius:18px}
 .page-strategy .opportunity-cost-stats{gap:10px;margin:8px 0}
 .page-strategy .opportunity-cost-stats span{padding:6px 10px;border-radius:14px}
 .page-strategy .opportunity-cost-stats b{font-size:22px}
 .page-strategy .opportunity-cost-stats em{font-size:13px}
 .page-strategy .opportunity-cost-note{min-height:32px;font-size:12px;grid-template-columns:112px minmax(0,1fr) minmax(0,1.5fr);padding:6px 10px}
 .page-strategy .opportunity-bucket{min-height:34px;height:auto;font-size:12px;padding:6px 10px}
-.page-strategy .factor-factory-mini{padding:12px 14px;margin:0 0 12px;border-radius:18px}
+.page-strategy .factor-factory-mini{padding:12px 14px;margin:0;border-radius:18px}
 .page-strategy .factor-factory-stats{gap:10px;margin:8px 0}
 .page-strategy .factor-factory-stats span{padding:6px 10px;border-radius:14px}
 .page-strategy .factor-factory-stats b{font-size:24px}
@@ -390,7 +398,10 @@ button{font:inherit;color:inherit}
 .bar span{display:block;height:100%;border-radius:inherit;animation:grow 1.4s ease both}
 .barline{display:grid;grid-template-columns:76px 1fr 30px;gap:10px;align-items:center;margin:16px 0;font-size:12px;color:var(--muted)}
 .market{grid-column:3;grid-row:3}
+.market-body{margin-top:18px;display:grid;grid-template-columns:minmax(0,1fr) minmax(190px,.36fr);gap:14px;align-items:stretch;min-height:0}
+.market-list{display:grid;gap:10px;align-content:start;min-width:0}
 .ticker{height:39px;border-radius:14px;border:1px solid rgba(80,169,255,.32);display:grid;grid-template-columns:132px 92px 1fr 76px;gap:12px;align-items:center;margin-top:10px;padding:0 16px;background:rgba(7,29,53,.55);font-size:14px}
+.market-list .ticker{margin-top:0}
 .ticker b{font-size:16px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
 .ticker .state{color:var(--green)}
 .ticker.yellow{border-color:rgba(255,196,87,.7)}.ticker.yellow .state{color:var(--yellow)}
@@ -406,6 +417,24 @@ button{font:inherit;color:inherit}
 .market-empty-state svg{color:var(--blue);filter:drop-shadow(0 0 12px rgba(80,169,255,.45))}
 .market-empty-state b{font-size:18px;color:#dff7ff}
 .market-empty-state span{max-width:360px;font-size:12px;line-height:1.45}
+.market-summary-panel{
+  min-width:0;border:1px solid rgba(80,169,255,.25);border-radius:16px;background:linear-gradient(180deg,rgba(9,37,64,.62),rgba(4,24,44,.42));
+  padding:13px;display:grid;grid-template-rows:auto auto minmax(34px,auto) minmax(34px,auto);gap:10px;align-self:stretch;
+}
+.market-summary-title{color:#cfe5f8;font-size:12px;font-weight:900;letter-spacing:.02em}
+.market-summary-grid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:8px}
+.market-summary-grid span{
+  min-width:0;border:1px solid rgba(80,169,255,.2);border-radius:11px;background:rgba(7,29,53,.54);
+  padding:8px 7px;
+}
+.market-summary-grid b{display:block;font-size:18px;line-height:1;color:#eaf6ff;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.market-summary-grid em{display:block;margin-top:5px;font-size:10px;font-style:normal;color:var(--muted);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.market-summary-line{
+  min-width:0;border:1px solid rgba(45,232,166,.22);border-radius:12px;background:rgba(45,232,166,.06);
+  display:grid;grid-template-columns:70px minmax(0,1fr);gap:8px;align-items:center;padding:8px 9px;font-size:11px;
+}
+.market-summary-line span{color:var(--muted);white-space:nowrap}
+.market-summary-line strong{color:#dffef3;text-align:right;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
 .perf{grid-column:4;grid-row:3}
 .latency-text{position:absolute;left:24px;top:138px;font-size:38px;font-weight:900}
 .perm-grid{display:grid;grid-template-columns:1fr 1fr;gap:12px;margin-top:44px}
@@ -624,6 +653,11 @@ button{font:inherit;color:inherit}
   .matrix-grid-shell{grid-template-columns:1fr}
   .overview-matrix-card{grid-template-rows:auto auto auto auto}
   .matrix-bottom-panel{grid-template-columns:1fr;min-height:0}
+  .strategy-research-grid{
+    grid-template-columns:1fr;
+    grid-template-areas:"opportunity" "factor" "candidates";
+  }
+  .market-body{grid-template-columns:1fr}
 }
 
 @media (max-width: 720px){
@@ -758,6 +792,10 @@ button{font:inherit;color:inherit}
   .factor-factory-stats{grid-template-columns:repeat(3,minmax(0,1fr));gap:7px}
   .factor-factory-stats span{display:grid;gap:2px;padding:7px 8px}
   .page-strategy .factor-factory-stats b{font-size:22px}
+  .strategy-research-grid{grid-template-columns:1fr;grid-template-areas:"opportunity" "factor" "candidates";gap:12px}
+  .market-body{grid-template-columns:1fr;gap:12px}
+  .market-summary-panel{grid-template-rows:auto auto auto auto;padding:11px}
+  .market-summary-grid{grid-template-columns:repeat(2,minmax(0,1fr))}
   .page-strategy .factor-factory-stats em{font-size:10px}
   .page-strategy .chip{min-height:48px;grid-template-columns:1fr 76px;font-size:11px;padding:7px 10px}
   .page-strategy .chip strong{display:none}

@@ -57,64 +57,66 @@ export function StrategyFlow({ flow }: { flow: Record<string, unknown> }) {
       </div>
       <div className="flow-line"><i /></div>
       <ReactECharts option={option} style={{ height: 112, marginTop: -8 }} />
-      <div className="opportunity-cost-mini">
-        <div className="candidate-title"><Scale size={15} /> 机会成本 / 拦截价值</div>
-        <div className="opportunity-cost-stats">
-          <span><b>{bps(opportunityCost.veto_net_value_bps)}</b><em>今日净值</em></span>
-          <span><b>{bps(opportunityCost.missed_profit_bps)}</b><em>错过收益</em></span>
-          <span><b>{bps(opportunityCost.loss_saved_bps)}</b><em>保护亏损</em></span>
-          <span><b>{bps(opportunityCost.veto_net_value_bps_7d)}</b><em>7日净值</em></span>
-          <span><b>{shortNumber(opportunityCost.false_block_count)}</b><em>误杀次数</em></span>
-          <span><b>{shortNumber(opportunityCost.loss_saved_count)}</b><em>保护次数</em></span>
-        </div>
-        <div className="opportunity-cost-note" title={stringValue(opportunityCost.status, "NO_DATA")}>
-          <span>{stringValue(opportunityCost.latest_day, "no-day")}</span>
-          <em>{stringValue(opportunityCost.status, "NO_DATA")}</em>
-          <strong>
-            高置信误杀 {shortNumber(opportunityCost.high_confidence_false_block_count_7d)}
-            {" / "}
-            保护 {shortNumber(opportunityCost.high_confidence_loss_saved_count_7d)}
-          </strong>
-        </div>
-        {opportunityBuckets.slice(0, 1).map((bucket, i) => (
-          <div className="opportunity-bucket" key={`${bucket.bucket_key}-${i}`} title={bucketTitle(bucket)}>
-            <span>{bucketIdentity(bucket)}</span>
-            <em>{stringValue(bucket.recommended_trade_level_decision, "REVIEW")}</em>
-            <strong>{bps(bucket.veto_net_value_bps)}</strong>
+      <div className="strategy-research-grid">
+        <div className="opportunity-cost-mini">
+          <div className="candidate-title"><Scale size={15} /> 机会成本 / 拦截价值</div>
+          <div className="opportunity-cost-stats">
+            <span><b>{bps(opportunityCost.veto_net_value_bps)}</b><em>今日净值</em></span>
+            <span><b>{bps(opportunityCost.missed_profit_bps)}</b><em>错过收益</em></span>
+            <span><b>{bps(opportunityCost.loss_saved_bps)}</b><em>保护亏损</em></span>
+            <span><b>{bps(opportunityCost.veto_net_value_bps_7d)}</b><em>7日净值</em></span>
+            <span><b>{shortNumber(opportunityCost.false_block_count)}</b><em>误杀次数</em></span>
+            <span><b>{shortNumber(opportunityCost.loss_saved_count)}</b><em>保护次数</em></span>
           </div>
-        ))}
-        {!opportunityBuckets.length && <div className="factor-empty">暂无拦截价值样本</div>}
-      </div>
-      <div className="factor-factory-mini">
-        <div className="candidate-title"><FlaskConical size={15} /> Factor Factory</div>
-        <div className="factor-factory-stats">
-          <span><b>{shortNumber(factorFactory.candidate_count)}</b><em>候选</em></span>
-          <span><b>{shortNumber(factorFactory.paper_review_queue_count ?? factorFactory.paper_ready_count)}</b><em>Paper候选</em></span>
-          <span><b>{shortNumber(factorFactory.strategy_bridge_candidate_count ?? safeRows(factorFactory.strategy_bridge_candidates).length)}</b><em>Bridge</em></span>
+          <div className="opportunity-cost-note" title={stringValue(opportunityCost.status, "NO_DATA")}>
+            <span>{stringValue(opportunityCost.latest_day, "no-day")}</span>
+            <em>{stringValue(opportunityCost.status, "NO_DATA")}</em>
+            <strong>
+              高置信误杀 {shortNumber(opportunityCost.high_confidence_false_block_count_7d)}
+              {" / "}
+              保护 {shortNumber(opportunityCost.high_confidence_loss_saved_count_7d)}
+            </strong>
+          </div>
+          {opportunityBuckets.slice(0, 1).map((bucket, i) => (
+            <div className="opportunity-bucket" key={`${bucket.bucket_key}-${i}`} title={bucketTitle(bucket)}>
+              <span>{bucketIdentity(bucket)}</span>
+              <em>{stringValue(bucket.recommended_trade_level_decision, "REVIEW")}</em>
+              <strong>{bps(bucket.veto_net_value_bps)}</strong>
+            </div>
+          ))}
+          {!opportunityBuckets.length && <div className="factor-empty">暂无拦截价值样本</div>}
         </div>
-        {factorRows.slice(0, 2).map((factor, i) => (
-          <div className="factor-chip" key={`${factor.factor_id}-${i}`}>
-            <Sparkles size={13} />
-            <span>{stringValue(factor.factor_id ?? factor.factor_name, "factor")}</span>
-            <em>{stringValue(factor.state ?? factor.candidate_state, "RESEARCH")}</em>
-            <strong>{bps(factor.long_short_bps ?? factor.best_long_short_mean_bps)}</strong>
+        <div className="factor-factory-mini">
+          <div className="candidate-title"><FlaskConical size={15} /> Factor Factory</div>
+          <div className="factor-factory-stats">
+            <span><b>{shortNumber(factorFactory.candidate_count)}</b><em>候选</em></span>
+            <span><b>{shortNumber(factorFactory.paper_review_queue_count ?? factorFactory.paper_ready_count)}</b><em>Paper候选</em></span>
+            <span><b>{shortNumber(factorFactory.strategy_bridge_candidate_count ?? safeRows(factorFactory.strategy_bridge_candidates).length)}</b><em>Bridge</em></span>
           </div>
-        ))}
-        {!factorRows.length && <div className="factor-empty">Factor Factory 暂无候选</div>}
-      </div>
-      <div className="candidate-list">
-        <div className="candidate-title"><Rocket size={15} /> 策略候选（只读）</div>
-        {topCandidates.slice(0, 4).map((candidate, i) => (
-          <div className="chip" key={candidateKey(candidate, i)} title={candidateTitle(candidate)}>
-            <span className="candidate-main">
-              <b>{candidateIdentity(candidate)}</b>
-              <small>{stringValue(candidate.strategy_candidate ?? candidate.takeaway, "candidate")}</small>
-            </span>
-            <em>{modeLabel(candidate)}</em>
-            <strong>{bps(candidate.avg_net_bps)}</strong>
-            <span className="candidate-detail">{candidateDetail(candidate)}</span>
-          </div>
-        ))}
+          {factorRows.slice(0, 2).map((factor, i) => (
+            <div className="factor-chip" key={`${factor.factor_id}-${i}`}>
+              <Sparkles size={13} />
+              <span>{stringValue(factor.factor_id ?? factor.factor_name, "factor")}</span>
+              <em>{stringValue(factor.state ?? factor.candidate_state, "RESEARCH")}</em>
+              <strong>{bps(factor.long_short_bps ?? factor.best_long_short_mean_bps)}</strong>
+            </div>
+          ))}
+          {!factorRows.length && <div className="factor-empty">Factor Factory 暂无候选</div>}
+        </div>
+        <div className="candidate-list">
+          <div className="candidate-title"><Rocket size={15} /> 策略候选（只读）</div>
+          {topCandidates.slice(0, 4).map((candidate, i) => (
+            <div className="chip" key={candidateKey(candidate, i)} title={candidateTitle(candidate)}>
+              <span className="candidate-main">
+                <b>{candidateIdentity(candidate)}</b>
+                <small>{stringValue(candidate.strategy_candidate ?? candidate.takeaway, "candidate")}</small>
+              </span>
+              <em>{modeLabel(candidate)}</em>
+              <strong>{bps(candidate.avg_net_bps)}</strong>
+              <span className="candidate-detail">{candidateDetail(candidate)}</span>
+            </div>
+          ))}
+        </div>
       </div>
     </section>
   );

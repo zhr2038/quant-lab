@@ -3,6 +3,23 @@ import { bps, safeRows, stringValue } from "../lib/api";
 
 export function MarketLiquidity({ market }: { market: Record<string, unknown> }) {
   const rows = safeRows(market.regimes);
+  const visibleRows = rows.slice(0, 6);
+  const spreadValues = rows
+    .map((row) => Number(row.spread_bps))
+    .filter((value) => Number.isFinite(value));
+  const avgSpread = spreadValues.length
+    ? spreadValues.reduce((total, value) => total + value, 0) / spreadValues.length
+    : undefined;
+  const maxSpreadRow = rows.reduce<Record<string, unknown> | undefined>((best, row) => {
+    const spread = Number(row.spread_bps);
+    if (!Number.isFinite(spread)) return best;
+    if (!best) return row;
+    const bestSpread = Number(best.spread_bps);
+    return spread > bestSpread ? row : best;
+  }, undefined);
+  const missingSpreadCount = rows.length - spreadValues.length;
+  const lowVolCount = rows.filter((row) => stringValue(row.volatility_regime ?? row.regime, "").includes("低")).length;
+  const normalCount = rows.filter((row) => stringValue(row.volatility_regime ?? row.regime, "").includes("正常")).length;
   return (
     <section className="card market pad">
       <h2 className="section-title icon-title"><Waves size={23} />市场状态与流动性</h2>
@@ -14,18 +31,45 @@ export function MarketLiquidity({ market }: { market: Record<string, unknown> })
           <span>market_regime_summary 暂无可展示行；数据恢复后会自动填充流动性队列。</span>
         </div>
       )}
-      {rows.slice(0, 6).map((row, i) => {
-        const spread = Number(row.spread_bps ?? 0);
-        const tone = spread >= 6 ? "red" : spread >= 3 ? "yellow" : "";
-        return (
-          <div className={`ticker ${tone}`} key={`${row.symbol}-${i}`}>
-            <b>{String(row.symbol ?? "—")}</b>
-            <span className="state">{stringValue(row.volatility_regime ?? row.regime, "未知")}</span>
-            <span className="wave-line" style={{ ["--phase" as string]: `${i * 8}px` }} />
-            <span>{bps(row.spread_bps)}</span>
+      {!!rows.length && (
+        <div className="market-body">
+          <div className="market-list">
+            {visibleRows.map((row, i) => {
+              const spread = Number(row.spread_bps ?? 0);
+              const tone = spread >= 6 ? "red" : spread >= 3 ? "yellow" : "";
+              return (
+                <div className={`ticker ${tone}`} key={`${row.symbol}-${i}`}>
+                  <b>{String(row.symbol ?? "—")}</b>
+                  <span className="state">{stringValue(row.volatility_regime ?? row.regime, "未知")}</span>
+                  <span className="wave-line" style={{ ["--phase" as string]: `${i * 8}px` }} />
+                  <span>{bps(row.spread_bps)}</span>
+                </div>
+              );
+            })}
           </div>
-        );
-      })}
+          <aside className="market-summary-panel">
+            <div className="market-summary-title">Regime Summary</div>
+            <div className="market-summary-grid">
+              <span><b>{rows.length}</b><em>symbols</em></span>
+              <span><b>{lowVolCount}</b><em>低波动</em></span>
+              <span><b>{normalCount}</b><em>正常</em></span>
+              <span><b>{bps(avgSpread)}</b><em>平均价差</em></span>
+            </div>
+            <div className="market-summary-line">
+              <span>最高价差</span>
+              <strong>
+                {stringValue(maxSpreadRow?.symbol, "—")}
+                {" · "}
+                {bps(maxSpreadRow?.spread_bps)}
+              </strong>
+            </div>
+            <div className="market-summary-line">
+              <span>缺失价差</span>
+              <strong>{missingSpreadCount}</strong>
+            </div>
+          </aside>
+        </div>
+      )}
     </section>
   );
 }

@@ -3655,6 +3655,35 @@ def test_expert_exports_running_request_file_job_stays_running_without_pid(
     assert "error" not in status
 
 
+def test_expert_exports_request_file_job_tolerates_slow_systemd_prestart(
+    tmp_path, monkeypatch
+):
+    exports_root = tmp_path / "exports"
+    exports_root.mkdir()
+    status_path = exports_root / ".quant_lab_web_export_2026-05-16.json"
+    request_path = exports_root / ".quant_lab_web_export_request.json"
+    request_path.write_text("{}", encoding="utf-8")
+    slow_prestart_time = (datetime.now(UTC) - timedelta(minutes=6)).timestamp()
+    os.utime(request_path, (slow_prestart_time, slow_prestart_time))
+    status_path.write_text(
+        json.dumps(
+            {
+                "state": "running",
+                "trigger": "request_file",
+                "request_path": str(request_path),
+                "started_at": datetime.now(UTC).isoformat(),
+            }
+        ),
+        encoding="utf-8",
+    )
+    monkeypatch.setenv("QUANT_LAB_WEB_EXPORT_STATUS_STALE_SECONDS", "999999999")
+
+    status = expert_exports._poll_export_job(exports_root, "2026-05-16")
+
+    assert status["state"] == "running"
+    assert "did not pick up web export request" not in str(status.get("error") or "")
+
+
 def test_expert_exports_request_file_job_fails_when_worker_never_picks_it_up(
     tmp_path, monkeypatch
 ):

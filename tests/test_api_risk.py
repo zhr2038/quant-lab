@@ -312,6 +312,7 @@ def test_lake_data_health_warns_before_market_bar_registry_stale_threshold(tmp_p
     health = _lake_data_health(lake)
 
     assert health["status"] == "warning"
+    assert health["market_bar_freshness_status"] == "WARNING"
     assert health["is_critical"] is False
     assert health["reasons"] == ["market_bar_delayed"]
     assert health["freshness_seconds"] >= 2 * 60 * 60
@@ -329,6 +330,7 @@ def test_lake_data_health_uses_market_bar_close_time(tmp_path, monkeypatch):
     health = _lake_data_health(lake)
 
     assert health["status"] == "ok"
+    assert health["market_bar_freshness_status"] == "OK"
     assert health["freshness_seconds"] < 2 * 60 * 60
     assert health["latest_market_bar_close_ts"]
 
@@ -347,6 +349,7 @@ def test_lake_data_health_is_critical_after_market_bar_registry_stale_threshold(
     health = _lake_data_health(lake)
 
     assert health["status"] == "critical"
+    assert health["market_bar_freshness_status"] == "CRITICAL"
     assert health["is_critical"] is True
     assert health["reasons"] == ["market_bar_stale"]
     assert health["freshness_seconds"] >= 3 * 60 * 60

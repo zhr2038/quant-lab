@@ -3938,6 +3938,7 @@ def _market_bar_data_health_from_latest(
     if age_seconds >= critical_threshold:
         return {
             "status": "critical",
+            "market_bar_freshness_status": "CRITICAL",
             "is_critical": True,
             "reasons": ["market_bar_stale"],
             "latest_market_bar_ts": latest_utc.isoformat(),
@@ -3949,6 +3950,7 @@ def _market_bar_data_health_from_latest(
     if age_seconds >= warning_threshold:
         return {
             "status": "warning",
+            "market_bar_freshness_status": "WARNING",
             "is_critical": False,
             "reasons": ["market_bar_delayed"],
             "latest_market_bar_ts": latest_utc.isoformat(),
@@ -3963,6 +3965,7 @@ def _market_bar_data_health_from_latest(
         }
     return {
         "status": "ok",
+        "market_bar_freshness_status": "OK",
         "latest_market_bar_ts": latest_utc.isoformat(),
         "latest_market_bar_close_ts": close_utc.isoformat() if close_utc else None,
         "market_bar_timeframe": timeframe or DEFAULT_MARKET_BAR_TIMEFRAME,

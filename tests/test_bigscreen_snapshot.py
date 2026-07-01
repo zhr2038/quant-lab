@@ -604,6 +604,17 @@ def test_bigscreen_cost_rows_show_latest_per_bucket_and_live_universe_first(tmp_
                     "day": "2026-06-25",
                 },
                 {
+                    "symbol": "BTC-USDT",
+                    "regime": "normal",
+                    "notional_bucket": "5-10",
+                    "source": "actual_okx_fills_and_bills",
+                    "cost_source": "actual_fills",
+                    "sample_count": 7,
+                    "total_cost_bps_p75": 11.0,
+                    "created_at": "2026-06-24T00:00:00Z",
+                    "day": "2026-06-24",
+                },
+                {
                     "symbol": "SOL-USDT",
                     "regime": "realized",
                     "notional_bucket": "all",
@@ -623,6 +634,7 @@ def test_bigscreen_cost_rows_show_latest_per_bucket_and_live_universe_first(tmp_
 
     rows = payload["cost"]["cost_rows"]
     assert [row["symbol"] for row in rows[:2]] == ["BTC-USDT", "SOL-USDT"]
+    assert len([row for row in rows if row["symbol"] == "BTC-USDT"]) == 1
     ada_rows = [row for row in rows if row["symbol"] == "ADA-USDT"]
     assert len(ada_rows) == 1
     assert ada_rows[0]["day"] == "2026-07-01"

@@ -3167,7 +3167,7 @@ def _latest_cost_bucket_display_rows(table: pl.DataFrame) -> pl.DataFrame:
     )
     key_columns = [
         column
-        for column in ["symbol", "cost_source", "source", "regime", "notional_bucket"]
+        for column in ["symbol", "cost_source", "source", "regime"]
         if column in working.columns
     ]
     return (

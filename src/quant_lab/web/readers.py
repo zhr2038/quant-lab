@@ -13,6 +13,7 @@ import polars as pl
 
 from quant_lab.costs.model import (
     COST_BOOTSTRAP_READINESS_FIELDS,
+    DEFAULT_LIVE_UNIVERSE_SYMBOLS,
     LIVE_UNIVERSE_COST_COVERAGE_FIELDS,
     evaluate_live_universe_cost_coverage,
 )
@@ -3098,13 +3099,7 @@ def _cost_bucket_table(frame: pl.DataFrame) -> pl.DataFrame:
     ]
     table = _select_existing_columns(frame, columns)
     table = _with_cost_bucket_focus(table)
-    sort_columns = [
-        column
-        for column in ["symbol", "cost_source", "source", "regime"]
-        if column in table.columns
-    ]
-    if sort_columns:
-        table = table.sort(sort_columns)
+    table = _latest_cost_bucket_display_rows(table)
     return _select_existing_columns(
         table,
         [
@@ -3123,6 +3118,65 @@ def _cost_bucket_table(frame: pl.DataFrame) -> pl.DataFrame:
             "day",
             "created_at",
         ],
+    )
+
+
+def _latest_cost_bucket_display_rows(table: pl.DataFrame) -> pl.DataFrame:
+    if table.is_empty() or "symbol" not in table.columns:
+        return table
+
+    working = table
+    required_columns = ["cost_source", "source", "regime", "notional_bucket", "created_at", "day"]
+    for column in required_columns:
+        if column not in working.columns:
+            working = working.with_columns(pl.lit("").alias(column))
+
+    source_text = pl.concat_str(
+        [
+            pl.col("cost_source").cast(pl.String, strict=False).fill_null(""),
+            pl.lit("|"),
+            pl.col("source").cast(pl.String, strict=False).fill_null(""),
+        ]
+    ).str.to_lowercase()
+    time_text = pl.coalesce(
+        [
+            pl.col("created_at").cast(pl.String, strict=False),
+            pl.col("day").cast(pl.String, strict=False),
+            pl.lit(""),
+        ]
+    )
+    working = working.with_columns(
+        pl.col("symbol")
+        .cast(pl.String, strict=False)
+        .is_in(list(DEFAULT_LIVE_UNIVERSE_SYMBOLS))
+        .cast(pl.Int8)
+        .alias("_display_live_priority"),
+        pl.when(source_text.str.contains("actual"))
+        .then(0)
+        .when(source_text.str.contains("mixed"))
+        .then(1)
+        .when(source_text.str.contains("bootstrap_cost_probe"))
+        .then(2)
+        .when(source_text.str.contains("public_spread_proxy"))
+        .then(3)
+        .when(source_text.str.contains("global_default"))
+        .then(4)
+        .otherwise(5)
+        .alias("_display_source_priority"),
+        time_text.alias("_display_time_key"),
+    )
+    key_columns = [
+        column
+        for column in ["symbol", "cost_source", "source", "regime", "notional_bucket"]
+        if column in working.columns
+    ]
+    return (
+        working.sort(
+            ["_display_live_priority", "_display_source_priority", "_display_time_key", "symbol"],
+            descending=[True, False, True, False],
+        )
+        .unique(subset=key_columns, keep="first", maintain_order=True)
+        .drop(["_display_live_priority", "_display_source_priority", "_display_time_key"])
     )
 
 

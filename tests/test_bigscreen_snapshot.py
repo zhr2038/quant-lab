@@ -564,6 +564,70 @@ def test_bigscreen_cost_payload_exposes_bootstrap_probe_rows(tmp_path):
     assert payload["cost"]["actual_rows"] == 0
 
 
+def test_bigscreen_cost_rows_show_latest_per_bucket_and_live_universe_first(tmp_path):
+    clear_bigscreen_cache()
+    lake = tmp_path / "lake"
+    write_parquet_dataset(
+        pl.DataFrame(
+            [
+                {
+                    "symbol": "ADA-USDT",
+                    "regime": "public_proxy",
+                    "notional_bucket": "all",
+                    "source": "public_spread_proxy",
+                    "cost_source": "public_spread_proxy",
+                    "sample_count": 5000,
+                    "total_cost_bps_p75": 6.0,
+                    "created_at": "2026-06-30T23:00:00Z",
+                    "day": "2026-06-30",
+                },
+                {
+                    "symbol": "ADA-USDT",
+                    "regime": "public_proxy",
+                    "notional_bucket": "all",
+                    "source": "public_spread_proxy",
+                    "cost_source": "public_spread_proxy",
+                    "sample_count": 5000,
+                    "total_cost_bps_p75": 6.5,
+                    "created_at": "2026-07-01T23:00:00Z",
+                    "day": "2026-07-01",
+                },
+                {
+                    "symbol": "BTC-USDT",
+                    "regime": "normal",
+                    "notional_bucket": "all",
+                    "source": "actual_okx_fills_and_bills",
+                    "cost_source": "actual_fills",
+                    "sample_count": 8,
+                    "total_cost_bps_p75": 10.0,
+                    "created_at": "2026-06-25T00:00:00Z",
+                    "day": "2026-06-25",
+                },
+                {
+                    "symbol": "SOL-USDT",
+                    "regime": "realized",
+                    "notional_bucket": "all",
+                    "source": "bootstrap_cost_probe",
+                    "cost_source": "bootstrap_cost_probe",
+                    "sample_count": 2,
+                    "total_cost_bps_p75": 12.0,
+                    "created_at": "2026-06-23T00:00:00Z",
+                    "day": "2026-06-23",
+                },
+            ]
+        ),
+        lake / "gold" / "cost_bucket_daily",
+    )
+
+    payload = bigscreen_snapshot(lake)
+
+    rows = payload["cost"]["cost_rows"]
+    assert [row["symbol"] for row in rows[:2]] == ["BTC-USDT", "SOL-USDT"]
+    ada_rows = [row for row in rows if row["symbol"] == "ADA-USDT"]
+    assert len(ada_rows) == 1
+    assert ada_rows[0]["day"] == "2026-07-01"
+
+
 def test_bigscreen_snapshot_redacts_secret_like_fields(tmp_path):
     clear_bigscreen_cache()
     lake = tmp_path / "lake"

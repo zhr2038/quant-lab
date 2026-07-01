@@ -13,6 +13,8 @@ import re
 import subprocess
 import time
 import zipfile
+from collections.abc import AsyncIterator
+from contextlib import asynccontextmanager
 from datetime import UTC, datetime, timedelta
 from functools import lru_cache
 from pathlib import Path
@@ -231,6 +233,33 @@ class StrategyOpportunityAdvisoryRow(BaseModel):
 KNOWN_DATASETS = dataset_names()
 
 
+def _warm_strategy_opportunity_advisory_cache() -> None:
+    try:
+        _ensure_risk_permission_dependency_meta(_lake_root())
+    except Exception:
+        pass
+    try:
+        _strategy_opportunity_advisory_snapshot(_lake_root())
+    except Exception:
+        pass
+    try:
+        _cost_bucket_snapshot(_lake_root())
+    except Exception:
+        pass
+    try:
+        from quant_lab.web.bigscreen import bigscreen_snapshot
+
+        bigscreen_snapshot(_lake_root())
+    except Exception:
+        pass
+
+
+@asynccontextmanager
+async def _api_lifespan(_: FastAPI) -> AsyncIterator[None]:
+    _warm_strategy_opportunity_advisory_cache()
+    yield
+
+
 def _bool_env(name: str, *, default: bool) -> bool:
     value = os.environ.get(name)
     if value is None:
@@ -247,6 +276,7 @@ def create_app() -> FastAPI:
         docs_url=None if disable_docs else "/docs",
         redoc_url=None if disable_docs else "/redoc",
         openapi_url=None if disable_docs else "/openapi.json",
+        lifespan=_api_lifespan,
     )
     app.add_middleware(GZipMiddleware, minimum_size=1024)
     _mount_bigscreen_static(app)
@@ -289,27 +319,6 @@ def create_app() -> FastAPI:
                 response=response,
                 error_type=error_type,
             )
-
-    @app.on_event("startup")
-    def warm_strategy_opportunity_advisory_cache() -> None:
-        try:
-            _ensure_risk_permission_dependency_meta(_lake_root())
-        except Exception:
-            pass
-        try:
-            _strategy_opportunity_advisory_snapshot(_lake_root())
-        except Exception:
-            pass
-        try:
-            _cost_bucket_snapshot(_lake_root())
-        except Exception:
-            pass
-        try:
-            from quant_lab.web.bigscreen import bigscreen_snapshot
-
-            bigscreen_snapshot(_lake_root())
-        except Exception:
-            pass
 
     @app.get("/v1/health", response_model=HealthResponse)
     def health() -> HealthResponse:

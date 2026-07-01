@@ -147,6 +147,7 @@ def test_storage_retention_does_not_create_root_owned_lake_files():
     assert "PermissionsStartOnly=true" in unit
     assert "prune-storage-retention --base-dir /var/lib/quant-lab" in unit
     assert "--keep-restricted-archive-days 7" in unit
+    assert "--keep-high-frequency-archive-days 3" in unit
     assert "journalctl --vacuum-size=200M" in unit
     assert "OnCalendar=*-*-* 09:20:00" in timer
 
@@ -230,6 +231,10 @@ def test_scheduled_compaction_covers_hot_ws_datasets():
     assert "MARKET_ROLLUP_LOOKBACK_HOURS" in script
     assert "MARKET_ROLLUP_TIMEOUT_SECONDS" in script
     assert "MARKET_ROLLUP_POLARS_MAX_THREADS" in script
+    assert "MARKET_ROLLUP_ARCHIVE_OLD_OKX_WS" in script
+    assert "MARKET_ROLLUP_ARCHIVE_HOT_HOURS" in script
+    assert "--archive-old-okx-public-ws" in script
+    assert "--archive-hot-hours" in script
     assert script.index('compact_hot_ws_dataset "silver/orderbook_snapshot"') < script.rindex(
         "\nbuild_market_data_rollups"
     )
@@ -275,6 +280,8 @@ def test_scheduled_compaction_covers_hot_ws_datasets():
     assert "MARKET_ROLLUP_LOOKBACK_HOURS=24" in unit
     assert "MARKET_ROLLUP_TIMEOUT_SECONDS=600" in unit
     assert "MARKET_ROLLUP_POLARS_MAX_THREADS=2" in unit
+    assert "MARKET_ROLLUP_ARCHIVE_OLD_OKX_WS=1" in unit
+    assert "MARKET_ROLLUP_ARCHIVE_HOT_HOURS=24" in unit
     assert "COMPACT_SMALL_FILE_MAINTENANCE=1" in unit
     assert "COMPACT_SMALL_FILE_MAINTENANCE_TIMEOUT_SECONDS=300" in unit
     assert "COMPACT_SMALL_FILE_MAINTENANCE_MAX_GROUPS=6" in unit

@@ -42,7 +42,7 @@ from quant_lab.ingest.okx_readonly_private import (
 )
 from quant_lab.ingest.okx_ws_public import collect_okx_public_ws, collect_okx_public_ws_universe
 from quant_lab.ingest.v5_reports import inspect_v5_reports, publish_v5_reports_to_lake
-from quant_lab.jobs.compact_market_data import build_market_data_1m_rollups
+from quant_lab.jobs.compact_market_data import build_market_data_1m_rollups, compact_market_data
 from quant_lab.jobs.small_file_maintenance import (
     DEFAULT_PRIORITY_DATASETS,
     lake_small_file_maintenance,
@@ -864,6 +864,24 @@ def build_market_data_rollups_command(
             help="Only scan source files and rows from the recent lookback window.",
         ),
     ] = 24,
+    archive_old_okx_public_ws: Annotated[
+        bool,
+        typer.Option(
+            "--archive-old-okx-public-ws/--keep-old-okx-public-ws",
+            help=(
+                "After writing rollups, move stale bronze okx_public_ws raw files "
+                "into the bounded high-frequency archive."
+            ),
+        ),
+    ] = False,
+    archive_hot_hours: Annotated[
+        int,
+        typer.Option(
+            "--archive-hot-hours",
+            min=1,
+            help="Keep this many recent okx_public_ws raw hours hot when archiving is enabled.",
+        ),
+    ] = 24,
     compact_output: Annotated[
         bool,
         typer.Option(
@@ -875,10 +893,19 @@ def build_market_data_rollups_command(
     result = run_with_job_metrics(
         lake_root=lake_root,
         job_name="build-market-data-rollups",
-        func=lambda: build_market_data_1m_rollups(
-            lake_root,
-            dry_run=not apply,
-            lookback_hours=lookback_hours,
+        func=lambda: (
+            compact_market_data(
+                lake_root,
+                hot_hours=archive_hot_hours,
+                dry_run=not apply,
+                rollup_lookback_hours=lookback_hours,
+            )
+            if archive_old_okx_public_ws
+            else build_market_data_1m_rollups(
+                lake_root,
+                dry_run=not apply,
+                lookback_hours=lookback_hours,
+            )
         ),
     )
     typer.echo(json.dumps(result.to_dict(), indent=None if compact_output else 2, sort_keys=True))
@@ -1259,6 +1286,10 @@ def prune_storage_retention_command(
         int,
         typer.Option("--keep-restricted-archive-days", min=1),
     ] = 7,
+    keep_high_frequency_archive_days: Annotated[
+        int,
+        typer.Option("--keep-high-frequency-archive-days", min=1),
+    ] = 3,
     keep_inbox_days: Annotated[int, typer.Option("--keep-inbox-days", min=1)] = 2,
     keep_export_packs: Annotated[int, typer.Option("--keep-export-packs", min=1)] = 5,
     dry_run: Annotated[
@@ -1277,6 +1308,7 @@ def prune_storage_retention_command(
         base_dir=base_dir,
         keep_redacted_archive_days=keep_redacted_archive_days,
         keep_restricted_archive_days=keep_restricted_archive_days,
+        keep_high_frequency_archive_days=keep_high_frequency_archive_days,
         keep_inbox_days=keep_inbox_days,
         keep_export_packs=keep_export_packs,
         dry_run=dry_run,

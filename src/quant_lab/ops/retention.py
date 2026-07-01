@@ -9,6 +9,7 @@ from typing import Any
 DEFAULT_BASE_DIR = Path("/var/lib/quant-lab")
 DEFAULT_KEEP_REDACTED_ARCHIVE_DAYS = 3
 DEFAULT_KEEP_RESTRICTED_ARCHIVE_DAYS = 7
+DEFAULT_KEEP_HIGH_FREQUENCY_ARCHIVE_DAYS = 3
 DEFAULT_KEEP_INBOX_DAYS = 2
 DEFAULT_KEEP_EXPORT_PACKS = 5
 
@@ -25,6 +26,7 @@ class RetentionPruneResult:
     removed_bytes: int = 0
     redacted_archive_removed_days: int = 0
     restricted_archive_removed_days: int = 0
+    high_frequency_archive_removed_days: int = 0
     inbox_removed_files: int = 0
     export_removed_files: int = 0
     maintenance_removed_dirs: int = 0
@@ -49,6 +51,7 @@ class RetentionPruneResult:
             "removed_bytes": self.removed_bytes,
             "redacted_archive_removed_days": self.redacted_archive_removed_days,
             "restricted_archive_removed_days": self.restricted_archive_removed_days,
+            "high_frequency_archive_removed_days": self.high_frequency_archive_removed_days,
             "inbox_removed_files": self.inbox_removed_files,
             "export_removed_files": self.export_removed_files,
             "maintenance_removed_dirs": self.maintenance_removed_dirs,
@@ -60,6 +63,7 @@ def prune_quant_lab_storage(
     *,
     keep_redacted_archive_days: int = DEFAULT_KEEP_REDACTED_ARCHIVE_DAYS,
     keep_restricted_archive_days: int = DEFAULT_KEEP_RESTRICTED_ARCHIVE_DAYS,
+    keep_high_frequency_archive_days: int = DEFAULT_KEEP_HIGH_FREQUENCY_ARCHIVE_DAYS,
     keep_inbox_days: int = DEFAULT_KEEP_INBOX_DAYS,
     keep_export_packs: int = DEFAULT_KEEP_EXPORT_PACKS,
     dry_run: bool = True,
@@ -88,6 +92,13 @@ def prune_quant_lab_storage(
     _prune_restricted_archive_days(
         root,
         keep_days=keep_restricted_archive_days,
+        dry_run=dry_run,
+        now=current,
+        result=result,
+    )
+    _prune_high_frequency_archive_days(
+        root,
+        keep_days=keep_high_frequency_archive_days,
         dry_run=dry_run,
         now=current,
         result=result,
@@ -148,6 +159,30 @@ def _prune_restricted_archive_days(
         root / "archive_restricted" / "v5",
     ):
         result.restricted_archive_removed_days += _prune_archive_day_dirs(
+            archive_root,
+            root,
+            keep_days=keep_days,
+            dry_run=dry_run,
+            now=now,
+            result=result,
+        )
+
+
+def _prune_high_frequency_archive_days(
+    root: Path,
+    *,
+    keep_days: int,
+    dry_run: bool,
+    now: datetime,
+    result: RetentionPruneResult,
+) -> None:
+    if keep_days < 1:
+        result.warnings.append("keep_high_frequency_archive_days_must_be_positive")
+        return
+    for archive_root in (
+        root / "lake" / "archive" / "high_frequency" / "bronze" / "okx_public_ws",
+    ):
+        result.high_frequency_archive_removed_days += _prune_archive_day_dirs(
             archive_root,
             root,
             keep_days=keep_days,
@@ -249,8 +284,11 @@ def _safe_children(path: Path, result: RetentionPruneResult) -> list[Path]:
 
 
 def _parse_day_dir(path: Path) -> date | None:
+    name = path.name
+    if name.startswith("date="):
+        name = name.split("=", 1)[1]
     try:
-        return date.fromisoformat(path.name)
+        return date.fromisoformat(name)
     except ValueError:
         return None
 

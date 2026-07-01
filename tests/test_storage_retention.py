@@ -56,6 +56,32 @@ def test_storage_retention_apply_deletes_only_regenerable_targets(tmp_path: Path
         tmp_path / "archive" / "v5" / "2026-05-18" / "sha" / "file.txt",
         "old redacted new layout",
     )
+    old_high_frequency = _write_file(
+        tmp_path
+        / "lake"
+        / "archive"
+        / "high_frequency"
+        / "bronze"
+        / "okx_public_ws"
+        / "date=2026-05-18"
+        / "hour=00"
+        / "symbol=BTC-USDT"
+        / "old.parquet",
+        "old raw ws",
+    )
+    kept_high_frequency = _write_file(
+        tmp_path
+        / "lake"
+        / "archive"
+        / "high_frequency"
+        / "bronze"
+        / "okx_public_ws"
+        / "date=2026-05-21"
+        / "hour=00"
+        / "symbol=BTC-USDT"
+        / "kept.parquet",
+        "kept raw ws",
+    )
     old_inbox = _write_file(tmp_path / "inbox" / "v5" / "bundles" / "old.tar.gz", "old")
     kept_inbox = _write_file(tmp_path / "inbox" / "v5" / "bundles" / "new.tar.gz", "new")
     _set_mtime(old_inbox, datetime(2026, 5, 18, tzinfo=UTC))
@@ -73,6 +99,7 @@ def test_storage_retention_apply_deletes_only_regenerable_targets(tmp_path: Path
         tmp_path,
         keep_redacted_archive_days=3,
         keep_restricted_archive_days=7,
+        keep_high_frequency_archive_days=3,
         keep_inbox_days=2,
         keep_export_packs=5,
         dry_run=False,
@@ -81,6 +108,7 @@ def test_storage_retention_apply_deletes_only_regenerable_targets(tmp_path: Path
 
     assert result.redacted_archive_removed_days == 2
     assert result.restricted_archive_removed_days == 2
+    assert result.high_frequency_archive_removed_days == 1
     assert result.inbox_removed_files == 1
     assert result.export_removed_files == 2
     assert result.maintenance_removed_dirs == 1
@@ -90,6 +118,8 @@ def test_storage_retention_apply_deletes_only_regenerable_targets(tmp_path: Path
     assert not old_restricted_raw.exists()
     assert kept_restricted_raw.exists()
     assert not old_new_layout_restricted_raw.exists()
+    assert not old_high_frequency.exists()
+    assert kept_high_frequency.exists()
     assert not old_inbox.exists()
     assert kept_inbox.exists()
     assert not smoke_dir.exists()

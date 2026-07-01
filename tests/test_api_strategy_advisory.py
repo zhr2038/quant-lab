@@ -150,6 +150,56 @@ def test_strategy_opportunity_advisory_endpoint_reads_gold(tmp_path, monkeypatch
     assert cached_response.headers["x-quant-lab-advisory-row-count"] == "2"
 
 
+def test_strategy_opportunity_advisory_limit_bounds_response_and_cache(
+    tmp_path,
+    monkeypatch,
+):
+    lake = tmp_path / "lake"
+    monkeypatch.setenv("QUANT_LAB_LAKE_ROOT", str(lake))
+    monkeypatch.delenv("QUANT_LAB_API_TOKEN", raising=False)
+    api_main._STRATEGY_OPPORTUNITY_ADVISORY_CACHE.clear()
+    api_main._STRATEGY_OPPORTUNITY_ADVISORY_RESPONSE_CACHE.clear()
+    generated = datetime(2026, 5, 20, tzinfo=UTC)
+    rows = []
+    for index, symbol in enumerate(["SOL-USDT", "ETH-USDT", "BNB-USDT"]):
+        rows.append(
+            {
+                "as_of_ts": generated,
+                "generated_at": generated - timedelta(minutes=index),
+                "expires_at": generated + timedelta(hours=1),
+                "strategy_id": f"{symbol}_PAPER_V1",
+                "strategy_candidate": "v5.f3_dominant_entry",
+                "source_module": "paper_tracking",
+                "symbol": symbol,
+                "decision": "PAPER_READY",
+                "recommended_mode": "paper",
+                "horizon_hours": 24,
+                "sample_count": 80 - index,
+                "max_live_notional_usdt": 0.0,
+            }
+        )
+    write_parquet_dataset(
+        pl.DataFrame(rows),
+        lake / "gold" / "strategy_opportunity_advisory",
+    )
+    client = TestClient(app)
+
+    first = client.get("/v1/strategy-opportunity-advisory", params={"limit": 1})
+    second = client.get("/v1/strategy-opportunity-advisory", params={"limit": 2})
+    invalid = client.get("/v1/strategy-opportunity-advisory", params={"limit": 0})
+
+    assert first.status_code == 200
+    assert second.status_code == 200
+    assert invalid.status_code == 422
+    assert len(first.json()) == 1
+    assert len(second.json()) == 2
+    assert first.headers["x-quant-lab-advisory-row-count"] == "1"
+    assert second.headers["x-quant-lab-advisory-row-count"] == "2"
+    assert first.json()[0]["symbol"] == "SOL-USDT"
+    assert second.json()[1]["symbol"] == "ETH-USDT"
+    assert int(second.headers["x-quant-lab-advisory-response-cache-size"]) >= 2
+
+
 def test_strategy_opportunity_advisory_endpoint_applies_portfolio_final_overlay(
     tmp_path,
     monkeypatch,

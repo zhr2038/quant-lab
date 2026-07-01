@@ -21,7 +21,7 @@ from pathlib import Path
 from typing import Any
 
 import polars as pl
-from fastapi import FastAPI, HTTPException, Request, status
+from fastapi import FastAPI, HTTPException, Query, Request, status
 from fastapi.responses import FileResponse, JSONResponse, RedirectResponse, Response
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, ConfigDict, Field
@@ -553,6 +553,11 @@ def create_app() -> FastAPI:
         latest_only: bool = False,
         fresh_only: bool = False,
         fields: str | None = None,
+        limit: int | None = Query(
+            default=None,
+            ge=1,
+            le=STRATEGY_OPPORTUNITY_ADVISORY_MAX_API_ROWS,
+        ),
     ) -> Response:
         return _strategy_opportunity_advisory_response(
             _lake_root(),
@@ -562,6 +567,7 @@ def create_app() -> FastAPI:
             latest_only=latest_only,
             fresh_only=fresh_only,
             fields=fields,
+            limit=limit,
         )
 
     @app.get("/v1/strategy_opportunity_advisory")
@@ -578,6 +584,11 @@ def create_app() -> FastAPI:
         families: str | None = None,
         latest_only: bool = True,
         fresh_only: bool = False,
+        limit: int | None = Query(
+            default=None,
+            ge=1,
+            le=STRATEGY_OPPORTUNITY_ADVISORY_MAX_API_ROWS,
+        ),
     ) -> Response:
         return _strategy_opportunity_advisory_response(
             _lake_root(),
@@ -588,6 +599,7 @@ def create_app() -> FastAPI:
             fresh_only=fresh_only,
             fields="minimal",
             compact_for_v5=True,
+            limit=limit,
         )
 
     @app.get("/v1/risk/live-permission", response_model=RiskPermission)
@@ -1974,6 +1986,7 @@ def _strategy_opportunity_advisory_response(
     fresh_only: bool = False,
     fields: str | None = None,
     compact_for_v5: bool = False,
+    limit: int | None = None,
 ) -> Response:
     request_now = datetime.now(UTC)
     snapshot, cache_hit, source_signature_ms = _strategy_opportunity_advisory_snapshot(lake_root)
@@ -1988,6 +2001,7 @@ def _strategy_opportunity_advisory_response(
         fresh_only=fresh_only,
         fields=fields,
         compact_for_v5=compact_for_v5,
+        limit=limit,
     )
     cached_response = _STRATEGY_OPPORTUNITY_ADVISORY_RESPONSE_CACHE.get(
         response_key,
@@ -2030,6 +2044,8 @@ def _strategy_opportunity_advisory_response(
     )
     if compact_for_v5:
         rows = _compact_strategy_opportunity_advisory_for_v5(rows)
+    if limit is not None:
+        rows = rows[:limit]
     minimal = str(fields or "").strip().lower() in {"minimal", "compact", "v5"}
     serialize_started = time.perf_counter()
     payload = (
@@ -2133,6 +2149,7 @@ def _strategy_opportunity_advisory_response_cache_key(
     fresh_only: bool,
     fields: str | None,
     compact_for_v5: bool = False,
+    limit: int | None = None,
 ) -> tuple[Any, ...]:
     return (
         source_sha,
@@ -2142,6 +2159,7 @@ def _strategy_opportunity_advisory_response_cache_key(
         bool(fresh_only),
         str(fields or "").strip().lower(),
         bool(compact_for_v5),
+        int(limit) if limit is not None else None,
     )
 
 

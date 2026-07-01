@@ -457,13 +457,15 @@ def test_cost_probe_only_bucket_does_not_count_as_live_universe_cost_coverage():
 def test_live_universe_cost_coverage_keeps_latest_bootstrap_detail_over_old_proxy():
     now = datetime(2026, 6, 15, tzinfo=UTC)
     old_proxy = now - timedelta(days=1)
+    bootstrap_row = _coverage_cost_row("BNB-USDT", "bootstrap_cost_probe", now)
+    bootstrap_row["proxy_sample_count"] = 100
 
     evaluation = evaluate_live_universe_cost_coverage(
         pl.DataFrame(
             [
                 _coverage_cost_row("SOL-USDT", "actual_fills", now),
                 _coverage_cost_row("BNB-USDT", "public_spread_proxy", old_proxy),
-                _coverage_cost_row("BNB-USDT", "bootstrap_cost_probe", now),
+                bootstrap_row,
             ]
         ),
         live_symbols=["BNB-USDT", "SOL-USDT"],

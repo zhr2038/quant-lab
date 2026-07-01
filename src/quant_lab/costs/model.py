@@ -216,7 +216,7 @@ def evaluate_live_universe_cost_coverage(
                 "latest_sample_count": _int_value(source_row.get("sample_count")),
                 "actual_fill_count": _int_value(source_row.get("actual_fill_count")),
                 "mixed_fill_count": _int_value(source_row.get("mixed_fill_count")),
-                "proxy_sample_count": _int_value(source_row.get("proxy_sample_count")),
+                "proxy_sample_count": _coverage_proxy_sample_count(source_row),
                 "cost_probe_fill_count": _int_value(source_row.get("cost_probe_fill_count")),
                 "strategy_live_fill_count": _int_value(
                     source_row.get("strategy_live_fill_count")
@@ -1777,6 +1777,18 @@ def _live_cost_sample_count(
     if _int_value(row.get("cost_probe_fill_count")) > 0:
         return 0
     return _int_value(row.get("sample_count"))
+
+
+def _coverage_proxy_sample_count(row: Mapping[str, Any] | None) -> int:
+    if row is None:
+        return 0
+    source = _cost_source(row)
+    origin_mix = _sample_origin_mix_value(row).lower()
+    if source == "bootstrap_cost_probe" or origin_mix == "cost_probe_only":
+        return 0
+    if _is_actual_or_mixed_source(source) and "proxy" not in origin_mix:
+        return 0
+    return _int_value(row.get("proxy_sample_count"))
 
 
 def _row_live_cost_eligible(row: Mapping[str, Any] | None) -> bool:

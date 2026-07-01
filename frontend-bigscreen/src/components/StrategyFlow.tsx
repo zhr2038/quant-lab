@@ -1,6 +1,6 @@
-import ReactECharts from "echarts-for-react";
 import { FlaskConical, GitBranch, Rocket, Scale, Sparkles } from "lucide-react";
 import { bps, safeRows, shortNumber, stringValue } from "../lib/api";
+import { ReactECharts } from "./EChart";
 
 export function StrategyFlow({ flow }: { flow: Record<string, unknown> }) {
   const counts = (flow.counts ?? {}) as Record<string, number>;

@@ -1,5 +1,5 @@
-import ReactECharts from "echarts-for-react";
 import { ShieldPlus } from "lucide-react";
+import { ReactECharts } from "./EChart";
 
 export function HealthPanel({
   score,

@@ -1,6 +1,6 @@
-import ReactECharts from "echarts-for-react";
 import { CircleDollarSign } from "lucide-react";
 import { pct, shortNumber } from "../lib/api";
+import { ReactECharts } from "./EChart";
 
 export function CostQuality({ cost }: { cost: Record<string, unknown> }) {
   const rows = [

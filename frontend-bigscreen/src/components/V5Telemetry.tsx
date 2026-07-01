@@ -1,6 +1,6 @@
-import ReactECharts from "echarts-for-react";
 import { Cpu, Radio } from "lucide-react";
 import { permissionDisplay } from "../lib/api";
+import { ReactECharts } from "./EChart";
 
 export function V5Telemetry({
   v5,

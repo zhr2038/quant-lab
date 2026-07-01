@@ -1,6 +1,6 @@
-import ReactECharts from "echarts-for-react";
 import { Gauge, ShieldCheck } from "lucide-react";
 import { ms, permissionDisplay, safeRows, shortNumber, stringValue } from "../lib/api";
+import { ReactECharts } from "./EChart";
 
 export function PerfConsumers({
   perf,

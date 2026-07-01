@@ -75,6 +75,17 @@ def test_okx_rest_backfill_runs_every_15_minutes_to_reduce_stale_market_bar_wind
     assert "--history" not in service
 
 
+def test_expanded_universe_backfill_stays_within_bigscreen_freshness_window():
+    timer = _unit("quant-lab-okx-expanded-universe-backfill.timer")
+    service = _unit("quant-lab-okx-expanded-universe-backfill.service")
+
+    assert "every hour" in timer
+    assert "OnUnitActiveSec=1h" in timer
+    assert "OnUnitActiveSec=6h" not in timer
+    assert "okx-backfill-expanded-universe" in service
+    assert "build-expanded-universe-shadow" in service
+
+
 def test_daily_export_uses_recent_api_metrics_window():
     unit = _unit("quant-lab-daily-export.service")
 

@@ -216,6 +216,57 @@ def test_bigscreen_data_matrix_symbols_exclude_aggregate_rows():
     assert symbols == ["BTC-USDT", "ETH-USDT", "SOL-USDT", "BNB-USDT", "ADA-USDT"]
 
 
+def test_bigscreen_data_matrix_uses_per_symbol_market_bar_freshness():
+    now = datetime.now(UTC)
+    fresh_open = now - timedelta(hours=1)
+    stale_open = now - timedelta(hours=8)
+
+    matrix = bigscreen_module._data_matrix(
+        market={
+            "regimes": pl.DataFrame(
+                [
+                    {"symbol": "BTC-USDT", "volatility_regime": "normal"},
+                    {"symbol": "ASTER-USDT", "volatility_regime": "normal"},
+                ]
+            )
+        },
+        collectors={"okx_public_ws_status": "OK"},
+        cost={},
+        strategy={},
+        data_health={
+            "latest_market_bar_ts": fresh_open,
+            "latest_market_bar_close_ts": now,
+            "market_bar_timeframe": "1H",
+            "latest_per_symbol": pl.DataFrame(
+                [
+                    {
+                        "symbol": "BTC-USDT",
+                        "timeframe": "1H",
+                        "latest_ts": fresh_open,
+                        "rows": 10,
+                    },
+                    {
+                        "symbol": "ASTER-USDT",
+                        "timeframe": "1H",
+                        "latest_ts": stale_open,
+                        "rows": 10,
+                    },
+                ]
+            ),
+        },
+        overview={},
+    )
+
+    rows = {row["symbol"]: row for row in matrix["rows"]}
+    assert rows["BTC-USDT"]["market_bar"]["status"] == "OK"
+    assert rows["BTC-USDT"]["market_bar"]["source"] == "per_symbol_latest"
+    assert rows["ASTER-USDT"]["market_bar"]["status"] == "CRITICAL"
+    assert rows["ASTER-USDT"]["market_bar"]["source"] == "per_symbol_latest"
+    warnings = bigscreen_module._data_matrix_warnings(matrix)
+    assert warnings
+    assert "ASTER-USDT.market_bar" in warnings[0]
+
+
 def test_bigscreen_matrix_attention_promotes_global_status_and_action():
     data_matrix = {
         "columns": ["spread", "trade", "cost"],

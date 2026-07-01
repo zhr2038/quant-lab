@@ -1146,15 +1146,30 @@ def _data_matrix(
         _frame_rows(strategy.get("strategy_opportunity_advisory"), limit=80)
     )
     evidence_by_symbol = _latest_by_symbol(_frame_rows(strategy.get("strategy_evidence"), limit=80))
+    latest_market_by_symbol = _rows_by_symbol(
+        _frame_rows(data_health.get("latest_per_symbol"), limit=500)
+    )
 
-    market_status = _market_bar_status(data_health, datetime.now(UTC))
-    market_delay_seconds = _market_bar_delay_seconds(data_health, datetime.now(UTC))
+    now = datetime.now(UTC)
+    fallback_market_status = _market_bar_status(data_health, now)
+    fallback_market_delay_seconds = _market_bar_delay_seconds(data_health, now)
+    fallback_market_latest_ts = data_health.get("latest_market_bar_ts")
+    fallback_market_close_ts = _market_bar_reference_ts(data_health)
     ws_status = _status_label(collectors.get("okx_public_ws_status"))
     rows: list[dict[str, Any]] = []
     for symbol in symbols[:16]:
         spread = spread_by_symbol.get(symbol, {})
         trade = trade_by_symbol.get(symbol, {})
         regime = regime_by_symbol.get(symbol, {})
+        market_bar = _symbol_market_bar_cell(
+            latest_market_by_symbol.get(symbol),
+            data_health=data_health,
+            fallback_status=fallback_market_status,
+            fallback_delay_seconds=fallback_market_delay_seconds,
+            fallback_latest_ts=fallback_market_latest_ts,
+            fallback_close_ts=fallback_market_close_ts,
+            now=now,
+        )
         cost_row = cost_by_symbol.get(symbol, {})
         live_cost_row = live_cost_by_symbol.get(symbol, {})
         advisory = advisory_by_symbol.get(symbol, {})
@@ -1163,12 +1178,7 @@ def _data_matrix(
             {
                 "symbol": symbol,
                 "market_bar": {
-                    "status": market_status,
-                    "freshness_seconds": market_delay_seconds,
-                    "latest_ts": _json_value(data_health.get("latest_market_bar_ts")),
-                    "latest_close_ts": _json_value(
-                        _market_bar_reference_ts(data_health)
-                    ),
+                    **market_bar,
                     "regime": regime.get("volatility_regime") or regime.get("regime"),
                 },
                 "ws": {
@@ -1206,6 +1216,56 @@ def _data_matrix(
         "columns": ["market_bar", "ws", "spread", "trade", "cost", "evidence", "advisory"],
         "rows": rows,
     }
+
+
+def _symbol_market_bar_cell(
+    row: dict[str, Any] | None,
+    *,
+    data_health: dict[str, Any],
+    fallback_status: str,
+    fallback_delay_seconds: int | None,
+    fallback_latest_ts: Any,
+    fallback_close_ts: datetime | None,
+    now: datetime,
+) -> dict[str, Any]:
+    if row:
+        latest_ts = row.get("latest_ts")
+        timeframe = str(
+            row.get("timeframe")
+            or data_health.get("market_bar_timeframe")
+            or DEFAULT_MARKET_BAR_TIMEFRAME
+        )
+        latest_close_ts = market_bar_close_ts(latest_ts, timeframe)
+        freshness_seconds = market_bar_freshness_seconds(
+            latest_ts,
+            latest_close_ts=latest_close_ts,
+            timeframe=timeframe,
+            now=now,
+        )
+        return {
+            "status": _market_bar_cell_status(freshness_seconds),
+            "freshness_seconds": freshness_seconds,
+            "latest_ts": _json_value(latest_ts),
+            "latest_close_ts": _json_value(latest_close_ts),
+            "source": "per_symbol_latest",
+        }
+    return {
+        "status": fallback_status,
+        "freshness_seconds": fallback_delay_seconds,
+        "latest_ts": _json_value(fallback_latest_ts),
+        "latest_close_ts": _json_value(fallback_close_ts),
+        "source": "global_market_bar_health",
+    }
+
+
+def _market_bar_cell_status(freshness_seconds: int | None) -> str:
+    if freshness_seconds is None:
+        return "WARNING"
+    if freshness_seconds >= _market_bar_critical_delay_seconds():
+        return "CRITICAL"
+    if freshness_seconds >= _market_bar_warning_delay_seconds():
+        return "WARNING"
+    return "OK"
 
 
 def _data_matrix_issue_summary(data_matrix: dict[str, Any]) -> dict[str, Any]:

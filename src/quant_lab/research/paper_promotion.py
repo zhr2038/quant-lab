@@ -77,6 +77,8 @@ PAPER_STRATEGY_PROMOTION_GATE_SCHEMA = {
     "lifecycle_state": pl.Utf8,
     "accepted": pl.Boolean,
     "paper_tracker_created": pl.Boolean,
+    "paper_tracker_effective": pl.Boolean,
+    "paper_tracker_status": pl.Utf8,
     "paper_runs": pl.Int64,
     "paper_days": pl.Int64,
     "closed_entries": pl.Int64,
@@ -344,10 +346,17 @@ def _promotion_gate_row(
         cost_sources & BLOCKED_PAPER_COST_SOURCES
     )
     accepted = bool(registry.get("accepted"))
+    reject_reason = _text(registry.get("reject_reason"))
     paper_tracker_created = bool(_text(registry.get("paper_tracker_id")))
+    paper_tracker_effective = accepted and paper_tracker_created
+    paper_tracker_status = _paper_tracker_status(
+        accepted=accepted,
+        reject_reason=reject_reason,
+        paper_tracker_created=paper_tracker_created,
+    )
     block_reasons = _gate_block_reasons(
         accepted=accepted,
-        reject_reason=_text(registry.get("reject_reason")),
+        reject_reason=reject_reason,
         paper_tracker_created=paper_tracker_created,
         paper_days=paper_days,
         closed_entries=closed_entries,
@@ -372,6 +381,8 @@ def _promotion_gate_row(
         "lifecycle_state": "PAPER_READY" if paper_ready else _text(registry.get("status")),
         "accepted": accepted,
         "paper_tracker_created": paper_tracker_created,
+        "paper_tracker_effective": paper_tracker_effective,
+        "paper_tracker_status": paper_tracker_status,
         "paper_runs": len(runs),
         "paper_days": paper_days,
         "closed_entries": closed_entries,
@@ -414,6 +425,8 @@ def _gate_block_reasons(
         reasons.add("proposal_not_acked")
     if reject_reason:
         reasons.add(f"v5_rejected:{reject_reason}")
+    if paper_tracker_created and not accepted:
+        reasons.add("paper_tracker_not_effective_without_ack")
     if not paper_tracker_created:
         reasons.add("paper_tracker_missing")
     if paper_days < MIN_PAPER_DAYS:
@@ -436,6 +449,25 @@ def _gate_block_reasons(
         reasons.add("cost_not_trusted_for_paper")
     reasons.update(_paper_block_reason_subset(daily_block_reasons))
     return sorted(reasons)
+
+
+def _paper_tracker_status(
+    *,
+    accepted: bool,
+    reject_reason: str,
+    paper_tracker_created: bool,
+) -> str:
+    if accepted and paper_tracker_created:
+        return "EFFECTIVE"
+    if reject_reason and paper_tracker_created:
+        return "REJECTED_BY_V5"
+    if paper_tracker_created:
+        return "AWAITING_ACK"
+    if accepted:
+        return "ACKED_TRACKER_MISSING"
+    if reject_reason:
+        return "REJECTED_TRACKER_MISSING"
+    return "MISSING"
 
 
 def _paper_block_reason_subset(reasons: list[str]) -> set[str]:

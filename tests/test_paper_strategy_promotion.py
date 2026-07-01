@@ -38,7 +38,46 @@ def test_paper_strategy_pipeline_blocks_unacked_proposal() -> None:
     assert registry["rules_locked"] is False
     assert gate["paper_ready"] is False
     assert gate["paper_tracker_created"] is False
+    assert gate["paper_tracker_effective"] is False
+    assert gate["paper_tracker_status"] == "MISSING"
     assert "proposal_not_acked" in json.loads(gate["block_reason"])
+
+
+def test_paper_strategy_pipeline_marks_unacked_tracker_evidence_not_effective() -> None:
+    proposal_id = "BNB_USDT_F3_DOMINANT_ENTRY_PAPER_V1"
+    tracker_id = "BNB_F3_DOMINANT_ENTRY_PAPER_V1"
+    frames = build_paper_strategy_pipeline_frames(
+        proposals=pl.DataFrame(),
+        proposal_ack=pl.DataFrame(),
+        runs=pl.DataFrame(
+            [
+                {
+                    "proposal_id": proposal_id,
+                    "paper_tracker_id": tracker_id,
+                    "strategy_candidate": "v5.f3_dominant_entry",
+                    "symbol": "BNB-USDT",
+                    "as_of_date": "2026-06-30",
+                    "paper_pnl_bps": 12.0,
+                    "would_enter": True,
+                    "would_exit": True,
+                    "arrival_mid": 600.0,
+                }
+            ]
+        ),
+        daily=pl.DataFrame(),
+        created_at=datetime(2026, 6, 30, tzinfo=UTC),
+    )
+
+    registry = frames["paper_strategy_registry"].to_dicts()[0]
+    gate = frames["paper_strategy_promotion_gate"].to_dicts()[0]
+    block_reasons = json.loads(gate["block_reason"])
+
+    assert registry["status"] == "PROPOSED_AWAITING_ACK"
+    assert gate["paper_tracker_created"] is True
+    assert gate["paper_tracker_effective"] is False
+    assert gate["paper_tracker_status"] == "AWAITING_ACK"
+    assert "proposal_not_acked" in block_reasons
+    assert "paper_tracker_not_effective_without_ack" in block_reasons
 
 
 def test_paper_strategy_pipeline_marks_ready_only_after_ack_and_future_paper_evidence() -> None:
@@ -119,6 +158,9 @@ def test_paper_strategy_pipeline_marks_ready_only_after_ack_and_future_paper_evi
     assert registry["rules_locked"] is True
     assert gate["paper_ready"] is True
     assert gate["lifecycle_state"] == "PAPER_READY"
+    assert gate["paper_tracker_created"] is True
+    assert gate["paper_tracker_effective"] is True
+    assert gate["paper_tracker_status"] == "EFFECTIVE"
     assert json.loads(gate["block_reason"]) == []
 
 
@@ -153,3 +195,5 @@ def test_build_and_publish_paper_strategy_pipeline_writes_gold_outputs(tmp_path)
     gate = read_parquet_dataset(lake / "gold" / "paper_strategy_promotion_gate")
     assert registry.to_dicts()[0]["proposal_id"] == "BNB_USDT_F3_DOMINANT_ENTRY_PAPER_V1"
     assert gate.to_dicts()[0]["paper_ready"] is False
+    assert gate.to_dicts()[0]["paper_tracker_effective"] is True
+    assert gate.to_dicts()[0]["paper_tracker_status"] == "EFFECTIVE"

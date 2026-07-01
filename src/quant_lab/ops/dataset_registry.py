@@ -560,6 +560,8 @@ def core_dataset_specs() -> dict[str, DatasetSpec]:
             required_columns=(
                 "proposal_id",
                 "paper_tracker_id",
+                "paper_tracker_effective",
+                "paper_tracker_status",
                 "lifecycle_state",
                 "paper_ready",
                 "block_reason",

@@ -155,8 +155,12 @@ def evaluate_live_universe_cost_coverage(
             if latest_actual is not None
             else False
         )
+        latest_is_bootstrap_probe = latest is not None and _cost_source(latest) == "bootstrap_cost_probe"
         anchored_mixed_proxy_candidate = (
-            not direct and latest_proxy is not None and has_live_actual_anchor
+            not direct
+            and not latest_is_bootstrap_probe
+            and latest_proxy is not None
+            and has_live_actual_anchor
         )
         covered = direct
         covered_count += int(covered)
@@ -176,7 +180,14 @@ def evaluate_live_universe_cost_coverage(
             if fresh_actual is not None
             else _cost_source(latest)
         )
-        source_row = fresh_actual or latest_proxy or latest_actual or latest or {}
+        source_row = (
+            fresh_actual
+            or (latest if latest_is_bootstrap_probe else None)
+            or latest_proxy
+            or latest_actual
+            or latest
+            or {}
+        )
         output.append(
             {
                 "generated_at": generated.isoformat().replace("+00:00", "Z"),
@@ -1830,6 +1841,8 @@ def _cost_evidence_tier(
 ) -> str:
     if direct:
         return "strict_direct_actual_or_mixed"
+    if latest is not None and _cost_source(latest) == "bootstrap_cost_probe":
+        return "bootstrap_cost_probe_not_counted"
     if latest_proxy is not None and has_live_actual_anchor:
         return "anchored_proxy_candidate_not_counted"
     if latest_proxy is not None:
@@ -1855,6 +1868,8 @@ def _coverage_reason(
 ) -> str:
     if direct:
         return "direct_actual_or_mixed_cost"
+    if latest is not None and _cost_source(latest) == "bootstrap_cost_probe":
+        return "bootstrap_cost_probe_not_live_coverage"
     if anchored_mixed_proxy_candidate:
         if latest_actual is not None and stale_actual_or_mixed:
             return "stale_actual_or_mixed_with_anchored_proxy_not_counted"

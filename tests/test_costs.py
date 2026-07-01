@@ -454,6 +454,37 @@ def test_cost_probe_only_bucket_does_not_count_as_live_universe_cost_coverage():
     assert evaluation["coverage_rate"] == 0.0
 
 
+def test_live_universe_cost_coverage_keeps_latest_bootstrap_detail_over_old_proxy():
+    now = datetime(2026, 6, 15, tzinfo=UTC)
+    old_proxy = now - timedelta(days=1)
+
+    evaluation = evaluate_live_universe_cost_coverage(
+        pl.DataFrame(
+            [
+                _coverage_cost_row("SOL-USDT", "actual_fills", now),
+                _coverage_cost_row("BNB-USDT", "public_spread_proxy", old_proxy),
+                _coverage_cost_row("BNB-USDT", "bootstrap_cost_probe", now),
+            ]
+        ),
+        live_symbols=["BNB-USDT", "SOL-USDT"],
+        generated_at=now,
+    )
+
+    bnb = evaluation["detail_by_symbol"]["BNB-USDT"]
+    assert bnb["latest_source"] == "bootstrap_cost_probe"
+    assert bnb["effective_cost_source"] == "bootstrap_cost_probe"
+    assert bnb["sample_origin_mix"] == "cost_probe_only"
+    assert bnb["sample_count"] == 4
+    assert bnb["cost_probe_fill_count"] == 4
+    assert bnb["proxy_sample_count"] == 0
+    assert bnb["cost_evidence_tier"] == "bootstrap_cost_probe_not_counted"
+    assert bnb["coverage_reason"] == "bootstrap_cost_probe_not_live_coverage"
+    assert bnb["actual_or_mixed_covered"] is False
+    assert evaluation["direct_symbols"] == ["SOL-USDT"]
+    assert evaluation["mixed_proxy_symbols"] == []
+    assert evaluation["coverage_rate"] == 0.5
+
+
 def test_cost_probe_only_bucket_counts_as_bootstrap_not_trusted_live():
     now = datetime(2026, 6, 15, tzinfo=UTC)
 

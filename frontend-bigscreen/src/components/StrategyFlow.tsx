@@ -58,7 +58,7 @@ export function StrategyFlow({ flow }: { flow: Record<string, unknown> }) {
         <Metric label="Kill" value={counts.kill ?? 0} tone="red" />
       </div>
       <div className="flow-line"><i /></div>
-      <ReactECharts option={option} style={{ height: 112, marginTop: -8 }} />
+      <ReactECharts option={option} style={{ height: 92, marginTop: -10 }} />
       <div className="strategy-research-grid">
         <div className="opportunity-cost-mini">
           <div className="candidate-title"><Scale size={15} /> 机会成本 / 拦截价值</div>

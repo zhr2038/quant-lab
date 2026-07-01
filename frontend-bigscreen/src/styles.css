@@ -343,9 +343,9 @@ button{font:inherit;color:inherit}
 .factor-chip strong{text-align:right;color:#b7d6ff}
 .factor-empty{border:1px dashed rgba(80,169,255,.24);border-radius:10px;padding:7px 9px;color:var(--muted);font-size:11px}
 .strategy-research-grid{
-  display:grid;grid-template-columns:minmax(300px,.34fr) minmax(0,.66fr);
-  grid-template-areas:"opportunity factor" "opportunity candidates";
-  gap:12px;margin-top:4px;align-items:start;
+  display:grid;grid-template-columns:minmax(250px,.26fr) minmax(360px,.39fr) minmax(320px,.35fr);
+  grid-template-areas:"opportunity factor candidates";
+  gap:12px;margin-top:2px;align-items:start;
 }
 .strategy-research-grid .opportunity-cost-mini{grid-area:opportunity;margin:0}
 .strategy-research-grid .factor-factory-mini{grid-area:factor;margin:0}
@@ -356,11 +356,11 @@ button{font:inherit;color:inherit}
 }
 .factor-factory-drawer h3{margin:0;font-size:17px;display:flex;align-items:center;gap:8px}
 .factor-factory-drawer p{margin:6px 0 10px!important;font-size:11px;color:var(--muted)}
-.page-strategy .strategy-card{padding:28px}
+.page-strategy .strategy-card{padding:22px}
 .page-strategy .strategy-card .sub{font-size:14px}
-.page-strategy .flow-metrics{gap:14px;margin-top:20px}
-.page-strategy .stage{height:84px}
-.page-strategy .stage b{font-size:36px}
+.page-strategy .flow-metrics{gap:12px;margin-top:14px}
+.page-strategy .stage{height:72px}
+.page-strategy .stage b{font-size:31px}
 .page-strategy .opportunity-cost-mini{padding:12px 14px;margin:0;border-radius:18px}
 .page-strategy .opportunity-cost-stats{gap:10px;margin:8px 0}
 .page-strategy .opportunity-cost-stats span{padding:6px 10px;border-radius:14px}
@@ -379,11 +379,11 @@ button{font:inherit;color:inherit}
 }
 .page-strategy .factor-chip-grid{grid-template-columns:repeat(2,minmax(0,1fr));gap:6px}
 .page-strategy .factor-chip strong{font-size:12px}
-.page-strategy .chip{min-height:46px;border-radius:18px;grid-template-columns:minmax(0,1fr) 104px 92px;font-size:13px;padding:6px 14px}
-.page-strategy .candidate-list-body{grid-template-columns:repeat(auto-fit,minmax(260px,1fr));gap:8px}
+.page-strategy .chip{min-height:40px;border-radius:15px;grid-template-columns:minmax(0,1fr) 82px 76px;font-size:12px;padding:5px 10px}
+.page-strategy .candidate-list-body{grid-template-columns:repeat(auto-fit,minmax(220px,1fr));gap:7px}
 .page-strategy .candidate-main b{font-size:15px}
 .page-strategy .candidate-main small{font-size:12px}
-.page-strategy .candidate-detail{font-size:11px}
+.page-strategy .candidate-detail{font-size:10px}
 .v5{grid-column:4;grid-row:2}
 .v5-grid{display:grid;grid-template-columns:minmax(260px,300px) minmax(0,1fr);gap:18px;margin-top:16px;align-items:center}
 .v5-radar{width:100%;height:220px;min-width:0}
@@ -452,12 +452,12 @@ button{font:inherit;color:inherit}
 .page-strategy .market-body{
   grid-template-columns:1fr;grid-template-rows:minmax(0,1fr) auto;gap:10px;margin-top:14px;
 }
-.page-strategy .market-list{grid-template-columns:1fr;overflow:hidden}
+.page-strategy .market-list{grid-template-columns:repeat(2,minmax(0,1fr));overflow:hidden;gap:7px}
 .page-strategy .ticker{
-  height:31px;grid-template-columns:82px 54px minmax(42px,1fr) 48px;gap:8px;padding:0 10px;
-  border-radius:11px;font-size:10px;
+  height:30px;grid-template-columns:66px 44px minmax(24px,1fr) 38px;gap:5px;padding:0 7px;
+  border-radius:10px;font-size:9px;
 }
-.page-strategy .ticker b{font-size:11px}
+.page-strategy .ticker b{font-size:10px}
 .page-strategy .market-summary-panel{
   grid-template-rows:auto auto;gap:7px;padding:10px;border-radius:13px;align-self:auto;
 }

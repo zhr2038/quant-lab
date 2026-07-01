@@ -369,6 +369,15 @@ button{font:inherit;color:inherit}
 .page-strategy .opportunity-cost-stats em{font-size:13px}
 .page-strategy .opportunity-cost-note{min-height:32px;font-size:12px;grid-template-columns:112px minmax(0,1fr) minmax(0,1.5fr);padding:6px 10px}
 .page-strategy .opportunity-bucket{min-height:34px;height:auto;font-size:12px;padding:6px 10px}
+.strategy-research-grid .opportunity-cost-stats{grid-template-columns:repeat(2,minmax(0,1fr))}
+.strategy-research-grid .opportunity-cost-stats b{font-size:clamp(17px,1vw,20px)}
+.strategy-research-grid .opportunity-cost-note{grid-template-columns:1fr;align-items:start;gap:2px;min-height:0}
+.strategy-research-grid .opportunity-cost-note span,
+.strategy-research-grid .opportunity-cost-note em,
+.strategy-research-grid .opportunity-cost-note strong{
+  white-space:normal;overflow-wrap:anywhere;text-overflow:clip;
+}
+.strategy-research-grid .opportunity-cost-note strong{text-align:left}
 .page-strategy .factor-factory-mini{padding:12px 14px;margin:0;border-radius:18px;display:grid;grid-template-rows:auto auto minmax(0,1fr);min-height:0}
 .page-strategy .factor-factory-stats{gap:10px;margin:8px 0}
 .page-strategy .factor-factory-stats span{padding:6px 10px;border-radius:14px}

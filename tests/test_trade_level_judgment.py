@@ -65,6 +65,48 @@ def test_sol_high_confidence_abort_becomes_micro_canary_review():
     assert sample["quant_lab_false_block_candidate"] is True
 
 
+def test_high_confidence_missing_arrival_mid_gets_observability_review_block():
+    candidate = _sol_candidate(candidate_id="sol-missing-mid")
+    candidate.pop("arrival_mid")
+    frames = build_trade_level_frames_from_sources(
+        candidate_events=pl.DataFrame([candidate]),
+        candidate_labels=pl.DataFrame(
+            [
+                {
+                    "candidate_id": "sol-missing-mid",
+                    "run_id": "run-sol",
+                    "symbol": "SOL-USDT",
+                    "strategy_candidate": "v5.local_alpha6",
+                    "horizon_hours": 24,
+                    "net_bps_after_cost": 42.0,
+                    "label_status": "complete",
+                    "label_reason": "ok",
+                }
+            ]
+        ),
+        risk_permissions=pl.DataFrame(
+            [
+                {
+                    "permission": "ABORT",
+                    "permission_status": "ACTIVE_ABORT",
+                    "as_of_ts": datetime(2026, 6, 29, 8, tzinfo=UTC),
+                    "live_block_reasons": '["no_strategy_live_small_ready"]',
+                    "allowed_live_modes": "[]",
+                }
+            ]
+        ),
+        v5_trades=pl.DataFrame(),
+        created_at=datetime(2026, 6, 29, 9, tzinfo=UTC),
+    )
+
+    judgment = frames["trade_level_judgment"].row(0, named=True)
+
+    assert judgment["v5_high_confidence_opportunity"] is True
+    assert judgment["trade_level_decision"] == "MICRO_CANARY_REVIEW_BLOCKED_BY_OBSERVABILITY"
+    assert "arrival_mid_missing" in judgment["reason"]
+    assert "trade_level_not_live_ready" not in judgment["reason"]
+
+
 def test_hard_safety_reason_always_hard_blocks():
     frames = build_trade_level_frames_from_sources(
         candidate_events=pl.DataFrame([_sol_candidate(candidate_id="sol-hard")]),
@@ -208,7 +250,10 @@ def test_sol_live_success_becomes_learning_sample_not_live_allow():
                     "action": "exit_filled",
                     "price": "75.02",
                     "qty": "0.2135",
-                    "raw_payload_json": '{"exit_reason":"protect_profit_lock_trailing"}',
+                    "raw_payload_json": (
+                        '{"exit_reason":"protect_profit_lock_trailing",'
+                        '"net_bps":161.0,"net_pnl_usdt":0.25}'
+                    ),
                 },
             ]
         ),
@@ -241,6 +286,12 @@ def test_sol_live_success_becomes_learning_sample_not_live_allow():
     assert judgment["trade_level_decision"] == "MICRO_CANARY_REVIEW"
     assert sample["sample_type"] == "LIVE_SUCCESS"
     assert sample["actual_order_submitted"] is True
+    assert sample["actual_exit_reason"] == "protect_profit_lock_trailing"
+    assert sample["actual_hold_minutes"] == 66.0
+    assert sample["actual_roundtrip_net_bps"] == 161.0
+    assert sample["actual_outcome_label"] == "PROFITABLE"
+    assert sample["fixed_horizon_net_bps"] == 161.0
+    assert sample["fixed_horizon_outcome_label"] == "PROFITABLE"
     assert sample["net_bps"] == 161.0
     assert sample["quant_lab_false_block_candidate"] is True
     assert sample["learning_eligible"] is True
@@ -267,6 +318,102 @@ def test_sol_live_success_becomes_learning_sample_not_live_allow():
     assert decision_regret["regret_type"] == "false_block"
     assert decision_regret["best_hindsight_action"] == "ALLOW"
     assert decision_regret["regret_bps"] == 161.0
+
+
+def test_live_sample_prefers_actual_roundtrip_over_negative_fixed_horizon_label():
+    candidate = _sol_candidate()
+    candidate["decision_ts"] = datetime(2026, 6, 29, 13, 0, 51, tzinfo=UTC)
+    candidate["ts_utc"] = candidate["decision_ts"]
+    frames = build_trade_level_frames_from_sources(
+        candidate_events=pl.DataFrame([candidate]),
+        candidate_labels=pl.DataFrame(
+            [
+                {
+                    "candidate_id": "sol-cand-1",
+                    "run_id": "run-sol",
+                    "symbol": "SOL-USDT",
+                    "strategy_candidate": "v5.local_alpha6",
+                    "horizon_hours": 24,
+                    "net_bps_after_cost": -137.2,
+                    "mfe_bps": 180.0,
+                    "mae_bps": -170.0,
+                    "win": False,
+                    "label_status": "complete",
+                    "label_reason": "ok",
+                }
+            ]
+        ),
+        risk_permissions=pl.DataFrame(
+            [
+                {
+                    "permission": "ABORT",
+                    "permission_status": "ACTIVE_ABORT",
+                    "as_of_ts": datetime(2026, 6, 29, 12, tzinfo=UTC),
+                    "live_block_reasons": '["no_strategy_live_small_ready"]',
+                    "allowed_live_modes": "[]",
+                }
+            ]
+        ),
+        v5_trades=pl.DataFrame(
+            [
+                {
+                    "run_id": "run-sol",
+                    "symbol": "SOL-USDT",
+                    "ts_utc": datetime(2026, 6, 29, 13, 0, 51, tzinfo=UTC),
+                    "side": "buy",
+                    "action": "entry_filled",
+                    "price": "73.84",
+                    "qty": "0.2135",
+                },
+                {
+                    "run_id": "run-sol",
+                    "symbol": "SOL-USDT",
+                    "ts_utc": datetime(2026, 6, 29, 18, 1, tzinfo=UTC),
+                    "side": "sell",
+                    "action": "exit_filled",
+                    "price": "75.18",
+                    "qty": "0.2135",
+                    "raw_payload_json": (
+                        '{"exit_reason":"protect_profit_lock_trailing",'
+                        '"net_bps":161.0,"net_pnl_usdt":0.25}'
+                    ),
+                },
+            ]
+        ),
+        order_lifecycles=pl.DataFrame(
+            [
+                {
+                    "run_id": "run-sol",
+                    "symbol": "SOL-USDT",
+                    "ts_utc": datetime(2026, 6, 29, 18, 1, tzinfo=UTC),
+                    "raw_payload_json": (
+                        '{"exit_reason":"protect_profit_lock_trailing",'
+                        '"realized_total_cost_bps":20.0}'
+                    ),
+                }
+            ]
+        ),
+        created_at=datetime(2026, 6, 29, 19, tzinfo=UTC),
+    )
+
+    sample = frames["v5_trade_learning_sample"].row(0, named=True)
+    audit = frames["quant_lab_false_block_audit"].row(0, named=True)
+    opportunity = frames["quant_lab_opportunity_cost_event"].row(0, named=True)
+
+    assert sample["sample_type"] == "LIVE_SUCCESS"
+    assert sample["outcome_label"] == "PROFITABLE"
+    assert sample["actual_outcome_label"] == "PROFITABLE"
+    assert sample["actual_roundtrip_net_bps"] == 161.0
+    assert sample["actual_hold_minutes"] == 300.15
+    assert sample["fixed_horizon_net_bps"] == -137.2
+    assert sample["fixed_horizon_outcome_label"] == "UNPROFITABLE"
+    assert sample["label_24h_after_cost_bps"] == -137.2
+    assert sample["hold_minutes"] == 300.15
+    assert sample["net_bps"] == 161.0
+    assert audit["actual_or_counterfactual_after_cost_bps"] == 161.0
+    assert audit["false_block"] is True
+    assert opportunity["after_cost_bps"] == 161.0
+    assert opportunity["regret_type"] == "false_block"
 
 
 def test_learning_sample_schema_does_not_infer_nullable_float_as_null():
@@ -382,6 +529,53 @@ def test_opportunity_cost_ignores_non_open_candidates_for_allow_outcomes():
     assert daily["quant_lab_would_allow_count"] == 0
     assert daily["false_allow_count"] == 0
     assert regret["regret_type"] == "not_v5_open"
+
+
+def test_opportunity_bucket_recommends_risk_block_for_loss_saved_bucket():
+    created = datetime(2026, 6, 29, 10, tzinfo=UTC)
+    rows = []
+    labels = []
+    judgments = []
+    for index in range(3):
+        event_id = f"bnb-loss-saved-{index}"
+        rows.append(
+            {
+                "event_id": event_id,
+                "decision_ts": datetime(2026, 6, 29, 8, index, tzinfo=UTC),
+                "symbol": "BNB-USDT",
+                "strategy_candidate": "f3_dominant_entry",
+                "rank": 1,
+                "alpha6_score": 0.984,
+                "edge_required_ratio": 2.0,
+                "cost_gate_verified": True,
+                "cost_source": "quant_lab_cached",
+                "regime": "Trending",
+                "risk_level": "PROTECT",
+                "v5_would_open": True,
+                "actual_submitted": False,
+            }
+        )
+        labels.append({"event_id": event_id, "label_24h_after_cost_bps": -45.0})
+        judgments.append(
+            {
+                "event_id": event_id,
+                "trade_level_decision": "RISK_BLOCK",
+                "v5_high_confidence_opportunity": True,
+            }
+        )
+    frames = build_opportunity_cost_frames(
+        events=pl.DataFrame(rows),
+        labels=pl.DataFrame(labels),
+        judgments=pl.DataFrame(judgments),
+        created_at=created,
+    )
+
+    bucket = frames["opportunity_cost_by_bucket"].row(0, named=True)
+
+    assert bucket["loss_saved_count"] == 3
+    assert bucket["veto_net_value_bps"] == 135.0
+    assert bucket["opportunity_exception_candidate"] is False
+    assert bucket["recommended_trade_level_decision"] == "RISK_BLOCK"
 
 
 def _sol_candidate(candidate_id: str = "sol-cand-1") -> dict[str, object]:

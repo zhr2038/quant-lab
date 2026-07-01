@@ -6,7 +6,7 @@ from typing import Any
 
 import polars as pl
 
-V5_TRADE_LEARNING_SAMPLE_SCHEMA_VERSION = "v5_trade_learning_sample.v0.1"
+V5_TRADE_LEARNING_SAMPLE_SCHEMA_VERSION = "v5_trade_learning_sample.v0.2"
 V5_TRADE_LEARNING_SAMPLE_SCHEMA = {
     "schema_version": pl.Utf8,
     "sample_id": pl.Utf8,
@@ -36,6 +36,12 @@ V5_TRADE_LEARNING_SAMPLE_SCHEMA = {
     "actual_order_submitted": pl.Boolean,
     "actual_fill_px": pl.Float64,
     "actual_all_in_bps": pl.Float64,
+    "actual_exit_ts": pl.Datetime(time_zone="UTC"),
+    "actual_exit_reason": pl.Utf8,
+    "actual_hold_minutes": pl.Float64,
+    "actual_roundtrip_net_bps": pl.Float64,
+    "actual_roundtrip_net_pnl_usdt": pl.Float64,
+    "actual_outcome_label": pl.Utf8,
     "exit_reason": pl.Utf8,
     "hold_minutes": pl.Float64,
     "net_bps": pl.Float64,
@@ -44,6 +50,11 @@ V5_TRADE_LEARNING_SAMPLE_SCHEMA = {
     "learning_eligible": pl.Boolean,
     "quant_lab_false_block_candidate": pl.Boolean,
     "feature_as_of_ts": pl.Datetime(time_zone="UTC"),
+    "label_4h_after_cost_bps": pl.Float64,
+    "label_8h_after_cost_bps": pl.Float64,
+    "label_24h_after_cost_bps": pl.Float64,
+    "fixed_horizon_net_bps": pl.Float64,
+    "fixed_horizon_outcome_label": pl.Utf8,
     "label_end_ts": pl.Datetime(time_zone="UTC"),
     "label_horizon_hours": pl.Int64,
     "cost_model_version_at_decision": pl.Utf8,
@@ -78,15 +89,21 @@ def build_v5_trade_learning_samples(
         event_id = _text(event.get("event_id"))
         label = labels_by_event.get(event_id, {})
         judgment = judgments_by_event.get(event_id, {})
-        value, horizon = _preferred_label_value(label)
+        label_values = _label_values(label)
+        fixed_value, horizon = _preferred_label_value(label)
         decision_ts = _timestamp(event.get("decision_ts"))
         actual_submitted = _bool(event.get("actual_submitted")) is True
         quant_lab_would_block = _quant_lab_would_block(judgment)
-        sample_type = _sample_type(actual_submitted=actual_submitted, net_bps=value)
         fill = fill_lookup.get((_text(event.get("run_id")), _text(event.get("symbol"))), {})
         lifecycle = lifecycle_lookup.get(
             (_text(event.get("run_id")), _text(event.get("symbol"))), {}
         )
+        actual = _actual_roundtrip_outcome(fill, lifecycle, decision_ts)
+        actual_net_bps = _float(actual.get("actual_roundtrip_net_bps"))
+        actual_net_pnl = _float(actual.get("actual_roundtrip_net_pnl_usdt"))
+        primary_value = actual_net_bps if actual_submitted else fixed_value
+        primary_pnl = actual_net_pnl if actual_submitted else None
+        sample_type = _sample_type(actual_submitted=actual_submitted, net_bps=primary_value)
         label_end_ts = (
             decision_ts + timedelta(hours=horizon)
             if decision_ts is not None and horizon is not None
@@ -94,7 +111,7 @@ def build_v5_trade_learning_samples(
         )
         learning_eligible = (
             bool(event.get("v5_would_open"))
-            and value is not None
+            and primary_value is not None
             and decision_ts is not None
             and bool(event.get("symbol"))
             and bool(event.get("strategy_candidate"))
@@ -102,9 +119,15 @@ def build_v5_trade_learning_samples(
         false_block_candidate = (
             bool(event.get("v5_would_open"))
             and quant_lab_would_block
-            and value is not None
-            and value > 0.0
+            and primary_value is not None
+            and primary_value > 0.0
         )
+        actual_exit_reason = _text(
+            actual.get("actual_exit_reason")
+            or lifecycle.get("exit_reason")
+            or fill.get("exit_reason")
+        )
+        actual_hold_minutes = _float(actual.get("actual_hold_minutes"))
         rows.append(
             {
                 "schema_version": V5_TRADE_LEARNING_SAMPLE_SCHEMA_VERSION,
@@ -139,16 +162,35 @@ def build_v5_trade_learning_samples(
                 "actual_all_in_bps": _first_float(
                     event.get("actual_all_in_cost_bps"),
                     lifecycle.get("realized_total_cost_bps"),
+                    fill.get("realized_total_cost_bps"),
+                    fill.get("actual_all_in_bps"),
                     event.get("selected_cost_bps"),
                 ),
-                "exit_reason": _text(lifecycle.get("exit_reason") or fill.get("exit_reason")),
-                "hold_minutes": float(horizon * 60) if horizon is not None else None,
-                "net_bps": value,
-                "net_pnl_usdt": _float(fill.get("net_pnl_usdt")),
-                "outcome_label": _outcome_label(value),
+                "actual_exit_ts": _timestamp(actual.get("actual_exit_ts")),
+                "actual_exit_reason": actual_exit_reason,
+                "actual_hold_minutes": actual_hold_minutes,
+                "actual_roundtrip_net_bps": actual_net_bps,
+                "actual_roundtrip_net_pnl_usdt": actual_net_pnl,
+                "actual_outcome_label": _outcome_label(actual_net_bps),
+                "exit_reason": actual_exit_reason,
+                "hold_minutes": (
+                    actual_hold_minutes
+                    if actual_submitted and actual_hold_minutes is not None
+                    else float(horizon * 60)
+                    if horizon is not None
+                    else None
+                ),
+                "net_bps": primary_value,
+                "net_pnl_usdt": primary_pnl,
+                "outcome_label": _outcome_label(primary_value),
                 "learning_eligible": learning_eligible,
                 "quant_lab_false_block_candidate": false_block_candidate,
                 "feature_as_of_ts": decision_ts,
+                "label_4h_after_cost_bps": label_values.get(4),
+                "label_8h_after_cost_bps": label_values.get(8),
+                "label_24h_after_cost_bps": label_values.get(24),
+                "fixed_horizon_net_bps": fixed_value,
+                "fixed_horizon_outcome_label": _outcome_label(fixed_value),
                 "label_end_ts": label_end_ts,
                 "label_horizon_hours": horizon,
                 "cost_model_version_at_decision": _text(
@@ -195,13 +237,50 @@ def _fill_lookup(frame: pl.DataFrame) -> dict[tuple[str, str], dict[str, Any]]:
             ),
             {},
         )
+        entry_payload = _payload(entry)
+        exit_payload = _payload(exit_row)
         lookup[key] = {
+            "entry_ts": _timestamp(
+                entry.get("ts_utc")
+                or entry.get("ts")
+                or entry.get("timestamp")
+                or entry_payload.get("ts_utc")
+                or entry_payload.get("ts")
+            ),
+            "exit_ts": _timestamp(
+                exit_row.get("ts_utc")
+                or exit_row.get("ts")
+                or exit_row.get("timestamp")
+                or exit_payload.get("ts_utc")
+                or exit_payload.get("ts")
+            ),
+            "entry_side": _text(entry.get("side") or entry_payload.get("side")),
             "entry_price": _float(entry.get("price") or entry.get("fill_price")),
+            "exit_price": _float(exit_row.get("price") or exit_row.get("fill_price")),
             "exit_reason": _payload_text(exit_row, "exit_reason", "reason"),
+            "actual_roundtrip_net_bps": _first_float(
+                exit_row.get("actual_roundtrip_net_bps"),
+                exit_row.get("roundtrip_net_bps"),
+                exit_row.get("realized_net_bps"),
+                exit_row.get("net_bps"),
+                exit_payload.get("actual_roundtrip_net_bps"),
+                exit_payload.get("roundtrip_net_bps"),
+                exit_payload.get("realized_net_bps"),
+                exit_payload.get("net_bps"),
+            ),
+            "realized_total_cost_bps": _first_float(
+                exit_row.get("realized_total_cost_bps"),
+                exit_row.get("total_realized_cost_bps"),
+                exit_payload.get("realized_total_cost_bps"),
+                exit_payload.get("total_realized_cost_bps"),
+            ),
             "net_pnl_usdt": _first_float(
                 exit_row.get("net_pnl_usdt"),
                 exit_row.get("pnl_usdt"),
                 exit_row.get("realized_pnl_usdt"),
+                exit_payload.get("net_pnl_usdt"),
+                exit_payload.get("pnl_usdt"),
+                exit_payload.get("realized_pnl_usdt"),
             ),
         }
     return lookup
@@ -229,6 +308,36 @@ def _lifecycle_lookup(frame: pl.DataFrame) -> dict[tuple[str, str], dict[str, An
                 payload.get("total_realized_cost_bps"),
                 existing.get("realized_total_cost_bps"),
             ),
+            "actual_roundtrip_net_bps": _first_float(
+                row.get("actual_roundtrip_net_bps"),
+                row.get("roundtrip_net_bps"),
+                row.get("realized_net_bps"),
+                row.get("net_bps"),
+                payload.get("actual_roundtrip_net_bps"),
+                payload.get("roundtrip_net_bps"),
+                payload.get("realized_net_bps"),
+                payload.get("net_bps"),
+                existing.get("actual_roundtrip_net_bps"),
+            ),
+            "actual_roundtrip_net_pnl_usdt": _first_float(
+                row.get("actual_roundtrip_net_pnl_usdt"),
+                row.get("net_pnl_usdt"),
+                row.get("pnl_usdt"),
+                row.get("realized_pnl_usdt"),
+                payload.get("actual_roundtrip_net_pnl_usdt"),
+                payload.get("net_pnl_usdt"),
+                payload.get("pnl_usdt"),
+                payload.get("realized_pnl_usdt"),
+                existing.get("actual_roundtrip_net_pnl_usdt"),
+            ),
+            "exit_ts": _timestamp(
+                row.get("exit_ts")
+                or row.get("ts_utc")
+                or row.get("ts")
+                or payload.get("exit_ts")
+                or payload.get("ts_utc")
+                or existing.get("exit_ts")
+            ),
             "exit_reason": _text(
                 row.get("exit_reason")
                 or payload.get("exit_reason")
@@ -237,6 +346,52 @@ def _lifecycle_lookup(frame: pl.DataFrame) -> dict[tuple[str, str], dict[str, An
             ),
         }
     return lookup
+
+
+def _actual_roundtrip_outcome(
+    fill: dict[str, Any],
+    lifecycle: dict[str, Any],
+    decision_ts: datetime | None,
+) -> dict[str, Any]:
+    exit_ts = _timestamp(lifecycle.get("exit_ts") or fill.get("exit_ts"))
+    entry_ts = _timestamp(fill.get("entry_ts")) or decision_ts
+    cost_bps = _first_float(
+        lifecycle.get("realized_total_cost_bps"),
+        fill.get("realized_total_cost_bps"),
+        fill.get("actual_all_in_bps"),
+    )
+    net_bps = _first_float(
+        lifecycle.get("actual_roundtrip_net_bps"),
+        fill.get("actual_roundtrip_net_bps"),
+    )
+    if net_bps is None:
+        gross_bps = _gross_roundtrip_bps(fill)
+        if gross_bps is not None:
+            net_bps = gross_bps - (cost_bps or 0.0)
+    hold_minutes = None
+    if entry_ts is not None and exit_ts is not None:
+        hold_minutes = max(0.0, (exit_ts - entry_ts).total_seconds() / 60.0)
+    return {
+        "actual_exit_ts": exit_ts,
+        "actual_exit_reason": _text(lifecycle.get("exit_reason") or fill.get("exit_reason")),
+        "actual_hold_minutes": hold_minutes,
+        "actual_roundtrip_net_bps": net_bps,
+        "actual_roundtrip_net_pnl_usdt": _first_float(
+            lifecycle.get("actual_roundtrip_net_pnl_usdt"),
+            fill.get("net_pnl_usdt"),
+        ),
+    }
+
+
+def _gross_roundtrip_bps(fill: dict[str, Any]) -> float | None:
+    entry_price = _float(fill.get("entry_price"))
+    exit_price = _float(fill.get("exit_price"))
+    if entry_price in (None, 0.0) or exit_price is None:
+        return None
+    entry_side = _text(fill.get("entry_side")).lower()
+    if entry_side == "sell":
+        return ((entry_price - exit_price) / entry_price) * 10_000.0
+    return ((exit_price - entry_price) / entry_price) * 10_000.0
 
 
 def _quant_lab_would_block(judgment: dict[str, Any]) -> bool:
@@ -268,6 +423,14 @@ def _preferred_label_value(label: dict[str, Any]) -> tuple[float | None, int | N
         if value is not None:
             return value, horizon
     return None, None
+
+
+def _label_values(label: dict[str, Any]) -> dict[int, float | None]:
+    return {
+        4: _float(label.get("label_4h_after_cost_bps")),
+        8: _float(label.get("label_8h_after_cost_bps")),
+        24: _float(label.get("label_24h_after_cost_bps")),
+    }
 
 
 def _payload_text(row: dict[str, Any], *fields: str) -> str:

@@ -30,7 +30,7 @@ from quant_lab.trade_learning.samples import (
     build_v5_trade_learning_samples,
 )
 
-TRADE_LEVEL_SCHEMA_VERSION = "trade_level_judgment.v0.1"
+TRADE_LEVEL_SCHEMA_VERSION = "trade_level_judgment.v0.2"
 TRADE_OPPORTUNITY_EVENT_SCHEMA_VERSION = "trade_opportunity_event.v0.2"
 FALSE_BLOCK_AUDIT_SCHEMA_VERSION = "quant_lab_false_block_audit.v0.1"
 
@@ -286,12 +286,6 @@ def build_trade_level_frames_from_sources(
         similarity=similarity,
         created_at=generated_at,
     )
-    audit = build_false_block_audit(
-        events,
-        labels,
-        judgments,
-        created_at=generated_at,
-    )
     samples = build_v5_trade_learning_samples(
         events,
         labels,
@@ -300,11 +294,19 @@ def build_trade_level_frames_from_sources(
         order_lifecycles=order_lifecycles if order_lifecycles is not None else pl.DataFrame(),
         created_at=generated_at,
     )
+    audit = build_false_block_audit(
+        events,
+        labels,
+        judgments,
+        samples=samples,
+        created_at=generated_at,
+    )
     attribution = build_v5_trade_outcome_attribution(samples, created_at=generated_at)
     opportunity_cost = build_opportunity_cost_frames(
         events,
         labels,
         judgments,
+        samples=samples,
         created_at=generated_at,
     )
     return {
@@ -368,6 +370,7 @@ def build_false_block_audit(
     labels: pl.DataFrame,
     judgments: pl.DataFrame,
     *,
+    samples: pl.DataFrame | None = None,
     created_at: datetime | None = None,
 ) -> pl.DataFrame:
     if events.is_empty() or judgments.is_empty():
@@ -375,12 +378,17 @@ def build_false_block_audit(
     created = created_at or datetime.now(UTC)
     events_by_id = {str(row.get("event_id") or ""): row for row in events.to_dicts()}
     labels_by_id = {str(row.get("event_id") or ""): row for row in labels.to_dicts()}
+    samples_by_id = {
+        str(row.get("event_id") or ""): row
+        for row in (samples if samples is not None else pl.DataFrame()).to_dicts()
+    }
     rows: list[dict[str, Any]] = []
     for judgment in judgments.to_dicts():
         event_id = str(judgment.get("event_id") or "")
         event = events_by_id.get(event_id, {})
         label = labels_by_id.get(event_id, {})
-        value, horizon = _preferred_label_value(label)
+        sample = samples_by_id.get(event_id, {})
+        value, horizon = _sample_or_label_value(sample, label)
         decision = _text(judgment.get("trade_level_decision"))
         quant_lab_would_block = decision not in {"MICRO_CANARY_ALLOW", "LIVE_SMALL_ALLOW"}
         was_profitable = value is not None and value > 0.0
@@ -420,7 +428,9 @@ def trade_level_risk_summary(
     decisions = Counter(
         _text(row.get("trade_level_decision")) or "UNKNOWN" for row in judgments.to_dicts()
     )
-    review_count = decisions.get("MICRO_CANARY_REVIEW", 0)
+    review_count = decisions.get("MICRO_CANARY_REVIEW", 0) + decisions.get(
+        "MICRO_CANARY_REVIEW_BLOCKED_BY_OBSERVABILITY", 0
+    )
     false_block_rate = 0.0
     audit = false_block_audit if false_block_audit is not None else pl.DataFrame()
     if not audit.is_empty():
@@ -536,6 +546,7 @@ def _judgment_row(
     risk_veto = _risk_permission_veto(event)
     strategy_veto = _strategy_advisory_veto(event)
     high_confidence, high_reasons = _v5_high_confidence(event, hard_reasons)
+    observability_reasons = _observability_reasons(event)
     similar_count = _int((similarity or {}).get("similar_sample_count")) or 0
     similar_median = _float((similarity or {}).get("similar_median_after_cost_bps"))
     similar_p25 = _float((similarity or {}).get("similar_p25_after_cost_bps"))
@@ -554,6 +565,12 @@ def _judgment_row(
     if hard:
         decision = "HARD_BLOCK"
         reasons.extend(hard_reasons)
+        max_order = 0.0
+        daily_limit = 0
+    elif high_confidence and observability_reasons:
+        decision = "MICRO_CANARY_REVIEW_BLOCKED_BY_OBSERVABILITY"
+        reasons.append("high_confidence_observability_missing")
+        reasons.extend(observability_reasons)
         max_order = 0.0
         daily_limit = 0
     elif paper_ready and not risk_veto:
@@ -632,14 +649,19 @@ def _v5_high_confidence(
         reasons.append("cost_gate_not_verified")
     if _bool(event.get("would_block_by_cost")) is True:
         reasons.append("would_block_by_cost")
-    if _float(event.get("arrival_mid")) is None:
-        reasons.append("arrival_mid_missing")
     if (
         _bool(event.get("unmanaged_position")) is True
         or _bool(event.get("unmanaged_exposure")) is True
     ):
         reasons.append("unmanaged_position")
     return not reasons, reasons
+
+
+def _observability_reasons(event: dict[str, Any]) -> list[str]:
+    reasons: list[str] = []
+    if _float(event.get("arrival_mid")) is None:
+        reasons.append("arrival_mid_missing")
+    return reasons
 
 
 def _hard_safety_reasons(event: dict[str, Any]) -> list[str]:
@@ -770,6 +792,17 @@ def _preferred_label_value(label: dict[str, Any]) -> tuple[float | None, int | N
         if value is not None:
             return value, horizon
     return None, None
+
+
+def _sample_or_label_value(
+    sample: dict[str, Any],
+    label: dict[str, Any],
+) -> tuple[float | None, int | None]:
+    value = _float(sample.get("net_bps"))
+    horizon = _int(sample.get("label_horizon_hours"))
+    if value is not None:
+        return value, horizon
+    return _preferred_label_value(label)
 
 
 def _schema_version_for_dataset(dataset_name: str) -> str:

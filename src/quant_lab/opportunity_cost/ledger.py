@@ -131,6 +131,7 @@ def build_opportunity_cost_frames(
     labels: pl.DataFrame,
     judgments: pl.DataFrame,
     *,
+    samples: pl.DataFrame | None = None,
     created_at: datetime | None = None,
 ) -> dict[str, pl.DataFrame]:
     created = created_at or datetime.now(UTC)
@@ -138,6 +139,7 @@ def build_opportunity_cost_frames(
         events,
         labels,
         judgments,
+        samples=samples,
         created_at=created,
     )
     daily = build_opportunity_cost_daily(event_frame, created_at=created)
@@ -156,6 +158,7 @@ def build_opportunity_cost_events(
     labels: pl.DataFrame,
     judgments: pl.DataFrame,
     *,
+    samples: pl.DataFrame | None = None,
     created_at: datetime | None = None,
 ) -> pl.DataFrame:
     created = created_at or datetime.now(UTC)
@@ -165,12 +168,17 @@ def build_opportunity_cost_events(
     judgments_by_event = {
         str(row.get("event_id") or ""): row for row in judgments.to_dicts()
     }
+    samples_by_event = {
+        str(row.get("event_id") or ""): row
+        for row in (samples if samples is not None else pl.DataFrame()).to_dicts()
+    }
     rows = []
     for event in events.to_dicts():
         event_id = _text(event.get("event_id"))
         label = labels_by_event.get(event_id, {})
         judgment = judgments_by_event.get(event_id, {})
-        after_cost, horizon = _preferred_label_value(label)
+        sample = samples_by_event.get(event_id, {})
+        after_cost, horizon = _sample_or_label_value(sample, label)
         quant_lab_decision = _text(judgment.get("trade_level_decision")) or "UNKNOWN"
         quant_lab_would_block = quant_lab_decision not in {
             "MICRO_CANARY_ALLOW",
@@ -372,7 +380,13 @@ def _bucket_row(bucket_key: str, rows: list[dict[str, Any]], created: datetime) 
     saved = sum(_float(row.get("loss_saved_bps")) or 0.0 for row in loss_saved)
     veto_net = saved - missed
     high_conf_false_blocks = sum(1 for row in false_blocks if row.get("high_confidence_v5"))
+    high_conf_loss_saved = sum(1 for row in loss_saved if row.get("high_confidence_v5"))
     exception = high_conf_false_blocks >= 3 and missed > saved
+    recommended_decision = ""
+    if exception:
+        recommended_decision = "MICRO_CANARY_REVIEW"
+    elif high_conf_loss_saved >= 3 and saved > missed:
+        recommended_decision = "RISK_BLOCK"
     return {
         "schema_version": OPPORTUNITY_COST_BY_BUCKET_SCHEMA_VERSION,
         "bucket_key": bucket_key,
@@ -395,7 +409,7 @@ def _bucket_row(bucket_key: str, rows: list[dict[str, Any]], created: datetime) 
         "veto_net_value_bps": veto_net,
         "high_confidence_false_block_count": high_conf_false_blocks,
         "opportunity_exception_candidate": exception,
-        "recommended_trade_level_decision": "MICRO_CANARY_REVIEW" if exception else "",
+        "recommended_trade_level_decision": recommended_decision,
         "created_at": created,
         "source": "quant_lab.opportunity_cost.bucket",
     }
@@ -426,6 +440,17 @@ def _preferred_label_value(label: dict[str, Any]) -> tuple[float | None, int | N
         if value is not None:
             return value, horizon
     return None, None
+
+
+def _sample_or_label_value(
+    sample: dict[str, Any],
+    label: dict[str, Any],
+) -> tuple[float | None, int | None]:
+    value = _float(sample.get("net_bps"))
+    horizon = _int(sample.get("label_horizon_hours"))
+    if value is not None:
+        return value, horizon
+    return _preferred_label_value(label)
 
 
 def _best_hindsight_action(after_cost: float | None) -> str:

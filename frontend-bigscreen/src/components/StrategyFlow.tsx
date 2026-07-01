@@ -1,6 +1,5 @@
 import { FlaskConical, GitBranch, Rocket, Scale, Sparkles } from "lucide-react";
 import { bps, safeRows, shortNumber, stringValue } from "../lib/api";
-import { ReactECharts } from "./EChart";
 
 export function StrategyFlow({ flow }: { flow: Record<string, unknown> }) {
   const counts = (flow.counts ?? {}) as Record<string, number>;
@@ -18,35 +17,6 @@ export function StrategyFlow({ flow }: { flow: Record<string, unknown> }) {
     ...safeRows(factorFactory.top_candidates),
     ...safeRows(factorFactory.strategy_bridge_candidates)
   ]);
-  const option = {
-    backgroundColor: "transparent",
-    animationDuration: 1200,
-    tooltip: {},
-    series: [
-      {
-        type: "sankey",
-        top: 20,
-        bottom: 20,
-        left: 8,
-        right: 8,
-        emphasis: { focus: "adjacency" },
-        nodeAlign: "justify",
-        data: [
-          { name: "Research", itemStyle: { color: "#50A9FF" } },
-          { name: "Shadow", itemStyle: { color: "#A77DFF" } },
-          { name: "Paper", itemStyle: { color: "#2DE8A6" } },
-          { name: "Kill", itemStyle: { color: "#FF5D7D" } }
-        ],
-        links: [
-          { source: "Research", target: "Shadow", value: Math.max(1, counts.shadow ?? 0) },
-          { source: "Shadow", target: "Paper", value: Math.max(1, counts.paper ?? 0) },
-          { source: "Research", target: "Kill", value: Math.max(1, counts.kill ?? 0) }
-        ],
-        lineStyle: { color: "gradient", curveness: 0.5 },
-        label: { color: "#eaf6ff", fontSize: 12 }
-      }
-    ]
-  };
   return (
     <section className="card pad strategy-card">
       <h2 className="section-title icon-title"><GitBranch size={23} />策略机会流</h2>
@@ -57,8 +27,15 @@ export function StrategyFlow({ flow }: { flow: Record<string, unknown> }) {
         <Metric label="Paper" value={counts.paper ?? 0} tone="green" />
         <Metric label="Kill" value={counts.kill ?? 0} tone="red" />
       </div>
-      <div className="flow-line"><i /></div>
-      <ReactECharts option={option} style={{ height: 92, marginTop: -10 }} />
+      <div className="flow-rail" aria-label="策略机会流阶段">
+        <span>Research</span>
+        <i />
+        <span>Shadow</span>
+        <i />
+        <span>Paper</span>
+        <i />
+        <span>Advisory</span>
+      </div>
       <div className="strategy-research-grid">
         <div className="opportunity-cost-mini">
           <div className="candidate-title"><Scale size={15} /> 机会成本 / 拦截价值</div>

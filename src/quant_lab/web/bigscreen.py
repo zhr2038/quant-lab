@@ -2358,7 +2358,7 @@ def _advisory_status(row: dict[str, Any]) -> str:
     decision = str(row.get("decision") or "").upper()
     mode = str(row.get("recommended_mode") or "").lower()
     if decision == "KILL":
-        return "CRITICAL"
+        return "INFO"
     if mode == "paper" or decision == "PAPER_READY":
         return "OK"
     if mode == "shadow" or "SHADOW" in decision:

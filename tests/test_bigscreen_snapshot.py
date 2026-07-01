@@ -149,6 +149,38 @@ def test_bigscreen_strategy_flow_counts_use_full_advisory_not_display_sample(tmp
     assert payload["strategy_flow"]["top_candidates"][0]["decision"] == "PAPER_READY"
 
 
+def test_bigscreen_data_matrix_treats_kill_advisory_as_neutral(tmp_path):
+    clear_bigscreen_cache()
+    lake = tmp_path / "lake"
+    created_at = datetime(2026, 6, 6, 13, 0, tzinfo=UTC)
+    write_parquet_dataset(
+        pl.DataFrame(
+            [
+                {
+                    "decision": "KILL",
+                    "recommended_mode": "none",
+                    "strategy_candidate": "risk_filtered_candidate",
+                    "symbol": "BTC-USDT",
+                    "horizon_hours": 24,
+                    "avg_net_bps": -12.0,
+                    "p25_net_bps": -50.0,
+                    "complete_sample_count": 30,
+                    "created_at": created_at,
+                    "as_of_ts": created_at,
+                }
+            ]
+        ),
+        lake / "gold" / "strategy_opportunity_advisory",
+    )
+
+    payload = bigscreen_snapshot(lake)
+    rows = {row["symbol"]: row for row in payload["data_matrix"]["rows"]}
+
+    assert payload["strategy_flow"]["counts"]["kill"] == 1
+    assert rows["BTC-USDT"]["advisory"]["decision"] == "KILL"
+    assert rows["BTC-USDT"]["advisory"]["status"] == "INFO"
+
+
 def test_bigscreen_strategy_flow_exposes_opportunity_cost_summary(tmp_path):
     clear_bigscreen_cache()
     lake = tmp_path / "lake"

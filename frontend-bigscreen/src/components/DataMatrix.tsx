@@ -24,7 +24,10 @@ export function DataMatrix({
     evidence: "证据",
     advisory: "建议"
   };
-  const rows = matrix.rows.slice(0, 8);
+  const rowLimit = variant === "overview" ? 12 : 18;
+  const rows = matrix.rows
+    .filter((row) => String(row.symbol ?? "").endsWith("-USDT"))
+    .slice(0, rowLimit);
   const matrixCells = rows.flatMap((row) => {
     const symbol = String(row.symbol ?? "—").replace("-USDT", "");
     return matrix.columns.map((column) => {

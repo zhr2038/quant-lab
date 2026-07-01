@@ -207,14 +207,14 @@ function Dashboard({
         return (
           <motion.section className="page-grid page-strategy" key="strategy" initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }}>
             <StrategyFlow flow={data.strategy_flow} />
-            <MarketLiquidity market={data.market} density="compact" />
+            <MarketLiquidity market={data.market} matrix={data.data_matrix} density="compact" />
           </motion.section>
         );
       case "data":
         return (
           <motion.section className="page-grid page-data" key="data" initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }}>
             <DataMatrix matrix={data.data_matrix} />
-            <MarketLiquidity market={data.market} density="full" />
+            <MarketLiquidity market={data.market} matrix={data.data_matrix} density="full" />
             <CostQuality cost={data.cost} />
           </motion.section>
         );

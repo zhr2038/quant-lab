@@ -3,12 +3,13 @@ import { bps, safeRows, stringValue } from "../lib/api";
 
 type MarketLiquidityProps = {
   market: Record<string, unknown>;
+  matrix?: Record<string, unknown>;
   density?: "compact" | "full";
 };
 
-export function MarketLiquidity({ market, density = "compact" }: MarketLiquidityProps) {
-  const rows = safeRows(market.regimes);
-  const visibleRows = rows.slice(0, density === "full" ? 10 : 8);
+export function MarketLiquidity({ market, matrix, density = "compact" }: MarketLiquidityProps) {
+  const rows = mergeMarketRows(safeRows(market.regimes), safeRows(matrix?.rows));
+  const visibleRows = rows.slice(0, density === "full" ? 18 : 10);
   const spreadValues = rows
     .map((row) => Number(row.spread_bps))
     .filter((value) => Number.isFinite(value));
@@ -77,4 +78,31 @@ export function MarketLiquidity({ market, density = "compact" }: MarketLiquidity
       )}
     </section>
   );
+}
+
+function mergeMarketRows(
+  regimeRows: Record<string, unknown>[],
+  matrixRows: Record<string, unknown>[]
+): Record<string, unknown>[] {
+  const rows: Record<string, unknown>[] = [];
+  const seen = new Set<string>();
+  const addRow = (row: Record<string, unknown>) => {
+    const symbol = stringValue(row.symbol, "").trim();
+    if (!symbol.endsWith("-USDT")) return;
+    if (!symbol || seen.has(symbol)) return;
+    seen.add(symbol);
+    rows.push(row);
+  };
+  regimeRows.forEach(addRow);
+  matrixRows.forEach((row) => {
+    const marketBar = (row.market_bar ?? {}) as Record<string, unknown>;
+    const spread = (row.spread ?? {}) as Record<string, unknown>;
+    addRow({
+      symbol: row.symbol,
+      volatility_regime: marketBar.regime,
+      regime: marketBar.regime,
+      spread_bps: spread.spread_bps
+    });
+  });
+  return rows;
 }

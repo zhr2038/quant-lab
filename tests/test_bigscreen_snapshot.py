@@ -267,6 +267,42 @@ def test_bigscreen_data_matrix_uses_per_symbol_market_bar_freshness():
     assert "ASTER-USDT.market_bar" in warnings[0]
 
 
+def test_bigscreen_matrix_action_prioritizes_per_symbol_market_staleness():
+    data_matrix = {
+        "columns": ["market_bar", "spread", "trade", "cost"],
+        "rows": [
+            {
+                "symbol": "ASTER-USDT",
+                "market_bar": {"status": "CRITICAL"},
+                "spread": {"status": "WARNING", "spread_bps": 4.0},
+                "trade": {"status": "WARNING"},
+                "cost": {"status": "OK"},
+            },
+            {
+                "symbol": "ADA-USDT",
+                "market_bar": {"status": "OK"},
+                "spread": {"status": "CRITICAL", "spread_bps": 8.0},
+                "trade": {"status": "OK"},
+                "cost": {"status": "OK"},
+            },
+        ],
+    }
+
+    actions = bigscreen_module._build_actions(
+        overview={},
+        data_health={},
+        cost={"hard_fallback_ratio": 0.0, "soft_fallback_ratio": 0.0},
+        v5={"latest": {"kill_switch_enabled": False, "reconcile_ok": True, "ledger_ok": True}},
+        web_events=[],
+        exports={},
+        data_matrix=data_matrix,
+    )
+
+    assert actions[0]["source"] == "data_matrix"
+    assert actions[0]["title"] == "逐币行情数据过期"
+    assert "不要只看全局 market freshness" in actions[0]["next_action"]
+
+
 def test_bigscreen_matrix_attention_promotes_global_status_and_action():
     data_matrix = {
         "columns": ["spread", "trade", "cost"],

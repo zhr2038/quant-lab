@@ -1335,8 +1335,26 @@ def _data_matrix_action_text(summary: dict[str, Any]) -> tuple[str, str, str]:
         warning_by_metric = {}
     spread_critical = int(critical_by_metric.get("spread") or 0)
     spread_warning = int(warning_by_metric.get("spread") or 0)
+    market_critical = int(critical_by_metric.get("market_bar") or 0)
+    market_warning = int(warning_by_metric.get("market_bar") or 0)
     top = ", ".join(str(value) for value in summary.get("top", []))
     top_text = top or "矩阵明细"
+    if market_critical:
+        return (
+            "逐币行情数据过期",
+            f"{market_critical} 个逐币行情严重滞后 / {critical} 个严重单元；"
+            f"重点查看 {top_text}",
+            "打开数据成本页复核 market_bar latest_ts / latest_close_ts，"
+            "不要只看全局 market freshness。",
+        )
+    if market_warning and not critical:
+        return (
+            "逐币行情新鲜度需关注",
+            f"{market_warning} 个逐币行情注意项 / {warning} 个注意单元；"
+            f"重点查看 {top_text}",
+            "打开数据成本页复核 market_bar latest_ts / latest_close_ts，"
+            "确认扩展币池是否需要补采。",
+        )
     if spread_critical:
         return (
             "市场价差偏高",

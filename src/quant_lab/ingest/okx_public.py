@@ -361,6 +361,26 @@ def backfill_expanded_usdt_spot_market_bars(
         after: str | None = None
         seen_cursors: set[str] = set()
         symbol_bar_count = 0
+        latest_candles = effective_client.get_candles(
+            candidate.symbol,
+            bar,
+            limit=limit,
+        )
+        if latest_candles:
+            fetched_candles += len(latest_candles)
+            market_bars.extend(
+                normalized_bars := normalize_okx_candles_to_market_bars(
+                    latest_candles,
+                    inst_id=candidate.symbol,
+                    bar=bar,
+                    market_type=market_type,
+                    source=OKX_EXPANDED_UNIVERSE_SOURCE,
+                )
+            )
+            symbol_bar_count += len(normalized_bars)
+            after = _oldest_candle_ts(latest_candles)
+            if after is not None:
+                seen_cursors.add(after)
         for _ in range(max(history_pages, 1)):
             candles = effective_client.get_history_candles(
                 candidate.symbol,

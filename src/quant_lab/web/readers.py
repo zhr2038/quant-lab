@@ -517,7 +517,7 @@ CORE_DIAGNOSTIC_DATASETS = {
 
 MARKET_BOOTSTRAP_COMMAND = (
     "qlab okx-fetch-candles --inst-id BTC-USDT --bar 1H --market-type SPOT "
-    "--lake-root {lake_root} --history --limit 100"
+    "--lake-root {lake_root} --limit 100"
 )
 V5_TELEMETRY_SYNC_COMMAND = (
     "qlab sync-v5-telemetry --config /etc/quant-lab/v5_telemetry_remote.yaml"

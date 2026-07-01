@@ -2645,8 +2645,9 @@ def test_overview_diagnostics_suggests_commands_when_lake_has_no_parquet(tmp_pat
     frames = "\n".join(command_texts)
     assert (
         "qlab okx-fetch-candles --inst-id BTC-USDT --bar 1H --market-type SPOT "
-        f"--lake-root {lake_root} --history --limit 100"
+        f"--lake-root {lake_root} --limit 100"
     ) in frames
+    assert "--history" not in frames
     assert "qlab okx-ws-collect-universe" in frames
     assert "qlab sync-v5-telemetry --config /etc/quant-lab/v5_telemetry_remote.yaml" in frames
     assert "qlab export-daily 尚未实现或尚未运行。" in warnings

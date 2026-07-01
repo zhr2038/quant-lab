@@ -65,11 +65,14 @@ def test_web_service_disables_bigscreen_stale_grace_by_default():
 
 def test_okx_rest_backfill_runs_every_15_minutes_to_reduce_stale_market_bar_window():
     timer = _unit("quant-lab-okx-rest-backfill.timer")
+    service = _unit("quant-lab-okx-rest-backfill.service")
 
     assert "every 15 minutes" in timer
     assert "OnActiveSec=15min" in timer
     assert "OnUnitActiveSec=15min" in timer
     assert "OnUnitActiveSec=1h" not in timer
+    assert "okx-fetch-candles" in service
+    assert "--history" not in service
 
 
 def test_daily_export_uses_recent_api_metrics_window():

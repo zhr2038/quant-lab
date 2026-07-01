@@ -3,6 +3,7 @@ from pathlib import Path
 from typing import Any
 
 import httpx
+import polars as pl
 import pytest
 
 from quant_lab.data.lake import read_parquet_dataset
@@ -334,12 +335,29 @@ def test_backfill_expanded_usdt_spot_market_bars_publishes_selected_symbols(tmp_
     candidates = read_parquet_dataset(
         lake_root / "bronze" / "okx_public_rest" / "spot_universe_candidates"
     )
+    latest_by_symbol = (
+        market.group_by("symbol")
+        .agg(pl.col("ts").max().alias("latest_ts"))
+        .sort("symbol")
+        .to_dicts()
+    )
 
     assert result.selected_symbols == ["BTC-USDT", "XRP-USDT"]
-    assert result.published_market_bars == 2
-    assert second.market_bar_rows == 2
+    assert result.published_market_bars == 4
+    assert second.market_bar_rows == 4
     assert set(market["symbol"].to_list()) == {"BTC-USDT", "XRP-USDT"}
+    assert latest_by_symbol == [
+        {
+            "symbol": "BTC-USDT",
+            "latest_ts": datetime(2026, 2, 16, 1, tzinfo=UTC),
+        },
+        {
+            "symbol": "XRP-USDT",
+            "latest_ts": datetime(2026, 2, 16, 0, tzinfo=UTC),
+        },
+    ]
     assert set(candidates["symbol"].to_list()) == {"BTC-USDT", "XRP-USDT"}
+    assert set(client.market_methods) == {"candles"}
     assert set(client.history_methods) == {"history_candles"}
 
 
@@ -408,6 +426,7 @@ def _ticker(symbol: str, *, quote_volume: float, bid: float, ask: float) -> dict
 
 class _FakeExpandedUniverseClient:
     def __init__(self) -> None:
+        self.market_methods: list[str] = []
         self.history_methods: list[str] = []
 
     def get_instruments(self, inst_type: str) -> list[dict[str, str]]:
@@ -426,6 +445,25 @@ class _FakeExpandedUniverseClient:
             _ticker("DOGE-USDT", quote_volume=9_000_000, bid=0.2, ask=0.2001),
         ]
 
+    def get_candles(
+        self,
+        inst_id: str,
+        bar: str,
+        after: str | None = None,
+        before: str | None = None,
+        limit: int = 100,
+    ) -> list[list[str]]:
+        assert bar == "1H"
+        assert after is None
+        assert before is None
+        assert limit == 100
+        self.market_methods.append("candles")
+        ts = {
+            "BTC-USDT": "1771203600000",
+            "XRP-USDT": "1771200000000",
+        }[inst_id]
+        return [[ts, "101", "102", "100", "101.5", "11", "11", "1116.5", "1"]]
+
     def get_history_candles(
         self,
         inst_id: str,
@@ -438,11 +476,15 @@ class _FakeExpandedUniverseClient:
         assert limit == 100
         self.history_methods.append("history_candles")
         if after is not None:
-            return []
+            ts = {
+                "BTC-USDT": "1771200000000",
+                "XRP-USDT": "1771196400000",
+            }[inst_id]
+            return [[ts, "100", "101", "99", "100.5", "10", "10", "1005", "1"]]
         assert before is None
         ts = {
-            "BTC-USDT": "1771200000000",
-            "XRP-USDT": "1771196400000",
+            "BTC-USDT": "1771196400000",
+            "XRP-USDT": "1771192800000",
         }[inst_id]
         return [[ts, "100", "101", "99", "100.5", "10", "10", "1005", "1"]]
 

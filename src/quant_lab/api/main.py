@@ -1286,6 +1286,15 @@ def _decorate_web_v2_expert_pack_status(
         "packs": packs,
         "pack_count": len(packs),
     }
+    attachment_available_pack = (
+        available_pack
+        if (
+            available_pack is not None
+            and _pack_name_matches_export_date(available_pack.name, export_date)
+        )
+        else None
+    )
+    attachment_pack = latest_pack or attachment_available_pack
     if latest_pack is not None:
         try:
             stat = latest_pack.stat()
@@ -1294,7 +1303,8 @@ def _decorate_web_v2_expert_pack_status(
         if stat is not None:
             payload["latest_size_bytes"] = stat.st_size
             payload["latest_modified_at"] = datetime.fromtimestamp(stat.st_mtime, UTC).isoformat()
-        payload.update(_expert_pack_v5_attachment_status(latest_pack))
+    if attachment_pack is not None:
+        payload.update(_expert_pack_v5_attachment_status(attachment_pack))
     payload.update(
         _export_regenerate_cooldown_payload(
             effective_status,

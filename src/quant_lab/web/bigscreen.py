@@ -505,10 +505,24 @@ def _web_v2_export_summary_from_history(
             latest_pack = manual_pack
             latest_source = "manual_web_request"
 
-    if latest_pack is not None:
-        manifest = readers._read_json_from_zip(latest_pack, "manifest.json")
-        data_quality = readers._read_json_from_zip(latest_pack, "data_quality.json")
-        questions = readers._read_text_from_zip(latest_pack, "expert_questions.md").splitlines()
+    display_available_pack = (
+        available_pack
+        if (
+            available_pack is not None
+            and _pack_name_matches_export_date(available_pack.name, export_date)
+        )
+        else None
+    )
+    display_pack = latest_pack or display_available_pack
+    display_source = (
+        latest_source
+        or ("available_pack" if display_available_pack is not None else None)
+    )
+
+    if display_pack is not None:
+        manifest = readers._read_json_from_zip(display_pack, "manifest.json")
+        data_quality = readers._read_json_from_zip(display_pack, "data_quality.json")
+        questions = readers._read_text_from_zip(display_pack, "expert_questions.md").splitlines()
     else:
         manifest = {}
         data_quality = {}
@@ -518,6 +532,8 @@ def _web_v2_export_summary_from_history(
         **history,
         "latest_pack": str(latest_pack) if latest_pack is not None else None,
         "latest_pack_source": latest_source,
+        "display_pack": str(display_pack) if display_pack is not None else None,
+        "display_pack_source": display_source,
         "manual_latest_pack": str(manual_pack) if manual_pack is not None else None,
         "manual_latest_pack_name": manual_pack.name if manual_pack is not None else None,
         "available_pack": str(available_pack) if available_pack is not None else None,

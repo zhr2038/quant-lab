@@ -1212,12 +1212,20 @@ def _data_matrix_issue_summary(data_matrix: dict[str, Any]) -> dict[str, Any]:
     columns = data_matrix.get("columns")
     rows = data_matrix.get("rows")
     if not isinstance(columns, list) or not isinstance(rows, list):
-        return {"critical": 0, "warning": 0, "top": []}
+        return {
+            "critical": 0,
+            "warning": 0,
+            "top": [],
+            "critical_by_metric": {},
+            "warning_by_metric": {},
+        }
 
     critical = 0
     warning = 0
     critical_top: list[str] = []
     warning_top: list[str] = []
+    critical_by_metric: dict[str, int] = {}
+    warning_by_metric: dict[str, int] = {}
     for row in rows:
         if not isinstance(row, dict):
             continue
@@ -1229,13 +1237,21 @@ def _data_matrix_issue_summary(data_matrix: dict[str, Any]) -> dict[str, Any]:
             status = str(cell.get("status") or "").upper()
             if status == "CRITICAL":
                 critical += 1
+                critical_by_metric[str(column)] = critical_by_metric.get(str(column), 0) + 1
                 if len(critical_top) < 3:
                     critical_top.append(f"{symbol}.{column}")
             elif status == "WARNING":
                 warning += 1
+                warning_by_metric[str(column)] = warning_by_metric.get(str(column), 0) + 1
                 if len(warning_top) < 3:
                     warning_top.append(f"{symbol}.{column}")
-    return {"critical": critical, "warning": warning, "top": critical_top or warning_top}
+    return {
+        "critical": critical,
+        "warning": warning,
+        "top": critical_top or warning_top,
+        "critical_by_metric": critical_by_metric,
+        "warning_by_metric": warning_by_metric,
+    }
 
 
 def _data_matrix_warnings(data_matrix: dict[str, Any]) -> list[str]:
@@ -1246,6 +1262,40 @@ def _data_matrix_warnings(data_matrix: dict[str, Any]) -> list[str]:
         return []
     top = ",".join(str(value) for value in summary.get("top", []) if str(value).strip())
     return [f"data_matrix_attention: critical={critical}; warning={warning}; top={top}"]
+
+
+def _data_matrix_action_text(summary: dict[str, Any]) -> tuple[str, str, str]:
+    critical = int(summary.get("critical") or 0)
+    warning = int(summary.get("warning") or 0)
+    critical_by_metric = summary.get("critical_by_metric")
+    warning_by_metric = summary.get("warning_by_metric")
+    if not isinstance(critical_by_metric, dict):
+        critical_by_metric = {}
+    if not isinstance(warning_by_metric, dict):
+        warning_by_metric = {}
+    spread_critical = int(critical_by_metric.get("spread") or 0)
+    spread_warning = int(warning_by_metric.get("spread") or 0)
+    top = ", ".join(str(value) for value in summary.get("top", []))
+    top_text = top or "矩阵明细"
+    if spread_critical:
+        return (
+            "市场价差偏高",
+            f"{spread_critical} 个严重价差 / {warning} 个注意单元；重点查看 {top_text}",
+            "这是实时盘口成本风险，不是数据过期；"
+            "打开数据成本页复核 spread、cost、advisory 的逐币状态",
+        )
+    if spread_warning and not critical:
+        return (
+            "市场价差需关注",
+            f"{spread_warning} 个价差注意项 / {warning} 个注意单元；重点查看 {top_text}",
+            "这是实时盘口成本风险，不是数据过期；"
+            "打开数据成本页复核 spread、cost、advisory 的逐币状态",
+        )
+    return (
+        "数据矩阵存在注意项",
+        f"{critical} 个严重单元 / {warning} 个注意单元；重点查看 {top_text}",
+        "打开数据成本页复核 spread、trade、cost、advisory 的逐币状态",
+    )
 
 
 def _matrix_symbols(
@@ -2158,14 +2208,14 @@ def _build_actions(
         critical = int(matrix_issue.get("critical") or 0)
         warning = int(matrix_issue.get("warning") or 0)
         if critical or warning:
-            top = ", ".join(str(value) for value in matrix_issue.get("top", []))
+            title, summary, next_action = _data_matrix_action_text(matrix_issue)
             actions.append(
                 _action(
                     "WARNING",
-                    "数据矩阵存在注意项",
-                    f"{critical} 个严重单元 / {warning} 个注意单元；重点查看 {top or '矩阵明细'}",
+                    title,
+                    summary,
                     "data_matrix",
-                    "打开数据成本页复核 spread、trade、cost、advisory 的逐币状态",
+                    next_action,
                     "/data",
                 )
             )

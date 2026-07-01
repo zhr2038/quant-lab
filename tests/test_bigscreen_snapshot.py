@@ -225,6 +225,9 @@ def test_bigscreen_matrix_attention_promotes_global_status_and_action():
     assert status == "WARNING"
     assert actions[0]["source"] == "data_matrix"
     assert actions[0]["severity"] == "WARNING"
+    assert actions[0]["title"] == "市场价差偏高"
+    assert "1 个严重价差" in actions[0]["summary"]
+    assert "不是数据过期" in actions[0]["next_action"]
 
 
 def test_bigscreen_strategy_flow_exposes_opportunity_cost_summary(tmp_path):

@@ -171,17 +171,7 @@ def _build_bigscreen_snapshot_payload(root: Path) -> dict[str, Any]:
     legacy_anomalies = _legacy_web_anomalies(data_health)
     v5_payload = _v5_payload(v5, current_readiness)
     exports_payload = _exports_payload(exports)
-    export_v5_lag = _expert_pack_v5_lag_issue(exports, v5)
-    if export_v5_lag is not None:
-        exports_payload.update(
-            {
-                "latest_pack_v5_lag_status": "WARNING",
-                "latest_pack_v5_lag_seconds": export_v5_lag["lag_seconds"],
-                "latest_pack_v5_lag_minutes": export_v5_lag["lag_minutes"],
-                "latest_live_v5_bundle_ts": export_v5_lag["latest_v5_bundle_ts"],
-                "latest_pack_v5_lag_pack_bundle_ts": export_v5_lag["pack_bundle_ts"],
-            }
-        )
+    exports_payload.update(_expert_pack_v5_lag_status_payload(exports, v5))
 
     payload = {
         "generated_at": _json_value(generated_at),
@@ -2808,6 +2798,29 @@ def _expert_pack_v5_lag_issue(
         "latest_v5_bundle_ts": _json_value(latest_v5_ts),
         "lag_seconds": lag_seconds,
         "lag_minutes": max(1, round(lag_seconds / 60)),
+    }
+
+
+def _expert_pack_v5_lag_status_payload(
+    exports: dict[str, Any],
+    v5: dict[str, Any],
+) -> dict[str, Any]:
+    current_pack = exports.get("latest_pack") or exports.get("display_pack")
+    if not current_pack:
+        return {}
+    _pack_bundle_name, pack_bundle_ts = _latest_export_pack_v5_bundle_metadata(exports)
+    latest_v5_ts = _parse_dt(_latest_v5_bundle_ts({}, v5))
+    if pack_bundle_ts is None or latest_v5_ts is None:
+        return {}
+    lag_seconds = int((latest_v5_ts - pack_bundle_ts).total_seconds())
+    bounded_lag_seconds = max(0, lag_seconds)
+    status = "OK" if lag_seconds <= EXPERT_PACK_V5_LAG_WARNING_SECONDS else "WARNING"
+    return {
+        "latest_pack_v5_lag_status": status,
+        "latest_pack_v5_lag_seconds": bounded_lag_seconds,
+        "latest_pack_v5_lag_minutes": max(0, round(bounded_lag_seconds / 60)),
+        "latest_live_v5_bundle_ts": _json_value(latest_v5_ts),
+        "latest_pack_v5_lag_pack_bundle_ts": _json_value(pack_bundle_ts),
     }
 
 

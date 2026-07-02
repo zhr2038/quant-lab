@@ -2407,30 +2407,35 @@ def test_bigscreen_action_warns_when_expert_pack_v5_bundle_lags_current_v5():
 
 def test_bigscreen_action_does_not_warn_for_recent_v5_followup_after_manual_pack():
     pack_path = "/var/lib/quant-lab/exports/quant_lab_expert_pack_2026-06-28_120000.zip"
+    v5 = {"latest": {"latest_bundle_ts": "2026-06-28T12:28:51Z"}}
+    exports = {
+        "latest_pack": pack_path,
+        "latest_pack_source": "manual_web_request",
+        "packs": pl.DataFrame(
+            [
+                {
+                    "path": pack_path,
+                    "name": Path(pack_path).name,
+                    "selected_v5_bundle_manifest_bundle_name": (
+                        "v5_live_followup_bundle_20260628T120533Z.tar.gz"
+                    ),
+                }
+            ]
+        ),
+        "data_quality_summary": {"status": "OK", "warning_count": 0},
+    }
     actions = bigscreen_module._build_actions(
         overview={},
         data_health={},
         cost={},
-        v5={"latest": {"latest_bundle_ts": "2026-06-28T12:28:51Z"}},
+        v5=v5,
         web_events=[],
-        exports={
-            "latest_pack": pack_path,
-            "latest_pack_source": "manual_web_request",
-            "packs": pl.DataFrame(
-                [
-                    {
-                        "path": pack_path,
-                        "name": Path(pack_path).name,
-                        "selected_v5_bundle_manifest_bundle_name": (
-                            "v5_live_followup_bundle_20260628T120533Z.tar.gz"
-                        ),
-                    }
-                ]
-            ),
-            "data_quality_summary": {"status": "OK", "warning_count": 0},
-        },
+        exports=exports,
     )
+    status_payload = bigscreen_module._expert_pack_v5_lag_status_payload(exports, v5)
 
+    assert status_payload["latest_pack_v5_lag_status"] == "OK"
+    assert status_payload["latest_pack_v5_lag_minutes"] == 23
     assert not any(
         item["source"] == "expert_export_summary.v5_bundle_lag" for item in actions
     )

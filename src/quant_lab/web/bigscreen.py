@@ -35,6 +35,8 @@ SNAPSHOT_CACHE_STALE_GRACE_SECONDS = 0.0
 MARKET_BAR_WARNING_DELAY_SECONDS = 2 * 60 * 60
 MARKET_BAR_CRITICAL_DELAY_SECONDS = 3 * 60 * 60
 EXPERT_PACK_V5_LAG_WARNING_SECONDS = 60 * 60
+WEB_V2_SMOKE_STATUS_PATH = Path("/var/lib/quant-lab/ops/web_v2_smoke/latest.json")
+WEB_V2_SMOKE_MAX_AGE_SECONDS = 25 * 60
 V5_BUNDLE_NAME_RE = re.compile(r"v5_live_followup_bundle_(\d{8}T\d{6})Z\.tar\.gz")
 _SNAPSHOT_CACHE: dict[str, tuple[float, dict[str, Any]]] = {}
 _SNAPSHOT_CACHE_SOURCE_SIGNATURES: dict[str, tuple[Any, ...]] = {}
@@ -135,6 +137,7 @@ def _build_bigscreen_snapshot_payload(root: Path) -> dict[str, Any]:
     exports = _web_v2_export_summary_from_history(root, export_history, generated_at)
     web_events = perf.recent_events(limit=50)
     api_metrics = _safe_api_metrics(root)
+    web_smoke = _web_v2_smoke_status(generated_at)
     overview = _overview_from_summaries(data_health, v5, consumers)
     data_matrix = _data_matrix(market, collectors, cost, strategy, data_health, overview)
 
@@ -188,7 +191,15 @@ def _build_bigscreen_snapshot_payload(root: Path) -> dict[str, Any]:
         "health_score": health_score,
         "kpis": _kpis(generated_at, overview, collectors, cost, v5, web_events, api_metrics),
         "actions": _build_actions(
-            overview, data_health, cost, v5, web_events, exports, legacy_anomalies, data_matrix
+            overview,
+            data_health,
+            cost,
+            v5,
+            web_events,
+            exports,
+            legacy_anomalies,
+            data_matrix,
+            web_smoke,
         )[:8],
         "data_matrix": data_matrix,
         "strategy_flow": _strategy_flow(strategy),
@@ -198,7 +209,7 @@ def _build_bigscreen_snapshot_payload(root: Path) -> dict[str, Any]:
         "collectors": _collector_payload(collectors),
         "data_health": _data_health_payload(data_health, data_matrix),
         "legacy_anomalies": legacy_anomalies,
-        "web_perf": _web_perf_payload(web_events, api_metrics),
+        "web_perf": _web_perf_payload(web_events, api_metrics, web_smoke),
         "consumers": _consumer_payload(consumers),
         "exports": exports_payload,
         "warnings": warnings[:30],
@@ -277,6 +288,7 @@ def _snapshot_source_signature(root: Path) -> tuple[Any, ...]:
         _directory_signature(root / "gold" / "quant_lab_opportunity_cost_daily"),
         _directory_signature(root / "gold" / "opportunity_cost_by_bucket"),
         _directory_signature(root / "gold" / "quant_lab_decision_regret"),
+        _path_signature(_web_v2_smoke_status_path()),
     )
 
 
@@ -419,6 +431,26 @@ def _seconds_env(name: str, default: int) -> int:
     except ValueError:
         return default
     return max(0, value)
+
+
+def _bool_env(name: str, default: bool = False) -> bool:
+    raw = os.environ.get(name, "")
+    if not raw:
+        return default
+    return raw.strip().lower() not in {"0", "false", "no", "off"}
+
+
+def _web_v2_smoke_status_path() -> Path:
+    raw = os.environ.get("QUANT_LAB_WEB_V2_SMOKE_STATUS_PATH", "").strip()
+    return Path(raw) if raw else WEB_V2_SMOKE_STATUS_PATH
+
+
+def _web_v2_smoke_max_age_seconds() -> int:
+    return _seconds_env("QUANT_LAB_WEB_V2_SMOKE_MAX_AGE_SECONDS", WEB_V2_SMOKE_MAX_AGE_SECONDS)
+
+
+def _web_v2_smoke_status_required() -> bool:
+    return _bool_env("QUANT_LAB_WEB_V2_SMOKE_REQUIRE_STATUS", default=False)
 
 
 def _safe_summary(name: str, fn: Any, *args: Any) -> dict[str, Any]:
@@ -2191,7 +2223,96 @@ def _legacy_web_anomalies(data_health: dict[str, Any]) -> dict[str, Any]:
     }
 
 
-def _web_perf_payload(events: list[dict[str, Any]], api_metrics: dict[str, Any]) -> dict[str, Any]:
+def _web_v2_smoke_status(now: datetime) -> dict[str, Any]:
+    path = _web_v2_smoke_status_path()
+    required = _web_v2_smoke_status_required()
+    max_age_seconds = _web_v2_smoke_max_age_seconds()
+    base: dict[str, Any] = {
+        "source_path": str(path),
+        "required": required,
+        "max_age_seconds": max_age_seconds,
+    }
+    if not path.exists():
+        return {**base, "status": "missing", "ok": None, "age_seconds": None}
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError) as exc:
+        return {
+            **base,
+            "status": "invalid",
+            "ok": False,
+            "age_seconds": None,
+            "error": f"{type(exc).__name__}: {exc}",
+        }
+    if not isinstance(payload, dict):
+        return {**base, "status": "invalid", "ok": False, "age_seconds": None}
+
+    checked_at = _parse_dt(payload.get("checked_at"))
+    age_seconds = None if checked_at is None else max(0, int((now - checked_at).total_seconds()))
+    failures = payload.get("failures") if isinstance(payload.get("failures"), list) else []
+    warnings = payload.get("warnings") if isinstance(payload.get("warnings"), list) else []
+    ok = payload.get("ok") if isinstance(payload.get("ok"), bool) else None
+    stale = age_seconds is None or age_seconds > max_age_seconds
+    status = "ok"
+    if ok is False or failures:
+        status = "failing"
+    elif stale:
+        status = "stale"
+    elif ok is None:
+        status = "unknown"
+
+    return {
+        **base,
+        "status": status,
+        "ok": ok,
+        "checked_at": _json_value(checked_at),
+        "age_seconds": age_seconds,
+        "failure_count": len(failures),
+        "warning_count": len(warnings),
+        "failures": failures[:6],
+        "warnings": warnings[:6],
+        "snapshot": payload.get("snapshot") if isinstance(payload.get("snapshot"), dict) else {},
+        "expert_pack": (
+            payload.get("expert_pack") if isinstance(payload.get("expert_pack"), dict) else {}
+        ),
+        "deep_health": (
+            payload.get("deep_health") if isinstance(payload.get("deep_health"), dict) else {}
+        ),
+    }
+
+
+def _web_v2_smoke_action_issue(web_smoke: dict[str, Any] | None) -> dict[str, Any] | None:
+    if not isinstance(web_smoke, dict):
+        return None
+    status = str(web_smoke.get("status") or "")
+    required = web_smoke.get("required") is True
+    if status == "missing" and not required:
+        return None
+    if status in {"ok", ""}:
+        return None
+    if status == "failing":
+        severity = "CRITICAL"
+        summary = f"最近一次 Web V2/API smoke 失败，failures={web_smoke.get('failure_count') or 0}"
+    elif status == "stale":
+        severity = "WARNING"
+        summary = (
+            "Web V2/API smoke 结果已过期，"
+            f"age={web_smoke.get('age_seconds')}s，阈值={web_smoke.get('max_age_seconds')}s"
+        )
+    elif status == "missing":
+        severity = "WARNING"
+        summary = "生产 API 要求 Web V2/API smoke 状态文件，但当前未找到 latest.json"
+    else:
+        severity = "WARNING"
+        summary = f"Web V2/API smoke 状态不可用：{status}"
+    return {"severity": severity, "summary": summary}
+
+
+def _web_perf_payload(
+    events: list[dict[str, Any]],
+    api_metrics: dict[str, Any],
+    web_smoke: dict[str, Any] | None = None,
+) -> dict[str, Any]:
     return {
         "cache_hit": sum(1 for row in events if row.get("cache_hit")),
         "cache_miss": sum(1 for row in events if row.get("cache_miss")),
@@ -2202,6 +2323,7 @@ def _web_perf_payload(events: list[dict[str, Any]], api_metrics: dict[str, Any])
         "api_p50_ms": _metric_latency(api_metrics, "p50") or _web_latency(events, "p50"),
         "api_p95_ms": _metric_latency(api_metrics, "p95") or _web_latency(events, "p95"),
         "slow_paths": api_metrics.get("slow_paths", []),
+        "web_v2_smoke": web_smoke or {},
     }
 
 
@@ -2464,8 +2586,21 @@ def _build_actions(
     exports: dict[str, Any],
     legacy_anomalies: dict[str, Any] | None = None,
     data_matrix: dict[str, Any] | None = None,
+    web_smoke: dict[str, Any] | None = None,
 ) -> list[dict[str, Any]]:
     actions: list[dict[str, Any]] = []
+    web_smoke_issue = _web_v2_smoke_action_issue(web_smoke)
+    if web_smoke_issue is not None:
+        actions.append(
+            _action(
+                str(web_smoke_issue["severity"]),
+                "Web V2/API 巡检异常",
+                str(web_smoke_issue["summary"]),
+                "web_v2_smoke",
+                "检查 quant-lab-web-v2-smoke.timer/service journal 与 latest.json 写入状态",
+                "/data-ops",
+            )
+        )
     if data_matrix is not None:
         matrix_issue = _data_matrix_issue_summary(data_matrix)
         critical = int(matrix_issue.get("critical") or 0)

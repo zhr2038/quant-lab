@@ -1221,6 +1221,13 @@ def web_v2_smoke_command(
             help="Return non-zero when warnings are present.",
         ),
     ] = False,
+    output_json: Annotated[
+        Path | None,
+        typer.Option(
+            "--output-json",
+            help="Atomically write the smoke result JSON for Web V2 status readers.",
+        ),
+    ] = None,
 ) -> None:
     symbols = tuple(symbol or DEFAULT_COST_SYMBOLS)
     result = run_web_v2_smoke(
@@ -1234,9 +1241,21 @@ def web_v2_smoke_command(
         allow_live_permission=allow_live_permission,
         include_api_contracts=not skip_api_contracts,
     )
+    if output_json is not None:
+        _write_json_atomically(output_json, result)
     typer.echo(json.dumps(result, indent=2, sort_keys=True, default=str))
     if result["failures"] or (fail_on_warnings and result["warnings"]):
         raise typer.Exit(1)
+
+
+def _write_json_atomically(path: Path, payload: dict[str, Any]) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    tmp_path = path.with_name(f".{path.name}.tmp")
+    tmp_path.write_text(
+        json.dumps(payload, indent=2, sort_keys=True, default=str) + "\n",
+        encoding="utf-8",
+    )
+    tmp_path.replace(path)
 
 
 def _compact_ops_summary_payload(payload: dict[str, Any]) -> dict[str, Any]:

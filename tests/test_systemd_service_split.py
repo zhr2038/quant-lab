@@ -55,6 +55,7 @@ def test_api_service_uses_async_metrics_flush():
     assert "QUANT_LAB_WEB_EXPORT_BACKGROUND_TRIGGER=request_file" in unit
     assert "QUANT_LAB_WEB_EXPORT_STATUS_STALE_SECONDS=1800" in unit
     assert "QUANT_LAB_BIGSCREEN_STALE_GRACE_SECONDS=0" in unit
+    assert "QUANT_LAB_WEB_V2_SMOKE_REQUIRE_STATUS=1" in unit
 
 
 def test_web_service_disables_bigscreen_stale_grace_by_default():
@@ -73,6 +74,9 @@ def test_web_v2_smoke_timer_checks_api_contracts_with_production_token():
     assert "qlab web-v2-smoke" in unit
     assert "--base-url http://127.0.0.1:8027" in unit
     assert "--request-attempts 3" in unit
+    assert "PermissionsStartOnly=true" in unit
+    assert "ExecStartPre=/usr/bin/install -d -o quantlab -g quantlab" in unit
+    assert "--output-json /var/lib/quant-lab/ops/web_v2_smoke/latest.json" in unit
     assert "--allow-live-cost-trust" not in unit
     assert "--allow-live-permission" not in unit
     assert "OnUnitActiveSec=10min" in timer

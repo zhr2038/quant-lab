@@ -1,10 +1,14 @@
 from datetime import UTC, datetime, timedelta
 
 import httpx
+from typer.testing import CliRunner
 
+import quant_lab.cli as cli_module
+from quant_lab.cli import app
 from quant_lab.ops.web_v2_smoke import run_web_v2_smoke
 
 NOW = datetime(2026, 7, 2, 7, 40, tzinfo=UTC)
+runner = CliRunner()
 
 
 def test_web_v2_smoke_allows_read_only_warnings_without_failing():
@@ -103,6 +107,26 @@ def test_web_v2_smoke_fails_unexpected_live_permission():
         "area": "/v1/risk/live-permission-detail",
         "reason": "unexpected_live_permission:ALLOW",
     } in result["failures"]
+
+
+def test_web_v2_smoke_cli_writes_output_before_nonzero_exit(monkeypatch, tmp_path):
+    output_path = tmp_path / "ops" / "web_v2_smoke" / "latest.json"
+
+    def fake_run_web_v2_smoke(**_: object) -> dict[str, object]:
+        return {
+            "ok": False,
+            "checked_at": "2026-07-02T07:40:00Z",
+            "failures": [{"area": "/web-v2/snapshot", "reason": "snapshot_status_critical"}],
+            "warnings": [],
+        }
+
+    monkeypatch.setattr(cli_module, "run_web_v2_smoke", fake_run_web_v2_smoke)
+
+    result = runner.invoke(app, ["web-v2-smoke", "--output-json", str(output_path)])
+
+    assert result.exit_code == 1
+    payload = output_path.read_text(encoding="utf-8")
+    assert '"snapshot_status_critical"' in payload
 
 
 def _smoke_handler(

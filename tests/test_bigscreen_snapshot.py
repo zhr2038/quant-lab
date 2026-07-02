@@ -499,6 +499,63 @@ def test_bigscreen_matrix_action_combines_spread_critical_with_market_warning():
     assert "market_bar latest_ts" in actions[0]["next_action"]
 
 
+def test_web_v2_smoke_status_required_missing_enters_action_queue(monkeypatch, tmp_path):
+    missing_status = tmp_path / "ops" / "web_v2_smoke" / "latest.json"
+    monkeypatch.setenv("QUANT_LAB_WEB_V2_SMOKE_STATUS_PATH", str(missing_status))
+    monkeypatch.setenv("QUANT_LAB_WEB_V2_SMOKE_REQUIRE_STATUS", "1")
+    status = bigscreen_module._web_v2_smoke_status(datetime(2026, 7, 2, 8, tzinfo=UTC))
+
+    actions = bigscreen_module._build_actions(
+        overview={},
+        data_health={},
+        cost={"hard_fallback_ratio": 0.0, "soft_fallback_ratio": 0.0},
+        v5={"latest": {"kill_switch_enabled": False, "reconcile_ok": True, "ledger_ok": True}},
+        web_events=[],
+        exports={},
+        web_smoke=status,
+    )
+
+    assert status["status"] == "missing"
+    assert actions[0]["source"] == "web_v2_smoke"
+    assert actions[0]["severity"] == "WARNING"
+
+
+def test_web_v2_smoke_status_failure_enters_web_perf_and_action_queue(monkeypatch, tmp_path):
+    status_path = tmp_path / "ops" / "web_v2_smoke" / "latest.json"
+    status_path.parent.mkdir(parents=True)
+    status_path.write_text(
+        json.dumps(
+            {
+                "ok": False,
+                "checked_at": "2026-07-02T07:58:00Z",
+                "failures": [{"area": "/web-v2/snapshot", "reason": "snapshot_status_critical"}],
+                "warnings": [],
+                "snapshot": {"status": "CRITICAL"},
+            }
+        ),
+        encoding="utf-8",
+    )
+    monkeypatch.setenv("QUANT_LAB_WEB_V2_SMOKE_STATUS_PATH", str(status_path))
+    status = bigscreen_module._web_v2_smoke_status(datetime(2026, 7, 2, 8, tzinfo=UTC))
+    web_perf = bigscreen_module._web_perf_payload([], {}, status)
+
+    actions = bigscreen_module._build_actions(
+        overview={},
+        data_health={},
+        cost={"hard_fallback_ratio": 0.0, "soft_fallback_ratio": 0.0},
+        v5={"latest": {"kill_switch_enabled": False, "reconcile_ok": True, "ledger_ok": True}},
+        web_events=[],
+        exports={},
+        web_smoke=status,
+    )
+
+    assert status["status"] == "failing"
+    assert status["age_seconds"] == 120
+    assert web_perf["web_v2_smoke"]["failure_count"] == 1
+    assert actions[0]["source"] == "web_v2_smoke"
+    assert actions[0]["severity"] == "CRITICAL"
+
+
 def test_bigscreen_strategy_flow_exposes_opportunity_cost_summary(tmp_path):
     clear_bigscreen_cache()
     lake = tmp_path / "lake"

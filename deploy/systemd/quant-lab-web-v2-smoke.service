@@ -11,7 +11,9 @@ WorkingDirectory=/opt/quant-lab
 EnvironmentFile=/etc/quant-lab/quant_lab_api.env
 Environment=POLARS_MAX_THREADS=1
 Environment=MALLOC_ARENA_MAX=2
-ExecStart=/bin/bash -lc 'set -euo pipefail; /usr/bin/timeout 3m /opt/quant-lab/.venv/bin/qlab web-v2-smoke --base-url http://127.0.0.1:8027 --request-attempts 3 --retry-delay-seconds 1.0'
+PermissionsStartOnly=true
+ExecStartPre=/usr/bin/install -d -o quantlab -g quantlab -m 0750 /var/lib/quant-lab/ops/web_v2_smoke
+ExecStart=/bin/bash -lc 'set -euo pipefail; /usr/bin/timeout 3m /opt/quant-lab/.venv/bin/qlab web-v2-smoke --base-url http://127.0.0.1:8027 --request-attempts 3 --retry-delay-seconds 1.0 --output-json /var/lib/quant-lab/ops/web_v2_smoke/latest.json'
 TimeoutStartSec=4min
 MemoryMax=768M
 CPUQuota=40%

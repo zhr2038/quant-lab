@@ -1316,6 +1316,11 @@ def _decorate_web_v2_expert_pack_status(
         ),
         "available_pack": str(available_pack) if available_pack is not None else None,
         "available_pack_name": available_pack.name if available_pack is not None else None,
+        "available_download_url": (
+            _web_v2_export_download_url(available_pack.name)
+            if available_pack is not None
+            else None
+        ),
         "manual_latest_pack": (
             str(manual_latest_pack) if manual_latest_pack is not None else None
         ),

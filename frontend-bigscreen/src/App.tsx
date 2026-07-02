@@ -511,6 +511,7 @@ function ExpertPackControls({ exports }: { exports: Record<string, unknown> }) {
   const packs = status?.packs ?? [];
   const latestName = stringValue(status?.latest_pack_name, "");
   const latestUrl = status?.latest_download_url ?? "";
+  const availableUrl = status?.available_download_url ?? "";
   const latestFileName = fileNameFromPath(latestName || latestUrl);
   const availableName = stringValue(status?.available_pack_name, status?.available_pack ?? "");
   const availableFileName = fileNameFromPath(availableName);
@@ -527,7 +528,7 @@ function ExpertPackControls({ exports }: { exports: Record<string, unknown> }) {
   const displayFileName = latestFileName || availableFileName || fileNameFromPath(
     stringValue(displayPack?.name, stringValue(displayPack?.path, ""))
   );
-  const displayUrl = latestUrl || stringValue(displayPack?.download_url, displayFileName);
+  const displayUrl = latestUrl || availableUrl || stringValue(displayPack?.download_url, displayFileName);
   const displayGeneratedAt = formatExpertPackStamp(displayFileName);
   const displayPrimaryText = displayGeneratedAt || displayFileName || "latest.zip";
   const displayModifiedAt = formatPackTime(displayPack?.modified_at);

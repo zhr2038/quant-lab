@@ -1412,6 +1412,10 @@ def test_web_v2_expert_pack_status_and_download(monkeypatch, tmp_path):
     status_payload = status_response.json()
     assert status_payload["state"] == "manual_missing"
     assert status_payload["available_pack_name"] == pack.name
+    assert (
+        status_payload["available_download_url"]
+        == f"/web-v2/expert-pack/download/{pack.name}"
+    )
     assert status_payload["latest_pack_name"] is None
     assert status_payload["latest_download_url"] is None
     assert status_payload["packs"][0]["download_url"] == f"/web-v2/expert-pack/download/{pack.name}"
@@ -1464,6 +1468,10 @@ def test_web_v2_expert_pack_status_exposes_available_pack_v5_attachment(
     assert payload["state"] == "manual_missing"
     assert payload["latest_pack_name"] is None
     assert payload["available_pack_name"] == pack.name
+    assert (
+        payload["available_download_url"]
+        == f"/web-v2/expert-pack/download/{pack.name}"
+    )
     assert (
         payload["latest_pack_v5_bundle_name"]
         == "v5_live_followup_bundle_20260605T040000Z.tar.gz"
@@ -1562,6 +1570,10 @@ def test_web_v2_expert_pack_status_filters_deleted_index_pack(monkeypatch, tmp_p
     ).json()
 
     assert payload["available_pack_name"] == pack.name
+    assert (
+        payload["available_download_url"]
+        == f"/web-v2/expert-pack/download/{pack.name}"
+    )
     assert payload["latest_pack_name"] is None
     assert payload["pack_count"] == 1
     assert [row["name"] for row in payload["packs"]] == [pack.name]

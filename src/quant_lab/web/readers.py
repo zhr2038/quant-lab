@@ -1730,6 +1730,11 @@ def _snapshot_meta_for_dataset(path: Path) -> dict[str, Any] | None:
     return payload if isinstance(payload, dict) else None
 
 
+def web_dataset_source_signature(path: Path) -> tuple[Any, ...]:
+    """Return the bounded source signature used by Web cache invalidation."""
+    return _web_dataset_source_signature(path)
+
+
 def _web_dataset_source_signature(path: Path) -> tuple[Any, ...]:
     meta = _snapshot_meta_for_dataset(path)
     if meta:

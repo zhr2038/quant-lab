@@ -258,9 +258,9 @@ def _snapshot_source_signature(root: Path) -> tuple[Any, ...]:
     export_date = beijing_today(datetime.now(UTC)).isoformat()
     return (
         _directory_signature(root / "silver" / "market_bar_health"),
-        _directory_signature(root / "silver" / "market_bar"),
-        _directory_signature(root / "silver" / "orderbook_snapshot"),
-        _directory_signature(root / "silver" / "trade_print"),
+        _lake_dataset_signature(root / "silver" / "market_bar"),
+        _lake_dataset_signature(root / "silver" / "orderbook_snapshot"),
+        _lake_dataset_signature(root / "silver" / "trade_print"),
         _directory_signature(root / "gold" / "cost_bucket_daily"),
         _directory_signature(root / "gold" / "cost_bootstrap_readiness"),
         _directory_signature(root / "gold" / "cost_probe_fill_bill_match"),
@@ -276,6 +276,14 @@ def _snapshot_source_signature(root: Path) -> tuple[Any, ...]:
         _directory_signature(root / "gold" / "opportunity_cost_by_bucket"),
         _directory_signature(root / "gold" / "quant_lab_decision_regret"),
     )
+
+
+def _lake_dataset_signature(path: Path) -> tuple[Any, ...]:
+    signature = readers.web_dataset_source_signature(path)
+    signature_kind = signature[0] if signature else None
+    if signature_kind in {"snapshot_meta", "lake_file_index"}:
+        return (str(path), signature)
+    return _directory_signature(path)
 
 
 def _path_signature(path: Path) -> tuple[Any, ...]:

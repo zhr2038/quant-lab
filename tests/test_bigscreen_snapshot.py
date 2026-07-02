@@ -1321,6 +1321,48 @@ def test_directory_signature_tracks_newest_partition_children(tmp_path):
     assert "day=2026-06-40" in repr(updated)
 
 
+def test_lake_dataset_signature_prefers_bounded_web_signature(monkeypatch, tmp_path):
+    dataset = tmp_path / "lake" / "silver" / "trade_print"
+    dataset.mkdir(parents=True)
+    web_signature = ("lake_file_index", 2, 1_900_000_000_000_000_000, 128)
+
+    monkeypatch.setattr(
+        bigscreen_module.readers,
+        "web_dataset_source_signature",
+        lambda path: web_signature,
+    )
+
+    def fail_directory_signature(path, **_kwargs):
+        raise AssertionError(f"unexpected direct directory scan for {path}")
+
+    monkeypatch.setattr(
+        bigscreen_module,
+        "_directory_signature",
+        fail_directory_signature,
+    )
+
+    assert bigscreen_module._lake_dataset_signature(dataset) == (str(dataset), web_signature)
+
+
+def test_lake_dataset_signature_falls_back_without_web_index(monkeypatch, tmp_path):
+    dataset = tmp_path / "lake" / "silver" / "trade_print"
+    dataset.mkdir(parents=True)
+    fallback_signature = ("dir", str(dataset))
+
+    monkeypatch.setattr(
+        bigscreen_module.readers,
+        "web_dataset_source_signature",
+        lambda path: ("path", 1_900_000_000_000_000_000, 0),
+    )
+    monkeypatch.setattr(
+        bigscreen_module,
+        "_directory_signature",
+        lambda path, **_kwargs: fallback_signature,
+    )
+
+    assert bigscreen_module._lake_dataset_signature(dataset) == fallback_signature
+
+
 def test_bigscreen_static_entry_is_served_if_built():
     static_index = Path("src/quant_lab/web/bigscreen_static/index.html")
     if not static_index.is_file():

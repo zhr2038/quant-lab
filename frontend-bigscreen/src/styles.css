@@ -33,11 +33,11 @@ button{font:inherit;color:inherit}
 }
 .app-frame{
   position:relative;z-index:2;flex:0 0 auto;
-  width:calc(1920px * var(--screen-scale,1));
+  width:calc(var(--screen-layout-width,1920px) * var(--screen-scale,1));
   height:calc(1080px * var(--screen-scale,1));
 }
 .app-shell{
-  position:absolute;left:0;top:0;width:1920px;height:1080px;padding:22px 28px 32px;
+  position:absolute;left:0;top:0;width:var(--screen-layout-width,1920px);height:1080px;padding:22px 28px 32px;
   transform-origin:top left;transform:scale(var(--screen-scale,1));
   backface-visibility:hidden;
   -webkit-backface-visibility:hidden;

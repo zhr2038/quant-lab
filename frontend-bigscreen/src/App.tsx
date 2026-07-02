@@ -111,7 +111,9 @@ function Bigscreen() {
       const width = viewport?.width ?? window.innerWidth;
       const height = viewport?.height ?? window.innerHeight;
       const scale = Math.min(width / 1920, height / 1080);
+      const layoutWidth = Math.max(1920, width / Math.max(scale, 0.01));
       document.documentElement.style.setProperty("--screen-scale", String(scale));
+      document.documentElement.style.setProperty("--screen-layout-width", `${layoutWidth}px`);
     };
     fit();
     window.addEventListener("resize", fit);

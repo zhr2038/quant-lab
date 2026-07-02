@@ -108,6 +108,41 @@ def test_high_confidence_missing_arrival_mid_gets_observability_review_block():
     assert "trade_level_not_live_ready" not in judgment["reason"]
 
 
+def test_trade_opportunity_event_preserves_quote_metadata():
+    frames = build_trade_level_frames_from_sources(
+        candidate_events=pl.DataFrame(
+            [
+                _sol_candidate()
+                | {
+                    "quote_ts": "2026-06-29T08:05:01Z",
+                    "quote_age_ms": 320.0,
+                    "quote_source": "okx_books5",
+                }
+            ]
+        ),
+        candidate_labels=pl.DataFrame(),
+        risk_permissions=pl.DataFrame(
+            [
+                {
+                    "permission": "ABORT",
+                    "permission_status": "ACTIVE_ABORT",
+                    "as_of_ts": datetime(2026, 6, 29, 8, tzinfo=UTC),
+                    "live_block_reasons": '["no_strategy_live_small_ready"]',
+                    "allowed_live_modes": "[]",
+                }
+            ]
+        ),
+        v5_trades=pl.DataFrame(),
+        created_at=datetime(2026, 6, 29, 9, tzinfo=UTC),
+    )
+
+    event = frames["trade_opportunity_event"].row(0, named=True)
+
+    assert event["quote_ts"] == "2026-06-29T08:05:01Z"
+    assert event["quote_age_ms"] == 320.0
+    assert event["quote_source"] == "okx_books5"
+
+
 def test_hard_safety_reason_always_hard_blocks():
     frames = build_trade_level_frames_from_sources(
         candidate_events=pl.DataFrame([_sol_candidate(candidate_id="sol-hard")]),

@@ -30,6 +30,7 @@ RISK_PERMISSION_DATASET = Path("gold") / "risk_permission"
 RISK_PERMISSION_API_DEPENDENCY_META_DATASET = Path("gold") / "risk_permission_api_dependency_meta"
 TRADE_LEVEL_JUDGMENT_DATASET = Path("gold") / "trade_level_judgment"
 FALSE_BLOCK_AUDIT_DATASET = Path("gold") / "quant_lab_false_block_audit"
+OPPORTUNITY_COST_BY_BUCKET_DATASET = Path("gold") / "opportunity_cost_by_bucket"
 COST_BUCKET_DAILY_DATASET = Path("gold") / "cost_bucket_daily"
 COST_HEALTH_DAILY_DATASET = Path("gold") / "cost_health_daily"
 MARKET_BAR_DATASET = Path("silver") / "market_bar"
@@ -83,6 +84,9 @@ RISK_PERMISSION_SCHEMA = {
     "live_block_reasons": pl.Utf8,
     "trade_level_decision_summary": pl.Utf8,
     "micro_canary_review_count": pl.Int64,
+    "micro_canary_review_bucket_count": pl.Int64,
+    "blocked_by_observability_count": pl.Int64,
+    "top_micro_canary_review_buckets": pl.Utf8,
     "false_block_rate": pl.Float64,
     "source": pl.Utf8,
     "fallback_level": pl.Utf8,
@@ -725,6 +729,9 @@ def risk_permission_row(permission: RiskPermission) -> dict[str, Any]:
         "live_block_reasons": _json(permission.live_block_reasons),
         "trade_level_decision_summary": "{}",
         "micro_canary_review_count": 0,
+        "micro_canary_review_bucket_count": 0,
+        "blocked_by_observability_count": 0,
+        "top_micro_canary_review_buckets": "[]",
         "false_block_rate": 0.0,
     }
 
@@ -738,7 +745,11 @@ def _trade_level_summary_for_risk_permission(root: Path) -> dict[str, Any]:
         false_block_audit = read_parquet_dataset(root / FALSE_BLOCK_AUDIT_DATASET)
     except Exception:
         false_block_audit = pl.DataFrame()
-    return trade_level_risk_summary(judgments, false_block_audit)
+    try:
+        opportunity_buckets = read_parquet_dataset(root / OPPORTUNITY_COST_BY_BUCKET_DATASET)
+    except Exception:
+        opportunity_buckets = pl.DataFrame()
+    return trade_level_risk_summary(judgments, false_block_audit, opportunity_buckets)
 
 
 def parse_risk_permission_row(row: dict[str, Any]) -> RiskPermission | None:
@@ -748,6 +759,9 @@ def parse_risk_permission_row(row: dict[str, Any]) -> RiskPermission | None:
     cleaned.pop("permission_source", None)
     cleaned.pop("trade_level_decision_summary", None)
     cleaned.pop("micro_canary_review_count", None)
+    cleaned.pop("micro_canary_review_bucket_count", None)
+    cleaned.pop("blocked_by_observability_count", None)
+    cleaned.pop("top_micro_canary_review_buckets", None)
     cleaned.pop("false_block_rate", None)
     if isinstance(cleaned.get("allowed_modes"), str):
         cleaned["allowed_modes"] = _json_list(cleaned["allowed_modes"])

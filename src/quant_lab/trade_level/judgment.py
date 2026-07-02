@@ -78,6 +78,9 @@ TRADE_OPPORTUNITY_EVENT_SCHEMA = {
     "risk_level": pl.Utf8,
     "regime": pl.Utf8,
     "arrival_mid": pl.Float64,
+    "quote_ts": pl.Utf8,
+    "quote_age_ms": pl.Float64,
+    "quote_source": pl.Utf8,
     "arrival_spread_bps": pl.Float64,
     "target_weight_after_risk": pl.Float64,
     "quant_lab_permission": pl.Utf8,
@@ -417,12 +420,20 @@ def build_false_block_audit(
 
 
 def trade_level_risk_summary(
-    judgments: pl.DataFrame, false_block_audit: pl.DataFrame | None = None
+    judgments: pl.DataFrame,
+    false_block_audit: pl.DataFrame | None = None,
+    opportunity_buckets: pl.DataFrame | None = None,
 ) -> dict[str, Any]:
+    bucket_rows = _micro_canary_review_bucket_rows(
+        opportunity_buckets if opportunity_buckets is not None else pl.DataFrame()
+    )
     if judgments.is_empty():
         return {
             "trade_level_decision_summary": safe_json_dumps({}),
             "micro_canary_review_count": 0,
+            "micro_canary_review_bucket_count": len(bucket_rows),
+            "blocked_by_observability_count": 0,
+            "top_micro_canary_review_buckets": safe_json_dumps(bucket_rows[:5]),
             "false_block_rate": 0.0,
         }
     decisions = Counter(
@@ -440,8 +451,42 @@ def trade_level_risk_summary(
     return {
         "trade_level_decision_summary": safe_json_dumps(dict(sorted(decisions.items()))),
         "micro_canary_review_count": int(review_count),
+        "micro_canary_review_bucket_count": len(bucket_rows),
+        "blocked_by_observability_count": int(
+            decisions.get("MICRO_CANARY_REVIEW_BLOCKED_BY_OBSERVABILITY", 0)
+        ),
+        "top_micro_canary_review_buckets": safe_json_dumps(bucket_rows[:5]),
         "false_block_rate": round(float(false_block_rate), 6),
     }
+
+
+def _micro_canary_review_bucket_rows(frame: pl.DataFrame) -> list[dict[str, Any]]:
+    if frame.is_empty() or "recommended_trade_level_decision" not in frame.columns:
+        return []
+    rows = [
+        row
+        for row in frame.to_dicts()
+        if _text(row.get("recommended_trade_level_decision")).upper() == "MICRO_CANARY_REVIEW"
+    ]
+    rows.sort(
+        key=lambda row: (
+            _float(row.get("veto_net_value_bps")) or 0.0,
+            -(_int(row.get("sample_count")) or 0),
+        )
+    )
+    return [
+        {
+            "bucket_key": _text(row.get("bucket_key")),
+            "symbol": _text(row.get("symbol")),
+            "strategy_candidate": _text(row.get("strategy_candidate")),
+            "sample_count": _int(row.get("sample_count")) or 0,
+            "false_block_count": _int(row.get("false_block_count")) or 0,
+            "loss_saved_count": _int(row.get("loss_saved_count")) or 0,
+            "veto_net_value_bps": _float(row.get("veto_net_value_bps")) or 0.0,
+            "recommended_trade_level_decision": "MICRO_CANARY_REVIEW",
+        }
+        for row in rows
+    ]
 
 
 def event_id_for_row(row: Mapping[str, Any]) -> str:
@@ -518,6 +563,13 @@ def _candidate_event_row(
         "risk_level": _text(_first(raw, payload, "risk_level", "risk_state")),
         "regime": _text(_first(raw, payload, "regime", "regime_state")),
         "arrival_mid": arrival_mid,
+        "quote_ts": _text(_first(raw, payload, "quote_ts", "arrival_quote_ts", "book_ts")),
+        "quote_age_ms": _float(
+            _first(raw, payload, "quote_age_ms", "arrival_quote_age_ms", "book_age_ms")
+        ),
+        "quote_source": _text(
+            _first(raw, payload, "quote_source", "arrival_quote_source", "book_source")
+        ),
         "arrival_spread_bps": _float(_first(raw, payload, "arrival_spread_bps", "spread_bps")),
         "target_weight_after_risk": _float(_first(raw, payload, "target_weight_after_risk")),
         "quant_lab_permission": _text(risk_row.get("permission")),

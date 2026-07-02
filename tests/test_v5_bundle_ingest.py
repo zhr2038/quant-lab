@@ -63,9 +63,11 @@ def test_sync_ingest_can_skip_large_historical_outcomes(tmp_path):
         tmp_path / "v5_live_followup_bundle_20260510T140249Z.tar.gz",
         {
             "summaries/candidate_snapshot.csv": (
-                "candidate_id,run_id,ts_utc,symbol,strategy_candidate,cost_source\n"
+                "candidate_id,run_id,ts_utc,symbol,strategy_candidate,cost_source,"
+                "quote_ts,quote_age_ms,quote_source\n"
                 "cand_1,run_001,2026-05-10T01:00:00Z,SOL/USDT,"
-                "f4_volume_expansion_entry,public_spread_proxy\n"
+                "f4_volume_expansion_entry,public_spread_proxy,"
+                "2026-05-10T01:00:01Z,240,okx_books5\n"
             ),
             "raw/reports/quant_lab_requests.jsonl": (
                 '{"ts":"2026-05-10T01:00:00Z","endpoint":"/v1/costs/estimate",'
@@ -98,6 +100,10 @@ def test_sync_ingest_can_skip_large_historical_outcomes(tmp_path):
     historical = read_parquet_dataset(lake / "silver/v5_high_score_blocked_outcome")
     shadow = read_parquet_dataset(lake / "silver/v5_shadow_outcome")
     assert candidate_events.height == 1
+    candidate = candidate_events.to_dicts()[0]
+    assert candidate["quote_ts"] == "2026-05-10T01:00:01Z"
+    assert candidate["quote_age_ms"] == "240"
+    assert candidate["quote_source"] == "okx_books5"
     assert requests.height == 1
     assert historical.is_empty()
     assert shadow.is_empty()

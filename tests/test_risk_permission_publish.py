@@ -57,6 +57,59 @@ def test_publish_risk_permission_allows_live_ready_with_healthy_inputs(tmp_path)
     assert "v5_local_live_not_controlled_by_quant_lab" in permission["live_block_reasons"]
 
 
+def test_publish_risk_permission_exposes_micro_canary_review_summary(tmp_path):
+    lake = tmp_path / "lake"
+    _write_gate(lake, GateStatus.QUARANTINE)
+    _write_fresh_market_bar(lake)
+    _write_actual_cost(lake)
+    now = datetime.now(UTC)
+    write_parquet_dataset(
+        pl.DataFrame(
+            [
+                {
+                    "trade_level_decision": "MICRO_CANARY_REVIEW",
+                    "created_at": now,
+                },
+                {
+                    "trade_level_decision": "MICRO_CANARY_REVIEW_BLOCKED_BY_OBSERVABILITY",
+                    "created_at": now,
+                },
+            ]
+        ),
+        lake / "gold" / "trade_level_judgment",
+    )
+    write_parquet_dataset(
+        pl.DataFrame(
+            [
+                {
+                    "bucket_key": "SOL|f3|rank_1",
+                    "symbol": "SOL-USDT",
+                    "strategy_candidate": "v5.f3_dominant_entry",
+                    "sample_count": 22,
+                    "false_block_count": 11,
+                    "loss_saved_count": 1,
+                    "veto_net_value_bps": -2345.88,
+                    "recommended_trade_level_decision": "MICRO_CANARY_REVIEW",
+                    "created_at": now,
+                }
+            ]
+        ),
+        lake / "gold" / "opportunity_cost_by_bucket",
+    )
+
+    publish_risk_permission(lake, strategy="v5", version="5.0.0")
+
+    permission = read_parquet_dataset(lake / "gold" / "risk_permission").to_dicts()[0]
+    top_buckets = json.loads(permission["top_micro_canary_review_buckets"])
+    assert permission["micro_canary_review_count"] == 2
+    assert permission["micro_canary_review_bucket_count"] == 1
+    assert permission["blocked_by_observability_count"] == 1
+    assert top_buckets[0]["bucket_key"] == "SOL|f3|rank_1"
+    assert top_buckets[0]["recommended_trade_level_decision"] == "MICRO_CANARY_REVIEW"
+    assert permission["allowed_live_modes"] == "[]"
+    assert permission["max_single_order_usdt"] == 0
+
+
 def test_publish_risk_permission_data_health_warns_before_market_bar_stale(tmp_path, monkeypatch):
     lake = tmp_path / "lake"
     monkeypatch.delenv("QUANT_LAB_MARKET_BAR_WARNING_DELAY_SECONDS", raising=False)

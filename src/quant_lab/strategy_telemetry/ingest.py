@@ -1703,6 +1703,15 @@ def _candidate_event_rows(
         required_edge_bps = _candidate_text(
             _first_value(row, payload, ["required_edge_bps", "required_edge"])
         )
+        quote_ts = _candidate_text(
+            _first_value(row, payload, ["quote_ts", "arrival_quote_ts", "book_ts"])
+        )
+        quote_age_ms = _candidate_text(
+            _first_value(row, payload, ["quote_age_ms", "arrival_quote_age_ms", "book_age_ms"])
+        )
+        quote_source = _candidate_text(
+            _first_value(row, payload, ["quote_source", "arrival_quote_source", "book_source"])
+        )
         event = row | {
             "event_type": "candidate_event",
             "candidate_event_schema_version": CANDIDATE_EVENT_SCHEMA_VERSION,
@@ -1725,6 +1734,9 @@ def _candidate_event_rows(
             "would_block_by_cost": would_block_by_cost,
             "expected_edge_bps": expected_edge_bps,
             "required_edge_bps": required_edge_bps,
+            "quote_ts": quote_ts,
+            "quote_age_ms": quote_age_ms,
+            "quote_source": quote_source,
             "raw_payload_json": safe_json_dumps(
                 {
                     **payload,
@@ -1742,6 +1754,9 @@ def _candidate_event_rows(
                     "would_block_by_cost": would_block_by_cost,
                     "expected_edge_bps": expected_edge_bps,
                     "required_edge_bps": required_edge_bps,
+                    "quote_ts": quote_ts,
+                    "quote_age_ms": quote_age_ms,
+                    "quote_source": quote_source,
                 }
             ),
         }

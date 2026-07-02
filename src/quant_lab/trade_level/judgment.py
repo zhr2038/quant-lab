@@ -48,6 +48,7 @@ DECISION_REGRET_DATASET = Path("gold") / "quant_lab_decision_regret"
 
 V5_CANDIDATE_EVENT_DATASET = Path("silver") / "v5_candidate_event"
 V5_TRADE_EVENT_DATASET = Path("silver") / "v5_trade_event"
+V5_ROUNDTRIP_DATASET = Path("silver") / "v5_roundtrip"
 V5_ORDER_LIFECYCLE_DATASET = Path("silver") / "v5_order_lifecycle"
 V5_CANDIDATE_LABEL_DATASET = Path("gold") / "v5_candidate_label"
 RISK_PERMISSION_DATASET = Path("gold") / "risk_permission"
@@ -211,6 +212,7 @@ def build_and_publish_trade_level_judgment(
         candidate_labels=read_parquet_dataset(root / V5_CANDIDATE_LABEL_DATASET),
         risk_permissions=read_parquet_dataset(root / RISK_PERMISSION_DATASET),
         v5_trades=read_parquet_dataset(root / V5_TRADE_EVENT_DATASET),
+        v5_roundtrips=read_parquet_dataset(root / V5_ROUNDTRIP_DATASET),
         order_lifecycles=read_parquet_dataset(root / V5_ORDER_LIFECYCLE_DATASET),
         created_at=generated_at,
     )
@@ -264,6 +266,7 @@ def build_trade_level_frames_from_sources(
     candidate_labels: pl.DataFrame,
     risk_permissions: pl.DataFrame,
     v5_trades: pl.DataFrame,
+    v5_roundtrips: pl.DataFrame | None = None,
     order_lifecycles: pl.DataFrame | None = None,
     created_at: datetime | None = None,
 ) -> dict[str, pl.DataFrame]:
@@ -294,6 +297,7 @@ def build_trade_level_frames_from_sources(
         labels,
         judgments,
         v5_trades=v5_trades,
+        v5_roundtrips=v5_roundtrips if v5_roundtrips is not None else pl.DataFrame(),
         order_lifecycles=order_lifecycles if order_lifecycles is not None else pl.DataFrame(),
         created_at=generated_at,
     )

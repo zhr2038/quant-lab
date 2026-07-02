@@ -6,7 +6,7 @@ from typing import Any
 
 import polars as pl
 
-V5_TRADE_LEARNING_SAMPLE_SCHEMA_VERSION = "v5_trade_learning_sample.v0.2"
+V5_TRADE_LEARNING_SAMPLE_SCHEMA_VERSION = "v5_trade_learning_sample.v0.3"
 V5_TRADE_LEARNING_SAMPLE_SCHEMA = {
     "schema_version": pl.Utf8,
     "sample_id": pl.Utf8,
@@ -41,6 +41,13 @@ V5_TRADE_LEARNING_SAMPLE_SCHEMA = {
     "actual_hold_minutes": pl.Float64,
     "actual_roundtrip_net_bps": pl.Float64,
     "actual_roundtrip_net_pnl_usdt": pl.Float64,
+    "fill_to_fill_net_bps": pl.Float64,
+    "fill_to_fill_net_pnl_usdt": pl.Float64,
+    "execution_adjusted_net_bps": pl.Float64,
+    "execution_adjusted_net_pnl_usdt": pl.Float64,
+    "learning_net_bps": pl.Float64,
+    "learning_net_pnl_usdt": pl.Float64,
+    "learning_return_basis": pl.Utf8,
     "actual_outcome_label": pl.Utf8,
     "exit_reason": pl.Utf8,
     "hold_minutes": pl.Float64,
@@ -69,6 +76,7 @@ def build_v5_trade_learning_samples(
     judgments: pl.DataFrame,
     *,
     v5_trades: pl.DataFrame | None = None,
+    v5_roundtrips: pl.DataFrame | None = None,
     order_lifecycles: pl.DataFrame | None = None,
     created_at: datetime | None = None,
 ) -> pl.DataFrame:
@@ -85,6 +93,9 @@ def build_v5_trade_learning_samples(
         v5_trades if v5_trades is not None else pl.DataFrame(),
         lifecycle_frame,
     )
+    roundtrip_lookup = _roundtrip_lookup(
+        v5_roundtrips if v5_roundtrips is not None else pl.DataFrame()
+    )
     lifecycle_lookup = _lifecycle_lookup(
         lifecycle_frame,
     )
@@ -99,14 +110,26 @@ def build_v5_trade_learning_samples(
         actual_submitted = _bool(event.get("actual_submitted")) is True
         quant_lab_would_block = _quant_lab_would_block(judgment)
         fill = fill_lookup.get((_text(event.get("run_id")), _text(event.get("symbol"))), {})
+        roundtrip = roundtrip_lookup.get(
+            (_text(event.get("run_id")), _text(event.get("symbol"))), {}
+        )
         lifecycle = lifecycle_lookup.get(
             (_text(event.get("run_id")), _text(event.get("symbol"))), {}
         )
         actual = _actual_roundtrip_outcome(fill, lifecycle, decision_ts)
         actual_net_bps = _float(actual.get("actual_roundtrip_net_bps"))
         actual_net_pnl = _float(actual.get("actual_roundtrip_net_pnl_usdt"))
+        fill_to_fill_net_bps = _float(roundtrip.get("fill_to_fill_net_bps"))
+        fill_to_fill_net_pnl = _float(roundtrip.get("fill_to_fill_net_pnl_usdt"))
+        execution_adjusted_net_bps = actual_net_bps
+        execution_adjusted_net_pnl = actual_net_pnl
         primary_value = actual_net_bps if actual_submitted else fixed_value
         primary_pnl = actual_net_pnl if actual_submitted else None
+        learning_return_basis = (
+            "actual_execution_adjusted_roundtrip"
+            if actual_submitted
+            else "counterfactual_fixed_horizon_after_cost"
+        )
         sample_type = _sample_type(actual_submitted=actual_submitted, net_bps=primary_value)
         label_end_ts = (
             decision_ts + timedelta(hours=horizon)
@@ -175,6 +198,13 @@ def build_v5_trade_learning_samples(
                 "actual_hold_minutes": actual_hold_minutes,
                 "actual_roundtrip_net_bps": actual_net_bps,
                 "actual_roundtrip_net_pnl_usdt": actual_net_pnl,
+                "fill_to_fill_net_bps": fill_to_fill_net_bps,
+                "fill_to_fill_net_pnl_usdt": fill_to_fill_net_pnl,
+                "execution_adjusted_net_bps": execution_adjusted_net_bps,
+                "execution_adjusted_net_pnl_usdt": execution_adjusted_net_pnl,
+                "learning_net_bps": primary_value,
+                "learning_net_pnl_usdt": primary_pnl,
+                "learning_return_basis": learning_return_basis,
                 "actual_outcome_label": _outcome_label(actual_net_bps),
                 "exit_reason": actual_exit_reason,
                 "hold_minutes": (
@@ -206,6 +236,36 @@ def build_v5_trade_learning_samples(
             }
         )
     return _frame(rows, V5_TRADE_LEARNING_SAMPLE_SCHEMA)
+
+
+def _roundtrip_lookup(frame: pl.DataFrame) -> dict[tuple[str, str], dict[str, Any]]:
+    lookup: dict[tuple[str, str], dict[str, Any]] = {}
+    if frame.is_empty():
+        return lookup
+    for row in sorted(
+        frame.to_dicts(),
+        key=lambda item: _timestamp(
+            item.get("close_time_utc") or item.get("close_ts") or item.get("ts_utc")
+        )
+        or datetime.min.replace(tzinfo=UTC),
+    ):
+        symbol = _text(row.get("symbol") or row.get("normalized_symbol"))
+        run_id = _text(row.get("open_run_id") or row.get("run_id"))
+        if not run_id or not symbol:
+            continue
+        lookup[(run_id, symbol)] = {
+            "fill_to_fill_net_bps": _first_float(
+                row.get("fill_to_fill_net_bps"),
+                row.get("net_bps"),
+                row.get("roundtrip_net_bps"),
+            ),
+            "fill_to_fill_net_pnl_usdt": _first_float(
+                row.get("fill_to_fill_net_pnl_usdt"),
+                row.get("net_pnl_usdt"),
+                row.get("roundtrip_net_pnl_usdt"),
+            ),
+        }
+    return lookup
 
 
 def _fill_lookup(

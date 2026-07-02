@@ -3735,6 +3735,7 @@ def _publish_trade_level_snapshot(
         candidate_labels=frames.get("v5_candidate_label", pl.DataFrame()),
         risk_permissions=frames.get("risk_permission", pl.DataFrame()),
         v5_trades=frames.get("v5_trade_event", pl.DataFrame()),
+        v5_roundtrips=frames.get("v5_roundtrip", pl.DataFrame()),
         order_lifecycles=_read_optional_lake_frame(root / "silver" / "v5_order_lifecycle"),
         created_at=generated_at,
     )

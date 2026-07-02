@@ -293,6 +293,19 @@ def test_sol_live_success_becomes_learning_sample_not_live_allow():
                 },
             ]
         ),
+        v5_roundtrips=pl.DataFrame(
+            [
+                {
+                    "open_run_id": "run-sol",
+                    "close_run_id": "run-sol-exit",
+                    "symbol": "SOL-USDT",
+                    "open_time_utc": datetime(2026, 6, 29, 13, 0, 51, tzinfo=UTC),
+                    "close_time_utc": datetime(2026, 6, 29, 18, 1, tzinfo=UTC),
+                    "net_bps": "9.66",
+                    "net_pnl_usdt": "0.01527",
+                }
+            ]
+        ),
         order_lifecycles=pl.DataFrame(
             [
                 {
@@ -416,6 +429,19 @@ def test_live_sample_prefers_actual_roundtrip_over_negative_fixed_horizon_label(
                 },
             ]
         ),
+        v5_roundtrips=pl.DataFrame(
+            [
+                {
+                    "open_run_id": "run-sol",
+                    "close_run_id": "run-sol-exit",
+                    "symbol": "SOL-USDT",
+                    "open_time_utc": datetime(2026, 6, 29, 13, 0, 51, tzinfo=UTC),
+                    "close_time_utc": datetime(2026, 6, 29, 18, 1, tzinfo=UTC),
+                    "net_bps": "9.66",
+                    "net_pnl_usdt": "0.01527",
+                }
+            ]
+        ),
         order_lifecycles=pl.DataFrame(
             [
                 {
@@ -453,6 +479,13 @@ def test_live_sample_prefers_actual_roundtrip_over_negative_fixed_horizon_label(
     assert sample["actual_exit_reason"] == "protect_profit_lock_trailing"
     assert sample["actual_roundtrip_net_bps"] == pytest.approx(expected_bps)
     assert sample["actual_roundtrip_net_pnl_usdt"] == pytest.approx(expected_pnl)
+    assert sample["fill_to_fill_net_bps"] == pytest.approx(9.66)
+    assert sample["fill_to_fill_net_pnl_usdt"] == pytest.approx(0.01527)
+    assert sample["execution_adjusted_net_bps"] == pytest.approx(expected_bps)
+    assert sample["execution_adjusted_net_pnl_usdt"] == pytest.approx(expected_pnl)
+    assert sample["learning_net_bps"] == pytest.approx(expected_bps)
+    assert sample["learning_net_pnl_usdt"] == pytest.approx(expected_pnl)
+    assert sample["learning_return_basis"] == "actual_execution_adjusted_roundtrip"
     assert sample["actual_hold_minutes"] == 300.15
     assert sample["fixed_horizon_net_bps"] == -137.2
     assert sample["fixed_horizon_outcome_label"] == "UNPROFITABLE"

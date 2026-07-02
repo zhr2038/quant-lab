@@ -1231,10 +1231,7 @@ def _data_matrix(
                     "status": ws_status,
                     "messages": collectors.get("orderbook_snapshot_rows"),
                 },
-                "spread": {
-                    "status": _spread_status(spread.get("spread_bps")),
-                    "spread_bps": _float(spread.get("spread_bps")),
-                },
+                "spread": _spread_cell(spread.get("spread_bps")),
                 "trade": {
                     "status": "OK" if _int(trade.get("trade_count")) else "WARNING",
                     "trade_count": _int(trade.get("trade_count")),
@@ -2664,6 +2661,24 @@ def _spread_status(value: Any) -> str:
     if spread >= 3:
         return "WARNING"
     return "OK"
+
+
+def _spread_cell(value: Any) -> dict[str, Any]:
+    spread = _float(value)
+    status = _spread_status(value)
+    cell: dict[str, Any] = {
+        "status": status,
+        "spread_bps": spread,
+    }
+    if spread is None:
+        cell["reason"] = "spread_not_observable"
+    elif status == "CRITICAL":
+        cell["reason"] = f"spread_bps {spread:.2f} >= 6.00 critical threshold"
+    elif status == "WARNING":
+        cell["reason"] = f"spread_bps {spread:.2f} >= 3.00 warning threshold"
+    else:
+        cell["reason"] = "spread_bps below warning threshold"
+    return cell
 
 
 def _advisory_status(row: dict[str, Any]) -> str:

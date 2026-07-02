@@ -243,6 +243,44 @@ def test_bigscreen_data_matrix_keeps_non_ws_symbol_when_strategy_references_it()
     assert symbols == ["BCH-USDT"]
 
 
+def test_bigscreen_data_matrix_spread_cells_explain_thresholds():
+    matrix = bigscreen_module._data_matrix(
+        market={
+            "regimes": pl.DataFrame(
+                [
+                    {"symbol": "ADA-USDT", "volatility_regime": "normal"},
+                    {"symbol": "BTC-USDT", "volatility_regime": "normal"},
+                    {"symbol": "SOL-USDT", "volatility_regime": "normal"},
+                ]
+            ),
+            "spread_bps": pl.DataFrame(
+                [
+                    {"symbol": "ADA-USDT", "spread_bps": 6.5},
+                    {"symbol": "BTC-USDT", "spread_bps": 3.5},
+                    {"symbol": "SOL-USDT", "spread_bps": 1.0},
+                ]
+            ),
+        },
+        collectors={"okx_public_ws_status": "OK"},
+        cost={},
+        strategy={},
+        data_health={},
+        overview={},
+    )
+
+    rows = {row["symbol"]: row for row in matrix["rows"]}
+    assert rows["ADA-USDT"]["spread"]["status"] == "CRITICAL"
+    assert rows["ADA-USDT"]["spread"]["reason"] == (
+        "spread_bps 6.50 >= 6.00 critical threshold"
+    )
+    assert rows["BTC-USDT"]["spread"]["status"] == "WARNING"
+    assert rows["BTC-USDT"]["spread"]["reason"] == (
+        "spread_bps 3.50 >= 3.00 warning threshold"
+    )
+    assert rows["SOL-USDT"]["spread"]["status"] == "OK"
+    assert rows["SOL-USDT"]["spread"]["reason"] == "spread_bps below warning threshold"
+
+
 def test_bigscreen_data_matrix_uses_per_symbol_market_bar_freshness():
     now = datetime.now(UTC)
     fresh_open = now - timedelta(hours=1)

@@ -196,7 +196,7 @@ def _build_bigscreen_snapshot_payload(root: Path) -> dict[str, Any]:
         "cost": _cost_payload(cost),
         "market": _market_payload(market),
         "collectors": _collector_payload(collectors),
-        "data_health": _data_health_payload(data_health),
+        "data_health": _data_health_payload(data_health, data_matrix),
         "legacy_anomalies": legacy_anomalies,
         "web_perf": _web_perf_payload(web_events, api_metrics),
         "consumers": _consumer_payload(consumers),
@@ -2002,7 +2002,11 @@ def _collector_payload(collectors: dict[str, Any]) -> dict[str, Any]:
     }
 
 
-def _data_health_payload(data_health: dict[str, Any]) -> dict[str, Any]:
+def _data_health_payload(
+    data_health: dict[str, Any],
+    data_matrix: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    latest_per_symbol = _current_latest_per_symbol_rows(data_health, data_matrix)
     return {
         "duplicate_bar_count": _int(data_health.get("duplicate_bar_count")) or 0,
         "unclosed_bar_count": _int(data_health.get("unclosed_bar_count")) or 0,
@@ -2016,8 +2020,66 @@ def _data_health_payload(data_health: dict[str, Any]) -> dict[str, Any]:
         "market_bar_freshness_status": _market_bar_status(data_health, datetime.now(UTC)),
         "stale_dataset_count": len(_frame_rows(data_health.get("stale_datasets"), limit=1000)),
         "stale_datasets": _frame_rows(data_health.get("stale_datasets"), limit=8),
-        "latest_per_symbol": _frame_rows(data_health.get("latest_per_symbol"), limit=8),
+        "latest_per_symbol": latest_per_symbol,
+        "latest_per_symbol_scope": "current_matrix_symbols_first"
+        if data_matrix is not None
+        else "raw_latest_per_symbol",
+        "latest_per_symbol_total_symbols": len(
+            _frame_rows(data_health.get("latest_per_symbol"), limit=5000)
+        ),
     }
+
+
+def _current_latest_per_symbol_rows(
+    data_health: dict[str, Any],
+    data_matrix: dict[str, Any] | None,
+    *,
+    limit: int = 8,
+) -> list[dict[str, Any]]:
+    raw_rows = _frame_rows(data_health.get("latest_per_symbol"), limit=5000)
+    if not raw_rows:
+        return []
+    if data_matrix is None:
+        return raw_rows[:limit]
+
+    by_symbol = _rows_by_symbol(raw_rows)
+    preferred: list[str] = []
+    matrix_rows = data_matrix.get("rows")
+    if isinstance(matrix_rows, list):
+        for row in matrix_rows:
+            if not isinstance(row, dict):
+                continue
+            symbol = _normalize_display_symbol(row.get("symbol"))
+            if _is_usdt_market_symbol(symbol) and symbol not in preferred:
+                preferred.append(symbol)
+    for symbol in readers.OKX_WS_UNIVERSE_SYMBOLS:
+        if symbol not in preferred:
+            preferred.append(symbol)
+
+    selected: list[dict[str, Any]] = []
+    seen: set[str] = set()
+    for symbol in preferred:
+        row = by_symbol.get(symbol)
+        if row is None or symbol in seen:
+            continue
+        selected.append(row)
+        seen.add(symbol)
+        if len(selected) >= limit:
+            return selected
+
+    remaining = []
+    for row in raw_rows:
+        symbol = _normalize_display_symbol(row.get("symbol"))
+        if not _is_usdt_market_symbol(symbol) or symbol in seen:
+            continue
+        remaining.append(row)
+    remaining.sort(key=_latest_per_symbol_sort_key, reverse=True)
+    return (selected + remaining)[:limit]
+
+
+def _latest_per_symbol_sort_key(row: dict[str, Any]) -> tuple[datetime, int]:
+    latest_ts = _parse_dt(row.get("latest_ts")) or datetime.min.replace(tzinfo=UTC)
+    return latest_ts, _int(row.get("rows")) or 0
 
 
 def _legacy_web_anomalies(data_health: dict[str, Any]) -> dict[str, Any]:

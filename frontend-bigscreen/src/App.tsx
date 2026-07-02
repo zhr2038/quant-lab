@@ -432,7 +432,7 @@ function drilldownContent(view: ViewKey, data: BigscreenSnapshot) {
         <>
           <MiniTable title="Stale datasets" rows={safeRows(data.data_health.stale_datasets)} columns={["dataset", "freshness_status", "rows", "path", "latest_timestamp"]} emptyLabel="无过期或缺失数据集" />
           <MiniTable title="Collectors" rows={safeRows(data.collectors.collectors)} columns={["collector", "status", "success_count", "latest_success_ts", "lag"]} />
-          <MiniTable title="Latest per symbol" rows={safeRows(data.data_health.latest_per_symbol)} columns={["symbol", "timeframe", "latest_ts", "rows"]} />
+          <MiniTable title="Latest per symbol（当前矩阵优先）" rows={safeRows(data.data_health.latest_per_symbol)} columns={["symbol", "timeframe", "latest_ts", "rows"]} />
         </>
       )
     };

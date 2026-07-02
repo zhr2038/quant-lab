@@ -338,6 +338,44 @@ def test_bigscreen_data_matrix_uses_per_symbol_market_bar_freshness():
     assert "ASTER-USDT.market_bar" in warnings[0]
 
 
+def test_bigscreen_data_health_latest_per_symbol_prioritizes_current_matrix_symbols():
+    now = datetime.now(UTC)
+    older = now - timedelta(days=30)
+    data_health = {
+        "latest_per_symbol": pl.DataFrame(
+            [
+                {"symbol": "AAVE-USDT", "timeframe": "1H", "latest_ts": older, "rows": 100},
+                {"symbol": "ALGO-USDT", "timeframe": "1H", "latest_ts": older, "rows": 100},
+                {"symbol": "BTC-USDT", "timeframe": "1H", "latest_ts": now, "rows": 10},
+                {"symbol": "ETH-USDT", "timeframe": "1H", "latest_ts": now, "rows": 10},
+                {"symbol": "SOL-USDT", "timeframe": "1H", "latest_ts": now, "rows": 10},
+                {"symbol": "BNB-USDT", "timeframe": "1H", "latest_ts": now, "rows": 10},
+                {"symbol": "ADA-USDT", "timeframe": "1H", "latest_ts": now, "rows": 10},
+                {"symbol": "BASED-USDT", "timeframe": "1H", "latest_ts": now, "rows": 10},
+            ]
+        )
+    }
+    data_matrix = {
+        "rows": [
+            {"symbol": "BTC-USDT"},
+            {"symbol": "ETH-USDT"},
+            {"symbol": "SOL-USDT"},
+            {"symbol": "BNB-USDT"},
+        ]
+    }
+
+    payload = bigscreen_module._data_health_payload(data_health, data_matrix)
+
+    assert [row["symbol"] for row in payload["latest_per_symbol"][:4]] == [
+        "BTC-USDT",
+        "ETH-USDT",
+        "SOL-USDT",
+        "BNB-USDT",
+    ]
+    assert payload["latest_per_symbol_scope"] == "current_matrix_symbols_first"
+    assert payload["latest_per_symbol_total_symbols"] == 8
+
+
 def test_bigscreen_matrix_action_prioritizes_per_symbol_market_staleness():
     data_matrix = {
         "columns": ["market_bar", "spread", "trade", "cost"],

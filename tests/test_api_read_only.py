@@ -1,8 +1,14 @@
+from datetime import UTC, datetime, timedelta
+
 from fastapi.routing import APIRoute
 from fastapi.testclient import TestClient
 
 from quant_lab.api.main import app, create_app
-from quant_lab.ops.api_metrics import api_error_summary, api_metrics_summary
+from quant_lab.ops.api_metrics import (
+    api_error_summary,
+    api_metrics_summary,
+    record_api_request,
+)
 
 
 def test_api_has_no_non_get_strategy_routes():
@@ -122,6 +128,38 @@ def test_api_metrics_records_request_counts(monkeypatch, tmp_path):
     assert payload["request_count"] >= 1
     assert payload["by_path"]["/v1/health"] == 1
     assert payload["latency_ms"]["max"] is not None
+
+
+def test_api_metrics_endpoint_can_filter_recent_window(monkeypatch, tmp_path):
+    lake = tmp_path / "lake"
+    monkeypatch.setenv("QUANT_LAB_LAKE_ROOT", str(lake))
+    monkeypatch.setenv("QUANT_LAB_API_METRICS_FLUSH_ROWS", "1")
+    monkeypatch.delenv("QUANT_LAB_API_TOKEN", raising=False)
+    now = datetime.now(UTC)
+    record_api_request(
+        lake_root=lake,
+        method="GET",
+        path="/v1/old",
+        status_code=200,
+        duration_seconds=0.1,
+        request_ts=now - timedelta(hours=2),
+    )
+    record_api_request(
+        lake_root=lake,
+        method="GET",
+        path="/v1/current",
+        status_code=200,
+        duration_seconds=0.01,
+        request_ts=now,
+    )
+    client = TestClient(create_app())
+
+    response = client.get("/v1/ops/api-metrics?since_minutes=60")
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["request_count"] == 1
+    assert payload["by_path"] == {"/v1/current": 1}
 
 
 def test_api_metrics_records_auth_result_and_client_context(monkeypatch, tmp_path):

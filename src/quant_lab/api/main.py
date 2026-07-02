@@ -418,8 +418,17 @@ def create_app() -> FastAPI:
         return CatalogDatasetsResponse(datasets=KNOWN_DATASETS)
 
     @app.get("/v1/ops/api-metrics", response_model=ApiMetricsResponse)
-    def ops_api_metrics(day: str | None = None) -> ApiMetricsResponse:
-        return ApiMetricsResponse(**api_metrics_summary(_lake_root(), day=day))
+    def ops_api_metrics(
+        day: str | None = None,
+        since_minutes: int | None = Query(default=None, ge=1),
+    ) -> ApiMetricsResponse:
+        return ApiMetricsResponse(
+            **api_metrics_summary(
+                _lake_root(),
+                day=day,
+                since_minutes=since_minutes,
+            )
+        )
 
     @app.get("/v1/gates/example", response_model=GateDecision)
     def gate_example() -> GateDecision:

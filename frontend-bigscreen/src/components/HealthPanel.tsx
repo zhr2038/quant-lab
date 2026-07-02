@@ -28,6 +28,7 @@ export function HealthPanel({
         splitLine: { show: false },
         axisLabel: { show: false },
         detail: {
+          show: false,
           valueAnimation: true,
           formatter: "{value}",
           color: "#eaf6ff",
@@ -45,7 +46,10 @@ export function HealthPanel({
       <p className="sub">综合数据新鲜度 / 成本可信 / V5 遥测 / 消费者权限</p>
       <div className="ring-chart">
         <ReactECharts option={option} style={{ height: 188, width: 218 }} />
-        <span>HEALTH SCORE</span>
+        <div className="health-score-text" aria-label={`Health score ${score}`}>
+          <b>{score}</b>
+          <span>HEALTH SCORE</span>
+        </div>
       </div>
       <div className={`health-pill ${status.toLowerCase()}`}>{status} · {warnings.length} 个注意项</div>
     </section>

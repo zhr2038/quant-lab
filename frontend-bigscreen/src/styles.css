@@ -149,7 +149,15 @@ button{font:inherit;color:inherit}
 .status-ring{height:300px}
 .ring-chart{position:absolute;left:52px;right:52px;top:82px;height:186px;display:flex;align-items:center;justify-content:center}
 .ring-chart:before{content:"";position:absolute;width:166px;height:166px;border-radius:50%;box-shadow:0 0 28px rgba(80,169,255,.35);animation:rotateGlow 8s ease-in-out infinite}
-.ring-chart span{position:absolute;bottom:56px;color:var(--muted);font-size:11px}
+.health-score-text{
+  position:absolute;inset:0;display:grid;grid-template-rows:1fr auto 1fr;place-items:center;text-align:center;
+  pointer-events:none;z-index:2;
+}
+.health-score-text b{
+  grid-row:2;display:block;font-size:58px;line-height:.9;font-weight:900;color:#eaf6ff;
+  font-variant-numeric:tabular-nums;text-shadow:0 0 18px rgba(80,169,255,.28);
+}
+.health-score-text span{grid-row:3;color:var(--muted);font-size:11px;align-self:start;margin-top:5px}
 .health-pill{
   position:absolute;left:58px;right:58px;bottom:22px;height:30px;border-radius:20px;border:1px solid rgba(255,196,87,.8);
   color:#ffe5a6;background:rgba(255,196,87,.12);display:flex;align-items:center;justify-content:center;font-size:12px;
@@ -1036,7 +1044,8 @@ button{font:inherit;color:inherit}
   .status-ring{height:292px}
   .ring-chart{left:34px;right:34px;top:78px;height:176px}
   .ring-chart:before{width:156px;height:156px}
-  .ring-chart span{bottom:52px}
+  .health-score-text b{font-size:52px}
+  .health-score-text span{font-size:10px}
   .health-pill{left:34px;right:34px;bottom:20px}
   .matrix-grid-shell{grid-template-columns:1fr;gap:12px;margin-top:14px}
   .matrix{grid-template-columns:42px repeat(7,minmax(30px,1fr));gap:5px;overflow:visible}

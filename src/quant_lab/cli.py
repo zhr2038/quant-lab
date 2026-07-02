@@ -55,6 +55,7 @@ from quant_lab.ops.lake_health import (
 )
 from quant_lab.ops.metrics import api_metrics_summary, job_run_summary, run_with_job_metrics
 from quant_lab.ops.retention import prune_quant_lab_storage
+from quant_lab.ops.web_v2_smoke import DEFAULT_COST_SYMBOLS, run_web_v2_smoke
 from quant_lab.reports.enforce_readiness import write_enforce_readiness_report
 from quant_lab.research.alpha_discovery import build_and_publish_alpha_discovery_board
 from quant_lab.research.alpha_factory import build_and_publish_alpha_factory
@@ -1136,6 +1137,69 @@ def ops_summary_command(
             default=str,
         )
     )
+
+
+@app.command("web-v2-smoke")
+def web_v2_smoke_command(
+    base_url: Annotated[
+        str,
+        typer.Option(
+            "--base-url",
+            help="quant-lab API/Web V2 base URL. Use localhost on production hosts.",
+        ),
+    ] = "http://127.0.0.1:8027",
+    api_token: Annotated[
+        str | None,
+        typer.Option(
+            "--api-token",
+            envvar="QUANT_LAB_API_TOKEN",
+            help="Bearer token for protected API endpoints. Defaults to env var.",
+        ),
+    ] = None,
+    symbol: Annotated[
+        list[str] | None,
+        typer.Option(
+            "--symbol",
+            help="Cost-estimate symbols to verify. Repeat the option for multiple symbols.",
+        ),
+    ] = None,
+    max_snapshot_age_seconds: Annotated[
+        int,
+        typer.Option(
+            "--max-snapshot-age-seconds",
+            min=1,
+            help="Fail if /web-v2/snapshot generated_at is older than this.",
+        ),
+    ] = 90,
+    allow_live_cost_trust: Annotated[
+        bool,
+        typer.Option(
+            "--allow-live-cost-trust/--fail-on-live-cost-trust",
+            help=(
+                "Current production smoke should normally fail if cost estimates "
+                "become live-trusted."
+            ),
+        ),
+    ] = False,
+    fail_on_warnings: Annotated[
+        bool,
+        typer.Option(
+            "--fail-on-warnings/--allow-warnings",
+            help="Return non-zero when warnings are present.",
+        ),
+    ] = False,
+) -> None:
+    symbols = tuple(symbol or DEFAULT_COST_SYMBOLS)
+    result = run_web_v2_smoke(
+        base_url=base_url,
+        api_token=api_token or os.getenv("QUANT_LAB_API_TOKEN"),
+        symbols=symbols,
+        max_snapshot_age_seconds=max_snapshot_age_seconds,
+        allow_live_cost_trust=allow_live_cost_trust,
+    )
+    typer.echo(json.dumps(result, indent=2, sort_keys=True, default=str))
+    if result["failures"] or (fail_on_warnings and result["warnings"]):
+        raise typer.Exit(1)
 
 
 def _compact_ops_summary_payload(payload: dict[str, Any]) -> dict[str, Any]:

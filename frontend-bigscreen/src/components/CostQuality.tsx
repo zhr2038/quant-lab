@@ -4,7 +4,7 @@ import { ReactECharts } from "./EChart";
 
 export function CostQuality({ cost }: { cost: Record<string, unknown> }) {
   const basis = String(cost.cost_quality_basis ?? "");
-  const unitLabel = basis === "effective_symbol_source" ? "symbols" : "rows";
+  const unitLabel = basis === "effective_symbol_source" ? "标的" : "rows";
   const rows = [
     { name: "真实", value: Number(cost.actual_rows ?? 0), color: "#2DE8A6" },
     { name: "混合", value: Number(cost.mixed_rows ?? 0), color: "#50A9FF" },

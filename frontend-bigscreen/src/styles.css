@@ -373,18 +373,37 @@ button{font:inherit;color:inherit}
 .strategy-research-grid{
   display:grid;grid-template-columns:minmax(230px,.28fr) minmax(300px,.42fr) minmax(280px,.3fr);grid-template-rows:auto;
   grid-template-areas:"opportunity factor candidates";
-  gap:12px;margin-top:2px;align-items:stretch;min-height:0;
+  gap:12px;margin-top:2px;align-items:start;min-height:0;
 }
-.strategy-research-grid .opportunity-cost-mini{grid-area:opportunity;margin:0;display:grid;grid-template-rows:auto auto auto minmax(0,1fr);align-content:start;gap:7px;min-height:0;overflow:auto;scrollbar-gutter:stable}
+.strategy-research-grid .opportunity-cost-mini{grid-area:opportunity;margin:0;display:grid;align-content:start;gap:7px;min-height:0;overflow:visible;scrollbar-gutter:stable}
 .strategy-research-grid .factor-factory-mini{grid-area:factor;margin:0;min-height:0}
 .strategy-research-grid .candidate-list{grid-area:candidates;margin:0}
+.strategy-secondary-grid{
+  margin-top:12px;display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:10px;min-height:0;height:100%;
+}
+.research-mini-panel{
+  min-width:0;min-height:0;border:1px solid rgba(80,169,255,.24);border-radius:15px;background:rgba(6,24,44,.52);
+  padding:10px;display:grid;grid-template-rows:auto minmax(0,1fr);gap:7px;overflow:hidden;
+}
+.research-mini-title{font-size:12px;font-weight:900;color:#cfe5f8}
+.research-mini-list{display:grid;gap:6px;align-content:start;overflow:auto;scrollbar-gutter:stable;min-height:0}
+.research-mini-row{
+  min-height:28px;border-radius:10px;border:1px solid rgba(80,169,255,.18);background:rgba(7,29,53,.5);
+  display:grid;grid-template-columns:minmax(0,1.15fr) minmax(0,1fr) minmax(58px,.36fr);gap:7px;align-items:center;padding:5px 7px;font-size:10px;
+}
+.research-mini-row strong,.research-mini-row span,.research-mini-row em{min-width:0;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.research-mini-row span{color:var(--muted)}
+.research-mini-row em{font-style:normal;color:var(--green);text-align:right}
+.research-mini-empty{
+  border:1px dashed rgba(80,169,255,.24);border-radius:10px;padding:8px;color:var(--muted);font-size:10px;
+}
 .factor-factory-drawer{
   border:1px solid rgba(45,232,166,.42);border-radius:16px;background:linear-gradient(180deg,rgba(8,34,58,.82),rgba(5,20,38,.86));
   padding:14px;margin:8px 0 16px;box-shadow:inset 0 1px 0 rgba(255,255,255,.06),0 0 26px rgba(45,232,166,.08);
 }
 .factor-factory-drawer h3{margin:0;font-size:17px;display:flex;align-items:center;gap:8px}
 .factor-factory-drawer p{margin:6px 0 10px!important;font-size:11px;color:var(--muted)}
-.page-strategy .strategy-card{padding:22px;display:grid;grid-template-rows:auto auto auto auto minmax(0,1fr);align-content:stretch;align-self:stretch}
+.page-strategy .strategy-card{padding:22px;display:grid;grid-template-rows:auto auto auto auto auto minmax(0,1fr);align-content:stretch;align-self:stretch}
 .page-strategy .strategy-card .sub{font-size:14px}
 .page-strategy .flow-metrics{gap:12px;margin-top:14px}
 .page-strategy .stage{height:66px}
@@ -405,8 +424,8 @@ button{font:inherit;color:inherit}
   white-space:normal;overflow-wrap:anywhere;text-overflow:clip;
 }
 .strategy-research-grid .opportunity-cost-note strong{text-align:left}
-.page-strategy .strategy-research-grid{height:100%;align-items:stretch}
-.page-strategy .factor-factory-mini{padding:12px 14px;margin:0;border-radius:18px;display:grid;grid-template-rows:auto auto minmax(0,1fr);align-content:stretch;min-height:0;overflow:hidden}
+.page-strategy .strategy-research-grid{align-items:start}
+.page-strategy .factor-factory-mini{padding:12px 14px;margin:0;border-radius:18px;display:grid;grid-template-rows:auto auto auto;align-content:start;min-height:0}
 .page-strategy .factor-factory-stats{gap:10px;margin:8px 0}
 .page-strategy .factor-factory-stats span{padding:6px 10px;border-radius:14px}
 .page-strategy .factor-factory-stats b{font-size:24px}
@@ -415,11 +434,11 @@ button{font:inherit;color:inherit}
   min-height:30px;height:auto;grid-template-columns:18px minmax(0,1fr) minmax(78px,.28fr) 68px;gap:7px;padding:0 9px;
   font-size:12px;border-radius:14px;
 }
-.page-strategy .factor-chip-grid{grid-template-columns:repeat(auto-fit,minmax(150px,1fr));gap:6px;overflow:auto;scrollbar-gutter:stable;align-content:start}
+.page-strategy .factor-chip-grid{grid-template-columns:repeat(auto-fit,minmax(150px,1fr));gap:6px;overflow:visible;scrollbar-gutter:stable;align-content:start}
 .page-strategy .factor-chip strong{font-size:12px}
 .page-strategy .chip{min-width:0;min-height:40px;border-radius:15px;grid-template-columns:minmax(0,1fr) minmax(48px,.16fr) minmax(56px,.18fr);gap:2px 6px;font-size:12px;padding:5px 9px}
-.page-strategy .candidate-list{display:grid;grid-template-rows:auto minmax(0,1fr);align-content:stretch;min-height:0;overflow:hidden}
-.page-strategy .candidate-list-body{grid-template-columns:repeat(auto-fit,minmax(176px,1fr));gap:7px;overflow:auto;scrollbar-gutter:stable;align-content:start}
+.page-strategy .candidate-list{display:grid;grid-template-rows:auto auto;align-content:start;min-height:0}
+.page-strategy .candidate-list-body{grid-template-columns:repeat(auto-fit,minmax(176px,1fr));gap:7px;overflow:visible;scrollbar-gutter:stable;align-content:start}
 .page-strategy .candidate-main b{font-size:15px}
 .page-strategy .candidate-main small{font-size:12px}
 .page-strategy .candidate-detail{font-size:10px}
@@ -569,11 +588,11 @@ button{font:inherit;color:inherit}
   min-height:0;overflow:auto;padding-right:6px;margin-right:-6px;scrollbar-gutter:stable;
   overscroll-behavior:contain;-webkit-overflow-scrolling:touch;
 }
-.drawer-scroll::-webkit-scrollbar,.pack-list::-webkit-scrollbar,.mini-table::-webkit-scrollbar,.market-list::-webkit-scrollbar,.factor-chip-grid::-webkit-scrollbar,.candidate-list-body::-webkit-scrollbar,.opportunity-cost-mini::-webkit-scrollbar,.matrix-issue-list::-webkit-scrollbar{width:8px;height:8px}
-.drawer-scroll::-webkit-scrollbar-thumb,.pack-list::-webkit-scrollbar-thumb,.mini-table::-webkit-scrollbar-thumb,.market-list::-webkit-scrollbar-thumb,.factor-chip-grid::-webkit-scrollbar-thumb,.candidate-list-body::-webkit-scrollbar-thumb,.opportunity-cost-mini::-webkit-scrollbar-thumb,.matrix-issue-list::-webkit-scrollbar-thumb{
+.drawer-scroll::-webkit-scrollbar,.pack-list::-webkit-scrollbar,.mini-table::-webkit-scrollbar,.market-list::-webkit-scrollbar,.factor-chip-grid::-webkit-scrollbar,.candidate-list-body::-webkit-scrollbar,.opportunity-cost-mini::-webkit-scrollbar,.matrix-issue-list::-webkit-scrollbar,.research-mini-list::-webkit-scrollbar{width:8px;height:8px}
+.drawer-scroll::-webkit-scrollbar-thumb,.pack-list::-webkit-scrollbar-thumb,.mini-table::-webkit-scrollbar-thumb,.market-list::-webkit-scrollbar-thumb,.factor-chip-grid::-webkit-scrollbar-thumb,.candidate-list-body::-webkit-scrollbar-thumb,.opportunity-cost-mini::-webkit-scrollbar-thumb,.matrix-issue-list::-webkit-scrollbar-thumb,.research-mini-list::-webkit-scrollbar-thumb{
   background:rgba(80,169,255,.42);border-radius:99px;
 }
-.drawer-scroll::-webkit-scrollbar-track,.pack-list::-webkit-scrollbar-track,.mini-table::-webkit-scrollbar-track,.market-list::-webkit-scrollbar-track,.factor-chip-grid::-webkit-scrollbar-track,.candidate-list-body::-webkit-scrollbar-track,.opportunity-cost-mini::-webkit-scrollbar-track,.matrix-issue-list::-webkit-scrollbar-track{background:rgba(5,20,38,.35);border-radius:99px}
+.drawer-scroll::-webkit-scrollbar-track,.pack-list::-webkit-scrollbar-track,.mini-table::-webkit-scrollbar-track,.market-list::-webkit-scrollbar-track,.factor-chip-grid::-webkit-scrollbar-track,.candidate-list-body::-webkit-scrollbar-track,.opportunity-cost-mini::-webkit-scrollbar-track,.matrix-issue-list::-webkit-scrollbar-track,.research-mini-list::-webkit-scrollbar-track{background:rgba(5,20,38,.35);border-radius:99px}
 .detail-drawer p{color:var(--muted);margin:8px 0 16px}
 .mini-table-block{margin-top:16px}
 .mini-table-block h3{margin:0 0 8px;font-size:16px;color:#dff7ff}
@@ -772,6 +791,7 @@ button{font:inherit;color:inherit}
     grid-template-areas:"factor" "candidates" "opportunity";
     align-items:start;
   }
+  .strategy-secondary-grid{grid-template-columns:repeat(2,minmax(0,1fr));height:auto}
   .page-strategy .factor-factory-mini,
   .page-strategy .candidate-list{
     grid-template-rows:auto auto;
@@ -810,6 +830,7 @@ button{font:inherit;color:inherit}
     grid-template-areas:"factor" "candidates" "opportunity";
     align-items:start;
   }
+  .strategy-secondary-grid{grid-template-columns:1fr}
   .market-body{grid-template-columns:minmax(0,1fr) minmax(190px,.34fr)}
   .page-strategy .market-body{
     grid-template-columns:minmax(0,1fr) minmax(190px,.3fr);

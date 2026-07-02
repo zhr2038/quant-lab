@@ -84,9 +84,9 @@ def test_bigscreen_snapshot_cache_covers_frontend_refresh_interval(monkeypatch, 
     monkeypatch.setattr(bigscreen_module.time, "monotonic", lambda: now)
 
     first = bigscreen_snapshot(tmp_path / "lake")
-    now = 1034.0
+    now = 1011.0
     second = bigscreen_snapshot(tmp_path / "lake")
-    now = 1036.0
+    now = 1013.0
     third = bigscreen_snapshot(tmp_path / "lake")
     now = 1217.0
     fourth = bigscreen_snapshot(tmp_path / "lake")
@@ -97,6 +97,12 @@ def test_bigscreen_snapshot_cache_covers_frontend_refresh_interval(monkeypatch, 
     assert third is not first
     assert fourth is not third
     assert fifth is not fourth
+
+
+def test_bigscreen_snapshot_default_cache_ttl_stays_below_frontend_poll(monkeypatch):
+    monkeypatch.delenv("QUANT_LAB_BIGSCREEN_CACHE_TTL_SECONDS", raising=False)
+
+    assert bigscreen_module._snapshot_cache_ttl_seconds() < 15.0
 
 
 def test_bigscreen_strategy_flow_counts_use_full_advisory_not_display_sample(tmp_path):

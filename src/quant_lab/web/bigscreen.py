@@ -28,7 +28,9 @@ from quant_lab.symbols import normalize_symbol
 from quant_lab.time_display import beijing_today
 from quant_lab.web import perf, readers
 
-SNAPSHOT_CACHE_TTL_SECONDS = 35.0
+# Keep the backend cache below the frontend polling interval. If this drifts
+# higher, the page can claim it refreshed while still rendering an old snapshot.
+SNAPSHOT_CACHE_TTL_SECONDS = 12.0
 SNAPSHOT_CACHE_STALE_GRACE_SECONDS = 0.0
 MARKET_BAR_WARNING_DELAY_SECONDS = 2 * 60 * 60
 MARKET_BAR_CRITICAL_DELAY_SECONDS = 3 * 60 * 60

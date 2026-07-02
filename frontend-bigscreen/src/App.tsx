@@ -51,6 +51,8 @@ const PAGES: Array<{ key: PageKey; label: string; description: string }> = [
   { key: "data", label: "数据成本", description: "市场 / 成本 / 数据矩阵" },
   { key: "ops", label: "运行导出", description: "服务 / API / V5 / 专家包" }
 ];
+const SNAPSHOT_REFETCH_INTERVAL_MS = 15_000;
+const SNAPSHOT_STALE_TIME_MS = 10_000;
 const PAGE_KEYS = new Set<PageKey>(PAGES.map((item) => item.key));
 
 function pageFromHash(): PageKey {
@@ -139,8 +141,11 @@ function Bigscreen() {
   const query = useQuery({
     queryKey: ["bigscreen-snapshot"],
     queryFn: fetchBigscreenSnapshot,
-    refetchInterval: 30_000,
-    staleTime: 25_000,
+    refetchInterval: SNAPSHOT_REFETCH_INTERVAL_MS,
+    refetchIntervalInBackground: true,
+    refetchOnMount: "always",
+    refetchOnWindowFocus: "always",
+    staleTime: SNAPSHOT_STALE_TIME_MS,
     retry: 1
   });
   const data = query.data;
@@ -157,7 +162,7 @@ function Bigscreen() {
             <div className="pills">
               <span className="pill green">READ ONLY</span>
               <span className={`pill ${data?.status?.toLowerCase() ?? "yellow"}`}>{data?.status ?? "LOADING"}</span>
-              <span className="pill">REFRESH 30s · Asia/Shanghai</span>
+              <span className="pill">REFRESH 15s · Asia/Shanghai</span>
             </div>
           </header>
 

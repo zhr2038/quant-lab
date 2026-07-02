@@ -1089,6 +1089,15 @@ def test_data_health_uses_generated_at_for_cost_probe_fill_bill_match(tmp_path):
     assert "cost_probe_cost_disagreement" not in {row["dataset"] for row in stale_rows}
 
 
+def test_data_health_treats_missing_cost_probe_audits_as_optional(tmp_path):
+    lake_root = tmp_path / "lake"
+
+    stale_rows = readers.data_health_summary(lake_root)["stale_datasets"].to_dicts()
+
+    assert "cost_probe_fill_bill_match" not in {row["dataset"] for row in stale_rows}
+    assert "cost_probe_cost_disagreement" not in {row["dataset"] for row in stale_rows}
+
+
 def test_dataset_snapshot_falls_back_when_file_index_misses_partitioned_files(tmp_path):
     lake_root = tmp_path / "lake"
     now = datetime.now(UTC)

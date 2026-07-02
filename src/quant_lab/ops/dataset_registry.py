@@ -445,6 +445,8 @@ def core_dataset_specs() -> dict[str, DatasetSpec]:
             producer="qlab export-daily",
             consumers=("readiness", "web", "expert-export"),
             primary_key=("generated_at", "symbol", "roundtrip_id"),
+            required=False,
+            min_rows=0,
             required_columns=(
                 "generated_at",
                 "symbol",

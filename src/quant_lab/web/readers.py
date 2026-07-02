@@ -215,6 +215,7 @@ OPTIONAL_EMPTY_DATASET_STATUSES = {
     "entry_quality_optional",
     "trade_level_optional",
     "historical_research_snapshot",
+    "cost_probe_optional_audit",
     DERIVED_LATEST_SOURCE_CURRENT_STATUS,
     "event_driven_no_recent_cost_probe_p3_preflight",
     "event_driven_no_recent_cost_probe_order_event",
@@ -5942,6 +5943,8 @@ def _empty_dataset_status(dataset_name: str) -> str:
         return "export_derived_optional"
     if dataset_name == "cost_bootstrap_readiness":
         return "export_derived_optional"
+    if dataset_name in {"cost_probe_fill_bill_match", "cost_probe_cost_disagreement"}:
+        return "cost_probe_optional_audit"
     if dataset_name == "v5_cost_probe_p3_preflight":
         return "event_driven_no_recent_cost_probe_p3_preflight"
     if dataset_name == "v5_cost_probe_live_execution_status":

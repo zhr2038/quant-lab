@@ -2953,6 +2953,68 @@ def test_web_dataset_source_signature_tracks_snapshot_meta_dataset_dir_changes(t
     assert first != second
 
 
+def test_heavy_web_dataset_source_signature_uses_file_index_summary(tmp_path, monkeypatch):
+    readers.clear_web_cache()
+    lake_root = tmp_path / "lake"
+    dataset_path = lake_root / "silver" / "trade_print"
+    dataset_path.mkdir(parents=True)
+    pl.DataFrame(
+        [
+            {
+                "symbol": "BTC-USDT",
+                "ts": datetime(2026, 5, 10, 1, tzinfo=UTC),
+                "price": 100.0,
+            }
+        ]
+    ).write_parquet(dataset_path / "part-1.parquet")
+    build_lake_file_index(lake_root, ["silver/trade_print"])
+
+    def fail_indexed_files(_path):
+        raise AssertionError("heavy source signature should not stat every indexed parquet file")
+
+    monkeypatch.setattr(readers, "_indexed_files_for_web", fail_indexed_files)
+
+    signature = readers._web_dataset_source_signature(dataset_path)
+
+    assert signature[0] == "lake_file_index_dataset"
+    assert signature[1] == 1
+
+
+def test_heavy_web_dataset_source_signature_changes_when_file_index_changes(tmp_path):
+    readers.clear_web_cache()
+    lake_root = tmp_path / "lake"
+    dataset_path = lake_root / "silver" / "trade_print"
+    dataset_path.mkdir(parents=True)
+    pl.DataFrame(
+        [
+            {
+                "symbol": "BTC-USDT",
+                "ts": datetime(2026, 5, 10, 1, tzinfo=UTC),
+                "price": 100.0,
+            }
+        ]
+    ).write_parquet(dataset_path / "part-1.parquet")
+    build_lake_file_index(lake_root, ["silver/trade_print"])
+    first = readers._web_dataset_source_signature(dataset_path)
+
+    pl.DataFrame(
+        [
+            {
+                "symbol": "BTC-USDT",
+                "ts": datetime(2026, 5, 10, 2, tzinfo=UTC),
+                "price": 101.0,
+            }
+        ]
+    ).write_parquet(dataset_path / "part-2.parquet")
+    build_lake_file_index(lake_root, ["silver/trade_print"])
+    readers.clear_web_cache()
+    second = readers._web_dataset_source_signature(dataset_path)
+
+    assert first != second
+    assert second[0] == "lake_file_index_dataset"
+    assert second[1] == 2
+
+
 def test_web_recent_dataset_cache_avoids_second_scan(tmp_path, monkeypatch):
     readers.clear_web_cache()
     lake_root = _fixture_lake(tmp_path)

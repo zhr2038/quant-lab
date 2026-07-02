@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 import json
 import os
 import time as time_module
@@ -1654,6 +1655,115 @@ def _web_file_index_paths_by_dataset(lake_root: Path) -> dict[str, list[Path]]:
     return _web_cache_set(cache_key, paths_by_dataset)
 
 
+def _web_file_index_dataset_signature(path: Path) -> tuple[Any, ...] | None:
+    lake_root = _infer_lake_root_from_path(path)
+    if lake_root is None:
+        return None
+    try:
+        relative_dataset = str(path.relative_to(lake_root)).replace("\\", "/")
+    except ValueError:
+        return None
+    signatures = _web_file_index_dataset_signatures(lake_root)
+    return signatures.get(relative_dataset)
+
+
+def _web_file_index_dataset_signatures(lake_root: Path) -> dict[str, tuple[Any, ...]]:
+    cache_key = (
+        "web_file_index_dataset_signatures",
+        str(lake_root.resolve()),
+        _lake_file_index_signature(lake_root),
+    )
+    cached = _web_cache_get(cache_key, event="web_file_index_dataset_signatures")
+    if cached is not None:
+        return cached
+    try:
+        index = read_parquet_dataset(lake_root / "bronze" / "lake_file_index")
+    except Exception:
+        return _web_cache_set(cache_key, {})
+    required = {"dataset", "path"}
+    if index.is_empty() or not required.issubset(set(index.columns)):
+        return _web_cache_set(cache_key, {})
+    available = set(index.columns)
+    selected_columns = [
+        column
+        for column in (
+            "dataset",
+            "path",
+            "source_sha",
+            "mtime_ns",
+            "file_size",
+            "row_count",
+            "min_ts",
+            "max_ts",
+            "indexed_at",
+            "index_version",
+        )
+        if column in available
+    ]
+    normalized = (
+        index.select([pl.col(column).cast(pl.Utf8, strict=False) for column in selected_columns])
+        .drop_nulls(subset=["dataset", "path"])
+        .sort(["dataset", "path"])
+    )
+    accumulators: dict[str, dict[str, Any]] = {}
+    for row in normalized.iter_rows(named=True):
+        dataset = str(row.get("dataset") or "")
+        path_text = str(row.get("path") or "")
+        if not dataset or not path_text:
+            continue
+        accumulator = accumulators.setdefault(
+            dataset,
+            {
+                "count": 0,
+                "row_count_sum": 0,
+                "file_size_sum": 0,
+                "max_mtime_ns": "",
+                "max_ts": "",
+                "max_indexed_at": "",
+                "digest": hashlib.blake2b(digest_size=16),
+            },
+        )
+        accumulator["count"] += 1
+        for source_column, target_key in (
+            ("row_count", "row_count_sum"),
+            ("file_size", "file_size_sum"),
+        ):
+            try:
+                accumulator[target_key] += int(row.get(source_column) or 0)
+            except (TypeError, ValueError):
+                pass
+        for source_column, target_key in (
+            ("mtime_ns", "max_mtime_ns"),
+            ("max_ts", "max_ts"),
+            ("indexed_at", "max_indexed_at"),
+        ):
+            value = str(row.get(source_column) or "")
+            if value > accumulator[target_key]:
+                accumulator[target_key] = value
+        digest = accumulator["digest"]
+        digest.update(
+            "|".join(
+                str(row.get(column) or "")
+                for column in selected_columns
+            ).encode("utf-8", "surrogatepass")
+        )
+        digest.update(b"\n")
+    signatures = {
+        dataset: (
+            "lake_file_index_dataset",
+            values["count"],
+            values["row_count_sum"],
+            values["file_size_sum"],
+            values["max_mtime_ns"],
+            values["max_ts"],
+            values["max_indexed_at"],
+            values["digest"].hexdigest(),
+        )
+        for dataset, values in accumulators.items()
+    }
+    return _web_cache_set(cache_key, signatures)
+
+
 def _infer_lake_root_from_path(path: Path) -> Path | None:
     parts = path.parts
     for index, part in enumerate(parts):
@@ -1772,6 +1882,11 @@ def _web_dataset_source_signature(path: Path) -> tuple[Any, ...]:
             root_stat.st_size if root_stat is not None else None,
             tuple((field, str(meta.get(field) or "")) for field in meta_fields),
         )
+    dataset_name = _dataset_name_from_path(path)
+    if dataset_name in WEB_HEAVY_METADATA_DATASETS:
+        indexed_signature = _web_file_index_dataset_signature(path)
+        if indexed_signature is not None:
+            return indexed_signature
     indexed = _indexed_files_for_web(path)
     if indexed is not None:
         newest = 0

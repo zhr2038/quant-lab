@@ -89,7 +89,7 @@ button{font:inherit;color:inherit}
   grid-column:auto;grid-row:auto;
 }
 .page-overview{grid-template-columns:420px minmax(0,1fr);grid-template-rows:140px minmax(0,1fr)}
-.page-overview .kpis{grid-column:1/3;grid-row:1;grid-template-columns:repeat(8,minmax(0,1fr));padding:46px 22px 18px}
+.page-overview .kpis{grid-column:1/3;grid-row:1;grid-template-columns:repeat(8,minmax(0,1fr));padding:38px 22px 12px}
 .overview-side{grid-column:1;grid-row:2;display:grid;grid-template-rows:280px 226px minmax(174px,1fr);gap:18px;min-height:0}
 .page-overview .heatmap{grid-column:2;grid-row:2}
 .page-strategy{grid-template-columns:minmax(0,1fr) minmax(420px,.38fr);grid-template-rows:minmax(0,1fr);align-items:stretch}
@@ -235,8 +235,24 @@ button{font:inherit;color:inherit}
 .matrix-side-stats b{display:block;font-size:19px;color:#eaf6ff;line-height:1}
 .matrix-side-stats em{display:block;margin-top:5px;color:var(--muted);font-size:10px;font-style:normal;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
 .overview-matrix-card{
-  display:grid;grid-template-rows:auto auto auto minmax(190px,1fr);align-content:stretch;
+  display:grid;grid-template-rows:auto auto auto minmax(150px,1fr);align-content:stretch;
 }
+.overview-matrix-card .matrix-grid-shell{margin-top:12px;gap:14px}
+.overview-matrix-card .matrix{gap:6px}
+.overview-matrix-card .cell{height:24px;border-radius:8px}
+.overview-matrix-card .matrix-side-panel{padding:12px;gap:8px;grid-template-rows:20px minmax(0,1fr) auto}
+.overview-matrix-card .matrix-spark{min-height:70px}
+.overview-matrix-card .matrix-side-stats{gap:6px}
+.overview-matrix-card .matrix-side-stats span{padding:6px}
+.overview-matrix-card .matrix-side-stats b{font-size:17px}
+.overview-matrix-card .matrix-side-stats em{font-size:9px}
+.overview-matrix-card .matrix-bottom-panel{margin-top:10px;gap:12px}
+.overview-matrix-card .matrix-issue-panel,.overview-matrix-card .matrix-coverage-panel{padding-top:9px;gap:7px}
+.overview-matrix-card .matrix-issue-list{grid-auto-rows:minmax(32px,auto);gap:6px}
+.overview-matrix-card .matrix-issue-row{grid-template-columns:52px 48px minmax(0,1fr);gap:8px;padding:6px 8px;border-radius:10px}
+.overview-matrix-card .matrix-issue-row strong{font-size:12px}
+.overview-matrix-card .matrix-issue-row span,.overview-matrix-card .matrix-issue-row em{font-size:10px}
+.overview-matrix-card .matrix-coverage-list{gap:8px}
 .matrix-bottom-panel{
   margin-top:18px;display:grid;grid-template-columns:minmax(0,1.36fr) minmax(260px,.64fr);gap:14px;
   min-height:0;align-self:stretch;

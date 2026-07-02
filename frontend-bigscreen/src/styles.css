@@ -381,16 +381,17 @@ button{font:inherit;color:inherit}
 .strategy-research-grid{
   display:grid;grid-template-columns:minmax(250px,.29fr) minmax(340px,.38fr) minmax(300px,.33fr);grid-template-rows:minmax(0,1fr);
   grid-template-areas:"opportunity factor candidates";
-  gap:12px;margin-top:2px;align-items:stretch;min-height:0;
+  gap:12px;margin-top:2px;align-items:stretch;min-height:0;overflow:hidden;
 }
-.strategy-research-grid .opportunity-cost-mini{grid-area:opportunity;margin:0;display:grid;align-content:start;gap:7px;min-height:0;overflow:auto;scrollbar-gutter:stable}
-.strategy-research-grid .factor-factory-mini{grid-area:factor;margin:0;min-height:0}
-.strategy-research-grid .candidate-list{grid-area:candidates;margin:0}
+.strategy-research-grid .opportunity-cost-mini{grid-area:opportunity;margin:0;display:grid;align-content:start;gap:7px;min-height:0;height:100%;max-height:100%;overflow:auto;scrollbar-gutter:stable}
+.strategy-research-grid .factor-factory-mini{grid-area:factor;margin:0;min-height:0;height:100%;max-height:100%}
+.strategy-research-grid .candidate-list{grid-area:candidates;margin:0;height:100%;max-height:100%}
 .strategy-secondary-grid{
-  margin-top:8px;display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:8px;min-height:0;height:100%;
+  margin-top:0;display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:8px;min-height:124px;height:100%;
+  max-height:100%;align-self:stretch;align-items:stretch;overflow:hidden;position:relative;z-index:2;
 }
 .research-mini-panel{
-  min-width:0;min-height:0;border:1px solid rgba(80,169,255,.24);border-radius:15px;background:rgba(6,24,44,.52);
+  min-width:0;min-height:0;height:100%;max-height:100%;border:1px solid rgba(80,169,255,.24);border-radius:15px;background:rgba(6,24,44,.86);
   padding:8px;display:grid;grid-template-rows:auto minmax(0,1fr);gap:5px;overflow:hidden;
 }
 .research-mini-title{font-size:12px;font-weight:900;color:#cfe5f8}
@@ -412,8 +413,8 @@ button{font:inherit;color:inherit}
 .factor-factory-drawer h3{margin:0;font-size:17px;display:flex;align-items:center;gap:8px}
 .factor-factory-drawer p{margin:6px 0 10px!important;font-size:11px;color:var(--muted)}
 .page-strategy .strategy-card{
-  padding:20px 22px;display:grid;grid-template-rows:auto auto auto auto minmax(0,1fr) minmax(92px,.28fr);
-  align-content:stretch;align-self:stretch;overflow:hidden;gap:0;
+  padding:20px 22px;display:grid;grid-template-rows:auto auto auto auto minmax(0,1fr) minmax(132px,.34fr);
+  align-content:stretch;align-self:stretch;overflow:hidden;gap:8px;
 }
 .page-strategy .strategy-card .sub{font-size:14px}
 .page-strategy .flow-metrics{gap:12px;margin-top:12px}
@@ -765,7 +766,8 @@ button{font:inherit;color:inherit}
     grid-column:auto;grid-row:auto;
   }
   .page-strategy .strategy-card{
-    grid-template-rows:auto auto auto auto auto;
+    grid-template-rows:auto auto auto auto auto auto;
+    height:auto;
   }
   .page-data{
     grid-template-columns:1fr;
@@ -824,7 +826,7 @@ button{font:inherit;color:inherit}
     grid-template-areas:"factor" "candidates" "opportunity";
     align-items:start;
   }
-  .strategy-secondary-grid{grid-template-columns:repeat(2,minmax(0,1fr));height:auto}
+  .strategy-secondary-grid{grid-template-columns:repeat(2,minmax(0,1fr));height:auto;min-height:168px;overflow:hidden}
   .page-strategy .factor-factory-mini,
   .page-strategy .candidate-list{
     grid-template-rows:auto auto;
@@ -930,7 +932,11 @@ button{font:inherit;color:inherit}
     grid-template-rows:minmax(0,1fr);
     align-items:stretch;
   }
-  .page-strategy .strategy-card{grid-column:1;grid-row:1;align-self:stretch;height:100%}
+  .page-strategy .strategy-card{
+    grid-column:1;grid-row:1;align-self:stretch;height:100%;
+    grid-template-rows:auto auto auto auto minmax(0,1fr) minmax(166px,.4fr);
+    gap:8px;
+  }
   .page-strategy .market{
     grid-column:2;grid-row:1;align-self:stretch;height:100%;
     grid-template-rows:auto auto auto;
@@ -943,7 +949,7 @@ button{font:inherit;color:inherit}
     align-items:stretch;
   }
   .strategy-research-grid .opportunity-cost-mini{overflow:auto}
-  .strategy-secondary-grid{grid-template-columns:repeat(2,minmax(0,1fr));height:100%}
+  .strategy-secondary-grid{grid-template-columns:repeat(2,minmax(0,1fr));height:100%;min-height:166px;overflow:hidden}
   .page-strategy .factor-factory-mini,
   .page-strategy .candidate-list{
     min-height:0;

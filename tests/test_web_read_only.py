@@ -1051,13 +1051,42 @@ def test_data_health_uses_generated_at_for_cost_probe_fill_bill_match(tmp_path):
         ),
         lake_root / "gold" / "cost_probe_fill_bill_match",
     )
+    write_parquet_dataset(
+        pl.DataFrame(
+            [
+                {
+                    "generated_at": now.isoformat(),
+                    "symbol": "SOL-USDT",
+                    "authorization_id": "auth-sol",
+                    "roundtrip_id": "entry:exit",
+                    "v5_roundtrip_cost_bps": "10",
+                    "quant_lab_roundtrip_cost_bps": "11",
+                    "okx_bill_roundtrip_cost_bps": "10.5",
+                    "diff_bps": "1",
+                    "status": "PASS",
+                    "reason": "comparable_values=okx_bill,quant_lab,v5",
+                    "cost_bucket_source": "bootstrap_cost_probe",
+                    "bill_match_status": "PASS",
+                }
+            ]
+        ),
+        lake_root / "gold" / "cost_probe_cost_disagreement",
+    )
 
     snapshot = readers._dataset_snapshot(lake_root, "cost_probe_fill_bill_match", now=now)
+    disagreement_snapshot = readers._dataset_snapshot(
+        lake_root,
+        "cost_probe_cost_disagreement",
+        now=now,
+    )
     stale_rows = readers.data_health_summary(lake_root)["stale_datasets"].to_dicts()
 
     assert snapshot.freshness["timestamp_column"] == "generated_at"
     assert snapshot.freshness["freshness_status"] == "fresh"
+    assert disagreement_snapshot.freshness["timestamp_column"] == "generated_at"
+    assert disagreement_snapshot.freshness["freshness_status"] == "fresh"
     assert "cost_probe_fill_bill_match" not in {row["dataset"] for row in stale_rows}
+    assert "cost_probe_cost_disagreement" not in {row["dataset"] for row in stale_rows}
 
 
 def test_dataset_snapshot_falls_back_when_file_index_misses_partitioned_files(tmp_path):

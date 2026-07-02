@@ -285,6 +285,7 @@ def test_export_daily_pack_writes_required_members(tmp_path):
         assert "reports/factor_strategy_bridge_candidates.csv" in names
         assert "reports/cost_bootstrap_readiness.csv" in names
         assert "reports/cost_probe_fill_bill_match.csv" in names
+        assert "reports/cost_probe_cost_disagreement.csv" in names
         assert "reports/live_universe_cost_coverage.csv" in names
         assert "reports/v5_candidate_feature_completeness_by_strategy.csv" in names
         assert "reports/fast_microstructure_forward_test.csv" in names
@@ -325,6 +326,13 @@ def test_export_daily_pack_writes_required_members(tmp_path):
             .splitlines()[0]
         )
         assert "bill_match_status" in fill_bill_header
+        disagreement_header = (
+            archive.read("reports/cost_probe_cost_disagreement.csv")
+            .decode("utf-8")
+            .splitlines()[0]
+        )
+        assert "diff_bps" in disagreement_header
+        assert "status" in disagreement_header
         learning_header = (
             archive.read("reports/v5_trade_learning_sample.csv")
             .decode("utf-8")

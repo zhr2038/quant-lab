@@ -434,6 +434,33 @@ def core_dataset_specs() -> dict[str, DatasetSpec]:
             quality_rules=("schema_required_columns", "freshness"),
         ),
         DatasetSpec(
+            dataset_id="cost_probe_cost_disagreement",
+            layer="gold",
+            relative_path=Path("gold") / "cost_probe_cost_disagreement",
+            owner="cost-model",
+            description=(
+                "Read-only audit comparing V5 cost-probe realized roundtrip cost, "
+                "quant-lab bootstrap cost bucket, and OKX bill-reconstructed cost."
+            ),
+            producer="qlab export-daily",
+            consumers=("readiness", "web", "expert-export"),
+            primary_key=("generated_at", "symbol", "roundtrip_id"),
+            required_columns=(
+                "generated_at",
+                "symbol",
+                "roundtrip_id",
+                "v5_roundtrip_cost_bps",
+                "quant_lab_roundtrip_cost_bps",
+                "okx_bill_roundtrip_cost_bps",
+                "diff_bps",
+                "status",
+            ),
+            timestamp_column="generated_at",
+            utc_timestamp_columns=("generated_at",),
+            freshness_seconds=24 * 60 * 60,
+            quality_rules=("schema_required_columns", "freshness"),
+        ),
+        DatasetSpec(
             dataset_id="alpha_evidence",
             layer="gold",
             relative_path=Path("gold") / "alpha_evidence",

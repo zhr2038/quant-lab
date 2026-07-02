@@ -28,6 +28,21 @@ COST_PROBE_FILL_BILL_MATCH_FIELDS = [
     "bill_match_status",
 ]
 
+COST_PROBE_COST_DISAGREEMENT_FIELDS = [
+    "generated_at",
+    "symbol",
+    "authorization_id",
+    "roundtrip_id",
+    "v5_roundtrip_cost_bps",
+    "quant_lab_roundtrip_cost_bps",
+    "okx_bill_roundtrip_cost_bps",
+    "diff_bps",
+    "status",
+    "reason",
+    "cost_bucket_source",
+    "bill_match_status",
+]
+
 
 def canonical_cost_probe_roundtrip_events(roundtrip_events: pl.DataFrame | None) -> pl.DataFrame:
     """Return one final/canonical row per cost-probe roundtrip key."""
@@ -275,6 +290,122 @@ def build_cost_probe_fill_bill_match(
     if not rows:
         return _empty_fill_bill_match_frame()
     return pl.DataFrame(rows, infer_schema_length=None).select(COST_PROBE_FILL_BILL_MATCH_FIELDS)
+
+
+def build_cost_probe_cost_disagreement(
+    cost_bucket_daily: pl.DataFrame | None,
+    order_events: pl.DataFrame | None,
+    roundtrip_events: pl.DataFrame | None,
+    private_fills: pl.DataFrame | None,
+    private_bills: pl.DataFrame | None,
+    *,
+    generated_at: datetime | None = None,
+) -> pl.DataFrame:
+    """Compare closed cost-probe roundtrip costs across V5, qlab, and OKX bills."""
+
+    generated = (generated_at or datetime.now(UTC)).astimezone(UTC)
+    generated_text = generated.isoformat().replace("+00:00", "Z")
+    canonical_roundtrips = canonical_cost_probe_roundtrip_events(roundtrip_events)
+    if canonical_roundtrips.is_empty():
+        return _empty_cost_disagreement_frame()
+
+    cost_rows = (
+        cost_bucket_daily.to_dicts()
+        if cost_bucket_daily is not None and not cost_bucket_daily.is_empty()
+        else []
+    )
+    order_rows = (
+        order_events.to_dicts()
+        if order_events is not None and not order_events.is_empty()
+        else []
+    )
+    fill_rows = (
+        private_fills.to_dicts()
+        if private_fills is not None and not private_fills.is_empty()
+        else []
+    )
+    bill_rows = (
+        private_bills.to_dicts()
+        if private_bills is not None and not private_bills.is_empty()
+        else []
+    )
+    rows: list[dict[str, Any]] = []
+
+    for roundtrip in canonical_roundtrips.to_dicts():
+        payload = _payload_dict(roundtrip)
+        if not eligible_cost_probe_roundtrip(roundtrip, payload):
+            continue
+        symbol = cost_probe_symbol(roundtrip, payload)
+        cost_row = _latest_bootstrap_cost_row(cost_rows, symbol)
+        entry = _cost_probe_leg_bill_match(
+            leg="entry",
+            roundtrip=roundtrip,
+            payload=payload,
+            order_rows=order_rows,
+            fill_rows=fill_rows,
+            bill_rows=bill_rows,
+            symbol=symbol,
+        )
+        exit_ = _cost_probe_leg_bill_match(
+            leg="exit",
+            roundtrip=roundtrip,
+            payload=payload,
+            order_rows=order_rows,
+            fill_rows=fill_rows,
+            bill_rows=bill_rows,
+            symbol=symbol,
+        )
+        fee_diff = _fee_diff(
+            entry["fee_from_fill"],
+            entry["fee_from_bill"],
+            exit_["fee_from_fill"],
+            exit_["fee_from_bill"],
+        )
+        bill_match_status = _bill_match_status(entry, exit_, fee_diff)
+        v5_cost = _v5_roundtrip_cost_bps(roundtrip, payload)
+        quant_lab_cost = _cost_bucket_roundtrip_cost_bps(cost_row)
+        okx_bill_cost = _okx_bill_roundtrip_cost_bps(
+            roundtrip=roundtrip,
+            payload=payload,
+            order_rows=order_rows,
+            fill_rows=fill_rows,
+            entry_fee=entry["fee_from_bill"],
+            exit_fee=exit_["fee_from_bill"],
+            symbol=symbol,
+        )
+        status, diff, reason = _cost_disagreement_status(
+            {
+                "v5": v5_cost,
+                "quant_lab": quant_lab_cost,
+                "okx_bill": okx_bill_cost,
+            }
+        )
+        rows.append(
+            {
+                "generated_at": generated_text,
+                "symbol": symbol,
+                "authorization_id": str(
+                    _first_value(roundtrip, payload, ["authorization_id"]) or ""
+                ),
+                "roundtrip_id": str(
+                    _first_value(roundtrip, payload, ["roundtrip_id", "roundtrip_key"]) or ""
+                ),
+                "v5_roundtrip_cost_bps": _format_number(v5_cost),
+                "quant_lab_roundtrip_cost_bps": _format_number(quant_lab_cost),
+                "okx_bill_roundtrip_cost_bps": _format_number(okx_bill_cost),
+                "diff_bps": _format_number(diff),
+                "status": status,
+                "reason": reason,
+                "cost_bucket_source": _cost_row_source(cost_row),
+                "bill_match_status": bill_match_status,
+            }
+        )
+
+    if not rows:
+        return _empty_cost_disagreement_frame()
+    return pl.DataFrame(rows, infer_schema_length=None).select(
+        COST_PROBE_COST_DISAGREEMENT_FIELDS
+    )
 
 
 def private_fill_matches_cost_probe(
@@ -581,6 +712,164 @@ def _roundtrip_leg_has_fill(
 
 def _empty_fill_bill_match_frame() -> pl.DataFrame:
     return pl.DataFrame(schema={field: pl.Utf8 for field in COST_PROBE_FILL_BILL_MATCH_FIELDS})
+
+
+def _empty_cost_disagreement_frame() -> pl.DataFrame:
+    return pl.DataFrame(schema={field: pl.Utf8 for field in COST_PROBE_COST_DISAGREEMENT_FIELDS})
+
+
+def _latest_bootstrap_cost_row(
+    cost_rows: Sequence[dict[str, Any]],
+    symbol: str,
+) -> dict[str, Any] | None:
+    normalized_symbol = normalize_symbol(symbol) if symbol else ""
+    candidates: list[dict[str, Any]] = []
+    for row in cost_rows:
+        row_payload = _payload_dict(row)
+        row_symbol_value = cost_probe_symbol(row, row_payload) or str(row.get("symbol") or "")
+        if normalized_symbol and normalize_symbol(row_symbol_value) != normalized_symbol:
+            continue
+        source = _cost_row_source(row)
+        origin = str(
+            _first_value(row, row_payload, ["sample_origin_mix", "sample_origin"]) or ""
+        ).lower()
+        if source != "bootstrap_cost_probe" and "cost_probe" not in origin:
+            continue
+        candidates.append(row)
+    if not candidates:
+        return None
+    return sorted(candidates, key=_cost_row_sort_key)[-1]
+
+
+def _cost_row_sort_key(row: Mapping[str, Any]) -> tuple[datetime, str]:
+    payload = _payload_dict(row)
+    timestamp = _first_timestamp(
+        row,
+        payload,
+        ("created_at", "generated_at", "as_of_ts", "day", "date", "ts", "timestamp"),
+    )
+    return timestamp or datetime.min.replace(tzinfo=UTC), str(row)
+
+
+def _cost_row_source(row: Mapping[str, Any] | None) -> str:
+    if not row:
+        return ""
+    payload = _payload_dict(row)
+    return str(
+        _first_value(row, payload, ["source", "cost_source", "latest_cost_source"]) or ""
+    ).strip()
+
+
+def _cost_bucket_roundtrip_cost_bps(row: Mapping[str, Any] | None) -> float | None:
+    if not row:
+        return None
+    payload = _payload_dict(row)
+    explicit = _first_float(
+        row,
+        payload,
+        [
+            "roundtrip_cost_bps",
+            "selected_roundtrip_cost_bps",
+            "roundtrip_cost_p75_bps",
+            "roundtrip_cost_p50_bps",
+            "roundtrip_cost_bps_p75",
+        ],
+    )
+    if explicit is not None and explicit > 0:
+        return explicit
+    total = _first_float(row, payload, ["total_cost_bps_p75", "selected_total_cost_bps"])
+    if total is not None and total > 0:
+        return total * 2.0
+    return None
+
+
+def _v5_roundtrip_cost_bps(
+    roundtrip: Mapping[str, Any],
+    payload: Mapping[str, Any],
+) -> float | None:
+    return _first_float(
+        roundtrip,
+        payload,
+        [
+            "roundtrip_cost_bps",
+            "realized_roundtrip_cost_bps",
+            "actual_roundtrip_cost_bps",
+            "filled_roundtrip_cost_bps",
+            "execution_roundtrip_cost_bps",
+            "total_roundtrip_cost_bps",
+        ],
+    )
+
+
+def _okx_bill_roundtrip_cost_bps(
+    *,
+    roundtrip: Mapping[str, Any],
+    payload: Mapping[str, Any],
+    order_rows: Sequence[dict[str, Any]],
+    fill_rows: Sequence[dict[str, Any]],
+    entry_fee: float | None,
+    exit_fee: float | None,
+    symbol: str,
+) -> float | None:
+    if entry_fee is None or exit_fee is None:
+        return None
+    entry_notional = _cost_probe_leg_notional(
+        leg="entry",
+        roundtrip=roundtrip,
+        payload=payload,
+        order_rows=order_rows,
+        fill_rows=fill_rows,
+        symbol=symbol,
+    )
+    exit_notional = _cost_probe_leg_notional(
+        leg="exit",
+        roundtrip=roundtrip,
+        payload=payload,
+        order_rows=order_rows,
+        fill_rows=fill_rows,
+        symbol=symbol,
+    )
+    if entry_notional is None or exit_notional is None or entry_notional <= 0:
+        return None
+    return ((entry_notional - exit_notional) + entry_fee + exit_fee) / entry_notional * 10_000.0
+
+
+def _cost_probe_leg_notional(
+    *,
+    leg: str,
+    roundtrip: Mapping[str, Any],
+    payload: Mapping[str, Any],
+    order_rows: Sequence[dict[str, Any]],
+    fill_rows: Sequence[dict[str, Any]],
+    symbol: str,
+) -> float | None:
+    order_ids = _roundtrip_leg_order_ids(roundtrip, payload, leg=leg)
+    trade_ids = _roundtrip_leg_trade_ids(roundtrip, payload, leg=leg)
+    private_matches = _matching_private_fills_for_leg(
+        fill_rows,
+        symbol=symbol,
+        order_ids=order_ids,
+        trade_ids=trade_ids,
+    )
+    if not private_matches:
+        matched_order = _latest_matching_order(order_rows, roundtrip, payload, leg=leg)
+        if matched_order is not None:
+            private_matches = [matched_order]
+    return _sum_optional(_fill_price_qty_side_notional(row)[3] for row in private_matches)
+
+
+def _cost_disagreement_status(values: Mapping[str, float | None]) -> tuple[str, float | None, str]:
+    comparable = {key: value for key, value in values.items() if value is not None}
+    if len(comparable) < 2:
+        missing = sorted(key for key in values if key not in comparable)
+        return "NOT_EVALUATED", None, "missing:" + ",".join(missing)
+    diff = max(comparable.values()) - min(comparable.values())
+    reason = "comparable_values=" + ",".join(sorted(comparable))
+    if diff <= 2.0:
+        return "PASS", diff, reason
+    if diff <= 5.0:
+        return "WARN", diff, reason
+    return "FAIL", diff, reason
 
 
 def _cost_probe_leg_bill_match(

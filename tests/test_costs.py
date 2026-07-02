@@ -10,7 +10,10 @@ from quant_lab.costs.model import (
     estimate_cost_from_cost_bucket_daily_rows,
     evaluate_live_universe_cost_coverage,
 )
-from quant_lab.costs.probe import build_cost_probe_fill_bill_match
+from quant_lab.costs.probe import (
+    build_cost_probe_cost_disagreement,
+    build_cost_probe_fill_bill_match,
+)
 
 
 def test_cost_model_uses_exact_matching_bucket():
@@ -163,6 +166,71 @@ def test_cost_probe_fill_bill_match_reconstructs_okx_spot_ledger_amounts():
     assert row["bill_match_status"] == "PASS"
 
 
+def test_cost_probe_cost_disagreement_passes_when_probe_costs_align():
+    now = datetime(2026, 6, 24, 9, 0, tzinfo=UTC)
+    roundtrips = _probe_roundtrip_events().with_columns(
+        pl.lit(16.0).alias("roundtrip_cost_bps")
+    )
+
+    disagreement = build_cost_probe_cost_disagreement(
+        pl.DataFrame(
+            [
+                {
+                    **_coverage_cost_row("ETH-USDT", "bootstrap_cost_probe", now),
+                    "roundtrip_cost_p75_bps": 16.5,
+                }
+            ]
+        ),
+        _probe_order_events(),
+        roundtrips,
+        _probe_private_fills(),
+        _probe_bill_rows(),
+        generated_at=now,
+    )
+
+    row = disagreement.to_dicts()[0]
+    assert row["generated_at"] == "2026-06-24T09:00:00Z"
+    assert row["symbol"] == "ETH-USDT"
+    assert row["authorization_id"] == "auth-eth-1"
+    assert row["roundtrip_id"] == "rt-eth-1"
+    assert row["v5_roundtrip_cost_bps"] == "16"
+    assert row["quant_lab_roundtrip_cost_bps"] == "16.5"
+    assert row["okx_bill_roundtrip_cost_bps"] == "16"
+    assert row["diff_bps"] == "0.5"
+    assert row["status"] == "PASS"
+    assert row["reason"] == "comparable_values=okx_bill,quant_lab,v5"
+    assert row["cost_bucket_source"] == "bootstrap_cost_probe"
+    assert row["bill_match_status"] == "PASS"
+
+
+def test_cost_probe_cost_disagreement_fails_on_large_cost_gap():
+    now = datetime(2026, 6, 24, 9, 0, tzinfo=UTC)
+    roundtrips = _probe_roundtrip_events().with_columns(
+        pl.lit(16.0).alias("roundtrip_cost_bps")
+    )
+
+    disagreement = build_cost_probe_cost_disagreement(
+        pl.DataFrame(
+            [
+                {
+                    **_coverage_cost_row("ETH-USDT", "bootstrap_cost_probe", now),
+                    "roundtrip_cost_p75_bps": 24.5,
+                }
+            ]
+        ),
+        _probe_order_events(),
+        roundtrips,
+        _probe_private_fills(),
+        _probe_bill_rows(),
+        generated_at=now,
+    )
+
+    row = disagreement.to_dicts()[0]
+    assert row["status"] == "FAIL"
+    assert row["diff_bps"] == "8.5"
+    assert row["bill_match_status"] == "PASS"
+
+
 def test_bootstrap_readiness_consumes_cost_probe_fill_bill_match_pass():
     now = datetime(2026, 6, 24, 9, 0, tzinfo=UTC)
 
@@ -303,6 +371,37 @@ def _probe_private_fills() -> pl.DataFrame:
                 "fee": -0.004,
                 "fee_currency": "USDT",
                 "ts": "2026-06-24T08:00:09Z",
+            },
+        ]
+    )
+
+
+def _probe_bill_rows() -> pl.DataFrame:
+    return pl.DataFrame(
+        [
+            {
+                "bill_id": "bill-entry",
+                "inst_id": "ETH-USDT",
+                "ccy": "ETH",
+                "fee": -0.000002,
+                "px": 2500.0,
+                "ts": "2026-06-24T08:00:02Z",
+            },
+            {
+                "bill_id": "bill-entry-principal",
+                "inst_id": "ETH-USDT",
+                "ccy": "USDT",
+                "fee": 0.0,
+                "amount": -5.0,
+                "px": 2500.0,
+                "ts": "2026-06-24T08:00:02Z",
+            },
+            {
+                "bill_id": "bill-exit",
+                "inst_id": "ETH-USDT",
+                "ccy": "USDT",
+                "fee": -0.004,
+                "ts": "2026-06-24T08:00:10Z",
             },
         ]
     )

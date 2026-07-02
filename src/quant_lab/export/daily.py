@@ -50,7 +50,9 @@ from quant_lab.costs.model import (
     evaluate_live_universe_cost_coverage,
 )
 from quant_lab.costs.probe import (
+    COST_PROBE_COST_DISAGREEMENT_FIELDS,
     COST_PROBE_FILL_BILL_MATCH_FIELDS,
+    build_cost_probe_cost_disagreement,
     build_cost_probe_fill_bill_match,
     canonical_cost_probe_live_execution_status,
     canonical_cost_probe_roundtrip_events,
@@ -193,6 +195,8 @@ STRATEGY_OPPORTUNITY_ADVISORY_SCHEMA_VERSION = "strategy_opportunity_advisory.v0
 SNAPSHOT_META_DATASETS = {
     "cost_bucket_daily",
     "cost_health_daily",
+    "cost_probe_cost_disagreement",
+    "cost_probe_fill_bill_match",
     "factor_strategy_bridge_candidates",
     "gate_decision",
     "strategy_health_daily",
@@ -543,6 +547,7 @@ REQUIRED_MEMBERS = [
     "costs/cost_fallbacks.csv",
     "reports/cost_bootstrap_readiness.csv",
     "reports/cost_probe_fill_bill_match.csv",
+    "reports/cost_probe_cost_disagreement.csv",
     "reports/live_universe_cost_coverage.csv",
     "research/alpha_evidence.csv",
     "research/strategy_evidence.csv",
@@ -958,6 +963,7 @@ CSV_SCHEMAS: dict[str, list[str]] = {
     "reports/live_universe_cost_coverage.csv": LIVE_UNIVERSE_COST_COVERAGE_FIELDS,
     "reports/cost_bootstrap_readiness.csv": COST_BOOTSTRAP_READINESS_FIELDS,
     "reports/cost_probe_fill_bill_match.csv": COST_PROBE_FILL_BILL_MATCH_FIELDS,
+    "reports/cost_probe_cost_disagreement.csv": COST_PROBE_COST_DISAGREEMENT_FIELDS,
     "market/orderbook_spread.csv": ["symbol", "channel", "ts", "spread_bps"],
     "market/trade_activity.csv": ["symbol", "trade_count", "size_sum", "latest_trade_ts"],
     "reports/api_latency_summary.csv": [
@@ -3961,11 +3967,20 @@ def _publish_cost_bootstrap_readiness_snapshot(
         frames.get("okx_private_readonly_bills", pl.DataFrame()),
         generated_at=generated_at,
     )
+    cost_disagreement = build_cost_probe_cost_disagreement(
+        _normalize_symbol_frame(frames.get("cost_bucket_daily", pl.DataFrame())),
+        frames.get("v5_cost_probe_order_event", pl.DataFrame()),
+        frames.get("v5_cost_probe_roundtrip_event", pl.DataFrame()),
+        frames.get("okx_private_readonly_fills", pl.DataFrame()),
+        frames.get("okx_private_readonly_bills", pl.DataFrame()),
+        generated_at=generated_at,
+    )
     row_counts = dict(snapshot.row_counts)
     warnings = [
         warning
         for warning in snapshot.warnings
         if not warning.startswith("cost_probe_fill_bill_match dataset is ")
+        and not warning.startswith("cost_probe_cost_disagreement dataset is ")
     ]
     _publish_export_frame(
         root,
@@ -3982,6 +3997,14 @@ def _publish_cost_bootstrap_readiness_snapshot(
         warnings=warnings,
         dataset_name="cost_probe_fill_bill_match",
         frame=fill_bill_match,
+    )
+    _publish_export_frame(
+        root,
+        frames=frames,
+        row_counts=row_counts,
+        warnings=warnings,
+        dataset_name="cost_probe_cost_disagreement",
+        frame=cost_disagreement,
     )
     return _DatasetSnapshot(
         frames=frames,
@@ -5369,6 +5392,13 @@ def _dataset_members(
         frames.get("okx_private_readonly_fills", pl.DataFrame()),
         frames.get("okx_private_readonly_bills", pl.DataFrame()),
     )
+    cost_probe_cost_disagreement = build_cost_probe_cost_disagreement(
+        costs,
+        frames.get("v5_cost_probe_order_event", pl.DataFrame()),
+        frames.get("v5_cost_probe_roundtrip_event", pl.DataFrame()),
+        frames.get("okx_private_readonly_fills", pl.DataFrame()),
+        frames.get("okx_private_readonly_bills", pl.DataFrame()),
+    )
     cost_health = frames.get("cost_health_daily", pl.DataFrame())
     evidence = _alpha_evidence_for_export(frames.get("alpha_evidence", pl.DataFrame()))
     alpha_discovery_board = _alpha_discovery_board_for_export(
@@ -5895,6 +5925,10 @@ def _dataset_members(
         "reports/cost_probe_fill_bill_match.csv": _csv_member(
             "reports/cost_probe_fill_bill_match.csv",
             cost_probe_fill_bill_match,
+        ),
+        "reports/cost_probe_cost_disagreement.csv": _csv_member(
+            "reports/cost_probe_cost_disagreement.csv",
+            cost_probe_cost_disagreement,
         ),
         "reports/live_universe_cost_coverage.csv": _csv_member(
             "reports/live_universe_cost_coverage.csv",

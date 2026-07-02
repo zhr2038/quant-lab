@@ -37,6 +37,7 @@ def test_dataset_registry_exposes_paths_for_api_and_lake_health():
     assert paths["market_bar"] == Path("silver") / "market_bar"
     assert paths["cost_bucket_daily"] == Path("gold") / "cost_bucket_daily"
     assert paths["cost_bootstrap_readiness"] == Path("gold") / "cost_bootstrap_readiness"
+    assert paths["cost_probe_cost_disagreement"] == Path("gold") / "cost_probe_cost_disagreement"
     assert paths["v5_candidate_event"] == Path("silver") / "v5_candidate_event"
 
 
@@ -57,6 +58,7 @@ def test_dataset_registry_covers_v5_and_research_governance_datasets():
         "v5_cost_probe_live_execution_status",
         "v5_cost_probe_order_event",
         "v5_cost_probe_roundtrip_event",
+        "cost_probe_cost_disagreement",
         "v5_candidate_label",
         "v5_shadow_outcome",
         "v5_paper_strategy_run",

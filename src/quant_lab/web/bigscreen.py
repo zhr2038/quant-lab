@@ -261,6 +261,8 @@ def _snapshot_source_signature(root: Path) -> tuple[Any, ...]:
         _directory_signature(root / "silver" / "trade_print"),
         _directory_signature(root / "gold" / "cost_bucket_daily"),
         _directory_signature(root / "gold" / "cost_bootstrap_readiness"),
+        _directory_signature(root / "gold" / "cost_probe_fill_bill_match"),
+        _directory_signature(root / "gold" / "cost_probe_cost_disagreement"),
         _path_signature(exports_root / f".quant_lab_web_export_{export_date}.json"),
         _path_signature(exports_root / "export_index.json"),
         _expert_pack_collection_signature(exports_root),

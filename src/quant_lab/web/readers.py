@@ -4992,19 +4992,35 @@ def strategy_consumer_summary(lake_root: str | Path) -> dict[str, Any]:
     warnings = [warning for warning in [permissions_warning, audits_warning] if warning]
     if permissions.is_empty():
         warnings.append("risk_permission 数据集缺失或为空")
+    permission_rows = _dedupe_latest_web_rows(
+        permissions,
+        keys=["strategy"],
+        timestamp_columns=["as_of_ts", "created_at", "source_bundle_ts"],
+    )
+    if not permission_rows.is_empty():
+        for sort_column in ("as_of_ts", "created_at", "source_bundle_ts"):
+            if sort_column in permission_rows.columns:
+                permission_rows = permission_rows.sort(
+                    sort_column,
+                    descending=True,
+                    nulls_last=True,
+                )
+                break
 
     latest_by_strategy: dict[str, str] = {}
-    if not permissions.is_empty() and {"strategy", "permission"}.issubset(permissions.columns):
-        sort_column = "as_of_ts" if "as_of_ts" in permissions.columns else "created_at"
-        if sort_column not in permissions.columns:
+    if not permission_rows.is_empty() and {"strategy", "permission"}.issubset(
+        permission_rows.columns
+    ):
+        sort_column = "as_of_ts" if "as_of_ts" in permission_rows.columns else "created_at"
+        if sort_column not in permission_rows.columns:
             sort_column = "strategy"
-        for row in permissions.sort(sort_column).to_dicts():
+        for row in permission_rows.sort(sort_column).to_dicts():
             status = row.get("permission_status")
             latest_by_strategy[str(row["strategy"]).lower()] = str(status or row["permission"])
 
     return {
         "permissions": latest_by_strategy,
-        "permission_rows": redact_frame(permissions).head(DISPLAY_LIMIT),
+        "permission_rows": redact_frame(permission_rows).head(DISPLAY_LIMIT),
         "fallback_rows": _fallback_rows(audits),
         "warnings": warnings,
     }

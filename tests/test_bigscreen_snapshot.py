@@ -1002,6 +1002,45 @@ def test_bigscreen_snapshot_redacts_secret_like_fields(tmp_path):
     assert "should-not-leak" not in str(payload)
 
 
+def test_bigscreen_snapshot_permission_rows_use_latest_strategy_row(tmp_path):
+    clear_bigscreen_cache()
+    lake = tmp_path / "lake"
+    write_parquet_dataset(
+        pl.DataFrame(
+            [
+                {
+                    "strategy": "v5",
+                    "version": "5.0.0",
+                    "permission": "SELL_ONLY",
+                    "permission_status": "ACTIVE_SELL_ONLY",
+                    "as_of_ts": "2026-07-02T10:00:00Z",
+                    "allowed_live_modes": "[]",
+                },
+                {
+                    "strategy": "v5",
+                    "version": "5.0.0",
+                    "permission": "ABORT",
+                    "permission_status": "ACTIVE_ABORT",
+                    "as_of_ts": "2026-07-02T16:00:00Z",
+                    "allowed_live_modes": "[]",
+                    "micro_canary_review_count": 141,
+                    "blocked_by_observability_count": 141,
+                },
+            ]
+        ),
+        lake / "gold" / "risk_permission",
+    )
+
+    payload = bigscreen_snapshot(lake)
+    rows = payload["consumers"]["permission_rows"]
+
+    assert len(rows) == 1
+    assert rows[0]["permission"] == "ABORT"
+    assert rows[0]["permission_status"] == "ACTIVE_ABORT"
+    assert rows[0]["micro_canary_review_count"] == 141
+    assert payload["consumers"]["permissions"]["v5"] == "ACTIVE_ABORT"
+
+
 def test_bigscreen_snapshot_exposes_cost_probe_p3_preflight(tmp_path):
     clear_bigscreen_cache()
     lake = tmp_path / "lake"

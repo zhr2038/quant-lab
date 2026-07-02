@@ -60,7 +60,7 @@ export function StrategyFlow({ flow }: { flow: Record<string, unknown> }) {
               保护 {shortNumber(opportunityCost.high_confidence_loss_saved_count_7d)}
             </strong>
           </div>
-          {opportunityBuckets.slice(0, 6).map((bucket, i) => (
+          {opportunityBuckets.slice(0, 4).map((bucket, i) => (
             <div className="opportunity-bucket" key={`${bucket.bucket_key}-${i}`} title={bucketTitle(bucket)}>
               <span>{bucketIdentity(bucket)}</span>
               <em>{stringValue(bucket.recommended_trade_level_decision, "REVIEW")}</em>
@@ -77,7 +77,7 @@ export function StrategyFlow({ flow }: { flow: Record<string, unknown> }) {
             <span><b>{shortNumber(factorFactory.strategy_bridge_candidate_count ?? safeRows(factorFactory.strategy_bridge_candidates).length)}</b><em>Bridge</em></span>
           </div>
           <div className="factor-chip-grid">
-            {factorRows.slice(0, 12).map((factor, i) => (
+            {factorRows.slice(0, 8).map((factor, i) => (
               <div className="factor-chip" key={`${factor.factor_id}-${i}`}>
                 <Sparkles size={13} />
                 <span>{stringValue(factor.factor_id ?? factor.factor_name, "factor")}</span>
@@ -91,7 +91,7 @@ export function StrategyFlow({ flow }: { flow: Record<string, unknown> }) {
         <div className="candidate-list">
           <div className="candidate-title"><Rocket size={15} /> 策略候选（只读）</div>
           <div className="candidate-list-body">
-            {topCandidates.slice(0, 10).map((candidate, i) => (
+            {topCandidates.slice(0, 6).map((candidate, i) => (
               <div className="chip" key={candidateKey(candidate, i)} title={candidateTitle(candidate)}>
                 <span className="candidate-main">
                   <b>{candidateIdentity(candidate)}</b>
@@ -108,7 +108,7 @@ export function StrategyFlow({ flow }: { flow: Record<string, unknown> }) {
       <div className="strategy-secondary-grid">
         <ResearchMiniPanel
           title="Bridge"
-          rows={bridgeRows.slice(0, 8).map((row) => [
+          rows={bridgeRows.slice(0, 4).map((row) => [
             stringValue(row.factor_id, "factor"),
             [row.symbol, row.regime, row.horizon].map((value) => stringValue(value, "")).filter(Boolean).join(" · "),
             stringValue(row.eligible_for_alpha_factory ?? row.recommended_action, "review")
@@ -116,7 +116,7 @@ export function StrategyFlow({ flow }: { flow: Record<string, unknown> }) {
         />
         <ResearchMiniPanel
           title="去重"
-          rows={dedupeRows.slice(0, 8).map((row) => [
+          rows={dedupeRows.slice(0, 4).map((row) => [
             stringValue(row.factor_id, "factor"),
             stringValue(row.leader_factor_id, "leader ?"),
             stringValue(row.dedupe_decision, "review")
@@ -124,7 +124,7 @@ export function StrategyFlow({ flow }: { flow: Record<string, unknown> }) {
         />
         <ResearchMiniPanel
           title="家族榜"
-          rows={familyRows.slice(0, 8).map((row) => [
+          rows={familyRows.slice(0, 4).map((row) => [
             stringValue(row.factor_family, "family"),
             stringValue(row.leader_factor_id, "leader"),
             `${shortNumber(row.paper_ready_count)} paper`
@@ -132,7 +132,7 @@ export function StrategyFlow({ flow }: { flow: Record<string, unknown> }) {
         />
         <ResearchMiniPanel
           title="Regime"
-          rows={regimeRows.slice(0, 8).map((row) => [
+          rows={regimeRows.slice(0, 4).map((row) => [
             stringValue(row.factor_id, "factor"),
             [row.regime, row.horizon].map((value) => stringValue(value, "")).filter(Boolean).join(" · "),
             bps(row.long_short_bps ?? row.best_long_short_mean_bps)

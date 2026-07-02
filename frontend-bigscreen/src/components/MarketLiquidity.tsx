@@ -10,6 +10,7 @@ type MarketLiquidityProps = {
 export function MarketLiquidity({ market, matrix, density = "compact" }: MarketLiquidityProps) {
   const rows = mergeMarketRows(safeRows(market.regimes), safeRows(matrix?.rows));
   const visibleRows = rows.slice(0, density === "full" ? 40 : 20);
+  const rowDensity = rows.length <= 8 ? "market-short" : rows.length <= 16 ? "market-medium" : "market-long";
   const spreadValues = rows
     .map((row) => finiteNumber(row.spread_bps))
     .filter((value): value is number => value !== undefined);
@@ -27,7 +28,7 @@ export function MarketLiquidity({ market, matrix, density = "compact" }: MarketL
   const lowVolCount = rows.filter((row) => stringValue(row.volatility_regime ?? row.regime, "").includes("低")).length;
   const normalCount = rows.filter((row) => stringValue(row.volatility_regime ?? row.regime, "").includes("正常")).length;
   return (
-    <section className={`card market pad market-${density}`}>
+    <section className={`card market pad market-${density} ${rowDensity}`}>
       <h2 className="section-title icon-title"><Waves size={23} />市场状态与流动性</h2>
       <p className="sub">波动状态 / spread bps / trade activity 由 market_regime_summary 汇总。</p>
       {!rows.length && (

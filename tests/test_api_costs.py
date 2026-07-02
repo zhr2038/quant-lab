@@ -580,6 +580,76 @@ def test_cost_estimate_prefers_fresh_bootstrap_probe_over_stale_mixed_actual(
     assert realized_payload["fallback_level"] == "COST_PROBE_ONLY;SAMPLE_TOO_SMALL"
 
 
+def test_cost_estimate_prefers_fresh_symbol_proxy_over_stale_actual(
+    tmp_path,
+    monkeypatch,
+):
+    lake = tmp_path / "lake"
+    monkeypatch.setenv("QUANT_LAB_LAKE_ROOT", str(lake))
+    write_parquet_dataset(
+        pl.DataFrame(
+            [
+                _cost_row(
+                    symbol="BTC-USDT",
+                    regime="realized",
+                    notional_bucket="all",
+                    sample_count=8,
+                    source="actual_fills",
+                    cost_source="actual_fills",
+                    fallback_level="SAMPLE_TOO_SMALL;SPREAD_PROXY;PRIVATE_FILL_LOOKBACK",
+                    total_cost_bps_p75=10.029101695811665,
+                    created_at="2026-06-14T23:50:07.833199Z",
+                ),
+                _cost_row(
+                    symbol="BTC-USDT",
+                    regime="public_proxy",
+                    event_type="spread_proxy",
+                    notional_bucket="all",
+                    sample_count=5000,
+                    proxy_sample_count=5000,
+                    actual_fill_count=0,
+                    source="public_spread_proxy",
+                    cost_source="public_spread_proxy",
+                    fallback_level="FEE_MISSING;SLIPPAGE_UNKNOWN;PUBLIC_SPREAD_PROXY",
+                    fee_bps_p75=0.0,
+                    slippage_bps_p75=0.0,
+                    spread_bps_p75=0.0166,
+                    total_cost_bps_p75=0.0166,
+                    created_at=datetime.now(UTC).isoformat(),
+                ),
+            ]
+        ),
+        lake / "gold/cost_bucket_daily",
+    )
+
+    response = TestClient(app).get(
+        "/v1/costs/estimate",
+        params={
+            "symbol": "BTC-USDT",
+            "regime": "normal",
+            "notional_usdt": 5,
+            "quantile": "p75",
+        },
+    )
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["source"] == "public_spread_proxy"
+    assert payload["matched_regime"] == "public_proxy"
+    assert payload["fallback_reason"] == "no_matching_regime"
+    assert payload["degraded_reason"] == "none"
+    assert payload["degraded_cost_model"] is True
+    assert payload["cost_quality"] == "public_proxy_only"
+    assert payload["cost_trusted_for_paper"] is True
+    assert payload["cost_trusted_for_live"] is False
+    assert payload["cost_trust_level"] == "PAPER_ONLY"
+    assert "source_public_proxy_only" in payload["cost_trust_block_reasons"]
+    assert payload["sample_count"] == 5000
+    assert payload["total_cost_bps_p75"] == 0.0166
+    assert round(payload["one_way_all_in_cost_bps"], 4) == 14.0166
+    assert round(payload["roundtrip_all_in_cost_bps"], 4) == 28.0332
+
+
 def test_cost_estimate_trust_allows_fresh_mixed_actual_proxy_canary(tmp_path, monkeypatch):
     lake = tmp_path / "lake"
     monkeypatch.setenv("QUANT_LAB_LAKE_ROOT", str(lake))

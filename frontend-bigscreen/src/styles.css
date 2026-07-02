@@ -685,6 +685,22 @@ button{font:inherit;color:inherit}
   .overview-side{
     display:grid;grid-template-rows:none;grid-auto-rows:auto;align-content:start;gap:18px;min-height:0;
   }
+  .page-strategy{
+    grid-template-columns:1fr;
+    grid-template-rows:auto auto;
+    align-items:start;
+  }
+  .page-strategy .strategy-card,.page-strategy .market{
+    grid-column:auto;grid-row:auto;
+  }
+  .page-data{
+    grid-template-columns:1fr;
+    grid-template-rows:auto auto auto;
+    align-items:start;
+  }
+  .page-data .heatmap,.page-data .market,.page-data .cost{
+    grid-column:auto;grid-row:auto;
+  }
   .page-overview .heatmap{min-height:646px}
   .status-ring{height:322px}
   .ring-chart{top:88px}

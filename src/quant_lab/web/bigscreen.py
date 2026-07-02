@@ -289,43 +289,31 @@ def _path_signature(path: Path) -> tuple[Any, ...]:
 def _directory_signature(path: Path, *, limit: int = 24, nested_limit: int = 8) -> tuple[Any, ...]:
     try:
         stat = path.stat()
-        all_children = list(path.iterdir())
+        children_by_name = sorted(path.iterdir(), key=lambda child: child.name)
     except OSError:
         return (str(path), "missing")
 
-    child_stats: list[tuple[Path, Any, Any]] = []
-    for child in all_children:
-        try:
-            child_stat = child.stat()
-        except OSError:
-            child_stats.append((child, "unreadable", "unreadable"))
-            continue
-        child_stats.append((child, child_stat.st_mtime_ns, child_stat.st_size))
-
-    selected_by_name = sorted(child_stats, key=lambda item: item[0].name)[:limit]
-    selected_by_mtime = sorted(
-        child_stats,
-        key=lambda item: (item[1] if isinstance(item[1], int) else -1, item[0].name),
-        reverse=True,
-    )[:limit]
-    selected: dict[str, tuple[Path, Any, Any]] = {
-        item[0].name: item for item in selected_by_name + selected_by_mtime
+    selected_children: dict[str, Path] = {
+        child.name: child
+        for child in children_by_name[:limit] + children_by_name[-limit:]
     }
     child_signatures: list[tuple[str, Any, Any, tuple[Any, ...]]] = []
-    for child, child_mtime, child_size in sorted(selected.values(), key=lambda item: item[0].name):
+    for child in selected_children.values():
+        try:
+            child_stat = child.stat()
+            child_mtime: Any = child_stat.st_mtime_ns
+            child_size: Any = child_stat.st_size
+        except OSError:
+            child_mtime = "unreadable"
+            child_size = "unreadable"
         nested_signature = _shallow_nested_signature(child, limit=nested_limit)
         child_signatures.append((child.name, child_mtime, child_size, nested_signature))
-    newest_child_mtime = max(
-        (mtime for _child, mtime, _size in child_stats if isinstance(mtime, int)),
-        default=None,
-    )
     return (
         str(path),
         stat.st_mtime_ns,
         stat.st_size,
-        len(all_children),
-        newest_child_mtime,
-        tuple(child_signatures),
+        len(children_by_name),
+        tuple(sorted(child_signatures, key=lambda item: item[0])),
     )
 
 

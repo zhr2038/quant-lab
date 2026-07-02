@@ -3,6 +3,8 @@ import { pct, shortNumber } from "../lib/api";
 import { ReactECharts } from "./EChart";
 
 export function CostQuality({ cost }: { cost: Record<string, unknown> }) {
+  const basis = String(cost.cost_quality_basis ?? "");
+  const unitLabel = basis === "effective_symbol_source" ? "symbols" : "rows";
   const rows = [
     { name: "真实", value: Number(cost.actual_rows ?? 0), color: "#2DE8A6" },
     { name: "混合", value: Number(cost.mixed_rows ?? 0), color: "#50A9FF" },
@@ -28,7 +30,7 @@ export function CostQuality({ cost }: { cost: Record<string, unknown> }) {
         left: "center",
         top: "42%",
         style: {
-          text: `${shortNumber(total)}\nrows`,
+          text: `${shortNumber(total)}\n${unitLabel}`,
           fill: "#eaf6ff",
           fontSize: 22,
           fontWeight: 900,
@@ -41,7 +43,7 @@ export function CostQuality({ cost }: { cost: Record<string, unknown> }) {
   return (
     <section className="card cost pad">
       <h2 className="section-title icon-title"><CircleDollarSign size={23} />成本质量</h2>
-      <p className="sub">actual / mixed / bootstrap probe / proxy / default 与 hard/soft fallback。</p>
+      <p className="sub">按当前 symbol 最高质量来源汇总；bootstrap probe 不作 live 覆盖。</p>
       <div className="cost-body">
         <ReactECharts option={option} style={{ height: 168, width: 168 }} />
         <div>

@@ -1963,6 +1963,7 @@ def _cost_payload(cost: dict[str, Any]) -> dict[str, Any]:
         "fallback_ratio_status",
         "symbols_with_actual_cost",
         "symbols_with_proxy_only",
+        "cost_quality_basis",
     ]
     payload = {key: _json_value(cost.get(key)) for key in keys}
     payload["cost_rows"] = _frame_rows(cost.get("costs"), limit=12)

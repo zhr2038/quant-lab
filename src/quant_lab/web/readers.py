@@ -2964,13 +2964,7 @@ def cost_model_summary(lake_root: str | Path) -> dict[str, Any]:
         fallback_ratio = fallback_rows / costs.height
 
     latest_health = health.sort("day").tail(1).to_dicts()[0] if not health.is_empty() else {}
-    bootstrap_probe_rows = (
-        costs.filter(
-            pl.col("source").cast(pl.String, strict=False) == "bootstrap_cost_probe"
-        ).height
-        if "source" in costs.columns
-        else 0
-    )
+    effective_quality = _effective_cost_quality_counts(costs, bootstrap)
     fallback_ratio = latest_health.get("fallback_ratio", fallback_ratio)
     return {
         "costs": redact_frame(_cost_bucket_table(costs)).head(DISPLAY_LIMIT),
@@ -2979,11 +2973,12 @@ def cost_model_summary(lake_root: str | Path) -> dict[str, Any]:
             DISPLAY_LIMIT
         ),
         "live_universe_cost_coverage": live_coverage,
-        "actual_rows": int(latest_health.get("actual_rows") or 0),
-        "mixed_rows": int(latest_health.get("mixed_rows") or 0),
-        "bootstrap_probe_rows": int(bootstrap_probe_rows),
-        "proxy_rows": int(latest_health.get("proxy_rows") or 0),
-        "global_default_rows": int(latest_health.get("global_default_rows") or 0),
+        "actual_rows": effective_quality["actual_rows"],
+        "mixed_rows": effective_quality["mixed_rows"],
+        "bootstrap_probe_rows": effective_quality["bootstrap_probe_rows"],
+        "proxy_rows": effective_quality["proxy_rows"],
+        "global_default_rows": effective_quality["global_default_rows"],
+        "cost_quality_basis": effective_quality["basis"],
         "hard_fallback_count": int(latest_health.get("hard_fallback_count") or 0),
         "hard_fallback_ratio": latest_health.get("hard_fallback_ratio"),
         "soft_fallback_count": int(latest_health.get("soft_fallback_count") or 0),
@@ -2997,6 +2992,149 @@ def cost_model_summary(lake_root: str | Path) -> dict[str, Any]:
         ),
         "warnings": warnings,
     }
+
+
+def _effective_cost_quality_counts(costs: pl.DataFrame, bootstrap: pl.DataFrame) -> dict[str, Any]:
+    """Count the best current cost evidence once per symbol for the Web V2 card."""
+    counts = {
+        "actual_rows": 0,
+        "mixed_rows": 0,
+        "bootstrap_probe_rows": 0,
+        "proxy_rows": 0,
+        "global_default_rows": 0,
+        "basis": "effective_symbol_source",
+    }
+    if costs.is_empty() and bootstrap.is_empty():
+        return counts
+
+    candidates: dict[str, dict[str, Any]] = {}
+
+    def add_candidate(
+        symbol: Any,
+        source: Any,
+        *,
+        time_key: Any = "",
+        sample_count: Any = None,
+    ) -> None:
+        normalized_symbol = normalize_symbol(str(symbol or ""))
+        if not normalized_symbol or normalized_symbol == "GLOBAL":
+            return
+        normalized_source = _cost_source_bucket(source)
+        if normalized_source is None:
+            return
+        priority = _cost_source_priority(normalized_source)
+        candidate = {
+            "source": normalized_source,
+            "priority": priority,
+            "time_key": str(time_key or ""),
+            "sample_count": _as_int(sample_count) or 0,
+        }
+        existing = candidates.get(normalized_symbol)
+        if existing is None or _cost_quality_candidate_is_better(candidate, existing):
+            candidates[normalized_symbol] = candidate
+
+    latest_costs = costs
+    if "day" in latest_costs.columns and not latest_costs.is_empty():
+        latest_day = latest_costs.select(pl.col("day").cast(pl.String, strict=False).max()).item()
+        latest_costs = latest_costs.filter(
+            pl.col("day").cast(pl.String, strict=False) == latest_day
+        )
+
+    for row in latest_costs.to_dicts():
+        add_candidate(
+            row.get("symbol"),
+            row.get("cost_source") or row.get("source"),
+            time_key=row.get("created_at") or row.get("day"),
+            sample_count=row.get("sample_count"),
+        )
+
+    for row in bootstrap.to_dicts():
+        source = _bootstrap_readiness_cost_source(row)
+        add_candidate(
+            row.get("symbol"),
+            source,
+            time_key=(
+                row.get("latest_fill_ts")
+                or row.get("latest_probe_ts")
+                or row.get("latest_probe_fill_ts")
+                or row.get("generated_at")
+            ),
+            sample_count=row.get("sample_count"),
+        )
+
+    for row in candidates.values():
+        source = row["source"]
+        if source == "actual":
+            counts["actual_rows"] += 1
+        elif source == "mixed":
+            counts["mixed_rows"] += 1
+        elif source == "bootstrap":
+            counts["bootstrap_probe_rows"] += 1
+        elif source == "proxy":
+            counts["proxy_rows"] += 1
+        elif source == "global_default":
+            counts["global_default_rows"] += 1
+    return counts
+
+
+def _cost_quality_candidate_is_better(
+    candidate: dict[str, Any], existing: dict[str, Any]
+) -> bool:
+    candidate_priority = int(candidate.get("priority") or 99)
+    existing_priority = int(existing.get("priority") or 99)
+    if candidate_priority != existing_priority:
+        return candidate_priority < existing_priority
+    candidate_samples = int(candidate.get("sample_count") or 0)
+    existing_samples = int(existing.get("sample_count") or 0)
+    if candidate_samples != existing_samples:
+        return candidate_samples > existing_samples
+    return str(candidate.get("time_key") or "") > str(existing.get("time_key") or "")
+
+
+def _cost_source_bucket(value: Any) -> str | None:
+    source = str(value or "").strip().lower()
+    if not source:
+        return None
+    if "actual" in source and "mixed" not in source:
+        return "actual"
+    if "mixed" in source:
+        return "mixed"
+    if "bootstrap_cost_probe" in source:
+        return "bootstrap"
+    if "public_spread_proxy" in source or source == "public_proxy":
+        return "proxy"
+    if "global_default" in source:
+        return "global_default"
+    return None
+
+
+def _cost_source_priority(source: str) -> int:
+    return {
+        "actual": 0,
+        "mixed": 1,
+        "bootstrap": 2,
+        "proxy": 3,
+        "global_default": 4,
+    }.get(source, 99)
+
+
+def _bootstrap_readiness_cost_source(row: dict[str, Any]) -> str | None:
+    source_text = " ".join(
+        str(row.get(column) or "").strip().lower()
+        for column in ["latest_cost_source", "cost_evidence_tier", "bootstrap_state"]
+    )
+    actual_count = (_as_int(row.get("actual_fill_count")) or 0) + (
+        _as_int(row.get("strategy_live_fill_count")) or 0
+    )
+    mixed_count = _as_int(row.get("mixed_fill_count")) or 0
+    probe_count = _as_int(row.get("cost_probe_fill_count")) or 0
+    if actual_count > 0 or "actual_fills" in source_text:
+        return "actual_fills"
+    if mixed_count > 0 or "mixed_actual_proxy" in source_text:
+        return "mixed_actual_proxy"
+    if probe_count > 0 or "bootstrap_cost_probe" in source_text:
+        return "bootstrap_cost_probe"
+    return None
 
 
 def _live_universe_cost_coverage_table(costs: pl.DataFrame) -> tuple[pl.DataFrame, str | None]:

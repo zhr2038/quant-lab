@@ -181,6 +181,59 @@ def test_api_request_metrics_records_auth_context_and_split_latency(tmp_path, mo
     assert path_summary["auth_error_count"] == 1.0
 
 
+def test_api_request_metrics_slow_paths_rank_success_latency(tmp_path, monkeypatch):
+    lake = tmp_path / "lake"
+    monkeypatch.setenv("QUANT_LAB_API_METRICS_FLUSH_ROWS", "1")
+    monkeypatch.setenv("QUANT_LAB_API_METRICS_FLUSH_SECONDS", "3600")
+
+    record_api_request(
+        lake_root=lake,
+        method="GET",
+        path="/v1/auth-only",
+        status_code=401,
+        duration_seconds=2.0,
+        auth_result="missing_bearer_token",
+        error_type="HTTPException",
+    )
+    record_api_request(
+        lake_root=lake,
+        method="GET",
+        path="/v1/mixed",
+        status_code=200,
+        duration_seconds=0.05,
+        auth_result="token_ok",
+    )
+    record_api_request(
+        lake_root=lake,
+        method="GET",
+        path="/v1/mixed",
+        status_code=401,
+        duration_seconds=3.0,
+        auth_result="missing_bearer_token",
+        error_type="HTTPException",
+    )
+    record_api_request(
+        lake_root=lake,
+        method="GET",
+        path="/v1/slow-success",
+        status_code=200,
+        duration_seconds=0.20,
+        auth_result="token_ok",
+    )
+
+    summary = api_metrics_summary(lake)
+    slow_paths = summary["slow_paths"]
+    slow_path_names = [row["path"] for row in slow_paths]
+
+    assert "/v1/auth-only" not in slow_path_names
+    assert slow_path_names[0] == "/v1/slow-success"
+    mixed_row = next(row for row in slow_paths if row["path"] == "/v1/mixed")
+    assert mixed_row["success_count"] == 1
+    assert mixed_row["slow_path_p95"] == 50.0
+    assert mixed_row["slow_path_basis"] == "success_p95"
+    assert summary["latency_by_path_ms"]["/v1/auth-only"]["auth_error_count"] == 1.0
+
+
 def test_api_request_metrics_summary_can_scope_to_production_client(tmp_path, monkeypatch):
     lake = tmp_path / "lake"
     monkeypatch.setenv("QUANT_LAB_API_METRICS_FLUSH_ROWS", "1")

@@ -969,13 +969,31 @@ def _slow_paths(
 ) -> list[dict[str, float | int | str | None]]:
     rows: list[dict[str, float | int | str | None]] = []
     for path, metrics in latency_by_path.items():
-        rows.append({"path": path, **metrics})
+        count = int(metrics.get("count") or 0)
+        error_count = int(float(metrics.get("error_count") or 0))
+        success_count = max(0, count - error_count)
+        if success_count <= 0:
+            continue
+        success_p95 = _float_or_none(metrics.get("success_p95"))
+        p95 = _float_or_none(metrics.get("p95"))
+        slow_path_p95 = success_p95 if success_p95 is not None else p95
+        if slow_path_p95 is None:
+            continue
+        rows.append(
+            {
+                "path": path,
+                **metrics,
+                "success_count": success_count,
+                "slow_path_p95": slow_path_p95,
+                "slow_path_basis": "success_p95" if success_p95 is not None else "p95",
+            }
+        )
     return sorted(
         rows,
         key=lambda row: (
-            float(row["p95"] or 0),
+            float(row["slow_path_p95"] or 0),
             float(row["max"] or 0),
-            int(row["count"] or 0),
+            int(row["success_count"] or 0),
         ),
         reverse=True,
     )[:limit]

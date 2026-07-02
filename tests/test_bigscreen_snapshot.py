@@ -854,14 +854,14 @@ def test_bigscreen_cost_payload_uses_current_effective_symbol_sources(tmp_path):
             [
                 {
                     "symbol": "BTC-USDT",
-                    "bootstrap_state": "BOOTSTRAP_PROBE_AVAILABLE",
-                    "cost_evidence_tier": "bootstrap_cost_probe",
-                    "latest_cost_source": "bootstrap_cost_probe",
-                    "actual_fill_count": 0,
+                    "bootstrap_state": "ACTUAL_FILLS_SMALL_SAMPLE",
+                    "cost_evidence_tier": "actual_fills_small_sample",
+                    "latest_cost_source": "actual_fills",
+                    "actual_fill_count": 8,
                     "mixed_fill_count": 0,
                     "cost_probe_fill_count": 2,
-                    "sample_count": 2,
-                    "latest_probe_ts": "2026-06-22T00:00:00Z",
+                    "sample_count": 10,
+                    "latest_fill_ts": "2026-06-22T00:00:00Z",
                 },
                 {
                     "symbol": "ETH-USDT",
@@ -894,8 +894,8 @@ def test_bigscreen_cost_payload_uses_current_effective_symbol_sources(tmp_path):
     payload = bigscreen_snapshot(lake)
 
     assert payload["cost"]["cost_quality_basis"] == "effective_symbol_source"
-    assert payload["cost"]["actual_rows"] == 1
-    assert payload["cost"]["bootstrap_probe_rows"] == 2
+    assert payload["cost"]["actual_rows"] == 2
+    assert payload["cost"]["bootstrap_probe_rows"] == 1
     assert payload["cost"]["proxy_rows"] == 1
     assert payload["cost"]["global_default_rows"] == 0
 

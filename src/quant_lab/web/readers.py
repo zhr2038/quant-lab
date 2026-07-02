@@ -3080,8 +3080,8 @@ def _effective_cost_quality_counts(costs: pl.DataFrame, bootstrap: pl.DataFrame)
 def _cost_quality_candidate_is_better(
     candidate: dict[str, Any], existing: dict[str, Any]
 ) -> bool:
-    candidate_priority = int(candidate.get("priority") or 99)
-    existing_priority = int(existing.get("priority") or 99)
+    candidate_priority = _candidate_priority(candidate)
+    existing_priority = _candidate_priority(existing)
     if candidate_priority != existing_priority:
         return candidate_priority < existing_priority
     candidate_samples = int(candidate.get("sample_count") or 0)
@@ -3089,6 +3089,11 @@ def _cost_quality_candidate_is_better(
     if candidate_samples != existing_samples:
         return candidate_samples > existing_samples
     return str(candidate.get("time_key") or "") > str(existing.get("time_key") or "")
+
+
+def _candidate_priority(candidate: dict[str, Any]) -> int:
+    value = candidate.get("priority")
+    return 99 if value is None else int(value)
 
 
 def _cost_source_bucket(value: Any) -> str | None:

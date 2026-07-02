@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import time
 from datetime import UTC, datetime
 from typing import Any
 
@@ -14,6 +15,8 @@ def run_web_v2_smoke(
     api_token: str | None = None,
     symbols: tuple[str, ...] = DEFAULT_COST_SYMBOLS,
     timeout_seconds: float = 20.0,
+    request_attempts: int = 3,
+    retry_delay_seconds: float = 0.75,
     max_snapshot_age_seconds: int = 90,
     allow_live_cost_trust: bool = False,
     now: datetime | None = None,
@@ -43,43 +46,70 @@ def run_web_v2_smoke(
         transport=transport,
         follow_redirects=True,
     ) as client:
-        web = _get(client, "/web-v2")
+        web = _get(
+            client,
+            "/web-v2",
+            attempts=request_attempts,
+            retry_delay_seconds=retry_delay_seconds,
+        )
         result["endpoints"]["/web-v2"] = _endpoint_summary(web)
         _require_http_ok(result, "/web-v2", web)
 
-        snapshot_response = _get(client, "/web-v2/snapshot")
+        snapshot_response = _get(
+            client,
+            "/web-v2/snapshot",
+            attempts=request_attempts,
+            retry_delay_seconds=retry_delay_seconds,
+        )
         snapshot = _json_payload(snapshot_response)
         result["endpoints"]["/web-v2/snapshot"] = _endpoint_summary(snapshot_response)
         result["snapshot"] = _snapshot_summary(snapshot, snapshot_response, checked_at)
-        _require_http_ok(result, "/web-v2/snapshot", snapshot_response)
-        _evaluate_snapshot(
-            result,
-            snapshot,
-            snapshot_response,
-            checked_at,
-            max_snapshot_age_seconds,
-        )
+        if _require_http_ok(result, "/web-v2/snapshot", snapshot_response):
+            _evaluate_snapshot(
+                result,
+                snapshot,
+                snapshot_response,
+                checked_at,
+                max_snapshot_age_seconds,
+            )
 
-        pack_response = _get(client, "/web-v2/expert-pack/status")
+        pack_response = _get(
+            client,
+            "/web-v2/expert-pack/status",
+            attempts=request_attempts,
+            retry_delay_seconds=retry_delay_seconds,
+        )
         pack_status = _json_payload(pack_response)
         result["endpoints"]["/web-v2/expert-pack/status"] = _endpoint_summary(pack_response)
         result["expert_pack"] = _expert_pack_summary(pack_status)
-        _require_http_ok(result, "/web-v2/expert-pack/status", pack_response)
-        _evaluate_expert_pack(result, pack_status)
+        if _require_http_ok(result, "/web-v2/expert-pack/status", pack_response):
+            _evaluate_expert_pack(result, pack_status)
 
-        health_response = _get(client, "/v1/health", headers=headers)
+        health_response = _get(
+            client,
+            "/v1/health",
+            headers=headers,
+            attempts=request_attempts,
+            retry_delay_seconds=retry_delay_seconds,
+        )
         health = _json_payload(health_response)
         result["endpoints"]["/v1/health"] = _endpoint_summary(health_response)
         result["health"] = _health_summary(health)
-        _require_http_ok(result, "/v1/health", health_response)
-        _evaluate_health(result, health, path="/v1/health")
+        if _require_http_ok(result, "/v1/health", health_response):
+            _evaluate_health(result, health, path="/v1/health")
 
-        deep_response = _get(client, "/v1/health/deep", headers=headers)
+        deep_response = _get(
+            client,
+            "/v1/health/deep",
+            headers=headers,
+            attempts=request_attempts,
+            retry_delay_seconds=retry_delay_seconds,
+        )
         deep = _json_payload(deep_response)
         result["endpoints"]["/v1/health/deep"] = _endpoint_summary(deep_response)
         result["deep_health"] = _deep_health_summary(deep)
-        _require_http_ok(result, "/v1/health/deep", deep_response)
-        _evaluate_health(result, deep, path="/v1/health/deep")
+        if _require_http_ok(result, "/v1/health/deep", deep_response):
+            _evaluate_health(result, deep, path="/v1/health/deep")
 
         for symbol in symbols:
             params = {
@@ -88,14 +118,26 @@ def run_web_v2_smoke(
                 "notional_usdt": "5",
                 "quantile": "p75",
             }
-            response = _get(client, "/v1/costs/estimate", headers=headers, params=params)
+            response = _get(
+                client,
+                "/v1/costs/estimate",
+                headers=headers,
+                params=params,
+                attempts=request_attempts,
+                retry_delay_seconds=retry_delay_seconds,
+            )
             payload = _json_payload(response)
             summary = _cost_summary(symbol, payload, response)
             result["costs"].append(summary)
             key = f"/v1/costs/estimate:{symbol}"
             result["endpoints"][key] = _endpoint_summary(response)
-            _require_http_ok(result, key, response)
-            _evaluate_cost(result, symbol, payload, allow_live_cost_trust=allow_live_cost_trust)
+            if _require_http_ok(result, key, response):
+                _evaluate_cost(
+                    result,
+                    symbol,
+                    payload,
+                    allow_live_cost_trust=allow_live_cost_trust,
+                )
 
     if result["failures"]:
         result["ok"] = False
@@ -108,11 +150,23 @@ def _get(
     *,
     headers: dict[str, str] | None = None,
     params: dict[str, str] | None = None,
+    attempts: int = 1,
+    retry_delay_seconds: float = 0.0,
 ) -> httpx.Response | Exception:
-    try:
-        return client.get(path, headers=headers, params=params)
-    except Exception as exc:  # pragma: no cover - exercised through integration use.
-        return exc
+    last_error: Exception | None = None
+    bounded_attempts = max(1, attempts)
+    for attempt in range(bounded_attempts):
+        if attempt:
+            time.sleep(max(0.0, retry_delay_seconds))
+        try:
+            response = client.get(path, headers=headers, params=params)
+        except Exception as exc:  # pragma: no cover - exercised through integration use.
+            last_error = exc
+            continue
+        if response.status_code >= 500 and attempt + 1 < bounded_attempts:
+            continue
+        return response
+    return last_error or RuntimeError("request_failed_without_response")
 
 
 def _json_payload(response: httpx.Response | Exception) -> dict[str, Any]:
@@ -144,18 +198,20 @@ def _require_http_ok(
     result: dict[str, Any],
     path: str,
     response: httpx.Response | Exception,
-) -> None:
+) -> bool:
     if isinstance(response, Exception):
         _failure(result, path, f"request_failed:{type(response).__name__}:{response}")
-        return
+        return False
     if response.status_code >= 500:
         _failure(result, path, f"http_{response.status_code}")
-        return
+        return False
     if response.status_code in {401, 403}:
         _failure(result, path, f"auth_failed:http_{response.status_code}")
-        return
+        return False
     if response.status_code >= 400:
         _failure(result, path, f"http_{response.status_code}")
+        return False
+    return True
 
 
 def _evaluate_snapshot(

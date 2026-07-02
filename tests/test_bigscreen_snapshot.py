@@ -1304,6 +1304,8 @@ def test_bigscreen_static_entry_is_served_if_built():
     response = TestClient(create_app()).get("/web-v2")
 
     assert response.status_code == 200
+    assert response.headers["Cache-Control"] == "no-store, max-age=0"
+    assert response.headers["Pragma"] == "no-cache"
     assert "quant-lab CONTROL CENTER" in response.text
 
 

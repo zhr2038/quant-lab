@@ -1157,7 +1157,9 @@ def _mount_bigscreen_static(app: FastAPI) -> None:
 def _bigscreen_index_response() -> Response:
     index_path = _bigscreen_static_root() / "index.html"
     if index_path.is_file():
-        return FileResponse(index_path)
+        response = FileResponse(index_path)
+        _mark_no_store(response)
+        return response
     return JSONResponse(
         status_code=503,
         content={

@@ -1197,6 +1197,23 @@ def web_v2_smoke_command(
             ),
         ),
     ] = False,
+    allow_live_permission: Annotated[
+        bool,
+        typer.Option(
+            "--allow-live-permission/--fail-on-live-permission",
+            help=(
+                "Current production smoke should normally fail if risk permission "
+                "APIs expose live modes or live order notional."
+            ),
+        ),
+    ] = False,
+    skip_api_contracts: Annotated[
+        bool,
+        typer.Option(
+            "--skip-api-contracts/--include-api-contracts",
+            help="Skip broader read-only API contract probes.",
+        ),
+    ] = False,
     fail_on_warnings: Annotated[
         bool,
         typer.Option(
@@ -1214,6 +1231,8 @@ def web_v2_smoke_command(
         retry_delay_seconds=retry_delay_seconds,
         max_snapshot_age_seconds=max_snapshot_age_seconds,
         allow_live_cost_trust=allow_live_cost_trust,
+        allow_live_permission=allow_live_permission,
+        include_api_contracts=not skip_api_contracts,
     )
     typer.echo(json.dumps(result, indent=2, sort_keys=True, default=str))
     if result["failures"] or (fail_on_warnings and result["warnings"]):

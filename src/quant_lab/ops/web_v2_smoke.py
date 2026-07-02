@@ -7,6 +7,42 @@ from typing import Any
 import httpx
 
 DEFAULT_COST_SYMBOLS = ("BTC-USDT", "ETH-USDT", "SOL-USDT", "BNB-USDT")
+DEFAULT_API_CONTRACT_ENDPOINTS: tuple[dict[str, Any], ...] = (
+    {
+        "key": "/v1/web/bigscreen-snapshot",
+        "path": "/v1/web/bigscreen-snapshot",
+        "expect_no_store": True,
+    },
+    {"key": "/v1/catalog/datasets", "path": "/v1/catalog/datasets"},
+    {
+        "key": "/v1/ops/api-metrics",
+        "path": "/v1/ops/api-metrics",
+        "params": {"since_minutes": "60"},
+    },
+    {"key": "/v1/gates/example", "path": "/v1/gates/example"},
+    {
+        "key": "/v1/gates/decision/smoke-missing",
+        "path": "/v1/gates/decision/smoke-missing",
+    },
+    {"key": "/v1/costs/example", "path": "/v1/costs/example"},
+    {
+        "key": "/v1/strategy-opportunity-advisory/v5-compact",
+        "path": "/v1/strategy-opportunity-advisory/v5-compact",
+        "params": {"limit": "5"},
+    },
+    {
+        "key": "/v1/risk/live-permission",
+        "path": "/v1/risk/live-permission",
+        "params": {"strategy": "v5", "version": "5.0.0"},
+        "risk_permission_payload": True,
+    },
+    {
+        "key": "/v1/risk/live-permission-detail",
+        "path": "/v1/risk/live-permission-detail",
+        "params": {"strategy": "v5", "version": "5.0.0"},
+        "risk_permission_detail_payload": True,
+    },
+)
 
 
 def run_web_v2_smoke(
@@ -19,6 +55,8 @@ def run_web_v2_smoke(
     retry_delay_seconds: float = 0.75,
     max_snapshot_age_seconds: int = 90,
     allow_live_cost_trust: bool = False,
+    allow_live_permission: bool = False,
+    include_api_contracts: bool = True,
     now: datetime | None = None,
     transport: httpx.BaseTransport | None = None,
 ) -> dict[str, Any]:
@@ -37,6 +75,7 @@ def run_web_v2_smoke(
         "expert_pack": {},
         "health": {},
         "deep_health": {},
+        "api_contracts": [],
         "costs": [],
     }
 
@@ -111,6 +150,30 @@ def run_web_v2_smoke(
         if _require_http_ok(result, "/v1/health/deep", deep_response):
             _evaluate_health(result, deep, path="/v1/health/deep")
 
+        if include_api_contracts:
+            for spec in DEFAULT_API_CONTRACT_ENDPOINTS:
+                response = _get(
+                    client,
+                    str(spec["path"]),
+                    headers=headers,
+                    params=spec.get("params"),
+                    attempts=request_attempts,
+                    retry_delay_seconds=retry_delay_seconds,
+                )
+                key = str(spec["key"])
+                payload = _jsonish_payload(response)
+                result["api_contracts"].append(_api_contract_summary(key, payload, response))
+                result["endpoints"][key] = _endpoint_summary(response)
+                if _require_http_ok(result, key, response):
+                    _evaluate_api_contract(
+                        result,
+                        key,
+                        spec,
+                        payload,
+                        response,
+                        allow_live_permission=allow_live_permission,
+                    )
+
         for symbol in symbols:
             params = {
                 "symbol": symbol,
@@ -180,6 +243,18 @@ def _json_payload(response: httpx.Response | Exception) -> dict[str, Any]:
     except ValueError:
         return {}
     return payload if isinstance(payload, dict) else {}
+
+
+def _jsonish_payload(response: httpx.Response | Exception) -> Any:
+    if not isinstance(response, httpx.Response):
+        return None
+    content_type = response.headers.get("content-type", "")
+    if "json" not in content_type.lower():
+        return None
+    try:
+        return response.json()
+    except ValueError:
+        return None
 
 
 def _endpoint_summary(response: httpx.Response | Exception) -> dict[str, Any]:
@@ -307,6 +382,88 @@ def _evaluate_cost(
         _failure(result, path, "cost_bucket_stale")
 
 
+def _evaluate_api_contract(
+    result: dict[str, Any],
+    key: str,
+    spec: dict[str, Any],
+    payload: Any,
+    response: httpx.Response | Exception,
+    *,
+    allow_live_permission: bool,
+) -> None:
+    if isinstance(response, httpx.Response):
+        content_type = response.headers.get("content-type", "")
+        if "json" not in content_type.lower():
+            _failure(result, key, "missing_json_content_type")
+        if spec.get("expect_no_store"):
+            cache_control = response.headers.get("cache-control", "")
+            stale_header = response.headers.get("x-quant-lab-bigscreen-cache-stale", "")
+            if "no-store" not in cache_control.lower():
+                _failure(result, key, "missing_no_store_cache_header")
+            if stale_header.lower() not in {"false", "0", ""}:
+                _failure(result, key, f"stale_cache_header:{stale_header}")
+    if payload is None:
+        _failure(result, key, "missing_json_payload")
+        return
+
+    if key == "/v1/catalog/datasets":
+        if not isinstance(payload, dict) or not payload.get("datasets"):
+            _failure(result, key, "missing_datasets")
+    elif key == "/v1/ops/api-metrics":
+        if not isinstance(payload, dict) or payload.get("request_count") is None:
+            _failure(result, key, "missing_request_count")
+    elif key.startswith("/v1/gates/"):
+        if not isinstance(payload, dict) or not payload.get("status"):
+            _failure(result, key, "missing_gate_status")
+    elif key == "/v1/costs/example":
+        if not isinstance(payload, dict) or not payload.get("source"):
+            _failure(result, key, "missing_cost_source")
+    elif key == "/v1/strategy-opportunity-advisory/v5-compact":
+        if not isinstance(payload, list):
+            _failure(result, key, "expected_json_list")
+
+    if spec.get("risk_permission_payload"):
+        _evaluate_risk_permission_payload(
+            result,
+            key,
+            payload if isinstance(payload, dict) else {},
+            allow_live_permission=allow_live_permission,
+        )
+    if spec.get("risk_permission_detail_payload"):
+        permission = payload.get("permission") if isinstance(payload, dict) else {}
+        _evaluate_risk_permission_payload(
+            result,
+            key,
+            permission if isinstance(permission, dict) else {},
+            allow_live_permission=allow_live_permission,
+        )
+
+
+def _evaluate_risk_permission_payload(
+    result: dict[str, Any],
+    key: str,
+    payload: dict[str, Any],
+    *,
+    allow_live_permission: bool,
+) -> None:
+    permission = str(payload.get("permission") or "").upper()
+    if not permission:
+        _failure(result, key, "missing_permission")
+        return
+    allowed_modes = payload.get("allowed_live_modes")
+    if not isinstance(allowed_modes, list):
+        allowed_modes = []
+    max_order = _float(payload.get("max_single_order_usdt")) or 0.0
+    if allow_live_permission:
+        return
+    if permission not in {"ABORT", "BLOCKED", "DENY"}:
+        _failure(result, key, f"unexpected_live_permission:{permission}")
+    if allowed_modes:
+        _failure(result, key, "unexpected_allowed_live_modes")
+    if max_order > 0:
+        _failure(result, key, f"unexpected_live_order_notional:{max_order:g}")
+
+
 def _snapshot_summary(
     snapshot: dict[str, Any],
     response: httpx.Response | Exception,
@@ -390,6 +547,36 @@ def _cost_summary(
     }
 
 
+def _api_contract_summary(
+    key: str,
+    payload: Any,
+    response: httpx.Response | Exception,
+) -> dict[str, Any]:
+    summary: dict[str, Any] = {
+        "path": key,
+        "status_code": response.status_code if isinstance(response, httpx.Response) else None,
+        "content_type": response.headers.get("content-type", "")
+        if isinstance(response, httpx.Response)
+        else "",
+    }
+    if isinstance(payload, dict):
+        summary["shape"] = "object"
+        for field in ("status", "permission", "request_count"):
+            if field in payload:
+                summary[field] = payload.get(field)
+        if "datasets" in payload and isinstance(payload.get("datasets"), list):
+            summary["dataset_count"] = len(payload["datasets"])
+        if "permission" in payload and isinstance(payload.get("permission"), dict):
+            permission = payload["permission"]
+            summary["permission"] = permission.get("permission")
+    elif isinstance(payload, list):
+        summary["shape"] = "list"
+        summary["row_count"] = len(payload)
+    else:
+        summary["shape"] = "unknown"
+    return summary
+
+
 def _failure(result: dict[str, Any], area: str, reason: str) -> None:
     result["failures"].append({"area": area, "reason": reason})
 
@@ -410,6 +597,15 @@ def _parse_dt(value: Any) -> datetime | None:
     if parsed.tzinfo is None:
         parsed = parsed.replace(tzinfo=UTC)
     return parsed.astimezone(UTC)
+
+
+def _float(value: Any) -> float | None:
+    if value in (None, ""):
+        return None
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return None
 
 
 def _iso(value: datetime) -> str:

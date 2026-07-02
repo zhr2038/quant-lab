@@ -42,6 +42,9 @@ def test_web_v2_smoke_allows_read_only_warnings_without_failing():
             "roundtrip_all_in_cost_bps": 28.0,
         }
     ]
+    contract_paths = {row["path"] for row in result["api_contracts"]}
+    assert "/v1/catalog/datasets" in contract_paths
+    assert "/v1/risk/live-permission" in contract_paths
 
 
 def test_web_v2_smoke_fails_stale_snapshot_and_stale_cost():
@@ -76,12 +79,39 @@ def test_web_v2_smoke_fails_stale_snapshot_and_stale_cost():
     } in result["failures"]
 
 
+def test_web_v2_smoke_fails_unexpected_live_permission():
+    transport = httpx.MockTransport(_smoke_handler(live_permission="ALLOW"))
+
+    result = run_web_v2_smoke(
+        base_url="http://testserver",
+        api_token="token",
+        symbols=("BTC-USDT",),
+        now=NOW,
+        transport=transport,
+    )
+
+    assert result["ok"] is False
+    assert {
+        "area": "/v1/risk/live-permission",
+        "reason": "unexpected_live_permission:ALLOW",
+    } in result["failures"]
+    assert {
+        "area": "/v1/risk/live-permission",
+        "reason": "unexpected_allowed_live_modes",
+    } in result["failures"]
+    assert {
+        "area": "/v1/risk/live-permission-detail",
+        "reason": "unexpected_live_permission:ALLOW",
+    } in result["failures"]
+
+
 def _smoke_handler(
     *,
     snapshot_status: str = "OK",
     generated_at: str = "2026-07-02T07:39:50Z",
     cost_fallback_reason: str = "no_matching_regime",
     cost_trusted_for_live: bool = False,
+    live_permission: str = "ABORT",
 ):
     def handler(request: httpx.Request) -> httpx.Response:
         if request.url.path == "/web-v2":
@@ -144,6 +174,47 @@ def _smoke_handler(
                     "roundtrip_all_in_cost_bps": 28.0,
                 },
             )
+        if request.url.path == "/v1/web/bigscreen-snapshot":
+            return httpx.Response(
+                200,
+                json={
+                    "status": snapshot_status,
+                    "health_score": 84,
+                    "generated_at": generated_at,
+                },
+                headers={
+                    "cache-control": "no-store, max-age=0",
+                    "x-quant-lab-bigscreen-cache-stale": "false",
+                },
+            )
+        if request.url.path == "/v1/catalog/datasets":
+            return httpx.Response(200, json={"datasets": ["market_bar", "cost_bucket_daily"]})
+        if request.url.path == "/v1/ops/api-metrics":
+            return httpx.Response(200, json={"request_count": 12, "by_path": {}})
+        if request.url.path == "/v1/gates/example":
+            return httpx.Response(200, json={"status": "QUARANTINE"})
+        if request.url.path == "/v1/gates/decision/smoke-missing":
+            return httpx.Response(200, json={"status": "QUARANTINE"})
+        if request.url.path == "/v1/costs/example":
+            return httpx.Response(200, json={"source": "example", "as_of_ts": generated_at})
+        if request.url.path == "/v1/strategy-opportunity-advisory/v5-compact":
+            return httpx.Response(200, json=[])
+        if request.url.path == "/v1/risk/live-permission":
+            return httpx.Response(200, json=_risk_permission_payload(live_permission))
+        if request.url.path == "/v1/risk/live-permission-detail":
+            return httpx.Response(
+                200,
+                json={"permission": _risk_permission_payload(live_permission)},
+            )
         return httpx.Response(404, json={"error": "missing route"})
 
     return handler
+
+
+def _risk_permission_payload(permission: str) -> dict[str, object]:
+    live_allowed = permission.upper() not in {"ABORT", "BLOCKED", "DENY"}
+    return {
+        "permission": permission,
+        "allowed_live_modes": ["canary"] if live_allowed else [],
+        "max_single_order_usdt": 5 if live_allowed else 0,
+    }

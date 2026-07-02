@@ -437,7 +437,7 @@ button{font:inherit;color:inherit}
 .page-strategy .strategy-research-grid{
   grid-template-columns:minmax(440px,1fr) minmax(360px,.62fr);
   grid-template-rows:auto auto;
-  grid-template-areas:"factor candidates" "factor opportunity";
+  grid-template-areas:"factor candidates" "opportunity candidates";
   align-items:start;
 }
 .page-strategy .factor-factory-mini{padding:12px 14px;margin:0;border-radius:18px;display:grid;grid-template-rows:auto auto auto;align-content:start;min-height:0;overflow:visible}
@@ -877,7 +877,7 @@ button{font:inherit;color:inherit}
   .strategy-research-grid{
     grid-template-columns:minmax(0,.55fr) minmax(0,.45fr);
     grid-template-rows:auto auto;
-    grid-template-areas:"factor candidates" "opportunity opportunity";
+    grid-template-areas:"factor candidates" "opportunity candidates";
     align-items:stretch;
   }
   .page-strategy .factor-factory-mini,
@@ -925,7 +925,7 @@ button{font:inherit;color:inherit}
   .strategy-research-grid{
     grid-template-columns:minmax(0,.54fr) minmax(0,.46fr);
     grid-template-rows:minmax(0,1fr) minmax(104px,.46fr);
-    grid-template-areas:"factor candidates" "opportunity opportunity";
+    grid-template-areas:"factor candidates" "opportunity candidates";
     align-items:stretch;
   }
   .strategy-research-grid .opportunity-cost-mini{overflow:auto}

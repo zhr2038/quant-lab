@@ -1296,6 +1296,31 @@ def test_bigscreen_snapshot_cache_invalidates_when_market_bar_health_changes(
     assert len(calls) == 2
 
 
+def test_directory_signature_tracks_newest_partition_children(tmp_path):
+    dataset = tmp_path / "lake" / "silver" / "trade_print"
+    for index in range(40):
+        partition = dataset / f"day=2026-06-{index + 1:02d}" / "symbol=BTC-USDT"
+        partition.mkdir(parents=True)
+        file_path = partition / "part.parquet"
+        file_path.write_text(f"old-{index}", encoding="utf-8")
+        older_ns = 1_800_000_000_000_000_000 + index
+        os.utime(file_path, ns=(older_ns, older_ns))
+        os.utime(partition, ns=(older_ns, older_ns))
+        os.utime(partition.parent, ns=(older_ns, older_ns))
+
+    initial = bigscreen_module._directory_signature(dataset)
+    latest_file = dataset / "day=2026-06-40" / "symbol=BTC-USDT" / "part.parquet"
+    latest_file.write_text("newest-file-content", encoding="utf-8")
+    newest_ns = 1_900_000_000_000_000_000
+    os.utime(latest_file, ns=(newest_ns, newest_ns))
+    os.utime(latest_file.parent, ns=(newest_ns, newest_ns))
+
+    updated = bigscreen_module._directory_signature(dataset)
+
+    assert updated != initial
+    assert "day=2026-06-40" in repr(updated)
+
+
 def test_bigscreen_static_entry_is_served_if_built():
     static_index = Path("src/quant_lab/web/bigscreen_static/index.html")
     if not static_index.is_file():

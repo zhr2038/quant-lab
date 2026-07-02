@@ -4,11 +4,13 @@ import json
 import math
 import os
 import re
+import subprocess
 import threading
 import time
 import zipfile
 from csv import DictReader
 from datetime import UTC, date, datetime
+from functools import lru_cache
 from io import TextIOWrapper
 from pathlib import Path
 from typing import Any
@@ -2139,6 +2141,7 @@ def _exports_payload(exports: dict[str, Any]) -> dict[str, Any]:
     manual_state = str(exports.get("manual_state") or "").strip()
     v5_bundle_name, v5_bundle_ts = _latest_export_pack_v5_bundle_metadata(exports)
     v5_attachment = _latest_export_pack_v5_attachment_metadata(exports)
+    code_lag = _latest_export_pack_code_lag_metadata(exports)
     return {
         "latest_pack": exports.get("latest_pack"),
         "latest_pack_name": latest_name if _is_expert_pack_name(latest_name) else None,
@@ -2152,6 +2155,10 @@ def _exports_payload(exports: dict[str, Any]) -> dict[str, Any]:
         "latest_pack_embedded_v5_bundle_matches_selected": v5_attachment.get(
             "embedded_matches_selected"
         ),
+        "latest_pack_quant_lab_git_commit": code_lag.get("pack_git_commit"),
+        "current_quant_lab_git_commit": code_lag.get("current_git_commit"),
+        "latest_pack_matches_current_quant_lab_commit": code_lag.get("matches_current"),
+        "latest_pack_code_lag_status": code_lag.get("code_lag_status"),
         "latest_download_url": (
             f"/web-v2/expert-pack/download/{latest_name}"
             if _is_expert_pack_name(latest_name)
@@ -2257,6 +2264,54 @@ def _first_present(*values: Any) -> Any:
         if value not in (None, ""):
             return value
     return None
+
+
+def _latest_export_pack_code_lag_metadata(exports: dict[str, Any]) -> dict[str, Any]:
+    manifest = exports.get("manifest_summary")
+    if not isinstance(manifest, dict):
+        manifest = {}
+    pack_commit = str(manifest.get("git_commit") or "").strip()
+    current_commit = _current_git_commit()
+    matches_current = _git_commits_match(pack_commit, current_commit or "")
+    return {
+        "pack_git_commit": pack_commit or None,
+        "current_git_commit": current_commit,
+        "matches_current": matches_current,
+        "code_lag_status": _pack_code_lag_status(matches_current),
+    }
+
+
+@lru_cache(maxsize=1)
+def _current_git_commit() -> str | None:
+    repo_root = Path(__file__).resolve().parents[3]
+    try:
+        result = subprocess.run(
+            ["git", "-C", str(repo_root), "rev-parse", "HEAD"],
+            check=True,
+            capture_output=True,
+            text=True,
+            timeout=3,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return None
+    commit = result.stdout.strip()
+    return commit or None
+
+
+def _git_commits_match(pack_commit: str, current_commit: str) -> bool | None:
+    pack = str(pack_commit or "").strip()
+    current = str(current_commit or "").strip()
+    if not pack or not current:
+        return None
+    return pack.startswith(current) or current.startswith(pack)
+
+
+def _pack_code_lag_status(matches_current: bool | None) -> str:
+    if matches_current is True:
+        return "OK"
+    if matches_current is False:
+        return "WARNING"
+    return "UNKNOWN"
 
 
 def _bool_or_none(value: Any) -> bool | None:

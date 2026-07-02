@@ -1633,6 +1633,18 @@ def test_web_v2_expert_pack_status_prefers_latest_requested_pack_over_stale_manu
     monkeypatch.setenv("QUANT_LAB_LAKE_ROOT", str(lake))
     monkeypatch.delenv("QUANT_LAB_API_TOKEN", raising=False)
     monkeypatch.setattr(api_main, "_git_commit", lambda: "new-sha")
+    write_parquet_dataset(
+        pl.DataFrame(
+            [
+                {
+                    "date": "2026-06-19",
+                    "strategy": "v5",
+                    "latest_bundle_ts": datetime(2026, 6, 19, 9, 30, tzinfo=UTC),
+                }
+            ]
+        ),
+        lake / "gold" / "strategy_health_daily",
+    )
     response = TestClient(create_app()).get(
         "/web-v2/expert-pack/status?export_date=2026-06-19"
     )
@@ -1670,6 +1682,9 @@ def test_web_v2_expert_pack_status_prefers_latest_requested_pack_over_stale_manu
     assert payload["current_quant_lab_git_commit"] == "new-sha"
     assert payload["latest_pack_matches_current_quant_lab_commit"] is False
     assert payload["latest_pack_code_lag_status"] == "WARNING"
+    assert payload["latest_pack_v5_lag_status"] == "WARNING"
+    assert payload["latest_pack_v5_lag_minutes"] == 150
+    assert payload["latest_live_v5_bundle_ts"] == "2026-06-19T09:30:00Z"
     assert payload["latest_download_url"] == f"/web-v2/expert-pack/download/{new_pack.name}"
     assert (
         payload["manual_latest_download_url"]
@@ -2231,6 +2246,7 @@ def test_bigscreen_snapshot_marks_available_pack_v5_bundle_lag(tmp_path, monkeyp
                     "selected_v5_bundle_manifest_bundle_name": (
                         "v5_live_followup_bundle_20260605T040000Z.tar.gz"
                     ),
+                    "git_commit": "old-sha",
                     "embedded_v5_bundle_present": True,
                     "embedded_v5_bundle_matches_selected": True,
                 }
@@ -2275,6 +2291,7 @@ def test_bigscreen_snapshot_marks_available_pack_v5_bundle_lag(tmp_path, monkeyp
     )
     monkeypatch.setattr(bigscreen_module.readers, "default_exports_root", lambda root: exports)
     monkeypatch.setattr(bigscreen_module, "beijing_today", lambda now=None: date(2026, 6, 5))
+    monkeypatch.setattr(bigscreen_module, "_current_git_commit", lambda: "new-sha")
 
     payload = bigscreen_snapshot(lake)
 
@@ -2282,6 +2299,9 @@ def test_bigscreen_snapshot_marks_available_pack_v5_bundle_lag(tmp_path, monkeyp
     assert payload["exports"]["latest_pack_name"] is None
     assert payload["exports"]["latest_pack_v5_lag_status"] == "WARNING"
     assert payload["exports"]["latest_pack_v5_lag_minutes"] == 130
+    assert payload["exports"]["latest_pack_code_lag_status"] == "WARNING"
+    assert payload["exports"]["latest_pack_quant_lab_git_commit"] == "old-sha"
+    assert payload["exports"]["current_quant_lab_git_commit"] == "new-sha"
     assert any(
         item["source"] == "expert_export_summary.v5_bundle_lag"
         for item in payload["actions"]

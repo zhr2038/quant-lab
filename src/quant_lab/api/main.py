@@ -99,6 +99,7 @@ BOTTOM_ZONE_PROBE_CANDIDATES = {
     "v5.bottom_zone_probe_paper",
     "bottom_zone_probe_paper",
 }
+EXPERT_PACK_V5_LAG_WARNING_SECONDS = 60 * 60
 UNOBSERVABLE_TEXT_VALUES = {"", "none", "null", "nan", "not_observable", "unknown"}
 _STRATEGY_OPPORTUNITY_ADVISORY_CACHE: StrategyOpportunityAdvisoryCache[
     "StrategyOpportunityAdvisoryRow"
@@ -1434,7 +1435,7 @@ def _expert_pack_v5_attachment_status(pack_path: Path) -> dict[str, Any]:
     embedded_member = manifest.get("embedded_v5_bundle_member_path")
     embedded_sha = manifest.get("embedded_v5_bundle_sha256")
     embedded_matches_selected = manifest.get("embedded_v5_bundle_matches_selected")
-    return {
+    payload = {
         "latest_pack_quant_lab_git_commit": pack_git_commit or None,
         "current_quant_lab_git_commit": current_git_commit or None,
         "latest_pack_matches_current_quant_lab_commit": pack_matches_current,
@@ -1455,6 +1456,49 @@ def _expert_pack_v5_attachment_status(pack_path: Path) -> dict[str, Any]:
             else None
         ),
     }
+    payload.update(_expert_pack_v5_lag_status(bundle_name, bundle_ts))
+    return payload
+
+
+def _expert_pack_v5_lag_status(bundle_name: str, bundle_ts: Any) -> dict[str, Any]:
+    pack_bundle_ts = _parse_api_datetime(bundle_ts) or _parse_api_datetime(
+        _v5_bundle_ts_from_name(bundle_name)
+    )
+    latest_live_ts = _latest_live_v5_bundle_ts(_lake_root())
+    if pack_bundle_ts is None or latest_live_ts is None:
+        return {}
+    lag_seconds = int((latest_live_ts - pack_bundle_ts).total_seconds())
+    if lag_seconds <= EXPERT_PACK_V5_LAG_WARNING_SECONDS:
+        return {
+            "latest_pack_v5_lag_status": "OK",
+            "latest_pack_v5_lag_seconds": max(0, lag_seconds),
+            "latest_pack_v5_lag_minutes": max(0, round(max(0, lag_seconds) / 60)),
+            "latest_live_v5_bundle_ts": _api_json_value(latest_live_ts),
+            "latest_pack_v5_lag_pack_bundle_ts": _api_json_value(pack_bundle_ts),
+        }
+    return {
+        "latest_pack_v5_lag_status": "WARNING",
+        "latest_pack_v5_lag_seconds": lag_seconds,
+        "latest_pack_v5_lag_minutes": max(1, round(lag_seconds / 60)),
+        "latest_live_v5_bundle_ts": _api_json_value(latest_live_ts),
+        "latest_pack_v5_lag_pack_bundle_ts": _api_json_value(pack_bundle_ts),
+    }
+
+
+def _latest_live_v5_bundle_ts(lake_root: Path) -> datetime | None:
+    row = _latest_lazy_row(
+        lake_root / "gold" / "strategy_health_daily",
+        filters={"strategy": "v5"},
+        sort_columns=["latest_bundle_ts", "created_at", "date"],
+    )
+    if row is None:
+        row = _latest_lazy_row(
+            lake_root / "gold" / "strategy_health_daily",
+            sort_columns=["latest_bundle_ts", "created_at", "date"],
+        )
+    if row is None:
+        return None
+    return _parse_api_datetime(row.get("latest_bundle_ts"))
 
 
 def _git_commits_match(pack_commit: str, current_commit: str) -> bool | None:

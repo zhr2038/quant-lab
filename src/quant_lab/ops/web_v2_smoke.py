@@ -15,7 +15,7 @@ def run_web_v2_smoke(
     api_token: str | None = None,
     symbols: tuple[str, ...] = DEFAULT_COST_SYMBOLS,
     timeout_seconds: float = 20.0,
-    request_attempts: int = 3,
+    request_attempts: int = 8,
     retry_delay_seconds: float = 0.75,
     max_snapshot_age_seconds: int = 90,
     allow_live_cost_trust: bool = False,

@@ -1171,6 +1171,22 @@ def web_v2_smoke_command(
             help="Fail if /web-v2/snapshot generated_at is older than this.",
         ),
     ] = 90,
+    request_attempts: Annotated[
+        int,
+        typer.Option(
+            "--request-attempts",
+            min=1,
+            help="Per-endpoint retry attempts; useful immediately after service restarts.",
+        ),
+    ] = 8,
+    retry_delay_seconds: Annotated[
+        float,
+        typer.Option(
+            "--retry-delay-seconds",
+            min=0.0,
+            help="Delay between per-endpoint retry attempts.",
+        ),
+    ] = 0.75,
     allow_live_cost_trust: Annotated[
         bool,
         typer.Option(
@@ -1194,6 +1210,8 @@ def web_v2_smoke_command(
         base_url=base_url,
         api_token=api_token or os.getenv("QUANT_LAB_API_TOKEN"),
         symbols=symbols,
+        request_attempts=request_attempts,
+        retry_delay_seconds=retry_delay_seconds,
         max_snapshot_age_seconds=max_snapshot_age_seconds,
         allow_live_cost_trust=allow_live_cost_trust,
     )

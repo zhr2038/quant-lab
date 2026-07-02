@@ -902,6 +902,75 @@ button{font:inherit;color:inherit}
   }
 }
 
+@media (min-width: 861px) and (max-width: 1280px){
+  .page-strategy{
+    grid-template-columns:minmax(0,1.34fr) minmax(420px,.66fr);
+    grid-template-rows:minmax(0,1fr);
+    align-items:stretch;
+  }
+  .page-strategy .strategy-card{grid-column:1;grid-row:1;align-self:stretch}
+  .page-strategy .market{
+    grid-column:2;grid-row:1;align-self:stretch;
+    grid-template-rows:auto auto minmax(0,1fr);
+    align-content:stretch;
+  }
+  .strategy-research-grid{
+    grid-template-columns:minmax(0,.54fr) minmax(0,.46fr);
+    grid-template-rows:minmax(0,1fr) minmax(104px,.46fr);
+    grid-template-areas:"factor candidates" "opportunity opportunity";
+    align-items:stretch;
+  }
+  .strategy-research-grid .opportunity-cost-mini{overflow:auto}
+  .strategy-secondary-grid{grid-template-columns:repeat(2,minmax(0,1fr));height:100%}
+  .page-strategy .factor-factory-mini,
+  .page-strategy .candidate-list{
+    min-height:0;
+  }
+  .page-strategy .factor-chip-grid,
+  .page-strategy .candidate-list-body{
+    overflow:auto;
+    max-height:none;
+  }
+  .page-strategy .market-body{
+    grid-template-columns:1fr;
+    grid-template-rows:minmax(0,1fr) auto;
+    gap:10px;
+    overflow:hidden;
+  }
+  .page-strategy .market-list{
+    grid-template-columns:repeat(auto-fit,minmax(166px,1fr));
+    max-height:none;
+  }
+  .page-strategy .ticker{
+    grid-template-columns:minmax(54px,.92fr) minmax(36px,.58fr) minmax(36px,.48fr);
+    gap:6px;
+  }
+  .page-strategy .ticker .wave-line{display:none}
+  .page-data{
+    grid-template-columns:minmax(0,1.12fr) minmax(360px,.88fr);
+    grid-template-rows:minmax(420px,1fr) minmax(250px,.56fr);
+    align-items:stretch;
+  }
+  .page-data .heatmap{grid-column:1;grid-row:1/3}
+  .page-data .market{grid-column:2;grid-row:1;align-self:stretch}
+  .page-data .cost{grid-column:2;grid-row:2;align-self:stretch}
+  .page-data .market-full{
+    height:auto;
+    grid-template-rows:auto auto minmax(0,1fr);
+    align-content:stretch;
+  }
+  .page-data .market-full .market-body{
+    grid-template-columns:1fr;
+    grid-template-rows:minmax(0,1fr) auto;
+    min-height:0;
+    overflow:hidden;
+  }
+  .page-data .market-full .market-list{
+    grid-template-columns:repeat(auto-fit,minmax(174px,1fr));
+    max-height:none;
+  }
+}
+
 @media (max-width: 860px){
   .page-strategy{
     grid-template-columns:1fr;

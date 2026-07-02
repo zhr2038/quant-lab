@@ -790,6 +790,8 @@ def _risk_permission_cache_key(
         str(lake_root.resolve()),
         str(strategy or "").strip(),
         str(version or "").strip(),
+        "risk_permission",
+        _dataset_snapshot_signature(lake_root / "gold" / "risk_permission"),
         "risk_permission_api_dependency_meta",
         _risk_permission_dependency_meta_signature(lake_root),
         "telemetry_latest_ts",

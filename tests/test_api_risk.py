@@ -125,6 +125,114 @@ def test_live_permission_api_does_not_cache_permission_without_expiry(tmp_path, 
     assert second.headers["x-risk-permission-cache-hit"] == "false"
 
 
+def test_live_permission_cache_invalidates_when_published_permission_changes(
+    tmp_path,
+    monkeypatch,
+):
+    lake = tmp_path / "lake"
+    monkeypatch.setenv("QUANT_LAB_LAKE_ROOT", str(lake))
+    api_main._RISK_PERMISSION_EVALUATION_CACHE.clear()
+    now = datetime.now(UTC)
+    calls = 0
+    write_parquet_dataset(
+        pl.DataFrame(
+            [
+                {
+                    "strategy": "v5",
+                    "version": "5.0.0",
+                    "risk_permission_source_sha": "risk-static",
+                    "gate_decision_source_sha": "gate-static",
+                    "cost_health_source_sha": "cost-static",
+                    "telemetry_latest_ts": now.isoformat(),
+                    "source_sha": "dependency-static",
+                    "generated_at": now.isoformat(),
+                }
+            ]
+        ),
+        lake / "gold/risk_permission_api_dependency_meta",
+    )
+    _write_risk_permissions(
+        lake,
+        [
+            _risk_row(
+                strategy="v5",
+                version="5.0.0",
+                permission="ABORT",
+                reasons='["first_published"]',
+                as_of_ts=now,
+                expires_at=now + timedelta(hours=1),
+                source_bundle_ts=now,
+                permission_status="ACTIVE_ABORT",
+            )
+        ],
+    )
+
+    def fake_live_permission_evaluation(_lake_root, *, strategy: str, version: str):
+        nonlocal calls
+        calls += 1
+        return {
+            "permission": RiskPermission(
+                strategy=strategy,
+                version=version,
+                permission=RiskAction.ABORT,
+                allowed_modes=[],
+                max_gross_exposure=0.0,
+                max_single_weight=0.0,
+                cost_model_version="costs-test",
+                gate_version="default-v0.1",
+                reasons=[f"computed_{calls}"],
+                created_at=now,
+                as_of_ts=now,
+                expires_at=now + timedelta(hours=1),
+                permission_status="ACTIVE_ABORT",
+                enforceable=True,
+            )
+        }
+
+    monkeypatch.setattr(api_main, "_live_permission_evaluation", fake_live_permission_evaluation)
+    client = TestClient(app)
+
+    first = client.get(
+        "/v1/risk/live-permission",
+        params={"strategy": "v5", "version": "5.0.0"},
+    )
+    _write_risk_permissions(
+        lake,
+        [
+            _risk_row(
+                strategy="v5",
+                version="5.0.0",
+                permission="ABORT",
+                reasons='["second_published_permission_row_with_new_source"]',
+                as_of_ts=now + timedelta(minutes=1),
+                expires_at=now + timedelta(hours=1),
+                source_bundle_ts=now + timedelta(minutes=1),
+                permission_status="ACTIVE_ABORT",
+            ),
+            _risk_row(
+                strategy="v5",
+                version="bootstrap",
+                permission="SELL_ONLY",
+                reasons='["bootstrap_reference_row"]',
+                as_of_ts=now,
+                permission_status="ACTIVE_SELL_ONLY",
+            ),
+        ],
+    )
+    second = client.get(
+        "/v1/risk/live-permission",
+        params={"strategy": "v5", "version": "5.0.0"},
+    )
+    api_main._RISK_PERMISSION_EVALUATION_CACHE.clear()
+
+    assert first.status_code == 200
+    assert second.status_code == 200
+    assert calls == 2
+    assert first.headers["x-risk-permission-cache-hit"] == "false"
+    assert second.headers["x-risk-permission-cache-hit"] == "false"
+    assert second.json()["reasons"] == ["computed_2"]
+
+
 def test_live_permission_cache_key_uses_light_dependency_meta(tmp_path, monkeypatch):
     lake = tmp_path / "lake"
     write_parquet_dataset(
@@ -168,6 +276,7 @@ def test_live_permission_cache_key_uses_light_dependency_meta(tmp_path, monkeypa
 
     assert "risk_permission_api_dependency_meta" in key
     assert any(path.endswith("gold/risk_permission_api_dependency_meta") for path in touched)
+    assert any(path.endswith("gold/risk_permission") for path in touched)
     assert not any("market_bar" in path for path in touched)
 
 

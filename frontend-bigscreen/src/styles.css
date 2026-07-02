@@ -373,9 +373,9 @@ button{font:inherit;color:inherit}
 .strategy-research-grid{
   display:grid;grid-template-columns:minmax(230px,.28fr) minmax(300px,.42fr) minmax(280px,.3fr);grid-template-rows:auto;
   grid-template-areas:"opportunity factor candidates";
-  gap:12px;margin-top:2px;align-items:start;min-height:0;
+  gap:12px;margin-top:2px;align-items:stretch;min-height:0;
 }
-.strategy-research-grid .opportunity-cost-mini{grid-area:opportunity;margin:0;display:grid;align-content:start;gap:7px;min-height:0;overflow:visible;scrollbar-gutter:stable}
+.strategy-research-grid .opportunity-cost-mini{grid-area:opportunity;margin:0;display:grid;grid-template-rows:auto auto auto minmax(0,1fr);align-content:start;gap:7px;min-height:0;overflow:auto;scrollbar-gutter:stable}
 .strategy-research-grid .factor-factory-mini{grid-area:factor;margin:0;min-height:0}
 .strategy-research-grid .candidate-list{grid-area:candidates;margin:0}
 .factor-factory-drawer{
@@ -384,7 +384,7 @@ button{font:inherit;color:inherit}
 }
 .factor-factory-drawer h3{margin:0;font-size:17px;display:flex;align-items:center;gap:8px}
 .factor-factory-drawer p{margin:6px 0 10px!important;font-size:11px;color:var(--muted)}
-.page-strategy .strategy-card{padding:22px;display:grid;grid-template-rows:auto auto auto auto auto;align-content:start;align-self:start}
+.page-strategy .strategy-card{padding:22px;display:grid;grid-template-rows:auto auto auto auto minmax(0,1fr);align-content:stretch;align-self:stretch}
 .page-strategy .strategy-card .sub{font-size:14px}
 .page-strategy .flow-metrics{gap:12px;margin-top:14px}
 .page-strategy .stage{height:66px}
@@ -405,7 +405,8 @@ button{font:inherit;color:inherit}
   white-space:normal;overflow-wrap:anywhere;text-overflow:clip;
 }
 .strategy-research-grid .opportunity-cost-note strong{text-align:left}
-.page-strategy .factor-factory-mini{padding:12px 14px;margin:0;border-radius:18px;display:grid;grid-template-rows:auto auto auto;align-content:start;min-height:0}
+.page-strategy .strategy-research-grid{height:100%;align-items:stretch}
+.page-strategy .factor-factory-mini{padding:12px 14px;margin:0;border-radius:18px;display:grid;grid-template-rows:auto auto minmax(0,1fr);align-content:stretch;min-height:0;overflow:hidden}
 .page-strategy .factor-factory-stats{gap:10px;margin:8px 0}
 .page-strategy .factor-factory-stats span{padding:6px 10px;border-radius:14px}
 .page-strategy .factor-factory-stats b{font-size:24px}
@@ -414,11 +415,11 @@ button{font:inherit;color:inherit}
   min-height:30px;height:auto;grid-template-columns:18px minmax(0,1fr) minmax(78px,.28fr) 68px;gap:7px;padding:0 9px;
   font-size:12px;border-radius:14px;
 }
-.page-strategy .factor-chip-grid{grid-template-columns:repeat(auto-fit,minmax(150px,1fr));gap:6px;overflow:visible;scrollbar-gutter:stable;align-content:start}
+.page-strategy .factor-chip-grid{grid-template-columns:repeat(auto-fit,minmax(150px,1fr));gap:6px;overflow:auto;scrollbar-gutter:stable;align-content:start}
 .page-strategy .factor-chip strong{font-size:12px}
 .page-strategy .chip{min-width:0;min-height:40px;border-radius:15px;grid-template-columns:minmax(0,1fr) minmax(48px,.16fr) minmax(56px,.18fr);gap:2px 6px;font-size:12px;padding:5px 9px}
-.page-strategy .candidate-list{display:grid;grid-template-rows:auto auto;align-content:start;min-height:0}
-.page-strategy .candidate-list-body{grid-template-columns:repeat(auto-fit,minmax(176px,1fr));gap:7px;overflow:visible;scrollbar-gutter:stable;align-content:start}
+.page-strategy .candidate-list{display:grid;grid-template-rows:auto minmax(0,1fr);align-content:stretch;min-height:0;overflow:hidden}
+.page-strategy .candidate-list-body{grid-template-columns:repeat(auto-fit,minmax(176px,1fr));gap:7px;overflow:auto;scrollbar-gutter:stable;align-content:start}
 .page-strategy .candidate-main b{font-size:15px}
 .page-strategy .candidate-main small{font-size:12px}
 .page-strategy .candidate-detail{font-size:10px}

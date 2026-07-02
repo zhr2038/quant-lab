@@ -92,9 +92,9 @@ button{font:inherit;color:inherit}
 .page-overview .kpis{grid-column:1/3;grid-row:1;grid-template-columns:repeat(8,minmax(0,1fr));padding:34px 22px 10px}
 .overview-side{grid-column:1;grid-row:2;display:grid;grid-template-rows:280px 226px minmax(174px,1fr);gap:18px;min-height:0}
 .page-overview .heatmap{grid-column:2;grid-row:2}
-.page-strategy{grid-template-columns:minmax(0,1fr) minmax(430px,.36fr);grid-template-rows:minmax(0,1fr);align-items:stretch}
+.page-strategy{grid-template-columns:minmax(0,1fr) minmax(430px,.36fr);grid-template-rows:minmax(0,1fr);align-items:start}
 .page-strategy .strategy-card{grid-column:1;grid-row:1}
-.page-strategy .market{grid-column:2;grid-row:1;align-self:stretch}
+.page-strategy .market{grid-column:2;grid-row:1;align-self:start}
 .page-data{grid-template-columns:minmax(0,1.08fr) minmax(430px,.92fr);grid-template-rows:auto minmax(0,1fr);align-items:start}
 .page-data .heatmap{grid-column:1;grid-row:1/3}
 .page-data .market{grid-column:2;grid-row:1;align-self:start}
@@ -411,7 +411,7 @@ button{font:inherit;color:inherit}
 }
 .factor-factory-drawer h3{margin:0;font-size:17px;display:flex;align-items:center;gap:8px}
 .factor-factory-drawer p{margin:6px 0 10px!important;font-size:11px;color:var(--muted)}
-.page-strategy .strategy-card{padding:22px;display:grid;grid-template-rows:auto auto auto auto minmax(0,1.18fr) minmax(120px,.82fr);align-content:stretch;align-self:stretch}
+.page-strategy .strategy-card{padding:22px;display:grid;grid-template-rows:auto auto auto auto auto auto;align-content:start;align-self:start}
 .page-strategy .strategy-card .sub{font-size:14px}
 .page-strategy .flow-metrics{gap:12px;margin-top:14px}
 .page-strategy .stage{height:66px}
@@ -434,8 +434,13 @@ button{font:inherit;color:inherit}
 .strategy-research-grid .opportunity-cost-note em,
 .strategy-research-grid .opportunity-cost-note strong{margin-top:3px}
 .strategy-research-grid .opportunity-cost-note strong{text-align:left}
-.page-strategy .strategy-research-grid{align-items:stretch}
-.page-strategy .factor-factory-mini{padding:12px 14px;margin:0;border-radius:18px;display:grid;grid-template-rows:auto auto minmax(0,1fr);align-content:stretch;min-height:0;overflow:hidden}
+.page-strategy .strategy-research-grid{
+  grid-template-columns:minmax(440px,1fr) minmax(360px,.62fr);
+  grid-template-rows:auto auto;
+  grid-template-areas:"factor candidates" "factor opportunity";
+  align-items:start;
+}
+.page-strategy .factor-factory-mini{padding:12px 14px;margin:0;border-radius:18px;display:grid;grid-template-rows:auto auto auto;align-content:start;min-height:0;overflow:visible}
 .page-strategy .factor-factory-stats{gap:10px;margin:8px 0}
 .page-strategy .factor-factory-stats span{padding:6px 10px;border-radius:14px}
 .page-strategy .factor-factory-stats b{font-size:24px}
@@ -444,11 +449,11 @@ button{font:inherit;color:inherit}
   min-height:30px;height:auto;grid-template-columns:18px minmax(0,1fr) minmax(78px,.28fr) 68px;gap:7px;padding:0 9px;
   font-size:12px;border-radius:14px;
 }
-.page-strategy .factor-chip-grid{grid-template-columns:repeat(auto-fit,minmax(150px,1fr));gap:6px;overflow:auto;scrollbar-gutter:stable;align-content:start}
+.page-strategy .factor-chip-grid{grid-template-columns:repeat(auto-fit,minmax(180px,1fr));gap:6px;overflow:visible;align-content:start}
 .page-strategy .factor-chip strong{font-size:12px}
 .page-strategy .chip{min-width:0;min-height:40px;border-radius:15px;grid-template-columns:minmax(0,1fr) minmax(48px,.16fr) minmax(56px,.18fr);gap:2px 6px;font-size:12px;padding:5px 9px}
-.page-strategy .candidate-list{display:grid;grid-template-rows:auto minmax(0,1fr);align-content:stretch;min-height:0;overflow:hidden}
-.page-strategy .candidate-list-body{grid-template-columns:repeat(auto-fit,minmax(176px,1fr));gap:7px;overflow:auto;scrollbar-gutter:stable;align-content:start}
+.page-strategy .candidate-list{display:grid;grid-template-rows:auto auto;align-content:start;min-height:0;overflow:visible}
+.page-strategy .candidate-list-body{grid-template-columns:repeat(auto-fit,minmax(210px,1fr));gap:7px;overflow:visible;align-content:start}
 .page-strategy .candidate-main b{font-size:15px}
 .page-strategy .candidate-main small{font-size:12px}
 .page-strategy .candidate-detail{font-size:10px}
@@ -517,9 +522,9 @@ button{font:inherit;color:inherit}
   align-items:stretch;gap:10px;padding:13px;
 }
 .market-full .market-summary-grid{grid-template-columns:repeat(2,minmax(0,1fr))}
-.page-strategy .market{display:grid;grid-template-rows:auto auto minmax(0,1fr);align-content:stretch}
+.page-strategy .market{display:grid;grid-template-rows:auto auto auto;align-content:start}
 .page-strategy .market-body{
-  grid-template-columns:1fr;grid-template-rows:minmax(0,1fr) auto;gap:10px;margin-top:14px;min-height:0;overflow:hidden;
+  grid-template-columns:1fr;grid-template-rows:auto auto;gap:10px;margin-top:14px;min-height:0;overflow:visible;
 }
 .page-strategy .market-list{
   grid-template-columns:1fr;grid-auto-rows:minmax(30px,auto);overflow:auto;gap:7px;scrollbar-gutter:stable;align-content:start;
@@ -530,7 +535,7 @@ button{font:inherit;color:inherit}
 }
 .page-strategy .ticker b{font-size:10px}
 .page-strategy .market-summary-panel{
-  grid-template-rows:auto auto minmax(30px,auto) minmax(30px,auto);gap:7px;padding:10px;border-radius:13px;align-self:stretch;
+  grid-template-rows:auto auto minmax(30px,auto) minmax(30px,auto);gap:7px;padding:10px;border-radius:13px;align-self:start;
 }
 .page-strategy .market-summary-grid{grid-template-columns:repeat(2,minmax(0,1fr));gap:6px}
 .page-strategy .market-summary-grid span{padding:6px 5px}
@@ -555,13 +560,13 @@ button{font:inherit;color:inherit}
 .page-data .matrix-issue-row strong,.page-data .matrix-issue-row span,.page-data .matrix-issue-row em{font-size:10px}
 .page-data .matrix-coverage-list{gap:8px}
 .page-data .market-full{
-  display:grid;grid-template-rows:auto auto auto;align-content:start;
+  display:grid;grid-template-rows:auto auto auto;align-content:start;align-self:start;
 }
 .page-data .market-full .market-body{
   margin-top:12px;grid-template-columns:minmax(0,1fr) minmax(210px,.26fr);gap:10px;min-height:0;overflow:visible;align-items:start;
 }
 .page-data .market-full .market-list{
-  grid-template-columns:repeat(auto-fit,minmax(176px,1fr));gap:7px;align-content:start;
+  grid-template-columns:repeat(auto-fit,minmax(190px,1fr));gap:7px;align-content:start;
   max-height:360px;overflow:auto;overflow-x:hidden;
 }
 .page-data .market-full .ticker{
@@ -863,7 +868,7 @@ button{font:inherit;color:inherit}
   .page-strategy{
     grid-template-columns:minmax(0,1fr) minmax(300px,.42fr);
     grid-template-rows:auto;
-    align-items:stretch;
+    align-items:start;
   }
   .page-strategy .strategy-card{grid-column:1;grid-row:1}
   .page-strategy .market{grid-column:2;grid-row:1;align-self:start}
@@ -879,8 +884,8 @@ button{font:inherit;color:inherit}
   .page-strategy .candidate-list{
     min-height:0;
   }
-  .page-strategy .factor-chip-grid{grid-template-columns:repeat(auto-fit,minmax(145px,1fr))}
-  .page-strategy .candidate-list-body{grid-template-columns:repeat(auto-fit,minmax(170px,1fr))}
+  .page-strategy .factor-chip-grid{grid-template-columns:repeat(auto-fit,minmax(165px,1fr))}
+  .page-strategy .candidate-list-body{grid-template-columns:repeat(auto-fit,minmax(190px,1fr))}
   .page-data{
     grid-template-columns:minmax(0,1.12fr) minmax(300px,.88fr);
     grid-template-rows:auto auto;
@@ -895,13 +900,13 @@ button{font:inherit;color:inherit}
     align-content:start;
   }
   .page-data .market-full .market-body{
-    grid-template-columns:1fr;
-    grid-template-rows:auto auto;
+    grid-template-columns:minmax(0,1fr) minmax(180px,.36fr);
+    grid-template-rows:auto;
     min-height:0;
   }
   .page-data .market-full .market-list{
-    grid-template-columns:repeat(auto-fit,minmax(190px,1fr));
-    max-height:520px;
+    grid-template-columns:repeat(auto-fit,minmax(168px,1fr));
+    max-height:360px;
   }
 }
 
@@ -909,13 +914,13 @@ button{font:inherit;color:inherit}
   .page-strategy{
     grid-template-columns:minmax(0,1.34fr) minmax(420px,.66fr);
     grid-template-rows:minmax(0,1fr);
-    align-items:stretch;
+    align-items:start;
   }
-  .page-strategy .strategy-card{grid-column:1;grid-row:1;align-self:stretch}
+  .page-strategy .strategy-card{grid-column:1;grid-row:1;align-self:start}
   .page-strategy .market{
-    grid-column:2;grid-row:1;align-self:stretch;
-    grid-template-rows:auto auto minmax(0,1fr);
-    align-content:stretch;
+    grid-column:2;grid-row:1;align-self:start;
+    grid-template-rows:auto auto auto;
+    align-content:start;
   }
   .strategy-research-grid{
     grid-template-columns:minmax(0,.54fr) minmax(0,.46fr);
@@ -931,14 +936,14 @@ button{font:inherit;color:inherit}
   }
   .page-strategy .factor-chip-grid,
   .page-strategy .candidate-list-body{
-    overflow:auto;
+    overflow:visible;
     max-height:none;
   }
   .page-strategy .market-body{
     grid-template-columns:1fr;
-    grid-template-rows:minmax(0,1fr) auto;
+    grid-template-rows:auto auto;
     gap:10px;
-    overflow:hidden;
+    overflow:visible;
   }
   .page-strategy .market-list{
     grid-template-columns:repeat(auto-fit,minmax(166px,1fr));
@@ -955,7 +960,7 @@ button{font:inherit;color:inherit}
     align-items:stretch;
   }
   .page-data .heatmap{grid-column:1;grid-row:1/3}
-  .page-data .market{grid-column:2;grid-row:1;align-self:stretch}
+  .page-data .market{grid-column:2;grid-row:1;align-self:start}
   .page-data .cost{grid-column:2;grid-row:2;align-self:stretch}
   .page-data .market-full{
     height:auto;
@@ -963,10 +968,10 @@ button{font:inherit;color:inherit}
     align-content:stretch;
   }
   .page-data .market-full .market-body{
-    grid-template-columns:1fr;
-    grid-template-rows:minmax(0,1fr) auto;
+    grid-template-columns:minmax(0,1fr) minmax(190px,.34fr);
+    grid-template-rows:auto;
     min-height:0;
-    overflow:hidden;
+    overflow:visible;
   }
   .page-data .market-full .market-list{
     grid-template-columns:repeat(auto-fit,minmax(174px,1fr));

@@ -136,6 +136,7 @@ The repository includes these timer templates:
 - `deploy/systemd/quant-lab-v5-regime-router.timer`
 - `deploy/systemd/quant-lab-alpha-evidence.timer`
 - `deploy/systemd/quant-lab-risk-permission.timer`
+- `deploy/systemd/quant-lab-web-v2-smoke.timer`
 - `deploy/systemd/quant-lab-daily-export.timer`
 
 Suggested production order:
@@ -150,6 +151,10 @@ Suggested production order:
 - Alpha evidence and gate publishing: every 15 minutes.
 - Risk permission publish: every 10 minutes, after telemetry and gate refresh
   and no less frequently than every 30 minutes.
+- Web V2/API smoke: every 10 minutes, using the production API token from
+  `/etc/quant-lab/quant_lab_api.env`. It checks `/web-v2`, no-store snapshot
+  headers, protected API contracts, cost-estimate trust flags, and risk
+  permission remains non-live.
 - Daily expert export: after telemetry and risk permission have had time to run;
   the export should still run `--pre-export-v5-refresh --allow-stale-v5` so the
   latest pack records current V5 snapshot provenance instead of a non-authoritative

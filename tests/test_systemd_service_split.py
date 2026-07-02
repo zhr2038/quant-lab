@@ -63,6 +63,22 @@ def test_web_service_disables_bigscreen_stale_grace_by_default():
     assert "QUANT_LAB_BIGSCREEN_STALE_GRACE_SECONDS=0" in unit
 
 
+def test_web_v2_smoke_timer_checks_api_contracts_with_production_token():
+    unit = _unit("quant-lab-web-v2-smoke.service")
+    timer = _unit("quant-lab-web-v2-smoke.timer")
+
+    assert "User=quantlab" in unit
+    assert "Group=quantlab" in unit
+    assert "EnvironmentFile=/etc/quant-lab/quant_lab_api.env" in unit
+    assert "qlab web-v2-smoke" in unit
+    assert "--base-url http://127.0.0.1:8027" in unit
+    assert "--request-attempts 3" in unit
+    assert "--allow-live-cost-trust" not in unit
+    assert "--allow-live-permission" not in unit
+    assert "OnUnitActiveSec=10min" in timer
+    assert "RandomizedDelaySec=60s" in timer
+
+
 def test_okx_rest_backfill_runs_every_15_minutes_to_reduce_stale_market_bar_window():
     timer = _unit("quant-lab-okx-rest-backfill.timer")
     service = _unit("quant-lab-okx-rest-backfill.service")

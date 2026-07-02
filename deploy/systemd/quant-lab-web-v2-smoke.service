@@ -1,0 +1,19 @@
+[Unit]
+Description=quant-lab Web V2/API smoke check
+After=network-online.target quant-lab-api.service
+Wants=network-online.target quant-lab-api.service
+
+[Service]
+Type=oneshot
+User=quantlab
+Group=quantlab
+WorkingDirectory=/opt/quant-lab
+EnvironmentFile=/etc/quant-lab/quant_lab_api.env
+Environment=POLARS_MAX_THREADS=1
+Environment=MALLOC_ARENA_MAX=2
+ExecStart=/bin/bash -lc 'set -euo pipefail; /usr/bin/timeout 3m /opt/quant-lab/.venv/bin/qlab web-v2-smoke --base-url http://127.0.0.1:8027 --request-attempts 3 --retry-delay-seconds 1.0'
+TimeoutStartSec=4min
+MemoryMax=768M
+CPUQuota=40%
+NoNewPrivileges=true
+PrivateTmp=true

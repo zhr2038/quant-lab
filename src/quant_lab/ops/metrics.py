@@ -307,6 +307,12 @@ def api_metrics_summary(
         client_hosts=client_hosts,
         client_ids=client_ids,
     )
+    if since_minutes is not None and since_minutes > 0:
+        try:
+            scoped = scoped.collect().lazy()
+            schema_names = _lazy_schema_names(scoped)
+        except Exception:
+            pass
     request_count = _lazy_count(scoped)
     if request_count == 0:
         return _empty_api_metrics_summary()

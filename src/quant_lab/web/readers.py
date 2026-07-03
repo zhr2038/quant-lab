@@ -1012,6 +1012,15 @@ def latest_dataset_timestamp(
     return None, seen_timestamp_column
 
 
+def _freshness_timestamp_columns(
+    dataset_name: str,
+    override: tuple[str, ...] | None,
+) -> tuple[str, ...] | None:
+    if override is not None:
+        return override
+    return DATASET_FRESHNESS_TIMESTAMP_COLUMNS.get(dataset_name)
+
+
 def _latest_market_bar_timeframe(df: pl.DataFrame, latest_ts: datetime | None) -> str | None:
     if (
         latest_ts is None
@@ -1102,7 +1111,7 @@ def _dataset_snapshot(
             dataset_name,
             lazy,
             schema,
-            timestamp_columns=timestamp_columns,
+            timestamp_columns=_freshness_timestamp_columns(dataset_name, timestamp_columns),
         )
     except Exception as exc:
         return DatasetSnapshot(

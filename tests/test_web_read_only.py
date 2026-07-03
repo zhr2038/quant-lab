@@ -1023,6 +1023,39 @@ def test_data_health_uses_generated_at_for_factor_strategy_bridge_freshness(tmp_
     }
 
 
+def test_data_health_snapshot_uses_generated_at_for_strategy_opportunity_without_meta(tmp_path):
+    lake_root = tmp_path / "lake"
+    now = datetime.now(UTC)
+    write_parquet_dataset(
+        pl.DataFrame(
+            [
+                {
+                    "symbol": "SOL-USDT",
+                    "as_of_ts": (now + timedelta(hours=4)).isoformat(),
+                    "generated_at": now.isoformat(),
+                    "created_at": now.isoformat(),
+                    "state": "PAPER",
+                    "live_order_effect": "none_read_only_research",
+                }
+            ]
+        ),
+        lake_root / "gold" / "strategy_opportunity_advisory",
+    )
+
+    snapshot = readers._dataset_snapshot(
+        lake_root,
+        "strategy_opportunity_advisory",
+        now=now,
+    )
+    stale_rows = readers.data_health_summary(lake_root)["stale_datasets"].to_dicts()
+
+    assert snapshot.freshness["timestamp_column"] == "generated_at"
+    assert snapshot.freshness["freshness_status"] == "fresh"
+    assert "strategy_opportunity_advisory" not in {
+        row["dataset"] for row in stale_rows
+    }
+
+
 def test_data_health_uses_generated_at_for_cost_probe_fill_bill_match(tmp_path):
     lake_root = tmp_path / "lake"
     now = datetime.now(UTC)

@@ -2785,6 +2785,8 @@ def test_bigscreen_snapshot_does_not_action_previous_day_available_pack_v5_lag(
     assert payload["exports"]["latest_pack_name"] is None
     assert payload["exports"]["latest_pack_v5_bundle_name"] is None
     assert payload["exports"].get("latest_pack_v5_lag_status") is None
+    assert payload["exports"].get("latest_pack_code_lag_status") is None
+    assert payload["exports"].get("latest_pack_matches_current_quant_lab_commit") is None
     assert not any(
         item["source"] == "expert_export_summary.v5_bundle_lag"
         for item in payload["actions"]

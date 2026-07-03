@@ -2483,6 +2483,8 @@ def _first_present(*values: Any) -> Any:
 
 
 def _latest_export_pack_code_lag_metadata(exports: dict[str, Any]) -> dict[str, Any]:
+    if not (exports.get("latest_pack") or exports.get("display_pack")):
+        return {}
     manifest = exports.get("manifest_summary")
     if not isinstance(manifest, dict):
         manifest = {}

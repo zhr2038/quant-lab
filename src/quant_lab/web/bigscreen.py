@@ -37,6 +37,7 @@ MARKET_BAR_CRITICAL_DELAY_SECONDS = 3 * 60 * 60
 EXPERT_PACK_V5_LAG_WARNING_SECONDS = 60 * 60
 WEB_V2_SMOKE_STATUS_PATH = Path("/var/lib/quant-lab/ops/web_v2_smoke/latest.json")
 WEB_V2_SMOKE_MAX_AGE_SECONDS = 25 * 60
+WEB_V2_API_METRICS_WINDOW_MINUTES = 60
 V5_BUNDLE_NAME_RE = re.compile(r"v5_live_followup_bundle_(\d{8}T\d{6})Z\.tar\.gz")
 _SNAPSHOT_CACHE: dict[str, tuple[float, dict[str, Any]]] = {}
 _SNAPSHOT_CACHE_SOURCE_SIGNATURES: dict[str, tuple[Any, ...]] = {}
@@ -414,13 +415,24 @@ def _market_bar_critical_delay_seconds() -> int:
     return max(warning, configured)
 
 
-def _seconds_env(name: str, default: int) -> int:
+def _web_v2_api_metrics_window_minutes() -> int:
+    return _nonnegative_int_env(
+        "QUANT_LAB_WEB_V2_API_METRICS_WINDOW_MINUTES",
+        WEB_V2_API_METRICS_WINDOW_MINUTES,
+    )
+
+
+def _nonnegative_int_env(name: str, default: int) -> int:
     raw = os.environ.get(name, "")
     try:
         value = int(float(raw)) if raw else default
     except ValueError:
         return default
     return max(0, value)
+
+
+def _seconds_env(name: str, default: int) -> int:
+    return _nonnegative_int_env(name, default)
 
 
 def _bool_env(name: str, default: bool = False) -> bool:
@@ -452,10 +464,22 @@ def _safe_summary(name: str, fn: Any, *args: Any) -> dict[str, Any]:
 
 
 def _safe_api_metrics(root: Path) -> dict[str, Any]:
+    window_minutes = _web_v2_api_metrics_window_minutes()
+    since_minutes = window_minutes if window_minutes > 0 else None
     try:
-        return api_metrics_summary(root)
+        summary = api_metrics_summary(root, since_minutes=since_minutes)
     except Exception as exc:
-        return {"warnings": [f"api_metrics_summary failed: {exc}"]}
+        return {
+            "window_minutes": since_minutes,
+            "warnings": [f"api_metrics_summary failed: {exc}"],
+        }
+    if isinstance(summary, dict):
+        summary.setdefault("window_minutes", since_minutes)
+        return summary
+    return {
+        "window_minutes": since_minutes,
+        "warnings": ["api_metrics_summary returned non-dict"],
+    }
 
 
 def _safe_strategy_summary(root: Path) -> dict[str, Any]:
@@ -2314,6 +2338,7 @@ def _web_perf_payload(
         "api_p50_ms": _metric_latency(api_metrics, "p50") or _web_latency(events, "p50"),
         "api_p95_ms": _metric_latency(api_metrics, "p95") or _web_latency(events, "p95"),
         "slow_paths": api_metrics.get("slow_paths", []),
+        "api_metrics_window_minutes": api_metrics.get("window_minutes"),
         "web_v2_smoke": web_smoke or {},
     }
 

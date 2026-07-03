@@ -556,6 +556,35 @@ def test_web_v2_smoke_status_failure_enters_web_perf_and_action_queue(monkeypatc
     assert actions[0]["severity"] == "CRITICAL"
 
 
+def test_bigscreen_snapshot_uses_recent_api_metrics_window(monkeypatch, tmp_path):
+    clear_bigscreen_cache()
+    captured: dict[str, int | None] = {}
+
+    def fake_api_metrics_summary(root: Path, *, since_minutes: int | None = None, **_: object):
+        captured["since_minutes"] = since_minutes
+        return {
+            "request_count": 1,
+            "latency_ms": {"p95": 11.0},
+            "slow_paths": [
+                {
+                    "path": "/v1/current",
+                    "success_p95": 11.0,
+                    "slow_path_p95": 11.0,
+                    "slow_path_basis": "success_p95",
+                }
+            ],
+        }
+
+    monkeypatch.delenv("QUANT_LAB_WEB_V2_API_METRICS_WINDOW_MINUTES", raising=False)
+    monkeypatch.setattr(bigscreen_module, "api_metrics_summary", fake_api_metrics_summary)
+
+    payload = bigscreen_snapshot(tmp_path / "lake")
+
+    assert captured["since_minutes"] == 60
+    assert payload["web_perf"]["api_metrics_window_minutes"] == 60
+    assert payload["web_perf"]["slow_paths"][0]["path"] == "/v1/current"
+
+
 def test_bigscreen_strategy_flow_exposes_opportunity_cost_summary(tmp_path):
     clear_bigscreen_cache()
     lake = tmp_path / "lake"

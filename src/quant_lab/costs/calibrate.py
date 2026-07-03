@@ -70,6 +70,9 @@ COST_BUCKET_DAILY_SCHEMA = {
     "total_cost_bps_p50": pl.Float64,
     "total_cost_bps_p75": pl.Float64,
     "total_cost_bps_p90": pl.Float64,
+    "roundtrip_cost_p50_bps": pl.Float64,
+    "roundtrip_cost_p75_bps": pl.Float64,
+    "roundtrip_cost_p90_bps": pl.Float64,
     "fallback_level": pl.Utf8,
     "source": pl.Utf8,
     "cost_source": pl.Utf8,
@@ -217,6 +220,9 @@ def build_cost_bucket_daily_rows(
     cost_probe_roundtrip_frame = canonical_cost_probe_roundtrip_events(
         cost_probe_roundtrip_frame
     )
+    cost_probe_roundtrip_costs = _cost_probe_roundtrip_costs_by_symbol(
+        cost_probe_roundtrip_frame
+    )
     cost_probe_private_order_ids, cost_probe_private_trade_ids = _cost_probe_private_fill_keys(
         cost_probe_order_frame,
         cost_probe_roundtrip_frame,
@@ -246,6 +252,7 @@ def build_cost_bucket_daily_rows(
             spread_samples=spread_samples,
             day=day,
             min_sample_count=min_sample_count,
+            cost_probe_roundtrip_costs=cost_probe_roundtrip_costs,
         )
         actual_symbols = {row.symbol for row in actual_rows}
         proxy_rows = _public_spread_proxy_rows(
@@ -302,6 +309,7 @@ def _actual_fill_rows(
     spread_samples: dict[str, list[float]],
     day: str,
     min_sample_count: int,
+    cost_probe_roundtrip_costs: dict[str, list[float]],
 ) -> list[CostBucketDaily]:
     groups: dict[tuple[str, str], list[dict[str, Any]]] = {}
     for sample in fill_samples:
@@ -318,6 +326,7 @@ def _actual_fill_rows(
                 spread_samples=spread_samples,
                 day=day,
                 min_sample_count=min_sample_count,
+                cost_probe_roundtrip_costs=cost_probe_roundtrip_costs,
             )
         )
     for symbol, samples in sorted(_group_all_fill_samples(fill_samples).items()):
@@ -330,6 +339,7 @@ def _actual_fill_rows(
                 spread_samples=spread_samples,
                 day=day,
                 min_sample_count=min_sample_count,
+                cost_probe_roundtrip_costs=cost_probe_roundtrip_costs,
             )
         )
     return sorted(rows, key=lambda row: (row.symbol, row.notional_bucket))
@@ -344,6 +354,7 @@ def _actual_fill_row(
     spread_samples: dict[str, list[float]],
     day: str,
     min_sample_count: int,
+    cost_probe_roundtrip_costs: dict[str, list[float]],
 ) -> CostBucketDaily:
     samples = _preferred_cost_samples(samples)
     cost_probe_fill_count = sum(1 for sample in samples if _sample_origin(sample) == "cost_probe")
@@ -410,6 +421,8 @@ def _actual_fill_row(
     fee_p50, fee_p75, fee_p90 = _percentiles_or_zero(fee_samples)
     slippage_p50, slippage_p75, slippage_p90 = _percentiles_or_zero(slippage_samples)
     spread_p50, spread_p75, spread_p90 = _percentiles_or_zero(spread_values)
+    roundtrip_samples = cost_probe_roundtrip_costs.get(symbol, []) if probe_only else []
+    roundtrip_p50, roundtrip_p75, roundtrip_p90 = _percentiles_or_zero(roundtrip_samples)
 
     return CostBucketDaily(
         day=day,
@@ -431,6 +444,9 @@ def _actual_fill_row(
         total_cost_bps_p50=fee_p50 + slippage_p50 + spread_p50,
         total_cost_bps_p75=fee_p75 + slippage_p75 + spread_p75,
         total_cost_bps_p90=fee_p90 + slippage_p90 + spread_p90,
+        roundtrip_cost_p50_bps=roundtrip_p50,
+        roundtrip_cost_p75_bps=roundtrip_p75,
+        roundtrip_cost_p90_bps=roundtrip_p90,
         fallback_level=";".join(fallback_parts) if fallback_parts else "NONE",
         source=source,
         cost_source=source,
@@ -657,6 +673,36 @@ def _v5_cost_probe_event_fill_samples(
             if sample is not None:
                 samples.append(sample)
     return samples
+
+
+def _cost_probe_roundtrip_costs_by_symbol(
+    roundtrip_events: pl.DataFrame,
+) -> dict[str, list[float]]:
+    costs: dict[str, list[float]] = {}
+    if roundtrip_events.is_empty():
+        return costs
+    for row in roundtrip_events.to_dicts():
+        payload = _raw_payload_dict(row)
+        if not _eligible_cost_probe_roundtrip(row, payload):
+            continue
+        symbol = _cost_probe_symbol(row, payload)
+        if not symbol:
+            continue
+        cost = _first_probe_float(
+            row,
+            payload,
+            [
+                "roundtrip_cost_bps",
+                "realized_roundtrip_cost_bps",
+                "actual_roundtrip_cost_bps",
+                "filled_roundtrip_cost_bps",
+                "execution_roundtrip_cost_bps",
+                "total_roundtrip_cost_bps",
+            ],
+        )
+        if cost is not None and cost > 0:
+            costs.setdefault(symbol, []).append(cost)
+    return costs
 
 
 def _cost_probe_private_fill_keys(

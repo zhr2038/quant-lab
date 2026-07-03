@@ -680,6 +680,9 @@ class CostBucketDaily(BaseModel):
     total_cost_bps_p50: float = Field(ge=0)
     total_cost_bps_p75: float = Field(ge=0)
     total_cost_bps_p90: float = Field(ge=0)
+    roundtrip_cost_p50_bps: float = Field(default=0.0, ge=0)
+    roundtrip_cost_p75_bps: float = Field(default=0.0, ge=0)
+    roundtrip_cost_p90_bps: float = Field(default=0.0, ge=0)
     fallback_level: str = Field(min_length=1)
     source: str = Field(min_length=1)
     cost_source: str | None = None

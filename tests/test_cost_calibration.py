@@ -529,6 +529,9 @@ def test_cost_probe_event_bridge_calibrates_bootstrap_not_actual(tmp_path):
     assert all_row["fee_bps_p50"] > 0
     assert all_row["slippage_bps_p50"] > 0
     assert all_row["spread_bps_p50"] > 0
+    assert all_row["roundtrip_cost_p50_bps"] == 20.5
+    assert all_row["roundtrip_cost_p75_bps"] == 20.5
+    assert all_row["roundtrip_cost_p90_bps"] == 20.5
 
 
 def test_ineligible_cost_probe_private_fills_do_not_become_trusted_live(tmp_path):
@@ -1070,6 +1073,7 @@ def _write_cost_probe_events(lake_root: Path, *, eligible: bool) -> None:
         "exit_order_id": "okx-exit-1",
         "authorization_id": "auth-1",
         "no_order_submitted": False,
+        "roundtrip_cost_bps": 20.5,
         "live_order_effect": "live_cost_probe_roundtrip",
         "flat_verification": flat,
         **flat,
@@ -1088,6 +1092,7 @@ def _write_cost_probe_events(lake_root: Path, *, eligible: bool) -> None:
                     "entry_order_id": "okx-entry-1",
                     "exit_order_id": "okx-exit-1",
                     "authorization_id": "auth-1",
+                    "roundtrip_cost_bps": 20.5,
                     "live_order_effect": "live_cost_probe_roundtrip",
                     "raw_payload_json": json.dumps(roundtrip_payload),
                 }

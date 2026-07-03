@@ -44,6 +44,8 @@ import "./styles.css";
 const queryClient = new QueryClient();
 type ViewKey = "strategy" | "data" | "v5" | "exports" | "raw";
 type PageKey = "overview" | "strategy" | "data" | "ops";
+const HASH_VIEW_KEY_VALUES = ["v5", "exports", "raw"] as const;
+type HashViewKey = (typeof HASH_VIEW_KEY_VALUES)[number];
 
 const PAGES: Array<{ key: PageKey; label: string; description: string }> = [
   { key: "overview", label: "总览", description: "健康 / KPI / 数据矩阵" },
@@ -54,11 +56,35 @@ const PAGES: Array<{ key: PageKey; label: string; description: string }> = [
 const SNAPSHOT_REFETCH_INTERVAL_MS = 15_000;
 const SNAPSHOT_STALE_TIME_MS = 10_000;
 const PAGE_KEYS = new Set<PageKey>(PAGES.map((item) => item.key));
+const HASH_VIEW_KEYS = new Set<string>(HASH_VIEW_KEY_VALUES);
+
+function hashKey(): string {
+  if (typeof window === "undefined") return "";
+  return window.location.hash.replace(/^#/, "").trim();
+}
+
+function isHashViewKey(key: string): key is HashViewKey {
+  return HASH_VIEW_KEYS.has(key);
+}
 
 function pageFromHash(): PageKey {
   if (typeof window === "undefined") return "overview";
-  const key = window.location.hash.replace("#", "").trim() as PageKey;
-  return PAGE_KEYS.has(key) ? key : "overview";
+  const key = hashKey();
+  if (PAGE_KEYS.has(key as PageKey)) return key as PageKey;
+  if (isHashViewKey(key)) return "ops";
+  return "overview";
+}
+
+function viewFromHash(): ViewKey | null {
+  const key = hashKey();
+  return isHashViewKey(key) ? key : null;
+}
+
+function replaceHash(hash: string) {
+  if (typeof window === "undefined") return;
+  if (window.location.hash !== hash) {
+    window.history.replaceState(null, "", hash);
+  }
 }
 
 function formatPackTime(value: unknown): string {
@@ -96,13 +122,22 @@ export default function App() {
 }
 
 function Bigscreen() {
-  const [view, setView] = useState<ViewKey | null>(null);
+  const [view, setViewState] = useState<ViewKey | null>(() => viewFromHash());
   const [page, setPageState] = useState<PageKey>(() => pageFromHash());
   const setPage = (nextPage: PageKey) => {
     setPageState(nextPage);
-    const nextHash = `#${nextPage}`;
-    if (window.location.hash !== nextHash) {
-      window.history.replaceState(null, "", nextHash);
+    setViewState(null);
+    replaceHash(`#${nextPage}`);
+  };
+  const setView = (nextView: ViewKey | null) => {
+    setViewState(nextView);
+    if (nextView && isHashViewKey(nextView)) {
+      setPageState("ops");
+      replaceHash(`#${nextView}`);
+      return;
+    }
+    if (nextView === null && view && isHashViewKey(view)) {
+      replaceHash(`#${page}`);
     }
   };
   useEffect(() => {
@@ -124,7 +159,10 @@ function Bigscreen() {
     };
   }, []);
   useEffect(() => {
-    const onHashChange = () => setPageState(pageFromHash());
+    const onHashChange = () => {
+      setPageState(pageFromHash());
+      setViewState(viewFromHash());
+    };
     window.addEventListener("hashchange", onHashChange);
     return () => window.removeEventListener("hashchange", onHashChange);
   }, []);

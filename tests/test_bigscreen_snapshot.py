@@ -1771,6 +1771,19 @@ def test_web_v2_mounts_v5_telemetry_card_on_one_primary_page():
     assert "包数 {status?.pack_count" not in app_source
 
 
+def test_web_v2_legacy_hashes_open_ops_drilldowns():
+    app_source = Path("frontend-bigscreen/src/App.tsx").read_text(encoding="utf-8")
+
+    assert 'const HASH_VIEW_KEY_VALUES = ["v5", "exports", "raw"] as const;' in app_source
+    assert 'if (isHashViewKey(key)) return "ops";' in app_source
+    assert (
+        "const [view, setViewState] = useState<ViewKey | null>(() => viewFromHash());"
+        in app_source
+    )
+    assert "setViewState(viewFromHash());" in app_source
+    assert 'replaceHash(`#${nextView}`);' in app_source
+
+
 def test_web_v2_legacy_redirects_to_streamlit_port(monkeypatch):
     monkeypatch.delenv("QUANT_LAB_API_TOKEN", raising=False)
     monkeypatch.setenv("QUANT_LAB_LEGACY_WEB_PORT", "8501")

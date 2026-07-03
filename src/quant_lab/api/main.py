@@ -11,6 +11,7 @@ import json
 import os
 import re
 import subprocess
+import threading
 import time
 import zipfile
 from collections.abc import AsyncIterator
@@ -93,6 +94,7 @@ MARKET_BAR_CRITICAL_DELAY_SECONDS = 3 * 60 * 60
 
 STRATEGY_OPPORTUNITY_ADVISORY_SCHEMA_VERSION = "strategy_opportunity_advisory.v0.1"
 STRATEGY_OPPORTUNITY_ADVISORY_TTL_SECONDS = 3 * 60 * 60
+API_METRICS_RESPONSE_CACHE_SECONDS = 12.0
 STRATEGY_OPPORTUNITY_ADVISORY_MAX_API_ROWS = 50_000
 BOTTOM_ZONE_PROBE_STRATEGY_ID = "BOTTOM_ZONE_PROBE_PAPER_V1"
 BOTTOM_ZONE_PROBE_CANDIDATES = {
@@ -108,6 +110,8 @@ _STRATEGY_OPPORTUNITY_ADVISORY_RESPONSE_CACHE = StrategyOpportunityAdvisoryRespo
 _RISK_PERMISSION_EVALUATION_CACHE: ExactKeyCache[dict[str, Any]] = ExactKeyCache()
 _COST_ESTIMATE_CACHE: ExactKeyCache[CostEstimate] = ExactKeyCache()
 _COST_BUCKET_CACHE = CostBucketCache()
+_API_METRICS_RESPONSE_CACHE_LOCK = threading.Lock()
+_API_METRICS_RESPONSE_CACHE: dict[tuple[Any, ...], tuple[float, "ApiMetricsResponse"]] = {}
 
 
 class HealthResponse(BaseModel):
@@ -268,6 +272,90 @@ def _bool_env(name: str, *, default: bool) -> bool:
     return value.strip().lower() in {"1", "true", "yes", "on"}
 
 
+def _api_metrics_response_cache_seconds() -> float:
+    value = os.environ.get(
+        "QUANT_LAB_API_METRICS_RESPONSE_CACHE_SECONDS",
+        str(API_METRICS_RESPONSE_CACHE_SECONDS),
+    )
+    try:
+        seconds = float(value)
+    except ValueError:
+        return API_METRICS_RESPONSE_CACHE_SECONDS
+    return max(0.0, seconds)
+
+
+def _api_metrics_response_cache_key(
+    lake_root: Path,
+    *,
+    day: str | None,
+    since_minutes: int | None,
+) -> tuple[Any, ...]:
+    try:
+        root_key = str(lake_root.resolve())
+    except OSError:
+        root_key = str(lake_root)
+    return (root_key, str(day or ""), int(since_minutes or 0))
+
+
+def _api_metrics_response_cache_get(
+    key: tuple[Any, ...],
+    *,
+    ttl_seconds: float,
+) -> ApiMetricsResponse | None:
+    if ttl_seconds <= 0:
+        return None
+    now = time.monotonic()
+    with _API_METRICS_RESPONSE_CACHE_LOCK:
+        cached = _API_METRICS_RESPONSE_CACHE.get(key)
+        if cached is None:
+            return None
+        created_at, payload = cached
+        if now - created_at > ttl_seconds:
+            _API_METRICS_RESPONSE_CACHE.pop(key, None)
+            return None
+        return payload
+
+
+def _api_metrics_response_cache_set(
+    key: tuple[Any, ...],
+    payload: ApiMetricsResponse,
+    *,
+    ttl_seconds: float,
+) -> None:
+    if ttl_seconds <= 0:
+        return
+    with _API_METRICS_RESPONSE_CACHE_LOCK:
+        _API_METRICS_RESPONSE_CACHE[key] = (time.monotonic(), payload)
+        if len(_API_METRICS_RESPONSE_CACHE) > 32:
+            oldest = min(
+                _API_METRICS_RESPONSE_CACHE,
+                key=lambda cache_key: _API_METRICS_RESPONSE_CACHE[cache_key][0],
+            )
+            _API_METRICS_RESPONSE_CACHE.pop(oldest, None)
+
+
+def _clear_api_metrics_response_cache() -> None:
+    with _API_METRICS_RESPONSE_CACHE_LOCK:
+        _API_METRICS_RESPONSE_CACHE.clear()
+
+
+def _set_api_metrics_response_headers(
+    response: Response,
+    *,
+    cache_hit: bool,
+    compute_ms: float,
+    cache_ttl_seconds: float,
+) -> None:
+    response.headers["X-Quant-Lab-Api-Cache-Hit"] = "true" if cache_hit else "false"
+    response.headers["X-Quant-Lab-Response-Cache-Hit"] = (
+        "true" if cache_hit else "false"
+    )
+    response.headers["X-Quant-Lab-Api-Metrics-Compute-Ms"] = f"{float(compute_ms):.3f}"
+    response.headers["X-Quant-Lab-Api-Metrics-Cache-TTL-Seconds"] = (
+        f"{float(cache_ttl_seconds):.3f}"
+    )
+
+
 def create_app() -> FastAPI:
     disable_docs = _bool_env("QUANT_LAB_DISABLE_DOCS", default=False)
     app = FastAPI(
@@ -419,16 +507,43 @@ def create_app() -> FastAPI:
 
     @app.get("/v1/ops/api-metrics", response_model=ApiMetricsResponse)
     def ops_api_metrics(
+        response: Response,
         day: str | None = None,
         since_minutes: int | None = Query(default=None, ge=1),
     ) -> ApiMetricsResponse:
-        return ApiMetricsResponse(
-            **api_metrics_summary(
-                _lake_root(),
-                day=day,
-                since_minutes=since_minutes,
-            )
+        lake_root = _lake_root()
+        cache_ttl_seconds = _api_metrics_response_cache_seconds()
+        cache_key = _api_metrics_response_cache_key(
+            lake_root,
+            day=day,
+            since_minutes=since_minutes,
         )
+        cached = _api_metrics_response_cache_get(
+            cache_key,
+            ttl_seconds=cache_ttl_seconds,
+        )
+        if cached is not None:
+            _set_api_metrics_response_headers(
+                response,
+                cache_hit=True,
+                compute_ms=0.0,
+                cache_ttl_seconds=cache_ttl_seconds,
+            )
+            return cached
+
+        started = time.perf_counter()
+        payload = ApiMetricsResponse(
+            **api_metrics_summary(lake_root, day=day, since_minutes=since_minutes)
+        )
+        compute_ms = (time.perf_counter() - started) * 1000.0
+        _api_metrics_response_cache_set(cache_key, payload, ttl_seconds=cache_ttl_seconds)
+        _set_api_metrics_response_headers(
+            response,
+            cache_hit=False,
+            compute_ms=compute_ms,
+            cache_ttl_seconds=cache_ttl_seconds,
+        )
+        return payload
 
     @app.get("/v1/gates/example", response_model=GateDecision)
     def gate_example() -> GateDecision:

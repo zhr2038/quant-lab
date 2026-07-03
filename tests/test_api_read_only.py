@@ -3,6 +3,7 @@ from datetime import UTC, datetime, timedelta
 from fastapi.routing import APIRoute
 from fastapi.testclient import TestClient
 
+import quant_lab.api.main as api_main
 from quant_lab.api.main import app, create_app
 from quant_lab.ops.api_metrics import (
     api_error_summary,
@@ -160,6 +161,38 @@ def test_api_metrics_endpoint_can_filter_recent_window(monkeypatch, tmp_path):
     payload = response.json()
     assert payload["request_count"] == 1
     assert payload["by_path"] == {"/v1/current": 1}
+
+
+def test_api_metrics_endpoint_uses_short_response_cache(monkeypatch, tmp_path):
+    lake = tmp_path / "lake"
+    calls: list[tuple[str | None, int | None]] = []
+
+    def fake_api_metrics_summary(_root, *, day=None, since_minutes=None, **_kwargs):
+        calls.append((day, since_minutes))
+        return {
+            "request_count": len(calls),
+            "by_path": {"/v1/current": len(calls)},
+            "by_status_code": {"200": len(calls)},
+            "latency_ms": {"p95": 1.0},
+        }
+
+    api_main._clear_api_metrics_response_cache()
+    monkeypatch.setenv("QUANT_LAB_LAKE_ROOT", str(lake))
+    monkeypatch.setenv("QUANT_LAB_API_METRICS_RESPONSE_CACHE_SECONDS", "30")
+    monkeypatch.delenv("QUANT_LAB_API_TOKEN", raising=False)
+    monkeypatch.setattr(api_main, "api_metrics_summary", fake_api_metrics_summary)
+    client = TestClient(create_app())
+
+    first = client.get("/v1/ops/api-metrics?since_minutes=60")
+    second = client.get("/v1/ops/api-metrics?since_minutes=60")
+
+    assert first.status_code == 200
+    assert second.status_code == 200
+    assert calls == [(None, 60)]
+    assert first.headers["x-quant-lab-response-cache-hit"] == "false"
+    assert second.headers["x-quant-lab-response-cache-hit"] == "true"
+    assert second.json() == first.json()
+    api_main._clear_api_metrics_response_cache()
 
 
 def test_api_metrics_records_auth_result_and_client_context(monkeypatch, tmp_path):

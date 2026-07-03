@@ -1067,8 +1067,8 @@ def estimate_cost_from_cost_bucket_daily_rows(
         total_cost_bps = observed_fee_bps + observed_slippage_bps + observed_spread_bps
 
     bucket_id = _cost_bucket_id(row)
-    stale = _row_is_stale(row)
     source = str(row.get("source") or "cost_bucket_daily")
+    stale = _row_is_stale(row) and not _is_bootstrap_cost_probe_source(source)
     sample_count = int(row.get("sample_count") or 0)
     fallback_reason = _fallback_reason(fallback_level, stale=stale, source=source)
     components = _all_in_cost_components(
@@ -1275,7 +1275,12 @@ def _rank_cost_bucket_rows(
             tier, fallback = 12, "GLOBAL_BUCKET_FALLBACK"
         else:
             continue
-        if fresh_symbol_candidate_available and _row_symbol(row) == symbol and _row_is_stale(row):
+        if (
+            fresh_symbol_candidate_available
+            and _row_symbol(row) == symbol
+            and _row_is_stale(row)
+            and not _is_bootstrap_cost_probe_source(source)
+        ):
             tier += 10
         ranked.append((tier, fallback, row))
 

@@ -650,6 +650,78 @@ def test_cost_estimate_prefers_fresh_symbol_proxy_over_stale_actual(
     assert round(payload["roundtrip_all_in_cost_bps"], 4) == 28.0332
 
 
+def test_cost_estimate_prefers_stale_bootstrap_probe_over_fresh_public_proxy(
+    tmp_path,
+    monkeypatch,
+):
+    lake = tmp_path / "lake"
+    monkeypatch.setenv("QUANT_LAB_LAKE_ROOT", str(lake))
+    write_parquet_dataset(
+        pl.DataFrame(
+            [
+                _cost_row(
+                    symbol="BTC-USDT",
+                    regime="realized",
+                    event_type="actual_fill",
+                    notional_bucket="all",
+                    sample_count=2,
+                    cost_probe_fill_count=2,
+                    live_cost_sample_count=0,
+                    trusted_live_sample_count=0,
+                    source="bootstrap_cost_probe",
+                    cost_source="bootstrap_cost_probe",
+                    fallback_level="COST_PROBE_ONLY;SAMPLE_TOO_SMALL",
+                    fee_bps_p75=10.0,
+                    slippage_bps_p75=2.0,
+                    spread_bps_p75=0.25,
+                    total_cost_bps_p75=12.25,
+                    created_at="2026-06-20T00:00:00Z",
+                ),
+                _cost_row(
+                    symbol="BTC-USDT",
+                    regime="public_proxy",
+                    event_type="spread_proxy",
+                    notional_bucket="all",
+                    sample_count=5000,
+                    proxy_sample_count=5000,
+                    actual_fill_count=0,
+                    source="public_spread_proxy",
+                    cost_source="public_spread_proxy",
+                    fallback_level="FEE_MISSING;SLIPPAGE_UNKNOWN;PUBLIC_SPREAD_PROXY",
+                    fee_bps_p75=0.0,
+                    slippage_bps_p75=0.0,
+                    spread_bps_p75=0.0166,
+                    total_cost_bps_p75=0.0166,
+                    created_at=datetime.now(UTC).isoformat(),
+                ),
+            ]
+        ),
+        lake / "gold/cost_bucket_daily",
+    )
+
+    response = TestClient(app).get(
+        "/v1/costs/estimate",
+        params={
+            "symbol": "BTC-USDT",
+            "regime": "normal",
+            "notional_usdt": 5,
+            "quantile": "p75",
+        },
+    )
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["source"] == "bootstrap_cost_probe"
+    assert payload["matched_regime"] == "realized"
+    assert payload["cost_quality"] == "bootstrap_cost_probe"
+    assert payload["cost_trust_level"] == "PAPER_ONLY"
+    assert payload["cost_trusted_for_live"] is False
+    assert payload["live_cost_sample_count"] == 0
+    assert payload["trusted_live_sample_count"] == 0
+    assert payload["fallback_reason"] == "no_matching_regime"
+    assert payload["total_cost_bps_p75"] == 12.25
+
+
 def test_cost_estimate_trust_allows_fresh_mixed_actual_proxy_canary(tmp_path, monkeypatch):
     lake = tmp_path / "lake"
     monkeypatch.setenv("QUANT_LAB_LAKE_ROOT", str(lake))

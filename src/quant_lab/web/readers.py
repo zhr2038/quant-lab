@@ -511,6 +511,9 @@ DATASET_TIMESTAMP_COLUMNS: dict[str, tuple[str, ...]] = {
 }
 
 DATASET_FRESHNESS_TIMESTAMP_COLUMNS: dict[str, tuple[str, ...]] = {
+    # `day` is the business aggregation date for opportunity-cost reports.
+    # Freshness should track when the daily rollup was rebuilt.
+    "quant_lab_opportunity_cost_daily": ("created_at", "day"),
     # `as_of_ts` is the advisory business date and may be midnight UTC for the
     # next Asia/Shanghai export day. Freshness should track production time.
     "strategy_opportunity_advisory": ("generated_at", "created_at", "as_of_ts"),

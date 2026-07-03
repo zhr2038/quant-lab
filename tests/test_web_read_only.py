@@ -1097,6 +1097,40 @@ def test_data_health_snapshot_uses_generated_at_for_strategy_opportunity_without
     }
 
 
+def test_data_health_snapshot_uses_created_at_for_opportunity_cost_daily_without_meta(tmp_path):
+    lake_root = tmp_path / "lake"
+    now = datetime.now(UTC)
+    write_parquet_dataset(
+        pl.DataFrame(
+            [
+                {
+                    "day": (now - timedelta(days=45)).date(),
+                    "false_block_count": 1,
+                    "loss_saved_count": 0,
+                    "veto_net_value_bps": -10.0,
+                    "opportunity_cost_status": "VETO_VALUE_NEGATIVE_REVIEW_EXCEPTIONS",
+                    "created_at": now.isoformat(),
+                    "source": "test",
+                }
+            ]
+        ),
+        lake_root / "gold" / "quant_lab_opportunity_cost_daily",
+    )
+
+    snapshot = readers._dataset_snapshot(
+        lake_root,
+        "quant_lab_opportunity_cost_daily",
+        now=now,
+    )
+    stale_rows = readers.data_health_summary(lake_root)["stale_datasets"].to_dicts()
+
+    assert snapshot.freshness["timestamp_column"] == "created_at"
+    assert snapshot.freshness["freshness_status"] == "fresh"
+    assert "quant_lab_opportunity_cost_daily" not in {
+        row["dataset"] for row in stale_rows
+    }
+
+
 def test_data_health_uses_generated_at_for_cost_probe_fill_bill_match(tmp_path):
     lake_root = tmp_path / "lake"
     now = datetime.now(UTC)

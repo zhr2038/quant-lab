@@ -3193,6 +3193,33 @@ def test_bigscreen_actions_skip_entry_or_scale_readiness_advisory():
     assert not any(action["source"] == "expert_export_summary" for action in actions)
 
 
+def test_bigscreen_actions_skip_cost_coverage_readiness_advisory_without_live_effect():
+    actions = bigscreen_module._build_actions(
+        overview={},
+        data_health={},
+        cost={},
+        v5={"latest": {"kill_switch_enabled": False, "reconcile_ok": True}},
+        web_events=[],
+        exports={
+            "latest_pack": "/tmp/quant_lab_expert_pack_2026-07-04_014820.zip",
+            "data_quality_summary": {
+                "status": "WARN",
+                "warning_count": 1,
+                "warnings": [
+                    "quant_lab_enforce_readiness: readiness_status=WARN; "
+                    "veto_status=VETO_READY; entry_status=ENTRY_READY; "
+                    "scale_status=SCALE_BLOCKED; blocked=[]; "
+                    "warnings=['actual_or_mixed_cost_coverage_research_universe']"
+                ],
+                "failures": [],
+            },
+        },
+        legacy_anomalies={"items": []},
+    )
+
+    assert not any(action["source"] == "expert_export_summary" for action in actions)
+
+
 def test_bigscreen_system_warnings_skip_entry_or_scale_readiness_advisory():
     exports = {
         "data_quality_summary": {

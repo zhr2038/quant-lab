@@ -5166,7 +5166,7 @@ def test_stale_dataset_check_uses_factor_bridge_generated_at():
     assert "factor_strategy_bridge_candidates" not in datasets
 
 
-def test_stale_dataset_check_uses_created_at_for_strategy_opportunity_advisory():
+def test_stale_dataset_check_uses_generated_at_for_strategy_opportunity_advisory():
     now = datetime.now(UTC)
     stale = daily_export_module._stale_rows(
         {
@@ -5175,6 +5175,7 @@ def test_stale_dataset_check_uses_created_at_for_strategy_opportunity_advisory()
                     {
                         "symbol": "SOL-USDT",
                         "as_of_ts": now + timedelta(hours=4),
+                        "generated_at": now,
                         "created_at": now,
                         "state": "PAPER",
                     }
@@ -5189,6 +5190,7 @@ def test_stale_dataset_check_uses_created_at_for_strategy_opportunity_advisory()
                 {
                     "symbol": "SOL-USDT",
                     "as_of_ts": now + timedelta(hours=4),
+                    "generated_at": now,
                     "created_at": now,
                     "state": "PAPER",
                 }
@@ -5198,7 +5200,7 @@ def test_stale_dataset_check_uses_created_at_for_strategy_opportunity_advisory()
 
     datasets = set(stale["dataset"].to_list()) if "dataset" in stale.columns else set()
     assert "strategy_opportunity_advisory" not in datasets
-    assert freshness["timestamp_column"] == "created_at"
+    assert freshness["timestamp_column"] == "generated_at"
     assert freshness["freshness_status"] == "fresh"
 
 

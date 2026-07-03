@@ -513,7 +513,7 @@ DATASET_TIMESTAMP_COLUMNS: dict[str, tuple[str, ...]] = {
 DATASET_FRESHNESS_TIMESTAMP_COLUMNS: dict[str, tuple[str, ...]] = {
     # `as_of_ts` is the advisory business date and may be midnight UTC for the
     # next Asia/Shanghai export day. Freshness should track production time.
-    "strategy_opportunity_advisory": ("created_at", "as_of_ts"),
+    "strategy_opportunity_advisory": ("generated_at", "created_at", "as_of_ts"),
 }
 
 CORE_DIAGNOSTIC_DATASETS = {

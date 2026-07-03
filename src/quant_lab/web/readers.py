@@ -510,6 +510,12 @@ DATASET_TIMESTAMP_COLUMNS: dict[str, tuple[str, ...]] = {
     "v5_trade_event": ("ts_utc", "ts", "ingest_ts", "bundle_ts"),
 }
 
+DATASET_FRESHNESS_TIMESTAMP_COLUMNS: dict[str, tuple[str, ...]] = {
+    # `as_of_ts` is the advisory business date and may be midnight UTC for the
+    # next Asia/Shanghai export day. Freshness should track production time.
+    "strategy_opportunity_advisory": ("created_at", "as_of_ts"),
+}
+
 CORE_DIAGNOSTIC_DATASETS = {
     "silver/market_bar": Path("silver") / "market_bar",
     "gold/cost_bucket_daily": Path("gold") / "cost_bucket_daily",
@@ -934,7 +940,11 @@ def dataset_freshness_payload(
             "timestamp_column": None,
             "latest_timestamp": None,
         }
-    latest, column = latest_dataset_timestamp(dataset_name, df)
+    latest, column = latest_dataset_timestamp(
+        dataset_name,
+        df,
+        timestamp_columns=DATASET_FRESHNESS_TIMESTAMP_COLUMNS.get(dataset_name),
+    )
     if latest is None:
         return {
             "freshness_seconds": None,
@@ -981,10 +991,15 @@ def dataset_freshness_payload(
 def latest_dataset_timestamp(
     dataset_name: str,
     df: pl.DataFrame,
+    *,
+    timestamp_columns: tuple[str, ...] | None = None,
 ) -> tuple[datetime | None, str | None]:
     if df.is_empty():
         return None, None
-    columns = DATASET_TIMESTAMP_COLUMNS.get(dataset_name, ("ts", "created_at", "ingest_ts"))
+    columns = timestamp_columns or DATASET_TIMESTAMP_COLUMNS.get(
+        dataset_name,
+        ("ts", "created_at", "ingest_ts"),
+    )
     seen_timestamp_column: str | None = None
     for column in columns:
         if column not in df.columns:

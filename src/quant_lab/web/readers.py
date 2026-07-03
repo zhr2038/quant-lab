@@ -1307,7 +1307,10 @@ def _collect_recent_lazy_frame(
     timestamp_column = next(
         (
             column
-            for column in DATASET_TIMESTAMP_COLUMNS.get(dataset_name, ("ts", "created_at"))
+            for column in (
+                _freshness_timestamp_columns(dataset_name, None)
+                or DATASET_TIMESTAMP_COLUMNS.get(dataset_name, ("ts", "created_at"))
+            )
             if column in schema
         ),
         None,

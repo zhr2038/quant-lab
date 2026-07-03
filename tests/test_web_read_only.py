@@ -434,6 +434,47 @@ def test_dashboard_overview_samples_advisory_tables(tmp_path, monkeypatch):
     assert summary["entry_quality_advisory"]["strategy_candidate"].to_list() == ["new_entry"]
 
 
+def test_advisory_recent_sample_prefers_generated_at_over_business_as_of(tmp_path):
+    lake_root = tmp_path / "lake"
+    now = datetime.now(UTC)
+    dataset_path = lake_root / "gold" / "strategy_opportunity_advisory"
+    dataset_path.mkdir(parents=True)
+    pl.DataFrame(
+        [
+            {
+                "strategy_candidate": "old_business_future",
+                "symbol": "OLD-USDT",
+                "decision": "KEEP_SHADOW",
+                "recommended_mode": "shadow",
+                "as_of_ts": (now + timedelta(hours=2)).isoformat(),
+                "generated_at": (now - timedelta(days=2)).isoformat(),
+            }
+        ]
+    ).write_parquet(dataset_path / "batch_old.parquet")
+    pl.DataFrame(
+        [
+            {
+                "strategy_candidate": "new_generated",
+                "symbol": "NEW-USDT",
+                "decision": "PAPER_READY",
+                "recommended_mode": "paper",
+                "as_of_ts": (now - timedelta(hours=1)).isoformat(),
+                "generated_at": now.isoformat(),
+            }
+        ]
+    ).write_parquet(dataset_path / "batch_new.parquet")
+
+    frame, warning = readers.read_recent_dataset_with_warning(
+        lake_root,
+        "strategy_opportunity_advisory",
+        limit=1,
+        lookback_hours=1,
+    )
+
+    assert warning is None
+    assert frame["strategy_candidate"].to_list() == ["new_generated"]
+
+
 def test_research_portfolio_web_table_normalizes_close_actions():
     frame = pl.DataFrame(
         [

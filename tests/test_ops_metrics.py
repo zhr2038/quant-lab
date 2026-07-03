@@ -39,9 +39,11 @@ def test_api_request_metrics_are_micro_batched(tmp_path, monkeypatch):
 def test_api_request_metrics_default_flush_window_limits_small_files(monkeypatch):
     monkeypatch.delenv("QUANT_LAB_API_METRICS_FLUSH_ROWS", raising=False)
     monkeypatch.delenv("QUANT_LAB_API_METRICS_FLUSH_SECONDS", raising=False)
+    monkeypatch.delenv("QUANT_LAB_API_METRICS_FLUSH_JOIN_SECONDS", raising=False)
 
     assert metrics_module._api_metrics_flush_rows() == 1_000
     assert metrics_module._api_metrics_flush_seconds() == 300.0
+    assert metrics_module._api_metrics_flush_join_seconds() == 0.25
 
 
 def test_api_request_metrics_can_flush_asynchronously(tmp_path, monkeypatch):

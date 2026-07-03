@@ -1107,11 +1107,11 @@ def _api_metrics_flush_seconds() -> float:
 
 
 def _api_metrics_flush_join_seconds() -> float:
-    raw_value = os.environ.get("QUANT_LAB_API_METRICS_FLUSH_JOIN_SECONDS", "5")
+    raw_value = os.environ.get("QUANT_LAB_API_METRICS_FLUSH_JOIN_SECONDS", "0.25")
     try:
         value = float(raw_value)
     except ValueError:
-        return 5.0
+        return 0.25
     return max(value, 0.0)
 
 

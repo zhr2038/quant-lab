@@ -192,6 +192,16 @@ from quant_lab.trade_level.similarity import TRADE_LEVEL_SIMILARITY_SCHEMA
 from quant_lab.web import readers
 
 STRATEGY_OPPORTUNITY_ADVISORY_SCHEMA_VERSION = "strategy_opportunity_advisory.v0.1"
+WEB_DERIVED_SNAPSHOT_DATASETS = (
+    "factor_strategy_bridge_candidates",
+    "strategy_opportunity_advisory",
+    "v5_missed_opportunity_audit",
+    "v5_risk_on_multi_buy_shadow",
+    "risk_on_multi_buy_shadow",
+    "cost_bootstrap_readiness",
+    "cost_probe_fill_bill_match",
+    "cost_probe_cost_disagreement",
+)
 SNAPSHOT_META_DATASETS = {
     "cost_bucket_daily",
     "cost_health_daily",
@@ -3671,6 +3681,16 @@ class ExpertPackValidationResult(BaseModel):
     export_date: str | None = None
 
 
+class WebDerivedSnapshotRefreshResult(BaseModel):
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    generated_at: datetime
+    live_order_effect: str = "none_read_only_lake_refresh"
+    refreshed_datasets: list[str] = Field(default_factory=list)
+    row_counts: dict[str, int] = Field(default_factory=dict)
+    warnings: list[str] = Field(default_factory=list)
+
+
 @dataclass(frozen=True)
 class _DatasetSnapshot:
     frames: dict[str, pl.DataFrame]
@@ -4273,6 +4293,44 @@ def _publish_research_portfolio_status_snapshot(
         frames=frames,
         row_counts=row_counts,
         warnings=warnings,
+    )
+
+
+def refresh_web_derived_snapshots(
+    lake_root: str | Path,
+    *,
+    generated_at: datetime | None = None,
+) -> WebDerivedSnapshotRefreshResult:
+    """Refresh Web/expert-pack shared derived gold snapshots.
+
+    Manual expert-pack generation publishes several display/audit tables that
+    Web V2 also treats as first-class lake datasets. Keep those tables fresh
+    from the normal read-only refresh path so the UI never depends on a manual
+    ZIP export to clear stale-data warnings.
+    """
+
+    root = Path(lake_root)
+    generated_at = generated_at or datetime.now(UTC)
+    snapshot = _load_snapshot(root)
+    snapshot = _publish_strategy_opportunity_advisory_snapshot(
+        root,
+        snapshot,
+        generated_at=generated_at,
+    )
+    snapshot = _publish_missed_opportunity_snapshot(root, snapshot)
+    snapshot = _publish_cost_bootstrap_readiness_snapshot(
+        root,
+        snapshot,
+        generated_at=generated_at,
+    )
+    return WebDerivedSnapshotRefreshResult(
+        generated_at=generated_at,
+        refreshed_datasets=list(WEB_DERIVED_SNAPSHOT_DATASETS),
+        row_counts={
+            dataset: int(snapshot.row_counts.get(dataset, 0))
+            for dataset in WEB_DERIVED_SNAPSHOT_DATASETS
+        },
+        warnings=sorted(set(snapshot.warnings)),
     )
 
 

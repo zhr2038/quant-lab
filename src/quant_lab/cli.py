@@ -18,7 +18,11 @@ from quant_lab.data.lake import (
     repair_parquet_partition_values,
 )
 from quant_lab.e2e import run_v5_contract_e2e
-from quant_lab.export.daily import export_daily_pack, validate_expert_pack
+from quant_lab.export.daily import (
+    export_daily_pack,
+    refresh_web_derived_snapshots,
+    validate_expert_pack,
+)
 from quant_lab.factors.factory import (
     build_and_publish_factor_factory,
     factor_factory_health,
@@ -1984,6 +1988,18 @@ def refresh_research_diagnostics_command(
             lake_root=lake_root,
             as_of_date=as_of_date,
         ),
+    )
+    typer.echo(result.model_dump_json(indent=2))
+
+
+@app.command("refresh-web-derived-snapshots")
+def refresh_web_derived_snapshots_command(
+    lake_root: Annotated[Path, typer.Option("--lake-root", file_okay=False, dir_okay=True)],
+) -> None:
+    result = run_with_job_metrics(
+        lake_root=lake_root,
+        job_name="refresh-web-derived-snapshots",
+        func=lambda: refresh_web_derived_snapshots(lake_root=lake_root),
     )
     typer.echo(result.model_dump_json(indent=2))
 

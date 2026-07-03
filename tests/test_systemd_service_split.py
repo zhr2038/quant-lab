@@ -237,6 +237,7 @@ def test_candidate_research_refresh_is_separate_from_alpha_evidence():
     assert "build-paper-strategy-tracking" in refresh_unit
     assert "build-research-portfolio-status" in refresh_unit
     assert "refresh-research-diagnostics" in refresh_unit
+    assert "refresh-web-derived-snapshots" in refresh_unit
     assert "build-sol-protect-paper-loss-attribution" not in refresh_unit
     assert "build-btc-probe-exit-policy-review" not in refresh_unit
     assert "build-bnb-swing-exit-policy-review" not in refresh_unit

@@ -415,6 +415,104 @@ def test_export_daily_pack_writes_required_members(tmp_path):
         assert meta.get("source_sha"), dataset
 
 
+def test_refresh_web_derived_snapshots_updates_export_backed_gold_tables(
+    monkeypatch,
+    tmp_path,
+):
+    generated_at = datetime(2026, 7, 3, 12, 0, tzinfo=UTC)
+    lake_root = tmp_path / "lake"
+    calls: list[str] = []
+    seed_snapshot = daily_export_module._DatasetSnapshot(
+        frames={"cost_bucket_daily": pl.DataFrame({"symbol": ["BTC/USDT"]})},
+        row_counts={"cost_bucket_daily": 1},
+        warnings=[],
+    )
+
+    def row_counts(frames):
+        return {name: frame.height for name, frame in frames.items()}
+
+    def fake_load(root):
+        assert root == lake_root
+        calls.append("load")
+        return seed_snapshot
+
+    def fake_strategy(root, snapshot, *, generated_at):
+        assert root == lake_root
+        assert generated_at == datetime(2026, 7, 3, 12, 0, tzinfo=UTC)
+        calls.append("strategy")
+        frames = {
+            **snapshot.frames,
+            "factor_strategy_bridge_candidates": pl.DataFrame({"id": [1, 2]}),
+            "strategy_opportunity_advisory": pl.DataFrame({"id": [1]}),
+        }
+        return daily_export_module._DatasetSnapshot(
+            frames=frames,
+            row_counts={**snapshot.row_counts, **row_counts(frames)},
+            warnings=snapshot.warnings,
+            transient_frames=snapshot.transient_frames,
+        )
+
+    def fake_missed(root, snapshot):
+        assert root == lake_root
+        calls.append("missed")
+        assert "strategy_opportunity_advisory" in snapshot.frames
+        frames = {
+            **snapshot.frames,
+            "v5_missed_opportunity_audit": pl.DataFrame({"id": [1, 2, 3]}),
+            "v5_risk_on_multi_buy_shadow": pl.DataFrame({"id": [1]}),
+            "risk_on_multi_buy_shadow": pl.DataFrame({"id": [1]}),
+        }
+        return daily_export_module._DatasetSnapshot(
+            frames=frames,
+            row_counts={**snapshot.row_counts, **row_counts(frames)},
+            warnings=snapshot.warnings,
+            transient_frames=snapshot.transient_frames,
+        )
+
+    def fake_cost(root, snapshot, *, generated_at):
+        assert root == lake_root
+        assert generated_at == datetime(2026, 7, 3, 12, 0, tzinfo=UTC)
+        calls.append("cost")
+        frames = {
+            **snapshot.frames,
+            "cost_bootstrap_readiness": pl.DataFrame({"id": [1, 2, 3, 4]}),
+            "cost_probe_fill_bill_match": pl.DataFrame({"id": [1]}),
+            "cost_probe_cost_disagreement": pl.DataFrame({"id": [1]}),
+        }
+        return daily_export_module._DatasetSnapshot(
+            frames=frames,
+            row_counts={**snapshot.row_counts, **row_counts(frames)},
+            warnings=[*snapshot.warnings, "example warning"],
+            transient_frames=snapshot.transient_frames,
+        )
+
+    monkeypatch.setattr(daily_export_module, "_load_snapshot", fake_load)
+    monkeypatch.setattr(
+        daily_export_module,
+        "_publish_strategy_opportunity_advisory_snapshot",
+        fake_strategy,
+    )
+    monkeypatch.setattr(daily_export_module, "_publish_missed_opportunity_snapshot", fake_missed)
+    monkeypatch.setattr(
+        daily_export_module,
+        "_publish_cost_bootstrap_readiness_snapshot",
+        fake_cost,
+    )
+
+    result = daily_export_module.refresh_web_derived_snapshots(
+        lake_root,
+        generated_at=generated_at,
+    )
+
+    assert calls == ["load", "strategy", "missed", "cost"]
+    assert result.generated_at == generated_at
+    assert result.live_order_effect == "none_read_only_lake_refresh"
+    assert result.refreshed_datasets == list(daily_export_module.WEB_DERIVED_SNAPSHOT_DATASETS)
+    assert result.row_counts["factor_strategy_bridge_candidates"] == 2
+    assert result.row_counts["cost_bootstrap_readiness"] == 4
+    assert result.warnings == ["example warning"]
+
+
 def test_research_validation_v3_reports_export_forward_and_cost_coverage(tmp_path):
     lake_root = tmp_path / "lake"
     out_dir = tmp_path / "exports"

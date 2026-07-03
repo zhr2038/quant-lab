@@ -1098,6 +1098,38 @@ def test_data_health_treats_missing_cost_probe_audits_as_optional(tmp_path):
     assert "cost_probe_cost_disagreement" not in {row["dataset"] for row in stale_rows}
 
 
+def test_cost_model_summary_exposes_cost_probe_disagreement_failures(tmp_path):
+    lake_root = tmp_path / "lake"
+    write_parquet_dataset(
+        pl.DataFrame(
+            [
+                {
+                    "generated_at": "2026-07-03T15:20:09Z",
+                    "symbol": "SOL-USDT",
+                    "authorization_id": "auth-sol",
+                    "roundtrip_id": "entry:exit",
+                    "v5_roundtrip_cost_bps": "21.4",
+                    "quant_lab_roundtrip_cost_bps": "51.9",
+                    "okx_bill_roundtrip_cost_bps": "31.4",
+                    "diff_bps": "30.5",
+                    "status": "FAIL",
+                    "reason": "comparable_values=okx_bill,quant_lab,v5",
+                    "cost_bucket_source": "mixed_actual_proxy",
+                    "bill_match_status": "PASS",
+                }
+            ]
+        ),
+        lake_root / "gold" / "cost_probe_cost_disagreement",
+    )
+
+    summary = readers.cost_model_summary(lake_root)
+
+    rows = summary["cost_probe_cost_disagreement"].to_dicts()
+    assert rows[0]["symbol"] == "SOL-USDT"
+    assert rows[0]["status"] == "FAIL"
+    assert "cost_probe_cost_disagreement_fail: fail_count=1" in summary["warnings"]
+
+
 def test_dataset_snapshot_falls_back_when_file_index_misses_partitioned_files(tmp_path):
     lake_root = tmp_path / "lake"
     now = datetime.now(UTC)

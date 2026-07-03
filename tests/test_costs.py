@@ -203,6 +203,169 @@ def test_cost_probe_cost_disagreement_passes_when_probe_costs_align():
     assert row["bill_match_status"] == "PASS"
 
 
+def test_cost_probe_cost_disagreement_uses_okx_quote_net_cashflow():
+    now = datetime(2026, 6, 24, 9, 0, tzinfo=UTC)
+    order_events = pl.DataFrame(
+        [
+            {
+                "event_ts": "2026-06-24T08:00:01Z",
+                "symbol": "BTC-USDT",
+                "leg": "entry",
+                "order_status": "filled",
+                "order_id": "entry-order-btc",
+                "trade_id": "entry-trade-btc",
+                "filled_qty": "0.001",
+                "avg_px": "50000",
+                "fee_usdt": "0.05",
+            },
+            {
+                "event_ts": "2026-06-24T08:00:09Z",
+                "symbol": "BTC-USDT",
+                "leg": "exit",
+                "order_status": "filled",
+                "order_id": "exit-order-btc",
+                "trade_id": "exit-trade-btc",
+                "filled_qty": "0.000999",
+                "avg_px": "50000",
+                "fee_usdt": "0.04995",
+            },
+        ]
+    )
+    roundtrips = pl.DataFrame(
+        [
+            {
+                "event_ts": "2026-06-24T08:00:12Z",
+                "symbol": "BTC-USDT",
+                "roundtrip_id": "rt-btc-1",
+                "roundtrip_status": "closed",
+                "authorization_id": "auth-btc-1",
+                "entry_order_id": "entry-order-btc",
+                "exit_order_id": "exit-order-btc",
+                "execution_completed": True,
+                "completed": True,
+                "flat_verified": True,
+                "exchange_flat_verified": True,
+                "local_flat_verified": True,
+                "reconcile_ok": True,
+                "cost_evidence_complete": True,
+                "eligible_for_cost_model": True,
+                "roundtrip_cost_bps": 19.99,
+            }
+        ]
+    )
+    private_fills = pl.DataFrame(
+        [
+            {
+                "inst_id": "BTC-USDT",
+                "order_id": "entry-order-btc",
+                "trade_id": "entry-trade-btc",
+                "side": "buy",
+                "fill_price": 50000.0,
+                "fill_size": 0.001,
+                "fee": -0.000001,
+                "fee_currency": "BTC",
+                "ts": "2026-06-24T08:00:01Z",
+            },
+            {
+                "inst_id": "BTC-USDT",
+                "order_id": "exit-order-btc",
+                "trade_id": "exit-trade-btc",
+                "side": "sell",
+                "fill_price": 50000.0,
+                "fill_size": 0.000999,
+                "fee": -0.04995,
+                "fee_currency": "USDT",
+                "ts": "2026-06-24T08:00:09Z",
+            },
+        ]
+    )
+    bills = pl.DataFrame(
+        [
+            {
+                "bill_id": "entry-base",
+                "inst_id": "BTC-USDT",
+                "ccy": "BTC",
+                "amount": 0.000999,
+                "ts": "2026-06-24T08:00:02Z",
+            },
+            {
+                "bill_id": "entry-quote",
+                "inst_id": "BTC-USDT",
+                "ccy": "USDT",
+                "amount": -50.0,
+                "ts": "2026-06-24T08:00:02Z",
+            },
+            {
+                "bill_id": "exit-base",
+                "inst_id": "BTC-USDT",
+                "ccy": "BTC",
+                "amount": -0.000999,
+                "ts": "2026-06-24T08:00:10Z",
+            },
+            {
+                "bill_id": "exit-quote",
+                "inst_id": "BTC-USDT",
+                "ccy": "USDT",
+                "amount": 49.90005,
+                "ts": "2026-06-24T08:00:10Z",
+            },
+        ]
+    )
+
+    disagreement = build_cost_probe_cost_disagreement(
+        pl.DataFrame(
+            [
+                {
+                    **_coverage_cost_row("BTC-USDT", "bootstrap_cost_probe", now),
+                    "roundtrip_cost_p75_bps": 20.0,
+                }
+            ]
+        ),
+        order_events,
+        roundtrips,
+        private_fills,
+        bills,
+        generated_at=now,
+    )
+
+    row = disagreement.to_dicts()[0]
+    assert row["okx_bill_roundtrip_cost_bps"] == "19.99"
+    assert row["v5_roundtrip_cost_bps"] == "19.99"
+    assert row["quant_lab_roundtrip_cost_bps"] == "20"
+    assert row["diff_bps"] == "0.01"
+    assert row["status"] == "PASS"
+
+
+def test_cost_probe_disagreement_prefers_pure_bootstrap_over_mixed_probe_bucket():
+    now = datetime(2026, 6, 24, 9, 0, tzinfo=UTC)
+    roundtrips = _probe_roundtrip_events().with_columns(
+        pl.lit(16.0).alias("roundtrip_cost_bps")
+    )
+    pure = {
+        **_coverage_cost_row("ETH-USDT", "bootstrap_cost_probe", now - timedelta(days=1)),
+        "roundtrip_cost_p75_bps": 16.5,
+    }
+    mixed = {
+        **_coverage_cost_row("ETH-USDT", "mixed_actual_proxy", now),
+        "roundtrip_cost_p75_bps": 60.0,
+        "sample_origin_mix": "cost_probe+strategy_live",
+    }
+
+    disagreement = build_cost_probe_cost_disagreement(
+        pl.DataFrame([pure, mixed]),
+        _probe_order_events(),
+        roundtrips,
+        _probe_private_fills(),
+        _probe_bill_rows(),
+        generated_at=now,
+    )
+
+    row = disagreement.to_dicts()[0]
+    assert row["quant_lab_roundtrip_cost_bps"] == "16.5"
+    assert row["cost_bucket_source"] == "bootstrap_cost_probe"
+    assert row["status"] == "PASS"
+
+
 def test_cost_probe_cost_disagreement_fails_on_large_cost_gap():
     now = datetime(2026, 6, 24, 9, 0, tzinfo=UTC)
     roundtrips = _probe_roundtrip_events().with_columns(

@@ -2929,18 +2929,32 @@ def cost_model_summary(lake_root: str | Path) -> dict[str, Any]:
         lake_root,
         "cost_bootstrap_readiness",
     )
+    disagreement, disagreement_warning = read_dataset_with_warning(
+        lake_root,
+        "cost_probe_cost_disagreement",
+    )
     live_coverage, live_coverage_warning = _live_universe_cost_coverage_table(costs)
     warnings = [
         warning
-        for warning in [costs_warning, health_warning, bootstrap_warning, live_coverage_warning]
+        for warning in [
+            costs_warning,
+            health_warning,
+            bootstrap_warning,
+            disagreement_warning,
+            live_coverage_warning,
+        ]
         if warning
     ]
+    warnings.extend(_cost_probe_disagreement_warnings(disagreement))
     if costs.is_empty():
         return {
             "costs": pl.DataFrame(),
             "cost_health": redact_frame(_cost_health_table(health)).head(DISPLAY_LIMIT),
             "cost_bootstrap_readiness": redact_frame(
                 _cost_bootstrap_readiness_table(bootstrap)
+            ).head(DISPLAY_LIMIT),
+            "cost_probe_cost_disagreement": redact_frame(
+                _cost_probe_cost_disagreement_table(disagreement)
             ).head(DISPLAY_LIMIT),
             "live_universe_cost_coverage": live_coverage,
             "actual_rows": 0,
@@ -2972,6 +2986,9 @@ def cost_model_summary(lake_root: str | Path) -> dict[str, Any]:
         "cost_bootstrap_readiness": redact_frame(_cost_bootstrap_readiness_table(bootstrap)).head(
             DISPLAY_LIMIT
         ),
+        "cost_probe_cost_disagreement": redact_frame(
+            _cost_probe_cost_disagreement_table(disagreement)
+        ).head(DISPLAY_LIMIT),
         "live_universe_cost_coverage": live_coverage,
         "actual_rows": effective_quality["actual_rows"],
         "mixed_rows": effective_quality["mixed_rows"],
@@ -3075,6 +3092,20 @@ def _effective_cost_quality_counts(costs: pl.DataFrame, bootstrap: pl.DataFrame)
         elif source == "global_default":
             counts["global_default_rows"] += 1
     return counts
+
+
+def _cost_probe_disagreement_warnings(frame: pl.DataFrame) -> list[str]:
+    if frame.is_empty() or "status" not in frame.columns:
+        return []
+    status_text = pl.col("status").cast(pl.Utf8, strict=False).str.to_uppercase()
+    fail_count = frame.filter(status_text == "FAIL").height
+    warn_count = frame.filter(status_text.is_in(["WARN", "WARNING"])).height
+    warnings: list[str] = []
+    if fail_count:
+        warnings.append(f"cost_probe_cost_disagreement_fail: fail_count={fail_count}")
+    if warn_count:
+        warnings.append(f"cost_probe_cost_disagreement_warn: warn_count={warn_count}")
+    return warnings
 
 
 def _cost_quality_candidate_is_better(
@@ -3444,6 +3475,54 @@ def _latest_cost_bucket_display_rows(table: pl.DataFrame) -> pl.DataFrame:
         .unique(subset=key_columns, keep="first", maintain_order=True)
         .drop(["_display_live_priority", "_display_source_priority", "_display_time_key"])
     )
+
+
+def _cost_probe_cost_disagreement_table(frame: pl.DataFrame) -> pl.DataFrame:
+    if frame.is_empty():
+        return frame
+    columns = [
+        "generated_at",
+        "symbol",
+        "status",
+        "diff_bps",
+        "v5_roundtrip_cost_bps",
+        "quant_lab_roundtrip_cost_bps",
+        "okx_bill_roundtrip_cost_bps",
+        "cost_bucket_source",
+        "bill_match_status",
+        "reason",
+        "authorization_id",
+        "roundtrip_id",
+    ]
+    table = _select_existing_columns(frame, columns)
+    if "status" in table.columns:
+        status_priority = {
+            "FAIL": 0,
+            "WARN": 1,
+            "WARNING": 1,
+            "NOT_EVALUATED": 2,
+            "PASS": 3,
+        }
+        table = table.with_columns(
+            pl.col("status")
+            .cast(pl.Utf8, strict=False)
+            .str.to_uppercase()
+            .map_elements(
+                lambda value: status_priority.get(str(value or ""), 4),
+                return_dtype=pl.Int64,
+            )
+            .alias("_status_priority")
+        )
+        sort_columns = ["_status_priority"]
+        descending = [False]
+        if "generated_at" in table.columns:
+            sort_columns.append("generated_at")
+            descending.append(True)
+        if "symbol" in table.columns:
+            sort_columns.append("symbol")
+            descending.append(False)
+        table = table.sort(sort_columns, descending=descending).drop("_status_priority")
+    return table
 
 
 def _with_cost_bucket_focus(table: pl.DataFrame) -> pl.DataFrame:

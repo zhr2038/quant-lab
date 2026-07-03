@@ -37,6 +37,12 @@ def render(lake_root: str | Path, st_module: Any | None = None) -> None:
         summary["cost_bootstrap_readiness"],
         "暂无 cost_bootstrap_readiness 数据。",
     )
+    st.subheader("成本探针对账")
+    show_frame(
+        st,
+        summary["cost_probe_cost_disagreement"],
+        "暂无 cost_probe_cost_disagreement 数据。",
+    )
     st.subheader("各标的成本桶")
     st.caption(
         "每行重点看：成本来源、样本数、P75/往返 all-in 成本、以及 canary/scale 可信等级。"

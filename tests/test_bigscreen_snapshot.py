@@ -3019,6 +3019,36 @@ def test_bigscreen_actions_skip_read_only_cost_coverage_advisory():
     assert not any(action["source"] == "cost_model_summary" for action in actions)
 
 
+def test_bigscreen_actions_surface_cost_probe_disagreement_failures():
+    actions = bigscreen_module._build_actions(
+        overview={},
+        data_health={},
+        cost={
+            "hard_fallback_ratio": 0.0,
+            "soft_fallback_ratio": 0.0,
+            "cost_probe_cost_disagreement": [
+                {
+                    "symbol": "SOL-USDT",
+                    "status": "FAIL",
+                    "diff_bps": "30.5",
+                    "bill_match_status": "PASS",
+                }
+            ],
+        },
+        v5={"latest": {"kill_switch_enabled": False, "reconcile_ok": True}},
+        web_events=[],
+        exports={},
+        legacy_anomalies={"items": []},
+    )
+
+    issue = next(
+        action for action in actions if action["source"] == "cost_probe_cost_disagreement"
+    )
+    assert issue["severity"] == "CRITICAL"
+    assert issue["title"] == "成本探针对账不一致"
+    assert "30.5bps" in issue["summary"]
+
+
 def test_bigscreen_actions_skip_read_only_export_cost_advisory():
     actions = bigscreen_module._build_actions(
         overview={},

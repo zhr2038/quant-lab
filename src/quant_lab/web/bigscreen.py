@@ -942,6 +942,34 @@ def _cost_soft_fallback_requires_action(cost: dict[str, Any]) -> bool:
     return not _cost_soft_fallback_is_read_only_advisory(cost)
 
 
+def _cost_probe_disagreement_issue(cost: dict[str, Any]) -> dict[str, Any] | None:
+    rows = _frame_rows(cost.get("cost_probe_cost_disagreement"), limit=100)
+    if not rows:
+        return None
+    fail_rows = [
+        row for row in rows if str(row.get("status") or "").strip().upper() == "FAIL"
+    ]
+    warn_rows = [
+        row
+        for row in rows
+        if str(row.get("status") or "").strip().upper() in {"WARN", "WARNING"}
+    ]
+    issue_rows = fail_rows or warn_rows
+    if not issue_rows:
+        return None
+    severity = "CRITICAL" if fail_rows else "WARNING"
+    symbols = sorted({str(row.get("symbol") or "") for row in issue_rows if row.get("symbol")})
+    max_diff = max((_float(row.get("diff_bps")) or 0.0) for row in issue_rows)
+    status_text = "FAIL" if fail_rows else "WARN"
+    return {
+        "severity": severity,
+        "summary": (
+            f"{len(issue_rows)} 个探针成本对账 {status_text}；"
+            f"最大差异 {max_diff:.1f}bps；标的 {', '.join(symbols[:4])}"
+        ),
+    }
+
+
 def _cost_soft_fallback_is_read_only_advisory(cost: dict[str, Any]) -> bool:
     if (_float(cost.get("hard_fallback_ratio")) or 0.0) > 0.25:
         return False
@@ -1995,6 +2023,9 @@ def _cost_payload(cost: dict[str, Any]) -> dict[str, Any]:
     payload["cost_bootstrap_readiness"] = _frame_rows(
         cost.get("cost_bootstrap_readiness"), limit=12
     )
+    payload["cost_probe_cost_disagreement"] = _frame_rows(
+        cost.get("cost_probe_cost_disagreement"), limit=12
+    )
     payload["live_universe_cost_coverage"] = _frame_rows(
         cost.get("live_universe_cost_coverage"), limit=12
     )
@@ -2643,6 +2674,18 @@ def _build_actions(
                 "存在 global_default 或成本服务缺口，不能当作 live-ready 证据",
                 "cost_model_summary",
                 "优先排查成本桶刷新、symbol 命中和 API 全局默认命中",
+                "/cost",
+            )
+        )
+    cost_probe_issue = _cost_probe_disagreement_issue(cost)
+    if cost_probe_issue is not None:
+        actions.append(
+            _action(
+                str(cost_probe_issue["severity"]),
+                "成本探针对账不一致",
+                str(cost_probe_issue["summary"]),
+                "cost_probe_cost_disagreement",
+                "复核 V5 roundtrip cost、quant-lab cost_bucket 与 OKX bill 净现金流口径",
                 "/cost",
             )
         )

@@ -371,6 +371,8 @@ def build_cost_probe_cost_disagreement(
             fill_rows=fill_rows,
             entry_fee=entry["fee_from_bill"],
             exit_fee=exit_["fee_from_bill"],
+            entry_quote_amount=entry["quote_amount_from_bill"],
+            exit_quote_amount=exit_["quote_amount_from_bill"],
             symbol=symbol,
         )
         status, diff, reason = _cost_disagreement_status(
@@ -738,7 +740,18 @@ def _latest_bootstrap_cost_row(
         candidates.append(row)
     if not candidates:
         return None
+    pure_candidates = [row for row in candidates if _is_pure_bootstrap_cost_row(row)]
+    if pure_candidates:
+        candidates = pure_candidates
     return sorted(candidates, key=_cost_row_sort_key)[-1]
+
+
+def _is_pure_bootstrap_cost_row(row: Mapping[str, Any]) -> bool:
+    payload = _payload_dict(row)
+    origin = str(
+        _first_value(row, payload, ["sample_origin_mix", "sample_origin"]) or ""
+    ).lower()
+    return _cost_row_source(row) == "bootstrap_cost_probe" or origin == "cost_probe_only"
 
 
 def _cost_row_sort_key(row: Mapping[str, Any]) -> tuple[datetime, str]:
@@ -809,10 +822,17 @@ def _okx_bill_roundtrip_cost_bps(
     fill_rows: Sequence[dict[str, Any]],
     entry_fee: float | None,
     exit_fee: float | None,
+    entry_quote_amount: float | None,
+    exit_quote_amount: float | None,
     symbol: str,
 ) -> float | None:
     if entry_fee is None or exit_fee is None:
         return None
+    if entry_quote_amount is not None and exit_quote_amount is not None:
+        cash_out = -entry_quote_amount if entry_quote_amount < 0 else entry_quote_amount
+        cash_in = exit_quote_amount if exit_quote_amount > 0 else -exit_quote_amount
+        if cash_out > 0:
+            return (cash_out - cash_in) / cash_out * 10_000.0
     entry_notional = _cost_probe_leg_notional(
         leg="entry",
         roundtrip=roundtrip,
@@ -924,6 +944,7 @@ def _cost_probe_leg_bill_match(
         "bill_ids": _bill_ids(bill_matches),
         "fee_from_fill": _sum_optional(_fee_from_fill(row) for row in private_matches),
         "fee_from_bill": fee_from_bill,
+        "quote_amount_from_bill": _quote_amount_from_bills(bill_matches, symbol=symbol),
     }
 
 
@@ -1036,6 +1057,24 @@ def _matching_ledger_bill_rows(
         "rows": list(matches.values()),
         "fee_from_bill": fee_total if matched_fee else None,
     }
+
+
+def _quote_amount_from_bills(rows: Sequence[dict[str, Any]], *, symbol: str) -> float | None:
+    quote = _quote_ccy(symbol)
+    observed: list[float] = []
+    for row in rows:
+        payload = _payload_dict(row)
+        ccy = str(
+            _first_value(row, payload, ["ccy", "currency", "fee_currency", "fee_ccy"]) or ""
+        ).upper()
+        if ccy not in {quote, "USDT", "USD"}:
+            continue
+        amount = _first_float(row, payload, ["amount", "balChg"])
+        if amount is not None:
+            observed.append(amount)
+    if not observed:
+        return None
+    return sum(observed)
 
 
 def _bill_matches_fill_fee_and_time(bill: Mapping[str, Any], fill: Mapping[str, Any]) -> bool:

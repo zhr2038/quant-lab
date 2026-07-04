@@ -451,7 +451,7 @@ def test_bigscreen_matrix_attention_promotes_global_status_and_action():
         data_matrix=data_matrix,
     )
 
-    assert warnings == ["data_matrix_attention: critical=1; warning=2; top=ADA-USDT.spread"]
+    assert warnings == ["data_matrix_attention: critical=1; warning=1; top=ADA-USDT.spread"]
     assert status == "WARNING"
     assert actions[0]["source"] == "data_matrix"
     assert actions[0]["severity"] == "WARNING"
@@ -497,6 +497,36 @@ def test_bigscreen_matrix_action_combines_spread_critical_with_market_warning():
     assert "2 个逐币行情注意项" in actions[0]["summary"]
     assert "实时盘口成本风险" in actions[0]["next_action"]
     assert "market_bar latest_ts" in actions[0]["next_action"]
+
+
+def test_bigscreen_matrix_action_ignores_read_only_cost_and_advisory_cells():
+    data_matrix = {
+        "columns": ["market_bar", "spread", "trade", "cost", "advisory"],
+        "rows": [
+            {
+                "symbol": "BTC-USDT",
+                "market_bar": {"status": "OK"},
+                "spread": {"status": "OK"},
+                "trade": {"status": "OK"},
+                "cost": {"status": "WARNING", "coverage_reason": "public_proxy"},
+                "advisory": {"status": "WARNING", "decision": None},
+            }
+        ],
+    }
+
+    warnings = bigscreen_module._data_matrix_warnings(data_matrix)
+    actions = bigscreen_module._build_actions(
+        overview={},
+        data_health={},
+        cost={"hard_fallback_ratio": 0.0, "soft_fallback_ratio": 0.0},
+        v5={"latest": {"kill_switch_enabled": False, "reconcile_ok": True, "ledger_ok": True}},
+        web_events=[],
+        exports={},
+        data_matrix=data_matrix,
+    )
+
+    assert warnings == []
+    assert not any(action["source"] == "data_matrix" for action in actions)
 
 
 def test_web_v2_smoke_status_required_missing_enters_action_queue(monkeypatch, tmp_path):

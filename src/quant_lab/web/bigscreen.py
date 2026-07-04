@@ -39,6 +39,7 @@ WEB_V2_SMOKE_STATUS_PATH = Path("/var/lib/quant-lab/ops/web_v2_smoke/latest.json
 WEB_V2_SMOKE_MAX_AGE_SECONDS = 25 * 60
 WEB_V2_API_METRICS_WINDOW_MINUTES = 60
 V5_BUNDLE_NAME_RE = re.compile(r"v5_live_followup_bundle_(\d{8}T\d{6})Z\.tar\.gz")
+ACTIONABLE_DATA_MATRIX_COLUMNS = {"market_bar", "spread", "trade"}
 _SNAPSHOT_CACHE: dict[str, tuple[float, dict[str, Any]]] = {}
 _SNAPSHOT_CACHE_SOURCE_SIGNATURES: dict[str, tuple[Any, ...]] = {}
 _SNAPSHOT_CACHE_LOCK = threading.RLock()
@@ -1432,18 +1433,21 @@ def _data_matrix_issue_summary(data_matrix: dict[str, Any]) -> dict[str, Any]:
             continue
         symbol = str(row.get("symbol") or "").strip() or "unknown"
         for column in columns:
+            column_key = str(column)
+            if column_key not in ACTIONABLE_DATA_MATRIX_COLUMNS:
+                continue
             cell = row.get(column)
             if not isinstance(cell, dict):
                 continue
             status = str(cell.get("status") or "").upper()
             if status == "CRITICAL":
                 critical += 1
-                critical_by_metric[str(column)] = critical_by_metric.get(str(column), 0) + 1
+                critical_by_metric[column_key] = critical_by_metric.get(column_key, 0) + 1
                 if len(critical_top) < 3:
                     critical_top.append(f"{symbol}.{column}")
             elif status == "WARNING":
                 warning += 1
-                warning_by_metric[str(column)] = warning_by_metric.get(str(column), 0) + 1
+                warning_by_metric[column_key] = warning_by_metric.get(column_key, 0) + 1
                 if len(warning_top) < 3:
                     warning_top.append(f"{symbol}.{column}")
     return {

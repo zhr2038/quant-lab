@@ -2796,21 +2796,6 @@ def _build_actions(
                 "/data-ops",
             )
         )
-    expert_pack_lag = _expert_pack_v5_lag_issue(exports, v5)
-    if expert_pack_lag is not None:
-        actions.append(
-            _action(
-                "WARNING",
-                "专家包内 V5 证据已落后",
-                (
-                    f"当前可下载包嵌入 {expert_pack_lag['pack_bundle_name']}，"
-                    f"落后最新 V5 {expert_pack_lag['lag_minutes']} 分钟"
-                ),
-                "expert_export_summary.v5_bundle_lag",
-                "需要最新证据时，手动点击“生成今日专家包”重新导出",
-                "/exports",
-            )
-        )
     export_quality_level = _export_quality_level(exports)
     if exports.get("latest_pack") and _export_quality_requires_action(exports):
         data_quality = _export_data_quality(exports)

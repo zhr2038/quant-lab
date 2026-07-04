@@ -2605,7 +2605,7 @@ def test_bigscreen_snapshot_matches_generated_day_across_utc_boundary(
     )
 
 
-def test_bigscreen_action_warns_when_expert_pack_v5_bundle_lags_current_v5():
+def test_bigscreen_action_keeps_expert_pack_v5_lag_out_of_global_queue():
     pack_path = "/var/lib/quant-lab/exports/quant_lab_expert_pack_2026-06-28_120000.zip"
     exports = {
         "latest_pack": pack_path,
@@ -2637,10 +2637,8 @@ def test_bigscreen_action_warns_when_expert_pack_v5_bundle_lags_current_v5():
 
     assert issue is not None
     assert issue["latest_v5_bundle_ts"] == "2026-06-28T14:22:51Z"
-    assert any(
-        item["source"] == "expert_export_summary.v5_bundle_lag"
-        and item["severity"] == "WARNING"
-        for item in actions
+    assert not any(
+        item["source"] == "expert_export_summary.v5_bundle_lag" for item in actions
     )
 
 
@@ -2752,7 +2750,7 @@ def test_bigscreen_snapshot_marks_available_pack_v5_bundle_lag(tmp_path, monkeyp
     assert payload["exports"]["latest_pack_code_lag_status"] == "WARNING"
     assert payload["exports"]["latest_pack_quant_lab_git_commit"] == "old-sha"
     assert payload["exports"]["current_quant_lab_git_commit"] == "new-sha"
-    assert any(
+    assert not any(
         item["source"] == "expert_export_summary.v5_bundle_lag"
         for item in payload["actions"]
     )

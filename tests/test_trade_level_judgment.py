@@ -12,6 +12,7 @@ from quant_lab.trade_level.judgment import (
     build_trade_level_judgments,
     build_trade_opportunity_events,
 )
+from quant_lab.trade_level.opportunity_queue import build_trade_level_opportunity_queue
 
 
 def test_sol_high_confidence_abort_becomes_micro_canary_review():
@@ -278,6 +279,17 @@ def test_bucket_policy_can_explicitly_promote_to_micro_canary_allow():
 
     judgments = build_trade_level_judgments(
         events,
+        similarity=pl.DataFrame(
+            [
+                {
+                    "event_id": event["event_id"],
+                    "similar_sample_count": 24,
+                    "similar_median_after_cost_bps": 12.0,
+                    "similar_p25_after_cost_bps": -12.0,
+                    "recent_7d_similar_mean": 8.0,
+                }
+            ]
+        ),
         bucket_policy=policy,
         created_at=datetime(2026, 6, 29, 9, tzinfo=UTC),
     )
@@ -723,6 +735,65 @@ def test_opportunity_bucket_recommends_risk_block_for_loss_saved_bucket():
     assert bucket["recommended_trade_level_decision"] == "RISK_BLOCK"
     assert bucket["policy_action"] == "RISK_BLOCK"
     assert bucket["high_confidence_loss_saved_count"] == 3
+    assert bucket["loss_saved_bps_median"] == 45.0
+    assert bucket["policy_basis"] == "loss_saved_bucket_positive_veto_value"
+
+
+def test_explicit_micro_canary_allow_requires_similarity_evidence():
+    events = build_trade_opportunity_events(
+        pl.DataFrame([_sol_candidate()]),
+        risk_permissions=pl.DataFrame(
+            [
+                {
+                    "permission": "ABORT",
+                    "permission_status": "ACTIVE_ABORT",
+                    "as_of_ts": datetime(2026, 6, 29, 8, tzinfo=UTC),
+                    "live_block_reasons": '["no_strategy_live_small_ready"]',
+                    "allowed_live_modes": "[]",
+                }
+            ]
+        ),
+        v5_trades=pl.DataFrame(),
+        created_at=datetime(2026, 6, 29, 9, tzinfo=UTC),
+    )
+    event = events.row(0, named=True)
+    policy = pl.DataFrame(
+        [
+            {
+                "bucket_key": event["event_id"] and "|".join(
+                    [
+                        event["symbol"],
+                        event["strategy_candidate"],
+                        "normal",
+                        "normal",
+                        "rank_1",
+                        "alpha_ge_0_95",
+                        "edge_ratio_ge_3",
+                        "unknown_cost_source",
+                        "cost_gate_verified",
+                    ]
+                ),
+                "policy_action": "MICRO_CANARY_ALLOW",
+                "policy_reason": "explicit_test_policy",
+                "policy_confidence": "high",
+                "max_single_order_usdt": 5.0,
+                "daily_trade_limit": 1,
+                "expires_at": datetime(2026, 6, 30, tzinfo=UTC),
+                "created_at": datetime(2026, 6, 29, 8, tzinfo=UTC),
+            }
+        ]
+    )
+
+    judgments = build_trade_level_judgments(
+        events,
+        bucket_policy=policy,
+        created_at=datetime(2026, 6, 29, 9, tzinfo=UTC),
+    )
+    judgment = judgments.row(0, named=True)
+
+    assert judgment["trade_level_decision"] == "MICRO_CANARY_REVIEW"
+    assert "bucket_policy_allow_requires_similarity_evidence" in judgment["reason"]
+    assert judgment["max_single_order_usdt"] == 0.0
 
 
 def test_bucket_policy_uses_only_prior_day_evidence():
@@ -802,7 +873,86 @@ def test_bucket_policy_uses_only_prior_day_evidence():
     assert policy_row["policy_action"] == "MICRO_CANARY_REVIEW"
     assert policy_row["sample_count"] == 5
     assert policy_row["missed_profit_bps_sum"] == 240.0
+    assert policy_row["min_arrival_mid_coverage"] == 0.8
     assert "false_block_bucket_negative_veto_value" in policy_row["policy_reason"]
+
+
+def test_trade_level_opportunity_queue_marks_review_bucket_blocked_by_observability():
+    now = datetime(2026, 6, 29, 10, tzinfo=UTC)
+    bucket_key = (
+        "SOL-USDT|sol_protect|Trending|PROTECT|rank_1|alpha_ge_0_95|"
+        "edge_ratio_ge_3|quant_lab_cached|cost_gate_verified"
+    )
+    policy = pl.DataFrame(
+        [
+            {
+                "policy_date": now.date(),
+                "bucket_key": bucket_key,
+                "symbol": "SOL-USDT",
+                "strategy_candidate": "sol_protect",
+                "regime": "Trending",
+                "risk_level": "PROTECT",
+                "sample_count": 42,
+                "false_block_count": 40,
+                "loss_saved_count": 2,
+                "veto_net_value_bps": -14524.53,
+                "policy_action": "MICRO_CANARY_REVIEW",
+                "policy_reason": "false_block_bucket_negative_veto_value_manual_review_only",
+                "policy_confidence": "high",
+                "expires_at": datetime(2026, 6, 30, tzinfo=UTC),
+            }
+        ]
+    )
+    judgments = pl.DataFrame(
+        [
+            {
+                "event_id": "evt-sol-1",
+                "bucket_key": policy.row(0, named=True)["bucket_key"],
+                "trade_level_decision": "MICRO_CANARY_REVIEW_BLOCKED_BY_OBSERVABILITY",
+            }
+        ]
+    )
+
+    queue = build_trade_level_opportunity_queue(policy, judgments, created_at=now)
+    row = queue.row(0, named=True)
+
+    assert row["next_action"] == "BLOCKED_BY_OBSERVABILITY"
+    assert row["observability_status"] == "BLOCKED_BY_OBSERVABILITY"
+    assert row["blocked_by_observability_count"] == 1
+
+
+def test_trade_level_opportunity_queue_keeps_loss_saved_bucket_blocked():
+    now = datetime(2026, 6, 29, 10, tzinfo=UTC)
+    bucket_key = (
+        "BNB-USDT|f3|Trending|PROTECT|rank_1|alpha_lt_0_85|"
+        "edge_ratio_lt_1_5|public_spread_proxy|cost_gate_verified"
+    )
+    policy = pl.DataFrame(
+        [
+            {
+                "policy_date": now.date(),
+                "bucket_key": bucket_key,
+                "symbol": "BNB-USDT",
+                "strategy_candidate": "f3",
+                "regime": "Trending",
+                "risk_level": "PROTECT",
+                "sample_count": 8,
+                "false_block_count": 1,
+                "loss_saved_count": 5,
+                "veto_net_value_bps": 400.0,
+                "policy_action": "RISK_BLOCK",
+                "policy_reason": "loss_saved_bucket_positive_veto_value",
+                "policy_confidence": "high",
+                "expires_at": datetime(2026, 6, 30, tzinfo=UTC),
+            }
+        ]
+    )
+
+    queue = build_trade_level_opportunity_queue(policy, pl.DataFrame(), created_at=now)
+    row = queue.row(0, named=True)
+
+    assert row["next_action"] == "KEEP_BLOCKED"
+    assert row["observability_status"] == "NOT_REQUIRED"
 
 
 def _sol_candidate(candidate_id: str = "sol-cand-1") -> dict[str, object]:

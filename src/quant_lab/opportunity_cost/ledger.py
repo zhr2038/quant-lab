@@ -9,7 +9,7 @@ import polars as pl
 
 OPPORTUNITY_COST_EVENT_SCHEMA_VERSION = "quant_lab_opportunity_cost_event.v0.2"
 OPPORTUNITY_COST_DAILY_SCHEMA_VERSION = "quant_lab_opportunity_cost_daily.v0.1"
-OPPORTUNITY_COST_BY_BUCKET_SCHEMA_VERSION = "opportunity_cost_by_bucket.v0.3"
+OPPORTUNITY_COST_BY_BUCKET_SCHEMA_VERSION = "opportunity_cost_by_bucket.v0.4"
 DECISION_REGRET_SCHEMA_VERSION = "quant_lab_decision_regret.v0.1"
 
 OPPORTUNITY_COST_EVENT_SCHEMA = {
@@ -94,7 +94,9 @@ OPPORTUNITY_COST_BY_BUCKET_SCHEMA = {
     "false_allow_count": pl.Int64,
     "correct_allow_count": pl.Int64,
     "missed_profit_bps_sum": pl.Float64,
+    "false_block_profit_bps_median": pl.Float64,
     "loss_saved_bps_sum": pl.Float64,
+    "loss_saved_bps_median": pl.Float64,
     "veto_net_value_bps": pl.Float64,
     "high_confidence_false_block_count": pl.Int64,
     "high_confidence_loss_saved_count": pl.Int64,
@@ -103,6 +105,7 @@ OPPORTUNITY_COST_BY_BUCKET_SCHEMA = {
     "recommended_trade_level_decision": pl.Utf8,
     "policy_action": pl.Utf8,
     "policy_confidence": pl.Utf8,
+    "policy_basis": pl.Utf8,
     "created_at": pl.Datetime(time_zone="UTC"),
     "source": pl.Utf8,
 }
@@ -380,8 +383,10 @@ def _bucket_row(bucket_key: str, rows: list[dict[str, Any]], created: datetime) 
     loss_saved = [row for row in rows if row.get("loss_saved")]
     false_allows = [row for row in rows if row.get("false_allow")]
     correct_allows = [row for row in rows if row.get("correct_allow")]
-    missed = sum(_float(row.get("missed_profit_bps")) or 0.0 for row in false_blocks)
-    saved = sum(_float(row.get("loss_saved_bps")) or 0.0 for row in loss_saved)
+    false_block_values = [_float(row.get("missed_profit_bps")) or 0.0 for row in false_blocks]
+    loss_saved_values = [_float(row.get("loss_saved_bps")) or 0.0 for row in loss_saved]
+    missed = sum(false_block_values)
+    saved = sum(loss_saved_values)
     veto_net = saved - missed
     high_conf_false_blocks = sum(1 for row in false_blocks if row.get("high_confidence_v5"))
     high_conf_loss_saved = sum(1 for row in loss_saved if row.get("high_confidence_v5"))
@@ -411,10 +416,13 @@ def _bucket_row(bucket_key: str, rows: list[dict[str, Any]], created: datetime) 
     )
     if exception:
         policy_action = "MICRO_CANARY_REVIEW"
+        policy_basis = "false_block_bucket_negative_veto_value"
     elif risk_block:
         policy_action = "RISK_BLOCK"
+        policy_basis = "loss_saved_bucket_positive_veto_value"
     else:
         policy_action = "PAPER_ONLY"
+        policy_basis = "paper_only_until_bucket_policy_clear"
     policy_confidence = "high" if policy_action in {"MICRO_CANARY_REVIEW", "RISK_BLOCK"} else "low"
     recommended_decision = policy_action if policy_action != "PAPER_ONLY" else ""
     return {
@@ -435,7 +443,9 @@ def _bucket_row(bucket_key: str, rows: list[dict[str, Any]], created: datetime) 
         "false_allow_count": len(false_allows),
         "correct_allow_count": len(correct_allows),
         "missed_profit_bps_sum": missed,
+        "false_block_profit_bps_median": _median(false_block_values),
         "loss_saved_bps_sum": saved,
+        "loss_saved_bps_median": _median(loss_saved_values),
         "veto_net_value_bps": veto_net,
         "high_confidence_false_block_count": high_conf_false_blocks,
         "high_confidence_loss_saved_count": high_conf_loss_saved,
@@ -444,6 +454,7 @@ def _bucket_row(bucket_key: str, rows: list[dict[str, Any]], created: datetime) 
         "recommended_trade_level_decision": recommended_decision,
         "policy_action": policy_action,
         "policy_confidence": policy_confidence,
+        "policy_basis": policy_basis,
         "created_at": created,
         "source": "quant_lab.opportunity_cost.bucket",
     }

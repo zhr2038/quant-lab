@@ -34,6 +34,10 @@ from quant_lab.trade_level.bucket_policy import (
     TRADE_LEVEL_BUCKET_POLICY_SCHEMA_VERSION,
     build_trade_level_bucket_policy,
 )
+from quant_lab.trade_level.opportunity_queue import (
+    TRADE_LEVEL_OPPORTUNITY_QUEUE_SCHEMA_VERSION,
+    build_trade_level_opportunity_queue,
+)
 
 TRADE_LEVEL_SCHEMA_VERSION = "trade_level_judgment.v0.3"
 TRADE_OPPORTUNITY_EVENT_SCHEMA_VERSION = "trade_opportunity_event.v0.2"
@@ -44,6 +48,7 @@ TRADE_OPPORTUNITY_LABEL_DATASET = Path("gold") / "trade_opportunity_label"
 TRADE_LEVEL_SIMILARITY_DATASET = Path("gold") / "trade_level_similarity_outcome"
 TRADE_LEVEL_JUDGMENT_DATASET = Path("gold") / "trade_level_judgment"
 TRADE_LEVEL_BUCKET_POLICY_DATASET = Path("gold") / "trade_level_bucket_policy"
+TRADE_LEVEL_OPPORTUNITY_QUEUE_DATASET = Path("gold") / "trade_level_opportunity_queue"
 FALSE_BLOCK_AUDIT_DATASET = Path("gold") / "quant_lab_false_block_audit"
 V5_TRADE_LEARNING_SAMPLE_DATASET = Path("gold") / "v5_trade_learning_sample"
 V5_TRADE_OUTCOME_ATTRIBUTION_DATASET = Path("gold") / "v5_trade_outcome_attribution"
@@ -206,6 +211,7 @@ class TradeLevelBuildResult(BaseModel):
     opportunity_cost_daily_rows: int = Field(ge=0)
     opportunity_cost_by_bucket_rows: int = Field(ge=0)
     trade_level_bucket_policy_rows: int = Field(ge=0)
+    trade_level_opportunity_queue_rows: int = Field(ge=0)
     decision_regret_rows: int = Field(ge=0)
     warnings: list[str] = Field(default_factory=list)
 
@@ -241,6 +247,7 @@ def build_and_publish_trade_level_judgment(
         ("quant_lab_opportunity_cost_daily", OPPORTUNITY_COST_DAILY_DATASET),
         ("opportunity_cost_by_bucket", OPPORTUNITY_COST_BY_BUCKET_DATASET),
         ("trade_level_bucket_policy", TRADE_LEVEL_BUCKET_POLICY_DATASET),
+        ("trade_level_opportunity_queue", TRADE_LEVEL_OPPORTUNITY_QUEUE_DATASET),
         ("quant_lab_decision_regret", DECISION_REGRET_DATASET),
     ]:
         frame = frames[dataset_name]
@@ -269,6 +276,7 @@ def build_and_publish_trade_level_judgment(
         opportunity_cost_daily_rows=frames["quant_lab_opportunity_cost_daily"].height,
         opportunity_cost_by_bucket_rows=frames["opportunity_cost_by_bucket"].height,
         trade_level_bucket_policy_rows=frames["trade_level_bucket_policy"].height,
+        trade_level_opportunity_queue_rows=frames["trade_level_opportunity_queue"].height,
         decision_regret_rows=frames["quant_lab_decision_regret"].height,
         warnings=warnings,
     )
@@ -368,6 +376,11 @@ def build_trade_level_frames_from_sources(
         samples=samples,
         created_at=generated_at,
     )
+    opportunity_queue = build_trade_level_opportunity_queue(
+        bucket_policy,
+        judgments,
+        created_at=generated_at,
+    )
     return {
         "trade_opportunity_event": events,
         "trade_opportunity_label": labels,
@@ -377,6 +390,7 @@ def build_trade_level_frames_from_sources(
         "v5_trade_learning_sample": samples,
         "v5_trade_outcome_attribution": attribution,
         "trade_level_bucket_policy": bucket_policy,
+        "trade_level_opportunity_queue": opportunity_queue,
         **opportunity_cost,
     }
 
@@ -503,8 +517,10 @@ def trade_level_risk_summary(
             "reviewable_abort_count": 0,
             "micro_canary_review_ready_count": 0,
             "micro_canary_review_blocked_by_observability_count": 0,
+            "micro_canary_allow_candidate_count": 0,
             "risk_block_bucket_count": risk_block_bucket_count,
             "recommended_next_permission_mode": _recommended_next_permission_mode(
+                0,
                 0,
                 0,
                 len(bucket_rows),
@@ -522,6 +538,7 @@ def trade_level_risk_summary(
     )
     review_ready_count = decisions.get("MICRO_CANARY_REVIEW", 0)
     blocked_by_observability = decisions.get("MICRO_CANARY_REVIEW_BLOCKED_BY_OBSERVABILITY", 0)
+    allow_candidate_count = decisions.get("MICRO_CANARY_ALLOW", 0)
     false_block_rate = 0.0
     audit = false_block_audit if false_block_audit is not None else pl.DataFrame()
     if not audit.is_empty():
@@ -535,10 +552,12 @@ def trade_level_risk_summary(
         "reviewable_abort_count": int(review_count),
         "micro_canary_review_ready_count": int(review_ready_count),
         "micro_canary_review_blocked_by_observability_count": int(blocked_by_observability),
+        "micro_canary_allow_candidate_count": int(allow_candidate_count),
         "risk_block_bucket_count": risk_block_bucket_count,
         "recommended_next_permission_mode": _recommended_next_permission_mode(
             int(review_ready_count),
             int(blocked_by_observability),
+            int(allow_candidate_count),
             len(bucket_rows),
             risk_block_bucket_count,
         ),
@@ -599,11 +618,14 @@ def _policy_action_count(frame: pl.DataFrame | None, action: str) -> int:
 def _recommended_next_permission_mode(
     review_ready_count: int,
     blocked_by_observability_count: int,
+    allow_candidate_count: int,
     review_bucket_count: int,
     risk_block_bucket_count: int,
 ) -> str:
+    if allow_candidate_count > 0:
+        return "MICRO_CANARY_ALLOW_CANDIDATE_REVIEW_REQUIRED"
     if review_ready_count > 0:
-        return "MICRO_CANARY_REVIEW"
+        return "MICRO_CANARY_REVIEW_ONLY"
     if blocked_by_observability_count > 0:
         return "MICRO_CANARY_REVIEW_BLOCKED_BY_OBSERVABILITY"
     if review_bucket_count > 0:
@@ -781,8 +803,16 @@ def _judgment_row(
         reasons.extend(observability_reasons)
         max_order = 0.0
         daily_limit = 0
+    elif policy_action == "MICRO_CANARY_ALLOW" and not similar_ok:
+        decision = "MICRO_CANARY_REVIEW"
+        reasons.append("bucket_policy_allow_requires_similarity_evidence")
+        if not similar_ok:
+            reasons.append("similar_sample_insufficient_for_auto_allow")
+        max_order = 0.0
+        daily_limit = 0
     elif (
         policy_action == "MICRO_CANARY_ALLOW"
+        and similar_ok
         and not _daily_micro_canary_used(event)
         and (_float((bucket_policy or {}).get("max_single_order_usdt")) or 0.0) > 0.0
         and (_int((bucket_policy or {}).get("daily_trade_limit")) or 0) > 0
@@ -1069,6 +1099,7 @@ def _schema_version_for_dataset(dataset_name: str) -> str:
         "quant_lab_opportunity_cost_daily": OPPORTUNITY_COST_DAILY_SCHEMA_VERSION,
         "opportunity_cost_by_bucket": OPPORTUNITY_COST_BY_BUCKET_SCHEMA_VERSION,
         "trade_level_bucket_policy": TRADE_LEVEL_BUCKET_POLICY_SCHEMA_VERSION,
+        "trade_level_opportunity_queue": TRADE_LEVEL_OPPORTUNITY_QUEUE_SCHEMA_VERSION,
         "quant_lab_decision_regret": DECISION_REGRET_SCHEMA_VERSION,
     }.get(dataset_name, dataset_name)
 

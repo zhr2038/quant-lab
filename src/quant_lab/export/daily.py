@@ -189,6 +189,7 @@ from quant_lab.trade_level.judgment import (
     build_trade_level_frames_from_sources,
 )
 from quant_lab.trade_level.labels import TRADE_OPPORTUNITY_LABEL_SCHEMA
+from quant_lab.trade_level.opportunity_queue import TRADE_LEVEL_OPPORTUNITY_QUEUE_SCHEMA
 from quant_lab.trade_level.similarity import TRADE_LEVEL_SIMILARITY_SCHEMA
 from quant_lab.web import readers
 
@@ -217,6 +218,7 @@ SNAPSHOT_META_DATASETS = {
     "trade_level_similarity_outcome",
     "trade_level_judgment",
     "trade_level_bucket_policy",
+    "trade_level_opportunity_queue",
     "quant_lab_false_block_audit",
     "v5_trade_learning_sample",
     "v5_trade_outcome_attribution",
@@ -296,6 +298,7 @@ HEAVY_EXPORT_DATASET_LIMITS = {
     "trade_level_similarity_outcome": 20_000,
     "trade_level_judgment": 20_000,
     "trade_level_bucket_policy": 20_000,
+    "trade_level_opportunity_queue": 20_000,
     "quant_lab_false_block_audit": 20_000,
     "v5_trade_learning_sample": 20_000,
     "v5_trade_outcome_attribution": 20_000,
@@ -352,6 +355,7 @@ HEAVY_EXPORT_RECENT_FILE_LIMITS = {
     "trade_level_similarity_outcome": 100,
     "trade_level_judgment": 100,
     "trade_level_bucket_policy": 100,
+    "trade_level_opportunity_queue": 100,
     "quant_lab_false_block_audit": 100,
     "v5_trade_learning_sample": 100,
     "v5_trade_outcome_attribution": 100,
@@ -453,6 +457,7 @@ SECTION_DATASETS = {
         "trade_level_similarity_outcome",
         "trade_level_judgment",
         "trade_level_bucket_policy",
+        "trade_level_opportunity_queue",
         "quant_lab_false_block_audit",
         "quant_lab_decision_regret",
         "second_stage_alpha_factory_sample",
@@ -649,6 +654,7 @@ REQUIRED_MEMBERS = [
     "reports/trade_level_similarity_outcome.csv",
     "reports/trade_level_judgment.csv",
     "reports/trade_level_bucket_policy.csv",
+    "reports/trade_level_opportunity_queue.csv",
     "reports/quant_lab_false_block_audit.csv",
     "reports/v5_trade_learning_sample.csv",
     "reports/v5_trade_outcome_attribution.csv",
@@ -1618,6 +1624,7 @@ CSV_SCHEMAS: dict[str, list[str]] = {
     "reports/trade_level_similarity_outcome.csv": list(TRADE_LEVEL_SIMILARITY_SCHEMA),
     "reports/trade_level_judgment.csv": list(TRADE_LEVEL_JUDGMENT_SCHEMA),
     "reports/trade_level_bucket_policy.csv": list(TRADE_LEVEL_BUCKET_POLICY_SCHEMA),
+    "reports/trade_level_opportunity_queue.csv": list(TRADE_LEVEL_OPPORTUNITY_QUEUE_SCHEMA),
     "reports/quant_lab_false_block_audit.csv": list(FALSE_BLOCK_AUDIT_SCHEMA),
     "reports/v5_trade_learning_sample.csv": list(V5_TRADE_LEARNING_SAMPLE_SCHEMA),
     "reports/v5_trade_outcome_attribution.csv": list(V5_TRADE_OUTCOME_ATTRIBUTION_SCHEMA),
@@ -3776,6 +3783,7 @@ def _publish_trade_level_snapshot(
         and not warning.startswith("trade_level_similarity_outcome dataset is ")
         and not warning.startswith("trade_level_judgment dataset is ")
         and not warning.startswith("trade_level_bucket_policy dataset is ")
+        and not warning.startswith("trade_level_opportunity_queue dataset is ")
         and not warning.startswith("quant_lab_false_block_audit dataset is ")
         and not warning.startswith("v5_trade_learning_sample dataset is ")
         and not warning.startswith("v5_trade_outcome_attribution dataset is ")
@@ -5779,6 +5787,7 @@ def _dataset_members(
     trade_level_similarity = frames.get("trade_level_similarity_outcome", pl.DataFrame())
     trade_level_judgments = frames.get("trade_level_judgment", pl.DataFrame())
     trade_level_bucket_policy = frames.get("trade_level_bucket_policy", pl.DataFrame())
+    trade_level_opportunity_queue = frames.get("trade_level_opportunity_queue", pl.DataFrame())
     false_block_audit = frames.get("quant_lab_false_block_audit", pl.DataFrame())
     v5_trade_learning_samples = frames.get("v5_trade_learning_sample", pl.DataFrame())
     v5_trade_outcome_attribution = frames.get("v5_trade_outcome_attribution", pl.DataFrame())
@@ -6130,6 +6139,10 @@ def _dataset_members(
         "reports/trade_level_bucket_policy.csv": _csv_member(
             "reports/trade_level_bucket_policy.csv",
             _tail_by_time(trade_level_bucket_policy, "created_at", limit=50_000),
+        ),
+        "reports/trade_level_opportunity_queue.csv": _csv_member(
+            "reports/trade_level_opportunity_queue.csv",
+            _tail_by_time(trade_level_opportunity_queue, "created_at", limit=50_000),
         ),
         "reports/quant_lab_false_block_audit.csv": _csv_member(
             "reports/quant_lab_false_block_audit.csv",

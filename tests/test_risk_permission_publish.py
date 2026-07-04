@@ -127,8 +127,9 @@ def test_publish_risk_permission_exposes_micro_canary_review_summary(tmp_path):
     assert permission["reviewable_abort_count"] == 2
     assert permission["micro_canary_review_ready_count"] == 1
     assert permission["micro_canary_review_blocked_by_observability_count"] == 1
+    assert permission["micro_canary_allow_candidate_count"] == 0
     assert permission["risk_block_bucket_count"] == 0
-    assert permission["recommended_next_permission_mode"] == "MICRO_CANARY_REVIEW"
+    assert permission["recommended_next_permission_mode"] == "MICRO_CANARY_REVIEW_ONLY"
     assert "micro_canary_review" in advisory_modes
     assert top_buckets[0]["bucket_key"] == "SOL|f3|rank_1"
     assert top_buckets[0]["policy_action"] == "MICRO_CANARY_REVIEW"

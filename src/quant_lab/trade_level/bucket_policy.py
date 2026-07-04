@@ -9,7 +9,7 @@ from quant_lab.opportunity_cost.ledger import (
     build_opportunity_cost_by_bucket,
 )
 
-TRADE_LEVEL_BUCKET_POLICY_SCHEMA_VERSION = "trade_level_bucket_policy.v0.1"
+TRADE_LEVEL_BUCKET_POLICY_SCHEMA_VERSION = "trade_level_bucket_policy.v0.2"
 
 TRADE_LEVEL_BUCKET_POLICY_SCHEMA = {
     "schema_version": pl.Utf8,
@@ -38,6 +38,8 @@ TRADE_LEVEL_BUCKET_POLICY_SCHEMA = {
     "policy_action": pl.Utf8,
     "policy_reason": pl.Utf8,
     "policy_confidence": pl.Utf8,
+    "policy_basis": pl.Utf8,
+    "min_arrival_mid_coverage": pl.Float64,
     "min_required_observability": pl.Float64,
     "max_single_order_usdt": pl.Float64,
     "daily_trade_limit": pl.Int64,
@@ -171,6 +173,10 @@ def _policy_row(
         "policy_action": action,
         "policy_reason": reason,
         "policy_confidence": confidence,
+        "policy_basis": _text(row.get("policy_basis")) or reason,
+        "min_arrival_mid_coverage": (
+            0.8 if action in {"MICRO_CANARY_REVIEW", "MICRO_CANARY_ALLOW"} else 0.0
+        ),
         "min_required_observability": (
             0.8 if action in {"MICRO_CANARY_REVIEW", "MICRO_CANARY_ALLOW"} else 0.0
         ),

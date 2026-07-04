@@ -90,6 +90,7 @@ RISK_PERMISSION_SCHEMA = {
     "reviewable_abort_count": pl.Int64,
     "micro_canary_review_ready_count": pl.Int64,
     "micro_canary_review_blocked_by_observability_count": pl.Int64,
+    "micro_canary_allow_candidate_count": pl.Int64,
     "risk_block_bucket_count": pl.Int64,
     "recommended_next_permission_mode": pl.Utf8,
     "top_micro_canary_review_buckets": pl.Utf8,
@@ -748,6 +749,7 @@ def risk_permission_row(permission: RiskPermission) -> dict[str, Any]:
         "reviewable_abort_count": 0,
         "micro_canary_review_ready_count": 0,
         "micro_canary_review_blocked_by_observability_count": 0,
+        "micro_canary_allow_candidate_count": 0,
         "risk_block_bucket_count": 0,
         "recommended_next_permission_mode": "PAPER_ONLY",
         "top_micro_canary_review_buckets": "[]",
@@ -792,6 +794,7 @@ def parse_risk_permission_row(row: dict[str, Any]) -> RiskPermission | None:
     cleaned.pop("reviewable_abort_count", None)
     cleaned.pop("micro_canary_review_ready_count", None)
     cleaned.pop("micro_canary_review_blocked_by_observability_count", None)
+    cleaned.pop("micro_canary_allow_candidate_count", None)
     cleaned.pop("risk_block_bucket_count", None)
     cleaned.pop("recommended_next_permission_mode", None)
     cleaned.pop("top_micro_canary_review_buckets", None)

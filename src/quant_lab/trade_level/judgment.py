@@ -18,6 +18,7 @@ from quant_lab.opportunity_cost.ledger import (
     OPPORTUNITY_COST_DAILY_SCHEMA_VERSION,
     OPPORTUNITY_COST_EVENT_SCHEMA_VERSION,
     build_opportunity_cost_frames,
+    opportunity_bucket_key,
 )
 from quant_lab.strategy_telemetry.sanitize import safe_json_dumps
 from quant_lab.symbols import normalize_symbol
@@ -29,8 +30,12 @@ from quant_lab.trade_learning.samples import (
     V5_TRADE_LEARNING_SAMPLE_SCHEMA_VERSION,
     build_v5_trade_learning_samples,
 )
+from quant_lab.trade_level.bucket_policy import (
+    TRADE_LEVEL_BUCKET_POLICY_SCHEMA_VERSION,
+    build_trade_level_bucket_policy,
+)
 
-TRADE_LEVEL_SCHEMA_VERSION = "trade_level_judgment.v0.2"
+TRADE_LEVEL_SCHEMA_VERSION = "trade_level_judgment.v0.3"
 TRADE_OPPORTUNITY_EVENT_SCHEMA_VERSION = "trade_opportunity_event.v0.2"
 FALSE_BLOCK_AUDIT_SCHEMA_VERSION = "quant_lab_false_block_audit.v0.1"
 
@@ -38,6 +43,7 @@ TRADE_OPPORTUNITY_EVENT_DATASET = Path("gold") / "trade_opportunity_event"
 TRADE_OPPORTUNITY_LABEL_DATASET = Path("gold") / "trade_opportunity_label"
 TRADE_LEVEL_SIMILARITY_DATASET = Path("gold") / "trade_level_similarity_outcome"
 TRADE_LEVEL_JUDGMENT_DATASET = Path("gold") / "trade_level_judgment"
+TRADE_LEVEL_BUCKET_POLICY_DATASET = Path("gold") / "trade_level_bucket_policy"
 FALSE_BLOCK_AUDIT_DATASET = Path("gold") / "quant_lab_false_block_audit"
 V5_TRADE_LEARNING_SAMPLE_DATASET = Path("gold") / "v5_trade_learning_sample"
 V5_TRADE_OUTCOME_ATTRIBUTION_DATASET = Path("gold") / "v5_trade_outcome_attribution"
@@ -112,6 +118,10 @@ TRADE_LEVEL_JUDGMENT_SCHEMA = {
     "similar_median_after_cost_bps": pl.Float64,
     "similar_p25_after_cost_bps": pl.Float64,
     "recent_7d_similar_mean": pl.Float64,
+    "bucket_key": pl.Utf8,
+    "bucket_policy_action": pl.Utf8,
+    "bucket_policy_reason": pl.Utf8,
+    "bucket_policy_confidence": pl.Utf8,
     "trade_level_decision": pl.Utf8,
     "max_single_order_usdt": pl.Float64,
     "daily_trade_limit": pl.Int64,
@@ -195,6 +205,7 @@ class TradeLevelBuildResult(BaseModel):
     opportunity_cost_event_rows: int = Field(ge=0)
     opportunity_cost_daily_rows: int = Field(ge=0)
     opportunity_cost_by_bucket_rows: int = Field(ge=0)
+    trade_level_bucket_policy_rows: int = Field(ge=0)
     decision_regret_rows: int = Field(ge=0)
     warnings: list[str] = Field(default_factory=list)
 
@@ -214,6 +225,7 @@ def build_and_publish_trade_level_judgment(
         v5_trades=read_parquet_dataset(root / V5_TRADE_EVENT_DATASET),
         v5_roundtrips=read_parquet_dataset(root / V5_ROUNDTRIP_DATASET),
         order_lifecycles=read_parquet_dataset(root / V5_ORDER_LIFECYCLE_DATASET),
+        as_of_date=day,
         created_at=generated_at,
     )
     warnings: list[str] = []
@@ -228,6 +240,7 @@ def build_and_publish_trade_level_judgment(
         ("quant_lab_opportunity_cost_event", OPPORTUNITY_COST_EVENT_DATASET),
         ("quant_lab_opportunity_cost_daily", OPPORTUNITY_COST_DAILY_DATASET),
         ("opportunity_cost_by_bucket", OPPORTUNITY_COST_BY_BUCKET_DATASET),
+        ("trade_level_bucket_policy", TRADE_LEVEL_BUCKET_POLICY_DATASET),
         ("quant_lab_decision_regret", DECISION_REGRET_DATASET),
     ]:
         frame = frames[dataset_name]
@@ -255,6 +268,7 @@ def build_and_publish_trade_level_judgment(
         opportunity_cost_event_rows=frames["quant_lab_opportunity_cost_event"].height,
         opportunity_cost_daily_rows=frames["quant_lab_opportunity_cost_daily"].height,
         opportunity_cost_by_bucket_rows=frames["opportunity_cost_by_bucket"].height,
+        trade_level_bucket_policy_rows=frames["trade_level_bucket_policy"].height,
         decision_regret_rows=frames["quant_lab_decision_regret"].height,
         warnings=warnings,
     )
@@ -268,12 +282,14 @@ def build_trade_level_frames_from_sources(
     v5_trades: pl.DataFrame,
     v5_roundtrips: pl.DataFrame | None = None,
     order_lifecycles: pl.DataFrame | None = None,
+    as_of_date: str | date | None = None,
     created_at: datetime | None = None,
 ) -> dict[str, pl.DataFrame]:
     from quant_lab.trade_level.labels import build_trade_opportunity_labels
     from quant_lab.trade_level.similarity import build_trade_level_similarity_outcome
 
     generated_at = created_at or datetime.now(UTC)
+    day = _parse_day(as_of_date) if as_of_date is not None else generated_at.date()
     events = build_trade_opportunity_events(
         candidate_events,
         risk_permissions=risk_permissions,
@@ -316,6 +332,42 @@ def build_trade_level_frames_from_sources(
         samples=samples,
         created_at=generated_at,
     )
+    bucket_policy = build_trade_level_bucket_policy(
+        opportunity_cost_events=opportunity_cost["quant_lab_opportunity_cost_event"],
+        opportunity_cost_by_bucket=opportunity_cost["opportunity_cost_by_bucket"],
+        policy_date=day,
+        created_at=generated_at,
+    )
+    judgments = build_trade_level_judgments(
+        events,
+        similarity=similarity,
+        bucket_policy=bucket_policy,
+        created_at=generated_at,
+    )
+    samples = build_v5_trade_learning_samples(
+        events,
+        labels,
+        judgments,
+        v5_trades=v5_trades,
+        v5_roundtrips=v5_roundtrips if v5_roundtrips is not None else pl.DataFrame(),
+        order_lifecycles=order_lifecycles if order_lifecycles is not None else pl.DataFrame(),
+        created_at=generated_at,
+    )
+    audit = build_false_block_audit(
+        events,
+        labels,
+        judgments,
+        samples=samples,
+        created_at=generated_at,
+    )
+    attribution = build_v5_trade_outcome_attribution(samples, created_at=generated_at)
+    opportunity_cost = build_opportunity_cost_frames(
+        events,
+        labels,
+        judgments,
+        samples=samples,
+        created_at=generated_at,
+    )
     return {
         "trade_opportunity_event": events,
         "trade_opportunity_label": labels,
@@ -324,6 +376,7 @@ def build_trade_level_frames_from_sources(
         "quant_lab_false_block_audit": audit,
         "v5_trade_learning_sample": samples,
         "v5_trade_outcome_attribution": attribution,
+        "trade_level_bucket_policy": bucket_policy,
         **opportunity_cost,
     }
 
@@ -356,6 +409,7 @@ def build_trade_level_judgments(
     events: pl.DataFrame,
     *,
     similarity: pl.DataFrame | None = None,
+    bucket_policy: pl.DataFrame | None = None,
     created_at: datetime | None = None,
 ) -> pl.DataFrame:
     if events.is_empty():
@@ -365,8 +419,17 @@ def build_trade_level_judgments(
     similarity_by_event = {
         str(row.get("event_id") or ""): row for row in similarity_frame.to_dicts()
     }
+    bucket_policy_by_key = _active_bucket_policy_by_key(
+        bucket_policy if bucket_policy is not None else pl.DataFrame(),
+        created,
+    )
     rows = [
-        _judgment_row(event, similarity_by_event.get(str(event.get("event_id") or "")), created)
+        _judgment_row(
+            event,
+            similarity_by_event.get(str(event.get("event_id") or "")),
+            bucket_policy_by_key.get(opportunity_bucket_key(event)),
+            created,
+        )
         for event in events.to_dicts()
     ]
     return _frame(rows, TRADE_LEVEL_JUDGMENT_SCHEMA)
@@ -427,15 +490,26 @@ def trade_level_risk_summary(
     judgments: pl.DataFrame,
     false_block_audit: pl.DataFrame | None = None,
     opportunity_buckets: pl.DataFrame | None = None,
+    bucket_policy: pl.DataFrame | None = None,
 ) -> dict[str, Any]:
-    bucket_rows = _micro_canary_review_bucket_rows(
-        opportunity_buckets if opportunity_buckets is not None else pl.DataFrame()
-    )
+    policy_source = _policy_summary_source(opportunity_buckets, bucket_policy)
+    bucket_rows = _micro_canary_review_bucket_rows(policy_source)
+    risk_block_bucket_count = _policy_action_count(policy_source, "RISK_BLOCK")
     if judgments.is_empty():
         return {
             "trade_level_decision_summary": safe_json_dumps({}),
             "micro_canary_review_count": 0,
             "micro_canary_review_bucket_count": len(bucket_rows),
+            "reviewable_abort_count": 0,
+            "micro_canary_review_ready_count": 0,
+            "micro_canary_review_blocked_by_observability_count": 0,
+            "risk_block_bucket_count": risk_block_bucket_count,
+            "recommended_next_permission_mode": _recommended_next_permission_mode(
+                0,
+                0,
+                len(bucket_rows),
+                risk_block_bucket_count,
+            ),
             "blocked_by_observability_count": 0,
             "top_micro_canary_review_buckets": safe_json_dumps(bucket_rows[:5]),
             "false_block_rate": 0.0,
@@ -446,6 +520,8 @@ def trade_level_risk_summary(
     review_count = decisions.get("MICRO_CANARY_REVIEW", 0) + decisions.get(
         "MICRO_CANARY_REVIEW_BLOCKED_BY_OBSERVABILITY", 0
     )
+    review_ready_count = decisions.get("MICRO_CANARY_REVIEW", 0)
+    blocked_by_observability = decisions.get("MICRO_CANARY_REVIEW_BLOCKED_BY_OBSERVABILITY", 0)
     false_block_rate = 0.0
     audit = false_block_audit if false_block_audit is not None else pl.DataFrame()
     if not audit.is_empty():
@@ -456,21 +532,29 @@ def trade_level_risk_summary(
         "trade_level_decision_summary": safe_json_dumps(dict(sorted(decisions.items()))),
         "micro_canary_review_count": int(review_count),
         "micro_canary_review_bucket_count": len(bucket_rows),
-        "blocked_by_observability_count": int(
-            decisions.get("MICRO_CANARY_REVIEW_BLOCKED_BY_OBSERVABILITY", 0)
+        "reviewable_abort_count": int(review_count),
+        "micro_canary_review_ready_count": int(review_ready_count),
+        "micro_canary_review_blocked_by_observability_count": int(blocked_by_observability),
+        "risk_block_bucket_count": risk_block_bucket_count,
+        "recommended_next_permission_mode": _recommended_next_permission_mode(
+            int(review_ready_count),
+            int(blocked_by_observability),
+            len(bucket_rows),
+            risk_block_bucket_count,
         ),
+        "blocked_by_observability_count": int(blocked_by_observability),
         "top_micro_canary_review_buckets": safe_json_dumps(bucket_rows[:5]),
         "false_block_rate": round(float(false_block_rate), 6),
     }
 
 
 def _micro_canary_review_bucket_rows(frame: pl.DataFrame) -> list[dict[str, Any]]:
-    if frame.is_empty() or "recommended_trade_level_decision" not in frame.columns:
+    if frame.is_empty():
         return []
     rows = [
         row
         for row in frame.to_dicts()
-        if _text(row.get("recommended_trade_level_decision")).upper() == "MICRO_CANARY_REVIEW"
+        if _policy_action(row) == "MICRO_CANARY_REVIEW"
     ]
     rows.sort(
         key=lambda row: (
@@ -487,10 +571,46 @@ def _micro_canary_review_bucket_rows(frame: pl.DataFrame) -> list[dict[str, Any]
             "false_block_count": _int(row.get("false_block_count")) or 0,
             "loss_saved_count": _int(row.get("loss_saved_count")) or 0,
             "veto_net_value_bps": _float(row.get("veto_net_value_bps")) or 0.0,
+            "policy_action": "MICRO_CANARY_REVIEW",
+            "policy_reason": _text(row.get("policy_reason")),
             "recommended_trade_level_decision": "MICRO_CANARY_REVIEW",
         }
         for row in rows
     ]
+
+
+def _policy_summary_source(
+    opportunity_buckets: pl.DataFrame | None,
+    bucket_policy: pl.DataFrame | None,
+) -> pl.DataFrame:
+    if bucket_policy is not None and not bucket_policy.is_empty():
+        return bucket_policy
+    if opportunity_buckets is not None:
+        return opportunity_buckets
+    return pl.DataFrame()
+
+
+def _policy_action_count(frame: pl.DataFrame | None, action: str) -> int:
+    if frame is None or frame.is_empty():
+        return 0
+    return sum(1 for row in frame.to_dicts() if _policy_action(row) == action)
+
+
+def _recommended_next_permission_mode(
+    review_ready_count: int,
+    blocked_by_observability_count: int,
+    review_bucket_count: int,
+    risk_block_bucket_count: int,
+) -> str:
+    if review_ready_count > 0:
+        return "MICRO_CANARY_REVIEW"
+    if blocked_by_observability_count > 0:
+        return "MICRO_CANARY_REVIEW_BLOCKED_BY_OBSERVABILITY"
+    if review_bucket_count > 0:
+        return "MICRO_CANARY_REVIEW_PENDING_MATCH"
+    if risk_block_bucket_count > 0:
+        return "RISK_BLOCK_POLICY_ACTIVE"
+    return "PAPER_ONLY"
 
 
 def event_id_for_row(row: Mapping[str, Any]) -> str:
@@ -594,7 +714,10 @@ def _candidate_event_row(
 
 
 def _judgment_row(
-    event: dict[str, Any], similarity: dict[str, Any] | None, created: datetime
+    event: dict[str, Any],
+    similarity: dict[str, Any] | None,
+    bucket_policy: dict[str, Any] | None,
+    created: datetime,
 ) -> dict[str, Any]:
     hard_reasons = _hard_safety_reasons(event)
     permission_reasons = _risk_reasons(event)
@@ -617,33 +740,14 @@ def _judgment_row(
         and recent_7d >= 0.0
     )
     paper_ready = _paper_ready(event)
+    bucket_key = opportunity_bucket_key(event)
+    policy_action = _policy_action(bucket_policy or {})
+    policy_reason = _text((bucket_policy or {}).get("policy_reason"))
+    policy_confidence = _text((bucket_policy or {}).get("policy_confidence"))
     reasons: list[str] = []
     if hard:
         decision = "HARD_BLOCK"
         reasons.extend(hard_reasons)
-        max_order = 0.0
-        daily_limit = 0
-    elif high_confidence and observability_reasons:
-        decision = "MICRO_CANARY_REVIEW_BLOCKED_BY_OBSERVABILITY"
-        reasons.append("high_confidence_observability_missing")
-        reasons.extend(observability_reasons)
-        max_order = 0.0
-        daily_limit = 0
-    elif paper_ready and not risk_veto:
-        decision = "LIVE_SMALL_ALLOW"
-        reasons.append("paper_ready_trade_level_allow")
-        max_order = max(_float(event.get("risk_max_single_order_usdt")) or 5.0, 5.0)
-        daily_limit = 1
-    elif high_confidence and similar_ok and not _daily_micro_canary_used(event):
-        decision = "MICRO_CANARY_ALLOW"
-        reasons.append("high_confidence_with_supported_similar_sample")
-        max_order = 5.0
-        daily_limit = 1
-    elif high_confidence and (risk_veto or strategy_veto or not similar_ok):
-        decision = "MICRO_CANARY_REVIEW"
-        reasons.append("high_confidence_requires_manual_micro_canary_review")
-        if not similar_ok:
-            reasons.append("similar_sample_insufficient_for_auto_allow")
         max_order = 0.0
         daily_limit = 0
     elif risk_veto and not _risk_reasons_reviewable(permission_reasons):
@@ -651,9 +755,65 @@ def _judgment_row(
         reasons.append("non_reviewable_risk_permission_veto")
         max_order = 0.0
         daily_limit = 0
+    elif policy_action == "RISK_BLOCK":
+        decision = "RISK_BLOCK"
+        reasons.append("bucket_policy_risk_block")
+        if policy_reason:
+            reasons.append(policy_reason)
+        max_order = 0.0
+        daily_limit = 0
+    elif policy_action == "MICRO_CANARY_REVIEW" and observability_reasons:
+        decision = "MICRO_CANARY_REVIEW_BLOCKED_BY_OBSERVABILITY"
+        reasons.append("bucket_policy_review_blocked_by_observability")
+        reasons.extend(observability_reasons)
+        max_order = 0.0
+        daily_limit = 0
+    elif policy_action == "MICRO_CANARY_REVIEW":
+        decision = "MICRO_CANARY_REVIEW"
+        reasons.append("bucket_policy_manual_micro_canary_review")
+        if policy_reason:
+            reasons.append(policy_reason)
+        max_order = 0.0
+        daily_limit = 0
+    elif policy_action == "MICRO_CANARY_ALLOW" and observability_reasons:
+        decision = "MICRO_CANARY_REVIEW_BLOCKED_BY_OBSERVABILITY"
+        reasons.append("bucket_policy_allow_blocked_by_observability")
+        reasons.extend(observability_reasons)
+        max_order = 0.0
+        daily_limit = 0
+    elif (
+        policy_action == "MICRO_CANARY_ALLOW"
+        and not _daily_micro_canary_used(event)
+        and (_float((bucket_policy or {}).get("max_single_order_usdt")) or 0.0) > 0.0
+        and (_int((bucket_policy or {}).get("daily_trade_limit")) or 0) > 0
+    ):
+        decision = "MICRO_CANARY_ALLOW"
+        reasons.append("bucket_policy_explicit_micro_canary_allow")
+        max_order = min(_float((bucket_policy or {}).get("max_single_order_usdt")) or 5.0, 5.0)
+        daily_limit = min(_int((bucket_policy or {}).get("daily_trade_limit")) or 1, 1)
+    elif high_confidence and observability_reasons:
+        decision = "MICRO_CANARY_REVIEW_BLOCKED_BY_OBSERVABILITY"
+        reasons.append("high_confidence_observability_missing")
+        reasons.extend(observability_reasons)
+        max_order = 0.0
+        daily_limit = 0
+    elif high_confidence and similar_ok and not _daily_micro_canary_used(event):
+        decision = "MICRO_CANARY_REVIEW"
+        reasons.append("similar_sample_supported_but_bucket_policy_required")
+        max_order = 0.0
+        daily_limit = 0
+    elif high_confidence and (risk_veto or strategy_veto or not similar_ok):
+        decision = "MICRO_CANARY_REVIEW"
+        reasons.append("high_confidence_requires_manual_micro_canary_review")
+        if not similar_ok:
+            reasons.append("similar_sample_insufficient_for_auto_allow")
+        max_order = 0.0
+        daily_limit = 0
     else:
         decision = "PAPER_ONLY"
         reasons.append("trade_level_not_live_ready")
+        if paper_ready:
+            reasons.append("paper_ready_still_requires_bucket_policy")
         reasons.extend(high_reasons)
         max_order = 0.0
         daily_limit = 0
@@ -673,6 +833,10 @@ def _judgment_row(
         "similar_median_after_cost_bps": similar_median,
         "similar_p25_after_cost_bps": similar_p25,
         "recent_7d_similar_mean": recent_7d,
+        "bucket_key": bucket_key,
+        "bucket_policy_action": policy_action,
+        "bucket_policy_reason": policy_reason,
+        "bucket_policy_confidence": policy_confidence,
         "trade_level_decision": decision,
         "max_single_order_usdt": max_order,
         "daily_trade_limit": daily_limit,
@@ -791,6 +955,37 @@ def _daily_micro_canary_used(event: dict[str, Any]) -> bool:
     return _bool(event.get("daily_micro_canary_used")) is True
 
 
+def _active_bucket_policy_by_key(frame: pl.DataFrame, now: datetime) -> dict[str, dict[str, Any]]:
+    if frame.is_empty() or "bucket_key" not in frame.columns:
+        return {}
+    rows: list[dict[str, Any]] = []
+    for row in frame.to_dicts():
+        key = _text(row.get("bucket_key"))
+        if not key:
+            continue
+        expires_at = _timestamp(row.get("expires_at"))
+        if expires_at is not None and expires_at <= now:
+            continue
+        rows.append(row)
+    rows.sort(
+        key=lambda row: (
+            _timestamp(row.get("policy_date") or row.get("created_at"))
+            or datetime.min.replace(tzinfo=UTC),
+            _timestamp(row.get("created_at")) or datetime.min.replace(tzinfo=UTC),
+        ),
+        reverse=True,
+    )
+    policies: dict[str, dict[str, Any]] = {}
+    for row in rows:
+        policies.setdefault(_text(row.get("bucket_key")), row)
+    return policies
+
+
+def _policy_action(row: dict[str, Any]) -> str:
+    action = _text(row.get("policy_action") or row.get("recommended_trade_level_decision")).upper()
+    return action if action in {"RISK_BLOCK", "MICRO_CANARY_REVIEW", "MICRO_CANARY_ALLOW"} else ""
+
+
 def _v5_would_open(raw: dict[str, Any], payload: dict[str, Any]) -> bool:
     decision = _text(_first(raw, payload, "final_decision", "decision", "action", "intent")).lower()
     if any(token in decision for token in ("buy", "open", "enter", "allow", "submit")):
@@ -873,6 +1068,7 @@ def _schema_version_for_dataset(dataset_name: str) -> str:
         "quant_lab_opportunity_cost_event": OPPORTUNITY_COST_EVENT_SCHEMA_VERSION,
         "quant_lab_opportunity_cost_daily": OPPORTUNITY_COST_DAILY_SCHEMA_VERSION,
         "opportunity_cost_by_bucket": OPPORTUNITY_COST_BY_BUCKET_SCHEMA_VERSION,
+        "trade_level_bucket_policy": TRADE_LEVEL_BUCKET_POLICY_SCHEMA_VERSION,
         "quant_lab_decision_regret": DECISION_REGRET_SCHEMA_VERSION,
     }.get(dataset_name, dataset_name)
 

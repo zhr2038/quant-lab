@@ -54,6 +54,7 @@ DATASET_PATHS = {
     "trade_opportunity_label": Path("gold") / "trade_opportunity_label",
     "trade_level_similarity_outcome": Path("gold") / "trade_level_similarity_outcome",
     "trade_level_judgment": Path("gold") / "trade_level_judgment",
+    "trade_level_bucket_policy": Path("gold") / "trade_level_bucket_policy",
     "quant_lab_false_block_audit": Path("gold") / "quant_lab_false_block_audit",
     "v5_trade_learning_sample": Path("gold") / "v5_trade_learning_sample",
     "v5_trade_outcome_attribution": Path("gold") / "v5_trade_outcome_attribution",
@@ -390,6 +391,7 @@ DATASET_TIMESTAMP_COLUMNS: dict[str, tuple[str, ...]] = {
     "trade_opportunity_label": ("decision_ts", "created_at"),
     "trade_level_similarity_outcome": ("decision_ts", "created_at"),
     "trade_level_judgment": ("decision_ts", "created_at"),
+    "trade_level_bucket_policy": ("created_at", "policy_date", "expires_at"),
     "quant_lab_false_block_audit": ("decision_ts", "created_at"),
     "v5_trade_learning_sample": ("decision_ts", "created_at"),
     "v5_trade_outcome_attribution": ("decision_ts", "created_at"),
@@ -601,6 +603,7 @@ WEB_RESEARCH_SAMPLE_DATASETS = {
     "trade_opportunity_label",
     "trade_level_similarity_outcome",
     "trade_level_judgment",
+    "trade_level_bucket_policy",
     "quant_lab_false_block_audit",
     "v5_trade_learning_sample",
     "v5_trade_outcome_attribution",
@@ -643,6 +646,7 @@ WEB_RECENT_LOOKBACK_HOURS = {
     "trade_opportunity_label": 24 * 14,
     "trade_level_similarity_outcome": 24 * 14,
     "trade_level_judgment": 24 * 14,
+    "trade_level_bucket_policy": 24 * 14,
     "quant_lab_false_block_audit": 24 * 14,
     "v5_trade_learning_sample": 24 * 14,
     "v5_trade_outcome_attribution": 24 * 14,
@@ -687,6 +691,7 @@ WEB_RECENT_FILE_LIMITS = {
     "trade_opportunity_label": 384,
     "trade_level_similarity_outcome": 384,
     "trade_level_judgment": 384,
+    "trade_level_bucket_policy": 384,
     "quant_lab_false_block_audit": 384,
     "v5_trade_learning_sample": 384,
     "v5_trade_outcome_attribution": 384,
@@ -3730,6 +3735,10 @@ def alpha_gate_summary(lake_root: str | Path) -> dict[str, Any]:
         lake_root,
         "trade_level_judgment",
     )
+    trade_bucket_policy, trade_bucket_policy_warning = _read_web_display_dataset_with_warning(
+        lake_root,
+        "trade_level_bucket_policy",
+    )
     false_block_audit, false_block_warning = _read_web_display_dataset_with_warning(
         lake_root,
         "quant_lab_false_block_audit",
@@ -3843,6 +3852,7 @@ def alpha_gate_summary(lake_root: str | Path) -> dict[str, Any]:
             trade_labels_warning,
             trade_similarity_warning,
             trade_judgments_warning,
+            trade_bucket_policy_warning,
             false_block_warning,
             v5_trade_learning_warning,
             v5_trade_attribution_warning,
@@ -3931,6 +3941,7 @@ def alpha_gate_summary(lake_root: str | Path) -> dict[str, Any]:
         "trade_level_judgment": redact_frame(_trade_level_judgment_table(trade_judgments)).head(
             DISPLAY_LIMIT
         ),
+        "trade_level_bucket_policy": redact_frame(trade_bucket_policy).head(DISPLAY_LIMIT),
         "quant_lab_false_block_audit": redact_frame(false_block_audit).head(DISPLAY_LIMIT),
         "v5_trade_learning_sample": redact_frame(v5_trade_learning).head(DISPLAY_LIMIT),
         "v5_trade_outcome_attribution": redact_frame(v5_trade_attribution).head(DISPLAY_LIMIT),
@@ -6357,6 +6368,7 @@ def _empty_dataset_status(dataset_name: str) -> str:
         "trade_opportunity_label",
         "trade_level_similarity_outcome",
         "trade_level_judgment",
+        "trade_level_bucket_policy",
         "quant_lab_false_block_audit",
         "v5_trade_learning_sample",
         "v5_trade_outcome_attribution",

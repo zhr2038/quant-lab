@@ -6,6 +6,7 @@ import polars as pl
 import pytest
 
 from quant_lab.opportunity_cost.ledger import build_opportunity_cost_frames
+from quant_lab.trade_level.bucket_policy import build_trade_level_bucket_policy
 from quant_lab.trade_level.judgment import (
     build_trade_level_frames_from_sources,
     build_trade_level_judgments,
@@ -185,7 +186,7 @@ def test_hard_safety_reason_always_hard_blocks():
     assert "reconcile_fail" in judgment["hard_safety_reasons"]
 
 
-def test_supported_similar_sample_can_promote_to_micro_canary_allow():
+def test_supported_similar_sample_requires_bucket_policy_before_micro_canary_allow():
     events = build_trade_opportunity_events(
         pl.DataFrame([_sol_candidate(candidate_id="sol-allow")]),
         risk_permissions=pl.DataFrame(
@@ -224,7 +225,66 @@ def test_supported_similar_sample_can_promote_to_micro_canary_allow():
     )
     judgment = judgments.row(0, named=True)
 
+    assert judgment["trade_level_decision"] == "MICRO_CANARY_REVIEW"
+    assert "similar_sample_supported_but_bucket_policy_required" in judgment["reason"]
+    assert judgment["max_single_order_usdt"] == 0.0
+    assert judgment["daily_trade_limit"] == 0
+
+
+def test_bucket_policy_can_explicitly_promote_to_micro_canary_allow():
+    events = build_trade_opportunity_events(
+        pl.DataFrame([_sol_candidate(candidate_id="sol-policy-allow")]),
+        risk_permissions=pl.DataFrame(
+            [
+                {
+                    "permission": "ABORT",
+                    "permission_status": "ACTIVE_ABORT",
+                    "as_of_ts": datetime(2026, 6, 29, 8, tzinfo=UTC),
+                    "live_block_reasons": '["no_strategy_live_small_ready"]',
+                    "allowed_live_modes": "[]",
+                }
+            ]
+        ),
+        v5_trades=pl.DataFrame(),
+        created_at=datetime(2026, 6, 29, 9, tzinfo=UTC),
+    )
+    event = events.row(0, named=True)
+    policy = pl.DataFrame(
+        [
+            {
+                "bucket_key": "|".join(
+                    [
+                        event["symbol"],
+                        event["strategy_candidate"],
+                        "normal",
+                        "normal",
+                        "rank_1",
+                        "alpha_ge_0_95",
+                        "edge_ratio_ge_3",
+                        "unknown_cost_source",
+                        "cost_gate_verified",
+                    ]
+                ),
+                "policy_action": "MICRO_CANARY_ALLOW",
+                "policy_reason": "explicit_test_policy",
+                "policy_confidence": "high",
+                "max_single_order_usdt": 5.0,
+                "daily_trade_limit": 1,
+                "expires_at": datetime(2026, 6, 30, tzinfo=UTC),
+                "created_at": datetime(2026, 6, 29, 8, tzinfo=UTC),
+            }
+        ]
+    )
+
+    judgments = build_trade_level_judgments(
+        events,
+        bucket_policy=policy,
+        created_at=datetime(2026, 6, 29, 9, tzinfo=UTC),
+    )
+    judgment = judgments.row(0, named=True)
+
     assert judgment["trade_level_decision"] == "MICRO_CANARY_ALLOW"
+    assert judgment["bucket_policy_action"] == "MICRO_CANARY_ALLOW"
     assert judgment["max_single_order_usdt"] == 5.0
     assert judgment["daily_trade_limit"] == 1
 
@@ -618,7 +678,7 @@ def test_opportunity_bucket_recommends_risk_block_for_loss_saved_bucket():
     rows = []
     labels = []
     judgments = []
-    for index in range(3):
+    for index in range(5):
         event_id = f"bnb-loss-saved-{index}"
         rows.append(
             {
@@ -637,7 +697,9 @@ def test_opportunity_bucket_recommends_risk_block_for_loss_saved_bucket():
                 "actual_submitted": False,
             }
         )
-        labels.append({"event_id": event_id, "label_24h_after_cost_bps": -45.0})
+        labels.append(
+            {"event_id": event_id, "label_24h_after_cost_bps": -45.0 if index < 3 else 0.0}
+        )
         judgments.append(
             {
                 "event_id": event_id,
@@ -655,9 +717,92 @@ def test_opportunity_bucket_recommends_risk_block_for_loss_saved_bucket():
     bucket = frames["opportunity_cost_by_bucket"].row(0, named=True)
 
     assert bucket["loss_saved_count"] == 3
+    assert bucket["sample_count"] == 5
     assert bucket["veto_net_value_bps"] == 135.0
     assert bucket["opportunity_exception_candidate"] is False
     assert bucket["recommended_trade_level_decision"] == "RISK_BLOCK"
+    assert bucket["policy_action"] == "RISK_BLOCK"
+    assert bucket["high_confidence_loss_saved_count"] == 3
+
+
+def test_bucket_policy_uses_only_prior_day_evidence():
+    created = datetime(2026, 6, 29, 10, tzinfo=UTC)
+    rows = []
+    labels = []
+    judgments = []
+    for index in range(5):
+        event_id = f"sol-prior-false-block-{index}"
+        rows.append(
+            {
+                "event_id": event_id,
+                "decision_ts": datetime(2026, 6, 28, 8, index, tzinfo=UTC),
+                "symbol": "SOL-USDT",
+                "strategy_candidate": "f3_dominant_entry",
+                "rank": 1,
+                "alpha6_score": 0.984,
+                "edge_required_ratio": 4.0,
+                "cost_gate_verified": True,
+                "cost_source": "bootstrap_cost_probe",
+                "regime": "normal",
+                "risk_level": "normal",
+                "v5_would_open": True,
+                "actual_submitted": False,
+            }
+        )
+        labels.append(
+            {"event_id": event_id, "label_24h_after_cost_bps": 80.0 if index < 3 else 0.0}
+        )
+        judgments.append(
+            {
+                "event_id": event_id,
+                "trade_level_decision": "PAPER_ONLY",
+                "v5_high_confidence_opportunity": True,
+            }
+        )
+    today_id = "sol-today-false-block"
+    rows.append(
+        {
+            "event_id": today_id,
+            "decision_ts": datetime(2026, 6, 29, 8, tzinfo=UTC),
+            "symbol": "SOL-USDT",
+            "strategy_candidate": "f3_dominant_entry",
+            "rank": 1,
+            "alpha6_score": 0.984,
+            "edge_required_ratio": 4.0,
+            "cost_gate_verified": True,
+            "cost_source": "bootstrap_cost_probe",
+            "regime": "normal",
+            "risk_level": "normal",
+            "v5_would_open": True,
+            "actual_submitted": False,
+        }
+    )
+    labels.append({"event_id": today_id, "label_24h_after_cost_bps": 999.0})
+    judgments.append(
+        {
+            "event_id": today_id,
+            "trade_level_decision": "PAPER_ONLY",
+            "v5_high_confidence_opportunity": True,
+        }
+    )
+    frames = build_opportunity_cost_frames(
+        events=pl.DataFrame(rows),
+        labels=pl.DataFrame(labels),
+        judgments=pl.DataFrame(judgments),
+        created_at=created,
+    )
+
+    policy = build_trade_level_bucket_policy(
+        opportunity_cost_events=frames["quant_lab_opportunity_cost_event"],
+        policy_date=datetime(2026, 6, 29, tzinfo=UTC).date(),
+        created_at=created,
+    )
+    policy_row = policy.row(0, named=True)
+
+    assert policy_row["policy_action"] == "MICRO_CANARY_REVIEW"
+    assert policy_row["sample_count"] == 5
+    assert policy_row["missed_profit_bps_sum"] == 240.0
+    assert "false_block_bucket_negative_veto_value" in policy_row["policy_reason"]
 
 
 def _sol_candidate(candidate_id: str = "sol-cand-1") -> dict[str, object]:

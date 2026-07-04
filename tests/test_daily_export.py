@@ -300,6 +300,7 @@ def test_export_daily_pack_writes_required_members(tmp_path):
         assert "reports/quant_lab_opportunity_cost_event.csv" in names
         assert "reports/quant_lab_opportunity_cost_daily.csv" in names
         assert "reports/opportunity_cost_by_bucket.csv" in names
+        assert "reports/trade_level_bucket_policy.csv" in names
         assert "reports/quant_lab_decision_regret.csv" in names
         assert "reports/api_error_summary.csv" in names
         assert "diagnostics/export_timing.csv" in names
@@ -353,6 +354,11 @@ def test_export_daily_pack_writes_required_members(tmp_path):
             .decode("utf-8")
             .splitlines()[0]
         )
+        trade_level_bucket_policy_header = (
+            archive.read("reports/trade_level_bucket_policy.csv")
+            .decode("utf-8")
+            .splitlines()[0]
+        )
         decision_regret_header = (
             archive.read("reports/quant_lab_decision_regret.csv")
             .decode("utf-8")
@@ -369,6 +375,8 @@ def test_export_daily_pack_writes_required_members(tmp_path):
         assert "veto_net_value_bps" in opportunity_daily_header
         assert "cost_source" in opportunity_bucket_header
         assert "opportunity_exception_candidate" in opportunity_bucket_header
+        assert "policy_action" in trade_level_bucket_policy_header
+        assert "expires_at" in trade_level_bucket_policy_header
         assert "best_hindsight_action" in decision_regret_header
         assert "web_rglob_fallback_zero" in acceptance_checks
         assert "api_latency_p95_ok" in acceptance_checks

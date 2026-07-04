@@ -96,16 +96,42 @@ def test_publish_risk_permission_exposes_micro_canary_review_summary(tmp_path):
         ),
         lake / "gold" / "opportunity_cost_by_bucket",
     )
+    write_parquet_dataset(
+        pl.DataFrame(
+            [
+                {
+                    "bucket_key": "SOL|f3|rank_1",
+                    "symbol": "SOL-USDT",
+                    "strategy_candidate": "v5.f3_dominant_entry",
+                    "sample_count": 22,
+                    "false_block_count": 11,
+                    "loss_saved_count": 1,
+                    "veto_net_value_bps": -2345.88,
+                    "policy_action": "MICRO_CANARY_REVIEW",
+                    "policy_reason": "false_block_bucket_negative_veto_value_manual_review_only",
+                    "created_at": now,
+                }
+            ]
+        ),
+        lake / "gold" / "trade_level_bucket_policy",
+    )
 
     publish_risk_permission(lake, strategy="v5", version="5.0.0")
 
     permission = read_parquet_dataset(lake / "gold" / "risk_permission").to_dicts()[0]
     top_buckets = json.loads(permission["top_micro_canary_review_buckets"])
+    advisory_modes = json.loads(permission["allowed_advisory_modes"])
     assert permission["micro_canary_review_count"] == 2
     assert permission["micro_canary_review_bucket_count"] == 1
     assert permission["blocked_by_observability_count"] == 1
+    assert permission["reviewable_abort_count"] == 2
+    assert permission["micro_canary_review_ready_count"] == 1
+    assert permission["micro_canary_review_blocked_by_observability_count"] == 1
+    assert permission["risk_block_bucket_count"] == 0
+    assert permission["recommended_next_permission_mode"] == "MICRO_CANARY_REVIEW"
+    assert "micro_canary_review" in advisory_modes
     assert top_buckets[0]["bucket_key"] == "SOL|f3|rank_1"
-    assert top_buckets[0]["recommended_trade_level_decision"] == "MICRO_CANARY_REVIEW"
+    assert top_buckets[0]["policy_action"] == "MICRO_CANARY_REVIEW"
     assert permission["allowed_live_modes"] == "[]"
     assert permission["max_single_order_usdt"] == 0
 

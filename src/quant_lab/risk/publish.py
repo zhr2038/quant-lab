@@ -31,6 +31,7 @@ RISK_PERMISSION_API_DEPENDENCY_META_DATASET = Path("gold") / "risk_permission_ap
 TRADE_LEVEL_JUDGMENT_DATASET = Path("gold") / "trade_level_judgment"
 FALSE_BLOCK_AUDIT_DATASET = Path("gold") / "quant_lab_false_block_audit"
 OPPORTUNITY_COST_BY_BUCKET_DATASET = Path("gold") / "opportunity_cost_by_bucket"
+TRADE_LEVEL_BUCKET_POLICY_DATASET = Path("gold") / "trade_level_bucket_policy"
 COST_BUCKET_DAILY_DATASET = Path("gold") / "cost_bucket_daily"
 COST_HEALTH_DAILY_DATASET = Path("gold") / "cost_health_daily"
 MARKET_BAR_DATASET = Path("silver") / "market_bar"
@@ -86,6 +87,11 @@ RISK_PERMISSION_SCHEMA = {
     "micro_canary_review_count": pl.Int64,
     "micro_canary_review_bucket_count": pl.Int64,
     "blocked_by_observability_count": pl.Int64,
+    "reviewable_abort_count": pl.Int64,
+    "micro_canary_review_ready_count": pl.Int64,
+    "micro_canary_review_blocked_by_observability_count": pl.Int64,
+    "risk_block_bucket_count": pl.Int64,
+    "recommended_next_permission_mode": pl.Utf8,
     "top_micro_canary_review_buckets": pl.Utf8,
     "false_block_rate": pl.Float64,
     "source": pl.Utf8,
@@ -146,7 +152,15 @@ def publish_risk_permission(
     )
     permission = apply_risk_advisory_context(permission, advisory_context)
     row = risk_permission_row(permission)
-    row.update(_trade_level_summary_for_risk_permission(root))
+    trade_level_summary = _trade_level_summary_for_risk_permission(root)
+    row.update(trade_level_summary)
+    if str(trade_level_summary.get("recommended_next_permission_mode") or "").startswith(
+        "MICRO_CANARY_REVIEW"
+    ):
+        advisory_modes = json_list(row.get("allowed_advisory_modes") or "[]")
+        row["allowed_advisory_modes"] = _json(
+            list(dict.fromkeys([*advisory_modes, "micro_canary_review"]))
+        )
     frame = pl.DataFrame(
         [row],
         schema=RISK_PERMISSION_SCHEMA,
@@ -731,6 +745,11 @@ def risk_permission_row(permission: RiskPermission) -> dict[str, Any]:
         "micro_canary_review_count": 0,
         "micro_canary_review_bucket_count": 0,
         "blocked_by_observability_count": 0,
+        "reviewable_abort_count": 0,
+        "micro_canary_review_ready_count": 0,
+        "micro_canary_review_blocked_by_observability_count": 0,
+        "risk_block_bucket_count": 0,
+        "recommended_next_permission_mode": "PAPER_ONLY",
         "top_micro_canary_review_buckets": "[]",
         "false_block_rate": 0.0,
     }
@@ -749,7 +768,16 @@ def _trade_level_summary_for_risk_permission(root: Path) -> dict[str, Any]:
         opportunity_buckets = read_parquet_dataset(root / OPPORTUNITY_COST_BY_BUCKET_DATASET)
     except Exception:
         opportunity_buckets = pl.DataFrame()
-    return trade_level_risk_summary(judgments, false_block_audit, opportunity_buckets)
+    try:
+        bucket_policy = read_parquet_dataset(root / TRADE_LEVEL_BUCKET_POLICY_DATASET)
+    except Exception:
+        bucket_policy = pl.DataFrame()
+    return trade_level_risk_summary(
+        judgments,
+        false_block_audit,
+        opportunity_buckets,
+        bucket_policy,
+    )
 
 
 def parse_risk_permission_row(row: dict[str, Any]) -> RiskPermission | None:
@@ -761,6 +789,11 @@ def parse_risk_permission_row(row: dict[str, Any]) -> RiskPermission | None:
     cleaned.pop("micro_canary_review_count", None)
     cleaned.pop("micro_canary_review_bucket_count", None)
     cleaned.pop("blocked_by_observability_count", None)
+    cleaned.pop("reviewable_abort_count", None)
+    cleaned.pop("micro_canary_review_ready_count", None)
+    cleaned.pop("micro_canary_review_blocked_by_observability_count", None)
+    cleaned.pop("risk_block_bucket_count", None)
+    cleaned.pop("recommended_next_permission_mode", None)
     cleaned.pop("top_micro_canary_review_buckets", None)
     cleaned.pop("false_block_rate", None)
     if isinstance(cleaned.get("allowed_modes"), str):

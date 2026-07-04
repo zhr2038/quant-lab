@@ -2,14 +2,14 @@ from __future__ import annotations
 
 import statistics
 from collections import defaultdict
-from datetime import UTC, date, datetime
+from datetime import UTC, date, datetime, timedelta
 from typing import Any
 
 import polars as pl
 
 OPPORTUNITY_COST_EVENT_SCHEMA_VERSION = "quant_lab_opportunity_cost_event.v0.2"
 OPPORTUNITY_COST_DAILY_SCHEMA_VERSION = "quant_lab_opportunity_cost_daily.v0.1"
-OPPORTUNITY_COST_BY_BUCKET_SCHEMA_VERSION = "opportunity_cost_by_bucket.v0.2"
+OPPORTUNITY_COST_BY_BUCKET_SCHEMA_VERSION = "opportunity_cost_by_bucket.v0.3"
 DECISION_REGRET_SCHEMA_VERSION = "quant_lab_decision_regret.v0.1"
 
 OPPORTUNITY_COST_EVENT_SCHEMA = {
@@ -97,8 +97,12 @@ OPPORTUNITY_COST_BY_BUCKET_SCHEMA = {
     "loss_saved_bps_sum": pl.Float64,
     "veto_net_value_bps": pl.Float64,
     "high_confidence_false_block_count": pl.Int64,
+    "high_confidence_loss_saved_count": pl.Int64,
+    "recent_7d_veto_net_value_bps": pl.Float64,
     "opportunity_exception_candidate": pl.Boolean,
     "recommended_trade_level_decision": pl.Utf8,
+    "policy_action": pl.Utf8,
+    "policy_confidence": pl.Utf8,
     "created_at": pl.Datetime(time_zone="UTC"),
     "source": pl.Utf8,
 }
@@ -381,12 +385,38 @@ def _bucket_row(bucket_key: str, rows: list[dict[str, Any]], created: datetime) 
     veto_net = saved - missed
     high_conf_false_blocks = sum(1 for row in false_blocks if row.get("high_confidence_v5"))
     high_conf_loss_saved = sum(1 for row in loss_saved if row.get("high_confidence_v5"))
-    exception = high_conf_false_blocks >= 3 and missed > saved
-    recommended_decision = ""
+    recent_cutoff = created - timedelta(days=7)
+    recent_rows = [
+        row
+        for row in rows
+        if (ts := _timestamp(row.get("decision_ts"))) is not None and ts >= recent_cutoff
+    ]
+    recent_missed = sum(_float(row.get("missed_profit_bps")) or 0.0 for row in recent_rows)
+    recent_saved = sum(_float(row.get("loss_saved_bps")) or 0.0 for row in recent_rows)
+    recent_veto_net = recent_saved - recent_missed
+    sample_count = len(v5_open_rows)
+    exception = (
+        sample_count >= 5
+        and len(false_blocks) >= 3
+        and high_conf_false_blocks >= 3
+        and missed > saved
+        and veto_net < 0.0
+    )
+    risk_block = (
+        sample_count >= 5
+        and len(loss_saved) >= 3
+        and high_conf_loss_saved >= 3
+        and saved > missed
+        and veto_net > 0.0
+    )
     if exception:
-        recommended_decision = "MICRO_CANARY_REVIEW"
-    elif high_conf_loss_saved >= 3 and saved > missed:
-        recommended_decision = "RISK_BLOCK"
+        policy_action = "MICRO_CANARY_REVIEW"
+    elif risk_block:
+        policy_action = "RISK_BLOCK"
+    else:
+        policy_action = "PAPER_ONLY"
+    policy_confidence = "high" if policy_action in {"MICRO_CANARY_REVIEW", "RISK_BLOCK"} else "low"
+    recommended_decision = policy_action if policy_action != "PAPER_ONLY" else ""
     return {
         "schema_version": OPPORTUNITY_COST_BY_BUCKET_SCHEMA_VERSION,
         "bucket_key": bucket_key,
@@ -399,7 +429,7 @@ def _bucket_row(bucket_key: str, rows: list[dict[str, Any]], created: datetime) 
         "expected_edge_ratio_bucket": _part(parts, 6),
         "cost_source": _part(parts, 7),
         "cost_gate_bucket": _part(parts, 8),
-        "sample_count": len(v5_open_rows),
+        "sample_count": sample_count,
         "false_block_count": len(false_blocks),
         "loss_saved_count": len(loss_saved),
         "false_allow_count": len(false_allows),
@@ -408,8 +438,12 @@ def _bucket_row(bucket_key: str, rows: list[dict[str, Any]], created: datetime) 
         "loss_saved_bps_sum": saved,
         "veto_net_value_bps": veto_net,
         "high_confidence_false_block_count": high_conf_false_blocks,
+        "high_confidence_loss_saved_count": high_conf_loss_saved,
+        "recent_7d_veto_net_value_bps": recent_veto_net,
         "opportunity_exception_candidate": exception,
         "recommended_trade_level_decision": recommended_decision,
+        "policy_action": policy_action,
+        "policy_confidence": policy_confidence,
         "created_at": created,
         "source": "quant_lab.opportunity_cost.bucket",
     }
@@ -428,6 +462,10 @@ def _bucket_fields(event: dict[str, Any]) -> dict[str, str]:
         "cost_gate_verified" if _bool(event.get("cost_gate_verified")) else "cost_gate_unverified",
     ]
     return {"bucket_key": "|".join(parts)}
+
+
+def opportunity_bucket_key(event: dict[str, Any]) -> str:
+    return _bucket_fields(event)["bucket_key"]
 
 
 def _preferred_label_value(label: dict[str, Any]) -> tuple[float | None, int | None]:

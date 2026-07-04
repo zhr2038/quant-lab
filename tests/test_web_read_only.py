@@ -972,6 +972,58 @@ def test_data_health_keeps_stale_bnb_latest_when_source_daily_is_stale(tmp_path)
     assert by_dataset["v5_bnb_paper_strategy_daily_latest"]["status"] == "stale"
 
 
+def test_data_health_hides_stale_bnb_paper_when_v5_telemetry_is_current(tmp_path):
+    lake_root = tmp_path / "lake"
+    now = datetime.now(UTC)
+    old = now - timedelta(days=5)
+    paper_daily = {
+        "strategy_id": "BNB_PAPER",
+        "paper_date": old.date().isoformat(),
+        "ingest_ts": old,
+        "bundle_ts": old,
+        "entry_count": 1,
+    }
+    paper_run = {
+        "strategy_id": "BNB_PAPER",
+        "entry_ts": old,
+        "ingest_ts": old,
+        "bundle_ts": old,
+        "status": "closed",
+    }
+    write_parquet_dataset(
+        pl.DataFrame([paper_daily]),
+        lake_root / "gold" / "v5_bnb_paper_strategy_daily_latest",
+    )
+    write_parquet_dataset(
+        pl.DataFrame([paper_daily]),
+        lake_root / "gold" / "v5_bnb_paper_strategy_daily",
+    )
+    write_parquet_dataset(
+        pl.DataFrame([paper_run]),
+        lake_root / "gold" / "v5_bnb_paper_strategy_runs",
+    )
+    write_parquet_dataset(
+        pl.DataFrame(
+            [
+                {
+                    "strategy": "v5",
+                    "date": now.date().isoformat(),
+                    "status": "OK",
+                    "latest_bundle_ts": now.isoformat(),
+                }
+            ]
+        ),
+        lake_root / "gold" / "strategy_health_daily",
+    )
+
+    stale_rows = readers.data_health_summary(lake_root)["stale_datasets"].to_dicts()
+    datasets = {row["dataset"] for row in stale_rows}
+
+    assert "v5_bnb_paper_strategy_daily" not in datasets
+    assert "v5_bnb_paper_strategy_daily_latest" not in datasets
+    assert "v5_bnb_paper_strategy_runs" not in datasets
+
+
 def test_stale_dataset_rows_keep_schema_when_empty(tmp_path, monkeypatch):
     monkeypatch.setattr(readers, "DATASET_PATHS", {})
 

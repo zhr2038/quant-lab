@@ -197,6 +197,9 @@ WEB_FILE_INDEX_FALLBACK_WARNING = "web_file_index_missing_refresh_required"
 WEB_SNAPSHOT_META_MISSING_WARNING = "web_snapshot_meta_missing"
 WEB_CACHE_DEFAULT_TTL_SECONDS = 30
 V5_PAPER_TELEMETRY_DATASETS = {
+    "v5_bnb_paper_strategy_daily",
+    "v5_bnb_paper_strategy_daily_latest",
+    "v5_bnb_paper_strategy_runs",
     "v5_paper_strategy_run",
     "v5_paper_strategy_proposal_ack",
     "v5_paper_strategy_daily",

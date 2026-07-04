@@ -9,7 +9,7 @@ import polars as pl
 
 OPPORTUNITY_COST_EVENT_SCHEMA_VERSION = "quant_lab_opportunity_cost_event.v0.2"
 OPPORTUNITY_COST_DAILY_SCHEMA_VERSION = "quant_lab_opportunity_cost_daily.v0.1"
-OPPORTUNITY_COST_BY_BUCKET_SCHEMA_VERSION = "opportunity_cost_by_bucket.v0.4"
+OPPORTUNITY_COST_BY_BUCKET_SCHEMA_VERSION = "opportunity_cost_by_bucket.v0.5"
 DECISION_REGRET_SCHEMA_VERSION = "quant_lab_decision_regret.v0.1"
 
 OPPORTUNITY_COST_EVENT_SCHEMA = {
@@ -407,23 +407,40 @@ def _bucket_row(bucket_key: str, rows: list[dict[str, Any]], created: datetime) 
         and missed > saved
         and veto_net < 0.0
     )
-    risk_block = (
+    alpha_bucket = _part(parts, 5)
+    risk_block_high_confidence = (
         sample_count >= 5
         and len(loss_saved) >= 3
         and high_conf_loss_saved >= 3
         and saved > missed
         and veto_net > 0.0
     )
+    risk_block_weak_signal = (
+        sample_count >= 5
+        and len(loss_saved) >= 3
+        and saved > missed
+        and veto_net > 0.0
+        and alpha_bucket in {"alpha_lt_0_85", "alpha_missing"}
+    )
     if exception:
         policy_action = "MICRO_CANARY_REVIEW"
         policy_basis = "false_block_bucket_negative_veto_value"
-    elif risk_block:
+    elif risk_block_high_confidence:
         policy_action = "RISK_BLOCK"
         policy_basis = "loss_saved_bucket_positive_veto_value"
+    elif risk_block_weak_signal:
+        policy_action = "RISK_BLOCK"
+        policy_basis = "weak_signal_loss_saved_bucket_positive_veto_value"
     else:
         policy_action = "PAPER_ONLY"
         policy_basis = "paper_only_until_bucket_policy_clear"
-    policy_confidence = "high" if policy_action in {"MICRO_CANARY_REVIEW", "RISK_BLOCK"} else "low"
+    policy_confidence = (
+        "high"
+        if policy_action == "MICRO_CANARY_REVIEW" or risk_block_high_confidence
+        else "medium"
+        if risk_block_weak_signal
+        else "low"
+    )
     recommended_decision = policy_action if policy_action != "PAPER_ONLY" else ""
     return {
         "schema_version": OPPORTUNITY_COST_BY_BUCKET_SCHEMA_VERSION,
@@ -433,7 +450,7 @@ def _bucket_row(bucket_key: str, rows: list[dict[str, Any]], created: datetime) 
         "regime": _part(parts, 2),
         "risk_level": _part(parts, 3),
         "rank_bucket": _part(parts, 4),
-        "alpha6_bucket": _part(parts, 5),
+        "alpha6_bucket": alpha_bucket,
         "expected_edge_ratio_bucket": _part(parts, 6),
         "cost_source": _part(parts, 7),
         "cost_gate_bucket": _part(parts, 8),

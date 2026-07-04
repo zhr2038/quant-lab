@@ -9,7 +9,7 @@ from quant_lab.opportunity_cost.ledger import (
     build_opportunity_cost_by_bucket,
 )
 
-TRADE_LEVEL_BUCKET_POLICY_SCHEMA_VERSION = "trade_level_bucket_policy.v0.2"
+TRADE_LEVEL_BUCKET_POLICY_SCHEMA_VERSION = "trade_level_bucket_policy.v0.3"
 
 TRADE_LEVEL_BUCKET_POLICY_SCHEMA = {
     "schema_version": pl.Utf8,
@@ -121,19 +121,24 @@ def _policy_row(
     high_false_blocks = _int(row.get("high_confidence_false_block_count")) or 0
     high_loss_saved = _int(row.get("high_confidence_loss_saved_count")) or 0
     action = _text(row.get("policy_action") or row.get("recommended_trade_level_decision")).upper()
+    derived_action = _policy_action(
+        alpha6_bucket=_text(row.get("alpha6_bucket")),
+        sample_count=sample_count,
+        false_block_count=false_blocks,
+        loss_saved_count=loss_saved,
+        missed_profit_bps_sum=missed,
+        loss_saved_bps_sum=saved,
+        veto_net_value_bps=veto_net,
+        high_confidence_false_block_count=high_false_blocks,
+        high_confidence_loss_saved_count=high_loss_saved,
+    )
     if action not in {"RISK_BLOCK", "MICRO_CANARY_REVIEW", "MICRO_CANARY_ALLOW", "PAPER_ONLY"}:
-        action = _policy_action(
-            sample_count=sample_count,
-            false_block_count=false_blocks,
-            loss_saved_count=loss_saved,
-            missed_profit_bps_sum=missed,
-            loss_saved_bps_sum=saved,
-            veto_net_value_bps=veto_net,
-            high_confidence_false_block_count=high_false_blocks,
-            high_confidence_loss_saved_count=high_loss_saved,
-        )
+        action = derived_action
+    elif action == "PAPER_ONLY" and derived_action != "PAPER_ONLY":
+        action = derived_action
     reason = _policy_reason(
         action=action,
+        alpha6_bucket=_text(row.get("alpha6_bucket")),
         sample_count=sample_count,
         false_block_count=false_blocks,
         loss_saved_count=loss_saved,
@@ -145,7 +150,16 @@ def _policy_row(
     )
     confidence = _text(row.get("policy_confidence"))
     if not confidence:
-        confidence = "high" if action in {"RISK_BLOCK", "MICRO_CANARY_REVIEW"} else "low"
+        confidence = _policy_confidence(
+            action=action,
+            alpha6_bucket=_text(row.get("alpha6_bucket")),
+            sample_count=sample_count,
+            loss_saved_count=loss_saved,
+            missed_profit_bps_sum=missed,
+            loss_saved_bps_sum=saved,
+            veto_net_value_bps=veto_net,
+            high_confidence_loss_saved_count=high_loss_saved,
+        )
     return {
         "schema_version": TRADE_LEVEL_BUCKET_POLICY_SCHEMA_VERSION,
         "policy_date": policy_date,
@@ -190,6 +204,7 @@ def _policy_row(
 
 def _policy_action(
     *,
+    alpha6_bucket: str,
     sample_count: int,
     false_block_count: int,
     loss_saved_count: int,
@@ -209,6 +224,14 @@ def _policy_action(
         return "RISK_BLOCK"
     if (
         sample_count >= 5
+        and loss_saved_count >= 3
+        and loss_saved_bps_sum > missed_profit_bps_sum
+        and veto_net_value_bps > 0.0
+        and alpha6_bucket in {"alpha_lt_0_85", "alpha_missing"}
+    ):
+        return "RISK_BLOCK"
+    if (
+        sample_count >= 5
         and false_block_count >= 3
         and missed_profit_bps_sum > loss_saved_bps_sum
         and veto_net_value_bps < 0.0
@@ -221,6 +244,7 @@ def _policy_action(
 def _policy_reason(
     *,
     action: str,
+    alpha6_bucket: str,
     sample_count: int,
     false_block_count: int,
     loss_saved_count: int,
@@ -231,6 +255,15 @@ def _policy_reason(
     high_confidence_loss_saved_count: int,
 ) -> str:
     if action == "RISK_BLOCK":
+        if (
+            sample_count >= 5
+            and loss_saved_count >= 3
+            and loss_saved_bps_sum > missed_profit_bps_sum
+            and veto_net_value_bps > 0.0
+            and high_confidence_loss_saved_count < 3
+            and alpha6_bucket in {"alpha_lt_0_85", "alpha_missing"}
+        ):
+            return "weak_signal_loss_saved_bucket_positive_veto_value"
         return "loss_saved_bucket_positive_veto_value"
     if action == "MICRO_CANARY_REVIEW":
         return "false_block_bucket_negative_veto_value_manual_review_only"
@@ -246,6 +279,33 @@ def _policy_reason(
     if veto_net_value_bps == 0.0 or missed_profit_bps_sum == loss_saved_bps_sum:
         missing.append("veto_value_flat")
     return ";".join(missing) or "paper_only_until_bucket_policy_clear"
+
+
+def _policy_confidence(
+    *,
+    action: str,
+    alpha6_bucket: str,
+    sample_count: int,
+    loss_saved_count: int,
+    missed_profit_bps_sum: float,
+    loss_saved_bps_sum: float,
+    veto_net_value_bps: float,
+    high_confidence_loss_saved_count: int,
+) -> str:
+    if action == "MICRO_CANARY_REVIEW":
+        return "high"
+    if action == "RISK_BLOCK":
+        if high_confidence_loss_saved_count >= 3:
+            return "high"
+        if (
+            sample_count >= 5
+            and loss_saved_count >= 3
+            and loss_saved_bps_sum > missed_profit_bps_sum
+            and veto_net_value_bps > 0.0
+            and alpha6_bucket in {"alpha_lt_0_85", "alpha_missing"}
+        ):
+            return "medium"
+    return "low"
 
 
 def _policy_priority(value: Any) -> int:

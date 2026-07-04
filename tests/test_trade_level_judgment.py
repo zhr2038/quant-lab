@@ -739,6 +739,81 @@ def test_opportunity_bucket_recommends_risk_block_for_loss_saved_bucket():
     assert bucket["policy_basis"] == "loss_saved_bucket_positive_veto_value"
 
 
+def test_opportunity_bucket_risk_blocks_weak_signal_loss_saved():
+    created = datetime(2026, 6, 29, 10, tzinfo=UTC)
+    rows = []
+    labels = []
+    judgments = []
+    for index in range(5):
+        event_id = f"eth-weak-loss-saved-{index}"
+        rows.append(
+            {
+                "event_id": event_id,
+                "decision_ts": datetime(2026, 6, 29, 8, index, tzinfo=UTC),
+                "symbol": "ETH-USDT",
+                "strategy_candidate": "f3_dominant_entry",
+                "rank": 3,
+                "alpha6_score": 0.42,
+                "edge_required_ratio": 0.9,
+                "cost_gate_verified": True,
+                "cost_source": "public_spread_proxy",
+                "regime": "Trending",
+                "risk_level": "PROTECT",
+                "v5_would_open": True,
+                "actual_submitted": False,
+            }
+        )
+        labels.append({"event_id": event_id, "label_24h_after_cost_bps": -120.0})
+        judgments.append(
+            {
+                "event_id": event_id,
+                "trade_level_decision": "RISK_BLOCK",
+                "v5_high_confidence_opportunity": False,
+            }
+        )
+    frames = build_opportunity_cost_frames(
+        events=pl.DataFrame(rows),
+        labels=pl.DataFrame(labels),
+        judgments=pl.DataFrame(judgments),
+        created_at=created,
+    )
+
+    bucket = frames["opportunity_cost_by_bucket"].row(0, named=True)
+    policy = build_trade_level_bucket_policy(
+        opportunity_cost_by_bucket=frames["opportunity_cost_by_bucket"],
+        policy_date=created.date(),
+        created_at=created,
+    ).row(0, named=True)
+    stale_bucket = pl.DataFrame(
+        [
+            bucket
+            | {
+                "schema_version": "opportunity_cost_by_bucket.v0.4",
+                "policy_action": "PAPER_ONLY",
+                "policy_confidence": "low",
+                "policy_basis": "paper_only_until_bucket_policy_clear",
+            }
+        ]
+    )
+    upgraded_policy = build_trade_level_bucket_policy(
+        opportunity_cost_by_bucket=stale_bucket,
+        policy_date=created.date(),
+        created_at=created,
+    ).row(0, named=True)
+
+    assert bucket["alpha6_bucket"] == "alpha_lt_0_85"
+    assert bucket["loss_saved_count"] == 5
+    assert bucket["high_confidence_loss_saved_count"] == 0
+    assert bucket["policy_action"] == "RISK_BLOCK"
+    assert bucket["policy_confidence"] == "medium"
+    assert bucket["policy_basis"] == "weak_signal_loss_saved_bucket_positive_veto_value"
+    assert policy["policy_action"] == "RISK_BLOCK"
+    assert policy["policy_confidence"] == "medium"
+    assert policy["policy_reason"] == "weak_signal_loss_saved_bucket_positive_veto_value"
+    assert upgraded_policy["policy_action"] == "RISK_BLOCK"
+    assert upgraded_policy["policy_reason"] == "weak_signal_loss_saved_bucket_positive_veto_value"
+
+
 def test_explicit_micro_canary_allow_requires_similarity_evidence():
     events = build_trade_opportunity_events(
         pl.DataFrame([_sol_candidate()]),

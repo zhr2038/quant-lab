@@ -3017,6 +3017,37 @@ def test_bigscreen_actions_skip_read_only_cost_coverage_advisory():
     assert not any(action["source"] == "cost_model_summary" for action in actions)
 
 
+def test_bigscreen_actions_skip_read_only_cost_soft_fallback_when_coverage_passes():
+    actions = bigscreen_module._build_actions(
+        overview={},
+        data_health={},
+        cost={
+            "hard_fallback_ratio": 0.0,
+            "soft_fallback_ratio": 0.94,
+            "live_universe_cost_coverage": [
+                {
+                    "symbol": "BTC-USDT",
+                    "coverage_status": "PASS",
+                    "coverage_reason": "anchored_proxy_candidate_not_counted",
+                    "live_order_effect": "read_only_no_live_order",
+                },
+                {
+                    "symbol": "SOL-USDT",
+                    "coverage_status": "PASS",
+                    "coverage_reason": "direct_actual_or_mixed_cost",
+                    "live_order_effect": "read_only_no_live_order",
+                },
+            ],
+        },
+        v5={"latest": {"kill_switch_enabled": False, "reconcile_ok": True}},
+        web_events=[],
+        exports={},
+        legacy_anomalies={"items": []},
+    )
+
+    assert not any(action["source"] == "cost_model_summary" for action in actions)
+
+
 def test_bigscreen_actions_surface_cost_probe_disagreement_failures():
     actions = bigscreen_module._build_actions(
         overview={},

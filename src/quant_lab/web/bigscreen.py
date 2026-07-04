@@ -999,16 +999,15 @@ def _cost_soft_fallback_is_read_only_advisory(cost: dict[str, Any]) -> bool:
     coverage_rows = _frame_rows(cost.get("live_universe_cost_coverage"), limit=100)
     if not coverage_rows:
         return False
-    warned_rows = [
+    actionable_rows = [
         row
         for row in coverage_rows
-        if str(row.get("coverage_status") or "").upper() in {"WARNING", "WARN"}
+        if str(row.get("coverage_status") or "").upper()
+        in {"CRITICAL", "FAIL", "FAILED", "WARNING", "WARN"}
     ]
-    if not warned_rows:
-        return False
     return all(
         str(row.get("live_order_effect") or "").strip().lower() == "read_only_no_live_order"
-        for row in warned_rows
+        for row in (actionable_rows or coverage_rows)
     )
 
 

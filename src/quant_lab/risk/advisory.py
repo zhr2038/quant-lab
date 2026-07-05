@@ -21,6 +21,7 @@ SHADOW_DECISIONS = {"KEEP_SHADOW", "REGIME_SHADOW"}
 PAPER_DECISIONS = {"PAPER_READY", "LIVE_SMALL_READY"}
 LIVE_DECISIONS = {"LIVE_SMALL_READY"}
 LEGACY_NON_LIVE_ALLOWED_MODES = {"paper", "shadow", "sell_only"}
+ADVISORY_ALLOWED_MODES = {"paper", "shadow", "micro_canary_review"}
 _ACTIVE_PERMISSION_STATUSES = {
     RiskPermissionStatus.ACTIVE_ALLOW.value,
     RiskPermissionStatus.ACTIVE_SELL_ONLY.value,
@@ -124,7 +125,7 @@ def apply_risk_advisory_context(
             "strategy_opportunities_available": bool(
                 context.get("strategy_opportunities_available")
             ),
-            "allowed_advisory_modes": list(context.get("allowed_advisory_modes") or []),
+            "allowed_advisory_modes": _safe_advisory_modes(permission, context),
             "allowed_live_modes": allowed_live_modes,
             "live_block_reasons": _dedupe(live_block_reasons),
         }
@@ -154,6 +155,27 @@ def _safe_legacy_allowed_modes(
         if str(mode) in LEGACY_NON_LIVE_ALLOWED_MODES
     ]
     return _dedupe([*existing_modes, *advisory_modes])
+
+
+def _safe_advisory_modes(
+    permission: RiskPermission,
+    context: dict[str, Any],
+) -> list[str]:
+    """Preserve review-only modes from a fresh published row without exposing live modes."""
+
+    context_modes = [
+        str(mode)
+        for mode in context.get("allowed_advisory_modes") or []
+        if str(mode) in ADVISORY_ALLOWED_MODES
+    ]
+    if not _permission_is_active(permission):
+        return _dedupe(context_modes)
+    published_modes = [
+        str(mode)
+        for mode in permission.allowed_advisory_modes
+        if str(mode) in ADVISORY_ALLOWED_MODES
+    ]
+    return _dedupe([*context_modes, *published_modes])
 
 
 def _permission_is_active(permission: RiskPermission) -> bool:

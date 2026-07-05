@@ -841,6 +841,51 @@ def test_live_permission_api_strips_legacy_live_modes_from_published_allow(
     assert "v5_local_live_not_controlled_by_quant_lab" in payload["live_block_reasons"]
 
 
+def test_live_permission_api_preserves_published_micro_canary_review_mode(
+    tmp_path,
+    monkeypatch,
+):
+    lake = tmp_path / "lake"
+    monkeypatch.setenv("QUANT_LAB_LAKE_ROOT", str(lake))
+    monkeypatch.setenv("QUANT_LAB_RISK_PERMISSION_TTL_SECONDS", "3600")
+    _write_cost_bucket(lake)
+    _write_fresh_market_bar(lake)
+    _write_alpha_discovery_board(lake, decision="PAPER_READY")
+    as_of_ts = datetime.now(UTC)
+    _write_risk_permissions(
+        lake,
+        [
+            _risk_row(
+                strategy="v5",
+                version="5.0.0",
+                permission="ABORT",
+                reasons='["no_required_gate_decisions"]',
+                as_of_ts=as_of_ts,
+                expires_at=as_of_ts + timedelta(hours=1),
+                source_bundle_ts=as_of_ts,
+                permission_status="ACTIVE_ABORT",
+                enforceable=True,
+            )
+            | {
+                "allowed_advisory_modes": '["shadow","paper","micro_canary_review"]',
+                "allowed_live_modes": "[]",
+                "live_block_reasons": '["quant_lab_live_command_not_allowed"]',
+            }
+        ],
+    )
+
+    payload = _get_permission("v5", version="5.0.0")
+
+    assert payload["permission"] == "ABORT"
+    assert payload["allowed_advisory_modes"] == [
+        "shadow",
+        "paper",
+        "micro_canary_review",
+    ]
+    assert payload["allowed_live_modes"] == []
+    assert payload["allowed_modes"] == []
+
+
 def test_live_permission_api_reads_published_risk_permission(tmp_path, monkeypatch):
     lake = tmp_path / "lake"
     monkeypatch.setenv("QUANT_LAB_LAKE_ROOT", str(lake))

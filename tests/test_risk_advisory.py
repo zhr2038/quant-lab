@@ -54,3 +54,24 @@ def test_advisory_context_keeps_non_live_modes_for_known_active_status() -> None
 
     assert result.allowed_modes == ["paper", "shadow"]
     assert result.allowed_live_modes == []
+
+
+def test_advisory_context_preserves_review_only_published_modes() -> None:
+    permission = _permission(status=RiskPermissionStatus.ACTIVE_ABORT).model_copy(
+        update={
+            "permission": RiskAction.ABORT,
+            "allowed_advisory_modes": ["micro_canary_review", "live_canary"],
+        }
+    )
+
+    result = apply_risk_advisory_context(
+        permission,
+        {
+            "system_safety_status": "SAFE_FOR_ADVISORY",
+            "allowed_advisory_modes": ["shadow", "paper"],
+            "base_live_block_reasons": [],
+        },
+    )
+
+    assert result.allowed_advisory_modes == ["shadow", "paper", "micro_canary_review"]
+    assert result.allowed_live_modes == []

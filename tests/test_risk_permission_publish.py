@@ -137,6 +137,66 @@ def test_publish_risk_permission_exposes_micro_canary_review_summary(tmp_path):
     assert permission["max_single_order_usdt"] == 0
 
 
+def test_publish_risk_permission_ignores_obsolete_observability_blocks(tmp_path):
+    lake = tmp_path / "lake"
+    _write_gate(lake, GateStatus.QUARANTINE)
+    _write_fresh_market_bar(lake)
+    _write_actual_cost(lake)
+    now = datetime.now(UTC)
+    stale = now - timedelta(days=3)
+    bucket_key = "SOL|f3|rank_1"
+    write_parquet_dataset(
+        pl.DataFrame(
+            [
+                {
+                    "event_id": "old-blocked",
+                    "bucket_key": bucket_key,
+                    "trade_level_decision": "MICRO_CANARY_REVIEW_BLOCKED_BY_OBSERVABILITY",
+                    "decision_ts": stale,
+                    "created_at": now,
+                },
+                {
+                    "event_id": "current-paper",
+                    "bucket_key": "BNB|f3|rank_1",
+                    "trade_level_decision": "PAPER_ONLY",
+                    "decision_ts": now,
+                    "created_at": now,
+                },
+            ]
+        ),
+        lake / "gold" / "trade_level_judgment",
+    )
+    write_parquet_dataset(
+        pl.DataFrame(
+            [
+                {
+                    "bucket_key": bucket_key,
+                    "symbol": "SOL-USDT",
+                    "strategy_candidate": "v5.f3_dominant_entry",
+                    "sample_count": 22,
+                    "false_block_count": 11,
+                    "loss_saved_count": 1,
+                    "veto_net_value_bps": -2345.88,
+                    "policy_action": "MICRO_CANARY_REVIEW",
+                    "policy_reason": "false_block_bucket_negative_veto_value_manual_review_only",
+                    "created_at": now,
+                }
+            ]
+        ),
+        lake / "gold" / "trade_level_bucket_policy",
+    )
+
+    publish_risk_permission(lake, strategy="v5", version="5.0.0")
+
+    permission = read_parquet_dataset(lake / "gold" / "risk_permission").to_dicts()[0]
+    assert json.loads(permission["trade_level_decision_summary"]) == {"PAPER_ONLY": 1}
+    assert permission["micro_canary_review_count"] == 0
+    assert permission["blocked_by_observability_count"] == 0
+    assert permission["micro_canary_review_blocked_by_observability_count"] == 0
+    assert permission["micro_canary_review_bucket_count"] == 1
+    assert permission["recommended_next_permission_mode"] == "MICRO_CANARY_REVIEW_PENDING_MATCH"
+
+
 def test_publish_risk_permission_data_health_warns_before_market_bar_stale(tmp_path, monkeypatch):
     lake = tmp_path / "lake"
     monkeypatch.delenv("QUANT_LAB_MARKET_BAR_WARNING_DELAY_SECONDS", raising=False)

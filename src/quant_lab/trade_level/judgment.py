@@ -4,7 +4,7 @@ import hashlib
 import json
 from collections import Counter
 from collections.abc import Mapping
-from datetime import UTC, date, datetime
+from datetime import UTC, date, datetime, timedelta
 from pathlib import Path
 from typing import Any
 
@@ -42,6 +42,7 @@ from quant_lab.trade_level.opportunity_queue import (
 TRADE_LEVEL_SCHEMA_VERSION = "trade_level_judgment.v0.3"
 TRADE_OPPORTUNITY_EVENT_SCHEMA_VERSION = "trade_opportunity_event.v0.2"
 FALSE_BLOCK_AUDIT_SCHEMA_VERSION = "quant_lab_false_block_audit.v0.1"
+TRADE_LEVEL_RISK_SUMMARY_CURRENT_WINDOW_HOURS = 24
 
 TRADE_OPPORTUNITY_EVENT_DATASET = Path("gold") / "trade_opportunity_event"
 TRADE_OPPORTUNITY_LABEL_DATASET = Path("gold") / "trade_opportunity_label"
@@ -530,8 +531,9 @@ def trade_level_risk_summary(
             "top_micro_canary_review_buckets": safe_json_dumps(bucket_rows[:5]),
             "false_block_rate": 0.0,
         }
+    judgment_rows = _current_judgment_rows(judgments)
     decisions = Counter(
-        _text(row.get("trade_level_decision")) or "UNKNOWN" for row in judgments.to_dicts()
+        _text(row.get("trade_level_decision")) or "UNKNOWN" for row in judgment_rows
     )
     review_count = decisions.get("MICRO_CANARY_REVIEW", 0) + decisions.get(
         "MICRO_CANARY_REVIEW_BLOCKED_BY_OBSERVABILITY", 0
@@ -542,7 +544,20 @@ def trade_level_risk_summary(
     false_block_rate = 0.0
     audit = false_block_audit if false_block_audit is not None else pl.DataFrame()
     if not audit.is_empty():
-        rows = [row for row in audit.to_dicts() if row.get("quant_lab_would_block")]
+        current_event_ids = {
+            event_id
+            for row in judgment_rows
+            if (event_id := _text(row.get("event_id") or row.get("sample_id")))
+        }
+        rows = [
+            row
+            for row in audit.to_dicts()
+            if row.get("quant_lab_would_block")
+            and (
+                not current_event_ids
+                or _text(row.get("event_id") or row.get("sample_id")) in current_event_ids
+            )
+        ]
         if rows:
             false_block_rate = sum(1 for row in rows if row.get("false_block")) / len(rows)
     return {
@@ -565,6 +580,20 @@ def trade_level_risk_summary(
         "top_micro_canary_review_buckets": safe_json_dumps(bucket_rows[:5]),
         "false_block_rate": round(float(false_block_rate), 6),
     }
+
+
+def _current_judgment_rows(judgments: pl.DataFrame) -> list[dict[str, Any]]:
+    rows = judgments.to_dicts()
+    stamped: list[tuple[dict[str, Any], datetime]] = []
+    for row in rows:
+        decision_ts = _timestamp(row.get("decision_ts"))
+        if decision_ts is not None:
+            stamped.append((row, decision_ts))
+    if not stamped:
+        return rows
+    latest = max(ts for _, ts in stamped)
+    cutoff = latest - timedelta(hours=TRADE_LEVEL_RISK_SUMMARY_CURRENT_WINDOW_HOURS)
+    return [row for row, ts in stamped if ts >= cutoff]
 
 
 def _micro_canary_review_bucket_rows(frame: pl.DataFrame) -> list[dict[str, Any]]:

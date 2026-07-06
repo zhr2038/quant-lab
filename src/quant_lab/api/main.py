@@ -410,7 +410,7 @@ def create_app() -> FastAPI:
             )
 
     @app.get("/v1/health", response_model=HealthResponse)
-    def health() -> HealthResponse:
+    async def health() -> HealthResponse:
         return HealthResponse()
 
     @app.get("/v1/health/deep")

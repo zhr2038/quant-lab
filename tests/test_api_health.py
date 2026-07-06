@@ -1,3 +1,4 @@
+import inspect
 import json
 from datetime import UTC, datetime
 
@@ -25,6 +26,16 @@ def test_health_is_light_and_does_not_scan_lake(monkeypatch, tmp_path):
 
     assert response.status_code == 200
     assert response.json() == {"status": "ok", "service": "quant-lab", "mode": "read-only"}
+
+
+def test_health_endpoint_stays_async_fast_path():
+    route = next(
+        route
+        for route in app.routes
+        if getattr(route, "path", None) == "/v1/health"
+    )
+
+    assert inspect.iscoroutinefunction(route.endpoint)
 
 
 def test_health_deep_runs_dataset_checks(monkeypatch, tmp_path):

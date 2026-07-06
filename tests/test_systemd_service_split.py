@@ -243,7 +243,8 @@ def test_candidate_research_refresh_is_separate_from_alpha_evidence():
     assert "build-bnb-swing-exit-policy-review" not in refresh_unit
     assert "build-entry-quality" in refresh_unit
     assert "build-regime-router" not in refresh_unit
-    assert "flock -E 75 -w 30" in refresh_unit
+    assert "flock -E 75 -w 600 /var/lock/quant-lab-heavy.lock" in refresh_unit
+    assert "flock -E 75 -w 30 /var/lock/quant-lab-v5-research.lock" in refresh_unit
     assert "/usr/bin/timeout 20m" in refresh_unit
     assert "TimeoutStartSec=25min" in refresh_unit
 

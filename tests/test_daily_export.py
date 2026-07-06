@@ -1717,6 +1717,44 @@ def test_system_acceptance_requires_expanded_reader_runs_and_daily_rows():
     assert passed_row["status"] == "PASS"
 
 
+def test_system_acceptance_treats_missing_expanded_paper_sources_as_not_applicable():
+    generated_at = datetime(2026, 6, 4, 10, tzinfo=UTC)
+    advisory = pl.DataFrame(
+        [
+            {
+                "strategy_id": "ETH_RESEARCH_ONLY",
+                "strategy_candidate": "v5.research_only",
+                "symbol": "ETH-USDT",
+                "decision": "RESEARCH_ONLY",
+                "recommended_mode": "research",
+                "universe_type": "research",
+                "generated_at": generated_at,
+                "expires_at": generated_at + timedelta(hours=2),
+            }
+        ]
+    )
+
+    dashboard = daily_export_module.build_system_acceptance_dashboard(
+        frames={},
+        report_frames={"strategy_opportunity_advisory": advisory},
+        row_counts={},
+        pre_export_v5={},
+        data_quality_warnings=[],
+        api_latency_summary=pl.DataFrame(),
+        lake_file_count=0,
+        generated_at=generated_at,
+    )
+    row = next(
+        row
+        for row in dashboard.to_dicts()
+        if row["check_name"] == "expanded_universe_paper_v5_rows_ok"
+    )
+
+    assert row["status"] == "PASS"
+    assert "not_applicable" in row["observed_value"]
+    assert row["next_action"] == ""
+
+
 def test_system_acceptance_requires_no_sample_reason_when_expanded_entry_count_zero():
     generated_at = datetime(2026, 6, 4, 10, tzinfo=UTC)
     advisory = pl.DataFrame(

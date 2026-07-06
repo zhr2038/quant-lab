@@ -499,14 +499,11 @@ def _expanded_universe_v5_check(
     if not wanted:
         return _check(
             "expanded_universe_paper_v5_rows_ok",
-            "WARNING",
-            "no HYPE/WLD PAPER_READY source rows",
-            "HYPE/WLD PAPER_READY source rows should produce V5 paper rows",
+            "PASS",
+            "not_applicable; no HYPE/WLD PAPER_READY source rows",
+            "when HYPE/WLD PAPER_READY source rows exist, they should produce V5 paper rows",
             "V5",
-            (
-                "wait for expanded-universe PAPER_READY advisory or refresh "
-                "strategy_opportunity_advisory"
-            ),
+            "",
         )
     missing_reader = sorted(wanted - v5_reader)
     missing_runs = sorted(wanted - v5_runs)

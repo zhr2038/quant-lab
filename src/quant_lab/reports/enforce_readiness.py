@@ -18,12 +18,24 @@ from quant_lab.costs.model import (
 )
 from quant_lab.data.lake import read_parquet_dataset, read_parquet_lazy
 from quant_lab.risk.publish import is_permission_status_enforceable, parse_risk_permission_row
+from quant_lab.strategy_telemetry import analyze as telemetry_analyze
 from quant_lab.symbols import normalize_symbol
 
 DEFAULT_COST_SYMBOLS = ["BNB-USDT", "BTC-USDT", "ETH-USDT", "SOL-USDT"]
 LIVE_UNIVERSE_SYMBOLS = DEFAULT_COST_SYMBOLS
 ENFORCE_READINESS_JSON = "v5_enforce_readiness.json"
 ENFORCE_READINESS_CSV = "v5_enforce_readiness.csv"
+FALLBACK_RATE_BREAKDOWN_CSV = "fallback_rate_breakdown.csv"
+FALLBACK_RATE_BREAKDOWN_COLUMNS = [
+    "day",
+    "symbol",
+    "endpoint",
+    "cost_source",
+    "fallback_type",
+    "fallback_count",
+    "request_count",
+    "fallback_rate",
+]
 ACTUAL_OR_MIXED_COST_SOURCES = {
     "actual_fills",
     "actual_okx_fills_and_bills",
@@ -323,12 +335,282 @@ def enforce_readiness_members(
     }
 
 
+def build_fallback_rate_breakdown(
+    lake_root: str | Path,
+    *,
+    analysis_date: str | None = None,
+) -> pl.DataFrame:
+    """Break down the readiness fallback_rate using the same telemetry event identity.
+
+    The readiness gate intentionally keeps a single aggregate fallback_rate for
+    policy. This table is evidence only: it explains which endpoint/symbol/cost
+    bucket contributed actual fallback events without changing the gate itself.
+    """
+    root = Path(lake_root)
+    requests = _read_optional_frame(root / "silver" / "v5_quant_lab_request")
+    fallbacks = _read_optional_frame(root / "silver" / "v5_quant_lab_fallback")
+    if requests.is_empty() and fallbacks.is_empty():
+        return _fallback_rate_breakdown_frame([])
+
+    effective_day = analysis_date or _latest_strategy_health_day(root)
+    if effective_day is None:
+        effective_day = _latest_telemetry_event_day(requests, fallbacks)
+
+    request_rows = list(telemetry_analyze._unique_event_rows(requests).values())
+    fallback_rows = list(telemetry_analyze._unique_event_rows(fallbacks).values())
+    request_rows = telemetry_analyze._analysis_day_event_rows(request_rows, effective_day)
+    fallback_rows = telemetry_analyze._analysis_day_event_rows(fallback_rows, effective_day)
+
+    request_dims_by_key: dict[str, dict[str, str]] = {}
+    request_counts: dict[tuple[str, str, str, str], int] = {}
+    fallback_events: dict[str, dict[str, str]] = {}
+
+    for row in request_rows:
+        payload = telemetry_analyze._payload(row)
+        status = telemetry_analyze._request_status(row, payload)
+        if status not in {"success", "fallback", "error"}:
+            continue
+        event_key = telemetry_analyze._event_key(row)
+        dims = _fallback_rate_dimensions(row, fallback_type="none")
+        request_dims_by_key[event_key] = dims
+        request_key = _fallback_rate_request_key(dims)
+        request_counts[request_key] = request_counts.get(request_key, 0) + 1
+        if status == "fallback":
+            fallback_events[event_key] = {
+                **dims,
+                "fallback_type": _fallback_rate_type(row),
+            }
+
+    for row in fallback_rows:
+        payload = telemetry_analyze._payload(row)
+        if not telemetry_analyze._fallback_table_row_is_actual(row, payload):
+            continue
+        event_key = telemetry_analyze._event_key(row)
+        dims = request_dims_by_key.get(event_key)
+        if dims is None:
+            dims = _fallback_rate_dimensions(row, fallback_type="none")
+        fallback_events.setdefault(
+            event_key,
+            {
+                **dims,
+                "fallback_type": _fallback_rate_type(row),
+            },
+        )
+
+    if not fallback_events:
+        return _fallback_rate_breakdown_frame([])
+
+    fallback_counts: dict[tuple[str, str, str, str, str], int] = {}
+    for dims in fallback_events.values():
+        key = (
+            dims["day"],
+            dims["symbol"],
+            dims["endpoint"],
+            dims["cost_source"],
+            dims["fallback_type"],
+        )
+        fallback_counts[key] = fallback_counts.get(key, 0) + 1
+
+    rows: list[dict[str, Any]] = []
+    total_fallback_count = len(fallback_events)
+    total_request_count = len(request_rows)
+    if total_fallback_count:
+        rows.append(
+            {
+                "day": effective_day or max(dims["day"] for dims in fallback_events.values()),
+                "symbol": "ALL",
+                "endpoint": "ALL",
+                "cost_source": "ALL",
+                "fallback_type": "ALL",
+                "fallback_count": total_fallback_count,
+                "request_count": total_request_count,
+                "fallback_rate": _safe_rate(total_fallback_count, total_request_count),
+            }
+        )
+
+    for key, fallback_count in fallback_counts.items():
+        day, symbol, endpoint, cost_source, fallback_type = key
+        request_key = (day, symbol, endpoint, cost_source)
+        request_count = request_counts.get(request_key, 0)
+        if request_count <= 0:
+            request_count = fallback_count
+        rows.append(
+            {
+                "day": day,
+                "symbol": symbol,
+                "endpoint": endpoint,
+                "cost_source": cost_source,
+                "fallback_type": fallback_type,
+                "fallback_count": fallback_count,
+                "request_count": request_count,
+                "fallback_rate": _safe_rate(fallback_count, request_count),
+            }
+        )
+    return _fallback_rate_breakdown_frame(rows)
+
+
 def _rows(dataset_path: Path) -> list[dict[str, Any]]:
     try:
         frame = read_parquet_dataset(dataset_path)
     except Exception:
         return []
     return [] if frame.is_empty() else frame.to_dicts()
+
+
+def _read_optional_frame(dataset_path: Path) -> pl.DataFrame:
+    try:
+        return read_parquet_dataset(dataset_path)
+    except Exception:
+        return pl.DataFrame()
+
+
+def _fallback_rate_breakdown_frame(rows: list[dict[str, Any]]) -> pl.DataFrame:
+    if not rows:
+        return pl.DataFrame(schema={column: pl.Utf8 for column in FALLBACK_RATE_BREAKDOWN_COLUMNS})
+    return (
+        pl.DataFrame(rows, infer_schema_length=None)
+        .with_columns(
+            pl.col("fallback_count").cast(pl.Int64, strict=False).fill_null(0),
+            pl.col("request_count").cast(pl.Int64, strict=False).fill_null(0),
+            pl.col("fallback_rate").cast(pl.Float64, strict=False).fill_null(0.0),
+        )
+        .sort(
+            ["fallback_count", "fallback_rate", "day", "endpoint", "symbol", "fallback_type"],
+            descending=[True, True, False, False, False, False],
+        )
+        .select(FALLBACK_RATE_BREAKDOWN_COLUMNS)
+    )
+
+
+def _latest_strategy_health_day(root: Path) -> str | None:
+    row = _latest_row(root / "gold" / "strategy_health_daily")
+    for field in ["day", "date", "analysis_date", "as_of_date"]:
+        value = row.get(field)
+        if value is not None and str(value).strip():
+            return str(value)[:10]
+    for field in ["latest_bundle_ts", "last_seen_bundle_ts", "created_at", "ingest_ts"]:
+        parsed = _parse_dt(row.get(field))
+        if parsed is not None:
+            return parsed.date().isoformat()
+    return None
+
+
+def _latest_telemetry_event_day(*frames: pl.DataFrame) -> str | None:
+    latest: datetime | None = None
+    for frame in frames:
+        for row in telemetry_analyze._unique_event_rows(frame).values():
+            event_time = telemetry_analyze._request_event_time(row)
+            if latest is None or event_time > latest:
+                latest = event_time
+    return latest.date().isoformat() if latest is not None else None
+
+
+def _fallback_rate_dimensions(
+    row: dict[str, Any],
+    *,
+    fallback_type: str,
+) -> dict[str, str]:
+    payload = telemetry_analyze._payload(row)
+    event_time = telemetry_analyze._request_event_time(row)
+    symbol = _dimension_value(
+        telemetry_analyze._first_value(
+            row,
+            payload,
+            [
+                "normalized_symbol",
+                "symbol",
+                "request_symbol",
+                "response_symbol",
+                "inst_id",
+                "instId",
+                "instrument",
+                "pair",
+            ],
+        )
+    )
+    if symbol != "not_observable":
+        symbol = normalize_symbol(symbol)
+    endpoint = _dimension_value(
+        telemetry_analyze._first_value(
+            row,
+            payload,
+            ["endpoint_path", "endpoint", "path", "route", "api_path", "request_path", "url"],
+        )
+    )
+    cost_source = _dimension_value(
+        telemetry_analyze._first_value(
+            row,
+            payload,
+            [
+                "cost_source",
+                "effective_cost_source",
+                "latest_cost_source",
+                "local_cost_source",
+                "response.cost_source",
+                "response_json.cost_source",
+                "response_body.cost_source",
+                "body.cost_source",
+                "json.cost_source",
+                "cost.source",
+            ],
+        )
+    )
+    return {
+        "day": event_time.date().isoformat(),
+        "symbol": symbol,
+        "endpoint": endpoint,
+        "cost_source": cost_source,
+        "fallback_type": fallback_type,
+    }
+
+
+def _fallback_rate_type(row: dict[str, Any]) -> str:
+    payload = telemetry_analyze._payload(row)
+    return _dimension_value(
+        telemetry_analyze._first_value(
+            row,
+            payload,
+            [
+                "fallback_type",
+                "error_type",
+                "exception_type",
+                "fallback_reason",
+                "diagnosis",
+                "degraded_reason",
+                "error",
+            ],
+        ),
+        default="fallback",
+    )
+
+
+def _fallback_rate_request_key(dims: dict[str, str]) -> tuple[str, str, str, str]:
+    return (dims["day"], dims["symbol"], dims["endpoint"], dims["cost_source"])
+
+
+def _dimension_value(value: Any, *, default: str = "not_observable") -> str:
+    if value is None:
+        return default
+    text = str(value).strip()
+    if not text:
+        return default
+    normalized = text.lower()
+    if normalized in {
+        "na",
+        "n/a",
+        "nan",
+        "none",
+        "null",
+        "unknown",
+        "not_available",
+        "not_observable",
+    }:
+        return default
+    return text
+
+
+def _safe_rate(numerator: int, denominator: int) -> float:
+    return float(numerator) / float(denominator) if denominator else 0.0
 
 
 def _latest_row(dataset_path: Path) -> dict[str, Any]:

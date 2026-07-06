@@ -4543,6 +4543,7 @@ def test_export_empty_csv_members_have_fixed_headers(tmp_path):
             "reports/live_universe_cost_coverage.csv",
             "reports/bottom_zone_probe_paper_readiness.csv",
             "reports/api_error_summary.csv",
+            "reports/fallback_rate_breakdown.csv",
             "reports/github_ci_status.csv",
             "v5/v5_candidate_events.csv",
             "v5/v5_btc_probe_entry_quality_audit.csv",

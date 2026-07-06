@@ -93,7 +93,10 @@ from quant_lab.ops.lake_health import lake_file_health_summary
 from quant_lab.reports.enforce_readiness import (
     ENFORCE_READINESS_CSV,
     ENFORCE_READINESS_JSON,
+    FALLBACK_RATE_BREAKDOWN_COLUMNS,
+    FALLBACK_RATE_BREAKDOWN_CSV,
     build_enforce_readiness_report,
+    build_fallback_rate_breakdown,
     enforce_readiness_members,
 )
 from quant_lab.reports.system_acceptance import (
@@ -665,6 +668,7 @@ REQUIRED_MEMBERS = [
     "reports/api_latency_summary.csv",
     "reports/api_latency_summary.md",
     "reports/api_error_summary.csv",
+    f"reports/{FALLBACK_RATE_BREAKDOWN_CSV}",
     "reports/github_ci_status.csv",
     "reports/v5_bundle_sync_diagnostics.csv",
     "reports/v5_local_live_vs_quant_lab_shadow.csv",
@@ -837,6 +841,7 @@ CSV_SCHEMAS: dict[str, list[str]] = {
         "warnings_json",
         "created_at",
     ],
+    f"reports/{FALLBACK_RATE_BREAKDOWN_CSV}": FALLBACK_RATE_BREAKDOWN_COLUMNS,
     "features/feature_snapshot.csv": [
         "feature_set",
         "feature_name",
@@ -4519,6 +4524,10 @@ def export_daily_pack(
     )
     members.update(_chart_members(member_frames))
     members.update(enforce_readiness_members(root))
+    members[f"reports/{FALLBACK_RATE_BREAKDOWN_CSV}"] = _csv_member(
+        f"reports/{FALLBACK_RATE_BREAKDOWN_CSV}",
+        build_fallback_rate_breakdown(root),
+    )
     _attach_selected_v5_bundle(members, pre_export_v5)
     members["reports/github_ci_status.csv"] = _csv_member(
         "reports/github_ci_status.csv",

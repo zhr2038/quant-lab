@@ -9,7 +9,9 @@ import polars as pl
 import quant_lab.reports.enforce_readiness as readiness
 from quant_lab.data.lake import write_parquet_dataset
 from quant_lab.reports.enforce_readiness import (
+    FALLBACK_RATE_BREAKDOWN_COLUMNS,
     build_enforce_readiness_report,
+    build_fallback_rate_breakdown,
     write_enforce_readiness_report,
 )
 
@@ -328,6 +330,86 @@ def test_enforce_readiness_uses_lazy_telemetry_counts(tmp_path, monkeypatch):
 
     assert report.metrics["decision_audit_count"] == 1
     assert report.metrics["event_key_coverage"] == 1.0
+
+
+def test_fallback_rate_breakdown_dedupes_request_and_fallback_sources(tmp_path):
+    lake = tmp_path / "lake"
+    ts = "2026-07-06T11:00:00+00:00"
+    old_ts = "2026-07-05T11:00:00+00:00"
+    write_parquet_dataset(
+        pl.DataFrame(
+            [
+                {
+                    "strategy": "v5",
+                    "event_id": "sol-cost-success",
+                    "endpoint_path": "/v1/costs/estimate",
+                    "symbol": "SOL/USDT",
+                    "cost_source": "actual_fills",
+                    "success": True,
+                    "fallback_used": False,
+                    "ts_utc": ts,
+                },
+                {
+                    "strategy": "v5",
+                    "event_id": "sol-cost-fallback",
+                    "endpoint_path": "/v1/costs/estimate",
+                    "symbol": "SOL/USDT",
+                    "cost_source": "actual_fills",
+                    "success": False,
+                    "fallback_used": True,
+                    "error_type": "QuantLabTimeout",
+                    "ts_utc": ts,
+                },
+            ]
+        ),
+        lake / "silver/v5_quant_lab_request",
+    )
+    write_parquet_dataset(
+        pl.DataFrame(
+            [
+                {
+                    "strategy": "v5",
+                    "event_id": "sol-cost-fallback",
+                    "endpoint_path": "/v1/costs/estimate",
+                    "symbol": "SOL/USDT",
+                    "cost_source": "actual_fills",
+                    "success": False,
+                    "fallback_used": True,
+                    "error_type": "QuantLabTimeout",
+                    "ts_utc": ts,
+                    "source_count": 20,
+                },
+                {
+                    "strategy": "v5",
+                    "event_id": "old-fallback",
+                    "endpoint_path": "/v1/costs/estimate",
+                    "symbol": "SOL/USDT",
+                    "cost_source": "actual_fills",
+                    "success": False,
+                    "fallback_used": True,
+                    "error_type": "QuantLabTimeout",
+                    "ts_utc": old_ts,
+                },
+            ]
+        ),
+        lake / "silver/v5_quant_lab_fallback",
+    )
+
+    breakdown = build_fallback_rate_breakdown(lake, analysis_date="2026-07-06")
+
+    assert breakdown.columns == FALLBACK_RATE_BREAKDOWN_COLUMNS
+    rows = breakdown.to_dicts()
+    all_row = next(row for row in rows if row["symbol"] == "ALL")
+    sol_row = next(row for row in rows if row["symbol"] == "SOL-USDT")
+    assert all_row["fallback_count"] == 1
+    assert all_row["request_count"] == 2
+    assert all_row["fallback_rate"] == 0.5
+    assert sol_row["endpoint"] == "/v1/costs/estimate"
+    assert sol_row["cost_source"] == "actual_fills"
+    assert sol_row["fallback_type"] == "QuantLabTimeout"
+    assert sol_row["fallback_count"] == 1
+    assert sol_row["request_count"] == 2
+    assert sol_row["fallback_rate"] == 0.5
 
 
 def test_enforce_readiness_dedupe_namespaces_request_and_fallback_events(tmp_path):

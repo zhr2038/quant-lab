@@ -1,3 +1,4 @@
+import json
 from datetime import UTC, datetime
 
 import polars as pl
@@ -91,6 +92,9 @@ def test_v5_gold_mirror_appends_only_new_bundle_rows(tmp_path):
     gold = read_parquet_dataset(gold_path)
     assert gold.height == 2
     assert "bundle_day" in gold.columns
+    meta = json.loads((gold_path / "_snapshot_meta.json").read_text(encoding="utf-8"))
+    assert meta["dataset"] == "v5_final_score_vs_alpha6_conflict"
+    assert meta["row_count"] == 2
 
     write_parquet_dataset(
         pl.DataFrame(
@@ -124,6 +128,8 @@ def test_v5_gold_mirror_appends_only_new_bundle_rows(tmp_path):
     gold = read_parquet_dataset(gold_path)
     assert gold.height == 3
     assert sorted(gold["run_id"].to_list()) == ["run-current", "run-next", "run-old"]
+    meta = json.loads((gold_path / "_snapshot_meta.json").read_text(encoding="utf-8"))
+    assert meta["row_count"] == 3
 
 
 def test_v5_gold_mirror_repairs_equal_count_but_stale_gold(tmp_path):
@@ -175,6 +181,9 @@ def test_v5_gold_mirror_repairs_equal_count_but_stale_gold(tmp_path):
     assert gold.height == 2
     assert sorted(gold["run_id"].to_list()) == ["run-current", "run-old"]
     assert "bundle_day" in gold.columns
+    meta = json.loads((gold_path / "_snapshot_meta.json").read_text(encoding="utf-8"))
+    assert meta["dataset"] == "v5_final_score_vs_alpha6_conflict"
+    assert meta["row_count"] == 2
 
 
 def test_analyze_flags_reconcile_failure(tmp_path):

@@ -16,6 +16,7 @@ from quant_lab.data.lake import (
     read_parquet_lazy,
     upsert_parquet_dataset,
     write_parquet_dataset,
+    write_snapshot_meta,
 )
 from quant_lab.strategy_telemetry.models import V5TelemetryAnalysisResult
 from quant_lab.symbols import normalize_symbol
@@ -694,6 +695,7 @@ def _mirror_v5_consistency_gold(
         repaired = _repair_gold_mirror_if_needed(
             silver_path,
             gold_path,
+            gold_name=gold_name,
             analysis_date=analysis_date,
         )
         if repaired:
@@ -706,7 +708,7 @@ def _mirror_v5_consistency_gold(
         )
         if frame.is_empty():
             continue
-        _append_gold_mirror_rows(frame, gold_path, analysis_date)
+        _append_gold_mirror_rows(frame, gold_path, gold_name, analysis_date)
         if gold_name == "v5_bnb_paper_strategy_daily":
             previous_latest = _safe_read_dataset(
                 lake_root / GOLD_DATASETS["v5_bnb_paper_strategy_daily_latest"]
@@ -722,12 +724,17 @@ def _mirror_v5_consistency_gold(
                     latest,
                     lake_root / GOLD_DATASETS["v5_bnb_paper_strategy_daily_latest"],
                 )
+                _write_gold_snapshot_meta(
+                    lake_root / GOLD_DATASETS["v5_bnb_paper_strategy_daily_latest"],
+                    "v5_bnb_paper_strategy_daily_latest",
+                )
 
 
 def _repair_gold_mirror_if_needed(
     silver_path: Path,
     gold_path: Path,
     *,
+    gold_name: str,
     analysis_date: str,
 ) -> bool:
     silver_rows = _dataset_row_count(silver_path)
@@ -754,6 +761,7 @@ def _repair_gold_mirror_if_needed(
         gold_path,
         partition_by="bundle_day",
     )
+    _write_gold_snapshot_meta(gold_path, gold_name)
     return True
 
 
@@ -824,7 +832,12 @@ def _dataset_row_count(path: Path) -> int:
         return 0
 
 
-def _append_gold_mirror_rows(frame: pl.DataFrame, path: Path, analysis_date: str) -> None:
+def _append_gold_mirror_rows(
+    frame: pl.DataFrame,
+    path: Path,
+    dataset_name: str,
+    analysis_date: str,
+) -> None:
     partitioned = _with_bundle_day(frame, analysis_date)
     append_parquet_dataset(
         partitioned,
@@ -833,6 +846,12 @@ def _append_gold_mirror_rows(frame: pl.DataFrame, path: Path, analysis_date: str
         target_rows_per_file=100_000,
         file_prefix="mirror",
     )
+    _write_gold_snapshot_meta(path, dataset_name)
+
+
+def _write_gold_snapshot_meta(path: Path, dataset_name: str) -> None:
+    frame = _safe_read_dataset(path)
+    write_snapshot_meta(path, dataset_name=dataset_name, frame=frame)
 
 
 def _with_bundle_day(frame: pl.DataFrame, analysis_date: str) -> pl.DataFrame:

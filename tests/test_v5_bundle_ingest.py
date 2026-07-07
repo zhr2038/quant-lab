@@ -1026,6 +1026,18 @@ def test_ingest_parses_quant_lab_usage_files(tmp_path):
     redacted_manual_auth = '"manual_authorization_required": "<REDACTED>"'
     assert redacted_manual_auth not in p3_preflight[0]["raw_payload_json"]
     assert "dry_run_plan_not_ready" in p3_preflight[0]["blockers_json"]
+    for dataset in [
+        "v5_bnb_profit_lock_shadow",
+        "v5_bnb_strong_alpha6_bypass_shadow",
+        "v5_bnb_paper_strategy_runs",
+        "v5_bnb_paper_strategy_daily",
+        "v5_cost_probe_p3_preflight",
+    ]:
+        dataset_path = lake / "silver" / dataset
+        meta = json.loads((dataset_path / "_snapshot_meta.json").read_text(encoding="utf-8"))
+        assert meta["dataset"] == dataset
+        assert meta["row_count"] == read_parquet_dataset(dataset_path).height
+        assert meta["source_sha"]
     export = export_daily_pack(
         export_date="2026-05-10",
         lake_root=lake,

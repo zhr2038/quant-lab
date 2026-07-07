@@ -21,6 +21,7 @@ from quant_lab.data.lake import (
     read_parquet_dataset,
     upsert_parquet_dataset,
     write_parquet_dataset,
+    write_snapshot_meta,
 )
 from quant_lab.strategy_telemetry.bundle import (
     compute_sha256,
@@ -98,6 +99,40 @@ SILVER_DATASETS = {
     "v5_negative_expectancy_consistency": Path("silver/v5_negative_expectancy_consistency"),
     "v5_pullback_reversal_shadow": Path("gold/v5_pullback_reversal_shadow"),
     "v5_pullback_reversal_readiness": Path("gold/v5_pullback_reversal_readiness"),
+}
+
+WEB_VISIBLE_SILVER_SNAPSHOT_META_DATASETS = {
+    "v5_decision_audit",
+    "v5_trade_event",
+    "v5_roundtrip",
+    "v5_open_position",
+    "v5_state_snapshot",
+    "v5_quant_lab_usage",
+    "v5_quant_lab_request",
+    "v5_quant_lab_compliance",
+    "v5_quant_lab_cost_usage",
+    "v5_quant_lab_fallback",
+    "v5_candidate_event",
+    "v5_cost_probe_p3_preflight",
+    "v5_cost_probe_live_execution_status",
+    "v5_cost_probe_order_event",
+    "v5_cost_probe_roundtrip_event",
+    "v5_paper_strategy_run",
+    "v5_paper_strategy_proposal_ack",
+    "v5_paper_strategy_daily",
+    "v5_paper_slippage_coverage",
+    "v5_expanded_universe_advisory_reader",
+    "v5_expanded_universe_paper_runs",
+    "v5_expanded_universe_paper_daily",
+    "v5_btc_probe_entry_quality_audit",
+    "v5_bnb_profit_lock_shadow",
+    "v5_bnb_negative_expectancy_attribution",
+    "v5_final_score_vs_alpha6_conflict",
+    "v5_bnb_strong_alpha6_bypass_shadow",
+    "v5_negative_expectancy_attribution",
+    "v5_bnb_paper_strategy_runs",
+    "v5_bnb_paper_strategy_daily",
+    "v5_negative_expectancy_consistency",
 }
 
 QUANT_LAB_USAGE_PATHS = {
@@ -504,12 +539,17 @@ def _write_silver(
             empty_csv = empty_csv_headers.get(name)
             if empty_csv is not None:
                 relative, header = empty_csv
+                dataset_path = lake_root / dataset
                 counts[name] = _write_empty_csv_refresh_dataset(
-                    lake_root / dataset,
+                    dataset_path,
                     metadata,
                     relative,
                     header,
                 )
+                if name in WEB_VISIBLE_SILVER_SNAPSHOT_META_DATASETS:
+                    warning = _write_silver_snapshot_meta(dataset_path, name)
+                    if warning:
+                        warnings.append(warning)
             continue
         dataset_path = lake_root / dataset
         if name in EVENT_KEY_DATASETS:
@@ -528,6 +568,10 @@ def _write_silver(
                 dataset_rows,
                 ["strategy", "bundle_sha256", "source_path_inside_bundle", "row_index"],
             )
+        if name in WEB_VISIBLE_SILVER_SNAPSHOT_META_DATASETS:
+            warning = _write_silver_snapshot_meta(dataset_path, name)
+            if warning:
+                warnings.append(warning)
     return counts, warnings
 
 
@@ -598,6 +642,10 @@ def _rehydrate_empty_csv_refresh_datasets(
                 if name == "v5_cost_probe_p3_preflight"
                 else _upsert_stable_rows(dataset_path, rows[name])
             )
+            if name in WEB_VISIBLE_SILVER_SNAPSHOT_META_DATASETS:
+                warning = _write_silver_snapshot_meta(dataset_path, name)
+                if warning:
+                    warnings.append(warning)
             continue
         if name not in EMPTY_CSV_REFRESH_DATASETS:
             continue
@@ -610,6 +658,10 @@ def _rehydrate_empty_csv_refresh_datasets(
                 relative,
                 header,
             )
+            if name in WEB_VISIBLE_SILVER_SNAPSHOT_META_DATASETS:
+                warning = _write_silver_snapshot_meta(dataset_path, name)
+                if warning:
+                    warnings.append(warning)
     return counts, warnings
 
 
@@ -2591,6 +2643,20 @@ def _write_empty_csv_refresh_dataset(
         dataset_path,
     )
     return 0
+
+
+def _write_silver_snapshot_meta(dataset_path: Path, dataset_name: str) -> str | None:
+    try:
+        frame = read_parquet_dataset(dataset_path)
+        write_snapshot_meta(
+            dataset_path,
+            dataset_name=dataset_name,
+            frame=frame,
+            schema_version=SCHEMA_VERSION,
+        )
+    except Exception as exc:
+        return f"{dataset_name} snapshot meta skipped: {type(exc).__name__}:{exc}"
+    return None
 
 
 def _with_stable_row_key(row: dict[str, Any]) -> dict[str, Any]:

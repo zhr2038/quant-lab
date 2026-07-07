@@ -4,6 +4,7 @@ import json
 import math
 import os
 import re
+import shutil
 import subprocess
 import threading
 import time
@@ -171,6 +172,7 @@ def _build_bigscreen_snapshot_payload(root: Path) -> dict[str, Any]:
     overview["status"] = status
     health_score = _health_score(status, data_health, cost, v5, web_events, exports)
     legacy_anomalies = _legacy_web_anomalies(data_health)
+    server_resources = _server_resources(root)
     v5_payload = _v5_payload(v5, current_readiness)
     exports_payload = _exports_payload(exports)
     exports_payload.update(_expert_pack_v5_lag_status_payload(exports, v5))
@@ -201,6 +203,7 @@ def _build_bigscreen_snapshot_payload(root: Path) -> dict[str, Any]:
         "collectors": _collector_payload(collectors),
         "data_health": _data_health_payload(data_health, data_matrix),
         "legacy_anomalies": legacy_anomalies,
+        "server_resources": server_resources,
         "web_perf": _web_perf_payload(web_events, api_metrics, web_smoke),
         "consumers": _consumer_payload(consumers),
         "exports": exports_payload,
@@ -2293,6 +2296,207 @@ def _legacy_web_anomalies(data_health: dict[str, Any]) -> dict[str, Any]:
         "items": items,
         "warnings": warning_values,
     }
+
+
+def _server_resources(root: Path) -> dict[str, Any]:
+    sampled_at = datetime.now(UTC)
+    cpu_count = os.cpu_count() or 1
+    load_1m: float | None = None
+    load_5m: float | None = None
+    load_15m: float | None = None
+    try:
+        load_1m, load_5m, load_15m = os.getloadavg()
+    except (AttributeError, OSError):
+        pass
+    cpu_usage_percent = _cpu_usage_percent_sample()
+    cpu_load_percent = (
+        min(999.0, max(0.0, (load_1m / max(cpu_count, 1)) * 100.0))
+        if load_1m is not None
+        else None
+    )
+    cpu_display_percent = cpu_usage_percent if cpu_usage_percent is not None else cpu_load_percent
+    memory = _memory_usage()
+    disk = _disk_usage(root)
+    uptime_seconds = _uptime_seconds()
+    swap_percent = _percent(memory.get("swap_used_bytes"), memory.get("swap_total_bytes"))
+    statuses = [
+        _resource_status(cpu_display_percent, warning=80.0, critical=95.0),
+        _resource_status(memory.get("memory_used_percent"), warning=80.0, critical=92.0),
+        _resource_status(disk.get("disk_used_percent"), warning=80.0, critical=90.0),
+        _resource_status(swap_percent, warning=20.0, critical=60.0),
+    ]
+    status = "CRITICAL" if "CRITICAL" in statuses else "WARNING" if "WARNING" in statuses else "OK"
+    return {
+        "live_order_effect": "none_read_only_display",
+        "source": "server_runtime_readonly",
+        "sampled_at": _json_value(sampled_at),
+        "hostname": _hostname(),
+        "status": status,
+        "cpu_count": cpu_count,
+        "cpu_usage_percent": _rounded(cpu_usage_percent),
+        "cpu_load_percent": _rounded(cpu_load_percent),
+        "cpu_display_percent": _rounded(cpu_display_percent),
+        "load_1m": _rounded(load_1m, digits=2),
+        "load_5m": _rounded(load_5m, digits=2),
+        "load_15m": _rounded(load_15m, digits=2),
+        "memory_total_bytes": memory.get("memory_total_bytes"),
+        "memory_available_bytes": memory.get("memory_available_bytes"),
+        "memory_used_bytes": memory.get("memory_used_bytes"),
+        "memory_used_percent": _rounded(memory.get("memory_used_percent")),
+        "swap_total_bytes": memory.get("swap_total_bytes"),
+        "swap_used_bytes": memory.get("swap_used_bytes"),
+        "swap_used_percent": _rounded(swap_percent),
+        **disk,
+        "uptime_seconds": _rounded(uptime_seconds, digits=0),
+    }
+
+
+def _hostname() -> str:
+    try:
+        uname = os.uname()
+    except AttributeError:
+        return os.environ.get("COMPUTERNAME") or "unknown"
+    return uname.nodename or "unknown"
+
+
+def _cpu_usage_percent_sample() -> float | None:
+    first = _read_proc_stat_cpu()
+    if first is None:
+        return None
+    time.sleep(0.05)
+    second = _read_proc_stat_cpu()
+    if second is None:
+        return None
+    total_delta = second[0] - first[0]
+    idle_delta = second[1] - first[1]
+    if total_delta <= 0:
+        return None
+    return max(0.0, min(100.0, (1.0 - (idle_delta / total_delta)) * 100.0))
+
+
+def _read_proc_stat_cpu() -> tuple[int, int] | None:
+    path = Path("/proc/stat")
+    try:
+        line = path.read_text(encoding="utf-8").splitlines()[0]
+    except (OSError, IndexError):
+        return None
+    parts = line.split()
+    if not parts or parts[0] != "cpu":
+        return None
+    try:
+        values = [int(value) for value in parts[1:]]
+    except ValueError:
+        return None
+    if len(values) < 4:
+        return None
+    idle = values[3] + (values[4] if len(values) > 4 else 0)
+    return sum(values), idle
+
+
+def _memory_usage() -> dict[str, Any]:
+    meminfo = _read_meminfo()
+    total = meminfo.get("MemTotal")
+    available = meminfo.get("MemAvailable")
+    if total is None:
+        return {}
+    if available is None:
+        available = meminfo.get("MemFree", 0) + meminfo.get("Buffers", 0) + meminfo.get("Cached", 0)
+    used = max(0, total - available)
+    swap_total = meminfo.get("SwapTotal", 0)
+    swap_free = meminfo.get("SwapFree", 0)
+    swap_used = max(0, swap_total - swap_free)
+    return {
+        "memory_total_bytes": total,
+        "memory_available_bytes": available,
+        "memory_used_bytes": used,
+        "memory_used_percent": _percent(used, total),
+        "swap_total_bytes": swap_total,
+        "swap_used_bytes": swap_used,
+    }
+
+
+def _read_meminfo() -> dict[str, int]:
+    values: dict[str, int] = {}
+    try:
+        lines = Path("/proc/meminfo").read_text(encoding="utf-8").splitlines()
+    except OSError:
+        return values
+    for line in lines:
+        if ":" not in line:
+            continue
+        key, rest = line.split(":", 1)
+        parts = rest.strip().split()
+        if not parts:
+            continue
+        try:
+            kib = int(parts[0])
+        except ValueError:
+            continue
+        values[key] = kib * 1024
+    return values
+
+
+def _disk_usage(root: Path) -> dict[str, Any]:
+    disk_path = root if root.exists() else Path("/")
+    try:
+        usage = shutil.disk_usage(disk_path)
+    except OSError:
+        try:
+            usage = shutil.disk_usage("/")
+            disk_path = Path("/")
+        except OSError:
+            return {}
+    used = max(0, usage.total - usage.free)
+    return {
+        "disk_path": str(disk_path),
+        "disk_total_bytes": usage.total,
+        "disk_free_bytes": usage.free,
+        "disk_used_bytes": used,
+        "disk_used_percent": _percent(used, usage.total),
+    }
+
+
+def _uptime_seconds() -> float | None:
+    try:
+        raw = Path("/proc/uptime").read_text(encoding="utf-8").split()[0]
+        return float(raw)
+    except (OSError, IndexError, ValueError):
+        return None
+
+
+def _percent(numerator: Any, denominator: Any) -> float | None:
+    try:
+        top = float(numerator)
+        bottom = float(denominator)
+    except (TypeError, ValueError):
+        return None
+    if bottom <= 0:
+        return None
+    return max(0.0, (top / bottom) * 100.0)
+
+
+def _rounded(value: Any, *, digits: int = 1) -> float | None:
+    try:
+        numeric = float(value)
+    except (TypeError, ValueError):
+        return None
+    if not math.isfinite(numeric):
+        return None
+    return round(numeric, digits)
+
+
+def _resource_status(value: Any, *, warning: float, critical: float) -> str:
+    try:
+        numeric = float(value)
+    except (TypeError, ValueError):
+        return "UNKNOWN"
+    if not math.isfinite(numeric):
+        return "UNKNOWN"
+    if numeric >= critical:
+        return "CRITICAL"
+    if numeric >= warning:
+        return "WARNING"
+    return "OK"
 
 
 def _web_v2_smoke_status(now: datetime) -> dict[str, Any]:

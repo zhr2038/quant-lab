@@ -211,6 +211,40 @@ button{font:inherit;color:inherit}
   height:46px;border:1px solid rgba(45,232,166,.28);border-radius:12px;background:rgba(45,232,166,.08);
   color:#b8f7df;display:flex;align-items:center;padding:0 11px;font-size:11px;
 }
+.server-resources{min-height:0}
+.server-resource-head{display:flex;align-items:flex-start;justify-content:space-between;gap:12px}
+.server-resource-head .sub{margin-top:6px;font-size:11px;line-height:1.35;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;max-width:270px}
+.server-resource-badge{
+  height:28px;padding:0 10px;border-radius:999px;border:1px solid rgba(45,232,166,.6);
+  display:flex;align-items:center;gap:6px;font-size:12px;font-weight:800;color:#b8f7df;background:rgba(45,232,166,.1);
+  white-space:nowrap;
+}
+.server-resource-badge.warning{border-color:rgba(255,196,87,.75);color:#ffe0a4;background:rgba(255,196,87,.12)}
+.server-resource-badge.critical{border-color:rgba(255,93,125,.8);color:#ffd0dc;background:rgba(255,93,125,.12)}
+.server-resource-list{display:grid;gap:7px;margin-top:12px}
+.server-resource-row{
+  display:grid;grid-template-columns:20px minmax(0,1fr) 86px;align-items:center;gap:8px;
+  border:1px solid rgba(80,169,255,.24);border-radius:11px;background:rgba(4,28,52,.54);
+  padding:7px 9px;min-width:0;
+}
+.server-resource-row svg{color:var(--green);filter:drop-shadow(0 0 8px rgba(45,232,166,.45))}
+.server-resource-row span{display:block;color:var(--muted);font-size:9px;line-height:1}
+.server-resource-row strong{display:block;margin-top:2px;color:#eaf6ff;font-size:18px;line-height:1}
+.server-resource-row em{
+  display:block;margin-top:3px;color:var(--muted);font-size:9px;font-style:normal;
+  white-space:nowrap;overflow:hidden;text-overflow:ellipsis;
+}
+.resource-meter{height:9px;border-radius:999px;background:rgba(80,169,255,.22);overflow:hidden}
+.resource-meter i{display:block;height:100%;border-radius:999px;background:linear-gradient(90deg,var(--green),var(--blue));box-shadow:0 0 10px rgba(45,232,166,.38)}
+.server-resources.warning .resource-meter i{background:linear-gradient(90deg,var(--yellow),#50a9ff)}
+.server-resources.critical .resource-meter i{background:linear-gradient(90deg,var(--red),var(--yellow))}
+.server-resource-meta{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:8px;margin-top:10px}
+.server-resource-meta span{
+  border:1px solid rgba(80,169,255,.22);background:rgba(5,28,52,.46);border-radius:10px;
+  padding:6px 8px;min-width:0;
+}
+.server-resource-meta b{display:block;font-size:13px;line-height:1;color:#dff7ff;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.server-resource-meta em{display:block;margin-top:3px;font-size:8px;font-style:normal;color:var(--muted);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
 .map-row{
   width:100%;height:30px;border-radius:9px;border:1px solid rgba(80,169,255,.35);background:rgba(12,48,86,.55);
   display:grid;grid-template-columns:18px 66px 1fr;gap:8px;align-items:center;margin-top:7px;padding:0 11px;font-size:12px;text-align:left;cursor:pointer;
@@ -781,7 +815,7 @@ button{font:inherit;color:inherit}
   .status-ring{height:322px}
   .ring-chart{top:88px}
   .health-pill{bottom:24px}
-  .legacy-anomalies{overflow:visible;padding-bottom:26px}
+  .legacy-anomalies,.server-resources{overflow:visible;padding-bottom:26px}
   .legacy-anomaly-head{gap:16px}
   .legacy-anomaly-head .sub{font-size:12px;line-height:1.45}
   .legacy-anomaly-badge{height:34px;padding:0 14px;font-size:13px}
@@ -807,6 +841,20 @@ button{font:inherit;color:inherit}
   .legacy-anomaly-empty{
     min-height:58px;height:auto;padding:12px 14px;font-size:13px;line-height:1.35;
   }
+  .server-resource-head{gap:16px}
+  .server-resource-head .sub{font-size:12px;line-height:1.45;max-width:360px}
+  .server-resource-badge{height:34px;padding:0 14px;font-size:13px}
+  .server-resource-list{gap:10px;margin-top:16px}
+  .server-resource-row{
+    grid-template-columns:24px minmax(0,1fr) 112px;gap:10px;padding:10px 12px;border-radius:14px;
+  }
+  .server-resource-row strong{font-size:23px}
+  .server-resource-row span,.server-resource-row em{font-size:11px}
+  .resource-meter{height:11px}
+  .server-resource-meta{gap:10px;margin-top:14px}
+  .server-resource-meta span{padding:9px 10px;border-radius:12px}
+  .server-resource-meta b{font-size:16px}
+  .server-resource-meta em{font-size:10px}
   .action-queue{overflow:visible;padding:18px 20px}
   .queue-item{
     height:auto;min-height:54px;margin-top:10px;padding:10px 14px 10px 40px;border-radius:14px;

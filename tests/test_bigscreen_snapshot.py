@@ -42,6 +42,19 @@ def test_bigscreen_snapshot_empty_lake_is_read_only_and_degraded(tmp_path):
     ]
 
 
+def test_bigscreen_snapshot_includes_read_only_server_resources(tmp_path):
+    clear_bigscreen_cache()
+    payload = bigscreen_snapshot(tmp_path / "lake")
+
+    resources = payload["server_resources"]
+    assert resources["live_order_effect"] == "none_read_only_display"
+    assert resources["source"] == "server_runtime_readonly"
+    assert resources["status"] in {"OK", "WARNING", "CRITICAL"}
+    assert resources["cpu_count"] >= 1
+    assert resources["disk_path"]
+    assert resources["disk_total_bytes"] >= resources["disk_free_bytes"]
+
+
 def test_bigscreen_snapshot_kpis_include_market_bar_close_time(tmp_path):
     lake = tmp_path / "lake"
     opened_at = datetime.now(UTC) - timedelta(hours=1, minutes=5)

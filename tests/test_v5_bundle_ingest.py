@@ -1037,6 +1037,7 @@ def test_ingest_parses_quant_lab_usage_files(tmp_path):
         meta = json.loads((dataset_path / "_snapshot_meta.json").read_text(encoding="utf-8"))
         assert meta["dataset"] == dataset
         assert meta["row_count"] == read_parquet_dataset(dataset_path).height
+        assert meta["generated_at"]
         assert meta["source_sha"]
     export = export_daily_pack(
         export_date="2026-05-10",

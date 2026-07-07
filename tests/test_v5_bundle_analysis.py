@@ -95,6 +95,7 @@ def test_v5_gold_mirror_appends_only_new_bundle_rows(tmp_path):
     meta = json.loads((gold_path / "_snapshot_meta.json").read_text(encoding="utf-8"))
     assert meta["dataset"] == "v5_final_score_vs_alpha6_conflict"
     assert meta["row_count"] == 2
+    assert meta["generated_at"] == "2026-05-10T00:00:00Z"
 
     write_parquet_dataset(
         pl.DataFrame(
@@ -130,6 +131,7 @@ def test_v5_gold_mirror_appends_only_new_bundle_rows(tmp_path):
     assert sorted(gold["run_id"].to_list()) == ["run-current", "run-next", "run-old"]
     meta = json.loads((gold_path / "_snapshot_meta.json").read_text(encoding="utf-8"))
     assert meta["row_count"] == 3
+    assert meta["generated_at"] == "2026-05-11T00:00:00Z"
 
 
 def test_v5_gold_mirror_repairs_equal_count_but_stale_gold(tmp_path):
@@ -184,6 +186,7 @@ def test_v5_gold_mirror_repairs_equal_count_but_stale_gold(tmp_path):
     meta = json.loads((gold_path / "_snapshot_meta.json").read_text(encoding="utf-8"))
     assert meta["dataset"] == "v5_final_score_vs_alpha6_conflict"
     assert meta["row_count"] == 2
+    assert meta["generated_at"] == "2026-05-10T00:00:00Z"
 
 
 def test_analyze_flags_reconcile_failure(tmp_path):

@@ -4137,7 +4137,24 @@ def _write_snapshot_meta(dataset_path: Path, *, dataset_name: str, frame: pl.Dat
     dataset_path.mkdir(parents=True, exist_ok=True)
     generated_at = _frame_latest_iso(
         frame,
-        ("generated_at", "created_at", "as_of_ts", "as_of_date", "latest_bundle_ts", "date"),
+        (
+            "generated_at",
+            "generated_at_utc",
+            "created_at",
+            "as_of_ts",
+            "as_of_date",
+            "latest_bundle_ts",
+            "bundle_ts",
+            "ingest_ts",
+            "event_ts",
+            "ts_utc",
+            "ts",
+            "entry_ts",
+            "exit_ts",
+            "paper_date",
+            "date",
+            "day",
+        ),
     )
     expires_at = _frame_latest_iso(frame, ("expires_at",))
     schema_version = _frame_text_value(frame, "schema_version")

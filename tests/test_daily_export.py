@@ -440,6 +440,12 @@ def test_refresh_web_derived_snapshots_updates_export_backed_gold_tables(
 ):
     generated_at = datetime(2026, 7, 3, 12, 0, tzinfo=UTC)
     lake_root = tmp_path / "lake"
+    reports_dir = lake_root / "reports"
+    reports_dir.mkdir(parents=True)
+    (reports_dir / "v5_enforce_readiness.json").write_text(
+        json.dumps({"readiness_status": "STALE"}),
+        encoding="utf-8",
+    )
     calls: list[str] = []
     seed_snapshot = daily_export_module._DatasetSnapshot(
         frames={"cost_bucket_daily": pl.DataFrame({"symbol": ["BTC/USDT"]})},
@@ -529,7 +535,13 @@ def test_refresh_web_derived_snapshots_updates_export_backed_gold_tables(
     assert result.refreshed_datasets == list(daily_export_module.WEB_DERIVED_SNAPSHOT_DATASETS)
     assert result.row_counts["factor_strategy_bridge_candidates"] == 2
     assert result.row_counts["cost_bootstrap_readiness"] == 4
+    assert result.row_counts["v5_enforce_readiness"] == 1
+    assert "fallback_rate_breakdown" in result.row_counts
     assert result.warnings == ["example warning"]
+    readiness = json.loads((reports_dir / "v5_enforce_readiness.json").read_text(encoding="utf-8"))
+    assert readiness["readiness_status"] != "STALE"
+    assert (reports_dir / "v5_enforce_readiness.csv").is_file()
+    assert (reports_dir / "fallback_rate_breakdown.csv").is_file()
 
 
 def test_research_validation_v3_reports_export_forward_and_cost_coverage(tmp_path):

@@ -98,6 +98,7 @@ from quant_lab.reports.enforce_readiness import (
     build_enforce_readiness_report,
     build_fallback_rate_breakdown,
     enforce_readiness_members,
+    write_enforce_readiness_report,
 )
 from quant_lab.reports.system_acceptance import (
     NO_TRIGGER_REASON_FIELDS,
@@ -4345,13 +4346,49 @@ def refresh_web_derived_snapshots(
         snapshot,
         generated_at=generated_at,
     )
+    report_row_counts: dict[str, int] = {}
+    try:
+        write_enforce_readiness_report(root, strategy="v5", version="5.0.0")
+        report_row_counts["v5_enforce_readiness"] = 1
+    except Exception as exc:
+        snapshot = _DatasetSnapshot(
+            frames=snapshot.frames,
+            row_counts=snapshot.row_counts,
+            warnings=[
+                *snapshot.warnings,
+                "v5_enforce_readiness publish skipped: "
+                f"{type(exc).__name__}:{_safe_warning_text(str(exc))}",
+            ],
+            transient_frames=snapshot.transient_frames,
+        )
+    try:
+        fallback_breakdown = build_fallback_rate_breakdown(root)
+        reports_dir = root / "reports"
+        reports_dir.mkdir(parents=True, exist_ok=True)
+        (reports_dir / FALLBACK_RATE_BREAKDOWN_CSV).write_text(
+            _csv_text(fallback_breakdown, fixed_columns=FALLBACK_RATE_BREAKDOWN_COLUMNS),
+            encoding="utf-8",
+        )
+        report_row_counts["fallback_rate_breakdown"] = fallback_breakdown.height
+    except Exception as exc:
+        snapshot = _DatasetSnapshot(
+            frames=snapshot.frames,
+            row_counts=snapshot.row_counts,
+            warnings=[
+                *snapshot.warnings,
+                "fallback_rate_breakdown publish skipped: "
+                f"{type(exc).__name__}:{_safe_warning_text(str(exc))}",
+            ],
+            transient_frames=snapshot.transient_frames,
+        )
     return WebDerivedSnapshotRefreshResult(
         generated_at=generated_at,
         refreshed_datasets=list(WEB_DERIVED_SNAPSHOT_DATASETS),
         row_counts={
             dataset: int(snapshot.row_counts.get(dataset, 0))
             for dataset in WEB_DERIVED_SNAPSHOT_DATASETS
-        },
+        }
+        | report_row_counts,
         warnings=sorted(set(snapshot.warnings)),
     )
 
@@ -8223,7 +8260,6 @@ def _refresh_v5_derived_outputs(lake_root: Path, export_day: date) -> list[str]:
                 fromlist=["write_enforce_readiness_report"],
             ).write_enforce_readiness_report(
                 lake_root=lake_root,
-                out_dir=readers.default_exports_root(lake_root),
                 strategy="v5",
                 version="5.0.0",
             ),
@@ -8447,11 +8483,9 @@ def _v5_derived_refresh_step_bodies() -> list[tuple[str, str]]:
         ),
         (
             "write_enforce_readiness_report",
-            "from quant_lab.web import readers\n"
             "from quant_lab.reports.enforce_readiness import write_enforce_readiness_report\n"
             "write_enforce_readiness_report("
             "lake_root=lake_root, "
-            "out_dir=readers.default_exports_root(lake_root), "
             "strategy='v5', "
             "version='5.0.0'"
             ")",

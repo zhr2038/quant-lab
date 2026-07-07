@@ -4418,6 +4418,14 @@ def refresh_web_derived_snapshots(
             ],
             transient_frames=snapshot.transient_frames,
         )
+    source_meta_warnings = _write_source_snapshot_metas(root, snapshot.frames)
+    if source_meta_warnings:
+        snapshot = _DatasetSnapshot(
+            frames=snapshot.frames,
+            row_counts=snapshot.row_counts,
+            warnings=[*snapshot.warnings, *source_meta_warnings],
+            transient_frames=snapshot.transient_frames,
+        )
     return WebDerivedSnapshotRefreshResult(
         generated_at=generated_at,
         refreshed_datasets=list(WEB_DERIVED_SNAPSHOT_DATASETS),

@@ -448,8 +448,13 @@ def test_refresh_web_derived_snapshots_updates_export_backed_gold_tables(
     )
     calls: list[str] = []
     seed_snapshot = daily_export_module._DatasetSnapshot(
-        frames={"cost_bucket_daily": pl.DataFrame({"symbol": ["BTC/USDT"]})},
-        row_counts={"cost_bucket_daily": 1},
+        frames={
+            "cost_bucket_daily": pl.DataFrame({"symbol": ["BTC/USDT"]}),
+            "v5_bnb_profit_lock_shadow": pl.DataFrame(
+                {"symbol": ["BNB-USDT"], "bundle_ts": [generated_at]}
+            ),
+        },
+        row_counts={"cost_bucket_daily": 1, "v5_bnb_profit_lock_shadow": 1},
         warnings=[],
     )
 
@@ -542,6 +547,13 @@ def test_refresh_web_derived_snapshots_updates_export_backed_gold_tables(
     assert readiness["readiness_status"] != "STALE"
     assert (reports_dir / "v5_enforce_readiness.csv").is_file()
     assert (reports_dir / "fallback_rate_breakdown.csv").is_file()
+    bnb_meta = json.loads(
+        (
+            lake_root / "silver" / "v5_bnb_profit_lock_shadow" / "_snapshot_meta.json"
+        ).read_text(encoding="utf-8")
+    )
+    assert bnb_meta["dataset"] == "v5_bnb_profit_lock_shadow"
+    assert bnb_meta["row_count"] == 1
 
 
 def test_research_validation_v3_reports_export_forward_and_cost_coverage(tmp_path):

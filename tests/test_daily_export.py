@@ -3791,9 +3791,13 @@ def test_export_daily_ingests_pending_v5_inbox_before_snapshot(tmp_path):
     assert "summaries/btc_probe_entry_quality_audit.csv" in embedded_v5_names
     assert "summaries/paper_strategy_proposal_ack.csv" in embedded_v5_names
     assert "reports/paper_strategy_proposal_ack.csv" in names
-    assert proposal_ack_rows[0]["proposal_id"] == "BNB_USDT_F3_DOMINANT_ENTRY_PAPER_V1"
-    assert proposal_ack_rows[0]["paper_tracker_id"] == "BNB_F3_DOMINANT_ENTRY_PAPER_V1"
-    assert proposal_ack_rows[0]["live_order_effect"] == "paper_only_no_live_order"
+    promoted_ack = next(
+        row
+        for row in proposal_ack_rows
+        if row["proposal_id"] == "BNB_USDT_F3_DOMINANT_ENTRY_PAPER_V1"
+    )
+    assert promoted_ack["paper_tracker_id"] == "BNB_F3_DOMINANT_ENTRY_PAPER_V1"
+    assert promoted_ack["live_order_effect"] == "paper_only_no_live_order"
     assert next(
         item
         for item in manifest["files"]
@@ -3815,6 +3819,76 @@ def test_export_daily_ingests_pending_v5_inbox_before_snapshot(tmp_path):
     assert btc_probe_rows[0]["anti_chase_flag"] == "true"
     assert btc_probe_rows[0]["normalized_symbol"] == "BTC-USDT"
     assert btc_probe_rows[0]["live_order_effect"] == "none_read_only_v5_bundle_audit"
+
+
+def test_export_daily_preserves_paper_strategy_ack_from_registry_without_v5_summary(tmp_path):
+    lake_root = tmp_path / "lake"
+    write_parquet_dataset(
+        pl.DataFrame(
+            [
+                {
+                    "strategy_id": "SOL_USDT_F3_DOMINANT_ENTRY_PAPER_V1",
+                    "strategy_version": "v1",
+                    "proposal_id": "SOL_USDT_F3_DOMINANT_ENTRY_PAPER_V1",
+                    "proposal_hash": "hash-sol-f3",
+                    "paper_tracker_id": "SOL_USDT_F3_DOMINANT_ENTRY_PAPER_V1",
+                    "symbol": "SOL-USDT",
+                    "strategy_candidate": "v5.f3_dominant_entry",
+                    "status": "PAPER_TRACKING",
+                    "paper_start_at": "2026-07-04T00:00:00Z",
+                    "rules_locked": True,
+                    "accepted": True,
+                    "reject_reason": "",
+                    "first_seen_at": "2026-07-04T00:00:00Z",
+                    "accepted_at": "2026-07-04T00:01:00Z",
+                    "expires_at": "",
+                    "source_pack_sha256": "pack-sha",
+                    "source_v5_bundle_sha256": "bundle-sha",
+                    "paper_only": True,
+                    "max_live_notional_usdt": 0.0,
+                    "live_order_effect": "paper_only_no_live_order",
+                    "created_at": "2026-07-07T22:26:00Z",
+                    "source": "research.paper_strategy_promotion.v0.1",
+                    "schema_version": "paper_strategy_pipeline.v1",
+                }
+            ]
+        ),
+        lake_root / "gold" / "paper_strategy_registry",
+    )
+
+    result = export_daily_pack(
+        export_date="2026-07-07",
+        lake_root=lake_root,
+        out_dir=tmp_path / "exports",
+        profile="expert",
+        command_line=["qlab", "export-daily"],
+        pre_export_v5_refresh=False,
+    )
+
+    with zipfile.ZipFile(result.zip_path) as archive:
+        proposal_ack_rows = list(
+            csv.DictReader(
+                io.StringIO(
+                    archive.read("reports/paper_strategy_proposal_ack.csv").decode("utf-8")
+                )
+            )
+        )
+        registry_rows = list(
+            csv.DictReader(
+                io.StringIO(archive.read("reports/paper_strategy_registry.csv").decode("utf-8"))
+            )
+        )
+
+    assert len(proposal_ack_rows) == 1
+    ack = proposal_ack_rows[0]
+    assert ack["proposal_id"] == "SOL_USDT_F3_DOMINANT_ENTRY_PAPER_V1"
+    assert ack["proposal_hash"] == "hash-sol-f3"
+    assert ack["accepted"].lower() == "true"
+    assert ack["accepted_at"] == "2026-07-04T00:01:00Z"
+    assert ack["source_pack_sha256"] == "pack-sha"
+    assert ack["source_v5_bundle_sha256"] == "bundle-sha"
+    assert ack["live_order_effect"] == "paper_only_no_live_order"
+    assert registry_rows[0]["status"] == "PAPER_TRACKING"
 
 
 def test_export_daily_limits_pre_export_v5_ingest_to_latest_pending(tmp_path, monkeypatch):

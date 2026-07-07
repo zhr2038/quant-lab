@@ -1606,8 +1606,10 @@ CSV_SCHEMAS: dict[str, list[str]] = {
     ],
     "reports/paper_strategy_proposal_ack.csv": [
         "proposal_id",
+        "proposal_hash",
         "paper_tracker_id",
         "accepted",
+        "accepted_at",
         "recommended_mode",
         "symbol",
         "strategy_candidate",
@@ -1615,6 +1617,8 @@ CSV_SCHEMAS: dict[str, list[str]] = {
         "proposal_source",
         "reject_reason",
         "live_order_effect",
+        "source_pack_sha256",
+        "source_v5_bundle_sha256",
     ],
     "reports/strategy_opportunity_advisory.csv": [
         "as_of_ts",
@@ -5727,8 +5731,20 @@ def _dataset_members(
         daily=paper_daily,
         created_at=export_reference_at,
     )
-    paper_strategy_registry = paper_pipeline["paper_strategy_registry"]
-    paper_strategy_promotion_gate = paper_pipeline["paper_strategy_promotion_gate"]
+    paper_strategy_registry = _stable_paper_strategy_lifecycle_frame(
+        paper_pipeline["paper_strategy_registry"],
+        frames.get("paper_strategy_registry", pl.DataFrame()),
+        schema=CSV_SCHEMAS["reports/paper_strategy_registry.csv"],
+    )
+    paper_strategy_promotion_gate = _stable_paper_strategy_lifecycle_frame(
+        paper_pipeline["paper_strategy_promotion_gate"],
+        frames.get("paper_strategy_promotion_gate", pl.DataFrame()),
+        schema=CSV_SCHEMAS["reports/paper_strategy_promotion_gate.csv"],
+    )
+    paper_strategy_proposal_ack = _paper_strategy_proposal_ack_for_export(
+        frames.get("v5_paper_strategy_proposal_ack", pl.DataFrame()),
+        paper_strategy_registry=paper_strategy_registry,
+    )
     strategy_regime_matrix = frames.get("strategy_regime_matrix", pl.DataFrame())
     regime_strategy_advisory = frames.get("regime_strategy_advisory", pl.DataFrame())
     missed_opportunity_audit = frames.get("v5_missed_opportunity_audit", pl.DataFrame())
@@ -6215,6 +6231,10 @@ def _dataset_members(
         "reports/paper_strategy_proposals.csv": _csv_member(
             "reports/paper_strategy_proposals.csv",
             paper_proposals,
+        ),
+        "reports/paper_strategy_proposal_ack.csv": _csv_member(
+            "reports/paper_strategy_proposal_ack.csv",
+            paper_strategy_proposal_ack,
         ),
         "reports/strategy_opportunity_advisory.csv": _csv_member(
             "reports/strategy_opportunity_advisory.csv",
@@ -7086,10 +7106,12 @@ def _promote_embedded_v5_summary_report(
     if not schema:
         return
     empty = _csv_member(dest_member, _empty_csv_schema_frame(dest_member))
+    existing_rows = _csv_member_rows(members.get(dest_member))
     embedded_member = str(v5_context.get("embedded_v5_bundle_member_path") or "").strip()
     payload = members.get(embedded_member)
     if not isinstance(payload, bytes):
-        members[dest_member] = empty
+        if not existing_rows:
+            members[dest_member] = empty
         v5_context.setdefault("warnings", []).append(
             f"embedded_v5_summary_missing:{summary_member}:embedded_bundle_not_available"
         )
@@ -7108,21 +7130,24 @@ def _promote_embedded_v5_summary_report(
                     selected = member
                     break
             if selected is None:
-                members[dest_member] = empty
+                if not existing_rows:
+                    members[dest_member] = empty
                 v5_context.setdefault("warnings", []).append(
                     f"embedded_v5_summary_missing:{summary_member}:member_not_found"
                 )
                 return
             handle = archive.extractfile(selected)
             if handle is None:
-                members[dest_member] = empty
+                if not existing_rows:
+                    members[dest_member] = empty
                 v5_context.setdefault("warnings", []).append(
                     f"embedded_v5_summary_missing:{summary_member}:member_unreadable"
                 )
                 return
             text = handle.read().decode("utf-8-sig", "replace")
     except Exception as exc:
-        members[dest_member] = empty
+        if not existing_rows:
+            members[dest_member] = empty
         v5_context.setdefault("warnings", []).append(
             f"embedded_v5_summary_missing:{summary_member}:{type(exc).__name__}"
         )
@@ -7132,13 +7157,20 @@ def _promote_embedded_v5_summary_report(
     except Exception:
         rows = []
     if not rows:
-        members[dest_member] = empty
+        if not existing_rows:
+            members[dest_member] = empty
         return
-    frame = pl.DataFrame(rows, infer_schema_length=None)
-    for column in schema:
-        if column not in frame.columns:
-            frame = frame.with_columns(pl.lit("").alias(column))
-    members[dest_member] = _csv_member(dest_member, frame.select(schema))
+    frame = _paper_strategy_ack_report_frame([*existing_rows, *rows], path=dest_member)
+    members[dest_member] = _csv_member(dest_member, frame)
+
+
+def _csv_member_rows(payload: _MemberPayload | None) -> list[dict[str, Any]]:
+    if not isinstance(payload, str) or not payload.strip():
+        return []
+    try:
+        return list(csv.DictReader(io.StringIO(payload)))
+    except Exception:
+        return []
 
 
 def _is_expected_v5_followup_bundle_name(name: str) -> bool:
@@ -10537,6 +10569,228 @@ def _paper_strategy_proposals_for_export(
         )
     ]
     return pl.DataFrame(proposals).select(CSV_SCHEMAS[path])
+
+
+def _paper_strategy_proposal_ack_for_export(
+    proposal_ack: pl.DataFrame,
+    *,
+    paper_strategy_registry: pl.DataFrame,
+) -> pl.DataFrame:
+    path = "reports/paper_strategy_proposal_ack.csv"
+    rows: list[dict[str, Any]] = []
+    rows.extend(
+        _paper_strategy_ack_report_row(row, from_registry=False)
+        for row in _rows(proposal_ack)
+    )
+    for row in _rows(paper_strategy_registry):
+        if not _paper_strategy_registry_row_has_ack_evidence(row):
+            continue
+        rows.append(_paper_strategy_ack_report_row(row, from_registry=True))
+    return _paper_strategy_ack_report_frame(rows, path=path)
+
+
+def _stable_paper_strategy_lifecycle_frame(
+    generated: pl.DataFrame,
+    persisted: pl.DataFrame,
+    *,
+    schema: list[str],
+) -> pl.DataFrame:
+    rows = [*_rows(persisted), *_rows(generated)]
+    if not rows:
+        return pl.DataFrame(schema={column: pl.Utf8 for column in schema})
+    merged = _merge_paper_strategy_rows(rows, schema)
+    return _csv_frame_with_schema(
+        pl.DataFrame(merged, infer_schema_length=None),
+        schema,
+    )
+
+
+def _merge_paper_strategy_rows(
+    rows: list[dict[str, Any]],
+    schema: list[str],
+) -> list[dict[str, Any]]:
+    best: dict[str, dict[str, Any]] = {}
+    for raw in rows:
+        row = {column: raw.get(column) for column in schema}
+        key = _paper_strategy_row_key(row)
+        if not key:
+            continue
+        current = best.get(key)
+        if current is None:
+            best[key] = row
+            continue
+        if _paper_strategy_row_rank(row) >= _paper_strategy_row_rank(current):
+            best[key] = _fill_blank_values(row, current, schema)
+        else:
+            best[key] = _fill_blank_values(current, row, schema)
+    return sorted(
+        best.values(),
+        key=lambda item: (
+            _ack_text(item.get("symbol")),
+            _ack_text(item.get("proposal_id")),
+            _ack_text(item.get("paper_tracker_id")),
+        ),
+    )
+
+
+def _paper_strategy_registry_row_has_ack_evidence(row: dict[str, Any]) -> bool:
+    status = _ack_text(row.get("status")).upper()
+    return bool(
+        _ack_bool_text(row.get("accepted"))
+        or _ack_text(row.get("accepted_at"))
+        or _ack_text(row.get("reject_reason"))
+        or status in {"ACKED", "PAPER_TRACKING", "PAPER_REVIEW", "REJECTED_BY_V5"}
+    )
+
+
+def _paper_strategy_ack_report_row(
+    row: dict[str, Any],
+    *,
+    from_registry: bool,
+) -> dict[str, Any]:
+    return {
+        "proposal_id": _ack_text(row.get("proposal_id") or row.get("strategy_id")),
+        "proposal_hash": _ack_text(row.get("proposal_hash")),
+        "paper_tracker_id": _ack_text(row.get("paper_tracker_id")),
+        "accepted": _ack_bool_text(row.get("accepted")),
+        "accepted_at": _ack_text(
+            row.get("accepted_at") or row.get("ingest_ts") or row.get("created_at")
+        ),
+        "recommended_mode": _ack_text(row.get("recommended_mode")) or (
+            "paper" if _paper_only_ack_row(row) else ""
+        ),
+        "symbol": normalize_symbol(row.get("symbol")) or _ack_text(row.get("symbol")),
+        "strategy_candidate": _ack_text(row.get("strategy_candidate")),
+        "suggested_horizon": _ack_text(row.get("suggested_horizon")),
+        "proposal_source": _ack_text(row.get("proposal_source"))
+        or ("paper_strategy_registry" if from_registry else "v5_paper_strategy_proposal_ack"),
+        "reject_reason": _ack_text(row.get("reject_reason")),
+        "live_order_effect": _ack_text(row.get("live_order_effect"))
+        or "paper_only_no_live_order",
+        "source_pack_sha256": _ack_text(row.get("source_pack_sha256")),
+        "source_v5_bundle_sha256": _ack_text(
+            row.get("source_v5_bundle_sha256")
+            or row.get("bundle_sha256")
+            or row.get("source_bundle_sha256")
+        ),
+    }
+
+
+def _paper_strategy_ack_report_frame(
+    rows: list[dict[str, Any]],
+    *,
+    path: str,
+) -> pl.DataFrame:
+    if not rows:
+        return _empty_csv_schema_frame(path)
+    schema = CSV_SCHEMAS[path]
+    best: dict[str, dict[str, Any]] = {}
+    for row in rows:
+        normalized = {column: row.get(column) for column in schema}
+        key = _paper_strategy_row_key(normalized)
+        if not key:
+            continue
+        current = best.get(key)
+        if current is None:
+            best[key] = normalized
+            continue
+        if _paper_strategy_row_rank(normalized) >= _paper_strategy_row_rank(current):
+            best[key] = _fill_blank_values(normalized, current, schema)
+        else:
+            best[key] = _fill_blank_values(current, normalized, schema)
+    if not best:
+        return _empty_csv_schema_frame(path)
+    ordered = sorted(
+        best.values(),
+        key=lambda item: (
+            _ack_text(item.get("symbol")),
+            _ack_text(item.get("proposal_id")),
+            _ack_text(item.get("paper_tracker_id")),
+        ),
+    )
+    return pl.DataFrame(ordered, infer_schema_length=None).select(schema)
+
+
+def _paper_strategy_row_key(row: dict[str, Any]) -> str:
+    proposal_id = _ack_text(row.get("proposal_id") or row.get("strategy_id"))
+    paper_tracker_id = _ack_text(row.get("paper_tracker_id"))
+    if paper_tracker_id:
+        return f"tracker:{paper_tracker_id}"
+    if proposal_id:
+        return f"id:{proposal_id}"
+    candidate = _ack_text(row.get("strategy_candidate"))
+    symbol = normalize_symbol(row.get("symbol")) or _ack_text(row.get("symbol"))
+    horizon = _ack_text(row.get("suggested_horizon"))
+    if candidate or symbol:
+        return f"candidate:{candidate}|symbol:{symbol}|horizon:{horizon}"
+    return ""
+
+
+def _paper_strategy_row_rank(row: dict[str, Any]) -> tuple[int, datetime, int]:
+    status = _ack_text(row.get("status")).upper()
+    lifecycle_score = 0
+    if _ack_bool_text(row.get("accepted")) == "true" or status in {
+        "ACKED",
+        "PAPER_TRACKING",
+        "PAPER_REVIEW",
+    }:
+        lifecycle_score = 3
+    elif _ack_text(row.get("reject_reason")) or status.startswith("REJECTED"):
+        lifecycle_score = 2
+    elif _ack_text(row.get("paper_tracker_id")):
+        lifecycle_score = 1
+    timestamp = _max_export_ts(
+        row.get("accepted_at"),
+        row.get("paper_start_at"),
+        row.get("first_seen_at"),
+        row.get("created_at"),
+        row.get("ingest_ts"),
+    ) or datetime.min.replace(tzinfo=UTC)
+    completeness = sum(1 for value in row.values() if _ack_text(value))
+    return lifecycle_score, timestamp, completeness
+
+
+def _max_export_ts(*values: Any) -> datetime | None:
+    parsed = [_parse_export_ts(value) for value in values]
+    parsed = [value for value in parsed if value is not None]
+    return max(parsed) if parsed else None
+
+
+def _fill_blank_values(
+    preferred: dict[str, Any],
+    fallback: dict[str, Any],
+    columns: list[str],
+) -> dict[str, Any]:
+    merged = dict(preferred)
+    for column in columns:
+        if not _ack_text(merged.get(column)) and _ack_text(fallback.get(column)):
+            merged[column] = fallback.get(column)
+    return merged
+
+
+def _paper_only_ack_row(row: dict[str, Any]) -> bool:
+    value = _optional_bool(row.get("paper_only"))
+    if value is not None:
+        return value
+    effect = _ack_text(row.get("live_order_effect")).lower()
+    return "paper_only" in effect
+
+
+def _ack_bool_text(value: Any) -> str:
+    parsed = _optional_bool(value)
+    if parsed is True:
+        return "true"
+    if parsed is False:
+        return "false"
+    return _ack_text(value)
+
+
+def _ack_text(value: Any) -> str:
+    if value is None:
+        return ""
+    if isinstance(value, datetime):
+        return value.astimezone(UTC).isoformat()
+    return str(value).strip()
 
 
 def _latest_as_of_date(rows: list[dict[str, Any]]) -> str | None:

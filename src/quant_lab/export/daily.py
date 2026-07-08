@@ -10635,8 +10635,9 @@ def _merge_paper_strategy_rows(
 
 def _paper_strategy_registry_row_has_ack_evidence(row: dict[str, Any]) -> bool:
     status = _ack_text(row.get("status")).upper()
+    accepted = _optional_bool(row.get("accepted"))
     return bool(
-        _ack_bool_text(row.get("accepted"))
+        accepted is True
         or _ack_text(row.get("accepted_at"))
         or _ack_text(row.get("reject_reason"))
         or status in {"ACKED", "PAPER_TRACKING", "PAPER_REVIEW", "REJECTED_BY_V5"}

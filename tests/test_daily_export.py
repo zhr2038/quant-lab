@@ -3891,6 +3891,98 @@ def test_export_daily_preserves_paper_strategy_ack_from_registry_without_v5_summ
     assert registry_rows[0]["status"] == "PAPER_TRACKING"
 
 
+def test_export_daily_does_not_report_pending_registry_rows_as_ack(tmp_path):
+    lake_root = tmp_path / "lake"
+    write_parquet_dataset(
+        pl.DataFrame(
+            [
+                {
+                    "strategy_id": "PENDING_PAPER_V1",
+                    "strategy_version": "v1",
+                    "proposal_id": "PENDING_PAPER_V1",
+                    "proposal_hash": "hash-pending",
+                    "paper_tracker_id": "",
+                    "symbol": "SOL-USDT",
+                    "strategy_candidate": "v5.pending_candidate",
+                    "status": "PROPOSED_AWAITING_ACK",
+                    "paper_start_at": "",
+                    "rules_locked": False,
+                    "accepted": False,
+                    "reject_reason": "",
+                    "first_seen_at": "2026-07-04T00:00:00Z",
+                    "accepted_at": "",
+                    "expires_at": "",
+                    "source_pack_sha256": "",
+                    "source_v5_bundle_sha256": "",
+                    "paper_only": True,
+                    "max_live_notional_usdt": 0.0,
+                    "live_order_effect": "paper_only_no_live_order",
+                    "created_at": "2026-07-07T22:26:00Z",
+                    "source": "research.paper_strategy_promotion.v0.1",
+                    "schema_version": "paper_strategy_pipeline.v1",
+                },
+                {
+                    "strategy_id": "REJECTED_PAPER_V1",
+                    "strategy_version": "v1",
+                    "proposal_id": "REJECTED_PAPER_V1",
+                    "proposal_hash": "hash-rejected",
+                    "paper_tracker_id": "",
+                    "symbol": "ETH-USDT",
+                    "strategy_candidate": "v5.rejected_candidate",
+                    "status": "REJECTED_BY_V5",
+                    "paper_start_at": "",
+                    "rules_locked": False,
+                    "accepted": False,
+                    "reject_reason": "v5_rejected_missing_tracker",
+                    "first_seen_at": "2026-07-04T00:00:00Z",
+                    "accepted_at": "",
+                    "expires_at": "",
+                    "source_pack_sha256": "pack-sha",
+                    "source_v5_bundle_sha256": "bundle-sha",
+                    "paper_only": True,
+                    "max_live_notional_usdt": 0.0,
+                    "live_order_effect": "paper_only_no_live_order",
+                    "created_at": "2026-07-07T22:26:00Z",
+                    "source": "research.paper_strategy_promotion.v0.1",
+                    "schema_version": "paper_strategy_pipeline.v1",
+                },
+            ]
+        ),
+        lake_root / "gold" / "paper_strategy_registry",
+    )
+
+    result = export_daily_pack(
+        export_date="2026-07-07",
+        lake_root=lake_root,
+        out_dir=tmp_path / "exports",
+        profile="expert",
+        command_line=["qlab", "export-daily"],
+        pre_export_v5_refresh=False,
+    )
+
+    with zipfile.ZipFile(result.zip_path) as archive:
+        proposal_ack_rows = list(
+            csv.DictReader(
+                io.StringIO(
+                    archive.read("reports/paper_strategy_proposal_ack.csv").decode("utf-8")
+                )
+            )
+        )
+        registry_rows = list(
+            csv.DictReader(
+                io.StringIO(archive.read("reports/paper_strategy_registry.csv").decode("utf-8"))
+            )
+        )
+
+    assert {row["proposal_id"] for row in registry_rows} == {
+        "PENDING_PAPER_V1",
+        "REJECTED_PAPER_V1",
+    }
+    assert [row["proposal_id"] for row in proposal_ack_rows] == ["REJECTED_PAPER_V1"]
+    assert proposal_ack_rows[0]["accepted"].lower() == "false"
+    assert proposal_ack_rows[0]["reject_reason"] == "v5_rejected_missing_tracker"
+
+
 def test_export_daily_limits_pre_export_v5_ingest_to_latest_pending(tmp_path, monkeypatch):
     lake_root = _fixture_lake(tmp_path)
     inbox = tmp_path / "inbox"

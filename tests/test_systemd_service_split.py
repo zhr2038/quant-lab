@@ -246,8 +246,10 @@ def test_candidate_research_refresh_is_separate_from_alpha_evidence():
     assert "build-regime-router" not in refresh_unit
     assert "flock -E 75 -w 600 /var/lock/quant-lab-heavy.lock" in refresh_unit
     assert "flock -E 75 -w 30 /var/lock/quant-lab-v5-research.lock" in refresh_unit
-    assert "/usr/bin/timeout 30m" in refresh_unit
-    assert "TimeoutStartSec=35min" in refresh_unit
+    assert "/usr/bin/timeout 45m" in refresh_unit
+    assert "TimeoutStartSec=55min" in refresh_unit
+    assert "MemoryHigh=3G" in refresh_unit
+    assert "MemoryMax=4G" in refresh_unit
 
     assert "build-regime-router" in regime_unit
     assert "/var/lock/quant-lab-v5-regime-router.lock" in regime_unit

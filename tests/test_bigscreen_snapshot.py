@@ -966,10 +966,74 @@ def test_bigscreen_cost_payload_uses_current_effective_symbol_sources(tmp_path):
     payload = bigscreen_snapshot(lake)
 
     assert payload["cost"]["cost_quality_basis"] == "effective_symbol_source"
-    assert payload["cost"]["actual_rows"] == 2
-    assert payload["cost"]["bootstrap_probe_rows"] == 1
-    assert payload["cost"]["proxy_rows"] == 1
+    assert payload["cost"]["actual_rows"] == 1
+    assert payload["cost"]["bootstrap_probe_rows"] == 0
+    assert payload["cost"]["proxy_rows"] == 3
     assert payload["cost"]["global_default_rows"] == 0
+
+
+def test_bigscreen_cost_quality_uses_live_effective_source_over_stale_readiness(
+    tmp_path,
+):
+    clear_bigscreen_cache()
+    lake = tmp_path / "lake"
+    now = datetime.now(UTC)
+    today = now.date().isoformat()
+    current_ts = now.isoformat().replace("+00:00", "Z")
+    write_parquet_dataset(
+        pl.DataFrame(
+            [
+                {
+                    "symbol": "BTC-USDT",
+                    "regime": "public_proxy",
+                    "notional_bucket": "all",
+                    "source": "public_spread_proxy",
+                    "cost_source": "public_spread_proxy",
+                    "sample_count": 5000,
+                    "fallback_level": "PUBLIC_SPREAD_PROXY",
+                    "created_at": current_ts,
+                    "day": today,
+                },
+                {
+                    "symbol": "ETH-USDT",
+                    "regime": "realized",
+                    "notional_bucket": "all",
+                    "source": "actual_fills",
+                    "cost_source": "actual_fills",
+                    "sample_count": 7,
+                    "fallback_level": "SAMPLE_TOO_SMALL;PRIVATE_FILL_LOOKBACK",
+                    "created_at": current_ts,
+                    "day": today,
+                },
+            ]
+        ),
+        lake / "gold" / "cost_bucket_daily",
+    )
+    write_parquet_dataset(
+        pl.DataFrame(
+            [
+                {
+                    "symbol": "BTC-USDT",
+                    "bootstrap_state": "ACTUAL_FILLS_SMALL_SAMPLE",
+                    "cost_evidence_tier": "actual_fills_small_sample",
+                    "latest_cost_source": "actual_fills",
+                    "actual_fill_count": 8,
+                    "mixed_fill_count": 0,
+                    "cost_probe_fill_count": 2,
+                    "sample_count": 10,
+                    "latest_fill_ts": "2026-06-08T00:00:00Z",
+                    "latest_probe_ts": "2026-06-21T00:00:00Z",
+                }
+            ]
+        ),
+        lake / "gold" / "cost_bootstrap_readiness",
+    )
+
+    payload = bigscreen_snapshot(lake)
+
+    assert payload["cost"]["actual_rows"] == 1
+    assert payload["cost"]["proxy_rows"] == 1
+    assert payload["cost"]["bootstrap_probe_rows"] == 0
 
 
 def test_bigscreen_cost_rows_show_latest_per_bucket_and_live_universe_first(tmp_path):

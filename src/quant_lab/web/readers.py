@@ -3021,7 +3021,7 @@ def cost_model_summary(lake_root: str | Path) -> dict[str, Any]:
         fallback_ratio = fallback_rows / costs.height
 
     latest_health = health.sort("day").tail(1).to_dicts()[0] if not health.is_empty() else {}
-    effective_quality = _effective_cost_quality_counts(costs, bootstrap)
+    effective_quality = _effective_cost_quality_counts(costs, bootstrap, live_coverage)
     fallback_ratio = latest_health.get("fallback_ratio", fallback_ratio)
     return {
         "costs": redact_frame(_cost_bucket_table(costs)).head(DISPLAY_LIMIT),
@@ -3054,7 +3054,11 @@ def cost_model_summary(lake_root: str | Path) -> dict[str, Any]:
     }
 
 
-def _effective_cost_quality_counts(costs: pl.DataFrame, bootstrap: pl.DataFrame) -> dict[str, Any]:
+def _effective_cost_quality_counts(
+    costs: pl.DataFrame,
+    bootstrap: pl.DataFrame,
+    live_coverage: pl.DataFrame | None = None,
+) -> dict[str, Any]:
     """Count the best current cost evidence once per symbol for the Web V2 card."""
     counts = {
         "actual_rows": 0,
@@ -3122,6 +3126,8 @@ def _effective_cost_quality_counts(costs: pl.DataFrame, bootstrap: pl.DataFrame)
             sample_count=row.get("sample_count"),
         )
 
+    _apply_live_universe_cost_quality_overrides(candidates, live_coverage)
+
     for row in candidates.values():
         source = row["source"]
         if source == "actual":
@@ -3135,6 +3141,43 @@ def _effective_cost_quality_counts(costs: pl.DataFrame, bootstrap: pl.DataFrame)
         elif source == "global_default":
             counts["global_default_rows"] += 1
     return counts
+
+
+def _apply_live_universe_cost_quality_overrides(
+    candidates: dict[str, dict[str, Any]],
+    live_coverage: pl.DataFrame | None,
+) -> None:
+    """Use live-universe effective sources to prevent stale bootstrap rows from winning."""
+    if live_coverage is None or live_coverage.is_empty():
+        return
+    if (
+        "symbol" not in live_coverage.columns
+        or "effective_cost_source" not in live_coverage.columns
+    ):
+        return
+    for row in live_coverage.to_dicts():
+        normalized_symbol = normalize_symbol(str(row.get("symbol") or ""))
+        if not normalized_symbol or normalized_symbol == "GLOBAL":
+            continue
+        source = _live_coverage_effective_source(row)
+        normalized_source = _cost_source_bucket(source)
+        if normalized_source is None:
+            continue
+        candidates[normalized_symbol] = {
+            "source": normalized_source,
+            "priority": _cost_source_priority(normalized_source),
+            "time_key": row.get("latest_created_at") or row.get("generated_at") or "",
+            "sample_count": _as_int(row.get("sample_count")) or 0,
+        }
+
+
+def _live_coverage_effective_source(row: dict[str, Any]) -> Any:
+    tier = str(row.get("cost_evidence_tier") or "").strip().lower()
+    if "proxy" in tier:
+        return "public_spread_proxy"
+    if "bootstrap_cost_probe" in tier:
+        return "bootstrap_cost_probe"
+    return row.get("effective_cost_source")
 
 
 def _cost_probe_disagreement_warnings(frame: pl.DataFrame) -> list[str]:

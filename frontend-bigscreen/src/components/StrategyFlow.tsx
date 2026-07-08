@@ -44,16 +44,18 @@ export function StrategyFlow({ flow }: { flow: Record<string, unknown> }) {
           <div className="candidate-title"><Scale size={15} /> 机会成本 / 拦截价值</div>
           <div className="opportunity-cost-stats">
             <span><b>{bps(opportunityCost.veto_net_value_bps)}</b><em>今日净值</em></span>
+            <span><b>{bps(opportunityCost.veto_net_value_bps_7d)}</b><em>7日净值</em></span>
             <span><b>{bps(opportunityCost.missed_profit_bps)}</b><em>错过收益</em></span>
             <span><b>{bps(opportunityCost.loss_saved_bps)}</b><em>保护亏损</em></span>
-            <span><b>{bps(opportunityCost.veto_net_value_bps_7d)}</b><em>7日净值</em></span>
-            <span><b>{shortNumber(opportunityCost.false_block_count)}</b><em>误杀次数</em></span>
-            <span><b>{shortNumber(opportunityCost.loss_saved_count)}</b><em>保护次数</em></span>
           </div>
           <div className="opportunity-cost-note" title={stringValue(opportunityCost.status, "NO_DATA")}>
             <span>{stringValue(opportunityCost.latest_day, "no-day")}</span>
             <em>{stringValue(opportunityCost.status, "NO_DATA")}</em>
             <strong>
+              误杀 {shortNumber(opportunityCost.false_block_count)}
+              {" / "}
+              保护 {shortNumber(opportunityCost.loss_saved_count)}
+              {" · "}
               高置信误杀 {shortNumber(opportunityCost.high_confidence_false_block_count_7d)}
               {" / "}
               保护 {shortNumber(opportunityCost.high_confidence_loss_saved_count_7d)}

@@ -1233,6 +1233,7 @@ def _rank_cost_bucket_rows(
 ) -> list[tuple[dict[str, Any], str]]:
     ranked: list[tuple[int, str, dict[str, Any]]] = []
     requested_regime = regime.lower()
+    requested_regime_aliases = _requested_cost_regime_aliases(requested_regime)
     fresh_symbol_candidate_available = any(
         _row_symbol(candidate) == symbol and not _row_is_stale(candidate)
         for candidate in rows
@@ -1246,9 +1247,13 @@ def _rank_cost_bucket_rows(
 
         source = str(row.get("source") or "")
 
-        if row_symbol == symbol and normalized_row_regime == requested_regime and notional_match:
+        if (
+            row_symbol == symbol
+            and normalized_row_regime in requested_regime_aliases
+            and notional_match
+        ):
             tier, fallback = 0, "NONE"
-        elif row_symbol == symbol and normalized_row_regime == requested_regime:
+        elif row_symbol == symbol and normalized_row_regime in requested_regime_aliases:
             tier, fallback = 1, "NOTIONAL_BUCKET_FALLBACK"
         elif row_symbol == symbol and _is_actual_or_mixed_source(source) and notional_match:
             tier, fallback = 2, "REGIME_FALLBACK"
@@ -1270,7 +1275,7 @@ def _rank_cost_bucket_rows(
             tier, fallback = 10, "REGIME_AND_NOTIONAL_BUCKET_FALLBACK"
         elif (
             _is_global_symbol(row_symbol)
-            and normalized_row_regime == requested_regime
+            and normalized_row_regime in requested_regime_aliases
             and notional_match
         ):
             tier, fallback = 11, "SYMBOL_FALLBACK"
@@ -1299,6 +1304,13 @@ def _rank_cost_bucket_rows(
             ),
         )
     ]
+
+
+def _requested_cost_regime_aliases(regime: str) -> set[str]:
+    normalized = str(regime or "").strip().lower()
+    if normalized == "normal":
+        return {"normal", "realized"}
+    return {normalized}
 
 
 def _row_matches_notional(

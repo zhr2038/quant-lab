@@ -567,10 +567,10 @@ def test_cost_estimate_prefers_fresh_bootstrap_probe_over_stale_mixed_actual(
     normal_payload = normal.json()
     realized_payload = realized.json()
     assert normal_payload["source"] == "bootstrap_cost_probe"
+    assert normal_payload["requested_regime"] == "normal"
     assert normal_payload["matched_regime"] == "realized"
-    assert normal_payload["fallback_level"] == (
-        "REGIME_FALLBACK;COST_PROBE_ONLY;SAMPLE_TOO_SMALL"
-    )
+    assert normal_payload["fallback_level"] == "COST_PROBE_ONLY;SAMPLE_TOO_SMALL"
+    assert normal_payload["fallback_reason"] == "COST_PROBE_ONLY;SAMPLE_TOO_SMALL"
     assert normal_payload["cost_quality"] == "bootstrap_cost_probe"
     assert normal_payload["cost_trusted_for_paper"] is True
     assert normal_payload["cost_trusted_for_live"] is False
@@ -718,7 +718,8 @@ def test_cost_estimate_prefers_stale_bootstrap_probe_over_fresh_public_proxy(
     assert payload["cost_trusted_for_live"] is False
     assert payload["live_cost_sample_count"] == 0
     assert payload["trusted_live_sample_count"] == 0
-    assert payload["fallback_reason"] == "no_matching_regime"
+    assert payload["fallback_level"] == "COST_PROBE_ONLY;SAMPLE_TOO_SMALL"
+    assert payload["fallback_reason"] == "COST_PROBE_ONLY;SAMPLE_TOO_SMALL"
     assert payload["total_cost_bps_p75"] == 12.25
 
 

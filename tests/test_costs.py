@@ -1368,6 +1368,51 @@ def test_cost_bucket_daily_estimate_prefers_cross_regime_mixed_actual_over_publi
     assert estimate.total_cost_bps == 2.5
 
 
+def test_cost_bucket_daily_estimate_treats_normal_as_realized_alias():
+    rows = [
+        {
+            "day": "2026-07-08",
+            "symbol": "SOL-USDT",
+            "regime": "realized",
+            "event_type": "actual_fill",
+            "notional_bucket": "all",
+            "sample_count": 16,
+            "fee_bps_p75": 10.0,
+            "spread_bps_p75": 1.0,
+            "slippage_bps_p75": 0.25,
+            "total_cost_bps_p75": 11.25,
+            "fallback_level": "SAMPLE_TOO_SMALL;PRIVATE_FILL_LOOKBACK",
+            "source": "actual_fills",
+        },
+        {
+            "day": "2026-07-08",
+            "symbol": "SOL-USDT",
+            "regime": "public_proxy",
+            "event_type": "spread_proxy",
+            "notional_bucket": "all",
+            "sample_count": 5000,
+            "spread_bps_p75": 2.0,
+            "total_cost_bps_p75": 2.0,
+            "fallback_level": "FEE_MISSING;SLIPPAGE_UNKNOWN;PUBLIC_SPREAD_PROXY",
+            "source": "public_spread_proxy",
+        },
+    ]
+
+    estimate = estimate_cost_from_cost_bucket_daily_rows(
+        symbol="SOL-USDT",
+        regime="normal",
+        notional_usdt=5,
+        quantile="p75",
+        rows=rows,
+    )
+
+    assert estimate.requested_regime == "normal"
+    assert estimate.matched_regime == "realized"
+    assert estimate.source == "actual_fills"
+    assert estimate.fallback_level == "SAMPLE_TOO_SMALL;PRIVATE_FILL_LOOKBACK"
+    assert "REGIME_FALLBACK" not in estimate.fallback_level
+
+
 def _coverage_cost_row(symbol: str, source: str, created_at: datetime) -> dict[str, object]:
     is_bootstrap_probe = source == "bootstrap_cost_probe"
     return {

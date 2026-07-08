@@ -60,7 +60,7 @@ export function StrategyFlow({ flow }: { flow: Record<string, unknown> }) {
               保护 {shortNumber(opportunityCost.high_confidence_loss_saved_count_7d)}
             </strong>
           </div>
-          {opportunityBuckets.slice(0, 4).map((bucket, i) => (
+          {opportunityBuckets.slice(0, 2).map((bucket, i) => (
             <div className="opportunity-bucket" key={`${bucket.bucket_key}-${i}`} title={bucketTitle(bucket)}>
               <span>{bucketIdentity(bucket)}</span>
               <em>{stringValue(bucket.recommended_trade_level_decision, "REVIEW")}</em>

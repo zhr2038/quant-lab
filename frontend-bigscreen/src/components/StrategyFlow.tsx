@@ -9,7 +9,6 @@ export function StrategyFlow({ flow }: { flow: Record<string, unknown> }) {
   ]);
   const factorFactory = (flow.factor_factory ?? {}) as Record<string, unknown>;
   const opportunityCost = (flow.opportunity_cost ?? {}) as Record<string, unknown>;
-  const opportunityBuckets = safeRows(opportunityCost.top_buckets);
   const factorReviewQueue = safeRows(factorFactory.paper_review_queue);
   const bridgeRows = safeRows(factorFactory.strategy_bridge_candidates);
   const dedupeRows = safeRows(factorFactory.dedupe_decisions);
@@ -60,7 +59,6 @@ export function StrategyFlow({ flow }: { flow: Record<string, unknown> }) {
               保护 {shortNumber(opportunityCost.high_confidence_loss_saved_count_7d)}
             </strong>
           </div>
-          {!opportunityBuckets.length && <div className="factor-empty">暂无拦截价值样本</div>}
         </div>
         <div className="factor-factory-mini">
           <div className="candidate-title"><FlaskConical size={15} /> Factor Factory</div>

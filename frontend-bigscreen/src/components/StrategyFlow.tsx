@@ -60,13 +60,6 @@ export function StrategyFlow({ flow }: { flow: Record<string, unknown> }) {
               保护 {shortNumber(opportunityCost.high_confidence_loss_saved_count_7d)}
             </strong>
           </div>
-          {opportunityBuckets.slice(0, 2).map((bucket, i) => (
-            <div className="opportunity-bucket" key={`${bucket.bucket_key}-${i}`} title={bucketTitle(bucket)}>
-              <span>{bucketIdentity(bucket)}</span>
-              <em>{stringValue(bucket.recommended_trade_level_decision, "REVIEW")}</em>
-              <strong>{bps(bucket.veto_net_value_bps)}</strong>
-            </div>
-          ))}
           {!opportunityBuckets.length && <div className="factor-empty">暂无拦截价值样本</div>}
         </div>
         <div className="factor-factory-mini">
@@ -159,22 +152,6 @@ function ResearchMiniPanel({ title, rows }: { title: string; rows: string[][] })
       </div>
     </div>
   );
-}
-
-function bucketIdentity(bucket: Record<string, unknown>): string {
-  const symbol = stringValue(bucket.symbol, "UNKNOWN");
-  const rank = stringValue(bucket.rank_bucket, "rank?");
-  const alpha = stringValue(bucket.alpha6_bucket, "alpha?");
-  return `${symbol} · ${rank} · ${alpha}`;
-}
-
-function bucketTitle(bucket: Record<string, unknown>): string {
-  return [
-    stringValue(bucket.bucket_key, "bucket"),
-    `false_block=${shortNumber(bucket.false_block_count)}`,
-    `loss_saved=${shortNumber(bucket.loss_saved_count)}`,
-    `veto_net=${bps(bucket.veto_net_value_bps)}`
-  ].join(" | ");
 }
 
 function dedupeCandidates(rows: Record<string, unknown>[]): Record<string, unknown>[] {

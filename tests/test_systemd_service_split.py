@@ -55,7 +55,8 @@ def test_api_service_uses_async_metrics_flush():
     assert "QUANT_LAB_WEB_ON_DEMAND_EXPORT=true" in unit
     assert "QUANT_LAB_WEB_EXPORT_BACKGROUND=true" in unit
     assert "QUANT_LAB_WEB_EXPORT_BACKGROUND_TRIGGER=request_file" in unit
-    assert "QUANT_LAB_WEB_EXPORT_STATUS_STALE_SECONDS=1800" in unit
+    assert "QUANT_LAB_WEB_EXPORT_STATUS_STALE_SECONDS=5400" in unit
+    assert "QUANT_LAB_WEB_EXPORT_REQUEST_PICKUP_STALE_SECONDS=5400" in unit
     assert "QUANT_LAB_BIGSCREEN_STALE_GRACE_SECONDS=0" in unit
     assert "QUANT_LAB_WEB_V2_SMOKE_REQUIRE_STATUS=1" in unit
 
@@ -434,7 +435,7 @@ def test_daily_export_template_refreshes_v5_before_packaging():
 def test_web_export_request_refreshes_costs_before_packaging():
     unit = _unit("quant-lab-web-export-request.service")
 
-    assert "TimeoutStartSec=65min" in unit
+    assert "TimeoutStartSec=95min" in unit
     assert "ExecStartPre=/usr/bin/systemctl start quant-lab-v5-telemetry-sync.service" in unit
     assert "ExecStartPre=/usr/bin/systemctl start quant-lab-cost-calibration.service" in unit
     assert "QUANT_LAB_EXPORT_GITHUB_CI_STATUS=1" in unit
@@ -445,6 +446,8 @@ def test_web_export_relies_on_systemd_memory_limit_for_snapshot_packaging():
 
     assert "QUANT_LAB_WEB_EXPORT_MEMORY_LIMIT_MB=0" in unit
     assert "QUANT_LAB_WEB_EXPORT_BACKGROUND_TRIGGER=request_file" in unit
+    assert "QUANT_LAB_WEB_EXPORT_STATUS_STALE_SECONDS=5400" in unit
+    assert "QUANT_LAB_WEB_EXPORT_REQUEST_PICKUP_STALE_SECONDS=5400" in unit
     assert "MemoryMax=5G" in unit
     assert "KillSignal=SIGINT" in unit
     assert "KillMode=mixed" in unit
@@ -462,7 +465,7 @@ def test_web_export_request_worker_is_scheduled_outside_dashboard_cgroup():
         "ExecStartPre=/usr/bin/systemctl start quant-lab-v5-telemetry-sync.service"
         in service
     )
-    assert "flock -E 75 -w 600 /var/lock/quant-lab-heavy.lock" in service
+    assert "flock -E 75 -w 2400 /var/lock/quant-lab-heavy.lock" in service
     assert "flock -E 75 -w 600 /var/lock/quant-lab-v5-telemetry-sync.lock" in service
     assert "SKIP_WEB_EXPORT_LOCK_BUSY" in service
     assert "QUANT_LAB_EXPORT_V5_MAX_PENDING_BUNDLES=12" in service

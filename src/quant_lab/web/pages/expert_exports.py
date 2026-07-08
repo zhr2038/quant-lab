@@ -23,7 +23,7 @@ WEB_EXPORT_MODE = "authoritative_snapshot"
 DEFAULT_DOWNLOAD_PACK_LIMIT = 5
 DEFAULT_DOWNLOAD_MAX_BYTES = 128 * 1024 * 1024
 DEFAULT_EXPORT_STATUS_STALE_SECONDS = 30 * 60
-DEFAULT_REQUEST_FILE_PICKUP_STALE_SECONDS = 12 * 60
+DEFAULT_REQUEST_FILE_PICKUP_STALE_SECONDS = 90 * 60
 DEFAULT_EXPORT_REGENERATE_COOLDOWN_SECONDS = 3 * 60
 DEFAULT_WEB_EXPORT_MEMORY_LIMIT_MB = 0
 REQUEST_FILE_BACKGROUND_TRIGGER = "request_file"
@@ -466,6 +466,40 @@ def _poll_export_job(exports_root: Path, export_date: str) -> dict[str, Any]:
     )
     if recovered is not None:
         return recovered
+    pid = status.get("worker_pid")
+    if not isinstance(pid, int):
+        pid = status.get("pid")
+    if isinstance(pid, int) and _pid_is_running(pid):
+        return status
+    if status.get("trigger") == REQUEST_FILE_BACKGROUND_TRIGGER:
+        request_path = _request_path_from_status(status, exports_root)
+        if (request_path is None or not request_path.exists()) and _export_job_is_stale(
+            status
+        ):
+            status = {
+                **status,
+                "state": "failed",
+                "error": "export process exceeded web status timeout; use scheduled export service",
+                "finished_at": datetime.now(UTC).isoformat(),
+            }
+            recovered = _recover_failed_export_status_from_pack(
+                exports_root,
+                export_date,
+                status_path,
+                status,
+            )
+            if recovered is not None:
+                return recovered
+            _write_export_job_status(status_path, status)
+            return status
+        status = _poll_request_file_export_job(
+            exports_root=exports_root,
+            export_date=export_date,
+            status_path=status_path,
+            status=status,
+            pid=pid if isinstance(pid, int) else None,
+        )
+        return status
     if _export_job_is_stale(status):
         status = {
             **status,
@@ -482,20 +516,6 @@ def _poll_export_job(exports_root: Path, export_date: str) -> dict[str, Any]:
         if recovered is not None:
             return recovered
         _write_export_job_status(status_path, status)
-        return status
-    pid = status.get("worker_pid")
-    if not isinstance(pid, int):
-        pid = status.get("pid")
-    if isinstance(pid, int) and _pid_is_running(pid):
-        return status
-    if status.get("trigger") == REQUEST_FILE_BACKGROUND_TRIGGER:
-        status = _poll_request_file_export_job(
-            exports_root=exports_root,
-            export_date=export_date,
-            status_path=status_path,
-            status=status,
-            pid=pid if isinstance(pid, int) else None,
-        )
         return status
     status = {
         **status,

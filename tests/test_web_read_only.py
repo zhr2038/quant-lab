@@ -3990,6 +3990,36 @@ def test_expert_exports_request_file_job_tolerates_slow_systemd_prestart(
     assert "did not pick up web export request" not in str(status.get("error") or "")
 
 
+def test_expert_exports_request_file_job_uses_pickup_timeout_before_generic_stale(
+    tmp_path, monkeypatch
+):
+    exports_root = tmp_path / "exports"
+    exports_root.mkdir()
+    status_path = exports_root / ".quant_lab_web_export_2026-05-16.json"
+    request_path = exports_root / ".quant_lab_web_export_request.json"
+    request_path.write_text("{}", encoding="utf-8")
+    old_time = (datetime.now(UTC) - timedelta(minutes=20)).timestamp()
+    os.utime(request_path, (old_time, old_time))
+    status_path.write_text(
+        json.dumps(
+            {
+                "state": "running",
+                "trigger": "request_file",
+                "request_path": str(request_path),
+                "started_at": datetime.fromtimestamp(old_time, UTC).isoformat(),
+            }
+        ),
+        encoding="utf-8",
+    )
+    monkeypatch.setenv("QUANT_LAB_WEB_EXPORT_STATUS_STALE_SECONDS", "1")
+    monkeypatch.setenv("QUANT_LAB_WEB_EXPORT_REQUEST_PICKUP_STALE_SECONDS", "5400")
+
+    status = expert_exports._poll_export_job(exports_root, "2026-05-16")
+
+    assert status["state"] == "running"
+    assert "exceeded web status timeout" not in str(status.get("error") or "")
+
+
 def test_expert_exports_request_file_job_fails_when_worker_never_picks_it_up(
     tmp_path, monkeypatch
 ):

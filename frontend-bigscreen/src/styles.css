@@ -221,37 +221,40 @@ button{font:inherit;color:inherit}
 }
 .server-resource-badge.warning{border-color:rgba(255,196,87,.75);color:#ffe0a4;background:rgba(255,196,87,.12)}
 .server-resource-badge.critical{border-color:rgba(255,93,125,.8);color:#ffd0dc;background:rgba(255,93,125,.12)}
-.server-resource-list{display:grid;gap:7px;margin-top:12px}
+.server-resource-list{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:8px;margin-top:10px}
 .server-resource-row{
-  display:grid;grid-template-columns:20px minmax(0,1fr) 86px;align-items:center;gap:8px;
+  display:grid;grid-template-columns:18px minmax(0,1fr);grid-template-rows:auto auto;align-items:center;gap:5px 7px;
   border:1px solid rgba(80,169,255,.24);border-radius:11px;background:rgba(4,28,52,.54);
-  padding:7px 9px;min-width:0;
+  padding:7px 8px;min-width:0;
 }
 .server-resource-row svg{color:var(--green);filter:drop-shadow(0 0 8px rgba(45,232,166,.45))}
 .server-resource-row span{display:block;color:var(--muted);font-size:9px;line-height:1}
-.server-resource-row strong{display:block;margin-top:2px;color:#eaf6ff;font-size:18px;line-height:1}
+.server-resource-row strong{display:block;margin-top:2px;color:#eaf6ff;font-size:16px;line-height:1}
 .server-resource-row em{
   display:block;margin-top:3px;color:var(--muted);font-size:9px;font-style:normal;
   white-space:nowrap;overflow:hidden;text-overflow:ellipsis;
 }
-.resource-meter{height:9px;border-radius:999px;background:rgba(80,169,255,.22);overflow:hidden}
+.resource-meter{grid-column:1/3;height:8px;border-radius:999px;background:rgba(80,169,255,.22);overflow:hidden}
 .resource-meter i{display:block;height:100%;border-radius:999px;background:linear-gradient(90deg,var(--green),var(--blue));box-shadow:0 0 10px rgba(45,232,166,.38)}
 .server-resources.warning .resource-meter i{background:linear-gradient(90deg,var(--yellow),#50a9ff)}
 .server-resources.critical .resource-meter i{background:linear-gradient(90deg,var(--red),var(--yellow))}
 .server-resource-meta{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:8px;margin-top:10px}
 .server-resource-meta span{
   border:1px solid rgba(80,169,255,.22);background:rgba(5,28,52,.46);border-radius:10px;
-  padding:6px 8px;min-width:0;
+  padding:5px 7px;min-width:0;
 }
-.server-resource-meta b{display:block;font-size:13px;line-height:1;color:#dff7ff;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.server-resource-meta b{display:block;font-size:12px;line-height:1;color:#dff7ff;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
 .server-resource-meta em{display:block;margin-top:3px;font-size:8px;font-style:normal;color:var(--muted);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
 .map-row{
-  width:100%;height:30px;border-radius:9px;border:1px solid rgba(80,169,255,.35);background:rgba(12,48,86,.55);
-  display:grid;grid-template-columns:18px 66px 1fr;gap:8px;align-items:center;margin-top:7px;padding:0 11px;font-size:12px;text-align:left;cursor:pointer;
+  width:100%;min-height:32px;height:auto;border-radius:9px;border:1px solid rgba(80,169,255,.35);background:rgba(12,48,86,.55);
+  display:grid;grid-template-columns:18px minmax(48px,.36fr) minmax(0,1fr);gap:8px;align-items:center;margin-top:7px;padding:6px 10px;font-size:12px;text-align:left;cursor:pointer;
 }
 .map-row:hover{border-color:var(--green);box-shadow:0 0 16px rgba(45,232,166,.18)}
 .map-row svg{color:var(--blue)}
-.map-row span{color:var(--muted);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.map-row span{
+  color:var(--muted);white-space:normal;overflow:hidden;text-overflow:clip;line-height:1.18;
+  display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;
+}
 .heatmap{grid-column:2;grid-row:2}
 .matrix-grid-shell{margin-top:18px;display:grid;grid-template-columns:minmax(540px,1fr) minmax(250px,.42fr);gap:18px;align-items:stretch}
 .matrix{display:grid;grid-template-columns:52px repeat(7,minmax(48px,1fr));gap:7px;align-items:center;min-width:0}
@@ -484,11 +487,11 @@ button{font:inherit;color:inherit}
 .page-strategy .factor-factory-stats b{font-size:24px}
 .page-strategy .factor-factory-stats em{font-size:13px}
 .page-strategy .factor-chip{
-  min-height:30px;height:auto;grid-template-columns:18px minmax(0,1fr) minmax(78px,.28fr) 68px;gap:7px;padding:0 9px;
+  min-height:30px;height:auto;grid-template-columns:18px minmax(0,1fr) minmax(78px,.28fr);gap:7px;padding:0 9px;
   font-size:12px;border-radius:14px;
 }
 .page-strategy .factor-chip-grid{grid-template-columns:repeat(auto-fit,minmax(180px,1fr));gap:6px;overflow:auto;align-content:start;scrollbar-gutter:stable}
-.page-strategy .factor-chip strong{font-size:12px}
+.page-strategy .factor-chip strong{display:none}
 .page-strategy .chip{min-width:0;min-height:40px;border-radius:15px;grid-template-columns:minmax(0,1fr) minmax(48px,.16fr) minmax(56px,.18fr);gap:2px 6px;font-size:12px;padding:5px 9px}
 .page-strategy .candidate-list{display:grid;grid-template-rows:auto minmax(0,1fr);align-content:start;min-height:0;overflow:hidden}
 .page-strategy .candidate-list-body{grid-template-columns:repeat(auto-fit,minmax(210px,1fr));gap:7px;overflow:auto;align-content:start;scrollbar-gutter:stable}
@@ -844,10 +847,11 @@ button{font:inherit;color:inherit}
   .server-resource-head{gap:16px}
   .server-resource-head .sub{font-size:12px;line-height:1.45;max-width:360px}
   .server-resource-badge{height:34px;padding:0 14px;font-size:13px}
-  .server-resource-list{gap:10px;margin-top:16px}
+  .server-resource-list{grid-template-columns:1fr;gap:10px;margin-top:16px}
   .server-resource-row{
     grid-template-columns:24px minmax(0,1fr) 112px;gap:10px;padding:10px 12px;border-radius:14px;
   }
+  .server-resource-row .resource-meter{grid-column:auto}
   .server-resource-row strong{font-size:23px}
   .server-resource-row span,.server-resource-row em{font-size:11px}
   .resource-meter{height:11px}
@@ -997,6 +1001,11 @@ button{font:inherit;color:inherit}
     align-items:stretch;
   }
   .strategy-research-grid .opportunity-cost-mini{overflow:auto}
+  .strategy-research-grid .opportunity-cost-stats{grid-template-columns:repeat(3,minmax(0,1fr))}
+  .page-strategy .opportunity-cost-stats b{font-size:16px}
+  .page-strategy .opportunity-cost-stats em{font-size:10px}
+  .strategy-research-grid .opportunity-cost-note{min-height:42px;font-size:10px}
+  .page-strategy .opportunity-bucket{min-height:28px;font-size:10px}
   .strategy-secondary-grid{grid-template-columns:repeat(2,minmax(0,1fr));height:100%;min-height:166px;overflow:hidden}
   .page-strategy .factor-factory-mini,
   .page-strategy .candidate-list{

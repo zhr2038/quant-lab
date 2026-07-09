@@ -2593,11 +2593,20 @@ def _append_rows(dataset_path: Path, rows: list[dict[str, Any]]) -> int:
 def _upsert_stable_rows(dataset_path: Path, rows: list[dict[str, Any]]) -> int:
     if not rows:
         return read_parquet_dataset(dataset_path).height
+
+    keyed_new_rows = [_with_stable_row_key(row) for row in rows]
     existing = read_parquet_dataset(dataset_path)
-    combined_rows = existing.to_dicts() if not existing.is_empty() else []
-    combined_rows.extend(rows)
-    keyed_rows = [_with_stable_row_key(row) for row in combined_rows]
-    df = _dataframe_from_rows(keyed_rows)
+    new_df = _dataframe_from_rows(keyed_new_rows)
+    frames = [frame for frame in (existing, new_df) if not frame.is_empty()]
+    df = pl.concat(frames, how="diagonal_relaxed") if frames else new_df
+
+    # Current datasets already persist stable_row_key. Re-hashing every historical
+    # row for each overlapping follow-up bundle made ingest time grow with the
+    # entire lake. Keep a migration fallback only for legacy or damaged datasets.
+    if not _stable_row_key_column_complete(existing):
+        df = _dataframe_from_rows(
+            [_with_stable_row_key(row) for row in df.to_dicts()]
+        )
     if not df.is_empty():
         candidate_keys = (
             ["strategy", "stable_row_key"]
@@ -2613,6 +2622,20 @@ def _upsert_stable_rows(dataset_path: Path, rows: list[dict[str, Any]]) -> int:
             df = df.unique(subset=key_columns, keep="last", maintain_order=True)
     write_parquet_dataset(df, dataset_path)
     return df.height
+
+
+def _stable_row_key_column_complete(df: pl.DataFrame) -> bool:
+    if df.is_empty():
+        return True
+    if "stable_row_key" not in df.columns:
+        return False
+    try:
+        keys = df.get_column("stable_row_key").cast(pl.Utf8, strict=False)
+        if keys.null_count():
+            return False
+        return not bool(keys.str.strip_chars().eq("").any())
+    except Exception:
+        return False
 
 
 def _write_empty_csv_refresh_dataset(

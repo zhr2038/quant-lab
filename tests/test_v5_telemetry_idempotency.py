@@ -1,6 +1,9 @@
 from pathlib import Path
 
-from quant_lab.data.lake import read_parquet_dataset
+import polars as pl
+
+import quant_lab.strategy_telemetry.ingest as ingest_module
+from quant_lab.data.lake import read_parquet_dataset, write_parquet_dataset
 from quant_lab.strategy_telemetry.ingest import ingest_v5_inbox
 from tests.v5_bundle_fixture import make_tar, make_v5_bundle_fixture
 
@@ -115,3 +118,67 @@ def test_ingest_v5_inbox_can_scan_only_latest_window(tmp_path):
     assert second.processed == []
     assert second.skipped_files == []
     assert any("max_scan_bundles_limit_applied:1_of_2" in warning for warning in second.warnings)
+
+
+def test_stable_upsert_hashes_only_new_rows_when_existing_keys_are_complete(
+    tmp_path,
+    monkeypatch,
+):
+    dataset = tmp_path / "lake" / "silver" / "v5_paper_strategy_run"
+    first = {
+        "strategy": "v5",
+        "source_path_inside_bundle": "summaries/paper_strategy_runs.csv",
+        "bundle_name": "first.tar.gz",
+        "bundle_sha256": "first",
+        "raw_payload_json": '{"strategy_id":"paper-1","run_id":"run-1"}',
+    }
+    existing = ingest_module._with_stable_row_key(first)
+    write_parquet_dataset(pl.DataFrame([existing]), dataset)
+
+    real_stable_row_key = ingest_module._stable_row_key
+    hashed_bundle_names: list[str] = []
+
+    def tracked_stable_row_key(row):
+        hashed_bundle_names.append(str(row.get("bundle_name") or ""))
+        return real_stable_row_key(row)
+
+    monkeypatch.setattr(ingest_module, "_stable_row_key", tracked_stable_row_key)
+    second = {
+        **first,
+        "bundle_name": "second.tar.gz",
+        "bundle_sha256": "second",
+    }
+
+    row_count = ingest_module._upsert_stable_rows(dataset, [second])
+    result = read_parquet_dataset(dataset)
+
+    assert row_count == 1
+    assert result.height == 1
+    assert result["bundle_name"][0] == "second.tar.gz"
+    assert hashed_bundle_names == ["second.tar.gz"]
+
+
+def test_stable_upsert_repairs_legacy_rows_without_stable_keys(tmp_path):
+    dataset = tmp_path / "lake" / "silver" / "v5_paper_strategy_run"
+    legacy = {
+        "strategy": "v5",
+        "source_path_inside_bundle": "summaries/paper_strategy_runs.csv",
+        "bundle_name": "legacy.tar.gz",
+        "bundle_sha256": "legacy",
+        "raw_payload_json": '{"strategy_id":"paper-legacy","run_id":"run-1"}',
+    }
+    write_parquet_dataset(pl.DataFrame([legacy]), dataset)
+    current = {
+        **legacy,
+        "bundle_name": "current.tar.gz",
+        "bundle_sha256": "current",
+        "raw_payload_json": '{"strategy_id":"paper-current","run_id":"run-2"}',
+    }
+
+    row_count = ingest_module._upsert_stable_rows(dataset, [current])
+    result = read_parquet_dataset(dataset)
+
+    assert row_count == 2
+    assert result.height == 2
+    assert result["stable_row_key"].null_count() == 0
+    assert result["stable_row_key"].n_unique() == 2

@@ -67,6 +67,7 @@ def test_compact_v5_sync_payload_omits_nested_bundle_details():
             "remote_max_files": 1,
             "max_scan_bundles": 1,
             "include_historical_outcomes": False,
+            "phase_seconds": {"pull": 1.25, "ingest": 8.5},
         }
     )
 
@@ -77,6 +78,7 @@ def test_compact_v5_sync_payload_omits_nested_bundle_details():
     assert payload["analysis_status"] == "WARNING"
     assert payload["warnings"] == ["pull-warning", "inbox-warning"]
     assert payload["scan_limited"] is True
+    assert payload["phase_seconds"] == {"pull": 1.25, "ingest": 8.5}
     assert "pull" not in payload
     assert "inbox" not in payload
     assert "analysis" not in payload

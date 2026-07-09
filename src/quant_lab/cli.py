@@ -2,6 +2,7 @@ import asyncio
 import json
 import os
 import sys
+import time
 from datetime import datetime
 from pathlib import Path
 from typing import Annotated, Any
@@ -2416,10 +2417,15 @@ def sync_v5_telemetry_command(
         effective_max_scan_bundles = int(env_value) if env_value else effective_remote_max_files
 
     def _run_sync() -> dict[str, object]:
+        phase_started = time.monotonic()
         pull = RemoteBundlePuller().pull_bundles(cfg, max_files=effective_remote_max_files)
+        phase_seconds: dict[str, float] = {
+            "pull": round(time.monotonic() - phase_started, 3),
+        }
         inbox = None
         analysis = None
         if not cfg.dry_run:
+            phase_started = time.monotonic()
             inbox = ingest_v5_inbox_dir(
                 inbox_dir=cfg.local_inbox_dir,
                 lake_root=cfg.lake_root,
@@ -2435,11 +2441,14 @@ def sync_v5_telemetry_command(
                 refresh_candidate_gold=False,
                 include_historical_outcomes=include_historical_outcomes,
             )
+            phase_seconds["ingest"] = round(time.monotonic() - phase_started, 3)
             if run_analysis_after_sync:
+                phase_started = time.monotonic()
                 analysis = analyze_v5_telemetry(
                     lake_root=cfg.lake_root,
                     refresh_candidate_gold=False,
                 )
+                phase_seconds["analysis"] = round(time.monotonic() - phase_started, 3)
         return {
             "pull": pull.model_dump(mode="json"),
             "inbox": inbox.model_dump(mode="json") if inbox else None,
@@ -2450,6 +2459,7 @@ def sync_v5_telemetry_command(
             "max_scan_bundles": effective_max_scan_bundles,
             "newest_first": newest_first,
             "include_historical_outcomes": include_historical_outcomes,
+            "phase_seconds": phase_seconds,
         }
 
     payload = run_with_job_metrics(
@@ -2490,6 +2500,7 @@ def _compact_v5_sync_payload(payload: dict[str, object]) -> dict[str, object]:
         "max_bundles": payload.get("max_bundles"),
         "remote_max_files": payload.get("remote_max_files"),
         "max_scan_bundles": payload.get("max_scan_bundles"),
+        "phase_seconds": payload.get("phase_seconds"),
         "pulled_count": len(pull.get("pulled_files") or []) if isinstance(pull, dict) else 0,
         "skipped_pull_count": len(pull.get("skipped_files") or []) if isinstance(pull, dict) else 0,
         "processed_count": len(processed) if isinstance(processed, list) else 0,

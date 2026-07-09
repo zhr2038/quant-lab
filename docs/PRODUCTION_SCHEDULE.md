@@ -44,7 +44,8 @@ split:
   rebuild candidate research outputs.
 - Frequent `qlab analyze-v5-telemetry --skip-candidate-gold` refreshes V5 health
   gold tables without touching candidate labels, strategy evidence, or the
-  alpha discovery board.
+  alpha discovery board. It should skip rather than overlap when a heavy
+  research refresh is already running.
 - Hourly `quant-lab-v5-research-refresh.service` runs incremental
   candidate research only:
   `qlab build-v5-candidate-labels --mode incremental --lookback-days 8`,

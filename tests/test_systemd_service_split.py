@@ -21,8 +21,10 @@ def test_v5_health_analysis_stays_lightweight():
     assert "--skip-candidate-gold" in unit
     assert "--compact-output" in unit
     assert "SKIP_V5_DAILY_ANALYSIS_LOCK_BUSY" in unit
+    assert "flock -E 75 -w 30 /var/lock/quant-lab-heavy.lock" in unit
     assert "flock -E 75 -w 5" in unit
     assert "/var/lock/quant-lab-v5-daily-analysis.lock" in unit
+    assert "TimeoutStartSec=10min" in unit
     assert "/var/lock/quant-lab-v5-research.lock" not in unit
     assert "/usr/bin/timeout 8m" in unit
     assert "build-v5-candidate-labels" not in unit

@@ -38,6 +38,7 @@ from tests.v5_bundle_fixture import make_tar
 def _isolate_default_v5_telemetry_config(monkeypatch, tmp_path):
     monkeypatch.delenv("QUANT_LAB_EXPORT_V5_MAX_PENDING_BUNDLES", raising=False)
     monkeypatch.delenv("QUANT_LAB_EXPORT_V5_MAX_SCAN_BUNDLES", raising=False)
+    monkeypatch.delenv("QUANT_LAB_EXPORT_PULL_V5_REMOTE", raising=False)
     monkeypatch.delenv("QUANT_LAB_EXPORT_GITHUB_CI_STATUS", raising=False)
     monkeypatch.delenv("QUANT_LAB_GITHUB_REPO", raising=False)
     monkeypatch.delenv("V5_GITHUB_REPO", raising=False)
@@ -4048,6 +4049,72 @@ def test_export_daily_limits_pre_export_v5_ingest_to_latest_pending(tmp_path, mo
     assert manifest["authoritative_snapshot"] is False
     assert manifest["pending_uningested_bundle_count"] == 1
     assert manifest["candidate_event_latest_ts"].startswith("2026-05-17T06:00:00")
+
+
+def test_pre_export_remote_pull_is_explicit_and_bounded(tmp_path, monkeypatch):
+    inbox = tmp_path / "inbox"
+    lake_root = tmp_path / "lake"
+    config_path = _v5_telemetry_config(tmp_path, inbox, lake_root)
+    cfg = daily_export_module._load_export_v5_config(
+        lake_root,
+        config_path=config_path,
+    )
+    captured: dict[str, object] = {}
+
+    class FakePuller:
+        def pull_bundles(self, remote_config, *, max_files=None):
+            captured["remote_config"] = remote_config
+            captured["max_files"] = max_files
+            return SimpleNamespace(
+                pulled_files=[str(inbox / "v5_live_followup_bundle_latest.tar.gz")],
+                skipped_files=[],
+                warnings=[],
+                dry_run=False,
+            )
+
+    import quant_lab.strategy_telemetry.remote_pull as remote_pull_module
+
+    monkeypatch.setenv("QUANT_LAB_EXPORT_PULL_V5_REMOTE", "1")
+    monkeypatch.setattr(remote_pull_module, "RemoteBundlePuller", FakePuller)
+
+    result = daily_export_module._pull_latest_v5_remote_for_export(cfg)
+
+    assert captured["remote_config"] is cfg["_remote_config"]
+    assert captured["max_files"] == 1
+    assert result == {
+        "remote_pull_attempted": True,
+        "remote_pull_success": True,
+        "remote_pulled_count": 1,
+        "remote_pulled_names": ["v5_live_followup_bundle_latest.tar.gz"],
+        "remote_skipped_count": 0,
+    }
+
+
+def test_pre_export_remote_pull_failure_is_fail_fast(tmp_path, monkeypatch):
+    inbox = tmp_path / "inbox"
+    lake_root = tmp_path / "lake"
+    config_path = _v5_telemetry_config(tmp_path, inbox, lake_root)
+    cfg = daily_export_module._load_export_v5_config(
+        lake_root,
+        config_path=config_path,
+    )
+
+    class FailingPuller:
+        def pull_bundles(self, remote_config, *, max_files=None):
+            return SimpleNamespace(
+                pulled_files=[],
+                skipped_files=[],
+                warnings=["remote bundle list exited with code 255"],
+                dry_run=False,
+            )
+
+    import quant_lab.strategy_telemetry.remote_pull as remote_pull_module
+
+    monkeypatch.setenv("QUANT_LAB_EXPORT_PULL_V5_REMOTE", "1")
+    monkeypatch.setattr(remote_pull_module, "RemoteBundlePuller", FailingPuller)
+
+    with pytest.raises(RuntimeError, match="v5_pre_export_remote_pull_failed"):
+        daily_export_module._pull_latest_v5_remote_for_export(cfg)
 
 
 def test_data_quality_fails_when_v5_bundle_is_stale_at_export(tmp_path):

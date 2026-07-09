@@ -444,7 +444,8 @@ def test_daily_export_template_refreshes_v5_before_packaging():
     assert "/var/lock/quant-lab-heavy.lock" in unit
     assert "/var/lock/quant-lab-v5-telemetry-sync.lock" in unit
     assert "SKIP_DAILY_EXPORT_LOCK_BUSY" in unit
-    assert "ExecStartPre=/usr/bin/systemctl start quant-lab-v5-telemetry-sync.service" in unit
+    assert "QUANT_LAB_EXPORT_PULL_V5_REMOTE=1" in unit
+    assert "ExecStartPre=/usr/bin/systemctl start quant-lab-v5-telemetry-sync.service" not in unit
     assert "ExecStartPre=/usr/bin/systemctl start quant-lab-cost-calibration.service" in unit
     assert (
         "ExecStartPre=/opt/quant-lab/.venv/bin/qlab publish-risk-permission "
@@ -457,7 +458,8 @@ def test_web_export_request_refreshes_costs_before_packaging():
     unit = _unit("quant-lab-web-export-request.service")
 
     assert "TimeoutStartSec=95min" in unit
-    assert "ExecStartPre=/usr/bin/systemctl start quant-lab-v5-telemetry-sync.service" in unit
+    assert "QUANT_LAB_EXPORT_PULL_V5_REMOTE=1" in unit
+    assert "ExecStartPre=/usr/bin/systemctl start quant-lab-v5-telemetry-sync.service" not in unit
     assert "ExecStartPre=/usr/bin/systemctl start quant-lab-cost-calibration.service" in unit
     assert "QUANT_LAB_EXPORT_GITHUB_CI_STATUS=1" in unit
 
@@ -482,9 +484,10 @@ def test_web_export_request_worker_is_scheduled_outside_dashboard_cgroup():
     assert "run-web-export-request" in service
     assert "--request-path /var/lib/quant-lab/exports/.quant_lab_web_export_request.json" in service
     assert "PermissionsStartOnly=true" in service
+    assert "QUANT_LAB_EXPORT_PULL_V5_REMOTE=1" in service
     assert (
         "ExecStartPre=/usr/bin/systemctl start quant-lab-v5-telemetry-sync.service"
-        in service
+        not in service
     )
     assert "flock -E 75 -w 2400 /var/lock/quant-lab-heavy.lock" in service
     assert "flock -E 75 -w 600 /var/lock/quant-lab-v5-telemetry-sync.lock" in service

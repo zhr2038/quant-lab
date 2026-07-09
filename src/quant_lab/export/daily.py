@@ -7569,6 +7569,11 @@ def _refresh_v5_before_export(
         "unreadable_bundle_names": [],
         "max_scan_bundles": _export_v5_max_scan_bundles(_export_v5_max_pending_bundles()),
         "max_pending_bundles": _export_v5_max_pending_bundles(),
+        "remote_pull_attempted": False,
+        "remote_pull_success": None,
+        "remote_pulled_count": 0,
+        "remote_pulled_names": [],
+        "remote_skipped_count": 0,
         "warnings": [],
     }
     warnings: list[str] = []
@@ -7579,6 +7584,8 @@ def _refresh_v5_before_export(
             f"v5_pre_export_config_failed: {type(exc).__name__}: {_safe_warning_text(str(exc))}"
         ]
         return context
+
+    context.update(_pull_latest_v5_remote_for_export(cfg))
 
     inbox_dir = Path(cfg["local_inbox_dir"])
     context["local_inbox_dir"] = str(inbox_dir)
@@ -7671,6 +7678,7 @@ def _load_export_v5_config(
 
         cfg = load_v5_telemetry_remote_config(resolved)
         return {
+            "_remote_config": cfg,
             "strategy": cfg.strategy,
             "local_inbox_dir": cfg.local_inbox_dir,
             "restricted_archive_dir": cfg.restricted_archive_dir,
@@ -7684,6 +7692,40 @@ def _load_export_v5_config(
         "restricted_archive_dir": base / "archive_restricted" / "v5" / "bundles",
         "redacted_archive_dir": base / "archive" / "v5" / "bundles",
         "limits": None,
+    }
+
+
+def _pull_latest_v5_remote_for_export(cfg: dict[str, Any]) -> dict[str, Any]:
+    if not _flag_enabled("QUANT_LAB_EXPORT_PULL_V5_REMOTE", default=False):
+        return {
+            "remote_pull_attempted": False,
+            "remote_pull_success": None,
+            "remote_pulled_count": 0,
+            "remote_pulled_names": [],
+            "remote_skipped_count": 0,
+        }
+
+    remote_config = cfg.get("_remote_config")
+    if remote_config is None:
+        raise RuntimeError(
+            "v5_pre_export_remote_pull_failed: remote telemetry config is unavailable"
+        )
+
+    from quant_lab.strategy_telemetry.remote_pull import RemoteBundlePuller
+
+    pull = RemoteBundlePuller().pull_bundles(remote_config, max_files=1)
+    warnings = [str(warning) for warning in (pull.warnings or [])]
+    if pull.dry_run:
+        warnings.append("remote pull unexpectedly ran in dry-run mode")
+    if warnings:
+        detail = "; ".join(_safe_warning_text(warning) for warning in warnings[:5])
+        raise RuntimeError(f"v5_pre_export_remote_pull_failed: {detail}")
+    return {
+        "remote_pull_attempted": True,
+        "remote_pull_success": True,
+        "remote_pulled_count": len(pull.pulled_files),
+        "remote_pulled_names": [Path(path).name for path in pull.pulled_files],
+        "remote_skipped_count": len(pull.skipped_files),
     }
 
 

@@ -624,6 +624,7 @@ quant-lab-v5-telemetry-sync.timer
 quant-lab-v5-daily-analysis.timer
 quant-lab-v5-research-refresh.timer
 quant-lab-v5-regime-router.timer
+quant-lab-alpha-factory.timer
 quant-lab-cost-calibration.timer
 quant-lab-risk-permission.timer
 quant-lab-daily-export.timer
@@ -636,6 +637,7 @@ quant-lab-lake-compaction.timer
 - REST backfill 定时补 1H bars；
 - V5 telemetry sync 高频轻量同步；
 - research refresh 较低频增量计算；
+- alpha factory 低频研究构建；
 - risk permission 定时刷新；
 - daily export 只打包已有结果；
 - lake maintenance/compaction 定时减少小文件。

@@ -148,6 +148,7 @@ def test_scheduled_lock_contention_is_reported_as_successful_skip():
         "quant-lab-cost-calibration.service": "SKIP_COST_CALIBRATION_LOCK_BUSY",
         "quant-lab-daily-export.service": "SKIP_DAILY_EXPORT_LOCK_BUSY",
         "quant-lab-entry-quality-history.service": "SKIP_ENTRY_QUALITY_HISTORY_LOCK_BUSY",
+        "quant-lab-alpha-factory.service": "SKIP_ALPHA_FACTORY_LOCK_BUSY",
         "quant-lab-lake-compaction.service": "SKIP_LAKE_COMPACTION_LOCK_BUSY",
         "quant-lab-storage-retention.service": "SKIP_STORAGE_RETENTION_LOCK_BUSY",
         "quant-lab-v5-daily-analysis.service": "SKIP_V5_DAILY_ANALYSIS_LOCK_BUSY",
@@ -222,6 +223,8 @@ def test_deploy_permission_repair_script_targets_deploy_user():
 
 def test_candidate_research_refresh_is_separate_from_alpha_evidence():
     alpha_unit = _unit("quant-lab-alpha-evidence.service")
+    alpha_factory_unit = _unit("quant-lab-alpha-factory.service")
+    alpha_factory_timer = _unit("quant-lab-alpha-factory.timer")
     refresh_unit = _unit("quant-lab-v5-research-refresh.service")
     regime_unit = _unit("quant-lab-v5-regime-router.service")
 
@@ -230,12 +233,22 @@ def test_candidate_research_refresh_is_separate_from_alpha_evidence():
     assert "build-strategy-evidence" not in alpha_unit
     assert "build-alpha-discovery-board" not in alpha_unit
 
+    assert "build-alpha-factory" in alpha_factory_unit
+    assert "build-alpha-discovery-board" not in alpha_factory_unit
+    assert "flock -E 75 -w 60 /var/lock/quant-lab-heavy.lock" in alpha_factory_unit
+    assert "/usr/bin/timeout 70m" in alpha_factory_unit
+    assert "TimeoutStartSec=80min" in alpha_factory_unit
+    assert "MemoryHigh=3G" in alpha_factory_unit
+    assert "MemoryMax=4G" in alpha_factory_unit
+    assert "OnUnitActiveSec=6h" in alpha_factory_timer
+
     assert "build-v5-candidate-labels" in refresh_unit
     assert "--mode incremental --lookback-days 8" in refresh_unit
     assert "build-strategy-evidence" in refresh_unit
     assert "--skip-historical-outcomes" in refresh_unit
     assert "build-factor-factory" in refresh_unit
     assert "--horizon-bars 4,8,24,72" in refresh_unit
+    assert "build-alpha-factory" not in refresh_unit
     assert "build-alpha-discovery-board" in refresh_unit
     assert "--skip-legacy-outcome-counts" in refresh_unit
     assert "build-paper-strategy-tracking" in refresh_unit

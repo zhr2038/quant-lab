@@ -55,11 +55,15 @@ split:
   It consumes recently ingested raw inputs and previously computed
   `gold/strategy_evidence_sample` state. It must not rescan all historical
   shadow/blocked outcome files on every run.
+- Lower-frequency `quant-lab-alpha-factory.service` runs
+  `qlab build-alpha-factory --lookback-days 30 --max-candidates 200` on its own
+  timer so hourly research refresh can finish trade-level judgment and Web
+  derived snapshots even when alpha search is expensive.
 - `quant-lab-v5-regime-router.service` runs `qlab build-regime-router`
   separately from the heavier research refresh. Keep it independent so
   `gold/market_regime_daily`, `gold/strategy_regime_matrix`, and
-  `gold/regime_strategy_advisory` do not go stale when alpha-factory or entry
-  quality refreshes consume the research-refresh time budget.
+  `gold/regime_strategy_advisory` do not go stale when other research refreshes
+  consume their time budgets.
 - `qlab build-alpha-evidence` remains separate from candidate board refresh.
 
 Historical full rebuilds are manual maintenance actions only. Use `--mode full`
@@ -135,6 +139,7 @@ The repository includes these timer templates:
 - `deploy/systemd/quant-lab-v5-daily-analysis.timer`
 - `deploy/systemd/quant-lab-v5-research-refresh.timer`
 - `deploy/systemd/quant-lab-v5-regime-router.timer`
+- `deploy/systemd/quant-lab-alpha-factory.timer`
 - `deploy/systemd/quant-lab-alpha-evidence.timer`
 - `deploy/systemd/quant-lab-risk-permission.timer`
 - `deploy/systemd/quant-lab-web-v2-smoke.timer`

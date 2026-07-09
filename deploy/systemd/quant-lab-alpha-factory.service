@@ -1,0 +1,18 @@
+[Unit]
+Description=quant-lab alpha factory research builder
+After=quant-lab-v5-research-refresh.service
+
+[Service]
+Type=oneshot
+User=quantlab
+Group=quantlab
+WorkingDirectory=/opt/quant-lab
+Environment=POLARS_MAX_THREADS=1
+Environment=MALLOC_ARENA_MAX=2
+TimeoutStartSec=80min
+MemoryHigh=3G
+MemoryMax=4G
+CPUQuota=60%
+ExecStart=/bin/bash -lc 'set -euo pipefail; /usr/bin/flock -E 75 -w 60 /var/lock/quant-lab-heavy.lock /usr/bin/timeout 70m /opt/quant-lab/.venv/bin/qlab build-alpha-factory --lake-root /var/lib/quant-lab/lake --date auto --lookback-days 30 --max-candidates 200 || { code="$?"; if [ "$${code}" = "75" ]; then echo "SKIP_ALPHA_FACTORY_LOCK_BUSY"; exit 0; fi; exit "$${code}"; }'
+NoNewPrivileges=true
+PrivateTmp=true

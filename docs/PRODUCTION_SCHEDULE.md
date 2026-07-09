@@ -39,9 +39,9 @@ publication, or alpha evidence generation.
 Additional V5 telemetry analysis and candidate research jobs are intentionally
 split:
 
-- High-frequency `qlab sync-v5-telemetry` ingests at most one new bundle and
-  runs lightweight V5 health analysis only. It skips historical outcome files
-  and does not rebuild candidate research outputs.
+- High-frequency `qlab sync-v5-telemetry` ingests at most one new bundle only.
+  It skips historical outcome files and does not run V5 health analysis or
+  rebuild candidate research outputs.
 - Frequent `qlab analyze-v5-telemetry --skip-candidate-gold` refreshes V5 health
   gold tables without touching candidate labels, strategy evidence, or the
   alpha discovery board.

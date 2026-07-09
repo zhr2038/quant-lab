@@ -687,7 +687,8 @@ qlab sync-v5-telemetry \
   --config /etc/quant-lab/v5_telemetry_remote.yaml \
   --max-bundles 1 \
   --newest-first \
-  --skip-historical-outcomes
+  --skip-historical-outcomes \
+  --skip-analysis-after-sync
 ```
 
 刷新 V5 research：

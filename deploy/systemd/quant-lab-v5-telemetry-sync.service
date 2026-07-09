@@ -13,10 +13,10 @@ Environment=MALLOC_ARENA_MAX=2
 Environment=QUANT_LAB_V5_SYNC_MAX_BUNDLES=1
 Environment=QUANT_LAB_V5_SYNC_REMOTE_MAX_FILES=1
 Environment=QUANT_LAB_V5_SYNC_MAX_SCAN_BUNDLES=1
-ExecStart=/bin/bash -lc 'set -euo pipefail; /usr/bin/flock -E 75 -w 30 /var/lock/quant-lab-heavy.lock /usr/bin/flock -E 75 -w 60 /var/lock/quant-lab-v5-telemetry-sync.lock /usr/bin/timeout 8m /opt/quant-lab/.venv/bin/qlab sync-v5-telemetry --config /etc/quant-lab/v5_telemetry_remote.yaml --max-bundles 1 --remote-max-files 1 --max-scan-bundles 1 --newest-first --max-skipped-files-reported 20 --skip-historical-outcomes --skip-analysis-after-sync --compact-output || { code="$?"; if [ "$${code}" = "75" ]; then echo "SKIP_V5_TELEMETRY_SYNC_LOCK_BUSY"; exit 0; fi; exit "$${code}"; }'
-TimeoutStartSec=12min
-MemoryHigh=1G
-MemoryMax=2G
+ExecStart=/bin/bash -lc 'set -euo pipefail; /usr/bin/flock -E 75 -w 30 /var/lock/quant-lab-heavy.lock /usr/bin/flock -E 75 -w 60 /var/lock/quant-lab-v5-telemetry-sync.lock /usr/bin/timeout 15m /opt/quant-lab/.venv/bin/qlab sync-v5-telemetry --config /etc/quant-lab/v5_telemetry_remote.yaml --max-bundles 1 --remote-max-files 1 --max-scan-bundles 1 --newest-first --max-skipped-files-reported 20 --skip-historical-outcomes --skip-analysis-after-sync --compact-output || { code="$?"; if [ "$${code}" = "75" ]; then echo "SKIP_V5_TELEMETRY_SYNC_LOCK_BUSY"; exit 0; fi; exit "$${code}"; }'
+TimeoutStartSec=18min
+MemoryHigh=2G
+MemoryMax=3G
 CPUQuota=80%
 NoNewPrivileges=true
 PrivateTmp=true

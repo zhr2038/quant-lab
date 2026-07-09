@@ -38,10 +38,10 @@ def test_v5_health_analysis_stays_lightweight():
     assert "/var/lock/quant-lab-heavy.lock" in sync_unit
     assert "flock -E 75 -w 30 /var/lock/quant-lab-heavy.lock" in sync_unit
     assert "flock -E 75 -w 60 /var/lock/quant-lab-v5-telemetry-sync.lock" in sync_unit
-    assert "/usr/bin/timeout 8m" in sync_unit
-    assert "TimeoutStartSec=12min" in sync_unit
-    assert "MemoryHigh=1G" in sync_unit
-    assert "MemoryMax=2G" in sync_unit
+    assert "/usr/bin/timeout 15m" in sync_unit
+    assert "TimeoutStartSec=18min" in sync_unit
+    assert "MemoryHigh=2G" in sync_unit
+    assert "MemoryMax=3G" in sync_unit
     assert "QUANT_LAB_V5_SYNC_REMOTE_MAX_FILES=1" in sync_unit
     assert "QUANT_LAB_V5_SYNC_MAX_SCAN_BUNDLES=1" in sync_unit
 

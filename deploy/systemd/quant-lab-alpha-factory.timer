@@ -1,10 +1,9 @@
 [Unit]
-Description=Run quant-lab alpha factory research builder every 6 hours
+Description=Run quant-lab alpha factory research builder daily off peak
 
 [Timer]
-OnActiveSec=45min
-OnUnitActiveSec=6h
-RandomizedDelaySec=10min
+OnCalendar=*-*-* 03:20:00
+RandomizedDelaySec=20min
 Persistent=false
 
 [Install]

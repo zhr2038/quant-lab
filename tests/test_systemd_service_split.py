@@ -240,7 +240,10 @@ def test_candidate_research_refresh_is_separate_from_alpha_evidence():
     assert "TimeoutStartSec=80min" in alpha_factory_unit
     assert "MemoryHigh=3G" in alpha_factory_unit
     assert "MemoryMax=4G" in alpha_factory_unit
-    assert "OnUnitActiveSec=6h" in alpha_factory_timer
+    assert "OnCalendar=*-*-* 03:20:00" in alpha_factory_timer
+    assert "RandomizedDelaySec=20min" in alpha_factory_timer
+    assert "OnUnitActiveSec=6h" not in alpha_factory_timer
+    assert "OnActiveSec=45min" not in alpha_factory_timer
 
     assert "build-v5-candidate-labels" in refresh_unit
     assert "--mode incremental --lookback-days 8" in refresh_unit

@@ -1250,7 +1250,6 @@ def _publish_second_stage_samples(root: Path, frame: pl.DataFrame) -> int:
             "source_event_key",
         ],
         append_new_rows_fast_path=True,
-        fast_path_ignored_compare_columns=("created_at",),
         streaming_upsert_fallback=True,
     )
 

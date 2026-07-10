@@ -314,13 +314,12 @@ def test_upsert_append_fast_path_skips_full_history_read_for_new_rows(
         dataset,
         key_columns=["id"],
         append_new_rows_fast_path=True,
-        fast_path_ignored_compare_columns=("created_at",),
     )
 
     assert rows == 2
 
 
-def test_upsert_append_fast_path_treats_ignored_metadata_change_as_retry(tmp_path):
+def test_upsert_append_fast_path_streams_retry_metadata_update(tmp_path):
     dataset = tmp_path / "lake" / "gold" / "immutable_samples"
     write_parquet_dataset(
         pl.DataFrame([{"id": 1, "value": "same", "created_at": "first"}]),
@@ -333,13 +332,13 @@ def test_upsert_append_fast_path_treats_ignored_metadata_change_as_retry(tmp_pat
         dataset,
         key_columns=["id"],
         append_new_rows_fast_path=True,
-        fast_path_ignored_compare_columns=("created_at",),
+        streaming_upsert_fallback=True,
     )
 
     assert rows == 1
     assert len(list(dataset.rglob("*.parquet"))) == file_count_before
     assert read_parquet_dataset(dataset).to_dicts() == [
-        {"id": 1, "value": "same", "created_at": "first"}
+        {"id": 1, "value": "same", "created_at": "retry"}
     ]
 
 
@@ -363,7 +362,6 @@ def test_upsert_append_fast_path_streams_changed_payload_without_full_read(
         dataset,
         key_columns=["id"],
         append_new_rows_fast_path=True,
-        fast_path_ignored_compare_columns=("created_at",),
         streaming_upsert_fallback=True,
     )
 

@@ -16,6 +16,7 @@ from quant_lab.backtest.reports import build_factor_forward_validation
 from quant_lab.data.lake import (
     count_parquet_rows,
     read_parquet_dataset,
+    read_parquet_lazy,
     write_parquet_dataset,
     write_snapshot_meta,
 )
@@ -372,9 +373,9 @@ def build_and_publish_alpha_factory(
         promotion_rows=promotion.height,
         template_registry_rows=registry.height,
         strategy_evidence_rows=evidence_rows,
-        strategy_evidence_sample_rows=read_parquet_dataset(
-            root / "gold" / "strategy_evidence_sample"
-        ).height,
+        strategy_evidence_sample_rows=count_parquet_rows(
+            root / STRATEGY_EVIDENCE_SAMPLE_DATASET
+        ),
         decision_counts=_decision_counts(results),
         warnings=list(second_stage.warnings)
         + ([] if candidates.height <= max_candidates else ["alpha_factory_candidate_cap_applied"]),
@@ -1317,14 +1318,12 @@ def _alpha_factory_source_summary(root: Path, day: date) -> pl.DataFrame:
         second_stage,
         "gold/second_stage_alpha_factory_summary",
     )
-    strategy_evidence = read_parquet_dataset(root / STRATEGY_EVIDENCE_DATASET)
-    alt_impulse = pl.DataFrame()
-    if not strategy_evidence.is_empty() and "strategy_candidate" in strategy_evidence.columns:
-        alt_impulse = strategy_evidence.filter(
-            (pl.col("strategy_candidate").cast(pl.Utf8) == "v5.alt_impulse_shadow")
-            & (pl.col("as_of_date").cast(pl.Utf8).str.slice(0, 10) == day.isoformat())
-        )
-        alt_impulse = _with_source_dataset(alt_impulse, "gold/strategy_evidence")
+    alt_impulse = _read_candidate_rows_for_day(
+        root / STRATEGY_EVIDENCE_DATASET,
+        day,
+        candidates=("v5.alt_impulse_shadow",),
+    )
+    alt_impulse = _with_source_dataset(alt_impulse, "gold/strategy_evidence")
     factor_bridge = _factor_bridge_source_summary(root, day)
     frames = [
         frame
@@ -1599,41 +1598,50 @@ def _factor_bridge_rows_to_source_summary(
 
 
 def _alpha_factory_source_samples(root: Path, day: date) -> pl.DataFrame:
-    second_stage = read_parquet_dataset(root / SECOND_STAGE_SAMPLE_DATASET)
-    second_stage = _filter_samples_for_day(
-        second_stage,
+    second_stage = _read_candidate_rows_for_day(
+        root / SECOND_STAGE_SAMPLE_DATASET,
         day,
-        source_dataset="gold/second_stage_alpha_factory_sample",
+        candidates=tuple(sorted(SECOND_STAGE_CANDIDATES)),
     )
-    strategy_samples = read_parquet_dataset(root / STRATEGY_EVIDENCE_SAMPLE_DATASET)
-    alt_impulse = pl.DataFrame()
-    if not strategy_samples.is_empty() and "strategy_candidate" in strategy_samples.columns:
-        alt_impulse = strategy_samples.filter(
-            (pl.col("strategy_candidate").cast(pl.Utf8) == "v5.alt_impulse_shadow")
-            & (pl.col("as_of_date").cast(pl.Utf8).str.slice(0, 10) == day.isoformat())
-        )
-        alt_impulse = _with_source_dataset(
-            alt_impulse,
-            "gold/strategy_evidence_sample",
-        )
+    second_stage = _with_source_dataset(
+        second_stage,
+        "gold/second_stage_alpha_factory_sample",
+    )
+    alt_impulse = _read_candidate_rows_for_day(
+        root / STRATEGY_EVIDENCE_SAMPLE_DATASET,
+        day,
+        candidates=("v5.alt_impulse_shadow",),
+    )
+    alt_impulse = _with_source_dataset(
+        alt_impulse,
+        "gold/strategy_evidence_sample",
+    )
     frames = [frame for frame in [second_stage, alt_impulse] if not frame.is_empty()]
     if not frames:
         return pl.DataFrame()
     return pl.concat(frames, how="diagonal_relaxed")
 
 
-def _filter_samples_for_day(
-    frame: pl.DataFrame,
+def _read_candidate_rows_for_day(
+    dataset: Path,
     day: date,
     *,
-    source_dataset: str,
+    candidates: tuple[str, ...],
 ) -> pl.DataFrame:
-    if frame.is_empty():
-        return frame
-    if "as_of_date" not in frame.columns:
-        return _with_source_dataset(frame, source_dataset)
-    filtered = frame.filter(pl.col("as_of_date").cast(pl.Utf8).str.slice(0, 10) == day.isoformat())
-    return _with_source_dataset(filtered, source_dataset)
+    try:
+        lazy = read_parquet_lazy(dataset)
+        columns = lazy.collect_schema().names()
+    except Exception:
+        return pl.DataFrame()
+    if "as_of_date" not in columns or "strategy_candidate" not in columns:
+        return pl.DataFrame()
+    try:
+        return lazy.filter(
+            (pl.col("as_of_date").cast(pl.Utf8).str.slice(0, 10) == day.isoformat())
+            & pl.col("strategy_candidate").cast(pl.Utf8).is_in(candidates)
+        ).collect()
+    except Exception:
+        return pl.DataFrame()
 
 
 def _with_source_dataset(frame: pl.DataFrame, source_dataset: str) -> pl.DataFrame:

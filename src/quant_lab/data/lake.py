@@ -698,9 +698,20 @@ def upsert_parquet_dataset(
     max_rows: int | None = None,
     max_rows_sort_by: Sequence[str] | None = None,
     max_rows_descending: bool = True,
+    append_new_rows_fast_path: bool = False,
+    fast_path_ignored_compare_columns: Sequence[str] | None = None,
 ) -> int:
     path = Path(dataset_path)
     with _dataset_lock(path):
+        if append_new_rows_fast_path and max_rows is None:
+            fast_path_rows = _try_append_only_upsert_unlocked(
+                df,
+                path,
+                key_columns=key_columns,
+                ignored_compare_columns=fast_path_ignored_compare_columns or (),
+            )
+            if fast_path_rows is not None:
+                return fast_path_rows
         existing_df = read_parquet_dataset(path)
         frames = [frame for frame in [existing_df, df] if not frame.is_empty()]
         combined = pl.concat(frames, how="diagonal_relaxed") if frames else df
@@ -716,6 +727,110 @@ def upsert_parquet_dataset(
             )
         _write_parquet_dataset_unlocked(combined, path)
         return combined.height
+
+
+def _try_append_only_upsert_unlocked(
+    df: pl.DataFrame,
+    dataset_path: Path,
+    *,
+    key_columns: Sequence[str],
+    ignored_compare_columns: Sequence[str],
+) -> int | None:
+    """Avoid materializing a large immutable history for new or unchanged batches.
+
+    The caller already owns the dataset lock. Any overlapping key whose payload
+    changed returns ``None`` so the normal full upsert remains the correctness
+    fallback.
+    """
+
+    if df.is_empty():
+        return count_parquet_rows(dataset_path)
+    files = _parquet_files(dataset_path)
+    if not files:
+        return None
+    available_keys = [column for column in key_columns if column in df.columns]
+    if not available_keys:
+        return None
+    try:
+        existing = _scan_parquet_files(files, schema_union=True)
+        existing_columns = existing.collect_schema().names()
+    except Exception:
+        return None
+    if any(column not in existing_columns for column in available_keys):
+        return None
+
+    incoming = df.unique(subset=available_keys, keep="last", maintain_order=True)
+    incoming_keys = incoming.select(available_keys).unique(maintain_order=False)
+    try:
+        matching_keys = (
+            incoming_keys.lazy()
+            .join(
+                existing.select(available_keys).unique(),
+                on=available_keys,
+                how="semi",
+            )
+            .collect()
+        )
+        existing_rows = int(existing.select(pl.len().alias("rows")).collect().item())
+    except Exception:
+        return None
+
+    if matching_keys.is_empty():
+        result = _append_parquet_dataset_unlocked(
+            incoming,
+            dataset_path,
+            auto_compact=False,
+        )
+        return existing_rows + result.rows_written
+
+    try:
+        incoming_overlap = incoming.join(matching_keys, on=available_keys, how="semi")
+        existing_overlap = (
+            existing.join(matching_keys.lazy(), on=available_keys, how="semi").collect()
+        )
+    except Exception:
+        return None
+    if not _frames_match_ignoring_columns(
+        existing_overlap,
+        incoming_overlap,
+        ignored_columns=ignored_compare_columns,
+    ):
+        return None
+
+    incoming_new = incoming.join(matching_keys, on=available_keys, how="anti")
+    if incoming_new.is_empty():
+        return existing_rows
+    result = _append_parquet_dataset_unlocked(
+        incoming_new,
+        dataset_path,
+        auto_compact=False,
+    )
+    return existing_rows + result.rows_written
+
+
+def _frames_match_ignoring_columns(
+    left: pl.DataFrame,
+    right: pl.DataFrame,
+    *,
+    ignored_columns: Sequence[str],
+) -> bool:
+    ignored = set(ignored_columns)
+    columns = sorted((set(left.columns) | set(right.columns)) - ignored)
+    if left.height != right.height:
+        return False
+
+    def canonical_rows(frame: pl.DataFrame) -> list[str]:
+        return sorted(
+            json.dumps(
+                {column: row.get(column) for column in columns},
+                sort_keys=True,
+                separators=(",", ":"),
+                default=_snapshot_json,
+            )
+            for row in frame.to_dicts()
+        )
+
+    return canonical_rows(left) == canonical_rows(right)
 
 
 def _limit_dataframe_rows(

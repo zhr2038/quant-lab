@@ -11,6 +11,7 @@ import polars as pl
 from pydantic import BaseModel, ConfigDict, Field
 
 from quant_lab.data.lake import (
+    count_parquet_rows,
     read_parquet_dataset,
     read_parquet_lazy,
     upsert_parquet_dataset,
@@ -1233,11 +1234,12 @@ def _cap_second_stage_decisions(rows: list[dict[str, Any]]) -> list[dict[str, An
 
 
 def _publish_second_stage_samples(root: Path, frame: pl.DataFrame) -> int:
+    dataset = root / STRATEGY_EVIDENCE_SAMPLE_DATASET
     if frame.is_empty():
-        return read_parquet_dataset(root / STRATEGY_EVIDENCE_SAMPLE_DATASET).height
+        return count_parquet_rows(dataset)
     return upsert_parquet_dataset(
         frame,
-        root / STRATEGY_EVIDENCE_SAMPLE_DATASET,
+        dataset,
         key_columns=[
             "strategy",
             "source_type",
@@ -1247,6 +1249,8 @@ def _publish_second_stage_samples(root: Path, frame: pl.DataFrame) -> int:
             "horizon_hours",
             "source_event_key",
         ],
+        append_new_rows_fast_path=True,
+        fast_path_ignored_compare_columns=("created_at",),
     )
 
 

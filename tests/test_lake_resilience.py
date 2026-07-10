@@ -7,6 +7,7 @@ from pathlib import Path
 import polars as pl
 import pytest
 
+import quant_lab.data.lake as lake_module
 from quant_lab.data.lake import (
     _lock_is_stale,
     _parquet_file_batches,
@@ -292,6 +293,75 @@ def test_concurrent_upserts_do_not_corrupt_parquet(tmp_path):
     assert result.height == 20
     assert result["id"].sort().to_list() == list(range(20))
     assert not invalid_parquet_files(dataset)
+
+
+def test_upsert_append_fast_path_skips_full_history_read_for_new_rows(
+    tmp_path,
+    monkeypatch,
+):
+    dataset = tmp_path / "lake" / "gold" / "immutable_samples"
+    write_parquet_dataset(
+        pl.DataFrame([{"id": 1, "value": "old", "created_at": "first"}]),
+        dataset,
+    )
+
+    def fail_full_read(*_args, **_kwargs):
+        raise AssertionError("append fast path must not materialize full history")
+
+    monkeypatch.setattr(lake_module, "_read_parquet_files", fail_full_read)
+    rows = upsert_parquet_dataset(
+        pl.DataFrame([{"id": 2, "value": "new", "created_at": "second"}]),
+        dataset,
+        key_columns=["id"],
+        append_new_rows_fast_path=True,
+        fast_path_ignored_compare_columns=("created_at",),
+    )
+
+    assert rows == 2
+
+
+def test_upsert_append_fast_path_treats_ignored_metadata_change_as_retry(tmp_path):
+    dataset = tmp_path / "lake" / "gold" / "immutable_samples"
+    write_parquet_dataset(
+        pl.DataFrame([{"id": 1, "value": "same", "created_at": "first"}]),
+        dataset,
+    )
+    file_count_before = len(list(dataset.rglob("*.parquet")))
+
+    rows = upsert_parquet_dataset(
+        pl.DataFrame([{"id": 1, "value": "same", "created_at": "retry"}]),
+        dataset,
+        key_columns=["id"],
+        append_new_rows_fast_path=True,
+        fast_path_ignored_compare_columns=("created_at",),
+    )
+
+    assert rows == 1
+    assert len(list(dataset.rglob("*.parquet"))) == file_count_before
+    assert read_parquet_dataset(dataset).to_dicts() == [
+        {"id": 1, "value": "same", "created_at": "first"}
+    ]
+
+
+def test_upsert_append_fast_path_falls_back_for_changed_payload(tmp_path):
+    dataset = tmp_path / "lake" / "gold" / "immutable_samples"
+    write_parquet_dataset(
+        pl.DataFrame([{"id": 1, "value": "old", "created_at": "first"}]),
+        dataset,
+    )
+
+    rows = upsert_parquet_dataset(
+        pl.DataFrame([{"id": 1, "value": "updated", "created_at": "second"}]),
+        dataset,
+        key_columns=["id"],
+        append_new_rows_fast_path=True,
+        fast_path_ignored_compare_columns=("created_at",),
+    )
+
+    assert rows == 1
+    assert read_parquet_dataset(dataset).to_dicts() == [
+        {"id": 1, "value": "updated", "created_at": "second"}
+    ]
 
 
 def test_concurrent_writes_do_not_create_invalid_parquet(tmp_path):

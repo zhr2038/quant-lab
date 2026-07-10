@@ -1,6 +1,8 @@
+import json
 from pathlib import Path
 
 import polars as pl
+import pytest
 
 import quant_lab.strategy_telemetry.ingest as ingest_module
 from quant_lab.data.lake import read_parquet_dataset, write_parquet_dataset
@@ -182,3 +184,56 @@ def test_stable_upsert_repairs_legacy_rows_without_stable_keys(tmp_path):
     assert result.height == 2
     assert result["stable_row_key"].null_count() == 0
     assert result["stable_row_key"].n_unique() == 2
+
+
+def test_bundle_manifest_is_written_only_after_silver_succeeds(tmp_path, monkeypatch):
+    inbox = tmp_path / "inbox"
+    bundle = make_v5_bundle_fixture(
+        inbox / "v5_live_followup_bundle_20260510T140249Z.tar.gz"
+    )
+    lake = tmp_path / "lake"
+
+    def fail_silver(*args, **kwargs):
+        raise MemoryError("simulated silver failure")
+
+    monkeypatch.setattr(ingest_module, "_write_silver", fail_silver)
+
+    with pytest.raises(MemoryError, match="simulated silver failure"):
+        ingest_module.ingest_v5_bundle(
+            bundle,
+            lake,
+            tmp_path / "restricted",
+            tmp_path / "redacted",
+            run_analysis=False,
+            refresh_candidate_gold=False,
+        )
+
+    manifest = read_parquet_dataset(
+        lake / "bronze" / "strategy_telemetry" / "v5" / "bundle_manifest"
+    )
+    secret_scan = read_parquet_dataset(
+        lake / "bronze" / "strategy_telemetry" / "v5" / "secret_scan"
+    )
+    assert manifest.is_empty()
+    assert secret_scan.height == 1
+
+
+def test_event_upsert_retry_of_same_bundle_does_not_double_source_count(tmp_path):
+    dataset = tmp_path / "lake" / "silver" / "v5_quant_lab_request"
+    row = {
+        "strategy": "v5",
+        "bundle_sha256": "same-bundle",
+        "bundle_name": "same.tar.gz",
+        "bundle_ts": "2026-05-10T14:02:49Z",
+        "source_path_inside_bundle": "reports/quant_lab_requests.jsonl",
+        "event_id": "request-1",
+        "request_id": "request-1",
+        "raw_payload_json": json.dumps({"request_id": "request-1", "ok": True}),
+    }
+
+    ingest_module._upsert_event_rows(dataset, [row])
+    ingest_module._upsert_event_rows(dataset, [row])
+    result = read_parquet_dataset(dataset)
+
+    assert result.height == 1
+    assert int(result["source_count"][0]) == 1

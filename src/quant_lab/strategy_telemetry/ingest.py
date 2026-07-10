@@ -19,6 +19,7 @@ from quant_lab.contracts.v5_quant_lab import (
 from quant_lab.data.lake import (
     append_parquet_dataset,
     read_parquet_dataset,
+    read_parquet_lazy,
     upsert_parquet_dataset,
     write_parquet_dataset,
     write_snapshot_meta,
@@ -340,7 +341,12 @@ def ingest_v5_bundle(
         )
         _write_archive_json(redacted_root, "provenance.json", metadata)
 
-        bronze_rows = _write_bronze(lake_root, inspection, validation, secret_scan, metadata)
+        bronze_rows = _write_bronze_evidence(
+            lake_root,
+            inspection,
+            secret_scan,
+            metadata,
+        )
         prune_warnings = [
             f"skipped_historical_outcome_file:{path}" for path in pruned_historical_outcomes
         ]
@@ -360,6 +366,11 @@ def ingest_v5_bundle(
         from quant_lab.strategy_telemetry.analyze import analyze_v5_telemetry
 
         analysis = analyze_v5_telemetry(lake_root, date=bundle_day)
+    bronze_rows["bundle_manifest"] = _write_bundle_manifest(
+        lake_root,
+        inspection,
+        metadata,
+    )
     return V5BundleIngestResult(
         strategy=strategy,
         bundle_path=str(bundle_path),
@@ -455,19 +466,12 @@ def ingest_v5_inbox(
     )
 
 
-def _write_bronze(
+def _write_bronze_evidence(
     lake_root: Path,
     inspection,
-    validation,
     secret_scan,
     metadata: dict[str, Any],
 ) -> dict[str, int]:
-    manifest_row = {
-        **metadata,
-        "file_count": inspection.file_count,
-        "total_uncompressed_size_bytes": inspection.total_uncompressed_size_bytes,
-        "detected_files_json": json.dumps(inspection.detected_files, sort_keys=True),
-    }
     secret_row = {
         **metadata,
         "scanned_files": secret_scan.scanned_files,
@@ -486,11 +490,6 @@ def _write_bronze(
         for path in inspection.detected_files
     ]
     return {
-        "bundle_manifest": _upsert_rows(
-            lake_root / BRONZE_DATASETS["bundle_manifest"],
-            [manifest_row],
-            ["bundle_sha256"],
-        ),
         "secret_scan": _upsert_rows(
             lake_root / BRONZE_DATASETS["secret_scan"],
             [secret_row],
@@ -501,6 +500,24 @@ def _write_bronze(
             file_rows,
         ),
     }
+
+
+def _write_bundle_manifest(
+    lake_root: Path,
+    inspection,
+    metadata: dict[str, Any],
+) -> int:
+    manifest_row = {
+        **metadata,
+        "file_count": inspection.file_count,
+        "total_uncompressed_size_bytes": inspection.total_uncompressed_size_bytes,
+        "detected_files_json": json.dumps(inspection.detected_files, sort_keys=True),
+    }
+    return _upsert_rows(
+        lake_root / BRONZE_DATASETS["bundle_manifest"],
+        [manifest_row],
+        ["bundle_sha256"],
+    )
 
 
 def _write_silver(
@@ -2585,6 +2602,17 @@ def _append_rows(dataset_path: Path, rows: list[dict[str, Any]]) -> int:
         return 0
     df = _dataframe_from_rows(rows)
     bundle_sha256 = str(rows[0].get("bundle_sha256") or "batch")
+    if bundle_sha256 != "batch":
+        try:
+            existing = read_parquet_lazy(dataset_path)
+            if "bundle_sha256" in existing.collect_schema().names():
+                already_present = not existing.filter(
+                    pl.col("bundle_sha256") == bundle_sha256
+                ).limit(1).collect().is_empty()
+                if already_present:
+                    return 0
+        except Exception:
+            pass
     prefix = f"bundle_{bundle_sha256[:12]}"
     result = append_parquet_dataset(df, dataset_path, file_prefix=prefix)
     return result.rows_written
@@ -2790,17 +2818,36 @@ def _upsert_event_rows(dataset_path: Path, rows: list[dict[str, Any]]) -> int:
     if not rows:
         return read_parquet_dataset(dataset_path).height
     existing = read_parquet_dataset(dataset_path)
-    combined_rows = existing.to_dicts() if not existing.is_empty() else []
-    combined_rows.extend(_with_event_key(row) for row in rows)
-
     merged: dict[tuple[str, str], dict[str, Any]] = {}
-    for raw_row in combined_rows:
+    for raw_row in existing.to_dicts() if not existing.is_empty() else []:
         row = _with_event_key(raw_row)
         key = (str(row.get("strategy") or ""), str(row.get("event_key") or ""))
         merged[key] = _merge_event_row(merged.get(key), row)
 
+    incoming: dict[tuple[str, str], dict[str, Any]] = {}
+    for raw_row in rows:
+        row = _with_event_key(raw_row)
+        key = (str(row.get("strategy") or ""), str(row.get("event_key") or ""))
+        incoming[key] = _merge_event_row(incoming.get(key), row)
+    for key, row in incoming.items():
+        current = merged.get(key)
+        if _same_bundle_event_observation(current, row):
+            continue
+        merged[key] = _merge_event_row(current, row)
+
     df = _dataframe_from_rows(list(merged.values()))
     return upsert_parquet_dataset(df, dataset_path, key_columns=["strategy", "event_key"])
+
+
+def _same_bundle_event_observation(
+    current: dict[str, Any] | None,
+    row: dict[str, Any],
+) -> bool:
+    if current is None:
+        return False
+    current_sha = str(current.get("bundle_sha256") or "").strip()
+    row_sha = str(row.get("bundle_sha256") or "").strip()
+    return bool(current_sha and row_sha and current_sha == row_sha)
 
 
 def _merge_event_row(

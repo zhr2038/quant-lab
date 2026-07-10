@@ -1,3 +1,4 @@
+import json
 import os
 from concurrent.futures import ThreadPoolExecutor
 from datetime import UTC, datetime, timedelta
@@ -18,6 +19,7 @@ from quant_lab.data.lake import (
     repair_parquet_partition_values,
     upsert_parquet_dataset,
     write_parquet_dataset,
+    write_snapshot_meta,
 )
 from quant_lab.ops.metrics import record_job_run
 
@@ -785,3 +787,30 @@ def test_read_parquet_dataset_ignores_internal_compaction_and_temp_files(tmp_pat
     read_back = read_parquet_dataset(dataset)
 
     assert read_back["value"].to_list() == ["live"]
+
+
+def test_snapshot_source_sha_is_order_independent_and_content_sensitive(tmp_path):
+    dataset = tmp_path / "lake" / "silver" / "wide_evidence"
+    first = pl.DataFrame(
+        [
+            {"id": 1, "value": "alpha", "generated_at": "2026-07-10T00:00:00Z"},
+            {"id": 2, "value": "beta", "generated_at": "2026-07-10T00:01:00Z"},
+        ]
+    )
+    write_snapshot_meta(dataset, dataset_name="wide_evidence", frame=first)
+    first_meta = json.loads((dataset / "_snapshot_meta.json").read_text(encoding="utf-8"))
+
+    write_snapshot_meta(dataset, dataset_name="wide_evidence", frame=first.reverse())
+    reordered_meta = json.loads((dataset / "_snapshot_meta.json").read_text(encoding="utf-8"))
+
+    changed = first.with_columns(
+        pl.when(pl.col("id") == 2)
+        .then(pl.lit("changed"))
+        .otherwise(pl.col("value"))
+        .alias("value")
+    )
+    write_snapshot_meta(dataset, dataset_name="wide_evidence", frame=changed)
+    changed_meta = json.loads((dataset / "_snapshot_meta.json").read_text(encoding="utf-8"))
+
+    assert first_meta["source_sha"] == reordered_meta["source_sha"]
+    assert first_meta["source_sha"] != changed_meta["source_sha"]

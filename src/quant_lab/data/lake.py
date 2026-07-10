@@ -1260,18 +1260,23 @@ def _snapshot_source_sha(
     digest.update(b"\0")
     columns = sorted(str(column) for column in frame.columns)
     digest.update(json.dumps(columns, separators=(",", ":")).encode("utf-8"))
+    digest.update(b"\0")
+    digest.update(str(frame.height).encode("ascii"))
     if frame.is_empty():
         return digest.hexdigest()
-    sorted_frame = _sort_dataframe(frame)
-    rows = sorted_frame.select(columns).to_dicts() if columns else []
-    digest.update(
-        json.dumps(
-            rows,
-            sort_keys=True,
-            separators=(",", ":"),
-            default=_snapshot_json,
-        ).encode("utf-8")
-    )
+    if columns:
+        # Wide V5 evidence frames can contain millions of scalar values. Turning
+        # every value into Python objects for a metadata checksum consumed several
+        # gigabytes, so hash fixed-width row fingerprints instead.
+        row_hashes = frame.select(columns).hash_rows(
+            seed=0,
+            seed_1=1,
+            seed_2=2,
+            seed_3=3,
+        ).sort()
+        for buffer in row_hashes.to_arrow().buffers():
+            if buffer is not None:
+                digest.update(memoryview(buffer))
     return digest.hexdigest()
 
 

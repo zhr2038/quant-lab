@@ -295,7 +295,7 @@ def test_concurrent_upserts_do_not_corrupt_parquet(tmp_path):
     assert not invalid_parquet_files(dataset)
 
 
-def test_upsert_append_fast_path_skips_full_history_read_for_new_rows(
+def test_streaming_upsert_skips_full_history_read_for_new_rows(
     tmp_path,
     monkeypatch,
 ):
@@ -306,20 +306,20 @@ def test_upsert_append_fast_path_skips_full_history_read_for_new_rows(
     )
 
     def fail_full_read(*_args, **_kwargs):
-        raise AssertionError("append fast path must not materialize full history")
+        raise AssertionError("streaming upsert must not materialize full history")
 
     monkeypatch.setattr(lake_module, "_read_parquet_files", fail_full_read)
     rows = upsert_parquet_dataset(
         pl.DataFrame([{"id": 2, "value": "new", "created_at": "second"}]),
         dataset,
         key_columns=["id"],
-        append_new_rows_fast_path=True,
+        streaming_upsert=True,
     )
 
     assert rows == 2
 
 
-def test_upsert_append_fast_path_streams_retry_metadata_update(tmp_path):
+def test_streaming_upsert_applies_retry_metadata_update(tmp_path):
     dataset = tmp_path / "lake" / "gold" / "immutable_samples"
     write_parquet_dataset(
         pl.DataFrame([{"id": 1, "value": "same", "created_at": "first"}]),
@@ -331,8 +331,7 @@ def test_upsert_append_fast_path_streams_retry_metadata_update(tmp_path):
         pl.DataFrame([{"id": 1, "value": "same", "created_at": "retry"}]),
         dataset,
         key_columns=["id"],
-        append_new_rows_fast_path=True,
-        streaming_upsert_fallback=True,
+        streaming_upsert=True,
     )
 
     assert rows == 1
@@ -342,7 +341,7 @@ def test_upsert_append_fast_path_streams_retry_metadata_update(tmp_path):
     ]
 
 
-def test_upsert_append_fast_path_streams_changed_payload_without_full_read(
+def test_streaming_upsert_applies_changed_payload_without_full_read(
     tmp_path,
     monkeypatch,
 ):
@@ -353,7 +352,7 @@ def test_upsert_append_fast_path_streams_changed_payload_without_full_read(
     )
 
     def fail_full_read(*_args, **_kwargs):
-        raise AssertionError("streaming fallback must not materialize full history")
+        raise AssertionError("streaming upsert must not materialize full history")
 
     monkeypatch.setattr(lake_module, "_read_parquet_files", fail_full_read)
 
@@ -361,8 +360,7 @@ def test_upsert_append_fast_path_streams_changed_payload_without_full_read(
         pl.DataFrame([{"id": 1, "value": "updated", "created_at": "second"}]),
         dataset,
         key_columns=["id"],
-        append_new_rows_fast_path=True,
-        streaming_upsert_fallback=True,
+        streaming_upsert=True,
     )
 
     assert rows == 1

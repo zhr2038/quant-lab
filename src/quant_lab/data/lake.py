@@ -698,32 +698,23 @@ def upsert_parquet_dataset(
     max_rows: int | None = None,
     max_rows_sort_by: Sequence[str] | None = None,
     max_rows_descending: bool = True,
-    append_new_rows_fast_path: bool = False,
-    streaming_upsert_fallback: bool = False,
+    streaming_upsert: bool = False,
 ) -> int:
     path = Path(dataset_path)
     with _dataset_lock(path):
-        if append_new_rows_fast_path and max_rows is None:
-            fast_path_rows = _try_append_only_upsert_unlocked(
-                df,
-                path,
-                key_columns=key_columns,
-            )
-            if fast_path_rows is not None:
-                return fast_path_rows
-            if streaming_upsert_fallback:
-                try:
-                    return _streaming_upsert_parquet_dataset_unlocked(
-                        df,
-                        path,
-                        key_columns=key_columns,
-                    )
-                except Exception:
-                    logger.warning(
-                        "streaming upsert failed for %s; using in-memory fallback",
-                        path,
-                        exc_info=True,
-                    )
+        if streaming_upsert and max_rows is None:
+            try:
+                return _streaming_upsert_parquet_dataset_unlocked(
+                    df,
+                    path,
+                    key_columns=key_columns,
+                )
+            except Exception:
+                logger.warning(
+                    "streaming upsert failed for %s; using in-memory fallback",
+                    path,
+                    exc_info=True,
+                )
         existing_df = read_parquet_dataset(path)
         frames = [frame for frame in [existing_df, df] if not frame.is_empty()]
         combined = pl.concat(frames, how="diagonal_relaxed") if frames else df
@@ -739,64 +730,6 @@ def upsert_parquet_dataset(
             )
         _write_parquet_dataset_unlocked(combined, path)
         return combined.height
-
-
-def _try_append_only_upsert_unlocked(
-    df: pl.DataFrame,
-    dataset_path: Path,
-    *,
-    key_columns: Sequence[str],
-) -> int | None:
-    """Avoid materializing a large immutable history for an all-new batch.
-
-    The caller already owns the dataset lock. Any overlapping key returns
-    ``None`` so the configured streaming or in-memory upsert handles updates.
-    """
-
-    if df.is_empty():
-        return count_parquet_rows(dataset_path)
-    files = _parquet_files(dataset_path)
-    if not files:
-        return None
-    available_keys = [column for column in key_columns if column in df.columns]
-    if not available_keys:
-        return None
-    try:
-        existing = _scan_parquet_files(files, schema_union=True)
-        existing_columns = existing.collect_schema().names()
-    except Exception:
-        return None
-    if any(column not in existing_columns for column in available_keys):
-        return None
-
-    incoming = df.unique(subset=available_keys, keep="last", maintain_order=True)
-    incoming_keys = incoming.select(available_keys).unique(maintain_order=False)
-    try:
-        matching_keys = (
-            incoming_keys.lazy()
-            .join(
-                existing.select(available_keys).unique(),
-                on=available_keys,
-                how="semi",
-            )
-            .collect()
-        )
-    except Exception:
-        return None
-
-    if not matching_keys.is_empty():
-        return None
-
-    try:
-        existing_rows = int(existing.select(pl.len().alias("rows")).collect().item())
-    except Exception:
-        return None
-    result = _append_parquet_dataset_unlocked(
-        incoming,
-        dataset_path,
-        auto_compact=False,
-    )
-    return existing_rows + result.rows_written
 
 
 def _streaming_upsert_parquet_dataset_unlocked(

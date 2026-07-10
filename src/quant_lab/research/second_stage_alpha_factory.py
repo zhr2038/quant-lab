@@ -1249,8 +1249,7 @@ def _publish_second_stage_samples(root: Path, frame: pl.DataFrame) -> int:
             "horizon_hours",
             "source_event_key",
         ],
-        append_new_rows_fast_path=True,
-        streaming_upsert_fallback=True,
+        streaming_upsert=True,
     )
 
 

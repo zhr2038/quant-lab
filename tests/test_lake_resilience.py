@@ -343,12 +343,20 @@ def test_upsert_append_fast_path_treats_ignored_metadata_change_as_retry(tmp_pat
     ]
 
 
-def test_upsert_append_fast_path_falls_back_for_changed_payload(tmp_path):
+def test_upsert_append_fast_path_streams_changed_payload_without_full_read(
+    tmp_path,
+    monkeypatch,
+):
     dataset = tmp_path / "lake" / "gold" / "immutable_samples"
     write_parquet_dataset(
         pl.DataFrame([{"id": 1, "value": "old", "created_at": "first"}]),
         dataset,
     )
+
+    def fail_full_read(*_args, **_kwargs):
+        raise AssertionError("streaming fallback must not materialize full history")
+
+    monkeypatch.setattr(lake_module, "_read_parquet_files", fail_full_read)
 
     rows = upsert_parquet_dataset(
         pl.DataFrame([{"id": 1, "value": "updated", "created_at": "second"}]),
@@ -356,9 +364,11 @@ def test_upsert_append_fast_path_falls_back_for_changed_payload(tmp_path):
         key_columns=["id"],
         append_new_rows_fast_path=True,
         fast_path_ignored_compare_columns=("created_at",),
+        streaming_upsert_fallback=True,
     )
 
     assert rows == 1
+    monkeypatch.undo()
     assert read_parquet_dataset(dataset).to_dicts() == [
         {"id": 1, "value": "updated", "created_at": "second"}
     ]

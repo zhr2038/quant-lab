@@ -700,6 +700,7 @@ def upsert_parquet_dataset(
     max_rows_descending: bool = True,
     append_new_rows_fast_path: bool = False,
     fast_path_ignored_compare_columns: Sequence[str] | None = None,
+    streaming_upsert_fallback: bool = False,
 ) -> int:
     path = Path(dataset_path)
     with _dataset_lock(path):
@@ -712,6 +713,19 @@ def upsert_parquet_dataset(
             )
             if fast_path_rows is not None:
                 return fast_path_rows
+            if streaming_upsert_fallback:
+                try:
+                    return _streaming_upsert_parquet_dataset_unlocked(
+                        df,
+                        path,
+                        key_columns=key_columns,
+                    )
+                except Exception:
+                    logger.warning(
+                        "streaming upsert failed for %s; using in-memory fallback",
+                        path,
+                        exc_info=True,
+                    )
         existing_df = read_parquet_dataset(path)
         frames = [frame for frame in [existing_df, df] if not frame.is_empty()]
         combined = pl.concat(frames, how="diagonal_relaxed") if frames else df
@@ -831,6 +845,102 @@ def _frames_match_ignoring_columns(
         )
 
     return canonical_rows(left) == canonical_rows(right)
+
+
+def _streaming_upsert_parquet_dataset_unlocked(
+    df: pl.DataFrame,
+    dataset_path: Path,
+    *,
+    key_columns: Sequence[str],
+) -> int:
+    """Upsert a small batch into a large Parquet history with bounded memory."""
+
+    files = _parquet_files(dataset_path)
+    if not files:
+        _write_parquet_dataset_unlocked(df, dataset_path)
+        return df.height
+    existing_schema = _scan_parquet_files(files, schema_union=True).collect_schema().names()
+    available_keys = [
+        column for column in key_columns if column in df.columns and column in existing_schema
+    ]
+    if not available_keys:
+        raise ValueError("streaming upsert requires at least one shared key column")
+    incoming = df.unique(subset=available_keys, keep="last", maintain_order=True)
+
+    path = Path(dataset_path)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    _ensure_lake_dir_permissions(path.parent)
+    staging = path.parent / f"__{path.name}_stream_upsert_{uuid.uuid4().hex}"
+    backup = path.parent / f"__{path.name}_backup_{uuid.uuid4().hex}"
+    connection: duckdb.DuckDBPyConnection | None = None
+    try:
+        staging.mkdir(parents=True, exist_ok=False)
+        _ensure_lake_dir_permissions(staging)
+        incoming_path = staging / "incoming.parquet"
+        output_path = staging / "data.parquet"
+        temp_directory = staging / "duckdb_tmp"
+        temp_directory.mkdir(parents=True, exist_ok=False)
+        incoming.write_parquet(incoming_path)
+
+        connection = duckdb.connect(database=":memory:", read_only=False)
+        connection.execute("SET threads = 1")
+        connection.execute("SET preserve_insertion_order = false")
+        connection.execute("SET memory_limit = '512MB'")
+        connection.execute(
+            f"SET temp_directory = {_duckdb_sql_literal(temp_directory)}"
+        )
+        existing_paths = ",".join(_duckdb_sql_literal(file) for file in files)
+        using_columns = ",".join(_duckdb_identifier(column) for column in available_keys)
+        incoming_sql = _duckdb_sql_literal(incoming_path)
+        output_sql = _duckdb_sql_literal(output_path)
+        query = f"""
+            WITH incoming AS (
+                SELECT * FROM read_parquet({incoming_sql})
+            ), retained AS (
+                SELECT existing.*
+                FROM read_parquet([{existing_paths}], union_by_name=true) AS existing
+                ANTI JOIN incoming USING ({using_columns})
+            )
+            SELECT * FROM retained
+            UNION ALL BY NAME
+            SELECT * FROM incoming
+        """
+        connection.execute(
+            f"COPY ({query}) TO {output_sql} "
+            "(FORMAT PARQUET, COMPRESSION ZSTD, ROW_GROUP_SIZE 100000)"
+        )
+        connection.close()
+        connection = None
+        incoming_path.unlink()
+        _remove_internal_path(temp_directory)
+        rows = int(pl.scan_parquet(output_path).select(pl.len()).collect().item())
+        _ensure_internal_tree_permissions(staging)
+        if path.exists():
+            _replace_path(path, backup)
+        try:
+            _replace_path(staging, path)
+            _ensure_internal_tree_permissions(path)
+        except Exception:
+            if backup.exists() and not path.exists():
+                _replace_path(backup, path)
+            raise
+        _remove_internal_path(backup)
+        return rows
+    except Exception:
+        if connection is not None:
+            connection.close()
+        _remove_internal_path(staging)
+        if backup.exists() and not path.exists():
+            _replace_path(backup, path)
+        raise
+
+
+def _duckdb_sql_literal(value: str | Path) -> str:
+    return "'" + str(value).replace("'", "''") + "'"
+
+
+def _duckdb_identifier(value: str) -> str:
+    return '"' + str(value).replace('"', '""') + '"'
 
 
 def _limit_dataframe_rows(

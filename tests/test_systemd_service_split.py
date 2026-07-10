@@ -37,8 +37,7 @@ def test_v5_health_analysis_stays_lightweight():
     assert "--skip-analysis-after-sync" in sync_unit
     assert "--run-analysis-after-sync" not in sync_unit
     assert "--compact-output" in sync_unit
-    assert "/var/lock/quant-lab-heavy.lock" in sync_unit
-    assert "flock -E 75 -w 30 /var/lock/quant-lab-heavy.lock" in sync_unit
+    assert "/var/lock/quant-lab-heavy.lock" not in sync_unit
     assert "flock -E 75 -w 60 /var/lock/quant-lab-v5-telemetry-sync.lock" in sync_unit
     assert "/usr/bin/timeout 15m" in sync_unit
     assert "TimeoutStartSec=18min" in sync_unit

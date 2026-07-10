@@ -896,6 +896,19 @@ def _append_file_rows(
     if logical == "summaries/issues_to_fix.json":
         rows["v5_issue"].extend(_issue_rows(metadata, relative, _read_json(file_path)))
         return
+    if logical == "summaries/alt_impulse_shadow_readiness.json":
+        payload = _read_json(file_path)
+        ready = bool(payload.get("ready_for_live_probe"))
+        rows["v5_state_snapshot"].append(
+            _json_row(metadata, relative, payload, None)
+            | {
+                "state_type": "alt_impulse_shadow_readiness",
+                "ok": ready,
+                "enabled": False,
+                "level": "READY" if ready else "BLOCKED",
+            }
+        )
+        return
     csv_mapping = {
         "summaries/router_decisions.csv": "v5_router_decision",
         "summaries/trades_roundtrips.csv": "v5_roundtrip",
@@ -986,7 +999,11 @@ def _csv_rows(metadata: dict[str, Any], relative: str, file_path: Path) -> list[
     with file_path.open("r", encoding="utf-8", newline="") as handle:
         reader = csv.DictReader(handle)
         for index, raw_row in enumerate(reader):
-            safe_row = redact_json_like(dict(raw_row))
+            normalized_row = {
+                str(key) if key is not None else "_extra_fields": value
+                for key, value in raw_row.items()
+            }
+            safe_row = redact_json_like(normalized_row)
             safe_row = _normalize_csv_symbol_fields(safe_row)
             rows.append(
                 _base_row(metadata, relative, run_id, index)

@@ -119,6 +119,75 @@ def test_sync_ingest_can_skip_large_historical_outcomes(tmp_path):
     assert not (redacted_root / "summaries/alt_impulse_shadow_outcomes.csv").exists()
 
 
+def test_ingest_routes_alt_impulse_readiness_json_to_state_snapshot(tmp_path):
+    bundle = make_tar(
+        tmp_path / "v5_live_followup_bundle_20260510T140249Z.tar.gz",
+        {
+            "summaries/alt_impulse_shadow_readiness.json": json.dumps(
+                {
+                    "schema_version": "v5.alt_impulse_shadow_readiness.v1",
+                    "generated_ts_utc": "2026-05-10T01:00:00Z",
+                    "ready_for_live_probe": False,
+                    "blocking_reasons": ["no_symbol_ready_for_live_probe"],
+                    "by_symbol": [
+                        {
+                            "symbol": "SOL/USDT",
+                            "ready_for_live_probe": False,
+                            "bnb_negative_expectancy_bps": None,
+                        }
+                    ],
+                }
+            )
+        },
+    )
+    lake = tmp_path / "lake"
+
+    result = ingest_v5_bundle(
+        bundle,
+        lake,
+        tmp_path / "restricted",
+        tmp_path / "redacted",
+        run_analysis=False,
+        refresh_candidate_gold=False,
+    )
+
+    states = read_parquet_dataset(lake / "silver/v5_state_snapshot")
+    row = states.to_dicts()[0]
+    payload = json.loads(row["raw_payload_json"])
+    assert not any("failed to parse" in warning for warning in result.warnings)
+    assert row["state_type"] == "alt_impulse_shadow_readiness"
+    assert row["ok"] is False
+    assert row["level"] == "BLOCKED"
+    assert payload["by_symbol"][0]["bnb_negative_expectancy_bps"] is None
+
+
+def test_csv_rows_normalize_extra_field_key_instead_of_parse_warning(tmp_path):
+    bundle = make_tar(
+        tmp_path / "v5_live_followup_bundle_20260510T140249Z.tar.gz",
+        {
+            "summaries/alt_impulse_shadow_outcomes.csv": (
+                "candidate_id,symbol\n"
+                "shadow_1,SOL-USDT,unexpected-extra-field\n"
+            )
+        },
+    )
+    lake = tmp_path / "lake"
+
+    result = ingest_v5_bundle(
+        bundle,
+        lake,
+        tmp_path / "restricted",
+        tmp_path / "redacted",
+        run_analysis=False,
+        refresh_candidate_gold=False,
+    )
+
+    shadow = read_parquet_dataset(lake / "silver/v5_shadow_outcome")
+    payload = json.loads(shadow.to_dicts()[0]["raw_payload_json"])
+    assert not any("failed to parse" in warning for warning in result.warnings)
+    assert payload["_extra_fields"] == ["unexpected-extra-field"]
+
+
 def test_ingest_v5_trades_csv_normalizes_cost_schema(tmp_path):
     bundle = make_tar(
         tmp_path / "v5_live_followup_bundle_20260514T070500Z.tar.gz",

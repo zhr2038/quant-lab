@@ -1,10 +1,11 @@
 from datetime import UTC, datetime
 
+import pytest
 from fastapi.testclient import TestClient
 
 from quant_lab.api.main import create_app
 from quant_lab.paper.contracts import PaperStrategyAck, PaperStrategyProposal
-from quant_lab.paper.service import publish_proposals
+from quant_lab.paper.service import publish_proposals, read_proposals
 
 
 def _proposal() -> PaperStrategyProposal:
@@ -77,3 +78,51 @@ def test_paper_ack_write_is_authenticated_and_idempotent(monkeypatch, tmp_path):
     assert first.json()["exchange_state_mutated"] is False
     assert first.json()["idempotent"] is False
     assert second.json()["idempotent"] is True
+
+
+def test_publish_reuses_canonical_id_when_only_provenance_changes(tmp_path):
+    lake = tmp_path / "lake"
+    original = _proposal()
+    payload = original.model_dump(mode="json")
+    payload.update(
+        {
+            "proposal_id": "",
+            "proposal_hash": "",
+            "created_at": datetime(2026, 7, 11, tzinfo=UTC),
+            "expires_at": datetime(2026, 8, 11, tzinfo=UTC),
+            "source_dataset_versions": {"alpha_discovery_board": "v2"},
+        }
+    )
+    refreshed = PaperStrategyProposal.model_validate(payload)
+    assert refreshed.proposal_hash != original.proposal_hash
+
+    publish_proposals(lake, [original])
+    publish_proposals(lake, [refreshed])
+
+    rows = read_proposals(lake)
+    assert len(rows) == 1
+    assert rows[0]["proposal_id"] == original.proposal_id
+    assert rows[0]["proposal_hash"] == original.proposal_hash
+    assert rows[0]["expires_at"] == "2026-08-11T00:00:00Z"
+
+
+def test_publish_rejects_rule_change_without_strategy_version_bump(tmp_path):
+    lake = tmp_path / "lake"
+    original = _proposal()
+    payload = original.model_dump(mode="json")
+    payload.update(
+        {
+            "proposal_id": "",
+            "proposal_hash": "",
+            "entry_rule": {
+                "operator": "momentum_gt",
+                "field": "momentum_24",
+                "value": 1,
+            },
+        }
+    )
+    changed = PaperStrategyProposal.model_validate(payload)
+    publish_proposals(lake, [original])
+
+    with pytest.raises(ValueError, match="strategy_version_rule_conflict"):
+        publish_proposals(lake, [changed])

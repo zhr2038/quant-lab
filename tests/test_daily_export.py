@@ -31,6 +31,8 @@ from quant_lab.export.daily import (
     validate_expert_pack,
 )
 from quant_lab.ops.metrics import record_api_request
+from quant_lab.paper.contracts import PaperStrategyProposal
+from quant_lab.paper.service import publish_proposals
 from tests.v5_bundle_fixture import make_tar
 
 
@@ -94,6 +96,36 @@ def test_export_v5_authoritative_scan_defaults_match_production_systemd(monkeypa
 
     assert max_pending == 1
     assert daily_export_module._export_v5_max_scan_bundles(max_pending) == 1000
+
+
+def test_paper_proposal_export_reuses_published_identity_when_board_is_sparse(tmp_path):
+    lake = tmp_path / "lake"
+    proposal = PaperStrategyProposal(
+        strategy_id="TAO_F3_F4_DEDUP_8H_PAPER",
+        strategy_version="1.0.0",
+        strategy_family="f3_f4_deduplicated_entry",
+        symbol="TAO/USDT",
+        timeframe="1h",
+        entry_rule={"operator": "momentum_gt", "field": "momentum_8", "value": 0},
+        exit_rule={"operator": "max_holding_bars", "value": 8},
+        max_holding_bars=8,
+        created_at=datetime(2026, 7, 11, tzinfo=UTC),
+        expires_at=datetime(2026, 8, 11, tzinfo=UTC),
+        source_dataset_versions={"alpha_discovery_board": "published-v1"},
+        required_market_fields=["bid", "ask", "mid", "momentum_8"],
+        required_cost_trust_level="PAPER_ONLY",
+    )
+    persisted = publish_proposals(lake, [proposal])
+
+    exported = daily_export_module._paper_strategy_proposals_for_export(
+        pl.DataFrame(),
+        persisted_proposals=persisted,
+    )
+
+    row = exported.to_dicts()[0]
+    assert row["proposal_id"] == proposal.proposal_id
+    assert row["proposal_hash"] == proposal.proposal_hash
+    assert row["live_order_effect"] == "none"
 
 
 def test_microstructure_rollup_limits_cover_forward_validation_window():

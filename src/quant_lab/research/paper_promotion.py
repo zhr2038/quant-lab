@@ -175,6 +175,10 @@ def build_and_publish_paper_strategy_pipeline(
     if configured:
         published = publish_proposals(root, [proposal for proposal, _evidence in configured])
         proposal_frame = published
+    existing_registry = _filter_superseded_structured_rows(
+        existing_registry, proposal_frame
+    )
+    existing_gate = _filter_superseded_structured_rows(existing_gate, proposal_frame)
     migration_audit = _merge_migration_audit(
         existing_migration_audit,
         build_legacy_proposal_migration_audit(legacy_evidence, configured),
@@ -188,11 +192,23 @@ def build_and_publish_paper_strategy_pipeline(
         read_parquet_dataset(root / COST_BUCKET_DAILY_DATASET),
     )
     write_parquet_dataset(strategy_cost_trust, root / STRATEGY_COST_TRUST_DATASET)
+    paper_ack = _filter_superseded_structured_rows(
+        read_parquet_dataset(root / PAPER_STRATEGY_PROPOSAL_ACK_DATASET),
+        proposal_frame,
+    )
+    paper_runs = _filter_superseded_structured_rows(
+        read_parquet_dataset(root / PAPER_STRATEGY_RUNS_DATASET),
+        proposal_frame,
+    )
+    paper_daily = _filter_superseded_structured_rows(
+        read_parquet_dataset(root / PAPER_STRATEGY_DAILY_DATASET),
+        proposal_frame,
+    )
     frames = build_paper_strategy_pipeline_frames(
         proposals=proposal_frame,
-        proposal_ack=read_parquet_dataset(root / PAPER_STRATEGY_PROPOSAL_ACK_DATASET),
-        runs=read_parquet_dataset(root / PAPER_STRATEGY_RUNS_DATASET),
-        daily=read_parquet_dataset(root / PAPER_STRATEGY_DAILY_DATASET),
+        proposal_ack=paper_ack,
+        runs=paper_runs,
+        daily=paper_daily,
         strategy_cost_trust=strategy_cost_trust,
     )
     registry = _merge_lifecycle_frame(
@@ -203,8 +219,8 @@ def build_and_publish_paper_strategy_pipeline(
     )
     gate = _promotion_gate_frame_from_registry(
         registry,
-        daily=read_parquet_dataset(root / PAPER_STRATEGY_DAILY_DATASET),
-        runs=read_parquet_dataset(root / PAPER_STRATEGY_RUNS_DATASET),
+        daily=paper_daily,
+        runs=paper_runs,
         proposals=proposal_frame,
         strategy_cost_trust=strategy_cost_trust,
     )
@@ -322,9 +338,52 @@ def _fill_blank_lifecycle_values(
 ) -> dict[str, Any]:
     output = dict(primary)
     for column in schema:
+        if column == "reject_reason" and _bool(primary.get("accepted")) is True:
+            output[column] = ""
+            continue
         if output.get(column) in (None, "") and fallback.get(column) not in (None, ""):
             output[column] = fallback.get(column)
     return output
+
+
+def _filter_superseded_structured_rows(
+    frame: pl.DataFrame,
+    proposals: pl.DataFrame,
+) -> pl.DataFrame:
+    if frame.is_empty() or proposals.is_empty():
+        return frame
+    active: dict[tuple[str, str], str] = {}
+    for row in proposals.to_dicts():
+        strategy_id = _text(row.get("strategy_id"))
+        strategy_version = _text(row.get("strategy_version"))
+        proposal_id = _text(row.get("proposal_id"))
+        if strategy_id and strategy_version and proposal_id:
+            active[(strategy_id, strategy_version)] = proposal_id
+    if not active:
+        return frame
+    rows = []
+    for row in frame.to_dicts():
+        proposal_id = _text(row.get("proposal_id"))
+        identity = _structured_proposal_identity(proposal_id)
+        if identity in active and proposal_id != active[identity]:
+            continue
+        rows.append(row)
+    if not rows:
+        return frame.head(0)
+    return (
+        pl.DataFrame(rows, infer_schema_length=None)
+        .cast(frame.schema, strict=False)
+        .select(frame.columns)
+    )
+
+
+def _structured_proposal_identity(proposal_id: str) -> tuple[str, str] | None:
+    parts = proposal_id.rsplit(":", 2)
+    if len(parts) != 3 or len(parts[2]) != 12:
+        return None
+    if any(char not in "0123456789abcdef" for char in parts[2].lower()):
+        return None
+    return parts[0], parts[1]
 
 
 def _registry_persistence_rank(row: Mapping[str, Any]) -> tuple[int, int, int, str]:
@@ -356,12 +415,19 @@ def build_paper_strategy_pipeline_frames(
     created_at: datetime | None = None,
 ) -> dict[str, pl.DataFrame]:
     created = (created_at or datetime.now(UTC)).isoformat()
-    proposal_rows = _proposal_rows(proposals if proposals is not None else pl.DataFrame())
+    proposal_frame = proposals if proposals is not None else pl.DataFrame()
+    ack_frame = proposal_ack if proposal_ack is not None else pl.DataFrame()
+    run_frame = runs if runs is not None else pl.DataFrame()
+    daily_frame = daily if daily is not None else pl.DataFrame()
+    ack_frame = _filter_superseded_structured_rows(ack_frame, proposal_frame)
+    run_frame = _filter_superseded_structured_rows(run_frame, proposal_frame)
+    daily_frame = _filter_superseded_structured_rows(daily_frame, proposal_frame)
+    proposal_rows = _proposal_rows(proposal_frame)
     ack_rows = _latest_rows_by_strategy(
-        proposal_ack if proposal_ack is not None else pl.DataFrame()
+        ack_frame
     )
-    run_rows = (runs if runs is not None else pl.DataFrame()).to_dicts()
-    daily_rows = _latest_rows_by_strategy(daily if daily is not None else pl.DataFrame())
+    run_rows = run_frame.to_dicts()
+    daily_rows = _latest_rows_by_strategy(daily_frame)
     cost_trust_rows = (
         strategy_cost_trust.to_dicts()
         if strategy_cost_trust is not None and not strategy_cost_trust.is_empty()
@@ -442,20 +508,32 @@ def _collect_strategy_keys(
     run_rows: list[dict[str, Any]],
     daily_rows: list[dict[str, Any]],
 ) -> set[_StrategyKey]:
-    keys: set[_StrategyKey] = set()
+    by_proposal: dict[str, _StrategyKey] = {}
+    keys_without_proposal: set[_StrategyKey] = set()
     for row in [*proposals, *ack_rows, *run_rows, *daily_rows]:
         proposal_id, paper_tracker_id, strategy_candidate, symbol = _row_key_tuple(row)
         if not any([proposal_id, paper_tracker_id, strategy_candidate, symbol]):
             continue
-        keys.add(
-            _StrategyKey(
-                proposal_id=proposal_id,
-                paper_tracker_id=paper_tracker_id,
-                strategy_candidate=strategy_candidate,
-                symbol=symbol,
-            )
+        key = _StrategyKey(
+            proposal_id=proposal_id,
+            paper_tracker_id=paper_tracker_id,
+            strategy_candidate=strategy_candidate,
+            symbol=symbol,
         )
-    return keys
+        if not proposal_id:
+            keys_without_proposal.add(key)
+            continue
+        current = by_proposal.get(proposal_id)
+        if current is None:
+            by_proposal[proposal_id] = key
+            continue
+        by_proposal[proposal_id] = _StrategyKey(
+            proposal_id=proposal_id,
+            paper_tracker_id=current.paper_tracker_id or key.paper_tracker_id,
+            strategy_candidate=current.strategy_candidate or key.strategy_candidate,
+            symbol=current.symbol or key.symbol,
+        )
+    return {*by_proposal.values(), *keys_without_proposal}
 
 
 def _registry_row(
@@ -468,7 +546,7 @@ def _registry_row(
     created_at: str,
 ) -> dict[str, Any]:
     accepted = _bool(ack.get("accepted"))
-    reject_reason = _text(ack.get("reject_reason"))
+    reject_reason = "" if accepted is True else _text(ack.get("reject_reason"))
     proposal_id = (
         key.proposal_id or _text(ack.get("proposal_id")) or _text(proposal.get("proposal_id"))
     )
@@ -894,10 +972,19 @@ def _registry_status(
 
 
 def _match_strategy_row(rows: list[Mapping[str, Any]], key: _StrategyKey) -> Mapping[str, Any]:
-    for row in rows:
-        if _row_matches_key(row, key):
-            return row
-    return {}
+    matches = [row for row in rows if _row_matches_key(row, key)]
+    if not matches:
+        return {}
+    return max(
+        matches,
+        key=lambda row: (
+            int(_bool(row.get("accepted")) is True),
+            int(bool(_text(row.get("paper_tracker_id")))),
+            int(_bool(row.get("rules_locked")) is True),
+            int(not bool(_text(row.get("reject_reason")))),
+            _row_sort_ts(row),
+        ),
+    )
 
 
 def _match_cost_trust_row(

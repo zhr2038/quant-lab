@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 import json
 from datetime import UTC, datetime
 from pathlib import Path
@@ -32,11 +33,96 @@ def publish_proposals(
     lake_root: str | Path,
     proposals: list[PaperStrategyProposal],
 ) -> pl.DataFrame:
-    incoming = pl.DataFrame([_proposal_storage_row(proposal) for proposal in proposals])
     existing = read_parquet_dataset(Path(lake_root) / PAPER_STRATEGY_PROPOSAL_DATASET)
-    merged = _upsert_rows(existing, incoming, key_fields=("proposal_id", "proposal_hash"))
+    rows = existing.to_dicts() if not existing.is_empty() else []
+    for proposal in proposals:
+        identity = (proposal.strategy_id, proposal.strategy_version)
+        same_version = [
+            row
+            for row in rows
+            if (str(row.get("strategy_id") or ""), str(row.get("strategy_version") or ""))
+            == identity
+        ]
+        if same_version:
+            fingerprint = proposal_rule_fingerprint(proposal)
+            compatible = [
+                row for row in same_version if proposal_rule_fingerprint(row) == fingerprint
+            ]
+            if not compatible:
+                raise ValueError(
+                    "strategy_version_rule_conflict: "
+                    f"{proposal.strategy_id}:{proposal.strategy_version}"
+                )
+            canonical = proposal_from_storage_row(compatible[0])
+            canonical = canonical.model_copy(
+                update={
+                    "created_at": proposal.created_at,
+                    "expires_at": proposal.expires_at,
+                    "source_pack_sha256": proposal.source_pack_sha256,
+                    "lifecycle_state": proposal.lifecycle_state,
+                    "lifecycle_reason": proposal.lifecycle_reason,
+                    "blocked_reasons": proposal.blocked_reasons,
+                    "next_required_actions": proposal.next_required_actions,
+                }
+            )
+            rows = [
+                row
+                for row in rows
+                if (
+                    str(row.get("strategy_id") or ""),
+                    str(row.get("strategy_version") or ""),
+                )
+                != identity
+            ]
+            rows.append(_proposal_storage_row(canonical))
+            continue
+        rows.append(_proposal_storage_row(proposal))
+    merged = pl.DataFrame(rows, infer_schema_length=None) if rows else pl.DataFrame()
     write_parquet_dataset(merged, Path(lake_root) / PAPER_STRATEGY_PROPOSAL_DATASET)
     return merged
+
+
+def proposal_from_storage_row(row: dict[str, Any]) -> PaperStrategyProposal:
+    return PaperStrategyProposal.model_validate(_json_row(dict(row)))
+
+
+def proposal_rule_fingerprint(value: PaperStrategyProposal | dict[str, Any]) -> str:
+    proposal = (
+        value if isinstance(value, PaperStrategyProposal) else proposal_from_storage_row(value)
+    )
+    payload = proposal.model_dump(mode="json")
+    locked_fields = (
+        "contract_version",
+        "strategy_id",
+        "strategy_version",
+        "strategy_family",
+        "symbol",
+        "timeframe",
+        "direction",
+        "entry_rule",
+        "exit_rule",
+        "max_holding_bars",
+        "min_holding_bars",
+        "cooldown_bars",
+        "signal_confirmation_bars",
+        "cost_quantile",
+        "minimum_expected_edge_bps",
+        "paper_notional_usdt",
+        "paper_only",
+        "live_order_effect",
+        "max_live_notional_usdt",
+        "required_market_fields",
+        "required_cost_trust_level",
+    )
+    canonical = {field: payload.get(field) for field in locked_fields}
+    return hashlib.sha256(
+        json.dumps(
+            canonical,
+            ensure_ascii=True,
+            sort_keys=True,
+            separators=(",", ":"),
+        ).encode("utf-8")
+    ).hexdigest()
 
 
 def record_ack(lake_root: str | Path, ack: PaperStrategyAck) -> tuple[dict[str, Any], bool]:

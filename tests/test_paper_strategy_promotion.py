@@ -43,6 +43,78 @@ def test_paper_strategy_pipeline_blocks_unacked_proposal() -> None:
     assert "proposal_not_acked" in json.loads(gate["block_reason"])
 
 
+def test_pipeline_uses_only_current_structured_proposal_and_clears_old_reject() -> None:
+    current_id = "TAO_F3_F4_DEDUP_8H_PAPER:1.0.0:bbbbbbbbbbbb"
+    old_id = "TAO_F3_F4_DEDUP_8H_PAPER:1.0.0:aaaaaaaaaaaa"
+    frames = build_paper_strategy_pipeline_frames(
+        proposals=pl.DataFrame(
+            [
+                {
+                    "proposal_id": current_id,
+                    "proposal_hash": "b" * 64,
+                    "strategy_id": "TAO_F3_F4_DEDUP_8H_PAPER",
+                    "strategy_version": "1.0.0",
+                    "strategy_candidate": "f3_f4_deduplicated_entry",
+                    "symbol": "TAO-USDT",
+                    "recommended_mode": "paper",
+                    "entry_rule": '{"operator":"gt","field":"close","value":0}',
+                    "exit_rule": '{"operator":"max_holding_bars","value":8}',
+                }
+            ]
+        ),
+        proposal_ack=pl.DataFrame(
+            [
+                {
+                    "proposal_id": old_id,
+                    "proposal_hash": "a" * 64,
+                    "accepted": False,
+                    "reject_reason": "no_supported_paper_tracker",
+                    "symbol": "TAO-USDT",
+                },
+                {
+                    "proposal_id": current_id,
+                    "proposal_hash": "b" * 64,
+                    "paper_tracker_id": f"paper:{current_id}",
+                    "accepted": True,
+                    "reject_reason": "",
+                    "rules_locked": True,
+                    "paper_only": True,
+                    "live_order_effect": "none",
+                    "strategy_version": "1.0.0",
+                    "strategy_candidate": "f3_f4_deduplicated_entry",
+                    "symbol": "TAO-USDT",
+                    "accepted_at": "2026-07-11T01:00:00Z",
+                },
+            ]
+        ),
+        daily=pl.DataFrame(
+            [
+                {
+                    "proposal_id": old_id,
+                    "paper_tracker_id": f"paper:{old_id}",
+                    "paper_days": 1,
+                },
+                {
+                    "proposal_id": current_id,
+                    "paper_tracker_id": f"paper:{current_id}",
+                    "paper_days": 1,
+                    "arrival_mid_coverage": 1.0,
+                },
+            ]
+        ),
+        created_at=datetime(2026, 7, 11, 2, tzinfo=UTC),
+    )
+
+    registry = frames["paper_strategy_registry"].to_dicts()
+    gate = frames["paper_strategy_promotion_gate"].to_dicts()
+    assert len(registry) == 1
+    assert len(gate) == 1
+    assert registry[0]["proposal_id"] == current_id
+    assert registry[0]["accepted"] is True
+    assert registry[0]["reject_reason"] == ""
+    assert "v5_rejected" not in gate[0]["promotion_block_reasons"]
+
+
 def test_paper_strategy_pipeline_marks_unacked_tracker_evidence_not_effective() -> None:
     proposal_id = "BNB_USDT_F3_DOMINANT_ENTRY_PAPER_V1"
     tracker_id = "BNB_F3_DOMINANT_ENTRY_PAPER_V1"

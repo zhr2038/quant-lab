@@ -4403,6 +4403,7 @@ def _canonical_strategy_opportunity_frames(
     paper_proposals = _paper_strategy_proposals_for_export(
         alpha_discovery_board,
         research_portfolio=research_portfolio,
+        persisted_proposals=frames.get("paper_strategy_proposal", pl.DataFrame()),
     )
     factor_strategy_bridge_candidates = factor_v2["factor_strategy_bridge_candidates"]
     opportunity_advisory = _strategy_opportunity_advisory_for_export(
@@ -6210,6 +6211,7 @@ def _dataset_members(
     paper_proposals = _paper_strategy_proposals_for_export(
         alpha_discovery_board,
         research_portfolio=research_portfolio,
+        persisted_proposals=frames.get("paper_strategy_proposal", pl.DataFrame()),
     )
     paper_pipeline = build_paper_strategy_pipeline_frames(
         proposals=paper_proposals,
@@ -11188,13 +11190,67 @@ def _paper_strategy_proposals_for_export(
     board: pl.DataFrame,
     *,
     research_portfolio: pl.DataFrame | None = None,
+    persisted_proposals: pl.DataFrame | None = None,
 ) -> pl.DataFrame:
     path = "reports/paper_strategy_proposals.csv"
+    from quant_lab.paper.proposals import build_configured_proposals, proposal_export_rows
+    from quant_lab.paper.service import proposal_from_storage_row, proposal_rule_fingerprint
+
+    configured = (
+        build_configured_proposals(board)
+        if not board.is_empty() and "decision" in board.columns
+        else []
+    )
+    persisted = (
+        persisted_proposals
+        if persisted_proposals is not None
+        else pl.DataFrame()
+    )
+    if not persisted.is_empty():
+        evidence_by_identity = {
+            (proposal.strategy_id, proposal.strategy_version): evidence
+            for proposal, evidence in configured
+        }
+        persisted_configured = []
+        now = datetime.now(UTC)
+        for row in persisted.to_dicts():
+            try:
+                proposal = proposal_from_storage_row(row)
+            except Exception:
+                continue
+            if proposal.expires_at <= now:
+                continue
+            evidence = evidence_by_identity.get(
+                (proposal.strategy_id, proposal.strategy_version),
+                {},
+            )
+            generated = next(
+                (
+                    candidate
+                    for candidate, _row in configured
+                    if (
+                        candidate.strategy_id,
+                        candidate.strategy_version,
+                    )
+                    == (proposal.strategy_id, proposal.strategy_version)
+                ),
+                None,
+            )
+            if generated is not None and proposal_rule_fingerprint(
+                generated
+            ) != proposal_rule_fingerprint(proposal):
+                continue
+            persisted_configured.append((proposal, evidence))
+        if persisted_configured:
+            return _csv_frame_with_schema(
+                pl.DataFrame(
+                    proposal_export_rows(persisted_configured),
+                    infer_schema_length=None,
+                ),
+                CSV_SCHEMAS[path],
+            )
     if board.is_empty() or "decision" not in board.columns:
         return _empty_csv_schema_frame(path)
-    from quant_lab.paper.proposals import build_configured_proposals, proposal_export_rows
-
-    configured = build_configured_proposals(board)
     if configured:
         return _csv_frame_with_schema(
             pl.DataFrame(proposal_export_rows(configured), infer_schema_length=None),
@@ -12497,6 +12553,7 @@ def _strategy_opportunity_advisory_from_frames(
     paper_proposals = _paper_strategy_proposals_for_export(
         alpha_discovery_board,
         research_portfolio=research_portfolio,
+        persisted_proposals=frames.get("paper_strategy_proposal", pl.DataFrame()),
     )
     return _strategy_opportunity_advisory_for_export(
         alpha_discovery_board=alpha_discovery_board,

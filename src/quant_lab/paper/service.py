@@ -162,11 +162,40 @@ def status_rows(lake_root: str | Path) -> list[dict[str, Any]]:
     rows: list[dict[str, Any]] = []
     for proposal in proposals.to_dicts() if not proposals.is_empty() else []:
         proposal_id = str(proposal.get("proposal_id") or "")
+        proposal_row = _json_row(proposal)
+        ack_row = _json_row(ack_by_id.get(proposal_id, {}))
+        promotion_row = _json_row(promotion_by_id.get(proposal_id, {}))
+        effective_row = promotion_row or proposal_row
         rows.append(
             {
-                **_json_row(proposal),
-                "ack": _json_row(ack_by_id.get(proposal_id, {})),
-                "promotion": _json_row(promotion_by_id.get(proposal_id, {})),
+                **proposal_row,
+                "proposal_lifecycle_state": proposal_row.get("lifecycle_state"),
+                "proposal_lifecycle_reason": proposal_row.get("lifecycle_reason"),
+                "proposal_blocked_reasons": proposal_row.get("blocked_reasons", []),
+                "proposal_next_required_actions": proposal_row.get(
+                    "next_required_actions", []
+                ),
+                "lifecycle_state": effective_row.get("lifecycle_state"),
+                "lifecycle_reason": effective_row.get("lifecycle_reason"),
+                "blocked_reasons": effective_row.get("blocked_reasons", []),
+                "next_required_actions": effective_row.get(
+                    "next_required_actions", []
+                ),
+                "accepted": promotion_row.get("accepted", ack_row.get("accepted")),
+                "rules_locked": promotion_row.get(
+                    "rules_locked", ack_row.get("rules_locked")
+                ),
+                "paper_tracker_id": promotion_row.get("paper_tracker_id")
+                or ack_row.get("paper_tracker_id")
+                or ack_row.get("tracker_id"),
+                "paper_ready": promotion_row.get("paper_ready", False),
+                "status_source": (
+                    "paper_strategy_promotion_gate"
+                    if promotion_row
+                    else "paper_strategy_proposal"
+                ),
+                "ack": ack_row,
+                "promotion": promotion_row,
             }
         )
     return rows

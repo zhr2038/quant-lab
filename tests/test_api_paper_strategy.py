@@ -1,9 +1,11 @@
 from datetime import UTC, datetime
 
+import polars as pl
 import pytest
 from fastapi.testclient import TestClient
 
 from quant_lab.api.main import create_app
+from quant_lab.data.lake import write_parquet_dataset
 from quant_lab.paper.contracts import PaperStrategyAck, PaperStrategyProposal
 from quant_lab.paper.service import publish_proposals, read_proposals
 
@@ -126,3 +128,60 @@ def test_publish_rejects_rule_change_without_strategy_version_bump(tmp_path):
 
     with pytest.raises(ValueError, match="strategy_version_rule_conflict"):
         publish_proposals(lake, [changed])
+
+
+def test_paper_status_surfaces_effective_promotion_lifecycle(monkeypatch, tmp_path):
+    lake = tmp_path / "lake"
+    proposal = _proposal()
+    publish_proposals(lake, [proposal])
+    tracker_id = f"paper:{proposal.proposal_id}"
+    write_parquet_dataset(
+        pl.DataFrame(
+            [
+                {
+                    "proposal_id": proposal.proposal_id,
+                    "proposal_hash": proposal.proposal_hash,
+                    "paper_tracker_id": tracker_id,
+                    "accepted": True,
+                    "rules_locked": True,
+                }
+            ]
+        ),
+        lake / "silver/v5_paper_strategy_proposal_ack",
+    )
+    write_parquet_dataset(
+        pl.DataFrame(
+            [
+                {
+                    "proposal_id": proposal.proposal_id,
+                    "proposal_hash": proposal.proposal_hash,
+                    "paper_tracker_id": tracker_id,
+                    "accepted": True,
+                    "rules_locked": True,
+                    "paper_ready": False,
+                    "lifecycle_state": "PAPER_EVIDENCE_INSUFFICIENT",
+                    "lifecycle_reason": "insufficient_paper_days",
+                    "blocked_reasons": '["insufficient_paper_days"]',
+                    "next_required_actions": '["continue_paper_tracking"]',
+                }
+            ]
+        ),
+        lake / "gold/paper_strategy_promotion_gate",
+    )
+    monkeypatch.setenv("QUANT_LAB_LAKE_ROOT", str(lake))
+    monkeypatch.delenv("QUANT_LAB_API_TOKEN", raising=False)
+
+    response = TestClient(create_app()).get("/v1/paper-strategy/status")
+
+    assert response.status_code == 200
+    row = response.json()[0]
+    assert row["proposal_lifecycle_state"] == "PAPER_PROPOSAL_READY"
+    assert row["lifecycle_state"] == "PAPER_EVIDENCE_INSUFFICIENT"
+    assert row["lifecycle_reason"] == "insufficient_paper_days"
+    assert row["blocked_reasons"] == ["insufficient_paper_days"]
+    assert row["next_required_actions"] == ["continue_paper_tracking"]
+    assert row["accepted"] is True
+    assert row["rules_locked"] is True
+    assert row["paper_tracker_id"] == tracker_id
+    assert row["paper_ready"] is False
+    assert row["status_source"] == "paper_strategy_promotion_gate"

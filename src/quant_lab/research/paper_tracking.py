@@ -375,8 +375,12 @@ def build_and_publish_paper_strategy_tracking(
         if daily.is_empty() and not runs.is_empty():
             daily = build_paper_strategy_daily_from_runs(runs, as_of_date=day)
         coverage = build_paper_slippage_coverage_from_v5(v5_slippage_raw, daily=daily)
-        if coverage.is_empty() and not daily.is_empty():
-            coverage = build_paper_slippage_coverage(daily, as_of_date=day)
+        if not daily.is_empty():
+            coverage = _replace_by_key(
+                build_paper_slippage_coverage(daily, as_of_date=day),
+                coverage,
+                ["proposal_id", "strategy_candidate", "symbol"],
+            )
         if runs.is_empty():
             warnings.append("paper_tracking_v5_runs_missing")
     else:

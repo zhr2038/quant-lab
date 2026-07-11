@@ -112,7 +112,51 @@ def test_pipeline_uses_only_current_structured_proposal_and_clears_old_reject() 
     assert registry[0]["proposal_id"] == current_id
     assert registry[0]["accepted"] is True
     assert registry[0]["reject_reason"] == ""
+    assert registry[0]["lifecycle_state"] == "PAPER_TRACKER_ACTIVE"
     assert "v5_rejected" not in gate[0]["promotion_block_reasons"]
+
+
+def test_accepted_tracker_is_active_before_first_daily_observation() -> None:
+    proposal_id = "TAO_F3_F4_DEDUP_8H_PAPER:1.0.0:cccccccccccc"
+    frames = build_paper_strategy_pipeline_frames(
+        proposals=pl.DataFrame(
+            [
+                {
+                    "proposal_id": proposal_id,
+                    "proposal_hash": "c" * 64,
+                    "strategy_id": "TAO_F3_F4_DEDUP_8H_PAPER",
+                    "strategy_version": "1.0.0",
+                    "strategy_candidate": "f3_f4_deduplicated_entry",
+                    "symbol": "TAO-USDT",
+                    "recommended_mode": "paper",
+                }
+            ]
+        ),
+        proposal_ack=pl.DataFrame(
+            [
+                {
+                    "proposal_id": proposal_id,
+                    "proposal_hash": "c" * 64,
+                    "paper_tracker_id": f"paper:{proposal_id}",
+                    "accepted": True,
+                    "rules_locked": True,
+                    "paper_only": True,
+                    "live_order_effect": "none",
+                    "strategy_version": "1.0.0",
+                    "strategy_candidate": "f3_f4_deduplicated_entry",
+                    "symbol": "TAO-USDT",
+                }
+            ]
+        ),
+        created_at=datetime(2026, 7, 11, 2, tzinfo=UTC),
+    )
+
+    registry = frames["paper_strategy_registry"].to_dicts()[0]
+    gate = frames["paper_strategy_promotion_gate"].to_dicts()[0]
+    assert registry["status"] == "ACKED"
+    assert registry["lifecycle_state"] == "PAPER_TRACKER_ACTIVE"
+    assert gate["paper_tracker_effective"] is True
+    assert gate["lifecycle_state"] == "PAPER_EVIDENCE_INSUFFICIENT"
 
 
 def test_paper_strategy_pipeline_marks_unacked_tracker_evidence_not_effective() -> None:

@@ -582,7 +582,7 @@ def _registry_row(
     lifecycle = legacy_lifecycle_state(
         status,
         accepted=accepted,
-        tracker_effective=bool(accepted and paper_tracker_id and (daily or runs)),
+        tracker_effective=bool(accepted and paper_tracker_id),
     )
     lifecycle_blocked = _registry_block_reasons(
         accepted=accepted,

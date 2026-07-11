@@ -585,9 +585,28 @@ def test_ingest_and_export_generic_paper_runtime_contract(tmp_path):
     assert normalized_runs[0]["holding_bars"] == 1
     assert normalized_runs[0]["observability"] == "OBSERVABLE"
 
+    write_parquet_dataset(
+        pl.DataFrame(
+            [
+                {
+                    "as_of_date": "2026-07-11",
+                    "proposal_id": "LEGACY_PAPER_TRACKER",
+                    "strategy_candidate": "legacy.paper",
+                    "symbol": "BTC-USDT",
+                    "paper_days": 1,
+                    "paper_slippage_coverage": 0.5,
+                    "arrival_mid_coverage": 0.5,
+                    "spread_observation_coverage": 0.5,
+                    "required_slippage_coverage": 0.8,
+                }
+            ]
+        ),
+        lake / "silver/v5_paper_slippage_coverage",
+    )
     tracking = build_and_publish_paper_strategy_tracking(lake, as_of_date="2026-07-11")
     pipeline = build_and_publish_paper_strategy_pipeline(lake, as_of_date="2026-07-11")
     daily = read_parquet_dataset(lake / "gold/paper_strategy_daily").to_dicts()[0]
+    slippage = read_parquet_dataset(lake / "gold/paper_slippage_coverage")
     promotion = read_parquet_dataset(lake / "gold/paper_strategy_promotion_gate").to_dicts()[0]
     assert tracking.paper_strategy_runs == 1
     assert pipeline.paper_strategy_registry == 1
@@ -596,6 +615,7 @@ def test_ingest_and_export_generic_paper_runtime_contract(tmp_path):
     assert daily["heartbeat_day_count"] == 1
     assert daily["entry_day_count"] == 1
     assert daily["paper_pnl_observed_count"] == 1
+    assert slippage.filter(pl.col("proposal_id") == proposal_id).height == 1
     assert promotion["lifecycle_state"] == "PAPER_EVIDENCE_INSUFFICIENT"
     assert promotion["paper_ready"] is False
 

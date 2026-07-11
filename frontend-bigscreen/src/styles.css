@@ -352,6 +352,18 @@ button{font:inherit;color:inherit}
   height:2px;border-radius:999px;margin:0 10px;background:linear-gradient(90deg,rgba(80,169,255,.2),rgba(45,232,166,.82));
   box-shadow:0 0 12px rgba(45,232,166,.16);
 }
+.paper-lifecycle{
+  min-height:42px;margin:10px 0 4px;display:grid;grid-template-columns:repeat(5,minmax(74px,1fr)) minmax(112px,.9fr);
+  gap:7px;align-items:stretch;
+}
+.paper-lifecycle-stage,.paper-lifecycle-mode{
+  min-width:0;border:1px solid rgba(80,169,255,.28);border-radius:10px;background:rgba(5,28,52,.58);
+  padding:6px 8px;display:flex;align-items:center;justify-content:space-between;gap:7px;
+}
+.paper-lifecycle-stage b{font-size:17px;color:#eaf6ff}
+.paper-lifecycle-stage em,.paper-lifecycle-mode em{font-size:10px;color:var(--muted);font-style:normal;white-space:nowrap}
+.paper-lifecycle-mode{border-color:rgba(45,232,166,.38);display:grid;justify-content:start;gap:1px}
+.paper-lifecycle-mode b{font-size:11px;color:var(--green);white-space:nowrap}
 .candidate-list{margin-top:0}
 .candidate-title{display:flex;align-items:center;gap:6px;color:var(--muted);font-size:12px;margin-bottom:4px}
 .chip{
@@ -1222,6 +1234,8 @@ button{font:inherit;color:inherit}
   .matrix-status-bar{grid-template-columns:42px minmax(0,1fr) 28px;gap:8px}
   .page-strategy .strategy-card{padding:18px}
   .flow-metrics{grid-template-columns:repeat(2,1fr)}
+  .paper-lifecycle{grid-template-columns:repeat(2,minmax(0,1fr))}
+  .paper-lifecycle-mode{grid-column:1/-1}
   .stage{height:72px}
   .stage b{font-size:29px}
   .page-strategy .stage{height:78px}

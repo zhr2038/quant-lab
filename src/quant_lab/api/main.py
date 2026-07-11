@@ -64,6 +64,16 @@ from quant_lab.data.market_bar_time import (
 from quant_lab.gates.defaults import conservative_example_gate_decision
 from quant_lab.ops.api_metrics import api_metrics_summary, record_api_request
 from quant_lab.ops.dataset_registry import dataset_names, get_dataset_spec
+from quant_lab.paper.contracts import PaperStrategyAck
+from quant_lab.paper.service import (
+    canary_readiness,
+    cost_trust_rows,
+    promotion_rows,
+    read_proposal,
+    read_proposals,
+    record_ack,
+    status_rows,
+)
 from quant_lab.research.advisory_overrides import (
     portfolio_overridden_decision_mode,
     portfolio_override_for_row,
@@ -726,6 +736,46 @@ def create_app() -> FastAPI:
             compact_for_v5=True,
             limit=limit,
         )
+
+    @app.get("/v1/paper-strategy/proposals")
+    def paper_strategy_proposals() -> list[dict[str, Any]]:
+        return read_proposals(_lake_root())
+
+    @app.get("/v1/paper-strategy/proposals/{proposal_id}")
+    def paper_strategy_proposal_detail(proposal_id: str) -> dict[str, Any]:
+        row = read_proposal(_lake_root(), proposal_id)
+        if row is None:
+            raise HTTPException(status_code=404, detail="paper strategy proposal not found")
+        return row
+
+    @app.post("/v1/paper-strategy/ack")
+    def paper_strategy_ack(ack: PaperStrategyAck) -> dict[str, Any]:
+        if not _bool_env("QUANT_LAB_PAPER_ACK_WRITE_ENABLED", default=False):
+            raise HTTPException(
+                status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+                detail="paper ACK metadata writes are disabled",
+            )
+        try:
+            row, idempotent = record_ack(_lake_root(), ack)
+        except ValueError as exc:
+            raise HTTPException(status_code=409, detail=str(exc)) from exc
+        return {"ack": row, "idempotent": idempotent, "exchange_state_mutated": False}
+
+    @app.get("/v1/paper-strategy/status")
+    def paper_strategy_status() -> list[dict[str, Any]]:
+        return status_rows(_lake_root())
+
+    @app.get("/v1/paper-strategy/promotion")
+    def paper_strategy_promotion() -> list[dict[str, Any]]:
+        return promotion_rows(_lake_root())
+
+    @app.get("/v1/cost-trust/{strategy_id}")
+    def strategy_cost_trust(strategy_id: str) -> list[dict[str, Any]]:
+        return cost_trust_rows(_lake_root(), strategy_id)
+
+    @app.get("/v1/canary-readiness")
+    def paper_canary_readiness() -> dict[str, Any]:
+        return canary_readiness(_lake_root())
 
     @app.get("/v1/risk/live-permission", response_model=RiskPermission)
     def live_permission(response: Response, strategy: str, version: str) -> RiskPermission:

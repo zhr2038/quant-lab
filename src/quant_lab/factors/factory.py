@@ -14,7 +14,11 @@ from pydantic import BaseModel, ConfigDict, Field
 from quant_lab import __version__
 from quant_lab.data.lake import read_parquet_dataset, upsert_parquet_dataset, write_parquet_dataset
 from quant_lab.factors.operators import numeric, safe_divide, winsorize_expr
-from quant_lab.factors.registry import FactorSpec, discover_factor_specs
+from quant_lab.factors.registry import (
+    FactorSpec,
+    apply_factor_semantic_lineage,
+    discover_factor_specs,
+)
 from quant_lab.research.evidence import DEFAULT_RESEARCH_COST_BPS
 from quant_lab.research.ic import compute_ic, compute_rank_ic
 from quant_lab.research.labels import build_forward_return_labels, validate_no_label_lookahead
@@ -47,6 +51,13 @@ FACTOR_DEFINITION_SCHEMA: dict[str, Any] = {
     "params_json": pl.Utf8,
     "expression_json": pl.Utf8,
     "expression_hash": pl.Utf8,
+    "canonical_factor_id": pl.Utf8,
+    "factor_formula_hash": pl.Utf8,
+    "feature_dependencies": pl.Utf8,
+    "operator_graph_hash": pl.Utf8,
+    "duplicate_of": pl.Utf8,
+    "correlation_cluster_id": pl.Utf8,
+    "effective_independence_weight": pl.Float64,
     "status": pl.Utf8,
     "lookback_bars": pl.Int64,
     "availability_lag_bars": pl.Int64,
@@ -80,6 +91,11 @@ FACTOR_VALUE_SCHEMA: dict[str, Any] = {
     "value": pl.Float64,
     "factor_status": pl.Utf8,
     "expression_hash": pl.Utf8,
+    "canonical_factor_id": pl.Utf8,
+    "factor_formula_hash": pl.Utf8,
+    "operator_graph_hash": pl.Utf8,
+    "correlation_cluster_id": pl.Utf8,
+    "effective_independence_weight": pl.Float64,
     "input_features_json": pl.Utf8,
     "input_dataset_version": pl.Utf8,
     "data_version": pl.Utf8,
@@ -352,6 +368,7 @@ def publish_factor_definitions(
 ) -> int:
     root = Path(lake_root)
     now = created_at or datetime.now(UTC)
+    specs = apply_factor_semantic_lineage(specs)
     frame = _schema_frame(
         [spec.definition_row(created_at=now, source=SOURCE_NAME) for spec in specs],
         FACTOR_DEFINITION_SCHEMA,
@@ -729,6 +746,7 @@ def _build_factor_value_frame(
 ) -> pl.DataFrame:
     if features.is_empty() or not specs:
         return pl.DataFrame(schema=FACTOR_VALUE_SCHEMA)
+    specs = apply_factor_semantic_lineage(specs)
     wide = _pivot_feature_values(features)
     input_dataset_version = _text_mode(features, "input_dataset_version", "feature_value:unknown")
     input_hash = _text_mode(features, "input_hash", "sha256:unknown")
@@ -759,6 +777,13 @@ def _build_factor_value_frame(
                 raw.cast(pl.Float64, strict=False).alias("raw_value"),
                 pl.lit(spec.status.value).alias("factor_status"),
                 pl.lit(spec.expression_hash).alias("expression_hash"),
+                pl.lit(spec.canonical_factor_id).alias("canonical_factor_id"),
+                pl.lit(spec.factor_formula_hash).alias("factor_formula_hash"),
+                pl.lit(spec.operator_graph_hash).alias("operator_graph_hash"),
+                pl.lit(spec.correlation_cluster_id).alias("correlation_cluster_id"),
+                pl.lit(spec.effective_independence_weight).alias(
+                    "effective_independence_weight"
+                ),
                 pl.lit(safe_json_dumps(list(spec.input_features))).alias("input_features_json"),
                 pl.lit(input_dataset_version).alias("input_dataset_version"),
                 pl.lit(input_dataset_version).alias("data_version"),

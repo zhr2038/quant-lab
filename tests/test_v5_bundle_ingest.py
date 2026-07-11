@@ -8,6 +8,11 @@ import polars as pl
 
 from quant_lab.data.lake import read_parquet_dataset, write_parquet_dataset
 from quant_lab.export.daily import export_daily_pack
+from quant_lab.research.paper_promotion import build_and_publish_paper_strategy_pipeline
+from quant_lab.research.paper_tracking import (
+    build_and_publish_paper_strategy_tracking,
+    build_paper_strategy_runs_from_v5,
+)
 from quant_lab.strategy_telemetry.ingest import (
     _event_key_fields,
     _event_key_from_fields,
@@ -74,12 +79,10 @@ def test_sync_ingest_can_skip_large_historical_outcomes(tmp_path):
                 '"status_code":200,"success":true}\n'
             ),
             "summaries/high_score_blocked_outcomes.csv": (
-                "candidate_id,symbol,label_4h_net_bps,label_status\n"
-                "hist_1,SOL-USDT,12,complete\n"
+                "candidate_id,symbol,label_4h_net_bps,label_status\nhist_1,SOL-USDT,12,complete\n"
             ),
             "summaries/alt_impulse_shadow_outcomes.csv": (
-                "candidate_id,symbol,label_4h_net_bps,label_status\n"
-                "shadow_1,SOL-USDT,10,complete\n"
+                "candidate_id,symbol,label_4h_net_bps,label_status\nshadow_1,SOL-USDT,10,complete\n"
             ),
         },
     )
@@ -108,13 +111,7 @@ def test_sync_ingest_can_skip_large_historical_outcomes(tmp_path):
     assert historical.is_empty()
     assert shadow.is_empty()
     assert any("skipped_historical_outcome_file" in warning for warning in result.warnings)
-    redacted_root = (
-        tmp_path
-        / "redacted"
-        / "2026-05-10"
-        / result.bundle_sha256
-        / "redacted_files"
-    )
+    redacted_root = tmp_path / "redacted" / "2026-05-10" / result.bundle_sha256 / "redacted_files"
     assert not (redacted_root / "summaries/high_score_blocked_outcomes.csv").exists()
     assert not (redacted_root / "summaries/alt_impulse_shadow_outcomes.csv").exists()
 
@@ -166,8 +163,7 @@ def test_csv_rows_normalize_extra_field_key_instead_of_parse_warning(tmp_path):
         tmp_path / "v5_live_followup_bundle_20260510T140249Z.tar.gz",
         {
             "summaries/alt_impulse_shadow_outcomes.csv": (
-                "candidate_id,symbol\n"
-                "shadow_1,SOL-USDT,unexpected-extra-field\n"
+                "candidate_id,symbol\nshadow_1,SOL-USDT,unexpected-extra-field\n"
             )
         },
     )
@@ -312,9 +308,7 @@ def test_ingest_exports_v5_pullback_reversal_artifacts(tmp_path):
         shadow_rows = list(
             csv.DictReader(
                 StringIO(
-                    archive.read("reports/pullback_reversal_shadow_outcomes.csv").decode(
-                        "utf-8"
-                    )
+                    archive.read("reports/pullback_reversal_shadow_outcomes.csv").decode("utf-8")
                 )
             )
         )
@@ -344,15 +338,13 @@ def test_pullback_reversal_shadow_uses_semantic_dedupe_across_reports_and_summar
         "label_status,generated_at_utc,schema_version,contract_version\n"
     )
     reports_csv = (
-        header
-        + "2026-05-26,confirmed_reversal_v0.2,v5.pullback_reversal_shadow_bnb,"
+        header + "2026-05-26,confirmed_reversal_v0.2,v5.pullback_reversal_shadow_bnb,"
         "run_1,cand_pb_1,key_1,BNB-USDT,2026-05-26T11:00:00Z,24,50,"
         "complete,2026-05-26T11:05:00Z,entry_quality.v0.1,"
         "v5.quant_lab.telemetry.v2\n"
     )
     summaries_csv = (
-        header
-        + "2026-05-26,confirmed_reversal_v0.2,v5.pullback_reversal_shadow_bnb,"
+        header + "2026-05-26,confirmed_reversal_v0.2,v5.pullback_reversal_shadow_bnb,"
         "run_1,cand_pb_1,key_1,BNB-USDT,2026-05-26T11:00:00Z,24,50,"
         "complete,2026-05-26T12:05:00Z,entry_quality.v0.1,"
         "v5.quant_lab.telemetry.v2\n"
@@ -387,9 +379,11 @@ def test_pullback_reversal_shadow_uses_semantic_dedupe_across_reports_and_summar
     assert rows.height == 3
     assert rows["stable_row_key"].n_unique() == 3
     grouped = rows.group_by(["symbol", "horizon_hours"]).len()
-    assert {
-        (row["symbol"], str(row["horizon_hours"])) for row in grouped.to_dicts()
-    } == {("BNB-USDT", "24"), ("BNB-USDT", "48"), ("SOL-USDT", "24")}
+    assert {(row["symbol"], str(row["horizon_hours"])) for row in grouped.to_dicts()} == {
+        ("BNB-USDT", "24"),
+        ("BNB-USDT", "48"),
+        ("SOL-USDT", "24"),
+    }
 
 
 def test_ingest_v5_paper_strategy_rows_dedupes_overlapping_summary(tmp_path):
@@ -421,6 +415,292 @@ def test_ingest_v5_paper_strategy_rows_dedupes_overlapping_summary(tmp_path):
     assert runs.height == 2
     assert runs["stable_row_key"].n_unique() == 2
     assert set(runs["bundle_name"].to_list()) == {second.name}
+
+
+def test_ingest_and_export_generic_paper_runtime_contract(tmp_path):
+    proposal_id = "TRX_ALT_IMPULSE_48H_PAPER_V1"
+    tracker_id = f"paper:{proposal_id}"
+    bundle = make_tar(
+        tmp_path / "v5_live_followup_bundle_20260711T040000Z.tar.gz",
+        {
+            "summaries/paper_strategy_proposal_ack.csv": (
+                "proposal_id,proposal_hash,paper_tracker_id,tracker_id,accepted,"
+                "accepted_at,paper_only,recommended_mode,symbol,strategy_candidate,"
+                "strategy_version,reject_reason,contract_version,rules_locked,"
+                "live_order_effect,schema_version\n"
+                f"{proposal_id},hash-trx,{tracker_id},{tracker_id},true,"
+                "2026-07-11T03:00:00Z,true,paper,TRX/USDT,alt_impulse,1,,"
+                "quant-lab.paper-strategy.v1,true,none,v5.generic_paper_runtime.v1\n"
+            ),
+            "summaries/paper_strategy_registry.csv": (
+                "schema_version,proposal_id,proposal_hash,tracker_id,strategy_id,"
+                "strategy_version,strategy_family,symbol,timeframe,state,rules_locked,"
+                "paper_only,live_order_effect,created_at,updated_at\n"
+                f"v5.generic_paper_runtime.v1,{proposal_id},hash-trx,{tracker_id},"
+                "trx_alt_impulse,1,alt_impulse,TRX/USDT,1h,WAITING_SIGNAL,true,true,"
+                "none,2026-07-11T03:00:00Z,2026-07-11T04:00:00Z\n"
+            ),
+            "summaries/paper_strategy_state.csv": (
+                "schema_version,tracker_id,proposal_id,strategy_id,symbol,state,"
+                "paper_trade_id,open_paper_position,cooldown_remaining_bars,"
+                "last_processed_bar_ts,updated_at\n"
+                f"v5.generic_paper_runtime.v1,{tracker_id},{proposal_id},"
+                "trx_alt_impulse,TRX/USDT,PAPER_CLOSED,trade-trx,false,0,"
+                "2026-07-11T03:00:00Z,2026-07-11T04:00:00Z\n"
+            ),
+            "summaries/paper_strategy_signals.csv": (
+                "schema_version,signal_id,proposal_id,tracker_id,strategy_id,"
+                "strategy_version,symbol,signal_ts,decision_ts,signal_type,triggered,"
+                "observability,arrival_bid,arrival_ask,arrival_mid,spread_bps,"
+                "quote_timestamp,quote_age_seconds,price_source,fallback_level,"
+                "valid_for_promotion\n"
+                f"v5.generic_paper_runtime.v1,signal-trx,{proposal_id},{tracker_id},"
+                "trx_alt_impulse,1,TRX/USDT,2026-07-11T03:00:00Z,"
+                "2026-07-11T03:00:01Z,entry,true,OBSERVABLE,0.125,0.126,0.1255,"
+                "79.68,2026-07-11T03:00:00Z,1,top_of_book,NONE,true\n"
+            ),
+            "summaries/paper_strategy_runs.csv": (
+                "schema_version,paper_trade_id,proposal_id,strategy_id,strategy_version,"
+                "symbol,direction,ts_utc,as_of_date,paper_tracker_id,strategy_candidate,"
+                "recommended_mode,board_decision,suggested_horizon,horizon_hours,"
+                "would_enter,would_exit,would_size,would_size_usdt,paper_source,"
+                "paper_count_scope,entry_decision_ts,entry_arrival_mid,entry_bid,"
+                "entry_ask,virtual_entry_price,paper_notional,virtual_quantity,"
+                "exit_decision_ts,exit_arrival_mid,virtual_exit_price,fee_estimate,"
+                "slippage_estimate,total_cost_bps,gross_pnl_bps,net_pnl_bps,"
+                "paper_pnl_bps,paper_pnl_usdt,estimated_spread_bps,holding_bars,"
+                "exit_reason,cost_source,cost_trust_level,market_regime,"
+                "valid_for_promotion,closed_at\n"
+                f"v5.generic_paper_runtime.v1,trade-trx,{proposal_id},trx_alt_impulse,"
+                f"1,TRX/USDT,long,2026-07-11T04:00:00Z,2026-07-11,{tracker_id},"
+                "alt_impulse,paper,PAPER_TRACKER_ACTIVE,48h,48,true,true,5,5,"
+                "generic_contract_runtime,closed_trade,2026-07-11T03:00:01Z,0.1255,"
+                "0.125,0.126,0.1261,5,39.65,2026-07-11T04:00:00Z,0.127,0.1269,"
+                "2,2,83.68,120,112,112,0.056,79.68,1,structured_exit_rule,"
+                "configured_conservative_paper,PAPER_ONLY,TREND_UP,true,"
+                "2026-07-11T04:00:00Z\n"
+            ),
+            "summaries/paper_strategy_daily.csv": (
+                "schema_version,paper_date,proposal_id,paper_tracker_id,strategy_id,"
+                "symbol,paper_days,heartbeat_day_count,entry_day_count,"
+                "daily_would_enter_count,cumulative_would_enter_count,would_enter_count,"
+                "closed_entries,daily_paper_pnl_observed_count,"
+                "cumulative_paper_pnl_observed_count,paper_pnl_observed_count,"
+                "paper_pnl_day_count,avg_paper_pnl_bps,arrival_mid_coverage,"
+                "spread_observation_coverage,cost_source_mix,created_at\n"
+                f"v5.generic_paper_runtime.v1,2026-07-11,{proposal_id},{tracker_id},"
+                "trx_alt_impulse,TRX/USDT,1,1,1,1,1,1,1,1,1,1,1,112,1,1,"
+                '"[""configured_conservative_paper""]",2026-07-11T04:00:00Z\n'
+            ),
+            "summaries/paper_strategy_quote_coverage.csv": (
+                "schema_version,proposal_id,strategy_id,symbol,candidate_signal_count,"
+                "observable_quote_count,arrival_mid_coverage,stale_quote_rate,"
+                "quote_fallback_rate,target_coverage\n"
+                f"v5.generic_paper_runtime.v1,{proposal_id},trx_alt_impulse,TRX/USDT,"
+                "1,1,1,0,0,0.95\n"
+            ),
+            "summaries/paper_strategy_cost_evidence.csv": (
+                "schema_version,proposal_id,strategy_id,symbol,required_cost_trust_level,"
+                "closed_trade_count,cost_observed_count,cost_source,cost_trust_level,"
+                "valid_for_live_coverage\n"
+                f"v5.generic_paper_runtime.v1,{proposal_id},trx_alt_impulse,TRX/USDT,"
+                "CANARY,1,1,configured_conservative_paper,PAPER_ONLY,false\n"
+            ),
+            "summaries/paper_strategy_errors.csv": (
+                "schema_version,ts_utc,proposal_id,error_code,error_type,error_message,"
+                "live_order_effect\n"
+                f"v5.generic_paper_runtime.v1,2026-07-11T02:00:00Z,{proposal_id},"
+                "quote_not_observable,RuntimeError,stale quote,none\n"
+            ),
+            "summaries/paper_strategy_restart_recovery.csv": (
+                "recovered_at,tracker_id,proposal_id,state,open_trade_preserved,"
+                "schema_version\n"
+                f"2026-07-11T03:30:00Z,{tracker_id},{proposal_id},PAPER_OPEN,true,"
+                "v5.generic_paper_runtime.v1\n"
+            ),
+            "summaries/quant_lab_contract_status.json": json.dumps(
+                {
+                    "schema_version": "v5.generic_paper_runtime.v1",
+                    "contract_version": "quant-lab.paper-strategy.v1",
+                    "paper_runtime_enabled": True,
+                    "paper_runtime_live_order_effect": "none",
+                    "quant_lab_mode": "shadow",
+                    "canary_enabled": False,
+                    "active_tracker_count": 1,
+                    "open_paper_position_count": 0,
+                    "real_order_calls": 0,
+                    "real_position_mutations": 0,
+                    "generated_at": "2026-07-11T04:00:00Z",
+                }
+            ),
+        },
+    )
+    lake = tmp_path / "lake"
+
+    result = ingest_v5_bundle(
+        bundle,
+        lake,
+        tmp_path / "restricted",
+        tmp_path / "redacted",
+        run_analysis=False,
+        refresh_candidate_gold=False,
+    )
+
+    expected_counts = {
+        "v5_paper_strategy_proposal_ack": 1,
+        "v5_paper_strategy_registry": 1,
+        "v5_paper_strategy_state": 1,
+        "v5_paper_strategy_signal": 1,
+        "v5_paper_strategy_run": 1,
+        "v5_paper_strategy_daily": 1,
+        "v5_paper_strategy_quote_coverage": 1,
+        "v5_paper_strategy_cost_evidence": 1,
+        "v5_paper_strategy_error": 1,
+        "v5_paper_strategy_restart_recovery": 1,
+        "v5_quant_lab_contract_status": 1,
+    }
+    for dataset, count in expected_counts.items():
+        assert result.silver_rows[dataset] == count
+
+    contract = read_parquet_dataset(lake / "silver/v5_quant_lab_contract_status").to_dicts()[0]
+    assert contract["quant_lab_mode"] == "shadow"
+    assert contract["paper_runtime_live_order_effect"] == "none"
+    assert contract["canary_enabled"] is False
+    assert contract["real_order_calls"] == 0
+    assert contract["real_position_mutations"] == 0
+
+    ingested_runs = read_parquet_dataset(lake / "silver/v5_paper_strategy_run")
+    normalized_runs = build_paper_strategy_runs_from_v5(ingested_runs).to_dicts()
+    assert normalized_runs[0]["would_enter"] is True
+    assert normalized_runs[0]["paper_pnl_bps"] == 112.0
+    assert normalized_runs[0]["paper_source"] == "generic_contract_runtime"
+    assert normalized_runs[0]["arrival_bid"] == 0.125
+    assert normalized_runs[0]["arrival_ask"] == 0.126
+    assert normalized_runs[0]["arrival_mid"] == 0.1255
+    assert normalized_runs[0]["virtual_entry_price"] == 0.1261
+    assert normalized_runs[0]["virtual_exit_price"] == 0.1269
+    assert normalized_runs[0]["cost_trust_level"] == "PAPER_ONLY"
+    assert normalized_runs[0]["market_regime"] == "TREND_UP"
+    assert normalized_runs[0]["exit_reason"] == "structured_exit_rule"
+    assert normalized_runs[0]["holding_bars"] == 1
+    assert normalized_runs[0]["observability"] == "OBSERVABLE"
+
+    tracking = build_and_publish_paper_strategy_tracking(lake, as_of_date="2026-07-11")
+    pipeline = build_and_publish_paper_strategy_pipeline(lake, as_of_date="2026-07-11")
+    daily = read_parquet_dataset(lake / "gold/paper_strategy_daily").to_dicts()[0]
+    promotion = read_parquet_dataset(lake / "gold/paper_strategy_promotion_gate").to_dicts()[0]
+    assert tracking.paper_strategy_runs == 1
+    assert pipeline.paper_strategy_registry == 1
+    assert daily["source_schema_version"] == "v5.generic_paper_runtime.v1"
+    assert daily["paper_days"] == 1
+    assert daily["heartbeat_day_count"] == 1
+    assert daily["entry_day_count"] == 1
+    assert daily["paper_pnl_observed_count"] == 1
+    assert promotion["lifecycle_state"] == "PAPER_EVIDENCE_INSUFFICIENT"
+    assert promotion["paper_ready"] is False
+
+    export = export_daily_pack(
+        export_date="2026-07-11",
+        lake_root=lake,
+        out_dir=tmp_path / "exports",
+        command_line=["qlab", "export-daily", "--no-pre-export-v5-refresh"],
+        pre_export_v5_refresh=False,
+    )
+    required_members = {
+        "v5/v5_paper_strategy_proposal_ack.csv",
+        "v5/v5_paper_strategy_registry.csv",
+        "v5/v5_paper_strategy_state.csv",
+        "v5/v5_paper_strategy_signals.csv",
+        "v5/v5_paper_strategy_runs.csv",
+        "v5/v5_paper_strategy_daily.csv",
+        "v5/v5_paper_strategy_quote_coverage.csv",
+        "v5/v5_paper_strategy_cost_evidence.csv",
+        "v5/v5_paper_strategy_errors.csv",
+        "v5/v5_paper_strategy_restart_recovery.csv",
+        "v5/v5_quant_lab_contract_status.csv",
+    }
+    with zipfile.ZipFile(export.zip_path) as archive:
+        assert required_members.issubset(archive.namelist())
+        exported_contract = list(
+            csv.DictReader(
+                StringIO(archive.read("v5/v5_quant_lab_contract_status.csv").decode("utf-8"))
+            )
+        )[0]
+        exported_runs = list(
+            csv.DictReader(StringIO(archive.read("v5/v5_paper_strategy_runs.csv").decode("utf-8")))
+        )
+    assert exported_contract["quant_lab_mode"] == "shadow"
+    assert exported_contract["canary_enabled"].lower() == "false"
+    assert exported_runs[0]["paper_pnl_bps"] == "112"
+
+
+def test_ingest_fill_bill_reconciliation_replaces_pending_with_late_bill(tmp_path):
+    header = (
+        "schema_version,generated_at,runtime_scope,symbol,order_id,cl_ord_id,"
+        "trade_ids,last_fill_ts,selected_fee_usdt,bill_match_status,"
+        "cost_evidence_status,cost_source\n"
+    )
+    pending = make_tar(
+        tmp_path / "v5_live_followup_bundle_20260711T030000Z.tar.gz",
+        {
+            "summaries/fill_bill_cost_reconciliation.csv": (
+                header + "v5.fill_bill_cost_reconciliation.v1,2026-07-11T03:00:00Z,"
+                "fills,ETH-USDT,order-1,client-1,trade-1,2026-07-11T02:59:00Z,"
+                "0.005,BILL_PENDING,PARTIAL,actual_fill_partial\n"
+            )
+        },
+    )
+    complete = make_tar(
+        tmp_path / "v5_live_followup_bundle_20260711T031000Z.tar.gz",
+        {
+            "summaries/fill_bill_cost_reconciliation.csv": (
+                header + "v5.fill_bill_cost_reconciliation.v1,2026-07-11T03:10:00Z,"
+                "fills,ETH-USDT,order-1,client-1,trade-1,2026-07-11T02:59:00Z,"
+                "0.005,PASS,ACTUAL,actual_fills_bills\n"
+            )
+        },
+    )
+    lake = tmp_path / "lake"
+
+    ingest_v5_bundle(
+        pending,
+        lake,
+        tmp_path / "restricted",
+        tmp_path / "redacted",
+        run_analysis=False,
+        refresh_candidate_gold=False,
+    )
+    ingest_v5_bundle(
+        complete,
+        lake,
+        tmp_path / "restricted",
+        tmp_path / "redacted",
+        run_analysis=False,
+        refresh_candidate_gold=False,
+    )
+
+    rows = read_parquet_dataset(lake / "silver/v5_fill_bill_cost_reconciliation")
+    assert rows.height == 1
+    row = rows.to_dicts()[0]
+    assert row["bill_match_status"] == "PASS"
+    assert row["cost_evidence_status"] == "ACTUAL"
+    assert row["bundle_name"] == complete.name
+
+    export = export_daily_pack(
+        export_date="2026-07-11",
+        lake_root=lake,
+        out_dir=tmp_path / "exports",
+        command_line=["qlab", "export-daily", "--no-pre-export-v5-refresh"],
+        pre_export_v5_refresh=False,
+    )
+    with zipfile.ZipFile(export.zip_path) as archive:
+        exported = list(
+            csv.DictReader(
+                StringIO(archive.read("v5/v5_fill_bill_cost_reconciliation.csv").decode("utf-8"))
+            )
+        )
+    assert exported[0]["bill_match_status"] == "PASS"
+    assert exported[0]["cost_evidence_status"] == "ACTUAL"
 
 
 def test_ingest_v5_expanded_universe_summary_rows(tmp_path):
@@ -500,8 +780,7 @@ def test_ingest_rehydrates_empty_expanded_universe_tables_for_already_ingested_b
     assert result.silver_rows["v5_expanded_universe_paper_runs"] == 1
     assert result.silver_rows["v5_expanded_universe_paper_daily"] == 1
     assert any(
-        warning.startswith("rehydrated_empty_csv_refresh_datasets:")
-        for warning in result.warnings
+        warning.startswith("rehydrated_empty_csv_refresh_datasets:") for warning in result.warnings
     )
     assert reader.height == 1
     assert runs.height == 1
@@ -512,9 +791,7 @@ def test_ingest_rehydrates_empty_expanded_universe_tables_for_already_ingested_b
 
 
 def test_ingest_rehydrates_cost_probe_p3_preflight_for_already_ingested_bundle(tmp_path):
-    bundle = make_v5_bundle_fixture(
-        tmp_path / "v5_live_followup_bundle_20260514T083000Z.tar.gz"
-    )
+    bundle = make_v5_bundle_fixture(tmp_path / "v5_live_followup_bundle_20260514T083000Z.tar.gz")
     lake = tmp_path / "lake"
 
     first = ingest_v5_bundle(bundle, lake, tmp_path / "restricted", tmp_path / "redacted")
@@ -537,17 +814,14 @@ def test_ingest_rehydrates_cost_probe_p3_preflight_for_already_ingested_bundle(t
     assert row["approved_live_order_execution"] is False
     assert row["live_order_effect"] == "none_preflight_only_no_order"
     assert any(
-        warning.startswith("rehydrated_empty_csv_refresh_datasets:")
-        for warning in result.warnings
+        warning.startswith("rehydrated_empty_csv_refresh_datasets:") for warning in result.warnings
     )
 
 
 def test_ingest_replaces_redacted_cost_probe_p3_preflight_for_already_ingested_bundle(
     tmp_path,
 ):
-    bundle = make_v5_bundle_fixture(
-        tmp_path / "v5_live_followup_bundle_20260514T083000Z.tar.gz"
-    )
+    bundle = make_v5_bundle_fixture(tmp_path / "v5_live_followup_bundle_20260514T083000Z.tar.gz")
     lake = tmp_path / "lake"
 
     first = ingest_v5_bundle(bundle, lake, tmp_path / "restricted", tmp_path / "redacted")
@@ -558,8 +832,7 @@ def test_ingest_replaces_redacted_cost_probe_p3_preflight_for_already_ingested_b
     for row in damaged_rows:
         row["manual_authorization_required"] = False
         row["raw_payload_json"] = (
-            '{"manual_authorization_required":"<REDACTED>",'
-            '"approved_live_order_execution":false}'
+            '{"manual_authorization_required":"<REDACTED>","approved_live_order_execution":false}'
         )
     write_parquet_dataset(pl.DataFrame(damaged_rows, infer_schema_length=None), dataset_path)
 
@@ -570,17 +843,13 @@ def test_ingest_replaces_redacted_cost_probe_p3_preflight_for_already_ingested_b
     assert result.silver_rows["v5_cost_probe_p3_preflight"] == len(damaged_rows)
     assert [row["manual_authorization_required"] for row in rows] == [True]
     assert all("<REDACTED>" not in row["raw_payload_json"] for row in rows)
-    assert all(
-        '"manual_authorization_required": true' in row["raw_payload_json"] for row in rows
-    )
+    assert all('"manual_authorization_required": true' in row["raw_payload_json"] for row in rows)
 
 
 def test_ingest_rehydrates_cost_probe_p3_preflight_schema_upgrade(
     tmp_path,
 ):
-    bundle = make_v5_bundle_fixture(
-        tmp_path / "v5_live_followup_bundle_20260514T083000Z.tar.gz"
-    )
+    bundle = make_v5_bundle_fixture(tmp_path / "v5_live_followup_bundle_20260514T083000Z.tar.gz")
     lake = tmp_path / "lake"
 
     first = ingest_v5_bundle(bundle, lake, tmp_path / "restricted", tmp_path / "redacted")
@@ -606,50 +875,53 @@ def test_ingest_rehydrates_cost_probe_p3_preflight_schema_upgrade(
 
 
 def test_ingest_exports_cost_probe_order_and_roundtrip_events(tmp_path):
-    order_events = "\n".join(
-        [
-            json.dumps(
-                {
-                    "event_ts": "2026-05-14T08:30:00Z",
-                    "order_key": "probe-entry-1",
-                    "symbol": "BTC/USDT",
-                    "leg": "entry",
-                    "side": "buy",
-                    "intent": "entry",
-                    "order_status": "submitted",
-                    "client_order_id": "probe-entry-1",
-                    "exchange_order_id": "okx-entry-1",
-                    "live_enabled": True,
-                    "dry_run": False,
-                    "no_order_submitted": False,
-                    "notional_usdt": "5.0",
-                    "live_order_effect": "live_cost_probe_order",
-                },
-                sort_keys=True,
-            ),
-            json.dumps(
-                {
-                    "event_ts": "2026-05-14T08:30:02Z",
-                    "order_key": "probe-entry-1",
-                    "symbol": "BTC/USDT",
-                    "leg": "entry",
-                    "side": "buy",
-                    "intent": "entry",
-                    "order_status": "filled",
-                    "client_order_id": "probe-entry-1",
-                    "exchange_order_id": "okx-entry-1",
-                    "filled_qty": "0.00007",
-                    "avg_px": "65000",
-                    "fee_usdt": "0.005",
-                    "live_enabled": True,
-                    "dry_run": False,
-                    "no_order_submitted": False,
-                    "live_order_effect": "live_cost_probe_order",
-                },
-                sort_keys=True,
-            ),
-        ]
-    ) + "\n"
+    order_events = (
+        "\n".join(
+            [
+                json.dumps(
+                    {
+                        "event_ts": "2026-05-14T08:30:00Z",
+                        "order_key": "probe-entry-1",
+                        "symbol": "BTC/USDT",
+                        "leg": "entry",
+                        "side": "buy",
+                        "intent": "entry",
+                        "order_status": "submitted",
+                        "client_order_id": "probe-entry-1",
+                        "exchange_order_id": "okx-entry-1",
+                        "live_enabled": True,
+                        "dry_run": False,
+                        "no_order_submitted": False,
+                        "notional_usdt": "5.0",
+                        "live_order_effect": "live_cost_probe_order",
+                    },
+                    sort_keys=True,
+                ),
+                json.dumps(
+                    {
+                        "event_ts": "2026-05-14T08:30:02Z",
+                        "order_key": "probe-entry-1",
+                        "symbol": "BTC/USDT",
+                        "leg": "entry",
+                        "side": "buy",
+                        "intent": "entry",
+                        "order_status": "filled",
+                        "client_order_id": "probe-entry-1",
+                        "exchange_order_id": "okx-entry-1",
+                        "filled_qty": "0.00007",
+                        "avg_px": "65000",
+                        "fee_usdt": "0.005",
+                        "live_enabled": True,
+                        "dry_run": False,
+                        "no_order_submitted": False,
+                        "live_order_effect": "live_cost_probe_order",
+                    },
+                    sort_keys=True,
+                ),
+            ]
+        )
+        + "\n"
+    )
     roundtrip_events = (
         json.dumps(
             {
@@ -757,9 +1029,7 @@ def test_ingest_exports_cost_probe_order_and_roundtrip_events(tmp_path):
     )
 
     order_rows = read_parquet_dataset(lake / "silver/v5_cost_probe_order_event").to_dicts()
-    roundtrip_rows = read_parquet_dataset(
-        lake / "silver/v5_cost_probe_roundtrip_event"
-    ).to_dicts()
+    roundtrip_rows = read_parquet_dataset(lake / "silver/v5_cost_probe_roundtrip_event").to_dicts()
     live_status_rows = read_parquet_dataset(
         lake / "silver/v5_cost_probe_live_execution_status"
     ).to_dicts()
@@ -804,35 +1074,25 @@ def test_ingest_exports_cost_probe_order_and_roundtrip_events(tmp_path):
         )
         roundtrip_csv = list(
             csv.DictReader(
-                StringIO(
-                    archive.read("v5/v5_cost_probe_roundtrip_events.csv").decode("utf-8")
-                )
+                StringIO(archive.read("v5/v5_cost_probe_roundtrip_events.csv").decode("utf-8"))
             )
         )
         roundtrip_canonical_csv = list(
             csv.DictReader(
-                StringIO(
-                    archive.read(
-                        "v5/v5_cost_probe_roundtrip_canonical.csv"
-                    ).decode("utf-8")
-                )
+                StringIO(archive.read("v5/v5_cost_probe_roundtrip_canonical.csv").decode("utf-8"))
             )
         )
         live_status_csv = list(
             csv.DictReader(
-                StringIO(
-                    archive.read(
-                        "v5/v5_cost_probe_live_execution_status.csv"
-                    ).decode("utf-8")
-                )
+                StringIO(archive.read("v5/v5_cost_probe_live_execution_status.csv").decode("utf-8"))
             )
         )
         live_status_canonical_csv = list(
             csv.DictReader(
                 StringIO(
-                    archive.read(
-                        "v5/v5_cost_probe_live_execution_status_canonical.csv"
-                    ).decode("utf-8")
+                    archive.read("v5/v5_cost_probe_live_execution_status_canonical.csv").decode(
+                        "utf-8"
+                    )
                 )
             )
         )
@@ -1076,9 +1336,7 @@ def test_ingest_parses_quant_lab_usage_files(tmp_path):
     negexp = read_parquet_dataset(lake / "silver/v5_negative_expectancy_consistency").to_dicts()
     assert negexp[0]["symbol"] == "BNB-USDT"
     assert negexp[0]["min_hold_violation_cycles"] == "1"
-    btc_probe = read_parquet_dataset(
-        lake / "silver/v5_btc_probe_entry_quality_audit"
-    ).to_dicts()
+    btc_probe = read_parquet_dataset(lake / "silver/v5_btc_probe_entry_quality_audit").to_dicts()
     assert btc_probe[0]["normalized_symbol"] == "BTC-USDT"
     assert btc_probe[0]["same_symbol_reentry_bypass"] == "probe_stop_loss_reentry_after_loss"
     assert btc_probe[0]["anti_chase_flag"] == "false"
@@ -1176,9 +1434,7 @@ def test_ingest_parses_quant_lab_usage_from_large_gzip_paths(tmp_path):
     assert result.silver_rows["v5_quant_lab_request"] == 1
     usage = read_parquet_dataset(lake / "silver/v5_quant_lab_usage").to_dicts()
     requests = read_parquet_dataset(lake / "silver/v5_quant_lab_request").to_dicts()
-    assert usage[0]["source_path_inside_bundle"] == (
-        "raw/large/reports/quant_lab_usage.jsonl.gz"
-    )
+    assert usage[0]["source_path_inside_bundle"] == ("raw/large/reports/quant_lab_usage.jsonl.gz")
     assert requests[0]["source_path_inside_bundle"] == (
         "raw/large/reports/quant_lab_requests.jsonl.gz"
     )

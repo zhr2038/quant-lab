@@ -9,6 +9,8 @@ from typing import Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
+from quant_lab.paper.canonical import factor_semantic_identity
+
 FactorTemplate = Literal[
     "feature",
     "neg_feature",
@@ -55,6 +57,13 @@ class FactorSpec(BaseModel):
     status: FactorStatus = FactorStatus.CANDIDATE
     owner: str = Field(default="quant", min_length=1)
     expression_hash: str = Field(default="", min_length=1)
+    canonical_factor_id: str = ""
+    factor_formula_hash: str = ""
+    feature_dependencies: tuple[str, ...] = ()
+    operator_graph_hash: str = ""
+    duplicate_of: str = ""
+    correlation_cluster_id: str = ""
+    effective_independence_weight: float = Field(default=1.0, gt=0.0, le=1.0)
 
     enabled: bool = True
     direction: int = Field(default=1)
@@ -67,10 +76,25 @@ class FactorSpec(BaseModel):
     def populate_expression_hash(cls, data: Any) -> Any:
         if not isinstance(data, dict):
             return data
-        if data.get("expression_hash"):
-            return data
         updated = dict(data)
-        updated["expression_hash"] = _expression_hash(updated)
+        if not updated.get("expression_hash"):
+            updated["expression_hash"] = _expression_hash(updated)
+        identity = factor_semantic_identity(
+            formula={
+                "template": updated.get("template"),
+                "input_features": list(updated.get("input_features") or ()),
+                "params": updated.get("params") or {},
+                "direction": updated.get("direction", 1),
+            },
+            feature_dependencies=updated.get("input_features") or (),
+            parameters={
+                "normalization": updated.get("normalization", "cross_sectional_zscore"),
+                "lookback_bars": updated.get("lookback_bars", 1),
+            },
+        )
+        for key, value in identity.items():
+            updated.setdefault(key, tuple(value) if key == "feature_dependencies" else value)
+        updated.setdefault("correlation_cluster_id", identity["canonical_factor_id"])
         return updated
 
     @field_validator("direction")
@@ -122,6 +146,13 @@ class FactorSpec(BaseModel):
             "params_json": json.dumps(self.params, sort_keys=True),
             "expression_json": json.dumps(self.expression, sort_keys=True),
             "expression_hash": self.expression_hash,
+            "canonical_factor_id": self.canonical_factor_id,
+            "factor_formula_hash": self.factor_formula_hash,
+            "feature_dependencies": json.dumps(list(self.feature_dependencies), sort_keys=True),
+            "operator_graph_hash": self.operator_graph_hash,
+            "duplicate_of": self.duplicate_of,
+            "correlation_cluster_id": self.correlation_cluster_id,
+            "effective_independence_weight": self.effective_independence_weight,
             "status": self.status.value,
             "lookback_bars": self.lookback_bars,
             "availability_lag_bars": self.availability_lag_bars,
@@ -356,9 +387,32 @@ def discover_factor_specs(
         )
         existing_ids.add(factor_id)
         if len(specs) >= max_factors:
-            return specs[:max_factors]
+            return apply_factor_semantic_lineage(specs[:max_factors])
 
-    return specs[:max_factors]
+    return apply_factor_semantic_lineage(specs[:max_factors])
+
+
+def apply_factor_semantic_lineage(specs: Iterable[FactorSpec]) -> list[FactorSpec]:
+    materialized = list(specs)
+    owners: dict[str, str] = {}
+    counts: dict[str, int] = {}
+    for spec in materialized:
+        owners.setdefault(spec.canonical_factor_id, spec.factor_id)
+        counts[spec.canonical_factor_id] = counts.get(spec.canonical_factor_id, 0) + 1
+    return [
+        spec.model_copy(
+            update={
+                "duplicate_of": (
+                    ""
+                    if owners[spec.canonical_factor_id] == spec.factor_id
+                    else owners[spec.canonical_factor_id]
+                ),
+                "correlation_cluster_id": spec.canonical_factor_id,
+                "effective_independence_weight": 1.0 / counts[spec.canonical_factor_id],
+            }
+        )
+        for spec in materialized
+    ]
 
 
 def _expression_hash(values: dict[str, Any]) -> str:

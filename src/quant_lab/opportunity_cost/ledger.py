@@ -7,6 +7,12 @@ from typing import Any
 
 import polars as pl
 
+from quant_lab.paper.canonical import (
+    annotate_shared_events,
+    canonical_market_event_id,
+    strategy_evaluation_id,
+)
+
 OPPORTUNITY_COST_EVENT_SCHEMA_VERSION = "quant_lab_opportunity_cost_event.v0.2"
 OPPORTUNITY_COST_DAILY_SCHEMA_VERSION = "quant_lab_opportunity_cost_daily.v0.1"
 OPPORTUNITY_COST_BY_BUCKET_SCHEMA_VERSION = "opportunity_cost_by_bucket.v0.5"
@@ -15,6 +21,14 @@ DECISION_REGRET_SCHEMA_VERSION = "quant_lab_decision_regret.v0.1"
 OPPORTUNITY_COST_EVENT_SCHEMA = {
     "schema_version": pl.Utf8,
     "event_id": pl.Utf8,
+    "canonical_event_id": pl.Utf8,
+    "opportunity_id": pl.Utf8,
+    "strategy_evaluation_id": pl.Utf8,
+    "strategy_id": pl.Utf8,
+    "strategy_version": pl.Utf8,
+    "shared_event_group_id": pl.Utf8,
+    "shared_event_strategy_count": pl.Int64,
+    "event_independence_weight": pl.Float64,
     "sample_id": pl.Utf8,
     "decision_ts": pl.Datetime(time_zone="UTC"),
     "day": pl.Date,
@@ -182,6 +196,9 @@ def build_opportunity_cost_events(
     rows = []
     for event in events.to_dicts():
         event_id = _text(event.get("event_id"))
+        canonical_id = _text(event.get("canonical_event_id")) or canonical_market_event_id(event)
+        strategy_id = _text(event.get("strategy_id") or event.get("strategy_candidate"))
+        strategy_version = _text(event.get("strategy_version")) or "legacy"
         label = labels_by_event.get(event_id, {})
         judgment = judgments_by_event.get(event_id, {})
         sample = samples_by_event.get(event_id, {})
@@ -204,6 +221,19 @@ def build_opportunity_cost_events(
             {
                 "schema_version": OPPORTUNITY_COST_EVENT_SCHEMA_VERSION,
                 "event_id": event_id,
+                "canonical_event_id": canonical_id,
+                "opportunity_id": canonical_id,
+                "strategy_evaluation_id": strategy_evaluation_id(
+                    event_id=canonical_id,
+                    strategy_id=strategy_id,
+                    strategy_version=strategy_version,
+                    source_event_id=event_id,
+                ),
+                "strategy_id": strategy_id,
+                "strategy_version": strategy_version,
+                "shared_event_group_id": canonical_id,
+                "shared_event_strategy_count": 1,
+                "event_independence_weight": 1.0,
                 "sample_id": event_id,
                 "decision_ts": decision_ts,
                 "day": decision_ts.date() if decision_ts else None,
@@ -248,7 +278,7 @@ def build_opportunity_cost_events(
                 "source": "quant_lab.opportunity_cost.event",
             }
         )
-    return _frame(rows, OPPORTUNITY_COST_EVENT_SCHEMA)
+    return _frame(annotate_shared_events(rows), OPPORTUNITY_COST_EVENT_SCHEMA)
 
 
 def build_opportunity_cost_daily(
@@ -330,6 +360,7 @@ def build_decision_regret(
 
 
 def _daily_row(day: date, rows: list[dict[str, Any]], created: datetime) -> dict[str, Any]:
+    rows = _independent_event_rows(rows)
     v5_open_rows = [row for row in rows if row.get("v5_would_open")]
     blocked = [row for row in v5_open_rows if row.get("quant_lab_would_block")]
     allowed = [row for row in v5_open_rows if row.get("quant_lab_would_allow")]
@@ -374,6 +405,23 @@ def _daily_row(day: date, rows: list[dict[str, Any]], created: datetime) -> dict
         "created_at": created,
         "source": "quant_lab.opportunity_cost.daily",
     }
+
+
+def _independent_event_rows(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Keep one market event for opportunity-level denominators."""
+
+    best: dict[str, dict[str, Any]] = {}
+    for row in rows:
+        key = _text(row.get("canonical_event_id") or row.get("event_id"))
+        current = best.get(key)
+        if current is None:
+            best[key] = row
+            continue
+        current_observed = _float(current.get("after_cost_bps")) is not None
+        row_observed = _float(row.get("after_cost_bps")) is not None
+        if row_observed and not current_observed:
+            best[key] = row
+    return list(best.values())
 
 
 def _bucket_row(bucket_key: str, rows: list[dict[str, Any]], created: datetime) -> dict[str, Any]:

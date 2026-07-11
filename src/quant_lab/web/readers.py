@@ -91,8 +91,11 @@ DATASET_PATHS = {
     "expanded_crypto_recommendations": Path("gold") / "expanded_crypto_recommendations",
     "paper_strategy_runs": Path("gold") / "paper_strategy_runs",
     "paper_strategy_daily": Path("gold") / "paper_strategy_daily",
+    "paper_strategy_proposal": Path("gold") / "paper_strategy_proposal",
     "paper_strategy_registry": Path("gold") / "paper_strategy_registry",
+    "paper_strategy_migration_audit": Path("gold") / "paper_strategy_migration_audit",
     "paper_strategy_promotion_gate": Path("gold") / "paper_strategy_promotion_gate",
+    "strategy_cost_trust": Path("gold") / "strategy_cost_trust",
     "paper_slippage_coverage": Path("gold") / "paper_slippage_coverage",
     "v5_final_score_vs_alpha6_conflict": Path("gold") / "v5_final_score_vs_alpha6_conflict",
     "v5_bnb_strong_alpha6_bypass_shadow": Path("gold") / "v5_bnb_strong_alpha6_bypass_shadow",
@@ -163,6 +166,15 @@ DATASET_PATHS = {
     "v5_paper_strategy_proposal_ack": Path("silver") / "v5_paper_strategy_proposal_ack",
     "v5_paper_strategy_daily": Path("silver") / "v5_paper_strategy_daily",
     "v5_paper_slippage_coverage": Path("silver") / "v5_paper_slippage_coverage",
+    "v5_paper_strategy_registry": Path("silver") / "v5_paper_strategy_registry",
+    "v5_paper_strategy_state": Path("silver") / "v5_paper_strategy_state",
+    "v5_paper_strategy_signal": Path("silver") / "v5_paper_strategy_signal",
+    "v5_paper_strategy_quote_coverage": Path("silver") / "v5_paper_strategy_quote_coverage",
+    "v5_paper_strategy_cost_evidence": Path("silver") / "v5_paper_strategy_cost_evidence",
+    "v5_paper_strategy_error": Path("silver") / "v5_paper_strategy_error",
+    "v5_paper_strategy_restart_recovery": Path("silver") / "v5_paper_strategy_restart_recovery",
+    "v5_quant_lab_contract_status": Path("silver") / "v5_quant_lab_contract_status",
+    "v5_fill_bill_cost_reconciliation": Path("silver") / "v5_fill_bill_cost_reconciliation",
     "v5_expanded_universe_advisory_reader": Path("silver") / "v5_expanded_universe_advisory_reader",
     "v5_expanded_universe_paper_runs": Path("silver") / "v5_expanded_universe_paper_runs",
     "v5_expanded_universe_paper_daily": Path("silver") / "v5_expanded_universe_paper_daily",
@@ -206,6 +218,14 @@ V5_PAPER_TELEMETRY_DATASETS = {
     "v5_paper_strategy_proposal_ack",
     "v5_paper_strategy_daily",
     "v5_paper_slippage_coverage",
+    "v5_paper_strategy_registry",
+    "v5_paper_strategy_state",
+    "v5_paper_strategy_signal",
+    "v5_paper_strategy_quote_coverage",
+    "v5_paper_strategy_cost_evidence",
+    "v5_paper_strategy_error",
+    "v5_paper_strategy_restart_recovery",
+    "v5_quant_lab_contract_status",
     "v5_expanded_universe_advisory_reader",
     "v5_expanded_universe_paper_runs",
     "v5_expanded_universe_paper_daily",
@@ -304,6 +324,7 @@ EVENT_DRIVEN_V5_DATASET_STATUSES = {
     ),
     "v5_cost_probe_order_event": "event_driven_no_recent_cost_probe_order_event",
     "v5_cost_probe_roundtrip_event": "event_driven_no_recent_cost_probe_roundtrip_event",
+    "v5_fill_bill_cost_reconciliation": "event_driven_no_recent_fill_bill_reconciliation",
     "v5_bnb_negative_expectancy_attribution": (
         "event_driven_no_recent_bnb_negative_expectancy_attribution"
     ),
@@ -427,8 +448,11 @@ DATASET_TIMESTAMP_COLUMNS: dict[str, tuple[str, ...]] = {
     "expanded_crypto_recommendations": ("generated_at", "as_of_date"),
     "paper_strategy_runs": ("created_at", "as_of_date"),
     "paper_strategy_daily": ("created_at", "as_of_date"),
+    "paper_strategy_proposal": ("created_at", "expires_at"),
     "paper_strategy_registry": ("created_at", "accepted_at", "paper_start_at"),
+    "paper_strategy_migration_audit": ("created_at",),
     "paper_strategy_promotion_gate": ("created_at",),
+    "strategy_cost_trust": ("created_at",),
     "paper_slippage_coverage": ("created_at", "as_of_date"),
     "sol_protect_paper_loss_attribution": (
         "generated_at_utc",
@@ -481,9 +505,23 @@ DATASET_TIMESTAMP_COLUMNS: dict[str, tuple[str, ...]] = {
     ),
     "v5_cost_probe_order_event": ("event_ts", "ingest_ts", "bundle_ts"),
     "v5_cost_probe_roundtrip_event": ("event_ts", "ingest_ts", "bundle_ts"),
+    "v5_fill_bill_cost_reconciliation": (
+        "last_fill_ts",
+        "generated_at",
+        "ingest_ts",
+        "bundle_ts",
+    ),
     "v5_paper_strategy_run": ("created_at", "ingest_ts", "bundle_ts", "as_of_date"),
     "v5_paper_strategy_proposal_ack": ("created_at", "ingest_ts", "bundle_ts"),
     "v5_paper_strategy_daily": ("created_at", "ingest_ts", "bundle_ts", "as_of_date"),
+    "v5_paper_strategy_registry": ("updated_at", "created_at", "ingest_ts", "bundle_ts"),
+    "v5_paper_strategy_state": ("updated_at", "ingest_ts", "bundle_ts"),
+    "v5_paper_strategy_signal": ("decision_ts", "signal_ts", "ingest_ts", "bundle_ts"),
+    "v5_paper_strategy_quote_coverage": ("ingest_ts", "bundle_ts"),
+    "v5_paper_strategy_cost_evidence": ("ingest_ts", "bundle_ts"),
+    "v5_paper_strategy_error": ("ts_utc", "ingest_ts", "bundle_ts"),
+    "v5_paper_strategy_restart_recovery": ("recovered_at", "ingest_ts", "bundle_ts"),
+    "v5_quant_lab_contract_status": ("generated_at", "ingest_ts", "bundle_ts"),
     "v5_paper_slippage_coverage": ("created_at", "ingest_ts", "bundle_ts", "as_of_date"),
     "v5_expanded_universe_advisory_reader": (
         "generated_at",
@@ -1785,10 +1823,9 @@ def _web_file_index_dataset_signatures(lake_root: Path) -> dict[str, tuple[Any, 
                 accumulator[target_key] = value
         digest = accumulator["digest"]
         digest.update(
-            "|".join(
-                str(row.get(column) or "")
-                for column in selected_columns
-            ).encode("utf-8", "surrogatepass")
+            "|".join(str(row.get(column) or "") for column in selected_columns).encode(
+                "utf-8", "surrogatepass"
+            )
         )
         digest.update(b"\n")
     signatures = {
@@ -3194,9 +3231,7 @@ def _cost_probe_disagreement_warnings(frame: pl.DataFrame) -> list[str]:
     return warnings
 
 
-def _cost_quality_candidate_is_better(
-    candidate: dict[str, Any], existing: dict[str, Any]
-) -> bool:
+def _cost_quality_candidate_is_better(candidate: dict[str, Any], existing: dict[str, Any]) -> bool:
     candidate_priority = _candidate_priority(candidate)
     existing_priority = _candidate_priority(existing)
     if candidate_priority != existing_priority:
@@ -3811,11 +3846,9 @@ def alpha_gate_summary(lake_root: str | Path) -> dict[str, Any]:
             "quant_lab_opportunity_cost_event",
         )
     )
-    opportunity_cost_daily, opportunity_cost_daily_warning = (
-        _read_web_display_dataset_with_warning(
-            lake_root,
-            "quant_lab_opportunity_cost_daily",
-        )
+    opportunity_cost_daily, opportunity_cost_daily_warning = _read_web_display_dataset_with_warning(
+        lake_root,
+        "quant_lab_opportunity_cost_daily",
     )
     opportunity_cost_by_bucket, opportunity_cost_by_bucket_warning = (
         _read_web_display_dataset_with_warning(
@@ -3999,9 +4032,7 @@ def alpha_gate_summary(lake_root: str | Path) -> dict[str, Any]:
             DISPLAY_LIMIT
         ),
         "trade_level_bucket_policy": redact_frame(trade_bucket_policy).head(DISPLAY_LIMIT),
-        "trade_level_opportunity_queue": redact_frame(trade_opportunity_queue).head(
-            DISPLAY_LIMIT
-        ),
+        "trade_level_opportunity_queue": redact_frame(trade_opportunity_queue).head(DISPLAY_LIMIT),
         "quant_lab_false_block_audit": redact_frame(false_block_audit).head(DISPLAY_LIMIT),
         "v5_trade_learning_sample": redact_frame(v5_trade_learning).head(DISPLAY_LIMIT),
         "v5_trade_outcome_attribution": redact_frame(v5_trade_attribution).head(DISPLAY_LIMIT),
@@ -4011,9 +4042,7 @@ def alpha_gate_summary(lake_root: str | Path) -> dict[str, Any]:
         "quant_lab_opportunity_cost_daily": redact_frame(opportunity_cost_daily).head(
             DISPLAY_LIMIT
         ),
-        "opportunity_cost_by_bucket": redact_frame(opportunity_cost_by_bucket).head(
-            DISPLAY_LIMIT
-        ),
+        "opportunity_cost_by_bucket": redact_frame(opportunity_cost_by_bucket).head(DISPLAY_LIMIT),
         "quant_lab_decision_regret": redact_frame(decision_regret).head(DISPLAY_LIMIT),
         "alpha_factory_result": redact_frame(
             _alpha_factory_result_table(alpha_factory_results)
@@ -6382,8 +6411,18 @@ def _dataset_display_name(dataset_name: str) -> str:
         "paper_strategy_runs": "纸面策略运行",
         "paper_strategy_daily": "纸面策略日汇总",
         "paper_strategy_registry": "纸面策略注册表",
+        "paper_strategy_migration_audit": "旧纸面策略迁移审计",
         "paper_strategy_promotion_gate": "纸面策略晋级闸门",
         "v5_paper_strategy_proposal_ack": "V5 纸面策略 ACK",
+        "v5_paper_strategy_registry": "V5 通用纸面策略注册表",
+        "v5_paper_strategy_state": "V5 通用纸面策略状态",
+        "v5_paper_strategy_signal": "V5 通用纸面策略信号",
+        "v5_paper_strategy_quote_coverage": "V5 纸面策略盘口覆盖",
+        "v5_paper_strategy_cost_evidence": "V5 纸面策略成本证据",
+        "v5_paper_strategy_error": "V5 纸面策略错误",
+        "v5_paper_strategy_restart_recovery": "V5 纸面策略重启恢复",
+        "v5_quant_lab_contract_status": "V5 与中台契约状态",
+        "v5_fill_bill_cost_reconciliation": "V5 成交与账单成本对账",
         "paper_slippage_coverage": "纸面滑点覆盖",
         "trade_print": "OKX 成交流",
         "orderbook_snapshot": "OKX 订单簿",

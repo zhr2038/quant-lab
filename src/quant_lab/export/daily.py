@@ -90,6 +90,7 @@ from quant_lab.opportunity_cost.ledger import (
 from quant_lab.ops.api_metrics import api_error_summary, api_metrics_summary
 from quant_lab.ops.data_quality import run_data_quality
 from quant_lab.ops.lake_health import lake_file_health_summary
+from quant_lab.paper.proposals import PAPER_STRATEGY_MIGRATION_AUDIT_SCHEMA
 from quant_lab.reports.enforce_readiness import (
     ENFORCE_READINESS_CSV,
     ENFORCE_READINESS_JSON,
@@ -127,6 +128,10 @@ from quant_lab.research.bottom_zone_reversal import (
     build_bottom_zone_reversal_shadow,
 )
 from quant_lab.research.btc_probe_exit_policy import btc_probe_exit_policy_summary_md
+from quant_lab.research.gate_effectiveness import (
+    EFFECTIVENESS_SCHEMA,
+    build_gate_effectiveness_report,
+)
 from quant_lab.research.market_pressure import (
     MARKET_PRESSURE_FIELDS,
     build_market_pressure_score,
@@ -135,6 +140,7 @@ from quant_lab.research.market_pressure import (
 from quant_lab.research.paper_promotion import (
     PAPER_STRATEGY_PROMOTION_GATE_SCHEMA,
     PAPER_STRATEGY_REGISTRY_SCHEMA,
+    build_and_publish_paper_strategy_pipeline,
     build_paper_strategy_pipeline_frames,
 )
 from quant_lab.research.paper_tracking import (
@@ -215,7 +221,12 @@ SNAPSHOT_META_DATASETS = {
     "cost_probe_fill_bill_match",
     "factor_strategy_bridge_candidates",
     "gate_decision",
+    "paper_strategy_migration_audit",
+    "paper_strategy_promotion_gate",
+    "paper_strategy_proposal",
+    "paper_strategy_registry",
     "strategy_health_daily",
+    "strategy_cost_trust",
     "strategy_opportunity_advisory",
     "trade_opportunity_event",
     "trade_opportunity_label",
@@ -245,9 +256,18 @@ SNAPSHOT_META_DATASETS = {
     "v5_cost_probe_live_execution_status",
     "v5_cost_probe_order_event",
     "v5_cost_probe_roundtrip_event",
+    "v5_fill_bill_cost_reconciliation",
     "v5_paper_strategy_run",
     "v5_paper_strategy_proposal_ack",
     "v5_paper_strategy_daily",
+    "v5_paper_strategy_registry",
+    "v5_paper_strategy_state",
+    "v5_paper_strategy_signal",
+    "v5_paper_strategy_quote_coverage",
+    "v5_paper_strategy_cost_evidence",
+    "v5_paper_strategy_error",
+    "v5_paper_strategy_restart_recovery",
+    "v5_quant_lab_contract_status",
     "v5_paper_slippage_coverage",
     "v5_expanded_universe_advisory_reader",
     "v5_expanded_universe_paper_runs",
@@ -333,6 +353,7 @@ HEAVY_EXPORT_DATASET_LIMITS = {
     "v5_cost_probe_live_execution_status": 5_000,
     "v5_cost_probe_order_event": 10_000,
     "v5_cost_probe_roundtrip_event": 10_000,
+    "v5_fill_bill_cost_reconciliation": 20_000,
     "v5_candidate_event": 20_000,
     "trade_opportunity_event": 20_000,
     "trade_opportunity_label": 20_000,
@@ -358,6 +379,9 @@ HEAVY_EXPORT_DATASET_LIMITS = {
     "expanded_crypto_universe_shadow": 20_000,
     "expanded_crypto_candidate_outcomes_by_symbol": 20_000,
     "v5_paper_strategy_run": 20_000,
+    "v5_paper_strategy_signal": 20_000,
+    "v5_paper_strategy_error": 10_000,
+    "v5_paper_strategy_restart_recovery": 10_000,
     "paper_strategy_runs": 20_000,
 }
 HEAVY_EXPORT_RECENT_FILE_LIMITS = {
@@ -390,6 +414,7 @@ HEAVY_EXPORT_RECENT_FILE_LIMITS = {
     "v5_cost_probe_p3_preflight": 100,
     "v5_cost_probe_order_event": 100,
     "v5_cost_probe_roundtrip_event": 100,
+    "v5_fill_bill_cost_reconciliation": 100,
     "v5_candidate_event": 100,
     "trade_opportunity_event": 100,
     "trade_opportunity_label": 100,
@@ -415,6 +440,9 @@ HEAVY_EXPORT_RECENT_FILE_LIMITS = {
     "expanded_crypto_universe_shadow": 100,
     "expanded_crypto_candidate_outcomes_by_symbol": 100,
     "v5_paper_strategy_run": 100,
+    "v5_paper_strategy_signal": 100,
+    "v5_paper_strategy_error": 100,
+    "v5_paper_strategy_restart_recovery": 100,
     "paper_strategy_runs": 100,
 }
 DEFAULT_EXPORT_SAMPLED_ROW_LIMIT = 20_000
@@ -479,6 +507,7 @@ SECTION_DATASETS = {
         "cost_health_daily",
         "okx_private_readonly_fills",
         "okx_private_readonly_bills",
+        "v5_fill_bill_cost_reconciliation",
     ],
     "research": [
         "alpha_evidence",
@@ -493,6 +522,9 @@ SECTION_DATASETS = {
         "strategy_evidence_quality",
         "research_portfolio_status",
         "strategy_opportunity_advisory",
+        "paper_strategy_proposal",
+        "paper_strategy_migration_audit",
+        "strategy_cost_trust",
         "trade_opportunity_event",
         "trade_opportunity_label",
         "trade_level_similarity_outcome",
@@ -578,6 +610,18 @@ SECTION_DATASETS = {
         "v5_cost_probe_live_execution_status",
         "v5_cost_probe_order_event",
         "v5_cost_probe_roundtrip_event",
+        "v5_fill_bill_cost_reconciliation",
+        "v5_paper_strategy_run",
+        "v5_paper_strategy_proposal_ack",
+        "v5_paper_strategy_daily",
+        "v5_paper_strategy_registry",
+        "v5_paper_strategy_state",
+        "v5_paper_strategy_signal",
+        "v5_paper_strategy_quote_coverage",
+        "v5_paper_strategy_cost_evidence",
+        "v5_paper_strategy_error",
+        "v5_paper_strategy_restart_recovery",
+        "v5_quant_lab_contract_status",
         "v5_candidate_event",
         "v5_btc_probe_entry_quality_audit",
         "v5_candidate_label",
@@ -645,6 +689,18 @@ REQUIRED_MEMBERS = [
     "v5/v5_cost_probe_order_events.csv",
     "v5/v5_cost_probe_roundtrip_events.csv",
     "v5/v5_cost_probe_roundtrip_canonical.csv",
+    "v5/v5_fill_bill_cost_reconciliation.csv",
+    "v5/v5_paper_strategy_proposal_ack.csv",
+    "v5/v5_paper_strategy_registry.csv",
+    "v5/v5_paper_strategy_state.csv",
+    "v5/v5_paper_strategy_signals.csv",
+    "v5/v5_paper_strategy_runs.csv",
+    "v5/v5_paper_strategy_daily.csv",
+    "v5/v5_paper_strategy_quote_coverage.csv",
+    "v5/v5_paper_strategy_cost_evidence.csv",
+    "v5/v5_paper_strategy_errors.csv",
+    "v5/v5_paper_strategy_restart_recovery.csv",
+    "v5/v5_quant_lab_contract_status.csv",
     "v5/v5_candidate_events.csv",
     "v5/v5_btc_probe_entry_quality_audit.csv",
     "v5/v5_candidate_labels.csv",
@@ -702,6 +758,13 @@ REQUIRED_MEMBERS = [
     "reports/quant_lab_opportunity_cost_event.csv",
     "reports/quant_lab_opportunity_cost_daily.csv",
     "reports/opportunity_cost_by_bucket.csv",
+    "reports/gate_candidate_level_effectiveness.csv",
+    "reports/gate_independent_event_effectiveness.csv",
+    "reports/gate_paper_trade_effectiveness.csv",
+    "reports/gate_live_trade_effectiveness.csv",
+    "reports/duplicate_event_report.csv",
+    "reports/duplicate_factor_report.csv",
+    "reports/strategy_cost_trust.csv",
     "reports/quant_lab_decision_regret.csv",
     "reports/api_latency_summary.csv",
     "reports/api_latency_summary.md",
@@ -774,6 +837,7 @@ REQUIRED_MEMBERS = [
     "reports/paper_strategy_daily.csv",
     "reports/paper_strategy_registry.csv",
     "reports/paper_strategy_promotion_gate.csv",
+    "reports/paper_strategy_migration_audit.csv",
     "reports/paper_strategy_summary.md",
     "reports/bnb_paper_strategy_runs.csv",
     "reports/bnb_paper_strategy_daily.csv",
@@ -1587,6 +1651,34 @@ CSV_SCHEMAS: dict[str, list[str]] = {
     ],
     "reports/paper_strategy_proposals.csv": [
         "proposal_id",
+        "contract_version",
+        "proposal_hash",
+        "strategy_id",
+        "strategy_version",
+        "strategy_family",
+        "timeframe",
+        "direction",
+        "entry_rule",
+        "exit_rule",
+        "max_holding_bars",
+        "min_holding_bars",
+        "cooldown_bars",
+        "signal_confirmation_bars",
+        "cost_quantile",
+        "minimum_expected_edge_bps",
+        "paper_notional_usdt",
+        "paper_only",
+        "live_order_effect",
+        "max_live_notional_usdt",
+        "expires_at",
+        "source_pack_sha256",
+        "source_dataset_versions",
+        "required_market_fields",
+        "required_cost_trust_level",
+        "lifecycle_state",
+        "lifecycle_reason",
+        "blocked_reasons",
+        "next_required_actions",
         "strategy_candidate",
         "symbol",
         "entry_conditions",
@@ -2413,6 +2505,41 @@ CSV_SCHEMAS: dict[str, list[str]] = {
     ],
     "reports/paper_strategy_registry.csv": list(PAPER_STRATEGY_REGISTRY_SCHEMA),
     "reports/paper_strategy_promotion_gate.csv": list(PAPER_STRATEGY_PROMOTION_GATE_SCHEMA),
+    "reports/paper_strategy_migration_audit.csv": list(PAPER_STRATEGY_MIGRATION_AUDIT_SCHEMA),
+    "reports/gate_candidate_level_effectiveness.csv": list(EFFECTIVENESS_SCHEMA),
+    "reports/gate_independent_event_effectiveness.csv": list(EFFECTIVENESS_SCHEMA),
+    "reports/gate_paper_trade_effectiveness.csv": list(EFFECTIVENESS_SCHEMA),
+    "reports/gate_live_trade_effectiveness.csv": list(EFFECTIVENESS_SCHEMA),
+    "reports/duplicate_event_report.csv": [
+        "canonical_event_id",
+        "strategy_evaluation_count",
+        "strategy_ids",
+        "event_independence_weight",
+        "duplicate_evidence",
+    ],
+    "reports/duplicate_factor_report.csv": [
+        "canonical_factor_id",
+        "factor_formula_hash",
+        "operator_graph_hash",
+        "factor_count",
+        "factor_ids",
+        "duplicate_factor_ids",
+        "effective_independence_weight",
+    ],
+    "reports/strategy_cost_trust.csv": [
+        "strategy_id",
+        "cost_trust_level",
+        "actual_sample_count",
+        "mixed_sample_count",
+        "proxy_sample_count",
+        "sample_age_seconds",
+        "coverage_dimensions",
+        "missing_dimensions",
+        "evaluated_condition_count",
+        "required_condition_count",
+        "source",
+        "created_at",
+    ],
     "reports/paper_slippage_coverage.csv": [
         "as_of_date",
         "proposal_id",
@@ -3209,6 +3336,44 @@ CSV_SCHEMAS: dict[str, list[str]] = {
         "raw_payload_json",
         "stable_row_key",
     ],
+    "v5/v5_fill_bill_cost_reconciliation.csv": [
+        "strategy",
+        "bundle_sha256",
+        "bundle_name",
+        "bundle_ts",
+        "ingest_ts",
+        "source_path_inside_bundle",
+        "schema_version",
+        "generated_at",
+        "runtime_scope",
+        "symbol",
+        "order_leg",
+        "side",
+        "order_id",
+        "cl_ord_id",
+        "trade_ids",
+        "fill_count",
+        "first_fill_ts",
+        "last_fill_ts",
+        "liquidity_role",
+        "fill_notional_usdt",
+        "fee_currency",
+        "fill_fee_raw",
+        "fill_fee_usdt",
+        "bill_ids",
+        "bill_fee_usdt",
+        "selected_fee_usdt",
+        "rebate_usdt",
+        "fee_diff_usdt",
+        "fee_missing_count",
+        "bill_delay_seconds",
+        "bill_match_status",
+        "cost_evidence_status",
+        "cost_source",
+        "fee_complete",
+        "raw_payload_json",
+        "stable_row_key",
+    ],
     "v5/v5_cost_probe_live_execution_status_canonical.csv": [
         "strategy",
         "bundle_sha256",
@@ -3714,6 +3879,267 @@ CSV_SCHEMAS["reports/bnb_paper_strategy_daily.csv"] = list(
     )
 )
 
+_V5_PAPER_TELEMETRY_ENVELOPE_FIELDS = [
+    "strategy",
+    "bundle_sha256",
+    "bundle_name",
+    "bundle_ts",
+    "ingest_ts",
+    "source_path_inside_bundle",
+    "row_index",
+    "run_id",
+]
+_V5_PAPER_TELEMETRY_AUDIT_FIELDS = ["raw_payload_json", "stable_row_key"]
+CSV_SCHEMAS.update(
+    {
+        "v5/v5_paper_strategy_proposal_ack.csv": [
+            *_V5_PAPER_TELEMETRY_ENVELOPE_FIELDS,
+            "proposal_id",
+            "proposal_hash",
+            "paper_tracker_id",
+            "tracker_id",
+            "accepted",
+            "accepted_at",
+            "paper_only",
+            "max_live_notional_usdt",
+            "recommended_mode",
+            "symbol",
+            "strategy_candidate",
+            "strategy_version",
+            "suggested_horizon",
+            "proposal_source",
+            "reject_reason",
+            "contract_version",
+            "rules_locked",
+            "live_order_effect",
+            "expires_at",
+            "source_v5_commit",
+            "source_v5_bundle_sha256",
+            "schema_version",
+            *_V5_PAPER_TELEMETRY_AUDIT_FIELDS,
+        ],
+        "v5/v5_paper_strategy_registry.csv": [
+            *_V5_PAPER_TELEMETRY_ENVELOPE_FIELDS,
+            "schema_version",
+            "proposal_id",
+            "proposal_hash",
+            "tracker_id",
+            "strategy_id",
+            "strategy_version",
+            "strategy_family",
+            "symbol",
+            "timeframe",
+            "state",
+            "rules_locked",
+            "paper_only",
+            "live_order_effect",
+            "created_at",
+            "updated_at",
+            *_V5_PAPER_TELEMETRY_AUDIT_FIELDS,
+        ],
+        "v5/v5_paper_strategy_state.csv": [
+            *_V5_PAPER_TELEMETRY_ENVELOPE_FIELDS,
+            "schema_version",
+            "tracker_id",
+            "proposal_id",
+            "strategy_id",
+            "symbol",
+            "state",
+            "paper_trade_id",
+            "open_paper_position",
+            "cooldown_remaining_bars",
+            "last_processed_bar_ts",
+            "updated_at",
+            *_V5_PAPER_TELEMETRY_AUDIT_FIELDS,
+        ],
+        "v5/v5_paper_strategy_signals.csv": [
+            *_V5_PAPER_TELEMETRY_ENVELOPE_FIELDS,
+            "schema_version",
+            "signal_id",
+            "proposal_id",
+            "tracker_id",
+            "strategy_id",
+            "strategy_version",
+            "symbol",
+            "signal_ts",
+            "decision_ts",
+            "signal_type",
+            "triggered",
+            "observability",
+            "arrival_bid",
+            "arrival_ask",
+            "arrival_mid",
+            "spread_bps",
+            "quote_timestamp",
+            "quote_age_seconds",
+            "price_source",
+            "fallback_level",
+            "valid_for_promotion",
+            *_V5_PAPER_TELEMETRY_AUDIT_FIELDS,
+        ],
+        "v5/v5_paper_strategy_runs.csv": list(
+            dict.fromkeys(
+                [
+                    *_V5_PAPER_TELEMETRY_ENVELOPE_FIELDS,
+                    "schema_version",
+                    "paper_trade_id",
+                    "proposal_id",
+                    "strategy_id",
+                    "strategy_version",
+                    "symbol",
+                    "direction",
+                    "entry_signal_ts",
+                    "entry_decision_ts",
+                    "entry_arrival_mid",
+                    "entry_bid",
+                    "entry_ask",
+                    "virtual_entry_price",
+                    "paper_notional",
+                    "virtual_quantity",
+                    "exit_signal_ts",
+                    "exit_decision_ts",
+                    "exit_arrival_mid",
+                    "virtual_exit_price",
+                    "fee_estimate",
+                    "slippage_estimate",
+                    "total_cost_bps",
+                    "gross_pnl_bps",
+                    "net_pnl_bps",
+                    "max_favorable_excursion",
+                    "max_adverse_excursion",
+                    "holding_bars",
+                    "exit_reason",
+                    "cost_source",
+                    "required_cost_trust_level",
+                    "cost_trust_level",
+                    "cost_model_version",
+                    "market_regime",
+                    "spread_bps",
+                    "quote_timestamp",
+                    "quote_age_seconds",
+                    "price_source",
+                    "fallback_level",
+                    "real_permission_would_allow",
+                    "real_mode_would_allow",
+                    "real_cost_canary_ready",
+                    "real_funds_sufficient",
+                    "valid_for_promotion",
+                    "opened_at",
+                    "closed_at",
+                    "ts_utc",
+                    "as_of_date",
+                    "paper_tracker_id",
+                    "strategy_candidate",
+                    "recommended_mode",
+                    "board_decision",
+                    "suggested_horizon",
+                    "horizon_hours",
+                    "would_enter",
+                    "would_exit",
+                    "would_size",
+                    "would_size_usdt",
+                    "paper_source",
+                    "paper_count_scope",
+                    "paper_pnl_bps",
+                    "paper_pnl_usdt",
+                    "estimated_spread_bps",
+                    *_V5_PAPER_TELEMETRY_AUDIT_FIELDS,
+                ]
+            )
+        ),
+        "v5/v5_paper_strategy_daily.csv": [
+            *_V5_PAPER_TELEMETRY_ENVELOPE_FIELDS,
+            "schema_version",
+            "paper_date",
+            "proposal_id",
+            "paper_tracker_id",
+            "strategy_id",
+            "symbol",
+            "paper_days",
+            "heartbeat_day_count",
+            "entry_day_count",
+            "daily_would_enter_count",
+            "cumulative_would_enter_count",
+            "would_enter_count",
+            "closed_entries",
+            "daily_paper_pnl_observed_count",
+            "cumulative_paper_pnl_observed_count",
+            "paper_pnl_observed_count",
+            "paper_pnl_day_count",
+            "avg_paper_pnl_bps",
+            "arrival_mid_coverage",
+            "spread_observation_coverage",
+            "cost_source_mix",
+            "created_at",
+            *_V5_PAPER_TELEMETRY_AUDIT_FIELDS,
+        ],
+        "v5/v5_paper_strategy_quote_coverage.csv": [
+            *_V5_PAPER_TELEMETRY_ENVELOPE_FIELDS,
+            "schema_version",
+            "proposal_id",
+            "strategy_id",
+            "symbol",
+            "candidate_signal_count",
+            "observable_quote_count",
+            "arrival_mid_coverage",
+            "stale_quote_rate",
+            "quote_fallback_rate",
+            "target_coverage",
+            *_V5_PAPER_TELEMETRY_AUDIT_FIELDS,
+        ],
+        "v5/v5_paper_strategy_cost_evidence.csv": [
+            *_V5_PAPER_TELEMETRY_ENVELOPE_FIELDS,
+            "schema_version",
+            "proposal_id",
+            "strategy_id",
+            "symbol",
+            "required_cost_trust_level",
+            "closed_trade_count",
+            "cost_observed_count",
+            "cost_source",
+            "cost_trust_level",
+            "valid_for_live_coverage",
+            *_V5_PAPER_TELEMETRY_AUDIT_FIELDS,
+        ],
+        "v5/v5_paper_strategy_errors.csv": [
+            *_V5_PAPER_TELEMETRY_ENVELOPE_FIELDS,
+            "schema_version",
+            "ts_utc",
+            "proposal_id",
+            "error_code",
+            "error_type",
+            "error_message",
+            "live_order_effect",
+            *_V5_PAPER_TELEMETRY_AUDIT_FIELDS,
+        ],
+        "v5/v5_paper_strategy_restart_recovery.csv": [
+            *_V5_PAPER_TELEMETRY_ENVELOPE_FIELDS,
+            "recovered_at",
+            "tracker_id",
+            "proposal_id",
+            "state",
+            "open_trade_preserved",
+            "schema_version",
+            *_V5_PAPER_TELEMETRY_AUDIT_FIELDS,
+        ],
+        "v5/v5_quant_lab_contract_status.csv": [
+            *_V5_PAPER_TELEMETRY_ENVELOPE_FIELDS,
+            "schema_version",
+            "contract_version",
+            "paper_runtime_enabled",
+            "paper_runtime_live_order_effect",
+            "quant_lab_mode",
+            "canary_enabled",
+            "active_tracker_count",
+            "open_paper_position_count",
+            "real_order_calls",
+            "real_position_mutations",
+            "generated_at",
+            *_V5_PAPER_TELEMETRY_AUDIT_FIELDS,
+        ],
+    }
+)
+
 _MemberPayload = str | bytes
 
 
@@ -3801,6 +4227,60 @@ def _publish_strategy_opportunity_advisory_snapshot(
             "bottom_zone_reversal_shadow": derived["bottom_zone_reversal_shadow"],
             "fast_microstructure_forward_test": derived["fast_microstructure_forward_test"],
         },
+    )
+
+
+PAPER_PIPELINE_EXPORT_DATASETS = (
+    "paper_strategy_proposal",
+    "paper_strategy_registry",
+    "paper_strategy_promotion_gate",
+    "paper_strategy_migration_audit",
+    "strategy_cost_trust",
+)
+
+
+def _publish_paper_strategy_pipeline_snapshot(
+    root: Path,
+    snapshot: _DatasetSnapshot,
+    day: date,
+) -> _DatasetSnapshot:
+    frames = dict(snapshot.frames)
+    row_counts = dict(snapshot.row_counts)
+    warnings = [
+        warning
+        for warning in snapshot.warnings
+        if not any(
+            warning.startswith(f"{dataset_name} dataset is ")
+            or warning.startswith(f"{dataset_name} read failed:")
+            or warning.startswith(f"{dataset_name} sampled read failed:")
+            for dataset_name in PAPER_PIPELINE_EXPORT_DATASETS
+        )
+    ]
+    try:
+        build_and_publish_paper_strategy_pipeline(root, as_of_date=day)
+    except Exception as exc:
+        warnings.append(
+            "paper_strategy_pipeline publish skipped: "
+            f"{type(exc).__name__}: {_safe_warning_text(str(exc))}"
+        )
+        return _DatasetSnapshot(
+            frames=frames,
+            row_counts=row_counts,
+            warnings=warnings,
+            transient_frames=snapshot.transient_frames,
+        )
+
+    for dataset_name in PAPER_PIPELINE_EXPORT_DATASETS:
+        frame, row_count, warning = _load_export_frame(root, dataset_name)
+        frames[dataset_name] = frame
+        row_counts[dataset_name] = row_count
+        if warning:
+            warnings.append(warning)
+    return _DatasetSnapshot(
+        frames=frames,
+        row_counts=row_counts,
+        warnings=warnings,
+        transient_frames=snapshot.transient_frames,
     )
 
 
@@ -4569,6 +5049,13 @@ def export_daily_pack(
     _record_export_stage(
         export_stage_timings,
         "publish_strategy_opportunity_advisory",
+        stage_started,
+    )
+    stage_started = _export_stage_start("publish_paper_strategy_pipeline")
+    snapshot = _publish_paper_strategy_pipeline_snapshot(root, snapshot, day)
+    _record_export_stage(
+        export_stage_timings,
+        "publish_paper_strategy_pipeline",
         stage_started,
     )
     stage_started = _export_stage_start("publish_trade_level_judgment")
@@ -5729,6 +6216,7 @@ def _dataset_members(
         proposal_ack=frames.get("v5_paper_strategy_proposal_ack", pl.DataFrame()),
         runs=paper_runs,
         daily=paper_daily,
+        strategy_cost_trust=frames.get("strategy_cost_trust", pl.DataFrame()),
         created_at=export_reference_at,
     )
     paper_strategy_registry = _stable_paper_strategy_lifecycle_frame(
@@ -5744,6 +6232,10 @@ def _dataset_members(
     paper_strategy_proposal_ack = _paper_strategy_proposal_ack_for_export(
         frames.get("v5_paper_strategy_proposal_ack", pl.DataFrame()),
         paper_strategy_registry=paper_strategy_registry,
+    )
+    paper_strategy_migration_audit = frames.get(
+        "paper_strategy_migration_audit",
+        pl.DataFrame(),
     )
     strategy_regime_matrix = frames.get("strategy_regime_matrix", pl.DataFrame())
     regime_strategy_advisory = frames.get("regime_strategy_advisory", pl.DataFrame())
@@ -5878,6 +6370,42 @@ def _dataset_members(
     v5_compliance = frames.get("v5_quant_lab_compliance", pl.DataFrame())
     v5_cost_usage = frames.get("v5_quant_lab_cost_usage", pl.DataFrame())
     v5_fallbacks = _dedupe_v5_event_frame(frames.get("v5_quant_lab_fallback", pl.DataFrame()))
+    v5_fill_bill_cost_reconciliation = frames.get(
+        "v5_fill_bill_cost_reconciliation",
+        pl.DataFrame(),
+    )
+    v5_paper_strategy_proposal_ack = frames.get(
+        "v5_paper_strategy_proposal_ack",
+        pl.DataFrame(),
+    )
+    v5_paper_strategy_registry = frames.get(
+        "v5_paper_strategy_registry",
+        pl.DataFrame(),
+    )
+    v5_paper_strategy_state = frames.get("v5_paper_strategy_state", pl.DataFrame())
+    v5_paper_strategy_signals = frames.get(
+        "v5_paper_strategy_signal",
+        pl.DataFrame(),
+    )
+    v5_paper_strategy_runs = frames.get("v5_paper_strategy_run", pl.DataFrame())
+    v5_paper_strategy_daily = frames.get("v5_paper_strategy_daily", pl.DataFrame())
+    v5_paper_strategy_quote_coverage = frames.get(
+        "v5_paper_strategy_quote_coverage",
+        pl.DataFrame(),
+    )
+    v5_paper_strategy_cost_evidence = frames.get(
+        "v5_paper_strategy_cost_evidence",
+        pl.DataFrame(),
+    )
+    v5_paper_strategy_errors = frames.get("v5_paper_strategy_error", pl.DataFrame())
+    v5_paper_strategy_restart_recovery = frames.get(
+        "v5_paper_strategy_restart_recovery",
+        pl.DataFrame(),
+    )
+    v5_quant_lab_contract_status = frames.get(
+        "v5_quant_lab_contract_status",
+        pl.DataFrame(),
+    )
     v5_cost_probe_p3_preflight = frames.get("v5_cost_probe_p3_preflight", pl.DataFrame())
     v5_cost_probe_live_execution_status = _dedupe_stable_row_key_frame(
         frames.get(
@@ -5919,6 +6447,29 @@ def _dataset_members(
     opportunity_cost_daily = frames.get("quant_lab_opportunity_cost_daily", pl.DataFrame())
     opportunity_cost_by_bucket = frames.get("opportunity_cost_by_bucket", pl.DataFrame())
     decision_regret = frames.get("quant_lab_decision_regret", pl.DataFrame())
+    gate_candidate_effectiveness = build_gate_effectiveness_report(
+        opportunity_cost_events,
+        evaluation_level="candidate_event",
+        dedupe_field="strategy_evaluation_id",
+    )
+    gate_independent_event_effectiveness = build_gate_effectiveness_report(
+        opportunity_cost_events,
+        evaluation_level="independent_market_event",
+        dedupe_field="canonical_event_id",
+    )
+    gate_paper_trade_effectiveness = build_gate_effectiveness_report(
+        paper_runs,
+        evaluation_level="paper_trade",
+        dedupe_field="paper_trade_id",
+    )
+    gate_live_trade_effectiveness = build_gate_effectiveness_report(
+        v5_trade_outcome_attribution,
+        evaluation_level="v5_live_trade",
+        dedupe_field="roundtrip_id",
+    )
+    duplicate_event_report = _duplicate_event_report(opportunity_cost_events)
+    duplicate_factor_report = _duplicate_factor_report(factor_definitions)
+    strategy_cost_trust = frames.get("strategy_cost_trust", pl.DataFrame())
     v5_candidate_quality = frames.get("v5_candidate_quality_daily", pl.DataFrame())
     v5_candidate_outcomes = frames.get("v5_candidate_outcome_summary", pl.DataFrame())
     v5_expanded_universe_advisory_reader = frames.get(
@@ -6296,6 +6847,34 @@ def _dataset_members(
             "reports/opportunity_cost_by_bucket.csv",
             opportunity_cost_by_bucket,
         ),
+        "reports/gate_candidate_level_effectiveness.csv": _csv_member(
+            "reports/gate_candidate_level_effectiveness.csv",
+            gate_candidate_effectiveness,
+        ),
+        "reports/gate_independent_event_effectiveness.csv": _csv_member(
+            "reports/gate_independent_event_effectiveness.csv",
+            gate_independent_event_effectiveness,
+        ),
+        "reports/gate_paper_trade_effectiveness.csv": _csv_member(
+            "reports/gate_paper_trade_effectiveness.csv",
+            gate_paper_trade_effectiveness,
+        ),
+        "reports/gate_live_trade_effectiveness.csv": _csv_member(
+            "reports/gate_live_trade_effectiveness.csv",
+            gate_live_trade_effectiveness,
+        ),
+        "reports/duplicate_event_report.csv": _csv_member(
+            "reports/duplicate_event_report.csv",
+            duplicate_event_report,
+        ),
+        "reports/duplicate_factor_report.csv": _csv_member(
+            "reports/duplicate_factor_report.csv",
+            duplicate_factor_report,
+        ),
+        "reports/strategy_cost_trust.csv": _csv_member(
+            "reports/strategy_cost_trust.csv",
+            strategy_cost_trust,
+        ),
         "reports/quant_lab_decision_regret.csv": _csv_member(
             "reports/quant_lab_decision_regret.csv",
             _tail_by_time(decision_regret, "decision_ts", limit=50_000),
@@ -6547,6 +7126,10 @@ def _dataset_members(
             "reports/paper_strategy_promotion_gate.csv",
             paper_strategy_promotion_gate,
         ),
+        "reports/paper_strategy_migration_audit.csv": _csv_member(
+            "reports/paper_strategy_migration_audit.csv",
+            paper_strategy_migration_audit,
+        ),
         "reports/bnb_paper_strategy_runs.csv": _csv_member(
             "reports/bnb_paper_strategy_runs.csv",
             bnb_paper_runs,
@@ -6735,6 +7318,62 @@ def _dataset_members(
             "v5/v5_quant_lab_cost_usage.csv", v5_cost_usage
         ),
         "v5/v5_quant_lab_fallbacks.csv": _csv_member("v5/v5_quant_lab_fallbacks.csv", v5_fallbacks),
+        "v5/v5_fill_bill_cost_reconciliation.csv": _csv_member(
+            "v5/v5_fill_bill_cost_reconciliation.csv",
+            _tail_by_time(
+                v5_fill_bill_cost_reconciliation,
+                "last_fill_ts",
+                limit=50_000,
+            ),
+        ),
+        "v5/v5_paper_strategy_proposal_ack.csv": _csv_member(
+            "v5/v5_paper_strategy_proposal_ack.csv",
+            _tail_by_time(v5_paper_strategy_proposal_ack, "accepted_at", limit=20_000),
+        ),
+        "v5/v5_paper_strategy_registry.csv": _csv_member(
+            "v5/v5_paper_strategy_registry.csv",
+            _tail_by_time(v5_paper_strategy_registry, "updated_at", limit=20_000),
+        ),
+        "v5/v5_paper_strategy_state.csv": _csv_member(
+            "v5/v5_paper_strategy_state.csv",
+            _tail_by_time(v5_paper_strategy_state, "updated_at", limit=20_000),
+        ),
+        "v5/v5_paper_strategy_signals.csv": _csv_member(
+            "v5/v5_paper_strategy_signals.csv",
+            _tail_by_time(v5_paper_strategy_signals, "decision_ts", limit=50_000),
+        ),
+        "v5/v5_paper_strategy_runs.csv": _csv_member(
+            "v5/v5_paper_strategy_runs.csv",
+            _tail_by_time(v5_paper_strategy_runs, "closed_at", limit=50_000),
+        ),
+        "v5/v5_paper_strategy_daily.csv": _csv_member(
+            "v5/v5_paper_strategy_daily.csv",
+            _tail_by_time(v5_paper_strategy_daily, "created_at", limit=50_000),
+        ),
+        "v5/v5_paper_strategy_quote_coverage.csv": _csv_member(
+            "v5/v5_paper_strategy_quote_coverage.csv",
+            _tail_by_time(v5_paper_strategy_quote_coverage, "ingest_ts", limit=20_000),
+        ),
+        "v5/v5_paper_strategy_cost_evidence.csv": _csv_member(
+            "v5/v5_paper_strategy_cost_evidence.csv",
+            _tail_by_time(v5_paper_strategy_cost_evidence, "ingest_ts", limit=20_000),
+        ),
+        "v5/v5_paper_strategy_errors.csv": _csv_member(
+            "v5/v5_paper_strategy_errors.csv",
+            _tail_by_time(v5_paper_strategy_errors, "ts_utc", limit=20_000),
+        ),
+        "v5/v5_paper_strategy_restart_recovery.csv": _csv_member(
+            "v5/v5_paper_strategy_restart_recovery.csv",
+            _tail_by_time(
+                v5_paper_strategy_restart_recovery,
+                "recovered_at",
+                limit=20_000,
+            ),
+        ),
+        "v5/v5_quant_lab_contract_status.csv": _csv_member(
+            "v5/v5_quant_lab_contract_status.csv",
+            _tail_by_time(v5_quant_lab_contract_status, "generated_at", limit=20_000),
+        ),
         "v5/v5_cost_probe_p3_preflight.csv": _csv_member(
             "v5/v5_cost_probe_p3_preflight.csv",
             _tail_by_time(v5_cost_probe_p3_preflight, "generated_at_utc", limit=10_000),
@@ -9687,9 +10326,7 @@ def _cost_bootstrap_readiness_question(readiness: pl.DataFrame) -> str:
         "cost_bootstrap_readiness 仍无 trusted coverage；"
         f"{bill_detail}；{bootstrap_detail}；"
         "不要重复已完成的成本探针，下一步按 next_action 增加真实/混合 live 样本与策略证据。"
-        "states="
-        + ",".join(states[:6])
-        + action_detail
+        "states=" + ",".join(states[:6]) + action_detail
     )
 
 
@@ -10555,6 +11192,14 @@ def _paper_strategy_proposals_for_export(
     path = "reports/paper_strategy_proposals.csv"
     if board.is_empty() or "decision" not in board.columns:
         return _empty_csv_schema_frame(path)
+    from quant_lab.paper.proposals import build_configured_proposals, proposal_export_rows
+
+    configured = build_configured_proposals(board)
+    if configured:
+        return _csv_frame_with_schema(
+            pl.DataFrame(proposal_export_rows(configured), infer_schema_length=None),
+            CSV_SCHEMAS[path],
+        )
     portfolio_overrides = _portfolio_status_overrides_by_candidate_symbol(
         research_portfolio if research_portfolio is not None else pl.DataFrame()
     )
@@ -10610,7 +11255,7 @@ def _paper_strategy_proposals_for_export(
             ),
         )
     ]
-    return pl.DataFrame(proposals).select(CSV_SCHEMAS[path])
+    return _csv_frame_with_schema(pl.DataFrame(proposals), CSV_SCHEMAS[path])
 
 
 def _paper_strategy_proposal_ack_for_export(
@@ -10621,8 +11266,7 @@ def _paper_strategy_proposal_ack_for_export(
     path = "reports/paper_strategy_proposal_ack.csv"
     rows: list[dict[str, Any]] = []
     rows.extend(
-        _paper_strategy_ack_report_row(row, from_registry=False)
-        for row in _rows(proposal_ack)
+        _paper_strategy_ack_report_row(row, from_registry=False) for row in _rows(proposal_ack)
     )
     for row in _rows(paper_strategy_registry):
         if not _paper_strategy_registry_row_has_ack_evidence(row):
@@ -10699,17 +11343,15 @@ def _paper_strategy_ack_report_row(
         "accepted_at": _ack_text(
             row.get("accepted_at") or row.get("ingest_ts") or row.get("created_at")
         ),
-        "recommended_mode": _ack_text(row.get("recommended_mode")) or (
-            "paper" if _paper_only_ack_row(row) else ""
-        ),
+        "recommended_mode": _ack_text(row.get("recommended_mode"))
+        or ("paper" if _paper_only_ack_row(row) else ""),
         "symbol": normalize_symbol(row.get("symbol")) or _ack_text(row.get("symbol")),
         "strategy_candidate": _ack_text(row.get("strategy_candidate")),
         "suggested_horizon": _ack_text(row.get("suggested_horizon")),
         "proposal_source": _ack_text(row.get("proposal_source"))
         or ("paper_strategy_registry" if from_registry else "v5_paper_strategy_proposal_ack"),
         "reject_reason": _ack_text(row.get("reject_reason")),
-        "live_order_effect": _ack_text(row.get("live_order_effect"))
-        or "paper_only_no_live_order",
+        "live_order_effect": _ack_text(row.get("live_order_effect")) or "paper_only_no_live_order",
         "source_pack_sha256": _ack_text(row.get("source_pack_sha256")),
         "source_v5_bundle_sha256": _ack_text(
             row.get("source_v5_bundle_sha256")
@@ -10899,6 +11541,72 @@ def _paper_live_block_reasons(row: dict[str, Any]) -> list[str]:
         reasons.append("no_paper_days")
     reasons.append("no_live_slippage_coverage")
     return reasons
+
+
+def _duplicate_event_report(events: pl.DataFrame) -> pl.DataFrame:
+    path = "reports/duplicate_event_report.csv"
+    if events.is_empty() or "canonical_event_id" not in events.columns:
+        return _empty_csv_schema_frame(path)
+    grouped: dict[str, list[dict[str, Any]]] = {}
+    for row in events.to_dicts():
+        event_id = str(row.get("canonical_event_id") or "").strip()
+        if event_id:
+            grouped.setdefault(event_id, []).append(row)
+    rows = []
+    for event_id, group in grouped.items():
+        strategies = sorted(
+            {
+                str(row.get("strategy_id") or row.get("strategy_candidate") or "")
+                for row in group
+                if str(row.get("strategy_id") or row.get("strategy_candidate") or "")
+            }
+        )
+        count = max(len(strategies), 1)
+        rows.append(
+            {
+                "canonical_event_id": event_id,
+                "strategy_evaluation_count": len(group),
+                "strategy_ids": safe_json_dumps(strategies),
+                "event_independence_weight": 1.0 / count,
+                "duplicate_evidence": len(group) > 1,
+            }
+        )
+    return _csv_frame_with_schema(
+        pl.DataFrame(rows, infer_schema_length=None) if rows else pl.DataFrame(),
+        CSV_SCHEMAS[path],
+    )
+
+
+def _duplicate_factor_report(factors: pl.DataFrame) -> pl.DataFrame:
+    path = "reports/duplicate_factor_report.csv"
+    if factors.is_empty() or "canonical_factor_id" not in factors.columns:
+        return _empty_csv_schema_frame(path)
+    grouped: dict[str, list[dict[str, Any]]] = {}
+    for row in factors.to_dicts():
+        canonical = str(row.get("canonical_factor_id") or "").strip()
+        if canonical:
+            grouped.setdefault(canonical, []).append(row)
+    rows = []
+    for canonical, group in grouped.items():
+        factor_ids = sorted({str(row.get("factor_id") or "") for row in group})
+        duplicate_ids = sorted(
+            str(row.get("factor_id") or "") for row in group if str(row.get("duplicate_of") or "")
+        )
+        rows.append(
+            {
+                "canonical_factor_id": canonical,
+                "factor_formula_hash": str(group[0].get("factor_formula_hash") or ""),
+                "operator_graph_hash": str(group[0].get("operator_graph_hash") or ""),
+                "factor_count": len(factor_ids),
+                "factor_ids": safe_json_dumps(factor_ids),
+                "duplicate_factor_ids": safe_json_dumps(duplicate_ids),
+                "effective_independence_weight": 1.0 / max(len(factor_ids), 1),
+            }
+        )
+    return _csv_frame_with_schema(
+        pl.DataFrame(rows, infer_schema_length=None) if rows else pl.DataFrame(),
+        CSV_SCHEMAS[path],
+    )
 
 
 def _lake_file_index_count(root: Path) -> int | None:

@@ -9,6 +9,8 @@ export function StrategyFlow({ flow }: { flow: Record<string, unknown> }) {
   ]);
   const factorFactory = (flow.factor_factory ?? {}) as Record<string, unknown>;
   const opportunityCost = (flow.opportunity_cost ?? {}) as Record<string, unknown>;
+  const paperLifecycle = (flow.paper_lifecycle ?? {}) as Record<string, unknown>;
+  const lifecycleCounts = (paperLifecycle.counts ?? {}) as Record<string, number>;
   const factorReviewQueue = safeRows(factorFactory.paper_review_queue);
   const bridgeRows = safeRows(factorFactory.strategy_bridge_candidates);
   const dedupeRows = safeRows(factorFactory.dedupe_decisions);
@@ -30,14 +32,16 @@ export function StrategyFlow({ flow }: { flow: Record<string, unknown> }) {
         <Metric label="Paper" value={counts.paper ?? 0} tone="green" />
         <Metric label="Kill" value={counts.kill ?? 0} tone="red" />
       </div>
-      <div className="flow-rail" aria-label="策略机会流阶段">
-        <span>Research</span>
-        <i />
-        <span>Shadow</span>
-        <i />
-        <span>Paper</span>
-        <i />
-        <span>Advisory</span>
+      <div className="paper-lifecycle" aria-label="Paper 策略生命周期">
+        <LifecycleStage label="提案就绪" value={lifecycleCounts.PAPER_PROPOSAL_READY} />
+        <LifecycleStage label="等待 ACK" value={lifecycleCounts.PAPER_ACK_PENDING} />
+        <LifecycleStage label="Tracker" value={lifecycleCounts.PAPER_TRACKER_ACTIVE} />
+        <LifecycleStage label="证据不足" value={lifecycleCounts.PAPER_EVIDENCE_INSUFFICIENT} />
+        <LifecycleStage label="晋级就绪" value={lifecycleCounts.PAPER_PROMOTION_READY} />
+        <span className="paper-lifecycle-mode">
+          <b>{stringValue(paperLifecycle.runtime_mode, "PAPER_ONLY")}</b>
+          <em>{stringValue(paperLifecycle.live_order_effect, "none")}</em>
+        </span>
       </div>
       <div className="strategy-research-grid">
         <div className="opportunity-cost-mini">
@@ -133,6 +137,15 @@ export function StrategyFlow({ flow }: { flow: Record<string, unknown> }) {
         />
       </div>
     </section>
+  );
+}
+
+function LifecycleStage({ label, value }: { label: string; value: number | undefined }) {
+  return (
+    <span className="paper-lifecycle-stage">
+      <b>{shortNumber(value ?? 0)}</b>
+      <em>{label}</em>
+    </span>
   );
 }
 

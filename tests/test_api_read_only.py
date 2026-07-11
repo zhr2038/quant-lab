@@ -12,7 +12,7 @@ from quant_lab.ops.api_metrics import (
 )
 
 
-def test_api_has_no_non_get_strategy_routes():
+def test_api_has_only_disabled_by_default_metadata_ack_write():
     business_methods = {"GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"}
     offending_routes = []
 
@@ -22,7 +22,7 @@ def test_api_has_no_non_get_strategy_routes():
             if explicit_business_methods != ["GET"]:
                 offending_routes.append((route.path, explicit_business_methods))
 
-    assert offending_routes == []
+    assert offending_routes == [("/v1/paper-strategy/ack", ["POST"])]
 
 
 def test_read_only_example_endpoints_and_catalog():

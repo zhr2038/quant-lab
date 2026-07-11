@@ -118,6 +118,9 @@ PAPER_RUN_REPORT_SCHEMA = {
 
 PAPER_RUN_SCHEMA = {
     "as_of_date": pl.Utf8,
+    "paper_trade_id": pl.Utf8,
+    "strategy_id": pl.Utf8,
+    "strategy_version": pl.Utf8,
     "proposal_id": pl.Utf8,
     "paper_tracker_id": pl.Utf8,
     "strategy_candidate": pl.Utf8,
@@ -150,10 +153,28 @@ PAPER_RUN_SCHEMA = {
     "arrival_bid": pl.Float64,
     "arrival_ask": pl.Float64,
     "arrival_mid": pl.Float64,
+    "entry_decision_ts": pl.Utf8,
+    "exit_decision_ts": pl.Utf8,
+    "quote_timestamp": pl.Utf8,
+    "quote_age_seconds": pl.Float64,
     "estimated_spread_bps": pl.Float64,
     "expected_order_type": pl.Utf8,
     "estimated_fill_px": pl.Float64,
+    "virtual_entry_price": pl.Float64,
+    "virtual_exit_price": pl.Float64,
+    "virtual_quantity": pl.Float64,
     "cost_source": pl.Utf8,
+    "cost_trust_level": pl.Utf8,
+    "market_regime": pl.Utf8,
+    "exit_reason": pl.Utf8,
+    "gross_pnl_bps": pl.Float64,
+    "net_pnl_bps": pl.Float64,
+    "max_favorable_excursion": pl.Float64,
+    "max_adverse_excursion": pl.Float64,
+    "holding_bars": pl.Int64,
+    "observability": pl.Utf8,
+    "not_observable_reason": pl.Utf8,
+    "valid_for_promotion": pl.Boolean,
     "paper_tracking_status": pl.Utf8,
     "tracking_stage": pl.Utf8,
     "sample_count": pl.Int64,
@@ -172,6 +193,7 @@ PAPER_RUN_SCHEMA = {
 
 PAPER_DAILY_SCHEMA = {
     "as_of_date": pl.Utf8,
+    "source_schema_version": pl.Utf8,
     "proposal_id": pl.Utf8,
     "paper_tracker_id": pl.Utf8,
     "strategy_candidate": pl.Utf8,
@@ -323,9 +345,7 @@ def build_and_publish_paper_strategy_tracking(
     board = read_parquet_dataset(root / ALPHA_DISCOVERY_BOARD_DATASET)
     day = _resolve_as_of_date(board, as_of_date)
     warnings: list[str] = []
-    v5_runs_raw = latest_v5_paper_frame(
-        read_parquet_dataset(root / V5_PAPER_STRATEGY_RUN_DATASET)
-    )
+    v5_runs_raw = latest_v5_paper_frame(read_parquet_dataset(root / V5_PAPER_STRATEGY_RUN_DATASET))
     v5_daily_raw = latest_v5_paper_frame(
         read_parquet_dataset(root / V5_PAPER_STRATEGY_DAILY_DATASET)
     )
@@ -539,12 +559,8 @@ def _daily_from_runs(runs: pl.DataFrame, *, as_of_date: date) -> pl.DataFrame:
         )
         run_rows = group["rows"]
         entry_rows = [row for row in run_rows if bool(row.get("would_enter")) is True]
-        v5_entry_rows = [
-            row for row in entry_rows if _paper_source(row) == "v5_telemetry"
-        ]
-        synthetic_entry_rows = [
-            row for row in entry_rows if _paper_source(row) != "v5_telemetry"
-        ]
+        v5_entry_rows = [row for row in entry_rows if _paper_source(row) == "v5_telemetry"]
+        synthetic_entry_rows = [row for row in entry_rows if _paper_source(row) != "v5_telemetry"]
         if not run_rows:
             continue
         run_rows.sort(key=lambda row: str(row.get("as_of_date") or ""))
@@ -555,9 +571,7 @@ def _daily_from_runs(runs: pl.DataFrame, *, as_of_date: date) -> pl.DataFrame:
         ]
         heartbeat_days = _heartbeat_day_count(run_rows)
         entry_days = len({str(row.get("as_of_date") or "") for row in entry_rows})
-        daily_entry_rows = [
-            row for row in daily_run_rows if bool(row.get("would_enter")) is True
-        ]
+        daily_entry_rows = [row for row in daily_run_rows if bool(row.get("would_enter")) is True]
         daily_v5_entry_rows = [
             row for row in daily_entry_rows if _paper_source(row) == "v5_telemetry"
         ]
@@ -643,8 +657,7 @@ def _daily_from_runs(runs: pl.DataFrame, *, as_of_date: date) -> pl.DataFrame:
                 if pnl_rows
                 else None,
                 "cumulative_paper_pnl_usdt": sum(
-                    _optional_float(row.get("paper_pnl_usdt")) or 0.0
-                    for row in pnl_rows
+                    _optional_float(row.get("paper_pnl_usdt")) or 0.0 for row in pnl_rows
                 ),
                 "avg_paper_pnl_bps": _mean(
                     value for row in pnl_rows for value in _paper_pnl_bps_values(row)
@@ -697,9 +710,7 @@ def build_paper_slippage_coverage(
         paper_days = int(_optional_float(row.get("paper_days")) or 0)
         required = max(paper_days, 1)
         arrival_mid_coverage = _optional_float(row.get("arrival_mid_coverage")) or 0.0
-        spread_observation_coverage = (
-            _optional_float(row.get("spread_observation_coverage")) or 0.0
-        )
+        spread_observation_coverage = _optional_float(row.get("spread_observation_coverage")) or 0.0
         coverage = min(arrival_mid_coverage, spread_observation_coverage)
         observed = int(round(coverage * required))
         rows.append(
@@ -712,9 +723,7 @@ def build_paper_slippage_coverage(
                 "observed_slippage_count": observed,
                 "required_observation_count": required,
                 "paper_slippage_coverage": coverage,
-                "required_slippage_coverage": _optional_float(
-                    row.get("required_slippage_coverage")
-                )
+                "required_slippage_coverage": _optional_float(row.get("required_slippage_coverage"))
                 or 0.8,
                 "arrival_mid_coverage": arrival_mid_coverage,
                 "spread_observation_coverage": spread_observation_coverage,
@@ -847,10 +856,14 @@ def build_paper_strategy_runs_from_v5(
     created_at = datetime.now(UTC).isoformat()
     portfolio_frame = research_portfolio if research_portfolio is not None else pl.DataFrame()
     portfolio_overrides = _paper_portfolio_overrides(portfolio_frame)
-    rows = [
-        _v5_run_row(row, created_at, portfolio_overrides=portfolio_overrides)
-        for row in frame.to_dicts()
-    ] if not frame.is_empty() else []
+    rows = (
+        [
+            _v5_run_row(row, created_at, portfolio_overrides=portfolio_overrides)
+            for row in frame.to_dicts()
+        ]
+        if not frame.is_empty()
+        else []
+    )
     rows.extend(_sol_f4_factor_candidate_run_rows(candidate_frame, created_at, rows))
     rows.extend(_bnb_paper_candidate_run_rows(candidate_frame, created_at, rows))
     if not rows:
@@ -870,10 +883,14 @@ def build_paper_strategy_runs_report_from_v5(
     created_at = datetime.now(UTC).isoformat()
     portfolio_frame = research_portfolio if research_portfolio is not None else pl.DataFrame()
     portfolio_overrides = _paper_portfolio_overrides(portfolio_frame)
-    rows = [
-        _v5_run_report_row(row, created_at, portfolio_overrides=portfolio_overrides)
-        for row in frame.to_dicts()
-    ] if not frame.is_empty() else []
+    rows = (
+        [
+            _v5_run_report_row(row, created_at, portfolio_overrides=portfolio_overrides)
+            for row in frame.to_dicts()
+        ]
+        if not frame.is_empty()
+        else []
+    )
     rows.extend(_sol_f4_factor_candidate_report_rows(candidate_frame, created_at, rows))
     rows.extend(_bnb_paper_candidate_report_rows(candidate_frame, created_at, rows))
     if not rows:
@@ -935,8 +952,7 @@ def paper_strategy_summary_md(daily: pl.DataFrame) -> str:
         int(_optional_float(row.get("cumulative_would_enter_count")) or 0) for row in display_rows
     )
     daily_pnl = sum(
-        int(_optional_float(row.get("daily_paper_pnl_observed_count")) or 0)
-        for row in display_rows
+        int(_optional_float(row.get("daily_paper_pnl_observed_count")) or 0) for row in display_rows
     )
     cumulative_pnl = sum(
         int(_optional_float(row.get("cumulative_paper_pnl_observed_count")) or 0)
@@ -973,9 +989,7 @@ def paper_strategy_summary_md(daily: pl.DataFrame) -> str:
                     str(row.get("proposal_id") or row.get("strategy_candidate") or ""),
                     str(row.get("symbol") or ""),
                     str(int(_optional_float(row.get("daily_v5_entry_count")) or 0)),
-                    str(
-                        int(_optional_float(row.get("daily_synthetic_would_enter_count")) or 0)
-                    ),
+                    str(int(_optional_float(row.get("daily_synthetic_would_enter_count")) or 0)),
                     str(int(_optional_float(row.get("cumulative_would_enter_count")) or 0)),
                     str(int(_optional_float(row.get("daily_paper_pnl_observed_count")) or 0)),
                     str(int(_optional_float(row.get("cumulative_paper_pnl_observed_count")) or 0)),
@@ -1098,6 +1112,9 @@ def enrich_paper_strategy_daily_from_runs(
             if metric:
                 break
         updated = dict(row)
+        authoritative_daily = (
+            str(updated.get("source_schema_version") or "") == "v5.generic_paper_runtime.v1"
+        )
         row_as_of_date = str(updated.get("as_of_date") or "")[:10]
         updated["daily_v5_entry_count"] = int(
             _optional_float(updated.get("daily_v5_entry_count"))
@@ -1110,7 +1127,13 @@ def enrich_paper_strategy_daily_from_runs(
             or 0
         )
         for field in metric_fields:
-            updated[field] = int(_optional_float(metric.get(field)) or 0)
+            existing_value = int(_optional_float(updated.get(field)) or 0)
+            metric_value = int(_optional_float(metric.get(field)) or 0)
+            updated[field] = (
+                max(existing_value, metric_value) if authoritative_daily else metric_value
+            )
+        if not updated.get("strategy_candidate") and metric.get("strategy_candidate"):
+            updated["strategy_candidate"] = metric.get("strategy_candidate")
         if row_as_of_date != as_of_date.isoformat():
             updated["daily_synthetic_would_enter_count"] = 0
         if metric:
@@ -1119,12 +1142,9 @@ def enrich_paper_strategy_daily_from_runs(
                 existing_cumulative_v5_count,
                 int(metric_v5_count or 0),
             )
-            total_would_enter_count = (
-                int(_optional_float(updated.get("cumulative_v5_entry_count")) or 0)
-                + int(
-                    _optional_float(updated.get("cumulative_synthetic_would_enter_count")) or 0
-                )
-            )
+            total_would_enter_count = int(
+                _optional_float(updated.get("cumulative_v5_entry_count")) or 0
+            ) + int(_optional_float(updated.get("cumulative_synthetic_would_enter_count")) or 0)
             updated["cumulative_would_enter_count"] = total_would_enter_count
             updated["would_enter_count"] = total_would_enter_count
         for field in ["daily_would_enter_count", "daily_paper_pnl_observed_count"]:
@@ -1145,6 +1165,9 @@ def enrich_paper_strategy_daily_from_runs(
         ]:
             if metric.get(field) not in {None, ""}:
                 updated[field] = metric.get(field)
+        updated["missing_cost_source_count"] = (
+            1 if _is_missing_cost_source(updated.get("cost_source_mix")) else 0
+        )
         required_days = int(_optional_float(updated.get("required_paper_days")) or 14)
         required_entries = int(
             _optional_float(updated.get("required_entry_day_count"))
@@ -1181,9 +1204,7 @@ def enrich_paper_strategy_daily_from_runs(
                 ),
                 "complete_count_by_horizon": _json_dict(updated.get("complete_count_by_horizon")),
                 "avg_bps_by_horizon": _json_dict(updated.get("avg_paper_pnl_bps_by_horizon")),
-                "day_count_by_horizon": _json_dict(
-                    updated.get("paper_pnl_day_count_by_horizon")
-                ),
+                "day_count_by_horizon": _json_dict(updated.get("paper_pnl_day_count_by_horizon")),
             },
             paper_negative_streak=int(_optional_float(updated.get("paper_negative_streak")) or 0),
         )
@@ -1648,9 +1669,7 @@ def _bnb_paper_candidate_run_rows(
     rows: list[dict[str, Any]] = []
     for candidate in candidate_events.to_dicts():
         payload = _payload(candidate)
-        symbol = normalize_symbol(
-            _field(candidate, payload, "symbol", "normalized_symbol")
-        )
+        symbol = normalize_symbol(_field(candidate, payload, "symbol", "normalized_symbol"))
         if symbol != BNB_SYMBOL:
             continue
         for proposal_id, strategy_candidate in (
@@ -1698,9 +1717,7 @@ def _bnb_paper_candidate_report_rows(
     rows: list[dict[str, Any]] = []
     for candidate in candidate_events.to_dicts():
         payload = _payload(candidate)
-        symbol = normalize_symbol(
-            _field(candidate, payload, "symbol", "normalized_symbol")
-        )
+        symbol = normalize_symbol(_field(candidate, payload, "symbol", "normalized_symbol"))
         if symbol != BNB_SYMBOL:
             continue
         for proposal_id, strategy_candidate in (
@@ -1744,8 +1761,7 @@ def _bnb_existing_candidate_keys(
     for row in rows:
         proposal_id = str(row.get("proposal_id") or row.get("strategy_id") or "")
         if not (
-            _is_bnb_f3_tracking_row(proposal_id)
-            or proposal_id == BNB_RISK_ON_BUY_PAPER_PROPOSAL_ID
+            _is_bnb_f3_tracking_row(proposal_id) or proposal_id == BNB_RISK_ON_BUY_PAPER_PROPOSAL_ID
         ):
             continue
         if normalize_symbol(row.get("symbol")) != BNB_SYMBOL:
@@ -2010,9 +2026,11 @@ def _eth_f3_restore_block_reason(row: dict[str, Any], payload: dict[str, Any]) -
         return "eth_f3_f3_vol_adj_ret_not_positive_no_new_entry"
     if _optional_float(_field(row, payload, "final_score")) is None:
         return "eth_f3_final_score_missing_no_new_entry"
-    regime = str(
-        _field(row, payload, "current_regime", "regime_state", "market_regime") or ""
-    ).strip().upper()
+    regime = (
+        str(_field(row, payload, "current_regime", "regime_state", "market_regime") or "")
+        .strip()
+        .upper()
+    )
     if regime == "RISK_OFF":
         return "eth_f3_risk_off_no_new_entry"
     final_decision = str(_field(row, payload, "final_decision", "decision") or "").lower()
@@ -2052,6 +2070,8 @@ def _paper_source_for_run(
 
 def _paper_source(row: dict[str, Any]) -> str:
     source = str(row.get("paper_source") or "").strip()
+    if source == "generic_contract_runtime":
+        return "v5_telemetry"
     return source or "v5_telemetry"
 
 
@@ -2217,10 +2237,9 @@ def _v5_run_row(
         candidate,
         symbol,
     )
-    paper_tracker_id = (
-        _field(row, payload, "paper_tracker_id", "strategy_id")
-        or _paper_tracker_id_for(proposal_id, candidate, symbol)
-    )
+    paper_tracker_id = _field(
+        row, payload, "paper_tracker_id", "strategy_id"
+    ) or _paper_tracker_id_for(proposal_id, candidate, symbol)
     would_exit = _optional_bool(_field(row, payload, "would_exit", "exit")) is True
     raw_would_enter = _optional_bool(_field(row, payload, "would_enter", "enter")) is True
     enter_policy = _paper_entry_policy(
@@ -2256,6 +2275,9 @@ def _v5_run_row(
     source_candidate = _source_candidate_metadata(row, payload, str(symbol or ""))
     return {
         "as_of_date": _as_of_date(row, payload),
+        "paper_trade_id": _field(row, payload, "paper_trade_id"),
+        "strategy_id": _field(row, payload, "strategy_id"),
+        "strategy_version": _field(row, payload, "strategy_version"),
         "proposal_id": proposal_id,
         "paper_tracker_id": paper_tracker_id,
         "strategy_candidate": candidate,
@@ -2270,9 +2292,7 @@ def _v5_run_row(
         "would_exit": would_exit,
         "would_size": 0.0
         if not effective_would_enter
-        else _optional_float(
-            _field(row, payload, "would_size", "would_size_notional", "size")
-        )
+        else _optional_float(_field(row, payload, "would_size", "would_size_notional", "size"))
         or 0.0,
         "would_size_usdt": 0.0
         if not effective_would_enter
@@ -2305,9 +2325,19 @@ def _v5_run_row(
         "paper_pnl_bps_48h": paper_pnl_bps_48h,
         "paper_pnl_bps_72h": paper_pnl_bps_72h,
         "paper_pnl_usdt": paper_pnl_usdt,
-        "arrival_bid": _optional_float(_field(row, payload, "arrival_bid", "bid_at_arrival")),
-        "arrival_ask": _optional_float(_field(row, payload, "arrival_ask", "ask_at_arrival")),
-        "arrival_mid": _optional_float(_field(row, payload, "arrival_mid", "mid_at_arrival")),
+        "arrival_bid": _optional_float(
+            _field(row, payload, "arrival_bid", "entry_bid", "bid_at_arrival")
+        ),
+        "arrival_ask": _optional_float(
+            _field(row, payload, "arrival_ask", "entry_ask", "ask_at_arrival")
+        ),
+        "arrival_mid": _optional_float(
+            _field(row, payload, "arrival_mid", "entry_arrival_mid", "mid_at_arrival")
+        ),
+        "entry_decision_ts": _field(row, payload, "entry_decision_ts"),
+        "exit_decision_ts": _field(row, payload, "exit_decision_ts"),
+        "quote_timestamp": _field(row, payload, "quote_timestamp"),
+        "quote_age_seconds": _optional_float(_field(row, payload, "quote_age_seconds")),
         "estimated_spread_bps": _optional_float(
             _field(
                 row,
@@ -2326,8 +2356,18 @@ def _v5_run_row(
             "paper_order_type",
         ),
         "estimated_fill_px": _optional_float(
-            _field(row, payload, "estimated_fill_px", "estimated_fill_price", "paper_fill_px")
+            _field(
+                row,
+                payload,
+                "estimated_fill_px",
+                "estimated_fill_price",
+                "paper_fill_px",
+                "virtual_entry_price",
+            )
         ),
+        "virtual_entry_price": _optional_float(_field(row, payload, "virtual_entry_price")),
+        "virtual_exit_price": _optional_float(_field(row, payload, "virtual_exit_price")),
+        "virtual_quantity": _optional_float(_field(row, payload, "virtual_quantity")),
         "paper_tracking_status": _field(
             row,
             payload,
@@ -2348,6 +2388,26 @@ def _v5_run_row(
             row=row,
             payload=payload,
         ),
+        "cost_trust_level": _field(row, payload, "cost_trust_level"),
+        "market_regime": _field(row, payload, "market_regime"),
+        "exit_reason": _field(row, payload, "exit_reason"),
+        "gross_pnl_bps": _optional_float(_field(row, payload, "gross_pnl_bps")),
+        "net_pnl_bps": _optional_float(_field(row, payload, "net_pnl_bps")),
+        "max_favorable_excursion": _optional_float(_field(row, payload, "max_favorable_excursion")),
+        "max_adverse_excursion": _optional_float(_field(row, payload, "max_adverse_excursion")),
+        "holding_bars": int(_optional_float(_field(row, payload, "holding_bars")) or 0),
+        "observability": (
+            "OBSERVABLE"
+            if _optional_float(_field(row, payload, "arrival_mid", "entry_arrival_mid")) is not None
+            else _field(row, payload, "observability", default="NOT_OBSERVABLE")
+        ),
+        "not_observable_reason": _field(
+            row,
+            payload,
+            "not_observable_reason",
+            "no_sample_reason",
+        ),
+        "valid_for_promotion": _optional_bool(_field(row, payload, "valid_for_promotion")) is True,
         "cost_source_mix": _cost_source_with_live_safety_markers(
             _field(row, payload, "cost_source_mix"),
             row=row,
@@ -2375,10 +2435,9 @@ def _v5_daily_row(row: dict[str, Any], created_at: str) -> dict[str, Any]:
         candidate,
         symbol,
     )
-    paper_tracker_id = (
-        _field(row, payload, "paper_tracker_id", "strategy_id")
-        or _paper_tracker_id_for(proposal_id, candidate, symbol)
-    )
+    paper_tracker_id = _field(
+        row, payload, "paper_tracker_id", "strategy_id"
+    ) or _paper_tracker_id_for(proposal_id, candidate, symbol)
     raw_paper_days = int(
         _optional_float(_field(row, payload, "paper_days", "paper_days_to_date")) or 0
     )
@@ -2399,9 +2458,7 @@ def _v5_daily_row(row: dict[str, Any], created_at: str) -> dict[str, Any]:
     )
     cumulative_would_value = _optional_float(cumulative_would_raw)
     cumulative_would_enter_count = (
-        daily_would_enter_count
-        if cumulative_would_value is None
-        else int(cumulative_would_value)
+        daily_would_enter_count if cumulative_would_value is None else int(cumulative_would_value)
     )
     daily_paper_pnl_observed_count = int(
         _optional_float(
@@ -2436,9 +2493,7 @@ def _v5_daily_row(row: dict[str, Any], created_at: str) -> dict[str, Any]:
     required_slippage_coverage = (
         _optional_float(_field(row, payload, "required_slippage_coverage")) or 0.8
     )
-    arrival_mid_coverage = (
-        _optional_float(_field(row, payload, "arrival_mid_coverage")) or 0.0
-    )
+    arrival_mid_coverage = _optional_float(_field(row, payload, "arrival_mid_coverage")) or 0.0
     spread_observation_coverage = (
         _optional_float(_field(row, payload, "spread_observation_coverage")) or 0.0
     )
@@ -2461,6 +2516,7 @@ def _v5_daily_row(row: dict[str, Any], created_at: str) -> dict[str, Any]:
     )
     row_out = {
         "as_of_date": _as_of_date(row, payload),
+        "source_schema_version": _field(row, payload, "schema_version"),
         "proposal_id": proposal_id,
         "paper_tracker_id": paper_tracker_id,
         "strategy_candidate": candidate,
@@ -2557,9 +2613,7 @@ def _v5_daily_row(row: dict[str, Any], created_at: str) -> dict[str, Any]:
         "arrival_mid_coverage": arrival_mid_coverage,
         "spread_observation_coverage": spread_observation_coverage,
         "cost_source_mix": cost_source_mix,
-        "missing_cost_source_count": 1
-        if _is_missing_cost_source(cost_source_mix)
-        else 0,
+        "missing_cost_source_count": 1 if _is_missing_cost_source(cost_source_mix) else 0,
         "live_eligible": not block_reasons,
         "live_block_reason": safe_json_dumps(
             sorted({*_json_list(_field(row, payload, "live_block_reason")), *block_reasons})
@@ -2583,14 +2637,13 @@ def _v5_slippage_row(row: dict[str, Any], created_at: str) -> dict[str, Any]:
         candidate,
         symbol,
     )
-    paper_tracker_id = (
-        _field(row, payload, "paper_tracker_id", "strategy_id")
-        or _paper_tracker_id_for(proposal_id, candidate, symbol)
-    )
+    paper_tracker_id = _field(
+        row, payload, "paper_tracker_id", "strategy_id"
+    ) or _paper_tracker_id_for(proposal_id, candidate, symbol)
     paper_days = int(_optional_float(_field(row, payload, "paper_days")) or 0)
-    coverage = _optional_float(
-        _field(row, payload, "paper_slippage_coverage", "slippage_coverage")
-    ) or 0.0
+    coverage = (
+        _optional_float(_field(row, payload, "paper_slippage_coverage", "slippage_coverage")) or 0.0
+    )
     arrival_mid_coverage = _optional_float(
         _field(row, payload, "arrival_mid_coverage", "mid_coverage")
     )
@@ -2630,9 +2683,7 @@ def _v5_slippage_row(row: dict[str, Any], created_at: str) -> dict[str, Any]:
         if spread_observation_coverage is not None
         else coverage,
         "cost_source_mix": cost_source_mix,
-        "missing_cost_source_count": 1
-        if _is_missing_cost_source(cost_source_mix)
-        else 0,
+        "missing_cost_source_count": 1 if _is_missing_cost_source(cost_source_mix) else 0,
         "coverage_status": _field(
             row,
             payload,
@@ -2810,11 +2861,14 @@ def _paper_daily_key_aliases(row: dict[str, Any]) -> list[tuple[str, str, str]]:
         candidates.add("v5.f3_dominant_entry")
     if candidate == "v5.f3_dominant_entry":
         candidates.add("v5.eth_f3_dominant_entry")
-    return [
+    aliases = [
         (proposal, strategy_candidate, symbol)
         for proposal in proposals
         for strategy_candidate in candidates
     ]
+    if proposal_id:
+        aliases.append((proposal_id, "", symbol))
+    return list(dict.fromkeys(aliases))
 
 
 def _group_run_rows(rows: list[dict[str, Any]]) -> dict[tuple[str, str, str], dict[str, Any]]:
@@ -2940,8 +2994,7 @@ def _paper_negative_trend_stats(rows: list[dict[str, Any]]) -> dict[str, Any]:
     negative_days: dict[str, bool] = {}
     for row_day, horizons in values_by_day_horizon.items():
         negative_days[row_day] = any(
-            values and (sum(values) / len(values)) < 0.0
-            for values in horizons.values()
+            values and (sum(values) / len(values)) < 0.0 for values in horizons.values()
         )
     ordered_days = sorted(negative_days)
     streak = 0
@@ -3070,12 +3123,8 @@ def _paper_strategy_review(
 
 
 def _is_eth_f3_config(cfg: PaperStrategyConfig) -> bool:
-    return (
-        cfg.proposal_id == ETH_F3_PAPER_PROPOSAL_ID
-        or (
-            cfg.strategy_candidate == ETH_F3_STRATEGY_CANDIDATE
-            and cfg.symbol == ETH_F3_SYMBOL
-        )
+    return cfg.proposal_id == ETH_F3_PAPER_PROPOSAL_ID or (
+        cfg.strategy_candidate == ETH_F3_STRATEGY_CANDIDATE and cfg.symbol == ETH_F3_SYMBOL
     )
 
 
@@ -3276,10 +3325,7 @@ def _cost_source_mix_sources(value: Any) -> set[str]:
     except json.JSONDecodeError:
         return {
             source
-            for source in (
-                str(part or "").strip().lower()
-                for part in re.split(r"[;,+|]", text)
-            )
+            for source in (str(part or "").strip().lower() for part in re.split(r"[;,+|]", text))
             if source
         }
     return _cost_source_mix_sources(parsed)
@@ -3297,9 +3343,7 @@ def _cost_live_safety_markers(
     degraded_cost_model = data.get("degraded_cost_model") or data.get("cost_degraded_model")
     if _cost_fallback_not_live_safe(fallback_level, fallback_reason):
         markers.add(COST_FALLBACK_NOT_LIVE_SAFE)
-    if _truthy_cost_flag(degraded_cost_model) or _cost_degraded_reason_not_none(
-        degraded_reason
-    ):
+    if _truthy_cost_flag(degraded_cost_model) or _cost_degraded_reason_not_none(degraded_reason):
         markers.add(COST_DEGRADED_MODEL)
     return markers
 

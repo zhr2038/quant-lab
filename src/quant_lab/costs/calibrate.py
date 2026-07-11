@@ -36,6 +36,7 @@ TRADE_PRINT_DATASET = Path("silver") / "trade_print"
 V5_TRADE_EVENT_DATASET = Path("silver") / "v5_trade_event"
 V5_QUANT_LAB_COST_USAGE_DATASET = Path("silver") / "v5_quant_lab_cost_usage"
 V5_ORDER_LIFECYCLE_DATASET = Path("silver") / "v5_order_lifecycle"
+V5_FILL_BILL_RECONCILIATION_DATASET = Path("silver") / "v5_fill_bill_cost_reconciliation"
 V5_COST_PROBE_ORDER_EVENT_DATASET = Path("silver") / "v5_cost_probe_order_event"
 V5_COST_PROBE_ROUNDTRIP_EVENT_DATASET = Path("silver") / "v5_cost_probe_roundtrip_event"
 MARKET_BAR_DATASET = Path("silver") / "market_bar"
@@ -113,6 +114,7 @@ def calibrate_costs_for_day(
     account_bills = _private_account_bills_for_day(root, day)
     v5_trade_events = _v5_trade_events_for_day(root, day)
     v5_order_lifecycle = _v5_order_lifecycle_for_day(root, day)
+    v5_fill_bill_reconciliation = _v5_fill_bill_reconciliation_for_day(root, day)
     v5_cost_probe_order_events = _v5_cost_probe_order_events_for_day(root, day)
     v5_cost_probe_roundtrip_events = _v5_cost_probe_roundtrip_events_for_day(root, day)
     v5_cost_usage = _v5_cost_usage_for_day(root, day)
@@ -141,6 +143,7 @@ def calibrate_costs_for_day(
         ),
         v5_trade_events=v5_trade_events,
         v5_order_lifecycle=v5_order_lifecycle,
+        v5_fill_bill_reconciliation=v5_fill_bill_reconciliation,
         v5_cost_probe_order_events=v5_cost_probe_order_events,
         v5_cost_probe_roundtrip_events=v5_cost_probe_roundtrip_events,
         market_bars=market_bars,
@@ -158,6 +161,7 @@ def calibrate_costs_for_day(
             | _symbols_from_fill_events(fill_events)
             | _symbols_from_v5_trade_events(v5_trade_events)
             | _symbols_from_v5_order_lifecycle(v5_order_lifecycle)
+            | _symbols_from_v5_fill_bill_reconciliation(v5_fill_bill_reconciliation)
             | _symbols_from_cost_probe_events(
                 v5_cost_probe_order_events,
                 v5_cost_probe_roundtrip_events,
@@ -173,7 +177,10 @@ def calibrate_costs_for_day(
         ),
         fee_bps_missing_count=_fee_missing_count(fill_events)
         + _v5_trade_fee_missing_count(v5_trade_events)
-        + _v5_order_lifecycle_fee_missing_count(v5_order_lifecycle),
+        + _v5_order_lifecycle_fee_missing_count(
+            v5_order_lifecycle,
+            v5_fill_bill_reconciliation,
+        ),
         **summarize_cost_api_usage(v5_cost_usage),
     )
     health_rows_written = publish_cost_health_daily(root, health)
@@ -199,6 +206,7 @@ def build_cost_bucket_daily_rows(
     order_events: pl.DataFrame | None = None,
     v5_trade_events: pl.DataFrame | None = None,
     v5_order_lifecycle: pl.DataFrame | None = None,
+    v5_fill_bill_reconciliation: pl.DataFrame | None = None,
     v5_cost_probe_order_events: pl.DataFrame | None = None,
     v5_cost_probe_roundtrip_events: pl.DataFrame | None = None,
     min_sample_count: int = DEFAULT_MIN_SAMPLE_COUNT,
@@ -227,6 +235,15 @@ def build_cost_bucket_daily_rows(
         cost_probe_order_frame,
         cost_probe_roundtrip_frame,
     )
+    lifecycle_samples = _v5_order_lifecycle_fill_samples(
+        v5_order_lifecycle if v5_order_lifecycle is not None else pl.DataFrame()
+    )
+    lifecycle_samples = _merge_v5_fill_bill_reconciliation(
+        lifecycle_samples,
+        v5_fill_bill_reconciliation
+        if v5_fill_bill_reconciliation is not None
+        else pl.DataFrame(),
+    )
     fill_samples = [
         *_fill_samples(
             fill_events,
@@ -239,16 +256,21 @@ def build_cost_bucket_daily_rows(
             cost_probe_roundtrip_frame,
             fill_events,
         ),
-        *_v5_order_lifecycle_fill_samples(
-            v5_order_lifecycle if v5_order_lifecycle is not None else pl.DataFrame()
-        ),
+        *lifecycle_samples,
         *_v5_trade_fill_samples(v5_trade_events if v5_trade_events is not None else pl.DataFrame()),
     ]
 
     if fill_samples:
         actual_rows = _actual_fill_rows(
             fill_samples=fill_samples,
-            bills_present=not account_bills.is_empty(),
+            bills_present=(
+                not account_bills.is_empty()
+                or _v5_fill_bill_has_bill_evidence(
+                    v5_fill_bill_reconciliation
+                    if v5_fill_bill_reconciliation is not None
+                    else pl.DataFrame()
+                )
+            ),
             spread_samples=spread_samples,
             day=day,
             min_sample_count=min_sample_count,
@@ -1273,6 +1295,7 @@ def _v5_order_lifecycle_fill_samples(v5_order_lifecycle: pl.DataFrame) -> list[d
                     or row.get("cl_ord_id")
                     or ""
                 ),
+                "cl_ord_id": str(row.get("cl_ord_id") or ""),
                 "side": str(row.get("side") or ""),
                 "action": str(row.get("intent") or row.get("action") or ""),
                 "fill_px": avg_fill_px,
@@ -1293,6 +1316,121 @@ def _v5_order_lifecycle_fill_samples(v5_order_lifecycle: pl.DataFrame) -> list[d
             }
         )
     return samples
+
+
+def _merge_v5_fill_bill_reconciliation(
+    lifecycle_samples: list[dict[str, Any]],
+    reconciliation: pl.DataFrame,
+) -> list[dict[str, Any]]:
+    reconciliation_samples = _v5_fill_bill_reconciliation_samples(reconciliation)
+    if not reconciliation_samples:
+        return lifecycle_samples
+    by_identifier: dict[str, dict[str, Any]] = {}
+    for sample in reconciliation_samples:
+        for identifier in _cost_sample_identifiers(sample):
+            by_identifier[identifier] = sample
+
+    merged: list[dict[str, Any]] = []
+    matched_reconciliation_ids: set[int] = set()
+    for sample in lifecycle_samples:
+        match = next(
+            (
+                by_identifier[identifier]
+                for identifier in _cost_sample_identifiers(sample)
+                if identifier in by_identifier
+            ),
+            None,
+        )
+        if match is None:
+            merged.append(sample)
+            continue
+        updated = dict(sample)
+        selected_fee = _optional_float(match.get("fee_usdt"))
+        notional = _optional_float(updated.get("notional"))
+        if selected_fee is not None:
+            updated["fee_usdt"] = selected_fee
+            updated["fee_bps"] = (
+                selected_fee / abs(notional) * 10_000
+                if notional is not None and notional != 0
+                else None
+            )
+        updated["fee_evidence_status"] = match.get("fee_evidence_status")
+        updated["fee_cost_source"] = match.get("fee_cost_source")
+        updated["liquidity_role"] = match.get("liquidity_role")
+        merged.append(updated)
+        matched_reconciliation_ids.add(id(match))
+    merged.extend(
+        sample
+        for sample in reconciliation_samples
+        if id(sample) not in matched_reconciliation_ids
+    )
+    return merged
+
+
+def _v5_fill_bill_reconciliation_samples(frame: pl.DataFrame) -> list[dict[str, Any]]:
+    if frame.is_empty():
+        return []
+    samples: list[dict[str, Any]] = []
+    for row in frame.to_dicts():
+        symbol_value = str(row.get("symbol") or "").strip()
+        symbol = normalize_symbol(symbol_value) if symbol_value else ""
+        notional = _first_float(row, ["fill_notional_usdt", "notional_usdt"])
+        selected_fee = _first_float(row, ["selected_fee_usdt"])
+        if not symbol or notional is None or notional <= 0 or selected_fee is None:
+            continue
+        evidence = str(row.get("cost_evidence_status") or "PARTIAL").upper()
+        samples.append(
+            {
+                "symbol": symbol,
+                "source_kind": "v5_fill_bill_reconciliation",
+                "sample_origin": "strategy_live",
+                "eligible_for_cost_model": evidence in {"ACTUAL", "MIXED", "PARTIAL"},
+                "eligible_for_alpha_pnl": True,
+                "notional": abs(notional),
+                "notional_bucket": _notional_bucket(abs(notional)),
+                "trade_id": str(row.get("trade_ids") or ""),
+                "order_id": str(row.get("order_id") or ""),
+                "cl_ord_id": str(row.get("cl_ord_id") or ""),
+                "side": str(row.get("side") or ""),
+                "action": str(row.get("order_leg") or ""),
+                "fill_px": None,
+                "fill_qty": None,
+                "fee": None,
+                "fee_ccy": str(row.get("fee_currency") or ""),
+                "fee_usdt": selected_fee,
+                "ts": row.get("last_fill_ts") or row.get("generated_at"),
+                "fee_bps": selected_fee / abs(notional) * 10_000,
+                "slippage_bps": None,
+                "spread_bps": None,
+                "fee_evidence_status": evidence,
+                "fee_cost_source": str(row.get("cost_source") or ""),
+                "liquidity_role": str(row.get("liquidity_role") or "unknown"),
+            }
+        )
+    return samples
+
+
+def _cost_sample_identifiers(sample: Mapping[str, Any]) -> set[str]:
+    values: set[str] = set()
+    for key in ("order_id", "cl_ord_id", "trade_id"):
+        raw = str(sample.get(key) or "").replace(",", ";")
+        values.update(part.strip() for part in raw.split(";") if part.strip())
+    return values
+
+
+def _v5_fill_bill_has_bill_evidence(frame: pl.DataFrame) -> bool:
+    if frame.is_empty():
+        return False
+    for row in frame.to_dicts():
+        if str(row.get("bill_ids") or "").strip():
+            return True
+        if str(row.get("bill_match_status") or "").upper() in {
+            "PASS",
+            "FEE_MISMATCH",
+            "FILL_FEE_MISSING",
+        }:
+            return True
+    return False
 
 
 def _cost_sample_origin(row: Mapping[str, Any]) -> str:
@@ -1636,6 +1774,17 @@ def _symbols_from_v5_order_lifecycle(v5_order_lifecycle: pl.DataFrame) -> set[st
     return symbols
 
 
+def _symbols_from_v5_fill_bill_reconciliation(frame: pl.DataFrame) -> set[str]:
+    if frame.is_empty():
+        return set()
+    symbols: set[str] = set()
+    for row in frame.to_dicts():
+        value = str(row.get("symbol") or "").strip()
+        if value:
+            symbols.add(normalize_symbol(value))
+    return symbols
+
+
 def _symbols_from_cost_probe_events(
     order_events: pl.DataFrame,
     roundtrip_events: pl.DataFrame,
@@ -1704,6 +1853,15 @@ def _v5_order_lifecycle_for_day(root: Path, day: str) -> pl.DataFrame:
             "bundle_ts",
             "ingest_ts",
         ),
+    )
+
+
+def _v5_fill_bill_reconciliation_for_day(root: Path, day: str) -> pl.DataFrame:
+    return _filter_recent_window(
+        read_parquet_dataset(root / V5_FILL_BILL_RECONCILIATION_DATASET),
+        day=day,
+        lookback_days=PRIVATE_COST_LOOKBACK_DAYS,
+        timestamp_columns=("last_fill_ts", "first_fill_ts", "generated_at", "bundle_ts"),
     )
 
 
@@ -1888,16 +2046,46 @@ def _v5_trade_fee_missing_count(v5_trade_events: pl.DataFrame) -> int:
     return count
 
 
-def _v5_order_lifecycle_fee_missing_count(v5_order_lifecycle: pl.DataFrame) -> int:
+def _v5_order_lifecycle_fee_missing_count(
+    v5_order_lifecycle: pl.DataFrame,
+    reconciliation: pl.DataFrame | None = None,
+) -> int:
     if v5_order_lifecycle.is_empty():
         return 0
+    reconciled_identifiers: set[str] = set()
+    if reconciliation is not None and not reconciliation.is_empty():
+        for row in reconciliation.to_dicts():
+            if _first_float(row, ["selected_fee_usdt"]) is None:
+                continue
+            reconciled_identifiers.update(_lifecycle_row_identifiers(row))
     count = 0
     for row in v5_order_lifecycle.to_dicts():
         if not _is_filled_lifecycle_row(row):
             continue
-        if _first_float(row, ["fee_bps", "fee_usdt", "fee_abs_usdt", "fee", "commission"]) is None:
-            count += 1
+        if _first_float(
+            row,
+            ["fee_bps", "fee_usdt", "fee_abs_usdt", "fee", "commission"],
+        ) is not None:
+            continue
+        if _lifecycle_row_identifiers(row).intersection(reconciled_identifiers):
+            continue
+        count += 1
     return count
+
+
+def _lifecycle_row_identifiers(row: Mapping[str, Any]) -> set[str]:
+    values: set[str] = set()
+    for key in (
+        "exchange_order_id",
+        "order_id",
+        "ord_id",
+        "cl_ord_id",
+        "trade_ids",
+        "trade_id",
+    ):
+        raw = str(row.get(key) or "").replace(",", ";")
+        values.update(part.strip() for part in raw.split(";") if part.strip())
+    return values
 
 
 def _v5_lifecycle_zero_fill_count(v5_order_lifecycle: pl.DataFrame) -> int:
@@ -2107,6 +2295,11 @@ def _actual_fill_source(
     if probe_only:
         return "bootstrap_cost_probe"
     if cost_probe_fill_count > 0:
+        return "mixed_actual_proxy"
+    if any(
+        str(sample.get("fee_evidence_status") or "").upper() in {"PARTIAL", "MIXED"}
+        for sample in samples
+    ):
         return "mixed_actual_proxy"
     source_kinds = {str(sample.get("source_kind") or "") for sample in samples}
     if fee_missing:

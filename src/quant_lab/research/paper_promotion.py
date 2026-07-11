@@ -13,6 +13,18 @@ import polars as pl
 from pydantic import BaseModel, ConfigDict, Field
 
 from quant_lab.data.lake import read_parquet_dataset, write_parquet_dataset
+from quant_lab.paper.contracts import (
+    PAPER_STRATEGY_CONTRACT_VERSION,
+    LifecycleState,
+    legacy_lifecycle_state,
+)
+from quant_lab.paper.cost_trust import build_strategy_cost_trust_frame
+from quant_lab.paper.proposals import (
+    PAPER_STRATEGY_MIGRATION_AUDIT_SCHEMA,
+    build_configured_proposals,
+    build_legacy_proposal_migration_audit,
+)
+from quant_lab.paper.service import PAPER_STRATEGY_PROPOSAL_DATASET, publish_proposals
 from quant_lab.strategy_telemetry.sanitize import safe_json_dumps
 from quant_lab.symbols import normalize_symbol
 
@@ -22,6 +34,10 @@ PAPER_STRATEGY_PROPOSAL_ACK_DATASET = Path("silver") / "v5_paper_strategy_propos
 PAPER_STRATEGY_RUNS_DATASET = Path("gold") / "paper_strategy_runs"
 PAPER_STRATEGY_DAILY_DATASET = Path("gold") / "paper_strategy_daily"
 STRATEGY_OPPORTUNITY_ADVISORY_DATASET = Path("gold") / "strategy_opportunity_advisory"
+ALPHA_DISCOVERY_BOARD_DATASET = Path("gold") / "alpha_discovery_board"
+COST_BUCKET_DAILY_DATASET = Path("gold") / "cost_bucket_daily"
+STRATEGY_COST_TRUST_DATASET = Path("gold") / "strategy_cost_trust"
+PAPER_STRATEGY_MIGRATION_AUDIT_DATASET = Path("gold") / "paper_strategy_migration_audit"
 
 PAPER_PIPELINE_SOURCE = "research.paper_strategy_promotion.v0.1"
 PAPER_PIPELINE_SCHEMA_VERSION = "paper_strategy_pipeline.v1"
@@ -49,6 +65,11 @@ PAPER_STRATEGY_REGISTRY_SCHEMA = {
     "symbol": pl.Utf8,
     "strategy_candidate": pl.Utf8,
     "status": pl.Utf8,
+    "lifecycle_state": pl.Utf8,
+    "lifecycle_reason": pl.Utf8,
+    "blocked_reasons": pl.Utf8,
+    "next_required_actions": pl.Utf8,
+    "contract_version": pl.Utf8,
     "paper_start_at": pl.Utf8,
     "rules_locked": pl.Boolean,
     "accepted": pl.Boolean,
@@ -89,11 +110,27 @@ PAPER_STRATEGY_PROMOTION_GATE_SCHEMA = {
     "p25_after_cost_bps": pl.Float64,
     "recent_7d_mean_bps": pl.Float64,
     "recent_7d_hit_rate": pl.Float64,
+    "max_drawdown_bps": pl.Float64,
+    "max_day_concentration": pl.Float64,
+    "regime_count": pl.Int64,
+    "rules_locked": pl.Boolean,
     "cost_source": pl.Utf8,
+    "strategy_cost_trust_level": pl.Utf8,
+    "required_cost_trust_level": pl.Utf8,
     "cost_trusted_for_paper": pl.Boolean,
     "backtest_paper_conflict": pl.Boolean,
+    "promotion_score": pl.Float64,
+    "promotion_confidence": pl.Utf8,
+    "evidence_quality": pl.Utf8,
+    "tail_risk_status": pl.Utf8,
+    "regime_coverage_status": pl.Utf8,
+    "cost_evidence_status": pl.Utf8,
     "paper_ready": pl.Boolean,
     "block_reason": pl.Utf8,
+    "promotion_block_reasons": pl.Utf8,
+    "lifecycle_reason": pl.Utf8,
+    "blocked_reasons": pl.Utf8,
+    "next_required_actions": pl.Utf8,
     "created_at": pl.Utf8,
     "source": pl.Utf8,
     "schema_version": pl.Utf8,
@@ -107,6 +144,7 @@ class PaperStrategyPipelineResult(BaseModel):
     as_of_date: str
     paper_strategy_registry: int = Field(ge=0)
     paper_strategy_promotion_gate: int = Field(ge=0)
+    paper_strategy_migration_audit: int = Field(ge=0)
 
 
 @dataclass(frozen=True)
@@ -124,14 +162,58 @@ def build_and_publish_paper_strategy_pipeline(
 ) -> PaperStrategyPipelineResult:
     root = Path(lake_root)
     day = _resolve_as_of_date(as_of_date)
+    advisory = read_parquet_dataset(root / STRATEGY_OPPORTUNITY_ADVISORY_DATASET)
+    legacy_evidence = read_parquet_dataset(root / ALPHA_DISCOVERY_BOARD_DATASET)
+    if legacy_evidence.is_empty():
+        legacy_evidence = advisory
+    existing_registry = read_parquet_dataset(root / PAPER_STRATEGY_REGISTRY_DATASET)
+    existing_gate = read_parquet_dataset(root / PAPER_STRATEGY_PROMOTION_GATE_DATASET)
+    existing_proposals = read_parquet_dataset(root / PAPER_STRATEGY_PROPOSAL_DATASET)
+    existing_migration_audit = read_parquet_dataset(root / PAPER_STRATEGY_MIGRATION_AUDIT_DATASET)
+    configured = build_configured_proposals(advisory)
+    proposal_frame = existing_proposals if not existing_proposals.is_empty() else advisory
+    if configured:
+        published = publish_proposals(root, [proposal for proposal, _evidence in configured])
+        proposal_frame = published
+    migration_audit = _merge_migration_audit(
+        existing_migration_audit,
+        build_legacy_proposal_migration_audit(legacy_evidence, configured),
+    )
+    write_parquet_dataset(
+        migration_audit,
+        root / PAPER_STRATEGY_MIGRATION_AUDIT_DATASET,
+    )
+    strategy_cost_trust = build_strategy_cost_trust_frame(
+        proposal_frame,
+        read_parquet_dataset(root / COST_BUCKET_DAILY_DATASET),
+    )
+    write_parquet_dataset(strategy_cost_trust, root / STRATEGY_COST_TRUST_DATASET)
     frames = build_paper_strategy_pipeline_frames(
-        proposals=read_parquet_dataset(root / STRATEGY_OPPORTUNITY_ADVISORY_DATASET),
+        proposals=proposal_frame,
         proposal_ack=read_parquet_dataset(root / PAPER_STRATEGY_PROPOSAL_ACK_DATASET),
         runs=read_parquet_dataset(root / PAPER_STRATEGY_RUNS_DATASET),
         daily=read_parquet_dataset(root / PAPER_STRATEGY_DAILY_DATASET),
+        strategy_cost_trust=strategy_cost_trust,
     )
-    registry = frames["paper_strategy_registry"]
-    gate = frames["paper_strategy_promotion_gate"]
+    registry = _merge_lifecycle_frame(
+        existing_registry,
+        frames["paper_strategy_registry"],
+        schema=PAPER_STRATEGY_REGISTRY_SCHEMA,
+        rank=_registry_persistence_rank,
+    )
+    gate = _promotion_gate_frame_from_registry(
+        registry,
+        daily=read_parquet_dataset(root / PAPER_STRATEGY_DAILY_DATASET),
+        runs=read_parquet_dataset(root / PAPER_STRATEGY_RUNS_DATASET),
+        proposals=proposal_frame,
+        strategy_cost_trust=strategy_cost_trust,
+    )
+    gate = _merge_lifecycle_frame(
+        existing_gate,
+        gate,
+        schema=PAPER_STRATEGY_PROMOTION_GATE_SCHEMA,
+        rank=_gate_persistence_rank,
+    )
     write_parquet_dataset(registry, root / PAPER_STRATEGY_REGISTRY_DATASET)
     write_parquet_dataset(gate, root / PAPER_STRATEGY_PROMOTION_GATE_DATASET)
     return PaperStrategyPipelineResult(
@@ -139,6 +221,128 @@ def build_and_publish_paper_strategy_pipeline(
         as_of_date=day.isoformat(),
         paper_strategy_registry=registry.height,
         paper_strategy_promotion_gate=gate.height,
+        paper_strategy_migration_audit=migration_audit.height,
+    )
+
+
+def _merge_migration_audit(existing: pl.DataFrame, generated: pl.DataFrame) -> pl.DataFrame:
+    rows: dict[str, dict[str, Any]] = {}
+    for frame in (existing, generated):
+        if frame.is_empty():
+            continue
+        for row in frame.to_dicts():
+            key = _text(row.get("legacy_row_id"))
+            if key:
+                rows[key] = row
+    return _frame(list(rows.values()), PAPER_STRATEGY_MIGRATION_AUDIT_SCHEMA)
+
+
+def _merge_lifecycle_frame(
+    existing: pl.DataFrame,
+    generated: pl.DataFrame,
+    *,
+    schema: dict[str, pl.DataType],
+    rank: Any,
+) -> pl.DataFrame:
+    best: dict[str, dict[str, Any]] = {}
+    for frame in (existing, generated):
+        if frame.is_empty():
+            continue
+        for source in frame.to_dicts():
+            row = {column: source.get(column) for column in schema}
+            key = _persistent_lifecycle_key(row)
+            if not key:
+                continue
+            current = best.get(key)
+            if current is None:
+                best[key] = row
+                continue
+            if rank(row) >= rank(current):
+                best[key] = _fill_blank_lifecycle_values(row, current, schema)
+            else:
+                best[key] = _fill_blank_lifecycle_values(current, row, schema)
+    return _frame(list(best.values()), schema)
+
+
+def _promotion_gate_frame_from_registry(
+    registry: pl.DataFrame,
+    *,
+    daily: pl.DataFrame,
+    runs: pl.DataFrame,
+    proposals: pl.DataFrame,
+    strategy_cost_trust: pl.DataFrame,
+) -> pl.DataFrame:
+    created_at = datetime.now(UTC).isoformat()
+    daily_rows = _latest_rows_by_strategy(daily)
+    run_rows = runs.to_dicts() if not runs.is_empty() else []
+    proposal_rows = _proposal_rows(proposals)
+    cost_trust_rows = strategy_cost_trust.to_dicts() if not strategy_cost_trust.is_empty() else []
+    rows: list[dict[str, Any]] = []
+    for registry_row in registry.to_dicts() if not registry.is_empty() else []:
+        proposal_id, paper_tracker_id, strategy_candidate, symbol = _row_key_tuple(registry_row)
+        key = _StrategyKey(
+            proposal_id=proposal_id,
+            paper_tracker_id=paper_tracker_id,
+            strategy_candidate=strategy_candidate,
+            symbol=symbol,
+        )
+        rows.append(
+            _promotion_gate_row(
+                registry=registry_row,
+                daily=_match_strategy_row(daily_rows, key),
+                runs=[row for row in run_rows if _row_matches_key(row, key)],
+                proposal=_match_strategy_row(proposal_rows, key),
+                strategy_cost_trust=_match_cost_trust_row(cost_trust_rows, registry_row),
+                created_at=created_at,
+            )
+        )
+    return _frame(rows, PAPER_STRATEGY_PROMOTION_GATE_SCHEMA)
+
+
+def _persistent_lifecycle_key(row: Mapping[str, Any]) -> str:
+    return (
+        _text(row.get("proposal_id"))
+        or _text(row.get("paper_tracker_id"))
+        or "|".join(
+            part
+            for part in (
+                _text(row.get("strategy_id")),
+                _symbol(row),
+                _text(row.get("strategy_candidate")),
+            )
+            if part
+        )
+    )
+
+
+def _fill_blank_lifecycle_values(
+    primary: dict[str, Any],
+    fallback: Mapping[str, Any],
+    schema: Mapping[str, pl.DataType],
+) -> dict[str, Any]:
+    output = dict(primary)
+    for column in schema:
+        if output.get(column) in (None, "") and fallback.get(column) not in (None, ""):
+            output[column] = fallback.get(column)
+    return output
+
+
+def _registry_persistence_rank(row: Mapping[str, Any]) -> tuple[int, int, int, str]:
+    rejected = (
+        bool(_text(row.get("reject_reason"))) or "REJECTED" in _text(row.get("status")).upper()
+    )
+    accepted = _bool(row.get("accepted")) is True
+    tracker = bool(_text(row.get("paper_tracker_id")))
+    return int(rejected or accepted), int(tracker), int(accepted), _row_sort_ts(row)
+
+
+def _gate_persistence_rank(row: Mapping[str, Any]) -> tuple[int, int, int, int, str]:
+    return (
+        _int(row.get("paper_runs")) or 0,
+        _int(row.get("paper_days")) or 0,
+        _int(row.get("closed_entries")) or 0,
+        int(_bool(row.get("accepted")) is True),
+        _row_sort_ts(row),
     )
 
 
@@ -148,6 +352,7 @@ def build_paper_strategy_pipeline_frames(
     proposal_ack: pl.DataFrame | None = None,
     runs: pl.DataFrame | None = None,
     daily: pl.DataFrame | None = None,
+    strategy_cost_trust: pl.DataFrame | None = None,
     created_at: datetime | None = None,
 ) -> dict[str, pl.DataFrame]:
     created = (created_at or datetime.now(UTC)).isoformat()
@@ -157,6 +362,11 @@ def build_paper_strategy_pipeline_frames(
     )
     run_rows = (runs if runs is not None else pl.DataFrame()).to_dicts()
     daily_rows = _latest_rows_by_strategy(daily if daily is not None else pl.DataFrame())
+    cost_trust_rows = (
+        strategy_cost_trust.to_dicts()
+        if strategy_cost_trust is not None and not strategy_cost_trust.is_empty()
+        else []
+    )
 
     keys = _collect_strategy_keys(proposal_rows, ack_rows, run_rows, daily_rows)
     registry_rows: list[dict[str, Any]] = []
@@ -181,6 +391,8 @@ def build_paper_strategy_pipeline_frames(
             registry=registry,
             daily=daily_row,
             runs=matched_runs,
+            proposal=proposal,
+            strategy_cost_trust=_match_cost_trust_row(cost_trust_rows, registry),
             created_at=created,
         )
         registry_rows.append(registry)
@@ -258,9 +470,7 @@ def _registry_row(
     accepted = _bool(ack.get("accepted"))
     reject_reason = _text(ack.get("reject_reason"))
     proposal_id = (
-        key.proposal_id
-        or _text(ack.get("proposal_id"))
-        or _text(proposal.get("proposal_id"))
+        key.proposal_id or _text(ack.get("proposal_id")) or _text(proposal.get("proposal_id"))
     )
     explicit_paper_tracker_id = (
         key.paper_tracker_id
@@ -270,7 +480,12 @@ def _registry_row(
     paper_tracker_id = explicit_paper_tracker_id or (
         proposal_id if accepted and (daily or runs) else ""
     )
-    strategy_id = paper_tracker_id or proposal_id or _text(daily.get("strategy_id"))
+    strategy_id = (
+        _text(proposal.get("strategy_id"))
+        or paper_tracker_id
+        or proposal_id
+        or _text(daily.get("strategy_id"))
+    )
     paper_only = _paper_only(ack, proposal)
     max_live_notional = _float(
         ack.get("max_live_notional_usdt")
@@ -286,11 +501,25 @@ def _registry_row(
         daily=daily,
         runs=runs,
     )
+    lifecycle = legacy_lifecycle_state(
+        status,
+        accepted=accepted,
+        tracker_effective=bool(accepted and paper_tracker_id and (daily or runs)),
+    )
+    lifecycle_blocked = _registry_block_reasons(
+        accepted=accepted,
+        reject_reason=reject_reason,
+        paper_tracker_id=paper_tracker_id,
+    )
     return {
         "strategy_id": strategy_id,
-        "strategy_version": _strategy_version(strategy_id or proposal_id),
+        "strategy_version": _text(ack.get("strategy_version"))
+        or _text(proposal.get("strategy_version"))
+        or _strategy_version(strategy_id or proposal_id),
         "proposal_id": proposal_id,
-        "proposal_hash": _text(ack.get("proposal_hash")) or _proposal_hash(proposal),
+        "proposal_hash": _text(ack.get("proposal_hash"))
+        or _text(proposal.get("proposal_hash"))
+        or _proposal_hash(proposal),
         "paper_tracker_id": paper_tracker_id,
         "symbol": key.symbol or _symbol(ack) or _symbol(proposal) or _symbol(daily),
         "strategy_candidate": (
@@ -300,19 +529,31 @@ def _registry_row(
             or _text(daily.get("strategy_candidate"))
         ),
         "status": status,
+        "lifecycle_state": lifecycle.value,
+        "lifecycle_reason": _lifecycle_reason(lifecycle, lifecycle_blocked),
+        "blocked_reasons": safe_json_dumps(lifecycle_blocked),
+        "next_required_actions": safe_json_dumps(
+            _next_required_actions(lifecycle, lifecycle_blocked)
+        ),
+        "contract_version": _text(proposal.get("contract_version"))
+        or _text(ack.get("contract_version"))
+        or PAPER_STRATEGY_CONTRACT_VERSION,
         "paper_start_at": _paper_start_at(ack=ack, daily=daily, runs=runs),
         "rules_locked": bool(accepted and paper_only and paper_tracker_id),
         "accepted": accepted,
         "reject_reason": reject_reason,
         "first_seen_at": _first_seen_at(proposal=proposal, ack=ack, runs=runs, daily=daily),
         "accepted_at": _text(ack.get("accepted_at")) or _text(ack.get("ingest_ts")),
-        "expires_at": _text(ack.get("expires_at")),
-        "source_pack_sha256": _text(ack.get("source_pack_sha256")),
+        "expires_at": _text(ack.get("expires_at")) or _text(proposal.get("expires_at")),
+        "source_pack_sha256": _text(ack.get("source_pack_sha256"))
+        or _text(proposal.get("source_pack_sha256")),
         "source_v5_bundle_sha256": _text(ack.get("source_v5_bundle_sha256"))
         or _text(ack.get("bundle_sha256")),
         "paper_only": paper_only,
         "max_live_notional_usdt": max_live_notional,
-        "live_order_effect": _text(ack.get("live_order_effect")) or "paper_only_no_live_order",
+        "live_order_effect": _text(ack.get("live_order_effect"))
+        or _text(proposal.get("live_order_effect"))
+        or "paper_only_no_live_order",
         "created_at": created_at,
         "source": PAPER_PIPELINE_SOURCE,
         "schema_version": PAPER_PIPELINE_SCHEMA_VERSION,
@@ -324,6 +565,8 @@ def _promotion_gate_row(
     registry: Mapping[str, Any],
     daily: Mapping[str, Any],
     runs: list[dict[str, Any]],
+    proposal: Mapping[str, Any],
+    strategy_cost_trust: Mapping[str, Any],
     created_at: str,
 ) -> dict[str, Any]:
     values = _paper_pnl_values(runs)
@@ -341,6 +584,14 @@ def _promotion_gate_row(
     p25_bps = _percentile(values, 0.25)
     recent_mean = _mean(recent_values)
     recent_hit_rate = _hit_rate(recent_values)
+    max_drawdown_bps = _max_drawdown(values)
+    max_day_concentration = _max_day_concentration(runs)
+    regimes = _paper_regimes(runs)
+    single_regime_strategy = _bool(daily.get("single_regime_strategy")) is True
+    tail_risk_status = _tail_risk_status(values)
+    regime_coverage_status = (
+        "PASS" if len(regimes) >= 2 or single_regime_strategy else "INSUFFICIENT"
+    )
     cost_sources = _cost_sources(daily.get("cost_source_mix"))
     cost_trusted = bool(cost_sources & TRUSTED_PAPER_COST_SOURCES) and not bool(
         cost_sources & BLOCKED_PAPER_COST_SOURCES
@@ -349,6 +600,8 @@ def _promotion_gate_row(
     reject_reason = _text(registry.get("reject_reason"))
     paper_tracker_created = bool(_text(registry.get("paper_tracker_id")))
     paper_tracker_effective = accepted and paper_tracker_created
+    rules_locked = bool(registry.get("rules_locked"))
+    backtest_paper_conflict = _bool(daily.get("backtest_paper_conflict")) is True
     paper_tracker_status = _paper_tracker_status(
         accepted=accepted,
         reject_reason=reject_reason,
@@ -367,9 +620,59 @@ def _promotion_gate_row(
         p25_bps=p25_bps,
         recent_mean=recent_mean,
         cost_trusted=cost_trusted,
+        max_drawdown_bps=max_drawdown_bps,
+        max_drawdown_budget_bps=_float(daily.get("max_drawdown_budget_bps")) or 500.0,
+        max_day_concentration=max_day_concentration,
+        tail_risk_status=tail_risk_status,
+        regime_coverage_status=regime_coverage_status,
+        rules_locked=rules_locked,
+        backtest_paper_conflict=backtest_paper_conflict,
         daily_block_reasons=_json_list(daily.get("live_block_reason")),
     )
+    required_cost_trust_level = _text(proposal.get("required_cost_trust_level")) or "PAPER_ONLY"
+    strategy_cost_trust_level = (
+        _text(strategy_cost_trust.get("cost_trust_level")) or "NOT_EVALUATED"
+    )
+    dimensional_cost_trusted = True
+    if strategy_cost_trust:
+        dimensional_cost_trusted = _cost_trust_rank(strategy_cost_trust_level) >= (
+            _cost_trust_rank(required_cost_trust_level)
+        )
+        if not dimensional_cost_trusted:
+            block_reasons = sorted(
+                {
+                    *block_reasons,
+                    "strategy_cost_trust_below_required:"
+                    f"actual={strategy_cost_trust_level};"
+                    f"required={required_cost_trust_level}",
+                }
+            )
+    effective_cost_trusted = cost_trusted and dimensional_cost_trusted
     paper_ready = not block_reasons
+    lifecycle = (
+        LifecycleState.PAPER_PROMOTION_READY
+        if paper_ready
+        else (
+            LifecycleState.PAPER_EVIDENCE_INSUFFICIENT
+            if paper_tracker_effective
+            else legacy_lifecycle_state(registry.get("lifecycle_state"))
+        )
+    )
+    promotion_score = _promotion_score(block_reasons)
+    promotion_confidence = _promotion_confidence(
+        score=promotion_score,
+        closed_entries=closed_entries,
+        paper_days=paper_days,
+    )
+    cost_evidence_status = (
+        "PASS"
+        if effective_cost_trusted
+        else (
+            f"{strategy_cost_trust_level}_REQUIRED_{required_cost_trust_level}"
+            if strategy_cost_trust
+            else "INSUFFICIENT"
+        )
+    )
     return {
         "strategy_id": _text(registry.get("strategy_id")),
         "strategy_version": _text(registry.get("strategy_version")),
@@ -378,7 +681,7 @@ def _promotion_gate_row(
         "paper_tracker_id": _text(registry.get("paper_tracker_id")),
         "symbol": _text(registry.get("symbol")),
         "strategy_candidate": _text(registry.get("strategy_candidate")),
-        "lifecycle_state": "PAPER_READY" if paper_ready else _text(registry.get("status")),
+        "lifecycle_state": lifecycle.value,
         "accepted": accepted,
         "paper_tracker_created": paper_tracker_created,
         "paper_tracker_effective": paper_tracker_effective,
@@ -393,11 +696,31 @@ def _promotion_gate_row(
         "p25_after_cost_bps": p25_bps,
         "recent_7d_mean_bps": recent_mean,
         "recent_7d_hit_rate": recent_hit_rate,
+        "max_drawdown_bps": max_drawdown_bps,
+        "max_day_concentration": max_day_concentration,
+        "regime_count": len(regimes),
+        "rules_locked": rules_locked,
         "cost_source": safe_json_dumps(sorted(cost_sources)),
-        "cost_trusted_for_paper": cost_trusted,
-        "backtest_paper_conflict": False,
+        "strategy_cost_trust_level": strategy_cost_trust_level,
+        "required_cost_trust_level": required_cost_trust_level,
+        "cost_trusted_for_paper": effective_cost_trusted,
+        "backtest_paper_conflict": backtest_paper_conflict,
+        "promotion_score": promotion_score,
+        "promotion_confidence": promotion_confidence,
+        "evidence_quality": _evidence_quality(
+            closed_entries=closed_entries,
+            arrival_mid_coverage=arrival_mid_coverage,
+            cost_trusted=effective_cost_trusted,
+        ),
+        "tail_risk_status": tail_risk_status,
+        "regime_coverage_status": regime_coverage_status,
+        "cost_evidence_status": cost_evidence_status,
         "paper_ready": paper_ready,
         "block_reason": safe_json_dumps(block_reasons),
+        "promotion_block_reasons": safe_json_dumps(block_reasons),
+        "lifecycle_reason": _lifecycle_reason(lifecycle, block_reasons),
+        "blocked_reasons": safe_json_dumps(block_reasons),
+        "next_required_actions": safe_json_dumps(_next_required_actions(lifecycle, block_reasons)),
         "created_at": created_at,
         "source": PAPER_PIPELINE_SOURCE,
         "schema_version": PAPER_PIPELINE_SCHEMA_VERSION,
@@ -418,6 +741,13 @@ def _gate_block_reasons(
     p25_bps: float | None,
     recent_mean: float | None,
     cost_trusted: bool,
+    max_drawdown_bps: float,
+    max_drawdown_budget_bps: float,
+    max_day_concentration: float,
+    tail_risk_status: str,
+    regime_coverage_status: str,
+    rules_locked: bool,
+    backtest_paper_conflict: bool,
     daily_block_reasons: list[str],
 ) -> list[str]:
     reasons: set[str] = set()
@@ -447,8 +777,71 @@ def _gate_block_reasons(
         reasons.add("recent_7d_mean_negative_or_missing")
     if not cost_trusted:
         reasons.add("cost_not_trusted_for_paper")
+    if max_drawdown_bps > max_drawdown_budget_bps:
+        reasons.add("max_drawdown_exceeds_budget")
+    if max_day_concentration > 0.5:
+        reasons.add("single_day_concentration_too_high")
+    if tail_risk_status != "PASS":
+        reasons.add("right_tail_dependence")
+    if regime_coverage_status != "PASS":
+        reasons.add("insufficient_regime_coverage")
+    if not rules_locked:
+        reasons.add("paper_rules_not_locked")
+    if backtest_paper_conflict:
+        reasons.add("unresolved_backtest_paper_conflict")
     reasons.update(_paper_block_reason_subset(daily_block_reasons))
     return sorted(reasons)
+
+
+def _registry_block_reasons(
+    *,
+    accepted: bool,
+    reject_reason: str,
+    paper_tracker_id: str,
+) -> list[str]:
+    reasons: list[str] = []
+    if not accepted:
+        reasons.append("v5_ack_required")
+    if reject_reason:
+        reasons.append(f"v5_rejected:{reject_reason}")
+    if accepted and not paper_tracker_id:
+        reasons.append("paper_tracker_missing")
+    return reasons
+
+
+def _lifecycle_reason(state: LifecycleState, blocked_reasons: list[str]) -> str:
+    if blocked_reasons:
+        return blocked_reasons[0]
+    reasons = {
+        LifecycleState.PAPER_PROPOSAL_READY: "structured_proposal_ready",
+        LifecycleState.PAPER_ACK_PENDING: "waiting_for_v5_ack",
+        LifecycleState.PAPER_TRACKER_ACTIVE: "v5_paper_tracker_active",
+        LifecycleState.PAPER_EVIDENCE_INSUFFICIENT: "paper_tracker_active_evidence_pending",
+        LifecycleState.PAPER_PROMOTION_READY: "paper_promotion_gates_passed",
+    }
+    return reasons.get(state, state.value.lower())
+
+
+def _next_required_actions(state: LifecycleState, blocked_reasons: list[str]) -> list[str]:
+    actions: list[str] = []
+    mapping = {
+        "v5_ack_required": "sync_proposal_to_v5",
+        "paper_tracker_missing": "create_v5_paper_tracker",
+        "insufficient_paper_days": "continue_paper_tracking",
+        "insufficient_closed_entries": "collect_more_closed_paper_trades",
+        "insufficient_arrival_mid_coverage": "improve_top_of_book_coverage",
+        "cost_not_trusted_for_paper": "collect_strategy_dimensional_cost_evidence",
+        "paper_rules_not_locked": "lock_acked_rule_version",
+        "insufficient_regime_coverage": "collect_additional_regime_evidence",
+    }
+    for reason in blocked_reasons:
+        base = reason.split(":", 1)[0]
+        action = mapping.get(base)
+        if action and action not in actions:
+            actions.append(action)
+    if not actions and state == LifecycleState.PAPER_PROMOTION_READY:
+        actions.append("manual_canary_review")
+    return actions
 
 
 def _paper_tracker_status(
@@ -507,6 +900,29 @@ def _match_strategy_row(rows: list[Mapping[str, Any]], key: _StrategyKey) -> Map
     return {}
 
 
+def _match_cost_trust_row(
+    rows: list[Mapping[str, Any]],
+    registry: Mapping[str, Any],
+) -> Mapping[str, Any]:
+    aliases = {
+        _text(registry.get("strategy_id")),
+        _text(registry.get("proposal_id")),
+    }
+    matches = [row for row in rows if _text(row.get("strategy_id")) in aliases - {""}]
+    if not matches:
+        return {}
+    return max(matches, key=_row_sort_ts)
+
+
+def _cost_trust_rank(value: Any) -> int:
+    return {
+        "BLOCK": 0,
+        "PAPER_ONLY": 1,
+        "CANARY": 2,
+        "SCALE_READY": 3,
+    }.get(_text(value).upper(), -1)
+
+
 def _row_matches_key(row: Mapping[str, Any], key: _StrategyKey) -> bool:
     aliases = {
         _text(row.get("proposal_id")),
@@ -526,9 +942,16 @@ def _row_matches_key(row: Mapping[str, Any], key: _StrategyKey) -> bool:
 
 def _row_key_tuple(row: Mapping[str, Any]) -> tuple[str, str, str, str]:
     proposal_id = _text(row.get("proposal_id")) or _text(row.get("strategy_id"))
-    paper_tracker_id = _text(row.get("paper_tracker_id")) or (
-        _text(row.get("strategy_id")) if proposal_id != _text(row.get("strategy_id")) else ""
+    paper_tracker_id = _text(row.get("paper_tracker_id"))
+    structured_proposal = bool(
+        _text(row.get("proposal_hash"))
+        and row.get("entry_rule") not in (None, "")
+        and row.get("exit_rule") not in (None, "")
     )
+    if not paper_tracker_id and not structured_proposal:
+        strategy_id = _text(row.get("strategy_id"))
+        if proposal_id != strategy_id:
+            paper_tracker_id = strategy_id
     return (
         proposal_id,
         paper_tracker_id,
@@ -621,6 +1044,70 @@ def _recent_paper_pnl_values(rows: list[Mapping[str, Any]]) -> list[float]:
     return [value for day, value in dated if day >= cutoff]
 
 
+def _max_drawdown(values: list[float]) -> float:
+    cumulative = 0.0
+    peak = 0.0
+    maximum = 0.0
+    for value in values:
+        cumulative += value
+        peak = max(peak, cumulative)
+        maximum = max(maximum, peak - cumulative)
+    return maximum
+
+
+def _max_day_concentration(rows: list[Mapping[str, Any]]) -> float:
+    by_day: dict[date, float] = {}
+    for row in rows:
+        day = _row_date(row)
+        if day is None:
+            continue
+        by_day[day] = by_day.get(day, 0.0) + sum(abs(value) for value in _paper_pnl_values([row]))
+    total = sum(by_day.values())
+    return max(by_day.values(), default=0.0) / total if total > 0 else 0.0
+
+
+def _paper_regimes(rows: list[Mapping[str, Any]]) -> set[str]:
+    return {
+        _text(row.get("market_regime") or row.get("regime") or row.get("regime_state"))
+        for row in rows
+        if _text(row.get("market_regime") or row.get("regime") or row.get("regime_state"))
+    }
+
+
+def _tail_risk_status(values: list[float]) -> str:
+    positive = sorted((value for value in values if value > 0.0), reverse=True)
+    if len(values) < MIN_CLOSED_ENTRIES or not positive:
+        return "INSUFFICIENT"
+    total = sum(positive)
+    return "PASS" if total > 0 and positive[0] / total <= 0.5 else "CONCENTRATED"
+
+
+def _promotion_score(block_reasons: list[str]) -> float:
+    required_gates = 16
+    return max(0.0, min(1.0, (required_gates - len(set(block_reasons))) / required_gates))
+
+
+def _promotion_confidence(*, score: float, closed_entries: int, paper_days: int) -> str:
+    if score >= 1.0 and closed_entries >= 30 and paper_days >= 21:
+        return "HIGH"
+    if score >= 0.8 and closed_entries >= MIN_CLOSED_ENTRIES:
+        return "MEDIUM"
+    return "LOW"
+
+
+def _evidence_quality(
+    *,
+    closed_entries: int,
+    arrival_mid_coverage: float,
+    cost_trusted: bool,
+) -> str:
+    if closed_entries >= 30 and arrival_mid_coverage >= 0.95 and cost_trusted:
+        return "HIGH"
+    if closed_entries >= MIN_CLOSED_ENTRIES and arrival_mid_coverage >= 0.8 and cost_trusted:
+        return "MEDIUM"
+    return "LOW"
+
+
 def _row_date(row: Mapping[str, Any]) -> date | None:
     text = _text(row.get("as_of_date")) or _text(row.get("ts_utc"))[:10]
     try:
@@ -640,9 +1127,7 @@ def _cost_sources(value: Any) -> set[str]:
             parsed = json.loads(text)
         except json.JSONDecodeError:
             return {
-                part.strip().lower()
-                for part in text.replace(";", ",").split(",")
-                if part.strip()
+                part.strip().lower() for part in text.replace(";", ",").split(",") if part.strip()
             }
         items = parsed if isinstance(parsed, list) else [parsed]
     sources = set()

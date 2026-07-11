@@ -169,6 +169,105 @@ def test_bigscreen_strategy_flow_counts_use_full_advisory_not_display_sample(tmp
     assert payload["strategy_flow"]["top_candidates"][0]["decision"] == "PAPER_READY"
 
 
+def test_bigscreen_paper_lifecycle_uses_canonical_states_and_cost_trust(tmp_path):
+    clear_bigscreen_cache()
+    lake = tmp_path / "lake"
+    created_at = datetime(2026, 7, 11, 3, 0, tzinfo=UTC)
+    write_parquet_dataset(
+        pl.DataFrame(
+            [
+                {
+                    "proposal_id": "proposal-ready",
+                    "strategy_id": "strategy-ready",
+                    "strategy_version": "v1",
+                    "symbol": "TRX-USDT",
+                    "lifecycle_state": "PAPER_READY",
+                    "paper_only": True,
+                    "created_at": created_at,
+                },
+                {
+                    "proposal_id": "proposal-ack",
+                    "strategy_id": "strategy-ack",
+                    "strategy_version": "v1",
+                    "symbol": "BCH-USDT",
+                    "lifecycle_state": "PAPER_PROPOSAL_READY",
+                    "paper_only": True,
+                    "created_at": created_at,
+                },
+                {
+                    "proposal_id": "proposal-promote",
+                    "strategy_id": "strategy-promote",
+                    "strategy_version": "v1",
+                    "symbol": "TAO-USDT",
+                    "lifecycle_state": "PAPER_PROPOSAL_READY",
+                    "paper_only": True,
+                    "created_at": created_at,
+                },
+            ]
+        ),
+        lake / "gold" / "paper_strategy_proposal",
+    )
+    write_parquet_dataset(
+        pl.DataFrame(
+            [
+                {
+                    "proposal_id": "proposal-ack",
+                    "strategy_id": "strategy-ack",
+                    "strategy_version": "v1",
+                    "symbol": "BCH-USDT",
+                    "lifecycle_state": "PAPER_ACK_PENDING",
+                    "paper_only": True,
+                    "accepted": False,
+                    "created_at": created_at,
+                }
+            ]
+        ),
+        lake / "gold" / "paper_strategy_registry",
+    )
+    write_parquet_dataset(
+        pl.DataFrame(
+            [
+                {
+                    "proposal_id": "proposal-promote",
+                    "strategy_id": "strategy-promote",
+                    "strategy_version": "v1",
+                    "symbol": "TAO-USDT",
+                    "lifecycle_state": "PAPER_PROMOTION_READY",
+                    "promotion_score": 100.0,
+                    "created_at": created_at,
+                }
+            ]
+        ),
+        lake / "gold" / "paper_strategy_promotion_gate",
+    )
+    write_parquet_dataset(
+        pl.DataFrame(
+            [
+                {
+                    "strategy_id": "strategy-promote",
+                    "cost_trust_level": "PAPER_ONLY",
+                    "created_at": created_at,
+                }
+            ]
+        ),
+        lake / "gold" / "strategy_cost_trust",
+    )
+
+    payload = bigscreen_snapshot(lake)
+    lifecycle = payload["strategy_flow"]["paper_lifecycle"]
+
+    assert lifecycle["counts"]["PAPER_PROPOSAL_READY"] == 1
+    assert lifecycle["counts"]["PAPER_ACK_PENDING"] == 1
+    assert lifecycle["counts"]["PAPER_PROMOTION_READY"] == 1
+    assert lifecycle["runtime_mode"] == "PAPER_ONLY"
+    assert lifecycle["live_order_effect"] == "none"
+    promoted = next(
+        row for row in lifecycle["rows"] if row["proposal_id"] == "proposal-promote"
+    )
+    assert promoted["cost_trust_level"] == "PAPER_ONLY"
+    json.dumps(payload)
+
+
 def test_bigscreen_data_matrix_treats_kill_advisory_as_neutral(tmp_path):
     clear_bigscreen_cache()
     lake = tmp_path / "lake"

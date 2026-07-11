@@ -1,0 +1,79 @@
+from datetime import UTC, datetime
+
+from fastapi.testclient import TestClient
+
+from quant_lab.api.main import create_app
+from quant_lab.paper.contracts import PaperStrategyAck, PaperStrategyProposal
+from quant_lab.paper.service import publish_proposals
+
+
+def _proposal() -> PaperStrategyProposal:
+    return PaperStrategyProposal(
+        strategy_id="TEST_PAPER",
+        strategy_version="1.0.0",
+        strategy_family="test",
+        symbol="TRX/USDT",
+        timeframe="1h",
+        entry_rule={"operator": "momentum_gt", "field": "momentum_24", "value": 0},
+        exit_rule={"operator": "max_holding_bars", "value": 48},
+        max_holding_bars=48,
+        created_at=datetime(2026, 7, 10, tzinfo=UTC),
+        expires_at=datetime(2026, 8, 10, tzinfo=UTC),
+        required_market_fields=["bid", "ask", "mid", "momentum_24"],
+        required_cost_trust_level="PAPER_ONLY",
+    )
+
+
+def test_paper_api_gets_and_ack_is_disabled_by_default(monkeypatch, tmp_path):
+    lake = tmp_path / "lake"
+    proposal = _proposal()
+    publish_proposals(lake, [proposal])
+    monkeypatch.setenv("QUANT_LAB_LAKE_ROOT", str(lake))
+    monkeypatch.delenv("QUANT_LAB_PAPER_ACK_WRITE_ENABLED", raising=False)
+    client = TestClient(create_app())
+
+    assert client.get("/v1/paper-strategy/proposals").status_code == 200
+    detail = client.get(f"/v1/paper-strategy/proposals/{proposal.proposal_id}")
+    assert detail.status_code == 200
+    ack = PaperStrategyAck(
+        proposal_id=proposal.proposal_id,
+        proposal_hash=proposal.proposal_hash,
+        accepted=True,
+        tracker_id=f"paper:{proposal.proposal_id}",
+        strategy_version=proposal.strategy_version,
+        rules_locked=True,
+        accepted_at=datetime(2026, 7, 10, 1, tzinfo=UTC),
+        expires_at=proposal.expires_at,
+    )
+    response = client.post("/v1/paper-strategy/ack", json=ack.model_dump(mode="json"))
+    assert response.status_code == 503
+
+
+def test_paper_ack_write_is_authenticated_and_idempotent(monkeypatch, tmp_path):
+    lake = tmp_path / "lake"
+    proposal = _proposal()
+    publish_proposals(lake, [proposal])
+    monkeypatch.setenv("QUANT_LAB_LAKE_ROOT", str(lake))
+    monkeypatch.setenv("QUANT_LAB_PAPER_ACK_WRITE_ENABLED", "true")
+    monkeypatch.setenv("QUANT_LAB_API_TOKEN", "paper-token")
+    client = TestClient(create_app())
+    payload = PaperStrategyAck(
+        proposal_id=proposal.proposal_id,
+        proposal_hash=proposal.proposal_hash,
+        accepted=True,
+        tracker_id=f"paper:{proposal.proposal_id}",
+        strategy_version=proposal.strategy_version,
+        rules_locked=True,
+        accepted_at=datetime(2026, 7, 10, 1, tzinfo=UTC),
+        expires_at=proposal.expires_at,
+    ).model_dump(mode="json")
+
+    assert client.post("/v1/paper-strategy/ack", json=payload).status_code == 401
+    headers = {"Authorization": "Bearer paper-token"}
+    first = client.post("/v1/paper-strategy/ack", json=payload, headers=headers)
+    second = client.post("/v1/paper-strategy/ack", json=payload, headers=headers)
+
+    assert first.status_code == 200
+    assert first.json()["exchange_state_mutated"] is False
+    assert first.json()["idempotent"] is False
+    assert second.json()["idempotent"] is True

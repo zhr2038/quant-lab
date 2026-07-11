@@ -345,6 +345,83 @@ def test_v5_order_lifecycle_generates_actual_fills_bucket(tmp_path):
     assert checks["fill_count_zero_for_filled_order"] is True
 
 
+def test_v5_fill_bill_reconciliation_backfills_missing_lifecycle_fee(tmp_path):
+    lake_root = tmp_path / "lake"
+    write_parquet_dataset(
+        pl.DataFrame(
+            [
+                {
+                    "strategy": "v5",
+                    "source_path_inside_bundle": (
+                        "raw/recent_runs/run_lifecycle/order_lifecycle.csv"
+                    ),
+                    "run_id": "run_lifecycle",
+                    "ts_utc": "2026-07-11T01:00:04Z",
+                    "symbol": "ETH-USDT",
+                    "normalized_symbol": "ETH-USDT",
+                    "side": "buy",
+                    "intent": "OPEN_LONG",
+                    "order_state": "FILLED",
+                    "arrival_mid": "2500",
+                    "spread_bps_at_decision": "2",
+                    "arrival_slippage_bps": "4",
+                    "avg_fill_px": "2501",
+                    "filled_qty": "0.002",
+                    "fee": None,
+                    "fee_ccy": None,
+                    "fee_usdt": None,
+                    "notional_usdt": "5.002",
+                    "exchange_order_id": "order-1",
+                    "cl_ord_id": "client-1",
+                    "trade_ids": "trade-1",
+                    "fill_count": "1",
+                    "last_fill_ts": "2026-07-11T01:00:04Z",
+                }
+            ]
+        ),
+        lake_root / "silver" / "v5_order_lifecycle",
+    )
+    write_parquet_dataset(
+        pl.DataFrame(
+            [
+                {
+                    "symbol": "ETH-USDT",
+                    "side": "buy",
+                    "order_leg": "entry",
+                    "order_id": "order-1",
+                    "cl_ord_id": "client-1",
+                    "trade_ids": "trade-1",
+                    "last_fill_ts": "2026-07-11T01:00:04Z",
+                    "fill_notional_usdt": "5.002",
+                    "selected_fee_usdt": "0.005",
+                    "bill_ids": "bill-1",
+                    "bill_match_status": "PASS",
+                    "cost_evidence_status": "ACTUAL",
+                    "cost_source": "actual_fills_bills",
+                    "liquidity_role": "taker",
+                }
+            ]
+        ),
+        lake_root / "silver" / "v5_fill_bill_cost_reconciliation",
+    )
+
+    result = calibrate_costs_for_day(lake_root, "2026-07-11", min_sample_count=1)
+
+    assert result.sources == ["actual_fills"]
+    rows = read_parquet_dataset(lake_root / "gold" / "cost_bucket_daily").to_dicts()
+    all_row = next(
+        row
+        for row in rows
+        if row["symbol"] == "ETH-USDT" and row["notional_bucket"] == "all"
+    )
+    assert all_row["source"] == "actual_fills"
+    assert all_row["fee_bps_p50"] > 0
+    assert "FEE_MISSING" not in all_row["fallback_level"]
+    health = read_parquet_dataset(lake_root / "gold" / "cost_health_daily").to_dicts()[0]
+    checks = json.loads(health["data_quality_checks_json"])
+    assert checks["fee_missing_rate"] == "0/1"
+
+
 def test_actual_lifecycle_cost_calibration_reaches_canary_with_arrival_spread(tmp_path):
     lake_root = tmp_path / "lake"
     _write_lifecycle_cost_samples(lake_root, day="2026-05-15", sample_count=30)

@@ -224,9 +224,7 @@ def test_export_daily_pack_writes_required_members(tmp_path):
     assert export_index_path.is_file()
     assert validation.valid
     structural_warnings = [
-        warning
-        for warning in validation.warnings
-        if warning != "data_quality status is CRITICAL"
+        warning for warning in validation.warnings if warning != "data_quality status is CRITICAL"
     ]
     assert structural_warnings == []
     assert validation.export_date == "2026-05-11"
@@ -324,27 +322,19 @@ def test_export_daily_pack_writes_required_members(tmp_path):
         assert "bootstrap_state" in readiness_rows[0]
         assert "actual_or_mixed_bootstrap_coverage_live_universe" in readiness_rows[0]
         fill_bill_header = (
-            archive.read("reports/cost_probe_fill_bill_match.csv")
-            .decode("utf-8")
-            .splitlines()[0]
+            archive.read("reports/cost_probe_fill_bill_match.csv").decode("utf-8").splitlines()[0]
         )
         assert "bill_match_status" in fill_bill_header
         disagreement_header = (
-            archive.read("reports/cost_probe_cost_disagreement.csv")
-            .decode("utf-8")
-            .splitlines()[0]
+            archive.read("reports/cost_probe_cost_disagreement.csv").decode("utf-8").splitlines()[0]
         )
         assert "diff_bps" in disagreement_header
         assert "status" in disagreement_header
         learning_header = (
-            archive.read("reports/v5_trade_learning_sample.csv")
-            .decode("utf-8")
-            .splitlines()[0]
+            archive.read("reports/v5_trade_learning_sample.csv").decode("utf-8").splitlines()[0]
         )
         attribution_header = (
-            archive.read("reports/v5_trade_outcome_attribution.csv")
-            .decode("utf-8")
-            .splitlines()[0]
+            archive.read("reports/v5_trade_outcome_attribution.csv").decode("utf-8").splitlines()[0]
         )
         opportunity_daily_header = (
             archive.read("reports/quant_lab_opportunity_cost_daily.csv")
@@ -352,14 +342,10 @@ def test_export_daily_pack_writes_required_members(tmp_path):
             .splitlines()[0]
         )
         opportunity_bucket_header = (
-            archive.read("reports/opportunity_cost_by_bucket.csv")
-            .decode("utf-8")
-            .splitlines()[0]
+            archive.read("reports/opportunity_cost_by_bucket.csv").decode("utf-8").splitlines()[0]
         )
         trade_level_bucket_policy_header = (
-            archive.read("reports/trade_level_bucket_policy.csv")
-            .decode("utf-8")
-            .splitlines()[0]
+            archive.read("reports/trade_level_bucket_policy.csv").decode("utf-8").splitlines()[0]
         )
         trade_level_opportunity_queue_header = (
             archive.read("reports/trade_level_opportunity_queue.csv")
@@ -367,14 +353,10 @@ def test_export_daily_pack_writes_required_members(tmp_path):
             .splitlines()[0]
         )
         decision_regret_header = (
-            archive.read("reports/quant_lab_decision_regret.csv")
-            .decode("utf-8")
-            .splitlines()[0]
+            archive.read("reports/quant_lab_decision_regret.csv").decode("utf-8").splitlines()[0]
         )
         v5_opportunity_event_header = (
-            archive.read("reports/v5_opportunity_event.csv")
-            .decode("utf-8")
-            .splitlines()[0]
+            archive.read("reports/v5_opportunity_event.csv").decode("utf-8").splitlines()[0]
         )
         assert "quant_lab_false_block_candidate" in learning_header
         assert "execution_quality" in attribution_header
@@ -549,9 +531,9 @@ def test_refresh_web_derived_snapshots_updates_export_backed_gold_tables(
     assert (reports_dir / "v5_enforce_readiness.csv").is_file()
     assert (reports_dir / "fallback_rate_breakdown.csv").is_file()
     bnb_meta = json.loads(
-        (
-            lake_root / "silver" / "v5_bnb_profit_lock_shadow" / "_snapshot_meta.json"
-        ).read_text(encoding="utf-8")
+        (lake_root / "silver" / "v5_bnb_profit_lock_shadow" / "_snapshot_meta.json").read_text(
+            encoding="utf-8"
+        )
     )
     assert bnb_meta["dataset"] == "v5_bnb_profit_lock_shadow"
     assert bnb_meta["row_count"] == 1
@@ -766,9 +748,7 @@ def test_research_validation_v3_reports_export_forward_and_cost_coverage(tmp_pat
     with zipfile.ZipFile(result.zip_path) as archive:
         factor_rows = list(
             csv.DictReader(
-                io.StringIO(
-                    archive.read("reports/factor_forward_validation.csv").decode("utf-8")
-                )
+                io.StringIO(archive.read("reports/factor_forward_validation.csv").decode("utf-8"))
             )
         )
         bridge_rows = list(
@@ -780,9 +760,7 @@ def test_research_validation_v3_reports_export_forward_and_cost_coverage(tmp_pat
         )
         cost_coverage_rows = list(
             csv.DictReader(
-                io.StringIO(
-                    archive.read("reports/live_universe_cost_coverage.csv").decode("utf-8")
-                )
+                io.StringIO(archive.read("reports/live_universe_cost_coverage.csv").decode("utf-8"))
             )
         )
         fast_rows = list(
@@ -804,9 +782,7 @@ def test_research_validation_v3_reports_export_forward_and_cost_coverage(tmp_pat
         fast_review_rows = list(
             csv.DictReader(
                 io.StringIO(
-                    archive.read("reports/fast_microstructure_strategy_review.csv").decode(
-                        "utf-8"
-                    )
+                    archive.read("reports/fast_microstructure_strategy_review.csv").decode("utf-8")
                 )
             )
         )
@@ -832,12 +808,9 @@ def test_research_validation_v3_reports_export_forward_and_cost_coverage(tmp_pat
         if row["recommended_action"] == "REVIEW_FOR_ALPHA_FACTORY_STRATEGY"
     ]
     assert bridge_review_rows
-    assert {"symbol", "regime", "horizon", "horizon_hours"}.issubset(
-        bridge_review_rows[0]
-    )
+    assert {"symbol", "regime", "horizon", "horizon_hours"}.issubset(bridge_review_rows[0])
     assert any(
-        row["eligible_for_alpha_factory"] == "strategy_review_pending"
-        for row in bridge_review_rows
+        row["eligible_for_alpha_factory"] == "strategy_review_pending" for row in bridge_review_rows
     )
     assert not any(
         "factor_strategy_bridge_candidates dataset is missing_or_empty" in warning
@@ -847,9 +820,7 @@ def test_research_validation_v3_reports_export_forward_and_cost_coverage(tmp_pat
         row["bridge_candidate_id"] for row in bridge_review_rows if row["bridge_candidate_id"]
     }
     bridge_advisory_rows = [
-        row
-        for row in advisory_rows
-        if row["strategy_candidate"] in bridge_review_candidate_ids
+        row for row in advisory_rows if row["strategy_candidate"] in bridge_review_candidate_ids
     ]
     assert bridge_advisory_rows
     assert bridge_review_candidate_ids.issubset(
@@ -863,8 +834,7 @@ def test_research_validation_v3_reports_export_forward_and_cost_coverage(tmp_pat
     assert all(row["recommended_mode"] == "shadow" for row in bridge_advisory_rows)
     assert all(row["max_live_notional_usdt"] == "0.0" for row in bridge_advisory_rows)
     assert all(
-        row["live_order_effect"] == "read_only_no_live_order"
-        for row in bridge_advisory_rows
+        row["live_order_effect"] == "read_only_no_live_order" for row in bridge_advisory_rows
     )
     assert not any(
         "forward_validation_not_passed" in row["blocking_reasons"]
@@ -889,8 +859,7 @@ def test_research_validation_v3_reports_export_forward_and_cost_coverage(tmp_pat
     assert sol_coverage["anchored_mixed_proxy_candidate"].lower() == "true"
     assert sol_coverage["mixed_proxy_eligible"].lower() == "true"
     assert (
-        sol_coverage["coverage_reason"]
-        == "stale_actual_or_mixed_with_anchored_proxy_not_counted"
+        sol_coverage["coverage_reason"] == "stale_actual_or_mixed_with_anchored_proxy_not_counted"
     )
     checks = {check["name"]: check for check in data_quality["checks"]}
     stale_live_cost = checks["live_universe_stale_actual_or_mixed_cost"]
@@ -1455,8 +1424,7 @@ def test_export_daily_pack_publishes_bottom_zone_canonical_gold_and_api(
     zip_bottom = [
         row
         for row in advisory_rows
-        if row["strategy_candidate"] == "v5.bottom_zone_probe_paper"
-        and row["symbol"] == "TON-USDT"
+        if row["strategy_candidate"] == "v5.bottom_zone_probe_paper" and row["symbol"] == "TON-USDT"
     ]
     assert zip_bottom
     assert zip_bottom[0]["max_live_notional_usdt"] == "0.0"
@@ -1602,13 +1570,9 @@ def test_strategy_opportunity_advisory_adds_bridge_review_shadow_rows():
                     "horizon_hours": 4,
                     "forward_sample_count": 44,
                     "forward_cost_adjusted_score": 18.5,
-                    "bridge_candidate_id": (
-                        "v5.factor_bridge.core.mean_reversion_vol_adjusted_4"
-                    ),
+                    "bridge_candidate_id": ("v5.factor_bridge.core.mean_reversion_vol_adjusted_4"),
                     "eligible_for_alpha_factory": "strategy_review_pending",
-                    "blocking_reasons": (
-                        '["needs_strategy_formulation","needs_paper_tracking"]'
-                    ),
+                    "blocking_reasons": ('["needs_strategy_formulation","needs_paper_tracking"]'),
                     "recommended_action": "REVIEW_FOR_ALPHA_FACTORY_STRATEGY",
                     "live_order_effect": "read_only_no_live_order",
                 },
@@ -1624,13 +1588,10 @@ def test_strategy_opportunity_advisory_adds_bridge_review_shadow_rows():
                     "forward_sample_count": 58,
                     "forward_cost_adjusted_score": 24.0,
                     "bridge_candidate_id": (
-                        "v5.fast_microstructure_bridge.orderbook_imbalance_1m."
-                        "sol_usdt.risk_on.4h"
+                        "v5.fast_microstructure_bridge.orderbook_imbalance_1m.sol_usdt.risk_on.4h"
                     ),
                     "eligible_for_alpha_factory": "strategy_review_pending",
-                    "blocking_reasons": (
-                        '["needs_strategy_formulation","needs_paper_tracking"]'
-                    ),
+                    "blocking_reasons": ('["needs_strategy_formulation","needs_paper_tracking"]'),
                     "recommended_action": "REVIEW_FOR_ALPHA_FACTORY_STRATEGY",
                     "live_order_effect": "read_only_no_live_order",
                 },
@@ -1650,9 +1611,7 @@ def test_strategy_opportunity_advisory_adds_bridge_review_shadow_rows():
 
     rows = {row["strategy_candidate"]: row for row in frame.to_dicts()}
     factor = rows["v5.factor_bridge.core.mean_reversion_vol_adjusted_4"]
-    fast = rows[
-        "v5.fast_microstructure_bridge.orderbook_imbalance_1m.sol_usdt.risk_on.4h"
-    ]
+    fast = rows["v5.fast_microstructure_bridge.orderbook_imbalance_1m.sol_usdt.risk_on.4h"]
 
     assert set(rows) == {
         "v5.factor_bridge.core.mean_reversion_vol_adjusted_4",
@@ -2003,11 +1962,7 @@ def test_system_acceptance_requires_api_auth_error_rate_below_one_percent():
         lake_file_count=0,
         generated_at=datetime(2026, 6, 11, 10, tzinfo=UTC),
     )
-    row = next(
-        row
-        for row in dashboard.to_dicts()
-        if row["check_name"] == "api_auth_error_rate_ok"
-    )
+    row = next(row for row in dashboard.to_dicts() if row["check_name"] == "api_auth_error_rate_ok")
     assert row["status"] == "PASS"
     assert "auth_error_rate=0.005000" in row["observed_value"]
 
@@ -2032,9 +1987,7 @@ def test_system_acceptance_requires_api_auth_error_rate_below_one_percent():
         generated_at=datetime(2026, 6, 11, 10, tzinfo=UTC),
     )
     failed_row = next(
-        row
-        for row in failed.to_dicts()
-        if row["check_name"] == "api_auth_error_rate_ok"
+        row for row in failed.to_dicts() if row["check_name"] == "api_auth_error_rate_ok"
     )
     assert failed_row["status"] == "FAIL"
 
@@ -2068,9 +2021,7 @@ def test_system_acceptance_uses_production_v5_auth_scope_when_available():
         generated_at=datetime(2026, 6, 11, 10, tzinfo=UTC),
     )
     row = next(
-        item
-        for item in dashboard.to_dicts()
-        if item["check_name"] == "api_auth_error_rate_ok"
+        item for item in dashboard.to_dicts() if item["check_name"] == "api_auth_error_rate_ok"
     )
     assert row["status"] == "PASS"
     assert "scope=production_v5" in row["observed_value"]
@@ -2101,9 +2052,7 @@ def test_system_acceptance_surfaces_github_ci_status():
         lake_file_count=0,
         generated_at=datetime(2026, 6, 11, 10, tzinfo=UTC),
     )
-    row = next(
-        item for item in success.to_dicts() if item["check_name"] == "github_ci_status_ok"
-    )
+    row = next(item for item in success.to_dicts() if item["check_name"] == "github_ci_status_ok")
     assert row["status"] == "PASS"
     assert "quant-lab:aaaaaaaaaaaa:success" in row["observed_value"]
 
@@ -2185,9 +2134,7 @@ def test_export_daily_pack_includes_github_ci_status_when_enabled(tmp_path, monk
         acceptance = {
             row["check_name"]: row
             for row in csv.DictReader(
-                io.StringIO(
-                    archive.read("reports/system_acceptance_dashboard.csv").decode("utf-8")
-                )
+                io.StringIO(archive.read("reports/system_acceptance_dashboard.csv").decode("utf-8"))
             )
         }
         assert acceptance["github_ci_status_ok"]["status"] == "PASS"
@@ -2245,9 +2192,10 @@ def test_system_acceptance_uses_lake_file_health_before_count_warning():
     checks = {row["check_name"]: row for row in dashboard.to_dicts()}
     assert checks["lake_parquet_file_count_under_threshold"]["status"] == "PASS"
     assert checks["lake_parquet_file_growth_24h_ok"]["status"] == "PASS"
-    assert "lake_health_warning_count=0" in checks[
-        "lake_parquet_file_count_under_threshold"
-    ]["observed_value"]
+    assert (
+        "lake_health_warning_count=0"
+        in checks["lake_parquet_file_count_under_threshold"]["observed_value"]
+    )
 
 
 def test_system_acceptance_downgrades_stale_v5_bundle_to_warning():
@@ -2261,11 +2209,7 @@ def test_system_acceptance_downgrades_stale_v5_bundle_to_warning():
         lake_file_count=0,
         generated_at=datetime(2026, 6, 4, 10, tzinfo=UTC),
     )
-    row = next(
-        row
-        for row in dashboard.to_dicts()
-        if row["check_name"] == "v5_bundle_sync_ok"
-    )
+    row = next(row for row in dashboard.to_dicts() if row["check_name"] == "v5_bundle_sync_ok")
     assert row["status"] == "WARNING"
     assert "downgrade V5-derived conclusions" in row["next_action"]
 
@@ -2281,11 +2225,7 @@ def test_system_acceptance_passes_synced_non_authoritative_v5_bundle():
         lake_file_count=0,
         generated_at=datetime(2026, 6, 11, 10, tzinfo=UTC),
     )
-    row = next(
-        row
-        for row in dashboard.to_dicts()
-        if row["check_name"] == "v5_bundle_sync_ok"
-    )
+    row = next(row for row in dashboard.to_dicts() if row["check_name"] == "v5_bundle_sync_ok")
     assert row["status"] == "PASS"
     assert "pre-export V5 refresh was disabled" in row["next_action"]
     assert "rerun telemetry sync" not in row["next_action"]
@@ -2305,11 +2245,7 @@ def test_system_acceptance_surfaces_blocked_enforce_readiness():
         lake_file_count=0,
         generated_at=datetime(2026, 6, 11, 10, tzinfo=UTC),
     )
-    row = next(
-        row
-        for row in dashboard.to_dicts()
-        if row["check_name"] == "enforce_readiness_ok"
-    )
+    row = next(row for row in dashboard.to_dicts() if row["check_name"] == "enforce_readiness_ok")
 
     assert row["status"] == "FAIL"
     assert "readiness_status=BLOCKED" in row["observed_value"]
@@ -2329,11 +2265,7 @@ def test_system_acceptance_surfaces_warn_enforce_readiness():
         lake_file_count=0,
         generated_at=datetime(2026, 6, 11, 10, tzinfo=UTC),
     )
-    row = next(
-        row
-        for row in dashboard.to_dicts()
-        if row["check_name"] == "enforce_readiness_ok"
-    )
+    row = next(row for row in dashboard.to_dicts() if row["check_name"] == "enforce_readiness_ok")
 
     assert row["status"] == "WARNING"
     assert "readiness_status=WARN" in row["observed_value"]
@@ -2519,8 +2451,7 @@ def test_v5_bundle_sync_keeps_refresh_disabled_provenance_out_of_failures():
     assert consistency["stale_v5_bundle"] is False
     assert consistency["warning_reason"] == ""
     assert (
-        "pre_export_v5_refresh_disabled"
-        in consistency["selected_v5_bundle_authoritative_reason"]
+        "pre_export_v5_refresh_disabled" in consistency["selected_v5_bundle_authoritative_reason"]
     )
     assert row["why_stale"] == ""
     assert row["failure_reason"] == ""
@@ -3103,9 +3034,7 @@ def test_csv_text_redacts_sensitive_values_on_native_path() -> None:
 
 
 def test_csv_text_keeps_python_json_serialization_for_complex_values() -> None:
-    text = daily_export_module._csv_text(
-        pl.DataFrame({"symbol": ["BTC-USDT"], "values": [[1, 2]]})
-    )
+    text = daily_export_module._csv_text(pl.DataFrame({"symbol": ["BTC-USDT"], "values": [[1, 2]]}))
 
     rows = list(csv.DictReader(io.StringIO(text)))
     assert rows[0]["symbol"] == "BTC-USDT"
@@ -3706,16 +3635,12 @@ def test_export_daily_ingests_pending_v5_inbox_before_snapshot(tmp_path):
             embedded_v5_names = set(v5_archive.getnames())
         btc_probe_rows = list(
             csv.DictReader(
-                io.StringIO(
-                    archive.read("v5/v5_btc_probe_entry_quality_audit.csv").decode("utf-8")
-                )
+                io.StringIO(archive.read("v5/v5_btc_probe_entry_quality_audit.csv").decode("utf-8"))
             )
         )
         proposal_ack_rows = list(
             csv.DictReader(
-                io.StringIO(
-                    archive.read("reports/paper_strategy_proposal_ack.csv").decode("utf-8")
-                )
+                io.StringIO(archive.read("reports/paper_strategy_proposal_ack.csv").decode("utf-8"))
             )
         )
 
@@ -3777,8 +3702,7 @@ def test_export_daily_ingests_pending_v5_inbox_before_snapshot(tmp_path):
     assert manifest["v5_export_consistency"]["embedded_v5_bundle_redacted"] is True
     assert provenance["embedded_v5_bundle_present"] is True
     assert (
-        provenance["embedded_v5_bundle_member_path"]
-        == manifest["embedded_v5_bundle_member_path"]
+        provenance["embedded_v5_bundle_member_path"] == manifest["embedded_v5_bundle_member_path"]
     )
     assert provenance["embedded_v5_bundle_sha256"] == manifest["embedded_v5_bundle_sha256"]
     assert provenance["embedded_v5_bundle_source_sha256"] == manifest["selected_v5_bundle_sha256"]
@@ -3799,11 +3723,14 @@ def test_export_daily_ingests_pending_v5_inbox_before_snapshot(tmp_path):
     )
     assert promoted_ack["paper_tracker_id"] == "BNB_F3_DOMINANT_ENTRY_PAPER_V1"
     assert promoted_ack["live_order_effect"] == "paper_only_no_live_order"
-    assert next(
-        item
-        for item in manifest["files"]
-        if item["path"] == manifest["embedded_v5_bundle_member_path"]
-    )["sha256"] == manifest["embedded_v5_bundle_sha256"]
+    assert (
+        next(
+            item
+            for item in manifest["files"]
+            if item["path"] == manifest["embedded_v5_bundle_member_path"]
+        )["sha256"]
+        == manifest["embedded_v5_bundle_sha256"]
+    )
     assert validate_expert_pack(result.zip_path).valid is True
     assert manifest["latest_v5_bundle_seen_at_export"].startswith("2026-05-17T06:00:00")
     assert manifest["latest_v5_bundle_ingested_at_export"].startswith("2026-05-17T06:00:00")
@@ -3869,9 +3796,7 @@ def test_export_daily_preserves_paper_strategy_ack_from_registry_without_v5_summ
     with zipfile.ZipFile(result.zip_path) as archive:
         proposal_ack_rows = list(
             csv.DictReader(
-                io.StringIO(
-                    archive.read("reports/paper_strategy_proposal_ack.csv").decode("utf-8")
-                )
+                io.StringIO(archive.read("reports/paper_strategy_proposal_ack.csv").decode("utf-8"))
             )
         )
         registry_rows = list(
@@ -3890,6 +3815,55 @@ def test_export_daily_preserves_paper_strategy_ack_from_registry_without_v5_summ
     assert ack["source_v5_bundle_sha256"] == "bundle-sha"
     assert ack["live_order_effect"] == "paper_only_no_live_order"
     assert registry_rows[0]["status"] == "PAPER_TRACKING"
+
+
+def test_export_daily_includes_legacy_paper_migration_audit(tmp_path):
+    lake_root = tmp_path / "lake"
+    write_parquet_dataset(
+        pl.DataFrame(
+            [
+                {
+                    "strategy_candidate": "v5.alt_impulse_shadow",
+                    "symbol": "TRX-USDT",
+                    "horizon_hours": 48,
+                    "decision": "PAPER_READY",
+                    "complete_sample_count": 30,
+                },
+                {
+                    "strategy_candidate": "legacy.unselected",
+                    "symbol": "ETH-USDT",
+                    "horizon_hours": 24,
+                    "decision": "PAPER_READY",
+                    "complete_sample_count": 30,
+                },
+            ]
+        ),
+        lake_root / "gold" / "alpha_discovery_board",
+    )
+
+    result = export_daily_pack(
+        export_date="2026-07-10",
+        lake_root=lake_root,
+        out_dir=tmp_path / "exports",
+        profile="expert",
+        command_line=["qlab", "export-daily"],
+        pre_export_v5_refresh=False,
+    )
+
+    with zipfile.ZipFile(result.zip_path) as archive:
+        rows = list(
+            csv.DictReader(
+                io.StringIO(
+                    archive.read("reports/paper_strategy_migration_audit.csv").decode("utf-8")
+                )
+            )
+        )
+
+    assert {row["migration_status"] for row in rows} == {
+        "MIGRATED_TO_V1_CONTRACT",
+        "NOT_SELECTED_FIRST_BATCH",
+    }
+    assert len({row["legacy_row_id"] for row in rows}) == 2
 
 
 def test_export_daily_does_not_report_pending_registry_rows_as_ack(tmp_path):
@@ -3964,9 +3938,7 @@ def test_export_daily_does_not_report_pending_registry_rows_as_ack(tmp_path):
     with zipfile.ZipFile(result.zip_path) as archive:
         proposal_ack_rows = list(
             csv.DictReader(
-                io.StringIO(
-                    archive.read("reports/paper_strategy_proposal_ack.csv").decode("utf-8")
-                )
+                io.StringIO(archive.read("reports/paper_strategy_proposal_ack.csv").decode("utf-8"))
             )
         )
         registry_rows = list(
@@ -4870,8 +4842,7 @@ def test_data_quality_critical_failures_are_not_downgraded_to_warn(tmp_path):
     assert checks["market_bar_present"]["status"] == "FAIL"
     assert checks["market_bar_present"]["severity"] == "critical"
     assert any(
-        failure.startswith("market_bar_present:")
-        for failure in data_quality.get("failures", [])
+        failure.startswith("market_bar_present:") for failure in data_quality.get("failures", [])
     )
 
 
@@ -4981,8 +4952,7 @@ def test_data_quality_marks_read_only_live_cost_block_as_pass_diagnostic(tmp_pat
     assert readiness_check["severity"] == "warning"
     assert "live_order_effect=read_only_no_live_order" in readiness_check["detail"]
     assert not any(
-        "quant_lab_enforce_readiness:" in warning
-        for warning in data_quality.get("warnings", [])
+        "quant_lab_enforce_readiness:" in warning for warning in data_quality.get("warnings", [])
     )
     assert not any(
         "quant_lab_enforce_readiness:" in failure for failure in data_quality.get("failures", [])
@@ -5420,9 +5390,7 @@ def test_stale_dataset_check_ignores_rollup_covered_heavy_raw_datasets():
     stale = daily_export_module._stale_rows(
         {
             "okx_public_ws": pl.DataFrame(),
-            "okx_public_ws_health": pl.DataFrame(
-                [{"last_message_at": now, "updated_at": now}]
-            ),
+            "okx_public_ws_health": pl.DataFrame([{"last_message_at": now, "updated_at": now}]),
             "orderbook_snapshot": pl.DataFrame(),
             "orderbook_spread_1m": pl.DataFrame(
                 [{"ts": now, "symbol": "BTC-USDT", "spread_bps": 1.2}]
@@ -6208,9 +6176,10 @@ def test_export_reports_private_fills_when_actual_cost_is_zero(tmp_path):
     )
     checks = {check["name"]: check for check in data_quality["checks"]}
     assert checks["private_fills_present_but_actual_cost_zero"]["status"] == "WARN"
-    assert "latest_health_check_passed=false" in checks[
-        "private_fills_present_but_actual_cost_zero"
-    ]["detail"]
+    assert (
+        "latest_health_check_passed=false"
+        in checks["private_fills_present_but_actual_cost_zero"]["detail"]
+    )
     assert checks["actual_cost_symbol_coverage"]["status"] == "PASS"
     assert "latest_actual_or_mixed_symbols=0/" in checks["actual_cost_symbol_coverage"]["detail"]
     assert "historical_actual_or_mixed_symbols=" in checks["actual_cost_symbol_coverage"]["detail"]
@@ -6506,9 +6475,7 @@ def test_export_treats_cost_probe_private_fills_as_info_not_actual_warning(tmp_p
     assert "cost_probe_private_fill_count=2" in private_fill_check["detail"]
     assert "effective_relevant_private_fills=0" in private_fill_check["detail"]
     assert "classification_overrides_latest_health=true" in private_fill_check["detail"]
-    assert (
-        checks["cost_probe_private_fills_excluded_from_live_coverage"]["status"] == "INFO"
-    )
+    assert checks["cost_probe_private_fills_excluded_from_live_coverage"]["status"] == "INFO"
     assert not any(
         warning.startswith("private_fills_present_but_actual_cost_zero")
         for warning in data_quality["warnings"]
@@ -6694,8 +6661,7 @@ def test_live_universe_stale_actual_or_mixed_detail_lists_uncovered_symbols():
     assert passed is False
     assert "stale_actual_or_mixed_symbols=['BTC-USDT']" in detail
     assert (
-        "uncovered_actual_or_mixed_symbols=['BNB-USDT', 'BTC-USDT', "
-        "'ETH-USDT', 'SOL-USDT']"
+        "uncovered_actual_or_mixed_symbols=['BNB-USDT', 'BTC-USDT', 'ETH-USDT', 'SOL-USDT']"
     ) in detail
     assert "proxy_only_symbols=['BTC-USDT', 'ETH-USDT']" in detail
     assert "coverage_status=WARNING" in detail

@@ -4,7 +4,7 @@ from fastapi.testclient import TestClient
 from quant_lab.api.main import create_app
 
 
-def test_all_strategy_facing_v1_routes_are_get_only():
+def test_only_paper_ack_metadata_route_can_be_non_get():
     app = create_app()
     mutating_methods = {"POST", "PUT", "PATCH", "DELETE"}
     offending = []
@@ -14,7 +14,7 @@ def test_all_strategy_facing_v1_routes_are_get_only():
             if methods & mutating_methods:
                 offending.append((route.path, sorted(methods & mutating_methods)))
 
-    assert offending == []
+    assert offending == [("/v1/paper-strategy/ack", ["POST"])]
 
 
 def test_catalog_uses_dataset_registry():

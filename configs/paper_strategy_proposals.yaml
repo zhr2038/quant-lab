@@ -1,0 +1,104 @@
+schema_version: paper_strategy_templates.v1
+proposals:
+  - strategy_id: TRX_ALT_IMPULSE_48H_PAPER
+    strategy_version: "1.0.0"
+    strategy_family: alt_impulse
+    symbol: TRX/USDT
+    timeframe: 1h
+    direction: long
+    source_candidates: [alt_impulse]
+    source_horizon_hours: 48
+    entry_rule:
+      operator: all
+      children:
+        - operator: regime_in
+          field: market_regime
+          values: [ALT_IMPULSE]
+        - operator: momentum_gt
+          field: momentum_24
+          value: 0
+    exit_rule:
+      operator: any
+      children:
+        - operator: max_holding_bars
+          value: 48
+        - operator: signal_invalid
+          field: momentum_24
+          value: 0
+    max_holding_bars: 48
+    min_holding_bars: 1
+    cooldown_bars: 24
+    signal_confirmation_bars: 2
+    cost_quantile: p75
+    minimum_expected_edge_bps: 20
+    paper_notional_usdt: 20
+    required_market_fields: [bid, ask, mid, momentum_24, market_regime]
+    required_cost_trust_level: PAPER_ONLY
+
+  - strategy_id: BCH_F3_F4_DEDUP_72H_PAPER
+    strategy_version: "1.0.0"
+    strategy_family: f3_f4_deduplicated_entry
+    symbol: BCH/USDT
+    timeframe: 1h
+    direction: long
+    source_candidates: [f3, f4]
+    source_horizon_hours: 72
+    entry_rule:
+      operator: all
+      children:
+        - operator: momentum_gt
+          field: momentum_24
+          value: 0
+        - operator: volume_zscore_gt
+          field: volume_zscore_24
+          value: 0
+    exit_rule:
+      operator: any
+      children:
+        - operator: max_holding_bars
+          value: 72
+        - operator: stop_loss
+          value: -300
+    max_holding_bars: 72
+    min_holding_bars: 1
+    cooldown_bars: 24
+    signal_confirmation_bars: 1
+    cost_quantile: p75
+    minimum_expected_edge_bps: 20
+    paper_notional_usdt: 20
+    required_market_fields: [bid, ask, mid, momentum_24, volume_zscore_24]
+    required_cost_trust_level: PAPER_ONLY
+
+  - strategy_id: TAO_F3_F4_DEDUP_8H_PAPER
+    strategy_version: "1.0.0"
+    strategy_family: f3_f4_deduplicated_entry
+    symbol: TAO/USDT
+    timeframe: 1h
+    direction: long
+    source_candidates: [f3, f4]
+    source_horizon_hours: 8
+    entry_rule:
+      operator: all
+      children:
+        - operator: momentum_gt
+          field: momentum_8
+          value: 0
+        - operator: volume_zscore_gt
+          field: volume_zscore_24
+          value: 0
+    exit_rule:
+      operator: any
+      children:
+        - operator: max_holding_bars
+          value: 8
+        - operator: trailing_exit
+          value: 80
+    max_holding_bars: 8
+    min_holding_bars: 1
+    cooldown_bars: 8
+    signal_confirmation_bars: 1
+    cost_quantile: p75
+    minimum_expected_edge_bps: 20
+    paper_notional_usdt: 20
+    required_market_fields: [bid, ask, mid, momentum_8, volume_zscore_24]
+    required_cost_trust_level: PAPER_ONLY

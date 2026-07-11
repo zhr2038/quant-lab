@@ -283,6 +283,10 @@ def _snapshot_source_signature(root: Path) -> tuple[Any, ...]:
         _directory_signature(root / "gold" / "quant_lab_opportunity_cost_daily"),
         _directory_signature(root / "gold" / "opportunity_cost_by_bucket"),
         _directory_signature(root / "gold" / "quant_lab_decision_regret"),
+        _directory_signature(root / "gold" / "paper_strategy_proposal"),
+        _directory_signature(root / "gold" / "paper_strategy_registry"),
+        _directory_signature(root / "gold" / "paper_strategy_promotion_gate"),
+        _directory_signature(root / "gold" / "strategy_cost_trust"),
         _path_signature(_web_v2_smoke_status_path()),
     )
 
@@ -501,6 +505,10 @@ def _safe_strategy_summary(root: Path) -> dict[str, Any]:
         ("factor_candidate", "factor_candidate"),
         ("factor_evidence", "factor_evidence"),
         ("factor_correlation_daily", "factor_correlation_daily"),
+        ("paper_strategy_proposal", "paper_strategy_proposal"),
+        ("paper_strategy_registry", "paper_strategy_registry"),
+        ("paper_strategy_promotion_gate", "paper_strategy_promotion_gate"),
+        ("strategy_cost_trust", "strategy_cost_trust"),
     ]:
         frame, warning = _read_display_frame(root, dataset_name)
         if frame.is_empty() and dataset_name == "risk_on_multi_buy_shadow":
@@ -1603,6 +1611,7 @@ def _strategy_flow(strategy: dict[str, Any]) -> dict[str, Any]:
     top = _top_strategy_candidates(ranking_rows or advisory_rows)
     factor_factory = _factor_factory_payload(strategy)
     opportunity_cost = _opportunity_cost_payload(strategy)
+    paper_lifecycle = _paper_lifecycle_payload(strategy)
     return {
         "counts": counts,
         "top_candidates": top[:8],
@@ -1612,11 +1621,124 @@ def _strategy_flow(strategy: dict[str, Any]) -> dict[str, Any]:
         "risk_on_multi_buy": _frame_rows(strategy.get("risk_on_multi_buy_shadow"), limit=6),
         "factor_factory": factor_factory,
         "opportunity_cost": opportunity_cost,
+        "paper_lifecycle": paper_lifecycle,
         "fast_microstructure_forward": _fast_microstructure_forward_payload(
             strategy.get("fast_microstructure_forward_test")
         ),
         "advisory_fresh": True,
     }
+
+
+_PAPER_LIFECYCLE_STATES = (
+    "RESEARCH_ONLY",
+    "BACKTEST_CANDIDATE",
+    "PAPER_PROPOSAL_READY",
+    "PAPER_ACK_PENDING",
+    "PAPER_TRACKER_ACTIVE",
+    "PAPER_EVIDENCE_INSUFFICIENT",
+    "PAPER_PROMOTION_READY",
+    "CANARY_READY",
+    "LIVE_SCALE_READY",
+    "REJECTED",
+    "KILLED",
+)
+
+
+def _paper_lifecycle_payload(strategy: dict[str, Any]) -> dict[str, Any]:
+    sources = (
+        ("proposal", _frame_rows(strategy.get("paper_strategy_proposal"), limit=2_000)),
+        ("registry", _frame_rows(strategy.get("paper_strategy_registry"), limit=2_000)),
+        (
+            "promotion",
+            _frame_rows(strategy.get("paper_strategy_promotion_gate"), limit=2_000),
+        ),
+    )
+    latest: dict[str, dict[str, Any]] = {}
+    for source, rows in sources:
+        for row in rows:
+            proposal_id = str(row.get("proposal_id") or "").strip()
+            strategy_id = str(row.get("strategy_id") or "").strip()
+            strategy_version = str(row.get("strategy_version") or "").strip()
+            key = proposal_id or f"{strategy_id}:{strategy_version}"
+            if not key.strip(":"):
+                continue
+            merged = {**latest.get(key, {}), **row}
+            merged["lifecycle_source"] = source
+            merged["lifecycle_state"] = _normalized_paper_lifecycle_state(merged, source)
+            latest[key] = merged
+
+    cost_by_strategy: dict[str, dict[str, Any]] = {}
+    for row in _frame_rows(strategy.get("strategy_cost_trust"), limit=2_000):
+        strategy_id = str(row.get("strategy_id") or "").strip()
+        if strategy_id:
+            cost_by_strategy[strategy_id] = row
+
+    counts = {state: 0 for state in _PAPER_LIFECYCLE_STATES}
+    rows: list[dict[str, Any]] = []
+    for row in latest.values():
+        state = str(row.get("lifecycle_state") or "RESEARCH_ONLY")
+        if state in counts:
+            counts[state] += 1
+        strategy_id = str(row.get("strategy_id") or "").strip()
+        cost = cost_by_strategy.get(strategy_id, {})
+        rows.append(
+            {
+                "proposal_id": row.get("proposal_id"),
+                "proposal_hash": row.get("proposal_hash"),
+                "strategy_id": strategy_id,
+                "strategy_version": row.get("strategy_version"),
+                "symbol": row.get("symbol"),
+                "lifecycle_state": state,
+                "lifecycle_reason": row.get("lifecycle_reason"),
+                "blocked_reasons": row.get("promotion_block_reasons")
+                or row.get("blocked_reasons"),
+                "next_required_actions": row.get("next_required_actions"),
+                "paper_only": row.get("paper_only", True),
+                "live_order_effect": row.get("live_order_effect")
+                or "paper_only_no_live_order",
+                "promotion_score": row.get("promotion_score"),
+                "cost_trust_level": cost.get("cost_trust_level") or "BLOCK",
+                "created_at": row.get("created_at"),
+            }
+        )
+    rows.sort(
+        key=lambda row: (
+            str(row.get("created_at") or ""),
+            str(row.get("proposal_id") or ""),
+        ),
+        reverse=True,
+    )
+
+    cost_counts: dict[str, int] = {}
+    for row in cost_by_strategy.values():
+        level = str(row.get("cost_trust_level") or "BLOCK")
+        cost_counts[level] = cost_counts.get(level, 0) + 1
+    return {
+        "contract_version": "quant_lab.paper_strategy.v1",
+        "runtime_mode": "PAPER_ONLY",
+        "live_order_effect": "none",
+        "counts": counts,
+        "cost_trust_counts": cost_counts,
+        "rows": rows[:8],
+        "total": len(rows),
+    }
+
+
+def _normalized_paper_lifecycle_state(row: dict[str, Any], source: str) -> str:
+    raw = str(row.get("lifecycle_state") or row.get("status") or "").strip().upper()
+    if raw == "PAPER_READY":
+        return "PAPER_PROPOSAL_READY"
+    if raw in _PAPER_LIFECYCLE_STATES:
+        return raw
+    if str(row.get("reject_reason") or "").strip():
+        return "REJECTED"
+    if source == "proposal":
+        return "PAPER_PROPOSAL_READY"
+    if row.get("accepted") is True and row.get("paper_tracker_effective") is True:
+        return "PAPER_TRACKER_ACTIVE"
+    if row.get("accepted") is True:
+        return "PAPER_ACK_PENDING"
+    return "PAPER_ACK_PENDING"
 
 
 def _opportunity_cost_payload(strategy: dict[str, Any]) -> dict[str, Any]:

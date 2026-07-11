@@ -77,16 +77,23 @@ SILVER_DATASETS = {
     "v5_quant_lab_fallback": Path("silver/v5_quant_lab_fallback"),
     "v5_candidate_event": Path("silver/v5_candidate_event"),
     "v5_order_lifecycle": Path("silver/v5_order_lifecycle"),
+    "v5_fill_bill_cost_reconciliation": Path("silver/v5_fill_bill_cost_reconciliation"),
     "v5_cost_probe_p3_preflight": Path("silver/v5_cost_probe_p3_preflight"),
-    "v5_cost_probe_live_execution_status": Path(
-        "silver/v5_cost_probe_live_execution_status"
-    ),
+    "v5_cost_probe_live_execution_status": Path("silver/v5_cost_probe_live_execution_status"),
     "v5_cost_probe_order_event": Path("silver/v5_cost_probe_order_event"),
     "v5_cost_probe_roundtrip_event": Path("silver/v5_cost_probe_roundtrip_event"),
     "v5_paper_strategy_run": Path("silver/v5_paper_strategy_run"),
     "v5_paper_strategy_proposal_ack": Path("silver/v5_paper_strategy_proposal_ack"),
     "v5_paper_strategy_daily": Path("silver/v5_paper_strategy_daily"),
     "v5_paper_slippage_coverage": Path("silver/v5_paper_slippage_coverage"),
+    "v5_paper_strategy_registry": Path("silver/v5_paper_strategy_registry"),
+    "v5_paper_strategy_state": Path("silver/v5_paper_strategy_state"),
+    "v5_paper_strategy_signal": Path("silver/v5_paper_strategy_signal"),
+    "v5_paper_strategy_quote_coverage": Path("silver/v5_paper_strategy_quote_coverage"),
+    "v5_paper_strategy_cost_evidence": Path("silver/v5_paper_strategy_cost_evidence"),
+    "v5_paper_strategy_error": Path("silver/v5_paper_strategy_error"),
+    "v5_paper_strategy_restart_recovery": Path("silver/v5_paper_strategy_restart_recovery"),
+    "v5_quant_lab_contract_status": Path("silver/v5_quant_lab_contract_status"),
     "v5_expanded_universe_advisory_reader": Path("silver/v5_expanded_universe_advisory_reader"),
     "v5_expanded_universe_paper_runs": Path("silver/v5_expanded_universe_paper_runs"),
     "v5_expanded_universe_paper_daily": Path("silver/v5_expanded_universe_paper_daily"),
@@ -114,6 +121,7 @@ WEB_VISIBLE_SILVER_SNAPSHOT_META_DATASETS = {
     "v5_quant_lab_cost_usage",
     "v5_quant_lab_fallback",
     "v5_candidate_event",
+    "v5_fill_bill_cost_reconciliation",
     "v5_cost_probe_p3_preflight",
     "v5_cost_probe_live_execution_status",
     "v5_cost_probe_order_event",
@@ -122,6 +130,14 @@ WEB_VISIBLE_SILVER_SNAPSHOT_META_DATASETS = {
     "v5_paper_strategy_proposal_ack",
     "v5_paper_strategy_daily",
     "v5_paper_slippage_coverage",
+    "v5_paper_strategy_registry",
+    "v5_paper_strategy_state",
+    "v5_paper_strategy_signal",
+    "v5_paper_strategy_quote_coverage",
+    "v5_paper_strategy_cost_evidence",
+    "v5_paper_strategy_error",
+    "v5_paper_strategy_restart_recovery",
+    "v5_quant_lab_contract_status",
     "v5_expanded_universe_advisory_reader",
     "v5_expanded_universe_paper_runs",
     "v5_expanded_universe_paper_daily",
@@ -179,9 +195,20 @@ EMPTY_CSV_REFRESH_DATASETS = {
     "v5_expanded_universe_advisory_reader",
     "v5_expanded_universe_paper_runs",
     "v5_expanded_universe_paper_daily",
+    "v5_paper_strategy_registry",
+    "v5_paper_strategy_state",
+    "v5_paper_strategy_quote_coverage",
+    "v5_paper_strategy_cost_evidence",
 }
 REHYDRATE_IF_EMPTY_DATASETS = {
     *EMPTY_CSV_REFRESH_DATASETS,
+    "v5_paper_strategy_proposal_ack",
+    "v5_paper_strategy_run",
+    "v5_paper_strategy_daily",
+    "v5_paper_strategy_signal",
+    "v5_paper_strategy_error",
+    "v5_paper_strategy_restart_recovery",
+    "v5_quant_lab_contract_status",
     "v5_cost_probe_p3_preflight",
     "v5_cost_probe_live_execution_status",
 }
@@ -189,6 +216,7 @@ SOURCE_AGNOSTIC_STABLE_ROW_KEY_DATASETS = {
     "v5_pullback_reversal_shadow",
     "v5_pullback_reversal_readiness",
     "v5_cost_probe_live_execution_status",
+    "v5_fill_bill_cost_reconciliation",
 }
 HISTORICAL_OUTCOME_PATH_PREFIXES = (
     "summaries/high_score_blocked_outcomes",
@@ -283,8 +311,7 @@ def ingest_v5_bundle(
         warnings = ["bundle sha256 already ingested", *rehydrate_warnings]
         if rehydrated_rows:
             warnings.append(
-                "rehydrated_empty_csv_refresh_datasets:"
-                + ",".join(sorted(rehydrated_rows))
+                "rehydrated_empty_csv_refresh_datasets:" + ",".join(sorted(rehydrated_rows))
             )
         return V5BundleIngestResult(
             strategy=strategy,
@@ -308,9 +335,7 @@ def ingest_v5_bundle(
             bundle_path,
             extracted_dir,
             effective_limits,
-            skip_member=None
-            if include_historical_outcomes
-            else _skip_historical_outcome_member,
+            skip_member=None if include_historical_outcomes else _skip_historical_outcome_member,
         )
         pruned_historical_outcomes = (
             _historical_outcomes_skipped_by_extract(extract_result.warnings)
@@ -628,12 +653,23 @@ def _rehydrate_empty_csv_refresh_datasets(
         "summaries/expanded_universe_advisory_reader.csv",
         "summaries/expanded_universe_paper_runs.csv",
         "summaries/expanded_universe_paper_daily.csv",
-    "reports/cost_probe_p3_preflight.json",
-    "summaries/cost_probe_p3_preflight.json",
-    "raw/reports/cost_probe_p3_preflight.json",
-    "reports/cost_probe_live_execution_status.json",
-    "summaries/cost_probe_live_execution_status.json",
-    "raw/reports/cost_probe_live_execution_status.json",
+        "summaries/paper_strategy_proposal_ack.csv",
+        "summaries/paper_strategy_registry.csv",
+        "summaries/paper_strategy_state.csv",
+        "summaries/paper_strategy_signals.csv",
+        "summaries/paper_strategy_runs.csv",
+        "summaries/paper_strategy_daily.csv",
+        "summaries/paper_strategy_quote_coverage.csv",
+        "summaries/paper_strategy_cost_evidence.csv",
+        "summaries/paper_strategy_errors.csv",
+        "summaries/paper_strategy_restart_recovery.csv",
+        "summaries/quant_lab_contract_status.json",
+        "reports/cost_probe_p3_preflight.json",
+        "summaries/cost_probe_p3_preflight.json",
+        "raw/reports/cost_probe_p3_preflight.json",
+        "reports/cost_probe_live_execution_status.json",
+        "summaries/cost_probe_live_execution_status.json",
+        "raw/reports/cost_probe_live_execution_status.json",
     }
 
     with tempfile.TemporaryDirectory(prefix="quant_lab_v5_rehydrate_") as temp_name:
@@ -797,15 +833,11 @@ def _append_file_rows(
     run_id = run_id_from_path(logical)
     if logical.endswith("/summary.json") or logical == "summaries/window_summary.json":
         payload = _read_json(file_path)
-        rows["v5_run_summary"].append(
-            _json_row(metadata, relative, payload, run_id)
-        )
+        rows["v5_run_summary"].append(_json_row(metadata, relative, payload, run_id))
         return
     if logical.endswith("/decision_audit.json"):
         payload = _read_json(file_path)
-        rows["v5_decision_audit"].append(
-            _json_row(metadata, relative, payload, run_id)
-        )
+        rows["v5_decision_audit"].append(_json_row(metadata, relative, payload, run_id))
         return
     if logical.endswith("/equity.jsonl"):
         rows["v5_equity_point"].extend(_jsonl_rows(metadata, relative, file_path))
@@ -909,6 +941,26 @@ def _append_file_rows(
             }
         )
         return
+    if logical == "summaries/quant_lab_contract_status.json":
+        payload = _read_json(file_path)
+        rows["v5_quant_lab_contract_status"].append(
+            _json_row(metadata, relative, payload, None)
+            | {
+                "contract_version": str(payload.get("contract_version") or ""),
+                "paper_runtime_enabled": bool(payload.get("paper_runtime_enabled")),
+                "paper_runtime_live_order_effect": str(
+                    payload.get("paper_runtime_live_order_effect") or ""
+                ),
+                "quant_lab_mode": str(payload.get("quant_lab_mode") or ""),
+                "canary_enabled": bool(payload.get("canary_enabled")),
+                "active_tracker_count": int(payload.get("active_tracker_count") or 0),
+                "open_paper_position_count": int(payload.get("open_paper_position_count") or 0),
+                "real_order_calls": int(payload.get("real_order_calls") or 0),
+                "real_position_mutations": int(payload.get("real_position_mutations") or 0),
+                "generated_at": str(payload.get("generated_at") or ""),
+            }
+        )
+        return
     csv_mapping = {
         "summaries/router_decisions.csv": "v5_router_decision",
         "summaries/trades_roundtrips.csv": "v5_roundtrip",
@@ -919,13 +971,19 @@ def _append_file_rows(
         "summaries/probe_diagnostics.csv": "v5_probe_diagnostic",
         "summaries/quant_lab_compliance.csv": "v5_quant_lab_compliance",
         "summaries/quant_lab_cost_usage.csv": "v5_quant_lab_cost_usage",
+        "summaries/fill_bill_cost_reconciliation.csv": ("v5_fill_bill_cost_reconciliation"),
         "summaries/paper_strategy_runs.csv": "v5_paper_strategy_run",
         "summaries/paper_strategy_proposal_ack.csv": "v5_paper_strategy_proposal_ack",
         "summaries/paper_strategy_daily.csv": "v5_paper_strategy_daily",
         "summaries/paper_slippage_coverage.csv": "v5_paper_slippage_coverage",
-        "summaries/expanded_universe_advisory_reader.csv": (
-            "v5_expanded_universe_advisory_reader"
-        ),
+        "summaries/paper_strategy_registry.csv": "v5_paper_strategy_registry",
+        "summaries/paper_strategy_state.csv": "v5_paper_strategy_state",
+        "summaries/paper_strategy_signals.csv": "v5_paper_strategy_signal",
+        "summaries/paper_strategy_quote_coverage.csv": ("v5_paper_strategy_quote_coverage"),
+        "summaries/paper_strategy_cost_evidence.csv": ("v5_paper_strategy_cost_evidence"),
+        "summaries/paper_strategy_errors.csv": "v5_paper_strategy_error",
+        "summaries/paper_strategy_restart_recovery.csv": ("v5_paper_strategy_restart_recovery"),
+        "summaries/expanded_universe_advisory_reader.csv": ("v5_expanded_universe_advisory_reader"),
         "summaries/expanded_universe_paper_runs.csv": "v5_expanded_universe_paper_runs",
         "summaries/expanded_universe_paper_daily.csv": "v5_expanded_universe_paper_daily",
         "summaries/bnb_profit_lock_shadow.csv": "v5_bnb_profit_lock_shadow",
@@ -1162,9 +1220,7 @@ def _cost_probe_p3_preflight_rows(
         "live_order_effect": _clean_text(payload.get("live_order_effect"))
         or "none_preflight_only_no_order",
         "manual_probe_symbol": _clean_text(payload.get("manual_probe_symbol")),
-        "manual_allowed_symbols_json": safe_json_dumps(
-            payload.get("manual_allowed_symbols") or []
-        ),
+        "manual_allowed_symbols_json": safe_json_dumps(payload.get("manual_allowed_symbols") or []),
         "manual_max_notional_usdt": _clean_text(payload.get("manual_max_notional_usdt")),
         "manual_required_exit_policy": _clean_text(payload.get("manual_required_exit_policy")),
         "manual_max_open_seconds": _clean_text(payload.get("manual_max_open_seconds")),
@@ -1173,9 +1229,7 @@ def _cost_probe_p3_preflight_rows(
         "runtime_blockers_json": safe_json_dumps(payload.get("runtime_blockers") or []),
         "guard_failures_json": safe_json_dumps(payload.get("guard_failures") or []),
         "dry_run_plan_state": _clean_text(payload.get("dry_run_plan_state")),
-        "latest_terminal_roundtrip_id": _clean_text(
-            payload.get("latest_terminal_roundtrip_id")
-        ),
+        "latest_terminal_roundtrip_id": _clean_text(payload.get("latest_terminal_roundtrip_id")),
         "latest_terminal_roundtrip_ts": _normalize_event_time(
             payload.get("latest_terminal_roundtrip_ts")
         ),
@@ -1301,9 +1355,7 @@ def _cost_probe_order_event_rows(
         )
         no_order_submitted = _parse_bool(payload.get("no_order_submitted"))
         live_order_effect = _clean_text(payload.get("live_order_effect")) or (
-            "none_cost_probe_event_only"
-            if no_order_submitted is True
-            else "live_cost_probe_order"
+            "none_cost_probe_event_only" if no_order_submitted is True else "live_cost_probe_order"
         )
         enriched_payload = {
             **payload,
@@ -1430,24 +1482,16 @@ def _cost_probe_roundtrip_event_rows(
                 "live_enabled": _parse_bool(payload.get("live_enabled")),
                 "no_order_submitted": no_order_submitted,
                 "gross_pnl_usdt": _clean_text(payload.get("gross_pnl_usdt")),
-                "fees_usdt": _clean_text(
-                    _first_payload_value(payload, ["fees_usdt", "fee_usdt"])
-                ),
+                "fees_usdt": _clean_text(_first_payload_value(payload, ["fees_usdt", "fee_usdt"])),
                 "net_pnl_usdt": _clean_text(payload.get("net_pnl_usdt")),
                 "authorization_id": _clean_text(payload.get("authorization_id")),
                 "execution_completed": _parse_bool(payload.get("execution_completed")),
                 "flat_verified": _parse_bool(payload.get("flat_verified")),
-                "exchange_flat_verified": _parse_bool(
-                    payload.get("exchange_flat_verified")
-                ),
+                "exchange_flat_verified": _parse_bool(payload.get("exchange_flat_verified")),
                 "local_flat_verified": _parse_bool(payload.get("local_flat_verified")),
                 "reconcile_ok": _parse_bool(payload.get("reconcile_ok")),
-                "cost_evidence_complete": _parse_bool(
-                    payload.get("cost_evidence_complete")
-                ),
-                "eligible_for_cost_model": _parse_bool(
-                    payload.get("eligible_for_cost_model")
-                ),
+                "cost_evidence_complete": _parse_bool(payload.get("cost_evidence_complete")),
+                "eligible_for_cost_model": _parse_bool(payload.get("eligible_for_cost_model")),
                 "eligible_for_live_cost_coverage": _parse_bool(
                     payload.get("eligible_for_live_cost_coverage")
                 ),
@@ -1458,9 +1502,7 @@ def _cost_probe_roundtrip_event_rows(
                 "entry_fee_usdt": _clean_text(payload.get("entry_fee_usdt")),
                 "exit_fee_usdt": _clean_text(payload.get("exit_fee_usdt")),
                 "roundtrip_cost_bps": _clean_text(payload.get("roundtrip_cost_bps")),
-                "fee_conversion_warnings": _clean_text(
-                    payload.get("fee_conversion_warnings")
-                ),
+                "fee_conversion_warnings": _clean_text(payload.get("fee_conversion_warnings")),
                 "bill_match_status": _clean_text(payload.get("bill_match_status")),
                 "fee_match_status": _clean_text(payload.get("fee_match_status")),
                 "live_order_effect": live_order_effect,
@@ -2075,12 +2117,9 @@ def _event_key_fields(
 ) -> dict[str, Any]:
     source_path = _logical_bundle_path(str(row.get("source_path_inside_bundle") or ""))
     strategy_id = _clean_text(
-        _first_value(row, payload, ["strategy_id", "strategyId", "strategy"])
-        or row.get("strategy")
+        _first_value(row, payload, ["strategy_id", "strategyId", "strategy"]) or row.get("strategy")
     )
-    event_id = _clean_text(
-        _first_value(row, payload, ["event_id", "eventId", "source_event_id"])
-    )
+    event_id = _clean_text(_first_value(row, payload, ["event_id", "eventId", "source_event_id"]))
     run_id = _first_value(row, payload, ["run_id", "runId", "run"])
     ts_utc = _normalize_event_time(
         _first_value(
@@ -2118,9 +2157,7 @@ def _event_key_fields(
     fallback_used = _parse_bool(
         _first_value(row, payload, ["fallback_used", "used_fallback", "local_fallback"])
     )
-    request_id = _clean_text(
-        _first_value(row, payload, ["request_id", "trace_id", "id", "uuid"])
-    )
+    request_id = _clean_text(_first_value(row, payload, ["request_id", "trace_id", "id", "uuid"]))
     status_code = _status_code(row, payload)
     symbol_value = _clean_text(
         _first_value(
@@ -2166,11 +2203,7 @@ def _event_key_from_fields(fields: dict[str, Any]) -> str:
             and value is not None
             and value != ""
         }
-        if (
-            stable.get("endpoint_path")
-            and stable.get("ts_utc")
-            and stable.get("error_type")
-        ):
+        if stable.get("endpoint_path") and stable.get("ts_utc") and stable.get("error_type"):
             # Summary fallback CSV rows often omit run_id while raw request rows carry it.
             # Endpoint + event time + concrete error are the stable cross-bundle identity.
             stable.pop("run_id", None)
@@ -2623,9 +2656,12 @@ def _append_rows(dataset_path: Path, rows: list[dict[str, Any]]) -> int:
         try:
             existing = read_parquet_lazy(dataset_path)
             if "bundle_sha256" in existing.collect_schema().names():
-                already_present = not existing.filter(
-                    pl.col("bundle_sha256") == bundle_sha256
-                ).limit(1).collect().is_empty()
+                already_present = (
+                    not existing.filter(pl.col("bundle_sha256") == bundle_sha256)
+                    .limit(1)
+                    .collect()
+                    .is_empty()
+                )
                 if already_present:
                     return 0
         except Exception:
@@ -2649,20 +2685,14 @@ def _upsert_stable_rows(dataset_path: Path, rows: list[dict[str, Any]]) -> int:
     # row for each overlapping follow-up bundle made ingest time grow with the
     # entire lake. Keep a migration fallback only for legacy or damaged datasets.
     if not _stable_row_key_column_complete(existing):
-        df = _dataframe_from_rows(
-            [_with_stable_row_key(row) for row in df.to_dicts()]
-        )
+        df = _dataframe_from_rows([_with_stable_row_key(row) for row in df.to_dicts()])
     if not df.is_empty():
         candidate_keys = (
             ["strategy", "stable_row_key"]
             if dataset_path.name in SOURCE_AGNOSTIC_STABLE_ROW_KEY_DATASETS
             else ["strategy", "source_path_inside_bundle", "stable_row_key"]
         )
-        key_columns = [
-            column
-            for column in candidate_keys
-            if column in df.columns
-        ]
+        key_columns = [column for column in candidate_keys if column in df.columns]
         if key_columns:
             df = df.unique(subset=key_columns, keep="last", maintain_order=True)
     write_parquet_dataset(df, dataset_path)
@@ -2735,6 +2765,8 @@ def _with_stable_row_key(row: dict[str, Any]) -> dict[str, Any]:
 
 def _stable_row_key(row: dict[str, Any]) -> str:
     source_path = _logical_bundle_path(str(row.get("source_path_inside_bundle") or ""))
+    if source_path == "summaries/fill_bill_cost_reconciliation.csv":
+        return _fill_bill_reconciliation_stable_row_key(row)
     if source_path in {
         "reports/pullback_reversal_shadow_outcomes.csv",
         "summaries/pullback_reversal_shadow_outcomes.csv",
@@ -2763,6 +2795,18 @@ def _stable_row_key(row: dict[str, Any]) -> str:
         }
     encoded = safe_json_dumps(basis) if not isinstance(basis, str) else basis
     return hashlib.sha256(encoded.encode("utf-8")).hexdigest()
+
+
+def _fill_bill_reconciliation_stable_row_key(row: dict[str, Any]) -> str:
+    payload = _loads_payload(row.get("raw_payload_json"))
+    basis = {
+        "runtime_scope": _first_value(row, payload, ["runtime_scope"]),
+        "symbol": _first_value(row, payload, ["symbol"]),
+        "order_id": _first_value(row, payload, ["order_id", "ord_id", "ordId"]),
+        "cl_ord_id": _first_value(row, payload, ["cl_ord_id", "clOrdId"]),
+        "trade_ids": _first_value(row, payload, ["trade_ids", "trade_id", "tradeId"]),
+    }
+    return hashlib.sha256(safe_json_dumps(basis).encode("utf-8")).hexdigest()
 
 
 def _pullback_shadow_stable_row_key(row: dict[str, Any]) -> str:

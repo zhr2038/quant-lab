@@ -6460,6 +6460,8 @@ def _empty_dataset_status(dataset_name: str) -> str:
         return "waiting_for_v5_bundle_manifest"
     if dataset_name in V5_PAPER_TELEMETRY_DATASETS:
         return "waiting_for_v5_paper_telemetry"
+    if dataset_name in RESEARCH_DIAGNOSTIC_DATASET_KEYS:
+        return "waiting_for_v5_paper_telemetry"
     if dataset_name in ENTRY_QUALITY_DATASETS:
         return "entry_quality_optional"
     if dataset_name in {

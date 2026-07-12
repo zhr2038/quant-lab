@@ -2362,7 +2362,7 @@ def _legacy_web_anomalies(data_health: dict[str, Any]) -> dict[str, Any]:
                 break
         add_item(
             top_severity,
-            "旧页面：过期或缺失的数据集",
+            "数据集过期或缺失",
             f"{len(stale_rows)} 个数据集需要关注；首页只展示前 {min(len(stale_rows), 12)} 条。",
             "legacy_data_health.stale_datasets",
             "检查对应采集 / refresh / telemetry sync 任务，避免下游页面看到旧结果。",
@@ -2372,7 +2372,7 @@ def _legacy_web_anomalies(data_health: dict[str, Any]) -> dict[str, Any]:
     if schema_count or unclosed_count or duplicate_count:
         add_item(
             "CRITICAL" if schema_count or unclosed_count else "WARNING",
-            "旧页面：行情结构异常",
+            "行情数据结构异常",
             f"schema={schema_count}，未闭合K线={unclosed_count}，重复bar={duplicate_count}。",
             "legacy_data_health.market_bar",
             "优先修复 market_bar 结构 / 未闭合 / 重复问题，再解释策略证据。",
@@ -2382,7 +2382,7 @@ def _legacy_web_anomalies(data_health: dict[str, Any]) -> dict[str, Any]:
     if missing_rows or missing_ratio > 0:
         add_item(
             "WARNING",
-            "旧页面：K线缺口",
+            "历史 K 线存在缺口",
             f"missing_bars={missing_count}，missing_ratio={missing_ratio:.4f}。",
             "legacy_data_health.missing_bars",
             "补齐对应 symbol/timeframe 的 market_bar，再刷新研究报告。",
@@ -2392,7 +2392,7 @@ def _legacy_web_anomalies(data_health: dict[str, Any]) -> dict[str, Any]:
     if warning_values and not items:
         add_item(
             "WARNING",
-            "旧页面：数据健康 warning",
+            "数据健康提示",
             warning_values[0],
             "legacy_data_health.warnings",
             "打开数据健康页查看 warning 明细。",
@@ -3090,7 +3090,10 @@ def _build_actions(
         if not isinstance(item, dict):
             continue
         source = str(item.get("source") or "")
-        if "market_bar" in source:
+        if source in {
+            "legacy_data_health.market_bar",
+            "legacy_data_health.missing_bars",
+        }:
             continue
         actions.append(
             _action(

@@ -221,6 +221,15 @@ def okx_backfill_expanded_universe(
     bar: Annotated[str, typer.Option("--bar", help="OKX candle bar.")] = "1H",
     max_symbols: Annotated[int, typer.Option("--max-symbols", min=1, max=100)] = 30,
     history_pages: Annotated[int, typer.Option("--history-pages", min=1, max=20)] = 8,
+    gap_repair_pages: Annotated[
+        int,
+        typer.Option(
+            "--gap-repair-pages",
+            min=1,
+            max=40,
+            help="History pages used only for selected symbols with internal market-bar gaps.",
+        ),
+    ] = 20,
     limit: Annotated[int, typer.Option("--limit", min=1, max=300)] = 100,
     min_quote_volume_24h: Annotated[
         float,
@@ -241,6 +250,7 @@ def okx_backfill_expanded_universe(
             bar=bar,
             max_symbols=max_symbols,
             history_pages=history_pages,
+            gap_repair_pages=gap_repair_pages,
             limit=limit,
             min_quote_volume_24h=min_quote_volume_24h,
             max_spread_bps=max_spread_bps,

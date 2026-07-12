@@ -89,3 +89,11 @@ def test_data_health_hides_stale_closed_research_diagnostics(tmp_path):
     stale_rows = readers.data_health_summary(lake)["stale_datasets"].to_dicts()
 
     assert not any(row["dataset"] == "sol_protect_paper_loss_attribution" for row in stale_rows)
+
+
+def test_data_health_hides_empty_event_driven_research_diagnostics(tmp_path):
+    stale_rows = readers.data_health_summary(tmp_path / "lake")["stale_datasets"].to_dicts()
+    stale_names = {str(row["dataset"]) for row in stale_rows}
+
+    assert "sol_protect_paper_loss_attribution" not in stale_names
+    assert "sol_protect_paper_loss_summary" not in stale_names

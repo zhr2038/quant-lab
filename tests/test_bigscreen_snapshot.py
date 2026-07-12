@@ -1638,8 +1638,17 @@ def test_bigscreen_snapshot_surfaces_legacy_web_anomalies(monkeypatch, tmp_path)
         "legacy_data_health.market_bar",
         "legacy_data_health.missing_bars",
     }
+    assert all(not str(item["title"]).startswith("旧页面") for item in legacy["items"])
     assert any(
         action.get("source") == "legacy_data_health.stale_datasets"
+        for action in payload["actions"]
+    )
+    assert not any(
+        action.get("source")
+        in {
+            "legacy_data_health.market_bar",
+            "legacy_data_health.missing_bars",
+        }
         for action in payload["actions"]
     )
 

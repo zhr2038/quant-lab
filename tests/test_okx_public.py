@@ -361,6 +361,37 @@ def test_backfill_expanded_usdt_spot_market_bars_publishes_selected_symbols(tmp_
     assert set(client.history_methods) == {"history_candles"}
 
 
+def test_backfill_expanded_universe_deepens_only_symbols_with_internal_gaps(tmp_path):
+    lake_root = tmp_path / "lake"
+    seed = normalize_okx_candles_to_market_bars(
+        [
+            ["1771203600000", "101", "102", "100", "101.5", "11", "11", "1116.5", "1"],
+            ["1771192800000", "100", "101", "99", "100.5", "10", "10", "1005", "1"],
+        ],
+        inst_id="BTC-USDT",
+        bar="1H",
+        market_type="SPOT",
+    )
+    publish_market_bars_to_lake(seed, lake_root)
+    client = _GapRepairExpandedUniverseClient()
+
+    result = backfill_expanded_usdt_spot_market_bars(
+        lake_root=lake_root,
+        client=client,
+        max_symbols=2,
+        history_pages=1,
+        gap_repair_pages=3,
+        limit=1,
+        min_quote_volume_24h=1_000_000,
+        max_spread_bps=20,
+    )
+
+    assert result.gap_repair_symbols == ["BTC-USDT"]
+    assert result.gap_repair_history_pages == 3
+    assert sum(symbol == "BTC-USDT" for symbol, _after in client.history_requests) == 3
+    assert sum(symbol == "XRP-USDT" for symbol, _after in client.history_requests) == 1
+
+
 def test_forbidden_keywords_do_not_appear_in_implementation_code():
     implementation_files = [
         Path("src/quant_lab/ingest/okx_public.py"),
@@ -486,6 +517,54 @@ class _FakeExpandedUniverseClient:
             "BTC-USDT": "1771196400000",
             "XRP-USDT": "1771192800000",
         }[inst_id]
+        return [[ts, "100", "101", "99", "100.5", "10", "10", "1005", "1"]]
+
+
+class _GapRepairExpandedUniverseClient(_FakeExpandedUniverseClient):
+    def __init__(self) -> None:
+        super().__init__()
+        self.history_requests: list[tuple[str, str | None]] = []
+
+    def get_candles(
+        self,
+        inst_id: str,
+        bar: str,
+        after: str | None = None,
+        before: str | None = None,
+        limit: int = 100,
+    ) -> list[list[str]]:
+        assert bar == "1H"
+        assert after is None
+        assert before is None
+        assert limit == 1
+        self.market_methods.append("candles")
+        ts = {
+            "BTC-USDT": "1771203600000",
+            "XRP-USDT": "1771200000000",
+        }[inst_id]
+        return [[ts, "101", "102", "100", "101.5", "11", "11", "1116.5", "1"]]
+
+    def get_history_candles(
+        self,
+        inst_id: str,
+        bar: str,
+        after: str | None = None,
+        before: str | None = None,
+        limit: int = 100,
+    ) -> list[list[str]]:
+        assert bar == "1H"
+        assert before is None
+        assert limit == 1
+        self.history_methods.append("history_candles")
+        self.history_requests.append((inst_id, after))
+        cursor = int(
+            after
+            or {
+                "BTC-USDT": "1771203600000",
+                "XRP-USDT": "1771200000000",
+            }[inst_id]
+        )
+        ts = str(cursor - 60 * 60 * 1000)
         return [[ts, "100", "101", "99", "100.5", "10", "10", "1005", "1"]]
 
 

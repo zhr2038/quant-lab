@@ -12,4 +12,4 @@ Environment=PYTHONUNBUFFERED=1
 TimeoutStartSec=26min
 MemoryMax=1536M
 CPUQuota=80%
-ExecStart=/bin/bash -lc 'set -euo pipefail; /opt/quant-lab/.venv/bin/qlab okx-backfill-expanded-universe --lake-root /var/lib/quant-lab/lake --bar 1H --max-symbols 30 --history-pages 8 --limit 100 --min-quote-volume-24h 1000000 --max-spread-bps 20 && /opt/quant-lab/.venv/bin/qlab build-expanded-universe-shadow --lake-root /var/lib/quant-lab/lake --max-candidates 30 --min-quote-volume-24h 1000000 --max-spread-bps 20'
+ExecStart=/bin/bash -lc 'set -euo pipefail; /opt/quant-lab/.venv/bin/qlab okx-backfill-expanded-universe --lake-root /var/lib/quant-lab/lake --bar 1H --max-symbols 30 --history-pages 8 --gap-repair-pages 20 --limit 100 --min-quote-volume-24h 1000000 --max-spread-bps 20 && /opt/quant-lab/.venv/bin/qlab build-expanded-universe-shadow --lake-root /var/lib/quant-lab/lake --max-candidates 30 --min-quote-volume-24h 1000000 --max-spread-bps 20'

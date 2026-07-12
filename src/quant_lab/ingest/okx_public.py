@@ -11,7 +11,7 @@ from pydantic import BaseModel, ConfigDict, Field
 
 from quant_lab.contracts.models import MarketBar
 from quant_lab.data.lake import MARKET_BAR_DATASET as MARKET_BAR_DATASET
-from quant_lab.data.lake import write_market_bars, write_parquet_dataset
+from quant_lab.data.lake import read_parquet_dataset, write_market_bars, write_parquet_dataset
 from quant_lab.symbols import normalize_symbol
 
 OKX_PUBLIC_REST_SOURCE = "okx_public_rest"
@@ -258,6 +258,8 @@ class OKXExpandedUniverseBackfillResult(BaseModel):
     market_bar_rows: int = Field(ge=0)
     candidate_dataset_path: str
     market_bar_dataset_path: str
+    gap_repair_symbols: list[str] = Field(default_factory=list)
+    gap_repair_history_pages: int = Field(ge=0)
     warnings: list[str] = Field(default_factory=list)
 
 
@@ -332,6 +334,7 @@ def backfill_expanded_usdt_spot_market_bars(
     market_type: str = "SPOT",
     max_symbols: int = 30,
     history_pages: int = 8,
+    gap_repair_pages: int = 20,
     limit: int = 100,
     min_quote_volume_24h: float = 1_000_000.0,
     max_spread_bps: float = 20.0,
@@ -353,6 +356,12 @@ def backfill_expanded_usdt_spot_market_bars(
         blacklist=blacklist,
     )
     _write_spot_universe_candidates(root, candidates, generated_at=generated_at)
+    gap_repair_symbols = _market_bar_symbols_with_internal_gaps(
+        root,
+        symbols=[candidate.symbol for candidate in candidates],
+        bar=bar,
+    )
+    effective_gap_repair_pages = max(history_pages, gap_repair_pages)
 
     warnings: list[str] = []
     market_bars: list[MarketBar] = []
@@ -381,7 +390,10 @@ def backfill_expanded_usdt_spot_market_bars(
             after = _oldest_candle_ts(latest_candles)
             if after is not None:
                 seen_cursors.add(after)
-        for _ in range(max(history_pages, 1)):
+        page_count = (
+            effective_gap_repair_pages if candidate.symbol in gap_repair_symbols else history_pages
+        )
+        for _ in range(max(page_count, 1)):
             candles = effective_client.get_history_candles(
                 candidate.symbol,
                 bar,
@@ -422,8 +434,57 @@ def backfill_expanded_usdt_spot_market_bars(
         market_bar_rows=market_bar_rows,
         candidate_dataset_path=str(root / OKX_SPOT_UNIVERSE_CANDIDATES_DATASET),
         market_bar_dataset_path=str(root / MARKET_BAR_DATASET),
+        gap_repair_symbols=sorted(gap_repair_symbols),
+        gap_repair_history_pages=effective_gap_repair_pages,
         warnings=warnings,
     )
+
+
+def _market_bar_symbols_with_internal_gaps(
+    lake_root: Path,
+    *,
+    symbols: Sequence[str],
+    bar: str,
+) -> set[str]:
+    timeframe_ms = _timeframe_to_milliseconds(bar)
+    if timeframe_ms is None or not symbols:
+        return set()
+    try:
+        market = read_parquet_dataset(lake_root / MARKET_BAR_DATASET)
+    except Exception:
+        return set()
+    required = {"symbol", "timeframe", "ts"}
+    if market.is_empty() or not required.issubset(market.columns):
+        return set()
+    selected = {normalize_symbol(symbol) for symbol in symbols}
+    try:
+        stats = (
+            market.filter(
+                pl.col("symbol").is_in(sorted(selected))
+                & (pl.col("timeframe").cast(pl.Utf8) == bar)
+            )
+            .select("symbol", "ts")
+            .unique()
+            .group_by("symbol")
+            .agg(
+                pl.col("ts").min().alias("first_ts"),
+                pl.col("ts").max().alias("last_ts"),
+                pl.len().alias("actual_bars"),
+            )
+        )
+    except Exception:
+        return set()
+    gaps: set[str] = set()
+    for row in stats.to_dicts():
+        first_ts = row.get("first_ts")
+        last_ts = row.get("last_ts")
+        actual_bars = int(row.get("actual_bars") or 0)
+        if not isinstance(first_ts, datetime) or not isinstance(last_ts, datetime):
+            continue
+        expected_bars = int((last_ts - first_ts).total_seconds() * 1000 / timeframe_ms) + 1
+        if expected_bars > actual_bars:
+            gaps.add(str(row.get("symbol") or ""))
+    return gaps
 
 
 def normalize_okx_candles_to_market_bars(

@@ -45,7 +45,7 @@ export function HealthPanel({
       <h2 className="section-title icon-title"><ShieldPlus size={24} />系统主状态</h2>
       <p className="sub">综合数据新鲜度 / 成本可信 / V5 遥测 / 消费者权限</p>
       <div className="ring-chart">
-        <ReactECharts option={option} style={{ height: 188, width: 218 }} />
+        <ReactECharts option={option} style={{ height: "100%", width: "100%" }} />
         <div className="health-score-text" aria-label={`Health score ${score}`}>
           <b>{score}</b>
           <span>HEALTH SCORE</span>

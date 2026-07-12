@@ -10,7 +10,7 @@ from typing import Any
 
 import polars as pl
 
-from quant_lab.data.file_index import old_files_for_dataset
+from quant_lab.data.file_index import files_fully_within_time_range, old_files_for_dataset
 from quant_lab.data.lake import read_parquet_lazy, upsert_parquet_dataset
 
 HF_DATASETS = {
@@ -23,6 +23,11 @@ TRADE_ACTIVITY_ROLLUP = Path("silver") / "trade_activity_1m"
 ORDERBOOK_SPREAD_ROLLUP_KEYS = ["symbol", "channel", "minute_ts"]
 TRADE_ACTIVITY_ROLLUP_KEYS = ["symbol", "minute_ts"]
 TOP_BOOK_LEVEL_RE = r'^\s*\[\s*\[\s*"?([^",\]\s]+)"?\s*,\s*"?([^",\]\s]+)"?'
+MAX_ARCHIVED_FILE_SAMPLES = 50
+SILVER_ROLLUP_COVERAGE = {
+    "trade_print": (TRADE_ACTIVITY_ROLLUP, "minute_ts"),
+    "orderbook_snapshot": (ORDERBOOK_SPREAD_ROLLUP, "minute_ts"),
+}
 
 
 @dataclass
@@ -32,6 +37,10 @@ class MarketDataCompactionResult:
     started_at: datetime
     finished_at: datetime | None = None
     archived_files: list[str] = field(default_factory=list)
+    archived_file_count: int = 0
+    archived_files_truncated: bool = False
+    archived_bytes: int = 0
+    archived_by_dataset: dict[str, int] = field(default_factory=dict)
     rollup_rows: dict[str, int] = field(default_factory=dict)
     warnings: list[str] = field(default_factory=list)
 
@@ -42,6 +51,10 @@ class MarketDataCompactionResult:
             "started_at": self.started_at.isoformat(),
             "finished_at": self.finished_at.isoformat() if self.finished_at else None,
             "archived_files": self.archived_files,
+            "archived_file_count": self.archived_file_count,
+            "archived_files_truncated": self.archived_files_truncated,
+            "archived_bytes": self.archived_bytes,
+            "archived_by_dataset": self.archived_by_dataset,
             "rollup_rows": self.rollup_rows,
             "warnings": self.warnings,
         }
@@ -64,7 +77,7 @@ def compact_market_data(
         result=result,
         since=_rollup_since(current, rollup_lookback_hours),
     )
-    _archive_old_okx_public_ws(
+    _archive_old_high_frequency_files(
         root, hot_hours=hot_hours, dry_run=dry_run, now=current, result=result
     )
     result.finished_at = datetime.now(UTC)
@@ -487,7 +500,7 @@ def _is_internal_file(path: Path) -> bool:
     return any(part.startswith("__") or part.startswith(".") for part in path.parts)
 
 
-def _archive_old_okx_public_ws(
+def _archive_old_high_frequency_files(
     root: Path,
     *,
     hot_hours: int,
@@ -495,45 +508,176 @@ def _archive_old_okx_public_ws(
     now: datetime,
     result: MarketDataCompactionResult,
 ) -> None:
-    dataset_root = root / HF_DATASETS["okx_public_ws"]
-    if not dataset_root.exists():
-        return
     cutoff = now - timedelta(hours=max(int(hot_hours), 1))
-    archive_root = root / "archive" / "high_frequency" / "bronze" / "okx_public_ws"
-    indexed_files = _old_archive_files_from_index(dataset_root, before=cutoff)
-    if indexed_files is None:
-        result.warnings.append(f"archive_fallback_rglob:{dataset_root.as_posix()}")
-        files = sorted(dataset_root.rglob("*.parquet"))
-    else:
-        files = sorted(indexed_files)
+    for dataset_name, relative_path in HF_DATASETS.items():
+        dataset_root = root / relative_path
+        if not dataset_root.exists():
+            continue
+        archive_root = root / "archive" / "high_frequency" / relative_path
+        coverage_spec = SILVER_ROLLUP_COVERAGE.get(dataset_name)
+        preserve_source_layout = coverage_spec is not None
+        if coverage_spec is None:
+            indexed_files = _old_archive_files_from_index(dataset_root, before=cutoff)
+            if indexed_files is None:
+                result.warnings.append(f"archive_fallback_rglob:{dataset_root.as_posix()}")
+                files = sorted(dataset_root.rglob("*.parquet"))
+            else:
+                files = sorted(indexed_files)
+        else:
+            rollup_path, timestamp_column = coverage_spec
+            coverage = _rollup_coverage(root / rollup_path, timestamp_column=timestamp_column)
+            if coverage is None:
+                result.warnings.append(
+                    f"archive_skipped_rollup_coverage_unavailable:{dataset_root.as_posix()}"
+                )
+                continue
+            coverage_start, coverage_end = coverage
+            effective_before = min(cutoff, coverage_end + timedelta(minutes=1))
+            indexed_files = _covered_archive_files_from_index(
+                dataset_root,
+                since=coverage_start,
+                before=effective_before,
+            )
+            if indexed_files is None:
+                result.warnings.append(
+                    f"archive_skipped_file_index_unavailable:{dataset_root.as_posix()}"
+                )
+                continue
+            files = sorted(indexed_files)
+        _archive_dataset_files(
+            dataset_root,
+            archive_root,
+            dataset_name=str(relative_path).replace("\\", "/"),
+            files=files,
+            cutoff=cutoff,
+            dry_run=dry_run,
+            preserve_source_layout=preserve_source_layout,
+            result=result,
+        )
+
+
+def _archive_dataset_files(
+    dataset_root: Path,
+    archive_root: Path,
+    *,
+    dataset_name: str,
+    files: list[Path],
+    cutoff: datetime,
+    dry_run: bool,
+    preserve_source_layout: bool,
+    result: MarketDataCompactionResult,
+) -> None:
     for path in files:
         if not path.exists() or not path.is_file() or _is_internal_file(path):
             continue
         try:
-            mtime = datetime.fromtimestamp(path.stat().st_mtime, UTC)
+            stat = path.stat()
+            mtime = datetime.fromtimestamp(stat.st_mtime, UTC)
         except OSError as exc:
             result.warnings.append(f"stat_failed:{path}:{exc}")
             continue
         if mtime >= cutoff:
             continue
-        symbol = _first_symbol(path) or "unknown"
-        dest = (
-            archive_root
-            / f"date={mtime.date().isoformat()}"
-            / f"hour={mtime.hour:02d}"
-            / f"symbol={symbol}"
-            / path.name
-        )
-        result.archived_files.append(str(path))
-        if dry_run:
+        base_dest = archive_root / f"date={mtime.date().isoformat()}" / f"hour={mtime.hour:02d}"
+        if preserve_source_layout:
+            try:
+                relative_source = path.relative_to(dataset_root)
+            except ValueError:
+                result.warnings.append(f"archive_source_outside_dataset:{path}")
+                continue
+            dest = base_dest / relative_source
+        else:
+            symbol = _first_symbol(path) or "unknown"
+            dest = base_dest / f"symbol={symbol}" / path.name
+        if dest.exists():
+            result.warnings.append(f"archive_destination_exists:{dest}")
             continue
-        dest.parent.mkdir(parents=True, exist_ok=True)
-        shutil.move(str(path), str(dest))
+        if dry_run:
+            _record_archived_file(result, path, dataset_name=dataset_name, size=stat.st_size)
+            continue
+        try:
+            dest.parent.mkdir(parents=True, exist_ok=True)
+            shutil.move(str(path), str(dest))
+        except OSError as exc:
+            result.warnings.append(f"archive_move_failed:{path}:{exc}")
+            continue
+        _record_archived_file(result, path, dataset_name=dataset_name, size=stat.st_size)
+    if not dry_run:
+        _remove_empty_source_directories(dataset_root)
+
+
+def _record_archived_file(
+    result: MarketDataCompactionResult,
+    path: Path,
+    *,
+    dataset_name: str,
+    size: int,
+) -> None:
+    result.archived_file_count += 1
+    result.archived_bytes += max(int(size), 0)
+    result.archived_by_dataset[dataset_name] = result.archived_by_dataset.get(dataset_name, 0) + 1
+    if len(result.archived_files) < MAX_ARCHIVED_FILE_SAMPLES:
+        result.archived_files.append(str(path))
+    else:
+        result.archived_files_truncated = True
+
+
+def _remove_empty_source_directories(dataset_root: Path) -> None:
+    directories = sorted(
+        (path for path in dataset_root.rglob("*") if path.is_dir()),
+        key=lambda path: len(path.parts),
+        reverse=True,
+    )
+    for directory in directories:
+        try:
+            directory.rmdir()
+        except OSError:
+            continue
+
+
+def _rollup_coverage(
+    path: Path,
+    *,
+    timestamp_column: str,
+) -> tuple[datetime, datetime] | None:
+    try:
+        lazy = read_parquet_lazy(path)
+        if timestamp_column not in lazy.collect_schema().names():
+            return None
+        bounds = (
+            lazy.select(
+                [
+                    _timestamp_expr(timestamp_column).min().alias("_min_ts"),
+                    _timestamp_expr(timestamp_column).max().alias("_max_ts"),
+                ]
+            )
+            .collect()
+            .row(0, named=True)
+        )
+    except Exception:
+        return None
+    start = bounds.get("_min_ts")
+    end = bounds.get("_max_ts")
+    if not isinstance(start, datetime) or not isinstance(end, datetime) or end < start:
+        return None
+    return start, end
 
 
 def _old_archive_files_from_index(path: Path, *, before: datetime) -> list[Path] | None:
     try:
         return old_files_for_dataset(path, before=before)
+    except Exception:
+        return None
+
+
+def _covered_archive_files_from_index(
+    path: Path,
+    *,
+    since: datetime,
+    before: datetime,
+) -> list[Path] | None:
+    try:
+        return files_fully_within_time_range(path, since=since, before=before)
     except Exception:
         return None
 

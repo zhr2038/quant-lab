@@ -181,6 +181,8 @@ def _prune_high_frequency_archive_days(
         return
     for archive_root in (
         root / "lake" / "archive" / "high_frequency" / "bronze" / "okx_public_ws",
+        root / "lake" / "archive" / "high_frequency" / "silver" / "trade_print",
+        root / "lake" / "archive" / "high_frequency" / "silver" / "orderbook_snapshot",
     ):
         result.high_frequency_archive_removed_days += _prune_archive_day_dirs(
             archive_root,

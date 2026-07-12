@@ -6,7 +6,11 @@ import polars as pl
 
 import quant_lab.data.file_index as file_index_module
 import quant_lab.jobs.compact_market_data as compact_market_data_module
-from quant_lab.data.file_index import build_lake_file_index, old_files_for_dataset
+from quant_lab.data.file_index import (
+    build_lake_file_index,
+    files_fully_within_time_range,
+    old_files_for_dataset,
+)
 from quant_lab.data.lake import (
     append_parquet_dataset,
     count_parquet_rows,
@@ -221,8 +225,7 @@ def test_market_data_rollup_merges_unindexed_recent_files_without_rebuilding_ind
     trade_row = read_parquet_dataset(lake / "silver/trade_activity_1m").to_dicts()[0]
     assert trade_row["size_sum"] == 7.0
     assert any(
-        item.startswith("file_index_stale_merged_recent_mtime_files:")
-        for item in result.warnings
+        item.startswith("file_index_stale_merged_recent_mtime_files:") for item in result.warnings
     )
 
 
@@ -234,14 +237,10 @@ def test_market_data_rollup_drops_deleted_index_paths_after_direct_compaction(tm
     new_ts = datetime(2026, 5, 31, 10, 0, tzinfo=UTC)
     old_file = source / "batch-old.parquet"
     compact_file = source / "compact-new.parquet"
-    pl.DataFrame([{"symbol": "BNB-USDT", "ts": old_ts, "size": 1.0}]).write_parquet(
-        old_file
-    )
+    pl.DataFrame([{"symbol": "BNB-USDT", "ts": old_ts, "size": 1.0}]).write_parquet(old_file)
     build_lake_file_index(lake, ["silver/trade_print"])
     old_file.unlink()
-    pl.DataFrame([{"symbol": "BNB-USDT", "ts": new_ts, "size": 7.0}]).write_parquet(
-        compact_file
-    )
+    pl.DataFrame([{"symbol": "BNB-USDT", "ts": new_ts, "size": 7.0}]).write_parquet(compact_file)
     os.utime(compact_file, (new_ts.timestamp(), new_ts.timestamp()))
 
     result = build_market_data_1m_rollups(
@@ -255,8 +254,7 @@ def test_market_data_rollup_drops_deleted_index_paths_after_direct_compaction(tm
     trade_row = read_parquet_dataset(lake / "silver/trade_activity_1m").to_dicts()[0]
     assert trade_row["size_sum"] == 7.0
     assert any(
-        item.startswith("file_index_stale_dropped_missing_files:")
-        for item in result.warnings
+        item.startswith("file_index_stale_dropped_missing_files:") for item in result.warnings
     )
 
 
@@ -362,6 +360,36 @@ def test_old_file_selection_uses_index_max_ts_before_cutoff(tmp_path):
     files = old_files_for_dataset(source, before=datetime(2026, 5, 31, tzinfo=UTC))
 
     assert files == [old]
+
+    covered = files_fully_within_time_range(
+        source,
+        since=old_ts - timedelta(hours=1),
+        before=datetime(2026, 5, 31, tzinfo=UTC),
+    )
+    assert covered == [old]
+
+
+def test_fully_covered_file_selection_preserves_files_before_coverage(tmp_path):
+    lake = tmp_path / "lake"
+    source = lake / "silver/orderbook_snapshot"
+    source.mkdir(parents=True)
+    before_coverage = source / "before.parquet"
+    covered = source / "covered.parquet"
+    pl.DataFrame([{"symbol": "BNB-USDT", "ts": datetime(2026, 5, 30, tzinfo=UTC)}]).write_parquet(
+        before_coverage
+    )
+    pl.DataFrame(
+        [{"symbol": "BNB-USDT", "ts": datetime(2026, 5, 31, 12, tzinfo=UTC)}]
+    ).write_parquet(covered)
+    build_lake_file_index(lake, ["silver/orderbook_snapshot"])
+
+    files = files_fully_within_time_range(
+        source,
+        since=datetime(2026, 5, 31, tzinfo=UTC),
+        before=datetime(2026, 6, 1, tzinfo=UTC),
+    )
+
+    assert files == [covered]
 
 
 def test_lake_file_index_reuses_unchanged_rows_and_scans_only_new_files(
@@ -568,6 +596,111 @@ def test_compact_market_data_archives_only_old_ws_files_when_applied(tmp_path):
     assert hot.exists()
     assert not old.exists()
     assert not any(item.startswith("archive_fallback_rglob:") for item in result.warnings)
+
+
+def test_compact_market_data_archives_rollup_covered_old_silver_files(tmp_path):
+    lake = tmp_path / "lake"
+    now = datetime(2026, 6, 1, tzinfo=UTC)
+    old_ts = now - timedelta(hours=36)
+    hot_ts = now - timedelta(hours=1)
+    old_trade = lake / "silver/trade_print/old.parquet"
+    hot_trade = lake / "silver/trade_print/hot.parquet"
+    old_book = lake / "silver/orderbook_snapshot/old.parquet"
+    hot_book = lake / "silver/orderbook_snapshot/hot.parquet"
+    old_trade.parent.mkdir(parents=True, exist_ok=True)
+    old_book.parent.mkdir(parents=True, exist_ok=True)
+    pl.DataFrame([{"symbol": "BNB-USDT", "ts": old_ts, "size": 1.0}]).write_parquet(old_trade)
+    pl.DataFrame([{"symbol": "BNB-USDT", "ts": hot_ts, "size": 2.0}]).write_parquet(hot_trade)
+    pl.DataFrame(
+        [
+            {
+                "symbol": "BNB-USDT",
+                "channel": "books5",
+                "ts": old_ts,
+                "asks_json": '[["101", "1"]]',
+                "bids_json": '[["100", "1"]]',
+            }
+        ]
+    ).write_parquet(old_book)
+    pl.DataFrame(
+        [
+            {
+                "symbol": "BNB-USDT",
+                "channel": "books5",
+                "ts": hot_ts,
+                "asks_json": '[["102", "1"]]',
+                "bids_json": '[["101", "1"]]',
+            }
+        ]
+    ).write_parquet(hot_book)
+    for path, timestamp in (
+        (old_trade, old_ts),
+        (old_book, old_ts),
+        (hot_trade, hot_ts),
+        (hot_book, hot_ts),
+    ):
+        os.utime(path, (timestamp.timestamp(), timestamp.timestamp()))
+    build_lake_file_index(
+        lake,
+        ["silver/trade_print", "silver/orderbook_snapshot"],
+    )
+
+    result = compact_market_data(lake, dry_run=False, now=now)
+
+    assert not old_trade.exists()
+    assert not old_book.exists()
+    assert hot_trade.exists()
+    assert hot_book.exists()
+    assert list((lake / "archive/high_frequency/silver/trade_print").rglob("old.parquet"))
+    assert list((lake / "archive/high_frequency/silver/orderbook_snapshot").rglob("old.parquet"))
+    assert result.archived_file_count == 2
+    assert result.archived_by_dataset == {
+        "silver/orderbook_snapshot": 1,
+        "silver/trade_print": 1,
+    }
+    assert result.archived_bytes > 0
+    assert result.archived_files_truncated is False
+
+
+def test_compact_market_data_preserves_silver_before_rollup_coverage(tmp_path):
+    lake = tmp_path / "lake"
+    now = datetime(2026, 6, 1, tzinfo=UTC)
+    old_ts = now - timedelta(hours=36)
+    hot_ts = now - timedelta(hours=1)
+    old_book = lake / "silver/orderbook_snapshot/old-invalid.parquet"
+    hot_book = lake / "silver/orderbook_snapshot/hot.parquet"
+    old_book.parent.mkdir(parents=True, exist_ok=True)
+    pl.DataFrame(
+        [
+            {
+                "symbol": "BNB-USDT",
+                "channel": "books5",
+                "ts": old_ts,
+                "asks_json": "[]",
+                "bids_json": "[]",
+            }
+        ]
+    ).write_parquet(old_book)
+    pl.DataFrame(
+        [
+            {
+                "symbol": "BNB-USDT",
+                "channel": "books5",
+                "ts": hot_ts,
+                "asks_json": '[["102", "1"]]',
+                "bids_json": '[["101", "1"]]',
+            }
+        ]
+    ).write_parquet(hot_book)
+    os.utime(old_book, (old_ts.timestamp(), old_ts.timestamp()))
+    os.utime(hot_book, (hot_ts.timestamp(), hot_ts.timestamp()))
+    build_lake_file_index(lake, ["silver/orderbook_snapshot"])
+
+    result = compact_market_data(lake, dry_run=False, now=now)
+
+    assert old_book.exists()
+    assert hot_book.exists()
+    assert result.archived_by_dataset.get("silver/orderbook_snapshot", 0) == 0
 
 
 def test_compact_market_data_warns_when_archive_file_index_missing(

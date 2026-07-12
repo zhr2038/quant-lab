@@ -83,15 +83,56 @@ def old_files_for_dataset(path: Path, *, before: datetime) -> list[Path] | None:
         )
         .filter(pl.col("dataset") == relative_dataset)
         .filter(
-            (
-                pl.col("_max_ts").is_not_null()
-                & (pl.col("_max_ts") < before)
-            )
+            (pl.col("_max_ts").is_not_null() & (pl.col("_max_ts") < before))
             | (
                 pl.col("_max_ts").is_null()
                 & pl.col("_mtime_ns").is_not_null()
                 & (pl.col("_mtime_ns") < cutoff_ns)
             )
+        )
+    )
+    return [lake_root / item for item in scoped.get_column("path").to_list()]
+
+
+def files_fully_within_time_range(
+    path: Path,
+    *,
+    since: datetime,
+    before: datetime,
+) -> list[Path] | None:
+    """Return indexed files whose complete timestamp range is inside a window."""
+    lake_root = _infer_lake_root(path)
+    if lake_root is None:
+        return None
+    index = read_parquet_dataset(lake_root / LAKE_FILE_INDEX)
+    required = {"path", "dataset", "min_ts", "max_ts"}
+    if index.is_empty() or not required.issubset(set(index.columns)):
+        return None
+    try:
+        relative_dataset = str(path.relative_to(lake_root)).replace("\\", "/")
+    except ValueError:
+        return None
+    if before <= since:
+        return []
+    scoped = (
+        index.with_columns(
+            [
+                pl.col("min_ts")
+                .cast(pl.Utf8, strict=False)
+                .str.to_datetime(time_zone="UTC", strict=False)
+                .alias("_min_ts"),
+                pl.col("max_ts")
+                .cast(pl.Utf8, strict=False)
+                .str.to_datetime(time_zone="UTC", strict=False)
+                .alias("_max_ts"),
+            ]
+        )
+        .filter(pl.col("dataset") == relative_dataset)
+        .filter(
+            pl.col("_min_ts").is_not_null()
+            & pl.col("_max_ts").is_not_null()
+            & (pl.col("_min_ts") >= since)
+            & (pl.col("_max_ts") < before)
         )
     )
     return [lake_root / item for item in scoped.get_column("path").to_list()]
@@ -150,8 +191,7 @@ def _existing_rows_by_key(frame: pl.DataFrame) -> dict[tuple[str, str], dict[str
     if frame.is_empty() or not {"dataset", "path"}.issubset(set(frame.columns)):
         return {}
     return {
-        (str(row.get("dataset") or ""), str(row.get("path") or "")): row
-        for row in frame.to_dicts()
+        (str(row.get("dataset") or ""), str(row.get("path") or "")): row for row in frame.to_dicts()
     }
 
 

@@ -82,6 +82,54 @@ def test_storage_retention_apply_deletes_only_regenerable_targets(tmp_path: Path
         / "kept.parquet",
         "kept raw ws",
     )
+    old_silver_trade = _write_file(
+        tmp_path
+        / "lake"
+        / "archive"
+        / "high_frequency"
+        / "silver"
+        / "trade_print"
+        / "date=2026-05-18"
+        / "hour=00"
+        / "old.parquet",
+        "old silver trade",
+    )
+    kept_silver_trade = _write_file(
+        tmp_path
+        / "lake"
+        / "archive"
+        / "high_frequency"
+        / "silver"
+        / "trade_print"
+        / "date=2026-05-21"
+        / "hour=00"
+        / "kept.parquet",
+        "kept silver trade",
+    )
+    old_silver_book = _write_file(
+        tmp_path
+        / "lake"
+        / "archive"
+        / "high_frequency"
+        / "silver"
+        / "orderbook_snapshot"
+        / "date=2026-05-18"
+        / "hour=00"
+        / "old.parquet",
+        "old silver book",
+    )
+    kept_silver_book = _write_file(
+        tmp_path
+        / "lake"
+        / "archive"
+        / "high_frequency"
+        / "silver"
+        / "orderbook_snapshot"
+        / "date=2026-05-21"
+        / "hour=00"
+        / "kept.parquet",
+        "kept silver book",
+    )
     old_inbox = _write_file(tmp_path / "inbox" / "v5" / "bundles" / "old.tar.gz", "old")
     kept_inbox = _write_file(tmp_path / "inbox" / "v5" / "bundles" / "new.tar.gz", "new")
     _set_mtime(old_inbox, datetime(2026, 5, 18, tzinfo=UTC))
@@ -108,7 +156,7 @@ def test_storage_retention_apply_deletes_only_regenerable_targets(tmp_path: Path
 
     assert result.redacted_archive_removed_days == 2
     assert result.restricted_archive_removed_days == 2
-    assert result.high_frequency_archive_removed_days == 1
+    assert result.high_frequency_archive_removed_days == 3
     assert result.inbox_removed_files == 1
     assert result.export_removed_files == 2
     assert result.maintenance_removed_dirs == 1
@@ -120,6 +168,10 @@ def test_storage_retention_apply_deletes_only_regenerable_targets(tmp_path: Path
     assert not old_new_layout_restricted_raw.exists()
     assert not old_high_frequency.exists()
     assert kept_high_frequency.exists()
+    assert not old_silver_trade.exists()
+    assert kept_silver_trade.exists()
+    assert not old_silver_book.exists()
+    assert kept_silver_book.exists()
     assert not old_inbox.exists()
     assert kept_inbox.exists()
     assert not smoke_dir.exists()

@@ -885,8 +885,8 @@ def build_market_data_rollups_command(
         typer.Option(
             "--archive-old-okx-public-ws/--keep-old-okx-public-ws",
             help=(
-                "After writing rollups, move stale bronze okx_public_ws raw files "
-                "into the bounded high-frequency archive."
+                "After writing rollups, move stale high-frequency raw and silver files "
+                "into the bounded archive. The legacy option name is retained for compatibility."
             ),
         ),
     ] = False,

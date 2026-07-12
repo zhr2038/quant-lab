@@ -806,6 +806,7 @@ def test_data_health_hides_pending_v5_paper_telemetry(tmp_path):
     assert "v5_paper_strategy_proposal_ack" not in datasets
     assert "v5_paper_strategy_daily" not in datasets
     assert "v5_paper_slippage_coverage" not in datasets
+    assert "v5_trade_opportunity_funnel" not in datasets
 
 
 def test_data_health_uses_ingest_time_for_v5_expanded_paper_daily(tmp_path):

@@ -316,6 +316,7 @@ RESEARCH_DIAGNOSTIC_DATASET_KEYS: dict[str, tuple[str, ...]] = {
 }
 EVENT_DRIVEN_V5_DATASET_STATUSES = {
     "v5_trade_event": "event_driven_no_recent_trade",
+    "v5_trade_opportunity_funnel": "event_driven_no_recent_trade_opportunity_funnel",
     "v5_bnb_profit_lock_shadow": "event_driven_no_recent_bnb_profit_lock",
     "v5_quant_lab_usage": "event_driven_no_recent_quant_lab_usage",
     "v5_quant_lab_request": "event_driven_no_recent_quant_lab_request",
@@ -6405,6 +6406,7 @@ def _dataset_display_name(dataset_name: str) -> str:
         "v5_gate_compliance_daily": "V5 门控合规",
         "v5_candidate_event": "V5 候选事件",
         "v5_candidate_label": "V5 候选标签",
+        "v5_trade_opportunity_funnel": "V5 交易机会漏斗",
         "v5_cost_probe_p3_preflight": "V5 成本探针 P3 预检",
         "v5_cost_probe_live_execution_status": "V5 成本探针执行状态",
         "v5_cost_probe_order_event": "V5 成本探针订单事件",
@@ -6451,14 +6453,9 @@ def _empty_dataset_status(dataset_name: str) -> str:
         return "export_derived_optional"
     if dataset_name in {"cost_probe_fill_bill_match", "cost_probe_cost_disagreement"}:
         return "cost_probe_optional_audit"
-    if dataset_name == "v5_cost_probe_p3_preflight":
-        return "event_driven_no_recent_cost_probe_p3_preflight"
-    if dataset_name == "v5_cost_probe_live_execution_status":
-        return "event_driven_no_recent_cost_probe_live_execution_status"
-    if dataset_name == "v5_cost_probe_order_event":
-        return "event_driven_no_recent_cost_probe_order_event"
-    if dataset_name == "v5_cost_probe_roundtrip_event":
-        return "event_driven_no_recent_cost_probe_roundtrip_event"
+    event_driven_status = EVENT_DRIVEN_V5_DATASET_STATUSES.get(dataset_name)
+    if event_driven_status:
+        return event_driven_status
     if dataset_name == "decision_audit":
         return "legacy_optional"
     if dataset_name == "v5_bundle_manifest":

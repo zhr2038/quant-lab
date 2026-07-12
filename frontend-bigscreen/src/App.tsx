@@ -145,8 +145,10 @@ function Bigscreen() {
       const viewport = window.visualViewport;
       const width = viewport?.width ?? window.innerWidth;
       const height = viewport?.height ?? window.innerHeight;
-      const scale = Math.min(width / 1920, height / 1080);
-      const layoutWidth = Math.max(1920, width / Math.max(scale, 0.01));
+      const useFluidLayout = width < 1500 || height < 850;
+      const scale = useFluidLayout ? 1 : Math.min(width / 1920, height / 1080);
+      const layoutWidth = useFluidLayout ? width : Math.max(1920, width / Math.max(scale, 0.01));
+      document.documentElement.dataset.webV2Layout = useFluidLayout ? "fluid" : "scaled";
       document.documentElement.style.setProperty("--screen-scale", String(scale));
       document.documentElement.style.setProperty("--screen-layout-width", `${layoutWidth}px`);
     };
@@ -156,6 +158,7 @@ function Bigscreen() {
     return () => {
       window.removeEventListener("resize", fit);
       window.visualViewport?.removeEventListener("resize", fit);
+      delete document.documentElement.dataset.webV2Layout;
     };
   }, []);
   useEffect(() => {
@@ -553,6 +556,7 @@ function ExpertPackControls({ exports }: { exports: Record<string, unknown> }) {
     }
   });
   const status = statusQuery.data;
+  const statusPending = status === undefined && statusQuery.isLoading;
   const packs = status?.packs ?? [];
   const latestName = stringValue(status?.latest_pack_name, "");
   const latestUrl = status?.latest_download_url ?? "";
@@ -619,6 +623,8 @@ function ExpertPackControls({ exports }: { exports: Record<string, unknown> }) {
   const lastError = stringValue(statusBody.error, "");
   const generateLabel = isRunning
     ? "生成中"
+    : statusPending
+      ? "读取状态中"
     : isCoolingDown
       ? `刚生成 ${cooldownRemaining}s`
       : "生成今日专家包";
@@ -641,7 +647,7 @@ function ExpertPackControls({ exports }: { exports: Record<string, unknown> }) {
           <button
             className="primary-action"
             onClick={() => generateMutation.mutate()}
-            disabled={generateMutation.isPending || isRunning || isCoolingDown}
+            disabled={statusPending || generateMutation.isPending || isRunning || isCoolingDown}
           >
             <PackagePlus size={16} />{generateLabel}
           </button>
@@ -649,9 +655,9 @@ function ExpertPackControls({ exports }: { exports: Record<string, unknown> }) {
       </div>
       <div className={`export-status-line ${displayState.toLowerCase()}`}>
         <span className="status-dot" />
-        <b>{displayState}</b>
-        <em>日期 {stringValue(status?.export_date, "today")}</em>
-        <em>历史包 {status?.pack_count ?? packs.length}</em>
+        <b>{statusPending ? "正在读取" : displayState}</b>
+        <em>{statusPending ? "日期读取中" : `日期 ${stringValue(status?.export_date, "today")}`}</em>
+        <em>{statusPending ? "历史包读取中" : `历史包 ${status?.pack_count ?? packs.length}`}</em>
         {status?.latest_size_bytes || displayPack?.size_bytes ? (
           <em>包大小 {shortNumber(status?.latest_size_bytes || displayPack?.size_bytes)}B</em>
         ) : null}
@@ -677,7 +683,9 @@ function ExpertPackControls({ exports }: { exports: Record<string, unknown> }) {
           当前可下载包由旧 quant-lab 代码生成（包 {shortCommit(packCommit)} · 当前 {shortCommit(currentCommit)}）；需要最新代码证据时请手动重新生成。
         </div>
       ) : null}
-      {displayUrl ? (
+      {statusPending ? (
+        <div className="export-empty">正在读取专家包状态与最新下载信息…</div>
+      ) : displayUrl ? (
         <a className="download-latest" href={expertPackDownloadUrl(displayUrl)} download title={displayFileName}>
           <DownloadCloud size={18} />
           <span className="download-latest-label">{downloadLatestLabel}</span>
@@ -706,7 +714,11 @@ function ExpertPackControls({ exports }: { exports: Record<string, unknown> }) {
             </div>
           );
         })}
-        {!visiblePacks.length && <div className="export-empty">{packs.length ? "最新包已在上方显示" : "not_observable"}</div>}
+        {!visiblePacks.length && (
+          <div className="export-empty">
+            {statusPending ? "正在读取历史包…" : packs.length ? "最新包已在上方显示" : "暂无历史专家包"}
+          </div>
+        )}
       </div>
     </section>
   );

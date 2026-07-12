@@ -1986,6 +1986,19 @@ def test_web_v2_mounts_v5_telemetry_card_on_one_primary_page():
     assert "包数 {status?.pack_count" not in app_source
 
 
+def test_web_v2_uses_fluid_layout_and_truthful_pack_loading_state():
+    app_source = Path("frontend-bigscreen/src/App.tsx").read_text(encoding="utf-8")
+    styles = Path("frontend-bigscreen/src/styles.css").read_text(encoding="utf-8")
+
+    assert 'dataset.webV2Layout = useFluidLayout ? "fluid" : "scaled";' in app_source
+    assert 'html[data-web-v2-layout="fluid"] .app-shell' in styles
+    assert ".page-strategy .candidate-detail{" in styles
+    assert "grid-column:1/-1" in styles
+    assert 'statusPending ? "正在读取" : displayState' in app_source
+    assert "正在读取专家包状态与最新下载信息" in app_source
+    assert "statusPending || generateMutation.isPending" in app_source
+
+
 def test_web_v2_legacy_hashes_open_ops_drilldowns():
     app_source = Path("frontend-bigscreen/src/App.tsx").read_text(encoding="utf-8")
 

@@ -1,9 +1,19 @@
 import { defineConfig } from "vite";
 import react from "@vitejs/plugin-react";
 
+function stripGeneratedTrailingWhitespace() {
+  return {
+    name: "strip-generated-trailing-whitespace",
+    enforce: "post" as const,
+    renderChunk(code: string) {
+      return { code: code.replace(/[ \t]+$/gm, ""), map: null };
+    }
+  };
+}
+
 export default defineConfig({
   base: "/web-v2/",
-  plugins: [react()],
+  plugins: [react(), stripGeneratedTrailingWhitespace()],
   build: {
     outDir: "../src/quant_lab/web/bigscreen_static",
     emptyOutDir: true,

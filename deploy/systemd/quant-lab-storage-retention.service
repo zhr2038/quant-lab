@@ -10,7 +10,7 @@ Group=quantlab
 WorkingDirectory=/opt/quant-lab
 PermissionsStartOnly=true
 Environment=PYTHONUNBUFFERED=1
-ExecStart=/bin/bash -lc 'set -euo pipefail; /usr/bin/flock -E 75 -w 10 /var/lock/quant-lab-storage-retention.lock /opt/quant-lab/.venv/bin/qlab prune-storage-retention --base-dir /var/lib/quant-lab --keep-redacted-archive-days 3 --keep-restricted-archive-days 7 --keep-high-frequency-archive-days 3 --keep-inbox-days 2 --keep-export-packs 5 --apply || { code="$?"; if [ "$${code}" = "75" ]; then echo "SKIP_STORAGE_RETENTION_LOCK_BUSY"; exit 0; fi; exit "$${code}"; }'
+ExecStart=/bin/bash -lc 'set -euo pipefail; /usr/bin/flock -E 75 -w 10 /var/lock/quant-lab-storage-retention.lock /opt/quant-lab/.venv/bin/qlab prune-storage-retention --base-dir /var/lib/quant-lab --keep-redacted-archive-days 3 --keep-restricted-archive-days 7 --keep-high-frequency-archive-days 30 --preserve-high-frequency-archive --keep-inbox-days 2 --keep-export-packs 5 --apply || { code="$?"; if [ "$${code}" = "75" ]; then echo "SKIP_STORAGE_RETENTION_LOCK_BUSY"; exit 0; fi; exit "$${code}"; }'
 ExecStartPost=/usr/bin/journalctl --vacuum-size=200M
 Nice=15
 IOSchedulingClass=idle

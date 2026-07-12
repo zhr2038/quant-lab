@@ -9,7 +9,7 @@ from typing import Any
 DEFAULT_BASE_DIR = Path("/var/lib/quant-lab")
 DEFAULT_KEEP_REDACTED_ARCHIVE_DAYS = 3
 DEFAULT_KEEP_RESTRICTED_ARCHIVE_DAYS = 7
-DEFAULT_KEEP_HIGH_FREQUENCY_ARCHIVE_DAYS = 3
+DEFAULT_KEEP_HIGH_FREQUENCY_ARCHIVE_DAYS = 30
 DEFAULT_KEEP_INBOX_DAYS = 2
 DEFAULT_KEEP_EXPORT_PACKS = 5
 
@@ -27,6 +27,7 @@ class RetentionPruneResult:
     redacted_archive_removed_days: int = 0
     restricted_archive_removed_days: int = 0
     high_frequency_archive_removed_days: int = 0
+    high_frequency_archive_prune_enabled: bool = False
     inbox_removed_files: int = 0
     export_removed_files: int = 0
     maintenance_removed_dirs: int = 0
@@ -52,6 +53,7 @@ class RetentionPruneResult:
             "redacted_archive_removed_days": self.redacted_archive_removed_days,
             "restricted_archive_removed_days": self.restricted_archive_removed_days,
             "high_frequency_archive_removed_days": self.high_frequency_archive_removed_days,
+            "high_frequency_archive_prune_enabled": self.high_frequency_archive_prune_enabled,
             "inbox_removed_files": self.inbox_removed_files,
             "export_removed_files": self.export_removed_files,
             "maintenance_removed_dirs": self.maintenance_removed_dirs,
@@ -64,6 +66,7 @@ def prune_quant_lab_storage(
     keep_redacted_archive_days: int = DEFAULT_KEEP_REDACTED_ARCHIVE_DAYS,
     keep_restricted_archive_days: int = DEFAULT_KEEP_RESTRICTED_ARCHIVE_DAYS,
     keep_high_frequency_archive_days: int = DEFAULT_KEEP_HIGH_FREQUENCY_ARCHIVE_DAYS,
+    prune_high_frequency_archive: bool = False,
     keep_inbox_days: int = DEFAULT_KEEP_INBOX_DAYS,
     keep_export_packs: int = DEFAULT_KEEP_EXPORT_PACKS,
     dry_run: bool = True,
@@ -76,6 +79,7 @@ def prune_quant_lab_storage(
         base_dir=str(root),
         dry_run=dry_run,
         started_at=current,
+        high_frequency_archive_prune_enabled=prune_high_frequency_archive,
     )
     if not root.exists():
         result.warnings.append(f"base_dir_missing:{root}")
@@ -96,13 +100,14 @@ def prune_quant_lab_storage(
         now=current,
         result=result,
     )
-    _prune_high_frequency_archive_days(
-        root,
-        keep_days=keep_high_frequency_archive_days,
-        dry_run=dry_run,
-        now=current,
-        result=result,
-    )
+    if prune_high_frequency_archive:
+        _prune_high_frequency_archive_days(
+            root,
+            keep_days=keep_high_frequency_archive_days,
+            dry_run=dry_run,
+            now=current,
+            result=result,
+        )
     _prune_inbox_bundles(
         root,
         keep_days=keep_inbox_days,

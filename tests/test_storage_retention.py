@@ -148,6 +148,7 @@ def test_storage_retention_apply_deletes_only_regenerable_targets(tmp_path: Path
         keep_redacted_archive_days=3,
         keep_restricted_archive_days=7,
         keep_high_frequency_archive_days=3,
+        prune_high_frequency_archive=True,
         keep_inbox_days=2,
         keep_export_packs=5,
         dry_run=False,
@@ -157,6 +158,7 @@ def test_storage_retention_apply_deletes_only_regenerable_targets(tmp_path: Path
     assert result.redacted_archive_removed_days == 2
     assert result.restricted_archive_removed_days == 2
     assert result.high_frequency_archive_removed_days == 3
+    assert result.high_frequency_archive_prune_enabled is True
     assert result.inbox_removed_files == 1
     assert result.export_removed_files == 2
     assert result.maintenance_removed_dirs == 1
@@ -176,6 +178,33 @@ def test_storage_retention_apply_deletes_only_regenerable_targets(tmp_path: Path
     assert kept_inbox.exists()
     assert not smoke_dir.exists()
     assert sum(pack.exists() for pack in exports) == 5
+
+
+def test_storage_retention_preserves_high_frequency_archive_by_default(
+    tmp_path: Path,
+) -> None:
+    old_high_frequency = _write_file(
+        tmp_path
+        / "lake"
+        / "archive"
+        / "high_frequency"
+        / "silver"
+        / "trade_print"
+        / "date=2026-04-01"
+        / "old.parquet",
+        "preserve until lineage and restore validation pass",
+    )
+
+    result = prune_quant_lab_storage(
+        tmp_path,
+        keep_high_frequency_archive_days=30,
+        dry_run=False,
+        now=datetime(2026, 5, 22, tzinfo=UTC),
+    )
+
+    assert result.high_frequency_archive_prune_enabled is False
+    assert result.high_frequency_archive_removed_days == 0
+    assert old_high_frequency.exists()
 
 
 def test_storage_retention_payload_can_truncate_removed_paths(tmp_path: Path) -> None:

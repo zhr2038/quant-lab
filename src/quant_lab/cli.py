@@ -1424,7 +1424,17 @@ def prune_storage_retention_command(
     keep_high_frequency_archive_days: Annotated[
         int,
         typer.Option("--keep-high-frequency-archive-days", min=1),
-    ] = 3,
+    ] = 30,
+    prune_high_frequency_archive: Annotated[
+        bool,
+        typer.Option(
+            "--prune-high-frequency-archive/--preserve-high-frequency-archive",
+            help=(
+                "Delete expired high-frequency archives only when explicitly enabled. "
+                "The default preserves them until lineage and restore validation pass."
+            ),
+        ),
+    ] = False,
     keep_inbox_days: Annotated[int, typer.Option("--keep-inbox-days", min=1)] = 2,
     keep_export_packs: Annotated[int, typer.Option("--keep-export-packs", min=1)] = 5,
     dry_run: Annotated[
@@ -1444,6 +1454,7 @@ def prune_storage_retention_command(
         keep_redacted_archive_days=keep_redacted_archive_days,
         keep_restricted_archive_days=keep_restricted_archive_days,
         keep_high_frequency_archive_days=keep_high_frequency_archive_days,
+        prune_high_frequency_archive=prune_high_frequency_archive,
         keep_inbox_days=keep_inbox_days,
         keep_export_packs=keep_export_packs,
         dry_run=dry_run,

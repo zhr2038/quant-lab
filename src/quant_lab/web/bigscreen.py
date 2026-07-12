@@ -896,17 +896,6 @@ def _is_read_only_live_readiness_failure(value: str) -> bool:
     )
 
 
-def _export_quality_requires_action(exports: dict[str, Any]) -> bool:
-    level = _export_quality_level(exports)
-    if level not in {"WARNING", "CRITICAL"}:
-        return False
-    data_quality = _export_data_quality(exports)
-    return not (
-        _export_quality_is_live_readiness_blocked_only(data_quality)
-        or _export_quality_is_read_only_cost_advisory(data_quality)
-    )
-
-
 def _export_quality_is_read_only_cost_advisory(data_quality: dict[str, Any]) -> bool:
     if str(data_quality.get("status") or "").upper() not in {"WARN", "WARNING"}:
         return False
@@ -3126,24 +3115,6 @@ def _build_actions(
                 "web_perf",
                 "刷新 lake_file_index，避免页面和导出变慢",
                 "/data-ops",
-            )
-        )
-    export_quality_level = _export_quality_level(exports)
-    if exports.get("latest_pack") and _export_quality_requires_action(exports):
-        data_quality = _export_data_quality(exports)
-        actions.append(
-            _action(
-                export_quality_level,
-                "专家包质量需复核",
-                (
-                    "最新 expert pack "
-                    f"data_quality={data_quality.get('status') or export_quality_level}; "
-                    f"warnings={_quality_warning_count(data_quality)}; "
-                    f"failures={_quality_failure_count(data_quality)}"
-                ),
-                "expert_export_summary",
-                "打开专家包导出页复核 data_quality 与缺失/陈旧数据明细",
-                "/exports",
             )
         )
     if str(exports.get("manual_state") or "").lower() == "failed":

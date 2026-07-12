@@ -3192,10 +3192,7 @@ def test_bigscreen_snapshot_promotes_export_data_quality_warning(tmp_path, monke
     assert payload["status"] == "WARNING"
     assert payload["health_score"] < 100
     assert any("expert_pack_data_quality_warning:" in item for item in payload["warnings"])
-    assert any(
-        action["source"] == "expert_export_summary" and action["severity"] == "WARNING"
-        for action in payload["actions"]
-    )
+    assert not any(action["source"] == "expert_export_summary" for action in payload["actions"])
 
 
 def test_bigscreen_actions_skip_read_only_cost_coverage_advisory():

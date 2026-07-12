@@ -76,7 +76,7 @@ html[data-web-v2-layout="fluid"] .page-strategy .market{height:auto;min-height:0
   html[data-web-v2-layout="fluid"] .page-data .heatmap{min-height:900px}
   html[data-web-v2-layout="fluid"] .page-data .market{min-height:430px}
   html[data-web-v2-layout="fluid"] .page-data .cost{min-height:330px}
-  html[data-web-v2-layout="fluid"] .page-ops{grid-template-rows:390px minmax(360px,auto)}
+  html[data-web-v2-layout="fluid"] .page-ops{grid-template-rows:430px minmax(360px,auto)}
 }
 .header{height:76px;display:flex;align-items:flex-start;justify-content:space-between}
 .title h1{font-size:36px;letter-spacing:.5px;margin:0 0 4px;display:flex;align-items:center;gap:12px}
@@ -1267,6 +1267,12 @@ html[data-web-v2-layout="fluid"] .page-strategy .market{height:auto;min-height:0
   .health-pill{left:34px;right:34px;bottom:20px}
   .matrix-grid-shell{grid-template-columns:1fr;gap:12px;margin-top:14px}
   .matrix{grid-template-columns:42px repeat(7,minmax(30px,1fr));gap:5px;overflow:visible}
+  .page-overview .matrix-grid-shell,
+  .page-data .matrix-grid-shell{grid-template-columns:minmax(0,1fr);gap:12px}
+  .page-overview .matrix,
+  .page-data .matrix{
+    width:100%;min-width:0;grid-template-columns:42px repeat(7,minmax(0,1fr));gap:4px;
+  }
   .matrix .h{font-size:10px}
   .symbol{font-size:11px}
   .cell{height:26px;border-radius:7px}

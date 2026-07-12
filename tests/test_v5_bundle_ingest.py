@@ -417,6 +417,112 @@ def test_ingest_v5_paper_strategy_rows_dedupes_overlapping_summary(tmp_path):
     assert set(runs["bundle_name"].to_list()) == {second.name}
 
 
+def test_ingest_and_export_v5_profitability_diagnostics_are_idempotent(tmp_path):
+    funnel_header = (
+        "schema_version,run_id,ts_utc,execution_mode,stage_order,stage,input_count,"
+        "output_count,dropped_count,conversion_rate,entry_output_count,"
+        "exit_output_count,primary_blocker,blocker_mix,count_source,live_order_effect\n"
+    )
+    exit_header = (
+        "schema_version,proposal_id,strategy_id,strategy_version,symbol,"
+        "closed_trade_count,avg_net_pnl_bps,avg_mfe_bps,avg_mae_bps,"
+        "avg_profit_giveback_bps,avg_exit_efficiency,avg_holding_bars,"
+        "high_profit_giveback_count,exit_reason_mix,exit_timing_state_mix,"
+        "diagnosis,valid_for_live_orders,live_order_effect\n"
+    )
+    run_csv = (
+        "schema_version,paper_trade_id,proposal_id,strategy_id,strategy_version,"
+        "symbol,ts_utc,closed_at,net_pnl_bps,mfe_bps,mae_bps,"
+        "profit_giveback_bps,exit_efficiency,exit_timing_bars,"
+        "exit_timing_state,holding_period_seconds,exit_reason\n"
+        "v5.generic_paper_runtime.v1,trade-1,proposal-1,strategy-1,1,SOL/USDT,"
+        "2026-07-12T01:00:00Z,2026-07-12T01:00:00Z,25,80,-30,55,0.3125,"
+        "4,profit_giveback,14400,max_holding_bars\n"
+    )
+    first = make_tar(
+        tmp_path / "v5_live_followup_bundle_20260712T010000Z.tar.gz",
+        {
+            "summaries/trade_opportunity_funnel.csv": funnel_header
+            + "v5.trade_opportunity_funnel.v1,run-1,2026-07-12T01:00:00Z,"
+            "shadow,50,local_order_generation,4,0,4,0,0,0,"
+            'protect_entry_rsi_confirm_too_weak,"{}",v5_order_intents,'
+            "read_only_observability\n",
+            "summaries/paper_strategy_exit_quality.csv": exit_header
+            + "v5.generic_paper_runtime.v1,proposal-1,strategy-1,1,SOL/USDT,"
+            '1,25,80,-30,55,0.3125,4,1,"{}","{}",high_profit_giveback,'
+            "false,none\n",
+            "summaries/paper_strategy_runs.csv": run_csv,
+        },
+    )
+    second = make_tar(
+        tmp_path / "v5_live_followup_bundle_20260712T020000Z.tar.gz",
+        {
+            "summaries/trade_opportunity_funnel.csv": funnel_header
+            + "v5.trade_opportunity_funnel.v1,run-1,2026-07-12T02:00:00Z,"
+            "shadow,50,local_order_generation,4,1,3,0.25,1,0,"
+            'protect_entry_volume_confirm_negative,"{}",v5_order_intents,'
+            "read_only_observability\n",
+            "summaries/paper_strategy_exit_quality.csv": exit_header
+            + "v5.generic_paper_runtime.v1,proposal-1,strategy-1,1,SOL/USDT,"
+            '2,35,90,-25,55,0.3889,5,1,"{}","{}",high_profit_giveback,'
+            "false,none\n",
+            "summaries/paper_strategy_runs.csv": run_csv,
+        },
+    )
+    lake = tmp_path / "lake"
+    restricted = tmp_path / "restricted"
+    redacted = tmp_path / "redacted"
+
+    ingest_v5_bundle(
+        first,
+        lake,
+        restricted,
+        redacted,
+        run_analysis=False,
+        refresh_candidate_gold=False,
+    )
+    for _ in range(10):
+        ingest_v5_bundle(
+            second,
+            lake,
+            restricted,
+            redacted,
+            run_analysis=False,
+            refresh_candidate_gold=False,
+        )
+
+    funnel = read_parquet_dataset(lake / "silver/v5_trade_opportunity_funnel")
+    exit_quality = read_parquet_dataset(lake / "silver/v5_paper_strategy_exit_quality")
+    runs = read_parquet_dataset(lake / "silver/v5_paper_strategy_run")
+    assert funnel.height == 1
+    assert funnel["output_count"][0] == "1"
+    assert exit_quality.height == 1
+    assert exit_quality["closed_trade_count"][0] == "2"
+    assert runs.height == 1
+    assert runs["mfe_bps"][0] == "80"
+    assert runs["mae_bps"][0] == "-30"
+    assert runs["profit_giveback_bps"][0] == "55"
+
+    export = export_daily_pack(
+        export_date="2026-07-12",
+        lake_root=lake,
+        out_dir=tmp_path / "exports",
+        command_line=["qlab", "export-daily", "--no-pre-export-v5-refresh"],
+        pre_export_v5_refresh=False,
+    )
+    with zipfile.ZipFile(export.zip_path) as archive:
+        names = set(archive.namelist())
+        assert "v5/v5_trade_opportunity_funnel.csv" in names
+        assert "v5/v5_paper_strategy_exit_quality.csv" in names
+        exported_runs = list(
+            csv.DictReader(
+                StringIO(archive.read("v5/v5_paper_strategy_runs.csv").decode("utf-8"))
+            )
+        )
+    assert exported_runs[0]["mfe_bps"] == "80"
+    assert exported_runs[0]["profit_giveback_bps"] == "55"
+
+
 def test_ingest_and_export_generic_paper_runtime_contract(tmp_path):
     proposal_id = "TRX_ALT_IMPULSE_48H_PAPER_V1"
     tracker_id = f"paper:{proposal_id}"

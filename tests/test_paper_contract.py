@@ -106,7 +106,7 @@ def test_raw_contract_hash_matches_v5_canonical_vector():
     )
 
 
-def test_first_batch_templates_build_only_three_generic_proposals():
+def test_templates_build_explicit_and_controlled_family_proposals():
     templates = load_proposal_templates()
     rows = [
         {
@@ -118,6 +118,7 @@ def test_first_batch_templates_build_only_three_generic_proposals():
             "avg_net_bps": 40.0,
             "p25_net_bps": 1.0,
             "win_rate": 0.6,
+            "decision": "PAPER_READY",
         },
         {
             "strategy_candidate": "v5.f3_dominant_entry",
@@ -125,6 +126,7 @@ def test_first_batch_templates_build_only_three_generic_proposals():
             "horizon_hours": 72,
             "sample_count": 40,
             "complete_sample_count": 30,
+            "decision": "PAPER_READY",
         },
         {
             "strategy_candidate": "v5.f4_volume_expansion_entry",
@@ -132,6 +134,7 @@ def test_first_batch_templates_build_only_three_generic_proposals():
             "horizon_hours": 72,
             "sample_count": 40,
             "complete_sample_count": 30,
+            "decision": "PAPER_READY",
         },
         {
             "strategy_candidate": "v5.f4_volume_expansion_entry",
@@ -139,20 +142,66 @@ def test_first_batch_templates_build_only_three_generic_proposals():
             "horizon_hours": 8,
             "sample_count": 40,
             "complete_sample_count": 30,
+            "decision": "PAPER_READY",
+        },
+        {
+            "strategy_candidate": "v5.f3_dominant_entry",
+            "symbol": "ADA-USDT",
+            "horizon_hours": 120,
+            "sample_count": 152,
+            "complete_sample_count": 61,
+            "avg_net_bps": 33.5,
+            "p25_net_bps": -44.8,
+            "win_rate": 0.607,
+            "decision": "PAPER_READY",
         },
     ]
     proposals = build_configured_proposals(
         pl.DataFrame(rows), created_at=datetime(2026, 7, 10, tzinfo=UTC)
     )
 
-    assert len(templates) == 3
+    assert len(templates) == 4
     assert {proposal.strategy_id for proposal, _ in proposals} == {
         "TRX_ALT_IMPULSE_48H_PAPER",
         "BCH_F3_F4_DEDUP_72H_PAPER",
         "TAO_F3_F4_DEDUP_8H_PAPER",
+        "ADA_F3_F4_DEDUP_120H_PAPER",
     }
     assert all(proposal.paper_only for proposal, _ in proposals)
     assert all(proposal.live_order_effect == "none" for proposal, _ in proposals)
+    dynamic = next(
+        proposal for proposal, _ in proposals if proposal.strategy_id.startswith("ADA_")
+    )
+    assert dynamic.max_holding_bars == 120
+    assert dynamic.exit_rule.children[0].value == 120
+
+
+def test_controlled_family_compiler_rejects_meta_and_under_sampled_rows():
+    rows = [
+        {
+            "strategy_candidate": "regime_router:v5.f3_dominant_entry",
+            "symbol": "ALL",
+            "horizon_hours": None,
+            "complete_sample_count": None,
+            "decision": "PAPER_READY",
+        },
+        {
+            "strategy_candidate": "v5.f3_dominant_entry",
+            "symbol": "ETH-USDT",
+            "horizon_hours": 24,
+            "complete_sample_count": 19,
+            "decision": "PAPER_READY",
+        },
+        {
+            "strategy_candidate": "v5.f3_dominant_entry",
+            "symbol": "BNB-USDT",
+            "horizon_hours": 120,
+            "complete_sample_count": 61,
+            "decision": "PAPER_READY",
+        },
+    ]
+
+    assert build_configured_proposals(pl.DataFrame(rows)) == []
 
 
 def test_legacy_paper_rows_have_explicit_migration_outcomes():
@@ -370,3 +419,42 @@ def test_cost_trust_requires_fresh_entry_and_exit_and_never_promotes_bootstrap()
         ).cost_trust_level
         == "PAPER_ONLY"
     )
+
+
+def test_cost_wildcards_support_paper_but_never_canary_or_live():
+    now = datetime(2026, 7, 10, tzinfo=UTC)
+    required = [
+        {
+            "symbol": "BNB-USDT",
+            "notional_bucket": "0_20",
+            "market_regime": "trend_up",
+            "liquidity_role": "taker",
+            "order_leg": "entry",
+            "spread_bucket": "tight",
+            "volatility_bucket": "normal",
+        }
+    ]
+    result = evaluate_strategy_cost_trust(
+        strategy_id="BNB_PAPER",
+        required_conditions=required,
+        observations=[
+            {
+                "symbol": "BNB-USDT",
+                "notional_bucket": "all",
+                "market_regime": "any",
+                "liquidity_role": "any",
+                "order_leg": "any",
+                "spread_bucket": "any",
+                "volatility_bucket": "any",
+                "cost_source": "actual_fills",
+                "sample_count": 100,
+                "observed_at": "2026-07-10T00:00:00Z",
+            }
+        ],
+        now=now,
+    )
+
+    assert result.cost_trust_level == "PAPER_ONLY"
+    assert result.paper_cost_usable is True
+    assert result.canary_cost_usable is False
+    assert result.live_cost_usable is False

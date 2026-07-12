@@ -257,7 +257,9 @@ SNAPSHOT_META_DATASETS = {
     "v5_cost_probe_order_event",
     "v5_cost_probe_roundtrip_event",
     "v5_fill_bill_cost_reconciliation",
+    "v5_trade_opportunity_funnel",
     "v5_paper_strategy_run",
+    "v5_paper_strategy_exit_quality",
     "v5_paper_strategy_proposal_ack",
     "v5_paper_strategy_daily",
     "v5_paper_strategy_registry",
@@ -378,7 +380,9 @@ HEAVY_EXPORT_DATASET_LIMITS = {
     "expanded_universe_candidate_label": 20_000,
     "expanded_crypto_universe_shadow": 20_000,
     "expanded_crypto_candidate_outcomes_by_symbol": 20_000,
+    "v5_trade_opportunity_funnel": 20_000,
     "v5_paper_strategy_run": 20_000,
+    "v5_paper_strategy_exit_quality": 20_000,
     "v5_paper_strategy_signal": 20_000,
     "v5_paper_strategy_error": 10_000,
     "v5_paper_strategy_restart_recovery": 10_000,
@@ -439,7 +443,9 @@ HEAVY_EXPORT_RECENT_FILE_LIMITS = {
     "expanded_universe_candidate_label": 100,
     "expanded_crypto_universe_shadow": 100,
     "expanded_crypto_candidate_outcomes_by_symbol": 100,
+    "v5_trade_opportunity_funnel": 100,
     "v5_paper_strategy_run": 100,
+    "v5_paper_strategy_exit_quality": 100,
     "v5_paper_strategy_signal": 100,
     "v5_paper_strategy_error": 100,
     "v5_paper_strategy_restart_recovery": 100,
@@ -611,7 +617,9 @@ SECTION_DATASETS = {
         "v5_cost_probe_order_event",
         "v5_cost_probe_roundtrip_event",
         "v5_fill_bill_cost_reconciliation",
+        "v5_trade_opportunity_funnel",
         "v5_paper_strategy_run",
+        "v5_paper_strategy_exit_quality",
         "v5_paper_strategy_proposal_ack",
         "v5_paper_strategy_daily",
         "v5_paper_strategy_registry",
@@ -695,6 +703,8 @@ REQUIRED_MEMBERS = [
     "v5/v5_paper_strategy_state.csv",
     "v5/v5_paper_strategy_signals.csv",
     "v5/v5_paper_strategy_runs.csv",
+    "v5/v5_paper_strategy_exit_quality.csv",
+    "v5/v5_trade_opportunity_funnel.csv",
     "v5/v5_paper_strategy_daily.csv",
     "v5/v5_paper_strategy_quote_coverage.csv",
     "v5/v5_paper_strategy_cost_evidence.csv",
@@ -810,6 +820,8 @@ REQUIRED_MEMBERS = [
     "reports/research_promotion_decision.md",
     "reports/backtest_vs_paper_consistency.csv",
     "reports/backtest_vs_paper_consistency.md",
+    "reports/backtest_vs_paper_gap_report.csv",
+    "reports/backtest_vs_paper_gap_report.md",
     "reports/risk_on_multi_buy_shadow.csv",
     "reports/risk_on_multi_buy_summary.md",
     "reports/bnb_negative_expectancy_attribution.csv",
@@ -1003,6 +1015,14 @@ CSV_SCHEMAS: dict[str, list[str]] = {
         "params_json",
         "expression_json",
         "expression_hash",
+        "factor_hash",
+        "canonical_factor_id",
+        "factor_formula_hash",
+        "formula_hash",
+        "duplicate_of",
+        "correlation_cluster_id",
+        "effective_independence_weight",
+        "independence_weight",
         "status",
         "lookback_bars",
         "availability_lag_bars",
@@ -1026,6 +1046,10 @@ CSV_SCHEMAS: dict[str, list[str]] = {
         "factor_family",
         "factor_version",
         "timeframe",
+        "factor_hash",
+        "canonical_factor_id",
+        "formula_hash",
+        "independence_weight",
         "horizon_bars",
         "decision_delay_bars",
         "sample_count",
@@ -1043,6 +1067,7 @@ CSV_SCHEMAS: dict[str, list[str]] = {
         "edge_cost_ratio",
         "decision",
         "score",
+        "independence_adjusted_score",
         "reasons_json",
         "warnings_json",
         "start_ts",
@@ -1057,10 +1082,16 @@ CSV_SCHEMAS: dict[str, list[str]] = {
         "factor_family",
         "factor_version",
         "timeframe",
+        "factor_hash",
+        "canonical_factor_id",
+        "formula_hash",
+        "independence_weight",
         "best_horizon_bars",
         "tested_horizon_count",
         "best_score",
         "avg_score",
+        "independence_adjusted_best_score",
+        "independence_adjusted_avg_score",
         "best_rank_ic_mean",
         "best_rank_ic_tstat",
         "best_long_short_mean_bps",
@@ -4007,6 +4038,13 @@ CSV_SCHEMAS.update(
                     "net_pnl_bps",
                     "max_favorable_excursion",
                     "max_adverse_excursion",
+                    "mfe_bps",
+                    "mae_bps",
+                    "profit_giveback_bps",
+                    "exit_efficiency",
+                    "exit_timing_bars",
+                    "exit_timing_state",
+                    "holding_period_seconds",
                     "holding_bars",
                     "exit_reason",
                     "cost_source",
@@ -4071,6 +4109,47 @@ CSV_SCHEMAS.update(
             "spread_observation_coverage",
             "cost_source_mix",
             "created_at",
+            *_V5_PAPER_TELEMETRY_AUDIT_FIELDS,
+        ],
+        "v5/v5_paper_strategy_exit_quality.csv": [
+            *_V5_PAPER_TELEMETRY_ENVELOPE_FIELDS,
+            "schema_version",
+            "proposal_id",
+            "strategy_id",
+            "strategy_version",
+            "symbol",
+            "closed_trade_count",
+            "avg_net_pnl_bps",
+            "avg_mfe_bps",
+            "avg_mae_bps",
+            "avg_profit_giveback_bps",
+            "avg_exit_efficiency",
+            "avg_holding_bars",
+            "high_profit_giveback_count",
+            "exit_reason_mix",
+            "exit_timing_state_mix",
+            "diagnosis",
+            "valid_for_live_orders",
+            "live_order_effect",
+            *_V5_PAPER_TELEMETRY_AUDIT_FIELDS,
+        ],
+        "v5/v5_trade_opportunity_funnel.csv": [
+            *_V5_PAPER_TELEMETRY_ENVELOPE_FIELDS,
+            "schema_version",
+            "ts_utc",
+            "execution_mode",
+            "stage_order",
+            "stage",
+            "input_count",
+            "output_count",
+            "dropped_count",
+            "conversion_rate",
+            "entry_output_count",
+            "exit_output_count",
+            "primary_blocker",
+            "blocker_mix",
+            "count_source",
+            "live_order_effect",
             *_V5_PAPER_TELEMETRY_AUDIT_FIELDS,
         ],
         "v5/v5_paper_strategy_quote_coverage.csv": [
@@ -6390,6 +6469,14 @@ def _dataset_members(
         pl.DataFrame(),
     )
     v5_paper_strategy_runs = frames.get("v5_paper_strategy_run", pl.DataFrame())
+    v5_paper_strategy_exit_quality = frames.get(
+        "v5_paper_strategy_exit_quality",
+        pl.DataFrame(),
+    )
+    v5_trade_opportunity_funnel = frames.get(
+        "v5_trade_opportunity_funnel",
+        pl.DataFrame(),
+    )
     v5_paper_strategy_daily = frames.get("v5_paper_strategy_daily", pl.DataFrame())
     v5_paper_strategy_quote_coverage = frames.get(
         "v5_paper_strategy_quote_coverage",
@@ -7028,6 +7115,13 @@ def _dataset_members(
         "reports/backtest_vs_paper_consistency.md": (
             backtest_bundle.backtest_vs_paper_consistency_md
         ),
+        "reports/backtest_vs_paper_gap_report.csv": _csv_member(
+            "reports/backtest_vs_paper_gap_report.csv",
+            backtest_bundle.backtest_vs_paper_gap_report,
+        ),
+        "reports/backtest_vs_paper_gap_report.md": (
+            backtest_bundle.backtest_vs_paper_gap_report_md
+        ),
         "reports/risk_on_multi_buy_shadow.csv": _csv_member(
             "reports/risk_on_multi_buy_shadow.csv",
             risk_on_multi_buy_shadow,
@@ -7347,6 +7441,14 @@ def _dataset_members(
         "v5/v5_paper_strategy_runs.csv": _csv_member(
             "v5/v5_paper_strategy_runs.csv",
             _tail_by_time(v5_paper_strategy_runs, "closed_at", limit=50_000),
+        ),
+        "v5/v5_paper_strategy_exit_quality.csv": _csv_member(
+            "v5/v5_paper_strategy_exit_quality.csv",
+            _tail_by_time(v5_paper_strategy_exit_quality, "ingest_ts", limit=20_000),
+        ),
+        "v5/v5_trade_opportunity_funnel.csv": _csv_member(
+            "v5/v5_trade_opportunity_funnel.csv",
+            _tail_by_time(v5_trade_opportunity_funnel, "ts_utc", limit=50_000),
         ),
         "v5/v5_paper_strategy_daily.csv": _csv_member(
             "v5/v5_paper_strategy_daily.csv",
@@ -11196,64 +11298,21 @@ def _paper_strategy_proposals_for_export(
     from quant_lab.paper.proposals import build_configured_proposals, proposal_export_rows
     from quant_lab.paper.service import proposal_from_storage_row, proposal_rule_fingerprint
 
-    configured = (
-        build_configured_proposals(board)
-        if not board.is_empty() and "decision" in board.columns
-        else []
-    )
-    persisted = (
-        persisted_proposals
-        if persisted_proposals is not None
-        else pl.DataFrame()
-    )
-    if not persisted.is_empty():
-        evidence_by_identity = {
-            (proposal.strategy_id, proposal.strategy_version): evidence
-            for proposal, evidence in configured
-        }
-        persisted_configured = []
+    persisted = persisted_proposals if persisted_proposals is not None else pl.DataFrame()
+    if board.is_empty() or "decision" not in board.columns:
+        persisted_rows = []
         now = datetime.now(UTC)
         for row in persisted.to_dicts():
             try:
                 proposal = proposal_from_storage_row(row)
             except Exception:
                 continue
-            if proposal.expires_at <= now:
-                continue
-            evidence = evidence_by_identity.get(
-                (proposal.strategy_id, proposal.strategy_version),
-                {},
-            )
-            generated = next(
-                (
-                    candidate
-                    for candidate, _row in configured
-                    if (
-                        candidate.strategy_id,
-                        candidate.strategy_version,
-                    )
-                    == (proposal.strategy_id, proposal.strategy_version)
-                ),
-                None,
-            )
-            if generated is not None and proposal_rule_fingerprint(
-                generated
-            ) != proposal_rule_fingerprint(proposal):
-                continue
-            persisted_configured.append((proposal, evidence))
-        if persisted_configured:
-            return _csv_frame_with_schema(
-                pl.DataFrame(
-                    proposal_export_rows(persisted_configured),
-                    infer_schema_length=None,
-                ),
-                CSV_SCHEMAS[path],
-            )
-    if board.is_empty() or "decision" not in board.columns:
-        return _empty_csv_schema_frame(path)
-    if configured:
+            if proposal.expires_at > now:
+                persisted_rows.append((proposal, {}))
+        if not persisted_rows:
+            return _empty_csv_schema_frame(path)
         return _csv_frame_with_schema(
-            pl.DataFrame(proposal_export_rows(configured), infer_schema_length=None),
+            pl.DataFrame(proposal_export_rows(persisted_rows), infer_schema_length=None),
             CSV_SCHEMAS[path],
         )
     portfolio_overrides = _portfolio_status_overrides_by_candidate_symbol(
@@ -11265,7 +11324,7 @@ def _paper_strategy_proposals_for_export(
         row
         for row in board_rows
         if str(row.get("decision") or "").upper() == "PAPER_READY"
-        and str(row.get("symbol") or "").strip().upper() != "UNKNOWN"
+        and str(row.get("symbol") or "").strip().upper() not in {"", "UNKNOWN", "ALL", "*"}
         and _portfolio_override_for_row(row, portfolio_overrides) is None
     ]
     if latest_as_of_date is not None:
@@ -11275,6 +11334,40 @@ def _paper_strategy_proposals_for_export(
     if not rows:
         return _empty_csv_schema_frame(path)
 
+    eligible_board = pl.DataFrame(rows, infer_schema_length=None)
+    configured = [
+        (proposal, evidence)
+        for proposal, evidence in build_configured_proposals(eligible_board)
+        if _paper_proposal_legacy_key(evidence) not in PAPER_PROPOSAL_IDS
+    ]
+    if not persisted.is_empty():
+        evidence_by_identity = {
+            (proposal.strategy_id, proposal.strategy_version): evidence
+            for proposal, evidence in configured
+        }
+        current_by_identity = {
+            (proposal.strategy_id, proposal.strategy_version): (proposal, evidence)
+            for proposal, evidence in configured
+        }
+        now = datetime.now(UTC)
+        for row in persisted.to_dicts():
+            try:
+                proposal = proposal_from_storage_row(row)
+            except Exception:
+                continue
+            if proposal.expires_at <= now:
+                continue
+            identity = (proposal.strategy_id, proposal.strategy_version)
+            evidence = evidence_by_identity.get(identity)
+            generated_row = current_by_identity.get(identity)
+            if evidence is None or generated_row is None:
+                continue
+            generated = generated_row[0]
+            if proposal_rule_fingerprint(generated) != proposal_rule_fingerprint(proposal):
+                continue
+            current_by_identity[identity] = (proposal, evidence)
+        configured = list(current_by_identity.values())
+
     best_by_candidate: dict[tuple[str, str], dict[str, Any]] = {}
     for row in rows:
         key = (str(row.get("strategy_candidate") or ""), str(row.get("symbol") or ""))
@@ -11283,7 +11376,7 @@ def _paper_strategy_proposals_for_export(
             best_by_candidate[key] = row
 
     created_at = datetime.now(UTC).isoformat()
-    proposals = [
+    legacy_proposals = [
         {
             "proposal_id": _paper_proposal_id(row),
             "strategy_candidate": row.get("strategy_candidate"),
@@ -11310,8 +11403,21 @@ def _paper_strategy_proposals_for_export(
                 str(item.get("strategy_candidate") or ""),
             ),
         )
+        if _paper_proposal_legacy_key(row) in PAPER_PROPOSAL_IDS
     ]
-    return _csv_frame_with_schema(pl.DataFrame(proposals), CSV_SCHEMAS[path])
+    proposal_rows = [*proposal_export_rows(configured), *legacy_proposals]
+    if not proposal_rows:
+        return _empty_csv_schema_frame(path)
+    return _csv_frame_with_schema(
+        pl.DataFrame(proposal_rows, infer_schema_length=None),
+        CSV_SCHEMAS[path],
+    )
+
+
+def _paper_proposal_legacy_key(row: Mapping[str, Any]) -> tuple[str, str]:
+    candidate = str(row.get("strategy_candidate") or "").strip()
+    symbol = str(row.get("symbol") or row.get("v5_symbol") or "").strip().upper()
+    return candidate, symbol.replace("/", "-").replace("_", "-")
 
 
 def _paper_strategy_proposal_ack_for_export(

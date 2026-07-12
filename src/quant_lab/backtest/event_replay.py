@@ -8,10 +8,8 @@ import polars as pl
 from quant_lab.backtest.cost_model import conservative_cost_for_symbol
 from quant_lab.backtest.datasets import (
     coerce_dt,
-    entry_price_from_row,
     first_value,
     float_or_none,
-    future_net_bps_from_market,
     iso_utc,
     market_rows_by_symbol,
     normalize_strategy_symbol,
@@ -22,10 +20,14 @@ from quant_lab.backtest.metrics import frame_with_schema, max_drawdown_bps, summ
 V5_DECISION_REPLAY_TRADES_FIELDS = [
     "strategy_id",
     "symbol",
+    "decision_ts",
     "entry_ts",
     "exit_ts",
     "entry_px",
     "exit_px",
+    "entry_price_source",
+    "exit_price_source",
+    "decision_delay_bars",
     "horizon_hours",
     "gross_bps",
     "cost_bps",
@@ -68,25 +70,27 @@ def build_v5_decision_replay(
             continue
         if not _would_open(row):
             continue
-        entry_ts = row["_ts"]
-        entry_px = entry_price_from_row(row)
-        if entry_px is None:
-            entry_px = _entry_px_from_market(bars_by_symbol, symbol, entry_ts)
+        decision_ts = row["_ts"]
+        entry_bar = _next_closed_bar(bars_by_symbol, symbol, decision_ts)
+        if entry_bar is None:
+            continue
+        entry_ts = entry_bar["_ts"]
+        entry_px = float_or_none(entry_bar.get("close")) or entry_bar.get("_close")
+        if entry_px is None or entry_px <= 0:
+            continue
         cost = conservative_cost_for_symbol(cost_bucket_daily, symbol=symbol)
-        net_bps = future_net_bps_from_market(
+        exit_result = _exit_from_market(
             bars_by_symbol=bars_by_symbol,
             symbol=symbol,
-            ts=entry_ts,
-            entry_px=entry_px or 0.0,
+            entry_ts=entry_ts,
+            entry_px=entry_px,
             horizon_hours=max_hold_hours,
-            cost_bps=cost.cost_bps,
+            hard_stop_bps=hard_stop_bps,
         )
-        if net_bps is None:
+        if exit_result is None:
             continue
-        exit_px = _exit_px_from_net(entry_px or 0.0, net_bps + cost.cost_bps)
-        exit_reason = "max_hold"
-        if net_bps <= hard_stop_bps:
-            exit_reason = "hard_stop_model"
+        exit_ts, exit_px, gross_bps, exit_reason, exit_price_source = exit_result
+        net_bps = gross_bps - cost.cost_bps
         replay_rows.append(
             {
                 "strategy_id": str(
@@ -102,16 +106,20 @@ def build_v5_decision_replay(
                     or "V5_DECISION_REPLAY_BACKTEST"
                 ),
                 "symbol": symbol,
+                "decision_ts": iso_utc(decision_ts),
                 "entry_ts": iso_utc(entry_ts),
-                "exit_ts": iso_utc(entry_ts + timedelta(hours=max_hold_hours)),
+                "exit_ts": iso_utc(exit_ts),
                 "entry_px": entry_px,
                 "exit_px": exit_px,
+                "entry_price_source": "next_closed_bar_close",
+                "exit_price_source": exit_price_source,
+                "decision_delay_bars": 1,
                 "horizon_hours": max_hold_hours,
-                "gross_bps": net_bps + cost.cost_bps,
+                "gross_bps": gross_bps,
                 "cost_bps": cost.cost_bps,
                 "net_bps": net_bps,
                 "exit_reason": exit_reason,
-                "data_leakage_check": "pass_sorted_visible_rows_only",
+                "data_leakage_check": "pass_next_closed_bar_one_bar_delay",
                 "live_order_effect": "read_only_no_live_order",
             }
         )
@@ -145,24 +153,55 @@ def _would_open(row: dict[str, Any]) -> bool:
     return False
 
 
-def _entry_px_from_market(
+def _next_closed_bar(
     bars_by_symbol: dict[str, list[dict[str, Any]]],
     symbol: str,
     ts: Any,
-) -> float | None:
+) -> dict[str, Any] | None:
     parsed = coerce_dt(ts)
     if parsed is None:
         return None
     for row in bars_by_symbol.get(normalize_strategy_symbol(symbol), []):
-        if row["_ts"] >= parsed:
-            return float_or_none(row.get("close")) or row.get("_close")
+        if row["_ts"] > parsed:
+            return row
     return None
 
 
-def _exit_px_from_net(entry_px: float, gross_bps: float) -> float | None:
-    if entry_px <= 0:
+def _exit_from_market(
+    *,
+    bars_by_symbol: dict[str, list[dict[str, Any]]],
+    symbol: str,
+    entry_ts: Any,
+    entry_px: float,
+    horizon_hours: int,
+    hard_stop_bps: float,
+) -> tuple[Any, float, float, str, str] | None:
+    parsed = coerce_dt(entry_ts)
+    if parsed is None or entry_px <= 0:
         return None
-    return entry_px * (1.0 + gross_bps / 10_000.0)
+    horizon_ts = parsed + timedelta(hours=int(horizon_hours))
+    stop_px = entry_px * (1.0 + float(hard_stop_bps) / 10_000.0)
+    horizon_bar: dict[str, Any] | None = None
+    for row in bars_by_symbol.get(normalize_strategy_symbol(symbol), []):
+        row_ts = row["_ts"]
+        if row_ts <= parsed:
+            continue
+        low = float_or_none(row.get("low"))
+        if low is not None and low <= stop_px:
+            open_px = float_or_none(row.get("open"))
+            exit_px = min(stop_px, open_px) if open_px is not None else stop_px
+            gross_bps = (exit_px / entry_px - 1.0) * 10_000.0
+            return row_ts, exit_px, gross_bps, "hard_stop_model", "ohlc_stop_path"
+        if row_ts >= horizon_ts:
+            horizon_bar = row
+            break
+    if horizon_bar is None:
+        return None
+    exit_px = float_or_none(horizon_bar.get("close")) or horizon_bar.get("_close")
+    if exit_px is None or exit_px <= 0:
+        return None
+    gross_bps = (exit_px / entry_px - 1.0) * 10_000.0
+    return horizon_bar["_ts"], exit_px, gross_bps, "max_hold", "horizon_closed_bar_close"
 
 
 def _equity_curve(trades: list[dict[str, Any]]) -> pl.DataFrame:
@@ -193,7 +232,8 @@ def _summary_md(trades: pl.DataFrame, equity: pl.DataFrame) -> str:
         "# V5 Decision Replay Backtest",
         "",
         "Read-only replay approximation. Rows are sorted by decision timestamp and use only",
-        "market bars at or after each decision timestamp. This report does not call V5 live logic.",
+        "the next closed market bar after each decision timestamp. This report does not call "
+        "V5 live logic.",
         "",
         f"- trade_count: {trades.height}",
         f"- complete_sample_count: {stats['complete_sample_count']}",

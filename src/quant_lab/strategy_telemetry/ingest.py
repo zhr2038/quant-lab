@@ -82,7 +82,9 @@ SILVER_DATASETS = {
     "v5_cost_probe_live_execution_status": Path("silver/v5_cost_probe_live_execution_status"),
     "v5_cost_probe_order_event": Path("silver/v5_cost_probe_order_event"),
     "v5_cost_probe_roundtrip_event": Path("silver/v5_cost_probe_roundtrip_event"),
+    "v5_trade_opportunity_funnel": Path("silver/v5_trade_opportunity_funnel"),
     "v5_paper_strategy_run": Path("silver/v5_paper_strategy_run"),
+    "v5_paper_strategy_exit_quality": Path("silver/v5_paper_strategy_exit_quality"),
     "v5_paper_strategy_proposal_ack": Path("silver/v5_paper_strategy_proposal_ack"),
     "v5_paper_strategy_daily": Path("silver/v5_paper_strategy_daily"),
     "v5_paper_slippage_coverage": Path("silver/v5_paper_slippage_coverage"),
@@ -126,7 +128,9 @@ WEB_VISIBLE_SILVER_SNAPSHOT_META_DATASETS = {
     "v5_cost_probe_live_execution_status",
     "v5_cost_probe_order_event",
     "v5_cost_probe_roundtrip_event",
+    "v5_trade_opportunity_funnel",
     "v5_paper_strategy_run",
+    "v5_paper_strategy_exit_quality",
     "v5_paper_strategy_proposal_ack",
     "v5_paper_strategy_daily",
     "v5_paper_slippage_coverage",
@@ -199,6 +203,8 @@ EMPTY_CSV_REFRESH_DATASETS = {
     "v5_paper_strategy_state",
     "v5_paper_strategy_quote_coverage",
     "v5_paper_strategy_cost_evidence",
+    "v5_paper_strategy_exit_quality",
+    "v5_trade_opportunity_funnel",
 }
 REHYDRATE_IF_EMPTY_DATASETS = {
     *EMPTY_CSV_REFRESH_DATASETS,
@@ -217,6 +223,8 @@ SOURCE_AGNOSTIC_STABLE_ROW_KEY_DATASETS = {
     "v5_pullback_reversal_readiness",
     "v5_cost_probe_live_execution_status",
     "v5_fill_bill_cost_reconciliation",
+    "v5_trade_opportunity_funnel",
+    "v5_paper_strategy_exit_quality",
 }
 HISTORICAL_OUTCOME_PATH_PREFIXES = (
     "summaries/high_score_blocked_outcomes",
@@ -972,7 +980,9 @@ def _append_file_rows(
         "summaries/quant_lab_compliance.csv": "v5_quant_lab_compliance",
         "summaries/quant_lab_cost_usage.csv": "v5_quant_lab_cost_usage",
         "summaries/fill_bill_cost_reconciliation.csv": ("v5_fill_bill_cost_reconciliation"),
+        "summaries/trade_opportunity_funnel.csv": "v5_trade_opportunity_funnel",
         "summaries/paper_strategy_runs.csv": "v5_paper_strategy_run",
+        "summaries/paper_strategy_exit_quality.csv": "v5_paper_strategy_exit_quality",
         "summaries/paper_strategy_proposal_ack.csv": "v5_paper_strategy_proposal_ack",
         "summaries/paper_strategy_daily.csv": "v5_paper_strategy_daily",
         "summaries/paper_slippage_coverage.csv": "v5_paper_slippage_coverage",
@@ -2767,6 +2777,10 @@ def _stable_row_key(row: dict[str, Any]) -> str:
     source_path = _logical_bundle_path(str(row.get("source_path_inside_bundle") or ""))
     if source_path == "summaries/fill_bill_cost_reconciliation.csv":
         return _fill_bill_reconciliation_stable_row_key(row)
+    if source_path == "summaries/trade_opportunity_funnel.csv":
+        return _trade_opportunity_funnel_stable_row_key(row)
+    if source_path == "summaries/paper_strategy_exit_quality.csv":
+        return _paper_strategy_exit_quality_stable_row_key(row)
     if source_path in {
         "reports/pullback_reversal_shadow_outcomes.csv",
         "summaries/pullback_reversal_shadow_outcomes.csv",
@@ -2805,6 +2819,25 @@ def _fill_bill_reconciliation_stable_row_key(row: dict[str, Any]) -> str:
         "order_id": _first_value(row, payload, ["order_id", "ord_id", "ordId"]),
         "cl_ord_id": _first_value(row, payload, ["cl_ord_id", "clOrdId"]),
         "trade_ids": _first_value(row, payload, ["trade_ids", "trade_id", "tradeId"]),
+    }
+    return hashlib.sha256(safe_json_dumps(basis).encode("utf-8")).hexdigest()
+
+
+def _trade_opportunity_funnel_stable_row_key(row: dict[str, Any]) -> str:
+    payload = _loads_payload(row.get("raw_payload_json"))
+    basis = {
+        "run_id": _first_value(row, payload, ["run_id"]),
+        "stage": _first_value(row, payload, ["stage"]),
+    }
+    return hashlib.sha256(safe_json_dumps(basis).encode("utf-8")).hexdigest()
+
+
+def _paper_strategy_exit_quality_stable_row_key(row: dict[str, Any]) -> str:
+    payload = _loads_payload(row.get("raw_payload_json"))
+    basis = {
+        "proposal_id": _first_value(row, payload, ["proposal_id"]),
+        "strategy_id": _first_value(row, payload, ["strategy_id"]),
+        "strategy_version": _first_value(row, payload, ["strategy_version"]),
     }
     return hashlib.sha256(safe_json_dumps(basis).encode("utf-8")).hexdigest()
 

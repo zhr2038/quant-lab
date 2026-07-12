@@ -31,6 +31,10 @@ class StrategyCostTrust(BaseModel):
     missing_dimensions: list[str] = Field(default_factory=list)
     evaluated_condition_count: int = Field(ge=0)
     required_condition_count: int = Field(ge=0)
+    research_cost_usable: bool = False
+    paper_cost_usable: bool = False
+    canary_cost_usable: bool = False
+    live_cost_usable: bool = False
     source: str = "paper.strategy_cost_trust.v1"
 
 
@@ -79,6 +83,7 @@ def evaluate_strategy_cost_trust(
             continue
         covered_dimensions.update(REQUIRED_COST_DIMENSIONS)
         fresh_matches: list[Mapping[str, Any]] = []
+        fresh_exact_matches: list[Mapping[str, Any]] = []
         for row in matches:
             source = str(row.get("cost_source") or row.get("source") or "proxy").lower()
             source_counts[_source_class(source)] += max(_to_int(row.get("sample_count")), 1)
@@ -87,8 +92,10 @@ def evaluate_strategy_cost_trust(
                 ages.append(age)
             if age is not None and age <= max_age_seconds:
                 fresh_matches.append(row)
+                if _matches_exact(condition, row):
+                    fresh_exact_matches.append(row)
         condition_levels.append(
-            _condition_level(fresh_matches, source_counts)
+            _condition_level(fresh_matches, fresh_exact_matches)
             if fresh_matches
             else _TrustRank.PAPER_ONLY
         )
@@ -105,6 +112,10 @@ def evaluate_strategy_cost_trust(
         missing_dimensions=sorted(missing_dimensions),
         evaluated_condition_count=len(condition_levels),
         required_condition_count=len(required),
+        research_cost_usable=overall >= _TrustRank.PAPER_ONLY,
+        paper_cost_usable=overall >= _TrustRank.PAPER_ONLY,
+        canary_cost_usable=overall >= _TrustRank.CANARY,
+        live_cost_usable=overall >= _TrustRank.SCALE_READY,
     )
 
 
@@ -112,6 +123,7 @@ def build_strategy_cost_trust_frame(
     proposals: pl.DataFrame,
     cost_buckets: pl.DataFrame,
     *,
+    paper_runtime_cost_evidence: pl.DataFrame | None = None,
     now: datetime | None = None,
 ) -> pl.DataFrame:
     columns = {
@@ -125,12 +137,23 @@ def build_strategy_cost_trust_frame(
         "missing_dimensions": pl.Utf8,
         "evaluated_condition_count": pl.Int64,
         "required_condition_count": pl.Int64,
+        "research_cost_usable": pl.Boolean,
+        "paper_cost_usable": pl.Boolean,
+        "canary_cost_usable": pl.Boolean,
+        "live_cost_usable": pl.Boolean,
         "source": pl.Utf8,
         "created_at": pl.Datetime(time_zone="UTC"),
     }
     if proposals.is_empty():
         return pl.DataFrame(schema=columns)
     observations = [_normalize_cost_observation(row) for row in cost_buckets.to_dicts()]
+    if paper_runtime_cost_evidence is not None and not paper_runtime_cost_evidence.is_empty():
+        observations.extend(
+            _normalize_paper_runtime_cost_observation(row)
+            for row in paper_runtime_cost_evidence.to_dicts()
+            if _to_int(row.get("closed_trade_count")) > 0
+            and _to_int(row.get("cost_observed_count")) > 0
+        )
     created = (now or datetime.now(UTC)).astimezone(UTC)
     rows = []
     for proposal in proposals.to_dicts():
@@ -157,19 +180,19 @@ def build_strategy_cost_trust_frame(
 
 def _condition_level(
     rows: list[Mapping[str, Any]],
-    _source_counts: Counter[str],
+    exact_rows: list[Mapping[str, Any]],
 ) -> _TrustRank:
     if not rows:
         return _TrustRank.BLOCK
     local = Counter()
-    for row in rows:
+    for row in exact_rows:
         source = _source_class(str(row.get("cost_source") or row.get("source") or "proxy"))
         local[source] += max(_to_int(row.get("sample_count")), 1)
     if local["actual"] >= 30:
         return _TrustRank.SCALE_READY
     if local["actual"] >= 10 or (local["actual"] >= 5 and local["mixed"] >= 10):
         return _TrustRank.CANARY
-    if local["actual"] + local["mixed"] + local["proxy"] > 0:
+    if rows:
         return _TrustRank.PAPER_ONLY
     return _TrustRank.BLOCK
 
@@ -178,7 +201,23 @@ def _matches(required: Mapping[str, Any], observed: Mapping[str, Any]) -> bool:
     for dimension in REQUIRED_COST_DIMENSIONS:
         expected = str(required.get(dimension) or "").strip().lower()
         actual = str(observed.get(dimension) or "").strip().lower()
-        if expected and expected not in {"*", "any"} and expected != actual:
+        if (
+            expected
+            and expected not in {"*", "any", "all"}
+            and actual not in {"*", "any", "all"}
+            and expected != actual
+        ):
+            return False
+    return True
+
+
+def _matches_exact(required: Mapping[str, Any], observed: Mapping[str, Any]) -> bool:
+    for dimension in REQUIRED_COST_DIMENSIONS:
+        expected = str(required.get(dimension) or "").strip().lower()
+        actual = str(observed.get(dimension) or "").strip().lower()
+        if expected in {"", "*", "any", "all"}:
+            continue
+        if actual in {"", "*", "any", "all"} or expected != actual:
             return False
     return True
 
@@ -288,4 +327,22 @@ def _normalize_cost_observation(row: Mapping[str, Any]) -> dict[str, Any]:
         "cost_source": row.get("cost_source") or row.get("source") or "proxy",
         "sample_count": row.get("sample_count") or row.get("n") or 0,
         "observed_at": row.get("observed_at") or row.get("as_of_ts") or row.get("created_at"),
+    }
+
+
+def _normalize_paper_runtime_cost_observation(row: Mapping[str, Any]) -> dict[str, Any]:
+    return {
+        "symbol": _normalize_symbol(row.get("symbol")),
+        "notional_bucket": "any",
+        "market_regime": "any",
+        "liquidity_role": "any",
+        "order_leg": "any",
+        "spread_bucket": "any",
+        "volatility_bucket": "any",
+        "cost_source": row.get("cost_source") or "configured_conservative_paper",
+        "sample_count": row.get("closed_trade_count") or row.get("cost_observed_count") or 0,
+        "observed_at": row.get("observed_at")
+        or row.get("as_of_ts")
+        or row.get("created_at")
+        or row.get("ingest_ts"),
     }

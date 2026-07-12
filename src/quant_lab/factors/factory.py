@@ -51,13 +51,16 @@ FACTOR_DEFINITION_SCHEMA: dict[str, Any] = {
     "params_json": pl.Utf8,
     "expression_json": pl.Utf8,
     "expression_hash": pl.Utf8,
+    "factor_hash": pl.Utf8,
     "canonical_factor_id": pl.Utf8,
     "factor_formula_hash": pl.Utf8,
+    "formula_hash": pl.Utf8,
     "feature_dependencies": pl.Utf8,
     "operator_graph_hash": pl.Utf8,
     "duplicate_of": pl.Utf8,
     "correlation_cluster_id": pl.Utf8,
     "effective_independence_weight": pl.Float64,
+    "independence_weight": pl.Float64,
     "status": pl.Utf8,
     "lookback_bars": pl.Int64,
     "availability_lag_bars": pl.Int64,
@@ -91,11 +94,14 @@ FACTOR_VALUE_SCHEMA: dict[str, Any] = {
     "value": pl.Float64,
     "factor_status": pl.Utf8,
     "expression_hash": pl.Utf8,
+    "factor_hash": pl.Utf8,
     "canonical_factor_id": pl.Utf8,
     "factor_formula_hash": pl.Utf8,
+    "formula_hash": pl.Utf8,
     "operator_graph_hash": pl.Utf8,
     "correlation_cluster_id": pl.Utf8,
     "effective_independence_weight": pl.Float64,
+    "independence_weight": pl.Float64,
     "input_features_json": pl.Utf8,
     "input_dataset_version": pl.Utf8,
     "data_version": pl.Utf8,
@@ -116,6 +122,10 @@ FACTOR_EVIDENCE_SCHEMA: dict[str, Any] = {
     "factor_family": pl.Utf8,
     "factor_version": pl.Utf8,
     "timeframe": pl.Utf8,
+    "factor_hash": pl.Utf8,
+    "canonical_factor_id": pl.Utf8,
+    "formula_hash": pl.Utf8,
+    "independence_weight": pl.Float64,
     "horizon_bars": pl.Int64,
     "decision_delay_bars": pl.Int64,
     "sample_count": pl.Int64,
@@ -140,6 +150,7 @@ FACTOR_EVIDENCE_SCHEMA: dict[str, Any] = {
     "period_count": pl.Int64,
     "decision": pl.Utf8,
     "score": pl.Float64,
+    "independence_adjusted_score": pl.Float64,
     "reasons_json": pl.Utf8,
     "warnings_json": pl.Utf8,
     "start_ts": pl.Datetime(time_zone="UTC"),
@@ -155,10 +166,16 @@ FACTOR_CANDIDATE_SCHEMA: dict[str, Any] = {
     "factor_family": pl.Utf8,
     "factor_version": pl.Utf8,
     "timeframe": pl.Utf8,
+    "factor_hash": pl.Utf8,
+    "canonical_factor_id": pl.Utf8,
+    "formula_hash": pl.Utf8,
+    "independence_weight": pl.Float64,
     "best_horizon_bars": pl.Int64,
     "tested_horizon_count": pl.Int64,
     "best_score": pl.Float64,
     "avg_score": pl.Float64,
+    "independence_adjusted_best_score": pl.Float64,
+    "independence_adjusted_avg_score": pl.Float64,
     "best_rank_ic_mean": pl.Float64,
     "best_rank_ic_tstat": pl.Float64,
     "best_long_short_mean_bps": pl.Float64,
@@ -520,6 +537,10 @@ def evaluate_and_publish_factor_evidence(
         "factor_family",
         "factor_version",
         "timeframe",
+        "factor_hash",
+        "canonical_factor_id",
+        "formula_hash",
+        "independence_weight",
     ]
     for horizon in sorted({int(item) for item in horizon_bars if int(item) > 0}):
         labels = build_forward_return_labels(
@@ -777,13 +798,16 @@ def _build_factor_value_frame(
                 raw.cast(pl.Float64, strict=False).alias("raw_value"),
                 pl.lit(spec.status.value).alias("factor_status"),
                 pl.lit(spec.expression_hash).alias("expression_hash"),
+                pl.lit(spec.expression_hash).alias("factor_hash"),
                 pl.lit(spec.canonical_factor_id).alias("canonical_factor_id"),
                 pl.lit(spec.factor_formula_hash).alias("factor_formula_hash"),
+                pl.lit(spec.factor_formula_hash).alias("formula_hash"),
                 pl.lit(spec.operator_graph_hash).alias("operator_graph_hash"),
                 pl.lit(spec.correlation_cluster_id).alias("correlation_cluster_id"),
                 pl.lit(spec.effective_independence_weight).alias(
                     "effective_independence_weight"
                 ),
+                pl.lit(spec.effective_independence_weight).alias("independence_weight"),
                 pl.lit(safe_json_dumps(list(spec.input_features))).alias("input_features_json"),
                 pl.lit(input_dataset_version).alias("input_dataset_version"),
                 pl.lit(input_dataset_version).alias("data_version"),
@@ -1031,6 +1055,8 @@ def _factor_evidence_row(
         **portfolio,
         "decision": decision,
         "score": score,
+        "independence_adjusted_score": score
+        * float(factor_meta.get("independence_weight") or 1.0),
         "reasons_json": safe_json_dumps(reasons),
         "warnings_json": safe_json_dumps(_dedupe(warnings)),
         "start_ts": start_ts,
@@ -1157,13 +1183,24 @@ def _candidate_frame_from_evidence(
     if evidence.is_empty():
         return pl.DataFrame(schema=FACTOR_CANDIDATE_SCHEMA)
     rows: list[dict[str, Any]] = []
-    group_columns = ["factor_id", "factor_name", "factor_family", "factor_version", "timeframe"]
+    group_columns = [
+        "factor_id",
+        "factor_name",
+        "factor_family",
+        "factor_version",
+        "timeframe",
+        "factor_hash",
+        "canonical_factor_id",
+        "formula_hash",
+        "independence_weight",
+    ]
     for key, group in evidence.group_by(group_columns, maintain_order=True):
         meta = dict(zip(group_columns, _as_tuple(key, len(group_columns)), strict=True))
         sorted_group = group.sort("score", descending=True)
         best = sorted_group.to_dicts()[0]
         decision = str(best.get("decision") or "RESEARCH")
         scores = _float_values(group, "score")
+        adjusted_scores = _float_values(group, "independence_adjusted_score")
         rows.append(
             {
                 "as_of_date": as_of_date.isoformat(),
@@ -1172,6 +1209,10 @@ def _candidate_frame_from_evidence(
                 "tested_horizon_count": group["horizon_bars"].n_unique(),
                 "best_score": _float(best.get("score")) or 0.0,
                 "avg_score": _mean(scores),
+                "independence_adjusted_best_score": (
+                    _float(best.get("independence_adjusted_score")) or 0.0
+                ),
+                "independence_adjusted_avg_score": _mean(adjusted_scores),
                 "best_rank_ic_mean": _float(best.get("rank_ic_mean")) or 0.0,
                 "best_rank_ic_tstat": _float(best.get("rank_ic_tstat")) or 0.0,
                 "best_long_short_mean_bps": _float(best.get("long_short_mean_bps")) or 0.0,
@@ -1188,7 +1229,7 @@ def _candidate_frame_from_evidence(
             }
         )
     return _schema_frame(rows, FACTOR_CANDIDATE_SCHEMA).sort(
-        ["candidate_state", "best_score"],
+        ["candidate_state", "independence_adjusted_best_score"],
         descending=[False, True],
     )
 

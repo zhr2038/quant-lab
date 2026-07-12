@@ -20,6 +20,7 @@ KNOWN_FILE_PATTERNS = [
     re.compile(r"^raw/recent_runs/[^/]+/equity\.jsonl$"),
     re.compile(r"^raw/recent_runs/[^/]+/trades\.csv$"),
     re.compile(r"^raw/recent_runs/[^/]+/order_lifecycle\.csv$"),
+    re.compile(r"^raw/recent_runs/[^/]+/trade_opportunity_funnel\.csv$"),
     re.compile(r"^raw/state/(kill_switch|reconcile_status|ledger_status|auto_risk_eval)\.json$"),
     re.compile(r"^summaries/window_summary\.json$"),
     re.compile(r"^summaries/issues_to_fix\.json$"),
@@ -40,6 +41,13 @@ KNOWN_FILE_PATTERNS = [
     re.compile(r"^summaries/router_decisions\.csv$"),
     re.compile(r"^summaries/trades_roundtrips\.csv$"),
     re.compile(r"^summaries/open_positions\.csv$"),
+    re.compile(r"^summaries/trade_opportunity_funnel\.csv$"),
+    re.compile(
+        r"^summaries/paper_strategy_(proposal_ack|registry|state|signals|runs|daily|"
+        r"quote_coverage|cost_evidence|exit_quality|errors|restart_recovery)\.csv$"
+    ),
+    re.compile(r"^summaries/paper_slippage_coverage\.csv$"),
+    re.compile(r"^summaries/quant_lab_contract_status\.json$"),
     re.compile(r"^summaries/high_score_blocked_targets\.csv$"),
     re.compile(r"^summaries/high_score_blocked_outcomes.*\.csv$"),
     re.compile(r"^summaries/btc_leadership_probe_blocked_outcomes.*\.csv$"),
@@ -55,6 +63,7 @@ KNOWN_FILE_PATTERNS = [
     re.compile(r"^reports/order_lifecycle\.csv$"),
     re.compile(r"^summaries/order_lifecycle\.csv$"),
     re.compile(r"^raw/reports/order_lifecycle\.csv$"),
+    re.compile(r"^raw/reports/trade_opportunity_funnel\.csv$"),
     re.compile(r"^reports/cost_probe_(plan|orders|roundtrips)\.csv$"),
     re.compile(r"^summaries/cost_probe_(plan|orders|roundtrips)\.csv$"),
     re.compile(r"^raw/reports/cost_probe_(plan|orders|roundtrips)\.csv$"),

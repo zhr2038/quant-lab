@@ -116,6 +116,52 @@ def test_pipeline_uses_only_current_structured_proposal_and_clears_old_reject() 
     assert "v5_rejected" not in gate[0]["promotion_block_reasons"]
 
 
+def test_pipeline_drops_same_id_ack_with_wrong_contract_hash() -> None:
+    proposal_id = "TAO_F3_F4_DEDUP_8H_PAPER:1.0.0:bbbbbbbbbbbb"
+    frames = build_paper_strategy_pipeline_frames(
+        proposals=pl.DataFrame(
+            [
+                {
+                    "contract_version": "quant_lab.paper_strategy.v1",
+                    "proposal_id": proposal_id,
+                    "proposal_hash": "b" * 64,
+                    "strategy_id": "TAO_F3_F4_DEDUP_8H_PAPER",
+                    "strategy_version": "1.0.0",
+                    "strategy_candidate": "f3_f4_deduplicated_entry",
+                    "symbol": "TAO-USDT",
+                    "entry_rule": '{"operator":"gt","field":"close","value":0}',
+                    "exit_rule": '{"operator":"max_holding_bars","value":8}',
+                }
+            ]
+        ),
+        proposal_ack=pl.DataFrame(
+            [
+                {
+                    "proposal_id": proposal_id,
+                    "proposal_hash": "a" * 64,
+                    "accepted": False,
+                    "reject_reason": "no_supported_paper_tracker",
+                },
+                {
+                    "proposal_id": proposal_id,
+                    "proposal_hash": "b" * 64,
+                    "paper_tracker_id": f"paper:{proposal_id}",
+                    "accepted": True,
+                    "rules_locked": True,
+                    "paper_only": True,
+                    "live_order_effect": "none",
+                },
+            ]
+        ),
+        created_at=datetime(2026, 7, 11, 2, tzinfo=UTC),
+    )
+
+    registry = frames["paper_strategy_registry"].to_dicts()
+    assert len(registry) == 1
+    assert registry[0]["accepted"] is True
+    assert registry[0]["reject_reason"] == ""
+
+
 def test_accepted_tracker_is_active_before_first_daily_observation() -> None:
     proposal_id = "TAO_F3_F4_DEDUP_8H_PAPER:1.0.0:cccccccccccc"
     frames = build_paper_strategy_pipeline_frames(

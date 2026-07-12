@@ -5,10 +5,12 @@ from datetime import UTC, datetime, timedelta
 import polars as pl
 import pytest
 
+from quant_lab.backtest.event_replay import build_v5_decision_replay
 from quant_lab.backtest.label_backtest import build_label_backtest_summary
 from quant_lab.backtest.reports import (
     build_backtest_report_bundle,
     build_backtest_vs_paper_consistency,
+    build_backtest_vs_paper_gap_report,
     build_research_promotion_decision,
 )
 
@@ -28,6 +30,148 @@ def _bars(symbol: str, start: datetime, closes: list[float]) -> pl.DataFrame:
             for index, close in enumerate(closes)
         ]
     )
+
+
+def test_v5_replay_enters_on_next_closed_bar_not_candidate_price() -> None:
+    start = datetime(2026, 7, 1, tzinfo=UTC)
+    candidate = pl.DataFrame(
+        [
+            {
+                "strategy_id": "NEXT_BAR_TEST",
+                "symbol": "SOL-USDT",
+                "ts_utc": start,
+                "close": 1.0,
+                "entry_px": 2.0,
+                "final_decision": "open_long",
+            }
+        ]
+    )
+    market = _bars("SOL-USDT", start, [100.0, 110.0, 121.0])
+
+    trades, _, _ = build_v5_decision_replay(
+        candidate_snapshot=candidate,
+        decision_audit=None,
+        market_bars=market,
+        cost_bucket_daily=pl.DataFrame(),
+        max_hold_hours=1,
+    )
+
+    row = trades.to_dicts()[0]
+    assert row["decision_ts"] == "2026-07-01T00:00:00Z"
+    assert row["entry_ts"] == "2026-07-01T01:00:00Z"
+    assert row["entry_px"] == 110.0
+    assert row["entry_price_source"] == "next_closed_bar_close"
+    assert row["exit_px"] == 121.0
+    assert row["data_leakage_check"] == "pass_next_closed_bar_one_bar_delay"
+
+
+def test_v5_replay_uses_future_ohlc_stop_path() -> None:
+    start = datetime(2026, 7, 1, tzinfo=UTC)
+    candidate = pl.DataFrame(
+        [
+            {
+                "strategy_id": "STOP_PATH_TEST",
+                "symbol": "SOL-USDT",
+                "ts_utc": start,
+                "final_decision": "open_long",
+            }
+        ]
+    )
+    market = pl.DataFrame(
+        [
+            {
+                "symbol": "SOL-USDT",
+                "ts": start + timedelta(hours=index),
+                "open": open_px,
+                "high": high,
+                "low": low,
+                "close": close,
+                "volume": 100.0,
+            }
+            for index, (open_px, high, low, close) in enumerate(
+                [
+                    (100.0, 101.0, 99.0, 100.0),
+                    (100.0, 101.0, 99.0, 100.0),
+                    (100.0, 101.0, 97.0, 100.5),
+                    (100.5, 105.0, 100.0, 104.0),
+                ]
+            )
+        ]
+    )
+
+    trades, _, _ = build_v5_decision_replay(
+        candidate_snapshot=candidate,
+        decision_audit=None,
+        market_bars=market,
+        cost_bucket_daily=pl.DataFrame(),
+        max_hold_hours=24,
+        hard_stop_bps=-200.0,
+    )
+
+    row = trades.to_dicts()[0]
+    assert row["entry_ts"] == "2026-07-01T01:00:00Z"
+    assert row["exit_ts"] == "2026-07-01T02:00:00Z"
+    assert row["exit_px"] == pytest.approx(98.0)
+    assert row["gross_bps"] == pytest.approx(-200.0)
+    assert row["exit_reason"] == "hard_stop_model"
+    assert row["exit_price_source"] == "ohlc_stop_path"
+
+
+def test_backtest_vs_paper_gap_explains_missing_and_material_gap() -> None:
+    labels = pl.DataFrame(
+        [
+            {
+                "strategy_id": "MISSING_PAPER",
+                "symbol": "SOL-USDT",
+                "horizon_hours": 24,
+                "sample_count": 50,
+                "complete_sample_count": 50,
+                "avg_net_bps": 150.0,
+                "p25_net_bps": 20.0,
+                "cost_model": "conservative_p75:mixed_actual_proxy",
+                "data_leakage_check": "pass_next_closed_bar_one_bar_delay",
+            },
+            {
+                "strategy_id": "MATERIAL_GAP",
+                "symbol": "BCH-USDT",
+                "horizon_hours": 24,
+                "sample_count": 60,
+                "complete_sample_count": 60,
+                "avg_net_bps": 180.0,
+                "p25_net_bps": 30.0,
+                "cost_model": "mixed_actual_proxy",
+                "data_leakage_check": "pass_next_closed_bar_one_bar_delay",
+            },
+        ]
+    )
+    paper = pl.DataFrame(
+        [
+            {
+                "strategy_id": "MATERIAL_GAP",
+                "symbol": "BCH-USDT",
+                "paper_days_to_date": 20,
+                "entry_count": 30,
+                "closed_entries": 25,
+                "avg_paper_pnl_bps_by_horizon": '{"24h": -40.0}',
+                "arrival_mid_coverage": 0.95,
+                "cost_source_mix": "mixed_actual_paper",
+            }
+        ]
+    )
+
+    report = build_backtest_vs_paper_gap_report(
+        label_summary=labels,
+        paper_daily=paper,
+    )
+
+    missing = report.filter(pl.col("strategy_id") == "MISSING_PAPER").to_dicts()[0]
+    assert missing["gap_status"] == "PAPER_MISSING"
+    assert "paper_tracker_or_daily_evidence_missing" in missing["root_causes"]
+    material = report.filter(pl.col("strategy_id") == "MATERIAL_GAP").to_dicts()[0]
+    assert material["paper_avg_net_bps"] == -40.0
+    assert material["gap_bps"] == -220.0
+    assert material["gap_status"] == "MATERIAL_GAP"
+    assert "return_sign_reversal" in material["root_causes"]
 
 
 def test_label_backtest_summarizes_bnb_alpha6_conflict() -> None:

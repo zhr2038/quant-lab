@@ -22,11 +22,16 @@ FACTOR_DEDUPE_DECISION_FIELDS = [
     "factor_id",
     "factor_family",
     "candidate_state",
+    "factor_hash",
+    "canonical_factor_id",
+    "formula_hash",
     "correlation_cluster_id",
     "cluster_size",
     "is_cluster_leader",
     "leader_factor_id",
     "max_abs_correlation",
+    "independence_weight",
+    "independence_adjusted_score",
     "dedupe_decision",
     "dedupe_reason",
     "live_order_effect",
@@ -43,6 +48,9 @@ FACTOR_FAMILY_LEADERBOARD_FIELDS = [
     "leader_best_rank_ic_tstat",
     "leader_best_long_short_mean_bps",
     "high_correlation_cluster_count",
+    "effective_factor_count",
+    "leader_independence_weight",
+    "leader_independence_adjusted_score",
     "recommendation",
     "live_order_effect",
 ]
@@ -52,12 +60,17 @@ FACTOR_PAPER_REVIEW_QUEUE_FIELDS = [
     "factor_id",
     "factor_family",
     "candidate_state",
+    "factor_hash",
+    "canonical_factor_id",
+    "formula_hash",
     "best_horizon_bars",
     "best_rank_ic_mean",
     "best_rank_ic_tstat",
     "best_long_short_mean_bps",
     "sample_count",
     "oos_score",
+    "independence_weight",
+    "independence_adjusted_oos_score",
     "regime_stability_score",
     "correlation_cluster_id",
     "recommendation",
@@ -75,6 +88,10 @@ COMPOSITE_FACTOR_CANDIDATE_FIELDS = [
     "no_future_fields",
     "leakage_check",
     "component_candidate_states",
+    "component_independence_weights",
+    "effective_component_count",
+    "raw_component_score",
+    "independence_adjusted_score",
     "recommendation",
     "live_order_effect",
 ]
@@ -163,7 +180,7 @@ def build_factor_factory_v2_reports(
         evidence=evidence,
         dedupe=dedupe,
     )
-    composite = build_composite_factor_candidates(candidates=candidates)
+    composite = build_composite_factor_candidates(candidates=candidates, dedupe=dedupe)
     regime = build_factor_regime_effectiveness(candidates=candidates, evidence=evidence)
     bridge = build_factor_strategy_bridge_candidates(
         paper_queue=paper_queue,
@@ -245,17 +262,27 @@ def build_factor_dedupe_decision(
         leader = leaders[factor_id]
         cluster = clusters[find(factor_id)]
         is_leader = factor_id == leader
+        independence_weight = min(
+            _independence_weight(row),
+            1.0 / max(len(cluster), 1),
+        )
+        raw_score = _float(row.get("best_score")) or 0.0
         out.append(
             {
                 "as_of_date": row.get("as_of_date"),
                 "factor_id": factor_id,
                 "factor_family": row.get("factor_family"),
                 "candidate_state": row.get("candidate_state"),
+                "factor_hash": row.get("factor_hash"),
+                "canonical_factor_id": row.get("canonical_factor_id"),
+                "formula_hash": row.get("formula_hash"),
                 "correlation_cluster_id": cluster_ids[factor_id],
                 "cluster_size": len(cluster),
                 "is_cluster_leader": is_leader,
                 "leader_factor_id": leader,
                 "max_abs_correlation": round(max_corr.get(factor_id, 0.0), 6),
+                "independence_weight": independence_weight,
+                "independence_adjusted_score": raw_score * independence_weight,
                 "dedupe_decision": "keep_leader" if is_leader else "redundant_suppressed",
                 "dedupe_reason": (
                     "cluster_leader_selected_by_state_tstat_spread"
@@ -287,7 +314,19 @@ def build_factor_family_leaderboard(
             for row in values
             if bool((dedupe_by_factor.get(row.get("factor_id")) or {}).get("is_cluster_leader"))
         ] or values
-        leader = sorted(leaders, key=_candidate_rank_key, reverse=True)[0]
+        leader = sorted(
+            leaders,
+            key=lambda row: _candidate_rank_key(
+                {
+                    **row,
+                    "independence_weight": (
+                        dedupe_by_factor.get(row.get("factor_id")) or {}
+                    ).get("independence_weight"),
+                }
+            ),
+            reverse=True,
+        )[0]
+        leader_dedupe = dedupe_by_factor.get(leader.get("factor_id")) or {}
         cluster_ids = {
             (dedupe_by_factor.get(row.get("factor_id")) or {}).get("correlation_cluster_id")
             for row in values
@@ -307,6 +346,17 @@ def build_factor_family_leaderboard(
                 "leader_best_rank_ic_tstat": leader.get("best_rank_ic_tstat"),
                 "leader_best_long_short_mean_bps": leader.get("best_long_short_mean_bps"),
                 "high_correlation_cluster_count": len({item for item in cluster_ids if item}),
+                "effective_factor_count": sum(
+                    _independence_weight(dedupe_by_factor.get(row.get("factor_id")) or row)
+                    for row in values
+                ),
+                "leader_independence_weight": _independence_weight(
+                    leader_dedupe or leader
+                ),
+                "leader_independence_adjusted_score": (
+                    _float(leader.get("best_score")) or 0.0
+                )
+                * _independence_weight(leader_dedupe or leader),
                 "recommendation": (
                     "REVIEW_FAMILY_LEADER_FOR_PAPER"
                     if str(leader.get("candidate_state") or "") == "PAPER_READY"
@@ -335,6 +385,7 @@ def build_factor_paper_review_queue(
         evidence_row = evidence_by_factor.get(factor_id, {})
         suppressed = str(dedupe_row.get("dedupe_decision") or "") == "redundant_suppressed"
         oos_score = _oos_score(row, evidence_row)
+        independence_weight = _independence_weight(dedupe_row or row)
         regime_score = _regime_stability_score(factor_id, evidence)
         out.append(
             {
@@ -342,6 +393,9 @@ def build_factor_paper_review_queue(
                 "factor_id": factor_id,
                 "factor_family": row.get("factor_family"),
                 "candidate_state": row.get("candidate_state"),
+                "factor_hash": row.get("factor_hash"),
+                "canonical_factor_id": row.get("canonical_factor_id"),
+                "formula_hash": row.get("formula_hash"),
                 "best_horizon_bars": row.get("best_horizon_bars"),
                 "best_rank_ic_mean": row.get("best_rank_ic_mean"),
                 "best_rank_ic_tstat": row.get("best_rank_ic_tstat"),
@@ -349,6 +403,10 @@ def build_factor_paper_review_queue(
                 "sample_count": evidence_row.get("valid_sample_count")
                 or evidence_row.get("sample_count"),
                 "oos_score": oos_score,
+                "independence_weight": independence_weight,
+                "independence_adjusted_oos_score": (
+                    oos_score * independence_weight if oos_score is not None else None
+                ),
                 "regime_stability_score": regime_score,
                 "correlation_cluster_id": dedupe_row.get("correlation_cluster_id"),
                 "recommendation": "HOLD_REVIEW_REDUNDANT" if suppressed else "FACTOR_PAPER_REVIEW",
@@ -358,8 +416,13 @@ def build_factor_paper_review_queue(
     return _frame(out, FACTOR_PAPER_REVIEW_QUEUE_FIELDS)
 
 
-def build_composite_factor_candidates(*, candidates: pl.DataFrame) -> pl.DataFrame:
+def build_composite_factor_candidates(
+    *,
+    candidates: pl.DataFrame,
+    dedupe: pl.DataFrame | None = None,
+) -> pl.DataFrame:
     candidate_by_id = {str(row.get("factor_id") or ""): row for row in _rows(candidates)}
+    dedupe_by_id = {str(row.get("factor_id") or ""): row for row in _rows(dedupe)}
     out = []
     as_of_date = _latest_as_of_date(_rows(candidates))
     for composite_id, terms in COMPOSITE_FACTOR_RECIPES:
@@ -376,6 +439,33 @@ def build_composite_factor_candidates(*, candidates: pl.DataFrame) -> pl.DataFra
             )
             for term in available
         }
+        component_weights = {
+            term: _independence_weight(
+                dedupe_by_id.get(term) or candidate_by_id.get(term) or {}
+            )
+            for term in available
+        }
+        component_scores = [
+            (
+                term,
+                _float((candidate_by_id.get(term) or {}).get("best_score")),
+                component_weights[term],
+            )
+            for term in available
+            if term in candidate_by_id
+        ]
+        observed_scores = [item for item in component_scores if item[1] is not None]
+        raw_component_score = (
+            sum(float(score) for _, score, _ in observed_scores) / len(observed_scores)
+            if observed_scores
+            else None
+        )
+        independence_adjusted_score = (
+            sum(float(score) * weight for _, score, weight in observed_scores)
+            / len(observed_scores)
+            if observed_scores
+            else None
+        )
         out.append(
             {
                 "as_of_date": as_of_date,
@@ -388,6 +478,10 @@ def build_composite_factor_candidates(*, candidates: pl.DataFrame) -> pl.DataFra
                 "no_future_fields": True,
                 "leakage_check": "pass_no_future_label_fields",
                 "component_candidate_states": safe_json_dumps(component_states),
+                "component_independence_weights": safe_json_dumps(component_weights),
+                "effective_component_count": sum(component_weights.values()),
+                "raw_component_score": raw_component_score,
+                "independence_adjusted_score": independence_adjusted_score,
                 "recommendation": (
                     "COMPOSITE_RESEARCH_QUEUE"
                     if not missing and len(terms) <= 3
@@ -768,13 +862,28 @@ def _bridge_candidate_rank_key(row: dict[str, Any]) -> tuple[int, int, str]:
 
 
 def _candidate_rank_key(row: dict[str, Any]) -> tuple[int, float, float, float, str]:
+    weight = _independence_weight(row)
     return (
         1 if str(row.get("candidate_state") or "") == "PAPER_READY" else 0,
-        _float(row.get("best_rank_ic_tstat")) or 0.0,
-        _float(row.get("best_long_short_mean_bps")) or 0.0,
-        _float(row.get("best_score")) or 0.0,
+        (_float(row.get("best_rank_ic_tstat")) or 0.0) * weight,
+        (_float(row.get("best_long_short_mean_bps")) or 0.0) * weight,
+        (
+            _float(row.get("independence_adjusted_best_score"))
+            if _float(row.get("independence_adjusted_best_score")) is not None
+            else (_float(row.get("best_score")) or 0.0) * weight
+        ),
         str(row.get("factor_id") or ""),
     )
+
+
+def _independence_weight(row: dict[str, Any]) -> float:
+    value = _float(
+        row.get("independence_weight")
+        or row.get("effective_independence_weight")
+    )
+    if value is None:
+        return 1.0
+    return max(0.0, min(value, 1.0))
 
 
 def _best_evidence_by_factor(evidence: pl.DataFrame) -> dict[str, dict[str, Any]]:

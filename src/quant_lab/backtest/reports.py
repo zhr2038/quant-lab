@@ -97,6 +97,32 @@ BACKTEST_VS_PAPER_CONSISTENCY_FIELDS = [
     "live_order_effect",
 ]
 
+BACKTEST_VS_PAPER_GAP_FIELDS = [
+    "strategy_id",
+    "symbol",
+    "horizon_hours",
+    "backtest_sample_count",
+    "backtest_complete_sample_count",
+    "backtest_avg_net_bps",
+    "backtest_p25_net_bps",
+    "backtest_cost_model",
+    "backtest_data_leakage_check",
+    "paper_strategy_id",
+    "paper_days",
+    "paper_entries",
+    "paper_closed_entries",
+    "paper_avg_net_bps",
+    "paper_cost_source_mix",
+    "arrival_mid_coverage",
+    "gap_bps",
+    "absolute_gap_bps",
+    "paper_to_backtest_ratio",
+    "gap_status",
+    "root_causes",
+    "recommendation",
+    "live_order_effect",
+]
+
 BACKTEST_REGIME_BREAKDOWN_FIELDS = [
     "strategy_id",
     "symbol",
@@ -140,6 +166,7 @@ BACKTEST_CSV_SCHEMAS = {
     "reports/bottom_zone_backtest.csv": BOTTOM_ZONE_BACKTEST_FIELDS,
     "reports/research_promotion_decision.csv": RESEARCH_PROMOTION_DECISION_FIELDS,
     "reports/backtest_vs_paper_consistency.csv": BACKTEST_VS_PAPER_CONSISTENCY_FIELDS,
+    "reports/backtest_vs_paper_gap_report.csv": BACKTEST_VS_PAPER_GAP_FIELDS,
     "reports/factor_forward_validation.csv": FACTOR_FORWARD_VALIDATION_FIELDS,
 }
 
@@ -158,6 +185,8 @@ class BacktestReportBundle:
     promotion_decision_md: str
     backtest_vs_paper_consistency: pl.DataFrame
     backtest_vs_paper_consistency_md: str
+    backtest_vs_paper_gap_report: pl.DataFrame
+    backtest_vs_paper_gap_report_md: str
 
 
 def build_backtest_report_bundle(frames: dict[str, pl.DataFrame]) -> BacktestReportBundle:
@@ -168,6 +197,11 @@ def build_backtest_report_bundle(frames: dict[str, pl.DataFrame]) -> BacktestRep
         cost_bucket_daily=frames.get("cost_bucket_daily", pl.DataFrame()),
     )
     consistency = build_backtest_vs_paper_consistency(
+        label_summary=engine_result.label_summary,
+        paper_daily=frames.get("paper_strategy_daily", pl.DataFrame()),
+        bnb_paper_daily=frames.get("bnb_paper_strategy_daily", pl.DataFrame()),
+    )
+    gap_report = build_backtest_vs_paper_gap_report(
         label_summary=engine_result.label_summary,
         paper_daily=frames.get("paper_strategy_daily", pl.DataFrame()),
         bnb_paper_daily=frames.get("bnb_paper_strategy_daily", pl.DataFrame()),
@@ -191,6 +225,8 @@ def build_backtest_report_bundle(frames: dict[str, pl.DataFrame]) -> BacktestRep
         promotion_decision_md=research_promotion_decision_md(promotion),
         backtest_vs_paper_consistency=consistency,
         backtest_vs_paper_consistency_md=backtest_vs_paper_consistency_md(consistency),
+        backtest_vs_paper_gap_report=gap_report,
+        backtest_vs_paper_gap_report_md=backtest_vs_paper_gap_report_md(gap_report),
     )
 
 
@@ -577,6 +613,188 @@ def backtest_vs_paper_consistency_md(frame: pl.DataFrame) -> str:
             f"recommendation={row.get('recommendation')}"
         )
     return "\n".join(lines) + "\n"
+
+
+def build_backtest_vs_paper_gap_report(
+    *,
+    label_summary: pl.DataFrame,
+    paper_daily: pl.DataFrame | None = None,
+    bnb_paper_daily: pl.DataFrame | None = None,
+) -> pl.DataFrame:
+    paper_by_strategy, paper_by_symbol = _paper_daily_lookup(
+        paper_daily, bnb_paper_daily
+    )
+    output: list[dict[str, Any]] = []
+    for row in rows(label_summary):
+        strategy_id = str(row.get("strategy_id") or "")
+        symbol = normalize_strategy_symbol(row.get("symbol"))
+        horizon = int(float_or_none(row.get("horizon_hours")) or 0)
+        paper = _select_paper_row_for_horizon(
+            paper_by_strategy.get(strategy_id, []), horizon
+        )
+        if paper is None and _strategy_uses_symbol_paper_proxy(strategy_id, symbol):
+            paper = _select_paper_row_for_horizon(paper_by_symbol.get(symbol, []), horizon)
+        paper = paper or {}
+        backtest_avg = float_or_none(row.get("avg_net_bps"))
+        paper_avg = _paper_avg_for_horizon(paper, horizon) if paper else None
+        gap = (
+            paper_avg - backtest_avg
+            if paper_avg is not None and backtest_avg is not None
+            else None
+        )
+        paper_entries = int(
+            float_or_none(
+                first_value(
+                    paper,
+                    (
+                        "entry_count",
+                        "would_enter_count",
+                        "cumulative_would_enter_count",
+                    ),
+                )
+            )
+            or 0
+        )
+        paper_closed = int(
+            float_or_none(
+                first_value(
+                    paper,
+                    (
+                        "closed_entries",
+                        "paper_pnl_observed_count",
+                        "cumulative_paper_pnl_observed_count",
+                    ),
+                )
+            )
+            or 0
+        )
+        paper_days = int(
+            float_or_none(
+                first_value(paper, ("paper_days_to_date", "paper_days"))
+            )
+            or 0
+        )
+        arrival_coverage = float_or_none(paper.get("arrival_mid_coverage"))
+        causes: list[str] = []
+        if not paper:
+            causes.append("paper_tracker_or_daily_evidence_missing")
+        if paper_days < 14:
+            causes.append("paper_days_lt_14")
+        if paper_closed < 20:
+            causes.append("paper_closed_entries_lt_20")
+        if arrival_coverage is None or arrival_coverage < 0.8:
+            causes.append("arrival_mid_coverage_lt_0_80_or_missing")
+        backtest_cost = str(row.get("cost_model") or "not_observable")
+        paper_cost = str(paper.get("cost_source_mix") or "not_observable")
+        if paper and not _cost_models_comparable(backtest_cost, paper_cost):
+            causes.append("backtest_paper_cost_source_mismatch")
+        if "one_bar_delay" not in str(row.get("data_leakage_check") or "") and (
+            "visible_at_decision_time"
+            not in str(row.get("data_leakage_check") or "")
+        ):
+            causes.append("backtest_entry_timing_not_proven")
+        if gap is not None and abs(gap) > 100.0:
+            causes.append("absolute_return_gap_gt_100bps")
+        if (
+            backtest_avg is not None
+            and paper_avg is not None
+            and backtest_avg * paper_avg < 0
+        ):
+            causes.append("return_sign_reversal")
+        gap_status = _gap_status(
+            paper=paper,
+            paper_closed=paper_closed,
+            arrival_coverage=arrival_coverage,
+            gap=gap,
+            sign_reversal="return_sign_reversal" in causes,
+        )
+        output.append(
+            {
+                "strategy_id": strategy_id,
+                "symbol": symbol,
+                "horizon_hours": horizon,
+                "backtest_sample_count": row.get("sample_count"),
+                "backtest_complete_sample_count": row.get("complete_sample_count"),
+                "backtest_avg_net_bps": backtest_avg,
+                "backtest_p25_net_bps": row.get("p25_net_bps"),
+                "backtest_cost_model": backtest_cost,
+                "backtest_data_leakage_check": row.get("data_leakage_check"),
+                "paper_strategy_id": paper.get("strategy_id"),
+                "paper_days": paper_days,
+                "paper_entries": paper_entries,
+                "paper_closed_entries": paper_closed,
+                "paper_avg_net_bps": paper_avg,
+                "paper_cost_source_mix": paper_cost,
+                "arrival_mid_coverage": arrival_coverage,
+                "gap_bps": gap,
+                "absolute_gap_bps": abs(gap) if gap is not None else None,
+                "paper_to_backtest_ratio": (
+                    paper_avg / backtest_avg
+                    if paper_avg is not None and backtest_avg not in (None, 0.0)
+                    else None
+                ),
+                "gap_status": gap_status,
+                "root_causes": ";".join(causes) or "no_material_gap_detected",
+                "recommendation": _gap_recommendation(gap_status),
+                "live_order_effect": "read_only_no_live_order",
+            }
+        )
+    return frame_with_schema(output, BACKTEST_VS_PAPER_GAP_FIELDS)
+
+
+def backtest_vs_paper_gap_report_md(frame: pl.DataFrame) -> str:
+    status_counts: dict[str, int] = defaultdict(int)
+    for row in rows(frame):
+        status_counts[str(row.get("gap_status") or "UNKNOWN")] += 1
+    lines = [
+        "# Backtest vs Paper Gap Report",
+        "",
+        "Read-only attribution of return, cost, timing, coverage and sample gaps.",
+        "This report cannot promote a strategy to Canary or Live.",
+        "",
+        f"- rows: {frame.height}",
+        *(f"- {key}: {value}" for key, value in sorted(status_counts.items())),
+        "- live_order_effect: read_only_no_live_order",
+    ]
+    return "\n".join(lines) + "\n"
+
+
+def _cost_models_comparable(backtest_cost: str, paper_cost: str) -> bool:
+    left = backtest_cost.lower()
+    right = paper_cost.lower()
+    if right in {"", "not_observable", "[]"}:
+        return False
+    source_classes = ("actual", "mixed", "bootstrap", "proxy", "configured", "default")
+    return any(token in left and token in right for token in source_classes)
+
+
+def _gap_status(
+    *,
+    paper: dict[str, Any],
+    paper_closed: int,
+    arrival_coverage: float | None,
+    gap: float | None,
+    sign_reversal: bool,
+) -> str:
+    if not paper:
+        return "PAPER_MISSING"
+    if paper_closed < 20 or arrival_coverage is None or arrival_coverage < 0.8:
+        return "PAPER_EVIDENCE_INSUFFICIENT"
+    if gap is None:
+        return "GAP_NOT_OBSERVABLE"
+    if sign_reversal or abs(gap) > 100.0:
+        return "MATERIAL_GAP"
+    return "CONSISTENT_WITHIN_100BPS"
+
+
+def _gap_recommendation(status: str) -> str:
+    return {
+        "PAPER_MISSING": "START_OR_REPAIR_GENERIC_PAPER_TRACKER",
+        "PAPER_EVIDENCE_INSUFFICIENT": "CONTINUE_PAPER_OBSERVATION",
+        "GAP_NOT_OBSERVABLE": "REPAIR_GAP_INPUTS",
+        "MATERIAL_GAP": "QUARANTINE_AND_ATTRIBUTE_GAP",
+        "CONSISTENT_WITHIN_100BPS": "KEEP_PAPER_OBSERVATION",
+    }.get(status, "REVIEW_GAP_REPORT")
 
 
 def research_promotion_decision_md(frame: pl.DataFrame) -> str:

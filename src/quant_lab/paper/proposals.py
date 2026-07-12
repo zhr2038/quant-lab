@@ -37,13 +37,18 @@ class ProposalTemplate(BaseModel):
     model_config = ConfigDict(extra="forbid", frozen=True)
 
     strategy_id: str
+    strategy_id_template: str = ""
     strategy_version: str
     strategy_family: str
     symbol: str
     timeframe: str
     direction: str = "long"
     source_candidates: list[str] = Field(min_length=1)
-    source_horizon_hours: int = Field(ge=1)
+    source_horizon_hours: int = Field(default=0, ge=0)
+    dynamic_horizon: bool = False
+    require_paper_ready: bool = True
+    min_complete_sample_count: int = Field(default=20, ge=0)
+    excluded_candidate_symbols: list[str] = Field(default_factory=list)
     entry_rule: PaperRule
     exit_rule: PaperRule
     max_holding_bars: int = Field(ge=1)
@@ -84,36 +89,34 @@ def build_configured_proposals(
     created = (created_at or datetime.now(UTC)).astimezone(UTC)
     evidence_rows = evidence.to_dicts()
     proposals: list[tuple[PaperStrategyProposal, dict[str, Any]]] = []
+    selected_opportunities: set[tuple[str, str, int]] = set()
     for template in load_proposal_templates(templates_path):
-        matching = [row for row in evidence_rows if _matches_template(row, template)]
+        matching = [
+            row
+            for row in evidence_rows
+            if _eligible_for_paper_proposal(row, template)
+            and _matches_template(row, template)
+        ]
         if not matching:
             continue
-        best = max(matching, key=_evidence_rank)
-        proposal = PaperStrategyProposal(
-            strategy_id=template.strategy_id,
-            strategy_version=template.strategy_version,
-            strategy_family=template.strategy_family,
-            symbol=template.symbol,
-            timeframe=template.timeframe,
-            direction=template.direction,
-            entry_rule=template.entry_rule,
-            exit_rule=template.exit_rule,
-            max_holding_bars=template.max_holding_bars,
-            min_holding_bars=template.min_holding_bars,
-            cooldown_bars=template.cooldown_bars,
-            signal_confirmation_bars=template.signal_confirmation_bars,
-            cost_quantile=template.cost_quantile,
-            minimum_expected_edge_bps=template.minimum_expected_edge_bps,
-            paper_notional_usdt=template.paper_notional_usdt,
-            created_at=created,
-            expires_at=created + timedelta(days=template.expires_after_days),
-            source_pack_sha256=source_pack_sha256,
-            source_dataset_versions=source_dataset_versions
-            or {"alpha_discovery_board": str(best.get("schema_version") or "legacy")},
-            required_market_fields=template.required_market_fields,
-            required_cost_trust_level=template.required_cost_trust_level,
-        )
-        proposals.append((proposal, best))
+        grouped: dict[tuple[str, str, int], list[dict[str, Any]]] = {}
+        for row in matching:
+            grouped.setdefault(_proposal_opportunity_key(row, template.strategy_family), []).append(
+                row
+            )
+        for opportunity_key, candidates in sorted(grouped.items()):
+            if opportunity_key in selected_opportunities:
+                continue
+            best = max(candidates, key=_evidence_rank)
+            proposal = _proposal_from_template(
+                template,
+                best,
+                created=created,
+                source_pack_sha256=source_pack_sha256,
+                source_dataset_versions=source_dataset_versions,
+            )
+            selected_opportunities.add(opportunity_key)
+            proposals.append((proposal, best))
     return proposals
 
 
@@ -166,6 +169,10 @@ def build_legacy_proposal_migration_audit(
     created = (created_at or datetime.now(UTC)).astimezone(UTC).isoformat()
     templates = load_proposal_templates(templates_path)
     proposal_by_strategy = {proposal.strategy_id: proposal for proposal, _row in proposals}
+    proposal_by_opportunity = {
+        _proposal_opportunity_key(row, proposal.strategy_family): proposal
+        for proposal, row in proposals
+    }
     selected_keys = {_legacy_identity(row): proposal.strategy_id for proposal, row in proposals}
     rows: list[dict[str, Any]] = []
     for source in evidence.to_dicts():
@@ -186,9 +193,14 @@ def build_legacy_proposal_migration_audit(
         ]
         canonical = proposal_by_strategy.get(selected_strategy or "") or next(
             (
-                proposal_by_strategy.get(template.strategy_id)
+                proposal_by_opportunity.get(
+                    _proposal_opportunity_key(source, template.strategy_family)
+                )
                 for template in matching_templates
-                if proposal_by_strategy.get(template.strategy_id) is not None
+                if proposal_by_opportunity.get(
+                    _proposal_opportunity_key(source, template.strategy_family)
+                )
+                is not None
             ),
             None,
         )
@@ -241,13 +253,109 @@ def build_legacy_proposal_migration_audit(
 def _matches_template(row: dict[str, Any], template: ProposalTemplate) -> bool:
     symbol = str(row.get("symbol") or row.get("v5_symbol") or "").upper().replace("/", "-")
     expected_symbol = template.symbol.upper().replace("/", "-")
-    if symbol != expected_symbol:
+    if expected_symbol not in {"*", "ANY"} and symbol != expected_symbol:
         return False
     horizon = _int(row.get("horizon_hours") or row.get("suggested_horizon"))
-    if horizon != template.source_horizon_hours:
+    if template.source_horizon_hours > 0 and horizon != template.source_horizon_hours:
         return False
     candidate = str(row.get("strategy_candidate") or row.get("candidate_name") or "").lower()
+    for excluded in template.excluded_candidate_symbols:
+        excluded_candidate, separator, excluded_symbol = excluded.partition("|")
+        if not separator:
+            continue
+        normalized_excluded_symbol = excluded_symbol.upper().replace("/", "-").replace("_", "-")
+        if excluded_candidate.lower() in candidate and normalized_excluded_symbol == symbol:
+            return False
     return any(source.lower() in candidate for source in template.source_candidates)
+
+
+def _eligible_for_paper_proposal(
+    row: dict[str, Any], template: ProposalTemplate
+) -> bool:
+    symbol = str(row.get("symbol") or row.get("v5_symbol") or "").strip().upper()
+    horizon = _int(row.get("horizon_hours") or row.get("suggested_horizon"))
+    if not symbol or symbol in {"ALL", "*", "UNKNOWN"} or horizon <= 0:
+        return False
+    decision = str(row.get("decision") or row.get("promotion_state") or "").strip().upper()
+    mode = str(row.get("recommended_mode") or "").strip().lower().replace("-", "_")
+    if template.require_paper_ready and decision not in {
+        "PAPER_READY",
+        "LIVE_SMALL_READY",
+    } and mode not in {"paper", "paper_only"}:
+        return False
+    return _int(row.get("complete_sample_count")) >= template.min_complete_sample_count
+
+
+def _proposal_from_template(
+    template: ProposalTemplate,
+    evidence: dict[str, Any],
+    *,
+    created: datetime,
+    source_pack_sha256: str,
+    source_dataset_versions: dict[str, str] | None,
+) -> PaperStrategyProposal:
+    symbol = str(evidence.get("symbol") or evidence.get("v5_symbol") or template.symbol)
+    symbol = symbol.upper().replace("-", "/").replace("_", "/")
+    horizon = _int(evidence.get("horizon_hours") or evidence.get("suggested_horizon"))
+    max_holding_bars = horizon if template.dynamic_horizon else template.max_holding_bars
+    strategy_id = _render_strategy_id(template, symbol=symbol, horizon=horizon)
+    exit_rule = _rule_with_dynamic_horizon(template.exit_rule, horizon=max_holding_bars)
+    return PaperStrategyProposal(
+        strategy_id=strategy_id,
+        strategy_version=template.strategy_version,
+        strategy_family=template.strategy_family,
+        symbol=symbol,
+        timeframe=template.timeframe,
+        direction=template.direction,
+        entry_rule=template.entry_rule,
+        exit_rule=exit_rule,
+        max_holding_bars=max_holding_bars,
+        min_holding_bars=template.min_holding_bars,
+        cooldown_bars=template.cooldown_bars,
+        signal_confirmation_bars=template.signal_confirmation_bars,
+        cost_quantile=template.cost_quantile,
+        minimum_expected_edge_bps=template.minimum_expected_edge_bps,
+        paper_notional_usdt=template.paper_notional_usdt,
+        created_at=created,
+        expires_at=created + timedelta(days=template.expires_after_days),
+        source_pack_sha256=source_pack_sha256,
+        source_dataset_versions=source_dataset_versions
+        or {"strategy_opportunity_advisory": str(evidence.get("schema_version") or "legacy")},
+        required_market_fields=template.required_market_fields,
+        required_cost_trust_level=template.required_cost_trust_level,
+    )
+
+
+def _render_strategy_id(template: ProposalTemplate, *, symbol: str, horizon: int) -> str:
+    if not template.strategy_id_template:
+        return template.strategy_id
+    base, _, quote = symbol.partition("/")
+    return template.strategy_id_template.format(
+        base=base,
+        quote=quote,
+        symbol=symbol.replace("/", "_"),
+        horizon=horizon,
+        strategy_family=template.strategy_family,
+    )
+
+
+def _rule_with_dynamic_horizon(rule: PaperRule, *, horizon: int) -> PaperRule:
+    children = [
+        _rule_with_dynamic_horizon(child, horizon=horizon) for child in rule.children
+    ]
+    updates: dict[str, Any] = {"children": children}
+    if rule.operator == "max_holding_bars" and _int(rule.value) <= 0:
+        updates["value"] = horizon
+    return rule.model_copy(update=updates)
+
+
+def _proposal_opportunity_key(
+    row: dict[str, Any], strategy_family: str
+) -> tuple[str, str, int]:
+    symbol = str(row.get("symbol") or row.get("v5_symbol") or "").upper()
+    symbol = symbol.replace("/", "-").replace("_", "-")
+    horizon = _int(row.get("horizon_hours") or row.get("suggested_horizon"))
+    return strategy_family, symbol, horizon
 
 
 def _legacy_identity(row: dict[str, Any]) -> tuple[str, str, int]:

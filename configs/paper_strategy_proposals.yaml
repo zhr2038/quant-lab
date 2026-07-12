@@ -8,6 +8,7 @@ proposals:
     direction: long
     source_candidates: [alt_impulse]
     source_horizon_hours: 48
+    min_complete_sample_count: 20
     entry_rule:
       operator: all
       children:
@@ -43,6 +44,7 @@ proposals:
     direction: long
     source_candidates: [f3, f4]
     source_horizon_hours: 72
+    min_complete_sample_count: 20
     entry_rule:
       operator: all
       children:
@@ -77,6 +79,7 @@ proposals:
     direction: long
     source_candidates: [f3, f4]
     source_horizon_hours: 8
+    min_complete_sample_count: 20
     entry_rule:
       operator: all
       children:
@@ -101,4 +104,52 @@ proposals:
     minimum_expected_edge_bps: 20
     paper_notional_usdt: 20
     required_market_fields: [bid, ask, mid, momentum_8, volume_zscore_24]
+    required_cost_trust_level: PAPER_ONLY
+
+  # Controlled compiler recipe for existing F3/F4 opportunity evidence. It is
+  # still Paper-only, uses a closed DSL, and never creates live permissions.
+  - strategy_id: GENERIC_F3_F4_DEDUP_PAPER
+    strategy_id_template: "{base}_F3_F4_DEDUP_{horizon}H_PAPER"
+    strategy_version: "1.0.0"
+    strategy_family: f3_f4_deduplicated_entry
+    symbol: "*"
+    timeframe: 1h
+    direction: long
+    source_candidates: [f3_dominant_entry, f4_volume_expansion_entry]
+    source_horizon_hours: 0
+    dynamic_horizon: true
+    require_paper_ready: true
+    min_complete_sample_count: 20
+    # These opportunities already have canonical legacy trackers. The generic
+    # compiler must not create a second proposal for the same market event.
+    excluded_candidate_symbols:
+      - v5.f3_dominant_entry|SOL-USDT
+      - v5.f4_volume_expansion_entry|SOL-USDT
+      - v5.f3_dominant_entry|ETH-USDT
+      - v5.f4_volume_expansion_entry|ETH-USDT
+      - v5.f3_dominant_entry|BNB-USDT
+    entry_rule:
+      operator: all
+      children:
+        - operator: momentum_gt
+          field: momentum_24
+          value: 0
+        - operator: volume_zscore_gt
+          field: volume_zscore_24
+          value: 0
+    exit_rule:
+      operator: any
+      children:
+        - operator: max_holding_bars
+          value: 0
+        - operator: stop_loss
+          value: -300
+    max_holding_bars: 1
+    min_holding_bars: 1
+    cooldown_bars: 24
+    signal_confirmation_bars: 1
+    cost_quantile: p75
+    minimum_expected_edge_bps: 20
+    paper_notional_usdt: 20
+    required_market_fields: [bid, ask, mid, momentum_24, volume_zscore_24]
     required_cost_trust_level: PAPER_ONLY

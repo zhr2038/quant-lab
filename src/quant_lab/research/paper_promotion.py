@@ -38,6 +38,9 @@ ALPHA_DISCOVERY_BOARD_DATASET = Path("gold") / "alpha_discovery_board"
 COST_BUCKET_DAILY_DATASET = Path("gold") / "cost_bucket_daily"
 STRATEGY_COST_TRUST_DATASET = Path("gold") / "strategy_cost_trust"
 PAPER_STRATEGY_MIGRATION_AUDIT_DATASET = Path("gold") / "paper_strategy_migration_audit"
+V5_PAPER_STRATEGY_COST_EVIDENCE_DATASET = (
+    Path("silver") / "v5_paper_strategy_cost_evidence"
+)
 
 PAPER_PIPELINE_SOURCE = "research.paper_strategy_promotion.v0.1"
 PAPER_PIPELINE_SCHEMA_VERSION = "paper_strategy_pipeline.v1"
@@ -46,7 +49,12 @@ MIN_CLOSED_ENTRIES = 20
 MIN_ENTRY_DAY_COUNT = 7
 MIN_ARRIVAL_MID_COVERAGE = 0.8
 MIN_P25_AFTER_COST_BPS = -30.0
-TRUSTED_PAPER_COST_SOURCES = {"actual_fills", "mixed_actual_proxy", "bootstrap_cost_probe"}
+TRUSTED_PAPER_COST_SOURCES = {
+    "actual_fills",
+    "mixed_actual_proxy",
+    "bootstrap_cost_probe",
+    "configured_conservative_paper",
+}
 BLOCKED_PAPER_COST_SOURCES = {
     "fallback_not_live_safe",
     "public_spread_proxy",
@@ -170,7 +178,9 @@ def build_and_publish_paper_strategy_pipeline(
     existing_gate = read_parquet_dataset(root / PAPER_STRATEGY_PROMOTION_GATE_DATASET)
     existing_proposals = read_parquet_dataset(root / PAPER_STRATEGY_PROPOSAL_DATASET)
     existing_migration_audit = read_parquet_dataset(root / PAPER_STRATEGY_MIGRATION_AUDIT_DATASET)
-    configured = build_configured_proposals(advisory)
+    configured = build_configured_proposals(
+        _proposal_source_evidence(legacy_evidence, advisory)
+    )
     proposal_frame = existing_proposals if not existing_proposals.is_empty() else advisory
     if configured:
         published = publish_proposals(root, [proposal for proposal, _evidence in configured])
@@ -190,6 +200,9 @@ def build_and_publish_paper_strategy_pipeline(
     strategy_cost_trust = build_strategy_cost_trust_frame(
         proposal_frame,
         read_parquet_dataset(root / COST_BUCKET_DAILY_DATASET),
+        paper_runtime_cost_evidence=read_parquet_dataset(
+            root / V5_PAPER_STRATEGY_COST_EVIDENCE_DATASET
+        ),
     )
     write_parquet_dataset(strategy_cost_trust, root / STRATEGY_COST_TRUST_DATASET)
     paper_ack = _filter_superseded_structured_rows(
@@ -239,6 +252,49 @@ def build_and_publish_paper_strategy_pipeline(
         paper_strategy_promotion_gate=gate.height,
         paper_strategy_migration_audit=migration_audit.height,
     )
+
+
+def _proposal_source_evidence(
+    discovery: pl.DataFrame,
+    advisory: pl.DataFrame,
+) -> pl.DataFrame:
+    """Break the pre-Paper circular gate while honoring explicit downgrades."""
+    if discovery.is_empty() or advisory.is_empty():
+        return discovery
+    latest_advisory: dict[tuple[str, str, int], dict[str, Any]] = {}
+    for row in advisory.to_dicts():
+        key = _proposal_evidence_key(row)
+        if key == ("", "", 0):
+            continue
+        current = latest_advisory.get(key)
+        if current is None or _row_sort_ts(row) >= _row_sort_ts(current):
+            latest_advisory[key] = row
+    rows = []
+    for row in discovery.to_dicts():
+        advisory_row = latest_advisory.get(_proposal_evidence_key(row), {})
+        decision = _text(advisory_row.get("decision")).upper()
+        reasons = {reason.lower() for reason in _json_list(advisory_row.get("live_block_reasons"))}
+        if "downgraded_from_paper" in reasons or decision in {
+            "DEAD",
+            "KILL",
+            "QUARANTINE",
+        }:
+            continue
+        rows.append(row)
+    if not rows:
+        return discovery.head(0)
+    return pl.DataFrame(rows, infer_schema_length=None).cast(discovery.schema, strict=False).select(
+        discovery.columns
+    )
+
+
+def _proposal_evidence_key(row: Mapping[str, Any]) -> tuple[str, str, int]:
+    candidate = _text(
+        row.get("strategy_candidate") or row.get("candidate_name")
+    ).lower()
+    raw_symbol = _text(row.get("symbol") or row.get("v5_symbol"))
+    symbol = normalize_symbol(raw_symbol) if raw_symbol else ""
+    return candidate, symbol, _int(row.get("horizon_hours") or row.get("suggested_horizon")) or 0
 
 
 def _merge_migration_audit(existing: pl.DataFrame, generated: pl.DataFrame) -> pl.DataFrame:
@@ -353,13 +409,27 @@ def _filter_superseded_structured_rows(
     if frame.is_empty() or proposals.is_empty():
         return frame
     active: dict[tuple[str, str], str] = {}
+    active_hash_by_id: dict[str, str] = {}
+    structured_contract_present = False
     for row in proposals.to_dicts():
         strategy_id = _text(row.get("strategy_id"))
         strategy_version = _text(row.get("strategy_version"))
         proposal_id = _text(row.get("proposal_id"))
+        proposal_hash = _text(row.get("proposal_hash"))
+        structured = bool(
+            _text(row.get("contract_version")) == PAPER_STRATEGY_CONTRACT_VERSION
+            or (
+                proposal_hash
+                and row.get("entry_rule") not in (None, "")
+                and row.get("exit_rule") not in (None, "")
+            )
+        )
+        structured_contract_present = structured_contract_present or structured
         if strategy_id and strategy_version and proposal_id:
             active[(strategy_id, strategy_version)] = proposal_id
-    if not active:
+        if structured and proposal_id:
+            active_hash_by_id[proposal_id] = proposal_hash
+    if not active and not active_hash_by_id:
         return frame
     rows = []
     for row in frame.to_dicts():
@@ -367,6 +437,13 @@ def _filter_superseded_structured_rows(
         identity = _structured_proposal_identity(proposal_id)
         if identity in active and proposal_id != active[identity]:
             continue
+        if structured_contract_present:
+            if proposal_id not in active_hash_by_id:
+                continue
+            expected_hash = active_hash_by_id[proposal_id]
+            observed_hash = _text(row.get("proposal_hash"))
+            if expected_hash and observed_hash and observed_hash != expected_hash:
+                continue
         rows.append(row)
     if not rows:
         return frame.head(0)

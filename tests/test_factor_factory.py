@@ -53,6 +53,10 @@ def test_factor_factory_builds_definitions_values_evidence_and_candidates(tmp_pa
     assert {
         "expression_json",
         "expression_hash",
+        "factor_hash",
+        "canonical_factor_id",
+        "formula_hash",
+        "independence_weight",
         "status",
         "lookback_bars",
         "availability_lag_bars",
@@ -66,6 +70,10 @@ def test_factor_factory_builds_definitions_values_evidence_and_candidates(tmp_pa
         "data_version",
         "factor_status",
         "expression_hash",
+        "factor_hash",
+        "canonical_factor_id",
+        "formula_hash",
+        "independence_weight",
         "quality_flags_json",
     }.issubset(set(values.columns))
 
@@ -76,6 +84,9 @@ def test_factor_factory_builds_definitions_values_evidence_and_candidates(tmp_pa
     assert definition["availability_lag_bars"] == 1
     assert definition["required_bars"] == 25
     assert len(definition["expression_hash"]) == 64
+    assert definition["factor_hash"] == definition["expression_hash"]
+    assert definition["formula_hash"] == definition["factor_formula_hash"]
+    assert definition["independence_weight"] == 0.5
 
     value = values.filter(pl.col("factor_id") == "core.close_return_24").sort("ts").to_dicts()[0]
     assert value["event_time"] == value["ts"]
@@ -84,6 +95,23 @@ def test_factor_factory_builds_definitions_values_evidence_and_candidates(tmp_pa
     assert value["data_version"] == value["input_dataset_version"]
     assert value["factor_status"] == "candidate"
     assert value["expression_hash"] == definition["expression_hash"]
+    assert value["factor_hash"] == definition["factor_hash"]
+    assert value["formula_hash"] == definition["formula_hash"]
+    assert value["independence_weight"] == 0.5
+    assert {
+        "factor_hash",
+        "canonical_factor_id",
+        "formula_hash",
+        "independence_weight",
+        "independence_adjusted_score",
+    }.issubset(set(evidence.columns))
+    assert {
+        "factor_hash",
+        "canonical_factor_id",
+        "formula_hash",
+        "independence_weight",
+        "independence_adjusted_best_score",
+    }.issubset(set(candidates.columns))
     assert json.loads(value["quality_flags_json"]) in ([], ["invalid_or_insufficient_input"])
 
 
@@ -252,6 +280,7 @@ def test_factor_factory_v2_dedupes_and_builds_review_outputs():
     dedupe = reports["factor_dedupe_decision"].to_dicts()
     dedupe_by_factor = {row["factor_id"]: row for row in dedupe}
     assert dedupe_by_factor["core.close_return_24"]["dedupe_decision"] == "keep_leader"
+    assert dedupe_by_factor["core.close_return_24"]["independence_weight"] == 0.5
     assert (
         dedupe_by_factor["auto.single.close_return_24"]["dedupe_decision"]
         == "redundant_suppressed"
@@ -259,7 +288,16 @@ def test_factor_factory_v2_dedupes_and_builds_review_outputs():
     queue = reports["factor_paper_review_queue"].to_dicts()
     assert any(row["recommendation"] == "FACTOR_PAPER_REVIEW" for row in queue)
     assert any(row["recommendation"] == "HOLD_REVIEW_REDUNDANT" for row in queue)
+    core_queue = next(row for row in queue if row["factor_id"] == "core.close_return_24")
+    assert core_queue["independence_adjusted_oos_score"] == pytest.approx(
+        core_queue["oos_score"] * 0.5
+    )
     assert reports["composite_factor_candidates"].height >= 1
+    composite = reports["composite_factor_candidates"].filter(
+        pl.col("composite_factor_id") == "composite.close_return_position_24"
+    ).to_dicts()[0]
+    assert composite["raw_component_score"] == 12.0
+    assert composite["independence_adjusted_score"] == 6.0
     assert reports["factor_regime_effectiveness"].height >= 1
     assert reports["factor_strategy_bridge_candidates"].height >= 1
     assert (

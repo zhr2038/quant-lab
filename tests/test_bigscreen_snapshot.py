@@ -1996,6 +1996,7 @@ def test_web_v2_uses_fluid_layout_and_truthful_pack_loading_state():
     assert "grid-column:1/-1" in styles
     assert 'grid-template-areas:"factor" "candidates" "opportunity"' in styles
     assert ".page-data .matrix-grid-shell{grid-template-columns:minmax(0,1fr)" in styles
+    assert 'html[data-web-v2-layout="fluid"] .page-ops .v5{grid-column:1/3;grid-row:2}' in styles
     assert 'statusPending ? "正在读取" : displayState' in app_source
     assert "正在读取专家包状态与最新下载信息" in app_source
     assert "statusPending || generateMutation.isPending" in app_source

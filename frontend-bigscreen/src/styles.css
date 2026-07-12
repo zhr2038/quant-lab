@@ -1307,7 +1307,15 @@ html[data-web-v2-layout="fluid"] .page-strategy .market{height:auto;min-height:0
   .factor-factory-stats{grid-template-columns:repeat(3,minmax(0,1fr));gap:7px}
   .factor-factory-stats span{display:grid;gap:2px;padding:7px 8px}
   .page-strategy .factor-factory-stats b{font-size:22px}
-  .strategy-research-grid{grid-template-columns:1fr;grid-template-areas:"opportunity" "factor" "candidates";gap:12px}
+  .page-strategy .strategy-research-grid{
+    grid-template-columns:minmax(0,1fr);grid-template-rows:auto auto auto;
+    grid-template-areas:"factor" "candidates" "opportunity";gap:12px;overflow:visible;
+  }
+  .page-strategy .strategy-secondary-grid{
+    grid-template-columns:minmax(0,1fr);height:auto;min-height:0;overflow:visible;
+  }
+  .page-strategy .candidate-list,
+  .page-strategy .candidate-list-body{width:100%;min-width:0;max-width:100%}
   .market-body,.page-strategy .market-body{grid-template-columns:1fr;grid-template-rows:auto auto;gap:12px}
   .market-list{grid-template-columns:repeat(auto-fit,minmax(210px,1fr))}
   .market-summary-panel{grid-template-columns:1fr;grid-template-rows:auto auto auto auto;padding:11px}
@@ -1317,7 +1325,7 @@ html[data-web-v2-layout="fluid"] .page-strategy .market{height:auto;min-height:0
   .page-strategy .chip strong{display:none}
   .page-strategy .candidate-main b{font-size:12px}
   .page-strategy .candidate-main small{font-size:10px}
-  .page-strategy .candidate-detail{font-size:9px;grid-column:1}
+  .page-strategy .candidate-detail{font-size:9px;grid-column:1/-1}
   .v5-grid,.cost-body{grid-template-columns:1fr;gap:14px}
   .v5-radar{max-width:300px;margin:0 auto}
   .v5-p3-strip{grid-template-columns:1fr}

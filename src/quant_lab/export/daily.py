@@ -6378,8 +6378,12 @@ def _dataset_members(
         research_portfolio=research_portfolio,
         persisted_proposals=frames.get("paper_strategy_proposal", pl.DataFrame()),
     )
+    paper_proposals_current = _prefer_frame(
+        frames.get("paper_strategy_proposals_current", pl.DataFrame()),
+        paper_proposals,
+    )
     paper_pipeline = build_paper_strategy_pipeline_frames(
-        proposals=paper_proposals,
+        proposals=paper_proposals_current,
         proposal_ack=frames.get("v5_paper_strategy_proposal_ack", pl.DataFrame()),
         runs=paper_runs,
         daily=paper_daily,
@@ -6994,8 +6998,8 @@ def _dataset_members(
             paper_strategy_proposal_ack,
         ),
         "reports/paper_strategy_proposals_current.csv": _csv_member(
-            "reports/paper_strategy_proposals.csv",
-            paper_proposals,
+            "reports/paper_strategy_proposals_current.csv",
+            paper_proposals_current,
         ),
         "reports/paper_strategy_trackers_current.csv": _csv_member(
             "reports/paper_strategy_trackers_current.csv",

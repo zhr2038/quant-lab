@@ -128,6 +128,57 @@ def test_paper_proposal_export_reuses_published_identity_when_board_is_sparse(tm
     assert row["live_order_effect"] == "none"
 
 
+def test_expert_pack_current_proposals_use_authoritative_current_snapshot(tmp_path):
+    lake = _fixture_lake(tmp_path)
+    proposals = [
+        PaperStrategyProposal(
+            strategy_id=f"TRX_F3_F4_DEDUP_{hours}H_PAPER",
+            strategy_version="1.0.0",
+            strategy_family="f3_f4_deduplicated_entry",
+            symbol="TRX/USDT",
+            timeframe="1h",
+            entry_rule={"operator": "momentum_gt", "field": "momentum_8", "value": 0},
+            exit_rule={"operator": "max_holding_bars", "value": hours},
+            max_holding_bars=hours,
+            created_at=datetime(2026, 7, 13, tzinfo=UTC),
+            expires_at=datetime(2026, 8, 13, tzinfo=UTC),
+            source_dataset_versions={"paper_strategy_proposals_current": "v1"},
+            required_market_fields=["bid", "ask", "mid", "momentum_8"],
+            required_cost_trust_level="PAPER_ONLY",
+        )
+        for hours in (8, 12)
+    ]
+    published = publish_proposals(lake, proposals)
+    write_parquet_dataset(
+        published.filter(pl.col("strategy_id") == "TRX_F3_F4_DEDUP_8H_PAPER"),
+        lake / "gold" / "paper_strategy_proposal",
+    )
+    write_parquet_dataset(
+        published,
+        lake / "gold" / "paper_strategy_proposals_current",
+    )
+
+    members = daily_export_module._dataset_members(
+        {
+            "paper_strategy_proposal": published.filter(
+                pl.col("strategy_id") == "TRX_F3_F4_DEDUP_8H_PAPER"
+            ),
+            "paper_strategy_proposals_current": published,
+        },
+        lake,
+        pre_export_v5={},
+    )
+    current_rows = list(
+        csv.DictReader(
+            io.StringIO(members["reports/paper_strategy_proposals_current.csv"])
+        )
+    )
+    assert {row["strategy_id"] for row in current_rows} == {
+        "TRX_F3_F4_DEDUP_8H_PAPER",
+        "TRX_F3_F4_DEDUP_12H_PAPER",
+    }
+
+
 def test_microstructure_rollup_limits_cover_forward_validation_window():
     min_rows_for_30_hourly_samples = 80_000
 

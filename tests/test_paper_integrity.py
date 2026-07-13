@@ -57,6 +57,35 @@ def _ack(proposal: dict[str, object]) -> dict[str, object]:
     }
 
 
+def _tracker(
+    proposal: dict[str, object],
+    *,
+    created_at: str = "2026-07-12T01:05:00Z",
+) -> dict[str, object]:
+    proposal_id = str(proposal["proposal_id"])
+    return {
+        "proposal_id": proposal_id,
+        "proposal_hash": proposal["proposal_hash"],
+        "tracker_id": f"paper:{proposal_id}",
+        "strategy_id": proposal["strategy_id"],
+        "strategy_version": proposal["strategy_version"],
+        "strategy_family": proposal["strategy_family"],
+        "symbol": proposal["symbol"],
+        "timeframe": proposal["timeframe"],
+        "state": "WAITING_SIGNAL",
+        "rules_locked": True,
+        "paper_only": True,
+        "live_order_effect": "none",
+        "created_at": created_at,
+        "updated_at": created_at,
+        "current_proposal_member": True,
+        "current_cohort_member": True,
+        "supersession_status": "CURRENT_ACTIVE",
+        "new_entry_allowed": True,
+        "exit_allowed": True,
+    }
+
+
 def _cost_trust(proposal: dict[str, object]) -> dict[str, object]:
     return {
         "proposal_id": proposal["proposal_id"],
@@ -100,6 +129,7 @@ def test_missing_cost_trust_is_fail_closed() -> None:
     frames = build_paper_strategy_pipeline_frames(
         proposals=pl.DataFrame([proposal]),
         proposal_ack=pl.DataFrame([_ack(proposal)]),
+        trackers_current=pl.DataFrame([_tracker(proposal)]),
         runs=pl.DataFrame(
             [
                 {
@@ -137,6 +167,7 @@ def test_registry_identity_is_canonical_and_cost_match_is_exact() -> None:
     frames = build_paper_strategy_pipeline_frames(
         proposals=pl.DataFrame([proposal]),
         proposal_ack=pl.DataFrame([_ack(proposal)]),
+        trackers_current=pl.DataFrame([_tracker(proposal)]),
         runs=pl.DataFrame(
             [
                 {
@@ -203,6 +234,7 @@ def test_shared_entry_event_counts_once_across_horizons() -> None:
     frames = build_paper_strategy_pipeline_frames(
         proposals=pl.DataFrame([proposal_8h, proposal_12h]),
         proposal_ack=pl.DataFrame([_ack(proposal_8h), _ack(proposal_12h)]),
+        trackers_current=pl.DataFrame([_tracker(proposal_8h), _tracker(proposal_12h)]),
         runs=pl.DataFrame(runs),
         daily=pl.DataFrame(daily),
         strategy_cost_trust=pl.DataFrame(trusts),
@@ -251,6 +283,7 @@ def test_structured_rows_do_not_cross_match_same_candidate_symbol() -> None:
     frames = build_paper_strategy_pipeline_frames(
         proposals=pl.DataFrame([proposal_8h, proposal_12h]),
         proposal_ack=pl.DataFrame([_ack(proposal_8h), _ack(proposal_12h)]),
+        trackers_current=pl.DataFrame([_tracker(proposal_8h), _tracker(proposal_12h)]),
         runs=pl.DataFrame(runs),
         daily=pl.DataFrame(daily),
         strategy_cost_trust=pl.DataFrame(trusts),
@@ -275,6 +308,10 @@ def test_published_gate_replaces_stale_derived_evidence(tmp_path) -> None:
     write_parquet_dataset(
         pl.DataFrame([_ack(proposal)]),
         lake / "silver/v5_paper_strategy_proposal_ack_current",
+    )
+    write_parquet_dataset(
+        pl.DataFrame([_tracker(proposal)]),
+        lake / "silver/v5_paper_strategy_trackers_current",
     )
     write_parquet_dataset(
         pl.DataFrame(
@@ -368,7 +405,11 @@ def test_publish_separates_current_history_and_freezes_cohort(tmp_path) -> None:
     write_parquet_dataset(pl.DataFrame([first]), lake / "gold/paper_strategy_proposal")
     write_parquet_dataset(
         pl.DataFrame([_ack(first)]),
-        lake / "silver/v5_paper_strategy_proposal_ack",
+        lake / "silver/v5_paper_strategy_proposal_ack_current",
+    )
+    write_parquet_dataset(
+        pl.DataFrame([_tracker(first)]),
+        lake / "silver/v5_paper_strategy_trackers_current",
     )
     write_parquet_dataset(
         pl.DataFrame(
@@ -393,6 +434,8 @@ def test_publish_separates_current_history_and_freezes_cohort(tmp_path) -> None:
     assert history.height >= 1
     assert conflicts.filter(pl.col("conflict_field") == "strategy_id").height == 1
     assert cohort_v1.height == 1
+    assert cohort_v1.to_dicts()[0]["status"] == "OBSERVING"
+    assert cohort_v1.to_dicts()[0]["all_members_admitted"] is True
     original_members = cohort_v1.to_dicts()[0]["proposal_ids"]
 
     write_parquet_dataset(
@@ -418,6 +461,173 @@ def test_publish_separates_current_history_and_freezes_cohort(tmp_path) -> None:
     cohorts = read_parquet_dataset(lake / "gold/paper_cohort_manifest").sort("cohort_version")
     assert cohorts.height == 2
     assert cohorts.to_dicts()[0]["proposal_ids"] == original_members
+    assert cohorts.to_dicts()[0]["status"] == "FROZEN"
     assert json.loads(cohorts.to_dicts()[1]["proposal_ids"]) == sorted(
         [first["proposal_id"], second["proposal_id"]]
     )
+    assert cohorts.to_dicts()[1]["status"] == "FORMING"
+    assert cohorts.to_dicts()[1]["observation_start_at"] is None
+
+    second_ack = _ack(second)
+    second_ack["accepted_at"] = "2026-07-15T03:00:00Z"
+    write_parquet_dataset(
+        pl.DataFrame([_ack(first), second_ack]),
+        lake / "silver/v5_paper_strategy_proposal_ack_current",
+    )
+    write_parquet_dataset(
+        pl.DataFrame(
+            [
+                _tracker(first),
+                _tracker(second, created_at="2026-07-15T03:05:00Z"),
+            ]
+        ),
+        lake / "silver/v5_paper_strategy_trackers_current",
+    )
+    build_and_publish_paper_strategy_pipeline(lake, as_of_date="2026-07-15")
+    admitted = read_parquet_dataset(lake / "gold/paper_cohort_manifest").sort(
+        "cohort_version"
+    )
+    assert admitted.to_dicts()[1]["status"] == "OBSERVING"
+    assert admitted.to_dicts()[1]["formal_observation_eligible"] is True
+    assert admitted.to_dicts()[1]["observation_start_at"] == "2026-07-15T03:05:00Z"
+
+
+def test_current_lifecycle_does_not_inherit_history() -> None:
+    proposal = _proposal(
+        "ARB_F3_F4_DEDUP_8H_PAPER", proposal_hash="b" * 64, horizon=8
+    )
+    frames = build_paper_strategy_pipeline_frames(
+        proposals=pl.DataFrame([proposal]),
+        proposal_ack=pl.DataFrame(),
+        trackers_current=pl.DataFrame(),
+        runs=pl.DataFrame(
+            [
+                {
+                    "proposal_id": proposal["proposal_id"],
+                    "proposal_hash": proposal["proposal_hash"],
+                    "paper_tracker_id": f"paper:{proposal['proposal_id']}",
+                    "paper_pnl_bps": 12.0,
+                    "cost_source": "configured_conservative_paper",
+                    "entry_signal_ts": "2026-07-01T00:00:00Z",
+                }
+            ]
+        ),
+        daily=pl.DataFrame(),
+        strategy_cost_trust=pl.DataFrame([_cost_trust(proposal)]),
+        created_at=NOW,
+    )
+    registry = frames["paper_strategy_registry"].to_dicts()[0]
+    gate = frames["paper_strategy_promotion_gate"].to_dicts()[0]
+    assert registry["accepted"] is False
+    assert registry["current_ack_present"] is False
+    assert registry["current_tracker_present"] is False
+    assert registry["paper_tracker_effective"] is False
+    assert registry["current_runtime_eligible"] is False
+    assert registry["evidence_from_history"] is True
+    assert registry["supersession_status"] == "CURRENT_PENDING_ACK"
+    assert gate["historical_evidence_present"] is True
+    assert gate["historical_closed_trade_count"] == 1
+    assert gate["current_contract_closed_trade_count"] == 1
+    assert gate["current_runtime_eligible"] is False
+    assert gate["paper_ready"] is False
+
+
+def test_published_current_drops_historical_ack_and_tracker_but_history_retains_them(
+    tmp_path,
+) -> None:
+    lake = tmp_path / "lake"
+    proposal = _proposal(
+        "ARB_F3_F4_DEDUP_8H_PAPER", proposal_hash="e" * 64, horizon=8
+    )
+    historical = {
+        **proposal,
+        **_ack(proposal),
+        "status": "CURRENT_ACTIVE",
+        "lifecycle_state": "PAPER_TRACKER_ACTIVE",
+        "paper_tracker_effective": True,
+        "current_tracker_effective": True,
+        "current_runtime_eligible": True,
+        "current_ack_present": True,
+        "current_tracker_present": True,
+        "rules_locked": True,
+        "new_entry_allowed": True,
+        "exit_allowed": True,
+    }
+    write_parquet_dataset(
+        pl.DataFrame([proposal]), lake / "gold/paper_strategy_proposal"
+    )
+    write_parquet_dataset(
+        pl.DataFrame([historical]), lake / "gold/paper_strategy_registry_current"
+    )
+    write_parquet_dataset(
+        pl.DataFrame(
+            [
+                {
+                    "proposal_id": proposal["proposal_id"],
+                    "proposal_hash": proposal["proposal_hash"],
+                    "paper_tracker_id": f"paper:{proposal['proposal_id']}",
+                    "paper_pnl_bps": 15.0,
+                    "cost_source": "configured_conservative_paper",
+                    "entry_signal_ts": "2026-07-01T00:00:00Z",
+                }
+            ]
+        ),
+        lake / "gold/paper_strategy_runs",
+    )
+
+    build_and_publish_paper_strategy_pipeline(lake, as_of_date="2026-07-13")
+
+    current = read_parquet_dataset(
+        lake / "gold/paper_strategy_registry_current"
+    ).to_dicts()[0]
+    history = read_parquet_dataset(
+        lake / "gold/paper_strategy_registry_history"
+    ).to_dicts()[0]
+    assert current["accepted"] is False
+    assert current["paper_tracker_effective"] is False
+    assert current["current_runtime_eligible"] is False
+    assert current["evidence_from_history"] is True
+    assert current["supersession_status"] == "CURRENT_PENDING_ACK"
+    assert history["accepted"] is True
+    assert history["evidence_from_history"] is True
+    assert history["current_tracker_effective"] is False
+    assert history["supersession_status"] == "HISTORY_ONLY"
+
+
+def test_current_ack_without_tracker_is_fail_closed() -> None:
+    proposal = _proposal(
+        "BNB_F3_F4_DEDUP_8H_PAPER", proposal_hash="c" * 64, horizon=8
+    )
+    frames = build_paper_strategy_pipeline_frames(
+        proposals=pl.DataFrame([proposal]),
+        proposal_ack=pl.DataFrame([_ack(proposal)]),
+        trackers_current=pl.DataFrame(),
+        created_at=NOW,
+    )
+    registry = frames["paper_strategy_registry"].to_dicts()[0]
+    assert registry["accepted"] is True
+    assert registry["current_ack_present"] is True
+    assert registry["current_tracker_present"] is False
+    assert registry["paper_tracker_effective"] is False
+    assert registry["supersession_status"] == "CURRENT_ACKED_TRACKER_MISSING"
+    assert registry["new_entry_allowed"] is False
+
+
+def test_current_tracker_without_ack_is_fail_closed() -> None:
+    proposal = _proposal(
+        "TAO_F3_F4_DEDUP_8H_PAPER", proposal_hash="d" * 64, horizon=8
+    )
+    frames = build_paper_strategy_pipeline_frames(
+        proposals=pl.DataFrame([proposal]),
+        proposal_ack=pl.DataFrame(),
+        trackers_current=pl.DataFrame([_tracker(proposal)]),
+        created_at=NOW,
+    )
+    registry = frames["paper_strategy_registry"].to_dicts()[0]
+    assert registry["accepted"] is False
+    assert registry["current_ack_present"] is False
+    assert registry["current_tracker_present"] is True
+    assert registry["paper_tracker_effective"] is True
+    assert registry["current_runtime_eligible"] is False
+    assert registry["supersession_status"] == "CURRENT_TRACKER_ACK_MISSING"
+    assert registry["new_entry_allowed"] is False

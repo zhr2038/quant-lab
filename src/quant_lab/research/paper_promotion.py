@@ -72,6 +72,9 @@ V5_PAPER_STRATEGY_ACK_CURRENT_DATASET = (
 V5_PAPER_STRATEGY_ACK_HISTORY_DATASET = (
     Path("silver") / "v5_paper_strategy_proposal_ack_history"
 )
+V5_PAPER_STRATEGY_TRACKERS_CURRENT_DATASET = (
+    Path("silver") / "v5_paper_strategy_trackers_current"
+)
 
 PAPER_PIPELINE_SOURCE = "research.paper_strategy_promotion.v0.1"
 PAPER_PIPELINE_SCHEMA_VERSION = "paper_strategy_pipeline.v1"
@@ -129,6 +132,13 @@ PAPER_STRATEGY_REGISTRY_SCHEMA = {
     "paper_start_at": pl.Utf8,
     "rules_locked": pl.Boolean,
     "accepted": pl.Boolean,
+    "current_ack_present": pl.Boolean,
+    "current_tracker_present": pl.Boolean,
+    "paper_tracker_effective": pl.Boolean,
+    "current_tracker_effective": pl.Boolean,
+    "current_runtime_eligible": pl.Boolean,
+    "evidence_from_history": pl.Boolean,
+    "current_activation_at": pl.Utf8,
     "reject_reason": pl.Utf8,
     "first_seen_at": pl.Utf8,
     "accepted_at": pl.Utf8,
@@ -162,6 +172,12 @@ PAPER_STRATEGY_PROMOTION_GATE_SCHEMA = {
     "accepted": pl.Boolean,
     "paper_tracker_created": pl.Boolean,
     "paper_tracker_effective": pl.Boolean,
+    "current_ack_present": pl.Boolean,
+    "current_tracker_present": pl.Boolean,
+    "current_runtime_eligible": pl.Boolean,
+    "historical_evidence_present": pl.Boolean,
+    "historical_closed_trade_count": pl.Int64,
+    "current_contract_closed_trade_count": pl.Int64,
     "paper_tracker_status": pl.Utf8,
     "paper_runs": pl.Int64,
     "paper_days": pl.Int64,
@@ -246,6 +262,16 @@ PAPER_COHORT_MANIFEST_SCHEMA = {
     "admitted_at": pl.Utf8,
     "observation_start_at": pl.Utf8,
     "status": pl.Utf8,
+    "proposal_count": pl.Int64,
+    "accepted_ack_count": pl.Int64,
+    "active_tracker_count": pl.Int64,
+    "current_runtime_eligible_count": pl.Int64,
+    "pending_proposal_ids": pl.Utf8,
+    "ack_missing_proposal_ids": pl.Utf8,
+    "tracker_missing_proposal_ids": pl.Utf8,
+    "identity_conflict_proposal_ids": pl.Utf8,
+    "all_members_admitted": pl.Boolean,
+    "formal_observation_eligible": pl.Boolean,
     "raw_closed_trade_count": pl.Int64,
     "independent_closed_trade_count": pl.Int64,
     "horizon_variant_count": pl.Int64,
@@ -307,26 +333,24 @@ def build_and_publish_paper_strategy_pipeline(
         root / PAPER_STRATEGY_PROPOSALS_CURRENT_DATASET,
     )
     raw_ack = read_parquet_dataset(root / V5_PAPER_STRATEGY_ACK_CURRENT_DATASET)
-    if raw_ack.is_empty():
-        raw_ack = read_parquet_dataset(root / PAPER_STRATEGY_PROPOSAL_ACK_DATASET)
     raw_ack_history = read_parquet_dataset(root / V5_PAPER_STRATEGY_ACK_HISTORY_DATASET)
     if raw_ack_history.is_empty():
         raw_ack_history = read_parquet_dataset(root / PAPER_STRATEGY_PROPOSAL_ACK_DATASET)
-    raw_trackers = read_parquet_dataset(root / V5_PAPER_STRATEGY_REGISTRY_CURRENT_DATASET)
-    if raw_trackers.is_empty():
-        raw_trackers = read_parquet_dataset(root / V5_PAPER_STRATEGY_REGISTRY_DATASET)
+    raw_trackers = read_parquet_dataset(
+        root / V5_PAPER_STRATEGY_TRACKERS_CURRENT_DATASET
+    )
     current_identity_conflicts = _build_identity_conflicts(
         proposal_frame,
         (
             ("paper_strategy_registry", existing_registry, False),
             (
                 "v5_paper_strategy_proposal_ack",
-                _filter_superseded_structured_rows(raw_ack, proposal_frame),
+                raw_ack,
                 True,
             ),
             (
-                "v5_paper_strategy_registry",
-                _filter_superseded_structured_rows(raw_trackers, proposal_frame),
+                "v5_paper_strategy_trackers_current",
+                raw_trackers,
                 True,
             ),
         ),
@@ -338,9 +362,6 @@ def build_and_publish_paper_strategy_pipeline(
     write_parquet_dataset(
         identity_conflicts,
         root / PAPER_STRATEGY_IDENTITY_CONFLICT_DATASET,
-    )
-    existing_registry_current = _filter_superseded_structured_rows(
-        existing_registry_current, proposal_frame
     )
     migration_audit = _merge_migration_audit(
         existing_migration_audit,
@@ -360,7 +381,8 @@ def build_and_publish_paper_strategy_pipeline(
     write_parquet_dataset(strategy_cost_trust, root / STRATEGY_COST_TRUST_DATASET)
     paper_ack = _filter_superseded_structured_rows(raw_ack, proposal_frame)
     paper_ack = _latest_rows_frame(paper_ack)
-    write_parquet_dataset(raw_ack_history, root / PAPER_STRATEGY_ACK_HISTORY_DATASET)
+    ack_history = _merge_ack_history(raw_ack_history, raw_ack)
+    write_parquet_dataset(ack_history, root / PAPER_STRATEGY_ACK_HISTORY_DATASET)
     write_parquet_dataset(paper_ack, root / PAPER_STRATEGY_ACK_CURRENT_DATASET)
     trackers_current = _latest_rows_frame(
         _filter_superseded_structured_rows(raw_trackers, proposal_frame)
@@ -380,16 +402,12 @@ def build_and_publish_paper_strategy_pipeline(
     frames = build_paper_strategy_pipeline_frames(
         proposals=proposal_frame,
         proposal_ack=paper_ack,
+        trackers_current=trackers_current,
         runs=paper_runs,
         daily=paper_daily,
         strategy_cost_trust=strategy_cost_trust,
     )
-    registry = _merge_lifecycle_frame(
-        existing_registry_current,
-        frames["paper_strategy_registry"],
-        schema=PAPER_STRATEGY_REGISTRY_SCHEMA,
-        rank=_registry_persistence_rank,
-    )
+    registry = frames["paper_strategy_registry"]
     registry = _canonicalize_registry_identity(registry, proposal_frame)
     registry = _apply_active_identity_conflicts(registry, identity_conflicts)
     gate = _promotion_gate_frame_from_registry(
@@ -401,15 +419,17 @@ def build_and_publish_paper_strategy_pipeline(
     )
     gate = _canonicalize_gate_identity(gate, proposal_frame)
     registry_history = _merge_lifecycle_frame(
-        existing_registry_history,
+        _merge_lifecycle_frame(
+            existing_registry_history,
+            existing_registry_current,
+            schema=PAPER_STRATEGY_REGISTRY_SCHEMA,
+            rank=_registry_persistence_rank,
+        ),
         registry,
         schema=PAPER_STRATEGY_REGISTRY_SCHEMA,
         rank=_registry_persistence_rank,
     )
-    registry_history = _canonicalize_registry_identity(
-        registry_history,
-        proposal_frame,
-    )
+    registry_history = _as_registry_history(registry_history)
     write_parquet_dataset(registry, root / PAPER_STRATEGY_REGISTRY_DATASET)
     write_parquet_dataset(registry, root / PAPER_STRATEGY_REGISTRY_CURRENT_DATASET)
     write_parquet_dataset(
@@ -487,6 +507,27 @@ def _merge_migration_audit(existing: pl.DataFrame, generated: pl.DataFrame) -> p
             if key:
                 rows[key] = row
     return _frame(list(rows.values()), PAPER_STRATEGY_MIGRATION_AUDIT_SCHEMA)
+
+
+def _merge_ack_history(history: pl.DataFrame, current: pl.DataFrame) -> pl.DataFrame:
+    if history.is_empty():
+        return current
+    if current.is_empty():
+        return history
+    combined = pl.concat([history, current], how="diagonal_relaxed")
+    key_columns = [
+        column
+        for column in (
+            "proposal_id",
+            "proposal_hash",
+            "tracker_id",
+            "paper_tracker_id",
+            "accepted_at",
+            "ingest_ts",
+        )
+        if column in combined.columns
+    ]
+    return combined.unique(subset=key_columns, keep="last", maintain_order=True)
 
 
 def _latest_rows_frame(frame: pl.DataFrame) -> pl.DataFrame:
@@ -701,15 +742,33 @@ def _canonicalize_registry_identity(
                     "identity_conflict_fields": "[]",
                     "current_proposal_member": True,
                     "current_cohort_member": True,
-                    "supersession_status": (
-                        "CURRENT_ACTIVE"
-                        if _bool(row.get("accepted"))
-                        else "CURRENT_PENDING_ACK"
-                    ),
-                    "new_entry_allowed": bool(_bool(row.get("accepted"))),
                     "exit_allowed": True,
                 }
             )
+        rows.append(row)
+    return _frame(rows, PAPER_STRATEGY_REGISTRY_SCHEMA)
+
+
+def _as_registry_history(registry: pl.DataFrame) -> pl.DataFrame:
+    rows: list[dict[str, Any]] = []
+    for source in registry.to_dicts() if not registry.is_empty() else []:
+        row = dict(source)
+        row.update(
+            {
+                "current_ack_present": False,
+                "current_tracker_present": False,
+                "paper_tracker_effective": False,
+                "current_tracker_effective": False,
+                "current_runtime_eligible": False,
+                "evidence_from_history": True,
+                "current_activation_at": "",
+                "current_proposal_member": False,
+                "current_cohort_member": False,
+                "supersession_status": "HISTORY_ONLY",
+                "new_entry_allowed": False,
+                "exit_allowed": True,
+            }
+        )
         rows.append(row)
     return _frame(rows, PAPER_STRATEGY_REGISTRY_SCHEMA)
 
@@ -738,6 +797,10 @@ def _apply_active_identity_conflicts(
             row["lifecycle_state"] = "IDENTITY_CONFLICT"
             row["lifecycle_reason"] = "canonical_identity_conflict"
             row["blocked_reasons"] = safe_json_dumps(["canonical_identity_conflict"])
+            row["paper_tracker_effective"] = False
+            row["current_tracker_effective"] = False
+            row["current_runtime_eligible"] = False
+            row["supersession_status"] = "IDENTITY_CONFLICT"
             row["new_entry_allowed"] = False
         rows.append(row)
     return _frame(rows, PAPER_STRATEGY_REGISTRY_SCHEMA)
@@ -785,12 +848,66 @@ def _build_paper_cohort_manifest(
     proposal_ids = [_text(row.get("proposal_id")) for row in proposal_rows]
     proposal_id_set = set(proposal_ids)
     signature = safe_json_dumps(proposal_ids)
-    starts = [
-        _text(row.get("paper_start_at"))
-        for row in registry.to_dicts()
+    registry_rows = [
+        row
+        for row in (registry.to_dicts() if not registry.is_empty() else [])
         if _text(row.get("proposal_id")) in proposal_id_set
-        and _text(row.get("paper_start_at"))
-    ] if not registry.is_empty() else []
+    ]
+    by_proposal = {
+        _text(row.get("proposal_id")): row
+        for row in registry_rows
+        if _text(row.get("proposal_id"))
+    }
+    accepted_ack_ids = sorted(
+        proposal_id
+        for proposal_id in proposal_ids
+        if _bool(by_proposal.get(proposal_id, {}).get("current_ack_present"))
+        and _bool(by_proposal.get(proposal_id, {}).get("accepted"))
+    )
+    active_tracker_ids = sorted(
+        proposal_id
+        for proposal_id in proposal_ids
+        if _bool(by_proposal.get(proposal_id, {}).get("current_tracker_present"))
+    )
+    runtime_eligible_ids = sorted(
+        proposal_id
+        for proposal_id in proposal_ids
+        if _bool(by_proposal.get(proposal_id, {}).get("current_runtime_eligible"))
+    )
+    ack_missing_ids = sorted(set(proposal_ids) - set(accepted_ack_ids))
+    tracker_missing_ids = sorted(set(proposal_ids) - set(active_tracker_ids))
+    identity_conflict_ids = sorted(
+        proposal_id
+        for proposal_id in proposal_ids
+        if _bool(by_proposal.get(proposal_id, {}).get("identity_conflict"))
+    )
+    pending_ids = sorted(set(proposal_ids) - set(runtime_eligible_ids))
+    all_members_admitted = (
+        len(runtime_eligible_ids) == len(proposal_ids)
+        and not identity_conflict_ids
+    )
+    activation_times = [
+        _text(by_proposal[proposal_id].get("current_activation_at"))
+        for proposal_id in runtime_eligible_ids
+        if _text(by_proposal[proposal_id].get("current_activation_at"))
+    ]
+    observation_start_at = (
+        max(activation_times)
+        if all_members_admitted and len(activation_times) == len(proposal_ids)
+        else None
+    )
+    admission = {
+        "proposal_count": len(proposal_ids),
+        "accepted_ack_count": len(accepted_ack_ids),
+        "active_tracker_count": len(active_tracker_ids),
+        "current_runtime_eligible_count": len(runtime_eligible_ids),
+        "pending_proposal_ids": safe_json_dumps(pending_ids),
+        "ack_missing_proposal_ids": safe_json_dumps(ack_missing_ids),
+        "tracker_missing_proposal_ids": safe_json_dumps(tracker_missing_ids),
+        "identity_conflict_proposal_ids": safe_json_dumps(identity_conflict_ids),
+        "all_members_admitted": all_members_admitted,
+        "formal_observation_eligible": all_members_admitted,
+    }
     run_rows = [
         row
         for row in (runs.to_dicts() if not runs.is_empty() else [])
@@ -813,12 +930,28 @@ def _build_paper_cohort_manifest(
         latest["raw_closed_trade_count"] = len(run_rows)
         latest["independent_closed_trade_count"] = len(event_ids)
         latest["horizon_variant_count"] = len(horizons)
-        if starts:
-            latest["observation_start_at"] = min(starts)
+        latest.update(admission)
+        if _text(latest.get("status")) not in {"FROZEN", "INVALID"}:
+            if all_members_admitted:
+                latest["status"] = (
+                    "REVIEW_READY"
+                    if _text(latest.get("status")) == "REVIEW_READY"
+                    else "OBSERVING"
+                )
+                latest["observation_start_at"] = (
+                    _text(latest.get("observation_start_at"))
+                    or observation_start_at
+                )
+            else:
+                latest["status"] = "FORMING"
+                latest["observation_start_at"] = None
+        else:
+            latest["formal_observation_eligible"] = False
         return _frame(existing_rows, PAPER_COHORT_MANIFEST_SCHEMA)
     for row in existing_rows:
-        if _text(row.get("status")) == "OBSERVING":
+        if _text(row.get("status")) not in {"FROZEN", "INVALID"}:
             row["status"] = "FROZEN"
+            row["formal_observation_eligible"] = False
     version = max((_int(row.get("cohort_version")) or 0 for row in existing_rows), default=0) + 1
     admitted = created_at.astimezone(UTC).isoformat()
     material = "|".join(
@@ -838,8 +971,9 @@ def _build_paper_cohort_manifest(
             "symbols": safe_json_dumps(sorted({_symbol(row) for row in proposal_rows})),
             "horizons": safe_json_dumps(horizons),
             "admitted_at": admitted,
-            "observation_start_at": min(starts) if starts else admitted,
-            "status": "OBSERVING",
+            "observation_start_at": observation_start_at,
+            "status": "OBSERVING" if all_members_admitted else "FORMING",
+            **admission,
             "raw_closed_trade_count": len(run_rows),
             "independent_closed_trade_count": len(event_ids),
             "horizon_variant_count": len(horizons),
@@ -1018,6 +1152,7 @@ def build_paper_strategy_pipeline_frames(
     *,
     proposals: pl.DataFrame | None = None,
     proposal_ack: pl.DataFrame | None = None,
+    trackers_current: pl.DataFrame | None = None,
     runs: pl.DataFrame | None = None,
     daily: pl.DataFrame | None = None,
     strategy_cost_trust: pl.DataFrame | None = None,
@@ -1026,15 +1161,18 @@ def build_paper_strategy_pipeline_frames(
     created = (created_at or datetime.now(UTC)).isoformat()
     proposal_frame = proposals if proposals is not None else pl.DataFrame()
     ack_frame = proposal_ack if proposal_ack is not None else pl.DataFrame()
+    tracker_frame = trackers_current if trackers_current is not None else pl.DataFrame()
     run_frame = runs if runs is not None else pl.DataFrame()
     daily_frame = daily if daily is not None else pl.DataFrame()
     ack_frame = _filter_superseded_structured_rows(ack_frame, proposal_frame)
+    tracker_frame = _filter_superseded_structured_rows(tracker_frame, proposal_frame)
     run_frame = _filter_superseded_structured_rows(run_frame, proposal_frame)
     daily_frame = _filter_superseded_structured_rows(daily_frame, proposal_frame)
     proposal_rows = _proposal_rows(proposal_frame)
     ack_rows = _latest_rows_by_strategy(
         ack_frame
     )
+    tracker_rows = _latest_rows_by_strategy(tracker_frame)
     run_rows = run_frame.to_dicts()
     event_variants = _event_variant_counts(run_rows)
     daily_rows = _latest_rows_by_strategy(daily_frame)
@@ -1044,21 +1182,31 @@ def build_paper_strategy_pipeline_frames(
         else []
     )
 
-    keys = _collect_strategy_keys(proposal_rows, ack_rows, run_rows, daily_rows)
     registry_rows: list[dict[str, Any]] = []
     gate_rows: list[dict[str, Any]] = []
-    for key in sorted(
-        keys,
-        key=lambda item: (item.symbol, item.proposal_id, item.paper_tracker_id),
+    for proposal in sorted(
+        proposal_rows,
+        key=lambda row: (_symbol(row), _text(row.get("proposal_id"))),
     ):
-        proposal = _match_strategy_row(proposal_rows, key)
-        ack = _match_strategy_row(ack_rows, key)
+        proposal_id = _text(proposal.get("proposal_id"))
+        proposal_hash = _text(proposal.get("proposal_hash"))
+        ack = _latest_exact_current_row(ack_rows, proposal_id, proposal_hash)
+        tracker = _latest_exact_current_row(tracker_rows, proposal_id, proposal_hash)
+        key = _StrategyKey(
+            proposal_id=proposal_id,
+            paper_tracker_id=_text(
+                tracker.get("tracker_id") or tracker.get("paper_tracker_id")
+            ),
+            strategy_candidate=_text(proposal.get("strategy_candidate")),
+            symbol=_symbol(proposal),
+        )
         daily_row = _match_strategy_row(daily_rows, key)
         matched_runs = [row for row in run_rows if _row_matches_key(row, key)]
         registry = _registry_row(
             key=key,
             proposal=proposal,
             ack=ack,
+            tracker=tracker,
             daily=daily_row,
             runs=matched_runs,
             created_at=created,
@@ -1113,6 +1261,22 @@ def _latest_rows_by_strategy(frame: pl.DataFrame) -> list[dict[str, Any]]:
     return list(best.values())
 
 
+def _latest_exact_current_row(
+    rows: list[dict[str, Any]],
+    proposal_id: str,
+    proposal_hash: str,
+) -> Mapping[str, Any]:
+    matches = [
+        row
+        for row in rows
+        if _text(row.get("proposal_id")) == proposal_id
+        and _text(row.get("proposal_hash")) == proposal_hash
+    ]
+    if not matches:
+        return {}
+    return max(matches, key=_row_sort_ts)
+
+
 def _collect_strategy_keys(
     proposals: list[dict[str, Any]],
     ack_rows: list[dict[str, Any]],
@@ -1152,22 +1316,20 @@ def _registry_row(
     key: _StrategyKey,
     proposal: Mapping[str, Any],
     ack: Mapping[str, Any],
+    tracker: Mapping[str, Any],
     daily: Mapping[str, Any],
     runs: list[dict[str, Any]],
     created_at: str,
 ) -> dict[str, Any]:
-    accepted = _bool(ack.get("accepted"))
+    current_ack_present = bool(ack)
+    current_tracker_present = bool(tracker)
+    accepted = current_ack_present and _bool(ack.get("accepted")) is True
     reject_reason = "" if accepted is True else _text(ack.get("reject_reason"))
     proposal_id = (
         key.proposal_id or _text(ack.get("proposal_id")) or _text(proposal.get("proposal_id"))
     )
-    explicit_paper_tracker_id = (
-        key.paper_tracker_id
-        or _text(ack.get("paper_tracker_id"))
-        or _text(daily.get("paper_tracker_id"))
-    )
-    paper_tracker_id = explicit_paper_tracker_id or (
-        proposal_id if accepted and (daily or runs) else ""
+    paper_tracker_id = _text(
+        tracker.get("tracker_id") or tracker.get("paper_tracker_id")
     )
     strategy_id = (
         _text(proposal.get("strategy_id"))
@@ -1175,7 +1337,7 @@ def _registry_row(
         or proposal_id
         or _text(daily.get("strategy_id"))
     )
-    paper_only = _paper_only(ack, proposal)
+    paper_only = _paper_only(ack, proposal) and _paper_only(tracker, proposal)
     max_live_notional = _float(
         ack.get("max_live_notional_usdt")
         or ack.get("advisory_max_live_notional_usdt")
@@ -1183,17 +1345,27 @@ def _registry_row(
     )
     if max_live_notional is None and paper_only:
         max_live_notional = 0.0
-    status = _registry_status(
-        accepted=accepted,
-        reject_reason=reject_reason,
-        paper_tracker_id=paper_tracker_id,
-        daily=daily,
-        runs=runs,
+    current_runtime_eligible = bool(
+        accepted
+        and current_tracker_present
+        and paper_tracker_id
+        and _bool(tracker.get("rules_locked")) is True
+        and paper_only
     )
+    if accepted and not current_tracker_present:
+        status = "CURRENT_ACKED_TRACKER_MISSING"
+    elif current_tracker_present and not accepted:
+        status = "CURRENT_TRACKER_ACK_MISSING"
+    elif current_runtime_eligible:
+        status = "CURRENT_ACTIVE"
+    elif reject_reason:
+        status = "REJECTED_BY_V5"
+    else:
+        status = "CURRENT_PENDING_ACK"
     lifecycle = legacy_lifecycle_state(
         status,
         accepted=accepted,
-        tracker_effective=bool(accepted and paper_tracker_id),
+        tracker_effective=current_runtime_eligible,
     )
     lifecycle_blocked = _registry_block_reasons(
         accepted=accepted,
@@ -1238,8 +1410,17 @@ def _registry_row(
         or _text(ack.get("contract_version"))
         or PAPER_STRATEGY_CONTRACT_VERSION,
         "paper_start_at": _paper_start_at(ack=ack, daily=daily, runs=runs),
-        "rules_locked": bool(accepted and paper_only and paper_tracker_id),
+        "rules_locked": current_runtime_eligible,
         "accepted": accepted,
+        "current_ack_present": current_ack_present,
+        "current_tracker_present": current_tracker_present,
+        "paper_tracker_effective": current_tracker_present,
+        "current_tracker_effective": current_tracker_present,
+        "current_runtime_eligible": current_runtime_eligible,
+        "evidence_from_history": bool(daily or runs),
+        "current_activation_at": (
+            _current_activation_at(ack, tracker) if current_runtime_eligible else ""
+        ),
         "reject_reason": reject_reason,
         "first_seen_at": _first_seen_at(proposal=proposal, ack=ack, runs=runs, daily=daily),
         "accepted_at": _text(ack.get("accepted_at")) or _text(ack.get("ingest_ts")),
@@ -1260,8 +1441,10 @@ def _registry_row(
         "identity_conflict_fields": "[]",
         "current_proposal_member": True,
         "current_cohort_member": True,
-        "supersession_status": "CURRENT_ACTIVE" if accepted else "CURRENT_PENDING_ACK",
-        "new_entry_allowed": bool(accepted),
+        "supersession_status": (
+            status if status.startswith("CURRENT_") else "CURRENT_PENDING_ACK"
+        ),
+        "new_entry_allowed": current_runtime_eligible,
         "exit_allowed": True,
     }
 
@@ -1329,8 +1512,24 @@ def _promotion_gate_row(
     )
     accepted = bool(registry.get("accepted"))
     reject_reason = _text(registry.get("reject_reason"))
-    paper_tracker_created = bool(_text(registry.get("paper_tracker_id")))
-    paper_tracker_effective = accepted and paper_tracker_created
+    current_ack_present = _bool(registry.get("current_ack_present")) is True
+    current_tracker_present = _bool(registry.get("current_tracker_present")) is True
+    current_runtime_eligible = _bool(registry.get("current_runtime_eligible")) is True
+    paper_tracker_created = current_tracker_present
+    paper_tracker_effective = current_tracker_present
+    historical_evidence_present = bool(runs) or bool(daily)
+    historical_closed_trade_count = len(runs)
+    proposal_id = _text(registry.get("proposal_id"))
+    proposal_hash = _text(registry.get("proposal_hash"))
+    current_contract_closed_trade_count = sum(
+        1
+        for run in runs
+        if _text(run.get("proposal_id")) == proposal_id
+        and (
+            not _text(run.get("proposal_hash"))
+            or _text(run.get("proposal_hash")) == proposal_hash
+        )
+    )
     rules_locked = bool(registry.get("rules_locked"))
     backtest_paper_conflict = _bool(daily.get("backtest_paper_conflict")) is True
     paper_tracker_status = _paper_tracker_status(
@@ -1413,6 +1612,8 @@ def _promotion_gate_row(
     identity_conflict = _bool(registry.get("identity_conflict"))
     if identity_conflict:
         block_reasons.append("canonical_identity_conflict")
+    if not current_runtime_eligible:
+        block_reasons.append("current_runtime_not_eligible")
     block_reasons = sorted(set(block_reasons))
     paper_ready = not block_reasons
     lifecycle = (
@@ -1465,6 +1666,12 @@ def _promotion_gate_row(
         "accepted": accepted,
         "paper_tracker_created": paper_tracker_created,
         "paper_tracker_effective": paper_tracker_effective,
+        "current_ack_present": current_ack_present,
+        "current_tracker_present": current_tracker_present,
+        "current_runtime_eligible": current_runtime_eligible,
+        "historical_evidence_present": historical_evidence_present,
+        "historical_closed_trade_count": historical_closed_trade_count,
+        "current_contract_closed_trade_count": current_contract_closed_trade_count,
         "paper_tracker_status": paper_tracker_status,
         "paper_runs": len(runs),
         "paper_days": paper_days,
@@ -1828,6 +2035,28 @@ def _paper_start_at(
         or _text(ack.get("accepted_at"))
         or _text(ack.get("ingest_ts"))
     )
+
+
+def _current_activation_at(
+    ack: Mapping[str, Any],
+    tracker: Mapping[str, Any],
+) -> str:
+    values = [
+        _text(ack.get("accepted_at") or ack.get("ingest_ts")),
+        _text(tracker.get("created_at") or tracker.get("updated_at")),
+    ]
+    present = [value for value in values if value]
+    if not present:
+        return ""
+    return max(present, key=_timestamp_sort_value)
+
+
+def _timestamp_sort_value(value: str) -> datetime:
+    try:
+        parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
+    except ValueError:
+        return datetime.min.replace(tzinfo=UTC)
+    return parsed.replace(tzinfo=UTC) if parsed.tzinfo is None else parsed.astimezone(UTC)
 
 
 def _first_seen_at(

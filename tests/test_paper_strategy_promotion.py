@@ -12,6 +12,29 @@ from quant_lab.research.paper_promotion import (
 )
 
 
+def _current_tracker(
+    proposal_id: str,
+    *,
+    proposal_hash: str = "",
+    strategy_id: str = "",
+    symbol: str = "",
+    created_at: str = "2026-07-11T01:05:00Z",
+) -> dict[str, object]:
+    return {
+        "proposal_id": proposal_id,
+        "proposal_hash": proposal_hash,
+        "tracker_id": f"paper:{proposal_id}",
+        "strategy_id": strategy_id or proposal_id,
+        "symbol": symbol,
+        "state": "WAITING_SIGNAL",
+        "rules_locked": True,
+        "paper_only": True,
+        "live_order_effect": "none",
+        "created_at": created_at,
+        "updated_at": created_at,
+    }
+
+
 def test_paper_strategy_pipeline_blocks_unacked_proposal() -> None:
     frames = build_paper_strategy_pipeline_frames(
         proposals=pl.DataFrame(
@@ -34,7 +57,7 @@ def test_paper_strategy_pipeline_blocks_unacked_proposal() -> None:
     registry = frames["paper_strategy_registry"].to_dicts()[0]
     gate = frames["paper_strategy_promotion_gate"].to_dicts()[0]
 
-    assert registry["status"] == "PROPOSED_AWAITING_ACK"
+    assert registry["status"] == "CURRENT_PENDING_ACK"
     assert registry["rules_locked"] is False
     assert gate["paper_ready"] is False
     assert gate["paper_tracker_created"] is False
@@ -85,6 +108,16 @@ def test_pipeline_uses_only_current_structured_proposal_and_clears_old_reject() 
                     "symbol": "TAO-USDT",
                     "accepted_at": "2026-07-11T01:00:00Z",
                 },
+            ]
+        ),
+        trackers_current=pl.DataFrame(
+            [
+                _current_tracker(
+                    current_id,
+                    proposal_hash="b" * 64,
+                    strategy_id="TAO_F3_F4_DEDUP_8H_PAPER",
+                    symbol="TAO-USDT",
+                )
             ]
         ),
         daily=pl.DataFrame(
@@ -153,6 +186,16 @@ def test_pipeline_drops_same_id_ack_with_wrong_contract_hash() -> None:
                 },
             ]
         ),
+        trackers_current=pl.DataFrame(
+            [
+                _current_tracker(
+                    proposal_id,
+                    proposal_hash="b" * 64,
+                    strategy_id="TAO_F3_F4_DEDUP_8H_PAPER",
+                    symbol="TAO-USDT",
+                )
+            ]
+        ),
         created_at=datetime(2026, 7, 11, 2, tzinfo=UTC),
     )
 
@@ -194,12 +237,22 @@ def test_accepted_tracker_is_active_before_first_daily_observation() -> None:
                 }
             ]
         ),
+        trackers_current=pl.DataFrame(
+            [
+                _current_tracker(
+                    proposal_id,
+                    proposal_hash="c" * 64,
+                    strategy_id="TAO_F3_F4_DEDUP_8H_PAPER",
+                    symbol="TAO-USDT",
+                )
+            ]
+        ),
         created_at=datetime(2026, 7, 11, 2, tzinfo=UTC),
     )
 
     registry = frames["paper_strategy_registry"].to_dicts()[0]
     gate = frames["paper_strategy_promotion_gate"].to_dicts()[0]
-    assert registry["status"] == "ACKED"
+    assert registry["status"] == "CURRENT_ACTIVE"
     assert registry["lifecycle_state"] == "PAPER_TRACKER_ACTIVE"
     assert gate["paper_tracker_effective"] is True
     assert gate["lifecycle_state"] == "PAPER_EVIDENCE_INSUFFICIENT"
@@ -209,8 +262,30 @@ def test_paper_strategy_pipeline_marks_unacked_tracker_evidence_not_effective() 
     proposal_id = "BNB_USDT_F3_DOMINANT_ENTRY_PAPER_V1"
     tracker_id = "BNB_F3_DOMINANT_ENTRY_PAPER_V1"
     frames = build_paper_strategy_pipeline_frames(
-        proposals=pl.DataFrame(),
+        proposals=pl.DataFrame(
+            [
+                {
+                    "proposal_id": proposal_id,
+                    "strategy_id": proposal_id,
+                    "strategy_candidate": "v5.f3_dominant_entry",
+                    "symbol": "BNB-USDT",
+                    "recommended_mode": "paper",
+                }
+            ]
+        ),
         proposal_ack=pl.DataFrame(),
+        trackers_current=pl.DataFrame(
+            [
+                {
+                    **_current_tracker(
+                        proposal_id,
+                        strategy_id=proposal_id,
+                        symbol="BNB-USDT",
+                    ),
+                    "tracker_id": tracker_id,
+                }
+            ]
+        ),
         runs=pl.DataFrame(
             [
                 {
@@ -234,9 +309,10 @@ def test_paper_strategy_pipeline_marks_unacked_tracker_evidence_not_effective() 
     gate = frames["paper_strategy_promotion_gate"].to_dicts()[0]
     block_reasons = json.loads(gate["block_reason"])
 
-    assert registry["status"] == "PROPOSED_AWAITING_ACK"
+    assert registry["status"] == "CURRENT_TRACKER_ACK_MISSING"
     assert gate["paper_tracker_created"] is True
-    assert gate["paper_tracker_effective"] is False
+    assert gate["paper_tracker_effective"] is True
+    assert gate["current_runtime_eligible"] is False
     assert gate["paper_tracker_status"] == "AWAITING_ACK"
     assert "proposal_not_acked" in block_reasons
     assert "paper_tracker_not_effective_without_ack" in block_reasons
@@ -291,6 +367,16 @@ def test_paper_strategy_pipeline_marks_ready_only_after_ack_and_future_paper_evi
                 }
             ]
         ),
+        trackers_current=pl.DataFrame(
+            [
+                _current_tracker(
+                    proposal_id,
+                    strategy_id=proposal_id,
+                    symbol="SOL-USDT",
+                    created_at="2026-06-01T00:02:00Z",
+                )
+            ]
+        ),
         runs=pl.DataFrame(run_rows),
         daily=pl.DataFrame(
             [
@@ -332,7 +418,7 @@ def test_paper_strategy_pipeline_marks_ready_only_after_ack_and_future_paper_evi
     registry = frames["paper_strategy_registry"].to_dicts()[0]
     gate = frames["paper_strategy_promotion_gate"].to_dicts()[0]
 
-    assert registry["status"] == "PAPER_REVIEW"
+    assert registry["status"] == "CURRENT_ACTIVE"
     assert registry["rules_locked"] is True
     assert gate["paper_ready"] is True
     assert gate["lifecycle_state"] == "PAPER_PROMOTION_READY"
@@ -389,11 +475,22 @@ def test_strategy_dimensional_cost_trust_separates_paper_from_canary() -> None:
 
 def test_build_and_publish_paper_strategy_pipeline_writes_gold_outputs(tmp_path) -> None:
     lake = tmp_path / "lake"
+    proposal_id = "BNB_USDT_F3_DOMINANT_ENTRY_PAPER_V1"
+    proposal = {
+        "proposal_id": proposal_id,
+        "strategy_id": proposal_id,
+        "strategy_candidate": "v5.f3_dominant_entry",
+        "symbol": "BNB-USDT",
+        "recommended_mode": "paper",
+    }
+    write_parquet_dataset(
+        pl.DataFrame([proposal]), lake / "gold" / "paper_strategy_proposal"
+    )
     write_parquet_dataset(
         pl.DataFrame(
             [
                 {
-                    "proposal_id": "BNB_USDT_F3_DOMINANT_ENTRY_PAPER_V1",
+                    "proposal_id": proposal_id,
                     "paper_tracker_id": "BNB_F3_DOMINANT_ENTRY_PAPER_V1",
                     "accepted": "true",
                     "recommended_mode": "paper",
@@ -405,7 +502,22 @@ def test_build_and_publish_paper_strategy_pipeline_writes_gold_outputs(tmp_path)
                 }
             ]
         ),
-        lake / "silver" / "v5_paper_strategy_proposal_ack",
+        lake / "silver" / "v5_paper_strategy_proposal_ack_current",
+    )
+    write_parquet_dataset(
+        pl.DataFrame(
+            [
+                {
+                    **_current_tracker(
+                        proposal_id,
+                        strategy_id=proposal_id,
+                        symbol="BNB-USDT",
+                    ),
+                    "tracker_id": "BNB_F3_DOMINANT_ENTRY_PAPER_V1",
+                }
+            ]
+        ),
+        lake / "silver" / "v5_paper_strategy_trackers_current",
     )
     write_parquet_dataset(pl.DataFrame(), lake / "gold" / "strategy_opportunity_advisory")
     write_parquet_dataset(pl.DataFrame(), lake / "gold" / "paper_strategy_runs")
@@ -416,7 +528,7 @@ def test_build_and_publish_paper_strategy_pipeline_writes_gold_outputs(tmp_path)
     assert result.paper_strategy_registry == 1
     registry = read_parquet_dataset(lake / "gold" / "paper_strategy_registry")
     gate = read_parquet_dataset(lake / "gold" / "paper_strategy_promotion_gate")
-    assert registry.to_dicts()[0]["proposal_id"] == "BNB_USDT_F3_DOMINANT_ENTRY_PAPER_V1"
+    assert registry.to_dicts()[0]["proposal_id"] == proposal_id
     assert gate.to_dicts()[0]["paper_ready"] is False
     assert gate.to_dicts()[0]["paper_tracker_effective"] is True
     assert gate.to_dicts()[0]["paper_tracker_status"] == "EFFECTIVE"
@@ -502,7 +614,21 @@ def test_pipeline_reuses_persisted_proposal_when_current_advisory_is_empty(tmp_p
                 }
             ]
         ),
-        lake / "silver" / "v5_paper_strategy_proposal_ack",
+        lake / "silver" / "v5_paper_strategy_proposal_ack_current",
+    )
+    write_parquet_dataset(
+        pl.DataFrame(
+            [
+                _current_tracker(
+                    str(proposal["proposal_id"]),
+                    proposal_hash=str(proposal["proposal_hash"]),
+                    strategy_id=str(proposal["strategy_id"]),
+                    symbol="TRX/USDT",
+                    created_at="2026-07-11T00:05:00Z",
+                )
+            ]
+        ),
+        lake / "silver" / "v5_paper_strategy_trackers_current",
     )
 
     build_and_publish_paper_strategy_pipeline(lake, as_of_date="2026-07-11")

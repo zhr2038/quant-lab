@@ -538,7 +538,24 @@ def test_ingest_and_export_generic_paper_runtime_contract(tmp_path):
                 "2026-07-11T03:00:00Z,true,paper,TRX/USDT,alt_impulse,1,,"
                 "quant-lab.paper-strategy.v1,true,none,v5.generic_paper_runtime.v1\n"
             ),
+            "summaries/paper_strategy_proposal_ack_current.csv": (
+                "proposal_id,proposal_hash,paper_tracker_id,tracker_id,accepted,"
+                "accepted_at,paper_only,recommended_mode,symbol,strategy_candidate,"
+                "strategy_version,reject_reason,contract_version,rules_locked,"
+                "live_order_effect,schema_version\n"
+                f"{proposal_id},hash-trx,{tracker_id},{tracker_id},true,"
+                "2026-07-11T03:00:00Z,true,paper,TRX/USDT,alt_impulse,1,,"
+                "quant-lab.paper-strategy.v1,true,none,v5.generic_paper_runtime.v1\n"
+            ),
             "summaries/paper_strategy_registry.csv": (
+                "schema_version,proposal_id,proposal_hash,tracker_id,strategy_id,"
+                "strategy_version,strategy_family,symbol,timeframe,state,rules_locked,"
+                "paper_only,live_order_effect,created_at,updated_at\n"
+                f"v5.generic_paper_runtime.v1,{proposal_id},hash-trx,{tracker_id},"
+                "trx_alt_impulse,1,alt_impulse,TRX/USDT,1h,WAITING_SIGNAL,true,true,"
+                "none,2026-07-11T03:00:00Z,2026-07-11T04:00:00Z\n"
+            ),
+            "summaries/paper_strategy_trackers_current.csv": (
                 "schema_version,proposal_id,proposal_hash,tracker_id,strategy_id,"
                 "strategy_version,strategy_family,symbol,timeframe,state,rules_locked,"
                 "paper_only,live_order_effect,created_at,updated_at\n"
@@ -708,6 +725,28 @@ def test_ingest_and_export_generic_paper_runtime_contract(tmp_path):
             ]
         ),
         lake / "silver/v5_paper_slippage_coverage",
+    )
+    write_parquet_dataset(
+        pl.DataFrame(
+            [
+                {
+                    "contract_version": "quant_lab.paper_strategy.v1",
+                    "proposal_id": proposal_id,
+                    "proposal_hash": "hash-trx",
+                    "strategy_id": "trx_alt_impulse",
+                    "strategy_version": "1",
+                    "strategy_family": "alt_impulse",
+                    "strategy_candidate": "alt_impulse",
+                    "symbol": "TRX/USDT",
+                    "timeframe": "1h",
+                    "max_holding_bars": 48,
+                    "recommended_mode": "paper",
+                    "entry_rule": '{"operator":"gt","field":"close","value":0}',
+                    "exit_rule": '{"operator":"max_holding_bars","value":48}',
+                }
+            ]
+        ),
+        lake / "gold/paper_strategy_proposal",
     )
     tracking = build_and_publish_paper_strategy_tracking(lake, as_of_date="2026-07-11")
     pipeline = build_and_publish_paper_strategy_pipeline(lake, as_of_date="2026-07-11")

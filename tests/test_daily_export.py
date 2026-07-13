@@ -2534,6 +2534,35 @@ def test_v5_export_consistency_rejects_expected_bundle_sha_mismatch():
     assert row["expected_v5_bundle_matched"] is False
 
 
+def test_v5_export_consistency_requires_expected_sha_for_acceptance_set():
+    consistency = daily_export_module._v5_export_consistency(
+        {
+            "strategy_health_daily": pl.DataFrame(
+                [
+                    {
+                        "date": "2026-06-15",
+                        "latest_bundle_ts": "2026-06-15T12:00:30Z",
+                    }
+                ]
+            )
+        },
+        pre_export_v5={
+            "latest_v5_bundle_seen_at_export": "2026-06-15T12:00:00Z",
+            "selected_v5_bundle_ingested_at": "2026-06-15T12:00:30Z",
+            "selected_v5_bundle_sha256": "selected-sha",
+            "selected_v5_bundle_manifest_match": True,
+            "acceptance_set_id": "acceptance-20260615",
+        },
+        pre_export_v5_refresh=True,
+        allow_stale_v5=False,
+    )
+    assert consistency["authoritative_snapshot"] is False
+    assert (
+        "acceptance_set_expected_v5_bundle_sha256_missing"
+        in consistency["selected_v5_bundle_authoritative_reason"]
+    )
+
+
 def test_v5_bundle_sync_keeps_refresh_disabled_provenance_out_of_failures():
     generated_at = datetime(2026, 6, 15, 13, tzinfo=UTC)
     frames = {
@@ -3693,6 +3722,9 @@ def test_export_daily_ingests_pending_v5_inbox_before_snapshot(tmp_path):
     bundle = make_tar(
         inbox / "v5_live_followup_bundle_20260517T060000Z.tar.gz",
         {
+            "v5_live_followup_bundle_20260517T060000Z/manifest.json": (
+                '{"git_commit":"3a89f0cdc887a2c38638307154cecd8e83ab8d9b"}'
+            ),
             "summaries/window_summary.json": (
                 '{"run_count": 1, "recent_24h_decision_audit_count": 1}'
             ),
@@ -3732,6 +3764,7 @@ def test_export_daily_ingests_pending_v5_inbox_before_snapshot(tmp_path):
             ),
         },
     )
+    bundle_sha = daily_export_module.compute_sha256(bundle)
     config = _v5_telemetry_config(tmp_path, inbox, lake_root)
 
     result = export_daily_pack(
@@ -3741,6 +3774,8 @@ def test_export_daily_ingests_pending_v5_inbox_before_snapshot(tmp_path):
         command_line=["qlab", "export-daily"],
         pre_export_v5_refresh=True,
         v5_telemetry_config=config,
+        expected_v5_bundle_sha256=bundle_sha,
+        acceptance_set_id="acceptance-20260517T060000Z",
     )
 
     with zipfile.ZipFile(result.zip_path) as archive:
@@ -3770,6 +3805,16 @@ def test_export_daily_ingests_pending_v5_inbox_before_snapshot(tmp_path):
     assert manifest["authoritative_snapshot"] is True
     assert manifest["stale_v5_bundle"] is False
     assert manifest["selected_v5_bundle_sha256"]
+    assert manifest["acceptance_set_id"] == "acceptance-20260517T060000Z"
+    assert manifest["expected_v5_bundle_sha256"] == bundle_sha
+    assert manifest["ingested_v5_bundle_sha256"] == bundle_sha
+    assert manifest["embedded_v5_bundle_source_sha256"] == bundle_sha
+    assert manifest["acceptance_set_matched"] is True
+    assert manifest["acceptance_set_sha256_relationship"]["all_equal"] is True
+    assert manifest["quant_lab_commit"]
+    assert manifest["v5_commit"] == "3a89f0cdc887a2c38638307154cecd8e83ab8d9b"
+    assert provenance["acceptance_set_matched"] is True
+    assert provenance["ingested_v5_bundle_sha256"] == bundle_sha
     assert (
         manifest["selected_v5_bundle_manifest_bundle_sha256"]
         == manifest["selected_v5_bundle_sha256"]
@@ -3854,6 +3899,21 @@ def test_export_daily_ingests_pending_v5_inbox_before_snapshot(tmp_path):
         == manifest["embedded_v5_bundle_sha256"]
     )
     assert validate_expert_pack(result.zip_path).valid is True
+    tampered_pack = tmp_path / "tampered-acceptance-set.zip"
+    with zipfile.ZipFile(result.zip_path) as source, zipfile.ZipFile(
+        tampered_pack, "w", compression=zipfile.ZIP_DEFLATED
+    ) as target:
+        for member_name in source.namelist():
+            payload = source.read(member_name)
+            if member_name == "manifest.json":
+                tampered_manifest = json.loads(payload.decode("utf-8"))
+                tampered_manifest["ingested_v5_bundle_sha256"] = "0" * 64
+                tampered_manifest["acceptance_set_matched"] = False
+                payload = json.dumps(tampered_manifest).encode("utf-8")
+            target.writestr(member_name, payload)
+    tampered_validation = validate_expert_pack(tampered_pack)
+    assert tampered_validation.valid is False
+    assert "acceptance set V5 bundle sha256 mismatch" in tampered_validation.reasons
     assert manifest["latest_v5_bundle_seen_at_export"].startswith("2026-05-17T06:00:00")
     assert manifest["latest_v5_bundle_ingested_at_export"].startswith("2026-05-17T06:00:00")
     assert manifest["candidate_event_rows"] >= 1
@@ -3871,7 +3931,9 @@ def test_export_daily_ingests_pending_v5_inbox_before_snapshot(tmp_path):
     assert btc_probe_rows[0]["live_order_effect"] == "none_read_only_v5_bundle_audit"
 
 
-def test_export_daily_preserves_paper_strategy_ack_from_registry_without_v5_summary(tmp_path):
+def test_export_daily_keeps_legacy_registry_only_in_history_without_current_v5_summary(
+    tmp_path,
+):
     lake_root = tmp_path / "lake"
     write_parquet_dataset(
         pl.DataFrame(
@@ -3926,17 +3988,24 @@ def test_export_daily_preserves_paper_strategy_ack_from_registry_without_v5_summ
                 io.StringIO(archive.read("reports/paper_strategy_registry.csv").decode("utf-8"))
             )
         )
+        registry_history_rows = list(
+            csv.DictReader(
+                io.StringIO(
+                    archive.read("reports/paper_strategy_registry_history.csv").decode(
+                        "utf-8"
+                    )
+                )
+            )
+        )
 
-    assert len(proposal_ack_rows) == 1
-    ack = proposal_ack_rows[0]
-    assert ack["proposal_id"] == "SOL_USDT_F3_DOMINANT_ENTRY_PAPER_V1"
-    assert ack["proposal_hash"] == "hash-sol-f3"
-    assert ack["accepted"].lower() == "true"
-    assert ack["accepted_at"] == "2026-07-04T00:01:00Z"
-    assert ack["source_pack_sha256"] == "pack-sha"
-    assert ack["source_v5_bundle_sha256"] == "bundle-sha"
-    assert ack["live_order_effect"] == "paper_only_no_live_order"
-    assert registry_rows[0]["status"] == "PAPER_TRACKING"
+    assert proposal_ack_rows == []
+    assert registry_rows == []
+    assert registry_history_rows[0]["proposal_id"] == (
+        "SOL_USDT_F3_DOMINANT_ENTRY_PAPER_V1"
+    )
+    assert registry_history_rows[0]["accepted"].lower() == "true"
+    assert registry_history_rows[0]["evidence_from_history"].lower() == "true"
+    assert registry_history_rows[0]["current_tracker_effective"].lower() == "false"
 
 
 def test_export_daily_includes_legacy_paper_migration_audit(tmp_path):
@@ -4068,14 +4137,22 @@ def test_export_daily_does_not_report_pending_registry_rows_as_ack(tmp_path):
                 io.StringIO(archive.read("reports/paper_strategy_registry.csv").decode("utf-8"))
             )
         )
+        registry_history_rows = list(
+            csv.DictReader(
+                io.StringIO(
+                    archive.read("reports/paper_strategy_registry_history.csv").decode(
+                        "utf-8"
+                    )
+                )
+            )
+        )
 
-    assert {row["proposal_id"] for row in registry_rows} == {
+    assert registry_rows == []
+    assert proposal_ack_rows == []
+    assert {row["proposal_id"] for row in registry_history_rows} == {
         "PENDING_PAPER_V1",
         "REJECTED_PAPER_V1",
     }
-    assert [row["proposal_id"] for row in proposal_ack_rows] == ["REJECTED_PAPER_V1"]
-    assert proposal_ack_rows[0]["accepted"].lower() == "false"
-    assert proposal_ack_rows[0]["reject_reason"] == "v5_rejected_missing_tracker"
 
 
 def test_export_daily_limits_pre_export_v5_ingest_to_latest_pending(tmp_path, monkeypatch):

@@ -5285,6 +5285,7 @@ def export_daily_pack(
         build_fallback_rate_breakdown(root),
     )
     _attach_selected_v5_bundle(members, pre_export_v5)
+    _finalize_acceptance_set_context(pre_export_v5)
     members["reports/github_ci_status.csv"] = _csv_member(
         "reports/github_ci_status.csv",
         _github_ci_status_frame_from_context(pre_export_v5),
@@ -5559,6 +5560,51 @@ def validate_expert_pack(path: str | Path) -> ExpertPackValidationResult:
                         actual_sha = hashlib.sha256(archive.read(str(embedded_path))).hexdigest()
                         if expected_sha and actual_sha.lower() != expected_sha.lower():
                             reasons.append("embedded V5 bundle sha256 mismatch")
+                acceptance_set_id = str(manifest.get("acceptance_set_id") or "").strip()
+                if acceptance_set_id:
+                    expected_sha = str(
+                        manifest.get("expected_v5_bundle_sha256") or ""
+                    ).strip().lower()
+                    ingested_sha = str(
+                        manifest.get("ingested_v5_bundle_sha256") or ""
+                    ).strip().lower()
+                    embedded_source_sha = str(
+                        manifest.get("embedded_v5_bundle_source_sha256") or ""
+                    ).strip().lower()
+                    required = {
+                        "expected_v5_bundle_sha256": expected_sha,
+                        "ingested_v5_bundle_sha256": ingested_sha,
+                        "embedded_v5_bundle_source_sha256": embedded_source_sha,
+                        "quant_lab_commit": str(
+                            manifest.get("quant_lab_commit") or ""
+                        ).strip(),
+                        "v5_commit": str(manifest.get("v5_commit") or "").strip(),
+                    }
+                    reasons.extend(
+                        f"acceptance set missing required field: {name}"
+                        for name, value in required.items()
+                        if not value
+                    )
+                    if not (
+                        expected_sha
+                        and expected_sha == ingested_sha == embedded_source_sha
+                    ):
+                        reasons.append("acceptance set V5 bundle sha256 mismatch")
+                    if manifest.get("acceptance_set_matched") is not True:
+                        reasons.append("acceptance set is not marked matched")
+                    attachment_manifest = _read_zip_json(
+                        archive,
+                        EMBEDDED_V5_BUNDLE_MANIFEST,
+                        reasons,
+                    )
+                    if isinstance(attachment_manifest, dict):
+                        attachment_source_sha = str(
+                            attachment_manifest.get("source_sha256") or ""
+                        ).strip().lower()
+                        if attachment_source_sha != embedded_source_sha:
+                            reasons.append(
+                                "acceptance set embedded source sha256 mismatch"
+                            )
             if isinstance(data_quality, dict):
                 quality_status = str(data_quality.get("status") or "").upper()
                 if quality_status in {"CRITICAL", "FAIL"}:
@@ -8001,6 +8047,61 @@ def _attach_selected_v5_bundle(
     )
 
 
+def _finalize_acceptance_set_context(v5_context: dict[str, Any]) -> None:
+    acceptance_set_id = str(v5_context.get("acceptance_set_id") or "").strip()
+    expected_sha = str(v5_context.get("expected_v5_bundle_sha256") or "").strip().lower()
+    ingested_sha = str(v5_context.get("selected_v5_bundle_sha256") or "").strip().lower()
+    embedded_source_sha = str(
+        v5_context.get("embedded_v5_bundle_source_sha256") or ""
+    ).strip().lower()
+    quant_lab_commit = _git_commit_full()
+    v5_commit = _selected_v5_bundle_git_commit(v5_context)
+    matched = bool(
+        acceptance_set_id
+        and expected_sha
+        and expected_sha == ingested_sha == embedded_source_sha
+        and quant_lab_commit
+        and v5_commit
+    )
+    v5_context.update(
+        {
+            "ingested_v5_bundle_sha256": ingested_sha or None,
+            "quant_lab_commit": quant_lab_commit,
+            "v5_commit": v5_commit,
+            "acceptance_set_matched": matched if acceptance_set_id else None,
+            "acceptance_set_sha256_relationship": {
+                "expected": expected_sha or None,
+                "ingested": ingested_sha or None,
+                "embedded_source": embedded_source_sha or None,
+                "all_equal": matched if acceptance_set_id else None,
+            },
+        }
+    )
+    if not acceptance_set_id:
+        return
+    missing = [
+        name
+        for name, value in (
+            ("expected_v5_bundle_sha256", expected_sha),
+            ("ingested_v5_bundle_sha256", ingested_sha),
+            ("embedded_v5_bundle_source_sha256", embedded_source_sha),
+            ("quant_lab_commit", quant_lab_commit),
+            ("v5_commit", v5_commit),
+        )
+        if not value
+    ]
+    if missing:
+        raise RuntimeError(
+            "acceptance_set_required_field_missing:" + ",".join(missing)
+        )
+    if not matched:
+        raise RuntimeError(
+            "acceptance_set_bundle_sha_mismatch:"
+            f"expected={expected_sha};ingested={ingested_sha};"
+            f"embedded_source={embedded_source_sha}"
+        )
+
+
 def _promote_embedded_v5_summary_report(
     members: dict[str, _MemberPayload],
     v5_context: dict[str, Any],
@@ -8243,6 +8344,13 @@ def _manifest_payload(
         "allow_stale_v5": allow_stale_v5,
         "acceptance_set_id": v5_context.get("acceptance_set_id"),
         "expected_v5_bundle_sha256": v5_context.get("expected_v5_bundle_sha256"),
+        "ingested_v5_bundle_sha256": v5_context.get("ingested_v5_bundle_sha256"),
+        "acceptance_set_matched": v5_context.get("acceptance_set_matched"),
+        "acceptance_set_sha256_relationship": v5_context.get(
+            "acceptance_set_sha256_relationship"
+        ),
+        "quant_lab_commit": v5_context.get("quant_lab_commit") or git["git_commit"],
+        "v5_commit": v5_context.get("v5_commit"),
         "expected_v5_bundle_matched": v5_context.get("expected_v5_bundle_matched"),
         "selected_v5_bundle_path": v5_context.get("selected_v5_bundle_path"),
         "selected_v5_bundle_sha256": v5_context.get("selected_v5_bundle_sha256"),
@@ -8306,6 +8414,13 @@ def _manifest_payload(
             "selected_v5_bundle_sha256": v5_context.get("selected_v5_bundle_sha256"),
             "acceptance_set_id": v5_context.get("acceptance_set_id"),
             "expected_v5_bundle_sha256": v5_context.get("expected_v5_bundle_sha256"),
+            "ingested_v5_bundle_sha256": v5_context.get(
+                "ingested_v5_bundle_sha256"
+            ),
+            "acceptance_set_matched": v5_context.get("acceptance_set_matched"),
+            "acceptance_set_sha256_relationship": v5_context.get(
+                "acceptance_set_sha256_relationship"
+            ),
             "expected_v5_bundle_matched": v5_context.get("expected_v5_bundle_matched"),
             "selected_v5_bundle_manifest_match": bool(
                 v5_context.get("selected_v5_bundle_manifest_match")
@@ -8951,6 +9066,7 @@ def _v5_export_consistency(
     latest_local_ingested = _latest_v5_bundle_ts(frames)
     selected_sha = str(pre_export_v5.get("selected_v5_bundle_sha256") or "").strip()
     expected_sha = str(pre_export_v5.get("expected_v5_bundle_sha256") or "").strip()
+    acceptance_set_id = str(pre_export_v5.get("acceptance_set_id") or "").strip()
     selected_ingested_at = _parse_v5_context_ts(pre_export_v5.get("selected_v5_bundle_ingested_at"))
     latest_ingested = _max_dt(latest_local_ingested, selected_ingested_at)
     manifest_match = bool(pre_export_v5.get("selected_v5_bundle_manifest_match"))
@@ -8981,6 +9097,8 @@ def _v5_export_consistency(
         authoritative_blockers.append("stale_v5_bundle")
     if not selected_sha:
         authoritative_blockers.append("selected_v5_bundle_sha256_missing")
+    if acceptance_set_id and not expected_sha:
+        authoritative_blockers.append("acceptance_set_expected_v5_bundle_sha256_missing")
     if expected_sha and selected_sha and expected_sha.lower() != selected_sha.lower():
         authoritative_blockers.append(
             f"expected_v5_bundle_sha256_mismatch:expected={expected_sha};selected={selected_sha}"
@@ -9027,7 +9145,7 @@ def _v5_export_consistency(
         )
         if expected_sha
         else None,
-        "acceptance_set_id": pre_export_v5.get("acceptance_set_id"),
+        "acceptance_set_id": acceptance_set_id or None,
     }
 
 
@@ -9574,6 +9692,13 @@ def _provenance_payload(
         "lake_root": str(root),
         "acceptance_set_id": v5_context.get("acceptance_set_id"),
         "expected_v5_bundle_sha256": v5_context.get("expected_v5_bundle_sha256"),
+        "ingested_v5_bundle_sha256": v5_context.get("ingested_v5_bundle_sha256"),
+        "acceptance_set_matched": v5_context.get("acceptance_set_matched"),
+        "acceptance_set_sha256_relationship": v5_context.get(
+            "acceptance_set_sha256_relationship"
+        ),
+        "quant_lab_commit": v5_context.get("quant_lab_commit") or git["git_commit"],
+        "v5_commit": v5_context.get("v5_commit"),
         "expected_v5_bundle_matched": v5_context.get("expected_v5_bundle_matched"),
         "selected_v5_bundle_sha256": v5_context.get("selected_v5_bundle_sha256"),
         "selected_v5_bundle_manifest_bundle_sha256": v5_context.get(

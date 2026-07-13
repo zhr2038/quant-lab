@@ -260,6 +260,7 @@ def test_paper_strategy_pipeline_marks_ready_only_after_ack_and_future_paper_evi
                 "would_exit": True,
                 "arrival_mid": 70.0,
                 "market_regime": "TREND_UP" if index % 2 else "SIDEWAYS",
+                "cost_source": "mixed_actual_proxy",
             }
         )
 
@@ -315,7 +316,12 @@ def test_paper_strategy_pipeline_marks_ready_only_after_ack_and_future_paper_evi
             [
                 {
                     "strategy_id": proposal_id,
+                    "proposal_id": proposal_id,
+                    "strategy_version": "V1",
                     "cost_trust_level": "CANARY",
+                    "paper_cost_usable": True,
+                    "canary_cost_usable": True,
+                    "live_cost_usable": False,
                     "created_at": "2026-06-14T00:00:00Z",
                 }
             ]
@@ -338,7 +344,7 @@ def test_paper_strategy_pipeline_marks_ready_only_after_ack_and_future_paper_evi
     assert json.loads(gate["block_reason"]) == []
 
 
-def test_strategy_dimensional_cost_trust_is_a_promotion_gate() -> None:
+def test_strategy_dimensional_cost_trust_separates_paper_from_canary() -> None:
     frames = build_paper_strategy_pipeline_frames(
         proposals=pl.DataFrame(
             [
@@ -357,8 +363,13 @@ def test_strategy_dimensional_cost_trust_is_a_promotion_gate() -> None:
         strategy_cost_trust=pl.DataFrame(
             [
                 {
+                    "proposal_id": "DIMENSIONAL_COST_PAPER",
                     "strategy_id": "DIMENSIONAL_COST_PAPER",
+                    "strategy_version": "1.0.0",
                     "cost_trust_level": "PAPER_ONLY",
+                    "paper_cost_usable": True,
+                    "canary_cost_usable": False,
+                    "live_cost_usable": False,
                     "created_at": "2026-06-14T00:00:00Z",
                 }
             ]
@@ -371,7 +382,9 @@ def test_strategy_dimensional_cost_trust_is_a_promotion_gate() -> None:
     assert gate["paper_ready"] is False
     assert gate["strategy_cost_trust_level"] == "PAPER_ONLY"
     assert gate["required_cost_trust_level"] == "CANARY"
-    assert any(reason.startswith("strategy_cost_trust_below_required:") for reason in reasons)
+    assert gate["dimensional_cost_trust_matched"] is True
+    assert gate["cost_trusted_for_canary"] is False
+    assert "cost_trust_row_missing" not in reasons
 
 
 def test_build_and_publish_paper_strategy_pipeline_writes_gold_outputs(tmp_path) -> None:

@@ -22,6 +22,11 @@ class StrategyCostTrust(BaseModel):
     model_config = ConfigDict(extra="forbid", frozen=True)
 
     strategy_id: str
+    proposal_id: str = ""
+    proposal_hash: str = ""
+    strategy_version: str = ""
+    symbol: str = ""
+    horizon_hours: int = Field(default=0, ge=0)
     cost_trust_level: str
     actual_sample_count: int = Field(ge=0)
     mixed_sample_count: int = Field(ge=0)
@@ -52,6 +57,11 @@ REQUIRED_COST_DIMENSIONS = (
 def evaluate_strategy_cost_trust(
     *,
     strategy_id: str,
+    proposal_id: str = "",
+    proposal_hash: str = "",
+    strategy_version: str = "",
+    symbol: str = "",
+    horizon_hours: int = 0,
     required_conditions: Iterable[Mapping[str, Any]],
     observations: Iterable[Mapping[str, Any]],
     now: datetime | None = None,
@@ -103,6 +113,11 @@ def evaluate_strategy_cost_trust(
     overall = min(condition_levels, default=_TrustRank.BLOCK)
     return StrategyCostTrust(
         strategy_id=strategy_id,
+        proposal_id=proposal_id,
+        proposal_hash=proposal_hash,
+        strategy_version=strategy_version,
+        symbol=_normalize_symbol(symbol),
+        horizon_hours=max(int(horizon_hours), 0),
         cost_trust_level=overall.name,
         actual_sample_count=source_counts["actual"],
         mixed_sample_count=source_counts["mixed"],
@@ -128,6 +143,11 @@ def build_strategy_cost_trust_frame(
 ) -> pl.DataFrame:
     columns = {
         "strategy_id": pl.Utf8,
+        "proposal_id": pl.Utf8,
+        "proposal_hash": pl.Utf8,
+        "strategy_version": pl.Utf8,
+        "symbol": pl.Utf8,
+        "horizon_hours": pl.Int64,
         "cost_trust_level": pl.Utf8,
         "actual_sample_count": pl.Int64,
         "mixed_sample_count": pl.Int64,
@@ -162,6 +182,15 @@ def build_strategy_cost_trust_frame(
         required = _proposal_required_conditions(proposal, notional=notional)
         result = evaluate_strategy_cost_trust(
             strategy_id=strategy_id,
+            proposal_id=str(proposal.get("proposal_id") or ""),
+            proposal_hash=str(proposal.get("proposal_hash") or ""),
+            strategy_version=str(proposal.get("strategy_version") or ""),
+            symbol=str(proposal.get("symbol") or ""),
+            horizon_hours=_to_int(
+                proposal.get("max_holding_bars")
+                or proposal.get("horizon_hours")
+                or proposal.get("suggested_horizon")
+            ),
             required_conditions=required,
             observations=observations,
             now=created,

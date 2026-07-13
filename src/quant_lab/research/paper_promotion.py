@@ -29,6 +29,24 @@ from quant_lab.strategy_telemetry.sanitize import safe_json_dumps
 from quant_lab.symbols import normalize_symbol
 
 PAPER_STRATEGY_REGISTRY_DATASET = Path("gold") / "paper_strategy_registry"
+PAPER_STRATEGY_PROPOSALS_CURRENT_DATASET = (
+    Path("gold") / "paper_strategy_proposals_current"
+)
+PAPER_STRATEGY_TRACKERS_CURRENT_DATASET = (
+    Path("gold") / "paper_strategy_trackers_current"
+)
+PAPER_STRATEGY_REGISTRY_CURRENT_DATASET = (
+    Path("gold") / "paper_strategy_registry_current"
+)
+PAPER_STRATEGY_REGISTRY_HISTORY_DATASET = (
+    Path("gold") / "paper_strategy_registry_history"
+)
+PAPER_STRATEGY_ACK_CURRENT_DATASET = Path("gold") / "paper_strategy_ack_current"
+PAPER_STRATEGY_ACK_HISTORY_DATASET = Path("gold") / "paper_strategy_ack_history"
+PAPER_STRATEGY_IDENTITY_CONFLICT_DATASET = (
+    Path("gold") / "paper_strategy_identity_conflict"
+)
+PAPER_COHORT_MANIFEST_DATASET = Path("gold") / "paper_cohort_manifest"
 PAPER_STRATEGY_PROMOTION_GATE_DATASET = Path("gold") / "paper_strategy_promotion_gate"
 PAPER_STRATEGY_PROPOSAL_ACK_DATASET = Path("silver") / "v5_paper_strategy_proposal_ack"
 PAPER_STRATEGY_RUNS_DATASET = Path("gold") / "paper_strategy_runs"
@@ -40,6 +58,19 @@ STRATEGY_COST_TRUST_DATASET = Path("gold") / "strategy_cost_trust"
 PAPER_STRATEGY_MIGRATION_AUDIT_DATASET = Path("gold") / "paper_strategy_migration_audit"
 V5_PAPER_STRATEGY_COST_EVIDENCE_DATASET = (
     Path("silver") / "v5_paper_strategy_cost_evidence"
+)
+V5_PAPER_STRATEGY_REGISTRY_DATASET = Path("silver") / "v5_paper_strategy_registry"
+V5_PAPER_STRATEGY_REGISTRY_CURRENT_DATASET = (
+    Path("silver") / "v5_paper_strategy_registry_current"
+)
+V5_PAPER_STRATEGY_REGISTRY_HISTORY_DATASET = (
+    Path("silver") / "v5_paper_strategy_registry_history"
+)
+V5_PAPER_STRATEGY_ACK_CURRENT_DATASET = (
+    Path("silver") / "v5_paper_strategy_proposal_ack_current"
+)
+V5_PAPER_STRATEGY_ACK_HISTORY_DATASET = (
+    Path("silver") / "v5_paper_strategy_proposal_ack_history"
 )
 
 PAPER_PIPELINE_SOURCE = "research.paper_strategy_promotion.v0.1"
@@ -54,23 +85,40 @@ TRUSTED_PAPER_COST_SOURCES = {
     "mixed_actual_proxy",
     "bootstrap_cost_probe",
     "configured_conservative_paper",
+    "public_spread_proxy",
 }
 BLOCKED_PAPER_COST_SOURCES = {
     "fallback_not_live_safe",
-    "public_spread_proxy",
     "public_microstructure_proxy",
     "global_default",
     "local_estimate",
     "conservative_shadow_cost",
 }
+CANARY_COST_SOURCES = {"actual_fills", "mixed_actual_proxy"}
+SCALE_COST_SOURCES = {"actual_fills"}
+
+IMMUTABLE_IDENTITY_FIELDS = (
+    "proposal_id",
+    "proposal_hash",
+    "strategy_id",
+    "strategy_version",
+    "strategy_family",
+    "symbol",
+    "timeframe",
+    "max_holding_bars",
+    "contract_version",
+)
 
 PAPER_STRATEGY_REGISTRY_SCHEMA = {
     "strategy_id": pl.Utf8,
     "strategy_version": pl.Utf8,
+    "strategy_family": pl.Utf8,
     "proposal_id": pl.Utf8,
     "proposal_hash": pl.Utf8,
     "paper_tracker_id": pl.Utf8,
     "symbol": pl.Utf8,
+    "timeframe": pl.Utf8,
+    "max_holding_bars": pl.Int64,
     "strategy_candidate": pl.Utf8,
     "status": pl.Utf8,
     "lifecycle_state": pl.Utf8,
@@ -93,6 +141,13 @@ PAPER_STRATEGY_REGISTRY_SCHEMA = {
     "created_at": pl.Utf8,
     "source": pl.Utf8,
     "schema_version": pl.Utf8,
+    "identity_conflict": pl.Boolean,
+    "identity_conflict_fields": pl.Utf8,
+    "current_proposal_member": pl.Boolean,
+    "current_cohort_member": pl.Boolean,
+    "supersession_status": pl.Utf8,
+    "new_entry_allowed": pl.Boolean,
+    "exit_allowed": pl.Boolean,
 }
 
 PAPER_STRATEGY_PROMOTION_GATE_SCHEMA = {
@@ -123,9 +178,29 @@ PAPER_STRATEGY_PROMOTION_GATE_SCHEMA = {
     "regime_count": pl.Int64,
     "rules_locked": pl.Boolean,
     "cost_source": pl.Utf8,
+    "paper_cost_model_usable": pl.Boolean,
+    "closed_trade_cost_observation_count": pl.Int64,
+    "closed_trade_cost_missing_count": pl.Int64,
+    "closed_trade_cost_coverage": pl.Float64,
+    "closed_trade_cost_sources": pl.Utf8,
+    "dimensional_cost_trust_level": pl.Utf8,
+    "dimensional_cost_trust_matched": pl.Boolean,
     "strategy_cost_trust_level": pl.Utf8,
     "required_cost_trust_level": pl.Utf8,
     "cost_trusted_for_paper": pl.Boolean,
+    "cost_trusted_for_canary": pl.Boolean,
+    "cost_trusted_for_scale": pl.Boolean,
+    "raw_closed_trade_count": pl.Int64,
+    "independent_closed_trade_count": pl.Int64,
+    "canonical_opportunity_id": pl.Utf8,
+    "shared_entry_event_id": pl.Utf8,
+    "evidence_independence_weight": pl.Float64,
+    "horizon_variant_count": pl.Int64,
+    "win_rate": pl.Float64,
+    "avg_mfe_bps": pl.Float64,
+    "avg_mae_bps": pl.Float64,
+    "avg_profit_giveback_bps": pl.Float64,
+    "avg_exit_efficiency": pl.Float64,
     "backtest_paper_conflict": pl.Boolean,
     "promotion_score": pl.Float64,
     "promotion_confidence": pl.Utf8,
@@ -133,6 +208,8 @@ PAPER_STRATEGY_PROMOTION_GATE_SCHEMA = {
     "tail_risk_status": pl.Utf8,
     "regime_coverage_status": pl.Utf8,
     "cost_evidence_status": pl.Utf8,
+    "identity_conflict": pl.Boolean,
+    "identity_conflict_fields": pl.Utf8,
     "paper_ready": pl.Boolean,
     "block_reason": pl.Utf8,
     "promotion_block_reasons": pl.Utf8,
@@ -142,6 +219,37 @@ PAPER_STRATEGY_PROMOTION_GATE_SCHEMA = {
     "created_at": pl.Utf8,
     "source": pl.Utf8,
     "schema_version": pl.Utf8,
+}
+
+PAPER_STRATEGY_IDENTITY_CONFLICT_SCHEMA = {
+    "proposal_id": pl.Utf8,
+    "proposal_hash": pl.Utf8,
+    "tracker_id": pl.Utf8,
+    "conflict_field": pl.Utf8,
+    "canonical_value": pl.Utf8,
+    "observed_value": pl.Utf8,
+    "source_dataset": pl.Utf8,
+    "source_row": pl.Utf8,
+    "active_conflict": pl.Boolean,
+    "resolution_status": pl.Utf8,
+    "created_at": pl.Utf8,
+}
+
+PAPER_COHORT_MANIFEST_SCHEMA = {
+    "cohort_id": pl.Utf8,
+    "cohort_version": pl.Int64,
+    "proposal_ids": pl.Utf8,
+    "proposal_hashes": pl.Utf8,
+    "strategy_ids": pl.Utf8,
+    "symbols": pl.Utf8,
+    "horizons": pl.Utf8,
+    "admitted_at": pl.Utf8,
+    "observation_start_at": pl.Utf8,
+    "status": pl.Utf8,
+    "raw_closed_trade_count": pl.Int64,
+    "independent_closed_trade_count": pl.Int64,
+    "horizon_variant_count": pl.Int64,
+    "created_at": pl.Utf8,
 }
 
 
@@ -175,6 +283,16 @@ def build_and_publish_paper_strategy_pipeline(
     if legacy_evidence.is_empty():
         legacy_evidence = advisory
     existing_registry = read_parquet_dataset(root / PAPER_STRATEGY_REGISTRY_DATASET)
+    existing_registry_current = read_parquet_dataset(
+        root / PAPER_STRATEGY_REGISTRY_CURRENT_DATASET
+    )
+    if existing_registry_current.is_empty():
+        existing_registry_current = existing_registry
+    existing_registry_history = read_parquet_dataset(
+        root / PAPER_STRATEGY_REGISTRY_HISTORY_DATASET
+    )
+    if existing_registry_history.is_empty():
+        existing_registry_history = existing_registry
     existing_gate = read_parquet_dataset(root / PAPER_STRATEGY_PROMOTION_GATE_DATASET)
     existing_proposals = read_parquet_dataset(root / PAPER_STRATEGY_PROPOSAL_DATASET)
     existing_migration_audit = read_parquet_dataset(root / PAPER_STRATEGY_MIGRATION_AUDIT_DATASET)
@@ -185,8 +303,45 @@ def build_and_publish_paper_strategy_pipeline(
     if configured:
         published = publish_proposals(root, [proposal for proposal, _evidence in configured])
         proposal_frame = published
-    existing_registry = _filter_superseded_structured_rows(
-        existing_registry, proposal_frame
+    write_parquet_dataset(
+        proposal_frame,
+        root / PAPER_STRATEGY_PROPOSALS_CURRENT_DATASET,
+    )
+    raw_ack = read_parquet_dataset(root / V5_PAPER_STRATEGY_ACK_CURRENT_DATASET)
+    if raw_ack.is_empty():
+        raw_ack = read_parquet_dataset(root / PAPER_STRATEGY_PROPOSAL_ACK_DATASET)
+    raw_ack_history = read_parquet_dataset(root / V5_PAPER_STRATEGY_ACK_HISTORY_DATASET)
+    if raw_ack_history.is_empty():
+        raw_ack_history = read_parquet_dataset(root / PAPER_STRATEGY_PROPOSAL_ACK_DATASET)
+    raw_trackers = read_parquet_dataset(root / V5_PAPER_STRATEGY_REGISTRY_CURRENT_DATASET)
+    if raw_trackers.is_empty():
+        raw_trackers = read_parquet_dataset(root / V5_PAPER_STRATEGY_REGISTRY_DATASET)
+    current_identity_conflicts = _build_identity_conflicts(
+        proposal_frame,
+        (
+            ("paper_strategy_registry", existing_registry, False),
+            (
+                "v5_paper_strategy_proposal_ack",
+                _filter_superseded_structured_rows(raw_ack, proposal_frame),
+                True,
+            ),
+            (
+                "v5_paper_strategy_registry",
+                _filter_superseded_structured_rows(raw_trackers, proposal_frame),
+                True,
+            ),
+        ),
+    )
+    identity_conflicts = _merge_identity_conflicts(
+        read_parquet_dataset(root / PAPER_STRATEGY_IDENTITY_CONFLICT_DATASET),
+        current_identity_conflicts,
+    )
+    write_parquet_dataset(
+        identity_conflicts,
+        root / PAPER_STRATEGY_IDENTITY_CONFLICT_DATASET,
+    )
+    existing_registry_current = _filter_superseded_structured_rows(
+        existing_registry_current, proposal_frame
     )
     existing_gate = _filter_superseded_structured_rows(existing_gate, proposal_frame)
     migration_audit = _merge_migration_audit(
@@ -205,9 +360,16 @@ def build_and_publish_paper_strategy_pipeline(
         ),
     )
     write_parquet_dataset(strategy_cost_trust, root / STRATEGY_COST_TRUST_DATASET)
-    paper_ack = _filter_superseded_structured_rows(
-        read_parquet_dataset(root / PAPER_STRATEGY_PROPOSAL_ACK_DATASET),
-        proposal_frame,
+    paper_ack = _filter_superseded_structured_rows(raw_ack, proposal_frame)
+    paper_ack = _latest_rows_frame(paper_ack)
+    write_parquet_dataset(raw_ack_history, root / PAPER_STRATEGY_ACK_HISTORY_DATASET)
+    write_parquet_dataset(paper_ack, root / PAPER_STRATEGY_ACK_CURRENT_DATASET)
+    trackers_current = _latest_rows_frame(
+        _filter_superseded_structured_rows(raw_trackers, proposal_frame)
+    )
+    write_parquet_dataset(
+        trackers_current,
+        root / PAPER_STRATEGY_TRACKERS_CURRENT_DATASET,
     )
     paper_runs = _filter_superseded_structured_rows(
         read_parquet_dataset(root / PAPER_STRATEGY_RUNS_DATASET),
@@ -225,11 +387,13 @@ def build_and_publish_paper_strategy_pipeline(
         strategy_cost_trust=strategy_cost_trust,
     )
     registry = _merge_lifecycle_frame(
-        existing_registry,
+        existing_registry_current,
         frames["paper_strategy_registry"],
         schema=PAPER_STRATEGY_REGISTRY_SCHEMA,
         rank=_registry_persistence_rank,
     )
+    registry = _canonicalize_registry_identity(registry, proposal_frame)
+    registry = _apply_active_identity_conflicts(registry, identity_conflicts)
     gate = _promotion_gate_frame_from_registry(
         registry,
         daily=paper_daily,
@@ -243,8 +407,32 @@ def build_and_publish_paper_strategy_pipeline(
         schema=PAPER_STRATEGY_PROMOTION_GATE_SCHEMA,
         rank=_gate_persistence_rank,
     )
+    gate = _canonicalize_gate_identity(gate, proposal_frame)
+    registry_history = _merge_lifecycle_frame(
+        existing_registry_history,
+        registry,
+        schema=PAPER_STRATEGY_REGISTRY_SCHEMA,
+        rank=_registry_persistence_rank,
+    )
+    registry_history = _canonicalize_registry_identity(
+        registry_history,
+        proposal_frame,
+    )
     write_parquet_dataset(registry, root / PAPER_STRATEGY_REGISTRY_DATASET)
+    write_parquet_dataset(registry, root / PAPER_STRATEGY_REGISTRY_CURRENT_DATASET)
+    write_parquet_dataset(
+        registry_history,
+        root / PAPER_STRATEGY_REGISTRY_HISTORY_DATASET,
+    )
     write_parquet_dataset(gate, root / PAPER_STRATEGY_PROMOTION_GATE_DATASET)
+    cohort = _build_paper_cohort_manifest(
+        read_parquet_dataset(root / PAPER_COHORT_MANIFEST_DATASET),
+        proposals=proposal_frame,
+        registry=registry,
+        runs=paper_runs,
+        created_at=datetime.now(UTC),
+    )
+    write_parquet_dataset(cohort, root / PAPER_COHORT_MANIFEST_DATASET)
     return PaperStrategyPipelineResult(
         lake_root=str(root),
         as_of_date=day.isoformat(),
@@ -309,6 +497,366 @@ def _merge_migration_audit(existing: pl.DataFrame, generated: pl.DataFrame) -> p
     return _frame(list(rows.values()), PAPER_STRATEGY_MIGRATION_AUDIT_SCHEMA)
 
 
+def _latest_rows_frame(frame: pl.DataFrame) -> pl.DataFrame:
+    if frame.is_empty():
+        return frame
+    rows = _latest_rows_by_strategy(frame)
+    if not rows:
+        return frame.head(0)
+    return (
+        pl.DataFrame(rows, infer_schema_length=None)
+        .cast(frame.schema, strict=False)
+        .select(frame.columns)
+    )
+
+
+def _build_identity_conflicts(
+    proposals: pl.DataFrame,
+    sources: tuple[tuple[str, pl.DataFrame, bool], ...],
+) -> pl.DataFrame:
+    if proposals.is_empty():
+        return _frame([], PAPER_STRATEGY_IDENTITY_CONFLICT_SCHEMA)
+    canonical = {
+        _text(row.get("proposal_id")): row
+        for row in proposals.to_dicts()
+        if _text(row.get("proposal_id"))
+    }
+    created_at = datetime.now(UTC).isoformat()
+    rows: list[dict[str, Any]] = []
+    tracker_owners: dict[str, list[tuple[str, str, bool, Mapping[str, Any]]]] = {}
+    for source_name, frame, active_conflict in sources:
+        if frame.is_empty():
+            continue
+        for observed in frame.to_dicts():
+            proposal_id = _text(observed.get("proposal_id"))
+            proposal = canonical.get(proposal_id)
+            if proposal is None:
+                continue
+            tracker_id = _text(
+                observed.get("tracker_id") or observed.get("paper_tracker_id")
+            )
+            if tracker_id:
+                tracker_owners.setdefault(tracker_id, []).append(
+                    (proposal_id, source_name, active_conflict, observed)
+                )
+                encoded_proposal_id = (
+                    tracker_id.removeprefix("paper:")
+                    if tracker_id.startswith("paper:")
+                    else ""
+                )
+                if encoded_proposal_id and encoded_proposal_id != proposal_id:
+                    rows.append(
+                        {
+                            "proposal_id": proposal_id,
+                            "proposal_hash": _text(proposal.get("proposal_hash")),
+                            "tracker_id": tracker_id,
+                            "conflict_field": "tracker_id_to_proposal_id",
+                            "canonical_value": proposal_id,
+                            "observed_value": encoded_proposal_id,
+                            "source_dataset": source_name,
+                            "source_row": safe_json_dumps(observed),
+                            "active_conflict": active_conflict,
+                            "resolution_status": (
+                                "BLOCKED_ACTIVE_CONFLICT"
+                                if active_conflict
+                                else "RESOLVED_BY_CANONICAL_PROPOSAL"
+                            ),
+                            "created_at": created_at,
+                        }
+                    )
+            for field in IMMUTABLE_IDENTITY_FIELDS:
+                expected = _identity_value(proposal, field)
+                actual = _identity_value(observed, field)
+                if not actual or expected == actual:
+                    continue
+                rows.append(
+                    {
+                        "proposal_id": proposal_id,
+                        "proposal_hash": _text(proposal.get("proposal_hash")),
+                        "tracker_id": _text(
+                            observed.get("tracker_id")
+                            or observed.get("paper_tracker_id")
+                        ),
+                        "conflict_field": field,
+                        "canonical_value": expected,
+                        "observed_value": actual,
+                        "source_dataset": source_name,
+                        "source_row": safe_json_dumps(observed),
+                        "active_conflict": active_conflict,
+                        "resolution_status": (
+                            "BLOCKED_ACTIVE_CONFLICT"
+                            if active_conflict
+                            else "RESOLVED_BY_CANONICAL_PROPOSAL"
+                        ),
+                        "created_at": created_at,
+                    }
+                )
+    for tracker_id, owners in tracker_owners.items():
+        proposal_ids = sorted({owner[0] for owner in owners})
+        if len(proposal_ids) <= 1:
+            continue
+        for proposal_id, source_name, active_conflict, observed in owners:
+            proposal = canonical[proposal_id]
+            rows.append(
+                {
+                    "proposal_id": proposal_id,
+                    "proposal_hash": _text(proposal.get("proposal_hash")),
+                    "tracker_id": tracker_id,
+                    "conflict_field": "tracker_id_to_proposal_id",
+                    "canonical_value": proposal_id,
+                    "observed_value": safe_json_dumps(proposal_ids),
+                    "source_dataset": f"{source_name}:cross_source_tracker_mapping",
+                    "source_row": safe_json_dumps(observed),
+                    "active_conflict": active_conflict,
+                    "resolution_status": (
+                        "BLOCKED_ACTIVE_CONFLICT"
+                        if active_conflict
+                        else "RESOLVED_BY_CANONICAL_PROPOSAL"
+                    ),
+                    "created_at": created_at,
+                }
+            )
+    return _frame(rows, PAPER_STRATEGY_IDENTITY_CONFLICT_SCHEMA)
+
+
+def _merge_identity_conflicts(
+    existing: pl.DataFrame,
+    current: pl.DataFrame,
+) -> pl.DataFrame:
+    current_rows = current.to_dicts() if not current.is_empty() else []
+    active_keys = {
+        (
+            _text(row.get("proposal_id")),
+            _text(row.get("source_dataset")),
+            _text(row.get("conflict_field")),
+            _text(row.get("observed_value")),
+        )
+        for row in current_rows
+    }
+    rows: dict[tuple[str, str, str, str], dict[str, Any]] = {}
+    for raw in existing.to_dicts() if not existing.is_empty() else []:
+        row = dict(raw)
+        key = (
+            _text(row.get("proposal_id")),
+            _text(row.get("source_dataset")),
+            _text(row.get("conflict_field")),
+            _text(row.get("observed_value")),
+        )
+        if _bool(row.get("active_conflict")) and key not in active_keys:
+            row["active_conflict"] = False
+            row["resolution_status"] = "RESOLVED_SOURCE_CORRECTED"
+        rows[key] = row
+    for row in current_rows:
+        key = (
+            _text(row.get("proposal_id")),
+            _text(row.get("source_dataset")),
+            _text(row.get("conflict_field")),
+            _text(row.get("observed_value")),
+        )
+        rows[key] = row
+    return _frame(list(rows.values()), PAPER_STRATEGY_IDENTITY_CONFLICT_SCHEMA)
+
+
+def _identity_value(row: Mapping[str, Any], field: str) -> str:
+    if field == "symbol":
+        return _symbol(row)
+    if field == "max_holding_bars":
+        return str(
+            _int(
+                row.get("max_holding_bars")
+                or row.get("horizon_hours")
+                or row.get("suggested_horizon")
+            )
+            or ""
+        )
+    return _text(row.get(field))
+
+
+def _canonicalize_registry_identity(
+    registry: pl.DataFrame,
+    proposals: pl.DataFrame,
+) -> pl.DataFrame:
+    if registry.is_empty() or proposals.is_empty():
+        return registry
+    canonical = {
+        _text(row.get("proposal_id")): row
+        for row in proposals.to_dicts()
+        if _text(row.get("proposal_id"))
+    }
+    rows: list[dict[str, Any]] = []
+    for source in registry.to_dicts():
+        row = dict(source)
+        proposal = canonical.get(_text(row.get("proposal_id")))
+        if proposal is not None:
+            row.update(
+                {
+                    "proposal_id": _text(proposal.get("proposal_id")),
+                    "proposal_hash": _text(proposal.get("proposal_hash")),
+                    "strategy_id": _text(proposal.get("strategy_id")),
+                    "strategy_version": _text(proposal.get("strategy_version")),
+                    "strategy_family": _text(proposal.get("strategy_family")),
+                    "symbol": _symbol(proposal),
+                    "timeframe": _text(proposal.get("timeframe")),
+                    "max_holding_bars": _int(
+                        proposal.get("max_holding_bars")
+                        or proposal.get("horizon_hours")
+                        or proposal.get("suggested_horizon")
+                    )
+                    or 0,
+                    "contract_version": _text(proposal.get("contract_version"))
+                    or PAPER_STRATEGY_CONTRACT_VERSION,
+                    "identity_conflict": False,
+                    "identity_conflict_fields": "[]",
+                    "current_proposal_member": True,
+                    "current_cohort_member": True,
+                    "supersession_status": (
+                        "CURRENT_ACTIVE"
+                        if _bool(row.get("accepted"))
+                        else "CURRENT_PENDING_ACK"
+                    ),
+                    "new_entry_allowed": bool(_bool(row.get("accepted"))),
+                    "exit_allowed": True,
+                }
+            )
+        rows.append(row)
+    return _frame(rows, PAPER_STRATEGY_REGISTRY_SCHEMA)
+
+
+def _apply_active_identity_conflicts(
+    registry: pl.DataFrame,
+    conflicts: pl.DataFrame,
+) -> pl.DataFrame:
+    if registry.is_empty() or conflicts.is_empty():
+        return registry
+    fields_by_proposal: dict[str, set[str]] = {}
+    for row in conflicts.to_dicts():
+        if not _bool(row.get("active_conflict")):
+            continue
+        fields_by_proposal.setdefault(_text(row.get("proposal_id")), set()).add(
+            _text(row.get("conflict_field"))
+        )
+    rows = []
+    for source in registry.to_dicts():
+        row = dict(source)
+        fields = sorted(fields_by_proposal.get(_text(row.get("proposal_id")), set()))
+        if fields:
+            row["identity_conflict"] = True
+            row["identity_conflict_fields"] = safe_json_dumps(fields)
+            row["status"] = "IDENTITY_CONFLICT"
+            row["lifecycle_state"] = "IDENTITY_CONFLICT"
+            row["lifecycle_reason"] = "canonical_identity_conflict"
+            row["blocked_reasons"] = safe_json_dumps(["canonical_identity_conflict"])
+            row["new_entry_allowed"] = False
+        rows.append(row)
+    return _frame(rows, PAPER_STRATEGY_REGISTRY_SCHEMA)
+
+
+def _canonicalize_gate_identity(
+    gate: pl.DataFrame,
+    proposals: pl.DataFrame,
+) -> pl.DataFrame:
+    if gate.is_empty() or proposals.is_empty():
+        return gate
+    canonical = {
+        _text(row.get("proposal_id")): row
+        for row in proposals.to_dicts()
+        if _text(row.get("proposal_id"))
+    }
+    rows = []
+    for source in gate.to_dicts():
+        row = dict(source)
+        proposal = canonical.get(_text(row.get("proposal_id")))
+        if proposal is not None:
+            row["proposal_hash"] = _text(proposal.get("proposal_hash"))
+            row["strategy_id"] = _text(proposal.get("strategy_id"))
+            row["strategy_version"] = _text(proposal.get("strategy_version"))
+            row["symbol"] = _symbol(proposal)
+        rows.append(row)
+    return _frame(rows, PAPER_STRATEGY_PROMOTION_GATE_SCHEMA)
+
+
+def _build_paper_cohort_manifest(
+    existing: pl.DataFrame,
+    *,
+    proposals: pl.DataFrame,
+    registry: pl.DataFrame,
+    runs: pl.DataFrame,
+    created_at: datetime,
+) -> pl.DataFrame:
+    existing_rows = existing.to_dicts() if not existing.is_empty() else []
+    proposal_rows = sorted(
+        proposals.to_dicts() if not proposals.is_empty() else [],
+        key=lambda row: _text(row.get("proposal_id")),
+    )
+    if not proposal_rows:
+        return _frame(existing_rows, PAPER_COHORT_MANIFEST_SCHEMA)
+    proposal_ids = [_text(row.get("proposal_id")) for row in proposal_rows]
+    proposal_id_set = set(proposal_ids)
+    signature = safe_json_dumps(proposal_ids)
+    starts = [
+        _text(row.get("paper_start_at"))
+        for row in registry.to_dicts()
+        if _text(row.get("proposal_id")) in proposal_id_set
+        and _text(row.get("paper_start_at"))
+    ] if not registry.is_empty() else []
+    run_rows = [
+        row
+        for row in (runs.to_dicts() if not runs.is_empty() else [])
+        if _text(row.get("proposal_id")) in proposal_id_set
+    ]
+    event_ids = {_paper_event_id(row) for row in run_rows if _paper_event_id(row)}
+    horizons = sorted(
+        {
+            _int(
+                row.get("max_holding_bars")
+                or row.get("horizon_hours")
+                or row.get("suggested_horizon")
+            )
+            or 0
+            for row in proposal_rows
+        }
+    )
+    latest = max(existing_rows, key=lambda row: _int(row.get("cohort_version")) or 0, default=None)
+    if latest is not None and _text(latest.get("proposal_ids")) == signature:
+        latest["raw_closed_trade_count"] = len(run_rows)
+        latest["independent_closed_trade_count"] = len(event_ids)
+        latest["horizon_variant_count"] = len(horizons)
+        if starts:
+            latest["observation_start_at"] = min(starts)
+        return _frame(existing_rows, PAPER_COHORT_MANIFEST_SCHEMA)
+    for row in existing_rows:
+        if _text(row.get("status")) == "OBSERVING":
+            row["status"] = "FROZEN"
+    version = max((_int(row.get("cohort_version")) or 0 for row in existing_rows), default=0) + 1
+    admitted = created_at.astimezone(UTC).isoformat()
+    material = "|".join(
+        f"{row.get('proposal_id')}:{row.get('proposal_hash')}" for row in proposal_rows
+    )
+    existing_rows.append(
+        {
+            "cohort_id": f"paper-cohort-{hashlib.sha256(material.encode()).hexdigest()[:16]}",
+            "cohort_version": version,
+            "proposal_ids": signature,
+            "proposal_hashes": safe_json_dumps(
+                [_text(row.get("proposal_hash")) for row in proposal_rows]
+            ),
+            "strategy_ids": safe_json_dumps(
+                [_text(row.get("strategy_id")) for row in proposal_rows]
+            ),
+            "symbols": safe_json_dumps(sorted({_symbol(row) for row in proposal_rows})),
+            "horizons": safe_json_dumps(horizons),
+            "admitted_at": admitted,
+            "observation_start_at": min(starts) if starts else admitted,
+            "status": "OBSERVING",
+            "raw_closed_trade_count": len(run_rows),
+            "independent_closed_trade_count": len(event_ids),
+            "horizon_variant_count": len(horizons),
+            "created_at": admitted,
+        }
+    )
+    return _frame(existing_rows, PAPER_COHORT_MANIFEST_SCHEMA)
+
+
 def _merge_lifecycle_frame(
     existing: pl.DataFrame,
     generated: pl.DataFrame,
@@ -347,6 +895,7 @@ def _promotion_gate_frame_from_registry(
     created_at = datetime.now(UTC).isoformat()
     daily_rows = _latest_rows_by_strategy(daily)
     run_rows = runs.to_dicts() if not runs.is_empty() else []
+    event_variants = _event_variant_counts(run_rows)
     proposal_rows = _proposal_rows(proposals)
     cost_trust_rows = strategy_cost_trust.to_dicts() if not strategy_cost_trust.is_empty() else []
     rows: list[dict[str, Any]] = []
@@ -365,6 +914,7 @@ def _promotion_gate_frame_from_registry(
                 runs=[row for row in run_rows if _row_matches_key(row, key)],
                 proposal=_match_strategy_row(proposal_rows, key),
                 strategy_cost_trust=_match_cost_trust_row(cost_trust_rows, registry_row),
+                event_variants=event_variants,
                 created_at=created_at,
             )
         )
@@ -504,6 +1054,7 @@ def build_paper_strategy_pipeline_frames(
         ack_frame
     )
     run_rows = run_frame.to_dicts()
+    event_variants = _event_variant_counts(run_rows)
     daily_rows = _latest_rows_by_strategy(daily_frame)
     cost_trust_rows = (
         strategy_cost_trust.to_dicts()
@@ -536,6 +1087,7 @@ def build_paper_strategy_pipeline_frames(
             runs=matched_runs,
             proposal=proposal,
             strategy_cost_trust=_match_cost_trust_row(cost_trust_rows, registry),
+            event_variants=event_variants,
             created_at=created,
         )
         registry_rows.append(registry)
@@ -668,15 +1220,25 @@ def _registry_row(
     )
     return {
         "strategy_id": strategy_id,
-        "strategy_version": _text(ack.get("strategy_version"))
-        or _text(proposal.get("strategy_version"))
+        "strategy_version": _text(proposal.get("strategy_version"))
+        or _text(ack.get("strategy_version"))
         or _strategy_version(strategy_id or proposal_id),
+        "strategy_family": _text(proposal.get("strategy_family"))
+        or _text(proposal.get("strategy_candidate"))
+        or key.strategy_candidate,
         "proposal_id": proposal_id,
-        "proposal_hash": _text(ack.get("proposal_hash"))
-        or _text(proposal.get("proposal_hash"))
+        "proposal_hash": _text(proposal.get("proposal_hash"))
+        or _text(ack.get("proposal_hash"))
         or _proposal_hash(proposal),
         "paper_tracker_id": paper_tracker_id,
-        "symbol": key.symbol or _symbol(ack) or _symbol(proposal) or _symbol(daily),
+        "symbol": _symbol(proposal) or key.symbol or _symbol(ack) or _symbol(daily),
+        "timeframe": _text(proposal.get("timeframe")),
+        "max_holding_bars": _int(
+            proposal.get("max_holding_bars")
+            or proposal.get("horizon_hours")
+            or proposal.get("suggested_horizon")
+        )
+        or 0,
         "strategy_candidate": (
             key.strategy_candidate
             or _text(ack.get("strategy_candidate"))
@@ -712,6 +1274,13 @@ def _registry_row(
         "created_at": created_at,
         "source": PAPER_PIPELINE_SOURCE,
         "schema_version": PAPER_PIPELINE_SCHEMA_VERSION,
+        "identity_conflict": False,
+        "identity_conflict_fields": "[]",
+        "current_proposal_member": True,
+        "current_cohort_member": True,
+        "supersession_status": "CURRENT_ACTIVE" if accepted else "CURRENT_PENDING_ACK",
+        "new_entry_allowed": bool(accepted),
+        "exit_allowed": True,
     }
 
 
@@ -722,6 +1291,7 @@ def _promotion_gate_row(
     runs: list[dict[str, Any]],
     proposal: Mapping[str, Any],
     strategy_cost_trust: Mapping[str, Any],
+    event_variants: Mapping[str, set[str]],
     created_at: str,
 ) -> dict[str, Any]:
     values = _paper_pnl_values(runs)
@@ -747,9 +1317,33 @@ def _promotion_gate_row(
     regime_coverage_status = (
         "PASS" if len(regimes) >= 2 or single_regime_strategy else "INSUFFICIENT"
     )
-    cost_sources = _cost_sources(daily.get("cost_source_mix"))
-    cost_trusted = bool(cost_sources & TRUSTED_PAPER_COST_SOURCES) and not bool(
-        cost_sources & BLOCKED_PAPER_COST_SOURCES
+    cost_sources, cost_source_errors = parse_cost_source_mix(
+        daily.get("cost_source_mix")
+    )
+    paper_cost_model_usable = bool(cost_sources) and not cost_source_errors and (
+        cost_sources <= TRUSTED_PAPER_COST_SOURCES
+    )
+    closed_cost_sources: set[str] = set()
+    closed_trade_cost_observation_count = 0
+    closed_trade_cost_invalid_count = 0
+    for run in runs:
+        run_sources, run_errors = parse_cost_source_mix(
+            run.get("cost_source") or run.get("cost_source_mix")
+        )
+        if run_sources and not run_errors:
+            closed_trade_cost_observation_count += 1
+            closed_cost_sources.update(run_sources)
+        else:
+            closed_trade_cost_invalid_count += 1
+    closed_trade_cost_missing_count = max(
+        closed_entries - closed_trade_cost_observation_count,
+        closed_trade_cost_invalid_count,
+        0,
+    )
+    closed_trade_cost_coverage = (
+        closed_trade_cost_observation_count / closed_entries
+        if closed_entries > 0
+        else 1.0
     )
     accepted = bool(registry.get("accepted"))
     reject_reason = _text(registry.get("reject_reason"))
@@ -774,7 +1368,7 @@ def _promotion_gate_row(
         median_bps=median_bps,
         p25_bps=p25_bps,
         recent_mean=recent_mean,
-        cost_trusted=cost_trusted,
+        cost_trusted=False,
         max_drawdown_bps=max_drawdown_bps,
         max_drawdown_budget_bps=_float(daily.get("max_drawdown_budget_bps")) or 500.0,
         max_day_concentration=max_day_concentration,
@@ -785,24 +1379,59 @@ def _promotion_gate_row(
         daily_block_reasons=_json_list(daily.get("live_block_reason")),
     )
     required_cost_trust_level = _text(proposal.get("required_cost_trust_level")) or "PAPER_ONLY"
+    cost_match_status = _text(strategy_cost_trust.get("__match_status")) or "MISSING"
+    dimensional_cost_trust_matched = cost_match_status == "UNIQUE"
     strategy_cost_trust_level = (
-        _text(strategy_cost_trust.get("cost_trust_level")) or "NOT_EVALUATED"
+        _text(strategy_cost_trust.get("cost_trust_level"))
+        if dimensional_cost_trust_matched
+        else "NOT_EVALUATED"
+    ) or "NOT_EVALUATED"
+    dimensional_paper_usable = dimensional_cost_trust_matched and (
+        _bool(strategy_cost_trust.get("paper_cost_usable"))
+        if strategy_cost_trust.get("paper_cost_usable") not in (None, "")
+        else _cost_trust_rank(strategy_cost_trust_level) >= _cost_trust_rank("PAPER_ONLY")
     )
-    dimensional_cost_trusted = True
-    if strategy_cost_trust:
-        dimensional_cost_trusted = _cost_trust_rank(strategy_cost_trust_level) >= (
-            _cost_trust_rank(required_cost_trust_level)
-        )
-        if not dimensional_cost_trusted:
-            block_reasons = sorted(
-                {
-                    *block_reasons,
-                    "strategy_cost_trust_below_required:"
-                    f"actual={strategy_cost_trust_level};"
-                    f"required={required_cost_trust_level}",
-                }
-            )
-    effective_cost_trusted = cost_trusted and dimensional_cost_trusted
+    dimensional_canary_usable = dimensional_cost_trust_matched and _bool(
+        strategy_cost_trust.get("canary_cost_usable")
+    )
+    dimensional_scale_usable = dimensional_cost_trust_matched and _bool(
+        strategy_cost_trust.get("live_cost_usable")
+    )
+    closed_cost_complete = closed_trade_cost_missing_count == 0
+    effective_cost_trusted = (
+        paper_cost_model_usable
+        and closed_cost_complete
+        and dimensional_paper_usable
+    )
+    cost_trusted_for_canary = (
+        effective_cost_trusted
+        and dimensional_canary_usable
+        and bool(closed_cost_sources)
+        and closed_cost_sources <= CANARY_COST_SOURCES
+    )
+    cost_trusted_for_scale = (
+        cost_trusted_for_canary
+        and dimensional_scale_usable
+        and closed_cost_sources <= SCALE_COST_SOURCES
+    )
+    block_reasons = [
+        reason for reason in block_reasons if reason != "cost_not_trusted_for_paper"
+    ]
+    if not effective_cost_trusted:
+        block_reasons.append("cost_not_trusted_for_paper")
+    if cost_match_status == "MISSING":
+        block_reasons.append("cost_trust_row_missing")
+    elif cost_match_status == "AMBIGUOUS":
+        block_reasons.append("cost_trust_row_ambiguous")
+    if closed_trade_cost_missing_count > 0:
+        block_reasons.append("closed_trade_cost_source_missing")
+    block_reasons.extend(
+        f"cost_source_data_quality_error:{error}" for error in cost_source_errors
+    )
+    identity_conflict = _bool(registry.get("identity_conflict"))
+    if identity_conflict:
+        block_reasons.append("canonical_identity_conflict")
+    block_reasons = sorted(set(block_reasons))
     paper_ready = not block_reasons
     lifecycle = (
         LifecycleState.PAPER_PROMOTION_READY
@@ -819,15 +1448,29 @@ def _promotion_gate_row(
         closed_entries=closed_entries,
         paper_days=paper_days,
     )
-    cost_evidence_status = (
-        "PASS"
-        if effective_cost_trusted
-        else (
-            f"{strategy_cost_trust_level}_REQUIRED_{required_cost_trust_level}"
-            if strategy_cost_trust
-            else "INSUFFICIENT"
-        )
+    if cost_match_status == "MISSING":
+        cost_evidence_status = "COST_TRUST_ROW_MISSING"
+    elif cost_match_status == "AMBIGUOUS":
+        cost_evidence_status = "COST_TRUST_ROW_AMBIGUOUS"
+    elif closed_trade_cost_missing_count > 0:
+        cost_evidence_status = "CLOSED_TRADE_COST_SOURCE_MISSING"
+    elif cost_source_errors:
+        cost_evidence_status = "COST_SOURCE_DATA_QUALITY_ERROR"
+    else:
+        cost_evidence_status = "PASS" if effective_cost_trusted else "COST_NOT_USABLE"
+    event_ids = [_paper_event_id(row) for row in runs if _paper_event_id(row)]
+    independence_weight = sum(
+        1.0 / max(len(event_variants.get(event_id, set())), 1)
+        for event_id in event_ids
     )
+    horizon_variant_count = max(
+        (len(event_variants.get(event_id, set())) for event_id in event_ids),
+        default=0,
+    )
+    mfe_values = _numeric_run_values(runs, "mfe_bps", "max_favorable_excursion")
+    mae_values = _numeric_run_values(runs, "mae_bps", "max_adverse_excursion")
+    giveback_values = _numeric_run_values(runs, "profit_giveback_bps")
+    efficiency_values = _numeric_run_values(runs, "exit_efficiency")
     return {
         "strategy_id": _text(registry.get("strategy_id")),
         "strategy_version": _text(registry.get("strategy_version")),
@@ -856,9 +1499,35 @@ def _promotion_gate_row(
         "regime_count": len(regimes),
         "rules_locked": rules_locked,
         "cost_source": safe_json_dumps(sorted(cost_sources)),
+        "paper_cost_model_usable": paper_cost_model_usable,
+        "closed_trade_cost_observation_count": closed_trade_cost_observation_count,
+        "closed_trade_cost_missing_count": closed_trade_cost_missing_count,
+        "closed_trade_cost_coverage": closed_trade_cost_coverage,
+        "closed_trade_cost_sources": safe_json_dumps(sorted(closed_cost_sources)),
+        "dimensional_cost_trust_level": strategy_cost_trust_level,
+        "dimensional_cost_trust_matched": dimensional_cost_trust_matched,
         "strategy_cost_trust_level": strategy_cost_trust_level,
         "required_cost_trust_level": required_cost_trust_level,
         "cost_trusted_for_paper": effective_cost_trusted,
+        "cost_trusted_for_canary": cost_trusted_for_canary,
+        "cost_trusted_for_scale": cost_trusted_for_scale,
+        "raw_closed_trade_count": len(runs),
+        "independent_closed_trade_count": len(set(event_ids)),
+        "canonical_opportunity_id": safe_json_dumps(sorted(set(event_ids))),
+        "shared_entry_event_id": safe_json_dumps(
+            sorted(
+                event_id
+                for event_id in set(event_ids)
+                if len(event_variants.get(event_id, set())) > 1
+            )
+        ),
+        "evidence_independence_weight": independence_weight,
+        "horizon_variant_count": horizon_variant_count,
+        "win_rate": _hit_rate(values),
+        "avg_mfe_bps": _mean(mfe_values),
+        "avg_mae_bps": _mean(mae_values),
+        "avg_profit_giveback_bps": _mean(giveback_values),
+        "avg_exit_efficiency": _mean(efficiency_values),
         "backtest_paper_conflict": backtest_paper_conflict,
         "promotion_score": promotion_score,
         "promotion_confidence": promotion_confidence,
@@ -870,6 +1539,9 @@ def _promotion_gate_row(
         "tail_risk_status": tail_risk_status,
         "regime_coverage_status": regime_coverage_status,
         "cost_evidence_status": cost_evidence_status,
+        "identity_conflict": identity_conflict,
+        "identity_conflict_fields": _text(registry.get("identity_conflict_fields"))
+        or "[]",
         "paper_ready": paper_ready,
         "block_reason": safe_json_dumps(block_reasons),
         "promotion_block_reasons": safe_json_dumps(block_reasons),
@@ -1068,14 +1740,48 @@ def _match_cost_trust_row(
     rows: list[Mapping[str, Any]],
     registry: Mapping[str, Any],
 ) -> Mapping[str, Any]:
-    aliases = {
-        _text(registry.get("strategy_id")),
-        _text(registry.get("proposal_id")),
-    }
-    matches = [row for row in rows if _text(row.get("strategy_id")) in aliases - {""}]
-    if not matches:
-        return {}
-    return max(matches, key=_row_sort_ts)
+    priorities = (
+        (
+            "proposal_id",
+            lambda row: _text(row.get("proposal_id"))
+            == _text(registry.get("proposal_id")),
+        ),
+        (
+            "proposal_hash",
+            lambda row: _text(row.get("proposal_hash"))
+            == _text(registry.get("proposal_hash")),
+        ),
+        (
+            "strategy_id_version",
+            lambda row: (
+                _text(row.get("strategy_id")) == _text(registry.get("strategy_id"))
+                and _text(row.get("strategy_version"))
+                == _text(registry.get("strategy_version"))
+            ),
+        ),
+    )
+    for match_level, predicate in priorities:
+        expected_present = {
+            "proposal_id": bool(_text(registry.get("proposal_id"))),
+            "proposal_hash": bool(_text(registry.get("proposal_hash"))),
+            "strategy_id_version": bool(
+                _text(registry.get("strategy_id"))
+                and _text(registry.get("strategy_version"))
+            ),
+        }[match_level]
+        if not expected_present:
+            continue
+        matches = [row for row in rows if predicate(row)]
+        if not matches:
+            continue
+        if len(matches) != 1:
+            return {"__match_status": "AMBIGUOUS", "__match_level": match_level}
+        return {
+            **dict(matches[0]),
+            "__match_status": "UNIQUE",
+            "__match_level": match_level,
+        }
+    return {"__match_status": "MISSING", "__match_level": "none"}
 
 
 def _cost_trust_rank(value: Any) -> int:
@@ -1280,30 +1986,116 @@ def _row_date(row: Mapping[str, Any]) -> date | None:
         return None
 
 
-def _cost_sources(value: Any) -> set[str]:
+def parse_cost_source_mix(value: Any) -> tuple[set[str], list[str]]:
     if value in (None, ""):
-        return set()
-    if isinstance(value, list):
-        items = value
-    else:
-        text = str(value).strip()
+        return set(), []
+    payload = value
+    if isinstance(value, str):
+        text = value.strip()
         try:
-            parsed = json.loads(text)
+            payload = json.loads(text)
         except json.JSONDecodeError:
-            return {
-                part.strip().lower() for part in text.replace(";", ",").split(",") if part.strip()
-            }
-        items = parsed if isinstance(parsed, list) else [parsed]
-    sources = set()
+            if text.startswith(("{", "[")):
+                return set(), ["invalid_json"]
+            return (
+                {
+                    part.strip().lower()
+                    for part in text.replace(";", ",").split(",")
+                    if part.strip()
+                },
+                [],
+            )
+    sources: set[str] = set()
+    errors: list[str] = []
+    if isinstance(payload, Mapping):
+        if "cost_source" in payload or "source" in payload:
+            items: list[Any] = [payload]
+        else:
+            items = [
+                {"cost_source": source, "count": count}
+                for source, count in payload.items()
+            ]
+    elif isinstance(payload, list):
+        items = payload
+    else:
+        items = [payload]
     for item in items:
+        count: Any = 1
         if isinstance(item, dict):
             source = item.get("cost_source") or item.get("source")
+            count = item.get("count", 1)
         else:
             source = item
         text = str(source or "").strip().lower()
-        if text:
+        if not text:
+            continue
+        try:
+            numeric = float(count)
+            parsed_count = int(numeric)
+            if numeric != parsed_count:
+                raise ValueError
+        except (TypeError, ValueError):
+            errors.append(f"invalid_count:{text}")
+            continue
+        if parsed_count < 0:
+            errors.append(f"negative_count:{text}")
+            continue
+        if parsed_count > 0:
             sources.add(text)
-    return sources
+    return sources, sorted(set(errors))
+
+
+def _cost_sources(value: Any) -> set[str]:
+    return parse_cost_source_mix(value)[0]
+
+
+def _paper_event_id(row: Mapping[str, Any]) -> str:
+    explicit = _text(
+        row.get("canonical_opportunity_id") or row.get("shared_entry_event_id")
+    )
+    if explicit:
+        return explicit
+    symbol = _symbol(row)
+    entry_ts = _text(
+        row.get("entry_signal_ts")
+        or row.get("entry_decision_ts")
+        or row.get("signal_ts")
+    )
+    if entry_ts:
+        material = f"{symbol or 'UNKNOWN'}|{entry_ts}"
+        return f"paper-event:{hashlib.sha256(material.encode()).hexdigest()[:24]}"
+    return _text(row.get("paper_trade_id"))
+
+
+def _event_variant_counts(
+    rows: list[Mapping[str, Any]],
+) -> dict[str, set[str]]:
+    variants: dict[str, set[str]] = {}
+    for row in rows:
+        event_id = _paper_event_id(row)
+        proposal_id = _text(row.get("proposal_id"))
+        if event_id and proposal_id:
+            variants.setdefault(event_id, set()).add(proposal_id)
+    return variants
+
+
+def _numeric_run_values(
+    rows: list[Mapping[str, Any]],
+    *fields: str,
+) -> list[float]:
+    output: list[float] = []
+    for row in rows:
+        value = next(
+            (
+                _float(row.get(field))
+                for field in fields
+                if _float(row.get(field)) is not None
+            ),
+            None,
+        )
+        if value is not None:
+            output.append(value)
+    return output
 
 
 def _json_list(value: Any) -> list[str]:

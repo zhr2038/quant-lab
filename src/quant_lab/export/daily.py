@@ -138,6 +138,7 @@ from quant_lab.research.market_pressure import (
     market_pressure_summary_md,
 )
 from quant_lab.research.paper_promotion import (
+    PAPER_STRATEGY_IDENTITY_CONFLICT_SCHEMA,
     PAPER_STRATEGY_PROMOTION_GATE_SCHEMA,
     PAPER_STRATEGY_REGISTRY_SCHEMA,
     build_and_publish_paper_strategy_pipeline,
@@ -224,7 +225,15 @@ SNAPSHOT_META_DATASETS = {
     "paper_strategy_migration_audit",
     "paper_strategy_promotion_gate",
     "paper_strategy_proposal",
+    "paper_strategy_proposals_current",
+    "paper_strategy_trackers_current",
     "paper_strategy_registry",
+    "paper_strategy_registry_current",
+    "paper_strategy_registry_history",
+    "paper_strategy_ack_current",
+    "paper_strategy_ack_history",
+    "paper_strategy_identity_conflict",
+    "paper_cohort_manifest",
     "strategy_health_daily",
     "strategy_cost_trust",
     "strategy_opportunity_advisory",
@@ -529,7 +538,11 @@ SECTION_DATASETS = {
         "research_portfolio_status",
         "strategy_opportunity_advisory",
         "paper_strategy_proposal",
+        "paper_strategy_proposals_current",
+        "paper_strategy_trackers_current",
         "paper_strategy_migration_audit",
+        "paper_strategy_identity_conflict",
+        "paper_cohort_manifest",
         "strategy_cost_trust",
         "trade_opportunity_event",
         "trade_opportunity_label",
@@ -566,6 +579,8 @@ SECTION_DATASETS = {
         "paper_strategy_runs",
         "paper_strategy_daily",
         "paper_strategy_registry",
+        "paper_strategy_registry_current",
+        "paper_strategy_registry_history",
         "paper_strategy_promotion_gate",
         "paper_slippage_coverage",
         "sol_protect_paper_loss_attribution",
@@ -753,6 +768,16 @@ REQUIRED_MEMBERS = [
     "reports/historical_label_threshold_ready.csv",
     "reports/paper_strategy_proposals.csv",
     "reports/paper_strategy_proposal_ack.csv",
+    "reports/paper_strategy_proposals_current.csv",
+    "reports/paper_strategy_trackers_current.csv",
+    "reports/paper_strategy_registry_current.csv",
+    "reports/paper_strategy_registry_history.csv",
+    "reports/paper_strategy_ack_current.csv",
+    "reports/paper_strategy_ack_history.csv",
+    "reports/paper_strategy_identity_conflict.csv",
+    "reports/paper_strategy_identity_conflict.md",
+    "reports/paper_cohort_manifest.json",
+    "reports/paper_cohort_status.md",
     "reports/strategy_opportunity_advisory.csv",
     "reports/v5_opportunity_event.csv",
     "reports/v5_opportunity_label.csv",
@@ -1743,6 +1768,38 @@ CSV_SCHEMAS: dict[str, list[str]] = {
         "source_pack_sha256",
         "source_v5_bundle_sha256",
     ],
+    "reports/paper_strategy_ack_current.csv": [
+        "proposal_id",
+        "proposal_hash",
+        "paper_tracker_id",
+        "accepted",
+        "accepted_at",
+        "recommended_mode",
+        "symbol",
+        "strategy_candidate",
+        "suggested_horizon",
+        "proposal_source",
+        "reject_reason",
+        "live_order_effect",
+        "source_pack_sha256",
+        "source_v5_bundle_sha256",
+    ],
+    "reports/paper_strategy_ack_history.csv": [
+        "proposal_id",
+        "proposal_hash",
+        "paper_tracker_id",
+        "accepted",
+        "accepted_at",
+        "recommended_mode",
+        "symbol",
+        "strategy_candidate",
+        "suggested_horizon",
+        "proposal_source",
+        "reject_reason",
+        "live_order_effect",
+        "source_pack_sha256",
+        "source_v5_bundle_sha256",
+    ],
     "reports/strategy_opportunity_advisory.csv": [
         "as_of_ts",
         "generated_at",
@@ -2535,6 +2592,15 @@ CSV_SCHEMAS: dict[str, list[str]] = {
         "schema_version",
     ],
     "reports/paper_strategy_registry.csv": list(PAPER_STRATEGY_REGISTRY_SCHEMA),
+    "reports/paper_strategy_registry_current.csv": list(
+        PAPER_STRATEGY_REGISTRY_SCHEMA
+    ),
+    "reports/paper_strategy_registry_history.csv": list(
+        PAPER_STRATEGY_REGISTRY_SCHEMA
+    ),
+    "reports/paper_strategy_identity_conflict.csv": list(
+        PAPER_STRATEGY_IDENTITY_CONFLICT_SCHEMA
+    ),
     "reports/paper_strategy_promotion_gate.csv": list(PAPER_STRATEGY_PROMOTION_GATE_SCHEMA),
     "reports/paper_strategy_migration_audit.csv": list(PAPER_STRATEGY_MIGRATION_AUDIT_SCHEMA),
     "reports/gate_candidate_level_effectiveness.csv": list(EFFECTIVENESS_SCHEMA),
@@ -2559,6 +2625,11 @@ CSV_SCHEMAS: dict[str, list[str]] = {
     ],
     "reports/strategy_cost_trust.csv": [
         "strategy_id",
+        "proposal_id",
+        "proposal_hash",
+        "strategy_version",
+        "symbol",
+        "horizon_hours",
         "cost_trust_level",
         "actual_sample_count",
         "mixed_sample_count",
@@ -2570,6 +2641,10 @@ CSV_SCHEMAS: dict[str, list[str]] = {
         "required_condition_count",
         "source",
         "created_at",
+        "research_cost_usable",
+        "paper_cost_usable",
+        "canary_cost_usable",
+        "live_cost_usable",
     ],
     "reports/paper_slippage_coverage.csv": [
         "as_of_date",
@@ -4311,7 +4386,15 @@ def _publish_strategy_opportunity_advisory_snapshot(
 
 PAPER_PIPELINE_EXPORT_DATASETS = (
     "paper_strategy_proposal",
+    "paper_strategy_proposals_current",
+    "paper_strategy_trackers_current",
     "paper_strategy_registry",
+    "paper_strategy_registry_current",
+    "paper_strategy_registry_history",
+    "paper_strategy_ack_current",
+    "paper_strategy_ack_history",
+    "paper_strategy_identity_conflict",
+    "paper_cohort_manifest",
     "paper_strategy_promotion_gate",
     "paper_strategy_migration_audit",
     "strategy_cost_trust",
@@ -6300,19 +6383,50 @@ def _dataset_members(
         strategy_cost_trust=frames.get("strategy_cost_trust", pl.DataFrame()),
         created_at=export_reference_at,
     )
-    paper_strategy_registry = _stable_paper_strategy_lifecycle_frame(
-        paper_pipeline["paper_strategy_registry"],
-        frames.get("paper_strategy_registry", pl.DataFrame()),
-        schema=CSV_SCHEMAS["reports/paper_strategy_registry.csv"],
+    persisted_registry_current = frames.get(
+        "paper_strategy_registry_current", pl.DataFrame()
     )
-    paper_strategy_promotion_gate = _stable_paper_strategy_lifecycle_frame(
-        paper_pipeline["paper_strategy_promotion_gate"],
-        frames.get("paper_strategy_promotion_gate", pl.DataFrame()),
-        schema=CSV_SCHEMAS["reports/paper_strategy_promotion_gate.csv"],
+    paper_strategy_registry = (
+        _csv_frame_with_schema(
+            persisted_registry_current,
+            CSV_SCHEMAS["reports/paper_strategy_registry.csv"],
+        )
+        if not persisted_registry_current.is_empty()
+        else _stable_paper_strategy_lifecycle_frame(
+            paper_pipeline["paper_strategy_registry"],
+            frames.get("paper_strategy_registry", pl.DataFrame()),
+            schema=CSV_SCHEMAS["reports/paper_strategy_registry.csv"],
+        )
     )
+    persisted_gate = frames.get("paper_strategy_promotion_gate", pl.DataFrame())
+    paper_strategy_promotion_gate = (
+        _csv_frame_with_schema(
+            persisted_gate,
+            CSV_SCHEMAS["reports/paper_strategy_promotion_gate.csv"],
+        )
+        if not persisted_gate.is_empty()
+        else paper_pipeline["paper_strategy_promotion_gate"]
+    )
+    paper_strategy_registry_history = frames.get(
+        "paper_strategy_registry_history", paper_strategy_registry
+    )
+    paper_strategy_trackers_current = frames.get(
+        "paper_strategy_trackers_current", pl.DataFrame()
+    )
+    paper_strategy_identity_conflict = frames.get(
+        "paper_strategy_identity_conflict", pl.DataFrame()
+    )
+    paper_cohort_manifest = frames.get("paper_cohort_manifest", pl.DataFrame())
     paper_strategy_proposal_ack = _paper_strategy_proposal_ack_for_export(
-        frames.get("v5_paper_strategy_proposal_ack", pl.DataFrame()),
+        frames.get(
+            "paper_strategy_ack_current",
+            frames.get("v5_paper_strategy_proposal_ack", pl.DataFrame()),
+        ),
         paper_strategy_registry=paper_strategy_registry,
+    )
+    paper_strategy_ack_history = _paper_strategy_proposal_ack_for_export(
+        frames.get("paper_strategy_ack_history", pl.DataFrame()),
+        paper_strategy_registry=paper_strategy_registry_history,
     )
     paper_strategy_migration_audit = frames.get(
         "paper_strategy_migration_audit",
@@ -6876,6 +6990,22 @@ def _dataset_members(
             "reports/paper_strategy_proposal_ack.csv",
             paper_strategy_proposal_ack,
         ),
+        "reports/paper_strategy_proposals_current.csv": _csv_member(
+            "reports/paper_strategy_proposals.csv",
+            paper_proposals,
+        ),
+        "reports/paper_strategy_trackers_current.csv": _csv_member(
+            "reports/paper_strategy_trackers_current.csv",
+            paper_strategy_trackers_current,
+        ),
+        "reports/paper_strategy_ack_current.csv": _csv_member(
+            "reports/paper_strategy_ack_current.csv",
+            paper_strategy_proposal_ack,
+        ),
+        "reports/paper_strategy_ack_history.csv": _csv_member(
+            "reports/paper_strategy_ack_history.csv",
+            paper_strategy_ack_history,
+        ),
         "reports/strategy_opportunity_advisory.csv": _csv_member(
             "reports/strategy_opportunity_advisory.csv",
             opportunity_advisory,
@@ -7217,6 +7347,27 @@ def _dataset_members(
         "reports/paper_strategy_registry.csv": _csv_member(
             "reports/paper_strategy_registry.csv",
             paper_strategy_registry,
+        ),
+        "reports/paper_strategy_registry_current.csv": _csv_member(
+            "reports/paper_strategy_registry_current.csv",
+            paper_strategy_registry,
+        ),
+        "reports/paper_strategy_registry_history.csv": _csv_member(
+            "reports/paper_strategy_registry_history.csv",
+            paper_strategy_registry_history,
+        ),
+        "reports/paper_strategy_identity_conflict.csv": _csv_member(
+            "reports/paper_strategy_identity_conflict.csv",
+            paper_strategy_identity_conflict,
+        ),
+        "reports/paper_strategy_identity_conflict.md": _paper_identity_conflict_md(
+            paper_strategy_identity_conflict
+        ),
+        "reports/paper_cohort_manifest.json": _json_text(
+            {"cohorts": paper_cohort_manifest.to_dicts()}
+        ),
+        "reports/paper_cohort_status.md": _paper_cohort_status_md(
+            paper_cohort_manifest
         ),
         "reports/paper_strategy_promotion_gate.csv": _csv_member(
             "reports/paper_strategy_promotion_gate.csv",
@@ -11447,6 +11598,26 @@ def _stable_paper_strategy_lifecycle_frame(
     if not rows:
         return pl.DataFrame(schema={column: pl.Utf8 for column in schema})
     merged = _merge_paper_strategy_rows(rows, schema)
+    generated_identity = {
+        _paper_strategy_row_key(row): row for row in _rows(generated)
+    }
+    immutable = {
+        "proposal_id",
+        "proposal_hash",
+        "strategy_id",
+        "strategy_version",
+        "strategy_family",
+        "symbol",
+        "timeframe",
+        "max_holding_bars",
+        "contract_version",
+    }
+    for row in merged:
+        canonical = generated_identity.get(_paper_strategy_row_key(row))
+        if canonical is None:
+            continue
+        for field in immutable & set(schema):
+            row[field] = canonical.get(field)
     return _csv_frame_with_schema(
         pl.DataFrame(merged, infer_schema_length=None),
         schema,
@@ -14610,6 +14781,59 @@ def _missed_opportunity_summary_md(audit: pl.DataFrame, risk_on_shadow: pl.DataF
                 f"{row.get('strategy_candidate')} selected {row.get('selected_symbols')} "
                 f"24h_net={row.get('future_24h_net_bps')}"
             )
+    return "\n".join(lines) + "\n"
+
+
+def _paper_identity_conflict_md(frame: pl.DataFrame) -> str:
+    rows = frame.to_dicts() if not frame.is_empty() else []
+    active = [
+        row for row in rows if _optional_bool(row.get("active_conflict")) is True
+    ]
+    lines = [
+        "# Paper Strategy Identity Conflicts",
+        "",
+        f"- total_conflicts: {len(rows)}",
+        f"- active_conflicts: {len(active)}",
+        "- fail_closed: true",
+        "",
+    ]
+    for row in active[:50]:
+        lines.append(
+            "- "
+            f"{row.get('proposal_id')} | {row.get('conflict_field')} | "
+            f"canonical={row.get('canonical_value')} | observed={row.get('observed_value')} | "
+            f"source={row.get('source_dataset')}"
+        )
+    if not active:
+        lines.append("No active identity conflicts. Historical resolved rows remain auditable.")
+    return "\n".join(lines) + "\n"
+
+
+def _paper_cohort_status_md(frame: pl.DataFrame) -> str:
+    rows = frame.sort("cohort_version").to_dicts() if not frame.is_empty() else []
+    lines = [
+        "# Paper Cohort Status",
+        "",
+        "Cohort membership is immutable. New proposal sets create a new cohort version.",
+        "",
+    ]
+    for row in rows:
+        lines.extend(
+            [
+                f"## {row.get('cohort_id')}",
+                f"- version: {row.get('cohort_version')}",
+                f"- status: {row.get('status')}",
+                f"- observation_start_at: {row.get('observation_start_at')}",
+                f"- proposal_ids: {row.get('proposal_ids')}",
+                f"- raw_closed_trade_count: {row.get('raw_closed_trade_count')}",
+                "- independent_closed_trade_count: "
+                f"{row.get('independent_closed_trade_count')}",
+                f"- horizon_variant_count: {row.get('horizon_variant_count')}",
+                "",
+            ]
+        )
+    if not rows:
+        lines.append("No cohort has been admitted.")
     return "\n".join(lines) + "\n"
 
 

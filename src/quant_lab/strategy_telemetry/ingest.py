@@ -86,9 +86,14 @@ SILVER_DATASETS = {
     "v5_paper_strategy_run": Path("silver/v5_paper_strategy_run"),
     "v5_paper_strategy_exit_quality": Path("silver/v5_paper_strategy_exit_quality"),
     "v5_paper_strategy_proposal_ack": Path("silver/v5_paper_strategy_proposal_ack"),
+    "v5_paper_strategy_proposal_ack_current": Path("silver/v5_paper_strategy_proposal_ack_current"),
+    "v5_paper_strategy_proposal_ack_history": Path("silver/v5_paper_strategy_proposal_ack_history"),
     "v5_paper_strategy_daily": Path("silver/v5_paper_strategy_daily"),
     "v5_paper_slippage_coverage": Path("silver/v5_paper_slippage_coverage"),
     "v5_paper_strategy_registry": Path("silver/v5_paper_strategy_registry"),
+    "v5_paper_strategy_registry_current": Path("silver/v5_paper_strategy_registry_current"),
+    "v5_paper_strategy_registry_history": Path("silver/v5_paper_strategy_registry_history"),
+    "v5_paper_strategy_trackers_current": Path("silver/v5_paper_strategy_trackers_current"),
     "v5_paper_strategy_state": Path("silver/v5_paper_strategy_state"),
     "v5_paper_strategy_signal": Path("silver/v5_paper_strategy_signal"),
     "v5_paper_strategy_quote_coverage": Path("silver/v5_paper_strategy_quote_coverage"),
@@ -132,9 +137,12 @@ WEB_VISIBLE_SILVER_SNAPSHOT_META_DATASETS = {
     "v5_paper_strategy_run",
     "v5_paper_strategy_exit_quality",
     "v5_paper_strategy_proposal_ack",
+    "v5_paper_strategy_proposal_ack_current",
     "v5_paper_strategy_daily",
     "v5_paper_slippage_coverage",
     "v5_paper_strategy_registry",
+    "v5_paper_strategy_registry_current",
+    "v5_paper_strategy_trackers_current",
     "v5_paper_strategy_state",
     "v5_paper_strategy_signal",
     "v5_paper_strategy_quote_coverage",
@@ -194,12 +202,19 @@ EVENT_KEY_DATASETS = {
     "v5_cost_probe_order_event",
     "v5_cost_probe_roundtrip_event",
 }
+SNAPSHOT_REPLACE_DATASETS = {
+    "v5_paper_strategy_proposal_ack_current",
+    "v5_paper_strategy_registry_current",
+    "v5_paper_strategy_trackers_current",
+}
 STABLE_ROW_KEY_DATASETS = set(SILVER_DATASETS) - EVENT_KEY_DATASETS - {"v5_candidate_event"}
 EMPTY_CSV_REFRESH_DATASETS = {
     "v5_expanded_universe_advisory_reader",
     "v5_expanded_universe_paper_runs",
     "v5_expanded_universe_paper_daily",
     "v5_paper_strategy_registry",
+    "v5_paper_strategy_registry_current",
+    "v5_paper_strategy_trackers_current",
     "v5_paper_strategy_state",
     "v5_paper_strategy_quote_coverage",
     "v5_paper_strategy_cost_evidence",
@@ -610,6 +625,10 @@ def _write_silver(
                 dataset_rows,
                 ["strategy", "candidate_id", "run_id", "ts_utc", "symbol", "strategy_candidate"],
             )
+        elif name in SNAPSHOT_REPLACE_DATASETS:
+            frame = _dataframe_from_rows(dataset_rows)
+            write_parquet_dataset(frame, dataset_path)
+            counts[name] = frame.height
         elif name in STABLE_ROW_KEY_DATASETS:
             counts[name] = _upsert_stable_rows(dataset_path, dataset_rows)
         else:
@@ -662,7 +681,12 @@ def _rehydrate_empty_csv_refresh_datasets(
         "summaries/expanded_universe_paper_runs.csv",
         "summaries/expanded_universe_paper_daily.csv",
         "summaries/paper_strategy_proposal_ack.csv",
+        "summaries/paper_strategy_proposal_ack_current.csv",
+        "summaries/paper_strategy_proposal_ack_history.csv",
         "summaries/paper_strategy_registry.csv",
+        "summaries/paper_strategy_registry_current.csv",
+        "summaries/paper_strategy_registry_history.csv",
+        "summaries/paper_strategy_trackers_current.csv",
         "summaries/paper_strategy_state.csv",
         "summaries/paper_strategy_signals.csv",
         "summaries/paper_strategy_runs.csv",
@@ -984,9 +1008,18 @@ def _append_file_rows(
         "summaries/paper_strategy_runs.csv": "v5_paper_strategy_run",
         "summaries/paper_strategy_exit_quality.csv": "v5_paper_strategy_exit_quality",
         "summaries/paper_strategy_proposal_ack.csv": "v5_paper_strategy_proposal_ack",
+        "summaries/paper_strategy_proposal_ack_current.csv": (
+            "v5_paper_strategy_proposal_ack_current"
+        ),
+        "summaries/paper_strategy_proposal_ack_history.csv": (
+            "v5_paper_strategy_proposal_ack_history"
+        ),
         "summaries/paper_strategy_daily.csv": "v5_paper_strategy_daily",
         "summaries/paper_slippage_coverage.csv": "v5_paper_slippage_coverage",
         "summaries/paper_strategy_registry.csv": "v5_paper_strategy_registry",
+        "summaries/paper_strategy_registry_current.csv": "v5_paper_strategy_registry_current",
+        "summaries/paper_strategy_registry_history.csv": "v5_paper_strategy_registry_history",
+        "summaries/paper_strategy_trackers_current.csv": "v5_paper_strategy_trackers_current",
         "summaries/paper_strategy_state.csv": "v5_paper_strategy_state",
         "summaries/paper_strategy_signals.csv": "v5_paper_strategy_signal",
         "summaries/paper_strategy_quote_coverage.csv": ("v5_paper_strategy_quote_coverage"),

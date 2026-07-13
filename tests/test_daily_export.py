@@ -2277,11 +2277,11 @@ def test_system_acceptance_surfaces_blocked_enforce_readiness():
         lake_file_count=0,
         generated_at=datetime(2026, 6, 11, 10, tzinfo=UTC),
     )
-    row = next(row for row in dashboard.to_dicts() if row["check_name"] == "enforce_readiness_ok")
+    rows = {row["check_name"]: row for row in dashboard.to_dicts()}
 
-    assert row["status"] == "FAIL"
-    assert "readiness_status=BLOCKED" in row["observed_value"]
-    assert "restore blocked readiness inputs" in row["next_action"]
+    assert rows["advisory_readiness_ok"]["status"] == "FAIL"
+    assert rows["entry_readiness_ok"]["status"] == "BLOCKED"
+    assert rows["scale_readiness_ok"]["status"] == "BLOCKED"
 
 
 def test_system_acceptance_surfaces_warn_enforce_readiness():
@@ -2297,10 +2297,11 @@ def test_system_acceptance_surfaces_warn_enforce_readiness():
         lake_file_count=0,
         generated_at=datetime(2026, 6, 11, 10, tzinfo=UTC),
     )
-    row = next(row for row in dashboard.to_dicts() if row["check_name"] == "enforce_readiness_ok")
+    rows = {row["check_name"]: row for row in dashboard.to_dicts()}
 
-    assert row["status"] == "WARNING"
-    assert "readiness_status=WARN" in row["observed_value"]
+    assert rows["advisory_readiness_ok"]["status"] == "WARNING"
+    assert rows["entry_readiness_ok"]["status"] == "BLOCKED"
+    assert rows["scale_readiness_ok"]["status"] == "BLOCKED"
 
 
 def test_v5_bundle_sync_uses_latest_ingested_dataset_timestamp():

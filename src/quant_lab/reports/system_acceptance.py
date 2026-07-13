@@ -258,9 +258,14 @@ def build_system_acceptance_dashboard(
     checks.append(_api_auth_error_rate_check(api_latency_summary))
     checks.append(_github_ci_status_check(dict(pre_export_v5 or {})))
 
-    checks.append(_enforce_readiness_check(data_quality_warnings))
-
     v5_context = dict(pre_export_v5 or {})
+    checks.extend(
+        _readiness_checks(
+            data_quality_warnings,
+            report_frames.get("v5_enforce_readiness", pl.DataFrame()),
+            v5_context,
+        )
+    )
     authoritative = _truthy(v5_context.get("authoritative_snapshot"))
     stale = _truthy(v5_context.get("stale_v5_bundle"))
     v5_ok = not stale
@@ -290,51 +295,71 @@ def build_system_acceptance_dashboard(
     return _frame(checks, SYSTEM_ACCEPTANCE_FIELDS)
 
 
-def _enforce_readiness_check(
+def _readiness_checks(
     data_quality_warnings: list[str] | tuple[str, ...],
-) -> dict[str, Any]:
+    readiness: pl.DataFrame,
+    v5_context: Mapping[str, Any],
+) -> list[dict[str, Any]]:
     matches = [
         str(item)
         for item in data_quality_warnings
         if "quant_lab_enforce_readiness" in str(item).lower()
     ]
-    if not matches:
-        return _check(
-            "enforce_readiness_ok",
-            "PASS",
-            "no enforce readiness warning",
-            "readiness_status=READY or no blocking readiness warning",
-            "quant-lab",
-            "",
-        )
     observed = "; ".join(matches)
-    text = observed.lower()
-    if "readiness_status=blocked" in text:
-        return _check(
-            "enforce_readiness_ok",
-            "FAIL",
-            observed,
-            "readiness_status must not be BLOCKED",
-            "quant-lab",
-            "keep advisory shadow-only and restore blocked readiness inputs before promotion",
-        )
-    if "readiness_status=warn" in text:
-        return _check(
-            "enforce_readiness_ok",
-            "WARNING",
-            observed,
-            "readiness_status should be READY",
-            "quant-lab",
-            "review enforce readiness warnings before any promotion",
-        )
-    return _check(
-        "enforce_readiness_ok",
-        "WARNING",
-        observed,
-        "readiness_status must be observable",
-        "quant-lab",
-        "inspect reports/v5_enforce_readiness.json and data_quality.json",
+    latest = readiness.tail(1).to_dicts()[0] if not readiness.is_empty() else {}
+    advisory_state = str(
+        latest.get("readiness_status")
+        or latest.get("advisory_status")
+        or ("BLOCKED" if "readiness_status=blocked" in observed.lower() else "")
+        or ("WARN" if "readiness_status=warn" in observed.lower() else "ADVISORY_READY")
+    ).upper()
+    entry_state = str(latest.get("entry_status") or "BLOCKED").upper()
+    scale_state = str(latest.get("scale_status") or "BLOCKED").upper()
+    permission = str(
+        latest.get("permission_status")
+        or v5_context.get("permission_status")
+        or v5_context.get("risk_permission_status")
+        or "ACTIVE_ABORT"
+    ).upper()
+    canary_enabled = _truthy(
+        latest.get("canary_enabled") or v5_context.get("canary_enabled")
     )
+    advisory_ok = advisory_state in {"ADVISORY_READY", "READY", "PASS"}
+    entry_ok = (
+        entry_state in {"ENTRY_READY", "READY", "PASS"}
+        and permission not in {"ABORT", "ACTIVE_ABORT", "BLOCKED"}
+        and canary_enabled
+    )
+    scale_ok = (
+        scale_state in {"SCALE_READY", "READY", "PASS"}
+        and entry_ok
+    )
+    return [
+        _check(
+            "advisory_readiness_ok",
+            "PASS" if advisory_ok else ("WARNING" if advisory_state == "WARN" else "FAIL"),
+            f"advisory_status={advisory_state}",
+            "ADVISORY_READY",
+            "quant-lab",
+            "" if advisory_ok else "restore advisory data/service readiness",
+        ),
+        _check(
+            "entry_readiness_ok",
+            "PASS" if entry_ok else "BLOCKED",
+            f"entry_status={entry_state};permission_status={permission};canary_enabled={str(canary_enabled).lower()}",
+            "ENTRY_READY with non-abort permission and canary enabled",
+            "quant-lab + V5",
+            "keep shadow; do not enable Entry or Enforce" if not entry_ok else "",
+        ),
+        _check(
+            "scale_readiness_ok",
+            "PASS" if scale_ok else "BLOCKED",
+            f"scale_status={scale_state};entry_ready={str(entry_ok).lower()}",
+            "SCALE_READY after Entry readiness",
+            "quant-lab + V5",
+            "do not scale capital" if not scale_ok else "",
+        ),
+    ]
 
 
 def build_no_trigger_reasons(

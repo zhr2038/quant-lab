@@ -157,6 +157,36 @@ def test_expert_pack_current_proposals_use_authoritative_current_snapshot(tmp_pa
         published,
         lake / "gold" / "paper_strategy_proposals_current",
     )
+    proposal_rows = published.to_dicts()
+    current_ack = pl.DataFrame(
+        [
+            {
+                "proposal_id": proposal_rows[0]["proposal_id"],
+                "proposal_hash": proposal_rows[0]["proposal_hash"],
+                "paper_tracker_id": f"paper:{proposal_rows[0]['proposal_id']}",
+                "accepted": True,
+                "accepted_at": "2026-07-13T00:00:00Z",
+                "symbol": "TRX-USDT",
+                "live_order_effect": "none",
+            }
+        ]
+    )
+    current_registry = pl.DataFrame(
+        [
+            {
+                "proposal_id": row["proposal_id"],
+                "proposal_hash": row["proposal_hash"],
+                "paper_tracker_id": f"paper:{row['proposal_id']}",
+                "strategy_id": row["strategy_id"],
+                "accepted": True,
+                "accepted_at": "2026-07-13T00:00:00Z",
+                "status": "PAPER_TRACKING",
+                "symbol": "TRX-USDT",
+                "live_order_effect": "none",
+            }
+            for row in proposal_rows
+        ]
+    )
 
     members = daily_export_module._dataset_members(
         {
@@ -164,6 +194,8 @@ def test_expert_pack_current_proposals_use_authoritative_current_snapshot(tmp_pa
                 pl.col("strategy_id") == "TRX_F3_F4_DEDUP_8H_PAPER"
             ),
             "paper_strategy_proposals_current": published,
+            "paper_strategy_ack_current": current_ack,
+            "paper_strategy_registry_current": current_registry,
         },
         lake,
         pre_export_v5={},
@@ -176,6 +208,12 @@ def test_expert_pack_current_proposals_use_authoritative_current_snapshot(tmp_pa
     assert {row["strategy_id"] for row in current_rows} == {
         "TRX_F3_F4_DEDUP_8H_PAPER",
         "TRX_F3_F4_DEDUP_12H_PAPER",
+    }
+    current_ack_rows = list(
+        csv.DictReader(io.StringIO(members["reports/paper_strategy_ack_current.csv"]))
+    )
+    assert {row["proposal_id"] for row in current_ack_rows} == {
+        proposal_rows[0]["proposal_id"]
     }
 
 

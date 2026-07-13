@@ -6424,11 +6424,16 @@ def _dataset_members(
         "paper_strategy_identity_conflict", pl.DataFrame()
     )
     paper_cohort_manifest = frames.get("paper_cohort_manifest", pl.DataFrame())
+    raw_paper_strategy_ack_current = frames.get(
+        "paper_strategy_ack_current",
+        frames.get("v5_paper_strategy_proposal_ack", pl.DataFrame()),
+    )
+    paper_strategy_proposal_ack_current = _paper_strategy_proposal_ack_for_export(
+        raw_paper_strategy_ack_current,
+        paper_strategy_registry=pl.DataFrame(),
+    )
     paper_strategy_proposal_ack = _paper_strategy_proposal_ack_for_export(
-        frames.get(
-            "paper_strategy_ack_current",
-            frames.get("v5_paper_strategy_proposal_ack", pl.DataFrame()),
-        ),
+        raw_paper_strategy_ack_current,
         paper_strategy_registry=paper_strategy_registry,
     )
     paper_strategy_ack_history = _paper_strategy_proposal_ack_for_export(
@@ -7007,7 +7012,7 @@ def _dataset_members(
         ),
         "reports/paper_strategy_ack_current.csv": _csv_member(
             "reports/paper_strategy_ack_current.csv",
-            paper_strategy_proposal_ack,
+            paper_strategy_proposal_ack_current,
         ),
         "reports/paper_strategy_ack_history.csv": _csv_member(
             "reports/paper_strategy_ack_history.csv",

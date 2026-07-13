@@ -1802,6 +1802,8 @@ def _row_matches_key(row: Mapping[str, Any], key: _StrategyKey) -> bool:
     key_aliases = {key.proposal_id, key.paper_tracker_id}
     if aliases & key_aliases - {""}:
         return True
+    if aliases - {""}:
+        return False
     return (
         bool(key.strategy_candidate)
         and bool(key.symbol)

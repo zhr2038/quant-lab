@@ -214,6 +214,56 @@ def test_shared_entry_event_counts_once_across_horizons() -> None:
     assert {row["horizon_variant_count"] for row in gates} == {2}
 
 
+def test_structured_rows_do_not_cross_match_same_candidate_symbol() -> None:
+    proposal_8h = _proposal("TRX_F3_F4_DEDUP_8H_PAPER", proposal_hash="8" * 64, horizon=8)
+    proposal_12h = _proposal(
+        "TRX_F3_F4_DEDUP_12H_PAPER", proposal_hash="9" * 64, horizon=12
+    )
+    runs = []
+    daily = []
+    trusts = []
+    for proposal in (proposal_8h, proposal_12h):
+        runs.append(
+            {
+                "proposal_id": proposal["proposal_id"],
+                "paper_tracker_id": f"paper:{proposal['proposal_id']}",
+                "strategy_id": proposal["strategy_id"],
+                "strategy_candidate": "f3_f4_deduplicated_entry",
+                "symbol": "TRX/USDT",
+                "paper_pnl_bps": 10.0,
+                "cost_source": "configured_conservative_paper",
+                "entry_signal_ts": "2026-07-12T02:00:00Z",
+            }
+        )
+        daily.append(
+            {
+                "proposal_id": proposal["proposal_id"],
+                "paper_tracker_id": f"paper:{proposal['proposal_id']}",
+                "strategy_id": proposal["strategy_id"],
+                "strategy_candidate": "f3_f4_deduplicated_entry",
+                "symbol": "TRX/USDT",
+                "closed_entries": 1,
+                "cost_source_mix": '{"configured_conservative_paper":1}',
+            }
+        )
+        trusts.append(_cost_trust(proposal))
+
+    frames = build_paper_strategy_pipeline_frames(
+        proposals=pl.DataFrame([proposal_8h, proposal_12h]),
+        proposal_ack=pl.DataFrame([_ack(proposal_8h), _ack(proposal_12h)]),
+        runs=pl.DataFrame(runs),
+        daily=pl.DataFrame(daily),
+        strategy_cost_trust=pl.DataFrame(trusts),
+        created_at=NOW,
+    )
+
+    gates = frames["paper_strategy_promotion_gate"].to_dicts()
+    assert {row["raw_closed_trade_count"] for row in gates} == {1}
+    assert {row["closed_trade_cost_observation_count"] for row in gates} == {1}
+    assert {row["closed_trade_cost_coverage"] for row in gates} == {1.0}
+    assert sum(row["evidence_independence_weight"] for row in gates) == 1.0
+
+
 def test_tracker_id_must_belong_to_its_proposal(tmp_path) -> None:
     lake = tmp_path / "lake"
     proposal = _proposal(

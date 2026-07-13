@@ -293,7 +293,6 @@ def build_and_publish_paper_strategy_pipeline(
     )
     if existing_registry_history.is_empty():
         existing_registry_history = existing_registry
-    existing_gate = read_parquet_dataset(root / PAPER_STRATEGY_PROMOTION_GATE_DATASET)
     existing_proposals = read_parquet_dataset(root / PAPER_STRATEGY_PROPOSAL_DATASET)
     existing_migration_audit = read_parquet_dataset(root / PAPER_STRATEGY_MIGRATION_AUDIT_DATASET)
     configured = build_configured_proposals(
@@ -343,7 +342,6 @@ def build_and_publish_paper_strategy_pipeline(
     existing_registry_current = _filter_superseded_structured_rows(
         existing_registry_current, proposal_frame
     )
-    existing_gate = _filter_superseded_structured_rows(existing_gate, proposal_frame)
     migration_audit = _merge_migration_audit(
         existing_migration_audit,
         build_legacy_proposal_migration_audit(legacy_evidence, configured),
@@ -400,12 +398,6 @@ def build_and_publish_paper_strategy_pipeline(
         runs=paper_runs,
         proposals=proposal_frame,
         strategy_cost_trust=strategy_cost_trust,
-    )
-    gate = _merge_lifecycle_frame(
-        existing_gate,
-        gate,
-        schema=PAPER_STRATEGY_PROMOTION_GATE_SCHEMA,
-        rank=_gate_persistence_rank,
     )
     gate = _canonicalize_gate_identity(gate, proposal_frame)
     registry_history = _merge_lifecycle_frame(
@@ -1020,16 +1012,6 @@ def _registry_persistence_rank(row: Mapping[str, Any]) -> tuple[int, int, int, s
     accepted = _bool(row.get("accepted")) is True
     tracker = bool(_text(row.get("paper_tracker_id")))
     return int(rejected or accepted), int(tracker), int(accepted), _row_sort_ts(row)
-
-
-def _gate_persistence_rank(row: Mapping[str, Any]) -> tuple[int, int, int, int, str]:
-    return (
-        _int(row.get("paper_runs")) or 0,
-        _int(row.get("paper_days")) or 0,
-        _int(row.get("closed_entries")) or 0,
-        int(_bool(row.get("accepted")) is True),
-        _row_sort_ts(row),
-    )
 
 
 def build_paper_strategy_pipeline_frames(

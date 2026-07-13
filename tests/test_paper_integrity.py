@@ -264,6 +264,71 @@ def test_structured_rows_do_not_cross_match_same_candidate_symbol() -> None:
     assert sum(row["evidence_independence_weight"] for row in gates) == 1.0
 
 
+def test_published_gate_replaces_stale_derived_evidence(tmp_path) -> None:
+    lake = tmp_path / "lake"
+    proposal = _proposal(
+        "TRX_F3_F4_DEDUP_8H_PAPER", proposal_hash="a" * 64, horizon=8
+    )
+    write_parquet_dataset(
+        pl.DataFrame([proposal]), lake / "gold/paper_strategy_proposal"
+    )
+    write_parquet_dataset(
+        pl.DataFrame([_ack(proposal)]),
+        lake / "silver/v5_paper_strategy_proposal_ack_current",
+    )
+    write_parquet_dataset(
+        pl.DataFrame(
+            [
+                {
+                    "proposal_id": proposal["proposal_id"],
+                    "paper_tracker_id": f"paper:{proposal['proposal_id']}",
+                    "strategy_id": proposal["strategy_id"],
+                    "strategy_candidate": "f3_f4_deduplicated_entry",
+                    "symbol": "TRX/USDT",
+                    "paper_pnl_bps": 10.0,
+                    "cost_source": "configured_conservative_paper",
+                    "entry_signal_ts": "2026-07-12T02:00:00Z",
+                }
+            ]
+        ),
+        lake / "gold/paper_strategy_runs",
+    )
+    write_parquet_dataset(
+        pl.DataFrame(
+            [
+                {
+                    "proposal_id": proposal["proposal_id"],
+                    "paper_tracker_id": f"paper:{proposal['proposal_id']}",
+                    "strategy_id": proposal["strategy_id"],
+                    "strategy_candidate": "f3_f4_deduplicated_entry",
+                    "symbol": "TRX/USDT",
+                    "paper_pnl_observed_count": 1,
+                    "cost_source_mix": '{"configured_conservative_paper":1}',
+                }
+            ]
+        ),
+        lake / "gold/paper_strategy_daily",
+    )
+
+    build_and_publish_paper_strategy_pipeline(lake, as_of_date="2026-07-13")
+    stale = read_parquet_dataset(lake / "gold/paper_strategy_promotion_gate").with_columns(
+        pl.lit(99).alias("paper_runs"),
+        pl.lit(99).alias("closed_entries"),
+        pl.lit(99).alias("raw_closed_trade_count"),
+        pl.lit(99).alias("closed_trade_cost_observation_count"),
+        pl.lit(99.0).alias("closed_trade_cost_coverage"),
+    )
+    write_parquet_dataset(stale, lake / "gold/paper_strategy_promotion_gate")
+
+    build_and_publish_paper_strategy_pipeline(lake, as_of_date="2026-07-13")
+
+    gate = read_parquet_dataset(lake / "gold/paper_strategy_promotion_gate").to_dicts()[0]
+    assert gate["closed_entries"] == 1
+    assert gate["raw_closed_trade_count"] == 1
+    assert gate["closed_trade_cost_observation_count"] == 1
+    assert gate["closed_trade_cost_coverage"] == 1.0
+
+
 def test_tracker_id_must_belong_to_its_proposal(tmp_path) -> None:
     lake = tmp_path / "lake"
     proposal = _proposal(

@@ -29,6 +29,9 @@ class StrategyCostTrust(BaseModel):
     horizon_hours: int = Field(default=0, ge=0)
     cost_trust_level: str
     actual_sample_count: int = Field(ge=0)
+    bill_matched_sample_count: int = Field(default=0, ge=0)
+    arrival_observed_sample_count: int = Field(default=0, ge=0)
+    scale_ready_sample_count: int = Field(default=0, ge=0)
     mixed_sample_count: int = Field(ge=0)
     proxy_sample_count: int = Field(ge=0)
     sample_age_seconds: float | None = Field(default=None, ge=0)
@@ -75,6 +78,9 @@ def evaluate_strategy_cost_trust(
     condition_levels: list[_TrustRank] = []
     covered_dimensions: set[str] = set()
     missing_dimensions: set[str] = set()
+    bill_matched_sample_count = 0
+    arrival_observed_sample_count = 0
+    scale_ready_sample_count = 0
 
     for condition in required:
         missing_dimensions.update(
@@ -104,6 +110,17 @@ def evaluate_strategy_cost_trust(
                 fresh_matches.append(row)
                 if _matches_exact(condition, row):
                     fresh_exact_matches.append(row)
+        for row in fresh_exact_matches:
+            if _source_class(
+                str(row.get("cost_source") or row.get("source") or "proxy")
+            ) != "actual":
+                continue
+            sample_count = max(_to_int(row.get("sample_count")), 1)
+            bill_count = _bill_matched_count(row, sample_count)
+            arrival_count = _arrival_observed_count(row, sample_count)
+            bill_matched_sample_count += bill_count
+            arrival_observed_sample_count += arrival_count
+            scale_ready_sample_count += min(bill_count, arrival_count)
         condition_levels.append(
             _condition_level(fresh_matches, fresh_exact_matches)
             if fresh_matches
@@ -120,6 +137,9 @@ def evaluate_strategy_cost_trust(
         horizon_hours=max(int(horizon_hours), 0),
         cost_trust_level=overall.name,
         actual_sample_count=source_counts["actual"],
+        bill_matched_sample_count=bill_matched_sample_count,
+        arrival_observed_sample_count=arrival_observed_sample_count,
+        scale_ready_sample_count=scale_ready_sample_count,
         mixed_sample_count=source_counts["mixed"],
         proxy_sample_count=source_counts["proxy"],
         sample_age_seconds=max(ages) if ages else None,
@@ -150,6 +170,9 @@ def build_strategy_cost_trust_frame(
         "horizon_hours": pl.Int64,
         "cost_trust_level": pl.Utf8,
         "actual_sample_count": pl.Int64,
+        "bill_matched_sample_count": pl.Int64,
+        "arrival_observed_sample_count": pl.Int64,
+        "scale_ready_sample_count": pl.Int64,
         "mixed_sample_count": pl.Int64,
         "proxy_sample_count": pl.Int64,
         "sample_age_seconds": pl.Float64,
@@ -216,8 +239,14 @@ def _condition_level(
     local = Counter()
     for row in exact_rows:
         source = _source_class(str(row.get("cost_source") or row.get("source") or "proxy"))
-        local[source] += max(_to_int(row.get("sample_count")), 1)
-    if local["actual"] >= 30:
+        sample_count = max(_to_int(row.get("sample_count")), 1)
+        local[source] += sample_count
+        if source == "actual":
+            local["scale_ready"] += min(
+                _bill_matched_count(row, sample_count),
+                _arrival_observed_count(row, sample_count),
+            )
+    if local["scale_ready"] >= 30:
         return _TrustRank.SCALE_READY
     if local["actual"] >= 10 or (local["actual"] >= 5 and local["mixed"] >= 10):
         return _TrustRank.CANARY
@@ -355,6 +384,14 @@ def _normalize_cost_observation(row: Mapping[str, Any]) -> dict[str, Any]:
         "volatility_bucket": str(row.get("volatility_bucket") or "any").lower(),
         "cost_source": row.get("cost_source") or row.get("source") or "proxy",
         "sample_count": row.get("sample_count") or row.get("n") or 0,
+        "bill_matched_count": row.get("bill_matched_count"),
+        "bill_match_status": row.get("bill_match_status"),
+        "arrival_observed_count": row.get("arrival_observed_count")
+        or row.get("arrival_sample_count")
+        or row.get("arrival_mid_count"),
+        "arrival_mid_coverage": row.get("arrival_mid_coverage"),
+        "arrival_observed": row.get("arrival_observed"),
+        "arrival_mid": row.get("arrival_mid") or row.get("arrival_mid_px"),
         "observed_at": row.get("observed_at") or row.get("as_of_ts") or row.get("created_at"),
     }
 
@@ -375,3 +412,27 @@ def _normalize_paper_runtime_cost_observation(row: Mapping[str, Any]) -> dict[st
         or row.get("created_at")
         or row.get("ingest_ts"),
     }
+
+
+def _bill_matched_count(row: Mapping[str, Any], sample_count: int) -> int:
+    explicit = _to_int(row.get("bill_matched_count"))
+    if explicit > 0:
+        return min(explicit, sample_count)
+    status = str(row.get("bill_match_status") or "").strip().upper()
+    return sample_count if status in {"PASS", "MATCHED"} else 0
+
+
+def _arrival_observed_count(row: Mapping[str, Any], sample_count: int) -> int:
+    explicit = _to_int(
+        row.get("arrival_observed_count")
+        or row.get("arrival_sample_count")
+        or row.get("arrival_mid_count")
+    )
+    if explicit > 0:
+        return min(explicit, sample_count)
+    coverage = _to_float(row.get("arrival_mid_coverage"))
+    if coverage > 0:
+        return min(int(sample_count * min(coverage, 1.0)), sample_count)
+    if row.get("arrival_observed") is True or _to_float(row.get("arrival_mid")) > 0:
+        return sample_count
+    return 0

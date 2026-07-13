@@ -458,3 +458,55 @@ def test_cost_wildcards_support_paper_but_never_canary_or_live():
     assert result.paper_cost_usable is True
     assert result.canary_cost_usable is False
     assert result.live_cost_usable is False
+
+
+def test_scale_cost_trust_requires_actual_bill_and_arrival_evidence():
+    now = datetime(2026, 7, 10, tzinfo=UTC)
+    required = [{
+        "symbol": "TRX-USDT",
+        "notional_bucket": "0_20",
+        "market_regime": "normal",
+        "liquidity_role": "taker",
+        "order_leg": "entry",
+        "spread_bucket": "tight",
+        "volatility_bucket": "normal",
+    }]
+    base = {
+        **required[0],
+        "cost_source": "actual_fills",
+        "sample_count": 30,
+        "observed_at": "2026-07-10T00:00:00Z",
+    }
+
+    actual_only = evaluate_strategy_cost_trust(
+        strategy_id="TRX_SCALE",
+        required_conditions=required,
+        observations=[base],
+        now=now,
+    )
+    bill_only = evaluate_strategy_cost_trust(
+        strategy_id="TRX_SCALE",
+        required_conditions=required,
+        observations=[{**base, "bill_matched_count": 30}],
+        now=now,
+    )
+    complete = evaluate_strategy_cost_trust(
+        strategy_id="TRX_SCALE",
+        required_conditions=required,
+        observations=[{
+            **base,
+            "bill_matched_count": 30,
+            "arrival_observed_count": 30,
+        }],
+        now=now,
+    )
+
+    assert actual_only.cost_trust_level == "CANARY"
+    assert actual_only.live_cost_usable is False
+    assert bill_only.cost_trust_level == "CANARY"
+    assert bill_only.live_cost_usable is False
+    assert complete.cost_trust_level == "SCALE_READY"
+    assert complete.bill_matched_sample_count == 30
+    assert complete.arrival_observed_sample_count == 30
+    assert complete.scale_ready_sample_count == 30
+    assert complete.live_cost_usable is True

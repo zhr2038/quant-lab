@@ -39,6 +39,18 @@ AI_RUN_SCHEMA: dict[str, Any] = {
     "stage2_allowed": pl.Boolean,
     "executive_summary": pl.Utf8,
     "route_sections_json": pl.Utf8,
+    "prompt_version": pl.Utf8,
+    "source_pack_name": pl.Utf8,
+    "preflight_status": pl.Utf8,
+    "preflight_blockers_json": pl.Utf8,
+    "primary_bottleneck_id": pl.Utf8,
+    "root_cause_tree_json": pl.Utf8,
+    "next_actions_json": pl.Utf8,
+    "continuity_status": pl.Utf8,
+    "continuity_json": pl.Utf8,
+    "stage1_attempts": pl.Int64,
+    "stage2_attempts": pl.Int64,
+    "validation_events_json": pl.Utf8,
     "finding_count": pl.Int64,
     "factor_proposal_count": pl.Int64,
     "paper_draft_count": pl.Int64,
@@ -90,6 +102,8 @@ AI_FACTOR_SCHEMA: dict[str, Any] = {
     "falsification_conditions_json": pl.Utf8,
     "evidence_refs_json": pl.Utf8,
     "known_overlap_risk": pl.Utf8,
+    "research_thread_id": pl.Utf8,
+    "source_finding_ids_json": pl.Utf8,
     "model": pl.Utf8,
     "completed_at": pl.Datetime(time_zone="UTC"),
     "proposal_state": pl.Utf8,
@@ -118,6 +132,8 @@ AI_PAPER_DRAFT_SCHEMA: dict[str, Any] = {
     "falsification_conditions_json": pl.Utf8,
     "evidence_refs_json": pl.Utf8,
     "mode": pl.Utf8,
+    "research_thread_id": pl.Utf8,
+    "source_finding_ids_json": pl.Utf8,
     "model": pl.Utf8,
     "completed_at": pl.Datetime(time_zone="UTC"),
     "proposal_state": pl.Utf8,
@@ -140,6 +156,11 @@ AI_EXPERIMENT_SCHEMA: dict[str, Any] = {
     "mode": pl.Utf8,
     "risks_json": pl.Utf8,
     "evidence_refs_json": pl.Utf8,
+    "research_thread_id": pl.Utf8,
+    "source_finding_ids_json": pl.Utf8,
+    "falsification_conditions_json": pl.Utf8,
+    "stopping_conditions_json": pl.Utf8,
+    "regime_slices_json": pl.Utf8,
     "model": pl.Utf8,
     "completed_at": pl.Datetime(time_zone="UTC"),
     "proposal_state": pl.Utf8,
@@ -151,11 +172,14 @@ AI_EXPERIMENT_SCHEMA: dict[str, Any] = {
 
 AI_CODE_REVIEW_SCHEMA: dict[str, Any] = {
     "task_id": pl.Utf8,
+    "target_id": pl.Utf8,
     "repository": pl.Utf8,
     "path_or_component": pl.Utf8,
     "reason": pl.Utf8,
     "expected_evidence": pl.Utf8,
     "priority": pl.Utf8,
+    "source_finding_ids_json": pl.Utf8,
+    "origin_stage": pl.Utf8,
     "model": pl.Utf8,
     "completed_at": pl.Datetime(time_zone="UTC"),
     "requires_human_review": pl.Boolean,
@@ -199,7 +223,11 @@ def import_ai_research_results(
             result = _load_result(result_dir / "result.json")
             task = _load_task_for_result(queue, result.task_id)
             _validate_result_against_task(result, task)
-            _publish_result(result, lake_root=Path(lake_root))
+            _publish_result(result, task=task, lake_root=Path(lake_root))
+            _atomic_write_json(
+                queue / "state" / "latest_research_context.json",
+                _research_context_payload(result),
+            )
             destination = imported / result.task_id
             _replace_directory(result_dir, destination)
             _atomic_write_json(
@@ -246,7 +274,12 @@ def import_ai_research_results(
     return summary
 
 
-def _publish_result(result: AIResearchResult, *, lake_root: Path) -> None:
+def _publish_result(
+    result: AIResearchResult,
+    *,
+    task: AIResearchTask,
+    lake_root: Path,
+) -> None:
     completed = result.completed_at.astimezone(UTC)
     proposals = result.proposals
     finding_groups = {
@@ -255,6 +288,10 @@ def _publish_result(result: AIResearchResult, *, lake_root: Path) -> None:
         "missing_evidence": result.diagnosis.missing_evidence,
     }
     finding_count = sum(len(items) for items in finding_groups.values())
+    stage2_code_targets = proposals.code_review_targets if proposals else []
+    code_review_target_count = len(result.diagnosis.code_review_targets) + len(
+        stage2_code_targets
+    )
 
     run_rows = [
         {
@@ -270,18 +307,38 @@ def _publish_result(result: AIResearchResult, *, lake_root: Path) -> None:
             "stage2_allowed": result.diagnosis.stage2_allowed,
             "executive_summary": result.diagnosis.executive_summary,
             "route_sections_json": canonical_json(result.diagnosis.route_sections),
+            "prompt_version": result.prompt_version,
+            "source_pack_name": task.source_pack_name,
+            "preflight_status": task.preflight.status if task.preflight else "NOT_AVAILABLE",
+            "preflight_blockers_json": canonical_json(
+                task.preflight.blockers if task.preflight else []
+            ),
+            "primary_bottleneck_id": result.diagnosis.primary_bottleneck_id,
+            "root_cause_tree_json": canonical_json(
+                [item.model_dump(mode="json") for item in result.diagnosis.root_cause_tree]
+            ),
+            "next_actions_json": canonical_json(
+                [item.model_dump(mode="json") for item in result.diagnosis.next_actions]
+            ),
+            "continuity_status": result.diagnosis.continuity.status,
+            "continuity_json": canonical_json(
+                result.diagnosis.continuity.model_dump(mode="json")
+            ),
+            "stage1_attempts": result.stage1_attempts,
+            "stage2_attempts": result.stage2_attempts,
+            "validation_events_json": result.validation_events_json,
             "finding_count": finding_count,
             "factor_proposal_count": len(proposals.factor_proposals) if proposals else 0,
             "paper_draft_count": len(proposals.paper_strategy_drafts) if proposals else 0,
             "experiment_count": len(proposals.experiment_proposals) if proposals else 0,
-            "code_review_target_count": len(proposals.code_review_targets) if proposals else 0,
+            "code_review_target_count": code_review_target_count,
             "usage_json": result.usage_json,
             "warnings_json": canonical_json(result.warnings),
             "schema_version": result.schema_version,
             "diagnostic_only": True,
             "live_order_effect": LIVE_ORDER_EFFECT,
             "created_at": datetime.now(UTC),
-            "source": "ai_research.importer.v1",
+            "source": "ai_research.importer.v2",
         }
     ]
     _upsert_rows(
@@ -313,7 +370,7 @@ def _publish_result(result: AIResearchResult, *, lake_root: Path) -> None:
                     "completed_at": completed,
                     "diagnostic_only": True,
                     "live_order_effect": LIVE_ORDER_EFFECT,
-                    "source": "ai_research.importer.v1",
+                    "source": "ai_research.importer.v2",
                 }
             )
     _upsert_rows(
@@ -323,8 +380,9 @@ def _publish_result(result: AIResearchResult, *, lake_root: Path) -> None:
         keys=["task_id", "finding_group", "finding_id"],
     )
 
-    if proposals is None:
-        return
+    factor_proposals = proposals.factor_proposals if proposals else []
+    paper_strategy_drafts = proposals.paper_strategy_drafts if proposals else []
+    experiment_proposals = proposals.experiment_proposals if proposals else []
 
     factor_rows = [
         {
@@ -349,15 +407,17 @@ def _publish_result(result: AIResearchResult, *, lake_root: Path) -> None:
                 [reference.model_dump(mode="json") for reference in item.evidence_refs]
             ),
             "known_overlap_risk": item.known_overlap_risk,
+            "research_thread_id": item.research_thread_id,
+            "source_finding_ids_json": canonical_json(item.source_finding_ids),
             "model": result.model,
             "completed_at": completed,
             "proposal_state": "AI_RESEARCH_DRAFT",
             "requires_human_review": True,
             "diagnostic_only": True,
             "live_order_effect": LIVE_ORDER_EFFECT,
-            "source": "ai_research.importer.v1",
+            "source": "ai_research.importer.v2",
         }
-        for item in proposals.factor_proposals
+        for item in factor_proposals
     ]
     _upsert_rows(
         factor_rows,
@@ -392,15 +452,17 @@ def _publish_result(result: AIResearchResult, *, lake_root: Path) -> None:
                 [reference.model_dump(mode="json") for reference in item.evidence_refs]
             ),
             "mode": item.mode,
+            "research_thread_id": item.research_thread_id,
+            "source_finding_ids_json": canonical_json(item.source_finding_ids),
             "model": result.model,
             "completed_at": completed,
             "proposal_state": "AI_RESEARCH_DRAFT",
             "requires_human_review": True,
             "diagnostic_only": True,
             "live_order_effect": LIVE_ORDER_EFFECT,
-            "source": "ai_research.importer.v1",
+            "source": "ai_research.importer.v2",
         }
-        for item in proposals.paper_strategy_drafts
+        for item in paper_strategy_drafts
     ]
     _upsert_rows(
         paper_rows,
@@ -425,15 +487,20 @@ def _publish_result(result: AIResearchResult, *, lake_root: Path) -> None:
             "evidence_refs_json": canonical_json(
                 [reference.model_dump(mode="json") for reference in item.evidence_refs]
             ),
+            "research_thread_id": item.research_thread_id,
+            "source_finding_ids_json": canonical_json(item.source_finding_ids),
+            "falsification_conditions_json": canonical_json(item.falsification_conditions),
+            "stopping_conditions_json": canonical_json(item.stopping_conditions),
+            "regime_slices_json": canonical_json(item.regime_slices),
             "model": result.model,
             "completed_at": completed,
             "proposal_state": "AI_RESEARCH_DRAFT",
             "requires_human_review": True,
             "diagnostic_only": True,
             "live_order_effect": LIVE_ORDER_EFFECT,
-            "source": "ai_research.importer.v1",
+            "source": "ai_research.importer.v2",
         }
-        for item in proposals.experiment_proposals
+        for item in experiment_proposals
     ]
     _upsert_rows(
         experiment_rows,
@@ -442,29 +509,62 @@ def _publish_result(result: AIResearchResult, *, lake_root: Path) -> None:
         keys=["task_id", "proposal_id"],
     )
 
+    stage1_code_targets = [
+        (item, "STAGE1_DIAGNOSTIC") for item in result.diagnosis.code_review_targets
+    ]
+    stage2_code_targets_with_origin = [
+        (item, "STAGE2_RESEARCH") for item in stage2_code_targets
+    ]
     code_rows = [
         {
             "task_id": result.task_id,
+            "target_id": item.target_id,
             "repository": item.repository,
             "path_or_component": item.path_or_component,
             "reason": item.reason,
             "expected_evidence": item.expected_evidence,
             "priority": item.priority,
+            "source_finding_ids_json": canonical_json(item.source_finding_ids),
+            "origin_stage": origin_stage,
             "model": result.model,
             "completed_at": completed,
             "requires_human_review": True,
             "diagnostic_only": True,
             "live_order_effect": LIVE_ORDER_EFFECT,
-            "source": "ai_research.importer.v1",
+            "source": "ai_research.importer.v2",
         }
-        for item in proposals.code_review_targets
+        for item, origin_stage in stage1_code_targets + stage2_code_targets_with_origin
     ]
     _upsert_rows(
         code_rows,
         schema=AI_CODE_REVIEW_SCHEMA,
         path=lake_root / AI_CODE_REVIEW_DATASET,
-        keys=["task_id", "repository", "path_or_component"],
+        keys=["task_id", "target_id"],
     )
+
+
+def _research_context_payload(result: AIResearchResult) -> dict[str, Any]:
+    findings = (
+        result.diagnosis.primary_bottlenecks
+        + result.diagnosis.contradictions
+        + result.diagnosis.missing_evidence
+    )
+    return {
+        "task_id": result.task_id,
+        "completed_at": result.completed_at.astimezone(UTC).isoformat(),
+        "system_state": result.diagnosis.system_state,
+        "executive_summary": result.diagnosis.executive_summary,
+        "findings": [
+            {
+                "finding_id": item.finding_id,
+                "category": item.category,
+                "severity": item.severity,
+                "summary": item.summary,
+            }
+            for item in findings[:24]
+        ],
+        "next_action_ids": [item.action_id for item in result.diagnosis.next_actions],
+    }
 
 
 def _upsert_rows(
@@ -507,12 +607,20 @@ def _validate_result_against_task(result: AIResearchResult, task: AIResearchTask
         raise ValueError("result source_pack_sha256 does not match task")
     if result.packet_sha256 != task.packet_sha256:
         raise ValueError("result packet_sha256 does not match task")
+    if task.preflight and task.preflight.status == "BLOCK" and result.diagnosis.stage2_allowed:
+        raise ValueError("blocked deterministic preflight cannot enter Stage 2")
+    previous_context = task.previous_research_context
+    continuity = result.diagnosis.continuity
+    if previous_context is None:
+        if continuity.status != "FIRST_RUN" or continuity.previous_task_id is not None:
+            raise ValueError("continuity must be FIRST_RUN without previous research context")
+    elif continuity.previous_task_id != previous_context.task_id:
+        raise ValueError("continuity previous_task_id does not match task context")
     routed = set(result.diagnosis.route_sections)
     unknown_sections = routed - set(task.sections)
     if unknown_sections:
         raise ValueError(f"diagnosis routed unknown sections: {sorted(unknown_sections)}")
-    _validate_evidence_references(
-        [
+    stage1_references = [
             reference
             for finding in (
                 *result.diagnosis.primary_bottlenecks,
@@ -520,7 +628,19 @@ def _validate_result_against_task(result: AIResearchResult, task: AIResearchTask
                 *result.diagnosis.missing_evidence,
             )
             for reference in finding.evidence_refs
-        ],
+        ]
+    stage1_references.extend(
+        reference
+        for node in result.diagnosis.root_cause_tree
+        for reference in node.evidence_refs
+    )
+    stage1_references.extend(
+        reference
+        for action in result.diagnosis.next_actions
+        for reference in action.evidence_refs
+    )
+    _validate_evidence_references(
+        stage1_references,
         task=task,
         allowed_sections=set(task.sections),
     )

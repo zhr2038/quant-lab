@@ -70,6 +70,18 @@ def test_bigscreen_snapshot_exposes_ai_research_without_live_effect(monkeypatch,
                     "reasoning_effort": "xhigh",
                     "system_state": "READY_FOR_PROPOSALS",
                     "stage2_allowed": True,
+                    "preflight_status": "PASS",
+                    "primary_bottleneck_id": "finding-1",
+                    "root_cause_tree_json": json.dumps(
+                        [{"node_id": "root-1", "label": "Paper chain is incomplete."}]
+                    ),
+                    "next_actions_json": json.dumps(
+                        [{"action_id": "action-1", "title": "Repair the tracker chain."}]
+                    ),
+                    "continuity_json": json.dumps(
+                        {"status": "FIRST_RUN", "summary": "First run."}
+                    ),
+                    "validation_events_json": "[]",
                     "completed_at": completed_at,
                     "diagnostic_only": True,
                     "live_order_effect": "none_read_only_research",
@@ -108,6 +120,10 @@ def test_bigscreen_snapshot_exposes_ai_research_without_live_effect(monkeypatch,
     assert ai["counts"]["finding_count"] == 1
     assert ai["queue"]["counts"]["pending"] == 1
     assert ai["latest_run"]["task_id"] == "task-imported"
+    assert ai["primary_bottleneck_id"] == "finding-1"
+    assert ai["root_cause_tree"][0]["node_id"] == "root-1"
+    assert ai["next_actions"][0]["action_id"] == "action-1"
+    assert ai["continuity"]["status"] == "FIRST_RUN"
 
 
 def test_bigscreen_snapshot_kpis_include_market_bar_close_time(tmp_path):

@@ -23,6 +23,7 @@
 4. 每个因子必须包含：经济逻辑、可证伪条件、预期 horizon、证据引用和已知重叠风险。
 5. 优先提出少量独立、可验证的组合因子；不要批量重命名单特征。
 6. 若与现有因子明显重复，应说明 overlap risk，不应伪装成新 Alpha。
+7. 每个提案必须给出稳定 `research_thread_id` 和 `source_finding_ids`，把研究假设追溯到 Stage 1 的具体问题。
 
 ## Paper 策略草案约束
 
@@ -31,6 +32,7 @@
 3. field 必须来自证据包中真实可用的市场字段。
 4. 每个草案必须有明确的 entry、exit、最小/最大持仓、冷却、证伪条件和 evidence_ref。
 5. mode 只能是 shadow 或 paper；不得建议 live。
+6. 草案必须通过 `research_thread_id` 和 `source_finding_ids` 关联到同一条研究问题链。
 
 ## 实验提案约束
 
@@ -38,6 +40,13 @@
 2. 成功指标应优先使用：样本外 Rank IC、after-cost quantile spread、净收益分布、最大回撤、false-block reduction、exit attribution、真实滑点覆盖。
 3. 禁止只以单一胜率或模型主观评分作为成功标准。
 4. 对证据不足的问题，优先设计采集/验证实验，而不是直接给结论。
+5. 每个实验必须明确 falsification_conditions、stopping_conditions 和 regime_slices，避免只定义成功、不定义失败与停止。
+6. 实验、因子、Paper 草案和代码复核目标必须引用真实存在的 Stage 1 finding_id。
+
+## 复核目标
+
+1. 每个代码复核目标必须有稳定 target_id、source_finding_ids、可验收 expected_evidence。
+2. 复核目标可以定位 quant-lab 或 V5-prod，但只能供人工检查；不得触发修改、部署或实盘行为。
 
 ## 质量要求
 

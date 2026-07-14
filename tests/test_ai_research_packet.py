@@ -49,6 +49,9 @@ def test_packet_uses_existing_expert_pack_and_deduplicates(tmp_path) -> None:
     assert "core_state" in task.sections
     assert "factor_research" in task.sections
     assert "trade_learning" in task.sections
+    assert task.preflight is not None
+    assert task.preflight.status == "BLOCK"
+    assert task.preflight.missing_core_members == ["provenance.json"]
     assert all(
         "restricted" not in doc.source_member
         for docs in task.sections.values()
@@ -114,3 +117,17 @@ def test_default_packet_stays_within_model_input_budget(tmp_path) -> None:
 
     assert task is not None
     assert len(canonical_json(task.model_dump(mode="json")).encode("utf-8")) < 400_000
+
+
+def test_packet_preflight_passes_with_complete_core_identity(tmp_path) -> None:
+    pack = tmp_path / "quant_lab_expert_pack_complete.zip"
+    with zipfile.ZipFile(pack, "w") as archive:
+        archive.writestr("manifest.json", "{}")
+        archive.writestr("provenance.json", "{}")
+        archive.writestr("data_quality.json", "{}")
+
+    task, _ = build_ai_research_task(pack, queue_root=tmp_path / "queue")
+
+    assert task is not None and task.preflight is not None
+    assert task.preflight.status == "PASS"
+    assert task.preflight.blockers == []

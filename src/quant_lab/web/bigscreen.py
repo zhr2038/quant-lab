@@ -584,6 +584,7 @@ def _safe_ai_research_summary(
     queue = _ai_queue_status()
     run_rows = _ai_rows(frames["ai_research_run"], sort_by="completed_at", limit=8)
     latest_run = run_rows[0] if run_rows else {}
+    latest_task_id = str(latest_run.get("task_id") or "")
     counts = {
         "run_count": frames["ai_research_run"].height,
         "finding_count": frames["ai_research_finding"].height,
@@ -604,6 +605,22 @@ def _safe_ai_research_summary(
     else:
         status = "WAITING_FOR_FIRST_RESULT"
 
+    current_findings = _ai_rows_for_task(
+        frames["ai_research_finding"], latest_task_id, sort_by="completed_at", limit=12
+    )
+    current_factors = _ai_rows_for_task(
+        frames["ai_factor_proposal"], latest_task_id, sort_by="completed_at", limit=10
+    )
+    current_paper_drafts = _ai_rows_for_task(
+        frames["ai_paper_strategy_draft"], latest_task_id, sort_by="completed_at", limit=8
+    )
+    current_experiments = _ai_rows_for_task(
+        frames["ai_experiment_proposal"], latest_task_id, sort_by="completed_at", limit=8
+    )
+    current_code_targets = _ai_rows_for_task(
+        frames["ai_code_review_target"], latest_task_id, sort_by="completed_at", limit=8
+    )
+
     return {
         "status": status,
         "mode": "diagnostic_only",
@@ -615,31 +632,16 @@ def _safe_ai_research_summary(
         "counts": counts,
         "queue": queue,
         "recent_runs": run_rows,
-        "findings": _ai_rows(
-            frames["ai_research_finding"],
-            sort_by="completed_at",
-            limit=12,
-        ),
-        "factor_proposals": _ai_rows(
-            frames["ai_factor_proposal"],
-            sort_by="completed_at",
-            limit=10,
-        ),
-        "paper_strategy_drafts": _ai_rows(
-            frames["ai_paper_strategy_draft"],
-            sort_by="completed_at",
-            limit=8,
-        ),
-        "experiment_proposals": _ai_rows(
-            frames["ai_experiment_proposal"],
-            sort_by="completed_at",
-            limit=8,
-        ),
-        "code_review_targets": _ai_rows(
-            frames["ai_code_review_target"],
-            sort_by="completed_at",
-            limit=8,
-        ),
+        "primary_bottleneck_id": latest_run.get("primary_bottleneck_id"),
+        "root_cause_tree": _json_array(latest_run.get("root_cause_tree_json")),
+        "next_actions": _json_array(latest_run.get("next_actions_json")),
+        "continuity": _json_object(latest_run.get("continuity_json")),
+        "validation_events": _json_array(latest_run.get("validation_events_json")),
+        "findings": current_findings,
+        "factor_proposals": current_factors,
+        "paper_strategy_drafts": current_paper_drafts,
+        "experiment_proposals": current_experiments,
+        "code_review_targets": current_code_targets,
         "warnings": warnings,
     }
 
@@ -651,6 +653,46 @@ def _ai_rows(frame: pl.DataFrame, *, sort_by: str, limit: int) -> list[dict[str,
     if sort_by in frame.columns:
         ordered = frame.sort(sort_by, descending=True, nulls_last=True)
     return _frame_rows(ordered, limit=limit)
+
+
+def _ai_rows_for_task(
+    frame: pl.DataFrame,
+    task_id: str,
+    *,
+    sort_by: str,
+    limit: int,
+) -> list[dict[str, Any]]:
+    if frame.is_empty() or not task_id or "task_id" not in frame.columns:
+        return []
+    return _ai_rows(
+        frame.filter(pl.col("task_id") == task_id),
+        sort_by=sort_by,
+        limit=limit,
+    )
+
+
+def _json_array(value: Any) -> list[dict[str, Any]]:
+    if isinstance(value, list):
+        return [item for item in value if isinstance(item, dict)]
+    if not isinstance(value, str) or not value.strip():
+        return []
+    try:
+        parsed = json.loads(value)
+    except (TypeError, ValueError):
+        return []
+    return [item for item in parsed if isinstance(item, dict)] if isinstance(parsed, list) else []
+
+
+def _json_object(value: Any) -> dict[str, Any]:
+    if isinstance(value, dict):
+        return value
+    if not isinstance(value, str) or not value.strip():
+        return {}
+    try:
+        parsed = json.loads(value)
+    except (TypeError, ValueError):
+        return {}
+    return parsed if isinstance(parsed, dict) else {}
 
 
 def _ai_queue_root() -> Path:

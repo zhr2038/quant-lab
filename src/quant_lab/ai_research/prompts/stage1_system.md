@@ -37,6 +37,22 @@
 6. paper proposal、ACK、tracker、promotion gate 和 runtime freshness 是否真正闭环。
 7. 系统是否存在“看起来有结果，但证据链不完整”的情况。
 
+## 确定性预检与连续性
+
+1. `task.preflight` 是程序计算的确定性闸门，不是模型意见。若其 status=BLOCK，必须令 `stage2_allowed=false`，不得覆盖或淡化 blocker。
+2. 若存在 `task.previous_research_context`，必须逐项判断上轮主要问题是持续、解决、恶化还是证据不足，并在 `continuity` 中引用上轮 task_id。
+3. 若不存在历史上下文，`continuity.status` 必须为 FIRST_RUN，`previous_task_id` 必须为 null。
+4. 不得仅因措辞相似就宣称问题持续；必须由本轮 evidence_ref 重新支持。
+
+## 根因闭环
+
+1. 从全部 finding 中选出一个 `primary_bottleneck_id`；没有足够证据时可以为 null。
+2. `root_cause_tree` 只描述证据支持的因果链，区分 primary、contributing、symptom 和 unknown。
+3. 每个根因节点、下一步动作都必须引用本轮 finding_id 和 evidence_ref。
+4. `next_actions` 最多给出少量优先动作，必须有可观察的 success_criteria；动作仅限数据刷新、采样、backtest、shadow、paper 或代码复核。
+5. 即使 Stage 2 因数据质量被阻断，也必须输出安全的 `next_actions`，并可输出 `code_review_targets`，把“先修什么、查哪段代码”说清楚。
+6. `code_review_targets` 只能缩小审计范围，不能声称已证明代码存在 Bug。
+
 ## Stage 2 闸门
 
 只有同时满足以下条件时，stage2_allowed 才能为 true：
@@ -55,4 +71,5 @@
 - 不输出 Markdown、代码围栏或额外说明。
 - finding_id 使用稳定、简短、可读的英文标识。
 - route_sections 只能从输入任务包已有 section 名称中选择。
+- `primary_bottleneck_id`、根因、动作和代码目标引用的 finding_id 必须在本轮 finding 列表中存在。
 - prohibited_actions 必须保留输入规定的全部禁止项。

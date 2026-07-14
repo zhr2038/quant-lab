@@ -12,6 +12,7 @@ from quant_lab.ai_research.contracts import (
     FactorProposal,
     KeyValue,
     ResearchFinding,
+    RootCauseNode,
     Stage1Diagnosis,
     Stage2ProposalSet,
     strict_output_schema,
@@ -72,6 +73,8 @@ def test_factor_proposal_is_research_only_and_has_lag() -> None:
         falsification_conditions=["after-cost spread is non-positive"],
         evidence_refs=[_evidence()],
         known_overlap_risk="May overlap with existing liquidity-adjusted momentum.",
+        research_thread_id="thread-factor-1",
+        source_finding_ids=["finding-1"],
     )
     assert proposal.research_only is True
     assert proposal.live_order_effect == "none_read_only_research"
@@ -168,4 +171,23 @@ def test_result_requires_ordered_utc_timestamps() -> None:
             completed_at=datetime(2026, 7, 14, 1, tzinfo=UTC),
             diagnosis=diagnosis,
             proposals=None,
+        )
+
+
+def test_stage1_root_cause_must_reference_current_finding() -> None:
+    with pytest.raises(ValidationError, match="unknown findings"):
+        Stage1Diagnosis(
+            task_id="task-root-cause",
+            system_state="REVIEW_REQUIRED",
+            executive_summary="Review only.",
+            stage2_allowed=False,
+            root_cause_tree=[
+                RootCauseNode(
+                    node_id="root-1",
+                    label="Unlinked root cause.",
+                    causal_role="primary",
+                    source_finding_ids=["missing-finding"],
+                    evidence_refs=[_evidence()],
+                )
+            ],
         )

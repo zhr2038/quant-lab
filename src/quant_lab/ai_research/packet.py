@@ -19,6 +19,8 @@ from quant_lab.ai_research.contracts import (
     PROHIBITED_ACTIONS,
     AIResearchTask,
     EvidenceDocument,
+    PriorResearchContext,
+    TaskPreflight,
     canonical_json,
     compute_task_packet_sha256,
 )
@@ -230,6 +232,15 @@ def build_ai_research_task(
     if not sections:
         raise ValueError(f"No supported evidence members found in expert pack: {pack}")
 
+    preflight = _build_task_preflight(
+        sections,
+        checked_at=created,
+        packet_warnings=warnings,
+    )
+    previous_research_context = _load_previous_research_context(
+        state_root / "latest_research_context.json"
+    )
+
     base_payload = {
         "schema_version": "quant_lab.ai_research_task.v1",
         "prompt_version": AI_PROMPT_VERSION,
@@ -241,6 +252,12 @@ def build_ai_research_task(
             key: [item.model_dump(mode="json") for item in value]
             for key, value in sorted(sections.items())
         },
+        "preflight": preflight.model_dump(mode="json"),
+        "previous_research_context": (
+            previous_research_context.model_dump(mode="json")
+            if previous_research_context is not None
+            else None
+        ),
         "allowed_factor_templates": _ALLOWED_FACTOR_TEMPLATES,
         "prohibited_actions": list(PROHIBITED_ACTIONS),
         "warnings": sorted(set(warnings)),
@@ -295,6 +312,65 @@ def build_ai_research_task(
         },
     )
     return task, task_path
+
+
+def _build_task_preflight(
+    sections: dict[str, list[EvidenceDocument]],
+    *,
+    checked_at: datetime,
+    packet_warnings: list[str],
+) -> TaskPreflight:
+    required_core_members = ["manifest.json", "provenance.json", "data_quality.json"]
+    core_members = {
+        document.source_member.lower().lstrip("./")
+        for document in sections.get("core_state", [])
+    }
+    missing_core_members = [
+        member for member in required_core_members if member not in core_members
+    ]
+    truncated_documents = [
+        document
+        for documents in sections.values()
+        for document in documents
+        if document.truncated
+    ]
+    truncated_core_members = sorted(
+        document.source_member
+        for document in sections.get("core_state", [])
+        if document.truncated
+    )
+    blockers = [f"missing_core_member:{member}" for member in missing_core_members]
+    blockers.extend(f"truncated_core_member:{member}" for member in truncated_core_members)
+    warnings = sorted(set(packet_warnings))
+    if truncated_documents and not truncated_core_members:
+        warnings.append(f"truncated_non_core_documents:{len(truncated_documents)}")
+    status: str
+    if blockers:
+        status = "BLOCK"
+    elif warnings:
+        status = "WARN"
+    else:
+        status = "PASS"
+    return TaskPreflight(
+        status=status,
+        checked_at=checked_at,
+        available_sections=sorted(sections),
+        required_core_members=required_core_members,
+        missing_core_members=missing_core_members,
+        truncated_document_count=len(truncated_documents),
+        blockers=sorted(set(blockers)),
+        warnings=warnings,
+    )
+
+
+def _load_previous_research_context(path: Path) -> PriorResearchContext | None:
+    payload = _read_json_object(path)
+    if not payload:
+        return None
+    try:
+        return PriorResearchContext.model_validate(payload)
+    except (TypeError, ValueError):
+        return None
 
 
 def build_task_from_latest_export(
@@ -360,7 +436,14 @@ def _select_members(
                     0,
                 )
                 reports_bonus = 5 if lower.startswith("reports/") else 0
-                ranked.append((score + suffix_bonus + reports_bonus, lower, info))
+                root_core_bonus = 30 if lower in {
+                    "manifest.json",
+                    "provenance.json",
+                    "data_quality.json",
+                } else 0
+                ranked.append(
+                    (score + suffix_bonus + reports_bonus + root_core_bonus, lower, info)
+                )
         section_items: list[zipfile.ZipInfo] = []
         for _score, _name, info in sorted(ranked, key=lambda item: (-item[0], item[1])):
             if info.filename in used:

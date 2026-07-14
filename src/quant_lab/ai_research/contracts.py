@@ -11,7 +11,11 @@ AI_TASK_SCHEMA_VERSION = "quant_lab.ai_research_task.v1"
 AI_STAGE1_SCHEMA_VERSION = "quant_lab.ai_research_diagnosis.v1"
 AI_STAGE2_SCHEMA_VERSION = "quant_lab.ai_research_proposals.v1"
 AI_RESULT_SCHEMA_VERSION = "quant_lab.ai_research_result.v1"
-AI_PROMPT_VERSION = "quant_lab.ai_research.prompt.v1"
+AI_PROMPT_VERSION = "quant_lab.ai_research.prompt.v2"
+SUPPORTED_AI_PROMPT_VERSIONS = (
+    "quant_lab.ai_research.prompt.v1",
+    AI_PROMPT_VERSION,
+)
 
 LIVE_ORDER_EFFECT = "none_read_only_research"
 PROHIBITED_ACTIONS = (
@@ -51,6 +55,23 @@ ResearchCategory = Literal[
 FindingStatus = Literal["observed", "hypothesis", "insufficient_evidence"]
 FindingSeverity = Literal["info", "warning", "critical"]
 ResearchMode = Literal["backtest", "shadow", "paper"]
+PreflightStatus = Literal["PASS", "WARN", "BLOCK"]
+ContinuityStatus = Literal[
+    "FIRST_RUN",
+    "CONTINUING",
+    "RESOLVED",
+    "REGRESSED",
+    "CHANGED",
+    "INSUFFICIENT_EVIDENCE",
+]
+DiagnosticActionType = Literal[
+    "refresh_evidence",
+    "collect_samples",
+    "backtest",
+    "shadow_experiment",
+    "paper_experiment",
+    "code_review",
+]
 PaperDirection = Literal["long", "short"]
 RuleMatch = Literal["all", "any"]
 RuleOperator = Literal[
@@ -117,6 +138,100 @@ class ResearchFinding(StrictModel):
         return self
 
 
+class TaskPreflight(StrictModel):
+    status: PreflightStatus
+    checked_at: datetime
+    available_sections: list[str] = Field(default_factory=list, max_length=16)
+    required_core_members: list[str] = Field(default_factory=list, max_length=16)
+    missing_core_members: list[str] = Field(default_factory=list, max_length=16)
+    truncated_document_count: int = Field(ge=0)
+    blockers: list[str] = Field(default_factory=list, max_length=32)
+    warnings: list[str] = Field(default_factory=list, max_length=32)
+
+    @model_validator(mode="after")
+    def status_matches_blockers(self) -> TaskPreflight:
+        _require_utc(self.checked_at, field_name="preflight.checked_at")
+        if self.status == "BLOCK" and not self.blockers:
+            raise ValueError("BLOCK preflight requires at least one blocker")
+        if self.status != "BLOCK" and self.blockers:
+            raise ValueError("preflight blockers require status=BLOCK")
+        return self
+
+
+class PriorFindingSummary(StrictModel):
+    finding_id: str = Field(min_length=1, max_length=120)
+    category: ResearchCategory
+    severity: FindingSeverity
+    summary: str = Field(min_length=1, max_length=500)
+
+
+class PriorResearchContext(StrictModel):
+    task_id: str = Field(min_length=1, max_length=160)
+    completed_at: datetime
+    system_state: str = Field(min_length=1, max_length=120)
+    executive_summary: str = Field(min_length=1, max_length=3000)
+    findings: list[PriorFindingSummary] = Field(default_factory=list, max_length=24)
+    next_action_ids: list[str] = Field(default_factory=list, max_length=24)
+
+    @model_validator(mode="after")
+    def completed_at_is_utc(self) -> PriorResearchContext:
+        _require_utc(self.completed_at, field_name="previous_research_context.completed_at")
+        return self
+
+
+class RootCauseNode(StrictModel):
+    node_id: str = Field(min_length=1, max_length=120)
+    parent_node_id: str | None = Field(default=None, max_length=120)
+    label: str = Field(min_length=1, max_length=500)
+    causal_role: Literal["primary", "contributing", "symptom", "unknown"]
+    source_finding_ids: list[str] = Field(min_length=1, max_length=12)
+    evidence_refs: list[EvidenceReference] = Field(min_length=1, max_length=12)
+
+
+class DiagnosticAction(StrictModel):
+    action_id: str = Field(min_length=1, max_length=160)
+    action_type: DiagnosticActionType
+    priority: Literal["P0", "P1", "P2", "P3"]
+    title: str = Field(min_length=1, max_length=500)
+    rationale: str = Field(min_length=1, max_length=1500)
+    source_finding_ids: list[str] = Field(min_length=1, max_length=12)
+    success_criteria: list[str] = Field(min_length=1, max_length=12)
+    evidence_refs: list[EvidenceReference] = Field(min_length=1, max_length=12)
+    requires_human_review: Literal[True] = True
+    research_only: Literal[True] = True
+    live_order_effect: Literal[LIVE_ORDER_EFFECT] = LIVE_ORDER_EFFECT
+
+
+class ResearchContinuity(StrictModel):
+    previous_task_id: str | None = Field(default=None, max_length=160)
+    status: ContinuityStatus
+    carried_finding_ids: list[str] = Field(default_factory=list, max_length=24)
+    resolved_finding_ids: list[str] = Field(default_factory=list, max_length=24)
+    new_finding_ids: list[str] = Field(default_factory=list, max_length=24)
+    summary: str = Field(min_length=1, max_length=1500)
+
+    @model_validator(mode="after")
+    def first_run_has_no_previous_task(self) -> ResearchContinuity:
+        if self.status == "FIRST_RUN" and self.previous_task_id is not None:
+            raise ValueError("FIRST_RUN continuity cannot name a previous task")
+        if self.status != "FIRST_RUN" and self.previous_task_id is None:
+            raise ValueError("non-FIRST_RUN continuity requires previous_task_id")
+        return self
+
+
+class CodeReviewTarget(StrictModel):
+    target_id: str = Field(min_length=1, max_length=160)
+    repository: Literal["quant-lab", "V5-prod"]
+    path_or_component: str = Field(min_length=1, max_length=500)
+    reason: str = Field(min_length=1, max_length=1500)
+    expected_evidence: str = Field(min_length=1, max_length=1000)
+    priority: Literal["P0", "P1", "P2", "P3"]
+    source_finding_ids: list[str] = Field(min_length=1, max_length=12)
+    requires_human_review: Literal[True] = True
+    research_only: Literal[True] = True
+    live_order_effect: Literal[LIVE_ORDER_EFFECT] = LIVE_ORDER_EFFECT
+
+
 class Stage1Diagnosis(StrictModel):
     schema_version: Literal[AI_STAGE1_SCHEMA_VERSION] = AI_STAGE1_SCHEMA_VERSION
     task_id: str = Field(min_length=1, max_length=160)
@@ -133,6 +248,16 @@ class Stage1Diagnosis(StrictModel):
     contradictions: list[ResearchFinding] = Field(default_factory=list, max_length=12)
     missing_evidence: list[ResearchFinding] = Field(default_factory=list, max_length=12)
     data_quality_warnings: list[str] = Field(default_factory=list, max_length=32)
+    primary_bottleneck_id: str | None = Field(default=None, max_length=120)
+    root_cause_tree: list[RootCauseNode] = Field(default_factory=list, max_length=24)
+    next_actions: list[DiagnosticAction] = Field(default_factory=list, max_length=12)
+    code_review_targets: list[CodeReviewTarget] = Field(default_factory=list, max_length=12)
+    continuity: ResearchContinuity = Field(
+        default_factory=lambda: ResearchContinuity(
+            status="FIRST_RUN",
+            summary="No previous AI research context was supplied.",
+        )
+    )
     prohibited_actions: list[str] = Field(default_factory=lambda: list(PROHIBITED_ACTIONS))
 
     @model_validator(mode="after")
@@ -141,6 +266,19 @@ class Stage1Diagnosis(StrictModel):
             raise ValueError("stage2_allowed requires at least one routed evidence section")
         if self.stage2_allowed and self.system_state != "READY_FOR_PROPOSALS":
             raise ValueError("stage2_allowed requires system_state=READY_FOR_PROPOSALS")
+        findings = self.primary_bottlenecks + self.contradictions + self.missing_evidence
+        finding_ids = {item.finding_id for item in findings}
+        if self.primary_bottleneck_id is not None and self.primary_bottleneck_id not in finding_ids:
+            raise ValueError("primary_bottleneck_id must reference a Stage 1 finding")
+        referenced_ids = {
+            source_id
+            for collection in (self.root_cause_tree, self.next_actions, self.code_review_targets)
+            for item in collection
+            for source_id in item.source_finding_ids
+        }
+        unknown_ids = referenced_ids - finding_ids
+        if unknown_ids:
+            raise ValueError(f"Stage 1 outputs reference unknown findings: {sorted(unknown_ids)}")
         _require_prohibited_actions(self.prohibited_actions)
         return self
 
@@ -167,6 +305,8 @@ class FactorProposal(StrictModel):
     falsification_conditions: list[str] = Field(min_length=1, max_length=12)
     evidence_refs: list[EvidenceReference] = Field(min_length=1, max_length=12)
     known_overlap_risk: str = Field(min_length=1, max_length=1000)
+    research_thread_id: str = Field(min_length=1, max_length=160)
+    source_finding_ids: list[str] = Field(min_length=1, max_length=12)
     research_only: Literal[True] = True
     live_order_effect: Literal[LIVE_ORDER_EFFECT] = LIVE_ORDER_EFFECT
 
@@ -208,6 +348,8 @@ class PaperStrategyDraft(StrictModel):
     falsification_conditions: list[str] = Field(min_length=1, max_length=12)
     evidence_refs: list[EvidenceReference] = Field(min_length=1, max_length=12)
     mode: Literal["shadow", "paper"]
+    research_thread_id: str = Field(min_length=1, max_length=160)
+    source_finding_ids: list[str] = Field(min_length=1, max_length=12)
     research_only: Literal[True] = True
     live_order_effect: Literal[LIVE_ORDER_EFFECT] = LIVE_ORDER_EFFECT
 
@@ -230,16 +372,13 @@ class ExperimentProposal(StrictModel):
     mode: ResearchMode
     risks: list[str] = Field(default_factory=list, max_length=12)
     evidence_refs: list[EvidenceReference] = Field(min_length=1, max_length=12)
+    research_thread_id: str = Field(min_length=1, max_length=160)
+    source_finding_ids: list[str] = Field(min_length=1, max_length=12)
+    falsification_conditions: list[str] = Field(min_length=1, max_length=12)
+    stopping_conditions: list[str] = Field(min_length=1, max_length=12)
+    regime_slices: list[str] = Field(min_length=1, max_length=12)
     research_only: Literal[True] = True
     live_order_effect: Literal[LIVE_ORDER_EFFECT] = LIVE_ORDER_EFFECT
-
-
-class CodeReviewTarget(StrictModel):
-    repository: Literal["quant-lab", "V5-prod"]
-    path_or_component: str = Field(min_length=1, max_length=500)
-    reason: str = Field(min_length=1, max_length=1500)
-    expected_evidence: str = Field(min_length=1, max_length=1000)
-    priority: Literal["P0", "P1", "P2", "P3"]
 
 
 class Stage2ProposalSet(StrictModel):
@@ -270,13 +409,18 @@ class EvidenceDocument(StrictModel):
 
 class AIResearchTask(StrictModel):
     schema_version: Literal[AI_TASK_SCHEMA_VERSION] = AI_TASK_SCHEMA_VERSION
-    prompt_version: Literal[AI_PROMPT_VERSION] = AI_PROMPT_VERSION
+    prompt_version: Literal[
+        "quant_lab.ai_research.prompt.v1",
+        "quant_lab.ai_research.prompt.v2",
+    ] = AI_PROMPT_VERSION
     task_id: str = Field(min_length=1, max_length=160)
     created_at: datetime
     source_pack_name: str = Field(min_length=1, max_length=500)
     source_pack_sha256: str = Field(min_length=64, max_length=64)
     packet_sha256: str = Field(min_length=64, max_length=64)
     sections: dict[str, list[EvidenceDocument]]
+    preflight: TaskPreflight | None = None
+    previous_research_context: PriorResearchContext | None = None
     allowed_factor_templates: list[FactorTemplate]
     prohibited_actions: list[str] = Field(default_factory=lambda: list(PROHIBITED_ACTIONS))
     warnings: list[str] = Field(default_factory=list, max_length=128)
@@ -308,6 +452,10 @@ class AIResearchResult(StrictModel):
     stage2_response_id: str | None = Field(default=None, max_length=300)
     usage_json: str = "{}"
     warnings: list[str] = Field(default_factory=list, max_length=128)
+    prompt_version: str = "quant_lab.ai_research.prompt.v1"
+    stage1_attempts: int = Field(default=1, ge=1, le=20)
+    stage2_attempts: int = Field(default=0, ge=0, le=20)
+    validation_events_json: str = "[]"
     diagnostic_only: Literal[True] = True
     live_order_effect: Literal[LIVE_ORDER_EFFECT] = LIVE_ORDER_EFFECT
 
@@ -321,6 +469,31 @@ class AIResearchResult(StrictModel):
             raise ValueError("diagnosis task_id mismatch")
         if self.proposals is not None and self.proposals.task_id != self.task_id:
             raise ValueError("proposal task_id mismatch")
+        finding_ids = {
+            item.finding_id
+            for item in (
+                self.diagnosis.primary_bottlenecks
+                + self.diagnosis.contradictions
+                + self.diagnosis.missing_evidence
+            )
+        }
+        if self.proposals is not None:
+            proposal_items = (
+                list(self.proposals.factor_proposals)
+                + list(self.proposals.paper_strategy_drafts)
+                + list(self.proposals.experiment_proposals)
+                + list(self.proposals.code_review_targets)
+            )
+            unknown_ids = {
+                source_id
+                for item in proposal_items
+                for source_id in item.source_finding_ids
+                if source_id not in finding_ids
+            }
+            if unknown_ids:
+                raise ValueError(
+                    f"Stage 2 outputs reference unknown findings: {sorted(unknown_ids)}"
+                )
         _require_utc(self.started_at, field_name="started_at")
         _require_utc(self.completed_at, field_name="completed_at")
         if self.completed_at < self.started_at:

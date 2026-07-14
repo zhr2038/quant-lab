@@ -2,20 +2,29 @@ from __future__ import annotations
 
 from datetime import UTC, datetime
 
+import polars as pl
 import pytest
 
 from quant_lab.ai_research.contracts import (
     AIResearchResult,
     AIResearchTask,
+    CodeReviewTarget,
     EvidenceDocument,
     EvidenceReference,
     FactorProposal,
     ResearchFinding,
     Stage1Diagnosis,
     Stage2ProposalSet,
+    TaskPreflight,
     compute_task_packet_sha256,
 )
-from quant_lab.ai_research.importer import _validate_result_against_task
+from quant_lab.ai_research.importer import (
+    AI_CODE_REVIEW_DATASET,
+    AI_RUN_DATASET,
+    _publish_result,
+    _validate_result_against_task,
+)
+from quant_lab.data.lake import read_parquet_dataset, write_parquet_dataset
 
 
 def _task() -> AIResearchTask:
@@ -93,6 +102,8 @@ def _result(task: AIResearchTask, reference: EvidenceReference) -> AIResearchRes
                 falsification_conditions=["after-cost return is non-positive"],
                 evidence_refs=[reference],
                 known_overlap_risk="May overlap with return factors.",
+                research_thread_id="thread-factor-1",
+                source_finding_ids=["finding-1"],
             )
         ],
     )
@@ -122,3 +133,90 @@ def test_import_validation_rejects_hallucinated_evidence_members() -> None:
             _result(task, _reference("reports/not-in-task.csv")),
             task,
         )
+
+
+def test_blocked_preflight_cannot_enter_stage2() -> None:
+    task = _task().model_copy(
+        update={
+            "preflight": TaskPreflight(
+                status="BLOCK",
+                checked_at=datetime(2026, 7, 14, tzinfo=UTC),
+                missing_core_members=["provenance.json"],
+                blockers=["missing_core_member:provenance.json"],
+                truncated_document_count=0,
+            )
+        }
+    )
+    task = task.model_copy(update={"packet_sha256": compute_task_packet_sha256(task)})
+
+    with pytest.raises(ValueError, match="blocked deterministic preflight"):
+        _validate_result_against_task(_result(task, _reference()), task)
+
+
+def test_stage1_code_target_is_published_when_stage2_is_blocked(tmp_path) -> None:
+    task = _task()
+    reference = _reference()
+    finding = ResearchFinding(
+        finding_id="finding-data",
+        category="data_quality",
+        status="observed",
+        severity="critical",
+        summary="Evidence refresh is incomplete.",
+        explanation="The source evidence is incomplete.",
+        confidence=0.9,
+        evidence_refs=[reference],
+        recommended_action="Repair the evidence refresh.",
+    )
+    diagnosis = Stage1Diagnosis(
+        task_id=task.task_id,
+        system_state="BLOCKED_DATA_QUALITY",
+        executive_summary="Stage 2 is blocked.",
+        stage2_allowed=False,
+        primary_bottlenecks=[finding],
+        primary_bottleneck_id=finding.finding_id,
+        code_review_targets=[
+            CodeReviewTarget(
+                target_id="review-refresh",
+                repository="quant-lab",
+                path_or_component="src/quant_lab/reports",
+                reason="Find why evidence refresh is incomplete.",
+                expected_evidence="A fresh complete evidence row.",
+                priority="P0",
+                source_finding_ids=[finding.finding_id],
+            )
+        ],
+    )
+    result = AIResearchResult(
+        task_id=task.task_id,
+        source_pack_sha256=task.source_pack_sha256,
+        packet_sha256=task.packet_sha256,
+        model="gpt-5.6-sol",
+        reasoning_effort="xhigh",
+        worker_id="nas-1",
+        started_at=datetime(2026, 7, 14, 1, tzinfo=UTC),
+        completed_at=datetime(2026, 7, 14, 2, tzinfo=UTC),
+        diagnosis=diagnosis,
+        proposals=None,
+    )
+
+    write_parquet_dataset(
+        pl.DataFrame(
+            [
+                {
+                    "task_id": "old-task",
+                    "completed_at": datetime(2026, 7, 13, tzinfo=UTC),
+                    "system_state": "REVIEW_REQUIRED",
+                }
+            ]
+        ),
+        tmp_path / AI_RUN_DATASET,
+    )
+
+    _publish_result(result, task=task, lake_root=tmp_path)
+
+    rows = read_parquet_dataset(tmp_path / AI_CODE_REVIEW_DATASET).to_dicts()
+    assert rows[0]["target_id"] == "review-refresh"
+    assert rows[0]["origin_stage"] == "STAGE1_DIAGNOSTIC"
+    run_rows = read_parquet_dataset(tmp_path / AI_RUN_DATASET)
+    assert run_rows.height == 2
+    assert "root_cause_tree_json" in run_rows.columns

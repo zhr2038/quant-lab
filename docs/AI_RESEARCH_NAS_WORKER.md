@@ -57,7 +57,12 @@ src/quant_lab/ai_research/prompts/stage2_system.md
 
 ### Stage 1：研究诊断与路由
 
-Stage 1 先检查：
+模型调用前先执行确定性 Preflight，确认根级 `manifest.json`、
+`provenance.json` 和 `data_quality.json` 均已进入任务包，且核心文档未被截断。
+Preflight 为 `BLOCK` 时，Stage 1 仍可给出数据修复和代码复核目标，但不能进入
+Stage 2。
+
+Stage 1 随后检查：
 
 - freshness、manifest、provenance、data quality；
 - 因子 IC、Rank IC、after-cost spread、独立性和样本覆盖；
@@ -65,6 +70,17 @@ Stage 1 先检查：
 - paper proposal、ACK、tracker、promotion gate 和 runtime freshness。
 
 只有证据足够且没有阻断性数据质量问题时，才允许 Stage 2，并且只路由相关 section。
+每轮还会携带上一轮已导入诊断的精简上下文，用于区分问题是持续、解决、恶化还是
+变化；历史结论不会替代本轮证据。
+
+Stage 1 固定输出一个可追溯闭环：
+
+```text
+finding -> primary bottleneck -> root cause tree -> next action -> code review target
+```
+
+即使 Stage 2 被阻断，安全的数据修复动作和代码检查目标仍会进入 Web，不再只显示
+“BLOCKED”而没有下一步。
 
 ### Stage 2：可证伪研究草案
 
@@ -83,6 +99,26 @@ live_order_effect=none_read_only_research
 requires_human_review=true
 proposal_state=AI_RESEARCH_DRAFT
 ```
+
+每个因子、Paper、实验和代码目标必须带 `research_thread_id` 或 `target_id`，并通过
+`source_finding_ids` 追溯到 Stage 1 的具体发现。实验同时要求失败条件、停止条件和
+regime 切片，避免只定义“什么算成功”。
+
+## 3.1 对 PA_Agent 的选择性借鉴
+
+本实现参考了 PA_Agent 的工程思想，但没有复制其交易决策语义或代码：
+
+| PA_Agent 的做法 | quant-lab 的采用方式 |
+| --- | --- |
+| 两阶段诊断与路由 | Stage 1 证据诊断，Stage 2 只接收相关 section |
+| 调用前确定性检查 | Expert Pack 身份与核心文档 Preflight |
+| 校验失败反馈重试 | Pydantic 错误路径经脱敏后反馈给模型，并记录尝试次数 |
+| 上一轮分析连续性 | 只携带精简研究上下文，本轮仍必须重新引用证据 |
+| 完整过程留痕 | prompt version、attempts、validation events、usage 写入研究运行表 |
+
+明确不采用的部分包括：GPT 买卖判断、自由对话驱动交易、任意代码执行、自动修改
+策略、自动晋级或连接真实下单。PA_Agent 使用 AGPL-3.0，本项目只借鉴公开架构思想，
+没有复制其实现代码。
 
 ## 4. 云端部署
 
@@ -308,6 +344,8 @@ gold/ai_code_review_target
 
 - 代理不支持 `gpt-5.6-sol`：任务进入 `failed`；
 - 代理忽略严格 JSON Schema：Pydantic 校验失败并重试，最终仍失败则不导入；
+- Schema 重试会携带精简错误路径，不会盲目重复同一请求；每次失败均写入
+  `validation_events_json`，令 Web 可见；
 - NAS 离线：任务留在 `pending`，V5 和 quant-lab 原有功能不受影响；
 - 返回了未知 section、SHA 不匹配或越权字段：结果进入 `results/rejected`；
 - Stage 1 认为证据不足：只保存诊断，不执行 Stage 2；

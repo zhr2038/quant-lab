@@ -215,6 +215,7 @@ def run_research(config: Config, task: AIResearchTask) -> AIResearchResult:
     started = datetime.now(UTC)
     usage: dict[str, Any] = {}
     warnings: list[str] = []
+    validation_events: list[dict[str, Any]] = []
 
     stage1_payload = {
         "task": task.model_dump(mode="json"),
@@ -238,10 +239,19 @@ def run_research(config: Config, task: AIResearchTask) -> AIResearchResult:
     unknown_routes = set(diagnosis.route_sections) - set(task.sections)
     if unknown_routes:
         raise ValueError(f"Stage 1 routed unknown sections: {sorted(unknown_routes)}")
+    if task.preflight and task.preflight.status == "BLOCK" and diagnosis.stage2_allowed:
+        raise ValueError("Stage 1 cannot override a blocked deterministic preflight")
+    if task.previous_research_context is None:
+        if diagnosis.continuity.status != "FIRST_RUN":
+            raise ValueError("Stage 1 continuity must be FIRST_RUN without prior context")
+    elif diagnosis.continuity.previous_task_id != task.previous_research_context.task_id:
+        raise ValueError("Stage 1 continuity references the wrong previous task")
     usage["stage1"] = stage1_raw.get("usage") or {}
+    validation_events.extend(stage1_raw.get("validation_events") or [])
 
     proposals: Stage2ProposalSet | None = None
     stage2_response_id: str | None = None
+    stage2_attempts = 0
     if diagnosis.stage2_allowed:
         routed_sections = {
             name: [document.model_dump(mode="json") for document in task.sections[name]]
@@ -280,6 +290,8 @@ def run_research(config: Config, task: AIResearchTask) -> AIResearchResult:
         if proposals.task_id != task.task_id:
             raise ValueError("Stage 2 returned a different task_id")
         usage["stage2"] = stage2_raw.get("usage") or {}
+        validation_events.extend(stage2_raw.get("validation_events") or [])
+        stage2_attempts = int(stage2_raw.get("attempts") or 1)
         stage2_response_id = _optional_text(stage2_raw.get("response_id"))
     else:
         warnings.append(f"stage2_skipped:{diagnosis.system_state}")
@@ -300,6 +312,10 @@ def run_research(config: Config, task: AIResearchTask) -> AIResearchResult:
         stage2_response_id=stage2_response_id,
         usage_json=canonical_json(usage),
         warnings=warnings,
+        prompt_version=task.prompt_version,
+        stage1_attempts=int(stage1_raw.get("attempts") or 1),
+        stage2_attempts=stage2_attempts,
+        validation_events_json=canonical_json(validation_events),
     )
 
 
@@ -313,12 +329,14 @@ def _responses_call(
     max_output_tokens: int,
     stage: str,
 ) -> dict[str, Any]:
+    base_input = [
+        {"role": "system", "content": system_prompt},
+        {"role": "user", "content": canonical_json(user_payload)},
+    ]
+    request_input = list(base_input)
     request = {
         "model": config.model,
-        "input": [
-            {"role": "system", "content": system_prompt},
-            {"role": "user", "content": canonical_json(user_payload)},
-        ],
+        "input": request_input,
         "reasoning": {"effort": config.reasoning_effort, "summary": "concise"},
         "text": {
             "format": {
@@ -331,19 +349,21 @@ def _responses_call(
         "max_output_tokens": max_output_tokens,
         "store": False,
     }
-    request_size = len(canonical_json(request).encode("utf-8"))
-    if request_size > MAX_RESPONSES_REQUEST_BYTES:
-        raise ValueError(
-            f"{stage} request exceeds bounded input size: "
-            f"{request_size}>{MAX_RESPONSES_REQUEST_BYTES}"
-        )
     headers = {
         "Authorization": f"Bearer {config.api_key}",
         "Content-Type": "application/json",
     }
     last_error: Exception | None = None
+    validation_events: list[dict[str, Any]] = []
     for attempt in range(config.api_retries + 1):
         try:
+            request["input"] = request_input
+            request_size = len(canonical_json(request).encode("utf-8"))
+            if request_size > MAX_RESPONSES_REQUEST_BYTES:
+                raise ValueError(
+                    f"{stage} request exceeds bounded input size: "
+                    f"{request_size}>{MAX_RESPONSES_REQUEST_BYTES}"
+                )
             with httpx.Client(timeout=config.api_timeout_seconds) as client:
                 response = client.post(
                     f"{config.api_base_url}/responses",
@@ -351,7 +371,7 @@ def _responses_call(
                     json=request,
                 )
             if response.is_error:
-                detail = response.text[:1000]
+                detail = _redact_secret(response.text[:1000], config.api_key)
                 raise RuntimeError(
                     f"Responses API HTTP {response.status_code}: {detail}"
                 )
@@ -372,9 +392,45 @@ def _responses_call(
                 "response_id": payload.get("id"),
                 "output_text": output_text,
                 "usage": payload.get("usage") or {},
+                "attempts": attempt + 1,
+                "validation_events": validation_events,
             }
-        except (httpx.HTTPError, json.JSONDecodeError, RuntimeError, ValidationError) as exc:
+        except ValidationError as exc:
             last_error = exc
+            validation_events.append(
+                {
+                    "stage": stage,
+                    "attempt": attempt + 1,
+                    "event": "SCHEMA_VALIDATION_FAILED",
+                    "errors": _validation_error_summary(exc),
+                }
+            )
+            request_input = base_input + [
+                {
+                    "role": "user",
+                    "content": _validation_retry_feedback(stage, exc),
+                }
+            ]
+            if attempt >= config.api_retries:
+                break
+            delay = min(60, 2 ** attempt * 5)
+            LOG.warning(
+                "api_retry stage=%s attempt=%s delay=%ss error=structured_output_invalid",
+                stage,
+                attempt + 1,
+                delay,
+            )
+            _sleep(delay)
+        except (httpx.HTTPError, json.JSONDecodeError, RuntimeError) as exc:
+            last_error = exc
+            validation_events.append(
+                {
+                    "stage": stage,
+                    "attempt": attempt + 1,
+                    "event": "PROVIDER_OR_TRANSPORT_FAILED",
+                    "error_type": type(exc).__name__,
+                }
+            )
             if attempt >= config.api_retries:
                 break
             delay = min(60, 2 ** attempt * 5)
@@ -388,6 +444,36 @@ def _responses_call(
             _sleep(delay)
     assert last_error is not None
     raise RuntimeError(f"{stage} model call failed after retries: {last_error}") from last_error
+
+
+def _redact_secret(value: str, secret: str) -> str:
+    return value.replace(secret, "[REDACTED]") if secret else value
+
+
+def _validation_error_summary(exc: ValidationError) -> list[dict[str, str]]:
+    return [
+        {
+            "path": ".".join(str(part) for part in item.get("loc") or ()),
+            "type": str(item.get("type") or "validation_error"),
+            "message": str(item.get("msg") or "invalid value")[:300],
+        }
+        for item in exc.errors(include_input=False, include_url=False)[:12]
+    ]
+
+
+def _validation_retry_feedback(stage: str, exc: ValidationError) -> str:
+    return canonical_json(
+        {
+            "instruction": (
+                "The previous structured output failed schema validation. Return one complete "
+                "JSON object only. Correct only the listed contract errors; preserve task_id, "
+                "evidence-grounded claims, source references, safety boundaries, and the prior "
+                "Stage 1 gate decision. Do not add Markdown or commentary."
+            ),
+            "stage": stage,
+            "validation_errors": _validation_error_summary(exc),
+        }
+    )
 
 
 def _extract_output_text(payload: dict[str, Any]) -> str:

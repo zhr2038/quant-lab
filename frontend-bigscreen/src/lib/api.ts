@@ -16,6 +16,7 @@ export const SnapshotSchema = z.object({
     rows: z.array(z.record(z.string(), z.unknown()))
   }).default({ columns: [], rows: [] }),
   strategy_flow: z.record(z.string(), z.unknown()).default({}),
+  ai_research: z.record(z.string(), z.unknown()).default({}),
   v5: z.record(z.string(), z.unknown()).default({}),
   cost: z.record(z.string(), z.unknown()).default({}),
   market: z.record(z.string(), z.unknown()).default({}),

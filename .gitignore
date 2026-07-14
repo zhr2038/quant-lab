@@ -14,4 +14,6 @@ node_modules/
 .env
 .env.*
 !.env.example
+deploy/nas_ai_worker/data/
+deploy/nas_ai_worker/secrets/
 backups_codex_*/

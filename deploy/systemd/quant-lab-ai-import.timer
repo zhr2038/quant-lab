@@ -1,0 +1,12 @@
+[Unit]
+Description=Import completed NAS AI research results
+
+[Timer]
+OnBootSec=5m
+OnUnitActiveSec=10m
+AccuracySec=1m
+Persistent=true
+Unit=quant-lab-ai-import.service
+
+[Install]
+WantedBy=timers.target

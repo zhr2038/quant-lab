@@ -1,0 +1,11 @@
+[Unit]
+Description=Create quant-lab AI research tasks twice daily
+
+[Timer]
+OnCalendar=*-*-* 08,20:45:00
+RandomizedDelaySec=10m
+Persistent=true
+Unit=quant-lab-ai-task.service
+
+[Install]
+WantedBy=timers.target

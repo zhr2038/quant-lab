@@ -7,7 +7,7 @@ import stat
 import zipfile
 from datetime import UTC, datetime
 
-from quant_lab.ai_research.contracts import compute_task_packet_sha256
+from quant_lab.ai_research.contracts import canonical_json, compute_task_packet_sha256
 from quant_lab.ai_research.packet import (
     build_ai_research_task,
     find_latest_expert_pack,
@@ -98,3 +98,19 @@ def test_latest_expert_pack_skips_newer_partial_zip(tmp_path) -> None:
     partial.touch()
 
     assert find_latest_expert_pack(tmp_path) == valid
+
+
+def test_default_packet_stays_within_model_input_budget(tmp_path) -> None:
+    pack = tmp_path / "quant_lab_expert_pack_2026-07-14_large.zip"
+    large_csv = "factor_id,rank_ic_mean\n" + "\n".join(
+        f"factor-{index},{index / 1000:.4f}" for index in range(20_000)
+    )
+    with zipfile.ZipFile(pack, "w", compression=zipfile.ZIP_DEFLATED) as archive:
+        archive.writestr("manifest.json", json.dumps({"fresh": True}))
+        for index in range(8):
+            archive.writestr(f"reports/factor_evidence_{index}.csv", large_csv)
+
+    task, _ = build_ai_research_task(pack, queue_root=tmp_path / "queue")
+
+    assert task is not None
+    assert len(canonical_json(task.model_dump(mode="json")).encode("utf-8")) < 400_000

@@ -23,11 +23,11 @@ def _parser() -> argparse.ArgumentParser:
     build.add_argument("--exports-dir", required=True, type=Path)
     build.add_argument("--queue-root", required=True, type=Path)
     build.add_argument("--force", action="store_true")
-    build.add_argument("--max-member-bytes", type=int, default=512 * 1024)
-    build.add_argument("--max-document-chars", type=int, default=120_000)
-    build.add_argument("--max-total-chars", type=int, default=2_500_000)
-    build.add_argument("--max-csv-rows", type=int, default=120)
-    build.add_argument("--max-docs-per-section", type=int, default=8)
+    build.add_argument("--max-member-bytes", type=int, default=256 * 1024)
+    build.add_argument("--max-document-chars", type=int, default=40_000)
+    build.add_argument("--max-total-chars", type=int, default=300_000)
+    build.add_argument("--max-csv-rows", type=int, default=64)
+    build.add_argument("--max-docs-per-section", type=int, default=4)
 
     import_results = subparsers.add_parser(
         "import-results",

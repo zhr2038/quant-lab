@@ -169,6 +169,8 @@ sudo -u quantlab /opt/quant-lab/.venv/bin/python \
 - 结果导入：`CPUQuota=30%`、`MemoryMax=700M`；
 - `POLARS_MAX_THREADS=1`；
 - 任务包直接读取已有 Expert Pack，不触发 lake refresh 或 daily export。
+- 单个任务证据上限约 30 万字符，Worker 对完整 Responses 请求设置 60 万字节
+  fail-fast 上限，避免超出模型上下文后反复重试。
 
 ## 5. NAS Docker 部署
 

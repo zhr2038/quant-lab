@@ -31,6 +31,7 @@ from quant_lab.ai_research.prompts import stage1_system_prompt, stage2_system_pr
 
 LOG = logging.getLogger("quant_ai_worker")
 TASK_ID_RE = re.compile(r"^[A-Za-z0-9_.-]{1,180}$")
+MAX_RESPONSES_REQUEST_BYTES = 600_000
 _STOP = False
 
 
@@ -329,8 +330,13 @@ def _responses_call(
         },
         "max_output_tokens": max_output_tokens,
         "store": False,
-        "metadata": {"component": "quant-lab-ai-worker", "stage": stage},
     }
+    request_size = len(canonical_json(request).encode("utf-8"))
+    if request_size > MAX_RESPONSES_REQUEST_BYTES:
+        raise ValueError(
+            f"{stage} request exceeds bounded input size: "
+            f"{request_size}>{MAX_RESPONSES_REQUEST_BYTES}"
+        )
     headers = {
         "Authorization": f"Bearer {config.api_key}",
         "Content-Type": "application/json",
@@ -344,7 +350,11 @@ def _responses_call(
                     headers=headers,
                     json=request,
                 )
-            response.raise_for_status()
+            if response.is_error:
+                detail = response.text[:1000]
+                raise RuntimeError(
+                    f"Responses API HTTP {response.status_code}: {detail}"
+                )
             payload = response.json()
             status = str(payload.get("status") or "completed")
             if status not in {"completed", "succeeded"}:

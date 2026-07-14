@@ -11,7 +11,7 @@ WorkingDirectory=/opt/quant-lab
 Environment=PYTHONUNBUFFERED=1
 Environment=POLARS_MAX_THREADS=1
 UMask=0007
-ExecStart=/opt/quant-lab/.venv/bin/python /opt/quant-lab/tools/quant_ai_queue.py build-task --exports-dir /var/lib/quant-lab/exports --queue-root /var/lib/quant-lab/ai_queue --max-member-bytes 524288 --max-document-chars 120000 --max-total-chars 2500000 --max-csv-rows 120 --max-docs-per-section 8
+ExecStart=/opt/quant-lab/.venv/bin/python /opt/quant-lab/tools/quant_ai_queue.py build-task --exports-dir /var/lib/quant-lab/exports --queue-root /var/lib/quant-lab/ai_queue --max-member-bytes 262144 --max-document-chars 40000 --max-total-chars 300000 --max-csv-rows 64 --max-docs-per-section 4
 Nice=10
 IOSchedulingClass=idle
 CPUQuota=40%

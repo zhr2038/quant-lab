@@ -76,16 +76,24 @@ def test_paper_runtime_no_trade_is_healthy_but_stale_open_trade_warns() -> None:
 
 
 def test_current_proposal_propagation_distinguishes_accepted_and_unseen() -> None:
+    snapshot_id = "proposal-snapshot:test"
+    snapshot_sha = "f" * 64
     proposals = pl.DataFrame(
         [
             {
                 "proposal_id": "accepted:1",
                 "proposal_hash": "a" * 64,
+                "proposal_snapshot_id": snapshot_id,
+                "proposal_snapshot_sha256": snapshot_sha,
+                "snapshot_generated_at": (NOW - timedelta(minutes=10)).isoformat(),
                 "created_at": (NOW - timedelta(minutes=10)).isoformat(),
             },
             {
                 "proposal_id": "unseen:1",
                 "proposal_hash": "b" * 64,
+                "proposal_snapshot_id": snapshot_id,
+                "proposal_snapshot_sha256": snapshot_sha,
+                "snapshot_generated_at": (NOW - timedelta(minutes=10)).isoformat(),
                 "created_at": (NOW - timedelta(minutes=5)).isoformat(),
             },
         ]
@@ -96,6 +104,8 @@ def test_current_proposal_propagation_distinguishes_accepted_and_unseen() -> Non
                 "proposal_id": "accepted:1",
                 "proposal_hash": "a" * 64,
                 "accepted": True,
+                "source_proposal_snapshot_id": snapshot_id,
+                "source_proposal_snapshot_sha256": snapshot_sha,
                 "accepted_at": (NOW - timedelta(minutes=8)).isoformat(),
             }
         ]
@@ -106,6 +116,8 @@ def test_current_proposal_propagation_distinguishes_accepted_and_unseen() -> Non
                 "proposal_id": "accepted:1",
                 "proposal_hash": "a" * 64,
                 "current_proposal_member": True,
+                "source_proposal_snapshot_id": snapshot_id,
+                "source_proposal_snapshot_sha256": snapshot_sha,
                 "created_at": (NOW - timedelta(minutes=7)).isoformat(),
             }
         ]
@@ -117,14 +129,190 @@ def test_current_proposal_propagation_distinguishes_accepted_and_unseen() -> Non
         ack_history=pl.DataFrame(),
         trackers_current=trackers,
         trackers_history=pl.DataFrame(),
+        selected_v5_bundle_built_at=NOW - timedelta(minutes=1),
+        v5_observed_proposal_snapshot_id=snapshot_id,
+        v5_observed_proposal_snapshot_sha256=snapshot_sha,
         generated_at=NOW,
     ).to_dicts()
     statuses = {row["proposal_id"]: row["propagation_status"] for row in rows}
 
     assert statuses == {
         "accepted:1": "ACCEPTED_TRACKER_ACTIVE",
-        "unseen:1": "NOT_YET_SEEN_BY_V5",
+        "unseen:1": "SNAPSHOT_FETCHED_PENDING_PARSE",
     }
+
+
+def test_expected_401_does_not_reset_production_auth_slo() -> None:
+    reports = build_api_auth_reports(
+        pl.DataFrame(
+            [
+                {
+                    "request_ts": (NOW - timedelta(minutes=10)).isoformat(),
+                    "path": "/v1/health/deep",
+                    "client_id": "v5.quant_lab_client",
+                    "user_agent": "v5-quant-lab-client/1.0",
+                    "auth_result": "token_ok",
+                    "status_code": 200,
+                },
+                {
+                    "request_ts": (NOW - timedelta(minutes=5)).isoformat(),
+                    "path": "/v1/health/deep",
+                    "client_id": "quant-lab.auth-negative-probe",
+                    "user_agent": "quant-lab-auth-negative-probe/1.0",
+                    "auth_result": "missing_bearer_token",
+                    "status_code": 401,
+                    "authorization": "Bearer must-not-leak",
+                }
+            ]
+        ),
+        generated_at=NOW,
+    )
+
+    slo = reports["api_auth_production_slo"].to_dicts()[0]
+    incident = reports["api_auth_incident"].to_dicts()[0]
+    assert slo["production_auth_slo_status"] == "PASS"
+    assert slo["unexpected_auth_failure_count"] == 0
+    assert incident["incident_class"] == "EXPECTED_UNAUTHENTICATED_PROBE"
+    assert incident["current_status"] == "EXPECTED_REJECTION_PASS"
+    assert incident["affects_production_auth_slo"] is False
+    assert "must-not-leak" not in repr(reports)
+
+
+def test_trusted_v5_401_resets_production_auth_slo() -> None:
+    reports = build_api_auth_reports(
+        pl.DataFrame(
+            [
+                {
+                    "request_ts": (NOW - timedelta(minutes=5)).isoformat(),
+                    "path": "/v1/paper-strategy/proposals",
+                    "client_id": "v5.quant_lab_client",
+                    "user_agent": "v5-quant-lab-client/1.0",
+                    "auth_result": "invalid_bearer_token",
+                    "status_code": 401,
+                }
+            ]
+        ),
+        generated_at=NOW,
+    )
+
+    slo = reports["api_auth_production_slo"].to_dicts()[0]
+    incident = reports["api_auth_incident"].to_dicts()[0]
+    assert slo["production_auth_slo_status"] == "FAIL"
+    assert slo["unexpected_auth_failure_count"] == 1
+    assert incident["incident_class"] == "TRUSTED_CLIENT_TOKEN_INVALID"
+    assert incident["unexpected_auth_failure"] is True
+
+
+def test_manual_curl_missing_token_is_operator_error() -> None:
+    reports = build_api_auth_reports(
+        pl.DataFrame(
+            [
+                {
+                    "request_ts": (NOW - timedelta(minutes=2)).isoformat(),
+                    "path": "/v1/health/deep",
+                    "client_id": "",
+                    "user_agent": "curl/8.7.1",
+                    "auth_result": "missing_bearer_token",
+                    "status_code": 401,
+                }
+            ]
+        ),
+        generated_at=NOW,
+    )
+
+    manual = reports["api_auth_manual_probe"].to_dicts()[0]
+    assert manual["incident_class"] == "MANUAL_PROBE_MISSING_TOKEN"
+    assert manual["operator_error"] is True
+    assert manual["affects_production_auth_slo"] is False
+
+
+def test_proposal_published_after_bundle_has_no_first_seen_time() -> None:
+    rows = build_paper_proposal_propagation_status(
+        proposals=pl.DataFrame(
+            [
+                {
+                    "proposal_id": "later:1",
+                    "proposal_hash": "a" * 64,
+                    "proposal_snapshot_id": "snapshot-later",
+                    "proposal_snapshot_sha256": "b" * 64,
+                    "snapshot_generated_at": NOW.isoformat(),
+                }
+            ]
+        ),
+        ack_current=pl.DataFrame(),
+        ack_history=pl.DataFrame(),
+        trackers_current=pl.DataFrame(),
+        trackers_history=pl.DataFrame(),
+        selected_v5_bundle_built_at=NOW - timedelta(minutes=1),
+        v5_observed_proposal_snapshot_id="snapshot-later",
+        v5_observed_proposal_snapshot_sha256="b" * 64,
+        generated_at=NOW,
+    ).to_dicts()
+
+    assert rows[0]["propagation_status"] == "PUBLISHED_AFTER_SELECTED_BUNDLE"
+    assert rows[0]["first_seen_by_v5_at"] == ""
+
+
+def test_history_ack_cannot_prove_current_snapshot_seen() -> None:
+    rows = build_paper_proposal_propagation_status(
+        proposals=pl.DataFrame(
+            [
+                {
+                    "proposal_id": "history:1",
+                    "proposal_hash": "c" * 64,
+                    "proposal_snapshot_id": "snapshot-current",
+                    "proposal_snapshot_sha256": "d" * 64,
+                    "snapshot_generated_at": (NOW - timedelta(minutes=10)).isoformat(),
+                }
+            ]
+        ),
+        ack_current=pl.DataFrame(),
+        ack_history=pl.DataFrame(
+            [
+                {
+                    "proposal_id": "history:1",
+                    "proposal_hash": "c" * 64,
+                    "accepted": True,
+                    "accepted_at": (NOW - timedelta(minutes=20)).isoformat(),
+                }
+            ]
+        ),
+        trackers_current=pl.DataFrame(),
+        trackers_history=pl.DataFrame(),
+        selected_v5_bundle_built_at=NOW - timedelta(minutes=1),
+        v5_observed_proposal_snapshot_id="snapshot-old",
+        v5_observed_proposal_snapshot_sha256="e" * 64,
+        generated_at=NOW,
+    ).to_dicts()
+
+    assert rows[0]["propagation_status"] == "HISTORICAL_ACK_ONLY"
+    assert rows[0]["first_seen_by_v5_at"] == ""
+
+
+def test_snapshot_id_match_with_sha_mismatch_is_rejected() -> None:
+    rows = build_paper_proposal_propagation_status(
+        proposals=pl.DataFrame(
+            [
+                {
+                    "proposal_id": "mismatch:1",
+                    "proposal_hash": "1" * 64,
+                    "proposal_snapshot_id": "snapshot-one",
+                    "proposal_snapshot_sha256": "2" * 64,
+                    "snapshot_generated_at": (NOW - timedelta(minutes=10)).isoformat(),
+                }
+            ]
+        ),
+        ack_current=pl.DataFrame(),
+        ack_history=pl.DataFrame(),
+        trackers_current=pl.DataFrame(),
+        trackers_history=pl.DataFrame(),
+        selected_v5_bundle_built_at=NOW - timedelta(minutes=1),
+        v5_observed_proposal_snapshot_id="snapshot-one",
+        v5_observed_proposal_snapshot_sha256="3" * 64,
+        generated_at=NOW,
+    ).to_dicts()
+
+    assert rows[0]["propagation_status"] == "HASH_MISMATCH"
 
 
 def test_complete_acceptance_discloses_all_non_pass_and_funnel_eras() -> None:
@@ -173,6 +361,7 @@ def test_complete_acceptance_discloses_all_non_pass_and_funnel_eras() -> None:
         cohort=pl.DataFrame([{"cohort_version": 1, "status": "FORMING"}]),
         propagation=propagation,
         auth_incidents=auth,
+        acceptance_context={"current_main_production_relationship": "MISMATCH"},
         generated_at=NOW,
     )
 
@@ -183,6 +372,18 @@ def test_complete_acceptance_discloses_all_non_pass_and_funnel_eras() -> None:
     }
     assert result["overall_system_health"] == "FAIL"
     assert result["permission_status"] == "ACTIVE_ABORT"
+    assert result["current_main_coverage_verdict"] == "BLOCKED_CURRENT_MAIN_NOT_DEPLOYED"
+    assert {
+        "auth_verdict",
+        "proposal_propagation_verdict",
+        "expanded_universe_verdict",
+        "paper_runtime_verdict",
+        "cohort_verdict",
+        "economic_evidence_verdict",
+        "entry_verdict",
+        "scale_verdict",
+        "current_main_coverage_verdict",
+    }.issubset(result)
 
     funnel = build_post_fix_funnel_attribution(
         pl.DataFrame(

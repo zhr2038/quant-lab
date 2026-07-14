@@ -7,7 +7,11 @@ from fastapi.testclient import TestClient
 from quant_lab.api.main import create_app
 from quant_lab.data.lake import write_parquet_dataset
 from quant_lab.paper.contracts import PaperStrategyAck, PaperStrategyProposal
-from quant_lab.paper.service import publish_proposals, read_proposals
+from quant_lab.paper.service import (
+    publish_canonical_proposal_snapshot,
+    publish_proposals,
+    read_proposals,
+)
 
 
 def _proposal() -> PaperStrategyProposal:
@@ -30,12 +34,30 @@ def _proposal() -> PaperStrategyProposal:
 def test_paper_api_gets_and_ack_is_disabled_by_default(monkeypatch, tmp_path):
     lake = tmp_path / "lake"
     proposal = _proposal()
-    publish_proposals(lake, [proposal])
+    published = publish_proposals(lake, [proposal])
+    publish_canonical_proposal_snapshot(
+        lake,
+        published,
+        generated_at=datetime(2026, 7, 10, 0, 30, tzinfo=UTC),
+        source_quant_lab_commit="a" * 40,
+    )
     monkeypatch.setenv("QUANT_LAB_LAKE_ROOT", str(lake))
     monkeypatch.delenv("QUANT_LAB_PAPER_ACK_WRITE_ENABLED", raising=False)
     client = TestClient(create_app())
 
-    assert client.get("/v1/paper-strategy/proposals").status_code == 200
+    response = client.get("/v1/paper-strategy/proposals")
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["proposal_snapshot_id"].startswith("proposal-snapshot:")
+    assert len(payload["proposal_snapshot_sha256"]) == 64
+    assert payload["snapshot_generated_at"] == "2026-07-10T00:30:00+00:00"
+    assert payload["proposal_count"] == 1
+    assert payload["proposal_ids"] == [proposal.proposal_id]
+    assert payload["proposal_hashes"] == [proposal.proposal_hash]
+    assert payload["source_quant_lab_commit"] == "a" * 40
+    assert payload["proposals"][0]["proposal_snapshot_id"] == payload[
+        "proposal_snapshot_id"
+    ]
     detail = client.get(f"/v1/paper-strategy/proposals/{proposal.proposal_id}")
     assert detail.status_code == 200
     ack = PaperStrategyAck(
@@ -128,6 +150,30 @@ def test_publish_rejects_rule_change_without_strategy_version_bump(tmp_path):
 
     with pytest.raises(ValueError, match="strategy_version_rule_conflict"):
         publish_proposals(lake, [changed])
+
+
+def test_canonical_proposal_snapshot_is_stable_for_identical_members(tmp_path):
+    lake = tmp_path / "lake"
+    published = publish_proposals(lake, [_proposal()])
+    first_frame, first = publish_canonical_proposal_snapshot(
+        lake,
+        published,
+        generated_at=datetime(2026, 7, 10, tzinfo=UTC),
+        source_quant_lab_commit="a" * 40,
+    )
+    second_frame, second = publish_canonical_proposal_snapshot(
+        lake,
+        published,
+        generated_at=datetime(2026, 7, 11, tzinfo=UTC),
+        source_quant_lab_commit="a" * 40,
+    )
+
+    assert second["proposal_snapshot_id"] == first["proposal_snapshot_id"]
+    assert second["proposal_snapshot_sha256"] == first["proposal_snapshot_sha256"]
+    assert second["snapshot_generated_at"] == first["snapshot_generated_at"]
+    assert first_frame["proposal_snapshot_id"].to_list() == second_frame[
+        "proposal_snapshot_id"
+    ].to_list()
 
 
 def test_paper_status_surfaces_effective_promotion_lifecycle(monkeypatch, tmp_path):

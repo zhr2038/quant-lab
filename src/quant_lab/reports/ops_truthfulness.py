@@ -10,6 +10,14 @@ import polars as pl
 
 AUTH_ERROR_RESULTS = {"missing_bearer_token", "invalid_bearer_token"}
 CURRENT_FUNNEL_SCHEMA_VERSION = "v5.trade_opportunity_funnel.v2"
+TRUSTED_PRODUCTION_CLIENT_IDS = {
+    "v5.quant_lab_client",
+    "v5.dashboard_proxy",
+}
+EXPECTED_UNAUTHENTICATED_PROBE_IDS = {
+    "quant-lab.auth-negative-probe",
+    "quant-lab.expected-unauthenticated-probe",
+}
 
 API_AUTH_INCIDENT_SCHEMA = {
     "endpoint": pl.Utf8,
@@ -17,6 +25,14 @@ API_AUTH_INCIDENT_SCHEMA = {
     "client_host": pl.Utf8,
     "user_agent": pl.Utf8,
     "auth_result": pl.Utf8,
+    "client_class": pl.Utf8,
+    "trusted_client": pl.Boolean,
+    "expected_unauthenticated_probe": pl.Boolean,
+    "incident_class": pl.Utf8,
+    "affects_production_auth_slo": pl.Boolean,
+    "affects_security_rejection_metric": pl.Boolean,
+    "operator_error": pl.Boolean,
+    "unexpected_auth_failure": pl.Boolean,
     "first_error_at": pl.Utf8,
     "last_error_at": pl.Utf8,
     "error_count": pl.Int64,
@@ -24,6 +40,17 @@ API_AUTH_INCIDENT_SCHEMA = {
     "clean_hours_after_recovery": pl.Float64,
     "current_status": pl.Utf8,
     "suspected_root_cause": pl.Utf8,
+    "generated_at": pl.Utf8,
+}
+
+API_AUTH_PRODUCTION_SLO_SCHEMA = {
+    "window_hours": pl.Int64,
+    "trusted_request_count": pl.Int64,
+    "unexpected_auth_failure_count": pl.Int64,
+    "last_unexpected_auth_failure_at": pl.Utf8,
+    "clean_hours_since_last_unexpected_failure": pl.Float64,
+    "production_auth_slo_status": pl.Utf8,
+    "detail": pl.Utf8,
     "generated_at": pl.Utf8,
 }
 
@@ -54,6 +81,12 @@ PAPER_RUNTIME_FRESHNESS_SCHEMA = {
 PAPER_PROPOSAL_PROPAGATION_SCHEMA = {
     "proposal_id": pl.Utf8,
     "proposal_hash": pl.Utf8,
+    "proposal_snapshot_id": pl.Utf8,
+    "proposal_snapshot_sha256": pl.Utf8,
+    "snapshot_generated_at": pl.Utf8,
+    "selected_v5_bundle_built_at": pl.Utf8,
+    "v5_observed_proposal_snapshot_id": pl.Utf8,
+    "v5_observed_proposal_snapshot_sha256": pl.Utf8,
     "proposal_published_at": pl.Utf8,
     "first_seen_by_v5_at": pl.Utf8,
     "ack_at": pl.Utf8,
@@ -74,17 +107,22 @@ def build_api_auth_reports(
     generated = _utc(generated_at)
     generated_text = generated.isoformat()
     rows = metrics.to_dicts() if not metrics.is_empty() else []
-    parsed: list[tuple[dict[str, Any], datetime]] = []
+    parsed: list[tuple[dict[str, Any], datetime, dict[str, Any]]] = []
     cutoff = generated - timedelta(days=max(1, incident_lookback_days))
     for source in rows:
         timestamp = _row_time(source, ("request_ts", "ts_utc", "created_at"))
         if timestamp is None or timestamp < cutoff:
             continue
-        parsed.append((source, timestamp))
+        parsed.append((source, timestamp, _classify_auth_event(source)))
 
     success_by_endpoint: dict[tuple[str, str, str, str], list[datetime]] = defaultdict(list)
-    errors_by_key: dict[tuple[str, str, str, str, str], list[datetime]] = defaultdict(list)
-    for row, timestamp in parsed:
+    errors_by_key: dict[tuple[str, str, str, str, str, str], list[datetime]] = defaultdict(
+        list
+    )
+    classifications_by_error: dict[
+        tuple[str, str, str, str, str, str], dict[str, Any]
+    ] = {}
+    for row, timestamp, classification in parsed:
         endpoint = _text(row.get("path") or row.get("endpoint_path"))
         identity = (
             endpoint,
@@ -95,13 +133,20 @@ def build_api_auth_reports(
         auth_result = _text(row.get("auth_result"))
         status_code = _int(row.get("status_code"))
         if status_code == 401 or auth_result in AUTH_ERROR_RESULTS:
-            errors_by_key[(*identity, auth_result or "http_401")].append(timestamp)
+            error_key = (
+                *identity,
+                auth_result or "http_401",
+                _text(classification.get("incident_class")),
+            )
+            errors_by_key[error_key].append(timestamp)
+            classifications_by_error[error_key] = classification
         elif status_code is not None and 200 <= status_code < 400 and auth_result == "token_ok":
             success_by_endpoint[identity].append(timestamp)
 
     incident_rows: list[dict[str, Any]] = []
     for key, timestamps in sorted(errors_by_key.items()):
-        endpoint, client_id, client_host, user_agent, auth_result = key
+        endpoint, client_id, client_host, user_agent, auth_result, _incident_class = key
+        classification = classifications_by_error[key]
         first_error = min(timestamps)
         last_error = max(timestamps)
         recoveries = [
@@ -111,7 +156,13 @@ def build_api_auth_reports(
         ]
         recovered_at = min(recoveries) if recoveries else None
         clean_hours = max(0.0, (generated - last_error).total_seconds() / 3600.0)
-        if clean_hours >= 24.0:
+        if _bool(classification.get("expected_unauthenticated_probe")):
+            current_status = "EXPECTED_REJECTION_PASS"
+        elif _bool(classification.get("operator_error")):
+            current_status = "OPERATOR_ERROR_RECORDED"
+        elif not _bool(classification.get("affects_production_auth_slo")):
+            current_status = "SECURITY_REJECTION_RECORDED"
+        elif clean_hours >= 24.0:
             current_status = "RECOVERED_24H_CLEAN"
         elif clean_hours <= 0.25 and recovered_at is None:
             current_status = "ACTIVE"
@@ -124,6 +175,7 @@ def build_api_auth_reports(
                 "client_host": client_host,
                 "user_agent": user_agent,
                 "auth_result": auth_result,
+                **classification,
                 "first_error_at": first_error.isoformat(),
                 "last_error_at": last_error.isoformat(),
                 "error_count": len(timestamps),
@@ -143,7 +195,7 @@ def build_api_auth_reports(
     client_groups: dict[tuple[str, str, str], list[tuple[dict[str, Any], datetime]]] = defaultdict(
         list
     )
-    for row, timestamp in parsed:
+    for row, timestamp, _classification in parsed:
         if timestamp < recent_cutoff:
             continue
         client_groups[
@@ -214,10 +266,74 @@ def build_api_auth_reports(
             }
         )
 
+    recent_cutoff = generated - timedelta(hours=24)
+    trusted_recent = [
+        (row, timestamp, classification)
+        for row, timestamp, classification in parsed
+        if timestamp >= recent_cutoff and _bool(classification.get("trusted_client"))
+    ]
+    unexpected_failures = [
+        timestamp
+        for row, timestamp, classification in parsed
+        if _bool(classification.get("unexpected_auth_failure"))
+        and (
+            _int(row.get("status_code")) == 401
+            or _text(row.get("auth_result")) in AUTH_ERROR_RESULTS
+        )
+    ]
+    last_unexpected = max(unexpected_failures, default=None)
+    recent_unexpected = [item for item in unexpected_failures if item >= recent_cutoff]
+    clean_hours = (
+        max(0.0, (generated - last_unexpected).total_seconds() / 3600.0)
+        if last_unexpected is not None
+        else None
+    )
+    production_slo_status = (
+        "FAIL"
+        if recent_unexpected
+        else "PASS"
+        if trusted_recent
+        else "NO_TRUSTED_TRAFFIC"
+    )
+    production_slo = _frame(
+        [
+            {
+                "window_hours": 24,
+                "trusted_request_count": len(trusted_recent),
+                "unexpected_auth_failure_count": len(recent_unexpected),
+                "last_unexpected_auth_failure_at": (
+                    last_unexpected.isoformat() if last_unexpected else ""
+                ),
+                "clean_hours_since_last_unexpected_failure": clean_hours,
+                "production_auth_slo_status": production_slo_status,
+                "detail": (
+                    "trusted production clients have no unexpected 401 in the last 24h"
+                    if production_slo_status == "PASS"
+                    else "trusted production client had an unexpected 401 in the last 24h"
+                    if production_slo_status == "FAIL"
+                    else "no trusted production client request was observed in the last 24h"
+                ),
+                "generated_at": generated_text,
+            }
+        ],
+        API_AUTH_PRODUCTION_SLO_SCHEMA,
+    )
+    incident_frame = _frame(incident_rows, API_AUTH_INCIDENT_SCHEMA)
+    security_rows = [
+        row
+        for row in incident_rows
+        if _bool(row.get("affects_security_rejection_metric"))
+    ]
+    manual_rows = [row for row in incident_rows if _bool(row.get("operator_error"))]
     return {
-        "api_auth_incident": _frame(incident_rows, API_AUTH_INCIDENT_SCHEMA),
-        "api_auth_error_timeline": _frame(incident_rows, API_AUTH_INCIDENT_SCHEMA),
+        "api_auth_incident": incident_frame,
+        "api_auth_error_timeline": incident_frame,
         "api_auth_client_summary": _frame(client_rows, API_AUTH_CLIENT_SUMMARY_SCHEMA),
+        "api_auth_production_slo": production_slo,
+        "api_auth_security_rejections": _frame(
+            security_rows, API_AUTH_INCIDENT_SCHEMA
+        ),
+        "api_auth_manual_probe": _frame(manual_rows, API_AUTH_INCIDENT_SCHEMA),
     }
 
 
@@ -333,12 +449,22 @@ def build_paper_proposal_propagation_status(
     ack_history: pl.DataFrame,
     trackers_current: pl.DataFrame,
     trackers_history: pl.DataFrame,
+    selected_v5_bundle_built_at: datetime | str | None = None,
+    v5_observed_proposal_snapshot_id: str | None = None,
+    v5_observed_proposal_snapshot_sha256: str | None = None,
+    v5_snapshot_fetched_at: datetime | str | None = None,
     generated_at: datetime | None = None,
 ) -> pl.DataFrame:
     generated = _utc(generated_at)
     generated_text = generated.isoformat()
-    ack_rows = _rows(ack_current, ack_history)
-    tracker_rows = _rows(trackers_current, trackers_history)
+    bundle_built_at = _as_utc_datetime(selected_v5_bundle_built_at)
+    observed_snapshot_id = _text(v5_observed_proposal_snapshot_id)
+    observed_snapshot_sha = _text(v5_observed_proposal_snapshot_sha256).lower()
+    observed_fetched_at = _as_utc_datetime(v5_snapshot_fetched_at)
+    ack_current_rows = _rows(ack_current)
+    ack_history_rows = _rows(ack_history)
+    tracker_current_rows = _rows(trackers_current)
+    tracker_history_rows = _rows(trackers_history)
     current_tracker_keys = {
         (_text(row.get("proposal_id")), _text(row.get("proposal_hash")))
         for row in (trackers_current.to_dicts() if not trackers_current.is_empty() else [])
@@ -347,28 +473,66 @@ def build_paper_proposal_propagation_status(
     for proposal in proposals.to_dicts() if not proposals.is_empty() else []:
         proposal_id = _text(proposal.get("proposal_id"))
         proposal_hash = _text(proposal.get("proposal_hash"))
+        snapshot_id = _text(proposal.get("proposal_snapshot_id"))
+        snapshot_sha = _text(proposal.get("proposal_snapshot_sha256")).lower()
+        snapshot_at = _row_time(
+            proposal,
+            ("snapshot_generated_at", "published_at", "created_at"),
+        )
         if not proposal_id:
             continue
         proposal_at = _row_time(
             proposal,
-            ("published_at", "created_at", "as_of_ts", "generated_at"),
+            (
+                "snapshot_generated_at",
+                "published_at",
+                "created_at",
+                "as_of_ts",
+                "generated_at",
+            ),
         )
-        same_id_acks = [row for row in ack_rows if _text(row.get("proposal_id")) == proposal_id]
-        exact_acks = [
+        current_same_id_acks = [
+            row for row in ack_current_rows if _text(row.get("proposal_id")) == proposal_id
+        ]
+        current_exact_acks = [
             row
-            for row in same_id_acks
+            for row in current_same_id_acks
             if not proposal_hash or _text(row.get("proposal_hash")) == proposal_hash
         ]
-        exact_ack = max(exact_acks, key=_propagation_row_rank, default=None)
-        same_id_trackers = [
-            row for row in tracker_rows if _text(row.get("proposal_id")) == proposal_id
-        ]
-        exact_trackers = [
+        current_same_id_trackers = [
             row
-            for row in same_id_trackers
+            for row in tracker_current_rows
+            if _text(row.get("proposal_id")) == proposal_id
+        ]
+        current_exact_trackers = [
+            row
+            for row in current_same_id_trackers
             if not proposal_hash or _text(row.get("proposal_hash")) == proposal_hash
         ]
-        exact_tracker = max(exact_trackers, key=_propagation_row_rank, default=None)
+        historical_exact = [
+            row
+            for row in [*ack_history_rows, *tracker_history_rows]
+            if _text(row.get("proposal_id")) == proposal_id
+            and (not proposal_hash or _text(row.get("proposal_hash")) == proposal_hash)
+        ]
+        snapshot_exact = bool(
+            snapshot_id
+            and snapshot_sha
+            and observed_snapshot_id == snapshot_id
+            and observed_snapshot_sha == snapshot_sha
+        )
+        snapshot_acks = [
+            row
+            for row in current_exact_acks
+            if _row_matches_proposal_snapshot(row, snapshot_id, snapshot_sha)
+        ]
+        snapshot_trackers = [
+            row
+            for row in current_exact_trackers
+            if _row_matches_proposal_snapshot(row, snapshot_id, snapshot_sha)
+        ]
+        exact_ack = max(snapshot_acks, key=_propagation_row_rank, default=None)
+        exact_tracker = max(snapshot_trackers, key=_propagation_row_rank, default=None)
         ack_at = _row_time(
             exact_ack or {},
             ("accepted_at", "rejected_at", "ack_at", "created_at", "ingest_ts"),
@@ -377,7 +541,11 @@ def build_paper_proposal_propagation_status(
             exact_tracker or {},
             ("tracker_created_at", "created_at", "updated_at", "ingest_ts"),
         )
-        seen_times = [item for item in (ack_at, tracker_at) if item is not None]
+        seen_times = [
+            item
+            for item in (observed_fetched_at, ack_at, tracker_at)
+            if item is not None
+        ]
         first_seen = min(seen_times) if seen_times else None
         reject_reason = _text((exact_ack or {}).get("reject_reason"))
         accepted = _bool((exact_ack or {}).get("accepted"))
@@ -392,17 +560,59 @@ def build_paper_proposal_propagation_status(
                 in current_tracker_keys
             )
         )
-        status, block_reason = _propagation_state(
-            proposal_hash=proposal_hash,
-            same_id_acks=same_id_acks,
-            same_id_trackers=same_id_trackers,
-            exact_ack=exact_ack,
-            exact_tracker=exact_tracker,
-            accepted=accepted,
-            current_tracker=current_tracker,
-            reject_reason=reject_reason,
-        )
-        reached_at = tracker_at or ack_at
+        if bundle_built_at is None:
+            status, block_reason = "UNKNOWN", "selected V5 bundle built_at is missing"
+            first_seen = None
+            ack_at = None
+            tracker_at = None
+        elif snapshot_at is None:
+            status, block_reason = (
+                "NOT_YET_PUBLISHED_AT_BUNDLE_TIME",
+                "Current Proposal snapshot publication time is missing",
+            )
+            first_seen = None
+            ack_at = None
+            tracker_at = None
+        elif snapshot_at > bundle_built_at:
+            status, block_reason = (
+                "PUBLISHED_AFTER_SELECTED_BUNDLE",
+                "Current Proposal snapshot was published after the selected V5 bundle",
+            )
+            first_seen = None
+            ack_at = None
+            tracker_at = None
+        elif observed_snapshot_id == snapshot_id and observed_snapshot_sha != snapshot_sha:
+            status, block_reason = "HASH_MISMATCH", "V5 observed Snapshot ID with another SHA"
+            first_seen = None
+            ack_at = None
+            tracker_at = None
+        elif not snapshot_exact:
+            if historical_exact:
+                status, block_reason = (
+                    "HISTORICAL_ACK_ONLY",
+                    "only historical ACK or Tracker evidence exists; "
+                    "Current Snapshot was not observed",
+                )
+            else:
+                status, block_reason = (
+                    "PUBLISHED_NOT_FETCHED",
+                    "selected V5 bundle did not record the Current Proposal Snapshot ID and SHA",
+                )
+            first_seen = None
+            ack_at = None
+            tracker_at = None
+        else:
+            status, block_reason = _current_snapshot_propagation_state(
+                proposal_hash=proposal_hash,
+                current_same_id_acks=current_same_id_acks,
+                current_same_id_trackers=current_same_id_trackers,
+                exact_ack=exact_ack,
+                exact_tracker=exact_tracker,
+                accepted=accepted,
+                current_tracker=current_tracker,
+                reject_reason=reject_reason,
+            )
+        reached_at = first_seen or tracker_at or ack_at
         lag = (
             max(0, int((reached_at - proposal_at).total_seconds()))
             if proposal_at is not None and reached_at is not None
@@ -412,6 +622,14 @@ def build_paper_proposal_propagation_status(
             {
                 "proposal_id": proposal_id,
                 "proposal_hash": proposal_hash,
+                "proposal_snapshot_id": snapshot_id,
+                "proposal_snapshot_sha256": snapshot_sha,
+                "snapshot_generated_at": snapshot_at.isoformat() if snapshot_at else "",
+                "selected_v5_bundle_built_at": (
+                    bundle_built_at.isoformat() if bundle_built_at else ""
+                ),
+                "v5_observed_proposal_snapshot_id": observed_snapshot_id,
+                "v5_observed_proposal_snapshot_sha256": observed_snapshot_sha,
                 "proposal_published_at": proposal_at.isoformat() if proposal_at else "",
                 "first_seen_by_v5_at": first_seen.isoformat() if first_seen else "",
                 "ack_at": ack_at.isoformat() if ack_at else "",
@@ -465,6 +683,7 @@ def build_complete_acceptance_status(
     cohort: pl.DataFrame,
     propagation: pl.DataFrame,
     auth_incidents: pl.DataFrame,
+    acceptance_context: Mapping[str, Any] | None = None,
     generated_at: datetime | None = None,
 ) -> dict[str, Any]:
     generated = _utc(generated_at)
@@ -490,9 +709,10 @@ def build_complete_acceptance_status(
         "ACTIVE_ABORT",
         "ACTIVE_SELL_ONLY",
     }
-    auth_ok = all(
-        _text(row.get("current_status")) == "RECOVERED_24H_CLEAN"
-        for row in (auth_incidents.to_dicts() if not auth_incidents.is_empty() else [])
+    auth_rows = auth_incidents.to_dicts() if not auth_incidents.is_empty() else []
+    auth_ok = bool(auth_rows) and all(
+        _text(row.get("production_auth_slo_status")).upper() == "PASS"
+        for row in auth_rows
     )
     runtime = paper_runtime_status(paper_freshness)
     propagation_rows = propagation.to_dicts() if not propagation.is_empty() else []
@@ -506,6 +726,21 @@ def build_complete_acceptance_status(
         key=lambda row: _int(row.get("cohort_version")) or 0,
         default={},
     )
+    context = dict(acceptance_context or {})
+    expanded_ok = _independent_check_ok(
+        system_acceptance,
+        tokens=("expanded_universe",),
+    )
+    economic_ok = _independent_check_ok(
+        system_acceptance,
+        tokens=("economic", "cost_trust", "paper_evidence"),
+    )
+    cohort_ok = _bool(latest_cohort.get("formal_observation_eligible")) or _text(
+        latest_cohort.get("status")
+    ).upper() in {"OBSERVING", "REVIEW_READY"}
+    main_relationship = _text(
+        context.get("current_main_production_relationship")
+    ).upper()
     if not safety_ok:
         scoped_verdict = "BLOCKED_SAFETY"
     elif not auth_ok:
@@ -527,6 +762,37 @@ def build_complete_acceptance_status(
         "data_quality_status": _text(data_quality.get("status") or "UNKNOWN").upper(),
         "paper_runtime_status": runtime,
         "cohort_status": _text(latest_cohort.get("status") or "MISSING"),
+        "auth_verdict": "PASS" if auth_ok else "BLOCKED_API_AUTH",
+        "proposal_propagation_verdict": (
+            "PASS" if propagation_ok else "BLOCKED_PROPOSAL_PROPAGATION"
+        ),
+        "expanded_universe_verdict": (
+            "PASS"
+            if expanded_ok is True
+            else "BLOCKED_EXPANDED_UNIVERSE"
+            if expanded_ok is False
+            else "UNKNOWN"
+        ),
+        "paper_runtime_verdict": (
+            "PASS" if runtime == "PASS" else "BLOCKED_PAPER_RUNTIME"
+        ),
+        "cohort_verdict": "PASS" if cohort_ok else "BLOCKED_COHORT",
+        "economic_evidence_verdict": (
+            "PASS"
+            if economic_ok is True
+            else "BLOCKED_ECONOMIC_EVIDENCE"
+            if economic_ok is False
+            else "UNKNOWN"
+        ),
+        "entry_verdict": _text(readiness.get("entry_status") or "UNKNOWN"),
+        "scale_verdict": _text(readiness.get("scale_status") or "UNKNOWN"),
+        "current_main_coverage_verdict": (
+            "PASS_CURRENT_MAIN_PRODUCTION_MATCH"
+            if main_relationship == "MATCH"
+            else "BLOCKED_CURRENT_MAIN_NOT_DEPLOYED"
+            if main_relationship == "MISMATCH"
+            else "UNKNOWN"
+        ),
         "entry_status": _text(readiness.get("entry_status") or "UNKNOWN"),
         "scale_status": _text(readiness.get("scale_status") or "UNKNOWN"),
         "permission": permission,
@@ -540,11 +806,28 @@ def build_complete_acceptance_status(
     }
 
 
-def _propagation_state(
+def _independent_check_ok(
+    frame: pl.DataFrame,
+    *,
+    tokens: tuple[str, ...],
+) -> bool | None:
+    matching = [
+        row
+        for row in (frame.to_dicts() if not frame.is_empty() else [])
+        if any(token in _text(row.get("check_name")).lower() for token in tokens)
+    ]
+    if not matching:
+        return None
+    return all(
+        _text(row.get("status")).upper() in {"PASS", "INFO"} for row in matching
+    )
+
+
+def _current_snapshot_propagation_state(
     *,
     proposal_hash: str,
-    same_id_acks: list[dict[str, Any]],
-    same_id_trackers: list[dict[str, Any]],
+    current_same_id_acks: list[dict[str, Any]],
+    current_same_id_trackers: list[dict[str, Any]],
     exact_ack: dict[str, Any] | None,
     exact_tracker: dict[str, Any] | None,
     accepted: bool,
@@ -553,15 +836,18 @@ def _propagation_state(
 ) -> tuple[str, str]:
     mismatched = any(
         proposal_hash and _text(row.get("proposal_hash")) not in {"", proposal_hash}
-        for row in [*same_id_acks, *same_id_trackers]
+        for row in [*current_same_id_acks, *current_same_id_trackers]
     )
     if mismatched and exact_ack is None and exact_tracker is None:
         return "HASH_MISMATCH", "V5 evidence exists for proposal_id with another hash"
     if accepted and exact_tracker and current_tracker:
         return "ACCEPTED_TRACKER_ACTIVE", ""
+    tracker_status = _text((exact_tracker or {}).get("supersession_status")).upper()
+    if tracker_status == "SUPERSEDED" or not _bool(
+        (exact_tracker or {}).get("current_proposal_member")
+    ) and exact_tracker is not None:
+        return "SUPERSEDED", "Current Snapshot Tracker is superseded or exit-only"
     reason = reject_reason.lower()
-    if "expired" in reason:
-        return "REJECTED_EXPIRED", reject_reason
     if "capacity" in reason:
         return "REJECTED_CAPACITY", reject_reason
     if "hash" in reason or "version_conflict" in reason:
@@ -569,10 +855,25 @@ def _propagation_state(
     if exact_ack is not None and not accepted:
         return "REJECTED_CONTRACT", reject_reason or "proposal rejected by V5"
     if exact_ack is not None or exact_tracker is not None:
-        return "SEEN_PENDING_PARSE", "accepted ACK has no current active tracker"
-    if same_id_acks or same_id_trackers:
-        return "SUPERSEDED", "only historical or superseded V5 evidence exists"
-    return "NOT_YET_SEEN_BY_V5", "no exact ACK or Tracker evidence"
+        return "SNAPSHOT_FETCHED_PENDING_PARSE", "accepted ACK has no current active tracker"
+    return (
+        "SNAPSHOT_FETCHED_PENDING_PARSE",
+        "V5 fetched the Snapshot but emitted no Snapshot-bound ACK or Tracker result",
+    )
+
+
+def _row_matches_proposal_snapshot(
+    row: Mapping[str, Any],
+    snapshot_id: str,
+    snapshot_sha256: str,
+) -> bool:
+    return bool(
+        snapshot_id
+        and snapshot_sha256
+        and _text(row.get("source_proposal_snapshot_id")) == snapshot_id
+        and _text(row.get("source_proposal_snapshot_sha256")).lower()
+        == snapshot_sha256.lower()
+    )
 
 
 def _stale_open_paper_positions(
@@ -627,6 +928,66 @@ def _auth_root_cause(
     if auth_result == "invalid_bearer_token":
         return "client_token_mismatch_or_rotation_incomplete"
     return "http_authentication_failure"
+
+
+def _classify_auth_event(row: Mapping[str, Any]) -> dict[str, Any]:
+    client_id = _text(row.get("client_id")).lower()
+    user_agent = _text(row.get("user_agent")).lower()
+    explicit_class = _text(row.get("client_class")).lower()
+    auth_result = _text(row.get("auth_result")).lower()
+    expected_probe = _bool(row.get("expected_unauthenticated_probe")) or (
+        client_id in EXPECTED_UNAUTHENTICATED_PROBE_IDS
+        or explicit_class == "expected_unauthenticated_probe"
+        or "auth-negative-probe" in user_agent
+    )
+    security_scan = (
+        explicit_class == "security_scan"
+        or "security-scan" in client_id
+        or "security-scan" in user_agent
+    )
+    trusted = _bool(row.get("trusted_client")) or (
+        client_id in TRUSTED_PRODUCTION_CLIENT_IDS
+        or explicit_class == "trusted_production"
+    )
+    manual_probe = (
+        explicit_class == "manual_probe"
+        or client_id in {"manual.curl", "manual.probe", "operator.manual_probe"}
+        or user_agent.startswith(("curl/", "httpie/", "postmanruntime/"))
+        or "powershell" in user_agent
+    )
+    if expected_probe:
+        client_class = "expected_unauthenticated_probe"
+        incident_class = "EXPECTED_UNAUTHENTICATED_PROBE"
+    elif security_scan:
+        client_class = "security_scan"
+        incident_class = "SECURITY_SCAN_REJECTED"
+    elif trusted:
+        client_class = "trusted_production"
+        incident_class = (
+            "TRUSTED_CLIENT_TOKEN_INVALID"
+            if auth_result == "invalid_bearer_token"
+            else "TRUSTED_CLIENT_TOKEN_MISSING"
+        )
+    elif manual_probe:
+        client_class = "manual_probe"
+        incident_class = "MANUAL_PROBE_MISSING_TOKEN"
+    else:
+        client_class = "unknown_external"
+        incident_class = "UNKNOWN_EXTERNAL_UNAUTHENTICATED"
+    operator_error = manual_probe and not trusted and not expected_probe
+    unexpected_auth_failure = trusted and not expected_probe
+    return {
+        "client_class": client_class,
+        "trusted_client": trusted,
+        "expected_unauthenticated_probe": expected_probe,
+        "incident_class": incident_class,
+        "affects_production_auth_slo": unexpected_auth_failure,
+        "affects_security_rejection_metric": (
+            expected_probe or security_scan or (not trusted and not operator_error)
+        ),
+        "operator_error": operator_error,
+        "unexpected_auth_failure": unexpected_auth_failure,
+    }
 
 
 def _unattributed_count(row: Mapping[str, Any]) -> int:
@@ -704,6 +1065,19 @@ def _row_time(row: Mapping[str, Any], columns: Iterable[str]) -> datetime | None
             continue
         return parsed.astimezone(UTC) if parsed.tzinfo else parsed.replace(tzinfo=UTC)
     return None
+
+
+def _as_utc_datetime(value: datetime | str | None) -> datetime | None:
+    if isinstance(value, datetime):
+        return value.astimezone(UTC) if value.tzinfo else value.replace(tzinfo=UTC)
+    text = _text(value)
+    if not text:
+        return None
+    try:
+        parsed = datetime.fromisoformat(text.replace("Z", "+00:00"))
+    except ValueError:
+        return None
+    return parsed.astimezone(UTC) if parsed.tzinfo else parsed.replace(tzinfo=UTC)
 
 
 def _age_seconds(reference: datetime, value: datetime | None) -> int | None:

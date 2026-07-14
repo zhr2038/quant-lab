@@ -24,14 +24,15 @@ from quant_lab.paper.proposals import (
     build_configured_proposals,
     build_legacy_proposal_migration_audit,
 )
-from quant_lab.paper.service import PAPER_STRATEGY_PROPOSAL_DATASET, publish_proposals
+from quant_lab.paper.service import (
+    PAPER_STRATEGY_PROPOSAL_DATASET,
+    publish_canonical_proposal_snapshot,
+    publish_proposals,
+)
 from quant_lab.strategy_telemetry.sanitize import safe_json_dumps
 from quant_lab.symbols import normalize_symbol
 
 PAPER_STRATEGY_REGISTRY_DATASET = Path("gold") / "paper_strategy_registry"
-PAPER_STRATEGY_PROPOSALS_CURRENT_DATASET = (
-    Path("gold") / "paper_strategy_proposals_current"
-)
 PAPER_STRATEGY_TRACKERS_CURRENT_DATASET = (
     Path("gold") / "paper_strategy_trackers_current"
 )
@@ -331,9 +332,9 @@ def build_and_publish_paper_strategy_pipeline(
     if configured:
         published = publish_proposals(root, [proposal for proposal, _evidence in configured])
         proposal_frame = published
-    write_parquet_dataset(
+    proposal_frame, _proposal_snapshot = publish_canonical_proposal_snapshot(
+        root,
         proposal_frame,
-        root / PAPER_STRATEGY_PROPOSALS_CURRENT_DATASET,
     )
     raw_ack = read_parquet_dataset(root / V5_PAPER_STRATEGY_ACK_CURRENT_DATASET)
     raw_ack_history = read_parquet_dataset(root / V5_PAPER_STRATEGY_ACK_HISTORY_DATASET)

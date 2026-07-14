@@ -233,6 +233,7 @@ SNAPSHOT_META_DATASETS = {
     "paper_strategy_promotion_gate",
     "paper_strategy_proposal",
     "paper_strategy_proposals_current",
+    "paper_strategy_proposal_snapshot",
     "paper_strategy_trackers_current",
     "paper_strategy_registry",
     "paper_strategy_registry_current",
@@ -242,6 +243,9 @@ SNAPSHOT_META_DATASETS = {
     "paper_strategy_identity_conflict",
     "paper_cohort_manifest",
     "api_auth_incident",
+    "api_auth_production_slo",
+    "api_auth_security_rejections",
+    "api_auth_manual_probe",
     "paper_runtime_freshness",
     "paper_proposal_propagation_status",
     "strategy_health_daily",
@@ -779,6 +783,7 @@ REQUIRED_MEMBERS = [
     "reports/paper_strategy_proposals.csv",
     "reports/paper_strategy_proposal_ack.csv",
     "reports/paper_strategy_proposals_current.csv",
+    "reports/paper_strategy_proposal_snapshot.json",
     "reports/paper_strategy_trackers_current.csv",
     "reports/paper_strategy_registry_current.csv",
     "reports/paper_strategy_registry_history.csv",
@@ -790,6 +795,10 @@ REQUIRED_MEMBERS = [
     "reports/paper_cohort_status.md",
     "reports/api_auth_error_timeline.csv",
     "reports/api_auth_client_summary.csv",
+    "reports/api_auth_incident.csv",
+    "reports/api_auth_production_slo.csv",
+    "reports/api_auth_security_rejections.csv",
+    "reports/api_auth_manual_probe.csv",
     "reports/paper_runtime_freshness.csv",
     "reports/paper_proposal_propagation_status.csv",
     "reports/system_acceptance_complete_status.json",
@@ -1783,6 +1792,9 @@ CSV_SCHEMAS: dict[str, list[str]] = {
         "live_order_effect",
         "source_pack_sha256",
         "source_v5_bundle_sha256",
+        "source_proposal_snapshot_id",
+        "source_proposal_snapshot_sha256",
+        "source_proposal_snapshot_generated_at",
     ],
     "reports/paper_strategy_ack_current.csv": [
         "proposal_id",
@@ -1799,6 +1811,9 @@ CSV_SCHEMAS: dict[str, list[str]] = {
         "live_order_effect",
         "source_pack_sha256",
         "source_v5_bundle_sha256",
+        "source_proposal_snapshot_id",
+        "source_proposal_snapshot_sha256",
+        "source_proposal_snapshot_generated_at",
     ],
     "reports/paper_strategy_ack_history.csv": [
         "proposal_id",
@@ -1815,6 +1830,9 @@ CSV_SCHEMAS: dict[str, list[str]] = {
         "live_order_effect",
         "source_pack_sha256",
         "source_v5_bundle_sha256",
+        "source_proposal_snapshot_id",
+        "source_proposal_snapshot_sha256",
+        "source_proposal_snapshot_generated_at",
     ],
     "reports/strategy_opportunity_advisory.csv": [
         "as_of_ts",
@@ -4312,6 +4330,12 @@ CSV_SCHEMAS.update(
             "active_tracker_count_deprecated",
             "active_tracker_count_semantics",
             "open_paper_position_count",
+            "proposal_snapshot_id",
+            "proposal_snapshot_sha256",
+            "proposal_snapshot_generated_at",
+            "proposal_snapshot_fetched_at",
+            "proposal_snapshot_count",
+            "quant_lab_contract_version",
             "real_order_calls",
             "real_position_mutations",
             "generated_at",
@@ -4413,6 +4437,7 @@ def _publish_strategy_opportunity_advisory_snapshot(
 PAPER_PIPELINE_EXPORT_DATASETS = (
     "paper_strategy_proposal",
     "paper_strategy_proposals_current",
+    "paper_strategy_proposal_snapshot",
     "paper_strategy_trackers_current",
     "paper_strategy_registry",
     "paper_strategy_registry_current",
@@ -4477,6 +4502,7 @@ def _publish_ops_truthfulness_snapshot(
     snapshot: _DatasetSnapshot,
     *,
     generated_at: datetime,
+    pre_export_v5: dict[str, Any] | None = None,
 ) -> _DatasetSnapshot:
     frames = dict(snapshot.frames)
     row_counts = dict(snapshot.row_counts)
@@ -4488,6 +4514,34 @@ def _publish_ops_truthfulness_snapshot(
     paper_runtime_freshness = build_paper_runtime_freshness(
         frames,
         generated_at=generated_at,
+    )
+    v5_context = pre_export_v5 if pre_export_v5 is not None else {}
+    snapshot_frame = frames.get("paper_strategy_proposal_snapshot", pl.DataFrame())
+    snapshot_row = snapshot_frame.tail(1).to_dicts()[0] if not snapshot_frame.is_empty() else {}
+    contract_row = _latest_v5_contract_status_row(
+        frames.get("v5_quant_lab_contract_status", pl.DataFrame())
+    )
+    for key, value in (
+        ("proposal_snapshot_id", snapshot_row.get("proposal_snapshot_id")),
+        ("proposal_snapshot_sha256", snapshot_row.get("proposal_snapshot_sha256")),
+        ("snapshot_generated_at", snapshot_row.get("snapshot_generated_at")),
+        (
+            "v5_observed_proposal_snapshot_id",
+            contract_row.get("proposal_snapshot_id"),
+        ),
+        (
+            "v5_observed_proposal_snapshot_sha256",
+            contract_row.get("proposal_snapshot_sha256"),
+        ),
+        (
+            "v5_observed_proposal_snapshot_fetched_at",
+            contract_row.get("proposal_snapshot_fetched_at"),
+        ),
+    ):
+        if value not in (None, ""):
+            v5_context[key] = value
+    selected_bundle_built_at = v5_context.get("selected_v5_bundle_built_at") or contract_row.get(
+        "bundle_ts"
     )
     propagation = build_paper_proposal_propagation_status(
         proposals=frames.get("paper_strategy_proposals_current", pl.DataFrame()),
@@ -4507,10 +4561,26 @@ def _publish_ops_truthfulness_snapshot(
             frames.get("paper_strategy_registry_history", pl.DataFrame()),
             frames.get("v5_paper_strategy_registry_history", pl.DataFrame()),
         ),
+        selected_v5_bundle_built_at=selected_bundle_built_at,
+        v5_observed_proposal_snapshot_id=v5_context.get(
+            "v5_observed_proposal_snapshot_id"
+        ),
+        v5_observed_proposal_snapshot_sha256=v5_context.get(
+            "v5_observed_proposal_snapshot_sha256"
+        ),
+        v5_snapshot_fetched_at=v5_context.get(
+            "v5_observed_proposal_snapshot_fetched_at"
+        ),
         generated_at=generated_at,
     )
     for dataset_name, frame in (
         ("api_auth_incident", auth["api_auth_incident"]),
+        ("api_auth_production_slo", auth["api_auth_production_slo"]),
+        (
+            "api_auth_security_rejections",
+            auth["api_auth_security_rejections"],
+        ),
+        ("api_auth_manual_probe", auth["api_auth_manual_probe"]),
         ("paper_runtime_freshness", paper_runtime_freshness),
         ("paper_proposal_propagation_status", propagation),
     ):
@@ -4530,9 +4600,25 @@ def _publish_ops_truthfulness_snapshot(
             **snapshot.transient_frames,
             "api_auth_error_timeline": auth["api_auth_error_timeline"],
             "api_auth_client_summary": auth["api_auth_client_summary"],
+            "api_auth_production_slo": auth["api_auth_production_slo"],
+            "api_auth_security_rejections": auth["api_auth_security_rejections"],
+            "api_auth_manual_probe": auth["api_auth_manual_probe"],
             "paper_runtime_freshness": paper_runtime_freshness,
             "paper_proposal_propagation_status": propagation,
         },
+    )
+
+
+def _latest_v5_contract_status_row(frame: pl.DataFrame) -> dict[str, Any]:
+    if frame.is_empty():
+        return {}
+    return max(
+        frame.to_dicts(),
+        key=lambda row: (
+            _parse_v5_context_ts(row.get("generated_at"))
+            or _parse_v5_context_ts(row.get("bundle_ts"))
+            or datetime.min.replace(tzinfo=UTC)
+        ),
     )
 
 
@@ -5316,7 +5402,9 @@ def export_daily_pack(
         root,
         snapshot,
         generated_at=generated_at,
+        pre_export_v5=pre_export_v5,
     )
+    _populate_acceptance_context_identity(pre_export_v5)
     _record_export_stage(
         export_stage_timings,
         "publish_ops_truthfulness",
@@ -6526,6 +6614,9 @@ def _dataset_members(
         frames.get("paper_strategy_proposals_current", pl.DataFrame()),
         paper_proposals,
     )
+    paper_proposal_snapshot = frames.get(
+        "paper_strategy_proposal_snapshot", pl.DataFrame()
+    )
     paper_pipeline = build_paper_strategy_pipeline_frames(
         proposals=paper_proposals_current,
         proposal_ack=frames.get("v5_paper_strategy_proposal_ack", pl.DataFrame()),
@@ -6952,6 +7043,11 @@ def _dataset_members(
         api_auth_incident,
     )
     api_auth_client_summary = frames.get("api_auth_client_summary", pl.DataFrame())
+    api_auth_production_slo = frames.get("api_auth_production_slo", pl.DataFrame())
+    api_auth_security_rejections = frames.get(
+        "api_auth_security_rejections", pl.DataFrame()
+    )
+    api_auth_manual_probe = frames.get("api_auth_manual_probe", pl.DataFrame())
     paper_runtime_freshness = frames.get(
         "paper_runtime_freshness",
         pl.DataFrame(),
@@ -6969,7 +7065,8 @@ def _dataset_members(
         paper_freshness=paper_runtime_freshness,
         cohort=paper_cohort_manifest,
         propagation=paper_proposal_propagation_status,
-        auth_incidents=api_auth_incident,
+        auth_incidents=api_auth_production_slo,
+        acceptance_context=pre_export_v5 or {},
         generated_at=export_reference_at,
     )
 
@@ -7176,6 +7273,9 @@ def _dataset_members(
             "reports/paper_strategy_proposals_current.csv",
             paper_proposals_current,
         ),
+        "reports/paper_strategy_proposal_snapshot.json": _json_text(
+            _proposal_snapshot_export_payload(paper_proposal_snapshot)
+        ),
         "reports/paper_strategy_trackers_current.csv": _csv_member(
             "reports/paper_strategy_trackers_current.csv",
             paper_strategy_trackers_current,
@@ -7296,6 +7396,22 @@ def _dataset_members(
         "reports/api_auth_client_summary.csv": _csv_member(
             "reports/api_auth_client_summary.csv",
             api_auth_client_summary,
+        ),
+        "reports/api_auth_incident.csv": _csv_member(
+            "reports/api_auth_incident.csv",
+            api_auth_incident,
+        ),
+        "reports/api_auth_production_slo.csv": _csv_member(
+            "reports/api_auth_production_slo.csv",
+            api_auth_production_slo,
+        ),
+        "reports/api_auth_security_rejections.csv": _csv_member(
+            "reports/api_auth_security_rejections.csv",
+            api_auth_security_rejections,
+        ),
+        "reports/api_auth_manual_probe.csv": _csv_member(
+            "reports/api_auth_manual_probe.csv",
+            api_auth_manual_probe,
         ),
         "reports/v5_bundle_sync_diagnostics.csv": _csv_member(
             "reports/v5_bundle_sync_diagnostics.csv",
@@ -8194,20 +8310,49 @@ def _attach_selected_v5_bundle(
 
 
 def _finalize_acceptance_set_context(v5_context: dict[str, Any]) -> None:
+    _populate_acceptance_context_identity(v5_context)
     acceptance_set_id = str(v5_context.get("acceptance_set_id") or "").strip()
     expected_sha = str(v5_context.get("expected_v5_bundle_sha256") or "").strip().lower()
     ingested_sha = str(v5_context.get("selected_v5_bundle_sha256") or "").strip().lower()
     embedded_source_sha = str(
         v5_context.get("embedded_v5_bundle_source_sha256") or ""
     ).strip().lower()
-    quant_lab_commit = _git_commit_full()
-    v5_commit = _selected_v5_bundle_git_commit(v5_context)
+    quant_lab_commit = str(v5_context.get("quant_lab_production_commit") or "").strip()
+    quant_lab_current_main_commit = str(
+        v5_context.get("quant_lab_current_main_commit") or ""
+    ).strip()
+    v5_commit = str(v5_context.get("v5_commit") or "").strip()
+    proposal_snapshot_id = str(v5_context.get("proposal_snapshot_id") or "").strip()
+    proposal_snapshot_sha = str(
+        v5_context.get("proposal_snapshot_sha256") or ""
+    ).strip().lower()
+    observed_snapshot_id = str(
+        v5_context.get("v5_observed_proposal_snapshot_id") or ""
+    ).strip()
+    observed_snapshot_sha = str(
+        v5_context.get("v5_observed_proposal_snapshot_sha256") or ""
+    ).strip().lower()
+    snapshot_generated_at = _parse_v5_context_ts(
+        v5_context.get("snapshot_generated_at")
+    )
+    selected_bundle_built_at = _parse_v5_context_ts(
+        v5_context.get("selected_v5_bundle_built_at")
+    )
+    formal_requested = bool(acceptance_set_id or expected_sha)
     matched = bool(
         acceptance_set_id
         and expected_sha
         and expected_sha == ingested_sha == embedded_source_sha
-        and quant_lab_commit
-        and v5_commit
+        and _is_full_git_sha(quant_lab_commit)
+        and _is_full_git_sha(quant_lab_current_main_commit)
+        and _is_full_git_sha(v5_commit)
+        and proposal_snapshot_id
+        and proposal_snapshot_sha
+        and proposal_snapshot_id == observed_snapshot_id
+        and proposal_snapshot_sha == observed_snapshot_sha
+        and snapshot_generated_at is not None
+        and selected_bundle_built_at is not None
+        and selected_bundle_built_at > snapshot_generated_at
     )
     v5_context.update(
         {
@@ -8215,6 +8360,14 @@ def _finalize_acceptance_set_context(v5_context: dict[str, Any]) -> None:
             "quant_lab_commit": quant_lab_commit,
             "v5_commit": v5_commit,
             "acceptance_set_matched": matched if acceptance_set_id else None,
+            "formal_acceptance_requested": formal_requested,
+            "formal_acceptance_eligible": matched if formal_requested else False,
+            "proposal_snapshot_match": bool(
+                proposal_snapshot_id
+                and proposal_snapshot_id == observed_snapshot_id
+                and proposal_snapshot_sha
+                and proposal_snapshot_sha == observed_snapshot_sha
+            ),
             "acceptance_set_sha256_relationship": {
                 "expected": expected_sha or None,
                 "ingested": ingested_sha or None,
@@ -8223,7 +8376,7 @@ def _finalize_acceptance_set_context(v5_context: dict[str, Any]) -> None:
             },
         }
     )
-    if not acceptance_set_id:
+    if not formal_requested:
         return
     missing = [
         name
@@ -8232,7 +8385,25 @@ def _finalize_acceptance_set_context(v5_context: dict[str, Any]) -> None:
             ("ingested_v5_bundle_sha256", ingested_sha),
             ("embedded_v5_bundle_source_sha256", embedded_source_sha),
             ("quant_lab_commit", quant_lab_commit),
+            ("quant_lab_current_main_commit", quant_lab_current_main_commit),
             ("v5_commit", v5_commit),
+            ("acceptance_set_id", acceptance_set_id),
+            ("proposal_snapshot_id", proposal_snapshot_id),
+            ("proposal_snapshot_sha256", proposal_snapshot_sha),
+            ("v5_observed_proposal_snapshot_id", observed_snapshot_id),
+            ("v5_observed_proposal_snapshot_sha256", observed_snapshot_sha),
+            (
+                "snapshot_generated_at",
+                snapshot_generated_at.isoformat() if snapshot_generated_at else "",
+            ),
+            (
+                "selected_v5_bundle_built_at",
+                selected_bundle_built_at.isoformat() if selected_bundle_built_at else "",
+            ),
+            (
+                "current_main_production_relationship",
+                v5_context.get("current_main_production_relationship"),
+            ),
         )
         if not value
     ]
@@ -8241,11 +8412,61 @@ def _finalize_acceptance_set_context(v5_context: dict[str, Any]) -> None:
             "acceptance_set_required_field_missing:" + ",".join(missing)
         )
     if not matched:
+        if proposal_snapshot_id != observed_snapshot_id:
+            raise RuntimeError(
+                "acceptance_set_proposal_snapshot_id_mismatch:"
+                f"expected={proposal_snapshot_id};observed={observed_snapshot_id}"
+            )
+        if proposal_snapshot_sha != observed_snapshot_sha:
+            raise RuntimeError(
+                "acceptance_set_proposal_snapshot_sha256_mismatch:"
+                f"expected={proposal_snapshot_sha};observed={observed_snapshot_sha}"
+            )
+        if (
+            snapshot_generated_at is not None
+            and selected_bundle_built_at is not None
+            and selected_bundle_built_at <= snapshot_generated_at
+        ):
+            raise RuntimeError(
+                "acceptance_set_v5_bundle_predates_proposal_snapshot:"
+                f"bundle_built_at={selected_bundle_built_at.isoformat()};"
+                f"snapshot_generated_at={snapshot_generated_at.isoformat()}"
+            )
+        if (
+            not _is_full_git_sha(quant_lab_commit)
+            or not _is_full_git_sha(quant_lab_current_main_commit)
+            or not _is_full_git_sha(v5_commit)
+        ):
+            raise RuntimeError("acceptance_set_full_git_sha_required")
         raise RuntimeError(
             "acceptance_set_bundle_sha_mismatch:"
             f"expected={expected_sha};ingested={ingested_sha};"
             f"embedded_source={embedded_source_sha}"
         )
+
+
+def _populate_acceptance_context_identity(v5_context: dict[str, Any]) -> None:
+    production_commit = str(_git_commit_full() or "").strip().lower()
+    current_main_commit = str(_git_ref_commit_full("origin/main") or "").strip().lower()
+    v5_commit = str(_selected_v5_bundle_git_commit(v5_context) or "").strip().lower()
+    if _is_full_git_sha(production_commit) and _is_full_git_sha(current_main_commit):
+        relationship = "MATCH" if production_commit == current_main_commit else "MISMATCH"
+    else:
+        relationship = "UNOBSERVABLE"
+    v5_context.update(
+        {
+            "quant_lab_commit": production_commit or None,
+            "quant_lab_production_commit": production_commit or None,
+            "quant_lab_current_main_commit": current_main_commit or None,
+            "current_main_production_relationship": relationship,
+            "v5_commit": v5_commit or None,
+        }
+    )
+
+
+def _is_full_git_sha(value: Any) -> bool:
+    text = str(value or "").strip().lower()
+    return len(text) == 40 and all(char in "0123456789abcdef" for char in text)
 
 
 def _promote_embedded_v5_summary_report(
@@ -8324,6 +8545,31 @@ def _csv_member_rows(payload: _MemberPayload | None) -> list[dict[str, Any]]:
         return list(csv.DictReader(io.StringIO(payload)))
     except Exception:
         return []
+
+
+def _proposal_snapshot_export_payload(frame: pl.DataFrame) -> dict[str, Any]:
+    if frame.is_empty():
+        return {
+            "proposal_snapshot_id": None,
+            "proposal_snapshot_sha256": None,
+            "snapshot_generated_at": None,
+            "proposal_count": 0,
+            "proposal_ids": [],
+            "proposal_hashes": [],
+            "source_quant_lab_commit": None,
+        }
+    row = dict(frame.tail(1).to_dicts()[0])
+    for field in ("proposal_ids", "proposal_hashes"):
+        value = row.get(field)
+        if isinstance(value, list):
+            row[field] = [str(item) for item in value]
+            continue
+        try:
+            parsed = json.loads(str(value or "[]"))
+        except (TypeError, ValueError, json.JSONDecodeError):
+            parsed = []
+        row[field] = [str(item) for item in parsed] if isinstance(parsed, list) else []
+    return row
 
 
 def _is_expected_v5_followup_bundle_name(name: str) -> bool:
@@ -8492,11 +8738,28 @@ def _manifest_payload(
         "expected_v5_bundle_sha256": v5_context.get("expected_v5_bundle_sha256"),
         "ingested_v5_bundle_sha256": v5_context.get("ingested_v5_bundle_sha256"),
         "acceptance_set_matched": v5_context.get("acceptance_set_matched"),
+        "formal_acceptance_requested": v5_context.get("formal_acceptance_requested"),
+        "formal_acceptance_eligible": v5_context.get("formal_acceptance_eligible"),
         "acceptance_set_sha256_relationship": v5_context.get(
             "acceptance_set_sha256_relationship"
         ),
         "quant_lab_commit": v5_context.get("quant_lab_commit") or git["git_commit"],
+        "quant_lab_production_commit": v5_context.get("quant_lab_production_commit"),
+        "quant_lab_current_main_commit": v5_context.get("quant_lab_current_main_commit"),
+        "current_main_production_relationship": v5_context.get(
+            "current_main_production_relationship"
+        ),
         "v5_commit": v5_context.get("v5_commit"),
+        "proposal_snapshot_id": v5_context.get("proposal_snapshot_id"),
+        "proposal_snapshot_sha256": v5_context.get("proposal_snapshot_sha256"),
+        "snapshot_generated_at": v5_context.get("snapshot_generated_at"),
+        "v5_observed_proposal_snapshot_id": v5_context.get(
+            "v5_observed_proposal_snapshot_id"
+        ),
+        "v5_observed_proposal_snapshot_sha256": v5_context.get(
+            "v5_observed_proposal_snapshot_sha256"
+        ),
+        "proposal_snapshot_match": v5_context.get("proposal_snapshot_match"),
         "expected_v5_bundle_matched": v5_context.get("expected_v5_bundle_matched"),
         "selected_v5_bundle_path": v5_context.get("selected_v5_bundle_path"),
         "selected_v5_bundle_sha256": v5_context.get("selected_v5_bundle_sha256"),
@@ -9840,11 +10103,28 @@ def _provenance_payload(
         "expected_v5_bundle_sha256": v5_context.get("expected_v5_bundle_sha256"),
         "ingested_v5_bundle_sha256": v5_context.get("ingested_v5_bundle_sha256"),
         "acceptance_set_matched": v5_context.get("acceptance_set_matched"),
+        "formal_acceptance_requested": v5_context.get("formal_acceptance_requested"),
+        "formal_acceptance_eligible": v5_context.get("formal_acceptance_eligible"),
         "acceptance_set_sha256_relationship": v5_context.get(
             "acceptance_set_sha256_relationship"
         ),
         "quant_lab_commit": v5_context.get("quant_lab_commit") or git["git_commit"],
+        "quant_lab_production_commit": v5_context.get("quant_lab_production_commit"),
+        "quant_lab_current_main_commit": v5_context.get("quant_lab_current_main_commit"),
+        "current_main_production_relationship": v5_context.get(
+            "current_main_production_relationship"
+        ),
         "v5_commit": v5_context.get("v5_commit"),
+        "proposal_snapshot_id": v5_context.get("proposal_snapshot_id"),
+        "proposal_snapshot_sha256": v5_context.get("proposal_snapshot_sha256"),
+        "snapshot_generated_at": v5_context.get("snapshot_generated_at"),
+        "v5_observed_proposal_snapshot_id": v5_context.get(
+            "v5_observed_proposal_snapshot_id"
+        ),
+        "v5_observed_proposal_snapshot_sha256": v5_context.get(
+            "v5_observed_proposal_snapshot_sha256"
+        ),
+        "proposal_snapshot_match": v5_context.get("proposal_snapshot_match"),
         "expected_v5_bundle_matched": v5_context.get("expected_v5_bundle_matched"),
         "selected_v5_bundle_sha256": v5_context.get("selected_v5_bundle_sha256"),
         "selected_v5_bundle_manifest_bundle_sha256": v5_context.get(
@@ -12004,6 +12284,15 @@ def _paper_strategy_ack_report_row(
             row.get("source_v5_bundle_sha256")
             or row.get("bundle_sha256")
             or row.get("source_bundle_sha256")
+        ),
+        "source_proposal_snapshot_id": _ack_text(
+            row.get("source_proposal_snapshot_id")
+        ),
+        "source_proposal_snapshot_sha256": _ack_text(
+            row.get("source_proposal_snapshot_sha256")
+        ),
+        "source_proposal_snapshot_generated_at": _ack_text(
+            row.get("source_proposal_snapshot_generated_at")
         ),
     }
 
@@ -19059,6 +19348,11 @@ def _git_commit() -> str | None:
 def _git_commit_full() -> str | None:
     root = Path(__file__).resolve().parents[3]
     return _git_command(["rev-parse", "HEAD"], root)
+
+
+def _git_ref_commit_full(ref: str) -> str | None:
+    root = Path(__file__).resolve().parents[3]
+    return _git_command(["rev-parse", ref], root)
 
 
 def _source_version(component: str, git_commit: str | None) -> str:

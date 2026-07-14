@@ -256,18 +256,18 @@ def build_system_acceptance_dashboard(
         )
     )
     checks.append(_api_auth_error_rate_check(api_latency_summary))
-    auth_incidents = frames.get("api_auth_incident", pl.DataFrame())
+    auth_slo = frames.get("api_auth_production_slo", pl.DataFrame())
     auth_statuses = {
-        str(row.get("current_status") or "UNKNOWN").upper()
-        for row in (auth_incidents.to_dicts() if not auth_incidents.is_empty() else [])
+        str(row.get("production_auth_slo_status") or "UNKNOWN").upper()
+        for row in (auth_slo.to_dicts() if not auth_slo.is_empty() else [])
     }
-    auth_recovered = not auth_statuses or auth_statuses == {"RECOVERED_24H_CLEAN"}
+    auth_recovered = bool(auth_statuses) and auth_statuses == {"PASS"}
     checks.append(
         _check(
             "api_auth_incident_recovered_24h",
             "PASS" if auth_recovered else "FAIL",
-            f"incident_statuses={sorted(auth_statuses)};rows={auth_incidents.height}",
-            "all historical auth incidents RECOVERED_24H_CLEAN",
+            f"production_slo_statuses={sorted(auth_statuses)};rows={auth_slo.height}",
+            "trusted production clients have no unexpected 401 in the last 24h",
             "V5/quant-lab",
             "observe from last 401 until 24h clean" if not auth_recovered else "",
         )

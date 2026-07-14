@@ -1002,6 +1002,30 @@ def _append_file_rows(
                     payload.get("active_tracker_count_semantics") or ""
                 ),
                 "open_paper_position_count": int(payload.get("open_paper_position_count") or 0),
+                "proposal_snapshot_id": str(payload.get("proposal_snapshot_id") or ""),
+                "proposal_snapshot_sha256": str(
+                    payload.get("proposal_snapshot_sha256") or ""
+                ),
+                "proposal_snapshot_generated_at": str(
+                    payload.get("proposal_snapshot_generated_at")
+                    or payload.get("snapshot_generated_at")
+                    or ""
+                ),
+                "proposal_snapshot_fetched_at": str(
+                    payload.get("proposal_snapshot_fetched_at")
+                    or payload.get("fetched_at")
+                    or ""
+                ),
+                "proposal_snapshot_count": int(
+                    payload.get("proposal_snapshot_count")
+                    or payload.get("proposal_count")
+                    or 0
+                ),
+                "quant_lab_contract_version": str(
+                    payload.get("quant_lab_contract_version")
+                    or payload.get("contract_version")
+                    or ""
+                ),
                 "real_order_calls": int(payload.get("real_order_calls") or 0),
                 "real_position_mutations": int(payload.get("real_position_mutations") or 0),
                 "generated_at": str(payload.get("generated_at") or ""),

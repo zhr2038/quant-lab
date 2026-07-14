@@ -649,6 +649,12 @@ def test_ingest_and_export_generic_paper_runtime_contract(tmp_path):
                     "paper_runtime_live_order_effect": "none",
                     "quant_lab_mode": "shadow",
                     "canary_enabled": False,
+                    "proposal_snapshot_id": "proposal-snapshot:test-runtime",
+                    "proposal_snapshot_sha256": "a" * 64,
+                    "proposal_snapshot_generated_at": "2026-07-11T03:00:00Z",
+                    "proposal_snapshot_fetched_at": "2026-07-11T03:05:00Z",
+                    "proposal_snapshot_count": 1,
+                    "quant_lab_contract_version": "quant-lab.paper-strategy.v1",
                     "active_tracker_count": 1,
                     "open_paper_position_count": 0,
                     "real_order_calls": 0,
@@ -689,6 +695,9 @@ def test_ingest_and_export_generic_paper_runtime_contract(tmp_path):
     assert contract["quant_lab_mode"] == "shadow"
     assert contract["paper_runtime_live_order_effect"] == "none"
     assert contract["canary_enabled"] is False
+    assert contract["proposal_snapshot_id"] == "proposal-snapshot:test-runtime"
+    assert contract["proposal_snapshot_sha256"] == "a" * 64
+    assert contract["proposal_snapshot_count"] == 1
     assert contract["real_order_calls"] == 0
     assert contract["real_position_mutations"] == 0
 

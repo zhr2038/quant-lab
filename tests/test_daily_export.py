@@ -2563,6 +2563,64 @@ def test_v5_export_consistency_requires_expected_sha_for_acceptance_set():
     )
 
 
+def test_acceptance_set_rejects_missing_proposal_snapshot_id(monkeypatch):
+    monkeypatch.setattr(daily_export_module, "_git_commit_full", lambda: "a" * 40)
+    monkeypatch.setattr(
+        daily_export_module, "_git_ref_commit_full", lambda _ref: "a" * 40
+    )
+    monkeypatch.setattr(
+        daily_export_module,
+        "_selected_v5_bundle_git_commit",
+        lambda _context: "b" * 40,
+    )
+    bundle_sha = "c" * 64
+    context = {
+        "acceptance_set_id": "acceptance-snapshot-required",
+        "expected_v5_bundle_sha256": bundle_sha,
+        "selected_v5_bundle_sha256": bundle_sha,
+        "embedded_v5_bundle_source_sha256": bundle_sha,
+        "selected_v5_bundle_built_at": "2026-07-15T01:00:00Z",
+    }
+
+    with pytest.raises(
+        RuntimeError,
+        match="acceptance_set_required_field_missing:.*proposal_snapshot_id",
+    ):
+        daily_export_module._finalize_acceptance_set_context(context)
+
+
+def test_acceptance_set_rejects_v5_bundle_earlier_than_proposal_snapshot(monkeypatch):
+    monkeypatch.setattr(daily_export_module, "_git_commit_full", lambda: "a" * 40)
+    monkeypatch.setattr(
+        daily_export_module, "_git_ref_commit_full", lambda _ref: "a" * 40
+    )
+    monkeypatch.setattr(
+        daily_export_module,
+        "_selected_v5_bundle_git_commit",
+        lambda _context: "b" * 40,
+    )
+    bundle_sha = "c" * 64
+    snapshot_sha = "d" * 64
+    context = {
+        "acceptance_set_id": "acceptance-causal-order",
+        "expected_v5_bundle_sha256": bundle_sha,
+        "selected_v5_bundle_sha256": bundle_sha,
+        "embedded_v5_bundle_source_sha256": bundle_sha,
+        "selected_v5_bundle_built_at": "2026-07-15T00:00:00Z",
+        "proposal_snapshot_id": "proposal-snapshot:causal",
+        "proposal_snapshot_sha256": snapshot_sha,
+        "snapshot_generated_at": "2026-07-15T00:01:00Z",
+        "v5_observed_proposal_snapshot_id": "proposal-snapshot:causal",
+        "v5_observed_proposal_snapshot_sha256": snapshot_sha,
+    }
+
+    with pytest.raises(
+        RuntimeError,
+        match="acceptance_set_v5_bundle_predates_proposal_snapshot",
+    ):
+        daily_export_module._finalize_acceptance_set_context(context)
+
+
 def test_v5_bundle_sync_keeps_refresh_disabled_provenance_out_of_failures():
     generated_at = datetime(2026, 6, 15, 13, tzinfo=UTC)
     frames = {
@@ -3719,9 +3777,7 @@ def test_export_marks_core_momentum_as_research_baseline_and_prioritizes_strateg
 def test_export_daily_ingests_pending_v5_inbox_before_snapshot(tmp_path):
     lake_root = _fixture_lake(tmp_path)
     inbox = tmp_path / "inbox"
-    bundle = make_tar(
-        inbox / "v5_live_followup_bundle_20260517T060000Z.tar.gz",
-        {
+    bundle_members = {
             "v5_live_followup_bundle_20260517T060000Z/manifest.json": (
                 '{"git_commit":"3a89f0cdc887a2c38638307154cecd8e83ab8d9b"}'
             ),
@@ -3762,10 +3818,59 @@ def test_export_daily_ingests_pending_v5_inbox_before_snapshot(tmp_path):
                 "v5.f3_dominant_entry,24h,api:/v1/strategy-opportunity-advisory,"
                 ",paper_only_no_live_order\n"
             ),
-        },
+        }
+    bundle = make_tar(
+        inbox / "v5_live_followup_bundle_20260517T060000Z.tar.gz",
+        bundle_members,
+    )
+    config = _v5_telemetry_config(tmp_path, inbox, lake_root)
+    daily_export_module._refresh_v5_before_export(
+        lake_root,
+        date(2026, 5, 17),
+        config_path=config,
+    )
+    daily_export_module.refresh_web_derived_snapshots(lake_root)
+    daily_export_module.build_and_publish_paper_strategy_pipeline(
+        lake_root,
+        as_of_date="2026-05-17",
+    )
+    snapshot = read_parquet_dataset(
+        lake_root / "gold" / "paper_strategy_proposal_snapshot"
+    ).to_dicts()[0]
+    later_bundle_ts = datetime.now(UTC) + timedelta(minutes=5)
+    later_bundle_stamp = later_bundle_ts.strftime("%Y%m%dT%H%M%SZ")
+    later_bundle_name = f"v5_live_followup_bundle_{later_bundle_stamp}"
+    later_members = {
+        key: value
+        for key, value in bundle_members.items()
+        if not key.endswith("/manifest.json")
+    }
+    later_members[f"{later_bundle_name}/manifest.json"] = (
+        '{"git_commit":"3a89f0cdc887a2c38638307154cecd8e83ab8d9b"}'
+    )
+    later_members["summaries/quant_lab_contract_status.json"] = json.dumps(
+        {
+            "contract_version": "paper_strategy.v1",
+            "quant_lab_contract_version": "paper_strategy.v1",
+            "proposal_snapshot_id": snapshot["proposal_snapshot_id"],
+            "proposal_snapshot_sha256": snapshot["proposal_snapshot_sha256"],
+            "proposal_snapshot_generated_at": snapshot["snapshot_generated_at"],
+            "proposal_snapshot_fetched_at": later_bundle_ts.isoformat(),
+            "proposal_snapshot_count": snapshot["proposal_count"],
+            "paper_runtime_enabled": True,
+            "paper_runtime_live_order_effect": "none",
+            "quant_lab_mode": "shadow",
+            "canary_enabled": False,
+            "real_order_calls": 0,
+            "real_position_mutations": 0,
+            "generated_at": later_bundle_ts.isoformat(),
+        }
+    )
+    bundle = make_tar(
+        inbox / f"{later_bundle_name}.tar.gz",
+        later_members,
     )
     bundle_sha = daily_export_module.compute_sha256(bundle)
-    config = _v5_telemetry_config(tmp_path, inbox, lake_root)
 
     result = export_daily_pack(
         export_date="2026-05-17",
@@ -3810,6 +3915,16 @@ def test_export_daily_ingests_pending_v5_inbox_before_snapshot(tmp_path):
     assert manifest["ingested_v5_bundle_sha256"] == bundle_sha
     assert manifest["embedded_v5_bundle_source_sha256"] == bundle_sha
     assert manifest["acceptance_set_matched"] is True
+    assert manifest["formal_acceptance_requested"] is True
+    assert manifest["formal_acceptance_eligible"] is True
+    assert manifest["proposal_snapshot_match"] is True
+    assert manifest["proposal_snapshot_id"] == snapshot["proposal_snapshot_id"]
+    assert manifest["v5_observed_proposal_snapshot_id"] == snapshot[
+        "proposal_snapshot_id"
+    ]
+    assert len(manifest["quant_lab_production_commit"]) == 40
+    assert len(manifest["quant_lab_current_main_commit"]) == 40
+    assert manifest["current_main_production_relationship"] in {"MATCH", "MISMATCH"}
     assert manifest["acceptance_set_sha256_relationship"]["all_equal"] is True
     assert manifest["quant_lab_commit"]
     assert manifest["v5_commit"] == "3a89f0cdc887a2c38638307154cecd8e83ab8d9b"
@@ -3838,15 +3953,17 @@ def test_export_daily_ingests_pending_v5_inbox_before_snapshot(tmp_path):
         == "selected_bundle_sha_matched_bundle_manifest"
     )
     assert manifest["selected_v5_bundle_manifest_bundle_name"].startswith(
-        "v5_live_followup_bundle_20260517T060000Z"
+        later_bundle_name
     )
-    assert manifest["selected_v5_bundle_built_at"].startswith("2026-05-17T06:00:00")
+    assert manifest["selected_v5_bundle_built_at"].startswith(
+        later_bundle_ts.strftime("%Y-%m-%dT%H:%M:%S")
+    )
     assert manifest["selected_v5_bundle_ingested_at"]
     assert manifest["selected_v5_bundle_event_counts"]["v5_candidate_event"] >= 1
     assert manifest["selected_v5_bundle_event_counts"]["v5_btc_probe_entry_quality_audit"] == 1
     assert manifest["embedded_v5_bundle_present"] is True
     assert manifest["embedded_v5_bundle_member_path"] == (
-        "v5/followup_bundle/v5_live_followup_bundle_20260517T060000Z.redacted.tar.gz"
+        f"v5/followup_bundle/{later_bundle_name}.redacted.tar.gz"
     )
     assert manifest["embedded_v5_bundle_manifest_path"] == (
         "v5/followup_bundle/attachment_manifest.json"
@@ -3914,8 +4031,12 @@ def test_export_daily_ingests_pending_v5_inbox_before_snapshot(tmp_path):
     tampered_validation = validate_expert_pack(tampered_pack)
     assert tampered_validation.valid is False
     assert "acceptance set V5 bundle sha256 mismatch" in tampered_validation.reasons
-    assert manifest["latest_v5_bundle_seen_at_export"].startswith("2026-05-17T06:00:00")
-    assert manifest["latest_v5_bundle_ingested_at_export"].startswith("2026-05-17T06:00:00")
+    assert manifest["latest_v5_bundle_seen_at_export"].startswith(
+        later_bundle_ts.strftime("%Y-%m-%dT%H:%M:%S")
+    )
+    assert manifest["latest_v5_bundle_ingested_at_export"].startswith(
+        later_bundle_ts.strftime("%Y-%m-%dT%H:%M:%S")
+    )
     assert manifest["candidate_event_rows"] >= 1
     assert manifest["candidate_event_latest_ts"].startswith("2026-05-17T06:00:00")
     assert manifest["latest_candidate_event_ts"].startswith("2026-05-17T06:00:00")

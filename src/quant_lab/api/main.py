@@ -70,7 +70,7 @@ from quant_lab.paper.service import (
     cost_trust_rows,
     promotion_rows,
     read_proposal,
-    read_proposals,
+    read_proposal_snapshot_payload,
     record_ack,
     status_rows,
 )
@@ -738,8 +738,8 @@ def create_app() -> FastAPI:
         )
 
     @app.get("/v1/paper-strategy/proposals")
-    def paper_strategy_proposals() -> list[dict[str, Any]]:
-        return read_proposals(_lake_root())
+    def paper_strategy_proposals() -> dict[str, Any]:
+        return read_proposal_snapshot_payload(_lake_root())
 
     @app.get("/v1/paper-strategy/proposals/{proposal_id}")
     def paper_strategy_proposal_detail(proposal_id: str) -> dict[str, Any]:

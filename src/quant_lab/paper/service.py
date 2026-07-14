@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import subprocess
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
@@ -12,14 +13,135 @@ from quant_lab.data.lake import read_parquet_dataset, write_parquet_dataset
 from quant_lab.paper.contracts import PaperStrategyAck, PaperStrategyProposal
 
 PAPER_STRATEGY_PROPOSAL_DATASET = Path("gold") / "paper_strategy_proposal"
+PAPER_STRATEGY_PROPOSALS_CURRENT_DATASET = (
+    Path("gold") / "paper_strategy_proposals_current"
+)
+PAPER_STRATEGY_PROPOSAL_SNAPSHOT_DATASET = (
+    Path("gold") / "paper_strategy_proposal_snapshot"
+)
 PAPER_STRATEGY_ACK_DATASET = Path("silver") / "v5_paper_strategy_proposal_ack"
 PAPER_STRATEGY_PROMOTION_DATASET = Path("gold") / "paper_strategy_promotion_gate"
 STRATEGY_COST_TRUST_DATASET = Path("gold") / "strategy_cost_trust"
 
 
 def read_proposals(lake_root: str | Path) -> list[dict[str, Any]]:
-    frame = read_parquet_dataset(Path(lake_root) / PAPER_STRATEGY_PROPOSAL_DATASET)
+    root = Path(lake_root)
+    frame = read_parquet_dataset(root / PAPER_STRATEGY_PROPOSALS_CURRENT_DATASET)
+    if frame.is_empty():
+        frame = read_parquet_dataset(root / PAPER_STRATEGY_PROPOSAL_DATASET)
     return _json_rows(frame)
+
+
+def read_proposal_snapshot(lake_root: str | Path) -> dict[str, Any]:
+    root = Path(lake_root)
+    proposals = read_proposals(root)
+    frame = read_parquet_dataset(root / PAPER_STRATEGY_PROPOSAL_SNAPSHOT_DATASET)
+    if not frame.is_empty():
+        row = _json_row(frame.tail(1).to_dicts()[0])
+        row["proposal_ids"] = _json_string_list(row.get("proposal_ids"))
+        row["proposal_hashes"] = _json_string_list(row.get("proposal_hashes"))
+        return row
+    current = pl.DataFrame(proposals, infer_schema_length=None) if proposals else pl.DataFrame()
+    _enriched, metadata = build_canonical_proposal_snapshot(
+        current,
+        source_quant_lab_commit=_git_commit_full(),
+    )
+    return metadata
+
+
+def read_proposal_snapshot_payload(lake_root: str | Path) -> dict[str, Any]:
+    metadata = read_proposal_snapshot(lake_root)
+    return {**metadata, "proposals": read_proposals(lake_root)}
+
+
+def publish_canonical_proposal_snapshot(
+    lake_root: str | Path,
+    proposals: pl.DataFrame,
+    *,
+    generated_at: datetime | None = None,
+    source_quant_lab_commit: str | None = None,
+) -> tuple[pl.DataFrame, dict[str, Any]]:
+    root = Path(lake_root)
+    prior = read_parquet_dataset(root / PAPER_STRATEGY_PROPOSAL_SNAPSHOT_DATASET)
+    enriched, metadata = build_canonical_proposal_snapshot(
+        proposals,
+        generated_at=generated_at,
+        source_quant_lab_commit=source_quant_lab_commit or _git_commit_full(),
+        prior_snapshot=prior,
+    )
+    write_parquet_dataset(enriched, root / PAPER_STRATEGY_PROPOSALS_CURRENT_DATASET)
+    storage = dict(metadata)
+    storage["proposal_ids"] = json.dumps(metadata["proposal_ids"], separators=(",", ":"))
+    storage["proposal_hashes"] = json.dumps(
+        metadata["proposal_hashes"], separators=(",", ":")
+    )
+    write_parquet_dataset(
+        pl.DataFrame([storage], infer_schema_length=None),
+        root / PAPER_STRATEGY_PROPOSAL_SNAPSHOT_DATASET,
+    )
+    return enriched, metadata
+
+
+def build_canonical_proposal_snapshot(
+    proposals: pl.DataFrame,
+    *,
+    generated_at: datetime | None = None,
+    source_quant_lab_commit: str,
+    prior_snapshot: pl.DataFrame | None = None,
+) -> tuple[pl.DataFrame, dict[str, Any]]:
+    generated = generated_at or datetime.now(UTC)
+    generated = generated.astimezone(UTC) if generated.tzinfo else generated.replace(tzinfo=UTC)
+    members = sorted(
+        (
+            str(row.get("proposal_id") or "").strip(),
+            str(row.get("proposal_hash") or "").strip().lower(),
+        )
+        for row in (proposals.to_dicts() if not proposals.is_empty() else [])
+        if str(row.get("proposal_id") or "").strip()
+    )
+    proposal_ids = [proposal_id for proposal_id, _proposal_hash in members]
+    proposal_hashes = [proposal_hash for _proposal_id, proposal_hash in members]
+    material = {
+        "proposal_ids": proposal_ids,
+        "proposal_hashes": proposal_hashes,
+        "proposal_count": len(members),
+        "source_quant_lab_commit": str(source_quant_lab_commit or "").strip(),
+    }
+    snapshot_sha = hashlib.sha256(
+        json.dumps(material, sort_keys=True, separators=(",", ":")).encode("utf-8")
+    ).hexdigest()
+    snapshot_id = f"proposal-snapshot:{snapshot_sha[:24]}"
+    snapshot_generated_at = generated.isoformat()
+    if prior_snapshot is not None and not prior_snapshot.is_empty():
+        prior = prior_snapshot.tail(1).to_dicts()[0]
+        if str(prior.get("proposal_snapshot_sha256") or "").lower() == snapshot_sha:
+            snapshot_generated_at = str(prior.get("snapshot_generated_at") or "").strip()
+            if not snapshot_generated_at:
+                snapshot_generated_at = generated.isoformat()
+    metadata = {
+        "proposal_snapshot_id": snapshot_id,
+        "proposal_snapshot_sha256": snapshot_sha,
+        "snapshot_generated_at": snapshot_generated_at,
+        "proposal_count": len(members),
+        "proposal_ids": proposal_ids,
+        "proposal_hashes": proposal_hashes,
+        "source_quant_lab_commit": str(source_quant_lab_commit or "").strip(),
+    }
+    if proposals.is_empty():
+        enriched = proposals.clone()
+        for name in (
+            "proposal_snapshot_id",
+            "proposal_snapshot_sha256",
+            "snapshot_generated_at",
+        ):
+            enriched = enriched.with_columns(pl.lit(None, dtype=pl.Utf8).alias(name))
+    else:
+        enriched = proposals.with_columns(
+            pl.lit(snapshot_id).alias("proposal_snapshot_id"),
+            pl.lit(snapshot_sha).alias("proposal_snapshot_sha256"),
+            pl.lit(snapshot_generated_at).alias("snapshot_generated_at"),
+        )
+    return enriched, metadata
 
 
 def read_proposal(lake_root: str | Path, proposal_id: str) -> dict[str, Any] | None:
@@ -132,6 +254,13 @@ def record_ack(lake_root: str | Path, ack: PaperStrategyAck) -> tuple[dict[str, 
         raise ValueError("unknown_proposal_id")
     if str(proposal.get("proposal_hash") or "") != ack.proposal_hash:
         raise ValueError("proposal_hash_mismatch")
+    current_snapshot_id = str(proposal.get("proposal_snapshot_id") or "")
+    current_snapshot_sha = str(proposal.get("proposal_snapshot_sha256") or "").lower()
+    if ack.source_proposal_snapshot_id and (
+        ack.source_proposal_snapshot_id != current_snapshot_id
+        or ack.source_proposal_snapshot_sha256.lower() != current_snapshot_sha
+    ):
+        raise ValueError("proposal_snapshot_mismatch")
     frame = read_parquet_dataset(root / PAPER_STRATEGY_ACK_DATASET)
     rows = frame.to_dicts() if not frame.is_empty() else []
     for row in rows:
@@ -294,3 +423,29 @@ def _proposal_storage_row(proposal: PaperStrategyProposal) -> dict[str, Any]:
             row.get(field), ensure_ascii=True, sort_keys=True, separators=(",", ":")
         )
     return row
+
+
+def _json_string_list(value: Any) -> list[str]:
+    if isinstance(value, list):
+        return [str(item) for item in value]
+    try:
+        parsed = json.loads(str(value or "[]"))
+    except (TypeError, ValueError, json.JSONDecodeError):
+        return []
+    return [str(item) for item in parsed] if isinstance(parsed, list) else []
+
+
+def _git_commit_full() -> str:
+    repo_root = Path(__file__).resolve().parents[3]
+    try:
+        result = subprocess.run(
+            ["git", "-C", str(repo_root), "rev-parse", "HEAD"],
+            capture_output=True,
+            check=False,
+            text=True,
+            timeout=5,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return ""
+    value = result.stdout.strip().lower()
+    return value if len(value) == 40 and all(char in "0123456789abcdef" for char in value) else ""

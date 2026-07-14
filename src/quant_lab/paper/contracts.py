@@ -419,9 +419,20 @@ class PaperStrategyAck(BaseModel):
     expires_at: datetime
     source_v5_commit: str = ""
     source_v5_bundle_sha256: str = ""
+    source_proposal_snapshot_id: str = ""
+    source_proposal_snapshot_sha256: str = Field(
+        default="",
+        pattern=r"^(|[0-9a-f]{64})$",
+    )
+    source_proposal_snapshot_generated_at: datetime | None = None
 
     @model_validator(mode="after")
     def validate_safety(self) -> PaperStrategyAck:
+        if (
+            self.source_proposal_snapshot_generated_at is not None
+            and self.source_proposal_snapshot_generated_at.tzinfo is None
+        ):
+            raise ValueError("source Proposal Snapshot timestamp must be timezone-aware")
         if self.accepted:
             if not self.tracker_id:
                 raise ValueError("accepted ACK requires tracker_id")

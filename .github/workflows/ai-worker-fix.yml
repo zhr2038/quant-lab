@@ -1,0 +1,54 @@
+name: Fix AI worker Python 3.11 syntax
+
+on:
+  push:
+    branches:
+      - agent/ai-research-nas-worker
+    paths:
+      - .github/workflows/ai-worker-fix.yml
+
+permissions:
+  contents: write
+
+jobs:
+  fix:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: agent/ai-research-nas-worker
+          fetch-depth: 0
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - name: Fix and validate
+        shell: bash
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          from pathlib import Path
+          path = Path('deploy/nas_ai_worker/worker.py')
+          text = path.read_text(encoding='utf-8')
+          old = '''                raise RuntimeError(
+                    f"Responses API returned status={status}: "
+                    f"{canonical_json(
+                        payload.get('error') or payload.get('incomplete_details') or {}
+                    )[:1000]}"
+                )'''
+          new = '''                detail = canonical_json(
+                    payload.get("error") or payload.get("incomplete_details") or {}
+                )[:1000]
+                raise RuntimeError(f"Responses API returned status={status}: {detail}")'''
+          if old not in text:
+              raise SystemExit('target block not found')
+          path.write_text(text.replace(old, new), encoding='utf-8')
+          PY
+          python -m pip install -q 'ruff>=0.6'
+          python -m ruff check --fix src/quant_lab/ai_research deploy/nas_ai_worker tools/quant_ai_queue.py tests/test_ai_research_contracts.py tests/test_ai_research_packet.py
+          python -m compileall -q src/quant_lab/ai_research deploy/nas_ai_worker tools/quant_ai_queue.py
+          rm -f .github/workflows/ai-worker-fix.yml
+          git config user.name "quant-lab automation"
+          git config user.email "actions@users.noreply.github.com"
+          git add -A
+          git commit -m "Fix AI worker Python 3.11 syntax"
+          git push origin HEAD:agent/ai-research-nas-worker

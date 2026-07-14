@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import hashlib
 import json
+import os
+import stat
 import zipfile
 from datetime import UTC, datetime
 
@@ -80,6 +82,10 @@ def test_packet_uses_existing_expert_pack_and_deduplicates(tmp_path) -> None:
     assert queue_status(queue)["counts"]["pending"] == 1
     assert (task_path.parent / "task_manifest.json").is_file()
     assert not list((queue / ".staging").iterdir())
+    if os.name != "nt":
+        assert stat.S_IMODE(task_path.parent.stat().st_mode) == 0o2770
+        assert stat.S_IMODE(task_path.stat().st_mode) == 0o660
+        assert stat.S_IMODE((task_path.parent / "task_manifest.json").stat().st_mode) == 0o660
 
 
 def test_latest_expert_pack_skips_newer_partial_zip(tmp_path) -> None:

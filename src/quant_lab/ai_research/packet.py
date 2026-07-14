@@ -257,6 +257,10 @@ def build_ai_research_task(
     staging_root = queue / ".staging"
     staging_root.mkdir(parents=True, exist_ok=True)
     staging_dir = Path(tempfile.mkdtemp(prefix=f"{task_id}.", dir=staging_root))
+    # mkdtemp always creates mode 0700. The NAS worker uses the queue-only
+    # quantai group, so publish group-traversable directories before the
+    # atomic pending rename.
+    staging_dir.chmod(0o2770)
     try:
         _atomic_write_json(staging_dir / "task.json", task.model_dump(mode="json"))
         _atomic_write_json(
@@ -534,6 +538,7 @@ def _atomic_write_json(path: Path, value: Any) -> None:
             handle.write("\n")
             handle.flush()
             os.fsync(handle.fileno())
+        os.chmod(temp_name, 0o660)
         os.replace(temp_name, path)
     finally:
         try:

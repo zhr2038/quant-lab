@@ -3935,6 +3935,35 @@ def test_expert_exports_running_job_recovers_when_process_exited_after_pack(
     assert status["recovered_pack_mtime"] == datetime.fromtimestamp(new_mtime, UTC).isoformat()
 
 
+def test_expert_exports_running_job_does_not_recover_while_worker_is_alive(
+    tmp_path, monkeypatch
+):
+    exports_root = tmp_path / "exports"
+    exports_root.mkdir()
+    status_path = exports_root / ".quant_lab_web_export_2026-05-16.json"
+    status_path.write_text(
+        json.dumps(
+            {
+                "state": "running",
+                "worker_pid": 4242,
+                "started_at": "2026-05-16T00:00:00+00:00",
+            }
+        ),
+        encoding="utf-8",
+    )
+    pack_path = exports_root / "quant_lab_expert_pack_2026-05-16_20260516T100000+0800.zip"
+    pack_path.write_bytes(b"partial-zip")
+    new_mtime = datetime(2026, 5, 16, 1, 0, tzinfo=UTC).timestamp()
+    os.utime(pack_path, (new_mtime, new_mtime))
+    monkeypatch.setattr(expert_exports, "_pid_is_running", lambda pid: True)
+
+    status = expert_exports._poll_export_job(exports_root, "2026-05-16")
+
+    assert status["state"] == "running"
+    assert "zip_path" not in status
+    assert "recovered_from_failed_status" not in status
+
+
 def test_expert_exports_running_request_file_job_stays_running_without_pid(
     tmp_path, monkeypatch
 ):

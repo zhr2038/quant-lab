@@ -458,14 +458,6 @@ def _poll_export_job(exports_root: Path, export_date: str) -> dict[str, Any]:
     status = _normalize_completed_export_status_times(status_path, status)
     if status.get("state") != "running":
         return status
-    recovered = _recover_failed_export_status_from_pack(
-        exports_root,
-        export_date,
-        status_path,
-        status,
-    )
-    if recovered is not None:
-        return recovered
     pid = status.get("worker_pid")
     if not isinstance(pid, int):
         pid = status.get("pid")

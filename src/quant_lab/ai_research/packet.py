@@ -340,8 +340,8 @@ def _build_task_preflight(
         if document.truncated
     )
     blockers = [f"missing_core_member:{member}" for member in missing_core_members]
-    blockers.extend(f"truncated_core_member:{member}" for member in truncated_core_members)
     warnings = sorted(set(packet_warnings))
+    warnings.extend(f"truncated_core_member:{member}" for member in truncated_core_members)
     if truncated_documents and not truncated_core_members:
         warnings.append(f"truncated_non_core_documents:{len(truncated_documents)}")
     status: str

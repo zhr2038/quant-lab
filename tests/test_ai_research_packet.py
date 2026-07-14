@@ -131,3 +131,23 @@ def test_packet_preflight_passes_with_complete_core_identity(tmp_path) -> None:
     assert task is not None and task.preflight is not None
     assert task.preflight.status == "PASS"
     assert task.preflight.blockers == []
+
+
+def test_packet_preflight_warns_but_does_not_block_truncated_core(tmp_path) -> None:
+    pack = tmp_path / "quant_lab_expert_pack_large_core.zip"
+    large = json.dumps({"rows": [{"value": "x" * 1000} for _ in range(20)]})
+    with zipfile.ZipFile(pack, "w") as archive:
+        archive.writestr("manifest.json", large)
+        archive.writestr("provenance.json", "{}")
+        archive.writestr("data_quality.json", "{}")
+
+    task, _ = build_ai_research_task(
+        pack,
+        queue_root=tmp_path / "queue",
+        max_document_chars=500,
+    )
+
+    assert task is not None and task.preflight is not None
+    assert task.preflight.status == "WARN"
+    assert task.preflight.blockers == []
+    assert any(item.startswith("truncated_core_member:") for item in task.preflight.warnings)

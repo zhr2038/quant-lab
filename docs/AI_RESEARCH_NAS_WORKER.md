@@ -58,9 +58,10 @@ src/quant_lab/ai_research/prompts/stage2_system.md
 ### Stage 1：研究诊断与路由
 
 模型调用前先执行确定性 Preflight，确认根级 `manifest.json`、
-`provenance.json` 和 `data_quality.json` 均已进入任务包，且核心文档未被截断。
-Preflight 为 `BLOCK` 时，Stage 1 仍可给出数据修复和代码复核目标，但不能进入
-Stage 2。
+`provenance.json` 和 `data_quality.json` 均已进入任务包。身份文件缺失时 Preflight
+为 `BLOCK`；核心摘要因输入限额被截断时为 `WARN`，再由 Stage 1 根据实际字段判断
+证据是否足够。Preflight 为 `BLOCK` 时，Stage 1 仍可给出数据修复和代码复核目标，
+但不能进入 Stage 2。
 
 Stage 1 随后检查：
 

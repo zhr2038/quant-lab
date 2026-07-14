@@ -436,7 +436,8 @@ def _upload_result(config: Config, task_id: str, local_result: Path) -> None:
         [
             "sh",
             "-lc",
-            f"set -eu; mv {shlex.quote(remote_temp)} {shlex.quote(remote_final)}; "
+            f"set -eu; chmod 0640 {shlex.quote(remote_temp)}; "
+            f"mv {shlex.quote(remote_temp)} {shlex.quote(remote_final)}; "
             f"mv {shlex.quote(config.remote_queue_root + '/running/' + task_id)} "
             f"{shlex.quote(config.remote_queue_root + '/completed/' + task_id)}",
         ],
@@ -456,7 +457,8 @@ def _mark_failed(config: Config, task_id: str, error_path: Path) -> None:
             [
                 "sh",
                 "-lc",
-                f"set -eu; src={shlex.quote(config.remote_queue_root + '/running/' + task_id)}; "
+                f"set -eu; chmod 0640 {shlex.quote(result_dir + '/worker_error.json')}; "
+                f"src={shlex.quote(config.remote_queue_root + '/running/' + task_id)}; "
                 f"dst={shlex.quote(config.remote_queue_root + '/failed/' + task_id)}; "
                 "[ ! -d \"$src\" ] || { rm -rf \"$dst\"; mv \"$src\" \"$dst\"; }",
             ],

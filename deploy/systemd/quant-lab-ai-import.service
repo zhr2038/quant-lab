@@ -1,0 +1,28 @@
+[Unit]
+Description=Validate and import NAS AI research results into read-only Gold datasets
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+User=quantlab
+Group=quantlab
+WorkingDirectory=/opt/quant-lab
+Environment=PYTHONUNBUFFERED=1
+Environment=POLARS_MAX_THREADS=1
+UMask=0007
+ExecStart=/opt/quant-lab/.venv/bin/python /opt/quant-lab/tools/quant_ai_queue.py import-results --queue-root /var/lib/quant-lab/ai_queue --lake-root /var/lib/quant-lab/lake --max-results 8
+Nice=10
+IOSchedulingClass=idle
+CPUQuota=30%
+MemoryMax=700M
+TasksMax=96
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+ReadWritePaths=/var/lib/quant-lab/ai_queue /var/lib/quant-lab/lake
+ReadOnlyPaths=/opt/quant-lab
+
+[Install]
+WantedBy=multi-user.target

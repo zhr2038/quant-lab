@@ -11,9 +11,9 @@ from typing import Any
 import polars as pl
 
 from quant_lab.ai_research.contracts import (
+    LIVE_ORDER_EFFECT,
     AIResearchResult,
     AIResearchTask,
-    LIVE_ORDER_EFFECT,
     canonical_json,
     compute_task_packet_sha256,
 )

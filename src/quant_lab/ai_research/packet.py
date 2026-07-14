@@ -15,9 +15,9 @@ from typing import Any
 
 from quant_lab.ai_research.contracts import (
     AI_PROMPT_VERSION,
+    PROHIBITED_ACTIONS,
     AIResearchTask,
     EvidenceDocument,
-    PROHIBITED_ACTIONS,
     canonical_json,
     compute_task_packet_sha256,
 )

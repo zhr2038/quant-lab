@@ -2,7 +2,6 @@ from __future__ import annotations
 
 from importlib.resources import files
 
-
 PROMPT_PACKAGE = "quant_lab.ai_research.prompts"
 
 

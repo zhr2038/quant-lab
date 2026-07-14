@@ -111,7 +111,7 @@ class ResearchFinding(StrictModel):
     recommended_action: str = Field(min_length=1, max_length=1500)
 
     @model_validator(mode="after")
-    def observed_requires_evidence(self) -> "ResearchFinding":
+    def observed_requires_evidence(self) -> ResearchFinding:
         if self.status == "observed" and not self.evidence_refs:
             raise ValueError("observed findings require at least one evidence reference")
         return self
@@ -136,7 +136,7 @@ class Stage1Diagnosis(StrictModel):
     prohibited_actions: list[str] = Field(default_factory=lambda: list(PROHIBITED_ACTIONS))
 
     @model_validator(mode="after")
-    def enforce_stage2_gate(self) -> "Stage1Diagnosis":
+    def enforce_stage2_gate(self) -> Stage1Diagnosis:
         if self.stage2_allowed and not self.route_sections:
             raise ValueError("stage2_allowed requires at least one routed evidence section")
         if self.stage2_allowed and self.system_state != "READY_FOR_PROPOSALS":
@@ -211,7 +211,7 @@ class PaperStrategyDraft(StrictModel):
     live_order_effect: Literal[LIVE_ORDER_EFFECT] = LIVE_ORDER_EFFECT
 
     @model_validator(mode="after")
-    def holding_period_is_valid(self) -> "PaperStrategyDraft":
+    def holding_period_is_valid(self) -> PaperStrategyDraft:
         if self.min_holding_bars > self.max_holding_bars:
             raise ValueError("min_holding_bars cannot exceed max_holding_bars")
         return self
@@ -296,7 +296,7 @@ class AIResearchResult(StrictModel):
     live_order_effect: Literal[LIVE_ORDER_EFFECT] = LIVE_ORDER_EFFECT
 
     @model_validator(mode="after")
-    def proposal_gate_matches_diagnosis(self) -> "AIResearchResult":
+    def proposal_gate_matches_diagnosis(self) -> AIResearchResult:
         if self.diagnosis.stage2_allowed and self.proposals is None:
             raise ValueError("stage2_allowed result requires proposals")
         if not self.diagnosis.stage2_allowed and self.proposals is not None:

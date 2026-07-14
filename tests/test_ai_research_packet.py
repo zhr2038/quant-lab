@@ -200,3 +200,36 @@ def test_large_core_json_uses_complete_deterministic_summary(tmp_path) -> None:
     assert core["data_quality.json"].truncated is False
     assert core["manifest.json"].content["_representation"]["file_count"] == 2_000
     assert core["data_quality.json"].content["checks"]["count"] == 500
+
+
+def test_large_alpha_board_uses_complete_deterministic_summary(tmp_path) -> None:
+    pack = tmp_path / "quant_lab_expert_pack_large_alpha_board.zip"
+    board = "factor_id,symbol,timeframe,status,score,detail\n" + "\n".join(
+        f"factor-{index},SOL-USDT,8h,SHADOW,{index},{'x' * 300}"
+        for index in range(5_000)
+    )
+    with zipfile.ZipFile(pack, "w", compression=zipfile.ZIP_DEFLATED) as archive:
+        archive.writestr("manifest.json", "{}")
+        archive.writestr("provenance.json", "{}")
+        archive.writestr("data_quality.json", "{}")
+        archive.writestr("reports/alpha_discovery_board.csv", board)
+
+    task, _ = build_ai_research_task(
+        pack,
+        queue_root=tmp_path / "queue",
+        max_member_bytes=256,
+        max_document_chars=40_000,
+    )
+
+    assert task is not None and task.preflight is not None
+    board_doc = next(
+        item
+        for item in task.sections["factor_research"]
+        if item.source_member == "reports/alpha_discovery_board.csv"
+    )
+    assert task.preflight.status == "PASS"
+    assert board_doc.representation == "deterministic_summary"
+    assert board_doc.truncated is False
+    assert board_doc.content["row_count"] == 5_000
+    assert board_doc.content["categorical_counts"]["status"] == {"SHADOW": 5_000}
+    assert len(canonical_json(board_doc.content)) <= 40_000

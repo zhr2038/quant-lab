@@ -31,6 +31,7 @@ DEFAULT_MAX_TOTAL_CHARS = 300_000
 DEFAULT_MAX_CSV_ROWS = 64
 DEFAULT_MAX_DOCS_PER_SECTION = 4
 CORE_JSON_MAX_MEMBER_BYTES = 2 * 1024 * 1024
+RESEARCH_CSV_MAX_MEMBER_BYTES = 16 * 1024 * 1024
 
 _ALLOWED_EXTENSIONS = {".json", ".md", ".csv", ".txt"}
 _EXCLUDED_PARTS = {"__macosx", ".git", "secrets", "private", "restricted"}
@@ -129,6 +130,7 @@ _ALLOWED_FACTOR_TEMPLATES = [
 
 _TASK_ID_RE = re.compile(r"[^A-Za-z0-9_.-]+")
 _CORE_SUMMARY_MEMBERS = {"manifest.json", "data_quality.json"}
+_DETERMINISTIC_CSV_SUMMARY_MEMBERS = {"reports/alpha_discovery_board.csv"}
 _RESEARCH_DATASET_KEYWORDS = (
     "alpha",
     "factor",
@@ -494,11 +496,13 @@ def _compact_member(
     warnings: list[str] = []
     normalized_name = member.filename.lower().lstrip("./")
     deterministic_core_summary = normalized_name in _CORE_SUMMARY_MEMBERS
-    read_limit = (
-        max(max_member_bytes, CORE_JSON_MAX_MEMBER_BYTES)
-        if deterministic_core_summary
-        else max_member_bytes
-    )
+    deterministic_csv_summary = normalized_name in _DETERMINISTIC_CSV_SUMMARY_MEMBERS
+    if deterministic_core_summary:
+        read_limit = max(max_member_bytes, CORE_JSON_MAX_MEMBER_BYTES)
+    elif deterministic_csv_summary:
+        read_limit = max(max_member_bytes, RESEARCH_CSV_MAX_MEMBER_BYTES)
+    else:
+        read_limit = max_member_bytes
     with archive.open(member, "r") as stream:
         raw = stream.read(read_limit + 1)
     truncated = len(raw) > read_limit or member.file_size > read_limit
@@ -510,7 +514,18 @@ def _compact_member(
     representation = "full"
 
     if suffix == ".csv":
-        content, csv_truncated = _compact_csv(text, max_rows=max_csv_rows)
+        if deterministic_csv_summary and not truncated:
+            content, summary_complete = _summarize_research_csv(
+                text,
+                max_rows=max_csv_rows,
+                max_chars=max_document_chars,
+            )
+            representation = (
+                "deterministic_summary" if summary_complete else "truncated_prefix"
+            )
+            csv_truncated = not summary_complete
+        else:
+            content, csv_truncated = _compact_csv(text, max_rows=max_csv_rows)
         source_format = "csv"
         truncated = truncated or csv_truncated
     elif suffix == ".json":
@@ -723,6 +738,74 @@ def _compact_csv(text: str, *, max_rows: int) -> tuple[dict[str, Any], bool]:
         return {"columns": [], "rows": [], "raw_prefix": text[:20_000]}, True
 
 
+def _summarize_research_csv(
+    text: str,
+    *,
+    max_rows: int,
+    max_chars: int,
+) -> tuple[dict[str, Any], bool]:
+    stream = io.StringIO(text)
+    try:
+        reader = csv.DictReader(stream)
+        fieldnames = [str(item) for item in (reader.fieldnames or [])]
+        rows: list[dict[str, str]] = []
+        categorical_columns = [
+            column
+            for column in fieldnames
+            if any(
+                keyword in column.lower()
+                for keyword in (
+                    "status",
+                    "stage",
+                    "decision",
+                    "symbol",
+                    "timeframe",
+                    "regime",
+                    "action",
+                )
+            )
+        ][:16]
+        category_counts: dict[str, dict[str, int]] = {
+            column: {} for column in categorical_columns
+        }
+        row_count = 0
+        selected_limit = min(max_rows, 32)
+        for row in reader:
+            row_count += 1
+            if len(rows) < selected_limit:
+                rows.append(
+                    {
+                        str(key): _truncate_cell_to(value, max_chars=400)
+                        for key, value in row.items()
+                        if key is not None
+                    }
+                )
+            for column in categorical_columns:
+                value = str(row.get(column) or "<empty>")[:160]
+                counts = category_counts[column]
+                if value in counts or len(counts) < 24:
+                    counts[value] = counts.get(value, 0) + 1
+                else:
+                    counts["<other>"] = counts.get("<other>", 0) + 1
+        content = {
+            "columns": fieldnames,
+            "row_count": row_count,
+            "selected_rows": rows,
+            "categorical_counts": category_counts,
+            "_representation": {
+                "kind": "deterministic_summary",
+                "selection_rule": "first_rows_plus_bounded_categorical_counts",
+                "selected_row_limit": selected_limit,
+            },
+        }
+        while rows and len(canonical_json(content)) > max_chars:
+            del rows[max(1, len(rows) // 2) :]
+            content["_representation"]["selected_row_limit"] = len(rows)
+        return content, len(canonical_json(content)) <= max_chars
+    except csv.Error:
+        return {"columns": [], "row_count": 0, "raw_prefix": text[:20_000]}, False
+
+
 def _compact_json(text: str, *, max_chars: int) -> Any:
     try:
         value = json.loads(text)
@@ -760,8 +843,14 @@ def _truncate_json_value(value: Any, *, budget: int, depth: int = 0) -> Any:
 
 
 def _truncate_cell(value: Any) -> str:
+    return _truncate_cell_to(value, max_chars=1_000)
+
+
+def _truncate_cell_to(value: Any, *, max_chars: int) -> str:
     text = "" if value is None else str(value)
-    return text if len(text) <= 1000 else text[:997] + "..."
+    if len(text) <= max_chars:
+        return text
+    return text[: max(0, max_chars - 3)] + "..."
 
 
 def _sha256_file(path: Path) -> str:

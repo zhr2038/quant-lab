@@ -141,6 +141,7 @@ class Stage1Diagnosis(StrictModel):
             raise ValueError("stage2_allowed requires at least one routed evidence section")
         if self.stage2_allowed and self.system_state != "READY_FOR_PROPOSALS":
             raise ValueError("stage2_allowed requires system_state=READY_FOR_PROPOSALS")
+        _require_prohibited_actions(self.prohibited_actions)
         return self
 
 
@@ -252,6 +253,11 @@ class Stage2ProposalSet(StrictModel):
     no_action_reasons: list[str] = Field(default_factory=list, max_length=24)
     prohibited_actions: list[str] = Field(default_factory=lambda: list(PROHIBITED_ACTIONS))
 
+    @model_validator(mode="after")
+    def preserve_safety_boundary(self) -> Stage2ProposalSet:
+        _require_prohibited_actions(self.prohibited_actions)
+        return self
+
 
 class EvidenceDocument(StrictModel):
     source_member: str = Field(min_length=1, max_length=500)
@@ -274,6 +280,16 @@ class AIResearchTask(StrictModel):
     allowed_factor_templates: list[FactorTemplate]
     prohibited_actions: list[str] = Field(default_factory=lambda: list(PROHIBITED_ACTIONS))
     warnings: list[str] = Field(default_factory=list, max_length=128)
+
+    @model_validator(mode="after")
+    def validate_task_boundary(self) -> AIResearchTask:
+        _require_utc(self.created_at, field_name="created_at")
+        _require_prohibited_actions(self.prohibited_actions)
+        if not self.sections:
+            raise ValueError("AI research task requires at least one evidence section")
+        if not self.allowed_factor_templates:
+            raise ValueError("AI research task requires at least one factor template")
+        return self
 
 
 class AIResearchResult(StrictModel):
@@ -305,6 +321,10 @@ class AIResearchResult(StrictModel):
             raise ValueError("diagnosis task_id mismatch")
         if self.proposals is not None and self.proposals.task_id != self.task_id:
             raise ValueError("proposal task_id mismatch")
+        _require_utc(self.started_at, field_name="started_at")
+        _require_utc(self.completed_at, field_name="completed_at")
+        if self.completed_at < self.started_at:
+            raise ValueError("completed_at cannot precede started_at")
         return self
 
 
@@ -354,3 +374,15 @@ def strict_output_schema(model: type[BaseModel]) -> dict[str, Any]:
 
     patch(schema)
     return schema
+
+
+def _require_prohibited_actions(value: list[str]) -> None:
+    if len(value) != len(PROHIBITED_ACTIONS) or set(value) != set(PROHIBITED_ACTIONS):
+        raise ValueError("prohibited_actions must preserve the complete safety boundary")
+
+
+def _require_utc(value: datetime, *, field_name: str) -> None:
+    if value.tzinfo is None or value.utcoffset() is None:
+        raise ValueError(f"{field_name} must be timezone-aware UTC")
+    if value.utcoffset().total_seconds() != 0:
+        raise ValueError(f"{field_name} must use UTC")

@@ -6,6 +6,7 @@ import io
 import json
 import os
 import re
+import shutil
 import tempfile
 import zipfile
 from collections import defaultdict
@@ -137,9 +138,19 @@ def find_latest_expert_pack(exports_dir: str | Path) -> Path | None:
         and "expert" in path.name.lower()
         and not path.name.startswith(".")
     ]
-    if not candidates:
-        return None
-    return max(candidates, key=lambda path: (path.stat().st_mtime_ns, path.name))
+    for candidate in sorted(
+        candidates,
+        key=lambda path: (path.stat().st_mtime_ns, path.name),
+        reverse=True,
+    ):
+        try:
+            if zipfile.is_zipfile(candidate):
+                with zipfile.ZipFile(candidate) as archive:
+                    archive.infolist()
+                return candidate
+        except (OSError, zipfile.BadZipFile):
+            continue
+    return None
 
 
 def build_ai_research_task(
@@ -241,11 +252,32 @@ def build_ai_research_task(
     task = provisional_task.model_copy(update={"packet_sha256": packet_sha})
 
     task_dir = pending_root / task_id
-    if task_dir.exists() and not force:
+    if task_dir.exists():
         return None, None
-    task_dir.mkdir(parents=True, exist_ok=True)
+    staging_root = queue / ".staging"
+    staging_root.mkdir(parents=True, exist_ok=True)
+    staging_dir = Path(tempfile.mkdtemp(prefix=f"{task_id}.", dir=staging_root))
+    try:
+        _atomic_write_json(staging_dir / "task.json", task.model_dump(mode="json"))
+        _atomic_write_json(
+            staging_dir / "task_manifest.json",
+            {
+                "task_id": task_id,
+                "source_pack_sha256": pack_sha,
+                "packet_sha256": packet_sha,
+                "published_at": created.isoformat(),
+            },
+        )
+        try:
+            os.replace(staging_dir, task_dir)
+        except OSError:
+            if task_dir.exists():
+                return None, None
+            raise
+    finally:
+        if staging_dir.exists():
+            shutil.rmtree(staging_dir)
     task_path = task_dir / "task.json"
-    _atomic_write_json(task_path, task.model_dump(mode="json"))
     _atomic_write_json(
         state_path,
         {

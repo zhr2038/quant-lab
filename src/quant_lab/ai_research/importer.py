@@ -511,6 +511,61 @@ def _validate_result_against_task(result: AIResearchResult, task: AIResearchTask
     unknown_sections = routed - set(task.sections)
     if unknown_sections:
         raise ValueError(f"diagnosis routed unknown sections: {sorted(unknown_sections)}")
+    _validate_evidence_references(
+        [
+            reference
+            for finding in (
+                *result.diagnosis.primary_bottlenecks,
+                *result.diagnosis.contradictions,
+                *result.diagnosis.missing_evidence,
+            )
+            for reference in finding.evidence_refs
+        ],
+        task=task,
+        allowed_sections=set(task.sections),
+    )
+    if result.proposals is None:
+        return
+    allowed_stage2_sections = set(result.diagnosis.route_sections)
+    if "core_state" in task.sections:
+        allowed_stage2_sections.add("core_state")
+    for proposal in result.proposals.factor_proposals:
+        if proposal.template not in task.allowed_factor_templates:
+            raise ValueError(f"factor template not allowed by task: {proposal.template}")
+    stage2_references = [
+        reference
+        for proposal in (
+            *result.proposals.factor_proposals,
+            *result.proposals.paper_strategy_drafts,
+            *result.proposals.experiment_proposals,
+        )
+        for reference in proposal.evidence_refs
+    ]
+    _validate_evidence_references(
+        stage2_references,
+        task=task,
+        allowed_sections=allowed_stage2_sections,
+    )
+
+
+def _validate_evidence_references(
+    references: list[Any],
+    *,
+    task: AIResearchTask,
+    allowed_sections: set[str],
+) -> None:
+    members_by_section = {
+        section: {document.source_member for document in documents}
+        for section, documents in task.sections.items()
+    }
+    for reference in references:
+        if reference.section not in allowed_sections:
+            raise ValueError(f"evidence section was not routed: {reference.section}")
+        if reference.source_member not in members_by_section.get(reference.section, set()):
+            raise ValueError(
+                "evidence source member is not present in the task: "
+                f"{reference.section}/{reference.source_member}"
+            )
 
 
 def _replace_directory(source: Path, destination: Path) -> None:

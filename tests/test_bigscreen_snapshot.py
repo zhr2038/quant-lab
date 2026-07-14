@@ -55,6 +55,61 @@ def test_bigscreen_snapshot_includes_read_only_server_resources(tmp_path):
     assert resources["disk_total_bytes"] >= resources["disk_free_bytes"]
 
 
+def test_bigscreen_snapshot_exposes_ai_research_without_live_effect(monkeypatch, tmp_path):
+    lake = tmp_path / "lake"
+    queue = tmp_path / "ai_queue"
+    (queue / "pending" / "task-pending").mkdir(parents=True)
+    monkeypatch.setenv("QUANT_LAB_AI_QUEUE_ROOT", str(queue))
+    completed_at = datetime(2026, 7, 14, 8, tzinfo=UTC)
+    write_parquet_dataset(
+        pl.DataFrame(
+            [
+                {
+                    "task_id": "task-imported",
+                    "model": "gpt-5.6-sol",
+                    "reasoning_effort": "xhigh",
+                    "system_state": "READY_FOR_PROPOSALS",
+                    "stage2_allowed": True,
+                    "completed_at": completed_at,
+                    "diagnostic_only": True,
+                    "live_order_effect": "none_read_only_research",
+                }
+            ]
+        ),
+        lake / "gold" / "ai_research_run",
+    )
+    write_parquet_dataset(
+        pl.DataFrame(
+            [
+                {
+                    "task_id": "task-imported",
+                    "finding_group": "primary_bottleneck",
+                    "finding_id": "finding-1",
+                    "summary": "Paper evidence is incomplete.",
+                    "category": "paper_lifecycle",
+                    "severity": "warning",
+                    "completed_at": completed_at,
+                    "diagnostic_only": True,
+                    "live_order_effect": "none_read_only_research",
+                }
+            ]
+        ),
+        lake / "gold" / "ai_research_finding",
+    )
+    clear_bigscreen_cache()
+
+    payload = bigscreen_snapshot(lake)
+
+    ai = payload["ai_research"]
+    assert ai["status"] == "AI_RESULT_AVAILABLE"
+    assert ai["mode"] == "diagnostic_only"
+    assert ai["live_order_effect"] == "none_read_only_research"
+    assert ai["counts"]["run_count"] == 1
+    assert ai["counts"]["finding_count"] == 1
+    assert ai["queue"]["counts"]["pending"] == 1
+    assert ai["latest_run"]["task_id"] == "task-imported"
+
+
 def test_bigscreen_snapshot_kpis_include_market_bar_close_time(tmp_path):
     lake = tmp_path / "lake"
     opened_at = datetime.now(UTC) - timedelta(hours=1, minutes=5)

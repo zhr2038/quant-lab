@@ -6,7 +6,11 @@ import zipfile
 from datetime import UTC, datetime
 
 from quant_lab.ai_research.contracts import compute_task_packet_sha256
-from quant_lab.ai_research.packet import build_ai_research_task, queue_status
+from quant_lab.ai_research.packet import (
+    build_ai_research_task,
+    find_latest_expert_pack,
+    queue_status,
+)
 
 
 def test_packet_uses_existing_expert_pack_and_deduplicates(tmp_path) -> None:
@@ -74,3 +78,17 @@ def test_packet_uses_existing_expert_pack_and_deduplicates(tmp_path) -> None:
     assert duplicate is None
     assert duplicate_path is None
     assert queue_status(queue)["counts"]["pending"] == 1
+    assert (task_path.parent / "task_manifest.json").is_file()
+    assert not list((queue / ".staging").iterdir())
+
+
+def test_latest_expert_pack_skips_newer_partial_zip(tmp_path) -> None:
+    valid = tmp_path / "quant_lab_expert_pack_2026-07-14_valid.zip"
+    with zipfile.ZipFile(valid, "w") as archive:
+        archive.writestr("manifest.json", "{}")
+    partial = tmp_path / "quant_lab_expert_pack_2026-07-14_partial.zip"
+    partial.write_bytes(b"PK\x03\x04unfinished")
+    valid.touch()
+    partial.touch()
+
+    assert find_latest_expert_pack(tmp_path) == valid

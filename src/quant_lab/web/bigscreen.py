@@ -119,6 +119,7 @@ def _build_bigscreen_snapshot_payload(root: Path) -> dict[str, Any]:
     data_health = _safe_summary("data_health_summary", readers.data_health_summary, root)
     cost = _safe_summary("cost_model_summary", readers.cost_model_summary, root)
     strategy = _safe_strategy_summary(root)
+    ai_research = _safe_ai_research_summary(root, generated_at=generated_at)
     market = _safe_summary("market_regime_summary", readers.market_regime_summary, root)
     collectors = _safe_summary("okx_collector_summary", readers.okx_collector_summary, root)
     v5 = _safe_summary("v5_telemetry_summary", readers.v5_telemetry_summary, root)
@@ -197,6 +198,7 @@ def _build_bigscreen_snapshot_payload(root: Path) -> dict[str, Any]:
         )[:8],
         "data_matrix": data_matrix,
         "strategy_flow": _strategy_flow(strategy),
+        "ai_research": ai_research,
         "v5": v5_payload,
         "cost": _cost_payload(cost),
         "market": _market_payload(market),
@@ -287,6 +289,16 @@ def _snapshot_source_signature(root: Path) -> tuple[Any, ...]:
         _directory_signature(root / "gold" / "paper_strategy_registry"),
         _directory_signature(root / "gold" / "paper_strategy_promotion_gate"),
         _directory_signature(root / "gold" / "strategy_cost_trust"),
+        _directory_signature(root / "gold" / "ai_research_run"),
+        _directory_signature(root / "gold" / "ai_research_finding"),
+        _directory_signature(root / "gold" / "ai_factor_proposal"),
+        _directory_signature(root / "gold" / "ai_paper_strategy_draft"),
+        _directory_signature(root / "gold" / "ai_experiment_proposal"),
+        _directory_signature(root / "gold" / "ai_code_review_target"),
+        _directory_signature(_ai_queue_root() / "state"),
+        _directory_signature(_ai_queue_root() / "pending"),
+        _directory_signature(_ai_queue_root() / "running"),
+        _directory_signature(_ai_queue_root() / "failed"),
         _path_signature(_web_v2_smoke_status_path()),
     )
 
@@ -544,6 +556,140 @@ def _safe_strategy_summary(root: Path) -> dict[str, Any]:
         "strategy_flow_counts": _strategy_flow_counts_from_frame(advisory_for_counts),
         "strategy_counts": _count_by_column(advisory_for_counts, "decision"),
         "discovery_counts": _count_by_column(discovery, "decision"),
+        "warnings": warnings,
+    }
+
+
+def _safe_ai_research_summary(
+    root: Path,
+    *,
+    generated_at: datetime,
+) -> dict[str, Any]:
+    dataset_names = (
+        "ai_research_run",
+        "ai_research_finding",
+        "ai_factor_proposal",
+        "ai_paper_strategy_draft",
+        "ai_experiment_proposal",
+        "ai_code_review_target",
+    )
+    frames: dict[str, pl.DataFrame] = {}
+    warnings: list[str] = []
+    for dataset_name in dataset_names:
+        frame, warning = _read_display_frame(root, dataset_name)
+        frames[dataset_name] = frame
+        if warning and not frame.is_empty():
+            warnings.append(warning)
+
+    queue = _ai_queue_status()
+    run_rows = _ai_rows(frames["ai_research_run"], sort_by="completed_at", limit=8)
+    latest_run = run_rows[0] if run_rows else {}
+    counts = {
+        "run_count": frames["ai_research_run"].height,
+        "finding_count": frames["ai_research_finding"].height,
+        "factor_proposal_count": frames["ai_factor_proposal"].height,
+        "paper_draft_count": frames["ai_paper_strategy_draft"].height,
+        "experiment_count": frames["ai_experiment_proposal"].height,
+        "code_review_target_count": frames["ai_code_review_target"].height,
+    }
+    queue_counts = queue.get("counts") if isinstance(queue.get("counts"), dict) else {}
+    if run_rows:
+        status = "AI_RESULT_AVAILABLE"
+    elif int(queue_counts.get("running") or 0) > 0:
+        status = "RUNNING"
+    elif int(queue_counts.get("pending") or 0) > 0:
+        status = "PENDING"
+    elif int(queue_counts.get("failed") or 0) > 0:
+        status = "FAILED"
+    else:
+        status = "WAITING_FOR_FIRST_RESULT"
+
+    return {
+        "status": status,
+        "mode": "diagnostic_only",
+        "research_only": True,
+        "requires_human_review": True,
+        "live_order_effect": "none_read_only_research",
+        "latest_run": latest_run,
+        "latest_run_age_seconds": _age_seconds(generated_at, latest_run.get("completed_at")),
+        "counts": counts,
+        "queue": queue,
+        "recent_runs": run_rows,
+        "findings": _ai_rows(
+            frames["ai_research_finding"],
+            sort_by="completed_at",
+            limit=12,
+        ),
+        "factor_proposals": _ai_rows(
+            frames["ai_factor_proposal"],
+            sort_by="completed_at",
+            limit=10,
+        ),
+        "paper_strategy_drafts": _ai_rows(
+            frames["ai_paper_strategy_draft"],
+            sort_by="completed_at",
+            limit=8,
+        ),
+        "experiment_proposals": _ai_rows(
+            frames["ai_experiment_proposal"],
+            sort_by="completed_at",
+            limit=8,
+        ),
+        "code_review_targets": _ai_rows(
+            frames["ai_code_review_target"],
+            sort_by="completed_at",
+            limit=8,
+        ),
+        "warnings": warnings,
+    }
+
+
+def _ai_rows(frame: pl.DataFrame, *, sort_by: str, limit: int) -> list[dict[str, Any]]:
+    if frame.is_empty():
+        return []
+    ordered = frame
+    if sort_by in frame.columns:
+        ordered = frame.sort(sort_by, descending=True, nulls_last=True)
+    return _frame_rows(ordered, limit=limit)
+
+
+def _ai_queue_root() -> Path:
+    value = os.environ.get("QUANT_LAB_AI_QUEUE_ROOT", "").strip()
+    return Path(value) if value else Path("/var/lib/quant-lab/ai_queue")
+
+
+def _ai_queue_status() -> dict[str, Any]:
+    root = _ai_queue_root()
+    counts: dict[str, int] = {}
+    warnings: list[str] = []
+    for state in ("pending", "running", "completed", "failed"):
+        path = root / state
+        try:
+            counts[state] = sum(1 for item in path.iterdir() if item.is_dir())
+        except FileNotFoundError:
+            counts[state] = 0
+        except OSError as exc:
+            counts[state] = 0
+            warnings.append(f"{state}:{type(exc).__name__}")
+    for state in ("inbox", "imported", "rejected"):
+        path = root / "results" / state
+        try:
+            counts[f"result_{state}"] = sum(1 for item in path.iterdir() if item.is_dir())
+        except FileNotFoundError:
+            counts[f"result_{state}"] = 0
+        except OSError as exc:
+            counts[f"result_{state}"] = 0
+            warnings.append(f"result_{state}:{type(exc).__name__}")
+    state_payload: dict[str, Any] = {}
+    try:
+        raw = json.loads((root / "state" / "last_task.json").read_text(encoding="utf-8"))
+        if isinstance(raw, dict):
+            state_payload = _json_value(raw)
+    except (OSError, json.JSONDecodeError):
+        pass
+    return {
+        "counts": counts,
+        "last_task": state_payload,
         "warnings": warnings,
     }
 

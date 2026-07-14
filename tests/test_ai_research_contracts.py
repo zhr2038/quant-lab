@@ -6,6 +6,7 @@ import pytest
 from pydantic import ValidationError
 
 from quant_lab.ai_research.contracts import (
+    PROHIBITED_ACTIONS,
     AIResearchResult,
     EvidenceReference,
     FactorProposal,
@@ -128,3 +129,43 @@ def test_strict_schema_rejects_unknown_keys_and_requires_all_properties() -> Non
     finding_schema = schema["$defs"]["ResearchFinding"]
     assert finding_schema["additionalProperties"] is False
     assert set(finding_schema["required"]) == set(finding_schema["properties"])
+
+
+def test_stage_outputs_cannot_remove_prohibited_actions() -> None:
+    with pytest.raises(ValidationError, match="prohibited_actions"):
+        Stage1Diagnosis(
+            task_id="task-safety",
+            system_state="REVIEW_REQUIRED",
+            executive_summary="Review only.",
+            stage2_allowed=False,
+            prohibited_actions=list(PROHIBITED_ACTIONS[:-1]),
+        )
+
+    with pytest.raises(ValidationError, match="prohibited_actions"):
+        Stage2ProposalSet(
+            task_id="task-safety",
+            executive_summary="Draft only.",
+            prohibited_actions=["live_order"],
+        )
+
+
+def test_result_requires_ordered_utc_timestamps() -> None:
+    diagnosis = Stage1Diagnosis(
+        task_id="task-time",
+        system_state="REVIEW_REQUIRED",
+        executive_summary="Review only.",
+        stage2_allowed=False,
+    )
+    with pytest.raises(ValidationError, match="completed_at"):
+        AIResearchResult(
+            task_id="task-time",
+            source_pack_sha256="a" * 64,
+            packet_sha256="b" * 64,
+            model="gpt-5.6-sol",
+            reasoning_effort="xhigh",
+            worker_id="nas-1",
+            started_at=datetime(2026, 7, 14, 2, tzinfo=UTC),
+            completed_at=datetime(2026, 7, 14, 1, tzinfo=UTC),
+            diagnosis=diagnosis,
+            proposals=None,
+        )

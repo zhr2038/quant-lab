@@ -106,12 +106,17 @@ cd /opt/quant-lab
 账号只需要访问 AI 队列，不需要读取 lake、生产配置或交易密钥：
 
 ```bash
+sudo groupadd --system quantai
 sudo useradd --system --create-home \
   --home-dir /var/lib/quant-ai-ssh \
   --shell /bin/bash \
-  --gid quantlab quantai
+  --gid quantai quantai
 
-sudo install -d -o quantlab -g quantlab -m 2770 \
+# quantlab 只获得 AI 队列的组访问权；quantai 不加入 quantlab 组，
+# 因而不能读取 lake、生产配置或交易密钥。
+sudo usermod --append --groups quantai quantlab
+
+sudo install -d -o quantlab -g quantai -m 2770 \
   /var/lib/quant-lab/ai_queue \
   /var/lib/quant-lab/ai_queue/pending \
   /var/lib/quant-lab/ai_queue/running \
@@ -128,13 +133,15 @@ sudo install -d -o quantlab -g quantlab -m 2770 \
 /var/lib/quant-ai-ssh/.ssh/authorized_keys
 ```
 
-建议在公钥前增加：
+在公钥前增加：
 
 ```text
-restrict,port-forwarding=no,agent-forwarding=no,X11-forwarding=no
+restrict
 ```
 
-该账号不得加入 sudoers，不得配置交易所密钥，也不需要访问 `/etc/quant-lab`。
+该账号不得加入 `quantlab` 组或 sudoers，不得配置交易所密钥，也不需要访问
+`/var/lib/quant-lab/lake` 或 `/etc/quant-lab`。部署后应使用 `id quantai` 和
+`sudo -u quantai test ! -r /etc/quant-lab/quant-lab.env` 验证边界。
 
 ### 4.3 安装 systemd 单元
 
@@ -265,7 +272,7 @@ sudo systemctl start quant-lab-ai-task.service
 NAS 单次执行：
 
 ```bash
-RUN_ONCE=true docker compose run --rm quant-ai-worker
+docker compose run --rm -e RUN_ONCE=true quant-ai-worker
 ```
 
 云端导入：

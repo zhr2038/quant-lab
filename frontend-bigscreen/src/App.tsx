@@ -20,6 +20,7 @@ import {
 } from "lucide-react";
 import { type CSSProperties, useEffect, useMemo, useRef, useState } from "react";
 import { ActionQueue } from "./components/ActionQueue";
+import { AIResearchPanel } from "./components/AIResearchPanel";
 import { CostQuality } from "./components/CostQuality";
 import { DataMatrix } from "./components/DataMatrix";
 import { HealthPanel } from "./components/HealthPanel";
@@ -43,13 +44,14 @@ import "./styles.css";
 
 const queryClient = new QueryClient();
 type ViewKey = "strategy" | "data" | "v5" | "exports" | "raw";
-type PageKey = "overview" | "strategy" | "data" | "ops";
+type PageKey = "overview" | "strategy" | "ai" | "data" | "ops";
 const HASH_VIEW_KEY_VALUES = ["v5", "exports", "raw"] as const;
 type HashViewKey = (typeof HASH_VIEW_KEY_VALUES)[number];
 
 const PAGES: Array<{ key: PageKey; label: string; description: string }> = [
   { key: "overview", label: "总览", description: "健康 / KPI / 数据矩阵" },
   { key: "strategy", label: "策略研究", description: "Factor Factory / 策略候选 / 市场" },
+  { key: "ai", label: "AI 研究", description: "诊断 / 草案 / 实验 / 复核" },
   { key: "data", label: "数据成本", description: "市场 / 成本 / 数据矩阵" },
   { key: "ops", label: "运行导出", description: "服务 / API / V5 / 专家包" }
 ];
@@ -256,6 +258,12 @@ function Dashboard({
           <motion.section className="page-grid page-strategy" key="strategy" initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }}>
             <StrategyFlow flow={data.strategy_flow} />
             <MarketLiquidity market={data.market} matrix={data.data_matrix} density="compact" />
+          </motion.section>
+        );
+      case "ai":
+        return (
+          <motion.section className="page-grid page-ai" key="ai" initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }}>
+            <AIResearchPanel research={data.ai_research} />
           </motion.section>
         );
       case "data":

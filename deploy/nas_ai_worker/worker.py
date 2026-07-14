@@ -348,12 +348,10 @@ def _responses_call(
             payload = response.json()
             status = str(payload.get("status") or "completed")
             if status not in {"completed", "succeeded"}:
-                raise RuntimeError(
-                    f"Responses API returned status={status}: "
-                    f"{canonical_json(
-                        payload.get('error') or payload.get('incomplete_details') or {}
-                    )[:1000]}"
-                )
+                detail = canonical_json(
+                    payload.get("error") or payload.get("incomplete_details") or {}
+                )[:1000]
+                raise RuntimeError(f"Responses API returned status={status}: {detail}")
             output_text = _extract_output_text(payload)
             if not output_text:
                 raise RuntimeError("Responses API returned no output_text")

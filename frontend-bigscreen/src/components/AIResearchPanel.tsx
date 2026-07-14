@@ -64,9 +64,11 @@ export function AIResearchPanel({ research }: { research: Record<string, unknown
           <small>{stringValue(latest.executive_summary, stringValue(latest.task_id, "尚无导入结果"))}</small>
         </div>
         <div>
-          <span>证据与连续性</span>
+          <span>证据来源与连续性</span>
           <b>{stringValue(latest.preflight_status, "NOT AVAILABLE")} · {stringValue(continuity.status, "FIRST RUN")}</b>
-          <small>{stringValue(continuity.summary, "尚无上一轮研究上下文")} · {delay(research.latest_run_age_seconds)}</small>
+          <small title={stringValue(continuity.summary, "尚无上一轮研究上下文")}>
+            证据包 {stringValue(latest.source_pack_name, "尚无来源包")} · {delay(research.latest_run_age_seconds)}
+          </small>
         </div>
         <div>
           <span>模型校验</span>

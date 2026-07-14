@@ -403,6 +403,7 @@ class EvidenceDocument(StrictModel):
     source_format: Literal["json", "csv", "markdown", "text"]
     content_sha256: str = Field(min_length=64, max_length=64)
     source_size_bytes: int = Field(ge=1)
+    representation: Literal["full", "deterministic_summary", "truncated_prefix"] = "full"
     truncated: bool = False
     content: Any
 

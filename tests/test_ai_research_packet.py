@@ -135,7 +135,7 @@ def test_packet_preflight_passes_with_complete_core_identity(tmp_path) -> None:
 
 def test_packet_preflight_warns_but_does_not_block_truncated_core(tmp_path) -> None:
     pack = tmp_path / "quant_lab_expert_pack_large_core.zip"
-    large = json.dumps({"rows": [{"value": "x" * 1000} for _ in range(20)]})
+    large = json.dumps({"rows": [{"value": "x" * (2 * 1024 * 1024 + 1_024)}]})
     with zipfile.ZipFile(pack, "w") as archive:
         archive.writestr("manifest.json", large)
         archive.writestr("provenance.json", "{}")
@@ -151,3 +151,52 @@ def test_packet_preflight_warns_but_does_not_block_truncated_core(tmp_path) -> N
     assert task.preflight.status == "WARN"
     assert task.preflight.blockers == []
     assert any(item.startswith("truncated_core_member:") for item in task.preflight.warnings)
+
+
+def test_large_core_json_uses_complete_deterministic_summary(tmp_path) -> None:
+    pack = tmp_path / "quant_lab_expert_pack_large_core_summary.zip"
+    manifest = {
+        "generated_at": "2026-07-14T00:00:00Z",
+        "files": [{"path": f"reports/{index}.csv"} for index in range(2_000)],
+        "row_counts": {f"factor_{index}": index for index in range(200)},
+        "dataset_freshness": {
+            f"factor_{index}": {"status": "OK", "latest_ts": "2026-07-14T00:00:00Z"}
+            for index in range(200)
+        },
+    }
+    data_quality = {
+        "status": "WARN",
+        "checks": [
+            {"dataset": f"factor_{index}", "status": "PASS", "detail": "x" * 500}
+            for index in range(500)
+        ],
+        "warnings": ["bounded warning"],
+        "dataset_governance": {
+            "status": "WARN",
+            "checks": [
+                {"dataset": f"factor_{index}", "status": "PASS", "detail": "y" * 500}
+                for index in range(500)
+            ],
+        },
+    }
+    with zipfile.ZipFile(pack, "w", compression=zipfile.ZIP_DEFLATED) as archive:
+        archive.writestr("manifest.json", json.dumps(manifest))
+        archive.writestr("provenance.json", "{}")
+        archive.writestr("data_quality.json", json.dumps(data_quality))
+
+    task, _ = build_ai_research_task(
+        pack,
+        queue_root=tmp_path / "queue",
+        max_member_bytes=256,
+        max_document_chars=40_000,
+    )
+
+    assert task is not None and task.preflight is not None
+    core = {item.source_member: item for item in task.sections["core_state"]}
+    assert task.preflight.status == "PASS"
+    assert core["manifest.json"].representation == "deterministic_summary"
+    assert core["data_quality.json"].representation == "deterministic_summary"
+    assert core["manifest.json"].truncated is False
+    assert core["data_quality.json"].truncated is False
+    assert core["manifest.json"].content["_representation"]["file_count"] == 2_000
+    assert core["data_quality.json"].content["checks"]["count"] == 500

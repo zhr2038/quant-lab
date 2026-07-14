@@ -30,6 +30,7 @@ DEFAULT_MAX_DOCUMENT_CHARS = 40_000
 DEFAULT_MAX_TOTAL_CHARS = 300_000
 DEFAULT_MAX_CSV_ROWS = 64
 DEFAULT_MAX_DOCS_PER_SECTION = 4
+CORE_JSON_MAX_MEMBER_BYTES = 2 * 1024 * 1024
 
 _ALLOWED_EXTENSIONS = {".json", ".md", ".csv", ".txt"}
 _EXCLUDED_PARTS = {"__macosx", ".git", "secrets", "private", "restricted"}
@@ -127,6 +128,20 @@ _ALLOWED_FACTOR_TEMPLATES = [
 ]
 
 _TASK_ID_RE = re.compile(r"[^A-Za-z0-9_.-]+")
+_CORE_SUMMARY_MEMBERS = {"manifest.json", "data_quality.json"}
+_RESEARCH_DATASET_KEYWORDS = (
+    "alpha",
+    "factor",
+    "paper",
+    "cost",
+    "risk",
+    "permission",
+    "proposal",
+    "tracker",
+    "opportunity",
+    "trade",
+    "v5",
+)
 
 
 def find_latest_expert_pack(exports_dir: str | Path) -> Path | None:
@@ -477,21 +492,40 @@ def _compact_member(
     max_csv_rows: int,
 ) -> tuple[EvidenceDocument | None, list[str]]:
     warnings: list[str] = []
+    normalized_name = member.filename.lower().lstrip("./")
+    deterministic_core_summary = normalized_name in _CORE_SUMMARY_MEMBERS
+    read_limit = (
+        max(max_member_bytes, CORE_JSON_MAX_MEMBER_BYTES)
+        if deterministic_core_summary
+        else max_member_bytes
+    )
     with archive.open(member, "r") as stream:
-        raw = stream.read(max_member_bytes + 1)
-    truncated = len(raw) > max_member_bytes or member.file_size > max_member_bytes
-    if len(raw) > max_member_bytes:
-        raw = raw[:max_member_bytes]
+        raw = stream.read(read_limit + 1)
+    truncated = len(raw) > read_limit or member.file_size > read_limit
+    if len(raw) > read_limit:
+        raw = raw[:read_limit]
     digest = hashlib.sha256(raw).hexdigest()
     suffix = PurePosixPath(member.filename).suffix.lower()
     text = raw.decode("utf-8", errors="replace")
+    representation = "full"
 
     if suffix == ".csv":
         content, csv_truncated = _compact_csv(text, max_rows=max_csv_rows)
         source_format = "csv"
         truncated = truncated or csv_truncated
     elif suffix == ".json":
-        content = _compact_json(text, max_chars=max_document_chars)
+        if deterministic_core_summary and not truncated:
+            content, summary_complete = _compact_core_json(
+                text,
+                source_member=normalized_name,
+                max_chars=max_document_chars,
+            )
+            representation = (
+                "deterministic_summary" if summary_complete else "truncated_prefix"
+            )
+            truncated = not summary_complete
+        else:
+            content = _compact_json(text, max_chars=max_document_chars)
         source_format = "json"
     elif suffix == ".md":
         content = text[:max_document_chars]
@@ -505,8 +539,11 @@ def _compact_member(
     if len(canonical_json(content)) > max_document_chars:
         content = canonical_json(content)[:max_document_chars]
         truncated = True
+        representation = "truncated_prefix"
         warnings.append(f"content_character_limit:{member.filename}")
     if truncated:
+        if representation == "full":
+            representation = "truncated_prefix"
         warnings.append(f"truncated:{member.filename}")
     return (
         EvidenceDocument(
@@ -514,10 +551,154 @@ def _compact_member(
             source_format=source_format,
             content_sha256=digest,
             source_size_bytes=member.file_size,
+            representation=representation,
             truncated=truncated,
             content=content,
         ),
         warnings,
+    )
+
+
+def _compact_core_json(
+    text: str,
+    *,
+    source_member: str,
+    max_chars: int,
+) -> tuple[Any, bool]:
+    try:
+        value = json.loads(text)
+    except json.JSONDecodeError:
+        return text[:max_chars], False
+    if not isinstance(value, dict):
+        content = _truncate_json_value(value, budget=max_chars)
+        return content, len(canonical_json(content)) <= max_chars
+
+    if source_member == "manifest.json":
+        content = _summarize_manifest(value)
+    elif source_member == "data_quality.json":
+        content = _summarize_data_quality(value)
+    else:
+        content = _truncate_json_value(value, budget=max_chars)
+    return content, len(canonical_json(content)) <= max_chars
+
+
+def _summarize_manifest(value: dict[str, Any]) -> dict[str, Any]:
+    summary = _scalar_items(value)
+    row_counts = value.get("row_counts")
+    if isinstance(row_counts, dict):
+        summary["row_counts"] = row_counts
+    summary["dataset_freshness"] = _summarize_dataset_mapping(
+        value.get("dataset_freshness"),
+        max_entries=72,
+    )
+    for key in ("acceptance_set_sha256_relationship", "github_ci_status", "lake_file_health"):
+        if key in value:
+            summary[key] = _truncate_json_value(value[key], budget=4_000)
+    files = value.get("files")
+    sections = value.get("sections")
+    summary["_representation"] = {
+        "kind": "deterministic_summary",
+        "source_key_count": len(value),
+        "file_count": len(files) if isinstance(files, list) else 0,
+        "section_count": len(sections) if isinstance(sections, (list, dict)) else 0,
+        "dataset_freshness_count": (
+            len(value.get("dataset_freshness", {}))
+            if isinstance(value.get("dataset_freshness"), dict)
+            else 0
+        ),
+        "selection_rule": "all_scalars_all_row_counts_and_research_relevant_or_non_ok_freshness",
+    }
+    return summary
+
+
+def _summarize_data_quality(value: dict[str, Any]) -> dict[str, Any]:
+    summary = _scalar_items(value)
+    for key in ("failures", "warnings"):
+        if key in value:
+            summary[key] = _truncate_json_value(value[key], budget=4_000)
+    summary["checks"] = _summarize_check_list(value.get("checks"), max_entries=12)
+    for key in ("dataset_governance", "registry_quality"):
+        nested = value.get(key)
+        if isinstance(nested, dict):
+            compact = _scalar_items(nested)
+            compact["checks"] = _summarize_check_list(
+                nested.get("checks"),
+                max_entries=16,
+            )
+            summary[key] = compact
+    nested_budgets = {
+        "decision_audit": 2_000,
+        "quant_lab_enforce_readiness": 4_000,
+        "risk_permission": 4_000,
+        "v5_pre_export": 4_000,
+    }
+    for key, budget in nested_budgets.items():
+        if key in value:
+            summary[key] = _truncate_json_value(value[key], budget=budget)
+    summary["_representation"] = {
+        "kind": "deterministic_summary",
+        "source_key_count": len(value),
+        "selection_rule": "all_scalars_all_failures_and_warnings_plus_bounded_non_ok_first_checks",
+    }
+    return summary
+
+
+def _scalar_items(value: dict[str, Any]) -> dict[str, Any]:
+    return {
+        str(key): item
+        for key, item in value.items()
+        if item is None or isinstance(item, (str, int, float, bool))
+    }
+
+
+def _summarize_dataset_mapping(value: Any, *, max_entries: int) -> dict[str, Any]:
+    if not isinstance(value, dict):
+        return {"count": 0, "selected": {}}
+    ranked = sorted(
+        value.items(),
+        key=lambda item: (
+            0 if _record_is_non_ok(item[1]) else 1,
+            0
+            if any(
+                keyword in str(item[0]).lower()
+                for keyword in _RESEARCH_DATASET_KEYWORDS
+            )
+            else 1,
+            str(item[0]),
+        ),
+    )
+    return {
+        "count": len(value),
+        "selected": {
+            str(key): _truncate_json_value(item, budget=600)
+            for key, item in ranked[:max_entries]
+        },
+    }
+
+
+def _summarize_check_list(value: Any, *, max_entries: int) -> dict[str, Any]:
+    if not isinstance(value, list):
+        return {"count": 0, "selected": []}
+    non_ok = [item for item in value if _record_is_non_ok(item)]
+    ok = [item for item in value if not _record_is_non_ok(item)]
+    selected = (non_ok + ok)[:max_entries]
+    return {
+        "count": len(value),
+        "non_ok_count": len(non_ok),
+        "selected": [_truncate_json_value(item, budget=400) for item in selected],
+    }
+
+
+def _record_is_non_ok(value: Any) -> bool:
+    if not isinstance(value, dict):
+        return False
+    signals = " ".join(
+        str(value.get(key) or "").upper()
+        for key in ("status", "state", "severity", "verdict", "result")
+    )
+    return any(
+        token in signals
+        for token in ("WARN", "FAIL", "ERROR", "CRITICAL", "BLOCK", "STALE", "MISSING")
     )
 
 

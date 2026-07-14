@@ -985,7 +985,22 @@ def _append_file_rows(
                 ),
                 "quant_lab_mode": str(payload.get("quant_lab_mode") or ""),
                 "canary_enabled": bool(payload.get("canary_enabled")),
+                "loaded_tracker_count": int(payload.get("loaded_tracker_count") or 0),
+                "current_active_tracker_count": int(
+                    payload.get("current_active_tracker_count") or 0
+                ),
+                "current_pending_tracker_count": int(
+                    payload.get("current_pending_tracker_count") or 0
+                ),
+                "superseded_exit_only_count": int(payload.get("superseded_exit_only_count") or 0),
+                "superseded_closed_count": int(payload.get("superseded_closed_count") or 0),
                 "active_tracker_count": int(payload.get("active_tracker_count") or 0),
+                "active_tracker_count_deprecated": bool(
+                    payload.get("active_tracker_count_deprecated")
+                ),
+                "active_tracker_count_semantics": str(
+                    payload.get("active_tracker_count_semantics") or ""
+                ),
                 "open_paper_position_count": int(payload.get("open_paper_position_count") or 0),
                 "real_order_calls": int(payload.get("real_order_calls") or 0),
                 "real_position_mutations": int(payload.get("real_position_mutations") or 0),

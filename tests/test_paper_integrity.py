@@ -436,7 +436,13 @@ def test_publish_separates_current_history_and_freezes_cohort(tmp_path) -> None:
     assert cohort_v1.height == 1
     assert cohort_v1.to_dicts()[0]["status"] == "OBSERVING"
     assert cohort_v1.to_dicts()[0]["all_members_admitted"] is True
+    first_cohort = cohort_v1.to_dicts()[0]
+    assert first_cohort["created_at"]
+    assert first_cohort["last_evaluated_at"]
+    assert first_cohort["last_evidence_at"]
     original_members = cohort_v1.to_dicts()[0]["proposal_ids"]
+    original_created_at = first_cohort["created_at"]
+    original_evidence_at = first_cohort["last_evidence_at"]
 
     write_parquet_dataset(
         pl.DataFrame(
@@ -454,6 +460,9 @@ def test_publish_separates_current_history_and_freezes_cohort(tmp_path) -> None:
     assert refreshed.to_dicts()[0]["cohort_version"] == 1
     assert refreshed.to_dicts()[0]["raw_closed_trade_count"] == 1
     assert refreshed.to_dicts()[0]["independent_closed_trade_count"] == 1
+    assert refreshed.to_dicts()[0]["created_at"] == original_created_at
+    assert refreshed.to_dicts()[0]["last_evaluated_at"] >= first_cohort["last_evaluated_at"]
+    assert refreshed.to_dicts()[0]["last_evidence_at"] >= original_evidence_at
 
     second = _proposal("TRX_F3_F4_DEDUP_12H_PAPER", proposal_hash="6" * 64, horizon=12)
     write_parquet_dataset(pl.DataFrame([first, second]), lake / "gold/paper_strategy_proposal")

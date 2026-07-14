@@ -101,6 +101,13 @@ from quant_lab.reports.enforce_readiness import (
     enforce_readiness_members,
     write_enforce_readiness_report,
 )
+from quant_lab.reports.ops_truthfulness import (
+    build_api_auth_reports,
+    build_complete_acceptance_status,
+    build_paper_proposal_propagation_status,
+    build_paper_runtime_freshness,
+    build_post_fix_funnel_attribution,
+)
 from quant_lab.reports.system_acceptance import (
     NO_TRIGGER_REASON_FIELDS,
     SYSTEM_ACCEPTANCE_FIELDS,
@@ -234,6 +241,9 @@ SNAPSHOT_META_DATASETS = {
     "paper_strategy_ack_history",
     "paper_strategy_identity_conflict",
     "paper_cohort_manifest",
+    "api_auth_incident",
+    "paper_runtime_freshness",
+    "paper_proposal_propagation_status",
     "strategy_health_daily",
     "strategy_cost_trust",
     "strategy_opportunity_advisory",
@@ -778,6 +788,12 @@ REQUIRED_MEMBERS = [
     "reports/paper_strategy_identity_conflict.md",
     "reports/paper_cohort_manifest.json",
     "reports/paper_cohort_status.md",
+    "reports/api_auth_error_timeline.csv",
+    "reports/api_auth_client_summary.csv",
+    "reports/paper_runtime_freshness.csv",
+    "reports/paper_proposal_propagation_status.csv",
+    "reports/system_acceptance_complete_status.json",
+    "reports/post_fix_funnel_attribution.json",
     "reports/strategy_opportunity_advisory.csv",
     "reports/v5_opportunity_event.csv",
     "reports/v5_opportunity_label.csv",
@@ -4287,7 +4303,14 @@ CSV_SCHEMAS.update(
             "paper_runtime_live_order_effect",
             "quant_lab_mode",
             "canary_enabled",
+            "loaded_tracker_count",
+            "current_active_tracker_count",
+            "current_pending_tracker_count",
+            "superseded_exit_only_count",
+            "superseded_closed_count",
             "active_tracker_count",
+            "active_tracker_count_deprecated",
+            "active_tracker_count_semantics",
             "open_paper_position_count",
             "real_order_calls",
             "real_position_mutations",
@@ -4446,6 +4469,70 @@ def _publish_paper_strategy_pipeline_snapshot(
         row_counts=row_counts,
         warnings=warnings,
         transient_frames=snapshot.transient_frames,
+    )
+
+
+def _publish_ops_truthfulness_snapshot(
+    root: Path,
+    snapshot: _DatasetSnapshot,
+    *,
+    generated_at: datetime,
+) -> _DatasetSnapshot:
+    frames = dict(snapshot.frames)
+    row_counts = dict(snapshot.row_counts)
+    warnings = list(snapshot.warnings)
+    auth = build_api_auth_reports(
+        frames.get("api_request_metrics", pl.DataFrame()),
+        generated_at=generated_at,
+    )
+    paper_runtime_freshness = build_paper_runtime_freshness(
+        frames,
+        generated_at=generated_at,
+    )
+    propagation = build_paper_proposal_propagation_status(
+        proposals=frames.get("paper_strategy_proposals_current", pl.DataFrame()),
+        ack_current=_prefer_frame(
+            frames.get("paper_strategy_ack_current", pl.DataFrame()),
+            frames.get("v5_paper_strategy_proposal_ack_current", pl.DataFrame()),
+        ),
+        ack_history=_prefer_frame(
+            frames.get("paper_strategy_ack_history", pl.DataFrame()),
+            frames.get("v5_paper_strategy_proposal_ack_history", pl.DataFrame()),
+        ),
+        trackers_current=_prefer_frame(
+            frames.get("paper_strategy_trackers_current", pl.DataFrame()),
+            frames.get("v5_paper_strategy_trackers_current", pl.DataFrame()),
+        ),
+        trackers_history=_prefer_frame(
+            frames.get("paper_strategy_registry_history", pl.DataFrame()),
+            frames.get("v5_paper_strategy_registry_history", pl.DataFrame()),
+        ),
+        generated_at=generated_at,
+    )
+    for dataset_name, frame in (
+        ("api_auth_incident", auth["api_auth_incident"]),
+        ("paper_runtime_freshness", paper_runtime_freshness),
+        ("paper_proposal_propagation_status", propagation),
+    ):
+        _publish_export_frame(
+            root,
+            frames=frames,
+            row_counts=row_counts,
+            warnings=warnings,
+            dataset_name=dataset_name,
+            frame=frame,
+        )
+    return _DatasetSnapshot(
+        frames=frames,
+        row_counts=row_counts,
+        warnings=warnings,
+        transient_frames={
+            **snapshot.transient_frames,
+            "api_auth_error_timeline": auth["api_auth_error_timeline"],
+            "api_auth_client_summary": auth["api_auth_client_summary"],
+            "paper_runtime_freshness": paper_runtime_freshness,
+            "paper_proposal_propagation_status": propagation,
+        },
     )
 
 
@@ -5222,6 +5309,17 @@ def export_daily_pack(
     _record_export_stage(
         export_stage_timings,
         "publish_paper_strategy_pipeline",
+        stage_started,
+    )
+    stage_started = _export_stage_start("publish_ops_truthfulness")
+    snapshot = _publish_ops_truthfulness_snapshot(
+        root,
+        snapshot,
+        generated_at=generated_at,
+    )
+    _record_export_stage(
+        export_stage_timings,
+        "publish_ops_truthfulness",
         stage_started,
     )
     stage_started = _export_stage_start("publish_trade_level_judgment")
@@ -6848,6 +6946,32 @@ def _dataset_members(
         lake_file_growth_24h_count=lake_file_growth_24h_count,
         lake_file_health=lake_file_health,
     )
+    api_auth_incident = frames.get("api_auth_incident", pl.DataFrame())
+    api_auth_error_timeline = frames.get(
+        "api_auth_error_timeline",
+        api_auth_incident,
+    )
+    api_auth_client_summary = frames.get("api_auth_client_summary", pl.DataFrame())
+    paper_runtime_freshness = frames.get(
+        "paper_runtime_freshness",
+        pl.DataFrame(),
+    )
+    paper_proposal_propagation_status = frames.get(
+        "paper_proposal_propagation_status",
+        pl.DataFrame(),
+    )
+    post_fix_funnel_attribution = build_post_fix_funnel_attribution(
+        frames.get("v5_trade_opportunity_funnel", pl.DataFrame())
+    )
+    system_acceptance_complete_status = build_complete_acceptance_status(
+        system_acceptance=system_acceptance_dashboard,
+        data_quality=data_quality or {},
+        paper_freshness=paper_runtime_freshness,
+        cohort=paper_cohort_manifest,
+        propagation=paper_proposal_propagation_status,
+        auth_incidents=api_auth_incident,
+        generated_at=export_reference_at,
+    )
 
     return {
         "market/market_snapshot.csv": _csv_member(
@@ -7165,6 +7289,14 @@ def _dataset_members(
             "reports/api_error_summary.csv",
             api_errors,
         ),
+        "reports/api_auth_error_timeline.csv": _csv_member(
+            "reports/api_auth_error_timeline.csv",
+            api_auth_error_timeline,
+        ),
+        "reports/api_auth_client_summary.csv": _csv_member(
+            "reports/api_auth_client_summary.csv",
+            api_auth_client_summary,
+        ),
         "reports/v5_bundle_sync_diagnostics.csv": _csv_member(
             "reports/v5_bundle_sync_diagnostics.csv",
             _v5_bundle_sync_diagnostics_frame(
@@ -7267,6 +7399,20 @@ def _dataset_members(
         ),
         "reports/system_acceptance_dashboard.md": system_acceptance_dashboard_md(
             system_acceptance_dashboard
+        ),
+        "reports/paper_runtime_freshness.csv": _csv_member(
+            "reports/paper_runtime_freshness.csv",
+            paper_runtime_freshness,
+        ),
+        "reports/paper_proposal_propagation_status.csv": _csv_member(
+            "reports/paper_proposal_propagation_status.csv",
+            paper_proposal_propagation_status,
+        ),
+        "reports/system_acceptance_complete_status.json": _json_text(
+            system_acceptance_complete_status
+        ),
+        "reports/post_fix_funnel_attribution.json": _json_text(
+            post_fix_funnel_attribution
         ),
         "reports/backtest_label_summary.csv": _csv_member(
             "reports/backtest_label_summary.csv",
@@ -10396,6 +10542,37 @@ def _data_quality_payload(
             status=readiness_check_status,
         )
     )
+
+    paper_runtime_freshness = snapshot.frames.get(
+        "paper_runtime_freshness",
+        pl.DataFrame(),
+    )
+    for row in (
+        paper_runtime_freshness.to_dicts()
+        if not paper_runtime_freshness.is_empty()
+        else []
+    ):
+        check_name = str(row.get("check_name") or "paper_runtime_freshness")
+        runtime_status = str(row.get("status") or "FAIL").upper()
+        checks.append(
+            _check(
+                check_name,
+                runtime_status in {"PASS", "NO_NEW_EVENT_EXPECTED"},
+                str(row.get("detail") or "paper runtime evidence missing"),
+                status=(
+                    "INFO"
+                    if runtime_status == "NO_NEW_EVENT_EXPECTED"
+                    else "WARN"
+                    if runtime_status == "WARNING"
+                    else runtime_status
+                ),
+                severity=(
+                    "warning"
+                    if runtime_status in {"WARNING", "NO_NEW_EVENT_EXPECTED"}
+                    else "critical"
+                ),
+            )
+        )
 
     stale = _stale_rows(snapshot.frames)
     checks.append(
@@ -17316,7 +17493,10 @@ def _stale_rows(frames: dict[str, pl.DataFrame]) -> pl.DataFrame:
         status = freshness["freshness_status"]
         if frame.is_empty():
             empty_status = readers._empty_dataset_status(name)  # type: ignore[attr-defined]
-            if empty_status in readers.OPTIONAL_EMPTY_DATASET_STATUSES:
+            if (
+                empty_status in readers.OPTIONAL_EMPTY_DATASET_STATUSES
+                or empty_status in EVENT_DRIVEN_OK_STATUSES
+            ):
                 continue
             if _empty_frame_covered_by_rollup(name, frames):
                 continue

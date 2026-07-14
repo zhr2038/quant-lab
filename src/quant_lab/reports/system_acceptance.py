@@ -256,6 +256,72 @@ def build_system_acceptance_dashboard(
         )
     )
     checks.append(_api_auth_error_rate_check(api_latency_summary))
+    auth_incidents = frames.get("api_auth_incident", pl.DataFrame())
+    auth_statuses = {
+        str(row.get("current_status") or "UNKNOWN").upper()
+        for row in (auth_incidents.to_dicts() if not auth_incidents.is_empty() else [])
+    }
+    auth_recovered = not auth_statuses or auth_statuses == {"RECOVERED_24H_CLEAN"}
+    checks.append(
+        _check(
+            "api_auth_incident_recovered_24h",
+            "PASS" if auth_recovered else "FAIL",
+            f"incident_statuses={sorted(auth_statuses)};rows={auth_incidents.height}",
+            "all historical auth incidents RECOVERED_24H_CLEAN",
+            "V5/quant-lab",
+            "observe from last 401 until 24h clean" if not auth_recovered else "",
+        )
+    )
+    paper_freshness = frames.get("paper_runtime_freshness", pl.DataFrame())
+    freshness_statuses = {
+        str(row.get("status") or "FAIL").upper()
+        for row in (paper_freshness.to_dicts() if not paper_freshness.is_empty() else [])
+    }
+    runtime_status = (
+        "FAIL"
+        if not freshness_statuses or "FAIL" in freshness_statuses
+        else "WARNING"
+        if "WARNING" in freshness_statuses
+        else "PASS"
+    )
+    checks.append(
+        _check(
+            "paper_runtime_freshness_ok",
+            runtime_status,
+            f"statuses={sorted(freshness_statuses)};rows={paper_freshness.height}",
+            "runtime/registry/state fresh; event streams may be NO_NEW_EVENT_EXPECTED",
+            "V5/quant-lab",
+            "inspect stale open Paper positions" if runtime_status != "PASS" else "",
+        )
+    )
+    propagation = frames.get("paper_proposal_propagation_status", pl.DataFrame())
+    propagation_statuses = {
+        str(row.get("propagation_status") or "UNKNOWN").upper()
+        for row in (propagation.to_dicts() if not propagation.is_empty() else [])
+    }
+    current_proposal_count = frames.get(
+        "paper_strategy_proposals_current", pl.DataFrame()
+    ).height
+    propagation_ok = (
+        current_proposal_count == 0
+        or (
+            propagation.height == current_proposal_count
+            and propagation_statuses == {"ACCEPTED_TRACKER_ACTIVE"}
+        )
+    )
+    checks.append(
+        _check(
+            "paper_proposal_propagation_complete",
+            "PASS" if propagation_ok else "BLOCKED",
+            (
+                f"current_proposals={current_proposal_count};"
+                f"propagation_rows={propagation.height};statuses={sorted(propagation_statuses)}"
+            ),
+            "every Current Proposal has exact accepted ACK and active Tracker",
+            "V5/quant-lab",
+            "allow V5 to consume Current Proposals naturally" if not propagation_ok else "",
+        )
+    )
     checks.append(_github_ci_status_check(dict(pre_export_v5 or {})))
 
     v5_context = dict(pre_export_v5 or {})

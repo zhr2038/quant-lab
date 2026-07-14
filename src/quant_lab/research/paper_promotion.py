@@ -276,6 +276,9 @@ PAPER_COHORT_MANIFEST_SCHEMA = {
     "independent_closed_trade_count": pl.Int64,
     "horizon_variant_count": pl.Int64,
     "created_at": pl.Utf8,
+    "last_evaluated_at": pl.Utf8,
+    "last_evidence_at": pl.Utf8,
+    "evidence_signature": pl.Utf8,
 }
 
 
@@ -839,11 +842,21 @@ def _build_paper_cohort_manifest(
     created_at: datetime,
 ) -> pl.DataFrame:
     existing_rows = existing.to_dicts() if not existing.is_empty() else []
+    evaluated_at = created_at.astimezone(UTC).isoformat()
     proposal_rows = sorted(
         proposals.to_dicts() if not proposals.is_empty() else [],
         key=lambda row: _text(row.get("proposal_id")),
     )
     if not proposal_rows:
+        for row in existing_rows:
+            row["created_at"] = _text(row.get("created_at")) or _text(
+                row.get("admitted_at")
+            )
+            row["last_evaluated_at"] = evaluated_at
+            row["last_evidence_at"] = (
+                _text(row.get("last_evidence_at"))
+                or _text(row.get("created_at"))
+            )
         return _frame(existing_rows, PAPER_COHORT_MANIFEST_SCHEMA)
     proposal_ids = [_text(row.get("proposal_id")) for row in proposal_rows]
     proposal_id_set = set(proposal_ids)
@@ -925,8 +938,30 @@ def _build_paper_cohort_manifest(
             for row in proposal_rows
         }
     )
+    member_states = sorted(
+        (
+            proposal_id,
+            _text(by_proposal.get(proposal_id, {}).get("lifecycle_state")),
+            _bool(by_proposal.get(proposal_id, {}).get("current_ack_present")),
+            _bool(by_proposal.get(proposal_id, {}).get("current_tracker_present")),
+            _bool(by_proposal.get(proposal_id, {}).get("current_runtime_eligible")),
+        )
+        for proposal_id in proposal_ids
+    )
+    evidence_signature = hashlib.sha256(
+        safe_json_dumps(
+            {
+                **admission,
+                "raw_closed_trade_count": len(run_rows),
+                "independent_closed_trade_count": len(event_ids),
+                "horizon_variant_count": len(horizons),
+                "member_states": member_states,
+            }
+        ).encode()
+    ).hexdigest()
     latest = max(existing_rows, key=lambda row: _int(row.get("cohort_version")) or 0, default=None)
     if latest is not None and _text(latest.get("proposal_ids")) == signature:
+        previous_evidence_signature = _text(latest.get("evidence_signature"))
         latest["raw_closed_trade_count"] = len(run_rows)
         latest["independent_closed_trade_count"] = len(event_ids)
         latest["horizon_variant_count"] = len(horizons)
@@ -947,11 +982,25 @@ def _build_paper_cohort_manifest(
                 latest["observation_start_at"] = None
         else:
             latest["formal_observation_eligible"] = False
+        latest["created_at"] = _text(latest.get("created_at")) or _text(
+            latest.get("admitted_at")
+        )
+        latest["last_evaluated_at"] = evaluated_at
+        latest["evidence_signature"] = evidence_signature
+        if previous_evidence_signature != evidence_signature:
+            latest["last_evidence_at"] = evaluated_at
+        else:
+            latest["last_evidence_at"] = (
+                _text(latest.get("last_evidence_at"))
+                or _text(latest.get("created_at"))
+            )
         return _frame(existing_rows, PAPER_COHORT_MANIFEST_SCHEMA)
     for row in existing_rows:
+        row["last_evaluated_at"] = evaluated_at
         if _text(row.get("status")) not in {"FROZEN", "INVALID"}:
             row["status"] = "FROZEN"
             row["formal_observation_eligible"] = False
+            row["last_evidence_at"] = evaluated_at
     version = max((_int(row.get("cohort_version")) or 0 for row in existing_rows), default=0) + 1
     admitted = created_at.astimezone(UTC).isoformat()
     material = "|".join(
@@ -978,6 +1027,9 @@ def _build_paper_cohort_manifest(
             "independent_closed_trade_count": len(event_ids),
             "horizon_variant_count": len(horizons),
             "created_at": admitted,
+            "last_evaluated_at": evaluated_at,
+            "last_evidence_at": evaluated_at,
+            "evidence_signature": evidence_signature,
         }
     )
     return _frame(existing_rows, PAPER_COHORT_MANIFEST_SCHEMA)

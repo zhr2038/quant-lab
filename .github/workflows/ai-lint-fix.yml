@@ -1,0 +1,35 @@
+name: Fix AI research lint
+
+on:
+  push:
+    branches:
+      - agent/ai-research-nas-worker
+    paths:
+      - .github/workflows/ai-lint-fix.yml
+
+permissions:
+  contents: write
+
+jobs:
+  fix:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: agent/ai-research-nas-worker
+          fetch-depth: 0
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - name: Apply Ruff fixes
+        shell: bash
+        run: |
+          set -euo pipefail
+          python -m pip install -q ruff==0.12.0
+          python -m ruff check --fix src/quant_lab/ai_research
+          rm -f .github/workflows/ai-lint-fix.yml
+          git config user.name "quant-lab automation"
+          git config user.email "actions@users.noreply.github.com"
+          git add -A
+          git commit -m "Fix AI research lint"
+          git push origin HEAD:agent/ai-research-nas-worker

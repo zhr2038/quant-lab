@@ -1089,6 +1089,7 @@ def _build_paper_cohort_manifest(
             row["last_evidence_at"] = evaluated_at
     version = max((_int(row.get("cohort_version")) or 0 for row in existing_rows), default=0) + 1
     admitted = created_at.astimezone(UTC).isoformat()
+    new_cohort_observation_start_at = admitted if all_members_admitted else None
     material = "|".join(
         f"{row.get('proposal_id')}:{row.get('proposal_hash')}" for row in proposal_rows
     )
@@ -1104,7 +1105,7 @@ def _build_paper_cohort_manifest(
             "symbols": safe_json_dumps(sorted({_symbol(row) for row in proposal_rows})),
             "horizons": safe_json_dumps(horizons),
             "admitted_at": admitted,
-            "observation_start_at": observation_start_at,
+            "observation_start_at": new_cohort_observation_start_at,
             "status": "OBSERVING" if all_members_admitted else "FORMING",
             **admission,
             "raw_closed_trade_count": len(run_rows),

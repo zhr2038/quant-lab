@@ -591,6 +591,10 @@ def test_legacy_observing_cohort_is_invalidated_without_content_snapshot(
     assert cohorts.to_dicts()[0]["formal_observation_eligible"] is False
     assert cohorts.to_dicts()[1]["snapshot_all_members_matched"] is True
     assert cohorts.to_dicts()[1]["status"] == "OBSERVING"
+    assert cohorts.to_dicts()[1]["observation_start_at"] == cohorts.to_dicts()[1][
+        "admitted_at"
+    ]
+    assert cohorts.to_dicts()[1]["observation_start_at"] != "2026-07-12T01:05:00Z"
 
 
 def test_current_lifecycle_does_not_inherit_history() -> None:

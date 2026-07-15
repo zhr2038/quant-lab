@@ -11,6 +11,35 @@ from quant_lab.research.paper_promotion import (
     build_paper_strategy_pipeline_frames,
 )
 
+TEST_CONTENT_SNAPSHOT_ID = "proposal-content-snapshot:test-current"
+TEST_CONTENT_SNAPSHOT_SHA = "e" * 64
+
+
+def _proposal_frame(rows: list[dict[str, object]]) -> pl.DataFrame:
+    return pl.DataFrame(
+        [
+            {
+                **row,
+                "proposal_content_snapshot_id": TEST_CONTENT_SNAPSHOT_ID,
+                "proposal_content_snapshot_sha256": TEST_CONTENT_SNAPSHOT_SHA,
+            }
+            for row in rows
+        ]
+    )
+
+
+def _ack_frame(rows: list[dict[str, object]]) -> pl.DataFrame:
+    return pl.DataFrame(
+        [
+            {
+                **row,
+                "source_proposal_content_snapshot_id": TEST_CONTENT_SNAPSHOT_ID,
+                "source_proposal_content_snapshot_sha256": TEST_CONTENT_SNAPSHOT_SHA,
+            }
+            for row in rows
+        ]
+    )
+
 
 def _current_tracker(
     proposal_id: str,
@@ -32,12 +61,14 @@ def _current_tracker(
         "live_order_effect": "none",
         "created_at": created_at,
         "updated_at": created_at,
+        "source_proposal_content_snapshot_id": TEST_CONTENT_SNAPSHOT_ID,
+        "source_proposal_content_snapshot_sha256": TEST_CONTENT_SNAPSHOT_SHA,
     }
 
 
 def test_paper_strategy_pipeline_blocks_unacked_proposal() -> None:
     frames = build_paper_strategy_pipeline_frames(
-        proposals=pl.DataFrame(
+        proposals=_proposal_frame(
             [
                 {
                     "proposal_id": "SOL_USDT_F3_DOMINANT_ENTRY_PAPER_V1",
@@ -70,7 +101,7 @@ def test_pipeline_uses_only_current_structured_proposal_and_clears_old_reject() 
     current_id = "TAO_F3_F4_DEDUP_8H_PAPER:1.0.0:bbbbbbbbbbbb"
     old_id = "TAO_F3_F4_DEDUP_8H_PAPER:1.0.0:aaaaaaaaaaaa"
     frames = build_paper_strategy_pipeline_frames(
-        proposals=pl.DataFrame(
+        proposals=_proposal_frame(
             [
                 {
                     "proposal_id": current_id,
@@ -85,7 +116,7 @@ def test_pipeline_uses_only_current_structured_proposal_and_clears_old_reject() 
                 }
             ]
         ),
-        proposal_ack=pl.DataFrame(
+        proposal_ack=_ack_frame(
             [
                 {
                     "proposal_id": old_id,
@@ -152,7 +183,7 @@ def test_pipeline_uses_only_current_structured_proposal_and_clears_old_reject() 
 def test_pipeline_drops_same_id_ack_with_wrong_contract_hash() -> None:
     proposal_id = "TAO_F3_F4_DEDUP_8H_PAPER:1.0.0:bbbbbbbbbbbb"
     frames = build_paper_strategy_pipeline_frames(
-        proposals=pl.DataFrame(
+        proposals=_proposal_frame(
             [
                 {
                     "contract_version": "quant_lab.paper_strategy.v1",
@@ -167,7 +198,7 @@ def test_pipeline_drops_same_id_ack_with_wrong_contract_hash() -> None:
                 }
             ]
         ),
-        proposal_ack=pl.DataFrame(
+        proposal_ack=_ack_frame(
             [
                 {
                     "proposal_id": proposal_id,
@@ -208,7 +239,7 @@ def test_pipeline_drops_same_id_ack_with_wrong_contract_hash() -> None:
 def test_accepted_tracker_is_active_before_first_daily_observation() -> None:
     proposal_id = "TAO_F3_F4_DEDUP_8H_PAPER:1.0.0:cccccccccccc"
     frames = build_paper_strategy_pipeline_frames(
-        proposals=pl.DataFrame(
+        proposals=_proposal_frame(
             [
                 {
                     "proposal_id": proposal_id,
@@ -221,7 +252,7 @@ def test_accepted_tracker_is_active_before_first_daily_observation() -> None:
                 }
             ]
         ),
-        proposal_ack=pl.DataFrame(
+        proposal_ack=_ack_frame(
             [
                 {
                     "proposal_id": proposal_id,
@@ -262,7 +293,7 @@ def test_paper_strategy_pipeline_marks_unacked_tracker_evidence_not_effective() 
     proposal_id = "BNB_USDT_F3_DOMINANT_ENTRY_PAPER_V1"
     tracker_id = "BNB_F3_DOMINANT_ENTRY_PAPER_V1"
     frames = build_paper_strategy_pipeline_frames(
-        proposals=pl.DataFrame(
+        proposals=_proposal_frame(
             [
                 {
                     "proposal_id": proposal_id,
@@ -341,7 +372,7 @@ def test_paper_strategy_pipeline_marks_ready_only_after_ack_and_future_paper_evi
         )
 
     frames = build_paper_strategy_pipeline_frames(
-        proposals=pl.DataFrame(
+        proposals=_proposal_frame(
             [
                 {
                     "proposal_id": proposal_id,
@@ -352,7 +383,7 @@ def test_paper_strategy_pipeline_marks_ready_only_after_ack_and_future_paper_evi
                 }
             ]
         ),
-        proposal_ack=pl.DataFrame(
+        proposal_ack=_ack_frame(
             [
                 {
                     "proposal_id": proposal_id,
@@ -432,7 +463,7 @@ def test_paper_strategy_pipeline_marks_ready_only_after_ack_and_future_paper_evi
 
 def test_strategy_dimensional_cost_trust_separates_paper_from_canary() -> None:
     frames = build_paper_strategy_pipeline_frames(
-        proposals=pl.DataFrame(
+        proposals=_proposal_frame(
             [
                 {
                     "proposal_id": "DIMENSIONAL_COST_PAPER",
@@ -486,6 +517,10 @@ def test_build_and_publish_paper_strategy_pipeline_writes_gold_outputs(tmp_path)
     write_parquet_dataset(
         pl.DataFrame([proposal]), lake / "gold" / "paper_strategy_proposal"
     )
+    build_and_publish_paper_strategy_pipeline(lake, as_of_date="2026-06-30")
+    current_proposal = read_parquet_dataset(
+        lake / "gold" / "paper_strategy_proposals_current"
+    ).to_dicts()[0]
     write_parquet_dataset(
         pl.DataFrame(
             [
@@ -499,6 +534,12 @@ def test_build_and_publish_paper_strategy_pipeline_writes_gold_outputs(tmp_path)
                     "live_order_effect": "paper_only_no_live_order",
                     "bundle_sha256": "sha",
                     "ingest_ts": "2026-06-30T00:00:00Z",
+                    "source_proposal_content_snapshot_id": current_proposal[
+                        "proposal_content_snapshot_id"
+                    ],
+                    "source_proposal_content_snapshot_sha256": current_proposal[
+                        "proposal_content_snapshot_sha256"
+                    ],
                 }
             ]
         ),
@@ -514,6 +555,12 @@ def test_build_and_publish_paper_strategy_pipeline_writes_gold_outputs(tmp_path)
                         symbol="BNB-USDT",
                     ),
                     "tracker_id": "BNB_F3_DOMINANT_ENTRY_PAPER_V1",
+                    "source_proposal_content_snapshot_id": current_proposal[
+                        "proposal_content_snapshot_id"
+                    ],
+                    "source_proposal_content_snapshot_sha256": current_proposal[
+                        "proposal_content_snapshot_sha256"
+                    ],
                 }
             ]
         ),
@@ -593,7 +640,9 @@ def test_pipeline_reuses_persisted_proposal_when_current_advisory_is_empty(tmp_p
     )
     write_parquet_dataset(advisory, lake / "gold" / "strategy_opportunity_advisory")
     build_and_publish_paper_strategy_pipeline(lake, as_of_date="2026-07-10")
-    proposal = read_parquet_dataset(lake / "gold" / "paper_strategy_proposal").to_dicts()[0]
+    proposal = read_parquet_dataset(
+        lake / "gold" / "paper_strategy_proposals_current"
+    ).to_dicts()[0]
 
     write_parquet_dataset(pl.DataFrame(), lake / "gold" / "strategy_opportunity_advisory")
     write_parquet_dataset(
@@ -611,6 +660,12 @@ def test_pipeline_reuses_persisted_proposal_when_current_advisory_is_empty(tmp_p
                     "strategy_version": proposal["strategy_version"],
                     "contract_version": proposal["contract_version"],
                     "accepted_at": "2026-07-11T00:00:00Z",
+                    "source_proposal_content_snapshot_id": proposal[
+                        "proposal_content_snapshot_id"
+                    ],
+                    "source_proposal_content_snapshot_sha256": proposal[
+                        "proposal_content_snapshot_sha256"
+                    ],
                 }
             ]
         ),
@@ -626,6 +681,14 @@ def test_pipeline_reuses_persisted_proposal_when_current_advisory_is_empty(tmp_p
                     symbol="TRX/USDT",
                     created_at="2026-07-11T00:05:00Z",
                 )
+                | {
+                    "source_proposal_content_snapshot_id": proposal[
+                        "proposal_content_snapshot_id"
+                    ],
+                    "source_proposal_content_snapshot_sha256": proposal[
+                        "proposal_content_snapshot_sha256"
+                    ],
+                }
             ]
         ),
         lake / "silver" / "v5_paper_strategy_trackers_current",

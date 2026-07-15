@@ -425,6 +425,11 @@ class PaperStrategyAck(BaseModel):
         pattern=r"^(|[0-9a-f]{64})$",
     )
     source_proposal_snapshot_generated_at: datetime | None = None
+    source_proposal_content_snapshot_id: str = ""
+    source_proposal_content_snapshot_sha256: str = Field(
+        default="",
+        pattern=r"^(|[0-9a-f]{64})$",
+    )
 
     @model_validator(mode="after")
     def validate_safety(self) -> PaperStrategyAck:

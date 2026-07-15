@@ -10,7 +10,11 @@ from typing import Any
 import polars as pl
 
 from quant_lab.data.lake import read_parquet_dataset, write_parquet_dataset
-from quant_lab.paper.contracts import PaperStrategyAck, PaperStrategyProposal
+from quant_lab.paper.contracts import (
+    PAPER_STRATEGY_CONTRACT_VERSION,
+    PaperStrategyAck,
+    PaperStrategyProposal,
+)
 
 PAPER_STRATEGY_PROPOSAL_DATASET = Path("gold") / "paper_strategy_proposal"
 PAPER_STRATEGY_PROPOSALS_CURRENT_DATASET = (
@@ -22,6 +26,7 @@ PAPER_STRATEGY_PROPOSAL_SNAPSHOT_DATASET = (
 PAPER_STRATEGY_ACK_DATASET = Path("silver") / "v5_paper_strategy_proposal_ack"
 PAPER_STRATEGY_PROMOTION_DATASET = Path("gold") / "paper_strategy_promotion_gate"
 STRATEGY_COST_TRUST_DATASET = Path("gold") / "strategy_cost_trust"
+PROPOSAL_COMPILER_VERSION = "quant_lab.paper_strategy_proposal_compiler.v1"
 
 
 def read_proposals(lake_root: str | Path) -> list[dict[str, Any]]:
@@ -101,45 +106,97 @@ def build_canonical_proposal_snapshot(
     )
     proposal_ids = [proposal_id for proposal_id, _proposal_hash in members]
     proposal_hashes = [proposal_hash for _proposal_id, proposal_hash in members]
+    contract_versions = sorted(
+        {
+            str(row.get("contract_version") or "").strip()
+            for row in (proposals.to_dicts() if not proposals.is_empty() else [])
+        }
+        - {""}
+    )
+    if len(contract_versions) > 1:
+        raise ValueError("proposal_snapshot_contract_version_mismatch")
+    proposal_contract_version = (
+        contract_versions[0]
+        if contract_versions
+        else PAPER_STRATEGY_CONTRACT_VERSION
+    )
+    content_material = {
+        "contract_version": proposal_contract_version,
+        "proposal_ids": sorted(proposal_ids),
+        "proposal_hashes": sorted(proposal_hashes),
+        "proposal_count": len(members),
+    }
+    content_snapshot_sha = hashlib.sha256(
+        json.dumps(
+            content_material, sort_keys=True, separators=(",", ":")
+        ).encode("utf-8")
+    ).hexdigest()
+    content_snapshot_id = f"proposal-content-snapshot:{content_snapshot_sha[:24]}"
     material = {
+        **content_material,
         "proposal_ids": proposal_ids,
         "proposal_hashes": proposal_hashes,
-        "proposal_count": len(members),
         "source_quant_lab_commit": str(source_quant_lab_commit or "").strip(),
     }
     snapshot_sha = hashlib.sha256(
         json.dumps(material, sort_keys=True, separators=(",", ":")).encode("utf-8")
     ).hexdigest()
     snapshot_id = f"proposal-snapshot:{snapshot_sha[:24]}"
-    snapshot_generated_at = generated.isoformat()
+    generated_at_text = generated.isoformat()
+    snapshot_generated_at = generated_at_text
     if prior_snapshot is not None and not prior_snapshot.is_empty():
         prior = prior_snapshot.tail(1).to_dicts()[0]
-        if str(prior.get("proposal_snapshot_sha256") or "").lower() == snapshot_sha:
+        prior_content_sha = str(
+            prior.get("proposal_content_snapshot_sha256")
+            or prior.get("proposal_snapshot_sha256")
+            or ""
+        ).lower()
+        if prior_content_sha == content_snapshot_sha:
             snapshot_generated_at = str(prior.get("snapshot_generated_at") or "").strip()
             if not snapshot_generated_at:
-                snapshot_generated_at = generated.isoformat()
+                snapshot_generated_at = generated_at_text
     metadata = {
         "proposal_snapshot_id": snapshot_id,
         "proposal_snapshot_sha256": snapshot_sha,
+        "proposal_content_snapshot_id": content_snapshot_id,
+        "proposal_content_snapshot_sha256": content_snapshot_sha,
         "snapshot_generated_at": snapshot_generated_at,
+        "generated_at": generated_at_text,
         "proposal_count": len(members),
         "proposal_ids": proposal_ids,
         "proposal_hashes": proposal_hashes,
         "source_quant_lab_commit": str(source_quant_lab_commit or "").strip(),
+        "proposal_compiler_version": PROPOSAL_COMPILER_VERSION,
+        "proposal_contract_version": proposal_contract_version,
+        "quant_lab_contract_version": proposal_contract_version,
     }
     if proposals.is_empty():
         enriched = proposals.clone()
         for name in (
             "proposal_snapshot_id",
             "proposal_snapshot_sha256",
+            "proposal_content_snapshot_id",
+            "proposal_content_snapshot_sha256",
             "snapshot_generated_at",
+            "source_quant_lab_commit",
+            "proposal_compiler_version",
+            "proposal_contract_version",
         ):
             enriched = enriched.with_columns(pl.lit(None, dtype=pl.Utf8).alias(name))
     else:
         enriched = proposals.with_columns(
             pl.lit(snapshot_id).alias("proposal_snapshot_id"),
             pl.lit(snapshot_sha).alias("proposal_snapshot_sha256"),
+            pl.lit(content_snapshot_id).alias("proposal_content_snapshot_id"),
+            pl.lit(content_snapshot_sha).alias(
+                "proposal_content_snapshot_sha256"
+            ),
             pl.lit(snapshot_generated_at).alias("snapshot_generated_at"),
+            pl.lit(str(source_quant_lab_commit or "").strip()).alias(
+                "source_quant_lab_commit"
+            ),
+            pl.lit(PROPOSAL_COMPILER_VERSION).alias("proposal_compiler_version"),
+            pl.lit(proposal_contract_version).alias("proposal_contract_version"),
         )
     return enriched, metadata
 
@@ -256,11 +313,23 @@ def record_ack(lake_root: str | Path, ack: PaperStrategyAck) -> tuple[dict[str, 
         raise ValueError("proposal_hash_mismatch")
     current_snapshot_id = str(proposal.get("proposal_snapshot_id") or "")
     current_snapshot_sha = str(proposal.get("proposal_snapshot_sha256") or "").lower()
+    current_content_snapshot_id = str(
+        proposal.get("proposal_content_snapshot_id") or ""
+    )
+    current_content_snapshot_sha = str(
+        proposal.get("proposal_content_snapshot_sha256") or ""
+    ).lower()
     if ack.source_proposal_snapshot_id and (
         ack.source_proposal_snapshot_id != current_snapshot_id
         or ack.source_proposal_snapshot_sha256.lower() != current_snapshot_sha
     ):
         raise ValueError("proposal_snapshot_mismatch")
+    if ack.source_proposal_content_snapshot_id and (
+        ack.source_proposal_content_snapshot_id != current_content_snapshot_id
+        or ack.source_proposal_content_snapshot_sha256.lower()
+        != current_content_snapshot_sha
+    ):
+        raise ValueError("proposal_content_snapshot_mismatch")
     frame = read_parquet_dataset(root / PAPER_STRATEGY_ACK_DATASET)
     rows = frame.to_dicts() if not frame.is_empty() else []
     for row in rows:

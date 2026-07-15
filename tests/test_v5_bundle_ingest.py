@@ -1,5 +1,6 @@
 import csv
 import gzip
+import hashlib
 import json
 import zipfile
 from io import StringIO
@@ -526,6 +527,18 @@ def test_ingest_and_export_v5_profitability_diagnostics_are_idempotent(tmp_path)
 def test_ingest_and_export_generic_paper_runtime_contract(tmp_path):
     proposal_id = "TRX_ALT_IMPULSE_48H_PAPER_V1"
     tracker_id = f"paper:{proposal_id}"
+    content_material = {
+        "contract_version": "quant_lab.paper_strategy.v1",
+        "proposal_ids": [proposal_id],
+        "proposal_hashes": ["hash-trx"],
+        "proposal_count": 1,
+    }
+    content_snapshot_sha = hashlib.sha256(
+        json.dumps(
+            content_material, sort_keys=True, separators=(",", ":")
+        ).encode()
+    ).hexdigest()
+    content_snapshot_id = f"proposal-content-snapshot:{content_snapshot_sha[:24]}"
     bundle = make_tar(
         tmp_path / "v5_live_followup_bundle_20260711T040000Z.tar.gz",
         {
@@ -533,35 +546,47 @@ def test_ingest_and_export_generic_paper_runtime_contract(tmp_path):
                 "proposal_id,proposal_hash,paper_tracker_id,tracker_id,accepted,"
                 "accepted_at,paper_only,recommended_mode,symbol,strategy_candidate,"
                 "strategy_version,reject_reason,contract_version,rules_locked,"
-                "live_order_effect,schema_version\n"
+                "live_order_effect,source_proposal_content_snapshot_id,"
+                "source_proposal_content_snapshot_sha256,schema_version\n"
                 f"{proposal_id},hash-trx,{tracker_id},{tracker_id},true,"
                 "2026-07-11T03:00:00Z,true,paper,TRX/USDT,alt_impulse,1,,"
-                "quant-lab.paper-strategy.v1,true,none,v5.generic_paper_runtime.v1\n"
+                "quant-lab.paper-strategy.v1,true,none,"
+                f"{content_snapshot_id},{content_snapshot_sha},"
+                "v5.generic_paper_runtime.v1\n"
             ),
             "summaries/paper_strategy_proposal_ack_current.csv": (
                 "proposal_id,proposal_hash,paper_tracker_id,tracker_id,accepted,"
                 "accepted_at,paper_only,recommended_mode,symbol,strategy_candidate,"
                 "strategy_version,reject_reason,contract_version,rules_locked,"
-                "live_order_effect,schema_version\n"
+                "live_order_effect,source_proposal_content_snapshot_id,"
+                "source_proposal_content_snapshot_sha256,schema_version\n"
                 f"{proposal_id},hash-trx,{tracker_id},{tracker_id},true,"
                 "2026-07-11T03:00:00Z,true,paper,TRX/USDT,alt_impulse,1,,"
-                "quant-lab.paper-strategy.v1,true,none,v5.generic_paper_runtime.v1\n"
+                "quant-lab.paper-strategy.v1,true,none,"
+                f"{content_snapshot_id},{content_snapshot_sha},"
+                "v5.generic_paper_runtime.v1\n"
             ),
             "summaries/paper_strategy_registry.csv": (
                 "schema_version,proposal_id,proposal_hash,tracker_id,strategy_id,"
                 "strategy_version,strategy_family,symbol,timeframe,state,rules_locked,"
-                "paper_only,live_order_effect,created_at,updated_at\n"
+                "paper_only,live_order_effect,created_at,updated_at,"
+                "source_proposal_content_snapshot_id,"
+                "source_proposal_content_snapshot_sha256\n"
                 f"v5.generic_paper_runtime.v1,{proposal_id},hash-trx,{tracker_id},"
                 "trx_alt_impulse,1,alt_impulse,TRX/USDT,1h,WAITING_SIGNAL,true,true,"
-                "none,2026-07-11T03:00:00Z,2026-07-11T04:00:00Z\n"
+                "none,2026-07-11T03:00:00Z,2026-07-11T04:00:00Z,"
+                f"{content_snapshot_id},{content_snapshot_sha}\n"
             ),
             "summaries/paper_strategy_trackers_current.csv": (
                 "schema_version,proposal_id,proposal_hash,tracker_id,strategy_id,"
                 "strategy_version,strategy_family,symbol,timeframe,state,rules_locked,"
-                "paper_only,live_order_effect,created_at,updated_at\n"
+                "paper_only,live_order_effect,created_at,updated_at,"
+                "source_proposal_content_snapshot_id,"
+                "source_proposal_content_snapshot_sha256\n"
                 f"v5.generic_paper_runtime.v1,{proposal_id},hash-trx,{tracker_id},"
                 "trx_alt_impulse,1,alt_impulse,TRX/USDT,1h,WAITING_SIGNAL,true,true,"
-                "none,2026-07-11T03:00:00Z,2026-07-11T04:00:00Z\n"
+                "none,2026-07-11T03:00:00Z,2026-07-11T04:00:00Z,"
+                f"{content_snapshot_id},{content_snapshot_sha}\n"
             ),
             "summaries/paper_strategy_state.csv": (
                 "schema_version,tracker_id,proposal_id,strategy_id,symbol,state,"
@@ -651,6 +676,8 @@ def test_ingest_and_export_generic_paper_runtime_contract(tmp_path):
                     "canary_enabled": False,
                     "proposal_snapshot_id": "proposal-snapshot:test-runtime",
                     "proposal_snapshot_sha256": "a" * 64,
+                    "proposal_content_snapshot_id": content_snapshot_id,
+                    "proposal_content_snapshot_sha256": content_snapshot_sha,
                     "proposal_snapshot_generated_at": "2026-07-11T03:00:00Z",
                     "proposal_snapshot_fetched_at": "2026-07-11T03:05:00Z",
                     "proposal_snapshot_count": 1,

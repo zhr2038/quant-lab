@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 import json
 from datetime import UTC, datetime
 
@@ -21,7 +22,7 @@ def _proposal(
     proposal_hash: str,
     horizon: int,
 ) -> dict[str, object]:
-    return {
+    proposal = {
         "contract_version": "quant_lab.paper_strategy.v1",
         "proposal_id": f"{strategy_id}:1.0.0:{proposal_hash[:12]}",
         "proposal_hash": proposal_hash,
@@ -38,10 +39,36 @@ def _proposal(
         "exit_rule": json.dumps({"operator": "max_holding_bars", "value": horizon}),
         "created_at": "2026-07-12T00:00:00Z",
     }
+    snapshot_id, snapshot_sha = _content_snapshot_binding([proposal])
+    proposal["proposal_content_snapshot_id"] = snapshot_id
+    proposal["proposal_content_snapshot_sha256"] = snapshot_sha
+    return proposal
 
 
-def _ack(proposal: dict[str, object]) -> dict[str, object]:
+def _content_snapshot_binding(
+    proposals: list[dict[str, object]],
+) -> tuple[str, str]:
+    material = {
+        "contract_version": "quant_lab.paper_strategy.v1",
+        "proposal_ids": sorted(str(row["proposal_id"]) for row in proposals),
+        "proposal_hashes": sorted(str(row["proposal_hash"]) for row in proposals),
+        "proposal_count": len(proposals),
+    }
+    digest = hashlib.sha256(
+        json.dumps(material, sort_keys=True, separators=(",", ":")).encode()
+    ).hexdigest()
+    return f"proposal-content-snapshot:{digest[:24]}", digest
+
+
+def _ack(
+    proposal: dict[str, object],
+    *,
+    snapshot_proposals: list[dict[str, object]] | None = None,
+) -> dict[str, object]:
     proposal_id = str(proposal["proposal_id"])
+    snapshot_id, snapshot_sha = _content_snapshot_binding(
+        snapshot_proposals or [proposal]
+    )
     return {
         "proposal_id": proposal_id,
         "proposal_hash": proposal["proposal_hash"],
@@ -54,6 +81,8 @@ def _ack(proposal: dict[str, object]) -> dict[str, object]:
         "strategy_version": "1.0.0",
         "symbol": "TRX/USDT",
         "accepted_at": "2026-07-12T01:00:00Z",
+        "source_proposal_content_snapshot_id": snapshot_id,
+        "source_proposal_content_snapshot_sha256": snapshot_sha,
     }
 
 
@@ -61,8 +90,12 @@ def _tracker(
     proposal: dict[str, object],
     *,
     created_at: str = "2026-07-12T01:05:00Z",
+    snapshot_proposals: list[dict[str, object]] | None = None,
 ) -> dict[str, object]:
     proposal_id = str(proposal["proposal_id"])
+    snapshot_id, snapshot_sha = _content_snapshot_binding(
+        snapshot_proposals or [proposal]
+    )
     return {
         "proposal_id": proposal_id,
         "proposal_hash": proposal["proposal_hash"],
@@ -83,6 +116,8 @@ def _tracker(
         "supersession_status": "CURRENT_ACTIVE",
         "new_entry_allowed": True,
         "exit_allowed": True,
+        "source_proposal_content_snapshot_id": snapshot_id,
+        "source_proposal_content_snapshot_sha256": snapshot_sha,
     }
 
 
@@ -477,17 +512,27 @@ def test_publish_separates_current_history_and_freezes_cohort(tmp_path) -> None:
     assert cohorts.to_dicts()[1]["status"] == "FORMING"
     assert cohorts.to_dicts()[1]["observation_start_at"] is None
 
-    second_ack = _ack(second)
+    current_snapshot = [first, second]
+    second_ack = _ack(second, snapshot_proposals=current_snapshot)
     second_ack["accepted_at"] = "2026-07-15T03:00:00Z"
     write_parquet_dataset(
-        pl.DataFrame([_ack(first), second_ack]),
+        pl.DataFrame(
+            [
+                _ack(first, snapshot_proposals=current_snapshot),
+                second_ack,
+            ]
+        ),
         lake / "silver/v5_paper_strategy_proposal_ack_current",
     )
     write_parquet_dataset(
         pl.DataFrame(
             [
-                _tracker(first),
-                _tracker(second, created_at="2026-07-15T03:05:00Z"),
+                _tracker(first, snapshot_proposals=current_snapshot),
+                _tracker(
+                    second,
+                    created_at="2026-07-15T03:05:00Z",
+                    snapshot_proposals=current_snapshot,
+                ),
             ]
         ),
         lake / "silver/v5_paper_strategy_trackers_current",
@@ -499,6 +544,53 @@ def test_publish_separates_current_history_and_freezes_cohort(tmp_path) -> None:
     assert admitted.to_dicts()[1]["status"] == "OBSERVING"
     assert admitted.to_dicts()[1]["formal_observation_eligible"] is True
     assert admitted.to_dicts()[1]["observation_start_at"] == "2026-07-15T03:05:00Z"
+
+
+def test_legacy_observing_cohort_is_invalidated_without_content_snapshot(
+    tmp_path,
+) -> None:
+    lake = tmp_path / "lake"
+    proposal = _proposal(
+        "TRX_CONTENT_BOUND_PAPER", proposal_hash="9" * 64, horizon=8
+    )
+    write_parquet_dataset(
+        pl.DataFrame([proposal]), lake / "gold/paper_strategy_proposal"
+    )
+    write_parquet_dataset(
+        pl.DataFrame([_ack(proposal)]),
+        lake / "silver/v5_paper_strategy_proposal_ack_current",
+    )
+    write_parquet_dataset(
+        pl.DataFrame([_tracker(proposal)]),
+        lake / "silver/v5_paper_strategy_trackers_current",
+    )
+    write_parquet_dataset(
+        pl.DataFrame(
+            [
+                {
+                    "cohort_id": "paper-cohort-legacy",
+                    "cohort_version": 2,
+                    "proposal_ids": json.dumps([proposal["proposal_id"]]),
+                    "proposal_hashes": json.dumps([proposal["proposal_hash"]]),
+                    "status": "OBSERVING",
+                    "formal_observation_eligible": True,
+                    "observation_start_at": "2026-07-12T01:05:00Z",
+                }
+            ]
+        ),
+        lake / "gold/paper_cohort_manifest",
+    )
+
+    build_and_publish_paper_strategy_pipeline(lake, as_of_date="2026-07-15")
+    cohorts = read_parquet_dataset(lake / "gold/paper_cohort_manifest").sort(
+        "cohort_version"
+    )
+
+    assert cohorts.height == 2
+    assert cohorts.to_dicts()[0]["status"] == "INVALIDATED_SNAPSHOT_MISMATCH"
+    assert cohorts.to_dicts()[0]["formal_observation_eligible"] is False
+    assert cohorts.to_dicts()[1]["snapshot_all_members_matched"] is True
+    assert cohorts.to_dicts()[1]["status"] == "OBSERVING"
 
 
 def test_current_lifecycle_does_not_inherit_history() -> None:

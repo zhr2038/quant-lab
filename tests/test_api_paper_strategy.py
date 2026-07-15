@@ -8,6 +8,7 @@ from quant_lab.api.main import create_app
 from quant_lab.data.lake import write_parquet_dataset
 from quant_lab.paper.contracts import PaperStrategyAck, PaperStrategyProposal
 from quant_lab.paper.service import (
+    build_canonical_proposal_snapshot,
     publish_canonical_proposal_snapshot,
     publish_proposals,
     read_proposals,
@@ -50,11 +51,17 @@ def test_paper_api_gets_and_ack_is_disabled_by_default(monkeypatch, tmp_path):
     payload = response.json()
     assert payload["proposal_snapshot_id"].startswith("proposal-snapshot:")
     assert len(payload["proposal_snapshot_sha256"]) == 64
+    assert payload["proposal_content_snapshot_id"].startswith(
+        "proposal-content-snapshot:"
+    )
+    assert len(payload["proposal_content_snapshot_sha256"]) == 64
     assert payload["snapshot_generated_at"] == "2026-07-10T00:30:00+00:00"
     assert payload["proposal_count"] == 1
     assert payload["proposal_ids"] == [proposal.proposal_id]
     assert payload["proposal_hashes"] == [proposal.proposal_hash]
     assert payload["source_quant_lab_commit"] == "a" * 40
+    assert payload["proposal_contract_version"] == "quant_lab.paper_strategy.v1"
+    assert payload["proposal_compiler_version"]
     assert payload["proposals"][0]["proposal_snapshot_id"] == payload[
         "proposal_snapshot_id"
     ]
@@ -159,7 +166,7 @@ def test_canonical_proposal_snapshot_is_stable_for_identical_members(tmp_path):
         lake,
         published,
         generated_at=datetime(2026, 7, 10, tzinfo=UTC),
-        source_quant_lab_commit="a" * 40,
+        source_quant_lab_commit="b" * 40,
     )
     second_frame, second = publish_canonical_proposal_snapshot(
         lake,
@@ -168,12 +175,49 @@ def test_canonical_proposal_snapshot_is_stable_for_identical_members(tmp_path):
         source_quant_lab_commit="a" * 40,
     )
 
-    assert second["proposal_snapshot_id"] == first["proposal_snapshot_id"]
-    assert second["proposal_snapshot_sha256"] == first["proposal_snapshot_sha256"]
+    assert second["proposal_snapshot_id"] != first["proposal_snapshot_id"]
+    assert second["proposal_snapshot_sha256"] != first["proposal_snapshot_sha256"]
+    assert second["proposal_content_snapshot_id"] == first[
+        "proposal_content_snapshot_id"
+    ]
+    assert second["proposal_content_snapshot_sha256"] == first[
+        "proposal_content_snapshot_sha256"
+    ]
     assert second["snapshot_generated_at"] == first["snapshot_generated_at"]
-    assert first_frame["proposal_snapshot_id"].to_list() == second_frame[
-        "proposal_snapshot_id"
+    assert first_frame["proposal_content_snapshot_id"].to_list() == second_frame[
+        "proposal_content_snapshot_id"
     ].to_list()
+
+
+def test_proposal_content_snapshot_changes_for_membership_hash_or_contract() -> None:
+    proposal = _proposal().model_dump(mode="json")
+    base = pl.DataFrame([proposal], infer_schema_length=None)
+    _frame, initial = build_canonical_proposal_snapshot(
+        base,
+        generated_at=datetime(2026, 7, 10, tzinfo=UTC),
+        source_quant_lab_commit="a" * 40,
+    )
+    changed_hash = base.with_columns(pl.lit("f" * 64).alias("proposal_hash"))
+    _frame, hash_changed = build_canonical_proposal_snapshot(
+        changed_hash,
+        generated_at=datetime(2026, 7, 10, tzinfo=UTC),
+        source_quant_lab_commit="a" * 40,
+    )
+    changed_contract = base.with_columns(
+        pl.lit("quant_lab.paper_strategy.v2").alias("contract_version")
+    )
+    _frame, contract_changed = build_canonical_proposal_snapshot(
+        changed_contract,
+        generated_at=datetime(2026, 7, 10, tzinfo=UTC),
+        source_quant_lab_commit="a" * 40,
+    )
+
+    assert hash_changed["proposal_content_snapshot_sha256"] != initial[
+        "proposal_content_snapshot_sha256"
+    ]
+    assert contract_changed["proposal_content_snapshot_sha256"] != initial[
+        "proposal_content_snapshot_sha256"
+    ]
 
 
 def test_paper_status_surfaces_effective_promotion_lifecycle(monkeypatch, tmp_path):

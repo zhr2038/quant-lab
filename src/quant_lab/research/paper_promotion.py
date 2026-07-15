@@ -119,6 +119,15 @@ PAPER_STRATEGY_REGISTRY_SCHEMA = {
     "strategy_family": pl.Utf8,
     "proposal_id": pl.Utf8,
     "proposal_hash": pl.Utf8,
+    "proposal_content_snapshot_id": pl.Utf8,
+    "proposal_content_snapshot_sha256": pl.Utf8,
+    "ack_source_content_snapshot_id": pl.Utf8,
+    "ack_source_content_snapshot_sha256": pl.Utf8,
+    "tracker_source_content_snapshot_id": pl.Utf8,
+    "tracker_source_content_snapshot_sha256": pl.Utf8,
+    "ack_snapshot_match": pl.Boolean,
+    "tracker_snapshot_match": pl.Boolean,
+    "snapshot_binding_status": pl.Utf8,
     "paper_tracker_id": pl.Utf8,
     "symbol": pl.Utf8,
     "timeframe": pl.Utf8,
@@ -263,7 +272,13 @@ PAPER_COHORT_MANIFEST_SCHEMA = {
     "admitted_at": pl.Utf8,
     "observation_start_at": pl.Utf8,
     "status": pl.Utf8,
+    "proposal_content_snapshot_id": pl.Utf8,
+    "proposal_content_snapshot_sha256": pl.Utf8,
     "proposal_count": pl.Int64,
+    "ack_snapshot_match_count": pl.Int64,
+    "tracker_snapshot_match_count": pl.Int64,
+    "snapshot_all_members_matched": pl.Boolean,
+    "snapshot_mismatch_proposal_ids": pl.Utf8,
     "accepted_ack_count": pl.Int64,
     "active_tracker_count": pl.Int64,
     "current_runtime_eligible_count": pl.Int64,
@@ -861,7 +876,22 @@ def _build_paper_cohort_manifest(
         return _frame(existing_rows, PAPER_COHORT_MANIFEST_SCHEMA)
     proposal_ids = [_text(row.get("proposal_id")) for row in proposal_rows]
     proposal_id_set = set(proposal_ids)
+    proposal_hashes = [_text(row.get("proposal_hash")) for row in proposal_rows]
     signature = safe_json_dumps(proposal_ids)
+    hash_signature = safe_json_dumps(proposal_hashes)
+    content_snapshot_ids = {
+        _text(row.get("proposal_content_snapshot_id")) for row in proposal_rows
+    } - {""}
+    content_snapshot_shas = {
+        _text(row.get("proposal_content_snapshot_sha256")).lower()
+        for row in proposal_rows
+    } - {""}
+    proposal_content_snapshot_id = (
+        next(iter(content_snapshot_ids)) if len(content_snapshot_ids) == 1 else ""
+    )
+    proposal_content_snapshot_sha = (
+        next(iter(content_snapshot_shas)) if len(content_snapshot_shas) == 1 else ""
+    )
     registry_rows = [
         row
         for row in (registry.to_dicts() if not registry.is_empty() else [])
@@ -888,6 +918,29 @@ def _build_paper_cohort_manifest(
         for proposal_id in proposal_ids
         if _bool(by_proposal.get(proposal_id, {}).get("current_runtime_eligible"))
     )
+    ack_snapshot_match_ids = sorted(
+        proposal_id
+        for proposal_id in proposal_ids
+        if _bool(by_proposal.get(proposal_id, {}).get("ack_snapshot_match"))
+    )
+    tracker_snapshot_match_ids = sorted(
+        proposal_id
+        for proposal_id in proposal_ids
+        if _bool(by_proposal.get(proposal_id, {}).get("tracker_snapshot_match"))
+    )
+    snapshot_mismatch_ids = sorted(
+        proposal_id
+        for proposal_id in proposal_ids
+        if proposal_id not in ack_snapshot_match_ids
+        or proposal_id not in tracker_snapshot_match_ids
+    )
+    snapshot_all_members_matched = bool(
+        proposal_content_snapshot_id
+        and proposal_content_snapshot_sha
+        and len(ack_snapshot_match_ids) == len(proposal_ids)
+        and len(tracker_snapshot_match_ids) == len(proposal_ids)
+        and not snapshot_mismatch_ids
+    )
     ack_missing_ids = sorted(set(proposal_ids) - set(accepted_ack_ids))
     tracker_missing_ids = sorted(set(proposal_ids) - set(active_tracker_ids))
     identity_conflict_ids = sorted(
@@ -899,6 +952,7 @@ def _build_paper_cohort_manifest(
     all_members_admitted = (
         len(runtime_eligible_ids) == len(proposal_ids)
         and not identity_conflict_ids
+        and snapshot_all_members_matched
     )
     activation_times = [
         _text(by_proposal[proposal_id].get("current_activation_at"))
@@ -911,7 +965,13 @@ def _build_paper_cohort_manifest(
         else None
     )
     admission = {
+        "proposal_content_snapshot_id": proposal_content_snapshot_id,
+        "proposal_content_snapshot_sha256": proposal_content_snapshot_sha,
         "proposal_count": len(proposal_ids),
+        "ack_snapshot_match_count": len(ack_snapshot_match_ids),
+        "tracker_snapshot_match_count": len(tracker_snapshot_match_ids),
+        "snapshot_all_members_matched": snapshot_all_members_matched,
+        "snapshot_mismatch_proposal_ids": safe_json_dumps(snapshot_mismatch_ids),
         "accepted_ack_count": len(accepted_ack_ids),
         "active_tracker_count": len(active_tracker_ids),
         "current_runtime_eligible_count": len(runtime_eligible_ids),
@@ -961,13 +1021,26 @@ def _build_paper_cohort_manifest(
         ).encode()
     ).hexdigest()
     latest = max(existing_rows, key=lambda row: _int(row.get("cohort_version")) or 0, default=None)
-    if latest is not None and _text(latest.get("proposal_ids")) == signature:
+    latest_matches_content = bool(
+        latest is not None
+        and _text(latest.get("proposal_ids")) == signature
+        and _text(latest.get("proposal_hashes")) == hash_signature
+        and _text(latest.get("proposal_content_snapshot_id"))
+        == proposal_content_snapshot_id
+        and _text(latest.get("proposal_content_snapshot_sha256")).lower()
+        == proposal_content_snapshot_sha
+    )
+    if latest_matches_content:
         previous_evidence_signature = _text(latest.get("evidence_signature"))
         latest["raw_closed_trade_count"] = len(run_rows)
         latest["independent_closed_trade_count"] = len(event_ids)
         latest["horizon_variant_count"] = len(horizons)
         latest.update(admission)
-        if _text(latest.get("status")) not in {"FROZEN", "INVALID"}:
+        if _text(latest.get("status")) not in {
+            "FROZEN",
+            "INVALID",
+            "INVALIDATED_SNAPSHOT_MISMATCH",
+        }:
             if all_members_admitted:
                 latest["status"] = (
                     "REVIEW_READY"
@@ -998,8 +1071,20 @@ def _build_paper_cohort_manifest(
         return _frame(existing_rows, PAPER_COHORT_MANIFEST_SCHEMA)
     for row in existing_rows:
         row["last_evaluated_at"] = evaluated_at
-        if _text(row.get("status")) not in {"FROZEN", "INVALID"}:
-            row["status"] = "FROZEN"
+        if _text(row.get("status")) not in {
+            "FROZEN",
+            "INVALID",
+            "INVALIDATED_SNAPSHOT_MISMATCH",
+        }:
+            row_snapshot_sha = _text(
+                row.get("proposal_content_snapshot_sha256")
+            ).lower()
+            row["status"] = (
+                "INVALIDATED_SNAPSHOT_MISMATCH"
+                if not row_snapshot_sha
+                and _text(row.get("proposal_ids")) == signature
+                else "FROZEN"
+            )
             row["formal_observation_eligible"] = False
             row["last_evidence_at"] = evaluated_at
     version = max((_int(row.get("cohort_version")) or 0 for row in existing_rows), default=0) + 1
@@ -1012,9 +1097,7 @@ def _build_paper_cohort_manifest(
             "cohort_id": f"paper-cohort-{hashlib.sha256(material.encode()).hexdigest()[:16]}",
             "cohort_version": version,
             "proposal_ids": signature,
-            "proposal_hashes": safe_json_dumps(
-                [_text(row.get("proposal_hash")) for row in proposal_rows]
-            ),
+            "proposal_hashes": hash_signature,
             "strategy_ids": safe_json_dumps(
                 [_text(row.get("strategy_id")) for row in proposal_rows]
             ),
@@ -1374,8 +1457,43 @@ def _registry_row(
     runs: list[dict[str, Any]],
     created_at: str,
 ) -> dict[str, Any]:
-    current_ack_present = bool(ack)
-    current_tracker_present = bool(tracker)
+    proposal_content_snapshot_id = _text(
+        proposal.get("proposal_content_snapshot_id")
+    )
+    proposal_content_snapshot_sha = _text(
+        proposal.get("proposal_content_snapshot_sha256")
+    ).lower()
+    ack_source_content_snapshot_id = _text(
+        ack.get("source_proposal_content_snapshot_id")
+    )
+    ack_source_content_snapshot_sha = _text(
+        ack.get("source_proposal_content_snapshot_sha256")
+    ).lower()
+    tracker_source_content_snapshot_id = _text(
+        tracker.get("source_proposal_content_snapshot_id")
+    )
+    tracker_source_content_snapshot_sha = _text(
+        tracker.get("source_proposal_content_snapshot_sha256")
+    ).lower()
+    ack_snapshot_match = bool(
+        ack
+        and proposal_content_snapshot_id
+        and proposal_content_snapshot_sha
+        and ack_source_content_snapshot_id == proposal_content_snapshot_id
+        and ack_source_content_snapshot_sha == proposal_content_snapshot_sha
+    )
+    tracker_snapshot_match = bool(
+        tracker
+        and proposal_content_snapshot_id
+        and proposal_content_snapshot_sha
+        and tracker_source_content_snapshot_id == proposal_content_snapshot_id
+        and tracker_source_content_snapshot_sha == proposal_content_snapshot_sha
+    )
+    current_ack_present = bool(ack and ack_snapshot_match)
+    current_tracker_present = bool(tracker and tracker_snapshot_match)
+    historical_snapshot_only = bool(
+        (ack and not ack_snapshot_match) or (tracker and not tracker_snapshot_match)
+    )
     accepted = current_ack_present and _bool(ack.get("accepted")) is True
     reject_reason = "" if accepted is True else _text(ack.get("reject_reason"))
     proposal_id = (
@@ -1405,7 +1523,9 @@ def _registry_row(
         and _bool(tracker.get("rules_locked")) is True
         and paper_only
     )
-    if accepted and not current_tracker_present:
+    if historical_snapshot_only:
+        status = "HISTORICAL_SNAPSHOT_ONLY"
+    elif accepted and not current_tracker_present:
         status = "CURRENT_ACKED_TRACKER_MISSING"
     elif current_tracker_present and not accepted:
         status = "CURRENT_TRACKER_ACK_MISSING"
@@ -1425,6 +1545,10 @@ def _registry_row(
         reject_reason=reject_reason,
         paper_tracker_id=paper_tracker_id,
     )
+    if historical_snapshot_only:
+        lifecycle_blocked = sorted(
+            {*lifecycle_blocked, "proposal_content_snapshot_mismatch"}
+        )
     return {
         "strategy_id": strategy_id,
         "strategy_version": _text(proposal.get("strategy_version"))
@@ -1437,6 +1561,21 @@ def _registry_row(
         "proposal_hash": _text(proposal.get("proposal_hash"))
         or _text(ack.get("proposal_hash"))
         or _proposal_hash(proposal),
+        "proposal_content_snapshot_id": proposal_content_snapshot_id,
+        "proposal_content_snapshot_sha256": proposal_content_snapshot_sha,
+        "ack_source_content_snapshot_id": ack_source_content_snapshot_id,
+        "ack_source_content_snapshot_sha256": ack_source_content_snapshot_sha,
+        "tracker_source_content_snapshot_id": tracker_source_content_snapshot_id,
+        "tracker_source_content_snapshot_sha256": tracker_source_content_snapshot_sha,
+        "ack_snapshot_match": ack_snapshot_match,
+        "tracker_snapshot_match": tracker_snapshot_match,
+        "snapshot_binding_status": (
+            "CURRENT_SNAPSHOT_BOUND"
+            if ack_snapshot_match and tracker_snapshot_match
+            else "HISTORICAL_SNAPSHOT_ONLY"
+            if historical_snapshot_only
+            else "CURRENT_SNAPSHOT_PENDING"
+        ),
         "paper_tracker_id": paper_tracker_id,
         "symbol": _symbol(proposal) or key.symbol or _symbol(ack) or _symbol(daily),
         "timeframe": _text(proposal.get("timeframe")),
@@ -1495,7 +1634,11 @@ def _registry_row(
         "current_proposal_member": True,
         "current_cohort_member": True,
         "supersession_status": (
-            status if status.startswith("CURRENT_") else "CURRENT_PENDING_ACK"
+            "HISTORICAL_SNAPSHOT_ONLY"
+            if historical_snapshot_only
+            else status
+            if status.startswith("CURRENT_")
+            else "CURRENT_PENDING_ACK"
         ),
         "new_entry_allowed": current_runtime_eligible,
         "exit_allowed": True,

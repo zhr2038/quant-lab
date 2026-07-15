@@ -83,6 +83,8 @@ PAPER_PROPOSAL_PROPAGATION_SCHEMA = {
     "proposal_hash": pl.Utf8,
     "proposal_snapshot_id": pl.Utf8,
     "proposal_snapshot_sha256": pl.Utf8,
+    "proposal_content_snapshot_id": pl.Utf8,
+    "proposal_content_snapshot_sha256": pl.Utf8,
     "snapshot_generated_at": pl.Utf8,
     "selected_v5_bundle_built_at": pl.Utf8,
     "v5_observed_proposal_snapshot_id": pl.Utf8,
@@ -473,8 +475,10 @@ def build_paper_proposal_propagation_status(
     for proposal in proposals.to_dicts() if not proposals.is_empty() else []:
         proposal_id = _text(proposal.get("proposal_id"))
         proposal_hash = _text(proposal.get("proposal_hash"))
-        snapshot_id = _text(proposal.get("proposal_snapshot_id"))
-        snapshot_sha = _text(proposal.get("proposal_snapshot_sha256")).lower()
+        snapshot_id = _text(proposal.get("proposal_content_snapshot_id"))
+        snapshot_sha = _text(
+            proposal.get("proposal_content_snapshot_sha256")
+        ).lower()
         snapshot_at = _row_time(
             proposal,
             ("snapshot_generated_at", "published_at", "created_at"),
@@ -624,6 +628,8 @@ def build_paper_proposal_propagation_status(
                 "proposal_hash": proposal_hash,
                 "proposal_snapshot_id": snapshot_id,
                 "proposal_snapshot_sha256": snapshot_sha,
+                "proposal_content_snapshot_id": snapshot_id,
+                "proposal_content_snapshot_sha256": snapshot_sha,
                 "snapshot_generated_at": snapshot_at.isoformat() if snapshot_at else "",
                 "selected_v5_bundle_built_at": (
                     bundle_built_at.isoformat() if bundle_built_at else ""
@@ -741,16 +747,48 @@ def build_complete_acceptance_status(
     main_relationship = _text(
         context.get("current_main_production_relationship")
     ).upper()
+    propagation_states = {
+        _text(row.get("propagation_status")) for row in propagation_rows
+    }
+    snapshot_mismatch_states = {
+        "NOT_YET_PUBLISHED_AT_BUNDLE_TIME",
+        "PUBLISHED_AFTER_SELECTED_BUNDLE",
+        "PUBLISHED_NOT_FETCHED",
+        "HASH_MISMATCH",
+        "UNKNOWN",
+    }
+    current_binding_states = {
+        "SNAPSHOT_FETCHED_PENDING_PARSE",
+        "HISTORICAL_ACK_ONLY",
+        "REJECTED_CONTRACT",
+        "REJECTED_CAPACITY",
+        "SUPERSEDED",
+    }
+    cohort_binding_ok = bool(
+        cohort_ok
+        and _bool(latest_cohort.get("snapshot_all_members_matched"))
+        and _text(latest_cohort.get("snapshot_mismatch_proposal_ids"))
+        in {"", "[]"}
+    )
+    acceptance_ok = bool(
+        context.get("acceptance_set_id")
+        and context.get("acceptance_set_matched") is True
+        and context.get("formal_acceptance_eligible") is True
+    )
     if not safety_ok:
         scoped_verdict = "BLOCKED_SAFETY"
-    elif not auth_ok:
-        scoped_verdict = "BLOCKED_API_AUTH"
-    elif runtime != "PASS":
-        scoped_verdict = "BLOCKED_PAPER_RUNTIME_FRESHNESS"
-    elif not propagation_ok:
-        scoped_verdict = "BLOCKED_PROPOSAL_PROPAGATION"
+    elif not auth_ok or runtime != "PASS":
+        scoped_verdict = "BLOCKED_RUNTIME"
+    elif propagation_states.intersection(snapshot_mismatch_states):
+        scoped_verdict = "BLOCKED_PROPOSAL_SNAPSHOT_MISMATCH"
+    elif propagation_states.intersection(current_binding_states) or not propagation_ok:
+        scoped_verdict = "BLOCKED_CURRENT_ACK_TRACKER_SNAPSHOT"
+    elif not cohort_binding_ok:
+        scoped_verdict = "BLOCKED_COHORT_BINDING"
+    elif not acceptance_ok:
+        scoped_verdict = "BLOCKED_ACCEPTANCE_SET"
     else:
-        scoped_verdict = "PASS_OPS_TRUTHFULNESS_AND_PROPAGATION"
+        scoped_verdict = "PASS_PROPOSAL_SNAPSHOT_AND_COHORT_BINDING"
     statuses = {_text(row.get("status")).upper() for row in issues}
     overall = (
         "FAIL" if statuses.intersection({"FAIL", "BLOCKED"}) else "WARNING" if statuses else "PASS"
@@ -870,8 +908,8 @@ def _row_matches_proposal_snapshot(
     return bool(
         snapshot_id
         and snapshot_sha256
-        and _text(row.get("source_proposal_snapshot_id")) == snapshot_id
-        and _text(row.get("source_proposal_snapshot_sha256")).lower()
+        and _text(row.get("source_proposal_content_snapshot_id")) == snapshot_id
+        and _text(row.get("source_proposal_content_snapshot_sha256")).lower()
         == snapshot_sha256.lower()
     )
 

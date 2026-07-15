@@ -85,6 +85,8 @@ def test_current_proposal_propagation_distinguishes_accepted_and_unseen() -> Non
                 "proposal_hash": "a" * 64,
                 "proposal_snapshot_id": snapshot_id,
                 "proposal_snapshot_sha256": snapshot_sha,
+                "proposal_content_snapshot_id": snapshot_id,
+                "proposal_content_snapshot_sha256": snapshot_sha,
                 "snapshot_generated_at": (NOW - timedelta(minutes=10)).isoformat(),
                 "created_at": (NOW - timedelta(minutes=10)).isoformat(),
             },
@@ -93,6 +95,8 @@ def test_current_proposal_propagation_distinguishes_accepted_and_unseen() -> Non
                 "proposal_hash": "b" * 64,
                 "proposal_snapshot_id": snapshot_id,
                 "proposal_snapshot_sha256": snapshot_sha,
+                "proposal_content_snapshot_id": snapshot_id,
+                "proposal_content_snapshot_sha256": snapshot_sha,
                 "snapshot_generated_at": (NOW - timedelta(minutes=10)).isoformat(),
                 "created_at": (NOW - timedelta(minutes=5)).isoformat(),
             },
@@ -106,6 +110,8 @@ def test_current_proposal_propagation_distinguishes_accepted_and_unseen() -> Non
                 "accepted": True,
                 "source_proposal_snapshot_id": snapshot_id,
                 "source_proposal_snapshot_sha256": snapshot_sha,
+                "source_proposal_content_snapshot_id": snapshot_id,
+                "source_proposal_content_snapshot_sha256": snapshot_sha,
                 "accepted_at": (NOW - timedelta(minutes=8)).isoformat(),
             }
         ]
@@ -118,6 +124,8 @@ def test_current_proposal_propagation_distinguishes_accepted_and_unseen() -> Non
                 "current_proposal_member": True,
                 "source_proposal_snapshot_id": snapshot_id,
                 "source_proposal_snapshot_sha256": snapshot_sha,
+                "source_proposal_content_snapshot_id": snapshot_id,
+                "source_proposal_content_snapshot_sha256": snapshot_sha,
                 "created_at": (NOW - timedelta(minutes=7)).isoformat(),
             }
         ]
@@ -235,6 +243,8 @@ def test_proposal_published_after_bundle_has_no_first_seen_time() -> None:
                     "proposal_hash": "a" * 64,
                     "proposal_snapshot_id": "snapshot-later",
                     "proposal_snapshot_sha256": "b" * 64,
+                    "proposal_content_snapshot_id": "snapshot-later",
+                    "proposal_content_snapshot_sha256": "b" * 64,
                     "snapshot_generated_at": NOW.isoformat(),
                 }
             ]
@@ -262,6 +272,8 @@ def test_history_ack_cannot_prove_current_snapshot_seen() -> None:
                     "proposal_hash": "c" * 64,
                     "proposal_snapshot_id": "snapshot-current",
                     "proposal_snapshot_sha256": "d" * 64,
+                    "proposal_content_snapshot_id": "snapshot-current",
+                    "proposal_content_snapshot_sha256": "d" * 64,
                     "snapshot_generated_at": (NOW - timedelta(minutes=10)).isoformat(),
                 }
             ]
@@ -298,6 +310,8 @@ def test_snapshot_id_match_with_sha_mismatch_is_rejected() -> None:
                     "proposal_hash": "1" * 64,
                     "proposal_snapshot_id": "snapshot-one",
                     "proposal_snapshot_sha256": "2" * 64,
+                    "proposal_content_snapshot_id": "snapshot-one",
+                    "proposal_content_snapshot_sha256": "2" * 64,
                     "snapshot_generated_at": (NOW - timedelta(minutes=10)).isoformat(),
                 }
             ]
@@ -407,3 +421,51 @@ def test_complete_acceptance_discloses_all_non_pass_and_funnel_eras() -> None:
     assert funnel["post_fix_unattributed_count"] == 0
     assert funnel["status"] == "PASS"
     assert funnel["historical_rows_rewritten"] is False
+
+
+def test_complete_acceptance_pass_requires_snapshot_cohort_and_atomic_set() -> None:
+    result = build_complete_acceptance_status(
+        system_acceptance=pl.DataFrame(),
+        data_quality={
+            "status": "PASS",
+            "checks": [],
+            "risk_permission": {
+                "permission": "ABORT",
+                "permission_status": "ACTIVE_ABORT",
+            },
+            "quant_lab_enforce_readiness": {},
+        },
+        paper_freshness=pl.DataFrame(
+            [
+                {"check_name": "paper_signal_event_fresh", "status": "PASS"},
+                {"check_name": "paper_trade_event_fresh", "status": "PASS"},
+            ]
+        ),
+        cohort=pl.DataFrame(
+            [
+                {
+                    "cohort_version": 3,
+                    "status": "OBSERVING",
+                    "formal_observation_eligible": True,
+                    "snapshot_all_members_matched": True,
+                    "snapshot_mismatch_proposal_ids": "[]",
+                }
+            ]
+        ),
+        propagation=pl.DataFrame(
+            [{"propagation_status": "ACCEPTED_TRACKER_ACTIVE"}]
+        ),
+        auth_incidents=pl.DataFrame(
+            [{"production_auth_slo_status": "PASS"}]
+        ),
+        acceptance_context={
+            "acceptance_set_id": "acceptance-current",
+            "acceptance_set_matched": True,
+            "formal_acceptance_eligible": True,
+        },
+        generated_at=NOW,
+    )
+
+    assert result["scoped_verdict"] == (
+        "PASS_PROPOSAL_SNAPSHOT_AND_COHORT_BINDING"
+    )

@@ -2609,9 +2609,15 @@ def test_acceptance_set_rejects_v5_bundle_earlier_than_proposal_snapshot(monkeyp
         "selected_v5_bundle_built_at": "2026-07-15T00:00:00Z",
         "proposal_snapshot_id": "proposal-snapshot:causal",
         "proposal_snapshot_sha256": snapshot_sha,
+        "proposal_content_snapshot_id": "proposal-content-snapshot:causal",
+        "proposal_content_snapshot_sha256": snapshot_sha,
         "snapshot_generated_at": "2026-07-15T00:01:00Z",
         "v5_observed_proposal_snapshot_id": "proposal-snapshot:causal",
         "v5_observed_proposal_snapshot_sha256": snapshot_sha,
+        "v5_observed_proposal_content_snapshot_id": (
+            "proposal-content-snapshot:causal"
+        ),
+        "v5_observed_proposal_content_snapshot_sha256": snapshot_sha,
     }
 
     with pytest.raises(
@@ -3852,8 +3858,14 @@ def test_export_daily_ingests_pending_v5_inbox_before_snapshot(tmp_path):
         {
             "contract_version": "paper_strategy.v1",
             "quant_lab_contract_version": "paper_strategy.v1",
-            "proposal_snapshot_id": snapshot["proposal_snapshot_id"],
-            "proposal_snapshot_sha256": snapshot["proposal_snapshot_sha256"],
+                "proposal_snapshot_id": snapshot["proposal_snapshot_id"],
+                "proposal_snapshot_sha256": snapshot["proposal_snapshot_sha256"],
+                "proposal_content_snapshot_id": snapshot[
+                    "proposal_content_snapshot_id"
+                ],
+                "proposal_content_snapshot_sha256": snapshot[
+                    "proposal_content_snapshot_sha256"
+                ],
             "proposal_snapshot_generated_at": snapshot["snapshot_generated_at"],
             "proposal_snapshot_fetched_at": later_bundle_ts.isoformat(),
             "proposal_snapshot_count": snapshot["proposal_count"],
@@ -3918,6 +3930,7 @@ def test_export_daily_ingests_pending_v5_inbox_before_snapshot(tmp_path):
     assert manifest["formal_acceptance_requested"] is True
     assert manifest["formal_acceptance_eligible"] is True
     assert manifest["proposal_snapshot_match"] is True
+    assert manifest["proposal_content_snapshot_match"] is True
     assert manifest["proposal_snapshot_id"] == snapshot["proposal_snapshot_id"]
     assert manifest["v5_observed_proposal_snapshot_id"] == snapshot[
         "proposal_snapshot_id"
@@ -3930,6 +3943,14 @@ def test_export_daily_ingests_pending_v5_inbox_before_snapshot(tmp_path):
     assert manifest["v5_commit"] == "3a89f0cdc887a2c38638307154cecd8e83ab8d9b"
     assert provenance["acceptance_set_matched"] is True
     assert provenance["ingested_v5_bundle_sha256"] == bundle_sha
+    assert result.expert_pack_sha256 == daily_export_module.compute_sha256(
+        Path(result.zip_path)
+    )
+    acceptance_set = json.loads(Path(result.acceptance_set_path).read_text())
+    assert acceptance_set["expert_pack_sha256"] == result.expert_pack_sha256
+    assert acceptance_set["proposal_content_snapshot_sha256"] == snapshot[
+        "proposal_content_snapshot_sha256"
+    ]
     assert (
         manifest["selected_v5_bundle_manifest_bundle_sha256"]
         == manifest["selected_v5_bundle_sha256"]

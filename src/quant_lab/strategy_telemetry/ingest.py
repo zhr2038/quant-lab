@@ -1006,6 +1006,12 @@ def _append_file_rows(
                 "proposal_snapshot_sha256": str(
                     payload.get("proposal_snapshot_sha256") or ""
                 ),
+                "proposal_content_snapshot_id": str(
+                    payload.get("proposal_content_snapshot_id") or ""
+                ),
+                "proposal_content_snapshot_sha256": str(
+                    payload.get("proposal_content_snapshot_sha256") or ""
+                ),
                 "proposal_snapshot_generated_at": str(
                     payload.get("proposal_snapshot_generated_at")
                     or payload.get("snapshot_generated_at")

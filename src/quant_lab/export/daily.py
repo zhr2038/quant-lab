@@ -1795,6 +1795,8 @@ CSV_SCHEMAS: dict[str, list[str]] = {
         "source_proposal_snapshot_id",
         "source_proposal_snapshot_sha256",
         "source_proposal_snapshot_generated_at",
+        "source_proposal_content_snapshot_id",
+        "source_proposal_content_snapshot_sha256",
     ],
     "reports/paper_strategy_ack_current.csv": [
         "proposal_id",
@@ -1814,6 +1816,8 @@ CSV_SCHEMAS: dict[str, list[str]] = {
         "source_proposal_snapshot_id",
         "source_proposal_snapshot_sha256",
         "source_proposal_snapshot_generated_at",
+        "source_proposal_content_snapshot_id",
+        "source_proposal_content_snapshot_sha256",
     ],
     "reports/paper_strategy_ack_history.csv": [
         "proposal_id",
@@ -1833,6 +1837,8 @@ CSV_SCHEMAS: dict[str, list[str]] = {
         "source_proposal_snapshot_id",
         "source_proposal_snapshot_sha256",
         "source_proposal_snapshot_generated_at",
+        "source_proposal_content_snapshot_id",
+        "source_proposal_content_snapshot_sha256",
     ],
     "reports/strategy_opportunity_advisory.csv": [
         "as_of_ts",
@@ -4332,6 +4338,8 @@ CSV_SCHEMAS.update(
             "open_paper_position_count",
             "proposal_snapshot_id",
             "proposal_snapshot_sha256",
+            "proposal_content_snapshot_id",
+            "proposal_content_snapshot_sha256",
             "proposal_snapshot_generated_at",
             "proposal_snapshot_fetched_at",
             "proposal_snapshot_count",
@@ -4357,6 +4365,8 @@ class DailyExportResult(BaseModel):
     missing_sections: list[str]
     warnings: list[str]
     row_counts: dict[str, int] = Field(default_factory=dict)
+    expert_pack_sha256: str | None = None
+    acceptance_set_path: str | None = None
 
 
 class ExpertPackValidationResult(BaseModel):
@@ -4524,6 +4534,14 @@ def _publish_ops_truthfulness_snapshot(
     for key, value in (
         ("proposal_snapshot_id", snapshot_row.get("proposal_snapshot_id")),
         ("proposal_snapshot_sha256", snapshot_row.get("proposal_snapshot_sha256")),
+        (
+            "proposal_content_snapshot_id",
+            snapshot_row.get("proposal_content_snapshot_id"),
+        ),
+        (
+            "proposal_content_snapshot_sha256",
+            snapshot_row.get("proposal_content_snapshot_sha256"),
+        ),
         ("snapshot_generated_at", snapshot_row.get("snapshot_generated_at")),
         (
             "v5_observed_proposal_snapshot_id",
@@ -4532,6 +4550,14 @@ def _publish_ops_truthfulness_snapshot(
         (
             "v5_observed_proposal_snapshot_sha256",
             contract_row.get("proposal_snapshot_sha256"),
+        ),
+        (
+            "v5_observed_proposal_content_snapshot_id",
+            contract_row.get("proposal_content_snapshot_id"),
+        ),
+        (
+            "v5_observed_proposal_content_snapshot_sha256",
+            contract_row.get("proposal_content_snapshot_sha256"),
         ),
         (
             "v5_observed_proposal_snapshot_fetched_at",
@@ -4563,10 +4589,10 @@ def _publish_ops_truthfulness_snapshot(
         ),
         selected_v5_bundle_built_at=selected_bundle_built_at,
         v5_observed_proposal_snapshot_id=v5_context.get(
-            "v5_observed_proposal_snapshot_id"
+            "v5_observed_proposal_content_snapshot_id"
         ),
         v5_observed_proposal_snapshot_sha256=v5_context.get(
-            "v5_observed_proposal_snapshot_sha256"
+            "v5_observed_proposal_content_snapshot_sha256"
         ),
         v5_snapshot_fetched_at=v5_context.get(
             "v5_observed_proposal_snapshot_fetched_at"
@@ -5541,6 +5567,18 @@ def export_daily_pack(
 
     zip_path = _unique_export_zip_path(output_root, day, generated_at)
     _write_zip(zip_path, members)
+    expert_pack_sha256 = _sha256_file(zip_path)
+    acceptance_set_path = None
+    if str(pre_export_v5.get("acceptance_set_id") or "").strip():
+        try:
+            acceptance_set_path = _write_atomic_acceptance_set(
+                zip_path,
+                expert_pack_sha256=expert_pack_sha256,
+                v5_context=pre_export_v5,
+            )
+        except Exception:
+            zip_path.unlink(missing_ok=True)
+            raise
     warnings.extend(_prune_old_export_packs(output_root, keep_count=_export_keep_pack_count()))
     index_warning = _write_export_index(
         output_root,
@@ -5559,6 +5597,10 @@ def export_daily_pack(
         missing_sections=missing_sections,
         warnings=warnings,
         row_counts=snapshot.row_counts,
+        expert_pack_sha256=expert_pack_sha256,
+        acceptance_set_path=(
+            str(acceptance_set_path) if acceptance_set_path is not None else None
+        ),
     )
 
 
@@ -5597,6 +5639,9 @@ def _prune_old_export_packs(output_root: Path, *, keep_count: int) -> list[str]:
     for pack in packs[keep_count:]:
         try:
             pack.unlink()
+            acceptance_sidecar = pack.with_suffix(".acceptance.json")
+            if acceptance_sidecar.exists():
+                acceptance_sidecar.unlink()
         except OSError as exc:
             warnings.append(f"export_pack_prune_failed:{pack.name}:{exc}")
     return warnings
@@ -5749,6 +5794,21 @@ def validate_expert_pack(path: str | Path) -> ExpertPackValidationResult:
                             reasons.append("embedded V5 bundle sha256 mismatch")
                 acceptance_set_id = str(manifest.get("acceptance_set_id") or "").strip()
                 if acceptance_set_id:
+                    acceptance_path = pack_path.with_suffix(".acceptance.json")
+                    acceptance_payload: dict[str, Any] = {}
+                    if not acceptance_path.is_file():
+                        reasons.append("acceptance set sidecar is missing")
+                    else:
+                        try:
+                            decoded = json.loads(
+                                acceptance_path.read_text(encoding="utf-8")
+                            )
+                            if isinstance(decoded, dict):
+                                acceptance_payload = decoded
+                            else:
+                                reasons.append("acceptance set sidecar must be an object")
+                        except (OSError, ValueError, json.JSONDecodeError) as exc:
+                            reasons.append(f"acceptance set sidecar is invalid: {exc}")
                     expected_sha = str(
                         manifest.get("expected_v5_bundle_sha256") or ""
                     ).strip().lower()
@@ -5779,6 +5839,71 @@ def validate_expert_pack(path: str | Path) -> ExpertPackValidationResult:
                         reasons.append("acceptance set V5 bundle sha256 mismatch")
                     if manifest.get("acceptance_set_matched") is not True:
                         reasons.append("acceptance set is not marked matched")
+                    sidecar_required = {
+                        "acceptance_set_id": str(
+                            acceptance_payload.get("acceptance_set_id") or ""
+                        ).strip(),
+                        "expected_v5_bundle_sha256": str(
+                            acceptance_payload.get("expected_v5_bundle_sha256") or ""
+                        ).strip().lower(),
+                        "ingested_v5_bundle_sha256": str(
+                            acceptance_payload.get("ingested_v5_bundle_sha256") or ""
+                        ).strip().lower(),
+                        "embedded_v5_bundle_source_sha256": str(
+                            acceptance_payload.get("embedded_v5_bundle_source_sha256")
+                            or ""
+                        ).strip().lower(),
+                        "proposal_content_snapshot_sha256": str(
+                            acceptance_payload.get("proposal_content_snapshot_sha256")
+                            or ""
+                        ).strip().lower(),
+                        "v5_observed_proposal_content_snapshot_sha256": str(
+                            acceptance_payload.get(
+                                "v5_observed_proposal_content_snapshot_sha256"
+                            )
+                            or ""
+                        ).strip().lower(),
+                        "quant_lab_commit": str(
+                            acceptance_payload.get("quant_lab_commit") or ""
+                        ).strip(),
+                        "v5_commit": str(
+                            acceptance_payload.get("v5_commit") or ""
+                        ).strip(),
+                        "expert_pack_sha256": str(
+                            acceptance_payload.get("expert_pack_sha256") or ""
+                        ).strip().lower(),
+                    }
+                    reasons.extend(
+                        f"acceptance set sidecar missing required field: {name}"
+                        for name, value in sidecar_required.items()
+                        if not value
+                    )
+                    if sidecar_required["acceptance_set_id"] != acceptance_set_id:
+                        reasons.append("acceptance set sidecar id mismatch")
+                    if sidecar_required["expert_pack_sha256"] != str(sha256 or "").lower():
+                        reasons.append("acceptance set expert pack sha256 mismatch")
+                    if not (
+                        sidecar_required["expected_v5_bundle_sha256"]
+                        and sidecar_required["expected_v5_bundle_sha256"]
+                        == sidecar_required["ingested_v5_bundle_sha256"]
+                        == sidecar_required["embedded_v5_bundle_source_sha256"]
+                    ):
+                        reasons.append("acceptance set sidecar V5 bundle sha256 mismatch")
+                    if (
+                        sidecar_required["proposal_content_snapshot_sha256"]
+                        != sidecar_required[
+                            "v5_observed_proposal_content_snapshot_sha256"
+                        ]
+                    ):
+                        reasons.append(
+                            "acceptance set sidecar Proposal Content Snapshot mismatch"
+                        )
+                    if sidecar_required["proposal_content_snapshot_sha256"] != str(
+                        manifest.get("proposal_content_snapshot_sha256") or ""
+                    ).strip().lower():
+                        reasons.append(
+                            "acceptance set sidecar current Proposal Content Snapshot mismatch"
+                        )
                     attachment_manifest = _read_zip_json(
                         archive,
                         EMBEDDED_V5_BUNDLE_MANIFEST,
@@ -8333,6 +8458,18 @@ def _finalize_acceptance_set_context(v5_context: dict[str, Any]) -> None:
     observed_snapshot_sha = str(
         v5_context.get("v5_observed_proposal_snapshot_sha256") or ""
     ).strip().lower()
+    proposal_content_snapshot_id = str(
+        v5_context.get("proposal_content_snapshot_id") or ""
+    ).strip()
+    proposal_content_snapshot_sha = str(
+        v5_context.get("proposal_content_snapshot_sha256") or ""
+    ).strip().lower()
+    observed_content_snapshot_id = str(
+        v5_context.get("v5_observed_proposal_content_snapshot_id") or ""
+    ).strip()
+    observed_content_snapshot_sha = str(
+        v5_context.get("v5_observed_proposal_content_snapshot_sha256") or ""
+    ).strip().lower()
     snapshot_generated_at = _parse_v5_context_ts(
         v5_context.get("snapshot_generated_at")
     )
@@ -8351,6 +8488,10 @@ def _finalize_acceptance_set_context(v5_context: dict[str, Any]) -> None:
         and proposal_snapshot_sha
         and proposal_snapshot_id == observed_snapshot_id
         and proposal_snapshot_sha == observed_snapshot_sha
+        and proposal_content_snapshot_id
+        and proposal_content_snapshot_sha
+        and proposal_content_snapshot_id == observed_content_snapshot_id
+        and proposal_content_snapshot_sha == observed_content_snapshot_sha
         and snapshot_generated_at is not None
         and selected_bundle_built_at is not None
         and selected_bundle_built_at > snapshot_generated_at
@@ -8368,6 +8509,12 @@ def _finalize_acceptance_set_context(v5_context: dict[str, Any]) -> None:
                 and proposal_snapshot_id == observed_snapshot_id
                 and proposal_snapshot_sha
                 and proposal_snapshot_sha == observed_snapshot_sha
+            ),
+            "proposal_content_snapshot_match": bool(
+                proposal_content_snapshot_id
+                and proposal_content_snapshot_id == observed_content_snapshot_id
+                and proposal_content_snapshot_sha
+                and proposal_content_snapshot_sha == observed_content_snapshot_sha
             ),
             "acceptance_set_sha256_relationship": {
                 "expected": expected_sha or None,
@@ -8393,6 +8540,16 @@ def _finalize_acceptance_set_context(v5_context: dict[str, Any]) -> None:
             ("proposal_snapshot_sha256", proposal_snapshot_sha),
             ("v5_observed_proposal_snapshot_id", observed_snapshot_id),
             ("v5_observed_proposal_snapshot_sha256", observed_snapshot_sha),
+            ("proposal_content_snapshot_id", proposal_content_snapshot_id),
+            ("proposal_content_snapshot_sha256", proposal_content_snapshot_sha),
+            (
+                "v5_observed_proposal_content_snapshot_id",
+                observed_content_snapshot_id,
+            ),
+            (
+                "v5_observed_proposal_content_snapshot_sha256",
+                observed_content_snapshot_sha,
+            ),
             (
                 "snapshot_generated_at",
                 snapshot_generated_at.isoformat() if snapshot_generated_at else "",
@@ -8422,6 +8579,18 @@ def _finalize_acceptance_set_context(v5_context: dict[str, Any]) -> None:
             raise RuntimeError(
                 "acceptance_set_proposal_snapshot_sha256_mismatch:"
                 f"expected={proposal_snapshot_sha};observed={observed_snapshot_sha}"
+            )
+        if proposal_content_snapshot_id != observed_content_snapshot_id:
+            raise RuntimeError(
+                "acceptance_set_proposal_content_snapshot_id_mismatch:"
+                f"expected={proposal_content_snapshot_id};"
+                f"observed={observed_content_snapshot_id}"
+            )
+        if proposal_content_snapshot_sha != observed_content_snapshot_sha:
+            raise RuntimeError(
+                "acceptance_set_proposal_content_snapshot_sha256_mismatch:"
+                f"expected={proposal_content_snapshot_sha};"
+                f"observed={observed_content_snapshot_sha}"
             )
         if (
             snapshot_generated_at is not None
@@ -8553,6 +8722,8 @@ def _proposal_snapshot_export_payload(frame: pl.DataFrame) -> dict[str, Any]:
         return {
             "proposal_snapshot_id": None,
             "proposal_snapshot_sha256": None,
+            "proposal_content_snapshot_id": None,
+            "proposal_content_snapshot_sha256": None,
             "snapshot_generated_at": None,
             "proposal_count": 0,
             "proposal_ids": [],
@@ -8753,6 +8924,12 @@ def _manifest_payload(
         "v5_commit": v5_context.get("v5_commit"),
         "proposal_snapshot_id": v5_context.get("proposal_snapshot_id"),
         "proposal_snapshot_sha256": v5_context.get("proposal_snapshot_sha256"),
+        "proposal_content_snapshot_id": v5_context.get(
+            "proposal_content_snapshot_id"
+        ),
+        "proposal_content_snapshot_sha256": v5_context.get(
+            "proposal_content_snapshot_sha256"
+        ),
         "snapshot_generated_at": v5_context.get("snapshot_generated_at"),
         "v5_observed_proposal_snapshot_id": v5_context.get(
             "v5_observed_proposal_snapshot_id"
@@ -8760,7 +8937,16 @@ def _manifest_payload(
         "v5_observed_proposal_snapshot_sha256": v5_context.get(
             "v5_observed_proposal_snapshot_sha256"
         ),
+        "v5_observed_proposal_content_snapshot_id": v5_context.get(
+            "v5_observed_proposal_content_snapshot_id"
+        ),
+        "v5_observed_proposal_content_snapshot_sha256": v5_context.get(
+            "v5_observed_proposal_content_snapshot_sha256"
+        ),
         "proposal_snapshot_match": v5_context.get("proposal_snapshot_match"),
+        "proposal_content_snapshot_match": v5_context.get(
+            "proposal_content_snapshot_match"
+        ),
         "expected_v5_bundle_matched": v5_context.get("expected_v5_bundle_matched"),
         "selected_v5_bundle_path": v5_context.get("selected_v5_bundle_path"),
         "selected_v5_bundle_sha256": v5_context.get("selected_v5_bundle_sha256"),
@@ -10118,6 +10304,12 @@ def _provenance_payload(
         "v5_commit": v5_context.get("v5_commit"),
         "proposal_snapshot_id": v5_context.get("proposal_snapshot_id"),
         "proposal_snapshot_sha256": v5_context.get("proposal_snapshot_sha256"),
+        "proposal_content_snapshot_id": v5_context.get(
+            "proposal_content_snapshot_id"
+        ),
+        "proposal_content_snapshot_sha256": v5_context.get(
+            "proposal_content_snapshot_sha256"
+        ),
         "snapshot_generated_at": v5_context.get("snapshot_generated_at"),
         "v5_observed_proposal_snapshot_id": v5_context.get(
             "v5_observed_proposal_snapshot_id"
@@ -10125,7 +10317,16 @@ def _provenance_payload(
         "v5_observed_proposal_snapshot_sha256": v5_context.get(
             "v5_observed_proposal_snapshot_sha256"
         ),
+        "v5_observed_proposal_content_snapshot_id": v5_context.get(
+            "v5_observed_proposal_content_snapshot_id"
+        ),
+        "v5_observed_proposal_content_snapshot_sha256": v5_context.get(
+            "v5_observed_proposal_content_snapshot_sha256"
+        ),
         "proposal_snapshot_match": v5_context.get("proposal_snapshot_match"),
+        "proposal_content_snapshot_match": v5_context.get(
+            "proposal_content_snapshot_match"
+        ),
         "expected_v5_bundle_matched": v5_context.get("expected_v5_bundle_matched"),
         "selected_v5_bundle_sha256": v5_context.get("selected_v5_bundle_sha256"),
         "selected_v5_bundle_manifest_bundle_sha256": v5_context.get(
@@ -12294,6 +12495,12 @@ def _paper_strategy_ack_report_row(
         ),
         "source_proposal_snapshot_generated_at": _ack_text(
             row.get("source_proposal_snapshot_generated_at")
+        ),
+        "source_proposal_content_snapshot_id": _ack_text(
+            row.get("source_proposal_content_snapshot_id")
+        ),
+        "source_proposal_content_snapshot_sha256": _ack_text(
+            row.get("source_proposal_content_snapshot_sha256")
         ),
     }
 
@@ -18073,6 +18280,78 @@ def _write_zip(path: Path, members: dict[str, _MemberPayload]) -> None:
             with archive.open(member, "w") as handle:
                 for chunk in _payload_byte_chunks(payload):
                     handle.write(chunk)
+
+
+def _write_atomic_acceptance_set(
+    pack_path: Path,
+    *,
+    expert_pack_sha256: str,
+    v5_context: Mapping[str, Any],
+) -> Path:
+    payload = {
+        "acceptance_set_id": str(v5_context.get("acceptance_set_id") or "").strip(),
+        "expected_v5_bundle_sha256": str(
+            v5_context.get("expected_v5_bundle_sha256") or ""
+        ).strip().lower(),
+        "ingested_v5_bundle_sha256": str(
+            v5_context.get("ingested_v5_bundle_sha256") or ""
+        ).strip().lower(),
+        "embedded_v5_bundle_source_sha256": str(
+            v5_context.get("embedded_v5_bundle_source_sha256") or ""
+        ).strip().lower(),
+        "proposal_content_snapshot_sha256": str(
+            v5_context.get("proposal_content_snapshot_sha256") or ""
+        ).strip().lower(),
+        "v5_observed_proposal_content_snapshot_sha256": str(
+            v5_context.get("v5_observed_proposal_content_snapshot_sha256") or ""
+        ).strip().lower(),
+        "quant_lab_commit": str(v5_context.get("quant_lab_commit") or "").strip(),
+        "v5_commit": str(v5_context.get("v5_commit") or "").strip(),
+        "expert_pack_sha256": expert_pack_sha256.lower(),
+        "expert_pack_name": pack_path.name,
+        "created_at": datetime.now(UTC).isoformat(),
+        "schema_version": "quant_lab.acceptance_set.v1",
+    }
+    required = {
+        key: value
+        for key, value in payload.items()
+        if key
+        in {
+            "acceptance_set_id",
+            "expected_v5_bundle_sha256",
+            "ingested_v5_bundle_sha256",
+            "embedded_v5_bundle_source_sha256",
+            "proposal_content_snapshot_sha256",
+            "v5_observed_proposal_content_snapshot_sha256",
+            "quant_lab_commit",
+            "v5_commit",
+            "expert_pack_sha256",
+        }
+    }
+    missing = [key for key, value in required.items() if not value]
+    if missing:
+        raise RuntimeError(
+            "acceptance_set_required_field_missing:" + ",".join(sorted(missing))
+        )
+    if not (
+        payload["expected_v5_bundle_sha256"]
+        == payload["ingested_v5_bundle_sha256"]
+        == payload["embedded_v5_bundle_source_sha256"]
+    ):
+        raise RuntimeError("acceptance_set_bundle_sha_mismatch")
+    if (
+        payload["proposal_content_snapshot_sha256"]
+        != payload["v5_observed_proposal_content_snapshot_sha256"]
+    ):
+        raise RuntimeError("acceptance_set_proposal_content_snapshot_sha256_mismatch")
+    sidecar = pack_path.with_suffix(".acceptance.json")
+    temporary = sidecar.with_suffix(sidecar.suffix + ".tmp")
+    temporary.write_text(
+        json.dumps(payload, ensure_ascii=True, sort_keys=True, indent=2) + "\n",
+        encoding="utf-8",
+    )
+    temporary.replace(sidecar)
+    return sidecar
 
 
 def _fail_on_secrets(members: dict[str, _MemberPayload]) -> None:

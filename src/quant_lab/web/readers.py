@@ -273,6 +273,8 @@ OPTIONAL_EMPTY_DATASET_STATUSES = {
     "trade_level_optional",
     "historical_research_snapshot",
     "cost_probe_optional_audit",
+    "registry_optional_empty",
+    "registry_freshness_not_required",
     DERIVED_LATEST_SOURCE_CURRENT_STATUS,
     "event_driven_no_recent_cost_probe_p3_preflight",
     "event_driven_no_recent_cost_probe_order_event",
@@ -1971,6 +1973,12 @@ def _dataset_snapshot_from_meta(
         or meta.get("generated_at")
     )
     dataset_name = _dataset_name_from_path(path)
+    if (
+        latest is None
+        and rows > 0
+        and DATASET_TIMESTAMP_COLUMNS.get(dataset_name)
+    ):
+        return None
     timeframe = None
     latest_close = None
     if dataset_name == "market_bar":
@@ -6564,17 +6572,22 @@ def _empty_dataset_status(dataset_name: str) -> str:
         "quant_lab_decision_regret",
     }:
         return "trade_level_optional"
+    spec = get_dataset_spec(dataset_name)
+    if spec is not None and not spec.required and int(spec.min_rows or 0) == 0:
+        return "registry_optional_empty"
     return "missing"
 
 
 def _optional_stale_status_from_registry(dataset_name: str, status: str) -> str:
-    if status != "stale" or dataset_name not in ENTRY_QUALITY_DATASETS:
+    if status != "stale":
         return status
     spec = get_dataset_spec(dataset_name)
     if spec is None:
         return status
     if spec.freshness_seconds is None and "freshness" not in spec.quality_rules:
-        return "entry_quality_optional"
+        if dataset_name in ENTRY_QUALITY_DATASETS:
+            return "entry_quality_optional"
+        return "registry_freshness_not_required"
     return status
 
 

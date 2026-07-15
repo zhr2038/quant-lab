@@ -120,6 +120,7 @@ def write_snapshot_meta(
     ) or _frame_latest_snapshot_text(
         frame,
         (
+            "snapshot_generated_at",
             "generated_at",
             "generated_at_utc",
             "created_at",

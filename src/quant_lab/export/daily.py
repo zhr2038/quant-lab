@@ -4961,6 +4961,7 @@ def _write_snapshot_meta(dataset_path: Path, *, dataset_name: str, frame: pl.Dat
     generated_at = _frame_latest_iso(
         frame,
         (
+            "snapshot_generated_at",
             "generated_at",
             "generated_at_utc",
             "created_at",

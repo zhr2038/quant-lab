@@ -906,6 +906,75 @@ def test_data_health_hides_stale_entry_quality_dataset_without_freshness_sla(tmp
     }
 
 
+def test_data_health_hides_optional_empty_ai_research_output(tmp_path):
+    stale_rows = readers.data_health_summary(tmp_path / "lake")["stale_datasets"].to_dicts()
+
+    assert "ai_paper_strategy_draft" not in {
+        row["dataset"] for row in stale_rows
+    }
+
+
+def test_data_health_hides_stale_audit_table_without_freshness_sla(tmp_path):
+    lake_root = tmp_path / "lake"
+    old = datetime.now(UTC) - timedelta(days=3)
+    write_parquet_dataset(
+        pl.DataFrame(
+            [
+                {
+                    "proposal_id": "proposal-1",
+                    "conflict_field": "proposal_hash",
+                    "active_conflict": False,
+                    "created_at": old,
+                }
+            ]
+        ),
+        lake_root / "gold" / "paper_strategy_identity_conflict",
+    )
+
+    stale_rows = readers.data_health_summary(lake_root)["stale_datasets"].to_dicts()
+
+    assert "paper_strategy_identity_conflict" not in {
+        row["dataset"] for row in stale_rows
+    }
+
+
+def test_dataset_snapshot_falls_back_when_sidecar_lacks_business_time(tmp_path):
+    lake_root = tmp_path / "lake"
+    dataset = lake_root / "gold" / "paper_strategy_proposal_snapshot"
+    now = datetime.now(UTC)
+    write_parquet_dataset(
+        pl.DataFrame(
+            [
+                {
+                    "proposal_snapshot_id": "snapshot-1",
+                    "snapshot_generated_at": now,
+                }
+            ]
+        ),
+        dataset,
+    )
+    (dataset / "_snapshot_meta.json").write_text(
+        json.dumps(
+            {
+                "dataset": "paper_strategy_proposal_snapshot",
+                "generated_at": "",
+                "row_count": 1,
+                "file_count": 1,
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    snapshot = readers._dataset_snapshot(
+        lake_root,
+        "paper_strategy_proposal_snapshot",
+        now=now + timedelta(minutes=1),
+    )
+
+    assert snapshot.freshness["timestamp_column"] == "snapshot_generated_at"
+    assert snapshot.freshness["freshness_status"] == "fresh"
+
+
 def test_data_health_hides_stale_bnb_latest_when_source_daily_is_current(tmp_path):
     lake_root = tmp_path / "lake"
     now = datetime.now(UTC)

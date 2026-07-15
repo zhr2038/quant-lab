@@ -890,3 +890,24 @@ def test_snapshot_source_sha_is_order_independent_and_content_sensitive(tmp_path
 
     assert first_meta["source_sha"] == reordered_meta["source_sha"]
     assert first_meta["source_sha"] != changed_meta["source_sha"]
+
+
+def test_snapshot_meta_uses_canonical_proposal_snapshot_time(tmp_path):
+    dataset = tmp_path / "lake" / "gold" / "paper_strategy_proposal_snapshot"
+    snapshot_generated_at = "2026-07-15T06:00:00Z"
+
+    write_snapshot_meta(
+        dataset,
+        dataset_name="paper_strategy_proposal_snapshot",
+        frame=pl.DataFrame(
+            [
+                {
+                    "proposal_snapshot_id": "snapshot-1",
+                    "snapshot_generated_at": snapshot_generated_at,
+                }
+            ]
+        ),
+    )
+
+    meta = json.loads((dataset / "_snapshot_meta.json").read_text(encoding="utf-8"))
+    assert meta["generated_at"] == snapshot_generated_at

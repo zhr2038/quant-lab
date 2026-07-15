@@ -11,9 +11,10 @@ AI_TASK_SCHEMA_VERSION = "quant_lab.ai_research_task.v1"
 AI_STAGE1_SCHEMA_VERSION = "quant_lab.ai_research_diagnosis.v1"
 AI_STAGE2_SCHEMA_VERSION = "quant_lab.ai_research_proposals.v1"
 AI_RESULT_SCHEMA_VERSION = "quant_lab.ai_research_result.v1"
-AI_PROMPT_VERSION = "quant_lab.ai_research.prompt.v2"
+AI_PROMPT_VERSION = "quant_lab.ai_research.prompt.v3"
 SUPPORTED_AI_PROMPT_VERSIONS = (
     "quant_lab.ai_research.prompt.v1",
+    "quant_lab.ai_research.prompt.v2",
     AI_PROMPT_VERSION,
 )
 
@@ -413,6 +414,7 @@ class AIResearchTask(StrictModel):
     prompt_version: Literal[
         "quant_lab.ai_research.prompt.v1",
         "quant_lab.ai_research.prompt.v2",
+        "quant_lab.ai_research.prompt.v3",
     ] = AI_PROMPT_VERSION
     task_id: str = Field(min_length=1, max_length=160)
     created_at: datetime

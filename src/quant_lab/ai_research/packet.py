@@ -896,6 +896,13 @@ def _build_alpha_factory_candidate_audit(
     content = {
         "schema_version": "quant_lab.ai_alpha_factory_candidate_audit.v1",
         "source_members": sorted(sources),
+        "freshness": {
+            "as_of_dates": _distinct_row_values(candidates + results + promotions, "as_of_date"),
+            "generated_at_values": _bounded_distinct_row_values(
+                candidates + results + promotions,
+                "generated_at",
+            ),
+        },
         "candidate_count": len(candidates),
         "result_count": len(results),
         "promotion_count": len(promotions),
@@ -1006,6 +1013,17 @@ def _build_factor_validation_audit(
     content = {
         "schema_version": "quant_lab.ai_factor_validation_audit.v1",
         "source_members": sorted(sources),
+        "freshness": {
+            "definition_created_at_values": _bounded_distinct_row_values(
+                definitions,
+                "created_at",
+            ),
+            "dedupe_as_of_dates": _distinct_row_values(dedupe, "as_of_date"),
+            "forward_validation_as_of_dates": _distinct_row_values(
+                forward,
+                "as_of_date",
+            ),
+        },
         "definition_count": len(definitions),
         "dedupe_decision_count": len(dedupe),
         "forward_validation_count": len(forward),
@@ -1149,7 +1167,9 @@ def _json_object(value: Any) -> dict[str, Any]:
 
 
 def _compact_number(value: Any) -> int | float | str | None:
-    text = str(value or "").strip()
+    if value is None:
+        return None
+    text = str(value).strip()
     if not text:
         return None
     try:
@@ -1167,6 +1187,22 @@ def _value_counts_rows(rows: list[dict[str, str]], key: str) -> dict[str, int]:
         value = str(row.get(key) or "<empty>")
         counts[value] = counts.get(value, 0) + 1
     return dict(sorted(counts.items()))
+
+
+def _distinct_row_values(rows: list[dict[str, str]], key: str) -> list[str]:
+    return sorted({str(row.get(key) or "") for row in rows if row.get(key)})
+
+
+def _bounded_distinct_row_values(
+    rows: list[dict[str, str]],
+    key: str,
+    *,
+    limit: int = 8,
+) -> list[str]:
+    values = _distinct_row_values(rows, key)
+    if len(values) <= limit:
+        return values
+    return [*values[: limit // 2], *values[-(limit // 2) :]]
 
 
 def _compact_csv(text: str, *, max_rows: int) -> tuple[dict[str, Any], bool]:

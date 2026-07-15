@@ -26,6 +26,7 @@
 7. 若 expert pack 本身不新鲜、来源不可信、确定性预检失败，或目标 route_section 的关键字段/样本覆盖不足，应优先阻断提案阶段。
 8. 独立子系统的阻塞必须完整披露，但不得把与目标研究路由无因果关系的 Paper 传播、成本覆盖或运维告警误当成所有 Stage 2 只读研究的全局阻塞。
 9. 对大型汇总表，若任务包同时提供 `derived/*_audit.json` 且其 `join_complete=true`、`truncated=false`、覆盖当前全部候选或验证行，可以使用该完整审计文档；不得因为原始大表采用确定性摘要而重复判定候选级证据缺失。
+10. `stale_dataset_check` 的总体 FAIL 不是自动的全局阻塞。必须检查陈旧成员属于哪个 section；例如陈旧 ACK、tracker 或 fills/bills 只阻断 paper_lifecycle 或 cost_and_execution，不能覆盖 `derived/factor_validation_audit.json` 和 `derived/alpha_factory_candidate_audit.json` 中独立披露的 factor_research 新鲜度。
 
 ## 诊断重点
 
@@ -66,6 +67,8 @@
 - 研究提案不会依赖不存在的字段。
 
 这里的“阻断性”按路由判断：会破坏整个包身份、时间因果或来源可信度的问题全局阻断；只影响 Paper 生命周期、成本或其他独立 section 的问题，仅阻断对应 route_section。`stage2_allowed=true` 只表示可以生成只读、可证伪研究草案，不表示 Paper、Canary 或 Live 就绪。
+
+若 factor_research 的完整审计证据可信，但结果为零通过、仅覆盖一个 symbol、普通 IC 缺失、validation/recent 样本为 0，仍可令 `stage2_allowed=true` 并仅路由到 `factor_research`，因为 Stage 2 可以安全地产生跨标的回测、补采样和对照实验。此类“正确披露的弱结果或有限范围”是研究问题，不是任务包数据损坏；Stage 2 不得因此生成 Paper 或 Live 结论。
 
 否则 stage2_allowed=false，system_state 必须是 BLOCKED_DATA_QUALITY、BLOCKED_INSUFFICIENT_EVIDENCE 或 REVIEW_REQUIRED。
 

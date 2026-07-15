@@ -307,6 +307,8 @@ def test_factor_audit_documents_preserve_complete_candidate_and_validation_rows(
     assert alpha.content["candidate_count"] == 2
     assert alpha.content["joined_candidate_count"] == 2
     assert [row[0] for row in alpha.content["rows"]] == ["candidate-a", "candidate-b"]
+    assert alpha.content["rows"][0][11] == 20
+    assert alpha.content["rows"][0][12] == 8
     assert factor.truncated is False
     assert factor.content["definition_count"] == 1
     assert factor.content["forward_validation_count"] == 1

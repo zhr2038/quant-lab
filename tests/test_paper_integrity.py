@@ -543,7 +543,9 @@ def test_publish_separates_current_history_and_freezes_cohort(tmp_path) -> None:
     )
     assert admitted.to_dicts()[1]["status"] == "OBSERVING"
     assert admitted.to_dicts()[1]["formal_observation_eligible"] is True
-    assert admitted.to_dicts()[1]["observation_start_at"] == "2026-07-15T03:05:00Z"
+    assert admitted.to_dicts()[1]["observation_start_at"] == admitted.to_dicts()[1][
+        "admitted_at"
+    ]
 
 
 def test_legacy_observing_cohort_is_invalidated_without_content_snapshot(
@@ -595,6 +597,14 @@ def test_legacy_observing_cohort_is_invalidated_without_content_snapshot(
         "admitted_at"
     ]
     assert cohorts.to_dicts()[1]["observation_start_at"] != "2026-07-12T01:05:00Z"
+
+    build_and_publish_paper_strategy_pipeline(lake, as_of_date="2026-07-16")
+    refreshed = read_parquet_dataset(lake / "gold/paper_cohort_manifest").sort(
+        "cohort_version"
+    )
+    assert refreshed.to_dicts()[1]["observation_start_at"] == refreshed.to_dicts()[1][
+        "admitted_at"
+    ]
 
 
 def test_current_lifecycle_does_not_inherit_history() -> None:

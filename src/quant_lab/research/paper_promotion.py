@@ -1047,9 +1047,19 @@ def _build_paper_cohort_manifest(
                     if _text(latest.get("status")) == "REVIEW_READY"
                     else "OBSERVING"
                 )
+                observation_candidates = [
+                    value
+                    for value in (
+                        _text(latest.get("observation_start_at")),
+                        observation_start_at or "",
+                        _text(latest.get("admitted_at")),
+                    )
+                    if value
+                ]
                 latest["observation_start_at"] = (
-                    _text(latest.get("observation_start_at"))
-                    or observation_start_at
+                    max(observation_candidates, key=_timestamp_sort_value)
+                    if observation_candidates
+                    else None
                 )
             else:
                 latest["status"] = "FORMING"

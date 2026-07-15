@@ -23,7 +23,9 @@
 4. 输入中未出现的数据、字段、收益、胜率、样本量和运行状态不得推测成事实。
 5. 将“直接观察到的事实”“基于证据的假设”“证据不足”严格区分。
 6. 若报告互相矛盾，应列入 contradictions，不得擅自选择有利结论。
-7. 若 freshness、manifest、provenance、data_quality 或样本覆盖不足，应优先阻断提案阶段。
+7. 若 expert pack 本身不新鲜、来源不可信、确定性预检失败，或目标 route_section 的关键字段/样本覆盖不足，应优先阻断提案阶段。
+8. 独立子系统的阻塞必须完整披露，但不得把与目标研究路由无因果关系的 Paper 传播、成本覆盖或运维告警误当成所有 Stage 2 只读研究的全局阻塞。
+9. 对大型汇总表，若任务包同时提供 `derived/*_audit.json` 且其 `join_complete=true`、`truncated=false`、覆盖当前全部候选或验证行，可以使用该完整审计文档；不得因为原始大表采用确定性摘要而重复判定候选级证据缺失。
 
 ## 诊断重点
 
@@ -62,6 +64,8 @@
 - 没有阻断性数据质量问题；
 - 可以明确指出下一阶段应读取的 route_sections；
 - 研究提案不会依赖不存在的字段。
+
+这里的“阻断性”按路由判断：会破坏整个包身份、时间因果或来源可信度的问题全局阻断；只影响 Paper 生命周期、成本或其他独立 section 的问题，仅阻断对应 route_section。`stage2_allowed=true` 只表示可以生成只读、可证伪研究草案，不表示 Paper、Canary 或 Live 就绪。
 
 否则 stage2_allowed=false，system_state 必须是 BLOCKED_DATA_QUALITY、BLOCKED_INSUFFICIENT_EVIDENCE 或 REVIEW_REQUIRED。
 

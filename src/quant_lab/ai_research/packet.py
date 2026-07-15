@@ -32,6 +32,7 @@ DEFAULT_MAX_CSV_ROWS = 64
 DEFAULT_MAX_DOCS_PER_SECTION = 4
 CORE_JSON_MAX_MEMBER_BYTES = 2 * 1024 * 1024
 RESEARCH_CSV_MAX_MEMBER_BYTES = 16 * 1024 * 1024
+FACTOR_AUDIT_MAX_DOCUMENT_CHARS = 80_000
 
 _ALLOWED_EXTENSIONS = {".json", ".md", ".csv", ".txt"}
 _EXCLUDED_PARTS = {"__macosx", ".git", "secrets", "private", "restricted"}
@@ -131,6 +132,16 @@ _ALLOWED_FACTOR_TEMPLATES = [
 _TASK_ID_RE = re.compile(r"[^A-Za-z0-9_.-]+")
 _CORE_SUMMARY_MEMBERS = {"manifest.json", "data_quality.json"}
 _DETERMINISTIC_CSV_SUMMARY_MEMBERS = {"reports/alpha_discovery_board.csv"}
+_ALPHA_FACTORY_AUDIT_MEMBERS = {
+    "reports/alpha_factory_candidates.csv",
+    "reports/alpha_factory_results.csv",
+    "reports/alpha_factory_promotion_queue.csv",
+}
+_FACTOR_VALIDATION_AUDIT_MEMBERS = {
+    "reports/factor_definitions.csv",
+    "reports/factor_dedupe_decision.csv",
+    "reports/factor_forward_validation.csv",
+}
 _RESEARCH_DATASET_KEYWORDS = (
     "alpha",
     "factor",
@@ -220,12 +231,39 @@ def build_ai_research_task(
     consumed_chars = 0
 
     with zipfile.ZipFile(pack) as archive:
+        audit_documents, audit_sources, audit_warnings = (
+            _build_factor_research_audit_documents(archive)
+        )
+        warnings.extend(audit_warnings)
+        for document in audit_documents:
+            encoded_length = len(canonical_json(document.model_dump(mode="json")))
+            if consumed_chars + encoded_length > max_total_chars:
+                warnings.append(
+                    f"skipped_due_to_total_limit:{document.source_member}"
+                )
+                continue
+            sections["factor_research"].append(document)
+            consumed_chars += encoded_length
+
         selected = _select_members(
             archive,
             max_docs_per_section=max_docs_per_section,
         )
+        if audit_documents:
+            # The derived documents already carry every current Alpha Factory and
+            # factor-validation row. Keep the large discovery board summary for
+            # population context, but do not spend the packet budget duplicating
+            # its component CSVs or terse Markdown summaries.
+            selected["factor_research"] = [
+                member
+                for member in selected.get("factor_research", [])
+                if member.filename.lower().lstrip("./")
+                == "reports/alpha_discovery_board.csv"
+            ]
         for section_name, members in selected.items():
             for member in members:
+                if member.filename.lower().lstrip("./") in audit_sources:
+                    continue
                 if consumed_chars >= max_total_chars:
                     warnings.append("packet_total_character_limit_reached")
                     break
@@ -707,14 +745,428 @@ def _summarize_check_list(value: Any, *, max_entries: int) -> dict[str, Any]:
 def _record_is_non_ok(value: Any) -> bool:
     if not isinstance(value, dict):
         return False
-    signals = " ".join(
+    outcome = " ".join(
         str(value.get(key) or "").upper()
-        for key in ("status", "state", "severity", "verdict", "result")
+        for key in ("status", "state", "verdict", "result")
+    ).strip()
+    if outcome:
+        if any(token in outcome for token in ("PASS", "OK", "HEALTHY", "READY")):
+            return False
+        return any(
+            token in outcome
+            for token in (
+                "WARN",
+                "FAIL",
+                "ERROR",
+                "CRITICAL",
+                "BLOCK",
+                "STALE",
+                "MISSING",
+            )
+        )
+    severity = str(value.get("severity") or "").upper()
+    return any(token in severity for token in ("WARN", "ERROR", "CRITICAL"))
+
+
+def _build_factor_research_audit_documents(
+    archive: zipfile.ZipFile,
+) -> tuple[list[EvidenceDocument], set[str], list[str]]:
+    available = {
+        info.filename.lower().lstrip("./"): info
+        for info in archive.infolist()
+        if _safe_supported_member(info)
+    }
+    documents: list[EvidenceDocument] = []
+    consumed_sources: set[str] = set()
+    warnings: list[str] = []
+
+    alpha_sources = {
+        name: available[name]
+        for name in _ALPHA_FACTORY_AUDIT_MEMBERS
+        if name in available
+    }
+    if len(alpha_sources) == len(_ALPHA_FACTORY_AUDIT_MEMBERS):
+        content, complete, detail_warnings = _build_alpha_factory_candidate_audit(
+            archive,
+            alpha_sources,
+        )
+        warnings.extend(detail_warnings)
+        document = _derived_evidence_document(
+            "derived/alpha_factory_candidate_audit.json",
+            content,
+            alpha_sources.values(),
+            complete=complete,
+        )
+        documents.append(document)
+        consumed_sources.update(alpha_sources)
+    elif alpha_sources:
+        missing = sorted(_ALPHA_FACTORY_AUDIT_MEMBERS - set(alpha_sources))
+        warnings.extend(f"factor_audit_missing_source:{name}" for name in missing)
+
+    validation_sources = {
+        name: available[name]
+        for name in _FACTOR_VALIDATION_AUDIT_MEMBERS
+        if name in available
+    }
+    if len(validation_sources) == len(_FACTOR_VALIDATION_AUDIT_MEMBERS):
+        content, complete, detail_warnings = _build_factor_validation_audit(
+            archive,
+            validation_sources,
+        )
+        warnings.extend(detail_warnings)
+        document = _derived_evidence_document(
+            "derived/factor_validation_audit.json",
+            content,
+            validation_sources.values(),
+            complete=complete,
+        )
+        documents.append(document)
+        consumed_sources.update(validation_sources)
+    elif validation_sources:
+        missing = sorted(_FACTOR_VALIDATION_AUDIT_MEMBERS - set(validation_sources))
+        warnings.extend(f"factor_audit_missing_source:{name}" for name in missing)
+
+    return documents, consumed_sources, warnings
+
+
+def _build_alpha_factory_candidate_audit(
+    archive: zipfile.ZipFile,
+    sources: dict[str, zipfile.ZipInfo],
+) -> tuple[dict[str, Any], bool, list[str]]:
+    candidates = _read_csv_rows(archive, sources["reports/alpha_factory_candidates.csv"])
+    results = _read_csv_rows(archive, sources["reports/alpha_factory_results.csv"])
+    promotions = _read_csv_rows(
+        archive,
+        sources["reports/alpha_factory_promotion_queue.csv"],
     )
-    return any(
-        token in signals
-        for token in ("WARN", "FAIL", "ERROR", "CRITICAL", "BLOCK", "STALE", "MISSING")
+    result_by_id, duplicate_result_ids = _rows_by_key(results, "candidate_id")
+    promotion_by_id, duplicate_promotion_ids = _rows_by_key(promotions, "candidate_id")
+    candidate_ids = [str(row.get("candidate_id") or "") for row in candidates]
+    duplicate_candidate_ids = _duplicate_values(candidate_ids)
+    candidate_id_set = {item for item in candidate_ids if item}
+    result_id_set = set(result_by_id)
+    promotion_id_set = set(promotion_by_id)
+    rows: list[list[Any]] = []
+    definition_parse_errors = 0
+    for candidate in candidates:
+        candidate_id = str(candidate.get("candidate_id") or "")
+        result = result_by_id.get(candidate_id, {})
+        promotion = promotion_by_id.get(candidate_id, {})
+        parameter_json = str(candidate.get("parameter_json") or "")
+        definition_hash, parsed = _canonical_text_sha256(parameter_json)
+        definition_parse_errors += int(not parsed)
+        validation_metrics = _json_object(result.get("validation_metrics_json"))
+        recent_metrics = _json_object(result.get("recent_7d_metrics_json"))
+        cost_sources = sorted(_json_object(result.get("cost_source_mix")))
+        rows.append(
+            [
+                candidate_id,
+                str(candidate.get("template_name") or ""),
+                str(candidate.get("symbol") or ""),
+                str(candidate.get("regime_state") or ""),
+                _compact_number(candidate.get("horizon_hours")),
+                definition_hash[:16],
+                _compact_number(result.get("sample_count")),
+                _compact_number(result.get("avg_net_bps")),
+                _compact_number(result.get("p25_net_bps")),
+                _compact_number(result.get("win_rate")),
+                ",".join(cost_sources),
+                _compact_number(validation_metrics.get("complete_sample_count")),
+                _compact_number(recent_metrics.get("complete_sample_count")),
+                str(result.get("decision") or ""),
+                str(promotion.get("promotion_state") or ""),
+            ]
+        )
+    missing_results = sorted(candidate_id_set - result_id_set)
+    missing_promotions = sorted(candidate_id_set - promotion_id_set)
+    orphan_results = sorted(result_id_set - candidate_id_set)
+    orphan_promotions = sorted(promotion_id_set - candidate_id_set)
+    complete = not any(
+        (
+            duplicate_candidate_ids,
+            duplicate_result_ids,
+            duplicate_promotion_ids,
+            missing_results,
+            missing_promotions,
+            orphan_results,
+            orphan_promotions,
+        )
     )
+    warnings = [] if complete else ["alpha_factory_candidate_audit_join_gap"]
+    content = {
+        "schema_version": "quant_lab.ai_alpha_factory_candidate_audit.v1",
+        "source_members": sorted(sources),
+        "candidate_count": len(candidates),
+        "result_count": len(results),
+        "promotion_count": len(promotions),
+        "joined_candidate_count": len(rows),
+        "join_complete": complete,
+        "join_diagnostics": {
+            "duplicate_candidate_ids": duplicate_candidate_ids,
+            "duplicate_result_ids": duplicate_result_ids,
+            "duplicate_promotion_ids": duplicate_promotion_ids,
+            "missing_result_ids": missing_results,
+            "missing_promotion_ids": missing_promotions,
+            "orphan_result_ids": orphan_results,
+            "orphan_promotion_ids": orphan_promotions,
+            "definition_json_parse_error_count": definition_parse_errors,
+        },
+        "row_legend": [
+            "candidate_id",
+            "template_name",
+            "symbol",
+            "regime_state",
+            "horizon_hours",
+            "candidate_definition_sha256_prefix",
+            "sample_count",
+            "avg_net_bps",
+            "p25_net_bps",
+            "win_rate",
+            "cost_sources",
+            "validation_complete_sample_count",
+            "recent_7d_complete_sample_count",
+            "decision",
+            "promotion_state",
+        ],
+        "rows": rows,
+        "_representation": {
+            "kind": "full_joined_audit",
+            "selection_rule": "all_current_alpha_factory_candidates_joined_by_candidate_id",
+            "row_count": len(rows),
+            "truncated": False,
+        },
+    }
+    within_budget = len(canonical_json(content)) <= FACTOR_AUDIT_MAX_DOCUMENT_CHARS
+    return content, complete and within_budget, warnings
+
+
+def _build_factor_validation_audit(
+    archive: zipfile.ZipFile,
+    sources: dict[str, zipfile.ZipInfo],
+) -> tuple[dict[str, Any], bool, list[str]]:
+    definitions = _read_csv_rows(archive, sources["reports/factor_definitions.csv"])
+    dedupe = _read_csv_rows(archive, sources["reports/factor_dedupe_decision.csv"])
+    forward = _read_csv_rows(archive, sources["reports/factor_forward_validation.csv"])
+    definition_rows = [
+        [
+            str(row.get("factor_id") or ""),
+            str(row.get("factor_family") or ""),
+            str(row.get("input_features_json") or ""),
+            str(row.get("template") or ""),
+            str(row.get("expression_hash") or ""),
+            str(row.get("canonical_factor_id") or ""),
+            str(row.get("formula_hash") or ""),
+            str(row.get("duplicate_of") or ""),
+            str(row.get("correlation_cluster_id") or ""),
+            _compact_number(row.get("independence_weight")),
+            _compact_number(row.get("availability_lag_bars")),
+            str(row.get("causal") or ""),
+            str(row.get("operator_graph_hash") or ""),
+        ]
+        for row in definitions
+    ]
+    dedupe_rows = [
+        [
+            str(row.get("factor_id") or ""),
+            str(row.get("correlation_cluster_id") or ""),
+            _compact_number(row.get("cluster_size")),
+            str(row.get("leader_factor_id") or ""),
+            str(row.get("is_cluster_leader") or ""),
+            _compact_number(row.get("max_abs_correlation")),
+            _compact_number(row.get("independence_weight")),
+            str(row.get("dedupe_decision") or ""),
+            str(row.get("dedupe_reason") or ""),
+        ]
+        for row in dedupe
+    ]
+    forward_rows = [
+        [
+            str(row.get("factor_id") or ""),
+            str(row.get("symbol") or ""),
+            str(row.get("regime") or ""),
+            _compact_number(row.get("horizon_hours")),
+            _compact_number(row.get("sample_count")),
+            _compact_number(row.get("rank_ic")),
+            _compact_number(row.get("long_short_bps")),
+            _compact_number(row.get("p25_net_bps")),
+            _compact_number(row.get("hit_rate")),
+            _compact_number(row.get("recent_7d_score")),
+            _compact_number(row.get("regime_stability")),
+            _compact_number(row.get("cost_adjusted_score")),
+            str(row.get("recommendation") or ""),
+            str(row.get("data_leakage_check") or ""),
+        ]
+        for row in forward
+    ]
+    definition_ids = {str(row.get("factor_id") or "") for row in definitions}
+    forward_ids = {str(row.get("factor_id") or "") for row in forward}
+    unmapped_forward_ids = sorted(item for item in forward_ids - definition_ids if item)
+    complete = not unmapped_forward_ids
+    warnings = [] if complete else ["factor_validation_audit_definition_gap"]
+    content = {
+        "schema_version": "quant_lab.ai_factor_validation_audit.v1",
+        "source_members": sorted(sources),
+        "definition_count": len(definitions),
+        "dedupe_decision_count": len(dedupe),
+        "forward_validation_count": len(forward),
+        "forward_recommendation_counts": _value_counts_rows(forward, "recommendation"),
+        "unmapped_forward_factor_ids": unmapped_forward_ids,
+        "definition_legend": [
+            "factor_id",
+            "factor_family",
+            "input_features_json",
+            "template",
+            "expression_hash",
+            "canonical_factor_id",
+            "formula_hash",
+            "duplicate_of",
+            "correlation_cluster_id",
+            "independence_weight",
+            "availability_lag_bars",
+            "causal",
+            "operator_graph_hash",
+        ],
+        "definition_rows": definition_rows,
+        "dedupe_legend": [
+            "factor_id",
+            "correlation_cluster_id",
+            "cluster_size",
+            "leader_factor_id",
+            "is_cluster_leader",
+            "max_abs_correlation",
+            "independence_weight",
+            "dedupe_decision",
+            "dedupe_reason",
+        ],
+        "dedupe_rows": dedupe_rows,
+        "forward_validation_legend": [
+            "factor_id",
+            "symbol",
+            "regime",
+            "horizon_hours",
+            "sample_count",
+            "rank_ic",
+            "long_short_bps",
+            "p25_net_bps",
+            "hit_rate",
+            "recent_7d_score",
+            "regime_stability",
+            "cost_adjusted_score",
+            "recommendation",
+            "data_leakage_check",
+        ],
+        "forward_validation_rows": forward_rows,
+        "_representation": {
+            "kind": "full_factor_validation_audit",
+            "selection_rule": "all_factor_definitions_dedupe_decisions_and_forward_validation_rows",
+            "truncated": False,
+        },
+    }
+    within_budget = len(canonical_json(content)) <= FACTOR_AUDIT_MAX_DOCUMENT_CHARS
+    return content, complete and within_budget, warnings
+
+
+def _derived_evidence_document(
+    source_member: str,
+    content: dict[str, Any],
+    sources: Any,
+    *,
+    complete: bool,
+) -> EvidenceDocument:
+    source_list = list(sources)
+    encoded = canonical_json(content)
+    return EvidenceDocument(
+        source_member=source_member,
+        source_format="json",
+        content_sha256=hashlib.sha256(encoded.encode("utf-8")).hexdigest(),
+        source_size_bytes=sum(item.file_size for item in source_list),
+        representation="full" if complete else "deterministic_summary",
+        truncated=not complete,
+        content=content,
+    )
+
+
+def _read_csv_rows(
+    archive: zipfile.ZipFile,
+    member: zipfile.ZipInfo,
+) -> list[dict[str, str]]:
+    text = archive.read(member).decode("utf-8", errors="replace")
+    return [
+        {str(key): str(value or "") for key, value in row.items() if key is not None}
+        for row in csv.DictReader(io.StringIO(text))
+    ]
+
+
+def _rows_by_key(
+    rows: list[dict[str, str]],
+    key: str,
+) -> tuple[dict[str, dict[str, str]], list[str]]:
+    output: dict[str, dict[str, str]] = {}
+    duplicates: list[str] = []
+    for row in rows:
+        value = str(row.get(key) or "")
+        if not value:
+            continue
+        if value in output:
+            duplicates.append(value)
+            continue
+        output[value] = row
+    return output, sorted(set(duplicates))
+
+
+def _duplicate_values(values: list[str]) -> list[str]:
+    seen: set[str] = set()
+    duplicates: set[str] = set()
+    for value in values:
+        if not value:
+            continue
+        if value in seen:
+            duplicates.add(value)
+        seen.add(value)
+    return sorted(duplicates)
+
+
+def _canonical_text_sha256(value: str) -> tuple[str, bool]:
+    try:
+        parsed = json.loads(value)
+    except json.JSONDecodeError:
+        encoded = value
+        parsed_ok = False
+    else:
+        encoded = canonical_json(parsed)
+        parsed_ok = True
+    return hashlib.sha256(encoded.encode("utf-8")).hexdigest(), parsed_ok
+
+
+def _json_object(value: Any) -> dict[str, Any]:
+    if isinstance(value, dict):
+        return value
+    try:
+        parsed = json.loads(str(value or "{}"))
+    except json.JSONDecodeError:
+        return {}
+    return parsed if isinstance(parsed, dict) else {}
+
+
+def _compact_number(value: Any) -> int | float | str | None:
+    text = str(value or "").strip()
+    if not text:
+        return None
+    try:
+        number = float(text)
+    except ValueError:
+        return text[:80]
+    if number.is_integer():
+        return int(number)
+    return round(number, 6)
+
+
+def _value_counts_rows(rows: list[dict[str, str]], key: str) -> dict[str, int]:
+    counts: dict[str, int] = {}
+    for row in rows:
+        value = str(row.get(key) or "<empty>")
+        counts[value] = counts.get(value, 0) + 1
+    return dict(sorted(counts.items()))
 
 
 def _compact_csv(text: str, *, max_rows: int) -> tuple[dict[str, Any], bool]:

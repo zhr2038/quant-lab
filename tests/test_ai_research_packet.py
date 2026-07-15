@@ -9,6 +9,7 @@ from datetime import UTC, datetime
 
 from quant_lab.ai_research.contracts import canonical_json, compute_task_packet_sha256
 from quant_lab.ai_research.packet import (
+    _summarize_data_quality,
     build_ai_research_task,
     find_latest_expert_pack,
     queue_status,
@@ -233,3 +234,96 @@ def test_large_alpha_board_uses_complete_deterministic_summary(tmp_path) -> None
     assert board_doc.content["row_count"] == 5_000
     assert board_doc.content["categorical_counts"]["status"] == {"SHADOW": 5_000}
     assert len(canonical_json(board_doc.content)) <= 40_000
+
+
+def test_factor_audit_documents_preserve_complete_candidate_and_validation_rows(
+    tmp_path,
+) -> None:
+    pack = tmp_path / "quant_lab_expert_pack_factor_audit.zip"
+    candidate_header = (
+        "candidate_id,template_name,symbol,regime_state,horizon_hours,parameter_json\n"
+    )
+    result_header = (
+        "candidate_id,sample_count,avg_net_bps,p25_net_bps,win_rate,"
+        "cost_source_mix,validation_metrics_json,recent_7d_metrics_json,decision\n"
+    )
+    promotion_header = "candidate_id,promotion_state\n"
+    with zipfile.ZipFile(pack, "w", compression=zipfile.ZIP_DEFLATED) as archive:
+        archive.writestr("manifest.json", "{}")
+        archive.writestr("provenance.json", "{}")
+        archive.writestr("data_quality.json", "{}")
+        archive.writestr(
+            "reports/alpha_factory_candidates.csv",
+            candidate_header
+            + 'candidate-a,feature,SOL-USDT,TREND_UP,8,"{""feature"":""f1""}"\n'
+            + 'candidate-b,product,ETH-USDT,RISK_OFF,24,"{""left"":""f1""}"\n',
+        )
+        archive.writestr(
+            "reports/alpha_factory_results.csv",
+            result_header
+            + 'candidate-a,40,12.5,-2.0,0.6,"{""actual"":40}",'
+            '"{""complete_sample_count"":20}",'
+            '"{""complete_sample_count"":8}",KEEP_SHADOW\n'
+            + 'candidate-b,50,8.5,-4.0,0.55,"{""proxy"":50}",'
+            '"{""complete_sample_count"":22}",'
+            '"{""complete_sample_count"":9}",RESEARCH\n',
+        )
+        archive.writestr(
+            "reports/alpha_factory_promotion_queue.csv",
+            promotion_header + "candidate-a,KEEP_SHADOW\ncandidate-b,RESEARCH\n",
+        )
+        archive.writestr(
+            "reports/factor_definitions.csv",
+            "factor_id,factor_family,input_features_json,template,expression_hash,"
+            "canonical_factor_id,formula_hash,duplicate_of,correlation_cluster_id,"
+            "independence_weight,availability_lag_bars,causal,operator_graph_hash\n"
+            'f1,momentum,"[""close_return_24""]",feature,expr-1,canonical-1,'
+            "formula-1,,cluster-1,1.0,1,True,graph-1\n",
+        )
+        archive.writestr(
+            "reports/factor_dedupe_decision.csv",
+            "factor_id,correlation_cluster_id,cluster_size,leader_factor_id,"
+            "is_cluster_leader,max_abs_correlation,independence_weight,"
+            "dedupe_decision,dedupe_reason\n"
+            "f1,cluster-1,1,f1,True,1.0,1.0,keep_leader,unique\n",
+        )
+        archive.writestr(
+            "reports/factor_forward_validation.csv",
+            "factor_id,symbol,regime,horizon_hours,sample_count,rank_ic,"
+            "long_short_bps,p25_net_bps,hit_rate,recent_7d_score,regime_stability,"
+            "cost_adjusted_score,recommendation,data_leakage_check\n"
+            "f1,SOL-USDT,TREND_UP,8,40,0.04,12.5,-2.0,0.6,5.0,0.8,12.5,"
+            "FORWARD_VALIDATION_PASS,pass\n",
+        )
+
+    task, _ = build_ai_research_task(pack, queue_root=tmp_path / "queue")
+
+    assert task is not None and task.preflight is not None
+    documents = {item.source_member: item for item in task.sections["factor_research"]}
+    alpha = documents["derived/alpha_factory_candidate_audit.json"]
+    factor = documents["derived/factor_validation_audit.json"]
+    assert alpha.truncated is False
+    assert alpha.content["join_complete"] is True
+    assert alpha.content["candidate_count"] == 2
+    assert alpha.content["joined_candidate_count"] == 2
+    assert [row[0] for row in alpha.content["rows"]] == ["candidate-a", "candidate-b"]
+    assert factor.truncated is False
+    assert factor.content["definition_count"] == 1
+    assert factor.content["forward_validation_count"] == 1
+    assert factor.content["forward_validation_rows"][0][0] == "f1"
+    assert task.preflight.status == "PASS"
+
+
+def test_data_quality_summary_does_not_treat_pass_severity_as_failure() -> None:
+    summary = _summarize_data_quality(
+        {
+            "checks": [
+                {"name": "critical_when_failed", "status": "PASS", "severity": "critical"},
+                {"name": "real_warning", "status": "WARNING", "severity": "warning"},
+            ]
+        }
+    )
+
+    assert summary["checks"]["count"] == 2
+    assert summary["checks"]["non_ok_count"] == 1
+    assert summary["checks"]["selected"][0]["name"] == "real_warning"

@@ -5481,6 +5481,8 @@ def export_daily_pack(
 
     member_frames = {**snapshot.frames, **snapshot.transient_frames}
     members: dict[str, _MemberPayload] = {}
+    _attach_selected_v5_bundle(members, pre_export_v5)
+    _finalize_acceptance_set_context(pre_export_v5)
     members.update(
         _dataset_members(
             member_frames,
@@ -5497,8 +5499,6 @@ def export_daily_pack(
         f"reports/{FALLBACK_RATE_BREAKDOWN_CSV}",
         build_fallback_rate_breakdown(root),
     )
-    _attach_selected_v5_bundle(members, pre_export_v5)
-    _finalize_acceptance_set_context(pre_export_v5)
     members["reports/github_ci_status.csv"] = _csv_member(
         "reports/github_ci_status.csv",
         _github_ci_status_frame_from_context(pre_export_v5),

@@ -3940,6 +3940,11 @@ def test_export_daily_ingests_pending_v5_inbox_before_snapshot(tmp_path):
         manifest = json.loads(archive.read("manifest.json").decode("utf-8"))
         provenance = json.loads(archive.read("provenance.json").decode("utf-8"))
         data_quality = json.loads(archive.read("data_quality.json").decode("utf-8"))
+        complete_status = json.loads(
+            archive.read("reports/system_acceptance_complete_status.json").decode(
+                "utf-8"
+            )
+        )
         embedded_member = manifest["embedded_v5_bundle_member_path"]
         embedded_manifest = json.loads(
             archive.read(manifest["embedded_v5_bundle_manifest_path"]).decode("utf-8")
@@ -3969,6 +3974,7 @@ def test_export_daily_ingests_pending_v5_inbox_before_snapshot(tmp_path):
     assert manifest["acceptance_set_matched"] is True
     assert manifest["formal_acceptance_requested"] is True
     assert manifest["formal_acceptance_eligible"] is True
+    assert complete_status["acceptance_set_verdict"] == "PASS"
     assert manifest["proposal_snapshot_match"] is True
     assert manifest["proposal_content_snapshot_match"] is True
     assert manifest["proposal_snapshot_id"] == snapshot["proposal_snapshot_id"]

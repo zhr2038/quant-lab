@@ -815,6 +815,9 @@ def build_complete_acceptance_status(
             "PASS" if runtime == "PASS" else "BLOCKED_PAPER_RUNTIME"
         ),
         "cohort_verdict": "PASS" if cohort_ok else "BLOCKED_COHORT",
+        "acceptance_set_verdict": (
+            "PASS" if acceptance_ok else "BLOCKED_ACCEPTANCE_SET"
+        ),
         "economic_evidence_verdict": (
             "PASS"
             if economic_ok is True

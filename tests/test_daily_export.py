@@ -2563,7 +2563,7 @@ def test_v5_export_consistency_requires_expected_sha_for_acceptance_set():
     )
 
 
-def test_acceptance_set_rejects_missing_proposal_snapshot_id(monkeypatch):
+def test_acceptance_set_rejects_missing_proposal_content_snapshot_id(monkeypatch):
     monkeypatch.setattr(daily_export_module, "_git_commit_full", lambda: "a" * 40)
     monkeypatch.setattr(
         daily_export_module, "_git_ref_commit_full", lambda _ref: "a" * 40
@@ -2584,9 +2584,49 @@ def test_acceptance_set_rejects_missing_proposal_snapshot_id(monkeypatch):
 
     with pytest.raises(
         RuntimeError,
-        match="acceptance_set_required_field_missing:.*proposal_snapshot_id",
+        match="acceptance_set_required_field_missing:.*proposal_content_snapshot_id",
     ):
         daily_export_module._finalize_acceptance_set_context(context)
+
+
+def test_acceptance_set_allows_provenance_snapshot_drift_when_content_matches(
+    monkeypatch,
+):
+    monkeypatch.setattr(daily_export_module, "_git_commit_full", lambda: "a" * 40)
+    monkeypatch.setattr(
+        daily_export_module, "_git_ref_commit_full", lambda _ref: "a" * 40
+    )
+    monkeypatch.setattr(
+        daily_export_module,
+        "_selected_v5_bundle_git_commit",
+        lambda _context: "b" * 40,
+    )
+    bundle_sha = "c" * 64
+    content_sha = "d" * 64
+    context = {
+        "acceptance_set_id": "acceptance-content-stable",
+        "expected_v5_bundle_sha256": bundle_sha,
+        "selected_v5_bundle_sha256": bundle_sha,
+        "embedded_v5_bundle_source_sha256": bundle_sha,
+        "selected_v5_bundle_built_at": "2026-07-15T01:00:00Z",
+        "proposal_snapshot_id": "proposal-snapshot:new-provenance",
+        "proposal_snapshot_sha256": "e" * 64,
+        "v5_observed_proposal_snapshot_id": "proposal-snapshot:old-provenance",
+        "v5_observed_proposal_snapshot_sha256": "f" * 64,
+        "proposal_content_snapshot_id": "proposal-content-snapshot:stable",
+        "proposal_content_snapshot_sha256": content_sha,
+        "v5_observed_proposal_content_snapshot_id": (
+            "proposal-content-snapshot:stable"
+        ),
+        "v5_observed_proposal_content_snapshot_sha256": content_sha,
+        "snapshot_generated_at": "2026-07-15T00:00:00Z",
+    }
+
+    daily_export_module._finalize_acceptance_set_context(context)
+
+    assert context["proposal_snapshot_match"] is False
+    assert context["proposal_content_snapshot_match"] is True
+    assert context["formal_acceptance_eligible"] is True
 
 
 def test_acceptance_set_rejects_v5_bundle_earlier_than_proposal_snapshot(monkeypatch):

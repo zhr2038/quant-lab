@@ -8484,10 +8484,6 @@ def _finalize_acceptance_set_context(v5_context: dict[str, Any]) -> None:
         and _is_full_git_sha(quant_lab_commit)
         and _is_full_git_sha(quant_lab_current_main_commit)
         and _is_full_git_sha(v5_commit)
-        and proposal_snapshot_id
-        and proposal_snapshot_sha
-        and proposal_snapshot_id == observed_snapshot_id
-        and proposal_snapshot_sha == observed_snapshot_sha
         and proposal_content_snapshot_id
         and proposal_content_snapshot_sha
         and proposal_content_snapshot_id == observed_content_snapshot_id
@@ -8536,10 +8532,6 @@ def _finalize_acceptance_set_context(v5_context: dict[str, Any]) -> None:
             ("quant_lab_current_main_commit", quant_lab_current_main_commit),
             ("v5_commit", v5_commit),
             ("acceptance_set_id", acceptance_set_id),
-            ("proposal_snapshot_id", proposal_snapshot_id),
-            ("proposal_snapshot_sha256", proposal_snapshot_sha),
-            ("v5_observed_proposal_snapshot_id", observed_snapshot_id),
-            ("v5_observed_proposal_snapshot_sha256", observed_snapshot_sha),
             ("proposal_content_snapshot_id", proposal_content_snapshot_id),
             ("proposal_content_snapshot_sha256", proposal_content_snapshot_sha),
             (
@@ -8570,16 +8562,6 @@ def _finalize_acceptance_set_context(v5_context: dict[str, Any]) -> None:
             "acceptance_set_required_field_missing:" + ",".join(missing)
         )
     if not matched:
-        if proposal_snapshot_id != observed_snapshot_id:
-            raise RuntimeError(
-                "acceptance_set_proposal_snapshot_id_mismatch:"
-                f"expected={proposal_snapshot_id};observed={observed_snapshot_id}"
-            )
-        if proposal_snapshot_sha != observed_snapshot_sha:
-            raise RuntimeError(
-                "acceptance_set_proposal_snapshot_sha256_mismatch:"
-                f"expected={proposal_snapshot_sha};observed={observed_snapshot_sha}"
-            )
         if proposal_content_snapshot_id != observed_content_snapshot_id:
             raise RuntimeError(
                 "acceptance_set_proposal_content_snapshot_id_mismatch:"

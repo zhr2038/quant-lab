@@ -75,7 +75,7 @@ export function StrategyFlow({ flow }: { flow: Record<string, unknown> }) {
           </div>
           <div className="factor-chip-grid">
             {factorRows.slice(0, 8).map((factor, i) => (
-              <div className="factor-chip" key={`${factor.factor_id}-${i}`}>
+              <div className="factor-chip" key={`${factor.factor_id}-${i}`} title={stringValue(factor.factor_id ?? factor.factor_name, "factor")}>
                 <Sparkles size={13} />
                 <span>{stringValue(factor.factor_id ?? factor.factor_name, "factor")}</span>
                 <em>{stringValue(factor.state ?? factor.candidate_state, "RESEARCH")}</em>
@@ -155,7 +155,7 @@ function ResearchMiniPanel({ title, rows }: { title: string; rows: string[][] })
       <div className="research-mini-title">{title}</div>
       <div className="research-mini-list">
         {rows.map((row, i) => (
-          <div className="research-mini-row" key={`${title}-${i}`}>
+          <div className="research-mini-row" key={`${title}-${i}`} title={row.join(" · ")}>
             <strong>{row[0]}</strong>
             <span>{row[1]}</span>
             <em>{row[2]}</em>

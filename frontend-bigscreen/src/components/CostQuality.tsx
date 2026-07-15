@@ -20,7 +20,8 @@ export function CostQuality({ cost }: { cost: Record<string, unknown> }) {
       {
         type: "pie",
         radius: ["62%", "78%"],
-        label: { color: "#eaf6ff" },
+        label: { show: false },
+        labelLine: { show: false },
         data: rows
       }
     ],

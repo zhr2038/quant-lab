@@ -123,11 +123,17 @@ export function DataMatrix({
           )}
         </div>
         <aside className="matrix-side-panel">
-          <div className="matrix-side-title">Freshness Timeline</div>
-          <svg className="sparkline matrix-spark" viewBox="0 0 480 96" aria-hidden="true">
-            <path d="M0 58 C42 16 84 24 126 62 S214 86 256 48 S336 10 386 34 S444 18 480 52" fill="none" stroke="#50a9ff" strokeWidth="3" />
-            <path d="M0 72 C58 46 104 48 154 70 S256 88 316 56 S412 44 480 66" fill="none" stroke="rgba(45,232,166,.72)" strokeWidth="2" />
-          </svg>
+          <div className="matrix-side-title">当前覆盖</div>
+          <div className="matrix-distribution" aria-label="当前矩阵状态分布">
+            {coverageRows.filter((item) => item.value > 0).map((item) => (
+              <span
+                className={item.tone}
+                key={item.key}
+                style={{ width: `${(item.value / statusTotal) * 100}%` }}
+                title={`${item.label}: ${item.value}`}
+              />
+            ))}
+          </div>
           <div className="matrix-side-stats">
             <span><b>{rows.length}</b><em>symbols</em></span>
             <span><b>{statusCounts.ok}</b><em>ok</em></span>

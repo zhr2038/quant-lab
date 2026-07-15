@@ -35,7 +35,7 @@ export function AIResearchPanel({ research }: { research: Record<string, unknown
   return (
     <section className="card pad ai-research">
       <div className="ai-head">
-        <div>
+        <div title={`${stringValue(primaryFinding?.summary, stringValue(latest.system_state, "等待首个结果"))} · ${stringValue(latest.executive_summary, stringValue(latest.task_id, "尚无导入结果"))}`}>
           <h2 className="section-title icon-title"><BrainCircuit size={24} />AI 研究工作台</h2>
           <p className="sub">确定性预检 → 诊断 → 研究假设 → 验证实验 → 人工复核</p>
         </div>
@@ -82,7 +82,7 @@ export function AIResearchPanel({ research }: { research: Record<string, unknown
           <div className="ai-block-head"><GitBranch size={17} /><h3>根因链</h3><span>{rootCause.length}</span></div>
           <div className="ai-root-chain">
             {rootCause.length ? rootCause.slice(0, 6).map((node, index) => (
-              <article key={stringValue(node.node_id, `root-${index}`)}>
+              <article key={stringValue(node.node_id, `root-${index}`)} title={stringValue(node.label, "未命名根因")}>
                 <em>{stringValue(node.causal_role, "unknown")}</em>
                 <b>{stringValue(node.label, "未命名根因")}</b>
                 {index < Math.min(rootCause.length, 6) - 1 ? <ArrowRight size={14} /> : null}
@@ -93,7 +93,7 @@ export function AIResearchPanel({ research }: { research: Record<string, unknown
           <div className="ai-block-head"><ListChecks size={17} /><h3>下一步最小动作</h3><span>{nextActions.length}</span></div>
           <div className="ai-action-list">
             {nextActions.length ? nextActions.slice(0, 6).map((action, index) => (
-              <article key={stringValue(action.action_id, `action-${index}`)}>
+              <article key={stringValue(action.action_id, `action-${index}`)} title={`${stringValue(action.title, "未命名动作")} · ${stringValue(action.rationale, "—")}`}>
                 <span>{stringValue(action.priority, "P2")}</span>
                 <div>
                   <b>{stringValue(action.title, "未命名动作")}</b>
@@ -139,7 +139,10 @@ function EvidenceList({ title, rows, primary, fallbackPrimary, secondary, traili
       <h3>{title}<span>{rows.length}</span></h3>
       <div>
         {rows.length ? rows.slice(0, 6).map((row, index) => (
-          <article key={`${stringValue(row[primary], stringValue(row[fallbackPrimary ?? ""], "row"))}-${index}`}>
+          <article
+            key={`${stringValue(row[primary], stringValue(row[fallbackPrimary ?? ""], "row"))}-${index}`}
+            title={`${stringValue(row[primary], stringValue(row[fallbackPrimary ?? ""], "—"))} · ${stringValue(row[secondary], "—")}`}
+          >
             <b>{stringValue(row[primary], stringValue(row[fallbackPrimary ?? ""], "—"))}</b>
             <small>{stringValue(row[secondary], "—")}</small>
             <em>{stringValue(row[trailing], "—")}</em>

@@ -2078,12 +2078,32 @@ def test_web_v2_legacy_hashes_open_ops_drilldowns():
 
     assert 'const HASH_VIEW_KEY_VALUES = ["v5", "exports", "raw"] as const;' in app_source
     assert 'if (isHashViewKey(key)) return "ops";' in app_source
-    assert (
-        "const [view, setViewState] = useState<ViewKey | null>(() => viewFromHash());"
-        in app_source
-    )
-    assert "setViewState(viewFromHash());" in app_source
+    assert "const [route, setRoute] = useState<RouteState>(() => routeFromHash());" in app_source
+    assert "window.addEventListener(\"popstate\", syncRoute);" in app_source
+    assert "window.addEventListener(\"pageshow\", syncRoute);" in app_source
     assert 'replaceHash(`#${nextView}`);' in app_source
+
+
+def test_web_v2_uses_truthful_charts_and_readable_mid_width_layout():
+    data_matrix = Path("frontend-bigscreen/src/components/DataMatrix.tsx").read_text(
+        encoding="utf-8"
+    )
+    market = Path("frontend-bigscreen/src/components/MarketLiquidity.tsx").read_text(
+        encoding="utf-8"
+    )
+    costs = Path("frontend-bigscreen/src/components/CostQuality.tsx").read_text(
+        encoding="utf-8"
+    )
+    styles = Path("frontend-bigscreen/src/styles.css").read_text(encoding="utf-8")
+
+    assert "Freshness Timeline" not in data_matrix
+    assert "matrix-distribution" in data_matrix
+    assert "wave-line" not in market
+    assert "spread-meter" in market
+    assert "label: { show: false }" in costs
+    assert "labelLine: { show: false }" in costs
+    assert "minmax(280px,1fr)" in styles
+    assert "@media (min-width: 1101px) and (max-width: 1600px)" in styles
 
 
 def test_web_v2_legacy_redirects_to_streamlit_port(monkeypatch):

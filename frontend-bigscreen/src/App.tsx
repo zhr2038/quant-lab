@@ -45,6 +45,7 @@ import "./styles.css";
 const queryClient = new QueryClient();
 type ViewKey = "strategy" | "data" | "v5" | "exports" | "raw";
 type PageKey = "overview" | "strategy" | "ai" | "data" | "ops";
+type RouteState = { page: PageKey; view: ViewKey | null };
 const HASH_VIEW_KEY_VALUES = ["v5", "exports", "raw"] as const;
 type HashViewKey = (typeof HASH_VIEW_KEY_VALUES)[number];
 
@@ -80,6 +81,10 @@ function pageFromHash(): PageKey {
 function viewFromHash(): ViewKey | null {
   const key = hashKey();
   return isHashViewKey(key) ? key : null;
+}
+
+function routeFromHash(): RouteState {
+  return { page: pageFromHash(), view: viewFromHash() };
 }
 
 function replaceHash(hash: string) {
@@ -124,20 +129,19 @@ export default function App() {
 }
 
 function Bigscreen() {
-  const [view, setViewState] = useState<ViewKey | null>(() => viewFromHash());
-  const [page, setPageState] = useState<PageKey>(() => pageFromHash());
+  const [route, setRoute] = useState<RouteState>(() => routeFromHash());
+  const { page, view } = route;
   const setPage = (nextPage: PageKey) => {
-    setPageState(nextPage);
-    setViewState(null);
+    setRoute({ page: nextPage, view: null });
     replaceHash(`#${nextPage}`);
   };
   const setView = (nextView: ViewKey | null) => {
-    setViewState(nextView);
     if (nextView && isHashViewKey(nextView)) {
-      setPageState("ops");
+      setRoute({ page: "ops", view: nextView });
       replaceHash(`#${nextView}`);
       return;
     }
+    setRoute({ page, view: nextView });
     if (nextView === null && view && isHashViewKey(view)) {
       replaceHash(`#${page}`);
     }
@@ -164,12 +168,16 @@ function Bigscreen() {
     };
   }, []);
   useEffect(() => {
-    const onHashChange = () => {
-      setPageState(pageFromHash());
-      setViewState(viewFromHash());
+    const syncRoute = () => setRoute(routeFromHash());
+    syncRoute();
+    window.addEventListener("hashchange", syncRoute);
+    window.addEventListener("popstate", syncRoute);
+    window.addEventListener("pageshow", syncRoute);
+    return () => {
+      window.removeEventListener("hashchange", syncRoute);
+      window.removeEventListener("popstate", syncRoute);
+      window.removeEventListener("pageshow", syncRoute);
     };
-    window.addEventListener("hashchange", onHashChange);
-    return () => window.removeEventListener("hashchange", onHashChange);
   }, []);
   useEffect(() => {
     const onKey = (event: KeyboardEvent) => {

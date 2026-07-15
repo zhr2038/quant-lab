@@ -13,7 +13,7 @@ export function V5Telemetry({
     backgroundColor: "transparent",
     radar: {
       center: ["50%", "52%"],
-      radius: "48%",
+      radius: "40%",
       splitNumber: 3,
       axisNameGap: 8,
       axisName: { color: "#8aa4be", fontSize: 11, lineHeight: 13, overflow: "break", width: 68 },

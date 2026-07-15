@@ -41,14 +41,16 @@ export function MarketLiquidity({ market, matrix, density = "compact" }: MarketL
       {!!rows.length && (
         <div className="market-body">
           <div className="market-list">
-            {visibleRows.map((row, i) => {
+            {visibleRows.map((row) => {
               const spread = finiteNumber(row.spread_bps);
               const tone = spread !== undefined && spread >= 6 ? "red" : spread !== undefined && spread >= 3 ? "yellow" : "";
               return (
-                <div className={`ticker ${tone}`} key={`${row.symbol}-${i}`}>
+                <div className={`ticker ${tone}`} key={String(row.symbol)}>
                   <b>{String(row.symbol ?? "—")}</b>
                   <span className="state">{stringValue(row.volatility_regime ?? row.regime, "未知")}</span>
-                  <span className="wave-line" style={{ ["--phase" as string]: `${i * 8}px` }} />
+                  <span className="spread-meter" title={spread === undefined ? "价差暂无数据" : `价差 ${spread.toFixed(2)} bps`}>
+                    <i style={{ width: spread === undefined ? "0%" : `${Math.min(100, Math.max(3, (spread / 6) * 100))}%` }} />
+                  </span>
                   <span>{bps(row.spread_bps)}</span>
                 </div>
               );

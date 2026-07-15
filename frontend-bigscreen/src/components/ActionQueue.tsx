@@ -7,12 +7,14 @@ export function ActionQueue({ actions }: { actions: Record<string, unknown>[] })
       <div className="action-list" aria-label="当前行动项">
         {actions.slice(0, 4).map((action, i) => {
           const severity = String(action.severity ?? "INFO").toUpperCase();
+          const title = String(action.title ?? "未命名行动");
+          const detail = String(action.next_action ?? action.summary ?? "");
           const Icon = severity === "CRITICAL" ? Siren : severity === "WARNING" ? AlertTriangle : severity === "OK" ? CheckCircle2 : CircleDot;
           return (
-            <article key={`${action.title}-${i}`} className={`queue-item ${severity.toLowerCase()}`}>
+            <article key={`${action.title}-${i}`} className={`queue-item ${severity.toLowerCase()}`} title={`${title} · ${detail}`}>
               <Icon size={17} aria-hidden="true" />
-              <b>{String(action.title ?? "未命名行动")}</b>
-              <span>{String(action.next_action ?? action.summary ?? "")}</span>
+              <b>{title}</b>
+              <span>{detail}</span>
             </article>
           );
         })}

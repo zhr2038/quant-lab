@@ -27,6 +27,7 @@ from quant_lab.export_plane.signatures import (
     sign_payload,
     verify_payload,
 )
+from quant_lab.export_worker import runner as export_runner
 from quant_lab.export_worker.runner import _ssh
 from quant_lab.export_worker.sync import sync_snapshot_blobs
 
@@ -248,6 +249,45 @@ def test_snapshot_copy_rejects_in_place_mutation(
     monkeypatch.setattr(snapshot_module.shutil, "copyfileobj", copy_then_mutate)
     with pytest.raises(RuntimeError, match="changed while copying"):
         snapshot_module._copy_snapshot_input(source, destination)  # noqa: SLF001
+
+
+def test_worker_failure_publishes_terminal_cloud_status(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    work = tmp_path / "work"
+    work.mkdir()
+    task = _task()
+    (work / "task.json").write_text(task.model_dump_json(), encoding="utf-8")
+    published = []
+    monkeypatch.setattr(
+        export_runner,
+        "_upload_status",
+        lambda _config, status, _work: published.append(status),
+    )
+    monkeypatch.setattr(export_runner, "_scp_to", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(
+        export_runner,
+        "_ssh",
+        lambda *_args, **_kwargs: SimpleNamespace(returncode=0, stdout="", stderr=""),
+    )
+
+    export_runner._mark_failed(  # noqa: SLF001
+        SimpleNamespace(
+            worker_id="nas-export-worker-01",
+            worker_commit=COMMIT,
+            remote_queue_root="/queue",
+            worker_status_path=tmp_path / "worker-status.json",
+        ),
+        task.task_id,
+        work,
+        ValueError("snapshot manifest SHA256 mismatch"),
+    )
+
+    assert len(published) == 1
+    assert published[0].state.value == "failed"
+    assert published[0].current_stage == "failed"
+    assert published[0].last_error == "ValueError: snapshot manifest SHA256 mismatch"
 
 
 def _valid_pack(path: Path, *, extra_name: str | None = None) -> None:

@@ -487,6 +487,7 @@ def _heavy_job_lock(path: Path):
 
 
 def _mark_failed(config: Config, task_id: str, work: Path, exc: Exception) -> None:
+    last_error = f"{type(exc).__name__}: {exc}"[:4000]
     error = {
         "task_id": task_id,
         "failed_at": datetime.now(UTC).isoformat(),
@@ -496,6 +497,18 @@ def _mark_failed(config: Config, task_id: str, work: Path, exc: Exception) -> No
     }
     local = work / "worker_error.json"
     atomic_write_json(local, error, mode=0o600)
+    try:
+        task = ExportTask.model_validate_json((work / "task.json").read_text(encoding="utf-8"))
+        failed_status = _status(
+            task,
+            ExportTaskState.FAILED,
+            config,
+            "failed",
+            last_error=last_error,
+        )
+        _upload_status(config, failed_status, work)
+    except Exception:
+        LOG.warning("failed_to_publish_failed_status task_id=%s", task_id, exc_info=True)
     try:
         _scp_to(
             config,

@@ -590,6 +590,16 @@ def _ssh_options(config: Config) -> list[str]:
         f"UserKnownHostsFile={config.known_hosts_path}",
         "-o",
         "ConnectTimeout=15",
+        "-o",
+        "ControlMaster=auto",
+        "-o",
+        "ControlPersist=300",
+        "-o",
+        "ControlPath=/tmp/quant-export-ssh-%C",
+        "-o",
+        "ServerAliveInterval=30",
+        "-o",
+        "ServerAliveCountMax=3",
     ]
 
 

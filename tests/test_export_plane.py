@@ -393,6 +393,25 @@ def test_remote_worker_command_is_serialized_as_one_quoted_argument(
     }
 
 
+def test_worker_ssh_options_reuse_one_authenticated_connection(tmp_path: Path) -> None:
+    config = SimpleNamespace(
+        ssh_host="cloud.example",
+        ssh_port=22,
+        ssh_user="quant-export",
+        ssh_key_path=tmp_path / "id_ed25519",
+        known_hosts_path=tmp_path / "known_hosts",
+    )
+
+    options = export_runner._ssh_options(config)  # noqa: SLF001
+    joined = " ".join(options)
+
+    assert "ControlMaster=auto" in joined
+    assert "ControlPersist=300" in joined
+    assert "ControlPath=/tmp/quant-export-ssh-%C" in joined
+    assert "ServerAliveInterval=30" in joined
+    assert "ServerAliveCountMax=3" in joined
+
+
 def test_current_main_commit_uses_github_pr_base_sha_when_remote_ref_is_absent(
     tmp_path: Path,
     monkeypatch,

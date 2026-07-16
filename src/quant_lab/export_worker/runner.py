@@ -38,6 +38,7 @@ from quant_lab.export_worker.sync import sync_snapshot_blobs
 LOG = logging.getLogger("quant_export_worker")
 TASK_ID_RE = re.compile(r"^[A-Za-z0-9_.:-]{1,180}$")
 _STOP = False
+_STATUS_UPLOAD_LOCK = threading.RLock()
 
 
 class Config:
@@ -417,6 +418,11 @@ def _status(
 
 
 def _upload_status(config: Config, status: ExportTaskStatus, work: Path) -> None:
+    with _STATUS_UPLOAD_LOCK:
+        _upload_status_locked(config, status, work)
+
+
+def _upload_status_locked(config: Config, status: ExportTaskStatus, work: Path) -> None:
     local = work / "status.json"
     atomic_write_json(local, status.model_dump(mode="json"), mode=0o600)
     remote = f"{config.remote_queue_root}/status/{status.task_id}.json"
@@ -458,18 +464,19 @@ def _heartbeat(
     def run() -> None:
         while not stop.wait(config.heartbeat_seconds):
             try:
-                status = ExportTaskStatus.model_validate_json(
-                    (work / "status.json").read_text(encoding="utf-8")
-                )
-                now = datetime.now(UTC)
-                status = status.model_copy(
-                    update={
-                        "updated_at": now,
-                        "heartbeat_at": now,
-                        "lease_expires_at": now + timedelta(seconds=task.lease_seconds),
-                    }
-                )
-                _upload_status(config, status, work)
+                with _STATUS_UPLOAD_LOCK:
+                    status = ExportTaskStatus.model_validate_json(
+                        (work / "status.json").read_text(encoding="utf-8")
+                    )
+                    now = datetime.now(UTC)
+                    status = status.model_copy(
+                        update={
+                            "updated_at": now,
+                            "heartbeat_at": now,
+                            "lease_expires_at": now + timedelta(seconds=task.lease_seconds),
+                        }
+                    )
+                    _upload_status_locked(config, status, work)
             except Exception:
                 LOG.warning("heartbeat_failed task_id=%s", task.task_id, exc_info=True)
 

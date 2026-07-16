@@ -410,14 +410,79 @@ def test_snapshot_blob_sync_batches_all_missing_files(tmp_path: Path) -> None:
         data_root=tmp_path / "data",
         fetch_blob=lambda *_args: pytest.fail("single-file fetch should not run"),
         fetch_blobs=fetch_batch,
+        batch_fetch_workers=2,
         min_free_disk_bytes=0,
         max_snapshot_bytes=1024,
     )
 
-    assert batches == [list(payloads)]
+    assert sorted(batches) == [[item] for item in sorted(payloads)]
     assert result.cache_hits == 0
     assert result.downloaded_files == 2
     assert result.downloaded_bytes == 6
+    for relative_path, payload in payloads.items():
+        assert (result.snapshot_root / "files" / relative_path).read_bytes() == payload
+
+
+def test_snapshot_blob_sync_preserves_completed_batches_after_peer_failure(
+    tmp_path: Path,
+) -> None:
+    payloads = {
+        "lake/gold/one/data.bin": b"one",
+        "lake/gold/two/data.bin": b"two",
+    }
+    references = [
+        ExportDatasetReference(
+            relative_path=relative_path,
+            sha256=sha256_bytes(payload),
+            size_bytes=len(payload),
+            mtime_ns=1,
+            dataset=relative_path.split("/")[2],
+            media_type="other",
+        )
+        for relative_path, payload in payloads.items()
+    ]
+    base = _snapshot()
+    snapshot = ExportSnapshotManifest.model_validate(
+        {
+            **base.model_dump(mode="json"),
+            "files": [item.model_dump(mode="json") for item in references],
+            "total_input_bytes": sum(len(value) for value in payloads.values()),
+        }
+    )
+    failed_once = {"value": False}
+
+    def fetch_batch(items: list[ExportDatasetReference], target: Path) -> None:
+        item = items[0]
+        if item.relative_path.endswith("two/data.bin") and not failed_once["value"]:
+            failed_once["value"] = True
+            raise EOFError("simulated network interruption")
+        destination = target / item.relative_path
+        destination.parent.mkdir(parents=True, exist_ok=True)
+        destination.write_bytes(payloads[item.relative_path])
+
+    with pytest.raises(EOFError, match="simulated network interruption"):
+        sync_snapshot_blobs(
+            snapshot,
+            data_root=tmp_path / "data",
+            fetch_blob=lambda *_args: pytest.fail("single-file fetch should not run"),
+            fetch_blobs=fetch_batch,
+            batch_fetch_workers=2,
+            min_free_disk_bytes=0,
+            max_snapshot_bytes=1024,
+        )
+
+    result = sync_snapshot_blobs(
+        snapshot,
+        data_root=tmp_path / "data",
+        fetch_blob=lambda *_args: pytest.fail("single-file fetch should not run"),
+        fetch_blobs=fetch_batch,
+        batch_fetch_workers=2,
+        min_free_disk_bytes=0,
+        max_snapshot_bytes=1024,
+    )
+
+    assert result.cache_hits == 1
+    assert result.downloaded_files == 1
     for relative_path, payload in payloads.items():
         assert (result.snapshot_root / "files" / relative_path).read_bytes() == payload
 
@@ -779,6 +844,25 @@ def test_worker_ssh_options_reuse_one_authenticated_connection(tmp_path: Path) -
     assert "ControlMaster=auto" in joined
     assert "ControlPersist=300" in joined
     assert "ControlPath=/tmp/quant-export-ssh-%C" in joined
+    assert "ServerAliveInterval=30" in joined
+    assert "ServerAliveCountMax=3" in joined
+
+
+def test_snapshot_transfer_ssh_options_use_independent_connections(tmp_path: Path) -> None:
+    config = SimpleNamespace(
+        ssh_host="cloud.example",
+        ssh_port=22,
+        ssh_user="quant-export",
+        ssh_key_path=tmp_path / "id_ed25519",
+        known_hosts_path=tmp_path / "known_hosts",
+    )
+
+    options = export_runner._snapshot_transfer_ssh_options(config)  # noqa: SLF001
+    joined = " ".join(options)
+
+    assert "ControlMaster=no" in joined
+    assert "ControlPersist" not in joined
+    assert "ControlPath" not in joined
     assert "ServerAliveInterval=30" in joined
     assert "ServerAliveCountMax=3" in joined
 

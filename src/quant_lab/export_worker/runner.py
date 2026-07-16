@@ -563,7 +563,7 @@ def _ssh(
     serialized = " ".join(shlex.quote(value) for value in remote_command)
     command = [
         "ssh",
-        *_snapshot_transfer_ssh_options(config),
+        *_ssh_options(config),
         f"{config.ssh_user}@{config.ssh_host}",
         serialized,
     ]
@@ -621,7 +621,7 @@ def _tar_snapshot_files_from(
     serialized = " ".join(shlex.quote(value) for value in remote_command)
     command = [
         "ssh",
-        *_ssh_options(config),
+        *_snapshot_transfer_ssh_options(config),
         f"{config.ssh_user}@{config.ssh_host}",
         serialized,
     ]

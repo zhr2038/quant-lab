@@ -867,6 +867,54 @@ def test_snapshot_transfer_ssh_options_use_independent_connections(tmp_path: Pat
     assert "ServerAliveCountMax=3" in joined
 
 
+def test_snapshot_batch_fetch_uses_independent_connection_options(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    payload = b"snapshot"
+    archive_bytes = io.BytesIO()
+    with tarfile.open(fileobj=archive_bytes, mode="w") as archive:
+        info = tarfile.TarInfo("lake/data.bin")
+        info.size = len(payload)
+        archive.addfile(info, io.BytesIO(payload))
+    captured: dict[str, list[str]] = {}
+
+    class FakeProcess:
+        def __init__(self, command, **_kwargs):
+            captured["command"] = command
+            self.stdin = io.BytesIO()
+            self.stdout = io.BytesIO(archive_bytes.getvalue())
+
+        def wait(self, timeout):
+            assert timeout == 3600
+            return 0
+
+        def kill(self):
+            raise AssertionError("successful transfer must not be killed")
+
+    monkeypatch.setattr(export_runner.subprocess, "Popen", FakeProcess)
+    monkeypatch.setattr(
+        export_runner,
+        "_snapshot_transfer_ssh_options",
+        lambda _config: ["independent-transfer-option"],
+    )
+    config = SimpleNamespace(
+        ssh_host="cloud.example",
+        ssh_user="quant-export",
+        remote_queue_root="/queue",
+    )
+
+    export_runner._tar_snapshot_files_from(  # noqa: SLF001
+        config,
+        snapshot_id="snapshot-1",
+        relative_paths=["lake/data.bin"],
+        target_root=tmp_path / "target",
+    )
+
+    assert "independent-transfer-option" in captured["command"]
+    assert (tmp_path / "target" / "lake" / "data.bin").read_bytes() == payload
+
+
 def test_worker_uploads_are_group_readable_for_cloud_services(
     tmp_path: Path,
     monkeypatch,

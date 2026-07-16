@@ -4,6 +4,8 @@ import io
 import json
 import os
 import tarfile
+import threading
+import time
 import zipfile
 from datetime import UTC, date, datetime
 from pathlib import Path
@@ -23,6 +25,7 @@ from quant_lab.export_plane.contracts import (
     ExportDatasetReference,
     ExportSnapshotManifest,
     ExportTask,
+    ExportTaskState,
 )
 from quant_lab.export_plane.signatures import (
     load_public_key,
@@ -683,6 +686,52 @@ def test_worker_uploads_are_group_readable_for_cloud_services(
     assert commands[0][0] == "scp"
     assert commands[1][0] == "ssh"
     assert commands[1][-1] == "chmod 0660 /queue/status/task.json.partial"
+
+
+def test_worker_status_uploads_are_serialized(tmp_path: Path, monkeypatch) -> None:
+    active_uploads = 0
+    max_active_uploads = 0
+    active_lock = threading.Lock()
+    start = threading.Barrier(3)
+
+    def fake_scp_to(_config, _local, _remote):
+        nonlocal active_uploads, max_active_uploads
+        with active_lock:
+            active_uploads += 1
+            max_active_uploads = max(max_active_uploads, active_uploads)
+        time.sleep(0.05)
+        with active_lock:
+            active_uploads -= 1
+
+    monkeypatch.setattr(export_runner, "_scp_to", fake_scp_to)
+    monkeypatch.setattr(
+        export_runner,
+        "_ssh",
+        lambda *_args, **_kwargs: SimpleNamespace(returncode=0, stdout="", stderr=""),
+    )
+    monkeypatch.setattr(export_runner, "_write_worker_status", lambda *_args, **_kwargs: None)
+    config = SimpleNamespace(remote_queue_root="/queue", worker_id="worker-1")
+    task = _task()
+    work = tmp_path / "work"
+    work.mkdir()
+    statuses = [
+        export_runner._status(task, ExportTaskState.SYNCING, config, "syncing"),
+        export_runner._status(task, ExportTaskState.MATERIALIZING, config, "materializing"),
+    ]
+
+    def upload(status):
+        start.wait()
+        export_runner._upload_status(config, status, work)  # noqa: SLF001
+
+    threads = [threading.Thread(target=upload, args=(status,)) for status in statuses]
+    for thread in threads:
+        thread.start()
+    start.wait()
+    for thread in threads:
+        thread.join(timeout=2)
+
+    assert all(not thread.is_alive() for thread in threads)
+    assert max_active_uploads == 1
 
 
 def test_worker_streams_snapshot_batch_without_extracting_unexpected_members(

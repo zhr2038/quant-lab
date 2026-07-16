@@ -2650,6 +2650,52 @@ def test_acceptance_set_allows_provenance_snapshot_drift_when_content_matches(
     assert context["proposal_snapshot_match"] is False
     assert context["proposal_content_snapshot_match"] is True
     assert context["formal_acceptance_eligible"] is True
+    assert context.get("authoritative_snapshot") is None
+
+
+def test_signed_nas_materialization_is_authoritative_after_acceptance(monkeypatch):
+    monkeypatch.setattr(daily_export_module, "_git_commit_full", lambda: "a" * 40)
+    monkeypatch.setattr(
+        daily_export_module, "_git_ref_commit_full", lambda _ref: "a" * 40
+    )
+    monkeypatch.setattr(
+        daily_export_module,
+        "_selected_v5_bundle_git_commit",
+        lambda _context: "b" * 40,
+    )
+    bundle_sha = "c" * 64
+    content_sha = "d" * 64
+    context = {
+        "materialization_plane": "nas_local",
+        "export_snapshot_id": "export-snapshot:test",
+        "acceptance_set_id": "acceptance-signed-materialization",
+        "expected_v5_bundle_sha256": bundle_sha,
+        "selected_v5_bundle_sha256": bundle_sha,
+        "embedded_v5_bundle_source_sha256": bundle_sha,
+        "selected_v5_bundle_built_at": "2026-07-15T01:00:00Z",
+        "proposal_snapshot_id": "proposal-snapshot:new-provenance",
+        "proposal_snapshot_sha256": "e" * 64,
+        "v5_observed_proposal_snapshot_id": "proposal-snapshot:old-provenance",
+        "v5_observed_proposal_snapshot_sha256": "f" * 64,
+        "proposal_content_snapshot_id": "proposal-content-snapshot:stable",
+        "proposal_content_snapshot_sha256": content_sha,
+        "v5_observed_proposal_content_snapshot_id": (
+            "proposal-content-snapshot:stable"
+        ),
+        "v5_observed_proposal_content_snapshot_sha256": content_sha,
+        "snapshot_generated_at": "2026-07-15T00:00:00Z",
+    }
+
+    daily_export_module._finalize_acceptance_set_context(context)
+
+    assert context["formal_acceptance_eligible"] is True
+    assert context["authoritative_snapshot"] is True
+    assert context["authoritative_snapshot_source"] == "signed_immutable_export_snapshot"
+    assert (
+        context["selected_v5_bundle_authoritative_reason"]
+        == "sealed_export_snapshot_acceptance_set_verified"
+    )
+    assert context["selected_v5_bundle_manifest_match"] is True
 
 
 def test_acceptance_set_rejects_v5_bundle_earlier_than_proposal_snapshot(monkeypatch):

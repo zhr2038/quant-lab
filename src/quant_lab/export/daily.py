@@ -8682,6 +8682,21 @@ def _finalize_acceptance_set_context(v5_context: dict[str, Any]) -> None:
             f"expected={expected_sha};ingested={ingested_sha};"
             f"embedded_source={embedded_source_sha}"
         )
+    if (
+        str(v5_context.get("materialization_plane") or "").strip() == "nas_local"
+        and str(v5_context.get("export_snapshot_id") or "").strip()
+        and bool(v5_context.get("formal_acceptance_eligible"))
+    ):
+        v5_context.update(
+            {
+                "authoritative_snapshot": True,
+                "authoritative_snapshot_source": "signed_immutable_export_snapshot",
+                "selected_v5_bundle_authoritative_reason": (
+                    "sealed_export_snapshot_acceptance_set_verified"
+                ),
+                "selected_v5_bundle_manifest_match": True,
+            }
+        )
 
 
 def _populate_acceptance_context_identity(v5_context: dict[str, Any]) -> None:
@@ -8994,6 +9009,7 @@ def _manifest_payload(
         "latest_v5_bundle_seen_at_export": v5_context.get("latest_v5_bundle_seen_at_export"),
         "latest_v5_bundle_ingested_at_export": _iso_or_none(latest_ingested_bundle_ts),
         "authoritative_snapshot": authoritative_snapshot,
+        "authoritative_snapshot_source": v5_context.get("authoritative_snapshot_source"),
         "stale_v5_bundle": stale_v5_bundle,
         "allow_stale_v5": allow_stale_v5,
         "acceptance_set_id": v5_context.get("acceptance_set_id"),

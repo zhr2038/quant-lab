@@ -641,6 +641,94 @@ def test_receipt_summary_rejects_unbounded_data_quality_member(tmp_path: Path) -
         accepted_module._bounded_pack_summaries(pack)  # noqa: SLF001
 
 
+def test_accepted_publish_keeps_source_root_writable_until_atomic_rename(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    temporary = tmp_path / "accepted" / ".incoming" / "task"
+    final_dir = tmp_path / "accepted" / "2026" / "07" / "16" / "pack"
+    nested = temporary / "nested"
+    nested.mkdir(parents=True)
+    payload = nested / "pack.zip"
+    payload.write_bytes(b"pack")
+    permission_calls: list[tuple[Path, int]] = []
+    real_set_permissions = accepted_module._set_accepted_permissions
+
+    def record_permissions(root, *, root_mode=0o550):
+        permission_calls.append((Path(root), root_mode))
+        real_set_permissions(root, root_mode=root_mode)
+
+    monkeypatch.setattr(accepted_module, "_set_accepted_permissions", record_permissions)
+
+    accepted_module._publish_accepted_directory(temporary, final_dir)  # noqa: SLF001
+
+    assert permission_calls == [(temporary, 0o750)]
+    assert (final_dir / "nested" / "pack.zip").read_bytes() == b"pack"
+    if os.name != "nt":
+        assert final_dir.stat().st_mode & 0o777 == 0o550
+        assert (final_dir / "nested").stat().st_mode & 0o777 == 0o550
+        assert (final_dir / "nested" / "pack.zip").stat().st_mode & 0o777 == 0o440
+
+
+def test_failed_accepted_publish_can_remove_read_only_temporary_tree(tmp_path: Path) -> None:
+    temporary = tmp_path / "accepted" / ".incoming" / "task"
+    nested = temporary / "nested"
+    nested.mkdir(parents=True)
+    payload = nested / "pack.zip"
+    payload.write_bytes(b"pack")
+    accepted_module._set_accepted_permissions(temporary)  # noqa: SLF001
+
+    accepted_module._remove_temporary_directory(temporary)  # noqa: SLF001
+
+    assert not temporary.exists()
+
+
+def test_existing_accepted_pack_repairs_missing_index(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    pack_sha = "f" * 64
+    pack_id = "expert-pack-existing"
+    export_date = date(2026, 7, 16)
+    accepted_root = tmp_path / "accepted"
+    final_dir = accepted_root / "2026" / "07" / "16" / pack_id
+    final_dir.mkdir(parents=True)
+    (final_dir / "receipt.json").write_text("{}", encoding="utf-8")
+    receipt = SimpleNamespace(pack_sha256=pack_sha)
+    calls: list[tuple[Path, object, date]] = []
+    monkeypatch.setattr(
+        accepted_module.ExportWorkerReceipt,
+        "model_validate_json",
+        lambda _value: receipt,
+    )
+    monkeypatch.setattr(
+        accepted_module,
+        "_update_index",
+        lambda path, value, day: calls.append((Path(path), value, day)),
+    )
+    result = SimpleNamespace(
+        validation_report=SimpleNamespace(valid=True, zip_sha256=pack_sha),
+        pack_manifest=SimpleNamespace(pack_id=pack_id),
+    )
+
+    returned_receipt, returned_dir = accepted_module.accept_materialized_pack(
+        result=result,
+        task=SimpleNamespace(export_date=export_date),
+        snapshot=SimpleNamespace(),
+        accepted_root=accepted_root,
+        index_path=tmp_path / "accepted_index.json",
+        worker_id="worker",
+        worker_signing_key_path=tmp_path / "unused-key",
+        worker_key_id="worker-key",
+        cache_hits=0,
+        downloaded_bytes=0,
+    )
+
+    assert returned_receipt is receipt
+    assert returned_dir == final_dir
+    assert calls == [(tmp_path / "accepted_index.json", receipt, export_date)]
+
+
 def test_remote_worker_command_is_serialized_as_one_quoted_argument(
     tmp_path: Path,
     monkeypatch,

@@ -52,6 +52,7 @@ def accept_materialized_pack(
         )
         if receipt.pack_sha256 != pack_sha:
             raise RuntimeError("accepted_pack_id_sha256_conflict")
+        _update_index(index_path, receipt, task.export_date)
         return receipt, final_dir
 
     incoming_parent = accepted / ".incoming"
@@ -140,14 +141,12 @@ def accept_materialized_pack(
             }
         )
         atomic_write_json(temporary / "receipt.json", receipt.model_dump(mode="json"))
-        _set_accepted_permissions(temporary)
-        final_dir.parent.mkdir(parents=True, exist_ok=True)
-        os.replace(temporary, final_dir)
+        _publish_accepted_directory(temporary, final_dir)
         _update_index(index_path, receipt, task.export_date)
         return receipt, final_dir
     finally:
         if temporary.exists():
-            shutil.rmtree(temporary, ignore_errors=True)
+            _remove_temporary_directory(temporary)
 
 
 def _stream_copy(source: Path, destination: Path) -> None:
@@ -157,10 +156,29 @@ def _stream_copy(source: Path, destination: Path) -> None:
         os.fsync(dst.fileno())
 
 
-def _set_accepted_permissions(root: Path) -> None:
+def _publish_accepted_directory(temporary: Path, final_dir: Path) -> None:
+    # Synology's Btrfs ugacl rejects a directory rename after its source root
+    # loses owner-write permission. Keep only that root writable until publish.
+    _set_accepted_permissions(temporary, root_mode=0o750)
+    final_dir.parent.mkdir(parents=True, exist_ok=True)
+    os.replace(temporary, final_dir)
+    final_dir.chmod(0o550)
+
+
+def _set_accepted_permissions(root: Path, *, root_mode: int = 0o550) -> None:
     for path in root.rglob("*"):
         path.chmod(0o550 if path.is_dir() else 0o440)
-    root.chmod(0o550)
+    root.chmod(root_mode)
+
+
+def _remove_temporary_directory(temporary: Path) -> None:
+    try:
+        temporary.chmod(0o750)
+        for path in temporary.rglob("*"):
+            path.chmod(0o750 if path.is_dir() else 0o640)
+    except OSError:
+        pass
+    shutil.rmtree(temporary, ignore_errors=True)
 
 
 def _bounded_pack_summaries(path: Path) -> dict[str, Any]:

@@ -132,32 +132,33 @@ def materialize_snapshot_pack(
 
 
 def _sealed_acceptance_context(snapshot: ExportSnapshotManifest) -> dict[str, Any]:
+    serialized = snapshot.model_dump(mode="json")
     context = {
-        "quant_lab_production_commit": snapshot.quant_lab_commit,
-        "quant_lab_current_main_commit": snapshot.quant_lab_current_main_commit,
+        "quant_lab_production_commit": serialized["quant_lab_commit"],
+        "quant_lab_current_main_commit": serialized["quant_lab_current_main_commit"],
         "current_main_production_relationship": (
-            snapshot.current_main_production_relationship
+            serialized["current_main_production_relationship"]
         ),
-        "proposal_snapshot_id": snapshot.proposal_snapshot_id,
-        "proposal_snapshot_sha256": snapshot.proposal_snapshot_sha256,
-        "proposal_content_snapshot_id": snapshot.proposal_content_snapshot_id,
+        "proposal_snapshot_id": serialized["proposal_snapshot_id"],
+        "proposal_snapshot_sha256": serialized["proposal_snapshot_sha256"],
+        "proposal_content_snapshot_id": serialized["proposal_content_snapshot_id"],
         "proposal_content_snapshot_sha256": (
-            snapshot.proposal_content_snapshot_sha256
+            serialized["proposal_content_snapshot_sha256"]
         ),
-        "snapshot_generated_at": snapshot.snapshot_generated_at,
+        "snapshot_generated_at": serialized["snapshot_generated_at"],
         "v5_observed_proposal_snapshot_id": (
-            snapshot.v5_observed_proposal_snapshot_id
+            serialized["v5_observed_proposal_snapshot_id"]
         ),
         "v5_observed_proposal_snapshot_sha256": (
-            snapshot.v5_observed_proposal_snapshot_sha256
+            serialized["v5_observed_proposal_snapshot_sha256"]
         ),
         "v5_observed_proposal_content_snapshot_id": (
-            snapshot.v5_observed_proposal_content_snapshot_id
+            serialized["v5_observed_proposal_content_snapshot_id"]
         ),
         "v5_observed_proposal_content_snapshot_sha256": (
-            snapshot.v5_observed_proposal_content_snapshot_sha256
+            serialized["v5_observed_proposal_content_snapshot_sha256"]
         ),
-        "selected_v5_bundle_built_at": snapshot.selected_v5_bundle_built_at,
+        "selected_v5_bundle_built_at": serialized["selected_v5_bundle_built_at"],
     }
     missing = [key for key, value in context.items() if value in (None, "")]
     if missing:

@@ -11,7 +11,7 @@ services:
     env_file:
       - .env
     cpus: 3.0
-    mem_limit: 6g
+    mem_limit: ${NAS_EXPORT_WORKER_MEMORY_LIMIT:-8g}
     pids_limit: 256
     read_only: true
     user: "10002:10002"

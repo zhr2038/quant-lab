@@ -2,6 +2,19 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
 SYSTEMD = ROOT / "deploy" / "systemd"
+
+
+def test_export_plane_units_share_the_low_privilege_queue_group() -> None:
+    for name in (
+        "quant-lab-api.service",
+        "quant-lab-web.service",
+        "quant-lab-export-request.service",
+        "quant-lab-export-receipt-import.service",
+        "quant-lab-ai-task.service",
+    ):
+        unit = (SYSTEMD / name).read_text(encoding="utf-8")
+        assert "User=quantlab" in unit
+        assert "SupplementaryGroups=quant-export" in unit
 SCRIPTS = ROOT / "deploy" / "scripts"
 
 

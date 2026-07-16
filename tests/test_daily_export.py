@@ -3889,7 +3889,9 @@ def test_export_marks_core_momentum_as_research_baseline_and_prioritizes_strateg
     assert "Focus strategy candidates:" in executive_summary
 
 
-def test_export_daily_ingests_pending_v5_inbox_before_snapshot(tmp_path):
+def test_export_daily_ingests_pending_v5_inbox_before_snapshot(tmp_path, monkeypatch):
+    monkeypatch.setattr(daily_export_module, "_git_commit_full", lambda: "a" * 40)
+    monkeypatch.setattr(daily_export_module, "_current_main_commit_full", lambda: "a" * 40)
     lake_root = _fixture_lake(tmp_path)
     inbox = tmp_path / "inbox"
     bundle_members = {

@@ -1,12 +1,8 @@
 FROM python:3.12-slim
 
-ARG BUILD_GIT_COMMIT=unknown
-ARG BUILD_TIMESTAMP=unknown
 ENV PYTHONDONTWRITEBYTECODE=1 \
     PYTHONUNBUFFERED=1 \
     POLARS_MAX_THREADS=3 \
-    BUILD_GIT_COMMIT=${BUILD_GIT_COMMIT} \
-    BUILD_TIMESTAMP=${BUILD_TIMESTAMP} \
     EXPORT_SCHEMA_VERSION=quant_lab.expert_pack.v1
 
 RUN apt-get update \
@@ -19,6 +15,11 @@ WORKDIR /app
 COPY pyproject.toml README.md /app/
 COPY src /app/src
 RUN pip install --no-cache-dir .
+
+ARG BUILD_GIT_COMMIT=unknown
+ARG BUILD_TIMESTAMP=unknown
+ENV BUILD_GIT_COMMIT=${BUILD_GIT_COMMIT} \
+    BUILD_TIMESTAMP=${BUILD_TIMESTAMP}
 
 USER 10002:10002
 ENTRYPOINT ["python", "-m", "quant_lab.export_worker.runner"]

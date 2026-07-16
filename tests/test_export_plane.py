@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import os
 import zipfile
 from datetime import UTC, date, datetime
 from pathlib import Path
@@ -13,6 +14,7 @@ from pydantic import ValidationError
 
 from quant_lab.export import daily as daily_export
 from quant_lab.export_materializer.validator import validate_export_pack_locally
+from quant_lab.export_plane import snapshot as snapshot_module
 from quant_lab.export_plane.contracts import (
     ExportDatasetReference,
     ExportSnapshotManifest,
@@ -181,6 +183,56 @@ def test_snapshot_blob_sync_rejects_bad_sha(tmp_path: Path) -> None:
             max_snapshot_bytes=1024,
         )
     assert not list((tmp_path / "data").rglob("*.partial"))
+
+
+@pytest.mark.skipif(os.name == "nt", reason="Windows forbids replacing an open file")
+def test_snapshot_copy_keeps_open_inode_when_source_is_atomically_replaced(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    source = tmp_path / "source.json"
+    destination = tmp_path / "snapshot" / "source.json"
+    destination.parent.mkdir()
+    source.write_bytes(b'{"version":1}\n')
+    original_copy = snapshot_module.shutil.copyfileobj
+
+    def copy_then_replace(source_handle, target_handle, *, length: int) -> None:
+        original_copy(source_handle, target_handle, length=length)
+        replacement = tmp_path / "replacement.json"
+        replacement.write_bytes(b'{"version":2}\n')
+        replacement.replace(source)
+
+    monkeypatch.setattr(snapshot_module.shutil, "copyfileobj", copy_then_replace)
+    reference = snapshot_module._copy_stable_reference(  # noqa: SLF001
+        "example",
+        source,
+        destination,
+        "lake/example/source.json",
+    )
+
+    assert destination.read_bytes() == b'{"version":1}\n'
+    assert source.read_bytes() == b'{"version":2}\n'
+    assert reference.sha256 == sha256_bytes(b'{"version":1}\n')
+
+
+def test_snapshot_copy_rejects_in_place_mutation(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    source = tmp_path / "source.json"
+    destination = tmp_path / "snapshot.json"
+    source.write_bytes(b'{"version":1}\n')
+    original_copy = snapshot_module.shutil.copyfileobj
+
+    def copy_then_mutate(source_handle, target_handle, *, length: int) -> None:
+        original_copy(source_handle, target_handle, length=length)
+        with source.open("ab") as mutable:
+            mutable.write(b"changed\n")
+            mutable.flush()
+
+    monkeypatch.setattr(snapshot_module.shutil, "copyfileobj", copy_then_mutate)
+    with pytest.raises(RuntimeError, match="changed while copying"):
+        snapshot_module._copy_snapshot_input(source, destination)  # noqa: SLF001
 
 
 def _valid_pack(path: Path, *, extra_name: str | None = None) -> None:

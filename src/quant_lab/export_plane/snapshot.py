@@ -6,6 +6,7 @@ import platform
 import shutil
 import subprocess
 import tempfile
+import time
 from collections.abc import Iterable
 from datetime import UTC, date, datetime
 from pathlib import Path
@@ -52,81 +53,86 @@ def seal_export_snapshot(
 
     sources = list(_export_source_files(root))
     sources.append(("v5_bundle", selected_v5, _relative_source_path(root, selected_v5)))
-    source_by_relative = {relative: path for _, path, relative in sources}
-    references = [_reference(dataset, path, relative) for dataset, path, relative in sources]
-    references.sort(key=lambda item: item.relative_path)
-    source_digest = sha256_bytes(
-        json.dumps(
-            [item.model_dump(mode="json") for item in references],
-            ensure_ascii=True,
-            sort_keys=True,
-            separators=(",", ":"),
-        ).encode()
-    )
-    snapshot_id = f"export-snapshot-{source_digest[:24]}"
-    acceptance_id = acceptance_set_id or f"nas-export-{export_date:%Y%m%d}-{source_digest[:16]}"
-    final_dir = queue / "snapshots" / snapshot_id
-    if final_dir.exists():
-        existing = ExportSnapshotManifest.model_validate_json(
-            (final_dir / "manifest.json").read_text(encoding="utf-8")
-        )
-        verify_snapshot_manifest_digest(existing)
-        if existing.files != references:
-            raise RuntimeError("snapshot_id already exists with different file references")
-        if existing.acceptance_set_id != acceptance_id:
-            raise RuntimeError("snapshot_id already exists with a different acceptance set")
-        if rehydrate_released and not (final_dir / "files").is_dir():
-            _rehydrate_snapshot_files(final_dir, references, source_by_relative)
-        return existing, final_dir
-
-    created_at = datetime.now(UTC)
-    unsigned = {
-        "schema_version": "quant_lab_export_snapshot.v1",
-        "snapshot_id": snapshot_id,
-        "export_date": export_date,
-        "created_at": created_at,
-        "quant_lab_commit": quant_commit,
-        "quant_lab_version": __version__,
-        "v5_commit": v5_commit,
-        "selected_v5_bundle_name": selected_v5.name,
-        "selected_v5_bundle_sha256": selected_sha,
-        "acceptance_set_id": acceptance_id,
-        "risk_permission_identity": _dataset_identity(root, "risk_permission"),
-        "paper_lifecycle_identity": _dataset_identity(root, "paper_strategy_proposal_snapshot"),
-        "environment_fingerprint": _environment_fingerprint(),
-        "schema_fingerprint": _schema_fingerprint(),
-        "files": references,
-        "total_input_bytes": sum(item.size_bytes for item in references),
-        "authoritative_input_snapshot": True,
-        "manifest_sha256": "0" * 64,
-        "signature_key_id": signature_key_id,
-        "signature_algorithm": "ed25519",
-        "signature": "A" * 88,
-    }
-    digest_payload = dict(unsigned)
-    digest_payload.pop("signature")
-    digest_payload.pop("manifest_sha256")
-    unsigned["manifest_sha256"] = sha256_bytes(canonical_json_bytes(digest_payload))
-    provisional = ExportSnapshotManifest.model_validate(unsigned)
-    unsigned["signature"] = sign_payload(provisional, load_signing_key(signing_key_path))
-    manifest = ExportSnapshotManifest.model_validate(unsigned)
-
-    temporary = Path(tempfile.mkdtemp(prefix=f".{snapshot_id}.", dir=queue / "snapshots"))
+    temporary = Path(tempfile.mkdtemp(prefix=".sealing.", dir=queue / "snapshots"))
     try:
         files_root = temporary / "files"
-        for reference in references:
-            source = source_by_relative[reference.relative_path]
-            destination = files_root / reference.relative_path
+        references: list[ExportDatasetReference] = []
+        for dataset, source, relative_path in sources:
+            destination = files_root / relative_path
             destination.parent.mkdir(parents=True, exist_ok=True)
-            _copy_snapshot_input(source, destination)
-            if destination.stat().st_size != reference.size_bytes:
-                raise RuntimeError(
-                    f"snapshot input size changed while sealing: {reference.relative_path}"
-                )
-            if sha256_file(destination) != reference.sha256:
-                raise RuntimeError(
-                    f"snapshot input changed while sealing: {reference.relative_path}"
-                )
+            references.append(
+                _copy_stable_reference(dataset, source, destination, relative_path)
+            )
+        references.sort(key=lambda item: item.relative_path)
+        v5_reference = next(item for item in references if item.dataset == "v5_bundle")
+        if v5_reference.sha256 != selected_sha:
+            raise RuntimeError("selected V5 bundle changed while sealing")
+
+        source_digest = sha256_bytes(
+            json.dumps(
+                [item.model_dump(mode="json") for item in references],
+                ensure_ascii=True,
+                sort_keys=True,
+                separators=(",", ":"),
+            ).encode()
+        )
+        snapshot_id = f"export-snapshot-{source_digest[:24]}"
+        acceptance_id = acceptance_set_id or (
+            f"nas-export-{export_date:%Y%m%d}-{source_digest[:16]}"
+        )
+        final_dir = queue / "snapshots" / snapshot_id
+        if final_dir.exists():
+            existing = ExportSnapshotManifest.model_validate_json(
+                (final_dir / "manifest.json").read_text(encoding="utf-8")
+            )
+            verify_snapshot_manifest_digest(existing)
+            if existing.files != references:
+                raise RuntimeError("snapshot_id already exists with different file references")
+            if existing.acceptance_set_id != acceptance_id:
+                raise RuntimeError("snapshot_id already exists with a different acceptance set")
+            if rehydrate_released and not (final_dir / "files").is_dir():
+                _set_snapshot_permissions(files_root)
+                os.replace(files_root, final_dir / "files")
+                (final_dir / "RELEASED.json").unlink(missing_ok=True)
+            return existing, final_dir
+
+        created_at = datetime.now(UTC)
+        unsigned = {
+            "schema_version": "quant_lab_export_snapshot.v1",
+            "snapshot_id": snapshot_id,
+            "export_date": export_date,
+            "created_at": created_at,
+            "quant_lab_commit": quant_commit,
+            "quant_lab_version": __version__,
+            "v5_commit": v5_commit,
+            "selected_v5_bundle_name": selected_v5.name,
+            "selected_v5_bundle_sha256": selected_sha,
+            "acceptance_set_id": acceptance_id,
+            "risk_permission_identity": _dataset_identity(root, "risk_permission"),
+            "paper_lifecycle_identity": _dataset_identity(
+                root,
+                "paper_strategy_proposal_snapshot",
+            ),
+            "environment_fingerprint": _environment_fingerprint(),
+            "schema_fingerprint": _schema_fingerprint(),
+            "files": references,
+            "total_input_bytes": sum(item.size_bytes for item in references),
+            "authoritative_input_snapshot": True,
+            "manifest_sha256": "0" * 64,
+            "signature_key_id": signature_key_id,
+            "signature_algorithm": "ed25519",
+            "signature": "A" * 88,
+        }
+        digest_payload = dict(unsigned)
+        digest_payload.pop("signature")
+        digest_payload.pop("manifest_sha256")
+        unsigned["manifest_sha256"] = sha256_bytes(canonical_json_bytes(digest_payload))
+        provisional = ExportSnapshotManifest.model_validate(unsigned)
+        unsigned["signature"] = sign_payload(
+            provisional,
+            load_signing_key(signing_key_path),
+        )
+        manifest = ExportSnapshotManifest.model_validate(unsigned)
         atomic_write_json(temporary / "manifest.json", manifest.model_dump(mode="json"))
         (temporary / "SEALED").write_text(manifest.manifest_sha256 + "\n", encoding="ascii")
         _set_snapshot_permissions(temporary)
@@ -135,33 +141,6 @@ def seal_export_snapshot(
         if temporary.exists():
             shutil.rmtree(temporary, ignore_errors=True)
     return manifest, final_dir
-
-
-def _rehydrate_snapshot_files(
-    snapshot_dir: Path,
-    references: list[ExportDatasetReference],
-    source_by_relative: dict[str, Path],
-) -> None:
-    temporary = snapshot_dir / ".files.partial"
-    shutil.rmtree(temporary, ignore_errors=True)
-    try:
-        for reference in references:
-            destination = temporary / reference.relative_path
-            destination.parent.mkdir(parents=True, exist_ok=True)
-            _copy_snapshot_input(source_by_relative[reference.relative_path], destination)
-            if destination.stat().st_size != reference.size_bytes:
-                raise RuntimeError(
-                    f"snapshot input size changed while restoring: {reference.relative_path}"
-                )
-            if sha256_file(destination) != reference.sha256:
-                raise RuntimeError(
-                    f"snapshot input changed while restoring: {reference.relative_path}"
-                )
-        _set_snapshot_permissions(temporary)
-        os.replace(temporary, snapshot_dir / "files")
-        (snapshot_dir / "RELEASED.json").unlink(missing_ok=True)
-    finally:
-        shutil.rmtree(temporary, ignore_errors=True)
 
 
 def verify_snapshot_manifest_digest(manifest: ExportSnapshotManifest) -> None:
@@ -207,21 +186,38 @@ def _dataset_files(path: Path, dataset: str) -> list[Path]:
     )
 
 
-def _reference(dataset: str, path: Path, relative_path: str) -> ExportDatasetReference:
-    before = path.stat()
-    digest = sha256_file(path)
-    after = path.stat()
-    if (before.st_size, before.st_mtime_ns) != (after.st_size, after.st_mtime_ns):
-        raise RuntimeError(f"export input changed while hashing: {path}")
-    return ExportDatasetReference(
-        relative_path=relative_path,
-        sha256=digest,
-        size_bytes=after.st_size,
-        mtime_ns=after.st_mtime_ns,
-        row_count=_parquet_rows(path) if path.suffix.lower() == ".parquet" else None,
-        dataset=dataset,
-        media_type=_media_type(path, dataset),
-    )
+def _copy_stable_reference(
+    dataset: str,
+    source: Path,
+    destination: Path,
+    relative_path: str,
+    *,
+    max_attempts: int = 5,
+) -> ExportDatasetReference:
+    last_error: Exception | None = None
+    for attempt in range(max(1, max_attempts)):
+        destination.unlink(missing_ok=True)
+        try:
+            captured = _copy_snapshot_input(source, destination)
+            return ExportDatasetReference(
+                relative_path=relative_path,
+                sha256=sha256_file(destination),
+                size_bytes=captured.st_size,
+                mtime_ns=captured.st_mtime_ns,
+                row_count=(
+                    _parquet_rows(destination)
+                    if source.suffix.lower() == ".parquet"
+                    else None
+                ),
+                dataset=dataset,
+                media_type=_media_type(source, dataset),
+            )
+        except (FileNotFoundError, RuntimeError) as exc:
+            last_error = exc
+            destination.unlink(missing_ok=True)
+            if attempt + 1 < max_attempts:
+                time.sleep(0.1 * (attempt + 1))
+    raise RuntimeError(f"snapshot input did not stabilize: {relative_path}") from last_error
 
 
 def _parquet_rows(path: Path) -> int | None:
@@ -245,12 +241,19 @@ def _relative_source_path(lake_root: Path, path: Path) -> str:
         return f"inputs/v5/{path.name}"
 
 
-def _copy_snapshot_input(source: Path, destination: Path) -> None:
+def _copy_snapshot_input(source: Path, destination: Path) -> os.stat_result:
     with source.open("rb") as source_handle, destination.open("xb") as target_handle:
+        before = os.fstat(source_handle.fileno())
         shutil.copyfileobj(source_handle, target_handle, length=1024 * 1024)
         target_handle.flush()
         os.fsync(target_handle.fileno())
-    shutil.copystat(source, destination)
+        after = os.fstat(source_handle.fileno())
+    if (before.st_size, before.st_mtime_ns) != (after.st_size, after.st_mtime_ns):
+        raise RuntimeError(f"snapshot input changed while copying: {source}")
+    if destination.stat().st_size != after.st_size:
+        raise RuntimeError(f"snapshot input size changed while copying: {source}")
+    os.utime(destination, ns=(after.st_atime_ns, after.st_mtime_ns))
+    return after
 
 
 def _set_snapshot_permissions(root: Path) -> None:

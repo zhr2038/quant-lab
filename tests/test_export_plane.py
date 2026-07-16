@@ -123,6 +123,21 @@ def test_ed25519_signature_detects_tampering(tmp_path: Path) -> None:
         verify_payload(changed, signature, load_public_key(public_path))
 
 
+def test_snapshot_manifest_digest_uses_normalized_nested_models(tmp_path: Path) -> None:
+    private_path, public_path = _keys(tmp_path)
+    unsigned = _snapshot().model_dump(mode="json")
+    unsigned["manifest_sha256"] = "0" * 64
+    unsigned["signature"] = "A" * 88
+
+    manifest = snapshot_module._finalize_snapshot_manifest(  # noqa: SLF001
+        unsigned,
+        private_path,
+    )
+
+    snapshot_module.verify_snapshot_manifest_digest(manifest)
+    verify_payload(manifest, manifest.signature, load_public_key(public_path))
+
+
 def test_snapshot_blob_sync_downloads_once_then_hits_cache(tmp_path: Path) -> None:
     source = tmp_path / "source.bin"
     source.write_bytes(b"snapshot-data")

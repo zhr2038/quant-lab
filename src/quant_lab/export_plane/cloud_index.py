@@ -12,6 +12,9 @@ from quant_lab.export_plane.signatures import signed_download_token
 from quant_lab.export_plane.status import atomic_write_json, ensure_queue_layout, read_json
 
 INDEX_FILE = "cloud_index.json"
+_ACTIVE_TASK_STATES = ("pending", "running")
+_ACTIVE_REQUEST_STATES = ("pending", "processing")
+_TERMINAL_TASK_STATES = {"download_ready", "failed", "expired", "cancelled"}
 
 
 def load_cloud_index(queue_root: str | Path) -> list[ExportPackIndexEntry]:
@@ -65,6 +68,20 @@ def export_plane_status(
         value = read_json(path)
         if value:
             request_statuses.append(value)
+    statuses.sort(key=lambda value: value.updated_at, reverse=True)
+    request_statuses.sort(key=_request_status_updated_at, reverse=True)
+    active_task_ids = {
+        path.name
+        for state in _ACTIVE_TASK_STATES
+        for path in (root / state).iterdir()
+        if path.is_dir()
+    }
+    active_request_ids = {
+        path.stem
+        for state in _ACTIVE_REQUEST_STATES
+        for path in (root / "requests" / state).glob("*.json")
+        if path.is_file()
+    }
     if export_date is not None:
         requested = [item for item in packs if item.export_date == export_date]
     else:
@@ -94,29 +111,62 @@ def export_plane_status(
     active = next(
         (
             item
-            for item in sorted(statuses, key=lambda value: value.updated_at, reverse=True)
-            if item.state.value
-            not in {"download_ready", "failed", "expired", "cancelled"}
+            for item in statuses
+            if item.task_id in active_task_ids
+            and item.state.value not in _TERMINAL_TASK_STATES
         ),
         None,
     )
-    request_state = (
-        str(request_statuses[0].get("state") or "") if request_statuses else ""
+    active_request = next(
+        (
+            item
+            for item in request_statuses
+            if str(item.get("request_id") or "") in active_request_ids
+            or str(item.get("task_id") or "") in active_task_ids
+        ),
+        None,
     )
-    effective_state = (
-        active.state.value
-        if active is not None
-        else (
-            request_state
-            if request_state not in {"", "cancelled", "failed"}
-            else ("download_ready" if latest else request_state or "idle")
+    terminal_events: list[tuple[datetime, str, str, Any]] = [
+        (item.updated_at, item.state.value, "task", item)
+        for item in statuses
+        if item.state.value in _TERMINAL_TASK_STATES
+    ]
+    terminal_events.extend(
+        (
+            _request_status_updated_at(item),
+            str(item.get("state") or ""),
+            "request",
+            item,
         )
+        for item in request_statuses
+        if str(item.get("state") or "") in {"failed", "cancelled"}
     )
+    terminal_event = max(terminal_events, default=None, key=lambda item: item[0])
+    if terminal_event is not None and latest is not None:
+        if terminal_event[0] <= latest.accepted_at:
+            terminal_event = None
+
+    current_task: ExportTaskStatus | None = active
+    current_request: dict[str, Any] | None = active_request
+    if active is not None:
+        effective_state = active.state.value
+    elif active_request is not None:
+        effective_state = str(active_request.get("state") or "pending")
+    elif terminal_event is not None:
+        effective_state = terminal_event[1]
+        if terminal_event[2] == "task":
+            current_task = terminal_event[3]
+        else:
+            current_request = terminal_event[3]
+    elif latest is not None:
+        effective_state = "download_ready"
+    else:
+        effective_state = "idle"
     return {
         "export_plane": "nas_local",
         "state": effective_state,
-        "task": active.model_dump(mode="json") if active is not None else None,
-        "request": request_statuses[0] if request_statuses else None,
+        "task": current_task.model_dump(mode="json") if current_task is not None else None,
+        "request": current_request,
         "latest_pack": latest_row,
         "packs": pack_rows,
         "pack_count": len(packs),
@@ -132,6 +182,18 @@ def export_plane_status(
         "cloud_zip_present": False,
         "live_order_effect": "none_read_only_export_control_plane",
     }
+
+
+def _request_status_updated_at(value: dict[str, Any]) -> datetime:
+    raw = value.get("updated_at") or value.get("requested_at")
+    if raw:
+        try:
+            parsed = datetime.fromisoformat(str(raw).replace("Z", "+00:00"))
+            if parsed.tzinfo is not None:
+                return parsed.astimezone(UTC)
+        except ValueError:
+            pass
+    return datetime.min.replace(tzinfo=UTC)
 
 
 def _pack_status_row(

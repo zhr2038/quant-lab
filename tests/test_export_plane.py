@@ -21,11 +21,14 @@ from quant_lab.export import daily as daily_export
 from quant_lab.export_materializer import writer as materializer_writer
 from quant_lab.export_materializer.validator import validate_export_pack_locally
 from quant_lab.export_plane import snapshot as snapshot_module
+from quant_lab.export_plane.cloud_index import export_plane_status, write_cloud_index
 from quant_lab.export_plane.contracts import (
     ExportDatasetReference,
+    ExportPackIndexEntry,
     ExportSnapshotManifest,
     ExportTask,
     ExportTaskState,
+    ExportTaskStatus,
 )
 from quant_lab.export_plane.signatures import (
     load_public_key,
@@ -598,6 +601,93 @@ def test_worker_failure_publishes_terminal_cloud_status(
     assert published[0].state.value == "failed"
     assert published[0].current_stage == "failed"
     assert published[0].last_error == "ValueError: snapshot manifest SHA256 mismatch"
+
+
+def test_export_plane_status_ignores_stale_cancelled_task_and_completed_request(
+    tmp_path: Path,
+) -> None:
+    now = datetime(2026, 7, 16, 14, 46, tzinfo=UTC)
+    pack = ExportPackIndexEntry(
+        pack_id="expert-pack-current",
+        task_id="export-current",
+        pack_name="current.zip",
+        export_date=now.date(),
+        generated_at=now,
+        accepted_at=now,
+        pack_sha256="1" * 64,
+        pack_size_bytes=10,
+        snapshot_id="export-snapshot-current",
+        authoritative_input_snapshot=True,
+        nas_artifact_validated=True,
+        control_plane_receipt_verified=True,
+        download_ready=True,
+        download_relative_path="2026/07/16/expert-pack-current/current.zip",
+        selected_v5_bundle_sha256=V5_SHA,
+        acceptance_set_id="acceptance-current",
+        worker_id="worker",
+        worker_commit=COMMIT,
+    )
+    write_cloud_index(tmp_path, [pack])
+    stale = ExportTaskStatus(
+        task_id="export-cancelled",
+        snapshot_id="export-snapshot-cancelled",
+        state=ExportTaskState.SYNCING,
+        requested_at=now,
+        updated_at=now,
+        current_stage="syncing",
+    )
+    status_root = tmp_path / "status"
+    status_root.mkdir(exist_ok=True)
+    (status_root / "export-cancelled.json").write_text(
+        stale.model_dump_json(),
+        encoding="utf-8",
+    )
+    (tmp_path / "cancelled" / stale.task_id).mkdir(parents=True)
+    completed_request = {
+        "request_id": "export-request-current",
+        "task_id": pack.task_id,
+        "task_created": True,
+        "state": "pending",
+        "updated_at": (now.replace(minute=45)).isoformat(),
+    }
+    request_status = tmp_path / "requests" / "status" / "export-request-current.json"
+    request_status.parent.mkdir(parents=True, exist_ok=True)
+    request_status.write_text(json.dumps(completed_request), encoding="utf-8")
+    completed_request_path = (
+        tmp_path / "requests" / "completed" / "export-request-current.json"
+    )
+    completed_request_path.parent.mkdir(parents=True, exist_ok=True)
+    completed_request_path.write_text("{}", encoding="utf-8")
+
+    result = export_plane_status(tmp_path, export_date=now.date())
+
+    assert result["state"] == "download_ready"
+    assert result["task"] is None
+    assert result["request"] is None
+
+
+def test_export_plane_status_keeps_genuinely_running_task_visible(tmp_path: Path) -> None:
+    now = datetime(2026, 7, 16, 14, 46, tzinfo=UTC)
+    active = ExportTaskStatus(
+        task_id="export-running",
+        snapshot_id="export-snapshot-running",
+        state=ExportTaskState.SYNCING,
+        requested_at=now,
+        updated_at=now,
+        current_stage="syncing",
+    )
+    status_root = tmp_path / "status"
+    status_root.mkdir(parents=True)
+    (status_root / "export-running.json").write_text(
+        active.model_dump_json(),
+        encoding="utf-8",
+    )
+    (tmp_path / "running" / active.task_id).mkdir(parents=True)
+
+    result = export_plane_status(tmp_path)
+
+    assert result["state"] == "syncing"
+    assert result["task"]["task_id"] == active.task_id
 
 
 def _valid_pack(path: Path, *, extra_name: str | None = None) -> None:

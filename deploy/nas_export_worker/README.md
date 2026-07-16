@@ -28,3 +28,5 @@ docker compose logs -f quant-export-worker
 ```
 
 The worker refuses a task when `expected_worker_commit` differs from its build commit.
+`SNAPSHOT_FETCH_WORKERS` controls independent, resumable snapshot streams. Use `4` by
+default and raise it only after checking qyun2 SSH load and NAS network stability.

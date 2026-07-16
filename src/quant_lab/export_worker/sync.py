@@ -3,6 +3,7 @@ from __future__ import annotations
 import os
 import shutil
 from collections.abc import Callable
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -28,6 +29,7 @@ def sync_snapshot_blobs(
     data_root: str | Path,
     fetch_blob: BlobFetcher,
     fetch_blobs: BlobBatchFetcher | None = None,
+    batch_fetch_workers: int = 1,
     min_free_disk_bytes: int,
     max_snapshot_bytes: int,
 ) -> SnapshotSyncResult:
@@ -68,13 +70,20 @@ def sync_snapshot_blobs(
         shutil.rmtree(incoming, ignore_errors=True)
         incoming.mkdir(parents=True, exist_ok=False)
         try:
-            fetch_blobs(missing, incoming)
-            for reference in missing:
-                _install_blob(
-                    incoming / reference.relative_path,
-                    _blob_path(blobs_root, reference.sha256),
-                    reference,
-                )
+            batches = _balanced_batches(missing, batch_fetch_workers)
+            with ThreadPoolExecutor(max_workers=len(batches)) as executor:
+                futures = [
+                    executor.submit(
+                        _fetch_and_install_batch,
+                        batch,
+                        incoming / f"batch-{index:02d}",
+                        fetch_blobs,
+                        blobs_root,
+                    )
+                    for index, batch in enumerate(batches)
+                ]
+                for future in futures:
+                    future.result()
         finally:
             shutil.rmtree(incoming, ignore_errors=True)
     else:
@@ -114,6 +123,42 @@ def sync_snapshot_blobs(
         downloaded_files=len(missing),
         downloaded_bytes=missing_bytes,
     )
+
+
+def _balanced_batches(
+    references: list[ExportDatasetReference],
+    worker_count: int,
+) -> list[list[ExportDatasetReference]]:
+    count = min(max(1, worker_count), len(references))
+    batches: list[list[ExportDatasetReference]] = [[] for _ in range(count)]
+    batch_bytes = [0] * count
+    for reference in sorted(
+        references,
+        key=lambda item: (-item.size_bytes, item.relative_path),
+    ):
+        index = min(range(count), key=lambda value: (batch_bytes[value], value))
+        batches[index].append(reference)
+        batch_bytes[index] += reference.size_bytes
+    return [batch for batch in batches if batch]
+
+
+def _fetch_and_install_batch(
+    references: list[ExportDatasetReference],
+    incoming: Path,
+    fetch_blobs: BlobBatchFetcher,
+    blobs_root: Path,
+) -> None:
+    incoming.mkdir(parents=True, exist_ok=False)
+    try:
+        fetch_blobs(references, incoming)
+        for reference in references:
+            _install_blob(
+                incoming / reference.relative_path,
+                _blob_path(blobs_root, reference.sha256),
+                reference,
+            )
+    finally:
+        shutil.rmtree(incoming, ignore_errors=True)
 
 
 def _install_blob(

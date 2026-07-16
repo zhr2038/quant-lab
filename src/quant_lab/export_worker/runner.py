@@ -80,6 +80,10 @@ class Config:
         self.min_free_disk_bytes = int(os.getenv("MIN_FREE_DISK_BYTES", str(20 * 1024**3)))
         self.max_task_age_seconds = int(os.getenv("MAX_TASK_AGE_SECONDS", str(48 * 3600)))
         self.receipt_wait_seconds = int(os.getenv("RECEIPT_WAIT_SECONDS", "900"))
+        self.snapshot_fetch_workers = min(
+            8,
+            max(1, int(os.getenv("SNAPSHOT_FETCH_WORKERS", "4"))),
+        )
         self.heavy_lock_path = Path(
             os.getenv("NAS_HEAVY_JOB_LOCK_PATH", "/runtime/heavy-job.lock")
         )
@@ -200,6 +204,7 @@ def process_claimed_task(config: Config, task_id: str) -> None:
                     relative_paths=[item.relative_path for item in references],
                     target_root=target,
                 ),
+                batch_fetch_workers=config.snapshot_fetch_workers,
                 min_free_disk_bytes=config.min_free_disk_bytes,
                 max_snapshot_bytes=config.max_snapshot_bytes,
             )
@@ -558,7 +563,7 @@ def _ssh(
     serialized = " ".join(shlex.quote(value) for value in remote_command)
     command = [
         "ssh",
-        *_ssh_options(config),
+        *_snapshot_transfer_ssh_options(config),
         f"{config.ssh_user}@{config.ssh_host}",
         serialized,
     ]
@@ -666,6 +671,26 @@ def _tar_snapshot_files_from(
 
 def _ssh_options(config: Config) -> list[str]:
     return [
+        *_ssh_common_options(config),
+        "-o",
+        "ControlMaster=auto",
+        "-o",
+        "ControlPersist=300",
+        "-o",
+        "ControlPath=/tmp/quant-export-ssh-%C",
+    ]
+
+
+def _snapshot_transfer_ssh_options(config: Config) -> list[str]:
+    return [
+        *_ssh_common_options(config),
+        "-o",
+        "ControlMaster=no",
+    ]
+
+
+def _ssh_common_options(config: Config) -> list[str]:
+    return [
         "-p",
         str(config.ssh_port),
         "-i",
@@ -680,12 +705,6 @@ def _ssh_options(config: Config) -> list[str]:
         f"UserKnownHostsFile={config.known_hosts_path}",
         "-o",
         "ConnectTimeout=15",
-        "-o",
-        "ControlMaster=auto",
-        "-o",
-        "ControlPersist=300",
-        "-o",
-        "ControlPath=/tmp/quant-export-ssh-%C",
         "-o",
         "ServerAliveInterval=30",
         "-o",

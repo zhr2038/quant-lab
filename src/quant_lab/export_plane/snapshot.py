@@ -123,16 +123,7 @@ def seal_export_snapshot(
             "signature_algorithm": "ed25519",
             "signature": "A" * 88,
         }
-        digest_payload = dict(unsigned)
-        digest_payload.pop("signature")
-        digest_payload.pop("manifest_sha256")
-        unsigned["manifest_sha256"] = sha256_bytes(canonical_json_bytes(digest_payload))
-        provisional = ExportSnapshotManifest.model_validate(unsigned)
-        unsigned["signature"] = sign_payload(
-            provisional,
-            load_signing_key(signing_key_path),
-        )
-        manifest = ExportSnapshotManifest.model_validate(unsigned)
+        manifest = _finalize_snapshot_manifest(unsigned, signing_key_path)
         atomic_write_json(temporary / "manifest.json", manifest.model_dump(mode="json"))
         (temporary / "SEALED").write_text(manifest.manifest_sha256 + "\n", encoding="ascii")
         _set_snapshot_permissions(temporary)
@@ -141,6 +132,30 @@ def seal_export_snapshot(
         if temporary.exists():
             shutil.rmtree(temporary, ignore_errors=True)
     return manifest, final_dir
+
+
+def _finalize_snapshot_manifest(
+    unsigned: dict[str, object],
+    signing_key_path: str | Path,
+) -> ExportSnapshotManifest:
+    provisional = ExportSnapshotManifest.model_validate(unsigned)
+    digest_payload = provisional.model_dump(mode="json")
+    digest_payload.pop("signature")
+    digest_payload.pop("manifest_sha256")
+    with_digest = ExportSnapshotManifest.model_validate(
+        {
+            **provisional.model_dump(mode="json"),
+            "manifest_sha256": sha256_bytes(canonical_json_bytes(digest_payload)),
+        }
+    )
+    manifest = ExportSnapshotManifest.model_validate(
+        {
+            **with_digest.model_dump(mode="json"),
+            "signature": sign_payload(with_digest, load_signing_key(signing_key_path)),
+        }
+    )
+    verify_snapshot_manifest_digest(manifest)
+    return manifest
 
 
 def verify_snapshot_manifest_digest(manifest: ExportSnapshotManifest) -> None:

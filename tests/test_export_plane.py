@@ -1,7 +1,9 @@
 from __future__ import annotations
 
+import io
 import json
 import os
+import tarfile
 import zipfile
 from datetime import UTC, date, datetime
 from pathlib import Path
@@ -175,6 +177,56 @@ def test_snapshot_blob_sync_downloads_once_then_hits_cache(tmp_path: Path) -> No
     assert second.downloaded_files == 0
     assert second.cache_hits == 1
     assert calls == [reference.relative_path]
+
+
+def test_snapshot_blob_sync_batches_all_missing_files(tmp_path: Path) -> None:
+    payloads = {
+        "lake/gold/one/data.bin": b"one",
+        "lake/gold/two/data.bin": b"two",
+    }
+    references = [
+        ExportDatasetReference(
+            relative_path=relative_path,
+            sha256=sha256_bytes(payload),
+            size_bytes=len(payload),
+            mtime_ns=1,
+            dataset=relative_path.split("/")[2],
+            media_type="other",
+        )
+        for relative_path, payload in payloads.items()
+    ]
+    base = _snapshot()
+    snapshot = ExportSnapshotManifest.model_validate(
+        {
+            **base.model_dump(mode="json"),
+            "files": [item.model_dump(mode="json") for item in references],
+            "total_input_bytes": sum(len(value) for value in payloads.values()),
+        }
+    )
+    batches: list[list[str]] = []
+
+    def fetch_batch(items: list[ExportDatasetReference], target: Path) -> None:
+        batches.append([item.relative_path for item in items])
+        for item in items:
+            destination = target / item.relative_path
+            destination.parent.mkdir(parents=True, exist_ok=True)
+            destination.write_bytes(payloads[item.relative_path])
+
+    result = sync_snapshot_blobs(
+        snapshot,
+        data_root=tmp_path / "data",
+        fetch_blob=lambda *_args: pytest.fail("single-file fetch should not run"),
+        fetch_blobs=fetch_batch,
+        min_free_disk_bytes=0,
+        max_snapshot_bytes=1024,
+    )
+
+    assert batches == [list(payloads)]
+    assert result.cache_hits == 0
+    assert result.downloaded_files == 2
+    assert result.downloaded_bytes == 6
+    for relative_path, payload in payloads.items():
+        assert (result.snapshot_root / "files" / relative_path).read_bytes() == payload
 
 
 def test_snapshot_blob_sync_rejects_bad_sha(tmp_path: Path) -> None:
@@ -442,6 +494,105 @@ def test_worker_uploads_are_group_readable_for_cloud_services(
     assert commands[0][0] == "scp"
     assert commands[1][0] == "ssh"
     assert commands[1][-1] == "chmod 0660 /queue/status/task.json.partial"
+
+
+def test_worker_streams_snapshot_batch_without_extracting_unexpected_members(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    payload = b"snapshot"
+    archive_bytes = io.BytesIO()
+    with tarfile.open(fileobj=archive_bytes, mode="w") as archive:
+        member = tarfile.TarInfo("lake/gold/example/data.bin")
+        member.size = len(payload)
+        archive.addfile(member, io.BytesIO(payload))
+
+    class FakeProcess:
+        def __init__(self) -> None:
+            self.stdin = io.BytesIO()
+            self.stdout = io.BytesIO(archive_bytes.getvalue())
+            self.killed = False
+
+        def wait(self, timeout: int) -> int:
+            assert timeout in {10, 3600}
+            return 0
+
+        def kill(self) -> None:
+            self.killed = True
+
+    process = FakeProcess()
+    monkeypatch.setattr(
+        "quant_lab.export_worker.runner.subprocess.Popen",
+        lambda *_args, **_kwargs: process,
+    )
+    config = SimpleNamespace(
+        ssh_host="cloud.example",
+        ssh_port=22,
+        ssh_user="quant-export",
+        ssh_key_path=tmp_path / "id_ed25519",
+        known_hosts_path=tmp_path / "known_hosts",
+        remote_queue_root="/queue",
+    )
+    target = tmp_path / "incoming"
+
+    export_runner._tar_snapshot_files_from(  # noqa: SLF001
+        config,
+        snapshot_id="export-snapshot-test",
+        relative_paths=["lake/gold/example/data.bin"],
+        target_root=target,
+    )
+
+    assert (target / "lake/gold/example/data.bin").read_bytes() == payload
+    assert process.killed is False
+
+
+def test_worker_rejects_unexpected_snapshot_batch_member(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    archive_bytes = io.BytesIO()
+    with tarfile.open(fileobj=archive_bytes, mode="w") as archive:
+        member = tarfile.TarInfo("../escape.bin")
+        member.size = 1
+        archive.addfile(member, io.BytesIO(b"x"))
+
+    class FakeProcess:
+        def __init__(self) -> None:
+            self.stdin = io.BytesIO()
+            self.stdout = io.BytesIO(archive_bytes.getvalue())
+            self.killed = False
+
+        def wait(self, timeout: int) -> int:
+            assert timeout in {10, 3600}
+            return 0
+
+        def kill(self) -> None:
+            self.killed = True
+
+    process = FakeProcess()
+    monkeypatch.setattr(
+        "quant_lab.export_worker.runner.subprocess.Popen",
+        lambda *_args, **_kwargs: process,
+    )
+    config = SimpleNamespace(
+        ssh_host="cloud.example",
+        ssh_port=22,
+        ssh_user="quant-export",
+        ssh_key_path=tmp_path / "id_ed25519",
+        known_hosts_path=tmp_path / "known_hosts",
+        remote_queue_root="/queue",
+    )
+
+    with pytest.raises(RuntimeError, match="unexpected_snapshot_batch_member"):
+        export_runner._tar_snapshot_files_from(  # noqa: SLF001
+            config,
+            snapshot_id="export-snapshot-test",
+            relative_paths=["lake/gold/example/data.bin"],
+            target_root=tmp_path / "incoming",
+        )
+
+    assert process.killed is True
+    assert not (tmp_path / "escape.bin").exists()
 
 
 def test_current_main_commit_uses_github_pr_base_sha_when_remote_ref_is_absent(

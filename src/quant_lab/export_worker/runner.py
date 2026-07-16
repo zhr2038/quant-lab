@@ -9,6 +9,8 @@ import shutil
 import signal
 import socket
 import subprocess
+import tarfile
+import tempfile
 import threading
 import time
 from contextlib import contextmanager
@@ -190,6 +192,12 @@ def process_claimed_task(config: Config, task_id: str) -> None:
                         f"{relative}"
                     ),
                     target,
+                ),
+                fetch_blobs=lambda references, target: _tar_snapshot_files_from(
+                    config,
+                    snapshot_id=task.snapshot_id,
+                    relative_paths=[item.relative_path for item in references],
+                    target_root=target,
                 ),
                 min_free_disk_bytes=config.min_free_disk_bytes,
                 max_snapshot_bytes=config.max_snapshot_bytes,
@@ -573,6 +581,80 @@ def _scp_to(config: Config, local_path: Path, remote_path: str) -> None:
     ]
     subprocess.run(command, check=True, capture_output=True, text=True, timeout=300)
     _ssh(config, ["chmod", "0660", remote_path])
+
+
+def _tar_snapshot_files_from(
+    config: Config,
+    *,
+    snapshot_id: str,
+    relative_paths: list[str],
+    target_root: Path,
+) -> None:
+    if not relative_paths:
+        return
+    expected = set(relative_paths)
+    if len(expected) != len(relative_paths):
+        raise RuntimeError("duplicate_snapshot_batch_path")
+    remote_root = f"{config.remote_queue_root}/snapshots/{snapshot_id}/files"
+    remote_command = [
+        "tar",
+        "-C",
+        remote_root,
+        "-cf",
+        "-",
+        "--null",
+        "--verbatim-files-from",
+        "--files-from=-",
+    ]
+    serialized = " ".join(shlex.quote(value) for value in remote_command)
+    command = [
+        "ssh",
+        *_ssh_options(config),
+        f"{config.ssh_user}@{config.ssh_host}",
+        serialized,
+    ]
+    target_root.mkdir(parents=True, exist_ok=True)
+    with tempfile.TemporaryFile(mode="w+b") as stderr:
+        process = subprocess.Popen(  # noqa: S603
+            command,
+            stdin=subprocess.PIPE,
+            stdout=subprocess.PIPE,
+            stderr=stderr,
+        )
+        assert process.stdin is not None
+        assert process.stdout is not None
+        try:
+            process.stdin.write(
+                b"\0".join(path.encode("utf-8") for path in relative_paths) + b"\0"
+            )
+            process.stdin.close()
+            seen: set[str] = set()
+            with tarfile.open(fileobj=process.stdout, mode="r|*") as archive:
+                for member in archive:
+                    if member.name not in expected or member.name in seen:
+                        raise RuntimeError(f"unexpected_snapshot_batch_member:{member.name}")
+                    if not member.isfile():
+                        raise RuntimeError(f"non_file_snapshot_batch_member:{member.name}")
+                    source = archive.extractfile(member)
+                    if source is None:
+                        raise RuntimeError(f"unreadable_snapshot_batch_member:{member.name}")
+                    destination = target_root / member.name
+                    destination.parent.mkdir(parents=True, exist_ok=True)
+                    with source, destination.open("xb") as output:
+                        shutil.copyfileobj(source, output, length=1024 * 1024)
+                    seen.add(member.name)
+            return_code = process.wait(timeout=3600)
+            if return_code != 0:
+                stderr.seek(0)
+                detail = stderr.read().decode("utf-8", errors="replace")
+                raise RuntimeError(f"snapshot_batch_fetch_failed:{_tail(detail)}")
+            missing = expected - seen
+            if missing:
+                raise RuntimeError(f"snapshot_batch_members_missing:{len(missing)}")
+        except Exception:
+            process.kill()
+            process.wait(timeout=10)
+            raise
 
 
 def _ssh_options(config: Config) -> list[str]:

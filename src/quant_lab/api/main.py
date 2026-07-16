@@ -1506,7 +1506,6 @@ def _web_v2_nas_expert_pack_status(*, export_date: date) -> dict[str, Any]:
         "mode": "read_only_nas_export",
         "live_order_effect": "none",
         "export_date": export_date.isoformat(),
-        "exports_root": None,
         "status": active_status,
         "latest_pack": latest.get("pack_name"),
         "latest_pack_name": latest.get("pack_name"),

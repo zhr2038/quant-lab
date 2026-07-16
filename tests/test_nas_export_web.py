@@ -26,6 +26,7 @@ def test_nas_web_generate_only_submits_lightweight_request(tmp_path: Path, monke
     payload = response.json()
     assert payload["storage_location"] == "nas_only"
     assert payload["cloud_zip_present"] is False
+    assert "exports_root" not in payload
     assert list((queue / "requests" / "pending").glob("*.json"))
 
 

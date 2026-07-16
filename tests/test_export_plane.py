@@ -9,12 +9,14 @@ from datetime import UTC, date, datetime
 from pathlib import Path
 from types import SimpleNamespace
 
+import polars as pl
 import pytest
 from cryptography.hazmat.primitives import serialization
 from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
 from pydantic import ValidationError
 
 from quant_lab.export import daily as daily_export
+from quant_lab.export_materializer import writer as materializer_writer
 from quant_lab.export_materializer.validator import validate_export_pack_locally
 from quant_lab.export_plane import snapshot as snapshot_module
 from quant_lab.export_plane.contracts import (
@@ -139,6 +141,112 @@ def test_snapshot_manifest_digest_uses_normalized_nested_models(tmp_path: Path) 
 
     snapshot_module.verify_snapshot_manifest_digest(manifest)
     verify_payload(manifest, manifest.signature, load_public_key(public_path))
+
+
+def test_snapshot_acceptance_context_binds_current_proposal_and_v5(
+    monkeypatch,
+) -> None:
+    content_id = "proposal-content-snapshot:stable"
+    content_sha = "c" * 64
+    proposal = pl.DataFrame(
+        {
+            "proposal_snapshot_id": ["proposal-snapshot:current"],
+            "proposal_snapshot_sha256": ["d" * 64],
+            "proposal_content_snapshot_id": [content_id],
+            "proposal_content_snapshot_sha256": [content_sha],
+            "snapshot_generated_at": ["2026-07-16T01:00:00+00:00"],
+        }
+    )
+    contract = pl.DataFrame(
+        {
+            "bundle_sha256": [V5_SHA],
+            "proposal_snapshot_id": ["proposal-snapshot:observed"],
+            "proposal_snapshot_sha256": ["e" * 64],
+            "proposal_content_snapshot_id": [content_id],
+            "proposal_content_snapshot_sha256": [content_sha],
+        }
+    )
+    monkeypatch.setattr(
+        snapshot_module.readers,
+        "read_dataset",
+        lambda _root, name: proposal
+        if name == "paper_strategy_proposal_snapshot"
+        else contract,
+    )
+    monkeypatch.setattr(
+        snapshot_module.daily_export,
+        "_latest_v5_contract_status_row",
+        lambda frame: frame.tail(1).to_dicts()[0],
+    )
+    monkeypatch.setattr(
+        snapshot_module.daily_export,
+        "_current_main_commit_full",
+        lambda: COMMIT,
+    )
+
+    context = snapshot_module._snapshot_acceptance_context(  # noqa: SLF001
+        Path("/lake"),
+        v5_context={"selected_v5_bundle_built_at": "2026-07-16T02:00:00+00:00"},
+        quant_lab_commit=COMMIT,
+        selected_v5_bundle_sha256=V5_SHA,
+    )
+
+    assert context["current_main_production_relationship"] == "MATCH"
+    assert context["proposal_content_snapshot_sha256"] == content_sha
+    assert context["v5_observed_proposal_content_snapshot_sha256"] == content_sha
+
+
+def test_materializer_requires_signed_acceptance_context() -> None:
+    with pytest.raises(RuntimeError, match="sealed_snapshot_acceptance_context_missing"):
+        materializer_writer._sealed_acceptance_context(_snapshot())  # noqa: SLF001
+
+
+def test_materializer_uses_signed_acceptance_context() -> None:
+    snapshot = _snapshot().model_copy(
+        update={
+            "quant_lab_current_main_commit": COMMIT,
+            "current_main_production_relationship": "MATCH",
+            "proposal_snapshot_id": "proposal-snapshot:current",
+            "proposal_snapshot_sha256": "c" * 64,
+            "proposal_content_snapshot_id": "proposal-content-snapshot:stable",
+            "proposal_content_snapshot_sha256": "d" * 64,
+            "snapshot_generated_at": datetime(2026, 7, 16, 1, tzinfo=UTC),
+            "v5_observed_proposal_snapshot_id": "proposal-snapshot:observed",
+            "v5_observed_proposal_snapshot_sha256": "e" * 64,
+            "v5_observed_proposal_content_snapshot_id": (
+                "proposal-content-snapshot:stable"
+            ),
+            "v5_observed_proposal_content_snapshot_sha256": "d" * 64,
+            "selected_v5_bundle_built_at": datetime(2026, 7, 16, 2, tzinfo=UTC),
+        }
+    )
+
+    context = materializer_writer._sealed_acceptance_context(snapshot)  # noqa: SLF001
+
+    assert context["quant_lab_production_commit"] == COMMIT
+    assert context["quant_lab_current_main_commit"] == COMMIT
+    assert context["proposal_content_snapshot_sha256"] == "d" * 64
+
+
+def test_snapshot_contract_rejects_inconsistent_content_identity() -> None:
+    payload = _snapshot().model_dump(mode="json")
+    payload.update(
+        {
+            "quant_lab_current_main_commit": COMMIT,
+            "current_main_production_relationship": "MATCH",
+            "proposal_content_snapshot_id": "proposal-content-snapshot:current",
+            "proposal_content_snapshot_sha256": "c" * 64,
+            "snapshot_generated_at": "2026-07-16T01:00:00+00:00",
+            "v5_observed_proposal_content_snapshot_id": (
+                "proposal-content-snapshot:other"
+            ),
+            "v5_observed_proposal_content_snapshot_sha256": "d" * 64,
+            "selected_v5_bundle_built_at": "2026-07-16T02:00:00+00:00",
+        }
+    )
+
+    with pytest.raises(ValidationError, match="proposal content snapshot identity"):
+        ExportSnapshotManifest.model_validate(payload)
 
 
 def test_snapshot_blob_sync_downloads_once_then_hits_cache(tmp_path: Path) -> None:

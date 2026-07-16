@@ -7,7 +7,12 @@ import sys
 from pathlib import Path
 
 from quant_lab.ai_research.importer import import_ai_research_results
-from quant_lab.ai_research.packet import build_task_from_latest_export, queue_status
+from quant_lab.ai_research.packet import (
+    build_task_from_latest_export,
+    build_task_from_nas_pack_reference,
+    queue_status,
+)
+from quant_lab.export_plane.cloud_index import load_cloud_index
 
 
 def _parser() -> argparse.ArgumentParser:
@@ -20,7 +25,9 @@ def _parser() -> argparse.ArgumentParser:
         "build-task",
         help="Build a compact AI task from the newest already-generated expert pack.",
     )
-    build.add_argument("--exports-dir", required=True, type=Path)
+    source = build.add_mutually_exclusive_group(required=True)
+    source.add_argument("--exports-dir", type=Path)
+    source.add_argument("--export-queue-root", type=Path)
     build.add_argument("--queue-root", required=True, type=Path)
     build.add_argument("--force", action="store_true")
     build.add_argument("--max-member-bytes", type=int, default=256 * 1024)
@@ -45,21 +52,34 @@ def _parser() -> argparse.ArgumentParser:
 def main(argv: list[str] | None = None) -> int:
     args = _parser().parse_args(argv)
     if args.command == "build-task":
-        task, task_path = build_task_from_latest_export(
-            args.exports_dir,
-            queue_root=args.queue_root,
-            force=args.force,
-            max_member_bytes=max(64 * 1024, args.max_member_bytes),
-            max_document_chars=max(10_000, args.max_document_chars),
-            max_total_chars=max(100_000, args.max_total_chars),
-            max_csv_rows=max(1, args.max_csv_rows),
-            max_docs_per_section=max(1, args.max_docs_per_section),
-        )
+        if args.export_queue_root is not None:
+            packs = load_cloud_index(args.export_queue_root)
+            if not packs:
+                task, task_path = None, None
+            else:
+                task, task_path = build_task_from_nas_pack_reference(
+                    packs[0],
+                    queue_root=args.queue_root,
+                    force=args.force,
+                )
+        else:
+            task, task_path = build_task_from_latest_export(
+                args.exports_dir,
+                queue_root=args.queue_root,
+                force=args.force,
+                max_member_bytes=max(64 * 1024, args.max_member_bytes),
+                max_document_chars=max(10_000, args.max_document_chars),
+                max_total_chars=max(100_000, args.max_total_chars),
+                max_csv_rows=max(1, args.max_csv_rows),
+                max_docs_per_section=max(1, args.max_docs_per_section),
+            )
         payload = {
             "created": task is not None,
             "task_id": task.task_id if task else None,
             "task_path": str(task_path) if task_path else None,
             "source_pack": task.source_pack_name if task else None,
+            "source_pack_id": task.source_pack_id if task else None,
+            "source_location": task.source_location if task else None,
             "packet_sha256": task.packet_sha256 if task else None,
             "sections": sorted(task.sections) if task else [],
             "warnings": task.warnings if task else [],

@@ -1,0 +1,21 @@
+[Unit]
+Description=Verify and import signed NAS Expert Export receipts
+
+[Service]
+Type=oneshot
+User=quantlab
+Group=quantlab
+WorkingDirectory=/opt/quant-lab
+EnvironmentFile=/etc/quant-lab/export-plane.env
+Environment=PYTHONUNBUFFERED=1
+UMask=0007
+ExecStart=/opt/quant-lab/.venv/bin/python /opt/quant-lab/tools/quant_export_queue.py import-receipts --queue-root ${QUANT_LAB_EXPORT_QUEUE_ROOT} --worker-public-key ${QUANT_LAB_NAS_WORKER_PUBLIC_KEY_PATH} --worker-key-id ${QUANT_LAB_NAS_WORKER_KEY_ID}
+CPUQuota=20%
+MemoryMax=512M
+TasksMax=48
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+ReadOnlyPaths=/opt/quant-lab
+ReadWritePaths=/var/lib/quant-lab/export_queue

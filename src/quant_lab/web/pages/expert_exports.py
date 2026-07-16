@@ -35,6 +35,9 @@ def render(
     exports_root: str | Path | None = None,
 ) -> None:
     st = streamlit_module(st_module)
+    if _nas_export_enabled():
+        _render_nas_export_plane(st)
+        return
     root = (
         Path(exports_root) if exports_root is not None else readers.default_exports_root(lake_root)
     )
@@ -109,6 +112,70 @@ def render(
         st.subheader("❓ 专家问题")
         show_frame(st, questions, "未找到专家问题。")
     show_warnings(st, summary["warnings"])
+
+
+def _nas_export_enabled() -> bool:
+    value = os.environ.get("QUANT_LAB_NAS_EXPORT_ENABLED", "false").strip().lower()
+    return value in {"1", "true", "yes", "on"}
+
+
+def _render_nas_export_plane(st: Any) -> None:
+    from quant_lab.export_plane.cloud_index import export_plane_status
+    from quant_lab.export_plane.request import submit_export_request
+
+    queue_root = Path(
+        os.environ.get("QUANT_LAB_EXPORT_QUEUE_ROOT", "/var/lib/quant-lab/export_queue")
+    )
+    base_url = os.environ.get("QUANT_LAB_NAS_EXPORT_BASE_URL", "").strip()
+    secret_path = Path(
+        os.environ.get(
+            "QUANT_LAB_NAS_DOWNLOAD_SIGNING_SECRET_FILE",
+            "/etc/quant-lab/secrets/nas-download.key",
+        )
+    )
+    try:
+        secret = secret_path.read_bytes().strip()
+    except OSError:
+        secret = b""
+    st.title("📦 专家包导出")
+    st.caption("专家包由 NAS 本地生成、验收与保存；中台仅封存输入并登记签名回执。")
+    if not base_url or len(secret) < 32:
+        _error(st, "NAS Export Plane 配置不完整，已拒绝本机导出回退。")
+        return
+    export_date = beijing_today()
+    if _button(st, "生成今日专家包", key="generate_today_nas_expert_pack"):
+        request, created = submit_export_request(
+            queue_root=queue_root,
+            export_date=export_date,
+            export_mode="authoritative",
+            requested_by="streamlit",
+        )
+        _info(
+            st,
+            f"{'已提交' if created else '已存在'}轻量请求：{request.request_id}",
+        )
+    payload = export_plane_status(
+        queue_root,
+        export_date=export_date,
+        nas_base_url=base_url,
+        download_secret=secret,
+        download_key_id=os.environ.get("QUANT_LAB_NAS_DOWNLOAD_KEY_ID", "nas-download-v1"),
+        download_ttl_seconds=int(
+            os.environ.get("QUANT_LAB_NAS_DOWNLOAD_TOKEN_TTL_SECONDS", "1800")
+        ),
+    )
+    st.subheader("任务状态")
+    status_row = payload.get("task") or payload.get("request") or {"state": payload["state"]}
+    show_frame(st, pl.DataFrame([status_row]), "当前没有导出任务。")
+    st.info("下载需要连接家庭网络或 VPN；专家包文件流量不经过中台服务器。")
+    if hasattr(st, "link_button"):
+        st.link_button("打开 NAS 专家包中心", base_url)
+    packs = payload.get("packs") if isinstance(payload.get("packs"), list) else []
+    show_frame(st, pl.DataFrame(packs) if packs else pl.DataFrame(), "暂无已验收专家包。")
+    for row in packs[:5]:
+        download_url = row.get("download_url")
+        if download_url and hasattr(st, "link_button"):
+            st.link_button(f"从 NAS 下载 {row.get('pack_name')}", download_url)
 
 
 def _web_background_export_enabled() -> bool:

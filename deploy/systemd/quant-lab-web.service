@@ -11,9 +11,10 @@ WorkingDirectory=/opt/quant-lab
 Environment=PYTHONUNBUFFERED=1
 Environment=QUANT_LAB_LAKE_ROOT=/var/lib/quant-lab/lake
 EnvironmentFile=-/etc/quant-lab/quant_lab_api.env
+EnvironmentFile=-/etc/quant-lab/export-plane.env
 Environment=QUANT_LAB_RISK_PERMISSION_TTL_SECONDS=5400
 Environment=QUANT_LAB_WEB_ON_DEMAND_EXPORT=true
-Environment=QUANT_LAB_WEB_EXPORT_BACKGROUND=true
+Environment=QUANT_LAB_WEB_EXPORT_BACKGROUND=false
 Environment=QUANT_LAB_WEB_EXPORT_BACKGROUND_TRIGGER=request_file
 Environment=QUANT_LAB_WEB_EXPORT_MODE=subprocess
 Environment=QUANT_LAB_WEB_EXPORT_TIMEOUT_SECONDS=900

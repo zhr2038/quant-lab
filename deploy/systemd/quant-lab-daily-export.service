@@ -1,5 +1,5 @@
 [Unit]
-Description=quant-lab daily expert snapshot export
+Description=LEGACY emergency-only cloud Expert Pack export
 After=quant-lab-risk-permission.service quant-lab-v5-telemetry-sync.service
 
 [Service]
@@ -21,9 +21,11 @@ Environment=QUANT_LAB_GITHUB_REPO=zhr2038/quant-lab
 Environment=V5_GITHUB_REPO=zhr2038/V5-prod
 Environment=QUANT_LAB_EXPORT_GITHUB_CI_TIMEOUT_SECONDS=8
 EnvironmentFile=-/etc/quant-lab/quant_lab_api.env
+EnvironmentFile=-/etc/quant-lab/export-plane.env
 MemoryHigh=5G
 MemoryMax=6G
 CPUQuota=80%
+ExecCondition=/bin/sh -c 'test "$QUANT_LAB_LOCAL_EXPORT_ENABLED" = 1'
 ExecStartPre=/usr/bin/systemctl start quant-lab-cost-calibration.service
 ExecStartPre=/opt/quant-lab/.venv/bin/qlab publish-risk-permission --lake-root /var/lib/quant-lab/lake --strategy v5 --version 5.0.0
 ExecStart=/bin/bash -lc 'set -euo pipefail; /usr/bin/flock -E 75 -w 600 /var/lock/quant-lab-heavy.lock /usr/bin/flock -E 75 -w 600 /var/lock/quant-lab-v5-telemetry-sync.lock /usr/bin/timeout 30m /opt/quant-lab/.venv/bin/qlab export-daily --date "$(date +%%F)" --lake-root /var/lib/quant-lab/lake --out-dir /var/lib/quant-lab/exports --no-refresh-risk-permission --pre-export-v5-refresh || { code="$$?"; if [ "$${code}" = "75" ]; then echo "SKIP_DAILY_EXPORT_LOCK_BUSY"; exit 0; fi; exit "$${code}"; }'

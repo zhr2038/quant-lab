@@ -409,6 +409,12 @@ class EvidenceDocument(StrictModel):
     content: Any
 
 
+class EvidenceManifestEntry(StrictModel):
+    section: str = Field(min_length=1, max_length=120)
+    source_member: str = Field(min_length=1, max_length=500)
+    content_sha256: str = Field(min_length=64, max_length=64)
+
+
 class AIResearchTask(StrictModel):
     schema_version: Literal[AI_TASK_SCHEMA_VERSION] = AI_TASK_SCHEMA_VERSION
     prompt_version: Literal[
@@ -420,6 +426,9 @@ class AIResearchTask(StrictModel):
     created_at: datetime
     source_pack_name: str = Field(min_length=1, max_length=500)
     source_pack_sha256: str = Field(min_length=64, max_length=64)
+    source_pack_id: str | None = Field(default=None, max_length=180)
+    source_snapshot_id: str | None = Field(default=None, max_length=180)
+    source_location: Literal["cloud_embedded", "nas_accepted"] = "cloud_embedded"
     packet_sha256: str = Field(min_length=64, max_length=64)
     sections: dict[str, list[EvidenceDocument]]
     preflight: TaskPreflight | None = None
@@ -432,8 +441,12 @@ class AIResearchTask(StrictModel):
     def validate_task_boundary(self) -> AIResearchTask:
         _require_utc(self.created_at, field_name="created_at")
         _require_prohibited_actions(self.prohibited_actions)
-        if not self.sections:
+        if not self.sections and self.source_location != "nas_accepted":
             raise ValueError("AI research task requires at least one evidence section")
+        if self.source_location == "nas_accepted" and (
+            not self.source_pack_id or not self.source_snapshot_id
+        ):
+            raise ValueError("NAS AI research task requires pack_id and snapshot_id")
         if not self.allowed_factor_templates:
             raise ValueError("AI research task requires at least one factor template")
         return self
@@ -459,6 +472,7 @@ class AIResearchResult(StrictModel):
     stage1_attempts: int = Field(default=1, ge=1, le=20)
     stage2_attempts: int = Field(default=0, ge=0, le=20)
     validation_events_json: str = "[]"
+    evidence_manifest: list[EvidenceManifestEntry] = Field(default_factory=list, max_length=128)
     diagnostic_only: Literal[True] = True
     live_order_effect: Literal[LIVE_ORDER_EFFECT] = LIVE_ORDER_EFFECT
 

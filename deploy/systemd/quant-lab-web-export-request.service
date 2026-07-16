@@ -1,5 +1,5 @@
 [Unit]
-Description=quant-lab web-triggered authoritative expert export
+Description=LEGACY emergency-only web-triggered cloud Expert Pack export
 After=network-online.target quant-lab-v5-telemetry-sync.service
 Wants=network-online.target
 
@@ -25,8 +25,10 @@ Environment=QUANT_LAB_GITHUB_REPO=zhr2038/quant-lab
 Environment=V5_GITHUB_REPO=zhr2038/V5-prod
 Environment=QUANT_LAB_EXPORT_GITHUB_CI_TIMEOUT_SECONDS=8
 EnvironmentFile=-/etc/quant-lab/quant_lab_api.env
+EnvironmentFile=-/etc/quant-lab/export-plane.env
 MemoryHigh=5G
 MemoryMax=6G
 CPUQuota=80%
+ExecCondition=/bin/sh -c 'test "$QUANT_LAB_WEB_LOCAL_EXPORT_ENABLED" = 1'
 ExecStartPre=/usr/bin/systemctl start quant-lab-cost-calibration.service
 ExecStart=/bin/bash -lc 'set -euo pipefail; /usr/bin/flock -E 75 -w 2400 /var/lock/quant-lab-heavy.lock /usr/bin/flock -E 75 -w 600 /var/lock/quant-lab-v5-telemetry-sync.lock /usr/bin/timeout 25m /opt/quant-lab/.venv/bin/qlab run-web-export-request --request-path /var/lib/quant-lab/exports/.quant_lab_web_export_request.json || { code="$?"; if [ "$${code}" = "75" ]; then echo "SKIP_WEB_EXPORT_LOCK_BUSY"; exit 0; fi; exit "$${code}"; }'

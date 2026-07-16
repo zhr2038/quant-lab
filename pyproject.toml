@@ -13,6 +13,7 @@ authors = [
 ]
 license = { text = "Proprietary" }
 dependencies = [
+    "cryptography>=43.0",
     "duckdb>=1.0",
     "fastapi>=0.115",
     "httpx>=0.27",

@@ -16,7 +16,7 @@ import time
 import zipfile
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
-from datetime import UTC, datetime, timedelta
+from datetime import UTC, date, datetime, timedelta
 from functools import lru_cache
 from pathlib import Path
 from typing import Any
@@ -489,7 +489,15 @@ def create_app() -> FastAPI:
         return status_payload
 
     @app.get("/web-v2/expert-pack/download/{file_name}")
-    def web_v2_download_expert_pack(file_name: str) -> FileResponse:
+    def web_v2_download_expert_pack(file_name: str) -> Response:
+        if _nas_export_enabled():
+            return JSONResponse(
+                status_code=status.HTTP_410_GONE,
+                content={
+                    "detail": "Expert Pack bytes are stored on NAS and are not proxied by qyun2",
+                    "storage_location": "nas_only",
+                },
+            )
         exports_root = _web_v2_exports_root()
         pack_path = _safe_web_v2_export_pack_path(exports_root, file_name)
         return FileResponse(
@@ -1366,6 +1374,18 @@ def _web_v2_export_date(export_date: str | None = None) -> str:
 
 
 def _start_web_v2_expert_pack_job() -> dict[str, Any]:
+    if _nas_export_enabled():
+        from quant_lab.export_plane.request import submit_export_request
+
+        config = _nas_export_configuration()
+        export_date = date.fromisoformat(_web_v2_export_date())
+        submit_export_request(
+            queue_root=config["queue_root"],
+            export_date=export_date,
+            export_mode="authoritative",
+            requested_by="web-v2",
+        )
+        return _web_v2_nas_expert_pack_status(export_date=export_date)
     from quant_lab.web.pages.expert_exports import (
         _start_export_job,
         _web_background_export_enabled,
@@ -1408,6 +1428,10 @@ def _start_web_v2_expert_pack_job() -> dict[str, Any]:
 
 
 def _web_v2_expert_pack_status(*, export_date: str | None = None) -> dict[str, Any]:
+    if _nas_export_enabled():
+        return _web_v2_nas_expert_pack_status(
+            export_date=date.fromisoformat(_web_v2_export_date(export_date))
+        )
     from quant_lab.web.pages.expert_exports import _poll_export_job
 
     day = _web_v2_export_date(export_date)
@@ -1418,6 +1442,94 @@ def _web_v2_expert_pack_status(*, export_date: str | None = None) -> dict[str, A
         export_date=day,
         exports_root=exports_root,
     )
+
+
+def _nas_export_enabled() -> bool:
+    return _bool_env("QUANT_LAB_NAS_EXPORT_ENABLED", default=False)
+
+
+def _nas_export_configuration() -> dict[str, Any]:
+    queue_root = Path(
+        os.environ.get("QUANT_LAB_EXPORT_QUEUE_ROOT", "/var/lib/quant-lab/export_queue")
+    )
+    base_url = os.environ.get("QUANT_LAB_NAS_EXPORT_BASE_URL", "").strip()
+    secret_path = Path(
+        os.environ.get(
+            "QUANT_LAB_NAS_DOWNLOAD_SIGNING_SECRET_FILE",
+            "/etc/quant-lab/secrets/nas-download.key",
+        )
+    )
+    if not base_url:
+        raise HTTPException(status_code=503, detail="NAS export base URL is not configured")
+    try:
+        secret = secret_path.read_bytes().strip()
+    except OSError as exc:
+        raise HTTPException(status_code=503, detail="NAS download signer is unavailable") from exc
+    if len(secret) < 32:
+        raise HTTPException(status_code=503, detail="NAS download signer is invalid")
+    return {
+        "queue_root": queue_root,
+        "base_url": base_url,
+        "secret": secret,
+        "key_id": os.environ.get("QUANT_LAB_NAS_DOWNLOAD_KEY_ID", "nas-download-v1"),
+        "ttl": int(os.environ.get("QUANT_LAB_NAS_DOWNLOAD_TOKEN_TTL_SECONDS", "1800")),
+    }
+
+
+def _web_v2_nas_expert_pack_status(*, export_date: date) -> dict[str, Any]:
+    from quant_lab.export_plane.cloud_index import export_plane_status
+
+    config = _nas_export_configuration()
+    raw = export_plane_status(
+        config["queue_root"],
+        export_date=export_date,
+        nas_base_url=config["base_url"],
+        download_secret=config["secret"],
+        download_key_id=config["key_id"],
+        download_ttl_seconds=config["ttl"],
+    )
+    latest = raw.get("latest_pack") if isinstance(raw.get("latest_pack"), dict) else {}
+    packs = [
+        {
+            **row,
+            "name": row.get("pack_name"),
+            "size_bytes": row.get("pack_size_bytes"),
+            "modified_at": row.get("accepted_at"),
+            "authoritative_snapshot": row.get("authoritative_input_snapshot"),
+        }
+        for row in raw.get("packs", [])
+        if isinstance(row, dict)
+    ]
+    active_status = raw.get("task") or raw.get("request") or {}
+    return {
+        **raw,
+        "mode": "read_only_nas_export",
+        "live_order_effect": "none",
+        "export_date": export_date.isoformat(),
+        "exports_root": None,
+        "status": active_status,
+        "latest_pack": latest.get("pack_name"),
+        "latest_pack_name": latest.get("pack_name"),
+        "latest_download_url": latest.get("download_url"),
+        "latest_size_bytes": latest.get("pack_size_bytes"),
+        "latest_modified_at": latest.get("accepted_at"),
+        "available_pack": latest.get("pack_name"),
+        "available_pack_name": latest.get("pack_name"),
+        "available_download_url": latest.get("download_url"),
+        "packs": packs,
+        "pack_count": len(packs),
+        "nas_center_url": config["base_url"],
+        "storage_location": "nas_only",
+        "cloud_zip_present": False,
+        "network_notice": "下载需要连接家庭网络或 VPN；文件流量不经过中台服务器。",
+        "authoritative_input_snapshot": raw.get("authoritative_input_snapshot", False),
+        "nas_artifact_validated": raw.get("nas_artifact_validated", False),
+        "control_plane_receipt_verified": raw.get(
+            "control_plane_receipt_verified",
+            False,
+        ),
+        "download_ready": raw.get("download_ready", False),
+    }
 
 
 def _decorate_web_v2_expert_pack_status(

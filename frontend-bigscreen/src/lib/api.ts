@@ -61,7 +61,14 @@ export const ExpertPackStatusSchema = z.object({
   regenerate_available_at: z.string().nullable().optional(),
   regenerate_reuse_pack_name: z.string().nullable().optional(),
   packs: z.array(z.record(z.string(), z.unknown())).default([]),
-  pack_count: z.number().default(0)
+  pack_count: z.number().default(0),
+  nas_center_url: z.string().nullable().optional(),
+  storage_location: z.string().optional(),
+  network_notice: z.string().optional(),
+  authoritative_input_snapshot: z.boolean().optional(),
+  nas_artifact_validated: z.boolean().optional(),
+  control_plane_receipt_verified: z.boolean().optional(),
+  download_ready: z.boolean().optional()
 });
 
 export type ExpertPackStatus = z.infer<typeof ExpertPackStatusSchema>;
@@ -114,6 +121,7 @@ export async function fetchExpertPackStatus(): Promise<ExpertPackStatus> {
 export function expertPackDownloadUrl(nameOrUrl: unknown): string {
   const text = stringValue(nameOrUrl, "");
   if (!text) return "#";
+  if (/^https?:\/\//i.test(text)) return text;
   if (text.startsWith("/web-v2/expert-pack/download/")) return `${apiBase()}${text}`;
   return `${apiBase()}/web-v2/expert-pack/download/${encodeURIComponent(text)}`;
 }

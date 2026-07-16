@@ -560,7 +560,11 @@ function ExpertPackControls({ exports }: { exports: Record<string, unknown> }) {
     queryFn: fetchExpertPackStatus,
     refetchInterval: (query) => {
       const state = String(query.state.data?.state ?? "").toLowerCase();
-      return ["running", "starting"].includes(state) ? 3000 : false;
+      return [
+        "snapshot_preparing", "pending", "claimed", "syncing", "materializing",
+        "validating_on_nas", "accepted_on_nas", "receipt_uploading", "receipt_received",
+        "receipt_verified", "running", "starting"
+      ].includes(state) ? 3000 : false;
     },
     retry: 1
   });
@@ -572,6 +576,7 @@ function ExpertPackControls({ exports }: { exports: Record<string, unknown> }) {
     }
   });
   const status = statusQuery.data;
+  const nasMode = status?.storage_location === "nas_only";
   const statusPending = status === undefined && statusQuery.isLoading;
   const packs = status?.packs ?? [];
   const latestName = stringValue(status?.latest_pack_name, "");
@@ -617,7 +622,11 @@ function ExpertPackControls({ exports }: { exports: Record<string, unknown> }) {
   });
   const state = String(status?.state ?? (statusQuery.isLoading ? "loading" : "not_observable"));
   const statusBody = status?.status ?? {};
-  const isRunning = ["running", "starting"].includes(state.toLowerCase());
+  const isRunning = [
+    "snapshot_preparing", "pending", "claimed", "syncing", "materializing",
+    "validating_on_nas", "accepted_on_nas", "receipt_uploading", "receipt_received",
+    "receipt_verified", "running", "starting"
+  ].includes(state.toLowerCase());
   const cooldownRemaining = Math.max(
     0,
     Math.ceil(numberValue(status?.regenerate_cooldown_remaining_seconds))
@@ -636,7 +645,7 @@ function ExpertPackControls({ exports }: { exports: Record<string, unknown> }) {
     : !isRunning && previousPackOnly && rawState === "missing_requested_date"
       ? "PREVIOUS_PACK_AVAILABLE"
       : state;
-  const lastError = stringValue(statusBody.error, "");
+  const lastError = stringValue(statusBody.last_error, stringValue(statusBody.error, ""));
   const generateLabel = isRunning
     ? "生成中"
     : statusPending
@@ -650,7 +659,9 @@ function ExpertPackControls({ exports }: { exports: Record<string, unknown> }) {
       <div className="export-console-head">
         <div>
           <h3><Archive size={18} />今日专家包</h3>
-          <p>read-only export · live_order_effect: none · 生成后可直接下载 ZIP</p>
+          <p>{nasMode
+            ? "NAS 本地生成与验收 · 文件流量不经过中台 · live_order_effect: none"
+            : "read-only export · live_order_effect: none · 生成后可直接下载 ZIP"}</p>
         </div>
         <div className="export-actions">
           <button
@@ -669,6 +680,14 @@ function ExpertPackControls({ exports }: { exports: Record<string, unknown> }) {
           </button>
         </div>
       </div>
+      {nasMode ? (
+        <div className="export-warning">
+          {status?.network_notice || "下载需要连接家庭网络或 VPN；文件存储在 NAS。"}
+          {status?.nas_center_url ? (
+            <> <a href={status.nas_center_url} target="_blank" rel="noreferrer">打开 NAS 专家包中心</a></>
+          ) : null}
+        </div>
+      ) : null}
       <div className={`export-status-line ${displayState.toLowerCase()}`}>
         <span className="status-dot" />
         <b>{statusPending ? "正在读取" : displayState}</b>
@@ -702,7 +721,7 @@ function ExpertPackControls({ exports }: { exports: Record<string, unknown> }) {
       {statusPending ? (
         <div className="export-empty">正在读取专家包状态与最新下载信息…</div>
       ) : displayUrl ? (
-        <a className="download-latest" href={expertPackDownloadUrl(displayUrl)} download title={displayFileName}>
+        <a className="download-latest" href={expertPackDownloadUrl(displayUrl)} title={displayFileName}>
           <DownloadCloud size={18} />
           <span className="download-latest-label">{downloadLatestLabel}</span>
           <span className="download-latest-name">{displayPrimaryText}</span>
@@ -724,7 +743,7 @@ function ExpertPackControls({ exports }: { exports: Record<string, unknown> }) {
                 <span>{shortNumber(pack.size_bytes)}B</span>
                 <span>{modifiedAt}</span>
               </em>
-              <a className="pack-download" href={expertPackDownloadUrl(url || name)} download>
+              <a className="pack-download" href={expertPackDownloadUrl(url || name)}>
                 <DownloadCloud size={14} />下载
               </a>
             </div>

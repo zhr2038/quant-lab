@@ -616,8 +616,10 @@ def _validate_result_against_task(result: AIResearchResult, task: AIResearchTask
             raise ValueError("continuity must be FIRST_RUN without previous research context")
     elif continuity.previous_task_id != previous_context.task_id:
         raise ValueError("continuity previous_task_id does not match task context")
+    evidence_members = _result_evidence_members(result, task)
+    available_sections = set(evidence_members)
     routed = set(result.diagnosis.route_sections)
-    unknown_sections = routed - set(task.sections)
+    unknown_sections = routed - available_sections
     if unknown_sections:
         raise ValueError(f"diagnosis routed unknown sections: {sorted(unknown_sections)}")
     stage1_references = [
@@ -642,12 +644,13 @@ def _validate_result_against_task(result: AIResearchResult, task: AIResearchTask
     _validate_evidence_references(
         stage1_references,
         task=task,
-        allowed_sections=set(task.sections),
+        allowed_sections=available_sections,
+        evidence_members=evidence_members,
     )
     if result.proposals is None:
         return
     allowed_stage2_sections = set(result.diagnosis.route_sections)
-    if "core_state" in task.sections:
+    if "core_state" in available_sections:
         allowed_stage2_sections.add("core_state")
     for proposal in result.proposals.factor_proposals:
         if proposal.template not in task.allowed_factor_templates:
@@ -665,6 +668,7 @@ def _validate_result_against_task(result: AIResearchResult, task: AIResearchTask
         stage2_references,
         task=task,
         allowed_sections=allowed_stage2_sections,
+        evidence_members=evidence_members,
     )
 
 
@@ -673,8 +677,9 @@ def _validate_evidence_references(
     *,
     task: AIResearchTask,
     allowed_sections: set[str],
+    evidence_members: dict[str, set[str]] | None = None,
 ) -> None:
-    members_by_section = {
+    members_by_section = evidence_members or {
         section: {document.source_member for document in documents}
         for section, documents in task.sections.items()
     }
@@ -686,6 +691,23 @@ def _validate_evidence_references(
                 "evidence source member is not present in the task: "
                 f"{reference.section}/{reference.source_member}"
             )
+
+
+def _result_evidence_members(
+    result: AIResearchResult,
+    task: AIResearchTask,
+) -> dict[str, set[str]]:
+    if task.sections:
+        return {
+            section: {document.source_member for document in documents}
+            for section, documents in task.sections.items()
+        }
+    if task.source_location != "nas_accepted" or not result.evidence_manifest:
+        raise ValueError("NAS AI result is missing its bounded evidence manifest")
+    members: dict[str, set[str]] = {}
+    for item in result.evidence_manifest:
+        members.setdefault(item.section, set()).add(item.source_member)
+    return members
 
 
 def _replace_directory(source: Path, destination: Path) -> None:

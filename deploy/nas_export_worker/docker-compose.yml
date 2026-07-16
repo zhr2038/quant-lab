@@ -1,0 +1,38 @@
+services:
+  quant-export-worker:
+    build:
+      context: ../..
+      dockerfile: deploy/nas_export_worker/Dockerfile
+      args:
+        BUILD_GIT_COMMIT: ${BUILD_GIT_COMMIT:?set BUILD_GIT_COMMIT}
+        BUILD_TIMESTAMP: ${BUILD_TIMESTAMP:-unknown}
+    container_name: quant-export-worker
+    restart: unless-stopped
+    env_file:
+      - .env
+    cpus: 3.0
+    mem_limit: 6g
+    pids_limit: 256
+    read_only: true
+    user: "10002:10002"
+    security_opt:
+      - no-new-privileges:true
+    tmpfs:
+      - /tmp:rw,noexec,nosuid,size=512m
+    volumes:
+      - ${NAS_EXPORT_DATA_HOST_PATH:-./data}:/data
+      - ${NAS_RUNTIME_HOST_PATH:-../quant-runtime}:/runtime
+      - ./secrets/id_ed25519:/run/secrets/qlab_ssh_key:ro
+      - ./secrets/known_hosts:/run/secrets/known_hosts:ro
+      - ./secrets/nas_export_signing_key:/run/secrets/nas_export_signing_key:ro
+      - ./secrets/cloud_export_public_key:/run/secrets/cloud_export_public_key:ro
+    healthcheck:
+      test: ["CMD", "python", "-c", "import pathlib; assert pathlib.Path('/data').is_dir()"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+    logging:
+      driver: json-file
+      options:
+        max-size: 10m
+        max-file: "5"

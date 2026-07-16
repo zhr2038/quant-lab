@@ -1,0 +1,30 @@
+[Unit]
+Description=Seal quant-lab authoritative Export Snapshots and enqueue NAS tasks
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+User=quantlab
+Group=quantlab
+WorkingDirectory=/opt/quant-lab
+EnvironmentFile=/etc/quant-lab/export-plane.env
+Environment=PYTHONUNBUFFERED=1
+Environment=POLARS_MAX_THREADS=1
+UMask=0007
+ExecStart=/opt/quant-lab/.venv/bin/python /opt/quant-lab/tools/quant_export_queue.py process-requests --queue-root ${QUANT_LAB_EXPORT_QUEUE_ROOT} --lake-root ${QUANT_LAB_LAKE_ROOT} --private-key ${QUANT_LAB_EXPORT_TASK_PRIVATE_KEY_PATH} --key-id ${QUANT_LAB_EXPORT_TASK_KEY_ID} --worker-commit ${QUANT_LAB_EXPORT_WORKER_COMMIT}
+Nice=10
+IOSchedulingClass=idle
+CPUQuota=40%
+MemoryHigh=700M
+MemoryMax=1200M
+TasksMax=96
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+ReadOnlyPaths=/opt/quant-lab /var/lib/quant-lab/lake /var/lib/quant-lab/v5_sync
+ReadWritePaths=/var/lib/quant-lab/export_queue
+
+[Install]
+WantedBy=multi-user.target

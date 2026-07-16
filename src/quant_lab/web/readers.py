@@ -5505,6 +5505,8 @@ def _latest_v5_event_frame(frame: pl.DataFrame) -> dict[str, Any] | None:
 
 
 def expert_export_summary(exports_root: str | Path) -> dict[str, Any]:
+    if _bool_env_value("QUANT_LAB_NAS_EXPORT_ENABLED", default=False):
+        return _nas_expert_export_summary()
     root = Path(exports_root)
     cache_key = (
         "expert_export_summary",
@@ -5558,6 +5560,52 @@ def expert_export_summary(exports_root: str | Path) -> dict[str, Any]:
             "warnings": [WEB_EXPORT_INDEX_MISSING_WARNING],
         },
     )
+
+
+def _nas_expert_export_summary() -> dict[str, Any]:
+    from quant_lab.export_plane.cloud_index import export_plane_status
+
+    queue_root = Path(
+        os.environ.get("QUANT_LAB_EXPORT_QUEUE_ROOT", "/var/lib/quant-lab/export_queue")
+    )
+    payload = export_plane_status(queue_root)
+    latest = payload.get("latest_pack") if isinstance(payload.get("latest_pack"), dict) else {}
+    rows = payload.get("packs") if isinstance(payload.get("packs"), list) else []
+    pack_rows = [
+        {
+            "path": None,
+            "name": row.get("pack_name"),
+            "pack_id": row.get("pack_id"),
+            "size_bytes": row.get("pack_size_bytes"),
+            "modified_at": row.get("accepted_at"),
+            "authoritative_snapshot": row.get("authoritative_input_snapshot"),
+            "nas_artifact_validated": row.get("nas_artifact_validated"),
+            "control_plane_receipt_verified": row.get("control_plane_receipt_verified"),
+            "download_ready": row.get("download_ready"),
+            "download_url": row.get("download_url"),
+            "pack_sha256": row.get("pack_sha256"),
+        }
+        for row in rows
+    ]
+    return {
+        "latest_pack": latest.get("pack_name"),
+        "latest_pack_source": "nas_signed_receipt" if latest else None,
+        "packs": pl.DataFrame(pack_rows) if pack_rows else pl.DataFrame(),
+        "manifest_summary": latest.get("manifest_summary") or {},
+        "data_quality_summary": latest.get("data_quality_summary") or {},
+        "expert_questions": latest.get("expert_questions") or [],
+        "manual_state": payload.get("state"),
+        "manual_status": payload.get("task") or payload.get("request") or {},
+        "warnings": [],
+        "storage_location": "nas_only",
+    }
+
+
+def _bool_env_value(name: str, *, default: bool) -> bool:
+    value = os.environ.get(name)
+    if value is None:
+        return default
+    return value.strip().lower() in {"1", "true", "yes", "on"}
 
 
 WEB_EXPORT_INDEX_MISSING_WARNING = "web_export_index_missing_scan_zip_fallback"

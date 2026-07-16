@@ -1,0 +1,64 @@
+services:
+  download-api:
+    build:
+      context: ../..
+      dockerfile: deploy/nas_export_download/Dockerfile
+    container_name: quant-export-download-api
+    restart: unless-stopped
+    env_file:
+      - .env
+    cpus: 0.5
+    mem_limit: 256m
+    pids_limit: 64
+    read_only: true
+    user: "10003:10003"
+    group_add:
+      - "10002"
+    security_opt:
+      - no-new-privileges:true
+    tmpfs:
+      - /tmp:rw,noexec,nosuid,size=32m
+    volumes:
+      - ${NAS_EXPORT_DATA_HOST_PATH:-../nas_export_worker/data}:/exports:ro
+      - ./secrets/nas-download.key:/run/secrets/nas-download.key:ro
+    logging:
+      driver: json-file
+      options:
+        max-size: 5m
+        max-file: "3"
+
+  quant-export-download:
+    image: nginxinc/nginx-unprivileged:1.27-alpine
+    container_name: quant-export-download
+    restart: unless-stopped
+    depends_on:
+      - download-api
+    cpus: 0.5
+    mem_limit: 256m
+    pids_limit: 64
+    read_only: true
+    user: "10003:10003"
+    group_add:
+      - "10002"
+    security_opt:
+      - no-new-privileges:true
+    ports:
+      - "${NAS_DOWNLOAD_BIND_HOST:-127.0.0.1}:${NAS_DOWNLOAD_PORT:-8788}:8788"
+    tmpfs:
+      - /tmp:rw,noexec,nosuid,size=16m
+      - /var/cache/nginx:rw,noexec,nosuid,size=64m
+      - /var/run:rw,noexec,nosuid,size=8m
+    volumes:
+      - ./nginx.conf:/etc/nginx/conf.d/default.conf:ro
+      - ./secrets/download.htpasswd:/run/secrets/download.htpasswd:ro
+      - ${NAS_EXPORT_DATA_HOST_PATH:-../nas_export_worker/data}/accepted:/exports/accepted:ro
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://127.0.0.1:8788/healthz"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+    logging:
+      driver: json-file
+      options:
+        max-size: 5m
+        max-file: "3"

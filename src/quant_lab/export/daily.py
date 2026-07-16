@@ -20,6 +20,7 @@ from collections.abc import Iterable, Mapping
 from dataclasses import dataclass
 from dataclasses import field as dataclass_field
 from datetime import UTC, date, datetime, timedelta
+from functools import wraps
 from pathlib import Path, PurePosixPath
 from typing import Any
 
@@ -4352,7 +4353,13 @@ CSV_SCHEMAS.update(
     }
 )
 
-_MemberPayload = str | bytes
+@dataclass(frozen=True)
+class _StagedMember:
+    path: Path
+    row_count: int | None = None
+
+
+_MemberPayload = str | bytes | _StagedMember
 
 
 class DailyExportResult(BaseModel):
@@ -5305,6 +5312,22 @@ def refresh_web_derived_snapshots(
     )
 
 
+def _restore_active_staging(function):
+    @wraps(function)
+    def wrapped(*args, **kwargs):
+        previous = os.environ.get("QUANT_LAB_EXPORT_ACTIVE_STAGING_DIR")
+        try:
+            return function(*args, **kwargs)
+        finally:
+            if previous is None:
+                os.environ.pop("QUANT_LAB_EXPORT_ACTIVE_STAGING_DIR", None)
+            else:
+                os.environ["QUANT_LAB_EXPORT_ACTIVE_STAGING_DIR"] = previous
+
+    return wrapped
+
+
+@_restore_active_staging
 def export_daily_pack(
     *,
     export_date: str | date,
@@ -5320,6 +5343,9 @@ def export_daily_pack(
     allow_stale_v5: bool = False,
     expected_v5_bundle_sha256: str | None = None,
     acceptance_set_id: str | None = None,
+    materialization_mode: bool = False,
+    member_staging_dir: str | Path | None = None,
+    source_snapshot_id: str | None = None,
 ) -> DailyExportResult:
     day = _parse_date(export_date)
     root = Path(lake_root)
@@ -5340,6 +5366,9 @@ def export_daily_pack(
         pre_export_v5["expected_v5_bundle_sha256"] = str(expected_v5_bundle_sha256).strip()
     if acceptance_set_id:
         pre_export_v5["acceptance_set_id"] = str(acceptance_set_id).strip()
+    if source_snapshot_id:
+        pre_export_v5["export_snapshot_id"] = str(source_snapshot_id).strip()
+        pre_export_v5["materialization_plane"] = "nas_local"
     _record_export_stage(export_stage_timings, "pre_export_v5", stage_started)
     stage_started = _export_stage_start("pre_export_risk_permission")
     pre_export_v5_warnings = [str(warning) for warning in pre_export_v5.get("warnings", [])]
@@ -5400,70 +5429,85 @@ def export_daily_pack(
     pre_export_v5["github_ci_status"] = _github_ci_status_summary(github_ci_status)
     _record_export_stage(export_stage_timings, "github_ci_status", stage_started)
     pre_export_v5_warnings = [str(warning) for warning in pre_export_v5.get("warnings", [])]
-    stage_started = _export_stage_start("publish_research_portfolio_status")
-    snapshot = _publish_research_portfolio_status_snapshot(root, snapshot, day)
-    _record_export_stage(export_stage_timings, "publish_research_portfolio_status", stage_started)
-    stage_started = _export_stage_start("publish_missed_opportunity")
-    snapshot = _publish_missed_opportunity_snapshot(root, snapshot)
-    _record_export_stage(export_stage_timings, "publish_missed_opportunity", stage_started)
-    stage_started = _export_stage_start("publish_strategy_opportunity_advisory")
-    snapshot = _publish_strategy_opportunity_advisory_snapshot(
-        root,
-        snapshot,
-        generated_at=generated_at,
-    )
-    _record_export_stage(
-        export_stage_timings,
-        "publish_strategy_opportunity_advisory",
-        stage_started,
-    )
-    stage_started = _export_stage_start("publish_paper_strategy_pipeline")
-    snapshot = _publish_paper_strategy_pipeline_snapshot(root, snapshot, day)
-    _record_export_stage(
-        export_stage_timings,
-        "publish_paper_strategy_pipeline",
-        stage_started,
-    )
-    stage_started = _export_stage_start("publish_ops_truthfulness")
-    snapshot = _publish_ops_truthfulness_snapshot(
-        root,
-        snapshot,
-        generated_at=generated_at,
-        pre_export_v5=pre_export_v5,
-    )
-    _populate_acceptance_context_identity(pre_export_v5)
-    _record_export_stage(
-        export_stage_timings,
-        "publish_ops_truthfulness",
-        stage_started,
-    )
-    stage_started = _export_stage_start("publish_trade_level_judgment")
-    snapshot = _publish_trade_level_snapshot(
-        root,
-        snapshot,
-        generated_at=generated_at,
-    )
-    _record_export_stage(export_stage_timings, "publish_trade_level_judgment", stage_started)
-    stage_started = _export_stage_start("publish_risk_dependency_meta")
-    snapshot = _publish_risk_permission_dependency_meta_snapshot(root, snapshot)
-    _record_export_stage(export_stage_timings, "publish_risk_dependency_meta", stage_started)
-    stage_started = _export_stage_start("publish_cost_bootstrap_readiness")
-    snapshot = _publish_cost_bootstrap_readiness_snapshot(
-        root,
-        snapshot,
-        generated_at=generated_at,
-    )
-    _record_export_stage(export_stage_timings, "publish_cost_bootstrap_readiness", stage_started)
-    stage_started = _export_stage_start("write_source_snapshot_metas")
-    meta_warnings = _write_source_snapshot_metas(root, snapshot.frames)
-    if meta_warnings:
-        snapshot = _DatasetSnapshot(
-            frames=snapshot.frames,
-            row_counts=snapshot.row_counts,
-            warnings=[*snapshot.warnings, *meta_warnings],
-            transient_frames=snapshot.transient_frames,
+    if materialization_mode:
+        stage_started = _export_stage_start("sealed_snapshot_materialization")
+        _populate_acceptance_context_identity(pre_export_v5)
+        _record_export_stage(
+            export_stage_timings,
+            "sealed_snapshot_materialization",
+            stage_started,
         )
-    _record_export_stage(export_stage_timings, "write_source_snapshot_metas", stage_started)
+    else:
+        stage_started = _export_stage_start("publish_research_portfolio_status")
+        snapshot = _publish_research_portfolio_status_snapshot(root, snapshot, day)
+        _record_export_stage(
+            export_stage_timings, "publish_research_portfolio_status", stage_started
+        )
+        stage_started = _export_stage_start("publish_missed_opportunity")
+        snapshot = _publish_missed_opportunity_snapshot(root, snapshot)
+        _record_export_stage(export_stage_timings, "publish_missed_opportunity", stage_started)
+        stage_started = _export_stage_start("publish_strategy_opportunity_advisory")
+        snapshot = _publish_strategy_opportunity_advisory_snapshot(
+            root,
+            snapshot,
+            generated_at=generated_at,
+        )
+        _record_export_stage(
+            export_stage_timings,
+            "publish_strategy_opportunity_advisory",
+            stage_started,
+        )
+        stage_started = _export_stage_start("publish_paper_strategy_pipeline")
+        snapshot = _publish_paper_strategy_pipeline_snapshot(root, snapshot, day)
+        _record_export_stage(
+            export_stage_timings,
+            "publish_paper_strategy_pipeline",
+            stage_started,
+        )
+        stage_started = _export_stage_start("publish_ops_truthfulness")
+        snapshot = _publish_ops_truthfulness_snapshot(
+            root,
+            snapshot,
+            generated_at=generated_at,
+            pre_export_v5=pre_export_v5,
+        )
+        _populate_acceptance_context_identity(pre_export_v5)
+        _record_export_stage(
+            export_stage_timings,
+            "publish_ops_truthfulness",
+            stage_started,
+        )
+        stage_started = _export_stage_start("publish_trade_level_judgment")
+        snapshot = _publish_trade_level_snapshot(
+            root,
+            snapshot,
+            generated_at=generated_at,
+        )
+        _record_export_stage(
+            export_stage_timings, "publish_trade_level_judgment", stage_started
+        )
+        stage_started = _export_stage_start("publish_risk_dependency_meta")
+        snapshot = _publish_risk_permission_dependency_meta_snapshot(root, snapshot)
+        _record_export_stage(export_stage_timings, "publish_risk_dependency_meta", stage_started)
+        stage_started = _export_stage_start("publish_cost_bootstrap_readiness")
+        snapshot = _publish_cost_bootstrap_readiness_snapshot(
+            root,
+            snapshot,
+            generated_at=generated_at,
+        )
+        _record_export_stage(
+            export_stage_timings, "publish_cost_bootstrap_readiness", stage_started
+        )
+        stage_started = _export_stage_start("write_source_snapshot_metas")
+        meta_warnings = _write_source_snapshot_metas(root, snapshot.frames)
+        if meta_warnings:
+            snapshot = _DatasetSnapshot(
+                frames=snapshot.frames,
+                row_counts=snapshot.row_counts,
+                warnings=[*snapshot.warnings, *meta_warnings],
+                transient_frames=snapshot.transient_frames,
+            )
+        _record_export_stage(export_stage_timings, "write_source_snapshot_metas", stage_started)
     stage_started = _export_stage_start("data_quality_payload")
     missing_sections = _missing_sections(snapshot.row_counts)
     data_quality = _data_quality_payload(
@@ -5480,6 +5524,11 @@ def export_daily_pack(
     warnings = sorted(set([*snapshot.warnings, *pre_export_v5_warnings, *data_quality["warnings"]]))
 
     member_frames = {**snapshot.frames, **snapshot.transient_frames}
+    staging_root = Path(member_staging_dir).resolve() if member_staging_dir else None
+    previous_staging = os.environ.get("QUANT_LAB_EXPORT_ACTIVE_STAGING_DIR")
+    if staging_root is not None:
+        staging_root.mkdir(parents=True, exist_ok=True)
+        os.environ["QUANT_LAB_EXPORT_ACTIVE_STAGING_DIR"] = str(staging_root)
     members: dict[str, _MemberPayload] = {}
     _attach_selected_v5_bundle(members, pre_export_v5)
     _finalize_acceptance_set_context(pre_export_v5)
@@ -5589,7 +5638,7 @@ def export_daily_pack(
     )
     if index_warning:
         warnings.append(index_warning)
-    return DailyExportResult(
+    result = DailyExportResult(
         export_date=day.isoformat(),
         profile=profile,
         zip_path=str(zip_path),
@@ -5602,6 +5651,12 @@ def export_daily_pack(
             str(acceptance_set_path) if acceptance_set_path is not None else None
         ),
     )
+    if staging_root is not None:
+        if previous_staging is None:
+            os.environ.pop("QUANT_LAB_EXPORT_ACTIVE_STAGING_DIR", None)
+        else:
+            os.environ["QUANT_LAB_EXPORT_ACTIVE_STAGING_DIR"] = previous_staging
+    return result
 
 
 def _unique_export_zip_path(output_root: Path, day: date, generated_at: datetime) -> Path:
@@ -8410,7 +8465,7 @@ def _attach_selected_v5_bundle(
         "matches_selected": not selected_sha or actual_sha == selected_sha,
         "matches_manifest": not manifest_sha or actual_sha == manifest_sha,
     }
-    members[member_path] = payload
+    members[member_path] = _stage_bytes_member(member_path, payload)
     members[EMBEDDED_V5_BUNDLE_MANIFEST] = _json_text(metadata)
     v5_context.update(
         {
@@ -8599,7 +8654,7 @@ def _finalize_acceptance_set_context(v5_context: dict[str, Any]) -> None:
 
 def _populate_acceptance_context_identity(v5_context: dict[str, Any]) -> None:
     production_commit = str(_git_commit_full() or "").strip().lower()
-    current_main_commit = str(_git_ref_commit_full("origin/main") or "").strip().lower()
+    current_main_commit = str(_current_main_commit_full() or "").strip().lower()
     v5_commit = str(_selected_v5_bundle_git_commit(v5_context) or "").strip().lower()
     if _is_full_git_sha(production_commit) and _is_full_git_sha(current_main_commit):
         relationship = "MATCH" if production_commit == current_main_commit else "MISMATCH"
@@ -8635,7 +8690,7 @@ def _promote_embedded_v5_summary_report(
     existing_rows = _csv_member_rows(members.get(dest_member))
     embedded_member = str(v5_context.get("embedded_v5_bundle_member_path") or "").strip()
     payload = members.get(embedded_member)
-    if not isinstance(payload, bytes):
+    if not isinstance(payload, bytes | _StagedMember):
         if not existing_rows:
             members[dest_member] = empty
         v5_context.setdefault("warnings", []).append(
@@ -8648,7 +8703,12 @@ def _promote_embedded_v5_summary_report(
         Path(summary_member).name,
     }
     try:
-        with tarfile.open(fileobj=io.BytesIO(payload), mode="r:gz") as archive:
+        archive_context = (
+            tarfile.open(payload.path, mode="r:gz")
+            if isinstance(payload, _StagedMember)
+            else tarfile.open(fileobj=io.BytesIO(payload), mode="r:gz")
+        )
+        with archive_context as archive:
             selected = None
             for member in archive.getmembers():
                 normalized = member.name.replace("\\", "/").lstrip("./")
@@ -8691,6 +8751,12 @@ def _promote_embedded_v5_summary_report(
 
 
 def _csv_member_rows(payload: _MemberPayload | None) -> list[dict[str, Any]]:
+    if isinstance(payload, _StagedMember):
+        try:
+            with payload.path.open("r", encoding="utf-8-sig", newline="") as handle:
+                return list(csv.DictReader(handle))
+        except (OSError, UnicodeDecodeError):
+            return []
     if not isinstance(payload, str) or not payload.strip():
         return []
     try:
@@ -8889,6 +8955,8 @@ def _manifest_payload(
         "stale_v5_bundle": stale_v5_bundle,
         "allow_stale_v5": allow_stale_v5,
         "acceptance_set_id": v5_context.get("acceptance_set_id"),
+        "export_snapshot_id": v5_context.get("export_snapshot_id"),
+        "materialization_plane": v5_context.get("materialization_plane") or "cloud_legacy",
         "expected_v5_bundle_sha256": v5_context.get("expected_v5_bundle_sha256"),
         "ingested_v5_bundle_sha256": v5_context.get("ingested_v5_bundle_sha256"),
         "acceptance_set_matched": v5_context.get("acceptance_set_matched"),
@@ -18257,11 +18325,30 @@ def _missing_sections(row_counts: dict[str, int]) -> list[str]:
 
 
 def _write_zip(path: Path, members: dict[str, _MemberPayload]) -> None:
-    with zipfile.ZipFile(path, "w", compression=zipfile.ZIP_DEFLATED) as archive:
-        for member, payload in sorted(members.items()):
-            with archive.open(member, "w") as handle:
-                for chunk in _payload_byte_chunks(payload):
-                    handle.write(chunk)
+    partial = path.with_suffix(path.suffix + ".partial")
+    partial.unlink(missing_ok=True)
+    try:
+        with zipfile.ZipFile(partial, "w", allowZip64=True) as archive:
+            for member, payload in sorted(members.items()):
+                compression = _member_zip_compression(member)
+                if isinstance(payload, _StagedMember):
+                    archive.write(payload.path, arcname=member, compress_type=compression)
+                    continue
+                info = zipfile.ZipInfo(member)
+                info.compress_type = compression
+                with archive.open(info, "w") as handle:
+                    for chunk in _payload_byte_chunks(payload):
+                        handle.write(chunk)
+        os.replace(partial, path)
+    finally:
+        partial.unlink(missing_ok=True)
+
+
+def _member_zip_compression(member: str) -> int:
+    suffixes = [suffix.lower() for suffix in PurePosixPath(member).suffixes]
+    if any(suffix in {".png", ".parquet", ".gz", ".zip", ".tgz"} for suffix in suffixes):
+        return zipfile.ZIP_STORED
+    return zipfile.ZIP_DEFLATED
 
 
 def _write_atomic_acceptance_set(
@@ -18340,6 +18427,13 @@ def _fail_on_secrets(members: dict[str, _MemberPayload]) -> None:
     findings: list[str] = []
     for member, text in members.items():
         if isinstance(text, bytes):
+            continue
+        if isinstance(text, _StagedMember):
+            if not _is_text_member(member):
+                continue
+            high, medium = _secret_severity_counts_in_file(text.path)
+            if high or medium:
+                findings.append(f"{member}: {high} high, {medium} medium")
             continue
         high, medium = _secret_severity_counts(text)
         if high or medium:
@@ -19106,8 +19200,47 @@ def _entry_quality_history_summary_md(metrics: pl.DataFrame) -> str:
     return "\n".join(lines) + "\n"
 
 
-def _csv_member(path: str, df: pl.DataFrame) -> str:
-    return _csv_text(df, fixed_columns=CSV_SCHEMAS.get(path))
+def _csv_member(path: str, df: pl.DataFrame) -> _MemberPayload:
+    staging = _active_member_staging_dir()
+    if staging is None:
+        return _csv_text(df, fixed_columns=CSV_SCHEMAS.get(path))
+    destination = _safe_staging_member_path(staging, path)
+    destination.parent.mkdir(parents=True, exist_ok=True)
+    safe = _csv_frame_with_schema(readers.redact_frame(df), CSV_SCHEMAS.get(path))
+    safe = _normalize_bool_columns_for_csv(safe)
+    if _can_use_native_csv_writer(safe):
+        safe.write_csv(destination)
+    else:
+        destination.write_text(
+            _python_csv_text(safe, fixed_columns=CSV_SCHEMAS.get(path)),
+            encoding="utf-8",
+        )
+    return _StagedMember(path=destination, row_count=safe.height)
+
+
+def _active_member_staging_dir() -> Path | None:
+    value = os.environ.get("QUANT_LAB_EXPORT_ACTIVE_STAGING_DIR", "").strip()
+    return Path(value) if value else None
+
+
+def _safe_staging_member_path(root: Path, member: str) -> Path:
+    relative = PurePosixPath(member.replace("\\", "/"))
+    if relative.is_absolute() or ".." in relative.parts:
+        raise ValueError(f"unsafe expert pack member path: {member}")
+    target = root.joinpath(*relative.parts).resolve()
+    if root.resolve() not in target.parents:
+        raise ValueError(f"expert pack member escapes staging root: {member}")
+    return target
+
+
+def _stage_bytes_member(member: str, payload: bytes) -> _MemberPayload:
+    staging = _active_member_staging_dir()
+    if staging is None:
+        return payload
+    destination = _safe_staging_member_path(staging, member)
+    destination.parent.mkdir(parents=True, exist_ok=True)
+    destination.write_bytes(payload)
+    return _StagedMember(path=destination)
 
 
 def _csv_text(df: pl.DataFrame, fixed_columns: list[str] | None = None) -> str:
@@ -19517,6 +19650,17 @@ def _flag_enabled(name: str, *, default: bool) -> bool:
 
 
 def _member_row_count(path: str, text: _MemberPayload) -> int | None:
+    if isinstance(text, _StagedMember):
+        if text.row_count is not None:
+            return text.row_count
+        if Path(path).suffix.lower() == ".csv":
+            try:
+                with text.path.open("rb") as handle:
+                    chunks = iter(lambda: handle.read(1024 * 1024), b"")
+                    return max(sum(chunk.count(b"\n") for chunk in chunks) - 1, 0)
+            except OSError:
+                return None
+        return None
     if isinstance(text, bytes):
         return None
     suffix = Path(path).suffix.lower()
@@ -19544,12 +19688,18 @@ def _sha256_text(text: str) -> str:
 
 
 def _sha256_payload(payload: _MemberPayload) -> str:
+    if isinstance(payload, _StagedMember):
+        return _sha256_file(payload.path)
     if isinstance(payload, bytes):
         return hashlib.sha256(payload).hexdigest()
     return _sha256_text(payload)
 
 
 def _payload_byte_chunks(payload: _MemberPayload, chunk_size: int = 1024 * 1024) -> Any:
+    if isinstance(payload, _StagedMember):
+        with payload.path.open("rb") as handle:
+            yield from iter(lambda: handle.read(chunk_size), b"")
+        return
     if isinstance(payload, bytes):
         for index in range(0, len(payload), chunk_size):
             yield payload[index : index + chunk_size]
@@ -19615,6 +19765,25 @@ def _git_commit_full() -> str | None:
 def _git_ref_commit_full(ref: str) -> str | None:
     root = Path(__file__).resolve().parents[3]
     return _git_command(["rev-parse", ref], root)
+
+
+def _current_main_commit_full() -> str | None:
+    observed = _git_ref_commit_full("origin/main")
+    if _is_full_git_sha(observed):
+        return observed
+    if os.environ.get("GITHUB_ACTIONS", "").strip().lower() != "true":
+        return observed
+    if os.environ.get("GITHUB_BASE_REF", "").strip() != "main":
+        return observed
+    event_path = Path(os.environ.get("GITHUB_EVENT_PATH", ""))
+    try:
+        event = json.loads(event_path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return observed
+    pull_request = event.get("pull_request") if isinstance(event, dict) else None
+    base = pull_request.get("base") if isinstance(pull_request, dict) else None
+    base_sha = str(base.get("sha") or "").strip().lower() if isinstance(base, dict) else ""
+    return base_sha if _is_full_git_sha(base_sha) else observed
 
 
 def _source_version(component: str, git_commit: str | None) -> str:

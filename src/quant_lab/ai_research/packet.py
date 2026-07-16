@@ -24,6 +24,8 @@ from quant_lab.ai_research.contracts import (
     canonical_json,
     compute_task_packet_sha256,
 )
+from quant_lab.export_plane.contracts import ExportPackIndexEntry
+from quant_lab.export_plane.signatures import sha256_file
 
 DEFAULT_MAX_MEMBER_BYTES = 256 * 1024
 DEFAULT_MAX_DOCUMENT_CHARS = 40_000
@@ -439,6 +441,125 @@ def build_task_from_latest_export(
     if pack is None:
         return None, None
     return build_ai_research_task(pack, queue_root=queue_root, force=force, **kwargs)
+
+
+def build_task_from_nas_pack_reference(
+    pack: ExportPackIndexEntry,
+    *,
+    queue_root: str | Path,
+    force: bool = False,
+    now: datetime | None = None,
+) -> tuple[AIResearchTask | None, Path | None]:
+    if not all(
+        (
+            pack.pack_state == "accepted",
+            pack.authoritative_input_snapshot,
+            pack.nas_artifact_validated,
+            pack.control_plane_receipt_verified,
+            pack.download_ready,
+        )
+    ):
+        raise ValueError("AI task source pack is not fully accepted")
+    queue = Path(queue_root)
+    state_root = queue / "state"
+    pending_root = queue / "pending"
+    staging_root = queue / ".staging"
+    state_root.mkdir(parents=True, exist_ok=True)
+    pending_root.mkdir(parents=True, exist_ok=True)
+    staging_root.mkdir(parents=True, exist_ok=True)
+    previous = _read_json_object(state_root / "last_task.json")
+    previous_task = str(previous.get("task_id") or "")
+    if not force and previous.get("source_pack_sha256") == pack.pack_sha256:
+        if previous_task and _task_exists(queue, previous_task):
+            return None, None
+    created = (now or datetime.now(UTC)).astimezone(UTC)
+    task_id = _task_id(Path(pack.pack_name), pack.pack_sha256, created)
+    base_payload = {
+        "schema_version": "quant_lab.ai_research_task.v1",
+        "prompt_version": AI_PROMPT_VERSION,
+        "task_id": task_id,
+        "created_at": created,
+        "source_pack_name": pack.pack_name,
+        "source_pack_sha256": pack.pack_sha256,
+        "source_pack_id": pack.pack_id,
+        "source_snapshot_id": pack.snapshot_id,
+        "source_location": "nas_accepted",
+        "sections": {},
+        "preflight": None,
+        "previous_research_context": _load_previous_research_context(
+            state_root / "latest_research_context.json"
+        ),
+        "allowed_factor_templates": _ALLOWED_FACTOR_TEMPLATES,
+        "prohibited_actions": list(PROHIBITED_ACTIONS),
+        "warnings": ["evidence_materialized_on_nas_worker"],
+        "packet_sha256": "0" * 64,
+    }
+    provisional = AIResearchTask.model_validate(base_payload)
+    task = provisional.model_copy(update={"packet_sha256": compute_task_packet_sha256(provisional)})
+    task_dir = pending_root / task.task_id
+    if task_dir.exists():
+        return None, None
+    staging = Path(tempfile.mkdtemp(prefix=f"{task.task_id}.", dir=staging_root))
+    staging.chmod(0o2770)
+    try:
+        _atomic_write_json(staging / "task.json", task.model_dump(mode="json"))
+        _atomic_write_json(
+            staging / "task_manifest.json",
+            {
+                "task_id": task.task_id,
+                "source_pack_id": pack.pack_id,
+                "source_pack_sha256": pack.pack_sha256,
+                "source_snapshot_id": pack.snapshot_id,
+                "source_location": "nas_accepted",
+                "packet_sha256": task.packet_sha256,
+                "published_at": created,
+            },
+        )
+        os.replace(staging, task_dir)
+    finally:
+        if staging.exists():
+            shutil.rmtree(staging, ignore_errors=True)
+    _atomic_write_json(
+        state_root / "last_task.json",
+        {
+            "task_id": task.task_id,
+            "source_pack_name": pack.pack_name,
+            "source_pack_id": pack.pack_id,
+            "source_pack_sha256": pack.pack_sha256,
+            "source_snapshot_id": pack.snapshot_id,
+            "packet_sha256": task.packet_sha256,
+            "created_at": created,
+        },
+    )
+    return task, task_dir / "task.json"
+
+
+def hydrate_nas_ai_research_task(
+    task: AIResearchTask,
+    *,
+    pack_path: str | Path,
+    work_root: str | Path,
+) -> AIResearchTask:
+    if task.source_location != "nas_accepted":
+        return task
+    pack = Path(pack_path)
+    if sha256_file(pack) != task.source_pack_sha256:
+        raise ValueError("NAS AI source pack SHA256 mismatch")
+    local_task, _ = build_ai_research_task(
+        pack,
+        queue_root=work_root,
+        force=True,
+        now=task.created_at,
+    )
+    if local_task is None:
+        raise RuntimeError("failed to build bounded evidence from NAS pack")
+    return task.model_copy(
+        update={
+            "sections": local_task.sections,
+            "preflight": local_task.preflight,
+            "warnings": sorted(set(task.warnings + local_task.warnings)),
+        }
+    )
 
 
 def queue_status(queue_root: str | Path) -> dict[str, Any]:

@@ -27,7 +27,10 @@ from quant_lab.ai_research.contracts import (
     compute_task_packet_sha256,
     strict_output_schema,
 )
+from quant_lab.ai_research.packet import hydrate_nas_ai_research_task
 from quant_lab.ai_research.prompts import stage1_system_prompt, stage2_system_prompt
+from quant_lab.export_plane.contracts import ExportPackIndexEntry, ExportWorkerReceipt
+from quant_lab.export_plane.signatures import load_public_key, sha256_file, verify_payload
 
 LOG = logging.getLogger("quant_ai_worker")
 TASK_ID_RE = re.compile(r"^[A-Za-z0-9_.-]{1,180}$")
@@ -73,6 +76,14 @@ class Config:
         self.worker_id = os.getenv("WORKER_ID", socket.gethostname())
         self.data_dir = Path(os.getenv("WORKER_DATA_DIR", "/data"))
         self.data_dir.mkdir(parents=True, exist_ok=True)
+        self.accepted_root = Path(os.getenv("NAS_EXPORT_ACCEPTED_ROOT", "/exports/accepted"))
+        self.accepted_index = Path(
+            os.getenv("NAS_EXPORT_INDEX_PATH", "/exports/accepted_index.json")
+        )
+        self.nas_worker_public_key = Path(
+            os.getenv("NAS_EXPORT_WORKER_PUBLIC_KEY", "/run/secrets/nas_export_public_key")
+        )
+        self.nas_worker_key_id = os.getenv("NAS_EXPORT_WORKER_KEY_ID", "nas-export-v1")
 
         if not self.ssh_key_path.is_file():
             raise FileNotFoundError(f"SSH key not found: {self.ssh_key_path}")
@@ -166,7 +177,8 @@ def process_claimed_task(config: Config, task_id: str) -> None:
             raise ValueError("downloaded task_id mismatch")
         if compute_task_packet_sha256(task) != task.packet_sha256:
             raise ValueError("downloaded task packet_sha256 is invalid")
-        result = run_research(config, task)
+        runtime_task = _hydrate_task_from_nas(config, task, local_dir)
+        result = run_research(config, runtime_task)
         result_path.write_text(
             json.dumps(
                 result.model_dump(mode="json"),
@@ -316,6 +328,66 @@ def run_research(config: Config, task: AIResearchTask) -> AIResearchResult:
         stage1_attempts=int(stage1_raw.get("attempts") or 1),
         stage2_attempts=stage2_attempts,
         validation_events_json=canonical_json(validation_events),
+        evidence_manifest=[
+            {
+                "section": section,
+                "source_member": document.source_member,
+                "content_sha256": document.content_sha256,
+            }
+            for section, documents in sorted(task.sections.items())
+            for document in documents
+        ],
+    )
+
+
+def _hydrate_task_from_nas(
+    config: Config,
+    task: AIResearchTask,
+    local_dir: Path,
+) -> AIResearchTask:
+    if task.source_location != "nas_accepted":
+        return task
+    payload = json.loads(config.accepted_index.read_text(encoding="utf-8"))
+    rows = [ExportPackIndexEntry.model_validate(row) for row in payload.get("packs", [])]
+    row = next((item for item in rows if item.pack_id == task.source_pack_id), None)
+    if row is None:
+        raise FileNotFoundError("NAS accepted pack is not indexed")
+    if not all(
+        (
+            row.pack_sha256 == task.source_pack_sha256,
+            row.snapshot_id == task.source_snapshot_id,
+            row.pack_state == "accepted",
+            row.nas_artifact_validated,
+            row.control_plane_receipt_verified,
+            row.download_ready,
+        )
+    ):
+        raise ValueError("NAS accepted pack identity or trust state mismatch")
+    relative = Path(row.download_relative_path)
+    pack_path = (config.accepted_root / relative).resolve()
+    pack_path.relative_to(config.accepted_root.resolve())
+    if sha256_file(pack_path) != row.pack_sha256:
+        raise ValueError("NAS accepted pack bytes do not match index")
+    receipt = ExportWorkerReceipt.model_validate_json(
+        (pack_path.parent / "receipt.json").read_text(encoding="utf-8")
+    )
+    if receipt.signature_key_id != config.nas_worker_key_id:
+        raise ValueError("unknown NAS Export Worker receipt key")
+    verify_payload(
+        receipt,
+        receipt.signature,
+        load_public_key(config.nas_worker_public_key),
+    )
+    if (
+        receipt.pack_id != row.pack_id
+        or receipt.pack_sha256 != row.pack_sha256
+        or receipt.snapshot_id != row.snapshot_id
+    ):
+        raise ValueError("NAS receipt does not bind the indexed pack")
+    return hydrate_nas_ai_research_task(
+        task,
+        pack_path=pack_path,
+        work_root=local_dir / "bounded-evidence",
     )
 
 

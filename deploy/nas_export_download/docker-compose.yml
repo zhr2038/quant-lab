@@ -28,7 +28,9 @@ services:
         max-file: "3"
 
   quant-export-download:
-    image: nginxinc/nginx-unprivileged:1.27-alpine
+    build:
+      context: ../..
+      dockerfile: deploy/nas_export_download/Nginx.Dockerfile
     container_name: quant-export-download
     restart: unless-stopped
     depends_on:
@@ -49,7 +51,6 @@ services:
       - /var/cache/nginx:rw,noexec,nosuid,size=64m
       - /var/run:rw,noexec,nosuid,size=8m
     volumes:
-      - ./nginx.conf:/etc/nginx/conf.d/default.conf:ro
       - ./secrets/download.htpasswd:/run/secrets/download.htpasswd:ro
       - ${NAS_EXPORT_DATA_HOST_PATH:-../nas_export_worker/data}/accepted:/exports/accepted:ro
     healthcheck:

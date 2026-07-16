@@ -245,9 +245,10 @@ def test_factor_audit_documents_preserve_complete_candidate_and_validation_rows(
     )
     result_header = (
         "candidate_id,sample_count,avg_net_bps,p25_net_bps,win_rate,"
-        "cost_source_mix,validation_metrics_json,recent_7d_metrics_json,decision\n"
+        "cost_source_mix,validation_metrics_json,recent_7d_metrics_json,"
+        "decision_reasons,decision\n"
     )
-    promotion_header = "candidate_id,promotion_state\n"
+    promotion_header = "candidate_id,reasons,promotion_state\n"
     with zipfile.ZipFile(pack, "w", compression=zipfile.ZIP_DEFLATED) as archive:
         archive.writestr("manifest.json", "{}")
         archive.writestr("provenance.json", "{}")
@@ -263,14 +264,19 @@ def test_factor_audit_documents_preserve_complete_candidate_and_validation_rows(
             result_header
             + 'candidate-a,40,12.5,-2.0,0.6,"{""actual"":40}",'
             '"{""complete_sample_count"":20}",'
-            '"{""complete_sample_count"":8}",KEEP_SHADOW\n'
+            '"{""complete_sample_count"":8}",'
+            '"[""insufficient_recent_samples""]",KEEP_SHADOW\n'
             + 'candidate-b,50,8.5,-4.0,0.55,"{""proxy"":50}",'
-            '"{""complete_sample_count"":22}",'
-            '"{""complete_sample_count"":9}",RESEARCH\n',
+            '"{""complete_sample_count"":0}",'
+            '"{""complete_sample_count"":0}",'
+            '"[""insufficient_validation_samples"",""insufficient_recent_samples""]",'
+            "RESEARCH\n",
         )
         archive.writestr(
             "reports/alpha_factory_promotion_queue.csv",
-            promotion_header + "candidate-a,KEEP_SHADOW\ncandidate-b,RESEARCH\n",
+            promotion_header
+            + 'candidate-a,"[""collect_more_samples""]",KEEP_SHADOW\n'
+            + 'candidate-b,"[""edge_not_confirmed""]",RESEARCH\n',
         )
         archive.writestr(
             "reports/factor_definitions.csv",
@@ -289,10 +295,10 @@ def test_factor_audit_documents_preserve_complete_candidate_and_validation_rows(
         )
         archive.writestr(
             "reports/factor_forward_validation.csv",
-            "factor_id,symbol,regime,horizon_hours,sample_count,rank_ic,"
+            "factor_id,symbol,regime,horizon_hours,sample_count,rank_ic,pearson_ic,"
             "long_short_bps,p25_net_bps,hit_rate,recent_7d_score,regime_stability,"
             "cost_adjusted_score,recommendation,data_leakage_check\n"
-            "f1,SOL-USDT,TREND_UP,8,40,0.04,12.5,-2.0,0.6,5.0,0.8,12.5,"
+            "f1,SOL-USDT,TREND_UP,8,40,0.04,0.03,12.5,-2.0,0.6,5.0,0.8,12.5,"
             "FORWARD_VALIDATION_PASS,pass\n",
         )
 
@@ -309,10 +315,14 @@ def test_factor_audit_documents_preserve_complete_candidate_and_validation_rows(
     assert [row[0] for row in alpha.content["rows"]] == ["candidate-a", "candidate-b"]
     assert alpha.content["rows"][0][11] == 20
     assert alpha.content["rows"][0][12] == 8
+    assert alpha.content["rows"][0][13] == "VALIDATION_AND_RECENT_PRESENT"
+    assert "insufficient_recent_samples" in alpha.content["rows"][0][14]
+    assert alpha.content["rows"][1][13] == "NO_VALIDATION_OR_RECENT_SAMPLES"
     assert factor.truncated is False
     assert factor.content["definition_count"] == 1
     assert factor.content["forward_validation_count"] == 1
     assert factor.content["forward_validation_rows"][0][0] == "f1"
+    assert factor.content["forward_validation_rows"][0][6] == 0.03
     assert task.preflight.status == "PASS"
 
 

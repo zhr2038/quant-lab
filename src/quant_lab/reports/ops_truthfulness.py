@@ -89,6 +89,10 @@ PAPER_PROPOSAL_PROPAGATION_SCHEMA = {
     "selected_v5_bundle_built_at": pl.Utf8,
     "v5_observed_proposal_snapshot_id": pl.Utf8,
     "v5_observed_proposal_snapshot_sha256": pl.Utf8,
+    "v5_observed_proposal_content_snapshot_id": pl.Utf8,
+    "v5_observed_proposal_content_snapshot_sha256": pl.Utf8,
+    "proposal_snapshot_match": pl.Boolean,
+    "proposal_content_snapshot_match": pl.Boolean,
     "proposal_published_at": pl.Utf8,
     "first_seen_by_v5_at": pl.Utf8,
     "ack_at": pl.Utf8,
@@ -454,6 +458,8 @@ def build_paper_proposal_propagation_status(
     selected_v5_bundle_built_at: datetime | str | None = None,
     v5_observed_proposal_snapshot_id: str | None = None,
     v5_observed_proposal_snapshot_sha256: str | None = None,
+    v5_observed_proposal_content_snapshot_id: str | None = None,
+    v5_observed_proposal_content_snapshot_sha256: str | None = None,
     v5_snapshot_fetched_at: datetime | str | None = None,
     generated_at: datetime | None = None,
 ) -> pl.DataFrame:
@@ -462,6 +468,12 @@ def build_paper_proposal_propagation_status(
     bundle_built_at = _as_utc_datetime(selected_v5_bundle_built_at)
     observed_snapshot_id = _text(v5_observed_proposal_snapshot_id)
     observed_snapshot_sha = _text(v5_observed_proposal_snapshot_sha256).lower()
+    observed_content_snapshot_id = _text(
+        v5_observed_proposal_content_snapshot_id
+    )
+    observed_content_snapshot_sha = _text(
+        v5_observed_proposal_content_snapshot_sha256
+    ).lower()
     observed_fetched_at = _as_utc_datetime(v5_snapshot_fetched_at)
     ack_current_rows = _rows(ack_current)
     ack_history_rows = _rows(ack_history)
@@ -475,8 +487,12 @@ def build_paper_proposal_propagation_status(
     for proposal in proposals.to_dicts() if not proposals.is_empty() else []:
         proposal_id = _text(proposal.get("proposal_id"))
         proposal_hash = _text(proposal.get("proposal_hash"))
-        snapshot_id = _text(proposal.get("proposal_content_snapshot_id"))
-        snapshot_sha = _text(
+        snapshot_id = _text(proposal.get("proposal_snapshot_id"))
+        snapshot_sha = _text(proposal.get("proposal_snapshot_sha256")).lower()
+        content_snapshot_id = _text(
+            proposal.get("proposal_content_snapshot_id")
+        )
+        content_snapshot_sha = _text(
             proposal.get("proposal_content_snapshot_sha256")
         ).lower()
         snapshot_at = _row_time(
@@ -524,6 +540,12 @@ def build_paper_proposal_propagation_status(
             and snapshot_sha
             and observed_snapshot_id == snapshot_id
             and observed_snapshot_sha == snapshot_sha
+        )
+        content_snapshot_exact = bool(
+            content_snapshot_id
+            and content_snapshot_sha
+            and observed_content_snapshot_id == content_snapshot_id
+            and observed_content_snapshot_sha == content_snapshot_sha
         )
         snapshot_acks = [
             row
@@ -590,12 +612,28 @@ def build_paper_proposal_propagation_status(
             first_seen = None
             ack_at = None
             tracker_at = None
+        elif (
+            observed_content_snapshot_id == content_snapshot_id
+            and observed_content_snapshot_sha != content_snapshot_sha
+        ):
+            status, block_reason = (
+                "HASH_MISMATCH",
+                "V5 observed Proposal Content Snapshot ID with another SHA",
+            )
+            first_seen = None
+            ack_at = None
+            tracker_at = None
         elif not snapshot_exact:
-            if historical_exact:
+            if historical_exact or current_exact_acks or current_exact_trackers:
                 status, block_reason = (
                     "HISTORICAL_ACK_ONLY",
-                    "only historical ACK or Tracker evidence exists; "
-                    "Current Snapshot was not observed",
+                    (
+                        "same Proposal content was processed under another publication Snapshot; "
+                        "Current publication Snapshot was not observed"
+                        if content_snapshot_exact
+                        else "only another Snapshot's ACK or Tracker evidence exists; "
+                        "Current publication Snapshot was not observed"
+                    ),
                 )
             else:
                 status, block_reason = (
@@ -628,14 +666,22 @@ def build_paper_proposal_propagation_status(
                 "proposal_hash": proposal_hash,
                 "proposal_snapshot_id": snapshot_id,
                 "proposal_snapshot_sha256": snapshot_sha,
-                "proposal_content_snapshot_id": snapshot_id,
-                "proposal_content_snapshot_sha256": snapshot_sha,
+                "proposal_content_snapshot_id": content_snapshot_id,
+                "proposal_content_snapshot_sha256": content_snapshot_sha,
                 "snapshot_generated_at": snapshot_at.isoformat() if snapshot_at else "",
                 "selected_v5_bundle_built_at": (
                     bundle_built_at.isoformat() if bundle_built_at else ""
                 ),
                 "v5_observed_proposal_snapshot_id": observed_snapshot_id,
                 "v5_observed_proposal_snapshot_sha256": observed_snapshot_sha,
+                "v5_observed_proposal_content_snapshot_id": (
+                    observed_content_snapshot_id
+                ),
+                "v5_observed_proposal_content_snapshot_sha256": (
+                    observed_content_snapshot_sha
+                ),
+                "proposal_snapshot_match": snapshot_exact,
+                "proposal_content_snapshot_match": content_snapshot_exact,
                 "proposal_published_at": proposal_at.isoformat() if proposal_at else "",
                 "first_seen_by_v5_at": first_seen.isoformat() if first_seen else "",
                 "ack_at": ack_at.isoformat() if ack_at else "",
@@ -911,8 +957,8 @@ def _row_matches_proposal_snapshot(
     return bool(
         snapshot_id
         and snapshot_sha256
-        and _text(row.get("source_proposal_content_snapshot_id")) == snapshot_id
-        and _text(row.get("source_proposal_content_snapshot_sha256")).lower()
+        and _text(row.get("source_proposal_snapshot_id")) == snapshot_id
+        and _text(row.get("source_proposal_snapshot_sha256")).lower()
         == snapshot_sha256.lower()
     )
 

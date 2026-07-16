@@ -4596,9 +4596,15 @@ def _publish_ops_truthfulness_snapshot(
         ),
         selected_v5_bundle_built_at=selected_bundle_built_at,
         v5_observed_proposal_snapshot_id=v5_context.get(
-            "v5_observed_proposal_content_snapshot_id"
+            "v5_observed_proposal_snapshot_id"
         ),
         v5_observed_proposal_snapshot_sha256=v5_context.get(
+            "v5_observed_proposal_snapshot_sha256"
+        ),
+        v5_observed_proposal_content_snapshot_id=v5_context.get(
+            "v5_observed_proposal_content_snapshot_id"
+        ),
+        v5_observed_proposal_content_snapshot_sha256=v5_context.get(
             "v5_observed_proposal_content_snapshot_sha256"
         ),
         v5_snapshot_fetched_at=v5_context.get(

@@ -329,6 +329,57 @@ def test_snapshot_id_match_with_sha_mismatch_is_rejected() -> None:
     assert rows[0]["propagation_status"] == "HASH_MISMATCH"
 
 
+def test_publication_snapshot_is_not_aliased_to_matching_content_snapshot() -> None:
+    content_id = "proposal-content-snapshot:stable"
+    content_sha = "4" * 64
+    rows = build_paper_proposal_propagation_status(
+        proposals=pl.DataFrame(
+            [
+                {
+                    "proposal_id": "republished:1",
+                    "proposal_hash": "5" * 64,
+                    "proposal_snapshot_id": "proposal-snapshot:current",
+                    "proposal_snapshot_sha256": "6" * 64,
+                    "proposal_content_snapshot_id": content_id,
+                    "proposal_content_snapshot_sha256": content_sha,
+                    "snapshot_generated_at": (NOW - timedelta(minutes=10)).isoformat(),
+                }
+            ]
+        ),
+        ack_current=pl.DataFrame(
+            [
+                {
+                    "proposal_id": "republished:1",
+                    "proposal_hash": "5" * 64,
+                    "accepted": True,
+                    "source_proposal_snapshot_id": "proposal-snapshot:previous",
+                    "source_proposal_snapshot_sha256": "7" * 64,
+                    "source_proposal_content_snapshot_id": content_id,
+                    "source_proposal_content_snapshot_sha256": content_sha,
+                    "accepted_at": (NOW - timedelta(minutes=8)).isoformat(),
+                }
+            ]
+        ),
+        ack_history=pl.DataFrame(),
+        trackers_current=pl.DataFrame(),
+        trackers_history=pl.DataFrame(),
+        selected_v5_bundle_built_at=NOW - timedelta(minutes=1),
+        v5_observed_proposal_snapshot_id="proposal-snapshot:previous",
+        v5_observed_proposal_snapshot_sha256="7" * 64,
+        v5_observed_proposal_content_snapshot_id=content_id,
+        v5_observed_proposal_content_snapshot_sha256=content_sha,
+        generated_at=NOW,
+    ).to_dicts()
+
+    row = rows[0]
+    assert row["proposal_snapshot_id"] == "proposal-snapshot:current"
+    assert row["proposal_content_snapshot_id"] == content_id
+    assert row["proposal_snapshot_match"] is False
+    assert row["proposal_content_snapshot_match"] is True
+    assert row["propagation_status"] == "HISTORICAL_ACK_ONLY"
+    assert row["first_seen_by_v5_at"] == ""
+
+
 def test_complete_acceptance_discloses_all_non_pass_and_funnel_eras() -> None:
     acceptance = pl.DataFrame(
         [

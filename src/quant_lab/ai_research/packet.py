@@ -978,6 +978,10 @@ def _build_alpha_factory_candidate_audit(
         definition_parse_errors += int(not parsed)
         validation_metrics = _json_object(result.get("validation_metrics_json"))
         recent_metrics = _json_object(result.get("recent_7d_metrics_json"))
+        validation_support_status = _validation_support_status(
+            validation_metrics,
+            recent_metrics,
+        )
         cost_sources = sorted(_json_object(result.get("cost_source_mix")))
         rows.append(
             [
@@ -994,6 +998,9 @@ def _build_alpha_factory_candidate_audit(
                 ",".join(cost_sources),
                 _compact_number(validation_metrics.get("complete_sample_count")),
                 _compact_number(recent_metrics.get("complete_sample_count")),
+                validation_support_status,
+                str(result.get("decision_reasons") or "[]"),
+                str(promotion.get("reasons") or "[]"),
                 str(result.get("decision") or ""),
                 str(promotion.get("promotion_state") or ""),
             ]
@@ -1015,7 +1022,7 @@ def _build_alpha_factory_candidate_audit(
     )
     warnings = [] if complete else ["alpha_factory_candidate_audit_join_gap"]
     content = {
-        "schema_version": "quant_lab.ai_alpha_factory_candidate_audit.v1",
+        "schema_version": "quant_lab.ai_alpha_factory_candidate_audit.v2",
         "source_members": sorted(sources),
         "freshness": {
             "as_of_dates": _distinct_row_values(candidates + results + promotions, "as_of_date"),
@@ -1053,6 +1060,9 @@ def _build_alpha_factory_candidate_audit(
             "cost_sources",
             "validation_complete_sample_count",
             "recent_7d_complete_sample_count",
+            "validation_support_status",
+            "decision_reasons",
+            "promotion_reasons",
             "decision",
             "promotion_state",
         ],
@@ -1115,6 +1125,7 @@ def _build_factor_validation_audit(
             _compact_number(row.get("horizon_hours")),
             _compact_number(row.get("sample_count")),
             _compact_number(row.get("rank_ic")),
+            _compact_number(row.get("pearson_ic")),
             _compact_number(row.get("long_short_bps")),
             _compact_number(row.get("p25_net_bps")),
             _compact_number(row.get("hit_rate")),
@@ -1132,7 +1143,7 @@ def _build_factor_validation_audit(
     complete = not unmapped_forward_ids
     warnings = [] if complete else ["factor_validation_audit_definition_gap"]
     content = {
-        "schema_version": "quant_lab.ai_factor_validation_audit.v1",
+        "schema_version": "quant_lab.ai_factor_validation_audit.v2",
         "source_members": sorted(sources),
         "freshness": {
             "definition_created_at_values": _bounded_distinct_row_values(
@@ -1185,6 +1196,7 @@ def _build_factor_validation_audit(
             "horizon_hours",
             "sample_count",
             "rank_ic",
+            "pearson_ic",
             "long_short_bps",
             "p25_net_bps",
             "hit_rate",
@@ -1300,6 +1312,23 @@ def _compact_number(value: Any) -> int | float | str | None:
     if number.is_integer():
         return int(number)
     return round(number, 6)
+
+
+def _validation_support_status(
+    validation_metrics: dict[str, Any],
+    recent_metrics: dict[str, Any],
+) -> str:
+    validation = _compact_number(validation_metrics.get("complete_sample_count"))
+    recent = _compact_number(recent_metrics.get("complete_sample_count"))
+    validation_count = validation if isinstance(validation, int | float) else 0
+    recent_count = recent if isinstance(recent, int | float) else 0
+    if validation_count <= 0 and recent_count <= 0:
+        return "NO_VALIDATION_OR_RECENT_SAMPLES"
+    if validation_count <= 0:
+        return "NO_VALIDATION_SAMPLES"
+    if recent_count <= 0:
+        return "NO_RECENT_SAMPLES"
+    return "VALIDATION_AND_RECENT_PRESENT"
 
 
 def _value_counts_rows(rows: list[dict[str, str]], key: str) -> dict[str, int]:

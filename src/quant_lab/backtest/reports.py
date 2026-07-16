@@ -147,6 +147,7 @@ FACTOR_FORWARD_VALIDATION_FIELDS = [
     "horizon_hours",
     "sample_count",
     "rank_ic",
+    "pearson_ic",
     "long_short_bps",
     "p25_net_bps",
     "hit_rate",
@@ -356,6 +357,7 @@ def factor_forward_validation_md(frame: pl.DataFrame) -> str:
             "- "
             f"{row.get('factor_id')} {row.get('symbol')} {row.get('regime')} "
             f"h={row.get('horizon_hours')} rank_ic={row.get('rank_ic')} "
+            f"pearson_ic={row.get('pearson_ic')} "
             f"long_short_bps={row.get('long_short_bps')}"
         )
     return "\n".join(lines) + "\n"
@@ -1026,7 +1028,9 @@ def _factor_forward_summary_row(
         and (label := float_or_none(sample.get("future_net_bps"))) is not None
     ]
     labels = [label for _ts, _value, label in pairs]
-    rank_ic = _forward_rank_ic([value for _ts, value, _label in pairs], labels)
+    values = [value for _ts, value, _label in pairs]
+    rank_ic = _forward_rank_ic(values, labels)
+    pearson_ic = _forward_pearson(values, labels)
     long_short, p25, hit_rate = _forward_top_bottom_stats(pairs)
     recent_score = _forward_recent_score(pairs)
     return {
@@ -1039,6 +1043,7 @@ def _factor_forward_summary_row(
         "horizon_hours": horizon,
         "sample_count": len(pairs),
         "rank_ic": _round_float(rank_ic),
+        "pearson_ic": _round_float(pearson_ic),
         "long_short_bps": _round_float(long_short),
         "p25_net_bps": _round_float(p25),
         "hit_rate": _round_float(hit_rate),

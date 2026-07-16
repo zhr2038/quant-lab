@@ -148,6 +148,13 @@ def test_alpha_evidence_primary_key_matches_real_schema():
     assert "horizon_hours" not in alpha_evidence.primary_key
 
 
+def test_paper_cohort_manifest_primary_key_preserves_version_history():
+    cohort = get_dataset_spec("paper_cohort_manifest")
+
+    assert cohort is not None
+    assert cohort.primary_key == ("cohort_id", "cohort_version")
+
+
 def test_job_run_history_uses_duration_seconds_schema():
     job_run_history = get_dataset_spec("job_run_history")
 

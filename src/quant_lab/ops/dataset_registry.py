@@ -742,7 +742,8 @@ def core_dataset_specs() -> dict[str, DatasetSpec]:
             consumers=("web", "expert-export", "paper-promotion"),
             required=False,
             min_rows=0,
-            primary_key=("cohort_id",),
+            # A cohort keeps immutable version history under one stable content ID.
+            primary_key=("cohort_id", "cohort_version"),
             required_columns=(
                 "cohort_id",
                 "cohort_version",

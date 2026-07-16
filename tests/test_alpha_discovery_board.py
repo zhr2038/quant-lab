@@ -25,12 +25,33 @@ from quant_lab.research.alpha_discovery import (
 )
 from quant_lab.research.paper_tracking import (
     build_and_publish_paper_strategy_tracking,
+    build_paper_slippage_coverage_from_v5,
     build_paper_strategy_daily_from_v5,
     build_paper_strategy_runs_from_v5,
     build_paper_strategy_runs_report_from_v5,
     enrich_paper_strategy_daily_from_runs,
     paper_strategy_summary_md,
 )
+
+
+def test_v5_paper_readiness_does_not_override_slippage_coverage_status():
+    coverage = build_paper_slippage_coverage_from_v5(
+        pl.DataFrame(
+            [
+                {
+                    "strategy_id": "TEST_PAPER_V1",
+                    "symbol": "SOL-USDT",
+                    "paper_days": 2,
+                    "slippage_coverage": 0.5,
+                    "required_slippage_coverage": 0.8,
+                    "readiness_status": "PAPER_READY",
+                }
+            ]
+        )
+    ).to_dicts()[0]
+
+    assert coverage["coverage_status"] == "insufficient_slippage_observations"
+    assert coverage["paper_slippage_coverage"] == 0.5
 
 
 def test_alpha_discovery_board_decisions_are_candidate_symbol_regime_horizon(tmp_path):

@@ -2648,6 +2648,16 @@ def _v5_slippage_row(row: dict[str, Any], created_at: str) -> dict[str, Any]:
     coverage = (
         _optional_float(_field(row, payload, "paper_slippage_coverage", "slippage_coverage")) or 0.0
     )
+    required_coverage = _optional_float(
+        _field(row, payload, "required_slippage_coverage")
+    ) or 0.8
+    coverage_status = str(_field(row, payload, "coverage_status") or "").strip()
+    if not coverage_status:
+        coverage_status = (
+            "ok"
+            if coverage >= required_coverage
+            else "insufficient_slippage_observations"
+        )
     arrival_mid_coverage = _optional_float(
         _field(row, payload, "arrival_mid_coverage", "mid_coverage")
     )
@@ -2676,10 +2686,7 @@ def _v5_slippage_row(row: dict[str, Any], created_at: str) -> dict[str, Any]:
             _optional_float(_field(row, payload, "required_observation_count", "total_rows")) or 1
         ),
         "paper_slippage_coverage": coverage,
-        "required_slippage_coverage": _optional_float(
-            _field(row, payload, "required_slippage_coverage")
-        )
-        or 0.8,
+        "required_slippage_coverage": required_coverage,
         "arrival_mid_coverage": arrival_mid_coverage
         if arrival_mid_coverage is not None
         else coverage,
@@ -2688,13 +2695,7 @@ def _v5_slippage_row(row: dict[str, Any], created_at: str) -> dict[str, Any]:
         else coverage,
         "cost_source_mix": cost_source_mix,
         "missing_cost_source_count": 1 if _is_missing_cost_source(cost_source_mix) else 0,
-        "coverage_status": _field(
-            row,
-            payload,
-            "coverage_status",
-            "readiness_status",
-            default="insufficient_slippage_observations",
-        ),
+        "coverage_status": coverage_status,
         "paper_tracking_status": _field(
             row,
             payload,
@@ -2702,7 +2703,7 @@ def _v5_slippage_row(row: dict[str, Any], created_at: str) -> dict[str, Any]:
             default=V5_PAPER_TRACKING_STATUS,
         ),
         "tracking_stage": "completed_paper_observations"
-        if coverage >= 0.8
+        if coverage >= required_coverage
         else "active_paper_strategy",
         "created_at": created_at,
         "source": V5_PAPER_TRACKING_SOURCE,

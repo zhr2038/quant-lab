@@ -304,6 +304,9 @@ def test_materializer_uses_signed_acceptance_context() -> None:
     assert context["quant_lab_production_commit"] == COMMIT
     assert context["quant_lab_current_main_commit"] == COMMIT
     assert context["proposal_content_snapshot_sha256"] == "d" * 64
+    assert context["snapshot_generated_at"] == "2026-07-16T01:00:00Z"
+    assert context["selected_v5_bundle_built_at"] == "2026-07-16T02:00:00Z"
+    json.dumps(context)
 
 
 def test_snapshot_contract_rejects_inconsistent_content_identity() -> None:

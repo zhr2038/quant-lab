@@ -49,13 +49,6 @@ def seal_export_snapshot(
     v5_commit = daily_export._selected_v5_bundle_git_commit(v5_context)  # noqa: SLF001
     if len(v5_commit) != 40:
         raise RuntimeError("selected V5 bundle does not expose a full git commit")
-    acceptance_context = _snapshot_acceptance_context(
-        root,
-        v5_context=v5_context,
-        quant_lab_commit=quant_commit,
-        selected_v5_bundle_sha256=selected_sha,
-    )
-
     sources = list(_export_source_files(root))
     sources.append(("v5_bundle", selected_v5, _relative_source_path(root, selected_v5)))
     temporary = Path(tempfile.mkdtemp(prefix=".sealing.", dir=queue / "snapshots"))
@@ -72,6 +65,12 @@ def seal_export_snapshot(
         v5_reference = next(item for item in references if item.dataset == "v5_bundle")
         if v5_reference.sha256 != selected_sha:
             raise RuntimeError("selected V5 bundle changed while sealing")
+        acceptance_context = _snapshot_acceptance_context(
+            files_root / "lake",
+            v5_context=v5_context,
+            quant_lab_commit=quant_commit,
+            selected_v5_bundle_sha256=selected_sha,
+        )
 
         source_digest = sha256_bytes(
             canonical_json_bytes(

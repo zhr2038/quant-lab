@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import os
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any
@@ -12,9 +13,10 @@ from pydantic import BaseModel, ConfigDict, Field
 
 from quant_lab.paper.contracts import PaperRule, PaperStrategyProposal
 
-DEFAULT_TEMPLATE_PATH = (
+REPOSITORY_TEMPLATE_PATH = (
     Path(__file__).resolve().parents[3] / "configs" / "paper_strategy_proposals.yaml"
 )
+PACKAGED_TEMPLATE_PATH = Path(__file__).with_name("paper_strategy_proposals.yaml")
 
 PAPER_STRATEGY_MIGRATION_AUDIT_SCHEMA = {
     "legacy_row_id": pl.Utf8,
@@ -71,9 +73,20 @@ class ProposalTemplateFile(BaseModel):
 
 
 def load_proposal_templates(path: str | Path | None = None) -> list[ProposalTemplate]:
-    source = Path(path) if path is not None else DEFAULT_TEMPLATE_PATH
+    source = Path(path) if path is not None else _default_template_path()
     payload = yaml.safe_load(source.read_text(encoding="utf-8")) or {}
     return ProposalTemplateFile.model_validate(payload).proposals
+
+
+def _default_template_path() -> Path:
+    configured = os.environ.get("QUANT_LAB_PAPER_PROPOSAL_CONFIG_PATH", "").strip()
+    candidates = [Path(configured)] if configured else []
+    candidates.extend((REPOSITORY_TEMPLATE_PATH, PACKAGED_TEMPLATE_PATH))
+    for candidate in candidates:
+        if candidate.is_file():
+            return candidate
+    searched = ", ".join(str(candidate) for candidate in candidates)
+    raise FileNotFoundError(f"paper proposal template is unavailable; searched: {searched}")
 
 
 def build_configured_proposals(

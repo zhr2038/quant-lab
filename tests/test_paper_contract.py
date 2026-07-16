@@ -18,6 +18,8 @@ from quant_lab.paper.contracts import (
 )
 from quant_lab.paper.cost_trust import evaluate_strategy_cost_trust
 from quant_lab.paper.proposals import (
+    PACKAGED_TEMPLATE_PATH,
+    REPOSITORY_TEMPLATE_PATH,
     build_configured_proposals,
     build_legacy_proposal_migration_audit,
     load_proposal_templates,
@@ -103,6 +105,13 @@ def test_raw_contract_hash_matches_v5_canonical_vector():
 
     assert paper_proposal_hash(payload) == (
         "6d922297dfdd33019d720d5491e276382d49c710e0823997f78e44a21dd29acb"
+    )
+
+
+def test_packaged_proposal_templates_match_repository_source():
+    assert PACKAGED_TEMPLATE_PATH.read_bytes() == REPOSITORY_TEMPLATE_PATH.read_bytes()
+    assert load_proposal_templates(PACKAGED_TEMPLATE_PATH) == load_proposal_templates(
+        REPOSITORY_TEMPLATE_PATH
     )
 
 

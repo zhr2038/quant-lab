@@ -412,6 +412,38 @@ def test_worker_ssh_options_reuse_one_authenticated_connection(tmp_path: Path) -
     assert "ServerAliveCountMax=3" in joined
 
 
+def test_worker_uploads_are_group_readable_for_cloud_services(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    commands: list[list[str]] = []
+
+    def fake_run(command, **_kwargs):
+        commands.append(command)
+        return SimpleNamespace(returncode=0, stdout="", stderr="")
+
+    monkeypatch.setattr("quant_lab.export_worker.runner.subprocess.run", fake_run)
+    config = SimpleNamespace(
+        ssh_host="cloud.example",
+        ssh_port=22,
+        ssh_user="quant-export",
+        ssh_key_path=tmp_path / "id_ed25519",
+        known_hosts_path=tmp_path / "known_hosts",
+    )
+    local = tmp_path / "status.json"
+    local.write_text("{}\n", encoding="utf-8")
+
+    export_runner._scp_to(  # noqa: SLF001
+        config,
+        local,
+        "/queue/status/task.json.partial",
+    )
+
+    assert commands[0][0] == "scp"
+    assert commands[1][0] == "ssh"
+    assert commands[1][-1] == "chmod 0660 /queue/status/task.json.partial"
+
+
 def test_current_main_commit_uses_github_pr_base_sha_when_remote_ref_is_absent(
     tmp_path: Path,
     monkeypatch,

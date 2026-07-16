@@ -572,6 +572,7 @@ def _scp_to(config: Config, local_path: Path, remote_path: str) -> None:
         f"{config.ssh_user}@{config.ssh_host}:{remote_path}",
     ]
     subprocess.run(command, check=True, capture_output=True, text=True, timeout=300)
+    _ssh(config, ["chmod", "0660", remote_path])
 
 
 def _ssh_options(config: Config) -> list[str]:

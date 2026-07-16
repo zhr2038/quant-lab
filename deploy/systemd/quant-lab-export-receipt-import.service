@@ -5,6 +5,7 @@ Description=Verify and import signed NAS Expert Export receipts
 Type=oneshot
 User=quantlab
 Group=quantlab
+SupplementaryGroups=quant-export
 WorkingDirectory=/opt/quant-lab
 EnvironmentFile=/etc/quant-lab/export-plane.env
 Environment=PYTHONUNBUFFERED=1

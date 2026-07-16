@@ -7,6 +7,7 @@ Wants=network-online.target
 Type=simple
 User=quantlab
 Group=quantlab
+SupplementaryGroups=quant-export
 WorkingDirectory=/opt/quant-lab
 Environment=PYTHONUNBUFFERED=1
 Environment=QUANT_LAB_LAKE_ROOT=/var/lib/quant-lab/lake

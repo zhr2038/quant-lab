@@ -23,6 +23,8 @@ from quant_lab.export_plane.signatures import (
 )
 from quant_lab.export_plane.status import atomic_write_json
 
+DATA_QUALITY_SUMMARY_SOURCE_LIMIT = 2 * 1024 * 1024
+
 
 def accept_materialized_pack(
     *,
@@ -164,7 +166,11 @@ def _set_accepted_permissions(root: Path) -> None:
 def _bounded_pack_summaries(path: Path) -> dict[str, Any]:
     with zipfile.ZipFile(path) as archive:
         manifest = _read_bounded_json(archive, "manifest.json")
-        quality = _read_bounded_json(archive, "data_quality.json")
+        quality = _read_bounded_json(
+            archive,
+            "data_quality.json",
+            limit=DATA_QUALITY_SUMMARY_SOURCE_LIMIT,
+        )
         questions = _read_bounded_text(archive, "expert_questions.md")
     manifest_keys = (
         "export_date",
@@ -193,8 +199,13 @@ def _bounded_pack_summaries(path: Path) -> dict[str, Any]:
     }
 
 
-def _read_bounded_json(archive: zipfile.ZipFile, name: str) -> dict[str, Any]:
-    text = _read_bounded_text(archive, name)
+def _read_bounded_json(
+    archive: zipfile.ZipFile,
+    name: str,
+    *,
+    limit: int = 256 * 1024,
+) -> dict[str, Any]:
+    text = _read_bounded_text(archive, name, limit=limit)
     try:
         value = json.loads(text)
     except json.JSONDecodeError:

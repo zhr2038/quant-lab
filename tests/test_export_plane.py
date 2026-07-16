@@ -34,6 +34,7 @@ from quant_lab.export_plane.signatures import (
     sign_payload,
     verify_payload,
 )
+from quant_lab.export_worker import accepted as accepted_module
 from quant_lab.export_worker import runner as export_runner
 from quant_lab.export_worker.runner import _ssh
 from quant_lab.export_worker.sync import sync_snapshot_blobs
@@ -600,6 +601,44 @@ def test_validator_rejects_zip_slip(tmp_path: Path) -> None:
     )
     assert report.valid is False
     assert "check_failed:safe_member_paths" in report.failures
+
+
+def test_receipt_summary_extracts_large_bounded_data_quality_member(tmp_path: Path) -> None:
+    pack = tmp_path / "quality.zip"
+    quality = {
+        "status": "WARNING",
+        "critical_count": 1,
+        "warning_count": 8,
+        "stale_dataset_count": 2,
+        "missing_dataset_count": 3,
+        "checks": [{"detail": "x" * 1024} for _ in range(300)],
+    }
+    with zipfile.ZipFile(pack, "w", compression=zipfile.ZIP_DEFLATED) as archive:
+        archive.writestr("manifest.json", "{}")
+        archive.writestr("data_quality.json", json.dumps(quality))
+        archive.writestr("expert_questions.md", "- question\n")
+
+    summaries = accepted_module._bounded_pack_summaries(pack)  # noqa: SLF001
+
+    assert summaries["data_quality_summary"] == {
+        "status": "WARNING",
+        "critical_count": 1,
+        "warning_count": 8,
+        "stale_dataset_count": 2,
+        "missing_dataset_count": 3,
+    }
+
+
+def test_receipt_summary_rejects_unbounded_data_quality_member(tmp_path: Path) -> None:
+    pack = tmp_path / "quality-too-large.zip"
+    quality = {"status": "WARNING", "detail": "x" * (2 * 1024 * 1024)}
+    with zipfile.ZipFile(pack, "w", compression=zipfile.ZIP_DEFLATED) as archive:
+        archive.writestr("manifest.json", "{}")
+        archive.writestr("data_quality.json", json.dumps(quality))
+        archive.writestr("expert_questions.md", "- question\n")
+
+    with pytest.raises(RuntimeError, match="receipt_summary_member_too_large:data_quality.json"):
+        accepted_module._bounded_pack_summaries(pack)  # noqa: SLF001
 
 
 def test_remote_worker_command_is_serialized_as_one_quoted_argument(

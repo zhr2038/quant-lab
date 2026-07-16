@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import json
 import os
 import platform
 import shutil
@@ -50,7 +49,6 @@ def seal_export_snapshot(
     v5_commit = daily_export._selected_v5_bundle_git_commit(v5_context)  # noqa: SLF001
     if len(v5_commit) != 40:
         raise RuntimeError("selected V5 bundle does not expose a full git commit")
-
     sources = list(_export_source_files(root))
     sources.append(("v5_bundle", selected_v5, _relative_source_path(root, selected_v5)))
     temporary = Path(tempfile.mkdtemp(prefix=".sealing.", dir=queue / "snapshots"))
@@ -67,14 +65,20 @@ def seal_export_snapshot(
         v5_reference = next(item for item in references if item.dataset == "v5_bundle")
         if v5_reference.sha256 != selected_sha:
             raise RuntimeError("selected V5 bundle changed while sealing")
+        acceptance_context = _snapshot_acceptance_context(
+            files_root / "lake",
+            v5_context=v5_context,
+            quant_lab_commit=quant_commit,
+            selected_v5_bundle_sha256=selected_sha,
+        )
 
         source_digest = sha256_bytes(
-            json.dumps(
-                [item.model_dump(mode="json") for item in references],
-                ensure_ascii=True,
-                sort_keys=True,
-                separators=(",", ":"),
-            ).encode()
+            canonical_json_bytes(
+                {
+                    "files": [item.model_dump(mode="json") for item in references],
+                    "acceptance_context": acceptance_context,
+                }
+            )
         )
         snapshot_id = f"export-snapshot-{source_digest[:24]}"
         acceptance_id = acceptance_set_id or (
@@ -103,6 +107,7 @@ def seal_export_snapshot(
             "export_date": export_date,
             "created_at": created_at,
             "quant_lab_commit": quant_commit,
+            **acceptance_context,
             "quant_lab_version": __version__,
             "v5_commit": v5_commit,
             "selected_v5_bundle_name": selected_v5.name,
@@ -132,6 +137,89 @@ def seal_export_snapshot(
         if temporary.exists():
             shutil.rmtree(temporary, ignore_errors=True)
     return manifest, final_dir
+
+
+def _snapshot_acceptance_context(
+    lake_root: Path,
+    *,
+    v5_context: dict[str, object],
+    quant_lab_commit: str,
+    selected_v5_bundle_sha256: str,
+) -> dict[str, object]:
+    current_main_commit = str(
+        daily_export._current_main_commit_full() or ""  # noqa: SLF001
+    ).strip().lower()
+    relationship = (
+        "MATCH"
+        if current_main_commit == quant_lab_commit
+        else ("MISMATCH" if len(current_main_commit) == 40 else "UNOBSERVABLE")
+    )
+    proposal_frame = readers.read_dataset(lake_root, "paper_strategy_proposal_snapshot")
+    contract_frame = readers.read_dataset(lake_root, "v5_quant_lab_contract_status")
+    if proposal_frame.is_empty():
+        raise RuntimeError("proposal snapshot is not observable for snapshot sealing")
+    proposal = proposal_frame.tail(1).to_dicts()[0]
+    contract = daily_export._latest_v5_contract_status_row(contract_frame)  # noqa: SLF001
+    snapshot_generated_at = daily_export._parse_v5_context_ts(  # noqa: SLF001
+        proposal.get("snapshot_generated_at")
+    )
+    selected_bundle_built_at = daily_export._parse_v5_context_ts(  # noqa: SLF001
+        v5_context.get("selected_v5_bundle_built_at")
+    )
+    context: dict[str, object] = {
+        "quant_lab_current_main_commit": current_main_commit or None,
+        "current_main_production_relationship": relationship,
+        "proposal_snapshot_id": proposal.get("proposal_snapshot_id"),
+        "proposal_snapshot_sha256": proposal.get("proposal_snapshot_sha256"),
+        "proposal_content_snapshot_id": proposal.get("proposal_content_snapshot_id"),
+        "proposal_content_snapshot_sha256": proposal.get(
+            "proposal_content_snapshot_sha256"
+        ),
+        "snapshot_generated_at": snapshot_generated_at,
+        "v5_observed_proposal_snapshot_id": contract.get("proposal_snapshot_id"),
+        "v5_observed_proposal_snapshot_sha256": contract.get(
+            "proposal_snapshot_sha256"
+        ),
+        "v5_observed_proposal_content_snapshot_id": contract.get(
+            "proposal_content_snapshot_id"
+        ),
+        "v5_observed_proposal_content_snapshot_sha256": contract.get(
+            "proposal_content_snapshot_sha256"
+        ),
+        "selected_v5_bundle_built_at": selected_bundle_built_at,
+    }
+    required = {
+        key: value
+        for key, value in context.items()
+        if key
+        in {
+            "quant_lab_current_main_commit",
+            "proposal_content_snapshot_id",
+            "proposal_content_snapshot_sha256",
+            "snapshot_generated_at",
+            "v5_observed_proposal_content_snapshot_id",
+            "v5_observed_proposal_content_snapshot_sha256",
+            "selected_v5_bundle_built_at",
+        }
+        and value in (None, "")
+    }
+    if required:
+        raise RuntimeError(
+            "snapshot_acceptance_context_missing:" + ",".join(sorted(required))
+        )
+    contract_bundle_sha = str(contract.get("bundle_sha256") or "").strip().lower()
+    if contract_bundle_sha != selected_v5_bundle_sha256:
+        raise RuntimeError("snapshot_acceptance_context_v5_bundle_mismatch")
+    if (
+        context["proposal_content_snapshot_id"]
+        != context["v5_observed_proposal_content_snapshot_id"]
+        or context["proposal_content_snapshot_sha256"]
+        != context["v5_observed_proposal_content_snapshot_sha256"]
+    ):
+        raise RuntimeError("snapshot_acceptance_context_proposal_content_mismatch")
+    if selected_bundle_built_at <= snapshot_generated_at:
+        raise RuntimeError("snapshot_acceptance_context_causal_order_invalid")
+    return context
 
 
 def _finalize_snapshot_manifest(

@@ -2589,6 +2589,29 @@ def test_acceptance_set_rejects_missing_proposal_content_snapshot_id(monkeypatch
         daily_export_module._finalize_acceptance_set_context(context)
 
 
+def test_materializer_preserves_signed_git_identity_without_local_git(monkeypatch):
+    monkeypatch.setattr(daily_export_module, "_git_commit_full", lambda: None)
+    monkeypatch.setattr(daily_export_module, "_current_main_commit_full", lambda: None)
+    monkeypatch.setattr(
+        daily_export_module,
+        "_selected_v5_bundle_git_commit",
+        lambda _context: None,
+    )
+    context = {
+        "quant_lab_production_commit": "a" * 40,
+        "quant_lab_current_main_commit": "a" * 40,
+        "current_main_production_relationship": "MATCH",
+        "v5_commit": "b" * 40,
+    }
+
+    daily_export_module._populate_acceptance_context_identity(context)
+
+    assert context["quant_lab_production_commit"] == "a" * 40
+    assert context["quant_lab_current_main_commit"] == "a" * 40
+    assert context["current_main_production_relationship"] == "MATCH"
+    assert context["v5_commit"] == "b" * 40
+
+
 def test_acceptance_set_allows_provenance_snapshot_drift_when_content_matches(
     monkeypatch,
 ):

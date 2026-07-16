@@ -92,6 +92,16 @@ class ExportSnapshotManifest(StrictModel):
     export_date: date
     created_at: datetime
     quant_lab_commit: str = Field(min_length=40, max_length=40)
+    quant_lab_current_main_commit: str | None = Field(
+        default=None,
+        min_length=40,
+        max_length=40,
+    )
+    current_main_production_relationship: Literal[
+        "MATCH",
+        "MISMATCH",
+        "UNOBSERVABLE",
+    ] = "UNOBSERVABLE"
     quant_lab_version: str = Field(min_length=1, max_length=80)
     v5_commit: str = Field(min_length=40, max_length=40)
     selected_v5_bundle_name: str = Field(min_length=1, max_length=300)
@@ -99,6 +109,44 @@ class ExportSnapshotManifest(StrictModel):
     acceptance_set_id: str = Field(min_length=1, max_length=180)
     risk_permission_identity: str = Field(min_length=1, max_length=300)
     paper_lifecycle_identity: str = Field(min_length=1, max_length=300)
+    proposal_snapshot_id: str | None = Field(default=None, min_length=1, max_length=180)
+    proposal_snapshot_sha256: str | None = Field(
+        default=None,
+        min_length=64,
+        max_length=64,
+    )
+    proposal_content_snapshot_id: str | None = Field(
+        default=None,
+        min_length=1,
+        max_length=180,
+    )
+    proposal_content_snapshot_sha256: str | None = Field(
+        default=None,
+        min_length=64,
+        max_length=64,
+    )
+    snapshot_generated_at: datetime | None = None
+    v5_observed_proposal_snapshot_id: str | None = Field(
+        default=None,
+        min_length=1,
+        max_length=180,
+    )
+    v5_observed_proposal_snapshot_sha256: str | None = Field(
+        default=None,
+        min_length=64,
+        max_length=64,
+    )
+    v5_observed_proposal_content_snapshot_id: str | None = Field(
+        default=None,
+        min_length=1,
+        max_length=180,
+    )
+    v5_observed_proposal_content_snapshot_sha256: str | None = Field(
+        default=None,
+        min_length=64,
+        max_length=64,
+    )
+    selected_v5_bundle_built_at: datetime | None = None
     environment_fingerprint: str = Field(min_length=64, max_length=64)
     schema_fingerprint: str = Field(min_length=64, max_length=64)
     files: list[ExportDatasetReference] = Field(min_length=1, max_length=20_000)
@@ -115,11 +163,79 @@ class ExportSnapshotManifest(StrictModel):
         _require_id(self.acceptance_set_id, "acceptance_set_id")
         _require_utc(self.created_at, "created_at")
         _require_commit(self.quant_lab_commit, "quant_lab_commit")
+        if self.quant_lab_current_main_commit is not None:
+            _require_commit(
+                self.quant_lab_current_main_commit,
+                "quant_lab_current_main_commit",
+            )
         _require_commit(self.v5_commit, "v5_commit")
         _require_sha(self.selected_v5_bundle_sha256, "selected_v5_bundle_sha256")
         _require_sha(self.environment_fingerprint, "environment_fingerprint")
         _require_sha(self.schema_fingerprint, "schema_fingerprint")
         _require_sha(self.manifest_sha256, "manifest_sha256")
+        for value, name in (
+            (self.proposal_snapshot_sha256, "proposal_snapshot_sha256"),
+            (
+                self.proposal_content_snapshot_sha256,
+                "proposal_content_snapshot_sha256",
+            ),
+            (
+                self.v5_observed_proposal_snapshot_sha256,
+                "v5_observed_proposal_snapshot_sha256",
+            ),
+            (
+                self.v5_observed_proposal_content_snapshot_sha256,
+                "v5_observed_proposal_content_snapshot_sha256",
+            ),
+        ):
+            if value is not None:
+                _require_sha(value, name)
+        if self.snapshot_generated_at is not None:
+            _require_utc(self.snapshot_generated_at, "snapshot_generated_at")
+        if self.selected_v5_bundle_built_at is not None:
+            _require_utc(
+                self.selected_v5_bundle_built_at,
+                "selected_v5_bundle_built_at",
+            )
+        acceptance_values = (
+            self.quant_lab_current_main_commit,
+            self.proposal_content_snapshot_id,
+            self.proposal_content_snapshot_sha256,
+            self.snapshot_generated_at,
+            self.v5_observed_proposal_content_snapshot_id,
+            self.v5_observed_proposal_content_snapshot_sha256,
+            self.selected_v5_bundle_built_at,
+        )
+        if any(value is not None for value in acceptance_values) and not all(
+            value is not None for value in acceptance_values
+        ):
+            raise ValueError("snapshot acceptance context must be complete")
+        if self.quant_lab_current_main_commit is not None:
+            expected_relationship = (
+                "MATCH"
+                if self.quant_lab_current_main_commit == self.quant_lab_commit
+                else "MISMATCH"
+            )
+            if self.current_main_production_relationship != expected_relationship:
+                raise ValueError("current main/production relationship is inconsistent")
+        elif self.current_main_production_relationship != "UNOBSERVABLE":
+            raise ValueError("current main relationship requires a current main commit")
+        if (
+            self.proposal_content_snapshot_id is not None
+            and (
+                self.proposal_content_snapshot_id
+                != self.v5_observed_proposal_content_snapshot_id
+                or self.proposal_content_snapshot_sha256
+                != self.v5_observed_proposal_content_snapshot_sha256
+            )
+        ):
+            raise ValueError("proposal content snapshot identity is inconsistent")
+        if (
+            self.snapshot_generated_at is not None
+            and self.selected_v5_bundle_built_at is not None
+            and self.selected_v5_bundle_built_at <= self.snapshot_generated_at
+        ):
+            raise ValueError("selected V5 bundle must postdate proposal snapshot")
         paths = [item.relative_path for item in self.files]
         if len(paths) != len(set(paths)):
             raise ValueError("snapshot contains duplicate relative paths")

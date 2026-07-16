@@ -5346,6 +5346,7 @@ def export_daily_pack(
     materialization_mode: bool = False,
     member_staging_dir: str | Path | None = None,
     source_snapshot_id: str | None = None,
+    sealed_acceptance_context: Mapping[str, Any] | None = None,
 ) -> DailyExportResult:
     day = _parse_date(export_date)
     root = Path(lake_root)
@@ -5369,6 +5370,37 @@ def export_daily_pack(
     if source_snapshot_id:
         pre_export_v5["export_snapshot_id"] = str(source_snapshot_id).strip()
         pre_export_v5["materialization_plane"] = "nas_local"
+    if sealed_acceptance_context:
+        if not materialization_mode:
+            raise RuntimeError("sealed_acceptance_context_requires_materialization_mode")
+        allowed_context_keys = {
+            "quant_lab_production_commit",
+            "quant_lab_current_main_commit",
+            "current_main_production_relationship",
+            "proposal_snapshot_id",
+            "proposal_snapshot_sha256",
+            "proposal_content_snapshot_id",
+            "proposal_content_snapshot_sha256",
+            "snapshot_generated_at",
+            "v5_observed_proposal_snapshot_id",
+            "v5_observed_proposal_snapshot_sha256",
+            "v5_observed_proposal_content_snapshot_id",
+            "v5_observed_proposal_content_snapshot_sha256",
+            "selected_v5_bundle_built_at",
+        }
+        unexpected = set(sealed_acceptance_context) - allowed_context_keys
+        if unexpected:
+            raise RuntimeError(
+                "sealed_acceptance_context_unexpected_field:"
+                + ",".join(sorted(unexpected))
+            )
+        pre_export_v5.update(
+            {
+                key: value
+                for key, value in sealed_acceptance_context.items()
+                if value not in (None, "")
+            }
+        )
     _record_export_stage(export_stage_timings, "pre_export_v5", stage_started)
     stage_started = _export_stage_start("pre_export_risk_permission")
     pre_export_v5_warnings = [str(warning) for warning in pre_export_v5.get("warnings", [])]
@@ -8653,13 +8685,23 @@ def _finalize_acceptance_set_context(v5_context: dict[str, Any]) -> None:
 
 
 def _populate_acceptance_context_identity(v5_context: dict[str, Any]) -> None:
-    production_commit = str(_git_commit_full() or "").strip().lower()
-    current_main_commit = str(_current_main_commit_full() or "").strip().lower()
-    v5_commit = str(_selected_v5_bundle_git_commit(v5_context) or "").strip().lower()
+    production_commit = str(
+        _git_commit_full() or v5_context.get("quant_lab_production_commit") or ""
+    ).strip().lower()
+    current_main_commit = str(
+        _current_main_commit_full()
+        or v5_context.get("quant_lab_current_main_commit")
+        or ""
+    ).strip().lower()
+    v5_commit = str(
+        _selected_v5_bundle_git_commit(v5_context) or v5_context.get("v5_commit") or ""
+    ).strip().lower()
     if _is_full_git_sha(production_commit) and _is_full_git_sha(current_main_commit):
         relationship = "MATCH" if production_commit == current_main_commit else "MISMATCH"
     else:
-        relationship = "UNOBSERVABLE"
+        relationship = str(
+            v5_context.get("current_main_production_relationship") or "UNOBSERVABLE"
+        )
     v5_context.update(
         {
             "quant_lab_commit": production_commit or None,

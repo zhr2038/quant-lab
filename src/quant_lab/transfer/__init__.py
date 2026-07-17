@@ -1,4 +1,4 @@
-"""Compatibility exports for the shared content-addressed snapshot sync layer."""
+"""Business-neutral, content-addressed transfer helpers."""
 
 from quant_lab.transfer.snapshot_sync import SnapshotSyncResult, sync_snapshot_blobs
 

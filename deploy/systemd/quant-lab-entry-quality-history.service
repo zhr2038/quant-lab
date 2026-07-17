@@ -1,5 +1,5 @@
 [Unit]
-Description=quant-lab entry quality historical analysis refresh
+Description=quant-lab legacy local entry quality history fallback (manual only)
 After=quant-lab-v5-research-refresh.service quant-lab-lake-compaction.service
 
 [Service]
@@ -7,8 +7,10 @@ Type=oneshot
 User=quantlab
 Group=quantlab
 WorkingDirectory=/opt/quant-lab
+EnvironmentFile=-/etc/quant-lab/research-plane.env
 Environment=POLARS_MAX_THREADS=1
 Environment=MALLOC_ARENA_MAX=2
+ExecCondition=/bin/bash -lc '[ "${QUANT_LAB_LOCAL_ENTRY_QUALITY_HISTORY_ENABLED:-0}" = "1" ]'
 TimeoutStartSec=20min
 MemoryHigh=2G
 MemoryMax=3G

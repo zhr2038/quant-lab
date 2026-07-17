@@ -24,6 +24,7 @@ export const SnapshotSchema = z.object({
   data_health: z.record(z.string(), z.unknown()).default({}),
   legacy_anomalies: z.record(z.string(), z.unknown()).default({}),
   server_resources: z.record(z.string(), z.unknown()).default({}),
+  research_compute: z.record(z.string(), z.unknown()).default({}),
   web_perf: z.record(z.string(), z.unknown()).default({}),
   consumers: z.record(z.string(), z.unknown()).default({}),
   exports: z.record(z.string(), z.unknown()).default({}),

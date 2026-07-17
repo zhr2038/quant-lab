@@ -1,0 +1,12 @@
+[Unit]
+Description=Request NAS Entry Quality History research twice daily
+
+[Timer]
+OnCalendar=*-*-* 01:35:00 UTC
+OnCalendar=*-*-* 13:35:00 UTC
+RandomizedDelaySec=10min
+Persistent=true
+Unit=quant-lab-entry-quality-history-request.service
+
+[Install]
+WantedBy=timers.target

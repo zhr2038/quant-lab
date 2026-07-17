@@ -1,0 +1,12 @@
+[Unit]
+Description=Poll for completed NAS research results
+
+[Timer]
+OnBootSec=2min
+OnUnitActiveSec=1min
+AccuracySec=10s
+Persistent=true
+Unit=quant-lab-research-result-import.service
+
+[Install]
+WantedBy=timers.target

@@ -69,3 +69,10 @@ def test_schema_retry_includes_structured_feedback(monkeypatch) -> None:
     assert result["validation_events"][0]["event"] == "SCHEMA_VALIDATION_FAILED"
     assert len(requests[1]["input"]) == 3  # type: ignore[arg-type]
     assert "secret-never-logged" not in str(requests)
+
+
+def test_stage1_prompt_distinguishes_publication_lag_from_content_mismatch() -> None:
+    prompt = worker.stage1_system_prompt()
+
+    assert "proposal_content_snapshot_match=true" in prompt
+    assert "不得称为内容哈希冲突" in prompt

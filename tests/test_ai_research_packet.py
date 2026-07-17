@@ -359,6 +359,66 @@ def test_factor_audit_documents_preserve_complete_candidate_and_validation_rows(
     assert task.preflight.status == "PASS"
 
 
+def test_large_complete_alpha_audit_is_not_mislabeled_as_truncated(tmp_path) -> None:
+    pack = tmp_path / "quant_lab_expert_pack_large_complete_alpha_audit.zip"
+    candidate_rows = []
+    result_rows = []
+    promotion_rows = []
+    long_reason = "x" * 900
+    for index in range(120):
+        candidate_id = f"candidate-{index:03d}"
+        candidate_rows.append(
+            f'{candidate_id},product,SOL-USDT,TREND_UP,24,"{{""left"":""f1""}}"'
+        )
+        result_rows.append(
+            f'{candidate_id},40,12.5,-2.0,0.6,"{{""actual"":40}}",'
+            '"{""complete_sample_count"":20}",'
+            '"{""complete_sample_count"":8}",'
+            f'"[""{long_reason}""]",KEEP_SHADOW'
+        )
+        promotion_rows.append(
+            f'{candidate_id},"[""collect_more_samples""]",KEEP_SHADOW'
+        )
+    with zipfile.ZipFile(pack, "w", compression=zipfile.ZIP_DEFLATED) as archive:
+        archive.writestr("manifest.json", "{}")
+        archive.writestr("provenance.json", "{}")
+        archive.writestr("data_quality.json", "{}")
+        archive.writestr(
+            "reports/alpha_factory_candidates.csv",
+            "candidate_id,template_name,symbol,regime_state,horizon_hours,parameter_json\n"
+            + "\n".join(candidate_rows),
+        )
+        archive.writestr(
+            "reports/alpha_factory_results.csv",
+            "candidate_id,sample_count,avg_net_bps,p25_net_bps,win_rate,"
+            "cost_source_mix,validation_metrics_json,recent_7d_metrics_json,"
+            "decision_reasons,decision\n"
+            + "\n".join(result_rows),
+        )
+        archive.writestr(
+            "reports/alpha_factory_promotion_queue.csv",
+            "candidate_id,reasons,promotion_state\n" + "\n".join(promotion_rows),
+        )
+
+    task, _ = build_ai_research_task(pack, queue_root=tmp_path / "queue")
+
+    assert task is not None and task.preflight is not None
+    alpha = next(
+        item
+        for item in task.sections["factor_research"]
+        if item.source_member == "derived/alpha_factory_candidate_audit.json"
+    )
+    assert len(canonical_json(alpha.content)) > 80_000
+    assert alpha.content["join_complete"] is True
+    assert alpha.content["_representation"]["truncated"] is False
+    assert alpha.truncated is False
+    assert alpha.representation == "full"
+    assert any(
+        warning.startswith("alpha_factory_candidate_audit_exceeds_target_chars:")
+        for warning in task.preflight.warnings
+    )
+
+
 def test_data_quality_summary_does_not_treat_pass_severity_as_failure() -> None:
     summary = _summarize_data_quality(
         {

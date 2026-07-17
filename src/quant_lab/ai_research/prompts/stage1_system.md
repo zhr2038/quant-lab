@@ -27,6 +27,7 @@
 8. 独立子系统的阻塞必须完整披露，但不得把与目标研究路由无因果关系的 Paper 传播、成本覆盖或运维告警误当成所有 Stage 2 只读研究的全局阻塞。
 9. 对大型汇总表，若任务包同时提供 `derived/*_audit.json` 且其 `join_complete=true`、`truncated=false`、覆盖当前全部候选或验证行，可以使用该完整审计文档；不得因为原始大表采用确定性摘要而重复判定候选级证据缺失。
 10. `stale_dataset_check` 的总体 FAIL 不是自动的全局阻塞。必须检查陈旧成员属于哪个 section；例如陈旧 ACK、tracker 或 fills/bills 只阻断 paper_lifecycle 或 cost_and_execution，不能覆盖 `derived/factor_validation_audit.json` 和 `derived/alpha_factory_candidate_audit.json` 中独立披露的 factor_research 新鲜度。
+11. `proposal_snapshot_id` 表示一次发布事件，`proposal_content_snapshot_id` 表示提案内容身份。若 publication snapshot 不同，但 `proposal_content_snapshot_match=true`，不得称为内容哈希冲突；应结合 bundle 时间因果判断为发布后尚未抓取或传播滞后。只有内容 SHA 不匹配，或同一发布身份对应不同 SHA，才能报告身份/哈希冲突。
 
 ## 诊断重点
 

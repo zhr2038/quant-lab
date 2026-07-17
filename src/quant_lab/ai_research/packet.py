@@ -34,7 +34,7 @@ DEFAULT_MAX_CSV_ROWS = 64
 DEFAULT_MAX_DOCS_PER_SECTION = 4
 CORE_JSON_MAX_MEMBER_BYTES = 2 * 1024 * 1024
 RESEARCH_CSV_MAX_MEMBER_BYTES = 16 * 1024 * 1024
-FACTOR_AUDIT_MAX_DOCUMENT_CHARS = 80_000
+FACTOR_AUDIT_TARGET_DOCUMENT_CHARS = 80_000
 
 _ALLOWED_EXTENSIONS = {".json", ".md", ".csv", ".txt"}
 _EXCLUDED_PARTS = {"__macosx", ".git", "secrets", "private", "restricted"}
@@ -1094,8 +1094,13 @@ def _build_alpha_factory_candidate_audit(
             "truncated": False,
         },
     }
-    within_budget = len(canonical_json(content)) <= FACTOR_AUDIT_MAX_DOCUMENT_CHARS
-    return content, complete and within_budget, warnings
+    encoded_chars = len(canonical_json(content))
+    if encoded_chars > FACTOR_AUDIT_TARGET_DOCUMENT_CHARS:
+        warnings.append(
+            "alpha_factory_candidate_audit_exceeds_target_chars:"
+            f"{encoded_chars}>{FACTOR_AUDIT_TARGET_DOCUMENT_CHARS}"
+        )
+    return content, complete, warnings
 
 
 def _build_factor_validation_audit(
@@ -1233,8 +1238,13 @@ def _build_factor_validation_audit(
             "truncated": False,
         },
     }
-    within_budget = len(canonical_json(content)) <= FACTOR_AUDIT_MAX_DOCUMENT_CHARS
-    return content, complete and within_budget, warnings
+    encoded_chars = len(canonical_json(content))
+    if encoded_chars > FACTOR_AUDIT_TARGET_DOCUMENT_CHARS:
+        warnings.append(
+            "factor_validation_audit_exceeds_target_chars:"
+            f"{encoded_chars}>{FACTOR_AUDIT_TARGET_DOCUMENT_CHARS}"
+        )
+    return content, complete, warnings
 
 
 def _derived_evidence_document(

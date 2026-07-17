@@ -83,6 +83,8 @@ def _snapshot(reference: ExportDatasetReference | None = None) -> ExportSnapshot
         export_date=date(2026, 7, 16),
         created_at=datetime(2026, 7, 16, tzinfo=UTC),
         quant_lab_commit=COMMIT,
+        quant_lab_current_main_commit=COMMIT,
+        current_main_production_relationship="MATCH",
         quant_lab_version="0.1.0",
         v5_commit="d" * 40,
         selected_v5_bundle_name="v5.tar.gz",
@@ -90,6 +92,16 @@ def _snapshot(reference: ExportDatasetReference | None = None) -> ExportSnapshot
         acceptance_set_id="acceptance-test",
         risk_permission_identity="risk:test",
         paper_lifecycle_identity="paper:test",
+        proposal_snapshot_id="proposal-snapshot:test",
+        proposal_snapshot_sha256="2" * 64,
+        proposal_content_snapshot_id="proposal-content-snapshot:test",
+        proposal_content_snapshot_sha256="3" * 64,
+        snapshot_generated_at=datetime(2026, 7, 15, 23, 55, tzinfo=UTC),
+        v5_observed_proposal_snapshot_id="proposal-snapshot:test",
+        v5_observed_proposal_snapshot_sha256="2" * 64,
+        v5_observed_proposal_content_snapshot_id="proposal-content-snapshot:test",
+        v5_observed_proposal_content_snapshot_sha256="3" * 64,
+        selected_v5_bundle_built_at=datetime(2026, 7, 16, tzinfo=UTC),
         environment_fingerprint="e" * 64,
         schema_fingerprint="f" * 64,
         files=files,
@@ -320,8 +332,20 @@ def test_snapshot_sealing_rejects_missing_v5_commit_with_explicit_error(
 
 
 def test_materializer_requires_signed_acceptance_context() -> None:
+    snapshot = _snapshot().model_copy(
+        update={
+            "quant_lab_current_main_commit": None,
+            "current_main_production_relationship": "UNOBSERVABLE",
+            "proposal_content_snapshot_id": None,
+            "proposal_content_snapshot_sha256": None,
+            "snapshot_generated_at": None,
+            "v5_observed_proposal_content_snapshot_id": None,
+            "v5_observed_proposal_content_snapshot_sha256": None,
+            "selected_v5_bundle_built_at": None,
+        }
+    )
     with pytest.raises(RuntimeError, match="sealed_snapshot_acceptance_context_missing"):
-        materializer_writer._sealed_acceptance_context(_snapshot())  # noqa: SLF001
+        materializer_writer._sealed_acceptance_context(snapshot)  # noqa: SLF001
 
 
 def test_materializer_uses_signed_acceptance_context() -> None:
@@ -728,7 +752,24 @@ def test_export_plane_status_keeps_genuinely_running_task_visible(tmp_path: Path
     assert result["task"]["task_id"] == active.task_id
 
 
-def _valid_pack(path: Path, *, extra_name: str | None = None) -> None:
+def _valid_pack(
+    path: Path,
+    *,
+    extra_name: str | None = None,
+    derived_bundle_sha: str = V5_SHA,
+    derived_report_status: str = "FRESH",
+) -> None:
+    generated_at = "2026-07-16T00:05:00+00:00"
+    derived_header = (
+        "generated_at,source_bundle_sha256,proposal_snapshot_id,"
+        "proposal_snapshot_sha256,proposal_content_snapshot_id,"
+        "proposal_content_snapshot_sha256,derived_report_age_seconds,"
+        "derived_report_status\n"
+    )
+    derived_row = (
+        f"{generated_at},{derived_bundle_sha},proposal-snapshot:test,{'2' * 64},"
+        f"proposal-content-snapshot:test,{'3' * 64},0,{derived_report_status}\n"
+    )
     members = {
         "provenance.json": "{}\n",
         "data_quality.json": '{"status":"OK"}\n',
@@ -737,6 +778,21 @@ def _valid_pack(path: Path, *, extra_name: str | None = None) -> None:
         "expert_questions.md": "- question\n",
         "diagnostics/export_timing.csv": "stage,seconds\nall,1\n",
         "diagnostics/export_timing.json": "{}\n",
+        "reports/api_auth_production_slo.csv": derived_header + derived_row,
+        "reports/paper_runtime_freshness.csv": derived_header + derived_row,
+        "reports/paper_proposal_propagation_status.csv": derived_header + derived_row,
+        "reports/system_acceptance_complete_status.json": json.dumps(
+            {
+                "generated_at": generated_at,
+                "source_bundle_sha256": derived_bundle_sha,
+                "proposal_snapshot_id": "proposal-snapshot:test",
+                "proposal_snapshot_sha256": "2" * 64,
+                "proposal_content_snapshot_id": "proposal-content-snapshot:test",
+                "proposal_content_snapshot_sha256": "3" * 64,
+                "derived_report_age_seconds": 0,
+                "derived_report_status": derived_report_status,
+            }
+        ),
     }
     files = [
         {
@@ -763,6 +819,7 @@ def _valid_pack(path: Path, *, extra_name: str | None = None) -> None:
         "selected_v5_bundle_sha256": V5_SHA,
         "acceptance_set_id": "acceptance-test",
         "authoritative_snapshot": True,
+        "generated_at": generated_at,
     }
     with zipfile.ZipFile(path, "w", compression=zipfile.ZIP_DEFLATED) as archive:
         for name, value in members.items():
@@ -781,6 +838,41 @@ def test_validator_accepts_contract_pack(tmp_path: Path) -> None:
     )
     assert report.valid is True
     assert report.failures == []
+
+
+def test_validator_rejects_derived_report_bundle_sha_mismatch(tmp_path: Path) -> None:
+    pack = tmp_path / "derived-mismatch.zip"
+    _valid_pack(pack, derived_bundle_sha="c" * 64)
+
+    report = validate_export_pack_locally(
+        pack,
+        task=_task(),
+        snapshot=_snapshot(),
+        pack_id="expert-pack-test",
+    )
+
+    assert report.valid is False
+    assert report.checks["derived_reports_source_v5_bundle"] is False
+    assert any(
+        failure.startswith("derived_report_source_bundle_mismatch:")
+        for failure in report.failures
+    )
+
+
+def test_validator_rejects_stale_derived_reports(tmp_path: Path) -> None:
+    pack = tmp_path / "derived-stale.zip"
+    _valid_pack(pack, derived_report_status="STALE_DERIVED_REPORT")
+
+    report = validate_export_pack_locally(
+        pack,
+        task=_task(),
+        snapshot=_snapshot(),
+        pack_id="expert-pack-test",
+    )
+
+    assert report.valid is False
+    assert report.checks["derived_reports_fresh"] is False
+    assert any(failure.startswith("derived_report_stale:") for failure in report.failures)
 
 
 def test_validator_rejects_zip_slip(tmp_path: Path) -> None:

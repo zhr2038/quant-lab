@@ -4747,8 +4747,8 @@ def _derived_report_context(
 ) -> dict[str, str]:
     return {
         "source_bundle_sha256": str(
-            v5_context.get("selected_v5_bundle_sha256")
-            or v5_context.get("expected_v5_bundle_sha256")
+            v5_context.get("expected_v5_bundle_sha256")
+            or v5_context.get("selected_v5_bundle_sha256")
             or v5_context.get("ingested_v5_bundle_sha256")
             or ""
         ).strip().lower(),

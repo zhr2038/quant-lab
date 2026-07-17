@@ -1,6 +1,8 @@
 from __future__ import annotations
 
+import csv
 import hashlib
+import io
 import json
 import stat
 import zipfile
@@ -16,6 +18,12 @@ from quant_lab.export_plane.contracts import (
 )
 from quant_lab.export_plane.signatures import sha256_file
 
+DERIVED_CSV_MEMBERS = (
+    "reports/api_auth_production_slo.csv",
+    "reports/paper_runtime_freshness.csv",
+    "reports/paper_proposal_propagation_status.csv",
+)
+DERIVED_JSON_MEMBER = "reports/system_acceptance_complete_status.json"
 REQUIRED_MEMBERS = {
     "manifest.json",
     "provenance.json",
@@ -25,6 +33,8 @@ REQUIRED_MEMBERS = {
     "expert_questions.md",
     "diagnostics/export_timing.csv",
     "diagnostics/export_timing.json",
+    *DERIVED_CSV_MEMBERS,
+    DERIVED_JSON_MEMBER,
 }
 MAX_MEMBERS = 20_000
 MAX_MEMBER_BYTES = 4 * 1024**3
@@ -80,6 +90,15 @@ def validate_export_pack_locally(
         )
         checks["acceptance_set_id"] = manifest.get("acceptance_set_id") == task.acceptance_set_id
         checks["authoritative_input"] = bool(manifest.get("authoritative_snapshot"))
+        checks.update(
+            _verify_derived_reports(
+                archive,
+                manifest=manifest,
+                task=task,
+                snapshot=snapshot,
+                failures=failures,
+            )
+        )
         member_checks = _verify_manifest_members(
             archive,
             manifest,
@@ -136,6 +155,128 @@ def _json_member(archive: zipfile.ZipFile, name: str) -> dict[str, Any]:
     except (KeyError, UnicodeDecodeError, json.JSONDecodeError, RuntimeError):
         return {}
     return value if isinstance(value, dict) else {}
+
+
+def _csv_member_rows(archive: zipfile.ZipFile, name: str) -> list[dict[str, str]]:
+    try:
+        info = archive.getinfo(name)
+        if info.file_size > MAX_METADATA_MEMBER_BYTES:
+            return []
+        with archive.open(info) as handle:
+            raw = handle.read(MAX_METADATA_MEMBER_BYTES + 1)
+        if len(raw) > MAX_METADATA_MEMBER_BYTES:
+            return []
+        return list(csv.DictReader(io.StringIO(raw.decode("utf-8-sig"))))
+    except (KeyError, UnicodeDecodeError, csv.Error, RuntimeError):
+        return []
+
+
+def _verify_derived_reports(
+    archive: zipfile.ZipFile,
+    *,
+    manifest: dict[str, Any],
+    task: ExportTask,
+    snapshot: ExportSnapshotManifest,
+    failures: list[str],
+) -> dict[str, bool]:
+    reports: list[tuple[str, dict[str, Any]]] = []
+    parseable = True
+    for name in DERIVED_CSV_MEMBERS:
+        rows = _csv_member_rows(archive, name)
+        if not rows:
+            failures.append(f"derived_report_missing_or_empty:{name}")
+            parseable = False
+            continue
+        reports.extend((name, row) for row in rows)
+    complete_status = _json_member(archive, DERIVED_JSON_MEMBER)
+    if not complete_status:
+        failures.append(f"derived_report_missing_or_empty:{DERIVED_JSON_MEMBER}")
+        parseable = False
+    else:
+        reports.append((DERIVED_JSON_MEMBER, complete_status))
+
+    expected_bundle_sha = task.selected_v5_bundle_sha256.lower()
+    source_matches = parseable and all(
+        str(row.get("source_bundle_sha256") or "").strip().lower() == expected_bundle_sha
+        for _, row in reports
+    )
+    if not source_matches:
+        for name, row in reports:
+            if str(row.get("source_bundle_sha256") or "").strip().lower() != expected_bundle_sha:
+                failures.append(f"derived_report_source_bundle_mismatch:{name}")
+
+    identity_pairs = (
+        ("proposal_snapshot_id", snapshot.proposal_snapshot_id, False),
+        ("proposal_snapshot_sha256", snapshot.proposal_snapshot_sha256, True),
+        ("proposal_content_snapshot_id", snapshot.proposal_content_snapshot_id, False),
+        (
+            "proposal_content_snapshot_sha256",
+            snapshot.proposal_content_snapshot_sha256,
+            True,
+        ),
+    )
+    identity_matches = parseable and all(
+        _derived_identity_matches(row, identity_pairs) for _, row in reports
+    )
+    if not identity_matches:
+        for name, row in reports:
+            if not _derived_identity_matches(row, identity_pairs):
+                failures.append(f"derived_report_snapshot_identity_mismatch:{name}")
+
+    manifest_generated_at = _parse_utc(manifest.get("generated_at"))
+    fresh = bool(parseable and manifest_generated_at is not None)
+    for name, row in reports:
+        report_generated_at = _parse_utc(row.get("generated_at"))
+        age_seconds = (
+            (manifest_generated_at - report_generated_at).total_seconds()
+            if manifest_generated_at is not None and report_generated_at is not None
+            else None
+        )
+        row_fresh = bool(
+            str(row.get("derived_report_status") or "").strip().upper() == "FRESH"
+            and age_seconds is not None
+            and -300 <= age_seconds <= daily_export.DERIVED_REPORT_MAX_AGE_SECONDS
+        )
+        if not row_fresh:
+            failures.append(f"derived_report_stale:{name}")
+            fresh = False
+
+    return {
+        "derived_reports_parseable": parseable,
+        "derived_reports_source_v5_bundle": source_matches,
+        "derived_reports_snapshot_identity": identity_matches,
+        "derived_reports_fresh": fresh,
+    }
+
+
+def _derived_identity_matches(
+    row: dict[str, Any],
+    identity_pairs: tuple[tuple[str, str | None, bool], ...],
+) -> bool:
+    for field, expected, normalize_lower in identity_pairs:
+        if expected is None:
+            continue
+        observed = str(row.get(field) or "").strip()
+        expected_text = str(expected).strip()
+        if normalize_lower:
+            observed = observed.lower()
+            expected_text = expected_text.lower()
+        if observed != expected_text:
+            return False
+    return True
+
+
+def _parse_utc(value: Any) -> datetime | None:
+    text = str(value or "").strip()
+    if not text:
+        return None
+    try:
+        parsed = datetime.fromisoformat(text.replace("Z", "+00:00"))
+    except ValueError:
+        return None
+    if parsed.tzinfo is None:
+        return None
+    return parsed.astimezone(UTC)
 
 
 def _verify_manifest_members(

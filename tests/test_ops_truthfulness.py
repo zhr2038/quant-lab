@@ -15,6 +15,25 @@ from quant_lab.reports.ops_truthfulness import (
 NOW = datetime(2026, 7, 14, 12, 0, tzinfo=UTC)
 
 
+def test_complete_acceptance_uses_expected_bundle_as_derived_source() -> None:
+    result = build_complete_acceptance_status(
+        system_acceptance=pl.DataFrame(),
+        data_quality={"status": "PASS", "checks": []},
+        paper_freshness=pl.DataFrame(),
+        cohort=pl.DataFrame(),
+        propagation=pl.DataFrame(),
+        auth_incidents=pl.DataFrame(),
+        acceptance_context={
+            "expected_v5_bundle_sha256": "a" * 64,
+            "selected_v5_bundle_sha256": "b" * 64,
+            "ingested_v5_bundle_sha256": "c" * 64,
+        },
+        generated_at=NOW,
+    )
+
+    assert result["source_bundle_sha256"] == "a" * 64
+
+
 def test_auth_incident_uses_natural_no_recurrence_window() -> None:
     metrics = pl.DataFrame(
         [

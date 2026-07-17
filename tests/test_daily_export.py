@@ -50,6 +50,19 @@ def _isolate_default_v5_telemetry_config(monkeypatch, tmp_path):
     monkeypatch.setenv("QUANT_LAB_V5_TELEMETRY_CONFIG", str(config))
 
 
+def test_derived_report_context_prefers_acceptance_set_bundle() -> None:
+    context = daily_export_module._derived_report_context(  # noqa: SLF001
+        {
+            "expected_v5_bundle_sha256": "a" * 64,
+            "selected_v5_bundle_sha256": "b" * 64,
+            "ingested_v5_bundle_sha256": "c" * 64,
+        },
+        {},
+    )
+
+    assert context["source_bundle_sha256"] == "a" * 64
+
+
 def test_collect_recent_heavy_files_uses_timestamp_not_physical_tail(tmp_path):
     dataset_path = tmp_path / "orderbook_spread_1m"
     dataset_path.mkdir()

@@ -846,8 +846,8 @@ def build_complete_acceptance_status(
     return {
         "generated_at": generated.isoformat(),
         "source_bundle_sha256": _text(
-            context.get("selected_v5_bundle_sha256")
-            or context.get("expected_v5_bundle_sha256")
+            context.get("expected_v5_bundle_sha256")
+            or context.get("selected_v5_bundle_sha256")
             or context.get("ingested_v5_bundle_sha256")
         ).lower(),
         "proposal_snapshot_id": _text(context.get("proposal_snapshot_id")),

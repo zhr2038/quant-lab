@@ -152,6 +152,7 @@ def _empty_artifacts(monkeypatch, *, mode: str = "recent_30d", cost_mode: str = 
         cost_mode=cost_mode,
         generated_at=GENERATED_AT,
         generated_from_bundle_id=BUNDLE_ID,
+        quant_lab_git_commit=COMMIT,
     )
 
 
@@ -810,6 +811,34 @@ def test_result_rejects_anti_leakage_failure_and_live_state(tmp_path: Path, monk
     _resign_bundle(live_root, context.worker_key, manifest, receipt)
     with pytest.raises(ValueError, match="live_state_forbidden"):
         _validate_bundle(context, live_root)
+
+
+def test_result_rejects_missing_output_commit_provenance(tmp_path: Path, monkeypatch) -> None:
+    context = _make_result_bundle(tmp_path, monkeypatch)
+    missing_root = tmp_path / "missing-output-commit"
+    shutil.copytree(context.root, missing_root)
+    manifest = ResearchResultManifest.model_validate_json(
+        (missing_root / "manifest.json").read_text()
+    )
+    receipt = ResearchWorkerReceipt.model_validate_json(
+        (missing_root / "receipt.json").read_text()
+    )
+    metrics_output = next(
+        item for item in manifest.outputs if item.dataset_name == "v5_entry_quality_history_metrics"
+    )
+    metrics = pl.read_parquet(missing_root / metrics_output.relative_path).with_columns(
+        pl.lit(None, dtype=pl.Utf8).alias("quant_lab_git_commit")
+    )
+    manifest = _rewrite_output(
+        missing_root,
+        manifest,
+        "v5_entry_quality_history_metrics",
+        metrics,
+    )
+    _resign_bundle(missing_root, context.worker_key, manifest, receipt)
+
+    with pytest.raises(ValueError, match="quant_lab_git_commit"):
+        _validate_bundle(context, missing_root)
 
 
 def test_result_rejects_schema_row_count_and_unsafe_path(tmp_path: Path, monkeypatch) -> None:

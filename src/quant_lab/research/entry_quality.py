@@ -549,6 +549,7 @@ class _BuildContext:
     generated_at: datetime
     generated_from_bundle_id: str
     window_hours: int
+    quant_lab_git_commit: str | None = None
 
 
 @dataclass(frozen=True)
@@ -844,6 +845,7 @@ def compute_entry_quality_history(
     window_hours: int = DEFAULT_WINDOW_HOURS,
     generated_at: datetime | None = None,
     generated_from_bundle_id: str = "",
+    quant_lab_git_commit: str | None = None,
 ) -> EntryQualityHistoryArtifacts:
     """Compute historical Entry Quality artifacts without reading or writing the Lake."""
 
@@ -858,6 +860,7 @@ def compute_entry_quality_history(
         generated_at=(generated_at or datetime.now(UTC)).astimezone(UTC),
         generated_from_bundle_id=str(generated_from_bundle_id or ""),
         window_hours=max(int(window_hours), 1),
+        quant_lab_git_commit=_observable_text(quant_lab_git_commit),
     )
     history = _HistoryContext(
         start_date=start_day,
@@ -2900,7 +2903,7 @@ def _pullback_candidate_name(symbol: str) -> str:
 
 
 def _common(ctx: _BuildContext, *, mode: str) -> dict[str, Any]:
-    git_commit = _git_commit()
+    git_commit = ctx.quant_lab_git_commit or _git_commit()
     return {
         "contract_version": V5_QUANT_LAB_CONTRACT_VERSION,
         "schema_version": ENTRY_QUALITY_SCHEMA_VERSION,

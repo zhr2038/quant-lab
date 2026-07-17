@@ -254,11 +254,17 @@ def _validate_frame_scope(
         if values != {task.window_hours}:
             raise ValueError(f"research_result_scope_mismatch:{dataset_name}:window_hours")
     if "quant_lab_git_commit" in frame.columns and not frame.is_empty():
-        for value in frame.get_column("quant_lab_git_commit").drop_nulls().cast(pl.Utf8).to_list():
-            if not task.quant_lab_commit.startswith(str(value)):
-                raise ValueError(
-                    f"research_result_scope_mismatch:{dataset_name}:quant_lab_git_commit"
-                )
+        values = {
+            str(value)
+            for value in frame.get_column("quant_lab_git_commit")
+            .drop_nulls()
+            .cast(pl.Utf8)
+            .to_list()
+        }
+        if values != {task.quant_lab_commit}:
+            raise ValueError(
+                f"research_result_scope_mismatch:{dataset_name}:quant_lab_git_commit"
+            )
     start_dt = datetime.combine(task.start_date, time.min, tzinfo=UTC)
     end_dt = datetime.combine(task.end_date + timedelta(days=1), time.min, tzinfo=UTC)
     for column in ("entry_ts", "ts_utc"):

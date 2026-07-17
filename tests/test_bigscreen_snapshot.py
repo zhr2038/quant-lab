@@ -178,6 +178,20 @@ def test_bigscreen_ai_status_prefers_pending_run_over_previous_result(monkeypatc
     assert ai["queue"]["counts"]["pending"] == 1
 
 
+def test_bigscreen_ai_queue_excludes_hidden_atomic_result_staging(monkeypatch, tmp_path):
+    lake = tmp_path / "lake"
+    queue = tmp_path / "ai_queue"
+    (queue / "results" / "inbox" / ".staging" / "task-uploading").mkdir(
+        parents=True
+    )
+    monkeypatch.setenv("QUANT_LAB_AI_QUEUE_ROOT", str(queue))
+    clear_bigscreen_cache()
+
+    ai = bigscreen_snapshot(lake)["ai_research"]
+
+    assert ai["queue"]["counts"]["result_inbox"] == 0
+
+
 def test_bigscreen_snapshot_kpis_include_market_bar_close_time(tmp_path):
     lake = tmp_path / "lake"
     opened_at = datetime.now(UTC) - timedelta(hours=1, minutes=5)

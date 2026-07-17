@@ -716,7 +716,11 @@ def _ai_queue_status() -> dict[str, Any]:
     for state in ("inbox", "imported", "rejected"):
         path = root / "results" / state
         try:
-            counts[f"result_{state}"] = sum(1 for item in path.iterdir() if item.is_dir())
+            counts[f"result_{state}"] = sum(
+                1
+                for item in path.iterdir()
+                if item.is_dir() and not item.name.startswith(".")
+            )
         except FileNotFoundError:
             counts[f"result_{state}"] = 0
         except OSError as exc:

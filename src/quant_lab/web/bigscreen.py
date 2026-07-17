@@ -594,10 +594,10 @@ def _safe_ai_research_summary(
         "code_review_target_count": frames["ai_code_review_target"].height,
     }
     queue_counts = queue.get("counts") if isinstance(queue.get("counts"), dict) else {}
-    if run_rows:
-        status = "AI_RESULT_AVAILABLE"
-    elif int(queue_counts.get("running") or 0) > 0:
+    if int(queue_counts.get("running") or 0) > 0:
         status = "RUNNING"
+    elif run_rows:
+        status = "AI_RESULT_AVAILABLE"
     elif int(queue_counts.get("pending") or 0) > 0:
         status = "PENDING"
     elif int(queue_counts.get("failed") or 0) > 0:

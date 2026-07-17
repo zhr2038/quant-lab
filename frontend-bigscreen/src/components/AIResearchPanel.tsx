@@ -31,6 +31,16 @@ export function AIResearchPanel({ research }: { research: Record<string, unknown
   const primaryFinding = findings.find((row) => stringValue(row.finding_id, "") === primaryId);
   const pending = Number(queueCounts.pending ?? 0);
   const running = Number(queueCounts.running ?? 0);
+  const stage2Allowed = latest.stage2_allowed === true || String(latest.stage2_allowed).toLowerCase() === "true";
+  const stage1Attempts = Number(latest.stage1_attempts ?? 0);
+  const stage2Attempts = Number(latest.stage2_attempts ?? 0);
+  const hasResult = Boolean(stringValue(latest.task_id, ""));
+  const stage1State = hasResult ? "COMPLETE" : "WAITING";
+  const stage2State = !hasResult ? "WAITING" : stage2Allowed ? (stage2Attempts > 0 ? "COMPLETE" : "PENDING") : "GATED";
+  const preflightStatus = stringValue(latest.preflight_status, "NOT_AVAILABLE");
+  const preflightDisplay = preflightStatus === "NOT_AVAILABLE" ? "LEGACY NOT RECORDED" : preflightStatus;
+  const routeSections = jsonStringList(latest.route_sections_json);
+  const statusLabel = running > 0 && hasResult ? "RUNNING · LAST RESULT" : status.replace(/_/g, " ");
 
   return (
     <section className="card pad ai-research">
@@ -39,7 +49,7 @@ export function AIResearchPanel({ research }: { research: Record<string, unknown
           <h2 className="section-title icon-title"><BrainCircuit size={24} />AI 研究工作台</h2>
           <p className="sub">确定性预检 → 诊断 → 研究假设 → 验证实验 → 人工复核</p>
         </div>
-        <span className={`ai-status ${statusClass(status)}`}><ShieldCheck size={15} />{status.replace(/_/g, " ")}</span>
+        <span className={`ai-status ${statusClass(status)}`}><ShieldCheck size={15} />{statusLabel}</span>
       </div>
 
       <div className="ai-safety-strip">
@@ -49,11 +59,11 @@ export function AIResearchPanel({ research }: { research: Record<string, unknown
       </div>
 
       <div className="ai-metrics">
-        <Metric icon={Layers3} label="研究运行" value={counts.run_count} />
-        <Metric icon={FileSearch} label="诊断发现" value={counts.finding_count} />
-        <Metric icon={Sparkles} label="因子草案" value={counts.factor_proposal_count} />
-        <Metric icon={BrainCircuit} label="Paper 草案" value={counts.paper_draft_count} />
-        <Metric icon={FlaskConical} label="实验草案" value={counts.experiment_count} />
+        <Metric icon={Layers3} label="历史运行" value={counts.run_count} />
+        <Metric icon={FileSearch} label="本轮发现" value={latest.finding_count} />
+        <Metric icon={Sparkles} label="本轮因子草案" value={latest.factor_proposal_count} />
+        <Metric icon={BrainCircuit} label="本轮 Paper 草案" value={latest.paper_draft_count} />
+        <Metric icon={FlaskConical} label="本轮实验草案" value={latest.experiment_count} />
         <Metric icon={Clock3} label="队列" value={`${pending} / ${running}`} sub="pending / running" />
       </div>
 
@@ -65,15 +75,15 @@ export function AIResearchPanel({ research }: { research: Record<string, unknown
         </div>
         <div>
           <span>证据来源与连续性</span>
-          <b>{stringValue(latest.preflight_status, "NOT AVAILABLE")} · {stringValue(continuity.status, "FIRST RUN")}</b>
+          <b>{preflightDisplay} · {stringValue(continuity.status, "FIRST RUN")}</b>
           <small title={stringValue(continuity.summary, "尚无上一轮研究上下文")}>
-            证据包 {stringValue(latest.source_pack_name, "尚无来源包")} · {delay(research.latest_run_age_seconds)}
+            {preflightStatus === "NOT_AVAILABLE" ? "旧结果未回传确定性预检 · " : ""}证据包 {stringValue(latest.source_pack_name, "尚无来源包")} · {delay(research.latest_run_age_seconds)}
           </small>
         </div>
         <div>
-          <span>模型校验</span>
-          <b>Stage 1 {shortNumber(latest.stage1_attempts)} 次 · Stage 2 {shortNumber(latest.stage2_attempts)} 次</b>
-          <small>{validationEvents.length ? `${validationEvents.length} 次结构/传输重试已留痕` : "本轮无校验重试"} · {stringValue(latest.model, "—")}</small>
+          <span>两阶段状态</span>
+          <b>Stage 1 {stage1State} · Stage 2 {stage2State}</b>
+          <small>{stage1Attempts || stage2Attempts ? `尝试 ${stage1Attempts} / ${stage2Attempts}` : "尚未运行"} · 路由 {routeSections.length ? routeSections.join(", ") : "—"} · {validationEvents.length ? `${validationEvents.length} 次重试` : "无重试"}</small>
         </div>
       </div>
 
@@ -114,6 +124,17 @@ export function AIResearchPanel({ research }: { research: Record<string, unknown
       </div>
     </section>
   );
+}
+
+function jsonStringList(value: unknown): string[] {
+  if (Array.isArray(value)) return value.map((item) => String(item)).filter(Boolean);
+  if (typeof value !== "string" || !value.trim()) return [];
+  try {
+    const parsed = JSON.parse(value);
+    return Array.isArray(parsed) ? parsed.map((item) => String(item)).filter(Boolean) : [];
+  } catch {
+    return [];
+  }
 }
 
 function Metric({ icon: Icon, label, value, sub }: { icon: typeof BrainCircuit; label: string; value: unknown; sub?: string }) {

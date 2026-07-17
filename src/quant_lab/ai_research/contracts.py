@@ -473,6 +473,7 @@ class AIResearchResult(StrictModel):
     stage2_attempts: int = Field(default=0, ge=0, le=20)
     validation_events_json: str = "[]"
     evidence_manifest: list[EvidenceManifestEntry] = Field(default_factory=list, max_length=128)
+    effective_preflight: TaskPreflight | None = None
     diagnostic_only: Literal[True] = True
     live_order_effect: Literal[LIVE_ORDER_EFFECT] = LIVE_ORDER_EFFECT
 

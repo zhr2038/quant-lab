@@ -42,7 +42,9 @@ AI_RUN_SCHEMA: dict[str, Any] = {
     "prompt_version": pl.Utf8,
     "source_pack_name": pl.Utf8,
     "preflight_status": pl.Utf8,
+    "preflight_checked_at": pl.Datetime(time_zone="UTC"),
     "preflight_blockers_json": pl.Utf8,
+    "preflight_warnings_json": pl.Utf8,
     "primary_bottleneck_id": pl.Utf8,
     "root_cause_tree_json": pl.Utf8,
     "next_actions_json": pl.Utf8,
@@ -202,10 +204,18 @@ def import_ai_research_results(
     imported.mkdir(parents=True, exist_ok=True)
     rejected.mkdir(parents=True, exist_ok=True)
 
-    candidates = sorted(
-        (item for item in inbox.iterdir() if item.is_dir()),
-        key=lambda path: (path.stat().st_mtime_ns, path.name),
-    ) if inbox.exists() else []
+    candidates = (
+        sorted(
+            (
+                item
+                for item in inbox.iterdir()
+                if item.is_dir() and (item / "result.json").is_file()
+            ),
+            key=lambda path: (path.stat().st_mtime_ns, path.name),
+        )
+        if inbox.exists()
+        else []
+    )
 
     summary: dict[str, Any] = {
         "queue_root": str(queue),
@@ -281,6 +291,7 @@ def _publish_result(
     lake_root: Path,
 ) -> None:
     completed = result.completed_at.astimezone(UTC)
+    effective_preflight = result.effective_preflight or task.preflight
     proposals = result.proposals
     finding_groups = {
         "primary_bottleneck": result.diagnosis.primary_bottlenecks,
@@ -309,9 +320,19 @@ def _publish_result(
             "route_sections_json": canonical_json(result.diagnosis.route_sections),
             "prompt_version": result.prompt_version,
             "source_pack_name": task.source_pack_name,
-            "preflight_status": task.preflight.status if task.preflight else "NOT_AVAILABLE",
+            "preflight_status": (
+                effective_preflight.status if effective_preflight else "NOT_AVAILABLE"
+            ),
+            "preflight_checked_at": (
+                effective_preflight.checked_at.astimezone(UTC)
+                if effective_preflight
+                else None
+            ),
             "preflight_blockers_json": canonical_json(
-                task.preflight.blockers if task.preflight else []
+                effective_preflight.blockers if effective_preflight else []
+            ),
+            "preflight_warnings_json": canonical_json(
+                effective_preflight.warnings if effective_preflight else []
             ),
             "primary_bottleneck_id": result.diagnosis.primary_bottleneck_id,
             "root_cause_tree_json": canonical_json(
@@ -607,7 +628,20 @@ def _validate_result_against_task(result: AIResearchResult, task: AIResearchTask
         raise ValueError("result source_pack_sha256 does not match task")
     if result.packet_sha256 != task.packet_sha256:
         raise ValueError("result packet_sha256 does not match task")
-    if task.preflight and task.preflight.status == "BLOCK" and result.diagnosis.stage2_allowed:
+    effective_preflight = result.effective_preflight or task.preflight
+    if task.source_location == "nas_accepted" and result.effective_preflight is None:
+        raise ValueError("NAS result is missing the materialized effective preflight")
+    if (
+        task.preflight is not None
+        and result.effective_preflight is not None
+        and result.effective_preflight != task.preflight
+    ):
+        raise ValueError("result effective preflight does not match embedded task preflight")
+    if (
+        effective_preflight
+        and effective_preflight.status == "BLOCK"
+        and result.diagnosis.stage2_allowed
+    ):
         raise ValueError("blocked deterministic preflight cannot enter Stage 2")
     previous_context = task.previous_research_context
     continuity = result.diagnosis.continuity
@@ -617,6 +651,11 @@ def _validate_result_against_task(result: AIResearchResult, task: AIResearchTask
     elif continuity.previous_task_id != previous_context.task_id:
         raise ValueError("continuity previous_task_id does not match task context")
     evidence_members = _result_evidence_members(result, task)
+    if effective_preflight and effective_preflight.available_sections:
+        if set(effective_preflight.available_sections) != set(evidence_members):
+            raise ValueError(
+                "effective preflight sections do not match materialized evidence manifest"
+            )
     available_sections = set(evidence_members)
     routed = set(result.diagnosis.route_sections)
     unknown_sections = routed - available_sections

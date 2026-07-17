@@ -126,6 +126,32 @@ def test_bigscreen_snapshot_exposes_ai_research_without_live_effect(monkeypatch,
     assert ai["continuity"]["status"] == "FIRST_RUN"
 
 
+def test_bigscreen_ai_status_prefers_active_run_over_previous_result(monkeypatch, tmp_path):
+    lake = tmp_path / "lake"
+    queue = tmp_path / "ai_queue"
+    (queue / "running" / "task-running").mkdir(parents=True)
+    monkeypatch.setenv("QUANT_LAB_AI_QUEUE_ROOT", str(queue))
+    write_parquet_dataset(
+        pl.DataFrame(
+            [
+                {
+                    "task_id": "task-completed",
+                    "completed_at": datetime(2026, 7, 17, tzinfo=UTC),
+                    "system_state": "READY_FOR_PROPOSALS",
+                }
+            ]
+        ),
+        lake / "gold" / "ai_research_run",
+    )
+    clear_bigscreen_cache()
+
+    ai = bigscreen_snapshot(lake)["ai_research"]
+
+    assert ai["status"] == "RUNNING"
+    assert ai["latest_run"]["task_id"] == "task-completed"
+    assert ai["queue"]["counts"]["running"] == 1
+
+
 def test_bigscreen_snapshot_kpis_include_market_bar_close_time(tmp_path):
     lake = tmp_path / "lake"
     opened_at = datetime.now(UTC) - timedelta(hours=1, minutes=5)

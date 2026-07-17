@@ -328,6 +328,7 @@ def run_research(config: Config, task: AIResearchTask) -> AIResearchResult:
         stage1_attempts=int(stage1_raw.get("attempts") or 1),
         stage2_attempts=stage2_attempts,
         validation_events_json=canonical_json(validation_events),
+        effective_preflight=task.preflight,
         evidence_manifest=[
             {
                 "section": section,
@@ -581,12 +582,22 @@ def _extract_output_text(payload: dict[str, Any]) -> str:
 
 
 def _upload_result(config: Config, task_id: str, local_result: Path) -> None:
-    result_dir = f"{config.remote_queue_root}/results/inbox/{task_id}"
-    remote_temp = f"{result_dir}/result.json.tmp"
-    remote_final = f"{result_dir}/result.json"
+    results_root = f"{config.remote_queue_root}/results"
+    staging_dir = f"{results_root}/staging/{task_id}"
+    result_dir = f"{results_root}/inbox/{task_id}"
+    imported_dir = f"{results_root}/imported/{task_id}"
+    remote_temp = f"{staging_dir}/result.json.tmp"
+    staged_result = f"{staging_dir}/result.json"
     _ssh(
         config,
-        ["sh", "-lc", f"umask 0007; mkdir -p {shlex.quote(result_dir)}"],
+        [
+            "sh",
+            "-lc",
+            f"umask 0007; mkdir -p {shlex.quote(staging_dir)} "
+            f"{shlex.quote(results_root + '/inbox')} "
+            f"{shlex.quote(results_root + '/imported')} "
+            f"{shlex.quote(config.remote_queue_root + '/completed')}",
+        ],
     )
     _scp_to(config, local_result, remote_temp)
     _ssh(
@@ -594,10 +605,26 @@ def _upload_result(config: Config, task_id: str, local_result: Path) -> None:
         [
             "sh",
             "-lc",
-            f"set -eu; chmod 0640 {shlex.quote(remote_temp)}; "
-            f"mv {shlex.quote(remote_temp)} {shlex.quote(remote_final)}; "
-            f"mv {shlex.quote(config.remote_queue_root + '/running/' + task_id)} "
-            f"{shlex.quote(config.remote_queue_root + '/completed/' + task_id)}",
+            f"set -eu; stage={shlex.quote(staging_dir)}; "
+            f"publish={shlex.quote(result_dir)}; imported={shlex.quote(imported_dir)}; "
+            f"running={shlex.quote(config.remote_queue_root + '/running/' + task_id)}; "
+            f"completed={shlex.quote(config.remote_queue_root + '/completed/' + task_id)}; "
+            f"chmod 0640 {shlex.quote(remote_temp)}; "
+            f"mv {shlex.quote(remote_temp)} {shlex.quote(staged_result)}; "
+            'if [ -f "$imported/result.json" ]; then '
+            'cmp -s "$stage/result.json" "$imported/result.json"; rm -rf "$stage"; exit 0; '
+            "fi; "
+            'if [ -f "$publish/result.json" ]; then '
+            'cmp -s "$stage/result.json" "$publish/result.json"; rm -rf "$stage"; exit 0; '
+            "fi; "
+            '[ ! -e "$publish" ] || { echo "incomplete publish directory exists" >&2; exit 24; }; '
+            'if [ -d "$running" ]; then '
+            '[ ! -e "$completed" ] || { echo "completed task already exists" >&2; exit 25; }; '
+            'mv "$running" "$completed"; '
+            'elif [ ! -d "$completed" ]; then '
+            'echo "task state missing before result publish" >&2; exit 26; '
+            "fi; "
+            'mv "$stage" "$publish"',
         ],
     )
 

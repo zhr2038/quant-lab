@@ -10,6 +10,7 @@ from quant_lab.ai_research.contracts import (
     AIResearchTask,
     CodeReviewTarget,
     EvidenceDocument,
+    EvidenceManifestEntry,
     EvidenceReference,
     FactorProposal,
     ResearchFinding,
@@ -23,6 +24,7 @@ from quant_lab.ai_research.importer import (
     AI_RUN_DATASET,
     _publish_result,
     _validate_result_against_task,
+    import_ai_research_results,
 )
 from quant_lab.data.lake import read_parquet_dataset, write_parquet_dataset
 
@@ -126,6 +128,21 @@ def test_import_validation_accepts_exact_evidence_members() -> None:
     _validate_result_against_task(_result(task, _reference()), task)
 
 
+def test_import_ignores_result_directory_until_atomic_payload_is_present(tmp_path) -> None:
+    queue_root = tmp_path / "queue"
+    incomplete = queue_root / "results" / "inbox" / "task-uploading"
+    incomplete.mkdir(parents=True)
+
+    summary = import_ai_research_results(
+        queue_root,
+        lake_root=tmp_path / "lake",
+    )
+
+    assert summary["examined"] == 0
+    assert summary["rejected"] == 0
+    assert incomplete.is_dir()
+
+
 def test_import_validation_rejects_hallucinated_evidence_members() -> None:
     task = _task()
     with pytest.raises(ValueError, match="not present"):
@@ -150,6 +167,70 @@ def test_blocked_preflight_cannot_enter_stage2() -> None:
     task = task.model_copy(update={"packet_sha256": compute_task_packet_sha256(task)})
 
     with pytest.raises(ValueError, match="blocked deterministic preflight"):
+        _validate_result_against_task(_result(task, _reference()), task)
+
+
+def test_nas_result_requires_and_publishes_materialized_effective_preflight(tmp_path) -> None:
+    embedded = _task()
+    provisional = embedded.model_copy(
+        update={
+            "source_pack_id": "expert-pack-test",
+            "source_snapshot_id": "snapshot-test",
+            "source_location": "nas_accepted",
+            "sections": {},
+            "preflight": None,
+            "packet_sha256": "0" * 64,
+        }
+    )
+    task = provisional.model_copy(
+        update={"packet_sha256": compute_task_packet_sha256(provisional)}
+    )
+    result = _result(task, _reference()).model_copy(
+        update={
+            "effective_preflight": TaskPreflight(
+                status="WARN",
+                checked_at=datetime(2026, 7, 14, 1, tzinfo=UTC),
+                available_sections=["factor_research"],
+                truncated_document_count=0,
+                warnings=["paper_runtime_stale"],
+            ),
+            "evidence_manifest": [
+                EvidenceManifestEntry(
+                    section="factor_research",
+                    source_member="reports/factor_evidence.csv",
+                    content_sha256="b" * 64,
+                )
+            ],
+        }
+    )
+
+    _validate_result_against_task(result, task)
+    _publish_result(result, task=task, lake_root=tmp_path)
+
+    row = read_parquet_dataset(tmp_path / AI_RUN_DATASET).to_dicts()[0]
+    assert row["preflight_status"] == "WARN"
+    assert row["preflight_checked_at"] == datetime(2026, 7, 14, 1, tzinfo=UTC)
+    assert row["preflight_blockers_json"] == "[]"
+    assert row["preflight_warnings_json"] == '["paper_runtime_stale"]'
+
+
+def test_nas_result_without_materialized_preflight_is_rejected() -> None:
+    embedded = _task()
+    provisional = embedded.model_copy(
+        update={
+            "source_pack_id": "expert-pack-test",
+            "source_snapshot_id": "snapshot-test",
+            "source_location": "nas_accepted",
+            "sections": {},
+            "preflight": None,
+            "packet_sha256": "0" * 64,
+        }
+    )
+    task = provisional.model_copy(
+        update={"packet_sha256": compute_task_packet_sha256(provisional)}
+    )
+
+    with pytest.raises(ValueError, match="materialized effective preflight"):
         _validate_result_against_task(_result(task, _reference()), task)
 
 

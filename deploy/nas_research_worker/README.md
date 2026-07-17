@@ -27,7 +27,9 @@ UID 10004:
 * `nas_research_signing_key`: NAS result-signing Ed25519 private key.
 
 Never place keys in `.env`, Compose, an image layer, or Git. Copy `.env.example`
-to `.env`, set `BUILD_GIT_COMMIT` to the exact deployed 40-character commit, then:
+to `.env`, keep `NAS_RESEARCH_SECRETS_HOST_PATH` pointed at the host secrets
+directory above, set `BUILD_GIT_COMMIT` to the exact deployed 40-character
+commit, then:
 
 ```bash
 docker compose build --pull

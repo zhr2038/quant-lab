@@ -24,10 +24,10 @@ services:
     volumes:
       - ${NAS_RESEARCH_DATA_HOST_PATH:-./data}:/data
       - ${NAS_RUNTIME_HOST_PATH:-../quant-runtime}:/runtime
-      - ./secrets/id_ed25519:/run/secrets/qlab_ssh_key:ro
-      - ./secrets/known_hosts:/run/secrets/known_hosts:ro
-      - ./secrets/cloud_research_task_public_key:/run/secrets/cloud_research_task_public_key:ro
-      - ./secrets/nas_research_signing_key:/run/secrets/nas_research_signing_key:ro
+      - ${NAS_RESEARCH_SECRETS_HOST_PATH:-./secrets}/id_ed25519:/run/secrets/qlab_ssh_key:ro
+      - ${NAS_RESEARCH_SECRETS_HOST_PATH:-./secrets}/known_hosts:/run/secrets/known_hosts:ro
+      - ${NAS_RESEARCH_SECRETS_HOST_PATH:-./secrets}/cloud_research_task_public_key:/run/secrets/cloud_research_task_public_key:ro
+      - ${NAS_RESEARCH_SECRETS_HOST_PATH:-./secrets}/nas_research_signing_key:/run/secrets/nas_research_signing_key:ro
     healthcheck:
       test:
         - CMD

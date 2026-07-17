@@ -97,6 +97,18 @@ def test_packet_uses_existing_expert_pack_and_deduplicates(tmp_path) -> None:
         assert stat.S_IMODE((task_path.parent / "task_manifest.json").stat().st_mode) == 0o660
 
 
+def test_queue_status_excludes_hidden_atomic_result_staging(tmp_path) -> None:
+    queue = tmp_path / "queue"
+    (queue / "results" / "inbox" / ".staging" / "task-uploading").mkdir(
+        parents=True
+    )
+    published = queue / "results" / "inbox" / "task-published"
+    published.mkdir(parents=True)
+    (published / "result.json").write_text("{}", encoding="utf-8")
+
+    assert queue_status(queue)["counts"]["result_inbox"] == 1
+
+
 def test_latest_expert_pack_skips_newer_partial_zip(tmp_path) -> None:
     valid = tmp_path / "quant_lab_expert_pack_2026-07-14_valid.zip"
     with zipfile.ZipFile(valid, "w") as archive:

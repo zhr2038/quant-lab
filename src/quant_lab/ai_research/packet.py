@@ -591,7 +591,11 @@ def queue_status(queue_root: str | Path) -> dict[str, Any]:
     result_inbox = root / "results" / "inbox"
     result_imported = root / "results" / "imported"
     counts["result_inbox"] = (
-        sum(1 for item in result_inbox.iterdir() if item.is_dir())
+        sum(
+            1
+            for item in result_inbox.iterdir()
+            if item.is_dir() and not item.name.startswith(".")
+        )
         if result_inbox.exists()
         else 0
     )

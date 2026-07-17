@@ -172,10 +172,10 @@ def test_upload_result_stages_before_atomic_inbox_publish(monkeypatch, tmp_path)
     assert scp_calls == [
         (
             local_result,
-            "/var/lib/quant-lab/ai_queue/results/staging/task-atomic/result.json.tmp",
+            "/var/lib/quant-lab/ai_queue/results/inbox/.staging/task-atomic/result.json.tmp",
         )
     ]
-    assert "results/staging/task-atomic" in ssh_calls[0][2]
+    assert "results/inbox/.staging/task-atomic" in ssh_calls[0][2]
     publish_script = ssh_calls[1][2]
     assert 'mv "$running" "$completed"' in publish_script
     assert 'mv "$stage" "$publish"' in publish_script

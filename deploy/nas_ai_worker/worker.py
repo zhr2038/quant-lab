@@ -583,7 +583,7 @@ def _extract_output_text(payload: dict[str, Any]) -> str:
 
 def _upload_result(config: Config, task_id: str, local_result: Path) -> None:
     results_root = f"{config.remote_queue_root}/results"
-    staging_dir = f"{results_root}/staging/{task_id}"
+    staging_dir = f"{results_root}/inbox/.staging/{task_id}"
     result_dir = f"{results_root}/inbox/{task_id}"
     imported_dir = f"{results_root}/imported/{task_id}"
     remote_temp = f"{staging_dir}/result.json.tmp"

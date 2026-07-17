@@ -178,6 +178,7 @@ def _build_bigscreen_snapshot_payload(root: Path) -> dict[str, Any]:
     health_score = _health_score(status, data_health, cost, v5, web_events, exports)
     legacy_anomalies = _legacy_web_anomalies(data_health)
     server_resources = _server_resources(root)
+    research_compute = _entry_quality_history_research_status()
     v5_payload = _v5_payload(v5, current_readiness)
     exports_payload = _exports_payload(exports)
     exports_payload.update(_expert_pack_v5_lag_status_payload(exports, v5))
@@ -210,6 +211,7 @@ def _build_bigscreen_snapshot_payload(root: Path) -> dict[str, Any]:
         "data_health": _data_health_payload(data_health, data_matrix),
         "legacy_anomalies": legacy_anomalies,
         "server_resources": server_resources,
+        "research_compute": research_compute,
         "web_perf": _web_perf_payload(web_events, api_metrics, web_smoke),
         "consumers": _consumer_payload(consumers),
         "exports": exports_payload,
@@ -303,6 +305,8 @@ def _snapshot_source_signature(root: Path) -> tuple[Any, ...]:
         _directory_signature(_ai_queue_root() / "pending"),
         _directory_signature(_ai_queue_root() / "running"),
         _directory_signature(_ai_queue_root() / "failed"),
+        _directory_signature(_research_queue_root() / "status"),
+        _directory_signature(_research_queue_root() / "results" / "inbox"),
         _path_signature(_web_v2_smoke_status_path()),
     )
 
@@ -755,6 +759,30 @@ def _json_object(value: Any) -> dict[str, Any]:
 def _ai_queue_root() -> Path:
     value = os.environ.get("QUANT_LAB_AI_QUEUE_ROOT", "").strip()
     return Path(value) if value else Path("/var/lib/quant-lab/ai_queue")
+
+
+def _research_queue_root() -> Path:
+    value = os.environ.get("QUANT_LAB_RESEARCH_QUEUE_ROOT", "").strip()
+    return Path(value) if value else Path("/var/lib/quant-lab/research_queue")
+
+
+def _entry_quality_history_research_status() -> dict[str, Any]:
+    from quant_lab.research_plane.status import entry_quality_history_plane_status
+
+    try:
+        return entry_quality_history_plane_status(_research_queue_root())
+    except (OSError, ValueError) as exc:
+        return {
+            "schema_version": "quant_lab_entry_quality_research_plane_status.v1",
+            "task_type": "entry_quality_history",
+            "state": "not_observable",
+            "task": None,
+            "recent": [],
+            "last_error": f"{type(exc).__name__}:{exc}",
+            "nas_offline_behavior": "wait_no_local_fallback",
+            "research_only": True,
+            "live_order_effect": "none",
+        }
 
 
 def _ai_queue_status() -> dict[str, Any]:

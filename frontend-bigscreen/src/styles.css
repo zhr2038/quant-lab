@@ -161,6 +161,26 @@ html[data-web-v2-layout="fluid"] .page-strategy .market{height:auto;min-height:0
   background:linear-gradient(120deg,transparent,rgba(255,255,255,.04),transparent);
   transform:translateX(-120%);animation:sweep 6s linear infinite;pointer-events:none;
 }
+.ops-export-card{display:grid;grid-template-columns:minmax(430px,.82fr) minmax(0,1.18fr);gap:22px;align-items:start}
+.research-compute-panel{min-width:0;border-right:1px solid rgba(80,169,255,.28);padding-right:22px}
+.research-compute-head{display:flex;justify-content:space-between;align-items:flex-start;gap:12px}
+.research-compute-head h3{display:flex;align-items:center;gap:8px;margin:0;font-size:17px}
+.research-compute-head p{margin:5px 0 0;color:var(--muted);font-size:10px}
+.research-state{height:28px;display:flex;align-items:center;gap:6px;border:1px solid rgba(80,169,255,.48);border-radius:999px;padding:0 10px;font-size:10px;font-weight:800;text-transform:uppercase}
+.research-state.ok{color:#aaf8dc;border-color:rgba(45,232,166,.68)}
+.research-state.warning{color:#ffe5a6;border-color:rgba(255,196,87,.72)}
+.research-state.critical{color:#ffd1dc;border-color:rgba(255,93,125,.78)}
+.research-state.info{color:#b9dfff}
+.research-compute-grid{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:8px 12px;margin-top:14px}
+.research-compute-grid>div{min-width:0;border-bottom:1px solid rgba(80,169,255,.18);padding:0 0 7px}
+.research-compute-grid span{display:block;color:var(--muted);font-size:9px}
+.research-compute-grid b{display:flex;align-items:center;gap:5px;min-width:0;margin-top:3px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;font-size:11px}
+.research-compute-error{margin-top:10px;border-left:2px solid var(--red);padding:6px 9px;color:#ffd1dc;background:rgba(255,93,125,.08);font-size:10px;overflow-wrap:anywhere}
+@media (max-width:1100px){
+  .ops-export-card{grid-template-columns:1fr}
+  .research-compute-panel{border-right:0;border-bottom:1px solid rgba(80,169,255,.28);padding:0 0 18px}
+  .research-compute-grid{grid-template-columns:repeat(2,minmax(0,1fr))}
+}
 .ai-research{display:grid;grid-template-rows:auto auto 96px 94px minmax(0,1fr);gap:12px}
 .ai-head{display:flex;align-items:flex-start;justify-content:space-between;gap:16px}
 .ai-status{height:34px;display:flex;align-items:center;gap:8px;border:1px solid rgba(80,169,255,.46);border-radius:8px;padding:0 12px;background:rgba(7,29,53,.72);font-size:12px;font-weight:800}

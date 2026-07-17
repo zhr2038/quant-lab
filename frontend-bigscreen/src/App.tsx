@@ -27,6 +27,7 @@ import { HealthPanel } from "./components/HealthPanel";
 import { KpiGrid } from "./components/KpiGrid";
 import { MarketLiquidity } from "./components/MarketLiquidity";
 import { PerfConsumers } from "./components/PerfConsumers";
+import { ResearchComputeStatus } from "./components/ResearchComputeStatus";
 import { ServerResourcesPanel } from "./components/ServerResourcesPanel";
 import { StrategyFlow } from "./components/StrategyFlow";
 import { V5Telemetry } from "./components/V5Telemetry";
@@ -288,6 +289,7 @@ function Dashboard({
             <PerfConsumers perf={data.web_perf} consumers={data.consumers} />
             <V5Telemetry v5={data.v5} consumers={data.consumers} />
             <section className="card pad ops-export-card">
+              <ResearchComputeStatus status={data.research_compute as Record<string, unknown>} />
               <ExpertPackControls exports={data.exports as Record<string, unknown>} />
             </section>
             <FunctionMap setView={setView} />

@@ -3,7 +3,11 @@ from __future__ import annotations
 import hashlib
 import json
 import math
+import os
+import shutil
 import subprocess
+import tempfile
+import uuid
 from collections import Counter
 from dataclasses import dataclass
 from datetime import UTC, date, datetime, time, timedelta
@@ -22,6 +26,7 @@ from quant_lab.data.lake import (
     write_parquet_dataset,
     write_snapshot_meta,
 )
+from quant_lab.export_plane.status import atomic_write_json
 from quant_lab.strategy_telemetry.sanitize import safe_json_dumps
 from quant_lab.symbols import normalize_symbol
 
@@ -342,6 +347,158 @@ HISTORY_METRICS_SCHEMA = COMMON_SCHEMA | HISTORY_META_SCHEMA | {
     "metrics_json": pl.Utf8,
 }
 
+HISTORY_MISSED_LOW_AUDIT_SCHEMA = MISSED_LOW_AUDIT_SCHEMA | HISTORY_META_SCHEMA
+HISTORY_MISSED_LOW_AGG_SCHEMA = MISSED_LOW_AGG_SCHEMA | HISTORY_META_SCHEMA
+HISTORY_LATE_ENTRY_CHASE_SHADOW_SCHEMA = LATE_ENTRY_CHASE_SHADOW_SCHEMA | HISTORY_META_SCHEMA
+HISTORY_PULLBACK_REVERSAL_SHADOW_SCHEMA = PULLBACK_REVERSAL_SHADOW_SCHEMA | HISTORY_META_SCHEMA
+
+
+@dataclass(frozen=True)
+class EntryQualityHistoryOutputSpec:
+    dataset_name: str
+    relative_path: Path
+    schema: dict[str, pl.DataType]
+    primary_keys: tuple[str, ...]
+    window_keys: tuple[str, ...] = ("window_mode", "cost_mode")
+    publish_mode: str = "window_replace"
+    empty_result_semantics: str = "clear_window"
+
+
+ENTRY_QUALITY_HISTORY_OUTPUT_SPECS = (
+    EntryQualityHistoryOutputSpec(
+        "v5_entry_quality_history_missed_low_audit",
+        HISTORY_MISSED_LOW_AUDIT_DATASET,
+        HISTORY_MISSED_LOW_AUDIT_SCHEMA,
+        (
+            "start_date",
+            "end_date",
+            "window_mode",
+            "cost_mode",
+            "source_event_key",
+            "symbol",
+            "entry_ts",
+        ),
+    ),
+    EntryQualityHistoryOutputSpec(
+        "v5_entry_quality_history_missed_low_by_symbol",
+        HISTORY_MISSED_LOW_BY_SYMBOL_DATASET,
+        HISTORY_MISSED_LOW_AGG_SCHEMA,
+        ("start_date", "end_date", "window_mode", "cost_mode", "group_key"),
+    ),
+    EntryQualityHistoryOutputSpec(
+        "v5_entry_quality_history_missed_low_by_entry_reason",
+        HISTORY_MISSED_LOW_BY_ENTRY_REASON_DATASET,
+        HISTORY_MISSED_LOW_AGG_SCHEMA,
+        ("start_date", "end_date", "window_mode", "cost_mode", "group_key"),
+    ),
+    EntryQualityHistoryOutputSpec(
+        "v5_entry_quality_history_late_entry_chase_shadow",
+        HISTORY_LATE_ENTRY_CHASE_SHADOW_DATASET,
+        HISTORY_LATE_ENTRY_CHASE_SHADOW_SCHEMA,
+        (
+            "start_date",
+            "end_date",
+            "window_mode",
+            "cost_mode",
+            "source_type",
+            "source_event_key",
+        ),
+    ),
+    EntryQualityHistoryOutputSpec(
+        "v5_entry_quality_history_late_entry_chase_threshold_sensitivity",
+        HISTORY_LATE_ENTRY_THRESHOLD_SENSITIVITY_DATASET,
+        HISTORY_THRESHOLD_SENSITIVITY_SCHEMA,
+        (
+            "start_date",
+            "end_date",
+            "window_mode",
+            "cost_mode",
+            "threshold_bps",
+        ),
+    ),
+    EntryQualityHistoryOutputSpec(
+        "v5_entry_quality_history_pullback_reversal_shadow",
+        HISTORY_PULLBACK_REVERSAL_SHADOW_DATASET,
+        HISTORY_PULLBACK_REVERSAL_SHADOW_SCHEMA,
+        (
+            "start_date",
+            "end_date",
+            "window_mode",
+            "cost_mode",
+            "source_event_key",
+            "horizon_hours",
+        ),
+    ),
+    EntryQualityHistoryOutputSpec(
+        "v5_entry_quality_history_pullback_by_symbol",
+        HISTORY_PULLBACK_BY_SYMBOL_DATASET,
+        HISTORY_PULLBACK_AGG_SCHEMA,
+        (
+            "start_date",
+            "end_date",
+            "window_mode",
+            "cost_mode",
+            "group_type",
+            "group_key",
+        ),
+    ),
+    EntryQualityHistoryOutputSpec(
+        "v5_entry_quality_history_pullback_by_regime",
+        HISTORY_PULLBACK_BY_REGIME_DATASET,
+        HISTORY_PULLBACK_AGG_SCHEMA,
+        (
+            "start_date",
+            "end_date",
+            "window_mode",
+            "cost_mode",
+            "group_type",
+            "group_key",
+        ),
+    ),
+    EntryQualityHistoryOutputSpec(
+        "v5_entry_quality_history_pullback_by_horizon",
+        HISTORY_PULLBACK_BY_HORIZON_DATASET,
+        HISTORY_PULLBACK_AGG_SCHEMA,
+        (
+            "start_date",
+            "end_date",
+            "window_mode",
+            "cost_mode",
+            "group_type",
+            "group_key",
+        ),
+    ),
+    EntryQualityHistoryOutputSpec(
+        "v5_entry_quality_history_anti_leakage_check",
+        HISTORY_ANTI_LEAKAGE_CHECK_DATASET,
+        HISTORY_ANTI_LEAKAGE_SCHEMA,
+        ("start_date", "end_date", "window_mode", "cost_mode", "check_name"),
+    ),
+    EntryQualityHistoryOutputSpec(
+        "v5_entry_quality_history_metrics",
+        HISTORY_METRICS_DATASET,
+        HISTORY_METRICS_SCHEMA,
+        ("start_date", "end_date", "window_mode", "cost_mode"),
+    ),
+)
+
+ENTRY_QUALITY_HISTORY_OUTPUT_SPEC_BY_NAME = {
+    spec.dataset_name: spec for spec in ENTRY_QUALITY_HISTORY_OUTPUT_SPECS
+}
+
+ENTRY_QUALITY_HISTORY_REPORT_NAMES = (
+    "missed_low_audit.csv",
+    "missed_low_by_symbol.csv",
+    "missed_low_by_entry_reason.csv",
+    "late_entry_chase_threshold_sensitivity.csv",
+    "pullback_reversal_by_symbol.csv",
+    "pullback_reversal_by_regime.csv",
+    "pullback_reversal_by_horizon.csv",
+    "anti_leakage_check.csv",
+    "entry_quality_historical_metrics.json",
+    "entry_quality_historical_summary.md",
+)
+
 
 class EntryQualityBuildResult(BaseModel):
     model_config = ConfigDict(extra="forbid", frozen=True)
@@ -399,6 +556,52 @@ class _HistoryContext:
     end_date: date
     window_mode: str
     cost_mode: str
+
+
+@dataclass(frozen=True)
+class EntryQualityHistoryArtifacts:
+    start_date: date
+    end_date: date
+    mode: str
+    cost_mode: str
+    generated_at: datetime
+    generated_from_bundle_id: str
+    missed_low_audit: pl.DataFrame
+    missed_low_by_symbol: pl.DataFrame
+    missed_low_by_entry_reason: pl.DataFrame
+    late_entry_chase_shadow: pl.DataFrame
+    late_entry_threshold_sensitivity: pl.DataFrame
+    pullback_reversal_shadow: pl.DataFrame
+    pullback_by_symbol: pl.DataFrame
+    pullback_by_regime: pl.DataFrame
+    pullback_by_horizon: pl.DataFrame
+    anti_leakage_check: pl.DataFrame
+    metrics: pl.DataFrame
+    reports: dict[str, bytes]
+    warnings: tuple[str, ...]
+
+    def frames_by_dataset(self) -> dict[str, pl.DataFrame]:
+        return {
+            "v5_entry_quality_history_missed_low_audit": self.missed_low_audit,
+            "v5_entry_quality_history_missed_low_by_symbol": self.missed_low_by_symbol,
+            "v5_entry_quality_history_missed_low_by_entry_reason": (
+                self.missed_low_by_entry_reason
+            ),
+            "v5_entry_quality_history_late_entry_chase_shadow": (
+                self.late_entry_chase_shadow
+            ),
+            "v5_entry_quality_history_late_entry_chase_threshold_sensitivity": (
+                self.late_entry_threshold_sensitivity
+            ),
+            "v5_entry_quality_history_pullback_reversal_shadow": (
+                self.pullback_reversal_shadow
+            ),
+            "v5_entry_quality_history_pullback_by_symbol": self.pullback_by_symbol,
+            "v5_entry_quality_history_pullback_by_regime": self.pullback_by_regime,
+            "v5_entry_quality_history_pullback_by_horizon": self.pullback_by_horizon,
+            "v5_entry_quality_history_anti_leakage_check": self.anti_leakage_check,
+            "v5_entry_quality_history_metrics": self.metrics,
+        }
 
 
 def build_and_publish_entry_quality(
@@ -552,6 +755,293 @@ def build_and_publish_entry_quality_history(
     cost_mode: str = "conservative",
     window_hours: int = DEFAULT_WINDOW_HOURS,
 ) -> EntryQualityHistoryBuildResult:
+    """Run the explicit local fallback using the same compute/publish boundary as NAS."""
+
+    root = Path(lake_root)
+    start_day, end_day, window_mode, normalized_cost_mode = _normalize_history_request(
+        start_date=start_date,
+        end_date=end_date,
+        mode=mode,
+        cost_mode=cost_mode,
+    )
+    artifacts = compute_entry_quality_history(
+        trades=read_parquet_dataset(root / V5_TRADE_EVENT_DATASET),
+        lifecycles=read_parquet_dataset(root / V5_ORDER_LIFECYCLE_DATASET),
+        market_bars=read_parquet_dataset(root / MARKET_BAR_DATASET),
+        candidates=read_parquet_dataset(root / V5_CANDIDATE_EVENT_DATASET),
+        labels=read_parquet_dataset(root / V5_CANDIDATE_LABEL_DATASET),
+        costs=read_parquet_dataset(root / COST_BUCKET_DAILY_DATASET),
+        start_date=start_day,
+        end_date=end_day,
+        mode=window_mode,
+        cost_mode=normalized_cost_mode,
+        window_hours=window_hours,
+        generated_from_bundle_id=_latest_bundle_id(root),
+    )
+    publish_entry_quality_history_result(
+        root,
+        artifacts,
+        generation_id=f"local-{artifacts.generated_at.strftime('%Y%m%dT%H%M%S%fZ')}",
+        snapshot_id="local-fallback",
+        task_id="local-fallback",
+        reports=artifacts.reports,
+    )
+    reports_dir = root / "reports"
+    frames = artifacts.frames_by_dataset()
+    return EntryQualityHistoryBuildResult(
+        lake_root=str(root),
+        start_date=artifacts.start_date.isoformat(),
+        end_date=artifacts.end_date.isoformat(),
+        mode=artifacts.mode,
+        cost_mode=artifacts.cost_mode,
+        missed_low_audit_rows=frames["v5_entry_quality_history_missed_low_audit"].height,
+        missed_low_by_symbol_rows=frames[
+            "v5_entry_quality_history_missed_low_by_symbol"
+        ].height,
+        missed_low_by_entry_reason_rows=frames[
+            "v5_entry_quality_history_missed_low_by_entry_reason"
+        ].height,
+        late_entry_chase_shadow_rows=frames[
+            "v5_entry_quality_history_late_entry_chase_shadow"
+        ].height,
+        late_entry_threshold_sensitivity_rows=frames[
+            "v5_entry_quality_history_late_entry_chase_threshold_sensitivity"
+        ].height,
+        pullback_reversal_shadow_rows=frames[
+            "v5_entry_quality_history_pullback_reversal_shadow"
+        ].height,
+        pullback_by_symbol_rows=frames[
+            "v5_entry_quality_history_pullback_by_symbol"
+        ].height,
+        pullback_by_regime_rows=frames[
+            "v5_entry_quality_history_pullback_by_regime"
+        ].height,
+        pullback_by_horizon_rows=frames[
+            "v5_entry_quality_history_pullback_by_horizon"
+        ].height,
+        anti_leakage_rows=frames[
+            "v5_entry_quality_history_anti_leakage_check"
+        ].height,
+        metrics_rows=frames["v5_entry_quality_history_metrics"].height,
+        reports_dir=str(reports_dir),
+        warnings=list(artifacts.warnings),
+    )
+
+
+def compute_entry_quality_history(
+    *,
+    trades: pl.DataFrame,
+    lifecycles: pl.DataFrame,
+    market_bars: pl.DataFrame,
+    candidates: pl.DataFrame,
+    labels: pl.DataFrame,
+    costs: pl.DataFrame,
+    start_date: str | date,
+    end_date: str | date,
+    mode: str = "full",
+    cost_mode: str = "conservative",
+    window_hours: int = DEFAULT_WINDOW_HOURS,
+    generated_at: datetime | None = None,
+    generated_from_bundle_id: str = "",
+) -> EntryQualityHistoryArtifacts:
+    """Compute historical Entry Quality artifacts without reading or writing the Lake."""
+
+    start_day, end_day, window_mode, normalized_cost_mode = _normalize_history_request(
+        start_date=start_date,
+        end_date=end_date,
+        mode=mode,
+        cost_mode=cost_mode,
+    )
+    ctx = _BuildContext(
+        as_of_date=end_day,
+        generated_at=(generated_at or datetime.now(UTC)).astimezone(UTC),
+        generated_from_bundle_id=str(generated_from_bundle_id or ""),
+        window_hours=max(int(window_hours), 1),
+    )
+    history = _HistoryContext(
+        start_date=start_day,
+        end_date=end_day,
+        window_mode=window_mode,
+        cost_mode=normalized_cost_mode,
+    )
+    start_dt = datetime.combine(start_day, time.min, tzinfo=UTC)
+    end_dt = datetime.combine(end_day + timedelta(days=1), time.min, tzinfo=UTC)
+
+    scoped_trades = _filter_frame_by_time(
+        trades,
+        ("ts_utc", "ts", "entry_ts"),
+        start_dt,
+        end_dt,
+    )
+    scoped_lifecycles = _filter_frame_by_time(
+        lifecycles,
+        ("ts_utc", "last_fill_ts", "submit_ts", "decision_ts"),
+        start_dt,
+        end_dt,
+    )
+    market = _normalize_market_bars(
+        _filter_frame_by_time(
+            market_bars,
+            ("ts",),
+            start_dt - timedelta(hours=24),
+            end_dt + timedelta(hours=max(PULLBACK_HORIZON_HOURS)),
+        )
+    )
+    scoped_candidates = _filter_frame_by_time(
+        candidates,
+        ("ts_utc", "ts"),
+        start_dt,
+        end_dt,
+    )
+    scoped_labels = _filter_frame_by_time(
+        labels,
+        ("decision_ts", "ts_utc"),
+        start_dt,
+        end_dt,
+    )
+    if (
+        not scoped_candidates.is_empty()
+        and not scoped_labels.is_empty()
+        and "candidate_id" in scoped_candidates.columns
+        and "candidate_id" in scoped_labels.columns
+    ):
+        candidate_ids = (
+            scoped_candidates.get_column("candidate_id").drop_nulls().unique().to_list()
+        )
+        scoped_labels = scoped_labels.filter(pl.col("candidate_id").is_in(candidate_ids))
+    scoped_costs = _filter_frame_by_time(
+        costs,
+        ("as_of_date",),
+        start_dt,
+        end_dt,
+    )
+
+    warnings: list[str] = []
+    if market.is_empty():
+        warnings.append("market_bar_empty")
+    if scoped_trades.is_empty() and scoped_lifecycles.is_empty():
+        warnings.append("v5_actual_entry_events_empty")
+    if scoped_candidates.is_empty():
+        warnings.append("v5_candidate_event_empty")
+
+    actual_entries = [
+        row
+        for row in _actual_entry_rows(scoped_trades, scoped_lifecycles)
+        if _is_within_window(_coerce_datetime(row.get("entry_ts")), start_dt, end_dt)
+    ]
+    missed = _with_history_meta(
+        build_missed_low_audit(actual_entries, market, ctx),
+        history,
+        HISTORY_MISSED_LOW_AUDIT_SCHEMA,
+    )
+    missed_by_symbol = _with_history_meta(
+        aggregate_missed_low(missed, group_column="symbol", ctx=ctx),
+        history,
+        HISTORY_MISSED_LOW_AGG_SCHEMA,
+    )
+    missed_by_reason = _with_history_meta(
+        aggregate_missed_low(missed, group_column="entry_reason", ctx=ctx),
+        history,
+        HISTORY_MISSED_LOW_AGG_SCHEMA,
+    )
+    late_shadow = _with_history_meta(
+        build_late_entry_chase_shadow(
+            actual_entries=actual_entries,
+            candidates=scoped_candidates,
+            labels=scoped_labels,
+            market_bars=market,
+            ctx=ctx,
+        ),
+        history,
+        HISTORY_LATE_ENTRY_CHASE_SHADOW_SCHEMA,
+    )
+    late_threshold = _with_history_meta(
+        build_late_entry_chase_threshold_advisory(late_shadow, ctx=ctx),
+        history,
+        HISTORY_THRESHOLD_SENSITIVITY_SCHEMA,
+    )
+    pullback = _with_history_meta(
+        build_pullback_reversal_shadow(
+            candidates=scoped_candidates,
+            market_bars=market,
+            costs=scoped_costs,
+            ctx=ctx,
+        ),
+        history,
+        HISTORY_PULLBACK_REVERSAL_SHADOW_SCHEMA,
+    )
+    pullback_by_symbol = build_pullback_reversal_history_aggregate(
+        pullback, group_type="symbol", ctx=ctx, history=history
+    )
+    pullback_by_regime = build_pullback_reversal_history_aggregate(
+        pullback, group_type="regime", ctx=ctx, history=history
+    )
+    pullback_by_horizon = build_pullback_reversal_history_aggregate(
+        pullback, group_type="horizon", ctx=ctx, history=history
+    )
+    anti_leakage = build_entry_quality_anti_leakage_check(
+        missed_low=missed,
+        late_shadow=late_shadow,
+        pullback=pullback,
+        market_bars=market,
+        candidates=scoped_candidates,
+        labels=scoped_labels,
+        start_dt=start_dt,
+        end_dt=end_dt,
+        ctx=ctx,
+        history=history,
+    )
+    metrics = build_entry_quality_history_metrics(
+        missed_low=missed,
+        late_shadow=late_shadow,
+        late_threshold=late_threshold,
+        pullback=pullback,
+        pullback_by_symbol=pullback_by_symbol,
+        pullback_by_regime=pullback_by_regime,
+        pullback_by_horizon=pullback_by_horizon,
+        anti_leakage=anti_leakage,
+        ctx=ctx,
+        history=history,
+        warnings=warnings,
+    )
+    provisional = EntryQualityHistoryArtifacts(
+        start_date=start_day,
+        end_date=end_day,
+        mode=window_mode,
+        cost_mode=normalized_cost_mode,
+        generated_at=ctx.generated_at,
+        generated_from_bundle_id=ctx.generated_from_bundle_id,
+        missed_low_audit=missed,
+        missed_low_by_symbol=missed_by_symbol,
+        missed_low_by_entry_reason=missed_by_reason,
+        late_entry_chase_shadow=late_shadow,
+        late_entry_threshold_sensitivity=late_threshold,
+        pullback_reversal_shadow=pullback,
+        pullback_by_symbol=pullback_by_symbol,
+        pullback_by_regime=pullback_by_regime,
+        pullback_by_horizon=pullback_by_horizon,
+        anti_leakage_check=anti_leakage,
+        metrics=metrics,
+        reports={},
+        warnings=tuple(warnings),
+    )
+    return EntryQualityHistoryArtifacts(
+        **{
+            **provisional.__dict__,
+            "reports": render_entry_quality_history_reports(provisional),
+        }
+    )
+
+
+def _legacy_build_and_publish_entry_quality_history(
+    lake_root: str | Path,
+    *,
+    start_date: str | date,
+    end_date: str | date,
+    mode: str = "full",
+    cost_mode: str = "conservative",
+    window_hours: int = DEFAULT_WINDOW_HOURS,
+) -> EntryQualityHistoryBuildResult:
     root = Path(lake_root)
     start_day = _parse_day(start_date)
     end_day = _parse_day(end_date)
@@ -610,8 +1100,26 @@ def build_and_publish_entry_quality_history(
         start_dt,
         end_dt,
     )
-    labels = read_parquet_dataset(root / V5_CANDIDATE_LABEL_DATASET)
-    costs = read_parquet_dataset(root / COST_BUCKET_DAILY_DATASET)
+    labels = _filter_frame_by_time(
+        read_parquet_dataset(root / V5_CANDIDATE_LABEL_DATASET),
+        ("decision_ts", "ts_utc"),
+        start_dt,
+        end_dt,
+    )
+    if (
+        not candidates.is_empty()
+        and not labels.is_empty()
+        and "candidate_id" in candidates.columns
+        and "candidate_id" in labels.columns
+    ):
+        candidate_ids = candidates.get_column("candidate_id").drop_nulls().unique().to_list()
+        labels = labels.filter(pl.col("candidate_id").is_in(candidate_ids))
+    costs = _filter_frame_by_time(
+        read_parquet_dataset(root / COST_BUCKET_DAILY_DATASET),
+        ("as_of_date",),
+        start_dt,
+        end_dt,
+    )
 
     warnings: list[str] = []
     if market.is_empty():
@@ -680,6 +1188,9 @@ def build_and_publish_entry_quality_history(
         missed_low=missed,
         late_shadow=late_shadow,
         pullback=pullback,
+        market_bars=market,
+        candidates=candidates,
+        labels=labels,
         start_dt=start_dt,
         end_dt=end_dt,
         ctx=ctx,
@@ -1519,6 +2030,9 @@ def build_entry_quality_anti_leakage_check(
     missed_low: pl.DataFrame,
     late_shadow: pl.DataFrame,
     pullback: pl.DataFrame,
+    market_bars: pl.DataFrame,
+    candidates: pl.DataFrame,
+    labels: pl.DataFrame,
     start_dt: datetime,
     end_dt: datetime,
     ctx: _BuildContext,
@@ -1537,15 +2051,82 @@ def build_entry_quality_anti_leakage_check(
             ts = _coerce_datetime(value)
             if ts is not None and not (start_dt <= ts < end_dt):
                 window_violations += 1
-    label_violations = 0
+    max_horizon = max(PULLBACK_HORIZON_HOURS)
+    allowed_forward_end = end_dt + timedelta(hours=max_horizon)
+    label_order_violations = 0
+    label_boundary_violations = 0
+    label_identity_violations = 0
+    candidate_times: dict[str, datetime] = {}
+    if not candidates.is_empty() and "candidate_id" in candidates.columns:
+        for row in candidates.to_dicts():
+            candidate_id = str(row.get("candidate_id") or "").strip()
+            decision_ts = _coerce_datetime(row.get("ts_utc") or row.get("ts"))
+            if candidate_id and decision_ts is not None:
+                candidate_times[candidate_id] = decision_ts
+    if not labels.is_empty():
+        for row in labels.to_dicts():
+            candidate_id = str(row.get("candidate_id") or "").strip()
+            decision_ts = _coerce_datetime(row.get("decision_ts") or row.get("ts_utc"))
+            label_ts = _coerce_datetime(row.get("label_ts") or row.get("label_end_ts"))
+            horizon = int(_float_or_none(row.get("horizon_hours")) or 0)
+            if decision_ts is not None and label_ts is not None and label_ts <= decision_ts:
+                label_order_violations += 1
+            if label_ts is not None and label_ts > allowed_forward_end:
+                label_boundary_violations += 1
+            if (
+                decision_ts is not None
+                and label_ts is not None
+                and horizon > 0
+                and label_ts > decision_ts + timedelta(hours=horizon + 1)
+            ):
+                label_boundary_violations += 1
+            candidate_ts = candidate_times.get(candidate_id)
+            if candidate_id and candidate_id not in candidate_times:
+                label_identity_violations += 1
+            elif (
+                candidate_ts is not None
+                and decision_ts is not None
+                and abs((candidate_ts - decision_ts).total_seconds()) > 1.0
+            ):
+                label_identity_violations += 1
+
+    market_future_violations = 0
+    market_max_ts: datetime | None = None
+    if not market_bars.is_empty() and "ts" in market_bars.columns:
+        market_times = [
+            ts
+            for ts in (_coerce_datetime(value) for value in market_bars.get_column("ts").to_list())
+            if ts is not None
+        ]
+        if market_times:
+            market_max_ts = max(market_times)
+            market_future_violations = sum(ts >= allowed_forward_end for ts in market_times)
+
+    horizon_violations = 0
     if not pullback.is_empty():
         for row in pullback.to_dicts():
             ts = _coerce_datetime(row.get("ts_utc"))
             horizon = int(_float_or_none(row.get("horizon_hours")) or 0)
             if str(row.get("label_status") or "") == "complete" and (
-                ts is None or horizon <= 0
+                ts is None
+                or horizon <= 0
+                or market_max_ts is None
+                or ts + timedelta(hours=horizon) > market_max_ts
+                or ts + timedelta(hours=horizon) > allowed_forward_end
             ):
-                label_violations += 1
+                horizon_violations += 1
+
+    bundle_identity_violations = 0
+    for frame in (missed_low, late_shadow, pullback):
+        if frame.is_empty() or "generated_from_bundle_id" not in frame.columns:
+            continue
+        bundle_identity_violations += sum(
+            str(value or "") != ctx.generated_from_bundle_id
+            for value in frame.get_column("generated_from_bundle_id").to_list()
+        )
+    walk_forward_violations = (
+        label_order_violations if history.window_mode == "walk_forward" else 0
+    )
     checks = [
         (
             "history_window_respected",
@@ -1554,13 +2135,43 @@ def build_entry_quality_anti_leakage_check(
         ),
         (
             "label_ts_after_decision_ts",
-            label_violations,
+            label_order_violations,
             "pullback labels must be forward horizons after decision_ts",
+        ),
+        (
+            "forward_label_end_boundary",
+            label_boundary_violations,
+            "forward labels must stay inside the sealed maximum-horizon boundary",
+        ),
+        (
+            "candidate_label_identity",
+            label_identity_violations,
+            "candidate labels must bind to the same candidate_id and decision timestamp",
+        ),
+        (
+            "market_future_data_excluded",
+            market_future_violations,
+            "market inputs must not extend beyond the sealed maximum-horizon boundary",
         ),
         (
             "closed_bar_inputs_only",
             0,
             "entry conditions use pre-window bars strictly before decision/entry timestamp",
+        ),
+        (
+            "walk_forward_semantics",
+            walk_forward_violations,
+            "walk-forward labels must preserve point-in-time decision ordering",
+        ),
+        (
+            "horizon_completion",
+            horizon_violations,
+            "complete outcomes require enough sealed market data for their full horizon",
+        ),
+        (
+            "bundle_source_identity",
+            bundle_identity_violations,
+            "all derived rows must retain the task-selected V5 bundle identity",
         ),
         (
             "read_only_no_live_action",
@@ -2146,7 +2757,18 @@ def _forward_label(
     roundtrip_cost_bps: float,
 ) -> dict[str, Any]:
     end = ts + timedelta(hours=horizon_hours)
-    future = [row for row in bars if ts < row["ts"] <= end]
+    end_bar = next((row for row in bars if row["ts"] >= end), None)
+    if end_bar is None:
+        return {
+            "gross_bps": None,
+            "net_bps_after_cost": None,
+            "mfe_bps": None,
+            "mae_bps": None,
+            "win": None,
+            "label_status": "pending",
+        }
+    label_ts = end_bar["ts"]
+    future = [row for row in bars if ts < row["ts"] <= label_ts]
     if not future:
         return {
             "gross_bps": None,
@@ -2346,6 +2968,202 @@ def _without_entry_quality_strategy_candidates(frame: pl.DataFrame) -> pl.DataFr
         | candidate.str.starts_with("v5.pullback_reversal_shadow_")
     )
     return frame.filter(~entry_quality_mask)
+
+
+def publish_entry_quality_history_result(
+    lake_root: str | Path,
+    artifacts: EntryQualityHistoryArtifacts,
+    *,
+    generation_id: str,
+    snapshot_id: str,
+    task_id: str,
+    reports: dict[str, bytes] | None = None,
+) -> dict[str, int]:
+    """Publish all 11 historical tables and reports as one rollback-capable generation."""
+
+    root = Path(lake_root)
+    safe_generation_id = _safe_research_identifier(generation_id, "generation_id")
+    safe_snapshot_id = _safe_research_identifier(snapshot_id, "snapshot_id")
+    safe_task_id = _safe_research_identifier(task_id, "task_id")
+    frames = artifacts.frames_by_dataset()
+    if set(frames) != set(ENTRY_QUALITY_HISTORY_OUTPUT_SPEC_BY_NAME):
+        raise ValueError("entry_quality_history_output_set_mismatch")
+
+    transaction_id = uuid.uuid4().hex
+    staging_root = root / "gold" / f".__eqh_s_{transaction_id[:8]}"
+    backup_root = root / "gold" / f".__eqh_b_{transaction_id[:8]}"
+    staging_root.mkdir(parents=True, exist_ok=False)
+    backup_root.mkdir(parents=True, exist_ok=False)
+    published_rows: dict[str, int] = {}
+    moved_targets: list[tuple[Path, Path | None]] = []
+    moved_reports: list[tuple[Path, Path | None]] = []
+    generation_payload = {
+        "schema_version": "entry_quality_history_generation.v1",
+        "generation_id": safe_generation_id,
+        "snapshot_id": safe_snapshot_id,
+        "task_id": safe_task_id,
+        "start_date": artifacts.start_date.isoformat(),
+        "end_date": artifacts.end_date.isoformat(),
+        "window_mode": artifacts.mode,
+        "cost_mode": artifacts.cost_mode,
+        "generated_at": artifacts.generated_at.isoformat(),
+        "published_at": datetime.now(UTC).isoformat(),
+        "research_only": True,
+        "live_order_effect": "none",
+    }
+    try:
+        if reports is not None:
+            if set(reports) != set(ENTRY_QUALITY_HISTORY_REPORT_NAMES):
+                raise ValueError("entry_quality_history_report_set_mismatch")
+            staged_reports = staging_root / "reports"
+            staged_reports.mkdir(parents=True, exist_ok=False)
+            for name in ENTRY_QUALITY_HISTORY_REPORT_NAMES:
+                if Path(name).name != name:
+                    raise ValueError("unsafe_entry_quality_history_report_name")
+                (staged_reports / name).write_bytes(reports[name])
+        for index, spec in enumerate(ENTRY_QUALITY_HISTORY_OUTPUT_SPECS):
+            new_frame = _coerce_history_frame(frames[spec.dataset_name], spec)
+            current = read_parquet_dataset(root / spec.relative_path)
+            combined = _replace_history_window(
+                current,
+                new_frame,
+                spec=spec,
+                window_mode=artifacts.mode,
+                cost_mode=artifacts.cost_mode,
+            )
+            staged = staging_root / f"d{index:02d}"
+            write_parquet_dataset(combined, staged)
+            write_snapshot_meta(
+                staged,
+                dataset_name=spec.dataset_name,
+                frame=combined,
+                schema_version=ENTRY_QUALITY_SCHEMA_VERSION,
+                generated_at=artifacts.generated_at,
+            )
+            atomic_write_json(staged / "_research_generation.json", generation_payload)
+            published_rows[spec.dataset_name] = combined.height
+
+        for index, spec in enumerate(ENTRY_QUALITY_HISTORY_OUTPUT_SPECS):
+            target = root / spec.relative_path
+            staged = staging_root / f"d{index:02d}"
+            backup = backup_root / f"d{index:02d}"
+            previous: Path | None = None
+            if target.exists():
+                backup.parent.mkdir(parents=True, exist_ok=True)
+                os.replace(target, backup)
+                previous = backup
+            try:
+                target.parent.mkdir(parents=True, exist_ok=True)
+                os.replace(staged, target)
+            except Exception:
+                if previous is not None and previous.exists() and not target.exists():
+                    os.replace(previous, target)
+                raise
+            moved_targets.append((target, previous))
+
+        if reports is not None:
+            reports_root = root / "reports"
+            reports_root.mkdir(parents=True, exist_ok=True)
+            for name in ENTRY_QUALITY_HISTORY_REPORT_NAMES:
+                target = reports_root / name
+                staged = staging_root / "reports" / name
+                backup = backup_root / "reports" / name
+                previous = None
+                if target.exists():
+                    backup.parent.mkdir(parents=True, exist_ok=True)
+                    os.replace(target, backup)
+                    previous = backup
+                try:
+                    os.replace(staged, target)
+                except Exception:
+                    if previous is not None and previous.exists() and not target.exists():
+                        os.replace(previous, target)
+                    raise
+                moved_reports.append((target, previous))
+
+        for spec in ENTRY_QUALITY_HISTORY_OUTPUT_SPECS:
+            target = root / spec.relative_path
+            metadata = json.loads(
+                (target / "_research_generation.json").read_text(encoding="utf-8")
+            )
+            if metadata.get("generation_id") != safe_generation_id:
+                raise RuntimeError("entry_quality_history_generation_switch_mismatch")
+            if not (target / "_snapshot_meta.json").is_file():
+                raise RuntimeError("entry_quality_history_snapshot_meta_missing")
+
+        atomic_write_json(
+            root / "gold" / "entry_quality_history_generation.json",
+            generation_payload
+            | {
+                "datasets": [spec.dataset_name for spec in ENTRY_QUALITY_HISTORY_OUTPUT_SPECS],
+                "row_counts": published_rows,
+            },
+        )
+    except Exception:
+        for target, previous in reversed(moved_reports):
+            if target.exists():
+                target.unlink()
+            if previous is not None and previous.exists():
+                os.replace(previous, target)
+        for target, previous in reversed(moved_targets):
+            if target.exists():
+                shutil.rmtree(target)
+            if previous is not None and previous.exists():
+                os.replace(previous, target)
+        raise
+    finally:
+        shutil.rmtree(staging_root, ignore_errors=True)
+        shutil.rmtree(backup_root, ignore_errors=True)
+    return published_rows
+
+
+def _replace_history_window(
+    current: pl.DataFrame,
+    replacement: pl.DataFrame,
+    *,
+    spec: EntryQualityHistoryOutputSpec,
+    window_mode: str,
+    cost_mode: str,
+) -> pl.DataFrame:
+    kept = current
+    if not current.is_empty():
+        if set(spec.window_keys).issubset(set(current.columns)):
+            mask = (pl.col("window_mode").cast(pl.Utf8) == window_mode) & (
+                pl.col("cost_mode").cast(pl.Utf8) == cost_mode
+            )
+            kept = current.filter(~mask)
+        else:
+            kept = pl.DataFrame(schema=spec.schema)
+    frames = [frame for frame in (kept, replacement) if not frame.is_empty()]
+    if not frames:
+        return pl.DataFrame(schema=spec.schema)
+    combined = pl.concat(frames, how="diagonal_relaxed")
+    combined = _coerce_history_frame(combined, spec)
+    if set(spec.primary_keys).issubset(set(combined.columns)):
+        combined = combined.unique(subset=list(spec.primary_keys), keep="last", maintain_order=True)
+    return combined
+
+
+def _coerce_history_frame(
+    frame: pl.DataFrame,
+    spec: EntryQualityHistoryOutputSpec,
+) -> pl.DataFrame:
+    normalized = frame
+    for column, dtype in spec.schema.items():
+        if column not in normalized.columns:
+            normalized = normalized.with_columns(pl.lit(None, dtype=dtype).alias(column))
+    normalized = normalized.select(list(spec.schema)).cast(spec.schema, strict=False)
+    if normalized.is_empty():
+        return pl.DataFrame(schema=spec.schema)
+    return normalized
+
+
+def _safe_research_identifier(value: str, field_name: str) -> str:
+    text = str(value or "").strip()
+    allowed = "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789_.:-"
+    if not text or len(text) > 180 or any(character not in allowed for character in text):
+        raise ValueError(f"unsafe_{field_name}")
+    return text
 
 
 def _publish_history(
@@ -2587,6 +3405,55 @@ def _json_listish(value: Any) -> list[str]:
     return [str(value)]
 
 
+def render_entry_quality_history_reports(
+    artifacts: EntryQualityHistoryArtifacts,
+) -> dict[str, bytes]:
+    metrics_payload = _history_metrics_payload(artifacts.metrics)
+    csv_frames = {
+        "missed_low_audit.csv": artifacts.missed_low_audit,
+        "missed_low_by_symbol.csv": artifacts.missed_low_by_symbol,
+        "missed_low_by_entry_reason.csv": artifacts.missed_low_by_entry_reason,
+        "late_entry_chase_threshold_sensitivity.csv": (
+            artifacts.late_entry_threshold_sensitivity
+        ),
+        "pullback_reversal_by_symbol.csv": artifacts.pullback_by_symbol,
+        "pullback_reversal_by_regime.csv": artifacts.pullback_by_regime,
+        "pullback_reversal_by_horizon.csv": artifacts.pullback_by_horizon,
+        "anti_leakage_check.csv": artifacts.anti_leakage_check,
+    }
+    reports = {
+        name: frame.write_csv().encode("utf-8") for name, frame in csv_frames.items()
+    }
+    reports["entry_quality_historical_metrics.json"] = safe_json_dumps(
+        metrics_payload
+    ).encode("utf-8")
+    reports["entry_quality_historical_summary.md"] = _entry_quality_history_summary_md(
+        metrics_payload
+    ).encode("utf-8")
+    return reports
+
+
+def write_entry_quality_history_reports(
+    reports_dir: str | Path,
+    reports: dict[str, bytes],
+) -> Path:
+    destination = Path(reports_dir)
+    destination.mkdir(parents=True, exist_ok=True)
+    with tempfile.TemporaryDirectory(
+        prefix=".entry-quality-history-reports-",
+        dir=destination.parent,
+    ) as temporary_name:
+        temporary = Path(temporary_name)
+        for name, payload in reports.items():
+            if Path(name).name != name or not name:
+                raise ValueError("unsafe_entry_quality_history_report_name")
+            path = temporary / name
+            path.write_bytes(payload)
+        for name in sorted(reports):
+            os.replace(temporary / name, destination / name)
+    return destination
+
+
 def _write_history_reports(
     root: Path,
     *,
@@ -2684,7 +3551,7 @@ def _entry_quality_history_summary_md(metrics: dict[str, Any]) -> str:
         f"- anti_leakage_status: {metrics.get('anti_leakage_status', '')}",
         "",
         "Allowed pullback reversal v2 decisions: RESEARCH_ONLY, KEEP_SHADOW.",
-        "PAPER_READY and LIVE_SMALL_READY are intentionally unavailable for pullback v2.",
+        "Paper promotion and live-small readiness are intentionally unavailable for pullback v2.",
     ]
     return "\n".join(lines) + "\n"
 
@@ -2710,6 +3577,34 @@ def _latest_bundle_id(root: Path) -> str:
                 if values:
                     return max(values)
     return ""
+
+
+def latest_entry_quality_bundle_id(lake_root: str | Path) -> str:
+    return _latest_bundle_id(Path(lake_root))
+
+
+def _normalize_history_request(
+    *,
+    start_date: str | date,
+    end_date: str | date,
+    mode: str,
+    cost_mode: str,
+) -> tuple[date, date, str, str]:
+    start_day = _parse_day(start_date)
+    end_day = _parse_day(end_date)
+    if end_day < start_day:
+        raise ValueError("end_date must be greater than or equal to start_date")
+    window_mode = str(mode or "full").strip().lower()
+    if window_mode not in {"full", "recent_7d", "recent_30d", "walk_forward"}:
+        raise ValueError("mode must be one of: full, recent_7d, recent_30d, walk_forward")
+    if window_mode == "recent_7d":
+        start_day = max(start_day, end_day - timedelta(days=6))
+    elif window_mode == "recent_30d":
+        start_day = max(start_day, end_day - timedelta(days=29))
+    normalized_cost_mode = str(cost_mode or "conservative").strip().lower()
+    if normalized_cost_mode not in {"conservative", "quant_lab"}:
+        raise ValueError("cost_mode must be one of: conservative, quant_lab")
+    return start_day, end_day, window_mode, normalized_cost_mode
 
 
 def _parse_day(value: str | date | None) -> date:

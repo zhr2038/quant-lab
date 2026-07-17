@@ -3,7 +3,7 @@ import json
 import os
 import sys
 import time
-from datetime import datetime
+from datetime import UTC, date, datetime, timedelta
 from pathlib import Path
 from typing import Annotated, Any
 
@@ -96,6 +96,13 @@ from quant_lab.research.sol_protect_paper_loss import (
     build_and_publish_sol_protect_paper_loss_attribution,
 )
 from quant_lab.research.strategy_evidence import build_and_publish_strategy_evidence
+from quant_lab.research_plane.importer import (
+    import_pending_entry_quality_history_results,
+    validate_pending_entry_quality_history_results,
+)
+from quant_lab.research_plane.queue import create_entry_quality_history_task
+from quant_lab.research_plane.signatures import load_public_key, load_signing_key
+from quant_lab.research_plane.status import entry_quality_history_plane_status
 from quant_lab.risk.publish import publish_risk_permission as publish_risk_permission_to_lake
 from quant_lab.strategy_telemetry.analyze import analyze_v5_telemetry
 from quant_lab.strategy_telemetry.bundle import safe_extract_v5_bundle, validate_v5_bundle
@@ -1940,6 +1947,11 @@ def build_entry_quality_history_command(
     ] = "conservative",
     window_hours: Annotated[int, typer.Option("--window-hours", min=1)] = 24,
 ) -> None:
+    if not _enabled_environment("QUANT_LAB_LOCAL_ENTRY_QUALITY_HISTORY_ENABLED"):
+        raise typer.BadParameter(
+            "local fallback disabled; set QUANT_LAB_LOCAL_ENTRY_QUALITY_HISTORY_ENABLED=1 "
+            "only during an approved maintenance window"
+        )
     result = run_with_job_metrics(
         lake_root=lake_root,
         job_name="build-entry-quality-history",
@@ -1953,6 +1965,122 @@ def build_entry_quality_history_command(
         ),
     )
     typer.echo(result.model_dump_json(indent=2))
+
+
+@app.command("request-entry-quality-history")
+def request_entry_quality_history_command(
+    lake_root: Annotated[Path, typer.Option("--lake-root", file_okay=False, dir_okay=True)],
+    queue_root: Annotated[Path, typer.Option("--queue-root", file_okay=False, dir_okay=True)],
+    signing_key_path: Annotated[
+        Path,
+        typer.Option(
+            "--signing-key-path",
+            envvar="QUANT_LAB_RESEARCH_TASK_PRIVATE_KEY_PATH",
+            exists=True,
+            dir_okay=False,
+        ),
+    ],
+    key_id: Annotated[str, typer.Option("--key-id")],
+    quant_lab_commit: Annotated[str, typer.Option("--quant-lab-commit")],
+    start_date: Annotated[str, typer.Option("--start-date")] = "auto",
+    end_date: Annotated[str, typer.Option("--end-date")] = "auto",
+    mode: Annotated[str, typer.Option("--mode")] = "recent_30d",
+    cost_mode: Annotated[str, typer.Option("--cost-mode")] = "conservative",
+    window_hours: Annotated[int, typer.Option("--window-hours", min=1)] = 24,
+) -> None:
+    if not _enabled_environment("QUANT_LAB_NAS_RESEARCH_ENABLED"):
+        raise typer.BadParameter("QUANT_LAB_NAS_RESEARCH_ENABLED must be 1")
+    end_day = datetime.now(UTC).date() if end_date == "auto" else date.fromisoformat(end_date)
+    start_day = (
+        end_day - timedelta(days=29) if start_date == "auto" else date.fromisoformat(start_date)
+    )
+    task, status = create_entry_quality_history_task(
+        lake_root,
+        queue_root,
+        start_date=start_day,
+        end_date=end_day,
+        mode=mode,
+        cost_mode=cost_mode,
+        window_hours=window_hours,
+        signing_key=load_signing_key(signing_key_path),
+        signature_key_id=key_id,
+        quant_lab_commit=quant_lab_commit,
+    )
+    typer.echo(
+        json.dumps(
+            {
+                "task": task.model_dump(mode="json"),
+                "status": status.model_dump(mode="json"),
+            },
+            ensure_ascii=True,
+            sort_keys=True,
+            indent=2,
+        )
+    )
+
+
+@app.command("import-entry-quality-history-results")
+def import_entry_quality_history_results_command(
+    lake_root: Annotated[Path, typer.Option("--lake-root", file_okay=False, dir_okay=True)],
+    queue_root: Annotated[Path, typer.Option("--queue-root", file_okay=False, dir_okay=True)],
+    task_public_key: Annotated[
+        Path, typer.Option("--task-public-key", exists=True, dir_okay=False)
+    ],
+    task_key_id: Annotated[str, typer.Option("--task-key-id")],
+    worker_public_key: Annotated[
+        Path, typer.Option("--worker-public-key", exists=True, dir_okay=False)
+    ],
+    worker_key_id: Annotated[str, typer.Option("--worker-key-id")],
+    quant_lab_commit: Annotated[str, typer.Option("--quant-lab-commit")],
+    max_result_bytes: Annotated[int, typer.Option("--max-result-bytes", min=1)] = 2 * 1024**3,
+    validate_only: Annotated[
+        bool,
+        typer.Option(
+            "--validate-only",
+            help="Validate signed results without publishing Gold or changing queue state.",
+        ),
+    ] = False,
+) -> None:
+    if not _enabled_environment("QUANT_LAB_NAS_RESEARCH_ENABLED"):
+        raise typer.BadParameter("QUANT_LAB_NAS_RESEARCH_ENABLED must be 1")
+    common = {
+        "task_public_key": load_public_key(task_public_key),
+        "worker_public_key": load_public_key(worker_public_key),
+        "expected_task_key_id": task_key_id,
+        "expected_worker_key_id": worker_key_id,
+        "expected_quant_lab_commit": quant_lab_commit,
+        "max_result_bytes": max_result_bytes,
+    }
+    if validate_only:
+        results = validate_pending_entry_quality_history_results(queue_root, **common)
+    else:
+        results = import_pending_entry_quality_history_results(
+            lake_root,
+            queue_root,
+            **common,
+        )
+    typer.echo(
+        json.dumps(
+            [result.__dict__ for result in results],
+            ensure_ascii=True,
+            sort_keys=True,
+            indent=2,
+        )
+    )
+
+
+@app.command("entry-quality-history-research-status")
+def entry_quality_history_research_status_command(
+    queue_root: Annotated[Path, typer.Option("--queue-root", file_okay=False, dir_okay=True)],
+) -> None:
+    typer.echo(
+        json.dumps(
+            entry_quality_history_plane_status(queue_root),
+            ensure_ascii=True,
+            sort_keys=True,
+            indent=2,
+        )
+    )
 
 
 @app.command("build-btc-probe-exit-policy-review")
@@ -2556,6 +2684,15 @@ def _v5_sync_warning_is_expected_limit_notice(value: object) -> bool:
             "max_bundles_limit_applied:",
         )
     )
+
+
+def _enabled_environment(name: str) -> bool:
+    return str(os.environ.get(name) or "").strip().lower() in {
+        "1",
+        "true",
+        "yes",
+        "on",
+    }
 
 
 def main() -> None:

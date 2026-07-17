@@ -1,5 +1,5 @@
 [Unit]
-Description=Run quant-lab entry quality historical analysis twice daily
+Description=Legacy local entry quality history timer (keep disabled by default)
 
 [Timer]
 OnCalendar=*-*-* 01:35:00

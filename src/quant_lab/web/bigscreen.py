@@ -596,10 +596,10 @@ def _safe_ai_research_summary(
     queue_counts = queue.get("counts") if isinstance(queue.get("counts"), dict) else {}
     if int(queue_counts.get("running") or 0) > 0:
         status = "RUNNING"
-    elif run_rows:
-        status = "AI_RESULT_AVAILABLE"
     elif int(queue_counts.get("pending") or 0) > 0:
         status = "PENDING"
+    elif run_rows:
+        status = "AI_RESULT_AVAILABLE"
     elif int(queue_counts.get("failed") or 0) > 0:
         status = "FAILED"
     else:

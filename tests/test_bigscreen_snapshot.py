@@ -113,7 +113,7 @@ def test_bigscreen_snapshot_exposes_ai_research_without_live_effect(monkeypatch,
     payload = bigscreen_snapshot(lake)
 
     ai = payload["ai_research"]
-    assert ai["status"] == "AI_RESULT_AVAILABLE"
+    assert ai["status"] == "PENDING"
     assert ai["mode"] == "diagnostic_only"
     assert ai["live_order_effect"] == "none_read_only_research"
     assert ai["counts"]["run_count"] == 1
@@ -150,6 +150,32 @@ def test_bigscreen_ai_status_prefers_active_run_over_previous_result(monkeypatch
     assert ai["status"] == "RUNNING"
     assert ai["latest_run"]["task_id"] == "task-completed"
     assert ai["queue"]["counts"]["running"] == 1
+
+
+def test_bigscreen_ai_status_prefers_pending_run_over_previous_result(monkeypatch, tmp_path):
+    lake = tmp_path / "lake"
+    queue = tmp_path / "ai_queue"
+    (queue / "pending" / "task-pending").mkdir(parents=True)
+    monkeypatch.setenv("QUANT_LAB_AI_QUEUE_ROOT", str(queue))
+    write_parquet_dataset(
+        pl.DataFrame(
+            [
+                {
+                    "task_id": "task-completed",
+                    "completed_at": datetime(2026, 7, 17, tzinfo=UTC),
+                    "system_state": "READY_FOR_PROPOSALS",
+                }
+            ]
+        ),
+        lake / "gold" / "ai_research_run",
+    )
+    clear_bigscreen_cache()
+
+    ai = bigscreen_snapshot(lake)["ai_research"]
+
+    assert ai["status"] == "PENDING"
+    assert ai["latest_run"]["task_id"] == "task-completed"
+    assert ai["queue"]["counts"]["pending"] == 1
 
 
 def test_bigscreen_snapshot_kpis_include_market_bar_close_time(tmp_path):

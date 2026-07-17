@@ -40,7 +40,11 @@ export function AIResearchPanel({ research }: { research: Record<string, unknown
   const preflightStatus = stringValue(latest.preflight_status, "NOT_AVAILABLE");
   const preflightDisplay = preflightStatus === "NOT_AVAILABLE" ? "LEGACY NOT RECORDED" : preflightStatus;
   const routeSections = jsonStringList(latest.route_sections_json);
-  const statusLabel = running > 0 && hasResult ? "RUNNING · LAST RESULT" : status.replace(/_/g, " ");
+  const statusLabel = running > 0 && hasResult
+    ? "RUNNING · LAST RESULT"
+    : pending > 0 && hasResult
+      ? "PENDING · LAST RESULT"
+      : status.replace(/_/g, " ");
 
   return (
     <section className="card pad ai-research">

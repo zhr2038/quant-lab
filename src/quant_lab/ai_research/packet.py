@@ -401,6 +401,7 @@ def _build_task_preflight(
     warnings.extend(f"truncated_core_member:{member}" for member in truncated_core_members)
     if truncated_documents and not truncated_core_members:
         warnings.append(f"truncated_non_core_documents:{len(truncated_documents)}")
+    warnings = _bounded_preflight_warnings(warnings)
     status: str
     if blockers:
         status = "BLOCK"
@@ -418,6 +419,25 @@ def _build_task_preflight(
         blockers=sorted(set(blockers)),
         warnings=warnings,
     )
+
+
+def _bounded_preflight_warnings(warnings: list[str]) -> list[str]:
+    """Keep deterministic preflight detail within the TaskPreflight contract."""
+    unique = sorted(
+        set(warnings),
+        key=lambda warning: (
+            0 if warning.startswith("truncated_core_member:") else 1,
+            warning,
+        ),
+    )
+    limit = 32
+    if len(unique) <= limit:
+        return unique
+    kept = unique[: limit - 1]
+    kept.append(
+        f"preflight_warnings_omitted:{len(unique) - len(kept)};total:{len(unique)}"
+    )
+    return kept
 
 
 def _load_previous_research_context(path: Path) -> PriorResearchContext | None:

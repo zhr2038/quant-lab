@@ -7,8 +7,13 @@ import stat
 import zipfile
 from datetime import UTC, datetime
 
-from quant_lab.ai_research.contracts import canonical_json, compute_task_packet_sha256
+from quant_lab.ai_research.contracts import (
+    EvidenceDocument,
+    canonical_json,
+    compute_task_packet_sha256,
+)
 from quant_lab.ai_research.packet import (
+    _build_task_preflight,
     _summarize_data_quality,
     build_ai_research_task,
     find_latest_expert_pack,
@@ -152,6 +157,34 @@ def test_packet_preflight_warns_but_does_not_block_truncated_core(tmp_path) -> N
     assert task.preflight.status == "WARN"
     assert task.preflight.blockers == []
     assert any(item.startswith("truncated_core_member:") for item in task.preflight.warnings)
+
+
+def test_packet_preflight_bounds_many_warnings_without_losing_counts() -> None:
+    core_documents = [
+        EvidenceDocument(
+            source_member=member,
+            source_format="json",
+            content_sha256="a" * 64,
+            source_size_bytes=2,
+            representation="full",
+            truncated=member == "manifest.json",
+            content={},
+        )
+        for member in ("manifest.json", "provenance.json", "data_quality.json")
+    ]
+    preflight = _build_task_preflight(
+        {"core_state": core_documents},
+        checked_at=datetime(2026, 7, 17, tzinfo=UTC),
+        packet_warnings=[
+            f"content_character_limit:reports/member-{index}.csv"
+            for index in range(59)
+        ],
+    )
+
+    assert preflight.status == "WARN"
+    assert len(preflight.warnings) == 32
+    assert preflight.warnings[0] == "truncated_core_member:manifest.json"
+    assert preflight.warnings[-1] == "preflight_warnings_omitted:29;total:60"
 
 
 def test_large_core_json_uses_complete_deterministic_summary(tmp_path) -> None:

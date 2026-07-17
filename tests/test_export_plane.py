@@ -281,6 +281,44 @@ def test_snapshot_acceptance_context_is_read_from_copied_bytes(
     assert (snapshot_dir / "files" / "lake" / "gold" / "example" / "data.json").exists()
 
 
+def test_snapshot_sealing_rejects_missing_v5_commit_with_explicit_error(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    lake_root = tmp_path / "lake"
+    lake_root.mkdir()
+    bundle = tmp_path / "bundle.tar.gz"
+    bundle.write_bytes(b"v5-bundle")
+    bundle_sha = sha256_bytes(bundle.read_bytes())
+
+    monkeypatch.setattr(snapshot_module, "_git_commit", lambda: COMMIT)
+    monkeypatch.setattr(
+        snapshot_module.daily_export,
+        "_observe_v5_before_export",
+        lambda _root: {
+            "selected_v5_bundle_path": str(bundle),
+            "selected_v5_bundle_sha256": bundle_sha,
+        },
+    )
+    monkeypatch.setattr(
+        snapshot_module.daily_export,
+        "_selected_v5_bundle_git_commit",
+        lambda _context: None,
+    )
+
+    with pytest.raises(
+        RuntimeError,
+        match="selected V5 bundle does not expose a full git commit",
+    ):
+        snapshot_module.seal_export_snapshot(
+            export_date=date(2026, 7, 17),
+            lake_root=lake_root,
+            queue_root=tmp_path / "queue",
+            signing_key_path=tmp_path / "unused.key",
+            signature_key_id="cloud-export-v1",
+        )
+
+
 def test_materializer_requires_signed_acceptance_context() -> None:
     with pytest.raises(RuntimeError, match="sealed_snapshot_acceptance_context_missing"):
         materializer_writer._sealed_acceptance_context(_snapshot())  # noqa: SLF001

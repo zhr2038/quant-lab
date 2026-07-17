@@ -13196,7 +13196,11 @@ def _selected_v5_bundle_git_commit(v5_context: Mapping[str, Any]) -> str | None:
         with tarfile.open(selected_path, "r:gz") as archive:
             for member in archive.getmembers():
                 parts = PurePosixPath(member.name).parts
-                if len(parts) != 2 or parts[-1] != "manifest.json" or not member.isfile():
+                if (
+                    not 1 <= len(parts) <= 2
+                    or parts[-1] != "manifest.json"
+                    or not member.isfile()
+                ):
                     continue
                 extracted = archive.extractfile(member)
                 if extracted is None:

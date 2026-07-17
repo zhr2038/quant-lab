@@ -3889,6 +3889,22 @@ def test_export_marks_core_momentum_as_research_baseline_and_prioritizes_strateg
     assert "Focus strategy candidates:" in executive_summary
 
 
+def test_selected_v5_bundle_git_commit_reads_root_manifest(tmp_path: Path) -> None:
+    bundle = tmp_path / "v5_bundle.tar.gz"
+    commit = "4" * 40
+    with tarfile.open(bundle, "w:gz") as archive:
+        payload = json.dumps({"git_commit": commit}).encode("utf-8")
+        info = tarfile.TarInfo("manifest.json")
+        info.size = len(payload)
+        archive.addfile(info, io.BytesIO(payload))
+
+    observed = daily_export_module._selected_v5_bundle_git_commit(  # noqa: SLF001
+        {"selected_v5_bundle_path": str(bundle)}
+    )
+
+    assert observed == commit
+
+
 def test_export_daily_ingests_pending_v5_inbox_before_snapshot(tmp_path, monkeypatch):
     monkeypatch.setattr(daily_export_module, "_git_commit_full", lambda: "a" * 40)
     monkeypatch.setattr(daily_export_module, "_current_main_commit_full", lambda: "a" * 40)

@@ -46,7 +46,9 @@ def seal_export_snapshot(
     selected_sha = str(v5_context.get("selected_v5_bundle_sha256") or "").lower()
     if not selected_v5.is_file() or len(selected_sha) != 64:
         raise RuntimeError("authoritative V5 bundle is not observable for snapshot sealing")
-    v5_commit = daily_export._selected_v5_bundle_git_commit(v5_context)  # noqa: SLF001
+    v5_commit = str(
+        daily_export._selected_v5_bundle_git_commit(v5_context) or ""  # noqa: SLF001
+    ).strip().lower()
     if len(v5_commit) != 40:
         raise RuntimeError("selected V5 bundle does not expose a full git commit")
     sources = list(_export_source_files(root))

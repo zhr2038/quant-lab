@@ -1322,7 +1322,7 @@ def _history_input_frames() -> dict[str, pl.DataFrame]:
         [
             {
                 "candidate_id": "candidate-recent",
-                "decision_ts": datetime(2026, 5, 10, 20, tzinfo=UTC),
+                "decision_ts": datetime(2026, 5, 10, 21, tzinfo=UTC),
                 "label_ts": datetime(2026, 5, 11, 20, tzinfo=UTC),
                 "horizon_hours": 24,
                 "net_bps_after_cost": 15.0,
@@ -1346,6 +1346,49 @@ def _history_input_frames() -> dict[str, pl.DataFrame]:
             ]
         ),
     }
+
+
+def test_candidate_label_identity_accepts_first_hourly_decision_bar() -> None:
+    frames = _history_input_frames()
+
+    artifacts = compute_entry_quality_history(
+        **frames,
+        start_date="2026-05-01",
+        end_date="2026-05-10",
+        mode="recent_30d",
+        cost_mode="conservative",
+        generated_at=GENERATED_AT,
+        generated_from_bundle_id=BUNDLE_ID,
+    )
+
+    check = artifacts.anti_leakage_check.filter(
+        pl.col("check_name") == "candidate_label_identity"
+    ).to_dicts()[0]
+    assert check["status"] == "PASS"
+    assert check["violation_count"] == 0
+
+
+def test_candidate_label_identity_rejects_noncausal_decision_bar() -> None:
+    frames = _history_input_frames()
+    frames["labels"] = frames["labels"].with_columns(
+        pl.lit(datetime(2026, 5, 10, 21, 0, 1, tzinfo=UTC)).alias("decision_ts")
+    )
+
+    artifacts = compute_entry_quality_history(
+        **frames,
+        start_date="2026-05-01",
+        end_date="2026-05-10",
+        mode="recent_30d",
+        cost_mode="conservative",
+        generated_at=GENERATED_AT,
+        generated_from_bundle_id=BUNDLE_ID,
+    )
+
+    check = artifacts.anti_leakage_check.filter(
+        pl.col("check_name") == "candidate_label_identity"
+    ).to_dicts()[0]
+    assert check["status"] == "FAIL"
+    assert check["violation_count"] == 1
 
 
 def _normalize_generated_at(frame: pl.DataFrame) -> pl.DataFrame:

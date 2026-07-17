@@ -40,6 +40,7 @@ ENTRY_QUALITY_SYMBOLS = {"BTC-USDT", "ETH-USDT", "SOL-USDT", "BNB-USDT"}
 LATE_CHASE_THRESHOLDS_BPS = (100, 150, 200, 250, 300, 400)
 LATE_CHASE_BY_SYMBOL_THRESHOLDS_BPS = (50, 100, 150, 200, 250, 300)
 PULLBACK_HORIZON_HOURS = (4, 8, 12, 24, 48, 72)
+CANDIDATE_LABEL_DECISION_MAX_LAG = timedelta(hours=1)
 MIN_ROUNDTRIP_COST_BPS = 30.0
 PULLBACK_OLD_RULE_VERSION = "old_pullback_v0.1"
 PULLBACK_NEW_RULE_VERSION = "confirmed_reversal_v0.2"
@@ -2083,12 +2084,14 @@ def build_entry_quality_anti_leakage_check(
             candidate_ts = candidate_times.get(candidate_id)
             if candidate_id and candidate_id not in candidate_times:
                 label_identity_violations += 1
-            elif (
-                candidate_ts is not None
-                and decision_ts is not None
-                and abs((candidate_ts - decision_ts).total_seconds()) > 1.0
-            ):
-                label_identity_violations += 1
+            elif candidate_ts is not None:
+                decision_is_causal = (
+                    decision_ts is not None
+                    and candidate_ts <= decision_ts
+                    and decision_ts <= candidate_ts + CANDIDATE_LABEL_DECISION_MAX_LAG
+                )
+                if not decision_is_causal:
+                    label_identity_violations += 1
 
     market_future_violations = 0
     market_max_ts: datetime | None = None
@@ -2146,7 +2149,7 @@ def build_entry_quality_anti_leakage_check(
         (
             "candidate_label_identity",
             label_identity_violations,
-            "candidate labels must bind to the same candidate_id and decision timestamp",
+            "candidate labels must bind to the same candidate_id and its first hourly decision bar",
         ),
         (
             "market_future_data_excluded",

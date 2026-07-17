@@ -425,7 +425,10 @@ DATASET_TIMESTAMP_COLUMNS: dict[str, tuple[str, ...]] = {
     ),
     "api_auth_security_rejections": ("generated_at", "last_error_at"),
     "api_auth_manual_probe": ("generated_at", "last_error_at"),
-    "paper_strategy_proposal_snapshot": ("snapshot_generated_at",),
+    "paper_strategy_proposal_snapshot": (
+        "last_evaluated_at",
+        "snapshot_generated_at",
+    ),
     "paper_runtime_freshness": ("generated_at", "latest_at"),
     "paper_proposal_propagation_status": (
         "generated_at",

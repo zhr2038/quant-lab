@@ -5741,6 +5741,25 @@ def test_stale_dataset_check_ignores_optional_entry_quality_history_and_generate
     assert "v5_pullback_reversal_shadow" not in datasets
 
 
+def test_stale_dataset_check_uses_proposal_snapshot_last_evaluated_at():
+    now = datetime.now(UTC)
+    stale = daily_export_module._stale_rows(
+        {
+            "paper_strategy_proposal_snapshot": pl.DataFrame(
+                [
+                    {
+                        "proposal_snapshot_id": "proposal-snapshot:stable",
+                        "snapshot_generated_at": now - timedelta(days=2),
+                        "last_evaluated_at": now,
+                    }
+                ]
+            )
+        }
+    )
+
+    assert stale.is_empty()
+
+
 def test_stale_dataset_check_reports_future_timestamps():
     now = datetime.now(UTC)
     stale = daily_export_module._stale_rows(

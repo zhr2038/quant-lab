@@ -11,6 +11,7 @@ from quant_lab.research.paper_promotion import (
     _apply_formal_independence_weights,
     _classify_cohort_trades,
     _cohort_evidence_metrics,
+    _open_paper_trade_rows,
     build_and_publish_paper_strategy_pipeline,
     build_paper_strategy_pipeline_frames,
     parse_cost_source_mix,
@@ -882,6 +883,55 @@ def test_formal_cohort_metrics_split_lifetime_and_independent_events() -> None:
     assert metrics["formal_independent_closed_event_count"] == 2
     assert metrics["formal_open_trade_count"] == 1
     assert abs(metrics["formal_mean_after_cost_bps"] + 78.597274) < 1e-6
+
+
+def test_open_paper_trade_rows_resolves_latest_tracker_state() -> None:
+    rows = pl.DataFrame(
+        [
+            {
+                "proposal_id": "arb-48h",
+                "strategy_id": "arb-48h",
+                "symbol": "ARB-USDT",
+                "paper_trade_id": "arb-open",
+                "open_paper_position": True,
+                "state": "PAPER_OPEN",
+                "ingest_ts": "2026-07-16T18:00:00Z",
+            },
+            {
+                "proposal_id": "arb-48h",
+                "strategy_id": "arb-48h",
+                "symbol": "ARB-USDT",
+                "paper_trade_id": "arb-open",
+                "open_paper_position": True,
+                "state": "PAPER_OPEN",
+                "ingest_ts": "2026-07-16T19:00:00Z",
+            },
+            {
+                "proposal_id": "tao-8h",
+                "strategy_id": "tao-8h",
+                "symbol": "TAO-USDT",
+                "paper_trade_id": "tao-closed",
+                "open_paper_position": True,
+                "state": "PAPER_OPEN",
+                "ingest_ts": "2026-07-16T08:00:00Z",
+            },
+            {
+                "proposal_id": "tao-8h",
+                "strategy_id": "tao-8h",
+                "symbol": "TAO-USDT",
+                "paper_trade_id": "",
+                "open_paper_position": False,
+                "state": "WAITING_SIGNAL",
+                "ingest_ts": "2026-07-16T16:00:00Z",
+            },
+        ]
+    )
+
+    current_open = _open_paper_trade_rows(rows).to_dicts()
+
+    assert len(current_open) == 1
+    assert current_open[0]["proposal_id"] == "arb-48h"
+    assert current_open[0]["ingest_ts"] == "2026-07-16T19:00:00Z"
 
 
 def test_shared_formal_entry_event_splits_independence_weight() -> None:

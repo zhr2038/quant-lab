@@ -1022,12 +1022,16 @@ def _classify_cohort_trades(
 def _open_paper_trade_rows(frame: pl.DataFrame) -> pl.DataFrame:
     if frame.is_empty() or "open_paper_position" not in frame.columns:
         return frame.head(0)
+    # V5 state is append-only across bundles. Resolve each tracker to its latest
+    # state before testing whether it is open so repeated snapshots and a later
+    # close cannot inflate the current Cohort position count.
+    current = _latest_rows_frame(frame)
     rows = [
         row
-        for row in frame.to_dicts()
+        for row in current.to_dicts()
         if _bool(row.get("open_paper_position"))
     ]
-    return pl.DataFrame(rows, infer_schema_length=None) if rows else frame.head(0)
+    return pl.DataFrame(rows, infer_schema_length=None) if rows else current.head(0)
 
 
 def _apply_formal_independence_weights(

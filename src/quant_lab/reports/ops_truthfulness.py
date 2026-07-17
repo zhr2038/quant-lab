@@ -994,8 +994,27 @@ def _stale_open_paper_positions(
     generated: datetime,
     max_age_seconds: int,
 ) -> list[dict[str, Any]]:
+    latest_by_tracker: dict[str, tuple[datetime, int, dict[str, Any]]] = {}
+    unkeyed_rows: list[dict[str, Any]] = []
+    for index, row in enumerate(frame.to_dicts() if not frame.is_empty() else []):
+        tracker_key = _text(
+            row.get("tracker_id")
+            or row.get("paper_tracker_id")
+            or row.get("proposal_id")
+            or row.get("paper_trade_id")
+        )
+        if not tracker_key:
+            unkeyed_rows.append(row)
+            continue
+        updated_at = _row_time(row, ("updated_at", "ingest_ts"))
+        rank = (updated_at or datetime.min.replace(tzinfo=UTC), index)
+        current = latest_by_tracker.get(tracker_key)
+        if current is None or rank[:2] >= current[:2]:
+            latest_by_tracker[tracker_key] = (*rank, row)
+
     output = []
-    for row in frame.to_dicts() if not frame.is_empty() else []:
+    current_rows = [item[2] for item in latest_by_tracker.values()]
+    for row in [*current_rows, *unkeyed_rows]:
         open_position = _bool(row.get("open_paper_position")) or _text(
             row.get("state")
         ).upper() in {"PAPER_OPEN", "PAPER_EXIT_PENDING"}

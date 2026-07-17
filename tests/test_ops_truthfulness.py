@@ -94,6 +94,35 @@ def test_paper_runtime_no_trade_is_healthy_but_stale_open_trade_warns() -> None:
     assert warning_status["paper_trade_event_fresh"] == "WARNING"
 
 
+def test_paper_runtime_ignores_superseded_stale_open_state() -> None:
+    fresh = NOW.isoformat()
+    result = build_paper_runtime_freshness(
+        {
+            "v5_quant_lab_contract_status": pl.DataFrame([{"generated_at": fresh}]),
+            "v5_paper_strategy_registry_current": pl.DataFrame([{"updated_at": fresh}]),
+            "v5_paper_strategy_state": pl.DataFrame(
+                [
+                    {
+                        "tracker_id": "paper:example",
+                        "state": "PAPER_OPEN",
+                        "updated_at": (NOW - timedelta(hours=4)).isoformat(),
+                    },
+                    {
+                        "tracker_id": "paper:example",
+                        "state": "WAITING_SIGNAL",
+                        "updated_at": fresh,
+                    },
+                ]
+            ),
+        },
+        generated_at=NOW,
+    )
+
+    statuses = {row["check_name"]: row["status"] for row in result.to_dicts()}
+    assert statuses["paper_signal_event_fresh"] == "NO_NEW_EVENT_EXPECTED"
+    assert statuses["paper_trade_event_fresh"] == "NO_NEW_EVENT_EXPECTED"
+
+
 def test_current_proposal_propagation_distinguishes_accepted_and_unseen() -> None:
     snapshot_id = "proposal-snapshot:test"
     snapshot_sha = "f" * 64

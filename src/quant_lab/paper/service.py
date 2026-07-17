@@ -25,6 +25,8 @@ PAPER_STRATEGY_PROPOSAL_SNAPSHOT_DATASET = (
 )
 PAPER_STRATEGY_ACK_DATASET = Path("silver") / "v5_paper_strategy_proposal_ack"
 PAPER_STRATEGY_PROMOTION_DATASET = Path("gold") / "paper_strategy_promotion_gate"
+PAPER_COHORT_MANIFEST_DATASET = Path("gold") / "paper_cohort_manifest"
+V5_CONTRACT_STATUS_DATASET = Path("silver") / "v5_quant_lab_contract_status"
 STRATEGY_COST_TRUST_DATASET = Path("gold") / "strategy_cost_trust"
 PROPOSAL_COMPILER_VERSION = "quant_lab.paper_strategy_proposal_compiler.v1"
 
@@ -55,8 +57,77 @@ def read_proposal_snapshot(lake_root: str | Path) -> dict[str, Any]:
 
 
 def read_proposal_snapshot_payload(lake_root: str | Path) -> dict[str, Any]:
-    metadata = read_proposal_snapshot(lake_root)
-    return {**metadata, "proposals": read_proposals(lake_root)}
+    root = Path(lake_root)
+    metadata = read_proposal_snapshot(root)
+    evaluated_at = datetime.now(UTC).isoformat()
+    cohort = _matching_cohort_metadata(root, metadata)
+    consumed_at = _last_v5_snapshot_consumed_at(root, metadata)
+    return {
+        **metadata,
+        **cohort,
+        "last_evaluated_at": evaluated_at,
+        "last_consumed_by_v5_at": consumed_at,
+        "proposals": read_proposals(root),
+    }
+
+
+def _matching_cohort_metadata(
+    lake_root: Path,
+    snapshot: dict[str, Any],
+) -> dict[str, Any]:
+    expected_sha = str(
+        snapshot.get("proposal_content_snapshot_sha256") or ""
+    ).strip().lower()
+    frame = read_parquet_dataset(lake_root / PAPER_COHORT_MANIFEST_DATASET)
+    candidates = [
+        row
+        for row in (frame.to_dicts() if not frame.is_empty() else [])
+        if str(row.get("proposal_content_snapshot_sha256") or "").strip().lower()
+        == expected_sha
+    ]
+    latest = max(
+        candidates,
+        key=lambda row: int(row.get("cohort_version") or 0),
+        default={},
+    )
+    return {
+        "cohort_id": str(latest.get("cohort_id") or ""),
+        "cohort_version": int(latest.get("cohort_version") or 0),
+        "cohort_observation_start_at": str(
+            latest.get("observation_start_at") or ""
+        ),
+        "cohort_status": str(latest.get("status") or ""),
+        "cohort_proposal_content_snapshot_sha256": str(
+            latest.get("proposal_content_snapshot_sha256") or ""
+        ).lower(),
+        "cohort_last_evaluated_at": str(latest.get("last_evaluated_at") or ""),
+    }
+
+
+def _last_v5_snapshot_consumed_at(
+    lake_root: Path,
+    snapshot: dict[str, Any],
+) -> str:
+    expected_sha = str(
+        snapshot.get("proposal_content_snapshot_sha256") or ""
+    ).strip().lower()
+    frame = read_parquet_dataset(lake_root / V5_CONTRACT_STATUS_DATASET)
+    matching = [
+        row
+        for row in (frame.to_dicts() if not frame.is_empty() else [])
+        if str(row.get("proposal_content_snapshot_sha256") or "").strip().lower()
+        == expected_sha
+    ]
+    values = [
+        str(
+            row.get("proposal_snapshot_fetched_at")
+            or row.get("fetched_at")
+            or row.get("generated_at")
+            or ""
+        ).strip()
+        for row in matching
+    ]
+    return max((value for value in values if value), default="")
 
 
 def publish_canonical_proposal_snapshot(

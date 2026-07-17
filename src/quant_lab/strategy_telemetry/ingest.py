@@ -1032,6 +1032,22 @@ def _append_file_rows(
                     or payload.get("contract_version")
                     or ""
                 ),
+                "last_evaluated_at": str(payload.get("last_evaluated_at") or ""),
+                "last_consumed_by_v5_at": str(
+                    payload.get("last_consumed_by_v5_at") or ""
+                ),
+                "cohort_id": str(payload.get("cohort_id") or ""),
+                "cohort_version": int(payload.get("cohort_version") or 0),
+                "cohort_observation_start_at": str(
+                    payload.get("cohort_observation_start_at") or ""
+                ),
+                "cohort_status": str(payload.get("cohort_status") or ""),
+                "cohort_proposal_content_snapshot_sha256": str(
+                    payload.get("cohort_proposal_content_snapshot_sha256") or ""
+                ),
+                "cohort_last_evaluated_at": str(
+                    payload.get("cohort_last_evaluated_at") or ""
+                ),
                 "real_order_calls": int(payload.get("real_order_calls") or 0),
                 "real_position_mutations": int(payload.get("real_position_mutations") or 0),
                 "generated_at": str(payload.get("generated_at") or ""),

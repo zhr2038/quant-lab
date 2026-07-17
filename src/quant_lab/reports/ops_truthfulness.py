@@ -739,6 +739,10 @@ def build_complete_acceptance_status(
     generated_at: datetime | None = None,
 ) -> dict[str, Any]:
     generated = _utc(generated_at)
+    report_age_seconds = max(
+        0,
+        int((datetime.now(UTC) - generated).total_seconds()),
+    )
     issues: list[dict[str, Any]] = []
     for row in system_acceptance.to_dicts() if not system_acceptance.is_empty() else []:
         status = _text(row.get("status")).upper()
@@ -841,6 +845,27 @@ def build_complete_acceptance_status(
     )
     return {
         "generated_at": generated.isoformat(),
+        "source_bundle_sha256": _text(
+            context.get("selected_v5_bundle_sha256")
+            or context.get("expected_v5_bundle_sha256")
+            or context.get("ingested_v5_bundle_sha256")
+        ).lower(),
+        "proposal_snapshot_id": _text(context.get("proposal_snapshot_id")),
+        "proposal_snapshot_sha256": _text(
+            context.get("proposal_snapshot_sha256")
+        ).lower(),
+        "proposal_content_snapshot_id": _text(
+            context.get("proposal_content_snapshot_id")
+        ),
+        "proposal_content_snapshot_sha256": _text(
+            context.get("proposal_content_snapshot_sha256")
+        ).lower(),
+        "derived_report_age_seconds": report_age_seconds,
+        "derived_report_status": (
+            "FRESH"
+            if report_age_seconds <= 3 * 60 * 60
+            else "STALE_DERIVED_REPORT"
+        ),
         "scoped_verdict": scoped_verdict,
         "overall_system_health": overall,
         "data_quality_status": _text(data_quality.get("status") or "UNKNOWN").upper(),

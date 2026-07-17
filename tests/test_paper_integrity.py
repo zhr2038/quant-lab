@@ -8,6 +8,9 @@ import polars as pl
 
 from quant_lab.data.lake import read_parquet_dataset, write_parquet_dataset
 from quant_lab.research.paper_promotion import (
+    _apply_formal_independence_weights,
+    _classify_cohort_trades,
+    _cohort_evidence_metrics,
     build_and_publish_paper_strategy_pipeline,
     build_paper_strategy_pipeline_frames,
     parse_cost_source_mix,
@@ -236,7 +239,8 @@ def test_registry_identity_is_canonical_and_cost_match_is_exact() -> None:
     assert gate["dimensional_cost_trust_matched"] is True
     assert gate["paper_cost_model_usable"] is True
     assert gate["closed_trade_cost_coverage"] == 1.0
-    assert gate["cost_trusted_for_paper"] is True
+    assert gate["formal_cost_coverage"] == 0.0
+    assert gate["cost_trusted_for_paper"] is False
     assert gate["cost_trusted_for_canary"] is False
 
 
@@ -478,6 +482,7 @@ def test_publish_separates_current_history_and_freezes_cohort(tmp_path) -> None:
     original_members = cohort_v1.to_dicts()[0]["proposal_ids"]
     original_created_at = first_cohort["created_at"]
     original_evidence_at = first_cohort["last_evidence_at"]
+    original_observation_start_at = first_cohort["observation_start_at"]
 
     write_parquet_dataset(
         pl.DataFrame(
@@ -496,6 +501,10 @@ def test_publish_separates_current_history_and_freezes_cohort(tmp_path) -> None:
     assert refreshed.to_dicts()[0]["raw_closed_trade_count"] == 1
     assert refreshed.to_dicts()[0]["independent_closed_trade_count"] == 1
     assert refreshed.to_dicts()[0]["created_at"] == original_created_at
+    assert (
+        refreshed.to_dicts()[0]["observation_start_at"]
+        == original_observation_start_at
+    )
     assert refreshed.to_dicts()[0]["last_evaluated_at"] >= first_cohort["last_evaluated_at"]
     assert refreshed.to_dicts()[0]["last_evidence_at"] >= original_evidence_at
 
@@ -746,3 +755,230 @@ def test_current_tracker_without_ack_is_fail_closed() -> None:
     assert registry["current_runtime_eligible"] is False
     assert registry["supersession_status"] == "CURRENT_TRACKER_ACK_MISSING"
     assert registry["new_entry_allowed"] is False
+
+
+def test_cohort_scope_uses_entry_time_and_fails_closed() -> None:
+    proposal = _proposal(
+        "TRX_FORMAL_SCOPE_PAPER", proposal_hash="f" * 64, horizon=8
+    )
+    snapshot_sha = str(proposal["proposal_content_snapshot_sha256"])
+    cohort = {
+        "cohort_id": "paper-cohort-scope",
+        "cohort_version": 3,
+        "status": "OBSERVING",
+        "observation_start_at": "2026-07-12T00:00:00Z",
+        "proposal_content_snapshot_sha256": snapshot_sha,
+    }
+    rows = pl.DataFrame(
+        [
+            {
+                "proposal_id": proposal["proposal_id"],
+                "paper_trade_id": "pre",
+                "entry_decision_ts": "2026-07-11T23:59:59Z",
+                "closed_at": "2026-07-12T08:00:00Z",
+                "proposal_content_snapshot_sha256": snapshot_sha,
+            },
+            {
+                "proposal_id": proposal["proposal_id"],
+                "paper_trade_id": "formal",
+                "entry_signal_ts": "2026-07-12T00:00:00Z",
+                "proposal_content_snapshot_sha256": snapshot_sha,
+            },
+            {
+                "proposal_id": proposal["proposal_id"],
+                "paper_trade_id": "missing-time",
+                "proposal_content_snapshot_sha256": snapshot_sha,
+            },
+            {
+                "proposal_id": proposal["proposal_id"],
+                "paper_trade_id": "snapshot-mismatch",
+                "opened_at": "2026-07-12T01:00:00Z",
+                "proposal_content_snapshot_sha256": "0" * 64,
+            },
+        ]
+    )
+
+    classified = _classify_cohort_trades(
+        rows,
+        cohort=cohort,
+        trackers=pl.DataFrame([_tracker(proposal)]),
+    ).to_dicts()
+
+    assert [row["cohort_scope"] for row in classified] == [
+        "PRE_COHORT_ENTRY",
+        "FORMAL_COHORT_ENTRY",
+        "ENTRY_TIME_NOT_OBSERVABLE",
+        "SNAPSHOT_MISMATCH",
+    ]
+
+
+def test_formal_cohort_metrics_split_lifetime_and_independent_events() -> None:
+    pre_rows = [
+        {
+            "paper_trade_id": f"pre-trade-{index}",
+            "proposal_id": f"pre-proposal-{index}",
+            "cohort_scope": "PRE_COHORT_ENTRY",
+            "canonical_opportunity_id": f"pre-event-{index % 11}",
+            "entry_decision_ts": f"2026-07-{1 + index % 10:02d}T00:00:00Z",
+            "paper_pnl_bps": float(index),
+            "entry_arrival_mid": 100.0,
+            "cost_source": "configured_conservative_paper",
+            "market_regime": "TREND_UP",
+        }
+        for index in range(18)
+    ]
+    formal_closed = [
+        {
+            "paper_trade_id": "formal-tao-8h",
+            "proposal_id": "tao-8h",
+            "cohort_scope": "FORMAL_COHORT_ENTRY",
+            "canonical_opportunity_id": "formal-event-tao",
+            "entry_decision_ts": "2026-07-16T01:00:00Z",
+            "closed_at": "2026-07-16T09:00:00Z",
+            "paper_pnl_bps": -232.456019,
+            "entry_arrival_mid": 100.0,
+            "cost_source": "configured_conservative_paper",
+            "market_regime": "TREND_UP",
+        },
+        {
+            "paper_trade_id": "formal-arb-8h",
+            "proposal_id": "arb-8h",
+            "cohort_scope": "FORMAL_COHORT_ENTRY",
+            "canonical_opportunity_id": "formal-event-arb",
+            "entry_decision_ts": "2026-07-16T02:00:00Z",
+            "closed_at": "2026-07-16T10:00:00Z",
+            "paper_pnl_bps": 75.261471,
+            "entry_arrival_mid": 100.0,
+            "cost_source": "configured_conservative_paper",
+            "market_regime": "SIDEWAYS",
+        },
+    ]
+    formal_open = [
+        {
+            "paper_trade_id": "formal-arb-48h",
+            "proposal_id": "arb-48h",
+            "cohort_scope": "FORMAL_COHORT_ENTRY",
+            "canonical_opportunity_id": "formal-event-arb",
+            "entry_decision_ts": "2026-07-16T02:00:00Z",
+            "entry_arrival_mid": 100.0,
+            "cost_source": "configured_conservative_paper",
+            "market_regime": "SIDEWAYS",
+        }
+    ]
+
+    metrics = _cohort_evidence_metrics(
+        [*pre_rows, *formal_closed],
+        formal_open,
+        evaluated_at=NOW,
+    )
+
+    assert metrics["lifetime_raw_closed_trade_count"] == 20
+    assert metrics["lifetime_independent_closed_event_count"] == 13
+    assert metrics["pre_cohort_raw_closed_trade_count"] == 18
+    assert metrics["pre_cohort_independent_event_count"] == 11
+    assert metrics["formal_entry_variant_count"] == 3
+    assert metrics["formal_independent_entry_event_count"] == 2
+    assert metrics["formal_closed_trade_count"] == 2
+    assert metrics["formal_independent_closed_event_count"] == 2
+    assert metrics["formal_open_trade_count"] == 1
+    assert abs(metrics["formal_mean_after_cost_bps"] + 78.597274) < 1e-6
+
+
+def test_shared_formal_entry_event_splits_independence_weight() -> None:
+    closed, opened = _apply_formal_independence_weights(
+        pl.DataFrame(
+            [
+                {
+                    "proposal_id": "tao-8h",
+                    "canonical_opportunity_id": "tao-event",
+                },
+                {
+                    "proposal_id": "tao-72h",
+                    "canonical_opportunity_id": "tao-event",
+                },
+            ]
+        ),
+        pl.DataFrame(),
+    )
+
+    assert closed.get_column("evidence_independence_weight").to_list() == [
+        0.5,
+        0.5,
+    ]
+    assert opened.is_empty()
+
+
+def test_promotion_gate_uses_formal_cohort_only() -> None:
+    proposal = _proposal(
+        "TRX_FORMAL_PROMOTION_PAPER", proposal_hash="a" * 64, horizon=8
+    )
+    snapshot_sha = str(proposal["proposal_content_snapshot_sha256"])
+    cohort = pl.DataFrame(
+        [
+            {
+                "cohort_id": "paper-cohort-formal",
+                "cohort_version": 3,
+                "status": "OBSERVING",
+                "observation_start_at": "2026-07-12T00:00:00Z",
+                "proposal_content_snapshot_sha256": snapshot_sha,
+            }
+        ]
+    )
+    runs = pl.DataFrame(
+        [
+            {
+                "proposal_id": proposal["proposal_id"],
+                "proposal_hash": proposal["proposal_hash"],
+                "paper_tracker_id": f"paper:{proposal['proposal_id']}",
+                "paper_pnl_bps": 1_000.0,
+                "cost_source": "configured_conservative_paper",
+                "entry_decision_ts": "2026-07-11T00:00:00Z",
+                "cohort_scope": "PRE_COHORT_ENTRY",
+                "canonical_opportunity_id": "pre-event",
+            },
+            {
+                "proposal_id": proposal["proposal_id"],
+                "proposal_hash": proposal["proposal_hash"],
+                "paper_tracker_id": f"paper:{proposal['proposal_id']}",
+                "paper_pnl_bps": -20.0,
+                "cost_source": "configured_conservative_paper",
+                "entry_decision_ts": "2026-07-12T01:00:00Z",
+                "entry_arrival_mid": 100.0,
+                "market_regime": "TREND_UP",
+                "cohort_scope": "FORMAL_COHORT_ENTRY",
+                "canonical_opportunity_id": "formal-event",
+            },
+        ]
+    )
+    frames = build_paper_strategy_pipeline_frames(
+        proposals=pl.DataFrame([proposal]),
+        proposal_ack=pl.DataFrame([_ack(proposal)]),
+        trackers_current=pl.DataFrame([_tracker(proposal)]),
+        runs=runs,
+        daily=pl.DataFrame(
+            [
+                {
+                    "proposal_id": proposal["proposal_id"],
+                    "paper_tracker_id": f"paper:{proposal['proposal_id']}",
+                    "paper_days": 99,
+                    "entry_day_count": 99,
+                    "paper_pnl_observed_count": 99,
+                    "avg_paper_pnl_bps": 999.0,
+                    "arrival_mid_coverage": 1.0,
+                }
+            ]
+        ),
+        strategy_cost_trust=pl.DataFrame([_cost_trust(proposal)]),
+        cohort_manifest=cohort,
+        created_at=NOW,
+    )
+    gate = frames["paper_strategy_promotion_gate"].to_dicts()[0]
+
+    assert gate["historical_closed_trade_count"] == 2
+    assert gate["promotion_evidence_scope"] == "FORMAL_COHORT_ONLY"
+    assert gate["cohort_calendar_days"] == 2
+    assert gate["formal_closed_trade_count"] == 1
+    assert gate["formal_independent_closed_event_count"] == 1
+    assert gate["formal_mean_after_cost_bps"] == -20.0
+    assert gate["paper_ready"] is False
+    assert "mean_after_cost_not_positive" in json.loads(gate["blocked_reasons"])

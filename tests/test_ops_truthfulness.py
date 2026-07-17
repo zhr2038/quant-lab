@@ -380,6 +380,124 @@ def test_publication_snapshot_is_not_aliased_to_matching_content_snapshot() -> N
     assert row["first_seen_by_v5_at"] == ""
 
 
+def test_export_refreshes_derived_reports_and_marks_old_rows_stale(tmp_path) -> None:
+    from quant_lab.export.daily import (
+        _DatasetSnapshot,
+        _publish_ops_truthfulness_snapshot,
+        _with_derived_report_metadata,
+    )
+
+    snapshot_id = "proposal-snapshot:refresh"
+    snapshot_sha = "a" * 64
+    content_id = "proposal-content-snapshot:refresh"
+    content_sha = "b" * 64
+    proposal = {
+        "proposal_id": "refresh:1",
+        "proposal_hash": "c" * 64,
+        "proposal_snapshot_id": snapshot_id,
+        "proposal_snapshot_sha256": snapshot_sha,
+        "proposal_content_snapshot_id": content_id,
+        "proposal_content_snapshot_sha256": content_sha,
+        "snapshot_generated_at": (NOW - timedelta(days=1)).isoformat(),
+    }
+    observed = {
+        "proposal_id": proposal["proposal_id"],
+        "proposal_hash": proposal["proposal_hash"],
+        "source_proposal_snapshot_id": snapshot_id,
+        "source_proposal_snapshot_sha256": snapshot_sha,
+        "source_proposal_content_snapshot_id": content_id,
+        "source_proposal_content_snapshot_sha256": content_sha,
+        "accepted": True,
+        "current_proposal_member": True,
+        "created_at": (NOW - timedelta(minutes=1)).isoformat(),
+    }
+    frames = {
+        "api_request_metrics": pl.DataFrame(
+            [
+                {
+                    "request_ts": (NOW - timedelta(minutes=1)).isoformat(),
+                    "path": "/v1/paper-strategy/proposals",
+                    "client_id": "v5.quant_lab_client",
+                    "auth_result": "token_ok",
+                    "status_code": 200,
+                }
+            ]
+        ),
+        "paper_strategy_proposals_current": pl.DataFrame([proposal]),
+        "paper_strategy_proposal_snapshot": pl.DataFrame([proposal]),
+        "paper_strategy_ack_current": pl.DataFrame([observed]),
+        "paper_strategy_trackers_current": pl.DataFrame([observed]),
+        "v5_quant_lab_contract_status": pl.DataFrame(
+            [
+                {
+                    "proposal_snapshot_id": snapshot_id,
+                    "proposal_snapshot_sha256": snapshot_sha,
+                    "proposal_content_snapshot_id": content_id,
+                    "proposal_content_snapshot_sha256": content_sha,
+                    "proposal_snapshot_fetched_at": (
+                        NOW - timedelta(minutes=1)
+                    ).isoformat(),
+                    "generated_at": (NOW - timedelta(minutes=1)).isoformat(),
+                    "bundle_ts": (NOW - timedelta(minutes=1)).isoformat(),
+                }
+            ]
+        ),
+        "v5_paper_strategy_registry_current": pl.DataFrame(
+            [{"updated_at": (NOW - timedelta(minutes=1)).isoformat()}]
+        ),
+        "v5_paper_strategy_state": pl.DataFrame(
+            [{"updated_at": (NOW - timedelta(minutes=1)).isoformat()}]
+        ),
+    }
+    source_bundle_sha = "d" * 64
+    refreshed = _publish_ops_truthfulness_snapshot(
+        tmp_path,
+        _DatasetSnapshot(frames=frames, row_counts={}, warnings=[]),
+        generated_at=NOW,
+        pre_export_v5={
+            "selected_v5_bundle_sha256": source_bundle_sha,
+            "selected_v5_bundle_built_at": (
+                NOW - timedelta(minutes=1)
+            ).isoformat(),
+        },
+        persist=False,
+    )
+
+    for dataset in (
+        "api_auth_production_slo",
+        "paper_runtime_freshness",
+        "paper_proposal_propagation_status",
+    ):
+        rows = refreshed.frames[dataset].to_dicts()
+        assert rows
+        assert {row["generated_at"] for row in rows} == {NOW.isoformat()}
+        assert {row["source_bundle_sha256"] for row in rows} == {
+            source_bundle_sha
+        }
+        assert {row["proposal_snapshot_id"] for row in rows} == {snapshot_id}
+        assert {row["proposal_content_snapshot_sha256"] for row in rows} == {
+            content_sha
+        }
+        assert {row["derived_report_status"] for row in rows} == {"FRESH"}
+    snapshot_row = refreshed.frames[
+        "paper_strategy_proposal_snapshot"
+    ].to_dicts()[0]
+    assert snapshot_row["snapshot_generated_at"] == proposal[
+        "snapshot_generated_at"
+    ]
+    assert snapshot_row["last_evaluated_at"] == NOW.isoformat()
+    assert snapshot_row["last_consumed_by_v5_at"]
+
+    stale = _with_derived_report_metadata(
+        pl.DataFrame(
+            [{"generated_at": (NOW - timedelta(hours=4)).isoformat()}]
+        ),
+        evaluated_at=NOW,
+        context={"source_bundle_sha256": source_bundle_sha},
+    ).to_dicts()[0]
+    assert stale["derived_report_status"] == "STALE_DERIVED_REPORT"
+
+
 def test_complete_acceptance_discloses_all_non_pass_and_funnel_eras() -> None:
     acceptance = pl.DataFrame(
         [

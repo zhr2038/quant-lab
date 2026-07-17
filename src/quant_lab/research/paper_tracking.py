@@ -74,6 +74,8 @@ PAPER_RUN_REPORT_SCHEMA = {
     "strategy_id": pl.Utf8,
     "proposal_id": pl.Utf8,
     "paper_tracker_id": pl.Utf8,
+    "proposal_hash": pl.Utf8,
+    "paper_trade_id": pl.Utf8,
     "strategy_candidate": pl.Utf8,
     "run_id": pl.Utf8,
     "ts_utc": pl.Utf8,
@@ -90,6 +92,17 @@ PAPER_RUN_REPORT_SCHEMA = {
     "symbol_match_verified": pl.Boolean,
     "paper_source": pl.Utf8,
     "paper_count_scope": pl.Utf8,
+    "cohort_id": pl.Utf8,
+    "cohort_version": pl.Int64,
+    "proposal_content_snapshot_sha256": pl.Utf8,
+    "cohort_observation_start_at": pl.Utf8,
+    "entry_signal_ts": pl.Utf8,
+    "entry_decision_ts": pl.Utf8,
+    "opened_at": pl.Utf8,
+    "closed_at": pl.Utf8,
+    "cohort_scope": pl.Utf8,
+    "canonical_opportunity_id": pl.Utf8,
+    "evidence_independence_weight": pl.Float64,
     "risk_level": pl.Utf8,
     "alpha6_score": pl.Float64,
     "alpha6_side": pl.Utf8,
@@ -122,6 +135,7 @@ PAPER_RUN_SCHEMA = {
     "strategy_id": pl.Utf8,
     "strategy_version": pl.Utf8,
     "proposal_id": pl.Utf8,
+    "proposal_hash": pl.Utf8,
     "paper_tracker_id": pl.Utf8,
     "strategy_candidate": pl.Utf8,
     "symbol": pl.Utf8,
@@ -142,6 +156,11 @@ PAPER_RUN_SCHEMA = {
     "symbol_match_verified": pl.Boolean,
     "paper_source": pl.Utf8,
     "paper_count_scope": pl.Utf8,
+    "cohort_id": pl.Utf8,
+    "cohort_version": pl.Int64,
+    "proposal_content_snapshot_sha256": pl.Utf8,
+    "cohort_observation_start_at": pl.Utf8,
+    "entry_signal_ts": pl.Utf8,
     "paper_pnl_bps": pl.Float64,
     "paper_pnl_bps_4h": pl.Float64,
     "paper_pnl_bps_8h": pl.Float64,
@@ -154,6 +173,11 @@ PAPER_RUN_SCHEMA = {
     "arrival_ask": pl.Float64,
     "arrival_mid": pl.Float64,
     "entry_decision_ts": pl.Utf8,
+    "opened_at": pl.Utf8,
+    "closed_at": pl.Utf8,
+    "cohort_scope": pl.Utf8,
+    "canonical_opportunity_id": pl.Utf8,
+    "evidence_independence_weight": pl.Float64,
     "exit_decision_ts": pl.Utf8,
     "quote_timestamp": pl.Utf8,
     "quote_age_seconds": pl.Float64,
@@ -2149,6 +2173,8 @@ def _v5_run_report_row(
         "strategy_id": strategy_id or paper_tracker_id or proposal_id,
         "proposal_id": proposal_id,
         "paper_tracker_id": paper_tracker_id,
+        "proposal_hash": _field(row, payload, "proposal_hash"),
+        "paper_trade_id": _field(row, payload, "paper_trade_id"),
         "strategy_candidate": candidate,
         "run_id": _field(row, payload, "run_id"),
         "ts_utc": _field(row, payload, "ts_utc", "ts", "timestamp", "created_at"),
@@ -2168,6 +2194,28 @@ def _v5_run_report_row(
         **source_candidate,
         "paper_source": paper_source,
         "paper_count_scope": _field(row, payload, "paper_count_scope", default="daily"),
+        "cohort_id": _field(row, payload, "cohort_id"),
+        "cohort_version": int(
+            _optional_float(_field(row, payload, "cohort_version")) or 0
+        ),
+        "proposal_content_snapshot_sha256": _field(
+            row, payload, "proposal_content_snapshot_sha256",
+            "source_proposal_content_snapshot_sha256",
+        ),
+        "cohort_observation_start_at": _field(
+            row, payload, "cohort_observation_start_at"
+        ),
+        "entry_signal_ts": _field(row, payload, "entry_signal_ts"),
+        "entry_decision_ts": _field(row, payload, "entry_decision_ts"),
+        "opened_at": _field(row, payload, "opened_at"),
+        "closed_at": _field(row, payload, "closed_at"),
+        "cohort_scope": _field(row, payload, "cohort_scope"),
+        "canonical_opportunity_id": _field(
+            row, payload, "canonical_opportunity_id", "shared_entry_event_id"
+        ),
+        "evidence_independence_weight": _optional_float(
+            _field(row, payload, "evidence_independence_weight")
+        ) or 0.0,
         "risk_level": _field(row, payload, "risk_level"),
         "alpha6_score": _optional_float(_field(row, payload, "alpha6_score")),
         "alpha6_side": _field(row, payload, "alpha6_side"),
@@ -2283,6 +2331,7 @@ def _v5_run_row(
         "strategy_id": _field(row, payload, "strategy_id"),
         "strategy_version": _field(row, payload, "strategy_version"),
         "proposal_id": proposal_id,
+        "proposal_hash": _field(row, payload, "proposal_hash"),
         "paper_tracker_id": paper_tracker_id,
         "strategy_candidate": candidate,
         "symbol": symbol,
@@ -2321,6 +2370,18 @@ def _v5_run_row(
         **source_candidate,
         "paper_source": paper_source,
         "paper_count_scope": _field(row, payload, "paper_count_scope", default="daily"),
+        "cohort_id": _field(row, payload, "cohort_id"),
+        "cohort_version": int(
+            _optional_float(_field(row, payload, "cohort_version")) or 0
+        ),
+        "proposal_content_snapshot_sha256": _field(
+            row, payload, "proposal_content_snapshot_sha256",
+            "source_proposal_content_snapshot_sha256",
+        ),
+        "cohort_observation_start_at": _field(
+            row, payload, "cohort_observation_start_at"
+        ),
+        "entry_signal_ts": _field(row, payload, "entry_signal_ts"),
         "paper_pnl_bps": paper_pnl_bps,
         "paper_pnl_bps_4h": paper_pnl_bps_4h,
         "paper_pnl_bps_8h": paper_pnl_bps_8h,
@@ -2339,6 +2400,15 @@ def _v5_run_row(
             _field(row, payload, "arrival_mid", "entry_arrival_mid", "mid_at_arrival")
         ),
         "entry_decision_ts": _field(row, payload, "entry_decision_ts"),
+        "opened_at": _field(row, payload, "opened_at"),
+        "closed_at": _field(row, payload, "closed_at"),
+        "cohort_scope": _field(row, payload, "cohort_scope"),
+        "canonical_opportunity_id": _field(
+            row, payload, "canonical_opportunity_id", "shared_entry_event_id"
+        ),
+        "evidence_independence_weight": _optional_float(
+            _field(row, payload, "evidence_independence_weight")
+        ) or 0.0,
         "exit_decision_ts": _field(row, payload, "exit_decision_ts"),
         "quote_timestamp": _field(row, payload, "quote_timestamp"),
         "quote_age_seconds": _optional_float(_field(row, payload, "quote_age_seconds")),

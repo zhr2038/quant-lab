@@ -349,7 +349,7 @@ def test_paper_strategy_pipeline_marks_unacked_tracker_evidence_not_effective() 
     assert "paper_tracker_not_effective_without_ack" in block_reasons
 
 
-def test_paper_strategy_pipeline_marks_ready_only_after_ack_and_future_paper_evidence() -> None:
+def test_paper_strategy_pipeline_requires_observing_formal_cohort_for_ready() -> None:
     proposal_id = "SOL_USDT_F3_DOMINANT_ENTRY_PAPER_V1"
     tracker_id = proposal_id
     run_rows = []
@@ -451,14 +451,16 @@ def test_paper_strategy_pipeline_marks_ready_only_after_ack_and_future_paper_evi
 
     assert registry["status"] == "CURRENT_ACTIVE"
     assert registry["rules_locked"] is True
-    assert gate["paper_ready"] is True
-    assert gate["lifecycle_state"] == "PAPER_PROMOTION_READY"
+    assert gate["paper_ready"] is False
+    assert gate["lifecycle_state"] == "PAPER_EVIDENCE_INSUFFICIENT"
+    assert gate["promotion_evidence_scope"] == "FORMAL_COHORT_ONLY"
+    assert "formal_cohort_not_observing" in json.loads(gate["blocked_reasons"])
     assert gate["paper_tracker_created"] is True
     assert gate["paper_tracker_effective"] is True
     assert gate["paper_tracker_status"] == "EFFECTIVE"
     assert gate["strategy_cost_trust_level"] == "CANARY"
     assert gate["required_cost_trust_level"] == "PAPER_ONLY"
-    assert json.loads(gate["block_reason"]) == []
+    assert "formal_cohort_not_observing" in json.loads(gate["block_reason"])
 
 
 def test_strategy_dimensional_cost_trust_separates_paper_from_canary() -> None:

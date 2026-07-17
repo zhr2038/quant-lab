@@ -76,6 +76,16 @@ V5_PAPER_STRATEGY_ACK_HISTORY_DATASET = (
 V5_PAPER_STRATEGY_TRACKERS_CURRENT_DATASET = (
     Path("silver") / "v5_paper_strategy_trackers_current"
 )
+V5_PAPER_STRATEGY_STATE_DATASET = Path("silver") / "v5_paper_strategy_state"
+
+COHORT_SCOPES = {
+    "FORMAL_COHORT_ENTRY",
+    "PRE_COHORT_ENTRY",
+    "PREVIOUS_COHORT_ENTRY",
+    "SNAPSHOT_MISMATCH",
+    "HISTORY_ONLY",
+    "ENTRY_TIME_NOT_OBSERVABLE",
+}
 
 PAPER_PIPELINE_SOURCE = "research.paper_strategy_promotion.v0.1"
 PAPER_PIPELINE_SCHEMA_VERSION = "paper_strategy_pipeline.v1"
@@ -189,6 +199,22 @@ PAPER_STRATEGY_PROMOTION_GATE_SCHEMA = {
     "historical_closed_trade_count": pl.Int64,
     "current_contract_closed_trade_count": pl.Int64,
     "paper_tracker_status": pl.Utf8,
+    "cohort_id": pl.Utf8,
+    "cohort_version": pl.Int64,
+    "cohort_status": pl.Utf8,
+    "cohort_observation_start_at": pl.Utf8,
+    "promotion_evidence_scope": pl.Utf8,
+    "cohort_calendar_days": pl.Int64,
+    "formal_entry_day_count": pl.Int64,
+    "formal_closed_trade_count": pl.Int64,
+    "formal_independent_closed_event_count": pl.Int64,
+    "formal_mean_after_cost_bps": pl.Float64,
+    "formal_median_after_cost_bps": pl.Float64,
+    "formal_p25_after_cost_bps": pl.Float64,
+    "formal_recent_7d_mean_bps": pl.Float64,
+    "formal_regime_count": pl.Int64,
+    "formal_cost_coverage": pl.Float64,
+    "formal_arrival_mid_coverage": pl.Float64,
     "paper_runs": pl.Int64,
     "paper_days": pl.Int64,
     "closed_entries": pl.Int64,
@@ -288,6 +314,24 @@ PAPER_COHORT_MANIFEST_SCHEMA = {
     "identity_conflict_proposal_ids": pl.Utf8,
     "all_members_admitted": pl.Boolean,
     "formal_observation_eligible": pl.Boolean,
+    "lifetime_raw_closed_trade_count": pl.Int64,
+    "lifetime_independent_closed_event_count": pl.Int64,
+    "pre_cohort_raw_closed_trade_count": pl.Int64,
+    "pre_cohort_independent_event_count": pl.Int64,
+    "formal_entry_variant_count": pl.Int64,
+    "formal_independent_entry_event_count": pl.Int64,
+    "formal_closed_trade_count": pl.Int64,
+    "formal_independent_closed_event_count": pl.Int64,
+    "formal_open_trade_count": pl.Int64,
+    "formal_entry_day_count": pl.Int64,
+    "formal_pnl_day_count": pl.Int64,
+    "formal_mean_after_cost_bps": pl.Float64,
+    "formal_median_after_cost_bps": pl.Float64,
+    "formal_p25_after_cost_bps": pl.Float64,
+    "formal_win_rate": pl.Float64,
+    "formal_arrival_mid_coverage": pl.Float64,
+    "formal_cost_coverage": pl.Float64,
+    "formal_regime_count": pl.Int64,
     "raw_closed_trade_count": pl.Int64,
     "independent_closed_trade_count": pl.Int64,
     "horizon_variant_count": pl.Int64,
@@ -410,10 +454,30 @@ def build_and_publish_paper_strategy_pipeline(
         trackers_current,
         root / PAPER_STRATEGY_TRACKERS_CURRENT_DATASET,
     )
+    existing_cohort = read_parquet_dataset(root / PAPER_COHORT_MANIFEST_DATASET)
+    cohort_context = _current_cohort_context(existing_cohort, proposal_frame)
     paper_runs = _filter_superseded_structured_rows(
         read_parquet_dataset(root / PAPER_STRATEGY_RUNS_DATASET),
         proposal_frame,
     )
+    paper_runs = _classify_cohort_trades(
+        paper_runs,
+        cohort=cohort_context,
+        trackers=trackers_current,
+    )
+    open_trades = _classify_cohort_trades(
+        _open_paper_trade_rows(
+            read_parquet_dataset(root / V5_PAPER_STRATEGY_STATE_DATASET)
+        ),
+        cohort=cohort_context,
+        trackers=trackers_current,
+    )
+    paper_runs, open_trades = _apply_formal_independence_weights(
+        paper_runs,
+        open_trades,
+    )
+    if not paper_runs.is_empty():
+        write_parquet_dataset(paper_runs, root / PAPER_STRATEGY_RUNS_DATASET)
     paper_daily = _filter_superseded_structured_rows(
         read_parquet_dataset(root / PAPER_STRATEGY_DAILY_DATASET),
         proposal_frame,
@@ -425,6 +489,8 @@ def build_and_publish_paper_strategy_pipeline(
         runs=paper_runs,
         daily=paper_daily,
         strategy_cost_trust=strategy_cost_trust,
+        cohort_manifest=existing_cohort,
+        open_trades=open_trades,
     )
     registry = frames["paper_strategy_registry"]
     registry = _canonicalize_registry_identity(registry, proposal_frame)
@@ -435,6 +501,8 @@ def build_and_publish_paper_strategy_pipeline(
         runs=paper_runs,
         proposals=proposal_frame,
         strategy_cost_trust=strategy_cost_trust,
+        cohort=cohort_context,
+        open_trades=open_trades,
     )
     gate = _canonicalize_gate_identity(gate, proposal_frame)
     registry_history = _merge_lifecycle_frame(
@@ -457,10 +525,11 @@ def build_and_publish_paper_strategy_pipeline(
     )
     write_parquet_dataset(gate, root / PAPER_STRATEGY_PROMOTION_GATE_DATASET)
     cohort = _build_paper_cohort_manifest(
-        read_parquet_dataset(root / PAPER_COHORT_MANIFEST_DATASET),
+        existing_cohort,
         proposals=proposal_frame,
         registry=registry,
         runs=paper_runs,
+        open_trades=open_trades,
         created_at=datetime.now(UTC),
     )
     write_parquet_dataset(cohort, root / PAPER_COHORT_MANIFEST_DATASET)
@@ -849,12 +918,274 @@ def _canonicalize_gate_identity(
     return _frame(rows, PAPER_STRATEGY_PROMOTION_GATE_SCHEMA)
 
 
+def _current_cohort_context(
+    cohorts: pl.DataFrame,
+    proposals: pl.DataFrame,
+) -> dict[str, Any]:
+    if cohorts.is_empty() or proposals.is_empty():
+        return {}
+    proposal_shas = {
+        _text(row.get("proposal_content_snapshot_sha256")).lower()
+        for row in proposals.to_dicts()
+    } - {""}
+    if len(proposal_shas) != 1:
+        return {}
+    expected_sha = next(iter(proposal_shas))
+    matching = [
+        row
+        for row in cohorts.to_dicts()
+        if _text(row.get("proposal_content_snapshot_sha256")).lower()
+        == expected_sha
+    ]
+    return dict(
+        max(
+            matching,
+            key=lambda row: _int(row.get("cohort_version")) or 0,
+            default={},
+        )
+    )
+
+
+def _classify_cohort_trades(
+    frame: pl.DataFrame,
+    *,
+    cohort: Mapping[str, Any],
+    trackers: pl.DataFrame,
+) -> pl.DataFrame:
+    if frame.is_empty():
+        return frame
+    tracker_by_proposal = {
+        _text(row.get("proposal_id")): row
+        for row in (trackers.to_dicts() if not trackers.is_empty() else [])
+        if _text(row.get("proposal_id"))
+    }
+    cohort_id = _text(cohort.get("cohort_id"))
+    cohort_version = _int(cohort.get("cohort_version")) or 0
+    observation_text = _text(cohort.get("observation_start_at"))
+    observation_at = _strict_timestamp(observation_text)
+    cohort_status = _text(cohort.get("status")).upper()
+    cohort_snapshot_sha = _text(
+        cohort.get("proposal_content_snapshot_sha256")
+    ).lower()
+    rows: list[dict[str, Any]] = []
+    for source in frame.to_dicts():
+        row = dict(source)
+        tracker = tracker_by_proposal.get(_text(row.get("proposal_id")), {})
+        entry_at = _entry_timestamp(row)
+        content_sha = _text(
+            row.get("proposal_content_snapshot_sha256")
+            or row.get("source_proposal_content_snapshot_sha256")
+            or tracker.get("source_proposal_content_snapshot_sha256")
+        ).lower()
+        prior_cohort_id = _text(row.get("cohort_id"))
+        prior_cohort_version = _int(row.get("cohort_version")) or 0
+        if not prior_cohort_id:
+            row["cohort_id"] = cohort_id
+            row["cohort_version"] = cohort_version
+        row["proposal_content_snapshot_sha256"] = content_sha
+        row["cohort_observation_start_at"] = (
+            _text(row.get("cohort_observation_start_at")) or observation_text
+        )
+        row["canonical_opportunity_id"] = (
+            _text(row.get("canonical_opportunity_id"))
+            or _paper_event_id(row)
+        )
+        if entry_at is None:
+            scope = "ENTRY_TIME_NOT_OBSERVABLE"
+        elif prior_cohort_id and cohort_id and (
+            prior_cohort_id != cohort_id or prior_cohort_version != cohort_version
+        ):
+            scope = "PREVIOUS_COHORT_ENTRY"
+        elif cohort_status not in {"OBSERVING", "REVIEW_READY"}:
+            scope = "HISTORY_ONLY"
+        elif not cohort_id or cohort_version <= 0 or observation_at is None:
+            scope = "HISTORY_ONLY"
+        elif not content_sha or content_sha != cohort_snapshot_sha:
+            scope = "SNAPSHOT_MISMATCH"
+        elif entry_at < observation_at:
+            scope = "PRE_COHORT_ENTRY"
+        else:
+            scope = "FORMAL_COHORT_ENTRY"
+        row["cohort_scope"] = scope
+        if "valid_for_promotion" in row:
+            row["valid_for_promotion"] = bool(
+                _bool(row.get("valid_for_promotion"))
+                and scope == "FORMAL_COHORT_ENTRY"
+            )
+        row["evidence_independence_weight"] = (
+            _float(row.get("evidence_independence_weight")) or 0.0
+        )
+        rows.append(row)
+    return pl.DataFrame(rows, infer_schema_length=None)
+
+
+def _open_paper_trade_rows(frame: pl.DataFrame) -> pl.DataFrame:
+    if frame.is_empty() or "open_paper_position" not in frame.columns:
+        return frame.head(0)
+    rows = [
+        row
+        for row in frame.to_dicts()
+        if _bool(row.get("open_paper_position"))
+    ]
+    return pl.DataFrame(rows, infer_schema_length=None) if rows else frame.head(0)
+
+
+def _apply_formal_independence_weights(
+    closed: pl.DataFrame,
+    opened: pl.DataFrame,
+) -> tuple[pl.DataFrame, pl.DataFrame]:
+    closed_rows = closed.to_dicts() if not closed.is_empty() else []
+    open_rows = opened.to_dicts() if not opened.is_empty() else []
+    variants: dict[str, set[str]] = {}
+    for row in [*closed_rows, *open_rows]:
+        event_id = _paper_event_id(row)
+        proposal_id = _text(row.get("proposal_id"))
+        if event_id and proposal_id:
+            variants.setdefault(event_id, set()).add(proposal_id)
+    for row in [*closed_rows, *open_rows]:
+        event_id = _paper_event_id(row)
+        row["canonical_opportunity_id"] = event_id
+        variant_count = len(variants.get(event_id, set()))
+        row["evidence_independence_weight"] = (
+            1.0 / variant_count if variant_count else 0.0
+        )
+    return (
+        pl.DataFrame(closed_rows, infer_schema_length=None)
+        if closed_rows
+        else closed,
+        pl.DataFrame(open_rows, infer_schema_length=None) if open_rows else opened,
+    )
+
+
+def _entry_timestamp(row: Mapping[str, Any]) -> datetime | None:
+    for field in ("entry_decision_ts", "entry_signal_ts", "opened_at"):
+        parsed = _strict_timestamp(row.get(field))
+        if parsed is not None:
+            return parsed
+    return None
+
+
+def _strict_timestamp(value: Any) -> datetime | None:
+    text = _text(value)
+    if not text:
+        return None
+    try:
+        parsed = datetime.fromisoformat(text.replace("Z", "+00:00"))
+    except ValueError:
+        return None
+    return parsed.replace(tzinfo=UTC) if parsed.tzinfo is None else parsed.astimezone(UTC)
+
+
+def _cohort_evidence_metrics(
+    closed_rows: list[dict[str, Any]],
+    open_rows: list[dict[str, Any]],
+    *,
+    evaluated_at: datetime,
+) -> dict[str, Any]:
+    del evaluated_at  # Reserved for future rolling-window policy without changing identity.
+    lifetime_events = {
+        _paper_event_id(row) for row in closed_rows if _paper_event_id(row)
+    }
+    pre_rows = [
+        row for row in closed_rows if _text(row.get("cohort_scope")) == "PRE_COHORT_ENTRY"
+    ]
+    formal_closed = [
+        row
+        for row in closed_rows
+        if _text(row.get("cohort_scope")) == "FORMAL_COHORT_ENTRY"
+    ]
+    formal_open = [
+        row
+        for row in open_rows
+        if _text(row.get("cohort_scope")) == "FORMAL_COHORT_ENTRY"
+    ]
+    formal_entries = [*formal_closed, *formal_open]
+    pre_events = {_paper_event_id(row) for row in pre_rows if _paper_event_id(row)}
+    formal_entry_events = {
+        _paper_event_id(row) for row in formal_entries if _paper_event_id(row)
+    }
+    formal_closed_events = {
+        _paper_event_id(row) for row in formal_closed if _paper_event_id(row)
+    }
+    entry_variants: set[str] = set()
+    for row in formal_entries:
+        entry_text = _text(
+            row.get("entry_decision_ts")
+            or row.get("entry_signal_ts")
+            or row.get("opened_at")
+        )
+        variant_id = _text(row.get("paper_trade_id")) or (
+            f"{_text(row.get('proposal_id'))}|{entry_text}"
+        )
+        if variant_id not in {"", "|"}:
+            entry_variants.add(variant_id)
+    pnl_values = _paper_pnl_values(formal_closed)
+    entry_days = {
+        value.date().isoformat()
+        for value in (_entry_timestamp(row) for row in formal_entries)
+        if value is not None
+    }
+    pnl_days = {
+        value.date().isoformat()
+        for value in (
+            _strict_timestamp(
+                row.get("closed_at")
+                or row.get("exit_decision_ts")
+                or row.get("ts_utc")
+                or row.get("as_of_date")
+            )
+            for row in formal_closed
+        )
+        if value is not None
+    }
+    arrival_count = sum(
+        _float(row.get("arrival_mid") or row.get("entry_arrival_mid")) is not None
+        for row in formal_entries
+    )
+    cost_count = sum(
+        bool(_cost_sources(row.get("cost_source") or row.get("cost_source_mix")))
+        for row in formal_closed
+    )
+    regimes = {
+        _text(row.get("market_regime"))
+        for row in formal_entries
+        if _text(row.get("market_regime"))
+    }
+    return {
+        "raw_closed_trade_count": len(closed_rows),
+        "independent_closed_trade_count": len(lifetime_events),
+        "lifetime_raw_closed_trade_count": len(closed_rows),
+        "lifetime_independent_closed_event_count": len(lifetime_events),
+        "pre_cohort_raw_closed_trade_count": len(pre_rows),
+        "pre_cohort_independent_event_count": len(pre_events),
+        "formal_entry_variant_count": len(entry_variants),
+        "formal_independent_entry_event_count": len(formal_entry_events),
+        "formal_closed_trade_count": len(formal_closed),
+        "formal_independent_closed_event_count": len(formal_closed_events),
+        "formal_open_trade_count": len(formal_open),
+        "formal_entry_day_count": len(entry_days),
+        "formal_pnl_day_count": len(pnl_days),
+        "formal_mean_after_cost_bps": _mean(pnl_values),
+        "formal_median_after_cost_bps": _median(pnl_values),
+        "formal_p25_after_cost_bps": _percentile(pnl_values, 0.25),
+        "formal_win_rate": _hit_rate(pnl_values),
+        "formal_arrival_mid_coverage": (
+            arrival_count / len(formal_entries) if formal_entries else 0.0
+        ),
+        "formal_cost_coverage": (
+            cost_count / len(formal_closed) if formal_closed else 0.0
+        ),
+        "formal_regime_count": len(regimes),
+    }
+
+
 def _build_paper_cohort_manifest(
     existing: pl.DataFrame,
     *,
     proposals: pl.DataFrame,
     registry: pl.DataFrame,
     runs: pl.DataFrame,
+    open_trades: pl.DataFrame | None = None,
     created_at: datetime,
 ) -> pl.DataFrame:
     existing_rows = existing.to_dicts() if not existing.is_empty() else []
@@ -987,7 +1318,20 @@ def _build_paper_cohort_manifest(
         for row in (runs.to_dicts() if not runs.is_empty() else [])
         if _text(row.get("proposal_id")) in proposal_id_set
     ]
-    event_ids = {_paper_event_id(row) for row in run_rows if _paper_event_id(row)}
+    open_rows = [
+        row
+        for row in (
+            open_trades.to_dicts()
+            if open_trades is not None and not open_trades.is_empty()
+            else []
+        )
+        if _text(row.get("proposal_id")) in proposal_id_set
+    ]
+    evidence = _cohort_evidence_metrics(
+        run_rows,
+        open_rows,
+        evaluated_at=created_at.astimezone(UTC),
+    )
     horizons = sorted(
         {
             _int(
@@ -1013,8 +1357,7 @@ def _build_paper_cohort_manifest(
         safe_json_dumps(
             {
                 **admission,
-                "raw_closed_trade_count": len(run_rows),
-                "independent_closed_trade_count": len(event_ids),
+                **evidence,
                 "horizon_variant_count": len(horizons),
                 "member_states": member_states,
             }
@@ -1032,8 +1375,7 @@ def _build_paper_cohort_manifest(
     )
     if latest_matches_content:
         previous_evidence_signature = _text(latest.get("evidence_signature"))
-        latest["raw_closed_trade_count"] = len(run_rows)
-        latest["independent_closed_trade_count"] = len(event_ids)
+        latest.update(evidence)
         latest["horizon_variant_count"] = len(horizons)
         latest.update(admission)
         if _text(latest.get("status")) not in {
@@ -1047,23 +1389,17 @@ def _build_paper_cohort_manifest(
                     if _text(latest.get("status")) == "REVIEW_READY"
                     else "OBSERVING"
                 )
-                observation_candidates = [
-                    value
-                    for value in (
-                        _text(latest.get("observation_start_at")),
-                        observation_start_at or "",
-                        _text(latest.get("admitted_at")),
-                    )
-                    if value
-                ]
                 latest["observation_start_at"] = (
-                    max(observation_candidates, key=_timestamp_sort_value)
-                    if observation_candidates
-                    else None
+                    _text(latest.get("observation_start_at"))
+                    or _text(latest.get("admitted_at"))
+                    or observation_start_at
+                    or None
                 )
             else:
                 latest["status"] = "FORMING"
-                latest["observation_start_at"] = None
+                latest["observation_start_at"] = (
+                    _text(latest.get("observation_start_at")) or None
+                )
         else:
             latest["formal_observation_eligible"] = False
         latest["created_at"] = _text(latest.get("created_at")) or _text(
@@ -1118,8 +1454,7 @@ def _build_paper_cohort_manifest(
             "observation_start_at": new_cohort_observation_start_at,
             "status": "OBSERVING" if all_members_admitted else "FORMING",
             **admission,
-            "raw_closed_trade_count": len(run_rows),
-            "independent_closed_trade_count": len(event_ids),
+            **evidence,
             "horizon_variant_count": len(horizons),
             "created_at": admitted,
             "last_evaluated_at": evaluated_at,
@@ -1164,6 +1499,8 @@ def _promotion_gate_frame_from_registry(
     runs: pl.DataFrame,
     proposals: pl.DataFrame,
     strategy_cost_trust: pl.DataFrame,
+    cohort: Mapping[str, Any] | None = None,
+    open_trades: pl.DataFrame | None = None,
 ) -> pl.DataFrame:
     created_at = datetime.now(UTC).isoformat()
     daily_rows = _latest_rows_by_strategy(daily)
@@ -1171,6 +1508,11 @@ def _promotion_gate_frame_from_registry(
     event_variants = _event_variant_counts(run_rows)
     proposal_rows = _proposal_rows(proposals)
     cost_trust_rows = strategy_cost_trust.to_dicts() if not strategy_cost_trust.is_empty() else []
+    open_rows = (
+        open_trades.to_dicts()
+        if open_trades is not None and not open_trades.is_empty()
+        else []
+    )
     rows: list[dict[str, Any]] = []
     for registry_row in registry.to_dicts() if not registry.is_empty() else []:
         proposal_id, paper_tracker_id, strategy_candidate, symbol = _row_key_tuple(registry_row)
@@ -1189,6 +1531,8 @@ def _promotion_gate_frame_from_registry(
                 strategy_cost_trust=_match_cost_trust_row(cost_trust_rows, registry_row),
                 event_variants=event_variants,
                 created_at=created_at,
+                cohort=cohort or {},
+                entry_rows=[row for row in open_rows if _row_matches_key(row, key)],
             )
         )
     return _frame(rows, PAPER_STRATEGY_PROMOTION_GATE_SCHEMA)
@@ -1303,6 +1647,8 @@ def build_paper_strategy_pipeline_frames(
     runs: pl.DataFrame | None = None,
     daily: pl.DataFrame | None = None,
     strategy_cost_trust: pl.DataFrame | None = None,
+    cohort_manifest: pl.DataFrame | None = None,
+    open_trades: pl.DataFrame | None = None,
     created_at: datetime | None = None,
 ) -> dict[str, pl.DataFrame]:
     created = (created_at or datetime.now(UTC)).isoformat()
@@ -1326,6 +1672,15 @@ def build_paper_strategy_pipeline_frames(
     cost_trust_rows = (
         strategy_cost_trust.to_dicts()
         if strategy_cost_trust is not None and not strategy_cost_trust.is_empty()
+        else []
+    )
+    cohort_context = _current_cohort_context(
+        cohort_manifest if cohort_manifest is not None else pl.DataFrame(),
+        proposal_frame,
+    )
+    open_rows = (
+        open_trades.to_dicts()
+        if open_trades is not None and not open_trades.is_empty()
         else []
     )
 
@@ -1366,6 +1721,8 @@ def build_paper_strategy_pipeline_frames(
             strategy_cost_trust=_match_cost_trust_row(cost_trust_rows, registry),
             event_variants=event_variants,
             created_at=created,
+            cohort=cohort_context,
+            entry_rows=[row for row in open_rows if _row_matches_key(row, key)],
         )
         registry_rows.append(registry)
         gate_rows.append(gate)
@@ -1665,7 +2022,11 @@ def _promotion_gate_row(
     strategy_cost_trust: Mapping[str, Any],
     event_variants: Mapping[str, set[str]],
     created_at: str,
+    cohort: Mapping[str, Any] | None = None,
+    entry_rows: list[dict[str, Any]] | None = None,
 ) -> dict[str, Any]:
+    cohort = cohort or {}
+    entry_rows = entry_rows or []
     values = _paper_pnl_values(runs)
     recent_values = _recent_paper_pnl_values(runs)
     paper_days = _int(daily.get("paper_days")) or _int(daily.get("heartbeat_day_count")) or 0
@@ -1684,14 +2045,60 @@ def _promotion_gate_row(
     max_drawdown_bps = _max_drawdown(values)
     max_day_concentration = _max_day_concentration(runs)
     regimes = _paper_regimes(runs)
+    formal_runs = [
+        row
+        for row in runs
+        if _text(row.get("cohort_scope")) == "FORMAL_COHORT_ENTRY"
+    ]
+    formal_open_rows = [
+        row
+        for row in entry_rows
+        if _text(row.get("cohort_scope")) == "FORMAL_COHORT_ENTRY"
+    ]
+    formal_entry_rows = [*formal_runs, *formal_open_rows]
+    formal_values = _paper_pnl_values(formal_runs)
+    formal_recent_values = _recent_paper_pnl_values(formal_runs)
+    formal_event_ids = {
+        _paper_event_id(row) for row in formal_runs if _paper_event_id(row)
+    }
+    formal_entry_days = {
+        value.date().isoformat()
+        for value in (_entry_timestamp(row) for row in formal_entry_rows)
+        if value is not None
+    }
+    formal_arrival_count = sum(
+        _float(row.get("arrival_mid") or row.get("entry_arrival_mid")) is not None
+        for row in formal_entry_rows
+    )
+    formal_arrival_mid_coverage = (
+        formal_arrival_count / len(formal_entry_rows) if formal_entry_rows else 0.0
+    )
+    formal_regimes = _paper_regimes(formal_entry_rows)
+    cohort_status = _text(cohort.get("status")).upper()
+    cohort_observation_start_at = _text(cohort.get("observation_start_at"))
+    observation_at = _strict_timestamp(cohort_observation_start_at)
+    evaluated_at = _strict_timestamp(created_at)
+    cohort_calendar_days = (
+        max((evaluated_at.date() - observation_at.date()).days + 1, 0)
+        if evaluated_at is not None
+        and observation_at is not None
+        and cohort_status in {"OBSERVING", "REVIEW_READY"}
+        else 0
+    )
     single_regime_strategy = _bool(daily.get("single_regime_strategy")) is True
     tail_risk_status = _tail_risk_status(values)
     regime_coverage_status = (
         "PASS" if len(regimes) >= 2 or single_regime_strategy else "INSUFFICIENT"
     )
-    cost_sources, cost_source_errors = parse_cost_source_mix(
-        daily.get("cost_source_mix")
-    )
+    cost_sources: set[str] = set()
+    cost_source_errors: list[str] = []
+    for run in runs:
+        observed_sources, observed_errors = parse_cost_source_mix(
+            run.get("cost_source") or run.get("cost_source_mix")
+        )
+        cost_sources.update(observed_sources)
+        cost_source_errors.extend(observed_errors)
+    cost_source_errors = sorted(set(cost_source_errors))
     paper_cost_model_usable = bool(cost_sources) and not cost_source_errors and (
         cost_sources <= TRUSTED_PAPER_COST_SOURCES
     )
@@ -1708,15 +2115,39 @@ def _promotion_gate_row(
         else:
             closed_trade_cost_invalid_count += 1
     closed_trade_cost_missing_count = max(
-        closed_entries - closed_trade_cost_observation_count,
+        len(runs) - closed_trade_cost_observation_count,
         closed_trade_cost_invalid_count,
         0,
     )
     closed_trade_cost_coverage = (
-        closed_trade_cost_observation_count / closed_entries
-        if closed_entries > 0
-        else 1.0
+        closed_trade_cost_observation_count / len(runs)
+        if runs
+        else 0.0
     )
+    formal_cost_sources: set[str] = set()
+    formal_cost_source_errors: list[str] = []
+    formal_cost_observation_count = 0
+    for run in formal_runs:
+        run_sources, run_errors = parse_cost_source_mix(
+            run.get("cost_source") or run.get("cost_source_mix")
+        )
+        formal_cost_sources.update(run_sources)
+        formal_cost_source_errors.extend(run_errors)
+        if run_sources and not run_errors:
+            formal_cost_observation_count += 1
+    formal_cost_source_errors = sorted(set(formal_cost_source_errors))
+    formal_cost_missing_count = max(
+        len(formal_runs) - formal_cost_observation_count,
+        0,
+    )
+    formal_cost_coverage = (
+        formal_cost_observation_count / len(formal_runs)
+        if formal_runs
+        else 0.0
+    )
+    formal_paper_cost_model_usable = bool(formal_cost_sources) and not (
+        formal_cost_source_errors
+    ) and formal_cost_sources <= TRUSTED_PAPER_COST_SOURCES
     accepted = bool(registry.get("accepted"))
     reject_reason = _text(registry.get("reject_reason"))
     current_ack_present = _bool(registry.get("current_ack_present")) is True
@@ -1748,20 +2179,24 @@ def _promotion_gate_row(
         accepted=accepted,
         reject_reason=reject_reason,
         paper_tracker_created=paper_tracker_created,
-        paper_days=paper_days,
-        closed_entries=closed_entries,
-        entry_day_count=entry_day_count,
-        arrival_mid_coverage=arrival_mid_coverage,
-        mean_bps=mean_bps,
-        median_bps=median_bps,
-        p25_bps=p25_bps,
-        recent_mean=recent_mean,
+        paper_days=cohort_calendar_days,
+        closed_entries=len(formal_runs),
+        entry_day_count=len(formal_entry_days),
+        arrival_mid_coverage=formal_arrival_mid_coverage,
+        mean_bps=_mean(formal_values),
+        median_bps=_median(formal_values),
+        p25_bps=_percentile(formal_values, 0.25),
+        recent_mean=_mean(formal_recent_values),
         cost_trusted=False,
-        max_drawdown_bps=max_drawdown_bps,
+        max_drawdown_bps=_max_drawdown(formal_values),
         max_drawdown_budget_bps=_float(daily.get("max_drawdown_budget_bps")) or 500.0,
-        max_day_concentration=max_day_concentration,
-        tail_risk_status=tail_risk_status,
-        regime_coverage_status=regime_coverage_status,
+        max_day_concentration=_max_day_concentration(formal_runs),
+        tail_risk_status=_tail_risk_status(formal_values),
+        regime_coverage_status=(
+            "PASS"
+            if len(formal_regimes) >= 2 or single_regime_strategy
+            else "INSUFFICIENT"
+        ),
         rules_locked=rules_locked,
         backtest_paper_conflict=backtest_paper_conflict,
         daily_block_reasons=_json_list(daily.get("live_block_reason")),
@@ -1785,22 +2220,22 @@ def _promotion_gate_row(
     dimensional_scale_usable = dimensional_cost_trust_matched and _bool(
         strategy_cost_trust.get("live_cost_usable")
     )
-    closed_cost_complete = closed_trade_cost_missing_count == 0
+    closed_cost_complete = bool(formal_runs) and formal_cost_missing_count == 0
     effective_cost_trusted = (
-        paper_cost_model_usable
+        formal_paper_cost_model_usable
         and closed_cost_complete
         and dimensional_paper_usable
     )
     cost_trusted_for_canary = (
         effective_cost_trusted
         and dimensional_canary_usable
-        and bool(closed_cost_sources)
-        and closed_cost_sources <= CANARY_COST_SOURCES
+        and bool(formal_cost_sources)
+        and formal_cost_sources <= CANARY_COST_SOURCES
     )
     cost_trusted_for_scale = (
         cost_trusted_for_canary
         and dimensional_scale_usable
-        and closed_cost_sources <= SCALE_COST_SOURCES
+        and formal_cost_sources <= SCALE_COST_SOURCES
     )
     block_reasons = [
         reason for reason in block_reasons if reason != "cost_not_trusted_for_paper"
@@ -1811,16 +2246,24 @@ def _promotion_gate_row(
         block_reasons.append("cost_trust_row_missing")
     elif cost_match_status == "AMBIGUOUS":
         block_reasons.append("cost_trust_row_ambiguous")
-    if closed_trade_cost_missing_count > 0:
+    if formal_cost_missing_count > 0:
         block_reasons.append("closed_trade_cost_source_missing")
     block_reasons.extend(
-        f"cost_source_data_quality_error:{error}" for error in cost_source_errors
+        f"cost_source_data_quality_error:{error}"
+        for error in formal_cost_source_errors
     )
     identity_conflict = _bool(registry.get("identity_conflict"))
     if identity_conflict:
         block_reasons.append("canonical_identity_conflict")
     if not current_runtime_eligible:
         block_reasons.append("current_runtime_not_eligible")
+    if cohort_status not in {"OBSERVING", "REVIEW_READY"}:
+        block_reasons.append("formal_cohort_not_observing")
+    if any(
+        _text(row.get("cohort_scope")) == "ENTRY_TIME_NOT_OBSERVABLE"
+        for row in [*runs, *entry_rows]
+    ):
+        block_reasons.append("formal_entry_time_not_observable")
     block_reasons = sorted(set(block_reasons))
     paper_ready = not block_reasons
     lifecycle = (
@@ -1835,16 +2278,16 @@ def _promotion_gate_row(
     promotion_score = _promotion_score(block_reasons)
     promotion_confidence = _promotion_confidence(
         score=promotion_score,
-        closed_entries=closed_entries,
-        paper_days=paper_days,
+        closed_entries=len(formal_runs),
+        paper_days=cohort_calendar_days,
     )
     if cost_match_status == "MISSING":
         cost_evidence_status = "COST_TRUST_ROW_MISSING"
     elif cost_match_status == "AMBIGUOUS":
         cost_evidence_status = "COST_TRUST_ROW_AMBIGUOUS"
-    elif closed_trade_cost_missing_count > 0:
+    elif formal_cost_missing_count > 0:
         cost_evidence_status = "CLOSED_TRADE_COST_SOURCE_MISSING"
-    elif cost_source_errors:
+    elif formal_cost_source_errors:
         cost_evidence_status = "COST_SOURCE_DATA_QUALITY_ERROR"
     else:
         cost_evidence_status = "PASS" if effective_cost_trusted else "COST_NOT_USABLE"
@@ -1880,6 +2323,22 @@ def _promotion_gate_row(
         "historical_closed_trade_count": historical_closed_trade_count,
         "current_contract_closed_trade_count": current_contract_closed_trade_count,
         "paper_tracker_status": paper_tracker_status,
+        "cohort_id": _text(cohort.get("cohort_id")),
+        "cohort_version": _int(cohort.get("cohort_version")) or 0,
+        "cohort_status": cohort_status,
+        "cohort_observation_start_at": cohort_observation_start_at,
+        "promotion_evidence_scope": "FORMAL_COHORT_ONLY",
+        "cohort_calendar_days": cohort_calendar_days,
+        "formal_entry_day_count": len(formal_entry_days),
+        "formal_closed_trade_count": len(formal_runs),
+        "formal_independent_closed_event_count": len(formal_event_ids),
+        "formal_mean_after_cost_bps": _mean(formal_values),
+        "formal_median_after_cost_bps": _median(formal_values),
+        "formal_p25_after_cost_bps": _percentile(formal_values, 0.25),
+        "formal_recent_7d_mean_bps": _mean(formal_recent_values),
+        "formal_regime_count": len(formal_regimes),
+        "formal_cost_coverage": formal_cost_coverage,
+        "formal_arrival_mid_coverage": formal_arrival_mid_coverage,
         "paper_runs": len(runs),
         "paper_days": paper_days,
         "closed_entries": closed_entries,

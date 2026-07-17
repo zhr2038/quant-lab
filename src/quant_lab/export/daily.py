@@ -2526,6 +2526,8 @@ CSV_SCHEMAS: dict[str, list[str]] = {
         "strategy_id",
         "proposal_id",
         "paper_tracker_id",
+        "proposal_hash",
+        "paper_trade_id",
         "strategy_candidate",
         "run_id",
         "ts_utc",
@@ -2550,6 +2552,17 @@ CSV_SCHEMAS: dict[str, list[str]] = {
         "symbol_match_verified",
         "paper_source",
         "paper_count_scope",
+        "cohort_id",
+        "cohort_version",
+        "proposal_content_snapshot_sha256",
+        "cohort_observation_start_at",
+        "entry_signal_ts",
+        "entry_decision_ts",
+        "opened_at",
+        "closed_at",
+        "cohort_scope",
+        "canonical_opportunity_id",
+        "evidence_independence_weight",
         "risk_level",
         "alpha6_score",
         "alpha6_side",
@@ -4085,6 +4098,11 @@ CSV_SCHEMAS.update(
             "live_order_effect",
             "created_at",
             "updated_at",
+            "cohort_id",
+            "cohort_version",
+            "cohort_observation_start_at",
+            "cohort_status",
+            "cohort_proposal_content_snapshot_sha256",
             *_V5_PAPER_TELEMETRY_AUDIT_FIELDS,
         ],
         "v5/v5_paper_strategy_state.csv": [
@@ -4097,6 +4115,23 @@ CSV_SCHEMAS.update(
             "state",
             "paper_trade_id",
             "open_paper_position",
+            "proposal_content_snapshot_sha256",
+            "cohort_id",
+            "cohort_version",
+            "cohort_observation_start_at",
+            "entry_signal_ts",
+            "entry_decision_ts",
+            "opened_at",
+            "closed_at",
+            "cohort_scope",
+            "canonical_opportunity_id",
+            "evidence_independence_weight",
+            "entry_arrival_mid",
+            "entry_bid",
+            "entry_ask",
+            "cost_source",
+            "cost_trust_level",
+            "market_regime",
             "cooldown_remaining_bars",
             "last_processed_bar_ts",
             "updated_at",
@@ -4140,6 +4175,15 @@ CSV_SCHEMAS.update(
                     "direction",
                     "entry_signal_ts",
                     "entry_decision_ts",
+                    "opened_at",
+                    "closed_at",
+                    "proposal_content_snapshot_sha256",
+                    "cohort_id",
+                    "cohort_version",
+                    "cohort_observation_start_at",
+                    "cohort_scope",
+                    "canonical_opportunity_id",
+                    "evidence_independence_weight",
                     "entry_arrival_mid",
                     "entry_bid",
                     "entry_ask",
@@ -4520,6 +4564,7 @@ def _publish_ops_truthfulness_snapshot(
     *,
     generated_at: datetime,
     pre_export_v5: dict[str, Any] | None = None,
+    persist: bool = True,
 ) -> _DatasetSnapshot:
     frames = dict(snapshot.frames)
     row_counts = dict(snapshot.row_counts)
@@ -4538,6 +4583,31 @@ def _publish_ops_truthfulness_snapshot(
     contract_row = _latest_v5_contract_status_row(
         frames.get("v5_quant_lab_contract_status", pl.DataFrame())
     )
+    if not snapshot_frame.is_empty():
+        last_consumed_at = str(
+            contract_row.get("proposal_snapshot_fetched_at")
+            or contract_row.get("fetched_at")
+            or contract_row.get("generated_at")
+            or ""
+        )
+        snapshot_frame = snapshot_frame.with_columns(
+            pl.lit(generated_at.astimezone(UTC).isoformat()).alias(
+                "last_evaluated_at"
+            ),
+            pl.lit(last_consumed_at).alias("last_consumed_by_v5_at"),
+        )
+        frames["paper_strategy_proposal_snapshot"] = snapshot_frame
+        row_counts["paper_strategy_proposal_snapshot"] = snapshot_frame.height
+        if persist:
+            _publish_export_frame(
+                root,
+                frames=frames,
+                row_counts=row_counts,
+                warnings=warnings,
+                dataset_name="paper_strategy_proposal_snapshot",
+                frame=snapshot_frame,
+            )
+        snapshot_row = snapshot_frame.tail(1).to_dicts()[0]
     for key, value in (
         ("proposal_snapshot_id", snapshot_row.get("proposal_snapshot_id")),
         ("proposal_snapshot_sha256", snapshot_row.get("proposal_snapshot_sha256")),
@@ -4612,9 +4682,25 @@ def _publish_ops_truthfulness_snapshot(
         ),
         generated_at=generated_at,
     )
+    report_context = _derived_report_context(v5_context, snapshot_row)
+    production_slo = _with_derived_report_metadata(
+        auth["api_auth_production_slo"],
+        evaluated_at=generated_at,
+        context=report_context,
+    )
+    paper_runtime_freshness = _with_derived_report_metadata(
+        paper_runtime_freshness,
+        evaluated_at=generated_at,
+        context=report_context,
+    )
+    propagation = _with_derived_report_metadata(
+        propagation,
+        evaluated_at=generated_at,
+        context=report_context,
+    )
     for dataset_name, frame in (
         ("api_auth_incident", auth["api_auth_incident"]),
-        ("api_auth_production_slo", auth["api_auth_production_slo"]),
+        ("api_auth_production_slo", production_slo),
         (
             "api_auth_security_rejections",
             auth["api_auth_security_rejections"],
@@ -4623,14 +4709,18 @@ def _publish_ops_truthfulness_snapshot(
         ("paper_runtime_freshness", paper_runtime_freshness),
         ("paper_proposal_propagation_status", propagation),
     ):
-        _publish_export_frame(
-            root,
-            frames=frames,
-            row_counts=row_counts,
-            warnings=warnings,
-            dataset_name=dataset_name,
-            frame=frame,
-        )
+        if persist:
+            _publish_export_frame(
+                root,
+                frames=frames,
+                row_counts=row_counts,
+                warnings=warnings,
+                dataset_name=dataset_name,
+                frame=frame,
+            )
+        else:
+            frames[dataset_name] = frame
+            row_counts[dataset_name] = frame.height
     return _DatasetSnapshot(
         frames=frames,
         row_counts=row_counts,
@@ -4639,13 +4729,80 @@ def _publish_ops_truthfulness_snapshot(
             **snapshot.transient_frames,
             "api_auth_error_timeline": auth["api_auth_error_timeline"],
             "api_auth_client_summary": auth["api_auth_client_summary"],
-            "api_auth_production_slo": auth["api_auth_production_slo"],
+            "api_auth_production_slo": production_slo,
             "api_auth_security_rejections": auth["api_auth_security_rejections"],
             "api_auth_manual_probe": auth["api_auth_manual_probe"],
             "paper_runtime_freshness": paper_runtime_freshness,
             "paper_proposal_propagation_status": propagation,
         },
     )
+
+
+DERIVED_REPORT_MAX_AGE_SECONDS = 3 * 60 * 60
+
+
+def _derived_report_context(
+    v5_context: Mapping[str, Any],
+    snapshot_row: Mapping[str, Any],
+) -> dict[str, str]:
+    return {
+        "source_bundle_sha256": str(
+            v5_context.get("selected_v5_bundle_sha256")
+            or v5_context.get("expected_v5_bundle_sha256")
+            or v5_context.get("ingested_v5_bundle_sha256")
+            or ""
+        ).strip().lower(),
+        "proposal_snapshot_id": str(
+            snapshot_row.get("proposal_snapshot_id")
+            or v5_context.get("proposal_snapshot_id")
+            or ""
+        ).strip(),
+        "proposal_snapshot_sha256": str(
+            snapshot_row.get("proposal_snapshot_sha256")
+            or v5_context.get("proposal_snapshot_sha256")
+            or ""
+        ).strip().lower(),
+        "proposal_content_snapshot_id": str(
+            snapshot_row.get("proposal_content_snapshot_id")
+            or v5_context.get("proposal_content_snapshot_id")
+            or ""
+        ).strip(),
+        "proposal_content_snapshot_sha256": str(
+            snapshot_row.get("proposal_content_snapshot_sha256")
+            or v5_context.get("proposal_content_snapshot_sha256")
+            or ""
+        ).strip().lower(),
+    }
+
+
+def _with_derived_report_metadata(
+    frame: pl.DataFrame,
+    *,
+    evaluated_at: datetime,
+    context: Mapping[str, Any],
+    max_age_seconds: int = DERIVED_REPORT_MAX_AGE_SECONDS,
+) -> pl.DataFrame:
+    if frame.is_empty():
+        return frame
+    evaluated = evaluated_at.astimezone(UTC)
+    rows: list[dict[str, Any]] = []
+    for source in frame.to_dicts():
+        row = dict(source)
+        report_at = _parse_v5_context_ts(row.get("generated_at"))
+        age_seconds = (
+            max(0, int((evaluated - report_at).total_seconds()))
+            if report_at is not None
+            else None
+        )
+        row.update(context)
+        row["derived_report_age_seconds"] = age_seconds
+        row["derived_report_status"] = (
+            "FRESH"
+            if age_seconds is not None and age_seconds <= max_age_seconds
+            else "STALE_DERIVED_REPORT"
+        )
+        rows.append(row)
+    return pl.DataFrame(rows, infer_schema_length=None)
 
 
 def _latest_v5_contract_status_row(frame: pl.DataFrame) -> dict[str, Any]:
@@ -5469,6 +5626,14 @@ def export_daily_pack(
     pre_export_v5_warnings = [str(warning) for warning in pre_export_v5.get("warnings", [])]
     if materialization_mode:
         stage_started = _export_stage_start("sealed_snapshot_materialization")
+        _populate_acceptance_context_identity(pre_export_v5)
+        snapshot = _publish_ops_truthfulness_snapshot(
+            root,
+            snapshot,
+            generated_at=generated_at,
+            pre_export_v5=pre_export_v5,
+            persist=False,
+        )
         _populate_acceptance_context_identity(pre_export_v5)
         _record_export_stage(
             export_stage_timings,
@@ -7275,6 +7440,12 @@ def _dataset_members(
         "paper_proposal_propagation_status",
         pl.DataFrame(),
     )
+    derived_generated_at = _latest_v5_contract_status_row(
+        api_auth_production_slo
+    ).get("generated_at")
+    derived_reference_at = (
+        _parse_v5_context_ts(derived_generated_at) or datetime.now(UTC)
+    )
     post_fix_funnel_attribution = build_post_fix_funnel_attribution(
         frames.get("v5_trade_opportunity_funnel", pl.DataFrame())
     )
@@ -7286,7 +7457,7 @@ def _dataset_members(
         propagation=paper_proposal_propagation_status,
         auth_incidents=api_auth_production_slo,
         acceptance_context=pre_export_v5 or {},
-        generated_at=export_reference_at,
+        generated_at=derived_reference_at,
     )
 
     return {

@@ -36,11 +36,41 @@ def test_paper_api_gets_and_ack_is_disabled_by_default(monkeypatch, tmp_path):
     lake = tmp_path / "lake"
     proposal = _proposal()
     published = publish_proposals(lake, [proposal])
-    publish_canonical_proposal_snapshot(
+    _snapshot_frame, snapshot = publish_canonical_proposal_snapshot(
         lake,
         published,
         generated_at=datetime(2026, 7, 10, 0, 30, tzinfo=UTC),
         source_quant_lab_commit="a" * 40,
+    )
+    write_parquet_dataset(
+        pl.DataFrame(
+            [
+                {
+                    "cohort_id": "paper-cohort-api",
+                    "cohort_version": 3,
+                    "observation_start_at": "2026-07-10T01:00:00Z",
+                    "status": "OBSERVING",
+                    "proposal_content_snapshot_sha256": snapshot[
+                        "proposal_content_snapshot_sha256"
+                    ],
+                    "last_evaluated_at": "2026-07-10T01:05:00Z",
+                }
+            ]
+        ),
+        lake / "gold/paper_cohort_manifest",
+    )
+    write_parquet_dataset(
+        pl.DataFrame(
+            [
+                {
+                    "proposal_content_snapshot_sha256": snapshot[
+                        "proposal_content_snapshot_sha256"
+                    ],
+                    "proposal_snapshot_fetched_at": "2026-07-10T01:06:00Z",
+                }
+            ]
+        ),
+        lake / "silver/v5_quant_lab_contract_status",
     )
     monkeypatch.setenv("QUANT_LAB_LAKE_ROOT", str(lake))
     monkeypatch.delenv("QUANT_LAB_PAPER_ACK_WRITE_ENABLED", raising=False)
@@ -62,6 +92,16 @@ def test_paper_api_gets_and_ack_is_disabled_by_default(monkeypatch, tmp_path):
     assert payload["source_quant_lab_commit"] == "a" * 40
     assert payload["proposal_contract_version"] == "quant_lab.paper_strategy.v1"
     assert payload["proposal_compiler_version"]
+    assert payload["cohort_id"] == "paper-cohort-api"
+    assert payload["cohort_version"] == 3
+    assert payload["cohort_observation_start_at"] == "2026-07-10T01:00:00Z"
+    assert payload["cohort_status"] == "OBSERVING"
+    assert payload["cohort_proposal_content_snapshot_sha256"] == payload[
+        "proposal_content_snapshot_sha256"
+    ]
+    assert payload["cohort_last_evaluated_at"] == "2026-07-10T01:05:00Z"
+    assert payload["last_evaluated_at"]
+    assert payload["last_consumed_by_v5_at"] == "2026-07-10T01:06:00Z"
     assert payload["proposals"][0]["proposal_snapshot_id"] == payload[
         "proposal_snapshot_id"
     ]

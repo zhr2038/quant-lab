@@ -119,7 +119,6 @@ def _build_bigscreen_snapshot_payload(root: Path) -> dict[str, Any]:
     data_health = _safe_summary("data_health_summary", readers.data_health_summary, root)
     cost = _safe_summary("cost_model_summary", readers.cost_model_summary, root)
     strategy = _safe_strategy_summary(root)
-    ai_research = _safe_ai_research_summary(root, generated_at=generated_at)
     market = _safe_summary("market_regime_summary", readers.market_regime_summary, root)
     collectors = _safe_summary("okx_collector_summary", readers.okx_collector_summary, root)
     v5 = _safe_summary("v5_telemetry_summary", readers.v5_telemetry_summary, root)
@@ -139,6 +138,11 @@ def _build_bigscreen_snapshot_payload(root: Path) -> dict[str, Any]:
         readers.default_exports_root(root),
     )
     exports = _web_v2_export_summary_from_history(root, export_history, generated_at)
+    ai_research = _safe_ai_research_summary(
+        root,
+        generated_at=generated_at,
+        latest_expert_pack=_latest_authoritative_export_pack(exports),
+    )
     web_events = perf.recent_events(limit=50)
     api_metrics = _safe_api_metrics(root)
     web_smoke = _web_v2_smoke_status(generated_at)
@@ -564,6 +568,7 @@ def _safe_ai_research_summary(
     root: Path,
     *,
     generated_at: datetime,
+    latest_expert_pack: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     dataset_names = (
         "ai_research_run",
@@ -585,6 +590,33 @@ def _safe_ai_research_summary(
     run_rows = _ai_rows(frames["ai_research_run"], sort_by="completed_at", limit=8)
     latest_run = run_rows[0] if run_rows else {}
     latest_task_id = str(latest_run.get("task_id") or "")
+    latest_available_pack = latest_expert_pack or {}
+    latest_available_pack_name = str(
+        latest_available_pack.get("name")
+        or latest_available_pack.get("pack_name")
+        or ""
+    )
+    latest_available_pack_sha256 = str(
+        latest_available_pack.get("pack_sha256")
+        or latest_available_pack.get("sha256")
+        or ""
+    )
+    result_pack_name = str(latest_run.get("source_pack_name") or "")
+    result_pack_sha256 = str(latest_run.get("source_pack_sha256") or "")
+    source_pack_matches_latest: bool | None = None
+    if latest_task_id and latest_available_pack_sha256 and result_pack_sha256:
+        source_pack_matches_latest = latest_available_pack_sha256 == result_pack_sha256
+    elif latest_task_id and latest_available_pack_name and result_pack_name:
+        source_pack_matches_latest = latest_available_pack_name == result_pack_name
+
+    if not latest_task_id:
+        source_pack_freshness_status = "NO_RESULT"
+    elif source_pack_matches_latest is True:
+        source_pack_freshness_status = "CURRENT"
+    elif source_pack_matches_latest is False:
+        source_pack_freshness_status = "STALE_SOURCE_PACK"
+    else:
+        source_pack_freshness_status = "NOT_OBSERVABLE"
     counts = {
         "run_count": frames["ai_research_run"].height,
         "finding_count": frames["ai_research_finding"].height,
@@ -598,6 +630,8 @@ def _safe_ai_research_summary(
         status = "RUNNING"
     elif int(queue_counts.get("pending") or 0) > 0:
         status = "PENDING"
+    elif source_pack_matches_latest is False:
+        status = "AI_RESULT_STALE"
     elif run_rows:
         status = "AI_RESULT_AVAILABLE"
     elif int(queue_counts.get("failed") or 0) > 0:
@@ -620,6 +654,8 @@ def _safe_ai_research_summary(
     current_code_targets = _ai_rows_for_task(
         frames["ai_code_review_target"], latest_task_id, sort_by="completed_at", limit=8
     )
+    if source_pack_matches_latest is False:
+        warnings.append("ai_result_source_pack_stale")
 
     return {
         "status": status,
@@ -629,6 +665,10 @@ def _safe_ai_research_summary(
         "live_order_effect": "none_read_only_research",
         "latest_run": latest_run,
         "latest_run_age_seconds": _age_seconds(generated_at, latest_run.get("completed_at")),
+        "source_pack_freshness_status": source_pack_freshness_status,
+        "source_pack_matches_latest": source_pack_matches_latest,
+        "latest_available_pack_name": latest_available_pack_name or None,
+        "latest_available_pack_sha256": latest_available_pack_sha256 or None,
         "counts": counts,
         "queue": queue,
         "recent_runs": run_rows,
@@ -644,6 +684,26 @@ def _safe_ai_research_summary(
         "code_review_targets": current_code_targets,
         "warnings": warnings,
     }
+
+
+def _latest_authoritative_export_pack(exports: dict[str, Any]) -> dict[str, Any]:
+    rows = exports.get("packs")
+    if not isinstance(rows, list):
+        return {}
+    for row in rows:
+        if not isinstance(row, dict):
+            continue
+        if row.get("authoritative_snapshot") is False:
+            continue
+        if row.get("nas_artifact_validated") is False:
+            continue
+        if row.get("control_plane_receipt_verified") is False:
+            continue
+        if row.get("download_ready") is False:
+            continue
+        if row.get("pack_sha256") or row.get("name") or row.get("pack_name"):
+            return row
+    return {}
 
 
 def _ai_rows(frame: pl.DataFrame, *, sort_by: str, limit: int) -> list[dict[str, Any]]:

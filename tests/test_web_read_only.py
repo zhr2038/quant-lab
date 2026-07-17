@@ -2532,6 +2532,31 @@ def test_candidate_label_freshness_prefers_generated_at_over_future_label_ts():
     assert payload["latest_timestamp"] == (now - timedelta(minutes=15)).isoformat()
 
 
+def test_current_paper_tracker_freshness_uses_bundle_ingest_not_creation_time():
+    now = datetime(2026, 7, 17, 11, tzinfo=UTC)
+    created_at = now - timedelta(days=2)
+    ingest_ts = now - timedelta(minutes=10)
+
+    payload = readers.dataset_freshness_payload(
+        "paper_strategy_trackers_current",
+        pl.DataFrame(
+            [
+                {
+                    "proposal_id": "proposal-1",
+                    "created_at": created_at,
+                    "updated_at": created_at,
+                    "ingest_ts": ingest_ts,
+                }
+            ]
+        ),
+        now=now,
+    )
+
+    assert payload["freshness_status"] == "fresh"
+    assert payload["timestamp_column"] == "ingest_ts"
+    assert payload["latest_timestamp"] == ingest_ts.isoformat()
+
+
 def test_key_pages_render_fixture_lake_without_network_or_mutation(tmp_path):
     lake_root = _fixture_lake(tmp_path)
     fake = FakeStreamlit()

@@ -655,6 +655,14 @@ DATASET_FRESHNESS_TIMESTAMP_COLUMNS: dict[str, tuple[str, ...]] = {
     # `as_of_ts` is the advisory business date and may be midnight UTC for the
     # next Asia/Shanghai export day. Freshness should track production time.
     "strategy_opportunity_advisory": ("generated_at", "created_at", "as_of_ts"),
+    # This is a current-view projection rebuilt from the selected V5 bundle.
+    # Tracker creation is immutable and must not make a freshly ingested view stale.
+    "paper_strategy_trackers_current": (
+        "ingest_ts",
+        "bundle_ts",
+        "updated_at",
+        "created_at",
+    ),
 }
 
 CORE_DIAGNOSTIC_DATASETS = {

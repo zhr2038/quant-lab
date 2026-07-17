@@ -178,6 +178,57 @@ def test_bigscreen_ai_status_prefers_pending_run_over_previous_result(monkeypatc
     assert ai["queue"]["counts"]["pending"] == 1
 
 
+def test_bigscreen_ai_result_discloses_newer_authoritative_pack(monkeypatch, tmp_path):
+    lake = tmp_path / "lake"
+    queue = tmp_path / "ai_queue"
+    queue.mkdir(parents=True)
+    monkeypatch.setenv("QUANT_LAB_AI_QUEUE_ROOT", str(queue))
+    write_parquet_dataset(
+        pl.DataFrame(
+            [
+                {
+                    "task_id": "task-old-pack",
+                    "source_pack_name": "expert-old.zip",
+                    "source_pack_sha256": "a" * 64,
+                    "completed_at": datetime(2026, 7, 17, tzinfo=UTC),
+                    "system_state": "READY_FOR_PROPOSALS",
+                }
+            ]
+        ),
+        lake / "gold" / "ai_research_run",
+    )
+
+    stale = bigscreen_module._safe_ai_research_summary(
+        lake,
+        generated_at=datetime(2026, 7, 17, 1, tzinfo=UTC),
+        latest_expert_pack={
+            "name": "expert-new.zip",
+            "pack_sha256": "b" * 64,
+            "authoritative_snapshot": True,
+            "nas_artifact_validated": True,
+            "control_plane_receipt_verified": True,
+            "download_ready": True,
+        },
+    )
+    current = bigscreen_module._safe_ai_research_summary(
+        lake,
+        generated_at=datetime(2026, 7, 17, 1, tzinfo=UTC),
+        latest_expert_pack={
+            "name": "expert-old.zip",
+            "pack_sha256": "a" * 64,
+        },
+    )
+
+    assert stale["status"] == "AI_RESULT_STALE"
+    assert stale["source_pack_freshness_status"] == "STALE_SOURCE_PACK"
+    assert stale["source_pack_matches_latest"] is False
+    assert stale["latest_available_pack_name"] == "expert-new.zip"
+    assert "ai_result_source_pack_stale" in stale["warnings"]
+    assert current["status"] == "AI_RESULT_AVAILABLE"
+    assert current["source_pack_freshness_status"] == "CURRENT"
+    assert current["source_pack_matches_latest"] is True
+
+
 def test_bigscreen_ai_queue_excludes_hidden_atomic_result_staging(monkeypatch, tmp_path):
     lake = tmp_path / "lake"
     queue = tmp_path / "ai_queue"

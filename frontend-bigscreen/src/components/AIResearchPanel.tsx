@@ -35,15 +35,20 @@ export function AIResearchPanel({ research }: { research: Record<string, unknown
   const stage1Attempts = Number(latest.stage1_attempts ?? 0);
   const stage2Attempts = Number(latest.stage2_attempts ?? 0);
   const hasResult = Boolean(stringValue(latest.task_id, ""));
+  const sourcePackFreshness = stringValue(research.source_pack_freshness_status, "NOT_OBSERVABLE");
+  const sourcePackIsStale = sourcePackFreshness === "STALE_SOURCE_PACK";
+  const latestAvailablePackName = stringValue(research.latest_available_pack_name, "");
   const stage1State = hasResult ? "COMPLETE" : "WAITING";
   const stage2State = !hasResult ? "WAITING" : stage2Allowed ? (stage2Attempts > 0 ? "COMPLETE" : "PENDING") : "GATED";
   const preflightStatus = stringValue(latest.preflight_status, "NOT_AVAILABLE");
   const preflightDisplay = preflightStatus === "NOT_AVAILABLE" ? "LEGACY NOT RECORDED" : preflightStatus;
   const routeSections = jsonStringList(latest.route_sections_json);
   const statusLabel = running > 0 && hasResult
-    ? "RUNNING · LAST RESULT"
+    ? `RUNNING · ${sourcePackIsStale ? "OLD RESULT" : "LAST RESULT"}`
     : pending > 0 && hasResult
-      ? "PENDING · LAST RESULT"
+      ? `PENDING · ${sourcePackIsStale ? "OLD RESULT" : "LAST RESULT"}`
+      : sourcePackIsStale
+        ? "STALE SOURCE PACK"
       : status.replace(/_/g, " ");
 
   return (
@@ -53,13 +58,15 @@ export function AIResearchPanel({ research }: { research: Record<string, unknown
           <h2 className="section-title icon-title"><BrainCircuit size={24} />AI 研究工作台</h2>
           <p className="sub">确定性预检 → 诊断 → 研究假设 → 验证实验 → 人工复核</p>
         </div>
-        <span className={`ai-status ${statusClass(status)}`}><ShieldCheck size={15} />{statusLabel}</span>
+        <span className={`ai-status ${sourcePackIsStale ? "warning" : statusClass(status)}`}><ShieldCheck size={15} />{statusLabel}</span>
       </div>
 
-      <div className="ai-safety-strip">
+      <div className={`ai-safety-strip ${sourcePackIsStale ? "stale" : ""}`}>
         <ShieldCheck size={17} />
-        <b>只读研究</b>
-        <span>不生成交易信号 · 不修改 V5 · 不自动晋级 · live effect {stringValue(research.live_order_effect, "none")}</span>
+        <b>{sourcePackIsStale ? "只读历史结果" : "只读研究"}</b>
+        <span>{sourcePackIsStale
+          ? `最新权威包 ${latestAvailablePackName || "已生成"} 正在等待或进行 AI 消费；下方旧结论不代表当前状态。`
+          : `不生成交易信号 · 不修改 V5 · 不自动晋级 · live effect ${stringValue(research.live_order_effect, "none")}`}</span>
       </div>
 
       <div className="ai-metrics">
@@ -73,7 +80,7 @@ export function AIResearchPanel({ research }: { research: Record<string, unknown
 
       <div className="ai-latest">
         <div>
-          <span>当前主要矛盾</span>
+          <span>{sourcePackIsStale ? "上次研究主要矛盾" : "当前主要矛盾"}</span>
           <b>{stringValue(primaryFinding?.summary, stringValue(latest.system_state, "等待首个结果"))}</b>
           <small>{stringValue(latest.executive_summary, stringValue(latest.task_id, "尚无导入结果"))}</small>
         </div>
@@ -82,6 +89,7 @@ export function AIResearchPanel({ research }: { research: Record<string, unknown
           <b>{preflightDisplay} · {stringValue(continuity.status, "FIRST RUN")}</b>
           <small title={stringValue(continuity.summary, "尚无上一轮研究上下文")}>
             {preflightStatus === "NOT_AVAILABLE" ? "旧结果未回传确定性预检 · " : ""}证据包 {stringValue(latest.source_pack_name, "尚无来源包")} · {delay(research.latest_run_age_seconds)}
+            {sourcePackIsStale && latestAvailablePackName ? ` · 最新 ${latestAvailablePackName}` : ""}
           </small>
         </div>
         <div>

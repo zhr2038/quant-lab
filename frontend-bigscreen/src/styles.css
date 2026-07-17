@@ -169,6 +169,8 @@ html[data-web-v2-layout="fluid"] .page-strategy .market{height:auto;min-height:0
 .ai-status.critical{border-color:rgba(255,93,125,.78);color:#ffd1dc}
 .ai-safety-strip{min-width:0;display:grid;grid-template-columns:auto auto minmax(0,1fr);align-items:center;gap:9px;color:#aaf8dc;border-top:1px solid rgba(45,232,166,.3);border-bottom:1px solid rgba(45,232,166,.22);padding:8px 3px;font-size:11px}
 .ai-safety-strip span{color:var(--muted);overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.ai-safety-strip.stale{color:#ffe5a6;border-color:rgba(255,196,87,.42);background:rgba(88,58,10,.18);padding-left:9px;padding-right:9px}
+.ai-safety-strip.stale span{color:#ffd88b}
 .ai-metrics{display:grid;grid-template-columns:repeat(6,minmax(0,1fr));gap:10px}
 .ai-metric{min-width:0;border:1px solid rgba(80,169,255,.32);border-radius:8px;background:rgba(5,28,52,.72);padding:12px;display:grid;grid-template-columns:auto 1fr;grid-template-rows:auto 1fr auto;gap:2px 8px}
 .ai-metric svg{grid-column:1;color:var(--blue)}

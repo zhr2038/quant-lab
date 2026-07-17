@@ -274,6 +274,9 @@ sudo systemctl daemon-reload
 The Request timer stays at 01:35/13:35 UTC with CPU 30%, MemoryHigh 500 MB,
 MemoryMax 900 MB and one Polars thread. The Import timer runs every minute with
 CPU 40%, MemoryHigh 700 MB, MemoryMax 1200 MB and one Polars thread.
+The Request unit sees the Lake read-only except for
+`ops/lake_file_index`, whose metadata membership is refreshed before sealing;
+Silver and Gold input directories remain read-only.
 
 The legacy service has an `ExecCondition` on
 `QUANT_LAB_LOCAL_ENTRY_QUALITY_HISTORY_ENABLED=1`; its timer remains disabled. A

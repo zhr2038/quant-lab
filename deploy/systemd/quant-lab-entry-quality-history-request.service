@@ -27,7 +27,7 @@ PrivateTmp=true
 ProtectSystem=strict
 ProtectHome=true
 ReadOnlyPaths=/opt/quant-lab /var/lib/quant-lab/lake
-ReadWritePaths=/var/lib/quant-lab/research_queue
+ReadWritePaths=/var/lib/quant-lab/research_queue /var/lib/quant-lab/lake/ops/lake_file_index
 
 [Install]
 WantedBy=multi-user.target

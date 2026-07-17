@@ -246,6 +246,7 @@ def compute_entry_quality_history_from_snapshot(
         cost_mode=task.parameters.cost_mode,
         window_hours=task.parameters.window_hours,
         generated_from_bundle_id=task.selected_v5_bundle_id,
+        quant_lab_git_commit=task.quant_lab_commit,
     )
     stage_seconds["compute"] = time.perf_counter() - compute_started
     return EntryQualityWorkerComputeResult(

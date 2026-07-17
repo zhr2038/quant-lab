@@ -215,6 +215,7 @@ def build_canonical_proposal_snapshot(
     snapshot_id = f"proposal-snapshot:{snapshot_sha[:24]}"
     generated_at_text = generated.isoformat()
     snapshot_generated_at = generated_at_text
+    prior: dict[str, Any] = {}
     if prior_snapshot is not None and not prior_snapshot.is_empty():
         prior = prior_snapshot.tail(1).to_dicts()[0]
         prior_content_sha = str(
@@ -240,6 +241,10 @@ def build_canonical_proposal_snapshot(
         "proposal_compiler_version": PROPOSAL_COMPILER_VERSION,
         "proposal_contract_version": proposal_contract_version,
         "quant_lab_contract_version": proposal_contract_version,
+        "last_evaluated_at": generated_at_text,
+        "last_consumed_by_v5_at": str(
+            prior.get("last_consumed_by_v5_at") or ""
+        ).strip(),
     }
     if proposals.is_empty():
         enriched = proposals.clone()

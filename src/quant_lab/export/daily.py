@@ -4739,6 +4739,17 @@ def _publish_ops_truthfulness_snapshot(
 
 
 DERIVED_REPORT_MAX_AGE_SECONDS = 3 * 60 * 60
+EXPORT_TIME_REGISTRY_FRAME_OVERRIDES = frozenset(
+    {
+        "api_auth_incident",
+        "api_auth_production_slo",
+        "api_auth_security_rejections",
+        "api_auth_manual_probe",
+        "paper_runtime_freshness",
+        "paper_proposal_propagation_status",
+        "paper_strategy_proposal_snapshot",
+    }
+)
 
 
 def _derived_report_context(
@@ -11010,6 +11021,12 @@ def _data_quality_payload(
             lake_root,
             dataset_names=registry_dataset_names,
             reference_at=generated_at,
+            frame_overrides={
+                name: snapshot.frames[name]
+                for name in registry_dataset_names
+                if name in EXPORT_TIME_REGISTRY_FRAME_OVERRIDES
+                and name in snapshot.frames
+            },
         ).to_dict(include_checks=True)
     except Exception as exc:
         registry_quality = {

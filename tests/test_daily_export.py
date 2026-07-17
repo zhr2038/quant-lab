@@ -3621,9 +3621,16 @@ def test_data_quality_registry_skips_heavy_raw_when_rollups_are_available(
                 "checks": [],
             }
 
-    def fake_run_data_quality(_lake_root, *, dataset_names, reference_at):
+    def fake_run_data_quality(
+        _lake_root,
+        *,
+        dataset_names,
+        reference_at,
+        frame_overrides,
+    ):
         captured["dataset_names"] = list(dataset_names)
         captured["reference_at"] = reference_at
+        captured["frame_overrides"] = frame_overrides
         return FakeDataQualitySummary()
 
     monkeypatch.setattr(daily_export_module, "run_data_quality", fake_run_data_quality)
@@ -3682,6 +3689,7 @@ def test_data_quality_registry_skips_heavy_raw_when_rollups_are_available(
     assert "okx_public_ws_health" in captured["dataset_names"]
     assert "trade_activity_1m" in captured["dataset_names"]
     assert "orderbook_spread_1m" in captured["dataset_names"]
+    assert captured["frame_overrides"] == {}
     assert payload["registry_quality"]["skipped_heavy_datasets"] == [
         "okx_public_ws",
         "orderbook_snapshot",

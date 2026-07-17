@@ -651,9 +651,16 @@ def core_dataset_specs() -> dict[str, DatasetSpec]:
                 "source_quant_lab_commit",
                 "proposal_compiler_version",
                 "proposal_contract_version",
+                "last_evaluated_at",
+                "last_consumed_by_v5_at",
             ),
-            timestamp_column="snapshot_generated_at",
-            utc_timestamp_columns=("snapshot_generated_at",),
+            timestamp_column="last_evaluated_at",
+            utc_timestamp_columns=(
+                "snapshot_generated_at",
+                "generated_at",
+                "last_evaluated_at",
+                "last_consumed_by_v5_at",
+            ),
             freshness_seconds=3 * 60 * 60,
             quality_rules=(
                 "schema_required_columns",

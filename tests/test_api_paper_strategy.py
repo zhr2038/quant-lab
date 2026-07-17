@@ -224,6 +224,9 @@ def test_canonical_proposal_snapshot_is_stable_for_identical_members(tmp_path):
         "proposal_content_snapshot_sha256"
     ]
     assert second["snapshot_generated_at"] == first["snapshot_generated_at"]
+    assert first["last_evaluated_at"] == "2026-07-10T00:00:00+00:00"
+    assert second["last_evaluated_at"] == "2026-07-11T00:00:00+00:00"
+    assert second["last_consumed_by_v5_at"] == ""
     assert first_frame["proposal_content_snapshot_id"].to_list() == second_frame[
         "proposal_content_snapshot_id"
     ].to_list()

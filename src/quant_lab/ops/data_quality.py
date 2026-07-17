@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from collections.abc import Mapping
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
@@ -73,6 +74,7 @@ def run_data_quality(
     dataset_names: list[str] | tuple[str, ...] | set[str] | None = None,
     reference_at: datetime | None = None,
     registry: dict[str, DatasetSpec] | None = None,
+    frame_overrides: Mapping[str, pl.DataFrame] | None = None,
 ) -> DataQualitySummary:
     root = Path(lake_root)
     generated_at = _utc(reference_at or datetime.now(UTC))
@@ -90,7 +92,14 @@ def run_data_quality(
                 required=False,
                 min_rows=0,
             )
-        checks.extend(_dataset_checks(root, spec, reference_at=generated_at))
+        checks.extend(
+            _dataset_checks(
+                root,
+                spec,
+                reference_at=generated_at,
+                frame_override=(frame_overrides or {}).get(name),
+            )
+        )
 
     fail_count = sum(1 for check in checks if check.status == "FAIL")
     warning_count = sum(1 for check in checks if check.status == "WARN")
@@ -111,25 +120,28 @@ def _dataset_checks(
     spec: DatasetSpec,
     *,
     reference_at: datetime,
+    frame_override: pl.DataFrame | None = None,
 ) -> list[DataQualityCheck]:
     path = root / spec.relative_path
     checks: list[DataQualityCheck] = []
-    invalid_files = invalid_parquet_files(path)
-    if invalid_files:
-        checks.append(
-            _check(
-                spec,
-                "parquet_valid",
-                False,
-                f"invalid_parquet_files={len(invalid_files)}",
-                path,
-                severity="critical",
-                next_action="repair or remove invalid parquet files before reading the dataset",
+    if frame_override is None:
+        invalid_files = invalid_parquet_files(path)
+        if invalid_files:
+            checks.append(
+                _check(
+                    spec,
+                    "parquet_valid",
+                    False,
+                    f"invalid_parquet_files={len(invalid_files)}",
+                    path,
+                    severity="critical",
+                    next_action="repair or remove invalid parquet files before reading the dataset",
+                )
             )
-        )
-        return checks
-
-    row_count = count_parquet_rows(path)
+            return checks
+        row_count = count_parquet_rows(path)
+    else:
+        row_count = frame_override.height
     checks.append(
         _check(
             spec,
@@ -147,7 +159,7 @@ def _dataset_checks(
     if row_count <= 0:
         return checks
 
-    lazy = read_parquet_lazy(path)
+    lazy = read_parquet_lazy(path) if frame_override is None else frame_override.lazy()
     try:
         schema = lazy.collect_schema()
     except Exception as exc:
@@ -311,7 +323,11 @@ def _freshness_checks(
     available_columns: set[str],
     reference_at: datetime,
 ) -> list[DataQualityCheck]:
-    if spec.timestamp_column is None or spec.timestamp_column not in available_columns:
+    if (
+        "freshness" not in spec.quality_rules
+        or spec.timestamp_column is None
+        or spec.timestamp_column not in available_columns
+    ):
         return []
     try:
         latest = (

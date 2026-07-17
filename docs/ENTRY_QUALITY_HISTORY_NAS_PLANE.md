@@ -285,7 +285,8 @@ Use `deploy/nas_research_worker`. The dedicated container runs as UID/GID 10004,
 with 3 CPUs, 256 PIDs, a read-only root, no-new-privileges, 512 MB noexec tmpfs,
 rotated logs, and an 8 GB default memory limit. Acceptance still requires observed
 peak RSS below 6 GB. It shares `/volume1/docker/quant-runtime/heavy-job.lock` with
-the Export Worker.
+the Export Worker. The dedicated `10004:10004` user receives supplemental group
+`10002` only for that setgid runtime directory; the shared lock is kept `0660`.
 
 Create a dedicated cloud SSH account with no sudo and queue-only group access.
 Use an outbound-only NAS key and an `authorized_keys` `restrict` option. Pin the

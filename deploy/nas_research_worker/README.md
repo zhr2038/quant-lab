@@ -10,10 +10,12 @@ and cannot publish Gold or influence live orders.
 ```bash
 install -d -m 2750 \
   /volume1/docker/quant-research/data/{blobs/sha256,snapshots,work,results,archive,rejected,status} \
-  /volume1/docker/quant-research/secrets \
-  /volume1/docker/quant-runtime
+  /volume1/docker/quant-research/secrets
 chown -R 10004:10004 /volume1/docker/quant-research/data
-chown 10004:10004 /volume1/docker/quant-runtime
+install -d -m 2770 -o 10002 -g 10002 /volume1/docker/quant-runtime
+touch /volume1/docker/quant-runtime/heavy-job.lock
+chown 10002:10002 /volume1/docker/quant-runtime/heavy-job.lock
+chmod 0660 /volume1/docker/quant-runtime/heavy-job.lock
 ```
 
 Install these files under `secrets/` with mode `0400` and ownership readable by
@@ -36,5 +38,7 @@ docker compose logs -f quant-research-worker
 
 The default container limit is 8 GB to leave headroom, while acceptance still
 requires observed peak RSS to remain below 6 GB. `heavy-job.lock` is shared with
-the Export Worker, so only one NAS heavy job computes at a time. A NAS outage
-leaves tasks waiting; there is intentionally no automatic cloud fallback.
+the Export Worker, so only one NAS heavy job computes at a time. The dedicated
+`10004:10004` user receives supplemental group `10002` only for this setgid
+runtime directory; it receives no Docker or sudo access. A NAS outage leaves
+tasks waiting; there is intentionally no automatic cloud fallback.

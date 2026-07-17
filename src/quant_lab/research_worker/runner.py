@@ -9,6 +9,7 @@ import signal
 import subprocess
 import threading
 import time
+import uuid
 from collections.abc import Iterator
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
@@ -41,6 +42,7 @@ from quant_lab.transfer.snapshot_sync import sync_snapshot_blobs
 
 LOG = logging.getLogger("quant_research_worker")
 STOP = threading.Event()
+_STATUS_UPLOAD_LOCK = threading.RLock()
 
 
 @dataclass(frozen=True)
@@ -107,7 +109,6 @@ def main() -> int:
     signal.signal(signal.SIGINT, _request_stop)
     config = Config.from_env()
     _validate_config(config)
-    processed = False
     while not STOP.is_set():
         recover_expired_leases(config)
         task_id = claim_next_task(config)
@@ -116,14 +117,15 @@ def main() -> int:
                 return 0
             STOP.wait(config.poll_seconds)
             continue
-        processed = True
         try:
             process_claimed_task(config, task_id)
         except Exception as exc:
             LOG.exception("research task failed task_id=%s error=%s", task_id, type(exc).__name__)
             _handle_failure(config, task_id, exc)
+            if config.run_once:
+                return 1
         if config.run_once:
-            return 0 if processed else 1
+            return 0
     return 0
 
 
@@ -437,22 +439,23 @@ def _heartbeat_loop(
 ) -> None:
     status = initial
     while not stop.wait(config.heartbeat_seconds):
-        latest_path = work / "status.upload.json"
         try:
-            status = ResearchTaskStatus.model_validate_json(
-                latest_path.read_text("utf-8")
-            )
-        except (OSError, ValueError):
-            pass
-        now = datetime.now(UTC)
-        status = status.model_copy(
-            update={
-                "heartbeat_at": now,
-                "lease_expires_at": now + timedelta(seconds=task.lease_seconds),
-            }
-        )
-        try:
-            _upload_status(config, status, work)
+            with _STATUS_UPLOAD_LOCK:
+                latest_path = work / "status.upload.json"
+                try:
+                    status = ResearchTaskStatus.model_validate_json(
+                        latest_path.read_text("utf-8")
+                    )
+                except (OSError, ValueError):
+                    pass
+                now = datetime.now(UTC)
+                status = status.model_copy(
+                    update={
+                        "heartbeat_at": now,
+                        "lease_expires_at": now + timedelta(seconds=task.lease_seconds),
+                    }
+                )
+                _upload_status(config, status, work)
         except Exception as exc:
             LOG.warning(
                 "heartbeat upload failed task_id=%s error=%s",
@@ -547,14 +550,20 @@ def _read_local_or_remote_status(
 
 
 def _upload_status(config: Config, status: ResearchTaskStatus, work: Path) -> None:
-    local = work / "status.upload.json"
-    local_tmp = work / f".{local.name}.{os.getpid()}.tmp"
-    local_tmp.write_text(status.model_dump_json(indent=2), encoding="utf-8")
-    os.replace(local_tmp, local)
-    remote_tmp = f"{config.cloud_queue_root}/status/.{status.task_id}.{os.getpid()}.tmp"
-    remote_final = f"{config.cloud_queue_root}/status/{status.task_id}.json"
-    _scp_to(config, local, remote_tmp)
-    _ssh(config, f"mv {shlex.quote(remote_tmp)} {shlex.quote(remote_final)}")
+    token = uuid.uuid4().hex
+    with _STATUS_UPLOAD_LOCK:
+        local = work / "status.upload.json"
+        local_tmp = work / f".{local.name}.{token}.tmp"
+        local_tmp.write_text(status.model_dump_json(indent=2), encoding="utf-8")
+        os.replace(local_tmp, local)
+        remote_tmp = f"{config.cloud_queue_root}/status/.{status.task_id}.{token}.tmp"
+        remote_final = f"{config.cloud_queue_root}/status/{status.task_id}.json"
+        _scp_to(config, local, remote_tmp)
+        try:
+            _ssh(config, f"mv {shlex.quote(remote_tmp)} {shlex.quote(remote_final)}")
+        except Exception:
+            _ssh(config, f"rm -f -- {shlex.quote(remote_tmp)}", check=False)
+            raise
 
 
 @contextlib.contextmanager

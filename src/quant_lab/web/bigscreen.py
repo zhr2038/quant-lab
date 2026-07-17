@@ -687,12 +687,9 @@ def _safe_ai_research_summary(
 
 
 def _latest_authoritative_export_pack(exports: dict[str, Any]) -> dict[str, Any]:
-    rows = exports.get("packs")
-    if not isinstance(rows, list):
-        return {}
-    for row in rows:
-        if not isinstance(row, dict):
-            continue
+    # NAS export receipts are exposed as a Polars frame while local export
+    # history uses a list. Normalize both before comparing AI source identity.
+    for row in _frame_rows(exports.get("packs"), limit=12):
         if row.get("authoritative_snapshot") is False:
             continue
         if row.get("nas_artifact_validated") is False:

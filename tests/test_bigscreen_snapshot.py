@@ -229,6 +229,28 @@ def test_bigscreen_ai_result_discloses_newer_authoritative_pack(monkeypatch, tmp
     assert current["source_pack_matches_latest"] is True
 
 
+def test_bigscreen_latest_authoritative_export_pack_accepts_nas_frame():
+    row = bigscreen_module._latest_authoritative_export_pack(
+        {
+            "packs": pl.DataFrame(
+                [
+                    {
+                        "name": "expert-current.zip",
+                        "pack_sha256": "c" * 64,
+                        "authoritative_snapshot": True,
+                        "nas_artifact_validated": True,
+                        "control_plane_receipt_verified": True,
+                        "download_ready": True,
+                    }
+                ]
+            )
+        }
+    )
+
+    assert row["name"] == "expert-current.zip"
+    assert row["pack_sha256"] == "c" * 64
+
+
 def test_bigscreen_ai_queue_excludes_hidden_atomic_result_staging(monkeypatch, tmp_path):
     lake = tmp_path / "lake"
     queue = tmp_path / "ai_queue"

@@ -18,6 +18,7 @@ from pydantic import ValidationError
 
 import quant_lab.research.entry_quality as entry_quality_module
 import quant_lab.research_plane.importer as importer_module
+import quant_lab.research_worker.runner as runner_module
 from quant_lab.data.lake import read_parquet_dataset, write_parquet_dataset
 from quant_lab.research.entry_quality import (
     ENTRY_QUALITY_HISTORY_OUTPUT_SPECS,
@@ -1151,6 +1152,113 @@ def test_expired_worker_lease_requeues_without_racing_live_status(
     assert recover_expired_leases(config, now=now) == 1
     assert uploaded[-1].state == ResearchTaskState.PENDING
     assert uploaded[-1].last_error == "LEASE_EXPIRED"
+
+
+def test_status_upload_uses_unique_remote_temporary_paths(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    config = _research_worker_config(tmp_path)
+    status = ResearchTaskStatus(
+        task_id="entry-quality-history-status-upload",
+        snapshot_id="entry-quality-history-snapshot-test",
+        start_date=date(2026, 6, 19),
+        end_date=date(2026, 7, 18),
+        mode="recent_30d",
+        cost_mode="conservative",
+        state=ResearchTaskState.COMPUTING,
+        worker_id=config.worker_id,
+        requested_at=GENERATED_AT,
+        claimed_at=GENERATED_AT,
+        heartbeat_at=GENERATED_AT,
+        lease_expires_at=GENERATED_AT + timedelta(minutes=10),
+        attempt=1,
+        max_attempts=3,
+    )
+    remote_paths: list[str] = []
+    commands: list[str] = []
+
+    def fake_scp(_config, local_path: Path, remote_path: str, **_kwargs) -> None:
+        assert local_path.read_text("utf-8")
+        remote_paths.append(remote_path)
+
+    def fake_ssh(_config, command: str, *, check: bool = True):
+        commands.append(command)
+        return subprocess.CompletedProcess([], 0, "", "")
+
+    monkeypatch.setattr(runner_module, "_scp_to", fake_scp)
+    monkeypatch.setattr(runner_module, "_ssh", fake_ssh)
+
+    runner_module._upload_status(config, status, tmp_path)
+    runner_module._upload_status(config, status, tmp_path)
+
+    assert len(set(remote_paths)) == 2
+    assert all(path.endswith(".tmp") for path in remote_paths)
+    final_path = f"{config.cloud_queue_root}/status/{status.task_id}.json"
+    assert all(final_path in command for command in commands)
+
+
+def test_run_once_returns_nonzero_when_claimed_task_fails(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    config = _research_worker_config(tmp_path)
+    handled: list[tuple[str, Exception]] = []
+    task_id = "entry-quality-history-run-once-failure"
+    runner_module.STOP.clear()
+    monkeypatch.setattr(runner_module.signal, "signal", lambda *_args: None)
+    monkeypatch.setattr(
+        runner_module.Config,
+        "from_env",
+        classmethod(lambda _cls: config),
+    )
+    monkeypatch.setattr(runner_module, "_validate_config", lambda _config: None)
+    monkeypatch.setattr(runner_module, "recover_expired_leases", lambda _config: 0)
+    monkeypatch.setattr(runner_module, "claim_next_task", lambda _config: task_id)
+    monkeypatch.setattr(
+        runner_module,
+        "process_claimed_task",
+        lambda _config, _task_id: (_ for _ in ()).throw(RuntimeError("boom")),
+    )
+    monkeypatch.setattr(
+        runner_module,
+        "_handle_failure",
+        lambda _config, value, exc: handled.append((value, exc)),
+    )
+
+    try:
+        assert runner_module.main() == 1
+    finally:
+        runner_module.STOP.clear()
+
+    assert handled and handled[0][0] == task_id
+    assert isinstance(handled[0][1], RuntimeError)
+
+
+def _research_worker_config(tmp_path: Path) -> Config:
+    return Config(
+        cloud_host="cloud",
+        cloud_user="worker",
+        cloud_port=22,
+        ssh_key_path=tmp_path / "ssh",
+        known_hosts_path=tmp_path / "known_hosts",
+        cloud_queue_root="/queue",
+        data_root=tmp_path / "data",
+        task_public_key_path=tmp_path / "task.pub",
+        task_key_id=TASK_KEY_ID,
+        worker_signing_key_path=tmp_path / "worker.key",
+        worker_key_id=WORKER_KEY_ID,
+        worker_id="nas-research-worker-01",
+        worker_commit=COMMIT,
+        run_once=True,
+        poll_seconds=30,
+        heartbeat_seconds=30,
+        min_free_disk_bytes=0,
+        max_snapshot_bytes=1,
+        max_result_bytes=1,
+        heavy_job_lock=tmp_path / "heavy.lock",
+        batch_fetch_workers=1,
+    )
 
 
 def _history_input_frames() -> dict[str, pl.DataFrame]:

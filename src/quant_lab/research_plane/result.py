@@ -45,6 +45,21 @@ FORBIDDEN_LIVE_STATE = "LIVE_SMALL_READY"
 ALPHA_FACTORY_FORBIDDEN_LIVE_STATES = frozenset(
     {"LIVE_SMALL_READY", "LIVE", "CANARY", "ENFORCE", "AUTO_PROMOTE"}
 )
+ALPHA_FACTORY_RESULT_DECISIONS = frozenset(
+    {"RESEARCH", "KEEP_SHADOW", "KILL", "PAPER_READY"}
+)
+ALPHA_FACTORY_DECISIONS_BY_DATASET = {
+    "second_stage_alpha_factory_summary": frozenset(
+        {"RESEARCH_ONLY", "KEEP_SHADOW", "KILL", "PAPER_READY"}
+    ),
+    "exit_policy_review_sample": frozenset(
+        {"RESEARCH_ONLY", "REVIEW_EXIT_POLICY"}
+    ),
+    "exit_policy_review_summary": frozenset(
+        {"RESEARCH_ONLY", "REVIEW_EXIT_POLICY"}
+    ),
+    "alpha_factory_result": ALPHA_FACTORY_RESULT_DECISIONS,
+}
 REQUIRED_ANTI_LEAKAGE_CHECKS = frozenset(
     {
         "history_window_respected",
@@ -563,8 +578,14 @@ def _validate_alpha_frame_safety(lazy: pl.LazyFrame, dataset_name: str) -> None:
                 f"alpha_factory_result_live_state_forbidden:{dataset_name}:{column}"
             )
     if "decision" in schema:
-        allowed = ["RESEARCH", "KEEP_SHADOW", "KILL", "PAPER_READY"]
-        invalid = lazy.filter(~pl.col("decision").is_in(allowed)).limit(1)
+        allowed = ALPHA_FACTORY_DECISIONS_BY_DATASET.get(
+            dataset_name,
+            ALPHA_FACTORY_RESULT_DECISIONS,
+        )
+        decision_text = pl.col("decision").cast(pl.Utf8)
+        invalid = lazy.filter(
+            decision_text.is_null() | ~decision_text.is_in(sorted(allowed))
+        ).limit(1)
         if not invalid.collect(engine="streaming").is_empty():
             raise ValueError(f"alpha_factory_result_unknown_decision:{dataset_name}")
     if "candidate_state" in schema:

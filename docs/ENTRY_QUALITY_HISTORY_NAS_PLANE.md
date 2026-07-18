@@ -210,10 +210,11 @@ Side effects are isolated to:
 
 The signed Snapshot and Task bind the full 40-character quant-lab commit,
 selected V5 bundle ID, Entry Quality schema, task parameters, file hashes, and
-Snapshot digest. Derived rows retain the existing short commit prefix and bundle
-ID; cloud validation checks that the prefix belongs to the full task commit.
-Result and receipt bind both cloud and Worker full commits. A Worker whose build
-commit differs from the task fails with `worker_code_mismatch`.
+Snapshot digest. Every non-empty derived output row stores that exact full commit
+and the selected bundle ID. Cloud validation rejects missing, null, shortened,
+mixed, or mismatched row-level commit provenance. Result and receipt also bind
+both cloud and Worker full commits. A Worker whose build commit differs from the
+task fails with `worker_code_mismatch`.
 
 ### 15. Compatibility tests
 

@@ -1,10 +1,10 @@
 """Tests for overlap-aware IC statistics (audit spec section 11)."""
+
 import math
 import sys
 from pathlib import Path
 
 import numpy as np
-import pytest
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 from audit.auditlib.ic_stats import (  # noqa: E402
@@ -76,9 +76,15 @@ class TestICTriad:
         assert d["n_periods"] == n
         assert 0 < d["non_overlap_count"] <= math.ceil(n / 24)
         assert set(d) == {
-            "n_periods", "ic_mean", "naive_tstat", "non_overlap_count",
-            "non_overlap_ic_mean", "non_overlap_tstat", "hac_tstat",
-            "hac_lag", "inflation_ratio",
+            "n_periods",
+            "ic_mean",
+            "naive_tstat",
+            "non_overlap_count",
+            "non_overlap_ic_mean",
+            "non_overlap_tstat",
+            "hac_tstat",
+            "hac_lag",
+            "inflation_ratio",
         }
 
     def test_unsorted_input_is_sorted(self):
@@ -117,26 +123,28 @@ class TestProductionICModuleHasCorrectedStats:
         rng = np.random.default_rng(42)
         total = n_times + 2 * h + 2
         rets = rng.normal(0.0002, 0.004, size=(total, n_symbols))
-        kernel = np.ones(h) / h
         rows = []
         base_ts = 1_700_000_000
         for t in range(h, h + n_times):
-            signal = rets[t - h:t].sum(axis=0)
-            fwd = rets[t + 1:t + 1 + h].sum(axis=0)
+            signal = rets[t - h : t].sum(axis=0)
+            fwd = rets[t + 1 : t + 1 + h].sum(axis=0)
             decision = base_ts + t * 3600
             for s in range(n_symbols):
-                rows.append({
-                    "symbol": f"S{s}",
-                    "decision_ts": decision,
-                    "alpha_score": float(signal[s]),
-                    "forward_return": float(fwd[s]),
-                })
+                rows.append(
+                    {
+                        "symbol": f"S{s}",
+                        "decision_ts": decision,
+                        "alpha_score": float(signal[s]),
+                        "forward_return": float(fwd[s]),
+                    }
+                )
         return rows
 
     def test_overlapping_labels_naive_tstat_inflated(self):
         if str(QL_SRC) not in sys.path:
             sys.path.insert(0, str(QL_SRC))
         import polars as pl  # noqa: PLC0415
+
         from quant_lab.research import ic as prod_ic  # noqa: PLC0415
 
         h = 24

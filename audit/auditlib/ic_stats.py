@@ -8,6 +8,7 @@ Three estimators (audit spec section 11):
    heteroskedasticity- and autocorrelation-consistent variance, lag matched to
    the horizon overlap.
 """
+
 from __future__ import annotations
 
 import math
@@ -56,7 +57,9 @@ def plain_tstat(values: np.ndarray) -> float:
     return float(values.mean() / std * math.sqrt(n))
 
 
-def select_non_overlapping(timestamps_sorted: np.ndarray, horizon_bars: int, bar_seconds: int = 3600) -> np.ndarray:
+def select_non_overlapping(
+    timestamps_sorted: np.ndarray, horizon_bars: int, bar_seconds: int = 3600
+) -> np.ndarray:
     """Return indices of kept samples under rule t_next >= t_last + horizon.
 
     timestamps_sorted: int64 epoch seconds (sorted ascending).
@@ -86,9 +89,9 @@ def newey_west_tstat(values: np.ndarray, lag: int) -> float:
     lag = max(0, min(int(lag), n - 2))
     gamma0 = float(np.dot(e, e) / n)
     var_mean = gamma0
-    for l in range(1, lag + 1):
-        w = 1.0 - l / (lag + 1.0)
-        gamma = float(np.dot(e[l:], e[:-l]) / n)
+    for lag_index in range(1, lag + 1):
+        w = 1.0 - lag_index / (lag + 1.0)
+        gamma = float(np.dot(e[lag_index:], e[:-lag_index]) / n)
         var_mean += 2.0 * w * gamma
     if var_mean <= 0:
         return 0.0

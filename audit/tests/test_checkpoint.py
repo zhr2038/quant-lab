@@ -43,4 +43,3 @@ def test_checkpoint_is_deterministic_for_same_inputs(tmp_path: Path) -> None:
     first_bytes = first.read_bytes()
     second = write_checkpoint(**kwargs)
     assert second.read_bytes() == first_bytes
-

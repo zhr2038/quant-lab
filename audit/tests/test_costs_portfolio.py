@@ -30,4 +30,3 @@ def test_long_only_weights_respect_top_n_and_cap() -> None:
     assert sum(weights.values()) == pytest.approx(1.0)
     assert min(weights.values()) >= 0.0
     assert max(weights.values()) <= 0.5 + 1e-12
-

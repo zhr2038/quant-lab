@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import sys
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
 import numpy as np
@@ -19,7 +19,7 @@ from audit.auditlib.universe import UniverseSpec, build_daily_universe  # noqa: 
 
 
 def _hourly_liquidity_panel(days: int = 42) -> pl.DataFrame:
-    start = datetime(2026, 1, 1, tzinfo=timezone.utc)
+    start = datetime(2026, 1, 1, tzinfo=UTC)
     rows = []
     for day in range(days):
         for hour in range(24):
@@ -48,7 +48,7 @@ def test_dynamic_universe_uses_only_prior_days_liquidity() -> None:
 
 
 def test_v5_raw_factors_match_production_indexing() -> None:
-    start = datetime(2026, 1, 1, tzinfo=timezone.utc)
+    start = datetime(2026, 1, 1, tzinfo=UTC)
     n = 500
     close = np.linspace(100.0, 200.0, n)
     volume = np.linspace(1_000.0, 2_000.0, n)
@@ -71,7 +71,7 @@ def test_v5_raw_factors_match_production_indexing() -> None:
 
 
 def test_v5_static_proxy_is_cross_section_centered() -> None:
-    start = datetime(2026, 1, 1, tzinfo=timezone.utc)
+    start = datetime(2026, 1, 1, tzinfo=UTC)
     rows = []
     for symbol, drift in [("A", 0.001), ("B", -0.0002), ("C", 0.0005)]:
         for i in range(520):
@@ -92,7 +92,7 @@ def test_v5_static_proxy_is_cross_section_centered() -> None:
 
 
 def test_funding_fade_counts_publications_not_hourly_asof_repeats() -> None:
-    start = datetime(2026, 1, 1, tzinfo=timezone.utc)
+    start = datetime(2026, 1, 1, tzinfo=UTC)
     bars = pl.DataFrame(
         {
             "symbol": ["A"] * 100,

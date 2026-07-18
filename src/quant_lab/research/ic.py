@@ -51,7 +51,9 @@ def compute_by_symbol_ic(df: pl.DataFrame, feature_column: str = "alpha_score") 
 # the plain t-stat above is kept unchanged for backwards compatibility.
 
 
-def _ics_by_decision_ts(df: pl.DataFrame, feature_column: str, *, rank: bool) -> tuple[list, list[float]]:
+def _ics_by_decision_ts(
+    df: pl.DataFrame, feature_column: str, *, rank: bool
+) -> tuple[list, list[float]]:
     """Per-decision-timestamp cross-sectional ICs, sorted by timestamp."""
     pairs_by_ts: dict[Any, list[tuple[float, float]]] = {}
     if df.is_empty() or feature_column not in df.columns:
@@ -126,9 +128,9 @@ def newey_west_tstat(values: np.ndarray, lag: int) -> float:
     lag = max(0, min(int(lag), n - 2))
     gamma0 = float(np.dot(e, e) / n)
     var_mean = gamma0
-    for l in range(1, lag + 1):
-        w = 1.0 - l / (lag + 1.0)
-        gamma = float(np.dot(e[l:], e[:-l]) / n)
+    for lag_index in range(1, lag + 1):
+        w = 1.0 - lag_index / (lag + 1.0)
+        gamma = float(np.dot(e[lag_index:], e[:-lag_index]) / n)
         var_mean += 2.0 * w * gamma
     if var_mean <= 0:
         return 0.0

@@ -28,4 +28,3 @@ def test_adjusted_pvalues_are_bounded_and_not_below_raw() -> None:
 def test_two_sided_pvalue_monotonic_in_absolute_tstat() -> None:
     assert two_sided_pvalue(3.0, 50) < two_sided_pvalue(2.0, 50)
     assert two_sided_pvalue(-2.0, 50) == two_sided_pvalue(2.0, 50)
-

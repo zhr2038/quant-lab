@@ -1,6 +1,7 @@
 """Shared constants for the alpha-validity audit pipeline."""
-from pathlib import Path
+
 import os
+from pathlib import Path
 
 LOCAL_AUDIT_ROOT = Path(os.environ.get("LOCAL_AUDIT_ROOT", "/home/hr/quant-alpha-audit"))
 DATA_RAW = LOCAL_AUDIT_ROOT / "data" / "raw"
@@ -22,9 +23,23 @@ FUNDING_DIR = DATA_RAW / "okx_funding"
 AUDIT_END_DATE = "2026-07-18"
 AUDIT_START_DATE = "2024-07-18"
 
-DECISION_DELAY_BARS = 1  # bars between feature timestamp and executable decision (one_bar_delay in prod config)
+DECISION_DELAY_BARS = (
+    1  # bars between feature timestamp and executable decision (one_bar_delay in prod config)
+)
 
-for _p in (DATA_RAW, DATA_SILVER, DATA_GOLD, WORK, ARTIFACTS, REPORTS, LOGS, MANIFESTS, CHECKPOINTS, CANDLES_DIR, FUNDING_DIR):
+for _p in (
+    DATA_RAW,
+    DATA_SILVER,
+    DATA_GOLD,
+    WORK,
+    ARTIFACTS,
+    REPORTS,
+    LOGS,
+    MANIFESTS,
+    CHECKPOINTS,
+    CANDLES_DIR,
+    FUNDING_DIR,
+):
     _p.mkdir(parents=True, exist_ok=True)
 
 

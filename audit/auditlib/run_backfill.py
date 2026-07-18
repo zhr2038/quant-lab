@@ -2,27 +2,65 @@
 
 Usage: python -m audit.auditlib.run_backfill [--only BTC-USDT] [--kind candles|funding|both]
 """
+
 from __future__ import annotations
 
 import argparse
 import json
 import sys
 import time
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
-from audit.auditlib.paths import WORK, CHECKPOINTS, LOGS, AUDIT_START_DATE, AUDIT_END_DATE  # noqa: E402
-from audit.auditlib.okx_backfill import RateLimiter, backfill_candles, backfill_funding  # noqa: E402
+from audit.auditlib.okx_backfill import (  # noqa: E402
+    RateLimiter,
+    backfill_candles,
+    backfill_funding,
+)
+from audit.auditlib.paths import AUDIT_END_DATE, AUDIT_START_DATE, CHECKPOINTS, WORK  # noqa: E402
 
 EXTRA_MAJORS = [
-    "DOGE-USDT", "SHIB-USDT", "PEPE-USDT", "DOT-USDT", "POL-USDT", "JUP-USDT",
-    "PYTH-USDT", "STRK-USDT", "ZK-USDT", "WIF-USDT", "FLOKI-USDT", "BONK-USDT",
-    "GRT-USDT", "IMX-USDT", "STX-USDT", "MKR-USDT", "OP-USDT", "ARB-USDT",
-    "TIA-USDT", "SEI-USDT", "INJ-USDT", "LDO-USDT", "CRV-USDT", "SAND-USDT",
-    "APE-USDT", "GMT-USDT", "BLUR-USDT", "W-USDT", "RENDER-USDT", "FET-USDT",
-    "VIRTUAL-USDT", "ZRO-USDT", "ETHFI-USDT", "TON-USDT", "HBAR-USDT",
-    "ICP-USDT", "TRX-USDT", "BCH-USDT", "AVAX-USDT", "DYDX-USDT",
+    "DOGE-USDT",
+    "SHIB-USDT",
+    "PEPE-USDT",
+    "DOT-USDT",
+    "POL-USDT",
+    "JUP-USDT",
+    "PYTH-USDT",
+    "STRK-USDT",
+    "ZK-USDT",
+    "WIF-USDT",
+    "FLOKI-USDT",
+    "BONK-USDT",
+    "GRT-USDT",
+    "IMX-USDT",
+    "STX-USDT",
+    "MKR-USDT",
+    "OP-USDT",
+    "ARB-USDT",
+    "TIA-USDT",
+    "SEI-USDT",
+    "INJ-USDT",
+    "LDO-USDT",
+    "CRV-USDT",
+    "SAND-USDT",
+    "APE-USDT",
+    "GMT-USDT",
+    "BLUR-USDT",
+    "W-USDT",
+    "RENDER-USDT",
+    "FET-USDT",
+    "VIRTUAL-USDT",
+    "ZRO-USDT",
+    "ETHFI-USDT",
+    "TON-USDT",
+    "HBAR-USDT",
+    "ICP-USDT",
+    "TRX-USDT",
+    "BCH-USDT",
+    "AVAX-USDT",
+    "DYDX-USDT",
 ]
 
 
@@ -40,12 +78,17 @@ def main() -> int:
     ap.add_argument("--end", default=AUDIT_END_DATE)
     args = ap.parse_args()
 
-    start_ms = int(datetime.fromisoformat(args.start).replace(tzinfo=timezone.utc).timestamp() * 1000)
-    end_ms = int(datetime.fromisoformat(args.end).replace(tzinfo=timezone.utc).timestamp() * 1000)
+    start_ms = int(datetime.fromisoformat(args.start).replace(tzinfo=UTC).timestamp() * 1000)
+    end_ms = int(datetime.fromisoformat(args.end).replace(tzinfo=UTC).timestamp() * 1000)
 
     symbols = [args.only] if args.only else load_symbols()
     limiter = RateLimiter(8.0)
-    summary = {"start_ms": start_ms, "end_ms": end_ms, "symbols": {}, "started_at": datetime.now(timezone.utc).isoformat()}
+    summary = {
+        "start_ms": start_ms,
+        "end_ms": end_ms,
+        "symbols": {},
+        "started_at": datetime.now(UTC).isoformat(),
+    }
     status_path = CHECKPOINTS / "okx_backfill" / "_run_status.json"
     status_path.parent.mkdir(parents=True, exist_ok=True)
 
@@ -70,7 +113,7 @@ def main() -> int:
         summary["symbols"][sym] = entry
         status_path.write_text(json.dumps(summary, indent=2))
 
-    summary["finished_at"] = datetime.now(timezone.utc).isoformat()
+    summary["finished_at"] = datetime.now(UTC).isoformat()
     status_path.write_text(json.dumps(summary, indent=2))
     n_ok = sum(1 for v in summary["symbols"].values() if v.get("ok"))
     print(f"BACKFILL_RUN_DONE ok={n_ok}/{len(symbols)}", flush=True)

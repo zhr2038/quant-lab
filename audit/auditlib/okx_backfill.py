@@ -8,19 +8,19 @@ Properties (per audit spec section 7):
 - UTC everywhere, per-symbol partitioned parquet: inst_id=/year=/month=
 - raw API response metadata log per page (first page per symbol keeps full payload)
 """
+
 from __future__ import annotations
 
 import json
 import time
-import sys
 from dataclasses import dataclass, field
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from pathlib import Path
 
 import polars as pl
 import requests
 
-from .paths import CANDLES_DIR, FUNDING_DIR, CHECKPOINTS, LOGS
+from .paths import CANDLES_DIR, CHECKPOINTS, FUNDING_DIR, LOGS
 
 OKX_BASE = "https://www.okx.com"
 CANDLES_URL = OKX_BASE + "/api/v5/market/history-candles"
@@ -72,7 +72,9 @@ def _get(url: str, params: dict, limiter: RateLimiter, logf, full_first: bool = 
             logf.flush()
             return data
         except Exception as e:  # noqa: BLE001
-            logf.write(json.dumps({"params": params, "error": str(e)[:300], "attempt": attempt}) + "\n")
+            logf.write(
+                json.dumps({"params": params, "error": str(e)[:300], "attempt": attempt}) + "\n"
+            )
             logf.flush()
             if attempt == MAX_RETRIES:
                 raise
@@ -86,7 +88,7 @@ def _ms(dt: datetime) -> int:
 
 
 def _from_ms(ms: int) -> datetime:
-    return datetime.fromtimestamp(ms / 1000, tz=timezone.utc)
+    return datetime.fromtimestamp(ms / 1000, tz=UTC)
 
 
 def _checkpoint_path(kind: str, inst_id: str) -> Path:
@@ -104,7 +106,7 @@ def _load_checkpoint(kind: str, inst_id: str) -> dict | None:
 
 def _save_checkpoint(kind: str, inst_id: str, state: dict) -> None:
     state = dict(state)
-    state["updated_at"] = datetime.now(timezone.utc).isoformat()
+    state["updated_at"] = datetime.now(UTC).isoformat()
     _checkpoint_path(kind, inst_id).write_text(json.dumps(state, indent=2))
 
 
@@ -165,16 +167,32 @@ def backfill_candles(inst_id: str, start_ms: int, end_ms: int, limiter: RateLimi
         if oldest <= start_ms:
             stop = True
         # incremental checkpoint (resume support)
-        _save_checkpoint("candles", inst_id, {
-            "done": False, "start_ms": start_ms, "end_ms": end_ms,
-            "oldest_fetched": oldest, "pages": pages, "rows": rows_total,
-        })
+        _save_checkpoint(
+            "candles",
+            inst_id,
+            {
+                "done": False,
+                "start_ms": start_ms,
+                "end_ms": end_ms,
+                "oldest_fetched": oldest,
+                "pages": pages,
+                "rows": rows_total,
+            },
+        )
     logf.close()
 
     if not frames:
-        _save_checkpoint("candles", inst_id, {
-            "done": True, "start_ms": start_ms, "end_ms": end_ms, "pages": pages, "rows": 0,
-        })
+        _save_checkpoint(
+            "candles",
+            inst_id,
+            {
+                "done": True,
+                "start_ms": start_ms,
+                "end_ms": end_ms,
+                "pages": pages,
+                "rows": 0,
+            },
+        )
         return {"status": "empty", "rows": 0}
 
     all_df = pl.concat(frames)
@@ -204,11 +222,19 @@ def backfill_candles(inst_id: str, start_ms: int, end_ms: int, limiter: RateLimi
         out_dir.mkdir(parents=True, exist_ok=True)
         part.drop(["year", "month"]).write_parquet(out_dir / "part-0.parquet", compression="zstd")
 
-    _save_checkpoint("candles", inst_id, {
-        "done": True, "start_ms": start_ms, "end_ms": end_ms,
-        "pages": pages, "rows": all_df.height,
-        "first_ts": int(all_df["ts"].min()), "last_ts": int(all_df["ts"].max()),
-    })
+    _save_checkpoint(
+        "candles",
+        inst_id,
+        {
+            "done": True,
+            "start_ms": start_ms,
+            "end_ms": end_ms,
+            "pages": pages,
+            "rows": all_df.height,
+            "first_ts": int(all_df["ts"].min()),
+            "last_ts": int(all_df["ts"].max()),
+        },
+    )
     return {"status": "ok", "rows": all_df.height, "pages": pages}
 
 
@@ -265,9 +291,17 @@ def backfill_funding(inst_id_swap: str, start_ms: int, end_ms: int, limiter: Rat
     logf.close()
 
     if not frames:
-        _save_checkpoint("funding", inst_id_swap, {
-            "done": True, "start_ms": start_ms, "end_ms": end_ms, "pages": pages, "rows": 0,
-        })
+        _save_checkpoint(
+            "funding",
+            inst_id_swap,
+            {
+                "done": True,
+                "start_ms": start_ms,
+                "end_ms": end_ms,
+                "pages": pages,
+                "rows": 0,
+            },
+        )
         return {"status": "empty", "rows": 0}
 
     all_df = pl.concat(frames)
@@ -293,9 +327,17 @@ def backfill_funding(inst_id_swap: str, start_ms: int, end_ms: int, limiter: Rat
         out_dir.mkdir(parents=True, exist_ok=True)
         part.drop(["year", "month"]).write_parquet(out_dir / "part-0.parquet", compression="zstd")
 
-    _save_checkpoint("funding", inst_id_swap, {
-        "done": True, "start_ms": start_ms, "end_ms": end_ms,
-        "pages": pages, "rows": all_df.height,
-        "first_ts": int(all_df["funding_time"].min()), "last_ts": int(all_df["funding_time"].max()),
-    })
+    _save_checkpoint(
+        "funding",
+        inst_id_swap,
+        {
+            "done": True,
+            "start_ms": start_ms,
+            "end_ms": end_ms,
+            "pages": pages,
+            "rows": all_df.height,
+            "first_ts": int(all_df["funding_time"].min()),
+            "last_ts": int(all_df["funding_time"].max()),
+        },
+    )
     return {"status": "ok", "rows": all_df.height, "pages": pages}

@@ -35,6 +35,7 @@ from audit.auditlib.forward_v22 import (  # noqa: E402
     ENTRY_COST_BPS,
     EVENT_SCHEMA,
     EXIT_COST_BPS,
+    FACTOR_LOOKBACK_HOURS,
     HOLDING_HOURS,
     RUNNER_VERSION,
     STRATEGY_ID,
@@ -176,6 +177,34 @@ def _fetch_symbol(
     return rows
 
 
+def contiguous_fetch_start(
+    *,
+    historical: pl.DataFrame,
+    existing: pl.DataFrame,
+    symbol: str,
+    fallback: datetime,
+) -> datetime:
+    history = historical.filter(pl.col("symbol") == symbol)
+    start = utc(history["ts"].max()) if not history.is_empty() else utc(fallback)
+    if existing.is_empty():
+        return start
+    cached = sorted(
+        utc(value)
+        for value in existing.filter(
+            (pl.col("symbol") == symbol) & (pl.col("ts") > start)
+        )["ts"].to_list()
+    )
+    expected = start + timedelta(hours=BAR_CLOSE_DELAY_HOURS)
+    for timestamp in cached:
+        if timestamp < expected:
+            continue
+        if timestamp != expected:
+            break
+        start = timestamp
+        expected = start + timedelta(hours=BAR_CLOSE_DELAY_HOURS)
+    return start
+
+
 def load_or_fetch_market(
     *,
     root: Path,
@@ -189,17 +218,16 @@ def load_or_fetch_market(
     existing = pl.read_parquet(cache) if cache.exists() else empty_frame(BAR_SCHEMA)
     rows: list[dict[str, Any]] = []
     if not no_fetch:
-        latest = {
-            str(row["symbol"]): utc(row["latest_ts"])
-            for row in existing.group_by("symbol")
-            .agg(pl.col("ts").max().alias("latest_ts"))
-            .iter_rows(named=True)
-        }
         symbols = historical["symbol"].unique().sort().to_list()
         with requests.Session() as session:
             for index, raw_symbol in enumerate(symbols, start=1):
                 symbol = str(raw_symbol)
-                start = latest.get(symbol, fetch_after)
+                start = contiguous_fetch_start(
+                    historical=historical,
+                    existing=existing,
+                    symbol=symbol,
+                    fallback=fetch_after,
+                )
                 if start >= as_of:
                     continue
                 rows.extend(_fetch_symbol(session, symbol, start, as_of))
@@ -345,7 +373,36 @@ def _decision_schedule_candidates(
     raise ValueError(f"unsupported mode: {mode}")
 
 
+def _symbols_with_complete_window(
+    bars: pl.DataFrame, *, end_bar_ts: datetime, hours: int
+) -> set[str]:
+    end = utc(end_bar_ts)
+    start = end - timedelta(hours=hours - 1)
+    coverage = (
+        bars.filter((pl.col("ts") >= start) & (pl.col("ts") <= end))
+        .group_by("symbol")
+        .agg(
+            pl.col("ts").n_unique().alias("bar_count"),
+            pl.col("ts").min().alias("first_bar"),
+            pl.col("ts").max().alias("last_bar"),
+        )
+        .filter(
+            (pl.col("bar_count") == hours)
+            & (pl.col("first_bar") == start)
+            & (pl.col("last_bar") == end)
+        )
+    )
+    return {str(value) for value in coverage["symbol"].to_list()}
+
+
 def _btc_state(bars: pl.DataFrame, feature_bar_ts: datetime) -> str:
+    complete = _symbols_with_complete_window(
+        bars.filter(pl.col("symbol") == "BTC-USDT"),
+        end_bar_ts=feature_bar_ts,
+        hours=BTC_TREND_LOOKBACK_HOURS,
+    )
+    if "BTC-USDT" not in complete:
+        return "UNAVAILABLE"
     btc = (
         bars.filter(pl.col("symbol") == "BTC-USDT")
         .sort("ts")
@@ -387,14 +444,28 @@ def create_decisions(
         signals = low_vol_480(causal)
         universe = build_daily_universe(causal, UNIVERSES["top20"])
         membership = universe.filter(pl.col("date") == scheduled.date()).sort("rank")
+        complete_symbols = _symbols_with_complete_window(
+            causal, end_bar_ts=feature_bar_ts, hours=FACTOR_LOOKBACK_HOURS
+        )
         factor = (
             signals.filter(pl.col("feature_ts") == feature_bar_ts)
             .join(membership.select(["symbol", "rank"]), on="symbol", how="inner")
+            .filter(pl.col("symbol").is_in(sorted(complete_symbols)))
             .drop_nulls("signal")
             .sort(["signal", "symbol"], descending=[True, False])
         )
         btc_state = _btc_state(causal, feature_bar_ts)
-        target = factor.head(3) if btc_state == "UP" and factor.height >= 3 else factor.head(0)
+        feature_coverage = factor.height / membership.height if membership.height else 0.0
+        data_complete = (
+            btc_state != "UNAVAILABLE"
+            and membership.height >= 3
+            and feature_coverage >= float(lock["minimum_data_coverage"])
+        )
+        target = (
+            factor.head(3)
+            if data_complete and btc_state == "UP" and factor.height >= 3
+            else factor.head(0)
+        )
         weights = (
             _capped_weights(target["signal"].to_numpy(), 3, 0.50, "score")
             if target.height == 3
@@ -405,12 +476,13 @@ def create_decisions(
             symbol: float(weight) for symbol, weight in zip(selected, weights, strict=True)
         }
         cash_weight = max(0.0, 1.0 - sum(target_weights.values()))
-        origin, late, eligible, latency = classify_decision_origin(
+        origin, late, timely_eligible, latency = classify_decision_origin(
             mode=mode,
             scheduled_run_ts=scheduled,
             recorded_at=recorded_at,
             max_latency=int(lock["max_decision_latency_seconds"]),
         )
+        eligible = timely_eligible and data_complete
         decision_id = stable_decision_id(
             scheduled, str(snapshot["snapshot_id"]), str(lock["sha256"])
         )
@@ -431,6 +503,8 @@ def create_decisions(
             "market_data_snapshot_id": str(snapshot["snapshot_id"]),
             "input_file_paths": _json(input_paths),
             "input_file_sha256": _json(input_hashes),
+            "feature_data_coverage": feature_coverage,
+            "data_quality_status": "PASS" if data_complete else "INCOMPLETE",
             "btc_trend_state": btc_state,
             "universe": _json([str(value) for value in membership["symbol"].to_list()]),
             "factor_scores": _json(
@@ -444,7 +518,13 @@ def create_decisions(
             "strategy_code_hash": str(lock["strategy_code_hash"]),
             "git_commit": str(lock["strategy_code_commit"]),
             "working_tree_clean": True,
-            "status": "DECISION_CREATED" if selected else "CASH",
+            "status": (
+                "DATA_INCOMPLETE"
+                if not data_complete
+                else "DECISION_CREATED"
+                if selected
+                else "CASH"
+            ),
         }
         decision_rows.append(row)
         event_rows.append(
@@ -457,6 +537,8 @@ def create_decisions(
                     "origin": origin,
                     "late_reconstructed": late,
                     "eligible_for_forward_evidence": eligible,
+                    "feature_data_coverage": feature_coverage,
+                    "data_quality_status": "PASS" if data_complete else "INCOMPLETE",
                     "btc_trend_state": btc_state,
                     "universe": json.loads(row["universe"]),
                     "factor_scores": json.loads(row["factor_scores"]),
@@ -918,7 +1000,17 @@ def performance_and_status(
     )
     expected_trades = sum(len(json.loads(value)) for value in entry_due["selected_symbols"])
     actual_trades = eligible_trades.height
-    coverage = min(1.0, actual_trades / expected_trades) if expected_trades else 1.0
+    fill_coverage = min(1.0, actual_trades / expected_trades) if expected_trades else 1.0
+    realtime_decisions = decisions.filter(pl.col("decision_origin") == "REALTIME")
+    feature_coverage = (
+        float(realtime_decisions["feature_data_coverage"].min())
+        if not realtime_decisions.is_empty()
+        else 1.0
+    )
+    incomplete_decisions = decisions.filter(
+        pl.col("data_quality_status") != "PASS"
+    ).height
+    coverage = min(fill_coverage, feature_coverage)
     missing_fills = max(0, expected_trades - actual_trades)
     exit_gap_count = closed.filter(
         pl.col("actual_exit_ts") > pl.col("scheduled_exit_ts")
@@ -947,7 +1039,7 @@ def performance_and_status(
         "unhandled_market_gap_count": exit_gap_count,
         "unexplained_missing_fill_count": missing_fills,
         "system_error_count": 0,
-        "data_completeness_unknown": False,
+        "data_completeness_unknown": incomplete_decisions > 0,
     }
     paper_status = evaluate_forward_status(
         metrics=metrics, lock=lock, integrity_errors=integrity_errors
@@ -969,6 +1061,7 @@ def performance_and_status(
         "actual_symbol_trades": actual_trades,
         "forward_days": forward_days,
         "data_coverage": coverage,
+        "feature_data_incomplete_count": incomplete_decisions,
         "strategy_net_return": strategy_return,
         "btc_benchmark_return": btc_return,
         "dynamic_universe_benchmark_return": universe_return,
@@ -1071,6 +1164,7 @@ def _failure_status(
         "actual_symbol_trades": 0,
         "forward_days": 0.0,
         "data_coverage": 0.0,
+        "feature_data_incomplete_count": 0,
         "strategy_net_return": 0.0,
         "btc_benchmark_return": 0.0,
         "dynamic_universe_benchmark_return": 0.0,

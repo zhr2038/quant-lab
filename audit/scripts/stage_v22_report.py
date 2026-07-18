@@ -170,6 +170,9 @@ benchmarks, and advancement statistics.
 Decision creation freezes the completed-bar cutoff, BTC 60-day trend state,
 dynamic universe, factor scores, rank, Top 3, target weights, and market snapshot.
 Entry recording occurs on a later invocation after the next bar is complete.
+The runner backfills from each symbol's first hourly cache gap and requires a
+contiguous 1440-hour BTC window plus at least 95% contiguous 480-hour factor
+coverage. A timely but incomplete decision remains auditable and ineligible.
 
 - Current identity status: **{status['runner_integrity']}**
 - Git HEAD check: **{'PASS' if status['git_head_check'] else 'FAIL'}**
@@ -405,7 +408,7 @@ footer{{max-width:1320px;margin:auto;padding:22px clamp(18px,5vw,72px) 50px;colo
 <div class="bar"><span class="rt"></span><span class="rec"></span></div>
 <p><span class="tag">REALTIME {official}</span><span class="tag amber">RECOVERY_RECONSTRUCTION {recovered}</span></p>
 <p class="note">重建决策、重建成交和重建基准保留审计价值，但不进入正式收益、基准、周期、交易数或晋级统计。</p></div><div class="grid" style="grid-template-columns:1fr 1fr">
-<dl><dt>正式有效决策数</dt><dd data-field="eligible_decisions">{status['eligible_decision_count']}</dd><dt>不合格决策数</dt><dd>{status['ineligible_decision_count']}</dd><dt>空仓决策数</dt><dd>{status['cash_decision_count']}</dd></dl>
+<dl><dt>正式有效决策数</dt><dd data-field="eligible_decisions">{status['eligible_decision_count']}</dd><dt>不合格决策数</dt><dd>{status['ineligible_decision_count']}</dd><dt>数据不完整决策数</dt><dd>{status.get('feature_data_incomplete_count', 0)}</dd><dt>空仓决策数</dt><dd>{status['cash_decision_count']}</dd></dl>
 <dl><dt>实际入场数</dt><dd>{status['actual_entry_count']}</dd><dt>已完成周期数</dt><dd>{status['completed_independent_cycles']}</dd><dt>有效币次交易数</dt><dd>{status['actual_symbol_trades']}</dd></dl>
 </div></div></section>
 <section><h2>Forward 绩效与门槛</h2><div class="tablewrap"><table><thead><tr><th>指标</th><th>当前</th><th>预注册门槛</th></tr></thead><tbody>

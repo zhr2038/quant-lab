@@ -67,6 +67,8 @@ DECISION_SCHEMA = {
     "market_data_snapshot_id": pl.Utf8,
     "input_file_paths": pl.Utf8,
     "input_file_sha256": pl.Utf8,
+    "feature_data_coverage": pl.Float64,
+    "data_quality_status": pl.Utf8,
     "btc_trend_state": pl.Utf8,
     "universe": pl.Utf8,
     "factor_scores": pl.Utf8,

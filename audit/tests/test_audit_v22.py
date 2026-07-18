@@ -40,6 +40,7 @@ from audit.scripts.stage_v22_forward import (
     _decision_schedule_candidates,
     _record_exception_status,
     build_market_snapshot,
+    contiguous_fetch_start,
     create_decisions,
     create_entries,
     forward_market_fetch_start,
@@ -154,6 +155,33 @@ def _metrics(**overrides: object) -> dict:
     return result
 
 
+def _continuous_market(
+    scheduled: datetime, *, missing: tuple[str, datetime] | None = None
+) -> pl.DataFrame:
+    symbols = ["BTC-USDT", "ETH-USDT", "SOL-USDT", "BNB-USDT"]
+    start = scheduled - timedelta(hours=1500)
+    rows = []
+    for index in range(1501):
+        timestamp = start + timedelta(hours=index)
+        for offset, symbol in enumerate(symbols):
+            if missing == (symbol, timestamp):
+                continue
+            price = 100.0 + offset * 10.0 + index * (0.02 + offset * 0.001)
+            rows.append(
+                {
+                    "symbol": symbol,
+                    "ts": timestamp,
+                    "open": price,
+                    "high": price,
+                    "low": price,
+                    "close": price,
+                    "volume": 1000.0,
+                    "quote_volume": 100_000.0,
+                }
+            )
+    return pl.DataFrame(rows, schema=BAR_SCHEMA)
+
+
 def test_locked_strategy_uses_explicit_60_day_btc_semantics() -> None:
     lock = _lock()
     validate_parameter_lock(lock)
@@ -234,6 +262,27 @@ def test_fetch_window_includes_first_bar_that_closes_after_cutoff() -> None:
     assert feature_bar_open + timedelta(hours=1) > cutoff
 
 
+def test_fetch_resumes_from_first_hourly_cache_gap() -> None:
+    start = datetime(2026, 7, 18, tzinfo=UTC)
+    historical = pl.DataFrame(
+        {"symbol": ["BTC-USDT"], "ts": [start]},
+        schema={"symbol": pl.Utf8, "ts": pl.Datetime("us", "UTC")},
+    )
+    existing = pl.DataFrame(
+        {
+            "symbol": ["BTC-USDT", "BTC-USDT"],
+            "ts": [start + timedelta(hours=1), start + timedelta(hours=3)],
+        },
+        schema={"symbol": pl.Utf8, "ts": pl.Datetime("us", "UTC")},
+    )
+    assert contiguous_fetch_start(
+        historical=historical,
+        existing=existing,
+        symbol="BTC-USDT",
+        fallback=start,
+    ) == start + timedelta(hours=1)
+
+
 def test_recovery_can_rebuild_but_never_create_formal_evidence() -> None:
     scheduled = datetime(2026, 7, 19, tzinfo=UTC)
     origin, late, eligible, _ = classify_decision_origin(
@@ -266,6 +315,8 @@ def test_reconstructed_trade_is_excluded_from_formal_equity() -> None:
         "market_data_snapshot_id": "snapshot",
         "input_file_paths": "[]",
         "input_file_sha256": "{}",
+        "feature_data_coverage": 1.0,
+        "data_quality_status": "PASS",
         "btc_trend_state": "UP",
         "universe": '["BTC-USDT"]',
         "factor_scores": "[]",
@@ -328,6 +379,8 @@ def test_completed_realtime_cash_cycle_is_kept_in_formal_equity() -> None:
         "market_data_snapshot_id": "snapshot",
         "input_file_paths": "[]",
         "input_file_sha256": "{}",
+        "feature_data_coverage": 1.0,
+        "data_quality_status": "PASS",
         "btc_trend_state": "DOWN",
         "universe": "[]",
         "factor_scores": "[]",
@@ -360,6 +413,7 @@ def test_completed_realtime_cash_cycle_is_kept_in_formal_equity() -> None:
         ({"max_drawdown": -0.31}, "FAIL_RISK_OR_DRAWDOWN"),
         ({"maximum_single_symbol_contribution": 0.51}, "FAIL_CONCENTRATION"),
         ({"data_coverage": 0.94}, "FAIL_DATA_QUALITY"),
+        ({"data_completeness_unknown": True}, "INCONCLUSIVE_DATA_INCOMPLETE"),
         ({}, "PAPER_REVIEW_READY"),
     ],
 )
@@ -460,26 +514,7 @@ def test_decision_and_entry_stages_are_separate() -> None:
     lock = _lock()
     cutoff = datetime(2026, 1, 1, 0, 30, tzinfo=UTC)
     scheduled = due_schedule_times(cutoff, cutoff + timedelta(hours=1))[0]
-    symbols = ["BTC-USDT", "ETH-USDT", "SOL-USDT", "BNB-USDT"]
-    start = scheduled - timedelta(hours=1500)
-    rows = []
-    for index in range(1501):
-        timestamp = start + timedelta(hours=index)
-        for offset, symbol in enumerate(symbols):
-            price = 100.0 + offset * 10.0 + index * (0.02 + offset * 0.001)
-            rows.append(
-                {
-                    "symbol": symbol,
-                    "ts": timestamp,
-                    "open": price,
-                    "high": price,
-                    "low": price,
-                    "close": price,
-                    "volume": 1000.0,
-                    "quote_volume": 100_000.0,
-                }
-            )
-    bars = pl.DataFrame(rows, schema=BAR_SCHEMA)
+    bars = _continuous_market(scheduled)
     snapshot = {
         "snapshot_id": "snapshot-1",
         "files": [{"path": "/data/bars", "sha256": "a" * 64}],
@@ -497,6 +532,8 @@ def test_decision_and_entry_stages_are_separate() -> None:
     assert decisions.height == 1
     assert decisions["feature_cutoff_ts"][0] == scheduled
     assert decisions["observed_market_data_cutoff"][0] == scheduled
+    assert decisions["feature_data_coverage"][0] == 1.0
+    assert decisions["data_quality_status"][0] == "PASS"
     entries, benchmarks, benchmark_trades, _ = create_entries(
         decisions=empty_frame(DECISION_SCHEMA),
         existing_trades=pl.DataFrame(schema={}),
@@ -530,6 +567,34 @@ def test_decision_and_entry_stages_are_separate() -> None:
     assert benchmark_trades["entry_ts"].unique().to_list() == [
         scheduled + timedelta(hours=1)
     ]
+
+
+def test_incomplete_feature_window_cannot_enter_formal_forward() -> None:
+    lock = _lock()
+    cutoff = datetime(2026, 1, 1, 0, 30, tzinfo=UTC)
+    scheduled = due_schedule_times(cutoff, cutoff + timedelta(hours=1))[0]
+    bars = _continuous_market(
+        scheduled, missing=("ETH-USDT", scheduled - timedelta(hours=2))
+    )
+    decisions, _events = create_decisions(
+        mode="realtime",
+        lock=lock,
+        cutoff=cutoff,
+        observed_cutoff=scheduled,
+        recorded_at=scheduled + timedelta(minutes=5),
+        bars=bars,
+        existing=empty_frame(DECISION_SCHEMA),
+        snapshot={
+            "snapshot_id": "snapshot-gap",
+            "files": [{"path": "/data/bars", "sha256": "a" * 64}],
+        },
+    )
+    assert decisions.height == 1
+    assert decisions["decision_origin"][0] == "REALTIME"
+    assert decisions["data_quality_status"][0] == "INCOMPLETE"
+    assert decisions["feature_data_coverage"][0] == pytest.approx(0.75)
+    assert decisions["eligible_for_forward_evidence"][0] is False
+    assert decisions["status"][0] == "DATA_INCOMPLETE"
 
 
 @pytest.mark.parametrize(

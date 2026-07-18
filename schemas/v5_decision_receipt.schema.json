@@ -1,0 +1,194 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://quant-lab.local/schemas/v5_decision_receipt.schema.json",
+  "title": "V5 Decision Receipt",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "receipt_id",
+    "receipt_status",
+    "last_completed_stage",
+    "created_at",
+    "finalized_at",
+    "decision_ts",
+    "market_data_cutoff",
+    "code_commit",
+    "config_hash",
+    "container_image_digest",
+    "strategy_version",
+    "universe",
+    "raw_features",
+    "factor_values",
+    "factor_weights",
+    "dynamic_ic_state",
+    "regime_state",
+    "hmm_state",
+    "rss_state",
+    "funding_state",
+    "current_positions",
+    "available_cash",
+    "optimizer_inputs",
+    "target_weights",
+    "alpha_gate",
+    "risk_permission",
+    "fail_policy",
+    "order_intents",
+    "execution_results",
+    "data_snapshot_id",
+    "live_order_effect",
+    "writer_status",
+    "error"
+  ],
+  "properties": {
+    "schema_version": {"const": "v5_decision_receipt.v1"},
+    "receipt_id": {"type": "string", "pattern": "^[a-f0-9]{64}$"},
+    "receipt_status": {"enum": ["SUCCEEDED", "FAILED", "PARTIAL"]},
+    "last_completed_stage": {
+      "enum": [
+        "RECEIPT_OPENED",
+        "MARKET_DATA_VALIDATED",
+        "PIPELINE_COMPLETED",
+        "ORDER_INTENTS_FINALIZED",
+        "EXECUTION_ATTEMPTED",
+        "EXECUTION_RECORDED"
+      ]
+    },
+    "created_at": {"$ref": "#/$defs/timestamp"},
+    "finalized_at": {"$ref": "#/$defs/nullableTimestamp"},
+    "decision_ts": {"$ref": "#/$defs/timestamp"},
+    "market_data_cutoff": {"$ref": "#/$defs/timestamp"},
+    "code_commit": {"type": "string", "pattern": "^[a-f0-9]{40}$"},
+    "config_hash": {"$ref": "#/$defs/sha256"},
+    "container_image_digest": {
+      "type": "string",
+      "pattern": "^(sha256:[a-f0-9]{64}|UNAVAILABLE:[A-Z0-9_]+)$"
+    },
+    "strategy_version": {"type": "string", "minLength": 1, "maxLength": 200},
+    "universe": {"$ref": "#/$defs/evidenceValue"},
+    "raw_features": {"$ref": "#/$defs/evidenceValue"},
+    "factor_values": {"$ref": "#/$defs/evidenceValue"},
+    "factor_weights": {"$ref": "#/$defs/evidenceValue"},
+    "dynamic_ic_state": {"$ref": "#/$defs/evidenceValue"},
+    "regime_state": {"$ref": "#/$defs/evidenceValue"},
+    "hmm_state": {"$ref": "#/$defs/evidenceValue"},
+    "rss_state": {"$ref": "#/$defs/evidenceValue"},
+    "funding_state": {"$ref": "#/$defs/evidenceValue"},
+    "current_positions": {"$ref": "#/$defs/evidenceValue"},
+    "available_cash": {"$ref": "#/$defs/evidenceValue"},
+    "optimizer_inputs": {"$ref": "#/$defs/evidenceValue"},
+    "target_weights": {"$ref": "#/$defs/evidenceValue"},
+    "alpha_gate": {"$ref": "#/$defs/evidenceValue"},
+    "risk_permission": {"$ref": "#/$defs/evidenceValue"},
+    "fail_policy": {"$ref": "#/$defs/evidenceValue"},
+    "order_intents": {"$ref": "#/$defs/evidenceValue"},
+    "execution_results": {"$ref": "#/$defs/evidenceValue"},
+    "data_snapshot_id": {"type": "string", "minLength": 1, "maxLength": 300},
+    "live_order_effect": {"const": "none"},
+    "writer_status": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["mode", "atomic", "append_only", "write_latency_ms"],
+      "properties": {
+        "mode": {"const": "read_only"},
+        "atomic": {"const": true},
+        "append_only": {"const": true},
+        "write_latency_ms": {"type": "number", "minimum": 0}
+      }
+    },
+    "error": {
+      "oneOf": [
+        {"type": "null"},
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["error_type", "message_sha256", "safe_summary"],
+          "properties": {
+            "error_type": {"type": "string", "minLength": 1, "maxLength": 200},
+            "message_sha256": {"$ref": "#/$defs/sha256"},
+            "safe_summary": {"type": "string", "maxLength": 500}
+          }
+        }
+      ]
+    }
+  },
+  "$defs": {
+    "timestamp": {
+      "type": "string",
+      "format": "date-time"
+    },
+    "nullableTimestamp": {
+      "oneOf": [
+        {"$ref": "#/$defs/timestamp"},
+        {"type": "null"}
+      ]
+    },
+    "sha256": {
+      "type": "string",
+      "pattern": "^[a-f0-9]{64}$"
+    },
+    "contentRef": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "relative_path",
+        "sha256",
+        "schema_version",
+        "media_type",
+        "size_bytes",
+        "row_count"
+      ],
+      "properties": {
+        "relative_path": {
+          "type": "string",
+          "pattern": "^content/[a-f0-9]{64}\\.(json\\.zst|parquet)$"
+        },
+        "sha256": {"$ref": "#/$defs/sha256"},
+        "schema_version": {"type": "string", "minLength": 1, "maxLength": 200},
+        "media_type": {"enum": ["application/zstd+json", "application/x-parquet"]},
+        "size_bytes": {"type": "integer", "minimum": 0},
+        "row_count": {"type": ["integer", "null"], "minimum": 0}
+      }
+    },
+    "safeInlineObject": {
+      "type": "object",
+      "propertyNames": {
+        "not": {
+          "pattern": "([Aa][Pp][Ii][_-]?[Kk][Ee][Yy]|[Ss][Ee][Cc][Rr][Ee][Tt]|[Pp][Aa][Ss][Ss][Pp][Hh][Rr][Aa][Ss][Ee]|[Pp][Rr][Ii][Vv][Aa][Tt][Ee][_-]?[Kk][Ee][Yy]|[Pp][Aa][Ss][Ss][Ww][Oo][Rr][Dd]|[Dd][Aa][Tt][Aa][Bb][Aa][Ss][Ee][_-]?[Uu][Rr][Ll]|[Dd][Ss][Nn]|[Aa][Uu][Tt][Hh][Oo][Rr][Ii][Zz][Aa][Tt][Ii][Oo][Nn]|[Cc][Oo][Oo][Kk][Ii][Ee]|[Tt][Oo][Kk][Ee][Nn])"
+        }
+      }
+    },
+    "evidenceValue": {
+      "oneOf": [
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["storage", "schema_version", "value"],
+          "properties": {
+            "storage": {"const": "inline"},
+            "schema_version": {"type": "string", "minLength": 1, "maxLength": 200},
+            "value": {"$ref": "#/$defs/safeInlineObject"}
+          }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["storage", "ref"],
+          "properties": {
+            "storage": {"const": "content_ref"},
+            "ref": {"$ref": "#/$defs/contentRef"}
+          }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["storage", "reason"],
+          "properties": {
+            "storage": {"const": "unavailable"},
+            "reason": {"type": "string", "minLength": 1, "maxLength": 300}
+          }
+        }
+      ]
+    }
+  }
+}

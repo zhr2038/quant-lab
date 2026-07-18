@@ -1,5 +1,10 @@
 # ruff: noqa: E501
-"""Forward-only runner for the single frozen low_vol + BTC trend hypothesis."""
+"""Invalidated Audit v2 runner retained only as an explicit compatibility guard.
+
+Audit v2 output remains reproducible from its immutable bundle, but this source
+entry point must never create more evidence with the known accounting defects.
+Use ``stage_v21_forward.py`` for all new forward observations.
+"""
 
 from __future__ import annotations
 
@@ -158,6 +163,13 @@ def _report(root: Path, cutoff: datetime, as_of: datetime) -> None:
 
 
 def main() -> None:
+    raise SystemExit(
+        "Audit v2 forward runner is INVALIDATED_BY_RUNNER_BUG; "
+        "use scripts/run_low_vol_forward_paper.sh (Audit v2.1)."
+    )
+
+
+def _invalidated_v2_main_for_source_audit_only() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument("--start-after", default=DEFAULT_CUTOFF.isoformat())
     parser.add_argument("--as-of", default=datetime.now(UTC).replace(microsecond=0).isoformat())

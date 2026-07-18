@@ -115,7 +115,7 @@ def test_time_based_funding_window_handles_different_frequencies() -> None:
     assert summary["median_settlement_frequency_hours"].to_list() == [4.0, 8.0]
 
 
-def test_funding_window_is_closed_left_and_never_fills_missing_with_zero() -> None:
+def test_funding_window_includes_event_then_asof_excludes_exact_timestamp() -> None:
     start = datetime(2026, 1, 1, tzinfo=UTC)
     funding = pl.DataFrame(
         {
@@ -125,8 +125,8 @@ def test_funding_window_is_closed_left_and_never_fills_missing_with_zero() -> No
         }
     )
     rolled = time_based_funding_observations(funding).sort("funding_ts")
-    assert rolled["funding_mean_20d"][0] is None
-    assert rolled["funding_mean_20d"][1] == pytest.approx(0.01)
+    assert rolled["funding_mean_20d"][0] == pytest.approx(0.01)
+    assert rolled["funding_mean_20d"][1] == pytest.approx(0.02)
     bars = pl.DataFrame(
         {"symbol": ["A", "A"], "ts": [start, start + timedelta(hours=8)]}
     )

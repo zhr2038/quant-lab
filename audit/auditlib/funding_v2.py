@@ -8,10 +8,11 @@ import polars as pl
 def time_based_funding_observations(
     funding: pl.DataFrame, *, period: str = "20d"
 ) -> pl.DataFrame:
-    """Trailing funding mean over natural time, excluding the current settlement.
+    """Trailing funding mean over natural time, including this published event.
 
-    The output is on funding publication timestamps.  `closed="left"` ensures
-    the event at the decision timestamp cannot enter its own signal.
+    The output is on funding publication timestamps.  The later as-of join is
+    strict, so an event becomes usable immediately *after* its timestamp, not
+    at that exact timestamp and not one settlement cycle later.
     """
     if funding.is_empty():
         return pl.DataFrame(
@@ -28,7 +29,7 @@ def time_based_funding_observations(
         funding.rename({time_col: "funding_ts"}) if time_col != "funding_ts" else funding
     ).sort(["symbol", "funding_ts"])
     rolled = frame.rolling(
-        index_column="funding_ts", period=period, group_by="symbol", closed="left"
+        index_column="funding_ts", period=period, group_by="symbol", closed="right"
     ).agg(
         pl.col("funding_rate").len().alias("observation_count_20d"),
         pl.col("funding_rate").mean().alias("funding_mean_20d"),
@@ -49,14 +50,16 @@ def funding_fade_time_20d(
         (-pl.col("funding_mean_20d")).alias("signal")
     )
     grid = bars_1h_index.select(["symbol", "ts"]).sort(["symbol", "ts"])
-    # The rolling row at settlement t already excludes t.  An exact asof join
-    # is therefore causal and represents information strictly before decision t.
+    # Each settlement row includes the event at t, but exact matches are
+    # forbidden.  Therefore funding_event_ts < decision_ts is the only usable
+    # relationship and the event is available from the next instant.
     return grid.join_asof(
         observations.sort(["symbol", "funding_ts"]),
         left_on="ts",
         right_on="funding_ts",
         by="symbol",
         strategy="backward",
+        allow_exact_matches=False,
         check_sortedness=False,
     ).select(["symbol", pl.col("ts").alias("feature_ts"), "signal"])
 

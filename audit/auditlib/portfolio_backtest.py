@@ -30,6 +30,8 @@ class Simulation:
     turnover: np.ndarray
     traded_fraction: np.ndarray
     contribution_by_symbol: np.ndarray
+    contribution_matrix: np.ndarray | None = None
+    traded_by_symbol: np.ndarray | None = None
 
 
 def build_market_matrix(
@@ -149,6 +151,8 @@ def simulate_long_only(
     turnover = np.zeros(n_times, dtype=float)
     traded = np.zeros(n_times, dtype=float)
     contributions = np.zeros(n_symbols, dtype=float)
+    contribution_matrix = np.zeros((n_times, n_symbols), dtype=float)
+    traded_by_symbol = np.zeros((n_times, n_symbols), dtype=float)
 
     # First event requires both warmup-complete signals and an available causal universe.
     anchor = None
@@ -161,7 +165,14 @@ def simulate_long_only(
             anchor = decision_index
             break
     if anchor is None:
-        return Simulation(gross, turnover, traded, contributions)
+        return Simulation(
+            gross,
+            turnover,
+            traded,
+            contributions,
+            contribution_matrix,
+            traded_by_symbol,
+        )
 
     offsets = [int(round(index * rebalance_hours / sleeve_count)) for index in range(sleeve_count)]
     for time_index in range(1, n_times):
@@ -169,6 +180,7 @@ def simulate_long_only(
         contribution = current * market.returns[time_index]
         gross[time_index] = contribution.sum()
         contributions += contribution
+        contribution_matrix[time_index] = contribution
 
         due_sleeves = [
             sleeve
@@ -196,7 +208,15 @@ def simulate_long_only(
         delta = np.abs(after - before)
         turnover[time_index] = 0.5 * delta.sum()
         traded[time_index] = delta.sum()
-    return Simulation(gross, turnover, traded, contributions)
+        traded_by_symbol[time_index] = delta
+    return Simulation(
+        gross,
+        turnover,
+        traded,
+        contributions,
+        contribution_matrix,
+        traded_by_symbol,
+    )
 
 
 def _daily_compound(

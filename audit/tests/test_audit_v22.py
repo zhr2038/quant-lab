@@ -42,6 +42,7 @@ from audit.scripts.stage_v22_forward import (
     build_market_snapshot,
     create_decisions,
     create_entries,
+    forward_market_fetch_start,
     run,
 )
 from audit.scripts.stage_v22_report import _dashboard, _executive, _final_decisions
@@ -223,6 +224,14 @@ def test_realtime_waits_until_the_decision_bar_is_observable() -> None:
         existing=empty_frame(DECISION_SCHEMA),
     )
     assert selected == []
+
+
+def test_fetch_window_includes_first_bar_that_closes_after_cutoff() -> None:
+    cutoff = datetime(2026, 7, 19, 20, 46, 56, tzinfo=UTC)
+    first_schedule = due_schedule_times(cutoff, cutoff + timedelta(hours=1))[0]
+    feature_bar_open = first_schedule - timedelta(hours=1)
+    assert forward_market_fetch_start(cutoff) < feature_bar_open
+    assert feature_bar_open + timedelta(hours=1) > cutoff
 
 
 def test_recovery_can_rebuild_but_never_create_formal_evidence() -> None:

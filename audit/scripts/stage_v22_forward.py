@@ -231,6 +231,11 @@ def available_market_cutoff(bars: pl.DataFrame, requested_as_of: datetime) -> da
     return utc(source["ts"].max()) + timedelta(hours=BAR_CLOSE_DELAY_HOURS)
 
 
+def forward_market_fetch_start(cutoff: datetime) -> datetime:
+    """Include the bar that first becomes observable strictly after cutoff."""
+    return utc(cutoff) - timedelta(hours=BAR_CLOSE_DELAY_HOURS)
+
+
 def build_market_snapshot(
     *, input_paths: Sequence[Path], market_cutoff: datetime, recorded_at: datetime
 ) -> dict[str, Any]:
@@ -1206,7 +1211,7 @@ def run(
     forward, cache_path = load_or_fetch_market(
         root=root,
         historical=historical,
-        fetch_after=cutoff,
+        fetch_after=forward_market_fetch_start(cutoff),
         as_of=requested,
         no_fetch=no_fetch,
         persist_cache=not dry_run,

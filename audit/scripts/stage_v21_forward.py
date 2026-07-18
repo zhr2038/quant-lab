@@ -21,6 +21,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 
 from audit.auditlib.factors import low_vol_480  # noqa: E402
 from audit.auditlib.forward_v21 import (  # noqa: E402
+    BAR_CLOSE_AVAILABLE_DELAY_HOURS,
     DECISION_SCHEMA,
     ENTRY_FEE_BPS,
     ENTRY_PRICE_RULE,
@@ -197,13 +198,23 @@ def load_or_fetch_market(
 def _available_cutoff(
     historical: pl.DataFrame, forward: pl.DataFrame, requested_as_of: datetime
 ) -> datetime:
-    eligible = forward.filter(pl.col("ts") <= requested_as_of)
+    eligible = forward.filter(
+        pl.col("ts")
+        + pl.duration(hours=BAR_CLOSE_AVAILABLE_DELAY_HOURS)
+        <= requested_as_of
+    )
     btc = eligible.filter(pl.col("symbol") == "BTC-USDT")
     if not btc.is_empty():
-        return utc(btc["ts"].max())
+        return utc(btc["ts"].max()) + timedelta(
+            hours=BAR_CLOSE_AVAILABLE_DELAY_HOURS
+        )
     if not eligible.is_empty():
-        return utc(eligible["ts"].max())
-    return utc(historical["ts"].max())
+        return utc(eligible["ts"].max()) + timedelta(
+            hours=BAR_CLOSE_AVAILABLE_DELAY_HOURS
+        )
+    return utc(historical["ts"].max()) + timedelta(
+        hours=BAR_CLOSE_AVAILABLE_DELAY_HOURS
+    )
 
 
 def _initial_trade(
@@ -253,11 +264,21 @@ def _decision_times(
     cutoff = utc(cutoff)
     anchor = cutoff.replace(minute=0, second=0, microsecond=0) + timedelta(hours=1)
     eligible = (
-        forward.filter(
-            (pl.col("symbol") == "BTC-USDT")
-            & (pl.col("ts") > cutoff)
-            & (pl.col("ts") + pl.duration(hours=1) <= available_cutoff)
-        )["ts"]
+        forward.filter(pl.col("symbol") == "BTC-USDT")
+        .with_columns(
+            (
+                pl.col("ts")
+                + pl.duration(hours=BAR_CLOSE_AVAILABLE_DELAY_HOURS)
+            ).alias("_feature_available_ts")
+        )
+        .filter(
+            (pl.col("_feature_available_ts") > cutoff)
+            & (
+                pl.col("_feature_available_ts")
+                + pl.duration(hours=1)
+                <= available_cutoff
+            )
+        )["_feature_available_ts"]
         .unique()
         .sort()
         .to_list()
@@ -301,24 +322,31 @@ def build_new_decisions(
     event_rows: list[dict[str, Any]] = []
     coverage_expected = 0
     coverage_available = 0
-    for feature_ts in _decision_times(forward_bars, cutoff, available_cutoff):
+    for feature_cutoff_ts in _decision_times(
+        forward_bars, cutoff, available_cutoff
+    ):
+        feature_bar_ts = feature_cutoff_ts - timedelta(
+            hours=BAR_CLOSE_AVAILABLE_DELAY_HOURS
+        )
         decision_id = stable_decision_id(
             STRATEGY_ID,
-            feature_ts,
+            feature_cutoff_ts,
             str(lock["data_snapshot_id"]),
             str(lock["sha256"]),
         )
         if decision_id in existing_ids:
             continue
-        entry_ts = feature_ts + timedelta(hours=1)
-        membership = universe.filter(pl.col("date") == feature_ts.date()).sort("rank")
+        entry_ts = feature_cutoff_ts + timedelta(hours=1)
+        membership = universe.filter(
+            pl.col("date") == feature_cutoff_ts.date()
+        ).sort("rank")
         factor_values = (
-            signals.filter(pl.col("feature_ts") == feature_ts)
+            signals.filter(pl.col("feature_ts") == feature_bar_ts)
             .join(membership.select(["symbol", "rank"]), on="symbol", how="inner")
             .drop_nulls("signal")
             .sort(["signal", "symbol"], descending=[True, False])
         )
-        btc_state = _btc_state(btc, feature_ts)
+        btc_state = _btc_state(btc, feature_bar_ts)
         target = (
             factor_values.head(3)
             if btc_state == "UP" and factor_values.height >= 3
@@ -336,7 +364,9 @@ def build_new_decisions(
         for row, weight in zip(target.iter_rows(named=True), raw_weights, strict=True):
             symbol = str(row["symbol"])
             coverage_expected += 1
-            price = select_next_bar_close(combined_bars, symbol, feature_ts)
+            price = select_next_bar_close(
+                combined_bars, symbol, feature_cutoff_ts
+            )
             if price is None:
                 rejected.append({"symbol": symbol, "reason": "MISSING_EXACT_NEXT_BAR_CLOSE"})
                 continue
@@ -359,8 +389,8 @@ def build_new_decisions(
         decision = {
             "decision_id": decision_id,
             "strategy_id": STRATEGY_ID,
-            "decision_ts": feature_ts,
-            "feature_cutoff_ts": feature_ts,
+            "decision_ts": feature_cutoff_ts,
+            "feature_cutoff_ts": feature_cutoff_ts,
             "entry_ts": entry_ts,
             "available_data_cutoff": available_cutoff,
             "btc_trend_state": btc_state,
@@ -390,7 +420,7 @@ def build_new_decisions(
         event_rows.append(
             make_event(
                 event_type="DECISION_CREATED",
-                event_ts=feature_ts,
+                event_ts=feature_cutoff_ts,
                 decision_id=decision_id,
                 payload={
                     "btc_trend_state": btc_state,
@@ -606,9 +636,23 @@ def _timeline(
     timestamps = (
         combined.filter(
             (pl.col("symbol") == "BTC-USDT")
-            & (pl.col("ts") > cutoff)
-            & (pl.col("ts") <= available_cutoff)
-        )["ts"]
+            & (
+                pl.col("ts")
+                + pl.duration(hours=BAR_CLOSE_AVAILABLE_DELAY_HOURS)
+                > cutoff
+            )
+            & (
+                pl.col("ts")
+                + pl.duration(hours=BAR_CLOSE_AVAILABLE_DELAY_HOURS)
+                <= available_cutoff
+            )
+        )
+        .select(
+            (
+                pl.col("ts")
+                + pl.duration(hours=BAR_CLOSE_AVAILABLE_DELAY_HOURS)
+            ).alias("_available_ts")
+        )["_available_ts"]
         .unique()
         .sort()
         .to_list()

@@ -14,6 +14,8 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 
 from audit.auditlib.forward_v21 import (  # noqa: E402
+    BAR_CLOSE_AVAILABLE_DELAY_HOURS,
+    BAR_TIMESTAMP_SEMANTICS,
     ENTRY_PRICE_RULE,
     EXIT_PRICE_RULE,
     RUNNER_VERSION,
@@ -140,6 +142,8 @@ def initialize(
         "v1_snapshot_id": v1_snapshot,
         "code_commit": commit,
         "runner_version": RUNNER_VERSION,
+        "bar_timestamp_semantics": BAR_TIMESTAMP_SEMANTICS,
+        "bar_close_available_delay_hours": BAR_CLOSE_AVAILABLE_DELAY_HOURS,
         "created_at": created_at.isoformat(),
     }
     lock["sha256"] = parameter_lock_digest(lock)

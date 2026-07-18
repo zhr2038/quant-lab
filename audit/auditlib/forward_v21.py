@@ -26,6 +26,8 @@ ENTRY_FEE_BPS = 10.0
 ENTRY_SLIPPAGE_BPS = 5.0
 EXIT_FEE_BPS = 10.0
 EXIT_SLIPPAGE_BPS = 5.0
+BAR_TIMESTAMP_SEMANTICS = "bar_open_time"
+BAR_CLOSE_AVAILABLE_DELAY_HOURS = 1
 
 DECISION_SCHEMA = {
     "decision_id": pl.Utf8,
@@ -179,6 +181,8 @@ def validate_parameter_lock(lock: Mapping[str, Any]) -> None:
         "exit_price_rule": EXIT_PRICE_RULE,
         "round_trip_cost_bps": 30.0,
         "runner_version": RUNNER_VERSION,
+        "bar_timestamp_semantics": BAR_TIMESTAMP_SEMANTICS,
+        "bar_close_available_delay_hours": BAR_CLOSE_AVAILABLE_DELAY_HOURS,
     }
     mismatches = {
         key: {"expected": value, "actual": lock.get(key)}
@@ -258,17 +262,23 @@ def validate_new_cutoff(
 def select_next_bar_close(
     bars: pl.DataFrame, symbol: str, feature_cutoff_ts: datetime
 ) -> tuple[datetime, float] | None:
-    """Return exactly the next completed 1h close; never use the signal bar."""
-    expected = utc(feature_cutoff_ts) + timedelta(hours=1)
+    """Return the next bar close and its actual availability timestamp.
+
+    OKX candle ``ts`` is bar-open time.  ``feature_cutoff_ts`` is the instant
+    the feature bar became complete, so the next bar opens at that instant and
+    its close becomes tradable one hour later.
+    """
+    next_bar_open = utc(feature_cutoff_ts)
+    entry_ts = next_bar_open + timedelta(hours=BAR_CLOSE_AVAILABLE_DELAY_HOURS)
     rows = bars.filter(
         (pl.col("symbol") == symbol)
-        & (pl.col("ts") == expected)
+        & (pl.col("ts") == next_bar_open)
         & pl.col("close").is_finite()
     )
     if rows.is_empty():
         return None
     row = rows.sort("ts").head(1).to_dicts()[0]
-    return utc(row["ts"]), float(row["close"])
+    return entry_ts, float(row["close"])
 
 
 def performance_counts(
@@ -468,11 +478,17 @@ def append_only_events(existing: pl.DataFrame, new: pl.DataFrame) -> pl.DataFram
 def _symbol_bars(
     bars: pl.DataFrame, symbol: str, available_cutoff: datetime
 ) -> pl.DataFrame:
-    return bars.filter(
-        (pl.col("symbol") == symbol)
-        & (pl.col("ts") <= utc(available_cutoff))
-        & pl.col("close").is_finite()
-    ).sort("ts")
+    return (
+        bars.filter((pl.col("symbol") == symbol) & pl.col("close").is_finite())
+        .with_columns(
+            (
+                pl.col("ts")
+                + pl.duration(hours=BAR_CLOSE_AVAILABLE_DELAY_HOURS)
+            ).alias("_available_ts")
+        )
+        .filter(pl.col("_available_ts") <= utc(available_cutoff))
+        .sort("_available_ts")
+    )
 
 
 def resolve_trade_state(
@@ -484,7 +500,9 @@ def resolve_trade_state(
         return current
     available = utc(available_cutoff)
     symbol_bars = _symbol_bars(bars, str(current["symbol"]), available)
-    after_entry = symbol_bars.filter(pl.col("ts") >= utc(current["entry_ts"]))
+    after_entry = symbol_bars.filter(
+        pl.col("_available_ts") >= utc(current["entry_ts"])
+    )
     if after_entry.is_empty():
         return current
     mark = after_entry.tail(1).to_dicts()[0]
@@ -498,7 +516,7 @@ def resolve_trade_state(
     scheduled_exit = utc(current["scheduled_exit_ts"])
     current.update(
         {
-            "mark_ts": mark["ts"],
+            "mark_ts": mark["_available_ts"],
             "mark_price": float(mark["close"]),
             "unrealized_gross_return": float(mark["close"]) / entry_price - 1.0,
         }
@@ -520,7 +538,7 @@ def resolve_trade_state(
             }
         )
         return current
-    exit_rows = after_entry.filter(pl.col("ts") >= scheduled_exit)
+    exit_rows = after_entry.filter(pl.col("_available_ts") >= scheduled_exit)
     if exit_rows.is_empty():
         current["status"] = "OPEN"
         return current
@@ -530,12 +548,15 @@ def resolve_trade_state(
     weight = float(current["target_weight"])
     current.update(
         {
-            "actual_exit_ts": exit_row["ts"],
+            "actual_exit_ts": exit_row["_available_ts"],
             "exit_price": float(exit_row["close"]),
             "exit_delay_bars": int(
-                round((exit_row["ts"] - scheduled_exit).total_seconds() / 3600.0)
+                round(
+                    (exit_row["_available_ts"] - scheduled_exit).total_seconds()
+                    / 3600.0
+                )
             ),
-            "mark_ts": exit_row["ts"],
+            "mark_ts": exit_row["_available_ts"],
             "mark_price": float(exit_row["close"]),
             "gross_return": gross,
             "net_return": net,
@@ -637,7 +658,11 @@ def build_cohort_equity(
         ["symbol", "ts"]
     ).iter_rows(named=True):
         bars_by_symbol.setdefault(str(row["symbol"]), []).append(
-            (utc(row["ts"]), float(row["close"]))
+            (
+                utc(row["ts"])
+                + timedelta(hours=BAR_CLOSE_AVAILABLE_DELAY_HOURS),
+                float(row["close"]),
+            )
         )
     output: list[dict[str, float | int | datetime]] = []
     for raw_ts in timeline:

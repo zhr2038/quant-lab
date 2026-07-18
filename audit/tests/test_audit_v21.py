@@ -99,10 +99,10 @@ def test_fixed_120h_exit_uses_first_available_bar_and_never_reprices() -> None:
     scheduled = entry + timedelta(hours=120)
     bars = _bars(
         [
-            ("A-USDT", entry, 100.0),
-            ("A-USDT", scheduled - timedelta(hours=1), 105.0),
-            ("A-USDT", scheduled + timedelta(hours=2), 110.0),
-            ("A-USDT", scheduled + timedelta(hours=20), 150.0),
+            ("A-USDT", entry - timedelta(hours=1), 100.0),
+            ("A-USDT", scheduled - timedelta(hours=2), 105.0),
+            ("A-USDT", scheduled + timedelta(hours=1), 110.0),
+            ("A-USDT", scheduled + timedelta(hours=19), 150.0),
         ]
     )
     open_state = resolve_trade_state(
@@ -122,20 +122,20 @@ def test_fixed_120h_exit_uses_first_available_bar_and_never_reprices() -> None:
 
 
 def test_entry_uses_exact_next_bar_close_and_rejects_a_gap() -> None:
-    feature = datetime(2026, 1, 1, tzinfo=UTC)
+    feature_cutoff = datetime(2026, 1, 1, 1, tzinfo=UTC)
     bars = _bars(
         [
-            ("A-USDT", feature, 100.0),
-            ("A-USDT", feature + timedelta(hours=1), 101.0),
-            ("A-USDT", feature + timedelta(hours=2), 102.0),
+            ("A-USDT", feature_cutoff - timedelta(hours=1), 100.0),
+            ("A-USDT", feature_cutoff, 101.0),
+            ("A-USDT", feature_cutoff + timedelta(hours=1), 102.0),
         ]
     )
-    assert select_next_bar_close(bars, "A-USDT", feature) == (
-        feature + timedelta(hours=1),
+    assert select_next_bar_close(bars, "A-USDT", feature_cutoff) == (
+        feature_cutoff + timedelta(hours=1),
         101.0,
     )
-    gap = bars.filter(pl.col("ts") != feature + timedelta(hours=1))
-    assert select_next_bar_close(gap, "A-USDT", feature) is None
+    gap = bars.filter(pl.col("ts") != feature_cutoff)
+    assert select_next_bar_close(gap, "A-USDT", feature_cutoff) is None
 
 
 def test_round_trip_cost_is_recorded_on_both_sides_and_compounded() -> None:
@@ -257,8 +257,8 @@ def test_benchmark_equity_is_nonzero_and_reproducible() -> None:
     trade["trade_id"] = stable_trade_id(decision_id, "A-USDT", entry)
     bars = _bars(
         [
-            ("A-USDT", entry, 100.0),
-            ("A-USDT", entry + timedelta(hours=1), 110.0),
+            ("A-USDT", entry - timedelta(hours=1), 100.0),
+            ("A-USDT", entry, 110.0),
         ]
     )
     decisions = pl.DataFrame([decision], schema=DECISION_SCHEMA)
@@ -298,11 +298,11 @@ def test_partially_closed_cohort_never_reprices_the_closed_leg() -> None:
     second["mark_price"] = 100.0
     bars = _bars(
         [
-            ("A-USDT", entry, 100.0),
-            ("B-USDT", entry, 100.0),
-            ("A-USDT", entry + timedelta(hours=120), 110.0),
-            ("A-USDT", entry + timedelta(hours=121), 1000.0),
-            ("B-USDT", entry + timedelta(hours=121), 100.0),
+            ("A-USDT", entry - timedelta(hours=1), 100.0),
+            ("B-USDT", entry - timedelta(hours=1), 100.0),
+            ("A-USDT", entry + timedelta(hours=119), 110.0),
+            ("A-USDT", entry + timedelta(hours=120), 1000.0),
+            ("B-USDT", entry + timedelta(hours=120), 100.0),
         ]
     )
     rows = build_cohort_equity(
@@ -337,8 +337,8 @@ def test_events_and_closed_trades_are_idempotent_and_immutable() -> None:
 
     bars = _bars(
         [
-            ("A-USDT", entry, 100.0),
-            ("A-USDT", entry + timedelta(hours=120), 110.0),
+            ("A-USDT", entry - timedelta(hours=1), 100.0),
+            ("A-USDT", entry + timedelta(hours=119), 110.0),
         ]
     )
     closed = resolve_trade_state(
@@ -515,12 +515,15 @@ def test_btc_trend_off_creates_cash_decision_without_a_trade() -> None:
     decisions, trades, _events, _expected, _available = build_new_decisions(
         lock=lock,
         cutoff=cutoff,
-        available_cutoff=start + timedelta(hours=1503),
+        available_cutoff=start + timedelta(hours=1504),
         combined_bars=combined,
         forward_bars=forward,
         existing=empty_frame(DECISION_SCHEMA),
     )
     assert decisions.height == 1
+    assert decisions["feature_cutoff_ts"][0] == start + timedelta(hours=1501)
+    assert decisions["decision_ts"][0] == start + timedelta(hours=1501)
+    assert decisions["entry_ts"][0] == start + timedelta(hours=1502)
     assert decisions["btc_trend_state"][0] == "DOWN"
     assert decisions["decision_status"][0] == "CASH"
     assert decisions["cash_weight"][0] == pytest.approx(1.0)
@@ -729,6 +732,8 @@ def test_forward_runner_integration_writes_all_outputs_and_is_idempotent(
         "v1_snapshot_id": "v1",
         "code_commit": "a" * 40,
         "runner_version": "quant_lab_low_vol_forward.v2.1",
+        "bar_timestamp_semantics": "bar_open_time",
+        "bar_close_available_delay_hours": 1,
         "created_at": cutoff.isoformat(),
     }
     lock["sha256"] = parameter_lock_digest(lock)
@@ -758,7 +763,7 @@ def test_forward_runner_integration_writes_all_outputs_and_is_idempotent(
     first = run(
         root=root,
         v1_root=v1_root,
-        requested_as_of=start + timedelta(hours=1503),
+        requested_as_of=start + timedelta(hours=1504),
         resume=True,
         dry_run=False,
         no_fetch=True,
@@ -769,7 +774,7 @@ def test_forward_runner_integration_writes_all_outputs_and_is_idempotent(
     second = run(
         root=root,
         v1_root=v1_root,
-        requested_as_of=start + timedelta(hours=1503),
+        requested_as_of=start + timedelta(hours=1504),
         resume=True,
         dry_run=False,
         no_fetch=True,

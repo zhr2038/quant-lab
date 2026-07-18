@@ -15,6 +15,7 @@ from quant_lab.research.entry_quality import (
     publish_entry_quality_history_result,
 )
 from quant_lab.research_plane.contracts import (
+    DEFAULT_RESEARCH_MAX_RESULT_BYTES,
     ResearchResultManifest,
     ResearchSnapshotManifest,
     ResearchTask,
@@ -29,6 +30,7 @@ from quant_lab.research_plane.result import (
     validate_research_task_snapshot,
 )
 from quant_lab.research_plane.signatures import sha256_file
+from quant_lab.research_plane.snapshot_gc import release_snapshot_payload
 from quant_lab.research_plane.status import (
     TASK_DIRECTORY_STATES,
     ensure_research_queue_layout,
@@ -65,7 +67,7 @@ def validate_entry_quality_history_result_for_import(
     expected_task_key_id: str,
     expected_worker_key_id: str,
     expected_quant_lab_commit: str,
-    max_result_bytes: int = 2 * 1024**3,
+    max_result_bytes: int = DEFAULT_RESEARCH_MAX_RESULT_BYTES,
 ) -> ResearchImportValidationResult:
     """Validate one inbox result without changing queue state or publishing Gold."""
 
@@ -123,7 +125,7 @@ def validate_pending_entry_quality_history_results(
     expected_task_key_id: str,
     expected_worker_key_id: str,
     expected_quant_lab_commit: str,
-    max_result_bytes: int = 2 * 1024**3,
+    max_result_bytes: int = DEFAULT_RESEARCH_MAX_RESULT_BYTES,
 ) -> list[ResearchImportValidationResult]:
     """Validate every current inbox result without creating or moving queue files."""
 
@@ -159,7 +161,7 @@ def import_entry_quality_history_result(
     expected_task_key_id: str,
     expected_worker_key_id: str,
     expected_quant_lab_commit: str,
-    max_result_bytes: int = 2 * 1024**3,
+    max_result_bytes: int = DEFAULT_RESEARCH_MAX_RESULT_BYTES,
 ) -> ResearchImportResult:
     queue = ensure_research_queue_layout(queue_root)
     lake = Path(lake_root)
@@ -211,6 +213,8 @@ def import_entry_quality_history_result(
     )
     status = read_research_status(queue, task_id) or _initial_import_status(task, snapshot)
     publication_committed = False
+    strict_validation_passed = False
+    manifest: ResearchResultManifest | None = None
     try:
         status = status.model_copy(
             update={
@@ -245,6 +249,7 @@ def import_entry_quality_history_result(
             expected_worker_key_id=expected_worker_key_id,
             max_result_bytes=max_result_bytes,
         )
+        strict_validation_passed = True
         _write_validation_event(
             queue,
             task_id,
@@ -285,8 +290,17 @@ def import_entry_quality_history_result(
             idempotent=False,
         )
     except Exception as exc:
-        if publication_committed:
+        if publication_committed and manifest is not None:
             _record_finalize_pending(queue, status, manifest.generation_id, exc)
+        elif strict_validation_passed and manifest is not None:
+            _record_publish_retry(queue, status, manifest.generation_id, exc)
+            return ResearchImportResult(
+                task_id=task_id,
+                state="publish_retry_pending",
+                generation_id=manifest.generation_id,
+                published_rows={},
+                idempotent=False,
+            )
         else:
             _reject_result(queue, task, status, inbox, running, exc)
         raise
@@ -301,7 +315,7 @@ def import_pending_entry_quality_history_results(
     expected_task_key_id: str,
     expected_worker_key_id: str,
     expected_quant_lab_commit: str,
-    max_result_bytes: int = 2 * 1024**3,
+    max_result_bytes: int = DEFAULT_RESEARCH_MAX_RESULT_BYTES,
 ) -> list[ResearchImportResult]:
     queue = ensure_research_queue_layout(queue_root)
     results: list[ResearchImportResult] = []
@@ -472,6 +486,20 @@ def _finalize_committed_import(
         "PASS",
         manifest.generation_id,
     )
+    try:
+        release_snapshot_payload(
+            queue,
+            manifest.snapshot_id,
+            reason="completed_import",
+        )
+    except Exception as exc:
+        _write_validation_event(
+            queue,
+            task_id,
+            "snapshot_payload_release",
+            "RETRY",
+            f"{type(exc).__name__}:{str(exc)[:800]}",
+        )
 
 
 def _record_finalize_pending(
@@ -491,6 +519,33 @@ def _record_finalize_pending(
         }
     )
     write_research_status(queue, pending)
+
+
+def _record_publish_retry(
+    queue: Path,
+    status: ResearchTaskStatus,
+    generation_id: str,
+    exc: Exception,
+) -> None:
+    detail = f"{type(exc).__name__}:{str(exc)[:800]}"
+    pending = status.model_copy(
+        update={
+            "state": ResearchTaskState.PUBLISHING,
+            "heartbeat_at": datetime.now(UTC),
+            "lease_expires_at": None,
+            "import_status": "publish_retry_pending",
+            "last_error": detail,
+            "gold_generation_id": generation_id,
+        }
+    )
+    write_research_status(queue, pending)
+    _write_validation_event(
+        queue,
+        status.task_id,
+        "atomic_gold_publish",
+        "RETRY",
+        detail,
+    )
 
 
 def _load_result_manifest(root: Path) -> ResearchResultManifest:

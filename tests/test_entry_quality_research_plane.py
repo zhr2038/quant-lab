@@ -18,6 +18,7 @@ from pydantic import ValidationError
 
 import quant_lab.research.entry_quality as entry_quality_module
 import quant_lab.research_plane.importer as importer_module
+import quant_lab.research_plane.queue as queue_module
 import quant_lab.research_worker.runner as runner_module
 from quant_lab.data.lake import read_parquet_dataset, write_parquet_dataset
 from quant_lab.research.entry_quality import (
@@ -26,8 +27,10 @@ from quant_lab.research.entry_quality import (
     ENTRY_QUALITY_SCHEMA_VERSION,
     compute_entry_quality_history,
     publish_entry_quality_history_result,
+    recover_entry_quality_history_publication,
 )
 from quant_lab.research_plane.contracts import (
+    DEFAULT_RESEARCH_MAX_RESULT_BYTES,
     RESEARCH_SNAPSHOT_SCHEMA,
     RESEARCH_TASK_SCHEMA,
     ResearchDatasetReference,
@@ -57,6 +60,10 @@ from quant_lab.research_plane.snapshot import (
     ENTRY_QUALITY_INPUT_DATASETS,
     seal_entry_quality_history_snapshot,
 )
+from quant_lab.research_plane.snapshot_gc import (
+    gc_research_snapshot_payloads,
+    release_snapshot_payload,
+)
 from quant_lab.research_plane.status import (
     ensure_research_queue_layout,
     entry_quality_history_plane_status,
@@ -71,8 +78,8 @@ from quant_lab.research_worker.runner import Config, recover_expired_leases
 from quant_lab.transfer.snapshot_sync import sync_snapshot_blobs
 
 COMMIT = "a" * 40
-TASK_KEY_ID = "cloud-research-task-v1"
-WORKER_KEY_ID = "nas-research-worker-v1"
+TASK_KEY_ID = "cloud-research-v1"
+WORKER_KEY_ID = "nas-research-v1"
 BUNDLE_ID = "v5-bundle-sha256:" + "b" * 64
 GENERATED_AT = datetime(2026, 7, 18, 1, 2, 3, tzinfo=UTC)
 DATASETS = [str(path).replace("\\", "/") for path in ENTRY_QUALITY_INPUT_DATASETS]
@@ -306,6 +313,40 @@ def test_research_contracts_forbid_extra_and_canonical_json_is_stable() -> None:
         ResearchTask.model_validate(unsafe)
 
 
+def test_recent_7d_is_normalized_before_snapshot_and_task_signature(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    key = Ed25519PrivateKey.generate()
+    snapshot = _signed_snapshot(key)
+    observed: dict[str, date] = {}
+
+    def fake_snapshot(*_args, start_date: date, end_date: date, **_kwargs):
+        observed["start_date"] = start_date
+        observed["end_date"] = end_date
+        return snapshot
+
+    monkeypatch.setattr(queue_module, "seal_entry_quality_history_snapshot", fake_snapshot)
+    task, _ = queue_module.create_entry_quality_history_task(
+        tmp_path / "lake",
+        tmp_path / "queue",
+        start_date=date(2026, 6, 1),
+        end_date=date(2026, 7, 18),
+        mode="recent_7d",
+        cost_mode="conservative",
+        signing_key=key,
+        signature_key_id=TASK_KEY_ID,
+        quant_lab_commit=COMMIT,
+        selected_v5_bundle_id=BUNDLE_ID,
+    )
+    assert observed == {
+        "start_date": date(2026, 7, 12),
+        "end_date": date(2026, 7, 18),
+    }
+    assert task.start_date == date(2026, 7, 12)
+    assert task.end_date == date(2026, 7, 18)
+
+
 def test_research_plane_web_status_is_read_only_and_truthful(tmp_path: Path) -> None:
     queue = tmp_path / "missing-queue"
     idle = entry_quality_history_plane_status(queue)
@@ -441,6 +482,23 @@ def test_snapshot_selects_only_six_datasets_and_required_time_ranges(tmp_path: P
     )
     assert same.snapshot_id == manifest.snapshot_id
 
+    assert release_snapshot_payload(queue, manifest.snapshot_id, reason="test") is True
+    assert not (queue / "snapshots" / manifest.snapshot_id / "files").exists()
+    assert (queue / "snapshots" / manifest.snapshot_id / "FILES_RELEASED.json").is_file()
+    rehydrated = seal_entry_quality_history_snapshot(
+        lake,
+        queue,
+        start_date=date(2026, 5, 10),
+        end_date=date(2026, 5, 10),
+        selected_v5_bundle_id=BUNDLE_ID,
+        signing_key=key,
+        signature_key_id=TASK_KEY_ID,
+        quant_lab_commit=COMMIT,
+    )
+    assert rehydrated.snapshot_id == manifest.snapshot_id
+    assert (queue / "snapshots" / manifest.snapshot_id / "files").is_dir()
+    assert not (queue / "snapshots" / manifest.snapshot_id / "FILES_RELEASED.json").exists()
+
     new_candidate = lake / "silver/v5_candidate_event/new.parquet"
     pl.DataFrame(
         [{"ts_utc": inside + timedelta(hours=1), "candidate_id": "candidate-2"}]
@@ -514,6 +572,60 @@ def test_snapshot_blob_sync_cold_then_warm_and_interrupted_partial(tmp_path: Pat
             max_snapshot_bytes=10 * 1024**2,
         )
     assert not list((other_root / "snapshots").glob(f"{manifest.snapshot_id}*"))
+
+
+def test_snapshot_gc_protects_active_references_then_releases_completed_payload(
+    tmp_path: Path,
+) -> None:
+    queue = ensure_research_queue_layout(tmp_path / "queue")
+    key = Ed25519PrivateKey.generate()
+    source = tmp_path / "payload.parquet"
+    pl.DataFrame({"ts": [GENERATED_AT], "value": [1]}).write_parquet(source)
+    reference = ResearchDatasetReference(
+        dataset_name=DATASETS[0],
+        source_relative_path="silver/v5_trade_event/payload.parquet",
+        relative_path="silver/v5_trade_event/payload.parquet",
+        sha256=sha256_file(source),
+        size_bytes=source.stat().st_size,
+        row_count=1,
+        mtime_ns=source.stat().st_mtime_ns,
+        min_ts=GENERATED_AT,
+        max_ts=GENERATED_AT,
+    )
+    snapshot = _signed_snapshot(key, files=[reference])
+    task = _signed_task(key, snapshot)
+    snapshot_root = queue / "snapshots" / snapshot.snapshot_id
+    payload = snapshot_root / "files" / reference.relative_path
+    payload.parent.mkdir(parents=True)
+    shutil.copy2(source, payload)
+    (snapshot_root / "manifest.json").write_text(snapshot.model_dump_json(indent=2))
+    (snapshot_root / "SEALED").write_text(snapshot.manifest_sha256 + "\n")
+    pending = queue / "pending" / task.task_id
+    pending.mkdir()
+    (pending / "task.json").write_text(task.model_dump_json(indent=2))
+
+    active = gc_research_snapshot_payloads(
+        queue,
+        retention_days=0,
+        max_payload_bytes=0,
+        now=GENERATED_AT + timedelta(days=30),
+    )
+    assert active.released_snapshot_count == 0
+    assert payload.is_file()
+
+    os.replace(pending, queue / "completed" / task.task_id)
+    released = gc_research_snapshot_payloads(
+        queue,
+        retention_days=0,
+        max_payload_bytes=0,
+        now=GENERATED_AT + timedelta(days=30),
+    )
+    assert released.released_snapshot_ids == (snapshot.snapshot_id,)
+    assert not (snapshot_root / "files").exists()
+    assert (snapshot_root / "manifest.json").is_file()
+    assert (snapshot_root / "SEALED").is_file()
+    assert (snapshot_root / "FILES_RELEASED.json").is_file()
+    assert "payload_released" in (queue / "audit" / "snapshot_gc.jsonl").read_text()
 
 
 def test_snapshot_blob_sync_rejects_insufficient_disk(
@@ -841,6 +953,65 @@ def test_result_rejects_missing_output_commit_provenance(tmp_path: Path, monkeyp
         _validate_bundle(context, missing_root)
 
 
+def test_result_rejects_partial_null_and_stale_row_provenance(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    context = _make_result_bundle(tmp_path, monkeypatch)
+    partial_root = tmp_path / "partial-null-commit"
+    shutil.copytree(context.root, partial_root)
+    manifest = ResearchResultManifest.model_validate_json(
+        (partial_root / "manifest.json").read_text()
+    )
+    receipt = ResearchWorkerReceipt.model_validate_json(
+        (partial_root / "receipt.json").read_text()
+    )
+    metrics_output = next(
+        item for item in manifest.outputs if item.dataset_name == "v5_entry_quality_history_metrics"
+    )
+    metrics = pl.read_parquet(partial_root / metrics_output.relative_path)
+    metrics = pl.concat([metrics, metrics], how="vertical").with_row_index("row_index")
+    metrics = metrics.with_columns(
+        pl.when(pl.col("row_index") == 0)
+        .then(pl.lit(None, dtype=pl.Utf8))
+        .otherwise(pl.col("quant_lab_git_commit"))
+        .alias("quant_lab_git_commit")
+    ).drop("row_index")
+    manifest = _rewrite_output(
+        partial_root,
+        manifest,
+        "v5_entry_quality_history_metrics",
+        metrics,
+    )
+    _resign_bundle(partial_root, context.worker_key, manifest, receipt)
+    with pytest.raises(ValueError, match="scope_null.*quant_lab_git_commit"):
+        _validate_bundle(context, partial_root)
+
+    stale_root = tmp_path / "stale-source-version"
+    shutil.copytree(context.root, stale_root)
+    manifest = ResearchResultManifest.model_validate_json(
+        (stale_root / "manifest.json").read_text()
+    )
+    receipt = ResearchWorkerReceipt.model_validate_json(
+        (stale_root / "receipt.json").read_text()
+    )
+    metrics_output = next(
+        item for item in manifest.outputs if item.dataset_name == "v5_entry_quality_history_metrics"
+    )
+    metrics = pl.read_parquet(stale_root / metrics_output.relative_path).with_columns(
+        pl.lit(f"entry_quality:{'b' * 40}").alias("source_version")
+    )
+    manifest = _rewrite_output(
+        stale_root,
+        manifest,
+        "v5_entry_quality_history_metrics",
+        metrics,
+    )
+    _resign_bundle(stale_root, context.worker_key, manifest, receipt)
+    with pytest.raises(ValueError, match="scope_mismatch.*source_version"):
+        _validate_bundle(context, stale_root)
+
+
 def test_result_rejects_schema_row_count_and_unsafe_path(tmp_path: Path, monkeypatch) -> None:
     context = _make_result_bundle(tmp_path, monkeypatch)
     row_root = tmp_path / "row-count"
@@ -928,6 +1099,121 @@ def test_publish_is_atomic_across_gold_and_reports(tmp_path: Path, monkeypatch) 
     for spec in ENTRY_QUALITY_HISTORY_OUTPUT_SPECS:
         metadata = json.loads((lake / spec.relative_path / "_research_generation.json").read_text())
         assert metadata["generation_id"] == "generation-old"
+
+
+def test_publish_journal_recovers_after_process_loss_between_directory_swaps(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    artifacts = _empty_artifacts(monkeypatch)
+    lake = tmp_path / "lake"
+    publish_entry_quality_history_result(
+        lake,
+        artifacts,
+        generation_id="generation-old",
+        snapshot_id="snapshot-old",
+        task_id="task-old",
+        reports=artifacts.reports,
+    )
+    spec = ENTRY_QUALITY_HISTORY_OUTPUT_SPECS[0]
+    target = lake / spec.relative_path
+    transaction_id = "deadbeef" * 4
+    staging_root = lake / "gold" / ".__eqh_s_deadbeef"
+    backup_root = lake / "gold" / ".__eqh_b_deadbeef"
+    staging_root.mkdir()
+    backup_root.mkdir()
+    backup = backup_root / "d00"
+    os.replace(target, backup)
+    journal = {
+        "schema_version": "entry_quality_history_publish_transaction.v1",
+        "transaction_id": transaction_id,
+        "generation_id": "generation-new",
+        "snapshot_id": "snapshot-new",
+        "task_id": "task-new",
+        "staging_root": "gold/.__eqh_s_deadbeef",
+        "backup_root": "gold/.__eqh_b_deadbeef",
+        "items": [
+            {
+                "kind": "directory",
+                "target": str(spec.relative_path).replace("\\", "/"),
+                "staged": "gold/.__eqh_s_deadbeef/d00",
+                "backup": "gold/.__eqh_b_deadbeef/d00",
+                "target_existed": True,
+            }
+        ],
+    }
+    journal_path = lake / "gold" / ".entry_quality_history_publish_transaction.json"
+    journal_path.write_text(json.dumps(journal), encoding="utf-8")
+
+    assert recover_entry_quality_history_publication(lake) is True
+    assert target.is_dir()
+    assert not journal_path.exists()
+    metadata = json.loads((target / "_research_generation.json").read_text())
+    assert metadata["generation_id"] == "generation-old"
+
+    staging_root.mkdir()
+    backup_root.mkdir()
+    (backup_root / "d00").mkdir()
+    committed_journal = journal | {
+        "generation_id": "generation-old",
+        "snapshot_id": "snapshot-old",
+        "task_id": "task-old",
+    }
+    journal_path.write_text(json.dumps(committed_journal), encoding="utf-8")
+    assert recover_entry_quality_history_publication(lake) is True
+    assert target.is_dir()
+    assert not staging_root.exists()
+    assert not backup_root.exists()
+    assert not journal_path.exists()
+
+
+def test_importer_retries_publish_infrastructure_failure_without_rejection(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    context = _make_result_bundle(tmp_path, monkeypatch)
+    queue = ensure_research_queue_layout(tmp_path / "queue")
+    lake = tmp_path / "lake"
+    _write_cloud_control(queue, context)
+    shutil.copytree(context.root, queue / "results/inbox" / context.task.task_id)
+
+    with monkeypatch.context() as patcher:
+        patcher.setattr(
+            importer_module,
+            "publish_entry_quality_history_result",
+            lambda *_args, **_kwargs: (_ for _ in ()).throw(OSError("disk temporarily full")),
+        )
+        result = import_entry_quality_history_result(
+            lake,
+            queue,
+            context.task.task_id,
+            task_public_key=context.task_key.public_key(),
+            worker_public_key=context.worker_key.public_key(),
+            expected_task_key_id=TASK_KEY_ID,
+            expected_worker_key_id=WORKER_KEY_ID,
+            expected_quant_lab_commit=COMMIT,
+        )
+    assert result.state == "publish_retry_pending"
+    assert (queue / "results/inbox" / context.task.task_id).is_dir()
+    assert (queue / "running" / context.task.task_id).is_dir()
+    assert not (queue / "results/rejected" / context.task.task_id).exists()
+    status = json.loads((queue / "status" / f"{context.task.task_id}.json").read_text())
+    assert status["import_status"] == "publish_retry_pending"
+    assert '"status":"RETRY"' in (
+        queue / "validation" / f"{context.task.task_id}.jsonl"
+    ).read_text()
+
+    recovered = import_entry_quality_history_result(
+        lake,
+        queue,
+        context.task.task_id,
+        task_public_key=context.task_key.public_key(),
+        worker_public_key=context.worker_key.public_key(),
+        expected_task_key_id=TASK_KEY_ID,
+        expected_worker_key_id=WORKER_KEY_ID,
+        expected_quant_lab_commit=COMMIT,
+    )
+    assert recovered.state == "completed"
 
 
 def test_importer_publishes_all_tables_is_idempotent_and_recovers_finalize(
@@ -1209,6 +1495,7 @@ def test_status_upload_uses_unique_remote_temporary_paths(
 
     def fake_scp(_config, local_path: Path, remote_path: str, **_kwargs) -> None:
         assert local_path.read_text("utf-8")
+        assert not runner_module._STATUS_UPLOAD_LOCK._is_owned()
         remote_paths.append(remote_path)
 
     def fake_ssh(_config, command: str, *, check: bool = True):
@@ -1225,6 +1512,133 @@ def test_status_upload_uses_unique_remote_temporary_paths(
     assert all(path.endswith(".tmp") for path in remote_paths)
     final_path = f"{config.cloud_queue_root}/status/{status.task_id}.json"
     assert all(final_path in command for command in commands)
+
+
+def test_worker_handoff_publishes_final_status_before_inbox_visibility(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    config = _research_worker_config(tmp_path)
+    key = Ed25519PrivateKey.generate()
+    snapshot = _signed_snapshot(key)
+    task = _signed_task(key, snapshot)
+    status = ResearchTaskStatus(
+        task_id=task.task_id,
+        snapshot_id=task.snapshot_id,
+        start_date=task.start_date,
+        end_date=task.end_date,
+        mode=task.mode,
+        cost_mode=task.cost_mode,
+        state=ResearchTaskState.UPLOADING,
+        requested_at=task.requested_at,
+        attempt=1,
+        max_attempts=task.max_attempts,
+    )
+    events: list[str] = []
+    monkeypatch.setattr(
+        runner_module,
+        "_upload_result_partial",
+        lambda *_args: events.append("partial_uploaded") or "/queue/results/inbox/.partial",
+    )
+    monkeypatch.setattr(
+        runner_module,
+        "_stop_heartbeat",
+        lambda *_args: events.append("heartbeat_stopped"),
+    )
+    monkeypatch.setattr(
+        runner_module,
+        "_upload_status",
+        lambda _config, value, _work: events.append(f"status:{value.state.value}"),
+    )
+    monkeypatch.setattr(
+        runner_module,
+        "_finalize_result_upload",
+        lambda *_args: events.append("inbox_visible"),
+    )
+
+    result = runner_module._handoff_result_to_cloud(
+        config,
+        task,
+        status,
+        tmp_path,
+        tmp_path / "result",
+        SimpleNamespace(),
+        SimpleNamespace(),
+    )
+    assert result.state == ResearchTaskState.VALIDATING_ON_CLOUD
+    assert events == [
+        "partial_uploaded",
+        "heartbeat_stopped",
+        "status:validating_on_cloud",
+        "inbox_visible",
+    ]
+
+
+def test_worker_failure_does_not_regress_cloud_owned_inbox(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    config = _research_worker_config(tmp_path)
+    monkeypatch.setattr(runner_module, "_remote_exists", lambda *_args: True)
+    monkeypatch.setattr(
+        runner_module,
+        "_upload_status",
+        lambda *_args: pytest.fail("worker must not overwrite cloud-owned status"),
+    )
+    monkeypatch.setattr(
+        runner_module,
+        "_ssh",
+        lambda *_args, **_kwargs: pytest.fail("worker must not move cloud-owned task"),
+    )
+    runner_module._handle_failure(config, "entry-quality-history-owned", RuntimeError("late"))
+
+    monkeypatch.setattr(
+        runner_module,
+        "_remote_exists",
+        lambda *_args: (_ for _ in ()).throw(RuntimeError("network uncertain")),
+    )
+    runner_module._handle_failure(
+        config,
+        "entry-quality-history-uncertain",
+        RuntimeError("late"),
+    )
+
+
+def test_worker_ssh_and_scp_time_out_explicitly(tmp_path: Path, monkeypatch) -> None:
+    config = _research_worker_config(tmp_path)
+    monkeypatch.setattr(
+        runner_module.subprocess,
+        "run",
+        lambda *args, **kwargs: (_ for _ in ()).throw(
+            subprocess.TimeoutExpired(args[0], kwargs.get("timeout", 1))
+        ),
+    )
+    with pytest.raises(RuntimeError, match="ssh_timeout"):
+        runner_module._ssh(config, "true")
+    with pytest.raises(RuntimeError, match="scp_from_timeout"):
+        runner_module._scp_from(config, "/remote", tmp_path / "local")
+    with pytest.raises(RuntimeError, match="scp_to_timeout"):
+        runner_module._scp_to(config, tmp_path / "local", "/remote")
+
+
+def test_research_plane_deployment_examples_share_keys_paths_and_memory_limit() -> None:
+    root = Path(__file__).resolve().parents[1]
+    request_unit = (
+        root / "deploy/systemd/quant-lab-entry-quality-history-request.service"
+    ).read_text()
+    cloud_env = (root / "deploy/systemd/research-plane.env.example").read_text()
+    nas_env = (root / "deploy/nas_research_worker/.env.example").read_text()
+    tmpfiles = (root / "deploy/tmpfiles.d/quant-lab-research-plane.conf").read_text()
+
+    assert "/var/lib/quant-lab/lake/bronze/lake_file_index" in request_unit
+    assert "/var/lib/quant-lab/lake/ops/lake_file_index" not in request_unit
+    assert "/var/lib/quant-lab/lake/bronze/lake_file_index" in tmpfiles
+    assert "QUANT_LAB_RESEARCH_TASK_KEY_ID=cloud-research-v1" in cloud_env
+    assert "QUANT_RESEARCH_TASK_KEY_ID=cloud-research-v1" in nas_env
+    assert "QUANT_LAB_RESEARCH_WORKER_KEY_ID=nas-research-v1" in cloud_env
+    assert "QUANT_RESEARCH_WORKER_KEY_ID=nas-research-v1" in nas_env
+    assert f"QUANT_LAB_RESEARCH_MAX_RESULT_BYTES={DEFAULT_RESEARCH_MAX_RESULT_BYTES}" in cloud_env
+    assert f"MAX_RESULT_BYTES={DEFAULT_RESEARCH_MAX_RESULT_BYTES}" in nas_env
 
 
 def test_run_once_returns_nonzero_when_claimed_task_fails(
@@ -1400,7 +1814,7 @@ def test_candidate_label_identity_accepts_first_hourly_decision_bar() -> None:
 def test_candidate_label_identity_rejects_noncausal_decision_bar() -> None:
     frames = _history_input_frames()
     frames["labels"] = frames["labels"].with_columns(
-        pl.lit(datetime(2026, 5, 10, 21, 0, 1, tzinfo=UTC)).alias("decision_ts")
+        pl.lit(datetime(2026, 5, 10, 20, 30, tzinfo=UTC)).alias("decision_ts")
     )
 
     artifacts = compute_entry_quality_history(

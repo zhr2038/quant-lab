@@ -268,7 +268,10 @@ root and the service group.
 ```bash
 sudo cp deploy/systemd/quant-lab-entry-quality-history-request.* /etc/systemd/system/
 sudo cp deploy/systemd/quant-lab-research-result-import.* /etc/systemd/system/
+sudo cp deploy/systemd/quant-lab-research-snapshot-gc.* /etc/systemd/system/
 sudo cp deploy/systemd/quant-lab-entry-quality-history.service /etc/systemd/system/
+sudo cp deploy/tmpfiles.d/quant-lab-research-plane.conf /etc/tmpfiles.d/
+sudo systemd-tmpfiles --create /etc/tmpfiles.d/quant-lab-research-plane.conf
 sudo systemctl daemon-reload
 ```
 
@@ -276,8 +279,15 @@ The Request timer stays at 01:35/13:35 UTC with CPU 30%, MemoryHigh 500 MB,
 MemoryMax 900 MB and one Polars thread. The Import timer runs every minute with
 CPU 40%, MemoryHigh 700 MB, MemoryMax 1200 MB and one Polars thread.
 The Request unit sees the Lake read-only except for
-`ops/lake_file_index`, whose metadata membership is refreshed before sealing;
+`bronze/lake_file_index`, whose metadata membership is refreshed before sealing;
 Silver and Gold input directories remain read-only.
+
+Completed imports release only immutable Snapshot `files/` payloads while
+preserving the signed manifest, seal, task, receipt, status, and audit record.
+Pending, running, and inbox-referenced Snapshots are protected by reference
+checks. A daily low-priority GC enforces the configured 7-day retention and
+10 GiB payload cap; a later identical request rehydrates the exact Snapshot only
+after its source file identities match the preserved manifest.
 
 The legacy service has an `ExecCondition` on
 `QUANT_LAB_LOCAL_ENTRY_QUALITY_HISTORY_ENABLED=1`; its timer remains disabled. A

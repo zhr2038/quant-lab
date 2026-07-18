@@ -141,6 +141,26 @@ def seal_entry_quality_history_snapshot(
             manifest = ResearchSnapshotManifest.model_validate_json(
                 (final_root / "manifest.json").read_text(encoding="utf-8")
             )
+            released = final_root / "FILES_RELEASED.json"
+            if released.is_file():
+                if manifest.files != references:
+                    raise RuntimeError("research_snapshot_rehydrate_source_mismatch")
+                _make_snapshot_writable(final_root)
+                existing_payload_valid = False
+                if (final_root / "files").is_dir():
+                    try:
+                        verify_snapshot_manifest(manifest, final_root=final_root)
+                        existing_payload_valid = True
+                    except (OSError, ValueError):
+                        shutil.rmtree(final_root / "files", ignore_errors=True)
+                source_files = temporary / "files"
+                if references and not source_files.is_dir() and not existing_payload_valid:
+                    raise RuntimeError("research_snapshot_rehydrate_payload_missing")
+                if source_files.exists() and not existing_payload_valid:
+                    os.replace(source_files, final_root / "files")
+                released.chmod(0o640)
+                released.unlink()
+                _make_snapshot_read_only(final_root)
             verify_snapshot_manifest(manifest, final_root=final_root)
             shutil.rmtree(temporary, ignore_errors=True)
             return manifest
@@ -314,6 +334,12 @@ def _make_snapshot_read_only(path: Path) -> None:
         path.chmod(0o550)
     except OSError:
         pass
+
+
+def _make_snapshot_writable(path: Path) -> None:
+    path.chmod(0o750)
+    for candidate in path.rglob("*"):
+        candidate.chmod(0o640 if candidate.is_file() else 0o750)
 
 
 def _path_has_symlink(root: Path, candidate: Path) -> bool:

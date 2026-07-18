@@ -27,6 +27,10 @@ from quant_lab.data.lake import (
     write_snapshot_meta,
 )
 from quant_lab.export_plane.status import atomic_write_json
+from quant_lab.research.candidate_labels import (
+    candidate_label_bars_by_symbol,
+    next_candidate_decision_bar,
+)
 from quant_lab.strategy_telemetry.sanitize import safe_json_dumps
 from quant_lab.symbols import normalize_symbol
 
@@ -40,7 +44,6 @@ ENTRY_QUALITY_SYMBOLS = {"BTC-USDT", "ETH-USDT", "SOL-USDT", "BNB-USDT"}
 LATE_CHASE_THRESHOLDS_BPS = (100, 150, 200, 250, 300, 400)
 LATE_CHASE_BY_SYMBOL_THRESHOLDS_BPS = (50, 100, 150, 200, 250, 300)
 PULLBACK_HORIZON_HOURS = (4, 8, 12, 24, 48, 72)
-CANDIDATE_LABEL_DECISION_MAX_LAG = timedelta(hours=1)
 MIN_ROUNDTRIP_COST_BPS = 30.0
 PULLBACK_OLD_RULE_VERSION = "old_pullback_v0.1"
 PULLBACK_NEW_RULE_VERSION = "confirmed_reversal_v0.2"
@@ -760,7 +763,7 @@ def build_and_publish_entry_quality_history(
     """Run the explicit local fallback using the same compute/publish boundary as NAS."""
 
     root = Path(lake_root)
-    start_day, end_day, window_mode, normalized_cost_mode = _normalize_history_request(
+    start_day, end_day, window_mode, normalized_cost_mode = normalize_entry_quality_history_request(
         start_date=start_date,
         end_date=end_date,
         mode=mode,
@@ -849,7 +852,7 @@ def compute_entry_quality_history(
 ) -> EntryQualityHistoryArtifacts:
     """Compute historical Entry Quality artifacts without reading or writing the Lake."""
 
-    start_day, end_day, window_mode, normalized_cost_mode = _normalize_history_request(
+    start_day, end_day, window_mode, normalized_cost_mode = normalize_entry_quality_history_request(
         start_date=start_date,
         end_date=end_date,
         mode=mode,
@@ -2060,13 +2063,15 @@ def build_entry_quality_anti_leakage_check(
     label_order_violations = 0
     label_boundary_violations = 0
     label_identity_violations = 0
-    candidate_times: dict[str, datetime] = {}
+    candidate_context: dict[str, tuple[str, datetime]] = {}
     if not candidates.is_empty() and "candidate_id" in candidates.columns:
         for row in candidates.to_dicts():
             candidate_id = str(row.get("candidate_id") or "").strip()
+            symbol = normalize_symbol(str(row.get("symbol") or ""))
             decision_ts = _coerce_datetime(row.get("ts_utc") or row.get("ts"))
-            if candidate_id and decision_ts is not None:
-                candidate_times[candidate_id] = decision_ts
+            if candidate_id and symbol and decision_ts is not None:
+                candidate_context[candidate_id] = (symbol, decision_ts)
+    label_bars = candidate_label_bars_by_symbol(market_bars)
     if not labels.is_empty():
         for row in labels.to_dicts():
             candidate_id = str(row.get("candidate_id") or "").strip()
@@ -2084,16 +2089,19 @@ def build_entry_quality_anti_leakage_check(
                 and label_ts > decision_ts + timedelta(hours=horizon + 1)
             ):
                 label_boundary_violations += 1
-            candidate_ts = candidate_times.get(candidate_id)
-            if candidate_id and candidate_id not in candidate_times:
+            context = candidate_context.get(candidate_id)
+            if candidate_id and context is None:
                 label_identity_violations += 1
-            elif candidate_ts is not None:
-                decision_is_causal = (
-                    decision_ts is not None
-                    and candidate_ts <= decision_ts
-                    and decision_ts <= candidate_ts + CANDIDATE_LABEL_DECISION_MAX_LAG
+            elif context is not None:
+                symbol, candidate_ts = context
+                expected = next_candidate_decision_bar(
+                    label_bars.get(symbol, []),
+                    candidate_ts,
                 )
-                if not decision_is_causal:
+                expected_ts = (
+                    _coerce_datetime(expected[1].get("ts")) if expected is not None else None
+                )
+                if decision_ts is None or expected_ts is None or decision_ts != expected_ts:
                     label_identity_violations += 1
 
     market_future_violations = 0
@@ -2988,6 +2996,7 @@ def publish_entry_quality_history_result(
     """Publish all 11 historical tables and reports as one rollback-capable generation."""
 
     root = Path(lake_root)
+    recover_entry_quality_history_publication(root)
     safe_generation_id = _safe_research_identifier(generation_id, "generation_id")
     safe_snapshot_id = _safe_research_identifier(snapshot_id, "snapshot_id")
     safe_task_id = _safe_research_identifier(task_id, "task_id")
@@ -3001,8 +3010,7 @@ def publish_entry_quality_history_result(
     staging_root.mkdir(parents=True, exist_ok=False)
     backup_root.mkdir(parents=True, exist_ok=False)
     published_rows: dict[str, int] = {}
-    moved_targets: list[tuple[Path, Path | None]] = []
-    moved_reports: list[tuple[Path, Path | None]] = []
+    journal_path = root / "gold" / ".entry_quality_history_publish_transaction.json"
     generation_payload = {
         "schema_version": "entry_quality_history_generation.v1",
         "generation_id": safe_generation_id,
@@ -3049,6 +3057,50 @@ def publish_entry_quality_history_result(
             atomic_write_json(staged / "_research_generation.json", generation_payload)
             published_rows[spec.dataset_name] = combined.height
 
+        journal_items = [
+            {
+                "kind": "directory",
+                "target": str(spec.relative_path).replace("\\", "/"),
+                "staged": str((staging_root / f"d{index:02d}").relative_to(root)).replace(
+                    "\\", "/"
+                ),
+                "backup": str((backup_root / f"d{index:02d}").relative_to(root)).replace(
+                    "\\", "/"
+                ),
+                "target_existed": (root / spec.relative_path).exists(),
+            }
+            for index, spec in enumerate(ENTRY_QUALITY_HISTORY_OUTPUT_SPECS)
+        ]
+        if reports is not None:
+            journal_items.extend(
+                {
+                    "kind": "file",
+                    "target": f"reports/{name}",
+                    "staged": str((staging_root / "reports" / name).relative_to(root)).replace(
+                        "\\", "/"
+                    ),
+                    "backup": str((backup_root / "reports" / name).relative_to(root)).replace(
+                        "\\", "/"
+                    ),
+                    "target_existed": (root / "reports" / name).exists(),
+                }
+                for name in ENTRY_QUALITY_HISTORY_REPORT_NAMES
+            )
+        atomic_write_json(
+            journal_path,
+            {
+                "schema_version": "entry_quality_history_publish_transaction.v1",
+                "transaction_id": transaction_id,
+                "generation_id": safe_generation_id,
+                "snapshot_id": safe_snapshot_id,
+                "task_id": safe_task_id,
+                "staging_root": str(staging_root.relative_to(root)).replace("\\", "/"),
+                "backup_root": str(backup_root.relative_to(root)).replace("\\", "/"),
+                "items": journal_items,
+                "created_at": datetime.now(UTC).isoformat(),
+            },
+        )
+
         for index, spec in enumerate(ENTRY_QUALITY_HISTORY_OUTPUT_SPECS):
             target = root / spec.relative_path
             staged = staging_root / f"d{index:02d}"
@@ -3065,7 +3117,6 @@ def publish_entry_quality_history_result(
                 if previous is not None and previous.exists() and not target.exists():
                     os.replace(previous, target)
                 raise
-            moved_targets.append((target, previous))
 
         if reports is not None:
             reports_root = root / "reports"
@@ -3085,7 +3136,6 @@ def publish_entry_quality_history_result(
                     if previous is not None and previous.exists() and not target.exists():
                         os.replace(previous, target)
                     raise
-                moved_reports.append((target, previous))
 
         for spec in ENTRY_QUALITY_HISTORY_OUTPUT_SPECS:
             target = root / spec.relative_path
@@ -3105,22 +3155,81 @@ def publish_entry_quality_history_result(
                 "row_counts": published_rows,
             },
         )
+        _complete_entry_quality_history_publication(root, journal_path)
     except Exception:
-        for target, previous in reversed(moved_reports):
-            if target.exists():
-                target.unlink()
-            if previous is not None and previous.exists():
-                os.replace(previous, target)
-        for target, previous in reversed(moved_targets):
-            if target.exists():
-                shutil.rmtree(target)
-            if previous is not None and previous.exists():
-                os.replace(previous, target)
+        if journal_path.is_file():
+            recover_entry_quality_history_publication(root)
         raise
     finally:
-        shutil.rmtree(staging_root, ignore_errors=True)
-        shutil.rmtree(backup_root, ignore_errors=True)
+        if not journal_path.exists():
+            shutil.rmtree(staging_root, ignore_errors=True)
+            shutil.rmtree(backup_root, ignore_errors=True)
     return published_rows
+
+
+def recover_entry_quality_history_publication(lake_root: str | Path) -> bool:
+    """Recover an interrupted Gold directory swap from its durable journal."""
+    root = Path(lake_root)
+    journal_path = root / "gold" / ".entry_quality_history_publish_transaction.json"
+    if not journal_path.is_file():
+        return False
+    payload = json.loads(journal_path.read_text(encoding="utf-8"))
+    if payload.get("schema_version") != "entry_quality_history_publish_transaction.v1":
+        raise RuntimeError("entry_quality_history_publish_journal_invalid")
+    pointer_path = root / "gold" / "entry_quality_history_generation.json"
+    pointer: dict[str, Any] = {}
+    if pointer_path.is_file():
+        try:
+            pointer = json.loads(pointer_path.read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            pointer = {}
+    committed = all(
+        pointer.get(name) == payload.get(name)
+        for name in ("generation_id", "snapshot_id", "task_id")
+    )
+    if not committed:
+        items = list(payload.get("items") or [])
+        for item in reversed(items):
+            target = _entry_quality_transaction_path(root, item.get("target"))
+            backup = _entry_quality_transaction_path(root, item.get("backup"))
+            target_existed = bool(item.get("target_existed"))
+            if backup.exists():
+                _remove_entry_quality_transaction_target(target)
+                target.parent.mkdir(parents=True, exist_ok=True)
+                os.replace(backup, target)
+            elif not target_existed:
+                _remove_entry_quality_transaction_target(target)
+    _complete_entry_quality_history_publication(root, journal_path)
+    return True
+
+
+def _complete_entry_quality_history_publication(root: Path, journal_path: Path) -> None:
+    if not journal_path.is_file():
+        return
+    payload = json.loads(journal_path.read_text(encoding="utf-8"))
+    staging_root = _entry_quality_transaction_path(root, payload.get("staging_root"))
+    backup_root = _entry_quality_transaction_path(root, payload.get("backup_root"))
+    shutil.rmtree(staging_root, ignore_errors=True)
+    shutil.rmtree(backup_root, ignore_errors=True)
+    journal_path.unlink(missing_ok=True)
+
+
+def _entry_quality_transaction_path(root: Path, value: Any) -> Path:
+    relative = Path(str(value or ""))
+    if relative.is_absolute() or not relative.parts or ".." in relative.parts:
+        raise RuntimeError("entry_quality_history_publish_journal_path_invalid")
+    candidate = (root / relative).resolve(strict=False)
+    resolved_root = root.resolve(strict=False)
+    if candidate != resolved_root and resolved_root not in candidate.parents:
+        raise RuntimeError("entry_quality_history_publish_journal_path_escape")
+    return candidate
+
+
+def _remove_entry_quality_transaction_target(path: Path) -> None:
+    if path.is_dir():
+        shutil.rmtree(path)
+    elif path.exists():
+        path.unlink()
 
 
 def _replace_history_window(
@@ -3589,7 +3698,7 @@ def latest_entry_quality_bundle_id(lake_root: str | Path) -> str:
     return _latest_bundle_id(Path(lake_root))
 
 
-def _normalize_history_request(
+def normalize_entry_quality_history_request(
     *,
     start_date: str | date,
     end_date: str | date,

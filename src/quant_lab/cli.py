@@ -96,12 +96,18 @@ from quant_lab.research.sol_protect_paper_loss import (
     build_and_publish_sol_protect_paper_loss_attribution,
 )
 from quant_lab.research.strategy_evidence import build_and_publish_strategy_evidence
+from quant_lab.research_plane.contracts import DEFAULT_RESEARCH_MAX_RESULT_BYTES
 from quant_lab.research_plane.importer import (
     import_pending_entry_quality_history_results,
     validate_pending_entry_quality_history_results,
 )
 from quant_lab.research_plane.queue import create_entry_quality_history_task
 from quant_lab.research_plane.signatures import load_public_key, load_signing_key
+from quant_lab.research_plane.snapshot_gc import (
+    DEFAULT_SNAPSHOT_PAYLOAD_CAP_BYTES,
+    DEFAULT_SNAPSHOT_RETENTION_DAYS,
+    gc_research_snapshot_payloads,
+)
 from quant_lab.research_plane.status import entry_quality_history_plane_status
 from quant_lab.risk.publish import publish_risk_permission as publish_risk_permission_to_lake
 from quant_lab.strategy_telemetry.analyze import analyze_v5_telemetry
@@ -1991,9 +1997,11 @@ def request_entry_quality_history_command(
     if not _enabled_environment("QUANT_LAB_NAS_RESEARCH_ENABLED"):
         raise typer.BadParameter("QUANT_LAB_NAS_RESEARCH_ENABLED must be 1")
     end_day = datetime.now(UTC).date() if end_date == "auto" else date.fromisoformat(end_date)
-    start_day = (
-        end_day - timedelta(days=29) if start_date == "auto" else date.fromisoformat(start_date)
-    )
+    if start_date == "auto":
+        lookback_days = 6 if mode.strip().lower() == "recent_7d" else 29
+        start_day = end_day - timedelta(days=lookback_days)
+    else:
+        start_day = date.fromisoformat(start_date)
     task, status = create_entry_quality_history_task(
         lake_root,
         queue_root,
@@ -2032,7 +2040,9 @@ def import_entry_quality_history_results_command(
     ],
     worker_key_id: Annotated[str, typer.Option("--worker-key-id")],
     quant_lab_commit: Annotated[str, typer.Option("--quant-lab-commit")],
-    max_result_bytes: Annotated[int, typer.Option("--max-result-bytes", min=1)] = 2 * 1024**3,
+    max_result_bytes: Annotated[
+        int, typer.Option("--max-result-bytes", min=1)
+    ] = DEFAULT_RESEARCH_MAX_RESULT_BYTES,
     validate_only: Annotated[
         bool,
         typer.Option(
@@ -2081,6 +2091,26 @@ def entry_quality_history_research_status_command(
             indent=2,
         )
     )
+
+
+@app.command("gc-entry-quality-history-snapshots")
+def gc_entry_quality_history_snapshots_command(
+    queue_root: Annotated[Path, typer.Option("--queue-root", file_okay=False, dir_okay=True)],
+    retention_days: Annotated[
+        int, typer.Option("--retention-days", min=0)
+    ] = DEFAULT_SNAPSHOT_RETENTION_DAYS,
+    max_payload_bytes: Annotated[
+        int, typer.Option("--max-payload-bytes", min=0)
+    ] = DEFAULT_SNAPSHOT_PAYLOAD_CAP_BYTES,
+    dry_run: Annotated[bool, typer.Option("--dry-run")] = False,
+) -> None:
+    result = gc_research_snapshot_payloads(
+        queue_root,
+        retention_days=retention_days,
+        max_payload_bytes=max_payload_bytes,
+        dry_run=dry_run,
+    )
+    typer.echo(json.dumps(result.__dict__, ensure_ascii=True, sort_keys=True, indent=2))
 
 
 @app.command("build-btc-probe-exit-policy-review")

@@ -14,6 +14,7 @@ RESEARCH_RECEIPT_SCHEMA = "quant_lab_research_receipt.v1"
 RESEARCH_STATUS_SCHEMA = "quant_lab_research_status.v1"
 RESEARCH_VALIDATION_SCHEMA = "quant_lab_research_validation.v1"
 ENTRY_QUALITY_HISTORY_TASK_TYPE = "entry_quality_history"
+DEFAULT_RESEARCH_MAX_RESULT_BYTES = 256 * 1024**2
 
 
 class StrictModel(BaseModel):
@@ -296,7 +297,7 @@ class ResearchValidationEvent(StrictModel):
     task_id: str
     stage: Literal["nas", "cloud"]
     check_name: str
-    status: Literal["PASS", "FAIL"]
+    status: Literal["PASS", "FAIL", "RETRY"]
     detail: str
     observed_at: datetime
 

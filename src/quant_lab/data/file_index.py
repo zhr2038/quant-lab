@@ -7,7 +7,10 @@ from typing import Any
 
 import polars as pl
 
-from quant_lab.data.lake import read_parquet_dataset, write_parquet_dataset
+from quant_lab.data.lake import (
+    read_parquet_dataset,
+    write_single_file_parquet_dataset_in_place,
+)
 
 LAKE_FILE_INDEX = Path("bronze") / "lake_file_index"
 TIMESTAMP_COLUMNS = ("ts", "timestamp", "received_at", "created_at", "minute_ts")
@@ -31,7 +34,7 @@ def build_lake_file_index(
     frame = pl.DataFrame(rows, infer_schema_length=None)
     output = _merged_index_frame(existing, frame, indexed_datasets=indexed_datasets)
     if not output.is_empty():
-        write_parquet_dataset(output, root / LAKE_FILE_INDEX)
+        write_single_file_parquet_dataset_in_place(output, root / LAKE_FILE_INDEX)
     return frame
 
 

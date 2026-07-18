@@ -102,6 +102,37 @@ def write_parquet_dataset(
         return _write_parquet_dataset_unlocked(df, path, partition_by=partition_by)
 
 
+def write_single_file_parquet_dataset_in_place(
+    df: pl.DataFrame,
+    dataset_path: str | Path,
+) -> Path:
+    """Atomically replace one-file dataset contents without replacing its directory.
+
+    This is intended for datasets whose systemd write boundary is the dataset
+    directory itself. Lock and staging files stay inside that directory, so the
+    parent can remain read-only.
+    """
+
+    path = Path(dataset_path)
+    path.mkdir(parents=True, exist_ok=True)
+    _ensure_lake_dir_permissions(path)
+    lock_anchor = path / "_in_place_payload"
+    with _dataset_lock(lock_anchor):
+        staging = path / f"._data_write_{uuid.uuid4().hex}.tmp"
+        target = path / "data.parquet"
+        try:
+            _sort_dataframe(df).write_parquet(staging)
+            os.replace(_replaceable_path(staging), _replaceable_path(target))
+            _ensure_internal_tree_permissions(path)
+            _remove_stale_parquet_files(path, keep=target)
+        finally:
+            try:
+                staging.unlink()
+            except FileNotFoundError:
+                pass
+    return path
+
+
 def write_snapshot_meta(
     dataset_path: str | Path,
     *,

@@ -1632,6 +1632,13 @@ def test_research_plane_deployment_examples_share_keys_paths_and_memory_limit() 
 
     assert "/var/lib/quant-lab/lake/bronze/lake_file_index" in request_unit
     assert "/var/lib/quant-lab/lake/ops/lake_file_index" not in request_unit
+    read_write_line = next(
+        line for line in request_unit.splitlines() if line.startswith("ReadWritePaths=")
+    )
+    assert read_write_line.split() == [
+        "ReadWritePaths=/var/lib/quant-lab/research_queue",
+        "/var/lib/quant-lab/lake/bronze/lake_file_index",
+    ]
     assert "/var/lib/quant-lab/lake/bronze/lake_file_index" in tmpfiles
     assert "QUANT_LAB_RESEARCH_TASK_KEY_ID=cloud-research-v1" in cloud_env
     assert "QUANT_RESEARCH_TASK_KEY_ID=cloud-research-v1" in nas_env

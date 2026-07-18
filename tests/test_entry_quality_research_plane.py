@@ -1640,6 +1640,10 @@ def test_research_plane_deployment_examples_share_keys_paths_and_memory_limit() 
         "/var/lib/quant-lab/lake/bronze/lake_file_index",
     ]
     assert "/var/lib/quant-lab/lake/bronze/lake_file_index" in tmpfiles
+    assert (
+        "d /var/lib/quant-lab/research_queue 2770 quantlab quant-research -"
+        in tmpfiles
+    )
     assert "QUANT_LAB_RESEARCH_TASK_KEY_ID=cloud-research-v1" in cloud_env
     assert "QUANT_RESEARCH_TASK_KEY_ID=cloud-research-v1" in nas_env
     assert "QUANT_LAB_RESEARCH_WORKER_KEY_ID=nas-research-v1" in cloud_env

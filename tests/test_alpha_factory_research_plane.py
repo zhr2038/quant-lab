@@ -626,6 +626,56 @@ def test_alpha_factory_result_scope_and_primary_keys_reject_nulls() -> None:
         )
 
 
+def test_alpha_factory_result_scope_allows_only_the_second_stage_history_window() -> None:
+    task = AlphaFactoryTask(
+        task_id="alpha-task",
+        snapshot_id="alpha-snapshot",
+        as_of_date=date(2026, 7, 18),
+        lookback_days=30,
+        quant_lab_commit=COMMIT,
+        alpha_factory_schema_version="alpha_factory.v0.1",
+        second_stage_schema_version="second_stage_alpha_factory.v0.1",
+        template_registry_digest="a" * 64,
+        selected_v5_bundle_id=BUNDLE_ID,
+        snapshot_manifest_sha256="b" * 64,
+        requested_at=datetime(2026, 7, 18, tzinfo=UTC),
+        signature_key_id=TASK_KEY_ID,
+        signature="test",
+    )
+    valid_history = pl.DataFrame(
+        {"as_of_date": ["2026-06-18", "2026-07-17", "2026-07-18"]}
+    ).lazy()
+    _validate_alpha_frame_scope(
+        valid_history,
+        dataset_name="second_stage_alpha_factory_sample",
+        task=task,
+    )
+
+    before_window = pl.DataFrame({"as_of_date": ["2026-06-17"]}).lazy()
+    with pytest.raises(ValueError, match="scope_mismatch"):
+        _validate_alpha_frame_scope(
+            before_window,
+            dataset_name="second_stage_alpha_factory_sample",
+            task=task,
+        )
+
+    malformed_day = pl.DataFrame({"as_of_date": ["2026-07-18T12:00:00Z"]}).lazy()
+    with pytest.raises(ValueError, match="scope_invalid"):
+        _validate_alpha_frame_scope(
+            malformed_day,
+            dataset_name="second_stage_alpha_factory_sample",
+            task=task,
+        )
+
+    current_only_output = pl.DataFrame({"as_of_date": ["2026-07-17"]}).lazy()
+    with pytest.raises(ValueError, match="scope_mismatch"):
+        _validate_alpha_frame_scope(
+            current_only_output,
+            dataset_name="alpha_factory_result",
+            task=task,
+        )
+
+
 def test_factor_bridge_report_accepts_only_read_only_effects(tmp_path: Path) -> None:
     report = tmp_path / "factor_strategy_bridge_candidates.csv"
     pl.DataFrame(

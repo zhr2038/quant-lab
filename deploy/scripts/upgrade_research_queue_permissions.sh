@@ -42,11 +42,17 @@ for relative_path in "${queue_directories[@]}"; do
 done
 
 # Existing task directories and metadata may predate the shared-group layout.
-find "${queue_root}" -xdev -type d \
+# Sealed snapshot descendants intentionally remain read-only (0550/0440).
+find "${queue_root}" -xdev -path "${queue_root}/snapshots" -prune -o -type d \
   -exec chown "${service_user}:${research_group}" {} + \
   -exec chmod 2770 {} +
-find "${queue_root}" -xdev -type f \
+find "${queue_root}" -xdev -path "${queue_root}/snapshots" -prune -o -type f \
   -exec chown "${service_user}:${research_group}" {} + \
   -exec chmod 0660 {} +
+
+# Ownership may need migration on older snapshots, but their immutable modes must
+# not be relaxed. -h also avoids following an unexpected symlink.
+find "${queue_root}/snapshots" -xdev -mindepth 1 \
+  -exec chown -h "${service_user}:${research_group}" {} +
 
 echo "research queue permissions ready: ${queue_root}"

@@ -1749,6 +1749,18 @@ def test_research_plane_deployment_examples_share_keys_paths_and_memory_limit() 
     assert "useradd" in permission_script
     assert "chmod 2770" in permission_script
     assert "chmod 0660" in permission_script
+    assert (
+        'find "${queue_root}" -xdev -path "${queue_root}/snapshots" -prune '
+        "-o -type d"
+    ) in permission_script
+    assert (
+        'find "${queue_root}" -xdev -path "${queue_root}/snapshots" -prune '
+        "-o -type f"
+    ) in permission_script
+    assert (
+        'find "${queue_root}/snapshots" -xdev -mindepth 1 '
+        '\\\n  -exec chown -h "${service_user}:${research_group}" {} +'
+    ) in permission_script
     assert "chmod 777" not in permission_script
     assert "QUANT_LAB_RESEARCH_TASK_KEY_ID=cloud-research-v1" in cloud_env
     assert "QUANT_RESEARCH_TASK_KEY_ID=cloud-research-v1" in nas_env
@@ -1756,6 +1768,51 @@ def test_research_plane_deployment_examples_share_keys_paths_and_memory_limit() 
     assert "QUANT_RESEARCH_WORKER_KEY_ID=nas-research-v1" in nas_env
     assert f"QUANT_LAB_RESEARCH_MAX_RESULT_BYTES={DEFAULT_RESEARCH_MAX_RESULT_BYTES}" in cloud_env
     assert f"MAX_RESULT_BYTES={DEFAULT_RESEARCH_MAX_RESULT_BYTES}" in nas_env
+
+
+def test_queue_permission_upgrade_preserves_sealed_snapshot_modes(tmp_path: Path) -> None:
+    if os.name != "posix":
+        pytest.skip("permission-mode integration test requires a POSIX host")
+
+    import grp
+    import pwd
+
+    root = Path(__file__).resolve().parents[1]
+    queue_root = tmp_path / "research_queue"
+    sealed_dir = queue_root / "snapshots" / "snapshot-1"
+    sealed_file = sealed_dir / "manifest.json"
+    legacy_dir = queue_root / "pending" / "task-1"
+    legacy_file = legacy_dir / "task.json"
+    sealed_dir.mkdir(parents=True)
+    legacy_dir.mkdir(parents=True)
+    sealed_file.write_text("{}")
+    legacy_file.write_text("{}")
+    sealed_dir.chmod(0o550)
+    sealed_file.chmod(0o440)
+    legacy_dir.chmod(0o700)
+    legacy_file.chmod(0o600)
+
+    user = pwd.getpwuid(os.getuid()).pw_name
+    group = grp.getgrgid(os.getgid()).gr_name
+    env = {
+        **os.environ,
+        "QUANT_LAB_RESEARCH_QUEUE_ROOT": str(queue_root),
+        "QUANT_LAB_SERVICE_USER": user,
+        "QUANT_LAB_RESEARCH_USER": user,
+        "QUANT_LAB_RESEARCH_GROUP": group,
+    }
+    subprocess.run(
+        ["bash", str(root / "deploy/scripts/upgrade_research_queue_permissions.sh")],
+        check=True,
+        env=env,
+        capture_output=True,
+        text=True,
+    )
+
+    assert sealed_dir.stat().st_mode & 0o7777 == 0o550
+    assert sealed_file.stat().st_mode & 0o7777 == 0o440
+    assert legacy_dir.stat().st_mode & 0o7777 == 0o2770
+    assert legacy_file.stat().st_mode & 0o7777 == 0o660
 
 
 def test_run_once_returns_nonzero_when_claimed_task_fails(

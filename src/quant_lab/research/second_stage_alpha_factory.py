@@ -353,6 +353,8 @@ def _build_second_stage_alpha_factory_tables(
         cost_context=cost_context,
         generated_at=generated_at,
         regime_state=regime,
+        decision_start=lookback_start,
+        decision_end=label_end,
     )
     rows: list[dict[str, Any]] = []
     rows.extend(relative_strength_rows)
@@ -362,7 +364,8 @@ def _build_second_stage_alpha_factory_tables(
             cost_context=cost_context,
             generated_at=generated_at,
             regime_state=regime,
-            as_of_date=as_of_date,
+            decision_start=lookback_start,
+            decision_end=label_end,
         )
     )
     rows.extend(
@@ -379,7 +382,8 @@ def _build_second_stage_alpha_factory_tables(
             cost_context=cost_context,
             generated_at=generated_at,
             regime_state=regime,
-            as_of_date=as_of_date,
+            decision_start=lookback_start,
+            decision_end=label_end,
         )
     )
     rows = _dedupe_rows(rows)
@@ -604,6 +608,8 @@ def _expanded_relative_strength_tables(
     cost_context: dict[str, dict[str, Any]],
     generated_at: datetime,
     regime_state: str,
+    decision_start: datetime,
+    decision_end: datetime,
 ) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
     quality_context = _quality_context_by_symbol(quality)
     if not quality_context or not bars_by_symbol:
@@ -617,7 +623,7 @@ def _expanded_relative_strength_tables(
             ts
             for rows in bars_by_symbol.values()
             for ts in [_parse_dt(row.get("ts")) for row in rows]
-            if ts is not None
+            if ts is not None and decision_start <= ts < decision_end
         }
     )
     for decision_ts in decision_times:
@@ -781,7 +787,8 @@ def _futures_short_shadow_samples(
     cost_context: dict[str, dict[str, Any]],
     generated_at: datetime,
     regime_state: str,
-    as_of_date: date,
+    decision_start: datetime,
+    decision_end: datetime,
 ) -> list[dict[str, Any]]:
     btc_bars = bars_by_symbol.get("BTC-USDT", [])
     if not btc_bars:
@@ -791,7 +798,7 @@ def _futures_short_shadow_samples(
         for horizon in DEFAULT_HORIZONS:
             for idx, bar in enumerate(btc_bars):
                 ts_utc = _parse_dt(bar.get("ts"))
-                if ts_utc is None or ts_utc.date() > as_of_date:
+                if ts_utc is None or not decision_start <= ts_utc < decision_end:
                     continue
                 future = _future_bar(btc_bars, idx, horizon)
                 if future is None:
@@ -1065,7 +1072,8 @@ def _pair_market_neutral_samples(
     cost_context: dict[str, dict[str, Any]],
     generated_at: datetime,
     regime_state: str,
-    as_of_date: date,
+    decision_start: datetime,
+    decision_end: datetime,
 ) -> list[dict[str, Any]]:
     output: list[dict[str, Any]] = []
     configs = (
@@ -1089,7 +1097,7 @@ def _pair_market_neutral_samples(
             for idx in range(0, common_length - horizon):
                 base_bar = bars_by_symbol[long_symbols[0]][idx]
                 ts_utc = _parse_dt(base_bar.get("ts"))
-                if ts_utc is None or ts_utc.date() > as_of_date:
+                if ts_utc is None or not decision_start <= ts_utc < decision_end:
                     continue
                 long_return = _basket_return_bps(bars_by_symbol, long_symbols, idx, horizon)
                 short_return = _basket_return_bps(bars_by_symbol, short_symbols, idx, horizon)

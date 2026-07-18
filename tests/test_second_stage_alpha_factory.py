@@ -161,6 +161,37 @@ def test_relative_strength_excludes_symbols_without_the_decision_bar() -> None:
     assert [row["symbol"] for row in ranked] == ["CURRENT-USDT"]
 
 
+def test_second_stage_decisions_exclude_snapshot_warmup_and_label_buffers(tmp_path):
+    lake = tmp_path / "lake"
+    _write_market(lake)
+    _write_expanded_labels(lake)
+    _extend_market_through_label_buffer(lake)
+
+    artifacts = second_stage_module.compute_second_stage_alpha_factory(
+        lake,
+        as_of_date="2026-05-24",
+        lookback_days=1,
+        generated_at=datetime(2026, 5, 25, tzinfo=UTC),
+    )
+
+    decision_start = datetime(2026, 5, 23, tzinfo=UTC)
+    decision_end = datetime(2026, 5, 25, tzinfo=UTC)
+    samples = artifacts.sample
+    decisions = artifacts.expanded_relative_strength_decision_sample
+
+    assert not samples.is_empty()
+    assert not decisions.is_empty()
+    assert samples.filter(pl.col("decision_ts") < decision_start).is_empty()
+    assert samples.filter(pl.col("decision_ts") >= decision_end).is_empty()
+    assert decisions.filter(pl.col("decision_ts") < decision_start).is_empty()
+    assert decisions.filter(pl.col("decision_ts") >= decision_end).is_empty()
+    assert not samples.filter(
+        (pl.col("source_type") == "second_stage_expanded_relative_strength_decision_time")
+        & (pl.col("decision_ts") == decision_start)
+    ).is_empty()
+    assert not samples.filter(pl.col("label_ts") >= decision_end).is_empty()
+
+
 def test_futures_shadow_is_labeled_as_spot_inverse_proxy_and_capped_to_shadow(tmp_path):
     lake = tmp_path / "lake"
     _write_market(lake)
@@ -1117,6 +1148,46 @@ def _write_market(lake) -> None:
             ]
         ),
         lake / "gold" / "market_regime_daily",
+    )
+
+
+def _extend_market_through_label_buffer(lake) -> None:
+    market = read_parquet_dataset(lake / "silver" / "market_bar")
+    start = datetime(2026, 5, 21, tzinfo=UTC)
+    rows = []
+    for symbol, base, drift in [
+        ("BTC-USDT", 100_000.0, -25.0),
+        ("ETH-USDT", 3_000.0, 3.5),
+        ("SOL-USDT", 170.0, 0.8),
+        ("BNB-USDT", 650.0, 0.2),
+        ("NEAR-USDT", 5.0, 0.05),
+        ("WLD-USDT", 2.0, 0.02),
+        ("OKB-USDT", 50.0, 0.15),
+    ]:
+        for hour in range(80, 144):
+            ts = start + timedelta(hours=hour)
+            close = base + drift * hour
+            rows.append(
+                {
+                    "venue": "okx",
+                    "symbol": symbol,
+                    "market_type": "SPOT",
+                    "timeframe": "1H",
+                    "ts": ts,
+                    "open": close - 0.1,
+                    "high": close + 0.5,
+                    "low": close - 0.5,
+                    "close": close,
+                    "volume": 1000.0 + hour,
+                    "quote_volume": close * (1000.0 + hour),
+                    "source": "test",
+                    "ingest_ts": ts,
+                    "is_closed": True,
+                }
+            )
+    write_parquet_dataset(
+        pl.concat([market, pl.DataFrame(rows)], how="vertical_relaxed"),
+        lake / "silver" / "market_bar",
     )
 
 

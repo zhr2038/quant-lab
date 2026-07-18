@@ -9,6 +9,7 @@ from quant_lab.research.alpha_factory.factory import (
     build_alpha_factory_results,
     build_and_publish_alpha_factory,
     build_default_template_registry,
+    compute_alpha_factory,
     publish_alpha_factory_template_registry,
 )
 
@@ -23,5 +24,6 @@ __all__ = [
     "build_alpha_factory_promotion_queue",
     "build_alpha_factory_results",
     "build_and_publish_alpha_factory",
+    "compute_alpha_factory",
     "publish_alpha_factory_template_registry",
 ]

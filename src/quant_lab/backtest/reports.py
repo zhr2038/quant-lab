@@ -282,7 +282,12 @@ def build_factor_forward_validation(
         if "is_valid" in value_row and not boolish(value_row.get("is_valid")):
             continue
         symbol = normalize_strategy_symbol(value_row.get("symbol"))
-        ts = coerce_dt(first_value(value_row, ("ts", "feature_ts", "created_at")))
+        ts = coerce_dt(
+            first_value(
+                value_row,
+                ("available_time", "decision_ts", "ts", "feature_ts", "created_at"),
+            )
+        )
         factor_value = first_float(
             value_row,
             ("value", "normalized_value", "rank_value", "raw_value"),

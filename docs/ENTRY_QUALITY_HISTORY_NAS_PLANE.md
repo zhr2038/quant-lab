@@ -271,9 +271,15 @@ sudo cp deploy/systemd/quant-lab-research-result-import.* /etc/systemd/system/
 sudo cp deploy/systemd/quant-lab-research-snapshot-gc.* /etc/systemd/system/
 sudo cp deploy/systemd/quant-lab-entry-quality-history.service /etc/systemd/system/
 sudo cp deploy/tmpfiles.d/quant-lab-research-plane.conf /etc/tmpfiles.d/
+sudo deploy/scripts/upgrade_research_queue_permissions.sh
 sudo systemd-tmpfiles --create /etc/tmpfiles.d/quant-lab-research-plane.conf
 sudo systemctl daemon-reload
 ```
+
+The upgrade script creates the `quant-research` group and SSH service account
+before tmpfiles is evaluated, then repairs existing queue directories to
+`quantlab:quant-research` with setgid `2770` directories and `0660` metadata.
+It is safe to run repeatedly and does not modify Lake datasets.
 
 The Request timer stays at 01:35/13:35 UTC with CPU 30%, MemoryHigh 500 MB,
 MemoryMax 900 MB and one Polars thread. The Import timer runs every minute with

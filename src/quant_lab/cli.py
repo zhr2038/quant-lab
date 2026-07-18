@@ -101,14 +101,17 @@ from quant_lab.research_plane.importer import (
     import_pending_entry_quality_history_results,
     validate_pending_entry_quality_history_results,
 )
-from quant_lab.research_plane.queue import create_entry_quality_history_task
+from quant_lab.research_plane.queue import (
+    create_alpha_factory_task,
+    create_entry_quality_history_task,
+)
 from quant_lab.research_plane.signatures import load_public_key, load_signing_key
 from quant_lab.research_plane.snapshot_gc import (
     DEFAULT_SNAPSHOT_PAYLOAD_CAP_BYTES,
     DEFAULT_SNAPSHOT_RETENTION_DAYS,
     gc_research_snapshot_payloads,
 )
-from quant_lab.research_plane.status import entry_quality_history_plane_status
+from quant_lab.research_plane.status import research_plane_status
 from quant_lab.risk.publish import publish_risk_permission as publish_risk_permission_to_lake
 from quant_lab.strategy_telemetry.analyze import analyze_v5_telemetry
 from quant_lab.strategy_telemetry.bundle import safe_extract_v5_bundle, validate_v5_bundle
@@ -1743,6 +1746,11 @@ def build_alpha_factory_command(
     lookback_days: Annotated[int, typer.Option("--lookback-days", min=1)] = 30,
     max_candidates: Annotated[int, typer.Option("--max-candidates", min=1, max=200)] = 200,
 ) -> None:
+    if not _enabled_environment("QUANT_LAB_LOCAL_ALPHA_FACTORY_ENABLED"):
+        raise typer.BadParameter(
+            "local fallback disabled; set QUANT_LAB_LOCAL_ALPHA_FACTORY_ENABLED=1 "
+            "only during an approved maintenance window"
+        )
     result = run_with_job_metrics(
         lake_root=lake_root,
         job_name="build-alpha-factory",
@@ -1754,6 +1762,53 @@ def build_alpha_factory_command(
         ),
     )
     typer.echo(result.model_dump_json(indent=2))
+
+
+@app.command("request-alpha-factory")
+def request_alpha_factory_command(
+    lake_root: Annotated[Path, typer.Option("--lake-root", file_okay=False, dir_okay=True)],
+    queue_root: Annotated[Path, typer.Option("--queue-root", file_okay=False, dir_okay=True)],
+    signing_key_path: Annotated[
+        Path,
+        typer.Option(
+            "--signing-key-path",
+            envvar="QUANT_LAB_RESEARCH_TASK_PRIVATE_KEY_PATH",
+            exists=True,
+            dir_okay=False,
+        ),
+    ],
+    key_id: Annotated[str, typer.Option("--key-id")],
+    quant_lab_commit: Annotated[str, typer.Option("--quant-lab-commit")],
+    as_of_date: Annotated[str, typer.Option("--date")] = "auto",
+    lookback_days: Annotated[int, typer.Option("--lookback-days", min=1, max=180)] = 30,
+    max_candidates: Annotated[int, typer.Option("--max-candidates", min=1, max=200)] = 200,
+) -> None:
+    if not _enabled_environment("QUANT_LAB_NAS_RESEARCH_ENABLED"):
+        raise typer.BadParameter("QUANT_LAB_NAS_RESEARCH_ENABLED must be 1")
+    if not _enabled_environment("QUANT_LAB_NAS_ALPHA_FACTORY_ENABLED"):
+        raise typer.BadParameter("QUANT_LAB_NAS_ALPHA_FACTORY_ENABLED must be 1")
+    day = datetime.now(UTC).date() if as_of_date == "auto" else date.fromisoformat(as_of_date)
+    task, status = create_alpha_factory_task(
+        lake_root,
+        queue_root,
+        as_of_date=day,
+        lookback_days=lookback_days,
+        max_candidates=max_candidates,
+        signing_key=load_signing_key(signing_key_path),
+        signature_key_id=key_id,
+        quant_lab_commit=quant_lab_commit,
+    )
+    typer.echo(
+        json.dumps(
+            {
+                "task": task.model_dump(mode="json"),
+                "status": status.model_dump(mode="json"),
+            },
+            ensure_ascii=True,
+            sort_keys=True,
+            indent=2,
+        )
+    )
 
 
 @app.command("build-v5-candidate-labels")
@@ -2027,7 +2082,8 @@ def request_entry_quality_history_command(
     )
 
 
-@app.command("import-entry-quality-history-results")
+@app.command("import-research-results")
+@app.command("import-entry-quality-history-results", hidden=True)
 def import_entry_quality_history_results_command(
     lake_root: Annotated[Path, typer.Option("--lake-root", file_okay=False, dir_okay=True)],
     queue_root: Annotated[Path, typer.Option("--queue-root", file_okay=False, dir_okay=True)],
@@ -2079,13 +2135,14 @@ def import_entry_quality_history_results_command(
     )
 
 
-@app.command("entry-quality-history-research-status")
-def entry_quality_history_research_status_command(
+@app.command("research-plane-status")
+@app.command("entry-quality-history-research-status", hidden=True)
+def research_plane_status_command(
     queue_root: Annotated[Path, typer.Option("--queue-root", file_okay=False, dir_okay=True)],
 ) -> None:
     typer.echo(
         json.dumps(
-            entry_quality_history_plane_status(queue_root),
+            research_plane_status(queue_root),
             ensure_ascii=True,
             sort_keys=True,
             indent=2,
@@ -2093,8 +2150,9 @@ def entry_quality_history_research_status_command(
     )
 
 
-@app.command("gc-entry-quality-history-snapshots")
-def gc_entry_quality_history_snapshots_command(
+@app.command("gc-research-snapshots")
+@app.command("gc-entry-quality-history-snapshots", hidden=True)
+def gc_research_snapshots_command(
     queue_root: Annotated[Path, typer.Option("--queue-root", file_okay=False, dir_okay=True)],
     retention_days: Annotated[
         int, typer.Option("--retention-days", min=0)

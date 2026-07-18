@@ -1,5 +1,5 @@
 [Unit]
-Description=Run quant-lab alpha factory research builder daily off peak
+Description=Legacy manual-only local Alpha Factory timer (disabled by default)
 
 [Timer]
 OnCalendar=*-*-* 03:20:00

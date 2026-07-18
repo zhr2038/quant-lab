@@ -1,0 +1,34 @@
+[Unit]
+Description=Seal Alpha Factory Research Snapshot and enqueue NAS task
+After=quant-lab-v5-research-refresh.service network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+User=quantlab
+Group=quantlab
+WorkingDirectory=/opt/quant-lab
+EnvironmentFile=/etc/quant-lab/research-plane.env
+Environment=PYTHONUNBUFFERED=1
+Environment=POLARS_MAX_THREADS=1
+Environment=MALLOC_ARENA_MAX=2
+UMask=0007
+ExecCondition=/bin/bash -lc '[ "${QUANT_LAB_NAS_RESEARCH_ENABLED:-0}" = "1" ] && [ "${QUANT_LAB_NAS_ALPHA_FACTORY_ENABLED:-0}" = "1" ]'
+ExecStartPre=/usr/bin/test -d /var/lib/quant-lab/lake/bronze/lake_file_index
+ExecStart=/bin/bash -lc 'set -euo pipefail; COMMIT="$(git -C /opt/quant-lab rev-parse HEAD)"; exec /opt/quant-lab/.venv/bin/qlab request-alpha-factory --lake-root "${QUANT_LAB_LAKE_ROOT}" --queue-root "${QUANT_LAB_RESEARCH_QUEUE_ROOT}" --key-id "${QUANT_LAB_RESEARCH_TASK_KEY_ID}" --quant-lab-commit "$COMMIT" --date auto --lookback-days 30 --max-candidates 200'
+TimeoutStartSec=20min
+Nice=10
+IOSchedulingClass=idle
+CPUQuota=30%
+MemoryHigh=500M
+MemoryMax=900M
+TasksMax=64
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+ReadOnlyPaths=/opt/quant-lab /var/lib/quant-lab/lake
+ReadWritePaths=/var/lib/quant-lab/research_queue /var/lib/quant-lab/lake/bronze/lake_file_index
+
+[Install]
+WantedBy=multi-user.target

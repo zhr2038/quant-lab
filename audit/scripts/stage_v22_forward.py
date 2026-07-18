@@ -1005,7 +1005,7 @@ def performance_and_status(
     feature_coverage = (
         float(realtime_decisions["feature_data_coverage"].min())
         if not realtime_decisions.is_empty()
-        else 1.0
+        else 0.0
     )
     incomplete_decisions = decisions.filter(
         pl.col("data_quality_status") != "PASS"

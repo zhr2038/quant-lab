@@ -697,6 +697,7 @@ def test_zero_sample_initialization_writes_all_v22_outputs_idempotently(tmp_path
         no_fetch=True,
     )
     assert first["paper_status"] == "INCONCLUSIVE_SAMPLE_INSUFFICIENT"
+    assert first["data_coverage"] == 0.0
     events_before = pl.read_parquet(root / "artifacts/forward_v22_events.parquet")
     second = run(
         root=root,

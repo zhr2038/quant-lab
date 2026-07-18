@@ -3,6 +3,7 @@ from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
 import polars as pl
+import pytest
 
 import quant_lab.data.file_index as file_index_module
 import quant_lab.jobs.compact_market_data as compact_market_data_module
@@ -440,6 +441,36 @@ def test_lake_file_index_reuses_unchanged_rows_and_scans_only_new_files(
     reused_flags = updated.sort("path").get_column("reused_from_previous_index").to_list()
     assert reused_flags.count(True) == 2
     assert reused_flags.count(False) == 1
+
+
+@pytest.mark.skipif(os.name == "nt", reason="POSIX directory permissions required")
+def test_lake_file_index_refresh_keeps_read_only_bronze_parent_untouched(tmp_path):
+    lake = tmp_path / "lake"
+    source = lake / "silver" / "trade_print"
+    source.mkdir(parents=True)
+    pl.DataFrame(
+        [
+            {
+                "symbol": "BNB-USDT",
+                "ts": datetime(2026, 5, 31, 9, tzinfo=UTC),
+                "size": 1.0,
+            }
+        ]
+    ).write_parquet(source / "source.parquet")
+    bronze = lake / "bronze"
+    index = bronze / "lake_file_index"
+    index.mkdir(parents=True)
+    os.chmod(index, 0o770)
+    os.chmod(bronze, 0o550)
+    try:
+        result = build_lake_file_index(lake, ["silver/trade_print"])
+    finally:
+        os.chmod(bronze, 0o770)
+
+    assert result.height == 1
+    assert (index / "data.parquet").is_file()
+    assert not (bronze / ".lake_file_index.lock").exists()
+    assert not list(bronze.glob("__lake_file_index_*"))
 
 
 def test_small_file_maintenance_compacts_priority_partition_groups(tmp_path):

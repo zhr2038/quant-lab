@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import json
 from dataclasses import dataclass
-from datetime import UTC, datetime, time, timedelta
+from datetime import UTC, date, datetime, time, timedelta
 from pathlib import Path
 from typing import Any
 
@@ -65,6 +65,9 @@ ALPHA_FACTORY_REQUIRED_REPORTS = frozenset(
         "reports/alpha_factory_worker_report.json",
         "reports/alpha_factory_anti_leakage.json",
     }
+)
+ALPHA_FACTORY_WINDOWED_AS_OF_DATASETS = frozenset(
+    {"second_stage_alpha_factory_sample"}
 )
 
 
@@ -478,10 +481,25 @@ def _validate_alpha_frame_scope(
             .get_column("as_of_date")
             .to_list()
         )
-        if values and {str(value) for value in values} != {task.as_of_date.isoformat()}:
-            raise ValueError(
-                f"alpha_factory_result_scope_mismatch:{dataset_name}:as_of_date"
-            )
+        if values:
+            try:
+                scoped_days = {date.fromisoformat(str(value)) for value in values}
+            except ValueError as exc:
+                raise ValueError(
+                    f"alpha_factory_result_scope_invalid:{dataset_name}:as_of_date"
+                ) from exc
+            if dataset_name in ALPHA_FACTORY_WINDOWED_AS_OF_DATASETS:
+                first_allowed = task.as_of_date - timedelta(days=task.lookback_days)
+                in_scope = all(
+                    first_allowed <= scoped_day <= task.as_of_date
+                    for scoped_day in scoped_days
+                )
+            else:
+                in_scope = scoped_days == {task.as_of_date}
+            if not in_scope:
+                raise ValueError(
+                    f"alpha_factory_result_scope_mismatch:{dataset_name}:as_of_date"
+                )
     if "candidate_id" in schema:
         null_count = int(
             lazy.select(pl.col("candidate_id").null_count())

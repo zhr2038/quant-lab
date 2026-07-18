@@ -544,6 +544,10 @@ def test_alpha_factory_control_state_rejects_nonzero_live_notional() -> None:
             "alpha_factory_result_unknown_decision",
         ),
         (
+            {"decision": None},
+            "alpha_factory_result_unknown_decision",
+        ),
+        (
             {
                 "strategy_candidate": "v5.futures_risk_off_hedge_proxy_shadow",
                 "decision": "PAPER_READY",
@@ -586,6 +590,53 @@ def test_alpha_factory_result_safety_validator_fails_closed(
 ) -> None:
     with pytest.raises(ValueError, match=error):
         _validate_alpha_frame_safety(pl.DataFrame([row]).lazy(), "test_output")
+
+
+@pytest.mark.parametrize(
+    ("dataset_name", "decision"),
+    [
+        ("second_stage_alpha_factory_summary", "RESEARCH_ONLY"),
+        ("second_stage_alpha_factory_summary", "KEEP_SHADOW"),
+        ("second_stage_alpha_factory_summary", "KILL"),
+        ("second_stage_alpha_factory_summary", "PAPER_READY"),
+        ("exit_policy_review_sample", "RESEARCH_ONLY"),
+        ("exit_policy_review_sample", "REVIEW_EXIT_POLICY"),
+        ("exit_policy_review_summary", "RESEARCH_ONLY"),
+        ("exit_policy_review_summary", "REVIEW_EXIT_POLICY"),
+        ("alpha_factory_result", "RESEARCH"),
+        ("alpha_factory_result", "KEEP_SHADOW"),
+        ("alpha_factory_result", "KILL"),
+        ("alpha_factory_result", "PAPER_READY"),
+    ],
+)
+def test_alpha_factory_result_safety_uses_dataset_decision_taxonomy(
+    dataset_name: str,
+    decision: str,
+) -> None:
+    _validate_alpha_frame_safety(
+        pl.DataFrame([{"decision": decision}]).lazy(),
+        dataset_name,
+    )
+
+
+@pytest.mark.parametrize(
+    ("dataset_name", "decision"),
+    [
+        ("alpha_factory_result", "RESEARCH_ONLY"),
+        ("alpha_factory_result", "REVIEW_EXIT_POLICY"),
+        ("second_stage_alpha_factory_summary", "RESEARCH"),
+        ("exit_policy_review_summary", "PAPER_READY"),
+    ],
+)
+def test_alpha_factory_result_safety_rejects_cross_dataset_decisions(
+    dataset_name: str,
+    decision: str,
+) -> None:
+    with pytest.raises(ValueError, match="alpha_factory_result_unknown_decision"):
+        _validate_alpha_frame_safety(
+            pl.DataFrame([{"decision": decision}]).lazy(),
+            dataset_name,
+        )
 
 
 def test_alpha_factory_result_scope_and_primary_keys_reject_nulls() -> None:

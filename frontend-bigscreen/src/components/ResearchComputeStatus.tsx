@@ -28,17 +28,25 @@ function timeValue(value: unknown): string {
   return parsed.toLocaleString("zh-CN", { hour12: false });
 }
 
-export function ResearchComputeStatus({ status }: Props) {
+function durationValue(value: unknown): string {
+  const seconds = Number(value ?? 0);
+  if (!Number.isFinite(seconds) || seconds <= 0) return "—";
+  if (seconds >= 3600) return `${(seconds / 3600).toFixed(1)} h`;
+  if (seconds >= 60) return `${(seconds / 60).toFixed(1)} min`;
+  return `${seconds.toFixed(1)} s`;
+}
+
+function stateTone(state: string): string {
+  const normalized = state.toLowerCase();
+  if (normalized === "completed") return "ok";
+  if (["rejected", "failed", "expired"].includes(normalized)) return "critical";
+  if (["idle", "not_observable"].includes(normalized)) return "info";
+  return "warning";
+}
+
+function TaskStatus({ label, status }: { label: string; status: Record<string, unknown> }) {
   const task = objectValue(status.task);
   const state = stringValue(status.state, "idle");
-  const normalized = state.toLowerCase();
-  const tone = normalized === "completed"
-    ? "ok"
-    : ["rejected", "failed", "expired"].includes(normalized)
-      ? "critical"
-      : ["idle", "not_observable"].includes(normalized)
-        ? "info"
-        : "warning";
   const inputBytes = Number(task.input_bytes ?? 0);
   const downloadedBytes = Number(task.downloaded_bytes ?? 0);
   const cacheHitBytes = Number(task.cache_hit_bytes ?? 0);
@@ -46,29 +54,48 @@ export function ResearchComputeStatus({ status }: Props) {
   const error = stringValue(task.last_error ?? status.last_error, "");
 
   return (
+    <div className="research-compute-task">
+      <div className="research-task-head">
+        <b>{label}</b>
+        <span className={`research-state ${stateTone(state)}`}><Activity size={13} />{state}</span>
+      </div>
+      <div className="research-compute-grid">
+        <div><span>任务</span><b title={stringValue(task.task_id)}>{stringValue(task.task_id, "—")}</b></div>
+        <div><span>Snapshot</span><b title={stringValue(task.snapshot_id)}>{stringValue(task.snapshot_id, "—")}</b></div>
+        <div><span>窗口</span><b>{stringValue(task.start_date, "—")} → {stringValue(task.end_date, "—")}</b></div>
+        <div><span>Worker / 心跳</span><b><Clock3 size={12} />{stringValue(task.worker_id, "—")} · {timeValue(task.worker_heartbeat_at ?? task.heartbeat_at)}</b></div>
+        <div><span>输入 / 下载</span><b><Database size={12} />{bytes(inputBytes)} / {bytes(downloadedBytes)}</b></div>
+        <div><span>缓存命中</span><b>{bytes(cacheHitBytes)} · {cacheRate}</b></div>
+        <div><span>输出</span><b>{stringValue(task.output_rows, "0")} 行 · {bytes(task.output_bytes)}</b></div>
+        <div><span>峰值内存 / 计算</span><b>{bytes(task.peak_rss_bytes)} · {durationValue(task.compute_duration_seconds)}</b></div>
+        <div><span>Anti-Leakage</span><b><ShieldCheck size={12} />{stringValue(task.anti_leakage_status, "—")}</b></div>
+        <div><span>云端导入</span><b>{stringValue(task.import_status, "—")}</b></div>
+        <div><span>Gold generation</span><b title={stringValue(task.gold_generation_id)}>{stringValue(task.gold_generation_id, "—")}</b></div>
+      </div>
+      {error ? <div className="research-compute-error">{error}</div> : null}
+    </div>
+  );
+}
+
+export function ResearchComputeStatus({ status }: Props) {
+  const tasks = objectValue(status.tasks);
+  const entryQuality = objectValue(tasks.entry_quality_history);
+  const alphaFactory = objectValue(tasks.alpha_factory);
+  const aggregateState = stringValue(status.state, "idle");
+
+  return (
     <section className="research-compute-panel">
       <div className="research-compute-head">
         <div>
-          <h3><Cpu size={18} />Entry Quality History · NAS</h3>
-          <p>research-only · live_order_effect: none</p>
+          <h3><Cpu size={18} />NAS Research Compute</h3>
+          <p>Entry Quality + Alpha Factory · research-only · live_order_effect: none</p>
         </div>
-        <span className={`research-state ${tone}`}><Activity size={14} />{state}</span>
+        <span className={`research-state ${stateTone(aggregateState)}`}><Activity size={14} />{aggregateState}</span>
       </div>
-      <div className="research-compute-grid">
-        <div><span>任务</span><b title={stringValue(task.task_id)}>{stringValue(task.task_id)}</b></div>
-        <div><span>Snapshot</span><b title={stringValue(task.snapshot_id)}>{stringValue(task.snapshot_id)}</b></div>
-        <div><span>窗口</span><b>{stringValue(task.start_date)} → {stringValue(task.end_date)}</b></div>
-        <div><span>口径</span><b>{stringValue(task.mode)} · {stringValue(task.cost_mode)}</b></div>
-        <div><span>Worker</span><b>{stringValue(task.worker_id)}</b></div>
-        <div><span>心跳</span><b><Clock3 size={12} />{timeValue(task.heartbeat_at)}</b></div>
-        <div><span>输入 / 下载</span><b><Database size={12} />{bytes(inputBytes)} / {bytes(downloadedBytes)}</b></div>
-        <div><span>缓存命中</span><b>{bytes(cacheHitBytes)} · {cacheRate}</b></div>
-        <div><span>输出行</span><b>{stringValue(task.output_rows, "0")}</b></div>
-        <div><span>Anti-Leakage</span><b><ShieldCheck size={12} />{stringValue(task.anti_leakage_status)}</b></div>
-        <div><span>云端导入</span><b>{stringValue(task.import_status)}</b></div>
-        <div><span>Gold generation</span><b title={stringValue(task.gold_generation_id)}>{stringValue(task.gold_generation_id)}</b></div>
+      <div className="research-task-list">
+        <TaskStatus label="Entry Quality History" status={entryQuality} />
+        <TaskStatus label="Alpha Factory" status={alphaFactory} />
       </div>
-      {error ? <div className="research-compute-error">{error}</div> : null}
     </section>
   );
 }

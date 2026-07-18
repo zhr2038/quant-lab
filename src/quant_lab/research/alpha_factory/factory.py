@@ -1,10 +1,8 @@
 from __future__ import annotations
 
-import csv
-import io
+import hashlib
 import json
-import os
-import zipfile
+from dataclasses import dataclass
 from datetime import UTC, date, datetime, timedelta
 from pathlib import Path
 from typing import Any
@@ -22,12 +20,20 @@ from quant_lab.data.lake import (
 )
 from quant_lab.factors.composite_factory import build_factor_strategy_bridge_candidates
 from quant_lab.research.second_stage_alpha_factory import (
+    EXIT_POLICY_REVIEW_SAMPLE_DATASET,
+    EXIT_POLICY_REVIEW_SAMPLE_SCHEMA,
+    EXIT_POLICY_REVIEW_SUMMARY_DATASET,
+    EXIT_POLICY_REVIEW_SUMMARY_SCHEMA,
+    EXPANDED_RELATIVE_STRENGTH_DECISION_SAMPLE_DATASET,
+    EXPANDED_RELATIVE_STRENGTH_DECISION_SAMPLE_SCHEMA,
     SECOND_STAGE_CANDIDATES,
     SECOND_STAGE_SAMPLE_DATASET,
     SECOND_STAGE_SUMMARY_DATASET,
     build_and_publish_second_stage_alpha_factory,
+    compute_second_stage_alpha_factory,
 )
 from quant_lab.research.strategy_evidence import (
+    SAMPLE_SCHEMA,
     STRATEGY_EVIDENCE_SAMPLE_DATASET,
     SUMMARY_SCHEMA,
     normalize_strategy_evidence_decisions,
@@ -53,8 +59,6 @@ FACTOR_BRIDGE_TEMPLATE_PATTERNS = (
     FACTOR_BRIDGE_TEMPLATE_PATTERN,
     FAST_MICROSTRUCTURE_BRIDGE_TEMPLATE_PATTERN,
 )
-FACTOR_BRIDGE_RECOMPUTE_MAX_FACTOR_VALUE_ROWS = 50_000
-FACTOR_BRIDGE_RECOMPUTE_MAX_MARKET_BAR_ROWS = 500_000
 
 ALPHA_FACTORY_TEMPLATE_REGISTRY_DATASET = (
     Path("gold") / "alpha_factory_template_registry"
@@ -296,6 +300,86 @@ PROMOTION_SCHEMA: dict[str, Any] = {
 }
 
 
+@dataclass(frozen=True)
+class AlphaFactoryOutputSpec:
+    dataset_name: str
+    relative_path: Path
+    schema: dict[str, pl.DataType]
+    primary_keys: tuple[str, ...]
+    window_keys: tuple[str, ...] = ("as_of_date",)
+    publish_mode: str = "window_replace"
+    empty_result_semantics: str = "clear_window"
+
+
+ALPHA_FACTORY_COMPUTE_OUTPUT_SPECS = (
+    AlphaFactoryOutputSpec(
+        "second_stage_alpha_factory_sample",
+        SECOND_STAGE_SAMPLE_DATASET,
+        SAMPLE_SCHEMA,
+        (
+            "as_of_date",
+            "strategy_candidate",
+            "symbol",
+            "source_event_key",
+            "horizon_hours",
+        ),
+    ),
+    AlphaFactoryOutputSpec(
+        "second_stage_alpha_factory_summary",
+        SECOND_STAGE_SUMMARY_DATASET,
+        SUMMARY_SCHEMA,
+        (
+            "as_of_date",
+            "strategy_candidate",
+            "symbol",
+            "regime_state",
+            "horizon_hours",
+        ),
+    ),
+    AlphaFactoryOutputSpec(
+        "expanded_relative_strength_decision_sample",
+        EXPANDED_RELATIVE_STRENGTH_DECISION_SAMPLE_DATASET,
+        EXPANDED_RELATIVE_STRENGTH_DECISION_SAMPLE_SCHEMA,
+        (
+            "decision_ts",
+            "symbol",
+            "lookback_hours",
+            "top_k",
+            "selected_rank",
+            "label_horizon_hours",
+        ),
+    ),
+    AlphaFactoryOutputSpec(
+        "exit_policy_review_sample",
+        EXIT_POLICY_REVIEW_SAMPLE_DATASET,
+        EXIT_POLICY_REVIEW_SAMPLE_SCHEMA,
+        ("as_of_date", "strategy_id", "source_entry_id"),
+    ),
+    AlphaFactoryOutputSpec(
+        "exit_policy_review_summary",
+        EXIT_POLICY_REVIEW_SUMMARY_DATASET,
+        EXIT_POLICY_REVIEW_SUMMARY_SCHEMA,
+        ("as_of_date", "strategy_id", "symbol"),
+    ),
+    AlphaFactoryOutputSpec(
+        "alpha_factory_candidate",
+        ALPHA_FACTORY_CANDIDATE_DATASET,
+        CANDIDATE_SCHEMA,
+        ("as_of_date", "candidate_id"),
+    ),
+    AlphaFactoryOutputSpec(
+        "alpha_factory_result",
+        ALPHA_FACTORY_RESULT_DATASET,
+        RESULT_SCHEMA,
+        ("as_of_date", "candidate_id"),
+    ),
+)
+
+ALPHA_FACTORY_COMPUTE_OUTPUT_SPEC_BY_NAME = {
+    spec.dataset_name: spec for spec in ALPHA_FACTORY_COMPUTE_OUTPUT_SPECS
+}
+
+
 class AlphaFactoryBuildResult(BaseModel):
     model_config = ConfigDict(extra="forbid", frozen=True)
 
@@ -309,6 +393,246 @@ class AlphaFactoryBuildResult(BaseModel):
     strategy_evidence_sample_rows: int = Field(ge=0)
     decision_counts: dict[str, int] = Field(default_factory=dict)
     warnings: list[str] = Field(default_factory=list)
+
+
+@dataclass(frozen=True)
+class AlphaFactoryComputeArtifacts:
+    second_stage_alpha_factory_sample: pl.DataFrame
+    second_stage_alpha_factory_summary: pl.DataFrame
+    expanded_relative_strength_decision_sample: pl.DataFrame
+    exit_policy_review_sample: pl.DataFrame
+    exit_policy_review_summary: pl.DataFrame
+    alpha_factory_candidate: pl.DataFrame
+    alpha_factory_result: pl.DataFrame
+    factor_strategy_bridge_candidates: pl.DataFrame
+    generated_at: datetime
+    as_of_date: date
+    warnings: tuple[str, ...]
+
+    def frames_by_dataset(self) -> dict[str, pl.DataFrame]:
+        return {
+            "second_stage_alpha_factory_sample": self.second_stage_alpha_factory_sample,
+            "second_stage_alpha_factory_summary": self.second_stage_alpha_factory_summary,
+            "expanded_relative_strength_decision_sample": (
+                self.expanded_relative_strength_decision_sample
+            ),
+            "exit_policy_review_sample": self.exit_policy_review_sample,
+            "exit_policy_review_summary": self.exit_policy_review_summary,
+            "alpha_factory_candidate": self.alpha_factory_candidate,
+            "alpha_factory_result": self.alpha_factory_result,
+        }
+
+
+@dataclass(frozen=True)
+class AlphaFactoryCloudDerivations:
+    promotion_queue: pl.DataFrame
+    strategy_evidence_sample: pl.DataFrame
+    strategy_evidence: pl.DataFrame
+
+
+def derive_alpha_factory_cloud_outputs(
+    *,
+    second_stage_samples: pl.DataFrame,
+    alpha_results: pl.DataFrame,
+    generated_at: datetime,
+) -> AlphaFactoryCloudDerivations:
+    """Derive promotion and shared evidence only after cloud validation."""
+    promotion = build_alpha_factory_promotion_queue(
+        alpha_results,
+        generated_at=generated_at,
+    )
+    if not promotion.is_empty():
+        invalid = promotion.filter(
+            (pl.col("max_live_notional_usdt") != 0)
+            | ~pl.col("promotion_state").is_in(
+                ["RESEARCH", "KEEP_SHADOW", "KILL", "PAPER_READY"]
+            )
+            | ~pl.col("manual_live_approval_required")
+        )
+        if not invalid.is_empty():
+            raise ValueError("alpha_factory_cloud_promotion_safety_violation")
+    sample_delta = second_stage_samples.select(list(SAMPLE_SCHEMA)).cast(
+        SAMPLE_SCHEMA,
+        strict=True,
+    )
+    summary_delta = _results_to_strategy_evidence(alpha_results)
+    return AlphaFactoryCloudDerivations(
+        promotion_queue=promotion,
+        strategy_evidence_sample=sample_delta,
+        strategy_evidence=summary_delta,
+    )
+
+
+def merge_alpha_factory_managed_evidence(
+    existing: pl.DataFrame,
+    delta: pl.DataFrame,
+    *,
+    as_of_date: date,
+    sample: bool,
+) -> pl.DataFrame:
+    """Replace only one day's Alpha-managed evidence and preserve every other producer."""
+    schema = SAMPLE_SCHEMA if sample else SUMMARY_SCHEMA
+    retained = existing
+    if not retained.is_empty() and {
+        "as_of_date",
+        "strategy_candidate",
+    }.issubset(retained.columns):
+        retained = retained.filter(
+            ~(
+                (pl.col("as_of_date").cast(pl.Utf8) == as_of_date.isoformat())
+                & _alpha_factory_managed_candidate_expr(pl.col("strategy_candidate"))
+            )
+        )
+    frames = [
+        frame.select(list(schema)).cast(schema, strict=False)
+        for frame in (retained, delta)
+        if not frame.is_empty()
+    ]
+    combined = (
+        pl.concat(frames, how="vertical_relaxed")
+        if frames
+        else pl.DataFrame(schema=schema)
+    )
+    if not sample:
+        combined = normalize_strategy_evidence_decisions(combined)
+    return combined.select(list(schema)).cast(schema, strict=False)
+
+
+def compute_alpha_factory(
+    lake_root: str | Path,
+    *,
+    as_of_date: str | date | None = None,
+    lookback_days: int = 30,
+    max_candidates: int = MAX_DAILY_CANDIDATES,
+    registry: pl.DataFrame | None = None,
+    generated_at: datetime | None = None,
+) -> AlphaFactoryComputeArtifacts:
+    """Compute Alpha Factory outputs without publishing Gold or shared evidence."""
+    root = Path(lake_root)
+    day = _parse_day(as_of_date)
+    generated = generated_at or datetime.now(UTC)
+    effective_registry = (
+        registry if registry is not None else build_default_template_registry(generated)
+    )
+    registry_lookup = template_registry_lookup(effective_registry)
+    second_stage = compute_second_stage_alpha_factory(
+        root,
+        as_of_date=day,
+        lookback_days=lookback_days,
+        generated_at=generated,
+    )
+    alt_impulse_summary = _with_source_dataset(
+        _read_candidate_rows_for_day(
+            root / STRATEGY_EVIDENCE_DATASET,
+            day,
+            candidates=("v5.alt_impulse_shadow",),
+        ),
+        "gold/strategy_evidence",
+    )
+    alt_impulse_samples = _with_source_dataset(
+        _read_candidate_rows_for_day(
+            root / STRATEGY_EVIDENCE_SAMPLE_DATASET,
+            day,
+            candidates=("v5.alt_impulse_shadow",),
+        ),
+        "gold/strategy_evidence_sample",
+    )
+    factor_bridge_summary, factor_bridge = compute_factor_bridge_source(
+        root,
+        day,
+        generated_at=generated,
+    )
+    summary_frames = [
+        _with_source_dataset(
+            second_stage.summary,
+            "gold/second_stage_alpha_factory_summary",
+        ),
+        alt_impulse_summary,
+        factor_bridge_summary,
+    ]
+    source_summary = pl.concat(
+        [frame for frame in summary_frames if not frame.is_empty()],
+        how="diagonal_relaxed",
+    ) if any(not frame.is_empty() for frame in summary_frames) else pl.DataFrame()
+    sample_frames = [
+        _with_source_dataset(
+            second_stage.sample,
+            "gold/second_stage_alpha_factory_sample",
+        ),
+        alt_impulse_samples,
+    ]
+    source_samples = pl.concat(
+        [frame for frame in sample_frames if not frame.is_empty()],
+        how="diagonal_relaxed",
+    ) if any(not frame.is_empty() for frame in sample_frames) else pl.DataFrame()
+    candidates = build_alpha_factory_candidates(
+        source_summary,
+        as_of_date=day,
+        generated_at=generated,
+        max_candidates=max_candidates,
+        registry_lookup=registry_lookup,
+    )
+    results = build_alpha_factory_results(
+        source_summary,
+        samples=source_samples,
+        as_of_date=day,
+        generated_at=generated,
+        max_candidates=max_candidates,
+        registry_lookup=registry_lookup,
+    )
+    return AlphaFactoryComputeArtifacts(
+        second_stage_alpha_factory_sample=second_stage.sample,
+        second_stage_alpha_factory_summary=second_stage.summary,
+        expanded_relative_strength_decision_sample=(
+            second_stage.expanded_relative_strength_decision_sample
+        ),
+        exit_policy_review_sample=second_stage.exit_policy_review_sample,
+        exit_policy_review_summary=second_stage.exit_policy_review_summary,
+        alpha_factory_candidate=candidates,
+        alpha_factory_result=results,
+        factor_strategy_bridge_candidates=factor_bridge,
+        generated_at=generated,
+        as_of_date=day,
+        warnings=second_stage.warnings,
+    )
+
+
+def compute_factor_bridge_source(
+    lake_root: str | Path,
+    as_of_date: str | date,
+    *,
+    generated_at: datetime | None = None,
+) -> tuple[pl.DataFrame, pl.DataFrame]:
+    """Recompute Factor Bridge from immutable Lake inputs without Expert Pack ZIPs."""
+    root = Path(lake_root)
+    day = _parse_day(as_of_date)
+    factor_candidates = read_parquet_dataset(root / FACTOR_CANDIDATE_DATASET)
+    factor_values = read_parquet_dataset(root / FACTOR_VALUE_DATASET)
+    market_bars = read_parquet_dataset(root / MARKET_BAR_DATASET)
+    if factor_candidates.is_empty() or factor_values.is_empty() or market_bars.is_empty():
+        return pl.DataFrame(), build_factor_strategy_bridge_candidates(
+            paper_queue=pl.DataFrame(),
+            factor_forward_validation=pl.DataFrame(),
+            generated_at=generated_at,
+        )
+    factor_forward = build_factor_forward_validation(
+        factor_candidates=factor_candidates,
+        factor_values=factor_values,
+        market_bars=market_bars,
+        market_regime=read_parquet_dataset(root / MARKET_REGIME_DATASET),
+        cost_bucket_daily=read_parquet_dataset(root / COST_BUCKET_DAILY_DATASET),
+    )
+    bridge = build_factor_strategy_bridge_candidates(
+        paper_queue=pl.DataFrame(),
+        factor_forward_validation=factor_forward,
+        generated_at=generated_at,
+    )
+    summary = _factor_bridge_rows_to_source_summary(
+        bridge.to_dicts() if not bridge.is_empty() else [],
+        day,
+        source_dataset=FACTOR_BRIDGE_REPORT_MEMBER,
+    )
+    return summary, bridge
 
 
 def build_and_publish_alpha_factory(
@@ -730,12 +1054,49 @@ def publish_alpha_factory_template_registry(
     root = Path(lake_root)
     published_at = generated_at or datetime.now(UTC)
     existing = read_parquet_dataset(root / ALPHA_FACTORY_TEMPLATE_REGISTRY_DATASET)
-    defaults = build_default_template_registry(published_at)
-    registry = _merge_template_registry(existing, defaults)
-    if not registry.is_empty():
-        registry = registry.with_columns(pl.lit(published_at).alias("created_at"))
+    registry = prepare_alpha_factory_control_state(existing, generated_at=published_at)
     write_parquet_dataset(registry, root / ALPHA_FACTORY_TEMPLATE_REGISTRY_DATASET)
     return registry
+
+
+def prepare_alpha_factory_control_state(
+    existing: pl.DataFrame | None,
+    *,
+    generated_at: datetime | None = None,
+) -> pl.DataFrame:
+    """Merge cloud-owned templates and fail closed on unsafe control state."""
+    generated = generated_at or datetime.now(UTC)
+    defaults = build_default_template_registry(generated)
+    registry = _merge_template_registry(
+        existing if existing is not None else pl.DataFrame(),
+        defaults,
+    )
+    known_ids = {str(row["template_id"]) for row in DEFAULT_TEMPLATE_REGISTRY}
+    rows: list[dict[str, Any]] = []
+    for row in registry.to_dicts():
+        payload = dict(row)
+        template_id = str(payload.get("template_id") or "")
+        parameter_space = _json_dict(payload.get("parameter_space_json"))
+        if template_id not in known_ids:
+            payload["enabled"] = False
+        elif str(payload.get("safety_mode") or "") != "paper_shadow_only":
+            raise ValueError("alpha_factory_template_registry_unsafe_safety_mode")
+        live_values = parameter_space.get("max_live_notional_usdt", [0])
+        if not isinstance(live_values, list) or any(_float(value) != 0.0 for value in live_values):
+            raise ValueError("alpha_factory_template_registry_nonzero_live_notional")
+        payload["created_at"] = generated
+        rows.append(payload)
+    return _normalize_template_registry(
+        pl.DataFrame(rows, infer_schema_length=None) if rows else defaults
+    )
+
+
+def alpha_factory_template_registry_digest(registry: pl.DataFrame) -> str:
+    rows = []
+    for row in registry.sort("template_id").to_dicts() if not registry.is_empty() else []:
+        rows.append({key: value for key, value in row.items() if key != "created_at"})
+    canonical = json.dumps(rows, sort_keys=True, separators=(",", ":"), default=str).encode()
+    return hashlib.sha256(canonical).hexdigest()
 
 
 def template_registry_lookup(registry: pl.DataFrame) -> dict[str, dict[str, Any]]:
@@ -1336,194 +1697,8 @@ def _alpha_factory_source_summary(root: Path, day: date) -> pl.DataFrame:
 
 
 def _factor_bridge_source_summary(root: Path, day: date) -> pl.DataFrame:
-    input_mtime = _factor_bridge_input_latest_mtime(root)
-    from_latest_pack = _latest_factor_bridge_report_summary(
-        root,
-        day,
-        min_pack_mtime=input_mtime,
-    )
-    if not from_latest_pack.is_empty():
-        return from_latest_pack
-    if not _factor_bridge_lake_recompute_allowed(root):
-        return pl.DataFrame()
-
-    factor_candidates = read_parquet_dataset(root / FACTOR_CANDIDATE_DATASET)
-    factor_values = read_parquet_dataset(root / FACTOR_VALUE_DATASET)
-    market_bars = read_parquet_dataset(root / MARKET_BAR_DATASET)
-    if (
-        not factor_candidates.is_empty()
-        and not factor_values.is_empty()
-        and not market_bars.is_empty()
-    ):
-        factor_forward = build_factor_forward_validation(
-            factor_candidates=factor_candidates,
-            factor_values=factor_values,
-            market_bars=market_bars,
-            market_regime=read_parquet_dataset(root / MARKET_REGIME_DATASET),
-            cost_bucket_daily=read_parquet_dataset(root / COST_BUCKET_DAILY_DATASET),
-        )
-        bridge = build_factor_strategy_bridge_candidates(
-            paper_queue=pl.DataFrame(),
-            factor_forward_validation=factor_forward,
-        )
-        current = _factor_bridge_rows_to_source_summary(
-            bridge.to_dicts() if not bridge.is_empty() else [],
-            day,
-            source_dataset=FACTOR_BRIDGE_REPORT_MEMBER,
-        )
-        if not current.is_empty():
-            return current
-
-    if input_mtime is None:
-        return _latest_factor_bridge_report_summary(root, day)
-    return pl.DataFrame()
-
-
-def _latest_factor_bridge_report_summary(
-    root: Path,
-    day: date,
-    *,
-    min_pack_mtime: datetime | None = None,
-) -> pl.DataFrame:
-    exports_root = _default_exports_root(root)
-    if not exports_root.exists():
-        return pl.DataFrame()
-    packs = sorted(
-        [
-            path
-            for path in exports_root.glob(f"quant_lab_expert_pack_{day.isoformat()}_*.zip")
-            if path.is_file()
-        ],
-        key=lambda path: path.stat().st_mtime,
-        reverse=True,
-    )
-    packs.extend(
-        sorted(
-            [
-                path
-                for path in exports_root.glob("quant_lab_expert_pack_*.zip")
-                if path.is_file() and path not in packs
-            ],
-            key=lambda path: path.stat().st_mtime,
-            reverse=True,
-        )
-    )
-    for pack in packs[:5]:
-        pack_mtime = _expert_pack_content_time(pack) or _path_mtime(pack)
-        if (
-            min_pack_mtime is not None
-            and pack_mtime is not None
-            and pack_mtime + timedelta(seconds=1) < min_pack_mtime
-        ):
-            continue
-        try:
-            with zipfile.ZipFile(pack) as archive:
-                if FACTOR_BRIDGE_REPORT_MEMBER not in archive.namelist():
-                    continue
-                rows = list(
-                    csv.DictReader(
-                        io.StringIO(
-                            archive.read(FACTOR_BRIDGE_REPORT_MEMBER).decode("utf-8")
-                        )
-                    )
-                )
-        except (OSError, zipfile.BadZipFile, KeyError, UnicodeDecodeError):
-            continue
-        summary = _factor_bridge_rows_to_source_summary(
-            rows,
-            day,
-            source_dataset=FACTOR_BRIDGE_REPORT_MEMBER,
-        )
-        if not summary.is_empty():
-            return summary
-    return pl.DataFrame()
-
-
-def _expert_pack_content_time(path: Path) -> datetime | None:
-    try:
-        with zipfile.ZipFile(path) as archive:
-            if "manifest.json" not in archive.namelist():
-                return None
-            manifest = json.loads(archive.read("manifest.json").decode("utf-8"))
-    except (OSError, zipfile.BadZipFile, KeyError, UnicodeDecodeError, json.JSONDecodeError):
-        return None
-    for field in (
-        "export_finished_at",
-        "export_generated_at",
-        "generated_at",
-        "created_at",
-    ):
-        parsed = _parse_dt(manifest.get(field))
-        if parsed is not None:
-            return parsed
-    return None
-
-
-def _factor_bridge_lake_recompute_allowed(root: Path) -> bool:
-    factor_limit = _int_env(
-        "QUANT_LAB_ALPHA_FACTORY_FACTOR_BRIDGE_RECOMPUTE_MAX_FACTOR_VALUE_ROWS",
-        FACTOR_BRIDGE_RECOMPUTE_MAX_FACTOR_VALUE_ROWS,
-    )
-    market_limit = _int_env(
-        "QUANT_LAB_ALPHA_FACTORY_FACTOR_BRIDGE_RECOMPUTE_MAX_MARKET_BAR_ROWS",
-        FACTOR_BRIDGE_RECOMPUTE_MAX_MARKET_BAR_ROWS,
-    )
-    if factor_limit <= 0 or market_limit <= 0:
-        return False
-    try:
-        return (
-            count_parquet_rows(root / FACTOR_VALUE_DATASET) <= factor_limit
-            and count_parquet_rows(root / MARKET_BAR_DATASET) <= market_limit
-        )
-    except Exception:
-        return False
-
-
-def _factor_bridge_input_latest_mtime(root: Path) -> datetime | None:
-    return _max_dt(
-        *[
-            _dataset_latest_mtime(root / dataset)
-            for dataset in (
-                FACTOR_CANDIDATE_DATASET,
-                FACTOR_VALUE_DATASET,
-                MARKET_BAR_DATASET,
-                MARKET_REGIME_DATASET,
-                COST_BUCKET_DAILY_DATASET,
-            )
-        ]
-    )
-
-
-def _dataset_latest_mtime(path: Path) -> datetime | None:
-    mtimes = [_path_mtime(item) for item in path.rglob("*.parquet")] if path.exists() else []
-    present = [item for item in mtimes if item is not None]
-    return max(present) if present else None
-
-
-def _path_mtime(path: Path) -> datetime | None:
-    try:
-        return datetime.fromtimestamp(path.stat().st_mtime, tz=UTC)
-    except OSError:
-        return None
-
-
-def _max_dt(*values: datetime | None) -> datetime | None:
-    present = [value for value in values if value is not None]
-    return max(present) if present else None
-
-
-def _int_env(name: str, default: int) -> int:
-    raw = os.environ.get(name)
-    if raw is None:
-        return default
-    try:
-        return int(raw)
-    except ValueError:
-        return default
-
-
-def _default_exports_root(root: Path) -> Path:
-    return root.parent / "exports" if root.name == "lake" else root / "exports"
+    summary, _bridge = compute_factor_bridge_source(root, day)
+    return summary
 
 
 def _factor_bridge_rows_to_source_summary(

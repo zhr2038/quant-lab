@@ -23,8 +23,12 @@ except ImportError:  # pragma: no cover - Linux NAS always provides resource.
 
 from quant_lab.research_plane.contracts import (
     DEFAULT_RESEARCH_MAX_RESULT_BYTES,
-    ResearchSnapshotManifest,
-    ResearchTask,
+    RESEARCH_SNAPSHOT_ADAPTER,
+    RESEARCH_TASK_ADAPTER,
+    AlphaFactorySnapshotManifest,
+    AlphaFactoryTask,
+    ResearchTaskEnvelope,
+    ResearchTaskLease,
     ResearchTaskState,
     ResearchTaskStatus,
 )
@@ -33,10 +37,12 @@ from quant_lab.research_plane.signatures import (
     load_public_key,
     load_signing_key,
 )
+from quant_lab.research_worker.alpha_factory import compute_alpha_factory_from_snapshot
 from quant_lab.research_worker.entry_quality_history import (
     compute_entry_quality_history_from_snapshot,
 )
 from quant_lab.research_worker.result_writer import (
+    write_alpha_factory_result_bundle,
     write_entry_quality_history_result_bundle,
 )
 from quant_lab.transfer.snapshot_sync import sync_snapshot_blobs
@@ -44,6 +50,8 @@ from quant_lab.transfer.snapshot_sync import sync_snapshot_blobs
 LOG = logging.getLogger("quant_research_worker")
 STOP = threading.Event()
 _STATUS_UPLOAD_LOCK = threading.RLock()
+_LEASE_UPLOAD_LOCK = threading.RLock()
+_HANDOFF_READY_MARKER = ".HANDOFF_READY"
 
 
 @dataclass(frozen=True)
@@ -181,18 +189,17 @@ def recover_expired_leases(config: Config, *, now: datetime | None = None) -> in
         if status is None:
             LOG.warning("cannot recover task without valid status task_id=%s", task_id)
             continue
+        if _recover_handoff_visibility(config, task_id):
+            continue
         if status.state in {
-            ResearchTaskState.VALIDATING_ON_CLOUD,
             ResearchTaskState.PUBLISHING,
             ResearchTaskState.COMPLETED,
             ResearchTaskState.REJECTED,
         }:
             continue
-        if _remote_exists(config, f"{config.cloud_queue_root}/results/inbox/{task_id}"):
-            # Inbox visibility transfers status ownership to the cloud importer.
-            continue
         if not _lease_is_expired(config, task_id, status, current_time):
             continue
+        _discard_incomplete_result_partials(config, task_id)
         status_path = work / "status.previous.json"
         expected_status_sha = hashlib.sha256(status_path.read_bytes()).hexdigest()
         retry = status.attempt < status.max_attempts
@@ -233,6 +240,9 @@ def _lease_is_expired(
     status: ResearchTaskStatus,
     now: datetime,
 ) -> bool:
+    lease = _read_local_or_remote_lease(config, task_id, config.data_root / "work" / task_id)
+    if lease is not None:
+        return lease.lease_expires_at <= now
     if status.lease_expires_at is not None:
         return status.lease_expires_at <= now
     claim_epoch = _read_remote_claim_epoch(config, task_id)
@@ -279,7 +289,8 @@ def _conditional_remote_transition(
         f"test ! -e {shlex.quote(root + '/results/inbox/' + task_id)} || exit 49; "
         f"actual=$(sha256sum {shlex.quote(status_path)} | cut -d' ' -f1); "
         f"test \"$actual\" = {shlex.quote(expected_status_sha)} || exit 46; "
-        f"mv {shlex.quote(source)} {shlex.quote(destination)}"
+        f"mv {shlex.quote(source)} {shlex.quote(destination)}; "
+        f"rm -f -- {shlex.quote(root + '/lease/' + task_id + '.json')}"
     )
     result = _ssh(config, script, check=False)
     if result.returncode in {46, 47, 48, 49}:
@@ -294,7 +305,7 @@ def process_claimed_task(config: Config, task_id: str) -> None:
     work.mkdir(parents=True, exist_ok=True)
     task_path = work / "task.json"
     _scp_from(config, _remote_task_path(config, "running", task_id, "task.json"), task_path)
-    task = ResearchTask.model_validate_json(task_path.read_text("utf-8"))
+    task = RESEARCH_TASK_ADAPTER.validate_json(task_path.read_text("utf-8"))
     task_public_key = load_public_key(config.task_public_key_path)
     if task.task_id != task_id:
         raise ValueError("research_task_id_mismatch")
@@ -308,7 +319,7 @@ def process_claimed_task(config: Config, task_id: str) -> None:
         f"{config.cloud_queue_root}/snapshots/{task.snapshot_id}/manifest.json",
         manifest_path,
     )
-    snapshot = ResearchSnapshotManifest.model_validate_json(manifest_path.read_text("utf-8"))
+    snapshot = RESEARCH_SNAPSHOT_ADAPTER.validate_json(manifest_path.read_text("utf-8"))
     validate_research_task_snapshot(
         task,
         snapshot,
@@ -318,13 +329,15 @@ def process_claimed_task(config: Config, task_id: str) -> None:
     )
 
     claimed_at = datetime.now(UTC)
+    start_date, end_date, mode, cost_mode = _task_status_dimensions(task)
     status = ResearchTaskStatus(
         task_id=task.task_id,
         snapshot_id=task.snapshot_id,
-        start_date=task.parameters.start_date,
-        end_date=task.parameters.end_date,
-        mode=task.parameters.mode,
-        cost_mode=task.parameters.cost_mode,
+        task_type=task.task_type,
+        start_date=start_date,
+        end_date=end_date,
+        mode=mode,
+        cost_mode=cost_mode,
         state=ResearchTaskState.SYNCING,
         worker_id=config.worker_id,
         requested_at=task.requested_at,
@@ -337,10 +350,20 @@ def process_claimed_task(config: Config, task_id: str) -> None:
         import_status="waiting_for_nas_result",
     )
     _upload_status(config, status, work)
+    lease = ResearchTaskLease(
+        task_id=task.task_id,
+        snapshot_id=task.snapshot_id,
+        task_type=task.task_type,
+        worker_id=config.worker_id,
+        claimed_at=claimed_at,
+        heartbeat_at=claimed_at,
+        lease_expires_at=claimed_at + timedelta(seconds=task.lease_seconds),
+    )
+    _upload_lease(config, lease, work)
     heartbeat_stop = threading.Event()
     heartbeat = threading.Thread(
         target=_heartbeat_loop,
-        args=(config, task, status, work, heartbeat_stop),
+        args=(config, task, lease, work, heartbeat_stop),
         daemon=True,
     )
     heartbeat.start()
@@ -372,11 +395,20 @@ def process_claimed_task(config: Config, task_id: str) -> None:
         _upload_status(config, status, work)
         started = time.perf_counter()
         with _heavy_job_lock(config.heavy_job_lock):
-            compute = compute_entry_quality_history_from_snapshot(
-                sync_result.snapshot_root,
-                snapshot,
-                task,
-            )
+            if isinstance(task, AlphaFactoryTask):
+                if not isinstance(snapshot, AlphaFactorySnapshotManifest):
+                    raise ValueError("research_task_snapshot_type_mismatch")
+                compute = compute_alpha_factory_from_snapshot(
+                    sync_result.snapshot_root,
+                    snapshot,
+                    task,
+                )
+            else:
+                compute = compute_entry_quality_history_from_snapshot(
+                    sync_result.snapshot_root,
+                    snapshot,
+                    task,
+                )
             status = status.model_copy(
                 update={
                     "state": ResearchTaskState.VALIDATING_ON_NAS,
@@ -385,23 +417,45 @@ def process_claimed_task(config: Config, task_id: str) -> None:
             )
             _upload_status(config, status, work)
             peak_rss = _peak_rss_bytes()
-            result_root, manifest, receipt = write_entry_quality_history_result_bundle(
-                config.data_root / "results",
-                task=task,
-                snapshot=snapshot,
-                artifacts=compute.artifacts,
-                worker_id=config.worker_id,
-                worker_commit=config.worker_commit,
-                worker_key_id=config.worker_key_id,
-                worker_signing_key=load_signing_key(config.worker_signing_key_path),
-                claimed_at=claimed_at,
-                input_bytes=snapshot.total_input_bytes,
-                cache_hit_bytes=status.cache_hit_bytes,
-                downloaded_bytes=status.downloaded_bytes,
-                peak_rss_bytes=peak_rss,
-                compute_duration_seconds=time.perf_counter() - started,
-                max_result_bytes=config.max_result_bytes,
-            )
+            signing_key = load_signing_key(config.worker_signing_key_path)
+            if isinstance(task, AlphaFactoryTask):
+                if not isinstance(snapshot, AlphaFactorySnapshotManifest):
+                    raise ValueError("research_task_snapshot_type_mismatch")
+                result_root, manifest, receipt = write_alpha_factory_result_bundle(
+                    config.data_root / "results",
+                    task=task,
+                    snapshot=snapshot,
+                    compute=compute,
+                    worker_id=config.worker_id,
+                    worker_commit=config.worker_commit,
+                    worker_key_id=config.worker_key_id,
+                    worker_signing_key=signing_key,
+                    claimed_at=claimed_at,
+                    input_bytes=snapshot.total_input_bytes,
+                    cache_hit_bytes=status.cache_hit_bytes,
+                    downloaded_bytes=status.downloaded_bytes,
+                    peak_rss_bytes=peak_rss,
+                    compute_duration_seconds=time.perf_counter() - started,
+                    max_result_bytes=config.max_result_bytes,
+                )
+            else:
+                result_root, manifest, receipt = write_entry_quality_history_result_bundle(
+                    config.data_root / "results",
+                    task=task,
+                    snapshot=snapshot,
+                    artifacts=compute.artifacts,
+                    worker_id=config.worker_id,
+                    worker_commit=config.worker_commit,
+                    worker_key_id=config.worker_key_id,
+                    worker_signing_key=signing_key,
+                    claimed_at=claimed_at,
+                    input_bytes=snapshot.total_input_bytes,
+                    cache_hit_bytes=status.cache_hit_bytes,
+                    downloaded_bytes=status.downloaded_bytes,
+                    peak_rss_bytes=peak_rss,
+                    compute_duration_seconds=time.perf_counter() - started,
+                    max_result_bytes=config.max_result_bytes,
+                )
         if manifest.output_bytes > config.max_result_bytes:
             raise RuntimeError("research_result_size_limit_exceeded")
         status = status.model_copy(
@@ -409,6 +463,9 @@ def process_claimed_task(config: Config, task_id: str) -> None:
                 "state": ResearchTaskState.UPLOADING,
                 "heartbeat_at": datetime.now(UTC),
                 "output_rows": receipt.output_rows,
+                "output_bytes": manifest.output_bytes,
+                "peak_rss_bytes": manifest.peak_rss_bytes,
+                "compute_duration_seconds": manifest.compute_duration_seconds,
                 "anti_leakage_status": receipt.anti_leakage_status,
             }
         )
@@ -427,31 +484,41 @@ def process_claimed_task(config: Config, task_id: str) -> None:
             _stop_heartbeat(config, heartbeat_stop, heartbeat)
 
 
+def _task_status_dimensions(task: ResearchTaskEnvelope) -> tuple[Any, Any, str, str]:
+    if isinstance(task, AlphaFactoryTask):
+        return (
+            task.as_of_date,
+            task.as_of_date,
+            "alpha_factory",
+            "research",
+        )
+    return (
+        task.parameters.start_date,
+        task.parameters.end_date,
+        task.parameters.mode,
+        task.parameters.cost_mode,
+    )
+
+
 def _heartbeat_loop(
     config: Config,
-    task: ResearchTask,
-    initial: ResearchTaskStatus,
+    task: ResearchTaskEnvelope,
+    initial: ResearchTaskLease,
     work: Path,
     stop: threading.Event,
 ) -> None:
-    status = initial
+    lease = initial
     while not stop.wait(config.heartbeat_seconds):
         try:
-            latest_path = work / "status.upload.json"
-            try:
-                status = ResearchTaskStatus.model_validate_json(
-                    latest_path.read_text("utf-8")
-                )
-            except (OSError, ValueError):
-                pass
             now = datetime.now(UTC)
-            status = status.model_copy(
+            lease = lease.model_copy(
                 update={
                     "heartbeat_at": now,
                     "lease_expires_at": now + timedelta(seconds=task.lease_seconds),
+                    "sequence": lease.sequence + 1,
                 }
             )
-            _upload_status(config, status, work)
+            _upload_lease(config, lease, work)
         except Exception as exc:
             LOG.warning(
                 "heartbeat upload failed task_id=%s error=%s",
@@ -489,19 +556,29 @@ def _upload_result_partial(config: Config, task_id: str, result_root: Path) -> s
     return remote_partial
 
 
+def _mark_result_partial_ready(config: Config, remote_partial: str) -> None:
+    marker = f"{remote_partial}/{_HANDOFF_READY_MARKER}"
+    _ssh(config, f"touch {shlex.quote(marker)}")
+
+
 def _handoff_result_to_cloud(
     config: Config,
-    task: ResearchTask,
+    task: ResearchTaskEnvelope,
     status: ResearchTaskStatus,
-    work: Path,
+    _work: Path,
     result_root: Path,
     heartbeat_stop: threading.Event,
     heartbeat: threading.Thread,
 ) -> ResearchTaskStatus:
     remote_partial = _upload_result_partial(config, task.task_id, result_root)
+    ready = False
     exposed = False
     try:
+        _mark_result_partial_ready(config, remote_partial)
+        ready = True
         _stop_heartbeat(config, heartbeat_stop, heartbeat)
+        _finalize_result_upload(config, task.task_id, remote_partial)
+        exposed = True
         completed_at = datetime.now(UTC)
         cloud_status = status.model_copy(
             update={
@@ -511,12 +588,9 @@ def _handoff_result_to_cloud(
                 "import_status": "result_uploaded",
             }
         )
-        _upload_status(config, cloud_status, work)
-        _finalize_result_upload(config, task.task_id, remote_partial)
-        exposed = True
         return cloud_status
     finally:
-        if not exposed:
+        if not ready and not exposed:
             with contextlib.suppress(Exception):
                 _ssh(config, f"rm -rf -- {shlex.quote(remote_partial)}", check=False)
 
@@ -528,6 +602,55 @@ def _finalize_result_upload(config: Config, task_id: str, remote_partial: str) -
         f"test ! -e {shlex.quote(remote_final)} && mv {shlex.quote(remote_partial)} "
         f"{shlex.quote(remote_final)} || rm -rf {shlex.quote(remote_partial)}",
     )
+
+
+def _recover_handoff_visibility(config: Config, task_id: str) -> bool:
+    """Expose a complete hidden result or report that cloud already owns it."""
+    inbox = f"{config.cloud_queue_root}/results/inbox/{task_id}"
+    if _remote_exists(config, inbox):
+        return True
+    for remote_partial in _list_result_partials(config, task_id):
+        marker = f"{remote_partial}/{_HANDOFF_READY_MARKER}"
+        if not _remote_exists(config, marker):
+            continue
+        _finalize_result_upload(config, task_id, remote_partial)
+        if _remote_exists(config, inbox):
+            LOG.warning(
+                "recovered complete hidden research result task_id=%s",
+                task_id,
+            )
+            return True
+    return False
+
+
+def _list_result_partials(config: Config, task_id: str) -> list[str]:
+    _require_identifier(task_id)
+    inbox_root = f"{config.cloud_queue_root}/results/inbox"
+    prefix = f".{task_id}."
+    suffix = ".partial"
+    command = (
+        f"find {shlex.quote(inbox_root)} -mindepth 1 -maxdepth 1 -type d "
+        f"-name {shlex.quote(prefix + '*' + suffix)} -print 2>/dev/null | LC_ALL=C sort"
+    )
+    result = _ssh(config, command, check=False)
+    if result.returncode != 0:
+        raise RuntimeError(f"research_partial_scan_failed:{_tail(result.stderr)}")
+    partials: list[str] = []
+    for raw_path in result.stdout.splitlines():
+        path = raw_path.strip()
+        name = Path(path).name
+        if not path or not name.startswith(prefix) or not name.endswith(suffix):
+            continue
+        partials.append(path)
+    return partials
+
+
+def _discard_incomplete_result_partials(config: Config, task_id: str) -> None:
+    for remote_partial in _list_result_partials(config, task_id):
+        marker = f"{remote_partial}/{_HANDOFF_READY_MARKER}"
+        if _remote_exists(config, marker):
+            continue
+        _ssh(config, f"rm -rf -- {shlex.quote(remote_partial)}", check=False)
 
 
 def _stop_heartbeat(
@@ -544,9 +667,8 @@ def _stop_heartbeat(
 def _handle_failure(config: Config, task_id: str, exc: Exception) -> None:
     work = config.data_root / "work" / task_id
     work.mkdir(parents=True, exist_ok=True)
-    inbox = f"{config.cloud_queue_root}/results/inbox/{task_id}"
     try:
-        result_uploaded = _remote_exists(config, inbox)
+        result_uploaded = _recover_handoff_visibility(config, task_id)
     except Exception as check_exc:
         LOG.warning(
             "cannot verify result ownership; leave running task untouched task_id=%s error=%s",
@@ -614,6 +736,25 @@ def _read_local_or_remote_status(
         return None
 
 
+def _read_local_or_remote_lease(
+    config: Config,
+    task_id: str,
+    work: Path,
+) -> ResearchTaskLease | None:
+    path = work / "lease.previous.json"
+    try:
+        path.unlink(missing_ok=True)
+        _scp_from(
+            config,
+            f"{config.cloud_queue_root}/lease/{task_id}.json",
+            path,
+            check=False,
+        )
+        return ResearchTaskLease.model_validate_json(path.read_text("utf-8"))
+    except (OSError, ValueError, RuntimeError):
+        return None
+
+
 def _upload_status(config: Config, status: ResearchTaskStatus, work: Path) -> None:
     token = uuid.uuid4().hex
     with _STATUS_UPLOAD_LOCK:
@@ -638,6 +779,38 @@ def _upload_status(config: Config, status: ResearchTaskStatus, work: Path) -> No
             raise RuntimeError("research_status_owned_by_cloud")
         if result.returncode != 0:
             raise RuntimeError(f"research_status_publish_failed:{_tail(result.stderr)}")
+    except Exception:
+        with contextlib.suppress(Exception):
+            _ssh(config, f"rm -f -- {shlex.quote(remote_tmp)}", check=False)
+        raise
+    finally:
+        upload.unlink(missing_ok=True)
+
+
+def _upload_lease(config: Config, lease: ResearchTaskLease, work: Path) -> None:
+    token = uuid.uuid4().hex
+    with _LEASE_UPLOAD_LOCK:
+        local = work / "lease.upload.json"
+        local_tmp = work / f".{local.name}.{token}.tmp"
+        local_tmp.write_text(lease.model_dump_json(indent=2), encoding="utf-8")
+        os.replace(local_tmp, local)
+        upload = work / f".lease.upload.{token}.json"
+        upload.write_bytes(local.read_bytes())
+    remote_tmp = f"{config.cloud_queue_root}/lease/.{lease.task_id}.{token}.tmp"
+    remote_final = f"{config.cloud_queue_root}/lease/{lease.task_id}.json"
+    inbox = f"{config.cloud_queue_root}/results/inbox/{lease.task_id}"
+    try:
+        _scp_to(config, upload, remote_tmp)
+        result = _ssh(
+            config,
+            f"if test -e {shlex.quote(inbox)}; then rm -f -- {shlex.quote(remote_tmp)}; "
+            f"exit 52; fi; mv {shlex.quote(remote_tmp)} {shlex.quote(remote_final)}",
+            check=False,
+        )
+        if result.returncode == 52:
+            raise RuntimeError("research_lease_owned_by_cloud")
+        if result.returncode != 0:
+            raise RuntimeError(f"research_lease_publish_failed:{_tail(result.stderr)}")
     except Exception:
         with contextlib.suppress(Exception):
             _ssh(config, f"rm -f -- {shlex.quote(remote_tmp)}", check=False)

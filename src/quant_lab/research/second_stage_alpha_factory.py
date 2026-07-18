@@ -3,6 +3,7 @@ from __future__ import annotations
 import statistics
 from bisect import bisect_left, bisect_right
 from collections import defaultdict
+from dataclasses import dataclass
 from datetime import UTC, date, datetime, time, timedelta
 from pathlib import Path
 from typing import Any
@@ -184,6 +185,16 @@ class SecondStageAlphaFactoryResult(BaseModel):
     warnings: list[str] = Field(default_factory=list)
 
 
+@dataclass(frozen=True)
+class SecondStageAlphaFactoryArtifacts:
+    sample: pl.DataFrame
+    summary: pl.DataFrame
+    expanded_relative_strength_decision_sample: pl.DataFrame
+    exit_policy_review_sample: pl.DataFrame
+    exit_policy_review_summary: pl.DataFrame
+    warnings: tuple[str, ...]
+
+
 def build_and_publish_second_stage_alpha_factory(
     lake_root: str | Path,
     *,
@@ -192,28 +203,22 @@ def build_and_publish_second_stage_alpha_factory(
 ) -> SecondStageAlphaFactoryResult:
     root = Path(lake_root)
     day = _parse_day(as_of_date)
-    samples, decision_samples, warnings = _build_second_stage_alpha_factory_tables(
+    artifacts = compute_second_stage_alpha_factory(
         root,
         as_of_date=day,
         lookback_days=lookback_days,
     )
-    summaries = _cap_second_stage_decisions(
-        summarize_strategy_evidence(samples, as_of_date=day)
-    )
-    sample_frame = normalize_strategy_evidence_samples(samples)
-    summary_frame = _summary_frame(summaries)
+    sample_frame = artifacts.sample
+    summary_frame = artifacts.summary
+    decision_samples = artifacts.expanded_relative_strength_decision_sample
+    exit_policy_samples = artifacts.exit_policy_review_sample
+    exit_policy_summary = artifacts.exit_policy_review_summary
 
     write_parquet_dataset(sample_frame, root / SECOND_STAGE_SAMPLE_DATASET)
     write_parquet_dataset(summary_frame, root / SECOND_STAGE_SUMMARY_DATASET)
     write_parquet_dataset(
         decision_samples,
         root / EXPANDED_RELATIVE_STRENGTH_DECISION_SAMPLE_DATASET,
-    )
-    exit_policy_samples, exit_policy_summary = build_exit_policy_review_tables(
-        root,
-        as_of_date=day,
-        lookback_days=lookback_days,
-        generated_at=datetime.now(UTC),
     )
     write_parquet_dataset(exit_policy_samples, root / EXIT_POLICY_REVIEW_SAMPLE_DATASET)
     write_parquet_dataset(exit_policy_summary, root / EXIT_POLICY_REVIEW_SUMMARY_DATASET)
@@ -238,7 +243,45 @@ def build_and_publish_second_stage_alpha_factory(
             }
         ),
         decision_counts=_decision_counts(summary_frame),
-        warnings=warnings,
+        warnings=list(artifacts.warnings),
+    )
+
+
+def compute_second_stage_alpha_factory(
+    lake_root: str | Path,
+    *,
+    as_of_date: str | date | None = None,
+    lookback_days: int = DEFAULT_LOOKBACK_DAYS,
+    generated_at: datetime | None = None,
+) -> SecondStageAlphaFactoryArtifacts:
+    """Compute Second Stage outputs without mutating Lake or Gold."""
+    root = Path(lake_root)
+    day = _parse_day(as_of_date)
+    generated = generated_at or datetime.now(UTC)
+    samples, decision_samples, warnings = _build_second_stage_alpha_factory_tables(
+        root,
+        as_of_date=day,
+        lookback_days=lookback_days,
+        generated_at=generated,
+    )
+    summaries = _cap_second_stage_decisions(
+        summarize_strategy_evidence(samples, as_of_date=day)
+    )
+    sample_frame = normalize_strategy_evidence_samples(samples)
+    summary_frame = _summary_frame(summaries)
+    exit_policy_samples, exit_policy_summary = build_exit_policy_review_tables(
+        root,
+        as_of_date=day,
+        lookback_days=lookback_days,
+        generated_at=generated,
+    )
+    return SecondStageAlphaFactoryArtifacts(
+        sample=sample_frame,
+        summary=summary_frame,
+        expanded_relative_strength_decision_sample=decision_samples,
+        exit_policy_review_sample=exit_policy_samples,
+        exit_policy_review_summary=exit_policy_summary,
+        warnings=tuple(warnings),
     )
 
 
@@ -261,9 +304,10 @@ def _build_second_stage_alpha_factory_tables(
     *,
     as_of_date: date,
     lookback_days: int = DEFAULT_LOOKBACK_DAYS,
+    generated_at: datetime | None = None,
 ) -> tuple[pl.DataFrame, pl.DataFrame, list[str]]:
     root = Path(lake_root)
-    generated_at = datetime.now(UTC)
+    generated_at = generated_at or datetime.now(UTC)
     lookback_start = datetime.combine(
         as_of_date - timedelta(days=max(lookback_days, 1)),
         time.min,
@@ -1295,12 +1339,14 @@ def _read_recent_dataset(
     timestamp_column = next((column for column in timestamp_columns if column in columns), None)
     if timestamp_column is None:
         try:
-            return lazy.collect()
+            return lazy.collect(engine="streaming")
         except Exception:
             return read_parquet_dataset(dataset_path)
     try:
         expr = pl.col(timestamp_column).cast(pl.Utf8).str.to_datetime(time_zone="UTC", strict=False)
-        return lazy.filter(expr.is_between(start, end, closed="left")).collect()
+        return lazy.filter(expr.is_between(start, end, closed="left")).collect(
+            engine="streaming"
+        )
     except Exception:
         frame = read_parquet_dataset(dataset_path)
         if frame.is_empty() or timestamp_column not in frame.columns:
@@ -1336,7 +1382,17 @@ def _bars_by_symbol(frame: pl.DataFrame) -> dict[str, list[dict[str, Any]]]:
     by_symbol: dict[str, list[dict[str, Any]]] = defaultdict(list)
     if frame.is_empty():
         return {}
-    for row in frame.to_dicts():
+    if not {"symbol", "ts"}.issubset(frame.columns):
+        return {}
+    projected_columns = [
+        column
+        for column in ("symbol", "ts", "open", "high", "low", "close", "is_closed")
+        if column in frame.columns
+    ]
+    projected = frame.select(projected_columns).sort(["symbol", "ts"])
+    for row in projected.iter_rows(named=True):
+        if "is_closed" in row and _bool(row.get("is_closed")) is False:
+            continue
         symbol = normalize_symbol(row.get("symbol"))
         ts = _parse_dt(row.get("ts"))
         if not symbol or ts is None:
@@ -1344,8 +1400,6 @@ def _bars_by_symbol(frame: pl.DataFrame) -> dict[str, list[dict[str, Any]]]:
         row = dict(row)
         row["ts"] = ts
         by_symbol[symbol].append(row)
-    for rows in by_symbol.values():
-        rows.sort(key=lambda row: _parse_dt(row.get("ts")) or datetime.min.replace(tzinfo=UTC))
     return dict(by_symbol)
 
 

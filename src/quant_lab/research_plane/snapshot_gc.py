@@ -8,7 +8,10 @@ from pathlib import Path
 from typing import Any
 
 from quant_lab.export_plane.status import atomic_write_json
-from quant_lab.research_plane.contracts import ResearchSnapshotManifest, ResearchTask
+from quant_lab.research_plane.contracts import (
+    RESEARCH_SNAPSHOT_ADAPTER,
+    RESEARCH_TASK_ADAPTER,
+)
 from quant_lab.research_plane.status import ensure_research_queue_layout
 
 DEFAULT_SNAPSHOT_RETENTION_DAYS = 7
@@ -114,7 +117,7 @@ def release_snapshot_payload(
     files_root = snapshot_root / "files"
     if not manifest_path.is_file() or not seal_path.is_file() or not files_root.exists():
         return False
-    manifest = ResearchSnapshotManifest.model_validate_json(manifest_path.read_text("utf-8"))
+    manifest = RESEARCH_SNAPSHOT_ADAPTER.validate_json(manifest_path.read_text("utf-8"))
     observed_at = now or datetime.now(UTC)
     _make_tree_writable(snapshot_root)
     marker = {
@@ -152,7 +155,7 @@ def _snapshot_records(queue: Path) -> list[tuple[datetime, str, int]]:
         if not manifest_path.is_file():
             continue
         try:
-            manifest = ResearchSnapshotManifest.model_validate_json(
+            manifest = RESEARCH_SNAPSHOT_ADAPTER.validate_json(
                 manifest_path.read_text("utf-8")
             )
         except (OSError, ValueError):
@@ -169,7 +172,9 @@ def _active_snapshot_ids(queue: Path) -> set[str]:
         for task_path in (queue / state).glob("*/task.json"):
             try:
                 snapshot_ids.add(
-                    ResearchTask.model_validate_json(task_path.read_text("utf-8")).snapshot_id
+                    RESEARCH_TASK_ADAPTER.validate_json(
+                        task_path.read_text("utf-8")
+                    ).snapshot_id
                 )
             except (OSError, ValueError):
                 continue
@@ -189,7 +194,7 @@ def _completed_snapshot_ids(queue: Path) -> set[str]:
     for task_path in (queue / "completed").glob("*/task.json"):
         try:
             snapshot_ids.add(
-                ResearchTask.model_validate_json(task_path.read_text("utf-8")).snapshot_id
+                RESEARCH_TASK_ADAPTER.validate_json(task_path.read_text("utf-8")).snapshot_id
             )
         except (OSError, ValueError):
             continue

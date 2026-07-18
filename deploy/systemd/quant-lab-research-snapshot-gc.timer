@@ -1,5 +1,5 @@
 [Unit]
-Description=Daily Entry Quality research snapshot payload retention
+Description=Daily NAS research snapshot payload retention
 
 [Timer]
 OnCalendar=*-*-* 04:40:00 UTC

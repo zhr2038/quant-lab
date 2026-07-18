@@ -3,12 +3,13 @@ from __future__ import annotations
 import csv
 import io
 import json
-import os
 import zipfile
 from datetime import UTC, datetime, timedelta
 
 import polars as pl
 import pytest
+from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
+from polars.testing import assert_frame_equal
 
 import quant_lab.research.alpha_factory.factory as alpha_factory_module
 from quant_lab.data.lake import read_parquet_dataset, write_parquet_dataset
@@ -20,6 +21,7 @@ from quant_lab.research.alpha_factory import (
     build_alpha_factory_results,
     build_and_publish_alpha_factory,
     build_default_template_registry,
+    compute_alpha_factory,
     publish_alpha_factory_template_registry,
 )
 from quant_lab.research.portfolio import build_and_publish_research_portfolio_status
@@ -27,6 +29,13 @@ from quant_lab.research.second_stage_alpha_factory import (
     SECOND_STAGE_CANDIDATES,
     build_and_publish_second_stage_alpha_factory,
 )
+from quant_lab.research_plane.contracts import AlphaFactorySnapshotManifest
+from quant_lab.research_plane.queue import create_alpha_factory_task
+from quant_lab.research_worker.alpha_factory import (
+    build_alpha_factory_anti_leakage_report,
+    compute_alpha_factory_from_snapshot,
+)
+from quant_lab.research_worker.result_writer import write_alpha_factory_result_bundle
 
 
 def test_second_stage_alpha_factory_publishes_into_research_chain(tmp_path):
@@ -243,6 +252,267 @@ def test_alpha_factory_outputs_candidates_results_and_queue_without_live(tmp_pat
     assert promotion_meta["source_sha"]
 
 
+def test_alpha_factory_pure_compute_matches_legacy_publish_fixture(tmp_path):
+    lake = tmp_path / "lake"
+    _write_market(lake)
+    _write_expanded_labels(lake)
+    _write_exit_policy_inputs(lake)
+    _write_alt_impulse_evidence(lake)
+    generated_at = datetime(2026, 5, 24, 23, 0, tzinfo=UTC)
+    pure = compute_alpha_factory(
+        lake,
+        as_of_date="2026-05-24",
+        lookback_days=30,
+        max_candidates=200,
+        registry=build_default_template_registry(generated_at),
+        generated_at=generated_at,
+    )
+
+    build_and_publish_alpha_factory(
+        lake,
+        as_of_date="2026-05-24",
+        lookback_days=30,
+        max_candidates=200,
+    )
+
+    for dataset_name, expected in pure.frames_by_dataset().items():
+        actual = read_parquet_dataset(lake / "gold" / dataset_name)
+        volatile = [
+            column
+            for column in ("generated_at", "created_at")
+            if column in expected.columns
+        ]
+        expected_stable = expected.drop(volatile)
+        actual_stable = actual.drop(volatile)
+        sort_columns = [
+            column
+            for column in (
+                "candidate_id",
+                "strategy_candidate",
+                "symbol",
+                "decision_ts",
+                "source_event_key",
+                "horizon_hours",
+            )
+            if column in expected_stable.columns
+        ]
+        if sort_columns:
+            expected_stable = expected_stable.sort(sort_columns)
+            actual_stable = actual_stable.sort(sort_columns)
+        assert_frame_equal(expected_stable, actual_stable, check_row_order=False)
+
+
+def test_alpha_factory_snapshot_worker_compute_matches_direct_fixture(tmp_path):
+    lake = tmp_path / "lake"
+    queue = tmp_path / "queue"
+    _write_market(lake)
+    _write_expanded_labels(lake)
+    _write_exit_policy_inputs(lake)
+    _write_alt_impulse_evidence(lake)
+    key = Ed25519PrivateKey.generate()
+    task, _ = create_alpha_factory_task(
+        lake,
+        queue,
+        as_of_date=datetime(2026, 5, 24, tzinfo=UTC).date(),
+        lookback_days=30,
+        max_candidates=200,
+        signing_key=key,
+        signature_key_id="cloud-research-v1",
+        quant_lab_commit="c" * 40,
+        selected_v5_bundle_id="v5-bundle-sha256:" + "d" * 64,
+    )
+    snapshot_root = queue / "snapshots" / task.snapshot_id
+    snapshot = AlphaFactorySnapshotManifest.model_validate_json(
+        (snapshot_root / "manifest.json").read_text("utf-8")
+    )
+    worker = compute_alpha_factory_from_snapshot(snapshot_root, snapshot, task)
+    registry = read_parquet_dataset(
+        snapshot_root / "files" / "gold" / "alpha_factory_template_registry"
+    )
+    direct = compute_alpha_factory(
+        lake,
+        as_of_date="2026-05-24",
+        lookback_days=30,
+        max_candidates=200,
+        registry=registry,
+        generated_at=worker.artifacts.generated_at,
+    )
+
+    for dataset_name, expected in direct.frames_by_dataset().items():
+        actual = worker.artifacts.frames_by_dataset()[dataset_name]
+        volatile = [
+            column
+            for column in ("generated_at", "created_at")
+            if column in expected.columns
+        ]
+        expected = expected.drop(volatile)
+        actual = actual.drop(volatile)
+        sort_columns = [
+            column
+            for column in (
+                "candidate_id",
+                "strategy_candidate",
+                "symbol",
+                "decision_ts",
+                "label_ts",
+                "source_event_key",
+                "horizon_hours",
+            )
+            if column in expected.columns
+        ]
+        if sort_columns:
+            expected = expected.sort(sort_columns)
+            actual = actual.sort(sort_columns)
+        assert_frame_equal(expected, actual)
+    bridge_sort = [
+        column
+        for column in ("factor_id", "symbol", "regime_state", "horizon_hours")
+        if column in direct.factor_strategy_bridge_candidates.columns
+    ]
+    expected_bridge = direct.factor_strategy_bridge_candidates.drop(
+        [
+            column
+            for column in ("generated_at", "created_at", "export_generated_at")
+            if column in direct.factor_strategy_bridge_candidates.columns
+        ]
+    )
+    actual_bridge = worker.artifacts.factor_strategy_bridge_candidates.select(
+        expected_bridge.columns
+    )
+    if bridge_sort:
+        expected_bridge = expected_bridge.sort(bridge_sort)
+        actual_bridge = actual_bridge.sort(bridge_sort)
+    assert_frame_equal(
+        expected_bridge,
+        actual_bridge,
+    )
+
+
+def test_alpha_factory_snapshot_worker_validates_nonempty_factor_bridge_report(tmp_path):
+    lake = tmp_path / "lake"
+    queue = tmp_path / "queue"
+    _write_factor_bridge_inputs(lake)
+    task_key = Ed25519PrivateKey.generate()
+    worker_key = Ed25519PrivateKey.generate()
+    task, _ = create_alpha_factory_task(
+        lake,
+        queue,
+        as_of_date=datetime(2026, 5, 24, tzinfo=UTC).date(),
+        lookback_days=30,
+        max_candidates=200,
+        signing_key=task_key,
+        signature_key_id="cloud-research-v1",
+        quant_lab_commit="c" * 40,
+        selected_v5_bundle_id="v5-bundle-sha256:" + "d" * 64,
+    )
+    snapshot_root = queue / "snapshots" / task.snapshot_id
+    snapshot = AlphaFactorySnapshotManifest.model_validate_json(
+        (snapshot_root / "manifest.json").read_text("utf-8")
+    )
+    compute = compute_alpha_factory_from_snapshot(snapshot_root, snapshot, task)
+
+    assert not compute.artifacts.factor_strategy_bridge_candidates.is_empty()
+    result_root, manifest, receipt = write_alpha_factory_result_bundle(
+        tmp_path / "results",
+        task=task,
+        snapshot=snapshot,
+        compute=compute,
+        worker_id="nas-research-worker-01",
+        worker_commit="c" * 40,
+        worker_key_id="nas-research-v1",
+        worker_signing_key=worker_key,
+        claimed_at=datetime(2026, 5, 24, 12, tzinfo=UTC),
+        input_bytes=snapshot.total_input_bytes,
+        cache_hit_bytes=snapshot.total_input_bytes,
+        downloaded_bytes=0,
+        peak_rss_bytes=256 * 1024**2,
+        compute_duration_seconds=1.0,
+        max_result_bytes=256 * 1024**2,
+    )
+
+    assert result_root.is_dir()
+    assert manifest.anti_leakage_status == "PASS"
+    assert receipt.anti_leakage_status == "PASS"
+
+
+def test_alpha_factory_anti_leakage_rejects_tampered_snapshot_outputs(tmp_path):
+    lake = tmp_path / "lake"
+    queue = tmp_path / "queue"
+    _write_market(lake)
+    _write_expanded_labels(lake)
+    _write_exit_policy_inputs(lake)
+    task, _ = create_alpha_factory_task(
+        lake,
+        queue,
+        as_of_date=datetime(2026, 5, 24, tzinfo=UTC).date(),
+        signing_key=Ed25519PrivateKey.generate(),
+        signature_key_id="cloud-research-v1",
+        quant_lab_commit="c" * 40,
+        selected_v5_bundle_id="v5-bundle-sha256:" + "d" * 64,
+    )
+    snapshot_root = queue / "snapshots" / task.snapshot_id
+    snapshot = AlphaFactorySnapshotManifest.model_validate_json(
+        (snapshot_root / "manifest.json").read_text("utf-8")
+    )
+    compute = compute_alpha_factory_from_snapshot(snapshot_root, snapshot, task)
+    base = compute.artifacts.frames_by_dataset()
+
+    decisions = base["expanded_relative_strength_decision_sample"]
+    bad_decision_ts = decisions["decision_ts"][0] + timedelta(minutes=30)
+    bad_decisions = decisions.with_row_index("_index").with_columns(
+        pl.when(pl.col("_index") == 0)
+        .then(pl.lit(bad_decision_ts))
+        .otherwise(pl.col("decision_ts"))
+        .alias("decision_ts")
+    ).drop("_index")
+    decision_report = build_alpha_factory_anti_leakage_report(
+        snapshot_root / "files",
+        manifest=snapshot,
+        task=task,
+        frames=base | {"expanded_relative_strength_decision_sample": bad_decisions},
+        factor_bridge=compute.artifacts.factor_strategy_bridge_candidates,
+    )
+    assert _anti_check(decision_report, "decision_bar_is_actual_completed_bar") > 0
+
+    samples = base["second_stage_alpha_factory_sample"]
+    relative_id = samples.filter(
+        pl.col("strategy_candidate").str.contains("expanded_relative_strength")
+    )["candidate_id"][0]
+    bad_samples = samples.with_columns(
+        pl.when(pl.col("candidate_id") == relative_id)
+        .then(pl.lit("fail"))
+        .otherwise(pl.col("anti_leakage_check"))
+        .alias("anti_leakage_check")
+    )
+    sample_report = build_alpha_factory_anti_leakage_report(
+        snapshot_root / "files",
+        manifest=snapshot,
+        task=task,
+        frames=base | {"second_stage_alpha_factory_sample": bad_samples},
+        factor_bridge=compute.artifacts.factor_strategy_bridge_candidates,
+    )
+    assert _anti_check(sample_report, "relative_strength_rank_uses_prior_bars") > 0
+
+    results = base["alpha_factory_result"]
+    result_id = results["candidate_id"][0]
+    train = json.loads(results["train_metrics_json"][0])
+    train["sample_count"] = int(train.get("sample_count") or 0) + 1
+    bad_results = results.with_columns(
+        pl.when(pl.col("candidate_id") == result_id)
+        .then(pl.lit(json.dumps(train, sort_keys=True)))
+        .otherwise(pl.col("train_metrics_json"))
+        .alias("train_metrics_json")
+    )
+    metrics_report = build_alpha_factory_anti_leakage_report(
+        snapshot_root / "files",
+        manifest=snapshot,
+        task=task,
+        frames=base | {"alpha_factory_result": bad_results},
+        factor_bridge=compute.artifacts.factor_strategy_bridge_candidates,
+    )
+    assert _anti_check(metrics_report, "train_validation_chronological_70_30") > 0
+
+
 def test_alpha_factory_builds_factor_bridge_strategy_review_candidate(tmp_path):
     lake = tmp_path / "lake"
     _write_factor_bridge_inputs(lake)
@@ -287,55 +557,59 @@ def test_alpha_factory_builds_factor_bridge_strategy_review_candidate(tmp_path):
     assert "alpha_factory_live_disabled" in reasons
 
 
-def test_alpha_factory_reads_factor_bridge_from_latest_expert_pack(tmp_path):
+def _write_legacy_factor_bridge_pack(pack_path, *, bridge_candidate: str) -> None:
+    buffer = io.StringIO()
+    writer = csv.DictWriter(
+        buffer,
+        fieldnames=[
+            "as_of_date",
+            "factor_id",
+            "factor_family",
+            "correlation_cluster_id",
+            "symbol",
+            "regime",
+            "horizon",
+            "horizon_hours",
+            "forward_sample_count",
+            "forward_cost_adjusted_score",
+            "bridge_candidate_id",
+            "eligible_for_alpha_factory",
+            "blocking_reasons",
+            "recommended_action",
+            "live_order_effect",
+        ],
+    )
+    writer.writeheader()
+    writer.writerow(
+        {
+            "as_of_date": "2026-05-24",
+            "factor_id": bridge_candidate.removeprefix("v5.factor_bridge."),
+            "factor_family": "legacy_pack_only",
+            "correlation_cluster_id": "cluster_legacy",
+            "symbol": "SOL-USDT",
+            "regime": "TREND_UP",
+            "horizon": "8h",
+            "horizon_hours": "8",
+            "forward_sample_count": "132",
+            "forward_cost_adjusted_score": "41.027543",
+            "bridge_candidate_id": bridge_candidate,
+            "eligible_for_alpha_factory": "strategy_review_pending",
+            "blocking_reasons": '["alpha_factory_strategy_review_required"]',
+            "recommended_action": "REVIEW_FOR_ALPHA_FACTORY_STRATEGY",
+            "live_order_effect": "none_read_only_research",
+        }
+    )
+    with zipfile.ZipFile(pack_path, "w") as archive:
+        archive.writestr("reports/factor_strategy_bridge_candidates.csv", buffer.getvalue())
+
+
+def test_alpha_factory_ignores_cloud_expert_pack_as_factor_bridge_input(tmp_path):
     lake = tmp_path / "lake"
     exports = tmp_path / "exports"
     exports.mkdir(parents=True)
     pack_path = exports / "quant_lab_expert_pack_2026-05-24_20260524T010000+0000.zip"
     bridge_candidate = "v5.factor_bridge.core.mean_reversion_vol_adjusted_4"
-    buffer = io.StringIO()
-    writer = csv.DictWriter(
-        buffer,
-        fieldnames=[
-            "as_of_date",
-            "factor_id",
-            "factor_family",
-            "correlation_cluster_id",
-            "symbol",
-            "regime",
-            "horizon",
-            "horizon_hours",
-            "forward_sample_count",
-            "forward_cost_adjusted_score",
-            "bridge_candidate_id",
-            "eligible_for_alpha_factory",
-            "blocking_reasons",
-            "recommended_action",
-            "live_order_effect",
-        ],
-    )
-    writer.writeheader()
-    writer.writerow(
-        {
-            "as_of_date": "2026-05-24",
-            "factor_id": "core.mean_reversion_vol_adjusted_4",
-            "factor_family": "risk_adjusted_reversal",
-            "correlation_cluster_id": "cluster_011",
-            "symbol": "SOL-USDT",
-            "regime": "TREND_UP",
-            "horizon": "8h",
-            "horizon_hours": "8",
-            "forward_sample_count": "132",
-            "forward_cost_adjusted_score": "41.027543",
-            "bridge_candidate_id": bridge_candidate,
-            "eligible_for_alpha_factory": "strategy_review_pending",
-            "blocking_reasons": '["alpha_factory_strategy_review_required"]',
-            "recommended_action": "REVIEW_FOR_ALPHA_FACTORY_STRATEGY",
-            "live_order_effect": "none_read_only_research",
-        }
-    )
-    with zipfile.ZipFile(pack_path, "w") as archive:
-        archive.writestr("reports/factor_strategy_bridge_candidates.csv", buffer.getvalue())
+    _write_legacy_factor_bridge_pack(pack_path, bridge_candidate=bridge_candidate)
 
     build_and_publish_alpha_factory(
         lake,
@@ -345,148 +619,16 @@ def test_alpha_factory_reads_factor_bridge_from_latest_expert_pack(tmp_path):
     )
 
     candidates = read_parquet_dataset(lake / "gold" / "alpha_factory_candidate")
-    rows = candidates.filter(pl.col("strategy_candidate") == bridge_candidate).to_dicts()
-
-    assert rows
-    assert rows[0]["template_name"] == "factor_strategy_bridge"
-    assert rows[0]["source_dataset"] == "reports/factor_strategy_bridge_candidates.csv"
+    assert candidates.filter(pl.col("strategy_candidate") == bridge_candidate).is_empty()
 
 
-def test_alpha_factory_reads_fast_microstructure_bridge_from_latest_expert_pack(tmp_path):
+def test_alpha_factory_recomputes_factor_bridge_and_ignores_stale_pack(tmp_path):
     lake = tmp_path / "lake"
     exports = tmp_path / "exports"
     exports.mkdir(parents=True)
     pack_path = exports / "quant_lab_expert_pack_2026-05-24_20260524T010000+0000.zip"
-    bridge_candidate = (
-        "v5.fast_microstructure_bridge.orderbook_imbalance_1m.bnb_usdt.sideways.8h"
-    )
-    buffer = io.StringIO()
-    writer = csv.DictWriter(
-        buffer,
-        fieldnames=[
-            "as_of_date",
-            "factor_id",
-            "factor_family",
-            "correlation_cluster_id",
-            "symbol",
-            "regime",
-            "horizon",
-            "horizon_hours",
-            "forward_sample_count",
-            "forward_cost_adjusted_score",
-            "bridge_candidate_id",
-            "eligible_for_alpha_factory",
-            "blocking_reasons",
-            "recommended_action",
-            "live_order_effect",
-        ],
-    )
-    writer.writeheader()
-    writer.writerow(
-        {
-            "as_of_date": "2026-05-24",
-            "factor_id": "fast_microstructure.orderbook_imbalance_1m",
-            "factor_family": "fast_microstructure",
-            "correlation_cluster_id": "fast_microstructure",
-            "symbol": "BNB-USDT",
-            "regime": "SIDEWAYS",
-            "horizon": "8h",
-            "horizon_hours": "8",
-            "forward_sample_count": "144",
-            "forward_cost_adjusted_score": "32.5",
-            "bridge_candidate_id": bridge_candidate,
-            "eligible_for_alpha_factory": "strategy_review_pending",
-            "blocking_reasons": (
-                '["needs_strategy_formulation","needs_paper_tracking",'
-                '"needs_cost_validation"]'
-            ),
-            "recommended_action": "REVIEW_FOR_ALPHA_FACTORY_STRATEGY",
-            "live_order_effect": "none_read_only_research",
-        }
-    )
-    with zipfile.ZipFile(pack_path, "w") as archive:
-        archive.writestr("reports/factor_strategy_bridge_candidates.csv", buffer.getvalue())
-
-    build_and_publish_alpha_factory(
-        lake,
-        as_of_date="2026-05-24",
-        lookback_days=30,
-        max_candidates=200,
-    )
-
-    candidates = read_parquet_dataset(lake / "gold" / "alpha_factory_candidate")
-    results = read_parquet_dataset(lake / "gold" / "alpha_factory_result")
-    promotion = read_parquet_dataset(lake / "gold" / "alpha_factory_promotion_queue")
-    candidate_rows = candidates.filter(pl.col("strategy_candidate") == bridge_candidate).to_dicts()
-    result_rows = results.filter(pl.col("strategy_candidate") == bridge_candidate).to_dicts()
-    promotion_rows = promotion.filter(pl.col("strategy_candidate") == bridge_candidate).to_dicts()
-
-    assert candidate_rows
-    assert result_rows
-    assert promotion_rows
-    params = json.loads(candidate_rows[0]["parameter_json"])
-    assert candidate_rows[0]["template_name"] == "factor_strategy_bridge"
-    assert candidate_rows[0]["source_dataset"] == "reports/factor_strategy_bridge_candidates.csv"
-    assert candidate_rows[0]["max_live_notional_usdt"] == 0.0
-    assert params["factor_id"] == "fast_microstructure.orderbook_imbalance_1m"
-    assert params["factor_family"] == "fast_microstructure"
-    assert params["forward_sample_count"] == 144
-    assert params["strategy_review_only"] is True
-    assert result_rows[0]["decision"] == "RESEARCH"
-    assert promotion_rows[0]["max_live_notional_usdt"] == 0.0
-
-
-def test_alpha_factory_prefers_current_factor_bridge_over_stale_expert_pack(tmp_path):
-    lake = tmp_path / "lake"
-    exports = tmp_path / "exports"
-    exports.mkdir(parents=True)
     stale_candidate = "v5.factor_bridge.core.stale_from_previous_pack"
-    buffer = io.StringIO()
-    writer = csv.DictWriter(
-        buffer,
-        fieldnames=[
-            "as_of_date",
-            "factor_id",
-            "factor_family",
-            "correlation_cluster_id",
-            "symbol",
-            "regime",
-            "horizon",
-            "horizon_hours",
-            "forward_sample_count",
-            "forward_cost_adjusted_score",
-            "bridge_candidate_id",
-            "eligible_for_alpha_factory",
-            "blocking_reasons",
-            "recommended_action",
-            "live_order_effect",
-        ],
-    )
-    writer.writeheader()
-    writer.writerow(
-        {
-            "as_of_date": "2026-05-24",
-            "factor_id": "core.stale_from_previous_pack",
-            "factor_family": "stale",
-            "correlation_cluster_id": "cluster_999",
-            "symbol": "SOL-USDT",
-            "regime": "TREND_UP",
-            "horizon": "8h",
-            "horizon_hours": "8",
-            "forward_sample_count": "132",
-            "forward_cost_adjusted_score": "41.027543",
-            "bridge_candidate_id": stale_candidate,
-            "eligible_for_alpha_factory": "strategy_review_pending",
-            "blocking_reasons": '["alpha_factory_strategy_review_required"]',
-            "recommended_action": "REVIEW_FOR_ALPHA_FACTORY_STRATEGY",
-            "live_order_effect": "none_read_only_research",
-        }
-    )
-    pack_path = exports / "quant_lab_expert_pack_2026-05-24_20260524T010000+0000.zip"
-    with zipfile.ZipFile(pack_path, "w") as archive:
-        archive.writestr("reports/factor_strategy_bridge_candidates.csv", buffer.getvalue())
-    old_ts = datetime(2026, 5, 23, tzinfo=UTC).timestamp()
-    os.utime(pack_path, (old_ts, old_ts))
+    _write_legacy_factor_bridge_pack(pack_path, bridge_candidate=stale_candidate)
     _write_factor_bridge_inputs(lake)
 
     build_and_publish_alpha_factory(
@@ -502,137 +644,21 @@ def test_alpha_factory_prefers_current_factor_bridge_over_stale_expert_pack(tmp_
     assert stale_candidate not in strategy_candidates
 
 
-def test_alpha_factory_skips_stale_factor_bridge_pack_without_large_recompute(
+def test_alpha_factory_factor_bridge_recompute_has_no_legacy_cloud_row_limit(
     tmp_path,
     monkeypatch,
 ):
     lake = tmp_path / "lake"
-    exports = tmp_path / "exports"
-    exports.mkdir(parents=True)
-    pack_path = exports / "quant_lab_expert_pack_2026-05-24_20260524T010000+0000.zip"
-    buffer = io.StringIO()
-    writer = csv.DictWriter(
-        buffer,
-        fieldnames=[
-            "as_of_date",
-            "factor_id",
-            "factor_family",
-            "correlation_cluster_id",
-            "symbol",
-            "regime",
-            "horizon",
-            "horizon_hours",
-            "forward_sample_count",
-            "forward_cost_adjusted_score",
-            "bridge_candidate_id",
-            "eligible_for_alpha_factory",
-            "blocking_reasons",
-            "recommended_action",
-            "live_order_effect",
-        ],
-    )
-    writer.writeheader()
-    writer.writerow(
-        {
-            "as_of_date": "2026-05-24",
-            "factor_id": "core.stale_from_previous_pack",
-            "factor_family": "stale",
-            "correlation_cluster_id": "cluster_999",
-            "symbol": "SOL-USDT",
-            "regime": "TREND_UP",
-            "horizon": "8h",
-            "horizon_hours": "8",
-            "forward_sample_count": "132",
-            "forward_cost_adjusted_score": "41.027543",
-            "bridge_candidate_id": "v5.factor_bridge.core.stale_from_previous_pack",
-            "eligible_for_alpha_factory": "strategy_review_pending",
-            "blocking_reasons": '["alpha_factory_strategy_review_required"]',
-            "recommended_action": "REVIEW_FOR_ALPHA_FACTORY_STRATEGY",
-            "live_order_effect": "none_read_only_research",
-        }
-    )
-    with zipfile.ZipFile(pack_path, "w") as archive:
-        archive.writestr("reports/factor_strategy_bridge_candidates.csv", buffer.getvalue())
-    old_ts = datetime(2026, 5, 23, tzinfo=UTC).timestamp()
-    os.utime(pack_path, (old_ts, old_ts))
     _write_factor_bridge_inputs(lake)
 
     monkeypatch.setattr(alpha_factory_module, "count_parquet_rows", lambda _path: 1_000_000_000)
 
-    def fail_recompute(**_kwargs):
-        raise AssertionError("large lake factor bridge recompute should be skipped")
-
-    monkeypatch.setattr(alpha_factory_module, "build_factor_forward_validation", fail_recompute)
-
     summary = alpha_factory_module._factor_bridge_source_summary(lake, datetime(2026, 5, 24).date())
 
-    assert summary.is_empty()
-
-
-def test_alpha_factory_uses_pack_manifest_time_not_touched_zip_mtime(
-    tmp_path,
-    monkeypatch,
-):
-    lake = tmp_path / "lake"
-    exports = tmp_path / "exports"
-    exports.mkdir(parents=True)
-    pack_path = exports / "quant_lab_expert_pack_2026-05-24_20260524T010000+0000.zip"
-    stale_candidate = "v5.factor_bridge.core.touched_stale_pack"
-    buffer = io.StringIO()
-    writer = csv.DictWriter(
-        buffer,
-        fieldnames=[
-            "as_of_date",
-            "factor_id",
-            "factor_family",
-            "correlation_cluster_id",
-            "symbol",
-            "regime",
-            "horizon",
-            "horizon_hours",
-            "forward_sample_count",
-            "forward_cost_adjusted_score",
-            "bridge_candidate_id",
-            "eligible_for_alpha_factory",
-            "blocking_reasons",
-            "recommended_action",
-            "live_order_effect",
-        ],
+    assert not summary.is_empty()
+    assert "v5.factor_bridge.core.mean_reversion_vol_adjusted_4" in set(
+        summary["strategy_candidate"].to_list()
     )
-    writer.writeheader()
-    writer.writerow(
-        {
-            "as_of_date": "2026-05-24",
-            "factor_id": "core.touched_stale_pack",
-            "factor_family": "stale",
-            "correlation_cluster_id": "cluster_999",
-            "symbol": "SOL-USDT",
-            "regime": "TREND_UP",
-            "horizon": "8h",
-            "horizon_hours": "8",
-            "forward_sample_count": "132",
-            "forward_cost_adjusted_score": "41.027543",
-            "bridge_candidate_id": stale_candidate,
-            "eligible_for_alpha_factory": "strategy_review_pending",
-            "blocking_reasons": '["alpha_factory_strategy_review_required"]',
-            "recommended_action": "REVIEW_FOR_ALPHA_FACTORY_STRATEGY",
-            "live_order_effect": "none_read_only_research",
-        }
-    )
-    with zipfile.ZipFile(pack_path, "w") as archive:
-        archive.writestr(
-            "manifest.json",
-            json.dumps({"generated_at": "2026-05-23T00:00:00+00:00"}),
-        )
-        archive.writestr("reports/factor_strategy_bridge_candidates.csv", buffer.getvalue())
-    touched_ts = datetime(2026, 5, 25, tzinfo=UTC).timestamp()
-    os.utime(pack_path, (touched_ts, touched_ts))
-    _write_factor_bridge_inputs(lake)
-    monkeypatch.setattr(alpha_factory_module, "count_parquet_rows", lambda _path: 1_000_000_000)
-
-    summary = alpha_factory_module._factor_bridge_source_summary(lake, datetime(2026, 5, 24).date())
-
-    assert summary.is_empty()
 
 
 def test_alpha_factory_reads_template_registry_enabled_flags(tmp_path):
@@ -951,6 +977,18 @@ def _alpha_factory_summary_frame(
     )
 
 
+def _anti_check(report: dict[str, object], name: str) -> int:
+    checks = report["checks"]
+    assert isinstance(checks, list)
+    return int(
+        next(
+            row["violation_count"]
+            for row in checks
+            if isinstance(row, dict) and row.get("check_name") == name
+        )
+    )
+
+
 def _alpha_factory_sample_frame(
     values: list[float],
     *,
@@ -1228,6 +1266,7 @@ def _write_factor_bridge_inputs(lake) -> None:
                     "symbol": "SOL-USDT",
                     "timeframe": "1H",
                     "ts": ts,
+                    "available_time": ts + timedelta(hours=1),
                     "value": float(hour),
                     "normalized_value": float(hour),
                     "rank_value": float(hour),

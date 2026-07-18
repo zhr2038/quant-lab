@@ -37,6 +37,7 @@ from quant_lab.research_plane.contracts import (
     ResearchResultManifest,
     ResearchSnapshotManifest,
     ResearchTask,
+    ResearchTaskLease,
     ResearchTaskState,
     ResearchTaskStatus,
     ResearchWorkerReceipt,
@@ -1396,9 +1397,14 @@ def test_importer_rejects_superseded_task_before_publish(tmp_path: Path, monkeyp
     assert not (lake / "gold/entry_quality_history_generation.json").exists()
 
 
+@pytest.mark.parametrize(
+    "worker_state",
+    [ResearchTaskState.COMPUTING, ResearchTaskState.VALIDATING_ON_CLOUD],
+)
 def test_expired_worker_lease_requeues_without_racing_live_status(
     tmp_path: Path,
     monkeypatch,
+    worker_state: ResearchTaskState,
 ) -> None:
     config = Config(
         cloud_host="cloud",
@@ -1432,7 +1438,7 @@ def test_expired_worker_lease_requeues_without_racing_live_status(
         end_date=date(2026, 7, 18),
         mode="recent_30d",
         cost_mode="conservative",
-        state=ResearchTaskState.COMPUTING,
+        state=worker_state,
         worker_id=config.worker_id,
         requested_at=GENERATED_AT,
         claimed_at=GENERATED_AT,
@@ -1456,6 +1462,10 @@ def test_expired_worker_lease_requeues_without_racing_live_status(
     monkeypatch.setattr("quant_lab.research_worker.runner._ssh", fake_ssh)
     monkeypatch.setattr("quant_lab.research_worker.runner._read_local_or_remote_status", fake_read)
     monkeypatch.setattr("quant_lab.research_worker.runner._remote_exists", lambda *_args: False)
+    monkeypatch.setattr(
+        "quant_lab.research_worker.runner._read_local_or_remote_lease",
+        lambda *_args: None,
+    )
     monkeypatch.setattr(
         "quant_lab.research_worker.runner._conditional_remote_transition",
         lambda *_args, **_kwargs: True,
@@ -1514,7 +1524,7 @@ def test_status_upload_uses_unique_remote_temporary_paths(
     assert all(final_path in command for command in commands)
 
 
-def test_worker_handoff_publishes_final_status_before_inbox_visibility(
+def test_worker_handoff_exposes_inbox_before_cloud_status_ownership(
     tmp_path: Path,
     monkeypatch,
 ) -> None:
@@ -1542,13 +1552,18 @@ def test_worker_handoff_publishes_final_status_before_inbox_visibility(
     )
     monkeypatch.setattr(
         runner_module,
+        "_mark_result_partial_ready",
+        lambda *_args: events.append("partial_ready"),
+    )
+    monkeypatch.setattr(
+        runner_module,
         "_stop_heartbeat",
         lambda *_args: events.append("heartbeat_stopped"),
     )
     monkeypatch.setattr(
         runner_module,
         "_upload_status",
-        lambda _config, value, _work: events.append(f"status:{value.state.value}"),
+        lambda *_args: pytest.fail("worker must not publish cloud-owned state"),
     )
     monkeypatch.setattr(
         runner_module,
@@ -1568,10 +1583,83 @@ def test_worker_handoff_publishes_final_status_before_inbox_visibility(
     assert result.state == ResearchTaskState.VALIDATING_ON_CLOUD
     assert events == [
         "partial_uploaded",
+        "partial_ready",
         "heartbeat_stopped",
-        "status:validating_on_cloud",
         "inbox_visible",
     ]
+
+
+def test_worker_heartbeat_updates_only_monotonic_lease(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    config = _research_worker_config(tmp_path)
+    key = Ed25519PrivateKey.generate()
+    snapshot = _signed_snapshot(key)
+    task = _signed_task(key, snapshot)
+    claimed_at = GENERATED_AT
+    lease = ResearchTaskLease(
+        task_id=task.task_id,
+        snapshot_id=task.snapshot_id,
+        worker_id=config.worker_id,
+        claimed_at=claimed_at,
+        heartbeat_at=claimed_at,
+        lease_expires_at=claimed_at + timedelta(seconds=task.lease_seconds),
+    )
+    uploaded: list[ResearchTaskLease] = []
+
+    class OneHeartbeat:
+        calls = 0
+
+        def wait(self, _seconds: int) -> bool:
+            self.calls += 1
+            return self.calls > 1
+
+    monkeypatch.setattr(
+        runner_module,
+        "_upload_lease",
+        lambda _config, value, _work: uploaded.append(value),
+    )
+    monkeypatch.setattr(
+        runner_module,
+        "_upload_status",
+        lambda *_args: pytest.fail("heartbeat must not rewrite business status"),
+    )
+
+    runner_module._heartbeat_loop(config, task, lease, tmp_path, OneHeartbeat())
+
+    assert len(uploaded) == 1
+    assert uploaded[0].sequence == 1
+    assert uploaded[0].heartbeat_at > lease.heartbeat_at
+
+
+def test_worker_recovers_complete_hidden_result_before_lease_requeue(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    config = _research_worker_config(tmp_path)
+    task_id = "entry-quality-history-handoff-recovery"
+    partial = f"{config.cloud_queue_root}/results/inbox/.{task_id}.abc.partial"
+    inbox = f"{config.cloud_queue_root}/results/inbox/{task_id}"
+    visible = False
+
+    def fake_exists(_config, path: str) -> bool:
+        if path == inbox:
+            return visible
+        return path == f"{partial}/{runner_module._HANDOFF_READY_MARKER}"
+
+    def fake_finalize(_config, _task_id: str, _partial: str) -> None:
+        nonlocal visible
+        assert _task_id == task_id
+        assert _partial == partial
+        visible = True
+
+    monkeypatch.setattr(runner_module, "_remote_exists", fake_exists)
+    monkeypatch.setattr(runner_module, "_list_result_partials", lambda *_args: [partial])
+    monkeypatch.setattr(runner_module, "_finalize_result_upload", fake_finalize)
+
+    assert runner_module._recover_handoff_visibility(config, task_id) is True
+    assert visible is True
 
 
 def test_worker_failure_does_not_regress_cloud_owned_inbox(
@@ -1629,6 +1717,9 @@ def test_research_plane_deployment_examples_share_keys_paths_and_memory_limit() 
     cloud_env = (root / "deploy/systemd/research-plane.env.example").read_text()
     nas_env = (root / "deploy/nas_research_worker/.env.example").read_text()
     tmpfiles = (root / "deploy/tmpfiles.d/quant-lab-research-plane.conf").read_text()
+    permission_script = (
+        root / "deploy/scripts/upgrade_research_queue_permissions.sh"
+    ).read_text()
 
     assert "/var/lib/quant-lab/lake/bronze/lake_file_index" in request_unit
     assert "/var/lib/quant-lab/lake/ops/lake_file_index" not in request_unit
@@ -1644,6 +1735,21 @@ def test_research_plane_deployment_examples_share_keys_paths_and_memory_limit() 
         "d /var/lib/quant-lab/research_queue 2770 quantlab quant-research -"
         in tmpfiles
     )
+    assert "research_queue/lease 2770 quantlab quant-research" in tmpfiles
+    for relative in (
+        "requests/pending",
+        "requests/processing",
+        "requests/completed",
+        "requests/failed",
+        "results/imported",
+    ):
+        assert f"research_queue/{relative} 2770 quantlab quant-research" in tmpfiles
+        assert relative in permission_script
+    assert "groupadd --system" in permission_script
+    assert "useradd" in permission_script
+    assert "chmod 2770" in permission_script
+    assert "chmod 0660" in permission_script
+    assert "chmod 777" not in permission_script
     assert "QUANT_LAB_RESEARCH_TASK_KEY_ID=cloud-research-v1" in cloud_env
     assert "QUANT_RESEARCH_TASK_KEY_ID=cloud-research-v1" in nas_env
     assert "QUANT_LAB_RESEARCH_WORKER_KEY_ID=nas-research-v1" in cloud_env
@@ -1843,6 +1949,29 @@ def test_candidate_label_identity_rejects_noncausal_decision_bar() -> None:
     ).to_dicts()[0]
     assert check["status"] == "FAIL"
     assert check["violation_count"] == 1
+
+
+def test_candidate_label_identity_uses_normalized_symbol_fallback() -> None:
+    frames = _history_input_frames()
+    frames["candidates"] = frames["candidates"].drop("symbol").with_columns(
+        pl.lit("SOL-USDT").alias("normalized_symbol")
+    )
+
+    artifacts = compute_entry_quality_history(
+        **frames,
+        start_date="2026-05-01",
+        end_date="2026-05-10",
+        mode="recent_30d",
+        cost_mode="conservative",
+        generated_at=GENERATED_AT,
+        generated_from_bundle_id=BUNDLE_ID,
+    )
+
+    check = artifacts.anti_leakage_check.filter(
+        pl.col("check_name") == "candidate_label_identity"
+    ).to_dicts()[0]
+    assert check["status"] == "PASS"
+    assert check["violation_count"] == 0
 
 
 def _normalize_generated_at(frame: pl.DataFrame) -> pl.DataFrame:

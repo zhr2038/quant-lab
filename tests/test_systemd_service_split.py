@@ -293,6 +293,35 @@ def test_candidate_research_refresh_is_separate_from_alpha_evidence():
     assert "MemoryMax=1G" in regime_unit
 
 
+def test_alpha_factory_nas_request_replaces_scheduled_local_compute():
+    request_service = _unit("quant-lab-alpha-factory-request.service")
+    request_timer = _unit("quant-lab-alpha-factory-request.timer")
+    legacy_service = _unit("quant-lab-alpha-factory.service")
+    legacy_timer = _unit("quant-lab-alpha-factory.timer")
+    importer = _unit("quant-lab-research-result-import.service")
+    snapshot_gc = _unit("quant-lab-research-snapshot-gc.service")
+
+    assert "request-alpha-factory" in request_service
+    assert "build-alpha-factory" not in request_service
+    assert "QUANT_LAB_NAS_ALPHA_FACTORY_ENABLED" in request_service
+    assert "POLARS_MAX_THREADS=1" in request_service
+    assert "CPUQuota=30%" in request_service
+    assert "MemoryHigh=500M" in request_service
+    assert "MemoryMax=900M" in request_service
+    assert "/var/lib/quant-lab/lake/bronze/lake_file_index" in request_service
+    assert "OnCalendar=*-*-* 03:20:00 UTC" in request_timer
+    assert "RandomizedDelaySec=20min" in request_timer
+
+    assert "QUANT_LAB_LOCAL_ALPHA_FACTORY_ENABLED" in legacy_service
+    assert "build-alpha-factory" in legacy_service
+    assert "manual-only" in legacy_service.lower()
+    assert "Persistent=false" in legacy_timer
+    assert "Unit=quant-lab-alpha-factory-request.service" not in legacy_timer
+
+    assert "import-research-results" in importer
+    assert "gc-research-snapshots" in snapshot_gc
+
+
 def test_scheduled_compaction_covers_hot_ws_datasets():
     unit = _unit("quant-lab-lake-compaction.service")
     timer = _unit("quant-lab-lake-compaction.timer")

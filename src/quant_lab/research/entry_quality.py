@@ -2067,7 +2067,9 @@ def build_entry_quality_anti_leakage_check(
     if not candidates.is_empty() and "candidate_id" in candidates.columns:
         for row in candidates.to_dicts():
             candidate_id = str(row.get("candidate_id") or "").strip()
-            symbol = normalize_symbol(str(row.get("symbol") or ""))
+            symbol = normalize_symbol(
+                str(row.get("symbol") or row.get("normalized_symbol") or "")
+            )
             decision_ts = _coerce_datetime(row.get("ts_utc") or row.get("ts"))
             if candidate_id and symbol and decision_ts is not None:
                 candidate_context[candidate_id] = (symbol, decision_ts)

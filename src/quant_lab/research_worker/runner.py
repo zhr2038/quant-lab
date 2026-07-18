@@ -22,6 +22,7 @@ except ImportError:  # pragma: no cover - Linux NAS always provides resource.
     resource = None  # type: ignore[assignment]
 
 from quant_lab.research_plane.contracts import (
+    DEFAULT_RESEARCH_MAX_RESULT_BYTES,
     ResearchSnapshotManifest,
     ResearchTask,
     ResearchTaskState,
@@ -68,6 +69,8 @@ class Config:
     max_result_bytes: int
     heavy_job_lock: Path
     batch_fetch_workers: int
+    ssh_timeout_seconds: int = 90
+    scp_timeout_seconds: int = 900
 
     @classmethod
     def from_env(cls) -> Config:
@@ -92,11 +95,15 @@ class Config:
             heartbeat_seconds=max(10, int(os.environ.get("HEARTBEAT_SECONDS", "30"))),
             min_free_disk_bytes=int(os.environ.get("MIN_FREE_DISK_BYTES", str(5 * 1024**3))),
             max_snapshot_bytes=int(os.environ.get("MAX_SNAPSHOT_BYTES", str(250 * 1024**3))),
-            max_result_bytes=int(os.environ.get("MAX_RESULT_BYTES", str(2 * 1024**3))),
+            max_result_bytes=int(
+                os.environ.get("MAX_RESULT_BYTES", str(DEFAULT_RESEARCH_MAX_RESULT_BYTES))
+            ),
             heavy_job_lock=Path(
                 os.environ.get("QUANT_HEAVY_JOB_LOCK", "/runtime/quant-runtime/heavy-job.lock")
             ),
             batch_fetch_workers=max(1, min(4, int(os.environ.get("BATCH_FETCH_WORKERS", "3")))),
+            ssh_timeout_seconds=max(10, int(os.environ.get("SSH_TIMEOUT_SECONDS", "90"))),
+            scp_timeout_seconds=max(30, int(os.environ.get("SCP_TIMEOUT_SECONDS", "900"))),
         )
 
 
@@ -182,15 +189,7 @@ def recover_expired_leases(config: Config, *, now: datetime | None = None) -> in
         }:
             continue
         if _remote_exists(config, f"{config.cloud_queue_root}/results/inbox/{task_id}"):
-            recovered_status = status.model_copy(
-                update={
-                    "state": ResearchTaskState.VALIDATING_ON_CLOUD,
-                    "heartbeat_at": current_time,
-                    "lease_expires_at": None,
-                    "import_status": "result_uploaded_recovered",
-                }
-            )
-            _upload_status(config, recovered_status, work)
+            # Inbox visibility transfers status ownership to the cloud importer.
             continue
         if not _lease_is_expired(config, task_id, status, current_time):
             continue
@@ -414,20 +413,18 @@ def process_claimed_task(config: Config, task_id: str) -> None:
             }
         )
         _upload_status(config, status, work)
-        _upload_result(config, task_id, result_root)
-        completed_at = datetime.now(UTC)
-        status = status.model_copy(
-            update={
-                "state": ResearchTaskState.VALIDATING_ON_CLOUD,
-                "heartbeat_at": completed_at,
-                "lease_expires_at": completed_at + timedelta(seconds=task.lease_seconds),
-                "import_status": "result_uploaded",
-            }
+        status = _handoff_result_to_cloud(
+            config,
+            task,
+            status,
+            work,
+            result_root,
+            heartbeat_stop,
+            heartbeat,
         )
-        _upload_status(config, status, work)
     finally:
-        heartbeat_stop.set()
-        heartbeat.join(timeout=5)
+        if heartbeat.is_alive():
+            _stop_heartbeat(config, heartbeat_stop, heartbeat)
 
 
 def _heartbeat_loop(
@@ -440,22 +437,21 @@ def _heartbeat_loop(
     status = initial
     while not stop.wait(config.heartbeat_seconds):
         try:
-            with _STATUS_UPLOAD_LOCK:
-                latest_path = work / "status.upload.json"
-                try:
-                    status = ResearchTaskStatus.model_validate_json(
-                        latest_path.read_text("utf-8")
-                    )
-                except (OSError, ValueError):
-                    pass
-                now = datetime.now(UTC)
-                status = status.model_copy(
-                    update={
-                        "heartbeat_at": now,
-                        "lease_expires_at": now + timedelta(seconds=task.lease_seconds),
-                    }
+            latest_path = work / "status.upload.json"
+            try:
+                status = ResearchTaskStatus.model_validate_json(
+                    latest_path.read_text("utf-8")
                 )
-                _upload_status(config, status, work)
+            except (OSError, ValueError):
+                pass
+            now = datetime.now(UTC)
+            status = status.model_copy(
+                update={
+                    "heartbeat_at": now,
+                    "lease_expires_at": now + timedelta(seconds=task.lease_seconds),
+                }
+            )
+            _upload_status(config, status, work)
         except Exception as exc:
             LOG.warning(
                 "heartbeat upload failed task_id=%s error=%s",
@@ -480,11 +476,53 @@ def _fetch_snapshot_batch(
         )
 
 
-def _upload_result(config: Config, task_id: str, result_root: Path) -> None:
-    remote_partial = f"{config.cloud_queue_root}/results/inbox/.{task_id}.partial"
+def _upload_result_partial(config: Config, task_id: str, result_root: Path) -> str:
+    remote_partial = (
+        f"{config.cloud_queue_root}/results/inbox/.{task_id}.{uuid.uuid4().hex}.partial"
+    )
+    try:
+        _scp_to(config, result_root, remote_partial, recursive=True)
+    except Exception:
+        with contextlib.suppress(Exception):
+            _ssh(config, f"rm -rf -- {shlex.quote(remote_partial)}", check=False)
+        raise
+    return remote_partial
+
+
+def _handoff_result_to_cloud(
+    config: Config,
+    task: ResearchTask,
+    status: ResearchTaskStatus,
+    work: Path,
+    result_root: Path,
+    heartbeat_stop: threading.Event,
+    heartbeat: threading.Thread,
+) -> ResearchTaskStatus:
+    remote_partial = _upload_result_partial(config, task.task_id, result_root)
+    exposed = False
+    try:
+        _stop_heartbeat(config, heartbeat_stop, heartbeat)
+        completed_at = datetime.now(UTC)
+        cloud_status = status.model_copy(
+            update={
+                "state": ResearchTaskState.VALIDATING_ON_CLOUD,
+                "heartbeat_at": completed_at,
+                "lease_expires_at": completed_at + timedelta(seconds=task.lease_seconds),
+                "import_status": "result_uploaded",
+            }
+        )
+        _upload_status(config, cloud_status, work)
+        _finalize_result_upload(config, task.task_id, remote_partial)
+        exposed = True
+        return cloud_status
+    finally:
+        if not exposed:
+            with contextlib.suppress(Exception):
+                _ssh(config, f"rm -rf -- {shlex.quote(remote_partial)}", check=False)
+
+
+def _finalize_result_upload(config: Config, task_id: str, remote_partial: str) -> None:
     remote_final = f"{config.cloud_queue_root}/results/inbox/{task_id}"
-    _ssh(config, f"rm -rf {shlex.quote(remote_partial)}")
-    _scp_to(config, result_root, remote_partial, recursive=True)
     _ssh(
         config,
         f"test ! -e {shlex.quote(remote_final)} && mv {shlex.quote(remote_partial)} "
@@ -492,9 +530,36 @@ def _upload_result(config: Config, task_id: str, result_root: Path) -> None:
     )
 
 
+def _stop_heartbeat(
+    config: Config,
+    stop: threading.Event,
+    heartbeat: threading.Thread,
+) -> None:
+    stop.set()
+    heartbeat.join(timeout=max(config.ssh_timeout_seconds, config.scp_timeout_seconds) + 5)
+    if heartbeat.is_alive():
+        raise RuntimeError("research_heartbeat_did_not_stop")
+
+
 def _handle_failure(config: Config, task_id: str, exc: Exception) -> None:
     work = config.data_root / "work" / task_id
     work.mkdir(parents=True, exist_ok=True)
+    inbox = f"{config.cloud_queue_root}/results/inbox/{task_id}"
+    try:
+        result_uploaded = _remote_exists(config, inbox)
+    except Exception as check_exc:
+        LOG.warning(
+            "cannot verify result ownership; leave running task untouched task_id=%s error=%s",
+            task_id,
+            type(check_exc).__name__,
+        )
+        return
+    if result_uploaded:
+        LOG.warning(
+            "research result already uploaded; cloud owns task state task_id=%s",
+            task_id,
+        )
+        return
     current = _read_local_or_remote_status(config, task_id, work)
     attempt = current.attempt if current is not None else 1
     max_attempts = current.max_attempts if current is not None else 3
@@ -556,14 +621,29 @@ def _upload_status(config: Config, status: ResearchTaskStatus, work: Path) -> No
         local_tmp = work / f".{local.name}.{token}.tmp"
         local_tmp.write_text(status.model_dump_json(indent=2), encoding="utf-8")
         os.replace(local_tmp, local)
-        remote_tmp = f"{config.cloud_queue_root}/status/.{status.task_id}.{token}.tmp"
-        remote_final = f"{config.cloud_queue_root}/status/{status.task_id}.json"
-        _scp_to(config, local, remote_tmp)
-        try:
-            _ssh(config, f"mv {shlex.quote(remote_tmp)} {shlex.quote(remote_final)}")
-        except Exception:
+        upload = work / f".status.upload.{token}.json"
+        upload.write_bytes(local.read_bytes())
+    remote_tmp = f"{config.cloud_queue_root}/status/.{status.task_id}.{token}.tmp"
+    remote_final = f"{config.cloud_queue_root}/status/{status.task_id}.json"
+    inbox = f"{config.cloud_queue_root}/results/inbox/{status.task_id}"
+    try:
+        _scp_to(config, upload, remote_tmp)
+        result = _ssh(
+            config,
+            f"if test -e {shlex.quote(inbox)}; then rm -f -- {shlex.quote(remote_tmp)}; "
+            f"exit 52; fi; mv {shlex.quote(remote_tmp)} {shlex.quote(remote_final)}",
+            check=False,
+        )
+        if result.returncode == 52:
+            raise RuntimeError("research_status_owned_by_cloud")
+        if result.returncode != 0:
+            raise RuntimeError(f"research_status_publish_failed:{_tail(result.stderr)}")
+    except Exception:
+        with contextlib.suppress(Exception):
             _ssh(config, f"rm -f -- {shlex.quote(remote_tmp)}", check=False)
-            raise
+        raise
+    finally:
+        upload.unlink(missing_ok=True)
 
 
 @contextlib.contextmanager
@@ -604,8 +684,9 @@ def _remote_task_path(config: Config, state: str, task_id: str, name: str) -> st
 
 
 def _ssh(config: Config, command: str, *, check: bool = True) -> subprocess.CompletedProcess[str]:
-    result = subprocess.run(
-        [
+    try:
+        result = subprocess.run(
+            [
             "ssh",
             "-p",
             str(config.cloud_port),
@@ -617,13 +698,22 @@ def _ssh(config: Config, command: str, *, check: bool = True) -> subprocess.Comp
             "StrictHostKeyChecking=yes",
             "-o",
             f"UserKnownHostsFile={config.known_hosts_path}",
+            "-o",
+            "ConnectTimeout=15",
+            "-o",
+            "ServerAliveInterval=15",
+            "-o",
+            "ServerAliveCountMax=3",
             f"{config.cloud_user}@{config.cloud_host}",
             command,
-        ],
-        text=True,
-        capture_output=True,
-        check=False,
-    )
+            ],
+            text=True,
+            capture_output=True,
+            check=False,
+            timeout=config.ssh_timeout_seconds,
+        )
+    except subprocess.TimeoutExpired as exc:
+        raise RuntimeError("ssh_timeout") from exc
     if check and result.returncode != 0:
         raise RuntimeError(f"ssh_failed:{_tail(result.stderr)}")
     return result
@@ -637,8 +727,9 @@ def _scp_from(
     check: bool = True,
 ) -> None:
     local_path.parent.mkdir(parents=True, exist_ok=True)
-    result = subprocess.run(
-        [
+    try:
+        result = subprocess.run(
+            [
             "scp",
             "-P",
             str(config.cloud_port),
@@ -650,13 +741,22 @@ def _scp_from(
             "StrictHostKeyChecking=yes",
             "-o",
             f"UserKnownHostsFile={config.known_hosts_path}",
+            "-o",
+            "ConnectTimeout=15",
+            "-o",
+            "ServerAliveInterval=15",
+            "-o",
+            "ServerAliveCountMax=3",
             f"{config.cloud_user}@{config.cloud_host}:{remote_path}",
             str(local_path),
-        ],
-        text=True,
-        capture_output=True,
-        check=False,
-    )
+            ],
+            text=True,
+            capture_output=True,
+            check=False,
+            timeout=config.scp_timeout_seconds,
+        )
+    except subprocess.TimeoutExpired as exc:
+        raise RuntimeError("scp_from_timeout") from exc
     if result.returncode != 0 and check:
         raise RuntimeError(f"scp_from_failed:{_tail(result.stderr)}")
 
@@ -683,11 +783,26 @@ def _scp_to(
             "StrictHostKeyChecking=yes",
             "-o",
             f"UserKnownHostsFile={config.known_hosts_path}",
+            "-o",
+            "ConnectTimeout=15",
+            "-o",
+            "ServerAliveInterval=15",
+            "-o",
+            "ServerAliveCountMax=3",
             str(local_path),
             f"{config.cloud_user}@{config.cloud_host}:{remote_path}",
         ]
     )
-    result = subprocess.run(command, text=True, capture_output=True, check=False)
+    try:
+        result = subprocess.run(
+            command,
+            text=True,
+            capture_output=True,
+            check=False,
+            timeout=config.scp_timeout_seconds,
+        )
+    except subprocess.TimeoutExpired as exc:
+        raise RuntimeError("scp_to_timeout") from exc
     if result.returncode != 0:
         raise RuntimeError(f"scp_to_failed:{_tail(result.stderr)}")
 

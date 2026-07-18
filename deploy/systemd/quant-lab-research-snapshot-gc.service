@@ -1,0 +1,30 @@
+[Unit]
+Description=Release inactive Entry Quality research snapshot payloads
+After=quant-lab-research-result-import.service
+
+[Service]
+Type=oneshot
+User=quantlab
+Group=quantlab
+WorkingDirectory=/opt/quant-lab
+EnvironmentFile=/etc/quant-lab/research-plane.env
+Environment=PYTHONUNBUFFERED=1
+UMask=0007
+ExecCondition=/bin/bash -lc '[ "${QUANT_LAB_NAS_RESEARCH_ENABLED:-0}" = "1" ]'
+ExecStart=/bin/bash -lc 'exec /opt/quant-lab/.venv/bin/qlab gc-entry-quality-history-snapshots --queue-root "${QUANT_LAB_RESEARCH_QUEUE_ROOT}" --retention-days "${QUANT_LAB_RESEARCH_SNAPSHOT_RETENTION_DAYS:-7}" --max-payload-bytes "${QUANT_LAB_RESEARCH_SNAPSHOT_MAX_PAYLOAD_BYTES:-10737418240}"'
+TimeoutStartSec=10min
+Nice=15
+IOSchedulingClass=idle
+CPUQuota=20%
+MemoryHigh=200M
+MemoryMax=400M
+TasksMax=32
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+ReadOnlyPaths=/opt/quant-lab
+ReadWritePaths=/var/lib/quant-lab/research_queue
+
+[Install]
+WantedBy=multi-user.target

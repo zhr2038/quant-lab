@@ -192,7 +192,7 @@ def build_candidate_labels(
     if events.is_empty():
         return pl.DataFrame(schema=LABEL_SCHEMA)
     created = created_at or datetime.now(UTC)
-    bars_by_symbol = _bars_by_symbol(market_bars)
+    bars_by_symbol = candidate_label_bars_by_symbol(market_bars)
     rows: list[dict[str, Any]] = []
     for event in events.to_dicts():
         rows.extend(_label_event(event, bars_by_symbol, created_at=created))
@@ -407,12 +407,12 @@ def _label_event(
     if not bars:
         return [_empty_horizon_row(base, hours, "missing_market_bar") for hours in HORIZON_HOURS]
 
-    ts_values = [bar["ts"] for bar in bars]
-    decision_index = bisect.bisect_right(ts_values, ts_utc)
-    if decision_index >= len(bars):
+    decision = next_candidate_decision_bar(bars, ts_utc)
+    if decision is None:
         return [_empty_horizon_row(base, hours, "missing_decision_bar") for hours in HORIZON_HOURS]
 
-    decision_bar = bars[decision_index]
+    decision_index, decision_bar = decision
+    ts_values = [bar["ts"] for bar in bars]
     decision_ts = _coerce_timestamp(decision_bar.get("ts"))
     decision_close = _finite_float(decision_bar.get("close"))
     if decision_ts is None or decision_close is None or decision_close <= 0:
@@ -557,7 +557,10 @@ def _mfe_mae_bps(
     return mfe, mae
 
 
-def _bars_by_symbol(market_bars: pl.DataFrame) -> dict[str, list[dict[str, Any]]]:
+def candidate_label_bars_by_symbol(
+    market_bars: pl.DataFrame,
+) -> dict[str, list[dict[str, Any]]]:
+    """Return the exact closed-bar series used by the candidate label builder."""
     if market_bars.is_empty():
         return {}
     required = {"symbol", "ts", "close", "high", "low"}
@@ -581,6 +584,20 @@ def _bars_by_symbol(market_bars: pl.DataFrame) -> dict[str, list[dict[str, Any]]
         selected = _select_timeframe(symbol_bars)
         selected_by_symbol[symbol_key] = selected.sort("ts").to_dicts()
     return selected_by_symbol
+
+
+def next_candidate_decision_bar(
+    bars: list[dict[str, Any]],
+    candidate_ts: datetime,
+) -> tuple[int, dict[str, Any]] | None:
+    """Select the first actual market bar strictly after a candidate event."""
+    ts_values = [_coerce_timestamp(bar.get("ts")) for bar in bars]
+    if any(value is None for value in ts_values):
+        return None
+    decision_index = bisect.bisect_right(ts_values, candidate_ts)  # type: ignore[arg-type]
+    if decision_index >= len(bars):
+        return None
+    return decision_index, bars[decision_index]
 
 
 def _select_timeframe(symbol_bars: pl.DataFrame) -> pl.DataFrame:

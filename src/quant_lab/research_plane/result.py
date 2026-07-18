@@ -246,7 +246,10 @@ def _validate_frame_scope(
     for column, expected in expected_text.items():
         if column not in frame.columns or frame.is_empty():
             continue
-        values = {str(value) for value in frame.get_column(column).drop_nulls().to_list()}
+        series = frame.get_column(column)
+        if series.null_count():
+            raise ValueError(f"research_result_scope_null:{dataset_name}:{column}")
+        values = {str(value) for value in series.to_list()}
         if values != {expected}:
             raise ValueError(f"research_result_scope_mismatch:{dataset_name}:{column}")
     if "window_hours" in frame.columns and not frame.is_empty():
@@ -254,16 +257,28 @@ def _validate_frame_scope(
         if values != {task.window_hours}:
             raise ValueError(f"research_result_scope_mismatch:{dataset_name}:window_hours")
     if "quant_lab_git_commit" in frame.columns and not frame.is_empty():
+        commit_series = frame.get_column("quant_lab_git_commit")
+        if commit_series.null_count():
+            raise ValueError(
+                f"research_result_scope_null:{dataset_name}:quant_lab_git_commit"
+            )
         values = {
             str(value)
-            for value in frame.get_column("quant_lab_git_commit")
-            .drop_nulls()
-            .cast(pl.Utf8)
-            .to_list()
+            for value in commit_series.cast(pl.Utf8).to_list()
         }
         if values != {task.quant_lab_commit}:
             raise ValueError(
                 f"research_result_scope_mismatch:{dataset_name}:quant_lab_git_commit"
+            )
+    if "source_version" in frame.columns and not frame.is_empty():
+        source_series = frame.get_column("source_version")
+        if source_series.null_count():
+            raise ValueError(f"research_result_scope_null:{dataset_name}:source_version")
+        expected_source_version = f"entry_quality:{task.quant_lab_commit}"
+        values = {str(value) for value in source_series.cast(pl.Utf8).to_list()}
+        if values != {expected_source_version}:
+            raise ValueError(
+                f"research_result_scope_mismatch:{dataset_name}:source_version"
             )
     start_dt = datetime.combine(task.start_date, time.min, tzinfo=UTC)
     end_dt = datetime.combine(task.end_date + timedelta(days=1), time.min, tzinfo=UTC)

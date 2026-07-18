@@ -30,6 +30,7 @@ def ensure_research_queue_layout(root: str | Path) -> Path:
         "results/imported",
         "results/rejected",
         "snapshots",
+        "audit",
         "status",
         "validation",
     ):

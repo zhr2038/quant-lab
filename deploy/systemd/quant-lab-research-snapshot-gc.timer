@@ -1,0 +1,11 @@
+[Unit]
+Description=Daily Entry Quality research snapshot payload retention
+
+[Timer]
+OnCalendar=*-*-* 04:40:00 UTC
+Persistent=true
+RandomizedDelaySec=15min
+Unit=quant-lab-research-snapshot-gc.service
+
+[Install]
+WantedBy=timers.target

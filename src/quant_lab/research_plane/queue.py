@@ -11,6 +11,7 @@ from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
 from quant_lab.research.entry_quality import (
     ENTRY_QUALITY_SCHEMA_VERSION,
     latest_entry_quality_bundle_id,
+    normalize_entry_quality_history_request,
 )
 from quant_lab.research_plane.contracts import (
     ENTRY_QUALITY_HISTORY_TASK_TYPE,
@@ -52,11 +53,19 @@ def create_entry_quality_history_task(
     selected_bundle = str(selected_bundle or "").strip()
     if not selected_bundle:
         raise RuntimeError("selected_v5_bundle_id_unavailable")
+    normalized_start, normalized_end, normalized_mode, normalized_cost_mode = (
+        normalize_entry_quality_history_request(
+            start_date=start_date,
+            end_date=end_date,
+            mode=mode,
+            cost_mode=cost_mode,
+        )
+    )
     parameters = EntryQualityHistoryTaskParameters(
-        start_date=start_date,
-        end_date=end_date,
-        mode=mode,
-        cost_mode=cost_mode,
+        start_date=normalized_start,
+        end_date=normalized_end,
+        mode=normalized_mode,
+        cost_mode=normalized_cost_mode,
         window_hours=window_hours,
     )
     snapshot = seal_entry_quality_history_snapshot(

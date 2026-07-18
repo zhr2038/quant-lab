@@ -589,7 +589,7 @@ def test_v5_decision_receipt_schema_is_strict_and_rejects_sensitive_keys() -> No
     schema = __import__("json").loads(schema_path.read_text(encoding="utf-8"))
     receipt = _receipt_fixture()
     jsonschema.Draft202012Validator(schema).validate(receipt)
-    receipt["raw_features"]["value"] = {"api_key": "must-not-be-written"}
+    receipt["raw_features"]["value"] = {"api_key": "x"}
     with pytest.raises(jsonschema.ValidationError):
         jsonschema.Draft202012Validator(schema).validate(receipt)
 

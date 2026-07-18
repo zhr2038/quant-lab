@@ -12,6 +12,7 @@ from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
 from polars.testing import assert_frame_equal
 
 import quant_lab.research.alpha_factory.factory as alpha_factory_module
+import quant_lab.research.second_stage_alpha_factory as second_stage_module
 from quant_lab.data.lake import read_parquet_dataset, write_parquet_dataset
 from quant_lab.export.daily import export_daily_pack
 from quant_lab.research.alpha_discovery import build_and_publish_alpha_discovery_board
@@ -120,6 +121,44 @@ def test_expanded_relative_strength_uses_decision_time_ranking_not_future_labels
     assert wld_row["selected"] is False
     assert wld_row["future_net_bps"] is not None
     assert set(explain["anti_leakage_check"].to_list()) == {"pass"}
+
+
+def test_relative_strength_excludes_symbols_without_the_decision_bar() -> None:
+    decision_ts = datetime(2026, 5, 23, 11, tzinfo=UTC)
+    lookback_ts = decision_ts - timedelta(hours=4)
+    stale_ts = decision_ts - timedelta(hours=1)
+    bars_by_symbol = {
+        "CURRENT-USDT": [
+            {"ts": lookback_ts, "close": 100.0},
+            {"ts": decision_ts, "close": 110.0},
+        ],
+        "STALE-USDT": [
+            {"ts": lookback_ts, "close": 100.0},
+            {"ts": stale_ts, "close": 120.0},
+        ],
+    }
+    quality = {
+        symbol: {
+            "quality_score": 90.0,
+            "spread_bps": 1.0,
+            "btc_corr": 0.0,
+            "volume_24h_usdt": 100_000_000.0,
+        }
+        for symbol in bars_by_symbol
+    }
+
+    ranked = second_stage_module._relative_strength_ranking(
+        bars_by_symbol=bars_by_symbol,
+        bar_times_by_symbol={
+            symbol: [row["ts"] for row in rows]
+            for symbol, rows in bars_by_symbol.items()
+        },
+        quality_context=quality,
+        decision_ts=decision_ts,
+        lookback_hours=4,
+    )
+
+    assert [row["symbol"] for row in ranked] == ["CURRENT-USDT"]
 
 
 def test_futures_shadow_is_labeled_as_spot_inverse_proxy_and_capped_to_shadow(tmp_path):

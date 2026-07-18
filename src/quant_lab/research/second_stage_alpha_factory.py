@@ -1548,6 +1548,10 @@ def _relative_strength_ranking(
         current_index = _bar_index_at_or_before_times(bar_times, decision_ts)
         if current_index is None:
             continue
+        # Cross-sectional ranking must compare symbols on the same completed bar.
+        # A stale last-known bar is evidence for its own timestamp, not this decision.
+        if bar_times[current_index] != decision_ts:
+            continue
         lookback_index = _bar_index_at_or_before_times(
             bar_times,
             decision_ts - timedelta(hours=lookback_hours),

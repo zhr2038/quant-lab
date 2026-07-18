@@ -30,18 +30,20 @@ def _run(command: list[str], *, cwd: Path, log_path: Path) -> tuple[int, float]:
     return process.returncode, seconds
 
 
-def _junit(path: Path, scope: str, seconds: float) -> dict:
+def _junit(path: Path, scope: str, seconds: float | None = None) -> dict:
     root = ET.parse(path).getroot()
     if root.tag == "testsuites":
         tests = int(sum(int(item.attrib.get("tests", 0)) for item in root))
         failures = int(sum(int(item.attrib.get("failures", 0)) for item in root))
         errors = int(sum(int(item.attrib.get("errors", 0)) for item in root))
         skipped = int(sum(int(item.attrib.get("skipped", 0)) for item in root))
+        recorded_seconds = sum(float(item.attrib.get("time", 0.0)) for item in root)
     else:
         tests = int(root.attrib.get("tests", 0))
         failures = int(root.attrib.get("failures", 0))
         errors = int(root.attrib.get("errors", 0))
         skipped = int(root.attrib.get("skipped", 0))
+        recorded_seconds = float(root.attrib.get("time", 0.0))
     return {
         "scope": scope,
         "tests": tests,
@@ -49,7 +51,7 @@ def _junit(path: Path, scope: str, seconds: float) -> dict:
         "failed": failures,
         "errors": errors,
         "skipped": skipped,
-        "seconds": seconds,
+        "seconds": recorded_seconds if seconds is None else seconds,
     }
 
 
@@ -58,10 +60,20 @@ def main() -> None:
     parser.add_argument("--root", type=Path, required=True)
     parser.add_argument("--repo", type=Path, required=True)
     parser.add_argument("--python", type=Path, required=True)
+    parser.add_argument(
+        "--v5-junit",
+        type=Path,
+        required=True,
+        help="Fresh JUnit XML from the unchanged V5-prod read-only checkout.",
+    )
+    parser.add_argument("--v5-head", required=True)
     args = parser.parse_args()
     root = args.root.resolve()
     repo = args.repo.resolve()
-    python = str(args.python.resolve())
+    # Keep the virtual-environment launcher path intact. ``resolve()`` follows
+    # ``.venv/bin/python`` to the system interpreter and silently drops the
+    # environment's site-packages.
+    python = str(args.python.expanduser().absolute())
     artifacts = root / "artifacts"
     logs = root / "logs"
     artifacts.mkdir(parents=True, exist_ok=True)
@@ -111,6 +123,11 @@ def main() -> None:
         if code:
             raise SystemExit(code)
 
+    v5_result = _junit(args.v5_junit.resolve(), "v5_full_read_only_checkout")
+    if v5_result["failed"] or v5_result["errors"]:
+        raise RuntimeError(f"V5 read-only regression failed: {v5_result}")
+    suites.append(v5_result)
+
     payload = {
         "schema_version": "alpha_audit_test_execution.v2.1",
         "generated_at": datetime.now(UTC).isoformat(),
@@ -118,8 +135,11 @@ def main() -> None:
         "test_suites": suites,
         "static_checks": static,
         "v5_regression": {
-            "status": "PENDING_READ_ONLY_CONFIRMATION",
-            "reason": "V5-prod source is unchanged; v2 result is retained until optional rerun.",
+            "status": "PASS",
+            "git_head": args.v5_head,
+            "source_mutated": False,
+            "junit_path": args.v5_junit.resolve().as_posix(),
+            "reason": "Fresh full regression from the unchanged V5-prod read-only checkout.",
         },
         "failed_tests_skipped": False,
         "assertions_weakened": False,

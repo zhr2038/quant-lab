@@ -52,6 +52,7 @@ def validate_v21_report_contract(
         "BTC 基准",
         "动态币池基准",
         "Parameter lock",
+        "PROVISIONAL INITIALIZATION · REJECTED",
         "INCONCLUSIVE",
     )
     missing = [label for label in required_dashboard_labels if label not in dashboard_html]

@@ -45,6 +45,7 @@ REQUIRED_ARTIFACTS = (
 REQUIRED_MANIFESTS = (
     "parameter_lock_v21.json",
     "forward_v21_cutoff.json",
+    "provisional_initialization_rejection_v21.json",
     "code_hashes_v21.txt",
     "report_consistency_v21.json",
 )
@@ -105,6 +106,8 @@ def _validate(root: Path, repo: Path) -> None:
     tests = json.loads((root / "artifacts/test_execution_v21.json").read_text())
     if tests.get("overall_status") != "PASS":
         raise RuntimeError("test execution is not PASS")
+    if tests.get("v5_regression", {}).get("status") != "PASS":
+        raise RuntimeError("fresh V5 read-only regression is not PASS")
     browser = json.loads((root / "artifacts/browser_qa_v21.json").read_text())
     if browser.get("status") != "PASS":
         raise RuntimeError("browser QA is not PASS")

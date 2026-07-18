@@ -602,7 +602,7 @@ def test_report_days_and_decisions_are_consistent_across_formats() -> None:
         '<html data-forward-available-days="1.250000000">'
         "Forward Runner Funding 时间窗口 INVALIDATED PRODUCTION ALPHA · FROZEN "
         "已实现净复合 未实现净标记 BTC 基准 动态币池基准 Parameter lock "
-        "INCONCLUSIVE</html>"
+        "PROVISIONAL INITIALIZATION · REJECTED INCONCLUSIVE</html>"
     )
     markdown = "| Forward available days | `1.250000000` |"
     decisions = {

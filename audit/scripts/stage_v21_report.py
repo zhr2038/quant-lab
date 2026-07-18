@@ -82,11 +82,19 @@ def _status_copy(status: dict) -> str:
     )
 
 
-def _write_final_decisions(root: Path, status: dict, funding: dict) -> dict:
+def _write_final_decisions(
+    root: Path, status: dict, funding: dict, provisional: dict
+) -> dict:
     decisions = {
         "audit_version": "v2.1",
         "generated_at": datetime.now(UTC).isoformat(),
         "forward_v2_status": "INVALIDATED_BY_RUNNER_BUG",
+        "preacceptance_initialization": {
+            "status": provisional["status"],
+            "parameter_lock_hash": provisional["parameter_lock_hash"],
+            "may_merge_with_official_v21": False,
+            "replacement_code_commit": provisional["replacement_code_commit"],
+        },
         "forward_v21_start_cutoff": status["forward_v21_start_cutoff"],
         "forward_v21": {
             "hypothesis_type": "POST_HOC_HYPOTHESIS",
@@ -188,7 +196,7 @@ Code commit: `{lock['code_commit']}`
 """
 
 
-def _runner_fix_report(status: dict) -> str:
+def _runner_fix_report(status: dict, provisional: dict) -> str:
     return f"""# Forward Runner Fix Report
 
 Status: **FIXED**. The invalidated v2 implementation is fail-fast and new
@@ -206,6 +214,17 @@ evidence is written only through the v2.1 runner.
 
 Observed v2.1 state: `{status['conclusion']}`. Fixing accounting does not prove
 the post-hoc strategy valid and does not change the production freeze.
+
+## Rejected pre-acceptance initialization
+
+The first provisional v2.1 initialization was rejected before acceptance after
+the OKX bar-open/bar-close availability mismatch was found. It had zero
+decisions, entries and closed trades, and cannot be merged with official v2.1.
+
+- Status: `{provisional['status']}`
+- Rejected lock: `{provisional['parameter_lock_hash']}`
+- Rejected code: `{provisional['code_commit']}`
+- Replacement code: `{provisional['replacement_code_commit']}`
 """
 
 
@@ -325,6 +344,7 @@ stage before packaging; the bundle stage rejects this state.
         f"- `{item['command']}`: **{item['status']}**."
         for item in data["static_checks"]
     )
+    v5 = data["v5_regression"]
     return f"""# Audit v2.1 Test Report
 
 Overall status: **{data['overall_status']}**. No failing test was skipped,
@@ -338,6 +358,10 @@ deleted or weakened by Audit v2.1.
 
 Browser QA is recorded separately in `artifacts/browser_qa_v21.json` and is
 required by the bundle validator.
+
+The fresh V5 full regression is **{v5['status']}** at commit
+`{v5['git_head']}`. It ran against the unchanged read-only checkout;
+`source_mutated=false`.
 """
 
 
@@ -348,6 +372,7 @@ def _dashboard(
     funding: dict,
     contributions: pl.DataFrame,
     equity: pl.DataFrame,
+    provisional: dict,
 ) -> str:
     days = f"{float(status['forward_available_days']):.9f}"
     strategy_path = _svg_path(equity["strategy_equity"].to_list())
@@ -365,7 +390,7 @@ def _dashboard(
         == "core.low_vol_480|top3|score|24h|staggered=0|btc_filter=1"
     )
     concentration_rows = "".join(
-        f"<tr><td>{_esc(partition)}</td><td>{_esc(group['top_symbol'][0])}</td>"
+        f"<tr><td>{_esc(partition[0] if isinstance(partition, tuple) else partition)}</td><td>{_esc(group['top_symbol'][0])}</td>"
         f"<td>{_pct(group['top_symbol_share'].max())}</td>"
         f"<td>{_pct(group['top_3_symbol_share'].max())}</td>"
         f"<td>{_num(group['hhi'].max(), 4)}</td></tr>"
@@ -380,7 +405,7 @@ def _dashboard(
 <style>
 :root{{--ink:#edf3f5;--muted:#91a0a5;--bg:#081012;--surface:#101a1d;--line:#273438;--red:#ff5c5c;--amber:#f4b860;--green:#55d6a7;--blue:#70a7ff}}
 *{{box-sizing:border-box}}html{{scroll-behavior:smooth}}body{{margin:0;background:var(--bg);color:var(--ink);font:15px/1.55 Inter,ui-sans-serif,system-ui,-apple-system,"Segoe UI",sans-serif}}
-a{{color:inherit}}code{{font-family:"SFMono-Regular",Consolas,monospace;font-size:.88em;color:#c9e2e8}}.wrap{{max-width:1240px;margin:auto;padding:0 36px}}nav{{position:sticky;top:0;z-index:5;background:rgba(8,16,18,.92);backdrop-filter:blur(14px);border-bottom:1px solid var(--line)}}nav .wrap{{height:58px;display:flex;align-items:center;justify-content:space-between}}nav a{{text-decoration:none;color:var(--muted);margin-left:22px;font-size:13px}}nav a:hover{{color:var(--ink)}}header{{min-height:470px;display:grid;align-items:center;border-bottom:1px solid var(--line);background:radial-gradient(circle at 80% 18%,rgba(255,92,92,.12),transparent 34%),linear-gradient(135deg,#081012,#0e191b)}}.eyebrow{{letter-spacing:.16em;text-transform:uppercase;color:var(--green);font-size:12px;font-weight:750}}h1{{font-size:clamp(42px,7vw,88px);line-height:.94;letter-spacing:-.055em;margin:18px 0 24px;max-width:980px}}.lede{{max-width:800px;color:#b4c1c5;font-size:19px}}.freeze{{display:inline-flex;margin-top:28px;padding:8px 13px;border:1px solid rgba(255,92,92,.6);color:var(--red);font-weight:800;letter-spacing:.08em}}section{{padding:72px 0;border-bottom:1px solid var(--line)}}h2{{font-size:32px;letter-spacing:-.025em;margin:0 0 8px}}.sub{{color:var(--muted);max-width:820px;margin:0 0 34px}}.statusline{{display:grid;grid-template-columns:repeat(3,1fr);gap:0;border-top:1px solid var(--line);border-bottom:1px solid var(--line)}}.statusline>div{{padding:25px 22px;border-right:1px solid var(--line)}}.statusline>div:last-child{{border:0}}.label{{font-size:12px;color:var(--muted);text-transform:uppercase;letter-spacing:.1em}}.value{{font-size:25px;font-weight:750;margin-top:5px}}.green{{color:var(--green)}}.amber{{color:var(--amber)}}.red{{color:var(--red)}}.metrics{{display:grid;grid-template-columns:repeat(4,1fr);border-top:1px solid var(--line)}}.metric{{padding:24px 18px;border-bottom:1px solid var(--line);border-right:1px solid var(--line)}}.metric:nth-child(4n){{border-right:0}}.metric b{{display:block;font-size:25px;margin-top:6px}}.chart{{height:260px;margin:30px 0 12px;border-left:1px solid var(--line);border-bottom:1px solid var(--line);padding:18px 0 0}}svg{{width:100%;height:220px;overflow:visible}}.legend span{{margin-right:22px;color:var(--muted);font-size:13px}}.dot{{width:8px;height:8px;border-radius:50%;display:inline-block;margin-right:7px}}table{{width:100%;border-collapse:collapse;font-variant-numeric:tabular-nums}}th,td{{text-align:left;padding:13px 10px;border-bottom:1px solid var(--line)}}th{{font-size:12px;color:var(--muted);text-transform:uppercase;letter-spacing:.07em}}tbody tr{{transition:background .16s}}tbody tr:hover{{background:#142125}}.twocol{{display:grid;grid-template-columns:1fr 1fr;gap:58px}}.callout{{border-left:3px solid var(--amber);padding:10px 0 10px 20px;color:#cbd5d8}}.provenance{{display:grid;grid-template-columns:210px 1fr;gap:8px 24px}}.provenance dt{{color:var(--muted)}}.provenance dd{{margin:0;overflow-wrap:anywhere}}footer{{padding:48px 0 70px;color:var(--muted)}}.reveal{{opacity:0;transform:translateY(10px);transition:opacity .45s,transform .45s}}.reveal.show{{opacity:1;transform:none}}@media(max-width:800px){{.wrap{{padding:0 20px}}nav .links{{display:none}}header{{min-height:430px}}.statusline,.metrics,.twocol{{grid-template-columns:1fr 1fr}}.statusline>div{{border-bottom:1px solid var(--line)}}.provenance{{grid-template-columns:1fr}}}}@media(max-width:520px){{.statusline,.metrics,.twocol{{grid-template-columns:1fr}}.metric{{border-right:0}}section{{padding:52px 0}}h1{{font-size:48px}}}}
+a{{color:inherit}}code{{font-family:"SFMono-Regular",Consolas,monospace;font-size:.88em;color:#c9e2e8}}.wrap{{max-width:1240px;margin:auto;padding:0 36px}}nav{{position:sticky;top:0;z-index:5;background:rgba(8,16,18,.92);backdrop-filter:blur(14px);border-bottom:1px solid var(--line)}}nav .wrap{{height:58px;display:flex;align-items:center;justify-content:space-between}}nav a{{text-decoration:none;color:var(--muted);margin-left:22px;font-size:13px}}nav a:hover{{color:var(--ink)}}header{{min-height:470px;display:grid;align-items:center;border-bottom:1px solid var(--line);background:radial-gradient(circle at 80% 18%,rgba(255,92,92,.12),transparent 34%),linear-gradient(135deg,#081012,#0e191b)}}.eyebrow{{letter-spacing:.16em;text-transform:uppercase;color:var(--green);font-size:12px;font-weight:750}}h1{{font-size:clamp(42px,7vw,88px);line-height:.94;letter-spacing:-.055em;margin:18px 0 24px;max-width:980px}}.lede{{max-width:800px;color:#b4c1c5;font-size:19px}}.freeze{{display:inline-flex;margin-top:28px;padding:8px 13px;border:1px solid rgba(255,92,92,.6);color:var(--red);font-weight:800;letter-spacing:.08em}}section{{padding:72px 0;border-bottom:1px solid var(--line)}}h2{{font-size:32px;letter-spacing:-.025em;margin:0 0 8px}}.sub{{color:var(--muted);max-width:820px;margin:0 0 34px}}.statusline{{display:grid;grid-template-columns:repeat(3,1fr);gap:0;border-top:1px solid var(--line);border-bottom:1px solid var(--line)}}.statusline>div{{padding:25px 22px;border-right:1px solid var(--line)}}.statusline>div:last-child{{border:0}}.label{{font-size:12px;color:var(--muted);text-transform:uppercase;letter-spacing:.1em}}.value{{font-size:25px;font-weight:750;margin-top:5px}}.green{{color:var(--green)}}.amber{{color:var(--amber)}}.red{{color:var(--red)}}.metrics{{display:grid;grid-template-columns:repeat(4,1fr);border-top:1px solid var(--line)}}.metric{{padding:24px 18px;border-bottom:1px solid var(--line);border-right:1px solid var(--line)}}.metric:nth-child(4n){{border-right:0}}.metric b{{display:block;font-size:25px;margin-top:6px}}.chart{{height:260px;margin:30px 0 12px;border-left:1px solid var(--line);border-bottom:1px solid var(--line);padding:18px 0 0}}svg{{width:100%;height:220px;overflow:visible}}.legend span{{margin-right:22px;color:var(--muted);font-size:13px}}.dot{{width:8px;height:8px;border-radius:50%;display:inline-block;margin-right:7px}}table{{width:100%;border-collapse:collapse;font-variant-numeric:tabular-nums}}th,td{{text-align:left;padding:13px 10px;border-bottom:1px solid var(--line)}}th{{font-size:12px;color:var(--muted);text-transform:uppercase;letter-spacing:.07em}}tbody tr{{transition:background .16s}}tbody tr:hover{{background:#142125}}.twocol{{display:grid;grid-template-columns:1fr 1fr;gap:58px}}.twocol>div{{min-width:0}}.callout{{border-left:3px solid var(--amber);padding:10px 0 10px 20px;color:#cbd5d8}}.provenance{{display:grid;grid-template-columns:210px 1fr;gap:8px 24px}}.provenance dt{{color:var(--muted)}}.provenance dd{{margin:0;overflow-wrap:anywhere}}footer{{padding:48px 0 70px;color:var(--muted)}}.reveal{{opacity:0;transform:translateY(10px);transition:opacity .45s,transform .45s}}.reveal.show{{opacity:1;transform:none}}@media(max-width:800px){{.wrap{{padding:0 20px}}nav .links{{display:none}}header{{min-height:430px}}.statusline,.metrics,.twocol{{grid-template-columns:1fr 1fr}}.statusline>div{{border-bottom:1px solid var(--line)}}.twocol table{{display:block;max-width:100%;overflow-x:auto;-webkit-overflow-scrolling:touch}}.provenance{{grid-template-columns:1fr}}}}@media(max-width:520px){{.statusline,.metrics,.twocol{{grid-template-columns:1fr}}.metric{{border-right:0}}section{{padding:52px 0}}h1{{font-size:48px}}}}
 </style></head>
 <body>
 <nav><div class="wrap"><strong>ALPHA AUDIT / v2.1</strong><div class="links"><a href="#forward">Forward</a><a href="#controls">Controls</a><a href="#funding">Funding</a><a href="#trace">Trace</a></div></div></nav>
@@ -390,7 +415,7 @@ a{{color:inherit}}code{{font-family:"SFMono-Regular",Consolas,monospace;font-siz
 <section id="forward"><div class="wrap reveal"><h2>Forward evidence</h2><p class="sub">结论只取实际可用完整市场数据，不取请求时间；未实现收益与已实现收益严格分开。</p><div class="metrics"><div class="metric"><span class="label">开始时间</span><b style="font-size:14px">{_esc(status['forward_v21_start_cutoff'])}</b></div><div class="metric"><span class="label">新数据天数</span><b>{days}</b></div><div class="metric"><span class="label">决策 / 空仓</span><b>{status['decision_count']} / {status['cash_decision_count']}</b></div><div class="metric"><span class="label">入场 / 关闭 / 开放</span><b>{status['entry_count']} / {status['closed_trade_count']} / {status['open_trade_count']}</b></div><div class="metric"><span class="label">已实现净复合</span><b>{_pct(status['realized_net_compounded_return'])}</b></div><div class="metric"><span class="label">未实现净标记</span><b>{_pct(status['unrealized_weighted_net_return'])}</b></div><div class="metric"><span class="label">算术累计（仅诊断）</span><b>{_pct(status['realized_net_arithmetic_sum_return'])}</b></div><div class="metric"><span class="label">当前结论</span><b class="amber" style="font-size:17px">INCONCLUSIVE</b></div></div><div class="chart"><svg viewBox="0 0 900 220" preserveAspectRatio="none" aria-label="Forward equity"><path d="{strategy_path}" fill="none" stroke="#55d6a7" stroke-width="3"/><path d="{btc_path}" fill="none" stroke="#70a7ff" stroke-width="2"/><path d="{universe_path}" fill="none" stroke="#f4b860" stroke-width="2"/></svg></div><div class="legend"><span><i class="dot" style="background:#55d6a7"></i>Strategy</span><span><i class="dot" style="background:#70a7ff"></i>BTC</span><span><i class="dot" style="background:#f4b860"></i>Dynamic universe</span><span>Cash = 1.000</span></div><div class="metrics" style="margin-top:24px"><div class="metric"><span class="label">策略标记复合</span><b>{_pct(status['marked_strategy_compounded_return'])}</b></div><div class="metric"><span class="label">BTC 基准</span><b>{_pct(status['btc_benchmark_compounded_return'])}</b></div><div class="metric"><span class="label">动态币池基准</span><b>{_pct(status['equal_weight_universe_benchmark_compounded_return'])}</b></div><div class="metric"><span class="label">数据覆盖</span><b>{_pct(status['data_coverage'])}</b></div></div><p class="callout">{_esc(conclusion)}。即使未来达到最小门槛，本阶段最多输出 PAPER_REVIEW_READY，绝不授予 LIVE_SMALL。</p></div></section>
 <section id="controls"><div class="wrap reveal"><div class="twocol"><div><h2>Strict null controls</h2><p class="sub">新增 within-symbol permutation 与 circular shift，各 1,000 次。time-within 已移入 robustness。</p><table><thead><tr><th>Control</th><th>N</th><th>IC p</th><th>Paired max p</th></tr></thead><tbody>{null_rows}</tbody></table></div><div><h2>Partition concentration</h2><p class="sub">不再把 full 样本的集中度复制给 validation 与 blind。</p><table><thead><tr><th>Partition</th><th>Top</th><th>Share</th><th>Top 3</th><th>HHI</th></tr></thead><tbody>{concentration_rows}</tbody></table></div></div></div></section>
 <section id="funding"><div class="wrap reveal"><h2>Funding event availability</h2><p class="sub">事件在 exact timestamp 不可用，之后立即可用；自然 20 日窗口不再多延迟一个结算周期。</p><div class="metrics"><div class="metric"><span class="label">时间语义</span><b class="green">FIXED</b></div><div class="metric"><span class="label">窗口</span><b style="font-size:18px">TIME-BASED 20D</b></div><div class="metric"><span class="label">有效 periods</span><b>{_esc(funding.get('n_periods'))}</b></div><div class="metric"><span class="label">因子结论</span><b class="amber">INCONCLUSIVE</b></div></div></div></section>
-<section id="trace"><div class="wrap reveal"><h2>Locked provenance</h2><p class="sub">v2.1 样本不能与失效 v2 样本合并；所有新记录绑定同一参数锁、代码和 baseline snapshot。</p><dl class="provenance"><dt>Parameter lock</dt><dd><code>{_esc(lock['sha256'])}</code></dd><dt>Runner</dt><dd><code>{_esc(lock['runner_version'])}</code></dd><dt>Code commit</dt><dd><code>{_esc(lock['code_commit'])}</code></dd><dt>Data snapshot</dt><dd><code>{_esc(lock['data_snapshot_id'])}</code></dd><dt>Entry / exit</dt><dd><code>{_esc(lock['entry_price_rule'])}</code> / <code>{_esc(lock['exit_price_rule'])}</code></dd><dt>Cost</dt><dd>15bps entry + 15bps exit; 30bps round trip</dd><dt>V5 replayability</dt><dd>PARTIALLY_REPLAYABLE — Decision Receipt is design only</dd></dl></div></section>
+<section id="trace"><div class="wrap reveal"><h2>Locked provenance</h2><p class="sub">v2.1 样本不能与失效 v2 样本合并；所有新记录绑定同一参数锁、代码和 baseline snapshot。</p><div class="freeze" style="margin:0 0 28px">PROVISIONAL INITIALIZATION · REJECTED</div><dl class="provenance"><dt>Parameter lock</dt><dd><code>{_esc(lock['sha256'])}</code></dd><dt>Runner</dt><dd><code>{_esc(lock['runner_version'])}</code></dd><dt>Code commit</dt><dd><code>{_esc(lock['code_commit'])}</code></dd><dt>Rejected provisional lock</dt><dd><code>{_esc(provisional['parameter_lock_hash'])}</code> · zero decisions · never merge</dd><dt>Data snapshot</dt><dd><code>{_esc(lock['data_snapshot_id'])}</code></dd><dt>Entry / exit</dt><dd><code>{_esc(lock['entry_price_rule'])}</code> / <code>{_esc(lock['exit_price_rule'])}</code></dd><dt>Cost</dt><dd>15bps entry + 15bps exit; 30bps round trip</dd><dt>V5 replayability</dt><dd>PARTIALLY_REPLAYABLE — Decision Receipt is design only</dd></dl></div></section>
 </main><footer><div class="wrap">Audit v2.1 · no deployment · no orders · no production mutation · generated {datetime.now(UTC).isoformat()}</div></footer>
 <script>const io=new IntersectionObserver(es=>es.forEach(e=>{{if(e.isIntersecting)e.target.classList.add('show')}}),{{threshold:.08}});document.querySelectorAll('.reveal').forEach(e=>io.observe(e));</script>
 </body></html>"""
@@ -407,6 +432,20 @@ def main() -> None:
     reports.mkdir(parents=True, exist_ok=True)
     status = _json(root / "artifacts/forward_v21_status.json")
     lock = _json(root / "manifests/parameter_lock_v21.json")
+    rejected_paths = sorted(
+        (root / "provisional_rejected").glob("*/REJECTION_STATUS.json")
+    )
+    if len(rejected_paths) != 1:
+        raise RuntimeError(
+            f"expected exactly one rejected provisional initialization, found {len(rejected_paths)}"
+        )
+    provisional = _json(rejected_paths[0])
+    if provisional.get("may_merge_with_official_v21") is not False:
+        raise RuntimeError("rejected provisional initialization may not be mergeable")
+    shutil.copy2(
+        rejected_paths[0],
+        root / "manifests/provisional_initialization_rejection_v21.json",
+    )
     funding_frame = pl.read_csv(root / "artifacts/funding_signal_results_v21.csv")
     funding = funding_frame.filter(
         pl.col("window_type").str.starts_with("TIME_BASED")
@@ -421,10 +460,13 @@ def main() -> None:
         root / "artifacts/symbol_contribution_by_partition_v21.csv"
     )
     equity = pl.read_parquet(root / "artifacts/forward_v21_equity.parquet")
-    decisions = _write_final_decisions(root, status, funding)
+    decisions = _write_final_decisions(root, status, funding, provisional)
 
     _write(reports / "forward_paper_report_v21.md", _forward_report(status, lock))
-    _write(reports / "forward_runner_fix_report.md", _runner_fix_report(status))
+    _write(
+        reports / "forward_runner_fix_report.md",
+        _runner_fix_report(status, provisional),
+    )
     _write(
         reports / "funding_window_correction_v21.md",
         _funding_report(frequency, comparison),
@@ -459,6 +501,9 @@ v2 record is preserved but `INVALIDATED_BY_RUNNER_BUG`.
 - Paired IC/portfolio max-stat is named honestly; Holm-Bonferroni is official.
 - V5 Decision Receipt is a default-off design/schema only. Current V5 remains
   PARTIALLY_REPLAYABLE, deployment readiness FAIL, production Alpha FROZEN.
+- A zero-decision provisional initialization was rejected before acceptance
+  when OKX bar-close availability semantics were corrected; it is preserved
+  and cannot be merged with official v2.1.
 
 Historical decisions remain unchanged: rev_xs is RETIRE (FAIL/FAIL/FAIL),
 low-vol signal PASS does not rescue the locked portfolio FAIL, and the post-hoc
@@ -479,19 +524,34 @@ cd "$QLAB_REPO_PATH"
 ./scripts/run_low_vol_forward_paper.sh --as-of "$(date -u +%FT%TZ)" --resume
 
 # Recompute only affected historical evidence.
-$AUDIT_V1_ROOT/.venv/bin/python audit/scripts/stage_v21_analysis.py \\
+$AUDIT_V1_ROOT/.venv/bin/python -m audit.scripts.stage_v21_analysis \\
   --root "$AUDIT_V21_ROOT" --v2-dir "$AUDIT_V2_DIR" \\
   --v1-dir "$AUDIT_V1_DIR" --v1-root "$AUDIT_V1_ROOT"
 
-$AUDIT_V1_ROOT/.venv/bin/python audit/scripts/stage_v21_report.py \\
+$AUDIT_V1_ROOT/.venv/bin/python -m audit.scripts.stage_v21_test \\
+  --root "$AUDIT_V21_ROOT" --repo "$QLAB_REPO_PATH" \\
+  --python "$AUDIT_V1_ROOT/.venv/bin/python" \\
+  --v5-junit "$AUDIT_V21_ROOT/artifacts/v5_pytest_all_v21.xml" \\
+  --v5-head 3df1c67cc44cc8be364ec5d3798ea0d3595c0abc
+
+$AUDIT_V1_ROOT/.venv/bin/python -m audit.scripts.stage_v21_report \\
   --root "$AUDIT_V21_ROOT" --repo "$QLAB_REPO_PATH"
+```
+
+Generate the fresh V5 JUnit first, from the unchanged Windows checkout:
+
+```powershell
+Set-Location E:/v5-prod/V5-prod-main-clean
+python -m pytest -q --junitxml=//wsl.localhost/Ubuntu/home/hr/quant-alpha-audit-v2.1/artifacts/v5_pytest_all_v21.xml
 ```
 
 The runner reads public completed OKX bars only. It contains no exchange
 credentials and cannot submit orders. Never merge v2 and v2.1 forward samples.
 """
     _write(reports / "reproduction_guide_v21.md", reproduction)
-    dashboard = _dashboard(status, lock, nulls, funding, contributions, equity)
+    dashboard = _dashboard(
+        status, lock, nulls, funding, contributions, equity, provisional
+    )
     _write(reports / "audit_dashboard_v21.html", dashboard)
 
     performance_row = pl.read_csv(

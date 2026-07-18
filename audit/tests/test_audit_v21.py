@@ -601,7 +601,9 @@ def test_report_days_and_decisions_are_consistent_across_formats() -> None:
     dashboard = (
         '<html data-forward-available-days="1.250000000">'
         "Forward Runner Funding 时间窗口 INVALIDATED PRODUCTION ALPHA · FROZEN "
-        "已实现净复合 未实现净标记 BTC 基准 动态币池基准 Parameter lock "
+        "已实现净复合 未实现净标记 已实现毛复合 已实现入场成本 "
+        "已实现退出成本 策略超额 vs BTC 策略超额 vs 动态币池 "
+        "BTC 基准 动态币池基准 Parameter lock "
         "PROVISIONAL INITIALIZATION · REJECTED INCONCLUSIVE</html>"
     )
     markdown = "| Forward available days | `1.250000000` |"
